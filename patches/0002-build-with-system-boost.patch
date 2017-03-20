@@ -1,0 +1,28 @@
+From 504f6eeca120650da018d7584737298f55dcbc9b Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Fabian=20Gr=C3=BCnbichler?= <f.gruenbichler@proxmox.com>
+Date: Mon, 20 Mar 2017 09:16:06 +0100
+Subject: [PATCH 2/2] build with system boost
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Signed-off-by: Fabian Grünbichler <f.gruenbichler@proxmox.com>
+---
+ debian/rules | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/debian/rules b/debian/rules
+index d529fdc..61efec4 100755
+--- a/debian/rules
++++ b/debian/rules
+@@ -11,6 +11,7 @@ extraopts += -DWITH_CEPHFS_JAVA=ON
+ extraopts += -DCMAKE_INSTALL_LIBDIR=/usr/lib
+ extraopts += -DCMAKE_INSTALL_LIBEXECDIR=/usr/lib
+ extraopts += -DCMAKE_INSTALL_SYSCONFDIR=/etc
++extraopts += -DWITH_SYSTEM_BOOST=ON
+ 
+ ifeq ($(DEB_HOST_ARCH), armel)
+   # armel supports ARMv4t or above instructions sets.
+-- 
+2.1.4
+
