@@ -98,9 +98,11 @@ ${DEBS}: ${SRC} patches
 .PHONY: download
 download ${SRC}:
 	rm -rf ${SRC} ${SRCDIR}
-	git clone -b v${VER} https://github.com/ceph/ceph.git ${SRCDIR}
+	git clone -b v${VER} --depth 1 https://github.com/ceph/ceph.git ${SRCDIR}
 	cd ${SRCDIR}; for module in ${SUBMODULES}; do git submodule update --init $${module}; done
-	tar czf ${SRC} --exclude .git ${SRCDIR}
+	# "ceph version" is derived from "git describe"
+	# only drop module history to save space
+	tar czf ${SRC} --exclude ".git/modules" ${SRCDIR}
 
 .PHONY: upload
 upload: ${DEBS}
