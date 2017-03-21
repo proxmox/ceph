@@ -112,7 +112,7 @@ distclean: clean
 
 .PHONY: clean
 clean:
-	rm -rf ceph *_${ARCH}.deb *.changes *.dsc *.buildinfo
+	rm -rf ceph *_all.deb *_${ARCH}.deb *.changes *.dsc *.buildinfo
 
 .PHONY: dinstall
 dinstall: ${DEB}
