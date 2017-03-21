@@ -1,0 +1,28 @@
+From 196f4ea77ed186fdf37a3aea97a22296f8f8e42d Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Fabian=20Gr=C3=BCnbichler?= <f.gruenbichler@proxmox.com>
+Date: Tue, 21 Mar 2017 07:47:08 +0100
+Subject: [PATCH 3/3] ceph-detect-init: support Debian Stretch
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Signed-off-by: Fabian Grünbichler <f.gruenbichler@proxmox.com>
+---
+ src/ceph-detect-init/ceph_detect_init/__init__.py | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/src/ceph-detect-init/ceph_detect_init/__init__.py b/src/ceph-detect-init/ceph_detect_init/__init__.py
+index b431616..d03d8db 100644
+--- a/src/ceph-detect-init/ceph_detect_init/__init__.py
++++ b/src/ceph-detect-init/ceph_detect_init/__init__.py
+@@ -113,6 +113,7 @@ def platform_information():
+     # this could be an empty string in Debian
+     if not codename and 'debian' in distro.lower():
+         debian_codenames = {
++            '9': 'stretch',
+             '8': 'jessie',
+             '7': 'wheezy',
+             '6': 'squeeze',
+-- 
+2.1.4
+
