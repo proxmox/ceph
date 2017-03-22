@@ -92,6 +92,7 @@ ${DEBS}: ${SRC} patches
 	cd ${SRCDIR}; rm -rf .pc ./patches
 	echo "git clone git://git.proxmox.com/git/ceph.git\\ngit checkout ${GITVERSION}" >  ${SRCDIR}/debian/SOURCE
 	echo "debian/SOURCE" >> ${SRCDIR}/debian/docs
+	cd ${SRCDIR}; git tag -m "PVE release tag" "v${VER}-${DEBREL}"
 	cd ${SRCDIR}; dpkg-buildpackage -b -uc -us
 	@echo ${DEBS}
 
