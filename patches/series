@@ -1,3 +1,4 @@
 0001-update-changelog.patch
 0002-build-with-system-boost.patch
 0003-ceph-detect-init-support-Debian-Stretch.patch
+0004-enable-systemd-targets-by-default.patch

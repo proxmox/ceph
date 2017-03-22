@@ -1,7 +1,7 @@
-From c99775b461be35901e508e28c53613f37d3f6e99 Mon Sep 17 00:00:00 2001
+From 97f2e218d7978619617563afe313d5db717b63fd Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?Fabian=20Gr=C3=BCnbichler?= <f.gruenbichler@proxmox.com>
 Date: Mon, 20 Mar 2017 09:16:06 +0100
-Subject: [PATCH 2/3] build with system boost
+Subject: [PATCH 2/4] build with system boost
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
