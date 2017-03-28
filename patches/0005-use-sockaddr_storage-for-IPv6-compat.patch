@@ -1,4 +1,4 @@
-From c0f3a65582497526bcbfba62d4c86c55b35c3559 Mon Sep 17 00:00:00 2001
+From a555fcbf33572390f8265c1f0b729407f097df60 Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?Fabian=20Gr=C3=BCnbichler?= <f.gruenbichler@proxmox.com>
 Date: Wed, 22 Mar 2017 16:13:50 +0100
 Subject: [PATCH 5/5] use sockaddr_storage for IPv6 compat
@@ -9,10 +9,10 @@ Content-Transfer-Encoding: 8bit
 Signed-off-by: Fabian Grünbichler <f.gruenbichler@proxmox.com>
 ---
  src/include/ipaddr.h       |  2 +-
- src/common/ipaddr.cc       |  6 +++---
+ src/common/ipaddr.cc       |  6 ++---
  src/common/pick_address.cc |  4 ++--
- src/test/test_ipaddr.cc    | 44 ++++++++++++++++++++++----------------------
- 4 files changed, 28 insertions(+), 28 deletions(-)
+ src/test/test_ipaddr.cc    | 60 +++++++++++++++++++++++++++++-----------------
+ 4 files changed, 44 insertions(+), 28 deletions(-)
 
 diff --git a/src/include/ipaddr.h b/src/include/ipaddr.h
 index cac13d6..bf1a083 100644
@@ -79,7 +79,7 @@ index ebce2d5..460168f 100644
  	return found;
      }
 diff --git a/src/test/test_ipaddr.cc b/src/test/test_ipaddr.cc
-index 9a3d43e..5d3b76e 100644
+index 9a3d43e..716094d 100644
 --- a/src/test/test_ipaddr.cc
 +++ b/src/test/test_ipaddr.cc
 @@ -256,7 +256,7 @@ TEST(CommonIPAddr, TestV6_PrefixZero)
@@ -196,75 +196,115 @@ index 9a3d43e..5d3b76e 100644
    unsigned int prefix_len;
    bool ok;
  
-@@ -380,7 +380,7 @@ TEST(CommonIPAddr, ParseNetwork_IPv4_0)
+@@ -377,10 +377,12 @@ TEST(CommonIPAddr, ParseNetwork_Bad_IPv6SlashJunk)
+ TEST(CommonIPAddr, ParseNetwork_IPv4_0)
+ {
+   struct sockaddr_in network;
++  struct sockaddr_storage net_storage;
    unsigned int prefix_len;
    bool ok;
  
 -  ok = parse_network("123.123.123.123/0", (struct sockaddr*)&network, &prefix_len);
-+  ok = parse_network("123.123.123.123/0", (struct sockaddr_storage*)&network, &prefix_len);
++  ok = parse_network("123.123.123.123/0", &net_storage, &prefix_len);
++  network = *(struct sockaddr_in *) &net_storage;
    ASSERT_EQ(ok, true);
    ASSERT_EQ(0U, prefix_len);
    ASSERT_EQ(AF_INET, network.sin_family);
-@@ -396,7 +396,7 @@ TEST(CommonIPAddr, ParseNetwork_IPv4_13)
+@@ -393,10 +395,12 @@ TEST(CommonIPAddr, ParseNetwork_IPv4_0)
+ TEST(CommonIPAddr, ParseNetwork_IPv4_13)
+ {
+   struct sockaddr_in network;
++  struct sockaddr_storage net_storage;
    unsigned int prefix_len;
    bool ok;
  
 -  ok = parse_network("123.123.123.123/13", (struct sockaddr*)&network, &prefix_len);
-+  ok = parse_network("123.123.123.123/13", (struct sockaddr_storage*)&network, &prefix_len);
++  ok = parse_network("123.123.123.123/13", &net_storage, &prefix_len);
++  network = *(struct sockaddr_in *) &net_storage;
    ASSERT_EQ(ok, true);
    ASSERT_EQ(13U, prefix_len);
    ASSERT_EQ(AF_INET, network.sin_family);
-@@ -412,7 +412,7 @@ TEST(CommonIPAddr, ParseNetwork_IPv4_32)
+@@ -409,10 +413,12 @@ TEST(CommonIPAddr, ParseNetwork_IPv4_13)
+ TEST(CommonIPAddr, ParseNetwork_IPv4_32)
+ {
+   struct sockaddr_in network;
++  struct sockaddr_storage net_storage;
    unsigned int prefix_len;
    bool ok;
  
 -  ok = parse_network("123.123.123.123/32", (struct sockaddr*)&network, &prefix_len);
-+  ok = parse_network("123.123.123.123/32", (struct sockaddr_storage*)&network, &prefix_len);
++  ok = parse_network("123.123.123.123/32", &net_storage, &prefix_len);
++  network = *(struct sockaddr_in *) &net_storage;
    ASSERT_EQ(ok, true);
    ASSERT_EQ(32U, prefix_len);
    ASSERT_EQ(AF_INET, network.sin_family);
-@@ -428,7 +428,7 @@ TEST(CommonIPAddr, ParseNetwork_IPv4_42)
+@@ -425,10 +431,12 @@ TEST(CommonIPAddr, ParseNetwork_IPv4_32)
+ TEST(CommonIPAddr, ParseNetwork_IPv4_42)
+ {
+   struct sockaddr_in network;
++  struct sockaddr_storage net_storage;
    unsigned int prefix_len;
    bool ok;
  
 -  ok = parse_network("123.123.123.123/42", (struct sockaddr*)&network, &prefix_len);
-+  ok = parse_network("123.123.123.123/42", (struct sockaddr_storage*)&network, &prefix_len);
++  ok = parse_network("123.123.123.123/42", &net_storage, &prefix_len);
++  network = *(struct sockaddr_in *) &net_storage;
    ASSERT_EQ(ok, true);
    ASSERT_EQ(42U, prefix_len);
    ASSERT_EQ(AF_INET, network.sin_family);
-@@ -444,7 +444,7 @@ TEST(CommonIPAddr, ParseNetwork_IPv6_0)
+@@ -441,10 +449,12 @@ TEST(CommonIPAddr, ParseNetwork_IPv4_42)
+ TEST(CommonIPAddr, ParseNetwork_IPv6_0)
+ {
+   struct sockaddr_in6 network;
++  struct sockaddr_storage net_storage;
    unsigned int prefix_len;
    bool ok;
  
 -  ok = parse_network("2001:1234:5678:90ab::dead:beef/0", (struct sockaddr*)&network, &prefix_len);
-+  ok = parse_network("2001:1234:5678:90ab::dead:beef/0", (struct sockaddr_storage*)&network, &prefix_len);
++  ok = parse_network("2001:1234:5678:90ab::dead:beef/0", &net_storage, &prefix_len);
++  network = *(struct sockaddr_in6 *) &net_storage;
    ASSERT_EQ(ok, true);
    ASSERT_EQ(0U, prefix_len);
    ASSERT_EQ(AF_INET6, network.sin6_family);
-@@ -460,7 +460,7 @@ TEST(CommonIPAddr, ParseNetwork_IPv6_67)
+@@ -457,10 +467,12 @@ TEST(CommonIPAddr, ParseNetwork_IPv6_0)
+ TEST(CommonIPAddr, ParseNetwork_IPv6_67)
+ {
+   struct sockaddr_in6 network;
++  struct sockaddr_storage net_storage;
    unsigned int prefix_len;
    bool ok;
  
 -  ok = parse_network("2001:1234:5678:90ab::dead:beef/67", (struct sockaddr*)&network, &prefix_len);
-+  ok = parse_network("2001:1234:5678:90ab::dead:beef/67", (struct sockaddr_storage*)&network, &prefix_len);
++  ok = parse_network("2001:1234:5678:90ab::dead:beef/67", &net_storage, &prefix_len);
++  network = *(struct sockaddr_in6 *) &net_storage;
    ASSERT_EQ(ok, true);
    ASSERT_EQ(67U, prefix_len);
    ASSERT_EQ(AF_INET6, network.sin6_family);
-@@ -476,7 +476,7 @@ TEST(CommonIPAddr, ParseNetwork_IPv6_128)
+@@ -473,10 +485,12 @@ TEST(CommonIPAddr, ParseNetwork_IPv6_67)
+ TEST(CommonIPAddr, ParseNetwork_IPv6_128)
+ {
+   struct sockaddr_in6 network;
++  struct sockaddr_storage net_storage;
    unsigned int prefix_len;
    bool ok;
  
 -  ok = parse_network("2001:1234:5678:90ab::dead:beef/128", (struct sockaddr*)&network, &prefix_len);
-+  ok = parse_network("2001:1234:5678:90ab::dead:beef/128", (struct sockaddr_storage*)&network, &prefix_len);
++  ok = parse_network("2001:1234:5678:90ab::dead:beef/128", &net_storage, &prefix_len);
++  network = *(struct sockaddr_in6 *) &net_storage;
    ASSERT_EQ(ok, true);
    ASSERT_EQ(128U, prefix_len);
    ASSERT_EQ(AF_INET6, network.sin6_family);
-@@ -492,7 +492,7 @@ TEST(CommonIPAddr, ParseNetwork_IPv6_9000)
+@@ -489,10 +503,12 @@ TEST(CommonIPAddr, ParseNetwork_IPv6_128)
+ TEST(CommonIPAddr, ParseNetwork_IPv6_9000)
+ {
+   struct sockaddr_in6 network;
++  struct sockaddr_storage net_storage;
    unsigned int prefix_len;
    bool ok;
  
 -  ok = parse_network("2001:1234:5678:90ab::dead:beef/9000", (struct sockaddr*)&network, &prefix_len);
-+  ok = parse_network("2001:1234:5678:90ab::dead:beef/9000", (struct sockaddr_storage*)&network, &prefix_len);
++  ok = parse_network("2001:1234:5678:90ab::dead:beef/9000", &net_storage, &prefix_len);
++  network = *(struct sockaddr_in6 *) &net_storage;
    ASSERT_EQ(ok, true);
    ASSERT_EQ(9000U, prefix_len);
    ASSERT_EQ(AF_INET6, network.sin6_family);
