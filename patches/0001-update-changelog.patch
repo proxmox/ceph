@@ -1,7 +1,7 @@
-From 9dd8e10bc63cafc99c348238d06454ed83bd4305 Mon Sep 17 00:00:00 2001
+From 5c8441e17b21f6b7cc9da641fff0a118a22df780 Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?Fabian=20Gr=C3=BCnbichler?= <f.gruenbichler@proxmox.com>
 Date: Mon, 20 Mar 2017 09:12:50 +0100
-Subject: [PATCH 1/5] update changelog
+Subject: [PATCH 1/6] update changelog
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit

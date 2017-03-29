@@ -1,7 +1,7 @@
-From acc4326c324d2ee47e297ee8f28fadfa224557d5 Mon Sep 17 00:00:00 2001
+From 0362a74b5e615235de81c027ac456d9e0a9a1279 Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?Fabian=20Gr=C3=BCnbichler?= <f.gruenbichler@proxmox.com>
 Date: Wed, 22 Mar 2017 09:00:34 +0100
-Subject: [PATCH 4/5] enable systemd targets by default
+Subject: [PATCH 4/6] enable systemd targets by default
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit

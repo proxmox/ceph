@@ -1,7 +1,7 @@
-From 0b89f3a4f811281c7fbc76cdfc86c0e66cb65b90 Mon Sep 17 00:00:00 2001
+From e0c71b6fcd2908094f2d42311a1c5549dda2d448 Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?Fabian=20Gr=C3=BCnbichler?= <f.gruenbichler@proxmox.com>
 Date: Tue, 21 Mar 2017 07:47:08 +0100
-Subject: [PATCH 3/5] ceph-detect-init: support Debian Stretch
+Subject: [PATCH 3/6] ceph-detect-init: support Debian Stretch
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit

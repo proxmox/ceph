@@ -1,7 +1,7 @@
-From a555fcbf33572390f8265c1f0b729407f097df60 Mon Sep 17 00:00:00 2001
+From 4858648bf48d110c960cd4a0261056805827b527 Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?Fabian=20Gr=C3=BCnbichler?= <f.gruenbichler@proxmox.com>
 Date: Wed, 22 Mar 2017 16:13:50 +0100
-Subject: [PATCH 5/5] use sockaddr_storage for IPv6 compat
+Subject: [PATCH 5/6] use sockaddr_storage for IPv6 compat
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
@@ -57,7 +57,7 @@ index 72fe7de..a7dedf2 100644
    }
  
 diff --git a/src/common/pick_address.cc b/src/common/pick_address.cc
-index ebce2d5..460168f 100644
+index 06d58e4..5f910d5 100644
 --- a/src/common/pick_address.cc
 +++ b/src/common/pick_address.cc
 @@ -32,7 +32,7 @@ static const struct sockaddr *find_ip_in_subnet_list(CephContext *cct,

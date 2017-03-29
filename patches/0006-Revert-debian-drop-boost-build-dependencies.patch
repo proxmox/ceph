@@ -1,0 +1,40 @@
+From 13ff68ad79668008e637bf75e83ace835248e8e8 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Fabian=20Gr=C3=BCnbichler?= <f.gruenbichler@proxmox.com>
+Date: Wed, 29 Mar 2017 09:10:54 +0200
+Subject: [PATCH 6/6] Revert "debian: drop boost build dependencies"
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+we build with system boost currently, so those are actually
+valid for us.
+
+This reverts commit 0d43b76268a41989dc0e285bfcf78b9f98386aaf.
+
+Signed-off-by: Fabian Grünbichler <f.gruenbichler@proxmox.com>
+---
+ debian/control | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+diff --git a/debian/control b/debian/control
+index 1ae3a8a..8974d32 100644
+--- a/debian/control
++++ b/debian/control
+@@ -28,6 +28,14 @@ Build-Depends: bc,
+                libbabeltrace-ctf-dev,
+                libbabeltrace-dev,
+                libblkid-dev (>= 2.17),
++               libboost-dev (>= 1.42),
++               libboost-program-options-dev (>= 1.42),
++               libboost-system-dev (>= 1.42),
++               libboost-thread-dev (>= 1.42),
++	       libboost-regex-dev,
++	       libboost-random-dev,
++               libboost-iostreams-dev (>= 1.42),
++               libboost-python-dev,
+                libcurl4-gnutls-dev,
+                libexpat1-dev,
+                libfcgi-dev,
+-- 
+2.1.4
+
