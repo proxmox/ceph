@@ -1,8 +1,8 @@
 RELEASE=5.0
 
 PACKAGE=ceph
-VER=12.0.0
-DEBREL=pve3
+VER=12.0.1
+DEBREL=pve1
 
 SRC=ceph.tar.gz
 SRCDIR=ceph
