@@ -1,4 +1,4 @@
-From 5c8441e17b21f6b7cc9da641fff0a118a22df780 Mon Sep 17 00:00:00 2001
+From ba9af8745b542dd4c76a8205f58ee8b828602865 Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?Fabian=20Gr=C3=BCnbichler?= <f.gruenbichler@proxmox.com>
 Date: Mon, 20 Mar 2017 09:12:50 +0100
 Subject: [PATCH 1/6] update changelog
@@ -8,14 +8,25 @@ Content-Transfer-Encoding: 8bit
 
 Signed-off-by: Fabian Grünbichler <f.gruenbichler@proxmox.com>
 ---
- debian/changelog | 24 ++++++++++++++++++++++++
- 1 file changed, 24 insertions(+)
+ debian/changelog | 32 ++++++++++++++++++++++++++++++++
+ 1 file changed, 32 insertions(+)
 
 diff --git a/debian/changelog b/debian/changelog
-index e7ab154..52ec3a9 100644
+index e7ab154..0935ea6 100644
 --- a/debian/changelog
 +++ b/debian/changelog
-@@ -4,6 +4,30 @@ ceph (12.0.1-1) stable; urgency=medium
+@@ -1,9 +1,41 @@
++ceph (12.0.1-pve1) stable; urgency=medium
++
++  * revert dropping of boost build dependencies
++
++  * revert including our package release in ceph version output
++
++ -- Proxmox Support Team <support@proxmox.com>  Wed, 29 Mar 2017 09:43:26 +0200
++
+ ceph (12.0.1-1) stable; urgency=medium
+ 
+   * New upstream release
  
   -- Ceph Release Team <ceph-maintainers@ceph.com>  Fri, 24 Mar 2017 15:47:57 +0000
  
