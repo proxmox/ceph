@@ -12,6 +12,7 @@ SUBMODULES=ceph-erasure-code-corpus \
  ceph-object-corpus \
  src/Beast \
  src/civetweb \
+ src/crypto/isa-l/isa-l_crypto \
  src/dpdk \
  src/erasure-code/jerasure/gf-complete \
  src/erasure-code/jerasure/jerasure \
