@@ -2,5 +2,4 @@
 0002-build-with-system-boost.patch
 0003-ceph-detect-init-support-Debian-Stretch.patch
 0004-enable-systemd-targets-by-default.patch
-0005-use-sockaddr_storage-for-IPv6-compat.patch
-0006-Revert-debian-drop-boost-build-dependencies.patch
+0005-Revert-debian-drop-boost-build-dependencies.patch

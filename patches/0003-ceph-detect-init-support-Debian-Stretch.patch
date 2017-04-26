@@ -1,7 +1,7 @@
-From e0c71b6fcd2908094f2d42311a1c5549dda2d448 Mon Sep 17 00:00:00 2001
+From 927fa850b146575bcb31c85c00fc75df321c5a7c Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?Fabian=20Gr=C3=BCnbichler?= <f.gruenbichler@proxmox.com>
 Date: Tue, 21 Mar 2017 07:47:08 +0100
-Subject: [PATCH 3/6] ceph-detect-init: support Debian Stretch
+Subject: [PATCH 3/5] ceph-detect-init: support Debian Stretch
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
@@ -12,10 +12,10 @@ Signed-off-by: Fabian Grünbichler <f.gruenbichler@proxmox.com>
  1 file changed, 1 insertion(+)
 
 diff --git a/src/ceph-detect-init/ceph_detect_init/__init__.py b/src/ceph-detect-init/ceph_detect_init/__init__.py
-index 9abc421..a7f7beb 100644
+index 78374be..21e60c8 100644
 --- a/src/ceph-detect-init/ceph_detect_init/__init__.py
 +++ b/src/ceph-detect-init/ceph_detect_init/__init__.py
-@@ -139,6 +139,7 @@ def platform_information():
+@@ -142,6 +142,7 @@ def platform_information():
      # this could be an empty string in Debian
      if not codename and 'debian' in distro_lower:
          debian_codenames = {

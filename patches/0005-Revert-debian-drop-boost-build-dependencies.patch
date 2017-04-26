@@ -1,7 +1,7 @@
-From 13ff68ad79668008e637bf75e83ace835248e8e8 Mon Sep 17 00:00:00 2001
+From ead28414be9eca9c6c09b702bbda27a4c2fbe65b Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?Fabian=20Gr=C3=BCnbichler?= <f.gruenbichler@proxmox.com>
 Date: Wed, 29 Mar 2017 09:10:54 +0200
-Subject: [PATCH 6/6] Revert "debian: drop boost build dependencies"
+Subject: [PATCH 5/5] Revert "debian: drop boost build dependencies"
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit

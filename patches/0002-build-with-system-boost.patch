@@ -1,7 +1,7 @@
-From d77d3431209484bc107609a3326f67149ddd7924 Mon Sep 17 00:00:00 2001
+From b56cf191f690b1ce3f1f0723fc09c634be6c81d8 Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?Fabian=20Gr=C3=BCnbichler?= <f.gruenbichler@proxmox.com>
 Date: Mon, 20 Mar 2017 09:16:06 +0100
-Subject: [PATCH 2/6] build with system boost
+Subject: [PATCH 2/5] build with system boost
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
@@ -12,7 +12,7 @@ Signed-off-by: Fabian Grünbichler <f.gruenbichler@proxmox.com>
  1 file changed, 1 insertion(+)
 
 diff --git a/debian/rules b/debian/rules
-index d529fdc..61efec4 100755
+index f8fb811..3810602 100755
 --- a/debian/rules
 +++ b/debian/rules
 @@ -11,6 +11,7 @@ extraopts += -DWITH_CEPHFS_JAVA=ON
@@ -20,9 +20,9 @@ index d529fdc..61efec4 100755
  extraopts += -DCMAKE_INSTALL_LIBEXECDIR=/usr/lib
  extraopts += -DCMAKE_INSTALL_SYSCONFDIR=/etc
 +extraopts += -DWITH_SYSTEM_BOOST=ON
- 
- ifeq ($(DEB_HOST_ARCH), armel)
-   # armel supports ARMv4t or above instructions sets.
+ ifneq (,$(filter parallel=%,$(DEB_BUILD_OPTIONS)))
+   NUMJOBS = $(patsubst parallel=%,%,$(filter parallel=%,$(DEB_BUILD_OPTIONS)))
+   extraopts += -DBOOST_J=$(NUMJOBS)
 -- 
 2.1.4
 
