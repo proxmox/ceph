@@ -3,3 +3,4 @@
 0003-ceph-detect-init-support-Debian-Stretch.patch
 0004-enable-systemd-targets-by-default.patch
 0005-Revert-debian-drop-boost-build-dependencies.patch
+0006-mon-OSDMonitor-tolerate-upgrade-from-post-kraken-dev.patch
