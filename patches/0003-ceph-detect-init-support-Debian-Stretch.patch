@@ -1,4 +1,4 @@
-From 927fa850b146575bcb31c85c00fc75df321c5a7c Mon Sep 17 00:00:00 2001
+From 70c45191ce08042685c958995f08da33daf5b252 Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?Fabian=20Gr=C3=BCnbichler?= <f.gruenbichler@proxmox.com>
 Date: Tue, 21 Mar 2017 07:47:08 +0100
 Subject: [PATCH 3/6] ceph-detect-init: support Debian Stretch

@@ -1,4 +1,4 @@
-From ead28414be9eca9c6c09b702bbda27a4c2fbe65b Mon Sep 17 00:00:00 2001
+From 088b229bb647c406170b0214b29c32a617f99bdc Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?Fabian=20Gr=C3=BCnbichler?= <f.gruenbichler@proxmox.com>
 Date: Wed, 29 Mar 2017 09:10:54 +0200
 Subject: [PATCH 5/6] Revert "debian: drop boost build dependencies"

@@ -1,4 +1,4 @@
-From b56cf191f690b1ce3f1f0723fc09c634be6c81d8 Mon Sep 17 00:00:00 2001
+From 22302166a96657850a29aed838a44774e7de13ec Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?Fabian=20Gr=C3=BCnbichler?= <f.gruenbichler@proxmox.com>
 Date: Mon, 20 Mar 2017 09:16:06 +0100
 Subject: [PATCH 2/6] build with system boost
