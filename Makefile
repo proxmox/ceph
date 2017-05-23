@@ -1,28 +1,11 @@
 RELEASE=5.0
 
 PACKAGE=ceph
-VER=12.0.2
+VER=12.0.3
 DEBREL=pve1
 
-SRC=ceph.tar.gz
 SRCDIR=ceph
-
-# everything except boost
-SUBMODULES=ceph-erasure-code-corpus \
- ceph-object-corpus \
- src/Beast \
- src/civetweb \
- src/crypto/isa-l/isa-l_crypto \
- src/dpdk \
- src/erasure-code/jerasure/gf-complete \
- src/erasure-code/jerasure/jerasure \
- src/googletest \
- src/isa-l \
- src/lua \
- src/rocksdb \
- src/spdk \
- src/xxHash \
- src/zstd
+BUILDSRC=${SRCDIR}-${VER}
 
 ARCH:=$(shell dpkg-architecture -qDEB_BUILD_ARCH)
 GITVERSION:=$(shell cat .git/refs/heads/master)
@@ -87,25 +70,29 @@ all: ${DEBS} ${DBG_DEBS}
 
 .PHONY: deb
 deb: ${DEBS} ${DBG_DEBS}
-${DEBS} ${DBG_DEBS}: ${SRC} patches
-	rm -rf ${SRCDIR}
-	tar xf ${SRC}
-	cd ${SRCDIR}; ln -s ../patches patches
-	cd ${SRCDIR}; quilt push -a
-	cd ${SRCDIR}; rm -rf .pc ./patches
-	echo "git clone git://git.proxmox.com/git/ceph.git\\ngit checkout ${GITVERSION}" >  ${SRCDIR}/debian/SOURCE
-	echo "debian/SOURCE" >> ${SRCDIR}/debian/docs
-	cd ${SRCDIR}; dpkg-buildpackage -b -uc -us
+${DEBS} ${DBG_DEBS}: patches
+	rm -rf ${BUILDSRC}
+	mkdir ${BUILDSRC}
+	rsync -ra ${SRCDIR}/ ${BUILDSRC}
+	cd ${BUILDSRC}; ln -s ../patches patches
+	cd ${BUILDSRC}; quilt push -a
+	cd ${BUILDSRC}; rm -rf .pc ./patches
+	echo "git clone git://git.proxmox.com/git/ceph.git\\ngit checkout ${GITVERSION}" >  ${BUILDSRC}/debian/SOURCE
+	echo "debian/SOURCE" >> ${BUILDSRC}/debian/docs
+	cd ${BUILDSRC}; dpkg-buildpackage -b -uc -us
 	@echo ${DEBS}
 
 .PHONY: download
-download ${SRC}:
-	rm -rf ${SRC} ${SRCDIR}
-	git clone -b v${VER} --depth 1 https://github.com/ceph/ceph.git ${SRCDIR}
-	cd ${SRCDIR}; for module in ${SUBMODULES}; do git submodule update --init $${module}; done
-	# "ceph version" is derived from "git describe"
-	# only drop module history to save space
-	tar czf ${SRC} --exclude ".git/modules" ${SRCDIR}
+download:
+	rm -rf ${SRCDIR}.tmp
+	git clone --recursive -b v${VER} https://github.com/ceph/ceph ${SRCDIR}.tmp
+	cd ${SRCDIR}.tmp; ./make-dist
+	rm -rf ${SRCDIR}
+	mkdir ${SRCDIR}
+	tar -C ${SRCDIR} --strip-components=1 -xf ${SRCDIR}.tmp/ceph-*.tar.bz2
+	# needed because boost and zstd builds fail otherwise
+	find ${SRCDIR} -type f -name ".gitignore" -delete
+	rm -rf ${SRCDIR}.tmp
 
 .PHONY: upload
 upload: ${DEBS}
@@ -115,7 +102,7 @@ distclean: clean
 
 .PHONY: clean
 clean:
-	rm -rf ceph *_all.deb *_${ARCH}.deb *.changes *.dsc *.buildinfo
+	rm -rf ${BUILDSRC} *_all.deb *_${ARCH}.deb *.changes *.dsc *.buildinfo *.tar.gz
 
 .PHONY: dinstall
 dinstall: ${DEB}
