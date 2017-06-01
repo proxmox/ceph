@@ -1,0 +1,32 @@
+Maintainer
+----------
+
+Sage Weil <sage@redhat.com>
+
+
+Component Technical Leads
+-------------------------
+
+Core, RADOS     - Josh Durgin <jdurgin@redhat.com>
+RBD             - Jason Dillaman <dillaman@redhat.com>
+RBD (kernel)    - Ilya Dryomov <idryomov@redhat.com>
+RGW             - Yehuda Sadeh <yehuda@redhat.com>
+                  Matt Benjamin <mbenjamin@redhat.com>
+CephFS          - John Spray <jspray@redhat.com>
+CephFS (kernel) - Yan, Zheng <zyan@redhat.com>
+Deployment      - Alfredo Deza <adeza@redhat.com>
+Teuthology      - Zack Cerza <zack@redhat.com>
+Calamari        - Gregory Meno <gmeno@redhat.com>
+Chef Cookbook   - Guilhem Lettron <guilhem@lettron.fr>
+
+
+Contributors
+------------
+
+For a complete contributor list:
+
+  git shortlog -sn
+
+For more friendly contributor stats, see:
+
+  http://metrics.ceph.com

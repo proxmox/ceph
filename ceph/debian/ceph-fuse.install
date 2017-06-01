@@ -1,0 +1,3 @@
+usr/sbin/mount.fuse.ceph sbin
+usr/bin/ceph-fuse
+usr/share/man/man8/ceph-fuse.8
