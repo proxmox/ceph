@@ -1,0 +1,29 @@
+From 7437c66185bb565a3e9b5e29c297bf769de162fd Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Fabian=20Gr=C3=BCnbichler?= <f.gruenbichler@proxmox.com>
+Date: Thu, 18 May 2017 14:35:19 +0200
+Subject: [PATCH 5/6] ceph-mgr: fix package description
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Signed-off-by: Fabian Grünbichler <f.gruenbichler@proxmox.com>
+---
+ debian/control | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/debian/control b/debian/control
+index eb91c40..c2303f0 100644
+--- a/debian/control
++++ b/debian/control
+@@ -164,7 +164,7 @@ Depends: ceph-base (= ${binary:Version}),
+          ${shlibs:Depends}
+ Replaces: ceph (<< 0.93-417)
+ Breaks: ceph (<< 0.93-417)
+-Description: metadata server for the ceph distributed file system
++Description: manager for the ceph distributed file system
+  Ceph is a massively scalable, open-source, distributed
+  storage system that runs on commodity hardware and delivers object,
+  block and file system storage.
+-- 
+2.1.4
+

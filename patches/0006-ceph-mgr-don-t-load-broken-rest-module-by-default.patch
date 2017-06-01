@@ -1,0 +1,29 @@
+From f174680b7caf53c4dcc6183cdb437bbc3df5596c Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Fabian=20Gr=C3=BCnbichler?= <f.gruenbichler@proxmox.com>
+Date: Thu, 1 Jun 2017 10:28:13 +0200
+Subject: [PATCH 6/6] ceph-mgr: don't load broken rest module by default
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Signed-off-by: Fabian Grünbichler <f.gruenbichler@proxmox.com>
+---
+ src/common/config_opts.h | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/common/config_opts.h b/src/common/config_opts.h
+index eff246e..4e1e9da 100644
+--- a/src/common/config_opts.h
++++ b/src/common/config_opts.h
+@@ -1679,7 +1679,7 @@ OPTION(rgw_shard_warning_threshold, OPT_DOUBLE, 90) // pct of safe max
+ OPTION(rgw_swift_versioning_enabled, OPT_BOOL, false) // whether swift object versioning feature is enabled
+ 
+ OPTION(mgr_module_path, OPT_STR, CEPH_PKGLIBDIR "/mgr") // where to load python modules from
+-OPTION(mgr_modules, OPT_STR, "rest")  // Which modules to load
++OPTION(mgr_modules, OPT_STR, "")  // Which modules to load
+ OPTION(mgr_data, OPT_STR, "/var/lib/ceph/mgr/$cluster-$id") // where to find keyring etc
+ OPTION(mgr_beacon_period, OPT_INT, 5)  // How frequently to send beacon
+ OPTION(mgr_stats_period, OPT_INT, 5) // How frequently to send stats
+-- 
+2.1.4
+
