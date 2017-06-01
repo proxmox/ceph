@@ -1,7 +1,7 @@
-From 7437c66185bb565a3e9b5e29c297bf769de162fd Mon Sep 17 00:00:00 2001
+From 0b60c4f0d420fd2dfb65a221ffb6b3ffa98e42c0 Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?Fabian=20Gr=C3=BCnbichler?= <f.gruenbichler@proxmox.com>
 Date: Thu, 18 May 2017 14:35:19 +0200
-Subject: [PATCH 5/6] ceph-mgr: fix package description
+Subject: [PATCH 5/7] ceph-mgr: fix package description
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit

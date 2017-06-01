@@ -1,7 +1,7 @@
-From cd591c10ab6f746d6dde0da3842efb4877581428 Mon Sep 17 00:00:00 2001
+From 10d79ed7976413a7ff3e8732893b3842d242090d Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?Fabian=20Gr=C3=BCnbichler?= <f.gruenbichler@proxmox.com>
 Date: Wed, 31 May 2017 14:33:09 +0200
-Subject: [PATCH 2/6] cmake: disable version from git
+Subject: [PATCH 2/7] cmake: disable version from git
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit

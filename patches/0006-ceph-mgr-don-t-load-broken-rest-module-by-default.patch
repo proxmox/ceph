@@ -1,7 +1,7 @@
-From f174680b7caf53c4dcc6183cdb437bbc3df5596c Mon Sep 17 00:00:00 2001
+From 0bf1ab6d4ca99892f82a27692498f77bd2cc48d5 Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?Fabian=20Gr=C3=BCnbichler?= <f.gruenbichler@proxmox.com>
 Date: Thu, 1 Jun 2017 10:28:13 +0200
-Subject: [PATCH 6/6] ceph-mgr: don't load broken rest module by default
+Subject: [PATCH 6/7] ceph-mgr: don't load broken rest module by default
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit

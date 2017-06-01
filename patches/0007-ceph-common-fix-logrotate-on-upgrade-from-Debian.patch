@@ -1,4 +1,4 @@
-From da20a6c3188f37b1f3fe30c651a90fc17e46b148 Mon Sep 17 00:00:00 2001
+From 00eebc3db3243ddf52063b58666947e0301ed3e1 Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?Fabian=20Gr=C3=BCnbichler?= <f.gruenbichler@proxmox.com>
 Date: Tue, 6 Jun 2017 12:20:06 +0200
 Subject: [PATCH 7/7] ceph-common: fix logrotate on upgrade from Debian
