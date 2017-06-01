@@ -79,6 +79,7 @@ ${DEBS} ${DBG_DEBS}: patches
 	cd ${BUILDSRC}; rm -rf .pc ./patches
 	echo "git clone git://git.proxmox.com/git/ceph.git\\ngit checkout ${GITVERSION}" >  ${BUILDSRC}/debian/SOURCE
 	echo "debian/SOURCE" >> ${BUILDSRC}/debian/docs
+	echo "${GITVERSION}\\nv${VER}" > ${BUILDSRC}/src/.git_version
 	cd ${BUILDSRC}; dpkg-buildpackage -b -uc -us
 	@echo ${DEBS}
 
