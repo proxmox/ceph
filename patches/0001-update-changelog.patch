@@ -1,4 +1,4 @@
-From d98627902c7534966e57c1efaf0d251556af751e Mon Sep 17 00:00:00 2001
+From 8ad464c4a675e0c9c19db10c4bde430c6ac22b95 Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?Fabian=20Gr=C3=BCnbichler?= <f.gruenbichler@proxmox.com>
 Date: Mon, 20 Mar 2017 09:12:50 +0100
 Subject: [PATCH 1/7] update changelog
@@ -8,14 +8,20 @@ Content-Transfer-Encoding: 8bit
 
 Signed-off-by: Fabian Grünbichler <f.gruenbichler@proxmox.com>
 ---
- debian/changelog | 52 ++++++++++++++++++++++++++++++++++++++++++++++++++++
- 1 file changed, 52 insertions(+)
+ debian/changelog | 56 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 56 insertions(+)
 
 diff --git a/debian/changelog b/debian/changelog
-index 147e186..b394148 100644
+index 147e186..f01f8ac 100644
 --- a/debian/changelog
 +++ b/debian/changelog
-@@ -1,21 +1,73 @@
+@@ -1,21 +1,77 @@
++ceph (12.0.3-pve2) stable; urgency=medium
++
++  * fix Ceph #19938: two logrotate scripts when upgrading from Debian packages
++
++ -- Proxmox Support Team <support@proxmox.com>  Wed, 7 Jun 2017 10:20:06 +0200
++
 +ceph (12.0.3-pve1) stable; urgency=medium
 +
 +  * rebase on top of v12.0.3
@@ -23,8 +29,6 @@ index 147e186..b394148 100644
 +  * don't enable (broken) ceph-mgr module by default
 +
 +  * use bundled boost
-+
-+  * fix Ceph #15569: two logrotate scripts when upgrading from Debian packages
 +
 + -- Proxmox Support Team <support@proxmox.com>  Tue, 6 Jun 2017 12:22:39 +0200
 +
