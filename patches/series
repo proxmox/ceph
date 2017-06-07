@@ -4,4 +4,4 @@
 0004-enable-systemd-targets-by-default.patch
 0005-ceph-mgr-fix-package-description.patch
 0006-ceph-mgr-don-t-load-broken-rest-module-by-default.patch
-0007-ceph-common-fix-logrotate-on-upgrade-from-Debian.patch
+0007-debian-sync-logrotate-packaging-with-downstream.patch
