@@ -8,7 +8,7 @@ SRCDIR=ceph
 BUILDSRC=${SRCDIR}-${VER}
 
 ARCH:=$(shell dpkg-architecture -qDEB_BUILD_ARCH)
-GITVERSION:=$(shell cat .git/refs/heads/master)
+GITVERSION:=$(shell git rev-parse HEAD)
 
 DBG_DEBS=ceph-common-dbg_${VER}-${DEBREL}_${ARCH}.deb \
 ceph-fuse-dbg_${VER}-${DEBREL}_${ARCH}.deb \
