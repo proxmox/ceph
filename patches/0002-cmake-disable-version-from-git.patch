@@ -1,7 +1,7 @@
-From 10d79ed7976413a7ff3e8732893b3842d242090d Mon Sep 17 00:00:00 2001
+From d9c0b01ec77f4df864671d0ddbc6b3f73567afd6 Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?Fabian=20Gr=C3=BCnbichler?= <f.gruenbichler@proxmox.com>
 Date: Wed, 31 May 2017 14:33:09 +0200
-Subject: [PATCH 2/7] cmake: disable version from git
+Subject: [PATCH 2/3] cmake: disable version from git
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
@@ -15,11 +15,11 @@ Signed-off-by: Fabian Grünbichler <f.gruenbichler@proxmox.com>
  1 file changed, 5 deletions(-)
 
 diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
-index c68c5fe..26c9a69 100644
+index aa08de7cea..21f97f58da 100644
 --- a/src/CMakeLists.txt
 +++ b/src/CMakeLists.txt
-@@ -202,15 +202,10 @@ set(GCOV_PREFIX_STRIP 4)
- 
+@@ -206,15 +206,10 @@ set(GCOV_PREFIX_STRIP 4)
+ # we pull the git version from .git
  option(ENABLE_GIT_VERSION "build Ceph with git version string" ON)
  if(${ENABLE_GIT_VERSION})
 -  get_git_head_revision(GIT_REFSPEC CEPH_GIT_VER)
@@ -35,5 +35,5 @@ index c68c5fe..26c9a69 100644
    string(SUBSTRING ${CEPH_GIT_NICE_VER} 1 -1 CEPH_GIT_NICE_VER)
  else(${ENABLE_GIT_VERSION})
 -- 
-2.1.4
+2.11.0
 

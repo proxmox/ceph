@@ -1,7 +1,7 @@
-From c755c71d5f5c1cc7b0642c27e504140e2768ccbf Mon Sep 17 00:00:00 2001
+From 4d22b47566842eac090bf9632b8763aca4218b85 Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?Fabian=20Gr=C3=BCnbichler?= <f.gruenbichler@proxmox.com>
 Date: Wed, 22 Mar 2017 09:00:34 +0100
-Subject: [PATCH 4/7] enable systemd targets by default
+Subject: [PATCH 3/3] enable systemd targets by default
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
@@ -12,10 +12,10 @@ Signed-off-by: Fabian Grünbichler <f.gruenbichler@proxmox.com>
  1 file changed, 3 insertions(+)
 
 diff --git a/debian/rules b/debian/rules
-index f8fb811..e12913c 100755
+index d4b3c97f71..11ed7a177c 100755
 --- a/debian/rules
 +++ b/debian/rules
-@@ -123,6 +123,9 @@ override_dh_installinit:
+@@ -130,6 +130,9 @@ override_dh_installinit:
  
  	dh_installinit -p ceph-base --name ceph --no-start
  	dh_installinit -p radosgw --no-start
@@ -26,5 +26,5 @@ index f8fb811..e12913c 100755
  override_dh_systemd_start:
  	dh_systemd_start --no-restart-on-upgrade
 -- 
-2.1.4
+2.11.0
 
