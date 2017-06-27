@@ -1,6 +1,7 @@
 // -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
 // vim: ts=8 sw=2 smarttab
 
+
 #include <errno.h>
 #include <limits.h>
 
@@ -18,8 +19,6 @@
 #include "rgw_rest_s3.h"
 #include "rgw_swift_auth.h"
 #include "rgw_cors_s3.h"
-#include "rgw_http_errors.h"
-#include "rgw_lib.h"
 
 #include "rgw_client_io.h"
 #include "rgw_resolve.h"
@@ -28,6 +27,53 @@
 
 #define dout_subsys ceph_subsys_rgw
 
+struct rgw_http_status_code {
+  int code;
+  const char *name;
+};
+
+const static struct rgw_http_status_code http_codes[] = {
+  { 100, "Continue" },
+  { 200, "OK" },
+  { 201, "Created" },
+  { 202, "Accepted" },
+  { 204, "No Content" },
+  { 205, "Reset Content" },
+  { 206, "Partial Content" },
+  { 207, "Multi Status" },
+  { 208, "Already Reported" },
+  { 300, "Multiple Choices" },
+  { 301, "Moved Permanently" },
+  { 302, "Found" },
+  { 303, "See Other" },
+  { 304, "Not Modified" },
+  { 305, "User Proxy" },
+  { 306, "Switch Proxy" },
+  { 307, "Temporary Redirect" },
+  { 308, "Permanent Redirect" },
+  { 400, "Bad Request" },
+  { 401, "Unauthorized" },
+  { 402, "Payment Required" },
+  { 403, "Forbidden" },
+  { 404, "Not Found" },
+  { 405, "Method Not Allowed" },
+  { 406, "Not Acceptable" },
+  { 407, "Proxy Authentication Required" },
+  { 408, "Request Timeout" },
+  { 409, "Conflict" },
+  { 410, "Gone" },
+  { 411, "Length Required" },
+  { 412, "Precondition Failed" },
+  { 413, "Request Entity Too Large" },
+  { 414, "Request-URI Too Long" },
+  { 415, "Unsupported Media Type" },
+  { 416, "Requested Range Not Satisfiable" },
+  { 417, "Expectation Failed" },
+  { 422, "Unprocessable Entity" },
+  { 500, "Internal Server Error" },
+  { 501, "Not Implemented" },
+  { 0, NULL },
+};
 
 struct rgw_http_attr {
   const char *rgw_attr;
@@ -306,45 +352,6 @@ void rgw_flush_formatter(struct req_state *s, Formatter *formatter)
   std::string outs(oss.str());
   if (!outs.empty() && s->op != OP_HEAD) {
     dump_body(s, outs);
-  }
-}
-
-void set_req_state_err(struct rgw_err& err,     /* out */
-                       int err_no,              /* in  */
-                       const int prot_flags)    /* in  */
-{
-  const struct rgw_http_errors *r;
-
-  if (err_no < 0)
-    err_no = -err_no;
-  err.ret = -err_no;
-  if (prot_flags & RGW_REST_SWIFT) {
-    r = search_err(err_no, RGW_HTTP_SWIFT_ERRORS,
-		   ARRAY_LEN(RGW_HTTP_SWIFT_ERRORS));
-    if (r) {
-      err.http_ret = r->http_ret;
-      err.s3_code = r->s3_code;
-      return;
-    }
-  }
-
-  r = search_err(err_no, RGW_HTTP_ERRORS, ARRAY_LEN(RGW_HTTP_ERRORS));
-  if (r) {
-    err.http_ret = r->http_ret;
-    err.s3_code = r->s3_code;
-    return;
-  }
-  dout(0) << "WARNING: set_req_state_err err_no=" << err_no
-	  << " resorting to 500" << dendl;
-
-  err.http_ret = 500;
-  err.s3_code = "UnknownError";
-}
-
-void set_req_state_err(struct req_state * const s, const int err_no)
-{
-  if (s) {
-    set_req_state_err(s->err, err_no, s->prot_flags);
   }
 }
 
@@ -658,7 +665,7 @@ void end_header(struct req_state* s, RGWOp* op, const char *content_type,
 
   dump_trans_id(s);
 
-  if ((!s->err.is_err()) &&
+  if ((!s->is_err()) &&
       (s->bucket_info.owner != s->user->user_id) &&
       (s->bucket_info.requester_pays)) {
     dump_header(s, "x-amz-request-charged", "requester");
@@ -675,7 +682,7 @@ void end_header(struct req_state* s, RGWOp* op, const char *content_type,
   /* do not send content type if content length is zero
      and the content type was not set by the user */
   if (force_content_type ||
-      (!content_type &&  s->formatter->get_len()  != 0) || s->err.is_err()){
+      (!content_type &&  s->formatter->get_len()  != 0) || s->is_err()){
     switch (s->format) {
     case RGW_FORMAT_XML:
       ctype = "application/xml";
@@ -694,24 +701,9 @@ void end_header(struct req_state* s, RGWOp* op, const char *content_type,
       ctype.append("; charset=utf-8");
     content_type = ctype.c_str();
   }
-  if (!force_no_error && s->err.is_err()) {
+  if (!force_no_error && s->is_err()) {
     dump_start(s);
-    if (s->format != RGW_FORMAT_HTML) {
-      s->formatter->open_object_section("Error");
-    }
-    if (!s->err.s3_code.empty())
-      s->formatter->dump_string("Code", s->err.s3_code);
-    if (!s->err.message.empty())
-      s->formatter->dump_string("Message", s->err.message);
-    if (!s->bucket_name.empty()) // TODO: connect to expose_bucket
-      s->formatter->dump_string("BucketName", s->bucket_name);
-    if (!s->trans_id.empty()) // TODO: connect to expose_bucket or another toggle
-      s->formatter->dump_string("RequestId", s->trans_id);
-    s->formatter->dump_string("HostId", s->host_id);
-    if (s->format != RGW_FORMAT_HTML) {
-      s->formatter->close_section();
-    }
-    s->formatter->output_footer();
+    dump(s);
     dump_content_length(s, s->formatter->get_len());
   } else {
     if (proposed_content_length == CHUNKED_TRANSFER_ENCODING) {
@@ -736,8 +728,8 @@ void end_header(struct req_state* s, RGWOp* op, const char *content_type,
   rgw_flush_formatter_and_reset(s, s->formatter);
 }
 
-void abort_early(struct req_state *s, RGWOp *op, int err_no,
-		 RGWHandler* handler)
+void abort_early(struct req_state *s, RGWOp* op, int err_no,
+		RGWHandler* handler)
 {
   string error_content("");
   if (!s->formatter) {
@@ -764,12 +756,10 @@ void abort_early(struct req_state *s, RGWOp *op, int err_no,
   // returned 0. If non-zero, we need to continue here.
   if (err_no) {
     // Watch out, we might have a custom error state already set!
-    if (s->err.http_ret && s->err.http_ret != 200) {
-      dump_errno(s);
-    } else {
+    if (!s->err.http_ret || s->err.http_ret == 200) {
       set_req_state_err(s, err_no);
-      dump_errno(s);
     }
+    dump_errno(s);
     dump_bucket_from_state(s);
     if (err_no == -ERR_PERMANENT_REDIRECT || err_no == -ERR_WEBSITE_REDIRECT) {
       string dest_uri;
@@ -872,7 +862,7 @@ int recv_body(struct req_state* const s,
               const size_t max)
 {
   try {
-    return AWS_AUTHv4_IO(s)->recv_body(buf, max, s->aws4_auth_needs_complete);
+    return RESTFUL_IO(s)->recv_body(buf, max);
   } catch (rgw::io::Exception& e) {
     return -e.code().value();
   }
@@ -1135,49 +1125,6 @@ int RGWPutObj_ObjStore::get_params()
   return 0;
 }
 
-int RGWPutObj_ObjStore::get_padding_last_aws4_chunk_encoded(bufferlist &bl, uint64_t chunk_size) {
-
-  const int chunk_str_min_len = 1 + 17 + 64 + 2; /* len('0') = 1 */
-
-  char *chunk_str = bl.c_str();
-  int budget = bl.length();
-
-  unsigned int chunk_data_size;
-  unsigned int chunk_offset = 0;
-
-  while (1) {
-
-    /* check available metadata */
-    if (budget < chunk_str_min_len) {
-      return -ERR_SIGNATURE_NO_MATCH;
-    }
-
-    chunk_offset = 0;
-
-    /* grab chunk size */
-    while ((*(chunk_str+chunk_offset) != ';') && (chunk_offset < chunk_str_min_len))
-      chunk_offset++;
-    string str = string(chunk_str, chunk_offset);
-    stringstream ss;
-    ss << std::hex << str;
-    ss >> chunk_data_size;
-
-    /* next chunk */
-    chunk_offset += 17 + 64 + 2 + chunk_data_size;
-
-    /* last chunk? */
-    budget -= chunk_offset;
-    if (budget < 0) {
-      budget *= -1;
-      break;
-    }
-
-    chunk_str += chunk_offset;
-  }
-
-  return budget;
-}
-
 int RGWPutObj_ObjStore::get_data(bufferlist& bl)
 {
   size_t cl;
@@ -1203,26 +1150,6 @@ int RGWPutObj_ObjStore::get_data(bufferlist& bl)
     len = read_len;
     bl.append(bp, 0, len);
 
-    /* read last aws4 chunk padding */
-    if (s->aws4_auth_streaming_mode && len == (int)chunk_size) {
-      int ret_auth = get_padding_last_aws4_chunk_encoded(bl, chunk_size);
-      if (ret_auth < 0) {
-        return ret_auth;
-      }
-      int len_padding = ret_auth;
-      if (len_padding) {
-        bufferptr bp_extra(len_padding);
-        const auto read_len = recv_body(s, bp_extra.c_str(), len_padding);
-        if (read_len < 0) {
-          return read_len;
-        }
-        if (read_len != len_padding) {
-          return -ERR_SIGNATURE_NO_MATCH;
-        }
-        bl.append(bp_extra.c_str(), len_padding);
-        bl.rebuild();
-      }
-    }
     ACCOUNTING_IO(s)->set_account(false);
   }
 
@@ -2108,7 +2035,7 @@ RGWRESTMgr::~RGWRESTMgr()
   delete default_mgr;
 }
 
-static int64_t parse_content_length(const char *content_length)
+int64_t parse_content_length(const char *content_length)
 {
   int64_t len = -1;
 
@@ -2282,7 +2209,7 @@ int RGWREST::preprocess(struct req_state *s, rgw::io::BasicClient* cio)
     s->info.domain = s->cct->_conf->rgw_dns_name;
   }
 
-  url_decode(s->info.request_uri, s->decoded_uri);
+  s->decoded_uri = url_decode(s->info.request_uri);
 
   /* FastCGI specification, section 6.3
    * http://www.fastcgi.com/devkit/doc/fcgi-spec.html#S6.3
@@ -2362,8 +2289,6 @@ int RGWREST::preprocess(struct req_state *s, rgw::io::BasicClient* cio)
       s->generic_attrs[giter->second] = env;
     }
   }
-
-  s->http_auth = info.env->get("HTTP_AUTHORIZATION");
 
   if (g_conf->rgw_print_continue) {
     const char *expect = info.env->get("HTTP_EXPECT");

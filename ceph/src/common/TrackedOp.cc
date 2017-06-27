@@ -11,13 +11,6 @@
  */
 
 #include "TrackedOp.h"
-#include "common/Formatter.h"
-#include <iostream>
-#include <vector>
-#include "common/debug.h"
-#include "common/config.h"
-#include "msg/Message.h"
-#include "include/assert.h"
 
 #define dout_context cct
 #define dout_subsys ceph_subsys_optracker
@@ -246,7 +239,7 @@ bool OpTracker::register_inflight_op(TrackedOp *i)
   if (!tracking_enabled)
     return false;
 
-  uint64_t current_seq = seq.inc();
+  uint64_t current_seq = ++seq;
   uint32_t shard_index = current_seq % num_optracker_shards;
   ShardedTrackingData* sdata = sharded_in_flight_list[shard_index];
   assert(NULL != sdata);

@@ -136,6 +136,7 @@ namespace buffer CEPH_BUFFER_API {
   class raw_posix_aligned;
   class raw_hack_aligned;
   class raw_char;
+  class raw_claimed_char;
   class raw_pipe;
   class raw_unshareable; // diagnostic, unshareable char buffer
   class raw_combined;
@@ -310,7 +311,7 @@ namespace buffer CEPH_BUFFER_API {
     bool can_zero_copy() const;
     int zero_copy_to_fd(int fd, int64_t *offset) const;
 
-    unsigned wasted();
+    unsigned wasted() const;
 
     int cmp(const ptr& o) const;
     bool is_zero() const;
@@ -347,6 +348,7 @@ namespace buffer CEPH_BUFFER_API {
     unsigned _len;
     unsigned _memcopy_count; //the total of memcopy using rebuild().
     ptr append_buffer;  // where i put small appends.
+    int _mempool = -1;
 
   public:
     class iterator;
@@ -680,6 +682,7 @@ namespace buffer CEPH_BUFFER_API {
       _memcopy_count = other._memcopy_count;
       last_p = begin();
       append_buffer.swap(other.append_buffer);
+      _mempool = other._mempool;
       other.clear();
       return *this;
     }
@@ -687,6 +690,13 @@ namespace buffer CEPH_BUFFER_API {
     unsigned get_num_buffers() const { return _buffers.size(); }
     const ptr& front() const { return _buffers.front(); }
     const ptr& back() const { return _buffers.back(); }
+
+    void reassign_to_mempool(int pool);
+    void try_assign_to_mempool(int pool);
+
+    size_t get_append_buffer_unused_tail_length() const {
+      return append_buffer.unused_tail_length();
+    }
 
     unsigned get_memcopy_count() const {return _memcopy_count; }
     const std::list<ptr>& buffers() const { return _buffers; }
@@ -769,12 +779,7 @@ namespace buffer CEPH_BUFFER_API {
 					 unsigned align_memory);
     bool rebuild_page_aligned();
 
-    void reserve(size_t prealloc) {
-      if (append_buffer.unused_tail_length() < prealloc) {
-	append_buffer = buffer::create(prealloc);
-	append_buffer.set_length(0);   // unused, so far.
-      }
-    }
+    void reserve(size_t prealloc);
 
     // assignment-op with move semantics
     const static unsigned int CLAIM_DEFAULT = 0;
@@ -783,6 +788,8 @@ namespace buffer CEPH_BUFFER_API {
     void claim(list& bl, unsigned int flags = CLAIM_DEFAULT);
     void claim_append(list& bl, unsigned int flags = CLAIM_DEFAULT);
     void claim_prepend(list& bl, unsigned int flags = CLAIM_DEFAULT);
+    // only for bl is bufferlist::page_aligned_appender
+    void claim_append_piecewise(list& bl);
 
     // clone non-shareable buffers (make shareable)
     void make_shareable() {
@@ -883,6 +890,13 @@ namespace buffer CEPH_BUFFER_API {
     }
     uint32_t crc32c(uint32_t crc) const;
     void invalidate_crc();
+
+    // These functions return a bufferlist with a pointer to a single
+    // static buffer. They /must/ not outlive the memory they
+    // reference.
+    static list static_from_mem(char* c, size_t l);
+    static list static_from_cstring(char* c);
+    static list static_from_string(std::string& s);
   };
 
   /*
@@ -897,7 +911,7 @@ namespace buffer CEPH_BUFFER_API {
     // cppcheck-suppress noExplicitConstructor
     hash(uint32_t init) : crc(init) { }
 
-    void update(buffer::list& bl) {
+    void update(const buffer::list& bl) {
       crc = bl.crc32c(crc);
     }
 
@@ -949,7 +963,7 @@ std::ostream& operator<<(std::ostream& out, const buffer::list& bl);
 
 std::ostream& operator<<(std::ostream& out, const buffer::error& e);
 
-inline bufferhash& operator<<(bufferhash& l, bufferlist &r) {
+inline bufferhash& operator<<(bufferhash& l, const bufferlist &r) {
   l.update(r);
   return l;
 }

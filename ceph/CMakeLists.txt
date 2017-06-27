@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 2.8.11)
 
 project(ceph)
-set(VERSION 12.0.3)
+set(VERSION 12.1.0)
 
 if(POLICY CMP0046)
   # Tweak policies (this one disables "missing" dependency warning)
@@ -22,7 +22,15 @@ endif()
 if(POLICY CMP0065)
   cmake_policy(SET CMP0065 NEW)
 endif()
-
+if(POLICY CMP0051)
+  # cmake 3.1 and higher include generator expressions in SOURCES property.
+  # in BuildBoost.cmake, get_target_property(<var> <target> SOURCES) is used
+  # to retrieve the source files of a target. in that case, we are only
+  # interested in the *source* files. and i don't want to bother stripping off
+  # the TARGET_OBJECTS elements from the returned SOURCES. so let's stick with
+  # the old behavior now.
+  cmake_policy(SET CMP0051 OLD)
+endif()
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake/modules/")
 
 if(CMAKE_SYSTEM_NAME MATCHES "Linux")
@@ -105,11 +113,10 @@ CHECK_FUNCTION_EXISTS(pthread_set_name_np HAVE_PTHREAD_SET_NAME_NP)
 CHECK_FUNCTION_EXISTS(pthread_setname_np HAVE_PTHREAD_SETNAME_NP)
 CHECK_FUNCTION_EXISTS(pthread_getname_np HAVE_PTHREAD_GETNAME_NP)
 CHECK_FUNCTION_EXISTS(eventfd HAVE_EVENTFD)
+CHECK_FUNCTION_EXISTS(getprogname HAVE_GETPROGNAME)
 
-CHECK_INCLUDE_FILES("inttypes.h" HAVE_INTTYPES_H)
 CHECK_INCLUDE_FILES("linux/types.h" HAVE_LINUX_TYPES_H)
 CHECK_INCLUDE_FILES("linux/version.h" HAVE_LINUX_VERSION_H)
-CHECK_INCLUDE_FILES("stdint.h" HAVE_STDINT_H)
 CHECK_INCLUDE_FILES("arpa/nameser_compat.h" HAVE_ARPA_NAMESER_COMPAT_H)
 CHECK_INCLUDE_FILES("sys/mount.h" HAVE_SYS_MOUNT_H)
 CHECK_INCLUDE_FILES("sys/param.h" HAVE_SYS_PARAM_H)
@@ -218,6 +225,12 @@ if(WITH_SPDK)
   set(HAVE_SPDK TRUE)
 endif(WITH_SPDK)
 
+option(WITH_PMEM "Enable PMEM" OFF)
+if(WITH_PMEM)
+  find_package(pmem REQUIRED)
+  set(HAVE_PMEM ${PMEM_FOUND})
+endif(WITH_PMEM)
+
 # needs mds and? XXX
 option(WITH_LIBCEPHFS "libcephfs client library" ON)
 
@@ -251,13 +264,13 @@ if(WITH_LEVELDB)
   find_file(HAVE_LEVELDB_FILTER_POLICY leveldb/filter_policy.h PATHS ${LEVELDB_INCLUDE_DIR})
 endif(WITH_LEVELDB)
 
-find_package(atomic_ops REQUIRED)
-message(STATUS "${ATOMIC_OPS_LIBRARIES}")
-if(NOT ${ATOMIC_OPS_FOUND})
-  set(NO_ATOMIC_OPS 1)
-endif(NOT ${ATOMIC_OPS_FOUND})
-
 find_package(snappy REQUIRED)
+
+option(WITH_LZ4 "LZ4 compression support" OFF)
+if(WITH_LZ4)
+  find_package(LZ4 REQUIRED)
+  set(HAVE_LZ4 ${LZ4_FOUND})
+endif(WITH_LZ4)
 
 #if allocator is set on command line make sure it matches below strings
 if(ALLOCATOR)
@@ -345,7 +358,7 @@ endif(WITH_BLKIN)
 
 #option for RGW
 option(WITH_RADOSGW "Rados Gateway is enabled" ON)
-option(WITH_RADOSGW_FCGI_FRONTEND "Rados Gateway's FCGI frontend is enabled" ON)
+option(WITH_RADOSGW_FCGI_FRONTEND "Rados Gateway's FCGI frontend is enabled" OFF)
 option(WITH_RADOSGW_BEAST_FRONTEND "Rados Gateway's Beast frontend is enabled" ON)
 if(WITH_RADOSGW)
   find_package(EXPAT REQUIRED)
@@ -437,6 +450,8 @@ if(${WITH_LTTNG})
   endif()
 endif(${WITH_LTTNG})
 
+option(WITH_OSD_INSTRUMENT_FUNCTIONS OFF)
+
 #option for Babeltrace
 option(HAVE_BABELTRACE "Babeltrace libraries are enabled" ON)
 if(${HAVE_BABELTRACE})
@@ -513,89 +528,41 @@ endif()
 # Boost
 option(WITH_SYSTEM_BOOST "require and build with system Boost" OFF)
 
+# Boost::thread depends on Boost::atomic, so list it explicitly.
 set(BOOST_COMPONENTS
-	container thread system regex random program_options date_time iostreams coroutine context)
+  atomic thread system regex random program_options date_time iostreams
+  filesystem)
+set(BOOST_HEADER_COMPONENTS container)
+
 if(WITH_MGR)
 	list(APPEND BOOST_COMPONENTS python)
 endif()
 
-if (WITH_SYSTEM_BOOST)
+if(WITH_RADOSGW_BEAST_FRONTEND)
+	list(APPEND BOOST_COMPONENTS coroutine context)
+endif()
+
+set(Boost_USE_MULTITHREADED ON)
+# require minimally the bundled version
+if(WITH_SYSTEM_BOOST)
   if(ENABLE_SHARED)
     set(Boost_USE_STATIC_LIBS OFF)
   else()
     set(Boost_USE_STATIC_LIBS ON)
   endif()
+  find_package(Boost 1.61 COMPONENTS ${BOOST_COMPONENTS} REQUIRED)
 else()
-  set(BOOST_CFLAGS "-fPIC -w") # check on arm, etc <---XXX
   set(BOOST_J 1 CACHE STRING
     "max jobs for Boost build") # override w/-DBOOST_J=<n>
-  message(STATUS "BUILDING Boost Libraries at j ${BOOST_J}")
-  # 1. prep w/required components
-  set(BOOST_SOURCE_DIR "${PROJECT_SOURCE_DIR}/src/boost")
-  set(BOOST_PREFIX "${PROJECT_BINARY_DIR}/boost")
-  set(BOOST_BUILD "${PROJECT_BINARY_DIR}/boost-build")
-  string(REPLACE ";" "," BOOST_WITH_LIBS "${BOOST_COMPONENTS}")
-  execute_process(COMMAND "./bootstrap.sh"
-    "--prefix=${BOOST_PREFIX}"
-    "--with-libraries=${BOOST_WITH_LIBS}"
-    WORKING_DIRECTORY ${BOOST_SOURCE_DIR})
-  set(BOOST_ROOT "${BOOST_PREFIX}")
-  set(b2 ./b2
-    --build-dir=${BOOST_BUILD} -j${BOOST_J})
-  if(CMAKE_VERBOSE_MAKEFILE)
-    list(APPEND b2 -d1)
-  else()
-    list(APPEND b2 -d0)
-  endif()
-  list(APPEND b2
-    variant=release link=static threading=multi cxxflags=${BOOST_CFLAGS})
-  if(NOT CMAKE_HOST_SYSTEM_PROCESSOR STREQUAL CMAKE_SYSTEM_PROCESSOR)
-    # we are crosscompiling
-    if(CMAKE_CXX_COMPILER_ID STREQUAL GNU)
-      set(b2_cc gcc)
-    elseif(CMAKE_CXX_COMPILER_ID STREQUAL Clang)
-      set(b2_cc clang)
-    else()
-      message(SEND_ERROR "unknown compiler: ${CMAKE_CXX_COMPILER_ID}")
-    endif()
-    # edit the config.jam so, b2 will be able to use the specified toolset
-    execute_process(
-      COMMAND
-      sed -i
-      "s|using ${b2_cc} ;|using ${b2_cc} : ${CMAKE_SYSTEM_PROCESSOR} : ${CMAKE_CXX_COMPILER} ;|"
-      ${PROJECT_SOURCE_DIR}/src/boost/project-config.jam)
-    # use ${CMAKE_SYSTEM_PROCESSOR} as the version identifier of compiler
-    list(APPEND b2 toolset=${b2_cc}-${CMAKE_SYSTEM_PROCESSOR})
-  endif()
-  # 2. install headers
-  execute_process(COMMAND
-    ${b2}
-    headers
-    WORKING_DIRECTORY ${BOOST_SOURCE_DIR})
-  # 3. build and install libs
-  execute_process(COMMAND
-    ${b2}
-    install
-    WORKING_DIRECTORY ${BOOST_SOURCE_DIR})
-  # 4. set hints for FindBoost.cmake
   set(Boost_USE_STATIC_LIBS ON)
-  set(Boost_NO_SYSTEM_PATHS ON)
-  include_directories(BEFORE ${BOOST_PREFIX}/include)
-  # fixup for CheckIncludeFileCXX
-  set(HAVE_BOOST_ASIO_COROUTINE ON)
-
-  set(BOOST_ROOT ${BOOST_PREFIX})
-  set(Boost_NO_SYSTEM_PATHS ON)
+  include(BuildBoost)
+  build_boost(1.63
+    COMPONENTS ${BOOST_COMPONENTS} ${BOOST_HEADER_COMPONENTS})
+  include_directories(BEFORE SYSTEM ${Boost_INCLUDE_DIRS})
 endif()
-
 set(Boost_USE_MULTITHREADED ON)
 
-# require minimally the bundled version
-find_package(Boost 1.61 COMPONENTS ${BOOST_COMPONENTS} REQUIRED)
-include_directories(SYSTEM ${Boost_INCLUDE_DIRS})
 include_directories(SYSTEM ${PROJECT_BINARY_DIR}/include)
-
-CHECK_INCLUDE_FILE_CXX("boost/asio/coroutine.hpp" HAVE_BOOST_ASIO_COROUTINE)
 
 find_package(Threads REQUIRED)
 
@@ -636,5 +603,5 @@ add_tags(ctags
   SRC_DIR src
   TAG_FILE tags
   EXCLUDE_OPTS ${CTAG_EXCLUDES}
-  EXCLUDES "*.js")
+  EXCLUDES "*.js" "*.css")
 add_custom_target(tags DEPENDS ctags)

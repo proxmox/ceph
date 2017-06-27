@@ -327,23 +327,7 @@ int validate_pool(IoCtx &io_ctx, CephContext *cct) {
     }
   }
 
-  std::ostream &operator<<(std::ostream &os, rbd_image_options_t &opts) {
-    image_options_ref* opts_ = static_cast<image_options_ref*>(opts);
-
-    os << "[";
-
-    for (image_options_t::const_iterator i = (*opts_)->begin();
-	 i != (*opts_)->end(); ++i) {
-      os << (i == (*opts_)->begin() ? "" : ", ") << image_option_name(i->first)
-	 << "=" << i->second;
-    }
-
-    os << "]";
-
-    return os;
-  }
-
-  std::ostream &operator<<(std::ostream &os, ImageOptions &opts) {
+  std::ostream &operator<<(std::ostream &os, const ImageOptions &opts) {
     os << "[";
 
     const char *delimiter = "";
@@ -546,8 +530,12 @@ int validate_pool(IoCtx &io_ctx, CephContext *cct) {
 
     bufferlist bl;
     int r = io_ctx.read(RBD_DIRECTORY, bl, 0, 0);
-    if (r < 0)
+    if (r < 0) {
+      if (r == -ENOENT) {
+        r = 0;
+      }
       return r;
+    }
 
     // old format images are in a tmap
     if (bl.length()) {
@@ -1144,7 +1132,9 @@ int validate_pool(IoCtx &io_ctx, CephContext *cct) {
     // might have been blacklisted by peer -- ensure we still own
     // the lock by pinging the OSD
     int r = ictx->exclusive_lock->assert_header_locked();
-    if (r < 0) {
+    if (r == -EBUSY || r == -ENOENT) {
+      return 0;
+    } else if (r < 0) {
       return r;
     }
 
@@ -1394,12 +1384,14 @@ int validate_pool(IoCtx &io_ctx, CephContext *cct) {
                        ictx->exclusive_lock->is_lock_owner();
       if (is_locked) {
         C_SaferCond ctx;
-        ictx->exclusive_lock->shut_down(&ctx);
+        auto exclusive_lock = ictx->exclusive_lock;
+        exclusive_lock->shut_down(&ctx);
         ictx->owner_lock.put_read();
         int r = ctx.wait();
         if (r < 0) {
           lderr(cct) << "error shutting down exclusive lock" << dendl;
         }
+        delete exclusive_lock;
       } else {
         ictx->owner_lock.put_read();
       }
@@ -1479,6 +1471,8 @@ int validate_pool(IoCtx &io_ctx, CephContext *cct) {
       if (r != -ENOENT) {
         lderr(cct) << "error listing rbd_trash entries: " << cpp_strerror(r)
                    << dendl;
+      } else {
+        r = 0;
       }
       return r;
     }
@@ -1848,7 +1842,8 @@ int validate_pool(IoCtx &io_ctx, CephContext *cct) {
 	  m_dest->io_work_queue->aio_write(comp, m_offset + write_offset,
 					   write_length,
 					   std::move(*write_bl),
-					   LIBRADOS_OP_FLAG_FADVISE_DONTNEED);
+					   LIBRADOS_OP_FLAG_FADVISE_DONTNEED,
+					   std::move(read_trace));
 	  write_offset = offset;
 	  write_length = 0;
 	}
@@ -1857,6 +1852,8 @@ int validate_pool(IoCtx &io_ctx, CephContext *cct) {
       assert(gather_ctx->get_sub_created_count() > 0);
       gather_ctx->activate();
     }
+
+    ZTracer::Trace read_trace;
 
   private:
     SimpleThrottle *m_throttle;
@@ -1897,10 +1894,16 @@ int validate_pool(IoCtx &io_ctx, CephContext *cct) {
       }
     }
 
+    ZTracer::Trace trace;
+    if (cct->_conf->rbd_blkin_trace_all) {
+      trace.init("copy", &src->trace_endpoint);
+    }
+
     RWLock::RLocker owner_lock(src->owner_lock);
     SimpleThrottle throttle(src->concurrent_management_ops, false);
     uint64_t period = src->get_stripe_period();
-    unsigned fadvise_flags = LIBRADOS_OP_FLAG_FADVISE_SEQUENTIAL | LIBRADOS_OP_FLAG_FADVISE_NOCACHE;
+    unsigned fadvise_flags = LIBRADOS_OP_FLAG_FADVISE_SEQUENTIAL |
+			     LIBRADOS_OP_FLAG_FADVISE_NOCACHE;
     for (uint64_t offset = 0; offset < src_size; offset += period) {
       if (throttle.pending_error()) {
         return throttle.wait_for_ret();
@@ -1908,11 +1911,16 @@ int validate_pool(IoCtx &io_ctx, CephContext *cct) {
 
       uint64_t len = min(period, src_size - offset);
       bufferlist *bl = new bufferlist();
-      Context *ctx = new C_CopyRead(&throttle, dest, offset, bl, sparse_size);
-      auto comp = io::AioCompletion::create_and_start(ctx, src,
-                                                      io::AIO_TYPE_READ);
-      io::ImageRequest<>::aio_read(src, comp, {{offset, len}},
-                                   io::ReadResult{bl}, fadvise_flags);
+      auto ctx = new C_CopyRead(&throttle, dest, offset, bl, sparse_size);
+      auto comp = io::AioCompletion::create_and_start<Context>(
+	ctx, src, io::AIO_TYPE_READ);
+
+      io::ImageReadRequest<> req(*src, comp, {{offset, len}},
+				 io::ReadResult{bl}, fadvise_flags,
+				 std::move(trace));
+      ctx->read_trace = req.get_trace();
+
+      req.send();
       prog_ctx.update_progress(offset, src_size);
     }
 
@@ -2127,6 +2135,11 @@ int validate_pool(IoCtx &io_ctx, CephContext *cct) {
     uint64_t period = ictx->get_stripe_period();
     uint64_t left = mylen;
 
+    ZTracer::Trace trace;
+    if (ictx->cct->_conf->rbd_blkin_trace_all) {
+      trace.init("read_iterate", &ictx->trace_endpoint);
+    }
+
     RWLock::RLocker owner_locker(ictx->owner_lock);
     start_time = ceph_clock_now();
     while (left > 0) {
@@ -2139,7 +2152,7 @@ int validate_pool(IoCtx &io_ctx, CephContext *cct) {
       auto c = io::AioCompletion::create_and_start(&ctx, ictx,
                                                    io::AIO_TYPE_READ);
       io::ImageRequest<>::aio_read(ictx, c, {{off, read_len}},
-                                   io::ReadResult{&bl}, 0);
+                                   io::ReadResult{&bl}, 0, std::move(trace));
 
       int ret = ctx.wait();
       if (ret < 0) {
@@ -2324,7 +2337,7 @@ int validate_pool(IoCtx &io_ctx, CephContext *cct) {
 	  ictx->readahead.inc_pending();
 	  ictx->aio_read_from_cache(q->oid, q->objectno, NULL,
 				    q->length, q->offset,
-				    req_comp, 0);
+				    req_comp, 0, nullptr);
 	}
       }
       ictx->perfcounter->inc(l_librbd_readahead);

@@ -20,9 +20,6 @@
 #include "common/ceph_time.h"
 #include "rgw_formats.h"
 
-
-using namespace std;
-
 // define as static when RGWBucket implementation compete
 extern void rgw_get_buckets_obj(const rgw_user& user_id, string& buckets_obj_id);
 
@@ -213,11 +210,11 @@ struct RGWBucketAdminOpState {
 
   void set_max_aio(int value) { max_aio = value; }
 
-  void set_user_id(rgw_user& user_id) {
+  void set_user_id(const rgw_user& user_id) {
     if (!user_id.empty())
       uid = user_id;
   }
-  void set_bucket_name(std::string& bucket_str) {
+  void set_bucket_name(const std::string& bucket_str) {
     bucket_name = bucket_str; 
   }
   void set_object(std::string& object_str) {

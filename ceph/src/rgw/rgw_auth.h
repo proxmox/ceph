@@ -16,7 +16,6 @@
 
 #define RGW_USER_ANON_ID "anonymous"
 
-
 namespace rgw {
 namespace auth {
 
@@ -28,6 +27,7 @@ using Exception = std::system_error;
 class Identity {
 public:
   typedef std::map<std::string, int> aclspec_t;
+  using idset_t = boost::container::flat_set<Principal>;
 
   virtual ~Identity() = default;
 
@@ -64,6 +64,10 @@ public:
   }
 
   virtual void to_str(std::ostream& out) const = 0;
+
+  /* Verify whether a given identity corresponds to an identity in the
+     provided set */
+  virtual bool is_identity(const idset_t& ids) const = 0;
 };
 
 inline std::ostream& operator<<(std::ostream& out,
@@ -99,8 +103,8 @@ public:
   virtual void load_acct_info(RGWUserInfo& user_info) const = 0; /* out */
 
   /* Apply any changes to request state. This method will be most useful for
-   * TempURL of Swift API or AWSv4. */
-  virtual void modify_request_state(req_state * s) const {}      /* in/out */
+   * TempURL of Swift API. */
+  virtual void modify_request_state(req_state* s) const {}      /* in/out */
 };
 
 
@@ -122,7 +126,10 @@ public:
  *  E. execute-commit - commit the modifications from point C. */
 class Completer {
 public:
-  typedef std::unique_ptr<Completer> cmplptr_t;
+  /* It's expected that Completers would tend to implement many interfaces
+   * and be used not only in req_state::auth::completer. Ref counting their
+   * instances woild be helpful. */
+  typedef std::shared_ptr<Completer> cmplptr_t;
 
   virtual ~Completer() = default;
 
@@ -130,6 +137,10 @@ public:
    * the completion succeeded. On error throws rgw::auth::Exception storing
    * the reason. */
   virtual bool complete() = 0;
+
+  /* Apply any changes to request state. The initial use case was injecting
+   * the AWSv4 filter over rgw::io::RestfulClient in req_state. */
+  virtual void modify_request_state(req_state* s) = 0;     /* in/out */
 };
 
 
@@ -312,6 +323,8 @@ public:
     return auth_stack.empty();
   }
 
+  static int apply(const Strategy& auth_strategy, req_state* s) noexcept;
+
 private:
   /* Using the reference wrapper here to explicitly point out we are not
    * interested in storing nulls while preserving the dynamic polymorphism. */
@@ -404,6 +417,8 @@ public:
   uint32_t get_perms_from_aclspec(const aclspec_t& aclspec) const override;
   bool is_admin_of(const rgw_user& uid) const override;
   bool is_owner_of(const rgw_user& uid) const override;
+  bool is_identity(const idset_t& ids) const override;
+
   uint32_t get_perm_mask() const override { return info.perm_mask; }
   void to_str(std::ostream& out) const override;
   void load_acct_info(RGWUserInfo& user_info) const override; /* out */
@@ -449,6 +464,7 @@ public:
   uint32_t get_perms_from_aclspec(const aclspec_t& aclspec) const override;
   bool is_admin_of(const rgw_user& uid) const override;
   bool is_owner_of(const rgw_user& uid) const override;
+  bool is_identity(const idset_t& ids) const override;
   uint32_t get_perm_mask() const override {
     return get_perm_mask(subuser, user_info);
   }

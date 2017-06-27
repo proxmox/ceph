@@ -212,8 +212,6 @@ public:
   int verify_params() override;
   int get_params() override;
   int get_data(bufferlist& bl) override;
-
-  int get_padding_last_aws4_chunk_encoded(bufferlist &bl, uint64_t chunk_size);
 };
 
 class RGWPostObj_ObjStore : public RGWPostObj
@@ -626,8 +624,6 @@ public:
 static constexpr int64_t NO_CONTENT_LENGTH = -1;
 static constexpr int64_t CHUNKED_TRANSFER_ENCODING = -2;
 
-extern void set_req_state_err(struct rgw_err &err, int err_no, int prot_flags);
-extern void set_req_state_err(struct req_state *s, int err_no);
 extern void dump_errno(int http_ret, string& out);
 extern void dump_errno(const struct rgw_err &err, string& out);
 extern void dump_errno(struct req_state *s);
@@ -691,6 +687,7 @@ static inline void dump_header_if_nonempty(struct req_state* s,
 }
 
 extern void dump_content_length(struct req_state *s, uint64_t len);
+extern int64_t parse_content_length(const char *content_length);
 extern void dump_etag(struct req_state *s,
                       const boost::string_ref& etag,
                       bool quoted = false);

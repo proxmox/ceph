@@ -13,17 +13,10 @@
 
 #ifndef TRACKEDREQUEST_H_
 #define TRACKEDREQUEST_H_
-#include <sstream>
-#include <stdint.h>
-#include <boost/intrusive/list.hpp>
-#include <atomic>
 
-#include "include/utime.h"
-#include "common/Mutex.h"
+#include <atomic>
 #include "common/histogram.h"
-#include "common/zipkin_trace.h"
 #include "msg/Message.h"
-#include "include/memory.h"
 #include "common/RWLock.h"
 
 #define OPTRACKER_PREALLOC_EVENTS 20
@@ -70,7 +63,7 @@ public:
 struct ShardedTrackingData;
 class OpTracker {
   friend class OpHistory;
-  atomic64_t seq;
+  std::atomic<int64_t> seq = { 0 };
   vector<ShardedTrackingData*> sharded_in_flight_list;
   uint32_t num_optracker_shards;
   OpHistory history;

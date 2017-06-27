@@ -250,7 +250,7 @@ Client::Client(Messenger *m, MonClient *mc, Objecter *objecter_)
     whoami(mc->get_global_id()), cap_epoch_barrier(0),
     last_tid(0), oldest_tid(0), last_flush_tid(1),
     initialized(false),
-    mounted(false), unmounting(false),
+    mounted(false), unmounting(false), blacklisted(false),
     local_osd(-1), local_osd_epoch(0),
     unsafe_sync_write(0),
     client_lock("Client::client_lock")
@@ -293,6 +293,7 @@ Client::Client(Messenger *m, MonClient *mc, Objecter *objecter_)
 				  true));
   objecter_finisher.start();
   filer.reset(new Filer(objecter, &objecter_finisher));
+  objecter->enable_blacklist_events();
 }
 
 
@@ -300,7 +301,12 @@ Client::~Client()
 {
   assert(!client_lock.is_locked());
 
+  // It is necessary to hold client_lock, because any inode destruction
+  // may call into ObjectCacher, which asserts that it's lock (which is
+  // client_lock) is held.
+  client_lock.Lock();
   tear_down_cache();
+  client_lock.Unlock();
 }
 
 void Client::tear_down_cache()
@@ -602,7 +608,7 @@ void Client::trim_cache(bool trim_kernel_dcache)
     if (lru.lru_get_size() <= lru.lru_get_max())  break;
 
     // trim!
-    Dentry *dn = static_cast<Dentry*>(lru.lru_expire());
+    Dentry *dn = static_cast<Dentry*>(lru.lru_get_next_expire());
     if (!dn)
       break;  // done
     
@@ -1649,6 +1655,11 @@ int Client::make_request(MetaRequest *request,
     if (request->aborted())
       break;
 
+    if (blacklisted) {
+      request->abort(-EBLACKLISTED);
+      break;
+    }
+
     // set up wait cond
     Cond caller_cond;
     request->caller_cond = &caller_cond;
@@ -2398,6 +2409,51 @@ void Client::_handle_full_flag(int64_t pool)
 
 void Client::handle_osd_map(MOSDMap *m)
 {
+  std::set<entity_addr_t> new_blacklists;
+  objecter->consume_blacklist_events(&new_blacklists);
+
+  const auto myaddr = messenger->get_myaddr();
+  if (!blacklisted && new_blacklists.count(myaddr)) {
+    auto epoch = objecter->with_osdmap([](const OSDMap &o){
+        return o.get_epoch();
+        });
+    lderr(cct) << "I was blacklisted at osd epoch " << epoch << dendl;
+    blacklisted = true;
+    for (std::map<ceph_tid_t, MetaRequest*>::iterator p = mds_requests.begin();
+         p != mds_requests.end(); ) {
+      auto req = p->second;
+      ++p;
+      req->abort(-EBLACKLISTED);
+      if (req->caller_cond) {
+	req->kick = true;
+	req->caller_cond->Signal();
+      }
+    }
+
+    // Progress aborts on any requests that were on this waitlist.  Any
+    // requests that were on a waiting_for_open session waitlist
+    // will get kicked during close session below.
+    signal_cond_list(waiting_for_mdsmap);
+
+    // Force-close all sessions: assume this is not abandoning any state
+    // on the MDS side because the MDS will have seen the blacklist too.
+    while(!mds_sessions.empty()) {
+      auto i = mds_sessions.begin();
+      auto session = i->second;
+      _closed_mds_session(session);
+    }
+
+    // Since we know all our OSD ops will fail, cancel them all preemtively,
+    // so that on an unhealthy cluster we can umount promptly even if e.g.
+    // some PGs were inaccessible.
+    objecter->op_cancel_writes(-EBLACKLISTED);
+
+  } else if (blacklisted) {
+    // Handle case where we were blacklisted but no longer are
+    blacklisted = objecter->with_osdmap([myaddr](const OSDMap &o){
+        return o.is_blacklisted(myaddr);});
+  }
+
   if (objecter->osdmap_full_flag()) {
     _handle_full_flag(-1);
   } else {
@@ -2707,11 +2763,19 @@ void Client::kick_requests(MetaSession *session)
   for (map<ceph_tid_t, MetaRequest*>::iterator p = mds_requests.begin();
        p != mds_requests.end();
        ++p) {
-    if (p->second->got_unsafe)
+    MetaRequest *req = p->second;
+    if (req->got_unsafe)
       continue;
-    if (p->second->retry_attempt > 0)
+    if (req->aborted()) {
+      if (req->caller_cond) {
+	req->kick = true;
+	req->caller_cond->Signal();
+      }
+      continue;
+    }
+    if (req->retry_attempt > 0)
       continue; // new requests only
-    if (p->second->mds == session->mds_num) {
+    if (req->mds == session->mds_num) {
       send_request(p->second, session);
     }
   }
@@ -2731,6 +2795,8 @@ void Client::resend_unsafe_requests(MetaSession *session)
        ++p) {
     MetaRequest *req = p->second;
     if (req->got_unsafe)
+      continue;
+    if (req->aborted())
       continue;
     if (req->retry_attempt == 0)
       continue; // old requests only
@@ -3280,6 +3346,19 @@ void Client::send_cap(Inode *in, MetaSession *session, Cap *cap,
   session->con->send_message(m);
 }
 
+static bool is_max_size_approaching(Inode *in)
+{
+  /* mds will adjust max size according to the reported size */
+  if (in->flushing_caps & CEPH_CAP_FILE_WR)
+    return false;
+  if (in->size >= in->max_size)
+    return true;
+  /* half of previous max_size increment has been used */
+  if (in->max_size > in->reported_size &&
+      (in->size << 1) >= in->max_size + in->reported_size)
+    return true;
+  return false;
+}
 
 /**
  * check_caps
@@ -3370,11 +3449,10 @@ void Client::check_caps(Inode *in, unsigned flags)
 
     /* approaching file_max? */
     if ((cap->issued & CEPH_CAP_FILE_WR) &&
-	(in->size << 1) >= in->max_size &&
-	(in->reported_size << 1) < in->max_size &&
-	cap == in->auth_cap) {
+	cap == in->auth_cap &&
+	is_max_size_approaching(in)) {
       ldout(cct, 10) << "size " << in->size << " approaching max_size " << in->max_size
-	       << ", reported " << in->reported_size << dendl;
+		     << ", reported " << in->reported_size << dendl;
       goto ack;
     }
 
@@ -5720,6 +5798,30 @@ void Client::_close_sessions()
   }
 }
 
+void Client::flush_mdlog_sync()
+{
+  if (mds_requests.empty()) 
+    return;
+  for (map<mds_rank_t,MetaSession*>::iterator p = mds_sessions.begin();
+       p != mds_sessions.end();
+       ++p) {
+    MetaSession *s = p->second;
+    flush_mdlog(s);
+  }
+}
+
+void Client::flush_mdlog(MetaSession *session)
+{
+  // Only send this to Luminous or newer MDS daemons, older daemons
+  // will crash if they see an unknown CEPH_SESSION_* value in this msg.
+  const uint64_t features = session->con->get_features();
+  if (HAVE_FEATURE(features, SERVER_LUMINOUS)) {
+    MClientSession *m = new MClientSession(CEPH_SESSION_REQUEST_FLUSH_MDLOG);
+    session->con->send_message(m);
+  }
+}
+
+
 void Client::unmount()
 {
   Mutex::Locker lock(client_lock);
@@ -5729,6 +5831,7 @@ void Client::unmount()
   ldout(cct, 2) << "unmounting" << dendl;
   unmounting = true;
 
+  flush_mdlog_sync(); // flush the mdlog for pending requests, if any
   while (!mds_requests.empty()) {
     ldout(cct, 10) << "waiting on " << mds_requests.size() << " requests" << dendl;
     mount_cond.Wait(client_lock);
@@ -5763,6 +5866,23 @@ void Client::unmount()
   }
 
   _ll_drop_pins();
+
+  if (blacklisted) {
+    ldout(cct, 0) << " skipping clean shutdown, we are blacklisted" << dendl;
+
+    if (cct->_conf->client_oc) {
+      // Purge all cached data so that ObjectCacher doesn't get hung up
+      // trying to flush it.  ObjectCacher's behaviour on EBLACKLISTED
+      // is to just leave things marked dirty
+      // (http://tracker.ceph.com/issues/9105)
+      for (const auto &i : inode_map) {
+        objectcacher->purge_set(&(i.second->oset));
+      }
+    }
+
+    mounted = false;
+    return;
+  }
 
   while (unsafe_sync_write > 0) {
     ldout(cct, 0) << unsafe_sync_write << " unsafe_sync_writes, waiting"  << dendl;
@@ -9002,10 +9122,8 @@ success:
 
     if (is_quota_bytes_approaching(in, f->actor_perms)) {
       check_caps(in, CHECK_CAPS_NODELAY);
-    } else {
-      if ((in->size << 1) >= in->max_size &&
-          (in->reported_size << 1) < in->max_size)
-        check_caps(in, 0);
+    } else if (is_max_size_approaching(in)) {
+      check_caps(in, 0);
     }
 
     ldout(cct, 7) << "wrote to " << totalwritten+offset << ", extending file size" << dendl;
@@ -9361,8 +9479,9 @@ int Client::statfs(const char *path, struct statvfs *stbuf,
     // as the filesystem statistics.
     const fsblkcnt_t total = quota_root->quota.max_bytes >> CEPH_BLOCK_SHIFT;
     const fsblkcnt_t used = quota_root->rstat.rbytes >> CEPH_BLOCK_SHIFT;
-    const fsblkcnt_t free = total - used;
-
+    // It is possible for a quota to be exceeded: arithmetic here must
+    // handle case where used > total.
+    const fsblkcnt_t free = total > used ? total - used : 0;
 
     stbuf->f_blocks = total;
     stbuf->f_bfree = free;
@@ -9428,9 +9547,12 @@ int Client::_do_filelock(Inode *in, Fh *fh, int lock_type, int op, int sleep,
     // enable interrupt
     switch_interrupt_cb(callback_handle, req->get());
     ret = make_request(req, fh->actor_perms, NULL, NULL, -1, &bl);
-
     // disable interrupt
     switch_interrupt_cb(callback_handle, NULL);
+    if (ret == 0 && req->aborted()) {
+      // effect of this lock request has been revoked by the 'lock intr' request
+      ret = req->get_abort_code();
+    }
     put_request(req);
   } else {
     ret = make_request(req, fh->actor_perms, NULL, NULL, -1, &bl);
@@ -9489,6 +9611,12 @@ int Client::_do_filelock(Inode *in, Fh *fh, int lock_type, int op, int sleep,
 
 int Client::_interrupt_filelock(MetaRequest *req)
 {
+  // Set abort code, but do not kick. The abort code prevents the request
+  // from being re-sent.
+  req->abort(-EINTR);
+  if (req->mds < 0)
+    return 0; // haven't sent the request
+
   Inode *in = req->inode();
 
   int lock_type;
@@ -9919,7 +10047,8 @@ int Client::ll_lookup(Inode *parent, const char *name, struct stat *attr,
 		      Inode **out, const UserPerm& perms)
 {
   Mutex::Locker lock(client_lock);
-  ldout(cct, 3) << "ll_lookup " << parent << " " << name << dendl;
+  vinodeno_t vparent = _get_vino(parent);
+  ldout(cct, 3) << "ll_lookup " << vparent << " " << name << dendl;
   tout(cct) << "ll_lookup" << std::endl;
   tout(cct) << name << std::endl;
 
@@ -9944,7 +10073,7 @@ int Client::ll_lookup(Inode *parent, const char *name, struct stat *attr,
   _ll_get(in.get());
 
  out:
-  ldout(cct, 3) << "ll_lookup " << parent << " " << name
+  ldout(cct, 3) << "ll_lookup " << vparent << " " << name
 	  << " -> " << r << " (" << hex << attr->st_ino << dec << ")" << dendl;
   tout(cct) << attr->st_ino << std::endl;
   *out = in.get();
@@ -9956,7 +10085,8 @@ int Client::ll_lookupx(Inode *parent, const char *name, Inode **out,
 		       const UserPerm& perms)
 {
   Mutex::Locker lock(client_lock);
-  ldout(cct, 3) << "ll_lookupx " << parent << " " << name << dendl;
+  vinodeno_t vparent = _get_vino(parent);
+  ldout(cct, 3) << "ll_lookupx " << vparent << " " << name << dendl;
   tout(cct) << "ll_lookupx" << std::endl;
   tout(cct) << name << std::endl;
 
@@ -9981,7 +10111,7 @@ int Client::ll_lookupx(Inode *parent, const char *name, Inode **out,
     _ll_get(in.get());
   }
 
-  ldout(cct, 3) << "ll_lookupx " << parent << " " << name
+  ldout(cct, 3) << "ll_lookupx " << vparent << " " << name
 	  << " -> " << r << " (" << hex << stx->stx_ino << dec << ")" << dendl;
   tout(cct) << stx->stx_ino << std::endl;
   *out = in.get();
@@ -11764,7 +11894,7 @@ int Client::ll_link(Inode *in, Inode *newparent, const char *newname,
   vinodeno_t vino = _get_vino(in);
   vinodeno_t vnewparent = _get_vino(newparent);
 
-  ldout(cct, 3) << "ll_link " << in << " to " << vnewparent << " " <<
+  ldout(cct, 3) << "ll_link " << vino << " to " << vnewparent << " " <<
     newname << dendl;
   tout(cct) << "ll_link" << std::endl;
   tout(cct) << vino.ino.val << std::endl;
@@ -12036,7 +12166,7 @@ out:
 
   tout(cct) << (unsigned long)*fhp << std::endl;
   tout(cct) << ino << std::endl;
-  ldout(cct, 3) << "_ll_create " << parent << " " << name << " 0" << oct <<
+  ldout(cct, 3) << "_ll_create " << vparent << " " << name << " 0" << oct <<
     mode << dec << " " << ceph_flags_sys2wire(flags) << " = " << r << " (" <<
     *fhp << " " << hex << ino << dec << ")" << dendl;
 
@@ -12399,10 +12529,8 @@ int Client::_fallocate(Fh *fh, int mode, int64_t offset, int64_t length)
 
       if (is_quota_bytes_approaching(in, fh->actor_perms)) {
         check_caps(in, CHECK_CAPS_NODELAY);
-      } else {
-        if ((in->size << 1) >= in->max_size &&
-            (in->reported_size << 1) < in->max_size)
-          check_caps(in, 0);
+      } else if (is_max_size_approaching(in)) {
+	check_caps(in, 0);
       }
     }
   }

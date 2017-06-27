@@ -34,6 +34,17 @@ using std::string;
 #undef dout_prefix
 #define dout_prefix *_dout << "rocksdb: "
 
+static rocksdb::SliceParts prepare_sliceparts(const bufferlist &bl, rocksdb::Slice *slices)
+{
+  unsigned n = 0;
+  for (std::list<buffer::ptr>::const_iterator p = bl.buffers().begin();
+       p != bl.buffers().end(); ++p, ++n) {
+    slices[n].data_ = p->c_str();
+    slices[n].size_ = p->length();
+  }
+  return rocksdb::SliceParts(slices, n);
+}
+
 //
 // One of these per rocksdb instance, implements the merge operator prefix stuff
 //
@@ -286,18 +297,44 @@ int RocksDBStore::do_open(ostream &out, bool create_if_missing)
     opt.env = static_cast<rocksdb::Env*>(priv);
   }
 
-  auto cache = rocksdb::NewLRUCache(g_conf->rocksdb_cache_size, g_conf->rocksdb_cache_shard_bits);
+  // caches
+  if (!cache_size) {
+    cache_size = g_conf->rocksdb_cache_size;
+  }
+  uint64_t row_cache_size = cache_size * g_conf->rocksdb_cache_row_ratio;
+  uint64_t block_cache_size = cache_size - row_cache_size;
+  if (g_conf->rocksdb_cache_type == "lru") {
+    bbt_opts.block_cache = rocksdb::NewLRUCache(
+      block_cache_size,
+      g_conf->rocksdb_cache_shard_bits);
+  } else if (g_conf->rocksdb_cache_type == "clock") {
+    bbt_opts.block_cache = rocksdb::NewClockCache(
+      block_cache_size,
+      g_conf->rocksdb_cache_shard_bits);
+  } else {
+    derr << "unrecognized rocksdb_cache_type '" << g_conf->rocksdb_cache_type
+	 << "'" << dendl;
+    return -EINVAL;
+  }
   bbt_opts.block_size = g_conf->rocksdb_block_size;
-  bbt_opts.block_cache = cache;
+
+  opt.row_cache = rocksdb::NewLRUCache(row_cache_size,
+				       g_conf->rocksdb_cache_shard_bits);
+
   if (g_conf->kstore_rocksdb_bloom_bits_per_key > 0) {
     dout(10) << __func__ << " set bloom filter bits per key to "
 	     << g_conf->kstore_rocksdb_bloom_bits_per_key << dendl;
-    bbt_opts.filter_policy.reset(rocksdb::NewBloomFilterPolicy(g_conf->kstore_rocksdb_bloom_bits_per_key));
+    bbt_opts.filter_policy.reset(rocksdb::NewBloomFilterPolicy(
+				   g_conf->kstore_rocksdb_bloom_bits_per_key));
   }
   opt.table_factory.reset(rocksdb::NewBlockBasedTableFactory(bbt_opts));
-  dout(10) << __func__ << " set block size to " << g_conf->rocksdb_block_size
-           << " cache size to " << g_conf->rocksdb_cache_size
-           << " num of cache shards to " << (1 << g_conf->rocksdb_cache_shard_bits) << dendl;
+  dout(10) << __func__ << " block size " << g_conf->rocksdb_block_size
+           << ", block_cache size " << prettybyte_t(block_cache_size)
+	   << ", row_cache size " << prettybyte_t(row_cache_size)
+	   << "; shards "
+	   << (1 << g_conf->rocksdb_cache_shard_bits)
+	   << ", type " << g_conf->rocksdb_cache_type
+	   << dendl;
 
   opt.merge_operator.reset(new MergeOperatorRouter(*this));
   status = rocksdb::DB::Open(opt, path, &db);
@@ -561,10 +598,10 @@ void RocksDBStore::RocksDBTransactionImpl::set(
 	     rocksdb::Slice(to_set_bl.buffers().front().c_str(),
 			    to_set_bl.length()));
   } else {
-    // make a copy
-    bufferlist val = to_set_bl;
-    bat.Put(rocksdb::Slice(key),
-	     rocksdb::Slice(val.c_str(), val.length()));
+    rocksdb::Slice key_slice(key);
+    rocksdb::Slice value_slices[to_set_bl.buffers().size()];
+    bat.Put(nullptr, rocksdb::SliceParts(&key_slice, 1),
+            prepare_sliceparts(to_set_bl, value_slices));
   }
 }
 
@@ -582,10 +619,10 @@ void RocksDBStore::RocksDBTransactionImpl::set(
 	     rocksdb::Slice(to_set_bl.buffers().front().c_str(),
 			    to_set_bl.length()));
   } else {
-    // make a copy
-    bufferlist val = to_set_bl;
-    bat.Put(rocksdb::Slice(key),
-	     rocksdb::Slice(val.c_str(), val.length()));
+    rocksdb::Slice key_slice(key);
+    rocksdb::Slice value_slices[to_set_bl.buffers().size()];
+    bat.Put(nullptr, rocksdb::SliceParts(&key_slice, 1),
+            prepare_sliceparts(to_set_bl, value_slices));
   }
 }
 
@@ -612,11 +649,18 @@ void RocksDBStore::RocksDBTransactionImpl::rm_single_key(const string &prefix,
 
 void RocksDBStore::RocksDBTransactionImpl::rmkeys_by_prefix(const string &prefix)
 {
-  KeyValueDB::Iterator it = db->get_iterator(prefix);
-  for (it->seek_to_first();
-       it->valid();
-       it->next()) {
-    bat.Delete(combine_strings(prefix, it->key()));
+  if (db->enable_rmrange) {
+    string endprefix = prefix;
+    endprefix.push_back('\x01');
+    bat.DeleteRange(combine_strings(prefix, string()),
+		    combine_strings(endprefix, string()));
+  } else {
+    KeyValueDB::Iterator it = db->get_iterator(prefix);
+    for (it->seek_to_first();
+	 it->valid();
+	 it->next()) {
+      bat.Delete(combine_strings(prefix, it->key()));
+    }
   }
 }
 
@@ -653,9 +697,10 @@ void RocksDBStore::RocksDBTransactionImpl::merge(
 			    to_set_bl.length()));
   } else {
     // make a copy
-    bufferlist val = to_set_bl;
-    bat.Merge(rocksdb::Slice(key),
-	     rocksdb::Slice(val.c_str(), val.length()));
+    rocksdb::Slice key_slice(key);
+    rocksdb::Slice value_slices[to_set_bl.buffers().size()];
+    bat.Merge(nullptr, rocksdb::SliceParts(&key_slice, 1),
+              prepare_sliceparts(to_set_bl, value_slices));
   }
 }
 

@@ -22,6 +22,7 @@
 #include "mon/PGMap.h"
 
 class MMgrDigest;
+class MMonMgrReport;
 class MPGStats;
 
 
@@ -37,7 +38,11 @@ protected:
   FSMap fsmap;
   mutable Mutex lock;
 
+  set<int64_t> existing_pools; ///< pools that exist, as of PGMap epoch
   PGMap pg_map;
+  PGMap::Incremental pending_inc;
+
+  PGMapStatService pgservice;
 
   bufferlist health_json;
   bufferlist mon_status_json;
@@ -46,6 +51,8 @@ public:
 
   void load_digest(MMgrDigest *m);
   void ingest_pgstats(MPGStats *stats);
+
+  void update_delta_stats();
 
   const bufferlist &get_health() const {return health_json;}
   const bufferlist &get_mon_status() const {return mon_status_json;}
@@ -72,6 +79,14 @@ public:
   template<typename Callback, typename...Args>
   auto with_pgmap(Callback&& cb, Args&&...args) const ->
     decltype(cb(pg_map, std::forward<Args>(args)...))
+  {
+    Mutex::Locker l(lock);
+    return std::forward<Callback>(cb)(pg_map, std::forward<Args>(args)...);
+  }
+
+  template<typename Callback, typename...Args>
+  auto with_pgservice(Callback&& cb, Args&&...args) const ->
+    decltype(cb(pgservice, std::forward<Args>(args)...))
   {
     Mutex::Locker l(lock);
     return std::forward<Callback>(cb)(pg_map, std::forward<Args>(args)...);

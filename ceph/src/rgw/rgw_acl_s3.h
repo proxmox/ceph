@@ -13,9 +13,6 @@
 #include "rgw_xml.h"
 #include "rgw_acl.h"
 
-
-using namespace std;
-
 class RGWRados;
 
 class ACLPermission_S3 : public ACLPermission, public XMLObj
@@ -95,7 +92,7 @@ public:
     owner = _owner;
     return ret;
   }
-  int create_from_headers(RGWRados *store, RGWEnv *env, ACLOwner& _owner);
+  int create_from_headers(RGWRados *store, const RGWEnv *env, ACLOwner& _owner);
 };
 
 /**

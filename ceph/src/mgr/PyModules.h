@@ -43,8 +43,10 @@ class PyModules
 
   std::string get_site_packages();
 
+  PyThreadState *pMainThreadState = nullptr;
+
 public:
-  static constexpr auto config_prefix = "mgr.";
+  static std::string config_prefix;
 
   PyModules(DaemonStateIndex &ds, ClusterState &cs, MonClient &mc,
             Objecter &objecter_, Client &client_,
@@ -90,6 +92,8 @@ public:
 
   bool get_config(const std::string &handle,
       const std::string &key, std::string *val) const;
+  PyObject *get_config_prefix(const std::string &handle,
+			      const std::string &prefix) const;
   void set_config(const std::string &handle,
       const std::string &key, const std::string &val);
 

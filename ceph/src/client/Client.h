@@ -388,6 +388,7 @@ protected:
   bool   initialized;
   bool   mounted;
   bool   unmounting;
+  bool   blacklisted;
 
   // When an MDS has sent us a REJECT, remember that and don't
   // contact it again.  Remember which inst rejected us, so that
@@ -723,7 +724,11 @@ protected:
 
   bool use_faked_inos() { return _use_faked_inos; }
   vinodeno_t map_faked_ino(ino_t ino);
-
+ 
+  //notify the mds to flush the mdlog
+  void flush_mdlog_sync();
+  void flush_mdlog(MetaSession *session);
+  
   // ----------------------
   // fs ops.
 private:

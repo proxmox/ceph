@@ -120,18 +120,22 @@ TEST(bluestore_extent_ref_map_t, put)
 {
   bluestore_extent_ref_map_t m;
   PExtentVector r;
+  bool maybe_unshared = false;
   m.get(10, 30);
-  m.put(10, 30, &r);
-  cout << m << " " << r << std::endl;
+  maybe_unshared = true;
+  m.put(10, 30, &r, &maybe_unshared);
+  cout << m << " " << r << " " << (int)maybe_unshared << std::endl;
   ASSERT_EQ(0u, m.ref_map.size());
   ASSERT_EQ(1u, r.size());
   ASSERT_EQ(10u, r[0].offset);
   ASSERT_EQ(30u, r[0].length);
+  ASSERT_TRUE(maybe_unshared);
   r.clear();
   m.get(10, 30);
   m.get(20, 10);
-  m.put(10, 30, &r);
-  cout << m << " " << r << std::endl;
+  maybe_unshared = true;
+  m.put(10, 30, &r, &maybe_unshared);
+  cout << m << " " << r << " " << (int)maybe_unshared << std::endl;
   ASSERT_EQ(1u, m.ref_map.size());
   ASSERT_EQ(10u, m.ref_map[20].length);
   ASSERT_EQ(1u, m.ref_map[20].refs);
@@ -140,11 +144,13 @@ TEST(bluestore_extent_ref_map_t, put)
   ASSERT_EQ(10u, r[0].length);
   ASSERT_EQ(30u, r[1].offset);
   ASSERT_EQ(10u, r[1].length);
+  ASSERT_TRUE(maybe_unshared);
   r.clear();
   m.get(30, 10);
   m.get(30, 10);
-  m.put(20, 15, &r);
-  cout << m << " " << r << std::endl;
+  maybe_unshared = true;
+  m.put(20, 15, &r, &maybe_unshared);
+  cout << m << " " << r << " " << (int)maybe_unshared << std::endl;
   ASSERT_EQ(2u, m.ref_map.size());
   ASSERT_EQ(5u, m.ref_map[30].length);
   ASSERT_EQ(1u, m.ref_map[30].refs);
@@ -153,9 +159,11 @@ TEST(bluestore_extent_ref_map_t, put)
   ASSERT_EQ(1u, r.size());
   ASSERT_EQ(20u, r[0].offset);
   ASSERT_EQ(10u, r[0].length);
+  ASSERT_FALSE(maybe_unshared);
   r.clear();
-  m.put(33, 5, &r);
-  cout << m << " " << r << std::endl;
+  maybe_unshared = true;
+  m.put(33, 5, &r, &maybe_unshared);
+  cout << m << " " << r << " " << (int)maybe_unshared << std::endl;
   ASSERT_EQ(3u, m.ref_map.size());
   ASSERT_EQ(3u, m.ref_map[30].length);
   ASSERT_EQ(1u, m.ref_map[30].refs);
@@ -166,6 +174,12 @@ TEST(bluestore_extent_ref_map_t, put)
   ASSERT_EQ(1u, r.size());
   ASSERT_EQ(33u, r[0].offset);
   ASSERT_EQ(2u, r[0].length);
+  ASSERT_FALSE(maybe_unshared);
+  r.clear();
+  maybe_unshared = true;
+  m.put(38, 2, &r, &maybe_unshared);
+  cout << m << " " << r << " " << (int)maybe_unshared << std::endl;
+  ASSERT_TRUE(maybe_unshared);
 }
 
 TEST(bluestore_extent_ref_map_t, contains)
@@ -828,7 +842,6 @@ TEST(Blob, put_ref)
 TEST(bluestore_blob_t, can_split)
 {
   bluestore_blob_t a;
-  a.flags = bluestore_blob_t::FLAG_MUTABLE;
   ASSERT_TRUE(a.can_split());
   a.flags = bluestore_blob_t::FLAG_SHARED;
   ASSERT_FALSE(a.can_split());
@@ -841,7 +854,6 @@ TEST(bluestore_blob_t, can_split)
 TEST(bluestore_blob_t, can_split_at)
 {
   bluestore_blob_t a;
-  a.flags = bluestore_blob_t::FLAG_MUTABLE;
   a.allocated_test(bluestore_pextent_t(0x10000, 0x2000));
   a.allocated_test(bluestore_pextent_t(0x20000, 0x2000));
   ASSERT_TRUE(a.can_split_at(0x1000));
@@ -856,7 +868,6 @@ TEST(bluestore_blob_t, can_split_at)
 TEST(bluestore_blob_t, prune_tail)
 {
   bluestore_blob_t a;
-  a.flags = bluestore_blob_t::FLAG_MUTABLE;
   a.allocated_test(bluestore_pextent_t(0x10000, 0x2000));
   a.allocated_test(bluestore_pextent_t(0x20000, 0x2000));
   ASSERT_FALSE(a.can_prune_tail());
@@ -1017,54 +1028,6 @@ TEST(Blob, legacy_decode)
     ASSERT_EQ(0xff0u + 1u, Bres2.get_blob_use_tracker().get_referenced_bytes());
     ASSERT_TRUE(Bres.get_blob_use_tracker().equal(Bres2.get_blob_use_tracker()));
   }
-}
-TEST(ExtentMap, find_lextent)
-{
-  BlueStore store(g_ceph_context, "", 4096);
-  BlueStore::LRUCache cache(g_ceph_context);
-  BlueStore::CollectionRef coll(new BlueStore::Collection(&store, &cache, coll_t()));
-  BlueStore::Onode onode(coll.get(), ghobject_t(), "");
-  BlueStore::ExtentMap em(&onode);
-  BlueStore::BlobRef br(new BlueStore::Blob);
-  br->shared_blob = new BlueStore::SharedBlob(coll.get());
-
-  ASSERT_EQ(em.extent_map.end(), em.find_lextent(0));
-  ASSERT_EQ(em.extent_map.end(), em.find_lextent(100));
-
-  em.extent_map.insert(*new BlueStore::Extent(100, 0, 100, br));
-  auto a = em.find(100);
-  ASSERT_EQ(em.extent_map.end(), em.find_lextent(0));
-  ASSERT_EQ(em.extent_map.end(), em.find_lextent(99));
-  ASSERT_EQ(a, em.find_lextent(100));
-  ASSERT_EQ(a, em.find_lextent(101));
-  ASSERT_EQ(a, em.find_lextent(199));
-  ASSERT_EQ(em.extent_map.end(), em.find_lextent(200));
-
-  em.extent_map.insert(*new BlueStore::Extent(200, 0, 100, br));
-  auto b = em.find(200);
-  ASSERT_EQ(em.extent_map.end(), em.find_lextent(0));
-  ASSERT_EQ(em.extent_map.end(), em.find_lextent(99));
-  ASSERT_EQ(a, em.find_lextent(100));
-  ASSERT_EQ(a, em.find_lextent(101));
-  ASSERT_EQ(a, em.find_lextent(199));
-  ASSERT_EQ(b, em.find_lextent(200));
-  ASSERT_EQ(b, em.find_lextent(299));
-  ASSERT_EQ(em.extent_map.end(), em.find_lextent(300));
-
-  em.extent_map.insert(*new BlueStore::Extent(400, 0, 100, br));
-  auto d = em.find(400);
-  ASSERT_EQ(em.extent_map.end(), em.find_lextent(0));
-  ASSERT_EQ(em.extent_map.end(), em.find_lextent(99));
-  ASSERT_EQ(a, em.find_lextent(100));
-  ASSERT_EQ(a, em.find_lextent(101));
-  ASSERT_EQ(a, em.find_lextent(199));
-  ASSERT_EQ(b, em.find_lextent(200));
-  ASSERT_EQ(b, em.find_lextent(299));
-  ASSERT_EQ(em.extent_map.end(), em.find_lextent(300));
-  ASSERT_EQ(em.extent_map.end(), em.find_lextent(399));
-  ASSERT_EQ(d, em.find_lextent(400));
-  ASSERT_EQ(d, em.find_lextent(499));
-  ASSERT_EQ(em.extent_map.end(), em.find_lextent(500));
 }
 
 TEST(ExtentMap, seek_lextent)

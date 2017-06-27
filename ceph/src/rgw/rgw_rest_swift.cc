@@ -571,20 +571,18 @@ static void get_rmattrs_from_headers(const req_state * const s,
 				     const char * const del_prefix,
 				     set<string>& rmattr_names)
 {
-  map<string, string, ltstr_nocase>& m = s->info.env->get_map();
-  map<string, string, ltstr_nocase>::const_iterator iter;
   const size_t put_prefix_len = strlen(put_prefix);
   const size_t del_prefix_len = strlen(del_prefix);
 
-  for (iter = m.begin(); iter != m.end(); ++iter) {
+  for (const auto& kv : s->info.env->get_map()) {
     size_t prefix_len = 0;
-    const char * const p = iter->first.c_str();
+    const char * const p = kv.first.c_str();
 
     if (strncasecmp(p, del_prefix, del_prefix_len) == 0) {
       /* Explicitly requested removal. */
       prefix_len = del_prefix_len;
     } else if ((strncasecmp(p, put_prefix, put_prefix_len) == 0)
-	       && iter->second.empty()) {
+	       && kv.second.empty()) {
       /* Removal requested by putting an empty value. */
       prefix_len = put_prefix_len;
     }
@@ -956,7 +954,7 @@ void RGWPutMetadataObject_ObjStore_SWIFT::send_response()
     op_ret = STATUS_ACCEPTED;
   }
   set_req_state_err(s, op_ret);
-  if (!s->err.is_err()) {
+  if (!s->is_err()) {
     dump_content_length(s, 0);
   }
   dump_errno(s);
@@ -982,7 +980,6 @@ static void bulkdelete_respond(const unsigned num_deleted,
         reason = fail_desc.err;
       }
     }
-
     rgw_err err;
     set_req_state_err(err, reason, prot_flags);
     dump_errno(err, resp_status);
@@ -1106,6 +1103,9 @@ static void dump_object_metadata(struct req_state * const s,
 
     if (aiter != std::end(rgw_to_http_attrs)) {
       response_attrs[aiter->second] = kv.second.c_str();
+    } else if (strcmp(name, RGW_ATTR_SLO_UINDICATOR) == 0) {
+      // this attr has an extra length prefix from ::encode() in prior versions
+      dump_header(s, "X-Object-Meta-Static-Large-Object", "True");
     } else if (strncmp(name, RGW_ATTR_META_PREFIX,
 		       sizeof(RGW_ATTR_META_PREFIX)-1) == 0) {
       name += sizeof(RGW_ATTR_META_PREFIX) - 1;
@@ -1296,7 +1296,7 @@ int RGWGetObj_ObjStore_SWIFT::send_response_data(bufferlist& bl,
 		    : op_ret);
     dump_errno(s);
 
-    if (s->err.is_err()) {
+    if (s->is_err()) {
       end_header(s, NULL);
       return 0;
     }
@@ -1306,7 +1306,7 @@ int RGWGetObj_ObjStore_SWIFT::send_response_data(bufferlist& bl,
     dump_range(s, ofs, end, s->obj_size);
   }
 
-  if (s->err.is_err()) {
+  if (s->is_err()) {
     end_header(s, NULL);
     return 0;
   }
@@ -1397,18 +1397,13 @@ int RGWBulkDelete_ObjStore_SWIFT::get_data(
       const size_t sep_pos = path_str.find('/', start_pos);
 
       if (string::npos != sep_pos) {
-        string bucket_name;
-        url_decode(path_str.substr(start_pos, sep_pos - start_pos), bucket_name);
-
-        string obj_name;
-        url_decode(path_str.substr(sep_pos + 1), obj_name);
-
-        path.bucket_name = bucket_name;
-        path.obj_key = obj_name;
+        path.bucket_name = url_decode(path_str.substr(start_pos,
+                                                      sep_pos - start_pos));
+        path.obj_key = url_decode(path_str.substr(sep_pos + 1));
       } else {
         /* It's guaranteed here that bucket name is at least one character
          * long and is different than slash. */
-        url_decode(path_str.substr(start_pos), path.bucket_name);
+        path.bucket_name = url_decode(path_str.substr(start_pos));
       }
 
       items.push_back(path);
@@ -1781,6 +1776,14 @@ bool RGWFormPost::is_integral()
 {
   const std::string form_signature = get_part_str(ctrl_parts, "signature");
 
+  try {
+    get_owner_info(s, *s->user);
+    s->auth.identity = rgw::auth::transform_old_authinfo(s);
+  } catch (...) {
+    ldout(s->cct, 5) << "cannot get user_info of account's owner" << dendl;
+    return false;
+  }
+
   for (const auto& kv : s->user->temp_url_keys) {
     const int temp_url_key_num = kv.first;
     const string& temp_url_key = kv.second;
@@ -1811,6 +1814,58 @@ bool RGWFormPost::is_integral()
   }
 
   return false;
+}
+
+void RGWFormPost::get_owner_info(const req_state* const s,
+                                   RGWUserInfo& owner_info) const
+{
+  /* We cannot use req_state::bucket_name because it isn't available
+   * now. It will be initialized in RGWHandler_REST_SWIFT::postauth_init(). */
+  const string& bucket_name = s->init_state.url_bucket;
+
+  /* TempURL in Formpost only requires that bucket name is specified. */
+  if (bucket_name.empty()) {
+    throw -EPERM;
+  }
+
+  string bucket_tenant;
+  if (!s->account_name.empty()) {
+    RGWUserInfo uinfo;
+    bool found = false;
+
+    const rgw_user uid(s->account_name);
+    if (uid.tenant.empty()) {
+      const rgw_user tenanted_uid(uid.id, uid.id);
+
+      if (rgw_get_user_info_by_uid(store, tenanted_uid, uinfo) >= 0) {
+        /* Succeeded. */
+        bucket_tenant = uinfo.user_id.tenant;
+        found = true;
+      }
+    }
+
+    if (!found && rgw_get_user_info_by_uid(store, uid, uinfo) < 0) {
+      throw -EPERM;
+    } else {
+      bucket_tenant = uinfo.user_id.tenant;
+    }
+  }
+
+  /* Need to get user info of bucket owner. */
+  RGWBucketInfo bucket_info;
+  int ret = store->get_bucket_info(*static_cast<RGWObjectCtx *>(s->obj_ctx),
+                                   bucket_tenant, bucket_name,
+                                   bucket_info, nullptr);
+  if (ret < 0) {
+    throw ret;
+  }
+
+  ldout(s->cct, 20) << "temp url user (bucket owner): " << bucket_info.owner
+                 << dendl;
+
+  if (rgw_get_user_info_by_uid(store, bucket_info.owner, owner_info) < 0) {
+    throw -EPERM;
+  }
 }
 
 int RGWFormPost::get_params()
@@ -1942,8 +1997,9 @@ bool RGWFormPost::is_next_file_to_upload()
     const auto field_iter = part.fields.find("Content-Disposition");
     if (std::end(part.fields) != field_iter) {
       const auto& params = field_iter->second.params;
+      const auto& filename_iter = params.find("filename");
 
-      if (std::end(params) != params.find("filename")) {
+      if (std::end(params) != filename_iter && ! filename_iter->second.empty()) {
         current_data_part = std::move(part);
         return true;
       }
@@ -1977,7 +2033,7 @@ void RGWFormPost::send_response()
   }
 
   set_req_state_err(s, op_ret);
-  s->err.s3_code = err_msg;
+  s->err.err_code = err_msg;
   dump_errno(s);
   if (! redirect.empty()) {
     dump_redirect(s, redirect);
@@ -2073,9 +2129,8 @@ int RGWSwiftWebsiteHandler::error_handler(const int err_no,
   const auto& ws_conf = s->bucket_info.website_conf;
 
   if (can_be_website_req() && ! ws_conf.error_doc.empty()) {
-    struct rgw_err err;
-    set_req_state_err(err, err_no, s->prot_flags);
-    return serve_errordoc(err.http_ret, ws_conf.error_doc);
+    set_req_state_err(s, err_no);
+    return serve_errordoc(s->err.http_ret, ws_conf.error_doc);
   }
 
   /* Let's go to the default, no-op handler. */
@@ -2231,8 +2286,7 @@ RGWOp* RGWSwiftWebsiteHandler::get_ws_listing_op()
 
 bool RGWSwiftWebsiteHandler::is_web_dir() const
 {
-  std::string subdir_name;
-  url_decode(s->object.name, subdir_name);
+  std::string subdir_name = url_decode(s->object.name);
 
   /* Remove character from the subdir name if it is "/". */
   if (subdir_name.empty()) {
@@ -2241,7 +2295,7 @@ bool RGWSwiftWebsiteHandler::is_web_dir() const
     subdir_name.pop_back();
   }
 
-  rgw_obj obj(s->bucket, subdir_name);
+  rgw_obj obj(s->bucket, std::move(subdir_name));
 
   /* First, get attrset of the object we'll try to retrieve. */
   RGWObjectCtx& obj_ctx = *static_cast<RGWObjectCtx *>(s->obj_ctx);
@@ -2476,45 +2530,7 @@ RGWOp *RGWHandler_REST_Obj_SWIFT::op_options()
 
 int RGWHandler_REST_SWIFT::authorize()
 {
-  try {
-    auto result = auth_strategy.authenticate(s);
-
-    if (result.get_status() != decltype(result)::Status::GRANTED) {
-      /* Access denied is acknowledged by returning a std::unique_ptr with
-       * nullptr inside. */
-      ldout(s->cct, 5) << "auth engine refused to authenicate" << dendl;
-      return -EPERM;
-    }
-
-    try {
-      rgw::auth::IdentityApplier::aplptr_t applier = result.get_applier();
-
-      /* Account used by a given RGWOp is decoupled from identity employed
-       * in the authorization phase (RGWOp::verify_permissions). */
-      applier->load_acct_info(*s->user);
-      s->perm_mask = applier->get_perm_mask();
-
-      /* This is the signle place where we pass req_state as a pointer
-       * to non-const and thus its modification is allowed. In the time
-       * of writing only RGWTempURLEngine needed that feature. */
-      applier->modify_request_state(s);
-
-      s->auth.identity = std::move(applier);
-      s->auth.completer = std::move(result.get_completer());
-
-      return 0;
-    } catch (int err) {
-      ldout(s->cct, 5) << "applier throwed err=" << err << dendl;
-      return err;
-    }
-  } catch (int err) {
-    ldout(s->cct, 5) << "auth engine throwed err=" << err << dendl;
-    return err;
-  }
-
-  /* All engines refused to handle this authentication request by
-   * returning RGWAuthEngine::Status::UNKKOWN. Rather rare case. */
-  return -EPERM;
+  return rgw::auth::Strategy::apply(auth_strategy, s);
 }
 
 int RGWHandler_REST_SWIFT::postauth_init()

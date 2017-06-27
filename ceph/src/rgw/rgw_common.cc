@@ -7,14 +7,17 @@
 #include <string>
 #include <boost/tokenizer.hpp>
 #include <boost/algorithm/string.hpp>
+#include <boost/utility/string_view.hpp>
 
 #include "json_spirit/json_spirit.h"
 #include "common/ceph_json.h"
 
+#include "rgw_op.h"
 #include "rgw_common.h"
 #include "rgw_acl.h"
 #include "rgw_string.h"
 #include "rgw_rados.h"
+#include "rgw_http_errors.h"
 
 #include "common/ceph_crypto.h"
 #include "common/armor.h"
@@ -32,14 +35,88 @@
 #define dout_context g_ceph_context
 #define dout_subsys ceph_subsys_rgw
 
-#define POLICY_ACTION           0x01
-#define POLICY_RESOURCE         0x02
-#define POLICY_ARN              0x04
-#define POLICY_STRING           0x08
+using boost::none;
+using boost::optional;
+
+using rgw::IAM::ARN;
+using rgw::IAM::Effect;
+using rgw::IAM::op_to_perm;
+using rgw::IAM::Policy;
 
 PerfCounters *perfcounter = NULL;
 
 const uint32_t RGWBucketInfo::NUM_SHARDS_BLIND_BUCKET(UINT32_MAX);
+
+rgw_http_errors rgw_http_s3_errors({
+    { 0, {200, "" }},
+    { STATUS_CREATED, {201, "Created" }},
+    { STATUS_ACCEPTED, {202, "Accepted" }},
+    { STATUS_NO_CONTENT, {204, "NoContent" }},
+    { STATUS_PARTIAL_CONTENT, {206, "" }},
+    { ERR_PERMANENT_REDIRECT, {301, "PermanentRedirect" }},
+    { ERR_WEBSITE_REDIRECT, {301, "WebsiteRedirect" }},
+    { STATUS_REDIRECT, {303, "" }},
+    { ERR_NOT_MODIFIED, {304, "NotModified" }},
+    { EINVAL, {400, "InvalidArgument" }},
+    { ERR_INVALID_REQUEST, {400, "InvalidRequest" }},
+    { ERR_INVALID_DIGEST, {400, "InvalidDigest" }},
+    { ERR_BAD_DIGEST, {400, "BadDigest" }},
+    { ERR_INVALID_LOCATION_CONSTRAINT, {400, "InvalidLocationConstraint" }},
+    { ERR_INVALID_BUCKET_NAME, {400, "InvalidBucketName" }},
+    { ERR_INVALID_OBJECT_NAME, {400, "InvalidObjectName" }},
+    { ERR_UNRESOLVABLE_EMAIL, {400, "UnresolvableGrantByEmailAddress" }},
+    { ERR_INVALID_PART, {400, "InvalidPart" }},
+    { ERR_INVALID_PART_ORDER, {400, "InvalidPartOrder" }},
+    { ERR_REQUEST_TIMEOUT, {400, "RequestTimeout" }},
+    { ERR_TOO_LARGE, {400, "EntityTooLarge" }},
+    { ERR_TOO_SMALL, {400, "EntityTooSmall" }},
+    { ERR_TOO_MANY_BUCKETS, {400, "TooManyBuckets" }},
+    { ERR_MALFORMED_XML, {400, "MalformedXML" }},
+    { ERR_AMZ_CONTENT_SHA256_MISMATCH, {400, "XAmzContentSHA256Mismatch" }},
+    { ERR_LENGTH_REQUIRED, {411, "MissingContentLength" }},
+    { EACCES, {403, "AccessDenied" }},
+    { EPERM, {403, "AccessDenied" }},
+    { ERR_SIGNATURE_NO_MATCH, {403, "SignatureDoesNotMatch" }},
+    { ERR_INVALID_ACCESS_KEY, {403, "InvalidAccessKeyId" }},
+    { ERR_USER_SUSPENDED, {403, "UserSuspended" }},
+    { ERR_REQUEST_TIME_SKEWED, {403, "RequestTimeTooSkewed" }},
+    { ERR_QUOTA_EXCEEDED, {403, "QuotaExceeded" }},
+    { ENOENT, {404, "NoSuchKey" }},
+    { ERR_NO_SUCH_BUCKET, {404, "NoSuchBucket" }},
+    { ERR_NO_SUCH_WEBSITE_CONFIGURATION, {404, "NoSuchWebsiteConfiguration" }},
+    { ERR_NO_SUCH_UPLOAD, {404, "NoSuchUpload" }},
+    { ERR_NOT_FOUND, {404, "Not Found"}},
+    { ERR_NO_SUCH_LC, {404, "NoSuchLifecycleConfiguration"}},
+    { ERR_NO_SUCH_BUCKET_POLICY, {404, "NoSuchBucketPolicy"}},
+    { ERR_METHOD_NOT_ALLOWED, {405, "MethodNotAllowed" }},
+    { ETIMEDOUT, {408, "RequestTimeout" }},
+    { EEXIST, {409, "BucketAlreadyExists" }},
+    { ERR_USER_EXIST, {409, "UserAlreadyExists" }},
+    { ERR_EMAIL_EXIST, {409, "EmailExists" }},
+    { ERR_KEY_EXIST, {409, "KeyExists"}},
+    { ERR_INVALID_SECRET_KEY, {400, "InvalidSecretKey"}},
+    { ERR_INVALID_KEY_TYPE, {400, "InvalidKeyType"}},
+    { ERR_INVALID_CAP, {400, "InvalidCapability"}},
+    { ERR_INVALID_TENANT_NAME, {400, "InvalidTenantName" }},
+    { ENOTEMPTY, {409, "BucketNotEmpty" }},
+    { ERR_PRECONDITION_FAILED, {412, "PreconditionFailed" }},
+    { ERANGE, {416, "InvalidRange" }},
+    { ERR_UNPROCESSABLE_ENTITY, {422, "UnprocessableEntity" }},
+    { ERR_LOCKED, {423, "Locked" }},
+    { ERR_INTERNAL_ERROR, {500, "InternalError" }},
+    { ERR_NOT_IMPLEMENTED, {501, "NotImplemented" }},
+    { ERR_SERVICE_UNAVAILABLE, {503, "ServiceUnavailable"}},
+});
+
+rgw_http_errors rgw_http_swift_errors({
+    { EACCES, {403, "AccessDenied" }},
+    { EPERM, {401, "AccessDenied" }},
+    { ERR_USER_SUSPENDED, {401, "UserSuspended" }},
+    { ERR_INVALID_UTF8, {412, "Invalid UTF8" }},
+    { ERR_BAD_URL, {412, "Bad URL" }},
+    { ERR_NOT_SLO_MANIFEST, {400, "Not an SLO manifest" }},
+    { ERR_QUOTA_EXCEEDED, {413, "QuotaExceeded" }},
+});
 
 int rgw_perf_start(CephContext *cct)
 {
@@ -84,18 +161,12 @@ rgw_err()
   clear();
 }
 
-rgw_err::
-rgw_err(int http, const std::string& s3)
-    : http_ret(http), ret(0), s3_code(s3)
-{
-}
-
 void rgw_err::
 clear()
 {
   http_ret = 200;
   ret = 0;
-  s3_code.clear();
+  err_code.clear();
 }
 
 bool rgw_err::
@@ -133,15 +204,15 @@ static string get_abs_path(const string& request_uri) {
   return request_uri.substr(beg_pos, len - beg_pos);
 }
 
-req_info::req_info(CephContext *cct, class RGWEnv *e) : env(e) {
+req_info::req_info(CephContext *cct, const class RGWEnv *env) : env(env) {
   method = env->get("REQUEST_METHOD", "");
   script_uri = env->get("SCRIPT_URI", cct->_conf->rgw_script_uri.c_str());
   request_uri = env->get("REQUEST_URI", cct->_conf->rgw_request_uri.c_str());
   if (request_uri[0] != '/') {
     request_uri = get_abs_path(request_uri);
   }
-  int pos = request_uri.find('?');
-  if (pos >= 0) {
+  auto pos = request_uri.find('?');
+  if (pos != string::npos) {
     request_params = request_uri.substr(pos + 1);
     request_uri = request_uri.substr(0, pos);
   } else {
@@ -196,10 +267,7 @@ req_state::req_state(CephContext* _cct, RGWEnv* e, RGWUserInfo* u)
   bucket_acl = NULL;
   object_acl = NULL;
   expect_cont = false;
-  aws4_auth_needs_complete = false;
-  aws4_auth_streaming_mode = false;
 
-  header_ended = false;
   obj_size = 0;
   prot_flags = 0;
 
@@ -212,7 +280,6 @@ req_state::req_state(CephContext* _cct, RGWEnv* e, RGWUserInfo* u)
   bucket_exists = false;
   has_bad_meta = false;
   length = NULL;
-  http_auth = NULL;
   local_source = false;
 
   obj_ctx = NULL;
@@ -222,6 +289,77 @@ req_state::~req_state() {
   delete formatter;
   delete bucket_acl;
   delete object_acl;
+}
+
+bool search_err(rgw_http_errors& errs, int err_no, bool is_website_redirect, int& http_ret, string& code)
+{
+  auto r = errs.find(err_no);
+  if (r != errs.end()) {
+    if (! is_website_redirect)
+      http_ret = r->second.first;
+     code = r->second.second;
+     return true;
+  }
+  return false;
+}
+
+void set_req_state_err(struct rgw_err& err,	/* out */
+			int err_no,		/* in  */
+			const int prot_flags)	/* in  */
+{
+  if (err_no < 0)
+    err_no = -err_no;
+
+  err.ret = -err_no;
+  bool is_website_redirect = false;
+
+  if (prot_flags & RGW_REST_SWIFT) {
+    if (search_err(rgw_http_swift_errors, err_no, is_website_redirect, err.http_ret, err.err_code))
+      return;
+  }
+
+  //Default to searching in s3 errors
+  is_website_redirect |= (prot_flags & RGW_REST_WEBSITE)
+		&& err_no == ERR_WEBSITE_REDIRECT && err.is_clear();
+  if (search_err(rgw_http_s3_errors, err_no, is_website_redirect, err.http_ret, err.err_code))
+      return;
+  dout(0) << "WARNING: set_req_state_err err_no=" << err_no
+	<< " resorting to 500" << dendl;
+
+  err.http_ret = 500;
+  err.err_code = "UnknownError";
+}
+
+void set_req_state_err(struct req_state* s, int err_no, const string& err_msg)
+{
+  if (s) {
+    set_req_state_err(s, err_no);
+    s->err.message = err_msg;
+  }
+}
+
+void set_req_state_err(struct req_state* s, int err_no)
+{
+  if (s) {
+    set_req_state_err(s->err, err_no, s->prot_flags);
+  }
+}
+
+void dump(struct req_state* s)
+{
+  if (s->format != RGW_FORMAT_HTML)
+    s->formatter->open_object_section("Error");
+  if (!s->err.err_code.empty())
+    s->formatter->dump_string("Code", s->err.err_code);
+  if (!s->err.message.empty())
+    s->formatter->dump_string("Message", s->err.message);
+  if (!s->bucket_name.empty())	// TODO: connect to expose_bucket
+    s->formatter->dump_string("BucketName", s->bucket_name);
+  if (!s->trans_id.empty())	// TODO: connect to expose_bucket or another toggle
+    s->formatter->dump_string("RequestId", s->trans_id);
+  s->formatter->dump_string("HostId", s->host_id);
+  if (s->format != RGW_FORMAT_HTML)
+    s->formatter->close_section();
 }
 
 struct str_len {
@@ -245,12 +383,10 @@ void req_info::init_meta_info(bool *found_bad_meta)
 {
   x_meta_map.clear();
 
-  map<string, string, ltstr_nocase>& m = env->get_map();
-  map<string, string, ltstr_nocase>::iterator iter;
-  for (iter = m.begin(); iter != m.end(); ++iter) {
+  for (const auto& kv: env->get_map()) {
     const char *prefix;
-    const string& header_name = iter->first;
-    const string& val = iter->second;
+    const string& header_name = kv.first;
+    const string& val = kv.second;
     for (int prefix_num = 0; (prefix = meta_prefixes[prefix_num].str) != NULL; prefix_num++) {
       int len = meta_prefixes[prefix_num].len;
       const char *p = header_name.c_str();
@@ -273,12 +409,10 @@ void req_info::init_meta_info(bool *found_bad_meta)
         }
         name_low[j] = 0;
 
-        map<string, string>::iterator iter;
-        iter = x_meta_map.find(name_low);
-        if (iter != x_meta_map.end()) {
-          string old = iter->second;
-          int pos = old.find_last_not_of(" \t"); /* get rid of any whitespaces after the value */
-          old = old.substr(0, pos + 1);
+        auto it = x_meta_map.find(name_low);
+        if (it != x_meta_map.end()) {
+          string old = it->second;
+          boost::algorithm::trim_right(old);
           old.append(",");
           old.append(val);
           x_meta_map[name_low] = old;
@@ -288,14 +422,14 @@ void req_info::init_meta_info(bool *found_bad_meta)
       }
     }
   }
-  for (iter = x_meta_map.begin(); iter != x_meta_map.end(); ++iter) {
-    dout(10) << "x>> " << iter->first << ":" << rgw::crypt_sanitize::x_meta_map{iter->first, iter->second} << dendl;
+  for (const auto& kv: x_meta_map) {
+    dout(10) << "x>> " << kv.first << ":" << rgw::crypt_sanitize::x_meta_map{kv.first, kv.second} << dendl;
   }
 }
 
 std::ostream& operator<<(std::ostream& oss, const rgw_err &err)
 {
-  oss << "rgw_err(http_ret=" << err.http_ret << ", s3='" << err.s3_code << "') ";
+  oss << "rgw_err(http_ret=" << err.http_ret << ", err_code='" << err.err_code << "') ";
   return oss;
 }
 
@@ -314,17 +448,6 @@ string rgw_string_unquote(const string& s)
     return s;
 
   return s.substr(1, len - 2);
-}
-
-static void trim_whitespace(const string& src, string& dst)
-{
-  const char *spacestr = " \t\n\r\f\v";
-  int start = src.find_first_not_of(spacestr);
-  if (start < 0)
-    return;
-
-  int end = src.find_last_not_of(spacestr);
-  dst = src.substr(start, end - start + 1);
 }
 
 static bool check_str_end(const char *s)
@@ -407,11 +530,10 @@ bool parse_iso8601(const char *s, struct tm *t, uint32_t *pns, bool extended_for
     dout(0) << "parse_iso8601 failed" << dendl;
     return false;
   }
-  string str;
-  trim_whitespace(p, str);
+  const boost::string_view str = rgw_trim_whitespace(boost::string_view(p));
   int len = str.size();
 
-  if (len == 1 && str[0] == 'Z')
+  if (len == 0 || (len == 1 && str[0] == 'Z'))
     return true;
 
   if (str[0] != '.' ||
@@ -419,8 +541,8 @@ bool parse_iso8601(const char *s, struct tm *t, uint32_t *pns, bool extended_for
     return false;
 
   uint32_t ms;
-  string nsstr = str.substr(1,  len - 2);
-  int r = stringtoul(nsstr, &ms);
+  boost::string_view nsstr = str.substr(1,  len - 2);
+  int r = stringtoul(nsstr.to_string(), &ms);
   if (r < 0)
     return false;
 
@@ -454,14 +576,12 @@ int parse_key_value(string& in_str, const char *delim, string& key, string& val)
   if (delim == NULL)
     return -EINVAL;
 
-  int pos = in_str.find(delim);
-  if (pos < 0)
+  auto pos = in_str.find(delim);
+  if (pos == string::npos)
     return -EINVAL;
 
-  trim_whitespace(in_str.substr(0, pos), key);
-  pos++;
-
-  trim_whitespace(in_str.substr(pos), val);
+  key = rgw_trim_whitespace(in_str.substr(0, pos));
+  val = rgw_trim_whitespace(in_str.substr(pos + 1));
 
   return 0;
 }
@@ -469,6 +589,27 @@ int parse_key_value(string& in_str, const char *delim, string& key, string& val)
 int parse_key_value(string& in_str, string& key, string& val)
 {
   return parse_key_value(in_str, "=", key,val);
+}
+
+boost::optional<std::pair<boost::string_view, boost::string_view>>
+parse_key_value(const boost::string_view& in_str,
+                const boost::string_view& delim)
+{
+  const size_t pos = in_str.find(delim);
+  if (pos == boost::string_view::npos) {
+    return boost::none;
+  }
+
+  const auto key = rgw_trim_whitespace(in_str.substr(0, pos));
+  const auto val = rgw_trim_whitespace(in_str.substr(pos + 1));
+
+  return std::make_pair(key, val);
+}
+
+boost::optional<std::pair<boost::string_view, boost::string_view>>
+parse_key_value(const boost::string_view& in_str)
+{
+  return parse_key_value(in_str, "=");
 }
 
 int parse_time(const char *time_str, real_time *time)
@@ -539,24 +680,21 @@ void calc_hmac_sha256(const char *key, int key_len,
   memcpy(dest, hash_sha256, CEPH_CRYPTO_HMACSHA256_DIGESTSIZE);
 }
 
+using ceph::crypto::SHA256;
+
 /*
  * calculate the sha256 hash value of a given msg
  */
-void calc_hash_sha256(const char *msg, int len, string& dest)
+sha256_digest_t calc_hash_sha256(const boost::string_view& msg)
 {
-  char hash_sha256[CEPH_CRYPTO_HMACSHA256_DIGESTSIZE];
+  std::array<unsigned char, CEPH_CRYPTO_HMACSHA256_DIGESTSIZE> hash;
 
-  SHA256 hash;
-  hash.Update((const unsigned char *)msg, len);
-  hash.Final((unsigned char *)hash_sha256);
+  SHA256 hasher;
+  hasher.Update(reinterpret_cast<const unsigned char*>(msg.data()), msg.size());
+  hasher.Final(hash.data());
 
-  char hex_str[(CEPH_CRYPTO_SHA256_DIGESTSIZE * 2) + 1];
-  buf_to_hex((unsigned char *)hash_sha256, CEPH_CRYPTO_SHA256_DIGESTSIZE, hex_str);
-
-  dest = std::string(hex_str);
+  return hash;
 }
-
-using ceph::crypto::SHA256;
 
 SHA256* calc_hash_sha256_open_stream()
 {
@@ -585,6 +723,14 @@ string calc_hash_sha256_close_stream(SHA256 **phash)
   *phash = NULL;
   
   return std::string(hex_str);
+}
+
+std::string calc_hash_sha256_restart_stream(SHA256 **phash)
+{
+  const auto hash = calc_hash_sha256_close_stream(phash);
+  *phash = calc_hash_sha256_open_stream();
+
+  return hash;
 }
 
 int gen_rand_base64(CephContext *cct, char *dest, int size) /* size should be the required string size + 1 */
@@ -726,10 +872,10 @@ int gen_rand_alphanumeric_plain(CephContext *cct, char *dest, int size) /* size 
 
 int NameVal::parse()
 {
-  int delim_pos = str.find('=');
+  auto delim_pos = str.find('=');
   int ret = 0;
 
-  if (delim_pos < 0) {
+  if (delim_pos == string::npos) {
     name = str;
     val = "";
     ret = 1;
@@ -758,10 +904,8 @@ int RGWHTTPArgs::parse()
        end = true;
        fpos = str.size(); 
     }
-    string substr, nameval;
-    substr = str.substr(pos, fpos - pos);
-    url_decode(substr, nameval, true);
-    NameVal nv(nameval);
+    std::string nameval = url_decode(str.substr(pos, fpos - pos), true);
+    NameVal nv(std::move(nameval));
     int ret = nv.parse();
     if (ret >= 0) {
       string& name = nv.get_name();
@@ -938,17 +1082,39 @@ bool verify_requester_payer_permission(struct req_state *s)
 }
 
 bool verify_bucket_permission(struct req_state * const s,
+			      const rgw_bucket& bucket,
                               RGWAccessControlPolicy * const user_acl,
                               RGWAccessControlPolicy * const bucket_acl,
-                              const int perm)
+			      const optional<Policy>& bucket_policy,
+                              const uint64_t op)
+{
+  if (!verify_requester_payer_permission(s))
+    return false;
+
+  if (bucket_policy) {
+    auto r = bucket_policy->eval(s->env, *s->auth.identity, op, ARN(bucket));
+    if (r == Effect::Allow)
+      // It looks like S3 ACLs only GRANT permissions rather than
+      // denying them, so this should be safe.
+      return true;
+    else if (r == Effect::Deny)
+      return false;
+  }
+
+  const auto perm = op_to_perm(op);
+
+  return verify_bucket_permission_no_policy(s, user_acl, bucket_acl, perm);
+}
+
+bool verify_bucket_permission_no_policy(struct req_state * const s,
+					RGWAccessControlPolicy * const user_acl,
+					RGWAccessControlPolicy * const bucket_acl,
+					const int perm)
 {
   if (!bucket_acl)
     return false;
 
   if ((perm & (int)s->perm_mask) != perm)
-    return false;
-
-  if (!verify_requester_payer_permission(s))
     return false;
 
   if (bucket_acl->verify_permission(*s->auth.identity, perm, perm,
@@ -961,35 +1127,76 @@ bool verify_bucket_permission(struct req_state * const s,
   return user_acl->verify_permission(*s->auth.identity, perm, perm);
 }
 
-bool verify_bucket_permission(struct req_state * const s, const int perm)
-{
-  return verify_bucket_permission(s,
-                                  s->user_acl.get(),
-                                  s->bucket_acl,
-                                  perm);
-}
-
-static inline bool check_deferred_bucket_acl(struct req_state * const s,
-                                             RGWAccessControlPolicy * const user_acl,
-                                             RGWAccessControlPolicy * const bucket_acl,
-                                             const uint8_t deferred_check,
-                                             const int perm)
-{
-  return (s->defer_to_bucket_acls == deferred_check \
-              && verify_bucket_permission(s, user_acl, bucket_acl, perm));
-}
-
-bool verify_object_permission(struct req_state * const s,
-                              RGWAccessControlPolicy * const user_acl,
-                              RGWAccessControlPolicy * const bucket_acl,
-                              RGWAccessControlPolicy * const object_acl,
-                              const int perm)
+bool verify_bucket_permission_no_policy(struct req_state * const s, const int perm)
 {
   if (!verify_requester_payer_permission(s))
     return false;
 
-  if (check_deferred_bucket_acl(s, user_acl, bucket_acl, RGW_DEFER_TO_BUCKET_ACLS_RECURSE, perm) ||
-      check_deferred_bucket_acl(s, user_acl, bucket_acl, RGW_DEFER_TO_BUCKET_ACLS_FULL_CONTROL, RGW_PERM_FULL_CONTROL)) {
+  return verify_bucket_permission_no_policy(s,
+					    s->user_acl.get(),
+					    s->bucket_acl,
+					    perm);
+}
+
+bool verify_bucket_permission(struct req_state * const s, const uint64_t op)
+{
+  return verify_bucket_permission(s,
+				  s->bucket,
+                                  s->user_acl.get(),
+                                  s->bucket_acl,
+				  s->iam_policy,
+                                  op);
+}
+
+static inline bool check_deferred_bucket_perms(struct req_state * const s,
+					       const rgw_bucket& bucket,
+					       RGWAccessControlPolicy * const user_acl,
+					       RGWAccessControlPolicy * const bucket_acl,
+					       const optional<Policy>& bucket_policy,
+					       const uint8_t deferred_check,
+					       const uint64_t op)
+{
+  return (s->defer_to_bucket_acls == deferred_check \
+	  && verify_bucket_permission(s, bucket, user_acl, bucket_acl, bucket_policy, op));
+}
+
+static inline bool check_deferred_bucket_only_acl(struct req_state * const s,
+						  RGWAccessControlPolicy * const user_acl,
+						  RGWAccessControlPolicy * const bucket_acl,
+						  const uint8_t deferred_check,
+						  const int perm)
+{
+  return (s->defer_to_bucket_acls == deferred_check \
+	  && verify_bucket_permission_no_policy(s, user_acl, bucket_acl, perm));
+}
+
+bool verify_object_permission(struct req_state * const s,
+			      const rgw_obj& obj,
+                              RGWAccessControlPolicy * const user_acl,
+                              RGWAccessControlPolicy * const bucket_acl,
+                              RGWAccessControlPolicy * const object_acl,
+                              const optional<Policy>& bucket_policy,
+                              const uint64_t op)
+{
+  if (!verify_requester_payer_permission(s))
+    return false;
+
+  if (bucket_policy) {
+    auto r = bucket_policy->eval(s->env, *s->auth.identity, op, ARN(obj));
+    if (r == Effect::Allow)
+      // It looks like S3 ACLs only GRANT permissions rather than
+      // denying them, so this should be safe.
+      return true;
+    else if (r == Effect::Deny)
+      return false;
+  }
+
+  const auto perm = op_to_perm(op);
+
+  if (check_deferred_bucket_perms(s, obj.bucket, user_acl, bucket_acl, bucket_policy,
+				  RGW_DEFER_TO_BUCKET_ACLS_RECURSE, op) ||
+      check_deferred_bucket_perms(s, obj.bucket, user_acl, bucket_acl, bucket_policy,
+				  RGW_DEFER_TO_BUCKET_ACLS_FULL_CONTROL, rgw::IAM::s3All)) {
     return true;
   }
 
@@ -1029,13 +1236,72 @@ bool verify_object_permission(struct req_state * const s,
   return user_acl->verify_permission(*s->auth.identity, swift_perm, swift_perm);
 }
 
-bool verify_object_permission(struct req_state *s, int perm)
+bool verify_object_permission_no_policy(struct req_state * const s,
+					RGWAccessControlPolicy * const user_acl,
+					RGWAccessControlPolicy * const bucket_acl,
+					RGWAccessControlPolicy * const object_acl,
+					const int perm)
+{
+  if (check_deferred_bucket_only_acl(s, user_acl, bucket_acl, RGW_DEFER_TO_BUCKET_ACLS_RECURSE, perm) ||
+      check_deferred_bucket_only_acl(s, user_acl, bucket_acl, RGW_DEFER_TO_BUCKET_ACLS_FULL_CONTROL, RGW_PERM_FULL_CONTROL)) {
+    return true;
+  }
+
+  if (!object_acl) {
+    return false;
+  }
+
+  bool ret = object_acl->verify_permission(*s->auth.identity, s->perm_mask, perm);
+  if (ret) {
+    return true;
+  }
+
+  if (!s->cct->_conf->rgw_enforce_swift_acls)
+    return ret;
+
+  if ((perm & (int)s->perm_mask) != perm)
+    return false;
+
+  int swift_perm = 0;
+  if (perm & (RGW_PERM_READ | RGW_PERM_READ_ACP))
+    swift_perm |= RGW_PERM_READ_OBJS;
+  if (perm & RGW_PERM_WRITE)
+    swift_perm |= RGW_PERM_WRITE_OBJS;
+
+  if (!swift_perm)
+    return false;
+
+  /* we already verified the user mask above, so we pass swift_perm as the mask here,
+     otherwise the mask might not cover the swift permissions bits */
+  if (bucket_acl->verify_permission(*s->auth.identity, swift_perm, swift_perm,
+                                    s->info.env->get("HTTP_REFERER")))
+    return true;
+
+  if (!user_acl)
+    return false;
+
+  return user_acl->verify_permission(*s->auth.identity, swift_perm, swift_perm);
+}
+
+bool verify_object_permission_no_policy(struct req_state *s, int perm)
+{
+  if (!verify_requester_payer_permission(s))
+    return false;
+
+  return verify_object_permission_no_policy(s, s->user_acl.get(),
+					    s->bucket_acl, s->object_acl,
+					    perm);
+}
+
+bool verify_object_permission(struct req_state *s, uint64_t op)
 {
   return verify_object_permission(s,
-                                  s->user_acl.get(),
+				  rgw_obj(s->bucket, s->object),
+				  s->user_acl.get(),
                                   s->bucket_acl,
                                   s->object_acl,
-                                  perm);
+				  s->iam_policy,
+                                  op);
 }
 
 class HexTable
@@ -1065,43 +1331,39 @@ static char hex_to_num(char c)
   return hex_table.to_num(c);
 }
 
-bool url_decode(const string& src_str, string& dest_str, bool in_query)
+std::string url_decode(const boost::string_view& src_str, bool in_query)
 {
-  const char *src = src_str.c_str();
-  char dest[src_str.size() + 1];
-  int pos = 0;
-  char c;
+  std::string dest_str;
+  dest_str.reserve(src_str.length() + 1);
 
-  while (*src) {
+  for (auto src = std::begin(src_str); src != std::end(src_str); ++src) {
     if (*src != '%') {
       if (!in_query || *src != '+') {
-        if (*src == '?') in_query = true;
-        dest[pos++] = *src++;
+        if (*src == '?') {
+          in_query = true;
+        }
+        dest_str.push_back(*src);
       } else {
-        dest[pos++] = ' ';
-        ++src;
+        dest_str.push_back(' ');
       }
     } else {
+      /* 3 == strlen("%%XX") */
+      if (std::distance(src, std::end(src_str)) < 3) {
+        break;
+      }
+
       src++;
-      if (!*src)
-        break;
-      char c1 = hex_to_num(*src++);
-      if (!*src)
-        break;
-      c = c1 << 4;
-      if (c1 < 0)
-        return false;
-      c1 = hex_to_num(*src++);
-      if (c1 < 0)
-        return false;
-      c |= c1;
-      dest[pos++] = c;
+      const char c1 = hex_to_num(*src++);
+      const char c2 = hex_to_num(*src);
+      if (c1 < 0 || c2 < 0) {
+        return std::string();
+      } else {
+        dest_str.push_back(c1 << 4 | c2);
+      }
     }
   }
-  dest[pos] = 0;
-  dest_str = dest;
 
-  return true;
+  return dest_str;
 }
 
 void rgw_uri_escape_char(char c, string& dst)
@@ -1189,9 +1451,9 @@ string rgw_trim_whitespace(const string& src)
   return src.substr(start, end - start + 1);
 }
 
-boost::string_ref rgw_trim_whitespace(const boost::string_ref& src)
+boost::string_view rgw_trim_whitespace(const boost::string_view& src)
 {
-  boost::string_ref res = src;
+  boost::string_view res = src;
 
   while (res.size() > 0 && std::isspace(res.front())) {
     res.remove_prefix(1);
@@ -1264,7 +1526,7 @@ int RGWUserCaps::get_cap(const string& cap, string& type, uint32_t *pperm)
 {
   int pos = cap.find('=');
   if (pos >= 0) {
-    trim_whitespace(cap.substr(0, pos), type);
+    type = rgw_trim_whitespace(cap.substr(0, pos));
   }
 
   if (!is_valid_cap_type(type))
@@ -1323,8 +1585,8 @@ int RGWUserCaps::add_from_string(const string& str)
 {
   int start = 0;
   do {
-    int end = str.find(';', start);
-    if (end < 0)
+    auto end = str.find(';', start);
+    if (end == string::npos)
       end = str.size();
 
     int r = add_cap(str.substr(start, end - start));
@@ -1341,8 +1603,8 @@ int RGWUserCaps::remove_from_string(const string& str)
 {
   int start = 0;
   do {
-    int end = str.find(';', start);
-    if (end < 0)
+    auto end = str.find(';', start);
+    if (end == string::npos)
       end = str.size();
 
     int r = remove_cap(str.substr(start, end - start));
@@ -1613,7 +1875,7 @@ static int matchignorecase(const char& c1, const char& c2)
   return 0;
 }
 
-int match(const string& pattern, const string& input, int flag)
+int match(const string& pattern, const string& input, uint32_t flag)
 {
   auto last_pos_input = 0, last_pos_pattern = 0;
 
@@ -1625,7 +1887,9 @@ int match(const string& pattern, const string& input, int flag)
     string substr_pattern = pattern.substr(last_pos_pattern, cur_pos_pattern);
 
     int res;
-    if (flag & POLICY_ACTION || flag & POLICY_ARN) {
+    if (substr_pattern == "*") {
+      res = 1;
+    } else if (flag & MATCH_POLICY_ACTION || flag & MATCH_POLICY_ARN) {
       res = match_internal(substr_pattern, substr_input, &matchignorecase);
     } else {
       res = match_internal(substr_pattern, substr_input, &matchcase);
@@ -1636,7 +1900,7 @@ int match(const string& pattern, const string& input, int flag)
     if (cur_pos_pattern == string::npos && cur_pos_input == string::npos)
       return 1;
     else if ((cur_pos_pattern == string::npos && cur_pos_input != string::npos) ||
-             (cur_pos_pattern != string::npos && cur_pos_input == string::npos))
+	     (cur_pos_pattern != string::npos && cur_pos_input == string::npos))
       return 0;
 
     last_pos_pattern = cur_pos_pattern + 1;

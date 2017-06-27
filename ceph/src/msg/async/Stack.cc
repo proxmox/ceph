@@ -47,12 +47,14 @@ std::function<void ()> NetworkStack::add_thread(unsigned i)
       while (!w->done) {
         ldout(cct, 30) << __func__ << " calling event process" << dendl;
 
-        int r = w->center.process_events(EventMaxWaitUs);
+        ceph::timespan dur;
+        int r = w->center.process_events(EventMaxWaitUs, &dur);
         if (r < 0) {
           ldout(cct, 20) << __func__ << " process events failed: "
                          << cpp_strerror(errno) << dendl;
           // TODO do something?
         }
+        w->perf_logger->tinc(l_msgr_running_total_time, dur);
       }
       w->reset();
       w->destroy();
@@ -99,6 +101,8 @@ Worker* NetworkStack::create_worker(CephContext *c, const string &type, unsigned
 
 NetworkStack::NetworkStack(CephContext *c, const string &t): type(t), started(false), cct(c)
 {
+  assert(cct->_conf->ms_async_op_threads > 0);
+
   const uint64_t InitEventNumber = 5000;
   num_workers = cct->_conf->ms_async_op_threads;
   if (num_workers >= EventCenter::MAX_EVENTCENTER) {

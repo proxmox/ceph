@@ -161,13 +161,14 @@ WRITE_CLASS_DENC(bluestore_pextent_t)
 
 ostream& operator<<(ostream& out, const bluestore_pextent_t& o);
 
-typedef mempool::bluestore_meta_other::vector<bluestore_pextent_t> PExtentVector;
+typedef mempool::bluestore_cache_other::vector<bluestore_pextent_t> PExtentVector;
 
 template<>
 struct denc_traits<PExtentVector> {
   static constexpr bool supported = true;
   static constexpr bool bounded = false;
   static constexpr bool featured = false;
+  static constexpr bool need_contiguous = true;
   static void bound_encode(const PExtentVector& v, size_t& p) {
     p += sizeof(uint32_t);
     const auto size = v.size();
@@ -208,7 +209,7 @@ struct bluestore_extent_ref_map_t {
     }
   };
 
-  typedef mempool::bluestore_meta_other::map<uint64_t,record_t> map_t;
+  typedef mempool::bluestore_cache_other::map<uint64_t,record_t> map_t;
   map_t ref_map;
 
   void _check() const;
@@ -222,7 +223,8 @@ struct bluestore_extent_ref_map_t {
   }
 
   void get(uint64_t offset, uint32_t len);
-  void put(uint64_t offset, uint32_t len, PExtentVector *release);
+  void put(uint64_t offset, uint32_t len, PExtentVector *release,
+	   bool *maybe_unshared);
 
   bool contains(uint64_t offset, uint32_t len) const;
   bool intersects(uint64_t offset, uint32_t len) const;
@@ -406,7 +408,7 @@ struct bluestore_blob_use_tracker_t {
   /// return false if there are some references to the blob,
   /// in this case release_units contains pextents
   /// (identified by their offsets relative to the blob start)
-  //  that are not used any more and can be safely deallocated. 
+  ///  that are not used any more and can be safely deallocated.
   bool put(
     uint32_t offset,
     uint32_t len,
@@ -469,7 +471,6 @@ struct bluestore_blob_use_tracker_t {
   static void generate_test_instances(list<bluestore_blob_use_tracker_t*>& o);
 private:
   void allocate();
-  void fall_back_to_per_au(uint32_t _num_au, uint32_t _au_size);
 };
 WRITE_CLASS_DENC(bluestore_blob_use_tracker_t)
 ostream& operator<<(ostream& out, const bluestore_blob_use_tracker_t& rm);
@@ -478,12 +479,12 @@ ostream& operator<<(ostream& out, const bluestore_blob_use_tracker_t& rm);
 struct bluestore_blob_t {
 private:
   PExtentVector extents;              ///< raw data position on device
-  uint32_t logical_length = 0;        ///< < original length of data stored in the blob
+  uint32_t logical_length = 0;        ///< original length of data stored in the blob
   uint32_t compressed_length = 0;     ///< compressed length if any
 
 public:
   enum {
-    FLAG_MUTABLE = 1,         ///< blob can be overwritten or split
+    LEGACY_FLAG_MUTABLE = 1,  ///< [legacy] blob can be overwritten or split
     FLAG_COMPRESSED = 2,      ///< blob is compressed
     FLAG_CSUM = 4,            ///< blob has checksums
     FLAG_HAS_UNUSED = 8,      ///< blob has unused map
@@ -595,7 +596,7 @@ public:
     compressed_length = clen;
   }
   bool is_mutable() const {
-    return has_flag(FLAG_MUTABLE);
+    return !is_compressed() && !is_shared();
   }
   bool is_compressed() const {
     return has_flag(FLAG_COMPRESSED);
@@ -634,8 +635,10 @@ public:
     return p->offset + x_off;
   }
 
-  /// return true if the entire range is allocated (mapped to extents on disk)
-  bool is_allocated(uint64_t b_off, uint64_t b_len) const {
+  // validate whether or not the status of pextents within the given range
+  // meets the requirement(allocated or unallocated).
+  bool _validate_range(uint64_t b_off, uint64_t b_len,
+                       bool require_allocated) const {
     auto p = extents.begin();
     assert(p != extents.end());
     while (b_off >= p->length) {
@@ -646,11 +649,12 @@ public:
     b_len += b_off;
     while (b_len) {
       assert(p != extents.end());
-      if (!p->is_valid()) {
-	return false;
+      if (require_allocated != p->is_valid()) {
+        return false;
       }
+
       if (p->length >= b_len) {
-	return true;
+        return true;
       }
       b_len -= p->length;
       ++p;
@@ -658,29 +662,16 @@ public:
     assert(0 == "we should not get here");
   }
 
+  /// return true if the entire range is allocated
+  /// (mapped to extents on disk)
+  bool is_allocated(uint64_t b_off, uint64_t b_len) const {
+    return _validate_range(b_off, b_len, true);
+  }
+
   /// return true if the entire range is unallocated
-  ///  (not mapped to extents on disk)
+  /// (not mapped to extents on disk)
   bool is_unallocated(uint64_t b_off, uint64_t b_len) const {
-    auto p = extents.begin();
-    assert(p != extents.end());
-    while (b_off >= p->length) {
-      b_off -= p->length;
-      ++p;
-      assert(p != extents.end());
-    }
-    b_len += b_off;
-    while (b_len) {
-      assert(p != extents.end());
-      if (p->is_valid()) {
-	return false;
-      }
-      if (p->length >= b_len) {
-	return true;
-      }
-      b_len -= p->length;
-      ++p;
-    }
-    assert(0 == "we should not get here");
+    return _validate_range(b_off, b_len, false);
   }
 
   /// return true if the logical range has never been used
@@ -939,7 +930,7 @@ ostream& operator<<(ostream& out, const bluestore_shared_blob_t& o);
 struct bluestore_onode_t {
   uint64_t nid = 0;                    ///< numeric id (locally unique)
   uint64_t size = 0;                   ///< object size
-  map<mempool::bluestore_meta_other::string, bufferptr> attrs;        ///< attrs
+  map<mempool::bluestore_cache_other::string, bufferptr> attrs;        ///< attrs
 
   struct shard_info {
     uint32_t offset = 0;  ///< logical offset for start of shard

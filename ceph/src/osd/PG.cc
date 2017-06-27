@@ -167,7 +167,7 @@ void PG::put(const char* tag)
   {
     Mutex::Locker l(_ref_id_lock);
     auto tag_counts_entry = _tag_counts.find(tag);
-    assert(_tag_counts_entry != _tag_counts.end());
+    assert(tag_counts_entry != _tag_counts.end());
     --tag_counts_entry->second;
     if (tag_counts_entry->second == 0) {
       _tag_counts.erase(tag_counts_entry);
@@ -187,7 +187,7 @@ uint64_t PG::get_with_id()
   BackTrace bt(0);
   stringstream ss;
   bt.print(ss);
-  dout(20) << __func__ << ": " << info.pgid << " got id " << id << dendl;
+  dout(20) << __func__ << ": " << info.pgid << " got id " << id << " (new) ref==" << ref << dendl;
   assert(!_live_ids.count(id));
   _live_ids.insert(make_pair(id, ss.str()));
   return id;
@@ -195,7 +195,7 @@ uint64_t PG::get_with_id()
 
 void PG::put_with_id(uint64_t id)
 {
-  dout(20) << __func__ << ": " << info.pgid << " put id " << id << dendl;
+  dout(20) << __func__ << ": " << info.pgid << " put id " << id << " (current) ref==" << ref << dendl;
   {
     Mutex::Locker l(_ref_id_lock);
     assert(_live_ids.count(id));
@@ -326,9 +326,7 @@ PG::PG(OSDService *o, OSDMapRef curmap,
   peer_features(CEPH_FEATURES_SUPPORTED_DEFAULT),
   acting_features(CEPH_FEATURES_SUPPORTED_DEFAULT),
   upacting_features(CEPH_FEATURES_SUPPORTED_DEFAULT),
-  last_epoch(0),
-  scrub_sleep_lock("PG::scrub_sleep_lock"),
-  scrub_sleep_timer(o->cct, scrub_sleep_lock, false /* relax locking */)
+  last_epoch(0)
 {
 #ifdef PG_DEBUG_REFS
   osd->add_pgid(p, this);
@@ -344,8 +342,6 @@ PG::PG(OSDService *o, OSDMapRef curmap,
 PG::~PG()
 {
   pgstate_history.set_pg_in_destructor();
-  Mutex::Locker l(scrub_sleep_lock);
-  scrub_sleep_timer.shutdown();
 #ifdef PG_DEBUG_REFS
   osd->remove_pgid(info.pgid, this);
 #endif
@@ -803,7 +799,6 @@ void PG::check_past_interval_bounds() const
       derr << info.pgid << " required past_interval bounds are"
 	   << " empty [" << rpib << ") but past_intervals is not: "
 	   << past_intervals << dendl;
-      assert(past_intervals.empty());
     }
   } else {
     if (past_intervals.empty()) {
@@ -1122,7 +1117,6 @@ void PG::calc_ec_acting(
   const vector<int> &up,
   pg_shard_t up_primary,
   const map<pg_shard_t, pg_info_t> &all_info,
-  bool compat_mode,
   bool restrict_to_up_acting,
   vector<int> *_want,
   set<pg_shard_t> *backfill,
@@ -1210,7 +1204,6 @@ void PG::calc_replicated_acting(
   const vector<int> &up,
   pg_shard_t up_primary,
   const map<pg_shard_t, pg_info_t> &all_info,
-  bool compat_mode,
   bool restrict_to_up_acting,
   vector<int> *want,
   set<pg_shard_t> *backfill,
@@ -1264,16 +1257,8 @@ void PG::calc_replicated_acting(
        * as far backwards as necessary to pick up any peers which can
        * be log recovered by auth_log_shard's log */
       ss << " shard " << up_cand << " (up) backfill " << cur_info << std::endl;
-      if (compat_mode) {
-	if (backfill->empty()) {
-	  backfill->insert(up_cand);
-	  want->push_back(*i);
-	  acting_backfill->insert(up_cand);
-	}
-      } else {
-	backfill->insert(up_cand);
-	acting_backfill->insert(up_cand);
-      }
+      backfill->insert(up_cand);
+      acting_backfill->insert(up_cand);
     } else {
       want->push_back(*i);
       acting_backfill->insert(up_cand);
@@ -1393,27 +1378,6 @@ bool PG::choose_acting(pg_shard_t &auth_log_shard_id,
   assert(!auth_log_shard->second.is_incomplete());
   auth_log_shard_id = auth_log_shard->first;
 
-  // Determine if compatibility needed
-  bool compat_mode = !cct->_conf->osd_debug_override_acting_compat;
-  if (compat_mode) {
-    bool all_support = true;
-    OSDMapRef osdmap = get_osdmap();
-
-    for (map<pg_shard_t, pg_info_t>::iterator it = all_info.begin();
-	 it != all_info.end();
-	 ++it) {
-      pg_shard_t peer = it->first;
-
-      const osd_xinfo_t& xi = osdmap->get_xinfo(peer.osd);
-      if (!(xi.features & CEPH_FEATURE_OSD_ERASURE_CODES)) {
-	all_support = false;
-	break;
-      }
-    }
-    if (all_support)
-      compat_mode = false;
-  }
-
   set<pg_shard_t> want_backfill, want_acting_backfill;
   vector<int> want;
   pg_shard_t want_primary;
@@ -1427,7 +1391,6 @@ bool PG::choose_acting(pg_shard_t &auth_log_shard_id,
       up,
       up_primary,
       all_info,
-      compat_mode,
       restrict_to_up_acting,
       &want,
       &want_backfill,
@@ -1443,7 +1406,6 @@ bool PG::choose_acting(pg_shard_t &auth_log_shard_id,
       up,
       up_primary,
       all_info,
-      compat_mode,
       restrict_to_up_acting,
       &want,
       &want_backfill,
@@ -1492,7 +1454,7 @@ bool PG::choose_acting(pg_shard_t &auth_log_shard_id,
     if (want_acting == up) {
       // There can't be any pending backfill if
       // want is the same as crush map up OSDs.
-      assert(compat_mode || want_backfill.empty());
+      assert(want_backfill.empty());
       vector<int> empty;
       osd->queue_want_pg_temp(info.pgid.pgid, empty);
     } else
@@ -1763,7 +1725,8 @@ void PG::activate(ObjectStore::Transaction& t,
         for (list<pg_log_entry_t>::iterator p = m->log.log.begin();
              p != m->log.log.end();
              ++p)
-	  if (p->soid <= pi.last_backfill)
+	  if (p->soid <= pi.last_backfill &&
+	      !p->is_error())
 	    pm.add_next_event(*p);
       }
       
@@ -1972,7 +1935,7 @@ void PG::all_activated_and_committed()
         AllReplicasActivated())));
 }
 
-bool PG::requeue_scrub()
+bool PG::requeue_scrub(bool high_priority)
 {
   assert(is_locked());
   if (scrub_queued) {
@@ -1981,7 +1944,7 @@ bool PG::requeue_scrub()
   } else {
     dout(10) << __func__ << ": queueing" << dendl;
     scrub_queued = true;
-    osd->queue_for_scrub(this);
+    osd->queue_for_scrub(this, high_priority);
     return true;
   }
 }
@@ -2751,7 +2714,10 @@ void PG::publish_stats_to_osd()
     if ((info.stats.state & PG_STATE_UNDERSIZED) == 0)
       info.stats.last_fullsized = now;
 
-    publish = true;
+    // do not send pgstat to mon anymore once we are luminous, since mgr takes
+    // care of this by sending MMonMgrReport to mon.
+    publish =
+      osd->osd->get_osdmap()->require_osd_release < CEPH_RELEASE_LUMINOUS;
     pg_stats_publish_valid = true;
     pg_stats_publish = pre_publish;
 
@@ -2832,8 +2798,6 @@ void PG::init(
   dirty_info = true;
   dirty_big_info = true;
   write_if_dirty(*t);
-
-  scrub_sleep_timer.init();
 }
 
 #pragma GCC diagnostic ignored "-Wpragmas"
@@ -3700,7 +3664,11 @@ void PG::do_replica_scrub_map(OpRequestRef op)
   --scrubber.waiting_on;
   scrubber.waiting_on_whom.erase(m->from);
   if (scrubber.waiting_on == 0) {
-    requeue_scrub();
+    if (ops_blocked_by_scrub()) {
+      requeue_scrub(true);
+    } else {
+      requeue_scrub(false);
+    }
   }
 }
 
@@ -3736,7 +3704,11 @@ void PG::sub_op_scrub_map(OpRequestRef op)
   scrubber.waiting_on_whom.erase(m->from);
 
   if (scrubber.waiting_on == 0) {
-    requeue_scrub();
+    if (ops_blocked_by_scrub()) {
+      requeue_scrub(true);
+    } else {
+      requeue_scrub(false);
+    }
   }
 }
 
@@ -4240,24 +4212,39 @@ void PG::scrub(epoch_t queued, ThreadPool::TPHandle &handle)
 {
   if (cct->_conf->osd_scrub_sleep > 0 &&
       (scrubber.state == PG::Scrubber::NEW_CHUNK ||
-       scrubber.state == PG::Scrubber::INACTIVE) && scrubber.needs_sleep) {
+       scrubber.state == PG::Scrubber::INACTIVE) &&
+       scrubber.needs_sleep) {
     ceph_assert(!scrubber.sleeping);
     dout(20) << __func__ << " state is INACTIVE|NEW_CHUNK, sleeping" << dendl;
+
     // Do an async sleep so we don't block the op queue
-    auto scrub_requeue_callback = new FunctionContext([this](int r) {
-      lock();
-      scrubber.sleeping = false;
-      scrubber.needs_sleep = false;
-      dout(20) << __func__ << " slept for "
-               << ceph_clock_now() - scrubber.sleep_start
-               << ", re-queuing scrub" << dendl;
-      scrub_queued = false;
-      requeue_scrub();
-      scrubber.sleep_start = utime_t();
-      unlock();
-    });
-    Mutex::Locker l(scrub_sleep_lock);
-    scrub_sleep_timer.add_event_after(cct->_conf->osd_scrub_sleep, scrub_requeue_callback);
+    OSDService *osds = osd;
+    spg_t pgid = get_pgid();
+    int state = scrubber.state;
+    auto scrub_requeue_callback =
+        new FunctionContext([osds, pgid, state](int r) {
+          PG *pg = osds->osd->lookup_lock_pg(pgid);
+          if (pg == nullptr) {
+            lgeneric_dout(osds->osd->cct, 20)
+                << "scrub_requeue_callback: Could not find "
+                << "PG " << pgid << " can't complete scrub requeue after sleep"
+                << dendl;
+            return;
+          }
+          pg->scrubber.sleeping = false;
+          pg->scrubber.needs_sleep = false;
+          lgeneric_dout(pg->cct, 20)
+              << "scrub_requeue_callback: slept for "
+              << ceph_clock_now() - pg->scrubber.sleep_start
+              << ", re-queuing scrub with state " << state << dendl;
+          pg->scrub_queued = false;
+          pg->requeue_scrub();
+          pg->scrubber.sleep_start = utime_t();
+          pg->unlock();
+        });
+    Mutex::Locker l(osd->scrub_sleep_lock);
+    osd->scrub_sleep_timer.add_event_after(cct->_conf->osd_scrub_sleep,
+                                           scrub_requeue_callback);
     scrubber.sleeping = true;
     scrubber.sleep_start = ceph_clock_now();
     return;
@@ -4818,6 +4805,10 @@ bool PG::scrub_process_inconsistent()
   return (!scrubber.authoritative.empty() && repair);
 }
 
+bool PG::ops_blocked_by_scrub() const {
+  return (waiting_for_scrub.size() != 0);
+}
+
 // the part that actually finalizes a scrub
 void PG::scrub_finish() 
 {
@@ -4949,7 +4940,7 @@ void PG::share_pg_info()
 }
 
 bool PG::append_log_entries_update_missing(
-  const mempool::osd::list<pg_log_entry_t> &entries,
+  const mempool::osd_pglog::list<pg_log_entry_t> &entries,
   ObjectStore::Transaction &t)
 {
   assert(!entries.empty());
@@ -4976,7 +4967,7 @@ bool PG::append_log_entries_update_missing(
 
 
 void PG::merge_new_log_entries(
-  const mempool::osd::list<pg_log_entry_t> &entries,
+  const mempool::osd_pglog::list<pg_log_entry_t> &entries,
   ObjectStore::Transaction &t)
 {
   dout(10) << __func__ << " " << entries << dendl;

@@ -15,12 +15,11 @@
 #ifndef CEPH_WORKQUEUE_H
 #define CEPH_WORKQUEUE_H
 
-#include "Mutex.h"
 #include "Cond.h"
-#include "Thread.h"
 #include "include/unordered_map.h"
-#include "common/config_obs.h"
 #include "common/HeartbeatMap.h"
+
+#include <atomic>
 
 class CephContext;
 
@@ -623,9 +622,11 @@ class ShardedThreadPool {
   Cond shardedpool_cond;
   Cond wait_cond;
   uint32_t num_threads;
-  atomic_t stop_threads;
-  atomic_t pause_threads;
-  atomic_t drain_threads;
+
+  std::atomic<bool> stop_threads = { false };
+  std::atomic<bool> pause_threads = { false };
+  std::atomic<bool> drain_threads = { false };
+
   uint32_t num_paused;
   uint32_t num_drained;
 

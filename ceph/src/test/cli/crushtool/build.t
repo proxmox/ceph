@@ -23,7 +23,7 @@
 #
 # crush rulesets are generated using the OSDMap helpers
 #
-  $ CEPH_ARGS="--debug-crush 0" crushtool --outfn "$map" --set-straw-calc-version 0 --build --num_osds 1 root straw 0
+  $ CEPH_ARGS="--debug-crush 0" crushtool --outfn "$map" --set-straw-calc-version 0 --build --num_osds 1 root straw 0 --set-chooseleaf-stable 0
   $ crushtool -o "$map.txt" -d "$map"
   $ cat "$map.txt"
   # begin crush map
@@ -51,7 +51,7 @@
   }
   
   # rules
-  rule replicated_ruleset {
+  rule replicated_rule {
   \truleset 0 (esc)
   \ttype replicated (esc)
   \tmin_size 1 (esc)

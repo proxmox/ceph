@@ -11,20 +11,21 @@
  * Foundation.  See file COPYING.
  */
 
+#ifndef CEPH_MGRMONITOR_H
+#define CEPH_MGRMONITOR_H
 
 #include "include/Context.h"
 #include "MgrMap.h"
 #include "PaxosService.h"
 
-
-class MgrMonitor : public PaxosService
+class MgrMonitor: public PaxosService
 {
   MgrMap map;
   MgrMap pending_map;
 
   utime_t first_seen_inactive;
 
-  std::map<uint64_t, utime_t> last_beacon;
+  std::map<uint64_t, ceph::coarse_mono_clock::time_point> last_beacon;
 
   /**
    * If a standby is available, make it active, given that
@@ -36,14 +37,16 @@ class MgrMonitor : public PaxosService
   void drop_active();
   void drop_standby(uint64_t gid);
 
-  Context *digest_callback;
+  Context *digest_event = nullptr;
+  void cancel_timer();
 
   bool check_caps(MonOpRequestRef op, const uuid_d& fsid);
 
 public:
   MgrMonitor(Monitor *mn, Paxos *p, const string& service_name)
-    : PaxosService(mn, p, service_name), digest_callback(nullptr)
+    : PaxosService(mn, p, service_name)
   {}
+  ~MgrMonitor() override {}
 
   void init() override;
   void on_shutdown() override;
@@ -83,3 +86,4 @@ public:
   friend class C_Updated;
 };
 
+#endif

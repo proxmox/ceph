@@ -15,6 +15,7 @@
 #include "common/Readahead.h"
 #include "common/RWLock.h"
 #include "common/snap_types.h"
+#include "common/zipkin_trace.h"
 
 #include "include/buffer_fwd.h"
 #include "include/rbd/librbd.hpp"
@@ -37,7 +38,6 @@ class SafeTimer;
 
 namespace librbd {
 
-  class AsyncOperation;
   template <typename> class ExclusiveLock;
   template <typename> class ImageState;
   template <typename> class ImageWatcher;
@@ -51,6 +51,7 @@ namespace librbd {
   namespace exclusive_lock { struct Policy; }
   namespace io {
   class AioCompletion;
+  class AsyncOperation;
   class ImageRequestWQ;
   class CopyupRequest;
   }
@@ -127,6 +128,7 @@ namespace librbd {
     cls::rbd::GroupSpec group_spec;
     uint64_t stripe_unit, stripe_count;
     uint64_t flags;
+    utime_t create_timestamp;
 
     file_layout_t layout;
 
@@ -140,7 +142,7 @@ namespace librbd {
 
     std::map<uint64_t, io::CopyupRequest*> copyup_list;
 
-    xlist<AsyncOperation*> async_ops;
+    xlist<io::AsyncOperation*> async_ops;
     xlist<AsyncRequest<>*> async_requests;
     std::list<Context*> async_requests_waiters;
 
@@ -200,6 +202,8 @@ namespace librbd {
     exclusive_lock::Policy *exclusive_lock_policy = nullptr;
     journal::Policy *journal_policy = nullptr;
 
+    ZTracer::Endpoint trace_endpoint;
+
     static bool _filter_metadata_confs(const string &prefix, std::map<string, bool> &configs,
                                        const map<string, bufferlist> &pairs, map<string, bufferlist> *res);
 
@@ -251,6 +255,7 @@ namespace librbd {
     uint64_t get_stripe_unit() const;
     uint64_t get_stripe_count() const;
     uint64_t get_stripe_period() const;
+    utime_t get_create_timestamp() const;
 
     void add_snap(cls::rbd::SnapshotNamespace in_snap_namespace,
 		  std::string in_snap_name,
@@ -266,8 +271,9 @@ namespace librbd {
     bool test_features(uint64_t test_features,
                        const RWLock &in_snap_lock) const;
     int get_flags(librados::snap_t in_snap_id, uint64_t *flags) const;
-    bool test_flags(uint64_t test_flags) const;
-    bool test_flags(uint64_t test_flags, const RWLock &in_snap_lock) const;
+    int test_flags(uint64_t test_flags, bool *flags_set) const;
+    int test_flags(uint64_t test_flags, const RWLock &in_snap_lock,
+                   bool *flags_set) const;
     int update_flags(librados::snap_t in_snap_id, uint64_t flag, bool enabled);
 
     const ParentInfo* get_parent_info(librados::snap_t in_snap_id) const;
@@ -278,10 +284,10 @@ namespace librbd {
 			   uint64_t *overlap) const;
     void aio_read_from_cache(object_t o, uint64_t object_no, bufferlist *bl,
 			     size_t len, uint64_t off, Context *onfinish,
-			     int fadvise_flags);
+			     int fadvise_flags, ZTracer::Trace *trace);
     void write_to_cache(object_t o, const bufferlist& bl, size_t len,
 			uint64_t off, Context *onfinish, int fadvise_flags,
-                        uint64_t journal_tid);
+                        uint64_t journal_tid, ZTracer::Trace *trace);
     void user_flushed();
     void flush_cache(Context *onfinish);
     void shut_down_cache(Context *on_finish);

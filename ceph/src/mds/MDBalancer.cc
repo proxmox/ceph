@@ -83,31 +83,53 @@ void MDBalancer::handle_export_pins(void)
   auto it = q.begin();
   dout(20) << "export_pin_queue size=" << q.size() << dendl;
   while (it != q.end()) {
-    auto current = it++;
-    CInode *in = *current;
+    auto cur = it++;
+    CInode *in = *cur;
     assert(in->is_dir());
-    mds_rank_t export_pin = in->get_export_pin();
-    if (!in->is_exportable(export_pin)) {
-      dout(10) << "can no longer export " << *in << " because export pins have since changed" << dendl;
-      q.erase(current);
-      continue;
-    }
-    dout(10) << "exporting dirfrags of " << *in << " to " << export_pin << dendl;
-    bool has_auth = false;
-    list<frag_t> ls;
-    in->dirfragtree.get_leaves(ls);
-    for (const auto &fg : ls) {
-      CDir *cd = in->get_dirfrag(fg);
-      if (cd && cd->is_auth()) {
-        /* N.B. when we are no longer auth after exporting, this function will remove the inode from the queue */
-        mds->mdcache->migrator->export_dir(cd, export_pin);
-        has_auth = true;
+    mds_rank_t export_pin = in->get_export_pin(false);
+
+    bool remove = true;
+    list<CDir*> dfls;
+    in->get_dirfrags(dfls);
+    for (auto dir : dfls) {
+      if (!dir->is_auth())
+	continue;
+
+      if (export_pin == MDS_RANK_NONE) {
+	if (dir->state_test(CDir::STATE_AUXSUBTREE)) {
+	  if (dir->is_frozen() || dir->is_freezing()) {
+	    // try again later
+	    remove = false;
+	    continue;
+	  }
+	  dout(10) << " clear auxsubtree on " << *dir << dendl;
+	  dir->state_clear(CDir::STATE_AUXSUBTREE);
+	  mds->mdcache->try_subtree_merge(dir);
+	}
+      } else if (export_pin == mds->get_nodeid()) {
+	if (dir->state_test(CDir::STATE_CREATING) ||
+	    dir->is_frozen() || dir->is_freezing()) {
+	  // try again later
+	  remove = false;
+	  continue;
+	}
+	if (!dir->is_subtree_root()) {
+	  dir->state_set(CDir::STATE_AUXSUBTREE);
+	  mds->mdcache->adjust_subtree_auth(dir, mds->get_nodeid());
+	  dout(10) << " create aux subtree on " << *dir << dendl;
+	} else if (!dir->state_test(CDir::STATE_AUXSUBTREE)) {
+	  dout(10) << " set auxsubtree bit on " << *dir << dendl;
+	  dir->state_set(CDir::STATE_AUXSUBTREE);
+	}
+      } else {
+	mds->mdcache->migrator->export_dir(dir, export_pin);
+	remove = false;
       }
     }
-    if (!has_auth) {
-      dout(10) << "can no longer export " << *in << " because I am not auth for any dirfrags" << dendl;
-      q.erase(current);
-      continue;
+
+    if (remove) {
+      in->state_clear(CInode::STATE_QUEUEDEXPORTPIN);
+      q.erase(cur);
     }
   }
 
@@ -374,7 +396,7 @@ void MDBalancer::handle_heartbeat(MHeartbeat *m)
       /* avoid spamming ceph -w if user does not turn mantle on */
       if (mds->mdsmap->get_balancer() != "") {
         int r = mantle_prep_rebalance();
-        if (!r) return;
+        if (!r) goto out;
 	mds->clog->warn() << "using old balancer; mantle failed for "
                           << "balancer=" << mds->mdsmap->get_balancer()
                           << " : " << cpp_strerror(r);
@@ -711,15 +733,6 @@ void MDBalancer::prep_rebalance(int beat)
   try_rebalance(state);
 }
 
-void MDBalancer::hit_targets(const balance_state_t& state)
-{
-  utime_t now = ceph_clock_now();
-  for (auto &it : state.targets) {
-    mds_rank_t target = it.first;
-    mds->hit_export_target(now, target, g_conf->mds_bal_target_decay);
-  }
-}
-
 int MDBalancer::mantle_prep_rebalance()
 {
   balance_state_t state;
@@ -775,9 +788,6 @@ int MDBalancer::mantle_prep_rebalance()
 
 void MDBalancer::try_rebalance(balance_state_t& state)
 {
-  if (!check_targets(state))
-    return;
-
   if (g_conf->mds_thrash_exports) {
     dout(5) << "mds_thrash is on; not performing standard rebalance operation!"
 	    << dendl;
@@ -926,18 +936,6 @@ void MDBalancer::try_rebalance(balance_state_t& state)
 
   dout(5) << "rebalance done" << dendl;
   mds->mdcache->show_subtrees();
-}
-
-
-/* Check that all targets are in the MDSMap export_targets for my rank. */
-bool MDBalancer::check_targets(const balance_state_t& state)
-{
-  for (const auto &it : state.targets) {
-    if (!mds->is_export_target(it.first)) {
-      return false;
-    }
-  }
-  return true;
 }
 
 void MDBalancer::find_exports(CDir *dir,

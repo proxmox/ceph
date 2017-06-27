@@ -36,6 +36,8 @@
 #include "stdlib.h"
 #include "fcntl.h"
 #include "sys/stat.h"
+#include "include/crc32c.h"
+#include "common/sctp_crc32.h"
 
 #define MAX_TEST 1000000
 #define FILENAME "bufferlist"
@@ -1701,6 +1703,33 @@ TEST(BufferList, is_n_page_sized) {
   }
 }
 
+TEST(BufferList, page_aligned_appender) {
+  bufferlist bl;
+  auto a = bl.get_page_aligned_appender(5);
+  a.append("asdf", 4);
+  a.flush();
+  cout << bl << std::endl;
+  ASSERT_EQ(1u, bl.get_num_buffers());
+  a.append("asdf", 4);
+  for (unsigned n = 0; n < 3 * CEPH_PAGE_SIZE; ++n) {
+    a.append("x", 1);
+  }
+  a.flush();
+  cout << bl << std::endl;
+  ASSERT_EQ(1u, bl.get_num_buffers());
+  for (unsigned n = 0; n < 3 * CEPH_PAGE_SIZE; ++n) {
+    a.append("y", 1);
+  }
+  a.flush();
+  cout << bl << std::endl;
+  ASSERT_EQ(2u, bl.get_num_buffers());
+  for (unsigned n = 0; n < 10 * CEPH_PAGE_SIZE; ++n) {
+    a.append("asdfasdfasdf", 1);
+  }
+  a.flush();
+  cout << bl << std::endl;
+}
+
 TEST(BufferList, rebuild_aligned_size_and_memory) {
   const unsigned SIMD_ALIGN = 32;
   const unsigned BUFFER_SIZE = 67;
@@ -1762,6 +1791,17 @@ TEST(BufferList, is_zero) {
     bl.append_zero(1);
     EXPECT_TRUE(bl.is_zero());
   }
+
+  for (size_t i = 1; i <= 256; ++i) {
+    bufferlist bl;
+    bl.append_zero(i);
+    EXPECT_TRUE(bl.is_zero());
+    bl.append('A');
+    // ensure buffer is a single, contiguous before testing
+    bl.rebuild();
+    EXPECT_FALSE(bl.is_zero());
+  }
+
 }
 
 TEST(BufferList, clear) {
@@ -2082,6 +2122,27 @@ TEST(BufferList, claim_prepend) {
   EXPECT_EQ((unsigned)2, to.get_num_buffers());
   EXPECT_EQ((unsigned)0, from.get_num_buffers());
   EXPECT_EQ((unsigned)0, from.length());
+}
+
+TEST(BufferList, claim_append_piecewise) {
+  bufferlist bl, t, dst;
+  auto a = bl.get_page_aligned_appender(4);
+  for (uint32_t i = 0; i < (CEPH_PAGE_SIZE + CEPH_PAGE_SIZE - 1333); i++)
+    a.append("x", 1);
+  a.flush();
+  const char *p = bl.c_str();
+  t.claim_append(bl);
+
+  for (uint32_t i = 0; i < (CEPH_PAGE_SIZE + 1333); i++)
+    a.append("x", 1);
+  a.flush();
+  t.claim_append(bl);
+
+  EXPECT_FALSE(t.is_aligned_size_and_memory(CEPH_PAGE_SIZE, CEPH_PAGE_SIZE));
+  dst.claim_append_piecewise(t);
+  EXPECT_TRUE(dst.is_aligned_size_and_memory(CEPH_PAGE_SIZE, CEPH_PAGE_SIZE));
+  const char *p1 = dst.c_str();
+  EXPECT_TRUE(p == p1);
 }
 
 TEST(BufferList, begin) {
@@ -2547,6 +2608,30 @@ TEST(BufferList, crc32c_append) {
   ASSERT_EQ(bl1.crc32c(0), bl2.crc32c(0));
 }
 
+TEST(BufferList, crc32c_zeros) {
+  char buffer[4*1024];
+  for (size_t i=0; i < sizeof(buffer); i++)
+  {
+    buffer[i] = i;
+  }
+
+  bufferlist bla;
+  bufferlist blb;
+
+  for (size_t j=0; j < 1000; j++)
+  {
+    bufferptr a(buffer, sizeof(buffer));
+
+    bla.push_back(a);
+    uint32_t crca = bla.crc32c(111);
+
+    blb.push_back(a);
+    uint32_t crcb = ceph_crc32c(111, (unsigned char*)blb.c_str(), blb.length());
+
+    EXPECT_EQ(crca, crcb);
+  }
+}
+
 TEST(BufferList, crc32c_append_perf) {
   int len = 256 * 1024 * 1024;
   bufferptr a(len);
@@ -2614,7 +2699,6 @@ TEST(BufferList, crc32c_append_perf) {
   }
   assert(buffer::get_cached_crc() == 1 + base_cached);
   assert(buffer::get_cached_crc_adjusted() == 2 + base_cached_adjusted);
-
   {
     utime_t start = ceph_clock_now();
     uint32_t r = blb.crc32c(0);

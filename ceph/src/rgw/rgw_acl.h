@@ -15,8 +15,6 @@
 
 #include "rgw_basic_types.h"
 
-using namespace std;
-
 #define RGW_PERM_NONE            0x00
 #define RGW_PERM_READ            0x01
 #define RGW_PERM_WRITE           0x02
@@ -28,6 +26,8 @@ using namespace std;
                                   RGW_PERM_READ_ACP | RGW_PERM_WRITE_ACP )
 #define RGW_PERM_ALL_S3          RGW_PERM_FULL_CONTROL
 #define RGW_PERM_INVALID         0xFF00
+
+static constexpr char RGW_REFERER_WILDCARD[] = "*";
 
 enum ACLGranteeTypeEnum {
 /* numbers are encoded, should not change */
@@ -223,6 +223,10 @@ struct ACLReferer {
       return false;
     }
 
+    if ("*" == url_spec) {
+      return true;
+    }
+
     if (http_host->compare(url_spec) == 0) {
       return true;
     }
@@ -302,7 +306,9 @@ public:
   uint32_t get_perm(const rgw::auth::Identity& auth_identity,
                     uint32_t perm_mask);
   uint32_t get_group_perm(ACLGroupTypeEnum group, uint32_t perm_mask);
-  uint32_t get_referer_perm(const std::string http_referer, uint32_t perm_mask);
+  uint32_t get_referer_perm(uint32_t current_perm,
+                            std::string http_referer,
+                            uint32_t perm_mask);
   void encode(bufferlist& bl) const {
     ENCODE_START(4, 3, bl);
     bool maps_initialized = true;
@@ -379,6 +385,7 @@ public:
     DECODE_FINISH(bl);
   }
   void dump(Formatter *f) const;
+  void decode_json(JSONObj *obj);
   static void generate_test_instances(list<ACLOwner*>& o);
   void set_id(const rgw_user& _id) { id = _id; }
   void set_name(const string& name) { display_name = name; }

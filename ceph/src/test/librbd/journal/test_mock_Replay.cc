@@ -32,7 +32,7 @@ struct ImageRequest<MockReplayImageCtx> {
                                const bufferlist &bl, int op_flags));
   static void aio_write(MockReplayImageCtx *ictx, AioCompletion *c,
                         Extents &&image_extents, bufferlist &&bl,
-                        int op_flags) {
+                        int op_flags, const ZTracer::Trace &parent_trace) {
     assert(s_instance != nullptr);
     s_instance->aio_write(c, image_extents, bl, op_flags);
   }
@@ -40,13 +40,16 @@ struct ImageRequest<MockReplayImageCtx> {
   MOCK_METHOD4(aio_discard, void(AioCompletion *c, uint64_t off, uint64_t len,
                                  bool skip_partial_discard));
   static void aio_discard(MockReplayImageCtx *ictx, AioCompletion *c,
-                          uint64_t off, uint64_t len, bool skip_partial_discard) {
+                          uint64_t off, uint64_t len,
+                          bool skip_partial_discard,
+                          const ZTracer::Trace &parent_trace) {
     assert(s_instance != nullptr);
     s_instance->aio_discard(c, off, len, skip_partial_discard);
   }
 
   MOCK_METHOD1(aio_flush, void(AioCompletion *c));
-  static void aio_flush(MockReplayImageCtx *ictx, AioCompletion *c) {
+  static void aio_flush(MockReplayImageCtx *ictx, AioCompletion *c,
+                        const ZTracer::Trace &parent_trace) {
     assert(s_instance != nullptr);
     s_instance->aio_flush(c);
   }
@@ -55,7 +58,7 @@ struct ImageRequest<MockReplayImageCtx> {
                                    const bufferlist &bl, int op_flags));
   static void aio_writesame(MockReplayImageCtx *ictx, AioCompletion *c,
                             uint64_t off, uint64_t len, bufferlist &&bl,
-                            int op_flags) {
+                            int op_flags, const ZTracer::Trace &parent_trace) {
     assert(s_instance != nullptr);
     s_instance->aio_writesame(c, off, len, bl, op_flags);
   }
@@ -123,6 +126,11 @@ public:
   typedef Replay<MockReplayImageCtx> MockJournalReplay;
 
   TestMockJournalReplay() : m_invoke_lock("m_invoke_lock") {
+  }
+
+  void expect_accept_ops(MockExclusiveLock &mock_exclusive_lock, bool accept) {
+    EXPECT_CALL(mock_exclusive_lock, accept_ops()).WillRepeatedly(
+      Return(accept));
   }
 
   void expect_aio_discard(MockIoImageRequest &mock_io_image_request,
@@ -330,6 +338,11 @@ TEST_F(TestMockJournalReplay, AioDiscard) {
   ASSERT_EQ(0, open_image(m_image_name, &ictx));
 
   MockReplayImageCtx mock_image_ctx(*ictx);
+
+  MockExclusiveLock mock_exclusive_lock;
+  mock_image_ctx.exclusive_lock = &mock_exclusive_lock;
+  expect_accept_ops(mock_exclusive_lock, true);
+
   MockJournalReplay mock_journal_replay(mock_image_ctx);
   MockIoImageRequest mock_io_image_request;
   expect_op_work_queue(mock_image_ctx);
@@ -358,6 +371,11 @@ TEST_F(TestMockJournalReplay, AioWrite) {
   ASSERT_EQ(0, open_image(m_image_name, &ictx));
 
   MockReplayImageCtx mock_image_ctx(*ictx);
+
+  MockExclusiveLock mock_exclusive_lock;
+  mock_image_ctx.exclusive_lock = &mock_exclusive_lock;
+  expect_accept_ops(mock_exclusive_lock, true);
+
   MockJournalReplay mock_journal_replay(mock_image_ctx);
   MockIoImageRequest mock_io_image_request;
   expect_op_work_queue(mock_image_ctx);
@@ -386,6 +404,11 @@ TEST_F(TestMockJournalReplay, AioFlush) {
   ASSERT_EQ(0, open_image(m_image_name, &ictx));
 
   MockReplayImageCtx mock_image_ctx(*ictx);
+
+  MockExclusiveLock mock_exclusive_lock;
+  mock_image_ctx.exclusive_lock = &mock_exclusive_lock;
+  expect_accept_ops(mock_exclusive_lock, true);
+
   MockJournalReplay mock_journal_replay(mock_image_ctx);
   MockIoImageRequest mock_io_image_request;
   expect_op_work_queue(mock_image_ctx);
@@ -412,6 +435,11 @@ TEST_F(TestMockJournalReplay, AioWriteSame) {
   ASSERT_EQ(0, open_image(m_image_name, &ictx));
 
   MockReplayImageCtx mock_image_ctx(*ictx);
+
+  MockExclusiveLock mock_exclusive_lock;
+  mock_image_ctx.exclusive_lock = &mock_exclusive_lock;
+  expect_accept_ops(mock_exclusive_lock, true);
+
   MockJournalReplay mock_journal_replay(mock_image_ctx);
   MockIoImageRequest mock_io_image_request;
   expect_op_work_queue(mock_image_ctx);
@@ -440,6 +468,11 @@ TEST_F(TestMockJournalReplay, IOError) {
   ASSERT_EQ(0, open_image(m_image_name, &ictx));
 
   MockReplayImageCtx mock_image_ctx(*ictx);
+
+  MockExclusiveLock mock_exclusive_lock;
+  mock_image_ctx.exclusive_lock = &mock_exclusive_lock;
+  expect_accept_ops(mock_exclusive_lock, true);
+
   MockJournalReplay mock_journal_replay(mock_image_ctx);
   MockIoImageRequest mock_io_image_request;
   expect_op_work_queue(mock_image_ctx);
@@ -468,6 +501,11 @@ TEST_F(TestMockJournalReplay, SoftFlushIO) {
   ASSERT_EQ(0, open_image(m_image_name, &ictx));
 
   MockReplayImageCtx mock_image_ctx(*ictx);
+
+  MockExclusiveLock mock_exclusive_lock;
+  mock_image_ctx.exclusive_lock = &mock_exclusive_lock;
+  expect_accept_ops(mock_exclusive_lock, true);
+
   MockJournalReplay mock_journal_replay(mock_image_ctx);
   MockIoImageRequest mock_io_image_request;
   expect_op_work_queue(mock_image_ctx);
@@ -507,6 +545,11 @@ TEST_F(TestMockJournalReplay, PauseIO) {
   ASSERT_EQ(0, open_image(m_image_name, &ictx));
 
   MockReplayImageCtx mock_image_ctx(*ictx);
+
+  MockExclusiveLock mock_exclusive_lock;
+  mock_image_ctx.exclusive_lock = &mock_exclusive_lock;
+  expect_accept_ops(mock_exclusive_lock, true);
+
   MockJournalReplay mock_journal_replay(mock_image_ctx);
   MockIoImageRequest mock_io_image_request;
   expect_op_work_queue(mock_image_ctx);
@@ -548,6 +591,11 @@ TEST_F(TestMockJournalReplay, Flush) {
   ASSERT_EQ(0, open_image(m_image_name, &ictx));
 
   MockReplayImageCtx mock_image_ctx(*ictx);
+
+  MockExclusiveLock mock_exclusive_lock;
+  mock_image_ctx.exclusive_lock = &mock_exclusive_lock;
+  expect_accept_ops(mock_exclusive_lock, true);
+
   MockJournalReplay mock_journal_replay(mock_image_ctx);
   MockIoImageRequest mock_io_image_request;
   expect_op_work_queue(mock_image_ctx);
@@ -576,6 +624,11 @@ TEST_F(TestMockJournalReplay, OpFinishError) {
   ASSERT_EQ(0, open_image(m_image_name, &ictx));
 
   MockReplayImageCtx mock_image_ctx(*ictx);
+
+  MockExclusiveLock mock_exclusive_lock;
+  mock_image_ctx.exclusive_lock = &mock_exclusive_lock;
+  expect_accept_ops(mock_exclusive_lock, true);
+
   MockJournalReplay mock_journal_replay(mock_image_ctx);
   expect_op_work_queue(mock_image_ctx);
 
@@ -607,6 +660,11 @@ TEST_F(TestMockJournalReplay, BlockedOpFinishError) {
   ASSERT_EQ(0, open_image(m_image_name, &ictx));
 
   MockReplayImageCtx mock_image_ctx(*ictx);
+
+  MockExclusiveLock mock_exclusive_lock;
+  mock_image_ctx.exclusive_lock = &mock_exclusive_lock;
+  expect_accept_ops(mock_exclusive_lock, true);
+
   MockJournalReplay mock_journal_replay(mock_image_ctx);
   expect_op_work_queue(mock_image_ctx);
 
@@ -646,6 +704,11 @@ TEST_F(TestMockJournalReplay, MissingOpFinishEvent) {
   ASSERT_EQ(0, open_image(m_image_name, &ictx));
 
   MockReplayImageCtx mock_image_ctx(*ictx);
+
+  MockExclusiveLock mock_exclusive_lock;
+  mock_image_ctx.exclusive_lock = &mock_exclusive_lock;
+  expect_accept_ops(mock_exclusive_lock, true);
+
   MockJournalReplay mock_journal_replay(mock_image_ctx);
   expect_op_work_queue(mock_image_ctx);
 
@@ -700,6 +763,11 @@ TEST_F(TestMockJournalReplay, MissingOpFinishEventCancelOps) {
   ASSERT_EQ(0, open_image(m_image_name, &ictx));
 
   MockReplayImageCtx mock_image_ctx(*ictx);
+
+  MockExclusiveLock mock_exclusive_lock;
+  mock_image_ctx.exclusive_lock = &mock_exclusive_lock;
+  expect_accept_ops(mock_exclusive_lock, true);
+
   MockJournalReplay mock_journal_replay(mock_image_ctx);
   expect_op_work_queue(mock_image_ctx);
 
@@ -747,6 +815,11 @@ TEST_F(TestMockJournalReplay, UnknownOpFinishEvent) {
   ASSERT_EQ(0, open_image(m_image_name, &ictx));
 
   MockReplayImageCtx mock_image_ctx(*ictx);
+
+  MockExclusiveLock mock_exclusive_lock;
+  mock_image_ctx.exclusive_lock = &mock_exclusive_lock;
+  expect_accept_ops(mock_exclusive_lock, true);
+
   MockJournalReplay mock_journal_replay(mock_image_ctx);
   expect_op_work_queue(mock_image_ctx);
 
@@ -767,6 +840,11 @@ TEST_F(TestMockJournalReplay, OpEventError) {
   ASSERT_EQ(0, open_image(m_image_name, &ictx));
 
   MockReplayImageCtx mock_image_ctx(*ictx);
+
+  MockExclusiveLock mock_exclusive_lock;
+  mock_image_ctx.exclusive_lock = &mock_exclusive_lock;
+  expect_accept_ops(mock_exclusive_lock, true);
+
   MockJournalReplay mock_journal_replay(mock_image_ctx);
   expect_op_work_queue(mock_image_ctx);
 
@@ -803,6 +881,11 @@ TEST_F(TestMockJournalReplay, SnapCreateEvent) {
   ASSERT_EQ(0, open_image(m_image_name, &ictx));
 
   MockReplayImageCtx mock_image_ctx(*ictx);
+
+  MockExclusiveLock mock_exclusive_lock;
+  mock_image_ctx.exclusive_lock = &mock_exclusive_lock;
+  expect_accept_ops(mock_exclusive_lock, true);
+
   MockJournalReplay mock_journal_replay(mock_image_ctx);
   expect_op_work_queue(mock_image_ctx);
 
@@ -844,6 +927,11 @@ TEST_F(TestMockJournalReplay, SnapCreateEventExists) {
   ASSERT_EQ(0, open_image(m_image_name, &ictx));
 
   MockReplayImageCtx mock_image_ctx(*ictx);
+
+  MockExclusiveLock mock_exclusive_lock;
+  mock_image_ctx.exclusive_lock = &mock_exclusive_lock;
+  expect_accept_ops(mock_exclusive_lock, true);
+
   MockJournalReplay mock_journal_replay(mock_image_ctx);
   expect_op_work_queue(mock_image_ctx);
 
@@ -881,6 +969,11 @@ TEST_F(TestMockJournalReplay, SnapRemoveEvent) {
   ASSERT_EQ(0, open_image(m_image_name, &ictx));
 
   MockReplayImageCtx mock_image_ctx(*ictx);
+
+  MockExclusiveLock mock_exclusive_lock;
+  mock_image_ctx.exclusive_lock = &mock_exclusive_lock;
+  expect_accept_ops(mock_exclusive_lock, true);
+
   MockJournalReplay mock_journal_replay(mock_image_ctx);
   expect_op_work_queue(mock_image_ctx);
 
@@ -917,6 +1010,11 @@ TEST_F(TestMockJournalReplay, SnapRemoveEventDNE) {
   ASSERT_EQ(0, open_image(m_image_name, &ictx));
 
   MockReplayImageCtx mock_image_ctx(*ictx);
+
+  MockExclusiveLock mock_exclusive_lock;
+  mock_image_ctx.exclusive_lock = &mock_exclusive_lock;
+  expect_accept_ops(mock_exclusive_lock, true);
+
   MockJournalReplay mock_journal_replay(mock_image_ctx);
   expect_op_work_queue(mock_image_ctx);
 
@@ -953,6 +1051,11 @@ TEST_F(TestMockJournalReplay, SnapRenameEvent) {
   ASSERT_EQ(0, open_image(m_image_name, &ictx));
 
   MockReplayImageCtx mock_image_ctx(*ictx);
+
+  MockExclusiveLock mock_exclusive_lock;
+  mock_image_ctx.exclusive_lock = &mock_exclusive_lock;
+  expect_accept_ops(mock_exclusive_lock, true);
+
   MockJournalReplay mock_journal_replay(mock_image_ctx);
   expect_op_work_queue(mock_image_ctx);
 
@@ -986,6 +1089,11 @@ TEST_F(TestMockJournalReplay, SnapRenameEventExists) {
   ASSERT_EQ(0, open_image(m_image_name, &ictx));
 
   MockReplayImageCtx mock_image_ctx(*ictx);
+
+  MockExclusiveLock mock_exclusive_lock;
+  mock_image_ctx.exclusive_lock = &mock_exclusive_lock;
+  expect_accept_ops(mock_exclusive_lock, true);
+
   MockJournalReplay mock_journal_replay(mock_image_ctx);
   expect_op_work_queue(mock_image_ctx);
 
@@ -1019,6 +1127,11 @@ TEST_F(TestMockJournalReplay, SnapProtectEvent) {
   ASSERT_EQ(0, open_image(m_image_name, &ictx));
 
   MockReplayImageCtx mock_image_ctx(*ictx);
+
+  MockExclusiveLock mock_exclusive_lock;
+  mock_image_ctx.exclusive_lock = &mock_exclusive_lock;
+  expect_accept_ops(mock_exclusive_lock, true);
+
   MockJournalReplay mock_journal_replay(mock_image_ctx);
   expect_op_work_queue(mock_image_ctx);
 
@@ -1055,6 +1168,11 @@ TEST_F(TestMockJournalReplay, SnapProtectEventBusy) {
   ASSERT_EQ(0, open_image(m_image_name, &ictx));
 
   MockReplayImageCtx mock_image_ctx(*ictx);
+
+  MockExclusiveLock mock_exclusive_lock;
+  mock_image_ctx.exclusive_lock = &mock_exclusive_lock;
+  expect_accept_ops(mock_exclusive_lock, true);
+
   MockJournalReplay mock_journal_replay(mock_image_ctx);
   expect_op_work_queue(mock_image_ctx);
 
@@ -1091,6 +1209,11 @@ TEST_F(TestMockJournalReplay, SnapUnprotectEvent) {
   ASSERT_EQ(0, open_image(m_image_name, &ictx));
 
   MockReplayImageCtx mock_image_ctx(*ictx);
+
+  MockExclusiveLock mock_exclusive_lock;
+  mock_image_ctx.exclusive_lock = &mock_exclusive_lock;
+  expect_accept_ops(mock_exclusive_lock, true);
+
   MockJournalReplay mock_journal_replay(mock_image_ctx);
   expect_op_work_queue(mock_image_ctx);
 
@@ -1127,6 +1250,11 @@ TEST_F(TestMockJournalReplay, SnapUnprotectOpFinishBusy) {
   ASSERT_EQ(0, open_image(m_image_name, &ictx));
 
   MockReplayImageCtx mock_image_ctx(*ictx);
+
+  MockExclusiveLock mock_exclusive_lock;
+  mock_image_ctx.exclusive_lock = &mock_exclusive_lock;
+  expect_accept_ops(mock_exclusive_lock, true);
+
   MockJournalReplay mock_journal_replay(mock_image_ctx);
   expect_op_work_queue(mock_image_ctx);
 
@@ -1159,6 +1287,11 @@ TEST_F(TestMockJournalReplay, SnapUnprotectEventInvalid) {
   ASSERT_EQ(0, open_image(m_image_name, &ictx));
 
   MockReplayImageCtx mock_image_ctx(*ictx);
+
+  MockExclusiveLock mock_exclusive_lock;
+  mock_image_ctx.exclusive_lock = &mock_exclusive_lock;
+  expect_accept_ops(mock_exclusive_lock, true);
+
   MockJournalReplay mock_journal_replay(mock_image_ctx);
   expect_op_work_queue(mock_image_ctx);
 
@@ -1195,6 +1328,11 @@ TEST_F(TestMockJournalReplay, SnapRollbackEvent) {
   ASSERT_EQ(0, open_image(m_image_name, &ictx));
 
   MockReplayImageCtx mock_image_ctx(*ictx);
+
+  MockExclusiveLock mock_exclusive_lock;
+  mock_image_ctx.exclusive_lock = &mock_exclusive_lock;
+  expect_accept_ops(mock_exclusive_lock, true);
+
   MockJournalReplay mock_journal_replay(mock_image_ctx);
   expect_op_work_queue(mock_image_ctx);
 
@@ -1231,6 +1369,11 @@ TEST_F(TestMockJournalReplay, RenameEvent) {
   ASSERT_EQ(0, open_image(m_image_name, &ictx));
 
   MockReplayImageCtx mock_image_ctx(*ictx);
+
+  MockExclusiveLock mock_exclusive_lock;
+  mock_image_ctx.exclusive_lock = &mock_exclusive_lock;
+  expect_accept_ops(mock_exclusive_lock, true);
+
   MockJournalReplay mock_journal_replay(mock_image_ctx);
   expect_op_work_queue(mock_image_ctx);
 
@@ -1263,6 +1406,11 @@ TEST_F(TestMockJournalReplay, RenameEventExists) {
   ASSERT_EQ(0, open_image(m_image_name, &ictx));
 
   MockReplayImageCtx mock_image_ctx(*ictx);
+
+  MockExclusiveLock mock_exclusive_lock;
+  mock_image_ctx.exclusive_lock = &mock_exclusive_lock;
+  expect_accept_ops(mock_exclusive_lock, true);
+
   MockJournalReplay mock_journal_replay(mock_image_ctx);
   expect_op_work_queue(mock_image_ctx);
 
@@ -1295,6 +1443,11 @@ TEST_F(TestMockJournalReplay, ResizeEvent) {
   ASSERT_EQ(0, open_image(m_image_name, &ictx));
 
   MockReplayImageCtx mock_image_ctx(*ictx);
+
+  MockExclusiveLock mock_exclusive_lock;
+  mock_image_ctx.exclusive_lock = &mock_exclusive_lock;
+  expect_accept_ops(mock_exclusive_lock, true);
+
   MockJournalReplay mock_journal_replay(mock_image_ctx);
   expect_op_work_queue(mock_image_ctx);
 
@@ -1332,6 +1485,11 @@ TEST_F(TestMockJournalReplay, FlattenEvent) {
   ASSERT_EQ(0, open_image(m_image_name, &ictx));
 
   MockReplayImageCtx mock_image_ctx(*ictx);
+
+  MockExclusiveLock mock_exclusive_lock;
+  mock_image_ctx.exclusive_lock = &mock_exclusive_lock;
+  expect_accept_ops(mock_exclusive_lock, true);
+
   MockJournalReplay mock_journal_replay(mock_image_ctx);
   expect_op_work_queue(mock_image_ctx);
 
@@ -1364,6 +1522,11 @@ TEST_F(TestMockJournalReplay, FlattenEventInvalid) {
   ASSERT_EQ(0, open_image(m_image_name, &ictx));
 
   MockReplayImageCtx mock_image_ctx(*ictx);
+
+  MockExclusiveLock mock_exclusive_lock;
+  mock_image_ctx.exclusive_lock = &mock_exclusive_lock;
+  expect_accept_ops(mock_exclusive_lock, true);
+
   MockJournalReplay mock_journal_replay(mock_image_ctx);
   expect_op_work_queue(mock_image_ctx);
 
@@ -1399,6 +1562,11 @@ TEST_F(TestMockJournalReplay, UpdateFeaturesEvent) {
   bool enabled = !ictx->test_features(features);
 
   MockReplayImageCtx mock_image_ctx(*ictx);
+
+  MockExclusiveLock mock_exclusive_lock;
+  mock_image_ctx.exclusive_lock = &mock_exclusive_lock;
+  expect_accept_ops(mock_exclusive_lock, true);
+
   MockJournalReplay mock_journal_replay(mock_image_ctx);
   expect_op_work_queue(mock_image_ctx);
 
@@ -1437,6 +1605,11 @@ TEST_F(TestMockJournalReplay, MetadataSetEvent) {
   ASSERT_EQ(0, open_image(m_image_name, &ictx));
 
   MockReplayImageCtx mock_image_ctx(*ictx);
+
+  MockExclusiveLock mock_exclusive_lock;
+  mock_image_ctx.exclusive_lock = &mock_exclusive_lock;
+  expect_accept_ops(mock_exclusive_lock, true);
+
   MockJournalReplay mock_journal_replay(mock_image_ctx);
   expect_op_work_queue(mock_image_ctx);
 
@@ -1469,6 +1642,11 @@ TEST_F(TestMockJournalReplay, MetadataRemoveEvent) {
   ASSERT_EQ(0, open_image(m_image_name, &ictx));
 
   MockReplayImageCtx mock_image_ctx(*ictx);
+
+  MockExclusiveLock mock_exclusive_lock;
+  mock_image_ctx.exclusive_lock = &mock_exclusive_lock;
+  expect_accept_ops(mock_exclusive_lock, true);
+
   MockJournalReplay mock_journal_replay(mock_image_ctx);
   expect_op_work_queue(mock_image_ctx);
 
@@ -1501,6 +1679,11 @@ TEST_F(TestMockJournalReplay, MetadataRemoveEventDNE) {
   ASSERT_EQ(0, open_image(m_image_name, &ictx));
 
   MockReplayImageCtx mock_image_ctx(*ictx);
+
+  MockExclusiveLock mock_exclusive_lock;
+  mock_image_ctx.exclusive_lock = &mock_exclusive_lock;
+  expect_accept_ops(mock_exclusive_lock, true);
+
   MockJournalReplay mock_journal_replay(mock_image_ctx);
   expect_op_work_queue(mock_image_ctx);
 
@@ -1533,6 +1716,11 @@ TEST_F(TestMockJournalReplay, UnknownEvent) {
   ASSERT_EQ(0, open_image(m_image_name, &ictx));
 
   MockReplayImageCtx mock_image_ctx(*ictx);
+
+  MockExclusiveLock mock_exclusive_lock;
+  mock_image_ctx.exclusive_lock = &mock_exclusive_lock;
+  expect_accept_ops(mock_exclusive_lock, true);
+
   MockJournalReplay mock_journal_replay(mock_image_ctx);
   expect_op_work_queue(mock_image_ctx);
 
@@ -1559,6 +1747,11 @@ TEST_F(TestMockJournalReplay, RefreshImageBeforeOpStart) {
   ASSERT_EQ(0, open_image(m_image_name, &ictx));
 
   MockReplayImageCtx mock_image_ctx(*ictx);
+
+  MockExclusiveLock mock_exclusive_lock;
+  mock_image_ctx.exclusive_lock = &mock_exclusive_lock;
+  expect_accept_ops(mock_exclusive_lock, true);
+
   MockJournalReplay mock_journal_replay(mock_image_ctx);
   expect_op_work_queue(mock_image_ctx);
 
@@ -1587,6 +1780,148 @@ TEST_F(TestMockJournalReplay, RefreshImageBeforeOpStart) {
   ASSERT_EQ(0, on_start_safe.wait());
   ASSERT_EQ(0, on_finish_ready.wait());
   ASSERT_EQ(0, on_finish_safe.wait());
+}
+
+TEST_F(TestMockJournalReplay, FlushEventAfterShutDown) {
+  REQUIRE_FEATURE(RBD_FEATURE_JOURNALING);
+
+  librbd::ImageCtx *ictx;
+  ASSERT_EQ(0, open_image(m_image_name, &ictx));
+
+  MockReplayImageCtx mock_image_ctx(*ictx);
+
+  MockExclusiveLock mock_exclusive_lock;
+  mock_image_ctx.exclusive_lock = &mock_exclusive_lock;
+  expect_accept_ops(mock_exclusive_lock, true);
+
+  MockJournalReplay mock_journal_replay(mock_image_ctx);
+  MockIoImageRequest mock_io_image_request;
+  expect_op_work_queue(mock_image_ctx);
+
+  ASSERT_EQ(0, when_shut_down(mock_journal_replay, false));
+
+  C_SaferCond on_ready;
+  C_SaferCond on_safe;
+  when_process(mock_journal_replay, EventEntry{AioFlushEvent()},
+               &on_ready, &on_safe);
+  ASSERT_EQ(0, on_ready.wait());
+  ASSERT_EQ(-ESHUTDOWN, on_safe.wait());
+}
+
+TEST_F(TestMockJournalReplay, ModifyEventAfterShutDown) {
+  REQUIRE_FEATURE(RBD_FEATURE_JOURNALING);
+
+  librbd::ImageCtx *ictx;
+  ASSERT_EQ(0, open_image(m_image_name, &ictx));
+
+  MockReplayImageCtx mock_image_ctx(*ictx);
+
+  MockExclusiveLock mock_exclusive_lock;
+  mock_image_ctx.exclusive_lock = &mock_exclusive_lock;
+  expect_accept_ops(mock_exclusive_lock, true);
+
+  MockJournalReplay mock_journal_replay(mock_image_ctx);
+  MockIoImageRequest mock_io_image_request;
+  expect_op_work_queue(mock_image_ctx);
+
+  ASSERT_EQ(0, when_shut_down(mock_journal_replay, false));
+
+  C_SaferCond on_ready;
+  C_SaferCond on_safe;
+  when_process(mock_journal_replay,
+               EventEntry{AioWriteEvent(123, 456, to_bl("test"))},
+               &on_ready, &on_safe);
+  ASSERT_EQ(0, on_ready.wait());
+  ASSERT_EQ(-ESHUTDOWN, on_safe.wait());
+}
+
+TEST_F(TestMockJournalReplay, OpEventAfterShutDown) {
+  REQUIRE_FEATURE(RBD_FEATURE_JOURNALING);
+
+  librbd::ImageCtx *ictx;
+  ASSERT_EQ(0, open_image(m_image_name, &ictx));
+
+  MockReplayImageCtx mock_image_ctx(*ictx);
+
+  MockExclusiveLock mock_exclusive_lock;
+  mock_image_ctx.exclusive_lock = &mock_exclusive_lock;
+  expect_accept_ops(mock_exclusive_lock, true);
+
+  MockJournalReplay mock_journal_replay(mock_image_ctx);
+  MockIoImageRequest mock_io_image_request;
+  expect_op_work_queue(mock_image_ctx);
+
+  ASSERT_EQ(0, when_shut_down(mock_journal_replay, false));
+
+  C_SaferCond on_ready;
+  C_SaferCond on_safe;
+  when_process(mock_journal_replay, EventEntry{RenameEvent(123, "image")},
+               &on_ready, &on_safe);
+  ASSERT_EQ(0, on_ready.wait());
+  ASSERT_EQ(-ESHUTDOWN, on_safe.wait());
+}
+
+TEST_F(TestMockJournalReplay, LockLostBeforeProcess) {
+  REQUIRE_FEATURE(RBD_FEATURE_JOURNALING);
+
+  librbd::ImageCtx *ictx;
+  ASSERT_EQ(0, open_image(m_image_name, &ictx));
+
+  MockReplayImageCtx mock_image_ctx(*ictx);
+
+  MockExclusiveLock mock_exclusive_lock;
+  mock_image_ctx.exclusive_lock = &mock_exclusive_lock;
+  expect_accept_ops(mock_exclusive_lock, false);
+
+  MockJournalReplay mock_journal_replay(mock_image_ctx);
+  MockIoImageRequest mock_io_image_request;
+  expect_op_work_queue(mock_image_ctx);
+
+  InSequence seq;
+  C_SaferCond on_ready;
+  C_SaferCond on_safe;
+  when_process(mock_journal_replay, EventEntry{AioFlushEvent()},
+               &on_ready, &on_safe);
+  ASSERT_EQ(0, on_ready.wait());
+  ASSERT_EQ(-ECANCELED, on_safe.wait());
+
+  ASSERT_EQ(0, when_shut_down(mock_journal_replay, false));
+}
+
+TEST_F(TestMockJournalReplay, LockLostBeforeExecuteOp) {
+  REQUIRE_FEATURE(RBD_FEATURE_JOURNALING);
+
+  librbd::ImageCtx *ictx;
+  ASSERT_EQ(0, open_image(m_image_name, &ictx));
+
+  MockReplayImageCtx mock_image_ctx(*ictx);
+
+  MockExclusiveLock mock_exclusive_lock;
+  mock_image_ctx.exclusive_lock = &mock_exclusive_lock;
+  expect_accept_ops(mock_exclusive_lock, false);
+
+  MockJournalReplay mock_journal_replay(mock_image_ctx);
+  expect_op_work_queue(mock_image_ctx);
+
+  InSequence seq;
+  EXPECT_CALL(mock_exclusive_lock, accept_ops()).WillOnce(Return(true));
+  EXPECT_CALL(mock_exclusive_lock, accept_ops()).WillOnce(Return(true));
+  expect_refresh_image(mock_image_ctx, false, 0);
+
+  C_SaferCond on_start_ready;
+  C_SaferCond on_start_safe;
+  when_process(mock_journal_replay, EventEntry{RenameEvent(123, "image")},
+               &on_start_ready, &on_start_safe);
+  ASSERT_EQ(0, on_start_ready.wait());
+
+  C_SaferCond on_finish_ready;
+  C_SaferCond on_finish_safe;
+  when_process(mock_journal_replay, EventEntry{OpFinishEvent(123, 0)},
+               &on_finish_ready, &on_finish_safe);
+
+  ASSERT_EQ(-ECANCELED, on_start_safe.wait());
+  ASSERT_EQ(0, on_finish_ready.wait());
+  ASSERT_EQ(-ECANCELED, on_finish_safe.wait());
 }
 
 } // namespace journal

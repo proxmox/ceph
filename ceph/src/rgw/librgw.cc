@@ -11,6 +11,7 @@
  * Foundation.  See file COPYING.
  *
  */
+#include "include/compat.h"
 #include <sys/types.h>
 #include <string.h>
 #include <chrono>
@@ -481,7 +482,8 @@ namespace rgw {
 					 g_conf->rgw_enable_gc_threads,
 					 g_conf->rgw_enable_lc_threads,
 					 g_conf->rgw_enable_quota_threads,
-					 g_conf->rgw_run_sync_thread);
+					 g_conf->rgw_run_sync_thread,
+					 g_conf->rgw_dynamic_resharding);
 
     if (!store) {
       mutex.Lock();

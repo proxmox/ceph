@@ -4,6 +4,7 @@
 #include "include/rados/librados.hpp"
 #include "include/stringify.h"
 #include "test/librados/test.h"
+#include "test/librados/test_common.h"
 #include "test/librados/TestCase.h"
 #include "global/global_context.h"
 
@@ -974,6 +975,7 @@ TEST_F(LibRadosListNP, ListObjectsError) {
       "\",\"sure\": \"--yes-i-really-really-mean-it-not-faking\"}";
     const char *cmd[2] = { c.c_str(), 0 };
     ASSERT_EQ(0, rados_mon_command(cluster, (const char **)cmd, 1, "", 0, &buf, &buflen, &st, &stlen));
+    ASSERT_EQ(0, rados_wait_for_latest_osdmap(cluster));
   }
 
   rados_list_ctx_t ctx;

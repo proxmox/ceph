@@ -1,5 +1,8 @@
 from abc import ABCMeta, abstractmethod
+from cStringIO import StringIO
 import json
+
+from conn import get_gateway_connection
 
 class Cluster:
     """ interface to run commands against a distinct ceph cluster """
@@ -65,14 +68,14 @@ class SystemObject:
     def json_command(self, cluster, cmd, args = None, **kwargs):
         """ run the given command, parse the output and return the resulting
         data and retcode """
-        (s, r) = self.command(cluster, cmd, args or [], **kwargs)
+        s, r = self.command(cluster, cmd, args or [], **kwargs)
         if r == 0:
             output = s.decode('utf-8')
             output = output[output.find('{'):] # trim extra output before json
             data = json.loads(output)
             self.load_from_json(data)
             self.data = data
-        return (self.data, r)
+        return self.data, r
 
     # mixins for supported commands
     class Create(object):
@@ -84,7 +87,7 @@ class SystemObject:
         def delete(self, cluster, args = None, **kwargs):
             """ delete the object """
             # not json_command() because delete has no output
-            (_, r) = self.command(cluster, 'delete', args, **kwargs)
+            _, r = self.command(cluster, 'delete', args, **kwargs)
             if r == 0:
                 self.data = None
             return r
@@ -153,6 +156,40 @@ class Zone(SystemObject, SystemObject.CreateDelete, SystemObject.GetSet, SystemO
     def realm(self):
         return self.zonegroup.realm() if self.zonegroup else None
 
+    def is_read_only(self):
+        return False
+
+    def tier_type(self):
+        raise NotImplementedError
+
+    def has_buckets(self):
+        return True
+
+    def get_conn(self, credentials):
+        return ZoneConn(self, credentials) # not implemented, but can be used
+
+class ZoneConn(object):
+    def __init__(self, zone, credentials):
+        self.zone = zone
+        self.name = zone.name
+        """ connect to the zone's first gateway """
+        if isinstance(credentials, list):
+            self.credentials = credentials[0]
+        else:
+            self.credentials = credentials
+
+        if self.zone.gateways is not None:
+            self.conn = get_gateway_connection(self.zone.gateways[0], self.credentials)
+
+    def get_connection(self):
+        return self.conn
+
+    def get_bucket(self, bucket_name, credentials):
+        raise NotImplementedError
+
+    def check_bucket_eq(self, zone, bucket_name):
+        raise NotImplementedError
+
 class ZoneGroup(SystemObject, SystemObject.CreateDelete, SystemObject.GetSet, SystemObject.Modify):
     def __init__(self, name, period = None, data = None, zonegroup_id = None, zones = None, master_zone  = None):
         self.name = name
@@ -160,6 +197,14 @@ class ZoneGroup(SystemObject, SystemObject.CreateDelete, SystemObject.GetSet, Sy
         self.zones = zones or []
         self.master_zone = master_zone
         super(ZoneGroup, self).__init__(data, zonegroup_id)
+        self.rw_zones = []
+        self.ro_zones = []
+        self.zones_by_type = {}
+        for z in self.zones:
+            if z.is_read_only():
+                self.ro_zones.append(z)
+            else:
+                self.rw_zones.append(z)
 
     def zonegroup_arg(self):
         """ command-line argument to specify this zonegroup """
@@ -195,20 +240,20 @@ class ZoneGroup(SystemObject, SystemObject.CreateDelete, SystemObject.GetSet, Sy
     def add(self, cluster, zone, args = None, **kwargs):
         """ add an existing zone to the zonegroup """
         args = zone.zone_arg() + (args or [])
-        (data, r) = self.json_command(cluster, 'add', args, **kwargs)
+        data, r = self.json_command(cluster, 'add', args, **kwargs)
         if r == 0:
             zone.zonegroup = self
             self.zones.append(zone)
-        return (data, r)
+        return data, r
 
     def remove(self, cluster, zone, args = None, **kwargs):
         """ remove an existing zone from the zonegroup """
         args = zone.zone_arg() + (args or [])
-        (data, r) = self.json_command(cluster, 'remove', args, **kwargs)
+        data, r = self.json_command(cluster, 'remove', args, **kwargs)
         if r == 0:
             zone.zonegroup = None
             self.zones.remove(zone)
-        return (data, r)
+        return data, r
 
     def realm(self):
         return self.period.realm if self.period else None

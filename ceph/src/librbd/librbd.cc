@@ -1011,6 +1011,17 @@ namespace librbd {
     return stripe_count;
   }
 
+  int Image::get_create_timestamp(struct timespec *timestamp)
+  {
+    ImageCtx *ictx = (ImageCtx *)ctx;
+    tracepoint(librbd, get_create_timestamp_enter, ictx, ictx->name.c_str(),
+               ictx->read_only);
+    utime_t time = ictx->get_create_timestamp();
+    time.to_timespec(timestamp);
+    tracepoint(librbd, get_create_timestamp_exit, 0, timestamp);
+    return 0;
+  }
+
   int Image::overlap(uint64_t *overlap)
   {
     ImageCtx *ictx = (ImageCtx *)ctx;
@@ -2141,11 +2152,6 @@ extern "C" int rbd_list(rados_ioctx_t p, char *names, size_t *size)
   tracepoint(librbd, list_enter, io_ctx.get_pool_name().c_str(), io_ctx.get_id());
   vector<string> cpp_names;
   int r = librbd::list(io_ctx, cpp_names);
-  if (r == -ENOENT) {
-    tracepoint(librbd, list_exit, 0, *size);
-    return 0;
-  }
-
   if (r < 0) {
     tracepoint(librbd, list_exit, r, *size);
     return r;
@@ -2819,6 +2825,18 @@ extern "C" int rbd_get_stripe_count(rbd_image_t image, uint64_t *stripe_count)
   tracepoint(librbd, get_stripe_count_enter, ictx, ictx->name.c_str(), ictx->snap_name.c_str(), ictx->read_only);
   *stripe_count = ictx->get_stripe_count();
   tracepoint(librbd, get_stripe_count_exit, 0, *stripe_count);
+  return 0;
+}
+
+extern "C"  int rbd_get_create_timestamp(rbd_image_t image,
+                                           struct timespec *timestamp)
+{
+  librbd::ImageCtx *ictx = (librbd::ImageCtx *)image;
+  tracepoint(librbd, get_create_timestamp_enter, ictx, ictx->name.c_str(),
+             ictx->read_only);
+  utime_t time = ictx->get_create_timestamp();
+  time.to_timespec(timestamp);
+  tracepoint(librbd, get_create_timestamp_exit, 0, timestamp);
   return 0;
 }
 
@@ -4038,14 +4056,6 @@ extern "C" int rbd_group_list(rados_ioctx_t p, char *names, size_t *size)
 
   vector<string> cpp_names;
   int r = librbd::list(io_ctx, cpp_names);
-
-  if (r == -ENOENT) {
-    *size = 0;
-    *names = '\0';
-    tracepoint(librbd, group_list_exit, 0);
-    return 0;
-  }
-
   if (r < 0) {
     tracepoint(librbd, group_list_exit, r);
     return r;

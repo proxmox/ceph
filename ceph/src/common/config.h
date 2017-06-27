@@ -15,24 +15,11 @@
 #ifndef CEPH_CONFIG_H
 #define CEPH_CONFIG_H
 
-#include <iosfwd>
-#include <functional>
-#include <vector>
-#include <map>
-#include <set>
-#include <boost/variant.hpp>
-
 #include "common/ConfUtils.h"
 #include "common/entity_name.h"
 #include "common/Mutex.h"
 #include "log/SubsystemMap.h"
 #include "common/config_obs.h"
-#include "msg/msg_types.h"
-
-enum {
-  CEPH_DEFAULT_CRUSH_REPLICATED_RULESET,
-  CEPH_DEFAULT_CRUSH_ERASURE_RULESET,
-};
 
 #define OSD_REP_PRIMARY 0
 #define OSD_REP_SPLAY   1
@@ -239,6 +226,12 @@ public:
   void diff(const md_config_t *other,
             map<string,pair<string,string> > *diff, set<string> *unknown);
 
+  /// obtain a diff between config values and another md_config_t 
+  /// values for a specific setting. 
+  void diff(const md_config_t *other,
+            map<string,pair<string,string>> *diff, set<string> *unknown, 
+            const string& setting);
+
   /// print/log warnings/errors from parsing the config
   void complain_about_parse_errors(CephContext *cct);
 
@@ -270,6 +263,11 @@ private:
 
   bool expand_meta(std::string &val,
 		   std::ostream *oss) const;
+
+  void diff_helper(const md_config_t* other,
+                   map<string, pair<string, string>>* diff,
+                   set<string>* unknown, const string& setting = string{});
+
 public:  // for global_init
   bool early_expand_meta(std::string &val,
 			 std::ostream *oss) const {

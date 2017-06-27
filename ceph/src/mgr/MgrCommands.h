@@ -59,6 +59,9 @@ COMMAND("osd perf", \
         "osd", \
         "r", \
         "cli,rest")
+COMMAND("osd df " \
+	"name=output_method,type=CephChoices,strings=plain|tree,req=false", \
+	"show OSD utilization", "osd", "r", "cli,rest")
 COMMAND("osd blocked-by", \
 	"print histogram of which OSDs are blocking their peers", \
 	"osd", "r", "cli,rest")
@@ -94,3 +97,13 @@ COMMAND("osd test-reweight-by-pg " \
 	"name=pools,type=CephPoolname,n=N,req=false",			\
 	"dry run of reweight OSDs by PG distribution [overload-percentage-for-consideration, default 120]", \
 	"osd", "rw", "cli,rest")
+
+COMMAND("osd scrub " \
+	"name=who,type=CephString", \
+	"initiate scrub on osd <who>", "osd", "rw", "cli,rest")
+COMMAND("osd deep-scrub " \
+	"name=who,type=CephString", \
+	"initiate deep scrub on osd <who>", "osd", "rw", "cli,rest")
+COMMAND("osd repair " \
+	"name=who,type=CephString", \
+	"initiate repair on osd <who>", "osd", "rw", "cli,rest")

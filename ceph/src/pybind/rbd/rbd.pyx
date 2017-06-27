@@ -228,6 +228,7 @@ cdef extern from "rbd/librbd.h" nogil:
                             uint8_t enabled)
     int rbd_get_stripe_unit(rbd_image_t image, uint64_t *stripe_unit)
     int rbd_get_stripe_count(rbd_image_t image, uint64_t *stripe_count)
+    int rbd_get_create_timestamp(rbd_image_t image, timespec *timestamp)
     int rbd_get_overlap(rbd_image_t image, uint64_t *overlap)
     int rbd_get_id(rbd_image_t image, char *id, size_t id_len)
     int rbd_get_block_name_prefix(rbd_image_t image, char *prefix,
@@ -394,6 +395,8 @@ class OSError(Error):
     def __str__(self):
         return '[Errno {0}] {1}'.format(self.errno, self.strerror)
 
+    def __reduce__(self):
+        return (self.__class__, (self.errno, self.strerror))
 
 class PermissionError(OSError):
     pass
@@ -2164,6 +2167,18 @@ written." % (self.name, ret, length))
             raise make_ex(ret, 'error getting stripe count for image %s' % (self.name))
         return stripe_count
 
+    def create_timestamp(self):
+        """
+        Returns the create timestamp for the image.
+        """
+        cdef:
+            timespec timestamp
+        with nogil:
+            ret = rbd_get_create_timestamp(self.image, &timestamp)
+        if ret != 0:
+            raise make_ex(ret, 'error getting create timestamp for image: %s' % (self.name))
+        return datetime.fromtimestamp(timestamp.tv_sec)
+
     def flatten(self):
         """
         Flatten clone image (copy all blocks from parent to child)
@@ -2798,6 +2813,10 @@ cdef class MetadataIterator(object):
                 break
             self.get_next_chunk()
 
+    def __dealloc__(self):
+        if self.last_read:
+            free(self.last_read)
+
     def get_next_chunk(self):
         cdef:
             char *c_keys = NULL
@@ -2854,8 +2873,8 @@ cdef class SnapIterator(object):
         self.num_snaps = 10
         while True:
             self.snaps = <rbd_snap_info_t*>realloc_chk(self.snaps,
-                                                   self.num_snaps *
-                                                   sizeof(rbd_snap_info_t))
+                                                       self.num_snaps *
+                                                       sizeof(rbd_snap_info_t))
             with nogil:
                 ret = rbd_snap_list(image.image, self.snaps, &self.num_snaps)
             if ret >= 0:
@@ -2905,12 +2924,18 @@ cdef class TrashIterator(object):
     def __init__(self, ioctx):
         self.ioctx = convert_ioctx(ioctx)
         self.num_entries = 1024
-        self.entries = <rbd_trash_image_info_t *>realloc_chk(NULL,
-            sizeof(rbd_trash_image_info_t) * self.num_entries)
-        with nogil:
-            ret = rbd_trash_list(self.ioctx, self.entries, &self.num_entries)
-        if ret < 0:
-            raise make_ex(ret, 'error listing trash entries')
+        self.entries = NULL
+        while True:
+            self.entries = <rbd_trash_image_info_t*>realloc_chk(self.entries,
+                                                                self.num_entries *
+                                                                sizeof(rbd_trash_image_info_t))
+            with nogil:
+                ret = rbd_trash_list(self.ioctx, self.entries, &self.num_entries)
+            if ret >= 0:
+                self.num_entries = ret
+                break
+            elif ret != -errno.ERANGE:
+                raise make_ex(ret, 'error listing trash entries')
 
     __source_string = ['USER', 'MIRRORING']
 

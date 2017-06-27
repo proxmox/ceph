@@ -12,36 +12,17 @@
  *
  */
 
-#include "auth/Auth.h"
-#include "common/ConfUtils.h"
 #include "common/ceph_argparse.h"
 #include "common/common_init.h"
 #include "common/config.h"
 #include "common/config_validators.h"
-#include "common/static_assert.h"
-#include "common/strtol.h"
-#include "common/version.h"
 #include "include/str_list.h"
-#include "include/types.h"
 #include "include/stringify.h"
-#include "msg/msg_types.h"
 #include "osd/osd_types.h"
 #include "common/errno.h"
 #include "common/hostname.h"
 
-#include "include/assert.h"
-
-#include <errno.h>
-#include <sstream>
-#include <stdlib.h>
-#include <string.h>
-#include <sys/stat.h>
-#include <sys/types.h>
-
-#include <type_traits>
-#include <utility>
 #include <boost/type_traits.hpp>
-#include <boost/utility/enable_if.hpp>
 
 /* Don't use standard Ceph logging in this file.
  * We can't use logging until it's initialized, and a lot of the necessary
@@ -57,10 +38,8 @@
 
 using std::map;
 using std::list;
-using std::multimap;
 using std::ostringstream;
 using std::pair;
-using std::set;
 using std::string;
 
 const char *CEPH_CONF_FILE_DEFAULT = "$data_dir/config, /etc/ceph/$cluster.conf, ~/.ceph/$cluster.conf, $cluster.conf"
@@ -1342,15 +1321,35 @@ bool md_config_t::expand_meta(std::string &origval,
 }
 
 void md_config_t::diff(
+  const md_config_t *other,
+  map<string, pair<string, string> > *diff,
+  set<string> *unknown) 
+{
+  diff_helper(other, diff, unknown);
+}
+void md_config_t::diff(
+  const md_config_t *other,
+  map<string, pair<string, string> > *diff,
+  set<string> *unknown, const string& setting) 
+{
+  diff_helper(other, diff, unknown, setting);
+}
+
+void md_config_t::diff_helper(
     const md_config_t *other,
     map<string,pair<string,string> > *diff,
-    set<string> *unknown)
+    set<string> *unknown, const string& setting)
 {
   Mutex::Locker l(lock);
 
   char local_buf[4096];
   char other_buf[4096];
-  for (auto& opt: *config_options) {
+  for (auto& opt : *config_options) {
+    if (!setting.empty()) {
+      if (setting != opt.name) {
+        continue;
+      }
+    }
     memset(local_buf, 0, sizeof(local_buf));
     memset(other_buf, 0, sizeof(other_buf));
 
@@ -1370,6 +1369,10 @@ void md_config_t::diff(
 
     if (strcmp(local_val, other_val))
       diff->insert(make_pair(opt.name, make_pair(local_val, other_val)));
+    else if (!setting.empty()) {
+        diff->insert(make_pair(opt.name, make_pair(local_val, other_val)));
+        break;
+    }
   }
 }
 

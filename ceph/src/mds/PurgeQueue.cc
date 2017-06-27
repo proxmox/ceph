@@ -445,21 +445,12 @@ void PurgeQueue::_execute_item(
   }
   assert(gather.has_subs());
 
-  gather.set_finisher(new FunctionContext([this, expire_to](int r){
-    if (lock.is_locked_by_me()) {
-      // Fast completion, Objecter ops completed before we hit gather.activate()
-      // and we're being called inline.  We are still inside _consume so
-      // no need to call back into it.
-      _execute_item_complete(expire_to);
-    } else {
-      // Normal completion, we're being called back from outside PurgeQueue::lock
-      // by the Objecter.  Take the lock, and call back into _consume to
-      // find more work.
-      Mutex::Locker l(lock);
-      _execute_item_complete(expire_to);
+  gather.set_finisher(new C_OnFinisher(
+                      new FunctionContext([this, expire_to](int r){
+    Mutex::Locker l(lock);
+    _execute_item_complete(expire_to);
 
-      _consume();
-    }
+    _consume();
 
     // Have we gone idle?  If so, do an extra write_head now instead of
     // waiting for next flush after journaler_write_head_interval.
@@ -471,7 +462,8 @@ void PurgeQueue::_execute_item(
             journaler.trim();
             }));
     }
-  }));
+  }), &finisher));
+
   gather.activate();
 }
 
@@ -515,7 +507,7 @@ void PurgeQueue::update_op_limit(const MDSMap &mds_map)
   uint64_t pg_count = 0;
   objecter->with_osdmap([&](const OSDMap& o) {
     // Number of PGs across all data pools
-    const std::set<int64_t> &data_pools = mds_map.get_data_pools();
+    const std::vector<int64_t> &data_pools = mds_map.get_data_pools();
     for (const auto dp : data_pools) {
       if (o.get_pg_pool(dp) == NULL) {
         // It is possible that we have an older OSDMap than MDSMap,

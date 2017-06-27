@@ -56,6 +56,21 @@ transform_old_authinfo(const req_state* const s)
       return id == acct_id;
     }
 
+    bool is_identity(const idset_t& ids) const override {
+      for (auto& p : ids) {
+	if (p.is_wildcard()) {
+	  return true;
+	} else if (p.is_tenant() && p.get_tenant() == id.tenant) {
+	  return true;
+	} else if (p.is_user() &&
+		   (p.get_tenant() == id.tenant) &&
+		   (p.get_id() == id.id)) {
+	  return true;
+	}
+      }
+      return false;
+    }
+
     uint32_t get_perm_mask() const override {
       return perm_mask;
     }
@@ -237,6 +252,54 @@ rgw::auth::Strategy::authenticate(const req_state* const s) const
   return strategy_result;
 }
 
+int
+rgw::auth::Strategy::apply(const rgw::auth::Strategy& auth_strategy,
+                           req_state* const s) noexcept
+{
+  try {
+    auto result = auth_strategy.authenticate(s);
+    if (result.get_status() != decltype(result)::Status::GRANTED) {
+      /* Access denied is acknowledged by returning a std::unique_ptr with
+       * nullptr inside. */
+      ldout(s->cct, 5) << "Failed the auth strategy, reason="
+                       << result.get_reason() << dendl;
+      return result.get_reason();
+    }
+
+    try {
+      rgw::auth::IdentityApplier::aplptr_t applier = result.get_applier();
+      rgw::auth::Completer::cmplptr_t completer = result.get_completer();
+
+      /* Account used by a given RGWOp is decoupled from identity employed
+       * in the authorization phase (RGWOp::verify_permissions). */
+      applier->load_acct_info(*s->user);
+      s->perm_mask = applier->get_perm_mask();
+
+      /* This is the signle place where we pass req_state as a pointer
+       * to non-const and thus its modification is allowed. In the time
+       * of writing only RGWTempURLEngine needed that feature. */
+      applier->modify_request_state(s);
+      if (completer) {
+        completer->modify_request_state(s);
+      }
+
+      s->auth.identity = std::move(applier);
+      s->auth.completer = std::move(completer);
+
+      return 0;
+    } catch (const int err) {
+      ldout(s->cct, 5) << "applier throwed err=" << err << dendl;
+      return err;
+    }
+  } catch (const int err) {
+    ldout(s->cct, 5) << "auth engine throwed err=" << err << dendl;
+    return err;
+  }
+
+  /* We never should be here. */
+  return -EPERM;
+}
+
 void
 rgw::auth::Strategy::add_engine(const Control ctrl_flag,
                                 const Engine& engine) noexcept
@@ -289,6 +352,29 @@ bool rgw::auth::RemoteApplier::is_owner_of(const rgw_user& uid) const
   }
 
   return info.acct_user == uid;
+}
+
+bool rgw::auth::RemoteApplier::is_identity(const idset_t& ids) const {
+  for (auto& id : ids) {
+    if (id.is_wildcard()) {
+      return true;
+
+      // We also need to cover cases where rgw_keystone_implicit_tenants
+      // was enabled. */
+    } else if (id.is_tenant() &&
+	       (info.acct_user.tenant.empty() ?
+		info.acct_user.id :
+		info.acct_user.tenant) == id.get_tenant()) {
+      return true;
+    } else if (id.is_user() &&
+	       info.acct_user.id == id.get_id() &&
+	       (info.acct_user.tenant.empty() ?
+		info.acct_user.id :
+		info.acct_user.tenant) == id.get_tenant()) {
+      return true;
+    }
+  }
+  return false;
 }
 
 void rgw::auth::RemoteApplier::to_str(std::ostream& out) const
@@ -383,8 +469,23 @@ bool rgw::auth::LocalApplier::is_owner_of(const rgw_user& uid) const
   return uid == user_info.user_id;
 }
 
-void rgw::auth::LocalApplier::to_str(std::ostream& out) const
-{
+bool rgw::auth::LocalApplier::is_identity(const idset_t& ids) const {
+  for (auto& id : ids) {
+    if (id.is_wildcard()) {
+      return true;
+    } else if (id.is_tenant() &&
+	       id.get_tenant() == user_info.user_id.tenant) {
+      return true;
+    } else if (id.is_user() &&
+	       (id.get_tenant() == user_info.user_id.tenant) &&
+	       (id.get_id() == user_info.user_id.id)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+void rgw::auth::LocalApplier::to_str(std::ostream& out) const {
   out << "rgw::auth::LocalApplier(acct_user=" << user_info.user_id
       << ", acct_name=" << user_info.display_name
       << ", subuser=" << subuser
@@ -422,7 +523,7 @@ rgw::auth::Engine::result_t
 rgw::auth::AnonymousEngine::authenticate(const req_state* const s) const
 {
   if (! is_applicable(s)) {
-    return result_t::deny();
+    return result_t::deny(-EPERM);
   } else {
     RGWUserInfo user_info;
     rgw_get_anon_user(user_info);

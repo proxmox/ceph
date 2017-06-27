@@ -20,13 +20,13 @@ extern "C" {
 #include "builder.h"
 }
 
+#include "include/assert.h"
 #include "include/err.h"
 #include "include/encoding.h"
 
 
 #include "common/Mutex.h"
 
-#include "include/assert.h"
 #define BUG_ON(x) assert(!(x))
 
 namespace ceph {
@@ -62,6 +62,9 @@ public:
 
 private:
   struct crush_map *crush;
+
+  bool have_uniform_rules = false;
+
   /* reverse maps */
   mutable bool have_rmaps;
   mutable std::map<string, int> type_rmap, name_rmap, rule_name_rmap;
@@ -104,6 +107,15 @@ public:
 
     set_tunables_default();
   }
+
+  /// true if any rule has a ruleset != the rule id
+  bool has_legacy_rulesets() const;
+
+  /// fix rules whose ruleid != ruleset
+  int renumber_rules_by_ruleset();
+
+  /// true if any ruleset has more than 1 rule
+  bool has_multirule_rulesets() const;
 
   // tunables
   void set_tunables_argonaut() {
@@ -169,7 +181,7 @@ public:
     crush->straw_calc_version = 1;
   }
   void set_tunables_default() {
-    set_tunables_hammer();
+    set_tunables_jewel();
     crush->straw_calc_version = 1;
   }
 
@@ -316,8 +328,8 @@ public:
   bool has_v3_rules() const;
   bool has_v4_buckets() const;
   bool has_v5_rules() const;
-  bool has_chooseargs() const;          // any chooseargs
-  bool has_incompat_chooseargs() const; // chooseargs that can't be made compat
+  bool has_choose_args() const;          // any choose_args
+  bool has_incompat_choose_args() const; // choose_args that can't be made compat
 
   bool is_v2_rule(unsigned ruleid) const;
   bool is_v3_rule(unsigned ruleid) const;
@@ -355,6 +367,11 @@ public:
   // bucket types
   int get_num_type_names() const {
     return type_map.size();
+  }
+  int get_max_type_id() const {
+    if (type_map.empty())
+      return 0;
+    return type_map.rbegin()->first;
   }
   int get_type_id(const string& name) const {
     build_rmaps();
@@ -401,6 +418,16 @@ public:
     if (have_rmaps)
       name_rmap[name] = i;
     return 0;
+  }
+  void swap_names(int a, int b) {
+    string an = name_map[a];
+    string bn = name_map[b];
+    name_map[a] = bn;
+    name_map[b] = an;
+    if (have_rmaps) {
+      name_rmap[an] = b;
+      name_rmap[bn] = a;
+    }
   }
   bool id_has_class(int i) {
     int idout;
@@ -574,6 +601,12 @@ public:
   int get_immediate_parent_id(int id, int *parent) const;
 
   /**
+   * return ancestor of the given type, or 0 if none
+   * (parent is always a bucket and thus <0)
+   */
+  int get_parent_of_type(int id, int type) const;
+
+  /**
    * get the fully qualified location of a device by successively finding
    * parents beginning at ID and ending at highest type number specified in
    * the CRUSH map which assumes that if device foo is under device bar, the
@@ -592,6 +625,15 @@ public:
    */
   int get_full_location_ordered(int id, vector<pair<string, string> >& path);
 
+  /*
+   * identical to get_full_location_ordered(int id, vector<pair<string, string> >& path),
+   * although it returns a concatenated string with the type/name pairs in descending
+   * hierarchical order with format key1=val1,key2=val2.
+   *
+   * returns the location in descending hierarchy as a string.
+   */
+  string get_full_location_ordered_string(int id);
+
   /**
    * returns (type_id, type) of all parent buckets between id and
    * default, can be used to check for anomolous CRUSH maps
@@ -605,6 +647,15 @@ public:
    * @return number of items, or error
    */
   int get_children(int id, list<int> *children);
+
+  /**
+    * enumerate leaves(devices) of given node
+    *
+    * @param name parent bucket name
+    * @return 0 on success or a negative errno on error.
+    */
+  int get_leaves(const string &name, set<int> *leaves);
+  int _get_leaves(int id, list<int> *leaves); // worker
 
   /**
    * insert an item into the map at a specific position
@@ -650,6 +701,16 @@ public:
    * @return 0 for success, negative on error
    */
   int move_bucket(CephContext *cct, int id, const map<string,string>& loc);
+
+  /**
+   * swap bucket contents of two buckets without touching bucket ids
+   *
+   * @param cct cct
+   * @param src bucket a
+   * @param dst bucket b
+   * @return 0 for success, negative on error
+   */
+  int swap_bucket(CephContext *cct, int src, int dst);
 
   /**
    * add a link to an existing bucket in the hierarchy to the new location
@@ -936,14 +997,17 @@ public:
     return set_rule_step(ruleno, step, CRUSH_RULE_EMIT, 0, 0);
   }
 
-  int add_simple_ruleset(string name, string root_name, string failure_domain_type,
-			 string mode, int rule_type, ostream *err = 0);
+  int add_simple_rule(
+    string name, string root_name, string failure_domain_type,
+    string mode, int rule_type, ostream *err = 0);
+
   /**
-   * @param rno ruleset id to use, -1 to pick the lowest available
+   * @param rno rule[set] id to use, -1 to pick the lowest available
    */
-  int add_simple_ruleset_at(string name, string root_name,
-                            string failure_domain_type, string mode,
-                            int rule_type, int rno, ostream *err = 0);
+  int add_simple_rule_at(
+    string name, string root_name,
+    string failure_domain_type, string mode,
+    int rule_type, int rno, ostream *err = 0);
 
   int remove_rule(int ruleno);
 
@@ -1004,11 +1068,11 @@ private:
 
     if (!IS_ERR(parent_bucket)) {
       // zero out the bucket weight
-      crush_bucket_adjust_item_weight(crush, parent_bucket, item, 0);
+      bucket_adjust_item_weight(cct, parent_bucket, item, 0);
       adjust_item_weight(cct, parent_bucket->id, parent_bucket->weight);
 
       // remove the bucket from the parent
-      crush_bucket_remove_item(crush, parent_bucket, item);
+      bucket_remove_item(parent_bucket, item);
     } else if (PTR_ERR(parent_bucket) != -ENOENT) {
       return PTR_ERR(parent_bucket);
     }
@@ -1100,10 +1164,15 @@ public:
     assert(b);
     return crush_add_bucket(crush, bucketno, b, idout);
   }
-  
+
+  int bucket_add_item(crush_bucket *bucket, int item, int weight);
+  int bucket_remove_item(struct crush_bucket *bucket, int item);
+  int bucket_adjust_item_weight(CephContext *cct, struct crush_bucket *bucket, int item, int weight);
+
   void finalize() {
     assert(crush);
     crush_finalize(crush);
+    have_uniform_rules = !has_legacy_rulesets();
   }
 
   int update_device_class(CephContext *cct, int id, const string& class_name, const string& name);
@@ -1145,7 +1214,14 @@ public:
 
   int find_rule(int ruleset, int type, int size) const {
     if (!crush) return -1;
-    return crush_find_rule(crush, ruleset, type, size);
+    if (!have_uniform_rules) {
+      return crush_find_rule(crush, ruleset, type, size);
+    } else {
+      if (ruleset < (int)crush->max_rules &&
+	  crush->rules[ruleset])
+	return ruleset;
+      return -1;
+    }
   }
 
   bool ruleset_exists(int const ruleset) const {
@@ -1284,8 +1360,6 @@ public:
   void dump_tree(Formatter *f) const;
   static void generate_test_instances(list<CrushWrapper*>& o);
 
-  int _get_osd_pool_default_crush_replicated_ruleset(CephContext *cct,
-                                                     bool quiet);
   int get_osd_pool_default_crush_replicated_ruleset(CephContext *cct);
 
   static bool is_valid_crush_name(const string& s);
