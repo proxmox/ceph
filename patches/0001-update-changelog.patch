@@ -11,11 +11,19 @@ Signed-off-by: Fabian Grünbichler <f.gruenbichler@proxmox.com>
  debian/changelog | 70 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++
  1 file changed, 70 insertions(+)
 
-diff --git a/debian/changelog b/debian/changelog
-index 9a6469c30c..d2c5a9b509 100644
---- a/debian/changelog
-+++ b/debian/changelog
-@@ -1,27 +1,97 @@
+Index: ceph-12.1.0/debian/changelog
+===================================================================
+--- ceph-12.1.0.orig/debian/changelog
++++ ceph-12.1.0/debian/changelog
+@@ -1,27 +1,105 @@
++ceph (12.1.0-pve2) unstable; urgency=medium
++
++  * fix https://bugs.debian.org/cgi-bin/bugreport.cgi?bug=582819
++
++  * add 0004-debian-workaround-the-bug-in-dpkg-maintscript-helper.patch
++
++ -- Proxmox Support Team <support@proxmox.com>  Mon, 03 Jul 2017 14:03:31 +0200
++
 +ceph (12.1.0-pve1) stable; urgency=medium
 +
 +  * rebase on latest upstream Release Candidate
@@ -113,6 +121,3 @@ index 9a6469c30c..d2c5a9b509 100644
  ceph (12.0.0-1) stable; urgency=medium
  
    * New upstream release
--- 
-2.11.0
-

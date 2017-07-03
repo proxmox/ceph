@@ -1,3 +1,4 @@
 0001-update-changelog.patch
 0002-cmake-disable-version-from-git.patch
 0003-enable-systemd-targets-by-default.patch
+0004-debian-workaround-the-bug-in-dpkg-maintscript-helper.patch

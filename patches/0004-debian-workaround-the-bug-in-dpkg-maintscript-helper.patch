@@ -1,0 +1,23 @@
+From c90f0605b6b94579ef0273e63934d4691eb69f00 Mon Sep 17 00:00:00 2001
+From: Kefu Chai <kchai@redhat.com>
+Date: Mon, 3 Jul 2017 16:51:21 +0800
+Subject: [PATCH] debian: workaround the bug in dpkg-maintscript-helper
+
+see https://bugs.launchpad.net/ubuntu/+source/snap-confine/+bug/1605052
+and https://bugs.debian.org/cgi-bin/bugreport.cgi?bug=582819
+
+Fixes: http://tracker.ceph.com/issues/20453
+Signed-off-by: Kefu Chai <kchai@redhat.com>
+---
+ debian/ceph-base.maintscript | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/debian/ceph-base.maintscript b/debian/ceph-base.maintscript
+index 38e36d454f87..9afaacbcae1c 100644
+--- a/debian/ceph-base.maintscript
++++ b/debian/ceph-base.maintscript
+@@ -1,2 +1,2 @@
+-rm_conffile /etc/logrotate.d/ceph.logrotate -- "$@"
+-rm_conffile /etc/logrotate.d/ceph -- "$@"
++rm_conffile /etc/logrotate.d/ceph.logrotate
++rm_conffile /etc/logrotate.d/ceph
