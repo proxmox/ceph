@@ -253,8 +253,8 @@ void _usage()
   cout << "   --tags-rm=<list>          list of tags to remove for zonegroup placement modify command\n";
   cout << "   --endpoints=<list>        zone endpoints\n";
   cout << "   --index_pool=<pool>       placement target index pool\n";
-  cout << "   --data_pool=<pool>        placement target data pool\n";
-  cout << "   --data_extra_pool=<pool>  placement target data extra (non-ec) pool\n";
+  cout << "   --data-pool=<pool>        placement target data pool\n";
+  cout << "   --data-extra-pool=<pool>  placement target data extra (non-ec) pool\n";
   cout << "   --placement-index-type=<type>\n";
   cout << "                             placement target index type (normal, indexless, or #id)\n";
   cout << "   --compression=<type>      placement target compression type (plugin name or empty/none)\n";
@@ -1529,13 +1529,19 @@ static boost::optional<RGWRESTConn> get_remote_conn(RGWRados *store,
   return conn;
 }
 
-#define MAX_REST_RESPONSE (128 * 1024) // we expect a very small response
+// we expect a very small response
+static constexpr size_t MAX_REST_RESPONSE = 128 * 1024;
+
 static int send_to_remote_gateway(RGWRESTConn* conn, req_info& info,
                                   bufferlist& in_data, JSONParser& parser)
 {
-  bufferlist response;
+  if (!conn) {
+    return -EINVAL;
+  }
+
+  ceph::bufferlist response;
   rgw_user user;
-  int ret = conn->forward(user, info, NULL, MAX_REST_RESPONSE, &in_data, &response);
+  int ret = conn->forward(user, info, nullptr, MAX_REST_RESPONSE, &in_data, &response);
 
   int parse_ret = parser.parse(response.c_str(), response.length());
   if (parse_ret < 0) {
@@ -1792,7 +1798,8 @@ static int do_period_pull(RGWRESTConn *remote_conn, const string& url,
   if (ret < 0) {
     cerr << "Error storing period " << period->get_id() << ": " << cpp_strerror(ret) << std::endl;
   }
-
+  // store latest epoch (ignore errors)
+  period->update_latest_epoch(period->get_epoch());
   return 0;
 }
 
@@ -2311,7 +2318,6 @@ int main(int argc, const char **argv)
   string bucket_id;
   Formatter *formatter = NULL;
   int purge_data = false;
-  RGWBucketInfo bucket_info;
   int pretty_format = false;
   int show_log_entries = true;
   int show_log_sum = true;
@@ -3398,6 +3404,15 @@ int main(int argc, const char **argv)
 	  cerr << "unable to initialize zone: " << cpp_strerror(-ret) << std::endl;
 	  return -ret;
 	}
+        if (zone.realm_id != zonegroup.realm_id) {
+          zone.realm_id = zonegroup.realm_id;
+          ret = zone.update();
+          if (ret < 0) {
+            cerr << "failed to save zone info: " << cpp_strerror(-ret) << std::endl;
+            return -ret;
+          }
+        }
+
         string *ptier_type = (tier_type_specified ? &tier_type : nullptr);
         zone.tier_config = tier_config_add;
 
@@ -3522,7 +3537,6 @@ int main(int argc, const char **argv)
 	}
 	string default_zonegroup;
 	ret = zonegroup.read_default_id(default_zonegroup);
-	cout << "read_default_id : " << ret << std::endl;
 	if (ret < 0 && ret != -ENOENT) {
 	  cerr << "could not determine default zonegroup: " << cpp_strerror(-ret) << std::endl;
 	}
@@ -5147,12 +5161,6 @@ next:
     if (object.empty()) {
       cerr << "ERROR: object not specified" << std::endl;
       return EINVAL;
-    }
-    RGWBucketInfo bucket_info;
-    int ret = init_bucket(tenant, bucket_name, bucket_id, bucket_info, bucket);
-    if (ret < 0) {
-      cerr << "ERROR: could not init bucket: " << cpp_strerror(-ret) << std::endl;
-      return -ret;
     }
   }
 

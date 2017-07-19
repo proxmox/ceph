@@ -77,6 +77,11 @@ int rgw_user_sync_all_stats(RGWRados *store, const rgw_user& user_id)
         ldout(cct, 0) << "ERROR: could not sync bucket stats: ret=" << ret << dendl;
         return ret;
       }
+      RGWQuotaInfo bucket_quota;
+      ret = store->check_bucket_shards(bucket_info, bucket_info.bucket, bucket_quota);
+      if (ret < 0) {
+	ldout(cct, 0) << "ERROR in check_bucket_shards: " << cpp_strerror(-ret)<< dendl;
+      }
     }
   } while (is_truncated);
 
@@ -1414,11 +1419,11 @@ int RGWSubUserPool::execute_remove(RGWUserAdminOpState& op_state,
   siter = subuser_map->find(subuser_str);
   if (siter == subuser_map->end()){
     set_err_msg(err_msg, "subuser not found: " + subuser_str);
-    return -EINVAL;
+    return -ERR_NO_SUCH_SUBUSER;
   }
   if (!op_state.has_existing_subuser()) {
     set_err_msg(err_msg, "subuser not found: " + subuser_str);
-    return -EINVAL;
+    return -ERR_NO_SUCH_SUBUSER;
   }
 
   // always purge all associate keys
@@ -1474,7 +1479,7 @@ int RGWSubUserPool::execute_modify(RGWUserAdminOpState& op_state, std::string *e
 
   if (!op_state.has_existing_subuser()) {
     set_err_msg(err_msg, "subuser does not exist");
-    return -EINVAL;
+    return -ERR_NO_SUCH_SUBUSER;
   }
 
   subuser_pair.first = subuser_str;
@@ -2294,7 +2299,7 @@ int RGWUserAdminOp_User::info(RGWRados *store, RGWUserAdminOpState& op_state,
     return ret;
 
   if (!op_state.has_existing_user())
-    return -ENOENT;
+    return -ERR_NO_SUCH_USER;
 
   Formatter *formatter = flusher.get_formatter();
 
@@ -2362,8 +2367,11 @@ int RGWUserAdminOp_User::modify(RGWRados *store, RGWUserAdminOpState& op_state,
   Formatter *formatter = flusher.get_formatter();
 
   ret = user.modify(op_state, NULL);
-  if (ret < 0)
+  if (ret < 0) {
+    if (ret == -ENOENT)
+      ret = -ERR_NO_SUCH_USER;
     return ret;
+  }
 
   ret = user.info(info, NULL);
   if (ret < 0)
@@ -2389,6 +2397,8 @@ int RGWUserAdminOp_User::remove(RGWRados *store, RGWUserAdminOpState& op_state,
 
   ret = user.remove(op_state, NULL);
 
+  if (ret == -ENOENT)
+    ret = -ERR_NO_SUCH_USER;
   return ret;
 }
 
@@ -2400,6 +2410,9 @@ int RGWUserAdminOp_Subuser::create(RGWRados *store, RGWUserAdminOpState& op_stat
   int ret = user.init(store, op_state);
   if (ret < 0)
     return ret;
+
+  if (!op_state.has_existing_user())
+    return -ERR_NO_SUCH_USER;
 
   Formatter *formatter = flusher.get_formatter();
 
@@ -2427,6 +2440,9 @@ int RGWUserAdminOp_Subuser::modify(RGWRados *store, RGWUserAdminOpState& op_stat
   int ret = user.init(store, op_state);
   if (ret < 0)
     return ret;
+
+  if (!op_state.has_existing_user())
+    return -ERR_NO_SUCH_USER;
 
   Formatter *formatter = flusher.get_formatter();
 
@@ -2456,6 +2472,9 @@ int RGWUserAdminOp_Subuser::remove(RGWRados *store, RGWUserAdminOpState& op_stat
     return ret;
 
 
+  if (!op_state.has_existing_user())
+    return -ERR_NO_SUCH_USER;
+
   ret = user.subusers.remove(op_state, NULL);
   if (ret < 0)
     return ret;
@@ -2471,6 +2490,9 @@ int RGWUserAdminOp_Key::create(RGWRados *store, RGWUserAdminOpState& op_state,
   int ret = user.init(store, op_state);
   if (ret < 0)
     return ret;
+
+  if (!op_state.has_existing_user())
+    return -ERR_NO_SUCH_USER;
 
   Formatter *formatter = flusher.get_formatter();
 
@@ -2506,6 +2528,9 @@ int RGWUserAdminOp_Key::remove(RGWRados *store, RGWUserAdminOpState& op_state,
   if (ret < 0)
     return ret;
 
+  if (!op_state.has_existing_user())
+    return -ERR_NO_SUCH_USER;
+
 
   ret = user.keys.remove(op_state, NULL);
   if (ret < 0)
@@ -2522,6 +2547,9 @@ int RGWUserAdminOp_Caps::add(RGWRados *store, RGWUserAdminOpState& op_state,
   int ret = user.init(store, op_state);
   if (ret < 0)
     return ret;
+
+  if (!op_state.has_existing_user())
+    return -ERR_NO_SUCH_USER;
 
   Formatter *formatter = flusher.get_formatter();
 
@@ -2550,6 +2578,9 @@ int RGWUserAdminOp_Caps::remove(RGWRados *store, RGWUserAdminOpState& op_state,
   int ret = user.init(store, op_state);
   if (ret < 0)
     return ret;
+
+  if (!op_state.has_existing_user())
+    return -ERR_NO_SUCH_USER;
 
   Formatter *formatter = flusher.get_formatter();
 

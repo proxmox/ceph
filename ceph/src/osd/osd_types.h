@@ -981,6 +981,7 @@ inline ostream& operator<<(ostream& out, const osd_stat_t& s) {
 #define PG_STATE_SNAPTRIM      (1<<26) // trimming snaps
 #define PG_STATE_SNAPTRIM_WAIT (1<<27) // queued to trim snaps
 #define PG_STATE_RECOVERY_TOOFULL (1<<28) // recovery can't proceed: too full
+#define PG_STATE_SNAPTRIM_ERROR (1<<29) // error stopped trimming snaps
 
 std::string pg_state_string(int state);
 std::string pg_vector_string(const vector<int32_t> &a);
@@ -1113,9 +1114,6 @@ struct pg_pool_t {
   }
   const char *get_type_name() const {
     return get_type_name(type);
-  }
-  static const char* get_default_type() {
-    return "replicated";
   }
 
   enum {
@@ -4658,6 +4656,7 @@ struct ObjectRecoveryProgress {
   bool first;
   bool data_complete;
   bool omap_complete;
+  bool error = false;
 
   ObjectRecoveryProgress()
     : data_recovered_to(0),
@@ -4795,7 +4794,7 @@ struct OSDOp {
   sobject_t soid;
 
   bufferlist indata, outdata;
-  int32_t rval;
+  errorcode32_t rval;
 
   OSDOp() : rval(0) {
     memset(&op, 0, sizeof(ceph_osd_op));
@@ -4835,6 +4834,13 @@ struct OSDOp {
    * @param out [out] combined data buffer
    */
   static void merge_osd_op_vector_out_data(vector<OSDOp>& ops, bufferlist& out);
+
+  /**
+   * Clear data as much as possible, leave minimal data for historical op dump
+   *
+   * @param ops [in] vector of OSDOps
+   */
+  static void clear_data(vector<OSDOp>& ops);
 };
 
 ostream& operator<<(ostream& out, const OSDOp& op);

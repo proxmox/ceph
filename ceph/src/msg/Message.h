@@ -183,6 +183,8 @@
 // Special
 #define MSG_NOP                   0x607
 
+#define MSG_MON_HEALTH_CHECKS     0x608
+
 // *** ceph-mgr <-> OSD/MDS daemons ***
 #define MSG_MGR_OPEN              0x700
 #define MSG_MGR_CONFIGURE         0x701
@@ -198,6 +200,7 @@
 #define MSG_MGR_DIGEST               0x705
 // *** cephmgr -> ceph-mon
 #define MSG_MON_MGR_REPORT        0x706
+#define MSG_SERVICE_MAP           0x707
 
 // ======================================================
 

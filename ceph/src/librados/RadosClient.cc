@@ -28,6 +28,7 @@
 #include "common/errno.h"
 #include "include/buffer.h"
 #include "include/stringify.h"
+#include "include/util.h"
 
 #include "messages/MLog.h"
 #include "msg/Messenger.h"
@@ -307,6 +308,12 @@ int librados::RadosClient::connect()
   monclient.sub_want("mgrmap", 0, 0);
   monclient.renew_subs();
 
+  if (service_daemon) {
+    ldout(cct, 10) << __func__ << " registering as " << service_name << "."
+		   << daemon_name << dendl;
+    mgrclient.service_daemon_register(service_name, daemon_name,
+				      daemon_metadata);
+  }
   mgrclient.init();
 
   objecter->set_client_incarnation(0);
@@ -1001,7 +1008,9 @@ void librados::RadosClient::handle_log(MLog *m)
 		 stamp.tv_sec, stamp.tv_nsec,
 		 e.seq, level.c_str(), e.msg.c_str());
 	if (log_cb2)
-	  log_cb2(log_cb_arg, line.c_str(), who.c_str(), name.c_str(),
+	  log_cb2(log_cb_arg, line.c_str(),
+		  e.channel.c_str(),
+		  who.c_str(), name.c_str(),
 		  stamp.tv_sec, stamp.tv_nsec,
 		  e.seq, level.c_str(), e.msg.c_str());
       }
@@ -1011,4 +1020,52 @@ void librados::RadosClient::handle_log(MLog *m)
   }
 
   m->put();
+}
+
+int librados::RadosClient::service_daemon_register(
+  const std::string& service,  ///< service name (e.g., 'rgw')
+  const std::string& name,     ///< daemon name (e.g., 'gwfoo')
+  const std::map<std::string,std::string>& metadata)
+{
+  if (service_daemon) {
+    return -EEXIST;
+  }
+  if (service == "osd" ||
+      service == "mds" ||
+      service == "client" ||
+      service == "mon" ||
+      service == "mgr") {
+    // normal ceph entity types are not allowed!
+    return -EINVAL;
+  }
+  if (service.empty() || name.empty()) {
+    return -EINVAL;
+  }
+
+  collect_sys_info(&daemon_metadata, cct);
+
+  ldout(cct,10) << __func__ << " " << service << "." << name << dendl;
+  service_daemon = true;
+  service_name = service;
+  daemon_name = name;
+  daemon_metadata.insert(metadata.begin(), metadata.end());
+
+  if (state == DISCONNECTED) {
+    return 0;
+  }
+  if (state == CONNECTING) {
+    return -EBUSY;
+  }
+  mgrclient.service_daemon_register(service_name, daemon_name,
+				    daemon_metadata);
+  return 0;
+}
+
+int librados::RadosClient::service_daemon_update_status(
+  const std::map<std::string,std::string>& status)
+{
+  if (state != CONNECTED) {
+    return -ENOTCONN;
+  }
+  return mgrclient.service_daemon_update_status(status);
 }

@@ -431,6 +431,7 @@ void AsyncConnection::process()
 #if defined(WITH_LTTNG) && defined(WITH_EVENTTRACE)
           ltt_recv_stamp = ceph_clock_now();
 #endif
+          recv_stamp = ceph_clock_now();
           ldout(async_msgr->cct, 20) << __func__ << " begin MSG" << dendl;
           ceph_msg_header header;
           ceph_msg_header_old oldheader;
@@ -486,7 +487,6 @@ void AsyncConnection::process()
           front.clear();
           middle.clear();
           data.clear();
-          recv_stamp = ceph_clock_now();
           current_header = header;
           state = STATE_OPEN_MESSAGE_THROTTLE_MESSAGE;
           break;
@@ -977,9 +977,9 @@ ssize_t AsyncConnection::_process_connection()
                                 << " not " << peer_addr
                                 << " - presumably this is the same node!" << dendl;
           } else {
-            ldout(async_msgr->cct, 0) << __func__ << " connect claims to be "
-                                << paddr << " not " << peer_addr << " - wrong node!" << dendl;
-            goto fail;
+            ldout(async_msgr->cct, 10) << __func__ << " connect claims to be "
+                                << paddr << " not " << peer_addr
+                                << " (peer is possibly using public_bind_addr?) " << dendl;
           }
         }
 

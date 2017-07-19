@@ -254,12 +254,6 @@ class Module(MgrModule):
             self.serve_event.wait()
             self.serve_event.clear()
 
-    def get_localized_config(self, key):
-        r = self.get_config(self.get_mgr_id() + '/' + key)
-        if r is None:
-            r = self.get_config(key)
-        return r
-
     def refresh_keys(self):
         self.keys = {}
         rawkeys = self.get_config_prefix('keys/') or {}
@@ -276,10 +270,10 @@ class Module(MgrModule):
             separators=(',', ': '),
         )
 
-        server_addr = self.get_localized_config('server_addr')
+        server_addr = self.get_localized_config('server_addr', '::')
         if server_addr is None:
             raise RuntimeError('no server_addr configured; try "ceph config-key put mgr/restful/server_addr <ip>"')
-        server_port = int(self.get_localized_config('server_port') or '8003')
+        server_port = int(self.get_localized_config('server_port', '8003'))
         self.log.info('server_addr: %s server_port: %d',
                       server_addr, server_port)
 

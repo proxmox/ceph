@@ -286,10 +286,11 @@ A storage drive should only support one OSD. Sequential read and sequential
 write throughput can bottleneck if other processes share the drive, including
 journals, operating systems, monitors, other OSDs and non-Ceph processes.
 
-Ceph acknowledges writes *after* journaling, so fast SSDs are an attractive
-option to accelerate the response time--particularly when using the ``XFS`` or
-``ext4`` filesystems. By contrast, the ``btrfs`` filesystem can write and journal
-simultaneously.
+Ceph acknowledges writes *after* journaling, so fast SSDs are an
+attractive option to accelerate the response time--particularly when
+using the ``XFS`` or ``ext4`` filesystems.  By contrast, the ``btrfs``
+filesystem can write and journal simultaneously.  (Note, however, that
+we recommend against using ``btrfs`` for production deployments.)
 
 .. note:: Partitioning a drive does not change its total throughput or
    sequential read/write limits. Running a journal in a separate partition
@@ -364,10 +365,13 @@ might not have a recent enough version of ``glibc`` to support ``syncfs(2)``.
 Filesystem Issues
 -----------------
 
-Currently, we recommend deploying clusters with XFS. The btrfs
-filesystem has many attractive features, but bugs in the filesystem may
-lead to performance issues.  We do not recommend ext4 because xattr size
-limitations break our support for long object names (needed for RGW).
+Currently, we recommend deploying clusters with XFS.
+
+We recommend against using btrfs or ext4.  The btrfs filesystem has
+many attractive features, but bugs in the filesystem may lead to
+performance issues and suprious ENOSPC errors.  We do not recommend
+ext4 because xattr size limitations break our support for long object
+names (needed for RGW).
 
 For more information, see `Filesystem Recommendations`_.
 
@@ -438,7 +442,7 @@ Events from the OSD as it prepares operations
 
 - queued_for_pg: the op has been put into the queue for processing by its PG
 - reached_pg: the PG has started doing the op
-- waiting for *: the op is waiting for some other work to complete before it
+- waiting for \*: the op is waiting for some other work to complete before it
   can proceed (a new OSDMap; for its object target to scrub; for the PG to
   finish peering; all as specified in the message)
 - started: the op has been accepted as something the OSD should actually do

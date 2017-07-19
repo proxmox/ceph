@@ -40,6 +40,7 @@
 #include "rgw_client_io.h"
 #include "rgw_compression.h"
 #include "rgw_role.h"
+#include "rgw_tag_s3.h"
 #include "cls/lock/cls_lock_client.h"
 #include "cls/rgw/cls_rgw_client.h"
 
@@ -690,6 +691,103 @@ int RGWOp::verify_op_mask()
   return 0;
 }
 
+int RGWGetObjTags::verify_permission()
+{
+  if (!verify_object_permission(s,
+				s->object.instance.empty() ?
+				rgw::IAM::s3GetObjectTagging:
+				rgw::IAM::s3GetObjectVersionTagging))
+    return -EACCES;
+
+  return 0;
+}
+
+void RGWGetObjTags::pre_exec()
+{
+  rgw_bucket_object_pre_exec(s);
+}
+
+void RGWGetObjTags::execute()
+{
+  rgw_obj obj;
+  map<string,bufferlist> attrs;
+
+  obj = rgw_obj(s->bucket, s->object);
+
+  store->set_atomic(s->obj_ctx, obj);
+
+  op_ret = get_obj_attrs(store, s, obj, attrs);
+  auto tags = attrs.find(RGW_ATTR_TAGS);
+  if(tags != attrs.end()){
+    has_tags = true;
+    tags_bl.append(tags->second);
+  }
+  send_response_data(tags_bl);
+}
+
+int RGWPutObjTags::verify_permission()
+{
+  if (!verify_object_permission(s,
+				s->object.instance.empty() ?
+				rgw::IAM::s3PutObjectTagging:
+				rgw::IAM::s3PutObjectVersionTagging))
+    return -EACCES;
+  return 0;
+}
+
+void RGWPutObjTags::execute()
+{
+  op_ret = get_params();
+  if (op_ret < 0)
+    return;
+
+  if (s->object.empty()){
+    op_ret= -EINVAL; // we only support tagging on existing objects
+    return;
+  }
+
+  rgw_obj obj;
+  obj = rgw_obj(s->bucket, s->object);
+  store->set_atomic(s->obj_ctx, obj);
+  op_ret = modify_obj_attr(store, s, obj, RGW_ATTR_TAGS, tags_bl);
+  if (op_ret == -ECANCELED){
+    op_ret = -ERR_TAG_CONFLICT;
+  }
+}
+
+void RGWDeleteObjTags::pre_exec()
+{
+  rgw_bucket_object_pre_exec(s);
+}
+
+
+int RGWDeleteObjTags::verify_permission()
+{
+  if (!s->object.empty()) {
+    if (!verify_object_permission(s,
+				  s->object.instance.empty() ?
+				  rgw::IAM::s3DeleteObjectTagging:
+				  rgw::IAM::s3DeleteObjectVersionTagging))
+      return -EACCES;
+  }
+  return 0;
+}
+
+void RGWDeleteObjTags::execute()
+{
+  if (s->object.empty())
+    return;
+
+  rgw_obj obj;
+  obj = rgw_obj(s->bucket, s->object);
+  store->set_atomic(s->obj_ctx, obj);
+  map <string, bufferlist> attrs;
+  map <string, bufferlist> rmattr;
+  bufferlist bl;
+  rmattr[RGW_ATTR_TAGS] = bl;
+  op_ret = store->set_attrs(s->obj_ctx, s->bucket_info, obj, attrs, &rmattr);
+}
+
 int RGWOp::do_aws4_auth_completion()
 {
   ldout(s->cct, 5) << "NOTICE: call to do_aws4_auth_completion"  << dendl;
@@ -934,7 +1032,7 @@ int RGWGetObj::read_user_manifest_part(rgw_bucket& bucket,
   op_ret = read_op.prepare();
   if (op_ret < 0)
     return op_ret;
-  op_ret = read_op.range_to_ofs(obj_size, cur_ofs, cur_end);
+  op_ret = read_op.range_to_ofs(ent.meta.accounted_size, cur_ofs, cur_end);
   if (op_ret < 0)
     return op_ret;
   bool need_decompress;
@@ -946,7 +1044,7 @@ int RGWGetObj::read_user_manifest_part(rgw_bucket& bucket,
 
   if (need_decompress)
   {
-    if (cs_info.orig_size != ent.meta.size) {
+    if (cs_info.orig_size != ent.meta.accounted_size) {
       // hmm.. something wrong, object not as expected, abort!
       ldout(s->cct, 0) << "ERROR: expected cs_info.orig_size=" << cs_info.orig_size <<
           ", actual read size=" << ent.meta.size << dendl;
@@ -1035,15 +1133,16 @@ static int iterate_user_manifest_parts(CephContext * const cct,
     }
 
     for (rgw_bucket_dir_entry& ent : objs) {
-      uint64_t cur_total_len = obj_ofs;
-      uint64_t start_ofs = 0, end_ofs = ent.meta.size;
+      const uint64_t cur_total_len = obj_ofs;
+      const uint64_t obj_size = ent.meta.accounted_size;
+      uint64_t start_ofs = 0, end_ofs = obj_size;
 
-      if ((ptotal_len || cb) && !found_start && cur_total_len + ent.meta.size > (uint64_t)ofs) {
+      if ((ptotal_len || cb) && !found_start && cur_total_len + obj_size > (uint64_t)ofs) {
 	start_ofs = ofs - obj_ofs;
 	found_start = true;
       }
 
-      obj_ofs += ent.meta.size;
+      obj_ofs += obj_size;
       if (pobj_sum) {
         etag_sum.Update((const byte *)ent.meta.etag.c_str(),
                         ent.meta.etag.length());
@@ -1129,7 +1228,7 @@ static int iterate_slo_parts(CephContext *cct,
     rgw_bucket_dir_entry ent;
 
     ent.key.name = part.obj_name;
-    ent.meta.size = part.size;
+    ent.meta.accounted_size = ent.meta.size = part.size;
     ent.meta.etag = part.etag;
 
     uint64_t cur_total_len = obj_ofs;
@@ -2707,6 +2806,27 @@ void RGWDeleteBucket::execute()
     }
   }
 
+  string prefix, delimiter;
+
+  if (s->prot_flags & RGW_REST_SWIFT) {
+    string path_args;
+    path_args = s->info.args.get("path");
+    if (!path_args.empty()) {
+      if (!delimiter.empty() || !prefix.empty()) {
+        op_ret = -EINVAL;
+        return;
+      }
+      prefix = path_args;
+      delimiter="/";
+    }
+  }
+
+  op_ret = abort_bucket_multiparts(store, s->cct, s->bucket_info, prefix, delimiter);
+
+  if (op_ret < 0) {
+    return;
+  }
+
   op_ret = store->delete_bucket(s->bucket_info, ot, false);
 
   if (op_ret == -ECANCELED) {
@@ -3386,6 +3506,7 @@ void RGWPutObj::execute()
   populate_with_generic_attrs(s, attrs);
   rgw_get_request_metadata(s->cct, s->info, attrs);
   encode_delete_at_attr(delete_at, attrs);
+  encode_obj_tags_attr(obj_tags.get(), attrs);
 
   /* Add a custom metadata to expose the information whether an object
    * is an SLO or not. Appending the attribute must be performed AFTER
@@ -3450,6 +3571,7 @@ void RGWPostObj::execute()
   RGWPutObjDataProcessor *filter = nullptr;
   boost::optional<RGWPutObj_Compress> compressor;
   CompressorRef plugin;
+  char supplied_md5[CEPH_CRYPTO_MD5_DIGESTSIZE * 2 + 1];
 
   /* Read in the data from the POST form. */
   op_ret = get_params();
@@ -3500,6 +3622,21 @@ void RGWPostObj::execute()
     op_ret = store->check_bucket_shards(s->bucket_info, s->bucket, bucket_quota);
     if (op_ret < 0) {
       return;
+    }
+
+    if (supplied_md5_b64) {
+      char supplied_md5_bin[CEPH_CRYPTO_MD5_DIGESTSIZE + 1];
+      ldout(s->cct, 15) << "supplied_md5_b64=" << supplied_md5_b64 << dendl;
+      op_ret = ceph_unarmor(supplied_md5_bin, &supplied_md5_bin[CEPH_CRYPTO_MD5_DIGESTSIZE + 1],
+                            supplied_md5_b64, supplied_md5_b64 + strlen(supplied_md5_b64));
+      ldout(s->cct, 15) << "ceph_armor ret=" << op_ret << dendl;
+      if (op_ret != CEPH_CRYPTO_MD5_DIGESTSIZE) {
+        op_ret = -ERR_INVALID_DIGEST;
+        return;
+      }
+
+      buf_to_hex((const unsigned char *)supplied_md5_bin, CEPH_CRYPTO_MD5_DIGESTSIZE, supplied_md5);
+      ldout(s->cct, 15) << "supplied_md5=" << supplied_md5 << dendl;
     }
 
     RGWPutObjProcessor_Atomic processor(*static_cast<RGWObjectCtx *>(s->obj_ctx),
@@ -3575,6 +3712,11 @@ void RGWPostObj::execute()
     }
 
     s->obj_size = ofs;
+
+    if (supplied_md5_b64 && strcmp(calc_md5, supplied_md5)) {
+      op_ret = -ERR_BAD_DIGEST;
+      return;
+    }
 
     op_ret = store->check_quota(s->bucket_owner.get_id(), s->bucket,
                                 user_quota, bucket_quota, s->obj_size);
@@ -5156,7 +5298,7 @@ void RGWCompleteMultipart::execute()
           op_ret = -ERR_INVALID_PART;
           return;
         }
-        int new_ofs; // offset in compression data for new part
+        int64_t new_ofs; // offset in compression data for new part
         if (cs_info.blocks.size() > 0)
           new_ofs = cs_info.blocks.back().new_ofs + cs_info.blocks.back().len;
         else
@@ -5353,17 +5495,12 @@ void RGWListBucketMultiparts::execute()
   }
   marker_meta = marker.get_meta();
 
-  RGWRados::Bucket target(store, s->bucket_info);
-  RGWRados::Bucket::List list_op(&target);
+  op_ret = list_bucket_multiparts(store, s->bucket_info, prefix, marker_meta, delimiter,
+                                  max_uploads, &objs, &common_prefixes, &is_truncated);
+  if (op_ret < 0) {
+    return;
+  }
 
-  list_op.params.prefix = prefix;
-  list_op.params.delim = delimiter;
-  list_op.params.marker = marker_meta;
-  list_op.params.ns = mp_ns;
-  list_op.params.filter = &mp_filter;
-
-  op_ret = list_op.list_objects(max_uploads, &objs, &common_prefixes,
-				&is_truncated);
   if (!objs.empty()) {
     vector<rgw_bucket_dir_entry>::iterator iter;
     RGWMultipartUploadEntry entry;
@@ -5570,7 +5707,7 @@ bool RGWBulkDelete::Deleter::delete_single(const acct_path_t& path)
       goto delop_fail;
     }
 
-    if (!store->get_zonegroup().is_master_zonegroup()) {
+    if (!store->is_meta_master()) {
       bufferlist in_data;
       ret = forward_request_to_master(s, &ot.read_version, store, in_data,
                                       nullptr);

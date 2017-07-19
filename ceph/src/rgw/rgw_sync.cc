@@ -414,7 +414,7 @@ class RGWReadMDLogEntriesCR : public RGWSimpleCoroutine {
   list<cls_log_entry> *entries;
   bool *truncated;
 
-  RGWAsyncReadMDLogEntries *req;
+  RGWAsyncReadMDLogEntries *req{nullptr};
 
 public:
   RGWReadMDLogEntriesCR(RGWMetaSyncEnv *_sync_env, RGWMetadataLog* mdlog,
@@ -835,7 +835,7 @@ public:
                                                 sync_env->store,
                                                 rgw_raw_obj(sync_env->store->get_zone_params().log_pool, sync_env->status_oid()),
                                                 lock_name, lock_duration, this));
-        lease_stack = spawn(lease_cr.get(), false);
+        lease_stack.reset(spawn(lease_cr.get(), false));
       }
       while (!lease_cr->is_locked()) {
         if (lease_cr->is_done()) {
@@ -1524,6 +1524,8 @@ public:
 
         if (retcode < 0) {
           ldout(sync_env->cct, 0) << "ERROR: failed to set sync marker: retcode=" << retcode << dendl;
+          yield lease_cr->go_down();
+          drain_all();
           return retcode;
         }
       }

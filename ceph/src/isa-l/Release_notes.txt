@@ -1,28 +1,35 @@
-=============================================================================
-v2.16 Intel Intelligent Storage Acceleration Library Release Notes
-      Open Source Version
-=============================================================================
+v2.18 Intel Intelligent Storage Acceleration Library Release Notes
+==================================================================
 
-=============================================================================
 RELEASE NOTE CONTENTS
-=============================================================================
 1. KNOWN ISSUES
 2. FIXED ISSUES
 3. CHANGE LOG & FEATURES ADDED
 
-=============================================================================
-1.  KNOWN ISSUES
-=============================================================================
-
-* Only erasure code unit included in open source version at this time.
+1. KNOWN ISSUES
+----------------
 
 * Perf tests do not run in Windows environment.
 
 * 32-bit lib is not supported in Windows.
 
-=============================================================================
 2. FIXED ISSUES
-=============================================================================
+---------------
+
+v2.18
+
+* Mac OS X/darwin systems no longer require the --target=darwin config option.
+  The autoconf canonical build should detect.
+
+v2.17
+
+* Fix igzip using 32K window and a shared object
+
+* Fix igzip undefined instruction error on Nehalem.
+
+* Fixed issue in crc performance tests where OS optimizations turned cold cache
+  tests into warm tests.
+
 v2.15
 
 * Fix for windows register save in gf_6vect_mad_avx2.asm.  Only affects windows
@@ -40,9 +47,35 @@ v2.10
   affects windows versions of erasure code.  GP register saves/restore were
   pushed to same stack area as XMM.
 
-=============================================================================
 3. CHANGE LOG & FEATURES ADDED 
-=============================================================================
+------------------------------
+
+v2.18
+
+* New 2-pass fully-dynamic deflate compression (level -1).  ISA-L fast deflate
+  now has two levels.  Level 0 (default) is the same as previous generations.
+  Setting to level 1 will switch to the fully-dynamic compression that will
+  typically reach higher compression ratios.
+
+* RAID AVX512 functions.
+
+v2.17
+
+* New fast decompression (inflate)
+
+* Compression improvements (deflate)
+  - Speed and compression ratio improvements.
+  - Fast custom Huffman code generation.
+  - New features:
+    * Run-time option of gzip crc calculation and headers/trailer.
+    * Choice of static header (BTYPE 01) blocks.
+    * LARGE_WINDOW, 32K history, now default.
+    * Stateless full flush mode.
+
+* CRC64
+  - Six new 64-bit polynomials supported. Normal and reflected versions of ECMA,
+    ISO and Jones polynomials.
+
 v2.16
 
 * Units added: crc, raid, igzip (deflate compression).

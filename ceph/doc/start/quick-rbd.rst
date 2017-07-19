@@ -47,6 +47,10 @@ Install Ceph
    directory. Ensure that the keyring file has appropriate read permissions 
    (e.g., ``sudo chmod +r /etc/ceph/ceph.client.admin.keyring``).
 
+Create an rbd pool
+==================
+#. On the admin node, use the ``ceph`` tool to `Create a Pool`_
+   (we recommend the name 'rbd').
 
 Configure a Block Device
 ========================
@@ -78,6 +82,7 @@ Configure a Block Device
 
 See `block devices`_ for additional details.
 
+.. _Create a Pool: ../../rados/operations/pools#createpool
 .. _Storage Cluster Quick Start: ../quick-ceph-deploy
 .. _block devices: ../../rbd/rbd
 .. _FAQ: http://wiki.ceph.com/How_Can_I_Give_Ceph_a_Try

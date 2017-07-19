@@ -327,6 +327,24 @@ def crush_setup(ctx, config):
 
 
 @contextlib.contextmanager
+def create_rbd_pool(ctx, config):
+    cluster_name = config['cluster']
+    first_mon = teuthology.get_first_mon(ctx, config, cluster_name)
+    (mon_remote,) = ctx.cluster.only(first_mon).remotes.iterkeys()
+    log.info('Waiting for OSDs to come up')
+    teuthology.wait_until_osds_up(
+        ctx,
+        cluster=ctx.cluster,
+        remote=mon_remote,
+        ceph_cluster=cluster_name,
+    )
+    log.info('Creating RBD pool')
+    mon_remote.run(
+        args=['sudo', 'ceph', '--cluster', cluster_name,
+              'osd', 'pool', 'create', 'rbd', '8'])
+    yield
+
+@contextlib.contextmanager
 def cephfs_setup(ctx, config):
     cluster_name = config['cluster']
     testdir = teuthology.get_testdir(ctx)
@@ -346,7 +364,6 @@ def cephfs_setup(ctx, config):
         all_roles = [item for remote_roles in mdss.remotes.values() for item in remote_roles]
         num_active = len([r for r in all_roles if is_active_mds(r)])
 
-        fs.set_allow_multimds(True)
         fs.set_max_mds(num_active)
         fs.set_allow_dirfrags(True)
 
@@ -577,28 +594,6 @@ def cluster(ctx, config):
 
     log.info('Setting up mon nodes...')
     mons = ctx.cluster.only(teuthology.is_type('mon', cluster_name))
-    osdmap_path = '{tdir}/{cluster}.osdmap'.format(tdir=testdir,
-                                                   cluster=cluster_name)
-    run.wait(
-        mons.run(
-            args=[
-                'adjust-ulimits',
-                'ceph-coverage',
-                coverage_dir,
-                'osdmaptool',
-                '-c', conf_path,
-                '--clobber',
-                '--createsimple', '{num:d}'.format(
-                    num=teuthology.num_instances_of_type(ctx.cluster, 'osd',
-                                                         cluster_name),
-                ),
-                osdmap_path,
-                '--pg_bits', '2',
-                '--pgp_bits', '4',
-            ],
-            wait=False,
-        ),
-    )
 
     if not config.get('skip_mgr_daemons', False):
         log.info('Setting up mgr nodes...')
@@ -872,7 +867,6 @@ def cluster(ctx, config):
                     '--mkfs',
                     '-i', id_,
                     '--monmap', monmap_path,
-                    '--osdmap', osdmap_path,
                     '--keyring', keyring_path,
                 ],
             )
@@ -883,7 +877,6 @@ def cluster(ctx, config):
                 'rm',
                 '--',
                 monmap_path,
-                osdmap_path,
             ],
             wait=False,
         ),
@@ -1012,7 +1005,6 @@ def cluster(ctx, config):
                     keyring_path,
                     data_dir,
                     monmap_path,
-                    osdmap_path,
                     run.Raw('{tdir}/../*.pid'.format(tdir=testdir)),
                 ],
                 wait=False,
@@ -1042,7 +1034,7 @@ def osd_scrub_pgs(ctx, config):
             all_clean = True
             break
         log.info(
-            "Waiting for all osds to be active and clean, waiting on %s" % bad)
+            "Waiting for all PGs to be active and clean, waiting on %s" % bad)
         time.sleep(delays)
     if not all_clean:
         raise RuntimeError("Scrubbing terminated -- not all pgs were active and clean.")
@@ -1124,6 +1116,38 @@ def run_daemon(ctx, config, type_):
             if not is_type_(role):
                 continue
             _, _, id_ = teuthology.split_role(role)
+
+            if type_ == 'osd':
+                datadir='/var/lib/ceph/osd/{cluster}-{id}'.format(
+                    cluster=cluster_name, id=id_)
+                osd_uuid = teuthology.get_file(
+                    remote=remote,
+                    path=datadir + '/fsid',
+                    sudo=True,
+                ).strip()
+                try:
+                    remote.run(
+                        args=[
+                            'sudo', 'ceph', '--cluster', cluster_name,
+                            'osd', 'new', osd_uuid, id_,
+                        ]
+                    )
+                except:
+                    # fallback to pre-luminous (hammer or jewel)
+                    remote.run(
+                        args=[
+                            'sudo', 'ceph', '--cluster', cluster_name,
+                            'osd', 'create', osd_uuid,
+                        ]
+                    )
+                if config.get('add_osds_to_crush'):
+                    remote.run(
+                        args=[
+                            'sudo', 'ceph', '--cluster', cluster_name,
+                            'osd', 'crush', 'create-or-move', 'osd.' + id_,
+                            '1.0', 'host=localhost', 'root=default',
+                        ]
+                    )
 
             run_cmd = [
                 'sudo',
@@ -1579,6 +1603,7 @@ def task(ctx, config):
         lambda: run_daemon(ctx=ctx, config=config, type_='mgr'),
         lambda: crush_setup(ctx=ctx, config=config),
         lambda: run_daemon(ctx=ctx, config=config, type_='osd'),
+        lambda: create_rbd_pool(ctx=ctx, config=config),
         lambda: cephfs_setup(ctx=ctx, config=config),
         lambda: run_daemon(ctx=ctx, config=config, type_='mds'),
     ]
@@ -1603,3 +1628,20 @@ def task(ctx, config):
         finally:
             if config.get('wait-for-scrub', True):
                 osd_scrub_pgs(ctx, config)
+
+            # stop logging health to clog during shutdown, or else we generate
+            # a bunch of scary messages unrelated to our actual run.
+            firstmon = teuthology.get_first_mon(ctx, config, config['cluster'])
+            (mon0_remote,) = ctx.cluster.only(firstmon).remotes.keys()
+            mon0_remote.run(
+                args=[
+                    'sudo',
+                    'ceph',
+                    '--cluster', config['cluster'],
+                    'tell',
+                    'mon.*',
+                    'injectargs',
+                    '--',
+                    '--no-mon-health-to-clog',
+                ]
+            )

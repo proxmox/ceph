@@ -62,10 +62,10 @@
 # main package definition
 #################################################################################
 Name:		ceph
-Version:	12.1.0
+Version:	12.1.1
 Release:	0%{?dist}
 %if 0%{?fedora} || 0%{?rhel}
-Epoch:		1
+Epoch:		2
 %endif
 
 # define %_epoch_prefix macro which will expand to the empty string if %epoch is undefined
@@ -77,7 +77,7 @@ License:	LGPL-2.1 and CC-BY-SA-1.0 and GPL-2.0 and BSL-1.0 and BSD-3-Clause and 
 Group:		System/Filesystems
 %endif
 URL:		http://ceph.com/
-Source0:	http://ceph.com/download/ceph-12.1.0.tar.bz2
+Source0:	http://ceph.com/download/ceph-12.1.1.tar.bz2
 %if 0%{?suse_version}
 %if 0%{?is_opensuse}
 ExclusiveArch:  x86_64 aarch64 ppc64 ppc64le
@@ -131,6 +131,7 @@ BuildRequires:	python-pecan
 BuildRequires:	python-requests
 BuildRequires:	python-virtualenv
 BuildRequires:	python-werkzeug
+BuildRequires:	socat
 BuildRequires:	snappy-devel
 BuildRequires:	udev
 BuildRequires:	util-linux
@@ -611,6 +612,7 @@ Summary:	Ceph distributed file system client library
 %if 0%{?suse_version}
 Group:		System/Libraries
 %endif
+Obsoletes:	libcephfs1
 %if 0%{?rhel} || 0%{?fedora}
 Obsoletes:	ceph-libs < %{_epoch_prefix}%{version}-%{release}
 Obsoletes:	ceph-libcephfs
@@ -773,7 +775,7 @@ python-rbd, python-rgw or python-cephfs instead.
 # common
 #################################################################################
 %prep
-%autosetup -p1 -n ceph-12.1.0
+%autosetup -p1 -n ceph-12.1.1
 
 %build
 %if 0%{with cephfs_java}
@@ -836,10 +838,10 @@ cmake .. \
 %endif
 %if %{with lttng}
     -DWITH_LTTNG=ON \
-    -DHAVE_BABELTRACE=ON \
+    -DWTIH_BABELTRACE=ON \
 %else
     -DWITH_LTTNG=OFF \
-    -DHAVE_BABELTRACE=OFF \
+    -DWTIH_BABELTRACE=OFF \
 %endif
     $CEPH_EXTRA_CMAKE_ARGS \
 %if 0%{with ocf}
@@ -1007,6 +1009,7 @@ fi
 
 %postun base
 /sbin/ldconfig
+test -n "$FIRST_ARG" || FIRST_ARG=$1
 %if 0%{?suse_version}
 DISABLE_RESTART_ON_UPDATE="yes"
 %service_del_postun ceph-disk@\*.service ceph.target
@@ -1027,8 +1030,7 @@ if [ $FIRST_ARG -ge 1 ] ; then
 fi
 
 %files common
-%docdir %{_docdir}
-%docdir %{_docdir}/ceph
+%dir %{_docdir}/ceph
 %doc %{_docdir}/ceph/sample.ceph.conf
 %doc %{_docdir}/ceph/COPYING
 %{_bindir}/ceph

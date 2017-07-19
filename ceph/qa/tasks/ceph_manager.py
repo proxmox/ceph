@@ -125,6 +125,7 @@ class Thrasher:
         self.chance_thrash_cluster_full = self.config.get('chance_thrash_cluster_full', .05)
         self.chance_thrash_pg_upmap = self.config.get('chance_thrash_pg_upmap', 1.0)
         self.chance_thrash_pg_upmap_items = self.config.get('chance_thrash_pg_upmap', 1.0)
+        self.random_eio = self.config.get('random_eio')
 
         num_osds = self.in_osds + self.out_osds
         self.max_pgs = self.config.get("max_pgs_per_pool_osd", 1200) * num_osds
@@ -435,6 +436,12 @@ class Thrasher:
             skip_admin_check=skip_admin_check)
         self.dead_osds.remove(osd)
         self.live_osds.append(osd)
+        if self.random_eio > 0 and osd is self.rerrosd:
+            self.ceph_manager.raw_cluster_cmd('tell', 'osd.'+str(self.rerrosd),
+                          'injectargs', '--', '--filestore_debug_random_read_err='+str(self.random_eio))
+            self.ceph_manager.raw_cluster_cmd('tell', 'osd.'+str(self.rerrosd),
+                          'injectargs', '--', '--bluestore_debug_random_read_err='+str(self.random_eio))
+
 
     def out_osd(self, osd=None):
         """
@@ -955,6 +962,12 @@ class Thrasher:
         scrubint = self.config.get("scrub_interval", -1)
         maxdead = self.config.get("max_dead", 0)
         delay = self.config.get("op_delay", 5)
+        self.rerrosd = self.live_osds[0]
+        if self.random_eio > 0:
+            self.ceph_manager.raw_cluster_cmd('tell', 'osd.'+str(self.rerrosd),
+                          'injectargs', '--', '--filestore_debug_random_read_err='+str(self.random_eio))
+            self.ceph_manager.raw_cluster_cmd('tell', 'osd.'+str(self.rerrosd),
+                          'injectargs', '--', '--bluestore_debug_random_read_err='+str(self.random_eio))
         self.log("starting do_thrash")
         while not self.stopping:
             to_log = [str(x) for x in ["in_osds: ", self.in_osds,
@@ -982,6 +995,11 @@ class Thrasher:
                         Scrubber(self.ceph_manager, self.config)
             self.choose_action()()
             time.sleep(delay)
+        if self.random_eio > 0:
+            self.ceph_manager.raw_cluster_cmd('tell', 'osd.'+str(self.rerrosd),
+                          'injectargs', '--', '--filestore_debug_random_read_err=0.0')
+            self.ceph_manager.raw_cluster_cmd('tell', 'osd.'+str(self.rerrosd),
+                          'injectargs', '--', '--bluestore_debug_random_read_err=0.0')
         for pool in list(self.pools_to_fix_pgp_num):
             if self.ceph_manager.get_pool_pg_num(pool) > 0:
                 self.fix_pgp_num(pool)
@@ -1159,7 +1177,7 @@ class CephManager:
                   "-w"],
             wait=False, stdout=StringIO(), stdin=run.PIPE)
 
-    def flush_pg_stats(self, osds, no_wait=None, wait_for_mon=3*5):
+    def flush_pg_stats(self, osds, no_wait=None, wait_for_mon=300):
         """
         Flush pg stats from a list of OSD ids, ensuring they are reflected
         all the way to the monitor.  Luminous and later only.
@@ -1171,7 +1189,7 @@ class CephManager:
                         stat seq from monitor anymore. in that case, you need
                         to pass a blacklist.
         :param wait_for_mon: wait for mon to be synced with mgr. 0 to disable
-                             it. (3 * mon_mgr_digest_period, by default)
+                             it. (5 min by default)
         """
         seq = {osd: self.raw_cluster_cmd('tell', 'osd.%d' % osd, 'flush_pg_stats')
                for osd in osds}

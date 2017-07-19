@@ -54,6 +54,7 @@ const char *ceph_osd_flag_name(unsigned flag)
   case CEPH_OSD_FLAG_KNOWN_REDIR: return "known_if_redirected";
   case CEPH_OSD_FLAG_FULL_TRY: return "full_try";
   case CEPH_OSD_FLAG_FULL_FORCE: return "full_force";
+  case CEPH_OSD_FLAG_IGNORE_REDIRECT: return "ignore_redirect";
   default: return "???";
   }
 }
@@ -834,6 +835,8 @@ std::string pg_state_string(int state)
     oss << "snaptrim+";
   if (state & PG_STATE_SNAPTRIM_WAIT)
     oss << "snaptrim_wait+";
+  if (state & PG_STATE_SNAPTRIM_ERROR)
+    oss << "snaptrim_error+";
   string ret(oss.str());
   if (ret.length() > 0)
     ret.resize(ret.length() - 1);
@@ -891,6 +894,8 @@ int pg_string_state(const std::string& state)
     type = PG_STATE_SNAPTRIM;
   else if (state == "snaptrim_wait")
     type = PG_STATE_SNAPTRIM_WAIT;
+  else if (state == "snaptrim_error")
+    type = PG_STATE_SNAPTRIM_ERROR;
   else
     type = -1;
   return type;
@@ -986,7 +991,7 @@ static opt_mapping_t opt_mapping = boost::assign::map_list_of
 	     pool_opts_t::CSUM_MIN_BLOCK, pool_opts_t::INT));
 
 bool pool_opts_t::is_opt_name(const std::string& name) {
-    return opt_mapping.find(name) != opt_mapping.end();
+    return opt_mapping.count(name);
 }
 
 pool_opts_t::opt_desc_t pool_opts_t::get_opt_desc(const std::string& name) {
@@ -996,7 +1001,7 @@ pool_opts_t::opt_desc_t pool_opts_t::get_opt_desc(const std::string& name) {
 }
 
 bool pool_opts_t::is_set(pool_opts_t::key_t key) const {
-    return opts.find(key) != opts.end();
+    return opts.count(key);
 }
 
 const pool_opts_t::value_t& pool_opts_t::get(pool_opts_t::key_t key) const {
@@ -5279,6 +5284,7 @@ ostream &ObjectRecoveryProgress::print(ostream &out) const
 	     << ", data_complete:" << ( data_complete ? "true" : "false" )
 	     << ", omap_recovered_to:" << omap_recovered_to
 	     << ", omap_complete:" << ( omap_complete ? "true" : "false" )
+	     << ", error:" << ( error ? "true" : "false" )
 	     << ")";
 }
 
@@ -5948,3 +5954,33 @@ ostream& operator<<(ostream& out, const store_statfs_t &s)
       << ")";
   return out;
 }
+
+void OSDOp::clear_data(vector<OSDOp>& ops)
+{
+  for (unsigned i = 0; i < ops.size(); i++) {
+    OSDOp& op = ops[i];
+    op.outdata.clear();
+    if (ceph_osd_op_type_attr(op.op.op) &&
+        op.op.xattr.name_len &&
+	op.indata.length() >= op.op.xattr.name_len) {
+      bufferptr bp(op.op.xattr.name_len);
+      bufferlist bl;
+      bl.append(bp);
+      bl.copy_in(0, op.op.xattr.name_len, op.indata);
+      op.indata.claim(bl);
+    } else if (ceph_osd_op_type_exec(op.op.op) &&
+               op.op.cls.class_len &&
+	       op.indata.length() >
+	         (op.op.cls.class_len + op.op.cls.method_len)) {
+      __u8 len = op.op.cls.class_len + op.op.cls.method_len;
+      bufferptr bp(len);
+      bufferlist bl;
+      bl.append(bp);
+      bl.copy_in(0, len, op.indata);
+      op.indata.claim(bl);
+    } else {
+      op.indata.clear();
+    }
+  }
+}
+

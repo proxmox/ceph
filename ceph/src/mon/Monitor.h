@@ -27,10 +27,12 @@
 #include <cmath>
 
 #include "include/types.h"
+#include "include/health.h"
 #include "msg/Messenger.h"
 
 #include "common/Timer.h"
 
+#include "health_check.h"
 #include "MonMap.h"
 #include "Elector.h"
 #include "Paxos.h"
@@ -496,6 +498,7 @@ private:
   version_t timecheck_round;
   unsigned int timecheck_acks;
   utime_t timecheck_round_start;
+  friend class HealthMonitor;
   /* When we hit a skew we will start a new round based off of
    * 'mon_timecheck_skew_interval'. Each new round will be backed off
    * until we hit 'mon_timecheck_interval' -- which is the typical
@@ -556,6 +559,9 @@ private:
 public:
   epoch_t get_epoch();
   int get_leader() const { return leader; }
+  string get_leader_name() {
+    return quorum.empty() ? string() : monmap->get_name(*quorum.begin());
+  }
   const set<int>& get_quorum() const { return quorum; }
   list<string> get_quorum_names() {
     list<string> q;
@@ -594,6 +600,7 @@ public:
   void win_election(epoch_t epoch, set<int>& q,
 		    uint64_t features,
                     const mon_feature_t& mon_features,
+		    const map<int,Metadata>& metadata,
 		    const MonCommand *cmdset, int cmdsize);
   void lose_election(epoch_t epoch, set<int>& q, int l,
 		     uint64_t features,
@@ -611,8 +618,6 @@ public:
    * Vector holding the Services serviced by this Monitor.
    */
   vector<PaxosService*> paxos_service;
-
-  PaxosService *get_paxos_service_by_name(const string& name);
 
   class PGMonitor *pgmon() {
     return (class PGMonitor *)paxos_service[PAXOS_PGMAP];
@@ -643,6 +648,10 @@ public:
   }
 
   class MgrStatMonitor *mgrstatmon() {
+    return (class MgrStatMonitor*) paxos_service[PAXOS_MGRSTAT];
+  }
+
+  class MgrStatMonitor *healthmon() {
     return (class MgrStatMonitor*) paxos_service[PAXOS_MGRSTAT];
   }
 
@@ -693,6 +702,7 @@ public:
   int print_nodes(Formatter *f, ostream& err);
 
   // Accumulate metadata across calls to update_mon_metadata
+  map<int, Metadata> mon_metadata;
   map<int, Metadata> pending_metadata;
 
   /**
@@ -734,6 +744,18 @@ public:
    */
   health_status_t get_health(list<string>& status, bufferlist *detailbl,
                              Formatter *f);
+
+  health_status_t get_health_status(
+    bool want_detail,
+    Formatter *f,
+    std::string *plain,
+    const char *sep1 = " ",
+    const char *sep2 = "; ");
+  void log_health(
+    const health_check_map_t& updated,
+    const health_check_map_t& previous,
+    MonitorDBStore::TransactionRef t);
+
   void get_cluster_status(stringstream &ss, Formatter *f);
 
   void reply_command(MonOpRequestRef op, int rc, const string &rs, version_t version);
@@ -873,8 +895,9 @@ public:
   int write_default_keyring(bufferlist& bl);
   void extract_save_mon_key(KeyRing& keyring);
 
+  void collect_metadata(Metadata *m);
   void update_mon_metadata(int from, Metadata&& m);
-  int load_metadata(map<int, Metadata>& m);
+  int load_metadata();
   void count_metadata(const string& field, Formatter *f);
 
   // features

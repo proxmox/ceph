@@ -298,27 +298,36 @@ int RocksDBStore::do_open(ostream &out, bool create_if_missing)
   }
 
   // caches
-  if (!cache_size) {
+  if (!set_cache_flag) {
     cache_size = g_conf->rocksdb_cache_size;
   }
   uint64_t row_cache_size = cache_size * g_conf->rocksdb_cache_row_ratio;
   uint64_t block_cache_size = cache_size - row_cache_size;
-  if (g_conf->rocksdb_cache_type == "lru") {
-    bbt_opts.block_cache = rocksdb::NewLRUCache(
-      block_cache_size,
-      g_conf->rocksdb_cache_shard_bits);
-  } else if (g_conf->rocksdb_cache_type == "clock") {
-    bbt_opts.block_cache = rocksdb::NewClockCache(
-      block_cache_size,
-      g_conf->rocksdb_cache_shard_bits);
+
+  if (block_cache_size == 0) {
+    // disable block cache
+    dout(10) << __func__ << " block_cache_size " << block_cache_size
+             << ", setting no_block_cache " << dendl;
+    bbt_opts.no_block_cache = true;
   } else {
-    derr << "unrecognized rocksdb_cache_type '" << g_conf->rocksdb_cache_type
-	 << "'" << dendl;
-    return -EINVAL;
+    if (g_conf->rocksdb_cache_type == "lru") {
+      bbt_opts.block_cache = rocksdb::NewLRUCache(
+        block_cache_size,
+        g_conf->rocksdb_cache_shard_bits);
+    } else if (g_conf->rocksdb_cache_type == "clock") {
+      bbt_opts.block_cache = rocksdb::NewClockCache(
+        block_cache_size,
+        g_conf->rocksdb_cache_shard_bits);
+    } else {
+      derr << "unrecognized rocksdb_cache_type '" << g_conf->rocksdb_cache_type
+  	 << "'" << dendl;
+      return -EINVAL;
+    }
   }
   bbt_opts.block_size = g_conf->rocksdb_block_size;
 
-  opt.row_cache = rocksdb::NewLRUCache(row_cache_size,
+  if (row_cache_size > 0)
+    opt.row_cache = rocksdb::NewLRUCache(row_cache_size,
 				       g_conf->rocksdb_cache_shard_bits);
 
   if (g_conf->kstore_rocksdb_bloom_bits_per_key > 0) {
@@ -716,8 +725,12 @@ int RocksDBStore::get(
     std::string value;
     std::string bound = combine_strings(prefix, *i);
     auto status = db->Get(rocksdb::ReadOptions(), rocksdb::Slice(bound), &value);
-    if (status.ok())
+    if (status.ok()) {
       (*out)[*i].append(value);
+    } else if (status.IsIOError()) {
+      ceph_abort_msg(cct, status.ToString());
+    }
+
   }
   utime_t lat = ceph_clock_now() - start;
   logger->inc(l_rocksdb_gets);
@@ -739,8 +752,10 @@ int RocksDBStore::get(
   s = db->Get(rocksdb::ReadOptions(), rocksdb::Slice(k), &value);
   if (s.ok()) {
     out->append(value);
-  } else {
+  } else if (s.IsNotFound()) {
     r = -ENOENT;
+  } else {
+    ceph_abort_msg(cct, s.ToString());
   }
   utime_t lat = ceph_clock_now() - start;
   logger->inc(l_rocksdb_gets);
@@ -763,8 +778,10 @@ int RocksDBStore::get(
   s = db->Get(rocksdb::ReadOptions(), rocksdb::Slice(k), &value);
   if (s.ok()) {
     out->append(value);
-  } else {
+  } else if (s.IsNotFound()) {
     r = -ENOENT;
+  } else {
+    ceph_abort_msg(cct, s.ToString());
   }
   utime_t lat = ceph_clock_now() - start;
   logger->inc(l_rocksdb_gets);
@@ -882,17 +899,20 @@ RocksDBStore::RocksDBWholeSpaceIteratorImpl::~RocksDBWholeSpaceIteratorImpl()
 int RocksDBStore::RocksDBWholeSpaceIteratorImpl::seek_to_first()
 {
   dbiter->SeekToFirst();
+  assert(!dbiter->status().IsIOError());
   return dbiter->status().ok() ? 0 : -1;
 }
 int RocksDBStore::RocksDBWholeSpaceIteratorImpl::seek_to_first(const string &prefix)
 {
   rocksdb::Slice slice_prefix(prefix);
   dbiter->Seek(slice_prefix);
+  assert(!dbiter->status().IsIOError());
   return dbiter->status().ok() ? 0 : -1;
 }
 int RocksDBStore::RocksDBWholeSpaceIteratorImpl::seek_to_last()
 {
   dbiter->SeekToLast();
+  assert(!dbiter->status().IsIOError());
   return dbiter->status().ok() ? 0 : -1;
 }
 int RocksDBStore::RocksDBWholeSpaceIteratorImpl::seek_to_last(const string &prefix)
@@ -934,6 +954,7 @@ int RocksDBStore::RocksDBWholeSpaceIteratorImpl::next()
   if (valid()) {
     dbiter->Next();
   }
+  assert(!dbiter->status().IsIOError());
   return dbiter->status().ok() ? 0 : -1;
 }
 int RocksDBStore::RocksDBWholeSpaceIteratorImpl::prev()
@@ -941,6 +962,7 @@ int RocksDBStore::RocksDBWholeSpaceIteratorImpl::prev()
   if (valid()) {
     dbiter->Prev();
   }
+  assert(!dbiter->status().IsIOError());
   return dbiter->status().ok() ? 0 : -1;
 }
 string RocksDBStore::RocksDBWholeSpaceIteratorImpl::key()

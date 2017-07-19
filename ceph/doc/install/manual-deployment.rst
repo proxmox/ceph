@@ -295,7 +295,7 @@ Manager daemon configuration
 
 On each node where you run a ceph-mon daemon, you should also set up a ceph-mgr daemon.
 
-See `../mgr/administrator`_
+See :doc:`../mgr/administrator`
 
 Adding OSDs
 ===========
@@ -323,7 +323,7 @@ on  ``node2`` and ``node3``:
 #. Prepare the OSD. ::
 
 	ssh {node-name}
-	sudo ceph-disk prepare --cluster {cluster-name} --cluster-uuid {uuid} --fs-type {ext4|xfs|btrfs} {data-path} [{journal-path}]
+	sudo ceph-disk prepare --cluster {cluster-name} --cluster-uuid {uuid} {data-path} [{journal-path}]
 
    For example::
 

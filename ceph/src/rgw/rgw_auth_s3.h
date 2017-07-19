@@ -46,7 +46,7 @@ class ExternalAuthStrategy : public rgw::auth::Strategy,
                             ) const override {
     auto apl = rgw::auth::add_sysreq(cct, store, s,
       rgw::auth::RemoteApplier(cct, store, std::move(acl_alg), info,
-                               false /* no implicit tenants */));
+                               cct->_conf->rgw_keystone_implicit_tenants));
     /* TODO(rzarzynski): replace with static_ptr. */
     return aplptr_t(new decltype(apl)(std::move(apl)));
   }
@@ -316,6 +316,7 @@ namespace auth {
 namespace s3 {
 
 static constexpr char AWS4_HMAC_SHA256_STR[] = "AWS4-HMAC-SHA256";
+static constexpr char AWS4_HMAC_SHA256_PAYLOAD_STR[] = "AWS4-HMAC-SHA256-PAYLOAD";
 
 static constexpr char AWS4_EMPTY_PAYLOAD_HASH[] = \
   "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";

@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 2.8.11)
 
 project(ceph)
-set(VERSION 12.1.0)
+set(VERSION 12.1.1)
 
 if(POLICY CMP0046)
   # Tweak policies (this one disables "missing" dependency warning)
@@ -214,10 +214,16 @@ set(HAVE_LIBFUSE ${FUSE_FOUND})
 endif(${WITH_FUSE})
 
 option(WITH_XFS "XFS is here" ON)
-if(${WITH_XFS})
-find_package(xfs)
-set(HAVE_LIBXFS ${XFS_FOUND})
-endif(${WITH_XFS})
+if(WITH_XFS)
+  find_package(xfs)
+  set(HAVE_LIBXFS ${XFS_FOUND})
+endif()
+
+option(WITH_ZFS "enable LibZFS if found" OFF)
+if(WITH_ZFS)
+  find_package(zfs)
+  set(HAVE_LIBZFS ${ZFS_FOUND})
+endif()
 
 option(WITH_SPDK "Enable SPDK" OFF)
 if(WITH_SPDK)
@@ -453,17 +459,16 @@ endif(${WITH_LTTNG})
 option(WITH_OSD_INSTRUMENT_FUNCTIONS OFF)
 
 #option for Babeltrace
-option(HAVE_BABELTRACE "Babeltrace libraries are enabled" ON)
-if(${HAVE_BABELTRACE})
+option(WITH_BABELTRACE "Babeltrace libraries are enabled" ON)
+if(WITH_BABELTRACE)
+  set(HAVE_BABELTRACE ON)
   find_package(babeltrace REQUIRED)
-  set(WITH_BABELTRACE ${BABELTRACE_FOUND})
   set(HAVE_BABELTRACE_BABELTRACE_H ${BABELTRACE_FOUND})
   set(HAVE_BABELTRACE_CTF_EVENTS_H ${BABELTRACE_FOUND})
   set(HAVE_BABELTRACE_CTF_ITERATOR_H ${BABELTRACE_FOUND})
-endif(${HAVE_BABELTRACE})
+endif(WITH_BABELTRACE)
 
 option(DEBUG_GATHER "C_Gather debugging is enabled" ON)
-option(HAVE_LIBZFS "LibZFS is enabled" OFF)
 option(ENABLE_COVERAGE "Coverage is enabled" OFF)
 option(PG_DEBUG_REFS "PG Ref debugging is enabled" OFF)
 

@@ -629,6 +629,7 @@ FileStore::FileStore(CephContext* cct, const std::string &base,
   plb.add_time_avg(l_filestore_commitcycle_latency, "commitcycle_latency", "Average latency of commit");
   plb.add_u64_counter(l_filestore_journal_full, "journal_full", "Journal writes while full");
   plb.add_time_avg(l_filestore_queue_transaction_latency_avg, "queue_transaction_latency_avg", "Store operation queue latency");
+  plb.add_time(l_filestore_sync_pause_max_lat, "sync_pause_max_latency", "Max latency of op_wq pause before syncfs");
 
   logger = plb.create_perf_counters();
 
@@ -819,7 +820,7 @@ int FileStore::mkfs()
   basedir_fd = ::open(basedir.c_str(), O_RDONLY);
   if (basedir_fd < 0) {
     ret = -errno;
-    derr << "mkfs failed to open base dir " << basedir << ": " << cpp_strerror(ret) << dendl;
+    derr << __FUNC__ << ": failed to open base dir " << basedir << ": " << cpp_strerror(ret) << dendl;
     return ret;
   }
 
@@ -828,7 +829,7 @@ int FileStore::mkfs()
   fsid_fd = ::open(fsid_fn, O_RDWR|O_CREAT, 0644);
   if (fsid_fd < 0) {
     ret = -errno;
-    derr << "mkfs: failed to open " << fsid_fn << ": " << cpp_strerror(ret) << dendl;
+    derr << __FUNC__ << ": failed to open " << fsid_fn << ": " << cpp_strerror(ret) << dendl;
     goto close_basedir_fd;
   }
 
@@ -840,9 +841,9 @@ int FileStore::mkfs()
   if (read_fsid(fsid_fd, &old_fsid) < 0 || old_fsid.is_zero()) {
     if (fsid.is_zero()) {
       fsid.generate_random();
-      dout(1) << "mkfs generated fsid " << fsid << dendl;
+      dout(1) << __FUNC__ << ": generated fsid " << fsid << dendl;
     } else {
-      dout(1) << "mkfs using provided fsid " << fsid << dendl;
+      dout(1) << __FUNC__ << ": using provided fsid " << fsid << dendl;
     }
 
     fsid.print(fsid_str);
@@ -866,7 +867,7 @@ int FileStore::mkfs()
 	   << cpp_strerror(ret) << dendl;
       goto close_fsid_fd;
     }
-    dout(10) << "mkfs fsid is " << fsid << dendl;
+    dout(10) << __FUNC__ << ": fsid is " << fsid << dendl;
   } else {
     if (!fsid.is_zero() && fsid != old_fsid) {
       derr << __FUNC__ << ": on-disk fsid " << old_fsid << " != provided " << fsid << dendl;
@@ -902,6 +903,14 @@ int FileStore::mkfs()
 	 << cpp_strerror(ret) << dendl;
     goto close_fsid_fd;
   }
+
+#if defined(__linux__)
+  if (basefs.f_type == BTRFS_SUPER_MAGIC &&
+      !g_ceph_context->check_experimental_feature_enabled("btrfs")) {
+    derr << __FUNC__ << ": deprecated btrfs support is not enabled" << dendl;
+    goto close_fsid_fd;
+  }
+#endif
 
   create_backend(basefs.f_type);
 
@@ -1156,6 +1165,14 @@ int FileStore::_detect_fs()
     return -errno;
 
   blk_size = st.f_bsize;
+
+#if defined(__linux__)
+  if (st.f_type == BTRFS_SUPER_MAGIC &&
+      !g_ceph_context->check_experimental_feature_enabled("btrfs")) {
+    derr <<__FUNC__ << ": deprecated btrfs support is not enabled" << dendl;
+    return -EPERM;
+  }
+#endif
 
   create_backend(st.f_type);
 
@@ -3183,8 +3200,7 @@ int FileStore::read(
   uint64_t offset,
   size_t len,
   bufferlist& bl,
-  uint32_t op_flags,
-  bool allow_eio)
+  uint32_t op_flags)
 {
   int got;
   tracepoint(objectstore, read_enter, _cid.c_str(), offset, len);
@@ -3220,10 +3236,6 @@ int FileStore::read(
   if (got < 0) {
     dout(10) << __FUNC__ << ": (" << cid << "/" << oid << ") pread error: " << cpp_strerror(got) << dendl;
     lfn_close(fd);
-    if (!(allow_eio || !m_filestore_fail_eio || got != -EIO)) {
-      derr << __FUNC__ << ": (" << cid << "/" << oid << ") pread error: " << cpp_strerror(got) << dendl;
-      assert(0 == "eio on pread");
-    }
     return got;
   }
   bptr.set_length(got);   // properly size the buffer
@@ -3253,6 +3265,10 @@ int FileStore::read(
 	   << got << "/" << len << dendl;
   if (cct->_conf->filestore_debug_inject_read_err &&
       debug_data_eio(oid)) {
+    return -EIO;
+  } else if (cct->_conf->filestore_debug_random_read_err &&
+    (rand() % (int)(cct->_conf->filestore_debug_random_read_err * 100.0)) == 0) {
+    dout(0) << __func__ << ": inject random EIO" << dendl;
     return -EIO;
   } else {
     tracepoint(objectstore, read_exit, got);
@@ -3968,7 +3984,10 @@ void FileStore::sync_entry()
       sync_entry_timeo_lock.Lock();
       SyncEntryTimeout *sync_entry_timeo =
 	new SyncEntryTimeout(cct, m_filestore_commit_timeout);
-      timer.add_event_after(m_filestore_commit_timeout, sync_entry_timeo);
+      if (!timer.add_event_after(m_filestore_commit_timeout,
+				 sync_entry_timeo)) {
+	sync_entry_timeo = nullptr;
+      }
       sync_entry_timeo_lock.Unlock();
 
       logger->set(l_filestore_committing, 1);
@@ -4010,8 +4029,7 @@ void FileStore::sync_entry()
 	  }
 	  dout(20) << " done waiting for checkpoint " << cid << " to complete" << dendl;
 	}
-      } else
-      {
+      } else {
 	apply_manager.commit_started();
 	op_tp.unpause();
 
@@ -4043,6 +4061,10 @@ void FileStore::sync_entry()
       utime_t lat = done - start;
       utime_t dur = done - startwait;
       dout(10) << __FUNC__ << ": commit took " << lat << ", interval was " << dur << dendl;
+      utime_t max_pause_lat = logger->tget(l_filestore_sync_pause_max_lat);
+      if (max_pause_lat < dur - lat) {
+        logger->tinc(l_filestore_sync_pause_max_lat, dur - lat);
+      }
 
       logger->inc(l_filestore_commitcycle);
       logger->tinc(l_filestore_commitcycle_latency, lat);
@@ -4072,9 +4094,10 @@ void FileStore::sync_entry()
 
       dout(15) << __FUNC__ << ": committed to op_seq " << cp << dendl;
 
-      sync_entry_timeo_lock.Lock();
-      timer.cancel_event(sync_entry_timeo);
-      sync_entry_timeo_lock.Unlock();
+      if (sync_entry_timeo) {
+	Mutex::Locker lock(sync_entry_timeo_lock);
+	timer.cancel_event(sync_entry_timeo);
+      }
     } else {
       op_tp.unpause();
     }
@@ -4333,6 +4356,7 @@ void FileStore::inject_mdata_error(const ghobject_t &oid) {
   dout(10) << __FUNC__ << ": init error on " << oid << dendl;
   mdata_error_set.insert(oid);
 }
+
 void FileStore::debug_obj_on_delete(const ghobject_t &oid) {
   Mutex::Locker l(read_error_lock);
   dout(10) << __FUNC__ << ": clear error on " << oid << dendl;

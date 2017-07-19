@@ -368,8 +368,8 @@ int main(int argc, const char **argv)
 	  string name;
 	  monmap.get_addr_name(a, name);
 	  monmap.rename(name, g_conf->name.get_id());
-	  cout << argv[0] << ": renaming mon." << name << " " << a
-	       << " to mon." << g_conf->name.get_id() << std::endl;
+	  dout(0) << argv[0] << ": renaming mon." << name << " " << a
+	       << " to mon." << g_conf->name.get_id() << dendl;
 	}
       } else {
 	// is a local address listed without a name?  if so, name myself.
@@ -382,12 +382,12 @@ int main(int argc, const char **argv)
 	  monmap.get_addr_name(local, name);
 
 	  if (name.compare(0, 7, "noname-") == 0) {
-	    cout << argv[0] << ": mon." << name << " " << local
-		 << " is local, renaming to mon." << g_conf->name.get_id() << std::endl;
+	    dout(0) << argv[0] << ": mon." << name << " " << local
+		 << " is local, renaming to mon." << g_conf->name.get_id() << dendl;
 	    monmap.rename(name, g_conf->name.get_id());
 	  } else {
-	    cout << argv[0] << ": mon." << name << " " << local
-		 << " is local, but not 'noname-' + something; not assuming it's me" << std::endl;
+	    dout(0) << argv[0] << ": mon." << name << " " << local
+		 << " is local, but not 'noname-' + something; not assuming it's me" << dendl;
 	  }
 	}
       }
@@ -395,7 +395,7 @@ int main(int argc, const char **argv)
 
     if (!g_conf->fsid.is_zero()) {
       monmap.fsid = g_conf->fsid;
-      cout << argv[0] << ": set fsid to " << g_conf->fsid << std::endl;
+      dout(0) << argv[0] << ": set fsid to " << g_conf->fsid << dendl;
     }
     
     if (monmap.fsid.is_zero()) {
@@ -435,8 +435,8 @@ int main(int argc, const char **argv)
       exit(1);
     }
     store.close();
-    cout << argv[0] << ": created monfs at " << g_conf->mon_data 
-	 << " for " << g_conf->name << std::endl;
+    dout(0) << argv[0] << ": created monfs at " << g_conf->mon_data 
+	 << " for " << g_conf->name << dendl;
     return 0;
   }
 
@@ -500,6 +500,7 @@ int main(int argc, const char **argv)
           derr << err_msg << dendl;
         prefork.exit(err);
       }
+      setsid();
       global_init_postfork_start(g_ceph_context);
     }
     common_init_finish(g_ceph_context);
@@ -706,16 +707,36 @@ int main(int argc, const char **argv)
   msgr->set_policy_throttlers(entity_name_t::TYPE_MDS, daemon_throttler,
 				     NULL);
 
+  entity_addr_t bind_addr = ipaddr;
+  entity_addr_t public_addr = ipaddr;
+
+  // check if the public_bind_addr option is set
+  if (!g_conf->public_bind_addr.is_blank_ip()) {
+    bind_addr = g_conf->public_bind_addr;
+
+    // set the default port if not already set
+    if (bind_addr.get_port() == 0) {
+      bind_addr.set_port(CEPH_MON_PORT);
+    }
+  }
+
   dout(0) << "starting " << g_conf->name << " rank " << rank
-       << " at " << ipaddr
+       << " at public addr " << public_addr
+       << " at bind addr " << bind_addr
        << " mon_data " << g_conf->mon_data
        << " fsid " << monmap.get_fsid()
        << dendl;
 
-  err = msgr->bind(ipaddr);
+  err = msgr->bind(bind_addr);
   if (err < 0) {
-    derr << "unable to bind monitor to " << ipaddr << dendl;
+    derr << "unable to bind monitor to " << bind_addr << dendl;
     prefork.exit(1);
+  }
+
+  // if the public and bind addr are different set the msgr addr
+  // to the public one, now that the bind is complete.
+  if (public_addr != bind_addr) {
+    msgr->set_addr(public_addr);
   }
 
   Messenger *mgr_msgr = Messenger::create(g_ceph_context, public_msgr_type,
@@ -726,11 +747,11 @@ int main(int argc, const char **argv)
     prefork.exit(1);
   }
 
-  cout << "starting " << g_conf->name << " rank " << rank
+  dout(0) << "starting " << g_conf->name << " rank " << rank
        << " at " << ipaddr
        << " mon_data " << g_conf->mon_data
        << " fsid " << monmap.get_fsid()
-       << std::endl;
+       << dendl;
 
   // start monitor
   mon = new Monitor(g_ceph_context, g_conf->name.get_id(), store,
@@ -802,4 +823,3 @@ int main(int argc, const char **argv)
   prefork.signal_exit(0);
   return 0;
 }
-

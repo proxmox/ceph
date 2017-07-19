@@ -32,7 +32,7 @@ from types import OsdMap, NotFound, Config, FsMap, MonMap, \
     PgSummary, Health, MonStatus
 
 import rados
-from rbd_ls import RbdLs
+from rbd_ls import RbdLs, RbdPoolLs
 from cephfs_clients import CephFSClients
 
 
@@ -79,6 +79,10 @@ class Module(MgrModule):
         # is pool name.
         self.rbd_ls = {}
 
+        # Stateful instance of RbdPoolLs, hold cached list of RBD
+        # pools
+        self.rbd_pool_ls = RbdPoolLs(self)
+
         # Stateful instances of CephFSClients, hold cached results.  Key to
         # dict is FSCID
         self.cephfs_clients = {}
@@ -102,12 +106,6 @@ class Module(MgrModule):
         self._rados.connect()
 
         return self._rados
-
-    def get_localized_config(self, key):
-        r = self.get_config(self.get_mgr_id() + '/' + key)
-        if r is None:
-            r = self.get_config(key)
-        return r
 
     def update_pool_stats(self):
         df = global_instance().get("df")
@@ -412,6 +410,19 @@ class Module(MgrModule):
                 """
                 Data consumed by the base.html template
                 """
+                status, data = global_instance().rbd_pool_ls.get()
+                if data is None:
+                    log.warning("Failed to get RBD pool list")
+                    data = []
+
+                rbd_pools = sorted([
+                    {
+                        "name": name,
+                        "url": "/rbd/{0}/".format(name)
+                    }
+                    for name in data
+                ], key=lambda k: k['name'])
+
                 fsmap = global_instance().get_sync_object(FsMap)
                 filesystems = [
                     {
@@ -423,7 +434,8 @@ class Module(MgrModule):
                 ]
 
                 return {
-                    'health': global_instance().get_sync_object(Health).data,
+                    'rbd_pools': rbd_pools,
+                    'health_status': self._health_data()['status'],
                     'filesystems': filesystems
                 }
 
@@ -518,7 +530,7 @@ class Module(MgrModule):
                         client['hostname'] = client['client_metadata']['hostname']
                     elif "kernel_version" in client['client_metadata']:
                         client['type'] = "kernel"
-                        client['version'] = client['kernel_version']
+                        client['version'] = client['client_metadata']['kernel_version']
                         client['hostname'] = client['client_metadata']['hostname']
                     else:
                         client['type'] = "unknown"
@@ -528,21 +540,36 @@ class Module(MgrModule):
                 return clients
 
             @cherrypy.expose
-            def clients(self, fs_id):
-                template = env.get_template("clients.html")
+            def clients(self, fscid_str):
+                try:
+                    fscid = int(fscid_str)
+                except ValueError:
+                    raise cherrypy.HTTPError(400,
+                        "Invalid filesystem id {0}".format(fscid_str))
 
-                toplevel_data = self._toplevel_data()
+                try:
+                    fs_name = FsMap(global_instance().get(
+                        "fs_map")).get_filesystem(fscid)['mdsmap']['fs_name']
+                except NotFound:
+                    log.warning("Missing FSCID, dumping fsmap:\n{0}".format(
+                        json.dumps(global_instance().get("fs_map"), indent=2)
+                    ))
+                    raise cherrypy.HTTPError(404,
+                                             "No filesystem with id {0}".format(fscid))
 
-                clients = self._clients(int(fs_id))
+                clients = self._clients(fscid)
                 global_instance().log.debug(json.dumps(clients, indent=2))
                 content_data = {
                     "clients": clients,
-                    "fscid": fs_id
+                    "fs_name": fs_name,
+                    "fscid": fscid,
+                    "fs_url": "/filesystem/" + fscid_str + "/"
                 }
 
+                template = env.get_template("clients.html")
                 return template.render(
                     ceph_version=global_instance().version,
-                    toplevel_data=json.dumps(toplevel_data, indent=2),
+                    toplevel_data=json.dumps(self._toplevel_data(), indent=2),
                     content_data=json.dumps(content_data, indent=2)
                 )
 
@@ -613,7 +640,6 @@ class Module(MgrModule):
                 )
 
             def _servers(self):
-                servers = global_instance().list_servers()
                 return {
                     'servers': global_instance().list_servers()
                 }
@@ -622,6 +648,21 @@ class Module(MgrModule):
             @cherrypy.tools.json_out()
             def servers_data(self):
                 return self._servers()
+
+            def _health_data(self):
+                health = global_instance().get_sync_object(Health).data
+                # Transform the `checks` dict into a list for the convenience
+                # of rendering from javascript.
+                checks = []
+                for k, v in health['checks'].iteritems():
+                    v['type'] = k
+                    checks.append(v)
+
+                checks = sorted(checks, cmp=lambda a, b: a['severity'] > b['severity'])
+
+                health['checks'] = checks
+
+                return health
 
             def _health(self):
                 # Fuse osdmap with pg_summary to get description of pools
@@ -657,14 +698,21 @@ class Module(MgrModule):
                 # to UI
                 del osd_map['pg_temp']
 
+                df = global_instance().get("df")
+                df['stats']['total_objects'] = sum(
+                    [p['stats']['objects'] for p in df['pools']])
+
                 return {
-                    "health": global_instance().get_sync_object(Health).data,
+                    "health": self._health_data(),
                     "mon_status": global_instance().get_sync_object(
                         MonStatus).data,
+                    "fs_map": global_instance().get_sync_object(FsMap).data,
                     "osd_map": osd_map,
                     "clog": list(global_instance().log_buffer),
                     "audit_log": list(global_instance().audit_buffer),
-                    "pools": pools
+                    "pools": pools,
+                    "mgr_map": global_instance().get("mgr_map"),
+                    "df": df
                 }
 
             @cherrypy.expose
@@ -732,8 +780,8 @@ class Module(MgrModule):
 
                 return dict(result)
 
-        server_addr = self.get_localized_config('server_addr')
-        server_port = self.get_localized_config('server_port') or '7000'
+        server_addr = self.get_localized_config('server_addr', '::')
+        server_port = self.get_localized_config('server_port', '7000')
         if server_addr is None:
             raise RuntimeError('no server_addr configured; try "ceph config-key put mgr/dashboard/server_addr <ip>"')
         log.info("server_addr: %s server_port: %s" % (server_addr, server_port))

@@ -15,7 +15,6 @@
 #include "PyState.h"
 #include "Gil.h"
 
-#include <boost/tokenizer.hpp>
 #include "common/errno.h"
 #include "include/stringify.h"
 
@@ -40,9 +39,9 @@ std::string PyModules::config_prefix;
 // because ServeThread is still an "incomplete" type there
 
 PyModules::PyModules(DaemonStateIndex &ds, ClusterState &cs,
-	  MonClient &mc, Objecter &objecter_, Client &client_,
-	  Finisher &f)
-  : daemon_state(ds), cluster_state(cs), monc(mc),
+	  MonClient &mc, LogChannelRef clog_, Objecter &objecter_,
+          Client &client_, Finisher &f)
+  : daemon_state(ds), cluster_state(cs), monc(mc), clog(clog_),
     objecter(objecter_), client(client_), finisher(f),
     lock("PyModules")
 {}
@@ -59,7 +58,7 @@ void PyModules::dump_server(const std::string &hostname,
 
   for (const auto &i : dmc) {
     const auto &key = i.first;
-    const std::string str_type = ceph_entity_type_name(key.first);
+    const std::string &str_type = key.first;
     const std::string &svc_name = key.second;
 
     // TODO: pick the highest version, and make sure that
@@ -117,10 +116,12 @@ PyObject *PyModules::list_servers_python()
   return f.get();
 }
 
-PyObject *PyModules::get_metadata_python(std::string const &handle,
-    entity_type_t svc_type, const std::string &svc_id)
+PyObject *PyModules::get_metadata_python(
+  std::string const &handle,
+  const std::string &svc_name,
+  const std::string &svc_id)
 {
-  auto metadata = daemon_state.get(DaemonKey(svc_type, svc_id));
+  auto metadata = daemon_state.get(DaemonKey(svc_name, svc_id));
   PyFormatter f;
   f.dump_string("hostname", metadata->hostname);
   for (const auto &i : metadata->metadata) {
@@ -130,6 +131,18 @@ PyObject *PyModules::get_metadata_python(std::string const &handle,
   return f.get();
 }
 
+PyObject *PyModules::get_daemon_status_python(
+  std::string const &handle,
+  const std::string &svc_name,
+  const std::string &svc_id)
+{
+  auto metadata = daemon_state.get(DaemonKey(svc_name, svc_id));
+  PyFormatter f;
+  for (const auto &i : metadata->service_status) {
+    f.dump_string(i.first.c_str(), i.second);
+  }
+  return f.get();
+}
 
 PyObject *PyModules::get_python(const std::string &what)
 {
@@ -174,9 +187,17 @@ PyObject *PyModules::get_python(const std::string &what)
       }
     );
     return f.get();
+  } else if (what == "service_map") {
+    PyFormatter f;
+    cluster_state.with_servicemap(
+      [&f](const ServiceMap &service_map) {
+        service_map.dump(&f);
+      }
+    );
+    return f.get();
   } else if (what == "osd_metadata") {
     PyFormatter f;
-    auto dmc = daemon_state.get_by_type(CEPH_ENTITY_TYPE_OSD);
+    auto dmc = daemon_state.get_by_service("osd");
     for (const auto &i : dmc) {
       f.open_object_section(i.first.second.c_str());
       f.dump_string("hostname", i.second->hostname);
@@ -259,6 +280,12 @@ PyObject *PyModules::get_python(const std::string &what)
       assert(false);
     }
     f.dump_string("json", json.to_str());
+    return f.get();
+  } else if (what == "mgr_map") {
+    PyFormatter f;
+    cluster_state.with_mgrmap([&f](const MgrMap &mgr_map) {
+      mgr_map.dump(&f);
+    });
     return f.get();
   } else {
     derr << "Python module requested unknown data '" << what << "'" << dendl;
@@ -360,9 +387,14 @@ int PyModules::init()
   // thread state becomes NULL)
   pMainThreadState = PyEval_SaveThread();
 
+  std::list<std::string> failed_modules;
+
   // Load python code
-  boost::tokenizer<> tok(g_conf->mgr_modules);
-  for(const auto& module_name : tok) {
+  set<string> ls;
+  cluster_state.with_mgrmap([&](const MgrMap& m) {
+      ls = m.modules;
+    });
+  for (const auto& module_name : ls) {
     dout(1) << "Loading python module '" << module_name << "'" << dendl;
     auto mod = std::unique_ptr<MgrPyModule>(new MgrPyModule(module_name, sys_path, pMainThreadState));
     int r = mod->load();
@@ -371,11 +403,17 @@ int PyModules::init()
       // or the right thread state (this is deliberate).
       derr << "Error loading module '" << module_name << "': "
         << cpp_strerror(r) << dendl;
+      failed_modules.push_back(module_name);
       // Don't drop out here, load the other modules
     } else {
       // Success!
       modules[module_name] = std::move(mod);
     }
+  }
+
+  if (!failed_modules.empty()) {
+    clog->error() << "Failed to load ceph-mgr modules: " << joinify(
+        failed_modules.begin(), failed_modules.end(), std::string(", "));
   }
 
   return 0;
@@ -607,7 +645,7 @@ void PyModules::log(const std::string &handle,
 
 PyObject* PyModules::get_counter_python(
     const std::string &handle,
-    entity_type_t svc_type,
+    const std::string &svc_name,
     const std::string &svc_id,
     const std::string &path)
 {
@@ -618,7 +656,7 @@ PyObject* PyModules::get_counter_python(
   PyFormatter f;
   f.open_array_section(path.c_str());
 
-  auto metadata = daemon_state.get(DaemonKey(svc_type, svc_id));
+  auto metadata = daemon_state.get(DaemonKey(svc_name, svc_id));
 
   // FIXME: this is unsafe, I need to either be inside DaemonStateIndex's
   // lock or put a lock on individual DaemonStates
@@ -635,8 +673,7 @@ PyObject* PyModules::get_counter_python(
       }
     } else {
       dout(4) << "Missing counter: '" << path << "' ("
-              << ceph_entity_type_name(svc_type) << "."
-              << svc_id << ")" << dendl;
+              << svc_name << "." << svc_id << ")" << dendl;
       dout(20) << "Paths are:" << dendl;
       for (const auto &i : metadata->perf_counters.instances) {
         dout(20) << i.first << dendl;
@@ -644,8 +681,7 @@ PyObject* PyModules::get_counter_python(
     }
   } else {
     dout(4) << "No daemon state for "
-              << ceph_entity_type_name(svc_type) << "."
-              << svc_id << ")" << dendl;
+              << svc_name << "." << svc_id << ")" << dendl;
   }
   f.close_section();
   return f.get();
@@ -664,3 +700,32 @@ PyObject *PyModules::get_context()
   return capsule;
 }
 
+static void _list_modules(
+  const std::string path,
+  std::set<std::string> *modules)
+{
+  DIR *dir = opendir(path.c_str());
+  if (!dir) {
+    return;
+  }
+  struct dirent *entry = NULL;
+  while ((entry = readdir(dir)) != NULL) {
+    string n(entry->d_name);
+    string fn = path + "/" + n;
+    struct stat st;
+    int r = ::stat(fn.c_str(), &st);
+    if (r == 0 && S_ISDIR(st.st_mode)) {
+      string initfn = fn + "/module.py";
+      r = ::stat(initfn.c_str(), &st);
+      if (r == 0) {
+	modules->insert(n);
+      }
+    }
+  }
+  closedir(dir);
+}
+
+void PyModules::list_modules(std::set<std::string> *modules)
+{
+  _list_modules(g_conf->mgr_module_path, modules);
+}

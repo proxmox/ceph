@@ -236,7 +236,7 @@ function test_kill_daemon() {
         # kill the mon and verify it cannot be reached
         #
         kill_daemon $pidfile TERM || return 1
-        ! timeout 60 ceph --connect-timeout 60 status || return 1
+        ! timeout 5 ceph status || return 1
     done
 
     teardown $dir || return 1
@@ -317,7 +317,7 @@ function test_kill_daemons() {
     # kill the mon and verify it cannot be reached
     #
     kill_daemons $dir TERM || return 1
-    ! timeout 60 ceph --connect-timeout 60 status || return 1
+    ! timeout 5 ceph status || return 1
     teardown $dir || return 1
 }
 
@@ -363,7 +363,7 @@ function test_kill_daemons() {
 # @param ... can be any option valid for ceph-mon
 # @return 0 on success, 1 on error
 #
-function run_mon() {
+function run_mon_no_pool() {
     local dir=$1
     shift
     local id=$1
@@ -403,6 +403,18 @@ function run_mon() {
 fsid = $(get_config mon $id fsid)
 mon host = $(get_config mon $id mon_host)
 EOF
+}
+
+function run_mon() {
+    local dir=$1
+    shift
+    local id=$1
+    shift
+
+    run_mon_no_pool $dir $id "$@" || return 1
+
+    ceph osd pool create rbd 8
+
     if test -z "$(get_config mon $id mon_initial_members)" ; then
         ceph osd pool delete rbd rbd --yes-i-really-really-mean-it || return 1
         ceph osd pool create rbd $PG_NUM || return 1
@@ -417,12 +429,12 @@ function test_run_mon() {
 
     run_mon $dir a --mon-initial-members=a || return 1
     # rbd has not been deleted / created, hence it has pool id 0
-    ceph osd dump | grep "pool 0 'rbd'" || return 1
+    ceph osd dump | grep "pool 1 'rbd'" || return 1
     kill_daemons $dir || return 1
 
     run_mon $dir a || return 1
     # rbd has been deleted / created, hence it does not have pool id 0
-    ! ceph osd dump | grep "pool 0 'rbd'" || return 1
+    ! ceph osd dump | grep "pool 1 'rbd'" || return 1
     local size=$(CEPH_ARGS='' ceph --format=json daemon $dir/ceph-mon.a.asok \
         config get osd_pool_default_size)
     test "$size" = '{"osd_pool_default_size":"3"}' || return 1
@@ -674,6 +686,7 @@ function activate_osd() {
     ceph_args+=" --pid-file=$dir/\$name.pid"
     ceph_args+=" --osd-max-object-name-len 460"
     ceph_args+=" --osd-max-object-namespace-len 64"
+    ceph_args+=" --enable-experimental-unrecoverable-data-corrupting-features *"
     ceph_args+=" "
     ceph_args+="$@"
     mkdir -p $osd_data
@@ -1160,7 +1173,7 @@ function test_get_last_scrub_stamp() {
     run_mgr $dir x || return 1
     run_osd $dir 0 || return 1
     wait_for_clean || return 1
-    stamp=$(get_last_scrub_stamp 1.0)
+    stamp=$(get_last_scrub_stamp 2.0)
     test -n "$stamp" || return 1
     teardown $dir || return 1
 }
@@ -1323,8 +1336,10 @@ function test_wait_for_health_ok() {
     setup $dir || return 1
     run_mon $dir a --osd_pool_default_size=1 --osd_failsafe_full_ratio=.99 --mon_pg_warn_min_per_osd=0 || return 1
     run_mgr $dir x --mon_pg_warn_min_per_osd=0 || return 1
-    ! TIMEOUT=1 wait_for_health_ok || return 1
     run_osd $dir 0 || return 1
+    kill_daemons $dir TERM osd || return 1
+    ! TIMEOUT=1 wait_for_health_ok || return 1
+    activate_osd $dir 0 || return 1
     wait_for_health_ok || return 1
     teardown $dir || return 1
 }
@@ -1355,9 +1370,9 @@ function test_repair() {
     run_mgr $dir x || return 1
     run_osd $dir 0 || return 1
     wait_for_clean || return 1
-    repair 1.0 || return 1
+    repair 2.0 || return 1
     kill_daemons $dir KILL osd || return 1
-    ! TIMEOUT=1 repair 1.0 || return 1
+    ! TIMEOUT=1 repair 2.0 || return 1
     teardown $dir || return 1
 }
 #######################################################################
@@ -1394,9 +1409,9 @@ function test_pg_scrub() {
     run_mgr $dir x || return 1
     run_osd $dir 0 || return 1
     wait_for_clean || return 1
-    pg_scrub 1.0 || return 1
+    pg_scrub 2.0 || return 1
     kill_daemons $dir KILL osd || return 1
-    ! TIMEOUT=1 pg_scrub 1.0 || return 1
+    ! TIMEOUT=1 pg_scrub 2.0 || return 1
     teardown $dir || return 1
 }
 
@@ -1485,7 +1500,7 @@ function test_wait_for_scrub() {
     run_mgr $dir x || return 1
     run_osd $dir 0 || return 1
     wait_for_clean || return 1
-    local pgid=1.0
+    local pgid=2.0
     ceph pg repair $pgid
     local last_scrub=$(get_last_scrub_stamp $pgid)
     wait_for_scrub $pgid "$last_scrub" || return 1
@@ -1760,6 +1775,46 @@ if test "$1" = TESTS ; then
     shift
     run_tests "$@"
 fi
+
+# NOTE:
+# jq only support --exit-status|-e from version 1.4 forwards, which makes
+# returning on error waaaay prettier and straightforward.
+# However, the current automated upstream build is running with v1.3,
+# which has no idea what -e is. Hence the convoluted error checking we
+# need. Sad.
+# The next time someone changes this code, please check if v1.4 is now
+# a thing, and, if so, please change these to use -e. Thanks.
+
+# jq '.all.supported | select([.[] == "foo"] | any)'
+function jq_success() {
+  input="$1"
+  filter="$2"
+  expects="\"$3\""
+
+  in_escaped=$(printf %s "$input" | sed "s/'/'\\\\''/g")
+  filter_escaped=$(printf %s "$filter" | sed "s/'/'\\\\''/g")
+
+  ret=$(echo "$in_escaped" | jq "$filter_escaped")
+  if [[ "$ret" == "true" ]]; then
+    return 0
+  elif [[ -n "$expects" ]]; then
+    if [[ "$ret" == "$expects" ]]; then
+      return 0
+    fi
+  fi
+  return 1
+  input=$1
+  filter=$2
+  expects="$3"
+
+  ret="$(echo $input | jq \"$filter\")"
+  if [[ "$ret" == "true" ]]; then
+    return 0
+  elif [[ -n "$expects" && "$ret" == "$expects" ]]; then
+    return 0
+  fi
+  return 1
+}
 
 # Local Variables:
 # compile-command: "cd ../../src ; make -j4 && ../qa/workunits/ceph-helpers.sh TESTS # test_get_config"

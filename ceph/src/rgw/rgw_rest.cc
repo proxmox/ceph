@@ -1478,6 +1478,8 @@ int RGWPostObj_ObjStore::verify_params()
     return -ERR_TOO_LARGE;
   }
 
+  supplied_md5_b64 = s->info.env->get("HTTP_CONTENT_MD5");
+
   return 0;
 }
 
@@ -1916,7 +1918,7 @@ int RGWHandler_REST::init_permissions(RGWOp* op)
 
 int RGWHandler_REST::read_permissions(RGWOp* op_obj)
 {
-  bool only_bucket;
+  bool only_bucket = false;
 
   switch (s->op) {
   case OP_HEAD:
@@ -1941,7 +1943,9 @@ int RGWHandler_REST::read_permissions(RGWOp* op_obj)
     only_bucket = true;
     break;
   case OP_DELETE:
-    only_bucket = true;
+    if (!s->info.args.exists("tagging")){
+      only_bucket = true;
+    }
     break;
   case OP_OPTIONS:
     only_bucket = true;
@@ -2210,6 +2214,10 @@ int RGWREST::preprocess(struct req_state *s, rgw::io::BasicClient* cio)
   }
 
   s->decoded_uri = url_decode(s->info.request_uri);
+  /* Validate for being free of the '\0' buried in the middle of the string. */
+  if (std::strlen(s->decoded_uri.c_str()) != s->decoded_uri.length()) {
+    return -ERR_ZERO_IN_URL;
+  }
 
   /* FastCGI specification, section 6.3
    * http://www.fastcgi.com/devkit/doc/fcgi-spec.html#S6.3

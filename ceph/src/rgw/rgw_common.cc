@@ -73,6 +73,7 @@ rgw_http_errors rgw_http_s3_errors({
     { ERR_TOO_MANY_BUCKETS, {400, "TooManyBuckets" }},
     { ERR_MALFORMED_XML, {400, "MalformedXML" }},
     { ERR_AMZ_CONTENT_SHA256_MISMATCH, {400, "XAmzContentSHA256Mismatch" }},
+    { ERR_INVALID_TAG, {400, "InvalidTag"}},
     { ERR_LENGTH_REQUIRED, {411, "MissingContentLength" }},
     { EACCES, {403, "AccessDenied" }},
     { EPERM, {403, "AccessDenied" }},
@@ -88,12 +89,15 @@ rgw_http_errors rgw_http_s3_errors({
     { ERR_NOT_FOUND, {404, "Not Found"}},
     { ERR_NO_SUCH_LC, {404, "NoSuchLifecycleConfiguration"}},
     { ERR_NO_SUCH_BUCKET_POLICY, {404, "NoSuchBucketPolicy"}},
+    { ERR_NO_SUCH_USER, {404, "NoSuchUser"}},
+    { ERR_NO_SUCH_SUBUSER, {404, "NoSuchSubUser"}},
     { ERR_METHOD_NOT_ALLOWED, {405, "MethodNotAllowed" }},
     { ETIMEDOUT, {408, "RequestTimeout" }},
     { EEXIST, {409, "BucketAlreadyExists" }},
     { ERR_USER_EXIST, {409, "UserAlreadyExists" }},
     { ERR_EMAIL_EXIST, {409, "EmailExists" }},
     { ERR_KEY_EXIST, {409, "KeyExists"}},
+    { ERR_TAG_CONFLICT, {409, "OperationAborted"}},
     { ERR_INVALID_SECRET_KEY, {400, "InvalidSecretKey"}},
     { ERR_INVALID_KEY_TYPE, {400, "InvalidKeyType"}},
     { ERR_INVALID_CAP, {400, "InvalidCapability"}},
@@ -106,6 +110,7 @@ rgw_http_errors rgw_http_s3_errors({
     { ERR_INTERNAL_ERROR, {500, "InternalError" }},
     { ERR_NOT_IMPLEMENTED, {501, "NotImplemented" }},
     { ERR_SERVICE_UNAVAILABLE, {503, "ServiceUnavailable"}},
+    { ERR_ZERO_IN_URL, {400, "InvalidRequest" }},
 });
 
 rgw_http_errors rgw_http_swift_errors({
@@ -116,6 +121,10 @@ rgw_http_errors rgw_http_swift_errors({
     { ERR_BAD_URL, {412, "Bad URL" }},
     { ERR_NOT_SLO_MANIFEST, {400, "Not an SLO manifest" }},
     { ERR_QUOTA_EXCEEDED, {413, "QuotaExceeded" }},
+    /* FIXME(rzarzynski): we need to find a way to apply Swift's error handling
+     * procedures also for ERR_ZERO_IN_URL. This make a problem as the validation
+     * is performed very early, even before setting the req_state::proto_flags. */
+    { ERR_ZERO_IN_URL, {412, "Invalid UTF8 or contains NULL"}},
 });
 
 int rgw_perf_start(CephContext *cct)
@@ -945,7 +954,8 @@ void RGWHTTPArgs::append(const string& name, const string& val)
       (name.compare("versioning") == 0) ||
       (name.compare("website") == 0) ||
       (name.compare("requestPayment") == 0) ||
-      (name.compare("torrent") == 0)) {
+      (name.compare("torrent") == 0) ||
+      (name.compare("tagging") == 0)) {
     sub_resources[name] = val;
   } else if (name[0] == 'r') { // root of all evil
     if ((name.compare("response-content-type") == 0) ||

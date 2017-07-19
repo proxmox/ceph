@@ -96,6 +96,7 @@ using namespace std;
 #include "messages/MMonGetVersion.h"
 #include "messages/MMonGetVersionReply.h"
 #include "messages/MMonHealth.h"
+#include "messages/MMonHealthChecks.h"
 #include "messages/MMonMetadata.h"
 #include "messages/MDataPing.h"
 #include "messages/MAuth.h"
@@ -169,6 +170,7 @@ using namespace std;
 #include "messages/MMgrOpen.h"
 #include "messages/MMgrConfigure.h"
 #include "messages/MMonMgrReport.h"
+#include "messages/MServiceMap.h"
 
 #include "messages/MLock.h"
 
@@ -751,6 +753,10 @@ Message *decode_message(CephContext *cct, int crcflags,
     m = new MMonMgrReport();
     break;
 
+  case MSG_SERVICE_MAP:
+    m = new MServiceMap();
+    break;
+
   case MSG_MGR_MAP:
     m = new MMgrMap();
     break;
@@ -778,6 +784,11 @@ Message *decode_message(CephContext *cct, int crcflags,
   case MSG_MON_HEALTH:
     m = new MMonHealth();
     break;
+
+  case MSG_MON_HEALTH_CHECKS:
+    m = new MMonHealthChecks();
+    break;
+
 #if defined(HAVE_XIO)
   case MSG_DATA_PING:
     m = new MDataPing();
