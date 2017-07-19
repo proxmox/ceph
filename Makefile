@@ -27,7 +27,8 @@ rbd-fuse-dbg_${VER}-${DEBREL}_${ARCH}.deb \
 rbd-mirror-dbg_${VER}-${DEBREL}_${ARCH}.deb \
 rbd-nbd-dbg_${VER}-${DEBREL}_${ARCH}.deb
 
-DEBS=ceph_${VER}-${DEBREL}_${ARCH}.deb \
+MAIN_DEB=ceph_${VER}-${DEBREL}_${ARCH}.deb
+DEBS_REST=$(MAIN_DEB) \
 ceph-base_${VER}-${DEBREL}_${ARCH}.deb \
 ceph-common_${VER}-${DEBREL}_${ARCH}.deb \
 ceph-fuse_${VER}-${DEBREL}_${ARCH}.deb \
@@ -63,6 +64,7 @@ radosgw_${VER}-${DEBREL}_${ARCH}.deb \
 rbd-fuse_${VER}-${DEBREL}_${ARCH}.deb \
 rbd-mirror_${VER}-${DEBREL}_${ARCH}.deb \
 rbd-nbd_${VER}-${DEBREL}_${ARCH}.deb
+DEBS=$(MAIN_DEB) $(DEBS_REST)
 
 all: ${DEBS} ${DBG_DEBS}
 	@echo ${DEBS}
@@ -70,7 +72,8 @@ all: ${DEBS} ${DBG_DEBS}
 
 .PHONY: deb
 deb: ${DEBS} ${DBG_DEBS}
-${DEBS} ${DBG_DEBS}: patches
+${DEBS_REST} ${DBG_DEBS}: $(MAIN_DEB)
+$(MAIN_DEB): patches
 	rm -rf ${BUILDSRC}
 	mkdir ${BUILDSRC}
 	rsync -ra ${SRCDIR}/ ${BUILDSRC}
