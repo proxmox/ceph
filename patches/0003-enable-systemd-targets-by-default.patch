@@ -1,4 +1,4 @@
-From 4d22b47566842eac090bf9632b8763aca4218b85 Mon Sep 17 00:00:00 2001
+From 653efebdc16c1263d5835c5ae972f95a8ecf97f4 Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?Fabian=20Gr=C3=BCnbichler?= <f.gruenbichler@proxmox.com>
 Date: Wed, 22 Mar 2017 09:00:34 +0100
 Subject: [PATCH 3/3] enable systemd targets by default
@@ -12,7 +12,7 @@ Signed-off-by: Fabian Grünbichler <f.gruenbichler@proxmox.com>
  1 file changed, 3 insertions(+)
 
 diff --git a/debian/rules b/debian/rules
-index d4b3c97f71..11ed7a177c 100755
+index 2e4ec9d22a..64278d79d1 100755
 --- a/debian/rules
 +++ b/debian/rules
 @@ -130,6 +130,9 @@ override_dh_installinit:
@@ -23,8 +23,8 @@ index d4b3c97f71..11ed7a177c 100755
 +	dh_systemd_enable -p ceph-mon ceph-mon.target
 +	dh_systemd_enable -p ceph-osd ceph-osd.target
  
- override_dh_systemd_start:
- 	dh_systemd_start --no-restart-on-upgrade
+ 	# NOTE: execute systemd helpers so they pickup dh_install'ed units and targets
+ 	dh_systemd_enable
 -- 
 2.11.0
 

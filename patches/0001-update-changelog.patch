@@ -1,4 +1,4 @@
-From 50cf83b17ef2120b772ea786cb5e0fcf110eae62 Mon Sep 17 00:00:00 2001
+From 22c6c7657b2767dcd9cbe3b0c42b363f3c979a3c Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?Fabian=20Gr=C3=BCnbichler?= <f.gruenbichler@proxmox.com>
 Date: Mon, 20 Mar 2017 09:12:50 +0100
 Subject: [PATCH 1/3] update changelog
@@ -8,14 +8,26 @@ Content-Transfer-Encoding: 8bit
 
 Signed-off-by: Fabian Grünbichler <f.gruenbichler@proxmox.com>
 ---
- debian/changelog | 70 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++
- 1 file changed, 70 insertions(+)
+ debian/changelog | 84 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 84 insertions(+)
 
-Index: ceph-12.1.0/debian/changelog
-===================================================================
---- ceph-12.1.0.orig/debian/changelog
-+++ ceph-12.1.0/debian/changelog
-@@ -1,27 +1,105 @@
+diff --git a/debian/changelog b/debian/changelog
+index 0da87edd48..9a029b1afe 100644
+--- a/debian/changelog
++++ b/debian/changelog
+@@ -1,33 +1,117 @@
++ceph (12.1.1-pve1) unstable; urgency=medium
++
++  * rebase on latest upstream Release Candidate
++
++ -- Proxmox Support Team <support@proxmox.com>  Wed, 19 Jul 2017 11:22:27 +0200
++
+ ceph (12.1.1-1) stable; urgency=medium
+ 
+   * New upstream release
+ 
+  -- Ceph Release Team <ceph-maintainers@ceph.com>  Mon, 17 Jul 2017 16:55:59 +0000
+ 
 +ceph (12.1.0-pve2) unstable; urgency=medium
 +
 +  * fix https://bugs.debian.org/cgi-bin/bugreport.cgi?bug=582819
@@ -121,3 +133,6 @@ Index: ceph-12.1.0/debian/changelog
  ceph (12.0.0-1) stable; urgency=medium
  
    * New upstream release
+-- 
+2.11.0
+
