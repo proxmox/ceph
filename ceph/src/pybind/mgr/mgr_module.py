@@ -111,6 +111,18 @@ class MgrModule(object):
         """
         return ceph_state.get_server(self._handle, hostname)
 
+    def get_perf_schema(self, svc_type, svc_name):
+        """
+        Called by the plugin to fetch perf counter schema info.
+        svc_name can be nullptr, as can svc_type, in which case
+        they are wildcards
+
+        :param svc_type:
+        :param svc_name:
+        :return: list of dicts describing the counters requested
+        """
+        return ceph_state.get_perf_schema(self._handle, svc_type, svc_name)
+
     def get_counter(self, svc_type, svc_name, path):
         """
         Called by the plugin to fetch data for a particular perf counter
@@ -156,6 +168,30 @@ class MgrModule(object):
         cluster.
         """
         ceph_state.send_command(self._handle, *args, **kwargs)
+
+    def set_health_checks(self, checks):
+        """
+        Set module's health checks
+
+        Set the module's current map of health checks.  Argument is a
+        dict of check names to info, in this form:
+
+           {
+             'CHECK_FOO': {
+               'severity': 'warning',           # or 'error'
+               'summary': 'summary string',
+               'detail': [ 'list', 'of', 'detail', 'strings' ],
+              },
+             'CHECK_BAR': {
+               'severity': 'error',
+               'summary': 'bars are bad',
+               'detail': [ 'too hard' ],
+             },
+           }
+
+        :param list: dict of health check dicts
+        """
+        ceph_state.set_health_checks(self._handle, checks)
 
     def handle_command(self, cmd):
         """

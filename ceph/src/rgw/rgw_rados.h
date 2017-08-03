@@ -134,6 +134,7 @@ public:
   rgw_obj_select(const rgw_obj& _obj) : obj(_obj), is_raw(false) {}
   rgw_obj_select(const rgw_raw_obj& _raw_obj) : raw_obj(_raw_obj), is_raw(true) {}
   rgw_obj_select(const rgw_obj_select& rhs) {
+    placement_rule = rhs.placement_rule;
     is_raw = rhs.is_raw;
     if (is_raw) {
       raw_obj = rhs.raw_obj;
@@ -1266,26 +1267,13 @@ struct RGWZoneParams : RGWSystemMetaObj {
     if (struct_v >= 10) {
       ::decode(reshard_pool, bl);
     } else {
-      reshard_pool = name + ".rgw.reshard";
+      reshard_pool = log_pool.name + ":reshard";
     }
     DECODE_FINISH(bl);
   }
   void dump(Formatter *f) const;
   void decode_json(JSONObj *obj);
   static void generate_test_instances(list<RGWZoneParams*>& o);
-
-  bool find_placement(const rgw_data_placement_target& placement, string *placement_id) {
-    for (const auto& pp : placement_pools) {
-      const RGWZonePlacementInfo& info = pp.second;
-      if (info.index_pool == placement.index_pool.to_str() &&
-          info.data_pool == placement.data_pool.to_str() &&
-          info.data_extra_pool == placement.data_extra_pool.to_str()) {
-        *placement_id = pp.first;
-        return true;
-      }
-    }
-    return false;
-  }
 
   bool get_placement(const string& placement_id, RGWZonePlacementInfo *placement) const {
     auto iter = placement_pools.find(placement_id);
@@ -1428,7 +1416,7 @@ struct RGWZoneGroupPlacementTarget {
   string name;
   set<string> tags;
 
-  bool user_permitted(list<string>& user_tags) {
+  bool user_permitted(list<string>& user_tags) const {
     if (tags.empty()) {
       return true;
     }
@@ -2595,10 +2583,6 @@ public:
 
   int create_pool(const rgw_pool& pool);
 
-  /**
-   * create a bucket with name bucket and the given list of attrs
-   * returns 0 on success, -ERR# otherwise.
-   */
   int init_bucket_index(RGWBucketInfo& bucket_info, int num_shards);
   int select_bucket_placement(RGWUserInfo& user_info, const string& zonegroup_id, const string& rule,
                               string *pselected_rule_name, RGWZonePlacementInfo *rule_info);
@@ -3002,7 +2986,7 @@ public:
     public:
       explicit List(RGWRados::Bucket *_target) : target(_target) {}
 
-      int list_objects(int max, vector<rgw_bucket_dir_entry> *result, map<string, bool> *common_prefixes, bool *is_truncated);
+      int list_objects(int64_t max, vector<rgw_bucket_dir_entry> *result, map<string, bool> *common_prefixes, bool *is_truncated);
       rgw_obj_key& get_next_marker() {
         return next_marker;
       }
@@ -3374,7 +3358,7 @@ public:
 
   int decode_policy(bufferlist& bl, ACLOwner *owner);
   int get_bucket_stats(RGWBucketInfo& bucket_info, int shard_id, string *bucket_ver, string *master_ver,
-      map<RGWObjCategory, RGWStorageStats>& stats, string *max_marker);
+      map<RGWObjCategory, RGWStorageStats>& stats, string *max_marker, bool* syncstopped = NULL);
   int get_bucket_stats_async(RGWBucketInfo& bucket_info, int shard_id, RGWGetBucketStats_CB *cb);
   int get_user_stats(const rgw_user& user, RGWStorageStats& stats);
   int get_user_stats_async(const rgw_user& user, RGWGetUserStats_CB *cb);
@@ -3420,6 +3404,8 @@ public:
   int cls_bucket_head_async(const RGWBucketInfo& bucket_info, int shard_id, RGWGetDirHeader_CB *ctx, int *num_aio);
   int list_bi_log_entries(RGWBucketInfo& bucket_info, int shard_id, string& marker, uint32_t max, std::list<rgw_bi_log_entry>& result, bool *truncated);
   int trim_bi_log_entries(RGWBucketInfo& bucket_info, int shard_id, string& marker, string& end_marker);
+  int resync_bi_log_entries(RGWBucketInfo& bucket_info, int shard_id);
+  int stop_bi_log_entries(RGWBucketInfo& bucket_info, int shard_id);
   int get_bi_log_status(RGWBucketInfo& bucket_info, int shard_id, map<int, string>& max_marker);
 
   int bi_get_instance(const RGWBucketInfo& bucket_info, rgw_obj& obj, rgw_bucket_dir_entry *dirent);
@@ -3528,6 +3514,7 @@ public:
   int complete_sync_user_stats(const rgw_user& user_id);
   int cls_user_add_bucket(rgw_raw_obj& obj, list<cls_user_bucket_entry>& entries);
   int cls_user_remove_bucket(rgw_raw_obj& obj, const cls_user_bucket& bucket);
+  int cls_user_get_bucket_stats(const rgw_bucket& bucket, cls_user_bucket_entry& entry);
 
   int check_quota(const rgw_user& bucket_owner, rgw_bucket& bucket,
                   RGWQuotaInfo& user_quota, RGWQuotaInfo& bucket_quota, uint64_t obj_size);

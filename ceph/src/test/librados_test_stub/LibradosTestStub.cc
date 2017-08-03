@@ -689,6 +689,47 @@ int IoCtx::writesame(const std::string& oid, bufferlist& bl, size_t len,
                      ctx->get_snap_context()));
 }
 
+int IoCtx::cmpext(const std::string& oid, uint64_t off, bufferlist& cmp_bl) {
+  TestIoCtxImpl *ctx = reinterpret_cast<TestIoCtxImpl*>(io_ctx_impl);
+  return ctx->execute_operation(
+    oid, boost::bind(&TestIoCtxImpl::cmpext, _1, _2, off, cmp_bl));
+}
+
+int IoCtx::application_enable(const std::string& app_name, bool force) {
+  return 0;
+}
+
+int IoCtx::application_enable_async(const std::string& app_name,
+                                    bool force, PoolAsyncCompletion *c) {
+  return -EOPNOTSUPP;
+}
+
+int IoCtx::application_list(std::set<std::string> *app_names) {
+  return -EOPNOTSUPP;
+}
+
+int IoCtx::application_metadata_get(const std::string& app_name,
+                                    const std::string &key,
+                                    std::string *value) {
+  return -EOPNOTSUPP;
+}
+
+int IoCtx::application_metadata_set(const std::string& app_name,
+                                    const std::string &key,
+                                    const std::string& value) {
+  return -EOPNOTSUPP;
+}
+
+int IoCtx::application_metadata_remove(const std::string& app_name,
+                                       const std::string &key) {
+  return -EOPNOTSUPP;
+}
+
+int IoCtx::application_metadata_list(const std::string& app_name,
+                                     std::map<std::string, std::string> *values) {
+  return -EOPNOTSUPP;
+}
+
 static int save_operation_result(int result, int *pval) {
   if (pval != NULL) {
     *pval = result;
@@ -728,6 +769,16 @@ void ObjectOperation::set_op_flags2(int flags) {
 size_t ObjectOperation::size() {
   TestObjectOperationImpl *o = reinterpret_cast<TestObjectOperationImpl*>(impl);
   return o->ops.size();
+}
+
+void ObjectOperation::cmpext(uint64_t off, bufferlist& cmp_bl, int *prval) {
+  TestObjectOperationImpl *o = reinterpret_cast<TestObjectOperationImpl*>(impl);
+  ObjectOperationTestImpl op = boost::bind(&TestIoCtxImpl::cmpext, _1, _2, off, cmp_bl);
+  if (prval != NULL) {
+    op = boost::bind(save_operation_result,
+                     boost::bind(op, _1, _2, _3, _4), prval);
+  }
+  o->ops.push_back(op);
 }
 
 void ObjectReadOperation::list_snaps(snap_set_t *out_snaps, int *prval) {
@@ -994,6 +1045,18 @@ int Rados::mon_command(std::string cmd, const bufferlist& inbl,
   return impl->mon_command(cmds, inbl, outbl, outs);
 }
 
+int Rados::service_daemon_register(const std::string& service,
+                                   const std::string& name,
+                                   const std::map<std::string,std::string>& metadata) {
+  TestRadosClient *impl = reinterpret_cast<TestRadosClient*>(client);
+  return impl->service_daemon_register(service, name, metadata);
+}
+
+int Rados::service_daemon_update_status(const std::map<std::string,std::string>& status) {
+  TestRadosClient *impl = reinterpret_cast<TestRadosClient*>(client);
+  return impl->service_daemon_update_status(status);
+}
+
 int Rados::pool_create(const char *name) {
   TestRadosClient *impl = reinterpret_cast<TestRadosClient*>(client);
   return impl->pool_create(name);
@@ -1122,27 +1185,22 @@ int cls_cxx_getxattrs(cls_method_context_t hctx, std::map<string, bufferlist> *a
 }
 
 int cls_cxx_map_get_keys(cls_method_context_t hctx, const string &start_obj,
-                         uint64_t max_to_get, std::set<string> *keys) {
+                         uint64_t max_to_get, std::set<string> *keys, bool *more) {
   librados::TestClassHandler::MethodContext *ctx =
     reinterpret_cast<librados::TestClassHandler::MethodContext*>(hctx);
 
   keys->clear();
   std::map<string, bufferlist> vals;
-  std::string last_key = start_obj;
-  do {
-    vals.clear();
-    int r = ctx->io_ctx_impl->omap_get_vals(ctx->oid, last_key, "", 1024,
-                                            &vals);
-    if (r < 0) {
-      return r;
-    }
+  int r = ctx->io_ctx_impl->omap_get_vals2(ctx->oid, start_obj, "", max_to_get,
+                                           &vals, more);
+  if (r < 0) {
+    return r;
+  }
 
-    for (std::map<string, bufferlist>::iterator it = vals.begin();
-        it != vals.end(); ++it) {
-      last_key = it->first;
-      keys->insert(last_key);
-    }
-  } while (!vals.empty());
+  for (std::map<string, bufferlist>::iterator it = vals.begin();
+       it != vals.end(); ++it) {
+    keys->insert(it->first);
+  }
   return keys->size();
 }
 
@@ -1168,11 +1226,11 @@ int cls_cxx_map_get_val(cls_method_context_t hctx, const string &key,
 
 int cls_cxx_map_get_vals(cls_method_context_t hctx, const string &start_obj,
                          const string &filter_prefix, uint64_t max_to_get,
-                         std::map<string, bufferlist> *vals) {
+                         std::map<string, bufferlist> *vals, bool *more) {
   librados::TestClassHandler::MethodContext *ctx =
     reinterpret_cast<librados::TestClassHandler::MethodContext*>(hctx);
-  int r = ctx->io_ctx_impl->omap_get_vals(ctx->oid, start_obj, filter_prefix,
-					  max_to_get, vals);
+  int r = ctx->io_ctx_impl->omap_get_vals2(ctx->oid, start_obj, filter_prefix,
+					  max_to_get, vals, more);
   if (r < 0) {
     return r;
   }

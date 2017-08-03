@@ -2562,8 +2562,6 @@ void PGMap::get_health_checks(
   const unsigned max = cct->_conf->mon_health_max_detail;
   const auto& pools = osdmap.get_pools();
 
-  checks->clear();
-
   typedef enum pg_consequence_t {
     UNAVAILABLE = 1,   // Client IO to the pool may block
     DEGRADED = 2,      // Fewer than the requested number of replicas are present
@@ -2609,11 +2607,11 @@ void PGMap::get_health_checks(
   std::map<unsigned, PgStateResponse> state_to_response = {
     // Immediate reports
     { PG_STATE_INCONSISTENT,     {DAMAGED,     {}} },
-    { PG_STATE_INCOMPLETE,       {DEGRADED,    {}} },
+    { PG_STATE_INCOMPLETE,       {UNAVAILABLE, {}} },
     { PG_STATE_REPAIR,           {DAMAGED,     {}} },
     { PG_STATE_SNAPTRIM_ERROR,   {DAMAGED,     {}} },
-    { PG_STATE_BACKFILL_TOOFULL, {DEGRADED,    {}} },
-    { PG_STATE_RECOVERY_TOOFULL, {DEGRADED,    {}} },
+    { PG_STATE_BACKFILL_TOOFULL, {DEGRADED_FULL, {}} },
+    { PG_STATE_RECOVERY_TOOFULL, {DEGRADED_FULL, {}} },
     { PG_STATE_DEGRADED,         {DEGRADED,    {}} },
     { PG_STATE_DOWN,             {UNAVAILABLE, {}} },
     // Delayed (wait until stuck) reports
@@ -2809,40 +2807,6 @@ void PGMap::get_health_checks(
     // Compose list of PGs contributing to this health check failing
     for (const auto &j : i.second.pg_messages) {
       check->detail.push_back(j.second);
-    }
-  }
-
-  // OSD_SKEWED_USAGE
-  if (cct->_conf->mon_warn_osd_usage_min_max_delta) {
-    int max_osd = -1, min_osd = -1;
-    float max_osd_usage = 0.0, min_osd_usage = 1.0;
-    for (auto p = osd_stat.begin(); p != osd_stat.end(); ++p) {
-      // kb should never be 0, but avoid divide by zero in case of corruption
-      if (p->second.kb <= 0)
-        continue;
-      float usage = ((float)p->second.kb_used) / ((float)p->second.kb);
-      if (usage > max_osd_usage) {
-        max_osd_usage = usage;
-	max_osd = p->first;
-      }
-      if (usage < min_osd_usage) {
-        min_osd_usage = usage;
-	min_osd = p->first;
-      }
-    }
-    float diff = max_osd_usage - min_osd_usage;
-    if (diff > cct->_conf->mon_warn_osd_usage_min_max_delta) {
-      auto& d = checks->add("OSD_SKEWED_USAGE", HEALTH_WARN,
-			    "skewed osd utilization");
-      ostringstream ss;
-      ss << "difference between min (osd." << min_osd << " at "
-	 << roundf(min_osd_usage*1000.0)/100.0
-	 << "%) and max (osd." << max_osd << " at "
-	 << roundf(max_osd_usage*1000.0)/100.0
-	 << "%) osd usage " << roundf(diff*1000.0)/100.0 << "% > "
-	 << roundf(cct->_conf->mon_warn_osd_usage_min_max_delta*1000.0)/100.0
-	 << " (mon_warn_osd_usage_min_max_delta)";
-      d.detail.push_back(ss.str());
     }
   }
 
@@ -3082,13 +3046,28 @@ void PGMap::get_health_checks(
     ostringstream ss;
     ss << pg_sum.stats.sum.num_objects_unfound
        << "/" << pg_sum.stats.sum.num_objects << " unfound (" << b << "%)";
-    checks->add("OBJECT_UNFOUND", HEALTH_WARN, ss.str());
+    auto& d = checks->add("OBJECT_UNFOUND", HEALTH_WARN, ss.str());
+
+    for (auto& p : pg_stat) {
+      if (p.second.stats.sum.num_objects_unfound) {
+	ostringstream ss;
+	ss << "pg " << p.first
+	   << " has " << p.second.stats.sum.num_objects_unfound
+	   << " unfound objects";
+	d.detail.push_back(ss.str());
+	if (d.detail.size() > max) {
+	  d.detail.push_back("(additional pgs left out for brevity)");
+	  break;
+	}
+      }
+    }
   }
 
   // REQUEST_SLOW
   // REQUEST_STUCK
   if (cct->_conf->mon_osd_warn_op_age > 0 &&
-      osd_sum.op_queue_age_hist.upper_bound() >
+      !osd_sum.op_queue_age_hist.h.empty() &&
+      osd_sum.op_queue_age_hist.upper_bound() / 1000.0 >
       cct->_conf->mon_osd_warn_op_age) {
     list<string> warn_detail, error_detail;
     unsigned warn = 0, error = 0;
@@ -3143,11 +3122,12 @@ void PGMap::get_health_checks(
       for (auto& p : warn_osd_by_max) {
 	ostringstream ss;
 	if (p.second.size() > 1) {
-	  ss << "osds " << p.second;
+	  ss << "osds " << p.second
+             << " have blocked requests > " << p.first << " sec";
 	} else {
-	  ss << "osd." << *p.second.begin();
+	  ss << "osd." << *p.second.begin()
+             << " has blocked requests > " << p.first << " sec";
 	}
-	ss << " have blocked requests > " << p.first << " sec";
 	d.detail.push_back(ss.str());
 	if (--left == 0) {
 	  break;
@@ -3164,11 +3144,12 @@ void PGMap::get_health_checks(
       for (auto& p : error_osd_by_max) {
 	ostringstream ss;
 	if (p.second.size() > 1) {
-	  ss << "osds " << p.second;
+	  ss << "osds " << p.second
+             << " have stuck requests > " << p.first << " sec";
 	} else {
-	  ss << "osd." << *p.second.begin();
+	  ss << "osd." << *p.second.begin()
+             << " has stuck requests > " << p.first << " sec";
 	}
-	ss << " have stuck requests > " << p.first << " sec";
 	d.detail.push_back(ss.str());
 	if (--left == 0) {
 	  break;
@@ -3180,40 +3161,83 @@ void PGMap::get_health_checks(
   // PG_NOT_SCRUBBED
   // PG_NOT_DEEP_SCRUBBED
   {
-    list<string> detail, deep_detail;
-    const double age = cct->_conf->mon_warn_not_scrubbed +
-      cct->_conf->mon_scrub_interval;
-    utime_t cutoff = now;
-    cutoff -= age;
-    const double deep_age = cct->_conf->mon_warn_not_deep_scrubbed +
-      cct->_conf->osd_deep_scrub_interval;
-    utime_t deep_cutoff = now;
-    deep_cutoff -= deep_age;
-    for (auto& p : pg_stat) {
-      if (p.second.last_scrub_stamp < cutoff) {
-	ostringstream ss;
-	ss << "pg " << p.first << " not scrubbed since "
-	   << p.second.last_scrub_stamp;
-        detail.push_back(ss.str());
+    if (cct->_conf->mon_warn_not_scrubbed ||
+        cct->_conf->mon_warn_not_deep_scrubbed) {
+      list<string> detail, deep_detail;
+      const double age = cct->_conf->mon_warn_not_scrubbed +
+        cct->_conf->mon_scrub_interval;
+      utime_t cutoff = now;
+      cutoff -= age;
+      const double deep_age = cct->_conf->mon_warn_not_deep_scrubbed +
+        cct->_conf->osd_deep_scrub_interval;
+      utime_t deep_cutoff = now;
+      deep_cutoff -= deep_age;
+      for (auto& p : pg_stat) {
+        if (cct->_conf->mon_warn_not_scrubbed &&
+            p.second.last_scrub_stamp < cutoff) {
+	  ostringstream ss;
+	  ss << "pg " << p.first << " not scrubbed since "
+	     << p.second.last_scrub_stamp;
+          detail.push_back(ss.str());
+        }
+        if (cct->_conf->mon_warn_not_deep_scrubbed &&
+            p.second.last_deep_scrub_stamp < deep_cutoff) {
+	  ostringstream ss;
+	  ss << "pg " << p.first << " not deep-scrubbed since "
+	     << p.second.last_deep_scrub_stamp;
+          deep_detail.push_back(ss.str());
+        }
       }
-      if (p.second.last_deep_scrub_stamp < deep_cutoff) {
-	ostringstream ss;
-	ss << "pg " << p.first << " not deep-scrubbed since "
-	   << p.second.last_deep_scrub_stamp;
-        deep_detail.push_back(ss.str());
+      if (!detail.empty()) {
+        ostringstream ss;
+        ss << detail.size() << " pgs not scrubbed for " << age;
+        auto& d = checks->add("PG_NOT_SCRUBBED", HEALTH_WARN, ss.str());
+        d.detail.swap(detail);
+      }
+      if (!deep_detail.empty()) {
+        ostringstream ss;
+        ss << deep_detail.size() << " pgs not deep-scrubbed for " << deep_age;
+        auto& d = checks->add("PG_NOT_DEEP_SCRUBBED", HEALTH_WARN, ss.str());
+        d.detail.swap(deep_detail);
+      }
+    }
+  }
+
+  // POOL_APP
+  {
+    list<string> detail;
+    for (auto &it : pools) {
+      const pg_pool_t &pool = it.second;
+      const string& pool_name = osdmap.get_pool_name(it.first);
+      auto it2 = pg_pool_sum.find(it.first);
+      if (it2 == pg_pool_sum.end()) {
+        continue;
+      }
+      const pool_stat_t *pstat = &it2->second;
+      if (pstat == nullptr) {
+        continue;
+      }
+      const object_stat_sum_t& sum = pstat->stats.sum;
+      // application metadata is not encoded until luminous is minimum
+      // required release
+      if (osdmap.require_osd_release >= CEPH_RELEASE_LUMINOUS &&
+          sum.num_objects > 0 && pool.application_metadata.empty() &&
+          !pool.is_tier() && !g_conf->mon_debug_no_require_luminous) {
+        stringstream ss;
+        ss << "application not enabled on pool '" << pool_name << "'";
+        detail.push_back(ss.str());
       }
     }
     if (!detail.empty()) {
       ostringstream ss;
-      ss << detail.size() << " pgs not scrubbed for " << age;
-      auto& d = checks->add("PG_NOT_SCRUBBED", HEALTH_WARN, ss.str());
+      ss << "application not enabled on " << detail.size() << " pool(s)";
+      auto& d = checks->add("POOL_APP_NOT_ENABLED", HEALTH_WARN, ss.str());
+      stringstream tip;
+      tip << "use 'ceph osd pool application enable <pool-name> "
+          << "<app-name>', where <app-name> is 'cephfs', 'rbd', 'rgw', "
+          << "or freeform for custom applications.";
+      detail.push_back(tip.str());
       d.detail.swap(detail);
-    }
-    if (!deep_detail.empty()) {
-      ostringstream ss;
-      ss << deep_detail.size() << " pgs not deep-scrubbed for " << age;
-      auto& d = checks->add("PG_NOT_DEEP_SCRUBBED", HEALTH_WARN, ss.str());
-      d.detail.swap(deep_detail);
     }
   }
 }
@@ -3391,7 +3415,8 @@ void PGMap::get_health(
 
   // slow requests
   if (cct->_conf->mon_osd_warn_op_age > 0 &&
-      osd_sum.op_queue_age_hist.upper_bound() > cct->_conf->mon_osd_warn_op_age) {
+      osd_sum.op_queue_age_hist.upper_bound() / 1000.0  >
+      cct->_conf->mon_osd_warn_op_age) {
     auto sum = _warn_slow_request_histogram(
       cct, osd_sum.op_queue_age_hist, "", summary, NULL);
     if (sum.first > 0 || sum.second > 0) {
@@ -3404,7 +3429,7 @@ void PGMap::get_health(
       }
       if (sum.second > 0) {
 	ostringstream ss;
-	ss << sum.first << " requests are blocked > "
+	ss << sum.second << " requests are blocked > "
 	   << (cct->_conf->mon_osd_warn_op_age *
 	       cct->_conf->mon_osd_err_op_age_ratio)
 	   << " sec";
@@ -3440,32 +3465,6 @@ void PGMap::get_health(
 	  detail->push_back(make_pair(HEALTH_WARN, ss2.str()));
 	}
       }
-    }
-  }
-
-  if (cct->_conf->mon_warn_osd_usage_min_max_delta) {
-    float max_osd_usage = 0.0, min_osd_usage = 1.0;
-    for (auto p = osd_stat.begin(); p != osd_stat.end(); ++p) {
-      // kb should never be 0, but avoid divide by zero in case of corruption
-      if (p->second.kb <= 0)
-        continue;
-      float usage = ((float)p->second.kb_used) / ((float)p->second.kb);
-      if (usage > max_osd_usage)
-        max_osd_usage = usage;
-      if (usage < min_osd_usage)
-        min_osd_usage = usage;
-    }
-    float diff = max_osd_usage - min_osd_usage;
-    if (diff > cct->_conf->mon_warn_osd_usage_min_max_delta) {
-      ostringstream ss;
-      ss << "difference between min (" << roundf(min_osd_usage*1000.0)/10.0
-	 << "%) and max (" << roundf(max_osd_usage*1000.0)/10.0
-	 << "%) osd usage " << roundf(diff*1000.0)/10.0 << "% > "
-	 << roundf(cct->_conf->mon_warn_osd_usage_min_max_delta*1000.0)/10.0
-	 << "% (mon_warn_osd_usage_min_max_delta)";
-      summary.push_back(make_pair(HEALTH_WARN, ss.str()));
-      if (detail)
-        detail->push_back(make_pair(HEALTH_WARN, ss.str()));
     }
   }
 
@@ -3832,7 +3831,11 @@ int process_pg_map_command(
         break;
       } else {
         int filter = pg_string_state(state_str);
-        assert(filter != -1);
+        if (filter < 0) {
+          *ss << "'" << state_str << "' is not a valid pg state,"
+              << " available choices: " << pg_state_string(0xFFFFFFFF);
+          return -EINVAL;
+        }
         state |= filter;
       }
 

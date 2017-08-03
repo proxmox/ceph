@@ -26,6 +26,7 @@
 
 #include "fnmatch.h"
 
+#include "rgw_acl.h"
 #include "rgw_basic_types.h"
 #include "rgw_iam_policy_keywords.h"
 
@@ -273,18 +274,8 @@ struct Condition {
   std::vector<std::string> vals;
 
   Condition() = default;
-  Condition(TokenID op, const char* s, std::size_t len) : op(op) {
-    static constexpr char ifexistr[] = "IfExists";
-    auto l = static_cast<const char*>(memmem(static_cast<const void*>(s), len,
-					     static_cast<const void*>(ifexistr),
-					     sizeof(ifexistr) -1));
-    if (l && ((l + sizeof(ifexistr) - 1 == (s + len)))) {
-      ifexists = true;
-      key.assign(s, static_cast<const char*>(l) - s);
-    } else {
-      key.assign(s, len);
-    }
-  }
+  Condition(TokenID op, const char* s, std::size_t len, bool ifexists)
+    : op(op), key(s, len), ifexists(ifexists) {}
 
   bool eval(const Environment& e) const;
 
@@ -332,7 +323,7 @@ struct Condition {
     try {
       double d = std::stod(s, &p);
       if (p == s.length()) {
-	return !((d == +0.0) || (d = -0.0) || std::isnan(d));
+	return !((d == +0.0) || (d == -0.0) || std::isnan(d));
       }
     } catch (const std::logic_error& e) {
       // Fallthrough

@@ -428,6 +428,9 @@ private:
 
   int load_metadata(int osd, map<string, string>& m, ostream *err);
   void count_metadata(const string& field, Formatter *f);
+public:
+  void count_metadata(const string& field, map<string,int> *out);
+protected:
   int get_osd_objectstore_type(int osd, std::string *type);
   bool is_pool_currently_all_bluestore(int64_t pool_id, const pg_pool_t &pool,
 				       ostream *err);
@@ -448,7 +451,7 @@ private:
   // the epoch when the pg mapping was calculated
   epoch_t creating_pgs_epoch = 0;
   creating_pgs_t creating_pgs;
-  std::mutex creating_pgs_lock;
+  mutable std::mutex creating_pgs_lock;
 
   creating_pgs_t update_pending_pgs(const OSDMap::Incremental& inc);
   void trim_creating_pgs(creating_pgs_t *creating_pgs,
@@ -461,7 +464,7 @@ private:
   pair<int32_t, pg_t> get_parent_pg(pg_t pgid) const;
   void update_creating_pgs();
   void check_pg_creates_subs();
-  epoch_t send_pg_creates(int osd, Connection *con, epoch_t next);
+  epoch_t send_pg_creates(int osd, Connection *con, epoch_t next) const;
 
   int32_t _allocate_osd_id(int32_t* existing_id);
 
@@ -514,6 +517,9 @@ public:
 
   int prepare_command_pool_set(map<string,cmd_vartype> &cmdmap,
                                stringstream& ss);
+  int prepare_command_pool_application(const string &prefix,
+                                       map<string,cmd_vartype> &cmdmap,
+                                       stringstream& ss);
 
   bool handle_osd_timeouts(const utime_t &now,
 			   std::map<int,utime_t> &last_osd_report);
@@ -535,6 +541,8 @@ public:
 
   void check_osdmap_sub(Subscription *sub);
   void check_pg_creates_sub(Subscription *sub);
+
+  void do_application_enable(int64_t pool_id, const std::string &app_name);
 
   void add_flag(int flag) {
     if (!(osdmap.flags & flag)) {

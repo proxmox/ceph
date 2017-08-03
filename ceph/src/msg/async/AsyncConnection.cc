@@ -978,8 +978,8 @@ ssize_t AsyncConnection::_process_connection()
                                 << " - presumably this is the same node!" << dendl;
           } else {
             ldout(async_msgr->cct, 10) << __func__ << " connect claims to be "
-                                << paddr << " not " << peer_addr
-                                << " (peer is possibly using public_bind_addr?) " << dendl;
+				       << paddr << " not " << peer_addr << dendl;
+	    goto fail;
           }
         }
 
@@ -2240,9 +2240,8 @@ ssize_t AsyncConnection::write_message(Message *m, bufferlist& bl, bool more)
                              << " off " << header.data_off << dendl;
 
   if ((bl.length() <= ASYNC_COALESCE_THRESHOLD) && (bl.buffers().size() > 1)) {
-    std::list<buffer::ptr>::const_iterator pb;
-    for (pb = bl.buffers().begin(); pb != bl.buffers().end(); ++pb) {
-      outcoming_bl.append((char*)pb->c_str(), pb->length());
+    for (const auto &pb : bl.buffers()) {
+      outcoming_bl.append((char*)pb.c_str(), pb.length());
     }
   } else {
     outcoming_bl.claim_append(bl);  
@@ -2266,16 +2265,18 @@ ssize_t AsyncConnection::write_message(Message *m, bufferlist& bl, bool more)
   }
 
   m->trace.event("async writing message");
-  logger->inc(l_msgr_send_bytes, outcoming_bl.length() - original_bl_len);
   ldout(async_msgr->cct, 20) << __func__ << " sending " << m->get_seq()
                              << " " << m << dendl;
+  ssize_t total_send_size = outcoming_bl.length();
   ssize_t rc = _try_send(more);
   if (rc < 0) {
     ldout(async_msgr->cct, 1) << __func__ << " error sending " << m << ", "
                               << cpp_strerror(rc) << dendl;
   } else if (rc == 0) {
+    logger->inc(l_msgr_send_bytes, total_send_size - original_bl_len);
     ldout(async_msgr->cct, 10) << __func__ << " sending " << m << " done." << dendl;
   } else {
+    logger->inc(l_msgr_send_bytes, total_send_size - outcoming_bl.length());
     ldout(async_msgr->cct, 10) << __func__ << " sending " << m << " continuely." << dendl;
   }
   if (m->get_type() == CEPH_MSG_OSD_OP)

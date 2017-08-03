@@ -508,8 +508,8 @@ set(libcommon_files
   common/ceph_hash.cc
   common/ceph_strings.cc
   common/ceph_frag.cc
+  common/options.cc
   common/config.cc
-  common/config_validators.cc
   common/utf8.c
   common/mime.c
   common/strtol.cc
@@ -539,6 +539,11 @@ set(libcommon_files
   arch/probe.cc
   ${auth_files}
   ${mds_files})
+
+if(HAS_VTA)
+  set_source_files_properties(common/config.cc
+    PROPERTIES COMPILE_FLAGS -fno-var-tracking-assignments)
+endif()
 
 if(FREEBSD)
   list(APPEND libcommon_files common/freebsd_errno.cc)
@@ -691,7 +696,8 @@ if (WITH_MGR)
       mgr/PyState.cc
       mgr/MgrPyModule.cc
       mgr/MgrStandby.cc
-      mgr/Mgr.cc)
+      mgr/Mgr.cc
+      mgr/mgr_commands.cc)
   add_executable(ceph-mgr ${mgr_srcs}
                  $<TARGET_OBJECTS:heap_profiler_objs>)
   target_include_directories(ceph-mgr PRIVATE "${PYTHON_INCLUDE_DIRS}")
@@ -992,7 +998,7 @@ if(WITH_LIBCEPHFS)
   install(TARGETS cephfs DESTINATION ${CMAKE_INSTALL_LIBDIR})
   install(DIRECTORY
     "${CMAKE_SOURCE_DIR}/src/include/cephfs"
-    DESTINATION include)
+    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
   set(ceph_syn_srcs
     ceph_syn.cc
     client/SyntheticClient.cc)

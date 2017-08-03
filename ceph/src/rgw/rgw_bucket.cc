@@ -1353,7 +1353,12 @@ int RGWBucketAdminOp::remove_bucket(RGWRados *store, RGWBucketAdminOpState& op_s
   if (ret < 0)
     return ret;
 
-  return bucket.remove(op_state, bypass_gc, keep_index_consistent);
+  std::string err_msg;
+  ret = bucket.remove(op_state, bypass_gc, keep_index_consistent, &err_msg);
+  if (!err_msg.empty()) {
+    lderr(store->ctx()) << "ERROR: " << err_msg << dendl;
+  }
+  return ret;
 }
 
 int RGWBucketAdminOp::remove_object(RGWRados *store, RGWBucketAdminOpState& op_state)
@@ -2263,6 +2268,33 @@ public:
       /* existing bucket, keep its placement */
       bci.info.bucket.explicit_placement = old_bci.info.bucket.explicit_placement;
       bci.info.placement_rule = old_bci.info.placement_rule;
+    }
+
+    if (exists && old_bci.info.datasync_flag_enabled() != bci.info.datasync_flag_enabled()) {
+      int shards_num = bci.info.num_shards? bci.info.num_shards : 1;
+      int shard_id = bci.info.num_shards? 0 : -1;
+
+      if (!bci.info.datasync_flag_enabled()) {
+      ret = store->stop_bi_log_entries(bci.info, -1);
+        if (ret < 0) {
+	   lderr(store->ctx()) << "ERROR: failed writing bilog" << dendl;
+	   return ret;
+        }
+      } else {
+        ret = store->resync_bi_log_entries(bci.info, -1);
+        if (ret < 0) {
+	   lderr(store->ctx()) << "ERROR: failed writing bilog" << dendl;
+	   return ret;
+        }
+      }
+
+      for (int i = 0; i < shards_num; ++i, ++shard_id) {
+        ret = store->data_log->add_entry(bci.info.bucket, shard_id);
+        if (ret < 0) {
+	   lderr(store->ctx()) << "ERROR: failed writing data log" << dendl;
+	   return ret;
+        }
+      }
     }
 
     // are we actually going to perform this put, or is it too old?

@@ -49,7 +49,7 @@ for the data manually first. For example::
 Fewer OSDs than Replicas
 ------------------------
 
-If you've brought up two OSDs to an ``up`` and ``in`` state, but you still 
+If you have brought up two OSDs to an ``up`` and ``in`` state, but you still 
 don't see ``active + clean`` placement groups, you may have an 
 ``osd pool default size`` set to greater than ``2``.
 
@@ -76,7 +76,7 @@ that copy. For each placement group mapped to the first OSD (see
 ``ceph pg dump``), you can force the first OSD to notice the placement groups
 it needs by running::
    
-   	ceph pg force_create_pg <pgid>
+   	ceph osd force-create-pg <pgid>
    	
 
 CRUSH Map Errors
@@ -328,7 +328,7 @@ If you have many nodes in your cluster and only a few of them receive data,
 mapped to OSDs, a small number of placement groups will not distribute across
 your cluster. Try creating a pool with a placement group count that is a
 multiple of the number of OSDs. See `Placement Groups`_ for details. The default
-placement group count for pools isn't useful, but you can change it `here`_.
+placement group count for pools is not useful, but you can change it `here`_.
 
 
 Can't Write Data

@@ -8,7 +8,7 @@
 #include <utility>
 
 #include <boost/regex.hpp>
-
+#include <iostream>
 #include "rapidjson/reader.h"
 
 #include "rgw_auth.h"
@@ -473,6 +473,7 @@ struct ParseState {
 
   bool arraying = false;
   bool objecting = false;
+  bool cond_ifexists = false;
 
   void reset();
 
@@ -505,6 +506,7 @@ struct PolicyParser : public BaseReaderHandler<UTF8<>, PolicyParser> {
   CephContext* cct;
   const string& tenant;
   Policy& policy;
+  std::set<TokenID> v;
 
   uint32_t seen = 0;
 
@@ -551,18 +553,48 @@ struct PolicyParser : public BaseReaderHandler<UTF8<>, PolicyParser> {
   }
   void set(TokenID in) {
     seen |= dex(in);
+    if (in == TokenID::Sid || in == TokenID::Effect || in == TokenID::Principal || in == TokenID::NotPrincipal ||
+         in == TokenID::Action || in == TokenID::NotAction || in == TokenID::Resource || in == TokenID::NotResource ||
+            in == TokenID::Condition || in == TokenID::AWS || in == TokenID::Federated || in == TokenID::Service ||
+              in == TokenID::CanonicalUser) {
+      v.insert(in);
+    }
   }
   void set(std::initializer_list<TokenID> l) {
     for (auto in : l) {
       seen |= dex(in);
+      if (in == TokenID::Sid || in == TokenID::Effect || in == TokenID::Principal || in == TokenID::NotPrincipal ||
+         in == TokenID::Action || in == TokenID::NotAction || in == TokenID::Resource || in == TokenID::NotResource ||
+            in == TokenID::Condition || in == TokenID::AWS || in == TokenID::Federated || in == TokenID::Service ||
+              in == TokenID::CanonicalUser) {
+        v.insert(in);
+      }
     }
   }
   void reset(TokenID in) {
     seen &= ~dex(in);
+    if (in == TokenID::Sid || in == TokenID::Effect || in == TokenID::Principal || in == TokenID::NotPrincipal ||
+         in == TokenID::Action || in == TokenID::NotAction || in == TokenID::Resource || in == TokenID::NotResource ||
+            in == TokenID::Condition || in == TokenID::AWS || in == TokenID::Federated || in == TokenID::Service ||
+              in == TokenID::CanonicalUser) {
+      v.erase(in);
+    }
   }
   void reset(std::initializer_list<TokenID> l) {
     for (auto in : l) {
       seen &= ~dex(in);
+      if (in == TokenID::Sid || in == TokenID::Effect || in == TokenID::Principal || in == TokenID::NotPrincipal ||
+         in == TokenID::Action || in == TokenID::NotAction || in == TokenID::Resource || in == TokenID::NotResource ||
+            in == TokenID::Condition || in == TokenID::AWS || in == TokenID::Federated || in == TokenID::Service ||
+              in == TokenID::CanonicalUser) {
+        v.erase(in);
+      }
+    }
+  }
+  void reset(std::set<TokenID> v) {
+    for (auto in : v) {
+      seen &= ~dex(in);
+      v.erase(in);
     }
   }
 
@@ -583,14 +615,12 @@ struct PolicyParser : public BaseReaderHandler<UTF8<>, PolicyParser> {
     if (s.empty()) {
       return false;
     }
-
     return s.back().obj_end();
   }
   bool Key(const char* str, SizeType length, bool copy) {
     if (s.empty()) {
       return false;
     }
-
     return s.back().key(str, length);
   }
 
@@ -598,7 +628,6 @@ struct PolicyParser : public BaseReaderHandler<UTF8<>, PolicyParser> {
     if (s.empty()) {
       return false;
     }
-
     return s.back().do_string(cct, str, length);
   }
   bool RawNumber(const char* str, SizeType length, bool copy) {
@@ -645,13 +674,22 @@ bool ParseState::obj_end() {
 }
 
 bool ParseState::key(const char* s, size_t l) {
-  auto k = pp->tokens.lookup(s, l);
+  auto token_len = l;
+  bool ifexists = false;
+  if (w->id == TokenID::Condition && w->kind == TokenKind::statement) {
+    static constexpr char IfExists[] = "IfExists";
+    if (boost::algorithm::ends_with(boost::string_view{s, l}, IfExists)) {
+      ifexists = true;
+      token_len -= sizeof(IfExists)-1;
+    }
+  }
+  auto k = pp->tokens.lookup(s, token_len);
 
   if (!k) {
     if (w->kind == TokenKind::cond_op) {
       auto& t = pp->policy.statements.back();
       pp->s.emplace_back(pp, cond_key);
-      t.conditions.emplace_back(w->id, s, l);
+      t.conditions.emplace_back(w->id, s, l, cond_ifexists);
       return true;
     } else {
       return false;
@@ -661,7 +699,6 @@ bool ParseState::key(const char* s, size_t l) {
   // If the token we're going with belongs within the condition at the
   // top of the stack and we haven't already encountered it, push it
   // on the stack
-
   // Top
   if ((((w->id == TokenID::Top) && (k->kind == TokenKind::top)) ||
        // Statement
@@ -680,6 +717,7 @@ bool ParseState::key(const char* s, size_t l) {
   } else if ((w->id == TokenID::Condition) &&
 	     (k->kind == TokenKind::cond_op)) {
     pp->s.emplace_back(pp, k);
+    pp->s.back().cond_ifexists = ifexists;
     return true;
   }
   return false;
@@ -829,9 +867,7 @@ bool ParseState::number(const char* s, size_t l) {
 }
 
 void ParseState::reset() {
-  pp->reset({TokenID::Sid, TokenID::Effect, TokenID::Principal,
-	TokenID::NotPrincipal, TokenID::Action, TokenID::NotAction,
-	TokenID::Resource, TokenID::NotResource, TokenID::Condition});
+  pp->reset(pp->v);
 }
 
 bool ParseState::obj_start() {
@@ -901,7 +937,7 @@ bool Condition::eval(const Environment& env) const {
   }
 
   if (i == env.end()) {
-    return false;
+    return ifexists;
   }
   const auto& s = i->second;
 

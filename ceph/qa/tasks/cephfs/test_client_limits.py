@@ -61,8 +61,8 @@ class TestClientLimits(CephFSTestCase):
 
         # MDS should not be happy about that, as the client is failing to comply
         # with the SESSION_RECALL messages it is being sent
-        mds_recall_state_timeout = int(self.fs.get_config("mds_recall_state_timeout"))
-        self.wait_for_health("MDS_HEALTH_CLIENT_RECALL",
+        mds_recall_state_timeout = float(self.fs.get_config("mds_recall_state_timeout"))
+        self.wait_for_health("MDS_CLIENT_RECALL",
                 mds_recall_state_timeout + 10)
 
         # We can also test that the MDS health warning for oversized
@@ -122,8 +122,8 @@ class TestClientLimits(CephFSTestCase):
 
         # After mds_revoke_cap_timeout, we should see a health warning (extra lag from
         # MDS beacon period)
-        mds_revoke_cap_timeout = int(self.fs.get_config("mds_revoke_cap_timeout"))
-        self.wait_for_health("MDS_CLIENT_RECALL", mds_revoke_cap_timeout + 10)
+        mds_revoke_cap_timeout = float(self.fs.get_config("mds_revoke_cap_timeout"))
+        self.wait_for_health("MDS_CLIENT_LATE_RELEASE", mds_revoke_cap_timeout + 10)
 
         # Client B should still be stuck
         self.assertFalse(rproc.finished)

@@ -25,6 +25,8 @@
     bucket rm                  remove bucket
     bucket check               check bucket index
     bucket reshard             reshard bucket
+    bucket sync disable        disable bucket sync
+    bucket sync enable         enable bucket sync
     bi get                     retrieve bucket index object entries
     bi put                     store bucket index object entries
     bi list                    list raw bucket index entries
@@ -153,7 +155,7 @@
      --access=<access>         Set access permissions for sub-user, should be one
                                of read, write, readwrite, full
      --display-name=<name>
-     --max_buckets             max number of buckets for a user
+     --max-buckets             max number of buckets for a user
      --admin                   set the admin flag on the user
      --system                  set the system flag on the user
      --bucket=<bucket>
@@ -196,7 +198,7 @@
      --tags-add=<list>         list of tags to add for zonegroup placement modify command
      --tags-rm=<list>          list of tags to remove for zonegroup placement modify command
      --endpoints=<list>        zone endpoints
-     --index_pool=<pool>       placement target index pool
+     --index-pool=<pool>       placement target index pool
      --data-pool=<pool>        placement target data pool
      --data-extra-pool=<pool>  placement target data extra (non-ec) pool
      --placement-index-type=<type>

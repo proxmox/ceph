@@ -71,6 +71,7 @@
       nbd unmap                   Unmap a nbd device.
       object-map check            Verify the object map is correct.
       object-map rebuild          Rebuild an invalid object map.
+      pool init                   Initialize pool for use by RBD.
       remove (rm)                 Delete an image.
       rename (mv)                 Rename image within pool.
       resize                      Resize (expand or shrink) image.
@@ -80,16 +81,16 @@
       snap limit set              Limit the number of snapshots.
       snap list (snap ls)         Dump list of image snapshots.
       snap protect                Prevent a snapshot from being deleted.
-      snap purge                  Deletes all snapshots.
-      snap remove (snap rm)       Deletes a snapshot.
+      snap purge                  Delete all snapshots.
+      snap remove (snap rm)       Delete a snapshot.
       snap rename                 Rename a snapshot.
       snap rollback (snap revert) Rollback image to snapshot.
       snap unprotect              Allow a snapshot to be deleted.
       status                      Show the status of this image.
       trash list (trash ls)       List trash images.
-      trash move (trash mv)       Moves an image to the trash.
-      trash remove (trash rm)     Removes an image from trash.
-      trash restore               Restores an image from trash.
+      trash move (trash mv)       Move an image to the trash.
+      trash remove (trash rm)     Remove an image from trash.
+      trash restore               Restore an image from trash.
       unmap                       Unmap a rbd device that was used by the kernel.
       watch                       Watch events on image.
   
@@ -1192,6 +1193,20 @@
     --snap arg            snapshot name
     --no-progress         disable progress output
   
+  rbd help pool init
+  usage: rbd pool init [--pool <pool>] [--force] 
+                       <pool-name> 
+  
+  Initialize pool for use by RBD.
+  
+  Positional arguments
+    <pool-name>          pool name
+  
+  Optional arguments
+    -p [ --pool ] arg    pool name
+    --force              force initialize pool for RBD use if registered by
+                         another application
+  
   rbd help remove
   usage: rbd remove [--pool <pool>] [--image <image>] [--no-progress] 
                     <image-spec> 
@@ -1335,7 +1350,7 @@
                         [--image-id <image-id>] [--no-progress] 
                         <image-spec> 
   
-  Deletes all snapshots.
+  Delete all snapshots.
   
   Positional arguments
     <image-spec>         image specification
@@ -1352,7 +1367,7 @@
                          [--no-progress] [--image-id <image-id>] [--force] 
                          <snap-spec> 
   
-  Deletes a snapshot.
+  Delete a snapshot.
   
   Positional arguments
     <snap-spec>          snapshot specification
@@ -1460,7 +1475,7 @@
   usage: rbd trash move [--pool <pool>] [--image <image>] [--delay <delay>] 
                         <image-spec> 
   
-  Moves an image to the trash.
+  Move an image to the trash.
   
   Positional arguments
     <image-spec>         image specification
@@ -1476,7 +1491,7 @@
                           [--no-progress] [--force] 
                           <image-id> 
   
-  Removes an image from trash.
+  Remove an image from trash.
   
   Positional arguments
     <image-id>           image id
@@ -1493,7 +1508,7 @@
                            [--image <image>] 
                            <image-id> 
   
-  Restores an image from trash.
+  Restore an image from trash.
   
   Positional arguments
     <image-id>           image id

@@ -19,8 +19,14 @@ if test $(id -u) != 0 ; then
 fi
 export LC_ALL=C # the following is vulnerable to i18n
 
+function munge_ceph_spec_in {
+    local OUTFILE=$1
+    sed -e 's/@//g' -e 's/%bcond_with make_check/%bcond_without make_check/g' < ceph.spec.in > $OUTFILE
+}
+
 if [ x`uname`x = xFreeBSDx ]; then
     $SUDO pkg install -yq \
+        devel/babeltrace \
         devel/git \
         devel/gperf \
         devel/gmake \
@@ -36,7 +42,7 @@ if [ x`uname`x = xFreeBSDx ]; then
         lang/cython \
         devel/py-virtualenv \
         databases/leveldb \
-	net/openldap24-client \
+        net/openldap-client \
         security/nss \
         security/cryptopp \
         archivers/snappy \
@@ -48,14 +54,16 @@ if [ x`uname`x = xFreeBSDx ]; then
         textproc/gsed \
         textproc/libxml2 \
         textproc/xmlstarlet \
-	textproc/jq \
-	textproc/sphinx \
+        textproc/jq \
+        textproc/py-sphinx \
         emulators/fuse \
         java/junit \
+        lang/python \
         lang/python27 \
-	devel/py-pip \
+        devel/py-pip \
         devel/py-argparse \
         devel/py-nose \
+        devel/py-prettytable \
         www/py-flask \
         www/fcgi \
         sysutils/flock \
@@ -129,14 +137,14 @@ else
                 fi
                 ;;
         esac
-        sed -e 's/@//g' < ceph.spec.in > $DIR/ceph.spec
+        munge_ceph_spec_in $DIR/ceph.spec
         $SUDO $builddepcmd $DIR/ceph.spec 2>&1 | tee $DIR/yum-builddep.out
         ! grep -q -i error: $DIR/yum-builddep.out || exit 1
         ;;
     opensuse|suse|sles)
         echo "Using zypper to install dependencies"
         $SUDO zypper --gpg-auto-import-keys --non-interactive install lsb-release systemd-rpm-macros
-        sed -e 's/@//g' < ceph.spec.in > $DIR/ceph.spec
+        munge_ceph_spec_in $DIR/ceph.spec
         $SUDO zypper --non-interactive install $(rpmspec -q --buildrequires $DIR/ceph.spec) || exit 1
         ;;
     alpine)

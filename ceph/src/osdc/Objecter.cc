@@ -2821,6 +2821,7 @@ int Objecter::_calc_target(op_target_t *t, Connection *con, bool any_change)
   osdmap->pg_to_up_acting_osds(pgid, &up, &up_primary,
 			       &acting, &acting_primary);
   bool sort_bitwise = osdmap->test_flag(CEPH_OSDMAP_SORTBITWISE);
+  bool recovery_deletes = osdmap->test_flag(CEPH_OSDMAP_RECOVERY_DELETES);
   unsigned prev_seed = ceph_stable_mod(pgid.ps(), t->pg_num, t->pg_num_mask);
   pg_t prev_pgid(prev_seed, pgid.pool());
   if (any_change && PastIntervals::is_new_interval(
@@ -2840,6 +2841,8 @@ int Objecter::_calc_target(op_target_t *t, Connection *con, bool any_change)
 	pg_num,
 	t->sort_bitwise,
 	sort_bitwise,
+	t->recovery_deletes,
+	recovery_deletes,
 	prev_pgid)) {
     force_resend = true;
   }
@@ -2874,6 +2877,7 @@ int Objecter::_calc_target(op_target_t *t, Connection *con, bool any_change)
       pg_t(ceph_stable_mod(pgid.ps(), t->pg_num, t->pg_num_mask), pgid.pool()),
       &t->actual_pgid);
     t->sort_bitwise = sort_bitwise;
+    t->recovery_deletes = recovery_deletes;
     ldout(cct, 10) << __func__ << " "
 		   << " raw pgid " << pgid << " -> actual " << t->actual_pgid
 		   << " acting " << acting
@@ -3411,30 +3415,17 @@ void Objecter::handle_osd_op_reply(MOSDOpReply *m)
 
   if (rc == -EAGAIN) {
     ldout(cct, 7) << " got -EAGAIN, resubmitting" << dendl;
-
-    if ((op->target.flags & CEPH_OSD_FLAG_BALANCE_READS) 
-	&& (op->target.acting_primary != op->target.osd)) {
-      if (op->onfinish)
-	num_in_flight--;
-      _session_op_remove(s, op);
-      sl.unlock();
-      put_session(s);
-
-      op->tid = 0;
-      op->target.flags &= ~CEPH_OSD_FLAG_BALANCE_READS;
-      op->target.pgid = pg_t();
-      _op_submit(op, sul, NULL);
-      m->put();
-      return;
-    }
-
-    // new tid
-    s->ops.erase(op->tid);
-    op->tid = ++last_tid;
-
-    _send_op(op);
+    if (op->onfinish)
+      num_in_flight--;
+    _session_op_remove(s, op);
     sl.unlock();
     put_session(s);
+
+    op->tid = 0;
+    op->target.flags &= ~(CEPH_OSD_FLAG_BALANCE_READS |
+			  CEPH_OSD_FLAG_LOCALIZE_READS);
+    op->target.pgid = pg_t();
+    _op_submit(op, sul, NULL);
     m->put();
     return;
   }
