@@ -1,4 +1,4 @@
-From 280abe4006f9ec451185f5c5da09d2cbe38cd31f Mon Sep 17 00:00:00 2001
+From c6af60a05ac7da38ad71d5f7a2093bde318b976d Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?Fabian=20Gr=C3=BCnbichler?= <f.gruenbichler@proxmox.com>
 Date: Wed, 31 May 2017 14:33:09 +0200
 Subject: [PATCH 2/3] cmake: disable version from git
@@ -15,7 +15,7 @@ Signed-off-by: Fabian Grünbichler <f.gruenbichler@proxmox.com>
  1 file changed, 5 deletions(-)
 
 diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
-index a764c490e4..ac7447fe21 100644
+index 5060b41bc2..5d57712a44 100644
 --- a/src/CMakeLists.txt
 +++ b/src/CMakeLists.txt
 @@ -206,15 +206,10 @@ set(GCOV_PREFIX_STRIP 4)
