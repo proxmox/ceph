@@ -1,4 +1,4 @@
-From 57b17764b8c368efe32f1df5e3a5be7db86ae626 Mon Sep 17 00:00:00 2001
+From 93c5cd1df7d2c5eb7e0da3bda861a7c811f5a129 Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?Fabian=20Gr=C3=BCnbichler?= <f.gruenbichler@proxmox.com>
 Date: Wed, 22 Mar 2017 09:00:34 +0100
 Subject: [PATCH 3/3] enable systemd targets by default
@@ -12,10 +12,10 @@ Signed-off-by: Fabian Grünbichler <f.gruenbichler@proxmox.com>
  1 file changed, 3 insertions(+)
 
 diff --git a/debian/rules b/debian/rules
-index 2e4ec9d22a..64278d79d1 100755
+index 92bc0b5877..782e4d4e87 100755
 --- a/debian/rules
 +++ b/debian/rules
-@@ -130,6 +130,9 @@ override_dh_installinit:
+@@ -132,6 +132,9 @@ override_dh_installinit:
  
  	dh_installinit -p ceph-base --name ceph --no-start
  	dh_installinit -p radosgw --no-start
