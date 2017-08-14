@@ -1254,7 +1254,7 @@ struct RGWZoneParams : RGWSystemMetaObj {
     if (struct_v >= 7) {
       ::decode(lc_pool, bl);
     } else {
-      lc_pool.init(name + ".rgw.lc");
+      lc_pool = log_pool.name + ":lc";
     }
     if (struct_v >= 8) {
       ::decode(tier_config, bl);
@@ -1262,7 +1262,7 @@ struct RGWZoneParams : RGWSystemMetaObj {
     if (struct_v >= 9) {
       ::decode(roles_pool, bl);
     } else {
-      roles_pool = name + ".rgw.roles";
+      roles_pool = name + ".rgw.meta:roles";
     }
     if (struct_v >= 10) {
       ::decode(reshard_pool, bl);
@@ -2213,6 +2213,7 @@ class RGWRados
   friend class RGWReshard;
   friend class RGWBucketReshard;
   friend class BucketIndexLockGuard;
+  friend class RGWCompleteMultipart;
 
   /** Open the pool used as root for this gateway */
   int open_root_pool_ctx();

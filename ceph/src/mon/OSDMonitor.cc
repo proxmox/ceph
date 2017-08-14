@@ -4984,6 +4984,43 @@ bool OSDMonitor::preprocess_command(MonOpRequestRef op)
                               show_shadow);
       rdata.append(ss.str());
     }
+  } else if (prefix == "osd crush ls") {
+    string name;
+    if (!cmd_getval(g_ceph_context, cmdmap, "node", name)) {
+      ss << "no node specified";
+      r = -EINVAL;
+      goto reply;
+    }
+    if (!osdmap.crush->name_exists(name)) {
+      ss << "node '" << name << "' does not exist";
+      r = -ENOENT;
+      goto reply;
+    }
+    int id = osdmap.crush->get_item_id(name);
+    list<int> result;
+    if (id >= 0) {
+      result.push_back(id);
+    } else {
+      int num = osdmap.crush->get_bucket_size(id);
+      for (int i = 0; i < num; ++i) {
+	result.push_back(osdmap.crush->get_bucket_item(id, i));
+      }
+    }
+    if (f) {
+      f->open_array_section("items");
+      for (auto i : result) {
+	f->dump_string("item", osdmap.crush->get_item_name(i));
+      }
+      f->close_section();
+      f->flush(rdata);
+    } else {
+      ostringstream ss;
+      for (auto i : result) {
+	ss << osdmap.crush->get_item_name(i) << "\n";
+      }
+      rdata.append(ss.str());
+    }
+    r = 0;
   } else if (prefix == "osd crush class ls") {
     boost::scoped_ptr<Formatter> f(Formatter::create(format, "json-pretty", "json-pretty"));
     f->open_array_section("crush_classes");
@@ -7391,7 +7428,6 @@ bool OSDMonitor::prepare_command_impl(MonOpRequestRef op,
         }
 
         auto class_name = newcrush.get_item_class(osd);
-        stringstream ts;
         if (!class_name) {
           ss << "osd." << osd << " belongs to no class, ";
           continue;
@@ -7480,63 +7516,6 @@ bool OSDMonitor::prepare_command_impl(MonOpRequestRef op,
       goto reply;
     else
       goto update;
-  } else if (prefix == "osd crush class rm") {
-    string device_class;
-    if (!cmd_getval(g_ceph_context, cmdmap, "class", device_class)) {
-      err = -EINVAL; // no value!
-      goto reply;
-    }
-    if (osdmap.require_osd_release < CEPH_RELEASE_LUMINOUS) {
-      ss << "you must complete the upgrade and 'ceph osd require-osd-release "
-	 << "luminous' before using crush device classes";
-      err = -EPERM;
-      goto reply;
-    }
-
-    CrushWrapper newcrush;
-    _get_pending_crush(newcrush);
-
-    if (!newcrush.class_exists(device_class)) {
-      err = -ENOENT;
-      ss << "class '" << device_class << "' does not exist";
-      goto reply;
-    }
-
-    int class_id = newcrush.get_class_id(device_class);
-
-    stringstream ts;
-    if (newcrush.class_is_in_use(class_id, &ts)) {
-      err = -EBUSY;
-      ss << "class '" << device_class << "' " << ts.str();
-      goto reply;
-    }
-
-    set<int> osds;
-    newcrush.get_devices_by_class(device_class, &osds);
-    for (auto& p: osds) {
-      err = newcrush.remove_device_class(g_ceph_context, p, &ss);
-      if (err < 0) {
-        // ss has reason for failure
-        goto reply;
-      }
-    }
-
-    if (osds.empty()) {
-      // empty class, remove directly
-      err = newcrush.remove_class_name(device_class);
-      if (err < 0) {
-        ss << "class '" << device_class << "' cannot be removed '"
-           << cpp_strerror(err) << "'";
-        goto reply;
-      }
-    }
-
-    pending_inc.crush.clear();
-    newcrush.encode(pending_inc.crush, mon->get_quorum_con_features());
-    ss << "removed class " << device_class << " with id " << class_id
-       << " from crush map";
-    goto update;
-
   } else if (prefix == "osd crush weight-set create" ||
 	     prefix == "osd crush weight-set create-compat") {
     CrushWrapper newcrush;
@@ -8730,6 +8709,11 @@ bool OSDMonitor::prepare_command_impl(MonOpRequestRef op,
       err = -EINVAL;
       goto reply;
     }
+    if (rel == osdmap.require_osd_release) {
+      // idempotent
+      err = 0;
+      goto reply;
+    }
     if (rel == CEPH_RELEASE_LUMINOUS) {
       if (!HAVE_FEATURE(osdmap.get_up_osd_features(), SERVER_LUMINOUS)) {
 	ss << "not all up OSDs have CEPH_FEATURE_SERVER_LUMINOUS feature";
@@ -9689,9 +9673,9 @@ bool OSDMonitor::prepare_command_impl(MonOpRequestRef op,
          << "really do.";
       err = -EPERM;
       goto reply;
-    } else if (is_destroy && !osdmap.exists(id)) {
+    } else if (!osdmap.exists(id)) {
       ss << "osd." << id << " does not exist";
-      err = -ENOENT;
+      err = 0; // idempotent
       goto reply;
     } else if (osdmap.is_up(id)) {
       ss << "osd." << id << " is not `down`.";

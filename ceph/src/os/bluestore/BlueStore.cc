@@ -3736,17 +3736,17 @@ int BlueStore::_set_cache_sizes()
     (double)1.0 - (double)cache_meta_ratio - (double)cache_kv_ratio;
 
   if (cache_meta_ratio < 0 || cache_meta_ratio > 1.0) {
-    derr << __func__ << "bluestore_cache_meta_ratio (" << cache_meta_ratio
+    derr << __func__ << " bluestore_cache_meta_ratio (" << cache_meta_ratio
 	 << ") must be in range [0,1.0]" << dendl;
     return -EINVAL;
   }
   if (cache_kv_ratio < 0 || cache_kv_ratio > 1.0) {
-    derr << __func__ << "bluestore_cache_kv_ratio (" << cache_kv_ratio
+    derr << __func__ << " bluestore_cache_kv_ratio (" << cache_kv_ratio
 	 << ") must be in range [0,1.0]" << dendl;
     return -EINVAL;
   }
   if (cache_meta_ratio + cache_kv_ratio > 1.0) {
-    derr << __func__ << "bluestore_cache_meta_ratio (" << cache_meta_ratio
+    derr << __func__ << " bluestore_cache_meta_ratio (" << cache_meta_ratio
 	 << ") + bluestore_cache_kv_ratio (" << cache_kv_ratio
 	 << ") = " << cache_meta_ratio + cache_kv_ratio << "; must be <= 1.0"
 	 << dendl;
@@ -4394,6 +4394,17 @@ bool BlueStore::is_rotational()
   _close_path();
   out:
   return rotational;
+}
+
+bool BlueStore::is_journal_rotational()
+{
+  if (!bluefs) {
+    dout(5) << __func__ << " bluefs disabled, default to store media type"
+            << dendl;
+    return is_rotational();
+  }
+  dout(10) << __func__ << " " << (int)bluefs->wal_is_rotational() << dendl;
+  return bluefs->wal_is_rotational();
 }
 
 bool BlueStore::test_mount_in_use()
@@ -8814,9 +8825,13 @@ int BlueStore::queue_transactions(
   if (txc->deferred_txn) {
     // ensure we do not block here because of deferred writes
     if (!throttle_deferred_bytes.get_or_fail(txc->cost)) {
+      dout(10) << __func__ << " failed get throttle_deferred_bytes, aggressive"
+	       << dendl;
+      ++deferred_aggressive;
       deferred_try_submit();
       throttle_deferred_bytes.get(txc->cost);
-    }
+      --deferred_aggressive;
+   }
   }
   utime_t tend = ceph_clock_now();
 
@@ -10499,8 +10514,6 @@ int BlueStore::_do_remove(
     return 0;
   }
 
-  uint32_t b_start = OBJECT_MAX_SIZE;
-  uint32_t b_end = 0;
   for (auto& e : h->extent_map.extent_map) {
     const bluestore_blob_t& b = e.blob->get_blob();
     SharedBlob *sb = e.blob->shared_blob.get();
@@ -10510,17 +10523,9 @@ int BlueStore::_do_remove(
       dout(20) << __func__ << "  unsharing " << e << dendl;
       bluestore_blob_t& blob = e.blob->dirty_blob();
       blob.clear_flag(bluestore_blob_t::FLAG_SHARED);
-      if (e.logical_offset < b_start) {
-        b_start = e.logical_offset;
-      }
-      if (e.logical_end() > b_end) {
-        b_end = e.logical_end();
-      }
+      h->extent_map.dirty_range(e.logical_offset, 1);
     }
   }
-
-  assert(b_end > b_start);
-  h->extent_map.dirty_range(b_start, b_end - b_start);
   txc->write_onode(h);
 
   return 0;
@@ -10928,7 +10933,7 @@ int BlueStore::_do_clone_range(
       // make sure it is shared
       if (!blob.is_shared()) {
 	c->make_blob_shared(_assign_blobid(txc), e.blob);
-	if (dirty_range_begin == 0) {
+	if (dirty_range_begin == 0 && dirty_range_end == 0) {
           dirty_range_begin = e.logical_offset;
         }
         assert(e.logical_end() > 0);
