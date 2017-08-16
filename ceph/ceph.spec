@@ -61,7 +61,7 @@
 # main package definition
 #################################################################################
 Name:		ceph
-Version:	12.1.3
+Version:	12.1.4
 Release:	0%{?dist}
 %if 0%{?fedora} || 0%{?rhel}
 Epoch:		2
@@ -76,7 +76,7 @@ License:	LGPL-2.1 and CC-BY-SA-1.0 and GPL-2.0 and BSL-1.0 and BSD-3-Clause and 
 Group:		System/Filesystems
 %endif
 URL:		http://ceph.com/
-Source0:	http://ceph.com/download/ceph-12.1.3.tar.bz2
+Source0:	http://ceph.com/download/ceph-12.1.4.tar.bz2
 %if 0%{?suse_version}
 %if 0%{?is_opensuse}
 ExclusiveArch:  x86_64 aarch64 ppc64 ppc64le
@@ -772,7 +772,7 @@ python-rbd, python-rgw or python-cephfs instead.
 # common
 #################################################################################
 %prep
-%autosetup -p1 -n ceph-12.1.3
+%autosetup -p1 -n ceph-12.1.4
 
 %build
 %if 0%{with cephfs_java}

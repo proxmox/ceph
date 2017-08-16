@@ -3156,10 +3156,13 @@ void OSDMonitor::check_pg_creates_sub(Subscription *sub)
 void OSDMonitor::do_application_enable(int64_t pool_id,
                                        const std::string &app_name)
 {
-  assert(paxos->is_plugged());
+  assert(paxos->is_plugged() && is_writeable());
 
   dout(20) << __func__ << ": pool_id=" << pool_id << ", app_name=" << app_name
            << dendl;
+
+  assert(osdmap.require_osd_release >= CEPH_RELEASE_LUMINOUS ||
+	 pending_inc.new_require_osd_release >= CEPH_RELEASE_LUMINOUS);
 
   auto pp = osdmap.get_pg_pool(pool_id);
   assert(pp != nullptr);
@@ -7454,7 +7457,43 @@ bool OSDMonitor::prepare_command_impl(MonOpRequestRef op,
         new Monitor::C_Command(mon,op, 0, rs, get_last_committed() + 1));
       return true;
     }
+  } else if (prefix == "osd crush class rename") {
+    string srcname, dstname;
+    if (!cmd_getval(g_ceph_context, cmdmap, "srcname", srcname)) {
+      err = -EINVAL;
+      goto reply;
+    }
+    if (!cmd_getval(g_ceph_context, cmdmap, "dstname", dstname)) {
+      err = -EINVAL;
+      goto reply;
+    }
 
+    CrushWrapper newcrush;
+    _get_pending_crush(newcrush);
+
+    if (!newcrush.class_exists(srcname)) {
+      err = -ENOENT;
+      ss << "class '" << srcname << "' does not exist";
+      goto reply;
+    }
+
+    if (newcrush.class_exists(dstname)) {
+      err = -EEXIST;
+      ss << "class '" << dstname << "' already exists";
+      goto reply;
+    }
+
+    err = newcrush.rename_class(srcname, dstname);
+    if (err < 0) {
+      ss << "fail to rename '" << srcname << "' to '" << dstname << "' : "
+         << cpp_strerror(err);
+      goto reply;
+    }
+
+    pending_inc.crush.clear();
+    newcrush.encode(pending_inc.crush, mon->get_quorum_con_features());
+    ss << "rename class '" << srcname << "' to '" << dstname << "'";
+    goto update;
   } else if (prefix == "osd crush add-bucket") {
     // os crush add-bucket <name> <type>
     string name, typestr;
@@ -11326,6 +11365,16 @@ int OSDMonitor::_prepare_remove_pool(
                << dendl;
       pending_inc.old_pg_upmap_items.insert(p.first);
     }
+  }
+
+  // remove any choose_args for this pool
+  CrushWrapper newcrush;
+  _get_pending_crush(newcrush);
+  if (newcrush.have_choose_args(pool)) {
+    dout(10) << __func__ << " removing choose_args for pool " << pool << dendl;
+    newcrush.rm_choose_args(pool);
+    pending_inc.crush.clear();
+    newcrush.encode(pending_inc.crush, mon->get_quorum_con_features());
   }
   return 0;
 }
