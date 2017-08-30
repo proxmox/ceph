@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 2.8.11)
 
 project(ceph)
-set(VERSION 12.1.4)
+set(VERSION 12.2.0)
 
 if(POLICY CMP0046)
   # Tweak policies (this one disables "missing" dependency warning)
@@ -274,7 +274,7 @@ find_package(snappy REQUIRED)
 
 option(WITH_LZ4 "LZ4 compression support" OFF)
 if(WITH_LZ4)
-  find_package(LZ4 REQUIRED)
+  find_package(LZ4 1.7 REQUIRED)
   set(HAVE_LZ4 ${LZ4_FOUND})
 endif(WITH_LZ4)
 
