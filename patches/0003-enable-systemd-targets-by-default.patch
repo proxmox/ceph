@@ -1,4 +1,4 @@
-From 966b844b880d38bc16a9c5dade0834077cc70afd Mon Sep 17 00:00:00 2001
+From 5efcf3ae8edf936208f9ee0b7b76615b2322cdda Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?Fabian=20Gr=C3=BCnbichler?= <f.gruenbichler@proxmox.com>
 Date: Wed, 22 Mar 2017 09:00:34 +0100
 Subject: [PATCH 3/3] enable systemd targets by default
