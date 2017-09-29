@@ -28,8 +28,7 @@ rbd-mirror-dbg_${VER}-${DEBREL}_${ARCH}.deb \
 rbd-nbd-dbg_${VER}-${DEBREL}_${ARCH}.deb
 
 MAIN_DEB=ceph_${VER}-${DEBREL}_${ARCH}.deb
-DEBS_REST=$(MAIN_DEB) \
-ceph-base_${VER}-${DEBREL}_${ARCH}.deb \
+DEBS_REST=ceph-base_${VER}-${DEBREL}_${ARCH}.deb \
 ceph-common_${VER}-${DEBREL}_${ARCH}.deb \
 ceph-fuse_${VER}-${DEBREL}_${ARCH}.deb \
 ceph-mds_${VER}-${DEBREL}_${ARCH}.deb \
