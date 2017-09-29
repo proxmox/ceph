@@ -1,4 +1,4 @@
-From 5efcf3ae8edf936208f9ee0b7b76615b2322cdda Mon Sep 17 00:00:00 2001
+From d582ef1c55087f9bb1be5d99f1238e865ac8be9e Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?Fabian=20Gr=C3=BCnbichler?= <f.gruenbichler@proxmox.com>
 Date: Wed, 22 Mar 2017 09:00:34 +0100
 Subject: [PATCH 3/3] enable systemd targets by default
@@ -26,5 +26,5 @@ index 92bc0b5877..782e4d4e87 100755
  	# NOTE: execute systemd helpers so they pickup dh_install'ed units and targets
  	dh_systemd_enable
 -- 
-2.11.0
+2.14.1
 
