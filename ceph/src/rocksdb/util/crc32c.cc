@@ -327,6 +327,15 @@ static inline void Slow_CRC32(uint64_t* l, uint8_t const **p) {
   table0_[c >> 24];
 }
 
+#if defined(HAVE_SSE42) && defined(__GNUC__)
+#if defined(__clang__)
+#if __has_cpp_attribute(gnu::target)
+__attribute__ ((target ("sse4.2")))
+#endif
+#else  // gcc supports this since 4.4
+__attribute__ ((target ("sse4.2")))
+#endif
+#endif
 static inline void Fast_CRC32(uint64_t* l, uint8_t const **p) {
 #ifdef __SSE4_2__
 #ifdef __LP64__
@@ -397,8 +406,7 @@ uint32_t ExtendImpl(uint32_t crc, const char* buf, size_t size) {
 static bool isSSE42() {
 #if defined(__GNUC__) && defined(__x86_64__) && !defined(IOS_CROSS_COMPILE)
   uint32_t c_;
-  uint32_t d_;
-  __asm__("cpuid" : "=c"(c_), "=d"(d_) : "a"(1) : "ebx");
+  __asm__("cpuid" : "=c"(c_) : "a"(1) : "ebx", "edx");
   return c_ & (1U << 20);  // copied from CpuId.h in Folly.
 #elif defined(_WIN64)
   int info[4];
@@ -425,7 +433,7 @@ bool IsFastCrc32Supported() {
 #endif
 }
 
-Function ChosenExtend = Choose_Extend();
+static Function ChosenExtend = Choose_Extend();
 
 uint32_t Extend(uint32_t crc, const char* buf, size_t size) {
   return ChosenExtend(crc, buf, size);

@@ -479,12 +479,12 @@ int write_pg(ObjectStore::Transaction &t, epoch_t epoch, pg_info_t &info,
   if (!divergent.empty()) {
     assert(missing.get_items().empty());
     PGLog::write_log_and_missing_wo_missing(
-      t, &km, log, coll, info.pgid.make_pgmeta_oid(), divergent, true, true);
+      t, &km, log, coll, info.pgid.make_pgmeta_oid(), divergent, true);
   } else {
     pg_missing_tracker_t tmissing(missing);
     bool rebuilt_missing_set_with_deletes = missing.may_include_deletes;
     PGLog::write_log_and_missing(
-      t, &km, log, coll, info.pgid.make_pgmeta_oid(), tmissing, true, true,
+      t, &km, log, coll, info.pgid.make_pgmeta_oid(), tmissing, true,
       &rebuilt_missing_set_with_deletes);
   }
   t.omap_setkeys(coll, info.pgid.make_pgmeta_oid(), km);
@@ -2286,9 +2286,13 @@ int dup(string srcpath, ObjectStore *src, string dstpath, ObjectStore *dst)
       ObjectStore::Transaction t;
       int bits = src->collection_bits(cid);
       if (bits < 0) {
-	cerr << "cannot get bit count for collection " << cid << ": "
-	     << cpp_strerror(bits) << std::endl;
-	goto out;
+        if (src->get_type() == "filestore" && cid.is_meta()) {
+          bits = 0;
+        } else {
+          cerr << "cannot get bit count for collection " << cid << ": "
+               << cpp_strerror(bits) << std::endl;
+          goto out;
+        }
       }
       t.create_collection(cid, bits);
       dst->apply_transaction(&osr, std::move(t));

@@ -61,7 +61,7 @@
 # main package definition
 #################################################################################
 Name:		ceph
-Version:	12.2.0
+Version:	12.2.1
 Release:	0%{?dist}
 %if 0%{?fedora} || 0%{?rhel}
 Epoch:		2
@@ -76,7 +76,7 @@ License:	LGPL-2.1 and CC-BY-SA-1.0 and GPL-2.0 and BSL-1.0 and BSD-3-Clause and 
 Group:		System/Filesystems
 %endif
 URL:		http://ceph.com/
-Source0:	http://ceph.com/download/ceph-12.2.0.tar.bz2
+Source0:	http://ceph.com/download/ceph-12.2.1.tar.bz2
 %if 0%{?suse_version}
 %if 0%{?is_opensuse}
 ExclusiveArch:  x86_64 aarch64 ppc64 ppc64le
@@ -341,6 +341,7 @@ Summary:	Ceph fuse-based client
 %if 0%{?suse_version}
 Group:		System/Filesystems
 %endif
+Requires:       fuse
 %description fuse
 FUSE based client for Ceph distributed network file system
 
@@ -772,7 +773,7 @@ python-rbd, python-rgw or python-cephfs instead.
 # common
 #################################################################################
 %prep
-%autosetup -p1 -n ceph-12.2.0
+%autosetup -p1 -n ceph-12.2.1
 
 %build
 %if 0%{with cephfs_java}
@@ -1528,10 +1529,7 @@ fi
 %{_libdir}/librbd_tp.so.*
 %endif
 
-%post -n librbd1
-/sbin/ldconfig
-mkdir -p /usr/lib64/qemu/
-ln -sf %{_libdir}/librbd.so.1 /usr/lib64/qemu/librbd.so.1
+%post -n librbd1 -p /sbin/ldconfig
 
 %postun -n librbd1 -p /sbin/ldconfig
 
