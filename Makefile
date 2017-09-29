@@ -60,6 +60,7 @@ python-rados_${VER}-${DEBREL}_${ARCH}.deb \
 python-rbd_${VER}-${DEBREL}_${ARCH}.deb \
 python-rgw_${VER}-${DEBREL}_${ARCH}.deb \
 radosgw_${VER}-${DEBREL}_${ARCH}.deb \
+rados-objclass-dev_${VER}-${DEBREL}_${ARCH}.deb \
 rbd-fuse_${VER}-${DEBREL}_${ARCH}.deb \
 rbd-mirror_${VER}-${DEBREL}_${ARCH}.deb \
 rbd-nbd_${VER}-${DEBREL}_${ARCH}.deb
