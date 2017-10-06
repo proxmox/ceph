@@ -1,21 +1,27 @@
-From d2274dc3f5035a9d2bec3d99cd9ddaf7bd491671 Mon Sep 17 00:00:00 2001
+From 76768681ea7bf8584d09751c8af648332dd41895 Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?Fabian=20Gr=C3=BCnbichler?= <f.gruenbichler@proxmox.com>
 Date: Mon, 20 Mar 2017 09:12:50 +0100
-Subject: [PATCH 1/3] update changelog
+Subject: [PATCH 1/4] update changelog
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
 
 Signed-off-by: Fabian Grünbichler <f.gruenbichler@proxmox.com>
 ---
- debian/changelog | 114 +++++++++++++++++++++++++++++++++++++++++++++++++++++++
- 1 file changed, 114 insertions(+)
+ debian/changelog | 120 +++++++++++++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 120 insertions(+)
 
 diff --git a/debian/changelog b/debian/changelog
-index f052439176..ddc7b787d2 100644
+index f052439176..a96ff7923b 100644
 --- a/debian/changelog
 +++ b/debian/changelog
-@@ -1,63 +1,177 @@
+@@ -1,63 +1,183 @@
++ceph (12.2.1-pve2) stable; urgency=medium
++
++  * cherry-pick RDMA fix
++
++ -- Proxmox Support Team <support@proxmox.com>  Fri, 6 Oct 2017 08:40:57 +0200
++
 +ceph (12.2.1-pve1) stable; urgency=medium
 +
 +  * rebase on latest upstream release
