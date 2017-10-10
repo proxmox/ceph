@@ -2,3 +2,4 @@
 0002-cmake-disable-version-from-git.patch
 0003-enable-systemd-targets-by-default.patch
 0004-msg-async-rdma-uninitialized-variable-fix.patch
+0005-ceph-disk-fix-runtime-omission-for-ceph-osd-service.patch
