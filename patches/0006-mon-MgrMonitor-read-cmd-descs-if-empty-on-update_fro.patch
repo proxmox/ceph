@@ -1,0 +1,46 @@
+From 246c246ff5d21a7ce589bd306164d51455cfd1a4 Mon Sep 17 00:00:00 2001
+From: Joao Eduardo Luis <joao@suse.de>
+Date: Wed, 20 Sep 2017 17:53:40 +0100
+Subject: [PATCH 6/6] mon/MgrMonitor: read cmd descs if empty on
+ update_from_paxos()
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+If the MgrMonitor's `command_descs` is empty, the monitor will not send
+the mgr commands to clients on `get_descriptions`. This, in turn, has
+the clients sending the commands to the monitors, which will have no
+idea how to handle them.
+
+Therefore, make sure to read the `command_descs` from disk if the vector
+is empty.
+
+Fixes: http://tracker.ceph.com/issues/21300
+
+Signed-off-by: Joao Eduardo Luis <joao@suse.de>
+(cherry picked from commit 3d06079bae0fbc096d6c3639807d9be3597e841a)
+(cherry picked from commit 86d143722e1f16a19a56ed7a163d1dc9327c0c90)
+Signed-off-by: Fabian Grünbichler <f.gruenbichler@proxmox.com>
+---
+ src/mon/MgrMonitor.cc | 5 +++--
+ 1 file changed, 3 insertions(+), 2 deletions(-)
+
+diff --git a/src/mon/MgrMonitor.cc b/src/mon/MgrMonitor.cc
+index 3840b642b9..55bce43920 100644
+--- a/src/mon/MgrMonitor.cc
++++ b/src/mon/MgrMonitor.cc
+@@ -85,8 +85,9 @@ void MgrMonitor::update_from_paxos(bool *need_bootstrap)
+     check_subs();
+ 
+     if (version == 1
+-	|| (map.get_available()
+-	    && (!old_available || old_gid != map.get_active_gid()))) {
++        || command_descs.empty()
++        || (map.get_available()
++            && (!old_available || old_gid != map.get_active_gid()))) {
+       dout(4) << "mkfs or daemon transitioned to available, loading commands"
+ 	      << dendl;
+       bufferlist loaded_commands;
+-- 
+2.14.1
+

@@ -3,3 +3,4 @@
 0003-enable-systemd-targets-by-default.patch
 0004-msg-async-rdma-uninitialized-variable-fix.patch
 0005-ceph-disk-fix-runtime-omission-for-ceph-osd-service.patch
+0006-mon-MgrMonitor-read-cmd-descs-if-empty-on-update_fro.patch
