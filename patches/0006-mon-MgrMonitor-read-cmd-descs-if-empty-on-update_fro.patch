@@ -1,4 +1,4 @@
-From 246c246ff5d21a7ce589bd306164d51455cfd1a4 Mon Sep 17 00:00:00 2001
+From 9b015f1ad4d9b9912f2b49b65e5349cc1b4c74db Mon Sep 17 00:00:00 2001
 From: Joao Eduardo Luis <joao@suse.de>
 Date: Wed, 20 Sep 2017 17:53:40 +0100
 Subject: [PATCH 6/6] mon/MgrMonitor: read cmd descs if empty on

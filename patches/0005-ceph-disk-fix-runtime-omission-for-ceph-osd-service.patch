@@ -1,7 +1,7 @@
-From 67f56c5d882c8e4bed3d404825da3454732ca32a Mon Sep 17 00:00:00 2001
+From 1f438fee7b3b7ffb589ae7af942fca836521117d Mon Sep 17 00:00:00 2001
 From: Carl Xiong <xiongc05@gmail.com>
 Date: Fri, 22 Sep 2017 11:55:33 +0800
-Subject: [PATCH 5/5] ceph-disk: fix '--runtime' omission for ceph-osd service
+Subject: [PATCH 5/6] ceph-disk: fix '--runtime' omission for ceph-osd service
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
