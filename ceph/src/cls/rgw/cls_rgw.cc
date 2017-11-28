@@ -445,8 +445,9 @@ int rgw_bucket_list(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
         CLS_LOG(20, "entry %s[%s] is not valid\n", key.name.c_str(), key.instance.c_str());
         continue;
       }
-
-      if (!op.list_versions && !entry.is_visible()) {
+      
+      // filter out noncurrent versions, delete markers, and initial marker
+      if (!op.list_versions && (!entry.is_visible() || op.start_obj.name == key.name)) {
         CLS_LOG(20, "entry %s[%s] is not visible\n", key.name.c_str(), key.instance.c_str());
         continue;
       }
@@ -935,6 +936,7 @@ int rgw_bucket_complete_op(cls_method_context_t hctx, bufferlist *in, bufferlist
     unaccount_entry(header, remove_entry);
 
     if (op.log_op && !header.syncstopped) {
+      ++header.ver; // increment index version, or we'll overwrite keys previously written
       rc = log_index_operation(hctx, remove_key, CLS_RGW_OP_DEL, op.tag, remove_entry.meta.mtime,
                                remove_entry.ver, CLS_RGW_STATE_COMPLETE, header.ver, header.max_marker, op.bilog_flags, NULL, NULL, &op.zones_trace);
       if (rc < 0)
@@ -1863,7 +1865,8 @@ static int rgw_bucket_clear_olh(cls_method_context_t hctx, bufferlist *in, buffe
   return 0;
 }
 
-int rgw_dir_suggest_changes(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
+int rgw_dir_suggest_changes(cls_method_context_t hctx,
+			    bufferlist *in, bufferlist *out)
 {
   CLS_LOG(1, "rgw_dir_suggest_changes()");
 
@@ -1956,8 +1959,21 @@ int rgw_dir_suggest_changes(cls_method_context_t hctx, bufferlist *in, bufferlis
         }
         break;
       case CEPH_RGW_UPDATE:
+	if (!cur_disk.exists) {
+	  // this update would only have been sent by the rgw client
+	  // if the rgw_bucket_dir_entry existed, however between that
+	  // check and now the entry has diappeared, so we were likely
+	  // in the midst of a delete op, and we will not recreate the
+	  // entry
+	  CLS_LOG(10,
+		  "CEPH_RGW_UPDATE not applied because rgw_bucket_dir_entry"
+		  " no longer exists\n");
+	  break;
+	}
+
         CLS_LOG(10, "CEPH_RGW_UPDATE name=%s instance=%s total_entries: %" PRId64 " -> %" PRId64 "\n",
                 cur_change.key.name.c_str(), cur_change.key.instance.c_str(), stats.num_entries, stats.num_entries + 1);
+
         stats.num_entries++;
         stats.total_size += cur_change.meta.accounted_size;
         stats.total_size_rounded += cls_rgw_get_rounded_size(cur_change.meta.accounted_size);
@@ -1978,10 +1994,9 @@ int rgw_dir_suggest_changes(cls_method_context_t hctx, bufferlist *in, bufferlis
           }
         }
         break;
-      }
-    }
-
-  }
+      } // switch(op)
+    } // if (cur_disk.pending_map.empty())
+  } // while (!in_iter.end())
 
   if (header_changed) {
     return write_bucket_header(hctx, &header);
@@ -2900,9 +2915,7 @@ static int usage_iterate_range(cls_method_context_t hctx, uint64_t start, uint64
   bool by_user = !user.empty();
   uint32_t i = 0;
   string user_key;
-
-  if (truncated)
-    *truncated = false;
+  bool truncated_status = false;
 
   if (!by_user) {
     usage_record_prefix_by_time(end, end_key);
@@ -2922,11 +2935,14 @@ static int usage_iterate_range(cls_method_context_t hctx, uint64_t start, uint64
   }
 
   CLS_LOG(20, "usage_iterate_range start_key=%s", start_key.c_str());
-  int ret = cls_cxx_map_get_vals(hctx, start_key, filter_prefix, max_entries, &keys, truncated);
+  int ret = cls_cxx_map_get_vals(hctx, start_key, filter_prefix, max_entries, &keys, &truncated_status);
   if (ret < 0)
     return ret;
 
-
+  if (truncated) {
+    *truncated = truncated_status;
+  }
+      
   map<string, bufferlist>::iterator iter = keys.begin();
   if (iter == keys.end())
     return 0;
@@ -2939,11 +2955,17 @@ static int usage_iterate_range(cls_method_context_t hctx, uint64_t start, uint64
 
     if (!by_user && key.compare(end_key) >= 0) {
       CLS_LOG(20, "usage_iterate_range reached key=%s, done", key.c_str());
+      if (truncated_status) {
+        key_iter = key;
+      }
       return 0;
     }
 
     if (by_user && key.compare(0, user_key.size(), user_key) != 0) {
       CLS_LOG(20, "usage_iterate_range reached key=%s, done", key.c_str());
+      if (truncated_status) {
+        key_iter = key;
+      }
       return 0;
     }
 

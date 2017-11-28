@@ -1860,7 +1860,7 @@ public:
   int get_zonegroup(RGWZoneGroup& zonegroup,
 		    const string& zonegroup_id);
 
-  bool is_single_zonegroup()
+  bool is_single_zonegroup() const
   {
       return (period_map.zonegroups.size() == 1);
   }
@@ -2809,11 +2809,12 @@ public:
         const string *user_data;
         rgw_zone_set *zones_trace;
         bool modify_tail;
+        bool completeMultipart;
 
         MetaParams() : mtime(NULL), rmattrs(NULL), data(NULL), manifest(NULL), ptag(NULL),
                  remove_objs(NULL), category(RGW_OBJ_CATEGORY_MAIN), flags(0),
                  if_match(NULL), if_nomatch(NULL), olh_epoch(0), canceled(false), user_data(nullptr), zones_trace(nullptr),
-                 modify_tail(false) {}
+                 modify_tail(false),  completeMultipart(false) {}
       } meta;
 
       explicit Write(RGWRados::Object *_target) : target(_target) {}
@@ -3591,6 +3592,11 @@ public:
   bool need_to_log_metadata() {
     return is_meta_master() &&
       (get_zonegroup().zones.size() > 1 || current_period.is_multi_zonegroups_with_zones());
+  }
+
+  bool can_reshard() const {
+    return current_period.get_id().empty() ||
+      (zonegroup.zones.size() == 1 && current_period.is_single_zonegroup());
   }
 
   librados::Rados* get_rados_handle();

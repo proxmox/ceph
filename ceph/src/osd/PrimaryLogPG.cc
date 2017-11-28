@@ -717,7 +717,7 @@ void PrimaryLogPG::maybe_force_recovery()
   if (!is_degraded() &&
       !state_test(PG_STATE_RECOVERING |
                   PG_STATE_RECOVERY_WAIT |
-		  PG_STATE_BACKFILL |
+		  PG_STATE_BACKFILLING |
 		  PG_STATE_BACKFILL_WAIT |
 		  PG_STATE_BACKFILL_TOOFULL))
     return;
@@ -1553,7 +1553,7 @@ void PrimaryLogPG::calc_trim_to()
   if (is_degraded() ||
       state_test(PG_STATE_RECOVERING |
 		 PG_STATE_RECOVERY_WAIT |
-		 PG_STATE_BACKFILL |
+		 PG_STATE_BACKFILLING |
 		 PG_STATE_BACKFILL_WAIT |
 		 PG_STATE_BACKFILL_TOOFULL)) {
     target = cct->_conf->osd_max_pg_log_entries;
@@ -2041,6 +2041,7 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
   if (write_ordered && is_degraded_or_backfilling_object(head)) {
     if (can_backoff && g_conf->osd_backoff_on_degraded) {
       add_backoff(session, head, head);
+      maybe_kick_recovery(head);
     } else {
       wait_for_degraded_object(head, op);
     }
@@ -2394,7 +2395,6 @@ void PrimaryLogPG::record_write_error(OpRequestRef op, const hobject_t &soid,
   dout(20) << __func__ << " r=" << r << dendl;
   assert(op->may_write());
   const osd_reqid_t &reqid = static_cast<const MOSDOp*>(op->get_req())->get_reqid();
-  ObjectContextRef obc;
   mempool::osd_pglog::list<pg_log_entry_t> entries;
   entries.push_back(pg_log_entry_t(pg_log_entry_t::ERROR, soid,
 				   get_next_version(), eversion_t(), 0,
@@ -4715,13 +4715,28 @@ int PrimaryLogPG::do_extent_cmp(OpContext *ctx, OSDOp& osd_op)
   dout(20) << __func__ << dendl;
   ceph_osd_op& op = osd_op.op;
 
-  if (!ctx->obs->exists || ctx->obs->oi.is_whiteout()) {
+  auto& oi = ctx->new_obs.oi;
+  uint64_t size = oi.size;
+  if ((oi.truncate_seq < op.extent.truncate_seq) &&
+      (op.extent.offset + op.extent.length > op.extent.truncate_size)) {
+    size = op.extent.truncate_size;
+  }
+
+  if (op.extent.offset >= size) {
+    op.extent.length = 0;
+  } else if (op.extent.offset + op.extent.length > size) {
+    op.extent.length = size - op.extent.offset;
+  }
+
+  if (op.extent.length == 0) {
+    dout(20) << __func__ << " zero length extent" << dendl;
+    return finish_extent_cmp(osd_op, bufferlist{});
+  } else if (!ctx->obs->exists || ctx->obs->oi.is_whiteout()) {
     dout(20) << __func__ << " object DNE" << dendl;
     return finish_extent_cmp(osd_op, {});
   } else if (pool.info.require_rollback()) {
     // If there is a data digest and it is possible we are reading
     // entire object, pass the digest.
-    auto& oi = ctx->new_obs.oi;
     boost::optional<uint32_t> maybe_crc;
     if (oi.is_data_digest() && op.checksum.offset == 0 &&
         op.checksum.length >= oi.size) {
@@ -6865,7 +6880,7 @@ inline int PrimaryLogPG::_delete_oid(
       }
     }
   } else {
-    legacy = false;
+    legacy = true;
   }
   dout(20) << __func__ << " " << soid << " whiteout=" << (int)whiteout
 	   << " no_whiteout=" << (int)no_whiteout
@@ -11313,7 +11328,7 @@ bool PrimaryLogPG::start_recovery_ops(
   assert(is_primary());
 
   if (!state_test(PG_STATE_RECOVERING) &&
-      !state_test(PG_STATE_BACKFILL)) {
+      !state_test(PG_STATE_BACKFILLING)) {
     /* TODO: I think this case is broken and will make do_recovery()
      * unhappy since we're returning false */
     dout(10) << "recovery raced and were queued twice, ignoring!" << dendl;
@@ -11348,7 +11363,7 @@ bool PrimaryLogPG::start_recovery_ops(
 
   bool deferred_backfill = false;
   if (recovering.empty() &&
-      state_test(PG_STATE_BACKFILL) &&
+      state_test(PG_STATE_BACKFILLING) &&
       !backfill_targets.empty() && started < max &&
       missing.num_missing() == 0 &&
       waiting_on_backfill.empty()) {
@@ -11417,6 +11432,9 @@ bool PrimaryLogPG::start_recovery_ops(
   if (state_test(PG_STATE_RECOVERING)) {
     state_clear(PG_STATE_RECOVERING);
     state_clear(PG_STATE_FORCED_RECOVERY);
+    if (get_osdmap()->get_pg_size(info.pgid.pgid) <= acting.size()) {
+      state_clear(PG_STATE_DEGRADED);
+    }
     if (needs_backfill()) {
       dout(10) << "recovery done, queuing backfill" << dendl;
       queue_peering_event(
@@ -11437,7 +11455,7 @@ bool PrimaryLogPG::start_recovery_ops(
             AllReplicasRecovered())));
     }
   } else { // backfilling
-    state_clear(PG_STATE_BACKFILL);
+    state_clear(PG_STATE_BACKFILLING);
     state_clear(PG_STATE_FORCED_BACKFILL);
     state_clear(PG_STATE_FORCED_RECOVERY);
     dout(10) << "recovery done, backfill done" << dendl;

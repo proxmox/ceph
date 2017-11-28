@@ -571,14 +571,22 @@ int Monitor::preinit()
   assert(!logger);
   {
     PerfCountersBuilder pcb(g_ceph_context, "mon", l_mon_first, l_mon_last);
-    pcb.add_u64(l_mon_num_sessions, "num_sessions", "Open sessions", "sess");
-    pcb.add_u64_counter(l_mon_session_add, "session_add", "Created sessions", "sadd");
-    pcb.add_u64_counter(l_mon_session_rm, "session_rm", "Removed sessions", "srm");
-    pcb.add_u64_counter(l_mon_session_trim, "session_trim", "Trimmed sessions");
-    pcb.add_u64_counter(l_mon_num_elections, "num_elections", "Elections participated in");
-    pcb.add_u64_counter(l_mon_election_call, "election_call", "Elections started");
-    pcb.add_u64_counter(l_mon_election_win, "election_win", "Elections won");
-    pcb.add_u64_counter(l_mon_election_lose, "election_lose", "Elections lost");
+    pcb.add_u64(l_mon_num_sessions, "num_sessions", "Open sessions", "sess",
+        PerfCountersBuilder::PRIO_USEFUL);
+    pcb.add_u64_counter(l_mon_session_add, "session_add", "Created sessions",
+        "sadd", PerfCountersBuilder::PRIO_INTERESTING);
+    pcb.add_u64_counter(l_mon_session_rm, "session_rm", "Removed sessions",
+        "srm", PerfCountersBuilder::PRIO_INTERESTING);
+    pcb.add_u64_counter(l_mon_session_trim, "session_trim", "Trimmed sessions",
+        "strm", PerfCountersBuilder::PRIO_USEFUL);
+    pcb.add_u64_counter(l_mon_num_elections, "num_elections", "Elections participated in",
+        "ecnt", PerfCountersBuilder::PRIO_USEFUL);
+    pcb.add_u64_counter(l_mon_election_call, "election_call", "Elections started",
+        "estt", PerfCountersBuilder::PRIO_INTERESTING);
+    pcb.add_u64_counter(l_mon_election_win, "election_win", "Elections won",
+        "ewon", PerfCountersBuilder::PRIO_INTERESTING);
+    pcb.add_u64_counter(l_mon_election_lose, "election_lose", "Elections lost",
+        "elst", PerfCountersBuilder::PRIO_INTERESTING);
     logger = pcb.create_perf_counters();
     cct->get_perfcounters_collection()->add(logger);
   }
@@ -1242,10 +1250,11 @@ void Monitor::sync_reset_timeout()
   dout(10) << __func__ << dendl;
   if (sync_timeout_event)
     timer.cancel_event(sync_timeout_event);
-  sync_timeout_event = new C_MonContext(this, [this](int) {
-      sync_timeout();
-    });
-  timer.add_event_after(g_conf->mon_sync_timeout, sync_timeout_event);
+  sync_timeout_event = timer.add_event_after(
+    g_conf->mon_sync_timeout,
+    new C_MonContext(this, [this](int) {
+	sync_timeout();
+      }));
 }
 
 void Monitor::sync_finish(version_t last_committed)
@@ -1588,8 +1597,12 @@ void Monitor::reset_probe_timeout()
       probe_timeout(r);
     });
   double t = g_conf->mon_probe_timeout;
-  timer.add_event_after(t, probe_timeout_event);
-  dout(10) << "reset_probe_timeout " << probe_timeout_event << " after " << t << " seconds" << dendl;
+  if (timer.add_event_after(t, probe_timeout_event)) {
+    dout(10) << "reset_probe_timeout " << probe_timeout_event
+	     << " after " << t << " seconds" << dendl;
+  } else {
+    probe_timeout_event = nullptr;
+  }
 }
 
 void Monitor::probe_timeout(int r)
@@ -2291,14 +2304,14 @@ void Monitor::health_tick_start()
   dout(15) << __func__ << dendl;
 
   health_tick_stop();
-  health_tick_event = new C_MonContext(this, [this](int r) {
-      if (r < 0)
-        return;
-      do_health_to_clog();
-      health_tick_start();
-    });
-  timer.add_event_after(cct->_conf->mon_health_to_clog_tick_interval,
-                        health_tick_event);
+  health_tick_event = timer.add_event_after(
+    cct->_conf->mon_health_to_clog_tick_interval,
+    new C_MonContext(this, [this](int r) {
+	if (r < 0)
+	  return;
+	do_health_to_clog();
+	health_tick_start();
+      }));
 }
 
 void Monitor::health_tick_stop()
@@ -2345,7 +2358,9 @@ void Monitor::health_interval_start()
         return;
       do_health_to_clog_interval();
     });
-  timer.add_event_at(next, health_interval_event);
+  if (!timer.add_event_at(next, health_interval_event)) {
+    health_interval_event = nullptr;
+  }
 }
 
 void Monitor::health_interval_stop()
@@ -2495,21 +2510,26 @@ health_status_t Monitor::get_health_status(
     *plain += "\n";
   }
 
+  const std::string old_fields_message = "'ceph health' JSON format has "
+    "changed in luminous. If you see this your monitoring system is "
+    "scraping the wrong fields. Disable this with 'mon health preluminous "
+    "compat warning = false'";
+
   if (f && (compat || compat_warn)) {
     health_status_t cr = compat_warn ? min(HEALTH_WARN, r) : r;
-    if (compat) {
-      f->open_array_section("summary");
-      if (compat_warn) {
-	f->open_object_section("item");
-	f->dump_stream("severity") << HEALTH_WARN;
-	f->dump_string("summary", "'ceph health' JSON format has changed in luminous; update your health monitoring scripts");
-	f->close_section();
-      }
-      for (auto& svc : paxos_service) {
-	svc->get_health_checks().dump_summary_compat(f);
-      }
+    f->open_array_section("summary");
+    if (compat_warn) {
+      f->open_object_section("item");
+      f->dump_stream("severity") << HEALTH_WARN;
+      f->dump_string("summary", old_fields_message);
       f->close_section();
     }
+    if (compat) {
+      for (auto& svc : paxos_service) {
+        svc->get_health_checks().dump_summary_compat(f);
+      }
+    }
+    f->close_section();
     f->dump_stream("overall_status") << cr;
   }
 
@@ -2517,7 +2537,7 @@ health_status_t Monitor::get_health_status(
     if (f && (compat || compat_warn)) {
       f->open_array_section("detail");
       if (compat_warn) {
-	f->dump_string("item", "'ceph health' JSON format has changed in luminous. If you see this your monitoring system is scraping the wrong fields. Disable this with 'mon health preluminous compat warning = false'");
+	f->dump_string("item", old_fields_message);
       }
     }
 
@@ -3149,8 +3169,8 @@ void Monitor::handle_command(MonOpRequestRef op)
       osdmon()->osdmap.require_osd_release >= CEPH_RELEASE_LUMINOUS) {
     const auto& hdr = m->get_header();
     uint64_t size = hdr.front_len + hdr.middle_len + hdr.data_len;
-    uint64_t max =
-      g_conf->mon_client_bytes * g_conf->mon_mgr_proxy_client_bytes_ratio;
+    uint64_t max = g_conf->get_val<uint64_t>("mon_client_bytes")
+                 * g_conf->get_val<double>("mon_mgr_proxy_client_bytes_ratio");
     if (mgr_proxy_bytes + size > max) {
       dout(10) << __func__ << " current mgr proxy bytes " << mgr_proxy_bytes
 	       << " + " << size << " > max " << max << dendl;
@@ -4578,10 +4598,11 @@ void Monitor::timecheck_reset_event()
            << " rounds_since_clean " << timecheck_rounds_since_clean
            << dendl;
 
-  timecheck_event = new C_MonContext(this, [this](int) {
-      timecheck_start_round();
-    });
-  timer.add_event_after(delay, timecheck_event);
+  timecheck_event = timer.add_event_after(
+    delay,
+    new C_MonContext(this, [this](int) {
+	timecheck_start_round();
+      }));
 }
 
 void Monitor::timecheck_check_skews()
@@ -5427,10 +5448,11 @@ void Monitor::scrub_event_start()
     return;
   }
 
-  scrub_event = new C_MonContext(this, [this](int) {
+  scrub_event = timer.add_event_after(
+    cct->_conf->mon_scrub_interval,
+    new C_MonContext(this, [this](int) {
       scrub_start();
-    });
-  timer.add_event_after(cct->_conf->mon_scrub_interval, scrub_event);
+      }));
 }
 
 void Monitor::scrub_event_cancel()
@@ -5454,11 +5476,11 @@ void Monitor::scrub_reset_timeout()
 {
   dout(15) << __func__ << " reset timeout event" << dendl;
   scrub_cancel_timeout();
-
-  scrub_timeout_event = new C_MonContext(this, [this](int) {
+  scrub_timeout_event = timer.add_event_after(
+    g_conf->mon_scrub_timeout,
+    new C_MonContext(this, [this](int) {
       scrub_timeout();
-    });
-  timer.add_event_after(g_conf->mon_scrub_timeout, scrub_timeout_event);
+    }));
 }
 
 /************ TICK ***************/

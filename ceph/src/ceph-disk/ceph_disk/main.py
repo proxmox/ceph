@@ -24,6 +24,7 @@ import argparse
 import base64
 import errno
 import fcntl
+import functools
 import json
 import logging
 import os
@@ -41,11 +42,22 @@ import pwd
 import grp
 import textwrap
 import glob
+import warnings
 
 CEPH_OSD_ONDISK_MAGIC = 'ceph osd volume v026'
 CEPH_LOCKBOX_ONDISK_MAGIC = 'ceph lockbox volume v001'
 
 KEY_MANAGEMENT_MODE_V1 = 'ceph-mon v1'
+
+DEPRECATION_WARNING = """
+*******************************************************************************
+This tool is now deprecated in favor of ceph-volume.
+It is recommended to use ceph-volume for OSD deployments. For details see:
+
+    http://docs.ceph.com/docs/master/ceph-volume/#migrating
+
+*******************************************************************************
+"""
 
 PTYPE = {
     'regular': {
@@ -721,6 +733,21 @@ def get_partition_mpath(dev, pnum):
         return None
 
 
+def retry(on_error=Exception, max_tries=10, wait=0.2, backoff=0):
+    def wrapper(func):
+        @functools.wraps(func)
+        def repeat(*args, **kwargs):
+            for tries in range(max_tries - 1):
+                try:
+                    return func(*args, **kwargs)
+                except on_error:
+                    time.sleep(wait + backoff * tries)
+            return func(*args, **kwargs)
+        return repeat
+    return wrapper
+
+
+@retry(Error)
 def get_partition_dev(dev, pnum):
     """
     get the device name for a partition
@@ -732,36 +759,25 @@ def get_partition_dev(dev, pnum):
        sda 1 -> sda1
        cciss/c0d1 1 -> cciss!c0d1p1
     """
-    max_retry = 10
-    for retry in range(0, max_retry + 1):
-        partname = None
-        error_msg = ""
-        if is_mpath(dev):
-            partname = get_partition_mpath(dev, pnum)
-        else:
-            name = get_dev_name(os.path.realpath(dev))
-            sys_entry = os.path.join(BLOCKDIR, name)
-            error_msg = " in %s" % sys_entry
-            for f in os.listdir(sys_entry):
-                if f.startswith(name) and f.endswith(str(pnum)):
-                    # we want the shortest name that starts with the base name
-                    # and ends with the partition number
-                    if not partname or len(f) < len(partname):
-                        partname = f
-        if partname:
-            if retry:
-                LOG.info('Found partition %d for %s after %d tries' %
-                         (pnum, dev, retry))
-            return get_dev_path(partname)
-        else:
-            if retry < max_retry:
-                LOG.info('Try %d/%d : partition %d for %s does not exist%s' %
-                         (retry + 1, max_retry, pnum, dev, error_msg))
-                time.sleep(.2)
-                continue
-            else:
-                raise Error('partition %d for %s does not appear to exist%s' %
-                            (pnum, dev, error_msg))
+    partname = None
+    error_msg = ""
+    if is_mpath(dev):
+        partname = get_partition_mpath(dev, pnum)
+    else:
+        name = get_dev_name(os.path.realpath(dev))
+        sys_entry = os.path.join(BLOCKDIR, name)
+        error_msg = " in %s" % sys_entry
+        for f in os.listdir(sys_entry):
+            if f.startswith(name) and f.endswith(str(pnum)):
+                # we want the shortest name that starts with the base name
+                # and ends with the partition number
+                if not partname or len(f) < len(partname):
+                    partname = f
+    if partname:
+        return get_dev_path(partname)
+    else:
+        raise Error('partition %d for %s does not appear to exist%s' %
+                    (pnum, dev, error_msg))
 
 
 def list_all_partitions():
@@ -1374,22 +1390,14 @@ def _dmcrypt_map(
         raise Error('unable to map device', rawdev, e)
 
 
-def dmcrypt_unmap(
-    _uuid
-):
+@retry(Error, max_tries=10, wait=0.5, backoff=1.0)
+def dmcrypt_unmap(_uuid):
     if not os.path.exists('/dev/mapper/' + _uuid):
         return
-    retries = 0
-    while True:
-        try:
-            command_check_call(['cryptsetup', 'remove', _uuid])
-            break
-        except subprocess.CalledProcessError as e:
-            if retries == 10:
-                raise Error('unable to unmap device', _uuid, e)
-            else:
-                time.sleep(0.5 + retries * 1.0)
-                retries += 1
+    try:
+        command_check_call(['cryptsetup', 'remove', _uuid])
+    except subprocess.CalledProcessError as e:
+        raise Error('unable to unmap device', _uuid, e)
 
 
 def mount(
@@ -1451,6 +1459,7 @@ def mount(
     return path
 
 
+@retry(UnmountError, max_tries=3, wait=0.5, backoff=1.0)
 def unmount(
     path,
     do_rm=True,
@@ -1458,25 +1467,17 @@ def unmount(
     """
     Unmount and removes the given mount point.
     """
-    retries = 0
-    while True:
-        try:
-            LOG.debug('Unmounting %s', path)
-            command_check_call(
-                [
-                    '/bin/umount',
-                    '--',
-                    path,
-                ],
-            )
-            break
-        except subprocess.CalledProcessError as e:
-            # on failure, retry 3 times with incremental backoff
-            if retries == 3:
-                raise UnmountError(e)
-            else:
-                time.sleep(0.5 + retries * 1.0)
-                retries += 1
+    try:
+        LOG.debug('Unmounting %s', path)
+        command_check_call(
+            [
+                '/bin/umount',
+                '--',
+                path,
+            ],
+        )
+    except subprocess.CalledProcessError as e:
+        raise UnmountError(e)
     if not do_rm:
         return
     os.rmdir(path)
@@ -1855,6 +1856,7 @@ class DevicePartition(object):
         return self.ptype_map[name]['ready']
 
     @staticmethod
+    @retry(OSError)
     def factory(path, dev, args):
         dmcrypt_type = CryptHelpers.get_dmcrypt_type(args)
         if ((path is not None and is_mpath(path)) or
@@ -3248,7 +3250,7 @@ def systemd_start(
     osd_id,
 ):
     systemd_disable(path, osd_id)
-    if is_mounted(path):
+    if os.path.ismount(path):
         style = ['--runtime']
     else:
         style = []
@@ -3759,6 +3761,20 @@ def main_activate(args):
                 reactivate=args.reactivate,
             )
             osd_data = get_mount_point(cluster, osd_id)
+
+            args.cluster = cluster
+            if args.dmcrypt:
+                for name in Space.NAMES:
+                    # Check if encrypted device in journal
+                    dev_path = os.path.join(osd_data, name + '_dmcrypt')
+                    if not os.path.exists(dev_path):
+                        continue
+                    partition = DevicePartition.factory(
+                        path=None,
+                        dev=dev_path,
+                        args=args)
+                    partition.rawdev = args.path
+                    partition.map()
 
         elif stat.S_ISDIR(mode):
             (cluster, osd_id) = activate_dir(
@@ -5633,6 +5649,8 @@ def make_zap_parser(subparsers):
 
 
 def main(argv):
+    # Deprecate from the very beginning
+    warnings.warn(DEPRECATION_WARNING)
     args = parse_args(argv)
 
     setup_logging(args.verbose, args.log_stdout)
@@ -5652,9 +5670,19 @@ def main(argv):
     CEPH_PREF_GROUP = args.setgroup
 
     if args.verbose:
-        args.func(args)
+        try:
+            args.func(args)
+        except Exception:
+            # warn on any exception when running with verbosity
+            warnings.warn(DEPRECATION_WARNING)
+            # but still raise the original issue
+            raise
+
     else:
         main_catch(args.func, args)
+
+    # if there aren't any errors, still log again at the very bottom
+    warnings.warn(DEPRECATION_WARNING)
 
 
 def setup_logging(verbose, log_stdout):
@@ -5682,6 +5710,8 @@ def main_catch(func, args):
         func(args)
 
     except Error as e:
+        # warn on generic 'error' exceptions
+        warnings.warn(DEPRECATION_WARNING)
         raise SystemExit(
             '{prog}: {msg}'.format(
                 prog=args.prog,
@@ -5690,6 +5720,8 @@ def main_catch(func, args):
         )
 
     except CephDiskException as error:
+        # warn on ceph-disk exceptions
+        warnings.warn(DEPRECATION_WARNING)
         exc_name = error.__class__.__name__
         raise SystemExit(
             '{prog} {exc_name}: {msg}'.format(

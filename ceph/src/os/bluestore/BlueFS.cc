@@ -255,6 +255,16 @@ void BlueFS::dump_perf_counters(Formatter *f)
   f->close_section();
 }
 
+void BlueFS::dump_block_extents(ostream& out)
+{
+  for (unsigned i = 0; i < MAX_BDEV; ++i) {
+    if (!bdev[i]) {
+      continue;
+    }
+    out << i << " : size 0x" << std::hex << bdev[i]->get_size()
+	<< " : own 0x" << block_all[i] << std::dec << "\n";
+  }
+}
 
 void BlueFS::get_usage(vector<pair<uint64_t,uint64_t>> *usage)
 {
@@ -1191,6 +1201,14 @@ void BlueFS::_compact_log_async(std::unique_lock<std::mutex>& l)
   new_log = new File;
   new_log->fnode.ino = 0;   // so that _flush_range won't try to log the fnode
 
+  // 0. wait for any racing flushes to complete.  (We do not want to block
+  // in _flush_sync_log with jump_to set or else a racing thread might flush
+  // our entries and our jump_to update won't be correct.)
+  while (log_flushing) {
+    dout(10) << __func__ << " log is currently flushing, waiting" << dendl;
+    log_cond.wait(l);
+  }
+
   // 1. allocate new log space and jump to it.
   old_log_jump_to = log_file->fnode.get_allocated();
   uint64_t need = old_log_jump_to + cct->_conf->bluefs_max_log_runway;
@@ -1351,16 +1369,19 @@ int BlueFS::_flush_and_sync_log(std::unique_lock<std::mutex>& l,
   while (log_flushing) {
     dout(10) << __func__ << " want_seq " << want_seq
 	     << " log is currently flushing, waiting" << dendl;
+    assert(!jump_to);
     log_cond.wait(l);
   }
   if (want_seq && want_seq <= log_seq_stable) {
     dout(10) << __func__ << " want_seq " << want_seq << " <= log_seq_stable "
 	     << log_seq_stable << ", done" << dendl;
+    assert(!jump_to);
     return 0;
   }
   if (log_t.empty() && dirty_files.empty()) {
     dout(10) << __func__ << " want_seq " << want_seq
 	     << " " << log_t << " not dirty, dirty_files empty, no-op" << dendl;
+    assert(!jump_to);
     return 0;
   }
 
@@ -1505,6 +1526,7 @@ int BlueFS::_flush_range(FileWriter *h, uint64_t offset, uint64_t length)
       derr << __func__ << " allocated: 0x" << std::hex << allocated
            << " offset: 0x" << offset << " length: 0x" << length << std::dec
            << dendl;
+      assert(0 == "bluefs enospc");
       return r;
     }
     h->file->fnode.recalc_allocated();

@@ -824,8 +824,9 @@ void PGMapDigest::dump_object_stat_sum(
     curr_object_copies_rate = (float)(sum.num_object_copies - sum.num_objects_degraded) / sum.num_object_copies;
 
   float used = 0.0;
+  // note avail passed in is raw_avail, calc raw_used here.
   if (avail) {
-    used = sum.num_bytes * curr_object_copies_rate;
+    used = sum.num_bytes * raw_used_rate * curr_object_copies_rate;
     used /= used + avail;
   } else if (sum.num_bytes) {
     used = 1.0;
@@ -2921,27 +2922,28 @@ void PGMap::get_health_checks(
   }
 
   // TOO_FEW_PGS
-  int num_in = osdmap.get_num_in_osds();
-  int sum_pg_up = MAX(pg_sum.up, static_cast<int32_t>(pg_stat.size()));
-  if (num_in &&
-      cct->_conf->mon_pg_warn_min_per_osd > 0 &&
-      osdmap.get_pools().size() > 0) {
-    int per = sum_pg_up / num_in;
-    if (per < cct->_conf->mon_pg_warn_min_per_osd && per) {
+  unsigned num_in = osdmap.get_num_in_osds();
+  auto sum_pg_up = std::max(static_cast<size_t>(pg_sum.up), pg_stat.size());
+  const auto min_pg_per_osd =
+    cct->_conf->get_val<uint64_t>("mon_pg_warn_min_per_osd");
+  if (num_in && min_pg_per_osd > 0 && osdmap.get_pools().size() > 0) {
+    auto per = sum_pg_up / num_in;
+    if (per < min_pg_per_osd && per) {
       ostringstream ss;
       ss << "too few PGs per OSD (" << per
-	 << " < min " << cct->_conf->mon_pg_warn_min_per_osd << ")";
+	 << " < min " << min_pg_per_osd << ")";
       checks->add("TOO_FEW_PGS", HEALTH_WARN, ss.str());
     }
   }
 
   // TOO_MANY_PGS
-  if (num_in && cct->_conf->mon_pg_warn_max_per_osd > 0) {
-    int per = sum_pg_up / num_in;
-    if (per > cct->_conf->mon_pg_warn_max_per_osd) {
+  auto max_pg_per_osd = cct->_conf->get_val<uint64_t>("mon_max_pg_per_osd");
+  if (num_in && max_pg_per_osd > 0) {
+    auto per = sum_pg_up / num_in;
+    if (per > max_pg_per_osd) {
       ostringstream ss;
       ss << "too many PGs per OSD (" << per
-	 << " > max " << cct->_conf->mon_pg_warn_max_per_osd << ")";
+	 << " > max " << max_pg_per_osd << ")";
       checks->add("TOO_MANY_PGS", HEALTH_WARN, ss.str());
     }
   }
@@ -3326,7 +3328,7 @@ void PGMap::get_health(
       note["incomplete"] += p->second;
     if (p->first & PG_STATE_BACKFILL_WAIT)
       note["backfill_wait"] += p->second;
-    if (p->first & PG_STATE_BACKFILL)
+    if (p->first & PG_STATE_BACKFILLING)
       note["backfilling"] += p->second;
     if (p->first & PG_STATE_BACKFILL_TOOFULL)
       note["backfill_toofull"] += p->second;
@@ -3431,7 +3433,7 @@ void PGMap::get_health(
 	                        PG_STATE_RECOVERY_TOOFULL |
 	                        PG_STATE_INCOMPLETE |
 	                        PG_STATE_BACKFILL_WAIT |
-	                        PG_STATE_BACKFILL |
+	                        PG_STATE_BACKFILLING |
 	                        PG_STATE_BACKFILL_TOOFULL)) &&
 	    stuck_pgs.count(p->first) == 0) {
 	  if (max > 0) {
@@ -3588,27 +3590,31 @@ void PGMap::get_health(
   }
 
   // pg skew
-  int num_in = osdmap.get_num_in_osds();
-  int sum_pg_up = MAX(pg_sum.up, static_cast<int32_t>(pg_stat.size()));
+  auto num_in = osdmap.get_num_in_osds();
+  auto sum_pg_up = MAX(static_cast<unsigned>(pg_sum.up), pg_stat.size());
   int sum_objects = pg_sum.stats.sum.num_objects;
   if (sum_objects < cct->_conf->mon_pg_warn_min_objects) {
     return;
   }
-  if (num_in && cct->_conf->mon_pg_warn_min_per_osd > 0) {
-    int per = sum_pg_up / num_in;
-    if (per < cct->_conf->mon_pg_warn_min_per_osd && per) {
+  const auto min_pg_per_osd =
+    cct->_conf->get_val<uint64_t>("mon_pg_warn_min_per_osd");
+  if (num_in && min_pg_per_osd > 0) {
+    auto per = sum_pg_up / num_in;
+    if (per < min_pg_per_osd && per) {
       ostringstream ss;
-      ss << "too few PGs per OSD (" << per << " < min " << cct->_conf->mon_pg_warn_min_per_osd << ")";
+      ss << "too few PGs per OSD (" << per << " < min " << min_pg_per_osd << ")";
       summary.push_back(make_pair(HEALTH_WARN, ss.str()));
       if (detail)
 	detail->push_back(make_pair(HEALTH_WARN, ss.str()));
     }
   }
-  if (num_in && cct->_conf->mon_pg_warn_max_per_osd > 0) {
+  int64_t max_pg_per_osd = cct->_conf->get_val<uint64_t>("mon_max_pg_per_osd");
+  if (num_in && max_pg_per_osd > 0) {
     int per = sum_pg_up / num_in;
-    if (per > cct->_conf->mon_pg_warn_max_per_osd) {
+    if (per > max_pg_per_osd) {
       ostringstream ss;
-      ss << "too many PGs per OSD (" << per << " > max " << cct->_conf->mon_pg_warn_max_per_osd << ")";
+      ss << "too many PGs per OSD (" << per << " > max "
+	 << max_pg_per_osd << ")";
       summary.push_back(make_pair(HEALTH_WARN, ss.str()));
       if (detail)
 	detail->push_back(make_pair(HEALTH_WARN, ss.str()));
@@ -3882,13 +3888,13 @@ int process_pg_map_command(
         state = -1;
         break;
       } else {
-        int filter = pg_string_state(state_str);
-        if (filter < 0) {
+        auto filter = pg_string_state(state_str);
+        if (!filter) {
           *ss << "'" << state_str << "' is not a valid pg state,"
               << " available choices: " << pg_state_string(0xFFFFFFFF);
           return -EINVAL;
         }
-        state |= filter;
+        state |= *filter;
       }
 
       states.pop_back();

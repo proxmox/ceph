@@ -188,6 +188,7 @@ int expire_tags(cls_method_context_t hctx, const std::string *skip_client_id) {
       if (tag.tid >= minimum_tag_tid) {
         // no need to check for tag classes beyond this point
         vals.clear();
+        more = false;
         break;
       }
     }
@@ -1047,6 +1048,7 @@ int journal_tag_list(cls_method_context_t hctx, bufferlist *in,
         // completed calculation of tag class minimums
         if (tag.tid >= minimum_tag_tid) {
           vals.clear();
+          more = false;
           break;
         }
       } else if (tag_pass == TAG_PASS_LIST) {

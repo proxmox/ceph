@@ -16,13 +16,20 @@ overrides:
     - scrub
     - osd_map_max_advance
     - wrongly marked
+    - overall HEALTH_
+    - \(MGR_DOWN\)
+    - \(OSD_
+    - \(PG_
+    - \(CACHE_
     fs: xfs
     conf:
+      global:
+        mon warn on pool no app: false
       mon:
         mon debug unsafe allow tier with nonempty snaps: true
-        mon warn on pool no app: false
       osd:
         osd map max advance: 1000
+        osd map cache size: 1100
 roles:
 - - mon.a
   - mds.a
@@ -161,7 +168,7 @@ workload_x:
        branch: jewel
        clients:
          client.1:
-         - rados/test-upgrade-v11.0.0.sh
+         - rados/test-upgrade-v11.0.0-noec.sh
          - cls
        env:
          CLS_RBD_GTEST_FILTER: '*:-TestClsRbd.mirror_image'
@@ -170,7 +177,7 @@ workload_x:
        branch: jewel
        clients:
          client.0:
-         - rados/test-upgrade-v11.0.0.sh
+         - rados/test-upgrade-v11.0.0-noec.sh
          - cls
    - print: "**** done rados/test-upgrade-v11.0.0.sh &  cls workload_x upgraded client"
    - rgw: [client.1]

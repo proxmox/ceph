@@ -1593,16 +1593,7 @@ function test_mon_osd()
   # When CEPH_CLI_TEST_DUP_COMMAND is set, osd create
   # is repeated and consumes two osd id, not just one.
   #
-  local next_osd
-  if test "$CEPH_CLI_TEST_DUP_COMMAND" ; then
-      next_osd=$((gap_start + 1))
-  else
-      next_osd=$gap_start
-  fi
-  id=`ceph osd create`
-  [ "$id" = "$next_osd" ]
-
-  next_osd=$((id + 1))
+  local next_osd=$gap_start
   id=`ceph osd create $(uuidgen)`
   [ "$id" = "$next_osd" ]
 
@@ -2162,9 +2153,12 @@ function test_mon_osd_erasure_code()
   ceph osd erasure-code-profile set fooprofile a=b c=d e=f --force
   ceph osd erasure-code-profile set fooprofile a=b c=d e=f
   expect_false ceph osd erasure-code-profile set fooprofile a=b c=d e=f g=h
-  #
-  # cleanup by removing profile 'fooprofile'
+  # ruleset-foo will work for luminous only
+  ceph osd erasure-code-profile set barprofile ruleset-failure-domain=host
+  ceph osd erasure-code-profile set barprofile crush-failure-domain=host
+  # clean up
   ceph osd erasure-code-profile rm fooprofile
+  ceph osd erasure-code-profile rm barprofile
 }
 
 function test_mon_osd_misc()

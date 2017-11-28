@@ -11,6 +11,9 @@
 #include <boost/lexical_cast.hpp>
 #include <boost/regex.hpp>
 
+// Definitions for enums
+#include "common/perf_counters.h"
+
 
 void Option::dump_value(const char *field_name,
     const Option::value_t &v, Formatter *f) const
@@ -160,12 +163,24 @@ std::vector<Option> get_global_options() {
     Option("public_network", Option::TYPE_STR, Option::LEVEL_ADVANCED)
     .add_service({"mon", "mds", "osd", "mgr"})
     .add_tag("network")
-    .set_description(""),
+    .set_description("Network(s) from which to choose a public address to bind to"),
+
+    Option("public_network_interface", Option::TYPE_STR, Option::LEVEL_ADVANCED)
+    .add_service({"mon", "mds", "osd", "mgr"})
+    .add_tag("network")
+    .set_description("Interface name(s) from which to choose an address from a public_network to bind to; public_network must also be specified.")
+    .add_see_also("public_network"),
 
     Option("cluster_network", Option::TYPE_STR, Option::LEVEL_ADVANCED)
     .add_service("osd")
     .add_tag("network")
-    .set_description(""),
+    .set_description("Network(s) from which to choose a cluster address to bind to"),
+
+    Option("cluster_network_interface", Option::TYPE_STR, Option::LEVEL_ADVANCED)
+    .add_service({"mon", "mds", "osd", "mgr"})
+    .add_tag("network")
+    .set_description("Interface name(s) from which to choose an address from a cluster_network to bind to; cluster_network must also be specified.")
+    .add_see_also("cluster_network"),
 
     Option("monmap", Option::TYPE_STR, Option::LEVEL_ADVANCED)
     .set_description("path to MonMap file")
@@ -183,6 +198,7 @@ std::vector<Option> get_global_options() {
     .add_service("common"),
 
     Option("mon_dns_srv_name", Option::TYPE_STR, Option::LEVEL_ADVANCED)
+    .set_default("ceph-mon")
     .set_description("name of DNS SRV record to check for monitor addresses")
     .add_service("common")
     .add_tag("network")
@@ -521,11 +537,16 @@ std::vector<Option> get_global_options() {
 
     Option("key", Option::TYPE_STR, Option::LEVEL_ADVANCED)
     .set_default("")
-    .set_description(""),
+    .set_description("Authentication key")
+    .set_long_description("A CephX authentication key, base64 encoded.  It normally looks something like 'AQAtut9ZdMbNJBAAHz6yBAWyJyz2yYRyeMWDag=='.")
+    .add_see_also("keyfile")
+    .add_see_also("keyring"),
 
     Option("keyfile", Option::TYPE_STR, Option::LEVEL_ADVANCED)
     .set_default("")
-    .set_description(""),
+    .set_description("Path to a file containing a key")
+    .set_long_description("The file should contain a CephX authentication key and optionally a trailing newline, but nothing else.")
+    .add_see_also("key"),
 
     Option("keyring", Option::TYPE_STR, Option::LEVEL_ADVANCED)
     .set_default(
@@ -537,7 +558,10 @@ std::vector<Option> get_global_options() {
       "/usr/local/etc/ceph/keyring,/usr/local/etc/ceph/keyring.bin," 
   #endif
     )
-    .set_description(""),
+    .set_description("Path to a keyring file.")
+    .set_long_description("A keyring file is an INI-style formatted file where the section names are client or daemon names (e.g., 'osd.0') and each section contains a 'key' property with CephX authentication key as the value.")
+    .add_see_also("key")
+    .add_see_also("keyfile"),
 
     Option("heartbeat_interval", Option::TYPE_INT, Option::LEVEL_ADVANCED)
     .set_default(5)
@@ -1011,13 +1035,13 @@ std::vector<Option> get_global_options() {
     .set_default(1)
     .set_description(""),
 
-    Option("mon_pg_warn_min_per_osd", Option::TYPE_INT, Option::LEVEL_ADVANCED)
+    Option("mon_pg_warn_min_per_osd", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
     .set_default(30)
-    .set_description(""),
+    .set_description("minimal number PGs per (in) osd before we warn the admin"),
 
-    Option("mon_pg_warn_max_per_osd", Option::TYPE_INT, Option::LEVEL_ADVANCED)
-    .set_default(300)
-    .set_description(""),
+    Option("mon_max_pg_per_osd", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
+    .set_default(200)
+    .set_description("Max number of PGs per OSD the cluster will allow"),
 
     Option("mon_pg_warn_max_object_skew", Option::TYPE_FLOAT, Option::LEVEL_ADVANCED)
     .set_default(10.0)
@@ -1127,9 +1151,10 @@ std::vector<Option> get_global_options() {
     .set_default(100ul << 20)
     .set_description(""),
 
-    Option("mon_mgr_proxy_client_bytes_ratio", Option::TYPE_FLOAT, Option::LEVEL_ADVANCED)
+    Option("mon_mgr_proxy_client_bytes_ratio", Option::TYPE_FLOAT, Option::LEVEL_DEV)
     .set_default(.3)
-    .set_description(""),
+    .set_description("ratio of mon_client_bytes that can be consumed by "
+                     "proxied mgr commands before we error out to client"),
 
     Option("mon_log_max_summary", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
     .set_default(50)
@@ -1272,6 +1297,10 @@ std::vector<Option> get_global_options() {
     Option("mon_mds_skip_sanity", Option::TYPE_BOOL, Option::LEVEL_ADVANCED)
     .set_default(false)
     .set_description(""),
+
+    Option("mon_fixup_legacy_erasure_code_profiles", Option::TYPE_BOOL, Option::LEVEL_ADVANCED)
+    .set_default(true)
+    .set_description("Automatically adjust ruleset-* to crush-* so that legacy apps can set modern erasure code profiles without modification"),
 
     Option("mon_debug_deprecated_as_obsolete", Option::TYPE_BOOL, Option::LEVEL_DEV)
     .set_default(false)
@@ -2544,6 +2573,13 @@ std::vector<Option> get_global_options() {
     .set_default(100)
     .set_description(""),
 
+    Option("osd_max_pg_per_osd_hard_ratio", Option::TYPE_FLOAT, Option::LEVEL_ADVANCED)
+    .set_default(2)
+    .set_min(1)
+    .set_description("Maximum number of PG per OSD, a factor of 'mon_max_pg_per_osd'")
+    .set_long_description("OSD will refuse to instantiate PG if the number of PG it serves exceeds this number.")
+    .add_see_also("mon_max_pg_per_osd"),
+
     Option("osd_op_complaint_time", Option::TYPE_FLOAT, Option::LEVEL_ADVANCED)
     .set_default(30)
     .set_description(""),
@@ -2579,6 +2615,10 @@ std::vector<Option> get_global_options() {
     Option("osd_backoff_on_peering", Option::TYPE_BOOL, Option::LEVEL_ADVANCED)
     .set_default(false)
     .set_description(""),
+
+    Option("osd_debug_shutdown", Option::TYPE_BOOL, Option::LEVEL_DEV)
+    .set_default(false)
+    .set_description("Turn up debug levels during shutdown"),
 
     Option("osd_debug_crash_on_ignored_backoff", Option::TYPE_BOOL, Option::LEVEL_DEV)
     .set_default(false)
@@ -3002,6 +3042,10 @@ std::vector<Option> get_global_options() {
     // --------------------------
     // bluestore
 
+    Option("bdev_inject_bad_size", Option::TYPE_BOOL, Option::LEVEL_DEV)
+    .set_default(false)
+    .set_description(""),
+
     Option("bdev_debug_inflight_ios", Option::TYPE_BOOL, Option::LEVEL_DEV)
     .set_default(false)
     .set_description(""),
@@ -3112,6 +3156,10 @@ std::vector<Option> get_global_options() {
     Option("bluestore_bluefs_min", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
     .set_default(1*1024*1024*1024)
     .set_description("minimum disk space allocated to BlueFS (e.g., at mkfs)"),
+
+    Option("bluestore_bluefs_min_free", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
+    .set_default(1*1024*1024*1024)
+    .set_description("minimum free space allocated to BlueFS"),
 
     Option("bluestore_bluefs_min_ratio", Option::TYPE_FLOAT, Option::LEVEL_ADVANCED)
     .set_default(.02)
@@ -3626,7 +3674,7 @@ std::vector<Option> get_global_options() {
     // filestore
 
     Option("filestore_rocksdb_options", Option::TYPE_STR, Option::LEVEL_ADVANCED)
-    .set_default("")
+    .set_default("max_background_compactions=8,compaction_readahead_size=2097152,compression=kNoCompression")
     .set_description(""),
 
     Option("filestore_omap_backend", Option::TYPE_STR, Option::LEVEL_ADVANCED)
@@ -4009,6 +4057,14 @@ std::vector<Option> get_global_options() {
     .set_default(0)
     .set_description(""),
 
+  Option("mgr_stats_threshold", Option::TYPE_INT, Option::LEVEL_ADVANCED)
+  .set_default((int64_t)PerfCountersBuilder::PRIO_USEFUL)
+  .set_description("Lowest perfcounter priority collected by mgr")
+  .set_long_description("Daemons only set perf counter data to the manager "
+    "daemon if the counter has a priority higher than this.")
+  .set_min_max((int64_t)PerfCountersBuilder::PRIO_DEBUGONLY,
+               (int64_t)PerfCountersBuilder::PRIO_CRITICAL),
+
     Option("journal_zero_on_create", Option::TYPE_BOOL, Option::LEVEL_ADVANCED)
     .set_default(false)
     .set_description(""),
@@ -4043,79 +4099,110 @@ std::vector<Option> get_global_options() {
 
     Option("mgr_module_path", Option::TYPE_STR, Option::LEVEL_ADVANCED)
     .set_default(CEPH_PKGLIBDIR "/mgr")
-    .set_description(""),
+    .add_service("mgr")
+    .set_description("Filesystem path to manager modules."),
 
-    Option("mgr_initial_modules", Option::TYPE_STR, Option::LEVEL_ADVANCED)
-    .set_default("restful status")
-    .set_description(""),
+    Option("mgr_initial_modules", Option::TYPE_STR, Option::LEVEL_BASIC)
+    .set_default("restful status balancer")
+    .add_service("mon")
+    .set_description("List of manager modules to enable when the cluster is "
+                     "first started")
+    .set_long_description("This list of module names is read by the monitor "
+        "when the cluster is first started after installation, to populate "
+        "the list of enabled manager modules.  Subsequent updates are done using "
+        "the 'mgr module [enable|disable]' commands.  List may be comma "
+        "or space separated."),
 
     Option("mgr_data", Option::TYPE_STR, Option::LEVEL_ADVANCED)
     .set_default("/var/lib/ceph/mgr/$cluster-$id")
-    .set_description(""),
+    .add_service("mgr")
+    .set_description("Filesystem path to the ceph-mgr data directory, used to "
+                     "contain keyring."),
 
     Option("mgr_tick_period", Option::TYPE_INT, Option::LEVEL_ADVANCED)
     .set_default(2)
-    .set_description(""),
+    .add_service("mgr")
+    .set_description("Period in seconds of beacon messages to monitor"),
 
-    Option("mgr_stats_period", Option::TYPE_INT, Option::LEVEL_ADVANCED)
+    Option("mgr_stats_period", Option::TYPE_INT, Option::LEVEL_BASIC)
     .set_default(5)
-    .set_description(""),
+    .add_service("mgr")
+    .set_description("Period in seconds of OSD/MDS stats reports to manager")
+    .set_long_description("Use this setting to control the granularity of "
+                          "time series data collection from daemons.  Adjust "
+                          "upwards if the manager CPU load is too high, or "
+                          "if you simply do not require the most up to date "
+                          "performance counter data."),
 
-    Option("mgr_client_bytes", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
+    Option("mgr_client_bytes", Option::TYPE_UINT, Option::LEVEL_DEV)
     .set_default(128*1048576)
-    .set_description(""),
+    .add_service("mgr"),
 
-    Option("mgr_client_messages", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
+    Option("mgr_client_messages", Option::TYPE_UINT, Option::LEVEL_DEV)
     .set_default(512)
-    .set_description(""),
+    .add_service("mgr"),
 
-    Option("mgr_osd_bytes", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
+    Option("mgr_osd_bytes", Option::TYPE_UINT, Option::LEVEL_DEV)
     .set_default(512*1048576)
-    .set_description(""),
+    .add_service("mgr"),
 
-    Option("mgr_osd_messages", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
+    Option("mgr_osd_messages", Option::TYPE_UINT, Option::LEVEL_DEV)
     .set_default(8192)
-    .set_description(""),
+    .add_service("mgr"),
 
-    Option("mgr_mds_bytes", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
+    Option("mgr_mds_bytes", Option::TYPE_UINT, Option::LEVEL_DEV)
     .set_default(128*1048576)
-    .set_description(""),
+    .add_service("mgr"),
 
-    Option("mgr_mds_messages", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
+    Option("mgr_mds_messages", Option::TYPE_UINT, Option::LEVEL_DEV)
     .set_default(128)
-    .set_description(""),
+    .add_service("mgr"),
 
-    Option("mgr_mon_bytes", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
+    Option("mgr_mon_bytes", Option::TYPE_UINT, Option::LEVEL_DEV)
     .set_default(128*1048576)
-    .set_description(""),
+    .add_service("mgr"),
 
-    Option("mgr_mon_messages", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
+    Option("mgr_mon_messages", Option::TYPE_UINT, Option::LEVEL_DEV)
     .set_default(128)
-    .set_description(""),
+    .add_service("mgr"),
 
-    Option("mgr_connect_retry_interval", Option::TYPE_FLOAT, Option::LEVEL_ADVANCED)
+    Option("mgr_connect_retry_interval", Option::TYPE_FLOAT, Option::LEVEL_DEV)
     .set_default(1.0)
-    .set_description(""),
+    .add_service("common"),
 
     Option("mgr_service_beacon_grace", Option::TYPE_FLOAT, Option::LEVEL_ADVANCED)
     .set_default(60.0)
-    .set_description(""),
+    .add_service("mgr")
+    .set_description("Period in seconds from last beacon to manager dropping "
+                     "state about a monitored service (RGW, rbd-mirror etc)"),
 
-    Option("mon_mgr_digest_period", Option::TYPE_INT, Option::LEVEL_ADVANCED)
+    Option("mon_mgr_digest_period", Option::TYPE_INT, Option::LEVEL_DEV)
     .set_default(5)
-    .set_description(""),
+    .add_service("mon")
+    .set_description("Period in seconds between monitor-to-manager "
+                     "health/status updates"),
 
     Option("mon_mgr_beacon_grace", Option::TYPE_INT, Option::LEVEL_ADVANCED)
     .set_default(30)
-    .set_description(""),
+    .add_service("mon")
+    .set_description("Period in seconds from last beacon to monitor marking "
+                     "a manager daemon as failed"),
 
     Option("mon_mgr_inactive_grace", Option::TYPE_INT, Option::LEVEL_ADVANCED)
     .set_default(60)
-    .set_description(""),
+    .add_service("mon")
+    .set_description("Period in seconds after cluster creation during which "
+                     "cluster may have no active manager")
+    .set_long_description("This grace period enables the cluster to come "
+                          "up cleanly without raising spurious health check "
+                          "failures about managers that aren't online yet"),
 
     Option("mon_mgr_mkfs_grace", Option::TYPE_INT, Option::LEVEL_ADVANCED)
     .set_default(60)
-    .set_description(""),
+    .add_service("mon")
+    .set_description("Period in seconds that the cluster may have no active "
+                     "manager before this is reported as an ERR rather than "
+                     "a WARN"),
 
     Option("mutex_perf_counter", Option::TYPE_BOOL, Option::LEVEL_ADVANCED)
     .set_default(false)
@@ -4164,6 +4251,18 @@ std::vector<Option> get_rgw_options() {
     Option("rgw_max_put_param_size", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
     .set_default(1 * 1024 * 1024)
     .set_description(""),
+
+    Option("rgw_max_attr_size", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
+    .set_default(0)
+    .set_description("The maximum length of metadata value. 0 skips the check"),
+
+    Option("rgw_max_attr_name_len", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
+    .set_default(0)
+    .set_description("The maximum length of metadata name. 0 skips the check"),
+
+    Option("rgw_max_attrs_num_in_req", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
+    .set_default(0)
+    .set_description("The maximum number of metadata items that can be put via single request"),
 
     Option("rgw_override_bucket_index_max_shards", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
     .set_default(0)
@@ -5748,6 +5847,14 @@ std::vector<Option> get_mds_options() {
     Option("mds_client_writeable_range_max_inc_objs", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
     .set_default(1024)
     .set_description(""),
+ 
+    Option("mds_min_caps_per_client", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
+    .set_default(100)
+    .set_description("minimum number of capabilities a client may hold"),
+
+    Option("mds_max_ratio_caps_per_client", Option::TYPE_FLOAT, Option::LEVEL_ADVANCED)
+    .set_default(.8)
+    .set_description("maximum ratio of current caps that may be recalled during MDS cache pressure"),
   });
 }
 

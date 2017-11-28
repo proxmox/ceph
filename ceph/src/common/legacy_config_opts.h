@@ -14,15 +14,11 @@
 
 /* note: no header guard */
 OPTION(host, OPT_STR) // "" means that ceph will use short hostname
-OPTION(fsid, OPT_UUID)
 OPTION(public_addr, OPT_ADDR)
 OPTION(public_bind_addr, OPT_ADDR)
 OPTION(cluster_addr, OPT_ADDR)
 OPTION(public_network, OPT_STR)
 OPTION(cluster_network, OPT_STR)
-OPTION(monmap, OPT_STR)
-OPTION(mon_host, OPT_STR)
-OPTION(mon_dns_srv_name, OPT_STR)
 OPTION(lockdep, OPT_BOOL)
 OPTION(lockdep_force_backtrace, OPT_BOOL) // always gather current backtrace at every lock
 OPTION(run_dir, OPT_STR)       // the "/var/run/ceph" dir, created on daemon startup
@@ -239,8 +235,6 @@ OPTION(mon_timecheck_interval, OPT_FLOAT) // on leader, timecheck (clock drift c
 OPTION(mon_timecheck_skew_interval, OPT_FLOAT) // on leader, timecheck (clock drift check) interval when in presence of a skew (seconds)
 OPTION(mon_pg_stuck_threshold, OPT_INT) // number of seconds after which pgs can be considered stuck inactive, unclean, etc (see doc/control.rst under dump_stuck for more info)
 OPTION(mon_pg_min_inactive, OPT_U64) // the number of PGs which have to be inactive longer than 'mon_pg_stuck_threshold' before health goes into ERR. 0 means disabled, never go into ERR.
-OPTION(mon_pg_warn_min_per_osd, OPT_INT)  // min # pgs per (in) osd before we warn the admin
-OPTION(mon_pg_warn_max_per_osd, OPT_INT)  // max # pgs per (in) osd before we warn the admin
 OPTION(mon_pg_warn_max_object_skew, OPT_FLOAT) // max skew few average in objects per pg
 OPTION(mon_pg_warn_min_objects, OPT_INT)  // do not warn below this object #
 OPTION(mon_pg_warn_min_pool_objects, OPT_INT)  // do not warn on pools below this object #
@@ -267,7 +261,6 @@ OPTION(mon_max_mdsmap_epochs, OPT_INT)
 OPTION(mon_max_osd, OPT_INT)
 OPTION(mon_probe_timeout, OPT_DOUBLE)
 OPTION(mon_client_bytes, OPT_U64)  // client msg data allowed in memory (in bytes)
-OPTION(mon_mgr_proxy_client_bytes_ratio, OPT_FLOAT) // ratio of mon_client_bytes that can be consumed by proxied mgr commands before we error out to client
 OPTION(mon_log_max_summary, OPT_U64)
 OPTION(mon_daemon_bytes, OPT_U64)  // mds, osd message memory cap (in bytes)
 OPTION(mon_max_log_entries_per_event, OPT_INT)
@@ -1541,27 +1534,6 @@ OPTION(rgw_shard_warning_threshold, OPT_DOUBLE) // pct of safe max
 
 OPTION(rgw_swift_versioning_enabled, OPT_BOOL) // whether swift object versioning feature is enabled
 
-OPTION(mgr_module_path, OPT_STR) // where to load python modules from
-OPTION(mgr_initial_modules, OPT_STR)  // Which modules to load
-OPTION(mgr_data, OPT_STR) // where to find keyring etc
-OPTION(mgr_tick_period, OPT_INT)  // How frequently to tick
-OPTION(mgr_stats_period, OPT_INT) // How frequently clients send stats
-OPTION(mgr_client_bytes, OPT_U64) // bytes from clients
-OPTION(mgr_client_messages, OPT_U64)      // messages from clients
-OPTION(mgr_osd_bytes, OPT_U64)   // bytes from osds
-OPTION(mgr_osd_messages, OPT_U64)       // messages from osds
-OPTION(mgr_mds_bytes, OPT_U64)   // bytes from mdss
-OPTION(mgr_mds_messages, OPT_U64)        // messages from mdss
-OPTION(mgr_mon_bytes, OPT_U64)   // bytes from mons
-OPTION(mgr_mon_messages, OPT_U64)        // messages from mons
-
-OPTION(mgr_connect_retry_interval, OPT_DOUBLE)
-OPTION(mgr_service_beacon_grace, OPT_DOUBLE)
-
-OPTION(mon_mgr_digest_period, OPT_INT)  // How frequently to send digests
-OPTION(mon_mgr_beacon_grace, OPT_INT)  // How long to wait to failover
-OPTION(mon_mgr_inactive_grace, OPT_INT) // How long before health WARN -> ERR
-OPTION(mon_mgr_mkfs_grace, OPT_INT) // How long before we complain about MGR_DOWN
 OPTION(rgw_crypt_require_ssl, OPT_BOOL) // requests including encryption key headers must be sent over ssl
 OPTION(rgw_crypt_default_encryption_key, OPT_STR) // base64 encoded key for encryption of rgw objects
 OPTION(rgw_crypt_s3_kms_encryption_keys, OPT_STR) // extra keys that may be used for aws:kms

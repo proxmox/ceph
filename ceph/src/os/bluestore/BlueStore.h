@@ -442,7 +442,7 @@ public:
       sb->coll = coll;
     }
 
-    bool remove(SharedBlob *sb) {
+    bool try_remove(SharedBlob *sb) {
       std::lock_guard<std::mutex> l(lock);
       if (sb->nref == 0) {
 	assert(sb->get_parent() == this);
@@ -452,10 +452,18 @@ public:
       return false;
     }
 
+    void remove(SharedBlob *sb) {
+      std::lock_guard<std::mutex> l(lock);
+      assert(sb->get_parent() == this);
+      sb_map.erase(sb->get_sbid());
+    }
+
     bool empty() {
       std::lock_guard<std::mutex> l(lock);
       return sb_map.empty();
     }
+
+    void dump(CephContext *cct, int lvl);
   };
 
 //#define CACHE_BLOB_BL  // not sure if this is a win yet or not... :/
@@ -1318,6 +1326,8 @@ public:
     void clear();
     bool empty();
 
+    void dump(CephContext *cct, int lvl);
+
     /// return true if f true for any item
     bool map_any(std::function<bool(OnodeRef)> f);
   };
@@ -1854,6 +1864,7 @@ private:
   KVSyncThread kv_sync_thread;
   std::mutex kv_lock;
   std::condition_variable kv_cond;
+  bool _kv_only = false;
   bool kv_sync_started = false;
   bool kv_stop = false;
   bool kv_finalize_started = false;
@@ -1978,8 +1989,9 @@ private:
   int _setup_block_symlink_or_file(string name, string path, uint64_t size,
 				   bool create);
 
-  int _write_bdev_label(string path, bluestore_bdev_label_t label);
 public:
+  static int _write_bdev_label(CephContext* cct,
+			       string path, bluestore_bdev_label_t label);
   static int _read_bdev_label(CephContext* cct, string path,
 			      bluestore_bdev_label_t *label);
 private:
@@ -2036,7 +2048,9 @@ private:
 
   bluestore_deferred_op_t *_get_deferred_op(TransContext *txc, OnodeRef o);
   void _deferred_queue(TransContext *txc);
+public:
   void deferred_try_submit();
+private:
   void _deferred_submit_unlock(OpSequencer *osr);
   void _deferred_aio_finish(OpSequencer *osr);
   int _deferred_replay();
@@ -2144,7 +2158,17 @@ public:
     return 0;
   }
 
-  int fsck(bool deep) override;
+  int write_meta(const std::string& key, const std::string& value) override;
+  int read_meta(const std::string& key, std::string *value) override;
+
+
+  int fsck(bool deep) override {
+    return _fsck(deep, false);
+  }
+  int repair(bool deep) override {
+    return _fsck(deep, true);
+  }
+  int _fsck(bool deep, bool repair);
 
   void set_cache_shards(unsigned num) override;
 
@@ -2451,6 +2475,10 @@ private:
 
       bool mark_unused;
       bool new_blob; ///< whether new blob was created
+
+      bool compressed = false;
+      bufferlist compressed_bl;
+      size_t compressed_len = 0;
 
       write_item(
 	uint64_t logical_offs,

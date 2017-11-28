@@ -1679,7 +1679,7 @@ void MDCache::journal_cow_dentry(MutationImpl *mut, EMetaBlob *metablob,
       mut->add_cow_inode(oldin);
       if (pcow_inode)
 	*pcow_inode = oldin;
-      CDentry *olddn = dn->dir->add_primary_dentry(dn->name, oldin, oldfirst, follows);
+      CDentry *olddn = dn->dir->add_primary_dentry(dn->name, oldin, oldfirst, oldin->last);
       oldin->inode.version = olddn->pre_dirty();
       dout(10) << " olddn " << *olddn << dendl;
       bool need_snapflush = !oldin->client_snap_caps.empty();
@@ -6481,8 +6481,8 @@ void MDCache::trim_lru(uint64_t count, map<mds_rank_t, MCacheExpire*> &expiremap
       unexpirables.push_back(dn);
     } else {
       trimmed++;
+      if (count > 0) count--;
     }
-    count--;
   }
 
   for (auto &dn : unexpirables) {
