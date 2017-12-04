@@ -1,7 +1,7 @@
-From 4f6ca990a8ea08893ed6f8a8a679246b2bd5132e Mon Sep 17 00:00:00 2001
+From 166210c6005403d06e221db9bc97f70a6a43df5e Mon Sep 17 00:00:00 2001
 From: Vasily Philipov <vasilyf@mellanox.com>
 Date: Tue, 3 Oct 2017 12:15:13 +0300
-Subject: [PATCH 4/6] msg/async/rdma: uninitialized variable fix
+Subject: [PATCH 5/6] msg/async/rdma: uninitialized variable fix
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
@@ -30,5 +30,5 @@ index 37e1a53077..06f514fe24 100644
  #ifdef HAVE_IBV_EXP
    union ibv_gid cgid;
 -- 
-2.14.1
+2.14.2
 

@@ -1,0 +1,41 @@
+From 29003f6e13fc3c50b0253be02c64107c36726898 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Fabian=20Gr=C3=BCnbichler?= <f.gruenbichler@proxmox.com>
+Date: Wed, 15 Nov 2017 10:51:08 +0100
+Subject: [PATCH 4/6] enable LZ4 support
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Signed-off-by: Fabian Grünbichler <f.gruenbichler@proxmox.com>
+---
+ debian/control | 1 +
+ debian/rules   | 1 +
+ 2 files changed, 2 insertions(+)
+
+diff --git a/debian/control b/debian/control
+index 79bef9bfb3..e363e436b6 100644
+--- a/debian/control
++++ b/debian/control
+@@ -38,6 +38,7 @@ Build-Depends: bc,
+                libldap2-dev,
+                libleveldb-dev,
+                liblttng-ust-dev,
++               liblz4-dev,
+                libnss3-dev,
+                libsnappy-dev,
+                libssl-dev,
+diff --git a/debian/rules b/debian/rules
+index 641a409831..0308d33d4d 100755
+--- a/debian/rules
++++ b/debian/rules
+@@ -7,6 +7,7 @@ export DEB_HOST_ARCH      ?= $(shell dpkg-architecture -qDEB_HOST_ARCH)
+ 
+ extraopts += -DUSE_CRYPTOPP=OFF -DWITH_OCF=ON -DWITH_LTTNG=ON -DWITH_PYTHON3=ON -DWITH_EMBEDDED=OFF
+ extraopts += -DWITH_CEPHFS_JAVA=ON
++extraopts += -DWITH_LZ4=ON
+ # assumes that ceph is exmpt from multiarch support, so we override the libdir.
+ extraopts += -DCMAKE_INSTALL_LIBDIR=/usr/lib
+ extraopts += -DCMAKE_INSTALL_LIBEXECDIR=/usr/lib
+-- 
+2.14.2
+
