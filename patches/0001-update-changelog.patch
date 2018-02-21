@@ -1,21 +1,33 @@
-From eb178d4a676f546deab7561d584797df0bdc9cf6 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?Fabian=20Gr=C3=BCnbichler?= <f.gruenbichler@proxmox.com>
 Date: Mon, 20 Mar 2017 09:12:50 +0100
-Subject: [PATCH 1/6] update changelog
+Subject: [PATCH] update changelog
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
 
 Signed-off-by: Fabian Grünbichler <f.gruenbichler@proxmox.com>
 ---
- debian/changelog | 138 +++++++++++++++++++++++++++++++++++++++++++++++++++++++
- 1 file changed, 138 insertions(+)
+ debian/changelog | 144 +++++++++++++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 144 insertions(+)
 
 diff --git a/debian/changelog b/debian/changelog
-index 7597cb680b..9ea4f278fb 100644
+index d050137769..4e239782dc 100644
 --- a/debian/changelog
 +++ b/debian/changelog
-@@ -1,69 +1,207 @@
+@@ -1,75 +1,219 @@
++ceph (12.2.3-pve1) stable; urgency=medium
++
++  * rebase on latest upstream release
++
++ -- Proxmox Support Team <support@proxmox.com>  Wed, 21 Feb 2018 12:11:36 +0100
++
+ ceph (12.2.3-1) stable; urgency=medium
+ 
+   * New upstream release
+ 
+  -- Ceph Release Team <ceph-maintainers@ceph.com>  Mon, 19 Feb 2018 23:14:45 +0000
+ 
 +ceph (12.2.2-pve1) stable; urgency=medium
 +
 +  * rebase on latest upstream release
