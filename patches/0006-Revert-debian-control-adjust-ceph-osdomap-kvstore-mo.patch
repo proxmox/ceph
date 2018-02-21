@@ -1,0 +1,60 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Fabian=20Gr=C3=BCnbichler?= <f.gruenbichler@proxmox.com>
+Date: Wed, 21 Feb 2018 13:20:11 +0100
+Subject: [PATCH] Revert "debian/control: adjust
+ ceph-{osdomap,kvstore,monstore}-tool feature move"
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+This reverts commit f6fb266699f7a39005cb76a2c878bdff5b3a7ff0.
+
+as it is not compatible with our PVE debian revision scheme.
+
+Signed-off-by: Fabian Grünbichler <f.gruenbichler@proxmox.com>
+---
+ debian/control | 12 ++++++------
+ 1 file changed, 6 insertions(+), 6 deletions(-)
+
+diff --git a/debian/control b/debian/control
+index 02babc3e9d..d70abc9659 100644
+--- a/debian/control
++++ b/debian/control
+@@ -105,10 +105,10 @@ Recommends: btrfs-tools,
+             ntp | time-daemon,
+ Replaces: ceph (<< 10),
+           ceph-common (<< 0.78-500),
+-          ceph-test (<< 12.2.2-14),
++          ceph-test (<< 12.2.3),
+           python-ceph (<< 0.92-1223),
+ Breaks: ceph (<< 10),
+-        ceph-test (<< 12.2.2-14),
++        ceph-test (<< 12.2.3),
+         python-ceph (<< 0.92-1223),
+ Description: common ceph daemon libraries and management tools
+  Ceph is a massively scalable, open-source, distributed
+@@ -206,8 +206,8 @@ Depends: ceph-base (= ${binary:Version}),
+          ${misc:Depends},
+          ${shlibs:Depends},
+ Recommends: ceph-common,
+-Replaces: ceph (<< 10), ceph-test (<< 12.2.2-14)
+-Breaks: ceph (<< 10), ceph-test (<< 12.2.2-14)
++Replaces: ceph (<< 10), ceph-test (<< 12.2.3)
++Breaks: ceph (<< 10), ceph-test (<< 12.2.3)
+ Description: monitor server for the ceph storage system
+  Ceph is a massively scalable, open-source, distributed
+  storage system that runs on commodity hardware and delivers object,
+@@ -240,8 +240,8 @@ Depends: ceph-base (= ${binary:Version}),
+          ${python:Depends},
+          ${shlibs:Depends},
+ Recommends: ceph-common (= ${binary:Version}),
+-Replaces: ceph (<< 10), ceph-test (<< 12.2.2-14)
+-Breaks: ceph (<< 10), ceph-test (<< 12.2.2-14)
++Replaces: ceph (<< 10), ceph-test (<< 12.2.3)
++Breaks: ceph (<< 10), ceph-test (<< 12.2.3)
+ Description: OSD server for the ceph storage system
+  Ceph is a massively scalable, open-source, distributed
+  storage system that runs on commodity hardware and delivers object,
+-- 
+2.14.2
+
