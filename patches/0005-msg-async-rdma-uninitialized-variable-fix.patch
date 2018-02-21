@@ -1,7 +1,7 @@
-From 166210c6005403d06e221db9bc97f70a6a43df5e Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Vasily Philipov <vasilyf@mellanox.com>
 Date: Tue, 3 Oct 2017 12:15:13 +0300
-Subject: [PATCH 5/6] msg/async/rdma: uninitialized variable fix
+Subject: [PATCH] msg/async/rdma: uninitialized variable fix
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit

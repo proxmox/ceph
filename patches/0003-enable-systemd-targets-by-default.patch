@@ -1,7 +1,7 @@
-From 39fe5f678a61b5d3a15ea8cd671fc0c810b97888 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?Fabian=20Gr=C3=BCnbichler?= <f.gruenbichler@proxmox.com>
 Date: Wed, 22 Mar 2017 09:00:34 +0100
-Subject: [PATCH 3/6] enable systemd targets by default
+Subject: [PATCH] enable systemd targets by default
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
@@ -12,7 +12,7 @@ Signed-off-by: Fabian Grünbichler <f.gruenbichler@proxmox.com>
  1 file changed, 3 insertions(+)
 
 diff --git a/debian/rules b/debian/rules
-index 857888f84e..641a409831 100755
+index 9c63c99c31..4442732e17 100755
 --- a/debian/rules
 +++ b/debian/rules
 @@ -133,6 +133,9 @@ override_dh_installinit:

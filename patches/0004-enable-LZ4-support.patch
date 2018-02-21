@@ -1,7 +1,7 @@
-From 29003f6e13fc3c50b0253be02c64107c36726898 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?Fabian=20Gr=C3=BCnbichler?= <f.gruenbichler@proxmox.com>
 Date: Wed, 15 Nov 2017 10:51:08 +0100
-Subject: [PATCH 4/6] enable LZ4 support
+Subject: [PATCH] enable LZ4 support
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
@@ -13,7 +13,7 @@ Signed-off-by: Fabian Grünbichler <f.gruenbichler@proxmox.com>
  2 files changed, 2 insertions(+)
 
 diff --git a/debian/control b/debian/control
-index 79bef9bfb3..e363e436b6 100644
+index 9940e74914..02babc3e9d 100644
 --- a/debian/control
 +++ b/debian/control
 @@ -38,6 +38,7 @@ Build-Depends: bc,
@@ -25,7 +25,7 @@ index 79bef9bfb3..e363e436b6 100644
                 libsnappy-dev,
                 libssl-dev,
 diff --git a/debian/rules b/debian/rules
-index 641a409831..0308d33d4d 100755
+index 4442732e17..a631658d4c 100755
 --- a/debian/rules
 +++ b/debian/rules
 @@ -7,6 +7,7 @@ export DEB_HOST_ARCH      ?= $(shell dpkg-architecture -qDEB_HOST_ARCH)
