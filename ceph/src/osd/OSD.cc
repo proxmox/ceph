@@ -1824,11 +1824,33 @@ int OSD::write_meta(CephContext *cct, ObjectStore *store, uuid_d& cluster_fsid, 
     return r;
 
   string key = cct->_conf->get_val<string>("key");
-  lderr(cct) << "key " << key << dendl;
   if (key.size()) {
     r = store->write_meta("osd_key", key);
     if (r < 0)
       return r;
+  } else {
+    string keyfile = cct->_conf->get_val<string>("keyfile");
+    if (!keyfile.empty()) {
+      bufferlist keybl;
+      string err;
+      if (keyfile == "-") {
+	static_assert(1024 * 1024 >
+		      (sizeof(CryptoKey) - sizeof(bufferptr) +
+		       sizeof(__u16) + 16 /* AES_KEY_LEN */ + 3 - 1) / 3. * 4.,
+		      "1MB should be enough for a base64 encoded CryptoKey");
+	r = keybl.read_fd(STDIN_FILENO, 1024 * 1024);
+      } else {
+	r = keybl.read_file(keyfile.c_str(), &err);
+      }
+      if (r < 0) {
+	derr << __func__ << " failed to read keyfile " << keyfile << ": "
+	     << err << ": " << cpp_strerror(r) << dendl;
+	return r;
+      }
+      r = store->write_meta("osd_key", keybl.to_str());
+      if (r < 0)
+	return r;
+    }
   }
 
   r = store->write_meta("ready", "ready");
@@ -4435,7 +4457,8 @@ bool OSD::maybe_wait_for_max_pg(spg_t pgid, bool is_mon_create)
   if (is_mon_create) {
     pending_creates_from_mon++;
   } else {
-    pending_creates_from_osd.emplace(pgid.pgid);
+    bool is_primary = osdmap->get_pg_acting_rank(pgid.pgid, whoami) == 0;
+    pending_creates_from_osd.emplace(pgid.pgid, is_primary);
   }
   dout(5) << __func__ << " withhold creation of pg " << pgid
 	  << ": " << pg_map.size() << " >= "<< max_pgs_per_osd << dendl;
@@ -4458,6 +4481,7 @@ static vector<int32_t> twiddle(const vector<int>& acting) {
 void OSD::resume_creating_pg()
 {
   bool do_sub_pg_creates = false;
+  bool have_pending_creates = false;
   MOSDPGTemp *pgtemp = nullptr;
   {
     const auto max_pgs_per_osd =
@@ -4485,19 +4509,45 @@ void OSD::resume_creating_pg()
 	pgtemp = new MOSDPGTemp{osdmap->get_epoch()};
       }
       vector<int> acting;
-      osdmap->pg_to_up_acting_osds(*pg, nullptr, nullptr, &acting, nullptr);
-      pgtemp->pg_temp[*pg] = twiddle(acting);
+      osdmap->pg_to_up_acting_osds(pg->first, nullptr, nullptr, &acting, nullptr);
+      pgtemp->pg_temp[pg->first] = twiddle(acting);
       pg = pending_creates_from_osd.erase(pg);
       spare_pgs--;
     }
+    have_pending_creates = (pending_creates_from_mon > 0 ||
+			    !pending_creates_from_osd.empty());
   }
+
+  bool do_renew_subs = false;
   if (do_sub_pg_creates) {
     if (monc->sub_want("osd_pg_creates", last_pg_create_epoch, 0)) {
       dout(4) << __func__ << ": resolicit pg creates from mon since "
 	      << last_pg_create_epoch << dendl;
-      monc->renew_subs();
+      do_renew_subs = true;
     }
   }
+  version_t start = osdmap->get_epoch() + 1;
+  if (have_pending_creates) {
+    // don't miss any new osdmap deleting PGs
+    if (monc->sub_want("osdmap", start, 0)) {
+      dout(4) << __func__ << ": resolicit osdmap from mon since "
+	      << start << dendl;
+      do_renew_subs = true;
+    }
+  } else if (pgtemp || do_sub_pg_creates) {
+    // no need to subscribe the osdmap continuously anymore
+    // once the pgtemp and/or mon_subscribe(pg_creates) is sent
+    if (monc->sub_want_increment("osdmap", start, CEPH_SUBSCRIBE_ONETIME)) {
+      dout(4) << __func__ << ": re-subscribe osdmap(onetime) since"
+	      << start << dendl;
+      do_renew_subs = true;
+    }
+  }
+
+  if (do_renew_subs) {
+    monc->renew_subs();
+  }
+
   if (pgtemp) {
     pgtemp->forced = true;
     monc->send_mon_message(pgtemp);
@@ -5325,7 +5375,7 @@ void OSD::tick_without_osd_lock()
     }
   }
 
-  check_ops_in_flight();
+  mgrc.update_osd_health(get_health_metrics());
   service.kick_recovery_queue();
   tick_timer_without_osd_lock.add_event_after(OSD_TICK_INTERVAL, new C_Tick_WithoutOSDLock(this));
 }
@@ -5856,8 +5906,12 @@ void OSD::_preboot(epoch_t oldest, epoch_t newest)
   if (osdmap->get_epoch() == 0) {
     derr << "waiting for initial osdmap" << dendl;
   } else if (osdmap->is_destroyed(whoami)) {
-    derr << "osdmap says I am destroyed, exiting" << dendl;
-    exit(0);
+    derr << "osdmap says I am destroyed" << dendl;
+    // provide a small margin so we don't livelock seeing if we
+    // un-destroyed ourselves.
+    if (osdmap->get_epoch() > newest - 1) {
+      exit(0);
+    }
   } else if (osdmap->test_flag(CEPH_OSDMAP_NOUP) || osdmap->is_noup(whoami)) {
     derr << "osdmap NOUP flag is set, waiting for it to clear" << dendl;
   } else if (!osdmap->test_flag(CEPH_OSDMAP_SORTBITWISE)) {
@@ -7538,6 +7592,20 @@ void OSD::sched_scrub()
 
 
 
+vector<OSDHealthMetric> OSD::get_health_metrics()
+{
+  vector<OSDHealthMetric> metrics;
+  lock_guard<mutex> pending_creates_locker{pending_creates_lock};
+  auto n_primaries = pending_creates_from_mon;
+  for (const auto& create : pending_creates_from_osd) {
+    if (create.second) {
+      n_primaries++;
+    }
+  }
+  metrics.emplace_back(osd_metric::PENDING_CREATING_PGS, n_primaries);
+  return metrics;
+}
+
 // =====================================================
 // MAP
 
@@ -8326,7 +8394,7 @@ void OSD::consume_map()
     lock_guard<mutex> pending_creates_locker{pending_creates_lock};
     for (auto pg = pending_creates_from_osd.cbegin();
 	 pg != pending_creates_from_osd.cend();) {
-      if (osdmap->get_pg_acting_rank(*pg, whoami) < 0) {
+      if (osdmap->get_pg_acting_rank(pg->first, whoami) < 0) {
 	pg = pending_creates_from_osd.erase(pg);
       } else {
 	++pg;
@@ -9470,33 +9538,40 @@ void OSD::do_recovery(
    * queue_recovery_after_sleep.
    */
   float recovery_sleep = get_osd_recovery_sleep();
-  if (recovery_sleep > 0 && service.recovery_needs_sleep) {
-    PGRef pgref(pg);
-    auto recovery_requeue_callback = new FunctionContext([this, pgref, queued, reserved_pushes](int r) {
-      dout(20) << "do_recovery wake up at "
-               << ceph_clock_now()
-	       << ", re-queuing recovery" << dendl;
-      service.recovery_needs_sleep = false;
-      service.queue_recovery_after_sleep(pgref.get(), queued, reserved_pushes);
-    });
+  {
     Mutex::Locker l(service.recovery_sleep_lock);
+    if (recovery_sleep > 0 && service.recovery_needs_sleep) {
+      PGRef pgref(pg);
+      auto recovery_requeue_callback = new FunctionContext([this, pgref, queued, reserved_pushes](int r) {
+        dout(20) << "do_recovery wake up at "
+                 << ceph_clock_now()
+	         << ", re-queuing recovery" << dendl;
+	Mutex::Locker l(service.recovery_sleep_lock);
+        service.recovery_needs_sleep = false;
+        service.queue_recovery_after_sleep(pgref.get(), queued, reserved_pushes);
+      });
 
-    // This is true for the first recovery op and when the previous recovery op
-    // has been scheduled in the past. The next recovery op is scheduled after
-    // completing the sleep from now.
-    if (service.recovery_schedule_time < ceph_clock_now()) {
-      service.recovery_schedule_time = ceph_clock_now();
+      // This is true for the first recovery op and when the previous recovery op
+      // has been scheduled in the past. The next recovery op is scheduled after
+      // completing the sleep from now.
+      if (service.recovery_schedule_time < ceph_clock_now()) {
+        service.recovery_schedule_time = ceph_clock_now();
+      }
+      service.recovery_schedule_time += recovery_sleep;
+      service.recovery_sleep_timer.add_event_at(service.recovery_schedule_time,
+	                                        recovery_requeue_callback);
+      dout(20) << "Recovery event scheduled at "
+               << service.recovery_schedule_time << dendl;
+      return;
     }
-    service.recovery_schedule_time += recovery_sleep;
-    service.recovery_sleep_timer.add_event_at(service.recovery_schedule_time,
-	                                      recovery_requeue_callback);
-    dout(20) << "Recovery event scheduled at "
-             << service.recovery_schedule_time << dendl;
-    return;
   }
 
   {
-    service.recovery_needs_sleep = true;
+    {
+      Mutex::Locker l(service.recovery_sleep_lock);
+      service.recovery_needs_sleep = true;
+    }
+
     if (pg->pg_has_reset_since(queued)) {
       goto out;
     }

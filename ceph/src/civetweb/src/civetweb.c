@@ -11955,7 +11955,12 @@ getreq(struct mg_connection *conn, char *ebuf, size_t ebuf_len, int *err)
 		return 0;
 	} else {
 		/* Message is a valid request or response */
-		if ((cl = get_header(&conn->request_info, "Content-Length")) != NULL) {
+		if ((cl = get_header(&conn->request_info, "Transfer-Encoding"))
+		               != NULL
+		           && !mg_strcasecmp(cl, "chunked")) {
+			conn->is_chunked = 1;
+			conn->content_len = 0;
+		} else if ((cl = get_header(&conn->request_info, "Content-Length")) != NULL) {
 			/* Request/response has content length set */
 			char *endptr = NULL;
 			conn->content_len = strtoll(cl, &endptr, 10);
@@ -11971,10 +11976,6 @@ getreq(struct mg_connection *conn, char *ebuf, size_t ebuf_len, int *err)
 			}
 			/* Publish the content length back to the request info. */
 			conn->request_info.content_length = conn->content_len;
-		} else if ((cl = get_header(&conn->request_info, "Transfer-Encoding"))
-		               != NULL
-		           && !mg_strcasecmp(cl, "chunked")) {
-			conn->is_chunked = 1;
 		} else if (!mg_strcasecmp(conn->request_info.request_method, "POST")
 		           || !mg_strcasecmp(conn->request_info.request_method,
 		                             "PUT")) {

@@ -1,4 +1,4 @@
-// Copyright Louis Dionne 2013-2016
+// Copyright Louis Dionne 2013-2017
 // Distributed under the Boost Software License, Version 1.0.
 // (See accompanying file LICENSE.md or copy at http://boost.org/LICENSE_1_0.txt)
 
@@ -40,7 +40,7 @@ namespace boost { namespace hana { namespace test {
         template <typename Xs, typename Elements>
         TestFunctor(Xs xs, Elements elements) {
             hana::for_each(xs, hana::capture(elements)([](auto elements, auto x) {
-                static_assert(Functor<decltype(x)>::value, "");
+                static_assert(Functor<decltype(x)>{}, "");
 
                 test::_injection<0> f{};
                 test::_injection<1> g{};

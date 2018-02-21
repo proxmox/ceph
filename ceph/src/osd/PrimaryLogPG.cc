@@ -535,6 +535,14 @@ void PrimaryLogPG::on_primary_error(
   dout(0) << __func__ << ": oid " << oid << " version " << v << dendl;
   primary_failed(oid);
   primary_error(oid, v);
+  backfill_add_missing(oid, v);
+}
+
+void PrimaryLogPG::backfill_add_missing(
+  const hobject_t &oid,
+  eversion_t v)
+{
+  dout(0) << __func__ << ": oid " << oid << " version " << v << dendl;
   backfills_in_flight.erase(oid);
   missing_loc.add_missing(oid, v, eversion_t());
 }
@@ -713,7 +721,7 @@ void PrimaryLogPG::wait_for_blocked_object(const hobject_t& soid, OpRequestRef o
 
 void PrimaryLogPG::maybe_force_recovery()
 {
-  // no force if not in degraded/recovery/backfill stats
+  // no force if not in degraded/recovery/backfill states
   if (!is_degraded() &&
       !state_test(PG_STATE_RECOVERING |
                   PG_STATE_RECOVERY_WAIT |
@@ -940,6 +948,7 @@ int PrimaryLogPG::do_command(
     f->open_object_section("pg");
     f->dump_string("state", pg_state_string(get_state()));
     f->dump_stream("snap_trimq") << snap_trimq;
+    f->dump_unsigned("snap_trimq_len", snap_trimq.size());
     f->dump_unsigned("epoch", get_osdmap()->get_epoch());
     f->open_array_section("up");
     for (vector<int>::iterator p = up.begin(); p != up.end(); ++p)
@@ -1701,15 +1710,6 @@ void PrimaryLogPG::do_request(
     }
   }
 
-  if (flushes_in_progress > 0) {
-    dout(20) << flushes_in_progress
-	     << " flushes_in_progress pending "
-	     << "waiting for active on " << op << dendl;
-    waiting_for_peered.push_back(op);
-    op->mark_delayed("waiting for peered");
-    return;
-  }
-
   if (!is_peered()) {
     // Delay unless PGBackend says it's ok
     if (pgbackend->can_handle_while_inactive(op)) {
@@ -1721,6 +1721,15 @@ void PrimaryLogPG::do_request(
       op->mark_delayed("waiting for peered");
       return;
     }
+  }
+
+  if (flushes_in_progress > 0) {
+    dout(20) << flushes_in_progress
+	     << " flushes_in_progress pending "
+	     << "waiting for flush on " << op << dendl;
+    waiting_for_flush.push_back(op);
+    op->mark_delayed("waiting for flush");
+    return;
   }
 
   assert(is_peered() && flushes_in_progress == 0);
@@ -2341,6 +2350,7 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
   // force recovery of the oldest missing object if too many logs
   maybe_force_recovery();
 }
+
 PrimaryLogPG::cache_result_t PrimaryLogPG::maybe_handle_manifest_detail(
   OpRequestRef op,
   bool write_ordered,
@@ -2446,6 +2456,10 @@ PrimaryLogPG::cache_result_t PrimaryLogPG::maybe_handle_cache_detail(
   bool in_hit_set,
   ObjectContextRef *promote_obc)
 {
+  // return quickly if caching is not enabled
+  if (pool.info.cache_mode == pg_pool_t::CACHEMODE_NONE)
+    return cache_result_t::NOOP;
+
   if (op &&
       op->get_req() &&
       op->get_req()->get_type() == CEPH_MSG_OSD_OP &&
@@ -2454,9 +2468,6 @@ PrimaryLogPG::cache_result_t PrimaryLogPG::maybe_handle_cache_detail(
     dout(20) << __func__ << ": ignoring cache due to flag" << dendl;
     return cache_result_t::NOOP;
   }
-  // return quickly if caching is not enabled
-  if (pool.info.cache_mode == pg_pool_t::CACHEMODE_NONE)
-    return cache_result_t::NOOP;
 
   must_promote = must_promote || op->need_promote();
 
@@ -2489,6 +2500,11 @@ PrimaryLogPG::cache_result_t PrimaryLogPG::maybe_handle_cache_detail(
   if (obc.get() && obc->obs.exists) {
     osd->logger->inc(l_osd_op_cache_hit);
     return cache_result_t::NOOP;
+  }
+  if (!is_primary()) {
+    dout(20) << __func__ << " cache miss; ask the primary" << dendl;
+    osd->reply_op_error(op, -EAGAIN);
+    return cache_result_t::REPLIED_WITH_EAGAIN;
   }
 
   if (missing_oid == hobject_t() && obc.get()) {
@@ -5031,7 +5047,7 @@ int PrimaryLogPG::do_osd_ops(OpContext *ctx, vector<OSDOp>& ops)
   dout(10) << "do_osd_op " << soid << " " << ops << dendl;
 
   ctx->current_osd_subop_num = 0;
-  for (vector<OSDOp>::iterator p = ops.begin(); p != ops.end(); ++p, ctx->current_osd_subop_num++) {
+  for (auto p = ops.begin(); p != ops.end(); ++p, ctx->current_osd_subop_num++, ctx->processed_subop_count++) {
     OSDOp& osd_op = *p;
     ceph_osd_op& op = osd_op.op;
 
@@ -5432,8 +5448,7 @@ int PrimaryLogPG::do_osd_ops(OpContext *ctx, vector<OSDOp>& ops)
 	map<string, bufferlist> out;
 	result = getattrs_maybe_cache(
 	  ctx->obc,
-	  &out,
-	  true);
+	  &out);
         
         bufferlist bl;
         ::encode(out, bl);
@@ -6196,8 +6211,7 @@ int PrimaryLogPG::do_osd_ops(OpContext *ctx, vector<OSDOp>& ops)
 	/* rm_attrs */
 	map<string,bufferlist> rmattrs;
 	result = getattrs_maybe_cache(ctx->obc,
-		    &rmattrs,
-		    true);
+		    &rmattrs);
 	if (result < 0) {
 	  return result;
 	}
@@ -7002,6 +7016,8 @@ int PrimaryLogPG::_rollback_to(OpContext *ctx, ceph_osd_op& op)
     case cache_result_t::BLOCKED_FULL:
       block_write_on_full_cache(soid, ctx->op);
       return -EAGAIN;
+    case cache_result_t::REPLIED_WITH_EAGAIN:
+      assert(0 == "this can't happen, no rollback on replica");
     default:
       assert(0 == "must promote was set, other values are not valid");
       return -EAGAIN;
@@ -7854,8 +7870,7 @@ int PrimaryLogPG::do_copy_get(OpContext *ctx, bufferlist::iterator& bp,
   if (!cursor.attr_complete) {
     result = getattrs_maybe_cache(
       ctx->obc,
-      &out_attrs,
-      true);
+      &out_attrs);
     if (result < 0) {
       if (cb) {
         delete cb;
@@ -10780,6 +10795,13 @@ void PrimaryLogPG::mark_all_unfound_lost(
 	log_entries.push_back(e);
         oids.push_back(oid);
 
+	// If context found mark object as deleted in case
+	// of racing with new creation.  This can happen if
+	// object lost and EIO at primary.
+	obc = object_contexts.lookup(oid);
+	if (obc)
+	  obc->obs.exists = false;
+
 	++v.version;
 	++m;
       }
@@ -10806,11 +10828,23 @@ void PrimaryLogPG::mark_all_unfound_lost(
 	  }
 	}
 
-	for (auto& p : waiting_for_unreadable_object) {
-	  release_backoffs(p.first);
+	if (is_recovery_unfound()) {
+	  queue_peering_event(
+	    CephPeeringEvtRef(
+	      std::make_shared<CephPeeringEvt>(
+	      get_osdmap()->get_epoch(),
+	      get_osdmap()->get_epoch(),
+	      DoRecovery())));
+	} else if (is_backfill_unfound()) {
+	  queue_peering_event(
+	    CephPeeringEvtRef(
+	      std::make_shared<CephPeeringEvt>(
+	      get_osdmap()->get_epoch(),
+	      get_osdmap()->get_epoch(),
+	      RequestBackfill())));
+	} else {
+	  queue_recovery();
 	}
-	requeue_object_waiters(waiting_for_unreadable_object);
-	queue_recovery();
 
 	stringstream ss;
 	ss << "pg has " << num_unfound
@@ -10904,7 +10938,7 @@ void PrimaryLogPG::on_flushed()
   assert(flushes_in_progress > 0);
   flushes_in_progress--;
   if (flushes_in_progress == 0) {
-    requeue_ops(waiting_for_peered);
+    requeue_ops(waiting_for_flush);
   }
   if (!is_peered() || !is_primary()) {
     pair<hobject_t, ObjectContextRef> i;
@@ -11045,7 +11079,7 @@ void PrimaryLogPG::on_activate()
 
 void PrimaryLogPG::_on_new_interval()
 {
-  dout(20) << __func__ << "checking missing set deletes flag. missing = " << pg_log.get_missing() << dendl;
+  dout(20) << __func__ << " checking missing set deletes flag. missing = " << pg_log.get_missing() << dendl;
   if (!pg_log.get_missing().may_include_deletes &&
       get_osdmap()->test_flag(CEPH_OSDMAP_RECOVERY_DELETES)) {
     pg_log.rebuild_missing_set_with_deletes(osd->store, coll, info);
@@ -11070,6 +11104,7 @@ void PrimaryLogPG::on_change(ObjectStore::Transaction *t)
   // requeue everything in the reverse order they should be
   // reexamined.
   requeue_ops(waiting_for_peered);
+  requeue_ops(waiting_for_flush);
   requeue_ops(waiting_for_active);
 
   clear_scrub_reserved();
@@ -11432,9 +11467,6 @@ bool PrimaryLogPG::start_recovery_ops(
   if (state_test(PG_STATE_RECOVERING)) {
     state_clear(PG_STATE_RECOVERING);
     state_clear(PG_STATE_FORCED_RECOVERY);
-    if (get_osdmap()->get_pg_size(info.pgid.pgid) <= acting.size()) {
-      state_clear(PG_STATE_DEGRADED);
-    }
     if (needs_backfill()) {
       dout(10) << "recovery done, queuing backfill" << dendl;
       queue_peering_event(
@@ -13470,6 +13502,7 @@ bool PrimaryLogPG::agent_choose_mode(bool restart, OpRequestRef op)
 	is_active()) {
       if (op)
 	requeue_op(op);
+      requeue_ops(waiting_for_flush);
       requeue_ops(waiting_for_active);
       requeue_ops(waiting_for_scrub);
       requeue_ops(waiting_for_cache_not_full);
@@ -14548,26 +14581,23 @@ int PrimaryLogPG::getattr_maybe_cache(
 
 int PrimaryLogPG::getattrs_maybe_cache(
   ObjectContextRef obc,
-  map<string, bufferlist> *out,
-  bool user_only)
+  map<string, bufferlist> *out)
 {
   int r = 0;
+  assert(out);
   if (pool.info.require_rollback()) {
-    if (out)
-      *out = obc->attr_cache;
+    *out = obc->attr_cache;
   } else {
     r = pgbackend->objects_get_attrs(obc->obs.oi.soid, out);
   }
-  if (out && user_only) {
-    map<string, bufferlist> tmp;
-    for (map<string, bufferlist>::iterator i = out->begin();
-	 i != out->end();
-	 ++i) {
-      if (i->first.size() > 1 && i->first[0] == '_')
-	tmp[i->first.substr(1, i->first.size())].claim(i->second);
-    }
-    tmp.swap(*out);
+  map<string, bufferlist> tmp;
+  for (map<string, bufferlist>::iterator i = out->begin();
+       i != out->end();
+       ++i) {
+    if (i->first.size() > 1 && i->first[0] == '_')
+      tmp[i->first.substr(1, i->first.size())].claim(i->second);
   }
+  tmp.swap(*out);
   return r;
 }
 

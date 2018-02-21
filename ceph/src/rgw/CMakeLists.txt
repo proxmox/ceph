@@ -76,6 +76,7 @@ set(rgw_a_srcs
   rgw_sync_module_es.cc
   rgw_sync_module_es_rest.cc
   rgw_sync_module_log.cc
+  rgw_sync_log_trim.cc
   rgw_period_history.cc
   rgw_period_puller.cc
   rgw_period_pusher.cc
@@ -141,7 +142,6 @@ add_library(rgw_a STATIC ${rgw_a_srcs})
 add_dependencies(rgw_a civetweb_h)
 
 target_include_directories(rgw_a PUBLIC
-  "../Beast/include"
   ${FCGI_INCLUDE_DIR}
   "../rapidjson/include"
   )
@@ -173,11 +173,6 @@ endif (WITH_RADOSGW_BEAST_FRONTEND)
 add_library(radosgw_a STATIC ${radosgw_srcs}
   $<TARGET_OBJECTS:civetweb_common_objs>)
 target_link_libraries(radosgw_a rgw_a ${SSL_LIBRARIES})
-if(WITH_RADOSGW_BEAST_FRONTEND)
-  target_link_libraries(radosgw_a
-    Boost::coroutine
-    Boost::context)
-endif()
 
 add_executable(radosgw rgw_main.cc)
 target_link_libraries(radosgw radosgw_a librados

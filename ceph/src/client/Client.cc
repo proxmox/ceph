@@ -83,6 +83,7 @@
 #include "Client.h"
 #include "Inode.h"
 #include "Dentry.h"
+#include "Delegation.h"
 #include "Dir.h"
 #include "ClientSnapRealm.h"
 #include "Fh.h"
@@ -238,7 +239,6 @@ Client::Client(Messenger *m, MonClient *mc, Objecter *objecter_)
     getgroups_cb(NULL),
     umask_cb(NULL),
     can_invalidate_dentries(false),
-    require_remount(false),
     async_ino_invalidator(m->cct),
     async_dentry_invalidator(m->cct),
     interrupt_finisher(m->cct),
@@ -251,9 +251,10 @@ Client::Client(Messenger *m, MonClient *mc, Objecter *objecter_)
     last_tid(0), oldest_tid(0), last_flush_tid(1),
     initialized(false),
     mounted(false), unmounting(false), blacklisted(false),
-    local_osd(-1), local_osd_epoch(0),
+    local_osd(-ENXIO), local_osd_epoch(0),
     unsafe_sync_write(0),
-    client_lock("Client::client_lock")
+    client_lock("Client::client_lock"),
+    deleg_timeout(0)
 {
   _reset_faked_inos();
   //
@@ -4022,22 +4023,40 @@ void Client::remove_session_caps(MetaSession *s)
   sync_cond.Signal();
 }
 
+int Client::_do_remount(void)
+{
+  errno = 0;
+  int r = remount_cb(callback_handle);
+  if (r != 0) {
+    int e = errno;
+    client_t whoami = get_nodeid();
+    if (r == -1) {
+      lderr(cct) <<
+          "failed to remount (to trim kernel dentries): "
+          "errno = " << e << " (" << strerror(e) << ")" << dendl;
+    } else {
+      lderr(cct) <<
+          "failed to remount (to trim kernel dentries): "
+          "return code = " << r << dendl;
+    }
+    bool should_abort = cct->_conf->get_val<bool>("client_die_on_failed_remount") ||
+        cct->_conf->get_val<bool>("client_die_on_failed_dentry_invalidate");
+    if (should_abort && !unmounting) {
+      lderr(cct) << "failed to remount for kernel dentry trimming; quitting!" << dendl;
+      ceph_abort();
+    }
+  }
+  return r;
+}
+
 class C_Client_Remount : public Context  {
 private:
   Client *client;
 public:
   explicit C_Client_Remount(Client *c) : client(c) {}
   void finish(int r) override {
-    assert (r == 0);
-    r = client->remount_cb(client->callback_handle);
-    if (r != 0) {
-      client_t whoami = client->get_nodeid();
-      lderr(client->cct) << "tried to remount (to trim kernel dentries) and got error "
-			 << r << dendl;
-      if (client->require_remount && !client->unmounting) {
-	assert(0 == "failed to remount for kernel dentry trimming");
-      }
-    }
+    assert(r == 0);
+    client->_do_remount();
   }
 };
 
@@ -4068,9 +4087,10 @@ void Client::trim_caps(MetaSession *s, int max)
 
   int trimmed = 0;
   xlist<Cap*>::iterator p = s->caps.begin();
+  std::set<InodeRef> anchor; /* prevent put_inode from deleting all caps during traversal */
   while ((caps_size - trimmed) > max && !p.end()) {
     Cap *cap = *p;
-    Inode *in = cap->inode;
+    InodeRef in(cap->inode);
 
     // Increment p early because it will be invalidated if cap
     // is deleted inside remove_cap
@@ -4080,16 +4100,16 @@ void Client::trim_caps(MetaSession *s, int max)
       int mine = cap->issued | cap->implemented;
       int oissued = in->auth_cap ? in->auth_cap->issued : 0;
       // disposable non-auth cap
-      if (!(get_caps_used(in) & ~oissued & mine)) {
+      if (!(get_caps_used(in.get()) & ~oissued & mine)) {
 	ldout(cct, 20) << " removing unused, unneeded non-auth cap on " << *in << dendl;
 	remove_cap(cap, true);
+        /* N.B. no need to push onto anchor, as we are only removing one cap */
 	trimmed++;
       }
     } else {
       ldout(cct, 20) << " trying to trim dentries for " << *in << dendl;
       bool all = true;
       set<Dentry*>::iterator q = in->dn_set.begin();
-      InodeRef tmp_ref(in);
       while (q != in->dn_set.end()) {
 	Dentry *dn = *q++;
 	if (dn->lru_is_expireable()) {
@@ -4100,6 +4120,8 @@ void Client::trim_caps(MetaSession *s, int max)
 	    // the end of this function.
 	    _schedule_invalidate_dentry_callback(dn, true);
 	  }
+          ldout(cct, 20) << " anchoring inode: " << in->ino << dendl;
+          anchor.insert(in);
 	  trim_dentry(dn);
         } else {
           ldout(cct, 20) << "  not expirable: " << dn->name << dendl;
@@ -4112,8 +4134,11 @@ void Client::trim_caps(MetaSession *s, int max)
       }
     }
   }
+  ldout(cct, 20) << " clearing anchored inodes" << dendl;
+  anchor.clear();
 
-  if (s->caps.size() > max)
+  caps_size = s->caps.size();
+  if (caps_size > max)
     _invalidate_kernel_dcache();
 }
 
@@ -5060,10 +5085,17 @@ void Client::handle_cap_grant(MetaSession *session, Inode *in, Cap *cap, MClient
   check_cap_issue(in, cap, new_caps);
 
   // update caps
-  if (old_caps & ~new_caps) { 
-    ldout(cct, 10) << "  revocation of " << ccap_string(~new_caps & old_caps) << dendl;
+  int revoked = old_caps & ~new_caps;
+  if (revoked) {
+    ldout(cct, 10) << "  revocation of " << ccap_string(revoked) << dendl;
     cap->issued = new_caps;
     cap->implemented |= new_caps;
+
+    // recall delegations if we're losing caps necessary for them
+    if (revoked & ceph_deleg_caps_for_type(CEPH_DELEGATION_RD))
+      in->recall_deleg(false);
+    else if (revoked & ceph_deleg_caps_for_type(CEPH_DELEGATION_WR))
+      in->recall_deleg(true);
 
     if (((used & ~new_caps) & CEPH_CAP_FILE_BUFFER)
         && !_flush(in, new C_Client_FlushComplete(this, in))) {
@@ -5676,6 +5708,8 @@ int Client::mount(const std::string &mount_root, const UserPerm& perms,
     return 0;
   }
 
+  unmounting = false;
+
   int r = authenticate();
   if (r < 0) {
     lderr(cct) << "authentication failed: " << cpp_strerror(r) << dendl;
@@ -5821,15 +5855,15 @@ void Client::flush_mdlog(MetaSession *session)
 }
 
 
-void Client::unmount()
+void Client::_unmount()
 {
-  Mutex::Locker lock(client_lock);
-
   if (unmounting)
     return;
 
   ldout(cct, 2) << "unmounting" << dendl;
   unmounting = true;
+
+  deleg_timeout = 0;
 
   flush_mdlog_sync(); // flush the mdlog for pending requests, if any
   while (!mds_requests.empty()) {
@@ -5942,6 +5976,12 @@ void Client::unmount()
   mounted = false;
 
   ldout(cct, 2) << "unmounted." << dendl;
+}
+
+void Client::unmount()
+{
+  Mutex::Locker lock(client_lock);
+  _unmount();
 }
 
 void Client::flush_cap_releases()
@@ -8361,6 +8401,8 @@ int Client::_release_fh(Fh *f)
   Inode *in = f->inode.get();
   ldout(cct, 5) << "_release_fh " << f << " mode " << f->mode << " on " << *in << dendl;
 
+  in->unset_deleg(f);
+
   if (in->snapid == CEPH_NOSNAP) {
     if (in->put_open_ref(f->mode)) {
       _flush(in, new C_Client_FlushComplete(this, in));
@@ -8412,11 +8454,11 @@ int Client::_open(Inode *in, int flags, mode_t mode, Fh **fhp,
 
   in->get_open_ref(cmode);  // make note of pending open, since it effects _wanted_ caps.
 
-  if ((flags & O_TRUNC) == 0 &&
-      in->caps_issued_mask(want)) {
+  if ((flags & O_TRUNC) == 0 && in->caps_issued_mask(want)) {
     // update wanted?
     check_caps(in, CHECK_CAPS_NODELAY);
   } else {
+
     MetaRequest *req = new MetaRequest(CEPH_MDS_OP_OPEN);
     filepath path;
     in->make_nosnap_relative_path(path);
@@ -8431,6 +8473,34 @@ int Client::_open(Inode *in, int flags, mode_t mode, Fh **fhp,
     req->head.args.open.old_size = in->size;   // for O_TRUNC
     req->set_inode(in);
     result = make_request(req, perms);
+
+    /*
+     * NFS expects that delegations will be broken on a conflicting open,
+     * not just when there is actual conflicting access to the file. SMB leases
+     * and oplocks also have similar semantics.
+     *
+     * Ensure that clients that have delegations enabled will wait on minimal
+     * caps during open, just to ensure that other clients holding delegations
+     * return theirs first.
+     */
+    if (deleg_timeout && result == 0) {
+      int need = 0, have;
+
+      if (cmode & CEPH_FILE_MODE_WR)
+        need |= CEPH_CAP_FILE_WR;
+      if (cmode & CEPH_FILE_MODE_RD)
+        need |= CEPH_CAP_FILE_RD;
+
+      result = get_caps(in, need, want, &have, -1);
+      if (result < 0) {
+	ldout(cct, 1) << "Unable to get caps after open of inode " << *in <<
+			  " . Denying open: " <<
+			  cpp_strerror(result) << dendl;
+	in->put_open_ref(cmode);
+      } else {
+	put_cap_ref(in, need);
+      }
+    }
   }
 
   // success?
@@ -10015,21 +10085,19 @@ int Client::test_dentry_handling(bool can_invalidate)
   if (can_invalidate_dentries) {
     assert(dentry_invalidate_cb);
     ldout(cct, 1) << "using dentry_invalidate_cb" << dendl;
+    r = 0;
   } else if (remount_cb) {
     ldout(cct, 1) << "using remount_cb" << dendl;
-    int s = remount_cb(callback_handle);
-    if (s) {
-      lderr(cct) << "Failed to invoke remount, needed to ensure kernel dcache consistency"
-		 << dendl;
-    }
-    if (cct->_conf->client_die_on_failed_remount) {
-      require_remount = true;
-      r = s;
-    }
-  } else {
-    lderr(cct) << "no method to invalidate kernel dentry cache; expect issues!" << dendl;
-    if (cct->_conf->client_die_on_failed_remount)
+    r = _do_remount();
+  }
+  if (r) {
+    bool should_abort = cct->_conf->get_val<bool>("client_die_on_failed_dentry_invalidate");
+    if (should_abort) {
+      lderr(cct) << "no method to invalidate kernel dentry cache; quitting!" << dendl;
       ceph_abort();
+    } else {
+      lderr(cct) << "no method to invalidate kernel dentry cache; expect issues!" << dendl;
+    }
   }
   return r;
 }
@@ -11911,8 +11979,9 @@ int Client::_unlink(Inode *dir, const char *name, const UserPerm& perm)
   req->set_filepath(path);
 
   InodeRef otherin;
-
+  Inode *in;
   Dentry *de;
+
   int res = get_or_create(dir, name, &de);
   if (res < 0)
     goto fail;
@@ -11923,7 +11992,10 @@ int Client::_unlink(Inode *dir, const char *name, const UserPerm& perm)
   res = _lookup(dir, name, 0, &otherin, perm);
   if (res < 0)
     goto fail;
-  req->set_other_inode(otherin.get());
+
+  in = otherin.get();
+  req->set_other_inode(in);
+  in->break_all_delegs();
   req->other_inode_drop = CEPH_CAP_LINK_SHARED | CEPH_CAP_LINK_EXCL;
 
   req->set_inode(dir);
@@ -11969,8 +12041,9 @@ int Client::_rmdir(Inode *dir, const char *name, const UserPerm& perms)
   if (dir->snapid != CEPH_NOSNAP && dir->snapid != CEPH_SNAPDIR) {
     return -EROFS;
   }
-
-  MetaRequest *req = new MetaRequest(dir->snapid == CEPH_SNAPDIR ? CEPH_MDS_OP_RMSNAP:CEPH_MDS_OP_RMDIR);
+  
+  int op = dir->snapid == CEPH_SNAPDIR ? CEPH_MDS_OP_RMSNAP : CEPH_MDS_OP_RMDIR;
+  MetaRequest *req = new MetaRequest(op);
   filepath path;
   dir->make_nosnap_relative_path(path);
   path.push_dentry(name);
@@ -11986,15 +12059,20 @@ int Client::_rmdir(Inode *dir, const char *name, const UserPerm& perms)
   int res = get_or_create(dir, name, &de);
   if (res < 0)
     goto fail;
+  if (op == CEPH_MDS_OP_RMDIR) 
+    req->set_dentry(de);
+  else
+    de->get();
+
   res = _lookup(dir, name, 0, &in, perms);
   if (res < 0)
     goto fail;
-  if (req->get_op() == CEPH_MDS_OP_RMDIR) {
+  if (op == CEPH_MDS_OP_RMDIR) {
     req->set_inode(dir);
-    req->set_dentry(de);
     req->set_other_inode(in.get());
   } else {
     unlink(de, true, true);
+    de->put();
     req->set_other_inode(in.get());
   }
 
@@ -12093,15 +12171,26 @@ int Client::_rename(Inode *fromdir, const char *fromname, Inode *todir, const ch
     res = _lookup(fromdir, fromname, 0, &oldin, perm);
     if (res < 0)
       goto fail;
-    req->set_old_inode(oldin.get());
+
+    Inode *oldinode = oldin.get();
+    oldinode->break_all_delegs();
+    req->set_old_inode(oldinode);
     req->old_inode_drop = CEPH_CAP_LINK_SHARED;
 
     res = _lookup(todir, toname, 0, &otherin, perm);
-    if (res != 0 && res != -ENOENT) {
-      goto fail;
-    } else if (res == 0) {
-      req->set_other_inode(otherin.get());
+    switch (res) {
+    case 0:
+      {
+	Inode *in = otherin.get();
+	req->set_other_inode(in);
+	in->break_all_delegs();
+      }
       req->other_inode_drop = CEPH_CAP_LINK_SHARED | CEPH_CAP_LINK_EXCL;
+      break;
+    case -ENOENT:
+      break;
+    default:
+      goto fail;
     }
 
     req->set_inode(todir);
@@ -12172,6 +12261,7 @@ int Client::_link(Inode *in, Inode *dir, const char *newname, const UserPerm& pe
     return -EDQUOT;
   }
 
+  in->break_all_delegs();
   MetaRequest *req = new MetaRequest(CEPH_MDS_OP_LINK);
 
   filepath path(newname, dir->ino);
@@ -12604,7 +12694,7 @@ int Client::ll_read_block(Inode *in, uint64_t blockid,
   if (unmounting)
     return -ENOTCONN;
 
-  vinodeno_t vino = ll_get_vino(in);
+  vinodeno_t vino = _get_vino(in);
   object_t oid = file_object_t(vino.ino, blockid);
   C_SaferCond onfinish;
   bufferlist bl;
@@ -12713,7 +12803,7 @@ int Client::ll_commit_blocks(Inode *in,
     Mutex::Locker lock(client_lock);
     /*
     BarrierContext *bctx;
-    vinodeno_t vino = ll_get_vino(in);
+    vinodeno_t vino = _get_vino(in);
     uint64_t ino = vino.ino;
 
     ldout(cct, 1) << "ll_commit_blocks for " << vino.ino << " from "
@@ -13014,6 +13104,48 @@ int Client::ll_flock(Fh *fh, int cmd, uint64_t owner)
   return _flock(fh, cmd, owner);
 }
 
+int Client::set_deleg_timeout(uint32_t timeout)
+{
+  Mutex::Locker lock(client_lock);
+
+  /*
+   * The whole point is to prevent blacklisting so we must time out the
+   * delegation before the session autoclose timeout kicks in.
+   */
+  if (timeout >= mdsmap->get_session_autoclose())
+    return -EINVAL;
+
+  deleg_timeout = timeout;
+  return 0;
+}
+
+int Client::ll_delegation(Fh *fh, unsigned cmd, ceph_deleg_cb_t cb, void *priv)
+{
+  int ret = -EINVAL;
+
+  Mutex::Locker lock(client_lock);
+
+  if (!mounted)
+    return -ENOTCONN;
+
+  Inode *inode = fh->inode.get();
+
+  switch(cmd) {
+  case CEPH_DELEGATION_NONE:
+    inode->unset_deleg(fh);
+    ret = 0;
+    break;
+  default:
+    try {
+      ret = inode->set_deleg(fh, cmd, cb, priv);
+    } catch (std::bad_alloc) {
+      ret = -ENOMEM;
+    }
+    break;
+  }
+  return ret;
+}
+
 class C_Client_RequestInterrupt : public Context  {
 private:
   Client *client;
@@ -13260,9 +13392,7 @@ int Client::enumerate_layout(int fd, vector<ObjectExtent>& result,
 }
 
 
-/*
- * find an osd with the same ip.  -1 if none.
- */
+/* find an osd with the same ip.  -ENXIO if none. */
 int Client::get_local_osd()
 {
   Mutex::Locker lock(client_lock);
@@ -13736,6 +13866,8 @@ const char** Client::get_tracked_conf_keys() const
     "client_cache_size",
     "client_cache_mid",
     "client_acl_type",
+    "client_deleg_timeout",
+    "client_deleg_break_on_open",
     NULL
   };
   return keys;
@@ -13839,4 +13971,3 @@ void StandaloneClient::shutdown()
   objecter->shutdown();
   monclient->shutdown();
 }
-

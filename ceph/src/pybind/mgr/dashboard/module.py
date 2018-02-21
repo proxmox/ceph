@@ -26,6 +26,7 @@ import socket
 
 import cherrypy
 import jinja2
+import urlparse
 
 from mgr_module import MgrModule, MgrStandbyModule, CommandResult
 
@@ -63,14 +64,23 @@ def recurse_refs(root, path):
     log.info("%s %d (%s)" % (path, sys.getrefcount(root), root.__class__))
 
 def get_prefixed_url(url):
-    return global_instance().url_prefix + url
+    return global_instance().url_prefix.rstrip('/') + url
 
 
+
+def prepare_url_prefix(url_prefix):
+    """
+    return '' if no prefix, or '/prefix' without slash in the end.
+    """
+    url_prefix = urlparse.urljoin('/', url_prefix)
+    return url_prefix.rstrip('/')
 
 class StandbyModule(MgrStandbyModule):
     def serve(self):
         server_addr = self.get_localized_config('server_addr', '::')
         server_port = self.get_localized_config('server_port', '7000')
+        url_prefix = prepare_url_prefix(self.get_config('url_prefix', default=''))
+
         if server_addr is None:
             raise RuntimeError('no server_addr configured; try "ceph config-key set mgr/dashboard/server_addr <ip>"')
         log.info("server_addr: %s server_port: %s" % (server_addr, server_port))
@@ -88,16 +98,16 @@ class StandbyModule(MgrStandbyModule):
 
         class Root(object):
             @cherrypy.expose
-            def index(self):
+            def default(self, *args, **kwargs):
                 active_uri = module.get_active_uri()
                 if active_uri:
-                    log.info("Redirecting to active '{0}'".format(active_uri))
-                    raise cherrypy.HTTPRedirect(active_uri)
+                    log.info("Redirecting to active '{0}'".format(active_uri + "/".join(args)))
+                    raise cherrypy.HTTPRedirect(active_uri + "/".join(args))
                 else:
                     template = env.get_template("standby.html")
                     return template.render(delay=5)
 
-        cherrypy.tree.mount(Root(), "/", {})
+        cherrypy.tree.mount(Root(), url_prefix, {})
         log.info("Starting engine...")
         cherrypy.engine.start()
         log.info("Waiting for engine...")
@@ -299,6 +309,10 @@ class Module(MgrModule):
                 filesystem = fs
                 break
 
+        if filesystem is None:
+            raise cherrypy.HTTPError(404,
+                "Filesystem id {0} not found".format(fs_id))
+
         rank_table = []
 
         mdsmap = filesystem['mdsmap']
@@ -433,35 +447,40 @@ class Module(MgrModule):
             "versions": mds_versions
         }
 
+    def _prime_log(self):
+        def load_buffer(buf, channel_name):
+            result = CommandResult("")
+            self.send_command(result, "mon", "", json.dumps({
+                "prefix": "log last",
+                "format": "json",
+                "channel": channel_name,
+                "num": LOG_BUFFER_SIZE
+                }), "")
+            r, outb, outs = result.wait()
+            if r != 0:
+                # Oh well.  We won't let this stop us though.
+                self.log.error("Error fetching log history (r={0}, \"{1}\")".format(
+                    r, outs))
+            else:
+                try:
+                    lines = json.loads(outb)
+                except ValueError:
+                    self.log.error("Error decoding log history")
+                else:
+                    for l in lines:
+                        buf.appendleft(l)
+
+        load_buffer(self.log_buffer, "cluster")
+        load_buffer(self.audit_buffer, "audit")
+        self.log_primed = True
+
     def serve(self):
         current_dir = os.path.dirname(os.path.abspath(__file__))
 
         jinja_loader = jinja2.FileSystemLoader(current_dir)
         env = jinja2.Environment(loader=jinja_loader)
 
-        result = CommandResult("")
-        self.send_command(result, "mon", "", json.dumps({
-            "prefix":"log last",
-            "format": "json"
-            }), "")
-        r, outb, outs = result.wait()
-        if r != 0:
-            # Oh well.  We won't let this stop us though.
-            self.log.error("Error fetching log history (r={0}, \"{1}\")".format(
-                r, outs))
-        else:
-            try:
-                lines = json.loads(outb)
-            except ValueError:
-                self.log.error("Error decoding log history")
-            else:
-                for l in lines:
-                    if l['channel'] == 'audit':
-                        self.audit_buffer.appendleft(l)
-                    else:
-                        self.log_buffer.appendleft(l)
-
-        self.log_primed = True
+        self._prime_log()
 
         class EndPoint(object):
             def _health_data(self):
@@ -879,15 +898,7 @@ class Module(MgrModule):
                         ret[k1][k2] = sorted_dict
                 return ret
 
-        url_prefix = self.get_config('url_prefix')
-        if url_prefix == None:
-            url_prefix = ''
-        else:
-            if len(url_prefix) != 0:
-                if url_prefix[0] != '/':
-                    url_prefix = '/'+url_prefix
-                if url_prefix[-1] == '/':
-                    url_prefix = url_prefix[:-1]
+        url_prefix = prepare_url_prefix(self.get_config('url_prefix', default=''))
         self.url_prefix = url_prefix
 
         server_addr = self.get_localized_config('server_addr', '::')
@@ -906,9 +917,10 @@ class Module(MgrModule):
 
         # Publish the URI that others may use to access the service we're
         # about to start serving
-        self.set_uri("http://{0}:{1}/".format(
+        self.set_uri("http://{0}:{1}{2}/".format(
             socket.getfqdn() if server_addr == "::" else server_addr,
-            server_port
+            server_port,
+            url_prefix
         ))
 
         static_dir = os.path.join(current_dir, 'static')

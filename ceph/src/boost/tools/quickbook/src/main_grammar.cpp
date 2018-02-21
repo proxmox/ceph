@@ -17,7 +17,7 @@
 #include "phrase_tags.hpp"
 #include "parsers.hpp"
 #include "scoped.hpp"
-#include "native_text.hpp"
+#include "stream.hpp"
 #include <boost/spirit/include/classic_core.hpp>
 #include <boost/spirit/include/classic_chset.hpp>
 #include <boost/spirit/include/classic_if.hpp>
@@ -53,11 +53,11 @@ namespace quickbook
         //   * List item
         //     |indent2 
 
-        list_stack_item(list_item_type r) :
+        explicit list_stack_item(list_item_type r) :
             type(r), indent(0), indent2(0), mark('\0') {}
 
-        list_stack_item(char mark, unsigned int indent, unsigned int indent2) :
-            type(syntactic_list), indent(indent), indent2(indent2), mark(mark)
+        explicit list_stack_item(char mark_, unsigned int indent_, unsigned int indent2_) :
+            type(syntactic_list), indent(indent_), indent2(indent2_), mark(mark_)
         {}
 
     };
@@ -101,7 +101,7 @@ namespace quickbook
                         template_args_1_6, template_arg_1_6, template_arg_1_6_content,
                         break_,
                         command_line_macro_identifier,
-                        dummy_block, line_dummy_block, square_brackets,
+                        dummy_block, line_dummy_block, square_brackets, error_brackets,
                         skip_escape
                         ;
 
@@ -151,8 +151,8 @@ namespace quickbook
     };
 
     struct process_element_impl : scoped_action_base {
-        process_element_impl(main_grammar_local& l) :
-            l(l), pushed_source_mode_(false), element_context_error_(false) {}
+        process_element_impl(main_grammar_local& l_) :
+            l(l_), pushed_source_mode_(false), element_context_error_(false) {}
 
         bool start()
         {
@@ -194,7 +194,7 @@ namespace quickbook
         }
 
         template <typename ResultT, typename ScannerT>
-        bool result(ResultT result, ScannerT const& scan)
+        bool result(ResultT r, ScannerT const& scan)
         {
             if (element_context_error_) {
                 error_message_action error(l.state_,
@@ -202,7 +202,7 @@ namespace quickbook
                 error(scan.first, scan.first);
                 return true;
             }
-            else if (result) {
+            else if (r) {
                 return true;
             }
             else if (qbk_version_n < 107u &&
@@ -235,8 +235,8 @@ namespace quickbook
 
     struct scoped_paragraph : scoped_action_base
     {
-        scoped_paragraph(quickbook::state& state) :
-            state(state), pushed(false) {}
+        scoped_paragraph(quickbook::state& state_) :
+            state(state_), pushed(false) {}
 
         bool start() {
             state.push_tagged_source_mode(state.source_mode_next);
@@ -256,8 +256,8 @@ namespace quickbook
     struct in_list_impl {
         main_grammar_local& l;
 
-        in_list_impl(main_grammar_local& l) :
-            l(l) {}
+        explicit in_list_impl(main_grammar_local& l_) :
+            l(l_) {}
 
         bool operator()() const {
             return !l.list_stack.empty() &&
@@ -270,8 +270,8 @@ namespace quickbook
     {
         typedef M T::*member_ptr;
 
-        set_scoped_value_impl(T& l, member_ptr ptr)
-            : l(l), ptr(ptr), saved_value() {}
+        explicit set_scoped_value_impl(T& l_, member_ptr ptr_)
+            : l(l_), ptr(ptr_), saved_value() {}
 
         bool start(M const& value) {
             saved_value = l.*ptr;
@@ -325,6 +325,8 @@ namespace quickbook
 
         scoped_parser<to_value_scoped_action> to_value(state);
         scoped_parser<scoped_paragraph> scope_paragraph(state);
+
+        quickbook_strict strict_mode(state);
 
         // Local Actions
         scoped_parser<process_element_impl> process_element(local);
@@ -515,8 +517,7 @@ namespace quickbook
                 // Note that we don't do this for lists in 1.6, as it causes
                 // the list block to end. The support for nested syntactic
                 // blocks in 1.7 will fix that. Although it does mean the
-                // following line will need to be indented. TODO: Flag that
-                // the indentation check shouldn't be made?
+                // following line will need to be indented.
             >>  !(  cl::eps_p(in_list) >> qbk_ver(106u, 107u)
                 |   cl::eps_p
                     (
@@ -609,7 +610,15 @@ namespace quickbook
             |   local.simple_markup
             |   escape
             |   comment
-            |   qbk_ver(106u) >> local.square_brackets
+            |   strict_mode
+            >>  (   local.error_brackets    [error("Invalid template/tag (strict mode)")]
+                |   cl::eps_p('[')          [error("Mismatched open bracket (strict mode)")]
+                >>  cl::anychar_p
+                |   cl::eps_p(']')          [error("Mismatched close bracket (strict mode)")]
+                >>  cl::anychar_p
+                )
+            |   qbk_ver(106u)
+            >>  local.square_brackets
             |   cl::space_p                 [raw_char]
             |   cl::anychar_p               [plain_char]
             ;
@@ -636,6 +645,14 @@ namespace quickbook
             |   cl::ch_p(']')           [plain_char]
             >>  cl::eps_p               [error("Mismatched close bracket")]
             )
+            ;
+
+        local.error_brackets =
+                cl::ch_p('[')           [plain_char]
+            >>  (   local.error_brackets
+                |   (cl::anychar_p - ']')
+                )
+            >>  cl::ch_p(']')
             ;
 
         local.macro =
@@ -675,8 +692,11 @@ namespace quickbook
                     >>  state.templates.scope
                             [state.values.entry(ph::arg1, ph::arg2, template_tags::escape)]
                             [state.values.entry(ph::arg1, ph::arg2, template_tags::identifier)]
-                    >>  !qbk_ver(106u)
+                    >>  !(  qbk_ver(106u)
                             [error("Templates with punctuation names can't be escaped in quickbook 1.6+")]
+                        |   strict_mode
+                            [error("Templates with punctuation names can't be escaped (strict mode)")]
+                        )
                     |   cl::str_p('`')
                     >>  state.templates.scope
                             [state.values.entry(ph::arg1, ph::arg2, template_tags::escape)]
@@ -788,7 +808,7 @@ namespace quickbook
         local.skip_code_block =
                 "```"
             >>  ~cl::eps_p("`")
-            >>  (   !(  *(*cl::blank_p >> cl::eol_p)
+            >>  (   (!( *(*cl::blank_p >> cl::eol_p)
                     >>  (   *(  "````" >> *cl::ch_p('`')
                             |   (   cl::anychar_p
                                 -   (*cl::space_p >> "```" >> ~cl::eps_p("`"))
@@ -797,7 +817,7 @@ namespace quickbook
                             >>  !(*cl::blank_p >> cl::eol_p)
                         )
                     >>  (*cl::space_p >> "```")
-                    )
+                    ))
                 |   *cl::anychar_p
                 )
             |   "``"
@@ -970,7 +990,6 @@ namespace quickbook
         >>  space
             ;
 
-
         attribute_value_1_7 =
             state.values.save() [
                 +(  ~cl::eps_p(']' | cl::space_p | comment)
@@ -1100,10 +1119,6 @@ namespace quickbook
     {
         // If this nested block is part of a list, then tell the
         // output state.
-        //
-        // TODO: This is a bit dodgy, it would be better if this
-        // was handled when the output state is pushed (currently
-        // in to_value_scoped_action).
         state_.in_list = state_.explicit_list;
         state_.explicit_list = false;
 
@@ -1207,8 +1222,7 @@ namespace quickbook
             if (qbk_version_n == 106u &&
                     list_stack.top().type == list_stack_item::syntactic_list) {
                 detail::outerr(state_.current_file, first)
-                    << "Nested blocks in lists won't be supported in "
-                    << "quickbook 1.6"
+                    << "Paragraphs in lists aren't supported in quickbook 1.6."
                     << std::endl;
                 ++state_.error_count;
             }
@@ -1229,7 +1243,7 @@ namespace quickbook
     {
         unsigned int new_indent = indent_length(first, mark_pos);
         unsigned int new_indent2 = indent_length(first, last);
-        char mark = *mark_pos;
+        char list_mark = *mark_pos;
 
         if (list_stack.top().type == list_stack_item::top_level &&
                 new_indent > 0) {
@@ -1239,8 +1253,8 @@ namespace quickbook
 
         if (list_stack.top().type != list_stack_item::syntactic_list ||
                 new_indent > list_indent) {
-            list_stack.push(list_stack_item(mark, new_indent, new_indent2));
-            state_.start_list(mark);
+            list_stack.push(list_stack_item(list_mark, new_indent, new_indent2));
+            state_.start_list(list_mark);
         }
         else if (new_indent == list_indent) {
             state_.end_list_item();
@@ -1261,7 +1275,7 @@ namespace quickbook
 
         list_indent = new_indent;
 
-        if (mark != list_stack.top().mark)
+        if (list_mark != list_stack.top().mark)
         {
             detail::outerr(state_.current_file, first)
                 << "Illegal change of list style.\n";

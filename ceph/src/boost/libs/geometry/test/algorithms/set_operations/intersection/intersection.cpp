@@ -5,8 +5,8 @@
 // Copyright (c) 2008-2015 Bruno Lalande, Paris, France.
 // Copyright (c) 2009-2015 Mateusz Loskot, London, UK.
 
-// This file was modified by Oracle on 2015, 2016.
-// Modifications copyright (c) 2015-2016, Oracle and/or its affiliates.
+// This file was modified by Oracle on 2015, 2016, 2017.
+// Modifications copyright (c) 2015-2017, Oracle and/or its affiliates.
 // Contributed and/or modified by Menelaos Karavelas, on behalf of Oracle
 // Contributed and/or modified by Adam Wulkiewicz, on behalf of Oracle
 
@@ -42,6 +42,16 @@
 
 BOOST_GEOMETRY_REGISTER_LINESTRING_TEMPLATED(std::vector)
 
+#define TEST_INTERSECTION(caseid, clips, points, area) \
+    (test_one<Polygon, Polygon, Polygon>) \
+    ( #caseid, caseid[0], caseid[1], clips, points, area)
+
+#if ! defined(BOOST_GEOMETRY_INCLUDE_SELF_TURNS)
+    #define TEST_INTERSECTION_IGNORE(caseid, clips, points, area) \
+        { ut_settings ignore_validity; ignore_validity.test_validity = false; \
+        (test_one<Polygon, Polygon, Polygon>) \
+        ( #caseid, caseid[0], caseid[1], clips, points, area, ignore_validity); }
+#endif
 
 template <typename Polygon>
 void test_areal()
@@ -49,10 +59,6 @@ void test_areal()
     typedef typename bg::coordinate_type<Polygon>::type ct;
     bool const ccw = bg::point_order<Polygon>::value == bg::counterclockwise;
     bool const open = bg::closure<Polygon>::value == bg::open;
-
-    ut_settings ignore_validity;
-    ignore_validity.test_validity = false;
-
 
     test_one<Polygon, Polygon, Polygon>("simplex_with_empty_1",
         simplex_normal[0], polygon_empty,
@@ -167,19 +173,20 @@ void test_areal()
         pie_2_3_23_0[0], pie_2_3_23_0[1],
         1, 4, 163292.679042133, ut_settings(0.1));
 
+    {
+        ut_settings settings(if_typed_tt<ct>(0.01, 0.1));
+
 #if defined(BOOST_GEOMETRY_NO_ROBUSTNESS)
-    test_one<Polygon, Polygon, Polygon>("isovist",
-        isovist1[0], isovist1[1],
-        1, 19, 88.4178,
-        ignore_validity);
-#else
-    // SQL Server gives: 88.1920416352664
-    // PostGIS gives:    88.19203677911
-    test_one<Polygon, Polygon, Polygon>("isovist",
-        isovist1[0], isovist1[1],
-        1, 19, 88.19203,
-        ut_settings(if_typed_tt<ct>(0.01, 0.1)));
+        settings.test_validity = false;
 #endif
+
+        // SQL Server gives: 88.1920416352664
+        // PostGIS gives:    88.19203677911
+        test_one<Polygon, Polygon, Polygon>("isovist",
+            isovist1[0], isovist1[1],
+            1, 19, 88.192037,
+            settings);
+    }
 
     test_one<Polygon, Polygon, Polygon>("geos_1",
         geos_1[0], geos_1[1],
@@ -294,16 +301,16 @@ void test_areal()
 
     test_one<Polygon, Polygon, Polygon>("ticket_10747_a",
                 ticket_10747_a[0], ticket_10747_a[1],
-                1, 4, 70368744177664);
+                1, 4, 70368744177664.0);
     test_one<Polygon, Polygon, Polygon>("ticket_10747_b",
                 ticket_10747_b[0], ticket_10747_b[1],
-                1, 4, 7036874417766400);
+                1, 4, 7036874417766400.0);
     test_one<Polygon, Polygon, Polygon>("ticket_10747_c",
                 ticket_10747_c[0], ticket_10747_c[1],
-                1, 4, 17592186044416);
+                1, 4, 17592186044416.0);
     test_one<Polygon, Polygon, Polygon>("ticket_10747_d",
                 ticket_10747_d[0], ticket_10747_d[1],
-                1, 4, 703687777321);
+                1, 4, 703687777321.0);
     test_one<Polygon, Polygon, Polygon>("ticket_10747_e",
                 ticket_10747_e[0], ticket_10747_e[1],
                 1, 4, 7.0368748575710959e-15);
@@ -332,6 +339,31 @@ void test_areal()
         case_81[0], case_81[1],
         0, -1, 0.0);
 
+    test_one<Polygon, Polygon, Polygon>("case_101",
+        case_101[0], case_101[1],
+        0, -1, 6.25);
+    test_one<Polygon, Polygon, Polygon>("case_102",
+        case_102[0], case_102[1],
+        0, -1, 3.1875);
+
+    test_one<Polygon, Polygon, Polygon>("case_103",
+        case_103[0], case_103[1],
+        1, -1, 0.5);
+    test_one<Polygon, Polygon, Polygon>("case_104",
+        case_104[0], case_104[1],
+        0, -1, 0.0);
+
+    TEST_INTERSECTION(case_105, 1, 34, 76.0);
+
+#ifdef BOOST_GEOMETRY_INCLUDE_SELF_TURNS
+    TEST_INTERSECTION(case_106, 2, -1, 3.5);
+    TEST_INTERSECTION(case_107, 3, -1, 3.0);
+#else
+    TEST_INTERSECTION_IGNORE(case_106, 0, -1, 3.5);
+    TEST_INTERSECTION_IGNORE(case_107, 0, -1, 3.0);
+#endif
+
+
     test_one<Polygon, Polygon, Polygon>("mysql_21964049",
         mysql_21964049[0], mysql_21964049[1],
         0, -1, 0.0);
@@ -345,20 +377,20 @@ void test_areal()
         mysql_21965285_b_inv[1],
         2, -1, 183.71376870369406);
 
-    test_one<Polygon, Polygon, Polygon>("mysql_23023665_6",
-        mysql_23023665_6[0], mysql_23023665_6[1],
-        1, -1, 11.812440191387557,
-        ignore_validity);
+    // Needs self-intersections to solve validity
+#ifdef BOOST_GEOMETRY_INCLUDE_SELF_TURNS
+    TEST_INTERSECTION(mysql_23023665_6, 2, 0, 11.812440191387557);
+#else
+    TEST_INTERSECTION_IGNORE(mysql_23023665_6, 1, -1, 11.812440191387557);
+#endif
 
     test_one<Polygon, Polygon, Polygon>("mysql_23023665_10",
         mysql_23023665_10[0], mysql_23023665_10[1],
-        1, 0, -1, 54.701340543162523,
-        ignore_validity);
+        1, 0, -1, 54.701340543162523);
 
     test_one<Polygon, Polygon, Polygon>("mysql_23023665_11",
         mysql_23023665_11[0], mysql_23023665_11[1],
-        1, 0, -1, 35.933385462482065,
-        ignore_validity);
+        1, 0, -1, 35.933385462482065);
 
 //    test_one<Polygon, Polygon, Polygon>(
 //        "polygon_pseudo_line",
@@ -570,6 +602,27 @@ void test_areal_linear()
     typedef typename bg::point_type<Polygon>::type Point;
     test_one<LineString, bg::model::ring<Point>, LineString>("simplex", poly_simplex, "LINESTRING(0 2,4 2)", 1, 2, 2.0);
 
+    test_one_lp<LineString, Polygon, LineString>("case30",
+        "POLYGON((25 0,0 15,30 15,22 10,25 0))",
+        "LINESTRING(10 15,20 15)",
+        1, 2, 10.0);
+
+    test_one_lp<LineString, Polygon, LineString>("case31",
+        "POLYGON((25 0,0 15,30 15,22 10,25 0))",
+        "LINESTRING(0 15,20 15)",
+        1, 2, 20.0);
+
+    test_one_lp<LineString, Polygon, LineString>("case32",
+        "POLYGON((25 0,0 15,30 15,22 10,25 0))",
+        "LINESTRING(25 0, 0 15,20 15)",
+        1, 3, 49.15475947422650 /*sqrt(25^2+15^2)+20*/);
+
+    typedef typename bg::point_type<Polygon>::type P;
+
+    test_one_lp<P, Polygon, LineString>("case30p",
+        "POLYGON((25 0,0 15,30 15,22 10,25 0))",
+        "LINESTRING(10 15,20 15)",
+        2, 2, 0);
 }
 
 
@@ -822,7 +875,7 @@ void test_ticket_10868(std::string const& wkt_out)
 
     test_one<polygon_type, polygon_type, polygon_type>("ticket_10868",
         ticket_10868[0], ticket_10868[1],
-        1, 7, 20266195244586);
+        1, 7, 20266195244586.0);
 }
 
 int test_main(int, char* [])

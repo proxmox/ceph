@@ -1,4 +1,4 @@
-// Copyright Louis Dionne 2013-2016
+// Copyright Louis Dionne 2013-2017
 // Distributed under the Boost Software License, Version 1.0.
 // (See accompanying file LICENSE.md or copy at http://boost.org/LICENSE_1_0.txt)
 
@@ -60,7 +60,7 @@ namespace boost { namespace hana { namespace test {
         template <typename Foldables>
         TestFoldable(Foldables foldables) {
             hana::for_each(foldables, [](auto xs) {
-                static_assert(Foldable<decltype(xs)>::value, "");
+                static_assert(Foldable<decltype(xs)>{}, "");
 
                 _injection<0> f{};
                 ct_eq<999> s{};

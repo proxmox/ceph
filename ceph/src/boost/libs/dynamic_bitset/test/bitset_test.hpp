@@ -28,7 +28,6 @@
 #include "boost/dynamic_bitset/dynamic_bitset.hpp"
 #include "boost/test/minimal.hpp"
 
-
 template <typename Block>
 inline bool nth_bit(Block num, std::size_t n)
 {
@@ -958,23 +957,41 @@ struct bitset_test {
 
   static bool less_than(const Bitset& a, const Bitset& b)
   {
-    // Compare from most significant to least.
-    // Careful, don't send unsigned int into negative territory!
-    if (a.size() == 0)
-      return false;
-
-    std::size_t I;
-    for (I = a.size() - 1; I > 0; --I)
-      if (a[I] < b[I])
-        return true;
-      else if (a[I] > b[I])
+  
+    typedef BOOST_DEDUCED_TYPENAME Bitset::size_type size_type;
+    
+    size_type asize(a.size());
+    size_type bsize(b.size());
+    
+    if (!bsize)
+        {
         return false;
-      // if (a[I] = b[I]) skip to next
-
-    if (a[0] < b[0])
-      return true;
+        }
+    else if (!asize)
+        {
+        return true;
+        }
     else
-      return false;
+        {
+              
+        // Compare from most significant to least.
+    
+        size_type leqsize(std::min BOOST_PREVENT_MACRO_SUBSTITUTION(asize,bsize));
+        size_type I;
+        for (I = 0; I < leqsize; ++I,--asize,--bsize)
+          {
+          
+          size_type i = asize-1;
+          size_type j = bsize-1;
+            
+          if (a[i] < b[j])
+            return true;
+          else if (a[i] > b[j])
+            return false;
+          // if (a[i] = b[j]) skip to next
+          }
+          return (a.size() < b.size());
+        }
   }
 
   static typename Bitset::size_type next_bit_on(const Bitset& b, typename Bitset::size_type prev)

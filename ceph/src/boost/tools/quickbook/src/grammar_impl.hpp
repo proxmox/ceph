@@ -20,13 +20,8 @@ namespace quickbook
 {
     namespace cl = boost::spirit::classic;
 
-    // Information about a square bracket element (e.g. [* word]).
-    //
-    // TODO: The naming is a bit confused as element is also sometimes used for
-    // syntactic/implicit elements (such as lists and horizontal rules). Maybe
-    // should use entity as a more general name instead of element. Or it might
-    // be better to use 'tag' for square bracket elements, although that is
-    // currently used for the type of entities.
+    // Information about a square bracket element (e.g. [* word]), and
+    // some other syntactic elements (such as lists and horizontal rules)..
     struct element_info
     {
         // Types of elements.
@@ -45,7 +40,7 @@ namespace quickbook
             section_block = 1,
 
             // Block elements that can be used in conditional phrases and lists,
-            // but not nested. (TODO: not a good name).
+            // but not nested.
             conditional_or_block = 2,
 
             // Block elements that can be nested in other elements.            
@@ -94,7 +89,7 @@ namespace quickbook
                 conditional_or_block | section_block,
 
             // These are all block elements in all other contexts.
-            is_block = nested_block | conditional_or_block | section_block,
+            is_block = nested_block | conditional_or_block | section_block
         };
 
         element_info()
@@ -103,9 +98,9 @@ namespace quickbook
         element_info(
                 type_enum t,
                 cl::rule<scanner>* r,
-                value::tag_type tag = value::default_tag,
+                value::tag_type tag_ = value::default_tag,
                 unsigned int v = 0)
-            : type(t), rule(r), tag(tag), qbk_version(v) {}
+            : type(t), rule(r), tag(tag_), qbk_version(v) {}
 
         type_enum type;
         cl::rule<scanner>* rule;
@@ -136,11 +131,14 @@ namespace quickbook
         cl::rule<scanner> skip_entity;
 
         // Miscellaneous stuff
-        cl::rule<scanner> hard_space;
-        cl::rule<scanner> space;
-        cl::rule<scanner> blank;
-        cl::rule<scanner> eol;
-        cl::rule<scanner> phrase_end;
+        cl::rule<scanner> hard_space; // Either non-empty space, or
+                                      // empty and not followed by
+                                      // alphanumeric/_. Use to match the
+                                      // the end of an itendifier.
+        cl::rule<scanner> space; // Space/tab/newline/comment (possibly empty)
+        cl::rule<scanner> blank; // Space/tab/comment (possibly empty)
+        cl::rule<scanner> eol; // blank >> eol
+        cl::rule<scanner> phrase_end; // End of phrase text, context sensitive
         cl::rule<scanner> comment;
         cl::rule<scanner> line_comment;
         cl::rule<scanner> macro_identifier;

@@ -261,6 +261,18 @@ test_main(int /* argc */, char * /* argv */[]) {
         BOOST_TEST_EQ(utf8_len, res);
     }
 
+    // Test that length calculation detects character boundaries
+    {
+        std::codecvt<wchar_t, char, std::mbstate_t> const& fac = std::use_facet< std::codecvt<wchar_t, char, std::mbstate_t> >(utf8_locale);
+        std::mbstate_t mbs = std::mbstate_t();
+        // The first 5 bytes of utf8_encoding contain 3 complete UTF-8 characters (taking 4 bytes in total) and 1 byte of an incomplete character.
+        // This last byte should not be accounted by length().
+        const int input_len = 5;
+        const int utf8_len = 4;
+        int res = fac.length(mbs, reinterpret_cast< const char* >(td::utf8_encoding), reinterpret_cast< const char* >(td::utf8_encoding + input_len), ~static_cast< std::size_t >(0u));
+        BOOST_TEST_EQ(utf8_len, res);
+    }
+
     return EXIT_SUCCESS;
 }
 

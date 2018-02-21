@@ -42,7 +42,7 @@ def health_status_to_number(status):
     elif status == 'HEALTH_ERR':
         return 2
 
-PG_STATES = ['creating', 'active', 'clean', 'down', 'scrubbing', 'degraded',
+PG_STATES = ['creating', 'active', 'clean', 'down', 'scrubbing', 'deep', 'degraded',
         'inconsistent', 'peering', 'repair', 'recovering', 'forced-recovery',
         'backfill', 'forced-backfill', 'wait-backfill', 'backfill-toofull',
         'incomplete', 'stale', 'remapped', 'undersized', 'peered']
@@ -55,6 +55,8 @@ DF_POOL = ['max_avail', 'bytes_used', 'raw_bytes_used', 'objects', 'dirty',
 OSD_METADATA = ('cluster_addr', 'device_class', 'id', 'public_addr')
 
 OSD_STATUS = ['weight', 'up', 'in']
+
+OSD_STATS = ['apply_latency_ms', 'commit_latency_ms']
 
 POOL_METADATA = ('pool_id', 'name')
 
@@ -181,7 +183,7 @@ class Module(MgrModule):
         # so that we can stably use the same tag names that
         # the Prometheus node_exporter does
         metrics['disk_occupation'] = Metric(
-            'undef',
+            'untyped',
             'disk_occupation',
             'Associate Ceph daemon with disk used',
             DISK_OCCUPATION
@@ -200,6 +202,15 @@ class Module(MgrModule):
                 'untyped',
                 path,
                 'OSD status {}'.format(state),
+                ('ceph_daemon',)
+            )
+        for stat in OSD_STATS:
+            path = 'osd_{}'.format(stat)
+            self.log.debug("init: creating {}".format(path))
+            metrics[path] = Metric(
+                'gauge',
+                path,
+                'OSD stat {}'.format(stat),
                 ('ceph_daemon',)
             )
         for state in PG_STATES:
@@ -263,12 +274,28 @@ class Module(MgrModule):
                          key.split('+')]
         for state, value in reported_pg_s:
             path = 'pg_{}'.format(state)
-            self.metrics[path].set(value)
+            try:
+                self.metrics[path].set(value)
+            except KeyError:
+                self.log.warn("skipping pg in unknown state {}".format(state))
         reported_states = [s[0] for s in reported_pg_s]
         for state in PG_STATES:
             path = 'pg_{}'.format(state)
             if state not in reported_states:
-                self.metrics[path].set(0)
+                try:
+                    self.metrics[path].set(0)
+                except KeyError:
+                    self.log.warn("skipping pg in unknown state {}".format(state))
+
+    def get_osd_stats(self):
+        osd_stats = self.get('osd_stats')
+        for osd in osd_stats['osd_stats']:
+            id_ = osd['osd']
+            for stat in OSD_STATS:
+                status = osd['perf_stat'][stat]
+                self.metrics['osd_{}'.format(stat)].set(
+                    status,
+                    ('osd.{}'.format(id_),))
 
     def get_metadata_and_osd_status(self):
         osd_map = self.get('osd_map')
@@ -319,6 +346,7 @@ class Module(MgrModule):
     def collect(self):
         self.get_health()
         self.get_df()
+        self.get_osd_stats()
         self.get_quorum_status()
         self.get_metadata_and_osd_status()
         self.get_pg_status()

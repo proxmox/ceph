@@ -126,6 +126,8 @@ class OSDMapIncremental(ceph_module.BasePyOSDMapIncremental):
         return self._set_crush_compat_weight_set_weights(weightmap)
 
 class CRUSHMap(ceph_module.BasePyCRUSH):
+    ITEM_NONE = 0x7fffffff
+
     def dump(self):
         return self._dump()
 
@@ -148,7 +150,7 @@ class MgrStandbyModule(ceph_module.BaseMgrStandbyModule):
     are not permitted to implement commands and they do not receive
     any notifications.
 
-    They only have access to the mgrmap (for acecssing service URI info
+    They only have access to the mgrmap (for accessing service URI info
     from their active peer), and to configuration settings (read only).
     """
 
@@ -174,8 +176,20 @@ class MgrStandbyModule(ceph_module.BaseMgrStandbyModule):
     def get_mgr_id(self):
         return self._ceph_get_mgr_id()
 
-    def get_config(self, key):
-        return self._ceph_get_config(key)
+    def get_config(self, key, default=None):
+        """
+        Retrieve the value of a persistent configuration setting
+
+        :param str key:
+        :param default: the default value of the config if it is not found
+        :return: str
+        """
+        r = self._ceph_get_config(key)
+        if r is None:
+            return default
+        else:
+            return r
+
 
     def get_active_uri(self):
         return self._ceph_get_active_uri()

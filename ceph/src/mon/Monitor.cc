@@ -45,6 +45,7 @@
 #include "messages/MMonPaxos.h"
 #include "messages/MRoute.h"
 #include "messages/MForward.h"
+#include "messages/MStatfs.h"
 
 #include "messages/MMonSubscribe.h"
 #include "messages/MMonSubscribeAck.h"
@@ -1860,7 +1861,7 @@ void Monitor::start_election()
   logger->inc(l_mon_num_elections);
   logger->inc(l_mon_election_call);
 
-  clog->info() << "mon." << name << " calling new monitor election";
+  clog->info() << "mon." << name << " calling monitor election";
   elector.call_election();
 }
 
@@ -1928,8 +1929,8 @@ void Monitor::win_election(epoch_t epoch, set<int>& active, uint64_t features,
   pending_metadata = metadata;
   outside_quorum.clear();
 
-  clog->info() << "mon." << name << "@" << rank
-		<< " won leader election with quorum " << quorum;
+  clog->info() << "mon." << name << " is new leader, mons " << get_quorum_names()
+      << " in quorum (ranks " << quorum << ")";
 
   set_leader_commands(get_local_commands(mon_features));
 
@@ -1971,7 +1972,25 @@ void Monitor::win_election(epoch_t epoch, set<int>& active, uint64_t features,
       monmap->get_epoch() > 0) {
     timecheck_start();
     health_tick_start();
-    do_health_to_clog_interval();
+
+    // Freshen the health status before doing health_to_clog in case
+    // our just-completed election changed the health
+    healthmon()->wait_for_active_ctx(new FunctionContext([this](int r){
+      dout(20) << "healthmon now active" << dendl;
+      healthmon()->tick();
+      if (healthmon()->is_proposing()) {
+        dout(20) << __func__ << " healthmon proposing, waiting" << dendl;
+        healthmon()->wait_for_finished_proposal(nullptr, new C_MonContext(this,
+              [this](int r){
+                assert(lock.is_locked_by_me());
+                do_health_to_clog_interval();
+              }));
+
+      } else {
+        do_health_to_clog_interval();
+      }
+    }));
+
     scrub_event_start();
   }
 }
@@ -2309,7 +2328,6 @@ void Monitor::health_tick_start()
     new C_MonContext(this, [this](int r) {
 	if (r < 0)
 	  return;
-	do_health_to_clog();
 	health_tick_start();
       }));
 }
@@ -4274,8 +4292,16 @@ void Monitor::dispatch_op(MonOpRequestRef op)
       break;
 
     // MgrStat
-    case MSG_MON_MGR_REPORT:
     case CEPH_MSG_STATFS:
+      // this is an ugly hack, sorry!  force the version to 1 so that we do
+      // not run afoul of the is_readable() paxos check.  the client is going
+      // by the pgmonitor version and the MgrStatMonitor version will lag behind
+      // that until we complete the upgrade.  The paxos ordering crap really
+      // doesn't matter for statfs results, so just kludge around it here.
+      if (osdmon()->osdmap.require_osd_release < CEPH_RELEASE_LUMINOUS) {
+	((MStatfs*)op->get_req())->version = 1;
+      }
+    case MSG_MON_MGR_REPORT:
     case MSG_GETPOOLSTATS:
       paxos_service[PAXOS_MGRSTAT]->dispatch(op);
       break;
@@ -4833,7 +4859,9 @@ void Monitor::handle_timecheck_leader(MonOpRequestRef op)
 
   ostringstream ss;
   health_status_t status = timecheck_status(ss, skew_bound, latency);
-  clog->health(status) << other << " " << ss.str();
+  if (status != HEALTH_OK) {
+    clog->health(status) << other << " " << ss.str();
+  }
 
   dout(10) << __func__ << " from " << other << " ts " << m->timestamp
 	   << " delta " << delta << " skew_bound " << skew_bound

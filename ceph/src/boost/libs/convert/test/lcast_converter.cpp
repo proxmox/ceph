@@ -5,7 +5,7 @@
 
 #include "./test.hpp"
 
-#ifdef BOOST_CONVERT_INTEL_SFINAE_BROKEN
+#if defined(BOOST_CONVERT_IS_NOT_SUPPORTED)
 int main(int, char const* []) { return 0; }
 #else
 
@@ -16,7 +16,7 @@ int main(int, char const* []) { return 0; }
 using std::string;
 using boost::convert;
 
-struct boost::cnv::by_default : public boost::cnv::lexical_cast {};
+struct boost::cnv::by_default : boost::cnv::lexical_cast {};
 
 static
 void

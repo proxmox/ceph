@@ -7,14 +7,11 @@
 
 #include <boost/type_index/ctti_type_index.hpp>
 
-#include <boost/functional/hash.hpp>
 #include <boost/lexical_cast.hpp>
 #include <algorithm>
 #include <string>
 
 #include <boost/core/lightweight_test.hpp>
-#define BOOST_TEST_LE(x, y) BOOST_TEST(x <= y)
-#define BOOST_TEST_GE(x, y) BOOST_TEST(x >= y)
 
 const char* hello1 = "Hello word";
 const char* hello1_end = hello1 + sizeof("Hello word");

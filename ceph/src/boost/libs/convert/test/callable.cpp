@@ -5,7 +5,7 @@
 
 #include "./test.hpp"
 
-#if defined(BOOST_CONVERT_INTEL_SFINAE_BROKEN) && 1 < 0
+#if defined(BOOST_CONVERT_IS_NOT_SUPPORTED)
 int main(int, char const* []) { return 0; }
 #else
 

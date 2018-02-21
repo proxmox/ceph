@@ -5819,9 +5819,9 @@ int OSDMonitor::parse_erasure_code_profile(const vector<string> &erasure_code_pr
       string key = i->substr(0, equal);
       equal++;
       const string value = i->substr(equal);
-      if (key.find("ruleset-") == 0) {
-	if (osdmap.require_osd_release >= CEPH_RELEASE_LUMINOUS &&
-	    g_conf->get_val<bool>("mon_fixup_legacy_erasure_code_profiles")) {
+      if (osdmap.require_osd_release >= CEPH_RELEASE_LUMINOUS &&
+	  key.find("ruleset-") == 0) {
+	if (g_conf->get_val<bool>("mon_fixup_legacy_erasure_code_profiles")) {
 	  mon->clog->warn() << "erasure code profile property '" << key
 			    << "' is no longer supported; try "
 			    << "'crush-" << key.substr(8) << "' instead";
@@ -6321,7 +6321,7 @@ int OSDMonitor::prepare_command_pool_set(map<string,cmd_vartype> &cmdmap,
        if (err == 0) {
 	 k = erasure_code->get_data_chunk_count();
        } else {
-	 ss << __func__ << " get_erasure_code failed: " << tmp.rdbuf();
+	 ss << __func__ << " get_erasure_code failed: " << tmp.str();
 	 return err;
        }
 
@@ -7584,7 +7584,12 @@ bool OSDMonitor::prepare_command_impl(MonOpRequestRef op,
 
   int64_t osdid;
   string name;
-  bool osdid_present = cmd_getval(g_ceph_context, cmdmap, "id", osdid);
+  bool osdid_present = false;
+  if (prefix != "osd pg-temp" &&
+      prefix != "osd pg-upmap" &&
+      prefix != "osd pg-upmap-items") {  // avoid commands with non-int id arg
+    osdid_present = cmd_getval(g_ceph_context, cmdmap, "id", osdid);
+  }
   if (osdid_present) {
     ostringstream oss;
     oss << "osd." << osdid;

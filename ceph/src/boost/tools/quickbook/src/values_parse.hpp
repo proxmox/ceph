@@ -21,7 +21,7 @@ namespace quickbook {
 
     struct value_builder_save : scoped_action_base
     {
-        value_builder_save(value_builder& builder) : builder(builder) {}
+        explicit value_builder_save(value_builder& builder_) : builder(builder_) {}
 
         bool start()
         {
@@ -32,11 +32,14 @@ namespace quickbook {
         void cleanup() { builder.restore(); }
 
         value_builder& builder;
+
+    private:
+        value_builder_save& operator=(value_builder_save const&);
     };
 
     struct value_builder_list : scoped_action_base
     {
-        value_builder_list(value_builder& builder) : builder(builder) {}
+        explicit value_builder_list(value_builder& builder_) : builder(builder_) {}
 
         bool start(value::tag_type tag = value::default_tag)
         {
@@ -48,6 +51,9 @@ namespace quickbook {
         void failure() { builder.clear_list(); }
 
         value_builder& builder;
+
+    private:
+        value_builder_list& operator=(value_builder_list const&);
     };
 
     struct value_entry
@@ -57,47 +63,53 @@ namespace quickbook {
             typedef void type;
         };
 
-        value_entry(value_builder& b, file_ptr* current_file)
-            : b(b), current_file(current_file) {}
+        explicit value_entry(value_builder& builder_, file_ptr* current_file_)
+            : builder(builder_), current_file(current_file_) {}
 
         void operator()(parse_iterator begin, parse_iterator end,
                 value::tag_type tag = value::default_tag) const
         {
-            b.insert(qbk_value(*current_file, begin.base(), end.base(), tag));
+            builder.insert(qbk_value(*current_file, begin.base(), end.base(), tag));
         }
 
         void operator()(int v,
             value::tag_type tag = value::default_tag) const
         {
-            b.insert(int_value(v, tag));
+            builder.insert(int_value(v, tag));
         }
 
-        value_builder& b;
+        value_builder& builder;
         file_ptr* current_file;
+
+    private:
+        value_entry& operator=(value_entry const&);
     };
 
     struct value_sort
     {
         typedef void result_type;
     
-        value_sort(value_builder& b)
-            : b(b) {}
+        explicit value_sort(value_builder& builder_)
+            : builder(builder_) {}
 
         void operator()() const {
-            b.sort_list();
+            builder.sort_list();
         }
 
-        value_builder& b;
+        value_builder& builder;
+
+    private:
+        value_sort& operator=(value_sort const&);
     };
 
     struct value_parser
     {
-        value_parser(file_ptr* current_file)
+        explicit value_parser(file_ptr* current_file)
             : builder()
-            , save(builder)
-            , list(builder)
+            , save(value_builder_save(builder))
+            , list(value_builder_list(builder))
             , entry(value_entry(builder, current_file))
-            , sort(builder)
+            , sort(value_sort(builder))
             {}
     
         value release() { return builder.release(); }

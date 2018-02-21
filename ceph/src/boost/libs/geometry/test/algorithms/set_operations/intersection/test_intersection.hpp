@@ -3,8 +3,8 @@
 
 // Copyright (c) 2007-2015 Barend Gehrels, Amsterdam, the Netherlands.
 
-// This file was modified by Oracle on 2016.
-// Modifications copyright (c) 2016, Oracle and/or its affiliates.
+// This file was modified by Oracle on 2016, 2017.
+// Modifications copyright (c) 2016-2017, Oracle and/or its affiliates.
 // Contributed and/or modified by Adam Wulkiewicz, on behalf of Oracle
 
 // Use, modification and distribution is subject to the Boost Software License,
@@ -41,6 +41,7 @@
 
 #include <geometry_test_common.hpp>
 #include "../setop_output_type.hpp"
+#include "../check_validity.hpp"
 
 struct ut_settings
 {
@@ -56,7 +57,13 @@ struct ut_settings
 
 };
 
-template <typename G1, typename G2, typename IntersectionOutput>
+template
+<
+    typename G1,
+    typename G2,
+    typename ResultType,
+    typename IntersectionOutput
+>
 typename bg::default_area_result<G1>::type
 check_result(
     IntersectionOutput const& intersection_output,
@@ -96,14 +103,15 @@ check_result(
         {
             std::cout << std::setprecision(20) << bg::wkt(*it) << std::endl;
         }
+    }
 
-        if (settings.test_validity)
-        {
-            std::string message;
-            bool const valid = bg::is_valid(*it, message);
-            BOOST_CHECK_MESSAGE(valid,
-                "intersection: " << caseid << " not valid " << message);
-        }
+    if (settings.test_validity)
+    {
+        std::string message;
+        bool const valid = check_validity<ResultType>::apply(intersection_output, message);
+        BOOST_CHECK_MESSAGE(valid,
+            "intersection: " << caseid << " not valid: " << message
+            << " type: " << (type_for_assert_message<G1, G2>()));
     }
 
 #if ! defined(BOOST_GEOMETRY_NO_BOOST_TEST)
@@ -169,24 +177,23 @@ typename bg::default_area_result<G1>::type test_intersection(std::string const& 
         std::cout << std::endl << "case " << caseid << std::endl;
     }
 
-    typedef typename bg::point_type<G1>::type point_type;
     typedef typename setop_output_type<OutputType>::type result_type;
 
+    typedef typename bg::point_type<G1>::type point_type;
+    boost::ignore_unused<point_type>();
+
+#if ! defined(BOOST_GEOMETRY_TEST_ONLY_ONE_TYPE)
     if (! settings.debug)
     {
         // Check _inserter behaviour with stratey
-        typedef bg::intersection_strategies
+        typedef typename bg::strategy::intersection::services::default_strategy
             <
-                typename bg::cs_tag<point_type>::type,
-                G1,
-                G2,
-                point_type,
-                typename bg::rescale_policy_type<point_type>::type,
-                CalculationType
-            > strategy;
+                typename bg::cs_tag<point_type>::type
+            >::type strategy_type;
         result_type clip;
-        bg::detail::intersection::intersection_insert<OutputType>(g1, g2, std::back_inserter(clip), strategy());
+        bg::detail::intersection::intersection_insert<OutputType>(g1, g2, std::back_inserter(clip), strategy_type());
     }
+#endif
 
     typename bg::default_area_result<G1>::type length_or_area = 0;
 
@@ -194,31 +201,33 @@ typename bg::default_area_result<G1>::type test_intersection(std::string const& 
     result_type intersection_output;
     bg::intersection(g1, g2, intersection_output);
 
-    check_result<G1, G2>(intersection_output, caseid, expected_count,
+    check_result<G1, G2, result_type>(intersection_output, caseid, expected_count,
         expected_holes_count, expected_point_count, expected_length_or_area,
         settings);
 
+#if ! defined(BOOST_GEOMETRY_TEST_ONLY_ONE_TYPE)
     // Check variant behaviour
     intersection_output.clear();
     bg::intersection(boost::variant<G1>(g1), g2, intersection_output);
 
-    check_result<G1, G2>(intersection_output, caseid, expected_count,
+    check_result<G1, G2, result_type>(intersection_output, caseid, expected_count,
         expected_holes_count, expected_point_count, expected_length_or_area,
         settings);
 
     intersection_output.clear();
     bg::intersection(g1, boost::variant<G2>(g2), intersection_output);
 
-    check_result<G1, G2>(intersection_output, caseid, expected_count,
+    check_result<G1, G2, result_type>(intersection_output, caseid, expected_count,
         expected_holes_count, expected_point_count, expected_length_or_area,
         settings);
 
     intersection_output.clear();
     bg::intersection(boost::variant<G1>(g1), boost::variant<G2>(g2), intersection_output);
 
-    check_result<G1, G2>(intersection_output, caseid, expected_count,
+    check_result<G1, G2, result_type>(intersection_output, caseid, expected_count,
         expected_holes_count, expected_point_count, expected_length_or_area,
         settings);
+#endif
 
 #if defined(TEST_WITH_SVG)
     {
@@ -239,6 +248,9 @@ typename bg::default_area_result<G1>::type test_intersection(std::string const& 
             << string_from_type<CalculationType>::name()
             << (ccw ? "_ccw" : "")
             << (open ? "_open" : "")
+#if defined(BOOST_GEOMETRY_INCLUDE_SELF_TURNS)
+            << "_self"
+#endif
 #if defined(BOOST_GEOMETRY_NO_ROBUSTNESS)
             << "_no_rob"
 #endif

@@ -243,8 +243,8 @@ class CInode : public MDSCacheObject, public InodeStoreBase, public Counter<CIno
     utime_t last_scrub_stamp;
     scrub_stamp_info_t() : scrub_start_version(0), last_scrub_version(0) {}
     void reset() {
-      scrub_start_version = 0;
-      scrub_start_stamp = utime_t();
+      scrub_start_version = last_scrub_version = 0;
+      scrub_start_stamp = last_scrub_stamp = utime_t();
     }
   };
 
@@ -260,7 +260,7 @@ class CInode : public MDSCacheObject, public InodeStoreBase, public Counter<CIno
     /// my own (temporary) stamps and versions for each dirfrag we have
     std::map<frag_t, scrub_stamp_info_t> dirfrag_stamps;
 
-    ScrubHeaderRefConst header;
+    ScrubHeaderRef header;
 
     scrub_info_t() : scrub_stamp_info_t(),
 	scrub_parent(NULL), on_finish(NULL),
@@ -272,6 +272,14 @@ class CInode : public MDSCacheObject, public InodeStoreBase, public Counter<CIno
     if (!scrub_infop)
       scrub_info_create();
     return scrub_infop;
+  }
+
+  ScrubHeaderRef get_scrub_header() {
+    if (scrub_infop == nullptr) {
+      return nullptr;
+    } else {
+      return scrub_infop->header;
+    }
   }
 
   bool scrub_is_in_progress() const {
@@ -286,7 +294,7 @@ class CInode : public MDSCacheObject, public InodeStoreBase, public Counter<CIno
    * directory's get_projected_version())
    */
   void scrub_initialize(CDentry *scrub_parent,
-			const ScrubHeaderRefConst& header,
+			ScrubHeaderRef& header,
 			MDSInternalContextBase *f);
   /**
    * Get the next dirfrag to scrub. Gives you a frag_t in output param which
@@ -616,6 +624,10 @@ public:
   elist<CInode*>::item item_dirty_dirfrag_dirfragtree;
   elist<CInode*>::item item_scrub;
 
+  // also update RecoveryQueue::RecoveryQueue() if you change this
+  elist<CInode*>::item& item_recover_queue = item_dirty_dirfrag_dir;
+  elist<CInode*>::item& item_recover_queue_front = item_dirty_dirfrag_nest;
+
 public:
   int auth_pin_freeze_allowance;
 
@@ -772,7 +784,7 @@ public:
   void encode_store(bufferlist& bl, uint64_t features);
   void decode_store(bufferlist::iterator& bl);
 
-  void encode_replica(mds_rank_t rep, bufferlist& bl, uint64_t features) {
+  void encode_replica(mds_rank_t rep, bufferlist& bl, uint64_t features, bool need_recover) {
     assert(is_auth());
     
     // relax locks?
@@ -783,7 +795,7 @@ public:
     ::encode(nonce, bl);
     
     _encode_base(bl, features);
-    _encode_locks_state_for_replica(bl);
+    _encode_locks_state_for_replica(bl, need_recover);
   }
   void decode_replica(bufferlist::iterator& p, bool is_new) {
     __u32 nonce;
@@ -811,11 +823,11 @@ public:
   void _decode_base(bufferlist::iterator& p);
   void _encode_locks_full(bufferlist& bl);
   void _decode_locks_full(bufferlist::iterator& p);
-  void _encode_locks_state_for_replica(bufferlist& bl);
+  void _encode_locks_state_for_replica(bufferlist& bl, bool need_recover);
   void _encode_locks_state_for_rejoin(bufferlist& bl, int rep);
   void _decode_locks_state(bufferlist::iterator& p, bool is_new);
   void _decode_locks_rejoin(bufferlist::iterator& p, std::list<MDSInternalContextBase*>& waiters,
-			    std::list<SimpleLock*>& eval_locks);
+			    std::list<SimpleLock*>& eval_locks, bool survivor);
 
   // -- import/export --
   void encode_export(bufferlist& bl);
@@ -914,9 +926,9 @@ public:
   }
 
   client_t calc_ideal_loner();
-  client_t choose_ideal_loner();
-  bool try_set_loner();
   void set_loner_cap(client_t l);
+  bool choose_ideal_loner();
+  bool try_set_loner();
   bool try_drop_loner();
 
   // choose new lock state during recovery, based on issued caps
@@ -1095,14 +1107,13 @@ public:
    */
   struct validated_data {
     template<typename T>struct member_status {
-      bool checked;
-      bool passed;
-      int ondisk_read_retval;
+      bool checked = false;
+      bool passed = false;
+      bool repaired = false;
+      int ondisk_read_retval = 0;
       T ondisk_value;
       T memory_value;
       std::stringstream error_str;
-      member_status() : checked(false), passed(false),
-          ondisk_read_retval(0) {}
     };
 
     bool performed_validation;
@@ -1121,6 +1132,8 @@ public:
         passed_validation(false) {}
 
     void dump(Formatter *f) const;
+
+    bool all_damage_repaired() const;
   };
 
   /**

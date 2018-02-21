@@ -16,31 +16,19 @@ import toolset ;
 project boost/fiber/performance/thread
     : requirements
       <link>static
-      <optimization>speed
       <threading>multi
+      <optimization>speed
       <variant>release
     ;
 
-exe overhead_create
-   : overhead_create.cpp
+exe skynet_async
+   : skynet_async.cpp
    ;
 
-exe overhead_join
-   : overhead_join.cpp
+exe skynet_std
+   : skynet_std.cpp
    ;
 
-exe overhead_detach
-   : overhead_detach.cpp
+exe skynet_pthread
+   : skynet_pthread.cpp
    ;
-
-exe overhead_yield
-   : overhead_yield.cpp
-   ;
-
-exe overhead_future
-   : overhead_future.cpp
-   ;
-
-#exe scale_join
-#   : scale_join.cpp
-#   ;

@@ -79,18 +79,27 @@ function(do_build_boost version)
     message(STATUS "boost already in src")
     set(source_dir
       SOURCE_DIR "${PROJECT_SOURCE_DIR}/src/boost")
-  elseif(version VERSION_GREATER 1.63)
+  elseif(version VERSION_GREATER 1.66)
     message(FATAL_ERROR "Unknown BOOST_REQUESTED_VERSION: ${version}")
   else()
-    message(STATUS "boost will be downloaded from sf.net")
-    set(boost_version 1.63.0)
-    set(boost_md5 1c837ecd990bb022d07e7aab32b09847)
+    message(STATUS "boost will be downloaded...")
+    # NOTE: If you change this version number make sure the package is available
+    # at the three URLs below (may involve uploading to download.ceph.com)
+    set(boost_version 1.66.0)
+    set(boost_md5 b2dfbd6c717be4a7bb2d88018eaccf75)
     string(REPLACE "." "_" boost_version_underscore ${boost_version} )
-    set(boost_url http://downloads.sourceforge.net/project/boost/boost/${boost_version}/boost_${boost_version_underscore}.tar.bz2)
+    set(boost_url 
+      https://dl.bintray.com/boostorg/release/${boost_version}/source/boost_${boost_version_underscore}.tar.bz2)
+    if(CMAKE_VERSION VERSION_GREATER 3.7)
+      set(boost_url
+        "${boost_url} http://downloads.sourceforge.net/project/boost/boost/${boost_version}/boost_${boost_version_underscore}.tar.bz2")
+      set(boost_url
+        "${boost_url} https://download.ceph.com/qa/boost_${boost_version_underscore}.tar.bz2")
+    endif()
     set(source_dir
       URL ${boost_url}
       URL_MD5 ${boost_md5})
-    if(CMAKE_VERSION VERSION_GREATER 3.0)
+    if(CMAKE_VERSION VERSION_GREATER 3.1)
       list(APPEND source_dir DOWNLOAD_NO_PROGRESS 1)
     endif()
   endif()

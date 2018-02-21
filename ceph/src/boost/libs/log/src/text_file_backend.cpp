@@ -378,7 +378,7 @@ BOOST_LOG_ANONYMOUS_NAMESPACE {
     }
 
     //! The function matches the file name and the pattern
-    bool match_pattern(path_string_type const& file_name, path_string_type const& pattern, unsigned int& file_counter)
+    bool match_pattern(path_string_type const& file_name, path_string_type const& pattern, unsigned int& file_counter, bool& file_counter_parsed)
     {
         typedef qi::extract_uint< unsigned int, 10, 1, -1 > file_counter_extract;
         typedef file_char_traits< path_char_type > traits_t;
@@ -481,6 +481,7 @@ BOOST_LOG_ANONYMOUS_NAMESPACE {
                         if (!file_counter_extract::call(f_it, f, file_counter))
                             return false;
 
+                        file_counter_parsed = true;
                         p_it = p;
                     }
                     break;
@@ -809,8 +810,9 @@ BOOST_LOG_ANONYMOUS_NAMESPACE {
                         {
                             // Check that the file name matches the pattern
                             unsigned int file_number = 0;
+                            bool file_number_parsed = false;
                             if (method != file::scan_matching ||
-                                match_pattern(filename_string(info.m_Path), mask, file_number))
+                                match_pattern(filename_string(info.m_Path), mask, file_number, file_number_parsed))
                             {
                                 info.m_Size = filesystem::file_size(info.m_Path);
                                 total_size += info.m_Size;
@@ -818,8 +820,9 @@ BOOST_LOG_ANONYMOUS_NAMESPACE {
                                 files.push_back(info);
                                 ++file_count;
 
-                                if (counter && file_number >= *counter)
-                                    *counter = file_number + 1;
+                                // Test that the file_number >= *counter accounting for the integer overflow
+                                if (file_number_parsed && counter != NULL && (file_number - *counter) < ((~0u) ^ ((~0u) >> 1)))
+                                    *counter = file_number + 1u;
                             }
                         }
                     }
@@ -1106,13 +1109,16 @@ struct text_file_backend::implementation
     time_based_rotation_predicate m_TimeBasedRotation;
     //! The flag shows if every written record should be flushed
     bool m_AutoFlush;
+    //! The flag indicates whether the final rotation should be performed
+    bool m_FinalRotationEnabled;
 
-    implementation(uintmax_t rotation_size, bool auto_flush) :
+    implementation(uintmax_t rotation_size, bool auto_flush, bool enable_final_rotation) :
         m_FileOpenMode(std::ios_base::trunc | std::ios_base::out),
         m_FileCounter(0),
         m_CharactersWritten(0),
         m_FileRotationSize(rotation_size),
-        m_AutoFlush(auto_flush)
+        m_AutoFlush(auto_flush),
+        m_FinalRotationEnabled(enable_final_rotation)
     {
     }
 };
@@ -1129,7 +1135,7 @@ BOOST_LOG_API text_file_backend::~text_file_backend()
     try
     {
         // Attempt to put the temporary file into storage
-        if (m_pImpl->m_File.is_open() && m_pImpl->m_CharactersWritten > 0)
+        if (m_pImpl->m_FinalRotationEnabled && m_pImpl->m_File.is_open() && m_pImpl->m_CharactersWritten > 0)
             rotate_file();
     }
     catch (...)
@@ -1145,9 +1151,10 @@ BOOST_LOG_API void text_file_backend::construct(
     std::ios_base::openmode mode,
     uintmax_t rotation_size,
     time_based_rotation_predicate const& time_based_rotation,
-    bool auto_flush)
+    bool auto_flush,
+    bool enable_final_rotation)
 {
-    m_pImpl = new implementation(rotation_size, auto_flush);
+    m_pImpl = new implementation(rotation_size, auto_flush, enable_final_rotation);
     set_file_name_pattern_internal(pattern);
     set_time_based_rotation(time_based_rotation);
     set_open_mode(mode);
@@ -1165,10 +1172,16 @@ BOOST_LOG_API void text_file_backend::set_time_based_rotation(time_based_rotatio
     m_pImpl->m_TimeBasedRotation = predicate;
 }
 
-//! Sets the flag to automatically flush buffers of all attached streams after each log record
-BOOST_LOG_API void text_file_backend::auto_flush(bool f)
+//! The method allows to enable or disable log file rotation on sink destruction.
+BOOST_LOG_API void text_file_backend::enable_final_rotation(bool enable)
 {
-    m_pImpl->m_AutoFlush = f;
+    m_pImpl->m_FinalRotationEnabled = enable;
+}
+
+//! Sets the flag to automatically flush write buffers of the file being written after each log record.
+BOOST_LOG_API void text_file_backend::auto_flush(bool enable)
+{
+    m_pImpl->m_AutoFlush = enable;
 }
 
 //! The method writes the message to the sink

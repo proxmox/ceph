@@ -5,7 +5,7 @@
 
 #include "./test.hpp"
 
-#ifdef BOOST_CONVERT_INTEL_SFINAE_BROKEN
+#if defined(BOOST_CONVERT_IS_NOT_SUPPORTED)
 int main(int, char const* []) { return 0; }
 #else
 
@@ -61,10 +61,10 @@ test_algorithms()
     std::vector<std::string>            strs3;
     boost::cnv::cstream                   cnv;
 
-    std::transform(chgs1.begin(), chgs1.end(), std::back_inserter(strs1), 
+    std::transform(chgs1.begin(), chgs1.end(), std::back_inserter(strs1),
         boost::cnv::apply<string>(boost::cref(cnv))); // Deduced TypeIn is 'change'
 
-    std::transform(chgs2.begin(), chgs2.end(), std::back_inserter(strs2), 
+    std::transform(chgs2.begin(), chgs2.end(), std::back_inserter(strs2),
         boost::cnv::apply<string>(boost::cref(cnv))); // Deduced TypeIn is 'change::value_type'
 
     BOOST_TEST(strs1.size() == 3);
@@ -79,7 +79,7 @@ test_algorithms()
 //]
 //[algorithm_example7
 
-    std::transform(chgs2.begin(), chgs2.end(), std::back_inserter(strs3), 
+    std::transform(chgs2.begin(), chgs2.end(), std::back_inserter(strs3),
         boost::cnv::apply<string, change>(boost::cref(cnv)));
 
     BOOST_TEST(strs3.size() == 3);

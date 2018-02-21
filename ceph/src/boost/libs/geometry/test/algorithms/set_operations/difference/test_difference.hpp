@@ -3,8 +3,8 @@
 
 // Copyright (c) 2007-2015 Barend Gehrels, Amsterdam, the Netherlands.
 
-// This file was modified by Oracle on 2016.
-// Modifications copyright (c) 2016, Oracle and/or its affiliates.
+// This file was modified by Oracle on 2016, 2017.
+// Modifications copyright (c) 2016-2017, Oracle and/or its affiliates.
 // Contributed and/or modified by Adam Wulkiewicz, on behalf of Oracle
 
 // Use, modification and distribution is subject to the Boost Software License,
@@ -91,10 +91,22 @@ void difference_output(std::string const& caseid, G1 const& g1, G2 const& g2, Ou
         typedef typename bg::coordinate_type<G1>::type coordinate_type;
         typedef typename bg::point_type<G1>::type point_type;
 
+        bool const ccw =
+            bg::point_order<G1>::value == bg::counterclockwise
+            || bg::point_order<G2>::value == bg::counterclockwise;
+        bool const open =
+            bg::closure<G1>::value == bg::open
+            || bg::closure<G2>::value == bg::open;
+
         std::ostringstream filename;
         filename << "difference_"
             << caseid << "_"
             << string_from_type<coordinate_type>::name()
+            << (ccw ? "_ccw" : "")
+            << (open ? "_open" : "")
+#if defined(BOOST_GEOMETRY_INCLUDE_SELF_TURNS)
+           << "_self"
+#endif
 #if defined(BOOST_GEOMETRY_NO_ROBUSTNESS)
             << "_no_rob"
 #endif
@@ -133,6 +145,7 @@ std::string test_difference(std::string const& caseid, G1 const& g1, G2 const& g
 
     bg::model::multi_polygon<OutputType> result;
 
+
     if (sym)
     {
         bg::sym_difference(g1, g2, result);
@@ -146,6 +159,31 @@ std::string test_difference(std::string const& caseid, G1 const& g1, G2 const& g
     {
         bg::remove_spikes(result);
     }
+
+#if ! defined(BOOST_GEOMETRY_TEST_ONLY_ONE_TYPE)
+    {
+        bg::model::multi_polygon<OutputType> result_s;
+        typedef typename bg::strategy::relate::services::default_strategy
+            <
+                G1, G2
+            >::type strategy_type;
+        if (sym)
+        {
+            bg::sym_difference(g1, g2, result_s, strategy_type());
+        }
+        else
+        {
+            bg::difference(g1, g2, result_s, strategy_type());
+        }
+
+        if (settings.remove_spikes)
+        {
+            bg::remove_spikes(result_s);
+        }
+        BOOST_CHECK_EQUAL(bg::num_points(result), bg::num_points(result_s));
+    }
+#endif
+
 
     std::ostringstream return_string;
     return_string << bg::wkt(result);
@@ -161,13 +199,15 @@ std::string test_difference(std::string const& caseid, G1 const& g1, G2 const& g
         std::string message;
         bool const valid = bg::is_valid(result, message);
         BOOST_CHECK_MESSAGE(valid,
-            "difference: " << caseid << " not valid " << message);
+            "difference: " << caseid << " not valid " << message
+            << " type: " << (type_for_assert_message<G1, G2>()));
     }
 #endif
 
     difference_output(caseid, g1, g2, result);
 
-#ifndef BOOST_GEOMETRY_DEBUG_ASSEMBLE
+#if ! (defined(BOOST_GEOMETRY_TEST_ONLY_ONE_TYPE) \
+    || defined(BOOST_GEOMETRY_DEBUG_ASSEMBLE))
     {
         // Test inserter functionality
         // Test if inserter returns output-iterator (using Boost.Range copy)
@@ -386,6 +426,7 @@ void test_one_lp(std::string const& caseid,
     bg::read_wkt(wkt2, g2);
 
     bg::correct(g1);
+    bg::correct(g2);
 
     typedef typename setop_output_type<OutputType>::type result_type;
     result_type pieces;

@@ -12,12 +12,15 @@
  */
 
 #include "DaemonServer.h"
+#include "mgr/Mgr.h"
 
+#include "include/stringify.h"
 #include "include/str_list.h"
 #include "auth/RotatingKeyRing.h"
 #include "json_spirit/json_spirit_writer.h"
 
 #include "mgr/mgr_commands.h"
+#include "mgr/OSDHealthMetricCollector.h"
 #include "mon/MonCommand.h"
 
 #include "messages/MMgrOpen.h"
@@ -69,9 +72,13 @@ DaemonServer::DaemonServer(MonClient *monc_,
       py_modules(py_modules_),
       clog(clog_),
       audit_clog(audit_clog_),
-      auth_registry(g_ceph_context,
+      auth_cluster_registry(g_ceph_context,
                     g_conf->auth_supported.empty() ?
                       g_conf->auth_cluster_required :
+                      g_conf->auth_supported),
+      auth_service_registry(g_ceph_context,
+                   g_conf->auth_supported.empty() ?
+                      g_conf->auth_service_required :
                       g_conf->auth_supported),
       lock("DaemonServer"),
       pgmap_ready(false)
@@ -142,7 +149,15 @@ bool DaemonServer::ms_verify_authorizer(Connection *con,
     bool& is_valid,
     CryptoKey& session_key)
 {
-  auto handler = auth_registry.get_handler(protocol);
+  AuthAuthorizeHandler *handler = nullptr;
+  if (peer_type == CEPH_ENTITY_TYPE_OSD ||
+      peer_type == CEPH_ENTITY_TYPE_MON ||
+      peer_type == CEPH_ENTITY_TYPE_MDS ||
+      peer_type == CEPH_ENTITY_TYPE_MGR) {
+    handler = auth_cluster_registry.get_handler(protocol);
+  } else {
+    handler = auth_service_registry.get_handler(protocol);
+  }
   if (!handler) {
     dout(0) << "No AuthAuthorizeHandler found for protocol " << protocol << dendl;
     is_valid = false;
@@ -406,6 +421,7 @@ bool DaemonServer::handle_report(MMgrReport *m)
     // themselves to be a daemon for some service.
     dout(4) << "rejecting report from non-daemon client " << m->daemon_name
 	    << dendl;
+    m->get_connection()->mark_down();
     m->put();
     return true;
   }
@@ -416,14 +432,56 @@ bool DaemonServer::handle_report(MMgrReport *m)
     dout(20) << "updating existing DaemonState for " << key << dendl;
     daemon = daemon_state.get(key);
   } else {
-    dout(4) << "constructing new DaemonState for " << key << dendl;
-    daemon = std::make_shared<DaemonState>(daemon_state.types);
-    // FIXME: crap, we don't know the hostname at this stage.
-    daemon->key = key;
-    daemon_state.insert(daemon);
-    // FIXME: we should avoid this case by rejecting MMgrReport from
-    // daemons without sessions, and ensuring that session open
-    // always contains metadata.
+    // we don't know the hostname at this stage, reject MMgrReport here.
+    dout(5) << "rejecting report from " << key << ", since we do not have its metadata now."
+	    << dendl;
+
+    // issue metadata request in background
+    if (!daemon_state.is_updating(key) && 
+	(key.first == "osd" || key.first == "mds")) {
+
+      std::ostringstream oss;
+      auto c = new MetadataUpdate(daemon_state, key);
+      if (key.first == "osd") {
+        oss << "{\"prefix\": \"osd metadata\", \"id\": "
+            << key.second<< "}";
+
+      } else if (key.first == "mds") {
+        c->set_default("addr", stringify(m->get_source_addr()));
+        oss << "{\"prefix\": \"mds metadata\", \"who\": \""
+            << key.second << "\"}";
+ 
+      } else {
+	ceph_abort();
+      }
+
+      monc->start_mon_command({oss.str()}, {}, &c->outbl, &c->outs, c);
+    }
+    
+    {
+      Mutex::Locker l(lock);
+      // kill session
+      MgrSessionRef session(static_cast<MgrSession*>(m->get_connection()->get_priv()));
+      if (!session) {
+	return false;
+      }
+      m->get_connection()->mark_down();
+      session->put();
+
+      dout(10) << "unregistering osd." << session->osd_id
+	       << "  session " << session << " con " << m->get_connection() << dendl;
+      
+      if (osd_cons.find(session->osd_id) != osd_cons.end()) {
+	   osd_cons[session->osd_id].erase(m->get_connection());
+      } 
+
+      auto iter = daemon_connections.find(m->get_connection());
+      if (iter != daemon_connections.end()) {
+	daemon_connections.erase(iter);
+      }
+    }
+
+    return false;
   }
 
   // Update the DaemonState
@@ -442,6 +500,10 @@ bool DaemonServer::handle_report(MMgrReport *m)
       daemon->last_service_beacon = now;
     } else if (m->daemon_status) {
       derr << "got status from non-daemon " << key << dendl;
+    }
+    if (m->get_connection()->peer_is_osd()) {
+      // only OSD sends health_checks to me now
+      daemon->osd_health_metrics = std::move(m->osd_health_metrics);
     }
   }
 
@@ -1171,7 +1233,7 @@ bool DaemonServer::handle_command(MCommand *m)
 	  } else {
 	    auto workit = pg_map.pg_stat.find(parsed_pg);
 	    if (workit == pg_map.pg_stat.end()) {
-	      ss << "pg " << pstr << " not exists; ";
+	      ss << "pg " << pstr << " does not exist; ";
 	      r = -ENOENT;
 	    } else {
 	      pg_stat_t workpg = workit->second;
@@ -1404,6 +1466,30 @@ void DaemonServer::send_report()
 	  *_dout << dendl;
 	});
     });
+
+  auto osds = daemon_state.get_by_service("osd");
+  map<osd_metric, unique_ptr<OSDHealthMetricCollector>> accumulated;
+  for (const auto& osd : osds) {
+    Mutex::Locker l(osd.second->lock);
+    for (const auto& metric : osd.second->osd_health_metrics) {
+      auto acc = accumulated.find(metric.get_type());
+      if (acc == accumulated.end()) {
+	auto collector = OSDHealthMetricCollector::create(metric.get_type());
+	if (!collector) {
+	  derr << __func__ << " " << osd.first << "." << osd.second
+	       << " sent me an unknown health metric: "
+	       << static_cast<uint8_t>(metric.get_type()) << dendl;
+	  continue;
+	}
+	tie(acc, std::ignore) = accumulated.emplace(metric.get_type(),
+						    std::move(collector));
+      }
+      acc->second->update(osd.first, metric);
+    }
+  }
+  for (const auto& acc : accumulated) {
+    acc.second->summarize(m->health_checks);
+  }
   // TODO? We currently do not notify the PyModules
   // TODO: respect needs_send, so we send the report only if we are asked to do
   //       so, or the state is updated.

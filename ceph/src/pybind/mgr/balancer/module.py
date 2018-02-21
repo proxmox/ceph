@@ -11,6 +11,7 @@ import random
 import time
 from mgr_module import MgrModule, CommandResult
 from threading import Event
+from mgr_module import CRUSHMap
 
 # available modes: 'none', 'crush', 'crush-compat', 'upmap', 'osd_weight'
 default_mode = 'none'
@@ -18,7 +19,6 @@ default_sleep_interval = 60   # seconds
 default_max_misplaced = .05    # max ratio of pgs replaced at a time
 
 TIME_FORMAT = '%Y-%m-%d_%H:%M:%S'
-
 
 class MappingState:
     def __init__(self, osdmap, pg_dump, desc=''):
@@ -303,7 +303,7 @@ class Module(MgrModule):
             self.optimize(plan)
             return (0, '', '')
         elif command['prefix'] == 'balancer rm':
-            self.plan_rm(command['name'])
+            self.plan_rm(command['plan'])
             return (0, '', '')
         elif command['prefix'] == 'balancer reset':
             self.plans = {}
@@ -451,6 +451,8 @@ class Module(MgrModule):
                     bytes_by_osd[osd] = 0
             for pgid, up in pm.iteritems():
                 for osd in [int(osd) for osd in up]:
+                    if osd == CRUSHMap.ITEM_NONE:
+                        continue
                     pgs_by_osd[osd] += 1
                     objects_by_osd[osd] += ms.pg_stat[pgid]['num_objects']
                     bytes_by_osd[osd] += ms.pg_stat[pgid]['num_bytes']
@@ -604,8 +606,8 @@ class Module(MgrModule):
 
     def do_upmap(self, plan):
         self.log.info('do_upmap')
-        max_iterations = self.get_config('upmap_max_iterations', 10)
-        max_deviation = self.get_config('upmap_max_deviation', .01)
+        max_iterations = int(self.get_config('upmap_max_iterations', 10))
+        max_deviation = float(self.get_config('upmap_max_deviation', .01))
 
         ms = plan.initial
         pools = [str(i['pool_name']) for i in ms.osdmap_dump.get('pools',[])]
@@ -630,10 +632,10 @@ class Module(MgrModule):
 
     def do_crush_compat(self, plan):
         self.log.info('do_crush_compat')
-        max_iterations = self.get_config('crush_compat_max_iterations', 25)
+        max_iterations = int(self.get_config('crush_compat_max_iterations', 25))
         if max_iterations < 1:
             return False
-        step = self.get_config('crush_compat_step', .5)
+        step = float(self.get_config('crush_compat_step', .5))
         if step <= 0 or step >= 1.0:
             return False
         max_misplaced = float(self.get_config('max_misplaced',
@@ -656,6 +658,8 @@ class Module(MgrModule):
 
         # get current compat weight-set weights
         orig_ws = self.get_compat_weight_set_weights()
+        if orig_ws is None:
+            return False
         orig_ws = { a: b for a, b in orig_ws.iteritems() if a >= 0 }
 
         # Make sure roots don't overlap their devices.  If so, we
@@ -671,7 +675,7 @@ class Module(MgrModule):
                     overlap[osd] = 1
                 visited[osd] = 1
         if len(overlap) > 0:
-            self.log.err('error: some osds belong to multiple subtrees: %s' %
+            self.log.error('error: some osds belong to multiple subtrees: %s' %
                          overlap)
             return False
 
@@ -873,13 +877,13 @@ class Module(MgrModule):
         for osd, weight in plan.compat_ws.iteritems():
             self.log.info('ceph osd crush weight-set reweight-compat osd.%d %f',
                           osd, weight)
-            result = CommandResult('foo')
+            result = CommandResult('')
             self.send_command(result, 'mon', '', json.dumps({
                 'prefix': 'osd crush weight-set reweight-compat',
                 'format': 'json',
                 'item': 'osd.%d' % osd,
                 'weight': [weight],
-            }), 'foo')
+            }), '')
             commands.append(result)
 
         # new_weight
@@ -888,12 +892,12 @@ class Module(MgrModule):
             reweightn[str(osd)] = str(int(weight * float(0x10000)))
         if len(reweightn):
             self.log.info('ceph osd reweightn %s', reweightn)
-            result = CommandResult('foo')
+            result = CommandResult('')
             self.send_command(result, 'mon', '', json.dumps({
                 'prefix': 'osd reweightn',
                 'format': 'json',
                 'weights': json.dumps(reweightn),
-            }), 'foo')
+            }), '')
             commands.append(result)
 
         # upmap

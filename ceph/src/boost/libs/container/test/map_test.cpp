@@ -42,13 +42,6 @@ template class map
    < test::movable_and_copyable_int
    , test::movable_and_copyable_int
    , std::less<test::movable_and_copyable_int>
-   , std::allocator< pair_t >
-   >;
-
-template class map
-   < test::movable_and_copyable_int
-   , test::movable_and_copyable_int
-   , std::less<test::movable_and_copyable_int>
    , adaptive_pool< pair_t >
    >;
 
@@ -58,36 +51,6 @@ template class multimap
    , std::less<test::movable_and_copyable_int>
    , std::allocator< pair_t >
    >;
-
-namespace container_detail {
-
-//Instantiate base class as previous instantiations don't instantiate inherited members
-template class tree
-   < pair_t
-   , select1st<test::movable_and_copyable_int>
-   , std::less<test::movable_and_copyable_int>
-   , test::simple_allocator<pair_t>
-   , tree_assoc_defaults
-   >;
-
-template class tree
-   < pair_t
-   , select1st<test::movable_and_copyable_int>
-   , std::less<test::movable_and_copyable_int>
-   , std::allocator<pair_t>
-   , tree_assoc_defaults
-   >;
-
-template class tree
-   < pair_t
-   , select1st<test::movable_and_copyable_int>
-   , std::less<test::movable_and_copyable_int>
-   , adaptive_pool<pair_t>
-   , tree_assoc_defaults
-   >;
-
-}  //container_detail {
-
 }} //boost::container
 
 class recursive_map
@@ -282,12 +245,10 @@ int test_map_variants()
 {
    typedef typename GetAllocatorMap<VoidAllocator, tree_type_value>::template apply<int>::map_type MyMap;
    typedef typename GetAllocatorMap<VoidAllocator, tree_type_value>::template apply<test::movable_int>::map_type MyMoveMap;
-   typedef typename GetAllocatorMap<VoidAllocator, tree_type_value>::template apply<test::movable_and_copyable_int>::map_type MyCopyMoveMap;
    typedef typename GetAllocatorMap<VoidAllocator, tree_type_value>::template apply<test::copyable_int>::map_type MyCopyMap;
 
    typedef typename GetAllocatorMap<VoidAllocator, tree_type_value>::template apply<int>::multimap_type MyMultiMap;
    typedef typename GetAllocatorMap<VoidAllocator, tree_type_value>::template apply<test::movable_int>::multimap_type MyMoveMultiMap;
-   typedef typename GetAllocatorMap<VoidAllocator, tree_type_value>::template apply<test::movable_and_copyable_int>::multimap_type MyCopyMoveMultiMap;
    typedef typename GetAllocatorMap<VoidAllocator, tree_type_value>::template apply<test::copyable_int>::multimap_type MyCopyMultiMap;
 
    typedef std::map<int, int>                                     MyStdMap;
@@ -306,15 +267,6 @@ int test_map_variants()
                   MyMoveMap
                   ,MyStdMap
                   ,MyMoveMultiMap
-                  ,MyStdMultiMap>()){
-      std::cout << "Error in map_test<MyBoostMap>" << std::endl;
-      return 1;
-   }
-
-   if (0 != test::map_test<
-                  MyCopyMoveMap
-                  ,MyStdMap
-                  ,MyCopyMoveMultiMap
                   ,MyStdMultiMap>()){
       std::cout << "Error in map_test<MyBoostMap>" << std::endl;
       return 1;
@@ -391,10 +343,10 @@ int main ()
    //Test std::pair value type as tree has workarounds to make old std::pair
    //implementations movable that can break things
    {
-	   boost::container::map<pair_t, pair_t> s;
-	   std::pair<const pair_t,pair_t> p;
-	   s.insert(p);
-	   s.emplace(p);
+      boost::container::map<pair_t, pair_t> s;
+      std::pair<const pair_t,pair_t> p;
+      s.insert(p);
+      s.emplace(p);
    }
 
    ////////////////////////////////////
@@ -480,6 +432,9 @@ int main ()
    if(!node_type_test())
       return 1;
 
+   if (!boost::container::test::instantiate_constructors<map<int, int>, multimap<int, int> >())
+      return 1;
+
    test::test_merge_from_different_comparison();
 
    ////////////////////////////////////
@@ -488,31 +443,21 @@ int main ()
    //
    // map
    //
-   typedef map< int*, int*, std::less<int*>, std::allocator< std::pair<int const*, int*> >
+   typedef map< int*, int*, std::less<int*>, std::allocator< std::pair<int *const, int*> >
               , tree_assoc_options< optimize_size<false>, tree_type<red_black_tree> >::type > rbmap_size_optimized_no;
-   typedef map< int*, int*, std::less<int*>, std::allocator< std::pair<int const*, int*> >
-              , tree_assoc_options< optimize_size<true>, tree_type<red_black_tree>  >::type > rbmap_size_optimized_yes;
-   BOOST_STATIC_ASSERT(sizeof(rbmap_size_optimized_yes) < sizeof(rbmap_size_optimized_no));
 
-   typedef map< int*, int*, std::less<int*>, std::allocator< std::pair<int const*, int*> >
-              , tree_assoc_options< optimize_size<false>, tree_type<avl_tree> >::type > avlmap_size_optimized_no;
-   typedef map< int*, int*, std::less<int*>, std::allocator< std::pair<int const*, int*> >
+   typedef map< int*, int*, std::less<int*>, std::allocator< std::pair<int *const, int*> >
               , tree_assoc_options< optimize_size<true>, tree_type<avl_tree>  >::type > avlmap_size_optimized_yes;
-   BOOST_STATIC_ASSERT(sizeof(avlmap_size_optimized_yes) < sizeof(avlmap_size_optimized_no));
    //
    // multimap
    //
-   typedef multimap< int*, int*, std::less<int*>, std::allocator< std::pair<int const*, int*> >
-                   , tree_assoc_options< optimize_size<false>, tree_type<red_black_tree> >::type > rbmmap_size_optimized_no;
-   typedef multimap< int*, int*, std::less<int*>, std::allocator< std::pair<int const*, int*> >
+   typedef multimap< int*, int*, std::less<int*>, std::allocator< std::pair<int *const, int*> >
                    , tree_assoc_options< optimize_size<true>, tree_type<red_black_tree>  >::type > rbmmap_size_optimized_yes;
-   BOOST_STATIC_ASSERT(sizeof(rbmmap_size_optimized_yes) < sizeof(rbmmap_size_optimized_no));
-
-   typedef multimap< int*, int*, std::less<int*>, std::allocator< std::pair<int const*, int*> >
+   typedef multimap< int*, int*, std::less<int*>, std::allocator< std::pair<int *const, int*> >
                    , tree_assoc_options< optimize_size<false>, tree_type<avl_tree> >::type > avlmmap_size_optimized_no;
-   typedef multimap< int*, int*, std::less<int*>, std::allocator< std::pair<int const*, int*> >
-                   , tree_assoc_options< optimize_size<true>, tree_type<avl_tree>  >::type > avlmmap_size_optimized_yes;
-   BOOST_STATIC_ASSERT(sizeof(avlmmap_size_optimized_yes) < sizeof(avlmmap_size_optimized_no));
+
+   BOOST_STATIC_ASSERT(sizeof(rbmmap_size_optimized_yes) < sizeof(rbmap_size_optimized_no));
+   BOOST_STATIC_ASSERT(sizeof(avlmap_size_optimized_yes) < sizeof(avlmmap_size_optimized_no));
 
    return 0;
 }

@@ -3171,7 +3171,11 @@ MOSDOp *Objecter::_prepare_osd_op(Op *op)
   }
 
   logger->inc(l_osdc_op_send);
-  logger->inc(l_osdc_op_send_bytes, m->get_data().length());
+  ssize_t sum = 0;
+  for (unsigned i = 0; i < m->ops.size(); i++) {
+    sum += m->ops[i].indata.length();
+  }
+  logger->inc(l_osdc_op_send_bytes, sum);
 
   return m;
 }
@@ -3182,9 +3186,9 @@ void Objecter::_send_op(Op *op, MOSDOp *m)
   // op->session->lock is locked
 
   // backoff?
-  hobject_t hoid = op->target.get_hobj();
   auto p = op->session->backoffs.find(op->target.actual_pgid);
   if (p != op->session->backoffs.end()) {
+    hobject_t hoid = op->target.get_hobj();
     auto q = p->second.lower_bound(hoid);
     if (q != p->second.begin()) {
       --q;

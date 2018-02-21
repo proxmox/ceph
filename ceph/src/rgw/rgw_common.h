@@ -407,7 +407,7 @@ public:
 
   void init(CephContext *cct);
   void init(CephContext *cct, char **envp);
-  void set(const boost::string_ref& name, const boost::string_ref& val);
+  void set(std::string name, std::string val);
   const char *get(const char *name, const char *def_val = nullptr) const;
   int get_int(const char *name, int def_val = 0) const;
   bool get_bool(const char *name, bool def_val = 0);
@@ -1717,6 +1717,7 @@ struct rgw_obj_key {
     DECODE_FINISH(bl);
   }
   void dump(Formatter *f) const;
+  void decode_json(JSONObj *obj);
 };
 WRITE_CLASS_ENCODER(rgw_obj_key)
 
@@ -2249,6 +2250,8 @@ bool verify_bucket_permission_no_policy(
   const int perm);
 bool verify_bucket_permission_no_policy(struct req_state * const s,
 					const int perm);
+int verify_bucket_owner_or_policy(struct req_state* const s,
+				  const uint64_t op);
 extern bool verify_object_permission(
   struct req_state * const s,
   const rgw_obj& obj,

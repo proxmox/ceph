@@ -184,7 +184,7 @@ toolset borland bcc32 : -e -n : /D
     : $(--python-lib[1]) ;
 ## Generic Unix cc
 if ! $(CC) { CC = cc ; }
-toolset cc $(CC) : "-o " : -D
+toolset cc "$(CC)" : "-o " : -D
     : $(CFLAGS)
     [ opt --release : -s -O ]
     [ opt --debug : -g ]
@@ -343,21 +343,21 @@ toolset vacpp xlc : "-o " : -D
     [ opt --debug : -g -qNOOPTimize -qnoinline -pg ]
     -I$(--python-include) -I$(--extra-include)
     : -L$(--python-lib[1]) -l$(--python-lib[2]) [ if-os AIX : -bmaxdata:0x40000000 ] ;
-    
+
 ## IBM XL C/C++ for Linux (little endian)
 toolset xlcpp xlC :  "-o " : -D
     : -Wno-unused -Wno-format
     [ opt --release : -s  ]
     [ opt --debug : -g -qNOOPTimize -qnoinline -pg ]
     -I$(--python-include) -I$(--extra-include)
-    : -L$(--python-lib[1]) -l$(--python-lib[2]) ;    
-    
+    : -L$(--python-lib[1]) -l$(--python-lib[2]) ;
+
 ## Microsoft Visual C++ .NET 7.x
 toolset vc7 cl : /Fe /Fe /Fd /Fo : -D
     : /nologo
     [ opt --release : /ML /O2 /Ob2 /Gy /GF /GA /GB ]
     [ opt --debug : /MLd /DEBUG /Z7 /Od /Ob0 ]
-    -I$(--python-include) -I$(--extra-include)
+    -I$(--python-include) -I$(--extra-include) -D_WIN32_WINNT=0x0501
     : kernel32.lib advapi32.lib user32.lib $(--python-lib[1]) ;
 ## Microsoft Visual C++ 2005
 toolset vc8 cl : /Fe /Fe /Fd /Fo : -D
@@ -401,7 +401,8 @@ toolset vc14 cl : /Fe /Fe /Fd /Fo : -D
     [ opt --debug : /MTd /DEBUG /Z7 /Od /Ob0 /wd4996 ]
     -I$(--python-include) -I$(--extra-include)
     : kernel32.lib advapi32.lib user32.lib $(--python-lib[1]) ;
-toolset vc15 cl : /Fe /Fe /Fd /Fo : -D
+## Microsoft Visual C++ 2017
+toolset vc141 cl : /Fe /Fe /Fd /Fo : -D
     : /nologo
     [ opt --release : /GL /MT /O2 /Ob2 /Gy /GF /GA /wd4996 ]
     [ opt --debug : /MTd /DEBUG /Z7 /Od /Ob0 /wd4996 ]
@@ -517,7 +518,7 @@ if --show-locate-target in $(ARGV)
 
 # We have some different files for UNIX, VMS, and NT.
 jam.source =
-    command.c compile.c constants.c debug.c execcmd.c frames.c function.c glob.c
+    command.c compile.c constants.c debug.c debugger.c execcmd.c frames.c function.c glob.c
     hash.c hcache.c headers.c hdrmacro.c jam.c jambase.c jamgram.c lists.c
     make.c make1.c mem.c object.c option.c output.c parse.c pathsys.c regexp.c
     rules.c scan.c search.c subst.c w32_getreg.c timestamp.c variable.c
@@ -550,6 +551,7 @@ if ! $(debug) || --noassert in $(ARGV)
 --defs += OPT_SEMAPHORE ;
 --defs += OPT_AT_FILES ;
 --defs += OPT_DEBUG_PROFILE ;
+--defs += JAM_DEBUGGER ;
 
 # Bug fixes
 --defs += OPT_FIX_TARGET_VARIABLES_EXT ;

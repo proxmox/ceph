@@ -568,12 +568,17 @@ int validate_pool(IoCtx &io_ctx, CephContext *cct) {
     CephContext *cct = ictx->cct;
     ldout(cct, 20) << "children flatten " << ictx->name << dendl;
 
+    int r = ictx->state->refresh_if_required();
+    if (r < 0) {
+      return r;
+    }
+
     RWLock::RLocker l(ictx->snap_lock);
     snap_t snap_id = ictx->get_snap_id(cls::rbd::UserSnapshotNamespace(), snap_name);
     ParentSpec parent_spec(ictx->md_ctx.get_id(), ictx->id, snap_id);
     map< pair<int64_t, string>, set<string> > image_info;
 
-    int r = api::Image<>::list_children(ictx, parent_spec, &image_info);
+    r = api::Image<>::list_children(ictx, parent_spec, &image_info);
     if (r < 0) {
       return r;
     }
@@ -603,6 +608,14 @@ int validate_pool(IoCtx &io_ctx, CephContext *cct) {
 	  return r;
 	}
 
+        if ((imctx->features & RBD_FEATURE_DEEP_FLATTEN) == 0 &&
+            !imctx->snaps.empty()) {
+          lderr(cct) << "snapshot in-use by " << pool << "/" << imctx->name
+                     << dendl;
+          imctx->state->close();
+          return -EBUSY;
+        }
+
 	librbd::NoOpProgressContext prog_ctx;
 	r = imctx->operations->flatten(prog_ctx);
 	if (r < 0) {
@@ -610,21 +623,6 @@ int validate_pool(IoCtx &io_ctx, CephContext *cct) {
 		     << cpp_strerror(r) << dendl;
           imctx->state->close();
 	  return r;
-	}
-
-	if ((imctx->features & RBD_FEATURE_DEEP_FLATTEN) == 0 &&
-	    !imctx->snaps.empty()) {
-	  imctx->parent_lock.get_read();
-	  ParentInfo parent_info = imctx->parent_md;
-	  imctx->parent_lock.put_read();
-
-	  r = cls_client::remove_child(&imctx->md_ctx, RBD_CHILDREN,
-				       parent_info.spec, imctx->id);
-	  if (r < 0 && r != -ENOENT) {
-	    lderr(cct) << "error removing child from children list" << dendl;
-	    imctx->state->close();
-	    return r;
-	  }
 	}
 
 	r = imctx->state->close();
@@ -645,11 +643,16 @@ int validate_pool(IoCtx &io_ctx, CephContext *cct) {
     CephContext *cct = ictx->cct;
     ldout(cct, 20) << "children list " << ictx->name << dendl;
 
+    int r = ictx->state->refresh_if_required();
+    if (r < 0) {
+      return r;
+    }
+
     RWLock::RLocker l(ictx->snap_lock);
     ParentSpec parent_spec(ictx->md_ctx.get_id(), ictx->id, ictx->snap_id);
     map< pair<int64_t, string>, set<string> > image_info;
 
-    int r = api::Image<>::list_children(ictx, parent_spec, &image_info);
+    r = api::Image<>::list_children(ictx, parent_spec, &image_info);
     if (r < 0) {
       return r;
     }
@@ -1364,9 +1367,8 @@ int validate_pool(IoCtx &io_ctx, CephContext *cct) {
       image_id = ictx->id;
       ictx->owner_lock.get_read();
       if (ictx->exclusive_lock != nullptr) {
-        r = ictx->operations->prepare_image_update();
-        if (r < 0 || (ictx->exclusive_lock != nullptr &&
-                      !ictx->exclusive_lock->is_lock_owner())) {
+        r = ictx->operations->prepare_image_update(false);
+        if (r < 0) {
 	  lderr(cct) << "cannot obtain exclusive lock - not removing" << dendl;
 	  ictx->owner_lock.put_read();
 	  ictx->state->close();
@@ -1890,18 +1892,28 @@ int validate_pool(IoCtx &io_ctx, CephContext *cct) {
       return -EINVAL;
     }
     int r;
+    const uint32_t MAX_KEYS = 64;
     map<string, bufferlist> pairs;
+    std::string last_key = "";
+    bool more_results = true;
 
-    r = cls_client::metadata_list(&src->md_ctx, src->header_oid, "", 0, &pairs);
-    if (r < 0 && r != -EOPNOTSUPP && r != -EIO) {
-      lderr(cct) << "couldn't list metadata: " << cpp_strerror(r) << dendl;
-      return r;
-    } else if (r == 0 && !pairs.empty()) {
-      r = cls_client::metadata_set(&dest->md_ctx, dest->header_oid, pairs);
-      if (r < 0) {
-        lderr(cct) << "couldn't set metadata: " << cpp_strerror(r) << dendl;
+    while (more_results) {
+      r = cls_client::metadata_list(&src->md_ctx, src->header_oid, last_key, 0, &pairs);
+      if (r < 0 && r != -EOPNOTSUPP && r != -EIO) {
+        lderr(cct) << "couldn't list metadata: " << cpp_strerror(r) << dendl;
         return r;
+      } else if (r == 0 && !pairs.empty()) {
+        r = cls_client::metadata_set(&dest->md_ctx, dest->header_oid, pairs);
+        if (r < 0) {
+          lderr(cct) << "couldn't set metadata: " << cpp_strerror(r) << dendl;
+          return r;
+        }
+
+        last_key = pairs.rbegin()->first;
       }
+
+      more_results = (pairs.size() == MAX_KEYS);
+      pairs.clear();
     }
 
     ZTracer::Trace trace;
@@ -2244,7 +2256,6 @@ int validate_pool(IoCtx &io_ctx, CephContext *cct) {
     }
 
     RWLock::RLocker owner_locker(ictx->owner_lock);
-    RWLock::WLocker md_locker(ictx->md_lock);
     r = ictx->invalidate_cache(false);
     ictx->perfcounter->inc(l_librbd_invalidate_cache);
     return r;

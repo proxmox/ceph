@@ -14,10 +14,11 @@
 #include <utility>
 #include <string>
 #include <cassert>
-#include <boost/scoped_ptr.hpp>
-#include <boost/iterator/iterator_traits.hpp>
-#include <boost/utility/string_ref.hpp>
 #include <stdexcept>
+#include <boost/scoped_ptr.hpp>
+#include <boost/operators.hpp>
+#include <boost/iterator/iterator_traits.hpp>
+#include "string_view.hpp"
 #include "fwd.hpp"
 #include "files.hpp"
 
@@ -51,7 +52,7 @@ namespace quickbook
 
             virtual file_ptr get_file() const;
             virtual string_iterator get_position() const;
-            virtual boost::string_ref get_quickbook() const;
+            virtual quickbook::string_view get_quickbook() const;
             virtual std::string get_encoded() const;
             virtual int get_int() const;
 
@@ -108,12 +109,12 @@ namespace quickbook
             iterator end() const;
 
             // Item accessors
-            int get_tag() const { return value_->tag_; }
+            tag_type get_tag() const { return value_->tag_; }
             file_ptr get_file() const
             { return value_->get_file(); }
             string_iterator get_position() const
             { return value_->get_position(); }
-            boost::string_ref get_quickbook() const
+            quickbook::string_view get_quickbook() const
             { return value_->get_quickbook(); }
             std::string get_encoded() const
             { return value_->get_encoded(); }

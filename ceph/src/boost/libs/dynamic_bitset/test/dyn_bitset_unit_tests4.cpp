@@ -176,11 +176,11 @@ void run_test_cases( BOOST_EXPLICIT_TEMPLATE_TYPE(Block) )
 
 
   std::ios::iostate masks[] = {
-                                  std::ios::goodbit,
-                                  std::ios::eofbit,
-                                  std::ios::failbit,
-                                  std::ios::eofbit | std::ios::failbit
-                                   };
+                                std::ios::goodbit,
+                                std::ios::eofbit,
+                                std::ios::failbit,
+                                std::ios::eofbit | std::ios::failbit
+                              };
 
   const std::string spaces = "\t\n "; //"\t\n\v\f ";
 

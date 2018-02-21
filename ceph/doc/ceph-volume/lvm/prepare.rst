@@ -109,7 +109,6 @@ already running there are a few things to take into account:
 
 * Preferably, no other mechanisms to mount the volume should exist, and should
   be removed (like fstab mount points)
-* There is currently no support for encrypted volumes
 
 The one time process for an existing OSD, with an ID of 0 and
 using a ``"ceph"`` cluster name would look like::
@@ -186,6 +185,15 @@ a volume group and a logical volume using the following convention:
 * logical volume name: ``osd-block-{osd_fsid}``
 
 
+Crush device class
+------------------
+
+To set the crush device class for the OSD, use the ``--crush-device-class`` flag. This will
+work for both bluestore and filestore OSDs::
+
+    ceph-volume lvm prepare --bluestore --data vg/lv --crush-device-class foo
+
+
 Storing metadata
 ----------------
 The following tags will get applied as part of the preparation process
@@ -195,6 +203,7 @@ regardless of the type of volume (journal or data) or OSD objectstore:
 * ``encrypted``
 * ``osd_fsid``
 * ``osd_id``
+* ``crush_device_class``
 
 For :term:`filestore` these tags will be added:
 

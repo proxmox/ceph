@@ -1,4 +1,4 @@
-// Copyright Louis Dionne 2013-2016
+// Copyright Louis Dionne 2013-2017
 // Distributed under the Boost Software License, Version 1.0.
 // (See accompanying file LICENSE.md or copy at http://boost.org/LICENSE_1_0.txt)
 
@@ -47,7 +47,7 @@ namespace boost { namespace hana { namespace test {
         template <typename Xs, typename Predicates, typename Values>
         TestMonadPlus(Xs xs, Predicates predicates, Values values) {
             hana::for_each(xs, [](auto a) {
-                static_assert(MonadPlus<decltype(a)>::value, "");
+                static_assert(MonadPlus<decltype(a)>{}, "");
 
                 // left identity
                 BOOST_HANA_CHECK(hana::equal(

@@ -66,6 +66,7 @@ struct MockImageCtx {
       parent_lock(image_ctx.parent_lock),
       object_map_lock(image_ctx.object_map_lock),
       async_ops_lock(image_ctx.async_ops_lock),
+      copyup_list_lock(image_ctx.copyup_list_lock),
       order(image_ctx.order),
       size(image_ctx.size),
       features(image_ctx.features),
@@ -92,6 +93,7 @@ struct MockImageCtx {
       concurrent_management_ops(image_ctx.concurrent_management_ops),
       blacklist_on_break_lock(image_ctx.blacklist_on_break_lock),
       blacklist_expire_seconds(image_ctx.blacklist_expire_seconds),
+      sparse_read_threshold_bytes(image_ctx.sparse_read_threshold_bytes),
       journal_order(image_ctx.journal_order),
       journal_splay_width(image_ctx.journal_splay_width),
       journal_commit_age(image_ctx.journal_commit_age),
@@ -106,7 +108,8 @@ struct MockImageCtx {
           image_ctx.mirroring_resync_after_disconnect),
       mirroring_replay_delay(image_ctx.mirroring_replay_delay),
       non_blocking_aio(image_ctx.non_blocking_aio),
-      blkin_trace_all(image_ctx.blkin_trace_all)
+      blkin_trace_all(image_ctx.blkin_trace_all),
+      enable_alloc_hint(image_ctx.enable_alloc_hint)
   {
     md_ctx.dup(image_ctx.md_ctx);
     data_ctx.dup(image_ctx.data_ctx);
@@ -145,9 +148,11 @@ struct MockImageCtx {
   MOCK_METHOD0(init_layout, void());
 
   MOCK_CONST_METHOD1(get_object_name, std::string(uint64_t));
+  MOCK_CONST_METHOD0(get_object_size, uint64_t());
   MOCK_CONST_METHOD0(get_current_size, uint64_t());
   MOCK_CONST_METHOD1(get_image_size, uint64_t(librados::snap_t));
   MOCK_CONST_METHOD1(get_object_count, uint64_t(librados::snap_t));
+  MOCK_CONST_METHOD1(get_read_flags, int(librados::snap_t));
   MOCK_CONST_METHOD2(get_snap_id,
 		     librados::snap_t(cls::rbd::SnapshotNamespace snap_namespace,
 				      std::string in_snap_name));
@@ -158,6 +163,8 @@ struct MockImageCtx {
                                           ParentSpec *pspec));
   MOCK_CONST_METHOD2(get_parent_overlap, int(librados::snap_t in_snap_id,
                                              uint64_t *overlap));
+  MOCK_CONST_METHOD2(prune_parent_extents, uint64_t(vector<pair<uint64_t,uint64_t> >& ,
+                                                    uint64_t));
 
   MOCK_CONST_METHOD2(is_snap_protected, int(librados::snap_t in_snap_id,
                                             bool *is_protected));
@@ -205,6 +212,8 @@ struct MockImageCtx {
                                          size_t, uint64_t, Context *, int, ZTracer::Trace *));
   MOCK_METHOD8(write_to_cache, void(object_t, const bufferlist&, size_t,
                                     uint64_t, Context *, int, uint64_t, ZTracer::Trace *));
+  MOCK_METHOD2(apply_metadata, int(const std::map<std::string, bufferlist> &,
+                                   bool));
 
   MOCK_CONST_METHOD0(get_stripe_count, uint64_t());
   MOCK_CONST_METHOD0(get_stripe_period, uint64_t());
@@ -246,6 +255,7 @@ struct MockImageCtx {
   RWLock &parent_lock;
   RWLock &object_map_lock;
   Mutex &async_ops_lock;
+  Mutex &copyup_list_lock;
 
   uint8_t order;
   uint64_t size;
@@ -266,6 +276,8 @@ struct MockImageCtx {
   xlist<operation::ResizeRequest<MockImageCtx>*> resize_reqs;
   xlist<AsyncRequest<MockImageCtx>*> async_requests;
   std::list<Context*> async_requests_waiters;
+
+  std::map<uint64_t, io::CopyupRequest<MockImageCtx>*> copyup_list;
 
   io::MockImageRequestWQ *io_work_queue;
   MockContextWQ *op_work_queue;
@@ -291,6 +303,7 @@ struct MockImageCtx {
   int concurrent_management_ops;
   bool blacklist_on_break_lock;
   uint32_t blacklist_expire_seconds;
+  uint64_t sparse_read_threshold_bytes;
   uint8_t journal_order;
   uint8_t journal_splay_width;
   double journal_commit_age;
@@ -304,6 +317,7 @@ struct MockImageCtx {
   int mirroring_replay_delay;
   bool non_blocking_aio;
   bool blkin_trace_all;
+  bool enable_alloc_hint;
 };
 
 } // namespace librbd

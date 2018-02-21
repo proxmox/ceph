@@ -23,6 +23,6 @@ import ../../config/checks/config : requires ;
 
 run binary_search_test.cpp ;
 run is_sorted_test.cpp ;
-run test_utf8_codecvt.cpp : : 
-  : [ requires std_wstreambuf ]
-  ;
+run numeric_traits_test.cpp ;
+# run test_utf8_codecvt.cpp : : : [ requires std_wstreambuf ] ;
+run test_utf8_codecvt.cpp ;

@@ -19,28 +19,28 @@ namespace boost {
 namespace fibers {
 
 barrier::barrier( std::size_t initial) :
-	initial_{ initial },
-	current_{ initial_ } {
-    if ( 0 == initial) {
-        throw fiber_error( std::make_error_code( std::errc::invalid_argument),
-                           "boost fiber: zero initial barrier count");
+    initial_{ initial },
+    current_{ initial_ } {
+    if ( BOOST_UNLIKELY( 0 == initial) ) {
+        throw fiber_error{ std::make_error_code( std::errc::invalid_argument),
+                           "boost fiber: zero initial barrier count" };
     }
 }
 
 bool
 barrier::wait() {
-	std::unique_lock< mutex > lk( mtx_);
-	const bool cycle = cycle_;
-	if ( 0 == --current_) {
-		cycle_ = ! cycle_;
-		current_ = initial_;
+    std::unique_lock< mutex > lk{ mtx_ };
+    const std::size_t cycle = cycle_;
+    if ( 0 == --current_) {
+        ++cycle_;
+        current_ = initial_;
         lk.unlock(); // no pessimization
-		cond_.notify_all();
-		return true;
-	} else {
-        cond_.wait( lk, [&](){ return cycle != cycle_; });
-	}
-	return false;
+        cond_.notify_all();
+        return true;
+    } else {
+        cond_.wait( lk, [&]{ return cycle != cycle_; });
+    }
+    return false;
 }
 
 }}

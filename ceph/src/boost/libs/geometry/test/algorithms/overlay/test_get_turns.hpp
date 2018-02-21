@@ -4,8 +4,8 @@
 // Copyright (c) 2008-2012 Bruno Lalande, Paris, France.
 // Copyright (c) 2009-2012 Mateusz Loskot, London, UK.
 
-// This file was modified by Oracle on 2014, 2016.
-// Modifications copyright (c) 2014-2016 Oracle and/or its affiliates.
+// This file was modified by Oracle on 2014, 2016, 2017.
+// Modifications copyright (c) 2014-2017 Oracle and/or its affiliates.
 
 // Parts of Boost.Geometry are redesigned from Geodan's Geographic Library
 // (geolib/GGL), copyright (c) 1995-2010 Geodan, Amsterdam, the Netherlands.
@@ -116,17 +116,21 @@ struct equal_turn
     const std::string * turn_ptr;
 };
 
-template <typename Geometry1, typename Geometry2, typename Expected>
+template <typename Geometry1, typename Geometry2, typename Expected, typename Strategy>
 void check_geometry_range(Geometry1 const& g1,
                           Geometry2 const& g2,
                           std::string const& wkt1,
                           std::string const& wkt2,
-                          Expected const& expected)
+                          Expected const& expected,
+                          Strategy const& strategy)
 {
     typedef bg::detail::no_rescale_policy robust_policy_type;
     typedef typename bg::point_type<Geometry2>::type point_type;
 
-    typedef typename bg::segment_ratio_type<point_type, robust_policy_type>::type segment_ratio_type;
+    typedef typename bg::segment_ratio_type
+        <
+            point_type, robust_policy_type
+        >::type segment_ratio_type;
 
     typedef bg::detail::overlay::turn_info
         <
@@ -147,13 +151,17 @@ void check_geometry_range(Geometry1 const& g1,
     robust_policy_type robust_policy;
     
     // Don't switch the geometries
-    typedef bg::detail::get_turns::get_turn_info_type<Geometry1, Geometry2, assign_policy_t> turn_policy_t;
+    typedef bg::detail::get_turns::get_turn_info_type
+        <
+            Geometry1, Geometry2, assign_policy_t
+        > turn_policy_t;
+
     bg::dispatch::get_turns
         <
             typename bg::tag<Geometry1>::type, typename bg::tag<Geometry2>::type,
             Geometry1, Geometry2, false, false,
             turn_policy_t
-        >::apply(0, g1, 1, g2, robust_policy, turns, interrupt_policy);
+        >::apply(0, g1, 1, g2, strategy, robust_policy, turns, interrupt_policy);
 
     bool ok = boost::size(expected) == turns.size();
 
@@ -215,6 +223,32 @@ void check_geometry_range(Geometry1 const& g1,
 }
 
 template <typename Geometry1, typename Geometry2, typename Expected>
+void check_geometry_range(Geometry1 const& g1,
+                          Geometry2 const& g2,
+                          std::string const& wkt1,
+                          std::string const& wkt2,
+                          Expected const& expected)
+{
+    typename bg::strategy::intersection::services::default_strategy
+        <
+            typename bg::cs_tag<Geometry1>::type
+        >::type strategy;
+
+    check_geometry_range(g1, g2, wkt1, wkt2, expected, strategy);
+}
+
+template <typename Geometry1, typename Geometry2, typename Expected, typename Strategy>
+void test_geometry_range(std::string const& wkt1, std::string const& wkt2,
+                         Expected const& expected, Strategy const& strategy)
+{
+    Geometry1 geometry1;
+    Geometry2 geometry2;
+    bg::read_wkt(wkt1, geometry1);
+    bg::read_wkt(wkt2, geometry2);
+    check_geometry_range(geometry1, geometry2, wkt1, wkt2, expected, strategy);
+}
+
+template <typename Geometry1, typename Geometry2, typename Expected>
 void test_geometry_range(std::string const& wkt1, std::string const& wkt2,
                          Expected const& expected)
 {
@@ -251,6 +285,14 @@ void test_geometry(std::string const& wkt1, std::string const& wkt2,
                    expected_pusher const& expected)
 {
     test_geometry_range<G1, G2>(wkt1, wkt2, expected);
+}
+
+template <typename G1, typename G2, typename Strategy>
+void test_geometry(std::string const& wkt1, std::string const& wkt2,
+                   expected_pusher const& expected,
+                   Strategy const& strategy)
+{
+    test_geometry_range<G1, G2>(wkt1, wkt2, expected, strategy);
 }
 
 #endif // BOOST_GEOMETRY_TEST_ALGORITHMS_OVERLAY_TEST_GET_TURNS_HPP

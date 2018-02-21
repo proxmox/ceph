@@ -5,7 +5,7 @@
 #ifndef BOOST_CONVERT_TEST_HPP
 #define BOOST_CONVERT_TEST_HPP
 
-#include <boost/convert/detail/forward.hpp>
+#include <boost/convert/detail/config.hpp>
 #include <boost/make_default.hpp>
 #include <boost/static_assert.hpp>
 #include <string>
@@ -13,6 +13,7 @@
 #include <string.h> // For strlen, strcmp, memcpy
 #include <memory.h> // Is needed for 'memset'
 #include <stdio.h>
+#include <time.h>
 
 #if defined(_MSC_VER)
 #   pragma warning(disable: 4189) // local variable is initialized but not referenced.
@@ -21,6 +22,8 @@
 #   pragma warning(disable: 4714) // marked as __forceinline not #endif
 #   pragma warning(disable: 4706)
 #   pragma warning(disable: 4005)
+#   pragma warning(disable: 4459) // declaration hides global declaration
+#   pragma warning(disable: 4456) // declaration hides previous local declaration
 #endif
 
 //[change_declaration

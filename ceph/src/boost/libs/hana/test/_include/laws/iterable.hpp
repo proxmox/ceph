@@ -1,4 +1,4 @@
-// Copyright Louis Dionne 2013-2016
+// Copyright Louis Dionne 2013-2017
 // Distributed under the Boost Software License, Version 1.0.
 // (See accompanying file LICENSE.md or copy at http://boost.org/LICENSE_1_0.txt)
 
@@ -49,7 +49,7 @@ namespace boost { namespace hana { namespace test {
         template <typename Xs>
         TestIterable(Xs xs) {
             hana::for_each(xs, [](auto xs) {
-                static_assert(Iterable<decltype(xs)>::value, "");
+                static_assert(Iterable<decltype(xs)>{}, "");
 
                 BOOST_HANA_CONSTANT_CHECK(
                     hana::is_empty(xs) ^iff^ hana::is_empty(hana::to<tuple_tag>(xs))

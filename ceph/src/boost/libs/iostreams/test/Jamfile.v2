@@ -9,9 +9,11 @@
 
 import stlport ;
 import modules ;
+import ac ;
 
 local NO_BZIP2 = [ modules.peek : NO_BZIP2 ] ;
 local NO_ZLIB = [ modules.peek : NO_ZLIB ] ;
+local NO_LZMA = [ modules.peek : NO_LZMA ] ;
 local LARGE_FILE_TEMP = [ modules.peek : LARGE_FILE_TEMP ] ;
 local LARGE_FILE_KEEP = [ modules.peek : LARGE_FILE_KEEP ] ;
 
@@ -66,6 +68,7 @@ rule compile-fail-iostreams ( sources * : requirements * : target-name ? ) {
           [ test-iostreams copy_test.cpp ]
           [ test-iostreams counter_test.cpp ]
           [ test-iostreams direct_adapter_test.cpp ]
+          [ test-iostreams dual_seekable_test.cpp ]
           [ test-iostreams example_test.cpp ]
           [ test-iostreams execute_test.cpp ]
           [ test-iostreams file_test.cpp ]
@@ -141,9 +144,18 @@ rule compile-fail-iostreams ( sources * : requirements * : target-name ? ) {
       {              
           all-tests += 
               [ test-iostreams 
+                    write_failure_test.cpp ../build//boost_iostreams ]
+              [ test-iostreams 
                     gzip_test.cpp ../build//boost_iostreams ]
               [ test-iostreams 
                     zlib_test.cpp ../build//boost_iostreams ] ;
+      }
+      if ! $(NO_LZMA)
+      {
+          using lzma : : <build-name>boost_lzma <tag>@tag : : true ;
+          all-tests += [ test-iostreams 
+                             lzma_test.cpp ../build//boost_iostreams :
+                             [ ac.check-library /lzma//lzma : : <build>no ] ] ;
       }
           
     test-suite "iostreams" : $(all-tests) ;

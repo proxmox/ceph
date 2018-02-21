@@ -12,43 +12,22 @@
 
 #include <string>
 #include <ostream>
-#include <boost/range/algorithm_ext/push_back.hpp>
-#include <boost/range/adaptor/transformed.hpp>
-#include <boost/utility/string_ref.hpp>
+#include "string_view.hpp"
 
 namespace quickbook { namespace detail {
-    std::string encode_string(boost::string_ref);
+    std::string encode_string(quickbook::string_view);
     void print_char(char ch, std::ostream& out);
-    void print_string(boost::string_ref str, std::ostream& out);
-    char filter_identifier_char(char ch);
-
-    template <typename Range>
-    inline std::string
-    make_identifier(Range const& range)
-    {
-        std::string out_name;
-
-        boost::push_back(out_name,
-            range | boost::adaptors::transformed(filter_identifier_char));
-
-        return out_name;
-    }
+    void print_string(quickbook::string_view str, std::ostream& out);
+    std::string make_identifier(quickbook::string_view);
 
     // URI escape string
-    std::string escape_uri(std::string uri);
-    inline std::string escape_uri(boost::string_ref uri) {
-        return escape_uri(std::string(uri.begin(), uri.end()));
-    }
+    std::string escape_uri(quickbook::string_view);
 
     // URI escape string, leaving characters generally used in URIs.
-    std::string partially_escape_uri(std::string uri);
-    inline std::string partially_escape_uri(boost::string_ref uri) {
-        return escape_uri(std::string(uri.begin(), uri.end()));
-    }
+    std::string partially_escape_uri(quickbook::string_view);
 
-    inline std::string to_s(boost::string_ref x) {
-        return std::string(x.begin(), x.end());
-    }
+    // Defined in id_xml.cpp. Just because.
+    std::string linkify(quickbook::string_view source, quickbook::string_view linkend);
 }}
 
 #endif // BOOST_SPIRIT_QUICKBOOK_UTILS_HPP

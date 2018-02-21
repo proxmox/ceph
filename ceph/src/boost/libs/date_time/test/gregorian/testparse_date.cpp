@@ -89,7 +89,7 @@ main()
         check("Expected exception not thrown: from ISO string (bad_day_of_month)", false);
         std::cout << date_from_iso_string(s) << std::endl;
       }
-      catch(bad_day_of_month& e) {
+      catch(bad_day_of_month&) {
         check("Caught expected exception: bad_day_of_month ", true);
       }
       catch(...) {
@@ -345,6 +345,7 @@ main()
     std::string ud(""); //empty string error sf bug# 1155556
     date d1(from_simple_string(ud));
     check("empty string",  false); //should never reach this piont
+    (void)d1;
   }
   catch(std::exception& e) {
     check(std::string("empty string parse (exception expected): ") + e.what(),  true);
