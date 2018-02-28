@@ -1255,29 +1255,33 @@ int RGWPutObj_ObjStore_S3::get_params()
 
   if_match = s->info.env->get("HTTP_IF_MATCH");
   if_nomatch = s->info.env->get("HTTP_IF_NONE_MATCH");
-  copy_source = s->info.env->get("HTTP_X_AMZ_COPY_SOURCE");
+  copy_source = url_decode(s->info.env->get("HTTP_X_AMZ_COPY_SOURCE", ""));
   copy_source_range = s->info.env->get("HTTP_X_AMZ_COPY_SOURCE_RANGE");
 
   /* handle x-amz-copy-source */
-
-  if (copy_source) {
-    if (*copy_source == '/') ++copy_source;
-    copy_source_bucket_name = copy_source;
+  boost::string_view cs_view(copy_source);
+  if (! cs_view.empty()) {
+    if (cs_view[0] == '/')
+      cs_view.remove_prefix(1);
+    copy_source_bucket_name = cs_view.to_string();
     pos = copy_source_bucket_name.find("/");
     if (pos == std::string::npos) {
       ret = -EINVAL;
       ldout(s->cct, 5) << "x-amz-copy-source bad format" << dendl;
       return ret;
     }
-    copy_source_object_name = copy_source_bucket_name.substr(pos + 1, copy_source_bucket_name.size());
+    copy_source_object_name =
+      copy_source_bucket_name.substr(pos + 1, copy_source_bucket_name.size());
     copy_source_bucket_name = copy_source_bucket_name.substr(0, pos);
 #define VERSION_ID_STR "?versionId="
     pos = copy_source_object_name.find(VERSION_ID_STR);
     if (pos == std::string::npos) {
       copy_source_object_name = url_decode(copy_source_object_name);
     } else {
-      copy_source_version_id = copy_source_object_name.substr(pos + sizeof(VERSION_ID_STR) - 1);
-      copy_source_object_name = url_decode(copy_source_object_name.substr(0, pos));
+      copy_source_version_id =
+	copy_source_object_name.substr(pos + sizeof(VERSION_ID_STR) - 1);
+      copy_source_object_name =
+	url_decode(copy_source_object_name.substr(0, pos));
     }
     pos = copy_source_bucket_name.find(":");
     if (pos == std::string::npos) {
@@ -1379,7 +1383,7 @@ void RGWPutObj_ObjStore_S3::send_response()
 	s->cct->_conf->rgw_s3_success_create_obj_status);
       set_req_state_err(s, op_ret);
     }
-    if (!copy_source) {
+    if (copy_source.empty()) {
       dump_errno(s);
       dump_etag(s, etag);
       dump_content_length(s, 0);
@@ -2279,7 +2283,7 @@ void RGWGetCORS_ObjStore_S3::send_response()
 {
   if (op_ret) {
     if (op_ret == -ENOENT)
-      set_req_state_err(s, ERR_NOT_FOUND);
+      set_req_state_err(s, ERR_NO_SUCH_CORS_CONFIGURATION);
     else
       set_req_state_err(s, op_ret);
   }
@@ -2536,23 +2540,24 @@ void RGWCompleteMultipart_ObjStore_S3::send_response()
     set_req_state_err(s, op_ret);
   dump_errno(s);
   end_header(s, this, "application/xml");
-  if (op_ret == 0) { 
+  if (op_ret == 0) {
     dump_start(s);
     s->formatter->open_object_section_in_ns("CompleteMultipartUploadResult", XMLNS_AWS_S3);
+    std::string base_uri = compute_domain_uri(s);
     if (!s->bucket_tenant.empty()) {
-      if (s->info.domain.length()) {
-        s->formatter->dump_format("Location", "%s.%s.%s",
-          s->bucket_name.c_str(),
-          s->bucket_tenant.c_str(),
-          s->info.domain.c_str());
-      }
+      s->formatter->dump_format("Location", "%s/%s:%s/%s",
+	  base_uri.c_str(),
+	  s->bucket_tenant.c_str(),
+	  s->bucket_name.c_str(),
+	  s->object.name.c_str()
+          );
       s->formatter->dump_string("Tenant", s->bucket_tenant);
     } else {
-      if (s->info.domain.length()) {
-        s->formatter->dump_format("Location", "%s.%s",
-          s->bucket_name.c_str(),
-          s->info.domain.c_str());
-      }
+      s->formatter->dump_format("Location", "%s/%s/%s",
+	  base_uri.c_str(),
+	  s->bucket_name.c_str(),
+	  s->object.name.c_str()
+          );
     }
     s->formatter->dump_string("Bucket", s->bucket_name);
     s->formatter->dump_string("Key", s->object.name);
@@ -3272,9 +3277,11 @@ int RGWHandler_REST_S3::init(RGWRados *store, struct req_state *s,
   s->has_acl_header = s->info.env->exists_prefix("HTTP_X_AMZ_GRANT");
 
   const char *copy_source = s->info.env->get("HTTP_X_AMZ_COPY_SOURCE");
+  if (copy_source &&
+      (! s->info.env->get("HTTP_X_AMZ_COPY_SOURCE_RANGE")) &&
+      (! s->info.args.exists("uploadId"))) {
 
-  if (copy_source && !s->info.env->get("HTTP_X_AMZ_COPY_SOURCE_RANGE")) {
-    ret = RGWCopyObj::parse_copy_location(copy_source,
+    ret = RGWCopyObj::parse_copy_location(url_decode(copy_source),
                                           s->init_state.src_bucket,
                                           s->src_object);
     if (!ret) {
