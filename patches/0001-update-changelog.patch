@@ -8,14 +8,26 @@ Content-Transfer-Encoding: 8bit
 
 Signed-off-by: Fabian Grünbichler <f.gruenbichler@proxmox.com>
 ---
- debian/changelog | 144 +++++++++++++++++++++++++++++++++++++++++++++++++++++++
- 1 file changed, 144 insertions(+)
+ debian/changelog | 150 +++++++++++++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 150 insertions(+)
 
 diff --git a/debian/changelog b/debian/changelog
-index d050137769..4e239782dc 100644
+index d8c3290336..2134c74dd3 100644
 --- a/debian/changelog
 +++ b/debian/changelog
-@@ -1,75 +1,219 @@
+@@ -1,81 +1,231 @@
++ceph (12.2.4-pve1) stable; urgency=medium
++
++  * rebase on latest upstream release
++
++ -- Proxmox Support Team <support@proxmox.com>  Wed, 28 Feb 2018 14:43:22 +0100
++
+ ceph (12.2.4-1) stable; urgency=medium
+ 
+   * New upstream release
+ 
+  -- Ceph Release Team <ceph-maintainers@ceph.com>  Mon, 26 Feb 2018 21:47:17 +0000
+ 
 +ceph (12.2.3-pve1) stable; urgency=medium
 +
 +  * rebase on latest upstream release
