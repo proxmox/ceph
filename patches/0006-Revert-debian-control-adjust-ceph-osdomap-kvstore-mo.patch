@@ -17,7 +17,7 @@ Signed-off-by: Fabian Grünbichler <f.gruenbichler@proxmox.com>
  1 file changed, 6 insertions(+), 6 deletions(-)
 
 diff --git a/debian/control b/debian/control
-index 02babc3e9d..d70abc9659 100644
+index bc5d03b0ab..902d033098 100644
 --- a/debian/control
 +++ b/debian/control
 @@ -105,10 +105,10 @@ Recommends: btrfs-tools,
@@ -33,7 +33,7 @@ index 02babc3e9d..d70abc9659 100644
          python-ceph (<< 0.92-1223),
  Description: common ceph daemon libraries and management tools
   Ceph is a massively scalable, open-source, distributed
-@@ -206,8 +206,8 @@ Depends: ceph-base (= ${binary:Version}),
+@@ -207,8 +207,8 @@ Depends: ceph-base (= ${binary:Version}),
           ${misc:Depends},
           ${shlibs:Depends},
  Recommends: ceph-common,
@@ -44,7 +44,7 @@ index 02babc3e9d..d70abc9659 100644
  Description: monitor server for the ceph storage system
   Ceph is a massively scalable, open-source, distributed
   storage system that runs on commodity hardware and delivers object,
-@@ -240,8 +240,8 @@ Depends: ceph-base (= ${binary:Version}),
+@@ -241,8 +241,8 @@ Depends: ceph-base (= ${binary:Version}),
           ${python:Depends},
           ${shlibs:Depends},
  Recommends: ceph-common (= ${binary:Version}),
