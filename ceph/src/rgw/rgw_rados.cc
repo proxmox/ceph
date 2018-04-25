@@ -5777,7 +5777,8 @@ int RGWRados::create_pool(const rgw_pool& pool)
     ldout(cct, 0)
       << __func__
       << " ERROR: librados::Rados::pool_create returned " << cpp_strerror(-ret)
-      << " (this can be due to a pool or placement group misconfiguration, e.g., pg_num < pgp_num)"
+      << " (this can be due to a pool or placement group misconfiguration, e.g."
+      << " pg_num < pgp_num or mon_max_pg_per_osd exceeded)"
       << dendl;
   }
   if (ret < 0)
@@ -8102,6 +8103,15 @@ int RGWRados::copy_obj(RGWObjectCtx& obj_ctx,
   if (ret < 0) {
     return ret;
   }
+  if (src_attrs.count(RGW_ATTR_CRYPT_MODE)) {
+    // Current implementation does not follow S3 spec and even
+    // may result in data corruption silently when copying
+    // multipart objects acorss pools. So reject COPY operations
+    //on encrypted objects before it is fully functional.
+    ldout(cct, 0) << "ERROR: copy op for encrypted object " << src_obj
+                  << " has not been implemented." << dendl;
+    return -ERR_NOT_IMPLEMENTED;
+  }
 
   src_attrs[RGW_ATTR_ACL] = attrs[RGW_ATTR_ACL];
   src_attrs.erase(RGW_ATTR_DELETE_AT);
@@ -8990,12 +9000,9 @@ int RGWRados::Object::Delete::delete_obj()
 
   store->remove_rgw_head_obj(op);
   r = ref.ioctx.operate(ref.oid, &op);
-  bool need_invalidate = false;
-  if (r == -ECANCELED) {
-    /* raced with another operation, we can regard it as removed */
-    need_invalidate = true;
-    r = 0;
-  }
+
+  /* raced with another operation, object state is indeterminate */
+  const bool need_invalidate = (r == -ECANCELED);
 
   int64_t poolid = ref.ioctx.get_id();
   if (r >= 0) {
@@ -13275,6 +13282,23 @@ int RGWRados::cls_user_get_header(const string& user_id, cls_user_header *header
     return rc;
 
   return 0;
+}
+
+int RGWRados::cls_user_reset_stats(const string& user_id)
+{
+  string buckets_obj_id;
+  rgw_get_buckets_obj(user_id, buckets_obj_id);
+  rgw_raw_obj obj(get_zone_params().user_uid_pool, buckets_obj_id);
+
+  rgw_rados_ref ref;
+  int r = get_raw_obj_ref(obj, &ref);
+  if (r < 0) {
+    return r;
+  }
+
+  librados::ObjectWriteOperation op;
+  ::cls_user_reset_stats(op);
+  return ref.ioctx.operate(ref.oid, &op);
 }
 
 int RGWRados::cls_user_get_header_async(const string& user_id, RGWGetUserHeader_CB *ctx)

@@ -3408,8 +3408,10 @@ void Client::check_caps(Inode *in, unsigned flags)
     return;   // guard if at end of func
 
   if ((revoking & (CEPH_CAP_FILE_CACHE | CEPH_CAP_FILE_LAZYIO)) &&
-      (used & CEPH_CAP_FILE_CACHE) && !(used & CEPH_CAP_FILE_BUFFER))
-    _release(in);
+      (used & CEPH_CAP_FILE_CACHE) && !(used & CEPH_CAP_FILE_BUFFER)) {
+    if (_release(in))
+      used &= ~CEPH_CAP_FILE_CACHE;
+  }
 
   if (!in->cap_snaps.empty())
     flush_snaps(in);
@@ -3743,8 +3745,11 @@ void Client::_invalidate_inode_cache(Inode *in)
   ldout(cct, 10) << "_invalidate_inode_cache " << *in << dendl;
 
   // invalidate our userspace inode cache
-  if (cct->_conf->client_oc)
+  if (cct->_conf->client_oc) {
     objectcacher->release_set(&in->oset);
+    if (!objectcacher->set_is_empty(&in->oset))
+      lderr(cct) << "failed to invalidate cache for " << *in << dendl;
+  }
 
   _schedule_invalidate_callback(in, 0, 0);
 }
@@ -4064,12 +4069,14 @@ void Client::_invalidate_kernel_dcache()
 {
   if (unmounting)
     return;
-  if (can_invalidate_dentries && dentry_invalidate_cb && root->dir) {
-    for (ceph::unordered_map<string, Dentry*>::iterator p = root->dir->dentries.begin();
-	 p != root->dir->dentries.end();
-	 ++p) {
-      if (p->second->inode)
-	_schedule_invalidate_dentry_callback(p->second, false);
+  if (can_invalidate_dentries) {
+    if (dentry_invalidate_cb && root->dir) {
+      for (ceph::unordered_map<string, Dentry*>::iterator p = root->dir->dentries.begin();
+         p != root->dir->dentries.end();
+         ++p) {
+       if (p->second->inode)
+        _schedule_invalidate_dentry_callback(p->second, false);
+      }
     }
   } else if (remount_cb) {
     // Hacky:
@@ -6151,7 +6158,7 @@ int Client::_lookup(Inode *dir, const string& dname, int mask, InodeRef *target,
 	     << " seq " << dn->lease_seq
 	     << dendl;
 
-    if (!dn->inode || dn->inode->caps_issued_mask(mask)) {
+    if (!dn->inode || dn->inode->caps_issued_mask(mask, true)) {
       // is dn lease valid?
       utime_t now = ceph_clock_now();
       if (dn->lease_mds >= 0 &&
@@ -6169,9 +6176,9 @@ int Client::_lookup(Inode *dir, const string& dname, int mask, InodeRef *target,
 		       << " vs lease_gen " << dn->lease_gen << dendl;
       }
       // dir lease?
-      if (dir->caps_issued_mask(CEPH_CAP_FILE_SHARED)) {
+      if (dir->caps_issued_mask(CEPH_CAP_FILE_SHARED, true)) {
 	if (dn->cap_shared_gen == dir->shared_gen &&
-	    (!dn->inode || dn->inode->caps_issued_mask(mask)))
+	    (!dn->inode || dn->inode->caps_issued_mask(mask, true)))
 	      goto hit_dn;
 	if (!dn->inode && (dir->flags & I_COMPLETE)) {
 	  ldout(cct, 10) << "_lookup concluded ENOENT locally for "
@@ -6184,7 +6191,7 @@ int Client::_lookup(Inode *dir, const string& dname, int mask, InodeRef *target,
     }
   } else {
     // can we conclude ENOENT locally?
-    if (dir->caps_issued_mask(CEPH_CAP_FILE_SHARED) &&
+    if (dir->caps_issued_mask(CEPH_CAP_FILE_SHARED, true) &&
 	(dir->flags & I_COMPLETE)) {
       ldout(cct, 10) << "_lookup concluded ENOENT locally for " << *dir << " dn '" << dname << "'" << dendl;
       return -ENOENT;
@@ -6648,7 +6655,7 @@ int Client::_readlink(Inode *in, char *buf, size_t size)
 
 int Client::_getattr(Inode *in, int mask, const UserPerm& perms, bool force)
 {
-  bool yes = in->caps_issued_mask(mask);
+  bool yes = in->caps_issued_mask(mask, true);
 
   ldout(cct, 10) << "_getattr mask " << ccap_string(mask) << " issued=" << yes << dendl;
   if (yes && !force)
@@ -6828,7 +6835,7 @@ force_request:
   }
   if (mask & CEPH_SETATTR_MTIME) {
     req->head.args.setattr.mtime = utime_t(stx->stx_mtime);
-    req->inode_drop |= CEPH_CAP_AUTH_SHARED | CEPH_CAP_FILE_RD |
+    req->inode_drop |= CEPH_CAP_FILE_SHARED | CEPH_CAP_FILE_RD |
       CEPH_CAP_FILE_WR;
   }
   if (mask & CEPH_SETATTR_ATIME) {
@@ -6845,7 +6852,7 @@ force_request:
       ldout(cct,10) << "unable to set size to " << stx->stx_size << ". Too large!" << dendl;
       return -EFBIG;
     }
-    req->inode_drop |= CEPH_CAP_AUTH_SHARED | CEPH_CAP_FILE_RD |
+    req->inode_drop |= CEPH_CAP_FILE_SHARED | CEPH_CAP_FILE_RD |
       CEPH_CAP_FILE_WR;
   }
   req->head.args.setattr.mask = mask;
@@ -7642,7 +7649,7 @@ int Client::_readdir_get_frag(dir_result_t *dirp)
   req->head.args.readdir.frag = fg;
   req->head.args.readdir.flags = CEPH_READDIR_REPLY_BITFLAGS;
   if (dirp->last_name.length()) {
-    req->path2.set_path(dirp->last_name.c_str());
+    req->path2.set_path(dirp->last_name);
   } else if (dirp->hash_order()) {
     req->head.args.readdir.offset_hash = dirp->offset_high();
   }
@@ -7819,10 +7826,10 @@ int Client::readdir_r_cb(dir_result_t *d, add_dirent_cb_t cb, void *p,
     if (diri->dn_set.empty())
       in = diri;
     else
-      in = diri->get_first_parent()->inode;
+      in = diri->get_first_parent()->dir->parent_inode;
 
     int r;
-    r = _getattr(diri, caps, dirp->perms);
+    r = _getattr(in, caps, dirp->perms);
     if (r < 0)
       return r;
 
@@ -7854,7 +7861,7 @@ int Client::readdir_r_cb(dir_result_t *d, add_dirent_cb_t cb, void *p,
 	   << dendl;
   if (dirp->inode->snapid != CEPH_SNAPDIR &&
       dirp->inode->is_complete_and_ordered() &&
-      dirp->inode->caps_issued_mask(CEPH_CAP_FILE_SHARED)) {
+      dirp->inode->caps_issued_mask(CEPH_CAP_FILE_SHARED, true)) {
     int err = _readdir_cache_cb(dirp, cb, p, caps, getref);
     if (err != -EAGAIN)
       return err;
@@ -9553,7 +9560,7 @@ int Client::fstatx(int fd, struct ceph_statx *stx, const UserPerm& perms,
   unsigned mask = statx_to_mask(flags, want);
 
   int r = 0;
-  if (mask && !f->inode->caps_issued_mask(mask)) {
+  if (mask && !f->inode->caps_issued_mask(mask, true)) {
     r = _getattr(f->inode, mask, perms);
     if (r < 0) {
       ldout(cct, 3) << "fstatx exit on error!" << dendl;
@@ -10571,7 +10578,7 @@ int Client::ll_getattrx(Inode *in, struct ceph_statx *stx, unsigned int want,
   int res = 0;
   unsigned mask = statx_to_mask(flags, want);
 
-  if (mask && !in->caps_issued_mask(mask))
+  if (mask && !in->caps_issued_mask(mask, true))
     res = _ll_getattr(in, mask, perms);
 
   if (res == 0)

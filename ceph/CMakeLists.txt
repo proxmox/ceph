@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 2.8.11)
 
 project(ceph)
-set(VERSION 12.2.4)
+set(VERSION 12.2.5)
 
 if(POLICY CMP0046)
   # Tweak policies (this one disables "missing" dependency warning)
@@ -389,7 +389,24 @@ if (WITH_RADOSGW)
     message(STATUS "Looking for openssl anyways, because radosgw selected")
     find_package(OpenSSL)
   endif()
+# https://curl.haxx.se/docs/install.html mentions the
+# configure flags for various ssl backends
+  execute_process(
+    COMMAND
+  "sh" "-c"
+  "curl-config --configure | grep with-ssl"
+  RESULT_VARIABLE NO_CURL_SSL_LINK
+  ERROR_VARIABLE CURL_CONFIG_ERRORS
+  )
+  if (CURL_CONFIG_ERRORS)
+    message(WARNING "unable to run curl-config; rgw cannot make ssl requests to external systems reliably")
+  endif()
+  find_package(OpenSSL)
   if (OPENSSL_FOUND)
+    if (NOT NO_CURL_SSL_LINK)
+      message(STATUS "libcurl is linked with openssl: explicitly setting locks")
+      set(WITH_CURL_OPENSSL ON)
+    endif() # CURL_SSL_LINK
     execute_process(
       COMMAND
 	"sh" "-c"
@@ -422,7 +439,7 @@ if (WITH_RADOSGW)
     message(STATUS "crypto soname: ${LIBCRYPTO_SONAME}")
   else()
     message(WARNING "ssl not found: rgw civetweb may fail to dlopen libssl libcrypto")
-  endif()
+  endif()  # OPENSSL_FOUND
 endif (WITH_RADOSGW)
 
 #option for CephFS

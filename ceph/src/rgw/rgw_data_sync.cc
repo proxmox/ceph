@@ -1683,7 +1683,9 @@ int RGWDataSyncStatusManager::init()
 
   RGWZoneParams& zone_params = store->get_zone_params();
 
-  sync_module = store->get_sync_module();
+  if (sync_module == nullptr) { 
+    sync_module = store->get_sync_module();
+  }
 
   conn = store->get_zone_conn_by_id(source_zone);
   if (!conn) {
@@ -2550,6 +2552,9 @@ int RGWBucketShardIncrementalSyncCR::operate()
           ldout(sync_env->cct, 20) << " resync on " << e.timestamp << dendl;
           sync_modify_time = e.timestamp;
           syncstopped = false;
+          continue;
+        }
+        if (e.op == CLS_RGW_OP_CANCEL) {
           continue;
         }
         if (e.state != CLS_RGW_STATE_COMPLETE) {

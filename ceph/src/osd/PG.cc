@@ -3470,6 +3470,7 @@ void PG::update_snap_map(
 	try {
 	  ::decode(snaps, p);
 	} catch (...) {
+	  derr << __func__ << " decode snaps failure on " << *i << dendl;
 	  snaps.clear();
 	}
 	set<snapid_t> _snaps(snaps.begin(), snaps.end());
@@ -4159,10 +4160,25 @@ void PG::_scan_snaps(ScrubMap &smap)
 			    << "...repaired";
 	}
 	snap_mapper.add_oid(hoid, obj_snaps, &_t);
-	r = osd->store->apply_transaction(osr.get(), std::move(t));
-	if (r != 0) {
-	  derr << __func__ << ": apply_transaction got " << cpp_strerror(r)
-	       << dendl;
+
+	// wait for repair to apply to avoid confusing other bits of the system.
+	{
+	  Cond my_cond;
+	  Mutex my_lock("PG::_scan_snaps my_lock");
+	  int r = 0;
+	  bool done;
+	  t.register_on_applied_sync(
+	    new C_SafeCond(&my_lock, &my_cond, &done, &r));
+	  r = osd->store->apply_transaction(osr.get(), std::move(t));
+	  if (r != 0) {
+	    derr << __func__ << ": apply_transaction got " << cpp_strerror(r)
+		 << dendl;
+	  } else {
+	    my_lock.Lock();
+	    while (!done)
+	      my_cond.Wait(my_lock);
+	    my_lock.Unlock();
+	  }
 	}
       }
     }
@@ -5130,25 +5146,41 @@ void PG::share_pg_info()
 
 bool PG::append_log_entries_update_missing(
   const mempool::osd_pglog::list<pg_log_entry_t> &entries,
-  ObjectStore::Transaction &t)
+  ObjectStore::Transaction &t, boost::optional<eversion_t> trim_to,
+  boost::optional<eversion_t> roll_forward_to)
 {
   assert(!entries.empty());
   assert(entries.begin()->version > info.last_update);
 
   PGLogEntryHandler rollbacker{this, &t};
+  if (roll_forward_to) {
+    pg_log.roll_forward(&rollbacker);
+  }
   bool invalidate_stats =
     pg_log.append_new_log_entries(info.last_backfill,
 				  info.last_backfill_bitwise,
 				  entries,
 				  &rollbacker);
+
+  if (roll_forward_to && entries.rbegin()->soid > info.last_backfill) {
+    pg_log.roll_forward(&rollbacker);
+  }
+  if (roll_forward_to && *roll_forward_to > pg_log.get_can_rollback_to()) {
+    pg_log.roll_forward_to(*roll_forward_to, &rollbacker);
+    last_rollback_info_trimmed_to_applied = *roll_forward_to;
+  }
+
   info.last_update = pg_log.get_head();
 
   if (pg_log.get_missing().num_missing() == 0) {
     // advance last_complete since nothing else is missing!
     info.last_complete = info.last_update;
   }
-
   info.stats.stats_invalid = info.stats.stats_invalid || invalidate_stats;
+
+  dout(20) << __func__ << "trim_to bool = " << bool(trim_to) << " trim_to = " << (trim_to ? *trim_to : eversion_t()) << dendl;
+  if (trim_to)
+    pg_log.trim(*trim_to, info);
   dirty_info = true;
   write_if_dirty(t);
   return invalidate_stats;
@@ -5157,12 +5189,14 @@ bool PG::append_log_entries_update_missing(
 
 void PG::merge_new_log_entries(
   const mempool::osd_pglog::list<pg_log_entry_t> &entries,
-  ObjectStore::Transaction &t)
+  ObjectStore::Transaction &t,
+  boost::optional<eversion_t> trim_to,
+  boost::optional<eversion_t> roll_forward_to)
 {
   dout(10) << __func__ << " " << entries << dendl;
   assert(is_primary());
 
-  bool rebuild_missing = append_log_entries_update_missing(entries, t);
+  bool rebuild_missing = append_log_entries_update_missing(entries, t, trim_to, roll_forward_to);
   for (set<pg_shard_t>::const_iterator i = actingbackfill.begin();
        i != actingbackfill.end();
        ++i) {
@@ -5402,6 +5436,7 @@ void PG::start_peering_interval(
   pg_shard_t old_acting_primary = get_primary();
   pg_shard_t old_up_primary = up_primary;
   bool was_old_primary = is_primary();
+  bool was_old_replica = is_replica();
 
   acting.swap(oldacting);
   up.swap(oldup);
@@ -5520,8 +5555,10 @@ void PG::start_peering_interval(
   actingbackfill.clear();
   scrub_queued = false;
 
-  // reset primary state?
+  // reset primary/replica state?
   if (was_old_primary || is_primary()) {
+    osd->remove_want_pg_temp(info.pgid.pgid);
+  } else if (was_old_replica || is_replica()) {
     osd->remove_want_pg_temp(info.pgid.pgid);
   }
   clear_primary_state();
@@ -5607,38 +5644,16 @@ void PG::proc_primary_info(ObjectStore::Transaction &t, const pg_info_t &oinfo)
   assert(!is_primary());
 
   update_history(oinfo.history);
+  if (!info.stats.stats_invalid && info.stats.stats.sum.num_scrub_errors) {
+    info.stats.stats.sum.num_scrub_errors = 0;
+    info.stats.stats.sum.num_shallow_scrub_errors = 0;
+    info.stats.stats.sum.num_deep_scrub_errors = 0;
+    dirty_info = true;
+  }
 
-  if (last_complete_ondisk.epoch >= info.history.last_epoch_started) {
-    // DEBUG: verify that the snaps are empty in snap_mapper
-    if (cct->_conf->osd_debug_verify_snaps_on_info) {
-      interval_set<snapid_t> p;
-      p.union_of(oinfo.purged_snaps, info.purged_snaps);
-      p.subtract(info.purged_snaps);
-      if (!p.empty()) {
-	for (interval_set<snapid_t>::iterator i = p.begin();
-	     i != p.end();
-	     ++i) {
-	  for (snapid_t snap = i.get_start();
-	       snap != i.get_len() + i.get_start();
-	       ++snap) {
-	    vector<hobject_t> hoids;
-	    int r = snap_mapper.get_next_objects_to_trim(snap, 1, &hoids);
-	    if (r != 0 && r != -ENOENT) {
-	      derr << __func__ << ": snap_mapper get_next_object_to_trim returned "
-		   << cpp_strerror(r) << dendl;
-	      ceph_abort();
-	    } else if (r != -ENOENT) {
-	      assert(!hoids.empty());
-	      derr << __func__ << ": snap_mapper get_next_object_to_trim returned "
-		   << cpp_strerror(r) << " for object "
-		   << hoids[0] << " on snap " << snap
-		   << " which should have been fully trimmed " << dendl;
-	      ceph_abort();
-	    }
-	  }
-	}
-      }
-    }
+  if (!(info.purged_snaps == oinfo.purged_snaps)) {
+    dout(10) << __func__ << " updating purged_snaps to " << oinfo.purged_snaps
+	     << dendl;
     info.purged_snaps = oinfo.purged_snaps;
     dirty_info = true;
     dirty_big_info = true;

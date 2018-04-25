@@ -666,7 +666,7 @@ bool CrushWrapper::check_item_loc(CephContext *cct, int item, const map<string,s
     return false;
   }
   
-  ldout(cct, 1) << "check_item_loc item " << item << " loc " << loc << dendl;
+  ldout(cct, 2) << __func__ << " item " << item << " loc " << loc << dendl;
   return false;
 }
 
@@ -768,6 +768,25 @@ int CrushWrapper::get_children(int id, list<int> *children)
     children->push_back(b->items[n]);
   }
   return b->size;
+}
+
+int CrushWrapper::get_rule_failure_domain(int rule_id)
+{
+  crush_rule *rule = get_rule(rule_id);
+  if (IS_ERR(rule)) {
+    return -ENOENT;
+  }
+  int type = 0; // default to osd-level
+  for (unsigned s = 0; s < rule->len; ++s) {
+    if ((rule->steps[s].op == CRUSH_RULE_CHOOSE_FIRSTN ||
+         rule->steps[s].op == CRUSH_RULE_CHOOSE_INDEP ||
+         rule->steps[s].op == CRUSH_RULE_CHOOSELEAF_FIRSTN ||
+         rule->steps[s].op == CRUSH_RULE_CHOOSELEAF_INDEP) &&
+         rule->steps[s].arg2 > type) {
+      type = rule->steps[s].arg2;
+    }
+  }
+  return type;
 }
 
 int CrushWrapper::_get_leaves(int id, list<int> *leaves)

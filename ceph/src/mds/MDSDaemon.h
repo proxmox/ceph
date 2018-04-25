@@ -15,6 +15,8 @@
 #ifndef CEPH_MDS_H
 #define CEPH_MDS_H
 
+#include <boost/utility/string_view.hpp>
+
 #include "common/LogClient.h"
 #include "common/Mutex.h"
 #include "common/Timer.h"
@@ -45,6 +47,15 @@ class MDSDaemon : public Dispatcher, public md_config_obs_t {
 
   SafeTimer    timer;
 
+
+  mono_time get_starttime() const {
+    return starttime;
+  }
+  chrono::duration<double> get_uptime() const {
+    mono_time now = mono_clock::now();
+    return chrono::duration<double>(now-starttime);
+  }
+
  protected:
   Beacon  beacon;
 
@@ -63,7 +74,7 @@ class MDSDaemon : public Dispatcher, public md_config_obs_t {
   MDSRankDispatcher *mds_rank;
 
  public:
-  MDSDaemon(const std::string &n, Messenger *m, MonClient *mc);
+  MDSDaemon(boost::string_view n, Messenger *m, MonClient *mc);
   ~MDSDaemon() override;
   int orig_argc;
   const char **orig_argv;
@@ -141,7 +152,7 @@ protected:
   // special message types
   friend class C_MDS_Send_Command_Reply;
   static void send_command_reply(MCommand *m, MDSRank* mds_rank, int r,
-				 bufferlist outbl, const std::string& outs);
+				 bufferlist outbl, boost::string_view outs);
   int _handle_command(
       const cmdmap_t &cmdmap,
       MCommand *m,
@@ -152,6 +163,9 @@ protected:
   void handle_command(class MCommand *m);
   void handle_mds_map(class MMDSMap *m);
   void _handle_mds_map(MDSMap *oldmap);
+
+private:
+    mono_time starttime = mono_clock::zero();
 };
 
 

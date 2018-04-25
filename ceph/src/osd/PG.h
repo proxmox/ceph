@@ -629,6 +629,8 @@ public:
     map<int, vector<pair<pg_notify_t, PastIntervals> > > notify_list;
   };
 
+public:
+  bool dne() { return info.dne(); }
   struct RecoveryCtx {
     utime_t start_time;
     map<int, map<spg_t, pg_query_t> > *query_map;
@@ -2532,7 +2534,9 @@ public:
 
   bool append_log_entries_update_missing(
     const mempool::osd_pglog::list<pg_log_entry_t> &entries,
-    ObjectStore::Transaction &t);
+    ObjectStore::Transaction &t,
+    boost::optional<eversion_t> trim_to,
+    boost::optional<eversion_t> roll_forward_to);
 
   /**
    * Merge entries updating missing as necessary on all
@@ -2540,7 +2544,9 @@ public:
    */
   void merge_new_log_entries(
     const mempool::osd_pglog::list<pg_log_entry_t> &entries,
-    ObjectStore::Transaction &t);
+    ObjectStore::Transaction &t,
+    boost::optional<eversion_t> trim_to,
+    boost::optional<eversion_t> roll_forward_to);
 
   void reset_interval_flush();
   void start_peering_interval(

@@ -15,6 +15,8 @@
 #ifndef MDS_RANK_H_
 #define MDS_RANK_H_
 
+#include <boost/utility/string_view.hpp>
+
 #include "common/DecayCounter.h"
 #include "common/LogClient.h"
 #include "common/Timer.h"
@@ -136,6 +138,14 @@ class MDSRank {
     // a separate lock here in future potentially.
     Mutex &mds_lock;
 
+    mono_time get_starttime() const {
+      return starttime;
+    }
+    chrono::duration<double> get_uptime() const {
+      mono_time now = mono_clock::now();
+      return chrono::duration<double>(now-starttime);
+    }
+
     class CephContext *cct;
 
     bool is_daemon_stopping() const;
@@ -175,6 +185,7 @@ class MDSRank {
     Session *get_session(client_t client) {
       return sessionmap.get_session(entity_name_t::CLIENT(client.v));
     }
+    Session *get_session(Message *m);
 
     PerfCounters       *logger, *mlogger;
     OpTracker    op_tracker;
@@ -284,7 +295,7 @@ class MDSRank {
       finished_queue.push_back(c);
       progress_thread.signal();
     }
-    void queue_waiters(list<MDSInternalContextBase*>& ls) {
+    void queue_waiters(std::list<MDSInternalContextBase*>& ls) {
       finished_queue.splice( finished_queue.end(), ls );
       progress_thread.signal();
     }
@@ -414,14 +425,14 @@ class MDSRank {
 
   protected:
     void dump_clientreplay_status(Formatter *f) const;
-    void command_scrub_path(Formatter *f, const string& path, vector<string>& scrubop_vec);
-    void command_tag_path(Formatter *f, const string& path,
-                          const string &tag);
-    void command_flush_path(Formatter *f, const string& path);
+    void command_scrub_path(Formatter *f, boost::string_view path, vector<string>& scrubop_vec);
+    void command_tag_path(Formatter *f, boost::string_view path,
+                          boost::string_view tag);
+    void command_flush_path(Formatter *f, boost::string_view path);
     void command_flush_journal(Formatter *f);
     void command_get_subtrees(Formatter *f);
     void command_export_dir(Formatter *f,
-        const std::string &path, mds_rank_t dest);
+        boost::string_view path, mds_rank_t dest);
     bool command_dirfrag_split(
         cmdmap_t cmdmap,
         std::ostream &ss);
@@ -432,7 +443,7 @@ class MDSRank {
         cmdmap_t cmdmap,
         std::ostream &ss,
         Formatter *f);
-    int _command_export_dir(const std::string &path, mds_rank_t dest);
+    int _command_export_dir(boost::string_view path, mds_rank_t dest);
     int _command_flush_journal(std::stringstream *ss);
     CDir *_command_dirfrag_get(
         const cmdmap_t &cmdmap,
@@ -506,6 +517,9 @@ class MDSRank {
 
     /* Update MDSMap export_targets for this rank. Called on ::tick(). */
     void update_targets(utime_t now);
+
+private:
+    mono_time starttime = mono_clock::zero();
 };
 
 /* This expects to be given a reference which it is responsible for.

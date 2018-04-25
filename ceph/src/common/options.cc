@@ -2631,6 +2631,13 @@ std::vector<Option> get_global_options() {
     .set_long_description("OSD will refuse to instantiate PG if the number of PG it serves exceeds this number.")
     .add_see_also("mon_max_pg_per_osd"),
 
+    Option("osd_pg_log_trim_max", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
+    .set_default(10000)
+    .set_description("maximum number of entries to remove at once from the PG log")
+    .add_service("osd")
+    .add_see_also("osd_min_pg_log_entries")
+    .add_see_also("osd_max_pg_log_entries"),
+
     Option("osd_op_complaint_time", Option::TYPE_FLOAT, Option::LEVEL_ADVANCED)
     .set_default(30)
     .set_description(""),
@@ -2703,7 +2710,7 @@ std::vector<Option> get_global_options() {
     .set_default(0)
     .set_description(""),
 
-    Option("osd_debug_verify_snaps_on_info", Option::TYPE_BOOL, Option::LEVEL_DEV)
+    Option("osd_debug_verify_snaps", Option::TYPE_BOOL, Option::LEVEL_DEV)
     .set_default(false)
     .set_description(""),
 
@@ -3451,7 +3458,7 @@ std::vector<Option> get_global_options() {
     .set_description("Preallocated buffer for inline shards"),
 
     Option("bluestore_cache_trim_interval", Option::TYPE_FLOAT, Option::LEVEL_ADVANCED)
-    .set_default(.2)
+    .set_default(.05)
     .set_description("How frequently we trim the bluestore cache"),
 
     Option("bluestore_cache_trim_max_skip_pinned", Option::TYPE_UINT, Option::LEVEL_DEV)
@@ -3492,9 +3499,12 @@ std::vector<Option> get_global_options() {
     .set_default(.99)
     .set_description("Ratio of bluestore cache to devote to kv database (rocksdb)"),
 
-    Option("bluestore_cache_kv_max", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
+    Option("bluestore_cache_kv_max", Option::TYPE_INT, Option::LEVEL_ADVANCED)
     .set_default(512_M)
-    .set_description("Max memory (bytes) to devote to kv database (rocksdb)"),
+    .set_description("Max memory (bytes) to devote to kv database (rocksdb)")
+    .set_long_description("A negative value means using bluestore_cache_meta_ratio "
+      "and bluestore_cache_kv_ratio instead of calculating these ratios using "
+      "bluestore_cache_size_* and bluestore_cache_kv_max."),
 
     Option("bluestore_kvbackend", Option::TYPE_STR, Option::LEVEL_DEV)
     .set_default("rocksdb")
@@ -6011,7 +6021,7 @@ std::vector<Option> get_mds_options() {
     .set_description(""),
 
     Option("mds_log_max_segments", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
-    .set_default(30)
+    .set_default(128)
     .set_description(""),
 
     Option("mds_bal_export_pin", Option::TYPE_BOOL, Option::LEVEL_ADVANCED)
@@ -6330,9 +6340,12 @@ std::vector<Option> get_mds_options() {
     .set_default(100)
     .set_description("minimum number of capabilities a client may hold"),
 
-    Option("mds_max_ratio_caps_per_client", Option::TYPE_FLOAT, Option::LEVEL_ADVANCED)
+    Option("mds_max_ratio_caps_per_client", Option::TYPE_FLOAT, Option::LEVEL_DEV)
     .set_default(.8)
     .set_description("maximum ratio of current caps that may be recalled during MDS cache pressure"),
+    Option("mds_hack_allow_loading_invalid_metadata", Option::TYPE_BOOL, Option::LEVEL_ADVANCED)
+     .set_default(0)
+     .set_description("INTENTIONALLY CAUSE DATA LOSS by bypasing checks for invalid metadata on disk. Allows testing repair tools."),
   });
 }
 

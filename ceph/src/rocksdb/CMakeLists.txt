@@ -156,6 +156,24 @@ else()
   endif()
 endif()
 
+include(CheckCXXSourceCompiles)
+if(NOT MSVC)
+  set(CMAKE_REQUIRED_FLAGS "-msse4.2")
+endif()
+CHECK_CXX_SOURCE_COMPILES("
+#include <cstdint>
+#include <nmmintrin.h>
+int main() {
+  volatile uint32_t x = _mm_crc32_u32(0, 0);
+}
+" HAVE_SSE42)
+unset(CMAKE_REQUIRED_FLAGS)
+if(HAVE_SSE42 AND NOT WITH_SSE42)
+set_source_files_properties(
+  util/crc32c.cc
+  PROPERTIES COMPILE_FLAGS "-msse4.2")
+endif()
+
 option(FAIL_ON_WARNINGS "Treat compile warnings as errors" ON)
 if(FAIL_ON_WARNINGS)
   if(MSVC)

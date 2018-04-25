@@ -1884,7 +1884,6 @@ private:
 
   PerfCounters *logger = nullptr;
 
-  std::mutex reap_lock;
   list<CollectionRef> removed_collections;
 
   RWLock debug_read_error_lock = {"BlueStore::debug_read_error_lock"};
@@ -2015,7 +2014,7 @@ private:
   void _assign_nid(TransContext *txc, OnodeRef o);
   uint64_t _assign_blobid(TransContext *txc);
 
-  void _dump_onode(OnodeRef o, int log_level=30);
+  void _dump_onode(const OnodeRef& o, int log_level=30);
   void _dump_extent_map(ExtentMap& em, int log_level=30);
   void _dump_transaction(Transaction *t, int log_level = 30);
 

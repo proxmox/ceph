@@ -2532,6 +2532,16 @@ int Objecter::op_cancel(ceph_tid_t tid, int r)
   return ret;
 }
 
+int Objecter::op_cancel(const vector<ceph_tid_t>& tids, int r)
+{
+  unique_lock wl(rwlock);
+  ldout(cct,10) << __func__ << " " << tids << dendl;
+  for (auto tid : tids) {
+    _op_cancel(tid, r);
+  }
+  return 0;
+}
+
 int Objecter::_op_cancel(ceph_tid_t tid, int r)
 {
   int ret = 0;
@@ -3411,7 +3421,7 @@ void Objecter::handle_osd_op_reply(MOSDOpReply *m)
     op->tid = 0;
     m->get_redirect().combine_with_locator(op->target.target_oloc,
 					   op->target.target_oid.name);
-    op->target.flags |= CEPH_OSD_FLAG_REDIRECTED;
+    op->target.flags |= (CEPH_OSD_FLAG_REDIRECTED | CEPH_OSD_FLAG_IGNORE_OVERLAY);
     _op_submit(op, sul, NULL);
     m->put();
     return;

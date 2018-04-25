@@ -11,8 +11,6 @@
 #include <errno.h>
 #include <signal.h>
 
-#include <curl/curl.h>
-
 #include <boost/intrusive_ptr.hpp>
 
 #include "acconfig.h"
@@ -54,6 +52,7 @@
 #include "rgw_request.h"
 #include "rgw_process.h"
 #include "rgw_frontend.h"
+#include "rgw_http_client_curl.h"
 #if defined(WITH_RADOSGW_BEAST_FRONTEND)
 #include "rgw_asio_frontend.h"
 #endif /* WITH_RADOSGW_BEAST_FRONTEND */
@@ -140,17 +139,6 @@ static void godown_alarm(int signum)
   _exit(0);
 }
 
-#ifdef HAVE_CURL_MULTI_WAIT
-static void check_curl()
-{
-}
-#else
-static void check_curl()
-{
-  derr << "WARNING: libcurl doesn't support curl_multi_wait()" << dendl;
-  derr << "WARNING: cross zone / region transfer performance may be affected" << dendl;
-}
-#endif
 
 class C_InitTimeout : public Context {
 public:
@@ -186,7 +174,11 @@ static RGWRESTMgr *set_logging(RGWRESTMgr *mgr)
 static RGWRESTMgr *rest_filter(RGWRados *store, int dialect, RGWRESTMgr *orig)
 {
   RGWSyncModuleInstanceRef sync_module = store->get_sync_module();
-  return sync_module->get_rest_filter(dialect, orig);
+  if (sync_module) {
+    return sync_module->get_rest_filter(dialect, orig);
+  } else {
+    return orig;
+  }
 }
 
 /*
@@ -295,8 +287,6 @@ int main(int argc, const char **argv)
     g_conf->set_val_or_die("rgw_zonegroup", g_conf->rgw_region.c_str());
   }
 
-  check_curl();
-
   if (g_conf->daemonize) {
     global_init_daemonize(g_ceph_context);
   }
@@ -319,9 +309,8 @@ int main(int argc, const char **argv)
   }
 
   rgw_init_resolver();
-  
-  curl_global_init(CURL_GLOBAL_ALL);
-  
+  rgw::curl::setup_curl(fe_map);
+
 #if defined(WITH_RADOSGW_FCGI_FRONTEND)
   FCGX_Init();
 #endif
@@ -499,7 +488,7 @@ int main(int argc, const char **argv)
       std::string uri_prefix;
       config->get_val("prefix", "", &uri_prefix);
       RGWProcessEnv env{ store, &rest, olog, port, uri_prefix, auth_registry };
-      fe = new RGWAsioFrontend(env);
+      fe = new RGWAsioFrontend(env, config);
     }
 #endif /* WITH_RADOSGW_BEAST_FRONTEND */
 #if defined(WITH_RADOSGW_FCGI_FRONTEND)
@@ -596,7 +585,7 @@ int main(int argc, const char **argv)
 
   rgw_tools_cleanup();
   rgw_shutdown_resolver();
-  curl_global_cleanup();
+  rgw::curl::cleanup_curl();
 
   rgw_perf_stop(g_ceph_context);
 
