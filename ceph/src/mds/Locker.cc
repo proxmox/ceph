@@ -17,6 +17,7 @@
 #include "MDSRank.h"
 #include "MDCache.h"
 #include "Locker.h"
+#include "MDBalancer.h"
 #include "CInode.h"
 #include "CDir.h"
 #include "CDentry.h"
@@ -1886,6 +1887,9 @@ void Locker::file_update_finish(CInode *in, MutationRef& mut, bool share_max, bo
   }
   issue_caps_set(need_issue);
 
+  utime_t now = ceph_clock_now();
+  mds->balancer->hit_inode(now, in, META_POP_IWR);
+
   // auth unpin after issuing caps
   mut->cleanup();
 }
@@ -2414,6 +2418,8 @@ bool Locker::check_inode_max_size(CInode *in, bool force_wrlock,
     pi.inode.rstat.rbytes = new_size;
     dout(10) << "check_inode_max_size mtime " << pi.inode.mtime << " -> " << new_mtime << dendl;
     pi.inode.mtime = new_mtime;
+    if (new_mtime > pi.inode.ctime)
+      pi.inode.ctime = pi.inode.rstat.rctime = new_mtime;
   }
 
   // use EOpen if the file is still open; otherwise, use EUpdate.
@@ -3131,7 +3137,7 @@ void Locker::_update_cap_fields(CInode *in, int dirty, MClientCaps *m, CInode::m
   if (m->get_ctime() > pi->ctime) {
     dout(7) << "  ctime " << pi->ctime << " -> " << m->get_ctime()
 	    << " for " << *in << dendl;
-    pi->ctime = m->get_ctime();
+    pi->ctime = pi->rstat.rctime = m->get_ctime();
   }
 
   if ((features & CEPH_FEATURE_FS_CHANGE_ATTR) &&

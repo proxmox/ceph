@@ -612,7 +612,8 @@ FileStore::FileStore(CephContext* cct, const std::string &base,
   plb.add_u64(l_filestore_journal_ops, "journal_ops", "Active journal entries to be applied");
   plb.add_u64(l_filestore_journal_queue_bytes, "journal_queue_bytes", "Size of journal queue");
   plb.add_u64(l_filestore_journal_bytes, "journal_bytes", "Active journal operation size to be applied");
-  plb.add_time_avg(l_filestore_journal_latency, "journal_latency", "Average journal queue completing latency");
+  plb.add_time_avg(l_filestore_journal_latency, "journal_latency", "Average journal queue completing latency",
+                   NULL, PerfCountersBuilder::PRIO_USEFUL);
   plb.add_u64_counter(l_filestore_journal_wr, "journal_wr", "Journal write IOs");
   plb.add_u64_avg(l_filestore_journal_wr_bytes, "journal_wr_bytes", "Journal data written");
   plb.add_u64(l_filestore_op_queue_max_ops, "op_queue_max_ops", "Max operations in writing to FS queue");
@@ -628,7 +629,8 @@ FileStore::FileStore(CephContext* cct, const std::string &base,
   plb.add_time_avg(l_filestore_commitcycle_interval, "commitcycle_interval", "Average interval between commits");
   plb.add_time_avg(l_filestore_commitcycle_latency, "commitcycle_latency", "Average latency of commit");
   plb.add_u64_counter(l_filestore_journal_full, "journal_full", "Journal writes while full");
-  plb.add_time_avg(l_filestore_queue_transaction_latency_avg, "queue_transaction_latency_avg", "Store operation queue latency");
+  plb.add_time_avg(l_filestore_queue_transaction_latency_avg, "queue_transaction_latency_avg",
+                   "Store operation queue latency", NULL, PerfCountersBuilder::PRIO_USEFUL);
   plb.add_time(l_filestore_sync_pause_max_lat, "sync_pause_max_latency", "Max latency of op_wq pause before syncfs");
 
   logger = plb.create_perf_counters();
@@ -2981,7 +2983,8 @@ void FileStore::_do_transaction(
         const coll_t &cid = !_need_temp_object_collection(_cid, oid) ?
           _cid : _cid.get_temp();
         tracepoint(objectstore, omap_clear_enter, osr_name);
-        r = _omap_clear(cid, oid, spos);
+        if (_check_replay_guard(cid, oid, spos) > 0)
+	  r = _omap_clear(cid, oid, spos);
         tracepoint(objectstore, omap_clear_exit, r);
       }
       break;
@@ -2994,7 +2997,8 @@ void FileStore::_do_transaction(
         map<string, bufferlist> aset;
         i.decode_attrset(aset);
         tracepoint(objectstore, omap_setkeys_enter, osr_name);
-        r = _omap_setkeys(cid, oid, aset, spos);
+        if (_check_replay_guard(cid, oid, spos) > 0)
+	  r = _omap_setkeys(cid, oid, aset, spos);
         tracepoint(objectstore, omap_setkeys_exit, r);
       }
       break;
@@ -3007,7 +3011,8 @@ void FileStore::_do_transaction(
         set<string> keys;
         i.decode_keyset(keys);
         tracepoint(objectstore, omap_rmkeys_enter, osr_name);
-        r = _omap_rmkeys(cid, oid, keys, spos);
+        if (_check_replay_guard(cid, oid, spos) > 0)
+	  r = _omap_rmkeys(cid, oid, keys, spos);
         tracepoint(objectstore, omap_rmkeys_exit, r);
       }
       break;
@@ -3021,7 +3026,8 @@ void FileStore::_do_transaction(
         first = i.decode_string();
         last = i.decode_string();
         tracepoint(objectstore, omap_rmkeyrange_enter, osr_name);
-        r = _omap_rmkeyrange(cid, oid, first, last, spos);
+        if (_check_replay_guard(cid, oid, spos) > 0)
+	  r = _omap_rmkeyrange(cid, oid, first, last, spos);
         tracepoint(objectstore, omap_rmkeyrange_exit, r);
       }
       break;
@@ -3034,7 +3040,8 @@ void FileStore::_do_transaction(
         bufferlist bl;
         i.decode_bl(bl);
         tracepoint(objectstore, omap_setheader_enter, osr_name);
-        r = _omap_setheader(cid, oid, bl, spos);
+        if (_check_replay_guard(cid, oid, spos) > 0)
+	  r = _omap_setheader(cid, oid, bl, spos);
         tracepoint(objectstore, omap_setheader_exit, r);
       }
       break;

@@ -417,6 +417,29 @@ bool AuthMonitor::prep_auth(MonOpRequestRef op, bool paxos_writable)
 	  supported.erase(CEPH_AUTH_CEPHX);
 	}
       }
+    } else if (!m->get_connection()->has_feature(CEPH_FEATURE_CEPHX_V2)) {
+      if (entity_name.get_type() == CEPH_ENTITY_TYPE_MON ||
+	  entity_name.get_type() == CEPH_ENTITY_TYPE_OSD ||
+	  entity_name.get_type() == CEPH_ENTITY_TYPE_MDS ||
+	  entity_name.get_type() == CEPH_ENTITY_TYPE_MGR) {
+	if (g_conf->cephx_cluster_require_version >= 2 ||
+	    g_conf->cephx_require_version >= 2) {
+	  dout(1) << m->get_source_inst()
+                  << " supports cephx but not v2 and"
+                  << " 'cephx [cluster] require version >= 2';"
+                  << " disallowing cephx" << dendl;
+	  supported.erase(CEPH_AUTH_CEPHX);
+	}
+      } else {
+	if (g_conf->cephx_service_require_version >= 2 ||
+	    g_conf->cephx_require_version >= 2) {
+	  dout(1) << m->get_source_inst()
+                  << " supports cephx but not v2 and"
+                  << " 'cephx [service] require version >= 2';"
+                  << " disallowing cephx" << dendl;
+	  supported.erase(CEPH_AUTH_CEPHX);
+	}
+      }
     }
 
     int type;
@@ -1325,8 +1348,8 @@ bool AuthMonitor::prepare_command(MonOpRequestRef op)
       for (const auto &sys_cap : wanted_caps) {
 	if (entity_auth.caps.count(sys_cap.first) == 0 ||
 	    !entity_auth.caps[sys_cap.first].contents_equal(sys_cap.second)) {
-	  ss << "key for " << entity << " exists but cap " << sys_cap.first
-	     << " does not match";
+	  ss << entity << " already has fs capabilities that differ from those supplied. To generate a new auth key for "
+	     << entity << ", first remove " << entity << " from configuration files, execute 'ceph auth rm " << entity << "', then execute this command again.";
 	  err = -EINVAL;
 	  goto done;
 	}

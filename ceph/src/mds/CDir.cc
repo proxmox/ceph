@@ -196,6 +196,7 @@ CDir::CDir(CInode *in, frag_t fg, MDCache *mdcache, bool auth) :
   pop_nested(ceph_clock_now()),
   pop_auth_subtree(ceph_clock_now()),
   pop_auth_subtree_nested(ceph_clock_now()),
+  pop_lru_subdirs(member_offset(CInode, item_pop_lru)),
   num_dentries_nested(0), num_dentries_auth_subtree(0),
   num_dentries_auth_subtree_nested(0),
   dir_auth(CDIR_AUTH_DEFAULT)
@@ -386,7 +387,6 @@ CDentry* CDir::add_primary_dentry(boost::string_view dname, CInode *in,
   items[dn->key()] = dn;
 
   dn->get_linkage()->inode = in;
-  in->set_primary_parent(dn);
 
   link_inode_work(dn, in);
 
@@ -533,7 +533,6 @@ void CDir::link_primary_inode(CDentry *dn, CInode *in)
   assert(dn->get_linkage()->is_null());
 
   dn->get_linkage()->inode = in;
-  in->set_primary_parent(dn);
 
   link_inode_work(dn, in);
 
@@ -558,7 +557,7 @@ void CDir::link_primary_inode(CDentry *dn, CInode *in)
 void CDir::link_inode_work( CDentry *dn, CInode *in)
 {
   assert(dn->get_linkage()->get_inode() == in);
-  assert(in->get_parent_dn() == dn);
+  in->set_primary_parent(dn);
 
   // set inode version
   //in->inode.version = dn->get_version();
@@ -646,9 +645,11 @@ void CDir::unlink_inode_work( CDentry *dn )
     // unlink auth_pin count
     if (in->auth_pins + in->nested_auth_pins)
       dn->adjust_nested_auth_pins(0 - (in->auth_pins + in->nested_auth_pins), 0 - in->auth_pins, NULL);
-    
+
     // detach inode
     in->remove_primary_parent(dn);
+    if (in->is_dir())
+      in->item_pop_lru.remove_myself();
     dn->get_linkage()->inode = 0;
   } else {
     assert(!dn->get_linkage()->is_null());
@@ -823,10 +824,13 @@ void CDir::steal_dentry(CDentry *dn)
     if (dn->get_linkage()->is_primary()) {
       CInode *in = dn->get_linkage()->get_inode();
       auto pi = in->get_projected_inode();
-      if (dn->get_linkage()->get_inode()->is_dir())
+      if (in->is_dir()) {
 	fnode.fragstat.nsubdirs++;
-      else
+	if (in->item_pop_lru.is_on_list())
+	  pop_lru_subdirs.push_back(&in->item_pop_lru);
+      } else {
 	fnode.fragstat.nfiles++;
+      }
       fnode.rstat.rbytes += pi->accounted_rstat.rbytes;
       fnode.rstat.rfiles += pi->accounted_rstat.rfiles;
       fnode.rstat.rsubdirs += pi->accounted_rstat.rsubdirs;
@@ -1659,8 +1663,7 @@ CDentry *CDir::_load_dentry(
     bufferlist &bl,
     const int pos,
     const std::set<snapid_t> *snaps,
-    bool *force_dirty,
-    list<CInode*> *undef_inodes)
+    bool *force_dirty)
 {
   bufferlist::iterator q = bl.begin();
 
@@ -1712,10 +1715,16 @@ CDentry *CDir::_load_dentry(
     }
 
     if (dn) {
-      if (dn->get_linkage()->get_inode() == 0) {
-        dout(12) << "_fetched  had NEG dentry " << *dn << dendl;
-      } else {
-        dout(12) << "_fetched  had dentry " << *dn << dendl;
+      CDentry::linkage_t *dnl = dn->get_linkage();
+      dout(12) << "_fetched had " << (dnl->is_null() ? "NEG" : "") << " dentry " << *dn << dendl;
+      if (committed_version == 0 &&
+	  dnl->is_remote() &&
+	  dn->is_dirty() &&
+	  ino == dnl->get_remote_ino() &&
+	  d_type == dnl->get_remote_d_type()) {
+	// see comment below
+	dout(10) << "_fetched  had underwater dentry " << *dn << ", marking clean" << dendl;
+	dn->mark_clean();
       }
     } else {
       // (remote) link
@@ -1748,15 +1757,35 @@ CDentry *CDir::_load_dentry(
 
     bool undef_inode = false;
     if (dn) {
-      CInode *in = dn->get_linkage()->get_inode();
-      if (in) {
-        dout(12) << "_fetched  had dentry " << *dn << dendl;
-        if (in->state_test(CInode::STATE_REJOINUNDEF)) {
-          undef_inodes->push_back(in);
-          undef_inode = true;
-        }
-      } else
-        dout(12) << "_fetched  had NEG dentry " << *dn << dendl;
+      CDentry::linkage_t *dnl = dn->get_linkage();
+      dout(12) << "_fetched had " << (dnl->is_null() ? "NEG" : "") << " dentry " << *dn << dendl;
+
+      if (dnl->is_primary()) {
+	CInode *in = dnl->get_inode();
+	if (in->state_test(CInode::STATE_REJOINUNDEF)) {
+	  undef_inode = true;
+	} else if (committed_version == 0 &&
+		   dn->is_dirty() &&
+		   inode_data.inode.ino == in->ino() &&
+		   inode_data.inode.version == in->get_version()) {
+	  /* clean underwater item?
+	   * Underwater item is something that is dirty in our cache from
+	   * journal replay, but was previously flushed to disk before the
+	   * mds failed.
+	   *
+	   * We only do this is committed_version == 0. that implies either
+	   * - this is a fetch after from a clean/empty CDir is created
+	   *   (and has no effect, since the dn won't exist); or
+	   * - this is a fetch after _recovery_, which is what we're worried
+	   *   about.  Items that are marked dirty from the journal should be
+	   *   marked clean if they appear on disk.
+	   */
+	  dout(10) << "_fetched  had underwater dentry " << *dn << ", marking clean" << dendl;
+	  dn->mark_clean();
+	  dout(10) << "_fetched  had underwater inode " << *dnl->get_inode() << ", marking clean" << dendl;
+	  in->mark_clean();
+	}
+      }
     }
 
     if (!dn || undef_inode) {
@@ -1918,7 +1947,7 @@ void CDir::_omap_fetched(bufferlist& hdrbl, map<string, bufferlist>& omap,
     try {
       dn = _load_dentry(
             p->first, dname, last, p->second, pos, snaps,
-            &force_dirty, &undef_inodes);
+            &force_dirty);
     } catch (const buffer::error &err) {
       cache->mds->clog->warn() << "Corrupt dentry '" << dname << "' in "
                                   "dir frag " << dirfrag() << ": "
@@ -1937,35 +1966,16 @@ void CDir::_omap_fetched(bufferlist& hdrbl, map<string, bufferlist>& omap,
       continue;
     }
 
-    if (dn && (wanted_items.count(mempool::mds_co::string(boost::string_view(dname))) > 0 || !complete)) {
+    if (!dn)
+      continue;
+
+    CDentry::linkage_t *dnl = dn->get_linkage();
+    if (dnl->is_primary() && dnl->get_inode()->state_test(CInode::STATE_REJOINUNDEF))
+      undef_inodes.push_back(dnl->get_inode());
+
+    if (!complete || wanted_items.count(mempool::mds_co::string(boost::string_view(dname))) > 0) {
       dout(10) << " touching wanted dn " << *dn << dendl;
       inode->mdcache->touch_dentry(dn);
-    }
-
-    /** clean underwater item?
-     * Underwater item is something that is dirty in our cache from
-     * journal replay, but was previously flushed to disk before the
-     * mds failed.
-     *
-     * We only do this is committed_version == 0. that implies either
-     * - this is a fetch after from a clean/empty CDir is created
-     *   (and has no effect, since the dn won't exist); or
-     * - this is a fetch after _recovery_, which is what we're worried 
-     *   about.  Items that are marked dirty from the journal should be
-     *   marked clean if they appear on disk.
-     */
-    if (committed_version == 0 &&     
-	dn &&
-	dn->get_version() <= got_fnode.version &&
-	dn->is_dirty()) {
-      dout(10) << "_fetched  had underwater dentry " << *dn << ", marking clean" << dendl;
-      dn->mark_clean();
-
-      if (dn->get_linkage()->is_primary()) {
-	assert(dn->get_linkage()->get_inode()->get_version() <= got_fnode.version);
-	dout(10) << "_fetched  had underwater inode " << *dn->get_linkage()->get_inode() << ", marking clean" << dendl;
-	dn->get_linkage()->get_inode()->mark_clean();
-      }
     }
   }
 
@@ -3055,6 +3065,28 @@ void CDir::dump(Formatter *f) const
   f->close_section();
 
   MDSCacheObject::dump(f);
+}
+
+void CDir::dump_load(Formatter *f, utime_t now, const DecayRate& rate)
+{
+  f->dump_stream("path") << get_path();
+  f->dump_stream("dirfrag") << dirfrag();
+
+  f->open_object_section("pop_me");
+  pop_me.dump(f, now, rate);
+  f->close_section();
+
+  f->open_object_section("pop_nested");
+  pop_nested.dump(f, now, rate);
+  f->close_section();
+
+  f->open_object_section("pop_auth_subtree");
+  pop_auth_subtree.dump(f, now, rate);
+  f->close_section();
+
+  f->open_object_section("pop_auth_subtree_nested");
+  pop_auth_subtree_nested.dump(f, now, rate);
+  f->close_section();
 }
 
 /****** Scrub Stuff *******/

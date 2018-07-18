@@ -73,12 +73,12 @@ public:
   std::map<int64_t, crush_choose_arg_map> choose_args;
 
 private:
-  struct crush_map *crush;
+  struct crush_map *crush = nullptr;
 
   bool have_uniform_rules = false;
 
   /* reverse maps */
-  mutable bool have_rmaps;
+  mutable bool have_rmaps = false;
   mutable std::map<string, int> type_rmap, name_rmap, rule_name_rmap;
   void build_rmaps() const {
     if (have_rmaps) return;
@@ -97,7 +97,7 @@ public:
   CrushWrapper(const CrushWrapper& other);
   const CrushWrapper& operator=(const CrushWrapper& other);
 
-  CrushWrapper() : crush(0), have_rmaps(false) {
+  CrushWrapper() {
     create();
   }
   ~CrushWrapper() {
@@ -586,6 +586,7 @@ public:
    * Note that these may not be parentless roots.
    */
   void find_takes(set<int> *roots) const;
+  void find_takes_by_rule(int rule, set<int> *roots) const;
 
   /**
    * find tree roots
@@ -681,9 +682,10 @@ public:
 
   /**
    * return ancestor of the given type, or 0 if none
+   * can pass in a specific crush **rule** to return ancestor from that rule only 
    * (parent is always a bucket and thus <0)
    */
-  int get_parent_of_type(int id, int type) const;
+  int get_parent_of_type(int id, int type, int rule = -1) const;
 
   /**
    * get the fully qualified location of a device by successively finding
@@ -726,6 +728,10 @@ public:
    * @return number of items, or error
    */
   int get_children(int id, list<int> *children);
+  void get_children_of_type(int id,
+                            int type,
+			    set<int> *children,
+			    bool exclude_shadow = true) const;
 
   /**
     * get failure-domain type of a specific crush rule
@@ -1385,7 +1391,7 @@ public:
   void destroy_choose_args(crush_choose_arg_map arg_map) {
     for (__u32 i = 0; i < arg_map.size; i++) {
       crush_choose_arg *arg = &arg_map.args[i];
-      for (__u32 j = 0; j < arg->weight_set_size; j++) {
+      for (__u32 j = 0; j < arg->weight_set_positions; j++) {
 	crush_weight_set *weight_set = &arg->weight_set[j];
 	free(weight_set->weights);
       }
@@ -1412,9 +1418,9 @@ public:
       carg.ids_size = 0;
       if (b && b->alg == CRUSH_BUCKET_STRAW2) {
 	crush_bucket_straw2 *sb = (crush_bucket_straw2*)b;
-	carg.weight_set_size = positions;
+	carg.weight_set_positions = positions;
 	carg.weight_set = (crush_weight_set*)calloc(sizeof(crush_weight_set),
-						    carg.weight_set_size);
+						    carg.weight_set_positions);
 	// initialize with canonical weights
 	for (int pos = 0; pos < positions; ++pos) {
 	  carg.weight_set[pos].size = b->size;
@@ -1425,7 +1431,7 @@ public:
 	}
       } else {
 	carg.weight_set = NULL;
-	carg.weight_set_size = 0;
+	carg.weight_set_positions = 0;
       }
     }
   }
@@ -1443,6 +1449,9 @@ public:
       destroy_choose_args(w.second);
     choose_args.clear();
   }
+
+  // remove choose_args for buckets that no longer exist, create them for new buckets
+  void update_choose_args(CephContext *cct);
 
   // adjust choose_args_map weight, preserving the hierarchical summation
   // property.  used by callers optimizing layouts by tweaking weights.
@@ -1473,8 +1482,8 @@ public:
   int get_choose_args_positions(crush_choose_arg_map cmap) {
     // infer positions from other buckets
     for (unsigned j = 0; j < cmap.size; ++j) {
-      if (cmap.args[j].weight_set_size) {
-	return cmap.args[j].weight_set_size;
+      if (cmap.args[j].weight_set_positions) {
+	return cmap.args[j].weight_set_positions;
       }
     }
     return 1;

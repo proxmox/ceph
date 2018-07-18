@@ -94,7 +94,8 @@ class MDSCommandOp : public CommandOp
 };
 
 /* error code for ceph_fuse */
-#define CEPH_FUSE_NO_MDS_UP    -(1<<2) /* no mds up deteced in ceph_fuse */
+#define CEPH_FUSE_NO_MDS_UP    -((1<<16)+0) /* no mds up deteced in ceph_fuse */
+#define CEPH_FUSE_LAST         -((1<<16)+1) /* (unused) */
 
 // ============================================
 // types for my local metadata cache
@@ -135,7 +136,6 @@ typedef void (*client_dentry_callback_t)(void *handle, vinodeno_t dirino,
 					 vinodeno_t ino, string& name);
 typedef int (*client_remount_callback_t)(void *handle);
 
-typedef int (*client_getgroups_callback_t)(void *handle, gid_t **sgids);
 typedef void(*client_switch_interrupt_callback_t)(void *handle, void *data);
 typedef mode_t (*client_umask_callback_t)(void *handle);
 
@@ -148,7 +148,6 @@ struct client_callback_args {
   client_dentry_callback_t dentry_cb;
   client_switch_interrupt_callback_t switch_intr_cb;
   client_remount_callback_t remount_cb;
-  client_getgroups_callback_t getgroups_cb;
   client_umask_callback_t umask_cb;
 };
 
@@ -276,7 +275,6 @@ class Client : public Dispatcher, public md_config_obs_t {
   client_remount_callback_t remount_cb;
   client_ino_callback_t ino_invalidate_cb;
   client_dentry_callback_t dentry_invalidate_cb;
-  client_getgroups_callback_t getgroups_cb;
   client_umask_callback_t umask_cb;
   bool can_invalidate_dentries;
 
@@ -432,8 +430,8 @@ protected:
   Inode*                 root_ancestor;
   LRU                    lru;    // lru list of Dentry's in our local metadata cache.
 
-  // all inodes with caps sit on either cap_list or delayed_caps.
-  xlist<Inode*> delayed_caps, cap_list;
+  // dirty_list keeps all the dirty inodes before flushing.
+  xlist<Inode*> delayed_list, dirty_list;
   int num_flushing_caps;
   ceph::unordered_map<inodeno_t,SnapRealm*> snap_realms;
 
@@ -539,7 +537,7 @@ protected:
   void trim_cache(bool trim_kernel_dcache=false);
   void trim_cache_for_reconnect(MetaSession *s);
   void trim_dentry(Dentry *dn);
-  void trim_caps(MetaSession *s, int max);
+  void trim_caps(MetaSession *s, uint64_t max);
   void _invalidate_kernel_dcache();
   
   void dump_inode(Formatter *f, Inode *in, set<Inode*>& did, bool disconnected);
@@ -574,8 +572,9 @@ protected:
 			     std::function<bool (const Inode &)> test);
   bool is_quota_files_exceeded(Inode *in, const UserPerm& perms);
   bool is_quota_bytes_exceeded(Inode *in, int64_t new_bytes,
-			       const UserPerm& perms);
-  bool is_quota_bytes_approaching(Inode *in, const UserPerm& perms);
+			       const UserPerm& perms,
+			       std::list<InodeRef>* quota_roots=nullptr);
+  bool is_quota_bytes_approaching(Inode *in, std::list<InodeRef>& quota_roots);
 
   std::map<std::pair<int64_t,std::string>, int> pool_perms;
   list<Cond*> waiting_for_pool_perm;
@@ -635,7 +634,6 @@ protected:
   void remove_cap(Cap *cap, bool queue_release);
   void remove_all_caps(Inode *in);
   void remove_session_caps(MetaSession *session);
-  void mark_caps_dirty(Inode *in, int caps);
   int mark_caps_flushing(Inode *in, ceph_tid_t *ptid);
   void adjust_session_flushing_caps(Inode *in, MetaSession *old_s, MetaSession *new_s);
   void flush_caps_sync();
@@ -733,6 +731,7 @@ protected:
   void flush_mdlog_sync();
   void flush_mdlog(MetaSession *session);
   
+  xlist<Inode*> &get_dirty_list() { return dirty_list; }
   // ----------------------
   // fs ops.
 private:
@@ -863,9 +862,6 @@ private:
     MAY_READ = 4,
   };
 
-  void init_groups(UserPerm *groups);
-
-  int inode_permission(Inode *in, const UserPerm& perms, unsigned want);
   int xattr_permission(Inode *in, const char *name, unsigned want,
 		       const UserPerm& perms);
   int may_setattr(Inode *in, struct ceph_statx *stx, int mask,
@@ -877,7 +873,6 @@ private:
   int may_hardlink(Inode *in, const UserPerm& perms);
 
   int _getattr_for_perm(Inode *in, const UserPerm& perms);
-  int _getgrouplist(gid_t **sgids, uid_t uid, gid_t gid);
 
   vinodeno_t _get_vino(Inode *in);
   inodeno_t _get_inodeno(Inode *in);
@@ -891,7 +886,11 @@ private:
 	  size_t (Client::*getxattr_cb)(Inode *in, char *val, size_t size);
 	  bool readonly, hidden;
 	  bool (Client::*exists_cb)(Inode *in);
+	  int flags;
   };
+
+/* Flags for VXattr */
+#define VXATTR_RSTAT 0x1
 
   bool _vxattrcb_quota_exists(Inode *in);
   size_t _vxattrcb_quota(Inode *in, char *val, size_t size);
@@ -1126,15 +1125,13 @@ public:
   int mksnap(const char *path, const char *name, const UserPerm& perm);
   int rmsnap(const char *path, const char *name, const UserPerm& perm);
 
+  // Inode permission checking
+  int inode_permission(Inode *in, const UserPerm& perms, unsigned want);
+
   // expose caps
   int get_caps_issued(int fd);
   int get_caps_issued(const char *path, const UserPerm& perms);
 
-  // low-level interface v2
-  inodeno_t ll_get_inodeno(Inode *in) {
-    Mutex::Locker lock(client_lock);
-    return _get_inodeno(in);
-  }
   snapid_t ll_get_snapid(Inode *in);
   vinodeno_t ll_get_vino(Inode *in) {
     Mutex::Locker lock(client_lock);
@@ -1221,6 +1218,7 @@ public:
   loff_t ll_lseek(Fh *fh, loff_t offset, int whence);
   int ll_flush(Fh *fh);
   int ll_fsync(Fh *fh, bool syncdataonly);
+  int ll_sync_inode(Inode *in, bool syncdataonly);
   int ll_fallocate(Fh *fh, int mode, loff_t offset, loff_t length);
   int ll_release(Fh *fh);
   int ll_getlk(Fh *fh, struct flock *fl, uint64_t owner);

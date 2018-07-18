@@ -331,9 +331,12 @@ OPTION(auth_service_required, OPT_STR)   // required by daemons of clients
 OPTION(auth_client_required, OPT_STR)     // what clients require of daemons
 OPTION(auth_supported, OPT_STR)               // deprecated; default value for above if they are not defined.
 OPTION(max_rotating_auth_attempts, OPT_INT)
-OPTION(cephx_require_signatures, OPT_BOOL) //  If true, don't talk to Cephx partners if they don't support message signing; off by default
+OPTION(cephx_require_signatures, OPT_BOOL)
 OPTION(cephx_cluster_require_signatures, OPT_BOOL)
 OPTION(cephx_service_require_signatures, OPT_BOOL)
+OPTION(cephx_require_version, OPT_INT)
+OPTION(cephx_cluster_require_version, OPT_INT)
+OPTION(cephx_service_require_version, OPT_INT)
 OPTION(cephx_sign_messages, OPT_BOOL)  // Default to signing session messages if supported
 OPTION(auth_mon_ticket_ttl, OPT_DOUBLE)
 OPTION(auth_service_ticket_ttl, OPT_DOUBLE)
@@ -769,6 +772,8 @@ OPTION(osd_max_scrubs, OPT_INT)
 OPTION(osd_scrub_during_recovery, OPT_BOOL) // Allow new scrubs to start while recovery is active on the OSD
 OPTION(osd_scrub_begin_hour, OPT_INT)
 OPTION(osd_scrub_end_hour, OPT_INT)
+OPTION(osd_scrub_begin_week_day, OPT_INT)
+OPTION(osd_scrub_end_week_day, OPT_INT)
 OPTION(osd_scrub_load_threshold, OPT_FLOAT)
 OPTION(osd_scrub_min_interval, OPT_FLOAT)    // if load is low
 OPTION(osd_scrub_max_interval, OPT_FLOAT)  // regardless of load
@@ -782,7 +787,12 @@ OPTION(osd_scrub_auto_repair_num_errors, OPT_U32)   // only auto-repair when num
 OPTION(osd_deep_scrub_interval, OPT_FLOAT) // once a week
 OPTION(osd_deep_scrub_randomize_ratio, OPT_FLOAT) // scrubs will randomly become deep scrubs at this rate (0.15 -> 15% of scrubs are deep)
 OPTION(osd_deep_scrub_stride, OPT_INT)
+OPTION(osd_deep_scrub_keys, OPT_INT)
 OPTION(osd_deep_scrub_update_digest_min_age, OPT_INT)   // objects must be this old (seconds) before we update the whole-object digest on scrub
+OPTION(osd_skip_data_digest, OPT_BOOL)
+OPTION(osd_distrust_data_digest, OPT_BOOL)
+OPTION(osd_deep_scrub_large_omap_object_key_threshold, OPT_U64)
+OPTION(osd_deep_scrub_large_omap_object_value_sum_threshold, OPT_U64)
 OPTION(osd_class_dir, OPT_STR) // where rados plugins are stored
 OPTION(osd_open_classes_on_start, OPT_BOOL)
 OPTION(osd_class_load_list, OPT_STR) // list of object classes allowed to be loaded (allow all: *)
@@ -818,7 +828,6 @@ OPTION(osd_debug_drop_ping_probability, OPT_DOUBLE)
 OPTION(osd_debug_drop_ping_duration, OPT_INT)
 OPTION(osd_debug_op_order, OPT_BOOL)
 OPTION(osd_debug_verify_missing_on_start, OPT_BOOL)
-OPTION(osd_debug_scrub_chance_rewrite_digest, OPT_U64)
 OPTION(osd_debug_verify_snaps, OPT_BOOL)
 OPTION(osd_debug_verify_stray_on_activate, OPT_BOOL)
 OPTION(osd_debug_skip_full_check_in_backfill_reservation, OPT_BOOL)
@@ -828,6 +837,7 @@ OPTION(osd_debug_misdirected_ops, OPT_BOOL)
 OPTION(osd_debug_skip_full_check_in_recovery, OPT_BOOL)
 OPTION(osd_debug_random_push_read_error, OPT_DOUBLE)
 OPTION(osd_debug_verify_cached_snaps, OPT_BOOL)
+OPTION(osd_debug_deep_scrub_sleep, OPT_FLOAT)
 OPTION(osd_enable_op_tracker, OPT_BOOL) // enable/disable OSD op tracking
 OPTION(osd_num_op_tracker_shard, OPT_U32) // The number of shards for holding the ops
 OPTION(osd_op_history_size, OPT_U32)    // Max number of completed ops to track
@@ -1335,6 +1345,7 @@ OPTION(rgw_lc_max_objs, OPT_INT)
 OPTION(rgw_lc_debug_interval, OPT_INT)  // Debug run interval, in seconds
 OPTION(rgw_script_uri, OPT_STR) // alternative value for SCRIPT_URI if not set in request
 OPTION(rgw_request_uri, OPT_STR) // alternative value for REQUEST_URI if not set in request
+OPTION(rgw_ignore_get_invalid_range, OPT_BOOL) // treat invalid (e.g., negative) range requests as full
 OPTION(rgw_swift_url, OPT_STR)             // the swift url, being published by the internal swift auth
 OPTION(rgw_swift_url_prefix, OPT_STR) // entry point for which a url is considered a swift url
 OPTION(rgw_swift_auth_url, OPT_STR)        // default URL to go and verify tokens for v1 auth (if not using internal swift auth)
@@ -1360,7 +1371,6 @@ OPTION(rgw_keystone_accepted_admin_roles, OPT_STR) // list of roles allowing an 
 OPTION(rgw_keystone_token_cache_size, OPT_INT)  // max number of entries in keystone token cache
 OPTION(rgw_keystone_revocation_interval, OPT_INT)  // seconds between tokens revocation check
 OPTION(rgw_keystone_verify_ssl, OPT_BOOL) // should we try to verify keystone's ssl
-OPTION(rgw_keystone_implicit_tenants, OPT_BOOL)  // create new users in their own tenants of the same name
 OPTION(rgw_cross_domain_policy, OPT_STR)
 OPTION(rgw_healthcheck_disabling_path, OPT_STR) // path that existence causes the healthcheck to respond 503
 OPTION(rgw_s3_auth_use_rados, OPT_BOOL)  // should we try to use the internal credentials for s3?

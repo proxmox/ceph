@@ -829,7 +829,10 @@ protected:
     if (!to_req.empty()) {
       // requeue at front of scrub blocking queue if we are blocked by scrub
       for (auto &&p: to_req) {
-	if (scrubber.write_blocked_by_scrub(p.first.get_head())) {
+	if (write_blocked_by_scrub(p.first.get_head())) {
+          for (auto& op : p.second) {
+            op->mark_delayed("waiting for scrub");
+          }
 	  waiting_for_scrub.splice(
 	    waiting_for_scrub.begin(),
 	    p.second,
@@ -1318,7 +1321,9 @@ protected:
     const hobject_t &begin, const hobject_t &end) override;
   void scrub_snapshot_metadata(
     ScrubMap &map,
-    const std::map<hobject_t, pair<uint32_t, uint32_t>> &missing_digest) override;
+    const std::map<hobject_t,
+                   pair<boost::optional<uint32_t>,
+                        boost::optional<uint32_t>>> &missing_digest) override;
   void _scrub_clear_state() override;
   void _scrub_finish() override;
   object_stat_collection_t scrub_cstat;
@@ -1785,6 +1790,9 @@ public:
   void on_shutdown() override;
   bool check_failsafe_full(ostream &ss) override;
   bool check_osdmap_full(const set<pg_shard_t> &missing_on) override;
+  bool maybe_preempt_replica_scrub(const hobject_t& oid) override {
+    return write_blocked_by_scrub(oid);
+  }
   int rep_repair_primary_object(const hobject_t& soid, OpRequestRef op);
 
   // attr cache handling

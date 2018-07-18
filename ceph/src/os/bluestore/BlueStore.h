@@ -431,7 +431,8 @@ public:
     SharedBlobRef lookup(uint64_t sbid) {
       std::lock_guard<std::mutex> l(lock);
       auto p = sb_map.find(sbid);
-      if (p == sb_map.end()) {
+      if (p == sb_map.end() ||
+	  p->second->nref == 0) {
         return nullptr;
       }
       return p->second;
@@ -443,20 +444,15 @@ public:
       sb->coll = coll;
     }
 
-    bool try_remove(SharedBlob *sb) {
-      std::lock_guard<std::mutex> l(lock);
-      if (sb->nref == 0) {
-	assert(sb->get_parent() == this);
-	sb_map.erase(sb->get_sbid());
-	return true;
-      }
-      return false;
-    }
-
     void remove(SharedBlob *sb) {
       std::lock_guard<std::mutex> l(lock);
       assert(sb->get_parent() == this);
-      sb_map.erase(sb->get_sbid());
+      // only remove if it still points to us
+      auto p = sb_map.find(sb->get_sbid());
+      if (p != sb_map.end() &&
+	  p->second == sb) {
+	sb_map.erase(p);
+      }
     }
 
     bool empty() {
@@ -2417,7 +2413,10 @@ public:
     assert(db);
     db->compact();
   }
-  
+  bool has_builtin_csum() const override {
+    return true;
+  }
+
 private:
   bool _debug_data_eio(const ghobject_t& o) {
     if (!cct->_conf->bluestore_debug_inject_read_err) {

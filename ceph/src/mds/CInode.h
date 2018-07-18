@@ -631,6 +631,7 @@ public:
   int auth_pin_freeze_allowance = 0;
 
   inode_load_vec_t pop;
+  elist<CInode*>::item item_pop_lru;
 
   // friends
   friend class Server;
@@ -762,7 +763,7 @@ protected:
    */
   int64_t get_backtrace_pool() const;
 public:
-  void _mark_dirty_parent(LogSegment *ls, bool dirty_pool=false);
+  void mark_dirty_parent(LogSegment *ls, bool dirty_pool=false);
   void clear_dirty_parent();
   void verify_diri_backtrace(bufferlist &bl, int err);
   bool is_dirty_parent() { return state_test(STATE_DIRTYPARENT); }

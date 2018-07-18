@@ -362,6 +362,8 @@ protected:
 
   load_spread_t pop_spread;
 
+  elist<CInode*> pop_lru_subdirs;
+
   // and to provide density
   int num_dentries_nested;
   int num_dentries_auth_subtree;
@@ -605,8 +607,7 @@ protected:
       bufferlist &bl,
       int pos,
       const std::set<snapid_t> *snaps,
-      bool *force_dirty,
-      std::list<CInode*> *undef_inodes);
+      bool *force_dirty);
 
   /**
    * Mark this fragment as BADFRAG (common part of go_bad and go_bad_dentry)
@@ -747,6 +748,7 @@ public:
   ostream& print_db_line_prefix(ostream& out) override;
   void print(ostream& out) override;
   void dump(Formatter *f) const;
+  void dump_load(Formatter *f, utime_t now, const DecayRate& rate);
 };
 
 #endif

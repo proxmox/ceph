@@ -2059,8 +2059,8 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
     return;
   }
 
-  if (write_ordered &&
-      scrubber.write_blocked_by_scrub(head)) {
+  if (write_ordered && scrubber.is_chunky_scrub_active() &&
+      write_blocked_by_scrub(head)) {
     dout(20) << __func__ << ": waiting for scrub" << dendl;
     waiting_for_scrub.push_back(op);
     op->mark_delayed("waiting for scrub");
@@ -3127,7 +3127,7 @@ void PrimaryLogPG::promote_object(ObjectContextRef obc,
 {
   hobject_t hoid = obc ? obc->obs.oi.soid : missing_oid;
   assert(hoid != hobject_t());
-  if (scrubber.write_blocked_by_scrub(hoid)) {
+  if (write_blocked_by_scrub(hoid)) {
     dout(10) << __func__ << " " << hoid
 	     << " blocked by scrub" << dendl;
     if (op) {
@@ -4532,6 +4532,9 @@ int PrimaryLogPG::do_checksum(OpContext *ctx, OSDOp& osd_op,
 			      bufferlist::iterator *bl_it)
 {
   dout(20) << __func__ << dendl;
+  bool skip_data_digest =
+    (osd->store->has_builtin_csum() && g_conf->osd_skip_data_digest) ||
+    g_conf->osd_distrust_data_digest;
 
   auto& op = osd_op.op;
   if (op.checksum.chunk_size > 0) {
@@ -4586,7 +4589,8 @@ int PrimaryLogPG::do_checksum(OpContext *ctx, OSDOp& osd_op,
     // If there is a data digest and it is possible we are reading
     // entire object, pass the digest.
     boost::optional<uint32_t> maybe_crc;
-    if (oi.is_data_digest() && op.checksum.offset == 0 &&
+    if (!skip_data_digest &&
+	oi.is_data_digest() && op.checksum.offset == 0 &&
         op.checksum.length >= oi.size) {
       maybe_crc = oi.data_digest;
     }
@@ -4734,6 +4738,9 @@ int PrimaryLogPG::do_extent_cmp(OpContext *ctx, OSDOp& osd_op)
 {
   dout(20) << __func__ << dendl;
   ceph_osd_op& op = osd_op.op;
+  bool skip_data_digest =
+    (osd->store->has_builtin_csum() && g_conf->osd_skip_data_digest) ||
+    g_conf->osd_distrust_data_digest;
 
   auto& oi = ctx->new_obs.oi;
   uint64_t size = oi.size;
@@ -4758,7 +4765,8 @@ int PrimaryLogPG::do_extent_cmp(OpContext *ctx, OSDOp& osd_op)
     // If there is a data digest and it is possible we are reading
     // entire object, pass the digest.
     boost::optional<uint32_t> maybe_crc;
-    if (oi.is_data_digest() && op.checksum.offset == 0 &&
+    if (!skip_data_digest &&
+	oi.is_data_digest() && op.checksum.offset == 0 &&
         op.checksum.length >= oi.size) {
       maybe_crc = oi.data_digest;
     }
@@ -4816,6 +4824,9 @@ int PrimaryLogPG::do_read(OpContext *ctx, OSDOp& osd_op) {
   __u32 seq = oi.truncate_seq;
   uint64_t size = oi.size;
   bool trimmed_read = false;
+  bool skip_data_digest =
+    (osd->store->has_builtin_csum() && g_conf->osd_skip_data_digest) ||
+    g_conf->osd_distrust_data_digest;
 
   // are we beyond truncate_size?
   if ( (seq < op.extent.truncate_seq) &&
@@ -4844,7 +4855,8 @@ int PrimaryLogPG::do_read(OpContext *ctx, OSDOp& osd_op) {
     // If there is a data digest and it is possible we are reading
     // entire object, pass the digest.  FillInVerifyExtent will
     // will check the oi.size again.
-    if (oi.is_data_digest() && op.extent.offset == 0 &&
+    if (!skip_data_digest &&
+	oi.is_data_digest() && op.extent.offset == 0 &&
         op.extent.length >= oi.size)
       maybe_crc = oi.data_digest;
     ctx->pending_async_reads.push_back(
@@ -4874,7 +4886,8 @@ int PrimaryLogPG::do_read(OpContext *ctx, OSDOp& osd_op) {
 	     << " bytes from obj " << soid << dendl;
 
     // whole object?  can we verify the checksum?
-    if (op.extent.length == oi.size && oi.is_data_digest()) {
+    if (!skip_data_digest &&
+	op.extent.length == oi.size && oi.is_data_digest()) {
       uint32_t crc = osd_op.outdata.crc32c(-1);
       if (oi.data_digest != crc) {
         osd->clog->error() << info.pgid << std::hex
@@ -4899,6 +4912,9 @@ int PrimaryLogPG::do_sparse_read(OpContext *ctx, OSDOp& osd_op) {
   auto& op = osd_op.op;
   auto& oi = ctx->new_obs.oi;
   auto& soid = oi.soid;
+  bool skip_data_digest =
+    (osd->store->has_builtin_csum() && g_conf->osd_skip_data_digest) ||
+    g_conf->osd_distrust_data_digest;
 
   if (op.extent.truncate_seq) {
     dout(0) << "sparse_read does not support truncation sequence " << dendl;
@@ -5012,7 +5028,8 @@ int PrimaryLogPG::do_sparse_read(OpContext *ctx, OSDOp& osd_op) {
     // Maybe at first, there is no much whole objects. With continued use, more
     // and more whole object exist. So from this point, for spare-read add
     // checksum make sense.
-    if (total_read == oi.size && oi.is_data_digest()) {
+    if (!skip_data_digest &&
+	total_read == oi.size && oi.is_data_digest()) {
       uint32_t crc = data_bl.crc32c(-1);
       if (oi.data_digest != crc) {
         osd->clog->error() << info.pgid << std::hex
@@ -5045,6 +5062,9 @@ int PrimaryLogPG::do_osd_ops(OpContext *ctx, vector<OSDOp>& ops)
   ObjectState& obs = ctx->new_obs;
   object_info_t& oi = obs.oi;
   const hobject_t& soid = oi.soid;
+  bool skip_data_digest =
+    (osd->store->has_builtin_csum() && g_conf->osd_skip_data_digest) ||
+    g_conf->osd_distrust_data_digest;
 
   PGTransaction* t = ctx->op_t.get();
 
@@ -5857,12 +5877,18 @@ int PrimaryLogPG::do_osd_ops(OpContext *ctx, vector<OSDOp>& ops)
 	    soid, op.extent.offset, op.extent.length, osd_op.indata, op.flags);
 	}
 
-	if (op.extent.offset == 0 && op.extent.length >= oi.size)
+	if (op.extent.offset == 0 && op.extent.length >= oi.size
+            && !skip_data_digest) {
 	  obs.oi.set_data_digest(osd_op.indata.crc32c(-1));
-	else if (op.extent.offset == oi.size && obs.oi.is_data_digest())
-	  obs.oi.set_data_digest(osd_op.indata.crc32c(obs.oi.data_digest));
-	else
+	} else if (op.extent.offset == oi.size && obs.oi.is_data_digest()) {
+          if (skip_data_digest) {
+            obs.oi.clear_data_digest();
+          } else {
+	    obs.oi.set_data_digest(osd_op.indata.crc32c(obs.oi.data_digest));
+          }
+	} else {
 	  obs.oi.clear_data_digest();
+        }
 	write_update_size_and_usage(ctx->delta_stats, oi, ctx->modified_ranges,
 				    op.extent.offset, op.extent.length);
 
@@ -5894,7 +5920,11 @@ int PrimaryLogPG::do_osd_ops(OpContext *ctx, vector<OSDOp>& ops)
 	if (op.extent.length) {
 	  t->write(soid, 0, op.extent.length, osd_op.indata, op.flags);
 	}
-	obs.oi.set_data_digest(osd_op.indata.crc32c(-1));
+        if (!skip_data_digest) {
+	  obs.oi.set_data_digest(osd_op.indata.crc32c(-1));
+        } else {
+	  obs.oi.clear_data_digest();
+	}
 
 	write_update_size_and_usage(ctx->delta_stats, oi, ctx->modified_ranges,
 	    0, op.extent.length, true);
@@ -7824,6 +7854,10 @@ int PrimaryLogPG::do_copy_get(OpContext *ctx, bufferlist::iterator& bp,
   int result = 0;
   object_copy_cursor_t cursor;
   uint64_t out_max;
+  bool skip_data_digest =
+    (osd->store->has_builtin_csum() && g_conf->osd_skip_data_digest) ||
+    g_conf->osd_distrust_data_digest;
+
   try {
     ::decode(cursor, bp);
     ::decode(out_max, bp);
@@ -7858,7 +7892,7 @@ int PrimaryLogPG::do_copy_get(OpContext *ctx, bufferlist::iterator& bp,
   } else {
     reply_obj.snap_seq = obc->ssc->snapset.seq;
   }
-  if (oi.is_data_digest()) {
+  if (!skip_data_digest && oi.is_data_digest()) {
     reply_obj.flags |= object_copy_data_t::FLAG_DATA_DIGEST;
     reply_obj.data_digest = oi.data_digest;
   }
@@ -8428,8 +8462,16 @@ void PrimaryLogPG::finish_copyfrom(CopyFromCallback *cb)
   // CopyFromCallback fills this in for us
   obs.oi.user_version = ctx->user_at_version;
 
-  obs.oi.set_data_digest(cb->results->data_digest);
-  obs.oi.set_omap_digest(cb->results->omap_digest);
+  if (cb->results->is_data_digest()) {
+    obs.oi.set_data_digest(cb->results->data_digest);
+  } else {
+    obs.oi.clear_data_digest();
+  }
+  if (cb->results->is_omap_digest()) {
+    obs.oi.set_omap_digest(cb->results->omap_digest);
+  } else {
+    obs.oi.clear_omap_digest();
+  }
 
   obs.oi.truncate_seq = cb->results->truncate_seq;
   obs.oi.truncate_size = cb->results->truncate_size;
@@ -8620,11 +8662,16 @@ void PrimaryLogPG::finish_promote(int r, CopyResults *results,
     }
     tctx->new_obs.oi.size = results->object_size;
     tctx->new_obs.oi.user_version = results->user_version;
-    // Don't care src object whether have data or omap digest
-    if (results->object_size)
+    if (results->is_data_digest()) {
       tctx->new_obs.oi.set_data_digest(results->data_digest);
-    if (results->has_omap)
+    } else {
+      tctx->new_obs.oi.clear_data_digest();
+    }
+    if (results->is_omap_digest()) {
       tctx->new_obs.oi.set_omap_digest(results->omap_digest);
+    } else {
+      tctx->new_obs.oi.clear_omap_digest();
+    }
     tctx->new_obs.oi.truncate_seq = results->truncate_seq;
     tctx->new_obs.oi.truncate_size = results->truncate_size;
 
@@ -9042,7 +9089,7 @@ int PrimaryLogPG::try_flush_mark_clean(FlushOpRef fop)
   }
 
   if (!fop->blocking &&
-      scrubber.write_blocked_by_scrub(oid)) {
+      write_blocked_by_scrub(oid)) {
     if (fop->op) {
       dout(10) << __func__ << " blocked by scrub" << dendl;
       requeue_op(fop->op);
@@ -9082,10 +9129,18 @@ int PrimaryLogPG::try_flush_mark_clean(FlushOpRef fop)
 	fop->op)) {
     dout(20) << __func__ << " took write lock" << dendl;
   } else if (fop->op) {
-    dout(10) << __func__ << " waiting on write lock" << dendl;
+    dout(10) << __func__ << " waiting on write lock " << fop->op << " "
+	     << fop->dup_ops << dendl;
     close_op_ctx(ctx.release());
-    requeue_op(fop->op);
-    requeue_ops(fop->dup_ops);
+    // fop->op is now waiting on the lock; get fop->dup_ops to wait too.
+    for (auto op : fop->dup_ops) {
+      bool locked = ctx->lock_manager.get_lock_type(
+	ObjectContext::RWState::RWWRITE,
+	oid,
+	obc,
+	op);
+      assert(!locked);
+    }
     return -EAGAIN;    // will retry
   } else {
     dout(10) << __func__ << " failed write lock, no op; failing" << dendl;
@@ -9776,7 +9831,7 @@ void PrimaryLogPG::handle_watch_timeout(WatchRef watch)
     return;
   }
 
-  if (scrubber.write_blocked_by_scrub(obc->obs.oi.soid)) {
+  if (write_blocked_by_scrub(obc->obs.oi.soid)) {
     dout(10) << "handle_watch_timeout waiting for scrub on obj "
 	     << obc->obs.oi.soid
 	     << dendl;
@@ -10187,6 +10242,11 @@ int PrimaryLogPG::find_object_context(const hobject_t& oid,
   } else {
     auto p = obc->ssc->snapset.clone_snaps.find(soid.snap);
     assert(p != obc->ssc->snapset.clone_snaps.end());
+    if (p->second.empty()) {
+      dout(1) << __func__ << " " << soid << " empty snapset -- DNE" << dendl;
+      assert(!cct->_conf->osd_debug_verify_snaps);
+      return -ENOENT;
+    }
     first = p->second.back();
     last = p->second.front();
   }
@@ -12435,10 +12495,10 @@ void PrimaryLogPG::update_range(
   if (bi->version < info.log_tail) {
     dout(10) << __func__<< ": bi is old, rescanning local backfill_info"
 	     << dendl;
+    osr->flush();
     if (last_update_applied >= info.log_tail) {
       bi->version = last_update_applied;
     } else {
-      osr->flush();
       bi->version = info.last_update;
     }
     scan_range(local_min, local_max, bi, handle);
@@ -12658,7 +12718,7 @@ void PrimaryLogPG::hit_set_remove_all()
     // Once we hit a degraded object just skip
     if (is_degraded_or_backfilling_object(aoid))
       return;
-    if (scrubber.write_blocked_by_scrub(aoid))
+    if (write_blocked_by_scrub(aoid))
       return;
   }
 
@@ -12777,7 +12837,7 @@ void PrimaryLogPG::hit_set_persist()
     // Once we hit a degraded object just skip further trim
     if (is_degraded_or_backfilling_object(aoid))
       return;
-    if (scrubber.write_blocked_by_scrub(aoid))
+    if (write_blocked_by_scrub(aoid))
       return;
   }
 
@@ -12811,7 +12871,7 @@ void PrimaryLogPG::hit_set_persist()
     new_hset.using_gmt);
 
   // If the current object is degraded we skip this persist request
-  if (scrubber.write_blocked_by_scrub(oid))
+  if (write_blocked_by_scrub(oid))
     return;
 
   hit_set->seal();
@@ -13055,7 +13115,8 @@ bool PrimaryLogPG::agent_work(int start_max, int agent_flush_quota)
       osd->logger->inc(l_osd_agent_skip);
       continue;
     }
-    if (scrubber.write_blocked_by_scrub(obc->obs.oi.soid)) {
+    if (range_intersects_scrub(obc->obs.oi.soid,
+			       obc->obs.oi.soid.get_head())) {
       dout(20) << __func__ << " skip (scrubbing) " << obc->obs.oi << dendl;
       osd->logger->inc(l_osd_agent_skip);
       continue;
@@ -13803,7 +13864,9 @@ unsigned PrimaryLogPG::process_clones_to(const boost::optional<hobject_t> &head,
  */
 void PrimaryLogPG::scrub_snapshot_metadata(
   ScrubMap &scrubmap,
-  const map<hobject_t, pair<uint32_t, uint32_t>> &missing_digest)
+  const map<hobject_t,
+            pair<boost::optional<uint32_t>,
+                 boost::optional<uint32_t>>> &missing_digest)
 {
   dout(10) << __func__ << dendl;
 
@@ -14145,10 +14208,7 @@ void PrimaryLogPG::scrub_snapshot_metadata(
   if (head && (head_error.errors || soid_error_count))
     scrubber.store->add_snap_error(pool.id, head_error);
 
-  for (map<hobject_t,pair<uint32_t,uint32_t>>::const_iterator p =
-	 missing_digest.begin();
-       p != missing_digest.end();
-       ++p) {
+  for (auto p = missing_digest.begin(); p != missing_digest.end(); ++p) {
     if (p->first.is_snapdir())
       continue;
     dout(10) << __func__ << " recording digests for " << p->first << dendl;
@@ -14168,8 +14228,16 @@ void PrimaryLogPG::scrub_snapshot_metadata(
     OpContextUPtr ctx = simple_opc_create(obc);
     ctx->at_version = get_next_version();
     ctx->mtime = utime_t();      // do not update mtime
-    ctx->new_obs.oi.set_data_digest(p->second.first);
-    ctx->new_obs.oi.set_omap_digest(p->second.second);
+    if (p->second.first) {
+      ctx->new_obs.oi.set_data_digest(*p->second.first);
+    } else {
+      ctx->new_obs.oi.clear_data_digest();
+    }
+    if (p->second.second) {
+      ctx->new_obs.oi.set_omap_digest(*p->second.second);
+    } else {
+      ctx->new_obs.oi.clear_omap_digest();
+    }
     finish_ctx(ctx.get(), pg_log_entry_t::MODIFY);
 
     ctx->register_on_success(

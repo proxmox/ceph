@@ -1667,16 +1667,9 @@ void BlueStore::SharedBlob::put()
 			     << " removing self from set " << get_parent()
 			     << dendl;
     if (get_parent()) {
-      if (get_parent()->try_remove(this)) {
-	delete this;
-      } else {
-	ldout(coll->store->cct, 20)
-	  << __func__ << " " << this << " lost race to remove myself from set"
-	  << dendl;
-      }
-    } else {
-      delete this;
+      get_parent()->remove(this);
     }
+    delete this;
   }
 }
 
@@ -4564,9 +4557,7 @@ int BlueStore::_open_db(bool create)
     string bfn;
     struct stat st;
 
-    if (read_meta("path_block.db", &bfn) < 0) {
-      bfn = path + "/block.db";
-    }
+    bfn = path + "/block.db";
     if (::stat(bfn.c_str(), &st) == 0) {
       r = bluefs->add_block_device(BlueFS::BDEV_DB, bfn);
       if (r < 0) {
@@ -4595,19 +4586,20 @@ int BlueStore::_open_db(bool create)
       }
       bluefs_shared_bdev = BlueFS::BDEV_SLOW;
       bluefs_single_shared_device = false;
-    } else if (::lstat(bfn.c_str(), &st) == -1) {
-      bluefs_shared_bdev = BlueFS::BDEV_DB;
     } else {
-      //symlink exist is bug
-      derr << __func__ << " " << bfn << " link target doesn't exist" << dendl;
       r = -errno;
-      goto free_bluefs;
+      if (::lstat(bfn.c_str(), &st) == -1) {
+	r = 0;
+	bluefs_shared_bdev = BlueFS::BDEV_DB;
+      } else {
+	derr << __func__ << " " << bfn << " symlink exists but target unusable: "
+	     << cpp_strerror(r) << dendl;
+	goto free_bluefs;
+      }
     }
 
     // shared device
-    if (read_meta("path_block", &bfn) < 0) {
-      bfn = path + "/block";
-    }
+    bfn = path + "/block";
     r = bluefs->add_block_device(bluefs_shared_bdev, bfn);
     if (r < 0) {
       derr << __func__ << " add block device(" << bfn << ") returned: " 
@@ -4636,9 +4628,7 @@ int BlueStore::_open_db(bool create)
       bluefs_extents.insert(start, initial);
     }
 
-    if (read_meta("path_block.wal", &bfn) < 0) {
-      bfn = path + "/block.wal";
-    }
+    bfn = path + "/block.wal";
     if (::stat(bfn.c_str(), &st) == 0) {
       r = bluefs->add_block_device(BlueFS::BDEV_WAL, bfn);
       if (r < 0) {
@@ -4667,13 +4657,16 @@ int BlueStore::_open_db(bool create)
       }
       cct->_conf->set_val("rocksdb_separate_wal_dir", "true");
       bluefs_single_shared_device = false;
-    } else if (::lstat(bfn.c_str(), &st) == -1) {
-      cct->_conf->set_val("rocksdb_separate_wal_dir", "false");
     } else {
-      //symlink exist is bug
-      derr << __func__ << " " << bfn << " link target doesn't exist" << dendl;
       r = -errno;
-      goto free_bluefs;
+      if (::lstat(bfn.c_str(), &st) == -1) {
+	r = 0;
+	cct->_conf->set_val("rocksdb_separate_wal_dir", "false");
+      } else {
+	derr << __func__ << " " << bfn << " symlink exists but target unusable: "
+	     << cpp_strerror(r) << dendl;
+	goto free_bluefs;
+      }
     }
 
     if (create) {
@@ -5011,6 +5004,7 @@ void BlueStore::_commit_bluefs_freespace(
 
 int BlueStore::_open_collections(int *errors)
 {
+  dout(10) << __func__ << dendl;
   assert(coll_map.empty());
   KeyValueDB::Iterator it = db->get_iterator(PREFIX_COLL);
   for (it->upper_bound(string());
@@ -5032,7 +5026,8 @@ int BlueStore::_open_collections(int *errors)
              << pretty_binary_string(it->key()) << dendl;
         return -EIO;
       }   
-      dout(20) << __func__ << " opened " << cid << " " << c << dendl;
+      dout(20) << __func__ << " opened " << cid << " " << c
+	       << " " << c->cnode << dendl;
       coll_map[cid] = c;
     } else {
       derr << __func__ << " unrecognized collection " << it->key() << dendl;
@@ -5116,30 +5111,13 @@ int BlueStore::_setup_block_symlink_or_file(
 	}
 
 	if (cct->_conf->bluestore_block_preallocate_file) {
-#ifdef HAVE_POSIX_FALLOCATE
-	  r = ::posix_fallocate(fd, 0, size);
-	  if (r) {
+          r = ::ceph_posix_fallocate(fd, 0, size);
+          if (r > 0) {
 	    derr << __func__ << " failed to prefallocate " << name << " file to "
 	      << size << ": " << cpp_strerror(r) << dendl;
 	    VOID_TEMP_FAILURE_RETRY(::close(fd));
 	    return -r;
 	  }
-#else
-	  char data[1024*128];
-	  for (uint64_t off = 0; off < size; off += sizeof(data)) {
-	    if (off + sizeof(data) > size)
-	      r = ::write(fd, data, size - off);
-	    else
-	      r = ::write(fd, data, sizeof(data));
-	    if (r < 0) {
-	      r = -errno;
-	      derr << __func__ << " failed to prefallocate w/ write " << name << " file to "
-		<< size << ": " << cpp_strerror(r) << dendl;
-	      VOID_TEMP_FAILURE_RETRY(::close(fd));
-	      return r;
-	    }
-	  }
-#endif
 	}
 	dout(1) << __func__ << " resized " << name << " file to "
 		<< pretty_si_t(size) << "B" << dendl;
@@ -5253,17 +5231,6 @@ int BlueStore::mkfs()
   r = _open_bdev(true);
   if (r < 0)
     goto out_close_fsid;
-
-  {
-    string wal_path = cct->_conf->get_val<string>("bluestore_block_wal_path");
-    if (wal_path.size()) {
-      write_meta("path_block.wal", wal_path);
-    }
-    string db_path = cct->_conf->get_val<string>("bluestore_block_db_path");
-    if (db_path.size()) {
-      write_meta("path_block.db", db_path);
-    }
-  }
 
   // choose min_alloc_size
   if (cct->_conf->bluestore_min_alloc_size) {
@@ -5782,7 +5749,8 @@ int BlueStore::_fsck(bool deep, bool repair)
 	  continue;
 	}
 	c->cid.is_pg(&pgid);
-	dout(20) << __func__ << "  collection " << c->cid << dendl;
+	dout(20) << __func__ << "  collection " << c->cid << " " << c->cnode
+		 << dendl;
       }
 
       if (!expecting_shards.empty()) {
@@ -6469,7 +6437,7 @@ int BlueStore::read(
   }
 
  out:
-  if (r == 0 && _debug_data_eio(oid)) {
+  if (r >= 0 && _debug_data_eio(oid)) {
     r = -EIO;
     derr << __func__ << " " << c->cid << " " << oid << " INJECT EIO" << dendl;
   } else if (cct->_conf->bluestore_debug_random_read_err &&
