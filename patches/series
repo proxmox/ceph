@@ -4,3 +4,4 @@
 0004-enable-LZ4-support.patch
 0005-msg-async-rdma-uninitialized-variable-fix.patch
 0006-Revert-debian-control-adjust-ceph-osdomap-kvstore-mo.patch
+0007-debian-control-add-break-libpvestorage-perl.patch

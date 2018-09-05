@@ -1,0 +1,20 @@
+Index: ceph/debian/control
+===================================================================
+--- ceph.orig/debian/control
++++ ceph/debian/control
+@@ -110,6 +110,7 @@ Replaces: ceph (<< 10),
+ Breaks: ceph (<< 10),
+         ceph-test (<< 12.2.2-14),
+         python-ceph (<< 0.92-1223),
++        libpve-storage-perl (<= 5.0-25),
+ Description: common ceph daemon libraries and management tools
+  Ceph is a massively scalable, open-source, distributed
+  storage system that runs on commodity hardware and delivers object,
+@@ -406,6 +407,7 @@ Breaks: ceph (<< 10),
+         ceph-test (<< 9.0.3-1646),
+         librbd1 (<< 0.92-1238),
+         python-ceph (<< 0.92-1223),
++        libpve-storage-perl (<= 5.0-25),
+ Suggests: ceph-base (= ${binary:Version}),
+           ceph-mds (= ${binary:Version}),
+ Description: common utilities to mount and interact with a ceph storage cluster
