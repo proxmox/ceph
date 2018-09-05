@@ -4068,7 +4068,7 @@ std::vector<Option> get_global_options() {
     .set_description(""),
 
     Option("filestore_merge_threshold", Option::TYPE_INT, Option::LEVEL_ADVANCED)
-    .set_default(10)
+    .set_default(-10)
     .set_description(""),
 
     Option("filestore_split_multiple", Option::TYPE_INT, Option::LEVEL_ADVANCED)
@@ -4709,6 +4709,15 @@ std::vector<Option> get_rgw_options() {
     .set_default(false)
     .set_description("Should S3 authentication use Keystone."),
 
+    Option("rgw_s3_auth_order", Option::TYPE_STR, Option::LEVEL_ADVANCED)
+     .set_default("external, local")
+     .set_description("Authentication strategy order to use for s3 authentication")
+     .set_long_description(
+	  "Order of authentication strategies to try for s3 authentication, the allowed "
+	   "options are a comma separated list of engines external, local. The "
+	   "default order is to try all the externally configured engines before "
+	   "attempting local rados based authentication"),
+
     Option("rgw_barbican_url", Option::TYPE_STR, Option::LEVEL_ADVANCED)
     .set_default("")
     .set_description("URL to barbican server."),
@@ -5190,6 +5199,20 @@ std::vector<Option> get_rgw_options() {
     Option("rgw_curl_wait_timeout_ms", Option::TYPE_INT, Option::LEVEL_DEV)
     .set_default(1000)
     .set_description(""),
+
+    Option("rgw_curl_low_speed_limit", Option::TYPE_INT, Option::LEVEL_ADVANCED)
+    .set_default(1024)
+    .set_long_description(
+        "It contains the average transfer speed in bytes per second that the "
+        "transfer should be below during rgw_curl_low_speed_time seconds for libcurl "
+        "to consider it to be too slow and abort. Set it zero to disable this."),
+
+    Option("rgw_curl_low_speed_time", Option::TYPE_INT, Option::LEVEL_ADVANCED)
+    .set_default(30)
+    .set_long_description(
+        "It contains the time in number seconds that the transfer speed should be below "
+        "the rgw_curl_low_speed_limit for the library to consider it too slow and abort. "
+        "Set it zero to disable this."),
 
     Option("rgw_copy_obj_progress", Option::TYPE_BOOL, Option::LEVEL_ADVANCED)
     .set_default(true)
@@ -6423,6 +6446,11 @@ std::vector<Option> get_mds_options() {
 
     Option("mds_inject_migrator_session_race", Option::TYPE_BOOL, Option::LEVEL_DEV)
      .set_default(false),
+
+    Option("mds_inject_migrator_message_loss", Option::TYPE_INT, Option::LEVEL_DEV)
+    .set_default(0)
+    .set_description(""),
+
   });
 }
 

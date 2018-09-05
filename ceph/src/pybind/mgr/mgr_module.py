@@ -6,6 +6,7 @@ import ceph_module  # noqa
 
 import json
 import logging
+import six
 import threading
 from collections import defaultdict
 
@@ -142,7 +143,7 @@ class CRUSHMap(ceph_module.BasePyCRUSH):
 
     def get_take_weight_osd_map(self, root):
         uglymap = self._get_take_weight_osd_map(root)
-        return { int(k): v for k, v in uglymap.get('weights', {}).iteritems() }
+        return { int(k): v for k, v in six.iteritems(uglymap.get('weights', {})) }
 
 class MgrStandbyModule(ceph_module.BaseMgrStandbyModule):
     """
@@ -223,6 +224,10 @@ class MgrModule(ceph_module.BaseMgrModule):
     PERFCOUNTER_HISTOGRAM = 0x10
     PERFCOUNTER_TYPE_MASK = ~3
 
+    # units supported
+    BYTES = 0
+    NONE = 1
+    
     def __init__(self, module_name, py_modules_ptr, this_ptr):
         self.module_name = module_name
 
@@ -320,6 +325,12 @@ class MgrModule(ceph_module.BaseMgrModule):
         else:
             return value
 
+    def _unit_to_str(self, unit):
+        if unit == self.NONE:
+            return "/s"
+        elif unit == self.BYTES:
+            return "B/s"  
+    
     def get_server(self, hostname):
         """
         Called by the plugin to load information about a particular

@@ -2405,6 +2405,43 @@ int print_obj_info(ObjectStore *store, coll_t coll, ghobject_t &ghobj, Formatter
   return r;
 }
 
+int corrupt_info(ObjectStore *store, coll_t coll, ghobject_t &ghobj, Formatter* formatter,
+	     ObjectStore::Sequencer &osr)
+{
+  bufferlist attr;
+  int r = store->getattr(coll, ghobj, OI_ATTR, attr);
+  if (r < 0) {
+    cerr << "Error getting attr on : " << make_pair(coll, ghobj) << ", "
+       << cpp_strerror(r) << std::endl;
+    return r;
+  }
+  object_info_t oi;
+  bufferlist::iterator bp = attr.begin();
+  try {
+    ::decode(oi, bp);
+  } catch (...) {
+    r = -EINVAL;
+    cerr << "Error getting attr on : " << make_pair(coll, ghobj) << ", "
+         << cpp_strerror(r) << std::endl;
+    return r;
+  }
+  cout << "Corrupting info" << std::endl;
+  if (!dry_run) {
+    attr.clear();
+    oi.alloc_hint_flags += 0xff;
+    ObjectStore::Transaction t;
+    ::encode(oi, attr, -1);  /* fixme: using full features */
+    t.setattr(coll, ghobj, OI_ATTR, attr);
+    r = store->apply_transaction(&osr, std::move(t));
+    if (r < 0) {
+      cerr << "Error writing object info: " << make_pair(coll, ghobj) << ", "
+         << cpp_strerror(r) << std::endl;
+      return r;
+    }
+  }
+  return 0;
+}
+
 int set_size(ObjectStore *store, coll_t coll, ghobject_t &ghobj, uint64_t setsize, Formatter* formatter,
 	     ObjectStore::Sequencer &osr, bool corrupt)
 {
@@ -2873,7 +2910,8 @@ int mydump_journal(Formatter *f, string journalpath, bool m_journal_dio)
 }
 
 int apply_layout_settings(ObjectStore *os, const OSDSuperblock &superblock,
-			  const string &pool_name, const spg_t &pgid, bool dry_run)
+			  const string &pool_name, const spg_t &pgid, bool dry_run,
+                          int target_level)
 {
   int r = 0;
 
@@ -2923,7 +2961,7 @@ int apply_layout_settings(ObjectStore *os, const OSDSuperblock &superblock,
       cerr << "Would apply layout settings to " << coll << std::endl;
     } else {
       cerr << "Finished " << done << "/" << total << " collections" << "\r";
-      r = fs->apply_layout_settings(coll);
+      r = fs->apply_layout_settings(coll, target_level);
       if (r < 0) {
 	cerr << "Error applying layout settings to " << coll << std::endl;
 	return r;
@@ -2993,7 +3031,8 @@ int main(int argc, char **argv)
   positional.add_options()
     ("object", po::value<string>(&object), "'' for pgmeta_oid, object name or ghobject in json")
     ("objcmd", po::value<string>(&objcmd), "command [(get|set)-bytes, (get|set|rm)-(attr|omap), (get|set)-omaphdr, list-attrs, list-omap, remove]")
-    ("arg1", po::value<string>(&arg1), "arg1 based on cmd")
+    ("arg1", po::value<string>(&arg1), "arg1 based on cmd, "
+     "for apply-layout-settings: target hash level split to")
     ("arg2", po::value<string>(&arg2), "arg2 based on cmd")
     ;
 
@@ -3364,7 +3403,11 @@ int main(int argc, char **argv)
   }
 
   if (op == "apply-layout-settings") {
-    ret = apply_layout_settings(fs, superblock, pool, pgid, dry_run);
+    int target_level = 0;
+    if (vm.count("arg1") && isdigit(arg1[0])) {
+      target_level = atoi(arg1.c_str());
+    }
+    ret = apply_layout_settings(fs, superblock, pool, pgid, dry_run, target_level);
     goto out;
   }
 
@@ -3868,6 +3911,15 @@ int main(int argc, char **argv)
 	}
 	ret = print_obj_info(fs, coll, ghobj, formatter);
 	goto out;
+      } else if (objcmd == "corrupt-info") {   // Undocumented testing feature
+	// There should not be any other arguments
+	if (vm.count("arg1") || vm.count("arg2")) {
+	  usage(desc);
+          ret = 1;
+          goto out;
+        }
+        ret = corrupt_info(fs, coll, ghobj, formatter, *osr);
+        goto out;
       } else if (objcmd == "set-size" || objcmd == "corrupt-size") {
 	// Undocumented testing feature
 	bool corrupt = (objcmd == "corrupt-size");

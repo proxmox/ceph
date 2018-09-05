@@ -279,7 +279,8 @@ void MgrClient::send_report()
 	  type.nick = data.nick;
 	}
 	type.type = data.type;
-        type.priority = perf_counters.get_adjusted_priority(data.prio);
+       type.priority = perf_counters.get_adjusted_priority(data.prio);
+	type.unit = data.unit;
 	report->declare_types.push_back(std::move(type));
 	session->declared.insert(path);
       }
@@ -465,5 +466,6 @@ int MgrClient::service_daemon_update_status(
 
 void MgrClient::update_osd_health(std::vector<OSDHealthMetric>&& metrics)
 {
+  Mutex::Locker l(lock);
   osd_health_metrics = std::move(metrics);
 }

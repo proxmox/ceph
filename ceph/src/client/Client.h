@@ -713,10 +713,11 @@ protected:
   void clear_dir_complete_and_ordered(Inode *diri, bool complete);
   void insert_readdir_results(MetaRequest *request, MetaSession *session, Inode *diri);
   Inode* insert_trace(MetaRequest *request, MetaSession *session);
-  void update_inode_file_bits(Inode *in, uint64_t truncate_seq, uint64_t truncate_size, uint64_t size,
-			      uint64_t change_attr, uint64_t time_warp_seq, utime_t ctime,
-			      utime_t mtime, utime_t atime, version_t inline_version,
-			      bufferlist& inline_data, int issued);
+  void update_inode_file_size(Inode *in, int issued, uint64_t size,
+			      uint64_t truncate_seq, uint64_t truncate_size);
+  void update_inode_file_time(Inode *in, int issued, uint64_t time_warp_seq,
+			      utime_t ctime, utime_t mtime, utime_t atime);
+
   Inode *add_update_inode(InodeStat *st, utime_t ttl, MetaSession *session,
 			  const UserPerm& request_perms);
   Dentry *insert_dentry_inode(Dir *dir, const string& dname, LeaseStat *dlease, 
@@ -945,6 +946,10 @@ private:
   mds_rank_t _get_random_up_mds() const;
 
   int _ll_getattr(Inode *in, int caps, const UserPerm& perms);
+  int _lookup_parent(Inode *in, const UserPerm& perms, Inode **parent=NULL);
+  int _lookup_name(Inode *in, Inode *parent, const UserPerm& perms);
+  int _lookup_ino(inodeno_t ino, const UserPerm& perms, Inode **inode=NULL);
+  bool _ll_forget(Inode *in, int count);
 
 public:
   int mount(const std::string &mount_root, const UserPerm& perms,
@@ -1142,6 +1147,7 @@ public:
   Inode *ll_get_inode(vinodeno_t vino);
   int ll_lookup(Inode *parent, const char *name, struct stat *attr,
 		Inode **out, const UserPerm& perms);
+  int ll_lookup_inode(struct inodeno_t ino, const UserPerm& perms, Inode **inode);
   int ll_lookupx(Inode *parent, const char *name, Inode **out,
 			struct ceph_statx *stx, unsigned want, unsigned flags,
 			const UserPerm& perms);

@@ -187,9 +187,13 @@ PyObject *ActivePyModules::get_python(const std::string &what)
       }
     });
     return f.get();
-  } else if (what == "config") {
+  } else if (what.substr(0, 6) == "config") {
     PyFormatter f;
-    g_conf->show_config(&f);
+    if (what == "config_options") {
+      g_conf->config_options(&f);  
+    } else if (what == "config") {
+      g_conf->show_config(&f);
+    }
     return f.get();
   } else if (what == "mon_map") {
     PyFormatter f;
@@ -637,6 +641,7 @@ PyObject* ActivePyModules::get_perf_schema_python(
 	}
 	f.dump_unsigned("type", type.type);
 	f.dump_unsigned("priority", type.priority);
+	f.dump_unsigned("units", type.unit);
 	f.close_section();
       }
       f.close_section();

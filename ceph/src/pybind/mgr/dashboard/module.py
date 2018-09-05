@@ -750,6 +750,28 @@ class Module(MgrModule):
                     toplevel_data=json.dumps(self._toplevel_data(), indent=2),
                     content_data=json.dumps(self._servers(), indent=2)
                 )
+            
+            @cherrypy.expose
+            def config_options(self, service="any"):
+                template = env.get_template("config_options.html")
+                return template.render(
+                    url_prefix = global_instance().url_prefix,
+                    ceph_version=global_instance().version,
+                    path_info=cherrypy.request.path_info,
+                    toplevel_data=json.dumps(self._toplevel_data(), indent=2),
+                    content_data=json.dumps(self.config_options_data(service), indent=2)
+                )
+
+            @cherrypy.expose
+            @cherrypy.tools.json_out()
+            def config_options_data(self, service):
+                options = {}
+                options = global_instance().get("config_options")
+
+                return {
+                    'options': options,
+                    'service': service,
+                }
 
             def _servers(self):
                 return {
@@ -761,6 +783,43 @@ class Module(MgrModule):
             def servers_data(self):
                 return self._servers()
 
+            @cherrypy.expose
+            def perf_counters(self, service_type, service_id):
+                template = env.get_template("perf_counters.html")
+                toplevel_data = self._toplevel_data()
+                
+                return template.render(
+                    url_prefix = global_instance().url_prefix,
+                    ceph_version=global_instance().version,
+                    path_info=cherrypy.request.path_info,
+                    toplevel_data=json.dumps(toplevel_data, indent=2),
+                    content_data=json.dumps(self.perf_counters_data(service_type, service_id), indent=2)
+                )
+            
+            @cherrypy.expose
+            @cherrypy.tools.json_out()
+            def perf_counters_data(self, service_type, service_id):
+                schema = global_instance().get_perf_schema(service_type, str(service_id)).values()[0]
+                counters = []
+                
+                for key, value in sorted(schema.items()):
+                    counter = dict()
+                    counter["name"] = str(key)
+                    counter["description"] = value["description"]
+                    if global_instance()._stattype_to_str(value["type"]) == 'counter':
+                        counter["value"] = global_instance().get_rate(service_type, service_id, key)
+                        counter["unit"]  = global_instance()._unit_to_str(value["units"])
+                    else:
+                        counter["value"] = global_instance().get_latest(service_type, service_id, key)
+                        counter["unit"] = ""
+                    counters.append(counter)
+                                                    
+                return {
+                    'service_type': service_type,
+                    'service_id': service_id,
+                    'counters': counters,
+                }  
+                
             def _health(self):
                 # Fuse osdmap with pg_summary to get description of pools
                 # including their PG states

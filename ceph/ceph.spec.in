@@ -142,6 +142,7 @@ BuildRequires:	python
 BuildRequires:	python-devel
 BuildRequires:	python-nose
 BuildRequires:	python-requests
+BuildRequires:	python-six
 BuildRequires:	python-virtualenv
 BuildRequires:	snappy-devel
 BuildRequires:	udev
@@ -322,6 +323,7 @@ Summary:        Ceph Manager Daemon
 Group:          System/Filesystems
 %endif
 Requires:       ceph-base = %{_epoch_prefix}%{version}-%{release}
+Requires:       python-six
 %if 0%{?fedora} || 0%{?rhel}
 Requires:       python-cherrypy
 Requires:       python-jinja2
@@ -822,7 +824,6 @@ cmake .. \
     -DCMAKE_INSTALL_MANDIR=%{_mandir} \
     -DCMAKE_INSTALL_DOCDIR=%{_docdir}/ceph \
     -DCMAKE_INSTALL_INCLUDEDIR=%{_includedir} \
-    -DWITH_EMBEDDED=OFF \
     -DWITH_MANPAGE=ON \
     -DWITH_PYTHON3=ON \
     -DWITH_SYSTEMD=ON \
@@ -1448,7 +1449,7 @@ fi
     /usr/lib/systemd/systemd-sysctl %{_sysctldir}/90-ceph-osd.conf > /dev/null 2>&1 || :
 %endif
 # work around https://tracker.ceph.com/issues/24903
-chown -h ceph:ceph /var/lib/ceph/osd/*/block* 2>&1 > /dev/null || :
+chown -f -h ceph:ceph /var/lib/ceph/osd/*/block* 2>&1 > /dev/null || :
 
 %preun osd
 %if 0%{?suse_version}

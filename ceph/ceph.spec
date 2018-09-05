@@ -61,7 +61,7 @@
 # main package definition
 #################################################################################
 Name:		ceph
-Version:	12.2.7
+Version:	12.2.8
 Release:	0%{?dist}
 %if 0%{?fedora} || 0%{?rhel}
 Epoch:		2
@@ -77,7 +77,7 @@ License:	LGPL-2.1 and CC-BY-SA-3.0 and GPL-2.0 and BSL-1.0 and BSD-3-Clause and 
 Group:		System/Filesystems
 %endif
 URL:		http://ceph.com/
-Source0:	http://ceph.com/download/ceph-12.2.7.tar.bz2
+Source0:	http://ceph.com/download/ceph-12.2.8.tar.bz2
 %if 0%{?suse_version}
 %if 0%{?is_opensuse}
 ExclusiveArch:  x86_64 aarch64 ppc64 ppc64le
@@ -142,6 +142,7 @@ BuildRequires:	python
 BuildRequires:	python-devel
 BuildRequires:	python-nose
 BuildRequires:	python-requests
+BuildRequires:	python-six
 BuildRequires:	python-virtualenv
 BuildRequires:	snappy-devel
 BuildRequires:	udev
@@ -322,6 +323,7 @@ Summary:        Ceph Manager Daemon
 Group:          System/Filesystems
 %endif
 Requires:       ceph-base = %{_epoch_prefix}%{version}-%{release}
+Requires:       python-six
 %if 0%{?fedora} || 0%{?rhel}
 Requires:       python-cherrypy
 Requires:       python-jinja2
@@ -779,7 +781,7 @@ python-rbd, python-rgw or python-cephfs instead.
 # common
 #################################################################################
 %prep
-%autosetup -p1 -n ceph-12.2.7
+%autosetup -p1 -n ceph-12.2.8
 
 %build
 %if 0%{with cephfs_java}
@@ -822,7 +824,6 @@ cmake .. \
     -DCMAKE_INSTALL_MANDIR=%{_mandir} \
     -DCMAKE_INSTALL_DOCDIR=%{_docdir}/ceph \
     -DCMAKE_INSTALL_INCLUDEDIR=%{_includedir} \
-    -DWITH_EMBEDDED=OFF \
     -DWITH_MANPAGE=ON \
     -DWITH_PYTHON3=ON \
     -DWITH_SYSTEMD=ON \
@@ -1448,7 +1449,7 @@ fi
     /usr/lib/systemd/systemd-sysctl %{_sysctldir}/90-ceph-osd.conf > /dev/null 2>&1 || :
 %endif
 # work around https://tracker.ceph.com/issues/24903
-chown -h ceph:ceph /var/lib/ceph/osd/*/block* 2>&1 > /dev/null || :
+chown -f -h ceph:ceph /var/lib/ceph/osd/*/block* 2>&1 > /dev/null || :
 
 %preun osd
 %if 0%{?suse_version}

@@ -118,6 +118,14 @@ def volume_groups(monkeypatch):
 
 
 @pytest.fixture
+def pvolumes(monkeypatch):
+    monkeypatch.setattr('ceph_volume.process.call', lambda x: ('', '', 0))
+    pvolumes = lvm_api.PVolumes()
+    pvolumes._purge()
+    return pvolumes
+
+
+@pytest.fixture
 def is_root(monkeypatch):
     """
     Patch ``os.getuid()`` so that ceph-volume's decorators that ensure a user
@@ -132,9 +140,23 @@ def tmpfile(tmpdir):
     Create a temporary file, optionally filling it with contents, returns an
     absolute path to the file when called
     """
-    def generate_file(name='file', contents=''):
-        path = os.path.join(str(tmpdir), name)
+    def generate_file(name='file', contents='', directory=None):
+        directory = directory or str(tmpdir)
+        path = os.path.join(directory, name)
         with open(path, 'w') as fp:
             fp.write(contents)
         return path
     return generate_file
+
+
+@pytest.fixture
+def device_info(monkeypatch):
+    def apply(devices=None, lsblk=None, lv=None):
+        devices = devices if devices else {}
+        lsblk = lsblk if lsblk else {}
+        lv = Factory(**lv) if lv else None
+        monkeypatch.setattr("ceph_volume.sys_info.devices", {})
+        monkeypatch.setattr("ceph_volume.util.device.disk.get_devices", lambda: devices)
+        monkeypatch.setattr("ceph_volume.util.device.lvm.get_lv_from_argument", lambda path: lv)
+        monkeypatch.setattr("ceph_volume.util.device.disk.lsblk", lambda path: lsblk)
+    return apply

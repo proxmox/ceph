@@ -363,6 +363,7 @@ const char** MDSDaemon::get_tracked_conf_keys() const
     "mds_max_purge_ops_per_pg",
     "mds_max_purge_files",
     "mds_inject_migrator_session_race",
+    "mds_inject_migrator_message_loss",
     "clog_to_graylog",
     "clog_to_graylog_host",
     "clog_to_graylog_port",
@@ -863,15 +864,16 @@ out:
 void MDSDaemon::handle_mds_map(MMDSMap *m)
 {
   version_t epoch = m->get_epoch();
-  dout(5) << "handle_mds_map epoch " << epoch << " from " << m->get_source() << dendl;
 
   // is it new?
   if (epoch <= mdsmap->get_epoch()) {
-    dout(5) << " old map epoch " << epoch << " <= " << mdsmap->get_epoch()
-	    << ", discarding" << dendl;
+    dout(5) << "handle_mds_map old map epoch " << epoch << " <= "
+            << mdsmap->get_epoch() << ", discarding" << dendl;
     m->put();
     return;
   }
+
+  dout(1) << "Updating MDS map to version " << epoch << " from " << m->get_source() << dendl;
 
   entity_addr_t addr;
 
@@ -891,7 +893,7 @@ void MDSDaemon::handle_mds_map(MMDSMap *m)
   mds_rank_t whoami = mdsmap->get_rank_gid(mds_gid_t(monc->get_global_id()));
 
   // verify compatset
-  CompatSet mdsmap_compat(get_mdsmap_compat_set_all());
+  CompatSet mdsmap_compat(MDSMap::get_compat_set_all());
   dout(10) << "     my compat " << mdsmap_compat << dendl;
   dout(10) << " mdsmap compat " << mdsmap->compat << dendl;
   if (!mdsmap_compat.writeable(mdsmap->compat)) {
@@ -931,7 +933,7 @@ void MDSDaemon::handle_mds_map(MMDSMap *m)
         if (mds_gid_t existing = mdsmap->find_mds_gid_by_name(name)) {
           const MDSMap::mds_info_t& i = mdsmap->get_info_gid(existing);
           if (i.global_id > myid) {
-            dout(1) << "map replaced me with another mds." << whoami
+            dout(1) << "Map replaced me with another mds." << whoami
                     << " with gid (" << i.global_id << ") larger than myself ("
                     << myid << "); quitting!" << dendl;
             // Call suicide() rather than respawn() because if someone else
@@ -944,7 +946,7 @@ void MDSDaemon::handle_mds_map(MMDSMap *m)
         }
       }
 
-      dout(1) << "map removed me (mds." << whoami << " gid:"
+      dout(1) << "Map removed me (mds." << whoami << " gid:"
               << myid << ") from cluster due to lost contact; respawning" << dendl;
       respawn();
     }
@@ -992,7 +994,7 @@ void MDSDaemon::_handle_mds_map(MDSMap *oldmap)
   // Normal rankless case, we're marked as standby
   if (new_state == MDSMap::STATE_STANDBY) {
     beacon.set_want_state(mdsmap, new_state);
-    dout(1) << "handle_mds_map standby" << dendl;
+    dout(1) << "Map has assigned me to become a standby" << dendl;
 
     return;
   }
@@ -1032,7 +1034,7 @@ void MDSDaemon::suicide()
   assert(stopping == false);
   stopping = true;
 
-  dout(1) << "suicide.  wanted state "
+  dout(1) << "suicide! Wanted state "
           << ceph_mds_state_name(beacon.get_want_state()) << dendl;
 
   if (tick_event) {
@@ -1071,7 +1073,11 @@ void MDSDaemon::suicide()
 
 void MDSDaemon::respawn()
 {
-  dout(1) << "respawn" << dendl;
+  dout(1) << "respawn!" << dendl;
+
+  /* Dump recent in case the MDS was stuck doing something which caused it to
+   * be removed from the MDSMap leading to respawn. */
+  g_ceph_context->_log->dump_recent();
 
   char *new_argv[orig_argc+1];
   dout(1) << " e: '" << orig_argv[0] << "'" << dendl;

@@ -2358,12 +2358,12 @@ uint64_t OSDMap::get_encoding_features() const
   }
   if (require_osd_release < CEPH_RELEASE_KRAKEN) {
     f &= ~(CEPH_FEATURE_SERVER_KRAKEN |
-	   CEPH_FEATURE_MSG_ADDR2 |
-	   CEPH_FEATURE_CRUSH_TUNABLES5);
+	   CEPH_FEATURE_MSG_ADDR2);
   }
   if (require_osd_release < CEPH_RELEASE_JEWEL) {
     f &= ~(CEPH_FEATURE_SERVER_JEWEL |
-	   CEPH_FEATURE_NEW_OSDOP_ENCODING);
+	   CEPH_FEATURE_NEW_OSDOP_ENCODING |
+	   CEPH_FEATURE_CRUSH_TUNABLES5);
   }
   return f;
 }
@@ -4377,9 +4377,9 @@ public:
     *tbl << ""
 	 << ""
 	 << "" << "TOTAL"
-	 << si_t(pgs->get_osd_sum().kb << 10)
-	 << si_t(pgs->get_osd_sum().kb_used << 10)
-	 << si_t(pgs->get_osd_sum().kb_avail << 10)
+	 << byte_u_t(pgs->get_osd_sum().kb << 10)
+	 << byte_u_t(pgs->get_osd_sum().kb_used << 10)
+	 << byte_u_t(pgs->get_osd_sum().kb_avail << 10)
 	 << lowprecision_t(average_util)
 	 << ""
 	 << TextTable::endrow;
@@ -4409,9 +4409,9 @@ protected:
 	 << c
 	 << weightf_t(qi.weight)
 	 << weightf_t(reweight)
-	 << si_t(kb << 10)
-	 << si_t(kb_used << 10)
-	 << si_t(kb_avail << 10)
+	 << byte_u_t(kb << 10)
+	 << byte_u_t(kb_used << 10)
+	 << byte_u_t(kb_avail << 10)
 	 << lowprecision_t(util)
 	 << lowprecision_t(var);
 

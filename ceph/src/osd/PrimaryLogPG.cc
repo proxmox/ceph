@@ -348,6 +348,7 @@ void PrimaryLogPG::on_local_recover(
     set<snapid_t> snaps;
     dout(20) << " snapset " << recovery_info.ss
 	     << " legacy_snaps " << recovery_info.oi.legacy_snaps << dendl;
+    bool error = false;
     if (recovery_info.ss.is_legacy() ||
 	recovery_info.ss.seq == 0 /* jewel osd doesn't populate this */) {
       assert(recovery_info.oi.legacy_snaps.size());
@@ -355,14 +356,20 @@ void PrimaryLogPG::on_local_recover(
 		   recovery_info.oi.legacy_snaps.end());
     } else {
       auto p = recovery_info.ss.clone_snaps.find(hoid.snap);
-      assert(p != recovery_info.ss.clone_snaps.end());  // hmm, should we warn?
-      snaps.insert(p->second.begin(), p->second.end());
+      if (p != recovery_info.ss.clone_snaps.end()) {
+        snaps.insert(p->second.begin(), p->second.end());
+      } else {
+        derr << __func__ << " " << hoid << " had no clone_snaps" << dendl;
+        error = true;
+      }
     }
-    dout(20) << " snaps " << snaps << dendl;
-    snap_mapper.add_oid(
-      recovery_info.soid,
-      snaps,
-      &_t);
+    if (!error) {
+      dout(20) << " snaps " << snaps << dendl;
+      snap_mapper.add_oid(
+        recovery_info.soid,
+        snaps,
+        &_t);
+    }
   }
   if (!is_delete && pg_log.get_missing().is_missing(recovery_info.soid) &&
       pg_log.get_missing().get_items().find(recovery_info.soid)->second.need > recovery_info.version) {
@@ -4873,6 +4880,18 @@ int PrimaryLogPG::do_read(OpContext *ctx, OSDOp& osd_op) {
   } else {
     int r = pgbackend->objects_read_sync(
       soid, op.extent.offset, op.extent.length, op.flags, &osd_op.outdata);
+    // whole object?  can we verify the checksum?
+    if (!skip_data_digest && r >= 0 && op.extent.offset == 0 &&
+        (uint64_t)r == oi.size && oi.is_data_digest()) {
+      uint32_t crc = osd_op.outdata.crc32c(-1);
+      if (oi.data_digest != crc) {
+        osd->clog->error() << info.pgid << std::hex
+                           << " full-object read crc 0x" << crc
+                           << " != expected 0x" << oi.data_digest
+                           << std::dec << " on " << soid;
+        r = -EIO; // try repair later
+      }
+    }
     if (r == -EIO) {
       r = rep_repair_primary_object(soid, ctx->op);
     }
@@ -4884,20 +4903,6 @@ int PrimaryLogPG::do_read(OpContext *ctx, OSDOp& osd_op) {
     }
     dout(10) << " read got " << r << " / " << op.extent.length
 	     << " bytes from obj " << soid << dendl;
-
-    // whole object?  can we verify the checksum?
-    if (!skip_data_digest &&
-	op.extent.length == oi.size && oi.is_data_digest()) {
-      uint32_t crc = osd_op.outdata.crc32c(-1);
-      if (oi.data_digest != crc) {
-        osd->clog->error() << info.pgid << std::hex
-			   << " full-object read crc 0x" << crc
-			   << " != expected 0x" << oi.data_digest
-			   << std::dec << " on " << soid;
-        // FIXME fall back to replica or something?
-        result = -EIO;
-      }
-    }
   }
 
   // XXX the op.extent.length is the requested length for async read
@@ -5036,8 +5041,10 @@ int PrimaryLogPG::do_sparse_read(OpContext *ctx, OSDOp& osd_op) {
           << " full-object read crc 0x" << crc
           << " != expected 0x" << oi.data_digest
           << std::dec << " on " << soid;
-        // FIXME fall back to replica or something?
-        return -EIO;
+        r = rep_repair_primary_object(soid, ctx->op);
+	if (r < 0) {
+	  return r;
+	}
       }
     }
 
@@ -5063,8 +5070,7 @@ int PrimaryLogPG::do_osd_ops(OpContext *ctx, vector<OSDOp>& ops)
   object_info_t& oi = obs.oi;
   const hobject_t& soid = oi.soid;
   bool skip_data_digest =
-    (osd->store->has_builtin_csum() && g_conf->osd_skip_data_digest) ||
-    g_conf->osd_distrust_data_digest;
+    osd->store->has_builtin_csum() && g_conf->osd_skip_data_digest;
 
   PGTransaction* t = ctx->op_t.get();
 
