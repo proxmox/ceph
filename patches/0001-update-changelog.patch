@@ -8,13 +8,13 @@ Content-Transfer-Encoding: 8bit
 
 Signed-off-by: Fabian Grünbichler <f.gruenbichler@proxmox.com>
 ---
- debian/changelog | 156 +++++++++++++++++++++++++++++++++++++++++++++++++++++++
- 1 file changed, 156 insertions(+)
+ debian/changelog | 175 +++++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 175 insertions(+)
 
-Index: ceph/debian/changelog
-===================================================================
---- ceph.orig/debian/changelog
-+++ ceph/debian/changelog
+diff --git a/debian/changelog b/debian/changelog
+index 642fc450fa..a8f2a30ee0 100644
+--- a/debian/changelog
++++ b/debian/changelog
 @@ -1,9 +1,28 @@
 +ceph (12.2.8-pve1) stable; urgency=medium
 +

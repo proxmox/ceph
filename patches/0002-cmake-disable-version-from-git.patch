@@ -15,7 +15,7 @@ Signed-off-by: Fabian Grünbichler <f.gruenbichler@proxmox.com>
  1 file changed, 5 deletions(-)
 
 diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
-index 7aa8a4392e..77a05ad960 100644
+index 80d4b351f5..10e4a6013b 100644
 --- a/src/CMakeLists.txt
 +++ b/src/CMakeLists.txt
 @@ -206,15 +206,10 @@ set(GCOV_PREFIX_STRIP 4)
@@ -34,6 +34,3 @@ index 7aa8a4392e..77a05ad960 100644
    # remove 'v' prefix from raw git version
    string(SUBSTRING ${CEPH_GIT_NICE_VER} 1 -1 CEPH_GIT_NICE_VER)
  else(${ENABLE_GIT_VERSION})
--- 
-2.14.2
-

@@ -17,10 +17,10 @@ Signed-off-by: Fabian Grünbichler <f.gruenbichler@proxmox.com>
  1 file changed, 6 insertions(+), 6 deletions(-)
 
 diff --git a/debian/control b/debian/control
-index bc5d03b0ab..902d033098 100644
+index d96f5aedd0..ecbecca725 100644
 --- a/debian/control
 +++ b/debian/control
-@@ -105,10 +105,10 @@ Recommends: btrfs-tools,
+@@ -106,10 +106,10 @@ Recommends: btrfs-tools,
              ntp | time-daemon,
  Replaces: ceph (<< 10),
            ceph-common (<< 0.78-500),
@@ -33,7 +33,7 @@ index bc5d03b0ab..902d033098 100644
          python-ceph (<< 0.92-1223),
  Description: common ceph daemon libraries and management tools
   Ceph is a massively scalable, open-source, distributed
-@@ -207,8 +207,8 @@ Depends: ceph-base (= ${binary:Version}),
+@@ -208,8 +208,8 @@ Depends: ceph-base (= ${binary:Version}),
           ${misc:Depends},
           ${shlibs:Depends},
  Recommends: ceph-common,
@@ -44,7 +44,7 @@ index bc5d03b0ab..902d033098 100644
  Description: monitor server for the ceph storage system
   Ceph is a massively scalable, open-source, distributed
   storage system that runs on commodity hardware and delivers object,
-@@ -241,8 +241,8 @@ Depends: ceph-base (= ${binary:Version}),
+@@ -242,8 +242,8 @@ Depends: ceph-base (= ${binary:Version}),
           ${python:Depends},
           ${shlibs:Depends},
  Recommends: ceph-common (= ${binary:Version}),
@@ -55,6 +55,3 @@ index bc5d03b0ab..902d033098 100644
  Description: OSD server for the ceph storage system
   Ceph is a massively scalable, open-source, distributed
   storage system that runs on commodity hardware and delivers object,
--- 
-2.14.2
-

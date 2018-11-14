@@ -12,7 +12,7 @@ Signed-off-by: Fabian Grünbichler <f.gruenbichler@proxmox.com>
  1 file changed, 3 insertions(+)
 
 diff --git a/debian/rules b/debian/rules
-index 9c63c99c31..4442732e17 100755
+index 99a3e8e982..db051ded25 100755
 --- a/debian/rules
 +++ b/debian/rules
 @@ -133,6 +133,9 @@ override_dh_installinit:
@@ -25,6 +25,3 @@ index 9c63c99c31..4442732e17 100755
  
  	# NOTE: execute systemd helpers so they pickup dh_install'ed units and targets
  	dh_systemd_enable
--- 
-2.14.2
-

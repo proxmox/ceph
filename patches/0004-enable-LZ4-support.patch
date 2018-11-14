@@ -13,7 +13,7 @@ Signed-off-by: Fabian Grünbichler <f.gruenbichler@proxmox.com>
  2 files changed, 2 insertions(+)
 
 diff --git a/debian/control b/debian/control
-index bdc74471da..bc5d03b0ab 100644
+index d5bc16e9ee..d96f5aedd0 100644
 --- a/debian/control
 +++ b/debian/control
 @@ -38,6 +38,7 @@ Build-Depends: bc,
@@ -25,17 +25,14 @@ index bdc74471da..bc5d03b0ab 100644
                 libsnappy-dev,
                 libssl-dev,
 diff --git a/debian/rules b/debian/rules
-index 4442732e17..a631658d4c 100755
+index db051ded25..9dad5ad166 100755
 --- a/debian/rules
 +++ b/debian/rules
 @@ -7,6 +7,7 @@ export DEB_HOST_ARCH      ?= $(shell dpkg-architecture -qDEB_HOST_ARCH)
  
- extraopts += -DUSE_CRYPTOPP=OFF -DWITH_OCF=ON -DWITH_LTTNG=ON -DWITH_PYTHON3=ON -DWITH_EMBEDDED=OFF
+ extraopts += -DUSE_CRYPTOPP=OFF -DWITH_OCF=ON -DWITH_LTTNG=ON -DWITH_PYTHON3=ON
  extraopts += -DWITH_CEPHFS_JAVA=ON
 +extraopts += -DWITH_LZ4=ON
  # assumes that ceph is exmpt from multiarch support, so we override the libdir.
  extraopts += -DCMAKE_INSTALL_LIBDIR=/usr/lib
  extraopts += -DCMAKE_INSTALL_LIBEXECDIR=/usr/lib
--- 
-2.14.2
-

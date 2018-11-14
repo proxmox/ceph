@@ -29,6 +29,3 @@ index 37e1a53077..06f514fe24 100644
  {
  #ifdef HAVE_IBV_EXP
    union ibv_gid cgid;
--- 
-2.14.2
-
