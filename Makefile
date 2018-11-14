@@ -66,25 +66,36 @@ rbd-mirror_${VER}-${DEBREL}_${ARCH}.deb \
 rbd-nbd_${VER}-${DEBREL}_${ARCH}.deb
 DEBS=$(MAIN_DEB) $(DEBS_REST)
 
+DSC=ceph_${VER}-${DEBREL}.dsc
+
 all: ${DEBS} ${DBG_DEBS}
 	@echo ${DEBS}
 	@echo ${DBG_DEBS}
 
+${BUILDSRC}: ${SRCDIR} patches
+	rm -rf $@
+	mkdir $@.tmp
+	rsync -ra ${SRCDIR}/ $@.tmp
+	cd $@.tmp; ln -s ../patches patches
+	cd $@.tmp; quilt push -a
+	cd $@.tmp; rm -rf .pc ./patches
+	echo "git clone git://git.proxmox.com/git/ceph.git\\ngit checkout ${GITVERSION}" >  $@.tmp/debian/SOURCE
+	echo "debian/SOURCE" >> $@.tmp/debian/docs
+	echo "${GITVERSION}\\nv${VER}" > $@.tmp/src/.git_version
+	mv $@.tmp $@
+
 .PHONY: deb
 deb: ${DEBS} ${DBG_DEBS}
 ${DEBS_REST} ${DBG_DEBS}: $(MAIN_DEB)
-$(MAIN_DEB): patches
-	rm -rf ${BUILDSRC}
-	mkdir ${BUILDSRC}
-	rsync -ra ${SRCDIR}/ ${BUILDSRC}
-	cd ${BUILDSRC}; ln -s ../patches patches
-	cd ${BUILDSRC}; quilt push -a
-	cd ${BUILDSRC}; rm -rf .pc ./patches
-	echo "git clone git://git.proxmox.com/git/ceph.git\\ngit checkout ${GITVERSION}" >  ${BUILDSRC}/debian/SOURCE
-	echo "debian/SOURCE" >> ${BUILDSRC}/debian/docs
-	echo "${GITVERSION}\\nv${VER}" > ${BUILDSRC}/src/.git_version
+$(MAIN_DEB): ${BUILDSRC}
 	cd ${BUILDSRC}; dpkg-buildpackage -b -uc -us
 	@echo ${DEBS}
+
+.PHONY: dsc
+dsc: ${DSC}
+${DSC}: ${BUILDSRC}
+	cd ${BUILDSRC}; dpkg-buildpackage -S -uc -us -d -nc
+	@echo ${DSC}
 
 .PHONY: download
 download:
