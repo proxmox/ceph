@@ -539,6 +539,7 @@ protected:
   void trim_dentry(Dentry *dn);
   void trim_caps(MetaSession *s, uint64_t max);
   void _invalidate_kernel_dcache();
+  void _trim_negative_child_dentries(InodeRef& in);
   
   void dump_inode(Formatter *f, Inode *in, set<Inode*>& did, bool disconnected);
   void dump_cache(Formatter *f);  // debug
@@ -764,7 +765,7 @@ private:
   int _release_fh(Fh *fh);
   void _put_fh(Fh *fh);
 
-  int _do_remount(void);
+  int _do_remount(bool retry_on_error);
   friend class C_Client_Remount;
 
   struct C_Readahead : public Context {
@@ -1253,6 +1254,9 @@ public:
   uint32_t get_deleg_timeout() { return deleg_timeout; }
   int set_deleg_timeout(uint32_t timeout);
   int ll_delegation(Fh *fh, unsigned cmd, ceph_deleg_cb_t cb, void *priv);
+
+private:
+  uint64_t retries_on_invalidate = 0;
 };
 
 /**

@@ -812,6 +812,11 @@ std::vector<Option> get_global_options() {
     .set_default(96)
     .set_description(""),
 
+    Option("ms_max_accept_failures", Option::TYPE_INT, Option::LEVEL_ADVANCED)
+    .set_default(4)
+    .set_description("The maximum number of consecutive failed accept() calls before "
+                     "considering the daemon is misconfigured and abort it."),
+
     Option("ms_dpdk_port_id", Option::TYPE_INT, Option::LEVEL_ADVANCED)
     .set_default(0)
     .set_description(""),
@@ -1069,7 +1074,7 @@ std::vector<Option> get_global_options() {
     .set_description("minimal number PGs per (in) osd before we warn the admin"),
 
     Option("mon_max_pg_per_osd", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
-    .set_default(200)
+    .set_default(250)
     .set_description("Max number of PGs per OSD the cluster will allow"),
 
     Option("mon_pg_warn_max_object_skew", Option::TYPE_FLOAT, Option::LEVEL_ADVANCED)
@@ -2963,7 +2968,7 @@ std::vector<Option> get_global_options() {
     .set_description(""),
 
     Option("rocksdb_cache_type", Option::TYPE_STR, Option::LEVEL_ADVANCED)
-    .set_default("lru")
+    .set_default("binned_lru")
     .set_description(""),
 
     Option("rocksdb_block_size", Option::TYPE_INT, Option::LEVEL_ADVANCED)
@@ -3145,6 +3150,32 @@ std::vector<Option> get_global_options() {
     Option("osd_discard_disconnected_ops", Option::TYPE_BOOL, Option::LEVEL_ADVANCED)
     .set_default(true)
     .set_description(""),
+
+
+    Option("osd_memory_target", Option::TYPE_UINT, Option::LEVEL_BASIC)
+    .set_default(4_G)
+    .add_see_also("bluestore_cache_autotune")
+    .set_description("When tcmalloc and cache autotuning is enabled, try to keep this many bytes mapped in memory."),
+
+    Option("osd_memory_base", Option::TYPE_UINT, Option::LEVEL_DEV)
+    .set_default(768_M)
+    .add_see_also("bluestore_cache_autotune")
+    .set_description("When tcmalloc and cache autotuning is enabled, estimate the minimum amount of memory in bytes the OSD will need."),
+
+    Option("osd_memory_expected_fragmentation", Option::TYPE_FLOAT, Option::LEVEL_DEV)
+    .set_default(0.15)
+    .add_see_also("bluestore_cache_autotune")
+    .set_description("When tcmalloc and cache autotuning is enabled, estimate the percent of memory fragmentation."),
+
+    Option("osd_memory_cache_min", Option::TYPE_UINT, Option::LEVEL_DEV)
+    .set_default(128_M)
+    .add_see_also("bluestore_cache_autotune")
+    .set_description("When tcmalloc and cache autotuning is enabled, set the minimum amount of memory used for caches."),
+
+    Option("osd_memory_cache_resize_interval", Option::TYPE_FLOAT, Option::LEVEL_DEV)
+    .set_default(1)
+    .add_see_also("bluestore_cache_autotune")
+    .set_description("When tcmalloc and cache autotuning is enabled, wait this many seconds between resizing caches."),
 
     Option("memstore_device_bytes", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
     .set_default(1_G)
@@ -3543,33 +3574,44 @@ std::vector<Option> get_global_options() {
     .set_default(.5)
     .set_description("2Q paper suggests .5"),
 
-    Option("bluestore_cache_size", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
+    Option("bluestore_cache_size", Option::TYPE_UINT, Option::LEVEL_DEV)
     .set_default(0)
     .set_description("Cache size (in bytes) for BlueStore")
     .set_long_description("This includes data and metadata cached by BlueStore as well as memory devoted to rocksdb's cache(s)."),
 
-    Option("bluestore_cache_size_hdd", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
+    Option("bluestore_cache_size_hdd", Option::TYPE_UINT, Option::LEVEL_DEV)
     .set_default(1_G)
     .set_description("Default bluestore_cache_size for rotational media"),
 
-    Option("bluestore_cache_size_ssd", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
+    Option("bluestore_cache_size_ssd", Option::TYPE_UINT, Option::LEVEL_DEV)
     .set_default(3_G)
     .set_description("Default bluestore_cache_size for non-rotational (solid state) media"),
 
-    Option("bluestore_cache_meta_ratio", Option::TYPE_FLOAT, Option::LEVEL_ADVANCED)
-    .set_default(.01)
+    Option("bluestore_cache_meta_ratio", Option::TYPE_FLOAT, Option::LEVEL_DEV)
+    .set_default(.4)
+    .add_see_also("bluestore_cache_size")
     .set_description("Ratio of bluestore cache to devote to metadata"),
 
-    Option("bluestore_cache_kv_ratio", Option::TYPE_FLOAT, Option::LEVEL_ADVANCED)
-    .set_default(.99)
+    Option("bluestore_cache_kv_ratio", Option::TYPE_FLOAT, Option::LEVEL_DEV)
+    .set_default(.4)
+    .add_see_also("bluestore_cache_size")
     .set_description("Ratio of bluestore cache to devote to kv database (rocksdb)"),
 
-    Option("bluestore_cache_kv_max", Option::TYPE_INT, Option::LEVEL_ADVANCED)
-    .set_default(512_M)
-    .set_description("Max memory (bytes) to devote to kv database (rocksdb)")
-    .set_long_description("A negative value means using bluestore_cache_meta_ratio "
-      "and bluestore_cache_kv_ratio instead of calculating these ratios using "
-      "bluestore_cache_size_* and bluestore_cache_kv_max."),
+    Option("bluestore_cache_autotune", Option::TYPE_BOOL, Option::LEVEL_DEV)
+    .set_default(true)
+    .add_see_also("bluestore_cache_size")
+    .add_see_also("bluestore_cache_meta_ratio")
+    .set_description("Automatically tune the ratio of caches while respecting min values."),
+
+    Option("bluestore_cache_autotune_chunk_size", Option::TYPE_UINT, Option::LEVEL_DEV)
+    .set_default(33554432)
+    .add_see_also("bluestore_cache_autotune")
+    .set_description("The chunk size in bytes to allocate to caches when cache autotune is enabled."),
+
+    Option("bluestore_cache_autotune_interval", Option::TYPE_FLOAT, Option::LEVEL_DEV)
+    .set_default(5)
+    .add_see_also("bluestore_cache_autotune")
+    .set_description("The number of seconds to wait between rebalances when cache autotune is enabled."),
 
     Option("bluestore_kvbackend", Option::TYPE_STR, Option::LEVEL_DEV)
     .set_default("rocksdb")
@@ -4189,7 +4231,7 @@ std::vector<Option> get_global_options() {
   .set_long_description("Daemons only set perf counter data to the manager "
     "daemon if the counter has a priority higher than this.")
   .set_min_max((int64_t)PerfCountersBuilder::PRIO_DEBUGONLY,
-               (int64_t)PerfCountersBuilder::PRIO_CRITICAL),
+               (int64_t)PerfCountersBuilder::PRIO_CRITICAL + 1),
 
     Option("journal_zero_on_create", Option::TYPE_BOOL, Option::LEVEL_ADVANCED)
     .set_default(false)
@@ -4534,6 +4576,11 @@ std::vector<Option> get_rgw_options() {
           "concurrency of lifecycle maintenance, but requires multiple RGW processes "
           "running on the zone to be utilized."),
 
+    Option("rgw_lc_max_rules", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
+    .set_default(1000)
+    .set_description("Max number of lifecycle rules set on one bucket")
+    .set_long_description("Number of lifecycle rules set on one bucket should be limited."),
+
     Option("rgw_lc_debug_interval", Option::TYPE_INT, Option::LEVEL_DEV)
     .set_default(-1)
     .set_description(""),
@@ -4800,7 +4847,7 @@ std::vector<Option> get_rgw_options() {
     .set_description(""),
 
     Option("rgw_thread_pool_size", Option::TYPE_INT, Option::LEVEL_BASIC)
-    .set_default(100)
+    .set_default(512)
     .set_description("RGW requests handling thread pool size.")
     .set_long_description(
         "This parameter determines the number of concurrent requests RGW can process "
@@ -5208,7 +5255,7 @@ std::vector<Option> get_rgw_options() {
         "to consider it to be too slow and abort. Set it zero to disable this."),
 
     Option("rgw_curl_low_speed_time", Option::TYPE_INT, Option::LEVEL_ADVANCED)
-    .set_default(30)
+    .set_default(300)
     .set_long_description(
         "It contains the time in number seconds that the transfer speed should be below "
         "the rgw_curl_low_speed_limit for the library to consider it too slow and abort. "
@@ -6270,7 +6317,7 @@ std::vector<Option> get_mds_options() {
     .set_description(""),
 
     Option("mds_max_export_size", Option::TYPE_UINT, Option::LEVEL_DEV)
-    .set_default(1_G)
+    .set_default(20_M)
     .set_description(""),
 
     Option("mds_kill_export_at", Option::TYPE_INT, Option::LEVEL_DEV)
@@ -6451,6 +6498,17 @@ std::vector<Option> get_mds_options() {
     .set_default(0)
     .set_description(""),
 
+    Option("mds_max_retries_on_remount_failure", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
+     .set_default(5)
+     .set_description("number of consecutive failed remount attempts for invalidating kernel dcache after which client would abort."),
+
+    Option("mds_request_load_average_decay_rate", Option::TYPE_FLOAT, Option::LEVEL_ADVANCED)
+    .set_default(60)
+    .set_description("rate of decay in seconds for calculating request load average"),
+
+    Option("mds_cap_revoke_eviction_timeout", Option::TYPE_FLOAT, Option::LEVEL_ADVANCED)
+     .set_default(0)
+     .set_description("number of seconds after which clients which have not responded to cap revoke messages by the MDS are evicted."),
   });
 }
 

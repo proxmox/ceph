@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 2.8.11)
 
 project(ceph)
-set(VERSION 12.2.8)
+set(VERSION 12.2.10)
 
 if(POLICY CMP0046)
   # Tweak policies (this one disables "missing" dependency warning)
@@ -107,6 +107,8 @@ CHECK_FUNCTION_EXISTS(fdatasync HAVE_FDATASYNC)
 CHECK_FUNCTION_EXISTS(strerror_r HAVE_STRERROR_R)
 CHECK_FUNCTION_EXISTS(name_to_handle_at HAVE_NAME_TO_HANDLE_AT)
 CHECK_FUNCTION_EXISTS(pipe2 HAVE_PIPE2)
+CHECK_FUNCTION_EXISTS(accept4 HAVE_ACCEPT4)
+
 set(CMAKE_REQUIRED_LIBRARIES pthread)
 CHECK_FUNCTION_EXISTS(pthread_spin_init HAVE_PTHREAD_SPINLOCK)
 CHECK_FUNCTION_EXISTS(pthread_set_name_np HAVE_PTHREAD_SET_NAME_NP)

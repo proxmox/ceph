@@ -88,10 +88,12 @@ Depends: binutils,
          ceph-common (= ${binary:Version}),
          cryptsetup-bin | cryptsetup,
          debianutils,
+         e2fsprogs,
          findutils,
          gdisk,
          grep,
          logrotate,
+         parted,
          psmisc,
          xfsprogs,
          ${misc:Depends},
@@ -235,7 +237,6 @@ Description: debugging symbols for ceph-mon
 Package: ceph-osd
 Architecture: linux-any
 Depends: ceph-base (= ${binary:Version}),
-         parted,
          lvm2,
          ${misc:Depends},
          ${python:Depends},
@@ -269,7 +270,7 @@ Package: ceph-fuse
 Architecture: linux-any
 Depends: ${misc:Depends},
          ${shlibs:Depends},
-Recommends: fuse,
+         fuse,
 Description: FUSE-based client for the Ceph distributed file system
  Ceph is a massively scalable, open-source, distributed
  storage system that runs on commodity hardware and delivers object,

@@ -29,9 +29,9 @@
 #include "MDSMap.h"
 #include "SessionMap.h"
 #include "MDCache.h"
-#include "Migrator.h"
 #include "MDLog.h"
 #include "PurgeQueue.h"
+#include "Server.h"
 #include "osdc/Journaler.h"
 
 // Full .h import instead of forward declaration for PerfCounter, for the
@@ -99,7 +99,6 @@ namespace ceph {
   struct heartbeat_handle_d;
 }
 
-class Server;
 class Locker;
 class MDCache;
 class MDLog;
@@ -220,7 +219,9 @@ class MDSRank {
     void handle_conf_change(const struct md_config_t *conf,
                             const std::set <std::string> &changed)
     {
-      mdcache->migrator->handle_conf_change(conf, changed, *mdsmap);
+      mdcache->handle_conf_change(conf, changed, *mdsmap);
+      sessionmap.handle_conf_change(conf, changed);
+      server->handle_conf_change(conf, changed);
       purge_queue.handle_conf_change(conf, changed, *mdsmap);
     }
 
@@ -297,8 +298,16 @@ class MDSRank {
       finished_queue.push_back(c);
       progress_thread.signal();
     }
+    void queue_waiter_front(MDSInternalContextBase *c) {
+      finished_queue.push_back(c);
+      progress_thread.signal();
+    }
     void queue_waiters(std::list<MDSInternalContextBase*>& ls) {
       finished_queue.splice( finished_queue.end(), ls );
+      progress_thread.signal();
+    }
+    void queue_waiters_front(std::list<MDSInternalContextBase*>& ls) {
+      finished_queue.splice(finished_queue.begin(), ls);
       progress_thread.signal();
     }
 
@@ -354,7 +363,11 @@ class MDSRank {
      */
     void damaged_unlocked();
 
-    utime_t get_laggy_until() const;
+    double last_cleared_laggy() const {
+      return beacon.last_cleared_laggy();
+    }
+
+    double get_dispatch_queue_max_age(utime_t now) const;
 
     void send_message_mds(Message *m, mds_rank_t mds);
     void forward_message_mds(Message *req, mds_rank_t mds);

@@ -1566,9 +1566,19 @@ void OSDMap::clean_temps(CephContext *cct,
     vector<int> raw_up;
     int primary;
     tmpmap.pg_to_raw_up(pg.first, &raw_up, &primary);
+    bool remove = false;
     if (vectors_equal(raw_up, pg.second)) {
       ldout(cct, 10) << __func__ << "  removing pg_temp " << pg.first << " "
 		     << pg.second << " that matches raw_up mapping" << dendl;
+      remove = true;
+    }
+    // oversized pg_temp?
+    if (pg.second.size() > tmpmap.get_pg_pool(pg.first.pool())->get_size()) {
+      ldout(cct, 10) << __func__ << "  removing pg_temp " << pg.first << " "
+		     << pg.second << " exceeds pool size" << dendl;
+      remove = true;
+    }
+    if (remove) {
       if (osdmap.pg_temp->count(pg.first))
 	pending_inc->new_pg_temp[pg.first].clear();
       else
@@ -2083,7 +2093,8 @@ void OSDMap::_apply_upmap(const pg_pool_t& pi, pg_t raw_pg, vector<int> *raw) co
   if (p != pg_upmap.end()) {
     // make sure targets aren't marked out
     for (auto osd : p->second) {
-      if (osd != CRUSH_ITEM_NONE && osd < max_osd && osd_weight[osd] == 0) {
+      if (osd != CRUSH_ITEM_NONE && osd < max_osd && osd >= 0 &&
+          osd_weight[osd] == 0) {
 	// reject/ignore the explicit mapping
 	return;
       }
@@ -2110,7 +2121,7 @@ void OSDMap::_apply_upmap(const pg_pool_t& pi, pg_t raw_pg, vector<int> *raw) co
 	if (osd == r.first &&
 	    pos < 0 &&
 	    !(r.second != CRUSH_ITEM_NONE && r.second < max_osd &&
-	      osd_weight[r.second] == 0)) {
+	      r.second >= 0 && osd_weight[r.second] == 0)) {
 	  pos = i;
 	}
       }

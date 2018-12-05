@@ -169,6 +169,10 @@ OPTION(ms_async_rdma_roce_ver, OPT_INT)         // 0=RoCEv1, 1=RoCEv2, 2=RoCEv1.
 OPTION(ms_async_rdma_sl, OPT_INT)               // in RoCE, this means PCP
 OPTION(ms_async_rdma_dscp, OPT_INT)            // in RoCE, this means DSCP
 
+// when there are enough accept failures, indicating there are unrecoverable failures,
+// just do ceph_abort() . Here we make it configurable.
+OPTION(ms_max_accept_failures, OPT_INT)
+
 OPTION(ms_dpdk_port_id, OPT_INT)
 SAFE_OPTION(ms_dpdk_coremask, OPT_STR)        // it is modified in unittest so that use SAFE_OPTION to declare 
 OPTION(ms_dpdk_memory_channel, OPT_STR)
@@ -469,8 +473,6 @@ OPTION(mds_bal_split_rd, OPT_FLOAT)
 OPTION(mds_bal_split_wr, OPT_FLOAT)
 OPTION(mds_bal_split_bits, OPT_INT)
 OPTION(mds_bal_merge_size, OPT_INT)
-OPTION(mds_bal_interval, OPT_INT)           // seconds
-OPTION(mds_bal_fragment_interval, OPT_INT)      // seconds
 OPTION(mds_bal_fragment_size_max, OPT_INT) // order of magnitude higher than split size
 OPTION(mds_bal_fragment_fast_factor, OPT_FLOAT) // multiple of size_max that triggers immediate split
 OPTION(mds_bal_idle_threshold, OPT_FLOAT)
@@ -1081,7 +1083,6 @@ OPTION(bluestore_cache_size_hdd, OPT_U64)
 OPTION(bluestore_cache_size_ssd, OPT_U64)
 OPTION(bluestore_cache_meta_ratio, OPT_DOUBLE)
 OPTION(bluestore_cache_kv_ratio, OPT_DOUBLE)
-OPTION(bluestore_cache_kv_max, OPT_INT) // limit the maximum amount of cache for the kv store
 OPTION(bluestore_kvbackend, OPT_STR)
 OPTION(bluestore_allocator, OPT_STR)     // stupid | bitmap
 OPTION(bluestore_freelist_blocks_per_key, OPT_INT)
@@ -1342,6 +1343,7 @@ OPTION(rgw_content_length_compat, OPT_BOOL) // Check both HTTP_CONTENT_LENGTH an
 OPTION(rgw_lifecycle_work_time, OPT_STR) //job process lc  at 00:00-06:00s
 OPTION(rgw_lc_lock_max_time, OPT_INT)  // total run time for a single lc processor work
 OPTION(rgw_lc_max_objs, OPT_INT)
+OPTION(rgw_lc_max_rules, OPT_U32)  // Max rules set on one bucket
 OPTION(rgw_lc_debug_interval, OPT_INT)  // Debug run interval, in seconds
 OPTION(rgw_script_uri, OPT_STR) // alternative value for SCRIPT_URI if not set in request
 OPTION(rgw_request_uri, OPT_STR) // alternative value for REQUEST_URI if not set in request

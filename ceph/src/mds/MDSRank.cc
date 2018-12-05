@@ -29,8 +29,8 @@
 #include "SnapClient.h"
 #include "SnapServer.h"
 #include "MDBalancer.h"
+#include "Migrator.h"
 #include "Locker.h"
-#include "Server.h"
 #include "InoTable.h"
 #include "mon/MonClient.h"
 #include "common/HeartbeatMap.h"
@@ -245,7 +245,7 @@ void MDSRankDispatcher::tick()
   heartbeat_reset();
 
   if (beacon.is_laggy()) {
-    dout(5) << "tick bailing out since we seem laggy" << dendl;
+    dout(1) << "skipping upkeep work because connection to Monitors appears laggy" << dendl;
     return;
   }
 
@@ -257,6 +257,9 @@ void MDSRankDispatcher::tick()
 
   // make sure mds log flushes, trims periodically
   mdlog->flush();
+
+  // update average session uptime
+  sessionmap.update_average_session_age();
 
   if (is_active() || is_stopping()) {
     mdcache->trim();
@@ -275,6 +278,7 @@ void MDSRankDispatcher::tick()
   // ...
   if (is_clientreplay() || is_active() || is_stopping()) {
     server->find_idle_sessions();
+    server->evict_cap_revoke_non_responders();
     locker->tick();
   }
 
@@ -538,10 +542,10 @@ bool MDSRank::_dispatch(Message *m, bool new_msg)
   }
 
   if (beacon.is_laggy()) {
-    dout(10) << " laggy, deferring " << *m << dendl;
+    dout(5) << " laggy, deferring " << *m << dendl;
     waiting_for_nolaggy.push_back(m);
   } else if (new_msg && !waiting_for_nolaggy.empty()) {
-    dout(10) << " there are deferred messages, deferring " << *m << dendl;
+    dout(5) << " there are deferred messages, deferring " << *m << dendl;
     waiting_for_nolaggy.push_back(m);
   } else {
     if (!handle_deferrable_message(m)) {
@@ -1015,9 +1019,9 @@ void MDSRank::retry_dispatch(Message *m)
   dec_dispatch_depth();
 }
 
-utime_t MDSRank::get_laggy_until() const
+double MDSRank::get_dispatch_queue_max_age(utime_t now) const
 {
-  return beacon.get_laggy_until();
+  return messenger->get_dispatch_queue_max_age(now);
 }
 
 bool MDSRank::is_daemon_stopping() const
@@ -1236,6 +1240,9 @@ public:
     MDSIOContext(mds_), old_read_pos(old_read_pos_) {}
   void finish(int r) override {
     mds->_standby_replay_restart_finish(r, old_read_pos);
+  }
+  void print(ostream& out) const override {
+    out << "standby_replay_restart";
   }
 };
 
@@ -1827,7 +1834,7 @@ void MDSRankDispatcher::handle_mds_map(
       list<MDSInternalContextBase*> ls;
       ls.swap(p->second);
       waiting_for_mdsmap.erase(p++);
-      finish_contexts(g_ceph_context, ls);
+      queue_waiters(ls);
     }
   }
 
@@ -2134,6 +2141,10 @@ void MDSRankDispatcher::dump_sessions(const SessionFilter &filter, Formatter *f)
     f->dump_int("num_caps", s->caps.size());
 
     f->dump_string("state", s->get_state_name());
+    if (s->is_open() || s->is_stale()) {
+      f->dump_unsigned("request_load_avg", s->get_load_avg());
+    }
+    f->dump_float("uptime", s->get_session_uptime());
     f->dump_int("replay_requests", is_clientreplay() ? s->get_request_count() : 0);
     f->dump_unsigned("completed_requests", s->get_num_completed_requests());
     f->dump_bool("reconnecting", server->waiting_for_reconnect(p->first.num()));
@@ -2604,60 +2615,59 @@ void MDSRank::create_logger()
   {
     PerfCountersBuilder mds_plb(g_ceph_context, "mds", l_mds_first, l_mds_last);
 
-    mds_plb.add_u64_counter(
-      l_mds_request, "request", "Requests", "req",
-      PerfCountersBuilder::PRIO_CRITICAL);
-    mds_plb.add_u64_counter(l_mds_reply, "reply", "Replies");
-    mds_plb.add_time_avg(
-      l_mds_reply_latency, "reply_latency", "Reply latency", "rlat",
-      PerfCountersBuilder::PRIO_CRITICAL);
-    mds_plb.add_u64_counter(
-      l_mds_forward, "forward", "Forwarding request", "fwd",
-      PerfCountersBuilder::PRIO_INTERESTING);
+    // super useful (high prio) perf stats
+    mds_plb.add_u64_counter(l_mds_request, "request", "Requests", "req",
+                            PerfCountersBuilder::PRIO_CRITICAL);
+    mds_plb.add_time_avg(l_mds_reply_latency, "reply_latency", "Reply latency", "rlat",
+                         PerfCountersBuilder::PRIO_CRITICAL);
+    mds_plb.add_u64(l_mds_inodes, "inodes", "Inodes", "inos",
+                    PerfCountersBuilder::PRIO_CRITICAL);
+    mds_plb.add_u64_counter(l_mds_forward, "forward", "Forwarding request", "fwd",
+                            PerfCountersBuilder::PRIO_INTERESTING);
+    mds_plb.add_u64(l_mds_caps, "caps", "Capabilities", "caps",
+                    PerfCountersBuilder::PRIO_INTERESTING);
+    mds_plb.add_u64_counter(l_mds_exported_inodes, "exported_inodes", "Exported inodes",
+                            "exi", PerfCountersBuilder::PRIO_INTERESTING);
+    mds_plb.add_u64_counter(l_mds_imported_inodes, "imported_inodes", "Imported inodes",
+                            "imi", PerfCountersBuilder::PRIO_INTERESTING);
+
+    // useful dir/inode/subtree stats
+    mds_plb.set_prio_default(PerfCountersBuilder::PRIO_USEFUL);
     mds_plb.add_u64_counter(l_mds_dir_fetch, "dir_fetch", "Directory fetch");
     mds_plb.add_u64_counter(l_mds_dir_commit, "dir_commit", "Directory commit");
     mds_plb.add_u64_counter(l_mds_dir_split, "dir_split", "Directory split");
     mds_plb.add_u64_counter(l_mds_dir_merge, "dir_merge", "Directory merge");
-
     mds_plb.add_u64(l_mds_inode_max, "inode_max", "Max inodes, cache size");
-    mds_plb.add_u64(l_mds_inodes, "inodes", "Inodes", "inos",
-		    PerfCountersBuilder::PRIO_CRITICAL);
+    mds_plb.add_u64(l_mds_inodes_pinned, "inodes_pinned", "Inodes pinned");
+    mds_plb.add_u64(l_mds_inodes_expired, "inodes_expired", "Inodes expired");
+    mds_plb.add_u64(l_mds_inodes_with_caps, "inodes_with_caps",
+                    "Inodes with capabilities");
+    mds_plb.add_u64(l_mds_subtrees, "subtrees", "Subtrees");
+    mds_plb.add_u64(l_mds_load_cent, "load_cent", "Load per cent");
+
+    // low prio stats
+    mds_plb.set_prio_default(PerfCountersBuilder::PRIO_DEBUGONLY);
+    mds_plb.add_u64_counter(l_mds_reply, "reply", "Replies");
     mds_plb.add_u64(l_mds_inodes_top, "inodes_top", "Inodes on top");
     mds_plb.add_u64(l_mds_inodes_bottom, "inodes_bottom", "Inodes on bottom");
     mds_plb.add_u64(
       l_mds_inodes_pin_tail, "inodes_pin_tail", "Inodes on pin tail");
-    mds_plb.add_u64(l_mds_inodes_pinned, "inodes_pinned", "Inodes pinned");
-    mds_plb.add_u64(l_mds_inodes_expired, "inodes_expired", "Inodes expired");
-    mds_plb.add_u64(
-      l_mds_inodes_with_caps, "inodes_with_caps", "Inodes with capabilities");
-    mds_plb.add_u64(l_mds_caps, "caps", "Capabilities", "caps",
-		    PerfCountersBuilder::PRIO_INTERESTING);
-    mds_plb.add_u64(l_mds_subtrees, "subtrees", "Subtrees");
-
     mds_plb.add_u64_counter(l_mds_traverse, "traverse", "Traverses");
     mds_plb.add_u64_counter(l_mds_traverse_hit, "traverse_hit", "Traverse hits");
     mds_plb.add_u64_counter(l_mds_traverse_forward, "traverse_forward",
-			    "Traverse forwards");
+                            "Traverse forwards");
     mds_plb.add_u64_counter(l_mds_traverse_discover, "traverse_discover",
-			    "Traverse directory discovers");
+                            "Traverse directory discovers");
     mds_plb.add_u64_counter(l_mds_traverse_dir_fetch, "traverse_dir_fetch",
-			    "Traverse incomplete directory content fetchings");
+                            "Traverse incomplete directory content fetchings");
     mds_plb.add_u64_counter(l_mds_traverse_remote_ino, "traverse_remote_ino",
-			    "Traverse remote dentries");
+                            "Traverse remote dentries");
     mds_plb.add_u64_counter(l_mds_traverse_lock, "traverse_lock",
-			    "Traverse locks");
-
-    mds_plb.add_u64(l_mds_load_cent, "load_cent", "Load per cent");
+                            "Traverse locks");
     mds_plb.add_u64(l_mds_dispatch_queue_len, "q", "Dispatch queue length");
-
     mds_plb.add_u64_counter(l_mds_exported, "exported", "Exports");
-    mds_plb.add_u64_counter(
-      l_mds_exported_inodes, "exported_inodes", "Exported inodes", "exi",
-      PerfCountersBuilder::PRIO_INTERESTING);
     mds_plb.add_u64_counter(l_mds_imported, "imported", "Imports");
-    mds_plb.add_u64_counter(
-      l_mds_imported_inodes, "imported_inodes", "Imported inodes", "imi",
-      PerfCountersBuilder::PRIO_INTERESTING);
+
     logger = mds_plb.create_perf_counters();
     g_ceph_context->get_perfcounters_collection()->add(logger);
   }
@@ -2666,21 +2676,26 @@ void MDSRank::create_logger()
     PerfCountersBuilder mdm_plb(g_ceph_context, "mds_mem", l_mdm_first, l_mdm_last);
     mdm_plb.add_u64(l_mdm_ino, "ino", "Inodes", "ino",
                     PerfCountersBuilder::PRIO_INTERESTING);
+    mdm_plb.add_u64(l_mdm_dn, "dn", "Dentries", "dn",
+                    PerfCountersBuilder::PRIO_INTERESTING);
+
+    mdm_plb.set_prio_default(PerfCountersBuilder::PRIO_USEFUL);
     mdm_plb.add_u64_counter(l_mdm_inoa, "ino+", "Inodes opened");
     mdm_plb.add_u64_counter(l_mdm_inos, "ino-", "Inodes closed");
     mdm_plb.add_u64(l_mdm_dir, "dir", "Directories");
     mdm_plb.add_u64_counter(l_mdm_dira, "dir+", "Directories opened");
     mdm_plb.add_u64_counter(l_mdm_dirs, "dir-", "Directories closed");
-    mdm_plb.add_u64(l_mdm_dn, "dn", "Dentries", "dn",
-                    PerfCountersBuilder::PRIO_INTERESTING);
     mdm_plb.add_u64_counter(l_mdm_dna, "dn+", "Dentries opened");
     mdm_plb.add_u64_counter(l_mdm_dns, "dn-", "Dentries closed");
     mdm_plb.add_u64(l_mdm_cap, "cap", "Capabilities");
     mdm_plb.add_u64_counter(l_mdm_capa, "cap+", "Capabilities added");
     mdm_plb.add_u64_counter(l_mdm_caps, "cap-", "Capabilities removed");
-    mdm_plb.add_u64(l_mdm_rss, "rss", "RSS");
     mdm_plb.add_u64(l_mdm_heap, "heap", "Heap size");
     mdm_plb.add_u64(l_mdm_buf, "buf", "Buffer size");
+
+    mdm_plb.set_prio_default(PerfCountersBuilder::PRIO_DEBUGONLY);
+    mdm_plb.add_u64(l_mdm_rss, "rss", "RSS");
+
     mlogger = mdm_plb.create_perf_counters();
     g_ceph_context->get_perfcounters_collection()->add(mlogger);
   }
@@ -2766,12 +2781,12 @@ bool MDSRank::evict_client(int64_t session_id,
   std::string tmp = ss.str();
   std::vector<std::string> cmd = {tmp};
 
-  auto kill_mds_session = [this, session_id, on_killed](){
+  auto kill_client_session = [this, session_id, wait, on_killed](){
     assert(mds_lock.is_locked_by_me());
     Session *session = sessionmap.get_session(
         entity_name_t(CEPH_ENTITY_TYPE_CLIENT, session_id));
     if (session) {
-      if (on_killed) {
+      if (on_killed || !wait) {
         server->kill_session(session, on_killed);
       } else {
         C_SaferCond on_safe;
@@ -2793,13 +2808,13 @@ bool MDSRank::evict_client(int64_t session_id,
     }
   };
 
-  auto background_blacklist = [this, session_id, cmd](std::function<void ()> fn){
+  auto apply_blacklist = [this, cmd](std::function<void ()> fn){
     assert(mds_lock.is_locked_by_me());
 
-    Context *on_blacklist_done = new FunctionContext([this, session_id, fn](int r) {
+    Context *on_blacklist_done = new FunctionContext([this, fn](int r) {
       objecter->wait_for_latest_osdmap(
        new C_OnFinisher(
-         new FunctionContext([this, session_id, fn](int r) {
+         new FunctionContext([this, fn](int r) {
               Mutex::Locker l(mds_lock);
               auto epoch = objecter->with_osdmap([](const OSDMap &o){
                   return o.get_epoch();
@@ -2816,33 +2831,29 @@ bool MDSRank::evict_client(int64_t session_id,
     monc->start_mon_command(cmd, {}, nullptr, nullptr, on_blacklist_done);
   };
 
-  auto blocking_blacklist = [this, cmd, &err_ss, background_blacklist](){
-    C_SaferCond inline_ctx;
-    background_blacklist([&inline_ctx](){inline_ctx.complete(0);});
-    mds_lock.Unlock();
-    inline_ctx.wait();
-    mds_lock.Lock();
-  };
-
   if (wait) {
     if (blacklist) {
-      blocking_blacklist();
+      C_SaferCond inline_ctx;
+      apply_blacklist([&inline_ctx](){inline_ctx.complete(0);});
+      mds_lock.Unlock();
+      inline_ctx.wait();
+      mds_lock.Lock();
     }
 
     // We dropped mds_lock, so check that session still exists
     session = sessionmap.get_session(entity_name_t(CEPH_ENTITY_TYPE_CLIENT,
-          session_id));
+						   session_id));
     if (!session) {
       dout(1) << "session " << session_id << " was removed while we waited "
                  "for blacklist" << dendl;
       return true;
     }
-    kill_mds_session();
+    kill_client_session();
   } else {
     if (blacklist) {
-      background_blacklist(kill_mds_session);
+      apply_blacklist(kill_client_session);
     } else {
-      kill_mds_session();
+      kill_client_session();
     }
   }
 

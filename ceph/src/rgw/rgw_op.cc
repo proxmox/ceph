@@ -3794,6 +3794,7 @@ void RGWPostObj::execute()
                                         s->cct->_conf->rgw_obj_stripe_size,
                                         s->req_id,
                                         s->bucket_info.versioning_enabled());
+    processor.set_olh_epoch(0);
     /* No filters by default. */
     filter = &processor;
 
@@ -5622,6 +5623,7 @@ void RGWCompleteMultipart::execute()
   obj_op.meta.flags = PUT_OBJ_CREATE;
   obj_op.meta.modify_tail = true;
   obj_op.meta.completeMultipart = true;
+  obj_op.meta.olh_epoch = olh_epoch;
   op_ret = obj_op.write_meta(ofs, accounted_size, attrs);
   if (op_ret < 0)
     return;

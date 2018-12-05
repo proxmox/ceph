@@ -1465,6 +1465,10 @@ mds_rank_t Client::choose_target_mds(MetaRequest *req, Inode** phash_diri)
 	mds = in->fragmap[fg];
 	if (phash_diri)
 	  *phash_diri = in;
+      } else if (in->auth_cap) {
+	mds = in->auth_cap->session->mds_num;
+      }
+      if (mds >= 0) {
 	ldout(cct, 10) << "choose_target_mds from dirfragtree hash" << dendl;
 	goto out;
       }
@@ -2989,10 +2993,15 @@ Dentry* Client::link(Dir *dir, const string& name, Inode *in, Dentry *dn)
     dn->dir = dir;
     dir->dentries[dn->name] = dn;
     lru.lru_insert_mid(dn);    // mid or top?
+    if (!in)
+      dir->num_null_dentries++;
 
     ldout(cct, 15) << "link dir " << dir->parent_inode << " '" << name << "' to inode " << in
 		   << " dn " << dn << " (new dn)" << dendl;
   } else {
+    assert(!dn->inode);
+    if (in)
+      dir->num_null_dentries--;
     ldout(cct, 15) << "link dir " << dir->parent_inode << " '" << name << "' to inode " << in
 		   << " dn " << dn << " (old dn)" << dendl;
   }
@@ -3049,11 +3058,15 @@ void Client::unlink(Dentry *dn, bool keepdir, bool keepdentry)
 
   if (keepdentry) {
     dn->lease_mds = -1;
+    if (in)
+      dn->dir->num_null_dentries++;
   } else {
     ldout(cct, 15) << "unlink  removing '" << dn->name << "' dn " << dn << dendl;
 
     // unlink from dir
     dn->dir->dentries.erase(dn->name);
+    if (!in)
+      dn->dir->num_null_dentries--;
     if (dn->dir->is_empty() && !keepdir)
       close_dir(dn->dir);
     dn->dir = 0;
@@ -3936,7 +3949,7 @@ void Client::add_update_cap(Inode *in, MetaSession *mds_session, uint64_t cap_id
 
   unsigned old_caps = cap->issued;
   cap->cap_id = cap_id;
-  cap->issued |= issued;
+  cap->issued = issued;
   cap->implemented |= issued;
   cap->seq = seq;
   cap->issue_seq = seq;
@@ -4045,11 +4058,15 @@ void Client::remove_session_caps(MetaSession *s)
   sync_cond.Signal();
 }
 
-int Client::_do_remount(void)
+int Client::_do_remount(bool retry_on_error)
 {
+  uint64_t max_retries = cct->_conf->get_val<uint64_t>("mds_max_retries_on_remount_failure");
+
   errno = 0;
   int r = remount_cb(callback_handle);
-  if (r != 0) {
+  if (r == 0) {
+    retries_on_invalidate = 0;
+  } else {
     int e = errno;
     client_t whoami = get_nodeid();
     if (r == -1) {
@@ -4061,8 +4078,10 @@ int Client::_do_remount(void)
           "failed to remount (to trim kernel dentries): "
           "return code = " << r << dendl;
     }
-    bool should_abort = cct->_conf->get_val<bool>("client_die_on_failed_remount") ||
-        cct->_conf->get_val<bool>("client_die_on_failed_dentry_invalidate");
+    bool should_abort =
+      (cct->_conf->get_val<bool>("client_die_on_failed_remount") ||
+       cct->_conf->get_val<bool>("client_die_on_failed_dentry_invalidate")) &&
+      !(retry_on_error && (++retries_on_invalidate < max_retries));
     if (should_abort && !unmounting) {
       lderr(cct) << "failed to remount for kernel dentry trimming; quitting!" << dendl;
       ceph_abort();
@@ -4078,7 +4097,7 @@ public:
   explicit C_Client_Remount(Client *c) : client(c) {}
   void finish(int r) override {
     assert(r == 0);
-    client->_do_remount();
+    client->_do_remount(true);
   }
 };
 
@@ -4099,6 +4118,31 @@ void Client::_invalidate_kernel_dcache()
     // Hacky:
     // when remounting a file system, linux kernel trims all unused dentries in the fs
     remount_finisher.queue(new C_Client_Remount(this));
+  }
+}
+
+void Client::_trim_negative_child_dentries(InodeRef& in)
+{
+  if (!in->is_dir())
+    return;
+
+  Dir* dir = in->dir;
+  if (dir && dir->dentries.size() == dir->num_null_dentries) {
+    for (auto p = dir->dentries.begin(); p != dir->dentries.end(); ) {
+      Dentry *dn = p->second;
+      ++p;
+      assert(!dn->inode);
+      if (dn->lru_is_expireable())
+	unlink(dn, true, false);  // keep dir, drop dentry
+    }
+    if (dir->dentries.empty()) {
+      close_dir(dir);
+    }
+  }
+
+  if (in->flags & I_SNAPDIR_OPEN) {
+    InodeRef snapdir = open_snapdir(in.get());
+    _trim_negative_child_dentries(snapdir);
   }
 }
 
@@ -4132,6 +4176,7 @@ void Client::trim_caps(MetaSession *s, uint64_t max)
       }
     } else {
       ldout(cct, 20) << " trying to trim dentries for " << *in << dendl;
+      _trim_negative_child_dentries(in);
       bool all = true;
       set<Dentry*>::iterator q = in->dn_set.begin();
       while (q != in->dn_set.end()) {
@@ -9360,7 +9405,7 @@ success:
   }
 
   // mtime
-  in->mtime = ceph_clock_now();
+  in->mtime = in->ctime = ceph_clock_now();
   in->change_attr++;
   in->mark_caps_dirty(CEPH_CAP_FILE_WR);
 
@@ -9666,6 +9711,7 @@ int Client::statfs(const char *path, struct statvfs *stbuf,
 {
   Mutex::Locker l(client_lock);
   tout(cct) << "statfs" << std::endl;
+  unsigned long int total_files_on_fs;
 
   if (unmounting)
     return -ENOTCONN;
@@ -9682,6 +9728,8 @@ int Client::statfs(const char *path, struct statvfs *stbuf,
 
   client_lock.Unlock();
   int rval = cond.wait();
+  assert(root);
+  total_files_on_fs = root->rstat.rfiles + root->rstat.rsubdirs;
   client_lock.Lock();
 
   if (rval < 0) {
@@ -9703,8 +9751,8 @@ int Client::statfs(const char *path, struct statvfs *stbuf,
   const int CEPH_BLOCK_SHIFT = 22;
   stbuf->f_frsize = 1 << CEPH_BLOCK_SHIFT;
   stbuf->f_bsize = 1 << CEPH_BLOCK_SHIFT;
-  stbuf->f_files = stats.num_objects;
-  stbuf->f_ffree = -1;
+  stbuf->f_files = total_files_on_fs;
+  stbuf->f_ffree = 0;
   stbuf->f_favail = -1;
   stbuf->f_fsid = -1;       // ??
   stbuf->f_flag = 0;        // ??
@@ -10109,7 +10157,7 @@ int Client::test_dentry_handling(bool can_invalidate)
     r = 0;
   } else if (remount_cb) {
     ldout(cct, 1) << "using remount_cb" << dendl;
-    r = _do_remount();
+    r = _do_remount(false);
   }
   if (r) {
     bool should_abort = cct->_conf->get_val<bool>("client_die_on_failed_dentry_invalidate");
@@ -13041,7 +13089,7 @@ int Client::_fallocate(Fh *fh, int mode, int64_t offset, int64_t length)
         in->inline_data = bl;
         in->inline_version++;
       }
-      in->mtime = ceph_clock_now();
+      in->mtime = in->ctime = ceph_clock_now();
       in->change_attr++;
       in->mark_caps_dirty(CEPH_CAP_FILE_WR);
     } else {
@@ -13067,7 +13115,7 @@ int Client::_fallocate(Fh *fh, int mode, int64_t offset, int64_t length)
 		  offset, length,
 		  ceph::real_clock::now(),
 		  0, true, onfinish);
-      in->mtime = ceph_clock_now();
+      in->mtime = in->ctime = ceph_clock_now();
       in->change_attr++;
       in->mark_caps_dirty(CEPH_CAP_FILE_WR);
 
@@ -13083,7 +13131,7 @@ int Client::_fallocate(Fh *fh, int mode, int64_t offset, int64_t length)
     uint64_t size = offset + length;
     if (size > in->size) {
       in->size = size;
-      in->mtime = ceph_clock_now();
+      in->mtime = in->ctime = ceph_clock_now();
       in->change_attr++;
       in->mark_caps_dirty(CEPH_CAP_FILE_WR);
 
@@ -13159,13 +13207,14 @@ int Client::fallocate(int fd, int mode, loff_t offset, loff_t length)
 int Client::ll_release(Fh *fh)
 {
   Mutex::Locker lock(client_lock);
+
+  if (unmounting)
+    return -ENOTCONN;
+
   ldout(cct, 3) << "ll_release (fh)" << fh << " " << fh->inode->ino << " " <<
     dendl;
   tout(cct) << "ll_release (fh)" << std::endl;
   tout(cct) << (unsigned long)fh << std::endl;
-
-  if (unmounting)
-    return -ENOTCONN;
 
   if (ll_unclosed_fh_set.count(fh))
     ll_unclosed_fh_set.erase(fh);

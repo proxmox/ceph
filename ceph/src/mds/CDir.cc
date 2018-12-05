@@ -1570,6 +1570,9 @@ public:
 	fin->complete(r);
     }
   }
+  void print(ostream& out) const override {
+    out << "dirfrag_fetch_more(" << dir->dirfrag() << ")";
+  }
 };
 
 class C_IO_Dir_OMAP_Fetched : public CDirIOContext {
@@ -1596,6 +1599,9 @@ public:
       if (fin)
 	fin->complete(r);
     }
+  }
+  void print(ostream& out) const override {
+    out << "dirfrag_fetch(" << dir->dirfrag() << ")";
   }
 };
 
@@ -2095,6 +2101,9 @@ public:
   C_IO_Dir_Committed(CDir *d, version_t v) : CDirIOContext(d), version(v) { }
   void finish(int r) override {
     dir->_committed(r, version);
+  }
+  void print(ostream& out) const override {
+    out << "dirfrag_commit(" << dir->dirfrag() << ")";
   }
 };
 
@@ -2878,33 +2887,62 @@ void CDir::unfreeze_tree()
   }
 }
 
-bool CDir::is_freezing_tree() const
+bool CDir::can_auth_pin(int *err_ret) const
 {
-  if (num_freezing_trees == 0)
-    return false;
-  const CDir *dir = this;
-  while (1) {
-    if (dir->is_freezing_tree_root()) return true;
-    if (dir->is_subtree_root()) return false;
-    if (dir->inode->parent)
-      dir = dir->inode->parent->dir;
-    else
-      return false; // root on replica
+  int err;
+  if (!is_auth()) {
+    err = ERR_NOT_AUTH;
+  } else if (is_freezing_dir() || is_frozen_dir()) {
+    err = ERR_FRAGMENTING_DIR;
+  } else {
+    auto p = is_freezing_or_frozen_tree();
+    if (p.first || p.second) {
+      err = ERR_EXPORTING_TREE;
+    } else {
+      err = 0;
+    }
   }
+  if (err && err_ret)
+    *err_ret = err;
+  return !err;
 }
 
-bool CDir::is_frozen_tree() const
+pair<bool,bool> CDir::is_freezing_or_frozen_tree() const
 {
-  if (num_frozen_trees == 0)
-    return false;
+  if (!num_freezing_trees && !num_frozen_trees)
+    return make_pair(false, false);
+
+  bool freezing, frozen;
   const CDir *dir = this;
   while (1) {
-    if (dir->is_frozen_tree_root()) return true;
-    if (dir->is_subtree_root()) return false;
+    freezing = dir->is_freezing_tree_root();
+    frozen = dir->is_frozen_tree_root();
+    if (freezing || frozen)
+      break;
+    if (dir->is_subtree_root())
+      break;
     if (dir->inode->parent)
       dir = dir->inode->parent->dir;
     else
-      return false;  // root on replica
+      break; // root on replica
+  }
+  return make_pair(freezing, frozen);
+}
+
+CDir *CDir::get_freezing_tree_root()
+{
+  if (num_freezing_trees == 0)
+    return nullptr;
+  CDir *dir = this;
+  while (true) {
+    if (dir->is_freezing_tree_root())
+      return dir;
+    if (dir->is_subtree_root())
+      return nullptr;
+    if (dir->inode->parent)
+      dir = dir->inode->parent->dir;
+    else
+      return nullptr;
   }
 }
 

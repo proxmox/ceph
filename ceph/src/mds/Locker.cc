@@ -18,6 +18,7 @@
 #include "MDCache.h"
 #include "Locker.h"
 #include "MDBalancer.h"
+#include "Migrator.h"
 #include "CInode.h"
 #include "CDir.h"
 #include "CDentry.h"
@@ -382,6 +383,7 @@ bool Locker::acquire_locks(MDRequestRef& mdr,
 	drop_locks(mdr.get());
       if (object->is_ambiguous_auth()) {
 	// wait
+	marker.message = "waiting for single auth, object is being migrated";
 	dout(10) << " ambiguous auth, waiting to authpin " << *object << dendl;
 	object->add_waiter(MDSCacheObject::WAIT_SINGLEAUTH, new C_MDS_RetryRequest(mdcache, mdr));
 	mdr->drop_local_auth_pins();
@@ -390,7 +392,8 @@ bool Locker::acquire_locks(MDRequestRef& mdr,
       mustpin_remote[object->authority().first].insert(object);
       continue;
     }
-    if (!object->can_auth_pin()) {
+    int err = 0;
+    if (!object->can_auth_pin(&err)) {
       // wait
       drop_locks(mdr.get());
       mdr->drop_local_auth_pins();
@@ -398,6 +401,13 @@ bool Locker::acquire_locks(MDRequestRef& mdr,
 	dout(10) << " can't auth_pin (freezing?) " << *object << ", nonblocking" << dendl;
 	mdr->aborted = true;
 	return false;
+      }
+      if (err == MDSCacheObject::ERR_EXPORTING_TREE) {
+	marker.message = "failed to authpin, subtree is being exported";
+      } else if (err == MDSCacheObject::ERR_FRAGMENTING_DIR) {
+	marker.message = "failed to authpin, dir is being fragmented";
+      } else if (err == MDSCacheObject::ERR_EXPORTING_INODE) {
+	marker.message = "failed to authpin, inode is being exported";
       }
       dout(10) << " can't auth_pin (freezing?), waiting to authpin " << *object << dendl;
       object->add_waiter(MDSCacheObject::WAIT_UNFREEZE, new C_MDS_RetryRequest(mdcache, mdr));
@@ -2418,8 +2428,11 @@ bool Locker::check_inode_max_size(CInode *in, bool force_wrlock,
     pi.inode.rstat.rbytes = new_size;
     dout(10) << "check_inode_max_size mtime " << pi.inode.mtime << " -> " << new_mtime << dendl;
     pi.inode.mtime = new_mtime;
-    if (new_mtime > pi.inode.ctime)
-      pi.inode.ctime = pi.inode.rstat.rctime = new_mtime;
+    if (new_mtime > pi.inode.ctime) {
+      pi.inode.ctime = new_mtime;
+      if (new_mtime > pi.inode.rstat.rctime)
+	pi.inode.rstat.rctime = new_mtime;
+    }
   }
 
   // use EOpen if the file is still open; otherwise, use EUpdate.
@@ -3146,7 +3159,9 @@ void Locker::_update_cap_fields(CInode *in, int dirty, MClientCaps *m, CInode::m
   if (m->get_ctime() > pi->ctime) {
     dout(7) << "  ctime " << pi->ctime << " -> " << m->get_ctime()
 	    << " for " << *in << dendl;
-    pi->ctime = pi->rstat.rctime = m->get_ctime();
+    pi->ctime = m->get_ctime();
+    if (m->get_ctime() > pi->rstat.rctime)
+      pi->rstat.rctime = m->get_ctime();
   }
 
   if ((features & CEPH_FEATURE_FS_CHANGE_ATTR) &&
@@ -3168,6 +3183,8 @@ void Locker::_update_cap_fields(CInode *in, int dirty, MClientCaps *m, CInode::m
       dout(7) << "  mtime " << pi->mtime << " -> " << mtime
 	      << " for " << *in << dendl;
       pi->mtime = mtime;
+      if (mtime > pi->rstat.rctime)
+	pi->rstat.rctime = mtime;
     }
     if (in->inode.is_file() &&   // ONLY if regular file
 	size > pi->size) {
@@ -3519,7 +3536,8 @@ void Locker::remove_client_cap(CInode *in, client_t client)
  * Return true if any currently revoking caps exceed the
  * mds_session_timeout threshold.
  */
-bool Locker::any_late_revoking_caps(xlist<Capability*> const &revoking) const
+bool Locker::any_late_revoking_caps(xlist<Capability*> const &revoking,
+                                    double timeout) const
 {
     xlist<Capability*>::const_iterator p = revoking.begin();
     if (p.end()) {
@@ -3528,7 +3546,7 @@ bool Locker::any_late_revoking_caps(xlist<Capability*> const &revoking) const
     } else {
       utime_t now = ceph_clock_now();
       utime_t age = now - (*p)->get_last_revoke_stamp();
-      if (age <= g_conf->mds_session_timeout) {
+      if (age <= timeout) {
           return false;
       } else {
           return true;
@@ -3536,22 +3554,18 @@ bool Locker::any_late_revoking_caps(xlist<Capability*> const &revoking) const
     }
 }
 
-
-void Locker::get_late_revoking_clients(std::list<client_t> *result) const
+void Locker::get_late_revoking_clients(std::list<client_t> *result,
+                                       double timeout) const
 {
-  if (!any_late_revoking_caps(revoking_caps)) {
+  if (!any_late_revoking_caps(revoking_caps, timeout)) {
     // Fast path: no misbehaving clients, execute in O(1)
     return;
   }
 
   // Slow path: execute in O(N_clients)
-  std::map<client_t, xlist<Capability*> >::const_iterator client_rc_iter;
-  for (client_rc_iter = revoking_caps_by_client.begin();
-       client_rc_iter != revoking_caps_by_client.end(); ++client_rc_iter) {
-    xlist<Capability*> const &client_rc = client_rc_iter->second;
-    bool any_late = any_late_revoking_caps(client_rc);
-    if (any_late) {
-        result->push_back(client_rc_iter->first);
+  for (auto &p : revoking_caps_by_client) {
+    if (any_late_revoking_caps(p.second, timeout)) {
+      result->push_back(p.first);
     }
   }
 }

@@ -798,6 +798,12 @@ void AsyncConnection::process()
             dispatch_queue->enqueue(message, message->get_priority(), conn_id);
           }
 
+	  // clean up local buffer references
+          data_buf.clear();
+          front.clear();
+          middle.clear();
+          data.clear();
+
           break;
         }
 
@@ -1538,7 +1544,7 @@ ssize_t AsyncConnection::handle_connect_msg(ceph_msg_connect &connect, bufferlis
     lock.lock();
     char tag;
     if (need_challenge && !had_challenge && authorizer_challenge) {
-      ldout(async_msgr->cct,0) << __func__ << ": challenging authorizer"
+      ldout(async_msgr->cct,10) << __func__ << ": challenging authorizer"
 			       << dendl;
       assert(authorizer_reply.length());
       tag = CEPH_MSGR_TAG_CHALLENGE_AUTHORIZER;

@@ -284,6 +284,7 @@ cdef extern from "rados/librados.h" nogil:
     void rados_write_op_create(rados_write_op_t write_op, int exclusive, const char *category)
     void rados_write_op_append(rados_write_op_t write_op, const char *buffer, size_t len)
     void rados_write_op_write_full(rados_write_op_t write_op, const char *buffer, size_t len)
+    void rados_write_op_assert_version(rados_write_op_t write_op, uint64_t ver)
     void rados_write_op_write(rados_write_op_t write_op, const char *buffer, size_t len, uint64_t offset)
     void rados_write_op_remove(rados_write_op_t write_op)
     void rados_write_op_truncate(rados_write_op_t write_op, uint64_t offset)
@@ -1941,6 +1942,19 @@ cdef class WriteOp(object):
         with nogil:
             rados_write_op_write(self.write_op, _to_write, length, _offset)
 
+    @requires(('version', int))
+    def assert_version(self, version):
+        """
+        Check if object's version is the expected one.
+        :param version: expected version of the object
+        :param type: int
+        """
+        cdef:
+            uint64_t _version = version
+
+        with nogil:
+            rados_write_op_assert_version(self.write_op, _version)
+
     @requires(('offset', int), ('length', int))
     def zero(self, offset, length):
         """
@@ -3442,14 +3456,13 @@ returned %d, but should return zero on success." % (self.name, ret))
             ReadOp _read_op = read_op
             rados_omap_iter_t iter_addr = NULL
             int _max_return = max_return
-            int prval = 0
 
         with nogil:
             rados_read_op_omap_get_vals2(_read_op.read_op, _start_after, _filter_prefix,
-                                         _max_return, &iter_addr, NULL, &prval)
+                                         _max_return, &iter_addr, NULL, NULL)
         it = OmapIterator(self)
         it.ctx = iter_addr
-        return it, int(prval)
+        return it, 0   # 0 is meaningless; there for backward-compat
 
     @requires(('read_op', ReadOp), ('start_after', str_type), ('max_return', int))
     def get_omap_keys(self, read_op, start_after, max_return):
@@ -3469,14 +3482,13 @@ returned %d, but should return zero on success." % (self.name, ret))
             ReadOp _read_op = read_op
             rados_omap_iter_t iter_addr = NULL
             int _max_return = max_return
-            int prval = 0
 
         with nogil:
             rados_read_op_omap_get_keys2(_read_op.read_op, _start_after,
-                                         _max_return, &iter_addr, NULL, &prval)
+                                         _max_return, &iter_addr, NULL, NULL)
         it = OmapIterator(self)
         it.ctx = iter_addr
-        return it, int(prval)
+        return it, 0   # 0 is meaningless; there for backward-compat
 
     @requires(('read_op', ReadOp), ('keys', tuple))
     def get_omap_vals_by_keys(self, read_op, keys):
@@ -3494,16 +3506,15 @@ returned %d, but should return zero on success." % (self.name, ret))
             rados_omap_iter_t iter_addr
             char **_keys = to_bytes_array(keys)
             size_t key_num = len(keys)
-            int prval = 0
 
         try:
             with nogil:
                 rados_read_op_omap_get_vals_by_keys(_read_op.read_op,
                                                     <const char**>_keys,
-                                                    key_num, &iter_addr,  &prval)
+                                                    key_num, &iter_addr, NULL)
             it = OmapIterator(self)
             it.ctx = iter_addr
-            return it, int(prval)
+            return it, 0   # 0 is meaningless; there for backward-compat
         finally:
             free(_keys)
 

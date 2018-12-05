@@ -13,7 +13,7 @@
  *
  */
 #include "acconfig.h"
-
+#include <unistd.h>
 #include <fstream>
 #include <iostream>
 #include <errno.h>
@@ -21,6 +21,7 @@
 #include <signal.h>
 #include <ctype.h>
 #include <boost/scoped_ptr.hpp>
+#include <random>
 
 #ifdef HAVE_SYS_PARAM_H
 #include <sys/param.h>
@@ -162,8 +163,6 @@
 #undef dout_prefix
 #define dout_prefix _prefix(_dout, whoami, get_osdmap_epoch())
 
-
-const double OSD::OSD_TICK_INTERVAL = 1.0;
 
 static ostream& _prefix(std::ostream* _dout, int whoami, epoch_t epoch) {
   return *_dout << "osd." << whoami << " " << epoch << " ";
@@ -746,8 +745,8 @@ void OSDService::promote_throttle_recalibrate()
   promote_probability_millis = prob;
 
   // set hard limits for this interval to mitigate stampedes
-  promote_max_objects = target_obj_sec * OSD::OSD_TICK_INTERVAL * 2;
-  promote_max_bytes = target_bytes_sec * OSD::OSD_TICK_INTERVAL * 2;
+  promote_max_objects = target_obj_sec * osd->OSD_TICK_INTERVAL * 2;
+  promote_max_bytes = target_bytes_sec * osd->OSD_TICK_INTERVAL * 2;
 }
 
 // -------------------------------------
@@ -2052,6 +2051,15 @@ OSD::~OSD()
   delete store;
 }
 
+double OSD::get_tick_interval() const
+{
+  // vary +/- 5% to avoid scrub scheduling livelocks
+  constexpr auto delta = 0.05;
+  std::default_random_engine rng{static_cast<unsigned>(whoami)};
+  return (OSD_TICK_INTERVAL *
+          std::uniform_real_distribution<>{1.0 - delta, 1.0 + delta}(rng));
+}
+
 void cls_initialize(ClassHandler *ch);
 
 void OSD::handle_signal(int signum)
@@ -2680,10 +2688,12 @@ int OSD::init()
   heartbeat_thread.create("osd_srv_heartbt");
 
   // tick
-  tick_timer.add_event_after(cct->_conf->osd_heartbeat_interval, new C_Tick(this));
+  tick_timer.add_event_after(get_tick_interval(),
+			     new C_Tick(this));
   {
     Mutex::Locker l(tick_timer_lock);
-    tick_timer_without_osd_lock.add_event_after(cct->_conf->osd_heartbeat_interval, new C_Tick_WithoutOSDLock(this));
+    tick_timer_without_osd_lock.add_event_after(get_tick_interval(),
+						new C_Tick_WithoutOSDLock(this));
   }
 
   osd_lock.Unlock();
@@ -5314,7 +5324,7 @@ void OSD::tick()
 
   do_waiters();
 
-  tick_timer.add_event_after(OSD_TICK_INTERVAL, new C_Tick(this));
+  tick_timer.add_event_after(get_tick_interval(), new C_Tick(this));
 }
 
 void OSD::tick_without_osd_lock()
@@ -5423,7 +5433,8 @@ void OSD::tick_without_osd_lock()
 
   mgrc.update_osd_health(get_health_metrics());
   service.kick_recovery_queue();
-  tick_timer_without_osd_lock.add_event_after(OSD_TICK_INTERVAL, new C_Tick_WithoutOSDLock(this));
+  tick_timer_without_osd_lock.add_event_after(get_tick_interval(),
+					      new C_Tick_WithoutOSDLock(this));
 }
 
 void OSD::check_ops_in_flight()
@@ -6878,18 +6889,23 @@ void OSD::do_command(Connection *con, ceph_tid_t tid, vector<string>& cmd, buffe
       }
     }
 
-    uint64_t rate = (double)count / (end - start);
+    double elapsed = end - start;
+    double rate = count / elapsed;
+    double iops = rate / bsize;
     if (f) {
       f->open_object_section("osd_bench_results");
       f->dump_int("bytes_written", count);
       f->dump_int("blocksize", bsize);
-      f->dump_unsigned("bytes_per_sec", rate);
+      f->dump_float("elapsed_sec", elapsed);
+      f->dump_float("bytes_per_sec", rate);
+      f->dump_float("iops", iops);
       f->close_section();
-      f->flush(ss);
+      f->flush(ds);
     } else {
-      ss << "bench: wrote " << byte_u_t(count)
+      ds << "bench: wrote " << byte_u_t(count)
 	 << " in blocks of " << byte_u_t(bsize) << " in "
-	 << (end-start) << " sec at " << byte_u_t(rate) << "/sec";
+	 << elapsed << " sec at " << byte_u_t(rate) << "/sec "
+	 << si_u_t(iops) << " IOPS";
     }
   }
 
@@ -7579,8 +7595,10 @@ bool OSD::scrub_load_below_threshold()
   }
 
   // allow scrub if below configured threshold
-  if (loadavgs[0] < cct->_conf->osd_scrub_load_threshold) {
-    dout(20) << __func__ << " loadavg " << loadavgs[0]
+  long cpus = sysconf(_SC_NPROCESSORS_ONLN);
+  double loadavg_per_cpu = cpus > 0 ? loadavgs[0] / cpus : loadavgs[0];
+  if (loadavg_per_cpu < cct->_conf->osd_scrub_load_threshold) {
+    dout(20) << __func__ << " loadavg per cpu " << loadavg_per_cpu
 	     << " < max " << cct->_conf->osd_scrub_load_threshold
 	     << " = yes" << dendl;
     return true;

@@ -100,6 +100,9 @@ const char * ceph_osd_op_flag_name(unsigned flag)
     case CEPH_OSD_OP_FLAG_FADVISE_NOCACHE:
       name = "fadvise_nocache";
       break;
+    case CEPH_OSD_OP_FLAG_BYPASS_CLEAN_CACHE:
+      name = "bypass_clean_cache";
+      break;
     default:
       name = "???";
   };
@@ -916,6 +919,8 @@ boost::optional<uint64_t> pg_string_state(const std::string& state)
     type = PG_STATE_SNAPTRIM_WAIT;
   else if (state == "snaptrim_error")
     type = PG_STATE_SNAPTRIM_ERROR;
+  else if (state == "creating")
+    type = PG_STATE_CREATING;
   else
     type = boost::none;
   return type;
@@ -1310,6 +1315,16 @@ void pg_pool_t::build_removed_snaps(interval_set<snapid_t>& rs) const
   } else {
     rs = removed_snaps;
   }
+}
+
+bool pg_pool_t::maybe_updated_removed_snaps(const interval_set<snapid_t>& cached) const
+{
+  if (is_unmanaged_snaps_mode()) { // remove_unmanaged_snap increments range_end
+    if (removed_snaps.empty() || cached.empty()) // range_end is undefined
+      return removed_snaps.empty() != cached.empty();
+    return removed_snaps.range_end() != cached.range_end();
+  }
+  return true;
 }
 
 snapid_t pg_pool_t::snap_exists(const char *s) const

@@ -38,38 +38,43 @@ enum {
   l_mdss_handle_client_request,
   l_mdss_handle_client_session,
   l_mdss_handle_slave_request,
-  l_mdss_req_create,
-  l_mdss_req_getattr,
-  l_mdss_req_getfilelock,
-  l_mdss_req_link,
-  l_mdss_req_lookup,
-  l_mdss_req_lookuphash,
-  l_mdss_req_lookupino,
-  l_mdss_req_lookupname,
-  l_mdss_req_lookupparent,
-  l_mdss_req_lookupsnap,
-  l_mdss_req_lssnap,
-  l_mdss_req_mkdir,
-  l_mdss_req_mknod,
-  l_mdss_req_mksnap,
-  l_mdss_req_open,
-  l_mdss_req_readdir,
-  l_mdss_req_rename,
-  l_mdss_req_renamesnap,
-  l_mdss_req_rmdir,
-  l_mdss_req_rmsnap,
-  l_mdss_req_rmxattr,
-  l_mdss_req_setattr,
-  l_mdss_req_setdirlayout,
-  l_mdss_req_setfilelock,
-  l_mdss_req_setlayout,
-  l_mdss_req_setxattr,
-  l_mdss_req_symlink,
-  l_mdss_req_unlink,
+  l_mdss_req_create_latency,
+  l_mdss_req_getattr_latency,
+  l_mdss_req_getfilelock_latency,
+  l_mdss_req_link_latency,
+  l_mdss_req_lookup_latency,
+  l_mdss_req_lookuphash_latency,
+  l_mdss_req_lookupino_latency,
+  l_mdss_req_lookupname_latency,
+  l_mdss_req_lookupparent_latency,
+  l_mdss_req_lookupsnap_latency,
+  l_mdss_req_lssnap_latency,
+  l_mdss_req_mkdir_latency,
+  l_mdss_req_mknod_latency,
+  l_mdss_req_mksnap_latency,
+  l_mdss_req_open_latency,
+  l_mdss_req_readdir_latency,
+  l_mdss_req_rename_latency,
+  l_mdss_req_renamesnap_latency,
+  l_mdss_req_rmdir_latency,
+  l_mdss_req_rmsnap_latency,
+  l_mdss_req_rmxattr_latency,
+  l_mdss_req_setattr_latency,
+  l_mdss_req_setdirlayout_latency,
+  l_mdss_req_setfilelock_latency,
+  l_mdss_req_setlayout_latency,
+  l_mdss_req_setxattr_latency,
+  l_mdss_req_symlink_latency,
+  l_mdss_req_unlink_latency,
+  l_mdss_cap_revoke_eviction,
   l_mdss_last,
 };
 
 class Server {
+public:
+  using clock = ceph::coarse_mono_clock;
+  using time = ceph::coarse_mono_time;
+
 private:
   MDSRank *mds;
   MDCache *mdcache;
@@ -84,6 +89,8 @@ private:
   int failed_reconnects;
   bool reconnect_evicting;  // true if I am waiting for evictions to complete
                             // before proceeding to reconnect_gather_finish
+
+  double cap_revoke_eviction_timeout = 0;
 
   friend class MDSContinuation;
   friend class ServerContext;
@@ -144,6 +151,7 @@ public:
   void submit_mdlog_entry(LogEvent *le, MDSLogContextBase *fin,
                           MDRequestRef& mdr, const char *evt);
   void dispatch_client_request(MDRequestRef& mdr);
+  void perf_gather_op_latency(const MClientRequest* req, utime_t lat);
   void early_reply(MDRequestRef& mdr, CInode *tracei, CDentry *tracedn);
   void respond_to_request(MDRequestRef& mdr, int r = 0);
   void set_trace_dist(Session *session, MClientReply *reply, CInode *in, CDentry *dn,
@@ -305,6 +313,10 @@ public:
   void do_rename_rollback(bufferlist &rbl, mds_rank_t master, MDRequestRef& mdr, bool finish_mdr=false);
   void _rename_rollback_finish(MutationRef& mut, MDRequestRef& mdr, CDentry *srcdn, version_t srcdnpv,
 			       CDentry *destdn, CDentry *staydn, bool finish_mdr);
+
+  void evict_cap_revoke_non_responders();
+  void handle_conf_change(const struct md_config_t *,
+                          const std::set <std::string> &changed);
 
 private:
   void reply_client_request(MDRequestRef& mdr, MClientReply *reply);

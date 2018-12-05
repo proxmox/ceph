@@ -100,15 +100,27 @@ class Zap(object):
                 for vg_name in vgs:
                     mlogger.info("Destroying volume group %s because --destroy was given", vg_name)
                     api.remove_vg(vg_name)
-                mlogger.info("Destroying physical volume %s because --destroy was given", device)
-                api.remove_pv(device)
+                if not lv:
+                    mlogger.info("Destroying physical volume %s because --destroy was given", device)
+                    api.remove_pv(device)
 
             wipefs(path)
             zap_data(path)
 
             if lv and not pvs:
-                # remove all lvm metadata
-                lv.clear_tags()
+                if args.destroy:
+                    lvs = api.Volumes()
+                    lvs.filter(vg_name=lv.vg_name)
+                    if len(lvs) <= 1:
+                        mlogger.info('Only 1 LV left in VG, will proceed to destroy volume group %s', lv.vg_name)
+                        api.remove_vg(lv.vg_name)
+                    else:
+                        mlogger.info('More than 1 LV left in VG, will proceed to destroy LV only')
+                        mlogger.info('Removing LV because --destroy was given: %s', lv)
+                        api.remove_lv(lv)
+                else:
+                    # just remove all lvm metadata, leaving the LV around
+                    lv.clear_tags()
 
         terminal.success("Zapping successful for: %s" % ", ".join(args.devices))
 

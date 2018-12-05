@@ -56,7 +56,7 @@ def common_parser(prog, description):
     required_group.add_argument(
         '--data',
         required=True,
-        type=arg_validators.LVPath(),
+        type=arg_validators.ValidDevice(as_string=True),
         help='OSD data path. A physical device or logical volume',
     )
 
@@ -97,6 +97,11 @@ def common_parser(prog, description):
     parser.add_argument(
         '--osd-fsid',
         help='Reuse an existing OSD fsid',
+    )
+
+    parser.add_argument(
+        '--cluster-fsid',
+        help='Specify the cluster fsid, useful when no ceph.conf is available',
     )
 
     parser.add_argument(

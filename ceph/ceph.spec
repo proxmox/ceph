@@ -44,7 +44,7 @@
 
 %if %{with selinux}
 # get selinux policy version
-%{!?_selinux_policy_version: %global _selinux_policy_version %(sed -e 's,.*selinux-policy-\\([^/]*\\)/.*,\\1,' /usr/share/selinux/devel/policyhelp 2>/dev/null || echo 0.0.0)}
+%{!?_selinux_policy_version: %global _selinux_policy_version 0.0.0}
 %endif
 
 %{!?_udevrulesdir: %global _udevrulesdir /lib/udev/rules.d}
@@ -61,7 +61,7 @@
 # main package definition
 #################################################################################
 Name:		ceph
-Version:	12.2.8
+Version:	12.2.10
 Release:	0%{?dist}
 %if 0%{?fedora} || 0%{?rhel}
 Epoch:		2
@@ -77,7 +77,7 @@ License:	LGPL-2.1 and CC-BY-SA-3.0 and GPL-2.0 and BSL-1.0 and BSD-3-Clause and 
 Group:		System/Filesystems
 %endif
 URL:		http://ceph.com/
-Source0:	http://ceph.com/download/ceph-12.2.8.tar.bz2
+Source0:	http://ceph.com/download/ceph-12.2.10.tar.bz2
 %if 0%{?suse_version}
 %if 0%{?is_opensuse}
 ExclusiveArch:  x86_64 aarch64 ppc64 ppc64le
@@ -100,7 +100,6 @@ BuildRequires:	sharutils
 %if 0%{with selinux}
 BuildRequires:	checkpolicy
 BuildRequires:	selinux-policy-devel
-BuildRequires:	/usr/share/selinux/devel/policyhelp
 %endif
 %if 0%{with make_check}
 %if 0%{?fedora} || 0%{?rhel}
@@ -124,7 +123,12 @@ BuildRequires:	fuse-devel
 BuildRequires:	gcc-c++
 BuildRequires:	gdbm
 %if 0%{with tcmalloc}
+%if 0%{?fedora} || 0%{?rhel}
+BuildRequires:	gperftools-devel >= 2.6.1
+%endif
+%if 0%{?suse_version}
 BuildRequires:	gperftools-devel >= 2.4
+%endif
 %endif
 BuildRequires:  jq
 BuildRequires:	leveldb-devel > 1.2
@@ -248,14 +252,25 @@ Requires:      python-requests
 Requires:      python-setuptools
 Requires:      grep
 Requires:      xfsprogs
+Requires:      e2fsprogs
 Requires:      logrotate
+Requires:      parted
 Requires:      util-linux
 Requires:      cryptsetup
 Requires:      findutils
 Requires:      psmisc
 Requires:      which
+%if 0%{?fedora} || 0%{?rhel}
+Requires:      gdisk
+# The following is necessary due to tracker 36508 and can be removed once the
+# associated upstream bugs are resolved.
+%if 0%{with tcmalloc}
+Requires:      gperftools-libs >= 2.6.1
+%endif
+%endif
 %if 0%{?suse_version}
 Recommends:    ntp-daemon
+Requires:      gptfdisk
 %endif
 %description base
 Base is the package that includes all the files shared amongst ceph servers
@@ -423,14 +438,6 @@ Summary:	Ceph Object Storage Daemon
 Group:		System/Filesystems
 %endif
 Requires:	ceph-base = %{_epoch_prefix}%{version}-%{release}
-# for sgdisk, used by ceph-disk
-%if 0%{?fedora} || 0%{?rhel}
-Requires:	gdisk
-%endif
-%if 0%{?suse_version}
-Requires:	gptfdisk
-%endif
-Requires:	parted
 Requires:	lvm2
 %description osd
 ceph-osd is the object storage daemon for the Ceph distributed file
@@ -781,7 +788,7 @@ python-rbd, python-rgw or python-cephfs instead.
 # common
 #################################################################################
 %prep
-%autosetup -p1 -n ceph-12.2.8
+%autosetup -p1 -n ceph-12.2.10
 
 %build
 %if 0%{with cephfs_java}

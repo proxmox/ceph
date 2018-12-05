@@ -218,6 +218,17 @@ class filepath {
     o.push_back(new filepath("var/log", 1));
     o.push_back(new filepath("foo/bar", 101));
   }
+
+  bool is_last_dot_or_dotdot() const {
+    if (depth() > 0) {
+      std::string dname = last_dentry();
+      if (dname == "." || dname == "..") {
+        return true;
+      }
+    }
+
+    return false;
+  }
 };
 
 WRITE_CLASS_ENCODER(filepath)
@@ -226,7 +237,7 @@ inline ostream& operator<<(ostream& out, const filepath& path)
 {
   if (path.get_ino()) {
     out << '#' << path.get_ino();
-    if (path.depth())
+    if (path.length())
       out << '/';
   }
   return out << path.get_path();

@@ -1000,17 +1000,6 @@ void ECBackend::handle_sub_read(
       i != op.to_read.end();
       ++i) {
     int r = 0;
-    ECUtil::HashInfoRef hinfo;
-    if (!get_parent()->get_pool().allows_ecoverwrites()) {
-      hinfo = get_hash_info(i->first);
-      if (!hinfo) {
-	r = -EIO;
-	get_parent()->clog_error() << "Corruption detected: object " << i->first
-                                   << " is missing hash_info";
-	dout(5) << __func__ << ": No hinfo for " << i->first << dendl;
-	goto error;
-      }
-    }
     for (auto j = i->second.begin(); j != i->second.end(); ++j) {
       bufferlist bl;
       r = store->read(
@@ -1039,6 +1028,17 @@ void ECBackend::handle_sub_read(
 	// This shows that we still need deep scrub because large enough files
 	// are read in sections, so the digest check here won't be done here.
 	// Do NOT check osd_read_eio_on_bad_digest here.  We need to report
+	ECUtil::HashInfoRef hinfo;
+	if (!get_parent()->get_pool().allows_ecoverwrites()) {
+	  hinfo = get_hash_info(i->first);
+	  if (!hinfo) {
+	    r = -EIO;
+	    get_parent()->clog_error() << "Corruption detected: object " << i->first
+				       << " is missing hash_info";
+	    dout(5) << __func__ << ": No hinfo for " << i->first << dendl;
+	    goto error;
+	  }
+	}
 	// the state of our chunk in case other chunks could substitute.
 	assert(hinfo->has_chunk_hash());
 	if ((bl.length() == hinfo->get_total_chunk_size()) &&
@@ -1077,6 +1077,8 @@ error:
 	*i, ghobject_t::NO_GEN, get_parent()->whoami_shard().shard),
       reply->attrs_read[*i]);
     if (r < 0) {
+      // If we read error, we should not return the attrs too.
+      reply->attrs_read.erase(*i);
       reply->buffers_read.erase(*i);
       reply->errors[*i] = r;
     }
@@ -2201,6 +2203,10 @@ void ECBackend::objects_read_async(
 	  auto range = got.second.get_containing_range(offset, length);
 	  assert(range.first != range.second);
 	  assert(range.first.get_off() <= offset);
+          ldpp_dout(dpp, 30) << "offset: " << offset << dendl;
+          ldpp_dout(dpp, 30) << "range offset: " << range.first.get_off() << dendl;
+          ldpp_dout(dpp, 30) << "length: " << length << dendl;
+          ldpp_dout(dpp, 30) << "range length: " << range.first.get_len()  << dendl;
 	  assert(
 	    (offset + length) <=
 	    (range.first.get_off() + range.first.get_len()));
@@ -2371,13 +2377,21 @@ int ECBackend::send_all_remaining_reads(
   GenContext<pair<RecoveryMessages *, read_result_t& > &> *c =
     rop.to_read.find(hoid)->second.cb;
 
+  // (Note cuixf) If we need to read attrs and we read failed, try to read again.
+  bool want_attrs =
+    rop.to_read.find(hoid)->second.want_attrs &&
+    (!rop.complete[hoid].attrs || rop.complete[hoid].attrs->empty());
+  if (want_attrs) {
+    dout(10) << __func__ << " want attrs again" << dendl;
+  }
+
   rop.to_read.erase(hoid);
   rop.to_read.insert(make_pair(
       hoid,
       read_request_t(
 	offsets,
 	shards,
-	false,
+	want_attrs,
 	c)));
   do_read_op(rop);
   return 0;

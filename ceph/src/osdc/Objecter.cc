@@ -1823,6 +1823,7 @@ void Objecter::get_session(Objecter::OSDSession *s)
 
 void Objecter::_reopen_session(OSDSession *s)
 {
+  // rwlock is locked unique
   // s->lock is locked
 
   entity_inst_t inst = osdmap->get_inst(s->osd);
@@ -2952,7 +2953,10 @@ int Objecter::_calc_target(op_target_t *t, Connection *con, bool any_change)
   if (legacy_change || unpaused || force_resend) {
     return RECALC_OP_TARGET_NEED_RESEND;
   }
-  if (split && con && con->has_features(CEPH_FEATUREMASK_RESEND_ON_SPLIT)) {
+  if (split &&
+      (osdmap->require_osd_release >= CEPH_RELEASE_LUMINOUS ||
+       HAVE_FEATURE(osdmap->get_xinfo(acting_primary).features,
+		    RESEND_ON_SPLIT))) {
     return RECALC_OP_TARGET_NEED_RESEND;
   }
   return RECALC_OP_TARGET_NO_ACTION;
@@ -4412,11 +4416,12 @@ bool Objecter::ms_handle_reset(Connection *con)
   if (!initialized)
     return false;
   if (con->get_peer_type() == CEPH_ENTITY_TYPE_OSD) {
+    unique_lock wl(rwlock);
+    
     OSDSession *session = static_cast<OSDSession*>(con->get_priv());
     if (session) {
       ldout(cct, 1) << "ms_handle_reset " << con << " session " << session
 		    << " osd." << session->osd << dendl;
-      unique_lock wl(rwlock);
       if (!initialized) {
 	wl.unlock();
 	return false;

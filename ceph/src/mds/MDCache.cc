@@ -152,7 +152,8 @@ protected:
     return mdcache->mds;
   }
 public:
-  explicit MDCacheIOContext(MDCache *mdc_) : mdcache(mdc_) {}
+  explicit MDCacheIOContext(MDCache *mdc_, bool track=true) :
+    MDSIOContextBase(track), mdcache(mdc_) {}
 };
 
 class MDCacheLogContext : public virtual MDSLogContextBase {
@@ -206,7 +207,13 @@ MDCache::MDCache(MDSRank *m, PurgeQueue &purge_queue_) :
   cap_imports_num_opening = 0;
 
   opening_root = open = false;
-  lru.lru_set_midpoint(cache_mid());
+
+  cache_inode_limit = g_conf->get_val<int64_t>("mds_cache_size");
+  cache_memory_limit = g_conf->get_val<uint64_t>("mds_cache_memory_limit");
+  cache_reservation = g_conf->get_val<double>("mds_cache_reservation");
+  cache_health_threshold = g_conf->get_val<double>("mds_health_cache_threshold");
+
+  lru.lru_set_midpoint(g_conf->get_val<double>("mds_cache_mid"));
 
   bottom_lru.lru_set_midpoint(0);
 
@@ -222,11 +229,28 @@ MDCache::~MDCache()
   }
 }
 
+void MDCache::handle_conf_change(const struct md_config_t *conf,
+                                 const std::set <std::string> &changed,
+                                 const MDSMap &mdsmap)
+{
+  if (changed.count("mds_cache_size"))
+    cache_inode_limit = g_conf->get_val<int64_t>("mds_cache_size");
+  if (changed.count("mds_cache_memory_limit"))
+    cache_memory_limit = g_conf->get_val<uint64_t>("mds_cache_memory_limit");
+  if (changed.count("mds_cache_reservation"))
+    cache_reservation = g_conf->get_val<double>("mds_cache_reservation");
+  if (changed.count("mds_health_cache_threshold"))
+    cache_health_threshold = g_conf->get_val<double>("mds_health_cache_threshold");
+  if (changed.count("mds_cache_mid"))
+    lru.lru_set_midpoint(g_conf->get_val<double>("mds_cache_mid"));
 
+  migrator->handle_conf_change(conf, changed, mdsmap);
+  mds->balancer->handle_conf_change(conf, changed, mdsmap);
+}
 
 void MDCache::log_stat()
 {
-  mds->logger->set(l_mds_inode_max, cache_limit_inodes() == 0 ? INT_MAX : cache_limit_inodes());
+  mds->logger->set(l_mds_inode_max, cache_inode_limit ? : INT_MAX);
   mds->logger->set(l_mds_inodes, lru.lru_get_size());
   mds->logger->set(l_mds_inodes_pinned, lru.lru_get_num_pinned());
   mds->logger->set(l_mds_inodes_top, lru.lru_get_top());
@@ -2925,10 +2949,7 @@ void MDCache::handle_mds_failure(mds_rank_t who)
 	if (!mdr->more()->waiting_on_slave.empty()) {
 	  assert(mdr->more()->srcdn_auth_mds == mds->get_nodeid());
 	  // will rollback, no need to wait
-	  if (mdr->slave_request) {
-	    mdr->slave_request->put();
-	    mdr->slave_request = 0;
-	  }
+	  mdr->reset_slave_request();
 	  mdr->more()->waiting_on_slave.clear();
 	}
       } else if (!mdr->committing) {
@@ -6294,10 +6315,14 @@ struct C_IO_MDC_TruncateFinish : public MDCacheIOContext {
   CInode *in;
   LogSegment *ls;
   C_IO_MDC_TruncateFinish(MDCache *c, CInode *i, LogSegment *l) :
-    MDCacheIOContext(c), in(i), ls(l) {}
+    MDCacheIOContext(c, false), in(i), ls(l) {
+  }
   void finish(int r) override {
     assert(r == 0 || r == -ENOENT);
     mdcache->truncate_inode_finish(in, ls);
+  }
+  void print(ostream& out) const override {
+    out << "file_truncate(" << in->ino() << ")";
   }
 };
 
@@ -6511,12 +6536,12 @@ void MDCache::trim_lru(uint64_t count, map<mds_rank_t, MCacheExpire*> &expiremap
 bool MDCache::trim(uint64_t count)
 {
   uint64_t used = cache_size();
-  uint64_t limit = cache_limit_memory();
+  uint64_t limit = cache_memory_limit;
   map<mds_rank_t, MCacheExpire*> expiremap;
 
   dout(7) << "trim bytes_used=" << bytes2str(used)
           << " limit=" << bytes2str(limit)
-          << " reservation=" << cache_reservation()
+          << " reservation=" << cache_reservation
           << "% count=" << count << dendl;
 
   // process delayed eval_stray()
@@ -7472,7 +7497,7 @@ void MDCache::check_memory_usage()
   mds->mlogger->set(l_mdm_heap, last.get_heap());
 
   if (cache_toofull()) {
-    last_recall_state = ceph_clock_now();
+    last_recall_state = clock::now();
     mds->server->recall_client_state();
   }
 
@@ -8343,6 +8368,9 @@ class C_IO_MDC_OpenInoBacktraceFetched : public MDCacheIOContext {
   void finish(int r) override {
     mdcache->_open_ino_backtrace_fetched(ino, bl, r);
   }
+  void print(ostream& out) const override {
+    out << "openino_backtrace_fetch" << ino << ")";
+  }
 };
 
 struct C_MDC_OpenInoTraverseDir : public MDCacheContext {
@@ -9060,10 +9088,14 @@ MDRequestRef MDCache::request_start_slave(metareqid_t ri, __u32 attempt, Message
 
 MDRequestRef MDCache::request_start_internal(int op)
 {
+  utime_t now = ceph_clock_now();
   MDRequestImpl::Params params;
   params.reqid.name = entity_name_t::MDS(mds->get_nodeid());
   params.reqid.tid = mds->issue_tid();
-  params.initiated = ceph_clock_now();
+  params.initiated = now;
+  params.throttled = now;
+  params.all_read = now;
+  params.dispatched = now;
   params.internal_op = op;
   MDRequestRef mdr =
       mds->op_tracker.create_request<MDRequestImpl,MDRequestImpl::Params>(params);
@@ -9135,8 +9167,7 @@ void MDCache::request_forward(MDRequestRef& mdr, mds_rank_t who, int port)
   if (mdr->client_request && mdr->client_request->get_source().is_client()) {
     dout(7) << "request_forward " << *mdr << " to mds." << who << " req "
             << *mdr->client_request << dendl;
-    mds->forward_message_mds(mdr->client_request, who);
-    mdr->client_request = 0;
+    mds->forward_message_mds(mdr->release_client_request(), who);
     if (mds->logger) mds->logger->inc(l_mds_forward);
   } else if (mdr->internal_op >= 0) {
     dout(10) << "request_forward on internal op; cancelling" << dendl;
@@ -11223,6 +11254,9 @@ public:
     assert(r == 0 || r == -ENOENT);
     mdcache->_fragment_finish(basedirfrag, resultfrags);
   }
+  void print(ostream& out) const override {
+    out << "dirfrags_commit(" << basedirfrag << ")";
+  }
 };
 
 void MDCache::fragment_frozen(MDRequestRef& mdr, int r)
@@ -11955,7 +11989,7 @@ int MDCache::dump_cache(boost::string_view fn, Formatter *f,
 
     dout(1) << "dump_cache to " << path << dendl;
 
-    fd = ::open(path, O_WRONLY|O_CREAT|O_EXCL, 0600);
+    fd = ::open(path, O_WRONLY|O_CREAT|O_EXCL|O_CLOEXEC, 0600);
     if (fd < 0) {
       derr << "failed to open " << path << ": " << cpp_strerror(errno) << dendl;
       return errno;
@@ -12463,43 +12497,54 @@ void MDCache::flush_dentry_work(MDRequestRef& mdr)
  */
 void MDCache::register_perfcounters()
 {
-    PerfCountersBuilder pcb(g_ceph_context,
-            "mds_cache", l_mdc_first, l_mdc_last);
+    PerfCountersBuilder pcb(g_ceph_context, "mds_cache", l_mdc_first, l_mdc_last);
 
-    /* Stray/purge statistics */
-    pcb.add_u64(l_mdc_num_strays, "num_strays",
-        "Stray dentries", "stry", PerfCountersBuilder::PRIO_INTERESTING);
-    pcb.add_u64(l_mdc_num_strays_delayed, "num_strays_delayed", "Stray dentries delayed");
-    pcb.add_u64(l_mdc_num_strays_enqueuing, "num_strays_enqueuing", "Stray dentries enqueuing for purge");
+    // Stray/purge statistics
+    pcb.add_u64(l_mdc_num_strays, "num_strays", "Stray dentries", "stry",
+                PerfCountersBuilder::PRIO_INTERESTING);
+    pcb.add_u64(l_mdc_num_recovering_enqueued,
+                "num_recovering_enqueued", "Files waiting for recovery", "recy",
+                PerfCountersBuilder::PRIO_INTERESTING);
+    pcb.add_u64_counter(l_mdc_recovery_completed,
+                        "recovery_completed", "File recoveries completed", "recd",
+                        PerfCountersBuilder::PRIO_INTERESTING);
 
-    pcb.add_u64_counter(l_mdc_strays_created, "strays_created", "Stray dentries created");
+    // useful recovery queue statistics
+    pcb.set_prio_default(PerfCountersBuilder::PRIO_USEFUL);
+    pcb.add_u64(l_mdc_num_recovering_processing, "num_recovering_processing",
+                "Files currently being recovered");
+    pcb.add_u64(l_mdc_num_recovering_prioritized, "num_recovering_prioritized",
+                "Files waiting for recovery with elevated priority");
+    pcb.add_u64_counter(l_mdc_recovery_started, "recovery_started",
+                        "File recoveries started");
+
+    // along with other stray dentries stats
+    pcb.add_u64(l_mdc_num_strays_delayed, "num_strays_delayed",
+                "Stray dentries delayed");
+    pcb.add_u64(l_mdc_num_strays_enqueuing, "num_strays_enqueuing",
+                "Stray dentries enqueuing for purge");
+    pcb.add_u64_counter(l_mdc_strays_created, "strays_created",
+                        "Stray dentries created");
     pcb.add_u64_counter(l_mdc_strays_enqueued, "strays_enqueued",
-        "Stray dentries enqueued for purge");
-    pcb.add_u64_counter(l_mdc_strays_reintegrated, "strays_reintegrated", "Stray dentries reintegrated");
-    pcb.add_u64_counter(l_mdc_strays_migrated, "strays_migrated", "Stray dentries migrated");
+                        "Stray dentries enqueued for purge");
+    pcb.add_u64_counter(l_mdc_strays_reintegrated, "strays_reintegrated",
+                        "Stray dentries reintegrated");
+    pcb.add_u64_counter(l_mdc_strays_migrated, "strays_migrated",
+                        "Stray dentries migrated");
 
-
-    /* Recovery queue statistics */
-    pcb.add_u64(l_mdc_num_recovering_processing, "num_recovering_processing", "Files currently being recovered");
-    pcb.add_u64(l_mdc_num_recovering_enqueued, "num_recovering_enqueued",
-        "Files waiting for recovery", "recy", PerfCountersBuilder::PRIO_INTERESTING);
-    pcb.add_u64(l_mdc_num_recovering_prioritized, "num_recovering_prioritized", "Files waiting for recovery with elevated priority");
-    pcb.add_u64_counter(l_mdc_recovery_started, "recovery_started", "File recoveries started");
-    pcb.add_u64_counter(l_mdc_recovery_completed, "recovery_completed",
-        "File recoveries completed", "recd", PerfCountersBuilder::PRIO_INTERESTING);
-
+    // low prio internal request stats
     pcb.add_u64_counter(l_mdss_ireq_enqueue_scrub, "ireq_enqueue_scrub",
-        "Internal Request type enqueue scrub");
+                        "Internal Request type enqueue scrub");
     pcb.add_u64_counter(l_mdss_ireq_exportdir, "ireq_exportdir",
-        "Internal Request type export dir");
+                        "Internal Request type export dir");
     pcb.add_u64_counter(l_mdss_ireq_flush, "ireq_flush",
-        "Internal Request type flush");
+                        "Internal Request type flush");
     pcb.add_u64_counter(l_mdss_ireq_fragmentdir, "ireq_fragmentdir",
-        "Internal Request type fragmentdir");
+                        "Internal Request type fragmentdir");
     pcb.add_u64_counter(l_mdss_ireq_fragstats, "ireq_fragstats",
-        "Internal Request type frag stats");
+                        "Internal Request type frag stats");
     pcb.add_u64_counter(l_mdss_ireq_inodestats, "ireq_inodestats",
-        "Internal Request type inode stats");
+                        "Internal Request type inode stats");
 
     logger.reset(pcb.create_perf_counters());
     g_ceph_context->get_perfcounters_collection()->add(logger.get());

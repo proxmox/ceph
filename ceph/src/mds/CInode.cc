@@ -604,31 +604,6 @@ CDir *CInode::get_approx_dirfrag(frag_t fg)
   return NULL;
 }	
 
-void CInode::get_dirfrags(std::list<CDir*>& ls) 
-{
-  // all dirfrags
-  for (const auto &p : dirfrags) {
-    ls.push_back(p.second);
-  }
-}
-void CInode::get_nested_dirfrags(list<CDir*>& ls) 
-{  
-  // dirfrags in same subtree
-  for (const auto &p : dirfrags) {
-    if (!p.second->is_subtree_root())
-      ls.push_back(p.second);
-  }
-}
-void CInode::get_subtree_dirfrags(list<CDir*>& ls) 
-{ 
-  // dirfrags that are roots of new subtrees
-  for (const auto &p : dirfrags) {
-    if (p.second->is_subtree_root())
-      ls.push_back(p.second);
-  }
-}
-
-
 CDir *CInode::get_or_open_dirfrag(MDCache *mdcache, frag_t fg)
 {
   assert(is_dir());
@@ -947,6 +922,9 @@ struct C_IO_Inode_Stored : public CInodeIOContext {
   void finish(int r) override {
     in->_stored(r, version, fin);
   }
+  void print(ostream& out) const override {
+    out << "inode_store(" << in->ino() << ")";
+  }
 };
 
 object_t InodeStoreBase::get_object_name(inodeno_t ino, frag_t fg, const char *suffix)
@@ -1038,6 +1016,9 @@ struct C_IO_Inode_Fetched : public CInodeIOContext {
     // Ignore 'r', because we fetch from two places, so r is usually ENOENT
     in->_fetched(bl, bl2, fin);
   }
+  void print(ostream& out) const override {
+    out << "inode_fetch(" << in->ino() << ")";
+  }
 };
 
 void CInode::fetch(MDSInternalContextBase *fin)
@@ -1125,6 +1106,9 @@ struct C_IO_Inode_StoredBacktrace : public CInodeIOContext {
   C_IO_Inode_StoredBacktrace(CInode *i, version_t v, Context *f) : CInodeIOContext(i), version(v), fin(f) {}
   void finish(int r) override {
     in->_stored_backtrace(r, version, fin);
+  }
+  void print(ostream& out) const override {
+    out << "backtrace_store(" << in->ino() << ")";
   }
 };
 
@@ -2405,12 +2389,20 @@ void CInode::clear_ambiguous_auth()
 }
 
 // auth_pins
-bool CInode::can_auth_pin() const {
-  if (!is_auth() || is_freezing_inode() || is_frozen_inode() || is_frozen_auth_pin())
-    return false;
-  if (parent)
-    return parent->can_auth_pin();
-  return true;
+bool CInode::can_auth_pin(int *err_ret) const {
+  int err;
+  if (!is_auth()) {
+    err = ERR_NOT_AUTH;
+  } else if (is_freezing_inode() || is_frozen_inode() || is_frozen_auth_pin()) {
+    err = ERR_EXPORTING_INODE;
+  } else {
+    if (parent)
+      return parent->can_auth_pin(err_ret);
+    err = 0;
+  }
+  if (err && err_ret)
+    *err_ret = err;
+  return !err;
 }
 
 void CInode::auth_pin(void *by) 

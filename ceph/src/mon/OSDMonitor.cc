@@ -5369,10 +5369,12 @@ bool OSDMonitor::preprocess_command(MonOpRequestRef op)
     bool show_shadow = shadow == "--show-shadow";
     boost::scoped_ptr<Formatter> f(Formatter::create(format));
     if (f) {
+      f->open_object_section("crush_tree");
       osdmap.crush->dump_tree(nullptr,
                               f.get(),
                               osdmap.get_pool_names(),
                               show_shadow);
+      f->close_section();
       f->flush(rdata);
     } else {
       ostringstream ss;
@@ -10864,6 +10866,25 @@ bool OSDMonitor::prepare_command_impl(MonOpRequestRef op,
       ss << "'expected_num_objects' must be non-negative";
       err = -EINVAL;
       goto reply;
+    }
+
+    if (expected_num_objects > 0 &&
+	cct->_conf->osd_objectstore == "filestore" &&
+	cct->_conf->filestore_merge_threshold > 0) {
+      ss << "'expected_num_objects' requires 'filestore_merge_threshold < 0'";
+      err = -EINVAL;
+      goto reply;
+    }
+
+    if (expected_num_objects == 0 &&
+	cct->_conf->osd_objectstore == "filestore" &&
+	cct->_conf->filestore_merge_threshold < 0) {
+      int osds = osdmap.get_num_osds();
+      if (osds && (pg_num >= 1024 || pg_num / osds >= 100)) {
+        ss << "For better initial performance on pools expected to store a "
+	   << "large number of objects, consider supplying the "
+	   << "expected_num_objects parameter when creating the pool.\n";
+      }
     }
 
     int64_t fast_read_param;
