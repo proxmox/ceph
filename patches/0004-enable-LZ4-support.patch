@@ -13,7 +13,7 @@ Signed-off-by: Fabian Grünbichler <f.gruenbichler@proxmox.com>
  2 files changed, 2 insertions(+)
 
 diff --git a/debian/control b/debian/control
-index d5bc16e9ee..d96f5aedd0 100644
+index 65c29ed0d5..819f4f0b4d 100644
 --- a/debian/control
 +++ b/debian/control
 @@ -38,6 +38,7 @@ Build-Depends: bc,
@@ -25,7 +25,7 @@ index d5bc16e9ee..d96f5aedd0 100644
                 libsnappy-dev,
                 libssl-dev,
 diff --git a/debian/rules b/debian/rules
-index db051ded25..9dad5ad166 100755
+index 00e9ac6b16..3ac923f71a 100755
 --- a/debian/rules
 +++ b/debian/rules
 @@ -7,6 +7,7 @@ export DEB_HOST_ARCH      ?= $(shell dpkg-architecture -qDEB_HOST_ARCH)

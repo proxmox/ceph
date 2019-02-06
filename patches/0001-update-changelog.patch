@@ -5,14 +5,26 @@ Subject: [PATCH] update changelog
 
 Signed-off-by: Alwin Antreich <a.antreich@proxmox.com>
 ---
- debian/changelog | 190 +++++++++++++++++++++++++++++++++++++++++++++++
- 1 file changed, 190 insertions(+)
+ debian/changelog | 196 +++++++++++++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 196 insertions(+)
 
 diff --git a/debian/changelog b/debian/changelog
-index 2b61ec882..75c7fb9ac 100644
+index eaed6bfbb4..4425cd75f7 100644
 --- a/debian/changelog
 +++ b/debian/changelog
-@@ -1,3 +1,18 @@
+@@ -1,9 +1,30 @@
++ceph (12.2.11-pve1) stable; urgency=medium
++
++  * New upstream release 
++
++ -- Proxmox Support Team <support@proxmox.com>  Wed, 06 Feb 2019 09:35:13 +0100
++
+ ceph (12.2.11-1) stable; urgency=medium
+ 
+   * New upstream release
+ 
+  -- Ceph Release Team <ceph-maintainers@ceph.com>  Wed, 30 Jan 2019 15:51:24 +0000
+ 
 +ceph (12.2.10-pve1) stable; urgency=medium
 +
 +  * New upstream release
@@ -31,7 +43,7 @@ index 2b61ec882..75c7fb9ac 100644
  ceph (12.2.10-1) stable; urgency=medium
  
    * New upstream release
-@@ -10,12 +25,31 @@ ceph (12.2.9-1) stable; urgency=medium
+@@ -16,12 +37,31 @@ ceph (12.2.9-1) stable; urgency=medium
  
   -- Ceph Release Team <ceph-maintainers@ceph.com>  Wed, 24 Oct 2018 21:04:18 +0000
  
@@ -63,7 +75,7 @@ index 2b61ec882..75c7fb9ac 100644
  ceph (12.2.7-1) stable; urgency=medium
  
    * New upstream release
-@@ -28,90 +62,246 @@ ceph (12.2.6-1) stable; urgency=medium
+@@ -34,90 +74,246 @@ ceph (12.2.6-1) stable; urgency=medium
  
   -- Ceph Release Team <ceph-maintainers@ceph.com>  Mon, 09 Jul 2018 16:18:46 +0000
  
@@ -310,6 +322,3 @@ index 2b61ec882..75c7fb9ac 100644
  ceph (12.0.0-1) stable; urgency=medium
  
    * New upstream release
--- 
-2.19.2
-

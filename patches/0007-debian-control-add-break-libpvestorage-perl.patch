@@ -8,10 +8,10 @@ Subject: [PATCH] debian/control: add break libpvestorage-perl
  1 file changed, 2 insertions(+)
 
 diff --git a/debian/control b/debian/control
-index ecbecca725..19aa49f9f4 100644
+index 83dc414788..1cfa2250de 100644
 --- a/debian/control
 +++ b/debian/control
-@@ -111,6 +111,7 @@ Replaces: ceph (<< 10),
+@@ -113,6 +113,7 @@ Replaces: ceph (<< 10),
  Breaks: ceph (<< 10),
          ceph-test (<< 12.2.3),
          python-ceph (<< 0.92-1223),
@@ -19,11 +19,11 @@ index ecbecca725..19aa49f9f4 100644
  Description: common ceph daemon libraries and management tools
   Ceph is a massively scalable, open-source, distributed
   storage system that runs on commodity hardware and delivers object,
-@@ -407,6 +408,7 @@ Breaks: ceph (<< 10),
+@@ -409,6 +410,7 @@ Breaks: ceph (<< 10),
          ceph-test (<< 9.0.3-1646),
          librbd1 (<< 0.92-1238),
          python-ceph (<< 0.92-1223),
 +        libpve-storage-perl (<= 5.0-25),
+ 	radosgw (<< 12.0.3)
  Suggests: ceph-base (= ${binary:Version}),
            ceph-mds (= ${binary:Version}),
- Description: common utilities to mount and interact with a ceph storage cluster
