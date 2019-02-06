@@ -404,10 +404,10 @@ COMMAND("fs set " \
 	"name=fs_name,type=CephString " \
 	"name=var,type=CephChoices,strings=max_mds|max_file_size"
         "|allow_new_snaps|inline_data|cluster_down|allow_multimds|allow_dirfrags|balancer" \
-        "|standby_count_wanted " \
+        "|standby_count_wanted|session_timeout|session_autoclose " \
 	"name=val,type=CephString "					\
 	"name=confirm,type=CephString,req=false",			\
-	"set mds parameter <var> to <val>", "mds", "rw", "cli,rest")
+	"set fs parameter <var> to <val>", "mds", "rw", "cli,rest")
 COMMAND("fs flag set name=flag_name,type=CephChoices,strings=enable_multiple "
         "name=val,type=CephString " \
 	"name=confirm,type=CephChoices,strings=--yes-i-really-mean-it,req=false", \
@@ -742,7 +742,7 @@ COMMAND("osd erasure-code-profile ls", \
 	"list all erasure code profiles", \
 	"osd", "r", "cli,rest")
 COMMAND("osd set " \
-	"name=key,type=CephChoices,strings=full|pause|noup|nodown|noout|noin|nobackfill|norebalance|norecover|noscrub|nodeep-scrub|notieragent|sortbitwise|recovery_deletes|require_jewel_osds|require_kraken_osds " \
+	"name=key,type=CephChoices,strings=full|pause|noup|nodown|noout|noin|nobackfill|norebalance|norecover|noscrub|nodeep-scrub|notieragent|sortbitwise|recovery_deletes|require_jewel_osds|require_kraken_osds||pglog_hardlimit " \
 	"name=sure,type=CephChoices,strings=--yes-i-really-mean-it,req=false", \
 	"set <key>", "osd", "rw", "cli,rest")
 COMMAND("osd unset " \

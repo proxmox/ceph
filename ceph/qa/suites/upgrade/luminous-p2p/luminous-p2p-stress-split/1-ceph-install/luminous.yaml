@@ -1,0 +1,19 @@
+meta:
+- desc: install ceph/luminous latest
+tasks:
+- install:
+    tag: v12.2.10
+    exclude_packages: ['librados3']
+    extra_packages: ['librados2']
+- print: "**** done install luminous v12.2.10"
+- ceph:
+- exec:
+    osd.0:
+      - ceph osd require-osd-release luminous
+      - ceph osd set-require-min-compat-client luminous
+- print: "**** done ceph"
+overrides:
+  ceph:
+    conf:
+      mon:
+        mon warn on osd down out interval zero: false

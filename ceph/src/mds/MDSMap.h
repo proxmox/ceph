@@ -232,9 +232,15 @@ public:
   utime_t get_session_timeout() const {
     return utime_t(session_timeout,0);
   }
+  void set_session_timeout(uint32_t t) {
+    session_timeout = t;
+  }
 
   utime_t get_session_autoclose() const {
     return utime_t(session_autoclose, 0);
+  }
+  void set_session_autoclose(uint32_t t) {
+    session_autoclose = t;
   }
 
   uint64_t get_max_filesize() const { return max_file_size; }
@@ -633,6 +639,16 @@ public:
     } else {
       return MDS_RANK_NONE;
     }
+  }
+
+  /**
+   * Get MDS rank incarnation if the rank is up, else -1
+   */
+  mds_gid_t get_incarnation(mds_rank_t m) const {
+    std::map<mds_rank_t, mds_gid_t>::const_iterator u = up.find(m);
+    if (u == up.end())
+      return MDS_GID_NONE;
+    return (mds_gid_t)get_inc_gid(u->second);
   }
 
   int get_inc_gid(mds_gid_t gid) const {

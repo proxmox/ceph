@@ -456,6 +456,7 @@ void Client::dump_status(Formatter *f)
     f->dump_int("mds_epoch", mdsmap->get_epoch());
     f->dump_int("osd_epoch", osd_epoch);
     f->dump_int("osd_epoch_barrier", cap_epoch_barrier);
+    f->dump_bool("blacklisted", blacklisted);
   }
 }
 
@@ -2475,6 +2476,12 @@ void Client::handle_osd_map(MOSDMap *m)
         return o.is_blacklisted(myaddr);});
   }
 
+  // Always subscribe to next osdmap for blacklisted client
+  // until this client is not blacklisted.
+  if (blacklisted) {
+    objecter->maybe_request_map();
+  }
+
   if (objecter->osdmap_full_flag()) {
     _handle_full_flag(-1);
   } else {
@@ -2611,13 +2618,14 @@ void Client::handle_fs_map_user(MFSMapUser *m)
 
 void Client::handle_mds_map(MMDSMap* m)
 {
+  mds_gid_t old_inc, new_inc;
   if (m->get_epoch() <= mdsmap->get_epoch()) {
     ldout(cct, 1) << "handle_mds_map epoch " << m->get_epoch()
                   << " is identical to or older than our "
                   << mdsmap->get_epoch() << dendl;
     m->put();
     return;
-  }  
+  }
 
   ldout(cct, 1) << "handle_mds_map epoch " << m->get_epoch() << dendl;
 
@@ -2664,6 +2672,13 @@ void Client::handle_mds_map(MMDSMap* m)
     if (!mdsmap->is_up(mds)) {
       session->con->mark_down();
     } else if (mdsmap->get_inst(mds) != session->inst) {
+      old_inc = oldmap->get_incarnation(mds);
+      new_inc = mdsmap->get_incarnation(mds);
+      if (old_inc != new_inc) {
+        ldout(cct, 1) << "mds incarnation changed from "
+		      << old_inc << " to " << new_inc << dendl;
+        oldstate = MDSMap::STATE_NULL;
+      }
       session->con->mark_down();
       session->inst = mdsmap->get_inst(mds);
       // When new MDS starts to take over, notify kernel to trim unused entries
@@ -2674,6 +2689,11 @@ void Client::handle_mds_map(MMDSMap* m)
       continue;  // no change
     
     session->mds_state = newstate;
+    if (old_inc != new_inc && newstate > MDSMap::STATE_RECONNECT) {
+      // missed reconnect close the session so that it can be reopened
+      _closed_mds_session(session);
+      continue;
+    }
     if (newstate == MDSMap::STATE_RECONNECT) {
       session->con = messenger->get_connection(session->inst);
       send_reconnect(session);
@@ -4862,7 +4882,6 @@ void Client::handle_cap_export(MetaSession *session, Inode *in, MClientCaps *m)
 	  tcap->cap_id = m->peer.cap_id;
 	  tcap->seq = m->peer.seq - 1;
 	  tcap->issue_seq = tcap->seq;
-	  tcap->mseq = m->peer.mseq;
 	  tcap->issued |= cap->issued;
 	  tcap->implemented |= cap->issued;
 	  if (cap == in->auth_cap)
@@ -9196,6 +9215,8 @@ int Client::_preadv_pwritev(int fd, const struct iovec *iov, unsigned iovcnt, in
 int Client::_write(Fh *f, int64_t offset, uint64_t size, const char *buf,
                   const struct iovec *iov, int iovcnt)
 {
+  uint64_t fpos = 0;
+
   if ((uint64_t)(offset+size) > mdsmap->get_max_filesize()) //too large!
     return -EFBIG;
 
@@ -9235,7 +9256,7 @@ int Client::_write(Fh *f, int64_t offset, uint64_t size, const char *buf,
       }
     }
     offset = f->pos;
-    f->pos = offset+size;
+    fpos = offset+size;
     unlock_fh_pos(f);
   }
 
@@ -9385,6 +9406,11 @@ success:
   lat -= start;
   logger->tinc(l_c_wrlat, lat);
 
+  if (fpos) {
+    lock_fh_pos(f);
+    f->pos = fpos;
+    unlock_fh_pos(f);
+  }
   totalwritten = size;
   r = (int)totalwritten;
 
