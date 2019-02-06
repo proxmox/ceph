@@ -82,6 +82,7 @@ ${BUILDSRC}: ${SRCDIR} patches
 	echo "git clone git://git.proxmox.com/git/ceph.git\\ngit checkout ${GITVERSION}" >  $@.tmp/debian/SOURCE
 	echo "debian/SOURCE" >> $@.tmp/debian/docs
 	echo "${GITVERSION}\\nv${VER}" > $@.tmp/src/.git_version
+	cp changelog.Debian $@.tmp/debian/changelog
 	mv $@.tmp $@
 
 .PHONY: deb
@@ -107,6 +108,7 @@ download:
 	tar -C ${SRCDIR} --strip-components=1 -xf ${SRCDIR}.tmp/ceph-*.tar.bz2
 	# needed because boost and zstd builds fail otherwise
 	find ${SRCDIR} -type f -name ".gitignore" -delete
+	mv ${SRCDIR}/debian/changelog ${SRCDIR}/changelog.upstream
 	rm -rf ${SRCDIR}.tmp
 
 .PHONY: upload
