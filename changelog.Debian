@@ -1,3 +1,9 @@
+ceph (12.2.11-pve1) stable; urgency=medium
+
+  * New upstream release
+
+ -- Proxmox Support Team <support@proxmox.com>  Wed, 06 Feb 2019 10:32:23 +0100
+
 ceph (12.2.11-1) stable; urgency=medium
 
   * New upstream release
