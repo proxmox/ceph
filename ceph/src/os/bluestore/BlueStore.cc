@@ -4192,6 +4192,8 @@ void BlueStore::_init_logger()
                     "Read EIO errors propagated to high level callers");
   b.add_u64_counter(l_bluestore_reads_with_retries, "bluestore_reads_with_retries",
                     "Read operations that required at least one retry due to failed checksum validation");
+  b.add_u64(l_bluestore_fragmentation, "bluestore_fragmentation_micros",
+            "How fragmented bluestore free space is (free extents / max possible number of free extents) * 1000");
   logger = b.create_perf_counters();
   cct->get_perfcounters_collection()->add(logger);
 }
@@ -5171,18 +5173,12 @@ int BlueStore::_balance_bluefs_freespace(PExtentVector *extents)
     dout(10) << __func__ << " gifting " << gift
 	     << " (" << byte_u_t(gift) << ")" << dendl;
 
-    // fixme: just do one allocation to start...
-    int r = alloc->reserve(gift);
-    assert(r == 0);
-
-    AllocExtentVector exts;
     int64_t alloc_len = alloc->allocate(gift, cct->_conf->bluefs_alloc_size,
-					0, 0, &exts);
+					0, 0, extents);
 
     if (alloc_len <= 0) {
       dout(0) << __func__ << " no allocate on 0x" << std::hex << gift
               << " min_alloc_size 0x" << min_alloc_size << std::dec << dendl;
-      alloc->unreserve(gift);
       _dump_alloc_on_rebalance_failure();
       return 0;
     } else if (alloc_len < (int64_t)gift) {
@@ -5190,13 +5186,10 @@ int BlueStore::_balance_bluefs_freespace(PExtentVector *extents)
               << " min_alloc_size 0x" << min_alloc_size 
 	      << " allocated 0x" << alloc_len
 	      << std::dec << dendl;
-      alloc->unreserve(gift - alloc_len);
       _dump_alloc_on_rebalance_failure();
     }
-    for (auto& p : exts) {
-      bluestore_pextent_t e = bluestore_pextent_t(p);
+    for (auto& e : *extents) {
       dout(1) << __func__ << " gifting " << e << " to bluefs" << dendl;
-      extents->push_back(e);
     }
     gift = 0;
 
@@ -5215,7 +5208,7 @@ int BlueStore::_balance_bluefs_freespace(PExtentVector *extents)
 
     while (reclaim > 0) {
       // NOTE: this will block and do IO.
-      AllocExtentVector extents;
+      PExtentVector extents;
       int r = bluefs->reclaim_blocks(bluefs_shared_bdev, reclaim,
 				     &extents);
       if (r < 0) {
@@ -6184,12 +6177,23 @@ int BlueStore::_fsck(bool deep, bool repair)
       }
       if (deep) {
 	bufferlist bl;
-	int r = _do_read(c.get(), o, 0, o->onode.size, bl, 0);
-	if (r < 0) {
-	  ++errors;
-	  derr << "fsck error: " << oid << " error during read: "
-	       << cpp_strerror(r) << dendl;
-	}
+	uint64_t max_read_block = cct->_conf->bluestore_fsck_read_bytes_cap;
+	uint64_t offset = 0;
+	do {
+	  uint64_t l = std::min(uint64_t(o->onode.size - offset), max_read_block);
+	  int r = _do_read(c.get(), o, offset, l, bl,
+	    CEPH_OSD_OP_FLAG_FADVISE_NOCACHE);
+	  if (r < 0) {
+	    ++errors;
+	    derr << "fsck error: " << oid << std::hex
+	         << " error during read: "
+		 << " " << offset << "~" << l
+		 << " " << cpp_strerror(r) << std::dec
+		 << dendl;
+	    break;
+	  }
+	  offset += l;
+	} while (offset < o->onode.size);
       }
       // omap
       if (o->onode.has_omap()) {
@@ -8525,21 +8529,24 @@ void BlueStore::_txc_finish(TransContext *txc)
     dout(10) << __func__ << " reaping empty zombie osr " << osr << dendl;
     osr->_unregister();
   }
+  logger->set(l_bluestore_fragmentation,
+    (uint64_t)(alloc->get_fragmentation(min_alloc_size) * 1000));
 }
 
 void BlueStore::_txc_release_alloc(TransContext *txc)
 {
-  // update allocator with full released set
+  interval_set<uint64_t> bulk_release_extents;
+  // it's expected we're called with lazy_release_lock already taken!
   if (!cct->_conf->bluestore_debug_no_reuse_blocks) {
     dout(10) << __func__ << " " << txc << " " << std::hex
              << txc->released << std::dec << dendl;
-    for (interval_set<uint64_t>::iterator p = txc->released.begin();
-	 p != txc->released.end();
-	 ++p) {
-      alloc->release(p.get_start(), p.get_len());
-    }
+    // interval_set seems to be too costly for inserting things in
+    // bstore_kv_final. We could serialize in simpler format and perform
+    // the merge separately, maybe even in a dedicated thread.
+    bulk_release_extents.insert(txc->released);
   }
 
+  alloc->release(bulk_release_extents);
   txc->allocated.clear();
   txc->released.clear();
 }
@@ -8692,18 +8699,24 @@ void BlueStore::_kv_sync_thread()
   dout(10) << __func__ << " start" << dendl;
   std::unique_lock<std::mutex> l(kv_lock);
   assert(!kv_sync_started);
+  bool bluefs_do_check_balance = false;
   kv_sync_started = true;
   kv_cond.notify_all();
   while (true) {
     assert(kv_committing.empty());
     if (kv_queue.empty() &&
 	((deferred_done_queue.empty() && deferred_stable_queue.empty()) ||
-	 !deferred_aggressive)) {
+	 !deferred_aggressive) &&
+	(bluefs_do_check_balance == false)) {
       if (kv_stop)
 	break;
       dout(20) << __func__ << " sleep" << dendl;
-      kv_cond.wait(l);
+      std::cv_status status = kv_cond.wait_for(l,
+        std::chrono::milliseconds(int64_t(cct->_conf->bluestore_bluefs_balance_interval * 1000)));
       dout(20) << __func__ << " wake" << dendl;
+      if (status == std::cv_status::timeout) {
+        bluefs_do_check_balance = true;
+      }
     } else {
       deque<TransContext*> kv_submitting;
       deque<DeferredBatch*> deferred_done, deferred_stable;
@@ -8838,6 +8851,7 @@ void BlueStore::_kv_sync_thread()
 	  synct->set(PREFIX_SUPER, "bluefs_extents", bl);
 	}
       }
+      bluefs_do_check_balance = false;
 
       // cleanup sync deferred keys
       for (auto b : deferred_stable) {
@@ -8890,14 +8904,9 @@ void BlueStore::_kv_sync_thread()
 	if (!bluefs_gift_extents.empty()) {
 	  _commit_bluefs_freespace(bluefs_gift_extents);
 	}
-	for (auto p = bluefs_extents_reclaiming.begin();
-	     p != bluefs_extents_reclaiming.end();
-	     ++p) {
-	  dout(20) << __func__ << " releasing old bluefs 0x" << std::hex
-		   << p.get_start() << "~" << p.get_len() << std::dec
-		   << dendl;
-	  alloc->release(p.get_start(), p.get_len());
-	}
+	dout(20) << __func__ << " releasing old bluefs 0x" << std::hex
+		 << bluefs_extents_reclaiming << std::dec << dendl;
+	alloc->release(bluefs_extents_reclaiming);
 	bluefs_extents_reclaiming.clear();
       }
 
@@ -10273,36 +10282,58 @@ int BlueStore::_do_alloc_write(
       // FIXME: memory alignment here is bad
       bufferlist t;
       int r = c->compress(wi.bl, t);
-      assert(r == 0);
 
-      bluestore_compression_header_t chdr;
-      chdr.type = c->get_type();
-      chdr.length = t.length();
-      ::encode(chdr, wi.compressed_bl);
-      wi.compressed_bl.claim_append(t);
-
-      wi.compressed_len = wi.compressed_bl.length();
-      uint64_t newlen = P2ROUNDUP(wi.compressed_len, min_alloc_size);
       uint64_t want_len_raw = wi.blob_length * crr;
       uint64_t want_len = P2ROUNDUP(want_len_raw, min_alloc_size);
-      if (newlen <= want_len && newlen < wi.blob_length) {
-	// Cool. We compressed at least as much as we were hoping to.
-	// pad out to min_alloc_size
-	wi.compressed_bl.append_zero(newlen - wi.compressed_len);
-	logger->inc(l_bluestore_write_pad_bytes, newlen - wi.compressed_len);
-	dout(20) << __func__ << std::hex << "  compressed 0x" << wi.blob_length
-		 << " -> 0x" << wi.compressed_len << " => 0x" << newlen
-		 << " with " << c->get_type()
-		 << std::dec << dendl;
-	txc->statfs_delta.compressed() += wi.compressed_len;
-	txc->statfs_delta.compressed_original() += wi.blob_length;
-	txc->statfs_delta.compressed_allocated() += newlen;
-	logger->inc(l_bluestore_compress_success_count);
-	wi.compressed = true;
-	need += newlen;
+      bool rejected = false;
+      uint64_t compressed_len = t.length();
+      // do an approximate (fast) estimation for resulting blob size
+      // that doesn't take header overhead  into account
+      uint64_t result_len = P2ROUNDUP(compressed_len, min_alloc_size);
+      if (r == 0 && result_len <= want_len && result_len < wi.blob_length) {
+	bluestore_compression_header_t chdr;
+	chdr.type = c->get_type();
+	chdr.length = t.length();
+	encode(chdr, wi.compressed_bl);
+	wi.compressed_bl.claim_append(t);
+
+	compressed_len = wi.compressed_bl.length();
+	result_len = P2ROUNDUP(compressed_len, min_alloc_size);
+	if (result_len <= want_len && result_len < wi.blob_length) {
+	  // Cool. We compressed at least as much as we were hoping to.
+	  // pad out to min_alloc_size
+	  wi.compressed_bl.append_zero(result_len - compressed_len);
+	  wi.compressed_len = compressed_len;
+	  wi.compressed = true;
+	  logger->inc(l_bluestore_write_pad_bytes, result_len - compressed_len);
+	  dout(20) << __func__ << std::hex << "  compressed 0x" << wi.blob_length
+		   << " -> 0x" << compressed_len << " => 0x" << result_len
+		   << " with " << c->get_type()
+		   << std::dec << dendl;
+	  txc->statfs_delta.compressed() += compressed_len;
+	  txc->statfs_delta.compressed_original() += wi.blob_length;
+	  txc->statfs_delta.compressed_allocated() += result_len;
+	  logger->inc(l_bluestore_compress_success_count);
+	  need += result_len;
+	} else {
+	  rejected = true;
+	}
+      } else if (r != 0) {
+	dout(5) << __func__ << std::hex << "  0x" << wi.blob_length
+		 << " bytes compressed using " << c->get_type_name()
+		 << std::dec
+		 << " failed with errcode = " << r
+		 << ", leaving uncompressed"
+		 << dendl;
+	logger->inc(l_bluestore_compress_rejected_count);
+	need += wi.blob_length;
       } else {
+	rejected = true;
+      }
+
+      if (rejected) {
 	dout(20) << __func__ << std::hex << "  0x" << wi.blob_length
-		 << " compressed to 0x" << wi.compressed_len << " -> 0x" << newlen
+		 << " compressed to 0x" << compressed_len << " -> 0x" << result_len
 		 << " with " << c->get_type()
 		 << ", which is more than required 0x" << want_len_raw
 		 << " -> 0x" << want_len
@@ -10317,19 +10348,19 @@ int BlueStore::_do_alloc_write(
       need += wi.blob_length;
     }
   }
-  int r = alloc->reserve(need);
-  if (r < 0) {
-    derr << __func__ << " failed to reserve 0x" << std::hex << need << std::dec
-	 << dendl;
-    return r;
-  }
-  AllocExtentVector prealloc;
+  PExtentVector prealloc;
   prealloc.reserve(2 * wctx->writes.size());;
   int prealloc_left = 0;
   prealloc_left = alloc->allocate(
     need, min_alloc_size, need,
     0, &prealloc);
+  if (prealloc_left  < 0) {
+    derr << __func__ << " failed to allocate 0x" << std::hex << need << std::dec
+	 << dendl;
+    return -ENOSPC;
+  }
   assert(prealloc_left == (int64_t)need);
+
   dout(20) << __func__ << " prealloc " << prealloc << dendl;
   auto prealloc_pos = prealloc.begin();
 
@@ -10381,7 +10412,7 @@ int BlueStore::_do_alloc_write(
       }
     }
 
-    AllocExtentVector extents;
+    PExtentVector extents;
     int64_t left = final_length;
     while (left > 0) {
       assert(prealloc_left > 0);
@@ -10963,7 +10994,7 @@ int BlueStore::_do_remove(
     );
   }
   txc->t->rmkey(PREFIX_OBJ, o->key.c_str(), o->key.size());
-  txc->removed(o);
+  txc->note_removed_object(o);
   o->extent_map.clear();
   o->onode = bluestore_onode_t();
   _debug_obj_on_delete(o->oid);

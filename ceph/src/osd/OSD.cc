@@ -2987,10 +2987,19 @@ void OSD::final_init()
   r = admin_socket->register_command(
    "trigger_scrub",
    "trigger_scrub " \
-   "name=pgid,type=CephString ",
+   "name=pgid,type=CephString " \
+   "name=time,type=CephInt,req=false",
    test_ops_hook,
    "Trigger a scheduled scrub ");
   assert(r == 0);
+  r = admin_socket->register_command(
+   "trigger_deep_scrub",
+   "trigger_deep_scrub " \
+   "name=pgid,type=CephString " \
+   "name=time,type=CephInt,req=false",
+   test_ops_hook,
+   "Trigger a scheduled deep scrub ");
+  ceph_assert(r == 0);
   r = admin_socket->register_command(
    "injectfull",
    "injectfull " \
@@ -5613,8 +5622,9 @@ void TestOpsSocketHook::test_ops(OSDService *service, ObjectStore *store,
        << "to " << service->cct->_conf->osd_recovery_delay_start;
     return;
   }
-  if (command ==  "trigger_scrub") {
+  if (command ==  "trigger_scrub" || command == "trigger_deep_scrub") {
     spg_t pgid;
+    bool deep = (command == "trigger_deep_scrub");
     OSDMapRef curmap = service->get_osdmap();
 
     string pgidstr;
@@ -5624,6 +5634,9 @@ void TestOpsSocketHook::test_ops(OSDService *service, ObjectStore *store,
       ss << "Invalid pgid specified";
       return;
     }
+
+    int64_t time;
+    cmd_getval(service->cct, cmdmap, "time", time, (int64_t)0);
 
     PG *pg = service->osd->_lookup_lock_pg(pgid);
     if (pg == nullptr) {
@@ -5635,16 +5648,31 @@ void TestOpsSocketHook::test_ops(OSDService *service, ObjectStore *store,
       pg->unreg_next_scrub();
       const pg_pool_t *p = curmap->get_pg_pool(pgid.pool());
       double pool_scrub_max_interval = 0;
-      p->opts.get(pool_opts_t::SCRUB_MAX_INTERVAL, &pool_scrub_max_interval);
-      double scrub_max_interval = pool_scrub_max_interval > 0 ?
-        pool_scrub_max_interval : g_conf->osd_scrub_max_interval;
+      double scrub_max_interval;
+      if (deep) {
+        p->opts.get(pool_opts_t::DEEP_SCRUB_INTERVAL, &pool_scrub_max_interval);
+        scrub_max_interval = pool_scrub_max_interval > 0 ?
+          pool_scrub_max_interval : g_conf->osd_deep_scrub_interval;
+      } else {
+        p->opts.get(pool_opts_t::SCRUB_MAX_INTERVAL, &pool_scrub_max_interval);
+        scrub_max_interval = pool_scrub_max_interval > 0 ?
+          pool_scrub_max_interval : g_conf->osd_scrub_max_interval;
+      }
       // Instead of marking must_scrub force a schedule scrub
       utime_t stamp = ceph_clock_now();
-      stamp -= scrub_max_interval;
-      stamp -=  100.0;  // push back last scrub more for good measure
-      pg->info.history.last_scrub_stamp = stamp;
+      if (time == 0)
+        stamp -= scrub_max_interval;
+      else
+        stamp -=  (float)time;
+      stamp -= 100.0;  // push back last scrub more for good measure
+      if (deep) {
+        pg->set_last_deep_scrub_stamp(stamp);
+      } else {
+        pg->set_last_scrub_stamp(stamp);
+      }
       pg->reg_next_scrub();
-      ss << "ok";
+      pg->publish_stats_to_osd();
+      ss << "ok - set" << (deep ? " deep" : "" ) << " stamp " << stamp;
     } else {
       ss << "Not primary";
     }
@@ -9596,46 +9624,31 @@ bool OSDService::_recover_now(uint64_t *available_pushes)
 
 void OSDService::adjust_pg_priorities(const vector<PGRef>& pgs, int newflags)
 {
-  if (!pgs.size() || !(newflags & (OFR_BACKFILL | OFR_RECOVERY)))
+  if (!pgs.size() || !(newflags & (OFR_BACKFILL | OFR_RECOVERY))) {
     return;
-  int newstate = 0;
-
+  }
+  set<spg_t> did;
   if (newflags & OFR_BACKFILL) {
-    newstate = PG_STATE_FORCED_BACKFILL;
+    for (auto& pg : pgs) {
+      if (pg->set_force_backfill(!(newflags & OFR_CANCEL))) {
+	did.insert(pg->pg_id);
+      }
+    }
   } else if (newflags & OFR_RECOVERY) {
-    newstate = PG_STATE_FORCED_RECOVERY;
-  }
-
-  // debug output here may get large, don't generate it if debug level is below
-  // 10 and use abbreviated pg ids otherwise
-  if ((cct)->_conf->subsys.should_gather(ceph_subsys_osd, 10)) {
-    stringstream ss;
-
-    for (auto& i : pgs) {
-      ss << i->get_pgid() << " ";
+    for (auto& pg : pgs) {
+      if (pg->set_force_recovery(!(newflags & OFR_CANCEL))) {
+	did.insert(pg->pg_id);
+      }
     }
-
-    dout(10) << __func__ << " working on " << ss.str() << dendl;
   }
-
-  if (newflags & OFR_CANCEL) {
-    for (auto& i : pgs) {
-      i->lock();
-      i->_change_recovery_force_mode(newstate, true);
-      i->unlock();
-    }
+  if (did.empty()) {
+    dout(10) << __func__ << " " << ((newflags & OFR_CANCEL) ? "cleared" : "set")
+	     << " force_" << ((newflags & OFR_BACKFILL) ? "backfill" : "recovery")
+	     << " on no pgs" << dendl;
   } else {
-    for (auto& i : pgs) {
-      // make sure the PG is in correct state before forcing backfill or recovery, or
-      // else we'll make PG keeping FORCE_* flag forever, requiring osds restart
-      // or forcing somehow recovery/backfill.
-      i->lock();
-      int pgstate = i->get_state();
-      if ( ((newstate == PG_STATE_FORCED_RECOVERY) && (pgstate & (PG_STATE_DEGRADED | PG_STATE_RECOVERY_WAIT | PG_STATE_RECOVERING))) ||
-	    ((newstate == PG_STATE_FORCED_BACKFILL) && (pgstate & (PG_STATE_DEGRADED | PG_STATE_BACKFILL_WAIT | PG_STATE_BACKFILLING))) )
-        i->_change_recovery_force_mode(newstate, false);
-      i->unlock();
-    }
+    dout(10) << __func__ << " " << ((newflags & OFR_CANCEL) ? "cleared" : "set")
+	     << " force_" << ((newflags & OFR_BACKFILL) ? "backfill" : "recovery")
+	     << " on " << did << dendl;
   }
 }
 

@@ -444,7 +444,7 @@ std::vector<Option> get_global_options() {
     .set_description(""),
 
     Option("mon_cluster_log_file_level", Option::TYPE_STR, Option::LEVEL_ADVANCED)
-    .set_default("info")
+    .set_default("debug")
     .set_description(""),
 
     Option("mon_cluster_log_to_graylog", Option::TYPE_STR, Option::LEVEL_ADVANCED)
@@ -1626,6 +1626,22 @@ std::vector<Option> get_global_options() {
     .set_default(10)
     .set_description(""),
 
+    Option("osd_calc_pg_upmaps_aggressively", Option::TYPE_BOOL, Option::LEVEL_ADVANCED)
+    .set_default(true)
+    .set_description("try to calculate PG upmaps more aggressively, e.g., "
+                     "by doing a fairly exhaustive search of existing PGs "
+                     "that can be unmapped or upmapped"),
+
+    Option("osd_calc_pg_upmaps_max_stddev", Option::TYPE_FLOAT, Option::LEVEL_ADVANCED)
+    .set_default(1.0)
+    .set_description("standard deviation below which there is no attempt made "
+                     "while trying to calculate PG upmaps"),
+
+    Option("osd_calc_pg_upmaps_local_fallback_retries", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
+    .set_default(100)
+    .set_description("Maximum number of PGs we can attempt to unmap or upmap "
+                     "for a specific overfull or underfull osd per iteration "),
+
     Option("journaler_prezero_periods", Option::TYPE_INT, Option::LEVEL_ADVANCED)
     .set_default(5)
     .set_description(""),
@@ -2564,7 +2580,8 @@ std::vector<Option> get_global_options() {
 
     Option("osd_scrub_backoff_ratio", Option::TYPE_FLOAT, Option::LEVEL_DEV)
     .set_default(.66)
-    .set_description("Backoff ratio after a failed scrub scheduling attempt"),
+    .set_long_description("This is the precentage of ticks that do NOT schedule scrubs, 66% means that 1 out of 3 ticks will schedule scrubs")
+    .set_description("Backoff ratio for scheduling scrubs"),
 
     Option("osd_scrub_chunk_min", Option::TYPE_INT, Option::LEVEL_ADVANCED)
     .set_default(5)
@@ -2599,9 +2616,8 @@ std::vector<Option> get_global_options() {
 
     Option("osd_deep_scrub_randomize_ratio", Option::TYPE_FLOAT, Option::LEVEL_ADVANCED)
     .set_default(0.15)
-    .set_description("Ratio of deep scrub interval to randomly vary")
-    .set_long_description("This prevents a deep scrub 'stampede' by randomly varying the scrub intervals so that they are soon uniformly distributed over the week")
-    .add_see_also("osd_deep_scrub_interval"),
+    .set_description("Scrubs will randomly become deep scrubs at this rate (0.15 -> 15% of scrubs are deep)")
+    .set_long_description("This prevents a deep scrub 'stampede' by spreading deep scrubs so they are uniformly distributed over the week"),
 
     Option("osd_deep_scrub_stride", Option::TYPE_INT, Option::LEVEL_ADVANCED)
     .set_default(524288)
@@ -3690,6 +3706,10 @@ std::vector<Option> get_global_options() {
     Option("bluestore_sync_submit_transaction", Option::TYPE_BOOL, Option::LEVEL_DEV)
     .set_default(false)
     .set_description("Try to submit metadata transaction to rocksdb in queuing thread context"),
+
+    Option("bluestore_fsck_read_bytes_cap", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
+    .set_default(64_M)
+    .set_description("Maximum bytes read at once by deep fsck"),
 
     Option("bluestore_throttle_bytes", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
     .set_default(64_M)
@@ -5978,7 +5998,7 @@ static std::vector<Option> get_rbd_options() {
     .set_description("default krbd map options"),
 
     Option("rbd_journal_order", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
-    .set_min(12)
+    .set_min_max(12, 26)
     .set_default(24)
     .set_description("default order (object size) for journal data objects"),
 
@@ -6098,6 +6118,14 @@ std::vector<Option> get_mds_options() {
     .set_default(.7)
     .set_description(""),
 
+    Option("mds_cache_trim_decay_rate", Option::TYPE_FLOAT, Option::LEVEL_ADVANCED)
+    .set_default(1)
+    .set_description("decay rate for trimming MDS cache throttle"),
+
+    Option("mds_cache_trim_threshold", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
+    .set_default(64_K)
+    .set_description("threshold for number of dentries that can be trimmed"),
+
     Option("mds_max_file_recover", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
     .set_default(32)
     .set_description(""),
@@ -6142,9 +6170,29 @@ std::vector<Option> get_mds_options() {
     .set_default(1024)
     .set_description(""),
 
-    Option("mds_recall_state_timeout", Option::TYPE_FLOAT, Option::LEVEL_ADVANCED)
-    .set_default(60)
-    .set_description(""),
+    Option("mds_recall_max_caps", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
+    .set_default(5000)
+    .set_description("maximum number of caps to recall from client session in single recall"),
+
+    Option("mds_recall_max_decay_rate", Option::TYPE_FLOAT, Option::LEVEL_ADVANCED)
+    .set_default(2.5)
+    .set_description("decay rate for throttle on recalled caps on a session"),
+
+    Option("mds_recall_max_decay_threshold", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
+    .set_default(16_K)
+    .set_description("decay threshold for throttle on recalled caps on a session"),
+
+    Option("mds_recall_global_max_decay_threshold", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
+    .set_default(64_K)
+    .set_description("decay threshold for throttle on recalled caps globally"),
+
+    Option("mds_recall_warning_threshold", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
+    .set_default(32_K)
+    .set_description("decay threshold for warning on slow session cap recall"),
+
+    Option("mds_recall_warning_decay_rate", Option::TYPE_FLOAT, Option::LEVEL_ADVANCED)
+    .set_default(60.0)
+    .set_description("decay rate for warning on slow session cap recall"),
 
     Option("mds_freeze_tree_timeout", Option::TYPE_FLOAT, Option::LEVEL_ADVANCED)
     .set_default(30)
@@ -6518,9 +6566,10 @@ std::vector<Option> get_mds_options() {
     .set_default(100)
     .set_description("minimum number of capabilities a client may hold"),
 
-    Option("mds_max_ratio_caps_per_client", Option::TYPE_FLOAT, Option::LEVEL_DEV)
-    .set_default(.8)
-    .set_description("maximum ratio of current caps that may be recalled during MDS cache pressure"),
+    Option("mds_max_caps_per_client", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
+    .set_default(1_M)
+    .set_description("maximum number of capabilities a client may hold"),
+
     Option("mds_hack_allow_loading_invalid_metadata", Option::TYPE_BOOL, Option::LEVEL_ADVANCED)
      .set_default(0)
      .set_description("INTENTIONALLY CAUSE DATA LOSS by bypasing checks for invalid metadata on disk. Allows testing repair tools."),

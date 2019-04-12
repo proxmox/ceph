@@ -289,9 +289,9 @@ PyObject *ActivePyModules::get_python(const std::string &what)
   } else if (what == "df") {
     PyFormatter f;
 
-    cluster_state.with_osdmap([this, &f](const OSDMap &osd_map){
-      cluster_state.with_pgmap(
-          [&osd_map, &f](const PGMap &pg_map) {
+    cluster_state.with_pgmap([this, &f](const PGMap &pg_map) {
+      cluster_state.with_osdmap(
+          [&pg_map, &f](const OSDMap &osd_map) {
         pg_map.dump_fs_stats(nullptr, &f, true);
         pg_map.dump_pool_stats_full(osd_map, nullptr, &f, true);
       });
@@ -420,14 +420,12 @@ void ActivePyModules::notify_all(const LogEntry &log_entry)
 bool ActivePyModules::get_config(const std::string &module_name,
     const std::string &key, std::string *val) const
 {
-  PyThreadState *tstate = PyEval_SaveThread();
-  Mutex::Locker l(lock);
-  PyEval_RestoreThread(tstate);
-
   const std::string global_key = PyModuleRegistry::config_prefix
     + module_name + "/" + key;
 
   dout(4) << __func__ << "key: " << global_key << dendl;
+
+  Mutex::Locker l(lock);
 
   if (config_cache.count(global_key)) {
     *val = config_cache.at(global_key);

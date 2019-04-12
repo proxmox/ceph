@@ -682,12 +682,10 @@ bool PG::MissingLoc::add_source_info(
 			 << ")" << dendl;
       continue;
     }
-    if (oinfo.last_complete < need) {
-      if (omissing.is_missing(soid)) {
-	ldout(pg->cct, 10) << "search_for_missing " << soid << " " << need
-			   << " also missing on osd." << fromosd << dendl;
-	continue;
-      }
+    if (omissing.is_missing(soid)) {
+      ldout(pg->cct, 10) << "search_for_missing " << soid << " " << need
+			 << " also missing on osd." << fromosd << dendl;
+      continue;
     }
 
     ldout(pg->cct, 10) << "search_for_missing " << soid << " " << need
@@ -2134,17 +2132,64 @@ void PG::mark_clean()
   kick_snap_trim();
 }
 
-void PG::_change_recovery_force_mode(int new_mode, bool clear)
+bool PG::set_force_recovery(bool b)
 {
+  bool did = false;
+  lock();
   if (!deleting) {
-    // we can't and shouldn't do anything if the PG is being deleted locally
-    if (clear) {
-      state_clear(new_mode);
-    } else {
-      state_set(new_mode);
+    if (b) {
+      if (!(state & PG_STATE_FORCED_RECOVERY) &&
+	  (state & (PG_STATE_DEGRADED |
+		    PG_STATE_RECOVERY_WAIT |
+		    PG_STATE_RECOVERING))) {
+	dout(20) << __func__ << " set" << dendl;
+	state_set(PG_STATE_FORCED_RECOVERY);
+	publish_stats_to_osd();
+	did = true;
+      }
+    } else if (state & PG_STATE_FORCED_RECOVERY) {
+      dout(20) << __func__ << " clear" << dendl;
+      state_clear(PG_STATE_FORCED_RECOVERY);
+      publish_stats_to_osd();
+      did = true;
     }
-    publish_stats_to_osd();
   }
+  unlock();
+  if (did) {
+    dout(20) << __func__ << " state " << pgstate_history.get_current_state() << dendl;
+    osd->local_reserver.update_priority(info.pgid, get_recovery_priority());
+  }
+  return did;
+}
+
+bool PG::set_force_backfill(bool b)
+{
+  bool did = false;
+  lock();
+  if (!deleting) {
+    if (b) {
+      if (!(state & PG_STATE_FORCED_BACKFILL) &&
+	  (state & (PG_STATE_DEGRADED |
+		    PG_STATE_BACKFILL_WAIT |
+		    PG_STATE_BACKFILLING))) {
+	dout(10) << __func__ << " set" << dendl;
+	state_set(PG_STATE_FORCED_BACKFILL);
+	publish_stats_to_osd();
+	did = true;
+      }
+    } else if (state & PG_STATE_FORCED_BACKFILL) {
+      dout(10) << __func__ << " clear" << dendl;
+      state_clear(PG_STATE_FORCED_BACKFILL);
+      publish_stats_to_osd();
+      did = true;
+    }
+  }
+  unlock();
+  if (did) {
+    dout(20) << __func__ << " state " << pgstate_history.get_current_state() << dendl;
+    osd->local_reserver.update_priority(info.pgid, get_backfill_priority());
+  }
+  return did;
 }
 
 inline int PG::clamp_recovery_priority(int priority)
@@ -2182,7 +2227,7 @@ unsigned PG::get_backfill_priority()
   // a higher value -> a higher priority
   int ret = OSD_BACKFILL_PRIORITY_BASE;
   if (state & PG_STATE_FORCED_BACKFILL) {
-    ret = OSD_RECOVERY_PRIORITY_FORCED;
+    ret = OSD_BACKFILL_PRIORITY_FORCED;
   } else {
     if (acting.size() < pool.info.min_size) {
       // inactive: no. of replicas < min_size, highest priority since it blocks IO
@@ -2774,14 +2819,14 @@ void PG::_update_calc_stats()
         for (auto& ml: sml.second) {
           int missing_shards;
           if (sml.first == shard_id_t::NO_SHARD) {
-            dout(0) << __func__ << " ml " << ml.second << " upset size " << upset.size() << " up " << ml.first.up << dendl;
+            dout(20) << __func__ << " ml " << ml.second << " upset size " << upset.size() << " up " << ml.first.up << dendl;
             missing_shards = (int)upset.size() - ml.first.up;
           } else {
 	    // Handle shards not even in upset below
             if (!find_shard(upset, sml.first))
 	      continue;
 	    missing_shards = std::max(0, 1 - ml.first.up);
-            dout(0) << __func__ << " shard " << sml.first << " ml " << ml.second << " missing shards " << missing_shards << dendl;
+            dout(20) << __func__ << " shard " << sml.first << " ml " << ml.second << " missing shards " << missing_shards << dendl;
           }
           int odegraded = ml.second * missing_shards;
           // Copies on other osds but limited to the possible degraded

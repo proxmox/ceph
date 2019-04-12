@@ -1,4 +1,5 @@
 import cherrypy
+from distutils.version import StrictVersion
 import json
 import errno
 import math
@@ -15,6 +16,19 @@ from mgr_module import MgrModule, MgrStandbyModule
 DEFAULT_ADDR = '::'
 DEFAULT_PORT = 9283
 
+# When the CherryPy server in 3.2.2 (and later) starts it attempts to verify
+# that the ports its listening on are in fact bound. When using the any address
+# "::" it tries both ipv4 and ipv6, and in some environments (e.g. kubernetes)
+# ipv6 isn't yet configured / supported and CherryPy throws an uncaught
+# exception.
+if cherrypy is not None:
+    v = StrictVersion(cherrypy.__version__)
+    # the issue was fixed in 3.2.3. it's present in 3.2.2 (current version on
+    # centos:7) and back to at least 3.0.0.
+    if StrictVersion("3.1.2") <= v < StrictVersion("3.2.3"):
+        # https://github.com/cherrypy/cherrypy/issues/1100
+        from cherrypy.process import servers
+        servers.wait_for_occupied_port = lambda host, port: None
 
 # cherrypy likes to sys.exit on error.  don't let it take us down too!
 def os_exit_noop(*args, **kwargs):
@@ -91,8 +105,9 @@ MDS_METADATA = ('ceph_daemon', 'fs_id', 'hostname', 'public_addr', 'rank',
 
 MON_METADATA = ('ceph_daemon', 'hostname', 'public_addr', 'rank', 'ceph_version')
 
-OSD_METADATA = ('ceph_daemon', 'cluster_addr', 'device_class', 'hostname',
-                'public_addr', 'ceph_version')
+OSD_METADATA = ('back_iface', 'ceph_daemon', 'cluster_addr', 'device_class',
+                'front_iface', 'hostname', 'objectstore', 'public_addr',
+                'ceph_version')
 
 OSD_STATUS = ['weight', 'up', 'in']
 
@@ -464,12 +479,25 @@ class Module(MgrModule):
 
             host_version = servers.get((str(id_), 'osd'), ('',''))
 
+            # collect disk occupation metadata
+            osd_metadata = self.get_metadata("osd", str(id_))
+            if osd_metadata is None:
+                continue
+
+            obj_store = osd_metadata.get('osd_objectstore', '')
+            f_iface = osd_metadata.get('front_iface', '')
+            b_iface = osd_metadata.get('back_iface', '')
+
             self.metrics['osd_metadata'].set(1, (
+                b_iface,
                 'osd.{}'.format(id_),
                 c_addr,
                 dev_class,
+                f_iface,
                 host_version[0],
-                p_addr, host_version[1]
+                obj_store,
+                p_addr,
+                host_version[1]
             ))
 
             # collect osd status
@@ -479,19 +507,13 @@ class Module(MgrModule):
                     'osd.{}'.format(id_),
                 ))
 
-            # collect disk occupation metadata
-            osd_metadata = self.get_metadata("osd", str(id_))
-            if osd_metadata is None:
-                continue
-
-            osd_objectstore = osd_metadata.get('osd_objectstore', None)
-            if osd_objectstore == "filestore":
+            if obj_store == "filestore":
             # collect filestore backend device
                 osd_dev_node = osd_metadata.get('backend_filestore_dev_node', None)
             # collect filestore journal device
                 osd_wal_dev_node = osd_metadata.get('osd_journal', '')
                 osd_db_dev_node = ''
-            elif osd_objectstore == "bluestore":
+            elif obj_store == "bluestore":
             # collect bluestore backend device
                 osd_dev_node = osd_metadata.get('bluestore_bdev_dev_node', None)
             # collect bluestore wal backend

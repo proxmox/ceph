@@ -31,6 +31,7 @@ using namespace CryptoPP;
 #define dout_subsys ceph_subsys_rgw
 
 using namespace rgw;
+using ceph::crypto::PK11_ImportSymKey_FIPS;
 
 /**
  * Encryption in CTR mode. offset is used as IV for each block.
@@ -129,7 +130,7 @@ public:
       keyItem.data = key;
       keyItem.len = AES_256_KEYSIZE;
 
-      symkey = PK11_ImportSymKey(slot, CKM_AES_CTR, PK11_OriginUnwrap, CKA_UNWRAP, &keyItem, NULL);
+      symkey = PK11_ImportSymKey_FIPS(slot, CKM_AES_CTR, PK11_OriginUnwrap, CKA_UNWRAP, &keyItem, NULL);
       if (symkey) {
         static_assert(sizeof(ctr_params.cb) >= AES_256_IVSIZE, "Must fit counter");
         ctr_params.ulCounterBits = 128;
@@ -317,7 +318,7 @@ public:
       keyItem.type = siBuffer;
       keyItem.data = const_cast<unsigned char*>(&key[0]);
       keyItem.len = AES_256_KEYSIZE;
-      symkey = PK11_ImportSymKey(slot, CKM_AES_CBC, PK11_OriginUnwrap, CKA_UNWRAP, &keyItem, NULL);
+      symkey = PK11_ImportSymKey_FIPS(slot, CKM_AES_CBC, PK11_OriginUnwrap, CKA_UNWRAP, &keyItem, NULL);
       if (symkey) {
         memcpy(ctr_params.iv, iv, AES_256_IVSIZE);
         ivItem.type = siBuffer;
@@ -577,7 +578,7 @@ bool AES_256_ECB_encrypt(CephContext* cct,
 
       param = PK11_ParamFromIV(CKM_AES_ECB, NULL);
       if (param) {
-        symkey = PK11_ImportSymKey(slot, CKM_AES_ECB, PK11_OriginUnwrap, CKA_UNWRAP, &keyItem, NULL);
+        symkey = PK11_ImportSymKey_FIPS(slot, CKM_AES_ECB, PK11_OriginUnwrap, CKA_UNWRAP, &keyItem, NULL);
         if (symkey) {
           ectx = PK11_CreateContextBySymKey(CKM_AES_ECB, CKA_ENCRYPT, symkey, param);
           if (ectx) {
@@ -666,29 +667,28 @@ int RGWGetObj_BlockDecrypt::fixup_range(off_t& bl_ofs, off_t& bl_end) {
     off_t in_end = bl_end;
 
     size_t i = 0;
-    while (i<parts_len.size() && (in_ofs > (off_t)parts_len[i])) {
+    while (i<parts_len.size() && (in_ofs >= (off_t)parts_len[i])) {
       in_ofs -= parts_len[i];
       i++;
     }
     //in_ofs is inside block i
     size_t j = 0;
-    while (j<parts_len.size() && (in_end > (off_t)parts_len[j])) {
+    while (j<(parts_len.size() - 1) && (in_end >= (off_t)parts_len[j])) {
       in_end -= parts_len[j];
       j++;
     }
-    //in_end is inside block j
+    //in_end is inside part j, OR j is the last part
 
-    size_t rounded_end;
-    rounded_end = ( in_end & ~(block_size - 1) ) + (block_size - 1);
-    if (rounded_end + 1 >= parts_len[j]) {
+    size_t rounded_end = ( in_end & ~(block_size - 1) ) + (block_size - 1);
+    if (rounded_end > parts_len[j]) {
       rounded_end = parts_len[j] - 1;
     }
 
     enc_begin_skip = in_ofs & (block_size - 1);
     ofs = bl_ofs - enc_begin_skip;
     end = bl_end;
-    bl_ofs = bl_ofs - enc_begin_skip;
     bl_end += rounded_end - in_end;
+    bl_ofs = std::min(bl_ofs - enc_begin_skip, bl_end);
   }
   else
   {
@@ -703,31 +703,47 @@ int RGWGetObj_BlockDecrypt::fixup_range(off_t& bl_ofs, off_t& bl_end) {
   return 0;
 }
 
+int RGWGetObj_BlockDecrypt::process(bufferlist& in, size_t part_ofs, size_t size)
+{
+  bufferlist data;
+  if (!crypt->decrypt(in, 0, size, data, part_ofs)) {
+    return -ERR_INTERNAL_ERROR;
+  }
+  off_t send_size = size - enc_begin_skip;
+  if (ofs + enc_begin_skip + send_size > end + 1) {
+    send_size = end + 1 - ofs - enc_begin_skip;
+  }
+  int res = next->handle_data(data, enc_begin_skip, send_size);
+  enc_begin_skip = 0;
+  ofs += size;
+  in.splice(0, size);
+  return res;
+}
 
 int RGWGetObj_BlockDecrypt::handle_data(bufferlist& bl, off_t bl_ofs, off_t bl_len) {
-  int res = 0;
   ldout(cct, 25) << "Decrypt " << bl_len << " bytes" << dendl;
-  size_t part_ofs = ofs;
-  size_t i = 0;
-  while (i<parts_len.size() && (part_ofs >= parts_len[i])) {
-    part_ofs -= parts_len[i];
-    i++;
-  }
   bl.copy(bl_ofs, bl_len, cache);
+
+  int res = 0;
+  size_t part_ofs = ofs;
+  for (size_t part : parts_len) {
+    if (part_ofs >= part) {
+      part_ofs -= part;
+    } else if (part_ofs + cache.length() >= part) {
+      // flush data up to part boundaries, aligned or not
+      res = process(cache, part_ofs, part - part_ofs);
+      if (res < 0) {
+        return res;
+      }
+      part_ofs = 0;
+    } else {
+      break;
+    }
+  }
+  // write up to block boundaries, aligned only
   off_t aligned_size = cache.length() & ~(block_size - 1);
   if (aligned_size > 0) {
-    bufferlist data;
-    if (! crypt->decrypt(cache, 0, aligned_size, data, part_ofs) ) {
-      return -ERR_INTERNAL_ERROR;
-    }
-    off_t send_size = aligned_size - enc_begin_skip;
-    if (ofs + enc_begin_skip + send_size > end + 1) {
-      send_size = end + 1 - ofs - enc_begin_skip;
-    }
-    res = next->handle_data(data, enc_begin_skip, send_size);
-    enc_begin_skip = 0;
-    ofs += aligned_size;
-    cache.splice(0, aligned_size);
+    res = process(cache, part_ofs, aligned_size);
   }
   return res;
 }
@@ -736,25 +752,26 @@ int RGWGetObj_BlockDecrypt::handle_data(bufferlist& bl, off_t bl_ofs, off_t bl_l
  * flush remainder of data to output
  */
 int RGWGetObj_BlockDecrypt::flush() {
+  ldout(cct, 25) << "Decrypt flushing " << cache.length() << " bytes" << dendl;
   int res = 0;
   size_t part_ofs = ofs;
-  size_t i = 0;
-  while (i<parts_len.size() && (part_ofs > parts_len[i])) {
-    part_ofs -= parts_len[i];
-    i++;
+  for (size_t part : parts_len) {
+    if (part_ofs >= part) {
+      part_ofs -= part;
+    } else if (part_ofs + cache.length() >= part) {
+      // flush data up to part boundaries, aligned or not
+      res = process(cache, part_ofs, part - part_ofs);
+      if (res < 0) {
+        return res;
+      }
+      part_ofs = 0;
+    } else {
+      break;
+    }
   }
+  // flush up to block boundaries, aligned or not
   if (cache.length() > 0) {
-    bufferlist data;
-    if (! crypt->decrypt(cache, 0, cache.length(), data, part_ofs) ) {
-      return -ERR_INTERNAL_ERROR;
-    }
-    off_t send_size = cache.length() - enc_begin_skip;
-    if (ofs + enc_begin_skip + send_size > end + 1) {
-      send_size = end + 1 - ofs - enc_begin_skip;
-    }
-    res = next->handle_data(data, enc_begin_skip, send_size);
-    enc_begin_skip = 0;
-    ofs += send_size;
+    res = process(cache, part_ofs, cache.length());
   }
   return res;
 }

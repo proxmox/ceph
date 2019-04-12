@@ -1255,6 +1255,8 @@ bool MDSMonitor::fail_mds_gid(FSMap &fsmap, mds_gid_t gid)
   const MDSMap::mds_info_t &info = fsmap.get_info_gid(gid);
   dout(1) << "fail_mds_gid " << gid << " mds." << info.name << " role " << info.rank << dendl;
 
+  ceph_assert(mon->osdmon()->is_writeable());
+
   epoch_t blacklist_epoch = 0;
   if (info.rank >= 0 && info.state != MDSMap::STATE_STANDBY_REPLAY) {
     utime_t until = ceph_clock_now();
@@ -2173,9 +2175,10 @@ bool MDSMonitor::maybe_promote_standby(FSMap &fsmap, std::shared_ptr<Filesystem>
 	do_propose = true;
       }
     }
-  } else {
+  } else if (!fs->mds_map.is_degraded()) {
     // There were no failures to replace, so try using any available standbys
-    // as standby-replay daemons.
+    // as standby-replay daemons. Don't do this when the cluster is degraded
+    // as a standby-replay daemon may try to read a journal being migrated.
 
     // Take a copy of the standby GIDs so that we can iterate over
     // them while perhaps-modifying standby_daemons during the loop

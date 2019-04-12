@@ -1,7 +1,7 @@
 RELEASE=5.3
 
 PACKAGE=ceph
-VER=12.2.11
+VER=12.2.12
 DEBREL=pve1
 
 SRCDIR=ceph

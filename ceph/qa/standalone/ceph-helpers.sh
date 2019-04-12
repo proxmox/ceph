@@ -19,7 +19,7 @@
 #
 TIMEOUT=300
 PG_NUM=4
-TMPDIR=${TMPDIR:-/tmp}
+TMPDIR=${TMPDIR:-${CEPH_BUILD_DIR}}
 CEPH_BUILD_VIRTUALENV=${TMPDIR}
 TESTDIR=${TESTDIR:-${TMPDIR}}
 
@@ -387,6 +387,17 @@ function test_kill_daemons() {
     kill_daemons $dir TERM || return 1
     ! timeout 5 ceph status || return 1
     teardown $dir || return 1
+}
+
+#
+# return a random TCP port which is not used yet
+#
+# please note, there could be racing if we use this function for
+# a free port, and then try to bind on this port.
+#
+function get_unused_port() {
+    local ip=127.0.0.1
+    python3 -c "import socket; s=socket.socket(); s.bind(('$ip', 0)); print(s.getsockname()[1]); s.close()"
 }
 
 #######################################################################
@@ -1411,6 +1422,7 @@ function test_get_timeout_delays() {
 # @return 0 if the cluster is clean, 1 otherwise
 #
 function wait_for_clean() {
+    local cmd=$1
     local num_active_clean=-1
     local cur_active_clean
     local -a delays=($(get_timeout_delays $TIMEOUT .1))
@@ -1436,6 +1448,8 @@ function wait_for_clean() {
             ceph report
             return 1
         fi
+	# eval is a no-op if cmd is empty
+        eval $cmd
         sleep ${delays[$loop]}
         loop+=1
     done

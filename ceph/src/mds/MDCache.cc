@@ -94,6 +94,7 @@
 #include "messages/MMDSSlaveRequest.h"
 
 #include "messages/MMDSFragmentNotify.h"
+#include "messages/MMDSFragmentNotifyAck.h"
 
 #include "messages/MGatherCaps.h"
 
@@ -173,7 +174,8 @@ MDCache::MDCache(MDSRank *m, PurgeQueue &purge_queue_) :
   filer(m->objecter, m->finisher),
   exceeded_size_limit(false),
   recovery_queue(m),
-  stray_manager(m, purge_queue_)
+  stray_manager(m, purge_queue_),
+  trim_counter(ceph_clock_now(), g_conf->get_val<double>("mds_cache_trim_decay_rate"))
 {
   migrator.reset(new Migrator(mds, this));
   root = NULL;
@@ -243,6 +245,9 @@ void MDCache::handle_conf_change(const struct md_config_t *conf,
     cache_health_threshold = g_conf->get_val<double>("mds_health_cache_threshold");
   if (changed.count("mds_cache_mid"))
     lru.lru_set_midpoint(g_conf->get_val<double>("mds_cache_mid"));
+  if (changed.count("mds_cache_trim_decay_rate")) {
+    trim_counter = DecayCounter(ceph_clock_now(), g_conf->get_val<double>("mds_cache_trim_decay_rate"));
+  }
 
   migrator->handle_conf_change(conf, changed, mdsmap);
   mds->balancer->handle_conf_change(conf, changed, mdsmap);
@@ -2015,14 +2020,15 @@ void MDCache::project_rstat_frag_to_inode(nest_info_t& rstat, nest_info_t& accou
   }
 }
 
-void MDCache::broadcast_quota_to_client(CInode *in, client_t exclude_ct)
+void MDCache::broadcast_quota_to_client(CInode *in, client_t exclude_ct, bool quota_change)
 {
   if (!in->is_auth() || in->is_frozen())
     return;
 
   auto i = in->get_projected_inode();
-
-  if (!i->quota.is_enable())
+  
+  if (!i->quota.is_enable() &&
+  	  !quota_change)
     return;
 
   for (map<client_t,Capability*>::iterator it = in->client_caps.begin();
@@ -3056,9 +3062,19 @@ void MDCache::handle_mds_failure(mds_rank_t who)
        p != fragments.end(); ) {
     dirfrag_t df = p->first;
     fragment_info_t& info = p->second;
-    ++p;
-    if (info.is_fragmenting())
+
+    if (info.is_fragmenting()) {
+      if (info.notify_ack_waiting.erase(who) &&
+	  info.notify_ack_waiting.empty()) {
+	fragment_drop_locks(info);
+	fragment_maybe_finish(p++);
+      } else {
+	++p;
+      }
       continue;
+    }
+
+    ++p;
     dout(10) << "cancelling fragment " << df << " bit " << info.bits << dendl;
     list<CDir*> dirs;
     info.dirs.swap(dirs);
@@ -4643,7 +4659,13 @@ void MDCache::handle_cache_rejoin_strong(MMDSCacheRejoin *strong)
   mds_rank_t from = mds_rank_t(strong->get_source().num());
 
   // only a recovering node will get a strong rejoin.
-  assert(mds->is_rejoin());
+  if (!mds->is_rejoin()) {
+    if (mds->get_want_state() == MDSMap::STATE_REJOIN) {
+      mds->wait_for_rejoin(new C_MDS_RetryMessage(mds, strong));
+      return;
+    }
+    assert(!"got unexpected rejoin message during recovery");
+  }
 
   // assimilate any potentially dirty scatterlock state
   for (map<inodeno_t,MMDSCacheRejoin::lock_bls>::iterator p = strong->inode_scatterlocks.begin();
@@ -5688,12 +5710,13 @@ void MDCache::export_remaining_imported_caps()
   }
 }
 
-void MDCache::try_reconnect_cap(CInode *in, Session *session)
+Capability* MDCache::try_reconnect_cap(CInode *in, Session *session)
 {
   client_t client = session->info.get_client();
+  Capability *cap = nullptr;
   const cap_reconnect_t *rc = get_replay_cap_reconnect(in->ino(), client);
   if (rc) {
-    in->reconnect_cap(client, *rc, session);
+    cap = in->reconnect_cap(client, *rc, session);
     dout(10) << "try_reconnect_cap client." << client
 	     << " reconnect wanted " << ccap_string(rc->capinfo.wanted)
 	     << " issue " << ccap_string(rc->capinfo.issued)
@@ -5721,6 +5744,7 @@ void MDCache::try_reconnect_cap(CInode *in, Session *session)
       cap_reconnect_waiters.erase(it);
     }
   }
+  return cap;
 }
 
 
@@ -6228,7 +6252,9 @@ void MDCache::identify_files_to_recover()
 	 p != in->inode.client_ranges.end();
 	 ++p) {
       Capability *cap = in->get_client_cap(p->first);
-      if (!cap) {
+      if (cap) {
+	cap->mark_clientwriteable();
+      } else {
 	dout(10) << " client." << p->first << " has range " << p->second << " but no cap on " << *in << dendl;
 	recover = true;
 	break;
@@ -6472,11 +6498,13 @@ void MDCache::start_recovered_truncates()
 // ================================================================================
 // cache trimming
 
-void MDCache::trim_lru(uint64_t count, map<mds_rank_t, MCacheExpire*> &expiremap)
+std::pair<bool, uint64_t> MDCache::trim_lru(uint64_t count, map<mds_rank_t, MCacheExpire*> &expiremap)
 {
   bool is_standby_replay = mds->is_standby_replay();
   std::vector<CDentry *> unexpirables;
   uint64_t trimmed = 0;
+
+  auto trim_threshold = g_conf->get_val<uint64_t>("mds_cache_trim_threshold");
 
   dout(7) << "trim_lru trimming " << count
           << " items from LRU"
@@ -6486,7 +6514,11 @@ void MDCache::trim_lru(uint64_t count, map<mds_rank_t, MCacheExpire*> &expiremap
           << " pinned=" << lru.lru_get_num_pinned()
           << dendl;
 
-  for (;;) {
+  const uint64_t trim_counter_start = trim_counter.get(ceph_clock_now());
+  bool throttled = false;
+  while (1) {
+    throttled |= trim_counter_start+trimmed >= trim_threshold;
+    if (throttled) break;
     CDentry *dn = static_cast<CDentry*>(bottom_lru.lru_expire());
     if (!dn)
       break;
@@ -6503,7 +6535,9 @@ void MDCache::trim_lru(uint64_t count, map<mds_rank_t, MCacheExpire*> &expiremap
   unexpirables.clear();
 
   // trim dentries from the LRU until count is reached
-  while (cache_toofull() || count > 0) {
+  while (!throttled && (cache_toofull() || count > 0)) {
+    throttled |= trim_counter_start+trimmed >= trim_threshold;
+    if (throttled) break;
     CDentry *dn = static_cast<CDentry*>(lru.lru_expire());
     if (!dn) {
       break;
@@ -6518,6 +6552,7 @@ void MDCache::trim_lru(uint64_t count, map<mds_rank_t, MCacheExpire*> &expiremap
       if (count > 0) count--;
     }
   }
+  trim_counter.hit(ceph_clock_now(), trimmed);
 
   for (auto &dn : unexpirables) {
     lru.lru_insert_mid(dn);
@@ -6525,6 +6560,7 @@ void MDCache::trim_lru(uint64_t count, map<mds_rank_t, MCacheExpire*> &expiremap
   unexpirables.clear();
 
   dout(7) << "trim_lru trimmed " << trimmed << " items" << dendl;
+  return std::pair<bool, uint64_t>(throttled, trimmed);
 }
 
 /*
@@ -6533,7 +6569,7 @@ void MDCache::trim_lru(uint64_t count, map<mds_rank_t, MCacheExpire*> &expiremap
  *
  * @param count is number of dentries to try to expire
  */
-bool MDCache::trim(uint64_t count)
+std::pair<bool, uint64_t> MDCache::trim(uint64_t count)
 {
   uint64_t used = cache_size();
   uint64_t limit = cache_memory_limit;
@@ -6547,7 +6583,8 @@ bool MDCache::trim(uint64_t count)
   // process delayed eval_stray()
   stray_manager.advance_delayed();
 
-  trim_lru(count, expiremap);
+  auto result = trim_lru(count, expiremap);
+  auto& trimmed = result.second;
 
   // trim non-auth, non-bound subtrees
   for (auto p = subtrees.begin(); p != subtrees.end();) {
@@ -6563,6 +6600,7 @@ bool MDCache::trim(uint64_t count)
 	  continue;
 
 	migrator->export_empty_import(dir);
+        ++trimmed;
       }
     } else {
       if (!diri->is_auth()) {
@@ -6579,6 +6617,7 @@ bool MDCache::trim(uint64_t count)
 	    rejoin_ack_gather.count(dir->get_dir_auth().first))
 	  continue;
 	trim_dirfrag(dir, 0, expiremap);
+        ++trimmed;
       }
     }
   }
@@ -6589,11 +6628,15 @@ bool MDCache::trim(uint64_t count)
     root->get_dirfrags(ls);
     for (list<CDir*>::iterator p = ls.begin(); p != ls.end(); ++p) {
       CDir *dir = *p;
-      if (dir->get_num_ref() == 1)  // subtree pin
+      if (dir->get_num_ref() == 1) { // subtree pin
 	trim_dirfrag(dir, 0, expiremap);
+        ++trimmed;
+      }
     }
-    if (root->get_num_ref() == 0)
+    if (root->get_num_ref() == 0) {
       trim_inode(0, root, 0, expiremap);
+      ++trimmed;
+    }
   }
 
   std::set<mds_rank_t> stopping;
@@ -6616,11 +6659,15 @@ bool MDCache::trim(uint64_t count)
       list<CDir*> ls;
       mdsdir_in->get_dirfrags(ls);
       for (auto dir : ls) {
-	if (dir->get_num_ref() == 1)  // subtree pin
+	if (dir->get_num_ref() == 1) {  // subtree pin
 	  trim_dirfrag(dir, dir, expiremap);
+          ++trimmed;
+        }
       }
-      if (mdsdir_in->get_num_ref() == 0)
+      if (mdsdir_in->get_num_ref() == 0) {
 	trim_inode(NULL, mdsdir_in, NULL, expiremap);
+        ++trimmed;
+      }
     } else {
       dout(20) << __func__ << ": some unexpirable contents in mdsdir" << dendl;
     }
@@ -6634,6 +6681,7 @@ bool MDCache::trim(uint64_t count)
         dout(20) << __func__ << ": maybe trimming base: " << *(*p) << dendl;
         if ((*p)->get_num_ref() == 0) {
           trim_inode(NULL, *p, NULL, expiremap);
+          ++trimmed;
         }
       }
     }
@@ -6642,7 +6690,7 @@ bool MDCache::trim(uint64_t count)
   // send any expire messages
   send_expire_messages(expiremap);
 
-  return true;
+  return result;
 }
 
 void MDCache::send_expire_messages(map<mds_rank_t, MCacheExpire*>& expiremap)
@@ -7482,7 +7530,7 @@ void MDCache::check_memory_usage()
   if (CInode::count())
     caps_per_inode = (double)Capability::count() / (double)CInode::count();
 
-  dout(2) << "check_memory_usage"
+  dout(2) << "Memory usage: "
 	   << " total " << last.get_total()
 	   << ", rss " << last.get_rss()
 	   << ", heap " << last.get_heap()
@@ -7497,8 +7545,7 @@ void MDCache::check_memory_usage()
   mds->mlogger->set(l_mdm_heap, last.get_heap());
 
   if (cache_toofull()) {
-    last_recall_state = clock::now();
-    mds->server->recall_client_state(-1.0, false, nullptr);
+    mds->server->recall_client_state(nullptr);
   }
 
   // If the cache size had exceeded its limit, but we're back in bounds
@@ -7508,7 +7555,7 @@ void MDCache::check_memory_usage()
     // Only do this once we are back in bounds: otherwise the releases would
     // slow down whatever process caused us to exceed bounds to begin with
     if (ceph_using_tcmalloc()) {
-      dout(2) << "check_memory_usage: releasing unused space from tcmalloc" 
+      dout(5) << "check_memory_usage: releasing unused space from tcmalloc"
 	      << dendl;
       ceph_heap_release_free_memory();
     }
@@ -7558,7 +7605,7 @@ void MDCache::shutdown_check()
 
 void MDCache::shutdown_start()
 {
-  dout(2) << "shutdown_start" << dendl;
+  dout(5) << "shutdown_start" << dendl;
 
   if (g_conf->mds_shutdown_check)
     mds->timer.add_event_after(g_conf->mds_shutdown_check, new C_MDC_ShutdownCheck(this));
@@ -7755,7 +7802,7 @@ bool MDCache::shutdown_pass()
   }
 
   // done!
-  dout(2) << "shutdown done." << dendl;
+  dout(5) << "shutdown done." << dendl;
   return true;
 }
 
@@ -7920,6 +7967,9 @@ void MDCache::dispatch(Message *m)
 
   case MSG_MDS_FRAGMENTNOTIFY:
     handle_fragment_notify(static_cast<MMDSFragmentNotify*>(m));
+    break;
+  case MSG_MDS_FRAGMENTNOTIFYACK:
+    handle_fragment_notify_ack(static_cast<MMDSFragmentNotifyAck*>(m));
     break;
 
   case MSG_MDS_FINDINO:
@@ -11309,29 +11359,29 @@ public:
 
 class C_MDC_FragmentCommit : public MDCacheLogContext {
   dirfrag_t basedirfrag;
-  list<CDir*> resultfrags;
+  MDRequestRef mdr;
 public:
-  C_MDC_FragmentCommit(MDCache *m, dirfrag_t df, list<CDir*>& l) :
-    MDCacheLogContext(m), basedirfrag(df), resultfrags(l) {}
+  C_MDC_FragmentCommit(MDCache *m, dirfrag_t df, const MDRequestRef& r) :
+    MDCacheLogContext(m), basedirfrag(df), mdr(r) {}
   void finish(int r) override {
-    mdcache->_fragment_committed(basedirfrag, resultfrags);
+    mdcache->_fragment_committed(basedirfrag, mdr);
   }
 };
 
-class C_IO_MDC_FragmentFinish : public MDCacheIOContext {
+class C_IO_MDC_FragmentPurgeOld : public MDCacheIOContext {
   dirfrag_t basedirfrag;
-  list<CDir*> resultfrags;
+  int bits;
+  MDRequestRef mdr;
 public:
-  C_IO_MDC_FragmentFinish(MDCache *m, dirfrag_t f, list<CDir*>& l) :
-    MDCacheIOContext(m), basedirfrag(f) {
-    resultfrags.swap(l);
-  }
+  C_IO_MDC_FragmentPurgeOld(MDCache *m, dirfrag_t f, int b,
+			    const MDRequestRef& r) :
+    MDCacheIOContext(m), basedirfrag(f), bits(b), mdr(r) {}
   void finish(int r) override {
     assert(r == 0 || r == -ENOENT);
-    mdcache->_fragment_finish(basedirfrag, resultfrags);
+    mdcache->_fragment_old_purged(basedirfrag, bits, mdr);
   }
   void print(ostream& out) const override {
-    out << "dirfrags_commit(" << basedirfrag << ")";
+    out << "fragment_purge_old(" << basedirfrag << ")";
   }
 };
 
@@ -11460,13 +11510,12 @@ void MDCache::dispatch_fragment_dir(MDRequestRef& mdr)
 void MDCache::_fragment_logged(MDRequestRef& mdr)
 {
   dirfrag_t basedirfrag = mdr->more()->fragment_base;
-  map<dirfrag_t,fragment_info_t>::iterator it = fragments.find(basedirfrag);
-  assert(it != fragments.end());
-  fragment_info_t &info = it->second;
+  auto& info = fragments.at(basedirfrag);
   CInode *diri = info.resultfrags.front()->get_inode();
 
   dout(10) << "fragment_logged " << basedirfrag << " bits " << info.bits
 	   << " on " << *diri << dendl;
+  mdr->mark_event("prepare logged");
 
   if (diri->is_auth())
     diri->pop_and_dirty_projected_inode(mdr->ls);
@@ -11494,23 +11543,46 @@ void MDCache::_fragment_logged(MDRequestRef& mdr)
 void MDCache::_fragment_stored(MDRequestRef& mdr)
 {
   dirfrag_t basedirfrag = mdr->more()->fragment_base;
-  map<dirfrag_t,fragment_info_t>::iterator it = fragments.find(basedirfrag);
-  assert(it != fragments.end());
-  fragment_info_t &info = it->second;
-  CInode *diri = info.resultfrags.front()->get_inode();
+  fragment_info_t &info = fragments.at(basedirfrag);
+  CDir *first = info.resultfrags.front();
+  CInode *diri = first->get_inode();
 
   dout(10) << "fragment_stored " << basedirfrag << " bits " << info.bits
 	   << " on " << *diri << dendl;
+  mdr->mark_event("new frags stored");
 
   // tell peers
-  CDir *first = *info.resultfrags.begin();
+  mds_rank_t diri_auth = (first->is_subtree_root() && !diri->is_auth()) ?
+			  diri->authority().first : CDIR_AUTH_UNKNOWN;
   for (const auto &p : first->get_replicas()) {
     if (mds->mdsmap->get_state(p.first) < MDSMap::STATE_REJOIN ||
 	(mds->mdsmap->get_state(p.first) == MDSMap::STATE_REJOIN &&
 	 rejoin_gather.count(p.first)))
       continue;
 
-    MMDSFragmentNotify *notify = new MMDSFragmentNotify(basedirfrag, info.bits);
+    auto notify = new MMDSFragmentNotify(basedirfrag, info.bits, mdr->reqid.tid);
+    if (diri_auth != CDIR_AUTH_UNKNOWN && // subtree root
+	diri_auth != p.first) { // not auth mds of diri
+      /*
+       * In the nornal case, mds does not trim dir inode whose child dirfrags
+       * are likely being fragmented (see trim_inode()). But when fragmenting
+       * subtree roots, following race can happen:
+       *
+       * - mds.a (auth mds of dirfrag) sends fragment_notify message to
+       *   mds.c and drops wrlock on dirfragtreelock.
+       * - mds.b (auth mds of dir inode) changes dirfragtreelock state to
+       *   SYNC and send lock message mds.c
+       * - mds.c receives the lock message and changes dirfragtreelock state
+       *   to SYNC
+       * - mds.c trim dirfrag and dir inode from its cache
+       * - mds.c receives the fragment_notify message
+       *
+       * So we need to ensure replicas have received the notify, then unlock
+       * the dirfragtreelock.
+       */
+      notify->mark_ack_wanted();
+      info.notify_ack_waiting.insert(p.first);
+    }
 
     // freshly replicate new dirs to peers
     for (list<CDir*>::iterator q = info.resultfrags.begin();
@@ -11523,10 +11595,8 @@ void MDCache::_fragment_stored(MDRequestRef& mdr)
 
   // journal commit
   EFragment *le = new EFragment(mds->mdlog, EFragment::OP_COMMIT, basedirfrag, info.bits);
-  mds->mdlog->start_submit_entry(le, new C_MDC_FragmentCommit(this, basedirfrag,
-							      info.resultfrags));
+  mds->mdlog->start_submit_entry(le, new C_MDC_FragmentCommit(this, basedirfrag, mdr));
 
-  mds->locker->drop_locks(mdr.get());
 
   // unfreeze resulting frags
   for (list<CDir*>::iterator p = info.resultfrags.begin();
@@ -11546,22 +11616,26 @@ void MDCache::_fragment_stored(MDRequestRef& mdr)
     dir->unfreeze_dir();
   }
 
-  fragments.erase(it);
-  request_finish(mdr);
+  if (info.notify_ack_waiting.empty()) {
+    fragment_drop_locks(info);
+  } else {
+    mds->locker->drop_locks_for_fragment_unfreeze(mdr.get());
+  }
 }
 
-void MDCache::_fragment_committed(dirfrag_t basedirfrag, list<CDir*>& resultfrags)
+void MDCache::_fragment_committed(dirfrag_t basedirfrag, const MDRequestRef& mdr)
 {
   dout(10) << "fragment_committed " << basedirfrag << dendl;
-  map<dirfrag_t, ufragment>::iterator it = uncommitted_fragments.find(basedirfrag);
-  assert(it != uncommitted_fragments.end());
-  ufragment &uf = it->second;
+  if (mdr)
+    mdr->mark_event("commit logged");
+
+  ufragment &uf = uncommitted_fragments.at(basedirfrag);
 
   // remove old frags
   C_GatherBuilder gather(
     g_ceph_context,
     new C_OnFinisher(
-      new C_IO_MDC_FragmentFinish(this, basedirfrag, resultfrags),
+      new C_IO_MDC_FragmentPurgeOld(this, basedirfrag, uf.bits, mdr),
       mds->finisher));
 
   SnapContext nullsnapc;
@@ -11589,16 +11663,50 @@ void MDCache::_fragment_committed(dirfrag_t basedirfrag, list<CDir*>& resultfrag
   gather.activate();
 }
 
-void MDCache::_fragment_finish(dirfrag_t basedirfrag, list<CDir*>& resultfrags)
+void MDCache::_fragment_old_purged(dirfrag_t basedirfrag, int bits, const MDRequestRef& mdr)
 {
-  dout(10) << "fragment_finish " << basedirfrag << "resultfrags.size="
-           << resultfrags.size() << dendl;
-  map<dirfrag_t, ufragment>::iterator it = uncommitted_fragments.find(basedirfrag);
-  assert(it != uncommitted_fragments.end());
-  ufragment &uf = it->second;
+  dout(10) << "fragment_old_purged " << basedirfrag << dendl;
+  if (mdr)
+    mdr->mark_event("old frags purged");
+
+  EFragment *le = new EFragment(mds->mdlog, EFragment::OP_FINISH, basedirfrag, bits);
+  mds->mdlog->start_submit_entry(le);
+
+  finish_uncommitted_fragment(basedirfrag, EFragment::OP_FINISH);
+
+  if (mds->logger) {
+    if (bits > 0) {
+      mds->logger->inc(l_mds_dir_split);
+    } else {
+      mds->logger->inc(l_mds_dir_merge);
+    }
+  }
+
+  if (mdr) {
+    auto it = fragments.find(basedirfrag);
+    ceph_assert(it != fragments.end());
+    it->second.finishing = true;
+    if (it->second.notify_ack_waiting.empty())
+      fragment_maybe_finish(it);
+    else
+      mdr->mark_event("wating for notify acks");
+  }
+}
+
+void MDCache::fragment_drop_locks(fragment_info_t& info)
+{
+  mds->locker->drop_locks(info.mdr.get());
+  request_finish(info.mdr);
+  //info.mdr.reset();
+}
+
+void MDCache::fragment_maybe_finish(const fragment_info_iterator& it)
+{
+  if (!it->second.finishing)
+    return;
 
   // unmark & auth_unpin
-  for (const auto &dir : resultfrags) {
+  for (const auto &dir : it->second.resultfrags) {
     dir->state_clear(CDir::STATE_FRAGMENTING);
     dir->auth_unpin(this);
 
@@ -11609,24 +11717,41 @@ void MDCache::_fragment_finish(dirfrag_t basedirfrag, list<CDir*>& resultfrags)
     mds->balancer->maybe_fragment(dir, false);
   }
 
-  if (mds->logger) {
-    if (resultfrags.size() > 1) {
-      mds->logger->inc(l_mds_dir_split);
-    } else {
-      mds->logger->inc(l_mds_dir_merge);
-    }
+  fragments.erase(it);
+}
+
+
+void MDCache::handle_fragment_notify_ack(MMDSFragmentNotifyAck *ack)
+{
+  dout(10) << "handle_fragment_notify_ack " << *ack << " from " << ack->get_source() << dendl;
+  mds_rank_t from = mds_rank_t(ack->get_source().num());
+
+  if (mds->get_state() < MDSMap::STATE_ACTIVE) {
+    ack->put();
+    return;
   }
 
-  EFragment *le = new EFragment(mds->mdlog, EFragment::OP_FINISH, basedirfrag, uf.bits);
-  mds->mdlog->start_submit_entry(le);
+  auto it = fragments.find(ack->get_base_dirfrag());
+  if (it == fragments.end() ||
+      it->second.get_tid() != ack->get_tid()) {
+    dout(10) << "handle_fragment_notify_ack obsolete message, dropping" << dendl;
+    ack->put();
+    return;
+  }
 
-  finish_uncommitted_fragment(basedirfrag, EFragment::OP_FINISH);
+  if (it->second.notify_ack_waiting.erase(from) &&
+      it->second.notify_ack_waiting.empty()) {
+    fragment_drop_locks(it->second);
+    fragment_maybe_finish(it);
+  }
+  ack->put();
 }
 
 /* This function DOES put the passed message before returning */
 void MDCache::handle_fragment_notify(MMDSFragmentNotify *notify)
 {
   dout(10) << "handle_fragment_notify " << *notify << " from " << notify->get_source() << dendl;
+  mds_rank_t from = mds_rank_t(notify->get_source().num());
 
   if (mds->get_state() < MDSMap::STATE_REJOIN) {
     notify->put();
@@ -11661,13 +11786,18 @@ void MDCache::handle_fragment_notify(MMDSFragmentNotify *notify)
     // add new replica dirs values
     bufferlist::iterator p = notify->basebl.begin();
     while (!p.end())
-      add_replica_dir(p, diri, mds_rank_t(notify->get_source().num()), waiters);
+      add_replica_dir(p, diri, from, waiters);
 
     mds->queue_waiters(waiters);
   } else {
     ceph_abort();
   }
 
+  if (notify->is_ack_wanted()) {
+    auto ack = new MMDSFragmentNotifyAck(notify->get_base_dirfrag(),
+					 notify->get_bits(), notify->get_tid());
+    mds->send_message_mds(ack, from);
+  }
   notify->put();
 }
 
@@ -11730,14 +11860,7 @@ void MDCache::rollback_uncommitted_fragments()
     assert(diri);
 
     if (uf.committed) {
-      list<CDir*> frags;
-      diri->get_dirfrags_under(p->first.frag, frags);
-      for (list<CDir*>::iterator q = frags.begin(); q != frags.end(); ++q) {
-	CDir *dir = *q;
-	dir->auth_pin(this);
-	dir->state_set(CDir::STATE_FRAGMENTING);
-      }
-      _fragment_committed(p->first, frags);
+      _fragment_committed(p->first, MDRequestRef());
       continue;
     }
 
@@ -11809,16 +11932,10 @@ void MDCache::rollback_uncommitted_fragments()
     for (list<frag_t>::iterator q = old_frags.begin(); q != old_frags.end(); ++q)
       assert(!diri->dirfragtree.is_leaf(*q));
 
-    for (list<CDir*>::iterator q = resultfrags.begin(); q != resultfrags.end(); ++q) {
-      CDir *dir = *q;
-      dir->auth_pin(this);
-      dir->state_set(CDir::STATE_FRAGMENTING);
-    }
-
     mds->mdlog->submit_entry(le);
 
     uf.old_frags.swap(old_frags);
-    _fragment_committed(p->first, resultfrags);
+    _fragment_committed(p->first, MDRequestRef());
   }
 }
 

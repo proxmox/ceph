@@ -19,6 +19,7 @@
 
 #include <boost/utility/string_view.hpp>
 
+#include "common/DecayCounter.h"
 #include "include/types.h"
 #include "include/filepath.h"
 #include "include/elist.h"
@@ -68,6 +69,7 @@ class MMDSSlaveRequest;
 struct MClientSnap;
 
 class MMDSFragmentNotify;
+class MMDSFragmentNotifyAck;
 
 class ESubtreeMap;
 
@@ -191,6 +193,9 @@ public:
    */
   void notify_stray(CDentry *dn) {
     assert(dn->get_dir()->get_inode()->is_stray());
+    if (dn->state_test(CDentry::STATE_PURGING))
+      return;
+
     stray_manager.eval_stray(dn);
   }
 
@@ -400,7 +405,7 @@ public:
   void project_rstat_frag_to_inode(nest_info_t& rstat, nest_info_t& accounted_rstat,
 				   snapid_t ofirst, snapid_t last, 
 				   CInode *pin, bool cow_head);
-  void broadcast_quota_to_client(CInode *in, client_t exclude_ct = -1);
+  void broadcast_quota_to_client(CInode *in, client_t exclude_ct = -1, bool quota_change = false);
   void predirty_journal_parents(MutationRef mut, EMetaBlob *blob,
 				CInode *in, CDir *parent,
 				int flags, int linkunlink=0,
@@ -651,7 +656,7 @@ public:
   void send_snaps(map<client_t,MClientSnap*>& splits);
   Capability* rejoin_import_cap(CInode *in, client_t client, const cap_reconnect_t& icr, mds_rank_t frommds);
   void finish_snaprealm_reconnect(client_t client, SnapRealm *realm, snapid_t seq);
-  void try_reconnect_cap(CInode *in, Session *session);
+  Capability* try_reconnect_cap(CInode *in, Session *session);
   void export_remaining_imported_caps();
 
   // cap imports.  delayed snap parent opens.
@@ -715,9 +720,9 @@ public:
   size_t get_cache_size() { return lru.lru_get_size(); }
 
   // trimming
-  bool trim(uint64_t count=0);
+  std::pair<bool, uint64_t> trim(uint64_t count=0);
 private:
-  void trim_lru(uint64_t count, map<mds_rank_t, MCacheExpire*>& expiremap);
+  std::pair<bool, uint64_t> trim_lru(uint64_t count, map<mds_rank_t, MCacheExpire*>& expiremap);
   bool trim_dentry(CDentry *dn, map<mds_rank_t, MCacheExpire*>& expiremap);
   void trim_dirfrag(CDir *dir, CDir *con,
 		    map<mds_rank_t, MCacheExpire*>& expiremap);
@@ -754,8 +759,6 @@ public:
 
   void trim_client_leases();
   void check_memory_usage();
-
-  time last_recall_state;
 
   // shutdown
 private:
@@ -1099,15 +1102,20 @@ private:
     list<CDir*> dirs;
     list<CDir*> resultfrags;
     MDRequestRef mdr;
+    set<mds_rank_t> notify_ack_waiting;
+    bool finishing = false;
+
     // for deadlock detection
-    bool all_frozen;
+    bool all_frozen = false;
     utime_t last_cum_auth_pins_change;
-    int last_cum_auth_pins;
-    int num_remote_waiters;	// number of remote authpin waiters
-    fragment_info_t() : bits(0), all_frozen(false), last_cum_auth_pins(0), num_remote_waiters(0) {}
+    int last_cum_auth_pins = 0;
+    int num_remote_waiters = 0;	// number of remote authpin waiters
+    fragment_info_t() {}
     bool is_fragmenting() { return !resultfrags.empty(); }
+    uint64_t get_tid() { return mdr ? mdr->reqid.tid : 0; }
   };
   map<dirfrag_t,fragment_info_t> fragments;
+  typedef map<dirfrag_t,fragment_info_t>::iterator fragment_info_iterator;
 
   void adjust_dir_fragments(CInode *diri, frag_t basefrag, int bits,
 			    list<CDir*>& frags, list<MDSInternalContextBase*>& waiters, bool replay);
@@ -1125,11 +1133,13 @@ private:
   void fragment_mark_and_complete(MDRequestRef& mdr);
   void fragment_frozen(MDRequestRef& mdr, int r);
   void fragment_unmark_unfreeze_dirs(list<CDir*>& dirs);
+  void fragment_drop_locks(fragment_info_t &info);
+  void fragment_maybe_finish(const fragment_info_iterator& it);
   void dispatch_fragment_dir(MDRequestRef& mdr);
   void _fragment_logged(MDRequestRef& mdr);
   void _fragment_stored(MDRequestRef& mdr);
-  void _fragment_committed(dirfrag_t f, list<CDir*>& resultfrags);
-  void _fragment_finish(dirfrag_t f, list<CDir*>& resultfrags);
+  void _fragment_committed(dirfrag_t f, const MDRequestRef& mdr);
+  void _fragment_old_purged(dirfrag_t f, int bits, const MDRequestRef& mdr);
 
   friend class EFragment;
   friend class C_MDC_FragmentFrozen;
@@ -1137,14 +1147,19 @@ private:
   friend class C_MDC_FragmentPrep;
   friend class C_MDC_FragmentStore;
   friend class C_MDC_FragmentCommit;
-  friend class C_IO_MDC_FragmentFinish;
+  friend class C_IO_MDC_FragmentPurgeOld;
 
   void handle_fragment_notify(MMDSFragmentNotify *m);
+  void handle_fragment_notify_ack(MMDSFragmentNotifyAck *m);
 
   void add_uncommitted_fragment(dirfrag_t basedirfrag, int bits, list<frag_t>& old_frag,
 				LogSegment *ls, bufferlist *rollback=NULL);
   void finish_uncommitted_fragment(dirfrag_t basedirfrag, int op);
   void rollback_uncommitted_fragment(dirfrag_t basedirfrag, list<frag_t>& old_frags);
+
+
+  DecayCounter trim_counter;
+
 public:
   void wait_for_uncommitted_fragment(dirfrag_t dirfrag, MDSInternalContextBase *c) {
     assert(uncommitted_fragments.count(dirfrag));
