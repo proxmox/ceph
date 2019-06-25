@@ -119,7 +119,7 @@ distclean: clean
 
 .PHONY: clean
 clean:
-	rm -rf ${BUILDSRC} *_all.deb *_${ARCH}.deb *.changes *.dsc *.buildinfo *.tar.gz
+	rm -rf ${BUILDSRC} ${BUILDSRC}.tmp *_all.deb *_${ARCH}.deb *.changes *.dsc *.buildinfo *.tar.gz
 
 .PHONY: dinstall
 dinstall: ${DEB}
