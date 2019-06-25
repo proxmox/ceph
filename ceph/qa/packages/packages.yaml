@@ -30,13 +30,16 @@ ceph:
   - rbd-fuse-dbg
   - rbd-mirror-dbg
   - rbd-nbd-dbg
-  - python3-cephfs
-  - python3-rados
   rpm:
   - ceph-radosgw
   - ceph-test
   - ceph
   - ceph-mgr
+  - ceph-mgr-dashboard
+  - ceph-mgr-diskprediction-cloud
+  - ceph-mgr-diskprediction-local
+  - ceph-mgr-rook
+  - ceph-mgr-ssh
   - ceph-fuse
   - libcephfs2
   - libcephfs-devel
@@ -45,5 +48,3 @@ ceph:
   - python-ceph
   - rbd-fuse
   - ceph-debuginfo
-  - python34-cephfs
-  - python34-rados

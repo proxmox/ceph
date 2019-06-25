@@ -37,40 +37,43 @@
 
 #include "spdk/conf.h"
 
-enum group_state {
-	GROUP_INIT = 0x0,
-	GROUP_READY = 0x1,
-	GROUP_DESTROY = 0x2,
+struct spdk_iscsi_initiator_name {
+	char *name;
+	TAILQ_ENTRY(spdk_iscsi_initiator_name) tailq;
+};
+
+struct spdk_iscsi_initiator_netmask {
+	char *mask;
+	TAILQ_ENTRY(spdk_iscsi_initiator_netmask) tailq;
 };
 
 struct spdk_iscsi_init_grp {
 	int ninitiators;
-	char **initiators;
+	TAILQ_HEAD(, spdk_iscsi_initiator_name) initiator_head;
 	int nnetmasks;
-	char **netmasks;
+	TAILQ_HEAD(, spdk_iscsi_initiator_netmask) netmask_head;
 	int ref;
 	int tag;
-	enum group_state state;
 	TAILQ_ENTRY(spdk_iscsi_init_grp)	tailq;
 };
 
 /* SPDK iSCSI Initiator Group management API */
-int spdk_iscsi_init_grp_create_from_configfile(struct spdk_conf_section *sp);
-
 int spdk_iscsi_init_grp_create_from_initiator_list(int tag,
 		int num_initiator_names, char **initiator_names,
 		int num_initiator_masks, char **initiator_masks);
-
-void spdk_iscsi_init_grp_destroy(struct spdk_iscsi_init_grp *ig);
-void spdk_iscsi_init_grp_destroy_by_tag(int tag);
-void spdk_iscsi_init_grp_release(struct spdk_iscsi_init_grp *ig);
-
+int spdk_iscsi_init_grp_add_initiators_from_initiator_list(int tag,
+		int num_initiator_names, char **initiator_names,
+		int num_initiator_masks, char **initiator_masks);
+int spdk_iscsi_init_grp_delete_initiators_from_initiator_list(int tag,
+		int num_initiator_names, char **initiator_names,
+		int num_initiator_masks, char **initiator_masks);
+int spdk_iscsi_init_grp_register(struct spdk_iscsi_init_grp *ig);
+struct spdk_iscsi_init_grp *spdk_iscsi_init_grp_unregister(int tag);
 struct spdk_iscsi_init_grp *spdk_iscsi_init_grp_find_by_tag(int tag);
-
-void spdk_iscsi_init_grp_register(struct spdk_iscsi_init_grp *ig);
-
-int spdk_iscsi_init_grp_array_create(void);
-void spdk_iscsi_init_grp_array_destroy(void);
-int spdk_iscsi_init_grp_deletable(int tag);
-
+void spdk_iscsi_init_grp_destroy(struct spdk_iscsi_init_grp *ig);
+int spdk_iscsi_parse_init_grps(void);
+void spdk_iscsi_init_grps_destroy(void);
+void spdk_iscsi_init_grps_config_text(FILE *fp);
+void spdk_iscsi_init_grps_info_json(struct spdk_json_write_ctx *w);
+void spdk_iscsi_init_grps_config_json(struct spdk_json_write_ctx *w);
 #endif // SPDK_INIT_GRP_H

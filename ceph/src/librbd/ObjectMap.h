@@ -6,6 +6,7 @@
 
 #include "include/int_types.h"
 #include "include/fs_types.h"
+#include "include/rados/librados_fwd.hpp"
 #include "include/rbd/object_map_types.h"
 #include "common/bit_vector.hpp"
 #include "librbd/Utils.h"
@@ -13,7 +14,6 @@
 
 class Context;
 class RWLock;
-namespace librados { class IoCtx; }
 namespace ZTracer { struct Trace; }
 
 namespace librbd {
@@ -48,6 +48,7 @@ public:
   void close(Context *on_finish);
   bool set_object_map(ceph::BitVector<2> &target_object_map);
   bool object_may_exist(uint64_t object_no) const;
+  bool object_may_not_exist(uint64_t object_no) const;
 
   void aio_save(Context *on_finish);
   void aio_resize(uint64_t new_size, uint8_t default_object_state,
@@ -69,8 +70,13 @@ public:
                   const boost::optional<uint8_t> &current_state,
                   const ZTracer::Trace &parent_trace, bool ignore_enoent,
                   T *callback_object) {
-    assert(start_object_no < end_object_no);
+    ceph_assert(start_object_no < end_object_no);
     if (snap_id == CEPH_NOSNAP) {
+      end_object_no = std::min(end_object_no, m_object_map.size());
+      if (start_object_no >= end_object_no) {
+        return false;
+      }
+
       auto it = m_object_map.begin() + start_object_no;
       auto end_it = m_object_map.begin() + end_object_no;
       for (; it != end_it; ++it) {

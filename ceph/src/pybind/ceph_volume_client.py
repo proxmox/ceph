@@ -1,7 +1,7 @@
 """
 Copyright (C) 2015 Red Hat, Inc.
 
-LGPL2.  See file COPYING.
+LGPL2.1.  See file COPYING.
 """
 
 from contextlib import contextmanager
@@ -144,7 +144,7 @@ class RankEvicter(threading.Thread):
             time.sleep(self.POLL_PERIOD)
             self._ready_waited += self.POLL_PERIOD
 
-            self._mds_map = self._volume_client._rados_command("mds dump", {})
+            self._mds_map = self._volume_client.get_mds_map()
 
     def _evict(self):
         """
@@ -176,7 +176,7 @@ class RankEvicter(threading.Thread):
                 return True
             elif ret == errno.ETIMEDOUT:
                 # Oh no, the MDS went laggy (that's how libcephfs knows to emit this error)
-                self._mds_map = self._volume_client._rados_command("mds dump", {})
+                self._mds_map = self._volume_client.get_mds_map()
                 try:
                     self._wait_for_ready()
                 except self.GidGone:
@@ -243,13 +243,31 @@ class CephFSVolumeClient(object):
     DEFAULT_VOL_PREFIX = "/volumes"
     DEFAULT_NS_PREFIX = "fsvolumens_"
 
-    def __init__(self, auth_id, conf_path, cluster_name, volume_prefix=None, pool_ns_prefix=None):
+    def __init__(self, auth_id=None, conf_path=None, cluster_name=None,
+                 volume_prefix=None, pool_ns_prefix=None, rados=None,
+                 fs_name=None):
+        """
+        Either set all three of ``auth_id``, ``conf_path`` and
+        ``cluster_name`` (rados constructed on connect), or
+        set ``rados`` (existing rados instance).
+        """
         self.fs = None
-        self.rados = None
+        self.fs_name = fs_name
         self.connected = False
+
         self.conf_path = conf_path
         self.cluster_name = cluster_name
         self.auth_id = auth_id
+
+        self.rados = rados
+        if self.rados:
+            # Using an externally owned rados, so we won't tear it down
+            # on disconnect
+            self.own_rados = False
+        else:
+            # self.rados will be constructed in connect
+            self.own_rados = True
+
         self.volume_prefix = volume_prefix if volume_prefix else self.DEFAULT_VOL_PREFIX
         self.pool_ns_prefix = pool_ns_prefix if pool_ns_prefix else self.DEFAULT_NS_PREFIX
         # For flock'ing in cephfs, I want a unique ID to distinguish me
@@ -378,6 +396,9 @@ class CephFSVolumeClient(object):
         auth_meta['dirty'] = False
         self._auth_metadata_set(auth_id, auth_meta)
 
+    def get_mds_map(self):
+        fs_map = self._rados_command("fs dump", {})
+        return fs_map['filesystems'][0]['mdsmap']
 
     def evict(self, auth_id, timeout=30, volume_path=None):
         """
@@ -396,8 +417,7 @@ class CephFSVolumeClient(object):
 
         log.info("evict clients with {0}".format(', '.join(client_spec)))
 
-        mds_map = self._rados_command("mds dump", {})
-
+        mds_map = self.get_mds_map()
         up = {}
         for name, gid in mds_map['up'].items():
             # Quirk of the MDSMap JSON dump: keys in the up dict are like "mds_0"
@@ -446,25 +466,7 @@ class CephFSVolumeClient(object):
             group_id
         )
 
-    def connect(self, premount_evict = None):
-        """
-
-        :param premount_evict: Optional auth_id to evict before mounting the filesystem: callers
-                               may want to use this to specify their own auth ID if they expect
-                               to be a unique instance and don't want to wait for caps to time
-                               out after failure of another instance of themselves.
-        """
-        log.debug("Connecting to RADOS with config {0}...".format(self.conf_path))
-        self.rados = rados.Rados(
-            name="client.{0}".format(self.auth_id),
-            clustername=self.cluster_name,
-            conffile=self.conf_path,
-            conf={}
-        )
-        self.rados.connect()
-
-        log.debug("Connection to RADOS complete")
-
+    def _connect(self, premount_evict):
         log.debug("Connecting to cephfs...")
         self.fs = cephfs.LibCephFS(rados_inst=self.rados)
         log.debug("CephFS initializing...")
@@ -474,12 +476,34 @@ class CephFSVolumeClient(object):
             self.evict(premount_evict)
             log.debug("Premount eviction of {0} completes".format(premount_evict))
         log.debug("CephFS mounting...")
-        self.fs.mount()
+        self.fs.mount(filesystem_name=self.fs_name)
         log.debug("Connection to cephfs complete")
 
         # Recover from partial auth updates due to a previous
         # crash.
         self.recover()
+
+    def connect(self, premount_evict = None):
+        """
+
+        :param premount_evict: Optional auth_id to evict before mounting the filesystem: callers
+                               may want to use this to specify their own auth ID if they expect
+                               to be a unique instance and don't want to wait for caps to time
+                               out after failure of another instance of themselves.
+        """
+        if self.own_rados:
+            log.debug("Configuring to RADOS with config {0}...".format(self.conf_path))
+            self.rados = rados.Rados(
+                name="client.{0}".format(self.auth_id),
+                clustername=self.cluster_name,
+                conffile=self.conf_path,
+                conf={}
+            )
+            if self.rados.state != "connected":
+                log.debug("Connecting to RADOS...")
+                self.rados.connect()
+                log.debug("Connection to RADOS complete")
+        self._connect(premount_evict)
 
     def get_mon_addrs(self):
         log.info("get_mon_addrs")
@@ -499,11 +523,18 @@ class CephFSVolumeClient(object):
             self.fs = None
             log.debug("Disconnecting cephfs complete")
 
-        if self.rados:
+        if self.rados and self.own_rados:
             log.debug("Disconnecting rados...")
             self.rados.shutdown()
             self.rados = None
             log.debug("Disconnecting rados complete")
+
+    def __enter__(self):
+        self.connect()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.disconnect()
 
     def __del__(self):
         self.disconnect()
@@ -633,9 +664,10 @@ class CephFSVolumeClient(object):
             pool_name = "{0}{1}".format(self.POOL_PREFIX, volume_path.volume_id)
             log.info("create_volume: {0}, create pool {1} as data_isolated =True.".format(volume_path, pool_name))
             pool_id = self._create_volume_pool(pool_name)
-            mds_map = self._rados_command("mds dump", {})
+            mds_map = self.get_mds_map()
             if pool_id not in mds_map['data_pools']:
-                self._rados_command("mds add_data_pool", {
+                self._rados_command("fs add_data_pool", {
+                    'fs_name': mds_map['fs_name'],
                     'pool': pool_name
                 })
             time.sleep(5) # time for MDSMap to be distributed
@@ -743,16 +775,17 @@ class CephFSVolumeClient(object):
             pool_name = "{0}{1}".format(self.POOL_PREFIX, volume_path.volume_id)
             osd_map = self._rados_command("osd dump", {})
             pool_id = self._get_pool_id(osd_map, pool_name)
-            mds_map = self._rados_command("mds dump", {})
+            mds_map = self.get_mds_map()
             if pool_id in mds_map['data_pools']:
-                self._rados_command("mds remove_data_pool", {
+                self._rados_command("fs rm_data_pool", {
+                    'fs_name': mds_map['fs_name'],
                     'pool': pool_name
                 })
             self._rados_command("osd pool delete",
                                 {
                                     "pool": pool_name,
                                     "pool2": pool_name,
-                                    "sure": "--yes-i-really-really-mean-it"
+                                    "yes_i_really_really_mean_it": True
                                 })
 
     def _get_ancestor_xattr(self, path, attr):

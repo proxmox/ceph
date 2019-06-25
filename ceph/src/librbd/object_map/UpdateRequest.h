@@ -38,7 +38,7 @@ public:
                 uint64_t snap_id, uint64_t start_object_no,
                 uint64_t end_object_no, uint8_t new_state,
                 const boost::optional<uint8_t> &current_state,
-                const ZTracer::Trace &parent_trace, bool ignore_enoent,
+      	        const ZTracer::Trace &parent_trace, bool ignore_enoent,
                 Context *on_finish)
     : Request(image_ctx, snap_id, on_finish), m_object_map(*object_map),
       m_start_object_no(start_object_no), m_end_object_no(end_object_no),

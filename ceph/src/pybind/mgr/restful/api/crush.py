@@ -1,7 +1,7 @@
 from pecan import expose
 from pecan.rest import RestController
 
-from restful import common, module
+from restful import common, context
 from collections import defaultdict
 
 from restful.decorators import auth
@@ -14,7 +14,7 @@ class CrushRule(RestController):
         """
         Show crush rules
         """
-        crush = module.instance.get('osd_map_crush')
+        crush = context.instance.get('osd_map_crush')
         rules = crush['rules']
 
         for rule in rules:

@@ -50,7 +50,7 @@ fi
 
 cd $RESULTS_DIR
 
-SYSINFO_FILE=$RESULTS_DIR/sysinfo.txt
+SYSINFO_FILE=sysinfo.txt
 COMMAND="hostname"
 echo ">> $COMMAND : " >> $SYSINFO_FILE
 $COMMAND >> $SYSINFO_FILE
@@ -140,14 +140,15 @@ run_step() {
 	echo -n Start $1 test phase...
 	if [ "$USE_PERF" = "1" ]
 	then
-		sudo /usr/bin/time taskset 0xFFF perf record $DB_BENCH --flagfile="$1"_flags.txt &> "$1"_db_bench.txt
+		sudo /usr/bin/time taskset 0xFF perf record $DB_BENCH --flagfile="$1"_flags.txt &> "$1"_db_bench.txt
 	else
-		sudo /usr/bin/time taskset 0xFFF $DB_BENCH --flagfile="$1"_flags.txt &> "$1"_db_bench.txt
+		sudo /usr/bin/time taskset 0xFF $DB_BENCH --flagfile="$1"_flags.txt &> "$1"_db_bench.txt
 	fi
 	echo done.
 
 	if [ "$NO_SPDK" = "1" ]
 	then
+	  drop_caches
 	  cat /sys/block/nvme0n1/stat >> "$1"_blockdev_stats.txt
 	fi
 
@@ -159,6 +160,12 @@ run_step() {
 		$TESTDIR/postprocess.py `pwd` $1 > $1_summary.txt
 	echo done.
 	fi
+}
+
+drop_caches() {
+	echo -n Cleaning Page Cache...
+	echo 3 > /proc/sys/vm/drop_caches
+	echo done.
 }
 
 if [ -z "$SKIP_INSERT" ]

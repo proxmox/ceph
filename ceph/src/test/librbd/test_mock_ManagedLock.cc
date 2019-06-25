@@ -16,7 +16,7 @@
 namespace librbd {
 
 struct MockManagedLockImageCtx : public MockImageCtx {
-  MockManagedLockImageCtx(ImageCtx &image_ctx) : MockImageCtx(image_ctx) {}
+  explicit MockManagedLockImageCtx(ImageCtx &image_ctx) : MockImageCtx(image_ctx) {}
 };
 
 namespace watcher {
@@ -29,9 +29,9 @@ struct Traits<MockManagedLockImageCtx> {
 struct MockMockManagedLock : public ManagedLock<MockManagedLockImageCtx> {
   MockMockManagedLock(librados::IoCtx& ioctx, ContextWQ *work_queue,
                  const std::string& oid, librbd::MockImageWatcher *watcher,
-                 managed_lock::Mode  mode, bool blacklist_on_break_lock,
+                 managed_lock::Mode  mode, bool blacklist_on_break_lock, 
                  uint32_t blacklist_expire_seconds)
-    : ManagedLock<MockManagedLockImageCtx>(ioctx, work_queue, oid, watcher,
+    : ManagedLock<MockManagedLockImageCtx>(ioctx, work_queue, oid, watcher, 
       librbd::managed_lock::EXCLUSIVE, true, 0) {
   };
   virtual ~MockMockManagedLock() = default;
@@ -52,7 +52,7 @@ struct BaseRequest {
   static T* create(librados::IoCtx& ioctx, MockImageWatcher *watcher,
                    ContextWQ *work_queue, const std::string& oid,
                    const std::string& cookie, Context *on_finish) {
-    assert(!s_requests.empty());
+    ceph_assert(!s_requests.empty());
     T* req = s_requests.front();
     req->on_finish = on_finish;
     s_requests.pop_front();
@@ -110,11 +110,11 @@ struct GetLockerRequest<MockManagedLockImageCtx> {
   static GetLockerRequest* create(librados::IoCtx& ioctx,
                                   const std::string& oid, bool exclusive,
                                   Locker *locker, Context *on_finish) {
-    assert(0 == "unexpected call");
+    ceph_abort_msg("unexpected call");
   }
 
   void send() {
-    assert(0 == "unexpected call");
+    ceph_abort_msg("unexpected call");
   }
 };
 
@@ -125,11 +125,11 @@ struct BreakRequest<MockManagedLockImageCtx> {
                               bool exclusive, bool blacklist_locker,
                               uint32_t blacklist_expire_seconds,
                               bool force_break_lock, Context *on_finish) {
-    assert(0 == "unexpected call");
+    ceph_abort_msg("unexpected call");
   }
 
   void send() {
-    assert(0 == "unexpected call");
+    ceph_abort_msg("unexpected call");
   }
 };
 
@@ -153,6 +153,10 @@ ACTION_P3(QueueRequest, request, r, wq) {
 
 ACTION_P2(QueueContext, r, wq) {
   wq->queue(arg0, r);
+}
+
+ACTION_P(Notify, ctx) {
+  ctx->complete(0);
 }
 
 namespace librbd {
@@ -204,12 +208,11 @@ public:
                   .WillOnce(CompleteContext(0, (ContextWQ *)nullptr));
   }
 
-  void expect_post_reacquired_lock_handler(MockImageWatcher& watcher,
-                        MockMockManagedLock &managed_lock,
-                        uint64_t &client_id) {
+  void expect_post_reacquired_lock_handler(MockImageWatcher& watcher, 
+                        MockMockManagedLock &managed_lock, uint64_t &client_id) {
     expect_get_watch_handle(watcher);
     EXPECT_CALL(managed_lock, post_reacquire_lock_handler(_, _))
-      .WillOnce(Invoke([&watcher, &client_id](int r, Context *on_finish){
+      .WillOnce(Invoke([&client_id](int r, Context *on_finish){
         if (r >= 0) {
           client_id = 98765;
         }
@@ -645,16 +648,14 @@ TEST_F(TestMockManagedLock, ReacquireWithSameCookie) {
   InSequence seq;
 
   MockAcquireRequest request_lock_acquire;
-  expect_acquire_lock(*mock_image_ctx.image_watcher, ictx->op_work_queue,
-                      request_lock_acquire, 0);
+  expect_acquire_lock(*mock_image_ctx.image_watcher, ictx->op_work_queue, request_lock_acquire, 0);
   ASSERT_EQ(0, when_acquire_lock(managed_lock));
   ASSERT_TRUE(is_lock_owner(managed_lock));
 
   // watcher with same cookie after rewatch
   uint64_t client_id = 0;
   C_SaferCond reacquire_ctx;
-  expect_post_reacquired_lock_handler(*mock_image_ctx.image_watcher,
-                                      managed_lock, client_id);
+  expect_post_reacquired_lock_handler(*mock_image_ctx.image_watcher, managed_lock, client_id);
   managed_lock.reacquire_lock(&reacquire_ctx);
   ASSERT_LT(0U, client_id);
   ASSERT_TRUE(is_lock_owner(managed_lock));

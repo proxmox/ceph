@@ -32,12 +32,13 @@
  */
 
 #include "nvme_internal.h"
+#include "spdk/nvme_ocssd.h"
 
 static void nvme_qpair_fail(struct spdk_nvme_qpair *qpair);
 
 struct nvme_string {
 	uint16_t	value;
-	const char 	*str;
+	const char	*str;
 };
 
 static const struct nvme_string admin_opcode[] = {
@@ -54,11 +55,20 @@ static const struct nvme_string admin_opcode[] = {
 	{ SPDK_NVME_OPC_NS_MANAGEMENT, "NAMESPACE MANAGEMENT" },
 	{ SPDK_NVME_OPC_FIRMWARE_COMMIT, "FIRMWARE COMMIT" },
 	{ SPDK_NVME_OPC_FIRMWARE_IMAGE_DOWNLOAD, "FIRMWARE IMAGE DOWNLOAD" },
+	{ SPDK_NVME_OPC_DEVICE_SELF_TEST, "DEVICE SELF-TEST" },
 	{ SPDK_NVME_OPC_NS_ATTACHMENT, "NAMESPACE ATTACHMENT" },
 	{ SPDK_NVME_OPC_KEEP_ALIVE, "KEEP ALIVE" },
+	{ SPDK_NVME_OPC_DIRECTIVE_SEND, "DIRECTIVE SEND" },
+	{ SPDK_NVME_OPC_DIRECTIVE_RECEIVE, "DIRECTIVE RECEIVE" },
+	{ SPDK_NVME_OPC_VIRTUALIZATION_MANAGEMENT, "VIRTUALIZATION MANAGEMENT" },
+	{ SPDK_NVME_OPC_NVME_MI_SEND, "NVME-MI SEND" },
+	{ SPDK_NVME_OPC_NVME_MI_RECEIVE, "NVME-MI RECEIVE" },
+	{ SPDK_NVME_OPC_DOORBELL_BUFFER_CONFIG, "DOORBELL BUFFER CONFIG" },
 	{ SPDK_NVME_OPC_FORMAT_NVM, "FORMAT NVM" },
 	{ SPDK_NVME_OPC_SECURITY_SEND, "SECURITY SEND" },
 	{ SPDK_NVME_OPC_SECURITY_RECEIVE, "SECURITY RECEIVE" },
+	{ SPDK_NVME_OPC_SANITIZE, "SANITIZE" },
+	{ SPDK_OCSSD_OPC_GEOMETRY, "OCSSD / GEOMETRY" },
 	{ 0xFFFF, "ADMIN COMMAND" }
 };
 
@@ -74,6 +84,10 @@ static const struct nvme_string io_opcode[] = {
 	{ SPDK_NVME_OPC_RESERVATION_REPORT, "RESERVATION REPORT" },
 	{ SPDK_NVME_OPC_RESERVATION_ACQUIRE, "RESERVATION ACQUIRE" },
 	{ SPDK_NVME_OPC_RESERVATION_RELEASE, "RESERVATION RELEASE" },
+	{ SPDK_OCSSD_OPC_VECTOR_RESET, "OCSSD / VECTOR RESET" },
+	{ SPDK_OCSSD_OPC_VECTOR_WRITE, "OCSSD / VECTOR WRITE" },
+	{ SPDK_OCSSD_OPC_VECTOR_READ, "OCSSD / VECTOR READ" },
+	{ SPDK_OCSSD_OPC_VECTOR_COPY, "OCSSD / VECTOR COPY" },
 	{ 0xFFFF, "IO COMMAND" }
 };
 
@@ -171,11 +185,16 @@ static const struct nvme_string generic_status[] = {
 	{ SPDK_NVME_SC_INVALID_CONTROLLER_MEM_BUF, "INVALID CONTROLLER MEMORY BUFFER" },
 	{ SPDK_NVME_SC_INVALID_PRP_OFFSET, "INVALID PRP OFFSET" },
 	{ SPDK_NVME_SC_ATOMIC_WRITE_UNIT_EXCEEDED, "ATOMIC WRITE UNIT EXCEEDED" },
+	{ SPDK_NVME_SC_OPERATION_DENIED, "OPERATION DENIED" },
 	{ SPDK_NVME_SC_INVALID_SGL_OFFSET, "INVALID SGL OFFSET" },
-	{ SPDK_NVME_SC_INVALID_SGL_SUBTYPE, "INVALID SGL SUBTYPE" },
 	{ SPDK_NVME_SC_HOSTID_INCONSISTENT_FORMAT, "HOSTID INCONSISTENT FORMAT" },
 	{ SPDK_NVME_SC_KEEP_ALIVE_EXPIRED, "KEEP ALIVE EXPIRED" },
 	{ SPDK_NVME_SC_KEEP_ALIVE_INVALID, "KEEP ALIVE INVALID" },
+	{ SPDK_NVME_SC_ABORTED_PREEMPT, "ABORTED - PREEMPT AND ABORT" },
+	{ SPDK_NVME_SC_SANITIZE_FAILED, "SANITIZE FAILED" },
+	{ SPDK_NVME_SC_SANITIZE_IN_PROGRESS, "SANITIZE IN PROGRESS" },
+	{ SPDK_NVME_SC_SGL_DATA_BLOCK_GRANULARITY_INVALID, "DATA BLOCK GRANULARITY INVALID" },
+	{ SPDK_NVME_SC_COMMAND_INVALID_IN_CMB, "COMMAND NOT SUPPORTED FOR QUEUE IN CMB" },
 	{ SPDK_NVME_SC_LBA_OUT_OF_RANGE, "LBA OUT OF RANGE" },
 	{ SPDK_NVME_SC_CAPACITY_EXCEEDED, "CAPACITY EXCEEDED" },
 	{ SPDK_NVME_SC_NAMESPACE_NOT_READY, "NAMESPACE NOT READY" },
@@ -212,6 +231,12 @@ static const struct nvme_string command_specific_status[] = {
 	{ SPDK_NVME_SC_NAMESPACE_NOT_ATTACHED, "NAMESPACE NOT ATTACHED" },
 	{ SPDK_NVME_SC_THINPROVISIONING_NOT_SUPPORTED, "THINPROVISIONING NOT SUPPORTED" },
 	{ SPDK_NVME_SC_CONTROLLER_LIST_INVALID, "CONTROLLER LIST INVALID" },
+	{ SPDK_NVME_SC_DEVICE_SELF_TEST_IN_PROGRESS, "DEVICE SELF-TEST IN PROGRESS" },
+	{ SPDK_NVME_SC_BOOT_PARTITION_WRITE_PROHIBITED, "BOOT PARTITION WRITE PROHIBITED" },
+	{ SPDK_NVME_SC_INVALID_CTRLR_ID, "INVALID CONTROLLER ID" },
+	{ SPDK_NVME_SC_INVALID_SECONDARY_CTRLR_STATE, "INVALID SECONDARY CONTROLLER STATE" },
+	{ SPDK_NVME_SC_INVALID_NUM_CTRLR_RESOURCES, "INVALID NUMBER OF CONTROLLER RESOURCES" },
+	{ SPDK_NVME_SC_INVALID_RESOURCE_ID, "INVALID RESOURCE IDENTIFIER" },
 	{ SPDK_NVME_SC_CONFLICTING_ATTRIBUTES, "CONFLICTING ATTRIBUTES" },
 	{ SPDK_NVME_SC_INVALID_PROTECTION_INFO, "INVALID PROTECTION INFO" },
 	{ SPDK_NVME_SC_ATTEMPTED_WRITE_TO_RO_PAGE, "WRITE TO RO PAGE" },
@@ -227,7 +252,21 @@ static const struct nvme_string media_error_status[] = {
 	{ SPDK_NVME_SC_COMPARE_FAILURE, "COMPARE FAILURE" },
 	{ SPDK_NVME_SC_ACCESS_DENIED, "ACCESS DENIED" },
 	{ SPDK_NVME_SC_DEALLOCATED_OR_UNWRITTEN_BLOCK, "DEALLOCATED OR UNWRITTEN BLOCK" },
+	{ SPDK_OCSSD_SC_OFFLINE_CHUNK, "RESET OFFLINE CHUNK" },
+	{ SPDK_OCSSD_SC_INVALID_RESET, "INVALID RESET" },
+	{ SPDK_OCSSD_SC_WRITE_FAIL_WRITE_NEXT_UNIT, "WRITE FAIL WRITE NEXT UNIT" },
+	{ SPDK_OCSSD_SC_WRITE_FAIL_CHUNK_EARLY_CLOSE, "WRITE FAIL CHUNK EARLY CLOSE" },
+	{ SPDK_OCSSD_SC_OUT_OF_ORDER_WRITE, "OUT OF ORDER WRITE" },
+	{ SPDK_OCSSD_SC_READ_HIGH_ECC, "READ HIGH ECC" },
 	{ 0xFFFF, "MEDIA ERROR" }
+};
+
+static const struct nvme_string path_status[] = {
+	{ SPDK_NVME_SC_INTERNAL_PATH_ERROR, "INTERNAL PATH ERROR" },
+	{ SPDK_NVME_SC_CONTROLLER_PATH_ERROR, "CONTROLLER PATH ERROR" },
+	{ SPDK_NVME_SC_HOST_PATH_ERROR, "HOST PATH ERROR" },
+	{ SPDK_NVME_SC_ABORTED_BY_HOST, "ABORTED BY HOST" },
+	{ 0xFFFF, "PATH ERROR" }
 };
 
 static const char *
@@ -244,6 +283,9 @@ get_status_string(uint16_t sct, uint16_t sc)
 		break;
 	case SPDK_NVME_SCT_MEDIA_ERROR:
 		entry = media_error_status;
+		break;
+	case SPDK_NVME_SCT_PATH:
+		entry = path_status;
 		break;
 	case SPDK_NVME_SCT_VENDOR_SPECIFIC:
 		return "VENDOR SPECIFIC";
@@ -300,6 +342,17 @@ nvme_completion_is_retry(const struct spdk_nvme_cpl *cpl)
 		default:
 			return false;
 		}
+	case SPDK_NVME_SCT_PATH:
+		/*
+		 * Per NVMe TP 4028 (Path and Transport Error Enhancements), retries should be
+		 * based on the setting of the DNR bit for Internal Path Error
+		 */
+		switch ((int)cpl->status.sc) {
+		case SPDK_NVME_SC_INTERNAL_PATH_ERROR:
+			return !cpl->status.dnr;
+		default:
+			return false;
+		}
 	case SPDK_NVME_SCT_COMMAND_SPECIFIC:
 	case SPDK_NVME_SCT_MEDIA_ERROR:
 	case SPDK_NVME_SCT_VENDOR_SPECIFIC:
@@ -324,14 +377,12 @@ nvme_qpair_manual_complete_request(struct spdk_nvme_qpair *qpair,
 	error = spdk_nvme_cpl_is_error(&cpl);
 
 	if (error && print_on_error) {
+		SPDK_NOTICELOG("Command completed manually:\n");
 		nvme_qpair_print_command(qpair, &req->cmd);
 		nvme_qpair_print_completion(qpair, &cpl);
 	}
 
-	if (req->cb_fn) {
-		req->cb_fn(req->cb_arg, &cpl);
-	}
-
+	nvme_complete_request(req, &cpl);
 	nvme_free_request(req);
 }
 
@@ -339,10 +390,23 @@ int32_t
 spdk_nvme_qpair_process_completions(struct spdk_nvme_qpair *qpair, uint32_t max_completions)
 {
 	int32_t ret;
+	struct nvme_request *req, *tmp;
 
 	if (qpair->ctrlr->is_failed) {
 		nvme_qpair_fail(qpair);
 		return 0;
+	}
+
+	/* error injection for those queued error requests */
+	if (spdk_unlikely(!STAILQ_EMPTY(&qpair->err_req_head))) {
+		STAILQ_FOREACH_SAFE(req, &qpair->err_req_head, stailq, tmp) {
+			if (spdk_get_ticks() - req->submit_tick > req->timeout_tsc) {
+				STAILQ_REMOVE(&qpair->err_req_head, req, nvme_request, stailq);
+				nvme_qpair_manual_complete_request(qpair, req,
+								   req->cpl.status.sct,
+								   req->cpl.status.sc, true);
+			}
+		}
 	}
 
 	qpair->in_completion_context = 1;
@@ -372,17 +436,23 @@ nvme_qpair_init(struct spdk_nvme_qpair *qpair, uint16_t id,
 
 	qpair->in_completion_context = 0;
 	qpair->delete_after_completion_context = 0;
+	qpair->no_deletion_notification_needed = 0;
 
 	qpair->ctrlr = ctrlr;
 	qpair->trtype = ctrlr->trid.trtype;
 
 	STAILQ_INIT(&qpair->free_req);
 	STAILQ_INIT(&qpair->queued_req);
+	TAILQ_INIT(&qpair->err_cmd_head);
+	STAILQ_INIT(&qpair->err_req_head);
 
 	req_size_padded = (sizeof(struct nvme_request) + 63) & ~(size_t)63;
 
-	qpair->req_buf = spdk_zmalloc(req_size_padded * num_requests, 64, NULL);
+	qpair->req_buf = spdk_zmalloc(req_size_padded * num_requests, 64, NULL,
+				      SPDK_ENV_SOCKET_ID_ANY, SPDK_MALLOC_SHARE);
 	if (qpair->req_buf == NULL) {
+		SPDK_ERRLOG("no memory to allocate qpair(cntlid:0x%x sqid:%d) req_buf with %d request\n",
+			    ctrlr->cntlid, qpair->id, num_requests);
 		return -ENOMEM;
 	}
 
@@ -395,11 +465,34 @@ nvme_qpair_init(struct spdk_nvme_qpair *qpair, uint16_t id,
 	return 0;
 }
 
+void
+nvme_qpair_deinit(struct spdk_nvme_qpair *qpair)
+{
+	struct nvme_request *req;
+	struct nvme_error_cmd *cmd, *entry;
+
+	while (!STAILQ_EMPTY(&qpair->err_req_head)) {
+		req = STAILQ_FIRST(&qpair->err_req_head);
+		STAILQ_REMOVE_HEAD(&qpair->err_req_head, stailq);
+		nvme_qpair_manual_complete_request(qpair, req,
+						   req->cpl.status.sct,
+						   req->cpl.status.sc, true);
+	}
+
+	TAILQ_FOREACH_SAFE(cmd, &qpair->err_cmd_head, link, entry) {
+		TAILQ_REMOVE(&qpair->err_cmd_head, cmd, link);
+		spdk_dma_free(cmd);
+	}
+
+	spdk_dma_free(qpair->req_buf);
+}
+
 int
 nvme_qpair_submit_request(struct spdk_nvme_qpair *qpair, struct nvme_request *req)
 {
 	int			rc = 0;
 	struct nvme_request	*child_req, *tmp;
+	struct nvme_error_cmd	*cmd;
 	struct spdk_nvme_ctrlr	*ctrlr = qpair->ctrlr;
 	bool			child_req_failed = false;
 
@@ -416,8 +509,9 @@ nvme_qpair_submit_request(struct spdk_nvme_qpair *qpair, struct nvme_request *re
 		TAILQ_FOREACH_SAFE(child_req, &req->children, child_tailq, tmp) {
 			if (!child_req_failed) {
 				rc = nvme_qpair_submit_request(qpair, child_req);
-				if (rc != 0)
+				if (rc != 0) {
 					child_req_failed = true;
+				}
 			} else { /* free remaining child_reqs since one child_req fails */
 				nvme_request_remove_child(req, child_req);
 				nvme_free_request(child_req);
@@ -425,6 +519,26 @@ nvme_qpair_submit_request(struct spdk_nvme_qpair *qpair, struct nvme_request *re
 		}
 
 		return rc;
+	}
+
+	/* queue those requests which matches with opcode in err_cmd list */
+	if (spdk_unlikely(!TAILQ_EMPTY(&qpair->err_cmd_head))) {
+		TAILQ_FOREACH(cmd, &qpair->err_cmd_head, link) {
+			if (!cmd->do_not_submit) {
+				continue;
+			}
+
+			if ((cmd->opc == req->cmd.opc) && cmd->err_count) {
+				/* add to error request list and set cpl */
+				req->timeout_tsc = cmd->timeout_tsc;
+				req->submit_tick = spdk_get_ticks();
+				req->cpl.status.sct = cmd->status.sct;
+				req->cpl.status.sc = cmd->status.sc;
+				STAILQ_INSERT_TAIL(&qpair->err_req_head, req, stailq);
+				cmd->err_count--;
+				return 0;
+			}
+		}
 	}
 
 	return nvme_transport_qpair_submit_request(qpair, req);
@@ -458,6 +572,16 @@ nvme_qpair_enable(struct spdk_nvme_qpair *qpair)
 void
 nvme_qpair_disable(struct spdk_nvme_qpair *qpair)
 {
+	struct nvme_request		*req;
+
+	while (!STAILQ_EMPTY(&qpair->err_req_head)) {
+		req = STAILQ_FIRST(&qpair->err_req_head);
+		STAILQ_REMOVE_HEAD(&qpair->err_req_head, stailq);
+		nvme_qpair_manual_complete_request(qpair, req,
+						   req->cpl.status.sct,
+						   req->cpl.status.sc, true);
+	}
+
 	nvme_transport_qpair_disable(qpair);
 }
 
@@ -475,4 +599,65 @@ nvme_qpair_fail(struct spdk_nvme_qpair *qpair)
 	}
 
 	nvme_transport_qpair_fail(qpair);
+}
+
+int
+spdk_nvme_qpair_add_cmd_error_injection(struct spdk_nvme_ctrlr *ctrlr,
+					struct spdk_nvme_qpair *qpair,
+					uint8_t opc, bool do_not_submit,
+					uint64_t timeout_in_us,
+					uint32_t err_count,
+					uint8_t sct, uint8_t sc)
+{
+	struct nvme_error_cmd *entry, *cmd = NULL;
+
+	if (qpair == NULL) {
+		qpair = ctrlr->adminq;
+	}
+
+	TAILQ_FOREACH(entry, &qpair->err_cmd_head, link) {
+		if (entry->opc == opc) {
+			cmd = entry;
+			break;
+		}
+	}
+
+	if (cmd == NULL) {
+		cmd = spdk_dma_zmalloc(sizeof(*cmd), 64, NULL);
+		if (!cmd) {
+			return -ENOMEM;
+		}
+		TAILQ_INSERT_TAIL(&qpair->err_cmd_head, cmd, link);
+	}
+
+	cmd->do_not_submit = do_not_submit;
+	cmd->err_count = err_count;
+	cmd->timeout_tsc = timeout_in_us * spdk_get_ticks_hz() / 1000000ULL;
+	cmd->opc = opc;
+	cmd->status.sct = sct;
+	cmd->status.sc = sc;
+
+	return 0;
+}
+
+void
+spdk_nvme_qpair_remove_cmd_error_injection(struct spdk_nvme_ctrlr *ctrlr,
+		struct spdk_nvme_qpair *qpair,
+		uint8_t opc)
+{
+	struct nvme_error_cmd *cmd, *entry;
+
+	if (qpair == NULL) {
+		qpair = ctrlr->adminq;
+	}
+
+	TAILQ_FOREACH_SAFE(cmd, &qpair->err_cmd_head, link, entry) {
+		if (cmd->opc == opc) {
+			TAILQ_REMOVE(&qpair->err_cmd_head, cmd, link);
+			spdk_dma_free(cmd);
+			return;
+		}
+	}
+
+	return;
 }

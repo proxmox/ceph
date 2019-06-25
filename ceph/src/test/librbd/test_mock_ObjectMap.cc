@@ -30,7 +30,7 @@ struct RefreshRequest<MockTestImageCtx> {
   static RefreshRequest *create(MockTestImageCtx &image_ctx,
                                 ceph::BitVector<2u> *object_map,
                                 uint64_t snap_id, Context *on_finish) {
-    assert(s_instance != nullptr);
+    ceph_assert(s_instance != nullptr);
     s_instance->on_finish = on_finish;
     s_instance->object_map = object_map;
     return s_instance;
@@ -49,7 +49,7 @@ struct UnlockRequest<MockTestImageCtx> {
   static UnlockRequest *s_instance;
   static UnlockRequest *create(MockTestImageCtx &image_ctx,
                                Context *on_finish) {
-    assert(s_instance != nullptr);
+    ceph_assert(s_instance != nullptr);
     s_instance->on_finish = on_finish;
     return s_instance;
   }
@@ -72,7 +72,7 @@ struct UpdateRequest<MockTestImageCtx> {
                                const boost::optional<uint8_t> &current_state,
                                const ZTracer::Trace &parent_trace,
                                bool ignore_enoent, Context *on_finish) {
-    assert(s_instance != nullptr);
+    ceph_assert(s_instance != nullptr);
     s_instance->on_finish = on_finish;
     s_instance->construct(snap_id, start_object_no, end_object_no, new_state,
                           current_state, ignore_enoent);
@@ -140,7 +140,7 @@ public:
                                                current_state, ignore_enoent))
       .Times(1);
     EXPECT_CALL(mock_update_request, send())
-      .WillOnce(Invoke([&mock_image_ctx, &mock_update_request, on_finish]() {
+      .WillOnce(Invoke([&mock_update_request, on_finish]() {
           *on_finish = mock_update_request.on_finish;
         }));
   }

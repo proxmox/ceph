@@ -34,71 +34,10 @@
 
 #include "scsi_internal.h"
 
-#include "spdk/conf.h"
-
-#include "spdk_internal/event.h"
-
-#define DEFAULT_MAX_UNMAP_LBA_COUNT			4194304
-#define DEFAULT_MAX_UNMAP_BLOCK_DESCRIPTOR_COUNT	1
-#define DEFAULT_OPTIMAL_UNMAP_GRANULARITY		0
-#define DEFAULT_UNMAP_GRANULARITY_ALIGNMENT		0
-#define DEFAULT_UGAVALID				0
-#define DEFAULT_MAX_WRITE_SAME_LENGTH			512
-
 struct spdk_scsi_globals g_spdk_scsi;
 
-static void
-spdk_set_default_scsi_parameters(void)
-{
-	g_spdk_scsi.scsi_params.max_unmap_lba_count = DEFAULT_MAX_UNMAP_LBA_COUNT;
-	g_spdk_scsi.scsi_params.max_unmap_block_descriptor_count =
-		DEFAULT_MAX_UNMAP_BLOCK_DESCRIPTOR_COUNT;
-	g_spdk_scsi.scsi_params.optimal_unmap_granularity =
-		DEFAULT_OPTIMAL_UNMAP_GRANULARITY;
-	g_spdk_scsi.scsi_params.unmap_granularity_alignment =
-		DEFAULT_UNMAP_GRANULARITY_ALIGNMENT;
-	g_spdk_scsi.scsi_params.ugavalid = DEFAULT_UGAVALID;
-	g_spdk_scsi.scsi_params.max_write_same_length = DEFAULT_MAX_WRITE_SAME_LENGTH;
-}
-
-static int
-spdk_read_config_scsi_parameters(void)
-{
-	struct spdk_conf_section *sp;
-	const char *val;
-
-	sp = spdk_conf_find_section(NULL, "Scsi");
-	if (sp == NULL) {
-		spdk_set_default_scsi_parameters();
-		return 0;
-	}
-
-	val = spdk_conf_section_get_val(sp, "MaxUnmapLbaCount");
-	g_spdk_scsi.scsi_params.max_unmap_lba_count = (val == NULL) ?
-			DEFAULT_MAX_UNMAP_LBA_COUNT : strtoul(val, NULL, 10);
-
-	val = spdk_conf_section_get_val(sp, "MaxUnmapBlockDescriptorCount");
-	g_spdk_scsi.scsi_params.max_unmap_block_descriptor_count = (val == NULL) ?
-			DEFAULT_MAX_UNMAP_BLOCK_DESCRIPTOR_COUNT : strtoul(val, NULL, 10);
-	val = spdk_conf_section_get_val(sp, "OptimalUnmapGranularity");
-	g_spdk_scsi.scsi_params.optimal_unmap_granularity = (val == NULL) ?
-			DEFAULT_OPTIMAL_UNMAP_GRANULARITY : strtoul(val, NULL, 10);
-
-	val = spdk_conf_section_get_val(sp, "UnmapGranularityAlignment");
-	g_spdk_scsi.scsi_params.unmap_granularity_alignment = (val == NULL) ?
-			DEFAULT_UNMAP_GRANULARITY_ALIGNMENT : strtoul(val, NULL, 10);
-
-	g_spdk_scsi.scsi_params.ugavalid = spdk_conf_section_get_boolval(sp, "Ugavalid", DEFAULT_UGAVALID);
-
-	val = spdk_conf_section_get_val(sp, "MaxWriteSameLength");
-	g_spdk_scsi.scsi_params.max_write_same_length = (val == NULL) ?
-			DEFAULT_MAX_WRITE_SAME_LENGTH : strtoul(val, NULL, 10);
-
-	return 0;
-}
-
-static int
-spdk_scsi_subsystem_init(void)
+int
+spdk_scsi_init(void)
 {
 	int rc;
 
@@ -108,33 +47,23 @@ spdk_scsi_subsystem_init(void)
 		return -1;
 	}
 
-	rc = spdk_read_config_scsi_parameters();
-	if (rc < 0) {
-		SPDK_ERRLOG("spdk_scsi_parameters() failed\n");
-		return -1;
-	}
-
-	return rc;
+	return 0;
 }
 
-static int
-spdk_scsi_subsystem_fini(void)
+void
+spdk_scsi_fini(void)
 {
 	pthread_mutex_destroy(&g_spdk_scsi.mutex);
-	return 0;
 }
 
 SPDK_TRACE_REGISTER_FN(scsi_trace)
 {
 	spdk_trace_register_owner(OWNER_SCSI_DEV, 'd');
 	spdk_trace_register_object(OBJECT_SCSI_TASK, 't');
-	spdk_trace_register_description("SCSI TASK DONE", "", TRACE_SCSI_TASK_DONE,
-					OWNER_SCSI_DEV, OBJECT_SCSI_TASK, 0, 0, 0, "");
-	spdk_trace_register_description("SCSI TASK START", "", TRACE_SCSI_TASK_START,
-					OWNER_SCSI_DEV, OBJECT_SCSI_TASK, 0, 0, 0, "");
+	spdk_trace_register_description("SCSI_TASK_DONE", "", TRACE_SCSI_TASK_DONE,
+					OWNER_SCSI_DEV, OBJECT_SCSI_TASK, 0, 0, "");
+	spdk_trace_register_description("SCSI_TASK_START", "", TRACE_SCSI_TASK_START,
+					OWNER_SCSI_DEV, OBJECT_SCSI_TASK, 0, 0, "");
 }
 
-SPDK_SUBSYSTEM_REGISTER(scsi, spdk_scsi_subsystem_init, spdk_scsi_subsystem_fini, NULL)
-SPDK_SUBSYSTEM_DEPEND(scsi, bdev)
-
-SPDK_LOG_REGISTER_TRACE_FLAG("scsi", SPDK_TRACE_SCSI)
+SPDK_LOG_REGISTER_COMPONENT("scsi", SPDK_LOG_SCSI)

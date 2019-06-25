@@ -21,23 +21,12 @@
 #define dout_context g_ceph_context
 #define dout_subsys ceph_subsys_mds
 
-void MDSInternalContextBase::complete(int r) {
+void MDSContext::complete(int r) {
   MDSRank *mds = get_mds();
-
-  dout(10) << "MDSInternalContextBase::complete: " << typeid(*this).name() << dendl;
-  assert(mds != NULL);
-  assert(mds->mds_lock.is_locked_by_me());
-  MDSContext::complete(r);
-}
-
-
-MDSRank *MDSInternalContext::get_mds() {
-  return mds;
-}
-
-MDSRank *MDSInternalContextWrapper::get_mds()
-{
-  return mds;
+  ceph_assert(mds != nullptr);
+  ceph_assert(mds->mds_lock.is_locked_by_me());
+  dout(10) << "MDSContext::complete: " << typeid(*this).name() << dendl;
+  return Context::complete(r);
 }
 
 void MDSInternalContextWrapper::finish(int r)
@@ -46,23 +35,23 @@ void MDSInternalContextWrapper::finish(int r)
 }
 
 elist<MDSIOContextBase*> MDSIOContextBase::ctx_list(member_offset(MDSIOContextBase, list_item));
-std::atomic_flag MDSIOContextBase::ctx_list_lock = ATOMIC_FLAG_INIT;
+ceph::spinlock MDSIOContextBase::ctx_list_lock;
 
 MDSIOContextBase::MDSIOContextBase(bool track)
 {
   created_at = ceph::coarse_mono_clock::now();
   if (track) {
-    simple_spin_lock(&ctx_list_lock);
+    ctx_list_lock.lock();
     ctx_list.push_back(&list_item);
-    simple_spin_unlock(&ctx_list_lock);
+    ctx_list_lock.unlock();
   }
 }
 
 MDSIOContextBase::~MDSIOContextBase()
 {
-  simple_spin_lock(&ctx_list_lock);
+  ctx_list_lock.lock();
   list_item.remove_myself();
-  simple_spin_unlock(&ctx_list_lock);
+  ctx_list_lock.unlock();
 }
 
 bool MDSIOContextBase::check_ios_in_flight(ceph::coarse_mono_time cutoff,
@@ -72,7 +61,7 @@ bool MDSIOContextBase::check_ios_in_flight(ceph::coarse_mono_time cutoff,
   static const unsigned MAX_COUNT = 100;
   unsigned slow = 0;
 
-  simple_spin_lock(&ctx_list_lock);
+  ctx_list_lock.lock();
   for (elist<MDSIOContextBase*>::iterator p = ctx_list.begin(); !p.end(); ++p) {
     MDSIOContextBase *c = *p;
     if (c->created_at >= cutoff)
@@ -83,7 +72,7 @@ bool MDSIOContextBase::check_ios_in_flight(ceph::coarse_mono_time cutoff,
     if (slow == 1)
       oldest = c->created_at;
   }
-  simple_spin_unlock(&ctx_list_lock);
+  ctx_list_lock.unlock();
 
   if (slow > 0) {
     if (slow > MAX_COUNT)
@@ -100,8 +89,8 @@ void MDSIOContextBase::complete(int r) {
   MDSRank *mds = get_mds();
 
   dout(10) << "MDSIOContextBase::complete: " << typeid(*this).name() << dendl;
-  assert(mds != NULL);
-  Mutex::Locker l(mds->mds_lock);
+  ceph_assert(mds != NULL);
+  std::lock_guard l(mds->mds_lock);
 
   if (mds->is_daemon_stopping()) {
     dout(4) << "MDSIOContextBase::complete: dropping for stopping "
@@ -126,14 +115,6 @@ void MDSLogContextBase::complete(int r) {
   mdlog->set_safe_pos(safe_pos);
 }
 
-MDSRank *MDSIOContext::get_mds() {
-  return mds;
-}
-
-MDSRank *MDSIOContextWrapper::get_mds() {
-  return mds;
-}
-
 void MDSIOContextWrapper::finish(int r)
 {
   fin->complete(r);
@@ -148,10 +129,3 @@ void C_IO_Wrapper::complete(int r)
     MDSIOContext::complete(r);
   }
 }
-
-MDSRank *MDSInternalContextGather::get_mds()
-{
-  derr << "Forbidden call to MDSInternalContextGather::get_mds by " << typeid(*this).name() << dendl;
-  ceph_abort();
-}
-

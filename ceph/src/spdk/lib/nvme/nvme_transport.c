@@ -57,11 +57,13 @@ nvme_transport_unknown(enum spdk_nvme_transport_type trtype)
 #define TRANSPORT_FABRICS_RDMA(func_name, args)	case SPDK_NVME_TRANSPORT_RDMA: SPDK_UNREACHABLE();
 #define TRANSPORT_RDMA_AVAILABLE		false
 #endif
-#define NVME_TRANSPORT_CALL(trtype, func_name, args) 	\
+#define TRANSPORT_FABRICS_FC(func_name, args)	case SPDK_NVME_TRANSPORT_FC: SPDK_UNREACHABLE();
+#define NVME_TRANSPORT_CALL(trtype, func_name, args)		\
 	do {							\
 		switch (trtype) {				\
 		TRANSPORT_PCIE(func_name, args)			\
 		TRANSPORT_FABRICS_RDMA(func_name, args)		\
+		TRANSPORT_FABRICS_FC(func_name, args)		\
 		TRANSPORT_DEFAULT(trtype)			\
 		}						\
 		SPDK_UNREACHABLE();				\
@@ -76,6 +78,9 @@ spdk_nvme_transport_available(enum spdk_nvme_transport_type trtype)
 
 	case SPDK_NVME_TRANSPORT_RDMA:
 		return TRANSPORT_RDMA_AVAILABLE;
+
+	case SPDK_NVME_TRANSPORT_FC:
+		return false;
 	}
 
 	return false;
@@ -92,9 +97,10 @@ int
 nvme_transport_ctrlr_scan(const struct spdk_nvme_transport_id *trid,
 			  void *cb_ctx,
 			  spdk_nvme_probe_cb probe_cb,
-			  spdk_nvme_remove_cb remove_cb)
+			  spdk_nvme_remove_cb remove_cb,
+			  bool direct_connect)
 {
-	NVME_TRANSPORT_CALL(trid->trtype, ctrlr_scan, (trid, cb_ctx, probe_cb, remove_cb));
+	NVME_TRANSPORT_CALL(trid->trtype, ctrlr_scan, (trid, cb_ctx, probe_cb, remove_cb, direct_connect));
 }
 
 int
@@ -139,17 +145,29 @@ nvme_transport_ctrlr_get_max_xfer_size(struct spdk_nvme_ctrlr *ctrlr)
 	NVME_TRANSPORT_CALL(ctrlr->trid.trtype, ctrlr_get_max_xfer_size, (ctrlr));
 }
 
-uint32_t
-nvme_transport_ctrlr_get_max_io_queue_size(struct spdk_nvme_ctrlr *ctrlr)
+uint16_t
+nvme_transport_ctrlr_get_max_sges(struct spdk_nvme_ctrlr *ctrlr)
 {
-	NVME_TRANSPORT_CALL(ctrlr->trid.trtype, ctrlr_get_max_io_queue_size, (ctrlr));
+	NVME_TRANSPORT_CALL(ctrlr->trid.trtype, ctrlr_get_max_sges, (ctrlr));
+}
+
+void *
+nvme_transport_ctrlr_alloc_cmb_io_buffer(struct spdk_nvme_ctrlr *ctrlr, size_t size)
+{
+	NVME_TRANSPORT_CALL(ctrlr->trid.trtype, ctrlr_alloc_cmb_io_buffer, (ctrlr, size));
+}
+
+int
+nvme_transport_ctrlr_free_cmb_io_buffer(struct spdk_nvme_ctrlr *ctrlr, void *buf, size_t size)
+{
+	NVME_TRANSPORT_CALL(ctrlr->trid.trtype, ctrlr_free_cmb_io_buffer, (ctrlr, buf, size));
 }
 
 struct spdk_nvme_qpair *
 nvme_transport_ctrlr_create_io_qpair(struct spdk_nvme_ctrlr *ctrlr, uint16_t qid,
-				     enum spdk_nvme_qprio qprio)
+				     const struct spdk_nvme_io_qpair_opts *opts)
 {
-	NVME_TRANSPORT_CALL(ctrlr->trid.trtype, ctrlr_create_io_qpair, (ctrlr, qid, qprio));
+	NVME_TRANSPORT_CALL(ctrlr->trid.trtype, ctrlr_create_io_qpair, (ctrlr, qid, opts));
 }
 
 int

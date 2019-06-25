@@ -1,10 +1,10 @@
-/**
+/*
  * Copyright (c) 2016-present, Facebook, Inc.
  * All rights reserved.
  *
- * This source code is licensed under the BSD-style license found in the
- * LICENSE file in the root directory of this source tree. An additional grant
- * of patent rights can be found in the PATENTS file in the same directory.
+ * This source code is licensed under both the BSD-style license (found in the
+ * LICENSE file in the root directory of this source tree) and the GPLv2 (found
+ * in the COPYING file in the root directory of this source tree).
  */
 #include "Pzstd.h"
 #include "SkippableFrame.h"
@@ -410,7 +410,7 @@ std::uint64_t asyncCompressChunks(
     });
     // Pass the output queue to the writer thread.
     chunks.push(std::move(out));
-    state.log(VERBOSE, "Starting a new frame\n");
+    state.log(VERBOSE, "%s\n", "Starting a new frame");
     // Fill the input queue for the compression job we just started
     status = readData(*in, ZSTD_CStreamInSize(), step, fd, &bytesRead);
   }
@@ -547,8 +547,8 @@ std::uint64_t asyncDecompressFrames(
     if (frameSize == 0) {
       // We hit a non SkippableFrame ==> not compressed by pzstd or corrupted
       // Pass the rest of the source to this decompression task
-      state.log(VERBOSE,
-          "Input not in pzstd format, falling back to serial decompression\n");
+      state.log(VERBOSE, "%s\n",
+          "Input not in pzstd format, falling back to serial decompression");
       while (status == FileStatus::Continue && !state.errorHolder.hasError()) {
         status = readData(*in, chunkSize, chunkSize, fd, &totalBytesRead);
       }
@@ -585,7 +585,10 @@ std::uint64_t writeFile(
   std::uint64_t bytesWritten = 0;
   std::shared_ptr<BufferWorkQueue> out;
   // Grab the output queue for each decompression job (in order).
-  while (outs.pop(out) && !errorHolder.hasError()) {
+  while (outs.pop(out)) {
+    if (errorHolder.hasError()) {
+      continue;
+    }
     if (!decompress) {
       // If we are compressing and want to write skippable frames we can't
       // start writing before compression is done because we need to know the

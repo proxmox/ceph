@@ -1,5 +1,4 @@
 tasks:
-- kclient:
 - workunit:
     timeout: 6h
     clients:

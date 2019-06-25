@@ -34,9 +34,10 @@
 #ifndef SPDK_INTERNAL_EVENT_H
 #define SPDK_INTERNAL_EVENT_H
 
-#include <stdio.h>
+#include "spdk/stdinc.h"
 
 #include "spdk/event.h"
+#include "spdk/json.h"
 
 struct spdk_event {
 	uint32_t		lcore;
@@ -46,59 +47,83 @@ struct spdk_event {
 };
 
 int spdk_reactors_init(unsigned int max_delay_us);
-int spdk_reactors_fini(void);
+void spdk_reactors_fini(void);
 
 void spdk_reactors_start(void);
-void spdk_reactors_stop(void);
-
-uint32_t spdk_event_queue_run_batch(uint32_t lcore);
+void spdk_reactors_stop(void *arg1, void *arg2);
 
 struct spdk_subsystem {
 	const char *name;
-	int (*init)(void);
-	int (*fini)(void);
+	/* User must call spdk_subsystem_init_next() when they are done with their initialization. */
+	void (*init)(void);
+	void (*fini)(void);
 	void (*config)(FILE *fp);
+
+	/**
+	 * Write JSON configuration handler.
+	 *
+	 * \param w JSON write context
+	 * \param done_ev Done event to be called when writing is done.
+	 */
+	void (*write_config_json)(struct spdk_json_write_ctx *w, struct spdk_event *done_ev);
 	TAILQ_ENTRY(spdk_subsystem) tailq;
 };
+
+TAILQ_HEAD(spdk_subsystem_list, spdk_subsystem);
+extern struct spdk_subsystem_list g_subsystems;
+
+struct spdk_subsystem *spdk_subsystem_find(struct spdk_subsystem_list *list, const char *name);
 
 struct spdk_subsystem_depend {
 	const char *name;
 	const char *depends_on;
-	struct spdk_subsystem *depends_on_subsystem;
 	TAILQ_ENTRY(spdk_subsystem_depend) tailq;
 };
+
+TAILQ_HEAD(spdk_subsystem_depend_list, spdk_subsystem_depend);
+extern struct spdk_subsystem_depend_list g_subsystems_deps;
 
 void spdk_add_subsystem(struct spdk_subsystem *subsystem);
 void spdk_add_subsystem_depend(struct spdk_subsystem_depend *depend);
 
-int spdk_subsystem_init(void);
-int spdk_subsystem_fini(void);
+void spdk_subsystem_init(struct spdk_event *app_start_event);
+void spdk_subsystem_fini(struct spdk_event *app_finish_event);
+void spdk_subsystem_init_next(int rc);
+void spdk_subsystem_fini_next(void);
 void spdk_subsystem_config(FILE *fp);
+
+/**
+ * Save pointed \c subsystem configuration to the JSON write context \c w. In case of
+ * error \c null is written to the JSON context. Writing might be done in async way
+ * so caller need to pass event that subsystem will call when it finish writing
+ * configuration.
+ *
+ * \param w JSON write context
+ * \param subsystem the subsystem to query
+ * \param done_ev event to be called when writing is done
+ */
+void spdk_subsystem_config_json(struct spdk_json_write_ctx *w, struct spdk_subsystem *subsystem,
+				struct spdk_event *done_ev);
+
+void spdk_rpc_initialize(const char *listen_addr);
+void spdk_rpc_finish(void);
 
 /**
  * \brief Register a new subsystem
  */
-#define SPDK_SUBSYSTEM_REGISTER(_name, _init, _fini, _config)			\
-	struct spdk_subsystem __spdk_subsystem_ ## _name = {			\
-	.name = #_name,								\
-	.init = _init,								\
-	.fini = _fini,								\
-	.config = _config,							\
-	};									\
+#define SPDK_SUBSYSTEM_REGISTER(_name) \
 	__attribute__((constructor)) static void _name ## _register(void)	\
 	{									\
-		spdk_add_subsystem(&__spdk_subsystem_ ## _name);		\
+		spdk_add_subsystem(&_name);					\
 	}
 
 /**
  * \brief Declare that a subsystem depends on another subsystem.
  */
 #define SPDK_SUBSYSTEM_DEPEND(_name, _depends_on)						\
-	extern struct spdk_subsystem __spdk_subsystem_ ## _depends_on;				\
 	static struct spdk_subsystem_depend __subsystem_ ## _name ## _depend_on ## _depends_on = { \
 	.name = #_name,										\
 	.depends_on = #_depends_on,								\
-	.depends_on_subsystem = &__spdk_subsystem_ ## _depends_on,				\
 	};											\
 	__attribute__((constructor)) static void _name ## _depend_on ## _depends_on(void)	\
 	{											\

@@ -6,8 +6,8 @@
       <template-type-parameter name="date_type"/>
     </template><purpose>Functor to iterate a fixed number of days. </purpose><typedef name="duration_type"><type>date_type::duration_type</type></typedef>
 <method-group name="public member functions">
-<method name="get_offset" cv="const"><type>duration_type</type><parameter name="d"><paramtype>const date_type &amp;</paramtype></parameter></method>
-<method name="get_neg_offset" cv="const"><type>duration_type</type><parameter name="d"><paramtype>const date_type &amp;</paramtype></parameter></method>
+<method name="get_offset" cv="const"><type>duration_type</type><parameter name=""><paramtype>const date_type &amp;</paramtype></parameter></method>
+<method name="get_neg_offset" cv="const"><type>duration_type</type><parameter name=""><paramtype>const date_type &amp;</paramtype></parameter></method>
 </method-group>
 <constructor><parameter name="f"><paramtype>int</paramtype></parameter></constructor>
 </class><class name="month_functor"><template>
@@ -26,8 +26,8 @@
     </template><purpose>Functor to iterate a over weeks. </purpose><typedef name="duration_type"><type>date_type::duration_type</type></typedef>
 <typedef name="calendar_type"><type>date_type::calendar_type</type></typedef>
 <method-group name="public member functions">
-<method name="get_offset" cv="const"><type>duration_type</type><parameter name="d"><paramtype>const date_type &amp;</paramtype></parameter></method>
-<method name="get_neg_offset" cv="const"><type>duration_type</type><parameter name="d"><paramtype>const date_type &amp;</paramtype></parameter></method>
+<method name="get_offset" cv="const"><type>duration_type</type><parameter name=""><paramtype>const date_type &amp;</paramtype></parameter></method>
+<method name="get_neg_offset" cv="const"><type>duration_type</type><parameter name=""><paramtype>const date_type &amp;</paramtype></parameter></method>
 </method-group>
 <constructor><parameter name="f"><paramtype>int</paramtype></parameter></constructor>
 </class><class name="year_functor"><template>
@@ -391,6 +391,7 @@
 <typedef name="duration_rep"><type>duration_rep_traits::impl_type</type></typedef>
 <method-group name="public member functions">
 <method name="get_rep" cv="const"><type>duration_rep</type><purpose>returns days_ as it's instantiated type - used for streaming </purpose></method>
+<method name="as_special" cv="const"><type>special_values</type></method>
 <method name="is_special" cv="const"><type>bool</type></method>
 <method name="days" cv="const"><type>duration_rep_type</type><purpose>returns days as value, not object. </purpose></method>
 <method name="operator==" cv="const"><type>bool</type><parameter name="rhs"><paramtype>const <classname>date_duration</classname> &amp;</paramtype></parameter><purpose>Equality. </purpose></method>
@@ -2535,7 +2536,7 @@ result:
 <method name="put_period_end_delimeter" cv="const"><type>OutItrT</type><parameter name="oitr"><paramtype>OutItrT &amp;</paramtype></parameter><purpose>Puts the period end characters into stream as controled by open/closed range setting. </purpose></method>
 <method name="range_option" cv="const"><type>range_display_options</type></method>
 <method name="range_option" cv="const"><type>void</type><parameter name="option"><paramtype>range_display_options</paramtype></parameter><purpose>Reset the range_option control. </purpose></method>
-<method name="delimiter_strings"><type>void</type><parameter name=""><paramtype>const string_type &amp;</paramtype></parameter><parameter name=""><paramtype>const string_type &amp;</paramtype></parameter><parameter name=""><paramtype>const string_type &amp;</paramtype></parameter><parameter name=""><paramtype>const string_type &amp;</paramtype></parameter></method>
+<method name="delimiter_strings"><type>void</type><parameter name="separator"><paramtype>const string_type &amp;</paramtype></parameter><parameter name="start_delim"><paramtype>const string_type &amp;</paramtype></parameter><parameter name="open_end_delim"><paramtype>const string_type &amp;</paramtype></parameter><parameter name="closed_end_delim"><paramtype>const string_type &amp;</paramtype></parameter><purpose>Change the delimiter strings. </purpose></method>
 <method name="put_period" cv="const"><type>OutItrT</type><template>
           <template-type-parameter name="period_type"/>
           <template-type-parameter name="facet_type"/>
@@ -2762,6 +2763,7 @@ special_value_formatter svf(&amp;special_value_names[0], &amp;special_value_name
     </template><purpose>Class for special_value parsing. </purpose><description><para>TODO: add doc-comments for which elements can be changed Parses input stream for strings representing special_values. Special values parsed are:<itemizedlist>
 <listitem><para>not_a_date_time</para></listitem><listitem><para>neg_infin</para></listitem><listitem><para>pod_infin</para></listitem><listitem><para>min_date_time</para></listitem><listitem><para>max_date_time </para></listitem></itemizedlist>
 </para></description><typedef name="string_type"><type>std::basic_string&lt; charT &gt;</type></typedef>
+<typedef name="stringstream_type"><type>std::basic_stringstream&lt; charT &gt;</type></typedef>
 <typedef name="stream_itr_type"><type>std::istreambuf_iterator&lt; charT &gt;</type></typedef>
 <typedef name="duration_type"><type>date_type::duration_type</type></typedef>
 <typedef name="parse_tree_type"><type><classname>string_parse_tree</classname>&lt; charT &gt;</type></typedef>
@@ -2775,12 +2777,19 @@ special_value_formatter svf(&amp;special_value_names[0], &amp;special_value_name
 <data-member name="max_date_time_string" specifiers="static"><type>const char_type</type></data-member>
 <method-group name="public member functions">
 <method name="sv_strings"><type>void</type><parameter name="nadt_str"><paramtype>const string_type &amp;</paramtype></parameter><parameter name="neg_inf_str"><paramtype>const string_type &amp;</paramtype></parameter><parameter name="pos_inf_str"><paramtype>const string_type &amp;</paramtype></parameter><parameter name="min_dt_str"><paramtype>const string_type &amp;</paramtype></parameter><parameter name="max_dt_str"><paramtype>const string_type &amp;</paramtype></parameter><purpose>Replace special value strings. </purpose></method>
-<method name="match" cv="const"><type>bool</type><parameter name="sitr"><paramtype>stream_itr_type &amp;</paramtype></parameter><parameter name="str_end"><paramtype>stream_itr_type &amp;</paramtype></parameter><parameter name="mr"><paramtype><classname>match_results</classname> &amp;</paramtype></parameter><purpose>Sets match_results.current_match to the corresponding special_value or -1. </purpose></method>
+<method name="match" cv="const"><type>bool</type><parameter name="sitr"><paramtype>stream_itr_type &amp;</paramtype><description><para>the start iterator </para></description></parameter><parameter name="str_end"><paramtype>stream_itr_type &amp;</paramtype><description><para>the end iterator </para></description></parameter><parameter name="mr"><paramtype><classname>match_results</classname> &amp;</paramtype><description><para>the match result: mr.current_match is set to the corresponding special_value or -1 </para></description></parameter><description><para>Given an input iterator, attempt to match it to a known special value 
+
+</para></description><returns><para>whether something matched </para></returns></method>
 </method-group>
 <constructor><purpose>Creates a <classname alt="boost::date_time::special_values_parser">special_values_parser</classname> with the default set of "sv_strings". </purpose></constructor>
 <constructor><parameter name="nadt_str"><paramtype>const string_type &amp;</paramtype></parameter><parameter name="neg_inf_str"><paramtype>const string_type &amp;</paramtype></parameter><parameter name="pos_inf_str"><paramtype>const string_type &amp;</paramtype></parameter><parameter name="min_dt_str"><paramtype>const string_type &amp;</paramtype></parameter><parameter name="max_dt_str"><paramtype>const string_type &amp;</paramtype></parameter><purpose>Creates a <classname alt="boost::date_time::special_values_parser">special_values_parser</classname> using a user defined set of element strings. </purpose></constructor>
 <constructor><parameter name="beg"><paramtype>typename collection_type::iterator</paramtype></parameter><parameter name="end"><paramtype>typename collection_type::iterator</paramtype></parameter></constructor>
 <constructor><parameter name="svp"><paramtype>const <classname>special_values_parser</classname>&lt; date_type, charT &gt; &amp;</paramtype></parameter></constructor>
+<method-group name="public static functions">
+<method name="likely" specifiers="static"><type>bool</type><parameter name="str"><paramtype>const string_type &amp;</paramtype><description><para>the string to check </para></description></parameter><description><para>The parser is expensive to create, and not thread-safe so it cannot be static therefore given a string, determine if it is likely to be a special value. A negative response is a definite no, whereas a positive is only likely and match() should be called and return value checked. 
+
+</para></description><returns><para>false if it is definitely not a special value </para></returns></method>
+</method-group>
 </class>
 
 
@@ -2896,7 +2905,7 @@ special_value_formatter svf(&amp;special_value_names[0], &amp;special_value_name
 <method name="printmatch"><type>void</type><parameter name="os"><paramtype>std::ostream &amp;</paramtype></parameter><parameter name="c"><paramtype>charT</paramtype></parameter></method>
 </method-group>
 <constructor><parameter name="names"><paramtype>collection_type</paramtype></parameter><parameter name="starting_point"><paramtype>unsigned int</paramtype><default>0</default></parameter><description><para>Parameter "starting_point" designates where the numbering begins. A starting_point of zero will start the numbering at zero (Sun=0, Mon=1, ...) were a starting_point of one starts the numbering at one (Jan=1, Feb=2, ...). The default is zero, negative vaules are not allowed </para></description></constructor>
-<constructor><parameter name="value"><paramtype>short</paramtype><default>-1</default></parameter></constructor>
+<constructor><parameter name="value"><paramtype>short</paramtype><default>parse_match_result_type::PARSE_ERROR</default></parameter></constructor>
 </struct>
 
 
@@ -3220,7 +3229,9 @@ special_value_formatter svf(&amp;special_value_names[0], &amp;special_value_name
 </method-group>
 <method-group name="public member functions">
 </method-group>
-<constructor specifiers="explicit"><parameter name="ss"><paramtype>boost::int64_t</paramtype></parameter></constructor>
+<constructor specifiers="explicit"><template>
+          <template-type-parameter name="T"/>
+        </template><parameter name="ss"><paramtype>T const &amp;</paramtype></parameter><parameter name=""><paramtype>typename boost::enable_if&lt; boost::is_integral&lt; T &gt;, void &gt;::type *</paramtype><default>0</default></parameter></constructor>
 </class>
 
 
@@ -3649,7 +3660,7 @@ special_value_formatter svf(&amp;special_value_names[0], &amp;special_value_name
       <template-nontype-parameter name="resolution_adjust"><type>#if(defined(BOOST_MSVC)&amp;&amp;(_MSC_VER&lt; 1300)) boost::int64_t</type></template-nontype-parameter>
       <template-nontype-parameter name="resolution_adjust"><type>#else typename frac_sec_type::int_type</type></template-nontype-parameter>
       <template-nontype-parameter name="frac_digits"><type>#endif unsigned short</type></template-nontype-parameter>
-      <template-type-parameter name="var_type"><default>std::time_t</default></template-type-parameter>
+      <template-type-parameter name="var_type"><default>boost::int64_t</default></template-type-parameter>
     </template><typedef name="fractional_seconds_type"><type>frac_sec_type::int_type</type></typedef>
 <typedef name="tick_type"><type>frac_sec_type::int_type</type></typedef>
 <typedef name="impl_type"><type>frac_sec_type::impl_type</type></typedef>

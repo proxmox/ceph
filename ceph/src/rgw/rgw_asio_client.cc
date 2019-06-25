@@ -5,6 +5,7 @@
 #include <boost/asio/write.hpp>
 
 #include "rgw_asio_client.h"
+#include "rgw_perf_counters.h"
 
 #define dout_context g_ceph_context
 #define dout_subsys ceph_subsys_rgw
@@ -26,6 +27,9 @@ ClientIO::~ClientIO() = default;
 int ClientIO::init_env(CephContext *cct)
 {
   env.init(cct);
+
+  perfcounter->inc(l_rgw_qlen);
+  perfcounter->inc(l_rgw_qactive);
 
   const auto& request = parser.get();
   const auto& headers = request;
@@ -89,6 +93,8 @@ int ClientIO::init_env(CephContext *cct)
 
 size_t ClientIO::complete_request()
 {
+  perfcounter->inc(l_rgw_qlen, -1);
+  perfcounter->inc(l_rgw_qactive, -1);
   return 0;
 }
 

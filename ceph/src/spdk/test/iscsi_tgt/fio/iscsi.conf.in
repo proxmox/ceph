@@ -1,5 +1,4 @@
 [Global]
-  LogFacility "local7"
 
 [iSCSI]
   NodeBase "iqn.2016-06.io.spdk"
@@ -10,5 +9,8 @@
   ImmediateData Yes
   ErrorRecoveryLevel 0
 
-[Rpc]
-  Enable Yes
+[Nvme]
+  RetryCount 4
+  ActionOnTimeout None
+  AdminPollRate 100000
+  HotplugEnable Yes

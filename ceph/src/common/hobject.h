@@ -19,7 +19,7 @@
 #include "include/cmp.h"
 
 #include "json_spirit/json_spirit_value.h"
-#include "include/assert.h"   // spirit clobbers it!
+#include "include/ceph_assert.h"   // spirit clobbers it!
 
 #include "reverse.h"
 
@@ -205,7 +205,7 @@ public:
   }
 
   bool is_max() const {
-    assert(!max || (*this == hobject_t(hobject_t::get_max())));
+    ceph_assert(!max || (*this == hobject_t(hobject_t::get_max())));
     return max;
   }
   bool is_min() const {
@@ -237,7 +237,7 @@ public:
 
   // filestore nibble-based key
   uint32_t get_nibblewise_key_u32() const {
-    assert(!max);
+    ceph_assert(!max);
     return nibblewise_key_cache;
   }
   uint64_t get_nibblewise_key() const {
@@ -246,7 +246,7 @@ public:
 
   // newer bit-reversed key
   uint32_t get_bitwise_key_u32() const {
-    assert(!max);
+    ceph_assert(!max);
     return hash_reverse_bits;
   }
   uint64_t get_bitwise_key() const {
@@ -293,7 +293,7 @@ public:
   bool parse(const string& s);
 
   void encode(bufferlist& bl) const;
-  void decode(bufferlist::iterator& bl);
+  void decode(bufferlist::const_iterator& bl);
   void decode(json_spirit::Value& v);
   void dump(Formatter *f) const;
   static void generate_test_instances(list<hobject_t*>& o);
@@ -465,7 +465,7 @@ public:
   }
 
   void encode(bufferlist& bl) const;
-  void decode(bufferlist::iterator& bl);
+  void decode(bufferlist::const_iterator& bl);
   void decode(json_spirit::Value& v);
   size_t encoded_size() const;
   void dump(Formatter *f) const;

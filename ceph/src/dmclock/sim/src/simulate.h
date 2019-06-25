@@ -3,6 +3,13 @@
 
 /*
  * Copyright (C) 2016 Red Hat Inc.
+ *
+ * Author: J. Eric Ivancich <ivancich@redhat.com>
+ *
+ * This is free software; you can redistribute it and/or modify it
+ * under the terms of the GNU Lesser General Public License version
+ * 2.1, as published by the Free Software Foundation.  See file
+ * COPYING.
  */
 
 
@@ -298,7 +305,7 @@ namespace crimson {
 
       template<typename T>
       void display_server_internal_stats(std::ostream& out,
-					 std::string time_unit) {
+					 const std::string& time_unit) {
 	T add_request_time(0);
 	T request_complete_time(0);
 	uint32_t add_request_count = 0;
@@ -344,7 +351,7 @@ namespace crimson {
 
       template<typename T>
       void display_client_internal_stats(std::ostream& out,
-					 std::string time_unit) {
+					 const std::string& time_unit) {
 	T track_resp_time(0);
 	T get_req_params_time(0);
 	uint32_t track_resp_count = 0;

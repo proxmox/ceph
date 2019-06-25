@@ -12,6 +12,7 @@
 
 #include <boost/beast/unit_test/suite.hpp>
 #include <exception>
+#include <memory>
 #include <utility>
 
 namespace boost {
@@ -22,11 +23,8 @@ class handler_ptr_test : public beast::unit_test::suite
 public:
     struct handler
     {
-        handler() = default;
-        handler(handler const&) = default;
-
-        void
-        operator()(bool& b) const
+        std::unique_ptr<int> ptr;
+        void operator()(bool& b) const
         {
             b = true;
         }
@@ -34,7 +32,7 @@ public:
 
     struct T
     {
-        T(handler&)
+        explicit T(handler const&)
         {
         }
 
@@ -43,23 +41,20 @@ public:
         }
     };
 
-    struct U
-    {
-        U(handler&)
-        {
-            throw std::exception{};
-        }
-    };
-
     void
-    run() override
+    testCtorExcept()
     {
-        handler h;
-        handler_ptr<T, handler> p1{h};
-        handler_ptr<T, handler> p2{p1};
+        struct U
+        {
+            explicit U(handler const&)
+            {
+                throw std::exception{};
+            }
+        };
+        handler_ptr<T, handler> p1{handler{}};
         try
         {
-            handler_ptr<U, handler> p3{h};
+            handler_ptr<U, handler> p2{handler{}};
             fail();
         }
         catch(std::exception const&)
@@ -68,12 +63,55 @@ public:
         }
         catch(...)
         {
-            fail();
+            fail("", __FILE__, __LINE__);
         }
-        handler_ptr<T, handler> p4{std::move(h)};
+    }
+
+    void
+    testMoveExcept()
+    {
+        struct throwing_handler
+        {
+            throwing_handler() = default;
+            throwing_handler(throwing_handler&&)
+            {
+                throw std::bad_alloc{};
+            }
+            void operator()() const
+            {
+            }
+        };
+        struct T
+        {
+            explicit T(throwing_handler const&) noexcept {}
+        };
+        try
+        {
+            throwing_handler h;
+            handler_ptr<T, throwing_handler> p{std::move(h)};
+            fail("", __FILE__, __LINE__);
+        }
+        catch (std::bad_alloc const&)
+        {
+            pass();
+        }
+    }
+
+    void
+    testInvoke()
+    {
+        handler_ptr<T, handler> p{handler{}};
         bool b = false;
-        p4.invoke(std::ref(b));
+        p.invoke(std::ref(b));
         BEAST_EXPECT(b);
+    }
+
+    void
+    run() override
+    {
+        testCtorExcept();
+        testMoveExcept();
+        testInvoke();
     }
 };
 

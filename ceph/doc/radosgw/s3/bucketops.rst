@@ -157,6 +157,8 @@ The ``ListBucketResult`` contains objects, where each object is within a ``Conte
 +------------------------+-----------+------------------------------------------+
 | ``StorageClass``       | String    | Should always return ``STANDARD``.       |
 +------------------------+-----------+------------------------------------------+
+| ``Type``               | String    | ``Appendable`` or ``Normal``.            |
++------------------------+-----------+------------------------------------------+
 
 Get Bucket Location
 -------------------
@@ -182,7 +184,7 @@ Response Entities
 | Name                   | Type      | Description                              |
 +========================+===========+==========================================+
 | ``LocationConstraint`` | String    | The region where bucket resides, empty   |
-|                        |           | string for defult region                 |
+|                        |           | string for default region                |
 +------------------------+-----------+------------------------------------------+
 
 

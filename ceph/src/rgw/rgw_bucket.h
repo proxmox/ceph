@@ -20,7 +20,7 @@
 #include "common/ceph_time.h"
 #include "rgw_formats.h"
 
-// define as static when RGWBucket implementation compete
+// define as static when RGWBucket implementation completes
 extern void rgw_get_buckets_obj(const rgw_user& user_id, string& buckets_obj_id);
 
 extern int rgw_bucket_store_info(RGWRados *store, const string& bucket_name, bufferlist& bl, bool exclusive,
@@ -114,10 +114,12 @@ public:
   RGWUserBuckets& operator=(const RGWUserBuckets&) = default;
 
   void encode(bufferlist& bl) const {
-    ::encode(buckets, bl);
+    using ceph::encode;
+    encode(buckets, bl);
   }
-  void decode(bufferlist::iterator& bl) {
-    ::decode(buckets, bl);
+  void decode(bufferlist::const_iterator& bl) {
+    using ceph::decode;
+    decode(buckets, bl);
   }
   /**
    * Check if the user owns a bucket by the given name.
@@ -161,6 +163,27 @@ public:
 WRITE_CLASS_ENCODER(RGWUserBuckets)
 
 class RGWMetadataManager;
+class RGWMetadataHandler;
+
+class RGWBucketMetaHandlerAllocator {
+public:
+  static RGWMetadataHandler *alloc();
+};
+
+class RGWBucketInstanceMetaHandlerAllocator {
+public:
+  static RGWMetadataHandler *alloc();
+};
+
+class RGWArchiveBucketMetaHandlerAllocator {
+public:
+  static RGWMetadataHandler *alloc();
+};
+
+class RGWArchiveBucketInstanceMetaHandlerAllocator {
+public:
+  static RGWMetadataHandler *alloc();
+};
 
 extern void rgw_bucket_init(RGWMetadataManager *mm);
 /**
@@ -208,7 +231,7 @@ struct RGWBucketAdminOpState {
   bool fix_index;
   bool delete_child_objects;
   bool bucket_stored;
-  int max_aio;
+  int max_aio = 0;
 
   rgw_bucket bucket;
 
@@ -342,6 +365,8 @@ public:
 
   static int clear_stale_instances(RGWRados *store, RGWBucketAdminOpState& op_state,
 				   RGWFormatterFlusher& flusher);
+  static int fix_lc_shards(RGWRados *store, RGWBucketAdminOpState& op_state,
+                           RGWFormatterFlusher& flusher);
 };
 
 
@@ -358,19 +383,19 @@ struct rgw_data_change {
   void encode(bufferlist& bl) const {
     ENCODE_START(1, 1, bl);
     uint8_t t = (uint8_t)entity_type;
-    ::encode(t, bl);
-    ::encode(key, bl);
-    ::encode(timestamp, bl);
+    encode(t, bl);
+    encode(key, bl);
+    encode(timestamp, bl);
     ENCODE_FINISH(bl);
   }
 
-  void decode(bufferlist::iterator& bl) {
+  void decode(bufferlist::const_iterator& bl) {
      DECODE_START(1, bl);
      uint8_t t;
-     ::decode(t, bl);
+     decode(t, bl);
      entity_type = (DataLogEntityType)t;
-     ::decode(key, bl);
-     ::decode(timestamp, bl);
+     decode(key, bl);
+     decode(timestamp, bl);
      DECODE_FINISH(bl);
   }
 
@@ -386,17 +411,17 @@ struct rgw_data_change_log_entry {
 
   void encode(bufferlist& bl) const {
     ENCODE_START(1, 1, bl);
-    ::encode(log_id, bl);
-    ::encode(log_timestamp, bl);
-    ::encode(entry, bl);
+    encode(log_id, bl);
+    encode(log_timestamp, bl);
+    encode(entry, bl);
     ENCODE_FINISH(bl);
   }
 
-  void decode(bufferlist::iterator& bl) {
+  void decode(bufferlist::const_iterator& bl) {
      DECODE_START(1, bl);
-     ::decode(log_id, bl);
-     ::decode(log_timestamp, bl);
-     ::decode(entry, bl);
+     decode(log_id, bl);
+     decode(log_timestamp, bl);
+     decode(entry, bl);
      DECODE_FINISH(bl);
   }
 
@@ -447,7 +472,7 @@ class RGWDataChangesLog {
     }
   };
 
-  typedef ceph::shared_ptr<ChangeStatus> ChangeStatusPtr;
+  typedef std::shared_ptr<ChangeStatus> ChangeStatusPtr;
 
   lru_map<rgw_bucket_shard, ChangeStatusPtr> changes;
 
@@ -513,12 +538,8 @@ public:
   int trim_entries(const real_time& start_time, const real_time& end_time,
                    const string& start_marker, const string& end_marker);
   int get_info(int shard_id, RGWDataChangesLogInfo *info);
-  int lock_exclusive(int shard_id, timespan duration, string& zone_id, string& owner_id) {
-    return store->lock_exclusive(store->get_zone_params().log_pool, oids[shard_id], duration, zone_id, owner_id);
-  }
-  int unlock(int shard_id, string& zone_id, string& owner_id) {
-    return store->unlock(store->get_zone_params().log_pool, oids[shard_id], zone_id, owner_id);
-  }
+  int lock_exclusive(int shard_id, timespan duration, string& zone_id, string& owner_id);
+  int unlock(int shard_id, string& zone_id, string& owner_id);
   struct LogMarker {
     int shard;
     string marker;

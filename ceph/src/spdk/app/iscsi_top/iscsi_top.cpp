@@ -31,19 +31,8 @@
  *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include <sys/types.h>
-#include <sys/uio.h>
+#include "spdk/stdinc.h"
 
-#include <fcntl.h>
-#include <inttypes.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <stdint.h>
-#include <string.h>
-#include <errno.h>
-#include <unistd.h>
-#include <signal.h>
-#include <termios.h>
 #include <algorithm>
 #include <map>
 #include <vector>
@@ -67,14 +56,17 @@ static void usage(void)
 static bool
 conns_compare(struct spdk_iscsi_conn *first, struct spdk_iscsi_conn *second)
 {
-	if (first->lcore < second->lcore)
+	if (first->lcore < second->lcore) {
 		return true;
+	}
 
-	if (first->lcore > second->lcore)
+	if (first->lcore > second->lcore) {
 		return false;
+	}
 
-	if (first->id < second->id)
+	if (first->id < second->id) {
 		return true;
+	}
 
 	return false;
 }
@@ -90,7 +82,7 @@ print_connections(void)
 	int			fd, i;
 	char			shm_name[64];
 
-	snprintf(shm_name, sizeof(shm_name), "spdk_iscsi_conns.%d", g_shm_id);
+	snprintf(shm_name, sizeof(shm_name), "/spdk_iscsi_conns.%d", g_shm_id);
 	fd = shm_open(shm_name, O_RDONLY, 0600);
 	if (fd < 0) {
 		fprintf(stderr, "Cannot open shared memory: %s\n", shm_name);
@@ -101,8 +93,8 @@ print_connections(void)
 	conns_size = sizeof(*conns) * MAX_ISCSI_CONNECTIONS;
 
 	conns_ptr = mmap(NULL, conns_size, PROT_READ, MAP_SHARED, fd, 0);
-	if (conns_ptr == NULL) {
-		fprintf(stderr, "Cannot mmap shared memory\n");
+	if (conns_ptr == MAP_FAILED) {
+		fprintf(stderr, "Cannot mmap shared memory (%d)\n", errno);
 		exit(1);
 	}
 
@@ -168,7 +160,7 @@ int main(int argc, char **argv)
 
 	history_ptr = mmap(NULL, sizeof(*histories), PROT_READ, MAP_SHARED, history_fd, 0);
 	if (history_ptr == MAP_FAILED) {
-		fprintf(stderr, "Unable to mmap history shm\n");
+		fprintf(stderr, "Unable to mmap history shm (%d).\n", errno);
 		exit(1);
 	}
 

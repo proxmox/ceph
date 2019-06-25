@@ -120,7 +120,7 @@ def task(ctx, config):
                 p.spawn(_run_tests, ctx, refspec, role, tests,
                         config.get('env'),
                         basedir=config.get('basedir','qa/workunits'),
-                        timeout=timeout, cleanup=cleanup)
+                        timeout=timeout,cleanup=cleanup)
 
     if cleanup:
         # Clean up dirs from any non-all workunits
@@ -285,8 +285,8 @@ def _spawn_on_all_clients(ctx, refspec, tests, env, basedir, subdir, timeout=Non
                         subdir,
                         timeout=timeout)
 
+    # cleanup the generated client directories
     if cleanup:
-        # cleanup the generated client directories
         for role, _ in client_remotes.items():
             _delete_dir(ctx, role, created_mountpoint[role])
 

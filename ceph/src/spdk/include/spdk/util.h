@@ -38,17 +38,20 @@
 #ifndef SPDK_UTIL_H
 #define SPDK_UTIL_H
 
+#include "spdk/stdinc.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
-
-#include <stddef.h>
-#include <stdint.h>
 
 #define spdk_min(a,b) (((a)<(b))?(a):(b))
 #define spdk_max(a,b) (((a)>(b))?(a):(b))
 
 #define SPDK_COUNTOF(arr) (sizeof(arr) / sizeof((arr)[0]))
+
+#define SPDK_CONTAINEROF(ptr, type, member) ((type *)((uintptr_t)ptr - offsetof(type, member)))
+
+#define SPDK_SEC_TO_USEC 1000000ULL
 
 static inline uint32_t
 spdk_u32log2(uint32_t x)
@@ -64,6 +67,19 @@ static inline uint32_t
 spdk_align32pow2(uint32_t x)
 {
 	return 1u << (1 + spdk_u32log2(x - 1));
+}
+
+/**
+ * Check if a uint32_t is a power of 2.
+ */
+static inline bool
+spdk_u32_is_pow2(uint32_t x)
+{
+	if (x == 0) {
+		return false;
+	}
+
+	return (x & (x - 1)) == 0;
 }
 
 #ifdef __cplusplus

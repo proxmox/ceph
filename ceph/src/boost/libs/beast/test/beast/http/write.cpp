@@ -22,6 +22,8 @@
 #include <boost/beast/test/yield_to.hpp>
 #include <boost/beast/unit_test/suite.hpp>
 #include <boost/asio/error.hpp>
+#include <boost/asio/io_service.hpp>
+#include <boost/asio/strand.hpp>
 #include <sstream>
 #include <string>
 
@@ -48,9 +50,8 @@ public:
 
             template<bool isRequest, class Fields>
             explicit
-            writer(message<isRequest,
-                    unsized_body, Fields> const& msg)
-                : body_(msg.body())
+            writer(header<isRequest, Fields> const&, value_type const& b)
+                : body_(b)
             {
             }
 
@@ -93,9 +94,8 @@ public:
 
             template<bool isRequest, class Fields>
             explicit
-            writer(message<isRequest,
-                    test_body, Fields> const& msg)
-                : body_(msg.body())
+            writer(header<isRequest, Fields> const&, value_type const& b)
+                : body_(b)
             {
             }
 
@@ -230,9 +230,8 @@ public:
 
             template<bool isRequest, class Fields>
             explicit
-            writer(message<isRequest,
-                    fail_body, Fields> const& msg)
-                : body_(msg.body())
+            writer(header<isRequest, Fields> const&, value_type const& b)
+                : body_(b)
             {
             }
 
@@ -860,6 +859,49 @@ public:
         ioc.run();
     }
 
+    struct copyable_handler
+    {
+        template<class... Args>
+        void
+        operator()(Args&&...) const
+        {
+        }
+    };
+
+    void
+    testAsioHandlerInvoke()
+    {
+        // make sure things compile, also can set a
+        // breakpoint in asio_handler_invoke to make sure
+        // it is instantiated.
+        {
+            boost::asio::io_context ioc;
+            boost::asio::io_service::strand s{ioc};
+            test::stream ts{ioc};
+            flat_buffer b;
+            request<empty_body> m;
+            request_serializer<empty_body, fields> sr{m};
+            async_write_some(ts, sr, s.wrap(copyable_handler{}));
+        }
+        {
+            boost::asio::io_context ioc;
+            boost::asio::io_service::strand s{ioc};
+            test::stream ts{ioc};
+            flat_buffer b;
+            request<empty_body> m;
+            request_serializer<empty_body, fields> sr{m};
+            async_write(ts, sr, s.wrap(copyable_handler{}));
+        }
+        {
+            boost::asio::io_context ioc;
+            boost::asio::io_service::strand s{ioc};
+            test::stream ts{ioc};
+            flat_buffer b;
+            request<empty_body> m;
+            async_write(ts, m, s.wrap(copyable_handler{}));
+        }
+    }
+
     void
     run() override
     {
@@ -881,6 +923,7 @@ public:
                 testWriteStream<test_body< true, false>>(yield);
                 testWriteStream<test_body< true,  true>>(yield);
             });
+        testAsioHandlerInvoke();
     }
 };
 

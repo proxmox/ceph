@@ -55,6 +55,21 @@ spdk_env_get_first_core(void)
 }
 
 uint32_t
+spdk_env_get_last_core(void)
+{
+	uint32_t i;
+	uint32_t last_core = UINT32_MAX;
+
+	SPDK_ENV_FOREACH_CORE(i) {
+		last_core = i;
+	}
+
+	assert(last_core != UINT32_MAX);
+
+	return last_core;
+}
+
+uint32_t
 spdk_env_get_next_core(uint32_t prev_core)
 {
 	unsigned lcore;
@@ -69,5 +84,25 @@ spdk_env_get_next_core(uint32_t prev_core)
 uint32_t
 spdk_env_get_socket_id(uint32_t core)
 {
+	if (core >= RTE_MAX_LCORE) {
+		return SPDK_ENV_SOCKET_ID_ANY;
+	}
+
 	return rte_lcore_to_socket_id(core);
+}
+
+int
+spdk_env_thread_launch_pinned(uint32_t core, thread_start_fn fn, void *arg)
+{
+	int rc;
+
+	rc = rte_eal_remote_launch(fn, arg, core);
+
+	return rc;
+}
+
+void
+spdk_env_thread_wait_all(void)
+{
+	rte_eal_mp_wait_lcore();
 }

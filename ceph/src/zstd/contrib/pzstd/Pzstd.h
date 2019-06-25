@@ -1,10 +1,10 @@
-/**
+/*
  * Copyright (c) 2016-present, Facebook, Inc.
  * All rights reserved.
  *
- * This source code is licensed under the BSD-style license found in the
- * LICENSE file in the root directory of this source tree. An additional grant
- * of patent rights can be found in the PATENTS file in the same directory.
+ * This source code is licensed under both the BSD-style license (found in the
+ * LICENSE file in the root directory of this source tree) and the GPLv2 (found
+ * in the COPYING file in the root directory of this source tree).
  */
 #pragma once
 
@@ -41,7 +41,7 @@ class SharedState {
       auto parameters = options.determineParameters();
       cStreamPool.reset(new ResourcePool<ZSTD_CStream>{
           [this, parameters]() -> ZSTD_CStream* {
-            this->log(VERBOSE, "Creating new ZSTD_CStream\n");
+            this->log(VERBOSE, "%s\n", "Creating new ZSTD_CStream");
             auto zcs = ZSTD_createCStream();
             if (zcs) {
               auto err = ZSTD_initCStream_advanced(
@@ -59,7 +59,7 @@ class SharedState {
     } else {
       dStreamPool.reset(new ResourcePool<ZSTD_DStream>{
           [this]() -> ZSTD_DStream* {
-            this->log(VERBOSE, "Creating new ZSTD_DStream\n");
+            this->log(VERBOSE, "%s\n", "Creating new ZSTD_DStream");
             auto zds = ZSTD_createDStream();
             if (zds) {
               auto err = ZSTD_initDStream(zds);

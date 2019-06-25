@@ -569,7 +569,7 @@ class Size(object):
 
         for k, v in kw.items():
             self._convert(v, k)
-            # only pursue the first occurence
+            # only pursue the first occurrence
             break
 
     def _convert(self, size, unit):
@@ -600,6 +600,9 @@ class Size(object):
 
     def __str__(self):
         return "%s" % self._get_best_format()
+
+    def __format__(self, spec):
+        return str(self._get_best_format()).__format__(spec)
 
     def __lt__(self, other):
         return self._b < other._b

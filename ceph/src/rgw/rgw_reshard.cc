@@ -2,8 +2,10 @@
 // vim: ts=8 sw=2 smarttab
 
 #include <limits>
+#include <sstream>
 
 #include "rgw_rados.h"
+#include "rgw_zone.h"
 #include "rgw_bucket.h"
 #include "rgw_reshard.h"
 #include "cls/rgw/cls_rgw_client.h"
@@ -13,17 +15,15 @@
 
 #include "common/dout.h"
 
+#include "services/svc_zone.h"
+#include "services/svc_sys_obj.h"
+
 #define dout_context g_ceph_context
 #define dout_subsys ceph_subsys_rgw
 
 const string reshard_oid_prefix = "reshard.";
 const string reshard_lock_name = "reshard_process";
 const string bucket_instance_lock_name = "bucket_instance_lock";
-
-using namespace std;
-
-#define RESHARD_SHARD_WINDOW 64
-#define RESHARD_MAX_AIO 128
 
 
 class BucketReshardShard {
@@ -32,8 +32,10 @@ class BucketReshardShard {
   int num_shard;
   RGWRados::BucketShard bs;
   vector<rgw_cls_bi_entry> entries;
-  map<uint8_t, rgw_bucket_category_stats> stats;
+  map<RGWObjCategory, rgw_bucket_category_stats> stats;
   deque<librados::AioCompletion *>& aio_completions;
+  uint64_t max_aio_completions;
+  uint64_t reshard_shard_batch_size;
 
   int wait_next_completion() {
     librados::AioCompletion *c = aio_completions.front();
@@ -53,7 +55,7 @@ class BucketReshardShard {
   }
 
   int get_completion(librados::AioCompletion **c) {
-    if (aio_completions.size() >= RESHARD_MAX_AIO) {
+    if (aio_completions.size() >= max_aio_completions) {
       int ret = wait_next_completion();
       if (ret < 0) {
         return ret;
@@ -75,13 +77,18 @@ public:
   {
     num_shard = (bucket_info.num_shards > 0 ? _num_shard : -1);
     bs.init(bucket_info.bucket, num_shard, nullptr /* no RGWBucketInfo */);
+
+    max_aio_completions =
+      store->ctx()->_conf.get_val<uint64_t>("rgw_reshard_max_aio");
+    reshard_shard_batch_size =
+      store->ctx()->_conf.get_val<uint64_t>("rgw_reshard_batch_size");
   }
 
   int get_num_shard() {
     return num_shard;
   }
 
-  int add_entry(rgw_cls_bi_entry& entry, bool account, uint8_t category,
+  int add_entry(rgw_cls_bi_entry& entry, bool account, RGWObjCategory category,
                 const rgw_bucket_category_stats& entry_stats) {
     entries.push_back(entry);
     if (account) {
@@ -91,7 +98,7 @@ public:
       target.total_size_rounded += entry_stats.total_size_rounded;
       target.actual_size += entry_stats.actual_size;
     }
-    if (entries.size() >= RESHARD_SHARD_WINDOW) {
+    if (entries.size() >= reshard_shard_batch_size) {
       int ret = flush();
       if (ret < 0) {
         return ret;
@@ -171,7 +178,7 @@ public:
   }
 
   int add_entry(int shard_index,
-                rgw_cls_bi_entry& entry, bool account, uint8_t category,
+                rgw_cls_bi_entry& entry, bool account, RGWObjCategory category,
                 const rgw_bucket_category_stats& entry_stats) {
     int ret = target_shards[shard_index]->add_entry(entry, account, category,
 						    entry_stats);
@@ -407,7 +414,8 @@ RGWBucketReshardLock::RGWBucketReshardLock(RGWRados* _store,
   ephemeral(_ephemeral),
   internal_lock(reshard_lock_name)
 {
-  const int lock_dur_secs = store->ctx()->_conf->rgw_reshard_bucket_lock_duration;
+  const int lock_dur_secs = store->ctx()->_conf.get_val<uint64_t>(
+    "rgw_reshard_bucket_lock_duration");
   duration = std::chrono::seconds(lock_dur_secs);
 
 #define COOKIE_LEN 16
@@ -456,8 +464,14 @@ int RGWBucketReshardLock::renew(const Clock::time_point& now) {
     ret = internal_lock.lock_exclusive(&store->reshard_pool_ctx, lock_oid);
   }
   if (ret < 0) { /* expired or already locked by another processor */
+    std::stringstream error_s;
+    if (-ENOENT == ret) {
+      error_s << "ENOENT (lock expired or never initially locked)";
+    } else {
+      error_s << ret << " (" << cpp_strerror(-ret) << ")";
+    }
     ldout(store->ctx(), 5) << __func__ << "(): failed to renew lock on " <<
-      lock_oid << " with " << cpp_strerror(-ret) << dendl;
+      lock_oid << " with error " << error_s.str() << dendl;
     return ret;
   }
   internal_lock.set_must_renew(false);
@@ -554,7 +568,7 @@ int RGWBucketReshard::do_reshard(int num_shards,
 
 	int target_shard_id;
 	cls_rgw_obj_key cls_key;
-	uint8_t category;
+	RGWObjCategory category;
 	rgw_bucket_category_stats stats;
 	bool account = entry.get_info(&cls_key, &category, &stats);
 	rgw_obj_key key(cls_key);
@@ -768,7 +782,7 @@ RGWReshard::RGWReshard(RGWRados* _store, bool _verbose, ostream *_out,
   store(_store), instance_lock(bucket_instance_lock_name),
   verbose(_verbose), out(_out), formatter(_formatter)
 {
-  num_logshards = store->ctx()->_conf->rgw_reshard_num_logs;
+  num_logshards = store->ctx()->_conf.get_val<uint64_t>("rgw_reshard_num_logs");
 }
 
 string RGWReshard::get_logshard_key(const string& tenant,
@@ -792,7 +806,7 @@ void RGWReshard::get_bucket_logshard_oid(const string& tenant, const string& buc
 
 int RGWReshard::add(cls_rgw_reshard_entry& entry)
 {
-  if (!store->can_reshard()) {
+  if (!store->svc.zone->can_reshard()) {
     ldout(store->ctx(), 20) << __func__ << " Resharding is disabled"  << dendl;
     return 0;
   }
@@ -851,7 +865,7 @@ int RGWReshard::list(int logshard_num, string& marker, uint32_t max, std::list<c
     }
     lderr(store->ctx()) << "ERROR: failed to list reshard log entries, oid=" << logshard_oid << dendl;
     if (ret == -EACCES) {
-      lderr(store->ctx()) << "access denied to pool " << store->get_zone_params().reshard_pool
+      lderr(store->ctx()) << "access denied to pool " << store->svc.zone->get_zone_params().reshard_pool
                           << ". Fix the pool access permissions of your client" << dendl;
     }
   }
@@ -906,14 +920,35 @@ int RGWReshard::clear_bucket_resharding(const string& bucket_instance_oid, cls_r
   return 0;
 }
 
-const int num_retries = 10;
-const int default_reshard_sleep_duration = 5;
-
-int RGWReshardWait::do_wait()
+int RGWReshardWait::wait(optional_yield y)
 {
-  Mutex::Locker l(lock);
+  std::unique_lock lock(mutex);
 
-  cond.WaitInterval(lock, utime_t(default_reshard_sleep_duration, 0));
+  if (going_down) {
+    return -ECANCELED;
+  }
+
+#ifdef HAVE_BOOST_CONTEXT
+  if (y) {
+    auto& context = y.get_io_context();
+    auto& yield = y.get_yield_context();
+
+    Waiter waiter(context);
+    waiters.push_back(waiter);
+    lock.unlock();
+
+    waiter.timer.expires_after(duration);
+
+    boost::system::error_code ec;
+    waiter.timer.async_wait(yield[ec]);
+
+    lock.lock();
+    waiters.erase(waiters.iterator_to(waiter));
+    return -ec.value();
+  }
+#endif
+
+  cond.wait_for(lock, duration);
 
   if (going_down) {
     return -ECANCELED;
@@ -922,75 +957,15 @@ int RGWReshardWait::do_wait()
   return 0;
 }
 
-int RGWReshardWait::block_while_resharding(RGWRados::BucketShard *bs,
-					   string *new_bucket_id,
-					   const RGWBucketInfo& bucket_info)
+void RGWReshardWait::stop()
 {
-  int ret = 0;
-  cls_rgw_bucket_instance_entry entry;
-
-  for (int i=0; i < num_retries; i++) {
-    ret = cls_rgw_get_bucket_resharding(bs->index_ctx, bs->bucket_obj, &entry);
-    if (ret < 0) {
-      ldout(store->ctx(), 0) << __func__ << " ERROR: failed to get bucket resharding :"  <<
-	cpp_strerror(-ret)<< dendl;
-      return ret;
-    }
-    if (!entry.resharding_in_progress()) {
-      *new_bucket_id = entry.new_bucket_instance_id;
-      return 0;
-    }
-    ldout(store->ctx(), 20) << "NOTICE: reshard still in progress; " << (i < num_retries - 1 ? "retrying" : "too many retries") << dendl;
-
-    if (i == num_retries - 1) {
-      break;
-    }
-
-    // If bucket is erroneously marked as resharding (e.g., crash or
-    // other error) then fix it. If we can take the bucket reshard
-    // lock then it means no other resharding should be taking place,
-    // and we're free to clear the flags.
-    {
-      // since we expect to do this rarely, we'll do our work in a
-      // block and erase our work after each try
-
-      RGWObjectCtx obj_ctx(bs->store);
-      const rgw_bucket& b = bs->bucket;
-      std::string bucket_id = b.get_key();
-      RGWBucketReshardLock reshard_lock(bs->store, bucket_info, true);
-      ret = reshard_lock.lock();
-      if (ret < 0) {
-	ldout(store->ctx(), 20) << __func__ <<
-	  " INFO: failed to take reshard lock for bucket " <<
-	  bucket_id << "; expected if resharding underway" << dendl;
-      } else {
-	ldout(store->ctx(), 10) << __func__ <<
-	  " INFO: was able to take reshard lock for bucket " <<
-	  bucket_id << dendl;
-	ret = RGWBucketReshard::clear_resharding(bs->store, bucket_info);
-	if (ret < 0) {
-	  reshard_lock.unlock();
-	  ldout(store->ctx(), 0) << __func__ <<
-	    " ERROR: failed to clear resharding flags for bucket " <<
-	    bucket_id << dendl;
-	} else {
-	  reshard_lock.unlock();
-	  ldout(store->ctx(), 5) << __func__ <<
-	    " INFO: apparently successfully cleared resharding flags for "
-	    "bucket " << bucket_id << dendl;
-	  continue; // if we apparently succeed immediately test again
-	} // if clear resharding succeeded
-      } // if taking of lock succeeded
-    } // block to encapsulate recovery from incomplete reshard
-
-    ret = do_wait();
-    if (ret < 0) {
-      ldout(store->ctx(), 0) << __func__ << " ERROR: bucket is still resharding, please retry" << dendl;
-      return ret;
-    }
+  std::scoped_lock lock(mutex);
+  going_down = true;
+  cond.notify_all();
+  for (auto& waiter : waiters) {
+    // unblock any waiters with ECANCELED
+    waiter.timer.cancel();
   }
-  ldout(store->ctx(), 0) << __func__ << " ERROR: bucket is still resharding, please retry" << dendl;
-  return -ERR_BUSY_RESHARDING;
 }
 
 int RGWReshard::process_single_logshard(int logshard_num)
@@ -1028,7 +1003,7 @@ int RGWReshard::process_single_logshard(int logshard_num)
 	ldout(store->ctx(), 20) << __func__ << " resharding " <<
 	  entry.bucket_name  << dendl;
 
-	RGWObjectCtx obj_ctx(store);
+        auto obj_ctx = store->svc.sysobj->init_obj_ctx();
 	rgw_bucket bucket;
 	RGWBucketInfo bucket_info;
 	map<string, bufferlist> attrs;
@@ -1094,7 +1069,7 @@ void  RGWReshard::get_logshard_oid(int shard_num, string *logshard)
 
 int RGWReshard::process_all_logshards()
 {
-  if (!store->can_reshard()) {
+  if (!store->svc.zone->can_reshard()) {
     ldout(store->ctx(), 20) << __func__ << " Resharding is disabled"  << dendl;
     return 0;
   }
@@ -1152,7 +1127,7 @@ void *RGWReshard::ReshardWorker::entry() {
 
     utime_t end = ceph_clock_now();
     end -= start;
-    int secs = cct->_conf->rgw_reshard_thread_interval;
+    int secs = cct->_conf.get_val<uint64_t>("rgw_reshard_thread_interval");
 
     if (secs <= end.sec())
       continue; // next round

@@ -25,7 +25,7 @@ reflect either technical terms or legacy ways of referring to Ceph systems.
 	Ceph
 	Ceph Platform
 		All Ceph software, which includes any piece of code hosted at
-		`http://github.com/ceph`_.
+		`https://github.com/ceph`_.
 
 	Ceph System
 	Ceph Stack
@@ -103,7 +103,7 @@ reflect either technical terms or legacy ways of referring to Ceph systems.
 		``fsid`` term is used interchangeably with ``uuid``
 
 	OSD uuid
-		Just like the OSD fsid, this is the OSD unique identifer and is used
+		Just like the OSD fsid, this is the OSD unique identifier and is used
 		interchangeably with ``fsid``
 
 	bluestore
@@ -124,6 +124,16 @@ reflect either technical terms or legacy ways of referring to Ceph systems.
 		The Ceph manager software, which collects all the state from the whole
 		cluster in one place.
 
+	Ceph Manager Dashboard
+	Ceph Dashboard
+	Dashboard Module
+	Dashboard Plugin
+	Dashboard
+		A built-in web-based Ceph management and monitoring application to
+		administer various aspects and objects of the cluster. The dashboard is
+		implemented as a Ceph Manager module. See :ref:`mgr-dashboard` for more
+		details.
+
 	Ceph Metadata Server
 	MDS
 		The Ceph metadata software.
@@ -137,7 +147,7 @@ reflect either technical terms or legacy ways of referring to Ceph systems.
 
 	Ceph Kernel Modules
 		The collection of kernel modules which can be used to interact with the
-		Ceph System (e.g,. ``ceph.ko``, ``rbd.ko``).
+		Ceph System (e.g., ``ceph.ko``, ``rbd.ko``).
 
 	Ceph Client Libraries
 		The collection of libraries that can be used to interact with components
@@ -185,5 +195,5 @@ reflect either technical terms or legacy ways of referring to Ceph systems.
 		Ceph-specific information about devices and its relationship with
 		OSDs.
 
-.. _http://github.com/ceph: http://github.com/ceph
+.. _https://github.com/ceph: https://github.com/ceph
 .. _Cluster Map: ../architecture#cluster-map

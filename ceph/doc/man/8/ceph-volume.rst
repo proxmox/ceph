@@ -111,7 +111,7 @@ Usage::
 Optional Arguments:
 
 * [-h, --help]  show the help message and exit
-* [--auto-detect-objectstore] Automatically detect the objecstore by inspecting
+* [--auto-detect-objectstore] Automatically detect the objectstore by inspecting
   the OSD
 * [--bluestore] bluestore objectstore (default)
 * [--filestore] filestore objectstore
@@ -335,4 +335,3 @@ See also
 ========
 
 :doc:`ceph-osd <ceph-osd>`\(8),
-:doc:`ceph-disk <ceph-disk>`\(8),

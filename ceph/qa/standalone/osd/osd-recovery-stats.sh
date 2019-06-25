@@ -26,6 +26,8 @@ function run() {
     export CEPH_ARGS
     CEPH_ARGS+="--fsid=$(uuidgen) --auth-supported=none "
     CEPH_ARGS+="--mon-host=$CEPH_MON "
+    # so we will not force auth_log_shard to be acting_primary
+    CEPH_ARGS+="--osd_force_auth_primary_missing_objects=1000000 "
     export margin=10
     export objects=200
     export poolname=test
@@ -211,13 +213,13 @@ function TEST_recovery_sizeup() {
     ceph osd out osd.$primary osd.$otherosd
     ceph osd pool set test size 4
     ceph osd unset norecover
-    ceph tell osd.$(get_primary $poolname obj1) debug kick_recovery_wq 0
+    # Get new primary
+    primary=$(get_primary $poolname obj1)
+
+    ceph tell osd.${primary} debug kick_recovery_wq 0
     sleep 2
 
     wait_for_clean || return 1
-
-    # Get new primary
-    primary=$(get_primary $poolname obj1)
 
     local degraded=$(expr $objects \* 2)
     local misplaced=$(expr $objects \* 2)
@@ -435,8 +437,6 @@ function TEST_recovery_erasure_remapped() {
     kill_daemons $dir || return 1
 }
 
-main osd-recovery-stats "$@"
-
 function TEST_recovery_multi() {
     local dir=$1
 
@@ -505,6 +505,7 @@ function TEST_recovery_multi() {
     kill_daemons $dir || return 1
 }
 
+main osd-recovery-stats "$@"
 
 # Local Variables:
 # compile-command: "make -j4 && ../qa/run-standalone.sh osd-recovery-stats.sh"

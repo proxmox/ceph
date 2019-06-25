@@ -29,7 +29,6 @@
 #include "common/errno.h"
 #include "common/strtol.h"
 #include "common/dout.h"
-#include "common/simple_spin.h"
 #include "msg/Messenger.h"
 #include "include/compat.h"
 #include "include/sock_compat.h"
@@ -75,7 +74,7 @@ class PosixConnectedSocketImpl final : public ConnectedSocketImpl {
   }
 
   // return the sent length
-  // < 0 means error occured
+  // < 0 means error occurred
   static ssize_t do_sendmsg(int fd, struct msghdr &msg, unsigned len, bool more)
   {
     size_t sent = 0;
@@ -113,26 +112,23 @@ class PosixConnectedSocketImpl final : public ConnectedSocketImpl {
 
   ssize_t send(bufferlist &bl, bool more) override {
     size_t sent_bytes = 0;
-    std::list<bufferptr>::const_iterator pb = bl.buffers().begin();
-    uint64_t left_pbrs = bl.buffers().size();
+    auto pb = std::cbegin(bl.buffers());
+    uint64_t left_pbrs = std::size(bl.buffers());
     while (left_pbrs) {
       struct msghdr msg;
       struct iovec msgvec[IOV_MAX];
-      uint64_t size = MIN(left_pbrs, IOV_MAX);
+      uint64_t size = std::min<uint64_t>(left_pbrs, IOV_MAX);
       left_pbrs -= size;
       memset(&msg, 0, sizeof(msg));
-      msg.msg_iovlen = 0;
+      msg.msg_iovlen = size;
       msg.msg_iov = msgvec;
       unsigned msglen = 0;
-      while (size > 0) {
-        msgvec[msg.msg_iovlen].iov_base = (void*)(pb->c_str());
-        msgvec[msg.msg_iovlen].iov_len = pb->length();
-        msg.msg_iovlen++;
-        msglen += pb->length();
-        ++pb;
-        size--;
+      for (auto iov = msgvec; iov != msgvec + size; iov++) {
+	iov->iov_base = (void*)(pb->c_str());
+	iov->iov_len = pb->length();
+	msglen += pb->length();
+	++pb;
       }
-
       ssize_t r = do_sendmsg(_fd, msg, msglen, left_pbrs || more);
       if (r < 0)
         return r;
@@ -165,6 +161,9 @@ class PosixConnectedSocketImpl final : public ConnectedSocketImpl {
   int fd() const override {
     return _fd;
   }
+  int socket_fd() const override {
+    return _fd;
+  }
   friend class PosixServerSocketImpl;
   friend class PosixNetworkStack;
 };
@@ -174,7 +173,10 @@ class PosixServerSocketImpl : public ServerSocketImpl {
   int _fd;
 
  public:
-  explicit PosixServerSocketImpl(NetHandler &h, int f): handler(h), _fd(f) {}
+  explicit PosixServerSocketImpl(NetHandler &h, int f,
+				 const entity_addr_t& listen_addr, unsigned slot)
+    : ServerSocketImpl(listen_addr.get_type(), slot),
+      handler(h), _fd(f) {}
   int accept(ConnectedSocket *sock, const SocketOptions &opts, entity_addr_t *out, Worker *w) override;
   void abort_accept() override {
     ::close(_fd);
@@ -185,7 +187,7 @@ class PosixServerSocketImpl : public ServerSocketImpl {
 };
 
 int PosixServerSocketImpl::accept(ConnectedSocket *sock, const SocketOptions &opt, entity_addr_t *out, Worker *w) {
-  assert(sock);
+  ceph_assert(sock);
   sockaddr_storage ss;
   socklen_t slen = sizeof(ss);
   int sd = accept_cloexec(_fd, (sockaddr*)&ss, &slen);
@@ -205,8 +207,9 @@ int PosixServerSocketImpl::accept(ConnectedSocket *sock, const SocketOptions &op
     return -errno;
   }
 
-  assert(NULL != out); //out should not be NULL in accept connection
+  ceph_assert(NULL != out); //out should not be NULL in accept connection
 
+  out->set_type(addr_type);
   out->set_sockaddr((sockaddr*)&ss);
   handler.set_priority(sd, opt.priority, out->get_family());
 
@@ -219,7 +222,9 @@ void PosixWorker::initialize()
 {
 }
 
-int PosixWorker::listen(entity_addr_t &sa, const SocketOptions &opt,
+int PosixWorker::listen(entity_addr_t &sa,
+			unsigned addr_slot,
+			const SocketOptions &opt,
                         ServerSocket *sock)
 {
   int listen_sd = net.create_socket(sa.get_family(), true);
@@ -258,7 +263,7 @@ int PosixWorker::listen(entity_addr_t &sa, const SocketOptions &opt,
 
   *sock = ServerSocket(
           std::unique_ptr<PosixServerSocketImpl>(
-              new PosixServerSocketImpl(net, listen_sd)));
+	    new PosixServerSocketImpl(net, listen_sd, sa, addr_slot)));
   return 0;
 }
 
@@ -284,14 +289,4 @@ int PosixWorker::connect(const entity_addr_t &addr, const SocketOptions &opts, C
 PosixNetworkStack::PosixNetworkStack(CephContext *c, const string &t)
     : NetworkStack(c, t)
 {
-  vector<string> corestrs;
-  get_str_vec(cct->_conf->ms_async_affinity_cores, corestrs);
-  for (auto & corestr : corestrs) {
-    string err;
-    int coreid = strict_strtol(corestr.c_str(), 10, &err);
-    if (err == "")
-      coreids.push_back(coreid);
-    else
-      lderr(cct) << __func__ << " failed to parse " << corestr << " in " << cct->_conf->ms_async_affinity_cores << dendl;
-  }
 }

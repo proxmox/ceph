@@ -34,7 +34,6 @@ void RewatchRequest::send() {
 }
 
 void RewatchRequest::unwatch() {
-  assert(m_watch_lock.is_wlocked());
   ceph_assert(m_watch_lock.is_wlocked());
   if (*m_watch_handle == 0) {
     rewatch();
@@ -50,7 +49,7 @@ void RewatchRequest::unwatch() {
   librados::AioCompletion *aio_comp = create_rados_callback<
                         RewatchRequest, &RewatchRequest::handle_unwatch>(this);
   int r = m_ioctx.aio_unwatch(watch_handle, aio_comp);
-  assert(r == 0);
+  ceph_assert(r == 0);
   aio_comp->release();
 }
 
@@ -75,7 +74,7 @@ void RewatchRequest::rewatch() {
   librados::AioCompletion *aio_comp = create_rados_callback<
                         RewatchRequest, &RewatchRequest::handle_rewatch>(this);
   int r = m_ioctx.aio_watch(m_oid, aio_comp, &m_rewatch_handle, m_watch_ctx);
-  assert(r == 0);
+  ceph_assert(r == 0);
   aio_comp->release();
 }
 

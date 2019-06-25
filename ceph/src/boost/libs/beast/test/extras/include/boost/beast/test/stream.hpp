@@ -432,9 +432,13 @@ read_some(MutableBufferSequence const& buffers,
         "MutableBufferSequence requirements not met");
     using boost::asio::buffer_copy;
     using boost::asio::buffer_size;
-    BOOST_ASSERT(buffer_size(buffers) > 0);
     if(in_->fc && in_->fc->fail(ec))
         return 0;
+    if(buffer_size(buffers) == 0)
+    {
+        ec.clear();
+        return 0;
+    }
     std::unique_lock<std::mutex> lock{in_->m};
     BOOST_ASSERT(! in_->op);
     in_->cv.wait(lock,
@@ -478,9 +482,8 @@ async_read_some(
         "MutableBufferSequence requirements not met");
     using boost::asio::buffer_copy;
     using boost::asio::buffer_size;
-    BOOST_ASSERT(buffer_size(buffers) > 0);
-    boost::asio::async_completion<ReadHandler,
-        void(error_code, std::size_t)> init{handler};
+    BOOST_BEAST_HANDLER_INIT(
+        ReadHandler, void(error_code, std::size_t));
     if(in_->fc)
     {
         error_code ec;
@@ -488,7 +491,7 @@ async_read_some(
             return boost::asio::post(
                 in_->ioc.get_executor(),
                 bind_handler(
-                    init.completion_handler,
+                    std::move(init.completion_handler),
                     ec,
                     0));
     }
@@ -506,7 +509,7 @@ async_read_some(
             boost::asio::post(
                 in_->ioc.get_executor(),
                 bind_handler(
-                    init.completion_handler,
+                    std::move(init.completion_handler),
                     error_code{},
                     bytes_transferred));
         }
@@ -522,7 +525,7 @@ async_read_some(
             boost::asio::post(
                 in_->ioc.get_executor(),
                 bind_handler(
-                    init.completion_handler,
+                    std::move(init.completion_handler),
                     ec,
                     0));
         }
@@ -531,7 +534,7 @@ async_read_some(
             in_->op.reset(new read_op_impl<BOOST_ASIO_HANDLER_TYPE(
                 ReadHandler, void(error_code, std::size_t)),
                     MutableBufferSequence>{*in_, buffers,
-                        init.completion_handler});
+                        std::move(init.completion_handler)});
         }
     }
     return init.result.get();
@@ -598,14 +601,14 @@ async_write_some(ConstBufferSequence const& buffers,
         "ConstBufferSequence requirements not met");
     using boost::asio::buffer_copy;
     using boost::asio::buffer_size;
-    boost::asio::async_completion<WriteHandler,
-        void(error_code, std::size_t)> init{handler};
+    BOOST_BEAST_HANDLER_INIT(
+        WriteHandler, void(error_code, std::size_t));
     auto out = out_.lock();
     if(! out)
         return boost::asio::post(
             in_->ioc.get_executor(),
             bind_handler(
-                init.completion_handler,
+                std::move(init.completion_handler),
                 boost::asio::error::connection_reset,
                 0));
     BOOST_ASSERT(out->code == status::ok);
@@ -616,7 +619,7 @@ async_write_some(ConstBufferSequence const& buffers,
             return boost::asio::post(
                 in_->ioc.get_executor(),
                 bind_handler(
-                    init.completion_handler,
+                    std::move(init.completion_handler),
                     ec,
                     0));
     }
@@ -632,7 +635,7 @@ async_write_some(ConstBufferSequence const& buffers,
     boost::asio::post(
         in_->ioc.get_executor(),
         bind_handler(
-            init.completion_handler,
+            std::move(init.completion_handler),
             error_code{},
             bytes_transferred));
     return init.result.get();
@@ -702,18 +705,11 @@ class stream::read_op_impl : public stream::read_op
         lambda(lambda&&) = default;
         lambda(lambda const&) = default;
 
-        lambda(state& s, Buffers const& b, Handler&& h)
+        template<class DeducedHandler>
+        lambda(state& s, Buffers const& b, DeducedHandler&& h)
             : s_(s)
             , b_(b)
-            , h_(std::move(h))
-            , work_(s_.ioc.get_executor())
-        {
-        }
-
-        lambda(state& s, Buffers const& b, Handler const& h)
-            : s_(s)
-            , b_(b)
-            , h_(h)
+            , h_(std::forward<DeducedHandler>(h))
             , work_(s_.ioc.get_executor())
         {
         }
@@ -772,13 +768,9 @@ class stream::read_op_impl : public stream::read_op
     lambda fn_;
 
 public:
-    read_op_impl(state& s, Buffers const& b, Handler&& h)
-        : fn_(s, b, std::move(h))
-    {
-    }
-
-    read_op_impl(state& s, Buffers const& b, Handler const& h)
-        : fn_(s, b, h)
+    template<class DeducedHandler>
+    read_op_impl(state& s, Buffers const& b, DeducedHandler&& h)
+        : fn_(s, b, std::forward<DeducedHandler>(h))
     {
     }
 

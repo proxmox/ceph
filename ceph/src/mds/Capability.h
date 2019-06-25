@@ -72,20 +72,22 @@ public:
   MEMPOOL_CLASS_HELPERS();
 
   struct Export {
-    int64_t cap_id;
-    int32_t wanted;
-    int32_t issued;
-    int32_t pending;
+    int64_t cap_id = 0;
+    int32_t wanted = 0;
+    int32_t issued = 0;
+    int32_t pending = 0;
     snapid_t client_follows;
-    ceph_seq_t seq;
-    ceph_seq_t mseq;
+    ceph_seq_t seq = 0;
+    ceph_seq_t mseq = 0;
     utime_t last_issue_stamp;
-    Export() : cap_id(0), wanted(0), issued(0), pending(0), seq(0), mseq(0) {}
-    Export(int64_t id, int w, int i, int p, snapid_t cf, ceph_seq_t s, ceph_seq_t m, utime_t lis) :
+    uint32_t state = 0;
+    Export() {}
+    Export(int64_t id, int w, int i, int p, snapid_t cf,
+	   ceph_seq_t s, ceph_seq_t m, utime_t lis, unsigned st) :
       cap_id(id), wanted(w), issued(i), pending(p), client_follows(cf),
-      seq(s), mseq(m), last_issue_stamp(lis) {}
+      seq(s), mseq(m), last_issue_stamp(lis), state(st) {}
     void encode(bufferlist &bl) const;
-    void decode(bufferlist::iterator &p);
+    void decode(bufferlist::const_iterator &p);
     void dump(Formatter *f) const;
     static void generate_test_instances(list<Export*>& ls);
   };
@@ -96,7 +98,7 @@ public:
     Import() : cap_id(0), issue_seq(0), mseq(0) {}
     Import(int64_t i, ceph_seq_t s, ceph_seq_t m) : cap_id(i), issue_seq(s), mseq(m) {}
     void encode(bufferlist &bl) const;
-    void decode(bufferlist::iterator &p);
+    void decode(bufferlist::const_iterator &p);
     void dump(Formatter *f) const;
   };
   struct revoke_info {
@@ -105,7 +107,7 @@ public:
     revoke_info() : before(0), seq(0), last_issue(0) {}
     revoke_info(__u32 b, ceph_seq_t s, ceph_seq_t li) : before(b), seq(s), last_issue(li) {}
     void encode(bufferlist& bl) const;
-    void decode(bufferlist::iterator& bl);
+    void decode(bufferlist::const_iterator& bl);
     void dump(Formatter *f) const;
     static void generate_test_instances(list<revoke_info*>& ls);
   };
@@ -113,12 +115,19 @@ public:
   const static unsigned STATE_NOTABLE		= (1<<0);
   const static unsigned STATE_NEW		= (1<<1);
   const static unsigned STATE_IMPORTING		= (1<<2);
+  const static unsigned STATE_NEEDSNAPFLUSH	= (1<<3);
   const static unsigned STATE_CLIENTWRITEABLE	= (1<<4);
+  const static unsigned STATE_NOINLINE		= (1<<5);
+  const static unsigned STATE_NOPOOLNS		= (1<<6);
+  const static unsigned STATE_NOQUOTA		= (1<<7);
+
+  const static unsigned MASK_STATE_EXPORTED =
+    (STATE_CLIENTWRITEABLE | STATE_NOINLINE | STATE_NOPOOLNS | STATE_NOQUOTA);
 
   Capability(CInode *i=nullptr, Session *s=nullptr, uint64_t id=0);
-  Capability(const Capability& other);  // no copying
+  Capability(const Capability& other) = delete;
 
-  const Capability& operator=(const Capability& other);  // no copying
+  const Capability& operator=(const Capability& other) = delete;
 
   int pending() const {
     return is_valid() ? _pending : (_pending & CEPH_CAP_PIN);
@@ -147,7 +156,7 @@ public:
 	_revokes.pop_back();
     } else {
       // no change.
-      assert(_pending == c);
+      ceph_assert(_pending == c);
     }
     //last_issue = 
     inc_last_seq();
@@ -208,7 +217,7 @@ public:
       }
     }
   }
-  ceph_seq_t get_mseq() { return mseq; }
+  ceph_seq_t get_mseq() const { return mseq; }
   void inc_mseq() { mseq++; }
 
   utime_t get_last_issue_stamp() const { return last_issue_stamp; }
@@ -219,14 +228,14 @@ public:
   void set_last_revoke_stamp(utime_t t) { last_revoke_stamp = t; }
   void reset_num_revoke_warnings() { num_revoke_warnings = 0; }
   void inc_num_revoke_warnings() { ++num_revoke_warnings; }
-  unsigned get_num_revoke_warnings() { return num_revoke_warnings; }
+  unsigned get_num_revoke_warnings() const { return num_revoke_warnings; }
 
   void set_cap_id(uint64_t i) { cap_id = i; }
-  uint64_t get_cap_id() { return cap_id; }
+  uint64_t get_cap_id() const { return cap_id; }
 
   //ceph_seq_t get_last_issue() { return last_issue; }
 
-  bool is_suppress() { return suppress > 0; }
+  bool is_suppress() const { return suppress > 0; }
   void inc_suppress() { suppress++; }
   void dec_suppress() { suppress--; }
 
@@ -239,9 +248,12 @@ public:
   bool is_new() const { return state & STATE_NEW; }
   void mark_new() { state |= STATE_NEW; }
   void clear_new() { state &= ~STATE_NEW; }
-  bool is_importing() { return state & STATE_IMPORTING; }
+  bool is_importing() const { return state & STATE_IMPORTING; }
   void mark_importing() { state |= STATE_IMPORTING; }
   void clear_importing() { state &= ~STATE_IMPORTING; }
+  bool need_snapflush() const { return state & STATE_NEEDSNAPFLUSH; }
+  void mark_needsnapflush() { state |= STATE_NEEDSNAPFLUSH; }
+  void clear_needsnapflush() { state &= ~STATE_NEEDSNAPFLUSH; }
 
   bool is_clientwriteable() const { return state & STATE_CLIENTWRITEABLE; }
   void mark_clientwriteable() {
@@ -257,6 +269,10 @@ public:
       maybe_clear_notable();
     }
   }
+
+  bool is_noinline() const { return state & STATE_NOINLINE; }
+  bool is_nopoolns() const { return state & STATE_NOPOOLNS; }
+  bool is_noquota() const { return state & STATE_NOQUOTA; }
 
   CInode *get_inode() const { return inode; }
   Session *get_session() const { return session; }
@@ -281,7 +297,7 @@ public:
   
   // -- exports --
   Export make_export() const {
-    return Export(cap_id, wanted(), issued(), pending(), client_follows, get_last_seq(), mseq+1, last_issue_stamp);
+    return Export(cap_id, wanted(), issued(), pending(), client_follows, get_last_seq(), mseq+1, last_issue_stamp, state);
   }
   void merge(const Export& other, bool auth_cap) {
     if (!is_stale()) {
@@ -297,6 +313,10 @@ public:
     }
 
     client_follows = other.client_follows;
+
+    state |= other.state & MASK_STATE_EXPORTED;
+    if ((other.state & STATE_CLIENTWRITEABLE) && !is_notable())
+      mark_notable();
 
     // wanted
     set_wanted(wanted() | other.wanted);
@@ -327,7 +347,7 @@ public:
 
   // serializers
   void encode(bufferlist &bl) const;
-  void decode(bufferlist::iterator &bl);
+  void decode(bufferlist::const_iterator &bl);
   void dump(Formatter *f) const;
   static void generate_test_instances(list<Capability*>& ls);
   

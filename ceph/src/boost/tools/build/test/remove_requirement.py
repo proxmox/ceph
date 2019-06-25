@@ -12,6 +12,8 @@ t = BoostBuild.Tester(use_test_config=False)
 
 t.write("jamroot.jam", """
 project : requirements <threading>multi <variant>debug:<link>static ;
+# Force link to be relevant
+project : requirements <link>shared:<define>TEST_DLL ;
 
 build-project sub ;
 build-project sub2 ;
@@ -41,7 +43,7 @@ int main() {}
 """)
 
 t.write("sub3/jamfile.jam", """
-exe hello : hello.cpp : -<variant>debug:<link>static ;
+exe hello : hello.cpp : "-<variant>debug:<link>static" ;
 """)
 
 t.write("sub4/hello.cpp", """
@@ -49,7 +51,7 @@ int main() {}
 """)
 
 t.write("sub4/jamfile.jam", """
-project : requirements -<variant>debug:<link>static ;
+project : requirements "-<variant>debug:<link>static" ;
 exe hello : hello.cpp ;
 """)
 

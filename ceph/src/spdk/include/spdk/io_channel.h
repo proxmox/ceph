@@ -38,89 +38,11 @@
 #ifndef SPDK_IO_CHANNEL_H_
 #define SPDK_IO_CHANNEL_H_
 
-#include <inttypes.h>
-#include <stdbool.h>
-
-#include "spdk/queue.h"
-
-#define SPDK_IO_PRIORITY_DEFAULT	100
-
-struct spdk_io_channel;
-
-typedef int (*io_channel_create_cb_t)(void *io_device, uint32_t priority, void *ctx_buf,
-				      void *unique_ctx);
-typedef void (*io_channel_destroy_cb_t)(void *io_device, void *ctx_buf);
-
-/**
- * \brief Initializes the calling thread for I/O channel allocation.
+/*
+ * This file has been renamed to thread.h. Please update
+ * include paths.
  */
-void spdk_allocate_thread(void);
 
-/**
- * \brief Releases any resources related to the calling thread for I/O channel allocation.
- *
- * All I/O channel references related to the calling thread must be released using
- *  spdk_put_io_channel() prior to calling this function.
- */
-void spdk_free_thread(void);
-
-/**
- * \brief Register the opaque io_device context as an I/O device.
- *
- * After an I/O device is registered, it can return I/O channels using the
- *  spdk_get_io_channel() function.  create_cb is the callback function invoked
- *  to allocate any resources required for a new I/O channel.  destroy_cb is the
- *  callback function invoked to release the resources for an I/O channel.  ctx_size
- *  is the size of the context buffer allocated to store references to allocated I/O
- *  channel resources.
- */
-void spdk_io_device_register(void *io_device, io_channel_create_cb_t create_cb,
-			     io_channel_destroy_cb_t destroy_cb, uint32_t ctx_size);
-
-/**
- * \brief Unregister the opaque io_device context as an I/O device.
- *
- * Callers must ensure they release references to any I/O channel related to this
- *  device before calling this function.
- */
-void spdk_io_device_unregister(void *io_device);
-
-/**
- * \brief Gets an I/O channel for the specified io_device to be used by the calling thread.
- *
- * The io_device context pointer specified must have previously been registered using
- *  spdk_io_device_register().  If an existing I/O channel does not exist yet for the given
- *  io_device on the calling thread, it will allocate an I/O channel and invoke the create_cb
- *  function pointer specified in spdk_io_device_register().  If an I/O channel already
- *  exists for the given io_device on the calling thread, its reference is returned rather
- *  than creating a new I/O channel.
- *
- * The priority parameter allows callers to create different I/O channels to the same
- *  I/O device with varying priorities.  Currently this value must be set to
- *  SPDK_IO_PRIORITY_DEFAULT.
- *
- * The unique parameter allows callers to specify that an existing channel should not
- *  be used to satisfy this request, even if the io_device and priority fields match.
- *
- * The unique_ctx parameter allows callers to pass channel-specific context to the create_cb
- *  handler for unique channels.  This value must be NULL for shared channels.
- */
-struct spdk_io_channel *spdk_get_io_channel(void *io_device, uint32_t priority, bool unique,
-		void *unique_ctx);
-
-/**
- * \brief Releases a reference to an I/O channel.
- *
- * Must be called from the same thread that called spdk_get_io_channel() for the specified
- *  I/O channel.  If this releases the last reference to the I/O channel, The destroy_cb
- *  function specified in spdk_io_device_register() will be invoked to release any
- *  associated resources.
- */
-void spdk_put_io_channel(struct spdk_io_channel *ch);
-
-/**
- * \brief Returns the context buffer associated with an I/O channel.
- */
-void *spdk_io_channel_get_ctx(struct spdk_io_channel *ch);
+#include "spdk/thread.h"
 
 #endif /* SPDK_IO_CHANNEL_H_ */

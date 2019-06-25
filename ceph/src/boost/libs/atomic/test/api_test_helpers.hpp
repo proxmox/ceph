@@ -1,5 +1,5 @@
 //  Copyright (c) 2011 Helge Bahmann
-//  Copyright (c) 2017 Andrey Semashev
+//  Copyright (c) 2017 - 2018 Andrey Semashev
 //
 //  Distributed under the Boost Software License, Version 1.0.
 //  See accompanying file LICENSE_1_0.txt or copy at
@@ -88,6 +88,14 @@ struct test_stream_type
         return *this;
     }
 #endif // defined(BOOST_HAS_INT128)
+#if defined(BOOST_HAS_FLOAT128)
+    // libstdc++ does not provide output operators for __float128
+    test_stream_type const& operator<< (boost::float128_type const& v) const
+    {
+        std::cerr << static_cast< double >(v);
+        return *this;
+    }
+#endif // defined(BOOST_HAS_FLOAT128)
 };
 
 const test_stream_type test_stream = {};
@@ -95,6 +103,8 @@ const test_stream_type test_stream = {};
 #define BOOST_LIGHTWEIGHT_TEST_OSTREAM test_stream
 
 #include <boost/core/lightweight_test.hpp>
+
+#include "value_with_epsilon.hpp"
 
 /* provide helpers that exercise whether the API
 functions of "boost::atomic" provide the correct
@@ -311,46 +321,46 @@ void test_additive_operators_with_type_and_test()
     {
         boost::atomic<T> a(zero_value);
         bool f = a.add_and_test(zero_diff);
-        BOOST_TEST_EQ( f, true );
+        BOOST_TEST_EQ( f, false );
         BOOST_TEST_EQ( a.load(), zero_value );
 
         f = a.add_and_test(one_diff);
-        BOOST_TEST_EQ( f, false );
+        BOOST_TEST_EQ( f, true );
         BOOST_TEST_EQ( a.load(), T(zero_add + one_diff) );
     }
     {
         boost::atomic<T> a(zero_value);
         bool f = a.add_and_test((distance_limits< T, D >::max)());
-        BOOST_TEST_EQ( f, false );
+        BOOST_TEST_EQ( f, true );
         BOOST_TEST_EQ( a.load(), T(zero_add + (distance_limits< T, D >::max)()) );
     }
     {
         boost::atomic<T> a(zero_value);
         bool f = a.add_and_test((distance_limits< T, D >::min)());
-        BOOST_TEST_EQ( f, ((distance_limits< T, D >::min)() == 0) );
+        BOOST_TEST_EQ( f, ((distance_limits< T, D >::min)() != 0) );
         BOOST_TEST_EQ( a.load(), T(zero_add + (distance_limits< T, D >::min)()) );
     }
 
     {
         boost::atomic<T> a(zero_value);
         bool f = a.sub_and_test(zero_diff);
-        BOOST_TEST_EQ( f, true );
+        BOOST_TEST_EQ( f, false );
         BOOST_TEST_EQ( a.load(), zero_value );
 
         f = a.sub_and_test(one_diff);
-        BOOST_TEST_EQ( f, false );
+        BOOST_TEST_EQ( f, true );
         BOOST_TEST_EQ( a.load(), T(zero_add - one_diff) );
     }
     {
         boost::atomic<T> a(zero_value);
         bool f = a.sub_and_test((distance_limits< T, D >::max)());
-        BOOST_TEST_EQ( f, false );
+        BOOST_TEST_EQ( f, true );
         BOOST_TEST_EQ( a.load(), T(zero_add - (distance_limits< T, D >::max)()) );
     }
     {
         boost::atomic<T> a(zero_value);
         bool f = a.sub_and_test((distance_limits< T, D >::min)());
-        BOOST_TEST_EQ( f, ((distance_limits< T, D >::min)() == 0) );
+        BOOST_TEST_EQ( f, ((distance_limits< T, D >::min)() != 0) );
         BOOST_TEST_EQ( a.load(), T(zero_add - (distance_limits< T, D >::min)()) );
     }
 }
@@ -421,6 +431,21 @@ void test_additive_operators_with_type(T value, D delta)
         BOOST_TEST_EQ( n, T((AddType)value - 1) );
     }
 
+    // Operations returning the actual resulting value
+    {
+        boost::atomic<T> a(value);
+        T n = a.add(delta);
+        BOOST_TEST_EQ( a.load(), T((AddType)value + delta) );
+        BOOST_TEST_EQ( n, T((AddType)value + delta) );
+    }
+
+    {
+        boost::atomic<T> a(value);
+        T n = a.sub(delta);
+        BOOST_TEST_EQ( a.load(), T((AddType)value - delta) );
+        BOOST_TEST_EQ( n, T((AddType)value - delta) );
+    }
+
     // Opaque operations
     {
         boost::atomic<T> a(value);
@@ -459,11 +484,37 @@ void test_negation()
     }
     {
         boost::atomic<T> a((T)1);
+        T n = a.negate();
+        BOOST_TEST_EQ( a.load(), (T)-1 );
+        BOOST_TEST_EQ( n, (T)-1 );
+
+        n = a.negate();
+        BOOST_TEST_EQ( a.load(), (T)1 );
+        BOOST_TEST_EQ( n, (T)1 );
+    }
+    {
+        boost::atomic<T> a((T)1);
         a.opaque_negate();
         BOOST_TEST_EQ( a.load(), (T)-1 );
 
         a.opaque_negate();
         BOOST_TEST_EQ( a.load(), (T)1 );
+    }
+    {
+        boost::atomic<T> a((T)1);
+        bool f = a.negate_and_test();
+        BOOST_TEST_EQ( f, true );
+        BOOST_TEST_EQ( a.load(), (T)-1 );
+
+        f = a.negate_and_test();
+        BOOST_TEST_EQ( f, true );
+        BOOST_TEST_EQ( a.load(), (T)1 );
+    }
+    {
+        boost::atomic<T> a((T)0);
+        bool f = a.negate_and_test();
+        BOOST_TEST_EQ( f, false );
+        BOOST_TEST_EQ( a.load(), (T)0 );
     }
 }
 
@@ -536,6 +587,35 @@ void test_bit_operators(T value, T delta)
         BOOST_TEST_EQ( n, T(value ^ delta) );
     }
 
+    // Operations returning the actual resulting value
+    {
+        boost::atomic<T> a(value);
+        T n = a.bitwise_and(delta);
+        BOOST_TEST_EQ( a.load(), T(value & delta) );
+        BOOST_TEST_EQ( n, T(value & delta) );
+    }
+
+    {
+        boost::atomic<T> a(value);
+        T n = a.bitwise_or(delta);
+        BOOST_TEST_EQ( a.load(), T(value | delta) );
+        BOOST_TEST_EQ( n, T(value | delta) );
+    }
+
+    {
+        boost::atomic<T> a(value);
+        T n = a.bitwise_xor(delta);
+        BOOST_TEST_EQ( a.load(), T(value ^ delta) );
+        BOOST_TEST_EQ( n, T(value ^ delta) );
+    }
+
+    {
+        boost::atomic<T> a(value);
+        T n = a.bitwise_complement();
+        BOOST_TEST_EQ( a.load(), T(~value) );
+        BOOST_TEST_EQ( n, T(~value) );
+    }
+
     // Opaque operations
     {
         boost::atomic<T> a(value);
@@ -565,45 +645,56 @@ void test_bit_operators(T value, T delta)
     {
         boost::atomic<T> a((T)1);
         bool f = a.and_and_test((T)1);
-        BOOST_TEST_EQ( f, false );
+        BOOST_TEST_EQ( f, true );
         BOOST_TEST_EQ( a.load(), T(1) );
 
         f = a.and_and_test((T)0);
-        BOOST_TEST_EQ( f, true );
+        BOOST_TEST_EQ( f, false );
         BOOST_TEST_EQ( a.load(), T(0) );
 
         f = a.and_and_test((T)0);
-        BOOST_TEST_EQ( f, true );
+        BOOST_TEST_EQ( f, false );
         BOOST_TEST_EQ( a.load(), T(0) );
     }
 
     {
         boost::atomic<T> a((T)0);
         bool f = a.or_and_test((T)0);
-        BOOST_TEST_EQ( f, true );
+        BOOST_TEST_EQ( f, false );
         BOOST_TEST_EQ( a.load(), T(0) );
 
         f = a.or_and_test((T)1);
-        BOOST_TEST_EQ( f, false );
+        BOOST_TEST_EQ( f, true );
         BOOST_TEST_EQ( a.load(), T(1) );
 
         f = a.or_and_test((T)1);
-        BOOST_TEST_EQ( f, false );
+        BOOST_TEST_EQ( f, true );
         BOOST_TEST_EQ( a.load(), T(1) );
     }
 
     {
         boost::atomic<T> a((T)0);
         bool f = a.xor_and_test((T)0);
-        BOOST_TEST_EQ( f, true );
+        BOOST_TEST_EQ( f, false );
         BOOST_TEST_EQ( a.load(), T(0) );
 
         f = a.xor_and_test((T)1);
-        BOOST_TEST_EQ( f, false );
+        BOOST_TEST_EQ( f, true );
         BOOST_TEST_EQ( a.load(), T(1) );
 
         f = a.xor_and_test((T)1);
+        BOOST_TEST_EQ( f, false );
+        BOOST_TEST_EQ( a.load(), T(0) );
+    }
+
+    {
+        boost::atomic<T> a((T)0);
+        bool f = a.complement_and_test();
         BOOST_TEST_EQ( f, true );
+        BOOST_TEST_EQ( a.load(), static_cast< T >(~static_cast< T >(0)) );
+
+        f = a.complement_and_test();
+        BOOST_TEST_EQ( f, false );
         BOOST_TEST_EQ( a.load(), T(0) );
     }
 
@@ -657,7 +748,7 @@ void test_bit_operators(T value, T delta)
 template<typename T>
 void do_test_integral_api(boost::false_type)
 {
-    BOOST_TEST( sizeof(boost::atomic<T>) >= sizeof(T));
+    BOOST_TEST(sizeof(boost::atomic<T>) >= sizeof(T));
 
     test_base_operators<T>(42, 43, 44);
     test_additive_operators<T, T>(42, 17);
@@ -692,6 +783,123 @@ inline void test_integral_api(void)
     if (boost::is_signed<T>::value)
         test_negation<T>();
 }
+
+#if !defined(BOOST_ATOMIC_NO_FLOATING_POINT)
+
+template<typename T, typename D>
+void test_fp_additive_operators(T value, D delta)
+{
+    /* explicit add/sub */
+    {
+        boost::atomic<T> a(value);
+        T n = a.fetch_add(delta);
+        BOOST_TEST_EQ( a.load(), approx(T(value + delta)) );
+        BOOST_TEST_EQ( n, approx(value) );
+    }
+
+    {
+        boost::atomic<T> a(value);
+        T n = a.fetch_sub(delta);
+        BOOST_TEST_EQ( a.load(), approx(T(value - delta)) );
+        BOOST_TEST_EQ( n, approx(value) );
+    }
+
+    /* overloaded modify/assign*/
+    {
+        boost::atomic<T> a(value);
+        T n = (a += delta);
+        BOOST_TEST_EQ( a.load(), approx(T(value + delta)) );
+        BOOST_TEST_EQ( n, approx(T(value + delta)) );
+    }
+
+    {
+        boost::atomic<T> a(value);
+        T n = (a -= delta);
+        BOOST_TEST_EQ( a.load(), approx(T(value - delta)) );
+        BOOST_TEST_EQ( n, approx(T(value - delta)) );
+    }
+
+    // Operations returning the actual resulting value
+    {
+        boost::atomic<T> a(value);
+        T n = a.add(delta);
+        BOOST_TEST_EQ( a.load(), approx(T(value + delta)) );
+        BOOST_TEST_EQ( n, approx(T(value + delta)) );
+    }
+
+    {
+        boost::atomic<T> a(value);
+        T n = a.sub(delta);
+        BOOST_TEST_EQ( a.load(), approx(T(value - delta)) );
+        BOOST_TEST_EQ( n, approx(T(value - delta)) );
+    }
+
+    // Opaque operations
+    {
+        boost::atomic<T> a(value);
+        a.opaque_add(delta);
+        BOOST_TEST_EQ( a.load(), approx(T(value + delta)) );
+    }
+
+    {
+        boost::atomic<T> a(value);
+        a.opaque_sub(delta);
+        BOOST_TEST_EQ( a.load(), approx(T(value - delta)) );
+    }
+}
+
+template< typename T >
+void test_fp_negation()
+{
+    {
+        boost::atomic<T> a((T)1);
+        T n = a.fetch_negate();
+        BOOST_TEST_EQ( a.load(), approx((T)-1) );
+        BOOST_TEST_EQ( n, approx((T)1) );
+
+        n = a.fetch_negate();
+        BOOST_TEST_EQ( a.load(), approx((T)1) );
+        BOOST_TEST_EQ( n, approx((T)-1) );
+    }
+    {
+        boost::atomic<T> a((T)1);
+        T n = a.negate();
+        BOOST_TEST_EQ( a.load(), approx((T)-1) );
+        BOOST_TEST_EQ( n, approx((T)-1) );
+
+        n = a.negate();
+        BOOST_TEST_EQ( a.load(), approx((T)1) );
+        BOOST_TEST_EQ( n, approx((T)1) );
+    }
+    {
+        boost::atomic<T> a((T)1);
+        a.opaque_negate();
+        BOOST_TEST_EQ( a.load(), approx((T)-1) );
+
+        a.opaque_negate();
+        BOOST_TEST_EQ( a.load(), approx((T)1) );
+    }
+}
+
+#endif // !defined(BOOST_ATOMIC_NO_FLOATING_POINT)
+
+template<typename T>
+inline void test_floating_point_api(void)
+{
+    BOOST_TEST(sizeof(boost::atomic<T>) >= sizeof(T));
+
+    // Note: When support for floating point is disabled, even the base operation tests may fail because
+    // the generic template specialization does not account for garbage in padding bits that are present in some FP types.
+#if !defined(BOOST_ATOMIC_NO_FLOATING_POINT)
+    test_base_operators<T>(static_cast<T>(42.1), static_cast<T>(43.2), static_cast<T>(44.3));
+
+    test_fp_additive_operators<T, T>(static_cast<T>(42.5), static_cast<T>(17.7));
+    test_fp_additive_operators<T, T>(static_cast<T>(-42.5), static_cast<T>(-17.7));
+
+    test_fp_negation<T>();
+#endif
+}
+
 
 template<typename T>
 void test_pointer_api(void)

@@ -8,9 +8,9 @@
 #include <unistd.h>
 #include <sstream>
 
-#include "include/assert.h"
 #include "common/errno.h"
 #include "common/safe_io.h"
+#include "include/ceph_assert.h"
 #include "include/compat.h"
 #include "include/sock_compat.h"
 
@@ -35,7 +35,7 @@ public:
   {}
 
   int prefork(std::string &err) {
-    assert(!forked);
+    ceph_assert(!forked);
     std::ostringstream oss;
     int r = socketpair_cloexec(AF_UNIX, SOCK_STREAM, 0, fd);
     if (r < 0) {
@@ -75,7 +75,7 @@ public:
   }
 
   int parent_wait(std::string &err_msg) {
-    assert(forked);
+    ceph_assert(forked);
 
     int r = -1;
     std::ostringstream oss;
@@ -111,7 +111,7 @@ public:
   int signal_exit(int r) {
     if (forked) {
       /* If we get an error here, it's too late to do anything reasonable about it. */
-      (void)safe_write(fd[1], &r, sizeof(r));
+      [[maybe_unused]] auto n = safe_write(fd[1], &r, sizeof(r));
     }
     return r;
   }
@@ -122,7 +122,7 @@ public:
   }
 
   void daemonize() {
-    assert(forked);
+    ceph_assert(forked);
     static int r = -1;
     int r2 = ::write(fd[1], &r, sizeof(r));
     r += r2;  // make the compiler shut up about the unused return code from ::write(2).

@@ -44,7 +44,7 @@
 			<Tool
 				Name="VCCLCompilerTool"
 				Optimization="0"
-				AdditionalIncludeDirectories="$(SolutionDir)..\..\lib;$(SolutionDir)..\..\lib\common;$(SolutionDir)..\..\lib\dictBuilder;$(SolutionDir)..\..\lib\legacy;$(SolutionDir)..\..\programs"
+				AdditionalIncludeDirectories="$(SolutionDir)..\..\lib;$(SolutionDir)..\..\lib\common;$(SolutionDir)..\..\lib\compress;$(SolutionDir)..\..\lib\dictBuilder;$(SolutionDir)..\..\lib\legacy;$(SolutionDir)..\..\programs"
 				PreprocessorDefinitions="WIN32;_DEBUG;_CONSOLE"
 				MinimalRebuild="true"
 				BasicRuntimeChecks="3"
@@ -120,7 +120,7 @@
 				Optimization="2"
 				EnableIntrinsicFunctions="true"
 				OmitFramePointers="true"
-				AdditionalIncludeDirectories="$(SolutionDir)..\..\lib;$(SolutionDir)..\..\lib\common;$(SolutionDir)..\..\lib\dictBuilder;$(SolutionDir)..\..\lib\legacy;$(SolutionDir)..\..\programs"
+				AdditionalIncludeDirectories="$(SolutionDir)..\..\lib;$(SolutionDir)..\..\lib\common;$(SolutionDir)..\..\lib\compress;$(SolutionDir)..\..\lib\dictBuilder;$(SolutionDir)..\..\lib\legacy;$(SolutionDir)..\..\programs"
 				PreprocessorDefinitions="WIN32;NDEBUG;_CONSOLE"
 				RuntimeLibrary="0"
 				EnableFunctionLevelLinking="true"
@@ -194,7 +194,7 @@
 			<Tool
 				Name="VCCLCompilerTool"
 				Optimization="0"
-				AdditionalIncludeDirectories="$(SolutionDir)..\..\lib;$(SolutionDir)..\..\lib\common;$(SolutionDir)..\..\lib\dictBuilder;$(SolutionDir)..\..\lib\legacy;$(SolutionDir)..\..\programs"
+				AdditionalIncludeDirectories="$(SolutionDir)..\..\lib;$(SolutionDir)..\..\lib\common;$(SolutionDir)..\..\lib\compress;$(SolutionDir)..\..\lib\dictBuilder;$(SolutionDir)..\..\lib\legacy;$(SolutionDir)..\..\programs"
 				PreprocessorDefinitions="WIN32;_DEBUG;_CONSOLE"
 				MinimalRebuild="true"
 				BasicRuntimeChecks="3"
@@ -271,7 +271,7 @@
 				Optimization="2"
 				EnableIntrinsicFunctions="true"
 				OmitFramePointers="true"
-				AdditionalIncludeDirectories="$(SolutionDir)..\..\lib;$(SolutionDir)..\..\lib\common;$(SolutionDir)..\..\lib\dictBuilder;$(SolutionDir)..\..\lib\legacy;$(SolutionDir)..\..\programs"
+				AdditionalIncludeDirectories="$(SolutionDir)..\..\lib;$(SolutionDir)..\..\lib\common;$(SolutionDir)..\..\lib\dictBuilder;$(SolutionDir)..\..\lib\legacy;$(SolutionDir)..\..\lib\compress;$(SolutionDir)..\..\programs"
 				PreprocessorDefinitions="WIN32;NDEBUG;_CONSOLE"
 				RuntimeLibrary="0"
 				EnableFunctionLevelLinking="true"
@@ -333,7 +333,19 @@
 				>
 			</File>
 			<File
+				RelativePath="..\..\..\lib\dictBuilder\cover.c"
+				>
+			</File>
+			<File
 				RelativePath="..\..\..\lib\dictBuilder\divsufsort.c"
+				>
+			</File>
+			<File
+				RelativePath="..\..\..\lib\common\pool.c"
+				>
+			</File>
+			<File
+				RelativePath="..\..\..\lib\common\threading.c"
 				>
 			</File>
 			<File
@@ -377,11 +389,35 @@
 				>
 			</File>
 			<File
+				RelativePath="..\..\..\lib\compress\zstdmt_compress.c"
+				>
+			</File>
+			<File
 				RelativePath="..\..\..\lib\compress\zstd_compress.c"
 				>
 			</File>
 			<File
 				RelativePath="..\..\..\lib\decompress\zstd_decompress.c"
+				>
+			</File>
+			<File
+				RelativePath="..\..\..\lib\compress\zstd_fast.c"
+				>
+			</File>
+			<File
+				RelativePath="..\..\..\lib\compress\zstd_double_fast.c"
+				>
+			</File>
+			<File
+				RelativePath="..\..\..\lib\compress\zstd_lazy.c"
+				>
+			</File>
+			<File
+				RelativePath="..\..\..\lib\compress\zstd_opt.c"
+				>
+      </File>
+			<File
+				RelativePath="..\..\..\lib\compress\zstd_ldm.c"
 				>
 			</File>
 		</Filter>
@@ -396,6 +432,14 @@
 			</File>
 			<File
 				RelativePath="..\..\..\lib\dictBuilder\divsufsort.h"
+				>
+			</File>
+			<File
+				RelativePath="..\..\..\lib\common\pool.h"
+				>
+			</File>
+			<File
+				RelativePath="..\..\..\lib\common\threading.h"
 				>
 			</File>
 			<File
@@ -447,11 +491,35 @@
 				>
 			</File>
 			<File
-				RelativePath="..\..\..\lib\compress\zstd_opt.h"
+				RelativePath="..\..\..\lib\compress\zstdmt_compress.h"
 				>
 			</File>
 			<File
 				RelativePath="..\..\..\lib\common\zstd_static.h"
+				>
+			</File>
+			<File
+				RelativePath="..\..\..\lib\compress\zstd_compress.h"
+				>
+			</File>
+			<File
+				RelativePath="..\..\..\lib\compress\zstd_fast.h"
+				>
+			</File>
+			<File
+				RelativePath="..\..\..\lib\compress\zstd_double_fast.h"
+				>
+			</File>
+			<File
+				RelativePath="..\..\..\lib\compress\zstd_lazy.h"
+				>
+			</File>
+			<File
+				RelativePath="..\..\..\lib\compress\zstd_opt.h"
+				>
+      </File>
+			<File
+				RelativePath="..\..\..\lib\compress\zstd_ldm.h"
 				>
 			</File>
 		</Filter>

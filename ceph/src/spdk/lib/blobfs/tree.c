@@ -31,12 +31,7 @@
  *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include <stdbool.h>
-#include <assert.h>
-#include <errno.h>
-#include <stdlib.h>
-#include <string.h>
-#include <pthread.h>
+#include "spdk/stdinc.h"
 
 #include "spdk/blobfs.h"
 #include "blobfs_internal.h"
@@ -45,6 +40,8 @@
 #include "spdk/assert.h"
 #include "spdk/env.h"
 #include "spdk_internal/log.h"
+
+uint32_t g_fs_cache_buffer_shift = CACHE_BUFFER_SHIFT_DEFAULT;
 
 struct cache_buffer *
 spdk_tree_find_buffer(struct cache_tree *tree, uint64_t offset)
@@ -87,7 +84,7 @@ spdk_tree_insert_buffer(struct cache_tree *root, struct cache_buffer *buffer)
 	uint64_t index, offset;
 
 	offset = buffer->offset;
-	while (offset >= CACHE_TREE_LEVEL_SIZE(root->level)) {
+	while (offset >= CACHE_TREE_LEVEL_SIZE(root->level + 1)) {
 		if (root->present_mask != 0) {
 			tree = calloc(1, sizeof(*tree));
 			tree->level = root->level + 1;
@@ -102,6 +99,7 @@ spdk_tree_insert_buffer(struct cache_tree *root, struct cache_buffer *buffer)
 	tree = root;
 	while (tree->level > 0) {
 		index = offset / CACHE_TREE_LEVEL_SIZE(tree->level);
+		assert(index < CACHE_TREE_WIDTH);
 		offset &= CACHE_TREE_LEVEL_MASK(tree->level);
 		if (tree->u.tree[index] == NULL) {
 			tree->u.tree[index] = calloc(1, sizeof(*tree));
@@ -112,6 +110,7 @@ spdk_tree_insert_buffer(struct cache_tree *root, struct cache_buffer *buffer)
 	}
 
 	index = offset / CACHE_BUFFER_SIZE;
+	assert(index < CACHE_TREE_WIDTH);
 	assert(tree->u.buffer[index] == NULL);
 	tree->u.buffer[index] = buffer;
 	tree->present_mask |= (1ULL << index);

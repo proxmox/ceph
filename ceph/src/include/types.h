@@ -1,4 +1,4 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*- 
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
 // vim: ts=8 sw=2 smarttab
 /*
  * Ceph - scalable distributed file system
@@ -7,9 +7,9 @@
  *
  * This is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
- * License version 2.1, as published by the Free Software 
+ * License version 2.1, as published by the Free Software
  * Foundation.  See file COPYING.
- * 
+ *
  */
 #ifndef CEPH_TYPES_H
 #define CEPH_TYPES_H
@@ -54,12 +54,13 @@ extern "C" {
 #include <string>
 #include <list>
 #include <set>
+#include <boost/container/flat_set.hpp>
+#include <boost/container/flat_map.hpp>
 #include <map>
 #include <vector>
 #include <iostream>
 #include <iomanip>
 
-using namespace std;
 
 #include "include/unordered_map.h"
 
@@ -71,7 +72,7 @@ using namespace std;
 #include "assert.h"
 
 // DARWIN compatibility
-#ifdef DARWIN
+#ifdef __APPLE__
 typedef long long loff_t;
 typedef long long off64_t;
 #define O_DIRECT 00040000
@@ -94,42 +95,75 @@ typedef off_t loff_t;
 // the case of containers of containers. I'm tempted to abstract this
 // stuff using template templates like I did for denc.
 
+namespace std {
 template<class A, class B>
-inline ostream& operator<<(ostream&out, const pair<A,B>& v);
+inline std::ostream& operator<<(std::ostream&out, const std::pair<A,B>& v);
 template<class A, class Alloc>
-inline ostream& operator<<(ostream& out, const vector<A,Alloc>& v);
+inline std::ostream& operator<<(std::ostream& out, const std::vector<A,Alloc>& v);
+template<class A, std::size_t N, class Alloc>
+inline std::ostream& operator<<(std::ostream& out, const boost::container::small_vector<A,N,Alloc>& v);
 template<class A, class Comp, class Alloc>
-inline ostream& operator<<(ostream& out, const deque<A,Alloc>& v);
-template<class A, class B, class C>
-inline ostream& operator<<(ostream&out, const boost::tuple<A, B, C> &t);
+inline std::ostream& operator<<(std::ostream& out, const std::deque<A,Alloc>& v);
+template<typename... Ts>
+inline std::ostream& operator<<(std::ostream& out, const std::tuple<Ts...> &t);
 template<class A, class Alloc>
-inline ostream& operator<<(ostream& out, const list<A,Alloc>& ilist);
+inline std::ostream& operator<<(std::ostream& out, const std::list<A,Alloc>& ilist);
 template<class A, class Comp, class Alloc>
-inline ostream& operator<<(ostream& out, const set<A, Comp, Alloc>& iset);
+inline std::ostream& operator<<(std::ostream& out, const std::set<A, Comp, Alloc>& iset);
 template<class A, class Comp, class Alloc>
-inline ostream& operator<<(ostream& out, const multiset<A,Comp,Alloc>& iset);
+inline std::ostream& operator<<(std::ostream& out, const std::multiset<A,Comp,Alloc>& iset);
 template<class A, class B, class Comp, class Alloc>
-inline ostream& operator<<(ostream& out, const map<A,B,Comp,Alloc>& m);
+inline std::ostream& operator<<(std::ostream& out, const std::map<A,B,Comp,Alloc>& m);
 template<class A, class B, class Comp, class Alloc>
-inline ostream& operator<<(ostream& out, const multimap<A,B,Comp,Alloc>& m);
+inline std::ostream& operator<<(std::ostream& out, const std::multimap<A,B,Comp,Alloc>& m);
+}
 
+namespace boost {
+template<typename... Ts>
+inline std::ostream& operator<<(std::ostream& out, const boost::tuple<Ts...> &t);
+
+namespace container {
+template<class A, class Comp, class Alloc>
+inline std::ostream& operator<<(std::ostream& out, const boost::container::flat_set<A, Comp, Alloc>& iset);
+template<class A, class B, class Comp, class Alloc>
+inline std::ostream& operator<<(std::ostream& out, const boost::container::flat_map<A, B, Comp, Alloc>& iset);
+}
+}
+
+namespace std {
 template<class A, class B>
-inline ostream& operator<<(ostream& out, const pair<A,B>& v) {
+inline std::ostream& operator<<(std::ostream& out, const std::pair<A,B>& v) {
   return out << v.first << "," << v.second;
 }
 
 template<class A, class Alloc>
-inline ostream& operator<<(ostream& out, const vector<A,Alloc>& v) {
+inline std::ostream& operator<<(std::ostream& out, const std::vector<A,Alloc>& v) {
+  bool first = true;
   out << "[";
-  for (auto p = v.begin(); p != v.end(); ++p) {
-    if (p != v.begin()) out << ",";
-    out << *p;
+  for (const auto& p : v) {
+    if (!first) out << ",";
+    out << p;
+    first = false;
   }
   out << "]";
   return out;
 }
+
+template<class A, std::size_t N, class Alloc>
+inline std::ostream& operator<<(std::ostream& out, const boost::container::small_vector<A,N,Alloc>& v) {
+  bool first = true;
+  out << "[";
+  for (const auto& p : v) {
+    if (!first) out << ",";
+    out << p;
+    first = false;
+  }
+  out << "]";
+  return out;
+}
+
 template<class A, class Alloc>
-inline ostream& operator<<(ostream& out, const deque<A,Alloc>& v) {
+inline std::ostream& operator<<(std::ostream& out, const std::deque<A,Alloc>& v) {
   out << "<";
   for (auto p = v.begin(); p != v.end(); ++p) {
     if (p != v.begin()) out << ",";
@@ -139,14 +173,19 @@ inline ostream& operator<<(ostream& out, const deque<A,Alloc>& v) {
   return out;
 }
 
-template<class A, class B, class C>
-inline ostream& operator<<(ostream&out, const boost::tuple<A, B, C> &t) {
-  out << boost::get<0>(t) <<"," << boost::get<1>(t) << "," << boost::get<2>(t);
+template<typename... Ts>
+inline std::ostream& operator<<(std::ostream& out, const std::tuple<Ts...> &t) {
+  auto f = [n = sizeof...(Ts), i = 0U, &out](const auto& e) mutable {
+    out << e;
+    if (++i != n)
+      out << ",";
+  };
+  ceph::for_each(t, f);
   return out;
 }
 
 template<class A, class Alloc>
-inline ostream& operator<<(ostream& out, const list<A,Alloc>& ilist) {
+inline std::ostream& operator<<(std::ostream& out, const std::list<A,Alloc>& ilist) {
   for (auto it = ilist.begin();
        it != ilist.end();
        ++it) {
@@ -157,7 +196,7 @@ inline ostream& operator<<(ostream& out, const list<A,Alloc>& ilist) {
 }
 
 template<class A, class Comp, class Alloc>
-inline ostream& operator<<(ostream& out, const set<A, Comp, Alloc>& iset) {
+inline std::ostream& operator<<(std::ostream& out, const std::set<A, Comp, Alloc>& iset) {
   for (auto it = iset.begin();
        it != iset.end();
        ++it) {
@@ -168,7 +207,7 @@ inline ostream& operator<<(ostream& out, const set<A, Comp, Alloc>& iset) {
 }
 
 template<class A, class Comp, class Alloc>
-inline ostream& operator<<(ostream& out, const multiset<A,Comp,Alloc>& iset) {
+inline std::ostream& operator<<(std::ostream& out, const std::multiset<A,Comp,Alloc>& iset) {
   for (auto it = iset.begin();
        it != iset.end();
        ++it) {
@@ -179,7 +218,7 @@ inline ostream& operator<<(ostream& out, const multiset<A,Comp,Alloc>& iset) {
 }
 
 template<class A, class B, class Comp, class Alloc>
-inline ostream& operator<<(ostream& out, const map<A,B,Comp,Alloc>& m)
+inline std::ostream& operator<<(std::ostream& out, const std::map<A,B,Comp,Alloc>& m)
 {
   out << "{";
   for (auto it = m.begin();
@@ -193,7 +232,7 @@ inline ostream& operator<<(ostream& out, const map<A,B,Comp,Alloc>& m)
 }
 
 template<class A, class B, class Comp, class Alloc>
-inline ostream& operator<<(ostream& out, const multimap<A,B,Comp,Alloc>& m)
+inline std::ostream& operator<<(std::ostream& out, const std::multimap<A,B,Comp,Alloc>& m)
 {
   out << "{{";
   for (auto it = m.begin();
@@ -206,6 +245,41 @@ inline ostream& operator<<(ostream& out, const multimap<A,B,Comp,Alloc>& m)
   return out;
 }
 
+} // namespace std
+
+namespace boost {
+namespace tuples {
+template<typename A, typename B, typename C>
+inline std::ostream& operator<<(std::ostream& out, const boost::tuples::tuple<A, B, C> &t) {
+  return out << boost::get<0>(t) << ","
+	     << boost::get<1>(t) << ","
+	     << boost::get<2>(t);
+}
+}
+namespace container {
+template<class A, class Comp, class Alloc>
+inline std::ostream& operator<<(std::ostream& out, const boost::container::flat_set<A, Comp, Alloc>& iset) {
+  for (auto it = iset.begin();
+       it != iset.end();
+       ++it) {
+    if (it != iset.begin()) out << ",";
+    out << *it;
+  }
+  return out;
+}
+
+template<class A, class B, class Comp, class Alloc>
+inline std::ostream& operator<<(std::ostream& out, const boost::container::flat_map<A, B, Comp, Alloc>& m) {
+  for (auto it = m.begin();
+       it != m.end();
+       ++it) {
+    if (it != m.begin()) out << ",";
+    out << it->first << "=" << it->second;
+  }
+  return out;
+}
+}
+} // namespace boost
 
 
 
@@ -285,12 +359,14 @@ struct client_t {
 
   // cppcheck-suppress noExplicitConstructor
   client_t(int64_t _v = -2) : v(_v) {}
-  
+
   void encode(bufferlist& bl) const {
-    ::encode(v, bl);
+    using ceph::encode;
+    encode(v, bl);
   }
-  void decode(bufferlist::iterator& bl) {
-    ::decode(v, bl);
+  void decode(bufferlist::const_iterator& bl) {
+    using ceph::decode;
+    decode(v, bl);
   }
 };
 WRITE_CLASS_ENCODER(client_t)
@@ -386,7 +462,7 @@ inline ostream& operator<<(ostream& out, const byte_u_t& b)
 {
   uint64_t n = b.v;
   int index = 0;
-  const char* u[] = {"B", "KiB", "MiB", "GiB", "TiB", "PiB", "EiB"};
+  const char* u[] = {" B", " KiB", " MiB", " GiB", " TiB", " PiB", " EiB"};
 
   while (n >= 1024 && index < 7) {
     n /= 1024;
@@ -410,9 +486,9 @@ struct weightf_t {
 
 inline ostream& operator<<(ostream& out, const weightf_t& w)
 {
-  if (w.v < -0.01) {
+  if (w.v < -0.01F) {
     return out << "-";
-  } else if (w.v < 0.000001) {
+  } else if (w.v < 0.000001F) {
     return out << "0";
   } else {
     std::streamsize p = out.precision();
@@ -431,10 +507,12 @@ struct shard_id_t {
   const static shard_id_t NO_SHARD;
 
   void encode(bufferlist &bl) const {
-    ::encode(id, bl);
+    using ceph::encode;
+    encode(id, bl);
   }
-  void decode(bufferlist::iterator &bl) {
-    ::decode(id, bl);
+  void decode(bufferlist::const_iterator &bl) {
+    using ceph::decode;
+    decode(id, bl);
   }
 };
 WRITE_CLASS_ENCODER(shard_id_t)
@@ -442,7 +520,7 @@ WRITE_EQ_OPERATORS_1(shard_id_t, id)
 WRITE_CMP_OPERATORS_1(shard_id_t, id)
 ostream &operator<<(ostream &lhs, const shard_id_t &rhs);
 
-#if defined(__sun) || defined(_AIX) || defined(DARWIN) || defined(__FreeBSD__)
+#if defined(__sun) || defined(_AIX) || defined(__APPLE__) || defined(__FreeBSD__)
 __s32  ceph_to_hostos_errno(__s32 e);
 __s32  hostos_to_ceph_errno(__s32 e);
 #else
@@ -466,17 +544,71 @@ struct errorcode32_t {
   int operator<=(int i) { return code <= i; }
 
   void encode(bufferlist &bl) const {
+    using ceph::encode;
     __s32 newcode = hostos_to_ceph_errno(code);
-    ::encode(newcode, bl);
+    encode(newcode, bl);
   }
-  void decode(bufferlist::iterator &bl) {
-    ::decode(code, bl);
+  void decode(bufferlist::const_iterator &bl) {
+    using ceph::decode;
+    decode(code, bl);
     code = ceph_to_hostos_errno(code);
   }
 };
 WRITE_CLASS_ENCODER(errorcode32_t)
 WRITE_EQ_OPERATORS_1(errorcode32_t, code)
 WRITE_CMP_OPERATORS_1(errorcode32_t, code)
+
+template <uint8_t S>
+struct sha_digest_t {
+  constexpr static uint32_t SIZE = S;
+  // TODO: we might consider std::array in the future. Avoiding it for now
+  // as sha_digest_t is a part of our public API.
+  unsigned char v[S] = {0};
+
+  string to_str() const {
+    char str[S * 2 + 1] = {0};
+    str[0] = '\0';
+    for (size_t i = 0; i < S; i++) {
+      ::sprintf(&str[i * 2], "%02x", static_cast<int>(v[i]));
+    }
+    return string(str);
+  }
+  sha_digest_t(const unsigned char *_v) { memcpy(v, _v, SIZE); };
+  sha_digest_t() {}
+
+  bool operator==(const sha_digest_t& r) const {
+    return ::memcmp(v, r.v, SIZE) == 0;
+  }
+  bool operator!=(const sha_digest_t& r) const {
+    return ::memcmp(v, r.v, SIZE) != 0;
+  }
+
+  void encode(bufferlist &bl) const {
+    // copy to avoid reinterpret_cast, is_pod and other nasty things
+    using ceph::encode;
+    std::array<unsigned char, SIZE> tmparr;
+    memcpy(tmparr.data(), v, SIZE);
+    encode(tmparr, bl);
+  }
+  void decode(bufferlist::const_iterator &bl) {
+    using ceph::decode;
+    std::array<unsigned char, SIZE> tmparr;
+    decode(tmparr, bl);
+    memcpy(v, tmparr.data(), SIZE);
+  }
+};
+
+template <uint8_t S>
+inline ostream &operator<<(ostream &out, const sha_digest_t<S> &b) {
+  string str = b.to_str();
+  return out << str;
+}
+
+using sha1_digest_t = sha_digest_t<20>;
+WRITE_CLASS_ENCODER(sha1_digest_t)
+
+using sha256_digest_t = sha_digest_t<32>;
+WRITE_CLASS_ENCODER(sha256_digest_t)
 
 
 #endif

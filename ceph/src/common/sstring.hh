@@ -19,7 +19,7 @@
  * Copyright 2014 Cloudius Systems
  */
 /*
- * C++2014 dependencies removed.  Uses of boost::string_view adapted to
+ * C++2014 dependencies removed.  Uses of std::string_view adapted to
  * boost::string_ref.  Matt Benjamin <mbenjamin@redhat.com>
  */
 
@@ -666,7 +666,7 @@ public:
   }
 
   static void decode_nohead(size_t len, value_type& s,
-                            buffer::ptr::iterator& p)
+                            buffer::ptr::const_iterator& p)
   {
     s.reset();
     if (len) {
@@ -686,7 +686,7 @@ public:
   }
 
   static void decode(value_type& s,
-                     buffer::ptr::iterator& p,
+                     buffer::ptr::const_iterator& p,
                      uint64_t f=0)
   {
     Size len;

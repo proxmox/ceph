@@ -8,32 +8,29 @@ Devices
 BlueStore manages either one, two, or (in certain cases) three storage
 devices.
 
-In the simplest case, BlueStore consumes a single (primary) storage
-device.  The storage device is normally partitioned into two parts:
+In the simplest case, BlueStore consumes a single (primary) storage device.
+The storage device is normally used as a whole, occupying the full device that
+is managed directly by BlueStore. This *primary device* is normally identified
+by a ``block`` symlink in the data directory.
 
-#. A small partition is formatted with XFS and contains basic metadata
-   for the OSD.  This *data directory* includes information about the
-   OSD (its identifier, which cluster it belongs to, and its private
-   keyring).
-
-#. The rest of the device is normally a large partition occupying the
-   rest of the device that is managed directly by BlueStore contains
-   all of the actual data.  This *primary device* is normally identifed
-   by a ``block`` symlink in data directory.
+The data directory is a ``tmpfs`` mount which gets populated (at boot time, or
+when ``ceph-volume`` activates it) with all the common OSD files that hold
+information about the OSD, like: its identifier, which cluster it belongs to,
+and its private keyring.
 
 It is also possible to deploy BlueStore across two additional devices:
 
-* A *WAL device* can be used for BlueStore's internal journal or
-  write-ahead log.  It is identified by the ``block.wal`` symlink in
-  the data directory.  It is only useful to use a WAL device if the
-  device is faster than the primary device (e.g., when it is on an SSD
-  and the primary device is an HDD).
-* A *DB device* can be used for storing BlueStore's internal metadata.
-  BlueStore (or rather, the embedded RocksDB) will put as much
-  metadata as it can on the DB device to improve performance.  If the
-  DB device fills up, metadata will spill back onto the primary device
-  (where it would have been otherwise).  Again, it is only helpful to
-  provision a DB device if it is faster than the primary device.
+* A *WAL device* (identified as ``block.wal`` in the data directory) can be
+  used for BlueStore's internal journal or write-ahead log. It is only useful
+  to use a WAL device if the device is faster than the primary device (e.g.,
+  when it is on an SSD and the primary device is an HDD).
+* A *DB device* (identified as ``block.db`` in the data directory) can be used
+  for storing BlueStore's internal metadata.  BlueStore (or rather, the
+  embedded RocksDB) will put as much metadata as it can on the DB device to
+  improve performance.  If the DB device fills up, metadata will spill back
+  onto the primary device (where it would have been otherwise).  Again, it is
+  only helpful to provision a DB device if it is faster than the primary
+  device.
 
 If there is only a small amount of fast storage available (e.g., less
 than a gigabyte), we recommend using it as a WAL device.  If there is
@@ -41,15 +38,18 @@ more, provisioning a DB device makes more sense.  The BlueStore
 journal will always be placed on the fastest device available, so
 using a DB device will provide the same benefit that the WAL device
 would while *also* allowing additional metadata to be stored there (if
-it will fix).
+it will fit).
 
 A single-device BlueStore OSD can be provisioned with::
 
-  ceph-disk prepare --bluestore <device>
+  ceph-volume lvm prepare --bluestore --data <device>
 
 To specify a WAL device and/or DB device, ::
 
-  ceph-disk prepare --bluestore <device> --block.wal <wal-device> --block-db <db-device>
+  ceph-volume lvm prepare --bluestore --data <device> --block.wal <wal-device> --block.db <db-device>
+
+.. note:: --data can be a Logical Volume using the vg/lv notation. Other
+          devices can be existing logical volumes or GPT partitions
 
 Provisioning strategies
 -----------------------
@@ -154,28 +154,28 @@ used as fallbacks.
 
 :Description: Automatically tune the ratios assigned to different bluestore caches while respecting minimum values.
 :Type: Boolean
-:Requered: Yes
+:Required: Yes
 :Default: ``True``
 
 ``osd_memory_target``
 
 :Description: When tcmalloc is available and cache autotuning is enabled, try to keep this many bytes mapped in memory. Note: This may not exactly match the RSS memory usage of the process.  While the total amount of heap memory mapped by the process should generally stay close to this target, there is no guarantee that the kernel will actually reclaim  memory that has been unmapped.  During initial developement, it was found that some kernels result in the OSD's RSS Memory exceeding the mapped memory by up to 20%.  It is hypothesised however, that the kernel generally may be more aggressive about reclaiming unmapped memory when there is a high amount of memory pressure.  Your mileage may vary.
 :Type: Unsigned Integer
-:Requered: Yes
+:Required: Yes
 :Default: ``4294967296``
 
 ``bluestore_cache_autotune_chunk_size``
 
 :Description: The chunk size in bytes to allocate to caches when cache autotune is enabled.  When the autotuner assigns memory to different caches, it will allocate memory in chunks.  This is done to avoid evictions when there are minor fluctuations in the heap size or autotuned cache ratios.
 :Type: Unsigned Integer
-:Requered: No
+:Required: No
 :Default: ``33554432``
 
 ``bluestore_cache_autotune_interval``
 
 :Description: The number of seconds to wait between rebalances when cache autotune is enabled.  This setting changes how quickly the ratios of the difference caches are recomputed.  Note:  Setting the interval too small can result in high CPU usage and lower performance.
 :Type: Float
-:Requered: No
+:Required: No
 :Default: ``5``
 
 ``osd_memory_base``
@@ -241,21 +241,21 @@ certain point.
 ``bluestore_cache_size``
 
 :Description: The amount of memory BlueStore will use for its cache.  If zero, ``bluestore_cache_size_hdd`` or ``bluestore_cache_size_ssd`` will be used instead.
-:Type: Integer
+:Type: Unsigned Integer
 :Required: Yes
 :Default: ``0``
 
 ``bluestore_cache_size_hdd``
 
 :Description: The default amount of memory BlueStore will use for its cache when backed by an HDD.
-:Type: Integer
+:Type: Unsigned Integer
 :Required: Yes
 :Default: ``1 * 1024 * 1024 * 1024`` (1 GB)
 
 ``bluestore_cache_size_ssd``
 
 :Description: The default amount of memory BlueStore will use for its cache when backed by an SSD.
-:Type: Integer
+:Type: Unsigned Integer
 :Required: Yes
 :Default: ``3 * 1024 * 1024 * 1024`` (3 GB)
 
@@ -276,7 +276,7 @@ certain point.
 ``bluestore_cache_kv_max``
 
 :Description: The maximum amount of cache devoted to key/value data (rocksdb).
-:Type: Floating point
+:Type: Unsigned Integer
 :Required: Yes
 :Default: ``512 * 1024*1024`` (512 MB)
 
@@ -331,14 +331,14 @@ of the *compression mode* and any hints associated with a write
 operation.  The modes are:
 
 * **none**: Never compress data.
-* **passive**: Do not compress data unless the write operation as a
+* **passive**: Do not compress data unless the write operation has a
   *compressible* hint set.
-* **aggressive**: Compress data unless the write operation as an
+* **aggressive**: Compress data unless the write operation has an
   *incompressible* hint set.
 * **force**: Try to compress data no matter what.
 
 For more information about the *compressible* and *incompressible* IO
-hints, see :doc:`/api/librados/#rados_set_alloc_hint`.
+hints, see :c:func:`rados_set_alloc_hint`.
 
 Note that regardless of the mode, if the size of the data chunk is not
 reduced sufficiently it will not be used and the original
@@ -372,11 +372,12 @@ set with::
 
 :Description: The default policy for using compression if the per-pool property
               ``compression_mode`` is not set. ``none`` means never use
-              compression.  ``passive`` means use compression when
-              `clients hint`_ that data is compressible.  ``aggressive`` means
-              use compression unless clients hint that data is not compressible.
-              ``force`` means use compression under all circumstances even if
-              the clients hint that the data is not compressible.
+              compression. ``passive`` means use compression when
+              :c:func:`clients hint <rados_set_alloc_hint>` that data is
+              compressible.  ``aggressive`` means use compression unless
+              clients hint that data is not compressible.  ``force`` means use
+              compression under all circumstances even if the clients hint that
+              the data is not compressible.
 :Type: String
 :Required: No
 :Valid Settings: ``none``, ``passive``, ``aggressive``, ``force``
@@ -450,4 +451,47 @@ set with::
 :Required: No
 :Default: 64K
 
-.. _clients hint: ../../api/librados/#rados_set_alloc_hint
+SPDK Usage
+==================
+
+If you want to use SPDK driver for NVME SSD, you need to ready your system.
+Please refer to `SPDK document`__ for more details.
+
+.. __: http://www.spdk.io/doc/getting_started.html#getting_started_examples
+
+SPDK offers a script to configure the device automatically. Users can run the
+script as root::
+
+  $ sudo src/spdk/scripts/setup.sh
+
+Then you need to specify NVMe device's device selector here with "spdk:" prefix for
+``bluestore_block_path``.
+
+For example, users can find the device selector of an Intel PCIe SSD with::
+
+  $ lspci -mm -n -D -d 8086:0953
+
+The device selector always has the form of ``DDDD:BB:DD.FF`` or ``DDDD.BB.DD.FF``.
+
+and then set::
+
+  bluestore block path = spdk:0000:01:00.0
+
+Where ``0000:01:00.0`` is the device selector found in the output of ``lspci``
+command above.
+
+If you want to run multiple SPDK instances per node, you must specify the
+amount of dpdk memory size in MB each instance will use, to make sure each
+instance uses its own dpdk memory
+
+In most cases, we only need one device to serve as data, db, db wal purposes.
+We need to make sure configurations below to make sure all IOs issued under
+SPDK.::
+
+  bluestore_block_db_path = ""
+  bluestore_block_db_size = 0
+  bluestore_block_wal_path = ""
+  bluestore_block_wal_size = 0
+
+Otherwise, the current implementation will setup symbol file to kernel
+filesystem location and uses kernel driver to issue DB/WAL IO.

@@ -104,7 +104,7 @@ void test_sequence_list_of_int()
     BOOST_CHECK_EQUAL( aux.size(), 13u );
     c3 = aux;
     BOOST_CHECK_EQUAL( c3.size(), 13u );
-#else
+#elif defined( BOOST_NO_CXX11_HDR_INITIALIZER_LIST )
     c3 = ba::list_of(1).repeat_fun( 10, &rand )(2)(3);
     BOOST_CHECK_EQUAL( c3.size(), 13u );
 #endif

@@ -32,14 +32,14 @@
  */
 
 /**
-* \file
-* GUID Partition Table (GPT) specification definitions
-*/
+ * \file
+ * GUID Partition Table (GPT) specification definitions
+ */
 
 #ifndef SPDK_GPT_SPEC_H
 #define SPDK_GPT_SPEC_H
 
-#include <stdint.h>
+#include "spdk/stdinc.h"
 
 #include "spdk/assert.h"
 
@@ -135,7 +135,7 @@ struct spdk_gpt_partition_entry {
 		uint64_t reserved_uefi : 45;
 		uint64_t guid_specific : 16;
 	} attr;
-	uint8_t partition_name[72];
+	uint16_t partition_name[36];
 };
 SPDK_STATIC_ASSERT(sizeof(struct spdk_gpt_partition_entry) == 128, "size incorrect");
 

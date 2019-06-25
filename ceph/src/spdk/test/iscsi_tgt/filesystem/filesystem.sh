@@ -2,58 +2,70 @@
 
 testdir=$(readlink -f $(dirname $0))
 rootdir=$(readlink -f $testdir/../../..)
-source $rootdir/scripts/autotest_common.sh
-
-if [ -z "$TARGET_IP" ]; then
-	echo "TARGET_IP not defined in environment"
-	exit 1
-fi
-
-if [ -z "$INITIATOR_IP" ]; then
-	echo "INITIATOR_IP not defined in environment"
-	exit 1
-fi
+source $rootdir/test/common/autotest_common.sh
+source $rootdir/test/iscsi_tgt/common.sh
+source $rootdir/scripts/common.sh
 
 timing_enter filesystem
 
-# iSCSI target configuration
-PORT=3260
-RPC_PORT=5260
-INITIATOR_TAG=2
-INITIATOR_NAME=ALL
-NETMASK=$INITIATOR_IP/32
-MALLOC_BDEV_SIZE=256
-MALLOC_BLOCK_SIZE=512
+rpc_py="$rootdir/scripts/rpc.py"
+# Remove lvol bdevs and stores.
+function remove_backends() {
+	echo "INFO: Removing lvol bdev"
+	$rpc_py destroy_lvol_bdev "lvs_0/lbd_0"
 
-rpc_py="python $rootdir/scripts/rpc.py"
+	echo "INFO: Removing lvol stores"
+	$rpc_py destroy_lvol_store -l lvs_0
 
-./app/iscsi_tgt/iscsi_tgt -c $testdir/iscsi.conf &
+	echo "INFO: Removing NVMe"
+	$rpc_py delete_nvme_controller Nvme0
+
+	return 0
+}
+
+timing_enter start_iscsi_tgt
+
+$ISCSI_APP -m $ISCSI_TEST_CORE_MASK --wait-for-rpc &
 pid=$!
 echo "Process pid: $pid"
 
 trap "killprocess $pid; exit 1" SIGINT SIGTERM EXIT
 
-waitforlisten $pid ${RPC_PORT}
+waitforlisten $pid
+$rpc_py set_iscsi_options -o 30 -a 16
+$rpc_py start_subsystem_init
 echo "iscsi_tgt is listening. Running tests..."
 
-$rpc_py add_portal_group 1 $TARGET_IP:$PORT
+timing_exit start_iscsi_tgt
+
+bdf=$(iter_pci_class_code 01 08 02 | head -1)
+$rpc_py add_portal_group $PORTAL_TAG $TARGET_IP:$ISCSI_PORT
 $rpc_py add_initiator_group $INITIATOR_TAG $INITIATOR_NAME $NETMASK
-$rpc_py construct_malloc_bdev $MALLOC_BDEV_SIZE $MALLOC_BLOCK_SIZE
-# "Malloc0:0" ==> use Malloc0 blockdev for LUN0
+$rpc_py construct_nvme_bdev -b "Nvme0" -t "pcie" -a $bdf
+
+ls_guid=$($rpc_py construct_lvol_store Nvme0n1 lvs_0)
+free_mb=$(get_lvs_free_mb "$ls_guid")
+# Using maximum 2048MiB to reduce the test time
+if [ $free_mb -gt 2048 ]; then
+	$rpc_py construct_lvol_bdev -u $ls_guid lbd_0 2048
+else
+	$rpc_py construct_lvol_bdev -u $ls_guid lbd_0 $free_mb
+fi
+# "lvs_0/lbd_0:0" ==> use lvs_0/lbd_0 blockdev for LUN0
 # "1:2" ==> map PortalGroup1 to InitiatorGroup2
-# "64" ==> iSCSI queue depth 64
-# "1 0 0 0" ==> disable CHAP authentication
-$rpc_py construct_target_node Target3 Target3_alias 'Malloc0:0' '1:2' 256 1 0 0 0
+# "256" ==> iSCSI queue depth 256
+# "-d" ==> disable CHAP authentication
+$rpc_py construct_target_node Target1 Target1_alias 'lvs_0/lbd_0:0' $PORTAL_TAG:$INITIATOR_TAG 256 -d
 sleep 1
 
-iscsiadm -m discovery -t sendtargets -p $TARGET_IP:$PORT
-iscsiadm -m node --login -p $TARGET_IP:$PORT
+iscsiadm -m discovery -t sendtargets -p $TARGET_IP:$ISCSI_PORT
+iscsiadm -m node --login -p $TARGET_IP:$ISCSI_PORT
 
-trap "umount /mnt/device; rm -rf /mnt/device; iscsicleanup; killprocess $pid; exit 1" SIGINT SIGTERM EXIT
+trap "remove_backends; umount /mnt/device; rm -rf /mnt/device; iscsicleanup; killprocess $pid; exit 1" SIGINT SIGTERM EXIT
 
 sleep 1
 
-mkdir -p  /mnt/device
+mkdir -p /mnt/device
 
 dev=$(iscsiadm -m session -P 3 | grep "Attached scsi disk" | awk '{print $4}')
 
@@ -69,25 +81,49 @@ for fstype in "ext4" "btrfs" "xfs"; do
 		mkfs.${fstype} -f /dev/${dev}1
 	fi
 	mount /dev/${dev}1 /mnt/device
-	touch /mnt/device/aaa
-	umount /mnt/device
+	if [ $RUN_NIGHTLY -eq 1 ]; then
+		fio -filename=/mnt/device/test -direct=1 -iodepth 64 -thread=1 -invalidate=1 -rw=randwrite -ioengine=libaio -bs=4k \
+			-size=1024M -name=job0
+		umount /mnt/device
 
-	iscsiadm -m node --logout
-	sleep 1
-	iscsiadm -m node --login -p $TARGET_IP:$PORT
-	sleep 1
-	dev=$(iscsiadm -m session -P 3 | grep "Attached scsi disk" | awk '{print $4}')
-	mount -o rw /dev/${dev}1 /mnt/device
+		iscsiadm -m node --logout
+		sleep 1
+		iscsiadm -m node --login -p $TARGET_IP:$ISCSI_PORT
+		sleep 1
+		dev=$(iscsiadm -m session -P 3 | grep "Attached scsi disk" | awk '{print $4}')
+		mount -o rw /dev/${dev}1 /mnt/device
+		if [ -f "/mnt/device/test" ]; then
+			echo "File existed."
+			fio -filename=/mnt/device/test -direct=1 -iodepth 64 -thread=1 -invalidate=1 -rw=randread \
+				-ioengine=libaio -bs=4k -runtime=20 -time_based=1 -name=job0
+		else
+			echo "File doesn't exist."
+			exit 1
+		fi
 
-	if [ -f "/mnt/device/aaa" ]; then
-		echo "File existed."
+		rm -rf /mnt/device/test
+		umount /mnt/device
 	else
-		echo "File doesn't exist."
-		exit 1
-	fi
+		touch /mnt/device/aaa
+		umount /mnt/device
 
-	rm -rf /mnt/device/aaa
-	umount /mnt/device
+		iscsiadm -m node --logout
+		sleep 1
+		iscsiadm -m node --login -p $TARGET_IP:$ISCSI_PORT
+		sleep 1
+		dev=$(iscsiadm -m session -P 3 | grep "Attached scsi disk" | awk '{print $4}')
+		mount -o rw /dev/${dev}1 /mnt/device
+
+		if [ -f "/mnt/device/aaa" ]; then
+			echo "File existed."
+		else
+			echo "File doesn't exist."
+			exit 1
+		fi
+
+		rm -rf /mnt/device/aaa
+		umount /mnt/device
+	fi
 done
 
 rm -rf /mnt/device
@@ -95,5 +131,6 @@ rm -rf /mnt/device
 trap - SIGINT SIGTERM EXIT
 
 iscsicleanup
+remove_backends
 killprocess $pid
 timing_exit filesystem

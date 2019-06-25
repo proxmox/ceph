@@ -181,13 +181,16 @@ handle_request(
     if(ec)
         return send(server_error(ec.message()));
 
+    // Cache the size since we need it after the move
+    auto const size = body.size();
+
     // Respond to HEAD request
     if(req.method() == http::verb::head)
     {
         http::response<http::empty_body> res{http::status::ok, req.version()};
         res.set(http::field::server, BOOST_BEAST_VERSION_STRING);
         res.set(http::field::content_type, mime_type(path));
-        res.content_length(body.size());
+        res.content_length(size);
         res.keep_alive(req.keep_alive());
         return send(std::move(res));
     }
@@ -199,7 +202,7 @@ handle_request(
         std::make_tuple(http::status::ok, req.version())};
     res.set(http::field::server, BOOST_BEAST_VERSION_STRING);
     res.set(http::field::content_type, mime_type(path));
-    res.content_length(body.size());
+    res.content_length(size);
     res.keep_alive(req.keep_alive());
     return send(std::move(res));
 }
@@ -317,6 +320,10 @@ public:
 
             for(;;)
             {
+                // Make the request empty before reading,
+                // otherwise the operation behavior is undefined.
+                req_ = {};
+
                 // Read a request
                 yield http::async_read(stream_, buffer_, req_,
                     boost::asio::bind_executor(
@@ -399,6 +406,14 @@ public:
         if(ec)
         {
             fail(ec, "open");
+            return;
+        }
+
+        // Allow address reuse
+        acceptor_.set_option(boost::asio::socket_base::reuse_address(true));
+        if(ec)
+        {
+            fail(ec, "set_option");
             return;
         }
 

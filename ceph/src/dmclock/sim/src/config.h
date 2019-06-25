@@ -1,6 +1,15 @@
 // -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
 // vim: ts=8 sw=2 smarttab
 
+/*
+ * Copyright (C) 2016 Red Hat Inc.
+ *
+ * This is free software; you can redistribute it and/or modify it
+ * under the terms of the GNU Lesser General Public License version
+ * 2.1, as published by the Free Software Foundation.  See file
+ * COPYING.
+ */
+
 
 #pragma once
 
@@ -13,6 +22,8 @@
 #include <iomanip>
 
 #include "ConfUtils.h"
+
+#include "sim_recs.h"
 
 
 namespace crimson {
@@ -28,6 +39,7 @@ namespace crimson {
       double client_reservation;
       double client_limit;
       double client_weight;
+      Cost client_req_cost;
 
       cli_group_t(uint _client_count = 100,
 		  uint _client_wait = 0,
@@ -37,7 +49,8 @@ namespace crimson {
 		  uint _client_outstanding_ops = 100,
 		  double _client_reservation = 20.0,
 		  double _client_limit = 60.0,
-		  double _client_weight = 1.0) :
+		  double _client_weight = 1.0,
+		  Cost _client_req_cost = 1u) :
 	client_count(_client_count),
 	client_wait(std::chrono::seconds(_client_wait)),
 	client_total_ops(_client_total_ops),
@@ -46,7 +59,8 @@ namespace crimson {
 	client_outstanding_ops(_client_outstanding_ops),
 	client_reservation(_client_reservation),
 	client_limit(_client_limit),
-	client_weight(_client_weight)
+	client_weight(_client_weight),
+	client_req_cost(_client_req_cost)
       {
 	// empty
       }
@@ -63,7 +77,8 @@ namespace crimson {
 	  std::fixed << std::setprecision(1) <<
 	  "client_reservation = " << cli_group.client_reservation << "\n" <<
 	  "client_limit = " << cli_group.client_limit << "\n" <<
-	  "client_weight = " << cli_group.client_weight;
+	  "client_weight = " << cli_group.client_weight << "\n" <<
+	  "client_req_cost = " << cli_group.client_req_cost;
 	return out;
       }
     }; // class cli_group_t
@@ -100,6 +115,7 @@ namespace crimson {
       uint client_groups;
       bool server_random_selection;
       bool server_soft_limit;
+      double anticipation_timeout;
 
       std::vector<cli_group_t> cli_group;
       std::vector<srv_group_t> srv_group;
@@ -107,11 +123,13 @@ namespace crimson {
       sim_config_t(uint _server_groups = 1,
 		   uint _client_groups = 1,
 		   bool _server_random_selection = false,
-		   bool _server_soft_limit = true) :
+		   bool _server_soft_limit = true,
+		   double _anticipation_timeout = 0.0) :
 	server_groups(_server_groups),
 	client_groups(_client_groups),
 	server_random_selection(_server_random_selection),
-	server_soft_limit(_server_soft_limit)
+	server_soft_limit(_server_soft_limit),
+	anticipation_timeout(_anticipation_timeout)
       {
 	srv_group.reserve(server_groups);
 	cli_group.reserve(client_groups);
@@ -123,7 +141,9 @@ namespace crimson {
 	  "server_groups = " << sim_config.server_groups << "\n" <<
 	  "client_groups = " << sim_config.client_groups << "\n" <<
 	  "server_random_selection = " << sim_config.server_random_selection << "\n" <<
-	  "server_soft_limit = " << sim_config.server_soft_limit;
+	  "server_soft_limit = " << sim_config.server_soft_limit << "\n" <<
+	  std::fixed << std::setprecision(3) << 
+	  "anticipation_timeout = " << sim_config.anticipation_timeout;
 	return out;
       }
     }; // class sim_config_t

@@ -39,13 +39,12 @@ APP = perf
 
 C_SRCS := perf.c
 
-CFLAGS += -I. $(ENV_CFLAGS)
-
-SPDK_LIB_LIST = ioat util log
+SPDK_LIB_LIST = ioat thread util log
 
 LIBS += $(SPDK_LIB_LINKER_ARGS) $(ENV_LINKER_ARGS)
 
 all: $(APP)
+	@:
 
 $(APP): $(OBJS) $(SPDK_LIB_FILES) $(ENV_LIBS)
 	$(LINK_C)

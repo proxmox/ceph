@@ -31,16 +31,7 @@
  *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include <ctype.h>
-#include <string.h>
-#include <stdbool.h>
-#include <stdio.h>
-#include <unistd.h>
-#include <inttypes.h>
-#include <stdlib.h>
-#include <sys/types.h>
-#include <sys/stat.h>
-#include <fcntl.h>
+#include "spdk/stdinc.h"
 
 #include "spdk/nvme.h"
 #include "spdk/env.h"
@@ -50,7 +41,7 @@
 
 struct dev {
 	struct spdk_pci_addr			pci_addr;
-	struct spdk_nvme_ctrlr 			*ctrlr;
+	struct spdk_nvme_ctrlr			*ctrlr;
 	const struct spdk_nvme_ctrlr_data	*cdata;
 	struct spdk_nvme_ns_data		*common_ns_data;
 	int					outstanding_admin_cmds;
@@ -58,6 +49,7 @@ struct dev {
 
 static struct dev devs[MAX_DEVS];
 static int num_devs = 0;
+static int g_shm_id = -1;
 
 #define foreach_dev(iter) \
 	for (iter = devs; iter - devs < num_devs; iter++)
@@ -89,7 +81,7 @@ identify_common_ns_cb(void *cb_arg, const struct spdk_nvme_cpl *cpl)
 
 	if (cpl->status.sc != SPDK_NVME_SC_SUCCESS) {
 		/* Identify Namespace for NSID = FFFFFFFFh is optional, so failure is not fatal. */
-		spdk_free(dev->common_ns_data);
+		spdk_dma_free(dev->common_ns_data);
 		dev->common_ns_data = NULL;
 	}
 
@@ -111,7 +103,7 @@ attach_cb(void *cb_ctx, const struct spdk_nvme_transport_id *trid,
 	/* Retrieve controller data */
 	dev->cdata = spdk_nvme_ctrlr_get_data(dev->ctrlr);
 
-	dev->common_ns_data = spdk_zmalloc(sizeof(struct spdk_nvme_ns_data), 4096, NULL);
+	dev->common_ns_data = spdk_dma_zmalloc(sizeof(struct spdk_nvme_ns_data), 4096, NULL);
 	if (dev->common_ns_data == NULL) {
 		fprintf(stderr, "common_ns_data allocation failure\n");
 		return;
@@ -127,7 +119,7 @@ attach_cb(void *cb_ctx, const struct spdk_nvme_transport_id *trid,
 	if (spdk_nvme_ctrlr_cmd_admin_raw(ctrlr, &cmd, dev->common_ns_data,
 					  sizeof(struct spdk_nvme_ns_data), identify_common_ns_cb, dev) != 0) {
 		dev->outstanding_admin_cmds--;
-		spdk_free(dev->common_ns_data);
+		spdk_dma_free(dev->common_ns_data);
 		dev->common_ns_data = NULL;
 	}
 
@@ -202,8 +194,9 @@ display_namespace(struct spdk_nvme_ns *ns)
 	       (long long)nsdata->nuse / 1024 / 1024);
 	printf("Format Progress Indicator:   %s\n",
 	       nsdata->fpi.fpi_supported ? "Supported" : "Not Supported");
-	if (nsdata->fpi.fpi_supported && nsdata->fpi.percentage_remaining)
+	if (nsdata->fpi.fpi_supported && nsdata->fpi.percentage_remaining) {
 		printf("Formatted Percentage:	%d%%\n", 100 - nsdata->fpi.percentage_remaining);
+	}
 	printf("Number of LBA Formats:       %d\n", nsdata->nlbaf + 1);
 	printf("Current LBA Format:          LBA Format #%02d\n",
 	       nsdata->flbas.format);
@@ -289,6 +282,24 @@ display_controller_list(void)
 	}
 }
 
+static char *
+get_line(char *buf, int buf_size, FILE *f)
+{
+	char *ret;
+	size_t len;
+
+	ret = fgets(buf, buf_size, f);
+	if (ret == NULL) {
+		return NULL;
+	}
+
+	len = strlen(buf);
+	if (len > 0 && buf[len - 1] == '\n') {
+		buf[len - 1] = '\0';
+	}
+	return buf;
+}
+
 static struct dev *
 get_controller(void)
 {
@@ -304,10 +315,10 @@ get_controller(void)
 		display_controller(iter, CONTROLLER_DISPLAY_SIMPLISTIC);
 	}
 
-	printf("Please Input PCI Address(domain:bus:dev.func): \n");
+	printf("Please Input PCI Address(domain:bus:dev.func):\n");
 
 	while ((ch = getchar()) != '\n' && ch != EOF);
-	p = fgets(address, 64, stdin);
+	p = get_line(address, 64, stdin);
 	if (p == NULL) {
 		return NULL;
 	}
@@ -366,7 +377,7 @@ get_allocated_nsid(struct dev *dev)
 	struct spdk_nvme_ns_list *ns_list;
 	struct spdk_nvme_cmd cmd = {0};
 
-	ns_list = spdk_zmalloc(sizeof(*ns_list), 4096, NULL);
+	ns_list = spdk_dma_zmalloc(sizeof(*ns_list), 4096, NULL);
 	if (ns_list == NULL) {
 		printf("Allocation error\n");
 		return 0;
@@ -380,7 +391,7 @@ get_allocated_nsid(struct dev *dev)
 	if (spdk_nvme_ctrlr_cmd_admin_raw(dev->ctrlr, &cmd, ns_list, sizeof(*ns_list),
 					  identify_allocated_ns_cb, dev)) {
 		printf("Identify command failed\n");
-		spdk_free(ns_list);
+		spdk_dma_free(ns_list);
 		return 0;
 	}
 
@@ -396,9 +407,9 @@ get_allocated_nsid(struct dev *dev)
 		printf("%u\n", ns_list->ns_list[i]);
 	}
 
-	spdk_free(ns_list);
+	spdk_dma_free(ns_list);
 
-	printf("Please Input Namespace ID: \n");
+	printf("Please Input Namespace ID:\n");
 	if (!scanf("%u", &nsid)) {
 		printf("Invalid Namespace ID\n");
 		nsid = 0;
@@ -413,8 +424,8 @@ ns_attach(struct dev *device, int attachment_op, int ctrlr_id, int ns_id)
 	int ret = 0;
 	struct spdk_nvme_ctrlr_list *ctrlr_list;
 
-	ctrlr_list = spdk_zmalloc(sizeof(struct spdk_nvme_ctrlr_list),
-				  4096, NULL);
+	ctrlr_list = spdk_dma_zmalloc(sizeof(struct spdk_nvme_ctrlr_list),
+				      4096, NULL);
 	if (ctrlr_list == NULL) {
 		printf("Allocation error (controller list)\n");
 		exit(1);
@@ -433,7 +444,7 @@ ns_attach(struct dev *device, int attachment_op, int ctrlr_id, int ns_id)
 		fprintf(stdout, "ns attach: Failed\n");
 	}
 
-	spdk_free(ctrlr_list);
+	spdk_dma_free(ctrlr_list);
 }
 
 static void
@@ -443,7 +454,7 @@ ns_manage_add(struct dev *device, uint64_t ns_size, uint64_t ns_capacity, int ns
 	uint32_t nsid;
 	struct spdk_nvme_ns_data *ndata;
 
-	ndata = spdk_zmalloc(sizeof(struct spdk_nvme_ns_data), 4096, NULL);
+	ndata = spdk_dma_zmalloc(sizeof(struct spdk_nvme_ns_data), 4096, NULL);
 	if (ndata == NULL) {
 		printf("Allocation error (namespace data)\n");
 		exit(1);
@@ -464,7 +475,7 @@ ns_manage_add(struct dev *device, uint64_t ns_size, uint64_t ns_capacity, int ns
 		printf("Created namespace ID %u\n", nsid);
 	}
 
-	spdk_free(ndata);
+	spdk_dma_free(ndata);
 }
 
 static void
@@ -529,9 +540,9 @@ add_ns(void)
 	uint64_t	ns_size		= 0;
 	uint64_t	ns_capacity	= 0;
 	int		ns_lbasize;
-	int 		ns_dps_type  	= 0;
-	int 		ns_dps_location = 0;
-	int	 	ns_nmic 	= 0;
+	int		ns_dps_type	= 0;
+	int		ns_dps_location	= 0;
+	int		ns_nmic		= 0;
 	struct dev	*ctrlr		= NULL;
 
 	ctrlr = get_controller();
@@ -556,21 +567,21 @@ add_ns(void)
 		return;
 	}
 
-	printf("Please Input Namespace Size (in LBAs): \n");
-	if (!scanf("%" SCNi64, &ns_size)) {
+	printf("Please Input Namespace Size (in LBAs):\n");
+	if (!scanf("%" SCNu64, &ns_size)) {
 		printf("Invalid Namespace Size\n");
 		while (getchar() != '\n');
 		return;
 	}
 
-	printf("Please Input Namespace Capacity (in LBAs): \n");
-	if (!scanf("%" SCNi64, &ns_capacity)) {
+	printf("Please Input Namespace Capacity (in LBAs):\n");
+	if (!scanf("%" SCNu64, &ns_capacity)) {
 		printf("Invalid Namespace Capacity\n");
 		while (getchar() != '\n');
 		return;
 	}
 
-	printf("Please Input Data Protection Type (0 - 3): \n");
+	printf("Please Input Data Protection Type (0 - 3):\n");
 	if (!scanf("%d", &ns_dps_type)) {
 		printf("Invalid Data Protection Type\n");
 		while (getchar() != '\n');
@@ -578,7 +589,7 @@ add_ns(void)
 	}
 
 	if (SPDK_NVME_FMT_NVM_PROTECTION_DISABLE != ns_dps_type) {
-		printf("Please Input Data Protection Location (1: Head; 0: Tail): \n");
+		printf("Please Input Data Protection Location (1: Head; 0: Tail):\n");
 		if (!scanf("%d", &ns_dps_location)) {
 			printf("Invalid Data Protection Location\n");
 			while (getchar() != '\n');
@@ -586,7 +597,7 @@ add_ns(void)
 		}
 	}
 
-	printf("Please Input Multi-path IO and Sharing Capabilities (1: Share; 0: Private): \n");
+	printf("Please Input Multi-path IO and Sharing Capabilities (1: Share; 0: Private):\n");
 	if (!scanf("%d", &ns_nmic)) {
 		printf("Invalid Multi-path IO and Sharing Capabilities\n");
 		while (getchar() != '\n');
@@ -600,7 +611,7 @@ add_ns(void)
 static void
 delete_ns(void)
 {
-	int 					ns_id;
+	int					ns_id;
 	struct dev				*ctrlr;
 
 	ctrlr = get_controller();
@@ -614,7 +625,7 @@ delete_ns(void)
 		return;
 	}
 
-	printf("Please Input Namespace ID: \n");
+	printf("Please Input Namespace ID:\n");
 	if (!scanf("%d", &ns_id)) {
 		printf("Invalid Namespace ID\n");
 		while (getchar() != '\n');
@@ -627,7 +638,7 @@ delete_ns(void)
 static void
 format_nvm(void)
 {
-	int 					ns_id;
+	int					ns_id;
 	int					ses;
 	int					pil;
 	int					pi;
@@ -656,7 +667,7 @@ format_nvm(void)
 		ns_id = SPDK_NVME_GLOBAL_NS_TAG;
 		ns = spdk_nvme_ctrlr_get_ns(ctrlr->ctrlr, 1);
 	} else {
-		printf("Please Input Namespace ID (1 - %d): \n", cdata->nn);
+		printf("Please Input Namespace ID (1 - %d):\n", cdata->nn);
 		if (!scanf("%d", &ns_id)) {
 			printf("Invalid Namespace ID\n");
 			while (getchar() != '\n');
@@ -673,7 +684,7 @@ format_nvm(void)
 
 	nsdata = spdk_nvme_ns_get_data(ns);
 
-	printf("Please Input Secure Erase Setting: \n");
+	printf("Please Input Secure Erase Setting:\n");
 	printf("	0: No secure erase operation requested\n");
 	printf("	1: User data erase\n");
 	if (cdata->fna.crypto_erase_supported) {
@@ -692,7 +703,7 @@ format_nvm(void)
 	}
 
 	if (nsdata->lbaf[lbaf].ms) {
-		printf("Please Input Protection Information: \n");
+		printf("Please Input Protection Information:\n");
 		printf("	0: Protection information is not enabled\n");
 		printf("	1: Protection information is enabled, Type 1\n");
 		printf("	2: Protection information is enabled, Type 2\n");
@@ -704,7 +715,7 @@ format_nvm(void)
 		}
 
 		if (pi) {
-			printf("Please Input Protection Information Location: \n");
+			printf("Please Input Protection Information Location:\n");
 			printf("	0: Protection information transferred as the last eight bytes of metadata\n");
 			printf("	1: Protection information transferred as the first eight bytes of metadata\n");
 			if (!scanf("%d", &pil)) {
@@ -716,7 +727,7 @@ format_nvm(void)
 			pil = 0;
 		}
 
-		printf("Please Input Metadata Setting: \n");
+		printf("Please Input Metadata Setting:\n");
 		printf("	0: Metadata is transferred as part of a separate buffer\n");
 		printf("	1: Metadata is transferred as part of an extended data LBA\n");
 		if (!scanf("%d", &ms)) {
@@ -762,6 +773,8 @@ update_firmware_image(void)
 	void					*fw_image;
 	struct dev				*ctrlr;
 	const struct spdk_nvme_ctrlr_data	*cdata;
+	enum spdk_nvme_fw_commit_action		commit_action;
+	struct spdk_nvme_status			status;
 
 	ctrlr = get_controller();
 	if (ctrlr == NULL) {
@@ -778,7 +791,7 @@ update_firmware_image(void)
 
 	printf("Please Input The Path Of Firmware Image\n");
 
-	if (fgets(path, 256, stdin) == NULL) {
+	if (get_line(path, sizeof(path), stdin) == NULL) {
 		printf("Invalid path setting\n");
 		while (getchar() != '\n');
 		return;
@@ -804,7 +817,7 @@ update_firmware_image(void)
 
 	size = fw_stat.st_size;
 
-	fw_image = spdk_zmalloc(size, 4096, NULL);
+	fw_image = spdk_dma_zmalloc(size, 4096, NULL);
 	if (fw_image == NULL) {
 		printf("Allocation error\n");
 		close(fd);
@@ -814,37 +827,78 @@ update_firmware_image(void)
 	if (read(fd, fw_image, size) != ((ssize_t)(size))) {
 		printf("Read firmware image failed\n");
 		close(fd);
-		spdk_free(fw_image);
+		spdk_dma_free(fw_image);
 		return;
 	}
 	close(fd);
 
-	printf("Please Input Slot(0 - 7): \n");
+	printf("Please Input Slot(0 - 7):\n");
 	if (!scanf("%d", &slot)) {
 		printf("Invalid Slot\n");
-		spdk_free(fw_image);
+		spdk_dma_free(fw_image);
 		while (getchar() != '\n');
 		return;
 	}
 
-	rc = spdk_nvme_ctrlr_update_firmware(ctrlr->ctrlr, fw_image, size, slot);
-	if (rc) {
+	commit_action = SPDK_NVME_FW_COMMIT_REPLACE_AND_ENABLE_IMG;
+	rc = spdk_nvme_ctrlr_update_firmware(ctrlr->ctrlr, fw_image, size, slot, commit_action, &status);
+	if (rc == -ENXIO && status.sct == SPDK_NVME_SCT_COMMAND_SPECIFIC &&
+	    status.sc == SPDK_NVME_SC_FIRMWARE_REQ_CONVENTIONAL_RESET) {
+		printf("conventional reset is needed to enable firmware !\n");
+	} else if (rc) {
 		printf("spdk_nvme_ctrlr_update_firmware failed\n");
 	} else {
 		printf("spdk_nvme_ctrlr_update_firmware success\n");
 	}
-	spdk_free(fw_image);
+	spdk_dma_free(fw_image);
+}
+
+static void
+args_usage(const char *program_name)
+{
+	printf("%s [options]", program_name);
+	printf("\n");
+	printf("options:\n");
+	printf(" -i         shared memory group ID\n");
+}
+
+static int
+parse_args(int argc, char **argv)
+{
+	int op;
+
+	while ((op = getopt(argc, argv, "i:")) != -1) {
+		switch (op) {
+		case 'i':
+			g_shm_id = atoi(optarg);
+			break;
+		default:
+			args_usage(argv[0]);
+			return 1;
+		}
+	}
+
+	return 0;
 }
 
 int main(int argc, char **argv)
 {
-	int		i;
+	int			i, rc;
 	struct spdk_env_opts	opts;
+
+	rc = parse_args(argc, argv);
+	if (rc != 0) {
+		return rc;
+	}
 
 	spdk_env_opts_init(&opts);
 	opts.name = "nvme_manage";
 	opts.core_mask = "0x1";
-	spdk_env_init(&opts);
+	opts.shm_id = g_shm_id;
+	if (spdk_env_init(&opts) < 0) {
+		fprintf(stderr, "Unable to initialize SPDK env\n");
+		return 1;
+	}
 
 	if (spdk_nvme_probe(NULL, NULL, probe_cb, attach_cb, NULL) != 0) {
 		fprintf(stderr, "spdk_nvme_probe() failed\n");
@@ -860,9 +914,10 @@ int main(int argc, char **argv)
 		bool exit_flag = false;
 
 		if (!scanf("%d", &cmd)) {
-			printf("Invalid Command\n");
+			printf("Invalid Command: command must be number 1-8\n");
 			while (getchar() != '\n');
-			return 0;
+			usage();
+			continue;
 		}
 		switch (cmd) {
 		case 1:
@@ -894,8 +949,9 @@ int main(int argc, char **argv)
 			break;
 		}
 
-		if (exit_flag)
+		if (exit_flag) {
 			break;
+		}
 
 		while (getchar() != '\n');
 		printf("press Enter to display cmd menu ...\n");

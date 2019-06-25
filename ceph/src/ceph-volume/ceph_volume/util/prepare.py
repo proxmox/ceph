@@ -104,6 +104,40 @@ def get_block_db_size(lv_format=True):
         return '%sG' % db_size.gb.as_int()
     return db_size
 
+def get_block_wal_size(lv_format=True):
+    """
+    Helper to retrieve the size (defined in megabytes in ceph.conf) to create
+    the block.wal logical volume, it "translates" the string into a float value,
+    then converts that into gigabytes, and finally (optionally) it formats it
+    back as a string so that it can be used for creating the LV.
+
+    :param lv_format: Return a string to be used for ``lv_create``. A 5 GB size
+    would result in '5G', otherwise it will return a ``Size`` object.
+
+    .. note: Configuration values are in bytes, unlike journals which
+             are defined in gigabytes
+    """
+    conf_wal_size = None
+    try:
+        conf_wal_size = conf.ceph.get_safe('osd', 'bluestore_block_wal_size', None)
+    except RuntimeError:
+        logger.exception("failed to load ceph configuration, will use defaults")
+
+    if not conf_wal_size:
+        logger.debug(
+            'block.wal has no size configuration, will fallback to using as much as possible'
+        )
+        return None
+    logger.debug('bluestore_block_wal_size set to %s' % conf_wal_size)
+    wal_size = disk.Size(b=str_to_int(conf_wal_size))
+
+    if wal_size < disk.Size(gb=2):
+        mlogger.error('Refusing to continue with configured size for block.wal')
+        raise RuntimeError('block.wal sizes must be larger than 2GB, detected: %s' % wal_size)
+    if lv_format:
+        return '%sG' % wal_size.gb.as_int()
+    return wal_size
+
 
 def create_id(fsid, json_secrets, osd_id=None):
     """
@@ -351,7 +385,7 @@ def osd_mkfs_bluestore(osd_id, fsid, keyring=None, wal=False, db=False):
                    --setuser ceph --setgroup ceph
 
     In some cases it is required to use the keyring, when it is passed in as
-    a keywork argument it is used as part of the ceph-osd command
+    a keyword argument it is used as part of the ceph-osd command
     """
     path = '/var/lib/ceph/osd/%s-%s/' % (conf.cluster, osd_id)
     monmap = os.path.join(path, 'activate.monmap')
@@ -361,7 +395,6 @@ def osd_mkfs_bluestore(osd_id, fsid, keyring=None, wal=False, db=False):
     base_command = [
         'ceph-osd',
         '--cluster', conf.cluster,
-        # undocumented flag, sets the `type` file to contain 'bluestore'
         '--osd-objectstore', 'bluestore',
         '--mkfs',
         '-i', osd_id,
@@ -420,7 +453,6 @@ def osd_mkfs_filestore(osd_id, fsid, keyring):
     command = [
         'ceph-osd',
         '--cluster', conf.cluster,
-        # undocumented flag, sets the `type` file to contain 'filestore'
         '--osd-objectstore', 'filestore',
         '--mkfs',
         '-i', osd_id,

@@ -12,6 +12,20 @@ class TestDevice(object):
         assert disk.sys_api
         assert "foo" in disk.sys_api
 
+    def test_lvm_size(self, device_info):
+        # 5GB in size
+        data = {"/dev/sda": {"size": "5368709120"}}
+        device_info(devices=data)
+        disk = device.Device("/dev/sda")
+        assert disk.lvm_size.gb == 4
+
+    def test_lvm_size_rounds_down(self, device_info):
+        # 5.5GB in size
+        data = {"/dev/sda": {"size": "5905580032"}}
+        device_info(devices=data)
+        disk = device.Device("/dev/sda")
+        assert disk.lvm_size.gb == 4
+
     def test_is_lv(self, device_info):
         data = {"lv_path": "vg/lv", "vg_name": "vg", "name": "lv"}
         device_info(lv=data)
@@ -42,42 +56,6 @@ class TestDevice(object):
         device_info(devices=data, lsblk=lsblk)
         disk = device.Device("/dev/sda")
         assert disk.is_device is True
-
-    def test_device_is_rotational(self, device_info, pvolumes):
-        data = {"/dev/sda": {"rotational": "1"}}
-        lsblk = {"TYPE": "device"}
-        device_info(devices=data, lsblk=lsblk)
-        disk = device.Device("/dev/sda")
-        assert disk.rotational
-
-    def test_device_is_not_rotational(self, device_info, pvolumes):
-        data = {"/dev/sda": {"rotational": "0"}}
-        lsblk = {"TYPE": "device"}
-        device_info(devices=data, lsblk=lsblk)
-        disk = device.Device("/dev/sda")
-        assert not disk.rotational
-
-    def test_device_is_rotational_lsblk(self, device_info, pvolumes):
-        data = {"/dev/sda": {"foo": "bar"}}
-        lsblk = {"TYPE": "device", "ROTA": "1"}
-        device_info(devices=data, lsblk=lsblk)
-        disk = device.Device("/dev/sda")
-        assert disk.rotational
-
-    def test_device_is_not_rotational_lsblk(self, device_info, pvolumes):
-        data = {"/dev/sda": {"rotational": "0"}}
-        lsblk = {"TYPE": "device", "ROTA": "0"}
-        device_info(devices=data, lsblk=lsblk)
-        disk = device.Device("/dev/sda")
-        assert not disk.rotational
-
-    def test_device_is_rotational_defaults_true(self, device_info, pvolumes):
-        # rotational will default true if no info from sys_api or lsblk is found
-        data = {"/dev/sda": {"foo": "bar"}}
-        lsblk = {"TYPE": "device", "foo": "bar"}
-        device_info(devices=data, lsblk=lsblk)
-        disk = device.Device("/dev/sda")
-        assert disk.rotational
 
     def test_disk_is_device(self, device_info, pvolumes):
         data = {"/dev/sda": {"foo": "bar"}}

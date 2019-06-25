@@ -31,13 +31,9 @@
  *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include "spdk/fd.h"
+#include "spdk/stdinc.h"
 
-#include <sys/ioctl.h>
-#include <sys/types.h>
-#include <sys/stat.h>
-#include <unistd.h>
-#include <stdint.h>
+#include "spdk/fd.h"
 
 #ifdef __linux__
 #include <linux/fs.h>
@@ -80,8 +76,7 @@ spdk_fd_get_blocklen(int fd)
 	}
 #endif
 
-	/* Assume 512 if none of the other methods worked */
-	return 512;
+	return 0;
 }
 
 uint64_t

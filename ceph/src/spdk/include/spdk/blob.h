@@ -42,23 +42,17 @@
  *
  * The blobstore is designed to be very high performance, and thus has
  * a few general rules regarding thread safety to avoid taking locks
- * in the I/O path. Functions starting with the prefix "spdk_bs_md" must only
- * be called from the metadata thread, of which there is only one at a time.
- * The user application can declare which thread is the metadata thread by
- * calling \ref spdk_bs_register_md_thread, but by default it is the thread
- * that was used to create the blobstore initially. The metadata thread can
- * be changed at run time by first unregistering
- * (\ref spdk_bs_unregister_md_thread) and then re-registering. Registering
- * a thread as the metadata thread is expensive and should be avoided.
+ * in the I/O path.  This is primarily done by only allowing most
+ * functions to be called on the metadata thread.  The metadata thread is
+ * the thread which called spdk_bs_init() or spdk_bs_load().
  *
- * Functions starting with the prefix "spdk_bs_io" are passed a channel
+ * Functions starting with the prefix "spdk_blob_io" are passed a channel
  * as an argument, and channels may only be used from the thread they were
- * created on. See \ref spdk_bs_alloc_io_channel.
+ * created on. See \ref spdk_bs_alloc_io_channel.  These are the only
+ * functions that may be called from a thread other than the metadata
+ * thread.
  *
- * Functions not starting with one of those two prefixes are thread safe
- * and may be called from any thread at any time.
- *
- * The blob store returns errors using negated POSIX errno values, either
+ * The blobstore returns errors using negated POSIX errno values, either
  * returned in the callback or as a return value. An errno value of 0 means
  * success.
  */
@@ -66,28 +60,72 @@
 #ifndef SPDK_BLOB_H
 #define SPDK_BLOB_H
 
-#include <stddef.h>
-#include <stdint.h>
+#include "spdk/stdinc.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 typedef uint64_t spdk_blob_id;
 #define SPDK_BLOBID_INVALID	(uint64_t)-1
+#define SPDK_BLOBSTORE_TYPE_LENGTH 16
 
 struct spdk_blob_store;
 struct spdk_io_channel;
 struct spdk_blob;
 struct spdk_xattr_names;
 
+/**
+ * Blobstore operation completion callback.
+ *
+ * \param cb_arg Callback argument.
+ * \param bserrno 0 if it completed successfully, or negative errno if it failed.
+ */
 typedef void (*spdk_bs_op_complete)(void *cb_arg, int bserrno);
+
+/**
+ * Blobstore operation completion callback with handle.
+ *
+ * \param cb_arg Callback argument.
+ * \param bs Handle to a blobstore.
+ * \param bserrno 0 if it completed successfully, or negative errno if it failed.
+ */
 typedef void (*spdk_bs_op_with_handle_complete)(void *cb_arg, struct spdk_blob_store *bs,
 		int bserrno);
+
+/**
+ * Blob operation completion callback.
+ *
+ * \param cb_arg Callback argument.
+ * \param bserrno 0 if it completed successfully, or negative errno if it failed.
+ */
 typedef void (*spdk_blob_op_complete)(void *cb_arg, int bserrno);
+
+/**
+ * Blob operation completion callback with blob ID.
+ *
+ * \param cb_arg Callback argument.
+ * \param blobid Blob ID.
+ * \param bserrno 0 if it completed successfully, or negative errno if it failed.
+ */
 typedef void (*spdk_blob_op_with_id_complete)(void *cb_arg, spdk_blob_id blobid, int bserrno);
+
+/**
+ * Blob operation completion callback with handle.
+ *
+ * \param cb_arg Callback argument.
+ * \param bs Handle to a blob.
+ * \param bserrno 0 if it completed successfully, or negative errno if it failed.
+ */
 typedef void (*spdk_blob_op_with_handle_complete)(void *cb_arg, struct spdk_blob *blb, int bserrno);
 
-
-/* Calls to function pointers of this type must obey all of the normal
-   rules for channels. The channel passed to this completion must match
-   the channel the operation was initiated on. */
+/**
+ * Blobstore device completion callback.
+ *
+ * \param channel I/O channel the operation was initiated on.
+ * \param cb_arg Callback argument.
+ * \param bserrno 0 if it completed successfully, or negative errno if it failed.
+ */
 typedef void (*spdk_bs_dev_cpl)(struct spdk_io_channel *channel,
 				void *cb_arg, int bserrno);
 
@@ -95,12 +133,6 @@ struct spdk_bs_dev_cb_args {
 	spdk_bs_dev_cpl		cb_fn;
 	struct spdk_io_channel	*channel;
 	void			*cb_arg;
-	/*
-	 * Blobstore device implementations can use this for scratch space for any data
-	 *  structures needed to translate the function arguments to the required format
-	 *  for the backing store.
-	 */
-	uint8_t			scratch[32];
 };
 
 struct spdk_bs_dev {
@@ -125,8 +157,22 @@ struct spdk_bs_dev {
 		      uint64_t lba, uint32_t lba_count,
 		      struct spdk_bs_dev_cb_args *cb_args);
 
+	void (*readv)(struct spdk_bs_dev *dev, struct spdk_io_channel *channel,
+		      struct iovec *iov, int iovcnt,
+		      uint64_t lba, uint32_t lba_count,
+		      struct spdk_bs_dev_cb_args *cb_args);
+
+	void (*writev)(struct spdk_bs_dev *dev, struct spdk_io_channel *channel,
+		       struct iovec *iov, int iovcnt,
+		       uint64_t lba, uint32_t lba_count,
+		       struct spdk_bs_dev_cb_args *cb_args);
+
 	void (*flush)(struct spdk_bs_dev *dev, struct spdk_io_channel *channel,
 		      struct spdk_bs_dev_cb_args *cb_args);
+
+	void (*write_zeroes)(struct spdk_bs_dev *dev, struct spdk_io_channel *channel,
+			     uint64_t lba, uint32_t lba_count,
+			     struct spdk_bs_dev_cb_args *cb_args);
 
 	void (*unmap)(struct spdk_bs_dev *dev, struct spdk_io_channel *channel,
 		      uint64_t lba, uint32_t lba_count,
@@ -136,132 +182,673 @@ struct spdk_bs_dev {
 	uint32_t	blocklen; /* In bytes */
 };
 
-struct spdk_bs_opts {
-	uint32_t cluster_sz; /* In bytes. Must be multiple of page size. */
-	uint32_t num_md_pages; /* Count of the number of pages reserved for metadata */
-	uint32_t max_md_ops; /* Maximum simultaneous metadata operations */
+struct spdk_bs_type {
+	char bstype[SPDK_BLOBSTORE_TYPE_LENGTH];
 };
 
-/* Initialize an spdk_bs_opts structure to the default blobstore option values. */
+struct spdk_bs_opts {
+	/** Size of cluster in bytes. Must be multiple of 4KiB page size. */
+	uint32_t cluster_sz;
+
+	/** Count of the number of pages reserved for metadata */
+	uint32_t num_md_pages;
+
+	/** Maximum simultaneous metadata operations */
+	uint32_t max_md_ops;
+
+	/** Maximum simultaneous operations per channel */
+	uint32_t max_channel_ops;
+
+	/** Blobstore type */
+	struct spdk_bs_type bstype;
+
+	/** Callback function to invoke for each blob. */
+	spdk_blob_op_with_handle_complete iter_cb_fn;
+
+	/** Argument passed to iter_cb_fn for each blob. */
+	void *iter_cb_arg;
+};
+
+/**
+ * Initialize a spdk_bs_opts structure to the default blobstore option values.
+ *
+ * \param opts The spdk_bs_opts structure to be initialized.
+ */
 void spdk_bs_opts_init(struct spdk_bs_opts *opts);
 
-/* Load a blob store from the given device. This will fail (return NULL) if no blob store is present. */
-void spdk_bs_load(struct spdk_bs_dev *dev,
+/**
+ * Load a blobstore from the given device.
+ *
+ * \param dev Blobstore block device.
+ * \param opts The structure which contains the option values for the blobstore.
+ * \param cb_fn Called when the loading is complete.
+ * \param cb_arg Argument passed to function cb_fn.
+ */
+void spdk_bs_load(struct spdk_bs_dev *dev, struct spdk_bs_opts *opts,
 		  spdk_bs_op_with_handle_complete cb_fn, void *cb_arg);
 
-/* Initialize a blob store on the given disk. Destroys all data present on the device. */
+/**
+ * Initialize a blobstore on the given device.
+ *
+ * \param dev Blobstore block device.
+ * \param opts The structure which contains the option values for the blobstore.
+ * \param cb_fn Called when the initialization is complete.
+ * \param cb_arg Argument passed to function cb_fn.
+ */
 void spdk_bs_init(struct spdk_bs_dev *dev, struct spdk_bs_opts *opts,
 		  spdk_bs_op_with_handle_complete cb_fn, void *cb_arg);
 
-/* Flush all volatile data to disk and destroy in-memory structures. */
+typedef void (*spdk_bs_dump_print_xattr)(FILE *fp, const char *bstype, const char *name,
+		const void *value, size_t value_length);
+
+/**
+ * Dump a blobstore's metadata to a given FILE in human-readable format.
+ *
+ * \param dev Blobstore block device.
+ * \param fp FILE pointer to dump the metadata contents.
+ * \param print_xattr_fn Callback function to interpret external xattrs.
+ * \param cb_fn Called when the dump is complete.
+ * \param cb_arg Argument passed to function cb_fn.
+ */
+void spdk_bs_dump(struct spdk_bs_dev *dev, FILE *fp, spdk_bs_dump_print_xattr print_xattr_fn,
+		  spdk_bs_op_complete cb_fn, void *cb_arg);
+/**
+ * Destroy the blobstore.
+ *
+ * It will destroy the blobstore by zeroing the super block.
+ *
+ * \param bs blobstore to destroy.
+ * \param cb_fn Called when the destruction is complete.
+ * \param cb_arg Argument passed to function cb_fn.
+ */
+void spdk_bs_destroy(struct spdk_blob_store *bs, spdk_bs_op_complete cb_fn,
+		     void *cb_arg);
+
+/**
+ * Unload the blobstore.
+ *
+ * It will flush all volatile data to disk.
+ *
+ * \param bs blobstore to unload.
+ * \param cb_fn Called when the unloading is complete.
+ * \param cb_arg Argument passed to function cb_fn.
+ */
 void spdk_bs_unload(struct spdk_blob_store *bs, spdk_bs_op_complete cb_fn, void *cb_arg);
 
-/* Set the given blob as the super blob. This will be retrievable immediately after an
- * spdk_bs_load on the next initialization.
+/**
+ * Set a super blob on the given blobstore.
+ *
+ * This will be retrievable immediately after spdk_bs_load() on the next initializaiton.
+ *
+ * \param bs blobstore.
+ * \param blobid The id of the blob which will be set as the super blob.
+ * \param cb_fn Called when the setting is complete.
+ * \param cb_arg Argument passed to function cb_fn.
  */
 void spdk_bs_set_super(struct spdk_blob_store *bs, spdk_blob_id blobid,
 		       spdk_bs_op_complete cb_fn, void *cb_arg);
 
-/* Open the super blob. */
+/**
+ * Get the super blob. The obtained blob id will be passed to the callback function.
+ *
+ * \param bs blobstore.
+ * \param cb_fn Called when the operation is complete.
+ * \param cb_arg Argument passed to function cb_fn.
+ */
 void spdk_bs_get_super(struct spdk_blob_store *bs,
 		       spdk_blob_op_with_id_complete cb_fn, void *cb_arg);
 
-/* Get the cluster size in bytes. Used in the extend operation. */
+/**
+ * Get the cluster size in bytes.
+ *
+ * \param bs blobstore to query.
+ *
+ * \return cluster size.
+ */
 uint64_t spdk_bs_get_cluster_size(struct spdk_blob_store *bs);
 
-/* Get the page size in bytes. This is the write and read granularity of blobs. */
+/**
+ * Get the page size in bytes. This is the write and read granularity of blobs.
+ *
+ * \param bs blobstore to query.
+ *
+ * \return page size.
+ */
 uint64_t spdk_bs_get_page_size(struct spdk_blob_store *bs);
 
-/* Get the number of free clusters. */
+/**
+ * Get the io unit size in bytes.
+ *
+ * \param bs blobstore to query.
+ *
+ * \return io unit size.
+ */
+uint64_t spdk_bs_get_io_unit_size(struct spdk_blob_store *bs);
+
+/**
+ * Get the number of free clusters.
+ *
+ * \param bs blobstore to query.
+ *
+ * \return the number of free clusters.
+ */
 uint64_t spdk_bs_free_cluster_count(struct spdk_blob_store *bs);
 
-/* Register the current thread as the metadata thread. All functions beginning with
- * the prefix "spdk_bs_md" must be called only from this thread.
+/**
+ * Get the total number of clusters accessible by user.
+ *
+ * \param bs blobstore to query.
+ *
+ * \return the total number of clusters accessible by user.
  */
-int spdk_bs_register_md_thread(struct spdk_blob_store *bs);
+uint64_t spdk_bs_total_data_cluster_count(struct spdk_blob_store *bs);
 
-/* Unregister the current thread as the metadata thread. This allows a different
- * thread to be registered.
+/**
+ * Get the blob id.
+ *
+ * \param blob Blob struct to query.
+ *
+ * \return blob id.
  */
-int spdk_bs_unregister_md_thread(struct spdk_blob_store *bs);
-
-/* Return the blobid */
 spdk_blob_id spdk_blob_get_id(struct spdk_blob *blob);
 
-/* Return the number of pages allocated to the blob */
+/**
+ * Get the number of pages allocated to the blob.
+ *
+ * \param blob Blob struct to query.
+ *
+ * \return the number of pages.
+ */
 uint64_t spdk_blob_get_num_pages(struct spdk_blob *blob);
 
-/* Return the number of clusters allocated to the blob */
+/**
+ * Get the number of io_units allocated to the blob.
+ *
+ * \param blob Blob struct to query.
+ *
+ * \return the number of io_units.
+ */
+uint64_t spdk_blob_get_num_io_units(struct spdk_blob *blob);
+
+/**
+ * Get the number of clusters allocated to the blob.
+ *
+ * \param blob Blob struct to query.
+ *
+ * \return the number of clusters.
+ */
 uint64_t spdk_blob_get_num_clusters(struct spdk_blob *blob);
 
-/* Create a new blob with initial size of 'sz' clusters. */
-void spdk_bs_md_create_blob(struct spdk_blob_store *bs,
-			    spdk_blob_op_with_id_complete cb_fn, void *cb_arg);
+struct spdk_blob_xattr_opts {
+	/* Number of attributes */
+	size_t	count;
+	/* Array of attribute names. Caller should free this array after use. */
+	char	**names;
+	/* User context passed to get_xattr_value function */
+	void	*ctx;
+	/* Callback that will return value for each attribute name. */
+	void	(*get_value)(void *xattr_ctx, const char *name,
+			     const void **value, size_t *value_len);
+};
 
-/* Delete an existing blob. */
-void spdk_bs_md_delete_blob(struct spdk_blob_store *bs, spdk_blob_id blobid,
-			    spdk_blob_op_complete cb_fn, void *cb_arg);
+struct spdk_blob_opts {
+	uint64_t  num_clusters;
+	bool	thin_provision;
+	struct spdk_blob_xattr_opts xattrs;
+};
 
-/* Open a blob */
-void spdk_bs_md_open_blob(struct spdk_blob_store *bs, spdk_blob_id blobid,
-			  spdk_blob_op_with_handle_complete cb_fn, void *cb_arg);
-
-/* Resize a blob to 'sz' clusters.
+/**
+ * Initialize a spdk_blob_opts structure to the default blob option values.
  *
- * These changes are not persisted to disk until
- * spdk_bs_md_sync_blob() is called. */
-int spdk_bs_md_resize_blob(struct spdk_blob *blob, size_t sz);
-
-/* Sync a blob */
-/* Make a blob persistent. This applies to open, resize, set xattr,
- * and remove xattr. These operations will not be persistent until
- * the blob has been synced.
- *
- * I/O operations (read/write) are synced independently. See
- * spdk_bs_io_flush_channel().
+ * \param opts spdk_blob_opts structure to initialize.
  */
-void spdk_bs_md_sync_blob(struct spdk_blob *blob,
-			  spdk_blob_op_complete cb_fn, void *cb_arg);
+void spdk_blob_opts_init(struct spdk_blob_opts *opts);
 
-/* Close a blob. This will automatically sync. */
-void spdk_bs_md_close_blob(struct spdk_blob **blob, spdk_blob_op_complete cb_fn, void *cb_arg);
+/**
+ * Create a new blob with options on the given blobstore. The new blob id will
+ * be passed to the callback function.
+ *
+ * \param bs blobstore.
+ * \param opts The structure which contains the option values for the new blob.
+ * \param cb_fn Called when the operation is complete.
+ * \param cb_arg Argument passed to funcion cb_fn.
+ */
+void spdk_bs_create_blob_ext(struct spdk_blob_store *bs, const struct spdk_blob_opts *opts,
+			     spdk_blob_op_with_id_complete cb_fn, void *cb_arg);
 
-struct spdk_io_channel *spdk_bs_alloc_io_channel(struct spdk_blob_store *bs,
-		uint32_t priority, uint32_t max_ops);
+/**
+ * Create a new blob with default option values on the given blobstore.
+ * The new blob id will be passed to the callback function.
+ *
+ * \param bs blobstore.
+ * \param cb_fn Called when the operation is complete.
+ * \param cb_arg Argument passed to function cb_fn.
+ */
+void spdk_bs_create_blob(struct spdk_blob_store *bs,
+			 spdk_blob_op_with_id_complete cb_fn, void *cb_arg);
 
+/**
+ * Create a read-only snapshot of specified blob with provided options.
+ * This will automatically sync specified blob.
+ *
+ * When operation is done, original blob is converted to the thin-provisioned
+ * blob with a newly created read-only snapshot set as a backing blob.
+ * Structure snapshot_xattrs as well as anything it references (like e.g. names
+ * array) must be valid until the completion is called.
+ *
+ * \param bs blobstore.
+ * \param blobid Id of the source blob used to create a snapshot.
+ * \param snapshot_xattrs xattrs specified for snapshot.
+ * \param cb_fn Called when the operation is complete.
+ * \param cb_arg Argument passed to function cb_fn.
+ */
+void spdk_bs_create_snapshot(struct spdk_blob_store *bs, spdk_blob_id blobid,
+			     const struct spdk_blob_xattr_opts *snapshot_xattrs,
+			     spdk_blob_op_with_id_complete cb_fn, void *cb_arg);
+
+/**
+ * Create a clone of specified read-only blob.
+ *
+ * Structure clone_xattrs as well as anything it references (like e.g. names
+ * array) must be valid until the completion is called.
+ *
+ * \param bs blobstore.
+ * \param blobid Id of the read only blob used as a snapshot for new clone.
+ * \param clone_xattrs xattrs specified for clone.
+ * \param cb_fn Called when the operation is complete.
+ * \param cb_arg Argument passed to function cb_fn.
+ */
+void spdk_bs_create_clone(struct spdk_blob_store *bs, spdk_blob_id blobid,
+			  const struct spdk_blob_xattr_opts *clone_xattrs,
+			  spdk_blob_op_with_id_complete cb_fn, void *cb_arg);
+
+/**
+ * Provide table with blob id's of clones are dependent on specified snapshot.
+ *
+ * Ids array should be allocated and the count parameter set to the number of
+ * id's it can store, before calling this function.
+ *
+ * If ids is NULL or count parameter is not sufficient to handle ids of all
+ * clones, -ENOMEM error is returned and count parameter is updated to the
+ * total number of clones.
+ *
+ * \param bs blobstore.
+ * \param blobid Snapshots blob id.
+ * \param ids Array of the clone ids or NULL to get required size in count.
+ * \param count Size of ids. After call it is updated to the number of clones.
+ *
+ * \return -ENOMEM if count is not sufficient to store all clones.
+ */
+int spdk_blob_get_clones(struct spdk_blob_store *bs, spdk_blob_id blobid, spdk_blob_id *ids,
+			 size_t *count);
+
+/**
+ * Get the blob id for the parent snapshot of this blob.
+ *
+ * \param bs blobstore.
+ * \param blobid Blob id.
+ *
+ * \return blob id of parent blob or SPDK_BLOBID_INVALID if have no parent
+ */
+spdk_blob_id spdk_blob_get_parent_snapshot(struct spdk_blob_store *bs, spdk_blob_id blobid);
+
+/**
+ * Check if blob is read only.
+ *
+ * \param blob Blob.
+ *
+ * \return true if blob is read only.
+ */
+bool spdk_blob_is_read_only(struct spdk_blob *blob);
+
+/**
+ * Check if blob is a snapshot.
+ *
+ * \param blob Blob.
+ *
+ * \return true if blob is a snapshot.
+ */
+bool spdk_blob_is_snapshot(struct spdk_blob *blob);
+
+/**
+ * Check if blob is a clone.
+ *
+ * \param blob Blob.
+ *
+ * \return true if blob is a clone.
+ */
+bool spdk_blob_is_clone(struct spdk_blob *blob);
+
+/**
+ * Check if blob is thin-provisioned.
+ *
+ * \param blob Blob.
+ *
+ * \return true if blob is thin-provisioned.
+ */
+bool spdk_blob_is_thin_provisioned(struct spdk_blob *blob);
+
+/**
+ * Delete an existing blob from the given blobstore.
+ *
+ * \param bs blobstore.
+ * \param blobid The id of the blob to delete.
+ * \param cb_fn Called when the operation is complete.
+ * \param cb_arg Argument passed to function cb_fn.
+ */
+void spdk_bs_delete_blob(struct spdk_blob_store *bs, spdk_blob_id blobid,
+			 spdk_blob_op_complete cb_fn, void *cb_arg);
+
+/**
+ * Allocate all clusters in this blob. Data for allocated clusters is copied
+ * from backing blob(s) if they exist.
+ *
+ * This call removes all dependencies on any backing blobs.
+ *
+ * \param bs blobstore.
+ * \param channel IO channel used to inflate blob.
+ * \param blobid The id of the blob to inflate.
+ * \param cb_fn Called when the operation is complete.
+ * \param cb_arg Argument passed to function cb_fn.
+ */
+void spdk_bs_inflate_blob(struct spdk_blob_store *bs, struct spdk_io_channel *channel,
+			  spdk_blob_id blobid, spdk_blob_op_complete cb_fn, void *cb_arg);
+
+/**
+ * Remove dependency on parent blob.
+ *
+ * This call allocates and copies data for any clusters that are allocated in
+ * the parent blob, and decouples parent updating dependencies of blob to
+ * its ancestor.
+ *
+ * If blob have no parent -EINVAL error is reported.
+ *
+ * \param bs blobstore.
+ * \param channel IO channel used to inflate blob.
+ * \param blobid The id of the blob.
+ * \param cb_fn Called when the operation is complete.
+ * \param cb_arg Argument passed to function cb_fn.
+ */
+void spdk_bs_blob_decouple_parent(struct spdk_blob_store *bs, struct spdk_io_channel *channel,
+				  spdk_blob_id blobid, spdk_blob_op_complete cb_fn, void *cb_arg);
+
+/**
+ * Open a blob from the given blobstore.
+ *
+ * \param bs blobstore.
+ * \param blobid The id of the blob to open.
+ * \param cb_fn Called when the operation is complete.
+ * \param cb_arg Argument passed to function cb_fn.
+ */
+void spdk_bs_open_blob(struct spdk_blob_store *bs, spdk_blob_id blobid,
+		       spdk_blob_op_with_handle_complete cb_fn, void *cb_arg);
+
+/**
+ * Resize a blob to 'sz' clusters. These changes are not persisted to disk until
+ * spdk_bs_md_sync_blob() is called.
+ * If called before previous resize finish, it will fail with errno -EBUSY
+ *
+ * \param blob Blob to resize.
+ * \param sz The new number of clusters.
+ * \param cb_fn Called when the operation is complete.
+ * \param cb_arg Argument passed to function cb_fn.
+ *
+ */
+void spdk_blob_resize(struct spdk_blob *blob, uint64_t sz, spdk_blob_op_complete cb_fn,
+		      void *cb_arg);
+
+/**
+ * Set blob as read only.
+ *
+ * These changes do not take effect until spdk_blob_sync_md() is called.
+ *
+ * \param blob Blob to set.
+ */
+int spdk_blob_set_read_only(struct spdk_blob *blob);
+
+/**
+ * Sync a blob.
+ *
+ * Make a blob persistent. This applies to open, resize, set xattr, and remove
+ * xattr. These operations will not be persistent until the blob has been synced.
+ *
+ * \param blob Blob to sync.
+ * \param cb_fn Called when the operation is complete.
+ * \param cb_arg Argument passed to function cb_fn.
+ */
+void spdk_blob_sync_md(struct spdk_blob *blob, spdk_blob_op_complete cb_fn, void *cb_arg);
+
+/**
+ * Close a blob. This will automatically sync.
+ *
+ * \param blob Blob to close.
+ * \param cb_fn Called when the operation is complete.
+ * \param cb_arg Argument passed to function cb_fn.
+ */
+void spdk_blob_close(struct spdk_blob *blob, spdk_blob_op_complete cb_fn, void *cb_arg);
+
+/**
+ * Allocate an I/O channel for the given blobstore.
+ *
+ * \param bs blobstore.
+ * \return a pointer to the allocated I/O channel.
+ */
+struct spdk_io_channel *spdk_bs_alloc_io_channel(struct spdk_blob_store *bs);
+
+/**
+ * Free the I/O channel.
+ *
+ * \param channel I/O channel to free.
+ */
 void spdk_bs_free_io_channel(struct spdk_io_channel *channel);
 
-/* Force all previously completed operations on this channel to be persistent. */
-void spdk_bs_io_flush_channel(struct spdk_io_channel *channel,
-			      spdk_blob_op_complete cb_fn, void *cb_arg);
+/**
+ * Write data to a blob.
+ *
+ * \param blob Blob to write.
+ * \param channel The I/O channel used to submit requests.
+ * \param payload The specified buffer which should contain the data to be written.
+ * \param offset Offset is in io units from the beginning of the blob.
+ * \param length Size of data in io units.
+ * \param cb_fn Called when the operation is complete.
+ * \param cb_arg Argument passed to function cb_fn.
+ */
+void spdk_blob_io_write(struct spdk_blob *blob, struct spdk_io_channel *channel,
+			void *payload, uint64_t offset, uint64_t length,
+			spdk_blob_op_complete cb_fn, void *cb_arg);
 
-/* Write data to a blob. Offset is in pages from the beginning of the blob. */
-void spdk_bs_io_write_blob(struct spdk_blob *blob, struct spdk_io_channel *channel,
-			   void *payload, uint64_t offset, uint64_t length,
-			   spdk_blob_op_complete cb_fn, void *cb_arg);
+/**
+ * Read data from a blob.
+ *
+ * \param blob Blob to read.
+ * \param channel The I/O channel used to submit requests.
+ * \param payload The specified buffer which will store the obtained data.
+ * \param offset Offset is in io units from the beginning of the blob.
+ * \param length Size of data in io units.
+ * \param cb_fn Called when the operation is complete.
+ * \param cb_arg Argument passed to function cb_fn.
+ */
+void spdk_blob_io_read(struct spdk_blob *blob, struct spdk_io_channel *channel,
+		       void *payload, uint64_t offset, uint64_t length,
+		       spdk_blob_op_complete cb_fn, void *cb_arg);
 
+/**
+ * Write the data described by 'iov' to 'length' pages beginning at 'offset' pages
+ * into the blob.
+ *
+ * \param blob Blob to write.
+ * \param channel I/O channel used to submit requests.
+ * \param iov The pointer points to an array of iovec structures.
+ * \param iovcnt The number of buffers.
+ * \param offset Offset is in io units from the beginning of the blob.
+ * \param length Size of data in io units.
+ * \param cb_fn Called when the operation is complete.
+ * \param cb_arg Argument passed to function cb_fn.
+ */
+void spdk_blob_io_writev(struct spdk_blob *blob, struct spdk_io_channel *channel,
+			 struct iovec *iov, int iovcnt, uint64_t offset, uint64_t length,
+			 spdk_blob_op_complete cb_fn, void *cb_arg);
 
-/* Read data from a blob. Offset is in pages from the beginning of the blob. */
-void spdk_bs_io_read_blob(struct spdk_blob *blob, struct spdk_io_channel *channel,
-			  void *payload, uint64_t offset, uint64_t length,
-			  spdk_blob_op_complete cb_fn, void *cb_arg);
+/**
+ * Read 'length' pages starting at 'offset' pages into the blob into the memory
+ * described by 'iov'.
+ *
+ * \param blob Blob to read.
+ * \param channel I/O channel used to submit requests.
+ * \param iov The pointer points to an array of iovec structures.
+ * \param iovcnt The number of buffers.
+ * \param offset Offset is in io units from the beginning of the blob.
+ * \param length Size of data in io units.
+ * \param cb_fn Called when the operation is complete.
+ * \param cb_arg Argument passed to function cb_fn.
+ */
+void spdk_blob_io_readv(struct spdk_blob *blob, struct spdk_io_channel *channel,
+			struct iovec *iov, int iovcnt, uint64_t offset, uint64_t length,
+			spdk_blob_op_complete cb_fn, void *cb_arg);
 
-/* Iterate through all blobs */
-void spdk_bs_md_iter_first(struct spdk_blob_store *bs,
-			   spdk_blob_op_with_handle_complete cb_fn, void *cb_arg);
-void spdk_bs_md_iter_next(struct spdk_blob_store *bs, struct spdk_blob **blob,
-			  spdk_blob_op_with_handle_complete cb_fn, void *cb_arg);
+/**
+ * Unmap 'length' pages beginning at 'offset' pages on the blob as unused. Unmapped
+ * pages may allow the underlying storage media to behave more effciently.
+ *
+ * \param blob Blob to unmap.
+ * \param channel I/O channel used to submit requests.
+ * \param offset Offset is in io units from the beginning of the blob.
+ * \param length Size of unmap area in pages.
+ * \param cb_fn Called when the operation is complete.
+ * \param cb_arg Argument passed to function cb_fn.
+ */
+void spdk_blob_io_unmap(struct spdk_blob *blob, struct spdk_io_channel *channel,
+			uint64_t offset, uint64_t length, spdk_blob_op_complete cb_fn, void *cb_arg);
 
-int spdk_blob_md_set_xattr(struct spdk_blob *blob, const char *name, const void *value,
-			   uint16_t value_len);
-int spdk_blob_md_remove_xattr(struct spdk_blob *blob, const char *name);
-int spdk_bs_md_get_xattr_value(struct spdk_blob *blob, const char *name,
-			       const void **value, size_t *value_len);
-int spdk_bs_md_get_xattr_names(struct spdk_blob *blob,
-			       struct spdk_xattr_names **names);
+/**
+ * Write zeros into area of a blob.
+ *
+ * \param blob Blob to write.
+ * \param channel I/O channel used to submit requests.
+ * \param offset Offset is in io units from the beginning of the blob.
+ * \param length Size of data in io units.
+ * \param cb_fn Called when the operation is complete.
+ * \param cb_arg Argument passed to function cb_fn.
+ */
+void spdk_blob_io_write_zeroes(struct spdk_blob *blob, struct spdk_io_channel *channel,
+			       uint64_t offset, uint64_t length, spdk_blob_op_complete cb_fn, void *cb_arg);
 
+/**
+ * Get the first blob of the blobstore. The obtained blob will be passed to
+ * the callback function.
+ *
+ * \param bs blobstore to traverse.
+ * \param cb_fn Called when the operation is complete.
+ * \param cb_arg Argument passed to function cb_fn.
+ */
+void spdk_bs_iter_first(struct spdk_blob_store *bs,
+			spdk_blob_op_with_handle_complete cb_fn, void *cb_arg);
+
+/**
+ * Get the next blob by using the current blob. The obtained blob will be passed
+ * to the callback function.
+ *
+ * \param bs blobstore to traverse.
+ * \param blob The current blob.
+ * \param cb_fn Called when the operation is complete.
+ * \param cb_arg Argument passed to function cb_fn.
+ */
+void spdk_bs_iter_next(struct spdk_blob_store *bs, struct spdk_blob *blob,
+		       spdk_blob_op_with_handle_complete cb_fn, void *cb_arg);
+
+/**
+ * Set an extended attribute for the given blob.
+ *
+ * \param blob Blob to set attribute.
+ * \param name Name of the extended attribute.
+ * \param value Value of the extended attribute.
+ * \param value_len Length of the value.
+ *
+ * \return 0 on success, -1 on failure.
+ */
+int spdk_blob_set_xattr(struct spdk_blob *blob, const char *name, const void *value,
+			uint16_t value_len);
+
+/**
+ * Remove the extended attribute from the given blob.
+ *
+ * \param blob Blob to remove attribute.
+ * \param name Name of the extended attribute.
+ *
+ * \return 0 on success, negative errno on failure.
+ */
+int spdk_blob_remove_xattr(struct spdk_blob *blob, const char *name);
+
+/**
+ * Get the value of the specified extended attribute. The obtained value and its
+ * size will be stored in value and value_len.
+ *
+ * \param blob Blob to query.
+ * \param name Name of the extended attribute.
+ * \param value Parameter as output.
+ * \param value_len Parameter as output.
+ *
+ * \return 0 on success, negative errno on failure.
+ */
+int spdk_blob_get_xattr_value(struct spdk_blob *blob, const char *name,
+			      const void **value, size_t *value_len);
+
+/**
+ * Iterate through all extended attributes of the blob. Get the names of all extended
+ * attributes that will be stored in names.
+ *
+ * \param blob Blob to query.
+ * \param names Parameter as output.
+ *
+ * \return 0 on success, negative errno on failure.
+ */
+int spdk_blob_get_xattr_names(struct spdk_blob *blob, struct spdk_xattr_names **names);
+
+/**
+ * Get the number of extended attributes.
+ *
+ * \param names Names of total extended attributes of the blob.
+ *
+ * \return the number of extended attributes.
+ */
 uint32_t spdk_xattr_names_get_count(struct spdk_xattr_names *names);
+
+/**
+ * Get the attribute name specified by the index.
+ *
+ * \param names Names of total extended attributes of the blob.
+ * \param index Index position of the specified attribute.
+ *
+ * \return attribute name.
+ */
 const char *spdk_xattr_names_get_name(struct spdk_xattr_names *names, uint32_t index);
+
+/**
+ * Free the attribute names.
+ *
+ * \param names Names of total extended attributes of the blob.
+ */
 void spdk_xattr_names_free(struct spdk_xattr_names *names);
+
+/**
+ * Get blobstore type of the given device.
+ *
+ * \param bs blobstore to query.
+ *
+ * \return blobstore type.
+ */
+struct spdk_bs_type spdk_bs_get_bstype(struct spdk_blob_store *bs);
+
+/**
+ * Set blobstore type to the given device.
+ *
+ * \param bs blobstore to set to.
+ * \param bstype Type label to set.
+ */
+void spdk_bs_set_bstype(struct spdk_blob_store *bs, struct spdk_bs_type bstype);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* SPDK_BLOB_H_ */

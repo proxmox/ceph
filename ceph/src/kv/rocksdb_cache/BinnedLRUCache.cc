@@ -13,10 +13,14 @@
 
 #include "BinnedLRUCache.h"
 
-#include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string>
+
+#define dout_context cct
+#define dout_subsys ceph_subsys_rocksdb
+#undef dout_prefix
+#define dout_prefix *_dout << "rocksdb: "
 
 namespace rocksdb_cache {
 
@@ -91,7 +95,7 @@ void BinnedLRUHandleTable::Resize() {
       count++;
     }
   }
-  assert(elems_ == count);
+  ceph_assert(elems_ == count);
   delete[] list_;
   list_ = new_list;
   length_ = new_length;
@@ -116,7 +120,7 @@ BinnedLRUCacheShard::BinnedLRUCacheShard(size_t capacity, bool strict_capacity_l
 BinnedLRUCacheShard::~BinnedLRUCacheShard() {}
 
 bool BinnedLRUCacheShard::Unref(BinnedLRUHandle* e) {
-  assert(e->refs > 0);
+  ceph_assert(e->refs > 0);
   e->refs--;
   return e->refs == 0;
 }
@@ -129,8 +133,8 @@ void BinnedLRUCacheShard::EraseUnRefEntries() {
     std::lock_guard<std::mutex> l(mutex_);
     while (lru_.next != &lru_) {
       BinnedLRUHandle* old = lru_.next;
-      assert(old->InCache());
-      assert(old->refs ==
+      ceph_assert(old->InCache());
+      ceph_assert(old->refs ==
              1);  // LRU list contains elements which may be evicted
       LRU_Remove(old);
       table_.Remove(old->key(), old->hash);
@@ -184,8 +188,8 @@ size_t BinnedLRUCacheShard::GetHighPriPoolUsage() const {
 }
 
 void BinnedLRUCacheShard::LRU_Remove(BinnedLRUHandle* e) {
-  assert(e->next != nullptr);
-  assert(e->prev != nullptr);
+  ceph_assert(e->next != nullptr);
+  ceph_assert(e->prev != nullptr);
   if (lru_low_pri_ == e) {
     lru_low_pri_ = e->prev;
   }
@@ -194,14 +198,14 @@ void BinnedLRUCacheShard::LRU_Remove(BinnedLRUHandle* e) {
   e->prev = e->next = nullptr;
   lru_usage_ -= e->charge;
   if (e->InHighPriPool()) {
-    assert(high_pri_pool_usage_ >= e->charge);
+    ceph_assert(high_pri_pool_usage_ >= e->charge);
     high_pri_pool_usage_ -= e->charge;
   }
 }
 
 void BinnedLRUCacheShard::LRU_Insert(BinnedLRUHandle* e) {
-  assert(e->next == nullptr);
-  assert(e->prev == nullptr);
+  ceph_assert(e->next == nullptr);
+  ceph_assert(e->prev == nullptr);
   if (high_pri_pool_ratio_ > 0 && e->IsHighPri()) {
     // Inset "e" to head of LRU list.
     e->next = &lru_;
@@ -228,7 +232,7 @@ void BinnedLRUCacheShard::MaintainPoolSize() {
   while (high_pri_pool_usage_ > high_pri_pool_capacity_) {
     // Overflow last entry in high-pri pool to low-pri pool.
     lru_low_pri_ = lru_low_pri_->next;
-    assert(lru_low_pri_ != &lru_);
+    ceph_assert(lru_low_pri_ != &lru_);
     lru_low_pri_->SetInHighPriPool(false);
     high_pri_pool_usage_ -= lru_low_pri_->charge;
   }
@@ -238,8 +242,8 @@ void BinnedLRUCacheShard::EvictFromLRU(size_t charge,
                                  ceph::autovector<BinnedLRUHandle*>* deleted) {
   while (usage_ + charge > capacity_ && lru_.next != &lru_) {
     BinnedLRUHandle* old = lru_.next;
-    assert(old->InCache());
-    assert(old->refs == 1);  // LRU list contains elements which may be evicted
+    ceph_assert(old->InCache());
+    ceph_assert(old->refs == 1);  // LRU list contains elements which may be evicted
     LRU_Remove(old);
     table_.Remove(old->key(), old->hash);
     old->SetInCache(false);
@@ -273,7 +277,7 @@ rocksdb::Cache::Handle* BinnedLRUCacheShard::Lookup(const rocksdb::Slice& key, u
   std::lock_guard<std::mutex> l(mutex_);
   BinnedLRUHandle* e = table_.Lookup(key, hash);
   if (e != nullptr) {
-    assert(e->InCache());
+    ceph_assert(e->InCache());
     if (e->refs == 1) {
       LRU_Remove(e);
     }
@@ -317,7 +321,7 @@ bool BinnedLRUCacheShard::Release(rocksdb::Cache::Handle* handle, bool force_era
       if (usage_ > capacity_ || force_erase) {
         // the cache is full
         // The LRU list must be empty since the cache is full
-        assert(!(usage_ > capacity_) || lru_.next == &lru_);
+        ceph_assert(!(usage_ > capacity_) || lru_.next == &lru_);
         // take this opportunity and remove the item
         table_.Remove(e->key(), e->hash);
         e->SetInCache(false);
@@ -342,11 +346,7 @@ rocksdb::Status BinnedLRUCacheShard::Insert(const rocksdb::Slice& key, uint32_t 
                              size_t charge,
                              void (*deleter)(const rocksdb::Slice& key, void* value),
                              rocksdb::Cache::Handle** handle, rocksdb::Cache::Priority priority) {
-  // Allocate the memory here outside of the mutex
-  // If the cache is full, we'll have to release it
-  // It shouldn't happen very often though.
-  BinnedLRUHandle* e = reinterpret_cast<BinnedLRUHandle*>(
-      new char[sizeof(BinnedLRUHandle) - 1 + key.size()]);
+  auto e = new BinnedLRUHandle();
   rocksdb::Status s;
   ceph::autovector<BinnedLRUHandle*> last_reference_list;
 
@@ -354,6 +354,7 @@ rocksdb::Status BinnedLRUCacheShard::Insert(const rocksdb::Slice& key, uint32_t 
   e->deleter = deleter;
   e->charge = charge;
   e->key_length = key.size();
+  e->key_data = new char[e->key_length];
   e->flags = 0;
   e->hash = hash;
   e->refs = (handle == nullptr
@@ -362,7 +363,7 @@ rocksdb::Status BinnedLRUCacheShard::Insert(const rocksdb::Slice& key, uint32_t 
   e->next = e->prev = nullptr;
   e->SetInCache(true);
   e->SetPriority(priority);
-  memcpy(e->key_data, key.data(), key.size());
+  std::copy_n(key.data(), e->key_length, e->key_data);
 
   {
     std::lock_guard<std::mutex> l(mutex_);
@@ -377,7 +378,7 @@ rocksdb::Status BinnedLRUCacheShard::Insert(const rocksdb::Slice& key, uint32_t 
         // into cache and get evicted immediately.
         last_reference_list.push_back(e);
       } else {
-        delete[] reinterpret_cast<char*>(e);
+        delete e;
         *handle = nullptr;
         s = rocksdb::Status::Incomplete("Insert failed due to LRU cache being full.");
       }
@@ -447,7 +448,7 @@ size_t BinnedLRUCacheShard::GetUsage() const {
 
 size_t BinnedLRUCacheShard::GetPinnedUsage() const {
   std::lock_guard<std::mutex> l(mutex_);
-  assert(usage_ >= lru_usage_);
+  ceph_assert(usage_ >= lru_usage_);
   return usage_ - lru_usage_;
 }
 
@@ -462,9 +463,12 @@ std::string BinnedLRUCacheShard::GetPrintableOptions() const {
   return std::string(buffer);
 }
 
-BinnedLRUCache::BinnedLRUCache(size_t capacity, int num_shard_bits,
-                   bool strict_capacity_limit, double high_pri_pool_ratio)
-    : ShardedCache(capacity, num_shard_bits, strict_capacity_limit) {
+BinnedLRUCache::BinnedLRUCache(CephContext *c, 
+                               size_t capacity, 
+                               int num_shard_bits,
+                               bool strict_capacity_limit, 
+                               double high_pri_pool_ratio)
+    : ShardedCache(capacity, num_shard_bits, strict_capacity_limit), cct(c) {
   num_shards_ = 1 << num_shard_bits;
   // TODO: Switch over to use mempool
   int rc = posix_memalign((void**) &shards_, 
@@ -545,9 +549,57 @@ size_t BinnedLRUCache::GetHighPriPoolUsage() const {
   return usage;
 }
 
-std::shared_ptr<rocksdb::Cache> NewBinnedLRUCache(size_t capacity, int num_shard_bits,
-                                   bool strict_capacity_limit,
-                                   double high_pri_pool_ratio) {
+// PriCache
+
+int64_t BinnedLRUCache::request_cache_bytes(PriorityCache::Priority pri, uint64_t total_cache) const
+{
+  int64_t assigned = get_cache_bytes(pri);
+  int64_t request = 0;
+
+  switch (pri) {
+  // PRI0 is for rocksdb's high priority items (indexes/filters)
+  case PriorityCache::Priority::PRI0:
+    {
+      request = GetHighPriPoolUsage();
+      break;
+    }
+  // All other cache items are currently shoved into the LAST priority. 
+  case PriorityCache::Priority::LAST:
+    {
+      request = GetUsage();
+      request -= GetHighPriPoolUsage();
+      break;
+    }
+  default:
+    break;
+  }
+  request = (request > assigned) ? request - assigned : 0;
+  ldout(cct, 10) << __func__ << " Priority: " << static_cast<uint32_t>(pri)
+                 << " Request: " << request << dendl;
+  return request;
+}
+
+int64_t BinnedLRUCache::commit_cache_size(uint64_t total_bytes)
+{
+  size_t old_bytes = GetCapacity();
+  int64_t new_bytes = PriorityCache::get_chunk(
+      get_cache_bytes(), total_bytes);
+  ldout(cct, 10) << __func__ << " old: " << old_bytes
+                 << " new: " << new_bytes << dendl;
+  SetCapacity((size_t) new_bytes);
+  double ratio =
+      (double) get_cache_bytes(PriorityCache::Priority::PRI0) / new_bytes;
+  ldout(cct, 10) << __func__ << " High Pri Pool Ratio set to " << ratio << dendl;
+  SetHighPriPoolRatio(ratio);
+  return new_bytes;
+}
+
+std::shared_ptr<rocksdb::Cache> NewBinnedLRUCache(
+    CephContext *c, 
+    size_t capacity,
+    int num_shard_bits,
+    bool strict_capacity_limit,
+    double high_pri_pool_ratio) {
   if (num_shard_bits >= 20) {
     return nullptr;  // the cache cannot be sharded into too many fine pieces
   }
@@ -558,8 +610,8 @@ std::shared_ptr<rocksdb::Cache> NewBinnedLRUCache(size_t capacity, int num_shard
   if (num_shard_bits < 0) {
     num_shard_bits = GetDefaultCacheShardBits(capacity);
   }
-  return std::make_shared<BinnedLRUCache>(capacity, num_shard_bits,
-                                    strict_capacity_limit, high_pri_pool_ratio);
+  return std::make_shared<BinnedLRUCache>(
+      c, capacity, num_shard_bits, strict_capacity_limit, high_pri_pool_ratio);
 }
 
 }  // namespace rocksdb_cache

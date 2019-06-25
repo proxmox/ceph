@@ -34,7 +34,8 @@
 #ifndef SPDK_CUNIT_H
 #define SPDK_CUNIT_H
 
-#include <stdlib.h>
+#include "spdk/stdinc.h"
+
 #include <CUnit/Basic.h>
 
 /*
@@ -46,12 +47,10 @@
 #define SPDK_CU_ASSERT_FATAL(cond)		\
 	do {					\
 		int result_ = !!(cond);		\
-		CU_ASSERT_FATAL(result_); 	\
+		CU_ASSERT_FATAL(result_);	\
 		if (!result_) {			\
 			abort();		\
 		}				\
 	} while (0)
-
-int spdk_cunit_print_results(const char *filename);
 
 #endif /* SPDK_CUNIT_H */

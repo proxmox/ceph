@@ -78,7 +78,14 @@ that Ceph uses the entire partition for the journal.
 :Default: ``90``
 
 
-``osd client message size cap`` 
+``osd max object size``
+
+:Description: The maximum size of a RADOS object in bytes.
+:Type: 32-bit Unsigned Integer
+:Default: 128MB
+
+
+``osd client message size cap``
 
 :Description: The largest client data message allowed in memory.
 :Type: 64-bit Unsigned Integer
@@ -228,6 +235,22 @@ scrubbing operations.
 :Default: ``24``
 
 
+``osd scrub begin week day``
+
+:Description: This restricts scrubbing to this day of the week or later.
+              0 or 7 = Sunday, 1 = Monday, etc.
+:Type: Integer in the range of 0 to 7
+:Default: ``0``
+
+
+``osd scrub end week day``
+
+:Description: This restricts scrubbing to days of the week earlier than this.
+              0 or 7 = Sunday, 1 = Monday, etc.
+:Type: Integer in the range of 0 to 7
+:Default: ``7``
+
+
 ``osd scrub during recovery``
 
 :Description: Allow scrub during recovery. Setting this to ``false`` will disable
@@ -256,8 +279,8 @@ scrubbing operations.
 
 ``osd scrub load threshold``
 
-:Description: The maximum load. Ceph will not scrub when the system load 
-              (as defined by ``getloadavg()``) is higher than this number. 
+:Description: The normalized maximum load. Ceph will not scrub when the system load
+              (as defined by ``getloadavg() / number of online cpus``) is higher than this number.
               Default is ``0.5``.
 
 :Type: Float
@@ -335,28 +358,26 @@ scrubbing operations.
 :Default: 512 KB. ``524288``
 
 
+``osd scrub auto repair``
+
+:Description: Setting this to ``true`` will enable automatic pg repair when errors
+              are found in scrub or deep-scrub.  However, if more than
+              ``osd scrub auto repair num errors`` errors are found a repair is NOT performed.
+:Type: Boolean
+:Default: ``false``
+
+
+``osd scrub auto repair num errors``
+
+:Description: Auto repair will not occur if more than this many errors are found.
+:Type: 32-bit Integer
+:Default: ``5``
+
+
 .. index:: OSD; operations settings
 
 Operations
 ==========
-
-Operations settings allow you to configure the number of threads for servicing
-requests. If you set ``osd op threads`` to ``0``, it disables multi-threading.
-By default, Ceph  uses two threads with a 30 second timeout and a 30 second
-complaint time if an operation doesn't complete within those time parameters.
-You can set operations priority weights between client operations and
-recovery operations to ensure optimal performance during recovery.
-
-
-``osd op threads`` 
-
-:Description: The number of threads to service Ceph OSD Daemon operations. 
-              Set to ``0`` to disable it. Increasing the number may increase 
-              the request processing rate.
-
-:Type: 32-bit Integer
-:Default: ``2`` 
-
 
 ``osd op queue``
 
@@ -401,8 +422,7 @@ recovery operations to ensure optimal performance during recovery.
 
 ``osd client op priority``
 
-:Description: The priority set for client operations. It is relative to
-              ``osd recovery op priority``.
+:Description: The priority set for client operations.
 
 :Type: 32-bit Integer
 :Default: ``63``
@@ -411,8 +431,7 @@ recovery operations to ensure optimal performance during recovery.
 
 ``osd recovery op priority``
 
-:Description: The priority set for recovery operations. It is relative to
-              ``osd client op priority``.
+:Description: The priority set for recovery operations, if not specified by the pool's ``recovery_op_priority``.
 
 :Type: 32-bit Integer
 :Default: ``3``
@@ -421,18 +440,30 @@ recovery operations to ensure optimal performance during recovery.
 
 ``osd scrub priority``
 
-:Description: The priority set for scrub operations. It is relative to
-              ``osd client op priority``.
+:Description: The default priority set for a scheduled scrub work queue when the
+              pool doesn't specify a value of ``scrub_priority``.  This can be
+              boosted to the value of ``osd client op priority`` when scrub is
+              blocking client operations.
 
 :Type: 32-bit Integer
 :Default: ``5``
 :Valid Range: 1-63
 
 
+``osd requested scrub priority``
+
+:Description: The priority set for user requested scrub on the work queue.  If
+              this value were to be smaller than ``osd client op priority`` it
+              can be boosted to the value of ``osd client op priority`` when
+              scrub is blocking client operations.
+
+:Type: 32-bit Integer
+:Default: ``120``
+
+
 ``osd snap trim priority``
 
-:Description: The priority set for snap trim operations. It is relative to
-              ``osd client op priority``.
+:Description: The priority set for the snap trim work queue.
 
 :Type: 32-bit Integer
 :Default: ``5``
@@ -454,49 +485,6 @@ recovery operations to ensure optimal performance during recovery.
 :Type: Float
 :Default: ``30``
 
-
-``osd disk threads``
-
-:Description: The number of disk threads, which are used to perform background
-              disk intensive OSD operations such as scrubbing and snap
-              trimming.
-
-:Type: 32-bit Integer
-:Default: ``1``
-
-``osd disk thread ioprio class``
-
-:Description: Warning: it will only be used if both ``osd disk thread
-	      ioprio class`` and ``osd disk thread ioprio priority`` are
-	      set to a non default value.  Sets the ioprio_set(2) I/O
-	      scheduling ``class`` for the disk thread. Acceptable
-	      values are ``idle``, ``be`` or ``rt``. The ``idle``
-	      class means the disk thread will have lower priority
-	      than any other thread in the OSD. This is useful to slow
-	      down scrubbing on an OSD that is busy handling client
-	      operations. ``be`` is the default and is the same
-	      priority as all other threads in the OSD. ``rt`` means
-	      the disk thread will have precendence over all other
-	      threads in the OSD. Note: Only works with the Linux Kernel
-	      CFQ scheduler. Since Jewel scrubbing is no longer carried
-	      out by the disk iothread, see osd priority options instead.
-:Type: String
-:Default: the empty string
-
-``osd disk thread ioprio priority``
-
-:Description: Warning: it will only be used if both ``osd disk thread
-	      ioprio class`` and ``osd disk thread ioprio priority`` are
-	      set to a non default value. It sets the ioprio_set(2)
-	      I/O scheduling ``priority`` of the disk thread ranging
-	      from 0 (highest) to 7 (lowest). If all OSDs on a given
-	      host were in class ``idle`` and compete for I/O
-	      (i.e. due to controller congestion), it can be used to
-	      lower the disk thread priority of one OSD to 7 so that
-	      another OSD with priority 0 can have priority.
-	      Note: Only works with the Linux Kernel CFQ scheduler.
-:Type: Integer in the range of 0 to 7 or -1 if not to be used.
-:Default: ``-1``
 
 ``osd op history size``
 
@@ -531,7 +519,7 @@ Core Concepts
 The QoS support of Ceph is implemented using a queueing scheduler
 based on `the dmClock algorithm`_. This algorithm allocates the I/O
 resources of the Ceph cluster in proportion to weights, and enforces
-the constraits of minimum reservation and maximum limitation, so that
+the constraints of minimum reservation and maximum limitation, so that
 the services can compete for the resources fairly. Currently the
 *mclock_opclass* operation queue divides Ceph services involving I/O
 resources into following buckets:
@@ -615,7 +603,7 @@ these queues neither interact nor share information among them. The
 number of shards can be controlled with the configuration options
 ``osd_op_num_shards``, ``osd_op_num_shards_hdd``, and
 ``osd_op_num_shards_ssd``. A lower number of shards will increase the
-impact of the mClock queues, but may have other deliterious effects.
+impact of the mClock queues, but may have other deleterious effects.
 
 Second, requests are transferred from the operation queue to the
 operation sequencer, in which they go through the phases of
@@ -971,6 +959,16 @@ perform well in a degraded state.
 :Type: Float
 :Default: ``0.025``
 
+
+``osd recovery priority``
+
+:Description: The default priority set for recovery work queue.  Not
+              related to a pool's ``recovery_priority``.
+
+:Type: 32-bit Integer
+:Default: ``5``
+
+
 Tiering
 =======
 
@@ -1043,20 +1041,6 @@ Miscellaneous
 :Description: Limits the number of lost objects to return.
 :Type: 32-bit Integer
 :Default: ``256``
-
-
-``osd auto upgrade tmap``
-
-:Description: Uses ``tmap`` for ``omap`` on old objects.
-:Type: Boolean
-:Default: ``true``
-
-
-``osd tmapput sets users tmap``
-
-:Description: Uses ``tmap`` for debugging only.
-:Type: Boolean
-:Default: ``false``
 
 
 ``osd fast fail on connection refused``

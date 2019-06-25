@@ -37,12 +37,23 @@
 
 #include "iscsi/iscsi.h"
 #include "spdk/scsi.h"
+#include "spdk/util.h"
 
 struct spdk_iscsi_task {
 	struct spdk_scsi_task	scsi;
 
+	struct spdk_iscsi_task *parent;
+
+	struct spdk_iscsi_conn *conn;
 	struct spdk_iscsi_pdu *pdu;
 	uint32_t outstanding_r2t;
+
+	uint32_t desired_data_transfer_length;
+
+	/* Only valid for Read/Write */
+	uint32_t bytes_completed;
+
+	uint32_t data_out_cnt;
 
 	/*
 	 * Tracks the current offset of large read io.
@@ -68,13 +79,25 @@ struct spdk_iscsi_task {
 	 */
 	uint32_t next_r2t_offset;
 	uint32_t R2TSN;
-	uint32_t r2t_datasn; /* record next datasn for a r2tsn*/
+	uint32_t r2t_datasn; /* record next datasn for a r2tsn */
 	uint32_t acked_r2tsn; /* next r2tsn to be acked */
 	uint32_t datain_datasn;
 	uint32_t acked_data_sn; /* next expected datain datasn */
 	uint32_t ttt;
 
+	uint32_t tag;
+
+	/**
+	 * Record the lun id just in case the lun is invalid,
+	 * which will happen when hot removing the lun.
+	 */
+	int lun_id;
+
 	TAILQ_ENTRY(spdk_iscsi_task) link;
+
+	TAILQ_HEAD(subtask_list, spdk_iscsi_task) subtask_list;
+	TAILQ_ENTRY(spdk_iscsi_task) subtask_link;
+	bool is_queued; /* is queued in scsi layer for handling */
 };
 
 static inline void
@@ -132,7 +155,7 @@ spdk_iscsi_task_is_read(struct spdk_iscsi_task *task)
 	struct iscsi_bhs_scsi_req *scsi_req;
 
 	scsi_req = (struct iscsi_bhs_scsi_req *)spdk_iscsi_task_get_bhs(task);
-	return (scsi_req->read == 1);
+	return (scsi_req->read_bit == 1);
 }
 
 static inline uint32_t
@@ -141,18 +164,24 @@ spdk_iscsi_task_get_cmdsn(struct spdk_iscsi_task *task)
 	return spdk_iscsi_task_get_pdu(task)->cmd_sn;
 }
 
-struct spdk_iscsi_task *spdk_iscsi_task_get(uint32_t *owner_task_ctr,
-		struct spdk_iscsi_task *parent);
+struct spdk_iscsi_task *spdk_iscsi_task_get(struct spdk_iscsi_conn *conn,
+		struct spdk_iscsi_task *parent,
+		spdk_scsi_task_cpl cpl_fn);
+
+static inline struct spdk_iscsi_task *
+spdk_iscsi_task_from_scsi_task(struct spdk_scsi_task *task)
+{
+	return SPDK_CONTAINEROF(task, struct spdk_iscsi_task, scsi);
+}
 
 static inline struct spdk_iscsi_task *
 spdk_iscsi_task_get_primary(struct spdk_iscsi_task *task)
 {
-	struct spdk_scsi_task *scsi_task;
-	struct spdk_scsi_task *scsi_primary_task;
-
-	scsi_task = &task->scsi;
-	scsi_primary_task = spdk_scsi_task_get_primary(scsi_task);
-	return (struct spdk_iscsi_task *)scsi_primary_task;
+	if (task->parent) {
+		return task->parent;
+	} else {
+		return task;
+	}
 }
 
 #endif /* SPDK_ISCSI_TASK_H */

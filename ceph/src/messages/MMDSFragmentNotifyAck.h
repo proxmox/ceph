@@ -17,40 +17,43 @@
 
 #include "msg/Message.h"
 
-class MMDSFragmentNotifyAck : public Message {
+class MMDSFragmentNotifyAck : public MessageInstance<MMDSFragmentNotifyAck> {
+public:
+  friend factory;
 private:
   dirfrag_t base_dirfrag;
   int8_t bits = 0;
 
-public:
+ public:
   dirfrag_t get_base_dirfrag() const { return base_dirfrag; }
   int get_bits() const { return bits; }
 
   bufferlist basebl;
 
-  MMDSFragmentNotifyAck() : Message(MSG_MDS_FRAGMENTNOTIFYACK) {}
+protected:
+  MMDSFragmentNotifyAck() : MessageInstance(MSG_MDS_FRAGMENTNOTIFYACK) {}
   MMDSFragmentNotifyAck(dirfrag_t df, int b, uint64_t tid) :
-    Message(MSG_MDS_FRAGMENTNOTIFYACK),
+    MessageInstance(MSG_MDS_FRAGMENTNOTIFYACK),
     base_dirfrag(df), bits(b) {
     set_tid(tid);
   }
-private:
   ~MMDSFragmentNotifyAck() override {}
 
 public:
-  const char *get_type_name() const override { return "fragment_notify_ack"; }
+  std::string_view get_type_name() const override { return "fragment_notify_ack"; }
   void print(ostream& o) const override {
     o << "fragment_notify_ack(" << base_dirfrag << " " << (int)bits << ")";
   }
 
   void encode_payload(uint64_t features) override {
-    ::encode(base_dirfrag, payload);
-    ::encode(bits, payload);
+    using ceph::encode;
+    encode(base_dirfrag, payload);
+    encode(bits, payload);
   }
   void decode_payload() override {
-    auto p = payload.begin();
-    ::decode(base_dirfrag, p);
-    ::decode(bits, p);
+    auto p = payload.cbegin();
+    decode(base_dirfrag, p);
+    decode(bits, p);
   }
 };
 

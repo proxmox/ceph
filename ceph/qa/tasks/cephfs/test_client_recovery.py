@@ -479,6 +479,13 @@ class TestClientRecovery(CephFSTestCase):
         self.mount_b.wait_until_mounted()
         self.mount_b.run_shell(["ls", "subdir/childfile"])
 
+    def test_unmount_for_evicted_client(self):
+        """Test if client hangs on unmount after evicting the client."""
+        mount_a_client_id = self.mount_a.get_global_id()
+        self.fs.mds_asok(['session', 'evict', "%s" % mount_a_client_id])
+
+        self.mount_a.umount_wait(require_clean=True, timeout=30)
+
     def test_stale_renew(self):
         if not isinstance(self.mount_a, FuseMount):
             raise SkipTest("Require FUSE client to handle signal STOP/CONT")
@@ -513,9 +520,29 @@ class TestClientRecovery(CephFSTestCase):
         # Is the new file visible from mount_b? (caps become invalid after session stale)
         self.mount_b.run_shell(["ls", "testdir/file2"])
 
-    def test_unmount_for_evicted_client(self):
-        """Test if client hangs on unmount after evicting the client."""
-        mount_a_client_id = self.mount_a.get_global_id()
-        self.fs.mds_asok(['session', 'evict', "%s" % mount_a_client_id])
+    def test_abort_conn(self):
+        """
+        Check that abort_conn() skips closing mds sessions.
+        """
+        if not isinstance(self.mount_a, FuseMount):
+            raise SkipTest("Testing libcephfs function")
 
-        self.mount_a.umount_wait(require_clean=True, timeout=30)
+        session_timeout = self.fs.get_var("session_timeout")
+
+        self.mount_a.umount_wait()
+        self.mount_b.umount_wait()
+
+        gid_str = self.mount_a.run_python(dedent("""
+            import cephfs as libcephfs
+            cephfs = libcephfs.LibCephFS(conffile='')
+            cephfs.mount()
+            client_id = cephfs.get_instance_id()
+            cephfs.abort_conn()
+            print client_id
+            """)
+        )
+        gid = int(gid_str);
+
+        self.assert_session_state(gid, "open")
+        time.sleep(session_timeout * 1.5)  # Long enough for MDS to consider session stale
+        self.assert_session_state(gid, "stale")

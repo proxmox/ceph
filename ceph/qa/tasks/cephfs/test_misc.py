@@ -17,7 +17,7 @@ class TestMisc(CephFSTestCase):
     def test_getattr_caps(self):
         """
         Check if MDS recognizes the 'mask' parameter of open request.
-        The paramter allows client to request caps when opening file
+        The parameter allows client to request caps when opening file
         """
 
         if not isinstance(self.mount_a, FuseMount):
@@ -35,7 +35,7 @@ class TestMisc(CephFSTestCase):
         p = self.mount_a.open_background("testfile")
         self.mount_b.wait_for_visible("testfile")
 
-        # this tiggers a lookup request and an open request. The debug
+        # this triggers a lookup request and an open request. The debug
         # code will check if lookup/open reply contains xattrs
         self.mount_b.run_shell(["cat", "testfile"])
 
@@ -186,6 +186,7 @@ class TestMisc(CephFSTestCase):
                                 cap_waited, session_timeout
                             ))
 
+            self.assertTrue(self.mount_a.is_blacklisted())
             cap_holder.stdin.close()
             try:
                 cap_holder.wait()
@@ -216,74 +217,102 @@ class TestMisc(CephFSTestCase):
         ratio = raw_avail / fs_avail
         assert 0.9 < ratio < 1.1
 
-    def _run_drop_cache_cmd(self, timeout, use_tell):
-        drop_res = None
-        if use_tell:
-            mds_id = self.fs.get_lone_mds_id()
-            drop_res = json.loads(
-                self.fs.mon_manager.raw_cluster_cmd("tell", "mds.{0}".format(mds_id),
-                                                    "cache", "drop", str(timeout)))
+    def test_dump_inode(self):
+        info = self.fs.mds_asok(['dump', 'inode', '1'])
+        assert(info['path'] == "/")
+
+    def test_dump_inode_hexademical(self):
+        self.mount_a.run_shell(["mkdir", "-p", "foo"])
+        ino = self.mount_a.path_to_ino("foo")
+        assert type(ino) is int
+        info = self.fs.mds_asok(['dump', 'inode', hex(ino)])
+        assert info['path'] == "/foo"
+
+
+class TestCacheDrop(CephFSTestCase):
+    CLIENTS_REQUIRED = 1
+
+    def _run_drop_cache_cmd(self, timeout=None):
+        result = None
+        mds_id = self.fs.get_lone_mds_id()
+        if timeout is not None:
+            result = self.fs.mon_manager.raw_cluster_cmd("tell", "mds.{0}".format(mds_id),
+                                                    "cache", "drop", str(timeout))
         else:
-            drop_res = self.fs.mds_asok(["cache", "drop", str(timeout)])
-        return drop_res
+            result = self.fs.mon_manager.raw_cluster_cmd("tell", "mds.{0}".format(mds_id),
+                                                    "cache", "drop")
+        return json.loads(result)
 
-    def _drop_cache_command(self, timeout, use_tell=True):
-        self.mount_b.umount_wait()
-        ls_data = self.fs.mds_asok(['session', 'ls'])
-        self.assert_session_count(1, ls_data)
-
+    def _setup(self, max_caps=20, threshold=400):
         # create some files
-        self.mount_a.create_n_files("dc-dir/dc-file", 1000)
-        # drop cache
-        drop_res = self._run_drop_cache_cmd(timeout, use_tell)
+        self.mount_a.create_n_files("dc-dir/dc-file", 1000, sync=True)
 
-        self.assertTrue(drop_res['client_recall']['return_code'] == 0)
-        self.assertTrue(drop_res['flush_journal']['return_code'] == 0)
+        # Reduce this so the MDS doesn't rkcall the maximum for simple tests
+        self.fs.rank_asok(['config', 'set', 'mds_recall_max_caps', str(max_caps)])
+        self.fs.rank_asok(['config', 'set', 'mds_recall_max_decay_threshold', str(threshold)])
 
-    def _drop_cache_command_timeout(self, timeout, use_tell=True):
-        self.mount_b.umount_wait()
-        ls_data = self.fs.mds_asok(['session', 'ls'])
-        self.assert_session_count(1, ls_data)
-
-        # create some files
-        self.mount_a.create_n_files("dc-dir/dc-file-t", 1000)
-
-        # simulate client death and try drop cache
-        self.mount_a.kill()
-        drop_res = self._run_drop_cache_cmd(timeout, use_tell)
-
-        self.assertTrue(drop_res['client_recall']['return_code'] == -errno.ETIMEDOUT)
-        self.assertTrue(drop_res['flush_journal']['return_code'] == 0)
-
-        self.mount_a.kill_cleanup()
-        self.mount_a.mount()
-        self.mount_a.wait_until_mounted()
-
-    def test_drop_cache_command_asok(self):
+    def test_drop_cache_command(self):
         """
-        Basic test for checking drop cache command using admin socket.
+        Basic test for checking drop cache command.
+        Confirm it halts without a timeout.
         Note that the cache size post trimming is not checked here.
         """
-        self._drop_cache_command(10, use_tell=False)
+        mds_min_caps_per_client = int(self.fs.get_config("mds_min_caps_per_client"))
+        self._setup()
+        result = self._run_drop_cache_cmd()
+        self.assertTrue(result['client_recall']['return_code'] == 0)
+        self.assertTrue(result['flush_journal']['return_code'] == 0)
+        # It should take at least 1 second
+        self.assertTrue(result['duration'] > 1)
+        self.assertGreaterEqual(result['trim_cache']['trimmed'], 1000-2*mds_min_caps_per_client)
 
-    def test_drop_cache_command_tell(self):
+    def test_drop_cache_command_timeout(self):
         """
-        Basic test for checking drop cache command using tell interface.
+        Basic test for checking drop cache command.
+        Confirm recall halts early via a timeout.
         Note that the cache size post trimming is not checked here.
         """
-        self._drop_cache_command(10)
+        self._setup()
+        result = self._run_drop_cache_cmd(timeout=10)
+        self.assertTrue(result['client_recall']['return_code'] == -errno.ETIMEDOUT)
+        self.assertTrue(result['flush_journal']['return_code'] == 0)
+        self.assertTrue(result['duration'] > 10)
+        self.assertGreaterEqual(result['trim_cache']['trimmed'], 100) # we did something, right?
 
-    def test_drop_cache_command_timeout_asok(self):
-        """
-        Check drop cache command with non-responding client using admin
-        socket. Note that the cache size post trimming is not checked here.
-        """
-        self._drop_cache_command_timeout(5, use_tell=False)
-
-    def test_drop_cache_command_timeout_tell(self):
+    def test_drop_cache_command_dead_timeout(self):
         """
         Check drop cache command with non-responding client using tell
         interface. Note that the cache size post trimming is not checked
         here.
         """
-        self._drop_cache_command_timeout(5)
+        self._setup()
+        self.mount_a.kill()
+        # Note: recall is subject to the timeout. The journal flush will
+        # be delayed due to the client being dead.
+        result = self._run_drop_cache_cmd(timeout=5)
+        self.assertTrue(result['client_recall']['return_code'] == -errno.ETIMEDOUT)
+        self.assertTrue(result['flush_journal']['return_code'] == 0)
+        self.assertTrue(result['duration'] > 5)
+        self.assertTrue(result['duration'] < 120)
+        self.assertEqual(0, result['trim_cache']['trimmed'])
+        self.mount_a.kill_cleanup()
+        self.mount_a.mount()
+        self.mount_a.wait_until_mounted()
+
+    def test_drop_cache_command_dead(self):
+        """
+        Check drop cache command with non-responding client using tell
+        interface. Note that the cache size post trimming is not checked
+        here.
+        """
+        self._setup()
+        self.mount_a.kill()
+        result = self._run_drop_cache_cmd()
+        self.assertTrue(result['client_recall']['return_code'] == 0)
+        self.assertTrue(result['flush_journal']['return_code'] == 0)
+        self.assertTrue(result['duration'] > 5)
+        self.assertTrue(result['duration'] < 120)
+        self.assertEqual(0, result['trim_cache']['trimmed'])
+        self.mount_a.kill_cleanup()
+        self.mount_a.mount()
+        self.mount_a.wait_until_mounted()

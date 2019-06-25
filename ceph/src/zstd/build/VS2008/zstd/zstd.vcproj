@@ -44,8 +44,8 @@
 			<Tool
 				Name="VCCLCompilerTool"
 				Optimization="0"
-				AdditionalIncludeDirectories="$(SolutionDir)..\..\lib;$(SolutionDir)..\..\lib\common;$(SolutionDir)..\..\lib\legacy;$(SolutionDir)..\..\lib\dictBuilder"
-				PreprocessorDefinitions="ZSTD_LEGACY_SUPPORT=1;WIN32;_DEBUG;_CONSOLE"
+				AdditionalIncludeDirectories="$(SolutionDir)..\..\lib;$(SolutionDir)..\..\lib\common;$(SolutionDir)..\..\lib\legacy;$(SolutionDir)..\..\lib\dictBuilder;$(SolutionDir)..\..\lib\compress"
+				PreprocessorDefinitions="ZSTD_MULTITHREAD=1;ZSTD_LEGACY_SUPPORT=4;WIN32;_DEBUG;_CONSOLE"
 				MinimalRebuild="true"
 				BasicRuntimeChecks="3"
 				RuntimeLibrary="3"
@@ -121,8 +121,8 @@
 				Optimization="2"
 				EnableIntrinsicFunctions="true"
 				OmitFramePointers="true"
-				AdditionalIncludeDirectories="$(SolutionDir)..\..\lib;$(SolutionDir)..\..\lib\common;$(SolutionDir)..\..\lib\legacy;$(SolutionDir)..\..\lib\dictBuilder"
-				PreprocessorDefinitions="ZSTD_LEGACY_SUPPORT=1;WIN32;NDEBUG;_CONSOLE"
+				AdditionalIncludeDirectories="$(SolutionDir)..\..\lib;$(SolutionDir)..\..\lib\common;$(SolutionDir)..\..\lib\legacy;$(SolutionDir)..\..\lib\dictBuilder;$(SolutionDir)..\..\lib\compress"
+				PreprocessorDefinitions="ZSTD_MULTITHREAD=1;ZSTD_LEGACY_SUPPORT=4;WIN32;NDEBUG;_CONSOLE"
 				RuntimeLibrary="0"
 				EnableFunctionLevelLinking="true"
 				UsePrecompiledHeader="0"
@@ -196,8 +196,8 @@
 			<Tool
 				Name="VCCLCompilerTool"
 				Optimization="0"
-				AdditionalIncludeDirectories="$(SolutionDir)..\..\lib;$(SolutionDir)..\..\lib\common;$(SolutionDir)..\..\lib\legacy;$(SolutionDir)..\..\lib\dictBuilder"
-				PreprocessorDefinitions="ZSTD_LEGACY_SUPPORT=1;WIN32;_DEBUG;_CONSOLE"
+				AdditionalIncludeDirectories="$(SolutionDir)..\..\lib;$(SolutionDir)..\..\lib\common;$(SolutionDir)..\..\lib\legacy;$(SolutionDir)..\..\lib\dictBuilder;$(SolutionDir)..\..\lib\compress"
+				PreprocessorDefinitions="ZSTD_MULTITHREAD=1;ZSTD_LEGACY_SUPPORT=4;WIN32;_DEBUG;_CONSOLE"
 				MinimalRebuild="true"
 				BasicRuntimeChecks="3"
 				RuntimeLibrary="3"
@@ -274,8 +274,8 @@
 				Optimization="2"
 				EnableIntrinsicFunctions="true"
 				OmitFramePointers="true"
-				AdditionalIncludeDirectories="$(SolutionDir)..\..\lib;$(SolutionDir)..\..\lib\common;$(SolutionDir)..\..\lib\legacy;$(SolutionDir)..\..\lib\dictBuilder"
-				PreprocessorDefinitions="ZSTD_LEGACY_SUPPORT=1;WIN32;NDEBUG;_CONSOLE"
+				AdditionalIncludeDirectories="$(SolutionDir)..\..\lib;$(SolutionDir)..\..\lib\common;$(SolutionDir)..\..\lib\legacy;$(SolutionDir)..\..\lib\dictBuilder;$(SolutionDir)..\..\lib\compress"
+				PreprocessorDefinitions="ZSTD_MULTITHREAD=1;ZSTD_LEGACY_SUPPORT=4;WIN32;NDEBUG;_CONSOLE"
 				RuntimeLibrary="0"
 				EnableFunctionLevelLinking="true"
 				UsePrecompiledHeader="0"
@@ -345,6 +345,10 @@
 				>
 			</File>
 			<File
+				RelativePath="..\..\..\lib\dictBuilder\cover.c"
+				>
+			</File>
+			<File
 				RelativePath="..\..\..\lib\dictBuilder\divsufsort.c"
 				>
 			</File>
@@ -374,6 +378,14 @@
 			</File>
 			<File
 				RelativePath="..\..\..\lib\decompress\huf_decompress.c"
+				>
+			</File>
+			<File
+				RelativePath="..\..\..\lib\common\pool.c"
+				>
+			</File>
+			<File
+				RelativePath="..\..\..\lib\common\threading.c"
 				>
 			</File>
 			<File
@@ -428,6 +440,30 @@
 				RelativePath="..\..\..\programs\zstdcli.c"
 				>
 			</File>
+			<File
+				RelativePath="..\..\..\lib\compress\zstdmt_compress.c"
+				>
+			</File>
+			<File
+				RelativePath="..\..\..\lib\compress\zstd_fast.c"
+				>
+			</File>
+			<File
+				RelativePath="..\..\..\lib\compress\zstd_double_fast.c"
+				>
+			</File>
+			<File
+				RelativePath="..\..\..\lib\compress\zstd_lazy.c"
+				>
+			</File>
+			<File
+				RelativePath="..\..\..\lib\compress\zstd_opt.c"
+				>
+      </File>
+			<File
+				RelativePath="..\..\..\lib\compress\zstd_ldm.c"
+				>
+			</File>
 		</Filter>
 		<Filter
 			Name="Header Files"
@@ -444,10 +480,6 @@
 			</File>
 			<File
 				RelativePath="..\..\..\lib\common\error_private.h"
-				>
-			</File>
-			<File
-				RelativePath="..\..\..\lib\common\zstd_errors.h"
 				>
 			</File>
 			<File
@@ -471,6 +503,14 @@
 				>
 			</File>
 			<File
+				RelativePath="..\..\..\lib\common\pool.h"
+				>
+			</File>
+			<File
+				RelativePath="..\..\..\lib\common\threading.h"
+				>
+			</File>
+			<File
 				RelativePath="..\..\..\lib\common\xxhash.h"
 				>
 			</File>
@@ -487,15 +527,15 @@
 				>
 			</File>
 			<File
+				RelativePath="..\..\..\lib\common\zstd_errors.h"
+				>
+			</File>
+			<File
 				RelativePath="..\..\..\lib\common\zstd_internal.h"
 				>
 			</File>
 			<File
 				RelativePath="..\..\..\lib\legacy\zstd_legacy.h"
-				>
-			</File>
-			<File
-				RelativePath="..\..\..\lib\compress\zstd_opt.h"
 				>
 			</File>
 			<File
@@ -528,6 +568,34 @@
 			</File>
 			<File
 				RelativePath="..\..\..\lib\legacy\zstd_v07.h"
+				>
+			</File>
+			<File
+				RelativePath="..\..\..\lib\compress\zstdmt_compress.h"
+				>
+			</File>
+			<File
+				RelativePath="..\..\..\lib\compress\zstd_compress.h"
+				>
+			</File>
+			<File
+				RelativePath="..\..\..\lib\compress\zstd_fast.h"
+				>
+			</File>
+			<File
+				RelativePath="..\..\..\lib\compress\zstd_double_fast.h"
+				>
+			</File>
+			<File
+				RelativePath="..\..\..\lib\compress\zstd_lazy.h"
+				>
+			</File>
+			<File
+				RelativePath="..\..\..\lib\compress\zstd_opt.h"
+				>
+      </File>
+			<File
+				RelativePath="..\..\..\lib\compress\zstd_ldm.h"
 				>
 			</File>
 		</Filter>

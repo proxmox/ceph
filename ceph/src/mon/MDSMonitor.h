@@ -20,33 +20,30 @@
 
 #include <map>
 #include <set>
-using namespace std;
 
 #include "include/types.h"
 #include "PaxosFSMap.h"
 #include "PaxosService.h"
 #include "msg/Messenger.h"
 #include "messages/MMDSBeacon.h"
+#include "CommandHandler.h"
 
-class MMonCommand;
-class MMDSLoadTargets;
-class MMDSMap;
 class FileSystemCommandHandler;
 
-class MDSMonitor : public PaxosService, public PaxosFSMap {
+class MDSMonitor : public PaxosService, public PaxosFSMap, protected CommandHandler {
  public:
   MDSMonitor(Monitor *mn, Paxos *p, string service_name);
 
   // service methods
   void create_initial() override;
-  void get_store_prefixes(std::set<string>& s) override;
+  void get_store_prefixes(std::set<string>& s) const override;
   void update_from_paxos(bool *need_bootstrap) override;
   void init() override;
   void create_pending() override; 
   void encode_pending(MonitorDBStore::TransactionRef t) override;
   // we don't require full versions; don't encode any.
   void encode_full(MonitorDBStore::TransactionRef t) override { }
-  version_t get_trim_to() override;
+  version_t get_trim_to() const override;
 
   bool preprocess_query(MonOpRequestRef op) override;  // true if processed.
   bool prepare_update(MonOpRequestRef op) override;
@@ -70,8 +67,8 @@ class MDSMonitor : public PaxosService, public PaxosFSMap {
 
  protected:
   // my helpers
-  void print_map(const FSMap &m, int dbl=7);
-  void update_logger();
+  template<int dblV = 7>
+  void print_map(const FSMap &m);
 
   void _updated(MonOpRequestRef op);
 
@@ -82,9 +79,6 @@ class MDSMonitor : public PaxosService, public PaxosFSMap {
   bool preprocess_offload_targets(MonOpRequestRef op);
   bool prepare_offload_targets(MonOpRequestRef op);
 
-  void get_health(list<pair<health_status_t,string> >& summary,
-		  list<pair<health_status_t,string> > *detail,
-		  CephContext *cct) const override;
   int fail_mds(FSMap &fsmap, std::ostream &ss,
       const std::string &arg,
       MDSMap::mds_info_t *failed_info);
@@ -92,20 +86,11 @@ class MDSMonitor : public PaxosService, public PaxosFSMap {
   bool preprocess_command(MonOpRequestRef op);
   bool prepare_command(MonOpRequestRef op);
 
-  void modify_legacy_filesystem(
-      FSMap &fsmap,
-      std::function<void(std::shared_ptr<Filesystem> )> fn);
-  int legacy_filesystem_command(
-      FSMap &fsmap,
-      MonOpRequestRef op,
-      std::string const &prefix,
-      map<string, cmd_vartype> &cmdmap,
-      std::stringstream &ss);
   int filesystem_command(
       FSMap &fsmap,
       MonOpRequestRef op,
       std::string const &prefix,
-      map<string, cmd_vartype> &cmdmap,
+      const cmdmap_t& cmdmap,
       std::stringstream &ss);
 
   // beacons
@@ -117,13 +102,10 @@ class MDSMonitor : public PaxosService, public PaxosFSMap {
   };
   map<mds_gid_t, beacon_info_t> last_beacon;
 
-  bool try_standby_replay(FSMap &fsmap, const MDSMap::mds_info_t& finfo,
-      const Filesystem &leader_fs, const MDSMap::mds_info_t& ainfo);
-
   std::list<std::shared_ptr<FileSystemCommandHandler> > handlers;
 
-  bool maybe_promote_standby(FSMap &fsmap, std::shared_ptr<Filesystem> &fs);
-  bool maybe_expand_cluster(FSMap &fsmap, fs_cluster_id_t fscid);
+  bool maybe_promote_standby(FSMap& fsmap, Filesystem& fs);
+  bool maybe_resize_cluster(FSMap &fsmap, fs_cluster_id_t fscid);
   void maybe_replace_gid(FSMap &fsmap, mds_gid_t gid,
       const MDSMap::mds_info_t& info, bool *mds_propose, bool *osd_propose);
   void tick() override;     // check state, take actions

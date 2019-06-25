@@ -15,13 +15,20 @@
 #include "common/debug.h"
 #include "AuthSessionHandler.h"
 #include "cephx/CephxSessionHandler.h"
+#ifdef HAVE_GSSAPI
+#include "krb/KrbSessionHandler.hpp"
+#endif
 #include "none/AuthNoneSessionHandler.h"
 #include "unknown/AuthUnknownSessionHandler.h"
 
+#include "common/ceph_crypto.h"
 #define dout_subsys ceph_subsys_auth
 
 
-AuthSessionHandler *get_auth_session_handler(CephContext *cct, int protocol, CryptoKey key, uint64_t features)
+AuthSessionHandler *get_auth_session_handler(
+  CephContext *cct, int protocol,
+  const CryptoKey& key,
+  uint64_t features)
 {
 
   // Should add code to only print the SHA1 hash of the key, unless in secure debugging mode
@@ -36,9 +43,15 @@ AuthSessionHandler *get_auth_session_handler(CephContext *cct, int protocol, Cry
     }
     return new CephxSessionHandler(cct, key, features);
   case CEPH_AUTH_NONE:
-    return new AuthNoneSessionHandler(cct, key);
+    return new AuthNoneSessionHandler();
   case CEPH_AUTH_UNKNOWN:
-    return new AuthUnknownSessionHandler(cct, key);
+    return new AuthUnknownSessionHandler();
+#ifdef HAVE_GSSAPI
+  case CEPH_AUTH_GSS: 
+    return new KrbSessionHandler();
+#endif
+  default:
+    return nullptr;
   }
-  return NULL;
 }
+

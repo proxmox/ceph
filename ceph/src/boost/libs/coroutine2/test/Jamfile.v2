@@ -28,10 +28,14 @@ project boost/coroutine2/test
       <variant>release
     ;
 
-rule configure-impl ( properties * )
+rule native-impl ( properties * )
 {
     local result  ;
-    if ( ! ( <target-os>windows in $(properties) ) )
+    if ( <target-os>darwin in $(properties) || <target-os>android in $(properties) )
+    {
+        result = <build>no ;
+    }
+    else if ( ! ( <target-os>windows in $(properties) ) )
     {
         result = <context-impl>ucontext ;
     }
@@ -61,7 +65,7 @@ test-suite minimal :
 
 [ run test_coroutine.cpp : 
     : :
-    <conditional>@configure-impl
+    <conditional>@native-impl
     [ requires cxx11_auto_declarations
                cxx11_constexpr
                cxx11_defaulted_functions

@@ -35,6 +35,10 @@
 #include "scsi_internal.h"
 #include "spdk/endian.h"
 #include "spdk/env.h"
+#include "spdk/util.h"
+
+static void
+spdk_scsi_task_free_data(struct spdk_scsi_task *task);
 
 void
 spdk_scsi_task_put(struct spdk_scsi_task *task)
@@ -46,43 +50,31 @@ spdk_scsi_task_put(struct spdk_scsi_task *task)
 	task->ref--;
 
 	if (task->ref == 0) {
-		struct spdk_bdev_io *bdev_io = task->blockdev_io;
-
-		if (task->parent) {
-			spdk_scsi_task_put(task->parent);
-			task->parent = NULL;
-		}
+		struct spdk_bdev_io *bdev_io = task->bdev_io;
 
 		if (bdev_io) {
-			/* due to lun reset, the bdev_io status could be pending */
-			if (bdev_io->status == SPDK_BDEV_IO_STATUS_PENDING) {
-				bdev_io->status = SPDK_BDEV_IO_STATUS_FAILED;
-			}
 			spdk_bdev_free_io(bdev_io);
 		}
 
 		spdk_scsi_task_free_data(task);
-		assert(task->owner_task_ctr != NULL);
-
-		if (*(task->owner_task_ctr) > 0) {
-			*(task->owner_task_ctr) -= 1;
-		} else {
-			SPDK_ERRLOG("task counter already 0\n");
-		}
 
 		task->free_fn(task);
 	}
 }
 
 void
-spdk_scsi_task_construct(struct spdk_scsi_task *task, uint32_t *owner_task_ctr,
-			 struct spdk_scsi_task *parent)
+spdk_scsi_task_construct(struct spdk_scsi_task *task,
+			 spdk_scsi_task_cpl cpl_fn,
+			 spdk_scsi_task_free free_fn)
 {
-	task->ref++;
+	assert(task != NULL);
+	assert(cpl_fn != NULL);
+	assert(free_fn != NULL);
 
-	assert(owner_task_ctr != NULL);
-	task->owner_task_ctr = owner_task_ctr;
-	*owner_task_ctr += 1;
+	task->cpl_fn = cpl_fn;
+	task->free_fn = free_fn;
+
+	task->ref++;
 
 	/*
 	 * Pre-fill the iov_buffers to point to the embedded iov
@@ -90,26 +82,13 @@ spdk_scsi_task_construct(struct spdk_scsi_task *task, uint32_t *owner_task_ctr,
 	assert(task->iov.iov_base == NULL);
 	task->iovs = &task->iov;
 	task->iovcnt = 1;
-
-	if (parent != NULL) {
-		parent->ref++;
-		task->parent = parent;
-		task->type = parent->type;
-		task->dxfer_dir = parent->dxfer_dir;
-		task->transfer_len = parent->transfer_len;
-		task->lun = parent->lun;
-		task->cdb = parent->cdb;
-		task->target_port = parent->target_port;
-		task->initiator_port = parent->initiator_port;
-		task->id = parent->id;
-	}
 }
 
-void
+static void
 spdk_scsi_task_free_data(struct spdk_scsi_task *task)
 {
 	if (task->alloc_len != 0) {
-		spdk_free(task->iov.iov_base);
+		spdk_dma_free(task->iov.iov_base);
 		task->alloc_len = 0;
 	}
 
@@ -117,12 +96,12 @@ spdk_scsi_task_free_data(struct spdk_scsi_task *task)
 	task->iov.iov_len = 0;
 }
 
-void *
+static void *
 spdk_scsi_task_alloc_data(struct spdk_scsi_task *task, uint32_t alloc_len)
 {
 	assert(task->alloc_len == 0);
 
-	task->iov.iov_base = spdk_zmalloc(alloc_len, 0, NULL);
+	task->iov.iov_base = spdk_dma_zmalloc(alloc_len, 0, NULL);
 	task->iov.iov_len = alloc_len;
 	task->alloc_len = alloc_len;
 
@@ -138,8 +117,9 @@ spdk_scsi_task_scatter_data(struct spdk_scsi_task *task, const void *src, size_t
 	struct iovec *iovs = task->iovs;
 	const uint8_t *pos;
 
-	if (buf_len == 0)
+	if (buf_len == 0) {
 		return 0;
+	}
 
 	if (task->iovcnt == 1 && iovs[0].iov_base == NULL) {
 		spdk_scsi_task_alloc_data(task, buf_len);
@@ -162,7 +142,7 @@ spdk_scsi_task_scatter_data(struct spdk_scsi_task *task, const void *src, size_t
 	pos = src;
 
 	for (i = 0; i < task->iovcnt; i++) {
-		len = SPDK_MIN(iovs[i].iov_len, buf_left);
+		len = spdk_min(iovs[i].iov_len, buf_left);
 		buf_left -= len;
 		memcpy(iovs[i].iov_base, pos, len);
 		pos += len;
@@ -189,7 +169,7 @@ spdk_scsi_task_gather_data(struct spdk_scsi_task *task, int *len)
 		return NULL;
 	}
 
-	buf = spdk_malloc(buf_len, 0, NULL);
+	buf = spdk_dma_malloc(buf_len, 0, NULL);
 	if (buf == NULL) {
 		*len = -1;
 		return NULL;
@@ -264,4 +244,13 @@ spdk_scsi_task_set_status(struct spdk_scsi_task *task, int sc, int sk,
 		spdk_scsi_task_build_sense_data(task, sk, asc, ascq);
 	}
 	task->status = sc;
+}
+
+void
+spdk_scsi_task_copy_status(struct spdk_scsi_task *dst,
+			   struct spdk_scsi_task *src)
+{
+	memcpy(dst->sense_data, src->sense_data, src->sense_data_len);
+	dst->sense_data_len = src->sense_data_len;
+	dst->status = src->status;
 }

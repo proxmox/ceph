@@ -1,7 +1,7 @@
 //  Copyright (c) 2011-present, Facebook, Inc.  All rights reserved.
-//  This source code is licensed under the BSD-style license found in the
-//  LICENSE file in the root directory of this source tree. An additional grant
-//  of patent rights can be found in the PATENTS file in the same directory.
+//  This source code is licensed under both the GPLv2 (found in the
+//  COPYING file in the root directory) and Apache 2.0 License
+//  (found in the LICENSE.Apache file in the root directory).
 
 #ifndef ROCKSDB_LITE
 
@@ -69,18 +69,36 @@ Status ReadableWriteBatch::GetEntryFromDataOffset(size_t data_offset,
     case kTypeLogData:
       *type = kLogDataRecord;
       break;
+    case kTypeNoop:
     case kTypeBeginPrepareXID:
+    case kTypeBeginPersistedPrepareXID:
+    case kTypeBeginUnprepareXID:
     case kTypeEndPrepareXID:
     case kTypeCommitXID:
     case kTypeRollbackXID:
       *type = kXIDRecord;
       break;
     default:
-      return Status::Corruption("unknown WriteBatch tag");
+      return Status::Corruption("unknown WriteBatch tag ",
+                                ToString(static_cast<unsigned int>(tag)));
   }
   return Status::OK();
 }
 
+// If both of `entry1` and `entry2` point to real entry in write batch, we
+// compare the entries as following:
+// 1. first compare the column family, the one with larger CF will be larger;
+// 2. Inside the same CF, we first decode the entry to find the key of the entry
+//    and the entry with larger key will be larger;
+// 3. If two entries are of the same CF and offset, the one with larger offset
+//    will be larger.
+// Some times either `entry1` or `entry2` is dummy entry, which is actually
+// a search key. In this case, in step 2, we don't go ahead and decode the
+// entry but use the value in WriteBatchIndexEntry::search_key.
+// One special case is WriteBatchIndexEntry::key_size is kFlagMinInCf.
+// This indicate that we are going to seek to the first of the column family.
+// Once we see this, this entry will be smaller than all the real entries of
+// the column family.
 int WriteBatchEntryComparator::operator()(
     const WriteBatchIndexEntry* entry1,
     const WriteBatchIndexEntry* entry2) const {
@@ -90,9 +108,10 @@ int WriteBatchEntryComparator::operator()(
     return -1;
   }
 
-  if (entry1->offset == WriteBatchIndexEntry::kFlagMin) {
+  // Deal with special case of seeking to the beginning of a column family
+  if (entry1->is_min_in_cf()) {
     return -1;
-  } else if (entry2->offset == WriteBatchIndexEntry::kFlagMin) {
+  } else if (entry2->is_min_in_cf()) {
     return 1;
   }
 
@@ -150,7 +169,7 @@ WriteBatchWithIndexInternal::Result WriteBatchWithIndexInternal::GetFromBatch(
   // TODO(agiardullo): consider adding support for reverse iteration
   iter->Seek(key);
   while (iter->Valid()) {
-    const WriteEntry& entry = iter->Entry();
+    const WriteEntry entry = iter->Entry();
     if (cmp->CompareKey(cf_id, entry.key, key) != 0) {
       break;
     }
@@ -169,9 +188,9 @@ WriteBatchWithIndexInternal::Result WriteBatchWithIndexInternal::GetFromBatch(
     iter->Prev();
   }
 
-  const Slice* entry_value = nullptr;
+  Slice entry_value;
   while (iter->Valid()) {
-    const WriteEntry& entry = iter->Entry();
+    const WriteEntry entry = iter->Entry();
     if (cmp->CompareKey(cf_id, entry.key, key) != 0) {
       // Unexpected error or we've reached a different next key
       break;
@@ -180,7 +199,7 @@ WriteBatchWithIndexInternal::Result WriteBatchWithIndexInternal::GetFromBatch(
     switch (entry.type) {
       case kPutRecord: {
         result = WriteBatchWithIndexInternal::Result::kFound;
-        entry_value = &entry.value;
+        entry_value = entry.value;
         break;
       }
       case kMergeRecord: {
@@ -242,7 +261,7 @@ WriteBatchWithIndexInternal::Result WriteBatchWithIndexInternal::GetFromBatch(
         Logger* logger = immuable_db_options.info_log.get();
 
         if (merge_operator) {
-          *s = MergeHelper::TimedFullMerge(merge_operator, key, entry_value,
+          *s = MergeHelper::TimedFullMerge(merge_operator, key, &entry_value,
                                            merge_context->GetOperands(), value,
                                            logger, statistics, env);
         } else {
@@ -255,7 +274,7 @@ WriteBatchWithIndexInternal::Result WriteBatchWithIndexInternal::GetFromBatch(
         }
       } else {  // nothing to merge
         if (result == WriteBatchWithIndexInternal::Result::kFound) {  // PUT
-          value->assign(entry_value->data(), entry_value->size());
+          value->assign(entry_value.data(), entry_value.size());
         }
       }
     }

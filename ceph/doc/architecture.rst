@@ -536,7 +536,7 @@ it calculates a placement group using the object name, a hash code, the
 number of PGs in the pool and the pool name. Ceph clients use the following
 steps to compute PG IDs.
 
-#. The client inputs the pool ID and the object ID. (e.g., pool = "liverpool" 
+#. The client inputs the pool name and the object ID. (e.g., pool = "liverpool" 
    and object-id = "john")
 #. Ceph takes the object ID and hashes it.
 #. Ceph calculates the hash modulo the number of PGs. (e.g., ``58``) to get 
@@ -676,7 +676,7 @@ encoding function splits the content into three data chunks simply by dividing
 the content in three: the first contains ``ABC``, the second ``DEF`` and the
 last ``GHI``. The content will be padded if the content length is not a multiple
 of ``K``. The function also creates two coding chunks: the fourth with ``YXY``
-and the fifth with ``GQC``. Each chunk is stored in an OSD in the acting set.
+and the fifth with ``QGC``. Each chunk is stored in an OSD in the acting set.
 The chunks are stored in objects that have the same name (**NYAN**) but reside
 on different OSDs. The order in which the chunks were created must be preserved
 and is stored as an attribute of the object (``shard_t``), in addition to its
@@ -1436,7 +1436,7 @@ Ceph Clients include a number of service interfaces. These include:
   
 - **Filesystem**: The :term:`Ceph Filesystem` (CephFS) service provides 
   a POSIX compliant filesystem usable with ``mount`` or as 
-  a filesytem in user space (FUSE).      
+  a filesystem in user space (FUSE).
 
 Ceph can run additional instances of OSDs, MDSs, and monitors for scalability
 and high availability. The following diagram depicts the high-level
@@ -1578,7 +1578,7 @@ instance for high availability.
 
 
 .. _RADOS - A Scalable, Reliable Storage Service for Petabyte-scale Storage Clusters: https://ceph.com/wp-content/uploads/2016/08/weil-rados-pdsw07.pdf
-.. _Paxos: http://en.wikipedia.org/wiki/Paxos_(computer_science)
+.. _Paxos: https://en.wikipedia.org/wiki/Paxos_(computer_science)
 .. _Monitor Config Reference: ../rados/configuration/mon-config-ref
 .. _Monitoring OSDs and PGs: ../rados/operations/monitoring-osd-pg
 .. _Heartbeats: ../rados/configuration/mon-osd-interaction
@@ -1591,14 +1591,14 @@ instance for high availability.
 .. _Hardware Recommendations: ../start/hardware-recommendations
 .. _Network Config Reference: ../rados/configuration/network-config-ref
 .. _Data Scrubbing: ../rados/configuration/osd-config-ref#scrubbing
-.. _striping: http://en.wikipedia.org/wiki/Data_striping
-.. _RAID: http://en.wikipedia.org/wiki/RAID 
-.. _RAID 0: http://en.wikipedia.org/wiki/RAID_0#RAID_0
+.. _striping: https://en.wikipedia.org/wiki/Data_striping
+.. _RAID: https://en.wikipedia.org/wiki/RAID
+.. _RAID 0: https://en.wikipedia.org/wiki/RAID_0#RAID_0
 .. _Ceph Object Storage: ../radosgw/
-.. _RESTful: http://en.wikipedia.org/wiki/RESTful
+.. _RESTful: https://en.wikipedia.org/wiki/RESTful
 .. _Erasure Code Notes: https://github.com/ceph/ceph/blob/40059e12af88267d0da67d8fd8d9cd81244d8f93/doc/dev/osd_internals/erasure_coding/developer_notes.rst
 .. _Cache Tiering: ../rados/operations/cache-tiering
 .. _Set Pool Values: ../rados/operations/pools#set-pool-values
-.. _Kerberos: http://en.wikipedia.org/wiki/Kerberos_(protocol)
+.. _Kerberos: https://en.wikipedia.org/wiki/Kerberos_(protocol)
 .. _Cephx Config Guide: ../rados/configuration/auth-config-ref
 .. _User Management: ../rados/operations/user-management

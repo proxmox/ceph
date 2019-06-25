@@ -6,15 +6,8 @@
 
 #include <chrono>
 
+#include "include/rados/librados_fwd.hpp"
 #include "cls/lock/cls_lock_types.h"
-
-namespace librados {
-  class AioCompletion;
-  class ObjectWriteOperation;
-  class IoCtx;
-  class ObjectReadOperation;
-  class ObjectOperation;
-}
 
 namespace rados {
   namespace cls {
@@ -54,7 +47,7 @@ namespace rados {
 			    list<std::string> *locks);
       extern void get_lock_info_start(librados::ObjectReadOperation *rados_op,
 				      const std::string& name);
-      extern int get_lock_info_finish(ceph::bufferlist::iterator *out,
+      extern int get_lock_info_finish(ceph::bufferlist::const_iterator *out,
 				      map<locker_id_t, locker_info_t> *lockers,
 				      ClsLockType *type, std::string *tag);
 
@@ -90,7 +83,7 @@ namespace rados {
 	void set_description(const std::string& desc) { description = desc; }
 	void set_duration(const utime_t& e) { duration = e; }
 	void set_duration(const ceph::timespan& d) {
-	  duration = utime_t(ceph::real_clock::time_point::min() + d);
+	  duration = utime_t(ceph::real_clock::zero() + d);
 	}
 
 	void set_may_renew(bool renew) {

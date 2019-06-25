@@ -217,15 +217,21 @@
 <header name="boost/date_time/posix_time/posix_time_duration.hpp">
 <namespace name="boost">
 <namespace name="posix_time">
-<class name="hours"><inherit access="public">boost::posix_time::time_duration</inherit><purpose>Allows expression of durations as an hour count. </purpose><method-group name="public member functions">
+<class name="hours"><inherit access="public">boost::posix_time::time_duration</inherit><description><para>Allows expression of durations as an hour count The argument must be an integral type </para></description><method-group name="public member functions">
 </method-group>
-<constructor specifiers="explicit"><parameter name="h"><paramtype>long</paramtype></parameter></constructor>
-</class><class name="minutes"><inherit access="public">boost::posix_time::time_duration</inherit><purpose>Allows expression of durations as a minute count. </purpose><method-group name="public member functions">
+<constructor specifiers="explicit"><template>
+          <template-type-parameter name="T"/>
+        </template><parameter name="h"><paramtype>T const &amp;</paramtype></parameter><parameter name=""><paramtype>typename boost::enable_if&lt; boost::is_integral&lt; T &gt;, void &gt;::type *</paramtype><default>0</default></parameter></constructor>
+</class><class name="minutes"><inherit access="public">boost::posix_time::time_duration</inherit><description><para>Allows expression of durations as a minute count The argument must be an integral type </para></description><method-group name="public member functions">
 </method-group>
-<constructor specifiers="explicit"><parameter name="m"><paramtype>long</paramtype></parameter></constructor>
-</class><class name="seconds"><inherit access="public">boost::posix_time::time_duration</inherit><purpose>Allows expression of durations as a seconds count. </purpose><method-group name="public member functions">
+<constructor specifiers="explicit"><template>
+          <template-type-parameter name="T"/>
+        </template><parameter name="m"><paramtype>T const &amp;</paramtype></parameter><parameter name=""><paramtype>typename boost::enable_if&lt; boost::is_integral&lt; T &gt;, void &gt;::type *</paramtype><default>0</default></parameter></constructor>
+</class><class name="seconds"><inherit access="public">boost::posix_time::time_duration</inherit><description><para>Allows expression of durations as a seconds count The argument must be an integral type </para></description><method-group name="public member functions">
 </method-group>
-<constructor specifiers="explicit"><parameter name="s"><paramtype>long</paramtype></parameter></constructor>
+<constructor specifiers="explicit"><template>
+          <template-type-parameter name="T"/>
+        </template><parameter name="s"><paramtype>T const &amp;</paramtype></parameter><parameter name=""><paramtype>typename boost::enable_if&lt; boost::is_integral&lt; T &gt;, void &gt;::type *</paramtype><default>0</default></parameter></constructor>
 </class><typedef name="millisec"><purpose>Allows expression of durations as milli seconds. </purpose><type>date_time::subsecond_duration&lt; <classname>time_duration</classname>, 1000 &gt;</type></typedef>
 <typedef name="milliseconds"><type>date_time::subsecond_duration&lt; <classname>time_duration</classname>, 1000 &gt;</type></typedef>
 <typedef name="microsec"><purpose>Allows expression of durations as micro seconds. </purpose><type>date_time::subsecond_duration&lt; <classname>time_duration</classname>, 1000000 &gt;</type></typedef>
@@ -839,9 +845,16 @@
 </header>
 <header name="boost/date_time/posix_time/time_serialize.hpp">
 <function name="BOOST_SERIALIZATION_SPLIT_FREE"><type/><parameter name=""><paramtype><classname>boost::posix_time::ptime</classname></paramtype></parameter><description><para>time_duration objects are broken down into 4 parts for serialization: types are hour_type, min_type, sec_type, and fractional_seconds_type as defined in the time_duration class </para></description></function>
+<function name="save"><type>void</type><template>
+          <template-type-parameter name="Archive"/>
+        </template><parameter name="ar"><paramtype>Archive &amp;</paramtype></parameter><parameter name="td"><paramtype>const posix_time::time_duration &amp;</paramtype></parameter><parameter name="version"><paramtype>unsigned int</paramtype></parameter></function>
+<function name="load_td"><type>void</type><template>
+          <template-type-parameter name="TimeResTraitsSize"/>
+          <template-type-parameter name="Archive"/>
+        </template><parameter name="ar"><paramtype>Archive &amp;</paramtype></parameter><parameter name="td"><paramtype>posix_time::time_duration &amp;</paramtype></parameter><purpose>Function to load posix_time::time_duration objects using serialization lib. </purpose><description><para>time_duration objects are broken down into 4 parts for serialization: types are hour_type, min_type, sec_type, and fractional_seconds_type as defined in the time_duration class </para></description></function>
 <function name="load"><type>void</type><template>
           <template-type-parameter name="Archive"/>
-        </template><parameter name="ar"><paramtype>Archive &amp;</paramtype></parameter><parameter name="td"><paramtype>posix_time::time_duration &amp;</paramtype></parameter><parameter name="int"><paramtype>unsigned</paramtype></parameter><purpose>Function to load posix_time::time_duration objects using serialization lib. </purpose><description><para>time_duration objects are broken down into 4 parts for serialization: types are hour_type, min_type, sec_type, and fractional_seconds_type as defined in the time_duration class </para></description></function>
+        </template><parameter name="ar"><paramtype>Archive &amp;</paramtype></parameter><parameter name="td"><paramtype>posix_time::time_duration &amp;</paramtype></parameter><parameter name="version"><paramtype>unsigned int</paramtype></parameter></function>
 <function name="save"><type>void</type><template>
           <template-type-parameter name="Archive"/>
         </template><parameter name="ar"><paramtype>Archive &amp;</paramtype></parameter><parameter name="pt"><paramtype>const posix_time::ptime &amp;</paramtype></parameter><parameter name="int"><paramtype>unsigned</paramtype></parameter><purpose>Function to save posix_time::ptime objects using serialization lib. </purpose><description><para>ptime objects are broken down into 2 parts for serialization: a date object and a time_duration onject </para></description></function>

@@ -41,13 +41,22 @@
 #ifndef SPDK_EVENT_H
 #define SPDK_EVENT_H
 
-#include <stdbool.h>
-#include <stdint.h>
-#include <stdio.h>
-#include <string.h>
+#include "spdk/stdinc.h"
 
+#include "spdk/cpuset.h"
 #include "spdk/queue.h"
+#include "spdk/log.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/**
+ * Event handler function.
+ *
+ * \param arg1 Argument 1.
+ * \param arg2 Argument 2.
+ */
 typedef void (*spdk_event_fn)(void *arg1, void *arg2);
 
 /**
@@ -55,15 +64,24 @@ typedef void (*spdk_event_fn)(void *arg1, void *arg2);
  */
 struct spdk_event;
 
-typedef void (*spdk_poller_fn)(void *arg);
-
 /**
  * \brief A poller is a function that is repeatedly called on an lcore.
  */
 struct spdk_poller;
 
+/**
+ * Callback function for customized shutdown handling of application.
+ */
 typedef void (*spdk_app_shutdown_cb)(void);
-typedef void (*spdk_sighandler_t)(int);
+
+/**
+ * Signal handler fucntion.
+ *
+ * \param signal Signal number.
+ */
+typedef void (*spdk_sighandler_t)(int signal);
+
+#define SPDK_DEFAULT_RPC_ADDR "/var/tmp/spdk.sock"
 
 /**
  * \brief Event framework initialization options
@@ -71,8 +89,8 @@ typedef void (*spdk_sighandler_t)(int);
 struct spdk_app_opts {
 	const char *name;
 	const char *config_file;
+	const char *rpc_addr; /* Can be UNIX domain socket path or IP address + TCP port */
 	const char *reactor_mask;
-	const char *log_facility;
 	const char *tpoint_group_mask;
 
 	int shm_id;
@@ -81,9 +99,16 @@ struct spdk_app_opts {
 	spdk_sighandler_t	usr1_handler;
 
 	bool			enable_coredump;
-	int			dpdk_mem_channel;
-	int	 		dpdk_master_core;
-	int			dpdk_mem_size;
+	int			mem_channel;
+	int			master_core;
+	int			mem_size;
+	bool			no_pci;
+	bool			hugepage_single_segments;
+	bool			unlink_hugepage;
+	enum spdk_log_level	print_level;
+	size_t			num_pci_addr;
+	struct spdk_pci_addr	*pci_blacklist;
+	struct spdk_pci_addr	*pci_whitelist;
 
 	/* The maximum latency allowed when passing an event
 	 * from one core to another. A value of 0
@@ -91,97 +116,187 @@ struct spdk_app_opts {
 	 * specified in microseconds.
 	 */
 	uint64_t		max_delay_us;
+
+	/* Wait for the associated RPC before initializing subsystems
+	 * when this flag is enabled.
+	 */
+	bool			delay_subsystem_init;
+};
+
+struct spdk_reactor_tsc_stats {
+	uint64_t busy_tsc;
+	uint64_t idle_tsc;
+	uint64_t unknown_tsc;
 };
 
 /**
- * \brief Initialize the default value of opts
-*/
+ * Initialize the default value of opts
+ *
+ * \param opts Data structure where SPDK will initialize the default options.
+ */
 void spdk_app_opts_init(struct spdk_app_opts *opts);
 
 /**
- * \brief Initialize an application to use the event framework. This must be called prior to using
- * any other functions in this library.
-*/
-void spdk_app_init(struct spdk_app_opts *opts);
+ * Start the framework.
+ *
+ * Before calling this function, the fields of opts must be initialized by
+ * spdk_app_opts_init(). Once started, the framework will call start_fn on the
+ * master core with the arguments provided. This call will block until spdk_app_stop()
+ * is called, or if an error condition occurs during the intialization
+ * code within spdk_app_start(), itself, before invoking the caller's
+ * supplied function.
+ *
+ * \param opts Initialization options used for this application.
+ * \param start_fn Event function that is called when the framework starts.
+ * \param arg1 Argument passed to function start_fn.
+ * \param arg2 Argument passed to function start_fn.
+ *
+ * \return 0 on success or non-zero on failure.
+ */
+int spdk_app_start(struct spdk_app_opts *opts, spdk_event_fn start_fn,
+		   void *arg1, void *arg2);
 
 /**
- * \brief Perform final shutdown operations on an application using the event framework.
-*/
-int spdk_app_fini(void);
+ * Perform final shutdown operations on an application using the event framework.
+ */
+void spdk_app_fini(void);
 
 /**
- * \brief Start the framework. Once started, the framework will call start_fn on the master
- * core with the arguments provided. This call will block until \ref spdk_app_stop is called.
-*/
-int spdk_app_start(spdk_event_fn start_fn, void *arg1, void *arg2);
-
-/**
- * \brief Start shutting down the framework.  Typically this function is not called directly, and
- * the shutdown process is started implicitly by a process signal.  But in applications that are
- * using SPDK for a subset of its process threads, this function can be called in lieu of a signal.
+ * Start shutting down the framework.
+ *
+ * Typically this function is not called directly, and the shutdown process is
+ * started implicitly by a process signal. But in applications that are using
+ * SPDK for a subset of its process threads, this function can be called in lieu
+ * of a signal.
  */
 void spdk_app_start_shutdown(void);
 
 /**
- * \brief Stop the framework. This does not wait for all threads to exit. Instead, it kicks off
- * the shutdown process and returns. Once the shutdown process is complete, \ref spdk_app_start will return.
-*/
+ * Stop the framework.
+ *
+ * This does not wait for all threads to exit. Instead, it kicks off the shutdown
+ * process and returns. Once the shutdown process is complete, spdk_app_start()
+ * will return.
+ *
+ * \param rc The rc value specified here will be returned to caller of spdk_app_start().
+ */
 void spdk_app_stop(int rc);
 
 /**
- * \brief Generate a configuration file that corresponds to the current running state.
-*/
+ * Generate a configuration file that corresponds to the current running state.
+ *
+ * \param config_str Values obtained from the generated configuration file.
+ * \param name Prefix for name of temporary configuration file to save the current config.
+ *
+ * \return 0 on success, -1 on failure.
+ */
 int spdk_app_get_running_config(char **config_str, char *name);
 
 /**
- * \brief Return the shared memory id for this application.
-*/
+ * Return the shared memory id for this application.
+ *
+ * \return shared memory id.
+ */
 int spdk_app_get_shm_id(void);
 
 /**
- * \brief Convert a string containing a CPU core mask into a bitmask
+ * Convert a string containing a CPU core mask into a bitmask
+ *
+ * \param mask String containing a CPU core mask.
+ * \param cpumask Bitmask of CPU cores.
+ *
+ * \return 0 on success, -1 on failure.
  */
-int spdk_app_parse_core_mask(const char *mask, uint64_t *cpumask);
+int spdk_app_parse_core_mask(const char *mask, struct spdk_cpuset *cpumask);
 
 /**
- * \brief Return a mask of the CPU cores active for this application
+ * Get the mask of the CPU cores active for this application
+ *
+ * \return the bitmask of the active CPU cores.
  */
-uint64_t spdk_app_get_core_mask(void);
+struct spdk_cpuset *spdk_app_get_core_mask(void);
+
+#define SPDK_APP_GETOPT_STRING "c:de:ghi:m:n:p:r:s:uB:L:RW:"
+
+enum spdk_app_parse_args_rvals {
+	SPDK_APP_PARSE_ARGS_HELP = 0,
+	SPDK_APP_PARSE_ARGS_SUCCESS = 1,
+	SPDK_APP_PARSE_ARGS_FAIL = 2
+};
+typedef enum spdk_app_parse_args_rvals spdk_app_parse_args_rvals_t;
 
 /**
- * \brief Return the number of CPU cores utilized by this application
+ * Helper function for parsing arguments and printing usage messages.
+ *
+ * \param argc Count of arguments in argv parameter array.
+ * \param argv Array of command line arguments.
+ * \param opts Default options for the application.
+ * \param getopt_str String representing the app-specific command line parameters.
+ * Characters in this string must not conflict with characters in SPDK_APP_GETOPT_STRING.
+ * \param app_long_opts Array of full-name parameters. Can be NULL.
+ * \param parse Function pointer to call if an argument in getopt_str is found.
+ * \param usage Function pointer to print usage messages for app-specific command
+ *		line parameters.
+ *\return SPDK_APP_PARSE_ARGS_FAIL on failure, SPDK_APP_PARSE_ARGS_SUCCESS on
+ *        success, SPDK_APP_PARSE_ARGS_HELP if '-h' passed as an option.
  */
-int spdk_app_get_core_count(void) __attribute__((deprecated));
+spdk_app_parse_args_rvals_t spdk_app_parse_args(int argc, char **argv,
+		struct spdk_app_opts *opts, const char *getopt_str,
+		struct option *app_long_opts, void (*parse)(int ch, char *arg),
+		void (*usage)(void));
 
 /**
- * \brief Return the lcore of the current thread.
+ * Print usage strings for common SPDK command line options.
+ *
+ * May only be called after spdk_app_parse_args().
  */
-uint32_t spdk_app_get_current_core(void) __attribute__((deprecated));
+void spdk_app_usage(void);
 
 /**
- * \brief Allocate an event to be passed to \ref spdk_event_call
+ * Allocate an event to be passed to spdk_event_call().
+ *
+ * \param lcore Lcore to run this event.
+ * \param fn Function used to execute event.
+ * \param arg1 Argument passed to function fn.
+ * \param arg2 Argument passed to function fn.
+ *
+ * \return a pointer to the allocated event.
  */
 struct spdk_event *spdk_event_allocate(uint32_t lcore, spdk_event_fn fn,
 				       void *arg1, void *arg2);
 
 /**
- * \brief Pass the given event to the associated lcore and call the function.
+ * Pass the given event to the associated lcore and call the function.
+ *
+ * \param event Event to execute.
  */
 void spdk_event_call(struct spdk_event *event);
 
 /**
- * \brief Register a poller on the given lcore.
+ * Enable or disable monitoring of context switches.
+ *
+ * \param enabled True to enable, false to disable.
  */
-void spdk_poller_register(struct spdk_poller **ppoller,
-			  spdk_poller_fn fn,
-			  void *arg,
-			  uint32_t lcore,
-			  uint64_t period_microseconds);
+void spdk_reactor_enable_context_switch_monitor(bool enabled);
 
 /**
- * \brief Unregister a poller on the given lcore.
+ * Return whether context switch monitoring is enabled.
+ *
+ * \return true if enabled or false otherwise.
  */
-void spdk_poller_unregister(struct spdk_poller **ppoller,
-			    struct spdk_event *complete);
+bool spdk_reactor_context_switch_monitor_enabled(void);
+
+/**
+ * Get tsc stats from a given reactor
+ * Copy cumulative reactor tsc values to user's tsc_stats structure.
+ *
+ * \param tsc_stats User's tsc_stats structure.
+ * \param core_id Get tsc data on this Reactor core id.
+ */
+int spdk_reactor_get_tsc_stats(struct spdk_reactor_tsc_stats *tsc_stats, uint32_t core_id);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

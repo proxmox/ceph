@@ -35,6 +35,7 @@
 #define _FD_MAN_H_
 #include <stdint.h>
 #include <pthread.h>
+#include <poll.h>
 
 #define MAX_FDS 1024
 
@@ -43,12 +44,13 @@ typedef void (*fd_cb)(int fd, void *dat, int *remove);
 struct fdentry {
 	int fd;		/* -1 indicates this entry is empty */
 	fd_cb rcb;	/* callback when this fd is readable. */
-	fd_cb wcb;	/* callback when this fd is writeable.*/
+	fd_cb wcb;	/* callback when this fd is writeable. */
 	void *dat;	/* fd context */
 	int busy;	/* whether this entry is being used in cb. */
 };
 
 struct fdset {
+	struct pollfd rwfds[MAX_FDS];
 	struct fdentry fd[MAX_FDS];
 	pthread_mutex_t fd_mutex;
 	int num;	/* current fd number of this fdset */
@@ -62,6 +64,6 @@ int fdset_add(struct fdset *pfdset, int fd,
 
 void *fdset_del(struct fdset *pfdset, int fd);
 
-void fdset_event_dispatch(struct fdset *pfdset);
+void *fdset_event_dispatch(void *arg);
 
 #endif

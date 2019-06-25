@@ -294,7 +294,7 @@ TEST_F(TestMockObjectMapSnapshotRemoveRequest, ScrubCleanObjects) {
   
   C_SaferCond cond_ctx1;
   {
-    librbd::ObjectMap<ImageCtx> om(*ictx, ictx->snap_id);
+    librbd::ObjectMap om(*ictx, ictx->snap_id);
     RWLock::RLocker owner_locker(ictx->owner_lock);
     RWLock::WLocker snap_locker(ictx->snap_lock);
     om.set_object_map(object_map);

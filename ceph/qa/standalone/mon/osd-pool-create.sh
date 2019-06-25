@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 #
 # Copyright (C) 2013, 2014 Cloudwatt <libre.licensing@cloudwatt.com>
 # Copyright (C) 2014, 2015 Red Hat <contact@redhat.com>
@@ -213,13 +213,17 @@ function TEST_pool_create_rep_expected_num_objects() {
     setup $dir || return 1
 
     # disable pg dir merge
+    CEPH_ARGS+="--osd-objectstore=filestore"
     export CEPH_ARGS
     run_mon $dir a || return 1
+    run_mgr $dir x || return 1
     run_osd $dir 0 || return 1
 
     ceph osd pool create rep_expected_num_objects 64 64 replicated  replicated_rule 100000 || return 1
     # wait for pg dir creating
-    sleep 5
+    sleep 30
+    ceph pg ls
+    find ${dir}/0/current -ls
     ret=$(find ${dir}/0/current/1.0_head/ | grep DIR | wc -l)
     if [ "$ret" -le 2 ];
     then

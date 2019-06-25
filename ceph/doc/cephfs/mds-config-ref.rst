@@ -88,7 +88,12 @@
 
 ``mds blacklist interval``
 
-:Description: The blacklist duration for failed MDSs in the OSD map.
+:Description: The blacklist duration for failed MDSs in the OSD map. Note,
+              this controls how long failed MDS daemons will stay in the
+              OSDMap blacklist. It has no effect on how long something is
+              blacklisted when the administrator blacklists it manually. For
+              example, ``ceph osd blacklist add`` will still use the default
+              blacklist time.
 :Type:  Float
 :Default: ``24.0*60.0``
 
@@ -136,13 +141,6 @@
 :Description: Determines whether the MDS should allow clients to see request 
               results before they commit to the journal.
 
-:Type:  Boolean
-:Default: ``true``
-
-
-``mds use tmap``
-
-:Description: Use trivialmap for directory updates.
 :Type:  Boolean
 :Default: ``true``
 
@@ -274,7 +272,7 @@
 
 ``mds bal fragment interval``
 
-:Description: The delay (in seconds) between a fragment being elegible for split
+:Description: The delay (in seconds) between a fragment being eligible for split
               or merge and executing the fragmentation change.
 :Type:  32-bit Integer
 :Default: ``5``
@@ -535,7 +533,7 @@
               (for testing only).
               
 :Type:  Boolean
-:Default: ``0``
+:Default: ``false``
 
 
 ``mds wipe ino prealloc``
@@ -544,7 +542,7 @@
               (for testing only).
               
 :Type:  Boolean
-:Default: ``0``
+:Default: ``false``
 
 
 ``mds skip ino``

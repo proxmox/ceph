@@ -19,16 +19,17 @@
 
 #include <list>
 #include <map>
-using std::list;
-using std::map;
 
 #include "include/types.h"
 #include "common/Clock.h"
 #include "common/Cond.h"
 
-class MDSMap;
+#include "msg/Message.h"
+#include "messages/MHeartbeat.h"
+
+#include "MDSMap.h"
+
 class MDSRank;
-class Message;
 class MHeartbeat;
 class CInode;
 class CDir;
@@ -36,15 +37,18 @@ class Messenger;
 class MonClient;
 
 class MDBalancer {
-  friend class C_Bal_SendHeartbeat;
 public:
+  using clock = ceph::coarse_mono_clock;
+  using time = ceph::coarse_mono_time;
+  friend class C_Bal_SendHeartbeat;
+
   MDBalancer(MDSRank *m, Messenger *msgr, MonClient *monc);
 
-  void handle_conf_change(const struct md_config_t *conf,
+  void handle_conf_change(const ConfigProxy& conf,
                           const std::set <std::string> &changed,
                           const MDSMap &mds_map);
 
-  int proc_message(Message *m);
+  int proc_message(const Message::const_ref &m);
 
   /**
    * Regularly called upkeep function.
@@ -53,12 +57,12 @@ public:
    */
   void tick();
 
-  void subtract_export(CDir *ex, utime_t now);
-  void add_import(CDir *im, utime_t now);
-  void adjust_pop_for_rename(CDir *pdir, CDir *dir, utime_t now, bool inc);
+  void subtract_export(CDir *ex);
+  void add_import(CDir *im);
+  void adjust_pop_for_rename(CDir *pdir, CDir *dir, bool inc);
 
-  void hit_inode(const utime_t& now, CInode *in, int type, int who=-1);
-  void hit_dir(const utime_t& now, CDir *dir, int type, int who=-1, double amount=1.0);
+  void hit_inode(CInode *in, int type, int who=-1);
+  void hit_dir(CDir *dir, int type, int who=-1, double amount=1.0);
 
   void queue_split(const CDir *dir, bool fast);
   void queue_merge(CDir *dir);
@@ -92,13 +96,13 @@ private:
 
   void handle_export_pins(void);
 
-  mds_load_t get_load(utime_t now);
+  mds_load_t get_load();
   int localize_balancer();
   void send_heartbeat();
-  void handle_heartbeat(MHeartbeat *m);
+  void handle_heartbeat(const MHeartbeat::const_ref &m);
   void find_exports(CDir *dir,
                     double amount,
-                    list<CDir*>& exports,
+                    std::list<CDir*>& exports,
                     double& have,
                     set<CDir*>& already_exporting);
 
@@ -130,11 +134,11 @@ private:
   string bal_code;
   string bal_version;
 
-  utime_t last_heartbeat;
-  utime_t last_sample;
-  utime_t rebalance_time; //ensure a consistent view of load for rebalance
+  time last_heartbeat = clock::zero();
+  time last_sample = clock::zero();
+  time rebalance_time = clock::zero(); //ensure a consistent view of load for rebalance
 
-  utime_t last_get_load;
+  time last_get_load = clock::zero();
   uint64_t last_num_requests = 0;
   uint64_t last_cpu_time = 0;
 
@@ -145,10 +149,10 @@ private:
   set<dirfrag_t>   split_pending, merge_pending;
 
   // per-epoch scatter/gathered info
-  map<mds_rank_t, mds_load_t>  mds_load;
-  map<mds_rank_t, double>       mds_meta_load;
-  map<mds_rank_t, map<mds_rank_t, float> > mds_import_map;
-  map<mds_rank_t, int> mds_last_epoch_under_map;
+  std::map<mds_rank_t, mds_load_t>  mds_load;
+  std::map<mds_rank_t, double>       mds_meta_load;
+  std::map<mds_rank_t, map<mds_rank_t, float> > mds_import_map;
+  std::map<mds_rank_t, int> mds_last_epoch_under_map;
 
   // per-epoch state
   double my_load = 0;

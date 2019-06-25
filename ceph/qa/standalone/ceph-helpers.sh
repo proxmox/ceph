@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 #
 # Copyright (C) 2013,2014 Cloudwatt <libre.licensing@cloudwatt.com>
 # Copyright (C) 2014,2015 Red Hat <contact@redhat.com>
@@ -18,8 +18,10 @@
 # GNU Library Public License for more details.
 #
 TIMEOUT=300
+WAIT_FOR_CLEAN_TIMEOUT=90
+MAX_TIMEOUT=15
 PG_NUM=4
-TMPDIR=${TMPDIR:-${CEPH_BUILD_DIR}}
+TMPDIR=${TMPDIR:-/tmp}
 CEPH_BUILD_VIRTUALENV=${TMPDIR}
 TESTDIR=${TESTDIR:-${TMPDIR}}
 
@@ -49,11 +51,6 @@ else
 fi
 
 EXTRA_OPTS=""
-if [ -n "$CEPH_LIB" ]; then
-    EXTRA_OPTS+=" --erasure-code-dir $CEPH_LIB"
-    EXTRA_OPTS+=" --plugin-dir $CEPH_LIB"
-    EXTRA_OPTS+=" --osd-class-dir $CEPH_LIB"
-fi
 
 #! @file ceph-helpers.sh
 #  @brief Toolbox to manage Ceph cluster dedicated to testing
@@ -135,6 +132,12 @@ function setup() {
     teardown $dir || return 1
     mkdir -p $dir
     mkdir -p $(get_asok_dir)
+    if [ $(ulimit -n) -le 1024 ]; then
+        ulimit -n 4096 || return 1
+    fi
+    if [ -z "$LOCALRUN" ]; then
+        trap "teardown $dir 1" TERM HUP INT
+    fi
 }
 
 function test_setup() {
@@ -253,7 +256,9 @@ function kill_daemon() {
     local send_signal=$2
     local delays=${3:-0.1 0.2 1 1 1 2 3 5 5 5 10 10 20 60 60 60 120}
     local exit_code=1
-    for try in $delays ; do
+    # In order to try after the last large sleep add 0 at the end so we check
+    # one last time before dropping out of the loop
+    for try in $delays 0 ; do
          if kill -$send_signal $pid 2> /dev/null ; then
             exit_code=1
          else
@@ -458,6 +463,7 @@ function run_mon() {
 
     ceph-mon \
         --id $id \
+	--osd-failsafe-full-ratio=.99 \
         --mon-osd-full-ratio=.99 \
         --mon-data-avail-crit=1 \
         --mon-data-avail-warn=5 \
@@ -491,15 +497,15 @@ function test_run_mon() {
     setup $dir || return 1
 
     run_mon $dir a --mon-initial-members=a || return 1
-    create_rbd_pool || return 1
-    # rbd has not been deleted / created, hence it has pool id 0
-    ceph osd dump | grep "pool 1 'rbd'" || return 1
+    ceph mon dump | grep "mon.a" || return 1
     kill_daemons $dir || return 1
 
-    run_mon $dir a || return 1
+    run_mon $dir a --osd_pool_default_size=3 || return 1
+    run_osd $dir 0 || return 1
+    run_osd $dir 1 || return 1
+    run_osd $dir 2 || return 1
     create_rbd_pool || return 1
-    # rbd has been deleted / created, hence it does not have pool id 0
-    ! ceph osd dump | grep "pool 1 'rbd'" || return 1
+    ceph osd dump | grep "pool 1 'rbd'" || return 1
     local size=$(CEPH_ARGS='' ceph --format=json daemon $(get_asok_path mon.a) \
         config get osd_pool_default_size)
     test "$size" = '{"osd_pool_default_size":"3"}' || return 1
@@ -553,12 +559,36 @@ function run_mgr() {
     ceph-mgr \
         --id $id \
         $EXTRA_OPTS \
+	--osd-failsafe-full-ratio=.99 \
         --debug-mgr 20 \
 	--debug-objecter 20 \
         --debug-ms 20 \
         --debug-paxos 20 \
         --chdir= \
         --mgr-data=$data \
+        --log-file=$dir/\$name.log \
+        --admin-socket=$(get_asok_path) \
+        --run-dir=$dir \
+        --pid-file=$dir/\$name.pid \
+        --mgr-module-path=$(realpath ${CEPH_ROOT}/src/pybind/mgr) \
+        "$@" || return 1
+}
+
+function run_mds() {
+    local dir=$1
+    shift
+    local id=$1
+    shift
+    local data=$dir/$id
+
+    ceph-mds \
+        --id $id \
+        $EXTRA_OPTS \
+	--debug-mds 20 \
+	--debug-objecter 20 \
+        --debug-ms 20 \
+        --chdir= \
+        --mds-data=$data \
         --log-file=$dir/\$name.log \
         --admin-socket=$(get_asok_path) \
         --run-dir=$dir \
@@ -584,9 +614,8 @@ function run_mgr() {
 # The CEPH_CONF variable is expected to be set to /dev/null to
 # only rely on arguments for configuration.
 #
-# The run_osd function creates the OSD data directory with ceph-disk
-# prepare on the **dir**/**id** directory and relies on the
-# activate_osd function to run the daemon.
+# The run_osd function creates the OSD data directory on the **dir**/**id**
+# directory and relies on the activate_osd function to run the daemon.
 #
 # Examples:
 #
@@ -606,16 +635,46 @@ function run_osd() {
     shift
     local osd_data=$dir/$id
 
-    local ceph_disk_args
-    ceph_disk_args+=" --statedir=$dir"
-    ceph_disk_args+=" --sysconfdir=$dir"
-    ceph_disk_args+=" --prepend-to-path="
-
+    local ceph_args="$CEPH_ARGS"
+    ceph_args+=" --osd-failsafe-full-ratio=.99"
+    ceph_args+=" --osd-journal-size=100"
+    ceph_args+=" --osd-scrub-load-threshold=2000"
+    ceph_args+=" --osd-data=$osd_data"
+    ceph_args+=" --osd-journal=${osd_data}/journal"
+    ceph_args+=" --chdir="
+    ceph_args+=$EXTRA_OPTS
+    ceph_args+=" --run-dir=$dir"
+    ceph_args+=" --admin-socket=$(get_asok_path)"
+    ceph_args+=" --debug-osd=20"
+    ceph_args+=" --log-file=$dir/\$name.log"
+    ceph_args+=" --pid-file=$dir/\$name.pid"
+    ceph_args+=" --osd-max-object-name-len=460"
+    ceph_args+=" --osd-max-object-namespace-len=64"
+    ceph_args+=" --enable-experimental-unrecoverable-data-corrupting-features=*"
+    ceph_args+=" "
+    ceph_args+="$@"
     mkdir -p $osd_data
-    ceph-disk $ceph_disk_args \
-        prepare --filestore $osd_data || return 1
 
-    activate_osd $dir $id "$@"
+    local uuid=`uuidgen`
+    echo "add osd$id $uuid"
+    OSD_SECRET=$(ceph-authtool --gen-print-key)
+    echo "{\"cephx_secret\": \"$OSD_SECRET\"}" > $osd_data/new.json
+    ceph osd new $uuid -i $osd_data/new.json
+    rm $osd_data/new.json
+    ceph-osd -i $id $ceph_args --mkfs --key $OSD_SECRET --osd-uuid $uuid
+
+    local key_fn=$osd_data/keyring
+    cat > $key_fn<<EOF
+[osd.$id]
+key = $OSD_SECRET
+EOF
+    echo adding osd$id key to auth repository
+    ceph -i "$key_fn" auth add osd.$id osd "allow *" mon "allow profile osd" mgr "allow profile osd"
+    echo start osd.$id
+    ceph-osd -i $id $ceph_args &
+
+    wait_for_osd up $id || return 1
+
 }
 
 function run_osd_bluestore() {
@@ -625,16 +684,47 @@ function run_osd_bluestore() {
     shift
     local osd_data=$dir/$id
 
-    local ceph_disk_args
-    ceph_disk_args+=" --statedir=$dir"
-    ceph_disk_args+=" --sysconfdir=$dir"
-    ceph_disk_args+=" --prepend-to-path="
-
+    local ceph_args="$CEPH_ARGS"
+    ceph_args+=" --osd-failsafe-full-ratio=.99"
+    ceph_args+=" --osd-journal-size=100"
+    ceph_args+=" --osd-scrub-load-threshold=2000"
+    ceph_args+=" --osd-data=$osd_data"
+    ceph_args+=" --osd-journal=${osd_data}/journal"
+    ceph_args+=" --chdir="
+    ceph_args+=$EXTRA_OPTS
+    ceph_args+=" --run-dir=$dir"
+    ceph_args+=" --admin-socket=$(get_asok_path)"
+    ceph_args+=" --debug-osd=20"
+    ceph_args+=" --log-file=$dir/\$name.log"
+    ceph_args+=" --pid-file=$dir/\$name.pid"
+    ceph_args+=" --osd-max-object-name-len=460"
+    ceph_args+=" --osd-max-object-namespace-len=64"
+    ceph_args+=" --enable-experimental-unrecoverable-data-corrupting-features=*"
+    ceph_args+=" "
+    ceph_args+="$@"
     mkdir -p $osd_data
-    ceph-disk $ceph_disk_args \
-        prepare --bluestore $osd_data || return 1
 
-    activate_osd $dir $id "$@"
+    local uuid=`uuidgen`
+    echo "add osd$osd $uuid"
+    OSD_SECRET=$(ceph-authtool --gen-print-key)
+    echo "{\"cephx_secret\": \"$OSD_SECRET\"}" > $osd_data/new.json
+    ceph osd new $uuid -i $osd_data/new.json
+    rm $osd_data/new.json
+    ceph-osd -i $id $ceph_args --mkfs --key $OSD_SECRET --osd-uuid $uuid --osd-objectstore=bluestore
+
+    local key_fn=$osd_data/keyring
+    cat > $key_fn<<EOF
+[osd.$osd]
+key = $OSD_SECRET
+EOF
+    echo adding osd$id key to auth repository
+    ceph -i "$key_fn" auth add osd.$id osd "allow *" mon "allow profile osd" mgr "allow profile osd"
+    echo start osd.$id
+    ceph-osd -i $id $ceph_args &
+
+    wait_for_osd up $id || return 1
+
+
 }
 
 function test_run_osd() {
@@ -720,7 +810,7 @@ function test_destroy_osd() {
 # The activate_osd function expects a valid OSD data directory
 # in **dir**/**id**, either just created via run_osd or re-using
 # one left by a previous run of ceph-osd. The ceph-osd daemon is
-# run indirectly via ceph-disk activate.
+# run directly on the foreground
 #
 # The activate_osd function blocks until the monitor reports the osd
 # up. If it fails to do so within $TIMEOUT seconds, activate_osd
@@ -744,16 +834,12 @@ function activate_osd() {
     shift
     local osd_data=$dir/$id
 
-    local ceph_disk_args
-    ceph_disk_args+=" --statedir=$dir"
-    ceph_disk_args+=" --sysconfdir=$dir"
-    ceph_disk_args+=" --prepend-to-path="
-
     local ceph_args="$CEPH_ARGS"
     ceph_args+=" --osd-failsafe-full-ratio=.99"
     ceph_args+=" --osd-journal-size=100"
     ceph_args+=" --osd-scrub-load-threshold=2000"
     ceph_args+=" --osd-data=$osd_data"
+    ceph_args+=" --osd-journal=${osd_data}/journal"
     ceph_args+=" --chdir="
     ceph_args+=$EXTRA_OPTS
     ceph_args+=" --run-dir=$dir"
@@ -761,16 +847,15 @@ function activate_osd() {
     ceph_args+=" --debug-osd=20"
     ceph_args+=" --log-file=$dir/\$name.log"
     ceph_args+=" --pid-file=$dir/\$name.pid"
-    ceph_args+=" --osd-max-object-name-len 460"
-    ceph_args+=" --osd-max-object-namespace-len 64"
-    ceph_args+=" --enable-experimental-unrecoverable-data-corrupting-features *"
+    ceph_args+=" --osd-max-object-name-len=460"
+    ceph_args+=" --osd-max-object-namespace-len=64"
+    ceph_args+=" --enable-experimental-unrecoverable-data-corrupting-features=*"
     ceph_args+=" "
     ceph_args+="$@"
     mkdir -p $osd_data
-    CEPH_ARGS="$ceph_args " ceph-disk $ceph_disk_args \
-        activate \
-        --mark-init=none \
-        $osd_data || return 1
+
+    echo start osd.$id
+    ceph-osd -i $id $ceph_args &
 
     [ "$id" = "$(cat $osd_data/whoami)" ] || return 1
 
@@ -1087,6 +1172,35 @@ function test_get_not_primary() {
 
 #######################################################################
 
+function _objectstore_tool_nodown() {
+    local dir=$1
+    shift
+    local id=$1
+    shift
+    local osd_data=$dir/$id
+
+    local journal_args
+    if [ "$objectstore_type" == "filestore" ]; then
+	journal_args=" --journal-path $osd_data/journal"
+    fi
+    ceph-objectstore-tool \
+        --data-path $osd_data \
+        $journal_args \
+        "$@" || return 1
+}
+
+function _objectstore_tool_nowait() {
+    local dir=$1
+    shift
+    local id=$1
+    shift
+
+    kill_daemons $dir TERM osd.$id >&2 < /dev/null || return 1
+
+    _objectstore_tool_nodown $dir $id "$@" || return 1
+    activate_osd $dir $id $ceph_osd_args >&2 || return 1
+}
+
 ##
 # Run ceph-objectstore-tool against the OSD **id** using the data path
 # **dir**. The OSD is killed with TERM prior to running
@@ -1108,21 +1222,8 @@ function objectstore_tool() {
     shift
     local id=$1
     shift
-    local osd_data=$dir/$id
 
-    local osd_type=$(cat $osd_data/type)
-
-    kill_daemons $dir TERM osd.$id >&2 < /dev/null || return 1
-
-    local journal_args
-    if [ "$objectstore_type" == "filestore" ]; then
-	journal_args=" --journal-path $osd_data/journal"
-    fi
-    ceph-objectstore-tool \
-        --data-path $osd_data \
-        $journal_args \
-        "$@" || return 1
-    activate_osd $dir $id $ceph_osd_args >&2 || return 1
+    _objectstore_tool_nowait $dir $id "$@" || return 1
     wait_for_clean >&2
 }
 
@@ -1188,7 +1289,7 @@ function get_num_active_clean() {
     expression+="select(contains(\"active\") and contains(\"clean\")) | "
     expression+="select(contains(\"stale\") | not)"
     ceph --format json pg dump pgs 2>/dev/null | \
-        jq "[.[] | .state | $expression] | length"
+        jq ".pg_stats | [.[] | .state | $expression] | length"
 }
 
 function test_get_num_active_clean() {
@@ -1245,7 +1346,7 @@ function test_get_num_pgs() {
 # @return 0 on success, 1 on error
 #
 function get_osd_id_used_by_pgs() {
-    ceph --format json pg dump pgs 2>/dev/null | jq '.[] | .up[], .acting[]' | sort
+    ceph --format json pg dump pgs 2>/dev/null | jq '.pg_stats | .[] | .up[], .acting[]' | sort
 }
 
 function test_get_osd_id_used_by_pgs() {
@@ -1319,7 +1420,7 @@ function get_last_scrub_stamp() {
     local pgid=$1
     local sname=${2:-last_scrub_stamp}
     ceph --format json pg dump pgs 2>/dev/null | \
-        jq -r ".[] | select(.pgid==\"$pgid\") | .$sname"
+        jq -r ".pg_stats | .[] | select(.pgid==\"$pgid\") | .$sname"
 }
 
 function test_get_last_scrub_stamp() {
@@ -1382,6 +1483,7 @@ function get_timeout_delays() {
     $trace && shopt -u -o xtrace
     local timeout=$1
     local first_step=${2:-1}
+    local max_timeout=${3:-$MAX_TIMEOUT}
 
     local i
     local total="0"
@@ -1390,6 +1492,13 @@ function get_timeout_delays() {
         echo -n "$(calc $i) "
         total=$(calc $total + $i)
         i=$(calc $i \* 2)
+        if [ $max_timeout -gt 0 ]; then
+            # Did we reach max timeout ?
+            if [ ${i%.*} -eq ${max_timeout%.*} ] && [ ${i#*.} \> ${max_timeout#*.} ] || [ ${i%.*} -gt ${max_timeout%.*} ]; then
+                # Yes, so let's cap the max wait time to max
+                i=$max_timeout
+            fi
+        fi
     done
     if test "$(calc $total \< $timeout)" = "1"; then
         echo -n "$(calc $timeout - $total) "
@@ -1409,13 +1518,15 @@ function test_get_timeout_delays() {
     test "$(get_timeout_delays 6 .1)" = "0.1 0.2 0.4 0.8 1.6 2.9 " || return 1
     test "$(get_timeout_delays 6.3 .1)" = "0.1 0.2 0.4 0.8 1.6 3.2 " || return 1
     test "$(get_timeout_delays 20 .1)" = "0.1 0.2 0.4 0.8 1.6 3.2 6.4 7.3 " || return 1
+    test "$(get_timeout_delays 300 .1 0)" = "0.1 0.2 0.4 0.8 1.6 3.2 6.4 12.8 25.6 51.2 102.4 95.3 " || return 1
+    test "$(get_timeout_delays 300 .1 10)" = "0.1 0.2 0.4 0.8 1.6 3.2 6.4 10 10 10 10 10 10 10 10 10 10 10 10 10 10 10 10 10 10 10 10 10 10 10 10 10 10 10 10 7.3 " || return 1
 }
 
 #######################################################################
 
 ##
 # Wait until the cluster becomes clean or if it does not make progress
-# for $TIMEOUT seconds.
+# for $WAIT_FOR_CLEAN_TIMEOUT seconds.
 # Progress is measured either via the **get_is_making_recovery_progress**
 # predicate or if the number of clean PGs changes (as returned by get_num_active_clean)
 #
@@ -1425,7 +1536,7 @@ function wait_for_clean() {
     local cmd=$1
     local num_active_clean=-1
     local cur_active_clean
-    local -a delays=($(get_timeout_delays $TIMEOUT .1))
+    local -a delays=($(get_timeout_delays $WAIT_FOR_CLEAN_TIMEOUT .1))
     local -i loop=0
 
     flush_pg_stats || return 1
@@ -1460,11 +1571,12 @@ function test_wait_for_clean() {
     local dir=$1
 
     setup $dir || return 1
-    run_mon $dir a --osd_pool_default_size=1 || return 1
+    run_mon $dir a --osd_pool_default_size=2 || return 1
+    run_osd $dir 0 || return 1
     run_mgr $dir x || return 1
     create_rbd_pool || return 1
-    ! TIMEOUT=1 wait_for_clean || return 1
-    run_osd $dir 0 || return 1
+    ! WAIT_FOR_CLEAN_TIMEOUT=1 wait_for_clean || return 1
+    run_osd $dir 1 || return 1
     wait_for_clean || return 1
     teardown $dir || return 1
 }
@@ -1511,6 +1623,7 @@ function test_wait_for_health_ok() {
     run_mgr $dir x --mon_pg_warn_min_per_osd=0 || return 1
     run_osd $dir 0 || return 1
     kill_daemons $dir TERM osd || return 1
+    ceph osd down 0 || return 1
     ! TIMEOUT=1 wait_for_health_ok || return 1
     activate_osd $dir 0 || return 1
     wait_for_health_ok || return 1
@@ -1876,10 +1989,10 @@ function test_flush_pg_stats()
     rados -p rbd put obj /etc/group
     flush_pg_stats || return 1
     local jq_filter='.pools | .[] | select(.name == "rbd") | .stats'
-    raw_bytes_used=`ceph df detail --format=json | jq "$jq_filter.raw_bytes_used"`
-    bytes_used=`ceph df detail --format=json | jq "$jq_filter.bytes_used"`
-    test $raw_bytes_used > 0 || return 1
-    test $raw_bytes_used == $bytes_used || return 1
+    stored=`ceph df detail --format=json | jq "$jq_filter.stored"`
+    stored_raw=`ceph df detail --format=json | jq "$jq_filter.stored_raw"`
+    test $stored -gt 0 || return 1
+    test $stored == $stored_raw || return 1
     teardown $dir
 }
 
@@ -1915,9 +2028,8 @@ function main() {
     shopt -s -o xtrace
     PS4='${BASH_SOURCE[0]}:$LINENO: ${FUNCNAME[0]}:  '
 
-    export PATH=${CEPH_BUILD_VIRTUALENV}/ceph-disk-virtualenv/bin:${CEPH_BUILD_VIRTUALENV}/ceph-detect-init-virtualenv/bin:.:$PATH # make sure program from sources are preferred
-    #export PATH=$CEPH_ROOT/src/ceph-disk/virtualenv/bin:$CEPH_ROOT/src/ceph-detect-init/virtualenv/bin:.:$PATH # make sure program from sources are preferred
-
+    export PATH=.:$PATH # make sure program from sources are preferred
+    export PYTHONWARNINGS=ignore
     export CEPH_CONF=/dev/null
     unset CEPH_ARGS
 
@@ -1937,8 +2049,7 @@ function run_tests() {
     shopt -s -o xtrace
     PS4='${BASH_SOURCE[0]}:$LINENO: ${FUNCNAME[0]}:  '
 
-    export PATH=${CEPH_BUILD_VIRTUALENV}/ceph-disk-virtualenv/bin:${CEPH_BUILD_VIRTUALENV}/ceph-detect-init-virtualenv/bin:.:$PATH # make sure program from sources are preferred
-    #export PATH=$CEPH_ROOT/src/ceph-disk/virtualenv/bin:$CEPH_ROOT/src/ceph-detect-init/virtualenv/bin:.:$PATH # make sure program from sources are preferred
+    export .:$PATH # make sure program from sources are preferred
 
     export CEPH_MON="127.0.0.1:7109" # git grep '\<7109\>' : there must be only one
     export CEPH_ARGS

@@ -1,58 +1,58 @@
 #!/usr/bin/env bash
 testdir=$(readlink -f $(dirname $0))
 rootdir=$(readlink -f $testdir/../../..)
-source $rootdir/scripts/autotest_common.sh
+source $rootdir/test/common/autotest_common.sh
+source $rootdir/test/iscsi_tgt/common.sh
+
+delete_tmp_conf_files() {
+	rm -f /usr/local/etc/its.conf
+	rm -f /usr/local/etc/auth.conf
+}
 
 if [ ! -d /usr/local/calsoft ]; then
 	echo "skipping calsoft tests"
 	exit 0
 fi
 
-if [ -z "$TARGET_IP" ]; then
-	echo "TARGET_IP not defined in environment"
-	exit 1
-fi
-
-if [ -z "$INITIATOR_IP" ]; then
-	echo "INITIATOR_IP not defined in environment"
-	exit 1
-fi
 timing_enter calsoft
 
-# iSCSI target configuration
-PORT=3260
-RPC_PORT=5260
-INITIATOR_TAG=2
-INITIATOR_NAME=ALL
-NETMASK=$INITIATOR_IP/32
 MALLOC_BDEV_SIZE=64
 MALLOC_BLOCK_SIZE=512
 
-rpc_py="python $rootdir/scripts/rpc.py"
-calsoft_py="python $testdir/calsoft.py"
+rpc_py="$rootdir/scripts/rpc.py"
+calsoft_py="$testdir/calsoft.py"
 
 # Copy the calsoft config file to /usr/local/etc
 mkdir -p /usr/local/etc
 cp $testdir/its.conf /usr/local/etc/
 cp $testdir/auth.conf /usr/local/etc/
 
-./app/iscsi_tgt/iscsi_tgt -c $testdir/iscsi.conf &
+# Append target ip to calsoft config
+echo "IP=$TARGET_IP" >> /usr/local/etc/its.conf
+
+timing_enter start_iscsi_tgt
+
+$ISCSI_APP -m 0x1 --wait-for-rpc &
 pid=$!
 echo "Process pid: $pid"
 
-trap "killprocess $pid; exit 1 " SIGINT SIGTERM EXIT
+trap "killprocess $pid; delete_tmp_conf_files; exit 1 " SIGINT SIGTERM EXIT
 
-waitforlisten $pid ${RPC_PORT}
+waitforlisten $pid
+$rpc_py load_subsystem_config < $testdir/iscsi.json
+$rpc_py start_subsystem_init
 echo "iscsi_tgt is listening. Running tests..."
 
-$rpc_py add_portal_group 1 $TARGET_IP:$PORT
+timing_exit start_iscsi_tgt
+
+$rpc_py add_portal_group $PORTAL_TAG $TARGET_IP:$ISCSI_PORT
 $rpc_py add_initiator_group $INITIATOR_TAG $INITIATOR_NAME $NETMASK
-$rpc_py construct_malloc_bdev $MALLOC_BDEV_SIZE $MALLOC_BLOCK_SIZE
-# "Malloc0:0" ==> use Malloc0 blockdev for LUN0
+$rpc_py construct_malloc_bdev -b MyBdev $MALLOC_BDEV_SIZE $MALLOC_BLOCK_SIZE
+# "MyBdev:0" ==> use MyBdev blockdev for LUN0
 # "1:2" ==> map PortalGroup1 to InitiatorGroup2
 # "64" ==> iSCSI queue depth 64
 # "0 0 0 1" ==> enable CHAP authentication using auth group 1
-$rpc_py construct_target_node Target3 Target3_alias 'Malloc0:0' '1:2' 64 0 0 0 1
+$rpc_py construct_target_node Target3 Target3_alias 'MyBdev:0' $PORTAL_TAG:$INITIATOR_TAG 64 -g 1
 sleep 1
 
 if [ "$1" ]; then
@@ -66,5 +66,6 @@ fi
 trap - SIGINT SIGTERM EXIT
 
 killprocess $pid
+delete_tmp_conf_files
 timing_exit calsoft
 exit $failed

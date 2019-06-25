@@ -31,15 +31,7 @@
  *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include <assert.h>
-#include <stdio.h>
-#include <unistd.h>
-#include <stdlib.h>
-#include <stdbool.h>
-#include <string.h>
-
-#include <rte_config.h>
-#include <rte_lcore.h>
+#include "spdk/stdinc.h"
 
 #include "spdk/ioat.h"
 #include "spdk/env.h"
@@ -78,9 +70,9 @@ struct ioat_chan_entry {
 };
 
 struct worker_thread {
-	struct ioat_chan_entry 	*ctx;
+	struct ioat_chan_entry	*ctx;
 	struct worker_thread	*next;
-	unsigned		lcore;
+	unsigned		core;
 };
 
 struct ioat_task {
@@ -130,7 +122,7 @@ ioat_exit(void)
 		if (dev->ioat) {
 			spdk_ioat_detach(dev->ioat);
 		}
-		spdk_free(dev);
+		spdk_dma_free(dev);
 	}
 }
 
@@ -173,7 +165,7 @@ register_workers(void)
 			return -1;
 		}
 
-		worker->lcore = i;
+		worker->core = i;
 		worker->next = g_workers;
 		g_workers = worker;
 		g_num_workers++;
@@ -226,7 +218,7 @@ attach_cb(void *cb_ctx, struct spdk_pci_device *pci_dev, struct spdk_ioat_chan *
 		return;
 	}
 
-	dev = spdk_zmalloc(sizeof(*dev), 0, NULL);
+	dev = spdk_dma_zmalloc(sizeof(*dev), 0, NULL);
 	if (dev == NULL) {
 		printf("Failed to allocate device struct\n");
 		return;
@@ -258,7 +250,7 @@ usage(char *program_name)
 	printf("\t[-c core mask for distributing I/O submission/completion work]\n");
 	printf("\t[-q queue depth]\n");
 	printf("\t[-n number of channels]\n");
-	printf("\t[-s transfer size in bytes]\n");
+	printf("\t[-o transfer size in bytes]\n");
 	printf("\t[-t time in seconds]\n");
 	printf("\t[-v verify copy result if this switch is on]\n");
 }
@@ -269,9 +261,9 @@ parse_args(int argc, char **argv)
 	int op;
 
 	construct_user_config(&g_user_config);
-	while ((op = getopt(argc, argv, "c:hn:q:s:t:v")) != -1) {
+	while ((op = getopt(argc, argv, "c:hn:o:q:t:v")) != -1) {
 		switch (op) {
-		case 's':
+		case 'o':
 			g_user_config.xfer_size_bytes = atoi(optarg);
 			break;
 		case 'n':
@@ -303,7 +295,7 @@ parse_args(int argc, char **argv)
 		usage(argv[0]);
 		return 1;
 	}
-	optind = 1;
+
 	return 0;
 }
 
@@ -351,7 +343,7 @@ work_fn(void *arg)
 	struct worker_thread *worker = (struct worker_thread *)arg;
 	struct ioat_chan_entry *t = NULL;
 
-	printf("Starting thread on core %u\n", worker->lcore);
+	printf("Starting thread on core %u\n", worker->core);
 
 	tsc_end = spdk_get_ticks() + g_user_config.time_in_sec * spdk_get_ticks_hz();
 
@@ -393,7 +385,9 @@ init(void)
 	spdk_env_opts_init(&opts);
 	opts.name = "perf";
 	opts.core_mask = g_user_config.core_mask;
-	spdk_env_init(&opts);
+	if (spdk_env_init(&opts) < 0) {
+		return -1;
+	}
 
 	return 0;
 }
@@ -406,7 +400,7 @@ dump_result(void)
 	uint64_t total_xfer_per_sec, total_bw_in_MiBps;
 	struct worker_thread *worker = g_workers;
 
-	printf("Channel_ID     Lcore     Transfers     Bandwidth     Failed\n");
+	printf("Channel_ID     Core     Transfers     Bandwidth     Failed\n");
 	printf("-----------------------------------------------------------\n");
 	while (worker != NULL) {
 		struct ioat_chan_entry *t = worker->ctx;
@@ -420,7 +414,7 @@ dump_result(void)
 
 			if (xfer_per_sec) {
 				printf("%10d%10d%12" PRIu64 "/s%8" PRIu64 " MiB/s%11" PRIu64 "\n",
-				       t->ioat_chan_id, worker->lcore, xfer_per_sec,
+				       t->ioat_chan_id, worker->core, xfer_per_sec,
 				       bw_in_MiBps, t->xfer_failed);
 			}
 			t = t->next;
@@ -461,7 +455,7 @@ associate_workers_with_chan(void)
 	struct spdk_ioat_chan *chan = get_next_chan();
 	struct worker_thread	*worker = g_workers;
 	struct ioat_chan_entry	*t;
-	char buf_pool_name[20], task_pool_name[20];
+	char buf_pool_name[30], task_pool_name[30];
 	int i = 0;
 
 	while (chan != NULL) {
@@ -473,9 +467,11 @@ associate_workers_with_chan(void)
 		t->ioat_chan_id = i;
 		snprintf(buf_pool_name, sizeof(buf_pool_name), "buf_pool_%d", i);
 		snprintf(task_pool_name, sizeof(task_pool_name), "task_pool_%d", i);
-		t->data_pool = spdk_mempool_create(buf_pool_name, 512, g_user_config.xfer_size_bytes, -1,
+		t->data_pool = spdk_mempool_create(buf_pool_name, 512, g_user_config.xfer_size_bytes,
+						   SPDK_MEMPOOL_DEFAULT_CACHE_SIZE,
 						   SPDK_ENV_SOCKET_ID_ANY);
-		t->task_pool = spdk_mempool_create(task_pool_name, 512, sizeof(struct ioat_task), -1,
+		t->task_pool = spdk_mempool_create(task_pool_name, 512, sizeof(struct ioat_task),
+						   SPDK_MEMPOOL_DEFAULT_CACHE_SIZE,
 						   SPDK_ENV_SOCKET_ID_ANY);
 		if (!t->data_pool || !t->task_pool) {
 			fprintf(stderr, "Could not allocate buffer pool.\n");
@@ -484,7 +480,7 @@ associate_workers_with_chan(void)
 			free(t);
 			return 1;
 		}
-		printf("Associating ioat_channel %d with lcore %d\n", i, worker->lcore);
+		printf("Associating ioat_channel %d with core %d\n", i, worker->core);
 		t->chan = chan;
 		t->next = worker->ctx;
 		worker->ctx = t;
@@ -548,12 +544,12 @@ main(int argc, char **argv)
 	}
 
 	/* Launch all of the slave workers */
-	master_core = rte_get_master_lcore();
+	master_core = spdk_env_get_current_core();
 	master_worker = NULL;
 	worker = g_workers;
 	while (worker != NULL) {
-		if (worker->lcore != master_core) {
-			rte_eal_remote_launch(work_fn, worker, worker->lcore);
+		if (worker->core != master_core) {
+			spdk_env_thread_launch_pinned(worker->core, work_fn, worker);
 		} else {
 			assert(master_worker == NULL);
 			master_worker = worker;
@@ -567,7 +563,7 @@ main(int argc, char **argv)
 		goto cleanup;
 	}
 
-	rte_eal_mp_wait_lcore();
+	spdk_env_thread_wait_all();
 
 	rc = dump_result();
 

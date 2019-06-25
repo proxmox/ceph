@@ -1,30 +1,31 @@
 # Storage Performance Development Kit {#index}
 
-# Introduction {#intro}
+# Introduction
+@copydoc intro
 
-- [SPDK on GitHub](https://github.com/spdk/spdk/)
-- [SPDK.io](http://www.spdk.io/)
+# Concepts
+@copydoc concepts
 
-The Storage Performance Development Kit (SPDK) provides a set of tools and libraries
-for writing high performance, scalable, user-mode storage applications.
-It achieves high performance by moving all of the necessary drivers
-into userspace and operating in a polled mode instead of relying on interrupts,
-which avoids kernel context switches and eliminates interrupt handling overhead.
+# User Guides
+@copydoc user_guides
 
-## General Information {#general}
+# Programmer Guides
+@copydoc prog_guides
 
- - @ref directory_structure
- - @ref porting
- - [Public API header files](files.html)
+# General Information
+@copydoc general
 
-## Modules {#modules}
+# Miscellaneous
+@copydoc misc
 
-- @ref event
-- @ref nvme
-- @ref nvmf
-- @ref ioat
-- @ref iscsi
-- @ref bdev
-- @ref blob
-- @ref blobfs
-- @ref vhost
+# Driver Modules
+@copydoc driver_modules
+
+# Tools
+@copydoc tools
+
+# Experimental Tools
+@copydoc experimental_tools
+
+# Performance Reports
+@copydoc performance_reports

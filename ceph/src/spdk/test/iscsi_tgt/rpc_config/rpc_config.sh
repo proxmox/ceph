@@ -2,43 +2,40 @@
 
 testdir=$(readlink -f $(dirname $0))
 rootdir=$(readlink -f $testdir/../../..)
-source $rootdir/scripts/autotest_common.sh
-
-if [ -z "$TARGET_IP" ]; then
-	echo "TARGET_IP not defined in environment"
-	exit 1
-fi
-
-if [ -z "$INITIATOR_IP" ]; then
-	echo "INITIATOR_IP not defined in environment"
-	exit 1
-fi
+source $rootdir/test/common/autotest_common.sh
+source $rootdir/test/iscsi_tgt/common.sh
 
 timing_enter rpc_config
 
-# iSCSI target configuration
-PORT=3260
-RPC_PORT=5260
-INITIATOR_TAG=2
-INITIATOR_NAME=ALL
-NETMASK=$INITIATOR_IP/32
+# $1 = test type (posix/vpp)
+if [ "$1" == "posix" ] || [ "$1" == "vpp" ]; then
+	TEST_TYPE=$1
+else
+	echo "No iSCSI test type specified"
+	exit 1
+fi
+
 MALLOC_BDEV_SIZE=64
 
-
 rpc_py=$rootdir/scripts/rpc.py
-rpc_config_py="python $testdir/rpc_config.py"
+rpc_config_py="$testdir/rpc_config.py"
 
+timing_enter start_iscsi_tgt
 
-./app/iscsi_tgt/iscsi_tgt -c $testdir/iscsi.conf &
+$ISCSI_APP --wait-for-rpc &
 pid=$!
 echo "Process pid: $pid"
 
 trap "killprocess $pid; exit 1" SIGINT SIGTERM EXIT
 
-waitforlisten $pid ${RPC_PORT}
+waitforlisten $pid
+$rpc_py set_iscsi_options -o 30 -a 16
+$rpc_py start_subsystem_init
 echo "iscsi_tgt is listening. Running tests..."
 
-$rpc_config_py $rpc_py
+timing_exit start_iscsi_tgt
+
+$rpc_config_py $rpc_py $TARGET_IP $INITIATOR_IP $ISCSI_PORT $NETMASK $TARGET_NAMESPACE $TEST_TYPE
 
 $rpc_py get_bdevs
 

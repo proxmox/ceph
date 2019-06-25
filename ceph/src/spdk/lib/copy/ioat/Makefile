@@ -34,8 +34,7 @@
 SPDK_ROOT_DIR := $(abspath $(CURDIR)/../../..)
 include $(SPDK_ROOT_DIR)/mk/spdk.common.mk
 
-CFLAGS += $(ENV_CFLAGS)
 LIBNAME = copy_ioat
-C_SRCS = copy_engine_ioat.c
+C_SRCS = copy_engine_ioat.c copy_engine_ioat_rpc.c
 
 include $(SPDK_ROOT_DIR)/mk/spdk.lib.mk

@@ -28,7 +28,7 @@ struct uuid_d {
 
   void generate_random() {
     std::random_device rng;
-    boost::uuids::basic_random_generator<decltype(rng)> gen(rng);
+    boost::uuids::basic_random_generator gen(rng);
     uuid = gen();
   }
   
@@ -57,7 +57,7 @@ struct uuid_d {
     ::encode_raw(uuid, bl);
   }
 
-  void decode(bufferlist::iterator& p) const {
+  void decode(bufferlist::const_iterator& p) const {
     ::decode_raw(uuid, p);
   }
 };

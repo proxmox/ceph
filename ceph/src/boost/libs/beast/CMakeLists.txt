@@ -9,7 +9,7 @@
 
 cmake_minimum_required (VERSION 3.5.1)
 
-project (Beast VERSION 144)
+project (Beast VERSION 167)
 
 set_property (GLOBAL PROPERTY USE_FOLDERS ON)
 option (Beast_BUILD_EXAMPLES "Build examples" ON)
@@ -74,7 +74,9 @@ get_filename_component (BOOST_ROOT ../../ ABSOLUTE)
 # VFALCO I want static but "b2 stage" builds a minimal set which excludes static
 add_definitions (-DBOOST_ALL_STATIC_LINK=1)
 
-add_definitions (-DBOOST_ASIO_NO_DEPRECATED=1)
+# Some of the tests use deprecated APIs
+#add_definitions (-DBOOST_ASIO_NO_DEPRECATED=1)
+
 add_definitions (-DBOOST_ASIO_DISABLE_BOOST_ARRAY=1)
 add_definitions (-DBOOST_ASIO_DISABLE_BOOST_BIND=1)
 add_definitions (-DBOOST_ASIO_DISABLE_BOOST_DATE_TIME=1)
@@ -150,8 +152,8 @@ elseif ("${VARIANT}" STREQUAL "ubasan")
     else()
         set (CMAKE_BUILD_TYPE RELWITHDEBINFO)
         set (CMAKE_CXX_FLAGS
-          "${CMAKE_CXX_FLAGS} -DBOOST_BEAST_NO_SLOW_TESTS=1 -msse4.2 -funsigned-char -fno-omit-frame-pointer -fsanitize=address,undefined -fsanitize-blacklist=${PROJECT_SOURCE_DIR}/tools/blacklist.supp")
-        set (CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -fsanitize=address,undefined")
+          "${CMAKE_CXX_FLAGS} -DBOOST_BEAST_NO_SLOW_TESTS=1 -msse4.2 -funsigned-char -fno-omit-frame-pointer -fsanitize=address,undefined -fno-sanitize-recover=address,undefined -fsanitize-blacklist=${PROJECT_SOURCE_DIR}/tools/blacklist.supp")
+        set (CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -fsanitize=address,undefined -fno-sanitize-recover=address,undefined")
     endif()
 
 elseif ("${VARIANT}" STREQUAL "debug")

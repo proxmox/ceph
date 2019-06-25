@@ -9,6 +9,7 @@
 
 #include "common/armor.h"
 #include "common/utf8.h"
+#include "rgw_rest_s3.h"
 #include "rgw_auth_s3.h"
 #include "rgw_common.h"
 #include "rgw_client_io.h"
@@ -245,8 +246,7 @@ bool is_time_skew_ok(time_t t)
   auto req_tp = ceph::coarse_real_clock::from_time_t(t);
   auto cur_tp = ceph::coarse_real_clock::now();
 
-  if (req_tp < cur_tp - RGW_AUTH_GRACE ||
-      req_tp > cur_tp + RGW_AUTH_GRACE) {
+  if (std::chrono::abs(cur_tp - req_tp) > RGW_AUTH_GRACE) {
     dout(10) << "NOTICE: request time skew too big." << dendl;
     using ceph::operator<<;
     dout(10) << "req_tp=" << req_tp << ", cur_tp=" << cur_tp << dendl;
@@ -260,7 +260,8 @@ static inline int parse_v4_query_string(const req_info& info,              /* in
                                         boost::string_view& credential,    /* out */
                                         boost::string_view& signedheaders, /* out */
                                         boost::string_view& signature,     /* out */
-                                        boost::string_view& date)          /* out */
+                                        boost::string_view& date,          /* out */
+                                        boost::string_view& sessiontoken)  /* out */
 {
   /* auth ships with req params ... */
 
@@ -306,10 +307,16 @@ static inline int parse_v4_query_string(const req_info& info,              /* in
     return -EPERM;
   }
 
+  if (info.args.exists("X-Amz-Security-Token")) {
+    sessiontoken = info.args.get("X-Amz-Security-Token");
+    if (sessiontoken.size() == 0) {
+      return -EPERM;
+    }
+  }
+
   return 0;
 }
 
-namespace {
 static bool get_next_token(const boost::string_view& s,
                            size_t& pos,
                            const char* const delims,
@@ -358,13 +365,13 @@ get_str_vec(const boost::string_view& str)
   const char delims[] = ";,= \t";
   return get_str_vec<ExpectedStrNum>(str, delims);
 }
-};
 
 static inline int parse_v4_auth_header(const req_info& info,               /* in */
                                        boost::string_view& credential,     /* out */
                                        boost::string_view& signedheaders,  /* out */
                                        boost::string_view& signature,      /* out */
-                                       boost::string_view& date)           /* out */
+                                       boost::string_view& date,           /* out */
+                                       boost::string_view& sessiontoken)   /* out */
 {
   boost::string_view input(info.env->get("HTTP_AUTHORIZATION", ""));
   try {
@@ -425,6 +432,10 @@ static inline int parse_v4_auth_header(const req_info& info,               /* in
     return -ERR_REQUEST_TIME_SKEWED;
   }
 
+  if (info.env->exists("HTTP_X_AMZ_SECURITY_TOKEN")) {
+    sessiontoken = info.env->get("HTTP_X_AMZ_SECURITY_TOKEN");
+  }
+
   return 0;
 }
 
@@ -434,26 +445,24 @@ int parse_v4_credentials(const req_info& info,                     /* in */
 			 boost::string_view& signedheaders,        /* out */
 			 boost::string_view& signature,            /* out */
 			 boost::string_view& date,                 /* out */
-                         bool& using_qs)                           /* out */
+			 boost::string_view& session_token,        /* out */
+			 const bool using_qs)                      /* in */
 {
-  const char* const http_auth = info.env->get("HTTP_AUTHORIZATION");
-  using_qs = http_auth == nullptr || http_auth[0] == '\0';
-
-  int ret;
   boost::string_view credential;
+  int ret;
   if (using_qs) {
     ret = parse_v4_query_string(info, credential, signedheaders,
-                                signature, date);
+                                signature, date, session_token);
   } else {
     ret = parse_v4_auth_header(info, credential, signedheaders,
-                               signature, date);
+                               signature, date, session_token);
   }
 
   if (ret < 0) {
     return ret;
   }
 
-  /* AKIAIVKTAZLOCF43WNQD/AAAAMMDD/region/host/aws4_request */
+  /* access_key/YYYYMMDD/region/service/aws4_request */
   dout(10) << "v4 credential format = " << credential << dendl;
 
   if (std::count(credential.begin(), credential.end(), '/') != 4) {
@@ -475,45 +484,6 @@ int parse_v4_credentials(const req_info& info,                     /* in */
   dout(10) << "credential scope = " << credential_scope << dendl;
 
   return 0;
-}
-
-static inline bool char_needs_aws4_escaping(const char c)
-{
-  if ((c >= 'a' && c <= 'z') ||
-      (c >= 'A' && c <= 'Z') ||
-      (c >= '0' && c <= '9')) {
-    return false;
-  }
-
-  switch (c) {
-    case '-':
-    case '_':
-    case '.':
-    case '~':
-      return false;
-  }
-  return true;
-}
-
-static inline std::string aws4_uri_encode(const std::string& src)
-{
-  std::string result;
-
-  for (const std::string::value_type c : src) {
-    if (char_needs_aws4_escaping(c)) {
-      rgw_uri_escape_char(c, result);
-    } else {
-      result.push_back(c);
-    }
-  }
-
-  return result;
-}
-
-static inline std::string aws4_uri_recode(const boost::string_view& src)
-{
-  std::string decoded = url_decode(src);
-  return aws4_uri_encode(decoded);
 }
 
 std::string get_v4_canonical_qs(const req_info& info, const bool using_qs)
@@ -550,14 +520,10 @@ std::string get_v4_canonical_qs(const req_info& info, const bool using_qs)
       continue;
     }
 
-    if (key == "X-Amz-Credential") {
-      /* FIXME(rzarzynski): I can't find any comment in the previously linked
-       * Amazon's docs saying that X-Amz-Credential should be handled in this
-       * way. */
-      canonical_qs_map[key.to_string()] = val.to_string();
-    } else {
-      canonical_qs_map[aws4_uri_recode(key)] = aws4_uri_recode(val);
-    }
+    // while awsv4 specs ask for all slashes to be encoded, s3 itself is relaxed
+    // in its implementation allowing non-url-encoded slashes to be present in
+    // presigned urls for instance
+    canonical_qs_map[aws4_uri_recode(key, true)] = aws4_uri_recode(val, true);
   }
 
   /* Thanks to the early exist we have the guarantee that canonical_qs_map has
@@ -678,7 +644,7 @@ get_v4_canon_req_hash(CephContext* cct,
   using sanitize = rgw::crypt_sanitize::log_content;
   ldout(cct, 10) << "canonical request = " << sanitize{canonical_req} << dendl;
   ldout(cct, 10) << "canonical request hash = "
-                 << buf_to_hex(canonical_req_hash).data() << dendl;
+                 << canonical_req_hash << dendl;
 
   return canonical_req_hash;
 }
@@ -695,9 +661,8 @@ get_v4_string_to_sign(CephContext* const cct,
                       const boost::string_view& credential_scope,
                       const sha256_digest_t& canonreq_hash)
 {
-  const auto hexed_cr_hash = buf_to_hex(canonreq_hash);
-  const boost::string_view hexed_cr_hash_str(hexed_cr_hash.data(),
-                                             hexed_cr_hash.size() - 1);
+  const auto hexed_cr_hash = canonreq_hash.to_str();
+  const boost::string_view hexed_cr_hash_str(hexed_cr_hash);
 
   const auto string_to_sign = string_join_reserve("\n",
     algorithm,
@@ -777,10 +742,10 @@ get_v4_signing_key(CephContext* const cct,
   const auto signing_key = calc_hmac_sha256(service_k,
                                             boost::string_view("aws4_request"));
 
-  ldout(cct, 10) << "date_k    = " << buf_to_hex(date_k).data() << dendl;
-  ldout(cct, 10) << "region_k  = " << buf_to_hex(region_k).data() << dendl;
-  ldout(cct, 10) << "service_k = " << buf_to_hex(service_k).data() << dendl;
-  ldout(cct, 10) << "signing_k = " << buf_to_hex(signing_key).data() << dendl;
+  ldout(cct, 10) << "date_k    = " << date_k << dendl;
+  ldout(cct, 10) << "region_k  = " << region_k << dendl;
+  ldout(cct, 10) << "service_k = " << service_k << dendl;
+  ldout(cct, 10) << "signing_k = " << signing_key << dendl;
 
   return signing_key;
 }
@@ -809,8 +774,8 @@ get_v4_signature(const boost::string_view& credential_scope,
    * the non-const data() variant like C++17's std::string. */
   using srv_signature_t = AWSEngine::VersionAbstractor::server_signature_t;
   srv_signature_t signature(srv_signature_t::initialized_later(),
-                            digest.size() * 2);
-  buf_to_hex(digest.data(), digest.size(), signature.begin());
+                            digest.SIZE * 2);
+  buf_to_hex(digest.v, digest.SIZE, signature.begin());
 
   ldout(cct, 10) << "generated signature = " << signature << dendl;
 
@@ -832,8 +797,8 @@ get_v2_signature(CephContext* const cct,
   char buf[64];
   const int ret = ceph_armor(std::begin(buf),
                              std::begin(buf) + 64,
-                             std::begin(digest),
-                             std::begin(digest) + digest.size());
+                             reinterpret_cast<const char *>(digest.v),
+                             reinterpret_cast<const char *>(digest.v + digest.SIZE));
   if (ret < 0) {
     ldout(cct, 10) << "ceph_armor failed" << dendl;
     throw ret;
@@ -940,10 +905,9 @@ AWSv4ComplMulti::calc_chunk_signature(const std::string& payload_hash) const
                  << dendl;
 
   /* new chunk signature */
-  const auto sighex = buf_to_hex(calc_hmac_sha256(signing_key,
-                                                  string_to_sign));
+  const auto sig = calc_hmac_sha256(signing_key, string_to_sign);
   /* FIXME(rzarzynski): std::string here is really unnecessary. */
-  return std::string(sighex.data(), sighex.size() - 1);
+  return sig.to_str();
 }
 
 
@@ -1057,7 +1021,7 @@ size_t AWSv4ComplMulti::recv_body(char* const buf, const size_t buf_max)
   return buf_pos;
 }
 
-void AWSv4ComplMulti::modify_request_state(req_state* const s_rw)
+void AWSv4ComplMulti::modify_request_state(const DoutPrefixProvider* dpp, req_state* const s_rw)
 {
   const char* const decoded_length = \
     s_rw->info.env->get("HTTP_X_AMZ_DECODED_CONTENT_LENGTH");
@@ -1069,7 +1033,7 @@ void AWSv4ComplMulti::modify_request_state(req_state* const s_rw)
     s_rw->content_length = parse_content_length(decoded_length);
 
     if (s_rw->content_length < 0) {
-      ldout(cct, 10) << "negative AWSv4's content length, aborting" << dendl;
+      ldpp_dout(dpp, 10) << "negative AWSv4's content length, aborting" << dendl;
       throw -EINVAL;
     }
   }
@@ -1123,7 +1087,7 @@ size_t AWSv4ComplSingle::recv_body(char* const buf, const size_t max)
   return received;
 }
 
-void AWSv4ComplSingle::modify_request_state(req_state* const s_rw)
+void AWSv4ComplSingle::modify_request_state(const DoutPrefixProvider* dpp, req_state* const s_rw)
 {
   /* Install the filter over rgw::io::RestfulClient. */
   AWS_AUTHv4_IO(s_rw)->add_filter(

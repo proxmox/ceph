@@ -61,8 +61,8 @@ void BitmapAllocator::init_add_free(uint64_t offset, uint64_t length)
 		  << std::dec << dendl;
 
   auto mas = get_min_alloc_size();
-  uint64_t offs = ROUND_UP_TO(offset, mas);
-  uint64_t l = P2ALIGN(offset + length - offs, mas);
+  uint64_t offs = round_up_to(offset, mas);
+  uint64_t l = p2align(offset + length - offs, mas);
 
   _mark_free(offs, l);
   ldout(cct, 10) << __func__ << " done" << dendl;
@@ -72,8 +72,8 @@ void BitmapAllocator::init_rm_free(uint64_t offset, uint64_t length)
   ldout(cct, 10) << __func__ << " 0x" << std::hex << offset << "~" << length
 		 << std::dec << dendl;
   auto mas = get_min_alloc_size();
-  uint64_t offs = ROUND_UP_TO(offset, mas);
-  uint64_t l = P2ALIGN(offset + length - offs, mas);
+  uint64_t offs = round_up_to(offset, mas);
+  uint64_t l = p2align(offset + length - offs, mas);
   _mark_allocated(offs, l);
   ldout(cct, 10) << __func__ << " done" << dendl;
 }

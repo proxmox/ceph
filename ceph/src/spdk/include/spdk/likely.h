@@ -38,6 +38,8 @@
 #ifndef SPDK_LIKELY_H
 #define SPDK_LIKELY_H
 
+#include "spdk/stdinc.h"
+
 #define spdk_unlikely(cond)	__builtin_expect((cond), 0)
 #define spdk_likely(cond)	__builtin_expect(!!(cond), 1)
 

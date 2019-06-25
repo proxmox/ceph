@@ -100,7 +100,9 @@ how to download, build, and install the libraries.</p>
     <li><a href="concept_check/index.html">Concept Check</a> - Tools for generic programming, from Jeremy Siek</li>
     <li><a href="config/config.htm">Config</a> - Helps Boost library developers adapt to compiler idiosyncrasies; not intended for library users</li>
     <li><a href="container/index.html">Container</a> - Standard library containers and extensions, from Ion Gazta&ntilde;aga</li>
+    <li><a href="container_hash/index.html">Container Hash</a> - An STL-compatible hash function object that can be extended to hash user defined types, from Daniel James</li>
     <li><a href="context/index.html">Context</a> - (C++11) Context switching library, from Oliver Kowalke</li>
+    <li><a href="contract/index.html">Contract</a> - Contract programming for C++. All contract programming features are supported: Subcontracting, class invariants, postconditions (with old and return values), preconditions, customizable actions on assertion failure (e.g., terminate or throw), optional compilation and checking of assertions, etc, from Lorenzo Caminiti</li>
     <li><a href="conversion/index.html">Conversion</a> - Polymorphic casts, from Dave Abrahams and Kevlin Henney</li>
     <li><a href="convert/index.html">Convert</a> - An extendible and configurable type-conversion framework, from Vladimir Batov</li>
     <li><a href="core/index.html">Core</a> - A collection of simple core utilities with minimal dependencies, from Peter Dimov, Glen Fernandes and Andrey Semashev</li>
@@ -123,7 +125,6 @@ how to download, build, and install the libraries.</p>
     <li><a href="functional/index.html">Functional</a> - The Boost.Function library contains a family of class templates that are function object wrappers, from Mark Rodgers</li>
     <li><a href="functional/factory/index.html">Functional/Factory</a> - Function object templates for dynamic and static object creation, from Tobias Schwinger</li>
     <li><a href="functional/forward/index.html">Functional/Forward</a> - Adapters to allow generic function objects to accept arbitrary arguments, from Tobias Schwinger</li>
-    <li><a href="functional/hash/index.html">Functional/Hash</a> - A TR1 hash function object that can be extended to hash user defined types, from Daniel James</li>
     <li><a href="functional/overloaded_function/index.html">Functional/Overloaded Function</a> - Overload different functions into a single function object, from Lorenzo Caminiti</li>
     <li><a href="fusion/doc/html/index.html">Fusion</a> - Library for working with tuples, including various containers, algorithms, etc, from Joel de Guzman, Dan Marsden and Tobias Schwinger</li>
     <li><a href="geometry/index.html">Geometry</a> - The Boost.Geometry library provides geometric algorithms, primitives and spatial index, from Barend Gehrels, Bruno Lalande, Mateusz Loskot, Adam Wulkiewicz and Menelaos Karavelas</li>
@@ -132,6 +133,7 @@ how to download, build, and install the libraries.</p>
     <li><a href="graph_parallel/index.html">GraphParallel</a> - The PBGL graph interface and graph components are generic, in the same sense as the the Standard Template Library (STL), from Jeremy Siek, Doug Gregor, and a University of Notre Dame team.</li>
     <li><a href="hana/index.html">Hana</a> - A modern C++ metaprogramming library. It provides high level algorithms to manipulate heterogeneous sequences, allows writing type-level computations with a natural syntax, provides tools to introspect user-defined types and much more, from Louis Dionne</li>
     <li><a href="heap/index.html">Heap</a> - Priority queue data structures, from Tim Blechmann</li>
+    <li><a href="hof/index.html">HOF</a> - Higher-order functions for C++, from Paul Fultz II</li>
     <li><a href="icl/index.html">ICL</a> - Interval Container Library, interval sets and maps and aggregation of associated values, from Joachim Faulhaber</li>
     <li><a href="utility/identity_type/index.html">Identity Type</a> - Wrap types within round parenthesis so they can always be passed as macro parameters, from Lorenzo Caminiti</li>
     <li><a href="utility/in_place_factories.html">In Place Factory, Typed In Place Factory</a> - Generic in-place construction of contained objects with a variadic argument-list, from Fernando Cacciola</li>
@@ -302,6 +304,7 @@ how to download, build, and install the libraries.</p>
 <ul>
     <li><a href="assert/index.html">Assert</a> - Customizable assert macros, from Peter Dimov</li>
     <li><a href="concept_check/index.html">Concept Check</a> - Tools for generic programming, from Jeremy Siek</li>
+    <li><a href="contract/index.html">Contract</a> - Contract programming for C++. All contract programming features are supported: Subcontracting, class invariants, postconditions (with old and return values), preconditions, customizable actions on assertion failure (e.g., terminate or throw), optional compilation and checking of assertions, etc, from Lorenzo Caminiti</li>
     <li><a href="stacktrace/index.html">Stacktrace</a> - Gather, store, copy and print backtraces, from Antony Polukhin</li>
     <li><a href="static_assert/index.html">Static Assert</a> - Static assertions (compile time assertions), from John Maddock</li>
     <li><a href="test/index.html">Test</a> - Support for simple program testing, full unit testing, and for program execution monitoring, from Gennadiy Rozental and Raffi Enficiaud</li>
@@ -343,12 +346,13 @@ how to download, build, and install the libraries.</p>
 
 <ul>
     <li><a href="bind/index.html">Bind</a> - boost::bind is a generalization of the standard functions std::bind1st and std::bind2nd. It supports arbitrary function objects, functions, function pointers, and member function pointers, and is able to bind any argument to a specific value or route input arguments into arbitrary positions, from Peter Dimov</li>
+    <li><a href="container_hash/index.html">Container Hash</a> - An STL-compatible hash function object that can be extended to hash user defined types, from Daniel James</li>
     <li><a href="function/index.html">Function</a> - Function object wrappers for deferred calls or callbacks, from Doug Gregor</li>
     <li><a href="functional/index.html">Functional</a> - The Boost.Function library contains a family of class templates that are function object wrappers, from Mark Rodgers</li>
     <li><a href="functional/factory/index.html">Functional/Factory</a> - Function object templates for dynamic and static object creation, from Tobias Schwinger</li>
     <li><a href="functional/forward/index.html">Functional/Forward</a> - Adapters to allow generic function objects to accept arbitrary arguments, from Tobias Schwinger</li>
-    <li><a href="functional/hash/index.html">Functional/Hash</a> - A TR1 hash function object that can be extended to hash user defined types, from Daniel James</li>
     <li><a href="functional/overloaded_function/index.html">Functional/Overloaded Function</a> - Overload different functions into a single function object, from Lorenzo Caminiti</li>
+    <li><a href="hof/index.html">HOF</a> - Higher-order functions for C++, from Paul Fultz II</li>
     <li><a href="lambda/index.html">Lambda</a> - Define small unnamed function objects at the actual call site, and more, from Jaakko J&auml;rvi and Gary Powell</li>
     <li><a href="local_function/index.html">Local Function</a> - Program functions locally, within other functions, directly within the scope where they are needed, from Lorenzo Caminiti</li>
     <li><a href="bind/mem_fn.html">Member Function</a> - Generalized binders for function/object/pointers and member functions, from Peter Dimov</li>
@@ -538,6 +542,7 @@ how to download, build, and install the libraries.</p>
     <li><a href="function_types/index.html">Function Types</a> - Boost.FunctionTypes provides functionality to classify, decompose and synthesize function, function pointer, function reference and pointer to member types, from Tobias Schwinger</li>
     <li><a href="fusion/doc/html/index.html">Fusion</a> - Library for working with tuples, including various containers, algorithms, etc, from Joel de Guzman, Dan Marsden and Tobias Schwinger</li>
     <li><a href="hana/index.html">Hana</a> - A modern C++ metaprogramming library. It provides high level algorithms to manipulate heterogeneous sequences, allows writing type-level computations with a natural syntax, provides tools to introspect user-defined types and much more, from Louis Dionne</li>
+    <li><a href="hof/index.html">HOF</a> - Higher-order functions for C++, from Paul Fultz II</li>
     <li><a href="metaparse/index.html">Metaparse</a> - A library for generating compile time parsers parsing embedded DSL code as part of the C++ compilation process, from Abel Sinkovics</li>
     <li><a href="mp11/index.html">Mp11</a> - A C++11 metaprogramming library, from Peter Dimov</li>
     <li><a href="mpl/index.html">MPL</a> - The Boost.MPL library is a general-purpose, high-level C++ template metaprogramming framework of compile-time algorithms, sequences and metafunctions. It provides a conceptual foundation and an extensive set of powerful and coherent tools that make doing explict metaprogramming in C++ as easy and enjoyable as possible within the current language, from Aleksey Gurtovoy</li>
@@ -556,6 +561,7 @@ how to download, build, and install the libraries.</p>
     <li><a href="endian/index.html">Endian</a> - Types and conversion functions for correct byte ordering and more regardless of processor endianness, from Beman Dawes</li>
     <li><a href="lexical_cast/index.html">Lexical Cast</a> - General literal text conversions, such as an int represented a string, or vice-versa, from Kevlin Henney</li>
     <li><a href="log/index.html">Log</a> - Logging library, from Andrey Semashev</li>
+    <li><a href="numeric/conversion/index.html">Numeric Conversion</a> - Optimized Policy-based Numeric Conversions, from Fernando Cacciola</li>
     <li><a href="predef/index.html">Predef</a> - This library defines a set of compiler, architecture, operating system, library, and other version numbers from the information it can gather of C, C++, Objective C, and Objective C++ predefined macros or those defined in generally available headers, from Rene Rivera</li>
     <li><a href="program_options/index.html">Program Options</a> - The program_options library allows program developers to obtain program options, that is (name, value) pairs from the user, via conventional methods such as command line and config file, from Vladimir Prus</li>
     <li><a href="core/swap.html">Swap</a> - Enhanced generic swap function, from Joseph Gauterin</li>

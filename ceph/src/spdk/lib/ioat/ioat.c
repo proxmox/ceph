@@ -31,14 +31,14 @@
  *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+#include "spdk/stdinc.h"
+
 #include "ioat_internal.h"
 
 #include "spdk/env.h"
 #include "spdk/util.h"
 
 #include "spdk_internal/log.h"
-
-#include <pthread.h>
 
 struct ioat_driver {
 	pthread_mutex_t			lock;
@@ -151,13 +151,6 @@ ioat_get_ring_entry(struct spdk_ioat_chan *ioat, uint32_t index,
 	*hw_desc = &ioat->hw_ring[i];
 }
 
-static uint64_t
-ioat_get_desc_phys_addr(struct spdk_ioat_chan *ioat, uint32_t index)
-{
-	return ioat->hw_ring_phys_addr +
-	       ioat_get_ring_index(ioat, index) * sizeof(union spdk_ioat_hw_desc);
-}
-
 static void
 ioat_submit_single(struct spdk_ioat_chan *ioat)
 {
@@ -266,6 +259,7 @@ static int ioat_reset_hw(struct spdk_ioat_chan *ioat)
 	int timeout;
 	uint64_t status;
 	uint32_t chanerr;
+	int rc;
 
 	status = ioat_get_chansts(ioat);
 	if (is_ioat_active(status) || is_ioat_idle(status)) {
@@ -289,6 +283,18 @@ static int ioat_reset_hw(struct spdk_ioat_chan *ioat)
 	 */
 	chanerr = ioat->regs->chanerr;
 	ioat->regs->chanerr = chanerr;
+
+	if (ioat->regs->cbver < SPDK_IOAT_VER_3_3) {
+		rc = spdk_pci_device_cfg_read32(ioat->device, &chanerr,
+						SPDK_IOAT_PCI_CHANERR_INT_OFFSET);
+		if (rc) {
+			SPDK_ERRLOG("failed to read the internal channel error register\n");
+			return -1;
+		}
+
+		spdk_pci_device_cfg_write32(ioat->device, chanerr,
+					    SPDK_IOAT_PCI_CHANERR_INT_OFFSET);
+	}
 
 	ioat_reset(ioat);
 
@@ -336,7 +342,7 @@ ioat_process_channel_events(struct spdk_ioat_chan *ioat)
 			desc->callback_fn(desc->callback_arg);
 		}
 
-		hw_desc_phys_addr = ioat_get_desc_phys_addr(ioat, ioat->tail);
+		hw_desc_phys_addr = desc->phys_addr;
 		ioat->tail++;
 	} while (hw_desc_phys_addr != completed_descriptor);
 
@@ -344,7 +350,7 @@ ioat_process_channel_events(struct spdk_ioat_chan *ioat)
 	return 0;
 }
 
-static int
+static void
 ioat_channel_destruct(struct spdk_ioat_chan *ioat)
 {
 	ioat_unmap_pci_bar(ioat);
@@ -354,15 +360,13 @@ ioat_channel_destruct(struct spdk_ioat_chan *ioat)
 	}
 
 	if (ioat->hw_ring) {
-		spdk_free(ioat->hw_ring);
+		spdk_dma_free(ioat->hw_ring);
 	}
 
 	if (ioat->comp_update) {
-		spdk_free((void *)ioat->comp_update);
+		spdk_dma_free((void *)ioat->comp_update);
 		ioat->comp_update = NULL;
 	}
-
-	return 0;
 }
 
 static int
@@ -372,6 +376,7 @@ ioat_channel_start(struct spdk_ioat_chan *ioat)
 	uint64_t status;
 	int i, num_descriptors;
 	uint64_t comp_update_bus_addr = 0;
+	uint64_t phys_addr;
 
 	if (ioat_map_pci_bar(ioat) != 0) {
 		SPDK_ERRLOG("ioat_map_pci_bar() failed\n");
@@ -387,8 +392,9 @@ ioat_channel_start(struct spdk_ioat_chan *ioat)
 
 	/* Always support DMA copy */
 	ioat->dma_capabilities = SPDK_IOAT_ENGINE_COPY_SUPPORTED;
-	if (ioat->regs->dmacapability & SPDK_IOAT_DMACAP_BFILL)
+	if (ioat->regs->dmacapability & SPDK_IOAT_DMACAP_BFILL) {
 		ioat->dma_capabilities |= SPDK_IOAT_ENGINE_FILL_SUPPORTED;
+	}
 	xfercap = ioat->regs->xfercap;
 
 	/* Only bits [4:0] are valid. */
@@ -397,15 +403,15 @@ ioat_channel_start(struct spdk_ioat_chan *ioat)
 		/* 0 means 4 GB max transfer size. */
 		ioat->max_xfer_size = 1ULL << 32;
 	} else if (xfercap < 12) {
-		/* XFCERCAP must be at least 12 (4 KB) according to the spec. */
+		/* XFERCAP must be at least 12 (4 KB) according to the spec. */
 		SPDK_ERRLOG("invalid XFERCAP value %u\n", xfercap);
 		return -1;
 	} else {
 		ioat->max_xfer_size = 1U << xfercap;
 	}
 
-	ioat->comp_update = spdk_zmalloc(sizeof(*ioat->comp_update), SPDK_IOAT_CHANCMP_ALIGN,
-					 &comp_update_bus_addr);
+	ioat->comp_update = spdk_dma_zmalloc(sizeof(*ioat->comp_update), SPDK_IOAT_CHANCMP_ALIGN,
+					     &comp_update_bus_addr);
 	if (ioat->comp_update == NULL) {
 		return -1;
 	}
@@ -419,14 +425,21 @@ ioat_channel_start(struct spdk_ioat_chan *ioat)
 		return -1;
 	}
 
-	ioat->hw_ring = spdk_zmalloc(num_descriptors * sizeof(union spdk_ioat_hw_desc), 64,
-				     &ioat->hw_ring_phys_addr);
+	ioat->hw_ring = spdk_dma_zmalloc(num_descriptors * sizeof(union spdk_ioat_hw_desc), 64,
+					 NULL);
 	if (!ioat->hw_ring) {
 		return -1;
 	}
 
 	for (i = 0; i < num_descriptors; i++) {
-		ioat->hw_ring[i].generic.next = ioat_get_desc_phys_addr(ioat, i + 1);
+		phys_addr = spdk_vtophys(&ioat->hw_ring[i]);
+		if (phys_addr == SPDK_VTOPHYS_ERROR) {
+			SPDK_ERRLOG("Failed to translate descriptor %u to physical address\n", i);
+			return -1;
+		}
+
+		ioat->ring[i].phys_addr = phys_addr;
+		ioat->hw_ring[ioat_get_ring_index(ioat, i - 1)].generic.next = phys_addr;
 	}
 
 	ioat->head = 0;
@@ -437,7 +450,7 @@ ioat_channel_start(struct spdk_ioat_chan *ioat)
 
 	ioat->regs->chanctrl = SPDK_IOAT_CHANCTRL_ANY_ERR_ABORT_EN;
 	ioat_write_chancmp(ioat, comp_update_bus_addr);
-	ioat_write_chainaddr(ioat, ioat->hw_ring_phys_addr);
+	ioat_write_chainaddr(ioat, ioat->ring[0].phys_addr);
 
 	ioat_prep_null(ioat);
 	ioat_flush(ioat);
@@ -446,8 +459,9 @@ ioat_channel_start(struct spdk_ioat_chan *ioat)
 	while (i-- > 0) {
 		spdk_delay_us(100);
 		status = ioat_get_chansts(ioat);
-		if (is_ioat_idle(status))
+		if (is_ioat_idle(status)) {
 			break;
+		}
 	}
 
 	if (is_ioat_idle(status)) {
@@ -463,9 +477,9 @@ ioat_channel_start(struct spdk_ioat_chan *ioat)
 
 /* Caller must hold g_ioat_driver.lock */
 static struct spdk_ioat_chan *
-ioat_attach(void *device)
+ioat_attach(struct spdk_pci_device *device)
 {
-	struct spdk_ioat_chan 	*ioat;
+	struct spdk_ioat_chan *ioat;
 	uint32_t cmd_reg;
 
 	ioat = calloc(1, sizeof(struct spdk_ioat_chan));
@@ -552,7 +566,7 @@ spdk_ioat_probe(void *cb_ctx, spdk_ioat_probe_cb probe_cb, spdk_ioat_attach_cb a
 	return rc;
 }
 
-int
+void
 spdk_ioat_detach(struct spdk_ioat_chan *ioat)
 {
 	struct ioat_driver	*driver = &g_ioat_driver;
@@ -566,14 +580,12 @@ spdk_ioat_detach(struct spdk_ioat_chan *ioat)
 
 	ioat_channel_destruct(ioat);
 	free(ioat);
-
-	return 0;
 }
 
 #define _2MB_PAGE(ptr)		((ptr) & ~(0x200000 - 1))
 #define _2MB_OFFSET(ptr)	((ptr) &  (0x200000 - 1))
 
-int64_t
+int
 spdk_ioat_submit_copy(struct spdk_ioat_chan *ioat, void *cb_arg, spdk_ioat_req_cb cb_fn,
 		      void *dst, const void *src, uint64_t nbytes)
 {
@@ -585,7 +597,7 @@ spdk_ioat_submit_copy(struct spdk_ioat_chan *ioat, void *cb_arg, spdk_ioat_req_c
 	uint32_t	orig_head;
 
 	if (!ioat) {
-		return -1;
+		return -EINVAL;
 	}
 
 	orig_head = ioat->head;
@@ -639,14 +651,14 @@ spdk_ioat_submit_copy(struct spdk_ioat_chan *ioat, void *cb_arg, spdk_ioat_req_c
 		 * in case we managed to fill out any descriptors.
 		 */
 		ioat->head = orig_head;
-		return -1;
+		return -ENOMEM;
 	}
 
 	ioat_flush(ioat);
-	return nbytes;
+	return 0;
 }
 
-int64_t
+int
 spdk_ioat_submit_fill(struct spdk_ioat_chan *ioat, void *cb_arg, spdk_ioat_req_cb cb_fn,
 		      void *dst, uint64_t fill_pattern, uint64_t nbytes)
 {
@@ -656,7 +668,7 @@ spdk_ioat_submit_fill(struct spdk_ioat_chan *ioat, void *cb_arg, spdk_ioat_req_c
 	uint32_t	orig_head;
 
 	if (!ioat) {
-		return -1;
+		return -EINVAL;
 	}
 
 	if (!(ioat->dma_capabilities & SPDK_IOAT_ENGINE_FILL_SUPPORTED)) {
@@ -671,6 +683,7 @@ spdk_ioat_submit_fill(struct spdk_ioat_chan *ioat, void *cb_arg, spdk_ioat_req_c
 
 	while (remaining) {
 		op_size = remaining;
+		op_size = spdk_min(op_size, (0x200000 - _2MB_OFFSET(vdst)));
 		op_size = spdk_min(op_size, ioat->max_xfer_size);
 		remaining -= op_size;
 
@@ -695,11 +708,11 @@ spdk_ioat_submit_fill(struct spdk_ioat_chan *ioat, void *cb_arg, spdk_ioat_req_c
 		 * in case we managed to fill out any descriptors.
 		 */
 		ioat->head = orig_head;
-		return -1;
+		return -ENOMEM;
 	}
 
 	ioat_flush(ioat);
-	return nbytes;
+	return 0;
 }
 
 uint32_t
@@ -717,4 +730,4 @@ spdk_ioat_process_events(struct spdk_ioat_chan *ioat)
 	return ioat_process_channel_events(ioat);
 }
 
-SPDK_LOG_REGISTER_TRACE_FLAG("ioat", SPDK_TRACE_IOAT)
+SPDK_LOG_REGISTER_COMPONENT("ioat", SPDK_LOG_IOAT)

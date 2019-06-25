@@ -13,6 +13,7 @@
  */
 
 #include "Capability.h"
+#include "CInode.h"
 #include "SessionMap.h"
 
 #include "common/Formatter.h"
@@ -24,29 +25,32 @@
 
 void Capability::Export::encode(bufferlist &bl) const
 {
-  ENCODE_START(2, 2, bl);
-  ::encode(cap_id, bl);
-  ::encode(wanted, bl);
-  ::encode(issued, bl);
-  ::encode(pending, bl);
-  ::encode(client_follows, bl);
-  ::encode(seq, bl);
-  ::encode(mseq, bl);
-  ::encode(last_issue_stamp, bl);
+  ENCODE_START(3, 2, bl);
+  encode(cap_id, bl);
+  encode(wanted, bl);
+  encode(issued, bl);
+  encode(pending, bl);
+  encode(client_follows, bl);
+  encode(seq, bl);
+  encode(mseq, bl);
+  encode(last_issue_stamp, bl);
+  encode(state, bl);
   ENCODE_FINISH(bl);
 }
 
-void Capability::Export::decode(bufferlist::iterator &p)
+void Capability::Export::decode(bufferlist::const_iterator &p)
 {
-  DECODE_START_LEGACY_COMPAT_LEN(2, 2, 2, p);
-  ::decode(cap_id, p);
-  ::decode(wanted, p);
-  ::decode(issued, p);
-  ::decode(pending, p);
-  ::decode(client_follows, p);
-  ::decode(seq, p);
-  ::decode(mseq, p);
-  ::decode(last_issue_stamp, p);
+  DECODE_START_LEGACY_COMPAT_LEN(3, 2, 2, p);
+  decode(cap_id, p);
+  decode(wanted, p);
+  decode(issued, p);
+  decode(pending, p);
+  decode(client_follows, p);
+  decode(seq, p);
+  decode(mseq, p);
+  decode(last_issue_stamp, p);
+  if (struct_v >= 3)
+    decode(state, p);
   DECODE_FINISH(p);
 }
 
@@ -77,18 +81,18 @@ void Capability::Export::generate_test_instances(list<Capability::Export*>& ls)
 void Capability::Import::encode(bufferlist &bl) const
 {
   ENCODE_START(1, 1, bl);
-  ::encode(cap_id, bl);
-  ::encode(issue_seq, bl);
-  ::encode(mseq, bl);
+  encode(cap_id, bl);
+  encode(issue_seq, bl);
+  encode(mseq, bl);
   ENCODE_FINISH(bl);
 }
 
-void Capability::Import::decode(bufferlist::iterator &bl)
+void Capability::Import::decode(bufferlist::const_iterator &bl)
 {
   DECODE_START(1, bl);
-  ::decode(cap_id, bl);
-  ::decode(issue_seq, bl);
-  ::decode(mseq, bl);
+  decode(cap_id, bl);
+  decode(issue_seq, bl);
+  decode(mseq, bl);
   DECODE_FINISH(bl);
 }
 
@@ -106,18 +110,18 @@ void Capability::Import::dump(Formatter *f) const
 void Capability::revoke_info::encode(bufferlist& bl) const
 {
   ENCODE_START(2, 2, bl)
-  ::encode(before, bl);
-  ::encode(seq, bl);
-  ::encode(last_issue, bl);
+  encode(before, bl);
+  encode(seq, bl);
+  encode(last_issue, bl);
   ENCODE_FINISH(bl);
 }
 
-void Capability::revoke_info::decode(bufferlist::iterator& bl)
+void Capability::revoke_info::decode(bufferlist::const_iterator& bl)
 {
   DECODE_START_LEGACY_COMPAT_LEN(2, 2, 2, bl);
-  ::decode(before, bl);
-  ::decode(seq, bl);
-  ::decode(last_issue, bl);
+  decode(before, bl);
+  decode(seq, bl);
+  decode(last_issue, bl);
   DECODE_FINISH(bl);
 }
 
@@ -155,6 +159,16 @@ Capability::Capability(CInode *i, Session *s, uint64_t id) :
   if (session) {
     session->touch_cap_bottom(this);
     cap_gen = session->get_cap_gen();
+
+    auto& conn = session->get_connection();
+    if (conn) {
+      if (!conn->has_feature(CEPH_FEATURE_MDS_INLINE_DATA))
+	state |= STATE_NOINLINE;
+      if (!conn->has_feature(CEPH_FEATURE_FS_FILE_LAYOUT_V2))
+	state |= STATE_NOPOOLNS;
+      if (!conn->has_feature(CEPH_FEATURE_MDS_QUOTA))
+	state |= STATE_NOQUOTA;
+    }
   }
 }
 
@@ -211,6 +225,11 @@ void Capability::maybe_clear_notable()
 void Capability::set_wanted(int w) {
   CInode *in = get_inode();
   if (in) {
+    if (!_wanted && w) {
+      in->adjust_num_caps_wanted(1);
+    } else if (_wanted && !w) {
+      in->adjust_num_caps_wanted(-1);
+    }
     if (!is_wanted_notable(_wanted) && is_wanted_notable(w)) {
       if (!is_notable())
 	mark_notable();
@@ -224,24 +243,26 @@ void Capability::set_wanted(int w) {
 void Capability::encode(bufferlist& bl) const
 {
   ENCODE_START(2, 2, bl)
-  ::encode(last_sent, bl);
-  ::encode(last_issue_stamp, bl);
+  encode(last_sent, bl);
+  encode(last_issue_stamp, bl);
 
-  ::encode(_wanted, bl);
-  ::encode(_pending, bl);
-  ::encode(_revokes, bl);
+  encode(_wanted, bl);
+  encode(_pending, bl);
+  encode(_revokes, bl);
   ENCODE_FINISH(bl);
 }
 
-void Capability::decode(bufferlist::iterator &bl)
+void Capability::decode(bufferlist::const_iterator &bl)
 {
   DECODE_START_LEGACY_COMPAT_LEN(2, 2, 2, bl)
-  ::decode(last_sent, bl);
-  ::decode(last_issue_stamp, bl);
+  decode(last_sent, bl);
+  decode(last_issue_stamp, bl);
 
-  ::decode(_wanted, bl);
-  ::decode(_pending, bl);
-  ::decode(_revokes, bl);
+  __u32 tmp_wanted;
+  decode(tmp_wanted, bl);
+  set_wanted(tmp_wanted);
+  decode(_pending, bl);
+  decode(_revokes, bl);
   DECODE_FINISH(bl);
   
   calc_issued();
@@ -269,18 +290,16 @@ void Capability::generate_test_instances(list<Capability*>& ls)
   ls.push_back(new Capability);
   ls.back()->last_sent = 11;
   ls.back()->last_issue_stamp = utime_t(12, 13);
-  ls.back()->_wanted = 14;
+  ls.back()->set_wanted(14);
   ls.back()->_pending = 15;
   {
-    ls.back()->_revokes.emplace_back();
-    auto &r = ls.back()->_revokes.back();
+    auto &r = ls.back()->_revokes.emplace_back();
     r.before = 16;
     r.seq = 17;
     r.last_issue = 18;
   }
   {
-    ls.back()->_revokes.emplace_back();
-    auto &r = ls.back()->_revokes.back();
+    auto &r = ls.back()->_revokes.emplace_back();
     r.before = 19;
     r.seq = 20;
     r.last_issue = 21;

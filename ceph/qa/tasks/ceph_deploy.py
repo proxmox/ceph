@@ -46,7 +46,7 @@ def download_ceph_deploy(ctx, config):
         system_type = teuthology.get_system_type(ceph_admin)
 
         if system_type == 'rpm':
-            package = 'python34' if py_ver == '3' else 'python'
+            package = 'python36' if py_ver == '3' else 'python'
             ctx.cluster.run(args=[
                 'sudo', 'yum', '-y', 'install',
                 package, 'python-virtualenv'
@@ -166,8 +166,13 @@ def get_nodes_using_role(ctx, target_role):
                 modified_remotes[_remote].append(svc_id)
 
     ctx.cluster.remotes = modified_remotes
-    ctx.cluster.mapped_role = ceph_deploy_mapped
-
+    # since the function is called multiple times for target roles
+    # append new mapped roles
+    if not hasattr(ctx.cluster, 'mapped_role'):
+        ctx.cluster.mapped_role = ceph_deploy_mapped
+    else:
+        ctx.cluster.mapped_role.update(ceph_deploy_mapped)
+    log.info("New mapped_role={mr}".format(mr=ctx.cluster.mapped_role))
     return nodes_of_interest
 
 
@@ -662,6 +667,7 @@ def cli_test(ctx, config):
         branch=test_branch) + nodename
     new_admin = 'install {branch} --cli '.format(branch=test_branch) + nodename
     create_initial = 'mon create-initial '
+    mgr_create = 'mgr create ' + nodename
     # either use create-keys or push command
     push_keys = 'admin ' + nodename
     execute_cdeploy(admin, new_mon_install, path)
@@ -669,6 +675,7 @@ def cli_test(ctx, config):
     execute_cdeploy(admin, new_osd_install, path)
     execute_cdeploy(admin, new_admin, path)
     execute_cdeploy(admin, create_initial, path)
+    execute_cdeploy(admin, mgr_create, path)
     execute_cdeploy(admin, push_keys, path)
 
     for i in range(3):
@@ -779,6 +786,7 @@ def upgrade(ctx, config):
     # get the roles that are mapped as per ceph-deploy
     # roles are mapped for mon/mds eg: mon.a  => mon.host_short_name
     mapped_role = ctx.cluster.mapped_role
+    log.info("roles={r}, mapped_roles={mr}".format(r=roles, mr=mapped_role))
     if config.get('branch'):
         branch = config.get('branch')
         (var, val) = branch.items()[0]

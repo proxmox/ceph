@@ -20,7 +20,7 @@
 #include "msg/msg_types.h"
 #include "include/rados/librados.hpp"
 
-#include "test/librados/test.h"
+#include "test/librados/test_cxx.h"
 #include "gtest/gtest.h"
 
 using namespace librados;
@@ -85,6 +85,9 @@ TEST(ClsLock, TestMultiLocking) {
   ASSERT_EQ(0, ioctx.write(oid, bl, bl.length(), 0));
 
   Lock l(lock_name);
+  // we set the duration, so the log output contains a locker with a
+  // non-zero expiration time
+  l.set_duration(utime_t(120, 0));
 
   /* test lock object */
 

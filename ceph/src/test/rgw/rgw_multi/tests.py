@@ -22,9 +22,10 @@ from nose.tools import eq_ as eq
 from nose.plugins.attrib import attr
 from nose.plugins.skip import SkipTest
 
-from .multisite import Zone, ZoneGroup
+from .multisite import Zone, ZoneGroup, Credentials
 
 from .conn import get_gateway_connection
+from .tools import assert_raises
 
 class Config:
     """ test configuration """
@@ -53,7 +54,7 @@ def init_multi(_realm, _user, _config=None):
 def get_realm():
     return realm
 
-log = logging.getLogger(__name__)
+log = logging.getLogger('rgw_multi.tests')
 
 num_buckets = 0
 run_prefix=''.join(random.choice(string.ascii_lowercase) for _ in range(6))
@@ -407,13 +408,15 @@ def zone_bucket_checkpoint(target_zone, source_zone, bucket_name):
                   (target_zone.name, source_zone.name, bucket_name)
 
 def zonegroup_bucket_checkpoint(zonegroup_conns, bucket_name):
-    for source_conn in zonegroup_conns.zones:
+    for source_conn in zonegroup_conns.rw_zones:
         for target_conn in zonegroup_conns.zones:
             if source_conn.zone == target_conn.zone:
                 continue
+            log.debug('bucket checkpoint: source=%s target=%s bucket=%s', source_conn.zone.name, target_conn.zone.name, bucket_name)
             zone_bucket_checkpoint(target_conn.zone, source_conn.zone, bucket_name)
     for source_conn, target_conn in combinations(zonegroup_conns.zones, 2):
-        target_conn.check_bucket_eq(source_conn, bucket_name)
+        if target_conn.zone.has_buckets():
+            target_conn.check_bucket_eq(source_conn, bucket_name)
 
 def set_master_zone(zone):
     zone.modify(zone.cluster, ['--master'])
@@ -421,6 +424,22 @@ def set_master_zone(zone):
     zonegroup.period.update(zone, commit=True)
     zonegroup.master_zone = zone
     log.info('Set master zone=%s, waiting %ds for reconfiguration..', zone.name, config.reconfigure_delay)
+    time.sleep(config.reconfigure_delay)
+
+def set_sync_from_all(zone, flag):
+    s = 'true' if flag else 'false'
+    zone.modify(zone.cluster, ['--sync-from-all={}'.format(s)])
+    zonegroup = zone.zonegroup
+    zonegroup.period.update(zone, commit=True)
+    log.info('Set sync_from_all flag on zone %s to %s', zone.name, s)
+    time.sleep(config.reconfigure_delay)
+
+def set_redirect_zone(zone, redirect_zone):
+    id_str = redirect_zone.id if redirect_zone else ''
+    zone.modify(zone.cluster, ['--redirect-zone={}'.format(id_str)])
+    zonegroup = zone.zonegroup
+    zonegroup.period.update(zone, commit=True)
+    log.info('Set redirect_zone zone %s to "%s"', zone.name, id_str)
     time.sleep(config.reconfigure_delay)
 
 def enable_bucket_sync(zone, bucket_name):
@@ -579,7 +598,8 @@ def new_key(zone, bucket_name, obj_name):
     return b.new_key(obj_name)
 
 def check_bucket_eq(zone_conn1, zone_conn2, bucket):
-    return zone_conn2.check_bucket_eq(zone_conn1, bucket.name)
+    if zone_conn2.zone.has_buckets():
+        zone_conn2.check_bucket_eq(zone_conn1, bucket.name)
 
 def test_object_sync():
     zonegroup = realm.master_zonegroup()
@@ -673,22 +693,19 @@ def test_versioned_object_incremental_sync():
             k = new_key(zone_conn, bucket, obj)
 
             k.set_contents_from_string('version1')
-            v = get_latest_object_version(k)
-            log.debug('version1 id=%s', v.version_id)
+            log.debug('version1 id=%s', k.version_id)
             # don't delete version1 - this tests that the initial version
             # doesn't get squashed into later versions
 
             # create and delete the following object versions to test that
             # the operations don't race with each other during sync
             k.set_contents_from_string('version2')
-            v = get_latest_object_version(k)
-            log.debug('version2 id=%s', v.version_id)
-            k.bucket.delete_key(obj, version_id=v.version_id)
+            log.debug('version2 id=%s', k.version_id)
+            k.bucket.delete_key(obj, version_id=k.version_id)
 
             k.set_contents_from_string('version3')
-            v = get_latest_object_version(k)
-            log.debug('version3 id=%s', v.version_id)
-            k.bucket.delete_key(obj, version_id=v.version_id)
+            log.debug('version3 id=%s', k.version_id)
+            k.bucket.delete_key(obj, version_id=k.version_id)
 
     for _, bucket in zone_bucket:
         zonegroup_bucket_checkpoint(zonegroup_conns, bucket.name)
@@ -703,6 +720,43 @@ def test_versioned_object_incremental_sync():
 
     for _, bucket in zone_bucket:
         zonegroup_bucket_checkpoint(zonegroup_conns, bucket.name)
+
+def test_version_suspended_incremental_sync():
+    zonegroup = realm.master_zonegroup()
+    zonegroup_conns = ZonegroupConns(zonegroup)
+
+    zone = zonegroup_conns.rw_zones[0]
+
+    # create a non-versioned bucket
+    bucket = zone.create_bucket(gen_bucket_name())
+    log.debug('created bucket=%s', bucket.name)
+    zonegroup_meta_checkpoint(zonegroup)
+
+    # upload an initial object
+    key1 = new_key(zone, bucket, 'obj')
+    key1.set_contents_from_string('')
+    log.debug('created initial version id=%s', key1.version_id)
+    zonegroup_bucket_checkpoint(zonegroup_conns, bucket.name)
+
+    # enable versioning
+    bucket.configure_versioning(True)
+    zonegroup_meta_checkpoint(zonegroup)
+
+    # re-upload the object as a new version
+    key2 = new_key(zone, bucket, 'obj')
+    key2.set_contents_from_string('')
+    log.debug('created new version id=%s', key2.version_id)
+    zonegroup_bucket_checkpoint(zonegroup_conns, bucket.name)
+
+    # suspend versioning
+    bucket.configure_versioning(False)
+    zonegroup_meta_checkpoint(zonegroup)
+
+    # re-upload the object as a 'null' version
+    key3 = new_key(zone, bucket, 'obj')
+    key3.set_contents_from_string('')
+    log.debug('created null version id=%s', key3.version_id)
+    zonegroup_bucket_checkpoint(zonegroup_conns, bucket.name)
 
 def test_delete_marker_full_sync():
     zonegroup = realm.master_zonegroup()
@@ -750,44 +804,6 @@ def test_suspended_delete_marker_full_sync():
     # wait for full sync
     for _, bucket in zone_bucket:
         zonegroup_bucket_checkpoint(zonegroup_conns, bucket.name)
-
-def test_version_suspended_incremental_sync():
-    zonegroup = realm.master_zonegroup()
-    zonegroup_conns = ZonegroupConns(zonegroup)
-
-    zone = zonegroup_conns.rw_zones[0]
-
-    # create a non-versioned bucket
-    bucket = zone.create_bucket(gen_bucket_name())
-    log.debug('created bucket=%s', bucket.name)
-    zonegroup_meta_checkpoint(zonegroup)
-
-    # upload an initial object
-    key1 = new_key(zone, bucket, 'obj')
-    key1.set_contents_from_string('')
-    log.debug('created initial version id=%s', key1.version_id)
-    zonegroup_bucket_checkpoint(zonegroup_conns, bucket.name)
-
-    # enable versioning
-    bucket.configure_versioning(True)
-    zonegroup_meta_checkpoint(zonegroup)
-
-    # re-upload the object as a new version
-    key2 = new_key(zone, bucket, 'obj')
-    key2.set_contents_from_string('')
-    log.debug('created new version id=%s', key2.version_id)
-    zonegroup_bucket_checkpoint(zonegroup_conns, bucket.name)
-
-    # suspend versioning
-    bucket.configure_versioning(False)
-    zonegroup_meta_checkpoint(zonegroup)
-
-    # re-upload the object as a 'null' version
-    key3 = new_key(zone, bucket, 'obj')
-    key3.set_contents_from_string('')
-    log.debug('created null version id=%s', key3.version_id)
-    zonegroup_bucket_checkpoint(zonegroup_conns, bucket.name)
-
 
 def test_bucket_versioning():
     buckets, zone_bucket = create_bucket_per_zone_in_realm()
@@ -881,7 +897,7 @@ def test_multi_period_incremental_sync():
             continue
         bucket_name = gen_bucket_name()
         log.info('create bucket zone=%s name=%s', zone_conn.name, bucket_name)
-        bucket = zone_conn.conn.create_bucket(bucket_name)
+        zone_conn.conn.create_bucket(bucket_name)
         buckets.append(bucket_name)
 
     # restart zone 3 gateway and wait for sync
@@ -895,7 +911,8 @@ def test_multi_period_incremental_sync():
                 if source_conn.zone == target_conn.zone:
                     continue
 
-                target_conn.check_bucket_eq(source_conn, bucket_name)
+                if target_conn.zone.has_buckets():
+                    target_conn.check_bucket_eq(source_conn, bucket_name)
 
     # verify that mdlogs are not empty and match for each period
     for period in mdlog_periods:
@@ -941,6 +958,51 @@ def test_datalog_autotrim():
         datalog = datalog_list(zone.zone)
         assert len(datalog) == 0
 
+def test_multi_zone_redirect():
+    zonegroup = realm.master_zonegroup()
+    if len(zonegroup.rw_zones) < 2:
+        raise SkipTest("test_multi_period_incremental_sync skipped. Requires 3 or more zones in master zonegroup.")
+
+    zonegroup_conns = ZonegroupConns(zonegroup)
+    (zc1, zc2) = zonegroup_conns.rw_zones[0:2]
+
+    z1, z2 = (zc1.zone, zc2.zone)
+
+    set_sync_from_all(z2, False)
+
+    # create a bucket on the first zone
+    bucket_name = gen_bucket_name()
+    log.info('create bucket zone=%s name=%s', z1.name, bucket_name)
+    bucket = zc1.conn.create_bucket(bucket_name)
+    obj = 'testredirect'
+
+    key = bucket.new_key(obj)
+    data = 'A'*512
+    key.set_contents_from_string(data)
+
+    zonegroup_meta_checkpoint(zonegroup)
+
+    # try to read object from second zone (should fail)
+    bucket2 = get_bucket(zc2, bucket_name)
+    assert_raises(boto.exception.S3ResponseError, bucket2.get_key, obj)
+
+    set_redirect_zone(z2, z1)
+
+    key2 = bucket2.get_key(obj)
+
+    eq(data, key2.get_contents_as_string())
+
+    key = bucket.new_key(obj)
+
+    for x in ['a', 'b', 'c', 'd']:
+        data = x*512
+        key.set_contents_from_string(data)
+        eq(data, key2.get_contents_as_string())
+
+    # revert config changes
+    set_sync_from_all(z2, True)
+    set_redirect_zone(z2, None)
+
 def test_zonegroup_remove():
     zonegroup = realm.master_zonegroup()
     zonegroup_conns = ZonegroupConns(zonegroup)
@@ -951,9 +1013,13 @@ def test_zonegroup_remove():
     z1, z2 = zonegroup.zones[0:2]
     c1, c2 = (z1.cluster, z2.cluster)
 
+    # get admin credentials out of existing zone
+    system_key = z1.data['system_key']
+    admin_creds = Credentials(system_key['access_key'], system_key['secret_key'])
+
     # create a new zone in zonegroup on c2 and commit
     zone = Zone('remove', zonegroup, c2)
-    zone.create(c2)
+    zone.create(c2, admin_creds.credential_args())
     zonegroup.zones.append(zone)
     zonegroup.period.update(zone, commit=True)
 
@@ -1128,6 +1194,9 @@ def test_multipart_object_sync():
 def test_encrypted_object_sync():
     zonegroup = realm.master_zonegroup()
     zonegroup_conns = ZonegroupConns(zonegroup)
+
+    if len(zonegroup.rw_zones) < 2:
+        raise SkipTest("test_zonegroup_remove skipped. Requires 2 or more zones in master zonegroup.")
 
     (zone1, zone2) = zonegroup_conns.rw_zones[0:2]
 

@@ -31,21 +31,19 @@
  *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include <stdbool.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <unistd.h>
-#include <inttypes.h>
+#include "spdk/stdinc.h"
 
+#include "spdk/endian.h"
 #include "spdk/nvme.h"
 #include "spdk/env.h"
+#include "spdk/log.h"
 
 #define MAX_DEVS 64
 
 struct dev {
 	struct spdk_pci_addr			pci_addr;
-	struct spdk_nvme_ctrlr 			*ctrlr;
-	char 					name[100];
+	struct spdk_nvme_ctrlr			*ctrlr;
+	char					name[100];
 };
 
 static struct dev devs[MAX_DEVS];
@@ -56,44 +54,22 @@ static int num_devs = 0;
 
 static int outstanding_commands;
 static int reserve_command_result;
-static int set_feature_result;
-
-struct feature {
-	uint32_t result;
-	bool valid;
-};
-
-static struct feature features[256];
+static bool get_host_id_successful;
 
 #define HOST_ID		0xABABABABCDCDCDCD
+#define EXT_HOST_ID	((uint8_t[]){0x0f, 0x97, 0xcd, 0x74, 0x8c, 0x80, 0x41, 0x42, \
+				     0x99, 0x0f, 0x65, 0xc4, 0xf0, 0x39, 0x24, 0x20})
+
 #define CR_KEY		0xDEADBEAF5A5A5A5B
 
 static void
 get_feature_completion(void *cb_arg, const struct spdk_nvme_cpl *cpl)
 {
-	struct feature *feature = cb_arg;
-	int fid = feature - features;
-
 	if (spdk_nvme_cpl_is_error(cpl)) {
-		fprintf(stdout, "get_feature(0x%02X) failed\n", fid);
+		fprintf(stdout, "Get Features - Host Identifier failed\n");
+		get_host_id_successful = false;
 	} else {
-		feature->result = cpl->cdw0;
-		feature->valid = true;
-	}
-	outstanding_commands--;
-}
-
-static void
-set_feature_completion(void *cb_arg, const struct spdk_nvme_cpl *cpl)
-{
-	struct feature *feature = cb_arg;
-	int fid = feature - features;
-
-	if (spdk_nvme_cpl_is_error(cpl)) {
-		fprintf(stdout, "set_feature(0x%02X) failed\n", fid);
-		set_feature_result = -1;
-	} else {
-		set_feature_result = 0;
+		get_host_id_successful = true;
 	}
 	outstanding_commands--;
 }
@@ -102,64 +78,39 @@ static int
 get_host_identifier(struct spdk_nvme_ctrlr *ctrlr)
 {
 	int ret;
-	uint64_t host_id;
-	struct spdk_nvme_cmd cmd = {};
+	uint8_t host_id[16];
+	uint32_t host_id_size;
+	uint32_t cdw11;
 
-	cmd.opc = SPDK_NVME_OPC_GET_FEATURES;
-	cmd.cdw10 = SPDK_NVME_FEAT_HOST_IDENTIFIER;
+	if (spdk_nvme_ctrlr_get_data(ctrlr)->ctratt.host_id_exhid_supported) {
+		host_id_size = 16;
+		cdw11 = 1;
+		printf("Using 128-bit extended host identifier\n");
+	} else {
+		host_id_size = 8;
+		cdw11 = 0;
+		printf("Using 64-bit host identifier\n");
+	}
 
 	outstanding_commands = 0;
-	ret = spdk_nvme_ctrlr_cmd_admin_raw(ctrlr, &cmd, &host_id, sizeof(host_id),
-					    get_feature_completion, &features[SPDK_NVME_FEAT_HOST_IDENTIFIER]);
+	ret = spdk_nvme_ctrlr_cmd_get_feature(ctrlr, SPDK_NVME_FEAT_HOST_IDENTIFIER, cdw11, host_id,
+					      host_id_size,
+					      get_feature_completion, NULL);
 	if (ret) {
 		fprintf(stdout, "Get Feature: Failed\n");
 		return -1;
 	}
 
 	outstanding_commands++;
+	get_host_id_successful = false;
 
 	while (outstanding_commands) {
 		spdk_nvme_ctrlr_process_admin_completions(ctrlr);
 	}
 
-	if (features[SPDK_NVME_FEAT_HOST_IDENTIFIER].valid) {
-		fprintf(stdout, "Get Feature: Host Identifier 0x%" PRIx64 "\n", host_id);
+	if (get_host_id_successful) {
+		spdk_trace_dump(stdout, "Get Feature: Host Identifier:", host_id, host_id_size);
 	}
-
-	return 0;
-}
-
-static int
-set_host_identifier(struct spdk_nvme_ctrlr *ctrlr)
-{
-	int ret;
-	uint64_t host_id;
-	struct spdk_nvme_cmd cmd = {};
-
-	cmd.opc = SPDK_NVME_OPC_SET_FEATURES;
-	cmd.cdw10 = SPDK_NVME_FEAT_HOST_IDENTIFIER;
-
-	host_id = HOST_ID;
-
-	outstanding_commands = 0;
-	set_feature_result = -1;
-
-	fprintf(stdout, "Set Feature: Host Identifier 0x%" PRIx64 "\n", host_id);
-	ret = spdk_nvme_ctrlr_cmd_admin_raw(ctrlr, &cmd, &host_id, sizeof(host_id),
-					    set_feature_completion, &features[SPDK_NVME_FEAT_HOST_IDENTIFIER]);
-	if (ret) {
-		fprintf(stdout, "Set Feature: Failed\n");
-		return -1;
-	}
-
-	outstanding_commands++;
-
-	while (outstanding_commands) {
-		spdk_nvme_ctrlr_process_admin_completions(ctrlr);
-	}
-
-	if (set_feature_result)
-		fprintf(stdout, "Set Feature: Host Identifier Failed\n");
 
 	return 0;
 }
@@ -178,7 +129,7 @@ reservation_ns_completion(void *cb_arg, const struct spdk_nvme_cpl *cpl)
 
 static int
 reservation_ns_register(struct spdk_nvme_ctrlr *ctrlr, struct spdk_nvme_qpair *qpair,
-			uint16_t ns_id)
+			uint32_t ns_id)
 {
 	int ret;
 	struct spdk_nvme_reservation_register_data rr_data;
@@ -206,17 +157,18 @@ reservation_ns_register(struct spdk_nvme_ctrlr *ctrlr, struct spdk_nvme_qpair *q
 		spdk_nvme_qpair_process_completions(qpair, 100);
 	}
 
-	if (reserve_command_result)
+	if (reserve_command_result) {
 		fprintf(stderr, "Reservation Register Failed\n");
+	}
 
 	return 0;
 }
 
 static int
-reservation_ns_report(struct spdk_nvme_ctrlr *ctrlr, struct spdk_nvme_qpair *qpair, uint16_t ns_id)
+reservation_ns_report(struct spdk_nvme_ctrlr *ctrlr, struct spdk_nvme_qpair *qpair, uint32_t ns_id)
 {
 	int ret, i;
-	uint8_t payload[0x1000];
+	uint8_t *payload;
 	struct spdk_nvme_reservation_status_data *status;
 	struct spdk_nvme_reservation_ctrlr_data *cdata;
 	struct spdk_nvme_ns *ns;
@@ -226,10 +178,17 @@ reservation_ns_report(struct spdk_nvme_ctrlr *ctrlr, struct spdk_nvme_qpair *qpa
 	outstanding_commands = 0;
 	reserve_command_result = -1;
 
+	payload = spdk_dma_zmalloc(0x1000, 0x1000, NULL);
+	if (!payload) {
+		fprintf(stderr, "DMA Buffer Allocation Failed\n");
+		return -1;
+	}
+
 	ret = spdk_nvme_ns_cmd_reservation_report(ns, qpair, payload, 0x1000,
 			reservation_ns_completion, NULL);
 	if (ret) {
 		fprintf(stderr, "Reservation Report Failed\n");
+		spdk_dma_free(payload);
 		return -1;
 	}
 
@@ -240,6 +199,7 @@ reservation_ns_report(struct spdk_nvme_ctrlr *ctrlr, struct spdk_nvme_qpair *qpa
 
 	if (reserve_command_result) {
 		fprintf(stderr, "Reservation Report Failed\n");
+		spdk_dma_free(payload);
 		return 0;
 	}
 
@@ -257,11 +217,12 @@ reservation_ns_report(struct spdk_nvme_ctrlr *ctrlr, struct spdk_nvme_qpair *qpa
 		fprintf(stdout, "Controller Reservation Key              0x%"PRIx64"\n", cdata->key);
 	}
 
+	spdk_dma_free(payload);
 	return 0;
 }
 
 static int
-reservation_ns_acquire(struct spdk_nvme_ctrlr *ctrlr, struct spdk_nvme_qpair *qpair, uint16_t ns_id)
+reservation_ns_acquire(struct spdk_nvme_ctrlr *ctrlr, struct spdk_nvme_qpair *qpair, uint32_t ns_id)
 {
 	int ret;
 	struct spdk_nvme_reservation_acquire_data cdata;
@@ -289,14 +250,15 @@ reservation_ns_acquire(struct spdk_nvme_ctrlr *ctrlr, struct spdk_nvme_qpair *qp
 		spdk_nvme_qpair_process_completions(qpair, 100);
 	}
 
-	if (reserve_command_result)
+	if (reserve_command_result) {
 		fprintf(stderr, "Reservation Acquire Failed\n");
+	}
 
 	return 0;
 }
 
 static int
-reservation_ns_release(struct spdk_nvme_ctrlr *ctrlr, struct spdk_nvme_qpair *qpair, uint16_t ns_id)
+reservation_ns_release(struct spdk_nvme_ctrlr *ctrlr, struct spdk_nvme_qpair *qpair, uint32_t ns_id)
 {
 	int ret;
 	struct spdk_nvme_reservation_key_data cdata;
@@ -323,8 +285,9 @@ reservation_ns_release(struct spdk_nvme_ctrlr *ctrlr, struct spdk_nvme_qpair *qp
 		spdk_nvme_qpair_process_completions(qpair, 100);
 	}
 
-	if (reserve_command_result)
+	if (reserve_command_result) {
 		fprintf(stderr, "Reservation Release Failed\n");
+	}
 
 	return 0;
 }
@@ -345,10 +308,10 @@ reserve_controller(struct spdk_nvme_ctrlr *ctrlr, struct spdk_nvme_qpair *qpair,
 	printf("Reservations:                %s\n",
 	       cdata->oncs.reservations ? "Supported" : "Not Supported");
 
-	if (!cdata->oncs.reservations)
+	if (!cdata->oncs.reservations) {
 		return;
+	}
 
-	set_host_identifier(ctrlr);
 	get_host_identifier(ctrlr);
 
 	/* tested 1 namespace */
@@ -362,6 +325,15 @@ static bool
 probe_cb(void *cb_ctx, const struct spdk_nvme_transport_id *trid,
 	 struct spdk_nvme_ctrlr_opts *opts)
 {
+	/*
+	 * Provide both 64-bit and 128-bit host identifiers.
+	 *
+	 * The NVMe library will choose which one to use based on whether the controller
+	 * supports extended host identifiers.
+	 */
+	to_le64(opts->host_id, HOST_ID);
+	memcpy(opts->extended_host_id, EXT_HOST_ID, sizeof(opts->extended_host_id));
+
 	return true;
 }
 
@@ -386,7 +358,11 @@ int main(int argc, char **argv)
 	spdk_env_opts_init(&opts);
 	opts.name = "reserve";
 	opts.core_mask = "0x1";
-	spdk_env_init(&opts);
+	opts.shm_id = 0;
+	if (spdk_env_init(&opts) < 0) {
+		fprintf(stderr, "Unable to initialize SPDK env\n");
+		return 1;
+	}
 
 	if (spdk_nvme_probe(NULL, NULL, probe_cb, attach_cb, NULL) != 0) {
 		fprintf(stderr, "spdk_nvme_probe() failed\n");
@@ -398,7 +374,7 @@ int main(int argc, char **argv)
 	foreach_dev(iter) {
 		struct spdk_nvme_qpair *qpair;
 
-		qpair = spdk_nvme_ctrlr_alloc_io_qpair(iter->ctrlr, 0);
+		qpair = spdk_nvme_ctrlr_alloc_io_qpair(iter->ctrlr, NULL, 0);
 		if (!qpair) {
 			fprintf(stderr, "spdk_nvme_ctrlr_alloc_io_qpair() failed\n");
 			rc = 1;

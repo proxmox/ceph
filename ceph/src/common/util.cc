@@ -25,9 +25,13 @@
 #include <sys/vfs.h>
 #endif
 
-#if defined(DARWIN) || defined(__FreeBSD__)
+#if defined(__APPLE__) || defined(__FreeBSD__)
 #include <sys/param.h>
 #include <sys/mount.h>
+#if defined(__APPLE__)
+#include <sys/types.h>
+#include <sys/sysctl.h>
+#endif
 #endif
 
 #include <string>
@@ -89,6 +93,7 @@ static void file_values_parse(const map<string, string>& kvm, FILE *fp, map<stri
 
 static bool os_release_parse(map<string, string> *m, CephContext *cct)
 {
+#if defined(__linux__)
   static const map<string, string> kvm = {
     { "distro", "ID=" },
     { "distro_description", "PRETTY_NAME=" },
@@ -105,6 +110,15 @@ static bool os_release_parse(map<string, string> *m, CephContext *cct)
   file_values_parse(kvm, fp, m, cct);
 
   fclose(fp);
+#elif defined(__FreeBSD__)
+  struct utsname u;
+  int r = uname(&u);
+  if (!r) {
+     m->insert(std::make_pair("distro", u.sysname));
+     m->insert(std::make_pair("distro_description", u.version));
+     m->insert(std::make_pair("distro_version", u.release));
+  }
+#endif
 
   return true;
 }
@@ -121,10 +135,44 @@ static void distro_detect(map<string, string> *m, CephContext *cct)
   }
 }
 
+int get_cgroup_memory_limit(uint64_t *limit)
+{
+  // /sys/fs/cgroup/memory/memory.limit_in_bytes
+
+  // the magic value 9223372036854771712 or 0x7ffffffffffff000
+  // appears to mean no limit.
+  FILE *f = fopen(PROCPREFIX "/sys/fs/cgroup/memory/memory.limit_in_bytes", "r");
+  if (!f) {
+    return -errno;
+  }
+  char buf[100];
+  int ret = 0;
+  long long value;
+  char *line = fgets(buf, sizeof(buf), f);
+  if (!line) {
+    ret = -EINVAL;
+    goto out;
+  }
+  if (sscanf(line, "%lld", &value) != 1) {
+    ret = -EINVAL;
+  }
+  if (value == 0x7ffffffffffff000) {
+    *limit = 0;  // no limit
+  } else {
+    *limit = value;
+  }
+out:
+  fclose(f);
+  return ret;
+}
+
+
 void collect_sys_info(map<string, string> *m, CephContext *cct)
 {
   // version
   (*m)["ceph_version"] = pretty_version_to_str();
+  (*m)["ceph_version_short"] = ceph_version_to_str();
+  (*m)["ceph_release"] = ceph_release_to_str();
 
   // kernel info
   struct utsname u;
@@ -138,17 +186,59 @@ void collect_sys_info(map<string, string> *m, CephContext *cct)
   }
 
   // but wait, am i in a container?
+  bool in_container = false;
+
   if (const char *pod_name = getenv("POD_NAME")) {
     (*m)["pod_name"] = pod_name;
+    in_container = true;
+  }
+  if (const char *container_name = getenv("CONTAINER_NAME")) {
+    (*m)["container_name"] = container_name;
+    in_container = true;
+  }
+  if (const char *container_image = getenv("CONTAINER_IMAGE")) {
+    (*m)["container_image"] = container_image;
+    in_container = true;
+  }
+  if (in_container) {
     if (const char *node_name = getenv("NODE_NAME")) {
       (*m)["container_hostname"] = u.nodename;
       (*m)["hostname"] = node_name;
     }
-  }
-  if (const char *ns = getenv("POD_NAMESPACE")) {
-    (*m)["pod_namespace"] = ns;
+    if (const char *ns = getenv("POD_NAMESPACE")) {
+      (*m)["pod_namespace"] = ns;
+    }
   }
 
+#ifdef __APPLE__
+  // memory
+  {
+    uint64_t size;
+    size_t len = sizeof(size);
+    r = sysctlbyname("hw.memsize", &size, &len, NULL, 0);
+    if (r == 0) {
+      (*m)["mem_total_kb"] = std::to_string(size);
+    }
+  }
+  {
+    xsw_usage vmusage;
+    size_t len = sizeof(vmusage);
+    r = sysctlbyname("vm.swapusage", &vmusage, &len, NULL, 0);
+    if (r == 0) {
+      (*m)["mem_swap_kb"] = std::to_string(vmusage.xsu_total);
+    }
+  }
+  // processor
+  {
+    char buf[100];
+    size_t len = sizeof(buf);
+    r = sysctlbyname("machdep.cpu.brand_string", buf, &len, NULL, 0);
+    if (r == 0) {
+      buf[len - 1] = '\0';
+      (*m)["cpu"] = buf;
+    }
+  }
+#else
   // memory
   FILE *f = fopen(PROCPREFIX "/proc/meminfo", "r");
   if (f) {
@@ -168,6 +258,11 @@ void collect_sys_info(map<string, string> *m, CephContext *cct)
       }
     }
     fclose(f);
+  }
+  uint64_t cgroup_limit;
+  if (get_cgroup_memory_limit(&cgroup_limit) == 0 &&
+      cgroup_limit > 0) {
+    (*m)["mem_cgroup_limit"] = boost::lexical_cast<string>(cgroup_limit);
   }
 
   // processor
@@ -193,14 +288,14 @@ void collect_sys_info(map<string, string> *m, CephContext *cct)
     }
     fclose(f);
   }
-
+#endif
   // distro info
   distro_detect(m, cct);
 }
 
 void dump_services(Formatter* f, const map<string, list<int> >& services, const char* type)
 {
-  assert(f);
+  ceph_assert(f);
 
   f->open_object_section(type);
   for (map<string, list<int> >::const_iterator host = services.begin();
@@ -216,6 +311,21 @@ void dump_services(Formatter* f, const map<string, list<int> >& services, const 
   f->close_section();
 }
 
+void dump_services(Formatter* f, const map<string, list<string> >& services, const char* type)
+{
+  ceph_assert(f);
+
+  f->open_object_section(type);
+  for (const auto& host : services) {
+    f->open_array_section(host.first.c_str());
+    const auto& hosted = host.second;
+    for (const auto& s : hosted) {
+      f->dump_string(type, s);
+    }
+    f->close_section();
+  }
+  f->close_section();
+}
 
 // If non-printable characters found then convert bufferlist to
 // base64 encoded string indicating whether it did.

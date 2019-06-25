@@ -1,7 +1,7 @@
 //  Copyright (c) 2011-present, Facebook, Inc.  All rights reserved.
-//  This source code is licensed under the BSD-style license found in the
-//  LICENSE file in the root directory of this source tree. An additional grant
-//  of patent rights can be found in the PATENTS file in the same directory.
+//  This source code is licensed under both the GPLv2 (found in the
+//  COPYING file in the root directory) and Apache 2.0 License
+//  (found in the LICENSE.Apache file in the root directory).
 //
 // Copyright (c) 2011 The LevelDB Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
@@ -12,11 +12,11 @@
 #include <mutex>
 #include <string>
 
-#include "rocksdb/Status.h"
+#include "rocksdb/status.h"
 #include "rocksdb/env.h"
 #include "util/aligned_buffer.h"
 
-#include <Windows.h>
+#include <windows.h>
 
 
 namespace rocksdb {
@@ -40,22 +40,13 @@ inline Status IOError(const std::string& context, int err_number) {
              : Status::IOError(context, strerror(err_number));
 }
 
-// Note the below two do not set errno because they are used only here in this
-// file
-// on a Windows handle and, therefore, not necessary. Translating GetLastError()
-// to errno
-// is a sad business
-inline int fsync(HANDLE hFile) {
-  if (!FlushFileBuffers(hFile)) {
-    return -1;
-  }
+class WinFileData;
 
-  return 0;
-}
+Status pwrite(const WinFileData* file_data, const Slice& data,
+  uint64_t offset, size_t& bytes_written);
 
-SSIZE_T pwrite(HANDLE hFile, const char* src, size_t numBytes, uint64_t offset);
-
-SSIZE_T pread(HANDLE hFile, char* src, size_t numBytes, uint64_t offset);
+Status pread(const WinFileData* file_data, char* src, size_t num_bytes,
+  uint64_t offset, size_t& bytes_read);
 
 Status fallocate(const std::string& filename, HANDLE hFile, uint64_t to_size);
 
@@ -75,8 +66,8 @@ class WinFileData {
  public:
   // We want this class be usable both for inheritance (prive
   // or protected) and for containment so __ctor and __dtor public
-  WinFileData(const std::string& filename, HANDLE hFile, bool use_direct_io)
-      : filename_(filename), hFile_(hFile), use_direct_io_(use_direct_io) {}
+  WinFileData(const std::string& filename, HANDLE hFile, bool direct_io)
+      : filename_(filename), hFile_(hFile), use_direct_io_(direct_io) {}
 
   virtual ~WinFileData() { this->CloseFile(); }
 
@@ -104,8 +95,8 @@ class WinFileData {
 class WinSequentialFile : protected WinFileData, public SequentialFile {
 
   // Override for behavior change when creating a custom env
-  virtual SSIZE_T PositionedReadInternal(char* src, size_t numBytes,
-    uint64_t offset) const;
+  virtual Status PositionedReadInternal(char* src, size_t numBytes,
+    uint64_t offset, size_t& bytes_read) const;
 
 public:
   WinSequentialFile(const std::string& fname, HANDLE f,
@@ -237,53 +228,11 @@ class WinMmapFile : private WinFileData, public WritableFile {
 class WinRandomAccessImpl {
  protected:
   WinFileData* file_base_;
-  bool read_ahead_;
-  const size_t compaction_readahead_size_;
-  const size_t random_access_max_buffer_size_;
-  mutable std::mutex buffer_mut_;
-  mutable AlignedBuffer buffer_;
-  mutable uint64_t
-      buffered_start_;  // file offset set that is currently buffered
+  size_t       alignment_;
 
   // Override for behavior change when creating a custom env
-  virtual SSIZE_T PositionedReadInternal(char* src, size_t numBytes,
-                                         uint64_t offset) const;
-
-  /*
-  * The function reads a requested amount of bytes into the specified aligned
-  * buffer Upon success the function sets the length of the buffer to the
-  * amount of bytes actually read even though it might be less than actually
-  * requested. It then copies the amount of bytes requested by the user (left)
-  * to the user supplied buffer (dest) and reduces left by the amount of bytes
-  * copied to the user buffer
-  *
-  * @user_offset [in] - offset on disk where the read was requested by the user
-  * @first_page_start [in] - actual page aligned disk offset that we want to
-  *                          read from
-  * @bytes_to_read [in] - total amount of bytes that will be read from disk
-  *                       which is generally greater or equal to the amount
-  *                       that the user has requested due to the
-  *                       either alignment requirements or read_ahead in
-  *                       effect.
-  * @left [in/out] total amount of bytes that needs to be copied to the user
-  *                buffer. It is reduced by the amount of bytes that actually
-  *                copied
-  * @buffer - buffer to use
-  * @dest - user supplied buffer
-  */
-
-  SSIZE_T ReadIntoBuffer(uint64_t user_offset, uint64_t first_page_start,
-                         size_t bytes_to_read, size_t& left,
-                         AlignedBuffer& buffer, char* dest) const;
-
-  SSIZE_T ReadIntoOneShotBuffer(uint64_t user_offset, uint64_t first_page_start,
-                                size_t bytes_to_read, size_t& left,
-                                char* dest) const;
-
-  SSIZE_T ReadIntoInstanceBuffer(uint64_t user_offset,
-                                 uint64_t first_page_start,
-                                 size_t bytes_to_read, size_t& left,
-                                 char* dest) const;
+  virtual Status PositionedReadInternal(char* src, size_t numBytes,
+                                        uint64_t offset, size_t& bytes_read) const;
 
   WinRandomAccessImpl(WinFileData* file_base, size_t alignment,
                       const EnvOptions& options);
@@ -293,9 +242,7 @@ class WinRandomAccessImpl {
   Status ReadImpl(uint64_t offset, size_t n, Slice* result,
                   char* scratch) const;
 
-  void HintImpl(RandomAccessFile::AccessPattern pattern);
-
-  size_t GetAlignment() const { return buffer_.Alignment(); }
+  size_t GetAlignment() const { return alignment_; }
 
  public:
 
@@ -318,13 +265,7 @@ class WinRandomAccessFile
   virtual Status Read(uint64_t offset, size_t n, Slice* result,
                       char* scratch) const override;
 
-  virtual bool ShouldForwardRawRequest() const override;
-
-  virtual void EnableReadAhead() override;
-
   virtual size_t GetUniqueId(char* id, size_t max_size) const override;
-
-  virtual void Hint(AccessPattern pattern) override;
 
   virtual bool use_direct_io() const override { return WinFileData::use_direct_io(); }
 
@@ -349,7 +290,7 @@ class WinWritableImpl {
  protected:
   WinFileData* file_data_;
   const uint64_t alignment_;
-  uint64_t filesize_;      // How much data is actually written disk
+  uint64_t next_write_offset_; // Needed because Windows does not support O_APPEND
   uint64_t reservedsize_;  // how far we have reserved space
 
   virtual Status PreallocateInternal(uint64_t spaceToReserve);
@@ -372,14 +313,14 @@ class WinWritableImpl {
 
   Status SyncImpl();
 
-  uint64_t GetFileSizeImpl() {
+  uint64_t GetFileNextWriteOffset() {
     // Double accounting now here with WritableFileWriter
     // and this size will be wrong when unbuffered access is used
     // but tests implement their own writable files and do not use
     // WritableFileWrapper
     // so we need to squeeze a square peg through
     // a round hole here.
-    return filesize_;
+    return next_write_offset_;
   }
 
   Status AllocateImpl(uint64_t offset, uint64_t len);
@@ -418,6 +359,8 @@ class WinWritableFile : private WinFileData,
 
   virtual Status Fsync() override;
 
+  virtual bool IsSyncThreadSafe() const override;
+
   // Indicates if the class makes use of direct I/O
   // Use PositionedAppend
   virtual bool use_direct_io() const override;
@@ -449,16 +392,6 @@ class WinRandomRWFile : private WinFileData,
   // buffer for Write() when use_direct_io() returns true
   virtual size_t GetRequiredBufferAlignment() const override;
 
-  // Used by the file_reader_writer to decide if the ReadAhead wrapper
-  // should simply forward the call and do not enact read_ahead buffering or
-  // locking.
-  // The implementation below takes care of reading ahead
-  virtual bool ShouldForwardRawRequest() const override;
-
-  // For cases when read-ahead is implemented in the platform dependent
-  // layer. This is when ShouldForwardRawRequest() returns true.
-  virtual void EnableReadAhead() override;
-
   // Write bytes in `data` at  offset `offset`, Returns Status::OK() on success.
   // Pass aligned buffer when use_direct_io() returns true.
   virtual Status Write(uint64_t offset, const Slice& data) override;
@@ -478,11 +411,32 @@ class WinRandomRWFile : private WinFileData,
   virtual Status Close() override;
 };
 
-class WinDirectory : public Directory {
- public:
-  WinDirectory() {}
+class WinMemoryMappedBuffer : public MemoryMappedFileBuffer {
+private:
+  HANDLE  file_handle_;
+  HANDLE  map_handle_;
+public:
+  WinMemoryMappedBuffer(HANDLE file_handle, HANDLE map_handle, void* base, size_t size) :
+    MemoryMappedFileBuffer(base, size),
+    file_handle_(file_handle),
+    map_handle_(map_handle) {}
+  ~WinMemoryMappedBuffer() override;
+};
 
+class WinDirectory : public Directory {
+  HANDLE handle_;
+ public:
+  explicit
+  WinDirectory(HANDLE h) noexcept : 
+    handle_(h) {
+    assert(handle_ != INVALID_HANDLE_VALUE);
+  }
+  ~WinDirectory() {
+    ::CloseHandle(handle_);
+  }
   virtual Status Fsync() override;
+
+  size_t GetUniqueId(char* id, size_t max_size) const override;
 };
 
 class WinFileLock : public FileLock {

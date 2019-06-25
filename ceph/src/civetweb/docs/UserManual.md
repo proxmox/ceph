@@ -140,10 +140,15 @@ Comma separated list of URI=PATH pairs, specifying that given
 URIs must be protected with password files specified by PATH.
 All Paths must be full file paths.
 
-### authentication_domain `mydomain.com`
+### authentication\_domain `mydomain.com`
 Authorization realm used for HTTP digest authentication. This domain is
 used in the encoding of the `.htpasswd` authorization files as well.
 Changing the domain retroactively will render the existing passwords useless.
+
+### enable\_auth\_domain\_check `yes`
+When using absolute URLs, verify the host is identical to the authentication\_domain. If enabled, requests to absolute URLs will only be processed 
+if they are directed to the domain. If disabled, absolute URLs to any host
+will be accepted.
 
 ### ssi\_pattern `**.shtml$|**.shtm$`
 All files that match `ssi_pattern` are treated as Server Side Includes (SSI).
@@ -235,11 +240,18 @@ are additional default index files, ordered before `index.cgi`.
 ### enable\_keep\_alive `no`
 Enable connection keep alive, either `yes` or `no`.
 
-Experimental feature. Allows clients to reuse TCP connection for subsequent
-HTTP requests, which improves performance.
+Allows clients to reuse TCP connection for subsequent HTTP requests, 
+which improves performance.
 For this to work when using request handlers it is important to add the
 correct Content-Length HTTP header for each request. If this is forgotten the
 client will time out.
+
+Note: If you set keep\_alive to `yes`, you should set keep\_alive\_timeout\_ms
+to some value > 0 (e.g. 500). If you set keep\_alive to `no`, you should set
+keep\_alive\_timeout\_ms to 0. Currently, this is done as a default value,
+but this configuration is redundant. In a future version, the keep\_alive 
+configuration option might be removed and automatically set to `yes` if 
+a timeout > 0 is set.
 
 ### access\_control\_list
 An Access Control List (ACL) allows restrictions to be put on the list of IP
@@ -279,13 +291,42 @@ For example, to bind to a loopback interface on port 80 and to
 all interfaces on HTTPS port 443, use `127.0.0.1:80,443s`.
 
 If the server is built with IPv6 support, `[::]:8080` can be used to
-listen to connections to port 8080 from both, IPv4 and IPv6.
-IPv6 addresses of network interfaces can be specified as well,
+listen to IPv6 connections to port 8080. IPv6 addresses of network
+interfaces can be specified as well,
 e.g. `[::1]:8080` for the IPv6 loopback interface.
+
+[::]:80 will bind to port 80 IPv6 only. In order to use port 80 for
+all interfaces, both IPv4 and IPv6, use either the configuration
+`80,[::]:80` (create one socket for IPv4 and one for IPv6 only),
+or `+80` (create one socket for both, IPv4 and IPv6). 
+The `+`-notation to use IPv4 and IPv6 will only work in no network
+interface is specified. Depending on your operating system version
+and IPv6 network environment, some configurations might not work
+as expected, so you have to test to find the configuration most 
+suitable for your needs. In case `+80` does not work for your
+environment, you need to use `80,[::]:80`.
+
+It is possible to use network interface addresses (e.g., `192.0.2.3:80`,
+`[2001:0db8::1234]:80`). To get a list of available network interface
+addresses, use `ipconfig` (in a `cmd` window in Windows) or `ifconfig` 
+(in a Linux shell).
+Alternatively, you could use the hostname for an interface. Check the 
+hosts file of your operating system for a proper hostname 
+(for Windows, usually found in C:\Windows\System32\drivers\etc\, 
+for most Linux distributions: /etc/hosts). E.g., to bind the IPv6 
+local host, you could use `ip6-localhost:80`. This translates to 
+`[::1]:80`. Beside the hosts file, there are several other name
+resolution services. Using your hostname might bind you to the
+localhost or an external interface. You could also try `hostname.local`,
+if the proper network services are installed (Zeroconf, mDNS, Bonjour, 
+Avahi). When using a hostname, you need to test in your particular network
+environment - in some cases, you might need to resort to a fixed IP address.
 
 ### document\_root `.`
 A directory to serve. By default, the current working directory is served.
 The current directory is commonly referenced as dot (`.`).
+It is recommended to use an absolute path for document\_root, in order to 
+avoid accidentally serving the wrong directory.
 
 ### ssl\_certificate
 Path to the SSL certificate file. This option is only required when at least
@@ -333,12 +374,46 @@ A pattern for the files to hide. Files that match the pattern will not
 show up in directory listing and return `404 Not Found` if requested. Pattern
 must be for a file name only, not including directory names. Example:
 
-    civetweb -hide_files_patterns secret.txt|*.hide
+    civetweb -hide_files_patterns secret.txt|**.hide
+
+Note: hide\_file\_patterns uses the pattern described above. If you want to
+hide all files with a certain extension, make sure to use **.extension
+(not just *.extension).
 
 ### request\_timeout\_ms `30000`
 Timeout for network read and network write operations, in milliseconds.
 If a client intends to keep long-running connection, either increase this
 value or (better) use keep-alive messages.
+
+### keep\_alive\_timeout\_ms `500` or `0`
+Idle timeout between two requests in one keep-alive connection.
+If keep alive is enabled, multiple requests using the same connection 
+are possible. This reduces the overhead for opening and closing connections
+when loading several resources from one server, but it also blocks one port
+and one thread at the server during the lifetime of this connection.
+Unfortunately, browsers do not close the keep-alive connection after loading
+all resources required to show a website.
+The server closes a keep-alive connection, if there is no additional request
+from the client during this timeout.
+
+Note: if enable\_keep\_alive is set to `no` the value of 
+keep\_alive\_timeout\_ms should be set to `0`, if enable\_keep\_alive is set 
+to `yes`, the value of keep\_alive\_timeout\_ms must be >0.
+Currently keep\_alive\_timeout\_ms is ignored if enable\_keep\_alive is no,
+but future versions my drop the enable\_keep\_alive configuration value and
+automatically use keep-alive if keep\_alive\_timeout\_ms is not 0.
+
+### linger\_timeout\_ms
+Set TCP socket linger timeout before closing sockets (SO\_LINGER option).
+The configured value is a timeout in milliseconds. Setting the value to 0
+will yield in abortive close (if the socket is closed from the server side).
+Setting the value to -1 will turn off linger.
+If the value is not set (or set to -2), CivetWeb will not set the linger
+option at all.
+
+Note: For consistency with other timeouts, the value is configured in
+milliseconds. However, the TCP socket layer usually only offers a timeout in 
+seconds, so the value should be an integer multiple of 1000.
 
 ### lua\_preload\_file
 This configuration option can be used to specify a Lua script file, which
@@ -361,6 +436,25 @@ directly to the client. Lua script parts are delimited from the standard
 content by including them between <? and ?> tags.
 An example can be found in the test directory.
 
+### lua\_background\_script
+Experimental feature, and subject to change.
+Run a Lua script in the background, independent from any connection.
+The script is started before network access to the server is available.
+It can be used to prepare the document root (e.g., update files, compress
+files, ...), check for external resources, remove old log files, etc.
+
+The Lua state remains open until the server is stopped.
+In the future, some callback functions will be available to notify the
+script on changes of the server state. See example lua script :
+[background.lua](https://github.com/civetweb/civetweb/blob/master/test/background.lua).
+
+Additional functions available in background script :
+sleep, root path, script name, isterminated
+
+### lua\_background\_script\_params `param1=1,param2=2`
+Can add dynamic parameters to background script.
+Parameters mapped to global 'mg' table 'params' field.
+
 ### websocket\_root
 In case civetweb is built with Lua and websocket support, Lua scripts may
 be used for websockets as well. Since websockets use a different URL scheme
@@ -368,10 +462,37 @@ be used for websockets as well. Since websockets use a different URL scheme
 websockets may also be served from a different directory. By default,
 the document_root is used as websocket_root as well.
 
-### access\_control\_allow\_origin
+
+### access\_control\_allow\_origin `*`
 Access-Control-Allow-Origin header field, used for cross-origin resource
 sharing (CORS).
 See the [Wikipedia page on CORS](http://en.wikipedia.org/wiki/Cross-origin_resource_sharing).
+
+
+### access\_control\_allow\_methods `*`
+Access-Control-Allow-Methods header field, used for cross-origin resource
+sharing (CORS) pre-flight requests.
+See the [Wikipedia page on CORS](http://en.wikipedia.org/wiki/Cross-origin_resource_sharing).
+
+If set to an empty string, pre-flights will not be supported directly by the server,
+but scripts may still support pre-flights by handling the OPTIONS method properly.
+If set to "*", the pre-flight will allow whatever method has been requested.
+If set to a comma separated list of valid HTTP methods, the pre-flight will return
+exactly this list as allowed method.
+If set in any other way, the result is unspecified.
+
+
+### access\_control\_allow\_headers `*`
+Access-Control-Allow-Headers header field, used for cross-origin resource
+sharing (CORS) pre-flight requests.
+See the [Wikipedia page on CORS](http://en.wikipedia.org/wiki/Cross-origin_resource_sharing).
+
+If set to an empty string, pre-flights will not allow additional headers.
+If set to "*", the pre-flight will allow whatever headers have been requested.
+If set to a comma separated list of valid HTTP headers, the pre-flight will return
+exactly this list as allowed headers.
+If set in any other way, the result is unspecified.
+
 
 ### error\_pages
 This option may be used to specify a directory for user defined error pages.
@@ -404,32 +525,44 @@ This value should not exceed one year (RFC 2616, Section 14.21).
 A value of 0 will send "do not cache" headers for all static files.
 For values <0 and values >31622400, the behavior is undefined.
 
+### strict\_transport\_security\_max\_age
+
+Set the `Strict-Transport-Security` header, and set the `max-age` value.
+This instructs web browsers to interact with the server only using HTTPS,
+never by HTTP. If set, it will be sent for every request handled directly
+by the server, except scripts (CGI, Lua, ..) and callbacks. They must 
+send HTTP headers on their own.
+
+The time is specified in seconds. If this configuration is not set, 
+or set to -1, no `Strict-Transport-Security` header will be sent.
+For values <-1 and values >31622400, the behavior is undefined.
+
 ### decode\_url `yes`
 URL encoded request strings are decoded in the server, unless it is disabled
 by setting this option to `no`.
 
-### ssl_verify_peer `no`
+### ssl\_verify\_peer `no`
 Enable client's certificate verification by the server.
 
-### ssl_ca_path
+### ssl\_ca\_path
 Name of a directory containing trusted CA certificates. Each file in the
 directory must contain only a single CA certificate. The files must be named
 by the subject name’s hash and an extension of “.0”. If there is more than one
 certificate with the same subject name they should have extensions ".0", ".1",
 ".2" and so on respectively.
 
-### ssl_ca_file
+### ssl\_ca\_file
 Path to a .pem file containing trusted certificates. The file may contain
 more than one certificate.
 
-### ssl_verify_depth `9`
+### ssl\_verify\_depth `9`
 Sets maximum depth of certificate chain. If client's certificate chain is longer
 than the depth set here connection is refused.
 
-### ssl_default_verify_paths `yes`
+### ssl\_default\_verify\_paths `yes`
 Loads default trusted certificates locations set at openssl compile time.
 
-### ssl_cipher_list
+### ssl\_cipher\_list
 List of ciphers to present to the client. Entries should be separated by
 colons, commas or spaces.
 
@@ -440,7 +573,7 @@ colons, commas or spaces.
 See [this entry](https://www.openssl.org/docs/manmaster/apps/ciphers.html) in
 OpenSSL documentation for full list of options and additional examples.
 
-### ssl_protocol_version `0`
+### ssl\_protocol\_version `0`
 Sets the minimal accepted version of SSL/TLS protocol according to the table:
 
 Protocols | Value
@@ -451,7 +584,7 @@ TLS1.0+TLS1.1+TLS1.2 | 2
 TLS1.1+TLS1.2 | 3
 TLS1.2 | 4
 
-### ssl_short_trust `no`
+### ssl\_short\_trust `no`
 Enables the use of short lived certificates. This will allow for the certificates
 and keys specified in `ssl_certificate`, `ssl_ca_file` and `ssl_ca_path` to be
 exchanged and reloaded while the server is running.
@@ -462,6 +595,44 @@ increase performance while swapping the certificate.
 
 Disk IO performance can be improved when keeping the certificates and keys stored
 on a tmpfs (linux) on a system with very high throughput.
+
+### allow\_sendfile\_call `yes`
+This option can be used to enable or disable the use of the Linux `sendfile` system call. It is only available for Linux systems and only affecting HTTP (not HTTPS) connections if `throttle` is not enabled. While using the `sendfile` call will lead to a performance boost for HTTP connections, this call may be broken for some file systems and some operating system versions.
+
+### case\_sensitive `no`
+This option can be uset to enable case URLs for Windows servers. It is only available for Windows systems. Windows file systems are not case sensitive, but they still store the file name including case. If this option is set to `yes`, the comparison for URIs and Windows file names will be case sensitive.
+
+### allow\_index\_script\_resource `no`
+Index scripts (like `index.cgi` or `index.lua`) may have script handled resources.
+
+It this feature is activated, that /some/path/file.ext might be handled by:
+  1. /some/path/file.ext (with PATH\_INFO='/', if ext = cgi)
+  2. /some/path/index.lua with mg.request\_info.path\_info='/file.ext'
+  3. /some/path/index.cgi with PATH\_INFO='/file.ext'
+  4. /some/path/index.php with PATH\_INFO='/file.ext'
+  5. /some/index.lua with mg.request\_info.path\_info=='/path/file.ext'
+  6. /some/index.cgi with PATH\_INFO='/path/file.ext'
+  7. /some/index.php with PATH\_INFO='/path/file.ext'
+  8. /index.lua with mg.request\_info.path\_info=='/some/path/file.ext'
+  9. /index.cgi with PATH\_INFO='/some/path/file.ext'
+  10. /index.php with PATH\_INFO='/some/path/file.ext'
+
+Note: This example is valid, if the default configuration values for `index_files`, `cgi_pattern` and `lua_script_pattern` are used, and the server is built with CGI and Lua support enabled.
+
+If this feature is not activated, only the first file (/some/path/file.cgi) will be accepted.
+
+Note: This parameter affects only index scripts. A path like /here/script.cgi/handle/this.ext will call /here/script.cgi with PATH\_INFO='/handle/this.ext', no matter if this option is set to `yes` or `no`. 
+
+This feature can be used to completely hide the script extension from the URL.
+
+### additional\_header
+Send additional HTTP response header line for every request.
+The full header line including key and value must be specified, excluding the carriage return line feed.
+
+Example (used as command line option): 
+`-additional_header "X-Frame-Options: SAMEORIGIN"`
+
+This option can be specified multiple times. All specified header lines will be sent.
 
 # Lua Scripts and Lua Server Pages
 Pre-built Windows and Mac civetweb binaries have built-in Lua scripting
@@ -528,7 +699,9 @@ mg (table):
 
     mg.read()                  -- reads a chunk from POST data, returns it as a string
     mg.write(str)              -- writes string to the client
-    mg.include(path)           -- sources another Lua file
+    mg.include(filename, [pathtype]) -- include another Lua Page file (Lua Pages only)
+                               -- pathtype can be "abs", "rel"/"file" or "virt[ual]"
+                               -- like defined for SSI #include
     mg.redirect(uri)           -- internal redirect to a given URI
     mg.onerror(msg)            -- error handler, can be overridden
     mg.version                 -- a string that holds Civetweb version
@@ -537,6 +710,7 @@ mg (table):
     mg.get_var(str, varname)   -- extract variable from (query) string
     mg.get_cookie(str, cookie) -- extract cookie from a string
     mg.get_mime_type(filename) -- get MIME type of a file
+    mg.get_info(infotype)      -- get server status information
     mg.send_file(filename)     -- send a file, including MIME type
     mg.url_encode(str)         -- URL encode a string
     mg.url_decode(str, [form]) -- URL decode a string. If form=true, replace + by space.
@@ -576,10 +750,13 @@ connect (function):
     end
 
 
+All filename arguments are either absolute or relative to the civetweb working
+directory (not the document root or the Lua script/page file).
+    
 **IMPORTANT: Civetweb does not send HTTP headers for Lua pages. Therefore,
 every Lua Page must begin with a HTTP reply line and headers**, like this:
 
-    <? print('HTTP/1.0 200 OK\r\nContent-Type: text/html\r\n\r\n') ?>
+    <? mg.write('HTTP/1.0 200 OK\r\nContent-Type: text/html\r\n\r\n') ?>
     <html><body>
       ... the rest of the web page ...
 
@@ -616,6 +793,14 @@ An example is shown in
   Solution: specify the full path to the PHP interpreter, e.g.:
     `civetweb -cgi_interpreter /full/path/to/php-cgi`
 
+- `php-cgi` is unavailable, for example on Mac OS X. As long as the `php` binary is installed, you can run CGI programs in command line mode (see the example below). Note that in this mode, `$_GET` and friends will be unavailable, and you'll have to parse the query string manually using [parse_str](http://php.net/manual/en/function.parse-str.php) and the `QUERY_STRING` environmental variable.
+
+        #!/usr/bin/php
+        <?php
+        echo "Content-Type: text/html\r\n\r\n";
+        echo "Hello World!\n";
+        ?>
+
 - Civetweb fails to start. If Civetweb exits immediately when started, this
   usually indicates a syntax error in the configuration file
   (named `civetweb.conf` by default) or the command-line arguments.
@@ -626,3 +811,4 @@ An example is shown in
 - Embedding with OpenSSL on Windows might fail because of calling convention.
   To force Civetweb to use `__stdcall` convention, add `/Gz` compilation
   flag in Visual Studio compiler.
+

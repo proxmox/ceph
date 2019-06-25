@@ -2,83 +2,97 @@
 
 testdir=$(readlink -f $(dirname $0))
 rootdir=$(readlink -f $testdir/../../..)
-source $rootdir/scripts/autotest_common.sh
+source $rootdir/test/common/autotest_common.sh
 source $rootdir/test/nvmf/common.sh
 
 MALLOC_BDEV_SIZE=64
 MALLOC_BLOCK_SIZE=512
 
-rpc_py="python $rootdir/scripts/rpc.py"
+rpc_py="$rootdir/scripts/rpc.py"
 
 set -e
 
-if ! rdma_nic_available; then
+# pass the parameter 'iso' to this script when running it in isolation to trigger rdma device initialization.
+# e.g. sudo ./filesystem.sh iso
+nvmftestinit $1
+
+RDMA_IP_LIST=$(get_available_rdma_ips)
+NVMF_FIRST_TARGET_IP=$(echo "$RDMA_IP_LIST" | head -n 1)
+if [ -z $NVMF_FIRST_TARGET_IP ]; then
 	echo "no NIC for nvmf test"
 	exit 0
 fi
 
 timing_enter fs_test
 
-# Start up the NVMf target in another process
-$rootdir/app/nvmf_tgt/nvmf_tgt -c $testdir/../nvmf.conf &
-nvmfpid=$!
+for incapsule in 0 4096; do
+	# Start up the NVMf target in another process
+	$NVMF_APP -m 0xF &
+	nvmfpid=$!
 
-trap "killprocess $nvmfpid; exit 1" SIGINT SIGTERM EXIT
+	trap "process_shm --id $NVMF_APP_SHM_ID; killprocess $nvmfpid; nvmftestfini $1; exit 1" SIGINT SIGTERM EXIT
 
-waitforlisten $nvmfpid ${RPC_PORT}
+	waitforlisten $nvmfpid
+	$rpc_py nvmf_create_transport -t RDMA -u 8192 -p 4 -c $incapsule
 
-bdevs="$bdevs $($rpc_py construct_malloc_bdev $MALLOC_BDEV_SIZE $MALLOC_BLOCK_SIZE)"
-bdevs="$bdevs $($rpc_py construct_malloc_bdev $MALLOC_BDEV_SIZE $MALLOC_BLOCK_SIZE)"
+	bdevs="$($rpc_py construct_malloc_bdev $MALLOC_BDEV_SIZE $MALLOC_BLOCK_SIZE)"
+	bdevs+=" $($rpc_py construct_malloc_bdev $MALLOC_BDEV_SIZE $MALLOC_BLOCK_SIZE)"
 
-modprobe -v nvme-rdma
+	modprobe -v nvme-rdma
 
-$rpc_py construct_nvmf_subsystem Direct nqn.2016-06.io.spdk:cnode1 'transport:RDMA traddr:192.168.100.8 trsvcid:4420' '' -p "*"
-$rpc_py construct_nvmf_subsystem Virtual nqn.2016-06.io.spdk:cnode2 'transport:RDMA traddr:192.168.100.8 trsvcid:4420' '' -s SPDK00000000000001 -n "$bdevs"
+	$rpc_py nvmf_subsystem_create nqn.2016-06.io.spdk:cnode1 -a -s SPDK00000000000001
+	for bdev in $bdevs; do
+		$rpc_py nvmf_subsystem_add_ns nqn.2016-06.io.spdk:cnode1 $bdev
+	done
+	$rpc_py nvmf_subsystem_add_listener nqn.2016-06.io.spdk:cnode1 -t rdma -a $NVMF_FIRST_TARGET_IP -s 4420
 
-nvme connect -t rdma -n "nqn.2016-06.io.spdk:cnode1" -a "$NVMF_FIRST_TARGET_IP" -s "$NVMF_PORT"
-nvme connect -t rdma -n "nqn.2016-06.io.spdk:cnode2" -a "$NVMF_FIRST_TARGET_IP" -s "$NVMF_PORT"
+	nvme connect -t rdma -n "nqn.2016-06.io.spdk:cnode1" -a "$NVMF_FIRST_TARGET_IP" -s "$NVMF_PORT"
 
-mkdir -p /mnt/device
+	waitforblk "nvme0n1"
+	waitforblk "nvme0n2"
 
-devs=`lsblk -l -o NAME | grep nvme`
+	mkdir -p /mnt/device
 
-for dev in $devs; do
-	timing_enter parted
-	parted -s /dev/$dev mklabel msdos  mkpart primary '0%' '100%'
-	timing_exit parted
-	sleep 1
+	devs=`lsblk -l -o NAME | grep nvme`
 
-	for fstype in "ext4" "btrfs" "xfs"; do
-		timing_enter $fstype
-		if [ $fstype = ext4 ]; then
-			force=-F
-		else
-			force=-f
-		fi
+	for dev in $devs; do
+		timing_enter parted
+		parted -s /dev/$dev mklabel msdos  mkpart primary '0%' '100%'
+		timing_exit parted
+		sleep 1
 
-		mkfs.${fstype} $force /dev/${dev}p1
+		for fstype in "ext4" "btrfs" "xfs"; do
+			timing_enter $fstype
+			if [ $fstype = ext4 ]; then
+				force=-F
+			else
+				force=-f
+			fi
 
-		mount /dev/${dev}p1 /mnt/device
-		touch /mnt/device/aaa
-		sync
-		rm /mnt/device/aaa
-		sync
-		umount /mnt/device
-		timing_exit $fstype
+			mkfs.${fstype} $force /dev/${dev}p1
+
+			mount /dev/${dev}p1 /mnt/device
+			touch /mnt/device/aaa
+			sync
+			rm /mnt/device/aaa
+			sync
+			umount /mnt/device
+			timing_exit $fstype
+		done
+
+		parted -s /dev/$dev rm 1
 	done
 
-	parted -s /dev/$dev rm 1
+	sync
+	nvme disconnect -n "nqn.2016-06.io.spdk:cnode1" || true
+
+	$rpc_py delete_nvmf_subsystem nqn.2016-06.io.spdk:cnode1
+
+	trap - SIGINT SIGTERM EXIT
+
+	nvmfcleanup
+	killprocess $nvmfpid
 done
 
-sync
-nvme disconnect -n "nqn.2016-06.io.spdk:cnode1" || true
-nvme disconnect -n "nqn.2016-06.io.spdk:cnode2" || true
-
-$rpc_py delete_nvmf_subsystem nqn.2016-06.io.spdk:cnode1
-$rpc_py delete_nvmf_subsystem nqn.2016-06.io.spdk:cnode2
-
-trap - SIGINT SIGTERM EXIT
-
-nvmfcleanup
-killprocess $nvmfpid
+nvmftestfini $1
 timing_exit fs_test

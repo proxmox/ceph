@@ -31,17 +31,7 @@
  *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include <assert.h>
-#include <errno.h>
-#include <stdbool.h>
-#include <stdio.h>
-#include <unistd.h>
-#include <string.h>
-#include <unistd.h>
-#include <signal.h>
-
-#include <rte_config.h>
-#include <rte_mempool.h>
+#include "spdk/stdinc.h"
 
 #include "spdk/nvme.h"
 #include "spdk/queue.h"
@@ -67,8 +57,6 @@ struct perf_task {
 	struct dev_ctx		*dev;
 	void			*buf;
 };
-
-static struct rte_mempool *task_pool;
 
 static TAILQ_HEAD(, dev_ctx) g_devs = TAILQ_HEAD_INITIALIZER(g_devs);
 
@@ -126,7 +114,7 @@ register_dev(struct spdk_nvme_ctrlr *ctrlr)
 	dev->size_in_ios = spdk_nvme_ns_get_size(dev->ns) / g_io_size_bytes;
 	dev->io_size_blocks = g_io_size_bytes / spdk_nvme_ns_get_sector_size(dev->ns);
 
-	dev->qpair = spdk_nvme_ctrlr_alloc_io_qpair(ctrlr, 0);
+	dev->qpair = spdk_nvme_ctrlr_alloc_io_qpair(ctrlr, NULL, 0);
 	if (!dev->qpair) {
 		fprintf(stderr, "ERROR: spdk_nvme_ctrlr_alloc_io_qpair() failed\n");
 		goto skip;
@@ -151,32 +139,42 @@ unregister_dev(struct dev_ctx *dev)
 	free(dev);
 }
 
-static void task_ctor(struct rte_mempool *mp, void *arg, void *__task, unsigned id)
+static struct perf_task *
+alloc_task(struct dev_ctx *dev)
 {
-	struct perf_task *task = __task;
-	task->buf = spdk_zmalloc(g_io_size_bytes, 0x200, NULL);
-	if (task->buf == NULL) {
-		fprintf(stderr, "task->buf rte_malloc failed\n");
-		exit(1);
+	struct perf_task *task;
+
+	task = calloc(1, sizeof(*task));
+	if (task == NULL) {
+		return NULL;
 	}
-	memset(task->buf, id % 8, g_io_size_bytes);
+
+	task->buf = spdk_dma_zmalloc(g_io_size_bytes, 0x200, NULL);
+	if (task->buf == NULL) {
+		free(task);
+		return NULL;
+	}
+
+	task->dev = dev;
+
+	return task;
+}
+
+static void
+free_task(struct perf_task *task)
+{
+	spdk_dma_free(task->buf);
+	free(task);
 }
 
 static void io_complete(void *ctx, const struct spdk_nvme_cpl *completion);
 
 static void
-submit_single_io(struct dev_ctx *dev)
+submit_single_io(struct perf_task *task)
 {
-	struct perf_task	*task = NULL;
+	struct dev_ctx		*dev = task->dev;
 	uint64_t		offset_in_ios;
 	int			rc;
-
-	if (rte_mempool_get(task_pool, (void **)&task) != 0) {
-		fprintf(stderr, "task_pool rte_mempool_get failed\n");
-		exit(1);
-	}
-
-	task->dev = dev;
 
 	offset_in_ios = dev->offset_in_ios++;
 	if (dev->offset_in_ios == dev->size_in_ios) {
@@ -189,7 +187,7 @@ submit_single_io(struct dev_ctx *dev)
 
 	if (rc != 0) {
 		fprintf(stderr, "starting I/O failed\n");
-		rte_mempool_put(task_pool, task);
+		free_task(task);
 	} else {
 		dev->current_queue_depth++;
 	}
@@ -204,8 +202,6 @@ task_complete(struct perf_task *task)
 	dev->current_queue_depth--;
 	dev->io_completed++;
 
-	rte_mempool_put(task_pool, task);
-
 	/*
 	 * is_draining indicates when time has expired for the test run
 	 * and we are just waiting for the previously submitted I/O
@@ -213,7 +209,9 @@ task_complete(struct perf_task *task)
 	 * the one just completed.
 	 */
 	if (!dev->is_draining && !dev->is_removed) {
-		submit_single_io(dev);
+		submit_single_io(task);
+	} else {
+		free_task(task);
 	}
 }
 
@@ -232,8 +230,16 @@ check_io(struct dev_ctx *dev)
 static void
 submit_io(struct dev_ctx *dev, int queue_depth)
 {
+	struct perf_task *task;
+
 	while (queue_depth-- > 0) {
-		submit_single_io(dev);
+		task = alloc_task(dev);
+		if (task == NULL) {
+			fprintf(stderr, "task allocation failed\n");
+			exit(1);
+		}
+
+		submit_single_io(task);
 	}
 }
 
@@ -365,6 +371,10 @@ io_loop(void)
 			print_stats();
 			next_stats_tsc += g_tsc_rate;
 		}
+
+		if (g_insert_times == g_expected_insert_times && g_removal_times == g_expected_removal_times) {
+			break;
+		}
 	}
 
 	TAILQ_FOREACH_SAFE(dev, &g_devs, tailq, dev_tmp) {
@@ -388,7 +398,7 @@ parse_args(int argc, char **argv)
 {
 	int op;
 
-	/* default value*/
+	/* default value */
 	g_time_in_sec = 0;
 
 	while ((op = getopt(argc, argv, "i:n:r:t:")) != -1) {
@@ -416,7 +426,6 @@ parse_args(int argc, char **argv)
 		return 1;
 	}
 
-	optind = 1;
 	return 0;
 }
 
@@ -451,12 +460,10 @@ int main(int argc, char **argv)
 	if (g_shm_id > -1) {
 		opts.shm_id = g_shm_id;
 	}
-	spdk_env_init(&opts);
-
-	task_pool = rte_mempool_create("task_pool", 8192,
-				       sizeof(struct perf_task),
-				       64, 0, NULL, NULL, task_ctor, NULL,
-				       SOCKET_ID_ANY, 0);
+	if (spdk_env_init(&opts) < 0) {
+		fprintf(stderr, "Unable to initialize SPDK env\n");
+		return 1;
+	}
 
 	g_tsc_rate = spdk_get_ticks_hz();
 

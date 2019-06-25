@@ -31,22 +31,17 @@
  *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+#include "spdk/stdinc.h"
+
 #include "spdk/bit_array.h"
 #include "spdk/env.h"
-
-#include <assert.h>
-#include <errno.h>
-#include <limits.h>
-#include <stdbool.h>
-#include <stddef.h>
-#include <stdlib.h>
-#include <string.h>
 
 #include "spdk/likely.h"
 #include "spdk/util.h"
 
 typedef uint64_t spdk_bit_array_word;
 #define SPDK_BIT_ARRAY_WORD_TZCNT(x)	(__builtin_ctzll(x))
+#define SPDK_BIT_ARRAY_WORD_POPCNT(x)	(__builtin_popcountll(x))
 #define SPDK_BIT_ARRAY_WORD_C(x)	((spdk_bit_array_word)(x))
 #define SPDK_BIT_ARRAY_WORD_BYTES	sizeof(spdk_bit_array_word)
 #define SPDK_BIT_ARRAY_WORD_BITS	(SPDK_BIT_ARRAY_WORD_BYTES * 8)
@@ -79,7 +74,7 @@ spdk_bit_array_free(struct spdk_bit_array **bap)
 
 	ba = *bap;
 	*bap = NULL;
-	spdk_free(ba);
+	spdk_dma_free(ba);
 }
 
 static inline uint32_t
@@ -102,7 +97,11 @@ spdk_bit_array_resize(struct spdk_bit_array **bap, uint32_t num_bits)
 	uint32_t old_word_count, new_word_count;
 	size_t new_size;
 
-	if (!bap) {
+	/*
+	 * Max number of bits allowed is UINT32_MAX - 1, because we use UINT32_MAX to denote
+	 * when a set or cleared bit cannot be found.
+	 */
+	if (!bap || num_bits == UINT32_MAX) {
 		return -EINVAL;
 	}
 
@@ -115,7 +114,7 @@ spdk_bit_array_resize(struct spdk_bit_array **bap, uint32_t num_bits)
 	 */
 	new_size += SPDK_BIT_ARRAY_WORD_BYTES;
 
-	new_ba = (struct spdk_bit_array *)spdk_realloc(*bap, new_size, 64, NULL);
+	new_ba = (struct spdk_bit_array *)spdk_dma_realloc(*bap, new_size, 64, NULL);
 	if (!new_ba) {
 		return -ENOMEM;
 	}
@@ -274,5 +273,41 @@ spdk_bit_array_find_first_set(const struct spdk_bit_array *ba, uint32_t start_bi
 uint32_t
 spdk_bit_array_find_first_clear(const struct spdk_bit_array *ba, uint32_t start_bit_index)
 {
-	return _spdk_bit_array_find_first(ba, start_bit_index, SPDK_BIT_ARRAY_WORD_C(-1));
+	uint32_t bit_index;
+
+	bit_index = _spdk_bit_array_find_first(ba, start_bit_index, SPDK_BIT_ARRAY_WORD_C(-1));
+
+	/*
+	 * If we ran off the end of the array and found the 0 bit in the extra word,
+	 * return UINT32_MAX to indicate no actual 0 bits were found.
+	 */
+	if (bit_index >= ba->bit_count) {
+		bit_index = UINT32_MAX;
+	}
+
+	return bit_index;
+}
+
+uint32_t
+spdk_bit_array_count_set(const struct spdk_bit_array *ba)
+{
+	const spdk_bit_array_word *cur_word = ba->words;
+	uint32_t word_count = spdk_bit_array_word_count(ba->bit_count);
+	uint32_t set_count = 0;
+
+	while (word_count--) {
+		/*
+		 * No special treatment is needed for the last (potentially partial) word, since
+		 * spdk_bit_array_resize() makes sure the bits past bit_count are cleared.
+		 */
+		set_count += SPDK_BIT_ARRAY_WORD_POPCNT(*cur_word++);
+	}
+
+	return set_count;
+}
+
+uint32_t
+spdk_bit_array_count_clear(const struct spdk_bit_array *ba)
+{
+	return ba->bit_count - spdk_bit_array_count_set(ba);
 }

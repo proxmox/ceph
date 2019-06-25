@@ -1,10 +1,11 @@
-/**
- * Copyright (c) 2016-present, Yann Collet, Facebook, Inc.
+/*
+ * Copyright (c) 2015-present, Yann Collet, Facebook, Inc.
  * All rights reserved.
  *
- * This source code is licensed under the BSD-style license found in the
- * LICENSE file in the root directory of this source tree. An additional grant
- * of patent rights can be found in the PATENTS file in the same directory.
+ * This source code is licensed under both the BSD-style license (found in the
+ * LICENSE file in the root directory of this source tree) and the GPLv2 (found
+ * in the COPYING file in the root directory of this source tree).
+ * You may select, at your option, one of the above-listed licenses.
  */
 
 
@@ -60,7 +61,7 @@ static U32 g_displayLevel = 2;
 #define DISPLAYUPDATE(l, ...) if (g_displayLevel>=l) { \
             if ((FUZ_GetClockSpan(g_displayClock) > g_refreshRate) || (g_displayLevel>=4)) \
             { g_displayClock = clock(); DISPLAY(__VA_ARGS__); \
-            if (g_displayLevel>=4) fflush(stdout); } }
+            if (g_displayLevel>=4) fflush(stderr); } }
 static const clock_t g_refreshRate = CLOCKS_PER_SEC * 15 / 100;
 static clock_t g_displayClock = 0;
 

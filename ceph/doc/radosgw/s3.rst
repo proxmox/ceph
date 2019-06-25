@@ -38,9 +38,9 @@ The following table describes the support status for current Amazon S3 functiona
 +---------------------------------+-----------------+----------------------------------------+
 | **Create Bucket**               | Supported       | Different set of canned ACLs           |
 +---------------------------------+-----------------+----------------------------------------+
-| **Bucket Lifecycle**            | Supported       | Removing expired files is supported    |
+| **Bucket Lifecycle**            | Supported       |                                        |
 +---------------------------------+-----------------+----------------------------------------+
-| **Policy (Buckets, Objects)**   | Not Supported   | ACLs are supported                     |
+| **Policy (Buckets, Objects)**   | Supported       | ACLs & bucket policies are supported   |
 +---------------------------------+-----------------+----------------------------------------+
 | **Bucket Website**              | Supported       |                                        |
 +---------------------------------+-----------------+----------------------------------------+
@@ -72,6 +72,11 @@ The following table describes the support status for current Amazon S3 functiona
 +---------------------------------+-----------------+----------------------------------------+
 | **Multipart Uploads**           | Supported       |                                        |
 +---------------------------------+-----------------+----------------------------------------+
+| **Object Tagging**              | Supported       | See :ref:`tag_policy` for Policy verbs |
++---------------------------------+-----------------+----------------------------------------+
+| **Storage Class**               | Supported       | See :ref:`storage_classes`             |
++---------------------------------+-----------------+----------------------------------------+
+
 
 Unsupported Header Fields
 -------------------------

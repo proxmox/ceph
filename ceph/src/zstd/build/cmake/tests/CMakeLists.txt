@@ -34,14 +34,11 @@ PROJECT(tests)
 
 SET(CMAKE_INCLUDE_CURRENT_DIR TRUE)
 
-# Define project root directory
-SET(ROOT_DIR ../../..)
-
 # Define programs directory, where sources and header files are located
-SET(LIBRARY_DIR ${ROOT_DIR}/lib)
-SET(PROGRAMS_DIR ${ROOT_DIR}/programs)
-SET(TESTS_DIR ${ROOT_DIR}/tests)
-INCLUDE_DIRECTORIES(${TESTS_DIR} ${PROGRAMS_DIR} ${LIBRARY_DIR} ${LIBRARY_DIR}/common ${LIBRARY_DIR}/dictBuilder)
+SET(LIBRARY_DIR ${ZSTD_SOURCE_DIR}/lib)
+SET(PROGRAMS_DIR ${ZSTD_SOURCE_DIR}/programs)
+SET(TESTS_DIR ${ZSTD_SOURCE_DIR}/tests)
+INCLUDE_DIRECTORIES(${TESTS_DIR} ${PROGRAMS_DIR} ${LIBRARY_DIR} ${LIBRARY_DIR}/common ${LIBRARY_DIR}/compress ${LIBRARY_DIR}/dictBuilder)
 
 ADD_EXECUTABLE(fullbench ${PROGRAMS_DIR}/datagen.c ${TESTS_DIR}/fullbench.c)
 TARGET_LINK_LIBRARIES(fullbench libzstd_static)

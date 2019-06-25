@@ -27,13 +27,14 @@ function run() {
     export CEPH_ARGS
     CEPH_ARGS+="--fsid=$(uuidgen) --auth-supported=none "
     CEPH_ARGS+="--mon-host=$CEPH_MON "
+    CEPH_ARGS+="--osd-objectstore=filestore "
 
     local funcs=${@:-$(set | sed -n -e 's/^\(TEST_[0-9a-z_]*\) .*/\1/p')}
     for func in $funcs ; do
         setup $dir || return 1
         run_mon $dir a || return 1
 	run_mgr $dir x || return 1
-	create_rbd_pool || return 1
+	ceph osd pool create foo 8 || return 1
 
         $func $dir || return 1
         teardown $dir || return 1
@@ -54,7 +55,7 @@ function get_state() {
     local pgid=$1
     local sname=state
     ceph --format json pg dump pgs 2>/dev/null | \
-        jq -r ".[] | select(.pgid==\"$pgid\") | .$sname"
+        jq -r ".pg_stats | .[] | select(.pgid==\"$pgid\") | .$sname"
 }
 
 function rados_put() {
@@ -109,18 +110,30 @@ function rados_get_data() {
 
     local poolname=pool-rep
     local objname=obj-$inject-$$
+    local pgid=$(get_pg $poolname $objname)
+
     rados_put $dir $poolname $objname || return 1
     inject_$inject rep data $poolname $objname $dir 0 || return 1
     rados_get $dir $poolname $objname || return 1
 
+    COUNT=$(ceph pg $pgid query | jq '.info.stats.stat_sum.num_objects_repaired')
+    test "$COUNT" = "1" || return 1
+
     inject_$inject rep data $poolname $objname $dir 0 || return 1
     inject_$inject rep data $poolname $objname $dir 1 || return 1
     rados_get $dir $poolname $objname || return 1
+
+    COUNT=$(ceph pg $pgid query | jq '.info.stats.stat_sum.num_objects_repaired')
+    test "$COUNT" = "2" || return 1
 
     inject_$inject rep data $poolname $objname $dir 0 || return 1
     inject_$inject rep data $poolname $objname $dir 1 || return 1
     inject_$inject rep data $poolname $objname $dir 2 || return 1
     rados_get $dir $poolname $objname hang || return 1
+
+    # After hang another repair couldn't happen, so count stays the same
+    COUNT=$(ceph pg $pgid query | jq '.info.stats.stat_sum.num_objects_repaired')
+    test "$COUNT" = "2" || return 1
 }
 
 function TEST_rados_get_with_eio() {
@@ -189,7 +202,7 @@ function TEST_rep_backfill_unfound() {
     done
 
     ceph pg dump pgs
-    ceph pg 2.0 list_missing | grep -q $testobj || return 1
+    ceph pg 2.0 list_unfound | grep -q $testobj || return 1
 
     # Command should hang because object is unfound
     timeout 5 rados -p $poolname get $testobj $dir/CHECK
@@ -266,7 +279,7 @@ function TEST_rep_recovery_unfound() {
     done
 
     ceph pg dump pgs
-    ceph pg 2.0 list_missing | grep -q $testobj || return 1
+    ceph pg 2.0 list_unfound | grep -q $testobj || return 1
 
     # Command should hang because object is unfound
     timeout 5 rados -p $poolname get $testobj $dir/CHECK
@@ -290,6 +303,55 @@ function TEST_rep_recovery_unfound() {
     rm -f ${dir}/ORIGINAL ${dir}/CHECK
 
     delete_pool $poolname
+}
+
+# This is a filestore only test because it requires data digest in object info
+function TEST_rep_read_unfound() {
+    local dir=$1
+    local objname=myobject
+
+    setup_osds 3 || return 1
+
+    ceph osd pool delete foo foo --yes-i-really-really-mean-it || return 1
+    local poolname=test-pool
+    create_pool $poolname 1 1 || return 1
+    ceph osd pool set $poolname size 2
+    wait_for_clean || return 1
+
+    ceph pg dump pgs
+
+    dd if=/dev/urandom bs=8k count=1 of=$dir/ORIGINAL
+    rados -p $poolname put $objname $dir/ORIGINAL
+
+    local primary=$(get_primary $poolname $objname)
+    local other=$(get_not_primary $poolname $objname)
+
+    dd if=/dev/urandom bs=8k count=1 of=$dir/CORRUPT
+    objectstore_tool $dir $primary $objname set-bytes $dir/CORRUPT || return 1
+    objectstore_tool $dir $other $objname set-bytes $dir/CORRUPT || return 1
+
+    timeout 30 rados -p $poolname get $objname $dir/tmp &
+
+    sleep 5
+
+    flush_pg_stats
+    ceph --format=json pg dump pgs | jq '.'
+
+    if ! ceph --format=json pg dump pgs | jq '.pg_stats | .[0].state' | grep -q recovery_unfound
+    then
+      echo "Failure to get to recovery_unfound state"
+      return 1
+    fi
+
+    objectstore_tool $dir $other $objname set-bytes $dir/ORIGINAL || return 1
+
+    wait
+
+    if ! cmp $dir/ORIGINAL $dir/tmp
+    then
+       echo "Bad data after primary repair"
+       return 1
+    fi
 }
 
 main osd-rep-recov-eio.sh "$@"

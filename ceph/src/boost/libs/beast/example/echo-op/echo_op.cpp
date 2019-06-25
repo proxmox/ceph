@@ -107,7 +107,7 @@ class echo_op
         // contained object constructor is a reference to the
         // managed final completion handler.
         //
-        explicit state(Handler& handler, AsyncStream& stream_)
+        explicit state(Handler const& handler, AsyncStream& stream_)
             : stream(stream_)
             , buffer((std::numeric_limits<std::size_t>::max)(),
                 boost::asio::get_associated_allocator(handler))
@@ -154,7 +154,7 @@ public:
     allocator_type
     get_allocator() const noexcept
     {
-        return boost::asio::get_associated_allocator(p_.handler());
+        return (boost::asio::get_associated_allocator)(p_.handler());
     }
 
     // Executor hook. This is Asio's system for customizing the
@@ -168,7 +168,7 @@ public:
 
     executor_type get_executor() const noexcept
     {
-        return boost::asio::get_associated_executor(
+        return (boost::asio::get_associated_executor)(
             p_.handler(), p_->stream.get_executor());
     }
 

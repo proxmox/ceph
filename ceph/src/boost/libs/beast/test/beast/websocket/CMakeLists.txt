@@ -26,10 +26,12 @@ add_executable (tests-beast-websocket
     mask.cpp
     option.cpp
     ping.cpp
-    read.cpp
+    read1.cpp
+    read2.cpp
     rfc6455.cpp
     role.cpp
     stream.cpp
+    stream_fwd.cpp
     teardown.cpp
     utf8_checker.cpp
     write.cpp

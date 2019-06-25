@@ -34,20 +34,73 @@
 #ifndef SPDK_RPC_CONFIG_H_
 #define SPDK_RPC_CONFIG_H_
 
-#include <stdint.h>
+#include "spdk/stdinc.h"
 
 #include "spdk/jsonrpc.h"
 
-typedef void (*spdk_rpc_method_handler)(struct spdk_jsonrpc_server_conn *conn,
-					const struct spdk_json_val *params,
-					const struct spdk_json_val *id);
+#ifdef __cplusplus
+extern "C" {
+#endif
 
-void spdk_rpc_register_method(const char *method, spdk_rpc_method_handler func);
+/**
+ * Start listening for RPC connections.
+ *
+ * \param listen_addr Listening address.
+ *
+ * \return 0 on success, -1 on failure.
+ */
+int spdk_rpc_listen(const char *listen_addr);
 
-#define SPDK_RPC_REGISTER(method, func) \
+/**
+ * Poll the RPC server.
+ */
+void spdk_rpc_accept(void);
+
+/**
+ * Stop listening for RPC connections.
+ */
+void spdk_rpc_close(void);
+
+/**
+ * Function signature for RPC request handlers.
+ *
+ * \param request RPC request to handle.
+ * \param params Parameters associated with the RPC request.
+ */
+typedef void (*spdk_rpc_method_handler)(struct spdk_jsonrpc_request *request,
+					const struct spdk_json_val *params);
+
+/**
+ * Register an RPC method.
+ *
+ * \param method Name for the registered method.
+ * \param func Function registered for this method to handle the RPC request.
+ * \param state_mask State mask of the registered method. If the bit of the state of
+ * the RPC server is set in the state_mask, the method is allowed. Otherwise, it is rejected.
+ */
+void spdk_rpc_register_method(const char *method, spdk_rpc_method_handler func,
+			      uint32_t state_mask);
+
+#define SPDK_RPC_STARTUP	0x1
+#define SPDK_RPC_RUNTIME	0x2
+
+#define SPDK_RPC_REGISTER(method, func, state_mask) \
 static void __attribute__((constructor)) rpc_register_##func(void) \
 { \
-	spdk_rpc_register_method(method, func); \
+	spdk_rpc_register_method(method, func, state_mask); \
 }
+
+/**
+ * Set the state mask of the RPC server. Any RPC method whose state mask is
+ * equal to the state of the RPC server is allowed.
+ *
+ * \param state_mask New state mask of the RPC server.
+ */
+void spdk_rpc_set_state(uint32_t state_mask);
+
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

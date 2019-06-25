@@ -34,71 +34,91 @@
 #ifndef SPDK_NVMF_TRANSPORT_H
 #define SPDK_NVMF_TRANSPORT_H
 
-#include <stdint.h>
+#include "spdk/stdinc.h"
 
+#include "spdk/nvme.h"
 #include "spdk/nvmf.h"
 
-struct spdk_nvmf_listen_addr;
-
 struct spdk_nvmf_transport {
+	struct spdk_nvmf_tgt			*tgt;
+	const struct spdk_nvmf_transport_ops	*ops;
+	struct spdk_nvmf_transport_opts		opts;
+
+	TAILQ_ENTRY(spdk_nvmf_transport)	link;
+};
+
+struct spdk_nvmf_transport_ops {
 	/**
-	 * Name of the transport.
+	 * Transport type
 	 */
-	const char *name;
+	enum spdk_nvme_transport_type type;
 
 	/**
-	 * Initialize the transport.
+	 * Initialize transport options to default value
 	 */
-	int (*transport_init)(uint16_t max_queue_depth, uint32_t max_io_size,
-			      uint32_t in_capsule_data_size);
+	void (*opts_init)(struct spdk_nvmf_transport_opts *opts);
 
 	/**
-	 * Shut down the transport.
+	 * Create a transport for the given transport opts
 	 */
-	int (*transport_fini)(void);
+	struct spdk_nvmf_transport *(*create)(struct spdk_nvmf_transport_opts *opts);
+
+	/**
+	 * Destroy the transport
+	 */
+	int (*destroy)(struct spdk_nvmf_transport *transport);
+
+	/**
+	  * Instruct the transport to accept new connections at the address
+	  * provided. This may be called multiple times.
+	  */
+	int (*listen)(struct spdk_nvmf_transport *transport,
+		      const struct spdk_nvme_transport_id *trid);
+
+	/**
+	  * Stop accepting new connections at the given address.
+	  */
+	int (*stop_listen)(struct spdk_nvmf_transport *transport,
+			   const struct spdk_nvme_transport_id *trid);
 
 	/**
 	 * Check for new connections on the transport.
 	 */
-	void (*acceptor_poll)(void);
-
-	/**
-	  * Instruct the acceptor to listen on the address provided. This
-	  * may be called multiple times.
-	  */
-	int (*listen_addr_add)(struct spdk_nvmf_listen_addr *listen_addr);
-
-	/**
-	  * Instruct to remove listening on the address provided. This
-	  * may be called multiple times.
-	  */
-	int (*listen_addr_remove)(struct spdk_nvmf_listen_addr *listen_addr);
+	void (*accept)(struct spdk_nvmf_transport *transport, new_qpair_fn cb_fn);
 
 	/**
 	 * Fill out a discovery log entry for a specific listen address.
 	 */
-	void (*listen_addr_discover)(struct spdk_nvmf_listen_addr *listen_addr,
-				     struct spdk_nvmf_discovery_log_page_entry *entry);
+	void (*listener_discover)(struct spdk_nvmf_transport *transport,
+				  struct spdk_nvme_transport_id *trid,
+				  struct spdk_nvmf_discovery_log_page_entry *entry);
 
 	/**
-	 * Create a new session
+	 * Create a new poll group
 	 */
-	struct spdk_nvmf_session *(*session_init)(void);
+	struct spdk_nvmf_transport_poll_group *(*poll_group_create)(struct spdk_nvmf_transport *transport);
 
 	/**
-	 * Destroy a session
+	 * Destroy a poll group
 	 */
-	void (*session_fini)(struct spdk_nvmf_session *session);
+	void (*poll_group_destroy)(struct spdk_nvmf_transport_poll_group *group);
 
 	/**
-	 * Add a connection to a session
+	 * Add a qpair to a poll group
 	 */
-	int (*session_add_conn)(struct spdk_nvmf_session *session, struct spdk_nvmf_conn *conn);
+	int (*poll_group_add)(struct spdk_nvmf_transport_poll_group *group,
+			      struct spdk_nvmf_qpair *qpair);
 
 	/**
-	 * Remove a connection from a session
+	 * Poll the group to process I/O
 	 */
-	int (*session_remove_conn)(struct spdk_nvmf_session *session, struct spdk_nvmf_conn *conn);
+	int (*poll_group_poll)(struct spdk_nvmf_transport_poll_group *group);
+
+	/*
+	 * Free the request without sending a response
+	 * to the originator. Release memory tied to this request.
+	 */
+	int (*req_free)(struct spdk_nvmf_request *req);
 
 	/*
 	 * Signal request completion, which sends a response
@@ -109,24 +129,72 @@ struct spdk_nvmf_transport {
 	/*
 	 * Deinitialize a connection.
 	 */
-	void (*conn_fini)(struct spdk_nvmf_conn *conn);
+	void (*qpair_fini)(struct spdk_nvmf_qpair *qpair);
 
 	/*
-	 * Poll a connection for events.
+	 * True if the qpair has no pending IO.
 	 */
-	int (*conn_poll)(struct spdk_nvmf_conn *conn);
+	bool (*qpair_is_idle)(struct spdk_nvmf_qpair *qpair);
 
 	/*
-	 * True if the conn has no pending IO.
+	 * Get the peer transport ID for the queue pair.
 	 */
-	bool (*conn_is_idle)(struct spdk_nvmf_conn *conn);
+	int (*qpair_get_peer_trid)(struct spdk_nvmf_qpair *qpair,
+				   struct spdk_nvme_transport_id *trid);
+
+	/*
+	 * Get the local transport ID for the queue pair.
+	 */
+	int (*qpair_get_local_trid)(struct spdk_nvmf_qpair *qpair,
+				    struct spdk_nvme_transport_id *trid);
+
+	/*
+	 * Get the listener transport ID that accepted this qpair originally.
+	 */
+	int (*qpair_get_listen_trid)(struct spdk_nvmf_qpair *qpair,
+				     struct spdk_nvme_transport_id *trid);
 };
 
-int spdk_nvmf_transport_init(void);
-int spdk_nvmf_transport_fini(void);
 
-const struct spdk_nvmf_transport *spdk_nvmf_transport_get(const char *name);
+int spdk_nvmf_transport_stop_listen(struct spdk_nvmf_transport *transport,
+				    const struct spdk_nvme_transport_id *trid);
 
-extern const struct spdk_nvmf_transport spdk_nvmf_transport_rdma;
+void spdk_nvmf_transport_accept(struct spdk_nvmf_transport *transport, new_qpair_fn cb_fn);
+
+void spdk_nvmf_transport_listener_discover(struct spdk_nvmf_transport *transport,
+		struct spdk_nvme_transport_id *trid,
+		struct spdk_nvmf_discovery_log_page_entry *entry);
+
+struct spdk_nvmf_transport_poll_group *spdk_nvmf_transport_poll_group_create(
+	struct spdk_nvmf_transport *transport);
+
+void spdk_nvmf_transport_poll_group_destroy(struct spdk_nvmf_transport_poll_group *group);
+
+int spdk_nvmf_transport_poll_group_add(struct spdk_nvmf_transport_poll_group *group,
+				       struct spdk_nvmf_qpair *qpair);
+
+int spdk_nvmf_transport_poll_group_poll(struct spdk_nvmf_transport_poll_group *group);
+
+int spdk_nvmf_transport_req_free(struct spdk_nvmf_request *req);
+
+int spdk_nvmf_transport_req_complete(struct spdk_nvmf_request *req);
+
+void spdk_nvmf_transport_qpair_fini(struct spdk_nvmf_qpair *qpair);
+
+bool spdk_nvmf_transport_qpair_is_idle(struct spdk_nvmf_qpair *qpair);
+
+int spdk_nvmf_transport_qpair_get_peer_trid(struct spdk_nvmf_qpair *qpair,
+		struct spdk_nvme_transport_id *trid);
+
+int spdk_nvmf_transport_qpair_get_local_trid(struct spdk_nvmf_qpair *qpair,
+		struct spdk_nvme_transport_id *trid);
+
+int spdk_nvmf_transport_qpair_get_listen_trid(struct spdk_nvmf_qpair *qpair,
+		struct spdk_nvme_transport_id *trid);
+
+bool spdk_nvmf_transport_opts_init(enum spdk_nvme_transport_type type,
+				   struct spdk_nvmf_transport_opts *opts);
+
+extern const struct spdk_nvmf_transport_ops spdk_nvmf_transport_rdma;
 
 #endif /* SPDK_NVMF_TRANSPORT_H */

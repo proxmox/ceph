@@ -31,55 +31,34 @@
  *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+#include "spdk/stdinc.h"
+
 #include "spdk/env.h"
+#include "spdk/string.h"
 #include "spdk/trace.h"
 
-#include <assert.h>
-#include <stdint.h>
-#include <string.h>
-#include <fcntl.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <unistd.h>
-#include <sys/types.h>
-#include <sys/stat.h>
-#include <sys/mman.h>
-#include <errno.h>
-
-#include <rte_config.h>
-#include <rte_lcore.h>
-
+static int g_trace_fd = -1;
 static char g_shm_name[64];
 
-static struct spdk_trace_histories *g_trace_histories;
-static struct spdk_trace_register_fn *g_reg_fn_head = NULL;
+struct spdk_trace_histories *g_trace_histories;
 
 void
-spdk_trace_record(uint16_t tpoint_id, uint16_t poller_id, uint32_t size,
-		  uint64_t object_id, uint64_t arg1)
+_spdk_trace_record(uint64_t tsc, uint16_t tpoint_id, uint16_t poller_id, uint32_t size,
+		   uint64_t object_id, uint64_t arg1)
 {
 	struct spdk_trace_history *lcore_history;
 	struct spdk_trace_entry *next_entry;
-	uint64_t tsc;
 	unsigned lcore;
 
-	/*
-	 * Tracepoint group ID is encoded in the tpoint_id.  Lower 6 bits determine the tracepoint
-	 *  within the group, the remaining upper bits determine the tracepoint group.  Each
-	 *  tracepoint group has its own tracepoint mask.
-	 */
-	if (g_trace_histories == NULL ||
-	    !((1ULL << (tpoint_id & 0x3F)) & g_trace_histories->tpoint_mask[tpoint_id >> 6])) {
-		return;
-	}
-
-	lcore = rte_lcore_id();
+	lcore = spdk_env_get_current_core();
 	if (lcore >= SPDK_TRACE_MAX_LCORE) {
 		return;
 	}
 
 	lcore_history = &g_trace_histories->per_lcore_history[lcore];
-	tsc = spdk_get_ticks();
+	if (tsc == 0) {
+		tsc = spdk_get_ticks();
+	}
 
 	lcore_history->tpoint_count[tpoint_id]++;
 
@@ -92,183 +71,98 @@ spdk_trace_record(uint16_t tpoint_id, uint16_t poller_id, uint32_t size,
 	next_entry->arg1 = arg1;
 
 	lcore_history->next_entry++;
-	if (lcore_history->next_entry == SPDK_TRACE_SIZE)
+	if (lcore_history->next_entry == SPDK_TRACE_SIZE) {
 		lcore_history->next_entry = 0;
-}
-
-uint64_t
-spdk_trace_get_tpoint_mask(uint32_t group_id)
-{
-	if (group_id >= SPDK_TRACE_MAX_GROUP_ID) {
-		fprintf(stderr, "%s: invalid group ID %d\n", __func__, group_id);
-		return 0ULL;
-	}
-
-	return g_trace_histories->tpoint_mask[group_id];
-}
-
-void
-spdk_trace_set_tpoints(uint32_t group_id, uint64_t tpoint_mask)
-{
-	if (group_id >= SPDK_TRACE_MAX_GROUP_ID) {
-		fprintf(stderr, "%s: invalid group ID %d\n", __func__, group_id);
-		return;
-	}
-
-	g_trace_histories->tpoint_mask[group_id] |= tpoint_mask;
-}
-
-void
-spdk_trace_clear_tpoints(uint32_t group_id, uint64_t tpoint_mask)
-{
-	if (group_id >= SPDK_TRACE_MAX_GROUP_ID) {
-		fprintf(stderr, "%s: invalid group ID %d\n", __func__, group_id);
-		return;
-	}
-
-	g_trace_histories->tpoint_mask[group_id] &= ~tpoint_mask;
-}
-
-uint64_t
-spdk_trace_get_tpoint_group_mask(void)
-{
-	uint64_t mask = 0x0;
-	int i;
-
-	for (i = 0; i < 64; i++) {
-		if (spdk_trace_get_tpoint_mask(i) != 0) {
-			mask |= (1ULL << i);
-		}
-	}
-
-	return mask;
-}
-
-void
-spdk_trace_set_tpoint_group_mask(uint64_t tpoint_group_mask)
-{
-	int i;
-
-	for (i = 0; i < 64; i++) {
-		if (tpoint_group_mask & (1ULL << i)) {
-			spdk_trace_set_tpoints(i, -1ULL);
-		}
 	}
 }
 
-void
+int
 spdk_trace_init(const char *shm_name)
 {
-	struct spdk_trace_register_fn *reg_fn;
-	int trace_fd;
 	int i = 0;
 
 	snprintf(g_shm_name, sizeof(g_shm_name), "%s", shm_name);
 
-	trace_fd = shm_open(shm_name, O_RDWR | O_CREAT, 0600);
-	if (trace_fd == -1) {
+	g_trace_fd = shm_open(shm_name, O_RDWR | O_CREAT, 0600);
+	if (g_trace_fd == -1) {
 		fprintf(stderr, "could not shm_open spdk_trace\n");
-		fprintf(stderr, "errno=%d %s\n", errno, strerror(errno));
-		exit(EXIT_FAILURE);
+		fprintf(stderr, "errno=%d %s\n", errno, spdk_strerror(errno));
+		return 1;
 	}
 
-	if (ftruncate(trace_fd, sizeof(*g_trace_histories)) != 0) {
+	if (ftruncate(g_trace_fd, sizeof(*g_trace_histories)) != 0) {
 		fprintf(stderr, "could not truncate shm\n");
-		exit(EXIT_FAILURE);
+		goto trace_init_err;
 	}
 
 	g_trace_histories = mmap(NULL, sizeof(*g_trace_histories), PROT_READ | PROT_WRITE,
-				 MAP_SHARED, trace_fd, 0);
-	if (g_trace_histories == NULL) {
+				 MAP_SHARED, g_trace_fd, 0);
+	if (g_trace_histories == MAP_FAILED) {
 		fprintf(stderr, "could not mmap shm\n");
-		exit(EXIT_FAILURE);
+		goto trace_init_err;
 	}
+
+	/* TODO: On FreeBSD, mlock on shm_open'd memory doesn't seem to work.  Docs say that kern.ipc.shm_use_phys=1
+	 * should allow it, but forcing that doesn't seem to work either.  So for now just skip mlock on FreeBSD
+	 * altogether.
+	 */
+#if defined(__linux__)
+	if (mlock(g_trace_histories, sizeof(*g_trace_histories)) != 0) {
+		fprintf(stderr, "Could not mlock shm for tracing - %s.\n", spdk_strerror(errno));
+		if (errno == ENOMEM) {
+			fprintf(stderr, "Check /dev/shm for old tracing files that can be deleted.\n");
+		}
+		goto trace_init_err;
+	}
+#endif
 
 	memset(g_trace_histories, 0, sizeof(*g_trace_histories));
 
-	g_trace_histories->tsc_rate = spdk_get_ticks_hz();
+	g_trace_flags = &g_trace_histories->flags;
+
+	g_trace_flags->tsc_rate = spdk_get_ticks_hz();
 
 	for (i = 0; i < SPDK_TRACE_MAX_LCORE; i++) {
 		g_trace_histories->per_lcore_history[i].lcore = i;
 	}
 
-	reg_fn = g_reg_fn_head;
-	while (reg_fn) {
-		reg_fn->reg_fn();
-		reg_fn = reg_fn->next;
+	spdk_trace_flags_init();
+
+	return 0;
+
+trace_init_err:
+	if (g_trace_histories != MAP_FAILED) {
+		munmap(g_trace_histories, sizeof(*g_trace_histories));
 	}
+	close(g_trace_fd);
+	g_trace_fd = -1;
+	shm_unlink(shm_name);
+	g_trace_histories = NULL;
+
+	return 1;
+
 }
 
 void
 spdk_trace_cleanup(void)
 {
+	bool unlink;
+
+	if (g_trace_histories == NULL) {
+		return;
+	}
+
+	/*
+	 * Only unlink the shm if there were no tracepoints enabled.  This ensures the file
+	 * can be used after this process exits/crashes for debugging.
+	 * Note that we have to calculate this value before g_trace_histories gets unmapped.
+	 */
+	unlink = spdk_mem_all_zero(g_trace_flags->tpoint_mask, sizeof(g_trace_flags->tpoint_mask));
 	munmap(g_trace_histories, sizeof(struct spdk_trace_histories));
-	shm_unlink(g_shm_name);
-}
+	g_trace_histories = NULL;
+	close(g_trace_fd);
 
-void
-spdk_trace_register_owner(uint8_t type, char id_prefix)
-{
-	struct spdk_trace_owner *owner;
-
-	assert(type != OWNER_NONE);
-
-	/* 'owner' has 256 entries and since 'type' is a uint8_t, it
-	 * can't overrun the array.
-	*/
-	owner = &g_trace_histories->owner[type];
-	assert(owner->type == 0);
-
-	owner->type = type;
-	owner->id_prefix = id_prefix;
-}
-
-void
-spdk_trace_register_object(uint8_t type, char id_prefix)
-{
-	struct spdk_trace_object *object;
-
-	assert(type != OBJECT_NONE);
-
-	/* 'object' has 256 entries and since 'type' is a uint8_t, it
-	 * can't overrun the array.
-	*/
-	object = &g_trace_histories->object[type];
-	assert(object->type == 0);
-
-	object->type = type;
-	object->id_prefix = id_prefix;
-}
-
-void
-spdk_trace_register_description(const char *name, const char *short_name,
-				uint16_t tpoint_id, uint8_t owner_type,
-				uint8_t object_type, uint8_t new_object,
-				uint8_t arg1_is_ptr, uint8_t arg1_is_alias,
-				const char *arg1_name)
-{
-	struct spdk_trace_tpoint *tpoint;
-
-	assert(tpoint_id != 0);
-	assert(tpoint_id < SPDK_TRACE_MAX_TPOINT_ID);
-
-	tpoint = &g_trace_histories->tpoint[tpoint_id];
-	assert(tpoint->tpoint_id == 0);
-
-	snprintf(tpoint->name, sizeof(tpoint->name), "%s", name);
-	snprintf(tpoint->short_name, sizeof(tpoint->short_name), "%s", short_name);
-	tpoint->tpoint_id = tpoint_id;
-	tpoint->object_type = object_type;
-	tpoint->owner_type = owner_type;
-	tpoint->new_object = new_object;
-	tpoint->arg1_is_ptr = arg1_is_ptr;
-	tpoint->arg1_is_alias = arg1_is_alias;
-	snprintf(tpoint->arg1_name, sizeof(tpoint->arg1_name), "%s", arg1_name);
-}
-
-void
-spdk_trace_add_register_fn(struct spdk_trace_register_fn *reg_fn)
-{
-	reg_fn->next = g_reg_fn_head;
-	g_reg_fn_head = reg_fn;
+	if (unlink) {
+		shm_unlink(g_shm_name);
+	}
 }

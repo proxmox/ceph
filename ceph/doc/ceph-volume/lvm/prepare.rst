@@ -40,7 +40,7 @@ journal.
 
 The API call looks like::
 
-    ceph-volume prepare --filestore --data data --journal journal
+    ceph-volume lvm prepare --filestore --data volume_group/lv_name --journal journal
 
 For enabling :ref:`encryption <ceph-volume-lvm-encryption>`, the ``--dmcrypt`` flag is required::
 
@@ -62,12 +62,12 @@ device name (or path).
 
 When using a partition, this is how it would look for ``/dev/sdc1``::
 
-    ceph-volume prepare --filestore --data volume_group/lv_name --journal /dev/sdc1
+    ceph-volume lvm prepare --filestore --data volume_group/lv_name --journal /dev/sdc1
 
 For a logical volume, just like for ``--data``, a volume group and logical
 volume name are required::
 
-    ceph-volume prepare --filestore --data volume_group/lv_name --journal volume_group/journal_lv
+    ceph-volume lvm prepare --filestore --data volume_group/lv_name --journal volume_group/journal_lv
 
 A generated uuid is used to ask the cluster for a new OSD. These two pieces are
 crucial for identifying an OSD and will later be used throughout the
@@ -97,6 +97,46 @@ mounted, re-using all the pieces of information from the initial steps::
       --osd-uuid <osd uuid> --keyring /var/lib/ceph/osd/<cluster name>-<osd id>/keyring \
       --setuser ceph --setgroup ceph
 
+
+.. _ceph-volume-lvm-partitions:
+
+Partitioning
+------------
+``ceph-volume lvm`` does not currently create partitions from a whole device.
+If using device partitions the only requirement is that they contain the
+``PARTUUID`` and that it is discoverable by ``blkid``. Both ``fdisk`` and
+``parted`` will create that automatically for a new partition.
+
+For example, using a new, unformatted drive (``/dev/sdd`` in this case) we can
+use ``parted`` to create a new partition. First we list the device
+information::
+
+    $ parted --script /dev/sdd print
+    Model: VBOX HARDDISK (scsi)
+    Disk /dev/sdd: 11.5GB
+    Sector size (logical/physical): 512B/512B
+    Disk Flags:
+
+This device is not even labeled yet, so we can use ``parted`` to create
+a ``gpt`` label before we create a partition, and verify again with ``parted
+print``::
+
+    $ parted --script /dev/sdd mklabel gpt
+    $ parted --script /dev/sdd print
+    Model: VBOX HARDDISK (scsi)
+    Disk /dev/sdd: 11.5GB
+    Sector size (logical/physical): 512B/512B
+    Partition Table: gpt
+    Disk Flags:
+
+Now lets create a single partition, and verify later if ``blkid`` can find
+a ``PARTUUID`` that is needed by ``ceph-volume``::
+
+    $ parted --script /dev/sdd mkpart primary 1 100%
+    $ blkid /dev/sdd1
+    /dev/sdd1: PARTLABEL="primary" PARTUUID="16399d72-1e1f-467d-96ee-6fe371a7d0d4"
+
+
 .. _ceph-volume-lvm-existing-osds:
 
 Existing OSDs
@@ -114,16 +154,16 @@ already running there are a few things to take into account:
 * Preferably, no other mechanisms to mount the volume should exist, and should
   be removed (like fstab mount points)
 
-The one time process for an existing OSD, with an ID of 0 and
-using a ``"ceph"`` cluster name would look like::
+The one time process for an existing OSD, with an ID of 0 and using
+a ``"ceph"`` cluster name would look like (the following command will **destroy
+any data** in the OSD)::
 
     ceph-volume lvm prepare --filestore --osd-id 0 --osd-fsid E3D291C1-E7BF-4984-9794-B60D9FA139CB
 
 The command line tool will not contact the monitor to generate an OSD ID and
 will format the LVM device in addition to storing the metadata on it so that it
-can later be startednot contact the monitor to generate an OSD ID and will
-format the LVM device in addition to storing the metadata on it so that it can
-later be started (for detailed metadata description see :ref:`ceph-volume-lvm-tags`).
+can be started later (for detailed metadata description see
+:ref:`ceph-volume-lvm-tags`).
 
 
 .. _ceph-volume-lvm-prepare_bluestore:
@@ -269,7 +309,7 @@ To recap the ``prepare`` process for :term:`bluestore`:
 #. ``block``, ``block.wal``, and ``block.db`` are symlinked if defined.
 #. monmap is fetched for activation
 #. Data directory is populated by ``ceph-osd``
-#. Logical Volumes are are assigned all the Ceph metadata using lvm tags
+#. Logical Volumes are assigned all the Ceph metadata using lvm tags
 
 
 And the ``prepare`` process for :term:`filestore`:

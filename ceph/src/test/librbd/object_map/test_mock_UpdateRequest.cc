@@ -9,6 +9,7 @@
 #include "librbd/internal.h"
 #include "librbd/ObjectMap.h"
 #include "librbd/Operations.h"
+#include "librbd/api/Image.h"
 #include "librbd/object_map/UpdateRequest.h"
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
@@ -29,10 +30,10 @@ public:
                      uint8_t new_state,
                      const boost::optional<uint8_t>& current_state, int r) {
     bufferlist bl;
-    ::encode(start_object_no, bl);
-    ::encode(end_object_no, bl);
-    ::encode(new_state, bl);
-    ::encode(current_state, bl);
+    encode(start_object_no, bl);
+    encode(end_object_no, bl);
+    encode(new_state, bl);
+    encode(current_state, bl);
 
     std::string oid(ObjectMap<>::object_map_name(ictx->id, snap_id));
     if (snap_id == CEPH_NOSNAP) {
@@ -129,9 +130,9 @@ TEST_F(TestMockObjectMapUpdateRequest, UpdateSnapOnDisk) {
   librbd::ImageCtx *ictx;
   ASSERT_EQ(0, open_image(m_image_name, &ictx));
   ASSERT_EQ(0, snap_create(*ictx, "snap1"));
-  ASSERT_EQ(0, librbd::snap_set(ictx,
-				cls::rbd::UserSnapshotNamespace(),
-				"snap1"));
+  ASSERT_EQ(0, librbd::api::Image<>::snap_set(ictx,
+				              cls::rbd::UserSnapshotNamespace(),
+				              "snap1"));
 
   uint64_t snap_id = ictx->snap_id;
   expect_update(ictx, snap_id, 0, 1, OBJECT_NONEXISTENT, OBJECT_EXISTS, 0);

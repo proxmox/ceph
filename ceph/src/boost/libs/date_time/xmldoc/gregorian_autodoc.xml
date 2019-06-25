@@ -1277,11 +1277,11 @@
 <struct name="bad_year"><inherit access="public">out_of_range</inherit><purpose>Exception type for gregorian year. </purpose><method-group name="public member functions">
 </method-group>
 <constructor/>
-</struct><class name="greg_year"><inherit access="public">greg_year_rep</inherit><purpose>Represent a year (range 1400 - 10000) </purpose><description><para>This small class allows for simple conversion an integer value into a year for the gregorian calendar. This currently only allows a range of 1400 to 10000. Both ends of the range are a bit arbitrary at the moment, but they are the limits of current testing of the library. As such they may be increased in the future. </para></description><method-group name="public member functions">
+</struct><class name="greg_year"><inherit access="public">greg_year_rep</inherit><purpose>Represent a year (range 1400 - 9999) </purpose><description><para>This small class allows for simple conversion an integer value into a year for the gregorian calendar. This currently only allows a range of 1400 to 9999. Both ends of the range are a bit arbitrary at the moment, but they are the limits of current testing of the library. As such they may be increased in the future. </para></description><method-group name="public member functions">
 <method name="conversion-operator" cv="const"><type>value_type</type></method>
 </method-group>
 <constructor><parameter name="year"><paramtype>value_type</paramtype></parameter></constructor>
-</class><typedef name="greg_year_policies"><purpose>Policy class that declares error handling gregorian year type. </purpose><type>CV::simple_exception_policy&lt; unsigned short, 1400, 10000, <classname>bad_year</classname> &gt;</type></typedef>
+</class><typedef name="greg_year_policies"><purpose>Policy class that declares error handling gregorian year type. </purpose><type>CV::simple_exception_policy&lt; unsigned short, 1400, 9999, <classname>bad_year</classname> &gt;</type></typedef>
 <typedef name="greg_year_rep"><purpose>Generated representation for gregorian year. </purpose><type>CV::constrained_value&lt; greg_year_policies &gt;</type></typedef>
 
 

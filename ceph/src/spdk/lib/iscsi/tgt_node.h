@@ -35,20 +35,29 @@
 #ifndef SPDK_ISCSI_TGT_NODE_H_
 #define SPDK_ISCSI_TGT_NODE_H_
 
-#include <pthread.h>
-#include <time.h>
+#include "spdk/stdinc.h"
 
 #include "spdk/scsi.h"
 
 struct spdk_iscsi_conn;
+struct spdk_iscsi_init_grp;
+struct spdk_iscsi_portal_grp;
+struct spdk_iscsi_portal;
+struct spdk_json_write_ctx;
 
-#define SPDK_ISCSI_MAX_QUEUE_DEPTH	64
 #define MAX_TARGET_MAP			256
-#define SPDK_TN_TAG_MAX 0x0000ffff
+#define SPDK_TN_TAG_MAX			0x0000ffff
 
-struct spdk_iscsi_tgt_node_map {
-	struct spdk_iscsi_portal_grp	*pg;
-	struct spdk_iscsi_init_grp	*ig;
+struct spdk_iscsi_ig_map {
+	struct spdk_iscsi_init_grp *ig;
+	TAILQ_ENTRY(spdk_iscsi_ig_map) tailq;
+};
+
+struct spdk_iscsi_pg_map {
+	struct spdk_iscsi_portal_grp *pg;
+	int num_ig_maps;
+	TAILQ_HEAD(, spdk_iscsi_ig_map) ig_map_head;
+	TAILQ_ENTRY(spdk_iscsi_pg_map) tailq ;
 };
 
 struct spdk_iscsi_tgt_node {
@@ -58,12 +67,12 @@ struct spdk_iscsi_tgt_node {
 
 	pthread_mutex_t mutex;
 
-	int auth_chap_disabled;
-	int auth_chap_required;
-	int auth_chap_mutual;
-	int auth_group;
-	int header_digest;
-	int data_digest;
+	bool disable_chap;
+	bool require_chap;
+	bool mutual_chap;
+	int chap_group;
+	bool header_digest;
+	bool data_digest;
 	int queue_depth;
 
 	struct spdk_scsi_dev *dev;
@@ -74,38 +83,51 @@ struct spdk_iscsi_tgt_node {
 	uint32_t num_active_conns;
 	int lcore;
 
-	int maxmap;
-	struct spdk_iscsi_tgt_node_map map[MAX_TARGET_MAP];
+	int num_pg_maps;
+	TAILQ_HEAD(, spdk_iscsi_pg_map) pg_map_head;
+	TAILQ_ENTRY(spdk_iscsi_tgt_node) tailq;
 };
 
-int spdk_iscsi_init_tgt_nodes(void);
+int spdk_iscsi_parse_tgt_nodes(void);
 
-int spdk_iscsi_shutdown_tgt_nodes(void);
+void spdk_iscsi_shutdown_tgt_nodes(void);
 int spdk_iscsi_shutdown_tgt_node_by_name(const char *target_name);
 int spdk_iscsi_send_tgts(struct spdk_iscsi_conn *conn, const char *iiqn,
 			 const char *iaddr, const char *tiqn, uint8_t *data, int alloc_len,
 			 int data_len);
 
-struct spdk_iscsi_init_grp *
-spdk_iscsi_find_init_grp(int tag);
-
 /* This typedef exists to work around an astyle 2.05 bug.
  * Remove it when astyle is fixed.
-*/
+ */
 typedef struct spdk_iscsi_tgt_node _spdk_iscsi_tgt_node;
 
+/*
+ * bdev_name_list and lun_id_list are equal sized arrays of size num_luns.
+ * bdev_name_list refers to the names of the bdevs that will be used for the LUNs on the
+ *  new target node.
+ * lun_id_list refers to the LUN IDs that will be used for the LUNs on the target node.
+ */
 _spdk_iscsi_tgt_node *
 spdk_iscsi_tgt_node_construct(int target_index,
 			      const char *name, const char *alias,
 			      int *pg_tag_list, int *ig_tag_list, uint16_t num_maps,
-			      char *lun_name_list[], int *lun_id_list, int num_luns,
+			      const char *bdev_name_list[], int *lun_id_list, int num_luns,
 			      int queue_depth,
-			      int no_auth_chap, int auth_chap, int auth_chap_mutual, int auth_group,
-			      int header_digest, int data_digest);
+			      bool disable_chap, bool require_chap, bool mutual_chap, int chap_group,
+			      bool header_digest, bool data_digest);
 
-int spdk_iscsi_tgt_node_access(struct spdk_iscsi_conn *conn,
-			       struct spdk_iscsi_tgt_node *target, const char *iqn,
-			       const char *addr);
+bool spdk_iscsi_check_chap_params(bool disable, bool require, bool mutual, int group);
+
+int spdk_iscsi_tgt_node_add_pg_ig_maps(struct spdk_iscsi_tgt_node *target,
+				       int *pg_tag_list, int *ig_tag_list,
+				       uint16_t num_maps);
+int spdk_iscsi_tgt_node_delete_pg_ig_maps(struct spdk_iscsi_tgt_node *target,
+		int *pg_tag_list, int *ig_tag_list,
+		uint16_t num_maps);
+
+bool spdk_iscsi_tgt_node_access(struct spdk_iscsi_conn *conn,
+				struct spdk_iscsi_tgt_node *target, const char *iqn,
+				const char *addr);
 struct spdk_iscsi_tgt_node *spdk_iscsi_find_tgt_node(const char *target_name);
 int spdk_iscsi_tgt_node_reset(struct spdk_iscsi_tgt_node *target,
 			      uint64_t lun);
@@ -113,4 +135,12 @@ int spdk_iscsi_tgt_node_cleanup_luns(struct spdk_iscsi_conn *conn,
 				     struct spdk_iscsi_tgt_node *target);
 void spdk_iscsi_tgt_node_delete_map(struct spdk_iscsi_portal_grp *portal_group,
 				    struct spdk_iscsi_init_grp *initiator_group);
+int spdk_iscsi_tgt_node_add_lun(struct spdk_iscsi_tgt_node *target,
+				const char *bdev_name, int lun_id);
+int spdk_iscsi_tgt_node_set_chap_params(struct spdk_iscsi_tgt_node *target,
+					bool disable_chap, bool require_chap,
+					bool mutual_chap, int32_t chap_group);
+void spdk_iscsi_tgt_nodes_config_text(FILE *fp);
+void spdk_iscsi_tgt_nodes_info_json(struct spdk_json_write_ctx *w);
+void spdk_iscsi_tgt_nodes_config_json(struct spdk_json_write_ctx *w);
 #endif /* SPDK_ISCSI_TGT_NODE_H_ */

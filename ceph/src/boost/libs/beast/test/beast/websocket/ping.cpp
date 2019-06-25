@@ -12,6 +12,9 @@
 
 #include "test.hpp"
 
+#include <boost/asio/io_service.hpp>
+#include <boost/asio/strand.hpp>
+
 namespace boost {
 namespace beast {
 namespace websocket {
@@ -112,7 +115,7 @@ public:
                             system_error{ec});
                     BEAST_EXPECT(n == 12);
                 });
-            BEAST_EXPECT(ws.wr_block_);
+            BEAST_EXPECT(ws.wr_block_.is_locked());
             BEAST_EXPECT(count == 0);
             ws.async_ping({},
                 [&](error_code ec)
@@ -144,7 +147,7 @@ public:
                         BOOST_THROW_EXCEPTION(
                             system_error{ec});
                 });
-            BEAST_EXPECT(ws.wr_block_);
+            BEAST_EXPECT(ws.wr_block_.is_locked());
             BEAST_EXPECT(count == 0);
             ws.async_ping({},
                 [&](error_code ec)
@@ -180,7 +183,7 @@ public:
                         BOOST_THROW_EXCEPTION(
                             system_error{ec});
                 });
-            while(! ws.wr_block_)
+            while(! ws.wr_block_.is_locked())
             {
                 ioc.run_one();
                 if(! BEAST_EXPECT(! ioc.stopped()))
@@ -218,11 +221,11 @@ public:
                 [&](error_code ec, std::size_t)
                 {
                     ++count;
-                    if(ec != error::failed)
+                    if(ec != error::bad_control_fragment)
                         BOOST_THROW_EXCEPTION(
                             system_error{ec});
                 });
-            while(! ws.wr_block_)
+            while(! ws.wr_block_.is_locked())
             {
                 ioc.run_one();
                 if(! BEAST_EXPECT(! ioc.stopped()))
@@ -263,7 +266,7 @@ public:
                         BOOST_THROW_EXCEPTION(
                             system_error{ec});
                 });
-            while(! ws.wr_block_)
+            while(! ws.wr_block_.is_locked())
             {
                 ioc.run_one();
                 if(! BEAST_EXPECT(! ioc.stopped()))
@@ -303,7 +306,7 @@ public:
                         BOOST_THROW_EXCEPTION(
                             system_error{ec});
                 });
-            while(! ws.wr_block_)
+            while(! ws.wr_block_.is_locked())
             {
                 ioc.run_one();
                 if(! BEAST_EXPECT(! ioc.stopped()))
@@ -342,7 +345,7 @@ public:
                             system_error{ec});
                     BEAST_EXPECT(n == 1);
                 });
-            BEAST_EXPECT(ws.wr_block_);
+            BEAST_EXPECT(ws.wr_block_.is_locked());
             ws.async_ping("",
                 [&](error_code ec)
                 {
@@ -384,15 +387,6 @@ public:
                     ++count;
                     BEAST_EXPECTS(ec == error::closed,
                         ec.message());
-                    // Pings after a close are aborted
-                    ws.async_ping("",
-                        [&](error_code ec)
-                        {
-                            ++count;
-                            BEAST_EXPECTS(ec == boost::asio::
-                                error::operation_aborted,
-                                    ec.message());
-                        });
                 });
             if(! BEAST_EXPECT(run_until(ioc, 100,
                     [&]{ return ws.wr_close_; })))
@@ -420,7 +414,7 @@ public:
             std::size_t n;
             for(n = 0; n < limit; ++n)
             {
-                if(count >= 4)
+                if(count >= 3)
                     break;
                 ioc.run_one();
             }
@@ -445,11 +439,42 @@ public:
     }
 
     void
+    testMoveOnly()
+    {
+        boost::asio::io_context ioc;
+        stream<test::stream> ws{ioc};
+        ws.async_ping({}, move_only_handler{});
+    }
+
+    struct copyable_handler
+    {
+        template<class... Args>
+        void
+        operator()(Args&&...) const
+        {
+        }
+    };
+
+    void
+    testAsioHandlerInvoke()
+    {
+        // make sure things compile, also can set a
+        // breakpoint in asio_handler_invoke to make sure
+        // it is instantiated.
+        boost::asio::io_context ioc;
+        boost::asio::io_service::strand s{ioc};
+        stream<test::stream> ws{ioc};
+        ws.async_ping({}, s.wrap(copyable_handler{}));
+    }
+
+    void
     run() override
     {
         testPing();
         testSuspend();
         testContHook();
+        testMoveOnly();
+        testAsioHandlerInvoke();
     }
 };
 

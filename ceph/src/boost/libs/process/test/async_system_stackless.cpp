@@ -24,7 +24,6 @@
 #include <array>
 
 namespace bp = boost::process;
-
 BOOST_AUTO_TEST_CASE(stackless, *boost::unit_test::timeout(15))
 {
     using boost::unit_test::framework::master_test_suite;
@@ -65,5 +64,3 @@ BOOST_AUTO_TEST_CASE(stackless, *boost::unit_test::timeout(15))
 
     BOOST_CHECK(did_something_else);
 }
-
-

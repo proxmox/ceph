@@ -1,7 +1,7 @@
 //  Copyright (c) 2011-present, Facebook, Inc.  All rights reserved.
-//  This source code is licensed under the BSD-style license found in the
-//  LICENSE file in the root directory of this source tree. An additional grant
-//  of patent rights can be found in the PATENTS file in the same directory.
+//  This source code is licensed under both the GPLv2 (found in the
+//  COPYING file in the root directory) and Apache 2.0 License
+//  (found in the LICENSE.Apache file in the root directory).
 //
 // Copyright (c) 2011 The LevelDB Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
@@ -27,13 +27,43 @@ namespace rocksdb {
 // and the value type is embedded as the low 8 bits in the sequence
 // number in internal keys, we need to use the highest-numbered
 // ValueType, not the lowest).
-const ValueType kValueTypeForSeek = kTypeSingleDeletion;
+const ValueType kValueTypeForSeek = kTypeBlobIndex;
 const ValueType kValueTypeForSeekForPrev = kTypeDeletion;
 
 uint64_t PackSequenceAndType(uint64_t seq, ValueType t) {
   assert(seq <= kMaxSequenceNumber);
   assert(IsExtendedValueType(t));
   return (seq << 8) | t;
+}
+
+EntryType GetEntryType(ValueType value_type) {
+  switch (value_type) {
+    case kTypeValue:
+      return kEntryPut;
+    case kTypeDeletion:
+      return kEntryDelete;
+    case kTypeSingleDeletion:
+      return kEntrySingleDelete;
+    case kTypeMerge:
+      return kEntryMerge;
+    case kTypeRangeDeletion:
+      return kEntryRangeDeletion;
+    case kTypeBlobIndex:
+      return kEntryBlobIndex;
+    default:
+      return kEntryOther;
+  }
+}
+
+bool ParseFullKey(const Slice& internal_key, FullKey* fkey) {
+  ParsedInternalKey ikey;
+  if (!ParseInternalKey(internal_key, &ikey)) {
+    return false;
+  }
+  fkey->user_key = ikey.user_key;
+  fkey->sequence = ikey.sequence;
+  fkey->type = GetEntryType(ikey.type);
+  return true;
 }
 
 void UnPackSequenceAndType(uint64_t packed, uint64_t* seq, ValueType* t) {
@@ -80,25 +110,6 @@ const char* InternalKeyComparator::Name() const {
   return name_.c_str();
 }
 
-int InternalKeyComparator::Compare(const Slice& akey, const Slice& bkey) const {
-  // Order by:
-  //    increasing user key (according to user-supplied comparator)
-  //    decreasing sequence number
-  //    decreasing type (though sequence# should be enough to disambiguate)
-  int r = user_comparator_->Compare(ExtractUserKey(akey), ExtractUserKey(bkey));
-  PERF_COUNTER_ADD(user_key_comparison_count, 1);
-  if (r == 0) {
-    const uint64_t anum = DecodeFixed64(akey.data() + akey.size() - 8);
-    const uint64_t bnum = DecodeFixed64(bkey.data() + bkey.size() - 8);
-    if (anum > bnum) {
-      r = -1;
-    } else if (anum < bnum) {
-      r = +1;
-    }
-  }
-  return r;
-}
-
 int InternalKeyComparator::Compare(const ParsedInternalKey& a,
                                    const ParsedInternalKey& b) const {
   // Order by:
@@ -129,7 +140,7 @@ void InternalKeyComparator::FindShortestSeparator(
   Slice user_limit = ExtractUserKey(limit);
   std::string tmp(user_start.data(), user_start.size());
   user_comparator_->FindShortestSeparator(&tmp, user_limit);
-  if (tmp.size() < user_start.size() &&
+  if (tmp.size() <= user_start.size() &&
       user_comparator_->Compare(user_start, tmp) < 0) {
     // User key has become shorter physically, but larger logically.
     // Tack on the earliest possible number to the shortened user key.
@@ -144,7 +155,7 @@ void InternalKeyComparator::FindShortSuccessor(std::string* key) const {
   Slice user_key = ExtractUserKey(*key);
   std::string tmp(user_key.data(), user_key.size());
   user_comparator_->FindShortSuccessor(&tmp);
-  if (tmp.size() < user_key.size() &&
+  if (tmp.size() <= user_key.size() &&
       user_comparator_->Compare(user_key, tmp) < 0) {
     // User key has become shorter physically, but larger logically.
     // Tack on the earliest possible number to the shortened user key.
@@ -174,4 +185,13 @@ LookupKey::LookupKey(const Slice& _user_key, SequenceNumber s) {
   end_ = dst;
 }
 
+void IterKey::EnlargeBuffer(size_t key_size) {
+  // If size is smaller than buffer size, continue using current buffer,
+  // or the static allocated one, as default
+  assert(key_size > buf_size_);
+  // Need to enlarge the buffer.
+  ResetBuffer();
+  buf_ = new char[key_size];
+  buf_size_ = key_size;
+}
 }  // namespace rocksdb

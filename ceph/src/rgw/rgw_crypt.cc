@@ -1,14 +1,16 @@
 // -*- mode:C; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
 // vim: ts=8 sw=2 smarttab
+
 /**
  * Crypto filters for Put/Post/Get operations.
  */
+
 #include <rgw/rgw_op.h>
 #include <rgw/rgw_crypt.h>
 #include <auth/Crypto.h>
 #include <rgw/rgw_b64.h>
 #include <rgw/rgw_rest_s3.h>
-#include "include/assert.h"
+#include "include/ceph_assert.h"
 #include <boost/utility/string_view.hpp>
 #include <rgw/rgw_keystone.h>
 #include "include/str_map.h"
@@ -20,24 +22,14 @@
 # include <pk11pub.h>
 #endif
 
-#ifdef USE_CRYPTOPP
-#include <cryptopp/cryptlib.h>
-#include <cryptopp/modes.h>
-#include <cryptopp/aes.h>
-using namespace CryptoPP;
-#endif
-
 #define dout_context g_ceph_context
 #define dout_subsys ceph_subsys_rgw
 
 using namespace rgw;
-using ceph::crypto::PK11_ImportSymKey_FIPS;
 
 /**
  * Encryption in CTR mode. offset is used as IV for each block.
  */
-#warning "TODO: move this code to auth/Crypto for others to reuse."
-
 class AES_256_CTR : public BlockCrypt {
 public:
   static const size_t AES_256_KEYSIZE = 256 / 8;
@@ -47,7 +39,7 @@ private:
   CephContext* cct;
   uint8_t key[AES_256_KEYSIZE];
 public:
-  AES_256_CTR(CephContext* cct): cct(cct) {
+  explicit AES_256_CTR(CephContext* cct): cct(cct) {
   }
   ~AES_256_CTR() {
     memset(key, 0, AES_256_KEYSIZE);
@@ -63,52 +55,7 @@ public:
     return AES_256_IVSIZE;
   }
 
-#ifdef USE_CRYPTOPP
-
-  bool encrypt(bufferlist& input, off_t in_ofs, size_t size, bufferlist& output, off_t stream_offset) {
-    byte iv[AES_256_IVSIZE];
-    ldout(cct, 25)
-        << "Encrypt in_ofs " << in_ofs
-        << " size=" << size
-        << " stream_offset=" << stream_offset
-        << dendl;
-    if (input.length() < in_ofs + size) {
-      return false;
-    }
-
-    output.clear();
-    buffer::ptr buf((size + AES_256_KEYSIZE - 1) / AES_256_KEYSIZE * AES_256_KEYSIZE);
-    /*create CTR mask*/
-    prepare_iv(iv, stream_offset);
-    CTR_Mode< AES >::Encryption e;
-    e.SetKeyWithIV(key, AES_256_KEYSIZE, iv, AES_256_IVSIZE);
-    buf.zero();
-    e.ProcessData((byte*)buf.c_str(), (byte*)buf.c_str(), buf.length());
-    buf.set_length(size);
-    off_t plaintext_pos = in_ofs;
-    off_t crypt_pos = 0;
-    auto iter = input.buffers().begin();
-    //skip unaffected begin
-    while ((iter != input.buffers().end()) && (plaintext_pos >= iter->length())) {
-      plaintext_pos -= iter->length();
-      ++iter;
-    }
-    while (iter != input.buffers().end()) {
-      off_t cnt = std::min<off_t>(iter->length() - plaintext_pos, size - crypt_pos);
-      byte* src = (byte*)iter->c_str() + plaintext_pos;
-      byte* dst = (byte*)buf.c_str() + crypt_pos;
-      for (off_t i = 0; i < cnt; i++) {
-        dst[i] ^= src[i];
-      }
-      ++iter;
-      plaintext_pos = 0;
-      crypt_pos += cnt;
-    }
-    output.append(buf);
-    return true;
-  }
-
-#elif defined(USE_NSS)
+#ifdef USE_NSS
 
   bool encrypt(bufferlist& input, off_t in_ofs, size_t size, bufferlist& output, off_t stream_offset)
   {
@@ -130,7 +77,7 @@ public:
       keyItem.data = key;
       keyItem.len = AES_256_KEYSIZE;
 
-      symkey = PK11_ImportSymKey_FIPS(slot, CKM_AES_CTR, PK11_OriginUnwrap, CKA_UNWRAP, &keyItem, NULL);
+      symkey = PK11_ImportSymKey(slot, CKM_AES_CTR, PK11_OriginUnwrap, CKA_UNWRAP, &keyItem, NULL);
       if (symkey) {
         static_assert(sizeof(ctr_params.cb) >= AES_256_IVSIZE, "Must fit counter");
         ctr_params.ulCounterBits = 128;
@@ -173,14 +120,14 @@ public:
   }
 
 #else
-#error Must define USE_CRYPTOPP or USE_NSS
+# error "No supported crypto implementation found."
 #endif
   /* in CTR encrypt is the same as decrypt */
   bool decrypt(bufferlist& input, off_t in_ofs, size_t size, bufferlist& output, off_t stream_offset) {
 	  return encrypt(input, in_ofs, size, output, stream_offset);
   }
 
-  void prepare_iv(byte iv[AES_256_IVSIZE], off_t offset) {
+  void prepare_iv(unsigned char iv[AES_256_IVSIZE], off_t offset) {
     off_t index = offset / AES_256_IVSIZE;
     off_t i = AES_256_IVSIZE - 1;
     unsigned int val;
@@ -245,7 +192,6 @@ CryptoAccelRef get_crypto_accel(CephContext *cct)
  * 6. (Special case) If m == 0 then last n bytes are xor-ed with pattern
  *    obtained by CBC ENCRYPTION of {0} with IV derived from offset
  */
-#warning "TODO: use auth/Crypto instead of reimplementing."
 class AES_256_CBC : public BlockCrypt {
 public:
   static const size_t AES_256_KEYSIZE = 256 / 8;
@@ -256,7 +202,7 @@ private:
   CephContext* cct;
   uint8_t key[AES_256_KEYSIZE];
 public:
-  AES_256_CBC(CephContext* cct): cct(cct) {
+  explicit AES_256_CBC(CephContext* cct): cct(cct) {
   }
   ~AES_256_CBC() {
     memset(key, 0, AES_256_KEYSIZE);
@@ -272,28 +218,7 @@ public:
     return CHUNK_SIZE;
   }
 
-#ifdef USE_CRYPTOPP
-
-  bool cbc_transform(unsigned char* out,
-                     const unsigned char* in,
-                     size_t size,
-                     const unsigned char (&iv)[AES_256_IVSIZE],
-                     const unsigned char (&key)[AES_256_KEYSIZE],
-                     bool encrypt)
-  {
-    if (encrypt) {
-      CBC_Mode< AES >::Encryption e;
-      e.SetKeyWithIV(key, AES_256_KEYSIZE, iv, AES_256_IVSIZE);
-      e.ProcessData((byte*)out, (byte*)in, size);
-    } else {
-      CBC_Mode< AES >::Decryption d;
-      d.SetKeyWithIV(key, AES_256_KEYSIZE, iv, AES_256_IVSIZE);
-      d.ProcessData((byte*)out, (byte*)in, size);
-    }
-    return true;
-  }
-
-#elif defined(USE_NSS)
+#ifdef USE_NSS
 
   bool cbc_transform(unsigned char* out,
                      const unsigned char* in,
@@ -318,7 +243,7 @@ public:
       keyItem.type = siBuffer;
       keyItem.data = const_cast<unsigned char*>(&key[0]);
       keyItem.len = AES_256_KEYSIZE;
-      symkey = PK11_ImportSymKey_FIPS(slot, CKM_AES_CBC, PK11_OriginUnwrap, CKA_UNWRAP, &keyItem, NULL);
+      symkey = PK11_ImportSymKey(slot, CKM_AES_CBC, PK11_OriginUnwrap, CKA_UNWRAP, &keyItem, NULL);
       if (symkey) {
         memcpy(ctr_params.iv, iv, AES_256_IVSIZE);
         ivItem.type = siBuffer;
@@ -350,7 +275,7 @@ public:
   }
 
 #else
-#error Must define USE_CRYPTOPP or USE_NSS
+# error "No supported crypto implementation found."
 #endif
 
   bool cbc_transform(unsigned char* out,
@@ -501,7 +426,7 @@ public:
   }
 
 
-  void prepare_iv(byte (&iv)[AES_256_IVSIZE], off_t offset) {
+  void prepare_iv(unsigned char (&iv)[AES_256_IVSIZE], off_t offset) {
     off_t index = offset / AES_256_IVSIZE;
     off_t i = AES_256_IVSIZE - 1;
     unsigned int val;
@@ -529,30 +454,7 @@ const uint8_t AES_256_CBC::IV[AES_256_CBC::AES_256_IVSIZE] =
     { 'a', 'e', 's', '2', '5', '6', 'i', 'v', '_', 'c', 't', 'r', '1', '3', '3', '7' };
 
 
-#ifdef USE_CRYPTOPP
-
-bool AES_256_ECB_encrypt(CephContext* cct,
-                         const uint8_t* key,
-                         size_t key_size,
-                         const uint8_t* data_in,
-                         uint8_t* data_out,
-                         size_t data_size)
-{
-  bool res = false;
-  if (key_size == AES_256_KEYSIZE) {
-    try {
-      ECB_Mode< AES >::Encryption e;
-      e.SetKey( key, key_size );
-      e.ProcessData(data_out, data_in, data_size);
-      res = true;
-    } catch( CryptoPP::Exception& ex ) {
-      ldout(cct, 5) << "AES-ECB encryption failed with: " << ex.GetWhat() << dendl;
-    }
-  }
-  return res;
-}
-
-#elif defined USE_NSS
+#ifdef USE_NSS
 
 bool AES_256_ECB_encrypt(CephContext* cct,
                          const uint8_t* key,
@@ -578,7 +480,7 @@ bool AES_256_ECB_encrypt(CephContext* cct,
 
       param = PK11_ParamFromIV(CKM_AES_ECB, NULL);
       if (param) {
-        symkey = PK11_ImportSymKey_FIPS(slot, CKM_AES_ECB, PK11_OriginUnwrap, CKA_UNWRAP, &keyItem, NULL);
+        symkey = PK11_ImportSymKey(slot, CKM_AES_ECB, PK11_OriginUnwrap, CKA_UNWRAP, &keyItem, NULL);
         if (symkey) {
           ectx = PK11_CreateContextBySymKey(CKM_AES_ECB, CKA_ENCRYPT, symkey, param);
           if (ectx) {
@@ -611,12 +513,12 @@ bool AES_256_ECB_encrypt(CephContext* cct,
 }
 
 #else
-#error Must define USE_CRYPTOPP or USE_NSS
+# error "No supported crypto implementation found."
 #endif
 
 
 RGWGetObj_BlockDecrypt::RGWGetObj_BlockDecrypt(CephContext* cct,
-                                               RGWGetDataCB* next,
+                                               RGWGetObj_Filter* next,
                                                std::unique_ptr<BlockCrypt> crypt):
     RGWGetObj_Filter(next),
     cct(cct),
@@ -636,9 +538,9 @@ int RGWGetObj_BlockDecrypt::read_manifest(bufferlist& manifest_bl) {
   parts_len.clear();
   RGWObjManifest manifest;
   if (manifest_bl.length()) {
-    bufferlist::iterator miter = manifest_bl.begin();
+    auto miter = manifest_bl.cbegin();
     try {
-      ::decode(manifest, miter);
+      decode(manifest, miter);
     } catch (buffer::error& err) {
       ldout(cct, 0) << "ERROR: couldn't decode manifest" << dendl;
       return -EIO;
@@ -650,7 +552,7 @@ int RGWGetObj_BlockDecrypt::read_manifest(bufferlist& manifest_bl) {
       }
       parts_len.back() += mi.get_stripe_size();
     }
-    if (cct->_conf->subsys.should_gather(ceph_subsys_rgw, 20)) {
+    if (cct->_conf->subsys.should_gather<ceph_subsys_rgw, 20>()) {
       for (size_t i = 0; i<parts_len.size(); i++) {
         ldout(cct, 20) << "Manifest part " << i << ", size=" << parts_len[i] << dendl;
       }
@@ -777,76 +679,53 @@ int RGWGetObj_BlockDecrypt::flush() {
 }
 
 RGWPutObj_BlockEncrypt::RGWPutObj_BlockEncrypt(CephContext* cct,
-                                               RGWPutObjDataProcessor* next,
-                                               std::unique_ptr<BlockCrypt> crypt):
-    RGWPutObj_Filter(next),
+                                               rgw::putobj::DataProcessor *next,
+                                               std::unique_ptr<BlockCrypt> crypt)
+  : Pipe(next),
     cct(cct),
     crypt(std::move(crypt)),
-    ofs(0),
-    cache()
+    block_size(this->crypt->get_block_size())
 {
-  block_size = this->crypt->get_block_size();
 }
 
-RGWPutObj_BlockEncrypt::~RGWPutObj_BlockEncrypt() {
-}
+int RGWPutObj_BlockEncrypt::process(bufferlist&& data, uint64_t logical_offset)
+{
+  ldout(cct, 25) << "Encrypt " << data.length() << " bytes" << dendl;
 
-int RGWPutObj_BlockEncrypt::handle_data(bufferlist& bl,
-                                        off_t in_ofs,
-                                        void **phandle,
-                                        rgw_raw_obj *pobj,
-                                        bool *again) {
-  int res = 0;
-  ldout(cct, 25) << "Encrypt " << bl.length() << " bytes" << dendl;
+  // adjust logical offset to beginning of cached data
+  ceph_assert(logical_offset >= cache.length());
+  logical_offset -= cache.length();
 
-  if (*again) {
-    bufferlist no_data;
-    res = next->handle_data(no_data, in_ofs, phandle, pobj, again);
-    //if *again is not set to false, we will have endless loop
-    //drop info on log
-    if (*again) {
-      ldout(cct, 20) << "*again==true" << dendl;
-    }
-    return res;
-  }
+  const bool flush = (data.length() == 0);
+  cache.claim_append(data);
 
-  cache.append(bl);
-  off_t proc_size = cache.length() & ~(block_size - 1);
-  if (bl.length() == 0) {
+  uint64_t proc_size = cache.length() & ~(block_size - 1);
+  if (flush) {
     proc_size = cache.length();
   }
   if (proc_size > 0) {
-    bufferlist data;
-    if (! crypt->encrypt(cache, 0, proc_size, data, ofs) ) {
+    bufferlist in, out;
+    cache.splice(0, proc_size, &in);
+    if (!crypt->encrypt(in, 0, proc_size, out, logical_offset)) {
       return -ERR_INTERNAL_ERROR;
     }
-    res = next->handle_data(data, ofs, phandle, pobj, again);
-    ofs += proc_size;
-    cache.splice(0, proc_size);
-    if (res < 0)
-      return res;
+    int r = Pipe::process(std::move(out), logical_offset);
+    logical_offset += proc_size;
+    if (r < 0)
+      return r;
   }
 
-  if (bl.length() == 0) {
+  if (flush) {
     /*replicate 0-sized handle_data*/
-    res = next->handle_data(bl, ofs, phandle, pobj, again);
+    return Pipe::process({}, logical_offset);
   }
-  return res;
+  return 0;
 }
 
-int RGWPutObj_BlockEncrypt::throttle_data(void *handle,
-                                          const rgw_raw_obj& obj,
-                                          uint64_t size,
-                                          bool need_to_wait) {
-  return next->throttle_data(handle, obj, size, need_to_wait);
-}
 
 std::string create_random_key_selector(CephContext * const cct) {
   char random[AES_256_KEYSIZE];
-  if (get_random_bytes(&random[0], sizeof(random)) != 0) {
-    ldout(cct, 0) << "ERROR: cannot get_random_bytes. " << dendl;
-    for (char& v:random) v=rand();
-  }
+  cct->random()->get_bytes(&random[0], sizeof(random));
   return std::string(random, sizeof(random));
 }
 
@@ -880,11 +759,11 @@ static int request_key_from_barbican(CephContext *cct,
   secret_url += "v1/secrets/" + std::string(key_id);
 
   bufferlist secret_bl;
-  RGWHTTPTransceiver secret_req(cct, &secret_bl);
+  RGWHTTPTransceiver secret_req(cct, "GET", secret_url, &secret_bl);
   secret_req.append_header("Accept", "application/octet-stream");
   secret_req.append_header("X-Auth-Token", barbican_token);
 
-  res = secret_req.process("GET", secret_url.c_str());
+  res = secret_req.process();
   if (res < 0) {
     return res;
   }
@@ -1103,8 +982,8 @@ int rgw_s3_prepare_encrypt(struct req_state* s,
       }
 
       MD5 key_hash;
-      byte key_hash_res[CEPH_CRYPTO_MD5_DIGESTSIZE];
-      key_hash.Update(reinterpret_cast<const byte*>(key_bin.c_str()), key_bin.size());
+      unsigned char key_hash_res[CEPH_CRYPTO_MD5_DIGESTSIZE];
+      key_hash.Update(reinterpret_cast<const unsigned char*>(key_bin.c_str()), key_bin.size());
       key_hash.Final(key_hash_res);
 
       if (memcmp(key_hash_res, keymd5_bin.c_str(), CEPH_CRYPTO_MD5_DIGESTSIZE) != 0) {
@@ -1340,7 +1219,7 @@ int rgw_s3_prepare_decrypt(struct req_state* s,
 
     MD5 key_hash;
     uint8_t key_hash_res[CEPH_CRYPTO_MD5_DIGESTSIZE];
-    key_hash.Update(reinterpret_cast<const byte*>(key_bin.c_str()), key_bin.size());
+    key_hash.Update(reinterpret_cast<const unsigned char*>(key_bin.c_str()), key_bin.size());
     key_hash.Final(key_hash_res);
 
     if ((memcmp(key_hash_res, keymd5_bin.c_str(), CEPH_CRYPTO_MD5_DIGESTSIZE) != 0) ||

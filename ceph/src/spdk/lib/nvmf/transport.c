@@ -31,81 +31,206 @@
  *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+#include "spdk/stdinc.h"
+
+#include "nvmf_internal.h"
 #include "transport.h"
 
-#include <stdlib.h>
-#include <strings.h>
-
+#include "spdk/config.h"
 #include "spdk/log.h"
 #include "spdk/nvmf.h"
 #include "spdk/queue.h"
 #include "spdk/util.h"
 
-#include "nvmf_internal.h"
-
-static const struct spdk_nvmf_transport *const g_transports[] = {
+static const struct spdk_nvmf_transport_ops *const g_transport_ops[] = {
 #ifdef SPDK_CONFIG_RDMA
 	&spdk_nvmf_transport_rdma,
 #endif
 };
 
-#define NUM_TRANSPORTS (SPDK_COUNTOF(g_transports))
+#define NUM_TRANSPORTS (SPDK_COUNTOF(g_transport_ops))
 
-int
-spdk_nvmf_transport_init(void)
+static inline const struct spdk_nvmf_transport_ops *
+spdk_nvmf_get_transport_ops(enum spdk_nvme_transport_type type)
 {
 	size_t i;
-	int count = 0;
-
 	for (i = 0; i != NUM_TRANSPORTS; i++) {
-		if (g_transports[i]->transport_init(g_nvmf_tgt.max_queue_depth, g_nvmf_tgt.max_io_size,
-						    g_nvmf_tgt.in_capsule_data_size) < 0) {
-			SPDK_NOTICELOG("%s transport init failed\n", g_transports[i]->name);
-		} else {
-			count++;
+		if (g_transport_ops[i]->type == type) {
+			return g_transport_ops[i];
 		}
 	}
+	return NULL;
+}
 
-	return count;
+struct spdk_nvmf_transport *
+spdk_nvmf_transport_create(enum spdk_nvme_transport_type type,
+			   struct spdk_nvmf_transport_opts *opts)
+{
+	const struct spdk_nvmf_transport_ops *ops = NULL;
+	struct spdk_nvmf_transport *transport;
+
+	if ((opts->max_io_size % opts->io_unit_size != 0) ||
+	    (opts->max_io_size / opts->io_unit_size >
+	     SPDK_NVMF_MAX_SGL_ENTRIES)) {
+		SPDK_ERRLOG("%s: invalid IO size, MaxIO:%d, UnitIO:%d, MaxSGL:%d\n",
+			    spdk_nvme_transport_id_trtype_str(type),
+			    opts->max_io_size,
+			    opts->io_unit_size,
+			    SPDK_NVMF_MAX_SGL_ENTRIES);
+		return NULL;
+	}
+
+	ops = spdk_nvmf_get_transport_ops(type);
+	if (!ops) {
+		SPDK_ERRLOG("Transport type %s unavailable.\n",
+			    spdk_nvme_transport_id_trtype_str(type));
+		return NULL;
+	}
+
+	transport = ops->create(opts);
+	if (!transport) {
+		SPDK_ERRLOG("Unable to create new transport of type %s\n",
+			    spdk_nvme_transport_id_trtype_str(type));
+		return NULL;
+	}
+
+	transport->ops = ops;
+	transport->opts = *opts;
+
+	return transport;
 }
 
 int
-spdk_nvmf_transport_fini(void)
+spdk_nvmf_transport_destroy(struct spdk_nvmf_transport *transport)
 {
-	size_t i;
-	int count = 0;
+	return transport->ops->destroy(transport);
+}
 
-	for (i = 0; i != NUM_TRANSPORTS; i++) {
-		if (g_transports[i]->transport_fini() < 0) {
-			SPDK_NOTICELOG("%s transport fini failed\n", g_transports[i]->name);
-		} else {
-			count++;
-		}
-	}
+int
+spdk_nvmf_transport_listen(struct spdk_nvmf_transport *transport,
+			   const struct spdk_nvme_transport_id *trid)
+{
+	return transport->ops->listen(transport, trid);
+}
 
-	return count;
+int
+spdk_nvmf_transport_stop_listen(struct spdk_nvmf_transport *transport,
+				const struct spdk_nvme_transport_id *trid)
+{
+	return transport->ops->stop_listen(transport, trid);
 }
 
 void
-spdk_nvmf_acceptor_poll(void)
+spdk_nvmf_transport_accept(struct spdk_nvmf_transport *transport, new_qpair_fn cb_fn)
 {
-	size_t i;
-
-	for (i = 0; i != NUM_TRANSPORTS; i++) {
-		g_transports[i]->acceptor_poll();
-	}
+	transport->ops->accept(transport, cb_fn);
 }
 
-const struct spdk_nvmf_transport *
-spdk_nvmf_transport_get(const char *name)
+void
+spdk_nvmf_transport_listener_discover(struct spdk_nvmf_transport *transport,
+				      struct spdk_nvme_transport_id *trid,
+				      struct spdk_nvmf_discovery_log_page_entry *entry)
 {
-	size_t i;
+	transport->ops->listener_discover(transport, trid, entry);
+}
 
-	for (i = 0; i != NUM_TRANSPORTS; i++) {
-		if (strcasecmp(name, g_transports[i]->name) == 0) {
-			return g_transports[i];
+struct spdk_nvmf_transport_poll_group *
+spdk_nvmf_transport_poll_group_create(struct spdk_nvmf_transport *transport)
+{
+	struct spdk_nvmf_transport_poll_group *group;
+
+	group = transport->ops->poll_group_create(transport);
+	group->transport = transport;
+
+	return group;
+}
+
+void
+spdk_nvmf_transport_poll_group_destroy(struct spdk_nvmf_transport_poll_group *group)
+{
+	group->transport->ops->poll_group_destroy(group);
+}
+
+int
+spdk_nvmf_transport_poll_group_add(struct spdk_nvmf_transport_poll_group *group,
+				   struct spdk_nvmf_qpair *qpair)
+{
+	if (qpair->transport) {
+		assert(qpair->transport == group->transport);
+		if (qpair->transport != group->transport) {
+			return -1;
 		}
+	} else {
+		qpair->transport = group->transport;
 	}
 
-	return NULL;
+	return group->transport->ops->poll_group_add(group, qpair);
+}
+
+int
+spdk_nvmf_transport_poll_group_poll(struct spdk_nvmf_transport_poll_group *group)
+{
+	return group->transport->ops->poll_group_poll(group);
+}
+
+int
+spdk_nvmf_transport_req_free(struct spdk_nvmf_request *req)
+{
+	return req->qpair->transport->ops->req_free(req);
+}
+
+int
+spdk_nvmf_transport_req_complete(struct spdk_nvmf_request *req)
+{
+	return req->qpair->transport->ops->req_complete(req);
+}
+
+void
+spdk_nvmf_transport_qpair_fini(struct spdk_nvmf_qpair *qpair)
+{
+	qpair->transport->ops->qpair_fini(qpair);
+}
+
+bool
+spdk_nvmf_transport_qpair_is_idle(struct spdk_nvmf_qpair *qpair)
+{
+	return qpair->transport->ops->qpair_is_idle(qpair);
+}
+
+int
+spdk_nvmf_transport_qpair_get_peer_trid(struct spdk_nvmf_qpair *qpair,
+					struct spdk_nvme_transport_id *trid)
+{
+	return qpair->transport->ops->qpair_get_peer_trid(qpair, trid);
+}
+
+int
+spdk_nvmf_transport_qpair_get_local_trid(struct spdk_nvmf_qpair *qpair,
+		struct spdk_nvme_transport_id *trid)
+{
+	return qpair->transport->ops->qpair_get_local_trid(qpair, trid);
+}
+
+int
+spdk_nvmf_transport_qpair_get_listen_trid(struct spdk_nvmf_qpair *qpair,
+		struct spdk_nvme_transport_id *trid)
+{
+	return qpair->transport->ops->qpair_get_listen_trid(qpair, trid);
+}
+
+bool
+spdk_nvmf_transport_opts_init(enum spdk_nvme_transport_type type,
+			      struct spdk_nvmf_transport_opts *opts)
+{
+	const struct spdk_nvmf_transport_ops *ops;
+
+	ops = spdk_nvmf_get_transport_ops(type);
+	if (!ops) {
+		SPDK_ERRLOG("Transport type %s unavailable.\n",
+			    spdk_nvme_transport_id_trtype_str(type));
+		return false;
+	}
+
+	ops->opts_init(opts);
+	return true;
 }

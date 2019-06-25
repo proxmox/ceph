@@ -34,7 +34,7 @@
 #ifndef SPDK_NVMF_SPEC_H
 #define SPDK_NVMF_SPEC_H
 
-#include <stdint.h>
+#include "spdk/stdinc.h"
 
 #include "spdk/assert.h"
 #include "spdk/nvme_spec.h"
@@ -272,8 +272,8 @@ struct spdk_nvmf_fabric_prop_get_cmd {
 	uint8_t		fctype;
 	uint8_t		reserved2[35];
 	struct {
-		uint8_t size		: 2;
-		uint8_t reserved	: 6;
+		uint8_t size		: 3;
+		uint8_t reserved	: 5;
 	} attrib;
 	uint8_t		reserved3[3];
 	uint32_t	ofst;
@@ -304,8 +304,8 @@ struct spdk_nvmf_fabric_prop_set_cmd {
 	uint8_t		fctype;
 	uint8_t		reserved1[35];
 	struct {
-		uint8_t size		: 2;
-		uint8_t reserved	: 6;
+		uint8_t size		: 3;
+		uint8_t reserved	: 5;
 	} attrib;
 	uint8_t		reserved2[3];
 	uint32_t	ofst;
@@ -322,8 +322,14 @@ struct spdk_nvmf_fabric_prop_set_cmd {
 };
 SPDK_STATIC_ASSERT(sizeof(struct spdk_nvmf_fabric_prop_set_cmd) == 64, "Incorrect size");
 
+#define SPDK_NVMF_NQN_MIN_LEN 11 /* The prefix in the spec is 11 characters */
 #define SPDK_NVMF_NQN_MAX_LEN 223
+#define SPDK_NVMF_NQN_UUID_PRE_LEN 32
+#define SPDK_NVMF_UUID_STRING_LEN 36
+#define SPDK_NVMF_NQN_UUID_PRE "nqn.2014-08.org.nvmexpress:uuid:"
 #define SPDK_NVMF_DISCOVERY_NQN "nqn.2014-08.org.nvmexpress.discovery"
+
+#define SPDK_DOMAIN_LABEL_MAX_LEN 63 /* RFC 1034 max domain label length */
 
 #define SPDK_NVMF_TRADDR_MAX_LEN 256
 #define SPDK_NVMF_TRSVCID_MAX_LEN 32
@@ -425,8 +431,8 @@ struct spdk_nvmf_rdma_request_private_data {
 	uint16_t	qid;	/* queue id */
 	uint16_t	hrqsize;	/* host receive queue size */
 	uint16_t	hsqsize;	/* host send queue size */
-	uint16_t 	cntlid;		/* controller id */
-	uint8_t 	reserved[22];
+	uint16_t	cntlid;		/* controller id */
+	uint8_t		reserved[22];
 };
 SPDK_STATIC_ASSERT(sizeof(struct spdk_nvmf_rdma_request_private_data) == 32, "Incorrect size");
 
@@ -439,7 +445,7 @@ SPDK_STATIC_ASSERT(sizeof(struct spdk_nvmf_rdma_accept_private_data) == 32, "Inc
 
 struct spdk_nvmf_rdma_reject_private_data {
 	uint16_t	recfmt; /* record format */
-	struct spdk_nvme_status status;
+	uint16_t	sts; /* status */
 };
 SPDK_STATIC_ASSERT(sizeof(struct spdk_nvmf_rdma_reject_private_data) == 4, "Incorrect size");
 
@@ -450,7 +456,7 @@ union spdk_nvmf_rdma_private_data {
 };
 SPDK_STATIC_ASSERT(sizeof(union spdk_nvmf_rdma_private_data) == 32, "Incorrect size");
 
-enum spdk_nvmf_rdma_transport_errors {
+enum spdk_nvmf_rdma_transport_error {
 	SPDK_NVMF_RDMA_ERROR_INVALID_PRIVATE_DATA_LENGTH	= 0x1,
 	SPDK_NVMF_RDMA_ERROR_INVALID_RECFMT			= 0x2,
 	SPDK_NVMF_RDMA_ERROR_INVALID_QID			= 0x3,
@@ -459,7 +465,6 @@ enum spdk_nvmf_rdma_transport_errors {
 	SPDK_NVMF_RDMA_ERROR_NO_RESOURCES			= 0x6,
 	SPDK_NVMF_RDMA_ERROR_INVALID_IRD			= 0x7,
 	SPDK_NVMF_RDMA_ERROR_INVALID_ORD			= 0x8,
-	SPDK_NVMF_RDMA_ERROR_INVALID_CNTLID			= 0x9,
 };
 
 #pragma pack(pop)

@@ -10,7 +10,7 @@
 #include <boost/mp11/algorithm.hpp>
 #include <boost/core/lightweight_test.hpp>
 #include <boost/config.hpp>
-#include <boost/detail/workaround.hpp>
+#include <boost/config/workaround.hpp>
 #include <tuple>
 
 using boost::mp11::mp_size_t;
@@ -20,9 +20,9 @@ using boost::mp11::mp_iota_c;
 
 struct F
 {
-    int i_;
+    std::size_t i_;
 
-    explicit F( int i ): i_( i ) {}
+    explicit F( std::size_t i ): i_( i ) {}
 
     template<std::size_t I> bool operator()( mp_size_t<I> ) const
     {

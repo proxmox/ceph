@@ -142,7 +142,9 @@ class TestDamage(CephFSTestCase):
                 # Missing dirfrags for non-system dirs result in empty directory
                 "10000000000.00000000",
                 # PurgeQueue is auto-created if not found on startup
-                "500.00000000"
+                "500.00000000",
+                # open file table is auto-created if not found on startup
+                "mds0_openfiles.0"
             ]:
                 expectation = NO_DAMAGE
             else:
@@ -451,7 +453,7 @@ class TestDamage(CephFSTestCase):
         self.mount_a.umount_wait()
 
         # Now repair the stats
-        scrub_json = self.fs.mds_asok(["scrub_path", "/subdir", "repair"])
+        scrub_json = self.fs.rank_tell(["scrub", "start", "/subdir", "repair"])
         log.info(json.dumps(scrub_json, indent=2))
 
         self.assertEqual(scrub_json["passed_validation"], False)

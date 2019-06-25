@@ -1,6 +1,6 @@
 #  Boost.SmartPtr Library test Jamfile
 #
-#  Copyright (c) 2003-2017 Peter Dimov
+#  Copyright (c) 2003-2018 Peter Dimov
 #  Copyright (c) 2003 Dave Abrahams
 #
 #  Distributed under the Boost Software License, Version 1.0. (See
@@ -51,7 +51,11 @@ run yield_k_test.cpp : : : <threading>multi : yield_k_test.mt ;
 run spinlock_test.cpp ;
 run spinlock_try_test.cpp ;
 run spinlock_try_test.cpp : : : <threading>multi : spinlock_try_test.mt ;
-run spinlock_pool_test.cpp ;
+run spinlock_pool_test.cpp : : :
+    # msvc-8.0, 9.0 optimizer codegen bug for `x % 41`
+    <toolset>msvc-8.0,<variant>release:<build>no
+    <toolset>msvc-9.0,<variant>release:<build>no ;
+
 run make_shared_test.cpp ;
 run make_shared_move_emulation_test.cpp ;
 run make_shared_perfect_forwarding_test.cpp ;
@@ -68,7 +72,7 @@ run sp_recursive_assign_test.cpp ;
 run sp_recursive_assign2_test.cpp ;
 run sp_recursive_assign_rv_test.cpp ;
 run sp_recursive_assign2_rv_test.cpp ;
-compile-fail auto_ptr_lv_fail.cpp ;
+compile-fail auto_ptr_lv_fail.cpp : <toolset>gcc-4.4.7:<build>no ;
 run atomic_count_test2.cpp ;
 run sp_typeinfo_test.cpp ;
 compile make_shared_fp_test.cpp ;
@@ -149,13 +153,13 @@ compile-fail array_fail_member_access.cpp ;
 compile-fail array_fail_array_access.cpp ;
 
 run make_shared_array_test.cpp ;
-run make_shared_arrays_test.cpp : : : <toolset>gcc-4.6.3_0x:<cxxflags>-fno-deduce-init-list ;
+run make_shared_arrays_test.cpp ; # <cxxflags>-fno-deduce-init-list no longer needed for gcc-4.6
 run make_shared_array_throws_test.cpp ;
 run make_shared_array_esft_test.cpp ;
 run make_shared_array_noinit_test.cpp ;
 run make_shared_array_value_test.cpp ;
 run allocate_shared_array_test.cpp ;
-run allocate_shared_arrays_test.cpp : : : <toolset>gcc-4.6.3_0x:<cxxflags>-fno-deduce-init-list ;
+run allocate_shared_arrays_test.cpp ; # <cxxflags>-fno-deduce-init-list no longer needed for gcc-4.6
 run allocate_shared_array_throws_test.cpp ;
 run allocate_shared_array_esft_test.cpp ;
 run allocate_shared_array_noinit_test.cpp ;
@@ -164,7 +168,7 @@ run allocate_shared_array_construct_test.cpp ;
 
 run make_unique_test.cpp ;
 run make_unique_args_test.cpp ;
-run make_unique_value_test.cpp ;
+run make_unique_value_test.cpp : : : <toolset>gcc-4.6:<cxxflags>-fno-deduce-init-list ;
 run make_unique_noinit_test.cpp ;
 run make_unique_throws_test.cpp ;
 run make_unique_array_test.cpp ;
@@ -266,3 +270,5 @@ run lsp_convertible_test.cpp ;
 run lsp_convertible_test2.cpp ;
 
 run make_shared_array_tmp_test.cpp ;
+
+run lw_thread_test.cpp : : : <threading>multi ;

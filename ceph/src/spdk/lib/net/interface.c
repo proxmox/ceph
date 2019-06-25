@@ -31,35 +31,24 @@
  *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include <stdlib.h>
+#include "net_internal.h"
+
+#include "spdk/stdinc.h"
+#include "spdk/string.h"
 
 #include "spdk/log.h"
 #include "spdk/net.h"
 
-#include "spdk_internal/event.h"
-
 #ifdef __linux__ /* Interface management is Linux-specific */
 
-#include <stdio.h>
-#include <string.h>
-#include <netinet/in.h>
 #include <linux/netlink.h>
 #include <linux/rtnetlink.h>
-#include <net/if.h>
-#include <unistd.h>
-#include <stdint.h>
-#include <stdio.h>
-#include <errno.h>
-#include <arpa/inet.h>
-#include <pthread.h>
-#include <assert.h>
-
 
 static TAILQ_HEAD(, spdk_interface) g_interface_head;
 
 static pthread_mutex_t interface_lock = PTHREAD_MUTEX_INITIALIZER;
 
-static uint32_t spdk_get_ifc_ipv4(void)
+static int spdk_get_ifc_ipv4(void)
 {
 	int ret;
 	int rtattrlen;
@@ -103,14 +92,14 @@ static uint32_t spdk_get_ifc_ipv4(void)
 	/* Send and recv the message from kernel */
 	ret = send(netlink_fd, &req, req.n.nlmsg_len, 0);
 	if (ret < 0) {
-		SPDK_ERRLOG("netlink send failed: %s\n", strerror(errno));
+		SPDK_ERRLOG("netlink send failed: %s\n", spdk_strerror(errno));
 		ret = 1;
 		goto exit;
 	}
 
 	ret = recv(netlink_fd, buf, sizeof(buf), 0);
 	if (ret <= 0) {
-		SPDK_ERRLOG("netlink recv failed: %s\n", strerror(errno));
+		SPDK_ERRLOG("netlink recv failed: %s\n", spdk_strerror(errno));
 		ret = 1;
 		goto exit;
 	}
@@ -167,7 +156,7 @@ exit:
 }
 
 
-static void spdk_process_new_interface_msg(struct nlmsghdr *h)
+static int spdk_process_new_interface_msg(struct nlmsghdr *h)
 {
 	int len;
 	struct spdk_interface *ifc;
@@ -179,7 +168,7 @@ static void spdk_process_new_interface_msg(struct nlmsghdr *h)
 	ifc = (struct spdk_interface *) malloc(sizeof(*ifc));
 	if (ifc == NULL) {
 		SPDK_ERRLOG("%s: Malloc failed\n", __func__);
-		exit(1);
+		return 1;
 	}
 
 	memset(ifc, 0, sizeof(*ifc));
@@ -195,7 +184,8 @@ static void spdk_process_new_interface_msg(struct nlmsghdr *h)
 		case IFLA_IFNAME:
 			if (if_indextoname(iface->ifi_index, ifc->name) == NULL) {
 				SPDK_ERRLOG("Indextoname failed!\n");
-				exit(1);
+				free(ifc);
+				return 2;
 			}
 			break;
 		default:
@@ -203,28 +193,29 @@ static void spdk_process_new_interface_msg(struct nlmsghdr *h)
 		}
 	}
 	TAILQ_INSERT_TAIL(&g_interface_head, ifc, tailq);
+	return 0;
 }
 
-static uint32_t spdk_prepare_ifc_list(void)
+static int spdk_prepare_ifc_list(void)
 {
-	uint32_t ret = 0;
+	int ret = 0;
 	struct nl_req_s {
 		struct nlmsghdr hdr;
 		struct rtgenmsg gen;
 		struct ifinfomsg ifi;
 	};
 	int netlink_fd;
-	struct sockaddr_nl local;  /* Our local (user space) side of the communication */
-	struct sockaddr_nl kernel; /* The remote (kernel space) side of the communication */
+	struct sockaddr_nl local;	/* Our local (user space) side of the communication */
+	struct sockaddr_nl kernel;	/* The remote (kernel space) side of the communication */
 
-	struct msghdr rtnl_msg;    /* Generic msghdr struct for use with sendmsg */
-	struct iovec io;	   /* IO vector for sendmsg */
+	struct msghdr rtnl_msg;		/* Generic msghdr struct for use with sendmsg */
+	struct iovec io;		/* IO vector for sendmsg */
 
-	struct nl_req_s req;       /* Structure that describes the rtnetlink packet itself */
-	char reply[16384]; 	   /* a large buffer to receive lots of link information */
+	struct nl_req_s req;		/* Structure that describes the rtnetlink packet itself */
+	char reply[16384];		/* a large buffer to receive lots of link information */
 
-	pid_t pid = getpid();	   /* Our process ID to build the correct netlink address */
-	int end = 0;		   /* some flag to end loop parsing */
+	pid_t pid = getpid();		/* Our process ID to build the correct netlink address */
+	int end = 0;			/* some flag to end loop parsing */
 
 	/*
 	 * Prepare netlink socket for kernel/user space communication
@@ -297,7 +288,10 @@ static uint32_t spdk_prepare_ifc_list(void)
 					end++;
 					break;
 				case RTM_NEWLINK:	/* This is a RTM_NEWLINK message, which contains lots of information about a link */
-					spdk_process_new_interface_msg(msg_ptr);
+					ret = spdk_process_new_interface_msg(msg_ptr);
+					if (ret != 0) {
+						goto exit;
+					}
 					break;
 				default:
 					break;
@@ -341,8 +335,9 @@ static int netlink_addr_msg(uint32_t ifc_idx, uint32_t ip_address, uint32_t crea
 	} req;
 	struct rtattr *rta;
 
-	if (spdk_interface_available(ifc_idx))
+	if (spdk_interface_available(ifc_idx)) {
 		return -1;
+	}
 
 	fd = socket(AF_NETLINK, SOCK_RAW, NETLINK_ROUTE);
 	if (fd < 0) {
@@ -356,7 +351,7 @@ static int netlink_addr_msg(uint32_t ifc_idx, uint32_t ip_address, uint32_t crea
 	la.nl_pid = getpid();
 	bind(fd, (struct sockaddr *) &la, sizeof(la));
 
-	/* initalize RTNETLINK request buffer. */
+	/* initialize RTNETLINK request buffer. */
 	bzero(&req, sizeof(req));
 
 	/* compute the initial length of the service request. */
@@ -388,7 +383,7 @@ static int netlink_addr_msg(uint32_t ifc_idx, uint32_t ip_address, uint32_t crea
 
 	/* setup the service header (struct rtmsg). */
 	req.r.ifa_family = AF_INET;
-	req.r.ifa_prefixlen = 32; /*hardcoded*/
+	req.r.ifa_prefixlen = 32; /* hardcoded */
 	req.r.ifa_flags = IFA_F_PERMANENT | IFA_F_SECONDARY;
 	req.r.ifa_index = ifc_idx;
 	req.r.ifa_scope = 0;
@@ -426,16 +421,22 @@ static void spdk_interface_ip_update(void)
 	pthread_mutex_unlock(&interface_lock);
 }
 
-static int
+int
 spdk_interface_init(void)
 {
+	int rc = 0;
+
 	TAILQ_INIT(&g_interface_head);
-	spdk_prepare_ifc_list();
-	spdk_get_ifc_ipv4();
-	return 0;
+	rc = spdk_prepare_ifc_list();
+	if (!rc) {
+		rc = spdk_get_ifc_ipv4();
+	}
+
+	return rc;
 }
 
-static int spdk_interface_destroy(void)
+void
+spdk_interface_destroy(void)
 {
 	struct spdk_interface *ifc_entry;
 
@@ -444,7 +445,6 @@ static int spdk_interface_destroy(void)
 		TAILQ_REMOVE(&g_interface_head, ifc_entry, tailq);
 		free(ifc_entry);
 	}
-	return 0;
 }
 
 int
@@ -473,16 +473,15 @@ void *spdk_interface_get_list(void)
 
 #else /* Not Linux */
 
-static int
+int
 spdk_interface_init(void)
 {
 	return 0;
 }
 
-static int
+void
 spdk_interface_destroy(void)
 {
-	return 0;
 }
 
 int
@@ -504,5 +503,3 @@ spdk_interface_get_list(void)
 }
 
 #endif
-
-SPDK_SUBSYSTEM_REGISTER(interface, spdk_interface_init, spdk_interface_destroy, NULL)

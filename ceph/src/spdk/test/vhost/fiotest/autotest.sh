@@ -1,21 +1,19 @@
 #!/usr/bin/env bash
 set -e
-BASE_DIR=$(readlink -f $(dirname $0))
-[[ -z "$TEST_DIR" ]] && TEST_DIR="$(cd $BASE_DIR/../../../../ && pwd)"
+AUTOTEST_BASE_DIR=$(readlink -f $(dirname $0))
+[[ -z "$COMMON_DIR" ]] && COMMON_DIR="$(cd $AUTOTEST_BASE_DIR/../common && pwd)"
+[[ -z "$TEST_DIR" ]] && TEST_DIR="$(cd $AUTOTEST_BASE_DIR/../../../../ && pwd)"
 
 dry_run=false
 no_shutdown=false
-fio_bin="fio"
-fio_jobs="$BASE_DIR/fio_jobs/"
-test_type=spdk_vhost
+fio_bin=""
+remote_fio_bin=""
+fio_jobs=""
+test_type=spdk_vhost_scsi
 reuse_vms=false
-force_build=false
 vms=()
 used_vms=""
-disk_split=""
 x=""
-
-max_sectors_kb=4
 
 function usage()
 {
@@ -27,28 +25,20 @@ function usage()
 	echo "    --test-type=TYPE      Perform specified test:"
 	echo "                          virtio - test host virtio-scsi-pci using file as disk image"
 	echo "                          kernel_vhost - use kernel driver vhost-scsi"
-	echo "                          spdk_vhost - use spdk vhost"
+	echo "                          spdk_vhost_scsi - use spdk vhost scsi"
+	echo "                          spdk_vhost_blk - use spdk vhost block"
 	echo "-x                        set -x for script debug"
 	echo "    --fio-bin=FIO         Use specific fio binary (will be uploaded to VM)"
-	echo "    --qemu-src=QEMU_DIR   Location of the QEMU sources"
-	echo "    --dpdk-src=DPDK_DIR   Location of the DPDK sources"
-	echo "    --fio-jobs=           Fio configs to use for tests. Can point to a directory or"
-	echo "                          can point to a directory with regex mask, example: ./dir/*.job"
+	echo "    --fio-job=            Fio config to use for test."
 	echo "                          All VMs will run the same fio job when FIO executes."
 	echo "                          (no unique jobs for specific VMs)"
 	echo "    --work-dir=WORK_DIR   Where to find build file. Must exist. [default: $TEST_DIR]"
 	echo "    --dry-run             Don't perform any tests, run only and wait for enter to terminate"
 	echo "    --no-shutdown         Don't shutdown at the end but leave envirionment working"
-	echo "    --force-build         Force SPDK rebuild with the specified DPDK path."
 	echo "    --vm=NUM[,OS][,DISKS] VM configuration. This parameter might be used more than once:"
 	echo "                          NUM - VM number (mandatory)"
 	echo "                          OS - VM os disk path (optional)"
 	echo "                          DISKS - VM os test disks/devices path (virtio - optional, kernel_vhost - mandatory)"
-	echo "    --disk-split          By default all test types execute fio jobs on all disks which are available on guest"
-	echo "                          system. Use this option if only some of the disks should be used for testing."
-	echo "                          Example: --disk-split=4,1-3 will result in VM 1 using it's first disk (ex. /dev/sda)"
-	echo "                          and VM 2 using it's disks 1-3 (ex. /dev/sdb, /dev/sdc, /dev/sdd)"
-	echo "    --max-sectors=NUM     Set max_sectors_kb for test disk to NUM (default: $max_sectors_kb)"
 	exit 0
 }
 
@@ -61,16 +51,11 @@ while getopts 'xh-:' optchar; do
 			help) usage $0 ;;
 			work-dir=*) TEST_DIR="${OPTARG#*=}" ;;
 			fio-bin=*) fio_bin="--fio-bin=${OPTARG#*=}" ;;
-			qemu-src=*) QEMU_SRC_DIR="${OPTARG#*=}" ;;
-			dpdk-src=*) DPDK_SRC_DIR="${OPTARG#*=}" ;;
-			fio-jobs=*) fio_jobs="${OPTARG#*=}" ;;
+			fio-job=*) fio_job="${OPTARG#*=}" ;;
 			dry-run) dry_run=true ;;
 			no-shutdown) no_shutdown=true ;;
 			test-type=*) test_type="${OPTARG#*=}" ;;
-			force-build) force_build=true ;;
 			vm=*) vms+=("${OPTARG#*=}") ;;
-			disk-split=*) disk_split="${OPTARG#*=}" ;;
-			max-sectors=*) max_sectors_kb="${OPTARG#*=}" ;;
 			*) usage $0 "Invalid argument '$OPTARG'" ;;
 		esac
 		;;
@@ -82,153 +67,130 @@ while getopts 'xh-:' optchar; do
 done
 shift $(( OPTIND - 1 ))
 
-if [[ -d "$fio_jobs" ]]; then
-	fio_jobs="$fio_jobs/*.job"
+if [[ ! -r "$fio_job" ]]; then
+	fail "no fio job file specified"
 fi
 
-. $BASE_DIR/common.sh
+. $COMMON_DIR/common.sh
 
 trap 'error_exit "${FUNCNAME}" "${LINENO}"' ERR
 
-echo "==============="
-echo "INFO: checking qemu"
-
-if [[ ! -x $INSTALL_DIR/bin/qemu-system-x86_64 ]]; then
-	echo "INFO: can't find $INSTALL_DIR/bin/qemu-system-x86_64 - building and installing"
-
-	if [[ ! -d $QEMU_SRC_DIR ]]; then
-		echo "ERROR: Cannot find qemu source in $QEMU_SRC_DIR"
-		exit 1
-	else
-		echo "INFO: qemu source exists $QEMU_SRC_DIR - building"
-		qemu_build_and_install
-	fi
-fi
-
-echo "==============="
-echo ""
-echo "INFO: checking spdk"
-echo ""
-
-if [[ ! -x $SPDK_BUILD_DIR/app/vhost/vhost ]] || $force_build ; then
-	echo "INFO: $SPDK_BUILD_DIR/app/vhost/vhost - building and installing"
-	spdk_build_and_install
-fi
-
 vm_kill_all
 
-if [[ $test_type == "spdk_vhost" ]]; then
-	echo "==============="
-	echo ""
-	echo "INFO: running SPDK"
-	echo ""
-	$BASE_DIR/run_vhost.sh $x --work-dir=$TEST_DIR
-	echo
+if [[ $test_type =~ "spdk_vhost" ]]; then
+	notice "==============="
+	notice ""
+	notice "running SPDK"
+	notice ""
+	spdk_vhost_run --json-path=$AUTOTEST_BASE_DIR
+	notice ""
 fi
 
-echo "==============="
-echo ""
-echo "Setting up VM"
-echo ""
+notice "==============="
+notice ""
+notice "Setting up VM"
+notice ""
 
-rpc_py="python $SPDK_BUILD_DIR/scripts/rpc.py "
-rpc_py+="-s 127.0.0.1 "
+rpc_py="$SPDK_BUILD_DIR/scripts/rpc.py -s $(get_vhost_dir)/rpc.sock"
 
 for vm_conf in ${vms[@]}; do
 	IFS=',' read -ra conf <<< "$vm_conf"
-	setup_cmd="$BASE_DIR/vm_setup.sh $x --work-dir=$TEST_DIR --test-type=$test_type"
 	if [[ x"${conf[0]}" == x"" ]] || ! assert_number ${conf[0]}; then
-		echo "ERROR: invalid VM configuration syntax $vm_conf"
-		exit 1;
+		fail "invalid VM configuration syntax $vm_conf"
 	fi
 
 	# Sanity check if VM is not defined twice
 	for vm_num in $used_vms; do
 		if [[ $vm_num -eq ${conf[0]} ]]; then
-			echo "ERROR: VM$vm_num defined more than twice ( $(printf "'%s' " "${vms[@]}"))!"
-			exit 1
+			fail "VM$vm_num defined more than twice ( $(printf "'%s' " "${vms[@]}"))!"
 		fi
 	done
 
-	setup_cmd+=" -f ${conf[0]}"
 	used_vms+=" ${conf[0]}"
-	[[ x"${conf[1]}" != x"" ]] && setup_cmd+=" --os=${conf[1]}"
-	[[ x"${conf[2]}" != x"" ]] && setup_cmd+=" --disk=${conf[2]}"
 
-	if [[ $test_type == "spdk_vhost" ]]; then
-		echo "INFO: Adding device via RPC ..."
-		echo ""
+	if [[ $test_type =~ "spdk_vhost" ]]; then
 
-		eval $(grep "^vhost_reactor_mask=" $BASE_DIR/autotest.config)
+		notice "Adding device via RPC ..."
+
 		while IFS=':' read -ra disks; do
 			for disk in "${disks[@]}"; do
-				$rpc_py construct_vhost_scsi_controller naa.$disk.${conf[0]} \
-				--cpumask $vhost_reactor_mask
-				$rpc_py add_vhost_scsi_lun naa.$disk.${conf[0]} 0 $disk
+				if [[ "$test_type" == "spdk_vhost_blk" ]]; then
+					disk=${disk%%_*}
+					notice "Creating vhost block controller naa.$disk.${conf[0]} with device $disk"
+					$rpc_py construct_vhost_blk_controller naa.$disk.${conf[0]} $disk
+				else
+					notice "Creating controller naa.$disk.${conf[0]}"
+					$rpc_py construct_vhost_scsi_controller naa.$disk.${conf[0]}
+
+					notice "Adding device (0) to naa.$disk.${conf[0]}"
+					$rpc_py add_vhost_scsi_lun naa.$disk.${conf[0]} 0 $disk
+				fi
 			done
 		done <<< "${conf[2]}"
 		unset IFS;
-		$rpc_py get_vhost_scsi_controllers
+		$rpc_py get_vhost_controllers
 	fi
+
+	setup_cmd="vm_setup --force=${conf[0]} --disk-type=$test_type"
+	[[ x"${conf[1]}" != x"" ]] && setup_cmd+=" --os=${conf[1]}"
+	[[ x"${conf[2]}" != x"" ]] && setup_cmd+=" --disks=${conf[2]}"
+
 	$setup_cmd
 done
 
 # Run everything
-$BASE_DIR/vm_run.sh $x --work-dir=$TEST_DIR $used_vms
+vm_run $used_vms
 vm_wait_for_boot 600 $used_vms
 
-echo "==============="
-echo ""
-echo "INFO: Testing..."
+if [[ $test_type == "spdk_vhost_scsi" ]]; then
+	for vm_conf in ${vms[@]}; do
+		IFS=',' read -ra conf <<< "$vm_conf"
+		while IFS=':' read -ra disks; do
+			for disk in "${disks[@]}"; do
+				notice "Hotdetach test. Trying to remove existing device from a controller naa.$disk.${conf[0]}"
+				$rpc_py remove_vhost_scsi_target naa.$disk.${conf[0]} 0
 
-echo "INFO: Running fio jobs ..."
-run_fio="python $BASE_DIR/run_fio.py "
-run_fio+="$fio_bin "
-run_fio+="--job-file="
-for job in $fio_jobs; do
-	run_fio+="$job,"
-done
-run_fio="${run_fio::-1}"
-run_fio+=" "
-run_fio+="--out=$TEST_DIR "
+				sleep 0.1
 
-if [[ ! $disk_split == '' ]]; then
-	run_fio+="--split-disks=$disk_split "
+				notice "Hotattach test. Re-adding device 0 to naa.$disk.${conf[0]}"
+				$rpc_py add_vhost_scsi_lun naa.$disk.${conf[0]} 0 $disk
+			done
+		done <<< "${conf[2]}"
+		unset IFS;
+	done
 fi
+
+sleep 0.1
+
+notice "==============="
+notice ""
+notice "Testing..."
+
+notice "Running fio jobs ..."
 
 # Check if all VM have disk in tha same location
 DISK=""
 
+fio_disks=""
 for vm_num in $used_vms; do
 	vm_dir=$VM_BASE_DIR/$vm_num
-	host_name="VM-$vm_num-$(cat $BASE_DIR/autotest.config|grep qemu_mask|awk -F'=' '{print $2}'|sed "$(($vm_num+1))q;d")"
-	echo "INFO: Setting up hostname: $host_name"
+
+	qemu_mask_param="VM_${vm_num}_qemu_mask"
+
+	host_name="VM-$vm_num"
+	notice "Setting up hostname: $host_name"
 	vm_ssh $vm_num "hostname $host_name"
 	vm_start_fio_server $fio_bin $readonly $vm_num
-	vm_check_scsi_location $vm_num
 
-	SCSI_DISK="${SCSI_DISK::-1}"
-	for DISK in $SCSI_DISK; do
-		echo "INFO: VM$vm_num Setting max_sectors_kb=$max_sectors_kb on disk $DISK"
-		echo ""
-		vm_ssh $vm_num "echo $max_sectors_kb > /sys/block/$DISK/queue/max_sectors_kb"
-	done
+	if [[ "$test_type" == "spdk_vhost_scsi" ]]; then
+		vm_check_scsi_location $vm_num
+		#vm_reset_scsi_devices $vm_num $SCSI_DISK
+	elif [[ "$test_type" == "spdk_vhost_blk" ]]; then
+		vm_check_blk_location $vm_num
+	fi
 
-	vm_reset_scsi_devices $vm_num $SCSI_DISK
-
-	run_fio+="127.0.0.1:$(cat $vm_dir/fio_socket):"
-	for disk in $SCSI_DISK; do
-		run_fio+="/dev/$disk:"
-	done
-	run_fio="${run_fio::-1}"
-	run_fio+=","
+	fio_disks+=" --vm=${vm_num}$(printf ':/dev/%s' $SCSI_DISK)"
 done
-
-run_fio="${run_fio%,}"
-run_fio+=" "
-run_fio="${run_fio::-1}"
-
-echo -e "$run_fio"
 
 if $dry_run; then
 	read -p "Enter to kill evething" xx
@@ -237,21 +199,49 @@ if $dry_run; then
 	exit 0
 fi
 
-$run_fio
+run_fio $fio_bin --job-file="$fio_job" --out="$TEST_DIR/fio_results" $fio_disks
 
-for vm_num in $used_vms; do
+if [[ "$test_type" == "spdk_vhost_scsi" ]]; then
+	for vm_num in $used_vms; do
 	vm_reset_scsi_devices $vm_num $SCSI_DISK
-done
+	done
+fi
 
 if ! $no_shutdown; then
-	echo "==============="
-	echo "INFO: Testing done -> shutting down"
-	at_app_exit
-	echo "==============="
+	notice "==============="
+	notice "APP EXITING"
+	notice "killing all VMs"
+	vm_shutdown_all
+	notice "waiting 2 seconds to let all VMs die"
+	sleep 2
+	if [[ $test_type =~ "spdk_vhost" ]]; then
+		notice "Removing vhost devices & controllers via RPC ..."
+		for vm_conf in ${vms[@]}; do
+			IFS=',' read -ra conf <<< "$vm_conf"
+
+			while IFS=':' read -ra disks; do
+				for disk in "${disks[@]}"; do
+					disk=${disk%%_*}
+					notice "Removing all vhost devices from controller naa.$disk.${conf[0]}"
+					if [[ "$test_type" == "spdk_vhost_scsi" ]]; then
+						$rpc_py remove_vhost_scsi_target naa.$disk.${conf[0]} 0
+					fi
+
+					$rpc_py remove_vhost_controller naa.$disk.${conf[0]}
+				done
+			done <<< "${conf[2]}"
+		done
+	fi
+	notice "Testing done -> shutting down"
+	notice "killing vhost app"
+	spdk_vhost_kill
+
+	notice "EXIT DONE"
+	notice "==============="
 else
-	echo "==============="
-	echo
-	echo "INFO: Leaving environment working!"
-	echo ""
-	echo "==============="
+	notice "==============="
+	notice ""
+	notice "Leaving environment working!"
+	notice ""
+	notice "==============="
 fi

@@ -1,3 +1,5 @@
+.. _rgw_frontends:
+
 ==============
 HTTP Frontends
 ==============
@@ -10,7 +12,7 @@ that can be configured with ``rgw_frontends``.
 Beast
 =====
 
-.. versionadded:: Luminous
+.. versionadded:: Mimic
 
 The ``beast`` frontend uses the Boost.Beast library for HTTP parsing
 and the Boost.Asio library for asynchronous network i/o.
@@ -56,6 +58,19 @@ Options
 
 :Type: String
 :Default: None
+
+``tcp_nodelay``
+
+:Description: If set the socket option will disable Nagle's algorithm on 
+              the connection which means that packets will be sent as soon 
+              as possible instead of waiting for a full buffer or timeout to occur.
+
+              ``1`` Disable Nagel's algorithm for all sockets.
+
+              ``0`` Keep the default: Nagel's algorithm enabled.
+
+:Type: Integer (0 or 1)
+:Default: 0
 
 
 Civetweb
@@ -108,6 +123,33 @@ Options
 :Type: String
 :Default: None
 
+``access_log_file``
+
+:Description: Path to a file for access logs. Either full path, or relative
+			  to the current working directory. If absent (default), then
+			  accesses are not logged.
+
+:Type: String
+:Default: ``EMPTY``
+
+
+``error_log_file``
+
+:Description: Path to a file for error logs. Either full path, or relative
+			  to the current working directory. If absent (default), then
+			  errors are not logged.
+
+:Type: String
+:Default: ``EMPTY``
+
+
+The following is an example of the ``/etc/ceph/ceph.conf`` file with some of these options set: ::
+ 
+ [client.rgw.gateway-node1]
+ rgw_frontends = civetweb 
+ request_timeout_ms = 30000 
+ error_log_file = /var/log/radosgw/civetweb.error.log 
+ access_log_file = /var/log/radosgw/civetweb.access.log
 
 A complete list of supported options can be found in the `Civetweb User Manual`_.
 

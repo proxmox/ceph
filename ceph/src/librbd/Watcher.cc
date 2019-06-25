@@ -11,7 +11,7 @@
 #include <boost/bind.hpp>
 
 // re-include our assert to clobber the system one; fix dout:
-#include "include/assert.h"
+#include "include/ceph_assert.h"
 
 #define dout_subsys ceph_subsys_rbd
 
@@ -45,7 +45,7 @@ struct C_UnwatchAndFlush : public Context {
 
       librados::AioCompletion *aio_comp = create_rados_callback(this);
       r = rados.aio_watch_flush(aio_comp);
-      assert(r == 0);
+      ceph_assert(r == 0);
       aio_comp->release();
       return;
     }
@@ -79,7 +79,7 @@ Watcher::C_NotifyAck::C_NotifyAck(Watcher *watcher, uint64_t notify_id,
 
 void Watcher::C_NotifyAck::finish(int r) {
   ldout(cct, 10) << "r=" << r << dendl;
-  assert(r == 0);
+  ceph_assert(r == 0);
   watcher->acknowledge_notify(notify_id, handle, out);
 }
 
@@ -98,21 +98,21 @@ Watcher::Watcher(librados::IoCtx& ioctx, ContextWQ *work_queue,
 
 Watcher::~Watcher() {
   RWLock::RLocker l(m_watch_lock);
-  assert(is_unregistered(m_watch_lock));
+  ceph_assert(is_unregistered(m_watch_lock));
 }
 
 void Watcher::register_watch(Context *on_finish) {
   ldout(m_cct, 10) << dendl;
 
   RWLock::WLocker watch_locker(m_watch_lock);
-  assert(is_unregistered(m_watch_lock));
+  ceph_assert(is_unregistered(m_watch_lock));
   m_watch_state = WATCH_STATE_REGISTERING;
   m_watch_blacklisted = false;
 
   librados::AioCompletion *aio_comp = create_rados_callback(
     new C_RegisterWatch(this, on_finish));
   int r = m_ioctx.aio_watch(m_oid, aio_comp, &m_watch_handle, &m_watch_ctx);
-  assert(r == 0);
+  ceph_assert(r == 0);
   aio_comp->release();
 }
 
@@ -123,7 +123,7 @@ void Watcher::handle_register_watch(int r, Context *on_finish) {
   Context *unregister_watch_ctx = nullptr;
   {
     RWLock::WLocker watch_locker(m_watch_lock);
-    assert(m_watch_state == WATCH_STATE_REGISTERING);
+    ceph_assert(m_watch_state == WATCH_STATE_REGISTERING);
 
     m_watch_state = WATCH_STATE_IDLE;
     if (r < 0) {
@@ -161,7 +161,7 @@ void Watcher::unregister_watch(Context *on_finish) {
       ldout(m_cct, 10) << "delaying unregister until register completed"
                        << dendl;
 
-      assert(m_unregister_watch_ctx == nullptr);
+      ceph_assert(m_unregister_watch_ctx == nullptr);
       m_unregister_watch_ctx = new FunctionContext([this, on_finish](int r) {
           unregister_watch(on_finish);
         });
@@ -170,7 +170,7 @@ void Watcher::unregister_watch(Context *on_finish) {
       librados::AioCompletion *aio_comp = create_rados_callback(
         new C_UnwatchAndFlush(m_ioctx, on_finish));
       int r = m_ioctx.aio_unwatch(m_watch_handle, aio_comp);
-      assert(r == 0);
+      ceph_assert(r == 0);
       aio_comp->release();
 
       m_watch_handle = 0;
@@ -201,7 +201,7 @@ void Watcher::block_notifies(Context *on_finish) {
 
 void Watcher::unblock_notifies() {
   RWLock::WLocker locker(m_watch_lock);
-  assert(m_blocked_count > 0);
+  ceph_assert(m_blocked_count > 0);
   --m_blocked_count;
   ldout(m_cct, 5) << "blocked_count=" << m_blocked_count << dendl;
 }
@@ -217,7 +217,7 @@ std::string Watcher::get_oid() const {
 
 void Watcher::set_oid(const string& oid) {
   RWLock::WLocker watch_locker(m_watch_lock);
-  assert(is_unregistered(m_watch_lock));
+  ceph_assert(is_unregistered(m_watch_lock));
 
   m_oid = oid;
 }
@@ -251,7 +251,7 @@ void Watcher::rewatch() {
   Context *unregister_watch_ctx = nullptr;
   {
     RWLock::WLocker watch_locker(m_watch_lock);
-    assert(m_watch_state == WATCH_STATE_REWATCHING);
+    ceph_assert(m_watch_state == WATCH_STATE_REWATCHING);
 
     if (m_unregister_watch_ctx != nullptr) {
       m_watch_state = WATCH_STATE_IDLE;
@@ -277,7 +277,7 @@ void Watcher::handle_rewatch(int r) {
   Context *unregister_watch_ctx = nullptr;
   {
     RWLock::WLocker watch_locker(m_watch_lock);
-    assert(m_watch_state == WATCH_STATE_REWATCHING);
+    ceph_assert(m_watch_state == WATCH_STATE_REWATCHING);
 
     m_watch_blacklisted = false;
     if (m_unregister_watch_ctx != nullptr) {
@@ -319,7 +319,7 @@ void Watcher::handle_rewatch_callback(int r) {
   Context *unregister_watch_ctx = nullptr;
   {
     RWLock::WLocker watch_locker(m_watch_lock);
-    assert(m_watch_state == WATCH_STATE_REWATCHING);
+    ceph_assert(m_watch_state == WATCH_STATE_REWATCHING);
 
     if (m_unregister_watch_ctx != nullptr) {
       m_watch_state = WATCH_STATE_IDLE;

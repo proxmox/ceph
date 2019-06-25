@@ -2,6 +2,7 @@
  *   BSD LICENSE
  *
  *   Copyright (c) Intel Corporation.
+ *   Copyright (c) 2017, IBM Corporation.
  *   All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
@@ -38,6 +39,8 @@
 #ifndef SPDK_BARRIER_H
 #define SPDK_BARRIER_H
 
+#include "spdk/stdinc.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -46,10 +49,76 @@ extern "C" {
 #define spdk_compiler_barrier() __asm volatile("" ::: "memory")
 
 /** Write memory barrier */
+#ifdef __PPC64__
+#define spdk_wmb()	__asm volatile("sync" ::: "memory")
+#elif defined(__aarch64__)
+#define spdk_wmb()	__asm volatile("dsb st" ::: "memory")
+#elif defined(__i386__) || defined(__x86_64__)
 #define spdk_wmb()	__asm volatile("sfence" ::: "memory")
+#else
+#define spdk_wmb()
+#error Unknown architecture
+#endif
+
+/** Read memory barrier */
+#ifdef __PPC64__
+#define spdk_rmb()	__asm volatile("sync" ::: "memory")
+#elif defined(__aarch64__)
+#define spdk_rmb()	__asm volatile("dsb ld" ::: "memory")
+#elif defined(__i386__) || defined(__x86_64__)
+#define spdk_rmb()	__asm volatile("lfence" ::: "memory")
+#else
+#define spdk_rmb()
+#error Unknown architecture
+#endif
 
 /** Full read/write memory barrier */
+#ifdef __PPC64__
+#define spdk_mb()	__asm volatile("sync" ::: "memory")
+#elif defined(__aarch64__)
+#define spdk_mb()	__asm volatile("dsb sy" ::: "memory")
+#elif defined(__i386__) || defined(__x86_64__)
 #define spdk_mb()	__asm volatile("mfence" ::: "memory")
+#else
+#define spdk_mb()
+#error Unknown architecture
+#endif
+
+/** SMP read memory barrier. */
+#ifdef __PPC64__
+#define spdk_smp_rmb()	__asm volatile("lwsync" ::: "memory")
+#elif defined(__aarch64__)
+#define spdk_smp_rmb()	__asm volatile("dmb ishld" ::: "memory")
+#elif defined(__i386__) || defined(__x86_64__)
+#define spdk_smp_rmb()	spdk_compiler_barrier()
+#else
+#define spdk_smp_rmb()
+#error Unknown architecture
+#endif
+
+/** SMP write memory barrier. */
+#ifdef __PPC64__
+#define spdk_smp_wmb()	__asm volatile("lwsync" ::: "memory")
+#elif defined(__aarch64__)
+#define spdk_smp_wmb()	__asm volatile("dmb ishst" ::: "memory")
+#elif defined(__i386__) || defined(__x86_64__)
+#define spdk_smp_wmb()	spdk_compiler_barrier()
+#else
+#define spdk_smp_wmb()
+#error Unknown architecture
+#endif
+
+/** SMP read/write memory barrier. */
+#ifdef __PPC64__
+#define spdk_smp_mb()	spdk_mb()
+#elif defined(__aarch64__)
+#define spdk_smp_mb()	__asm volatile("dmb ish" ::: "memory")
+#elif defined(__i386__) || defined(__x86_64__)
+#define spdk_smp_mb()	spdk_mb()
+#else
+#define spdk_smp_mb()
+#error Unknown architecture
+#endif
 
 #ifdef __cplusplus
 }

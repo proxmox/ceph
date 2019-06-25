@@ -73,7 +73,7 @@ There are six main sections to a CRUSH Map.
 
 #. **buckets:** Once you define bucket types, you must define each node
    in the hierarchy, its type, and which devices or other nodes it
-   containes.
+   contains.
 
 #. **rules:** Rules define policy about how data is distributed across
    devices in the hierarchy.
@@ -95,7 +95,7 @@ cluster.  Devices are identified by an id (a non-negative integer) and
 a name, normally ``osd.N`` where ``N`` is the device id.
 
 Devices may also have a *device class* associated with them (e.g.,
-``hdd`` or ``ssd``), allowing them to be conveniently targetted by a
+``hdd`` or ``ssd``), allowing them to be conveniently targeted by a
 crush rule.
 
 ::
@@ -278,7 +278,7 @@ and one rack bucket. The OSDs are declared as items within the host buckets::
    `CRUSH - Controlled, Scalable, Decentralized Placement of Replicated Data`_,
    and more specifically to **Section 3.4**. The bucket types are:
 
-	#. **Uniform:** Uniform buckets aggregate devices with **exactly** the same
+	#. **Uniform**: Uniform buckets aggregate devices with **exactly** the same
 	   weight. For example, when firms commission or decommission hardware, they
 	   typically do so with many machines that have exactly the same physical
 	   configuration (e.g., bulk purchases). When storage devices have exactly
@@ -302,7 +302,7 @@ and one rack bucket. The OSDs are declared as items within the host buckets::
 	   tree buckets reduce the placement time to O(log :sub:`n`), making them
 	   suitable for managing much larger sets of devices or nested buckets.
 
-	#. **Straw:** List and Tree buckets use a divide and conquer strategy
+	#. **Straw**: List and Tree buckets use a divide and conquer strategy
 	   in a way that either gives certain items precedence (e.g., those
 	   at the beginning of a list) or obviates the need to consider entire
 	   subtrees of items at all. That improves the performance of the replica
@@ -311,6 +311,12 @@ and one rack bucket. The OSDs are declared as items within the host buckets::
 	   or re-weighting of an item. The straw bucket type allows all items to
 	   fairly “compete” against each other for replica placement through a
 	   process analogous to a draw of straws.
+
+        #. **Straw2**: Straw2 buckets improve Straw to correctly avoid any data 
+           movement between items when neighbor weights change.
+
+           For example the weight of item A including adding it anew or removing
+           it completely, there will be data movement only to or from item A.
 
 .. topic:: Hash
 
@@ -366,21 +372,19 @@ A rule takes the following form::
 
 	rule <rulename> {
 
-		ruleset <ruleset>
+		id [a unique whole numeric ID]
 		type [ replicated | erasure ]
 		min_size <min-size>
 		max_size <max-size>
 		step take <bucket-name> [class <device-class>]
-		step [choose|chooseleaf] [firstn|indep] <N> <bucket-type>
+		step [choose|chooseleaf] [firstn|indep] <N> type <bucket-type>
 		step emit
 	}
 
 
-``ruleset``
+``id``
 
-:Description: A unique whole number for identifying the rule. The name ``ruleset``
-              is a carry-over from the past, when it was possible to have multiple
-              CRUSH rules per pool.
+:Description: A unique whole number for identifying the rule.
 
 :Purpose: A component of the rule mask.
 :Type: Integer
@@ -433,8 +437,9 @@ A rule takes the following form::
 
 ``step choose firstn {num} type {bucket-type}``
 
-:Description: Selects the number of buckets of the given type. The number is
-              usually the number of replicas in the pool (i.e., pool size).
+:Description: Selects the number of buckets of the given type from within the
+	      current bucket. The number is usually the number of replicas in
+	      the pool (i.e., pool size).
 
               - If ``{num} == 0``, choose ``pool-num-replicas`` buckets (all available).
               - If ``{num} > 0 && < pool-num-replicas``, choose that many buckets.
@@ -448,8 +453,8 @@ A rule takes the following form::
 ``step chooseleaf firstn {num} type {bucket-type}``
 
 :Description: Selects a set of buckets of ``{bucket-type}`` and chooses a leaf
-              node from the subtree of each bucket in the set of buckets. The
-              number of buckets in the set is usually the number of replicas in
+              node (that is, an OSD) from the subtree of each bucket in the set of buckets.
+              The number of buckets in the set is usually the number of replicas in
               the pool (i.e., pool size).
 
               - If ``{num} == 0``, choose ``pool-num-replicas`` buckets (all available).
@@ -459,7 +464,6 @@ A rule takes the following form::
 :Purpose: A component of the rule. Usage removes the need to select a device using two steps.
 :Prerequisite: Follows ``step take`` or ``step choose``.
 :Example: ``step chooseleaf firstn 0 type row``
-
 
 
 ``step emit``
@@ -475,6 +479,29 @@ A rule takes the following form::
 .. important:: A given CRUSH rule may be assigned to multiple pools, but it
    is not possible for a single pool to have multiple CRUSH rules.
 
+``firstn`` versus ``indep``
+
+:Description: Controls the replacement strategy CRUSH uses when items (OSDs)
+	      are marked down in the CRUSH map. If this rule is to be used with
+	      replicated pools it should be ``firstn`` and if it's for
+	      erasure-coded pools it should be ``indep``.
+
+	      The reason has to do with how they behave when a
+	      previously-selected device fails. Let's say you have a PG stored
+	      on OSDs 1, 2, 3, 4, 5. Then 3 goes down.
+	      
+	      With the "firstn" mode, CRUSH simply adjusts its calculation to
+	      select 1 and 2, then selects 3 but discovers it's down, so it
+	      retries and selects 4 and 5, and then goes on to select a new
+	      OSD 6. So the final CRUSH mapping change is
+	      1, 2, 3, 4, 5 -> 1, 2, 4, 5, 6.
+
+	      But if you're storing an EC pool, that means you just changed the
+	      data mapped to OSDs 4, 5, and 6! So the "indep" mode attempts to
+	      not do that. You can instead expect it, when it selects the failed
+	      OSD 3, to try again and pick out 6, for a final transformation of:
+	      1, 2, 3, 4, 5 -> 1, 2, 6, 4, 5
+	      
 .. _crush-reclassify:
 
 Migrating from a legacy SSD rule to device classes
@@ -666,3 +693,5 @@ Again, the special ``--enable-unsafe-tunables`` option is required.
 Further, as noted above, be careful running old versions of the
 ``ceph-osd`` daemon after reverting to legacy values as the feature
 bit is not perfectly enforced.
+
+.. _CRUSH - Controlled, Scalable, Decentralized Placement of Replicated Data: https://ceph.com/wp-content/uploads/2016/08/weil-crush-sc06.pdf

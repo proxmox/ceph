@@ -39,13 +39,15 @@
 #ifndef SPDK_IOAT_SPEC_H
 #define SPDK_IOAT_SPEC_H
 
+#include "spdk/stdinc.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-#include <inttypes.h>
-
 #include "spdk/assert.h"
+
+#define SPDK_IOAT_PCI_CHANERR_INT_OFFSET	0x180
 
 #define SPDK_IOAT_INTRCTRL_MASTER_INT_EN	0x01
 

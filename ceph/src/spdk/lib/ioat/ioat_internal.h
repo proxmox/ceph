@@ -34,22 +34,18 @@
 #ifndef __IOAT_INTERNAL_H__
 #define __IOAT_INTERNAL_H__
 
+#include "spdk/stdinc.h"
+
 #include "spdk/ioat.h"
 #include "spdk/ioat_spec.h"
-
-#include <errno.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <inttypes.h>
-
 #include "spdk/queue.h"
 #include "spdk/mmio.h"
 
-/* Allocate 2 << 15 (32K) descriptors per channel by default. */
+/* Allocate 1 << 15 (32K) descriptors per channel by default. */
 #define IOAT_DEFAULT_ORDER			15
 
 struct ioat_descriptor {
+	uint64_t		phys_addr;
 	spdk_ioat_req_cb	callback_fn;
 	void			*callback_arg;
 };
@@ -57,7 +53,7 @@ struct ioat_descriptor {
 /* One of these per allocated PCI device. */
 struct spdk_ioat_chan {
 	/* Opaque handle to upper layer */
-	void                *device;
+	struct spdk_pci_device		*device;
 	uint64_t            max_xfer_size;
 	volatile struct spdk_ioat_registers *regs;
 
@@ -71,7 +67,6 @@ struct spdk_ioat_chan {
 
 	struct ioat_descriptor		*ring;
 	union spdk_ioat_hw_desc		*hw_ring;
-	uint64_t			hw_ring_phys_addr;
 	uint32_t			dma_capabilities;
 
 	/* tailq entry for attached_chans */

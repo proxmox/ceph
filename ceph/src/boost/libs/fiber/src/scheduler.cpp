@@ -93,15 +93,15 @@ scheduler::sleep2ready_() noexcept {
             i = sleep_queue_.erase( i);
             // reset sleep-tp
             ctx->tp_ = (std::chrono::steady_clock::time_point::max)();
-            std::intptr_t prev = ctx->twstatus.exchange( -1);
+            std::intptr_t prev = ctx->twstatus.exchange( -2);
             if ( static_cast< std::intptr_t >( -1) ==  prev) {
                 // timed-wait op.: timeout after notify
                 continue;
             }
             // prev == 0: no timed-wait op.
             // prev == <any>: timed-wait op., timeout before notify
-            // push new context to ready-queue
-            algo_->awakened( ctx);
+            // store context in local queues
+            schedule( ctx);
         } else {
             break; // first context with now < deadline
         }
@@ -134,7 +134,7 @@ scheduler::~scheduler() {
     main_ctx_ = nullptr;
 }
 
-boost::context::continuation
+boost::context::fiber
 scheduler::dispatch() noexcept {
     BOOST_ASSERT( context::active() == dispatcher_ctx_);
     for (;;) {
@@ -152,6 +152,7 @@ scheduler::dispatch() noexcept {
         remote_ready2ready_();
 #endif
         // get sleeping context'
+        // must be called after remote_ready2ready_()
         sleep2ready_();
         // get next ready context
         context * ctx = algo_->pick_next();
@@ -198,7 +199,6 @@ scheduler::schedule( context * ctx) noexcept {
     BOOST_ASSERT( ! ctx->remote_ready_is_linked() );
 #endif
     BOOST_ASSERT( ! ctx->terminated_is_linked() );
-    BOOST_ASSERT( ! ctx->wait_is_linked() );
     // remove context ctx from sleep-queue
     // (might happen if blocked in timed_mutex::try_lock_until())
     if ( ctx->sleep_is_linked() ) {
@@ -232,7 +232,7 @@ scheduler::schedule_from_remote( context * ctx) noexcept {
 }
 #endif
 
-boost::context::continuation
+boost::context::fiber
 scheduler::terminate( detail::spinlock_lock & lk, context * ctx) noexcept {
     BOOST_ASSERT( nullptr != ctx);
     BOOST_ASSERT( context::active() == ctx);

@@ -35,7 +35,7 @@ Any options not recognized by ceph-fuse will be passed on to libfuse.
 
 .. option:: -o opt,[opt...]
 
-   mount options.
+   Mount options.
 
 .. option:: -d
 

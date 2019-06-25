@@ -10,6 +10,9 @@
 // Test that header file is self-contained.
 #include <boost/beast/websocket/stream.hpp>
 
+#include <boost/asio/io_service.hpp>
+#include <boost/asio/strand.hpp>
+
 #include "test.hpp"
 
 namespace boost {
@@ -19,7 +22,7 @@ namespace websocket {
 class write_test : public websocket_test_suite
 {
 public:
-    template<class Wrap>
+    template<bool deflateSupported, class Wrap>
     void
     doTestWrite(Wrap const& w)
     {
@@ -50,7 +53,8 @@ public:
         }
 
         // message
-        doTest(pmd, [&](ws_type& ws)
+        doTest<deflateSupported>(pmd,
+        [&](ws_type_t<deflateSupported>& ws)
         {
             ws.auto_fragment(false);
             ws.binary(false);
@@ -63,10 +67,11 @@ public:
         });
 
         // empty message
-        doTest(pmd, [&](ws_type& ws)
+        doTest<deflateSupported>(pmd,
+        [&](ws_type_t<deflateSupported>& ws)
         {
             ws.text(true);
-            w.write(ws, boost::asio::null_buffers{});
+            w.write(ws, boost::asio::const_buffer{});
             multi_buffer b;
             w.read(ws, b);
             BEAST_EXPECT(ws.got_text());
@@ -74,7 +79,8 @@ public:
         });
 
         // fragmented message
-        doTest(pmd, [&](ws_type& ws)
+        doTest<deflateSupported>(pmd,
+        [&](ws_type_t<deflateSupported>& ws)
         {
             ws.auto_fragment(false);
             ws.binary(false);
@@ -88,7 +94,8 @@ public:
         });
 
         // continuation
-        doTest(pmd, [&](ws_type& ws)
+        doTest<deflateSupported>(pmd,
+        [&](ws_type_t<deflateSupported>& ws)
         {
             std::string const s = "Hello";
             std::size_t const chop = 3;
@@ -103,7 +110,8 @@ public:
         });
 
         // mask
-        doTest(pmd, [&](ws_type& ws)
+        doTest<deflateSupported>(pmd,
+        [&](ws_type_t<deflateSupported>& ws)
         {
             ws.auto_fragment(false);
             std::string const s = "Hello";
@@ -114,7 +122,8 @@ public:
         });
 
         // mask (large)
-        doTest(pmd, [&](ws_type& ws)
+        doTest<deflateSupported>(pmd,
+        [&](ws_type_t<deflateSupported>& ws)
         {
             ws.auto_fragment(false);
             ws.write_buffer_size(16);
@@ -126,7 +135,8 @@ public:
         });
 
         // mask, autofrag
-        doTest(pmd, [&](ws_type& ws)
+        doTest<deflateSupported>(pmd,
+        [&](ws_type_t<deflateSupported>& ws)
         {
             ws.auto_fragment(true);
             std::string const s(16384, '*');
@@ -140,7 +150,7 @@ public:
         doStreamLoop([&](test::stream& ts)
         {
             echo_server es{log, kind::async_client};
-            ws_type ws{ts};
+            ws_type_t<deflateSupported> ws{ts};
             ws.next_layer().connect(es.stream());
             try
             {
@@ -166,7 +176,7 @@ public:
         doStreamLoop([&](test::stream& ts)
         {
             echo_server es{log, kind::async_client};
-            ws_type ws{ts};
+            ws_type_t<deflateSupported> ws{ts};
             ws.next_layer().connect(es.stream());
             try
             {
@@ -187,7 +197,15 @@ public:
             }
             ts.close();
         });
+    }
 
+    template<class Wrap>
+    void
+    doTestWriteDeflate(Wrap const& w)
+    {
+        using boost::asio::buffer;
+
+        permessage_deflate pmd;
         pmd.client_enable = true;
         pmd.server_enable = true;
         pmd.compLevel = 1;
@@ -238,11 +256,15 @@ public:
     {
         using boost::asio::buffer;
 
-        doTestWrite(SyncClient{});
+        doTestWrite<false>(SyncClient{});
+        doTestWrite<true>(SyncClient{});
+        doTestWriteDeflate(SyncClient{});
 
         yield_to([&](yield_context yield)
         {
-            doTestWrite(AsyncClient{yield});
+            doTestWrite<false>(AsyncClient{yield});
+            doTestWrite<true>(AsyncClient{yield});
+            doTestWriteDeflate(AsyncClient{yield});
         });
     }
 
@@ -268,7 +290,7 @@ public:
                         BOOST_THROW_EXCEPTION(
                             system_error{ec});
                 });
-            BEAST_EXPECT(ws.wr_block_);
+            BEAST_EXPECT(ws.wr_block_.is_locked());
             BEAST_EXPECT(count == 0);
             ws.async_write(sbuf("*"),
                 [&](error_code ec, std::size_t n)
@@ -301,7 +323,7 @@ public:
                         BOOST_THROW_EXCEPTION(
                             system_error{ec});
                 });
-            BEAST_EXPECT(ws.wr_block_);
+            BEAST_EXPECT(ws.wr_block_.is_locked());
             BEAST_EXPECT(count == 0);
             ws.async_write(sbuf("*"),
                 [&](error_code ec, std::size_t)
@@ -337,7 +359,7 @@ public:
                         BOOST_THROW_EXCEPTION(
                             system_error{ec});
                 });
-            while(! ws.wr_block_)
+            while(! ws.wr_block_.is_locked())
             {
                 ioc.run_one();
                 if(! BEAST_EXPECT(! ioc.stopped()))
@@ -379,7 +401,7 @@ public:
                             system_error{ec});
                     BEAST_EXPECT(n == 16384);
                 });
-            BEAST_EXPECT(ws.wr_block_);
+            BEAST_EXPECT(ws.wr_block_.is_locked());
             ws.async_ping("",
                 [&](error_code ec)
                 {
@@ -413,7 +435,7 @@ public:
                             system_error{ec});
                     BEAST_EXPECT(n == 16384);
                 });
-            BEAST_EXPECT(ws.wr_block_);
+            BEAST_EXPECT(ws.wr_block_.is_locked());
             ws.async_ping("",
                 [&](error_code ec)
                 {
@@ -447,7 +469,7 @@ public:
                             system_error{ec});
                     BEAST_EXPECT(n == 16384);
                 });
-            BEAST_EXPECT(ws.wr_block_);
+            BEAST_EXPECT(ws.wr_block_.is_locked());
             ws.async_ping("",
                 [&](error_code ec)
                 {
@@ -480,7 +502,7 @@ public:
                             system_error{ec});
                     BEAST_EXPECT(n == 16384);
                 });
-            BEAST_EXPECT(ws.wr_block_);
+            BEAST_EXPECT(ws.wr_block_.is_locked());
             ws.async_ping("",
                 [&](error_code ec)
                 {
@@ -518,7 +540,7 @@ public:
                             system_error{ec});
                     BEAST_EXPECT(n == s.size());
                 });
-            BEAST_EXPECT(ws.wr_block_);
+            BEAST_EXPECT(ws.wr_block_.is_locked());
             ws.async_ping("",
                 [&](error_code ec)
                 {
@@ -549,7 +571,7 @@ public:
                 if(! BEAST_EXPECTS(! ec, ec.message()))
                     break;
                 ws.async_write_some(false,
-                    boost::asio::null_buffers{},
+                    boost::asio::const_buffer{},
                     [&](error_code, std::size_t)
                     {
                         fail();
@@ -613,6 +635,41 @@ public:
     }
 
     void
+    testMoveOnly()
+    {
+        boost::asio::io_context ioc;
+        stream<test::stream> ws{ioc};
+        ws.async_write_some(
+            true, boost::asio::const_buffer{},
+            move_only_handler{});
+    }
+
+    struct copyable_handler
+    {
+        template<class... Args>
+        void
+        operator()(Args&&...) const
+        {
+        }
+    };
+
+    void
+    testAsioHandlerInvoke()
+    {
+        // make sure things compile, also can set a
+        // breakpoint in asio_handler_invoke to make sure
+        // it is instantiated.
+        {
+            boost::asio::io_context ioc;
+            boost::asio::io_service::strand s{ioc};
+            stream<test::stream> ws{ioc};
+            flat_buffer b;
+            ws.async_write(boost::asio::const_buffer{},
+                s.wrap(copyable_handler{}));
+        }
+    }
+
+    void
     run() override
     {
         testWrite();
@@ -620,6 +677,7 @@ public:
         testAsyncWriteFrame();
         testIssue300();
         testContHook();
+        testMoveOnly();
     }
 };
 

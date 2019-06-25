@@ -14,6 +14,7 @@ Branch      | Linux/OSX | Windows | Coverage | Documentation | Matrix
 - [Appearances](#appearances)
 - [Description](#description)
 - [Requirements](#requirements)
+- [Git Branches](#branches)
 - [Building](#building)
 - [Usage](#usage)
 - [License](#license)
@@ -41,6 +42,10 @@ This library is designed for:
 * **Basis for Further Abstraction.** Components are well-suited for building upon.
 
 ## Appearances
+
+| <a href="https://www.bishopfox.com/case_study/securing-beast/">Bishop Fox 2018</a> |
+| ------------ |
+| <a href="https://youtu.be/4TtyYbGDAj0"><img width="320" height = "180" alt="Beast Security Review" src="https://raw.githubusercontent.com/vinniefalco/BeastAssets/master/BishopFox2018.png"></a> |
 
 | <a href="https://raw.githubusercontent.com/vinniefalco/CppCon2017/master/Make%20Classes%20Great%20Again%20-%20Vinnie%20Falco%20-%20CppCon%202017.pdf">CppCon 2017</a> | <a href="http://cppcast.com/2017/01/vinnie-falco/">CppCast 2017</a> | <a href="https://raw.githubusercontent.com/vinniefalco/BeastAssets/master/CppCon2016.pdf">CppCon 2016</a> |
 | ------------ | ------------ | ----------- |
@@ -73,6 +78,25 @@ One of these components is required in order to build the tests and examples:
 * Properly configured bjam/b2
 * CMake 3.5.1 or later (Windows only)
 
+## Branches
+
+The official repository contains the following branches:
+
+* [**master**](https://github.com/boostorg/beast/tree/master) This
+  holds the most recent snapshot with code that is known to be stable.
+
+* [**develop**](https://github.com/boostorg/beast/tree/develop) This
+  holds the most recent snapshot. It may contain unstable code.
+
+Each of these branches requires a corresponding Boost branch and
+all of its subprojects. For example, if you wish to use the **master**
+branch version of Beast, you should clone the Boost superproject,
+switch to the **master** branch in the superproject and acquire
+all the Boost libraries corresponding to that branch including Beast.
+
+Or, to use the latest shipping version of Beast, simply use it
+from the corresponding distribution of Boost.
+
 ## Building
 
 Beast is header-only. To use it just add the necessary `#include` line
@@ -87,14 +111,16 @@ with the Boost.Coroutine library. Please visit the Boost documentation
 for instructions on how to do this for your particular build system.
 
 To build the documentation, examples, tests, and benchmarks it is
-necessary to first obtain the boost "superproject" along with all
-of the boost libraries. Instructions for doing so may be found on
+necessary to first obtain the Boost "superproject" along with sources of
+all of the Boost libraries, then run the `b2` command to build the Boost
+libraries.
+Instructions for doing so may be found on
 the [Boost Wiki](https://github.com/boostorg/boost/wiki/Getting-Started).
 These commamnds will build the programs and documentation that come
 with Beast (omit the cxxflags parameter when building using MSVC):
 
 ```
-cd boost   # The directory containing the boost superproject and libraries
+cd boost   # The directory containing the Boost superproject and libraries
 b2 libs/beast/test cxxflags="-std=c++11"    # bjam must be in your $PATH
 b2 libs/beast/example cxxflags="-std=c++11"
 b2 libs/beast/doc
@@ -104,7 +130,7 @@ On Windows platforms only, CMake may be used to generate a Visual Studio
 solution and a set of Visual Studio project files using these commands:
 
 ```
-cd boost   # The directory containing the boost superproject and libraries
+cd boost   # The directory containing the Boost superproject and libraries
 cd libs/beast
 mkdir bin
 cd bin

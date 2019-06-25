@@ -14,8 +14,10 @@
 #include <mutex>
 
 #include "ShardedCache.h"
-
 #include "common/autovector.h"
+#include "common/dout.h"
+#include "include/ceph_assert.h"
+#include "common/ceph_context.h"
 
 namespace rocksdb_cache {
 
@@ -46,6 +48,7 @@ namespace rocksdb_cache {
 // RUCache::Release (to move into state 2) or BinnedLRUCacheShard::Erase (for state 3)
 
 std::shared_ptr<rocksdb::Cache> NewBinnedLRUCache(
+    CephContext *c,
     size_t capacity,
     int num_shard_bits = -1,
     bool strict_capacity_limit = false,
@@ -70,7 +73,7 @@ struct BinnedLRUHandle {
 
   uint32_t hash;     // Hash of key(); used for fast sharding and comparisons
 
-  char key_data[1];  // Beginning of key
+  char* key_data = nullptr;  // Beginning of key
 
   rocksdb::Slice key() const {
     // For cheaper lookups, we allow a temporary Handle object
@@ -114,11 +117,12 @@ struct BinnedLRUHandle {
   void SetHit() { flags |= 8; }
 
   void Free() {
-    assert((refs == 1 && InCache()) || (refs == 0 && !InCache()));
+    ceph_assert((refs == 1 && InCache()) || (refs == 0 && !InCache()));
     if (deleter) {
       (*deleter)(key(), value);
     }
-    delete[] reinterpret_cast<char*>(this);
+    delete[] key_data;
+    delete this;
   }
 };
 
@@ -142,7 +146,7 @@ class BinnedLRUHandleTable {
       BinnedLRUHandle* h = list_[i];
       while (h != nullptr) {
         auto n = h->next_hash;
-        assert(h->InCache());
+        ceph_assert(h->InCache());
         func(h);
         h = n;
       }
@@ -214,10 +218,10 @@ class alignas(CACHE_LINE_SIZE) BinnedLRUCacheShard : public CacheShard {
   //  not threadsafe
   size_t TEST_GetLRUSize();
 
-  //  Retrives high pri pool ratio
+  //  Retrieves high pri pool ratio
   double GetHighPriPoolRatio() const;
 
-  // Retrives high pri pool usage
+  // Retrieves high pri pool usage
   size_t GetHighPriPoolUsage() const;
 
  private:
@@ -289,8 +293,8 @@ class alignas(CACHE_LINE_SIZE) BinnedLRUCacheShard : public CacheShard {
 
 class BinnedLRUCache : public ShardedCache {
  public:
-  BinnedLRUCache(size_t capacity, int num_shard_bits, bool strict_capacity_limit,
-           double high_pri_pool_ratio);
+  BinnedLRUCache(CephContext *c, size_t capacity, int num_shard_bits,
+      bool strict_capacity_limit, double high_pri_pool_ratio);
   virtual ~BinnedLRUCache();
   virtual const char* Name() const override { return "BinnedLRUCache"; }
   virtual CacheShard* GetShard(int shard) override;
@@ -304,12 +308,24 @@ class BinnedLRUCache : public ShardedCache {
   size_t TEST_GetLRUSize();
   // Sets the high pri pool ratio
   void SetHighPriPoolRatio(double high_pri_pool_ratio);
-  //  Retrives high pri pool ratio
+  //  Retrieves high pri pool ratio
   double GetHighPriPoolRatio() const;
   // Retrieves high pri pool usage
   size_t GetHighPriPoolUsage() const;
 
+  // PriorityCache
+  virtual int64_t request_cache_bytes(
+      PriorityCache::Priority pri, uint64_t total_cache) const;
+  virtual int64_t commit_cache_size(uint64_t total_cache);
+  virtual int64_t get_committed_size() const {
+    return GetCapacity();
+  }
+  virtual std::string get_cache_name() const {
+    return "RocksDB Binned LRU Cache";
+  }
+
  private:
+  CephContext *cct;
   BinnedLRUCacheShard* shards_;
   int num_shards_ = 0;
 };

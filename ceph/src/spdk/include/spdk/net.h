@@ -38,50 +38,64 @@
 #ifndef SPDK_NET_H
 #define SPDK_NET_H
 
-#include <stddef.h>
-#include <stdbool.h>
-#include <stdint.h>
-#include <unistd.h>
-#include <sys/uio.h>
+#include "spdk/stdinc.h"
 
 #include "spdk/queue.h"
 
-#define IDLE_INTERVAL_TIME_IN_US 5000
+#ifdef __cplusplus
+extern "C" {
+#endif
 
-const char *spdk_net_framework_get_name(void);
-int spdk_net_framework_start(void);
-void spdk_net_framework_clear_socket_association(int sock);
-int spdk_net_framework_fini(void);
-int spdk_net_framework_idle_time(void);
+struct spdk_sock;
 
-#define SPDK_IFNAMSIZE		32
-#define SPDK_MAX_IP_PER_IFC	32
+struct spdk_net_framework {
+	const char *name;
 
-struct spdk_interface {
-	char name[SPDK_IFNAMSIZE];
-	uint32_t index;
-	uint32_t num_ip_addresses; /* number of IP addresses defined */
-	uint32_t ip_address[SPDK_MAX_IP_PER_IFC];
-	TAILQ_ENTRY(spdk_interface)	tailq;
+	int (*init)(void);
+	void (*fini)(void);
+
+	STAILQ_ENTRY(spdk_net_framework) link;
 };
 
-int spdk_interface_add_ip_address(int ifc_index, char *ip_addr);
-int spdk_interface_delete_ip_address(int ifc_index, char *ip_addr);
-void *spdk_interface_get_list(void);
+/**
+ * Register a net framework.
+ *
+ * \param frame Net framework to register.
+ */
+void spdk_net_framework_register(struct spdk_net_framework *frame);
 
-int spdk_sock_getaddr(int sock, char *saddr, int slen, char *caddr, int clen);
-int spdk_sock_connect(const char *ip, int port);
-int spdk_sock_listen(const char *ip, int port);
-int spdk_sock_accept(int sock);
-int spdk_sock_close(int sock);
-ssize_t spdk_sock_recv(int sock, void *buf, size_t len);
-ssize_t spdk_sock_writev(int sock, struct iovec *iov, int iovcnt);
+#define SPDK_NET_FRAMEWORK_REGISTER(name, frame) \
+static void __attribute__((constructor)) net_framework_register_##name(void) \
+{ \
+	spdk_net_framework_register(frame); \
+}
 
-int spdk_sock_set_recvlowat(int sock, int nbytes);
-int spdk_sock_set_recvbuf(int sock, int sz);
-int spdk_sock_set_sendbuf(int sock, int sz);
+/**
+ * Initialize the network interfaces by getting information through netlink socket.
+ *
+ * \return 0 on success, 1 on failure.
+ */
+int spdk_interface_init(void);
 
-bool spdk_sock_is_ipv6(int sock);
-bool spdk_sock_is_ipv4(int sock);
+/**
+ * Destroy the network interfaces.
+ */
+void spdk_interface_destroy(void);
 
-#endif /* SPDK_NET_FRAMEWORK_H */
+/**
+ * Start all registered frameworks.
+ *
+ * \return 0 on success.
+ */
+int spdk_net_framework_start(void);
+
+/**
+ * Stop all registered frameworks.
+ */
+void spdk_net_framework_fini(void);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* SPDK_NET_H */

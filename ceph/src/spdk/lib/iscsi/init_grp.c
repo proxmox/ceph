@@ -32,35 +32,302 @@
  *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include <assert.h>
-#include <inttypes.h>
-#include <stdint.h>
-#include <string.h>
-#include <errno.h>
-#include <stdarg.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <poll.h>
-#include <pthread.h>
-#include <fcntl.h>
-#include <unistd.h>
-#include <signal.h>
-#include <sys/types.h>
+#include "spdk/stdinc.h"
 
 #include "spdk/conf.h"
-#include "spdk/net.h"
+#include "spdk/string.h"
 
 #include "spdk_internal/log.h"
 
 #include "iscsi/iscsi.h"
-#include "iscsi/tgt_node.h"
-#include "iscsi/conn.h"
 #include "iscsi/init_grp.h"
 
+static struct spdk_iscsi_init_grp *
+spdk_iscsi_init_grp_create(int tag)
+{
+	struct spdk_iscsi_init_grp *ig;
+
+	ig = calloc(1, sizeof(*ig));
+	if (ig == NULL) {
+		SPDK_ERRLOG("calloc() failed for initiator group\n");
+		return NULL;
+	}
+
+	ig->tag = tag;
+	TAILQ_INIT(&ig->initiator_head);
+	TAILQ_INIT(&ig->netmask_head);
+	return ig;
+}
+
+static struct spdk_iscsi_initiator_name *
+spdk_iscsi_init_grp_find_initiator(struct spdk_iscsi_init_grp *ig, char *name)
+{
+	struct spdk_iscsi_initiator_name *iname;
+
+	TAILQ_FOREACH(iname, &ig->initiator_head, tailq) {
+		if (!strcmp(iname->name, name)) {
+			return iname;
+		}
+	}
+	return NULL;
+}
+
+static int
+spdk_iscsi_init_grp_add_initiator(struct spdk_iscsi_init_grp *ig, char *name)
+{
+	struct spdk_iscsi_initiator_name *iname;
+	char *p;
+
+	if (ig->ninitiators >= MAX_INITIATOR) {
+		SPDK_ERRLOG("> MAX_INITIATOR(=%d) is not allowed\n", MAX_INITIATOR);
+		return -EPERM;
+	}
+
+	iname = spdk_iscsi_init_grp_find_initiator(ig, name);
+	if (iname != NULL) {
+		return -EEXIST;
+	}
+
+	iname = malloc(sizeof(*iname));
+	if (iname == NULL) {
+		SPDK_ERRLOG("malloc() failed for initiator name str\n");
+		return -ENOMEM;
+	}
+
+	iname->name = strdup(name);
+	if (iname->name == NULL) {
+		SPDK_ERRLOG("strdup() failed for initiator name\n");
+		free(iname);
+		return -ENOMEM;
+	}
+
+	/* Replace "ALL" by "ANY" if set */
+	p = strstr(iname->name, "ALL");
+	if (p != NULL) {
+		SPDK_WARNLOG("Please use \"%s\" instead of \"%s\"\n", "ANY", "ALL");
+		SPDK_WARNLOG("Converting \"%s\" to \"%s\" automatically\n", "ALL", "ANY");
+		memcpy(p, "ANY", 3);
+	}
+
+	TAILQ_INSERT_TAIL(&ig->initiator_head, iname, tailq);
+	ig->ninitiators++;
+
+	SPDK_DEBUGLOG(SPDK_LOG_ISCSI, "InitiatorName %s\n", name);
+	return 0;
+}
+
+static int
+spdk_iscsi_init_grp_delete_initiator(struct spdk_iscsi_init_grp *ig, char *name)
+{
+	struct spdk_iscsi_initiator_name *iname;
+
+	iname = spdk_iscsi_init_grp_find_initiator(ig, name);
+	if (iname == NULL) {
+		return -ENOENT;
+	}
+
+	TAILQ_REMOVE(&ig->initiator_head, iname, tailq);
+	ig->ninitiators--;
+	free(iname->name);
+	free(iname);
+	return 0;
+}
+
+static int
+spdk_iscsi_init_grp_add_initiators(struct spdk_iscsi_init_grp *ig, int num_inames, char **inames)
+{
+	int i;
+	int rc;
+
+	for (i = 0; i < num_inames; i++) {
+		rc = spdk_iscsi_init_grp_add_initiator(ig, inames[i]);
+		if (rc < 0) {
+			goto cleanup;
+		}
+	}
+	return 0;
+
+cleanup:
+	for (; i > 0; --i) {
+		spdk_iscsi_init_grp_delete_initiator(ig, inames[i - 1]);
+	}
+	return rc;
+}
+
+static void
+spdk_iscsi_init_grp_delete_all_initiators(struct spdk_iscsi_init_grp *ig)
+{
+	struct spdk_iscsi_initiator_name *iname, *tmp;
+
+	TAILQ_FOREACH_SAFE(iname, &ig->initiator_head, tailq, tmp) {
+		TAILQ_REMOVE(&ig->initiator_head, iname, tailq);
+		ig->ninitiators--;
+		free(iname->name);
+		free(iname);
+	}
+}
+
+static int
+spdk_iscsi_init_grp_delete_initiators(struct spdk_iscsi_init_grp *ig, int num_inames, char **inames)
+{
+	int i;
+	int rc;
+
+	for (i = 0; i < num_inames; i++) {
+		rc = spdk_iscsi_init_grp_delete_initiator(ig, inames[i]);
+		if (rc < 0) {
+			goto cleanup;
+		}
+	}
+	return 0;
+
+cleanup:
+	for (; i > 0; --i) {
+		rc = spdk_iscsi_init_grp_add_initiator(ig, inames[i - 1]);
+		if (rc != 0) {
+			spdk_iscsi_init_grp_delete_all_initiators(ig);
+			break;
+		}
+	}
+	return -1;
+}
+
+static struct spdk_iscsi_initiator_netmask *
+spdk_iscsi_init_grp_find_netmask(struct spdk_iscsi_init_grp *ig, const char *mask)
+{
+	struct spdk_iscsi_initiator_netmask *netmask;
+
+	TAILQ_FOREACH(netmask, &ig->netmask_head, tailq) {
+		if (!strcmp(netmask->mask, mask)) {
+			return netmask;
+		}
+	}
+	return NULL;
+}
+
+static int
+spdk_iscsi_init_grp_add_netmask(struct spdk_iscsi_init_grp *ig, char *mask)
+{
+	struct spdk_iscsi_initiator_netmask *imask;
+	char *p;
+
+	if (ig->nnetmasks >= MAX_NETMASK) {
+		SPDK_ERRLOG("> MAX_NETMASK(=%d) is not allowed\n", MAX_NETMASK);
+		return -EPERM;
+	}
+
+	imask = spdk_iscsi_init_grp_find_netmask(ig, mask);
+	if (imask != NULL) {
+		return -EEXIST;
+	}
+
+	imask = malloc(sizeof(*imask));
+	if (imask == NULL) {
+		SPDK_ERRLOG("malloc() failed for inititator mask str\n");
+		return -ENOMEM;
+	}
+
+	imask->mask = strdup(mask);
+	if (imask->mask == NULL) {
+		SPDK_ERRLOG("strdup() failed for initiator mask\n");
+		free(imask);
+		return -ENOMEM;
+	}
+
+	/* Replace "ALL" by "ANY" if set */
+	p = strstr(imask->mask, "ALL");
+	if (p != NULL) {
+		SPDK_WARNLOG("Please use \"%s\" instead of \"%s\"\n", "ANY", "ALL");
+		SPDK_WARNLOG("Converting \"%s\" to \"%s\" automatically\n", "ALL", "ANY");
+		memcpy(p, "ANY", 3);
+	}
+
+	TAILQ_INSERT_TAIL(&ig->netmask_head, imask, tailq);
+	ig->nnetmasks++;
+
+	SPDK_DEBUGLOG(SPDK_LOG_ISCSI, "Netmask %s\n", mask);
+	return 0;
+}
+
+static int
+spdk_iscsi_init_grp_delete_netmask(struct spdk_iscsi_init_grp *ig, char *mask)
+{
+	struct spdk_iscsi_initiator_netmask *imask;
+
+	imask = spdk_iscsi_init_grp_find_netmask(ig, mask);
+	if (imask == NULL) {
+		return -ENOENT;
+	}
+
+	TAILQ_REMOVE(&ig->netmask_head, imask, tailq);
+	ig->nnetmasks--;
+	free(imask->mask);
+	free(imask);
+	return 0;
+}
+
+static int
+spdk_iscsi_init_grp_add_netmasks(struct spdk_iscsi_init_grp *ig, int num_imasks, char **imasks)
+{
+	int i;
+	int rc;
+
+	for (i = 0; i < num_imasks; i++) {
+		rc = spdk_iscsi_init_grp_add_netmask(ig, imasks[i]);
+		if (rc != 0) {
+			goto cleanup;
+		}
+	}
+	return 0;
+
+cleanup:
+	for (; i > 0; --i) {
+		spdk_iscsi_init_grp_delete_netmask(ig, imasks[i - 1]);
+	}
+	return rc;
+}
+
+static void
+spdk_iscsi_init_grp_delete_all_netmasks(struct spdk_iscsi_init_grp *ig)
+{
+	struct spdk_iscsi_initiator_netmask *imask, *tmp;
+
+	TAILQ_FOREACH_SAFE(imask, &ig->netmask_head, tailq, tmp) {
+		TAILQ_REMOVE(&ig->netmask_head, imask, tailq);
+		ig->nnetmasks--;
+		free(imask->mask);
+		free(imask);
+	}
+}
+
+static int
+spdk_iscsi_init_grp_delete_netmasks(struct spdk_iscsi_init_grp *ig, int num_imasks, char **imasks)
+{
+	int i;
+	int rc;
+
+	for (i = 0; i < num_imasks; i++) {
+		rc = spdk_iscsi_init_grp_delete_netmask(ig, imasks[i]);
+		if (rc != 0) {
+			goto cleanup;
+		}
+	}
+	return 0;
+
+cleanup:
+	for (; i > 0; --i) {
+		rc = spdk_iscsi_init_grp_add_netmask(ig, imasks[i - 1]);
+		if (rc != 0) {
+			spdk_iscsi_init_grp_delete_all_netmasks(ig);
+			break;
+		}
+	}
+	return -1;
+}
 
 /* Read spdk iscsi target's config file and create initiator group */
-int
-spdk_iscsi_init_grp_create_from_configfile(struct spdk_conf_section *sp)
+static int
+spdk_iscsi_parse_init_grp(struct spdk_conf_section *sp)
 {
 	int i, rc = 0;
 	const char *val = NULL;
@@ -69,47 +336,49 @@ spdk_iscsi_init_grp_create_from_configfile(struct spdk_conf_section *sp)
 	char **initiators = NULL, **netmasks = NULL;
 	int tag = spdk_conf_section_get_num(sp);
 
-	SPDK_TRACELOG(SPDK_TRACE_DEBUG, "add initiator group %d\n", tag);
+	SPDK_DEBUGLOG(SPDK_LOG_ISCSI, "add initiator group %d\n", tag);
 
 	val = spdk_conf_section_get_val(sp, "Comment");
 	if (val != NULL) {
-		SPDK_TRACELOG(SPDK_TRACE_DEBUG, "Comment %s\n", val);
+		SPDK_DEBUGLOG(SPDK_LOG_ISCSI, "Comment %s\n", val);
 	}
 
 	/* counts number of definitions */
 	for (i = 0; ; i++) {
 		val = spdk_conf_section_get_nval(sp, "InitiatorName", i);
-		if (val == NULL)
+		if (val == NULL) {
 			break;
+		}
 	}
 	if (i == 0) {
 		SPDK_ERRLOG("num_initiator_names = 0\n");
-		goto cleanup;
+		return -EINVAL;
 	}
 	num_initiator_names = i;
 	if (num_initiator_names > MAX_INITIATOR) {
 		SPDK_ERRLOG("%d > MAX_INITIATOR\n", num_initiator_names);
-		return -1;
+		return -E2BIG;
 	}
 	for (i = 0; ; i++) {
 		val = spdk_conf_section_get_nval(sp, "Netmask", i);
-		if (val == NULL)
+		if (val == NULL) {
 			break;
+		}
 	}
 	if (i == 0) {
 		SPDK_ERRLOG("num_initiator_mask = 0\n");
-		goto cleanup;
+		return -EINVAL;
 	}
 	num_initiator_masks = i;
 	if (num_initiator_masks > MAX_NETMASK) {
 		SPDK_ERRLOG("%d > MAX_NETMASK\n", num_initiator_masks);
-		return -1;
+		return -E2BIG;
 	}
 
 	initiators = calloc(num_initiator_names, sizeof(char *));
 	if (!initiators) {
-		perror("initiators");
-		return -1;
+		SPDK_ERRLOG("calloc() failed for temp initiator name array\n");
+		return -ENOMEM;
 	}
 	for (i = 0; i < num_initiator_names; i++) {
 		val = spdk_conf_section_get_nval(sp, "InitiatorName", i);
@@ -118,17 +387,17 @@ spdk_iscsi_init_grp_create_from_configfile(struct spdk_conf_section *sp)
 			rc = -EINVAL;
 			goto cleanup;
 		}
-		SPDK_TRACELOG(SPDK_TRACE_DEBUG, "InitiatorName %s\n", val);
+		SPDK_DEBUGLOG(SPDK_LOG_ISCSI, "InitiatorName %s\n", val);
 		initiators[i] = strdup(val);
 		if (!initiators[i]) {
-			perror("initiator name copy");
+			SPDK_ERRLOG("strdup() failed for temp initiator name\n");
 			rc = -ENOMEM;
 			goto cleanup;
 		}
 	}
 	netmasks = calloc(num_initiator_masks, sizeof(char *));
 	if (!netmasks) {
-		perror("netmasks");
+		SPDK_ERRLOG("malloc() failed for portal group\n");
 		rc = -ENOMEM;
 		goto cleanup;
 	}
@@ -139,10 +408,10 @@ spdk_iscsi_init_grp_create_from_configfile(struct spdk_conf_section *sp)
 			rc = -EINVAL;
 			goto cleanup;
 		}
-		SPDK_TRACELOG(SPDK_TRACE_DEBUG, "Netmask %s\n", val);
+		SPDK_DEBUGLOG(SPDK_LOG_ISCSI, "Netmask %s\n", val);
 		netmasks[i] = strdup(val);
 		if (!netmasks[i]) {
-			perror("initiator netmask copy");
+			SPDK_ERRLOG("strdup() failed for temp initiator mask\n");
 			rc = -ENOMEM;
 			goto cleanup;
 		}
@@ -150,10 +419,6 @@ spdk_iscsi_init_grp_create_from_configfile(struct spdk_conf_section *sp)
 
 	rc = spdk_iscsi_init_grp_create_from_initiator_list(tag,
 			num_initiator_names, initiators, num_initiator_masks, netmasks);
-	if (rc < 0) {
-		goto cleanup;
-	}
-	return rc;
 
 cleanup:
 	if (initiators) {
@@ -175,6 +440,25 @@ cleanup:
 	return rc;
 }
 
+int
+spdk_iscsi_init_grp_register(struct spdk_iscsi_init_grp *ig)
+{
+	struct spdk_iscsi_init_grp *tmp;
+	int rc = -1;
+
+	assert(ig != NULL);
+
+	pthread_mutex_lock(&g_spdk_iscsi.mutex);
+	tmp = spdk_iscsi_init_grp_find_by_tag(ig->tag);
+	if (tmp == NULL) {
+		TAILQ_INSERT_TAIL(&g_spdk_iscsi.ig_head, ig, tailq);
+		rc = 0;
+	}
+	pthread_mutex_unlock(&g_spdk_iscsi.mutex);
+
+	return rc;
+}
+
 /*
  * Create initiator group from list of initiator ip/hostnames and netmasks
  * The initiator hostname/netmask lists are allocated by the caller on the
@@ -187,85 +471,139 @@ spdk_iscsi_init_grp_create_from_initiator_list(int tag,
 		int num_initiator_masks,
 		char **initiator_masks)
 {
-	int i, rc = 0;
+	int rc = -1;
 	struct spdk_iscsi_init_grp *ig = NULL;
 
-	/* Make sure there are no duplicate initiator group tags */
-	if (spdk_iscsi_init_grp_find_by_tag(tag)) {
-		SPDK_ERRLOG("initiator group creation failed.  duplicate initiator group tag (%d)\n", tag);
-		rc = -EEXIST;
-		goto cleanup;
-	}
-
-	if (num_initiator_names > MAX_INITIATOR) {
-		SPDK_ERRLOG("%d > MAX_INITIATOR\n", num_initiator_names);
-		rc = -1;
-		goto cleanup;
-	}
-
-	if (num_initiator_masks > MAX_NETMASK) {
-		SPDK_ERRLOG("%d > MAX_NETMASK\n", num_initiator_masks);
-		rc = -1;
-		goto cleanup;
-	}
-
-	SPDK_TRACELOG(SPDK_TRACE_DEBUG,
+	SPDK_DEBUGLOG(SPDK_LOG_ISCSI,
 		      "add initiator group (from initiator list) tag=%d, #initiators=%d, #masks=%d\n",
 		      tag, num_initiator_names, num_initiator_masks);
 
-	ig = malloc(sizeof(*ig));
+	ig = spdk_iscsi_init_grp_create(tag);
 	if (!ig) {
-		SPDK_ERRLOG("initiator group malloc error (%d)\n", tag);
-		rc = -ENOMEM;
+		SPDK_ERRLOG("initiator group create error (%d)\n", tag);
+		return rc;
+	}
+
+	rc = spdk_iscsi_init_grp_add_initiators(ig, num_initiator_names,
+						initiator_names);
+	if (rc < 0) {
+		SPDK_ERRLOG("add initiator name error\n");
 		goto cleanup;
 	}
 
-	memset(ig, 0, sizeof(*ig));
-	ig->ref = 0;
-	ig->tag = tag;
+	rc = spdk_iscsi_init_grp_add_netmasks(ig, num_initiator_masks,
+					      initiator_masks);
+	if (rc < 0) {
+		SPDK_ERRLOG("add initiator netmask error\n");
+		goto cleanup;
+	}
 
-	ig->ninitiators = num_initiator_names;
-	ig->nnetmasks = num_initiator_masks;
-	ig->initiators = initiator_names;
-	for (i = 0; i < num_initiator_names; i++)
-		SPDK_TRACELOG(SPDK_TRACE_DEBUG, "InitiatorName %s\n",
-			      ig->initiators[i]);
-
-	ig->netmasks = initiator_masks;
-	for (i = 0; i < num_initiator_masks; i++)
-		SPDK_TRACELOG(SPDK_TRACE_DEBUG, "Netmask %s\n",
-			      ig->netmasks[i]);
-
-	ig->state = GROUP_INIT;
-	spdk_iscsi_init_grp_register(ig);
-
+	rc = spdk_iscsi_init_grp_register(ig);
+	if (rc < 0) {
+		SPDK_ERRLOG("initiator group register error (%d)\n", tag);
+		goto cleanup;
+	}
 	return 0;
 
 cleanup:
-	free(ig);
+	spdk_iscsi_init_grp_destroy(ig);
+	return rc;
+}
+
+int
+spdk_iscsi_init_grp_add_initiators_from_initiator_list(int tag,
+		int num_initiator_names,
+		char **initiator_names,
+		int num_initiator_masks,
+		char **initiator_masks)
+{
+	int rc = -1;
+	struct spdk_iscsi_init_grp *ig;
+
+	SPDK_DEBUGLOG(SPDK_LOG_ISCSI,
+		      "add initiator to initiator group: tag=%d, #initiators=%d, #masks=%d\n",
+		      tag, num_initiator_names, num_initiator_masks);
+
+	pthread_mutex_lock(&g_spdk_iscsi.mutex);
+	ig = spdk_iscsi_init_grp_find_by_tag(tag);
+	if (!ig) {
+		pthread_mutex_unlock(&g_spdk_iscsi.mutex);
+		SPDK_ERRLOG("initiator group (%d) is not found\n", tag);
+		return rc;
+	}
+
+	rc = spdk_iscsi_init_grp_add_initiators(ig, num_initiator_names,
+						initiator_names);
+	if (rc < 0) {
+		SPDK_ERRLOG("add initiator name error\n");
+		goto error;
+	}
+
+	rc = spdk_iscsi_init_grp_add_netmasks(ig, num_initiator_masks,
+					      initiator_masks);
+	if (rc < 0) {
+		SPDK_ERRLOG("add initiator netmask error\n");
+		spdk_iscsi_init_grp_delete_initiators(ig, num_initiator_names,
+						      initiator_names);
+	}
+
+error:
+	pthread_mutex_unlock(&g_spdk_iscsi.mutex);
+	return rc;
+}
+
+int
+spdk_iscsi_init_grp_delete_initiators_from_initiator_list(int tag,
+		int num_initiator_names,
+		char **initiator_names,
+		int num_initiator_masks,
+		char **initiator_masks)
+{
+	int rc = -1;
+	struct spdk_iscsi_init_grp *ig;
+
+	SPDK_DEBUGLOG(SPDK_LOG_ISCSI,
+		      "delete initiator from initiator group: tag=%d, #initiators=%d, #masks=%d\n",
+		      tag, num_initiator_names, num_initiator_masks);
+
+	pthread_mutex_lock(&g_spdk_iscsi.mutex);
+	ig = spdk_iscsi_init_grp_find_by_tag(tag);
+	if (!ig) {
+		pthread_mutex_unlock(&g_spdk_iscsi.mutex);
+		SPDK_ERRLOG("initiator group (%d) is not found\n", tag);
+		return rc;
+	}
+
+	rc = spdk_iscsi_init_grp_delete_initiators(ig, num_initiator_names,
+			initiator_names);
+	if (rc < 0) {
+		SPDK_ERRLOG("delete initiator name error\n");
+		goto error;
+	}
+
+	rc = spdk_iscsi_init_grp_delete_netmasks(ig, num_initiator_masks,
+			initiator_masks);
+	if (rc < 0) {
+		SPDK_ERRLOG("delete initiator netmask error\n");
+		spdk_iscsi_init_grp_add_initiators(ig, num_initiator_names,
+						   initiator_names);
+		goto error;
+	}
+
+error:
+	pthread_mutex_unlock(&g_spdk_iscsi.mutex);
 	return rc;
 }
 
 void
 spdk_iscsi_init_grp_destroy(struct spdk_iscsi_init_grp *ig)
 {
-	int i;
-
 	if (!ig) {
 		return;
 	}
 
-	for (i = 0; i < ig->ninitiators; i++) {
-		free(ig->initiators[i]);
-	}
-
-	for (i = 0; i < ig->nnetmasks; i++) {
-		free(ig->netmasks[i]);
-	}
-
-	free(ig->initiators);
-	free(ig->netmasks);
-
+	spdk_iscsi_init_grp_delete_all_initiators(ig);
+	spdk_iscsi_init_grp_delete_all_netmasks(ig);
 	free(ig);
 };
 
@@ -283,30 +621,12 @@ spdk_iscsi_init_grp_find_by_tag(int tag)
 	return NULL;
 }
 
-void
-spdk_iscsi_init_grp_destroy_by_tag(int tag)
-{
-	spdk_iscsi_init_grp_destroy(spdk_iscsi_init_grp_find_by_tag(tag));
-}
-
-void
-spdk_iscsi_init_grp_register(struct spdk_iscsi_init_grp *ig)
-{
-	assert(ig != NULL);
-
-	pthread_mutex_lock(&g_spdk_iscsi.mutex);
-	ig->state = GROUP_READY;
-	TAILQ_INSERT_TAIL(&g_spdk_iscsi.ig_head, ig, tailq);
-	pthread_mutex_unlock(&g_spdk_iscsi.mutex);
-}
-
 int
-spdk_iscsi_init_grp_array_create(void)
+spdk_iscsi_parse_init_grps(void)
 {
 	struct spdk_conf_section *sp;
 	int rc;
 
-	TAILQ_INIT(&g_spdk_iscsi.ig_head);
 	sp = spdk_conf_first_section(NULL);
 	while (sp != NULL) {
 		if (spdk_conf_section_match_prefix(sp, "InitiatorGroup")) {
@@ -314,9 +634,9 @@ spdk_iscsi_init_grp_array_create(void)
 				SPDK_ERRLOG("Group 0 is invalid\n");
 				return -1;
 			}
-			rc = spdk_iscsi_init_grp_create_from_configfile(sp);
+			rc = spdk_iscsi_parse_init_grp(sp);
 			if (rc < 0) {
-				SPDK_ERRLOG("add_initiator_group() failed\n");
+				SPDK_ERRLOG("parse_init_group() failed\n");
 				return -1;
 			}
 		}
@@ -326,70 +646,141 @@ spdk_iscsi_init_grp_array_create(void)
 }
 
 void
-spdk_iscsi_init_grp_array_destroy(void)
+spdk_iscsi_init_grps_destroy(void)
 {
 	struct spdk_iscsi_init_grp *ig, *tmp;
 
-	SPDK_TRACELOG(SPDK_TRACE_DEBUG, "spdk_iscsi_init_grp_array_destroy\n");
+	SPDK_DEBUGLOG(SPDK_LOG_ISCSI, "spdk_iscsi_init_grp_array_destroy\n");
 	pthread_mutex_lock(&g_spdk_iscsi.mutex);
 	TAILQ_FOREACH_SAFE(ig, &g_spdk_iscsi.ig_head, tailq, tmp) {
-		ig->state = GROUP_DESTROY;
 		TAILQ_REMOVE(&g_spdk_iscsi.ig_head, ig, tailq);
 		spdk_iscsi_init_grp_destroy(ig);
 	}
 	pthread_mutex_unlock(&g_spdk_iscsi.mutex);
 }
-static inline void
-spdk_initiator_group_unregister(struct spdk_iscsi_init_grp *ig)
+
+struct spdk_iscsi_init_grp *
+spdk_iscsi_init_grp_unregister(int tag)
 {
-	struct spdk_iscsi_init_grp *initiator_group;
-	struct spdk_iscsi_init_grp *initiator_group_tmp;
-
-	assert(ig != NULL);
-
-	pthread_mutex_lock(&g_spdk_iscsi.mutex);
-	TAILQ_FOREACH_SAFE(initiator_group, &g_spdk_iscsi.ig_head, tailq, initiator_group_tmp) {
-		if (ig->tag == initiator_group->tag)
-			TAILQ_REMOVE(&g_spdk_iscsi.ig_head, initiator_group, tailq);
-	}
-	pthread_mutex_unlock(&g_spdk_iscsi.mutex);
-}
-
-int
-spdk_iscsi_init_grp_deletable(int tag)
-{
-	int ret = 0;
 	struct spdk_iscsi_init_grp *ig;
 
 	pthread_mutex_lock(&g_spdk_iscsi.mutex);
-	ig = spdk_iscsi_init_grp_find_by_tag(tag);
-	if (ig == NULL) {
-		ret = -1;
-		goto out;
+	TAILQ_FOREACH(ig, &g_spdk_iscsi.ig_head, tailq) {
+		if (ig->tag == tag) {
+			TAILQ_REMOVE(&g_spdk_iscsi.ig_head, ig, tailq);
+			pthread_mutex_unlock(&g_spdk_iscsi.mutex);
+			return ig;
+		}
 	}
-
-	if (ig->state != GROUP_READY) {
-		ret = -1;
-		goto out;
-	}
-
-	if (ig->ref == 0) {
-		ret = 0;
-		goto out;
-	}
-
-out:
-	if (ret == 0)
-		ig->state = GROUP_DESTROY;
 	pthread_mutex_unlock(&g_spdk_iscsi.mutex);
-	return ret;
+	return NULL;
+}
+
+static const char *initiator_group_section = \
+		"\n"
+		"# Users must change the InitiatorGroup section(s) to match the IP\n"
+		"#  addresses and initiator configuration in their environment.\n"
+		"# Netmask can be used to specify a single IP address or a range of IP addresses\n"
+		"#  Netmask 192.168.1.20   <== single IP address\n"
+		"#  Netmask 192.168.1.0/24 <== IP range 192.168.1.*\n";
+
+#define INITIATOR_GROUP_TMPL \
+"[InitiatorGroup%d]\n" \
+"  Comment \"Initiator Group%d\"\n"
+
+#define INITIATOR_TMPL \
+"  InitiatorName "
+
+#define NETMASK_TMPL \
+"  Netmask "
+
+void
+spdk_iscsi_init_grps_config_text(FILE *fp)
+{
+	struct spdk_iscsi_init_grp *ig;
+	struct spdk_iscsi_initiator_name *iname;
+	struct spdk_iscsi_initiator_netmask *imask;
+
+	/* Create initiator group section */
+	fprintf(fp, "%s", initiator_group_section);
+
+	/* Dump initiator groups */
+	TAILQ_FOREACH(ig, &g_spdk_iscsi.ig_head, tailq) {
+		if (NULL == ig) { continue; }
+		fprintf(fp, INITIATOR_GROUP_TMPL, ig->tag, ig->tag);
+
+		/* Dump initiators */
+		fprintf(fp, INITIATOR_TMPL);
+		TAILQ_FOREACH(iname, &ig->initiator_head, tailq) {
+			fprintf(fp, "%s ", iname->name);
+		}
+		fprintf(fp, "\n");
+
+		/* Dump netmasks */
+		fprintf(fp, NETMASK_TMPL);
+		TAILQ_FOREACH(imask, &ig->netmask_head, tailq) {
+			fprintf(fp, "%s ", imask->mask);
+		}
+		fprintf(fp, "\n");
+	}
+}
+
+static void
+spdk_iscsi_init_grp_info_json(struct spdk_iscsi_init_grp *ig,
+			      struct spdk_json_write_ctx *w)
+{
+	struct spdk_iscsi_initiator_name *iname;
+	struct spdk_iscsi_initiator_netmask *imask;
+
+	spdk_json_write_object_begin(w);
+
+	spdk_json_write_named_int32(w, "tag", ig->tag);
+
+	spdk_json_write_named_array_begin(w, "initiators");
+	TAILQ_FOREACH(iname, &ig->initiator_head, tailq) {
+		spdk_json_write_string(w, iname->name);
+	}
+	spdk_json_write_array_end(w);
+
+	spdk_json_write_named_array_begin(w, "netmasks");
+	TAILQ_FOREACH(imask, &ig->netmask_head, tailq) {
+		spdk_json_write_string(w, imask->mask);
+	}
+	spdk_json_write_array_end(w);
+
+	spdk_json_write_object_end(w);
+}
+
+static void
+spdk_iscsi_init_grp_config_json(struct spdk_iscsi_init_grp *ig,
+				struct spdk_json_write_ctx *w)
+{
+	spdk_json_write_object_begin(w);
+
+	spdk_json_write_named_string(w, "method", "add_initiator_group");
+
+	spdk_json_write_name(w, "params");
+	spdk_iscsi_init_grp_info_json(ig, w);
+
+	spdk_json_write_object_end(w);
 }
 
 void
-spdk_iscsi_init_grp_release(struct spdk_iscsi_init_grp *ig)
+spdk_iscsi_init_grps_info_json(struct spdk_json_write_ctx *w)
 {
-	spdk_initiator_group_unregister(ig);
-	pthread_mutex_lock(&g_spdk_iscsi.mutex);
-	spdk_iscsi_init_grp_destroy(ig);
-	pthread_mutex_unlock(&g_spdk_iscsi.mutex);
+	struct spdk_iscsi_init_grp *ig;
+
+	TAILQ_FOREACH(ig, &g_spdk_iscsi.ig_head, tailq) {
+		spdk_iscsi_init_grp_info_json(ig, w);
+	}
+}
+
+void
+spdk_iscsi_init_grps_config_json(struct spdk_json_write_ctx *w)
+{
+	struct spdk_iscsi_init_grp *ig;
+
+	TAILQ_FOREACH(ig, &g_spdk_iscsi.ig_head, tailq) {
+		spdk_iscsi_init_grp_config_json(ig, w);
+	}
 }

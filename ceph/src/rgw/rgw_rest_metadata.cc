@@ -1,5 +1,6 @@
 // -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
 // vim: ts=8 sw=2 smarttab
+
 /*
  * Ceph - scalable distributed file system
  *
@@ -11,6 +12,7 @@
  * Foundation. See file COPYING.
  *
  */
+
 #include "include/page.h"
 
 #include "rgw_rest.h"
@@ -21,14 +23,10 @@
 #include "common/errno.h"
 #include "common/strtol.h"
 #include "rgw/rgw_b64.h"
-#include "include/assert.h"
+#include "include/ceph_assert.h"
 
 #define dout_context g_ceph_context
 #define dout_subsys ceph_subsys_rgw
-
-const string RGWOp_Metadata_Get::name() {
-  return "get_metadata";
-}
 
 static inline void frame_metadata_key(req_state *s, string& out) {
   bool exists;
@@ -64,8 +62,13 @@ void RGWOp_Metadata_Get::execute() {
   http_ret = 0;
 }
 
-const string RGWOp_Metadata_List::name() {
-  return "list_metadata";
+void RGWOp_Metadata_Get_Myself::execute() {
+  string owner_id;
+
+  owner_id = s->owner.get_id().to_str();
+  s->info.args.append("key", owner_id);
+
+  return RGWOp_Metadata_Get::execute();
 }
 
 void RGWOp_Metadata_List::execute() {
@@ -334,6 +337,8 @@ void RGWOp_Metadata_Unlock::execute() {
 }
 
 RGWOp *RGWHandler_Metadata::op_get() {
+  if (s->info.args.exists("myself"))
+    return new RGWOp_Metadata_Get_Myself;
   if (s->info.args.exists("key"))
     return new RGWOp_Metadata_Get;
   else

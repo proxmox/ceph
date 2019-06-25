@@ -36,6 +36,10 @@ that users start consuming ``ceph-volume``. There are two paths for migrating:
 #. Redeploy existing OSDs with ``ceph-volume``: This is covered in depth on
    :ref:`rados-replacing-an-osd`
 
+For details on why ``ceph-disk`` was removed please see the :ref:`Why was
+ceph-disk replaced? <ceph-disk-replaced>` section.
+
+
 New deployments
 ^^^^^^^^^^^^^^^
 For new deployments, :ref:`ceph-volume-lvm` is recommended, it can use any
@@ -63,6 +67,7 @@ and ``ceph-disk`` is fully disabled. Encryption is fully supported.
    lvm/batch
    lvm/encryption
    lvm/prepare
+   lvm/create
    lvm/scan
    lvm/systemd
    lvm/list

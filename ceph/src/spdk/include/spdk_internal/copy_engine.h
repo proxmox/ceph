@@ -34,8 +34,7 @@
 #ifndef SPDK_INTERNAL_COPY_ENGINE_H
 #define SPDK_INTERNAL_COPY_ENGINE_H
 
-#include <stdio.h>
-#include <stdint.h>
+#include "spdk/stdinc.h"
 
 #include "spdk/copy_engine.h"
 #include "spdk/queue.h"
@@ -46,11 +45,11 @@ struct spdk_copy_task {
 };
 
 struct spdk_copy_engine {
-	int64_t	(*copy)(void *cb_arg, struct spdk_io_channel *ch, void *dst, void *src,
+	int	(*copy)(void *cb_arg, struct spdk_io_channel *ch, void *dst, void *src,
 			uint64_t nbytes, spdk_copy_completion_cb cb);
-	int64_t	(*fill)(void *cb_arg, struct spdk_io_channel *ch, void *dst, uint8_t fill,
+	int	(*fill)(void *cb_arg, struct spdk_io_channel *ch, void *dst, uint8_t fill,
 			uint64_t nbytes, spdk_copy_completion_cb cb);
-	struct spdk_io_channel *(*get_io_channel)(uint32_t priority);
+	struct spdk_io_channel *(*get_io_channel)(void);
 };
 
 struct spdk_copy_module_if {
@@ -66,7 +65,7 @@ struct spdk_copy_module_if {
 	 *
 	 *  Modules are not required to define this function.
 	 */
-	void	(*module_fini)(void);
+	void	(*module_fini)(void *ctx);
 
 	/** Function called to return a text string representing the
 	 *   module's configuration options for inclusion in an
@@ -83,14 +82,14 @@ void spdk_copy_module_list_add(struct spdk_copy_module_if *copy_module);
 
 #define SPDK_COPY_MODULE_REGISTER(init_fn, fini_fn, config_fn, ctx_size_fn)				\
 	static struct spdk_copy_module_if init_fn ## _if = {						\
-	.module_init 	= init_fn,									\
+	.module_init	= init_fn,									\
 	.module_fini	= fini_fn,									\
 	.config_text	= config_fn,									\
-	.get_ctx_size	= ctx_size_fn,                                					\
-	};  												\
-	__attribute__((constructor)) static void init_fn ## _init(void)  				\
-	{                                                           					\
-	    spdk_copy_module_list_add(&init_fn ## _if);                  				\
+	.get_ctx_size	= ctx_size_fn,									\
+	};												\
+	__attribute__((constructor)) static void init_fn ## _init(void)					\
+	{												\
+		spdk_copy_module_list_add(&init_fn ## _if);						\
 	}
 
 #endif

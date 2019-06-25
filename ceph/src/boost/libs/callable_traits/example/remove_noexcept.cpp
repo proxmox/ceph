@@ -18,10 +18,10 @@ int main(){}
 using boost::callable_traits::remove_noexcept_t;
 
 static_assert(std::is_same<
-	remove_noexcept_t<int() noexcept>,
-	int()
+    remove_noexcept_t<int() noexcept>,
+    int()
 >{}, "");
-    
+
 int main() {}
 
 //]

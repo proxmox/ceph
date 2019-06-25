@@ -18,12 +18,12 @@ namespace librbd {
 namespace object_map {
 
 void SnapshotRemoveRequest::send() {
-  assert(m_image_ctx.owner_lock.is_locked());
-  assert(m_image_ctx.snap_lock.is_wlocked());
+  ceph_assert(m_image_ctx.owner_lock.is_locked());
+  ceph_assert(m_image_ctx.snap_lock.is_wlocked());
 
   if ((m_image_ctx.features & RBD_FEATURE_FAST_DIFF) != 0) {
     int r = m_image_ctx.get_flags(m_snap_id, &m_flags);
-    assert(r == 0);
+    ceph_assert(r == 0);
 
     compute_next_snap_id();
     load_map();
@@ -44,7 +44,7 @@ void SnapshotRemoveRequest::load_map() {
     SnapshotRemoveRequest, &SnapshotRemoveRequest::handle_load_map>(this);
   int r = m_image_ctx.md_ctx.aio_operate(snap_oid, rados_completion, &op,
                                          &m_out_bl);
-  assert(r == 0);
+  ceph_assert(r == 0);
   rados_completion->release();
 }
 
@@ -53,7 +53,7 @@ void SnapshotRemoveRequest::handle_load_map(int r) {
   ldout(cct, 5) << "r=" << r << dendl;
 
   if (r == 0) {
-    auto it = m_out_bl.begin();
+    auto it = m_out_bl.cbegin();
     r = cls_client::object_map_load_finish(&it, &m_snap_object_map);
   }
   if (r == -ENOENT) {
@@ -99,7 +99,7 @@ void SnapshotRemoveRequest::remove_snapshot() {
     SnapshotRemoveRequest,
     &SnapshotRemoveRequest::handle_remove_snapshot>(this);
   int r = m_image_ctx.md_ctx.aio_operate(oid, rados_completion, &op);
-  assert(r == 0);
+  ceph_assert(r == 0);
   rados_completion->release();
 }
 
@@ -124,8 +124,8 @@ void SnapshotRemoveRequest::handle_remove_snapshot(int r) {
 }
 
 void SnapshotRemoveRequest::invalidate_next_map() {
-  assert(m_image_ctx.owner_lock.is_locked());
-  assert(m_image_ctx.snap_lock.is_wlocked());
+  ceph_assert(m_image_ctx.owner_lock.is_locked());
+  ceph_assert(m_image_ctx.snap_lock.is_wlocked());
 
   CephContext *cct = m_image_ctx.cct;
   ldout(cct, 5) << dendl;
@@ -141,7 +141,15 @@ void SnapshotRemoveRequest::invalidate_next_map() {
 void SnapshotRemoveRequest::handle_invalidate_next_map(int r) {
   CephContext *cct = m_image_ctx.cct;
   ldout(cct, 5) << "r=" << r << dendl;
-  assert(r == 0);
+
+  if (r < 0) {
+    std::string oid(ObjectMap<>::object_map_name(m_image_ctx.id,
+                                                 m_next_snap_id));
+    lderr(cct) << "failed to invalidate object map " << oid << ": "
+               << cpp_strerror(r) << dendl;
+    complete(r);
+    return;
+  }
 
   remove_map();
 }
@@ -157,7 +165,7 @@ void SnapshotRemoveRequest::remove_map() {
   auto rados_completion = librbd::util::create_rados_callback<
     SnapshotRemoveRequest, &SnapshotRemoveRequest::handle_remove_map>(this);
   int r = m_image_ctx.md_ctx.aio_operate(oid, rados_completion, &op);
-  assert(r == 0);
+  ceph_assert(r == 0);
   rados_completion->release();
 }
 
@@ -177,12 +185,12 @@ void SnapshotRemoveRequest::handle_remove_map(int r) {
 }
 
 void SnapshotRemoveRequest::compute_next_snap_id() {
-  assert(m_image_ctx.snap_lock.is_locked());
+  ceph_assert(m_image_ctx.snap_lock.is_locked());
 
   m_next_snap_id = CEPH_NOSNAP;
   std::map<librados::snap_t, SnapInfo>::const_iterator it =
     m_image_ctx.snap_info.find(m_snap_id);
-  assert(it != m_image_ctx.snap_info.end());
+  ceph_assert(it != m_image_ctx.snap_info.end());
 
   ++it;
   if (it != m_image_ctx.snap_info.end()) {

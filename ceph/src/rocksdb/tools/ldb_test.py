@@ -76,7 +76,7 @@ class LDBTestCase(unittest.TestCase):
 
             my_check_output("./ldb %s >/dev/null 2>&1 |grep -v \"Created bg \
                 thread\"" % params, shell=True)
-        except Exception, e:
+        except Exception:
             return
         self.fail(
             "Exception should have been raised for command with params: %s" %
@@ -146,6 +146,14 @@ class LDBTestCase(unittest.TestCase):
     def loadDb(self, params, dumpFile):
         return 0 == run_err_null("cat %s | ./ldb load %s" % (dumpFile, params))
 
+    def writeExternSst(self, params, inputDumpFile, outputSst):
+        return 0 == run_err_null("cat %s | ./ldb write_extern_sst %s %s"
+                % (inputDumpFile, outputSst, params))
+
+    def ingestExternSst(self, params, inputSst):
+        return 0 == run_err_null("./ldb ingest_extern_sst %s %s"
+                                     % (inputSst, params))
+
     def testStringBatchPut(self):
         print "Running testStringBatchPut..."
         self.assertRunOK("batchput x1 y1 --create_if_missing", "OK")
@@ -169,10 +177,10 @@ class LDBTestCase(unittest.TestCase):
         print "Running testCountDelimIDump..."
         self.assertRunOK("batchput x.1 x1 --create_if_missing", "OK")
         self.assertRunOK("batchput y.abc abc y.2 2 z.13c pqr", "OK")
-        self.assertRunOK("dump --count_delim", "x => count:1\tsize:5\ny => count:2\tsize:12\nz => count:1\tsize:8")
-        self.assertRunOK("dump --count_delim=\".\"", "x => count:1\tsize:5\ny => count:2\tsize:12\nz => count:1\tsize:8")
+        self.assertRunOK("idump --count_delim", "x => count:1\tsize:5\ny => count:2\tsize:12\nz => count:1\tsize:8")
+        self.assertRunOK("idump --count_delim=\".\"", "x => count:1\tsize:5\ny => count:2\tsize:12\nz => count:1\tsize:8")
         self.assertRunOK("batchput x,2 x2 x,abc xabc", "OK")
-        self.assertRunOK("dump --count_delim=\",\"", "x => count:2\tsize:14\nx.1 => count:1\tsize:5\ny.2 => count:1\tsize:4\ny.abc => count:1\tsize:8\nz.13c => count:1\tsize:8")
+        self.assertRunOK("idump --count_delim=\",\"", "x => count:2\tsize:14\nx.1 => count:1\tsize:5\ny.2 => count:1\tsize:4\ny.abc => count:1\tsize:8\nz.13c => count:1\tsize:8")
 
     def testInvalidCmdLines(self):
         print "Running testInvalidCmdLines..."
@@ -229,7 +237,7 @@ class LDBTestCase(unittest.TestCase):
         self.assertRunFAIL("get --ttl a3")
         self.assertRunOK("checkconsistency", "OK")
 
-    def testInvalidCmdLines(self):
+    def testInvalidCmdLines(self):  # noqa: F811 T25377293 Grandfathered in
         print "Running testInvalidCmdLines..."
         # db not specified
         self.assertRunFAILFull("put 0x6133 0x6233 --hex --create_if_missing")
@@ -330,6 +338,18 @@ class LDBTestCase(unittest.TestCase):
         dumpFilePath = os.path.join(self.TMP_DIR, "dump8")
         self.assertFalse(self.dumpDb(
             "--db=%s --create_if_missing" % origDbPath, dumpFilePath))
+
+    def testIDumpBasics(self):
+        print "Running testIDumpBasics..."
+        self.assertRunOK("put a val --create_if_missing", "OK")
+        self.assertRunOK("put b val", "OK")
+        self.assertRunOK(
+                "idump", "'a' seq:1, type:1 => val\n"
+                "'b' seq:2, type:1 => val\nInternal keys in range: 2")
+        self.assertRunOK(
+                "idump --input_key_hex --from=%s --to=%s" % (hex(ord('a')),
+                                                             hex(ord('b'))),
+                "'a' seq:1, type:1 => val\nInternal keys in range: 1")
 
     def testMiscAdminTask(self):
         print "Running testMiscAdminTask..."
@@ -504,7 +524,7 @@ class LDBTestCase(unittest.TestCase):
 
     def testColumnFamilies(self):
         print "Running testColumnFamilies..."
-        dbPath = os.path.join(self.TMP_DIR, self.DB_NAME)
+        dbPath = os.path.join(self.TMP_DIR, self.DB_NAME)  # noqa: F841 T25377293 Grandfathered in
         self.assertRunOK("put cf1_1 1 --create_if_missing", "OK")
         self.assertRunOK("put cf1_2 2 --create_if_missing", "OK")
         self.assertRunOK("put cf1_3 3 --try_load_options", "OK")
@@ -534,6 +554,39 @@ class LDBTestCase(unittest.TestCase):
                          "3")
         # non-existing column family.
         self.assertRunFAIL("get cf3_1 --column_family=four")
+
+    def testIngestExternalSst(self):
+        print "Running testIngestExternalSst..."
+
+        # Dump, load, write external sst and ingest it in another db
+        dbPath = os.path.join(self.TMP_DIR, "db1")
+        self.assertRunOK(
+            "batchput --db=%s --create_if_missing x1 y1 x2 y2 x3 y3 x4 y4"
+            % dbPath,
+            "OK")
+        self.assertRunOK("scan --db=%s" % dbPath,
+                         "x1 : y1\nx2 : y2\nx3 : y3\nx4 : y4")
+        dumpFilePath = os.path.join(self.TMP_DIR, "dump1")
+        with open(dumpFilePath, 'w') as f:
+            f.write("x1 ==> y10\nx2 ==> y20\nx3 ==> y30\nx4 ==> y40")
+        externSstPath = os.path.join(self.TMP_DIR, "extern_data1.sst")
+        self.assertTrue(self.writeExternSst("--create_if_missing --db=%s"
+                            % dbPath,
+                        dumpFilePath,
+                        externSstPath))
+        # cannot ingest if allow_global_seqno is false
+        self.assertFalse(
+            self.ingestExternSst(
+                "--create_if_missing --allow_global_seqno=false --db=%s"
+                % dbPath,
+                externSstPath))
+        self.assertTrue(
+            self.ingestExternSst(
+                "--create_if_missing --allow_global_seqno --db=%s"
+                % dbPath,
+                externSstPath))
+        self.assertRunOKFull("scan --db=%s" % dbPath,
+                             "x1 : y10\nx2 : y20\nx3 : y30\nx4 : y40")
 
 if __name__ == "__main__":
     unittest.main()

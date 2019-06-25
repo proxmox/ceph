@@ -10,28 +10,25 @@
 # Bracketed ([]) names define sections
 
 [Global]
-  # Users can restrict work items to only run on certain cores by
-  #  specifying a ReactorMask.  Default ReactorMask mask is defined as
-  #  -c option in the 'ealargs' setting at beginning of file nvmf_tgt.c.
-  #ReactorMask 0x00FF
-
   # Tracepoint group mask for spdk trace buffers
   # Default: 0x0 (all tracepoint groups disabled)
-  # Set to 0xFFFFFFFFFFFFFFFF to enable all tracepoint groups.
+  # Set to 0xFFFF to enable all tracepoint groups.
   #TpointGroupMask 0x0
 
-  # syslog facility
-  LogFacility "local7"
+  # PciBlacklist and PciWhitelist cannot be used at the same time
+  #PciBlacklist 0000:01:00.0
+  #PciBlacklist 0000:02:00.0
+  #PciWhitelist 0000:03:00.0
+  #PciWhitelist 0000:04:00.0
 
-[Rpc]
-  # Defines whether to enable configuration via RPC.
-  # Default is disabled.  Note that the RPC interface is not
-  # authenticated, so users should be careful about enabling
-  # RPC in non-trusted environments.
-  Enable No
-  # Listen address for the RPC service.
-  # May be an IP address or an absolute path to a Unix socket.
-  Listen 127.0.0.1
+# Users may activate entries in this section to override default values for
+# global parameters in the block device (bdev) subsystem.
+[Bdev]
+  # Number of spdk_bdev_io structures allocated in the global bdev subsystem pool.
+  #BdevIoPoolSize 65536
+
+  # Maximum number of spdk_bdev_io structures to cache per thread.
+  #BdevIoCacheSize 256
 
 # Users may change this section to create a different number or size of
 #  malloc LUNs.
@@ -49,9 +46,17 @@
 # AIO <file name> <bdev name>
 # The file name is the backing device
 # The bdev name can be referenced from elsewhere in the configuration file.
+# Block size may be omitted to automatically detect the block size of a disk.
 [AIO]
   AIO /dev/sdb AIO0
   AIO /dev/sdc AIO1
+  AIO /tmp/myfile AIO2 4096
+
+# PMDK libpmemblk-based block device
+[Pmem]
+  # Syntax:
+  #   Blk <pmemblk pool file name> <bdev name>
+  Blk /path/to/pmem-pool Pmem0
 
 # Define NVMf protocol global options
 [Nvmf]
@@ -64,13 +69,11 @@
   #MaxQueueDepth 128
 
   # Set the maximum in-capsule data size. Must be a multiple of 16.
+  # 0 is a valid choice.
   #InCapsuleDataSize 4096
 
   # Set the maximum I/O size. Must be a multiple of 4096.
   #MaxIOSize 131072
-
-  # Set the global acceptor lcore ID, lcores are numbered starting at 0.
-  #AcceptorCore 0
 
   # Set how often the acceptor polls for incoming connections. The acceptor is also
   # responsible for polling existing connections that have gone idle. 0 means continuously
@@ -85,14 +88,16 @@
   # other sections in the configuration file. For NVMe devices, a namespace
   # is automatically appended to each name in the format <YourName>nY, where
   # Y is the NSID (starts at 1).
-  TransportId "trtype:PCIe traddr:0000:00:00.0" Nvme0
-  TransportId "trtype:PCIe traddr:0000:01:00.0" Nvme1
+  TransportID "trtype:PCIe traddr:0000:00:00.0" Nvme0
+  TransportID "trtype:PCIe traddr:0000:01:00.0" Nvme1
+  TransportID "trtype:PCIe traddr:0000:02:00.0" Nvme2
+  TransportID "trtype:PCIe traddr:0000:03:00.0" Nvme3
 
   # The number of attempts per I/O when an I/O fails. Do not include
   # this key to get the default behavior.
   RetryCount 4
-  # Timeout for each command, in seconds. If 0, don't track timeouts.
-  Timeout 0
+  # Timeout for each command, in microseconds. If 0, don't track timeouts.
+  TimeoutUsec 0
   # Action to take on command time out. Only valid when Timeout is greater
   # than 0. This may be 'Reset' to reset the controller, 'Abort' to abort
   # the command, or 'None' to just print a message but do nothing.
@@ -102,8 +107,10 @@
   # Units in microseconds.
   AdminPollRate 100000
 
-  # Enable handling of hotplug (runtime insert and remove) events
-  HotplugEnable Yes
+  # Disable handling of hotplug (runtime insert and remove) events,
+  # users can set to Yes if want to enable it.
+  # Default: No
+  HotplugEnable No
 
 # The Split virtual block device slices block devices into multiple smaller bdevs.
 [Split]
@@ -117,48 +124,58 @@
   # leaving the rest of the device inaccessible
   Split Malloc3 8 1
 
+# The RAID virtual block device based on pre-configured block device.
+[RAID1]
+  # Unique name of this RAID device.
+  Name Raid0
+  # RAID level, only raid level 0 is supported.
+  RaidLevel 0
+  # Strip size in KB.
+  StripSize 64
+  # Number of pre-configured bdevs.
+  NumDevices 2
+  # Pre-configured bdevs name.
+  Devices Nvme2n1 Nvme3n1
+
 # Define an NVMf Subsystem.
 # - NQN is required and must be unique.
-# - Core may be set or not. If set, the specified subsystem will run on
-#   it, otherwise each subsystem will use a round-robin method to allocate
-#   core from available cores,  lcores are numbered starting at 0.
-# - Mode may be either "Direct" or "Virtual". Direct means that physical
-#   devices attached to the target will be presented to hosts as if they
-#   were directly attached to the host. No software emulation or command
-#   validation is performed. Virtual means that an NVMe controller is
-#   emulated in software and the namespaces it contains map to block devices
-#   on the target system. These block devices do not need to be NVMe devices.
-#   Only Direct mode is currently supported.
 # - Between 1 and 255 Listen directives are allowed. This defines
 #   the addresses on which new connections may be accepted. The format
 #   is Listen <type> <address> where type currently can only be RDMA.
 # - Between 0 and 255 Host directives are allowed. This defines the
 #   NQNs of allowed hosts. If no Host directive is specified, all hosts
 #   are allowed to connect.
-# - Exactly 1 NVMe directive specifying an NVMe device by PCI BDF. The
-#   PCI domain:bus:device.function can be replaced by "*" to indicate
-#   any PCI device.
+# - Between 0 and 255 Namespace directives are allowed. These define the
+#   namespaces accessible from this subsystem.
+#   The user must specify MaxNamespaces to allow for adding namespaces
+#   during active connection. By default it is 0
+#   The user must specify a bdev name for each namespace, and may optionally
+#   specify a namespace ID. If nsid is omitted, the namespace will be
+#   assigned the next available NSID. The NSID must be unique within the
+#   subsystem. An optional namespace UUID may also be specified.
+#   Syntax:
+#     Namespace <bdev_name> [<nsid> [<uuid>]]
 
-# Direct controller
+# Namespaces backed by physical NVMe devices
 [Subsystem1]
   NQN nqn.2016-06.io.spdk:cnode1
-  Core 0
-  Mode Direct
   Listen RDMA 15.15.15.2:4420
-  Host nqn.2016-06.io.spdk:init
-  NVMe 0000:00:00.0
-
-# Multiple subsystems are allowed.
-# Virtual controller
-[Subsystem2]
-  NQN nqn.2016-06.io.spdk:cnode2
-  Core 0
-  Mode Virtual
-  Listen RDMA 192.168.2.21:4420
+  AllowAnyHost No
   Host nqn.2016-06.io.spdk:init
   SN SPDK00000000000001
-  Namespace Nvme0n1
-  Namespace Nvme1n1
+  MaxNamespaces 20
+  Namespace Nvme0n1 1
+  Namespace Nvme1n1 2
+  Namespace Raid0
+
+# Multiple subsystems are allowed.
+# Namespaces backed by non-NVMe devices
+[Subsystem2]
+  NQN nqn.2016-06.io.spdk:cnode2
+  Listen RDMA 192.168.2.21:4420
+  AllowAnyHost No
+  Host nqn.2016-06.io.spdk:init
+  SN SPDK00000000000002
   Namespace Malloc0
   Namespace Malloc1
   Namespace AIO0

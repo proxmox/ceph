@@ -18,11 +18,11 @@
 #include <limits>
 #include <cmath>
 #include <sstream>
-#include <boost/utility/string_view.hpp>
+#include <string_view>
 
 using std::ostringstream;
 
-long long strict_strtoll(const boost::string_view str, int base, std::string *err)
+long long strict_strtoll(std::string_view str, int base, std::string *err)
 {
   char *endptr;
   errno = 0; /* To distinguish success/failure after call (see man page) */
@@ -43,15 +43,15 @@ long long strict_strtoll(const boost::string_view str, int base, std::string *er
 
 long long strict_strtoll(const char *str, int base, std::string *err)
 {
-  return strict_strtoll(boost::string_view(str), base, err);
+  return strict_strtoll(std::string_view(str), base, err);
 }
 
-int strict_strtol(const boost::string_view str, int base, std::string *err)
+int strict_strtol(std::string_view str, int base, std::string *err)
 {
   long long ret = strict_strtoll(str, base, err);
   if (!err->empty())
     return 0;
-  if ((ret <= INT_MIN) || (ret >= INT_MAX)) {
+  if ((ret < INT_MIN) || (ret > INT_MAX)) {
     ostringstream errStr;
     errStr << "The option value '" << str << "' seems to be invalid";
     *err = errStr.str();
@@ -62,10 +62,10 @@ int strict_strtol(const boost::string_view str, int base, std::string *err)
 
 int strict_strtol(const char *str, int base, std::string *err)
 {
-  return strict_strtol(boost::string_view(str), base, err);
+  return strict_strtol(std::string_view(str), base, err);
 }
 
-double strict_strtod(const boost::string_view str, std::string *err)
+double strict_strtod(std::string_view str, std::string *err)
 {
   char *endptr;
   errno = 0; /* To distinguish success/failure after call (see man page) */
@@ -95,10 +95,10 @@ double strict_strtod(const boost::string_view str, std::string *err)
 
 double strict_strtod(const char *str, std::string *err)
 {
-  return strict_strtod(boost::string_view(str), err);
+  return strict_strtod(std::string_view(str), err);
 }
 
-float strict_strtof(const boost::string_view str, std::string *err)
+float strict_strtof(std::string_view str, std::string *err)
 {
   char *endptr;
   errno = 0; /* To distinguish success/failure after call (see man page) */
@@ -128,23 +128,23 @@ float strict_strtof(const boost::string_view str, std::string *err)
 
 float strict_strtof(const char *str, std::string *err)
 {
-  return strict_strtof(boost::string_view(str), err);
+  return strict_strtof(std::string_view(str), err);
 }
 
 template<typename T>
-T strict_iec_cast(const boost::string_view str, std::string *err)
+T strict_iec_cast(std::string_view str, std::string *err)
 {
   if (str.empty()) {
     *err = "strict_iecstrtoll: value not specified";
     return 0;
   }
   // get a view of the unit and of the value
-  boost::string_view unit;
-  boost::string_view n = str;
+  std::string_view unit;
+  std::string_view n = str;
   size_t u = str.find_first_not_of("0123456789-+");
   int m = 0;
   // deal with unit prefix is there is one
-  if (u != boost::string_view::npos) {
+  if (u != std::string_view::npos) {
     n = str.substr(0, u);
     unit = str.substr(u, str.length() - u);
     // we accept both old si prefixes as well as the proper iec prefixes
@@ -210,26 +210,26 @@ T strict_iec_cast(const boost::string_view str, std::string *err)
   return (ll << m);
 }
 
-template int strict_iec_cast<int>(const boost::string_view str, std::string *err);
-template long strict_iec_cast<long>(const boost::string_view str, std::string *err);
-template long long strict_iec_cast<long long>(const boost::string_view str, std::string *err);
-template uint64_t strict_iec_cast<uint64_t>(const boost::string_view str, std::string *err);
-template uint32_t strict_iec_cast<uint32_t>(const boost::string_view str, std::string *err);
+template int strict_iec_cast<int>(std::string_view str, std::string *err);
+template long strict_iec_cast<long>(std::string_view str, std::string *err);
+template long long strict_iec_cast<long long>(std::string_view str, std::string *err);
+template uint64_t strict_iec_cast<uint64_t>(std::string_view str, std::string *err);
+template uint32_t strict_iec_cast<uint32_t>(std::string_view str, std::string *err);
 
-uint64_t strict_iecstrtoll(const boost::string_view str, std::string *err)
+uint64_t strict_iecstrtoll(std::string_view str, std::string *err)
 {
   return strict_iec_cast<uint64_t>(str, err);
 }
 
 uint64_t strict_iecstrtoll(const char *str, std::string *err)
 {
-  return strict_iec_cast<uint64_t>(boost::string_view(str), err);
+  return strict_iec_cast<uint64_t>(std::string_view(str), err);
 }
 
 template<typename T>
 T strict_iec_cast(const char *str, std::string *err)
 {
-  return strict_iec_cast<T>(boost::string_view(str), err);
+  return strict_iec_cast<T>(std::string_view(str), err);
 }
 
 template int strict_iec_cast<int>(const char *str, std::string *err);
@@ -239,16 +239,16 @@ template uint64_t strict_iec_cast<uint64_t>(const char *str, std::string *err);
 template uint32_t strict_iec_cast<uint32_t>(const char *str, std::string *err);
 
 template<typename T>
-T strict_si_cast(const boost::string_view str, std::string *err)
+T strict_si_cast(std::string_view str, std::string *err)
 {
   if (str.empty()) {
     *err = "strict_sistrtoll: value not specified";
     return 0;
   }
-  boost::string_view n = str;
+  std::string_view n = str;
   int m = 0;
   // deal with unit prefix is there is one
-  if (str.find_first_not_of("0123456789+-") != boost::string_view::npos) {
+  if (str.find_first_not_of("0123456789+-") != std::string_view::npos) {
     const char &u = str.back();
     if (u == 'K')
       m = 3;
@@ -290,13 +290,13 @@ T strict_si_cast(const boost::string_view str, std::string *err)
   return (ll * pow (10,  m));
 }
 
-template int strict_si_cast<int>(const boost::string_view str, std::string *err);
-template long strict_si_cast<long>(const boost::string_view str, std::string *err);
-template long long strict_si_cast<long long>(const boost::string_view str, std::string *err);
-template uint64_t strict_si_cast<uint64_t>(const boost::string_view str, std::string *err);
-template uint32_t strict_si_cast<uint32_t>(const boost::string_view str, std::string *err);
+template int strict_si_cast<int>(std::string_view str, std::string *err);
+template long strict_si_cast<long>(std::string_view str, std::string *err);
+template long long strict_si_cast<long long>(std::string_view str, std::string *err);
+template uint64_t strict_si_cast<uint64_t>(std::string_view str, std::string *err);
+template uint32_t strict_si_cast<uint32_t>(std::string_view str, std::string *err);
 
-uint64_t strict_sistrtoll(const boost::string_view str, std::string *err)
+uint64_t strict_sistrtoll(std::string_view str, std::string *err)
 {
   return strict_si_cast<uint64_t>(str, err);
 }
@@ -309,7 +309,7 @@ uint64_t strict_sistrtoll(const char *str, std::string *err)
 template<typename T>
 T strict_si_cast(const char *str, std::string *err)
 {
-  return strict_si_cast<T>(boost::string_view(str), err);
+  return strict_si_cast<T>(std::string_view(str), err);
 }
 
 template int strict_si_cast<int>(const char *str, std::string *err);

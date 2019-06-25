@@ -263,6 +263,7 @@ class Scan(object):
         else:
             with open(json_path, 'w') as fp:
                 json.dump(osd_metadata, fp, indent=4, sort_keys=True, ensure_ascii=False)
+                fp.write(os.linesep)
             terminal.success(
                 'OSD %s got scanned and metadata persisted to file: %s' % (
                     osd_id,
@@ -270,7 +271,7 @@ class Scan(object):
                 )
             )
             terminal.success(
-                'To take over managment of this scanned OSD, and disable ceph-disk and udev, run:'
+                'To take over management of this scanned OSD, and disable ceph-disk and udev, run:'
             )
             terminal.success('    ceph-volume simple activate %s %s' % (osd_id, osd_fsid))
 

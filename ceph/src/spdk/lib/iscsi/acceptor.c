@@ -32,75 +32,60 @@
  *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include <errno.h>
-#include <string.h>
-#include <unistd.h>
-
-#include <sys/types.h>
+#include "spdk/stdinc.h"
 
 #include "spdk/env.h"
-#include "spdk/event.h"
+#include "spdk/thread.h"
 #include "spdk/log.h"
-#include "spdk/net.h"
+#include "spdk/sock.h"
+#include "spdk/string.h"
 #include "iscsi/acceptor.h"
 #include "iscsi/conn.h"
 #include "iscsi/portal_grp.h"
 
 #define ACCEPT_TIMEOUT_US 1000 /* 1ms */
 
-static struct spdk_poller *g_acceptor_poller;
-
-static void
-spdk_iscsi_portal_accept(struct spdk_iscsi_portal *portal)
+static int
+spdk_iscsi_portal_accept(void *arg)
 {
-	int				rc, sock;
+	struct spdk_iscsi_portal	*portal = arg;
+	struct spdk_sock		*sock;
+	int				rc;
+	int				count = 0;
 
-	if (portal->sock < 0) {
-		return;
+	if (portal->sock == NULL) {
+		return -1;
 	}
 
 	while (1) {
-		rc = spdk_sock_accept(portal->sock);
-		if (rc >= 0) {
-			sock = rc;
+		sock = spdk_sock_accept(portal->sock);
+		if (sock != NULL) {
 			rc = spdk_iscsi_conn_construct(portal, sock);
 			if (rc < 0) {
-				close(sock);
+				spdk_sock_close(&sock);
 				SPDK_ERRLOG("spdk_iscsi_connection_construct() failed\n");
 				break;
 			}
+			count++;
 		} else {
 			if (errno != EAGAIN && errno != EWOULDBLOCK) {
-				SPDK_ERRLOG("accept error(%d): %s\n", errno, strerror(errno));
+				SPDK_ERRLOG("accept error(%d): %s\n", errno, spdk_strerror(errno));
 			}
 			break;
 		}
 	}
-}
 
-static void
-spdk_acceptor(void *arg)
-{
-	struct spdk_iscsi_globals		*iscsi = arg;
-	struct spdk_iscsi_portal_grp	*portal_group;
-	struct spdk_iscsi_portal	*portal;
-
-	TAILQ_FOREACH(portal_group, &iscsi->pg_head, tailq) {
-		TAILQ_FOREACH(portal, &portal_group->head, tailq) {
-			spdk_iscsi_portal_accept(portal);
-		}
-	}
+	return count;
 }
 
 void
-spdk_iscsi_acceptor_start(void)
+spdk_iscsi_acceptor_start(struct spdk_iscsi_portal *p)
 {
-	spdk_poller_register(&g_acceptor_poller, spdk_acceptor, &g_spdk_iscsi, spdk_env_get_current_core(),
-			     ACCEPT_TIMEOUT_US);
+	p->acceptor_poller = spdk_poller_register(spdk_iscsi_portal_accept, p, ACCEPT_TIMEOUT_US);
 }
 
 void
-spdk_iscsi_acceptor_stop(void)
+spdk_iscsi_acceptor_stop(struct spdk_iscsi_portal *p)
 {
-	spdk_poller_unregister(&g_acceptor_poller, NULL);
+	spdk_poller_unregister(&p->acceptor_poller);
 }
