@@ -1,0 +1,29 @@
+From 2db844652e8df36adba7ba3b1a334ee583d1a1e1 Mon Sep 17 00:00:00 2001
+From: Dominik Csapak <d.csapak@proxmox.com>
+Date: Tue, 28 May 2019 16:29:21 +0200
+Subject: [PATCH] ceph-volume lvm.zap fix cleanup for db partitions
+
+this uses the correct type 'db' for db type partitions, else
+a block.db parition does not get cleaned up by ceph-volume zap
+
+Signed-off-by: Dominik Csapak <d.csapak@proxmox.com>
+---
+ src/ceph-volume/ceph_volume/devices/lvm/zap.py | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/ceph-volume/ceph_volume/devices/lvm/zap.py b/src/ceph-volume/ceph_volume/devices/lvm/zap.py
+index 328a036152..9a7a103ada 100644
+--- a/src/ceph-volume/ceph_volume/devices/lvm/zap.py
++++ b/src/ceph-volume/ceph_volume/devices/lvm/zap.py
+@@ -77,7 +77,7 @@ def ensure_associated_lvs(lvs):
+     wal_lvs = lvs._filter(lv_tags={'ceph.type': 'wal'})
+     backing_devices = [
+         (journal_lvs, 'journal'),
+-        (db_lvs, 'block'),
++        (db_lvs, 'db'),
+         (wal_lvs, 'wal')
+     ]
+ 
+-- 
+2.20.1
+
