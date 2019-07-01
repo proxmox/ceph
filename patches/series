@@ -3,3 +3,4 @@
 0006-debian-control-add-break-libpvestorage-perl.patch
 0007-debian-rules-ship-Ceph-changelog-as-upstream-changel.patch
 0008-ceph-volume-lvm.zap-fix-cleanup-for-db-partitions.patch
+0009-remove-legacy-pve-ceph-osd-activation-script-in-post.patch

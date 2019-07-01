@@ -1,0 +1,41 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Dominik Csapak <d.csapak@proxmox.com>
+Date: Thu, 27 Jun 2019 14:37:06 +0200
+Subject: [PATCH 09/10] remove legacy pve ceph osd activation script in
+ postinst of ceph-osd
+
+that service was distributed by pve-manager (but not in a regular way)
+and only executed ceph-disk activate-all
+
+this fails on nautilus and has to be removed when upgrading from
+luminous
+
+Signed-off-by: Dominik Csapak <d.csapak@proxmox.com>
+---
+ debian/ceph-osd.postinst | 13 +++++++++++++
+ 1 file changed, 13 insertions(+)
+
+diff --git a/debian/ceph-osd.postinst b/debian/ceph-osd.postinst
+index 5e44548fe8..7cc1f6ce14 100644
+--- a/debian/ceph-osd.postinst
++++ b/debian/ceph-osd.postinst
+@@ -25,6 +25,19 @@ case "$1" in
+     configure)
+ 	[ -x /etc/init.d/procps ] && invoke-rc.d procps restart || :
+ 	[ -x /sbin/start ] && start ceph-osd-all || :
++
++	# remove legacy osd activation service
++	if [ ! -z "$2" ] && dpkg --compare-versions "$2" lt '14'; then
++	    CEPHSERVICE="/etc/systemd/system/ceph.service"
++	    MD5SUM="f716952fcc5dda4ecdb153c02627da52  $CEPHSERVICE"
++	    if [ -e "$CEPHSERVICE" ] && [ "$(md5sum $CEPHSERVICE)" = "$MD5SUM" ]; then
++		if [ -e /etc/systemd/system/multi-user.target.wants/ceph.service ]; then
++		    deb-systemd-invoke disable ceph.service >/dev/null || :
++		fi
++		rm "$CEPHSERVICE" || :
++		systemctl --system daemon-reload >/dev/null || :
++	    fi
++	fi
+     ;;
+     abort-upgrade|abort-remove|abort-deconfigure)
+ 	:
