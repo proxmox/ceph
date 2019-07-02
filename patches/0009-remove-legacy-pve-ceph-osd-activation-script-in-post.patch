@@ -24,8 +24,8 @@ index 5e44548fe8..7cc1f6ce14 100644
  	[ -x /etc/init.d/procps ] && invoke-rc.d procps restart || :
  	[ -x /sbin/start ] && start ceph-osd-all || :
 +
-+	# remove legacy osd activation service
-+	if [ ! -z "$2" ] && dpkg --compare-versions "$2" lt '14'; then
++	# remove legacy osd activation service, FIXME remove with next ceph >> 14
++	if [ ! -z "$2" ] && dpkg --compare-versions "$2" lt '14.2.1-pve2'; then
 +	    CEPHSERVICE="/etc/systemd/system/ceph.service"
 +	    MD5SUM="f716952fcc5dda4ecdb153c02627da52  $CEPHSERVICE"
 +	    if [ -e "$CEPHSERVICE" ] && [ "$(md5sum $CEPHSERVICE)" = "$MD5SUM" ]; then
