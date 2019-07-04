@@ -1,3 +1,16 @@
+ceph (14.2.1-pve2) stable; urgency=medium
+
+  * add ceph-volume zap fix
+
+  * add postinst code to remove old ceph osd activation script
+
+  * add patch to remove unused init.d ceph script
+
+  * change the ceph-mgr plugin dependencies from recommends to suggest, to
+    avoid pulling in development packages by default
+
+ -- Proxmox Support Team <support@proxmox.com>  Wed, 08 May 2019 15:10:02 +0200
+
 ceph (14.2.1-pve1) stable; urgency=medium
 
   * New upstream Nautilus 14.2.1 release
