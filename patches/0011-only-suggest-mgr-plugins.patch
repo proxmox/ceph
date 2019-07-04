@@ -1,0 +1,35 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Dominik Csapak <d.csapak@proxmox.com>
+Date: Thu, 4 Jul 2019 08:17:05 +0200
+Subject: [PATCH] only suggest mgr plugins
+
+so that they wont be installed by default
+
+Signed-off-by: Dominik Csapak <d.csapak@proxmox.com>
+---
+ debian/control | 12 ++++++------
+ 1 file changed, 6 insertions(+), 6 deletions(-)
+
+diff --git a/debian/control b/debian/control
+index e7a01c6ff8..692705c4c4 100644
+--- a/debian/control
++++ b/debian/control
+@@ -188,12 +188,12 @@ Depends: ceph-base (= ${binary:Version}),
+          ${misc:Depends},
+          ${python:Depends},
+          ${shlibs:Depends},
+-Recommends: ceph-mgr-dashboard,
+-            ceph-mgr-diskprediction-local,
+-            ceph-mgr-diskprediction-cloud,
+-            ceph-mgr-rook,
+-            ceph-mgr-ssh
+-Suggests: python-influxdb
++Suggests: ceph-mgr-dashboard,
++          ceph-mgr-diskprediction-local,
++          ceph-mgr-diskprediction-cloud,
++          ceph-mgr-rook,
++          ceph-mgr-ssh,
++          python-influxdb
+ Replaces: ceph (<< 0.93-417),
+ Breaks: ceph (<< 0.93-417),
+ Description: manager for the ceph distributed storage system

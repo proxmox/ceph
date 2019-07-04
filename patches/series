@@ -5,3 +5,4 @@
 0008-ceph-volume-lvm.zap-fix-cleanup-for-db-partitions.patch
 0009-remove-legacy-pve-ceph-osd-activation-script-in-post.patch
 0010-remove-legacy-init.d-ceph-script.patch
+0011-only-suggest-mgr-plugins.patch
