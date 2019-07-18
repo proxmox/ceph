@@ -1,3 +1,9 @@
+ceph (14.2.2-pve1) stable; urgency=medium
+
+  * New upstream Nautilus 14.2.2 release
+
+ -- Proxmox Support Team <support@proxmox.com>  Thu, 18 Jul 2019 11:15:19 +0200
+
 ceph (14.2.1-pve2) stable; urgency=medium
 
   * add ceph-volume zap fix
