@@ -1,5 +1,6 @@
 import {
   AfterContentChecked,
+  ChangeDetectionStrategy,
   ChangeDetectorRef,
   Component,
   EventEmitter,
@@ -31,7 +32,8 @@ import { CdUserConfig } from '../../models/cd-user-config';
 @Component({
   selector: 'cd-table',
   templateUrl: './table.component.html',
-  styleUrls: ['./table.component.scss']
+  styleUrls: ['./table.component.scss'],
+  changeDetection: ChangeDetectionStrategy.OnPush
 })
 export class TableComponent implements AfterContentChecked, OnInit, OnChanges, OnDestroy {
   @ViewChild(DatatableComponent)
@@ -163,6 +165,16 @@ export class TableComponent implements AfterContentChecked, OnInit, OnChanges, O
   constructor(private ngZone: NgZone, private cdRef: ChangeDetectorRef) {}
 
   ngOnInit() {
+    // ngx-datatable triggers calculations each time mouse enters a row,
+    // this will prevent that.
+    window.addEventListener(
+      'mouseenter',
+      function(event) {
+        event.stopPropagation();
+      },
+      true
+    );
+
     this._addTemplates();
     if (!this.sorts) {
       // Check whether the specified identifier exists.
@@ -382,9 +394,10 @@ export class TableComponent implements AfterContentChecked, OnInit, OnChanges, O
     if (!this.data) {
       return; // Wait for data
     }
-    this.rows = [...this.data];
     if (this.search.length > 0) {
       this.updateFilter();
+    } else {
+      this.rows = [...this.data];
     }
     this.reset();
     this.updateSelected();
@@ -495,18 +508,11 @@ export class TableComponent implements AfterContentChecked, OnInit, OnChanges, O
       .replace('+', ' ')
       .split(':');
     const columnsClone = [...columns];
-    const dataClone = [...data];
-    const filterColumns = (columnName: string) =>
-      columnsClone.filter((c) => c.name.toLowerCase().indexOf(columnName) !== -1);
     if (searchTerms.length === 2) {
-      columns = filterColumns(searchTerms[0]);
+      columns = columnsClone.filter((c) => c.name.toLowerCase().indexOf(searchTerms[0]) !== -1);
     }
-    const searchTerm: string = _.last(searchTerms);
-    data = this.basicDataSearch(searchTerm, data, columns);
+    data = this.basicDataSearch(_.last(searchTerms), data, columns);
     // Checks if user searches for column but he is still typing
-    if (data.length === 0 && searchTerms.length === 1 && filterColumns(searchTerm).length > 0) {
-      data = dataClone;
-    }
     return this.subSearch(data, currentSearch, columnsClone);
   }
 

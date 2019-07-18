@@ -92,6 +92,9 @@ class RookWriteCompletion(orchestrator.WriteCompletion):
         global all_completions
         all_completions.append(self)
 
+    def __str__(self):
+        return self.message
+
     @property
     def result(self):
         return self._result
@@ -137,34 +140,26 @@ def deferred_read(f):
 class RookEnv(object):
     def __init__(self):
         # POD_NAMESPACE already exist for Rook 0.9
-        pod_namespace = os.environ.get('POD_NAMESPACE', 'rook-ceph')
-        self.cluster_ns = os.environ.get('ROOK_CLUSTER_NS', pod_namespace)
+        self.namespace = os.environ.get('POD_NAMESPACE', 'rook-ceph')
 
-        # ROOK_CLUSTER_NAME was a previously used env var name.
-        rook_cluster_name = os.environ.get('ROOK_CLUSTER_NAME', pod_namespace)
         # ROOK_CEPH_CLUSTER_CRD_NAME is new is Rook 1.0
-        self.cluster_name = os.environ.get('ROOK_CEPH_CLUSTER_CRD_NAME', rook_cluster_name)
+        self.cluster_name = os.environ.get('ROOK_CEPH_CLUSTER_CRD_NAME', self.namespace)
 
-        self.operator_ns = os.environ.get('ROOK_OPERATOR_NAMESPACE', "rook-ceph-system")
+        self.operator_namespace = os.environ.get('ROOK_OPERATOR_NAMESPACE', "rook-ceph-system")
         self.crd_version = os.environ.get('ROOK_CEPH_CLUSTER_CRD_VERSION', 'v1')
         self.api_name = "ceph.rook.io/" + self.crd_version
 
     def api_version_match(self):
         return self.crd_version == 'v1'
 
+    def has_namespace(self):
+        return 'POD_NAMESPACE' in os.environ
+
 
 class RookOrchestrator(MgrModule, orchestrator.Orchestrator):
     MODULE_OPTIONS = [
         # TODO: configure k8s API addr instead of assuming local
     ]
-
-    def _progress(self, *args, **kwargs):
-        try:
-            self.remote("progress", *args, **kwargs)
-        except ImportError:
-            # If the progress module is disabled that's fine,
-            # they just won't see the output.
-            pass
 
     def wait(self, completions):
         self.log.info("wait: completions={0}".format(completions))
@@ -184,23 +179,15 @@ class RookOrchestrator(MgrModule, orchestrator.Orchestrator):
             if c.is_complete:
                 continue
 
-            if not c.is_read:
-                self._progress("update", c.id, c.message, 0.5)
-
             try:
                 c.execute()
             except Exception as e:
-                self.log.exception("Completion {0} threw an exception:".format(
-                    c.message
-                ))
-                c.error = e
+                if not isinstance(e, orchestrator.OrchestratorError):
+                    self.log.exception("Completion {0} threw an exception:".format(
+                        c.message
+                    ))
+                c.exception = e
                 c._complete = True
-                if not c.is_read:
-                    self._progress("complete", c.id)
-            else:
-                if c.is_complete:
-                    if not c.is_read:
-                        self._progress("complete", c.id)
 
             if not c.is_complete:
                 incomplete = True
@@ -218,7 +205,7 @@ class RookOrchestrator(MgrModule, orchestrator.Orchestrator):
     def available(self):
         if not kubernetes_imported:
             return False, "`kubernetes` python module not found"
-        elif not self._rook_env.cluster_ns:
+        elif not self._rook_env.has_namespace():
             return False, "ceph-mgr not running in Rook cluster"
 
         try:
@@ -345,7 +332,8 @@ class RookOrchestrator(MgrModule, orchestrator.Orchestrator):
     @deferred_read
     def describe_service(self, service_type=None, service_id=None, node_name=None):
 
-        assert service_type in ("mds", "osd", "mgr", "mon", "nfs", None), service_type + " unsupported"
+        if service_type not in ("mds", "osd", "mgr", "mon", "nfs", None):
+            raise orchestrator.OrchestratorValidationError(service_type + " unsupported")
 
         pods = self.rook_cluster.describe_pods(service_type, service_id, node_name)
 
@@ -370,6 +358,9 @@ class RookOrchestrator(MgrModule, orchestrator.Orchestrator):
                 sd.service = p['labels']['ceph_nfs']
                 sd.service_instance = p['labels']['instance']
                 sd.rados_config_location = self.rook_cluster.get_nfs_conf_url(sd.service, sd.service_instance)
+            elif sd.service_type == "rgw":
+                sd.service = p['labels']['rgw']
+                sd.service_instance = p['labels']['ceph_daemon_id']
             else:
                 # Unknown type -- skip it
                 continue
@@ -445,7 +436,7 @@ class RookOrchestrator(MgrModule, orchestrator.Orchestrator):
         def is_complete():
             # Find OSD pods on this host
             pod_osd_ids = set()
-            pods = self._k8s.list_namespaced_pod(self._rook_env.cluster_ns,
+            pods = self._k8s.list_namespaced_pod(self._rook_env.namespace,
                                                  label_selector="rook_cluster={},app=rook-ceph-osd".format(self._rook_env.cluster_name),
                                                  field_selector="spec.nodeName={0}".format(
                                                      drive_group.hosts(all_hosts)[0]

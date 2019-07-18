@@ -2250,9 +2250,12 @@ private:
   void _assign_nid(TransContext *txc, OnodeRef o);
   uint64_t _assign_blobid(TransContext *txc);
 
-  template <int LogLevelV = 30> void _dump_onode(const OnodeRef& o);
-  template <int LogLevelV = 30> void _dump_extent_map(ExtentMap& em);
-  template <int LogLevelV = 30> void _dump_transaction(Transaction *t);
+  template <int LogLevelV>
+  friend void _dump_onode(CephContext *cct, const Onode& o);
+  template <int LogLevelV>
+  friend void _dump_extent_map(CephContext *cct, const ExtentMap& em);
+  template <int LogLevelV>
+  friend void _dump_transaction(CephContext *cct, Transaction *t);
 
   TransContext *_txc_create(Collection *c, OpSequencer *osr,
 			    list<Context*> *on_commits);
@@ -2697,6 +2700,8 @@ private:
   string failed_cmode;
   set<string> failed_compressors;
   string spillover_alert;
+  string legacy_statfs_alert;
+  string disk_size_mismatch_alert;
 
   void _log_alerts(osd_alert_list_t& alerts);
   bool _set_compression_alert(bool cmode, const char* s) {
@@ -2721,6 +2726,12 @@ private:
   void _clear_spillover_alert() {
     std::lock_guard l(qlock);
     spillover_alert.clear();
+  }
+
+  void _check_legacy_statfs_alert();
+  void _set_disk_size_mismatch_alert(const string& s) {
+    std::lock_guard l(qlock);
+    disk_size_mismatch_alert = s;
   }
 
 private:

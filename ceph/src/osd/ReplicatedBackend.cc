@@ -21,6 +21,7 @@
 #include "messages/MOSDPGPushReply.h"
 #include "common/EventTrace.h"
 #include "include/random.h"
+#include "include/util.h"
 #include "OSD.h"
 
 #define dout_context cct
@@ -659,8 +660,8 @@ int ReplicatedBackend::be_deep_scrub(
       return 0;
     }
     if (r == 0 && hdrbl.length()) {
-      dout(25) << "CRC header " << string(hdrbl.c_str(), hdrbl.length())
-	       << dendl;
+      bool encoded = false;
+      dout(25) << "CRC header " << cleanbin(hdrbl, encoded, true) << dendl;
       pos.omap_hash << hdrbl;
     }
   }
@@ -1299,10 +1300,22 @@ void ReplicatedBackend::prepare_pull(
   ceph_assert(!q->second.empty());
 
   // pick a pullee
-  auto p = q->second.begin();
-  std::advance(p,
-               util::generate_random_number<int>(0,
-                                                 q->second.size() - 1));
+  auto p = q->second.end();
+  if (cct->_conf->osd_debug_feed_pullee >= 0) {
+    for (auto it = q->second.begin(); it != q->second.end(); it++) {
+      if (it->osd == cct->_conf->osd_debug_feed_pullee) {
+        p = it;
+        break;
+      }
+    }
+  }
+  if (p == q->second.end()) {
+    // probably because user feed a wrong pullee
+    p = q->second.begin();
+    std::advance(p,
+                 util::generate_random_number<int>(0,
+                                                   q->second.size() - 1));
+  }
   ceph_assert(get_osdmap()->is_up(p->osd));
   pg_shard_t fromshard = *p;
 
@@ -2182,9 +2195,11 @@ void ReplicatedBackend::_failed_pull(pg_shard_t from, const hobject_t &soid)
 {
   dout(20) << __func__ << ": " << soid << " from " << from << dendl;
   list<pg_shard_t> fl = { from };
-  get_parent()->failed_push(fl, soid);
+  auto it = pulling.find(soid);
+  assert(it != pulling.end());
+  get_parent()->failed_push(fl, soid, it->second.recovery_info.version);
 
-  clear_pull(pulling.find(soid));
+  clear_pull(it);
 }
 
 void ReplicatedBackend::clear_pull_from(

@@ -276,9 +276,6 @@ Client::Client(Messenger *m, MonClient *mc, Objecter *objecter_)
 {
   _reset_faked_inos();
 
-  _dir_vxattrs_name_size = _vxattrs_calcu_name_size(_dir_vxattrs);
-  _file_vxattrs_name_size = _vxattrs_calcu_name_size(_file_vxattrs);
-
   user_id = cct->_conf->client_mount_uid;
   group_id = cct->_conf->client_mount_gid;
 
@@ -860,6 +857,7 @@ Inode * Client::add_update_inode(InodeStat *st, utime_t from,
     in->uid = st->uid;
     in->gid = st->gid;
     in->btime = st->btime;
+    in->snap_btime = st->snap_btime;
   }
 
   if ((new_version || (new_issued & CEPH_CAP_LINK_SHARED)) &&
@@ -2733,23 +2731,25 @@ void Client::handle_mds_map(const MConstRef<MMDSMap>& m)
       continue;  // no change
     
     session->mds_state = newstate;
-    if (old_inc != new_inc && newstate > MDSMap::STATE_RECONNECT) {
-      // missed reconnect close the session so that it can be reopened
-      _closed_mds_session(session);
-      continue;
-    }
     if (newstate == MDSMap::STATE_RECONNECT) {
       session->con = messenger->connect_to_mds(session->addrs);
       send_reconnect(session);
-    } else if (newstate >= MDSMap::STATE_ACTIVE) {
-      if (oldstate < MDSMap::STATE_ACTIVE) {
-	// kick new requests
-	kick_requests(session);
-	kick_flushing_caps(session);
-	signal_context_list(session->waiting_for_open);
-	wake_up_session_caps(session, true);
+    } else if (newstate > MDSMap::STATE_RECONNECT) {
+      if (oldstate < MDSMap::STATE_RECONNECT) {
+	ldout(cct, 1) << "we may miss the MDSMap::RECONNECT, close mds session ... " << dendl;
+	_closed_mds_session(session);
+	continue;
       }
-      connect_mds_targets(mds);
+      if (newstate >= MDSMap::STATE_ACTIVE) {
+	if (oldstate < MDSMap::STATE_ACTIVE) {
+	  // kick new requests
+	  kick_requests(session);
+	  kick_flushing_caps(session);
+	  signal_context_list(session->waiting_for_open);
+	  wake_up_session_caps(session, true);
+	}
+	connect_mds_targets(mds);
+      }
     } else if (newstate == MDSMap::STATE_NULL &&
 	       mds >= mdsmap->get_max_mds()) {
       _closed_mds_session(session);
@@ -8577,22 +8577,6 @@ int Client::_lookup_parent(Inode *ino, const UserPerm& perms, Inode **parent)
 {
   ldout(cct, 8) << __func__ << " enter(" << ino->ino << ")" << dendl;
 
-  if (unmounting)
-    return -ENOTCONN;
-
-  if (!ino->dentries.empty()) {
-    // if we exposed the parent here, we'd need to check permissions,
-    // but right now we just rely on the MDS doing so in make_request
-    ldout(cct, 8) << __func__ << " dentry already present" << dendl;
-    return 0;
-  }
-  
-  if (ino->is_root()) {
-    *parent = NULL;
-    ldout(cct, 8) << "ino is root, no parent" << dendl;
-    return -EINVAL;
-  }
-
   MetaRequest *req = new MetaRequest(CEPH_MDS_OP_LOOKUPPARENT);
   filepath path(ino->ino);
   req->set_filepath(path);
@@ -8611,12 +8595,6 @@ int Client::_lookup_parent(Inode *ino, const UserPerm& perms, Inode **parent)
   }
   ldout(cct, 8) << __func__ << " exit(" << ino->ino << ") = " << r << dendl;
   return r;
-}
-
-int Client::lookup_parent(Inode *ino, const UserPerm& perms, Inode **parent)
-{
-  std::lock_guard lock(client_lock);
-  return _lookup_parent(ino, perms, parent);
 }
 
 /**
@@ -10675,31 +10653,38 @@ int Client::ll_lookup_inode(
     const UserPerm& perms,
     Inode **inode)
 {
+  ceph_assert(inode != NULL);
   std::lock_guard lock(client_lock);
   ldout(cct, 3) << "ll_lookup_inode " << ino  << dendl;
    
+  if (unmounting)
+    return -ENOTCONN;
+
   // Num1: get inode and *inode
   int r = _lookup_ino(ino, perms, inode);
-  if (r) {
+  if (r)
     return r;
-  }
-  ceph_assert(inode != NULL);
+
   ceph_assert(*inode != NULL);
+
+  if (!(*inode)->dentries.empty()) {
+    ldout(cct, 8) << __func__ << " dentry already present" << dendl;
+    return 0;
+  }
+
+  if ((*inode)->is_root()) {
+    ldout(cct, 8) << "ino is root, no parent" << dendl;
+    return 0;
+  }
 
   // Num2: Request the parent inode, so that we can look up the name
   Inode *parent;
   r = _lookup_parent(*inode, perms, &parent);
-  if (r && r != -EINVAL) {
-    // Unexpected error
+  if (r) {
     _ll_forget(*inode, 1);  
     return r;
-  } else if (r == -EINVAL) {
-    // EINVAL indicates node without parents (root), drop out now
-    // and don't try to look up the non-existent dentry.
-    return 0;
   }
-  // FIXME: I don't think this works; lookup_parent() returns 0 if the parent
-  // is already in cache
+
   ceph_assert(parent != NULL);
 
   // Num3: Finally, get the name (dentry) of the requested inode
@@ -11342,44 +11327,52 @@ int Client::ll_getxattr(Inode *in, const char *name, void *value,
 int Client::_listxattr(Inode *in, char *name, size_t size,
 		       const UserPerm& perms)
 {
+  bool len_only = (size == 0);
   int r = _getattr(in, CEPH_STAT_CAP_XATTR, perms, in->xattr_version == 0);
-  if (r == 0) {
-    for (map<string,bufferptr>::iterator p = in->xattrs.begin();
-	 p != in->xattrs.end();
-	 ++p)
-      r += p->first.length() + 1;
-
-    const VXattr *vxattrs = _get_vxattrs(in);
-    r += _vxattrs_name_size(vxattrs);
-
-    if (size != 0) {
-      if (size >= (unsigned)r) {
-	for (map<string,bufferptr>::iterator p = in->xattrs.begin();
-	     p != in->xattrs.end();
-	     ++p) {
-	  memcpy(name, p->first.c_str(), p->first.length());
-	  name += p->first.length();
-	  *name = '\0';
-	  name++;
-	}
-	if (vxattrs) {
-	  for (int i = 0; !vxattrs[i].name.empty(); i++) {
-	    const VXattr& vxattr = vxattrs[i];
-	    if (vxattr.hidden)
-	      continue;
-	    // call pointer-to-member function
-	    if(vxattr.exists_cb && !(this->*(vxattr.exists_cb))(in))
-	      continue;
-	    memcpy(name, vxattr.name.c_str(), vxattr.name.length());
-	    name += vxattr.name.length();
-	    *name = '\0';
-	    name++;
-	  }
-	}
-      } else
-	r = -ERANGE;
-    }
+  if (r != 0) {
+    goto out;
   }
+
+  r = 0;
+  for (const auto& p : in->xattrs) {
+    size_t this_len = p.first.length() + 1;
+    r += this_len;
+    if (len_only)
+      continue;
+
+    if (this_len > size) {
+      r = -ERANGE;
+      goto out;
+    }
+
+    memcpy(name, p.first.c_str(), this_len);
+    name += this_len;
+    size -= this_len;
+  }
+
+  const VXattr *vxattr;
+  for (vxattr = _get_vxattrs(in); vxattr && !vxattr->name.empty(); vxattr++) {
+    if (vxattr->hidden)
+      continue;
+    // call pointer-to-member function
+    if (vxattr->exists_cb && !(this->*(vxattr->exists_cb))(in))
+      continue;
+
+    size_t this_len = vxattr->name.length() + 1;
+    r += this_len;
+    if (len_only)
+      continue;
+
+    if (this_len > size) {
+      r = -ERANGE;
+      goto out;
+    }
+
+    memcpy(name, vxattr->name.c_str(), this_len);
+    name += this_len;
+    size -= this_len;
+  }
+out:
   ldout(cct, 8) << __func__ << "(" << in->ino << ", " << size << ") = " << r << dendl;
   return r;
 }
@@ -11779,7 +11772,7 @@ size_t Client::_vxattrcb_dir_rbytes(Inode *in, char *val, size_t size)
 }
 size_t Client::_vxattrcb_dir_rctime(Inode *in, char *val, size_t size)
 {
-  return snprintf(val, size, "%ld.09%ld", (long)in->rstat.rctime.sec(),
+  return snprintf(val, size, "%ld.%09ld", (long)in->rstat.rctime.sec(),
       (long)in->rstat.rctime.nsec());
 }
 bool Client::_vxattrcb_dir_pin_exists(Inode *in)
@@ -11789,6 +11782,18 @@ bool Client::_vxattrcb_dir_pin_exists(Inode *in)
 size_t Client::_vxattrcb_dir_pin(Inode *in, char *val, size_t size)
 {
   return snprintf(val, size, "%ld", (long)in->dir_pin);
+}
+
+bool Client::_vxattrcb_snap_btime_exists(Inode *in)
+{
+  return !in->snap_btime.is_zero();
+}
+
+size_t Client::_vxattrcb_snap_btime(Inode *in, char *val, size_t size)
+{
+  return snprintf(val, size, "%llu.%09lu",
+      (long long unsigned)in->snap_btime.sec(),
+      (long unsigned)in->snap_btime.nsec());
 }
 
 #define CEPH_XATTR_NAME(_type, _name) "ceph." #_type "." #_name
@@ -11871,6 +11876,14 @@ const Client::VXattr Client::_dir_vxattrs[] = {
     exists_cb: &Client::_vxattrcb_dir_pin_exists,
     flags: 0,
   },
+  {
+    name: "ceph.snap.btime",
+    getxattr_cb: &Client::_vxattrcb_snap_btime,
+    readonly: true,
+    hidden: false,
+    exists_cb: &Client::_vxattrcb_snap_btime_exists,
+    flags: 0,
+  },
   { name: "" }     /* Required table terminator */
 };
 
@@ -11888,6 +11901,14 @@ const Client::VXattr Client::_file_vxattrs[] = {
   XATTR_LAYOUT_FIELD(file, layout, object_size),
   XATTR_LAYOUT_FIELD(file, layout, pool),
   XATTR_LAYOUT_FIELD(file, layout, pool_namespace),
+  {
+    name: "ceph.snap.btime",
+    getxattr_cb: &Client::_vxattrcb_snap_btime,
+    readonly: true,
+    hidden: false,
+    exists_cb: &Client::_vxattrcb_snap_btime_exists,
+    flags: 0,
+  },
   { name: "" }     /* Required table terminator */
 };
 
@@ -11913,17 +11934,6 @@ const Client::VXattr *Client::_match_vxattr(Inode *in, const char *name)
     }
   }
   return NULL;
-}
-
-size_t Client::_vxattrs_calcu_name_size(const VXattr *vxattr)
-{
-  size_t len = 0;
-  while (!vxattr->name.empty()) {
-    if (!vxattr->hidden)
-      len += vxattr->name.length() + 1;
-    vxattr++;
-  }
-  return len;
 }
 
 int Client::ll_readlink(Inode *in, char *buf, size_t buflen, const UserPerm& perms)

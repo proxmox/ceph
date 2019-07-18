@@ -1534,11 +1534,9 @@ function test_mon_osd()
   expect_false ceph osd add-noup 797er
   expect_false ceph osd add-nodown u9uwer
   expect_false ceph osd add-noin 78~15
-  expect_false ceph osd add-noout 0 all 1
 
   expect_false ceph osd rm-noup 1234567
   expect_false ceph osd rm-nodown fsadf7
-  expect_false ceph osd rm-noin 0 1 any
   expect_false ceph osd rm-noout 790-fd
 
   ids=`ceph osd ls-tree default`
@@ -1553,6 +1551,165 @@ function test_mon_osd()
   ceph osd rm-noout all
   ! ceph -s | grep 'NODOWN'
   ! ceph -s | grep 'NOOUT'
+
+  # test crush node flags
+  ceph osd add-noup osd.0
+  ceph osd add-nodown osd.0
+  ceph osd add-noin osd.0
+  ceph osd add-noout osd.0
+  ceph osd dump -f json-pretty | jq ".crush_node_flags" | expect_false grep "osd.0"
+  ceph osd rm-noup osd.0
+  ceph osd rm-nodown osd.0
+  ceph osd rm-noin osd.0
+  ceph osd rm-noout osd.0
+  ceph osd dump -f json-pretty | jq ".crush_node_flags" | expect_false grep "osd.0"
+
+  ceph osd crush add-bucket foo host root=default
+  ceph osd add-noup foo
+  ceph osd add-nodown foo
+  ceph osd add-noin foo
+  ceph osd add-noout foo
+  ceph osd dump -f json-pretty | jq ".crush_node_flags" | grep foo
+  ceph osd rm-noup foo
+  ceph osd rm-nodown foo
+  ceph osd rm-noin foo
+  ceph osd rm-noout foo
+  ceph osd dump -f json-pretty | jq ".crush_node_flags" | expect_false grep foo
+  ceph osd add-noup foo
+  ceph osd dump -f json-pretty | jq ".crush_node_flags" | grep foo
+  ceph osd crush rm foo
+  ceph osd dump -f json-pretty | jq ".crush_node_flags" | expect_false grep foo
+
+  ceph osd set-group noup osd.0
+  ceph osd dump -f json-pretty | jq ".osds[0].state" | grep 'noup'
+  ceph osd set-group noup,nodown osd.0
+  ceph osd dump -f json-pretty | jq ".osds[0].state" | grep 'noup'
+  ceph osd dump -f json-pretty | jq ".osds[0].state" | grep 'nodown'
+  ceph osd set-group noup,nodown,noin osd.0
+  ceph osd dump -f json-pretty | jq ".osds[0].state" | grep 'noup'
+  ceph osd dump -f json-pretty | jq ".osds[0].state" | grep 'nodown'
+  ceph osd dump -f json-pretty | jq ".osds[0].state" | grep 'noin'
+  ceph osd set-group noup,nodown,noin,noout osd.0
+  ceph osd dump -f json-pretty | jq ".osds[0].state" | grep 'noup'
+  ceph osd dump -f json-pretty | jq ".osds[0].state" | grep 'nodown'
+  ceph osd dump -f json-pretty | jq ".osds[0].state" | grep 'noin'
+  ceph osd dump -f json-pretty | jq ".osds[0].state" | grep 'noout'
+  ceph osd unset-group noup osd.0
+  ceph osd dump -f json-pretty | jq ".osds[0].state" | expect_false grep 'noup'
+  ceph osd dump -f json-pretty | jq ".osds[0].state" | grep 'nodown'
+  ceph osd dump -f json-pretty | jq ".osds[0].state" | grep 'noin'
+  ceph osd dump -f json-pretty | jq ".osds[0].state" | grep 'noout'
+  ceph osd unset-group noup,nodown osd.0
+  ceph osd dump -f json-pretty | jq ".osds[0].state" | expect_false grep 'noup\|nodown'
+  ceph osd dump -f json-pretty | jq ".osds[0].state" | grep 'noin'
+  ceph osd dump -f json-pretty | jq ".osds[0].state" | grep 'noout'
+  ceph osd unset-group noup,nodown,noin osd.0
+  ceph osd dump -f json-pretty | jq ".osds[0].state" | expect_false grep 'noup\|nodown\|noin'
+  ceph osd dump -f json-pretty | jq ".osds[0].state" | grep 'noout'
+  ceph osd unset-group noup,nodown,noin,noout osd.0
+  ceph osd dump -f json-pretty | jq ".osds[0].state" | expect_false grep 'noup\|nodown\|noin\|noout'
+
+  ceph osd set-group noup,nodown,noin,noout osd.0 osd.1
+  ceph osd dump -f json-pretty | jq ".osds[0].state" | grep 'noup'
+  ceph osd dump -f json-pretty | jq ".osds[0].state" | grep 'nodown'
+  ceph osd dump -f json-pretty | jq ".osds[0].state" | grep 'noin'
+  ceph osd dump -f json-pretty | jq ".osds[0].state" | grep 'noout'
+  ceph osd dump -f json-pretty | jq ".osds[1].state" | grep 'noup'
+  ceph osd dump -f json-pretty | jq ".osds[1].state" | grep 'nodown'
+  ceph osd dump -f json-pretty | jq ".osds[1].state" | grep 'noin'
+  ceph osd dump -f json-pretty | jq ".osds[1].state" | grep 'noout'
+  ceph osd unset-group noup,nodown,noin,noout osd.0 osd.1
+  ceph osd dump -f json-pretty | jq ".osds[0].state" | expect_false grep 'noup\|nodown\|noin\|noout'
+  ceph osd dump -f json-pretty | jq ".osds[1].state" | expect_false grep 'noup\|nodown\|noin\|noout'
+
+  ceph osd set-group noup all
+  ceph osd dump -f json-pretty | jq ".osds[0].state" | grep 'noup'
+  ceph osd unset-group noup all
+  ceph osd dump -f json-pretty | jq ".osds[0].state" | expect_false grep 'noup'
+
+  # crush node flags
+  ceph osd crush add-bucket foo host root=default
+  ceph osd set-group noup foo
+  ceph osd dump -f json-pretty | jq ".crush_node_flags.foo" | grep 'noup'
+  ceph osd set-group noup,nodown foo
+  ceph osd dump -f json-pretty | jq ".crush_node_flags.foo" | grep 'noup'
+  ceph osd dump -f json-pretty | jq ".crush_node_flags.foo" | grep 'nodown'
+  ceph osd set-group noup,nodown,noin foo
+  ceph osd dump -f json-pretty | jq ".crush_node_flags.foo" | grep 'noup'
+  ceph osd dump -f json-pretty | jq ".crush_node_flags.foo" | grep 'nodown'
+  ceph osd dump -f json-pretty | jq ".crush_node_flags.foo" | grep 'noin'
+  ceph osd set-group noup,nodown,noin,noout foo
+  ceph osd dump -f json-pretty | jq ".crush_node_flags.foo" | grep 'noup'
+  ceph osd dump -f json-pretty | jq ".crush_node_flags.foo" | grep 'nodown'
+  ceph osd dump -f json-pretty | jq ".crush_node_flags.foo" | grep 'noin'
+  ceph osd dump -f json-pretty | jq ".crush_node_flags.foo" | grep 'noout'
+
+  ceph osd unset-group noup foo
+  ceph osd dump -f json-pretty | jq ".crush_node_flags.foo" | expect_false grep 'noup'
+  ceph osd dump -f json-pretty | jq ".crush_node_flags.foo" | grep 'nodown'
+  ceph osd dump -f json-pretty | jq ".crush_node_flags.foo" | grep 'noin'
+  ceph osd dump -f json-pretty | jq ".crush_node_flags.foo" | grep 'noout'
+  ceph osd unset-group noup,nodown foo
+  ceph osd dump -f json-pretty | jq ".crush_node_flags.foo" | expect_false grep 'noup\|nodown'
+  ceph osd dump -f json-pretty | jq ".crush_node_flags.foo" | grep 'noin'
+  ceph osd dump -f json-pretty | jq ".crush_node_flags.foo" | grep 'noout'
+  ceph osd unset-group noup,nodown,noin foo
+  ceph osd dump -f json-pretty | jq ".crush_node_flags.foo" | expect_false grep 'noup\|nodown\|noin'
+  ceph osd dump -f json-pretty | jq ".crush_node_flags.foo" | grep 'noout'
+  ceph osd unset-group noup,nodown,noin,noout foo
+  ceph osd dump -f json-pretty | jq ".crush_node_flags.foo" | expect_false grep 'noup\|nodown\|noin\|noout'
+
+  ceph osd set-group noin,noout foo
+  ceph osd dump -f json-pretty | jq ".crush_node_flags.foo" | grep 'noin'
+  ceph osd dump -f json-pretty | jq ".crush_node_flags.foo" | grep 'noout'
+  ceph osd unset-group noin,noout foo
+  ceph osd dump -f json-pretty | jq ".crush_node_flags" | expect_false grep 'foo'
+
+  ceph osd set-group noup,nodown,noin,noout foo
+  ceph osd dump -f json-pretty | jq ".crush_node_flags.foo" | grep 'noup'
+  ceph osd dump -f json-pretty | jq ".crush_node_flags.foo" | grep 'nodown'
+  ceph osd dump -f json-pretty | jq ".crush_node_flags.foo" | grep 'noin'
+  ceph osd dump -f json-pretty | jq ".crush_node_flags.foo" | grep 'noout'
+  ceph osd crush rm foo
+  ceph osd dump -f json-pretty | jq ".crush_node_flags" | expect_false grep 'foo'
+
+  # test device class flags
+  osd_0_device_class=$(ceph osd crush get-device-class osd.0)
+  ceph osd set-group noup $osd_0_device_class
+  ceph osd dump -f json-pretty | jq ".device_class_flags.$osd_0_device_class" | grep 'noup'
+  ceph osd set-group noup,nodown $osd_0_device_class
+  ceph osd dump -f json-pretty | jq ".device_class_flags.$osd_0_device_class" | grep 'noup'
+  ceph osd dump -f json-pretty | jq ".device_class_flags.$osd_0_device_class" | grep 'nodown'
+  ceph osd set-group noup,nodown,noin $osd_0_device_class
+  ceph osd dump -f json-pretty | jq ".device_class_flags.$osd_0_device_class" | grep 'noup'
+  ceph osd dump -f json-pretty | jq ".device_class_flags.$osd_0_device_class" | grep 'nodown'
+  ceph osd dump -f json-pretty | jq ".device_class_flags.$osd_0_device_class" | grep 'noin'
+  ceph osd set-group noup,nodown,noin,noout $osd_0_device_class
+  ceph osd dump -f json-pretty | jq ".device_class_flags.$osd_0_device_class" | grep 'noup'
+  ceph osd dump -f json-pretty | jq ".device_class_flags.$osd_0_device_class" | grep 'nodown'
+  ceph osd dump -f json-pretty | jq ".device_class_flags.$osd_0_device_class" | grep 'noin'
+  ceph osd dump -f json-pretty | jq ".device_class_flags.$osd_0_device_class" | grep 'noout'
+
+  ceph osd unset-group noup $osd_0_device_class
+  ceph osd dump -f json-pretty | jq ".device_class_flags.$osd_0_device_class" | expect_false grep 'noup'
+  ceph osd dump -f json-pretty | jq ".device_class_flags.$osd_0_device_class" | grep 'nodown'
+  ceph osd dump -f json-pretty | jq ".device_class_flags.$osd_0_device_class" | grep 'noin'
+  ceph osd dump -f json-pretty | jq ".device_class_flags.$osd_0_device_class" | grep 'noout'
+  ceph osd unset-group noup,nodown $osd_0_device_class
+  ceph osd dump -f json-pretty | jq ".device_class_flags.$osd_0_device_class" | expect_false grep 'noup\|nodown'
+  ceph osd dump -f json-pretty | jq ".device_class_flags.$osd_0_device_class" | grep 'noin'
+  ceph osd dump -f json-pretty | jq ".device_class_flags.$osd_0_device_class" | grep 'noout'
+  ceph osd unset-group noup,nodown,noin $osd_0_device_class
+  ceph osd dump -f json-pretty | jq ".device_class_flags.$osd_0_device_class" | expect_false grep 'noup\|nodown\|noin'
+  ceph osd dump -f json-pretty | jq ".device_class_flags.$osd_0_device_class" | grep 'noout'
+  ceph osd unset-group noup,nodown,noin,noout $osd_0_device_class
+  ceph osd dump -f json-pretty | jq ".device_class_flags.$osd_0_device_class" | expect_false grep 'noup\|nodown\|noin\|noout'
+
+  ceph osd set-group noin,noout $osd_0_device_class
+  ceph osd dump -f json-pretty | jq ".device_class_flags.$osd_0_device_class" | grep 'noin'
+  ceph osd dump -f json-pretty | jq ".device_class_flags.$osd_0_device_class" | grep 'noout'
+  ceph osd unset-group noin,noout $osd_0_device_class
+  ceph osd dump -f json-pretty | jq ".crush_node_flags" | expect_false grep $osd_0_device_class
 
   # make sure mark out preserves weight
   ceph osd reweight osd.0 .5
@@ -2022,10 +2179,12 @@ function test_mon_osd_pool_set()
   ceph osd pool get $TEST_POOL_GETSET recovery_priority | expect_false grep '.'
   ceph osd pool set $TEST_POOL_GETSET recovery_priority 5 
   ceph osd pool get $TEST_POOL_GETSET recovery_priority | grep 'recovery_priority: 5'
+  ceph osd pool set $TEST_POOL_GETSET recovery_priority -5
+  ceph osd pool get $TEST_POOL_GETSET recovery_priority | grep 'recovery_priority: -5'
   ceph osd pool set $TEST_POOL_GETSET recovery_priority 0
   ceph osd pool get $TEST_POOL_GETSET recovery_priority | expect_false grep '.'
-  expect_false ceph osd pool set $TEST_POOL_GETSET recovery_priority -1
-  expect_false ceph osd pool set $TEST_POOL_GETSET recovery_priority 30
+  expect_false ceph osd pool set $TEST_POOL_GETSET recovery_priority -11
+  expect_false ceph osd pool set $TEST_POOL_GETSET recovery_priority 11
 
   ceph osd pool get $TEST_POOL_GETSET recovery_op_priority | expect_false grep '.'
   ceph osd pool set $TEST_POOL_GETSET recovery_op_priority 5 

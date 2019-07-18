@@ -67,6 +67,10 @@
 #define CEPH_OSD_FEATURE_INCOMPAT_RECOVERY_DELETES CompatSet::Feature(16, "deletes in missing set")
 
 
+/// pool priority range set by user
+#define OSD_POOL_PRIORITY_MAX 10
+#define OSD_POOL_PRIORITY_MIN -OSD_POOL_PRIORITY_MAX
+
 /// min recovery priority for MBackfillReserve
 #define OSD_RECOVERY_PRIORITY_MIN 0
 
@@ -81,6 +85,9 @@
 
 /// base backfill priority for MBackfillReserve (inactive PG)
 #define OSD_BACKFILL_INACTIVE_PRIORITY_BASE 220
+
+/// base recovery priority for MRecoveryReserve (inactive PG)
+#define OSD_RECOVERY_INACTIVE_PRIORITY_BASE 220
 
 /// max manually/automatically set recovery priority for MBackfillReserve
 #define OSD_RECOVERY_PRIORITY_MAX 253
@@ -100,6 +107,13 @@
 /// priority when more full
 #define OSD_DELETE_PRIORITY_FULL 255
 
+static std::map<int, int> max_prio_map = {
+	{OSD_BACKFILL_PRIORITY_BASE, OSD_BACKFILL_DEGRADED_PRIORITY_BASE - 1},
+	{OSD_BACKFILL_DEGRADED_PRIORITY_BASE, OSD_RECOVERY_PRIORITY_BASE - 1},
+	{OSD_RECOVERY_PRIORITY_BASE, OSD_BACKFILL_INACTIVE_PRIORITY_BASE - 1},
+	{OSD_RECOVERY_INACTIVE_PRIORITY_BASE, OSD_RECOVERY_PRIORITY_MAX},
+	{OSD_BACKFILL_INACTIVE_PRIORITY_BASE, OSD_RECOVERY_PRIORITY_MAX}
+};
 
 typedef hobject_t collection_list_handle_t;
 
@@ -2078,6 +2092,8 @@ struct pg_stat_t {
   int64_t ondisk_log_size;    // >= active_log_size
 
   vector<int32_t> up, acting;
+  vector<pg_shard_t> avail_no_missing;
+  map< std::set<pg_shard_t>, int32_t > object_location_counts;
   epoch_t mapping_epoch;
 
   vector<int32_t> blocked_by;  ///< osds on which the pg is blocked
@@ -2337,6 +2353,9 @@ struct osd_stat_t {
 
   uint32_t num_pgs = 0;
 
+  uint32_t num_osds = 0;
+  uint32_t num_per_pool_osds = 0;
+
   osd_stat_t() : snap_trim_queue_len(0), num_snap_trimming(0),
        num_shards_repaired(0)	{}
 
@@ -2348,6 +2367,8 @@ struct osd_stat_t {
     op_queue_age_hist.add(o.op_queue_age_hist);
     os_perf_stat.add(o.os_perf_stat);
     num_pgs += o.num_pgs;
+    num_osds += o.num_osds;
+    num_per_pool_osds += o.num_per_pool_osds;
     for (const auto& a : o.os_alerts) {
       auto& target = os_alerts[a.first];
       for (auto& i : a.second) {
@@ -2363,6 +2384,8 @@ struct osd_stat_t {
     op_queue_age_hist.sub(o.op_queue_age_hist);
     os_perf_stat.sub(o.os_perf_stat);
     num_pgs -= o.num_pgs;
+    num_osds -= o.num_osds;
+    num_per_pool_osds -= o.num_per_pool_osds;
     for (const auto& a : o.os_alerts) {
       auto& target = os_alerts[a.first];
       for (auto& i : a.second) {
@@ -2388,7 +2411,9 @@ inline bool operator==(const osd_stat_t& l, const osd_stat_t& r) {
     l.hb_peers == r.hb_peers &&
     l.op_queue_age_hist == r.op_queue_age_hist &&
     l.os_perf_stat == r.os_perf_stat &&
-    l.num_pgs == r.num_pgs;
+    l.num_pgs == r.num_pgs &&
+    l.num_osds == r.num_osds &&
+    l.num_per_pool_osds == r.num_per_pool_osds;
 }
 inline bool operator!=(const osd_stat_t& l, const osd_stat_t& r) {
   return !(l == r);
@@ -2472,9 +2497,9 @@ struct pool_stat_t {
   // In legacy mode used and netto values are the same. But for new per-pool
   // collection 'used' provides amount of space ALLOCATED at all related OSDs 
   // and 'netto' is amount of stored user data.
-  uint64_t get_allocated_bytes() const {
+  uint64_t get_allocated_bytes(bool per_pool) const {
     uint64_t allocated_bytes;
-    if (num_store_stats) {
+    if (per_pool) {
       allocated_bytes = store_stats.allocated;
     } else {
       // legacy mode, use numbers from 'stats'
@@ -2485,9 +2510,9 @@ struct pool_stat_t {
     allocated_bytes += stats.sum.num_omap_bytes;
     return allocated_bytes;
   }
-  uint64_t get_user_bytes(float raw_used_rate) const {
+  uint64_t get_user_bytes(float raw_used_rate, bool per_pool) const {
     uint64_t user_bytes;
-    if (num_store_stats) {
+    if (per_pool) {
       user_bytes = raw_used_rate ? store_stats.data_stored / raw_used_rate : 0;
     } else {
       // legacy mode, use numbers from 'stats'
@@ -4066,16 +4091,7 @@ public:
    * @param other pg_log_t to copy from
    * @param from copy entries after this version
    */
-  void copy_after(const pg_log_t &other, eversion_t from);
-
-  /**
-   * copy a range of entries from another pg_log_t
-   *
-   * @param other pg_log_t to copy from
-   * @param from copy entries after this version
-   * @param to up to and including this version
-   */
-  void copy_range(const pg_log_t &other, eversion_t from, eversion_t to);
+  void copy_after(CephContext* cct, const pg_log_t &other, eversion_t from);
 
   /**
    * copy up to N entries
@@ -4083,7 +4099,7 @@ public:
    * @param other source log
    * @param max max number of entries to copy
    */
-  void copy_up_to(const pg_log_t &other, int max);
+  void copy_up_to(CephContext* cct, const pg_log_t &other, int max);
 
   ostream& print(ostream& out) const;
 

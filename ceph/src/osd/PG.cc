@@ -980,6 +980,7 @@ void PG::remove_down_peer_info(const OSDMapRef osdmap)
       peer_missing.erase(p->first);
       peer_log_requested.erase(p->first);
       peer_missing_requested.erase(p->first);
+      peer_purged.erase(p->first); // so we can re-purge if necessary
       peer_info.erase(p++);
       removed = true;
     } else
@@ -1554,7 +1555,8 @@ bool PG::recoverable_and_ge_min_size(const vector<int> &want) const
 void PG::choose_async_recovery_ec(const map<pg_shard_t, pg_info_t> &all_info,
                                   const pg_info_t &auth_info,
                                   vector<int> *want,
-                                  set<pg_shard_t> *async_recovery) const
+                                  set<pg_shard_t> *async_recovery,
+                                  const OSDMapRef osdmap) const
 {
   set<pair<int, pg_shard_t> > candidates_by_cost;
   for (uint8_t i = 0; i < want->size(); ++i) {
@@ -1581,14 +1583,21 @@ void PG::choose_async_recovery_ec(const map<pg_shard_t, pg_info_t> &all_info,
     // past the authoritative last_update the same as those equal to it.
     version_t auth_version = auth_info.last_update.version;
     version_t candidate_version = shard_info.last_update.version;
-    auto approx_missing_objects =
-      shard_info.stats.stats.sum.num_objects_missing;
-    if (auth_version > candidate_version) {
-      approx_missing_objects += auth_version - candidate_version;
-    }
-    if (static_cast<uint64_t>(approx_missing_objects) >
-	cct->_conf.get_val<uint64_t>("osd_async_recovery_min_cost")) {
-      candidates_by_cost.insert(make_pair(approx_missing_objects, shard_i));
+    if (HAVE_FEATURE(osdmap->get_up_osd_features(), SERVER_NAUTILUS)) {
+      auto approx_missing_objects =
+        shard_info.stats.stats.sum.num_objects_missing;
+      if (auth_version > candidate_version) {
+        approx_missing_objects += auth_version - candidate_version;
+      }
+      if (static_cast<uint64_t>(approx_missing_objects) >
+	  cct->_conf.get_val<uint64_t>("osd_async_recovery_min_cost")) {
+        candidates_by_cost.emplace(approx_missing_objects, shard_i);
+      }
+    } else {
+      if (auth_version > candidate_version &&
+          (auth_version - candidate_version) > cct->_conf.get_val<uint64_t>("osd_async_recovery_min_cost")) {
+        candidates_by_cost.insert(make_pair(auth_version - candidate_version, shard_i));
+      }
     }
   }
 
@@ -1613,7 +1622,8 @@ void PG::choose_async_recovery_ec(const map<pg_shard_t, pg_info_t> &all_info,
 void PG::choose_async_recovery_replicated(const map<pg_shard_t, pg_info_t> &all_info,
                                           const pg_info_t &auth_info,
                                           vector<int> *want,
-                                          set<pg_shard_t> *async_recovery) const
+                                          set<pg_shard_t> *async_recovery,
+                                          const OSDMapRef osdmap) const
 {
   set<pair<int, pg_shard_t> > candidates_by_cost;
   for (auto osd_num : *want) {
@@ -1632,16 +1642,28 @@ void PG::choose_async_recovery_replicated(const map<pg_shard_t, pg_info_t> &all_
     // logs plus historical missing objects as the cost of recovery
     version_t auth_version = auth_info.last_update.version;
     version_t candidate_version = shard_info.last_update.version;
-    auto approx_missing_objects =
-      shard_info.stats.stats.sum.num_objects_missing;
-    if (auth_version > candidate_version) {
-      approx_missing_objects += auth_version - candidate_version;
+    if (HAVE_FEATURE(osdmap->get_up_osd_features(), SERVER_NAUTILUS)) {
+      auto approx_missing_objects =
+        shard_info.stats.stats.sum.num_objects_missing;
+      if (auth_version > candidate_version) {
+        approx_missing_objects += auth_version - candidate_version;
+      } else {
+        approx_missing_objects += candidate_version - auth_version;
+      }
+      if (static_cast<uint64_t>(approx_missing_objects)  >
+	  cct->_conf.get_val<uint64_t>("osd_async_recovery_min_cost")) {
+        candidates_by_cost.emplace(approx_missing_objects, shard_i);
+      }
     } else {
-      approx_missing_objects += candidate_version - auth_version;
-    }
-    if (static_cast<uint64_t>(approx_missing_objects)  >
-	cct->_conf.get_val<uint64_t>("osd_async_recovery_min_cost")) {
-      candidates_by_cost.insert(make_pair(approx_missing_objects, shard_i));
+      size_t approx_entries;
+      if (auth_version > candidate_version) {
+        approx_entries = auth_version - candidate_version;
+      } else {
+        approx_entries = candidate_version - auth_version;
+      }
+      if (approx_entries > cct->_conf.get_val<uint64_t>("osd_async_recovery_min_cost")) {
+        candidates_by_cost.insert(make_pair(approx_entries, shard_i));
+      }
     }
   }
 
@@ -1759,9 +1781,9 @@ bool PG::choose_acting(pg_shard_t &auth_log_shard_id,
   set<pg_shard_t> want_async_recovery;
   if (HAVE_FEATURE(get_osdmap()->get_up_osd_features(), SERVER_MIMIC)) {
     if (pool.info.is_erasure()) {
-      choose_async_recovery_ec(all_info, auth_log_shard->second, &want, &want_async_recovery);
+      choose_async_recovery_ec(all_info, auth_log_shard->second, &want, &want_async_recovery, get_osdmap());
     } else {
-      choose_async_recovery_replicated(all_info, auth_log_shard->second, &want, &want_async_recovery);
+      choose_async_recovery_replicated(all_info, auth_log_shard->second, &want, &want_async_recovery, get_osdmap());
     }
   }
   if (want != acting) {
@@ -2036,7 +2058,7 @@ void PG::activate(ObjectStore::Transaction& t,
 	  last_peering_reset /* epoch to create pg at */);
 
 	// send some recent log, so that op dup detection works well.
-	m->log.copy_up_to(pg_log.get_log(), cct->_conf->osd_min_pg_log_entries);
+	m->log.copy_up_to(cct, pg_log.get_log(), cct->_conf->osd_min_pg_log_entries);
 	m->info.log_tail = m->log.tail;
 	pi.log_tail = m->log.tail;  // sigh...
 
@@ -2049,7 +2071,7 @@ void PG::activate(ObjectStore::Transaction& t,
 	  get_osdmap_epoch(), info,
 	  last_peering_reset /* epoch to create pg at */);
 	// send new stuff to append to replicas log
-	m->log.copy_after(pg_log.get_log(), pi.last_update);
+	m->log.copy_after(cct, pg_log.get_log(), pi.last_update);
       }
 
       // share past_intervals if we are creating the pg on the replica
@@ -2455,14 +2477,27 @@ bool PG::set_force_backfill(bool b)
   return did;
 }
 
-inline int PG::clamp_recovery_priority(int priority)
+int PG::clamp_recovery_priority(int priority, int pool_recovery_priority, int max)
 {
   static_assert(OSD_RECOVERY_PRIORITY_MIN < OSD_RECOVERY_PRIORITY_MAX, "Invalid priority range");
   static_assert(OSD_RECOVERY_PRIORITY_MIN >= 0, "Priority range must match unsigned type");
 
+  ceph_assert(max <= OSD_RECOVERY_PRIORITY_MAX);
+
+  // User can't set this too high anymore, but might be a legacy value
+  if (pool_recovery_priority > OSD_POOL_PRIORITY_MAX)
+    pool_recovery_priority = OSD_POOL_PRIORITY_MAX;
+  if (pool_recovery_priority < OSD_POOL_PRIORITY_MIN)
+    pool_recovery_priority = OSD_POOL_PRIORITY_MIN;
+  // Shift range from min to max to 0 to max - min
+  pool_recovery_priority += (0 - OSD_POOL_PRIORITY_MIN);
+  ceph_assert(pool_recovery_priority >= 0 && pool_recovery_priority <= (OSD_POOL_PRIORITY_MAX - OSD_POOL_PRIORITY_MIN));
+
+  priority += pool_recovery_priority;
+
   // Clamp to valid range
-  if (priority > OSD_RECOVERY_PRIORITY_MAX) {
-    return OSD_RECOVERY_PRIORITY_MAX;
+  if (priority > max) {
+    return max;
   } else if (priority < OSD_RECOVERY_PRIORITY_MIN) {
     return OSD_RECOVERY_PRIORITY_MIN;
   } else {
@@ -2473,15 +2508,25 @@ inline int PG::clamp_recovery_priority(int priority)
 unsigned PG::get_recovery_priority()
 {
   // a higher value -> a higher priority
-  int64_t ret = 0;
+  int ret = OSD_RECOVERY_PRIORITY_BASE;
+  int base = ret;
 
   if (state & PG_STATE_FORCED_RECOVERY) {
     ret = OSD_RECOVERY_PRIORITY_FORCED;
   } else {
-    pool.info.opts.get(pool_opts_t::RECOVERY_PRIORITY, &ret);
-    ret = clamp_recovery_priority(OSD_RECOVERY_PRIORITY_BASE + ret);
+    // XXX: This priority boost isn't so much about inactive, but about data-at-risk
+    if (is_degraded() && info.stats.avail_no_missing.size() < pool.info.min_size) {
+      base = OSD_RECOVERY_INACTIVE_PRIORITY_BASE;
+      // inactive: no. of replicas < min_size, highest priority since it blocks IO
+      ret = base + (pool.info.min_size - info.stats.avail_no_missing.size());
+    }
+
+    int64_t pool_recovery_priority = 0;
+    pool.info.opts.get(pool_opts_t::RECOVERY_PRIORITY, &pool_recovery_priority);
+
+    ret = clamp_recovery_priority(ret, pool_recovery_priority, max_prio_map[base]);
   }
-  dout(20) << __func__ << " recovery priority for " << *this << " is " << ret << ", state is " << state << dendl;
+  dout(20) << __func__ << " recovery priority is " << ret << dendl;
   return static_cast<unsigned>(ret);
 }
 
@@ -2489,30 +2534,35 @@ unsigned PG::get_backfill_priority()
 {
   // a higher value -> a higher priority
   int ret = OSD_BACKFILL_PRIORITY_BASE;
+  int base = ret;
+
   if (state & PG_STATE_FORCED_BACKFILL) {
     ret = OSD_BACKFILL_PRIORITY_FORCED;
   } else {
     if (acting.size() < pool.info.min_size) {
+      base = OSD_BACKFILL_INACTIVE_PRIORITY_BASE;
       // inactive: no. of replicas < min_size, highest priority since it blocks IO
-      ret = OSD_BACKFILL_INACTIVE_PRIORITY_BASE + (pool.info.min_size - acting.size());
+      ret = base + (pool.info.min_size - acting.size());
 
     } else if (is_undersized()) {
       // undersized: OSD_BACKFILL_DEGRADED_PRIORITY_BASE + num missing replicas
       ceph_assert(pool.info.size > actingset.size());
-      ret = OSD_BACKFILL_DEGRADED_PRIORITY_BASE + (pool.info.size - actingset.size());
+      base = OSD_BACKFILL_DEGRADED_PRIORITY_BASE;
+      ret = base + (pool.info.size - actingset.size());
 
     } else if (is_degraded()) {
       // degraded: baseline degraded
-      ret = OSD_BACKFILL_DEGRADED_PRIORITY_BASE;
+      base = ret = OSD_BACKFILL_DEGRADED_PRIORITY_BASE;
     }
 
     // Adjust with pool's recovery priority
     int64_t pool_recovery_priority = 0;
     pool.info.opts.get(pool_opts_t::RECOVERY_PRIORITY, &pool_recovery_priority);
 
-    ret = clamp_recovery_priority(pool_recovery_priority + ret);
+    ret = clamp_recovery_priority(ret, pool_recovery_priority, max_prio_map[base]);
   }
 
+  dout(20) << __func__ << " backfill priority is " << ret << dendl;
   return static_cast<unsigned>(ret);
 }
 
@@ -2626,10 +2676,9 @@ void PG::split_into(pg_t child_pgid, PG *child, unsigned split_bits)
   info.log_tail = pg_log.get_tail();
   child->info.log_tail = child->pg_log.get_tail();
 
-  if (info.last_complete < pg_log.get_tail())
-    info.last_complete = pg_log.get_tail();
-  if (child->info.last_complete < child->pg_log.get_tail())
-    child->info.last_complete = child->pg_log.get_tail();
+  // reset last_complete, we might have modified pg_log & missing above
+  pg_log.reset_complete_to(&info);
+  child->pg_log.reset_complete_to(&child->info);
 
   // Info
   child->info.history = info.history;
@@ -3203,6 +3252,8 @@ void PG::_update_calc_stats()
   info.stats.stats.sum.num_objects_degraded = 0;
   info.stats.stats.sum.num_objects_unfound = 0;
   info.stats.stats.sum.num_objects_misplaced = 0;
+  info.stats.avail_no_missing.clear();
+  info.stats.object_location_counts.clear();
 
   if ((is_remapped() || is_undersized() || !is_clean()) && (is_peered() || is_activating())) {
     dout(20) << __func__ << " actingset " << actingset << " upset "
@@ -3236,6 +3287,8 @@ void PG::_update_calc_stats()
         acting_source_objects.insert(make_pair(missing, pg_whoami));
       }
       info.stats.stats.sum.num_objects_missing_on_primary = missing;
+      if (missing == 0)
+        info.stats.avail_no_missing.push_back(pg_whoami);
       dout(20) << __func__ << " shard " << pg_whoami
                << " primary objects " << num_objects
                << " missing " << missing
@@ -3269,11 +3322,32 @@ void PG::_update_calc_stats()
 	acting_source_objects.insert(make_pair(missing, peer.first));
       }
       peer.second.stats.stats.sum.num_objects_missing = missing;
+      if (missing == 0)
+        info.stats.avail_no_missing.push_back(peer.first);
       dout(20) << __func__ << " shard " << peer.first
                << " objects " << peer_num_objects
                << " missing " << missing
                << dendl;
     }
+
+    // Compute object_location_counts
+    for (auto& ml: missing_loc.get_missing_locs()) {
+      info.stats.object_location_counts[ml.second]++;
+      dout(30) << __func__ << " " << ml.first << " object_location_counts["
+	       << ml.second << "]=" << info.stats.object_location_counts[ml.second]
+	       << dendl;
+    }
+    int64_t not_missing = num_objects - missing_loc.get_missing_locs().size();
+    if (not_missing) {
+	// During recovery we know upset == actingset and is being populated
+	// During backfill we know that all non-missing objects are in the actingset
+        info.stats.object_location_counts[actingset] = not_missing;
+    }
+    dout(30) << __func__ << " object_location_counts["
+	     << upset << "]=" << info.stats.object_location_counts[upset]
+	     << dendl;
+    dout(20) << __func__ << " object_location_counts "
+	     << info.stats.object_location_counts << dendl;
 
     // A misplaced object is not stored on the correct OSD
     int64_t misplaced = 0;
@@ -3896,11 +3970,16 @@ void PG::append_log(
 
   PGLogEntryHandler handler{this, &t};
   if (!transaction_applied) {
-     /* We must be a backfill peer, so it's ok if we apply
+     /* We must be a backfill or async recovery peer, so it's ok if we apply
       * out-of-turn since we won't be considered when
       * determining a min possible last_update.
+      *
+      * We skip_rollforward() here, which advances the crt, without
+      * doing an actual rollforward. This avoids cleaning up entries
+      * from the backend and we do not end up in a situation, where the
+      * object is deleted before we can _merge_object_divergent_entries().
       */
-    pg_log.roll_forward(&handler);
+    pg_log.skip_rollforward();
   }
 
   for (vector<pg_log_entry_t>::const_iterator p = logv.begin();
@@ -4660,12 +4739,12 @@ void PG::_scan_rollback_obs(const vector<ghobject_t> &rollback_obs)
        i != rollback_obs.end();
        ++i) {
     if (i->generation < trimmed_to.version) {
-      osd->clog->error() << "osd." << osd->whoami
-			<< " pg " << info.pgid
-			<< " found obsolete rollback obj "
-			<< *i << " generation < trimmed_to "
-			<< trimmed_to
-			<< "...repaired";
+      dout(10) << __func__ << "osd." << osd->whoami
+	       << " pg " << info.pgid
+	       << " found obsolete rollback obj "
+	       << *i << " generation < trimmed_to "
+	       << trimmed_to
+	       << "...repaired" << dendl;
       t.remove(coll, *i);
     }
   }
@@ -6049,7 +6128,7 @@ void PG::fulfill_log(
 			<< ", sending full log instead";
       mlog->log = pg_log.get_log();           // primary should not have requested this!!
     } else
-      mlog->log.copy_after(pg_log.get_log(), query.since);
+      mlog->log.copy_after(cct, pg_log.get_log(), query.since);
   }
   else if (query.type == pg_query_t::FULLLOG) {
     dout(10) << " sending info+missing+full log" << dendl;
@@ -8559,7 +8638,7 @@ boost::statechart::result PG::RecoveryState::Active::react(const MNotifyRec& not
 		       << dendl;
     pg->proc_replica_info(
       notevt.from, notevt.notify.info, notevt.notify.epoch_sent);
-    if (pg->have_unfound()) {
+    if (pg->have_unfound() || (pg->is_degraded() && pg->might_have_unfound.count(notevt.from))) {
       pg->discover_all_missing(*context< RecoveryMachine >().get_query_map());
     }
   }

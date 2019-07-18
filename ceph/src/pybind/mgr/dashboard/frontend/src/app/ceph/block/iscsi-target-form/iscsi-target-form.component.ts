@@ -32,7 +32,7 @@ export class IscsiTargetFormComponent implements OnInit {
   disk_default_controls: any;
   backstores: string[];
   default_backstore: string;
-  supported_rbd_features: any;
+  unsupported_rbd_features: any;
   required_rbd_features: any;
 
   isEdit = false;
@@ -124,7 +124,7 @@ export class IscsiTargetFormComponent implements OnInit {
       this.disk_default_controls = data[3].disk_default_controls;
       this.backstores = data[3].backstores;
       this.default_backstore = data[3].default_backstore;
-      this.supported_rbd_features = data[3].supported_rbd_features;
+      this.unsupported_rbd_features = data[3].unsupported_rbd_features;
       this.required_rbd_features = data[3].required_rbd_features;
 
       // rbdService.list()
@@ -226,7 +226,6 @@ export class IscsiTargetFormComponent implements OnInit {
 
     _.forEach(res.groups, (group) => {
       const fg = this.addGroup();
-      console.log(group);
       group.disks = _.map(group.disks, (disk) => `${disk.pool}/${disk.image}`);
       fg.patchValue(group);
       _.forEach(group.members, (member) => {
@@ -494,7 +493,7 @@ export class IscsiTargetFormComponent implements OnInit {
 
     const initiators = _.map(
       this.initiators.value,
-      (initiator) => new SelectOption(false, initiator.client_iqn, '')
+      (initiator) => new SelectOption(false, initiator.client_iqn, '', !initiator.cdIsInGroup)
     );
     this.groupMembersSelections.push(initiators);
 
@@ -509,11 +508,19 @@ export class IscsiTargetFormComponent implements OnInit {
   onGroupMemberSelection($event) {
     const option = $event.option;
 
-    this.initiators.controls.forEach((element) => {
+    let initiator_index: number;
+    this.initiators.controls.forEach((element, index) => {
       if (element.value.client_iqn === option.name) {
         element.patchValue({ luns: [] });
         element.get('cdIsInGroup').setValue(option.selected);
+        initiator_index = index;
       }
+    });
+
+    // Members can only be at one group at a time, so when a member is selected
+    // in one group we need to disable its selection in other groups
+    _.forEach(this.groupMembersSelections, (group) => {
+      group[initiator_index].enabled = !option.selected;
     });
   }
 
@@ -570,10 +577,10 @@ export class IscsiTargetFormComponent implements OnInit {
 
     // Portals
     formValue.portals.forEach((portal) => {
-      const portalSplit = portal.split(':');
+      const index = portal.indexOf(':');
       request.portals.push({
-        host: portalSplit[0],
-        ip: portalSplit[1]
+        host: portal.substring(0, index),
+        ip: portal.substring(index + 1)
       });
     });
 
@@ -678,11 +685,11 @@ export class IscsiTargetFormComponent implements OnInit {
   validFeatures(image, backstore) {
     const imageFeatures = image.features;
     const requiredFeatures = this.required_rbd_features[backstore];
-    const supportedFeatures = this.supported_rbd_features[backstore];
+    const unsupportedFeatures = this.unsupported_rbd_features[backstore];
     // tslint:disable-next-line:no-bitwise
     const validRequiredFeatures = (imageFeatures & requiredFeatures) === requiredFeatures;
     // tslint:disable-next-line:no-bitwise
-    const validSupportedFeatures = (imageFeatures & supportedFeatures) === imageFeatures;
+    const validSupportedFeatures = (imageFeatures & unsupportedFeatures) === 0;
     return validRequiredFeatures && validSupportedFeatures;
   }
 

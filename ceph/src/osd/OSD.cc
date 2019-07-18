@@ -444,6 +444,11 @@ void OSDService::start_shutdown()
     std::lock_guard l(sleep_lock);
     sleep_timer.shutdown();
   }
+
+  {
+    std::lock_guard l(recovery_request_lock);
+    recovery_request_timer.shutdown();
+  }
 }
 
 void OSDService::shutdown_reserver()
@@ -463,11 +468,6 @@ void OSDService::shutdown()
   for (auto f : objecter_finishers) {
     f->wait_for_empty();
     f->stop();
-  }
-
-  {
-    std::lock_guard l(recovery_request_lock);
-    recovery_request_timer.shutdown();
   }
 
   publish_map(OSDMapRef());
@@ -5217,6 +5217,7 @@ void OSD::heartbeat_check()
 
 void OSD::heartbeat()
 {
+  ceph_assert(heartbeat_lock.is_locked_by_me());
   dout(30) << "heartbeat" << dendl;
 
   // get CPU load avg
@@ -5866,7 +5867,10 @@ void OSD::_preboot(epoch_t oldest, epoch_t newest)
 	   << oldest << ".." << newest << dendl;
 
   // ensure our local fullness awareness is accurate
-  heartbeat();
+  {
+    std::lock_guard l(heartbeat_lock);
+    heartbeat();
+  }
 
   // if our map within recent history, try to add ourselves to the osdmap.
   if (osdmap->get_epoch() == 0) {
@@ -5878,7 +5882,7 @@ void OSD::_preboot(epoch_t oldest, epoch_t newest)
     if (osdmap->get_epoch() > newest - 1) {
       exit(0);
     }
-  } else if (osdmap->test_flag(CEPH_OSDMAP_NOUP) || osdmap->is_noup(whoami)) {
+  } else if (osdmap->is_noup(whoami)) {
     derr << "osdmap NOUP flag is set, waiting for it to clear" << dendl;
   } else if (!osdmap->test_flag(CEPH_OSDMAP_SORTBITWISE)) {
     derr << "osdmap SORTBITWISE OSDMap flag is NOT set; please set it"
@@ -6420,8 +6424,8 @@ COMMAND("bench " \
 	"name=size,type=CephInt,req=false " \
 	"name=object_size,type=CephInt,req=false " \
 	"name=object_num,type=CephInt,req=false ", \
-	"OSD benchmark: write <count> <size>-byte objects, " \
-	"(default 1G size 4MB). Results in log.",
+	"OSD benchmark: write <count> <size>-byte objects(with <obj_size> <obj_num>), " \
+	"(default count=1G default size=4MB). Results in log.",
 	"osd", "rw")
 COMMAND("flush_pg_stats", "flush pg stats", "osd", "rw")
 COMMAND("heap " \
@@ -7671,6 +7675,7 @@ MPGStats* OSD::collect_pg_stats()
       });
   }
   store_statfs_t st;
+  bool per_pool_stats = false;
   for (auto p : pool_set) {
     int r = store->pool_statfs(p, &st);
     if (r == -ENOTSUP) {
@@ -7678,8 +7683,13 @@ MPGStats* OSD::collect_pg_stats()
     } else {
       assert(r >= 0);
       m->pool_stat[p] = st;
+      per_pool_stats = true;
     }
   }
+
+  // indicate whether we are reporting per-pool stats
+  m->osd_stat.num_osds = 1;
+  m->osd_stat.num_per_pool_osds = per_pool_stats ? 1 : 0;
 
   return m;
 }
@@ -8191,9 +8201,7 @@ void OSD::_committed_osd_maps(epoch_t first, epoch_t last, MOSDMap *m)
       }
     }
 
-    if ((osdmap->test_flag(CEPH_OSDMAP_NOUP) !=
-        newmap->test_flag(CEPH_OSDMAP_NOUP)) ||
-        (osdmap->is_noup(whoami) != newmap->is_noup(whoami))) {
+    if (osdmap->is_noup(whoami) != newmap->is_noup(whoami)) {
       dout(10) << __func__ << " NOUP flag changed in " << newmap->get_epoch()
 	       << dendl;
       if (is_booting()) {

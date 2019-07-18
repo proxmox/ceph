@@ -4316,12 +4316,12 @@ void PrimaryLogPG::do_backfill(OpRequestRef op)
       // pg is consuming on the disk in order to compute amount of new data
       // reserved to hold backfill if it won't fit.
       if (m->op == MOSDPGBackfill::OP_BACKFILL_PROGRESS) {
-        dout(0) << __func__ << " primary " << m->stats.stats.sum.num_bytes << " local " << info.stats.stats.sum.num_bytes << dendl;
+        dout(25) << __func__ << " primary " << m->stats.stats.sum.num_bytes << " local " << info.stats.stats.sum.num_bytes << dendl;
         int64_t bytes = info.stats.stats.sum.num_bytes;
         info.stats = m->stats;
         info.stats.stats.sum.num_bytes = bytes;
       } else {
-        dout(0) << __func__ << " final " << m->stats.stats.sum.num_bytes << " replaces local " << info.stats.stats.sum.num_bytes << dendl;
+        dout(20) << __func__ << " final " << m->stats.stats.sum.num_bytes << " replaces local " << info.stats.stats.sum.num_bytes << dendl;
         info.stats = m->stats;
       }
 
@@ -11694,7 +11694,8 @@ void PrimaryLogPG::primary_failed(const hobject_t &soid)
   failed_push(fl, soid);
 }
 
-void PrimaryLogPG::failed_push(const list<pg_shard_t> &from, const hobject_t &soid)
+void PrimaryLogPG::failed_push(const list<pg_shard_t> &from,
+  const hobject_t &soid, const eversion_t &need)
 {
   dout(20) << __func__ << ": " << soid << dendl;
   ceph_assert(recovering.count(soid));
@@ -11705,8 +11706,16 @@ void PrimaryLogPG::failed_push(const list<pg_shard_t> &from, const hobject_t &so
     requeue_ops(blocked_ops);
   }
   recovering.erase(soid);
-  for (auto&& i : from)
+  for (auto&& i : from) {
     missing_loc.remove_location(soid, i);
+    if (need != eversion_t()) {
+      dout(0) << __func__ << " adding " << soid << " to shard " << i
+              << "'s missing set too" << dendl;
+      auto pm = peer_missing.find(i);
+      if (pm != peer_missing.end())
+        pm->second.add(soid, need, eversion_t(), false);
+    }
+  }
   dout(0) << __func__ << " " << soid << " from shard " << from
 	  << ", reps on " << missing_loc.get_locations(soid)
 	  << " unfound? " << missing_loc.is_unfound(soid) << dendl;
@@ -12447,15 +12456,14 @@ bool PrimaryLogPG::start_recovery_ops(
 
   const auto &missing = pg_log.get_missing();
 
-  unsigned int num_missing = missing.num_missing();
   uint64_t num_unfound = get_num_unfound();
 
-  if (num_missing == 0) {
+  if (!missing.have_missing()) {
     info.last_complete = info.last_update;
   }
 
-  if (num_missing == num_unfound) {
-    // All of the missing objects we have are unfound.
+  if (!missing.have_missing() || // Primary does not have missing
+      all_missing_unfound()) { // or all of the missing objects are unfound.
     // Recover the replicas.
     started = recover_replicas(max, handle, &recovery_started);
   }
@@ -14242,6 +14250,11 @@ bool PrimaryLogPG::agent_maybe_evict(ObjectContextRef& obc, bool after_flush)
   if (!after_flush && obc->obs.oi.is_dirty()) {
     dout(20) << __func__ << " skip (dirty) " << obc->obs.oi << dendl;
     return false;
+  }
+  // This is already checked by agent_work() which passes after_flush = false
+  if (after_flush && range_intersects_scrub(soid, soid.get_head())) {
+      dout(20) << __func__ << " skip (scrubbing) " << obc->obs.oi << dendl;
+      return false;
   }
   if (!obc->obs.oi.watchers.empty()) {
     dout(20) << __func__ << " skip (watchers) " << obc->obs.oi << dendl;

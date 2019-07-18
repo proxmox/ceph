@@ -16,6 +16,7 @@ import { Permissions } from '../../../../shared/models/permissions';
 import { DimlessBinaryPipe } from '../../../../shared/pipes/dimless-binary.pipe';
 import { AuthStorageService } from '../../../../shared/services/auth-storage.service';
 import { OsdFlagsModalComponent } from '../osd-flags-modal/osd-flags-modal.component';
+import { OsdPgScrubModalComponent } from '../osd-pg-scrub-modal/osd-pg-scrub-modal.component';
 import { OsdRecvSpeedModalComponent } from '../osd-recv-speed-modal/osd-recv-speed-modal.component';
 import { OsdReweightModalComponent } from '../osd-reweight-modal/osd-reweight-modal.component';
 import { OsdScrubModalComponent } from '../osd-scrub-modal/osd-scrub-modal.component';
@@ -45,6 +46,7 @@ export class OsdListComponent implements OnInit {
   tableActions: CdTableAction[];
   bsModalRef: BsModalRef;
   columns: CdTableColumn[];
+  advancedTableActions: any[];
 
   osds = [];
   selection = new CdTableSelection();
@@ -144,6 +146,26 @@ export class OsdListComponent implements OnInit {
         icon: 'fa-remove'
       }
     ];
+    this.advancedTableActions = [
+      {
+        name: this.i18n('Cluster-wide Flags'),
+        icon: 'fa-flag',
+        click: () => this.configureFlagsAction(),
+        permission: this.permissions.osd.read
+      },
+      {
+        name: this.i18n('Cluster-wide Recovery Priority'),
+        icon: 'fa-cog',
+        click: () => this.configureQosParamsAction(),
+        permission: this.permissions.configOpt.read
+      },
+      {
+        name: this.i18n('PG scrub'),
+        icon: 'fa-stethoscope',
+        click: () => this.configurePgScrubAction(),
+        permission: this.permissions.configOpt.read
+      }
+    ];
   }
 
   ngOnInit() {
@@ -153,7 +175,7 @@ export class OsdListComponent implements OnInit {
       { prop: 'collectedStates', name: this.i18n('Status'), cellTemplate: this.statusColor },
       { prop: 'stats.numpg', name: this.i18n('PGs') },
       { prop: 'stats.stat_bytes', name: this.i18n('Size'), pipe: this.dimlessBinaryPipe },
-      { name: this.i18n('Usage'), cellTemplate: this.osdUsageTpl },
+      { prop: 'stats.usage', name: this.i18n('Usage'), cellTemplate: this.osdUsageTpl },
       {
         prop: 'stats_history.out_bytes',
         name: this.i18n('Read bytes'),
@@ -175,6 +197,8 @@ export class OsdListComponent implements OnInit {
         cellTransformation: CellTemplate.perSecond
       }
     ];
+
+    this.removeActionsWithNoPermissions();
   }
 
   get hasOsdSelected() {
@@ -221,11 +245,11 @@ export class OsdListComponent implements OnInit {
 
   getOsdList() {
     this.osdService.getList().subscribe((data: any[]) => {
-      this.osds = data;
-      data.map((osd) => {
+      this.osds = data.map((osd) => {
         osd.collectedStates = OsdListComponent.collectStates(osd);
         osd.stats_history.out_bytes = osd.stats_history.op_out_bytes.map((i) => i[1]);
         osd.stats_history.in_bytes = osd.stats_history.op_in_bytes.map((i) => i[1]);
+        osd.stats.usage = osd.stats.stat_bytes_used / osd.stats.stat_bytes;
         osd.cdIsBinary = true;
         return osd;
       });
@@ -245,7 +269,7 @@ export class OsdListComponent implements OnInit {
     this.bsModalRef = this.modalService.show(OsdScrubModalComponent, { initialState });
   }
 
-  configureClusterAction() {
+  configureFlagsAction() {
     this.bsModalRef = this.modalService.show(OsdFlagsModalComponent, {});
   }
 
@@ -305,5 +329,21 @@ export class OsdListComponent implements OnInit {
 
   configureQosParamsAction() {
     this.bsModalRef = this.modalService.show(OsdRecvSpeedModalComponent, {});
+  }
+
+  configurePgScrubAction() {
+    this.bsModalRef = this.modalService.show(OsdPgScrubModalComponent, { class: 'modal-lg' });
+  }
+
+  /**
+   * Removes all actions from 'advancedTableActions' that need a permission the user doesn't have.
+   */
+  private removeActionsWithNoPermissions() {
+    if (!this.permissions) {
+      this.advancedTableActions = [];
+      return;
+    }
+
+    this.advancedTableActions = this.advancedTableActions.filter((action) => action.permission);
   }
 }

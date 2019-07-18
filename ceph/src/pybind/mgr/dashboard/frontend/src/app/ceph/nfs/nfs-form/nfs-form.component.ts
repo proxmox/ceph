@@ -201,10 +201,6 @@ export class NfsFormComponent implements OnInit {
         CdValidators.requiredIf({ security_label: true, 'fsal.name': 'CEPH' })
       )
     });
-
-    this.nfsForm.get('protocolNfsv4').valueChanges.subscribe(() => {
-      this.nfsForm.get('pseudo').updateValueAndValidity({ emitEvent: false });
-    });
   }
 
   resolveModel(res) {
@@ -541,6 +537,14 @@ export class NfsFormComponent implements OnInit {
           .value();
       } else {
         client.addresses = [];
+      }
+
+      if (!client.squash) {
+        client.squash = requestModel.squash;
+      }
+
+      if (!client.access_type) {
+        client.access_type = requestModel.access_type;
       }
     });
 

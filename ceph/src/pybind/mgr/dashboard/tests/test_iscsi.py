@@ -17,7 +17,7 @@ class IscsiTest(ControllerTestCase, CLICommandTestMixin):
 
     @classmethod
     def setup_server(cls):
-        OrchClient.instance().available = lambda: False
+        OrchClient().available = lambda: False
         mgr.rados.side_effect = None
         # pylint: disable=protected-access
         Iscsi._cp_config['tools.authenticate.on'] = False
@@ -333,6 +333,21 @@ class IscsiTest(ControllerTestCase, CLICommandTestMixin):
         response['groups'] = []
         self._update_iscsi_target(create_request, update_request, response)
 
+    @mock.patch('dashboard.controllers.iscsi.IscsiTarget._validate_image')
+    def test_add_client_to_multiple_groups(self, _validate_image_mock):
+        target_iqn = "iqn.2003-01.com.redhat.iscsi-gw:iscsi-igw16"
+        create_request = copy.deepcopy(iscsi_target_request)
+        create_request['target_iqn'] = target_iqn
+        create_request['groups'].append(copy.deepcopy(create_request['groups'][0]))
+        create_request['groups'][1]['group_id'] = 'mygroup2'
+        self._post('/api/iscsi/target', create_request)
+        self.assertStatus(400)
+        self.assertJsonBody({
+            'detail': 'Each initiator can only be part of 1 group at a time',
+            'code': 'initiator_in_multiple_groups',
+            'component': 'iscsi'
+        })
+
     def _update_iscsi_target(self, create_request, update_request, response):
         self._post('/api/iscsi/target', create_request)
         self.assertStatus(201)
@@ -488,9 +503,9 @@ class IscsiClientMock(object):
                 "rbd": 0,
                 "user:rbd": 4,
             },
-            "supported_rbd_features": {
-                "rbd": 135,
-                "user:rbd": 61,
+            "unsupported_rbd_features": {
+                "rbd": 88,
+                "user:rbd": 0,
             },
             "disk_default_controls": {
                 "user:rbd": {

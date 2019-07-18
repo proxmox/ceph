@@ -1,7 +1,7 @@
 RELEASE=6.0
 
 PACKAGE=ceph
-VER=14.2.1
+VER=14.2.2
 DEBREL=pve2
 
 SRCDIR=ceph

@@ -25,7 +25,7 @@ from ..tools import TaskManager
 @UiApiController('/iscsi', Scope.ISCSI)
 class IscsiUi(BaseController):
 
-    REQUIRED_CEPH_ISCSI_CONFIG_VERSION = 8
+    REQUIRED_CEPH_ISCSI_CONFIG_VERSION = 9
 
     @Endpoint()
     @ReadPermission
@@ -36,7 +36,7 @@ class IscsiUi(BaseController):
             status['message'] = 'There are no gateways defined'
             return status
         try:
-            for gateway in gateways.keys():
+            for gateway in gateways:
                 try:
                     IscsiClient.instance(gateway_name=gateway).ping()
                 except RequestException:
@@ -51,10 +51,14 @@ class IscsiUi(BaseController):
             status['available'] = True
         except RequestException as e:
             if e.content:
-                content = json.loads(e.content)
-                content_message = content.get('message')
+                try:
+                    content = json.loads(e.content)
+                    content_message = content.get('message')
+                except ValueError:
+                    content_message = e.content
                 if content_message:
                     status['message'] = content_message
+
         return status
 
     @Endpoint()
@@ -67,7 +71,7 @@ class IscsiUi(BaseController):
     def portals(self):
         portals = []
         gateways_config = IscsiGatewaysConfig.get_gateways_config()
-        for name in gateways_config['gateways'].keys():
+        for name in gateways_config['gateways']:
             ip_addresses = IscsiClient.instance(gateway_name=name).get_ip_addresses()
             portals.append({'name': name, 'ip_addresses': ip_addresses['data']})
         return sorted(portals, key=lambda p: '{}.{}'.format(p['name'], p['ip_addresses']))
@@ -144,7 +148,7 @@ class IscsiUi(BaseController):
 class Iscsi(BaseController):
 
     @Endpoint('GET', 'discoveryauth')
-    @UpdatePermission
+    @ReadPermission
     def get_discoveryauth(self):
         return self._get_discoveryauth()
 
@@ -219,7 +223,7 @@ class IscsiTarget(RESTController):
             raise DashboardException(msg='Target already exists',
                                      code='target_already_exists',
                                      component='iscsi')
-        IscsiTarget._validate(target_iqn, portals, disks)
+        IscsiTarget._validate(target_iqn, portals, disks, groups)
         IscsiTarget._create(target_iqn, target_controls, acl_enabled, portals, disks, clients,
                             groups, 0, 100, config)
 
@@ -241,7 +245,7 @@ class IscsiTarget(RESTController):
             raise DashboardException(msg='Target IQN already in use',
                                      code='target_iqn_already_in_use',
                                      component='iscsi')
-        IscsiTarget._validate(new_target_iqn, portals, disks)
+        IscsiTarget._validate(new_target_iqn, portals, disks, groups)
         config = IscsiTarget._delete(target_iqn, config, 0, 50, new_target_iqn, target_controls,
                                      portals, disks, clients, groups)
         IscsiTarget._create(new_target_iqn, target_controls, acl_enabled, portals, disks, clients,
@@ -398,7 +402,7 @@ class IscsiTarget(RESTController):
         return False
 
     @staticmethod
-    def _validate(target_iqn, portals, disks):
+    def _validate(target_iqn, portals, disks, groups):
         if not target_iqn:
             raise DashboardException(msg='Target IQN is required',
                                      code='target_iqn_required',
@@ -431,12 +435,20 @@ class IscsiTarget(RESTController):
             image = disk['image']
             backstore = disk['backstore']
             required_rbd_features = settings['required_rbd_features'][backstore]
-            supported_rbd_features = settings['supported_rbd_features'][backstore]
+            unsupported_rbd_features = settings['unsupported_rbd_features'][backstore]
             IscsiTarget._validate_image(pool, image, backstore, required_rbd_features,
-                                        supported_rbd_features)
+                                        unsupported_rbd_features)
+
+        initiators = []
+        for group in groups:
+            initiators = initiators + group['members']
+        if len(initiators) != len(set(initiators)):
+            raise DashboardException(msg='Each initiator can only be part of 1 group at a time',
+                                     code='initiator_in_multiple_groups',
+                                     component='iscsi')
 
     @staticmethod
-    def _validate_image(pool, image, backstore, required_rbd_features, supported_rbd_features):
+    def _validate_image(pool, image, backstore, required_rbd_features, unsupported_rbd_features):
         try:
             ioctx = mgr.rados.open_ioctx(pool)
             try:
@@ -451,14 +463,14 @@ class IscsiTarget(RESTController):
                                                                       required_rbd_features)),
                                                  code='image_missing_required_features',
                                                  component='iscsi')
-                    if img.features() & supported_rbd_features != img.features():
+                    if img.features() & unsupported_rbd_features != 0:
                         raise DashboardException(msg='Image {} cannot be exported using {} '
                                                      'backstore because it contains unsupported '
-                                                     'features (supported features are '
+                                                     'features ('
                                                      '{})'.format(image,
                                                                   backstore,
                                                                   format_bitmask(
-                                                                      supported_rbd_features)),
+                                                                      unsupported_rbd_features)),
                                                  code='image_contains_unsupported_features',
                                                  component='iscsi')
 

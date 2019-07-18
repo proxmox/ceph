@@ -290,7 +290,9 @@ public:
     const hobject_t &oid,
     const object_stat_sum_t &stat_diff,
     bool is_delete) override;
-  void failed_push(const list<pg_shard_t> &from, const hobject_t &soid) override;
+  void failed_push(const list<pg_shard_t> &from,
+                   const hobject_t &soid,
+                   const eversion_t &need = eversion_t()) override;
   void primary_failed(const hobject_t &soid) override;
   bool primary_error(const hobject_t& soid, eversion_t v) override;
   void cancel_pull(const hobject_t &soid) override;
@@ -1578,11 +1580,15 @@ private:
     explicit SnapTrimmer(PrimaryLogPG *pg) : pg(pg) {}
     void log_enter(const char *state_name);
     void log_exit(const char *state_name, utime_t duration);
-    bool can_trim() {
+    bool permit_trim() {
       return
 	pg->is_clean() &&
 	!pg->scrubber.active &&
-	!pg->snap_trimq.empty() &&
+	!pg->snap_trimq.empty();
+    }
+    bool can_trim() {
+      return
+	permit_trim() &&
 	!pg->get_osdmap()->test_flag(CEPH_OSDMAP_NOSNAPTRIM);
     }
   } snap_trimmer_machine;
@@ -1601,7 +1607,7 @@ private:
       : my_base(ctx),
 	NamedState(context< SnapTrimmer >().pg, "Trimming") {
       context< SnapTrimmer >().log_enter(state_name);
-      ceph_assert(context< SnapTrimmer >().can_trim());
+      ceph_assert(context< SnapTrimmer >().permit_trim());
       ceph_assert(in_flight.empty());
     }
     void exit() {

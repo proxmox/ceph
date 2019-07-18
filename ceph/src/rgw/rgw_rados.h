@@ -1921,7 +1921,8 @@ public:
                        string *petag,
                        void (*progress_cb)(off_t, void *),
                        void *progress_data,
-                       rgw_zone_set *zones_trace= nullptr);
+                       rgw_zone_set *zones_trace= nullptr,
+                       std::optional<uint64_t>* bytes_transferred = 0);
   /**
    * Copy an object.
    * dest_obj: the object to copy into
@@ -2183,8 +2184,8 @@ public:
 		      RGWBucketInfo& info,
 		      ceph::real_time *pmtime, map<string, bufferlist> *pattrs = NULL);
 
-  // Returns true on successful refresh. Returns false if there was an
-  // error or the version stored on the OSD is the same as that
+  // Returns 0 on successful refresh. Returns error code if there was
+  // an error or the version stored on the OSD is the same as that
   // presented in the BucketInfo structure.
   //
   int try_refresh_bucket_info(RGWBucketInfo& info,

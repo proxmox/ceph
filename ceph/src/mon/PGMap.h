@@ -52,24 +52,28 @@ public:
   mempool::pgmap::unordered_map<uint64_t,int32_t> num_pg_by_state;
   struct pg_count {
     int32_t acting = 0;
-    int32_t up = 0;
+    int32_t up_not_acting = 0;
     int32_t primary = 0;
     void encode(bufferlist& bl) const {
       using ceph::encode;
       encode(acting, bl);
-      encode(up, bl);
+      encode(up_not_acting, bl);
       encode(primary, bl);
     }
     void decode(bufferlist::const_iterator& p) {
       using ceph::decode;
       decode(acting, p);
-      decode(up, p);
+      decode(up_not_acting, p);
       decode(primary, p);
     }
   };
   mempool::pgmap::unordered_map<int32_t,pg_count> num_pg_by_osd;
 
   mempool::pgmap::map<int64_t,interval_set<snapid_t>> purged_snaps;
+
+  bool use_per_pool_stats() const {
+    return osd_sum.num_osds == osd_sum.num_per_pool_osds;
+  }
 
   // recent deltas, and summation
   /**
@@ -169,7 +173,8 @@ public:
 			    const pool_stat_t &pool_stat,
 			    uint64_t avail,
 			    float raw_used_rate,
-			    bool verbose, const pg_pool_t *pool);
+				   bool verbose, bool per_pool,
+				   const pg_pool_t *pool);
 
   size_t get_num_pg_by_osd(int osd) const {
     auto p = num_pg_by_osd.find(osd);

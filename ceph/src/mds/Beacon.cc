@@ -56,7 +56,8 @@ void Beacon::shutdown()
   if (!finished) {
     finished = true;
     lock.unlock();
-    sender.join();
+    if (sender.joinable())
+      sender.join();
   }
 }
 
@@ -388,7 +389,7 @@ void Beacon::notify_health(MDSRank const *mds)
 	  (session->get_num_trim_flushes_warnings() > 0 &&
 	   session->get_num_completed_flushes() >= max_completed_flushes)) {
 	std::ostringstream oss;
-	oss << "Client " << session->get_human_name() << " failing to advance its oldest client/flush tid";
+	oss << "Client " << session->get_human_name() << " failing to advance its oldest client/flush tid. ";
 	MDSHealthMetric m(MDS_HEALTH_CLIENT_OLDEST_TID, HEALTH_WARN, oss.str());
 	m.metadata["client_id"] = stringify(session->get_client());
 	large_completed_requests_metrics.push_back(m);

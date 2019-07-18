@@ -159,7 +159,7 @@ void PGMapDigest::dump(Formatter *f) const
     f->dump_unsigned("osd", p.first);
     f->dump_unsigned("num_primary_pg", p.second.primary);
     f->dump_unsigned("num_acting_pg", p.second.acting);
-    f->dump_unsigned("num_up_pg", p.second.up);
+    f->dump_unsigned("num_up_not_acting_pg", p.second.up_not_acting);
     f->close_section();
   }
   f->close_section();
@@ -798,7 +798,9 @@ void PGMapDigest::dump_pool_stats_full(
           << pool_id;
     }
     float raw_used_rate = osd_map.pool_raw_used_rate(pool_id);
-    dump_object_stat_sum(tbl, f, stat, avail, raw_used_rate, verbose, pool);
+    bool per_pool = use_per_pool_stats();
+    dump_object_stat_sum(tbl, f, stat, avail, raw_used_rate, verbose, per_pool,
+			 pool);
     if (f) {
       f->close_section();  // stats
       f->close_section();  // pool
@@ -827,6 +829,8 @@ void PGMapDigest::dump_cluster_stats(stringstream *ss,
     f->dump_int("total_used_bytes", osd_sum.statfs.get_used());
     f->dump_int("total_used_raw_bytes", osd_sum.statfs.get_used_raw());
     f->dump_float("total_used_raw_ratio", osd_sum.statfs.get_used_raw_ratio());
+    f->dump_unsigned("num_osds", osd_sum.num_osds);
+    f->dump_unsigned("num_per_pool_osds", osd_sum.num_per_pool_osds);
     f->close_section();
     f->open_object_section("stats_by_class");
     for (auto& i : osd_sum_by_class) {
@@ -877,7 +881,7 @@ void PGMapDigest::dump_cluster_stats(stringstream *ss,
 void PGMapDigest::dump_object_stat_sum(
   TextTable &tbl, Formatter *f,
   const pool_stat_t &pool_stat, uint64_t avail,
-  float raw_used_rate, bool verbose,
+  float raw_used_rate, bool verbose, bool per_pool,
   const pg_pool_t *pool)
 {
   const object_stat_sum_t &sum = pool_stat.stats.sum;
@@ -886,8 +890,8 @@ void PGMapDigest::dump_object_stat_sum(
   if (sum.num_object_copies > 0) {
     raw_used_rate *= (float)(sum.num_object_copies - sum.num_objects_degraded) / sum.num_object_copies;
   }
-    
-  uint64_t used_bytes = pool_stat.get_allocated_bytes();
+
+  uint64_t used_bytes = pool_stat.get_allocated_bytes(per_pool);
 
   float used = 0.0;
   // note avail passed in is raw_avail, calc raw_used here.
@@ -899,7 +903,7 @@ void PGMapDigest::dump_object_stat_sum(
   }
   auto avail_res = raw_used_rate ? avail / raw_used_rate : 0;
   // an approximation for actually stored user data
-  auto stored_normalized = pool_stat.get_user_bytes(raw_used_rate);
+  auto stored_normalized = pool_stat.get_user_bytes(raw_used_rate, per_pool);
   if (f) {
     f->dump_int("stored", stored_normalized);
     f->dump_int("objects", sum.num_objects);
@@ -918,7 +922,7 @@ void PGMapDigest::dump_object_stat_sum(
       f->dump_int("compress_bytes_used", statfs.data_compressed_allocated);
       f->dump_int("compress_under_bytes", statfs.data_compressed_original);
       // Stored by user amplified by replication
-      f->dump_int("stored_raw", pool_stat.get_user_bytes(1.0));
+      f->dump_int("stored_raw", pool_stat.get_user_bytes(1.0, per_pool));
     }
   } else {
     tbl << stringify(byte_u_t(stored_normalized));
@@ -1296,8 +1300,11 @@ void PGMap::stat_pg_add(const pg_t &pgid, const pg_stat_t &s,
     num_pg_by_osd[*p].acting++;
   }
   for (auto p = s.up.begin(); p != s.up.end(); ++p) {
-    pg_by_osd[*p].insert(pgid);
-    num_pg_by_osd[*p].up++;
+    auto& t = pg_by_osd[*p];
+    if (t.find(pgid) == t.end()) {
+      t.insert(pgid);
+      num_pg_by_osd[*p].up_not_acting++;
+    }
   }
 
   if (s.up_primary >= 0) {
@@ -1357,7 +1364,9 @@ bool PGMap::stat_pg_sub(const pg_t &pgid, const pg_stat_t &s,
       blocked_by_sum.erase(q);
   }
 
+  set<int32_t> actingset;
   for (auto p = s.acting.begin(); p != s.acting.end(); ++p) {
+    actingset.insert(*p);
     auto& oset = pg_by_osd[*p];
     oset.erase(pgid);
     if (oset.empty())
@@ -1371,9 +1380,11 @@ bool PGMap::stat_pg_sub(const pg_t &pgid, const pg_stat_t &s,
     oset.erase(pgid);
     if (oset.empty())
       pg_by_osd.erase(*p);
+    if (actingset.count(*p))
+      continue;
     auto it = num_pg_by_osd.find(*p);
-    if (it != num_pg_by_osd.end() && it->second.up > 0)
-      it->second.up--;
+    if (it != num_pg_by_osd.end() && it->second.up_not_acting > 0)
+      it->second.up_not_acting--;
   }
 
   if (s.up_primary >= 0) {
@@ -2994,6 +3005,10 @@ void PGMap::get_health_checks(
 	summary = "BlueFS spillover detected";
       } else if (asum.first == "BLUESTORE_NO_COMPRESSION") {
 	summary = "BlueStore compression broken";
+      } else if (asum.first == "BLUESTORE_LEGACY_STATFS") {
+	summary = "Legacy BlueStore stats reporting detected";
+      } else if (asum.first == "BLUESTORE_DISK_SIZE_MISMATCH") {
+	summary = "BlueStore has dangerous mismatch between block device and free list sizes";
       }
       summary += " on ";
       summary += stringify(asum.second.first);

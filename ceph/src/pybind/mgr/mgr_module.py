@@ -6,6 +6,7 @@ import six
 import threading
 from collections import defaultdict, namedtuple
 import rados
+import re
 import time
 
 PG_STATES = [
@@ -658,6 +659,25 @@ class MgrModule(ceph_module.BaseMgrModule):
 
         return ''
 
+    def _perfpath_to_path_labels(self, daemon, path):
+        label_names = ("ceph_daemon",)
+        labels = (daemon,)
+
+        if daemon.startswith('rbd-mirror.'):
+            match = re.match(
+                r'^rbd_mirror_([^/]+)/(?:(?:([^/]+)/)?)(.*)\.(replay(?:_bytes|_latency)?)$',
+                path
+            )
+            if match:
+                path = 'rbd_mirror_' + match.group(4)
+                pool = match.group(1)
+                namespace = match.group(2) or ''
+                image = match.group(3)
+                label_names += ('pool', 'namespace', 'image')
+                labels += (pool, namespace, image)
+
+        return path, label_names, labels,
+
     def _perfvalue_to_value(self, stattype, value):
         if stattype & self.PERFCOUNTER_TIME:
             # Convert from ns to seconds
@@ -1098,7 +1118,7 @@ class MgrModule(ceph_module.BaseMgrModule):
 
     def get_all_perf_counters(self, prio_limit=PRIO_USEFUL,
                               services=("mds", "mon", "osd",
-                                        "rbd-mirror", "rgw")):
+                                        "rbd-mirror", "rgw", "tcmu-runner")):
         """
         Return the perf counters currently known to this ceph-mgr
         instance, filtered by priority equal to or greater than `prio_limit`.

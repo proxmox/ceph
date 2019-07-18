@@ -69,6 +69,7 @@ set(unittest_librbd_srcs
   image/test_mock_RefreshRequest.cc
   image/test_mock_RemoveRequest.cc
   image/test_mock_ValidatePoolRequest.cc
+  io/test_mock_CopyupRequest.cc
   io/test_mock_ImageRequest.cc
   io/test_mock_ImageRequestWQ.cc
   io/test_mock_ObjectRequest.cc
@@ -145,19 +146,6 @@ target_link_libraries(ceph_test_librbd
   radostest)
 target_compile_definitions(ceph_test_librbd PRIVATE "TEST_LIBRBD_INTERNALS")
 
-add_executable(ceph_test_librbd_api
-  test_support.cc
-  test_librbd.cc
-  test_main.cc
-  $<TARGET_OBJECTS:common_texttable_obj>)
-target_link_libraries(ceph_test_librbd_api
-  ceph-common
-  radostest
-  radostest-cxx
-  librbd
-  librados
-  ${UNITTEST_LIBS})
-
 add_executable(ceph_test_librbd_fsx
   fsx.cc
   $<TARGET_OBJECTS:common_texttable_obj>
@@ -182,5 +170,4 @@ install(TARGETS
 
 install(TARGETS
   ceph_test_librbd
-  ceph_test_librbd_api
   DESTINATION ${CMAKE_INSTALL_BINDIR})

@@ -1432,7 +1432,7 @@ protected:
   bool needs_backfill() const;
 
   /// clip calculated priority to reasonable range
-  inline int clamp_recovery_priority(int priority);
+  int clamp_recovery_priority(int prio, int pool_recovery_prio, int max);
   /// get log recovery reservation priority
   unsigned get_recovery_priority();
   /// get backfill reservation priority
@@ -1569,11 +1569,13 @@ protected:
   void choose_async_recovery_ec(const map<pg_shard_t, pg_info_t> &all_info,
                                 const pg_info_t &auth_info,
                                 vector<int> *want,
-                                set<pg_shard_t> *async_recovery) const;
+                                set<pg_shard_t> *async_recovery,
+                                const OSDMapRef osdmap) const;
   void choose_async_recovery_replicated(const map<pg_shard_t, pg_info_t> &all_info,
                                         const pg_info_t &auth_info,
                                         vector<int> *want,
-                                        set<pg_shard_t> *async_recovery) const;
+                                        set<pg_shard_t> *async_recovery,
+                                        const OSDMapRef osdmap) const;
 
   bool recoverable_and_ge_min_size(const vector<int> &want) const;
   bool choose_acting(pg_shard_t &auth_log_shard,
@@ -1608,6 +1610,16 @@ protected:
   }
   uint64_t get_num_unfound() const {
     return missing_loc.num_unfound();
+  }
+  bool all_missing_unfound() const {
+    const auto& missing = pg_log.get_missing();
+    if (!missing.have_missing())
+      return false;
+    for (auto& m : missing.get_items()) {
+      if (!missing_loc.is_unfound(m.first))
+        return false;
+    }
+    return true;
   }
 
   virtual void check_local() = 0;
