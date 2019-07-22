@@ -101,16 +101,15 @@ ${DSC}: ${BUILDSRC}
 
 .PHONY: download
 download:
-	rm -rf ${SRCDIR}.tmp
-	git clone --recursive -b v${VER} https://github.com/ceph/ceph ${SRCDIR}.tmp
-	cd ${SRCDIR}.tmp; ./make-dist
-	rm -rf ${SRCDIR}
-	mkdir ${SRCDIR}
-	tar -C ${SRCDIR} --strip-components=1 -xf ${SRCDIR}.tmp/ceph-*.tar.bz2
+	# FIXME: better verification (download dsc and use dscverify with ceph.com release key?)
+	dget --allow-unauthenticated --download-only 'https://download.ceph.com/debian-nautilus/pool/main/c/ceph/ceph_${VER}.orig.tar.gz'
+	rm -rf ${SRCDIR}.tmp ${SRCDIR}
+	mkdir ${SRCDIR}.tmp
+	tar -C ${SRCDIR}.tmp --strip-components=1 -xf ceph_${VER}.orig.tar.gz
 	# needed because boost and zstd builds fail otherwise
-	find ${SRCDIR} -type f -name ".gitignore" -delete
-	mv ${SRCDIR}/debian/changelog ${SRCDIR}/changelog.upstream
-	rm -rf ${SRCDIR}.tmp
+	find ${SRCDIR}.tmp -type f -name ".gitignore" -delete
+	mv ${SRCDIR}.tmp/debian/changelog ${SRCDIR}.tmp/changelog.upstream
+	mv ${SRCDIR}.tmp ${SRCDIR}
 
 .PHONY: upload
 upload: ${DEBS}
