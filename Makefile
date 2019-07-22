@@ -49,7 +49,7 @@ librbd1_${VER}-${DEBREL}_${ARCH}.deb \
 librbd-dev_${VER}-${DEBREL}_${ARCH}.deb \
 librgw2_${VER}-${DEBREL}_${ARCH}.deb \
 librgw-dev_${VER}-${DEBREL}_${ARCH}.deb \
-python3-ceph-argparse_${VER}-${DEBREL}_${ARCH}.deb \
+python3-ceph-argparse_${VER}-${DEBREL}_all.deb \
 python3-cephfs_${VER}-${DEBREL}_${ARCH}.deb \
 python3-rados_${VER}-${DEBREL}_${ARCH}.deb \
 python3-rbd_${VER}-${DEBREL}_${ARCH}.deb \
@@ -90,6 +90,7 @@ deb: ${DEBS} ${DBG_DEBS}
 ${DEBS_REST} ${DBG_DEBS}: $(MAIN_DEB)
 $(MAIN_DEB): ${BUILDSRC}
 	cd ${BUILDSRC}; dpkg-buildpackage -b -uc -us
+	lintian ${DEBS}
 	@echo ${DEBS}
 
 .PHONY: dsc
