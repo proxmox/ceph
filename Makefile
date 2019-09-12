@@ -99,15 +99,16 @@ ${DSC}: ${BUILDSRC}
 	cd ${BUILDSRC}; dpkg-buildpackage -S -uc -us -d -nc
 	@echo ${DSC}
 
+# NOTE: always downloads latest version!
 .PHONY: download
 download:
-	# FIXME: better verification (download dsc and use dscverify with ceph.com release key?)
-	dget --allow-unauthenticated --download-only 'https://download.ceph.com/debian-nautilus/pool/main/c/ceph/ceph_${VER}.orig.tar.gz'
 	rm -rf ${SRCDIR}.tmp ${SRCDIR}
-	mkdir ${SRCDIR}.tmp
-	tar -C ${SRCDIR}.tmp --strip-components=1 -xf ceph_${VER}.orig.tar.gz
-	# needed because boost and zstd builds fail otherwise
-	find ${SRCDIR}.tmp -type f -name ".gitignore" -delete
+	dgit -cdgit-distro.ceph.archive-query=aptget: -cdgit-distro.ceph.mirror=http://download.ceph.com/debian-nautilus -cdgit-distro.ceph.git-check=false --apt-get:--option=Dir::Etc::Trusted=${CURDIR}/upstream-key.asc -d ceph clone ceph xenial ./${SRCDIR}.tmp
+	@echo "WARNING"
+	@echo "Check output above for verification errors!"
+	@echo "WARNING"
+	rm -rf ${SRCDIR}.tmp/.git
+	find ${SRCDIR}.tmp/ -type f -name '.gitignore' -delete
 	mv ${SRCDIR}.tmp/debian/changelog ${SRCDIR}.tmp/changelog.upstream
 	mv ${SRCDIR}.tmp ${SRCDIR}
 
