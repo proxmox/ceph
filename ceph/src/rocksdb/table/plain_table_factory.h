@@ -17,7 +17,6 @@ namespace rocksdb {
 
 struct EnvOptions;
 
-using std::unique_ptr;
 class Status;
 class RandomAccessFile;
 class WritableFile;
@@ -149,8 +148,8 @@ class PlainTableFactory : public TableFactory {
 
   const char* Name() const override { return "PlainTable"; }
   Status NewTableReader(const TableReaderOptions& table_reader_options,
-                        unique_ptr<RandomAccessFileReader>&& file,
-                        uint64_t file_size, unique_ptr<TableReader>* table,
+                        std::unique_ptr<RandomAccessFileReader>&& file,
+                        uint64_t file_size, std::unique_ptr<TableReader>* table,
                         bool prefetch_index_and_filter_in_cache) const override;
 
   TableBuilder* NewTableBuilder(

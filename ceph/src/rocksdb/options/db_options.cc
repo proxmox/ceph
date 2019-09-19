@@ -85,7 +85,9 @@ ImmutableDBOptions::ImmutableDBOptions(const DBOptions& options)
       allow_ingest_behind(options.allow_ingest_behind),
       preserve_deletes(options.preserve_deletes),
       two_write_queues(options.two_write_queues),
-      manual_wal_flush(options.manual_wal_flush) {
+      manual_wal_flush(options.manual_wal_flush),
+      atomic_flush(options.atomic_flush),
+      avoid_unnecessary_blocking_io(options.avoid_unnecessary_blocking_io) {
 }
 
 void ImmutableDBOptions::Dump(Logger* log) const {
@@ -178,7 +180,7 @@ void ImmutableDBOptions::Dump(Logger* log) const {
       log, "    Options.sst_file_manager.rate_bytes_per_sec: %" PRIi64,
       sst_file_manager ? sst_file_manager->GetDeleteRateBytesPerSecond() : 0);
   ROCKS_LOG_HEADER(log, "                      Options.wal_recovery_mode: %d",
-                   wal_recovery_mode);
+                   static_cast<int>(wal_recovery_mode));
   ROCKS_LOG_HEADER(log, "                 Options.enable_thread_tracking: %d",
                    enable_thread_tracking);
   ROCKS_LOG_HEADER(log, "                 Options.enable_pipelined_write: %d",
@@ -195,7 +197,8 @@ void ImmutableDBOptions::Dump(Logger* log) const {
                    write_thread_slow_yield_usec);
   if (row_cache) {
     ROCKS_LOG_HEADER(
-        log, "                              Options.row_cache: %" PRIu64,
+        log,
+        "                              Options.row_cache: %" ROCKSDB_PRIszt,
         row_cache->GetCapacity());
   } else {
     ROCKS_LOG_HEADER(log,
@@ -216,6 +219,10 @@ void ImmutableDBOptions::Dump(Logger* log) const {
                    two_write_queues);
   ROCKS_LOG_HEADER(log, "            Options.manual_wal_flush: %d",
                    manual_wal_flush);
+  ROCKS_LOG_HEADER(log, "            Options.atomic_flush: %d", atomic_flush);
+  ROCKS_LOG_HEADER(log,
+                   "            Options.avoid_unnecessary_blocking_io: %d",
+                   avoid_unnecessary_blocking_io);
 }
 
 MutableDBOptions::MutableDBOptions()
@@ -228,6 +235,8 @@ MutableDBOptions::MutableDBOptions()
       max_total_wal_size(0),
       delete_obsolete_files_period_micros(6ULL * 60 * 60 * 1000000),
       stats_dump_period_sec(600),
+      stats_persist_period_sec(600),
+      stats_history_buffer_size(1024 * 1024),
       max_open_files(-1),
       bytes_per_sync(0),
       wal_bytes_per_sync(0),
@@ -244,6 +253,8 @@ MutableDBOptions::MutableDBOptions(const DBOptions& options)
       delete_obsolete_files_period_micros(
           options.delete_obsolete_files_period_micros),
       stats_dump_period_sec(options.stats_dump_period_sec),
+      stats_persist_period_sec(options.stats_persist_period_sec),
+      stats_history_buffer_size(options.stats_history_buffer_size),
       max_open_files(options.max_open_files),
       bytes_per_sync(options.bytes_per_sync),
       wal_bytes_per_sync(options.wal_bytes_per_sync),
@@ -268,6 +279,12 @@ void MutableDBOptions::Dump(Logger* log) const {
       delete_obsolete_files_period_micros);
   ROCKS_LOG_HEADER(log, "                  Options.stats_dump_period_sec: %u",
                    stats_dump_period_sec);
+  ROCKS_LOG_HEADER(log, "                Options.stats_persist_period_sec: %d",
+                   stats_persist_period_sec);
+  ROCKS_LOG_HEADER(
+      log,
+      "                Options.stats_history_buffer_size: %" ROCKSDB_PRIszt,
+      stats_history_buffer_size);
   ROCKS_LOG_HEADER(log, "                         Options.max_open_files: %d",
                    max_open_files);
   ROCKS_LOG_HEADER(log,

@@ -29,6 +29,7 @@
 #include "util/cast_util.h"
 #include "util/coding.h"
 #include "util/file_reader_writer.h"
+#include "util/file_util.h"
 #include "util/filename.h"
 #include "util/logging.h"
 #include "util/mutexlock.h"
@@ -190,7 +191,7 @@ void WalManager::PurgeObsoleteWALFiles() {
           continue;
         }
         if (now_seconds - file_m_time > db_options_.wal_ttl_seconds) {
-          s = env_->DeleteFile(file_path);
+          s = DeleteDBFile(&db_options_, file_path, archival_dir, false);
           if (!s.ok()) {
             ROCKS_LOG_WARN(db_options_.info_log, "Can't delete file: %s: %s",
                            file_path.c_str(), s.ToString().c_str());
@@ -216,7 +217,7 @@ void WalManager::PurgeObsoleteWALFiles() {
             log_file_size = std::max(log_file_size, file_size);
             ++log_files_num;
           } else {
-            s = env_->DeleteFile(file_path);
+            s = DeleteDBFile(&db_options_, file_path, archival_dir, false);
             if (!s.ok()) {
               ROCKS_LOG_WARN(db_options_.info_log,
                              "Unable to delete file: %s: %s", file_path.c_str(),
@@ -255,7 +256,8 @@ void WalManager::PurgeObsoleteWALFiles() {
 
   for (size_t i = 0; i < files_del_num; ++i) {
     std::string const file_path = archived_logs[i]->PathName();
-    s = env_->DeleteFile(db_options_.wal_dir + "/" + file_path);
+    s = DeleteDBFile(&db_options_, db_options_.wal_dir + "/" + file_path,
+                     db_options_.wal_dir, false);
     if (!s.ok()) {
       ROCKS_LOG_WARN(db_options_.info_log, "Unable to delete file: %s: %s",
                      file_path.c_str(), s.ToString().c_str());
@@ -429,7 +431,7 @@ Status WalManager::ReadFirstLine(const std::string& fname,
 
     Status* status;
     bool ignore_error;  // true if db_options_.paranoid_checks==false
-    virtual void Corruption(size_t bytes, const Status& s) override {
+    void Corruption(size_t bytes, const Status& s) override {
       ROCKS_LOG_WARN(info_log, "[WalManager] %s%s: dropping %d bytes; %s",
                      (this->ignore_error ? "(ignoring error) " : ""), fname,
                      static_cast<int>(bytes), s.ToString().c_str());
@@ -443,7 +445,7 @@ Status WalManager::ReadFirstLine(const std::string& fname,
   std::unique_ptr<SequentialFile> file;
   Status status = env_->NewSequentialFile(
       fname, &file, env_->OptimizeForLogRead(env_options_));
-  unique_ptr<SequentialFileReader> file_reader(
+  std::unique_ptr<SequentialFileReader> file_reader(
       new SequentialFileReader(std::move(file), fname));
 
   if (!status.ok()) {

@@ -101,7 +101,7 @@
 # main package definition
 #################################################################################
 Name:		ceph
-Version:	14.2.2
+Version:	14.2.4
 Release:	0%{?dist}
 %if 0%{?fedora} || 0%{?rhel}
 Epoch:		2
@@ -117,7 +117,7 @@ License:	LGPL-2.1 and CC-BY-SA-3.0 and GPL-2.0 and BSL-1.0 and BSD-3-Clause and 
 Group:		System/Filesystems
 %endif
 URL:		http://ceph.com/
-Source0:	%{?_remote_tarball_prefix}ceph-14.2.2.tar.bz2
+Source0:	%{?_remote_tarball_prefix}ceph-14.2.4.tar.bz2
 %if 0%{?suse_version}
 # _insert_obs_source_lines_here
 ExclusiveArch:  x86_64 aarch64 ppc64le s390x
@@ -226,7 +226,6 @@ BuildRequires:  yaml-cpp-devel
 %if 0%{?suse_version}
 BuildRequires:  pkgconfig(systemd)
 BuildRequires:	systemd-rpm-macros
-BuildRequires:	systemd
 %{?systemd_requires}
 PreReq:		%fillup_prereq
 BuildRequires:	net-tools
@@ -464,6 +463,7 @@ BuildArch:      noarch
 Group:          System/Filesystems
 %endif
 Requires:       ceph-mgr = %{_epoch_prefix}%{version}-%{release}
+Requires:       ceph-grafana-dashboards = %{_epoch_prefix}%{version}-%{release}
 %if 0%{?fedora} || 0%{?rhel}
 Requires:       python%{_python_buildid}-cherrypy
 Requires:       python%{_python_buildid}-jwt
@@ -1075,7 +1075,7 @@ This package provides Ceph’s default alerts for Prometheus.
 # common
 #################################################################################
 %prep
-%autosetup -p1 -n ceph-14.2.2
+%autosetup -p1 -n ceph-14.2.4
 
 %build
 # LTO can be enabled as soon as the following GCC bug is fixed:
@@ -1227,8 +1227,6 @@ install -m 0644 -D etc/sysctl/90-ceph-osd.conf %{buildroot}%{_sysctldir}/90-ceph
 
 # firewall templates and /sbin/mount.ceph symlink
 %if 0%{?suse_version}
-install -m 0644 -D etc/sysconfig/SuSEfirewall2.d/services/ceph-mon %{buildroot}%{_sysconfdir}/sysconfig/SuSEfirewall2.d/services/ceph-mon
-install -m 0644 -D etc/sysconfig/SuSEfirewall2.d/services/ceph-osd-mds %{buildroot}%{_sysconfdir}/sysconfig/SuSEfirewall2.d/services/ceph-osd-mds
 mkdir -p %{buildroot}/sbin
 ln -sf %{_sbindir}/mount.ceph %{buildroot}/sbin/mount.ceph
 %endif
@@ -1307,8 +1305,6 @@ rm -rf %{buildroot}
 %endif
 %if 0%{?suse_version}
 %{_fillupdir}/sysconfig.*
-%config %{_sysconfdir}/sysconfig/SuSEfirewall2.d/services/ceph-mon
-%config %{_sysconfdir}/sysconfig/SuSEfirewall2.d/services/ceph-osd-mds
 %endif
 %{_unitdir}/ceph.target
 %if 0%{with python2}
