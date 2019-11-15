@@ -1,0 +1,27 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Igor Fedotov <ifedotov@suse.com>
+Date: Wed, 13 Nov 2019 22:09:53 +0300
+Subject: [PATCH] os/bluestore: consolidate extents from the same device only
+
+Presumably Fixes: https://tracker.ceph.com/issues/42223
+
+Signed-off-by: Igor Fedotov <ifedotov@suse.com>
+(cherry picked from commit 20a90698a262905e97bae771b5950af04c00c67a)
+[ https://github.com/ceph/ceph/pull/31621 ]
+Signed-off-by: Thomas Lamprecht <t.lamprecht@proxmox.com>
+---
+ src/os/bluestore/bluefs_types.h | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/src/os/bluestore/bluefs_types.h b/src/os/bluestore/bluefs_types.h
+index fde0384..d841264 100644
+--- a/src/os/bluestore/bluefs_types.h
++++ b/src/os/bluestore/bluefs_types.h
+@@ -91,6 +91,7 @@ struct bluefs_fnode_t {
+   void append_extent(const bluefs_extent_t& ext) {
+     if (!extents.empty() &&
+ 	extents.back().end() == ext.offset &&
++	extents.back().bdev == ext.bdev &&
+ 	(uint64_t)extents.back().length + (uint64_t)ext.length < 0xffffffff) {
+       extents.back().length += ext.length;
+     } else {
