@@ -1,3 +1,13 @@
+ceph (14.2.4.1-pve1) stable; urgency=medium
+
+  * Backport fix for possible data corruption using BlueStore OSDs that have
+    a separate DB or WAL device, introduced with 14.2.3
+
+  * fix a situation were mgr daemons became unresponsive when device health
+    metrics were enabled
+
+ -- Proxmox Support Team <support@proxmox.com>  Fri, 15 Nov 2019 10:24:45 +0100
+
 ceph (14.2.4-pve1) stable; urgency=medium
 
   * New upstream Nautilus 14.2.4 release
