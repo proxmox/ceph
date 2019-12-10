@@ -1,3 +1,9 @@
+ceph (14.2.5-pve1) stable; urgency=medium
+
+  * New upstream Nautilus 14.2.5 stable release
+
+ -- Proxmox Support Team <support@proxmox.com>  Tue, 10 Dec 2019 12:54:23 +0100
+
 ceph (14.2.4.1-pve1) stable; urgency=medium
 
   * Backport fix for possible data corruption using BlueStore OSDs that have
