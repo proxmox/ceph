@@ -2,10 +2,6 @@
 0002-enable-systemd-targets-by-default.patch
 0006-debian-control-add-break-libpvestorage-perl.patch
 0007-debian-rules-ship-Ceph-changelog-as-upstream-changel.patch
-0008-ceph-volume-lvm.zap-fix-cleanup-for-db-partitions.patch
 0009-remove-legacy-pve-ceph-osd-activation-script-in-post.patch
 0010-remove-legacy-init.d-ceph-script.patch
 0011-only-suggest-mgr-plugins.patch
-0012-os-bluestore-consolidate-extents-from-the-same-devic.patch
-0013-mgr-devicehealth-do-not-scrape-mon-devices.patch
-0014-bump-version-to-14.2.4.1.patch

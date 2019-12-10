@@ -14,7 +14,7 @@ diff --git a/debian/control b/debian/control
 index e7a01c6ff8..692705c4c4 100644
 --- a/debian/control
 +++ b/debian/control
-@@ -188,12 +188,12 @@ Depends: ceph-base (= ${binary:Version}),
+@@ -192,13 +192,13 @@ Depends: ceph-base (= ${binary:Version}),
           ${misc:Depends},
           ${python:Depends},
           ${shlibs:Depends},
@@ -22,12 +22,14 @@ index e7a01c6ff8..692705c4c4 100644
 -            ceph-mgr-diskprediction-local,
 -            ceph-mgr-diskprediction-cloud,
 -            ceph-mgr-rook,
+-            ceph-mgr-k8sevents,
 -            ceph-mgr-ssh
 -Suggests: python-influxdb
 +Suggests: ceph-mgr-dashboard,
 +          ceph-mgr-diskprediction-local,
 +          ceph-mgr-diskprediction-cloud,
 +          ceph-mgr-rook,
++          ceph-mgr-k8sevents,
 +          ceph-mgr-ssh,
 +          python-influxdb
  Replaces: ceph (<< 0.93-417),
