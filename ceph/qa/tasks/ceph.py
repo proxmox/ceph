@@ -1625,14 +1625,10 @@ def restart(ctx, config):
             ctx.daemons.get_daemon(type_, id_, cluster).restart()
             clusters.add(cluster)
     
-    for cluster in clusters:
-        manager = ctx.managers[cluster]
-        for dmon in daemons:
-            if '.' in dmon:
-                dm_parts = dmon.split('.')
-                if dm_parts[1].isdigit():
-                    if dm_parts[0] == 'osd':
-                        manager.mark_down_osd(int(dm_parts[1]))
+    for role in daemons:
+        cluster, type_, id_ = teuthology.split_role(role)
+        if type_ == 'osd':
+            ctx.managers[cluster].mark_down_osd(id_)
 
     if config.get('wait-for-healthy', True):
         for cluster in clusters:
@@ -1938,11 +1934,13 @@ def task(ctx, config):
             # a bunch of scary messages unrelated to our actual run.
             firstmon = teuthology.get_first_mon(ctx, config, config['cluster'])
             (mon0_remote,) = ctx.cluster.only(firstmon).remotes.keys()
+            # try this several times, since tell to mons is lossy.
             mon0_remote.run(
                 args=[
                     'sudo',
                     'ceph',
                     '--cluster', config['cluster'],
+                    '--mon-client-directed-command-retry', '5',
                     'tell',
                     'mon.*',
                     'injectargs',

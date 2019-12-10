@@ -8,6 +8,12 @@ import uuid
 from ceph_volume import process, terminal
 from . import as_string
 
+# python2 has no FileNotFoundError
+try:
+    FileNotFoundError
+except NameError:
+    FileNotFoundError = OSError
+
 logger = logging.getLogger(__name__)
 mlogger = terminal.MultiLogger(__name__)
 
@@ -275,7 +281,39 @@ def get_mounts(devices=False, paths=False, realpath=False):
         return paths_mounted
 
 
-def set_context(path, recursive = False):
+def set_context(path, recursive=False):
+    """
+    Calls ``restorecon`` to set the proper context on SELinux systems. Only if
+    the ``restorecon`` executable is found anywhere in the path it will get
+    called.
+
+    If the ``CEPH_VOLUME_SKIP_RESTORECON`` environment variable is set to
+    any of: "1", "true", "yes" the call will be skipped as well.
+
+    Finally, if SELinux is not enabled, or not available in the system,
+    ``restorecon`` will not be called. This is checked by calling out to the
+    ``selinuxenabled`` executable. If that tool is not installed or returns
+    a non-zero exit status then no further action is taken and this function
+    will return.
+    """
+    skip = os.environ.get('CEPH_VOLUME_SKIP_RESTORECON', '')
+    if skip.lower() in ['1', 'true', 'yes']:
+        logger.info(
+            'CEPH_VOLUME_SKIP_RESTORECON environ is set, will not call restorecon'
+        )
+        return
+
+    try:
+        stdout, stderr, code = process.call(['selinuxenabled'],
+                                            verbose_on_failure=False)
+    except FileNotFoundError:
+        logger.info('No SELinux found, skipping call to restorecon')
+        return
+
+    if code != 0:
+        logger.info('SELinux is not enabled, will not call restorecon')
+        return
+
     # restore selinux context to default policy values
     if which('restorecon').startswith('/'):
         if recursive:

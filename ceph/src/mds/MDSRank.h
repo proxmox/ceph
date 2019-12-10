@@ -77,6 +77,9 @@ enum {
   l_mds_openino_dir_fetch,
   l_mds_openino_backtrace_fetch,
   l_mds_openino_peer_discover,
+  l_mds_root_rfiles,
+  l_mds_root_rbytes,
+  l_mds_root_rsnaps,
   l_mds_last,
 };
 
@@ -228,6 +231,10 @@ class MDSRank {
     bool is_stopped() const { return mdsmap->is_stopped(whoami); }
     bool is_cluster_degraded() const { return cluster_degraded; }
     bool allows_multimds_snaps() const { return mdsmap->allows_multimds_snaps(); }
+
+    bool is_cache_trimmable() const {
+      return is_clientreplay() || is_active() || is_stopping();
+    }
 
     void handle_write_error(int err);
 

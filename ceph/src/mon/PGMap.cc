@@ -15,6 +15,7 @@
 
 #include "osd/osd_types.h"
 #include "osd/OSDMap.h"
+#include <boost/range/adaptor/reversed.hpp>
 
 #define dout_context g_ceph_context
 
@@ -1133,14 +1134,16 @@ void PGMap::apply_incremental(CephContext *cct, const Incremental& inc)
 
     auto pool_statfs_iter =
       pool_statfs.find(std::make_pair(update_pool, update_osd));
-    pool_stat_t &pool_sum_ref = pg_pool_sum[update_pool];
-    if (pool_statfs_iter == pool_statfs.end()) {
-      pool_statfs.emplace(std::make_pair(update_pool, update_osd), statfs_inc);
-    } else {
-      pool_sum_ref.sub(pool_statfs_iter->second);
-      pool_statfs_iter->second = statfs_inc;
+    if (pg_pool_sum.count(update_pool)) { 
+      pool_stat_t &pool_sum_ref = pg_pool_sum[update_pool];
+      if (pool_statfs_iter == pool_statfs.end()) {
+        pool_statfs.emplace(std::make_pair(update_pool, update_osd), statfs_inc);
+      } else {
+        pool_sum_ref.sub(pool_statfs_iter->second);
+        pool_statfs_iter->second = statfs_inc;
+      }
+      pool_sum_ref.add(statfs_inc);
     }
-    pool_sum_ref.add(statfs_inc);
   }
 
   for (auto p = inc.get_osd_stat_updates().begin();
@@ -2331,10 +2334,11 @@ void PGMap::get_health_checks(
   typedef enum pg_consequence_t {
     UNAVAILABLE = 1,   // Client IO to the pool may block
     DEGRADED = 2,      // Fewer than the requested number of replicas are present
-    DEGRADED_FULL = 3, // Fewer than the request number of replicas may be present
-                       //  and insufficiet resources are present to fix this
-    DAMAGED = 4        // The data may be missing or inconsistent on disk and
+    BACKFILL_FULL = 3, // Backfill is blocked for space considerations
+                       // This may or may not be a deadlock condition.
+    DAMAGED = 4,        // The data may be missing or inconsistent on disk and
                        //  requires repair
+    RECOVERY_FULL = 5  // Recovery is blocked because OSDs are full
   } pg_consequence_t;
 
   // For a given PG state, how should it be reported at the pool level?
@@ -2377,8 +2381,8 @@ void PGMap::get_health_checks(
     { PG_STATE_SNAPTRIM_ERROR,   {DAMAGED,     {}} },
     { PG_STATE_RECOVERY_UNFOUND, {DAMAGED,     {}} },
     { PG_STATE_BACKFILL_UNFOUND, {DAMAGED,     {}} },
-    { PG_STATE_BACKFILL_TOOFULL, {DEGRADED_FULL, {}} },
-    { PG_STATE_RECOVERY_TOOFULL, {DEGRADED_FULL, {}} },
+    { PG_STATE_BACKFILL_TOOFULL, {BACKFILL_FULL, {}} },
+    { PG_STATE_RECOVERY_TOOFULL, {RECOVERY_FULL, {}} },
     { PG_STATE_DEGRADED,         {DEGRADED,    {}} },
     { PG_STATE_DOWN,             {UNAVAILABLE, {}} },
     // Delayed (wait until stuck) reports
@@ -2522,14 +2526,19 @@ void PGMap::get_health_checks(
         summary = "Degraded data redundancy: ";
         sev = HEALTH_WARN;
         break;
-      case DEGRADED_FULL:
-        health_code = "PG_DEGRADED_FULL";
-        summary = "Degraded data redundancy (low space): ";
-        sev = HEALTH_ERR;
+      case BACKFILL_FULL:
+        health_code = "PG_BACKFILL_FULL";
+        summary = "Low space hindering backfill (add storage if this doesn't resolve itself): ";
+        sev = HEALTH_WARN;
         break;
       case DAMAGED:
         health_code = "PG_DAMAGED";
         summary = "Possible data damage: ";
+        sev = HEALTH_ERR;
+        break;
+      case RECOVERY_FULL:
+        health_code = "PG_RECOVERY_FULL";
+        summary = "Full OSDs blocking recovery: ";
         sev = HEALTH_ERR;
         break;
       default:
@@ -2691,6 +2700,129 @@ void PGMap::get_health_checks(
       ss << "too many PGs per OSD (" << per
 	 << " > max " << max_pg_per_osd << ")";
       checks->add("TOO_MANY_PGS", HEALTH_WARN, ss.str());
+    }
+  }
+
+  // TOO_FEW_OSDS
+  auto warn_too_few_osds = cct->_conf.get_val<bool>("mon_warn_on_too_few_osds");
+  auto osd_pool_default_size = cct->_conf.get_val<uint64_t>("osd_pool_default_size");
+  if (warn_too_few_osds && osdmap.get_num_osds() < osd_pool_default_size) {
+    ostringstream ss;
+    ss << "OSD count " << osdmap.get_num_osds()
+	 << " < osd_pool_default_size " << osd_pool_default_size;
+    checks->add("TOO_FEW_OSDS", HEALTH_WARN, ss.str());
+  }
+
+  // SLOW_PING_TIME
+  // Convert milliseconds to microseconds
+  auto warn_slow_ping_time = cct->_conf.get_val<double>("mon_warn_on_slow_ping_time") * 1000;
+  auto grace = cct->_conf.get_val<int64_t>("osd_heartbeat_grace");
+  if (warn_slow_ping_time == 0) {
+    double ratio = cct->_conf.get_val<double>("mon_warn_on_slow_ping_ratio");
+    warn_slow_ping_time = grace;
+    warn_slow_ping_time *= 1000000 * ratio; // Seconds of grace to microseconds at ratio
+  }
+  if (warn_slow_ping_time > 0) {
+
+    struct mon_ping_item_t {
+      uint32_t pingtime;
+      int from;
+      int to;
+      bool improving;
+
+      bool operator<(const mon_ping_item_t& rhs) const {
+        if (pingtime < rhs.pingtime)
+          return true;
+        if (pingtime > rhs.pingtime)
+          return false;
+        if (from < rhs.from)
+          return true;
+        if (from > rhs.from)
+          return false;
+        return to < rhs.to;
+      }
+    };
+
+    list<string> detail_back;
+    list<string> detail_front;
+    set<mon_ping_item_t> back_sorted, front_sorted;
+    for (auto i : osd_stat) {
+      for (auto j : i.second.hb_pingtime) {
+
+	// Maybe source info is old
+	if (now.sec() - j.second.last_update > grace * 60)
+	  continue;
+
+	mon_ping_item_t back;
+	back.pingtime = std::max(j.second.back_pingtime[0], j.second.back_pingtime[1]);
+	back.pingtime = std::max(back.pingtime, j.second.back_pingtime[2]);
+	back.from = i.first;
+	back.to = j.first;
+	if (back.pingtime > warn_slow_ping_time) {
+	  back.improving = (j.second.back_pingtime[0] < j.second.back_pingtime[1]
+			    && j.second.back_pingtime[1] < j.second.back_pingtime[2]);
+	  back_sorted.emplace(back);
+	}
+
+	mon_ping_item_t front;
+	front.pingtime = std::max(j.second.front_pingtime[0], j.second.front_pingtime[1]);
+	front.pingtime = std::max(front.pingtime, j.second.front_pingtime[2]);
+	front.from = i.first;
+	front.to = j.first;
+	if (front.pingtime > warn_slow_ping_time) {
+	  front.improving = (j.second.front_pingtime[0] < j.second.front_pingtime[1]
+			     && j.second.front_pingtime[1] < j.second.back_pingtime[2]);
+	  front_sorted.emplace(front);
+	}
+      }
+    }
+    int max_detail = 10;
+    for (auto &sback : boost::adaptors::reverse(back_sorted)) {
+      ostringstream ss;
+      if (max_detail == 0) {
+	ss << "Truncated long network list.  Use ceph daemon mgr.# dump_osd_network for more information";
+        detail_back.push_back(ss.str());
+        break;
+      }
+      max_detail--;
+      ss << "Slow heartbeat ping on back interface from osd." << sback.from
+         << (osdmap.is_down(sback.from) ? " (down)" : "")
+	 << " to osd." << sback.to
+         << (osdmap.is_down(sback.to) ? " (down)" : "")
+	 << " " << fixed_u_to_string(sback.pingtime, 3) << " msec"
+	 << (sback.improving ? " possibly improving" : "");
+      detail_back.push_back(ss.str());
+    }
+    max_detail = 10;
+    for (auto &sfront : boost::adaptors::reverse(front_sorted)) {
+      ostringstream ss;
+      if (max_detail == 0) {
+	ss << "Truncated long network list.  Use ceph daemon mgr.# dump_osd_network for more information";
+        detail_front.push_back(ss.str());
+        break;
+      }
+      max_detail--;
+      ss << "Slow heartbeat ping on front interface from osd." << sfront.from
+         << (osdmap.is_down(sfront.from) ? " (down)" : "")
+         << " to osd." << sfront.to
+         << (osdmap.is_down(sfront.to) ? " (down)" : "")
+	 << " " << fixed_u_to_string(sfront.pingtime, 3) << " msec"
+	 << (sfront.improving ? " possibly improving" : "");
+      detail_front.push_back(ss.str());
+    }
+    if (detail_back.size() != 0) {
+      ostringstream ss;
+      ss << "Long heartbeat ping times on back interface seen, longest is "
+	 << fixed_u_to_string(back_sorted.rbegin()->pingtime, 3) << " msec";
+      auto& d = checks->add("OSD_SLOW_PING_TIME_BACK", HEALTH_WARN, ss.str());
+      d.detail.swap(detail_back);
+    }
+    if (detail_front.size() != 0) {
+      ostringstream ss;
+      ss << "Long heartbeat ping times on front interface seen, longest is "
+	 << fixed_u_to_string(front_sorted.rbegin()->pingtime, 3) << " msec";
+      auto& d = checks->add("OSD_SLOW_PING_TIME_FRONT", HEALTH_WARN, ss.str());
+      d.detail.swap(detail_front);
     }
   }
 

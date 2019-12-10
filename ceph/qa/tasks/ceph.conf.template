@@ -26,6 +26,7 @@
 	mon warn on crush straw calc version zero = false
 	mon warn on no sortbitwise = false
 	mon warn on osd down out interval zero = false
+	mon warn on too few osds = false
 
         osd pool default erasure code profile = "plugin=jerasure technique=reed_sol_van k=2 m=1 ruleset-failure-domain=osd crush-failure-domain=osd"
 
@@ -35,6 +36,9 @@
 
 	mon cluster log file level = debug
 	debug asserts on shutdown = true
+
+	# we see this fail in qa on *nautilus*; bump up retries
+	mon_client_directed_command_retry = 4
 
 [osd]
         osd journal size = 100

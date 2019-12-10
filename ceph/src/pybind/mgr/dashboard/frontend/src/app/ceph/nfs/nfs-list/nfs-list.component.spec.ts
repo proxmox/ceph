@@ -9,6 +9,7 @@ import { BehaviorSubject, of } from 'rxjs';
 
 import {
   configureTestBed,
+  expectItemTasks,
   i18nProviders,
   PermissionHelper
 } from '../../../../testing/unit-test-helper';
@@ -127,10 +128,6 @@ describe('NfsListComponent', () => {
       summaryService.addRunningTask(task);
     };
 
-    const expectExportTasks = (expo: any, executing: string) => {
-      expect(expo.cdExecuting).toEqual(executing);
-    };
-
     beforeEach(() => {
       exports = [];
       addExport('a');
@@ -154,18 +151,18 @@ describe('NfsListComponent', () => {
       addTask('nfs/create', 'd');
       tick();
       expect(component.exports.length).toBe(4);
-      expectExportTasks(component.exports[0], undefined);
-      expectExportTasks(component.exports[1], undefined);
-      expectExportTasks(component.exports[2], undefined);
-      expectExportTasks(component.exports[3], 'Creating');
+      expectItemTasks(component.exports[0], undefined);
+      expectItemTasks(component.exports[1], undefined);
+      expectItemTasks(component.exports[2], undefined);
+      expectItemTasks(component.exports[3], 'Creating');
     }));
 
     it('should show when an existing export is being modified', () => {
       addTask('nfs/edit', 'a');
       addTask('nfs/delete', 'b');
       expect(component.exports.length).toBe(3);
-      expectExportTasks(component.exports[0], 'Updating');
-      expectExportTasks(component.exports[1], 'Deleting');
+      expectItemTasks(component.exports[0], 'Updating');
+      expectItemTasks(component.exports[1], 'Deleting');
     });
   });
 
@@ -186,7 +183,7 @@ describe('NfsListComponent', () => {
       scenario = {
         fn: () => tableActions.getCurrentButton().name,
         single: 'Edit',
-        empty: 'Add'
+        empty: 'Create'
       };
     });
 
@@ -195,7 +192,7 @@ describe('NfsListComponent', () => {
         tableActions = permissionHelper.setPermissionsAndGetActions(1, 1, 1);
       });
 
-      it(`shows 'Edit' for single selection else 'Add' as main action`, () =>
+      it(`shows 'Edit' for single selection else 'Create' as main action`, () =>
         permissionHelper.testScenarios(scenario));
 
       it('shows all actions', () => {
@@ -209,7 +206,7 @@ describe('NfsListComponent', () => {
         tableActions = permissionHelper.setPermissionsAndGetActions(1, 1, 0);
       });
 
-      it(`shows 'Edit' for single selection else 'Add' as main action`, () =>
+      it(`shows 'Edit' for single selection else 'Create' as main action`, () =>
         permissionHelper.testScenarios(scenario));
 
       it(`shows all actions except for 'Delete'`, () => {
@@ -224,12 +221,12 @@ describe('NfsListComponent', () => {
         tableActions = permissionHelper.setPermissionsAndGetActions(1, 0, 1);
       });
 
-      it(`shows 'Delete' for single selection else 'Add' as main action`, () => {
+      it(`shows 'Delete' for single selection else 'Create' as main action`, () => {
         scenario.single = 'Delete';
         permissionHelper.testScenarios(scenario);
       });
 
-      it(`shows 'Add', and 'Delete'  action`, () => {
+      it(`shows 'Create', and 'Delete'  action`, () => {
         expect(tableActions.tableActions.length).toBe(2);
         expect(tableActions.tableActions).toEqual([
           component.tableActions[0],
@@ -262,12 +259,12 @@ describe('NfsListComponent', () => {
         tableActions = permissionHelper.setPermissionsAndGetActions(1, 0, 0);
       });
 
-      it(`always shows 'Add' as main action`, () => {
-        scenario.single = 'Add';
+      it(`always shows 'Create' as main action`, () => {
+        scenario.single = 'Create';
         permissionHelper.testScenarios(scenario);
       });
 
-      it(`shows 'Add' action`, () => {
+      it(`shows 'Create' action`, () => {
         expect(tableActions.tableActions.length).toBe(1);
         expect(tableActions.tableActions).toEqual([component.tableActions[0]]);
       });

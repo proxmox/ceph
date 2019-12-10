@@ -335,6 +335,59 @@ needs to be stopped and BlueFS informed of the device size change with::
 
   ceph-bluestore-tool bluefs-bdev-expand --path /var/lib/ceph/osd/ceph-$ID
 
+BLUEFS_AVAILABLE_SPACE
+______________________
+
+To check how much space is free for BlueFS do::
+
+  ceph daemon osd.123 bluestore bluefs available
+
+This will output up to 3 values: `BDEV_DB free`, `BDEV_SLOW free` and
+`available_from_bluestore`. `BDEV_DB` and `BDEV_SLOW` report amount of space that
+has been acquired by BlueFS and is considered free. Value `available_from_bluestore`
+denotes ability of BlueStore to relinquish more space to BlueFS.
+It is normal that this value is different from amount of BlueStore free space, as
+BlueFS allocation unit is typically larger than BlueStore allocation unit.
+This means that only part of BlueStore free space will be acceptable for BlueFS.
+
+BLUEFS_LOW_SPACE
+_________________
+
+If BlueFS is running low on available free space and there is little
+`available_from_bluestore` one can consider reducing BlueFS allocation unit size.
+To simulate available space when allocation unit is different do::
+
+  ceph daemon osd.123 bluestore bluefs available <alloc-unit-size>
+
+BLUESTORE_FRAGMENTATION
+_______________________
+
+As BlueStore works free space on underlying storage will get fragmented.
+This is normal and unavoidable but excessive fragmentation will cause slowdown.
+To inspect BlueStore fragmentation one can do::
+
+  ceph daemon osd.123 bluestore allocator score block
+
+Score is given in [0-1] range.
+[0.0 .. 0.4] tiny fragmentation
+[0.4 .. 0.7] small, acceptable fragmentation
+[0.7 .. 0.9] considerable, but safe fragmentation
+[0.9 .. 1.0] severe fragmentation, may impact BlueFS ability to get space from BlueStore
+
+If detailed report of free fragments is required do::
+
+  ceph daemon osd.123 bluestore allocator dump block
+
+In case when handling OSD process that is not running fragmentation can be
+inspected with `ceph-bluestore-tool`.
+Get fragmentation score::
+
+  ceph-bluestore-tool --path /var/lib/ceph/osd/ceph-123 --allocator block free-score
+
+And dump detailed free chunks::
+
+  ceph-bluestore-tool --path /var/lib/ceph/osd/ceph-123 --allocator block free-dump
+
 BLUESTORE_LEGACY_STATFS
 _______________________
 
@@ -489,16 +542,27 @@ The state of specific problematic PGs can be queried with::
   ceph tell <pgid> query
 
 
-PG_DEGRADED_FULL
+PG_RECOVERY_FULL
 ________________
 
 Data redundancy may be reduced or at risk for some data due to a lack
 of free space in the cluster.  Specifically, one or more PGs has the
-*backfill_toofull* or *recovery_toofull* flag set, meaning that the
+*recovery_toofull* flag set, meaning that the
+cluster is unable to migrate or recover data because one or more OSDs
+is above the *full* threshold.
+
+See the discussion for *OSD_FULL* above for steps to resolve this condition.
+
+PG_BACKFILL_FULL
+________________
+
+Data redundancy may be reduced or at risk for some data due to a lack
+of free space in the cluster.  Specifically, one or more PGs has the
+*backfill_toofull* flag set, meaning that the
 cluster is unable to migrate or recover data because one or more OSDs
 is above the *backfillfull* threshold.
 
-See the discussion for *OSD_BACKFILLFULL* or *OSD_FULL* above for
+See the discussion for *OSD_BACKFILLFULL* above for
 steps to resolve this condition.
 
 PG_DAMAGED
@@ -678,6 +742,12 @@ the pool is too large and should be reduced or set to zero with::
 
 For more information, see :ref:`specifying_pool_target_size`.
 
+TOO_FEW_OSDS
+____________
+
+The number of OSDs in the cluster is below the configurable
+threshold of ``osd_pool_default_size``.
+
 SMALLER_PGP_NUM
 _______________
 
@@ -840,3 +910,72 @@ happen if they are misplaced or degraded (see *PG_AVAILABILITY* and
 You can manually initiate a scrub of a clean PG with::
 
   ceph pg deep-scrub <pgid>
+
+
+Miscellaneous
+-------------
+
+RECENT_CRASH
+____________
+
+One or more Ceph daemons has crashed recently, and the crash has not
+yet been archived (acknowledged) by the administrator.  This may
+indicate a software bug, a hardware problem (e.g., a failing disk), or
+some other problem.
+
+New crashes can be listed with::
+
+  ceph crash ls-new
+
+Information about a specific crash can be examined with::
+
+  ceph crash info <crash-id>
+
+This warning can be silenced by "archiving" the crash (perhaps after
+being examined by an administrator) so that it does not generate this
+warning::
+
+  ceph crash archive <crash-id>
+
+Similarly, all new crashes can be archived with::
+
+  ceph crash archive-all
+
+Archived crashes will still be visible via ``ceph crash ls`` but not
+``ceph crash ls-new``.
+
+The time period for what "recent" means is controlled by the option
+``mgr/crash/warn_recent_interval`` (default: two weeks).
+
+These warnings can be disabled entirely with::
+
+  ceph config set mgr/crash/warn_recent_interval 0
+
+TELEMETRY_CHANGED
+_________________
+
+Telemetry has been enabled, but the contents of the telemetry report
+have changed since that time, so telemetry reports will not be sent.
+
+The Ceph developers periodically revise the telemetry feature to
+include new and useful information, or to remove information found to
+be useless or sensitive.  If any new information is included in the
+report, Ceph will require the administrator to re-enable telemetry to
+ensure they have an opportunity to (re)review what information will be
+shared.
+
+To review the contents of the telemetry report,::
+
+  ceph telemetry show
+
+Note that the telemetry report consists of several optional channels
+that may be independently enabled or disabled.  For more information, see
+:ref:`telemetry`.
+
+To re-enable telemetry (and make this warning go away),::
+
+  ceph telemetry on
+
+To disable telemetry (and make this warning go away),::
+
+  ceph telemetry off

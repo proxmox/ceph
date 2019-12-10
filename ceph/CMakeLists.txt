@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.5.1)
 
 project(ceph CXX C ASM)
-set(VERSION 14.2.4)
+set(VERSION 14.2.5)
 
 if(POLICY CMP0028)
   cmake_policy(SET CMP0028 NEW)
@@ -210,20 +210,33 @@ endif()
 
 find_package(Backtrace)
 
+# remote block storage
+option(WITH_RBD "Remote block storage is here" ON)
+
 if(LINUX)
   find_package(udev REQUIRED)
   set(HAVE_UDEV ${UDEV_FOUND})
   find_package(blkid REQUIRED)
   set(HAVE_BLKID ${BLKID_FOUND})
+  if(WITH_RBD)
+    find_package(genl REQUIRED)
+    set(HAVE_GENL $GENL_FOUND)
+  endif()
+  find_package(keyutils REQUIRED)
+  set(HAVE_KEYUTILS ${KEYUTILS_FOUND})
 elseif(FREEBSD)
   set(HAVE_UDEV OFF)
   set(HAVE_LIBAIO OFF)
   set(HAVE_BLKID OFF)
+  set(HAVE_GENL OFF)
+  set(HAVE_KEYUTILS OFF)
 else()
   set(HAVE_UDEV OFF)
   message(STATUS "Not using udev")
   set(HAVE_BLKID OFF)
   message(STATUS "Not using BLKID")
+  set(HAVE_GENL OFF)
+  message(STATUS "Not using GENL")
 endif(LINUX)
 
 option(WITH_OPENLDAP "OPENLDAP is here" ON)
@@ -267,11 +280,7 @@ if(WITH_BLUESTORE)
   endif()
 endif()
 
-if(CMAKE_SYSTEM_PROCESSOR MATCHES "i386|i686|amd64|x86_64|AMD64|aarch64")
-  option(WITH_SPDK "Enable SPDK" ON)
-else()
-  option(WITH_SPDK "Enable SPDK" OFF)
-endif()
+option(WITH_SPDK "Enable SPDK" OFF)
 if(WITH_SPDK)
   if(NOT WITH_BLUESTORE)
     message(SEND_ERROR "Please enable WITH_BLUESTORE for using SPDK")
@@ -311,14 +320,18 @@ option(WITH_LIBCEPHFS "libcephfs client library" ON)
 # key-value store
 option(WITH_KVS "Key value store is here" ON)
 
-# remote block storage
-option(WITH_RBD "Remote block storage is here" ON)
-
 # KERNEL remote block storage
 option(WITH_KRBD "Kernel Remote block storage is here" ON)
 
 if(WITH_KRBD AND WITHOUT_RBD)
   message(FATAL_ERROR "Cannot have WITH_KRBD with WITH_RBD.")
+endif()
+if(LINUX)
+  if(WITH_LIBCEPHFS OR WITH_KRBD)
+    # keyutils is only used when talking to the Linux Kernel key store 
+    find_package(keyutils REQUIRED)
+    set(HAVE_KEYUTILS ${KEYUTILS_FOUND})
+  endif()
 endif()
 
 option(WITH_LEVELDB "LevelDB is here" ON)
@@ -384,10 +397,6 @@ if(HAVE_LIBTCMALLOC AND WITH_STATIC_LIBSTDCXX)
   set(EXE_LINKER_USE_PIE FALSE)
 else()
   set(EXE_LINKER_USE_PIE ${ENABLE_SHARED})
-endif()
-
-if(WITH_LIBCEPHFS OR WITH_KRBD)
-  find_package(keyutils REQUIRED)
 endif()
 
 find_package(CURL REQUIRED)
@@ -681,6 +690,9 @@ if(WITH_SYSTEM_NPM)
     message(FATAL_ERROR "Can't find npm.")
   endif()
 endif()
+set(DASHBOARD_FRONTEND_LANGS "" CACHE STRING
+  "List of comma separated ceph-dashboard frontend languages to build. \
+  Use value `ALL` to build all languages")
 
 include_directories(SYSTEM ${PROJECT_BINARY_DIR}/include)
 

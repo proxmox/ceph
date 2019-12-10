@@ -26,6 +26,7 @@ Build-Depends: cmake (>= 3.5),
                libbabeltrace-ctf-dev,
                libbabeltrace-dev,
                libblkid-dev (>= 2.17),
+               libcap-ng-dev,
                libcunit1-dev,
                libcurl4-openssl-dev,
                libexpat1-dev,
@@ -45,10 +46,13 @@ Build-Depends: cmake (>= 3.5),
                libssl-dev,
                libtool,
                libudev-dev,
+               libnl-3-dev,
+               libnl-genl-3-dev,
                libxml2-dev,
                librabbitmq-dev,
                lsb-release,
                parted,
+               patch,
                pkg-config,
                python (>= 2.7),
                python-all-dev,
@@ -69,7 +73,7 @@ Build-Depends: cmake (>= 3.5),
                python3-all-dev,
                python3-setuptools,
 # Make-Check   socat,
-               uuid-dev,
+# Make-Check   uuid-dev,
                uuid-runtime,
                valgrind,
                virtualenv | python-virtualenv,
@@ -192,6 +196,7 @@ Recommends: ceph-mgr-dashboard,
             ceph-mgr-diskprediction-local,
             ceph-mgr-diskprediction-cloud,
             ceph-mgr-rook,
+            ceph-mgr-k8sevents,
             ceph-mgr-ssh
 Suggests: python-influxdb
 Replaces: ceph (<< 0.93-417),
@@ -274,6 +279,21 @@ Description: rook plugin for ceph-mgr
  This package contains the rook plugin for ceph-mgr's orchestration
  functionality, to allow ceph-mgr to install and configure ceph using
  Rook.
+
+Package: ceph-mgr-k8sevents
+Architecture: all
+Depends: ceph-mgr (= ${binary:Version}),
+         python-kubernetes,
+         ${misc:Depends},
+         ${python:Depends},
+Description: kubernetes events plugin for ceph-mgr
+ Ceph is a massively scalable, open-source, distributed
+ storage system that runs on commodity hardware and delivers object,
+ block and file system storage.
+ .
+ This package contains the k8sevents plugin, to allow ceph-mgr to send
+ ceph related events to the kubernetes events API, and track all events
+ that occur within the rook-ceph namespace.
 
 Package: ceph-mgr-ssh
 Architecture: all

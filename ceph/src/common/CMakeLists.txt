@@ -4,6 +4,9 @@ add_library(common_buffer_obj OBJECT
 add_library(common_texttable_obj OBJECT
   TextTable.cc)
 
+add_library(common_prioritycache_obj OBJECT
+  PriorityCache.cc)
+
 set(common_srcs
   AsyncOpTracker.cc
   BackTrace.cc
@@ -20,7 +23,6 @@ set(common_srcs
   Mutex.cc
   OutputDataSocket.cc
   PluginRegistry.cc
-  PriorityCache.cc
   Readahead.cc
   SloppyCRCMap.cc
   SubProcess.cc
@@ -175,7 +177,7 @@ target_link_libraries(crc32
 
 add_library(common_utf8 STATIC utf8.c)
 
-if(WITH_LIBCEPHFS OR WITH_KRBD)
+if(HAVE_KEYUTILS)
   set(parse_secret_srcs
     secret.c)
   add_library(parse_secret_objs OBJECT ${parse_secret_srcs})

@@ -120,7 +120,7 @@ export class RbdListComponent implements OnInit {
         !selection.hasSingleSelection || selection.first().cdExecuting,
       icon: 'fa-copy',
       routerLink: () => `/block/rbd/copy/${getImageUri()}`,
-      name: this.i18n('Copy')
+      name: this.actionLabels.COPY
     };
     const flattenAction: CdTableAction = {
       permission: 'update',
@@ -128,13 +128,13 @@ export class RbdListComponent implements OnInit {
         !selection.hasSingleSelection || selection.first().cdExecuting || !selection.first().parent,
       icon: 'fa-chain-broken',
       click: () => this.flattenRbdModal(),
-      name: this.i18n('Flatten')
+      name: this.actionLabels.FLATTEN
     };
     const moveAction: CdTableAction = {
       permission: 'delete',
       icon: 'fa-trash-o',
       click: () => this.trashRbdModal(),
-      name: this.i18n('Move to Trash')
+      name: this.actionLabels.TRASH
     };
     this.tableActions = [
       addAction,
@@ -288,6 +288,7 @@ export class RbdListComponent implements OnInit {
     this.modalRef = this.modalService.show(CriticalConfirmationModalComponent, {
       initialState: {
         itemDescription: 'RBD',
+        itemNames: [`${poolName}/${imageName}`],
         submitActionObservable: () =>
           this.taskWrapper.wrapTaskAroundCall({
             task: new FinishedTask('rbd/delete', {

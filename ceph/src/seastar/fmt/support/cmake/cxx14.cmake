@@ -3,10 +3,15 @@
 include(CheckCXXSourceCompiles)
 include(CheckCXXCompilerFlag)
 
-if (NOT CMAKE_CXX_STANDARD)
+if (CMAKE_CXX_STANDARD)
+  message(STATUS "CXX_STANDARD: ${CMAKE_CXX_STANDARD}")
+elseif (CMAKE_CXX_FLAGS MATCHES "-std=(c|gnu)\\+\\+")
+  string(REGEX MATCH "-std=(c|gnu)\\+\\+[^ ]+" CXX_STANDARD_FLAG "${CMAKE_CXX_FLAGS}")
+  message(STATUS "CXX_STANDARD_FLAG: ${CXX_STANDARD_FLAG}")
+else()
   set(CMAKE_CXX_STANDARD 11)
+  message(STATUS "CXX_STANDARD: ${CMAKE_CXX_STANDARD}")
 endif()
-message(STATUS "CXX_STANDARD: ${CMAKE_CXX_STANDARD}")
 
 if (CMAKE_CXX_STANDARD EQUAL 20)
   check_cxx_compiler_flag(-std=c++20 has_std_20_flag)

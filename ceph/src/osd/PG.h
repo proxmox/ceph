@@ -1673,11 +1673,13 @@ protected:
     hobject_t end = info.pgid.pgid.get_hobj_end(pool.info.get_pg_num());
     add_backoff(s, begin, end);
   }
+public:
   void release_pg_backoffs() {
     hobject_t begin = info.pgid.pgid.get_hobj_start();
     hobject_t end = info.pgid.pgid.get_hobj_end(pool.info.get_pg_num());
     release_backoffs(begin, end);
   }
+protected:
 
   // -- scrub --
 public:
@@ -1687,7 +1689,7 @@ public:
 
     // metadata
     set<pg_shard_t> reserved_peers;
-    bool reserved, reserve_failed;
+    bool local_reserved, remote_reserved, reserve_failed;
     epoch_t epoch_start;
 
     // common to both scrubs
@@ -2043,7 +2045,7 @@ protected:
   TrivialEvent(NeedUpThru)
   TrivialEvent(Backfilled)
   TrivialEvent(LocalBackfillReserved)
-  TrivialEvent(RejectRemoteReservation)
+  TrivialEvent(RejectTooFullRemoteReservation)
   public:
   TrivialEvent(RequestBackfill)
   protected:
@@ -2431,12 +2433,12 @@ protected:
         boost::statechart::custom_reaction< Backfilled >,
 	boost::statechart::custom_reaction< DeferBackfill >,
 	boost::statechart::custom_reaction< UnfoundBackfill >,
-	boost::statechart::custom_reaction< RemoteReservationRejected >,
+	boost::statechart::custom_reaction< RemoteReservationRejectedTooFull >,
 	boost::statechart::custom_reaction< RemoteReservationRevokedTooFull>,
 	boost::statechart::custom_reaction< RemoteReservationRevoked>
 	> reactions;
       explicit Backfilling(my_context ctx);
-      boost::statechart::result react(const RemoteReservationRejected& evt) {
+      boost::statechart::result react(const RemoteReservationRejectedTooFull& evt) {
 	// for compat with old peers
 	post_event(RemoteReservationRevokedTooFull());
 	return discard_event();
@@ -2454,7 +2456,7 @@ protected:
     struct WaitRemoteBackfillReserved : boost::statechart::state< WaitRemoteBackfillReserved, Active >, NamedState {
       typedef boost::mpl::list<
 	boost::statechart::custom_reaction< RemoteBackfillReserved >,
-	boost::statechart::custom_reaction< RemoteReservationRejected >,
+	boost::statechart::custom_reaction< RemoteReservationRejectedTooFull >,
 	boost::statechart::custom_reaction< RemoteReservationRevoked >,
 	boost::statechart::transition< AllBackfillsReserved, Backfilling >
 	> reactions;
@@ -2463,7 +2465,7 @@ protected:
       void retry();
       void exit();
       boost::statechart::result react(const RemoteBackfillReserved& evt);
-      boost::statechart::result react(const RemoteReservationRejected& evt);
+      boost::statechart::result react(const RemoteReservationRejectedTooFull& evt);
       boost::statechart::result react(const RemoteReservationRevoked& evt);
     };
 
@@ -2479,12 +2481,12 @@ protected:
       typedef boost::mpl::list<
 	boost::statechart::transition< RequestBackfill, WaitLocalBackfillReserved>,
 	boost::statechart::custom_reaction< RemoteBackfillReserved >,
-	boost::statechart::custom_reaction< RemoteReservationRejected >
+	boost::statechart::custom_reaction< RemoteReservationRejectedTooFull >
 	> reactions;
       explicit NotBackfilling(my_context ctx);
       void exit();
       boost::statechart::result react(const RemoteBackfillReserved& evt);
-      boost::statechart::result react(const RemoteReservationRejected& evt);
+      boost::statechart::result react(const RemoteReservationRejectedTooFull& evt);
     };
 
     struct NotRecovering : boost::statechart::state< NotRecovering, Active>, NamedState {
@@ -2562,7 +2564,7 @@ protected:
       typedef boost::mpl::list<
 	boost::statechart::transition< RecoveryDone, RepNotRecovering >,
 	// for compat with old peers
-	boost::statechart::transition< RemoteReservationRejected, RepNotRecovering >,
+	boost::statechart::transition< RemoteReservationRejectedTooFull, RepNotRecovering >,
 	boost::statechart::transition< RemoteReservationCanceled, RepNotRecovering >,
 	boost::statechart::custom_reaction< BackfillTooFull >,
 	boost::statechart::custom_reaction< RemoteRecoveryPreempted >,
@@ -2578,15 +2580,15 @@ protected:
     struct RepWaitBackfillReserved : boost::statechart::state< RepWaitBackfillReserved, ReplicaActive >, NamedState {
       typedef boost::mpl::list<
 	boost::statechart::custom_reaction< RemoteBackfillReserved >,
-	boost::statechart::custom_reaction< RejectRemoteReservation >,
-	boost::statechart::custom_reaction< RemoteReservationRejected >,
+	boost::statechart::custom_reaction< RejectTooFullRemoteReservation >,
+	boost::statechart::custom_reaction< RemoteReservationRejectedTooFull >,
 	boost::statechart::custom_reaction< RemoteReservationCanceled >
 	> reactions;
       explicit RepWaitBackfillReserved(my_context ctx);
       void exit();
       boost::statechart::result react(const RemoteBackfillReserved &evt);
-      boost::statechart::result react(const RejectRemoteReservation &evt);
-      boost::statechart::result react(const RemoteReservationRejected &evt);
+      boost::statechart::result react(const RejectTooFullRemoteReservation &evt);
+      boost::statechart::result react(const RemoteReservationRejectedTooFull &evt);
       boost::statechart::result react(const RemoteReservationCanceled &evt);
     };
 
@@ -2594,13 +2596,13 @@ protected:
       typedef boost::mpl::list<
 	boost::statechart::custom_reaction< RemoteRecoveryReserved >,
 	// for compat with old peers
-	boost::statechart::custom_reaction< RemoteReservationRejected >,
+	boost::statechart::custom_reaction< RemoteReservationRejectedTooFull >,
 	boost::statechart::custom_reaction< RemoteReservationCanceled >
 	> reactions;
       explicit RepWaitRecoveryReserved(my_context ctx);
       void exit();
       boost::statechart::result react(const RemoteRecoveryReserved &evt);
-      boost::statechart::result react(const RemoteReservationRejected &evt) {
+      boost::statechart::result react(const RemoteReservationRejectedTooFull &evt) {
 	// for compat with old peers
 	post_event(RemoteReservationCanceled());
 	return discard_event();
@@ -2612,8 +2614,8 @@ protected:
       typedef boost::mpl::list<
 	boost::statechart::custom_reaction< RequestRecoveryPrio >,
 	boost::statechart::custom_reaction< RequestBackfillPrio >,
-	boost::statechart::custom_reaction< RejectRemoteReservation >,
-	boost::statechart::transition< RemoteReservationRejected, RepNotRecovering >,
+	boost::statechart::custom_reaction< RejectTooFullRemoteReservation >,
+	boost::statechart::transition< RemoteReservationRejectedTooFull, RepNotRecovering >,
 	boost::statechart::transition< RemoteReservationCanceled, RepNotRecovering >,
 	boost::statechart::custom_reaction< RemoteRecoveryReserved >,
 	boost::statechart::custom_reaction< RemoteBackfillReserved >,
@@ -2630,7 +2632,7 @@ protected:
 	// my reservation completion raced with a RELEASE from primary
 	return discard_event();
       }
-      boost::statechart::result react(const RejectRemoteReservation &evt);
+      boost::statechart::result react(const RejectTooFullRemoteReservation &evt);
       void exit();
     };
 

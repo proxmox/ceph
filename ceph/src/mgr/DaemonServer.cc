@@ -378,6 +378,7 @@ void DaemonServer::shutdown()
   dout(10) << "begin" << dendl;
   msgr->shutdown();
   msgr->wait();
+  cluster_state.shutdown();
   dout(10) << "done" << dendl;
 
   std::lock_guard l(lock);
@@ -431,9 +432,6 @@ bool DaemonServer::handle_open(MMgrOpen *m)
     daemon = std::make_shared<DaemonState>(daemon_state.types);
     daemon->key = key;
     daemon->service_daemon = true;
-    if (m->daemon_metadata.count("hostname")) {
-      daemon->hostname = m->daemon_metadata["hostname"];
-    }
     daemon_state.insert(daemon);
   }
   if (daemon) {
@@ -2705,9 +2703,6 @@ void DaemonServer::got_service_map()
 	auto daemon = std::make_shared<DaemonState>(daemon_state.types);
 	daemon->key = key;
 	daemon->set_metadata(q.second.metadata);
-        if (q.second.metadata.count("hostname")) {
-          daemon->hostname = q.second.metadata["hostname"];
-        }
 	daemon->service_daemon = true;
 	daemon_state.insert(daemon);
 	dout(10) << "added missing " << key << dendl;

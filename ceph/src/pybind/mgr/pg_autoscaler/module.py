@@ -9,7 +9,7 @@ import threading
 import uuid
 from six import itervalues, iteritems
 from collections import defaultdict
-from prettytable import PrettyTable
+from prettytable import PrettyTable, PLAIN_COLUMNS
 
 from mgr_module import MgrModule
 
@@ -115,6 +115,8 @@ class PgAutoscaler(MgrModule):
 #                                 'IDEAL',
                                  'NEW PG_NUM', 'AUTOSCALE'],
                                 border=False)
+            table.left_padding_width = 0
+            table.right_padding_width = 1
             table.align['POOL'] = 'l'
             table.align['SIZE'] = 'r'
             table.align['TARGET SIZE'] = 'r'
@@ -254,6 +256,9 @@ class PgAutoscaler(MgrModule):
         # iterate over all pools to determine how they should be sized
         for pool_name, p in iteritems(pools):
             pool_id = p['pool']
+            if pool_id not in pool_stats:
+                # race with pool deletion; skip
+                continue
 
             # FIXME: we assume there is only one take per pool, but that
             # may not be true.
@@ -268,7 +273,7 @@ class PgAutoscaler(MgrModule):
 
             raw_used_rate = osdmap.pool_raw_used_rate(pool_id)
 
-            pool_logical_used = pool_stats[pool_id]['bytes_used']
+            pool_logical_used = pool_stats[pool_id]['stored']
             bias = p['options'].get('pg_autoscale_bias', 1.0)
             target_bytes = p['options'].get('target_size_bytes', 0)
 

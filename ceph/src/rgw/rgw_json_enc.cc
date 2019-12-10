@@ -483,6 +483,9 @@ void RGWUserInfo::dump(Formatter *f) const
   if (system) { /* no need to show it for every user */
     encode_json("system", (bool)system, f);
   }
+  if (admin) {
+    encode_json("admin", (bool)admin, f);
+  }
   encode_json("default_placement", default_placement.name, f);
   encode_json("default_storage_class", default_placement.storage_class, f);
   encode_json("placement_tags", placement_tags, f);
@@ -561,6 +564,9 @@ void RGWUserInfo::decode_json(JSONObj *obj)
   bool sys = false;
   JSONDecoder::decode_json("system", sys, obj);
   system = (__u8)sys;
+  bool ad = false;
+  JSONDecoder::decode_json("admin", ad, obj);
+  admin = (__u8)ad;
   JSONDecoder::decode_json("default_placement", default_placement.name, obj);
   JSONDecoder::decode_json("default_storage_class", default_placement.storage_class, obj);
   JSONDecoder::decode_json("placement_tags", placement_tags, obj);
@@ -1526,10 +1532,10 @@ void rgw::keystone::AdminTokenRequestVer2::dump(Formatter* const f) const
   f->open_object_section("token_request");
     f->open_object_section("auth");
       f->open_object_section("passwordCredentials");
-        encode_json("username", to_string(conf.get_admin_user()), f);
-        encode_json("password", to_string(conf.get_admin_password()), f);
+        encode_json("username", ::to_string(conf.get_admin_user()), f);
+        encode_json("password", conf.get_admin_password(), f);
       f->close_section();
-      encode_json("tenantName", to_string(conf.get_admin_tenant()), f);
+      encode_json("tenantName", ::to_string(conf.get_admin_tenant()), f);
     f->close_section();
   f->close_section();
 }
@@ -1545,22 +1551,22 @@ void rgw::keystone::AdminTokenRequestVer3::dump(Formatter* const f) const
         f->open_object_section("password");
           f->open_object_section("user");
             f->open_object_section("domain");
-              encode_json("name", to_string(conf.get_admin_domain()), f);
+              encode_json("name", ::to_string(conf.get_admin_domain()), f);
             f->close_section();
-            encode_json("name", to_string(conf.get_admin_user()), f);
-            encode_json("password", to_string(conf.get_admin_password()), f);
+            encode_json("name", ::to_string(conf.get_admin_user()), f);
+            encode_json("password", conf.get_admin_password(), f);
           f->close_section();
         f->close_section();
       f->close_section();
       f->open_object_section("scope");
         f->open_object_section("project");
           if (! conf.get_admin_project().empty()) {
-            encode_json("name", to_string(conf.get_admin_project()), f);
+            encode_json("name", ::to_string(conf.get_admin_project()), f);
           } else {
-            encode_json("name", to_string(conf.get_admin_tenant()), f);
+            encode_json("name", ::to_string(conf.get_admin_tenant()), f);
           }
           f->open_object_section("domain");
-            encode_json("name", to_string(conf.get_admin_domain()), f);
+            encode_json("name", ::to_string(conf.get_admin_domain()), f);
           f->close_section();
         f->close_section();
       f->close_section();
