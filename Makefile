@@ -1,5 +1,6 @@
 PACKAGE=ceph
-VER=14.2.4.1
+VER != dpkg-parsechangelog -l changelog.Debian -Sversion | cut -d- -f1
+PKGVER != dpkg-parsechangelog -l changelog.Debian -Sversion
 DEBREL=pve1
 
 SRCDIR=ceph
@@ -8,63 +9,63 @@ BUILDSRC=${SRCDIR}-${VER}
 ARCH:=$(shell dpkg-architecture -qDEB_BUILD_ARCH)
 GITVERSION:=$(shell git rev-parse HEAD)
 
-DBG_DEBS=ceph-common-dbg_${VER}-${DEBREL}_${ARCH}.deb \
-ceph-fuse-dbg_${VER}-${DEBREL}_${ARCH}.deb \
-ceph-mds-dbg_${VER}-${DEBREL}_${ARCH}.deb \
-ceph-mgr-dbg_${VER}-${DEBREL}_${ARCH}.deb \
-ceph-mon-dbg_${VER}-${DEBREL}_${ARCH}.deb \
-ceph-osd-dbg_${VER}-${DEBREL}_${ARCH}.deb \
-ceph-test-dbg_${VER}-${DEBREL}_${ARCH}.deb \
-libcephfs2-dbg_${VER}-${DEBREL}_${ARCH}.deb \
-librados2-dbg_${VER}-${DEBREL}_${ARCH}.deb \
-libradosstriper1-dbg_${VER}-${DEBREL}_${ARCH}.deb \
-librbd1-dbg_${VER}-${DEBREL}_${ARCH}.deb \
-librgw2-dbg_${VER}-${DEBREL}_${ARCH}.deb \
-radosgw-dbg_${VER}-${DEBREL}_${ARCH}.deb \
-rbd-fuse-dbg_${VER}-${DEBREL}_${ARCH}.deb \
-rbd-mirror-dbg_${VER}-${DEBREL}_${ARCH}.deb \
-rbd-nbd-dbg_${VER}-${DEBREL}_${ARCH}.deb
+DBG_DEBS=ceph-common-dbg_${PKGVER}_${ARCH}.deb \
+ceph-fuse-dbg_${PKGVER}_${ARCH}.deb \
+ceph-mds-dbg_${PKGVER}_${ARCH}.deb \
+ceph-mgr-dbg_${PKGVER}_${ARCH}.deb \
+ceph-mon-dbg_${PKGVER}_${ARCH}.deb \
+ceph-osd-dbg_${PKGVER}_${ARCH}.deb \
+ceph-test-dbg_${PKGVER}_${ARCH}.deb \
+libcephfs2-dbg_${PKGVER}_${ARCH}.deb \
+librados2-dbg_${PKGVER}_${ARCH}.deb \
+libradosstriper1-dbg_${PKGVER}_${ARCH}.deb \
+librbd1-dbg_${PKGVER}_${ARCH}.deb \
+librgw2-dbg_${PKGVER}_${ARCH}.deb \
+radosgw-dbg_${PKGVER}_${ARCH}.deb \
+rbd-fuse-dbg_${PKGVER}_${ARCH}.deb \
+rbd-mirror-dbg_${PKGVER}_${ARCH}.deb \
+rbd-nbd-dbg_${PKGVER}_${ARCH}.deb
 
-MAIN_DEB=ceph_${VER}-${DEBREL}_${ARCH}.deb
-DEBS_REST=ceph-base_${VER}-${DEBREL}_${ARCH}.deb \
-ceph-common_${VER}-${DEBREL}_${ARCH}.deb \
-ceph-fuse_${VER}-${DEBREL}_${ARCH}.deb \
-ceph-mds_${VER}-${DEBREL}_${ARCH}.deb \
-ceph-mgr_${VER}-${DEBREL}_${ARCH}.deb \
-ceph-mon_${VER}-${DEBREL}_${ARCH}.deb \
-ceph-osd_${VER}-${DEBREL}_${ARCH}.deb \
-ceph-resource-agents_${VER}-${DEBREL}_${ARCH}.deb \
-ceph-test_${VER}-${DEBREL}_${ARCH}.deb \
-libcephfs2_${VER}-${DEBREL}_${ARCH}.deb \
-libcephfs-dev_${VER}-${DEBREL}_${ARCH}.deb \
-libcephfs-java_${VER}-${DEBREL}_all.deb \
-libcephfs-jni_${VER}-${DEBREL}_${ARCH}.deb \
-librados2_${VER}-${DEBREL}_${ARCH}.deb \
-librados-dev_${VER}-${DEBREL}_${ARCH}.deb \
-libradosstriper1_${VER}-${DEBREL}_${ARCH}.deb \
-libradosstriper-dev_${VER}-${DEBREL}_${ARCH}.deb \
-librbd1_${VER}-${DEBREL}_${ARCH}.deb \
-librbd-dev_${VER}-${DEBREL}_${ARCH}.deb \
-librgw2_${VER}-${DEBREL}_${ARCH}.deb \
-librgw-dev_${VER}-${DEBREL}_${ARCH}.deb \
-python3-ceph-argparse_${VER}-${DEBREL}_all.deb \
-python3-cephfs_${VER}-${DEBREL}_${ARCH}.deb \
-python3-rados_${VER}-${DEBREL}_${ARCH}.deb \
-python3-rbd_${VER}-${DEBREL}_${ARCH}.deb \
-python3-rgw_${VER}-${DEBREL}_${ARCH}.deb \
-python-ceph_${VER}-${DEBREL}_${ARCH}.deb \
-python-cephfs_${VER}-${DEBREL}_${ARCH}.deb \
-python-rados_${VER}-${DEBREL}_${ARCH}.deb \
-python-rbd_${VER}-${DEBREL}_${ARCH}.deb \
-python-rgw_${VER}-${DEBREL}_${ARCH}.deb \
-radosgw_${VER}-${DEBREL}_${ARCH}.deb \
-rados-objclass-dev_${VER}-${DEBREL}_${ARCH}.deb \
-rbd-fuse_${VER}-${DEBREL}_${ARCH}.deb \
-rbd-mirror_${VER}-${DEBREL}_${ARCH}.deb \
-rbd-nbd_${VER}-${DEBREL}_${ARCH}.deb
+MAIN_DEB=ceph_${PKGVER}_${ARCH}.deb
+DEBS_REST=ceph-base_${PKGVER}_${ARCH}.deb \
+ceph-common_${PKGVER}_${ARCH}.deb \
+ceph-fuse_${PKGVER}_${ARCH}.deb \
+ceph-mds_${PKGVER}_${ARCH}.deb \
+ceph-mgr_${PKGVER}_${ARCH}.deb \
+ceph-mon_${PKGVER}_${ARCH}.deb \
+ceph-osd_${PKGVER}_${ARCH}.deb \
+ceph-resource-agents_${PKGVER}_${ARCH}.deb \
+ceph-test_${PKGVER}_${ARCH}.deb \
+libcephfs2_${PKGVER}_${ARCH}.deb \
+libcephfs-dev_${PKGVER}_${ARCH}.deb \
+libcephfs-java_${PKGVER}_all.deb \
+libcephfs-jni_${PKGVER}_${ARCH}.deb \
+librados2_${PKGVER}_${ARCH}.deb \
+librados-dev_${PKGVER}_${ARCH}.deb \
+libradosstriper1_${PKGVER}_${ARCH}.deb \
+libradosstriper-dev_${PKGVER}_${ARCH}.deb \
+librbd1_${PKGVER}_${ARCH}.deb \
+librbd-dev_${PKGVER}_${ARCH}.deb \
+librgw2_${PKGVER}_${ARCH}.deb \
+librgw-dev_${PKGVER}_${ARCH}.deb \
+python3-ceph-argparse_${PKGVER}_all.deb \
+python3-cephfs_${PKGVER}_${ARCH}.deb \
+python3-rados_${PKGVER}_${ARCH}.deb \
+python3-rbd_${PKGVER}_${ARCH}.deb \
+python3-rgw_${PKGVER}_${ARCH}.deb \
+python-ceph_${PKGVER}_${ARCH}.deb \
+python-cephfs_${PKGVER}_${ARCH}.deb \
+python-rados_${PKGVER}_${ARCH}.deb \
+python-rbd_${PKGVER}_${ARCH}.deb \
+python-rgw_${PKGVER}_${ARCH}.deb \
+radosgw_${PKGVER}_${ARCH}.deb \
+rados-objclass-dev_${PKGVER}_${ARCH}.deb \
+rbd-fuse_${PKGVER}_${ARCH}.deb \
+rbd-mirror_${PKGVER}_${ARCH}.deb \
+rbd-nbd_${PKGVER}_${ARCH}.deb
 DEBS=$(MAIN_DEB) $(DEBS_REST)
 
-DSC=ceph_${VER}-${DEBREL}.dsc
+DSC=ceph_${PKGVER}.dsc
 
 all: ${DEBS} ${DBG_DEBS}
 	@echo ${DEBS}
