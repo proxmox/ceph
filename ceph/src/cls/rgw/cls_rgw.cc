@@ -173,8 +173,12 @@ static int get_obj_vals(cls_method_context_t hctx, const string& start, const st
   auto upper = std::lower_bound(lower, pkeys->end(), new_start, comp);
   pkeys->erase(lower, upper);
 
-  if (num_entries == (int)pkeys->size())
+  if (num_entries == (int)pkeys->size() || !(*pmore))
     return 0;
+
+  if (pkeys->size() && new_start < pkeys->rbegin()->first) {
+    new_start = pkeys->rbegin()->first;
+  }
 
   map<string, bufferlist> new_keys;
 
@@ -2617,7 +2621,7 @@ static int bi_log_iterate_entries(cls_method_context_t hctx, const string& marke
     end_key.append(end_marker);
   }
 
-  CLS_LOG(0, "bi_log_iterate_entries start_key=%s end_key=%s\n", start_key.c_str(), end_key.c_str());
+  CLS_LOG(10, "bi_log_iterate_entries start_key=%s end_key=%s\n", start_key.c_str(), end_key.c_str());
 
   string filter;
 
@@ -2635,7 +2639,7 @@ static int bi_log_iterate_entries(cls_method_context_t hctx, const string& marke
     const string& key = iter->first;
     rgw_bi_log_entry e;
 
-    CLS_LOG(0, "bi_log_iterate_entries key=%s bl.length=%d\n", key.c_str(), (int)iter->second.length());
+    CLS_LOG(10, "bi_log_iterate_entries key=%s bl.length=%d\n", key.c_str(), (int)iter->second.length());
 
     if (key.compare(end_key) > 0) {
       key_iter = key;
@@ -3208,23 +3212,36 @@ static int gc_update_entry(cls_method_context_t hctx, uint32_t expiration_secs,
       return ret;
     }
   }
+
+  // calculate time and time key
   info.time = ceph::real_clock::now();
   info.time += make_timespan(expiration_secs);
+  string time_key;
+  get_time_key(info.time, &time_key);
+
+  if (info.chain.objs.empty()) {
+    CLS_LOG(0,
+	    "WARNING: %s setting GC log entry with zero-length chain, "
+	    "tag='%s', timekey='%s'",
+	    __func__, info.tag.c_str(), time_key.c_str());
+  }
+
   ret = gc_omap_set(hctx, GC_OBJ_NAME_INDEX, info.tag, &info);
   if (ret < 0)
     return ret;
 
-  string key;
-  get_time_key(info.time, &key);
-  ret = gc_omap_set(hctx, GC_OBJ_TIME_INDEX, key, &info);
+  ret = gc_omap_set(hctx, GC_OBJ_TIME_INDEX, time_key, &info);
   if (ret < 0)
     goto done_err;
 
   return 0;
 
 done_err:
-  CLS_LOG(0, "ERROR: gc_set_entry error info.tag=%s, ret=%d\n", info.tag.c_str(), ret);
+
+  CLS_LOG(0, "ERROR: gc_set_entry error info.tag=%s, ret=%d\n",
+	  info.tag.c_str(), ret);
   gc_omap_remove(hctx, GC_OBJ_NAME_INDEX, info.tag);
+
   return ret;
 }
 
@@ -3281,16 +3298,22 @@ static int rgw_cls_gc_defer_entry(cls_method_context_t hctx, bufferlist *in, buf
   return gc_defer_entry(hctx, op.tag, op.expiration_secs);
 }
 
-static int gc_iterate_entries(cls_method_context_t hctx, const string& marker, bool expired_only,
-                              string& key_iter, uint32_t max_entries, bool *truncated,
-                              int (*cb)(cls_method_context_t, const string&, cls_rgw_gc_obj_info&, void *),
+static int gc_iterate_entries(cls_method_context_t hctx,
+			      const string& marker,
+			      bool expired_only,
+                              string& out_marker,
+			      uint32_t max_entries,
+			      bool *truncated,
+                              int (*cb)(cls_method_context_t,
+					const string&,
+					cls_rgw_gc_obj_info&,
+					void *),
                               void *param)
 {
-  CLS_LOG(10, "gc_iterate_range");
+  CLS_LOG(10, "gc_iterate_entries");
 
   map<string, bufferlist> keys;
   string filter_prefix, end_key;
-  uint32_t i = 0;
   string key;
 
   if (truncated)
@@ -3314,18 +3337,20 @@ static int gc_iterate_entries(cls_method_context_t hctx, const string& marker, b
 
   string filter;
 
-  int ret = cls_cxx_map_get_vals(hctx, start_key, filter, max_entries, &keys, truncated);
+  int ret = cls_cxx_map_get_vals(hctx, start_key, filter, max_entries,
+				 &keys, truncated);
   if (ret < 0)
     return ret;
 
-
   map<string, bufferlist>::iterator iter = keys.begin();
-  if (iter == keys.end())
+  if (iter == keys.end()) {
+    // if keys empty must not come back as truncated
+    ceph_assert(!truncated || !(*truncated));
     return 0;
+  }
 
-  uint32_t num_keys = keys.size();
-
-  for (; iter != keys.end(); ++iter, ++i) {
+  const string* last_key = nullptr; // last key processed, for end-marker
+  for (; iter != keys.end(); ++iter) {
     const string& key = iter->first;
     cls_rgw_gc_obj_info e;
 
@@ -3337,8 +3362,11 @@ static int gc_iterate_entries(cls_method_context_t hctx, const string& marker, b
       return 0;
     }
 
-    if (!key_in_index(key, GC_OBJ_TIME_INDEX))
+    if (!key_in_index(key, GC_OBJ_TIME_INDEX)) {
+      if (truncated)
+	*truncated = false;
       return 0;
+    }
 
     ret = gc_record_decode(iter->second, e);
     if (ret < 0)
@@ -3347,10 +3375,14 @@ static int gc_iterate_entries(cls_method_context_t hctx, const string& marker, b
     ret = cb(hctx, key, e, param);
     if (ret < 0)
       return ret;
+    last_key = &(iter->first); // update when callback successful
+  }
 
-    if (i == num_keys - 1) {
-      key_iter = key;
-    }
+  // set the out marker if either caller does not capture truncated or
+  // if they do capture and we are truncated
+  if (!truncated || *truncated) {
+    assert(last_key);
+    out_marker = *last_key;
   }
 
   return 0;
@@ -3397,11 +3429,9 @@ static int rgw_cls_gc_list(cls_method_context_t hctx, bufferlist *in, bufferlist
   return 0;
 }
 
-static int gc_remove(cls_method_context_t hctx, list<string>& tags)
+static int gc_remove(cls_method_context_t hctx, vector<string>& tags)
 {
-  list<string>::iterator iter;
-
-  for (iter = tags.begin(); iter != tags.end(); ++iter) {
+  for (auto iter = tags.begin(); iter != tags.end(); ++iter) {
     string& tag = *iter;
     cls_rgw_gc_obj_info info;
     int ret = gc_omap_get(hctx, GC_OBJ_NAME_INDEX, tag, &info);

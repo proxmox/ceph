@@ -52,6 +52,8 @@ protected:
   bufferlist health_json;
   bufferlist mon_status_json;
 
+  class ClusterSocketHook *asok_hook;
+
 public:
 
   void load_digest(MMgrDigest *m);
@@ -129,6 +131,24 @@ public:
     return objecter->with_osdmap(std::forward<Args>(args)...);
   }
 
+  // call cb(osdmap, pg_map, ...args) with the appropriate locks
+  template <typename Callback, typename ...Args>
+  auto with_osdmap_and_pgmap(Callback&& cb, Args&& ...args) const ->
+    decltype(objecter->with_osdmap(std::forward<Callback>(cb),
+                                   pg_map,
+                                   std::forward<Args>(args)...))
+  {
+    ceph_assert(objecter != nullptr);
+    Mutex::Locker l(lock);
+    return objecter->with_osdmap(
+      std::forward<Callback>(cb),
+      pg_map,
+      std::forward<Args>(args)...);
+  }
+  void final_init();
+  void shutdown();
+  bool asok_command(std::string admin_command, const cmdmap_t& cmdmap,
+		       std::string format, ostream& ss);
 };
 
 #endif

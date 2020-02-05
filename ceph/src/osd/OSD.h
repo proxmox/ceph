@@ -519,6 +519,12 @@ public:
       }
     }
   }
+  OSDMapRef get_next_osdmap() {
+    Mutex::Locker l(pre_publish_lock);
+    if (!next_osdmap)
+      return OSDMapRef();
+    return next_osdmap;
+  }
 
 private:
   Mutex peer_map_epoch_lock;
@@ -1057,10 +1063,8 @@ public:
   osd_stat_t osd_stat;
   uint32_t seq = 0;
 
-  void update_osd_stat(vector<int>& hb_peers);
-  osd_stat_t set_osd_stat(const struct store_statfs_t &stbuf,
-                          vector<int>& hb_peers,
-			  int num_pgs);
+  void set_statfs(const struct store_statfs_t &stbuf);
+  osd_stat_t set_osd_stat(vector<int>& hb_peers, int num_pgs);
   osd_stat_t get_osd_stat() {
     Mutex::Locker l(stat_lock);
     ++seq;
@@ -1071,6 +1075,12 @@ public:
   uint64_t get_osd_stat_seq() {
     Mutex::Locker l(stat_lock);
     return osd_stat.seq;
+  }
+  void get_hb_pingtime(map<int, osd_stat_t::Interfaces> *pp)
+  {
+    Mutex::Locker l(stat_lock);
+    *pp = osd_stat.hb_pingtime;
+    return;
   }
 
   // -- OSD Full Status --
@@ -1106,9 +1116,9 @@ private:
   mutable int64_t injectfull = 0;
   s_names injectfull_state = NONE;
   float get_failsafe_full_ratio();
-  void check_full_status(float ratio);
   bool _check_full(s_names type, ostream &ss) const;
 public:
+  void check_full_status(float ratio);
   bool check_failsafe_full(ostream &ss) const;
   bool check_full(ostream &ss) const;
   bool check_backfill_full(ostream &ss) const;
@@ -1236,6 +1246,8 @@ protected:
 
   int whoami;
   std::string dev_path, journal_path;
+
+  int last_require_osd_release = 0;
 
   bool store_is_rotational = true;
   bool journal_is_rotational = true;
@@ -1402,44 +1414,37 @@ private:
 
   // -- sessions --
 private:
-  void dispatch_session_waiting(Session *session, OSDMapRef osdmap);
+  void dispatch_session_waiting(SessionRef session, OSDMapRef osdmap);
   void maybe_share_map(Session *session, OpRequestRef op, OSDMapRef osdmap);
 
   Mutex session_waiting_lock;
-  set<Session*> session_waiting_for_map;
+  set<SessionRef> session_waiting_for_map;
 
   /// Caller assumes refs for included Sessions
-  void get_sessions_waiting_for_map(set<Session*> *out) {
+  void get_sessions_waiting_for_map(set<SessionRef> *out) {
     Mutex::Locker l(session_waiting_lock);
     out->swap(session_waiting_for_map);
   }
-  void register_session_waiting_on_map(Session *session) {
+  void register_session_waiting_on_map(SessionRef session) {
     Mutex::Locker l(session_waiting_lock);
-    if (session_waiting_for_map.insert(session).second) {
-      session->get();
-    }
+    session_waiting_for_map.insert(session);
   }
-  void clear_session_waiting_on_map(Session *session) {
+  void clear_session_waiting_on_map(SessionRef session) {
     Mutex::Locker l(session_waiting_lock);
-    set<Session*>::iterator i = session_waiting_for_map.find(session);
-    if (i != session_waiting_for_map.end()) {
-      (*i)->put();
-      session_waiting_for_map.erase(i);
-    }
+    session_waiting_for_map.erase(session);
   }
   void dispatch_sessions_waiting_on_map() {
-    set<Session*> sessions_to_check;
+    set<SessionRef> sessions_to_check;
     get_sessions_waiting_for_map(&sessions_to_check);
-    for (set<Session*>::iterator i = sessions_to_check.begin();
+    for (auto i = sessions_to_check.begin();
 	 i != sessions_to_check.end();
 	 sessions_to_check.erase(i++)) {
-      (*i)->session_dispatch_lock.Lock();
-      dispatch_session_waiting(*i, osdmap);
-      (*i)->session_dispatch_lock.Unlock();
-      (*i)->put();
+      Mutex::Locker l{(*i)->session_dispatch_lock};
+      SessionRef session = *i;
+      dispatch_session_waiting(session, osdmap);
     }
   }
-  void session_handle_reset(Session *session) {
+  void session_handle_reset(SessionRef session) {
     Mutex::Locker l(session->session_dispatch_lock);
     clear_session_waiting_on_map(session);
 
@@ -1485,20 +1490,57 @@ private:
     utime_t last_rx_front;  ///< last time we got a ping reply on the front side
     utime_t last_rx_back;   ///< last time we got a ping reply on the back side
     epoch_t epoch;      ///< most recent epoch we wanted this peer
+    /// number of connections we send and receive heartbeat pings/replies
+    const static int HEARTBEAT_MAX_CONN = 2;
+    /// history of inflight pings, arranging by timestamp we sent
+    /// send time -> deadline -> remaining replies
+    map<utime_t, pair<utime_t, int>> ping_history;
 
-    bool is_unhealthy(utime_t cutoff) const {
-      return
-	! ((last_rx_front > cutoff ||
-	    (last_rx_front == utime_t() && (last_tx == utime_t() ||
-					    first_tx > cutoff))) &&
-	   (last_rx_back > cutoff ||
-	    (last_rx_back == utime_t() && (last_tx == utime_t() ||
-					   first_tx > cutoff))));
-    }
-    bool is_healthy(utime_t cutoff) const {
-      return last_rx_front > cutoff && last_rx_back > cutoff;
+    utime_t hb_interval_start;
+    uint32_t hb_average_count = 0;
+    uint32_t hb_index = 0;
+
+    uint32_t hb_total_back = 0;
+    uint32_t hb_min_back = UINT_MAX;
+    uint32_t hb_max_back = 0;
+    vector<uint32_t> hb_back_pingtime;
+    vector<uint32_t> hb_back_min;
+    vector<uint32_t> hb_back_max;
+
+    uint32_t hb_total_front = 0;
+    uint32_t hb_min_front = UINT_MAX;
+    uint32_t hb_max_front = 0;
+    vector<uint32_t> hb_front_pingtime;
+    vector<uint32_t> hb_front_min;
+    vector<uint32_t> hb_front_max;
+
+    bool is_stale(utime_t stale) {
+      if (ping_history.empty()) {
+        return false;
+      }
+      utime_t oldest_deadline = ping_history.begin()->second.first;
+      return oldest_deadline <= stale;
     }
 
+    bool is_unhealthy(utime_t now) {
+      if (ping_history.empty()) {
+        /// we haven't sent a ping yet or we have got all replies,
+        /// in either way we are safe and healthy for now
+        return false;
+      }
+
+      utime_t oldest_deadline = ping_history.begin()->second.first;
+      return now > oldest_deadline;
+    }
+
+    bool is_healthy(utime_t now) {
+      if (last_rx_front == utime_t() || last_rx_back == utime_t()) {
+        // only declare to be healthy until we have received the first
+        // replies from both front/back connections
+        return false;
+      }
+      return !is_unhealthy(now);
+    }
   };
   /// state attached to outgoing heartbeat connections
   struct HeartbeatSession : public RefCountedObject {
@@ -1518,12 +1560,16 @@ private:
   Messenger *hb_back_server_messenger;
   utime_t last_heartbeat_resample;   ///< last time we chose random peers in waiting-for-healthy state
   double daily_loadavg;
-  
+
+  // Track ping repsonse times using vector as a circular buffer
+  // MUST BE A POWER OF 2
+  const uint32_t hb_vector_size = 16;
+
   void _add_heartbeat_peer(int p);
   void _remove_heartbeat_peer(int p);
   bool heartbeat_reset(Connection *con);
   void maybe_update_heartbeat_peers();
-  void reset_heartbeat_peers();
+  void reset_heartbeat_peers(bool all);
   bool heartbeat_peers_need_update() {
     return heartbeat_need_update.load();
   }
@@ -2454,10 +2500,15 @@ private:
   int get_num_op_threads();
 
   float get_osd_recovery_sleep();
+  float get_osd_snap_trim_sleep();
 
 public:
-  static int peek_meta(ObjectStore *store, string& magic,
-		       uuid_d& cluster_fsid, uuid_d& osd_fsid, int& whoami);
+  static int peek_meta(ObjectStore *store,
+		       string *magic,
+		       uuid_d *cluster_fsid,
+		       uuid_d *osd_fsid,
+		       int *whoami,
+		       int *min_osd_release);
   
 
   // startup/shutdown

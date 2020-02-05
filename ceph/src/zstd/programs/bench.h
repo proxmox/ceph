@@ -1,10 +1,11 @@
-/**
+/*
  * Copyright (c) 2016-present, Yann Collet, Facebook, Inc.
  * All rights reserved.
  *
- * This source code is licensed under the BSD-style license found in the
- * LICENSE file in the root directory of this source tree. An additional grant
- * of patent rights can be found in the PATENTS file in the same directory.
+ * This source code is licensed under both the BSD-style license (found in the
+ * LICENSE file in the root directory of this source tree) and the GPLv2 (found
+ * in the COPYING file in the root directory of this source tree).
+ * You may select, at your option, one of the above-listed licenses.
  */
 
 
@@ -12,15 +13,23 @@
 #define BENCH_H_121279284357
 
 #include <stddef.h>   /* size_t */
+#define ZSTD_STATIC_LINKING_ONLY   /* ZSTD_compressionParameters */
+#include "zstd.h"     /* ZSTD_compressionParameters */
 
-int BMK_benchFiles(const char** fileNamesTable, unsigned nbFiles,
-                   const char* dictFileName, int cLevel, int cLevelLast);
+int BMK_benchFiles(const char** fileNamesTable, unsigned nbFiles,const char* dictFileName,
+                   int cLevel, int cLevelLast, ZSTD_compressionParameters* compressionParams, int setRealTimePrio);
 
 /* Set Parameters */
-void BMK_SetNbSeconds(unsigned nbLoops);
-void BMK_SetBlockSize(size_t blockSize);
-void BMK_setAdditionalParam(int additionalParam);
+void BMK_setNbSeconds(unsigned nbLoops);
+void BMK_setBlockSize(size_t blockSize);
+void BMK_setNbThreads(unsigned nbThreads);
 void BMK_setNotificationLevel(unsigned level);
-void BMK_setDecodeOnly(unsigned decodeFlag);
+void BMK_setAdditionalParam(int additionalParam);
+void BMK_setDecodeOnlyMode(unsigned decodeFlag);
+void BMK_setLdmFlag(unsigned ldmFlag);
+void BMK_setLdmMinMatch(unsigned ldmMinMatch);
+void BMK_setLdmHashLog(unsigned ldmHashLog);
+void BMK_setLdmBucketSizeLog(unsigned ldmBucketSizeLog);
+void BMK_setLdmHashEveryLog(unsigned ldmHashEveryLog);
 
 #endif   /* BENCH_H_121279284357 */

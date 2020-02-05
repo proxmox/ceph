@@ -759,7 +759,48 @@ void PG::MissingLoc::check_recovery_sources(const OSDMapRef& osdmap)
     }
   }
 }
-  
+
+void PG::MissingLoc::remove_stray_recovery_sources(pg_shard_t stray)
+{
+  ldout(pg->cct, 10) << __func__ << " remove osd " << stray << " from missing_loc" << dendl;
+  // filter missing_loc
+  map<hobject_t, set<pg_shard_t>>::iterator p = missing_loc.begin();
+  while (p != missing_loc.end()) {
+    set<pg_shard_t>::iterator q = p->second.begin();
+    bool changed = false;
+    while (q != p->second.end()) {
+      if (*q == stray) {
+        if (!changed) {
+          changed = true;
+          _dec_count(p->second);
+        }
+        p->second.erase(q++);
+      } else {
+        ++q;
+      }
+    }
+    if (p->second.empty()) {
+      missing_loc.erase(p++);
+    } else {
+      if (changed) {
+        _inc_count(p->second);
+      }
+      ++p;
+    }
+  }
+  // filter missing_loc_sources
+  for (set<pg_shard_t>::iterator p = missing_loc_sources.begin();
+       p != missing_loc_sources.end();
+       ) {
+    if (*p != stray) {
+      ++p;
+      continue;
+    }
+    ldout(pg->cct, 10) << __func__ << " remove osd" << stray << " from missing_loc_sources" << dendl;
+    missing_loc_sources.erase(p++);
+  }
+}
+
 void PG::discover_all_missing(map<int, map<spg_t,pg_query_t> > &query_map)
 {
   auto &missing = pg_log.get_missing();
@@ -946,6 +987,7 @@ void PG::remove_down_peer_info(const OSDMapRef osdmap)
       peer_missing.erase(p->first);
       peer_log_requested.erase(p->first);
       peer_missing_requested.erase(p->first);
+      peer_purged.erase(p->first); // so we can re-purge if necessary
       peer_info.erase(p++);
       removed = true;
     } else
@@ -1792,7 +1834,7 @@ void PG::activate(ObjectStore::Transaction& t,
 	  get_osdmap()->get_epoch(), pi);
 
 	// send some recent log, so that op dup detection works well.
-	m->log.copy_up_to(pg_log.get_log(), cct->_conf->osd_min_pg_log_entries);
+	m->log.copy_up_to(cct, pg_log.get_log(), cct->_conf->osd_min_pg_log_entries);
 	m->info.log_tail = m->log.tail;
 	pi.log_tail = m->log.tail;  // sigh...
 
@@ -1804,7 +1846,7 @@ void PG::activate(ObjectStore::Transaction& t,
 	  i->shard, pg_whoami.shard,
 	  get_osdmap()->get_epoch(), info);
 	// send new stuff to append to replicas log
-	m->log.copy_after(pg_log.get_log(), pi.last_update);
+	m->log.copy_after(cct, pg_log.get_log(), pi.last_update);
       }
 
       // share past_intervals if we are creating the pg on the replica
@@ -1938,13 +1980,14 @@ bool PG::op_has_sufficient_caps(OpRequestRef& op)
 
   const MOSDOp *req = static_cast<const MOSDOp*>(op->get_req());
 
-  Session *session = static_cast<Session*>(req->get_connection()->get_priv());
+  auto priv = req->get_connection()->get_priv();
+  auto session = static_cast<Session*>(priv.get());
   if (!session) {
     dout(0) << "op_has_sufficient_caps: no session for op " << *req << dendl;
     return false;
   }
   OSDCap& caps = session->caps;
-  session->put();
+  priv.reset();
 
   const string &key = req->get_hobj().get_key().empty() ?
     req->get_oid().name :
@@ -2270,7 +2313,8 @@ void PG::finish_recovery(list<Context*>& tfin)
 void PG::_finish_recovery(Context *c)
 {
   lock();
-  if (deleting) {
+  if (deleting || !is_clean()) {
+    dout(10) << __func__ << " raced with delete or repair" << dendl;
     unlock();
     return;
   }
@@ -2348,10 +2392,9 @@ void PG::split_into(pg_t child_pgid, PG *child, unsigned split_bits)
   info.log_tail = pg_log.get_tail();
   child->info.log_tail = child->pg_log.get_tail();
 
-  if (info.last_complete < pg_log.get_tail())
-    info.last_complete = pg_log.get_tail();
-  if (child->info.last_complete < child->pg_log.get_tail())
-    child->info.last_complete = child->pg_log.get_tail();
+  // reset last_complete, we might have modified pg_log & missing above
+  pg_log.reset_complete_to(&info);
+  child->pg_log.reset_complete_to(&child->info);
 
   // Info
   child->info.history = info.history;
@@ -2607,6 +2650,7 @@ void PG::purge_strays()
     }
     peer_missing.erase(*p);
     peer_info.erase(*p);
+    missing_loc.remove_stray_recovery_sources(*p);
     peer_purged.insert(*p);
     removed = true;
   }
@@ -3442,8 +3486,13 @@ void PG::append_log(
      /* We must be a backfill peer, so it's ok if we apply
       * out-of-turn since we won't be considered when
       * determining a min possible last_update.
+      *
+      * We skip_rollforward() here, which advances the crt, without
+      * doing an actual rollforward. This avoids cleaning up entries
+      * from the backend and we do not end up in a situation, where the
+      * object is deleted before we can _merge_object_divergent_entries().
       */
-    pg_log.roll_forward(&handler);
+    pg_log.skip_rollforward();
   }
 
   for (vector<pg_log_entry_t>::const_iterator p = logv.begin();
@@ -4273,12 +4322,12 @@ void PG::_scan_rollback_obs(
        i != rollback_obs.end();
        ++i) {
     if (i->generation < trimmed_to.version) {
-      osd->clog->error() << "osd." << osd->whoami
-			<< " pg " << info.pgid
-			<< " found obsolete rollback obj "
-			<< *i << " generation < trimmed_to "
-			<< trimmed_to
-			<< "...repaired";
+      dout(10) << __func__ << "osd." << osd->whoami
+	       << " pg " << info.pgid
+	       << " found obsolete rollback obj "
+	       << *i << " generation < trimmed_to "
+	       << trimmed_to
+	       << "...repaired" << dendl;
       t.remove(coll, *i);
     }
   }
@@ -5255,8 +5304,9 @@ void PG::scrub_compare_maps()
   }
 
   stringstream ss;
-  get_pgbackend()->be_large_omap_check(maps, master_set,
-                                       scrubber.large_omap_objects, ss);
+  get_pgbackend()->be_omap_checks(maps, master_set,
+                                  scrubber.omap_stats, ss);
+
   if (!ss.str().empty()) {
     osd->clog->warn(ss);
   }
@@ -5455,7 +5505,13 @@ void PG::scrub_finish()
       info.history.last_clean_scrub_stamp = now;
     info.stats.stats.sum.num_shallow_scrub_errors = scrubber.shallow_errors;
     info.stats.stats.sum.num_deep_scrub_errors = scrubber.deep_errors;
-    info.stats.stats.sum.num_large_omap_objects = scrubber.large_omap_objects;
+    info.stats.stats.sum.num_large_omap_objects = scrubber.omap_stats.large_omap_objects;
+    info.stats.stats.sum.num_omap_bytes = scrubber.omap_stats.omap_bytes;
+    info.stats.stats.sum.num_omap_keys = scrubber.omap_stats.omap_keys;
+    dout(25) << __func__ << " shard " << pg_whoami << " num_omap_bytes = "
+             << info.stats.stats.sum.num_omap_bytes << " num_omap_keys = "
+             << info.stats.stats.sum.num_omap_keys << dendl;
+    publish_stats_to_osd();
   } else {
     info.stats.stats.sum.num_shallow_scrub_errors = scrubber.shallow_errors;
     // XXX: last_clean_scrub_stamp doesn't mean the pg is not inconsistent
@@ -5666,7 +5722,7 @@ void PG::fulfill_log(
 			<< ", sending full log instead";
       mlog->log = pg_log.get_log();           // primary should not have requested this!!
     } else
-      mlog->log.copy_after(pg_log.get_log(), query.since);
+      mlog->log.copy_after(cct, pg_log.get_log(), query.since);
   }
   else if (query.type == pg_query_t::FULLLOG) {
     dout(10) << " sending info+missing+full log" << dendl;
@@ -6194,14 +6250,15 @@ bool PG::can_discard_replica_op(OpRequestRef& op)
   // connection to it when handling the new osdmap marking it down, and also
   // resets the messenger sesssion when the replica reconnects. to avoid the
   // out-of-order replies, the messages from that replica should be discarded.
-  if (osd->get_osdmap()->is_down(from))
+  OSDMapRef next_map = osd->get_next_osdmap();
+  if (next_map->is_down(from))
     return true;
   /* Mostly, this overlaps with the old_peering_msg
    * condition.  An important exception is pushes
    * sent by replicas not in the acting set, since
    * if such a replica goes down it does not cause
    * a new interval. */
-  if (get_osdmap()->get_down_at(from) >= m->map_epoch)
+  if (next_map->get_down_at(from) >= m->map_epoch)
     return true;
 
   // same pg?
@@ -7799,7 +7856,7 @@ boost::statechart::result PG::RecoveryState::Active::react(const MNotifyRec& not
 		       << dendl;
     pg->proc_replica_info(
       notevt.from, notevt.notify.info, notevt.notify.epoch_sent);
-    if (pg->have_unfound()) {
+    if (pg->have_unfound() || (pg->is_degraded() && pg->might_have_unfound.count(notevt.from))) {
       pg->discover_all_missing(*context< RecoveryMachine >().get_query_map());
     }
   }

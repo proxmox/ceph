@@ -246,11 +246,11 @@ bool DaemonServer::ms_get_authorizer(int dest_type,
 bool DaemonServer::ms_handle_reset(Connection *con)
 {
   if (con->get_peer_type() == CEPH_ENTITY_TYPE_OSD) {
-    MgrSessionRef session(static_cast<MgrSession*>(con->get_priv()));
+    auto priv = con->get_priv();
+    auto session = static_cast<MgrSession*>(priv.get());
     if (!session) {
       return false;
     }
-    session->put(); // SessionRef takes a ref
     Mutex::Locker l(lock);
     dout(10) << "unregistering osd." << session->osd_id
 	     << "  session " << session << " con " << con << dendl;
@@ -334,6 +334,7 @@ void DaemonServer::shutdown()
   dout(10) << "begin" << dendl;
   msgr->shutdown();
   msgr->wait();
+  cluster_state.shutdown();
   dout(10) << "done" << dendl;
 }
 
@@ -465,12 +466,12 @@ bool DaemonServer::handle_report(MMgrReport *m)
     {
       Mutex::Locker l(lock);
       // kill session
-      MgrSessionRef session(static_cast<MgrSession*>(m->get_connection()->get_priv()));
+      auto priv = m->get_connection()->get_priv();
+      auto session = static_cast<MgrSession*>(priv.get());
       if (!session) {
 	return false;
       }
       m->get_connection()->mark_down();
-      session->put();
 
       dout(10) << "unregistering osd." << session->osd_id
 	       << "  session " << session << " con " << m->get_connection() << dendl;
@@ -666,11 +667,11 @@ bool DaemonServer::handle_command(MCommand *m)
 
   std::shared_ptr<CommandContext> cmdctx = std::make_shared<CommandContext>(m);
 
-  MgrSessionRef session(static_cast<MgrSession*>(m->get_connection()->get_priv()));
+  auto priv = m->get_connection()->get_priv();
+  auto session = static_cast<MgrSession*>(priv.get());
   if (!session) {
     return true;
   }
-  session->put(); // SessionRef takes a ref
   if (session->inst.name == entity_name_t())
     session->inst.name = m->get_source();
 
@@ -726,29 +727,27 @@ bool DaemonServer::handle_command(MCommand *m)
   // lookup command
   const MonCommand *mgr_cmd = _get_mgrcommand(prefix, mgr_commands);
   _generate_command_map(cmdctx->cmdmap, param_str_map);
+
+  bool is_allowed;
   if (!mgr_cmd) {
     MonCommand py_command = {"", "", "py", "rw", "cli"};
-    if (!_allowed_command(session.get(), py_command.module, prefix, cmdctx->cmdmap,
-                          param_str_map, &py_command)) {
-      dout(1) << " access denied" << dendl;
-      ss << "access denied; does your client key have mgr caps?"
-	" See http://docs.ceph.com/docs/master/mgr/administrator/#client-authentication";
-      cmdctx->reply(-EACCES, ss);
-      return true;
-    }
+    is_allowed = _allowed_command(session, py_command.module,
+      prefix, cmdctx->cmdmap, param_str_map, &py_command);
   } else {
     // validate user's permissions for requested command
-    if (!_allowed_command(session.get(), mgr_cmd->module, prefix, cmdctx->cmdmap,
-                          param_str_map, mgr_cmd)) {
+    is_allowed = _allowed_command(session, mgr_cmd->module,
+      prefix, cmdctx->cmdmap,  param_str_map, mgr_cmd);
+  }
+  if (!is_allowed) {
       dout(1) << " access denied" << dendl;
       audit_clog->info() << "from='" << session->inst << "' "
                          << "entity='" << session->entity_name << "' "
                          << "cmd=" << m->cmd << ":  access denied";
-      ss << "access denied' does your client key have mgr caps?"
-	" See http://docs.ceph.com/docs/master/mgr/administrator/#client-authentication";
+      ss << "access denied' does your client key have mgr caps? "
+            "See http://docs.ceph.com/docs/master/mgr/administrator/"
+            "#client-authentication";
       cmdctx->reply(-EACCES, ss);
       return true;
-    }
   }
 
   audit_clog->debug()
@@ -1554,21 +1553,18 @@ void DaemonServer::handle_conf_change(const struct md_config_t *conf,
                                               const std::set <std::string> &changed)
 {
   dout(4) << "ohai" << dendl;
-  // We may be called within lock (via MCommand `config set`) or outwith the
-  // lock (via admin socket `config set`), so handle either case.
-  const bool initially_locked = lock.is_locked_by_me();
-  if (!initially_locked) {
-    lock.Lock();
-  }
 
   if (changed.count("mgr_stats_threshold") || changed.count("mgr_stats_period")) {
     dout(4) << "Updating stats threshold/period on "
             << daemon_connections.size() << " clients" << dendl;
     // Send a fresh MMgrConfigure to all clients, so that they can follow
     // the new policy for transmitting stats
-    for (auto &c : daemon_connections) {
-      _send_configure(c);
-    }
+    finisher.queue(new FunctionContext([this](int r) {
+      Mutex::Locker l(lock);
+      for (auto &c : daemon_connections) {
+        _send_configure(c);
+      }
+    }));
   }
 }
 

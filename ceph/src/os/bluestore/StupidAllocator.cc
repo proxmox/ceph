@@ -10,8 +10,8 @@
 #undef dout_prefix
 #define dout_prefix *_dout << "stupidalloc 0x" << this << " "
 
-StupidAllocator::StupidAllocator(CephContext* cct)
-  : cct(cct), num_free(0),
+StupidAllocator::StupidAllocator(CephContext* cct, const std::string& name)
+  : Allocator(name), cct(cct), num_free(0),
     free(10),
     last_alloc(0)
 {
@@ -205,10 +205,13 @@ int64_t StupidAllocator::allocate(
     bool can_append = true;
     if (!extents->empty()) {
       bluestore_pextent_t &last_extent  = extents->back();
-      if ((last_extent.end() == offset) &&
-	  ((last_extent.length + length) <= max_alloc_size)) {
-	can_append = false;
-	last_extent.length += length;
+      if (last_extent.end() == offset) {
+        uint64_t l64 = last_extent.length;
+        l64 += length;
+        if (l64 < 0x100000000 && l64 <= max_alloc_size) {
+	  can_append = false;
+	  last_extent.length += length;
+        }
       }
     }
     if (can_append) {
@@ -255,7 +258,7 @@ double StupidAllocator::get_fragmentation(uint64_t alloc_unit)
   uint64_t intervals = 0;
   {
     std::lock_guard<std::mutex> l(lock);
-    max_intervals = num_free / alloc_unit;
+    max_intervals = P2ROUNDUP(num_free, alloc_unit) / alloc_unit;
     for (unsigned bin = 0; bin < free.size(); ++bin) {
       intervals += free[bin].num_intervals();
     }
@@ -283,6 +286,16 @@ void StupidAllocator::dump()
 	 ++p) {
       dout(0) << __func__ << "  0x" << std::hex << p.get_start() << "~"
 	      << p.get_len() << std::dec << dendl;
+    }
+  }
+}
+
+void StupidAllocator::dump(std::function<void(uint64_t offset, uint64_t length)> notify)
+{
+  std::lock_guard<std::mutex> l(lock);
+  for (unsigned bin = 0; bin < free.size(); ++bin) {
+    for (auto p = free[bin].begin(); p != free[bin].end(); ++p) {
+      notify(p.get_start(), p.get_len());
     }
   }
 }

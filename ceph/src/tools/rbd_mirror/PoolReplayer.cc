@@ -254,6 +254,8 @@ bool PoolReplayer::is_running() const {
 
 void PoolReplayer::init()
 {
+  Mutex::Locker l(m_lock);
+
   assert(!m_pool_replayer_thread.is_started());
 
   // reset state
@@ -383,8 +385,6 @@ int PoolReplayer::init_rados(const std::string &cluster_name,
 			     const std::string &description,
 			     RadosRef *rados_ref,
                              bool strip_cluster_overrides) {
-  rados_ref->reset(new librados::Rados());
-
   // NOTE: manually bootstrap a CephContext here instead of via
   // the librados API to avoid mixing global singletons between
   // the librados shared library and the daemon
@@ -468,6 +468,8 @@ int PoolReplayer::init_rados(const std::string &cluster_name,
   cct->_conf->apply_changes(nullptr);
   cct->_conf->complain_about_parse_errors(cct);
 
+  rados_ref->reset(new librados::Rados());
+
   r = (*rados_ref)->init_with_context(cct);
   assert(r == 0);
   cct->put();
@@ -511,6 +513,18 @@ void PoolReplayer::run()
   }
 
   m_instance_replayer->stop();
+}
+
+void PoolReplayer::reopen_logs()
+{
+  Mutex::Locker l(m_lock);
+
+  if (m_local_rados) {
+    reinterpret_cast<CephContext *>(m_local_rados->cct())->reopen_logs();
+  }
+  if (m_remote_rados) {
+    reinterpret_cast<CephContext *>(m_remote_rados->cct())->reopen_logs();
+  }
 }
 
 void PoolReplayer::print_status(Formatter *f, stringstream *ss)
@@ -734,9 +748,29 @@ void PoolReplayer::init_remote_pool_watcher(Context *on_finish) {
   assert(!m_remote_pool_watcher);
   m_remote_pool_watcher.reset(new PoolWatcher<>(
     m_threads, m_remote_io_ctx, m_remote_pool_watcher_listener));
+  auto ctx = new FunctionContext([this, on_finish](int r) {
+      handle_init_remote_pool_watcher(r, on_finish);
+    });
   m_remote_pool_watcher->init(create_async_context_callback(
-    m_threads->work_queue, on_finish));
+    m_threads->work_queue, ctx));
+}
 
+void PoolReplayer::handle_init_remote_pool_watcher(int r, Context *on_finish) {
+  dout(10) << "r=" << r << dendl;
+  if (r == -ENOENT) {
+    // Technically nothing to do since the other side doesn't
+    // have mirroring enabled. Eventually the remote pool watcher will
+    // detect images (if mirroring is enabled), so no point propagating
+    // an error which would just busy-spin the state machines.
+    dout(0) << "remote peer does not have mirroring configured" << dendl;
+    r = 0;
+  } else if (r < 0) {
+    derr << "failed to retrieve remote images: " << cpp_strerror(r) << dendl;
+  }
+
+  on_finish->complete(r);
+
+  Mutex::Locker locker(m_lock);
   m_cond.Signal();
 }
 

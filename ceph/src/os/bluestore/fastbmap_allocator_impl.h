@@ -46,6 +46,7 @@ typedef mempool::bluestore_alloc::vector<slot_t> slot_vector_t;
 
 // fitting into cache line on x86_64
 static const size_t slotset_width = 8; // 8 slots per set
+static const size_t slots_per_slotset = 8;
 static const size_t slotset_bytes = sizeof(slot_t) * slotset_width;
 static const size_t bits_per_slot = sizeof(slot_t) * 8;
 static const size_t bits_per_slotset = slotset_bytes * 8;
@@ -141,6 +142,7 @@ class AllocatorLevel01Loose : public AllocatorLevel01
     L1_ENTRY_NOT_USED = 0x02,
     L1_ENTRY_FREE = 0x03,
     CHILD_PER_SLOT = bits_per_slot / L1_ENTRY_WIDTH, // 32
+    L1_ENTRIES_PER_SLOT = bits_per_slot / L1_ENTRY_WIDTH, //32
     CHILD_PER_SLOT_L0 = bits_per_slot, // 64
   };
   uint64_t _children_per_slot() const override
@@ -337,23 +339,23 @@ protected:
 
     auto pos = l0_pos_start;
     slot_t bits = (slot_t)1 << (l0_pos_start % d0);
-    slot_t& val_s = l0[pos / d0];
-    int64_t pos_e = std::min(l0_pos_end, (int64_t)P2ROUNDUP(l0_pos_start + 1, d0));
+    slot_t* val_s = &l0[pos / d0];
+    int64_t pos_e = std::min(l0_pos_end,
+                             P2ROUNDUP(l0_pos_start + 1, d0));
     while (pos < pos_e) {
-      val_s |= bits;
+      *val_s |=  bits;
       bits <<= 1;
       pos++;
     }
-    pos_e = std::min(l0_pos_end, (int64_t)P2ALIGN(l0_pos_end, d0));
-    auto idx = pos / d0;
+    pos_e = std::min(l0_pos_end, P2ALIGN(l0_pos_end, d0));
     while (pos < pos_e) {
-      l0[idx++] = all_slot_set;
+      *(++val_s) = all_slot_set;
       pos += d0;
     }
     bits = 1;
-    uint64_t& val_e = l0[pos / d0];
+    ++val_s;
     while (pos < l0_pos_end) {
-      val_e |= bits;
+      *val_s |= bits;
       bits <<= 1;
       pos++;
     }
@@ -408,10 +410,10 @@ protected:
     uint64_t* allocated,
     interval_vector_t* res);
 
-  uint64_t _mark_alloc_l1(const interval_t& r)
+  uint64_t _mark_alloc_l1(uint64_t offset, uint64_t length)
   {
-    uint64_t l0_pos_start = r.offset / l0_granularity;
-    uint64_t l0_pos_end = P2ROUNDUP(r.offset + r.length, l0_granularity) / l0_granularity;
+    uint64_t l0_pos_start = offset / l0_granularity;
+    uint64_t l0_pos_end = P2ROUNDUP(offset + length, l0_granularity) / l0_granularity;
     _mark_alloc_l1_l0(l0_pos_start, l0_pos_end);
     return l0_granularity * (l0_pos_end - l0_pos_start);
   }
@@ -469,7 +471,12 @@ public:
   }
   void collect_stats(
     std::map<size_t, size_t>& bins_overall) override;
+
+  static inline ssize_t count_0s(slot_t slot_val, size_t start_pos);
+  static inline ssize_t count_1s(slot_t slot_val, size_t start_pos);
+  void dump(std::function<void(uint64_t offset, uint64_t length)> notify);
 };
+
 
 class AllocatorLevel01Compact : public AllocatorLevel01
 {
@@ -746,7 +753,7 @@ protected:
     uint64_t l2_pos_end = P2ROUNDUP(int64_t(o + len), int64_t(l2_granularity)) / l2_granularity;
 
     std::lock_guard<std::mutex> l(lock);
-    auto allocated = l1._mark_alloc_l1(interval_t(o, len));
+    auto allocated = l1._mark_alloc_l1(o, len);
     assert(available >= allocated);
     available -= allocated;
     _mark_l2_on_l1(l2_pos, l2_pos_end);

@@ -903,9 +903,15 @@ WRITE_CLASS_ENCODER(objectstore_perf_stat_t)
  * aggregate stats for an osd
  */
 struct osd_stat_t {
-  int64_t kb, kb_used, kb_avail;
+  int64_t kb = 0;            ///< total device size
+  int64_t kb_used = 0;       ///< total used
+  int64_t kb_used_data = 0;  ///< total used by object data
+  int64_t kb_used_omap = 0;  ///< total used by omap data
+  int64_t kb_used_meta = 0;  ///< total used by internal metadata
+  int64_t kb_avail = 0;      ///< total available/free
+
   vector<int> hb_peers;
-  int32_t snap_trim_queue_len, num_snap_trimming;
+  int32_t snap_trim_queue_len = 0, num_snap_trimming = 0;
 
   pow2_hist_t op_queue_age_hist;
 
@@ -916,12 +922,25 @@ struct osd_stat_t {
 
   uint32_t num_pgs = 0;
 
-  osd_stat_t() : kb(0), kb_used(0), kb_avail(0),
-		 snap_trim_queue_len(0), num_snap_trimming(0) {}
+  struct Interfaces {
+    uint32_t last_update;  // in seconds
+    uint32_t back_pingtime[3];
+    uint32_t back_min[3];
+    uint32_t back_max[3];
+    uint32_t back_last;
+    uint32_t front_pingtime[3];
+    uint32_t front_min[3];
+    uint32_t front_max[3];
+    uint32_t front_last;
+  };
+  map<int, Interfaces> hb_pingtime;  ///< map of osd id to Interfaces
 
   void add(const osd_stat_t& o) {
     kb += o.kb;
     kb_used += o.kb_used;
+    kb_used_data += o.kb_used_data;
+    kb_used_omap += o.kb_used_omap;
+    kb_used_meta += o.kb_used_meta;
     kb_avail += o.kb_avail;
     snap_trim_queue_len += o.snap_trim_queue_len;
     num_snap_trimming += o.num_snap_trimming;
@@ -932,6 +951,9 @@ struct osd_stat_t {
   void sub(const osd_stat_t& o) {
     kb -= o.kb;
     kb_used -= o.kb_used;
+    kb_used_data -= o.kb_used_data;
+    kb_used_omap -= o.kb_used_omap;
+    kb_used_meta -= o.kb_used_meta;
     kb_avail -= o.kb_avail;
     snap_trim_queue_len -= o.snap_trim_queue_len;
     num_snap_trimming -= o.num_snap_trimming;
@@ -950,6 +972,9 @@ WRITE_CLASS_ENCODER(osd_stat_t)
 inline bool operator==(const osd_stat_t& l, const osd_stat_t& r) {
   return l.kb == r.kb &&
     l.kb_used == r.kb_used &&
+    l.kb_used_data == r.kb_used_data &&
+    l.kb_used_omap == r.kb_used_omap &&
+    l.kb_used_meta == r.kb_used_meta &&
     l.kb_avail == r.kb_avail &&
     l.snap_trim_queue_len == r.snap_trim_queue_len &&
     l.num_snap_trimming == r.num_snap_trimming &&
@@ -962,10 +987,12 @@ inline bool operator!=(const osd_stat_t& l, const osd_stat_t& r) {
   return !(l == r);
 }
 
-
-
 inline ostream& operator<<(ostream& out, const osd_stat_t& s) {
-  return out << "osd_stat(" << byte_u_t(s.kb_used << 10) << " used, "
+  return out << "osd_stat("
+	     << byte_u_t(s.kb_used << 10) << " used ("
+	     << byte_u_t(s.kb_used_data << 10) << " data, "
+	     << byte_u_t(s.kb_used_omap << 10) << " omap, "
+	     << byte_u_t(s.kb_used_meta << 10) << " meta), "
 	     << byte_u_t(s.kb_avail << 10) << " avail, "
 	     << byte_u_t(s.kb << 10) << " total, "
 	     << "peers " << s.hb_peers
@@ -1666,6 +1693,8 @@ struct object_stat_sum_t {
   int64_t num_objects_missing;
   int64_t num_legacy_snapsets; ///< upper bound on pre-luminous-style SnapSets
   int64_t num_large_omap_objects = 0;
+  int64_t num_omap_bytes = 0;
+  int64_t num_omap_keys = 0;
 
   object_stat_sum_t()
     : num_bytes(0),
@@ -1713,6 +1742,8 @@ struct object_stat_sum_t {
     FLOOR(num_wr);
     FLOOR(num_wr_kb);
     FLOOR(num_large_omap_objects);
+    FLOOR(num_omap_bytes);
+    FLOOR(num_omap_keys);
     FLOOR(num_shallow_scrub_errors);
     FLOOR(num_deep_scrub_errors);
     num_scrub_errors = num_shallow_scrub_errors + num_deep_scrub_errors;
@@ -1774,6 +1805,8 @@ struct object_stat_sum_t {
 				out[i].num_deep_scrub_errors;
     }
     SPLIT(num_large_omap_objects);
+    SPLIT(num_omap_bytes);
+    SPLIT(num_omap_keys);
     SPLIT(num_objects_recovered);
     SPLIT(num_bytes_recovered);
     SPLIT(num_keys_recovered);
@@ -1829,6 +1862,8 @@ struct object_stat_sum_t {
         sizeof(num_wr_kb) +
         sizeof(num_scrub_errors) +
         sizeof(num_large_omap_objects) +
+        sizeof(num_omap_bytes) +
+        sizeof(num_omap_keys) +
         sizeof(num_objects_recovered) +
         sizeof(num_bytes_recovered) +
         sizeof(num_keys_recovered) +
@@ -3666,16 +3701,7 @@ public:
    * @param other pg_log_t to copy from
    * @param from copy entries after this version
    */
-  void copy_after(const pg_log_t &other, eversion_t from);
-
-  /**
-   * copy a range of entries from another pg_log_t
-   *
-   * @param other pg_log_t to copy from
-   * @param from copy entries after this version
-   * @param to up to and including this version
-   */
-  void copy_range(const pg_log_t &other, eversion_t from, eversion_t to);
+  void copy_after(CephContext* cct, const pg_log_t &other, eversion_t from);
 
   /**
    * copy up to N entries
@@ -3683,7 +3709,7 @@ public:
    * @param other source log
    * @param max max number of entries to copy
    */
-  void copy_up_to(const pg_log_t &other, int max);
+  void copy_up_to(CephContext* cct, const pg_log_t &other, int max);
 
   ostream& print(ostream& out) const;
 
@@ -4956,6 +4982,8 @@ struct ScrubMap {
     bool large_omap_object_found:1;
     uint64_t large_omap_object_key_count = 0;
     uint64_t large_omap_object_value_size = 0;
+    uint64_t object_omap_bytes = 0;
+    uint64_t object_omap_keys = 0;
 
     object() :
       // Init invalid size so it won't match if we get a stat EIO error
@@ -4976,6 +5004,7 @@ struct ScrubMap {
   eversion_t incr_since;
   bool has_large_omap_object_errors:1;
   boost::optional<bool> has_builtin_csum;
+  bool has_omap_keys:1;
 
   void merge_incr(const ScrubMap &l);
   void clear_from(const hobject_t& start) {
@@ -5341,26 +5370,57 @@ struct PromoteCounter {
   }
 };
 
+typedef std::map<std::string,std::string> osd_alert_list_t;
+typedef std::map<int, osd_alert_list_t> os_alerts_t;
+
 /** store_statfs_t
  * ObjectStore full statfs information
  */
 struct store_statfs_t
 {
-  uint64_t total = 0;                  // Total bytes
-  uint64_t available = 0;              // Free bytes available
+  uint64_t total = 0;                  ///< Total bytes
+  uint64_t available = 0;              ///< Free bytes available
+  uint64_t internally_reserved = 0;    ///< Bytes reserved for internal purposes
 
-  int64_t allocated = 0;               // Bytes allocated by the store
-  int64_t stored = 0;                  // Bytes actually stored by the user
-  int64_t compressed = 0;              // Bytes stored after compression
-  int64_t compressed_allocated = 0;    // Bytes allocated for compressed data
-  int64_t compressed_original = 0;     // Bytes that were successfully compressed
+  int64_t allocated = 0;               ///< Bytes allocated by the store
+
+  int64_t data_stored = 0;                ///< Bytes actually stored by the user
+  int64_t data_compressed = 0;            ///< Bytes stored after compression
+  int64_t data_compressed_allocated = 0;  ///< Bytes allocated for compressed data
+  int64_t data_compressed_original = 0;   ///< Bytes that were compressed
+
+  int64_t omap_allocated = 0;         ///< approx usage of omap data
+  int64_t internal_metadata = 0;      ///< approx usage of internal metadata
 
   void reset() {
     *this = store_statfs_t();
   }
   bool operator ==(const store_statfs_t& other) const;
   void dump(Formatter *f) const;
+  DENC(store_statfs_t, v, p) {
+    DENC_START(1, 1, p);
+    denc(v.total, p);
+    denc(v.available, p);
+    denc(v.internally_reserved, p);
+    denc(v.allocated, p);
+    denc(v.data_stored, p);
+    denc(v.data_compressed, p);
+    denc(v.data_compressed_allocated, p);
+    denc(v.data_compressed_original, p);
+    denc(v.omap_allocated, p);
+    denc(v.internal_metadata, p);
+    DENC_FINISH(p);
+  }
 };
+WRITE_CLASS_DENC(store_statfs_t)
+
 ostream &operator<<(ostream &lhs, const store_statfs_t &rhs);
+
+// omap specific stats
+struct omap_stat_t {
+ int large_omap_objects;
+ int64_t omap_bytes;
+ int64_t omap_keys;
+};
 
 #endif

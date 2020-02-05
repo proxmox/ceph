@@ -1403,8 +1403,8 @@ struct RGWZone {
 
   bool is_read_only() { return read_only; }
 
-  bool syncs_from(const string& zone_id) const {
-    return (sync_from_all || sync_from.find(zone_id) != sync_from.end());
+  bool syncs_from(const string& zone_name) const {
+    return (sync_from_all || sync_from.find(zone_name) != sync_from.end());
   }
 };
 WRITE_CLASS_ENCODER(RGWZone)
@@ -2499,6 +2499,8 @@ public:
       const auto& zonegroups_by_api = current_period.get_map().zonegroups_by_api;
       if (zonegroups_by_api.find(api) != zonegroups_by_api.end())
         return true;
+    } else if (zonegroup.api_name == api) {
+        return true;
     }
     return false;
   }
@@ -3005,6 +3007,9 @@ public:
 
     class List {
     protected:
+      // absolute maximum number of objects that
+      // list_objects_(un)ordered can return
+      static constexpr int64_t bucket_list_objects_absolute_max = 25000;
 
       RGWRados::Bucket *target;
       rgw_obj_key next_marker;
@@ -3269,7 +3274,7 @@ public:
   virtual int delete_system_obj(rgw_raw_obj& src_obj, RGWObjVersionTracker *objv_tracker = NULL);
 
   /** Remove an object from the bucket index */
-  int delete_obj_index(const rgw_obj& obj);
+  int delete_obj_index(const rgw_obj& obj, ceph::real_time mtime);
 
   /**
    * Get an attribute for a system object.
@@ -3620,11 +3625,11 @@ public:
   void update_gc_chain(rgw_obj& head_obj, RGWObjManifest& manifest, cls_rgw_obj_chain *chain);
   int send_chain_to_gc(cls_rgw_obj_chain& chain, const string& tag, bool sync);
   int gc_operate(string& oid, librados::ObjectWriteOperation *op);
-  int gc_aio_operate(string& oid, librados::ObjectWriteOperation *op);
+  int gc_aio_operate(string& oid, librados::ObjectWriteOperation *op, librados::AioCompletion **pc = nullptr);
   int gc_operate(string& oid, librados::ObjectReadOperation *op, bufferlist *pbl);
 
   int list_gc_objs(int *index, string& marker, uint32_t max, bool expired_only, std::list<cls_rgw_gc_obj_info>& result, bool *truncated);
-  int process_gc();
+  int process_gc(bool expired_only);
   bool process_expire_objects();
   int defer_gc(void *ctx, const RGWBucketInfo& bucket_info, const rgw_obj& obj);
 
@@ -4059,6 +4064,10 @@ public:
 
   void set_version_id(const string& vid) {
     version_id = vid;
+  }
+
+  const string& get_version_id() const {
+    return version_id;
   }
 }; /* RGWPutObjProcessor_Atomic */
 

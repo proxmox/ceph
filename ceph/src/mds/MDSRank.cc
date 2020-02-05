@@ -316,6 +316,17 @@ private:
     Context *timer_task = nullptr;
   };
 
+  std::pair<bool, uint64_t> do_trim() {
+    auto p = mdcache->trim(UINT64_MAX);
+    auto& throttled = p.first;
+    auto& count = p.second;
+    dout(10) << __func__
+             << (throttled ? " (throttled)" : "")
+             << " trimmed " << count << " caps" << dendl;
+    dentries_trimmed += count;
+    return std::make_pair(throttled, count);
+  }
+
   void recall_client_state() {
     dout(20) << __func__ << dendl;
     auto now = mono_clock::now();
@@ -331,16 +342,22 @@ private:
 
     caps_recalled += count;
     if ((throttled || count > 0) && (recall_timeout == 0 || duration < recall_timeout)) {
-      auto timer = new FunctionContext([this](int _) {
-        recall_client_state();
-      });
-      mds->timer.add_event_after(1.0, timer);
+      C_ContextTimeout *ctx = new C_ContextTimeout(
+        mds, 1, new FunctionContext([this](int r) {
+          recall_client_state();
+      }));
+      ctx->start_timer();
+      gather->set_finisher(new MDSInternalContextWrapper(mds, ctx));
+      gather->activate();
+      mdlog->flush(); /* use down-time to incrementally flush log */
+      do_trim(); /* use down-time to incrementally trim cache */
     } else {
       if (!gather->has_subs()) {
         delete gather;
         return handle_recall_client_state(0);
       } else if (recall_timeout > 0 && duration > recall_timeout) {
-        delete gather;
+        gather->set_finisher(new C_MDSInternalNoop);
+        gather->activate();
         return handle_recall_client_state(-ETIMEDOUT);
       } else {
         uint64_t remaining = (recall_timeout == 0 ? 0 : recall_timeout-duration);
@@ -402,13 +419,9 @@ private:
   void trim_cache() {
     dout(20) << __func__ << dendl;
 
-    auto p = mdcache->trim(UINT64_MAX);
+    auto p = do_trim();
     auto& throttled = p.first;
     auto& count = p.second;
-    dout(10) << __func__
-             << (throttled ? " (throttled)" : "")
-             << " trimmed " << count << " caps" << dendl;
-    dentries_trimmed += count;
     if (throttled && count > 0) {
       auto timer = new FunctionContext([this](int _) {
         trim_cache();
@@ -951,7 +964,7 @@ void MDSRank::ProgressThread::shutdown()
 bool MDSRankDispatcher::ms_dispatch(Message *m)
 {
   if (m->get_source().is_client()) {
-    Session *session = static_cast<Session*>(m->get_connection()->get_priv());
+    Session *session = static_cast<Session*>(m->get_connection()->get_priv().get());
     if (session)
       session->last_seen = Session::clock::now();
   }
@@ -1281,9 +1294,9 @@ bool MDSRank::is_stale_message(Message *m) const
 
 Session *MDSRank::get_session(Message *m)
 {
-  Session *session = static_cast<Session *>(m->get_connection()->get_priv());
+  // do not carry ref
+  auto session = static_cast<Session *>(m->get_connection()->get_priv().get());
   if (session) {
-    session->put(); // do not carry ref
     dout(20) << "get_session have " << session << " " << session->info.inst
 	     << " state " << session->get_state_name() << dendl;
     // Check if we've imported an open session since (new sessions start closed)
@@ -1399,9 +1412,9 @@ void MDSRank::send_message_client_counted(Message *m, client_t client)
 
 void MDSRank::send_message_client_counted(Message *m, Connection *connection)
 {
-  Session *session = static_cast<Session *>(connection->get_priv());
+  // do not carry ref
+  auto session = static_cast<Session *>(connection->get_priv().get());
   if (session) {
-    session->put();  // do not carry ref
     send_message_client_counted(m, session);
   } else {
     dout(10) << "send_message_client_counted has no session for " << m->get_source_inst() << dendl;
@@ -2403,6 +2416,23 @@ bool MDSRankDispatcher::handle_asok_command(
       ss << dss.str();
     }
     mds_lock.Unlock();
+  } else if (command == "session config") {
+    int64_t client_id;
+    std::string option;
+    std::string value;
+
+    cmd_getval(g_ceph_context, cmdmap, "client_id", client_id);
+    cmd_getval(g_ceph_context, cmdmap, "option", option);
+    bool got_value = cmd_getval(g_ceph_context, cmdmap, "value", value);
+
+    mds_lock.Lock();
+    std::stringstream dss;
+    int ret = config_client(client_id, !got_value, option, value, dss);
+    if (ret < 0) {
+      dout(15) << dss.str() << dendl;
+      ss << dss.str();
+    }
+    mds_lock.Unlock();
   } else if (command == "scrub_path") {
     string path;
     vector<string> scrubop_vec;
@@ -3091,6 +3121,42 @@ void MDSRankDispatcher::handle_osd_map()
   objecter->maybe_request_map();
 }
 
+int MDSRank::config_client(int64_t session_id, bool remove,
+			   const std::string& option, const std::string& value,
+			   std::stringstream& ss)
+{
+  Session *session = sessionmap.get_session(entity_name_t(CEPH_ENTITY_TYPE_CLIENT, session_id));
+  if (!session) {
+    ss << "session " << session_id << " not in sessionmap!";
+    return -ENOENT;
+  }
+
+  if (option == "timeout") {
+    if (remove) {
+      auto it = session->info.client_metadata.find("timeout");
+      if (it == session->info.client_metadata.end()) {
+	ss << "Nonexistent config: " << option;
+	return -ENODATA;
+      }
+      session->info.client_metadata.erase(it);
+    } else {
+      char *end;
+      strtoul(value.c_str(), &end, 0);
+      if (*end) {
+	ss << "Invalid config for timeout: " << value;
+	return -EINVAL;
+      }
+      session->info.client_metadata[option] = value;
+    }
+    //sessionmap._mark_dirty(session, true);
+  } else {
+    ss << "Invalid config option: " << option;
+    return -EINVAL;
+  }
+
+  return 0;
+}
+
 bool MDSRank::evict_client(int64_t session_id,
     bool wait, bool blacklist, std::stringstream& err_ss,
     Context *on_killed)
@@ -3283,6 +3349,17 @@ bool MDSRankDispatcher::handle_command(
     evict_clients(filter, m);
 
     *need_reply = false;
+    return true;
+  } else if (prefix == "session config" || prefix == "client config") {
+    int64_t client_id;
+    std::string option;
+    std::string value;
+
+    cmd_getval(g_ceph_context, cmdmap, "client_id", client_id);
+    cmd_getval(g_ceph_context, cmdmap, "option", option);
+    bool got_value = cmd_getval(g_ceph_context, cmdmap, "value", value);
+
+    *r = config_client(client_id, !got_value, option, value, *ss);
     return true;
   } else if (prefix == "damage ls") {
     JSONFormatter f(true);

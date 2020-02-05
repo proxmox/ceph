@@ -41,6 +41,7 @@
 
 #include "bluestore_types.h"
 #include "BlockDevice.h"
+#include "BlueFS.h"
 #include "common/EventTrace.h"
 
 class Allocator;
@@ -124,6 +125,7 @@ enum {
 };
 
 class BlueStore : public ObjectStore,
+                  public BlueFSDeviceExpander,
 		  public md_config_obs_t {
   // -----------------------------------------------------
   // types
@@ -1461,6 +1463,16 @@ public:
     int64_t& compressed_allocated() {
       return values[STATFS_COMPRESSED_ALLOCATED];
     }
+
+    volatile_statfs& operator=(const store_statfs_t& st) {
+      values[STATFS_ALLOCATED] = st.allocated;
+      values[STATFS_STORED] = st.data_stored;
+      values[STATFS_COMPRESSED_ORIGINAL] = st.data_compressed_original;
+      values[STATFS_COMPRESSED] = st.data_compressed;
+      values[STATFS_COMPRESSED_ALLOCATED] = st.data_compressed_allocated;
+      return *this;
+    }
+
     bool is_empty() {
       return values[STATFS_ALLOCATED] == 0 &&
 	values[STATFS_STORED] == 0 &&
@@ -2101,6 +2113,13 @@ private:
   void _set_alloc_sizes();
   void _set_blob_size();
   void _set_finisher_num();
+  int _is_bluefs(bool create, bool* ret);
+  /*
+   * opens both DB and dependant super_meta, FreelistManager and allocator
+   * in the proper order
+   */
+  int _open_db_and_around();
+  void _close_db_and_around();
 
   int _open_bdev(bool create);
   void _close_bdev();
@@ -2142,9 +2161,12 @@ private:
   void _assign_nid(TransContext *txc, OnodeRef o);
   uint64_t _assign_blobid(TransContext *txc);
 
-  void _dump_onode(const OnodeRef& o, int log_level=30);
-  void _dump_extent_map(ExtentMap& em, int log_level=30);
-  void _dump_transaction(Transaction *t, int log_level = 30);
+  friend void _dump_onode(CephContext *cct, const Onode& o, int log_level);
+  friend void _dump_extent_map(
+    CephContext *cct,
+    const ExtentMap& em,
+    int log_level);
+  friend void _dump_transaction(CephContext *cct, Transaction *t, int log_level);
 
   TransContext *_txc_create(OpSequencer *osr);
   void _txc_update_store_statfs(TransContext *txc);
@@ -2290,6 +2312,8 @@ public:
   int write_meta(const std::string& key, const std::string& value) override;
   int read_meta(const std::string& key, std::string *value) override;
 
+  int cold_open();
+  int cold_close();
 
   int fsck(bool deep) override {
     return _fsck(deep, false);
@@ -2833,6 +2857,8 @@ private:
 			CollectionRef& c,
 			CollectionRef& d,
 			unsigned bits, int rem);
+private:
+  size_t available_freespace(uint64_t alloc_size) override;
 };
 
 inline ostream& operator<<(ostream& out, const BlueStore::OpSequencer& s) {

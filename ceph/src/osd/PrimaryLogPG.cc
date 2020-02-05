@@ -1691,10 +1691,9 @@ void PrimaryLogPG::get_src_oloc(const object_t& oid, const object_locator_t& olo
 void PrimaryLogPG::handle_backoff(OpRequestRef& op)
 {
   const MOSDBackoff *m = static_cast<const MOSDBackoff*>(op->get_req());
-  SessionRef session = static_cast<Session*>(m->get_connection()->get_priv());
+  SessionRef session{static_cast<Session*>(m->get_connection()->get_priv().get())};
   if (!session)
     return;  // drop it.
-  session->put();  // get_priv takes a ref, and so does the SessionRef
   hobject_t begin = info.pgid.pgid.get_hobj_start();
   hobject_t end = info.pgid.pgid.get_hobj_end(pool.info.get_pg_num());
   if (begin < m->begin) {
@@ -1742,10 +1741,9 @@ void PrimaryLogPG::do_request(
   // pg-wide backoffs
   const Message *m = op->get_req();
   if (m->get_connection()->has_feature(CEPH_FEATURE_RADOS_BACKOFF)) {
-    SessionRef session = static_cast<Session*>(m->get_connection()->get_priv());
+    SessionRef session{static_cast<Session*>(m->get_connection()->get_priv().get())};
     if (!session)
       return;  // drop it.
-    session->put();  // get_priv takes a ref, and so does the SessionRef
 
     if (op->get_req()->get_type() == CEPH_MSG_OSD_OP) {
       if (session->check_backoff(cct, info.pgid,
@@ -1942,12 +1940,11 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
     m->get_connection()->has_feature(CEPH_FEATURE_RADOS_BACKOFF);
   SessionRef session;
   if (can_backoff) {
-    session = static_cast<Session*>(m->get_connection()->get_priv());
+    session = static_cast<Session*>(m->get_connection()->get_priv().get());
     if (!session.get()) {
       dout(10) << __func__ << " no session" << dendl;
       return;
     }
-    session->put();  // get_priv() takes a ref, and so does the intrusive_ptr
 
     if (session->check_backoff(cct, info.pgid, head, m)) {
       return;
@@ -7466,10 +7463,9 @@ void PrimaryLogPG::do_osd_op_effects(OpContext *ctx, const ConnectionRef& conn)
 
   assert(conn);
 
-  boost::intrusive_ptr<Session> session((Session *)conn->get_priv());
-  if (!session.get())
+  auto session = conn->get_priv();
+  if (!session)
     return;
-  session->put();  // get_priv() takes a ref, and so does the intrusive_ptr
 
   for (list<pair<watch_info_t,bool> >::iterator i = ctx->watch_connects.begin();
        i != ctx->watch_connects.end();
@@ -10757,7 +10753,10 @@ void PrimaryLogPG::recover_got(hobject_t oid, eversion_t v)
 {
   dout(10) << "got missing " << oid << " v " << v << dendl;
   pg_log.recover_got(oid, v, info);
-  if (pg_log.get_log().complete_to != pg_log.get_log().log.end()) {
+  if (pg_log.get_log().log.empty()) {
+    dout(10) << "last_complete now " << info.last_complete
+             << " while log is empty" << dendl;
+  } else if (pg_log.get_log().complete_to != pg_log.get_log().log.end()) {
     dout(10) << "last_complete now " << info.last_complete
 	     << " log.complete_to " << pg_log.get_log().complete_to->version
 	     << dendl;
@@ -11549,15 +11548,14 @@ bool PrimaryLogPG::start_recovery_ops(
 
   const auto &missing = pg_log.get_missing();
 
-  unsigned int num_missing = missing.num_missing();
   uint64_t num_unfound = get_num_unfound();
 
-  if (num_missing == 0) {
+  if (!missing.have_missing()) {
     info.last_complete = info.last_update;
   }
 
-  if (num_missing == num_unfound) {
-    // All of the missing objects we have are unfound.
+  if (!missing.have_missing() || // Primary does not have missing
+      all_missing_unfound()) { // or all of the missing objects are unfound.
     // Recover the replicas.
     started = recover_replicas(max, handle);
   }
@@ -12623,16 +12621,22 @@ void PrimaryLogPG::scan_range(
     if (is_primary())
       obc = object_contexts.lookup(*p);
     if (obc) {
+      if (!obc->obs.exists) {
+	/* If the object does not exist here, it must have been removed
+	 * between the collection_list_partial and here.  This can happen
+	 * for the first item in the range, which is usually last_backfill.
+	 */
+	continue;
+      }
       bi->objects[*p] = obc->obs.oi.version;
       dout(20) << "  " << *p << " " << obc->obs.oi.version << dendl;
     } else {
       bufferlist bl;
       int r = pgbackend->objects_get_attr(*p, OI_ATTR, &bl);
-
       /* If the object does not exist here, it must have been removed
-	 * between the collection_list_partial and here.  This can happen
-	 * for the first item in the range, which is usually last_backfill.
-	 */
+       * between the collection_list_partial and here.  This can happen
+       * for the first item in the range, which is usually last_backfill.
+       */
       if (r == -ENOENT)
 	continue;
 
@@ -14525,6 +14529,7 @@ int PrimaryLogPG::rep_repair_primary_object(const hobject_t& soid, OpRequestRef 
   if (!eio_errors_to_process) {
     eio_errors_to_process = true;
     assert(is_clean());
+    state_clear(PG_STATE_CLEAN);
     queue_peering_event(
         CephPeeringEvtRef(
 	  std::make_shared<CephPeeringEvt>(

@@ -1255,10 +1255,10 @@ void OSDMap::get_up_osds(set<int32_t>& ls) const
   }
 }
 
-void OSDMap::get_out_osds(set<int32_t>& ls) const
+void OSDMap::get_out_existing_osds(set<int32_t>& ls) const
 {
   for (int i = 0; i < max_osd; i++) {
-    if (is_out(i))
+    if (exists(i) && get_weight(i) == CEPH_OSD_OUT)
       ls.insert(i);
   }
 }
@@ -1612,67 +1612,52 @@ void OSDMap::clean_temps(CephContext *cct,
   }
 }
 
-void OSDMap::maybe_remove_pg_upmaps(CephContext *cct,
-                                    const OSDMap& osdmap,
-                                    Incremental *pending_inc)
+void OSDMap::get_upmap_pgs(vector<pg_t> *upmap_pgs) const
 {
-  ldout(cct, 10) << __func__ << dendl;
-  OSDMap tmpmap;
-  tmpmap.deepish_copy_from(osdmap);
-  tmpmap.apply_incremental(*pending_inc);
-  set<pg_t> to_check;
-  set<pg_t> to_cancel;
-  map<int, map<int, float>> rule_weight_map;
+  upmap_pgs->reserve(pg_upmap.size() + pg_upmap_items.size());
+  for (auto& p : pg_upmap)
+    upmap_pgs->push_back(p.first);
+  for (auto& p : pg_upmap_items)
+    upmap_pgs->push_back(p.first);
+}
 
-  for (auto& p : tmpmap.pg_upmap) {
-    to_check.insert(p.first);
-  }
-  for (auto& p : tmpmap.pg_upmap_items) {
-    to_check.insert(p.first);
-  }
-  for (auto& p : pending_inc->new_pg_upmap) {
-    to_check.insert(p.first);
-  }
-  for (auto& p : pending_inc->new_pg_upmap_items) {
-    to_check.insert(p.first);
-  }
+bool OSDMap::check_pg_upmaps(
+  CephContext *cct,
+  const vector<pg_t>& to_check,
+  vector<pg_t> *to_cancel,
+  map<pg_t, mempool::osdmap::vector<pair<int,int>>> *to_remap) const
+{
+  bool any_change = false;
+  map<int, map<int, float>> rule_weight_map;
   for (auto& pg : to_check) {
-    if (!tmpmap.pg_exists(pg)) {
+    if (!pg_exists(pg)) {
       ldout(cct, 0) << __func__ << " pg " << pg << " is gone" << dendl;
-      to_cancel.insert(pg);
+      to_cancel->push_back(pg);
       continue;
     }
-    vector<int> raw_up;
-    int primary;
-    tmpmap.pg_to_raw_up(pg, &raw_up, &primary);
-    vector<int> up;
-    up.reserve(raw_up.size());
-    for (auto osd : raw_up) {
-      // skip non-existent/down osd for erasure-coded PGs
-      if (osd == CRUSH_ITEM_NONE)
-        continue;
-      up.push_back(osd);
-    }
-    auto crush_rule = tmpmap.get_pg_pool_crush_rule(pg);
-    auto r = tmpmap.crush->verify_upmap(cct,
-                                        crush_rule,
-                                        tmpmap.get_pg_pool_size(pg),
-                                        up);
+    vector<int> raw, up;
+    pg_to_raw_upmap(pg, &raw, &up);
+    auto crush_rule = get_pg_pool_crush_rule(pg);
+    auto r = crush->verify_upmap(cct,
+                                 crush_rule,
+                                 get_pg_pool_size(pg),
+                                 up);
     if (r < 0) {
       ldout(cct, 0) << __func__ << " verify_upmap of pg " << pg
                     << " returning " << r
                     << dendl;
-      to_cancel.insert(pg);
+      to_cancel->push_back(pg);
       continue;
     }
     // below we check against crush-topology changing..
     map<int, float> weight_map;
     auto it = rule_weight_map.find(crush_rule);
     if (it == rule_weight_map.end()) {
-      auto r = tmpmap.crush->get_rule_weight_osd_map(crush_rule, &weight_map);
+      auto r = crush->get_rule_weight_osd_map(crush_rule, &weight_map);
       if (r < 0) {
         lderr(cct) << __func__ << " unable to get crush weight_map for "
-                   << "crush_rule " << crush_rule << dendl;
+                   << "crush_rule " << crush_rule
+                   << dendl;
         continue;
       }
       rule_weight_map[crush_rule] = weight_map;
@@ -1685,56 +1670,123 @@ void OSDMap::maybe_remove_pg_upmaps(CephContext *cct,
     for (auto osd : up) {
       auto it = weight_map.find(osd);
       if (it == weight_map.end()) {
-        // osd is gone or has been moved out of the specific crush-tree
-        to_cancel.insert(pg);
+        ldout(cct, 10) << __func__ << " pg " << pg << ": osd " << osd << " is gone or has "
+	              << "been moved out of the specific crush-tree"
+		      << dendl;
+        to_cancel->push_back(pg);
         break;
       }
-      auto adjusted_weight = tmpmap.get_weightf(it->first) * it->second;
+      auto adjusted_weight = get_weightf(it->first) * it->second;
       if (adjusted_weight == 0) {
-        // osd is out/crush-out
-        to_cancel.insert(pg);
+        ldout(cct, 10) << __func__ << " pg " << pg << ": osd " << osd
+	              << " is out/crush-out"
+		    << dendl;
+        to_cancel->push_back(pg);
         break;
       }
     }
+    if (!to_cancel->empty() && to_cancel->back() == pg)
+      continue;
+    // okay, upmap is valid
+    // continue to check if it is still necessary
+    auto i = pg_upmap.find(pg);
+    if (i != pg_upmap.end() && vectors_equal(raw, i->second)) {
+      ldout(cct, 10) << " removing redundant pg_upmap "
+                     << i->first << " " << i->second
+                     << dendl;
+      to_cancel->push_back(pg);
+      continue;
+    }
+    auto j = pg_upmap_items.find(pg);
+    if (j != pg_upmap_items.end()) {
+      mempool::osdmap::vector<pair<int,int>> newmap;
+      for (auto& p : j->second) {
+        if (std::find(raw.begin(), raw.end(), p.first) == raw.end()) {
+          // cancel mapping if source osd does not exist anymore
+          continue;
+        }
+        if (p.second != CRUSH_ITEM_NONE && p.second < max_osd &&
+            p.second >= 0 && osd_weight[p.second] == 0) {
+          // cancel mapping if target osd is out
+          continue;
+        }
+        newmap.push_back(p);
+      }
+      if (newmap.empty()) {
+        ldout(cct, 10) << " removing no-op pg_upmap_items "
+                       << j->first << " " << j->second
+                       << dendl;
+        to_cancel->push_back(pg);
+      } else if (newmap != j->second) {
+        ldout(cct, 10) << " simplifying partially no-op pg_upmap_items "
+                       << j->first << " " << j->second
+                       << " -> " << newmap
+                       << dendl;
+        to_remap->insert({pg, newmap});
+        any_change = true;
+      }
+    }
   }
+  any_change = any_change || !to_cancel->empty();
+  return any_change;
+}
+
+void OSDMap::clean_pg_upmaps(
+  CephContext *cct,
+  Incremental *pending_inc,
+  const vector<pg_t>& to_cancel,
+  const map<pg_t, mempool::osdmap::vector<pair<int,int>>>& to_remap) const
+{
   for (auto &pg: to_cancel) {
-    { // pg_upmap
-      auto it = pending_inc->new_pg_upmap.find(pg);
-      if (it != pending_inc->new_pg_upmap.end()) {
-        ldout(cct, 10) << __func__ << " cancel invalid pending "
-                       << "pg_upmap entry "
-                       << it->first << "->" << it->second
-                       << dendl;
-        pending_inc->new_pg_upmap.erase(it);
-      }
-      if (osdmap.pg_upmap.count(pg)) {
-        ldout(cct, 10) << __func__ << " cancel invalid pg_upmap entry "
-                       << osdmap.pg_upmap.find(pg)->first << "->"
-                       << osdmap.pg_upmap.find(pg)->second
-                       << dendl;
-        pending_inc->old_pg_upmap.insert(pg);
-      }
+    auto i = pending_inc->new_pg_upmap.find(pg);
+    if (i != pending_inc->new_pg_upmap.end()) {
+      ldout(cct, 10) << __func__ << " cancel invalid pending "
+                     << "pg_upmap entry "
+                     << i->first << "->" << i->second
+                     << dendl;
+      pending_inc->new_pg_upmap.erase(i);
     }
-    { // pg_upmap_items
-      auto it = pending_inc->new_pg_upmap_items.find(pg);
-      if (it != pending_inc->new_pg_upmap_items.end()) {
-        ldout(cct, 10) << __func__ << " cancel invalid pending "
-                       << "pg_upmap_items entry "
-                       << it->first << "->" << it->second
-                       << dendl;
-        pending_inc->new_pg_upmap_items.erase(it);
-      }
-      if (osdmap.pg_upmap_items.count(pg)) {
-        ldout(cct, 10) << __func__ << " cancel invalid "
-                       << "pg_upmap_items entry "
-                       << osdmap.pg_upmap_items.find(pg)->first << "->"
-                       << osdmap.pg_upmap_items.find(pg)->second
-                       << dendl;
-        pending_inc->old_pg_upmap_items.insert(pg);
-      }
+    auto j = pg_upmap.find(pg);
+    if (j != pg_upmap.end()) {
+      ldout(cct, 10) << __func__ << " cancel invalid pg_upmap entry "
+                     << j->first << "->" << j->second
+                     << dendl;
+      pending_inc->old_pg_upmap.insert(pg);
+    }
+    auto p = pending_inc->new_pg_upmap_items.find(pg);
+    if (p != pending_inc->new_pg_upmap_items.end()) {
+      ldout(cct, 10) << __func__ << " cancel invalid pending "
+                     << "pg_upmap_items entry "
+                     << p->first << "->" << p->second
+                     << dendl;
+      pending_inc->new_pg_upmap_items.erase(p);
+    }
+    auto q = pg_upmap_items.find(pg);
+    if (q != pg_upmap_items.end()) {
+      ldout(cct, 10) << __func__ << " cancel invalid "
+                     << "pg_upmap_items entry "
+                     << q->first << "->" << q->second
+                     << dendl;
+      pending_inc->old_pg_upmap_items.insert(pg);
     }
   }
-  tmpmap.clean_pg_upmaps(cct, pending_inc);
+  for (auto& i : to_remap)
+    pending_inc->new_pg_upmap_items[i.first] = i.second;
+}
+
+bool OSDMap::clean_pg_upmaps(
+  CephContext *cct,
+  Incremental *pending_inc) const
+{
+  ldout(cct, 10) << __func__ << dendl;
+  vector<pg_t> to_check;
+  vector<pg_t> to_cancel;
+  map<pg_t, mempool::osdmap::vector<pair<int,int>>> to_remap;
+
+  get_upmap_pgs(&to_check);
+  auto any_change = check_pg_upmaps(cct, to_check, &to_cancel, &to_remap);
+  clean_pg_upmaps(cct, pending_inc, to_cancel, to_remap);
+  return any_change;
 }
 
 int OSDMap::apply_incremental(const Incremental &inc)
@@ -2253,14 +2305,16 @@ void OSDMap::pg_to_raw_osds(pg_t pg, vector<int> *raw, int *primary) const
     *primary = _pick_primary(*raw);
 }
 
-void OSDMap::pg_to_raw_upmap(pg_t pg, vector<int> *raw_upmap) const
+void OSDMap::pg_to_raw_upmap(pg_t pg, vector<int>*raw,
+                             vector<int> *raw_upmap) const
 {
   auto pool = get_pg_pool(pg.pool());
   if (!pool) {
     raw_upmap->clear();
     return;
   }
-  _pg_to_raw_osds(*pool, pg, raw_upmap, NULL);
+  _pg_to_raw_osds(*pool, pg, raw, NULL);
+  *raw_upmap = *raw;
   _apply_upmap(*pool, pg, raw_upmap);
 }
 
@@ -3430,8 +3484,6 @@ void OSDMap::print_summary(Formatter *f, ostream& out,
     f->dump_int("num_osds", get_num_osds());
     f->dump_int("num_up_osds", get_num_up_osds());
     f->dump_int("num_in_osds", get_num_in_osds());
-    f->dump_bool("full", test_flag(CEPH_OSDMAP_FULL) ? true : false);
-    f->dump_bool("nearfull", test_flag(CEPH_OSDMAP_NEARFULL) ? true : false);
     f->dump_unsigned("num_remapped_pgs", get_num_pg_temp());
     f->close_section();
   } else {
@@ -3453,10 +3505,6 @@ void OSDMap::print_oneline_summary(ostream& out) const
       << get_num_osds() << " total, "
       << get_num_up_osds() << " up, "
       << get_num_in_osds() << " in";
-  if (test_flag(CEPH_OSDMAP_FULL))
-    out << " full";
-  else if (test_flag(CEPH_OSDMAP_NEARFULL))
-    out << " nearfull";
 }
 
 bool OSDMap::crush_rule_in_use(int rule_id) const
@@ -3910,61 +3958,12 @@ int OSDMap::summarize_mapping_stats(
   return 0;
 }
 
-
-int OSDMap::clean_pg_upmaps(
-  CephContext *cct,
-  Incremental *pending_inc) const
-{
-  ldout(cct, 10) << __func__ << dendl;
-  int changed = 0;
-  for (auto& p : pg_upmap) {
-    vector<int> raw;
-    int primary;
-    pg_to_raw_osds(p.first, &raw, &primary);
-    if (vectors_equal(raw, p.second)) {
-      ldout(cct, 10) << " removing redundant pg_upmap " << p.first << " "
-		     << p.second << dendl;
-      pending_inc->old_pg_upmap.insert(p.first);
-      ++changed;
-    }
-  }
-  for (auto& p : pg_upmap_items) {
-    vector<int> raw;
-    int primary;
-    pg_to_raw_osds(p.first, &raw, &primary);
-    mempool::osdmap::vector<pair<int,int>> newmap;
-    for (auto& q : p.second) {
-      if (std::find(raw.begin(), raw.end(), q.first) == raw.end()) {
-        // cancel mapping if source osd does not exist anymore
-        continue;
-      }
-      if (q.second != CRUSH_ITEM_NONE && q.second < max_osd &&
-          q.second >= 0 && osd_weight[q.second] == 0) {
-        // cancel mapping if target osd is out
-        continue;
-      }
-      newmap.push_back(q);
-    }
-    if (newmap.empty()) {
-      ldout(cct, 10) << " removing no-op pg_upmap_items " << p.first << " "
-		     << p.second << dendl;
-      pending_inc->old_pg_upmap_items.insert(p.first);
-      ++changed;
-    } else if (newmap != p.second) {
-      ldout(cct, 10) << " simplifying partially no-op pg_upmap_items "
-		     << p.first << " " << p.second << " -> " << newmap << dendl;
-      pending_inc->new_pg_upmap_items[p.first] = newmap;
-      ++changed;
-    }
-  }
-  return changed;
-}
-
 bool OSDMap::try_pg_upmap(
   CephContext *cct,
   pg_t pg,                       ///< pg to potentially remap
   const set<int>& overfull,      ///< osds we'd want to evacuate
   const vector<int>& underfull,  ///< osds to move to, in order of preference
+  const vector<int>& more_underfull,  ///< more osds only slightly underfull
   vector<int> *orig,
   vector<int> *out)              ///< resulting alternative mapping
 {
@@ -3993,6 +3992,7 @@ bool OSDMap::try_pg_upmap(
     rule,
     pool->get_size(),
     overfull, underfull,
+    more_underfull,
     *orig,
     out);
   if (r < 0)
@@ -4004,13 +4004,16 @@ bool OSDMap::try_pg_upmap(
 
 int OSDMap::calc_pg_upmaps(
   CephContext *cct,
-  float max_deviation_ratio,
+  uint32_t max_deviation,
   int max,
   const set<int64_t>& only_pools,
   OSDMap::Incremental *pending_inc)
 {
   ldout(cct, 10) << __func__ << " pools " << only_pools << dendl;
   OSDMap tmp;
+  // Can't be less than 1 pg
+  if (max_deviation < 1)
+    max_deviation = 1;
   tmp.deepish_copy_from(*this);
   int num_changed = 0;
   map<int,set<pg_t>> pgs_by_osd;
@@ -4072,10 +4075,10 @@ int OSDMap::calc_pg_upmaps(
     lderr(cct) << __func__ << " abort due to max <= 0" << dendl;
     return 0;
   }
-  float decay_factor = 1.0 / float(max);
   float stddev = 0;
   map<int,float> osd_deviation;       // osd, deviation(pgs)
   multimap<float,int> deviation_osd;  // deviation(pgs), osd
+  float cur_max_deviation = 0;
   for (auto& i : pgs_by_osd) {
     // make sure osd is still there (belongs to this crush-tree)
     ceph_assert(osd_weight.count(i.first));
@@ -4089,8 +4092,11 @@ int OSDMap::calc_pg_upmaps(
     osd_deviation[i.first] = deviation;
     deviation_osd.insert(make_pair(deviation, i.first));
     stddev += deviation * deviation;
+    if (fabsf(deviation) > cur_max_deviation)
+      cur_max_deviation = fabsf(deviation);
   }
-  if (stddev <= cct->_conf->get_val<double>("osd_calc_pg_upmaps_max_stddev")) {
+  ldout(cct, 20) << " stdev " << stddev << " max_deviation " << cur_max_deviation << dendl;
+  if (cur_max_deviation <= max_deviation) {
     ldout(cct, 10) << __func__ << " distribution is almost perfect"
                    << dendl;
     return 0;
@@ -4101,54 +4107,44 @@ int OSDMap::calc_pg_upmaps(
   auto local_fallback_retries =
     cct->_conf->get_val<uint64_t>("osd_calc_pg_upmaps_local_fallback_retries");
   while (max--) {
+    ldout(cct, 30) << "Top of loop #" << max+1 << dendl;
     // build overfull and underfull
     set<int> overfull;
+    set<int> more_overfull;
+    bool using_more_overfull = false;
     vector<int> underfull;
-    float decay = 0;
-    int decay_count = 0;
-    while (overfull.empty()) {
-      for (auto i = deviation_osd.rbegin(); i != deviation_osd.rend(); i++) {
-        if (i->first >= (1.0 - decay))
+    vector<int> more_underfull;
+    for (auto i = deviation_osd.rbegin(); i != deviation_osd.rend(); i++) {
+        ldout(cct, 30) << " check " << i->first << " <= " << max_deviation << dendl;
+	if (i->first <= 0)
+	  break;
+        if (i->first > max_deviation) {
+	  ldout(cct, 30) << " add overfull osd." << i->second << dendl;
           overfull.insert(i->second);
+	} else {
+          more_overfull.insert(i->second);
+	}
       }
-      if (!overfull.empty())
-        break;
-      decay_count++;
-      decay = decay_factor * decay_count;
-      if (decay >= 1.0)
-        break;
-      ldout(cct, 30) << " decay_factor = " << decay_factor
-                     << " decay_count = " << decay_count
-                     << " decay (overfull) = " << decay
-                     << dendl;
-    }
-    if (overfull.empty()) {
-      lderr(cct) << __func__ << " failed to build overfull" << dendl;
-      break;
-    }
 
-    decay = 0;
-    decay_count = 0;
-    while (underfull.empty()) {
-      for (auto i = deviation_osd.begin(); i != deviation_osd.end(); i++) {
-        if (i->first >= (-.999 + decay))
+    for (auto i = deviation_osd.begin(); i != deviation_osd.end(); i++) {
+        ldout(cct, 30) << " check " << i->first << " >= " << -(int)max_deviation << dendl;
+        if (i->first >= 0)
           break;
-        underfull.push_back(i->second);
-      }
-      if (!underfull.empty())
-        break;
-      decay_count++;
-      decay = decay_factor * decay_count;
-      if (decay >= .999)
-        break;
-      ldout(cct, 30) << " decay_factor = " << decay_factor
-                     << " decay_count = " << decay_count
-                     << " decay (underfull) = " << decay
-                     << dendl;
+        if (i->first < -(int)max_deviation) {
+	  ldout(cct, 30) << " add underfull osd." << i->second << dendl;
+          underfull.push_back(i->second);
+	} else {
+          more_underfull.push_back(i->second);
+	}
     }
-    if (underfull.empty()) {
-      lderr(cct) << __func__ << " failed to build underfull" << dendl;
+    if (underfull.empty() && overfull.empty()) {
+      ldout(cct, 20) << __func__ << " failed to build overfull and underfull" << dendl;
       break;
+    }
+    if (overfull.empty() && !underfull.empty()) {
+      ldout(cct, 20) << __func__ << " Using more_overfull since we still have underfull" << dendl;
+      overfull = more_overfull;
+      using_more_overfull = true;
     }
 
     ldout(cct, 10) << " overfull " << overfull
@@ -4164,21 +4160,23 @@ int OSDMap::calc_pg_upmaps(
     auto temp_pgs_by_osd = pgs_by_osd;
     // always start with fullest, break if we find any changes to make
     for (auto p = deviation_osd.rbegin(); p != deviation_osd.rend(); ++p) {
-      if (skip_overfull) {
+      if (skip_overfull && !underfull.empty()) {
         ldout(cct, 10) << " skipping overfull " << dendl;
         break; // fall through to check underfull
       }
       int osd = p->second;
       float deviation = p->first;
       float target = osd_weight[osd] * pgs_per_weight;
+      ldout(cct, 10) << " Overfull search osd." << osd
+                       << " target " << target
+                       << " deviation " << deviation
+		       << dendl;
       ceph_assert(target > 0);
-      float deviation_ratio = deviation / target;
-      if (deviation_ratio < max_deviation_ratio) {
+      if (!using_more_overfull && deviation <= max_deviation) {
 	ldout(cct, 10) << " osd." << osd
                        << " target " << target
                        << " deviation " << deviation
-                       << " -> ratio " << deviation_ratio
-                       << " < max ratio " << max_deviation_ratio
+                       << " < max deviation " << max_deviation
                        << dendl;
 	break;
       }
@@ -4272,9 +4270,9 @@ int OSDMap::calc_pg_upmaps(
           // to see if we can append more remapping pairs
         }
 	ldout(cct, 10) << " trying " << pg << dendl;
-	vector<int> orig, out;
-        tmp.pg_to_raw_upmap(pg, &orig); // including existing upmaps too
-	if (!try_pg_upmap(cct, pg, overfull, underfull, &orig, &out)) {
+        vector<int> raw, orig, out;
+        tmp.pg_to_raw_upmap(pg, &raw, &orig); // including existing upmaps too
+	if (!try_pg_upmap(cct, pg, overfull, underfull, more_underfull, &orig, &out)) {
 	  continue;
 	}
 	ldout(cct, 10) << " " << pg << " " << orig << " -> " << out << dendl;
@@ -4282,13 +4280,24 @@ int OSDMap::calc_pg_upmaps(
 	  continue;
 	}
 	ceph_assert(orig != out);
+	int pos = -1;
+	float max_dev = 0;
 	for (unsigned i = 0; i < out.size(); ++i) {
           if (orig[i] == out[i])
             continue; // skip invalid remappings
           if (existing.count(orig[i]) || existing.count(out[i]))
             continue; // we want new remappings only!
+	  if (osd_deviation[orig[i]] > max_dev) {
+	    max_dev = osd_deviation[orig[i]];
+	    pos = i;
+	    ldout(cct, 30) << "Max osd." << orig[i] << " pos " << i << " dev " << osd_deviation[orig[i]] << dendl;
+	  }
+	}
+	if (pos != -1) {
+	  int i = pos;
           ldout(cct, 10) << " will try adding new remapping pair "
                          << orig[i] << " -> " << out[i] << " for " << pg
+			 << (orig[i] != osd ? " NOT selected osd" : "")
                          << dendl;
           existing.insert(orig[i]);
           existing.insert(out[i]);
@@ -4317,14 +4326,13 @@ int OSDMap::calc_pg_upmaps(
       float deviation = p.first;
       float target = osd_weight[osd] * pgs_per_weight;
       ceph_assert(target > 0);
-      float deviation_ratio = abs(deviation / target);
-      if (deviation_ratio < max_deviation_ratio) {
-        // respect max_deviation_ratio too
+      if (fabsf(deviation) < max_deviation) {
+        // respect max_deviation too
         ldout(cct, 10) << " osd." << osd
                        << " target " << target
                        << " deviation " << deviation
-                       << " -> absolute ratio " << deviation_ratio
-                       << " < max ratio " << max_deviation_ratio
+                       << " -> absolute " << fabsf(deviation)
+                       << " < max " << max_deviation
                        << dendl;
         break;
       }
@@ -4410,6 +4418,7 @@ int OSDMap::calc_pg_upmaps(
     float new_stddev = 0;
     map<int,float> temp_osd_deviation;
     multimap<float,int> temp_deviation_osd;
+    float cur_max_deviation = 0;
     for (auto& i : temp_pgs_by_osd) {
       // make sure osd is still there (belongs to this crush-tree)
       ceph_assert(osd_weight.count(i.first));
@@ -4422,7 +4431,9 @@ int OSDMap::calc_pg_upmaps(
                      << dendl;
       temp_osd_deviation[i.first] = deviation;
       temp_deviation_osd.insert(make_pair(deviation, i.first));
-      new_stddev += deviation * deviation;
+       new_stddev += deviation * deviation;
+      if (fabsf(deviation) > cur_max_deviation)
+        cur_max_deviation = fabsf(deviation);
     }
     ldout(cct, 10) << " stddev " << stddev << " -> " << new_stddev << dendl;
     if (new_stddev >= stddev) {
@@ -4473,6 +4484,12 @@ int OSDMap::calc_pg_upmaps(
       tmp.pg_upmap_items[i.first] = i.second;
       pending_inc->new_pg_upmap_items[i.first] = i.second;
       ++num_changed;
+    }
+    ldout(cct, 20) << " stdev " << stddev << " max_deviation " << cur_max_deviation << dendl;
+    if (cur_max_deviation <= max_deviation) {
+      ldout(cct, 10) << __func__ << " Optimization plan is almost perfect"
+                     << dendl;
+      break;
     }
   }
   ldout(cct, 10) << " num_changed = " << num_changed << dendl;
@@ -4540,9 +4557,11 @@ protected:
       return;
 
     float reweight = qi.is_bucket() ? -1 : osdmap->get_weightf(qi.id);
-    int64_t kb = 0, kb_used = 0, kb_avail = 0;
+    int64_t kb = 0, kb_used = 0, kb_used_data = 0, kb_used_omap = 0,
+      kb_used_meta = 0, kb_avail = 0;
     double util = 0;
-    if (get_bucket_utilization(qi.id, &kb, &kb_used, &kb_avail))
+    if (get_bucket_utilization(qi.id, &kb, &kb_used, &kb_used_data,
+			       &kb_used_omap, &kb_used_meta, &kb_avail))
       if (kb_used && kb)
         util = 100.0 * (double)kb_used / (double)kb;
 
@@ -4552,7 +4571,9 @@ protected:
 
     size_t num_pgs = qi.is_bucket() ? 0 : pgs->get_num_pg_by_osd(qi.id);
 
-    dump_item(qi, reweight, kb, kb_used, kb_avail, util, var, num_pgs, f);
+    dump_item(qi, reweight, kb, kb_used,
+	      kb_used_data, kb_used_omap, kb_used_meta,
+	      kb_avail, util, var, num_pgs, f);
 
     if (!qi.is_bucket() && reweight > 0) {
       if (min_var < 0 || var < min_var)
@@ -4571,6 +4592,9 @@ protected:
 			 float &reweight,
 			 int64_t kb,
 			 int64_t kb_used,
+			 int64_t kb_used_data,
+			 int64_t kb_used_omap,
+			 int64_t kb_used_meta,
 			 int64_t kb_avail,
 			 double& util,
 			 double& var,
@@ -4586,8 +4610,10 @@ protected:
     for (int i = 0; i < osdmap->get_max_osd(); i++) {
       if (!osdmap->exists(i) || osdmap->get_weight(i) == 0)
 	continue;
-      int64_t kb_i, kb_used_i, kb_avail_i;
-      if (get_osd_utilization(i, &kb_i, &kb_used_i, &kb_avail_i)) {
+      int64_t kb_i, kb_used_i, kb_used_data_i, kb_used_omap_i, kb_used_meta_i,
+	kb_avail_i;
+      if (get_osd_utilization(i, &kb_i, &kb_used_i, &kb_used_data_i,
+			      &kb_used_omap_i, &kb_used_meta_i, &kb_avail_i)) {
 	kb += kb_i;
 	kb_used += kb_used_i;
       }
@@ -4596,38 +4622,60 @@ protected:
   }
 
   bool get_osd_utilization(int id, int64_t* kb, int64_t* kb_used,
+			   int64_t* kb_used_data,
+			   int64_t* kb_used_omap,
+			   int64_t* kb_used_meta,
 			   int64_t* kb_avail) const {
     const osd_stat_t *p = pgs->get_osd_stat(id);
     if (!p) return false;
     *kb = p->kb;
     *kb_used = p->kb_used;
+    *kb_used_data = p->kb_used_data;
+    *kb_used_omap = p->kb_used_omap;
+    *kb_used_meta = p->kb_used_meta;
     *kb_avail = p->kb_avail;
     return *kb > 0;
   }
 
   bool get_bucket_utilization(int id, int64_t* kb, int64_t* kb_used,
+			      int64_t* kb_used_data,
+			      int64_t* kb_used_omap,
+			      int64_t* kb_used_meta,
 			      int64_t* kb_avail) const {
     if (id >= 0) {
       if (osdmap->is_out(id)) {
         *kb = 0;
         *kb_used = 0;
+	*kb_used_data = 0;
+	*kb_used_omap = 0;
+	*kb_used_meta = 0;
         *kb_avail = 0;
         return true;
       }
-      return get_osd_utilization(id, kb, kb_used, kb_avail);
+      return get_osd_utilization(id, kb, kb_used, kb_used_data,
+				 kb_used_omap, kb_used_meta, kb_avail);
     }
 
     *kb = 0;
     *kb_used = 0;
+    *kb_used_data = 0;
+    *kb_used_omap = 0;
+    *kb_used_meta = 0;
     *kb_avail = 0;
 
     for (int k = osdmap->crush->get_bucket_size(id) - 1; k >= 0; k--) {
       int item = osdmap->crush->get_bucket_item(id, k);
-      int64_t kb_i = 0, kb_used_i = 0, kb_avail_i = 0;
-      if (!get_bucket_utilization(item, &kb_i, &kb_used_i, &kb_avail_i))
+      int64_t kb_i = 0, kb_used_i = 0, kb_used_data_i = 0,
+	kb_used_omap_i = 0, kb_used_meta_i = 0, kb_avail_i = 0;
+      if (!get_bucket_utilization(item, &kb_i, &kb_used_i,
+				  &kb_used_data_i, &kb_used_omap_i,
+				  &kb_used_meta_i, &kb_avail_i))
 	return false;
       *kb += kb_i;
       *kb_used += kb_used_i;
+      *kb_used_data += kb_used_data_i;
+      *kb_used_omap += kb_used_omap_i;
+      *kb_used_meta += kb_used_meta_i;
       *kb_avail += kb_avail_i;
     }
     return *kb > 0;
@@ -4660,6 +4708,9 @@ public:
     tbl->define_column("REWEIGHT", TextTable::LEFT, TextTable::RIGHT);
     tbl->define_column("SIZE", TextTable::LEFT, TextTable::RIGHT);
     tbl->define_column("USE", TextTable::LEFT, TextTable::RIGHT);
+    tbl->define_column("DATA", TextTable::LEFT, TextTable::RIGHT);
+    tbl->define_column("OMAP", TextTable::LEFT, TextTable::RIGHT);
+    tbl->define_column("META", TextTable::LEFT, TextTable::RIGHT);
     tbl->define_column("AVAIL", TextTable::LEFT, TextTable::RIGHT);
     tbl->define_column("%USE", TextTable::LEFT, TextTable::RIGHT);
     tbl->define_column("VAR", TextTable::LEFT, TextTable::RIGHT);
@@ -4676,6 +4727,9 @@ public:
 	 << "" << "TOTAL"
 	 << byte_u_t(pgs->get_osd_sum().kb << 10)
 	 << byte_u_t(pgs->get_osd_sum().kb_used << 10)
+	 << byte_u_t(pgs->get_osd_sum().kb_used_data << 10)
+	 << byte_u_t(pgs->get_osd_sum().kb_used_omap << 10)
+	 << byte_u_t(pgs->get_osd_sum().kb_used_meta << 10)
 	 << byte_u_t(pgs->get_osd_sum().kb_avail << 10)
 	 << lowprecision_t(average_util)
 	 << ""
@@ -4694,6 +4748,9 @@ protected:
 			 float &reweight,
 			 int64_t kb,
 			 int64_t kb_used,
+			 int64_t kb_used_data,
+			 int64_t kb_used_omap,
+			 int64_t kb_used_meta,
 			 int64_t kb_avail,
 			 double& util,
 			 double& var,
@@ -4708,6 +4765,9 @@ protected:
 	 << weightf_t(reweight)
 	 << byte_u_t(kb << 10)
 	 << byte_u_t(kb_used << 10)
+	 << byte_u_t(kb_used_data << 10)
+	 << byte_u_t(kb_used_omap << 10)
+	 << byte_u_t(kb_used_meta << 10)
 	 << byte_u_t(kb_avail << 10)
 	 << lowprecision_t(util)
 	 << lowprecision_t(var);
@@ -4779,19 +4839,25 @@ public:
 protected:
   using OSDUtilizationDumper<Formatter>::dump_item;
   void dump_item(const CrushTreeDumper::Item &qi,
-			 float &reweight,
-			 int64_t kb,
-			 int64_t kb_used,
-			 int64_t kb_avail,
-			 double& util,
-			 double& var,
-			 const size_t num_pgs,
-			 Formatter *f) override {
+		 float &reweight,
+		 int64_t kb,
+		 int64_t kb_used,
+		 int64_t kb_used_data,
+		 int64_t kb_used_omap,
+		 int64_t kb_used_meta,
+		 int64_t kb_avail,
+		 double& util,
+		 double& var,
+		 const size_t num_pgs,
+		 Formatter *f) override {
     f->open_object_section("item");
     CrushTreeDumper::dump_item_fields(crush, weight_set_names, qi, f);
     f->dump_float("reweight", reweight);
     f->dump_int("kb", kb);
     f->dump_int("kb_used", kb_used);
+    f->dump_int("kb_used_data", kb_used_data);
+    f->dump_int("kb_used_omap", kb_used_omap);
+    f->dump_int("kb_used_meta", kb_used_meta);
     f->dump_int("kb_avail", kb_avail);
     f->dump_float("utilization", util);
     f->dump_float("var", var);
@@ -4803,9 +4869,13 @@ protected:
 public:
   void summary(Formatter *f) {
     f->open_object_section("summary");
-    f->dump_int("total_kb", pgs->get_osd_sum().kb);
-    f->dump_int("total_kb_used", pgs->get_osd_sum().kb_used);
-    f->dump_int("total_kb_avail", pgs->get_osd_sum().kb_avail);
+    auto s = pgs->get_osd_sum();
+    f->dump_int("total_kb", s.kb);
+    f->dump_int("total_kb_used", s.kb_used);
+    f->dump_int("total_kb_used_data", s.kb_used_data);
+    f->dump_int("total_kb_used_omap", s.kb_used_omap);
+    f->dump_int("total_kb_used_meta", s.kb_used_meta);
+    f->dump_int("total_kb_avail", s.kb_avail);
     f->dump_float("average_utilization", average_util);
     f->dump_float("min_var", min_var);
     f->dump_float("max_var", max_var);

@@ -2895,8 +2895,21 @@ void Client::kick_requests_closed(MetaSession *session)
       if (req->got_unsafe) {
 	lderr(cct) << "kick_requests_closed removing unsafe request " << req->get_tid() << dendl;
 	req->unsafe_item.remove_myself();
-	req->unsafe_dir_item.remove_myself();
-	req->unsafe_target_item.remove_myself();
+	if (is_dir_operation(req)) {
+	  Inode *dir = req->inode();
+	  assert(dir);
+	  dir->set_async_err(-EIO);
+	  lderr(cct) << "kick_requests_closed drop req of inode(dir) : "
+		     <<  dir->ino  << " " << req->get_tid() << dendl;
+	  req->unsafe_dir_item.remove_myself();
+	}
+	if (req->target) {
+	  InodeRef &in = req->target;
+	  in->set_async_err(-EIO);
+	  lderr(cct) << "kick_requests_closed drop req of inode : "
+		     <<  in->ino  << " " << req->get_tid() << dendl;
+	  req->unsafe_target_item.remove_myself();
+	}
 	signal_cond_list(req->waitfor_safe);
 	unregister_request(req);
       }
@@ -5081,6 +5094,7 @@ void Client::_schedule_invalidate_dentry_callback(Dentry *dn, bool del)
 void Client::_try_to_trim_inode(Inode *in, bool sched_inval)
 {
   int ref = in->get_num_ref();
+  ldout(cct, 5) << __func__ << " in " << *in <<dendl;
 
   if (in->dir && !in->dir->dentries.empty()) {
     for (auto p = in->dir->dentries.begin();
@@ -5109,13 +5123,16 @@ void Client::_try_to_trim_inode(Inode *in, bool sched_inval)
     --ref;
   }
 
-  if (ref > 0 && in->ll_ref > 0 && sched_inval) {
+  if (ref > 0) {
     set<Dentry*>::iterator q = in->dn_set.begin();
     while (q != in->dn_set.end()) {
-      Dentry *dn = *q++;
-      // FIXME: we play lots of unlink/link tricks when handling MDS replies,
-      //        so in->dn_set doesn't always reflect the state of kernel's dcache.
-      _schedule_invalidate_dentry_callback(dn, true);
+      Dentry *dn = *q;
+      ++q;
+      if( in->ll_ref > 0 && sched_inval) {
+	// FIXME: we play lots of unlink/link tricks when handling MDS replies,
+	//        so in->dn_set doesn't always reflect the state of kernel's dcache.
+	_schedule_invalidate_dentry_callback(dn, true);
+      }
       unlink(dn, true, true);
     }
   }
@@ -7819,9 +7836,15 @@ int Client::_readdir_cache_cb(dir_result_t *dirp, add_dirent_cb_t cb, void *p,
       continue;
     }
 
+    int idx = pd - dir->readdir_cache.begin();
     int r = _getattr(dn->inode, caps, dirp->perms);
     if (r < 0)
       return r;
+    
+    // the content of readdir_cache may change after _getattr(), so pd may be invalid iterator    
+    pd = dir->readdir_cache.begin() + idx;
+    if (pd >= dir->readdir_cache.end() || *pd != dn)
+      return -EAGAIN;
 
     struct ceph_statx stx;
     struct dirent de;
@@ -8405,22 +8428,6 @@ int Client::lookup_ino(inodeno_t ino, const UserPerm& perms, Inode **inode)
 int Client::_lookup_parent(Inode *ino, const UserPerm& perms, Inode **parent)
 {
   ldout(cct, 8) << "lookup_parent enter(" << ino->ino << ")" << dendl;
-
-  if (unmounting)
-    return -ENOTCONN;
-
-  if (!ino->dn_set.empty()) {
-    // if we exposed the parent here, we'd need to check permissions,
-    // but right now we just rely on the MDS doing so in make_request
-    ldout(cct, 8) << "lookup_parent dentry already present" << dendl;
-    return 0;
-  }
-  
-  if (ino->is_root()) {
-    *parent = NULL;
-    ldout(cct, 8) << "ino is root, no parent" << dendl;
-    return -EINVAL;
-  }
 
   MetaRequest *req = new MetaRequest(CEPH_MDS_OP_LOOKUPPARENT);
   filepath path(ino->ino);
@@ -10475,31 +10482,38 @@ int Client::ll_lookup_inode(
     const UserPerm& perms,
     Inode **inode)
 {
+  assert(inode != NULL);
   Mutex::Locker lock(client_lock);
   ldout(cct, 3) << "ll_lookup_inode " << ino  << dendl;
    
+  if (unmounting)
+    return -ENOTCONN;
+
   // Num1: get inode and *inode
   int r = _lookup_ino(ino, perms, inode);
-  if (r) {
+  if (r)
     return r;
-  }
-  assert(inode != NULL);
+
   assert(*inode != NULL);
+
+  if (!(*inode)->dn_set.empty()) {
+    ldout(cct, 8) << __func__ << " dentry already present" << dendl;
+    return 0;
+  }
+
+  if ((*inode)->is_root()) {
+    ldout(cct, 8) << "ino is root, no parent" << dendl;
+    return 0;
+  }
 
   // Num2: Request the parent inode, so that we can look up the name
   Inode *parent;
   r = _lookup_parent(*inode, perms, &parent);
-  if (r && r != -EINVAL) {
-    // Unexpected error
+  if (r) {
     _ll_forget(*inode, 1);  
     return r;
-  } else if (r == -EINVAL) {
-    // EINVAL indicates node without parents (root), drop out now
-    // and don't try to look up the non-existent dentry.
-    return 0;
   }
-  // FIXME: I don't think this works; lookup_parent() returns 0 if the parent
-  // is already in cache
+
   assert(parent != NULL);
 
   // Num3: Finally, get the name (dentry) of the requested inode
@@ -11535,7 +11549,7 @@ size_t Client::_vxattrcb_dir_rbytes(Inode *in, char *val, size_t size)
 }
 size_t Client::_vxattrcb_dir_rctime(Inode *in, char *val, size_t size)
 {
-  return snprintf(val, size, "%ld.09%ld", (long)in->rstat.rctime.sec(),
+  return snprintf(val, size, "%ld.%09ld", (long)in->rstat.rctime.sec(),
       (long)in->rstat.rctime.nsec());
 }
 
@@ -14065,6 +14079,15 @@ void Client::clear_filer_flags(int flags)
   Mutex::Locker l(client_lock);
   assert(flags == CEPH_OSD_FLAG_LOCALIZE_READS);
   objecter->clear_global_op_flag(flags);
+}
+
+// called before mount. 0 means infinite
+void Client::set_session_timeout(unsigned timeout)
+{
+  Mutex::Locker l(client_lock);
+  assert(initialized);
+
+  metadata["timeout"] = stringify(timeout);
 }
 
 /**

@@ -9,7 +9,7 @@ class TestSingleType(object):
         conf_ceph(get_safe=lambda *a: '5120')
         args = factory(filtered_devices=[], osds_per_device=1, journal_size=None)
         devices = [
-            fakedevice(used_by_ceph=False, is_lvm_member=False, sys_api=dict(rotational='1', size=12073740000))
+            fakedevice(used_by_ceph=False, is_lvm_member=False, rotational=True, sys_api=dict(size=12073740000))
         ]
         computed_osd = filestore.SingleType(devices, args).computed['osds'][0]
         assert computed_osd['data']['percentage'] == 55
@@ -21,18 +21,18 @@ class TestSingleType(object):
         conf_ceph(get_safe=lambda *a: '5120')
         args = factory(filtered_devices=[], osds_per_device=1, journal_size=None)
         devices = [
-            fakedevice(used_by_ceph=False, is_lvm_member=False, sys_api=dict(rotational='1', size=6073740000))
+            fakedevice(used_by_ceph=False, is_lvm_member=False, rotational=True, sys_api=dict(size=6073740000))
         ]
         with pytest.raises(RuntimeError) as error:
             filestore.SingleType(devices, args)
         msg = "Unable to use device 5.66 GB /dev/sda, LVs would be smaller than 5GB"
-        assert msg in str(error)
+        assert msg in str(error.value)
 
     def test_ssd_device_is_large_enough(self, fakedevice, factory, conf_ceph):
         conf_ceph(get_safe=lambda *a: '5120')
         args = factory(filtered_devices=[], osds_per_device=1, journal_size=None)
         devices = [
-            fakedevice(used_by_ceph=False, is_lvm_member=False, sys_api=dict(rotational='0', size=12073740000))
+            fakedevice(used_by_ceph=False, is_lvm_member=False, rotational=False, sys_api=dict(size=12073740000))
         ]
         computed_osd = filestore.SingleType(devices, args).computed['osds'][0]
         assert computed_osd['data']['percentage'] == 55
@@ -44,66 +44,66 @@ class TestSingleType(object):
         conf_ceph(get_safe=lambda *a: '5120')
         args = factory(filtered_devices=[], osds_per_device=1, journal_size=None)
         devices = [
-            fakedevice(used_by_ceph=False, is_lvm_member=False, sys_api=dict(rotational='0', size=6073740000))
+            fakedevice(used_by_ceph=False, is_lvm_member=False, rotational=False, sys_api=dict(size=6073740000))
         ]
         with pytest.raises(RuntimeError) as error:
             filestore.SingleType(devices, args)
         msg = "Unable to use device 5.66 GB /dev/sda, LVs would be smaller than 5GB"
-        assert msg in str(error)
+        assert msg in str(error.value)
 
     def test_ssd_device_multi_osd(self, fakedevice, factory, conf_ceph):
         conf_ceph(get_safe=lambda *a: '5120')
         args = factory(filtered_devices=[], osds_per_device=4, journal_size=None)
         devices = [
-            fakedevice(used_by_ceph=False, is_lvm_member=False, sys_api=dict(rotational='0', size=16073740000))
+            fakedevice(used_by_ceph=False, is_lvm_member=False, rotational=False, sys_api=dict(size=16073740000))
         ]
         with pytest.raises(RuntimeError) as error:
             filestore.SingleType(devices, args)
         msg = "Unable to use device 14.97 GB /dev/sda, LVs would be smaller than 5GB"
-        assert msg in str(error)
+        assert msg in str(error.value)
 
     def test_hdd_device_multi_osd(self, fakedevice, factory, conf_ceph):
         conf_ceph(get_safe=lambda *a: '5120')
         args = factory(filtered_devices=[], osds_per_device=4, journal_size=None)
         devices = [
-            fakedevice(used_by_ceph=False, is_lvm_member=False, sys_api=dict(rotational='1', size=16073740000))
+            fakedevice(used_by_ceph=False, is_lvm_member=False, rotational=True, sys_api=dict(size=16073740000))
         ]
         with pytest.raises(RuntimeError) as error:
             filestore.SingleType(devices, args)
         msg = "Unable to use device 14.97 GB /dev/sda, LVs would be smaller than 5GB"
-        assert msg in str(error)
+        assert msg in str(error.value)
 
     def test_device_is_lvm_member_fails(self, fakedevice, factory, conf_ceph):
         conf_ceph(get_safe=lambda *a: '5120')
         args = factory(filtered_devices=[], osds_per_device=1, journal_size=None)
         devices = [
-            fakedevice(used_by_ceph=False, is_lvm_member=True, sys_api=dict(rotational='1', size=12073740000))
+            fakedevice(used_by_ceph=False, is_lvm_member=True, rotational=True, sys_api=dict(size=12073740000))
         ]
         with pytest.raises(RuntimeError) as error:
             filestore.SingleType(devices, args)
-        assert 'Unable to use device, already a member of LVM' in str(error)
+        assert 'Unable to use device, already a member of LVM' in str(error.value)
 
     def test_hdd_device_with_small_configured_journal(self, fakedevice, factory, conf_ceph):
         conf_ceph(get_safe=lambda *a: '120')
         args = factory(filtered_devices=[], osds_per_device=1, journal_size=None)
         devices = [
-            fakedevice(used_by_ceph=False, is_lvm_member=False, sys_api=dict(rotational='1', size=6073740000))
+            fakedevice(used_by_ceph=False, is_lvm_member=False, rotational=True, sys_api=dict(size=6073740000))
         ]
         with pytest.raises(RuntimeError) as error:
             filestore.SingleType(devices, args)
         msg = "journal sizes must be larger than 2GB, detected: 120.00 MB"
-        assert msg in str(error)
+        assert msg in str(error.value)
 
     def test_ssd_device_with_small_configured_journal(self, fakedevice, factory, conf_ceph):
         conf_ceph(get_safe=lambda *a: '120')
         args = factory(filtered_devices=[], osds_per_device=1, journal_size=None)
         devices = [
-            fakedevice(used_by_ceph=False, is_lvm_member=False, sys_api=dict(rotational='0', size=6073740000))
+            fakedevice(used_by_ceph=False, is_lvm_member=False, rotational=False, sys_api=dict(size=6073740000))
         ]
         with pytest.raises(RuntimeError) as error:
             filestore.SingleType(devices, args)
         msg = "journal sizes must be larger than 2GB, detected: 120.00 MB"
-        assert msg in str(error)
+        assert msg in str(error.value)
 
 
 class TestMixedType(object):
@@ -112,44 +112,44 @@ class TestMixedType(object):
         conf_ceph(get_safe=lambda *a: '120')
         args = factory(filtered_devices=[], osds_per_device=1, journal_size=None)
         devices = [
-            fakedevice(used_by_ceph=False, is_lvm_member=False, sys_api=dict(rotational='0', size=6073740000)),
-            fakedevice(used_by_ceph=False, is_lvm_member=False, sys_api=dict(rotational='1', size=6073740000))
+            fakedevice(used_by_ceph=False, is_lvm_member=False, rotational=False, sys_api=dict(size=6073740000)),
+            fakedevice(used_by_ceph=False, is_lvm_member=False, rotational=True, sys_api=dict(size=6073740000))
         ]
         with pytest.raises(RuntimeError) as error:
             filestore.MixedType(devices, args)
         msg = "journal sizes must be larger than 2GB, detected: 120.00 MB"
-        assert msg in str(error)
+        assert msg in str(error.value)
 
     def test_ssd_device_is_not_large_enough(self, stub_vgs, fakedevice, factory, conf_ceph):
         conf_ceph(get_safe=lambda *a: '7120')
         args = factory(filtered_devices=[], osds_per_device=1, journal_size=None)
         devices = [
-            fakedevice(used_by_ceph=False, is_lvm_member=False, sys_api=dict(rotational='0', size=6073740000)),
-            fakedevice(used_by_ceph=False, is_lvm_member=False, sys_api=dict(rotational='1', size=6073740000))
+            fakedevice(used_by_ceph=False, is_lvm_member=False, rotational=False, sys_api=dict(size=6073740000)),
+            fakedevice(used_by_ceph=False, is_lvm_member=False, rotational=True, sys_api=dict(size=6073740000))
         ]
         with pytest.raises(RuntimeError) as error:
             filestore.MixedType(devices, args)
         msg = "Not enough space in fast devices (5.66 GB) to create 1 x 6.95 GB journal LV"
-        assert msg in str(error)
+        assert msg in str(error.value)
 
     def test_hdd_device_is_lvm_member_fails(self, stub_vgs, fakedevice, factory, conf_ceph):
         conf_ceph(get_safe=lambda *a: '5120')
         args = factory(filtered_devices=[], osds_per_device=1, journal_size=None)
         devices = [
-            fakedevice(used_by_ceph=False, is_lvm_member=False, sys_api=dict(rotational='0', size=6073740000)),
-            fakedevice(used_by_ceph=False, is_lvm_member=True, sys_api=dict(rotational='1', size=6073740000))
+            fakedevice(used_by_ceph=False, is_lvm_member=False, rotational=False, sys_api=dict(size=6073740000)),
+            fakedevice(used_by_ceph=False, is_lvm_member=True, rotational=True, sys_api=dict(size=6073740000))
         ]
         with pytest.raises(RuntimeError) as error:
             filestore.MixedType(devices, args)
-        assert 'Unable to use device, already a member of LVM' in str(error)
+        assert 'Unable to use device, already a member of LVM' in str(error.value)
 
     def test_ssd_is_lvm_member_doesnt_fail(self, volumes, stub_vgs, fakedevice, factory, conf_ceph):
         # fast PV, because ssd is an LVM member
         CephPV = lvm.PVolume(vg_name='fast', pv_name='/dev/sda', pv_tags='')
         ssd = fakedevice(
-            used_by_ceph=False, is_lvm_member=True, sys_api=dict(rotational='0', size=6073740000), pvs_api=[CephPV]
+            used_by_ceph=False, is_lvm_member=True, rotational=False, sys_api=dict(size=6073740000), pvs_api=[CephPV]
         )
-        hdd = fakedevice(used_by_ceph=False, is_lvm_member=False, sys_api=dict(rotational='1', size=6073740000))
+        hdd = fakedevice(used_by_ceph=False, is_lvm_member=False, rotational=True, sys_api=dict(size=6073740000))
         # when get_api_vgs() gets called, it will return this one VG
         stub_vgs([
             dict(
@@ -171,12 +171,12 @@ class TestMixedType(object):
         CephPV1 = lvm.PVolume(vg_name='fast1', pv_name='/dev/sda', pv_tags='')
         CephPV2 = lvm.PVolume(vg_name='fast2', pv_name='/dev/sdb', pv_tags='')
         ssd1 = fakedevice(
-            used_by_ceph=False, is_lvm_member=True, sys_api=dict(rotational='0', size=6073740000), pvs_api=[CephPV1]
+            used_by_ceph=False, is_lvm_member=True, rotational=False, sys_api=dict(size=6073740000), pvs_api=[CephPV1]
         )
         ssd2 = fakedevice(
-            used_by_ceph=False, is_lvm_member=True, sys_api=dict(rotational='0', size=6073740000), pvs_api=[CephPV2]
+            used_by_ceph=False, is_lvm_member=True, rotational=False, sys_api=dict(size=6073740000), pvs_api=[CephPV2]
         )
-        hdd = fakedevice(used_by_ceph=False, is_lvm_member=False, sys_api=dict(rotational='1', size=6073740000))
+        hdd = fakedevice(used_by_ceph=False, is_lvm_member=False, rotational=True, sys_api=dict(size=6073740000))
         # when get_api_vgs() gets called, it will return this one VG
         stub_vgs([
             dict(
@@ -195,16 +195,16 @@ class TestMixedType(object):
         with pytest.raises(RuntimeError) as error:
             filestore.MixedType(devices, args)
 
-        assert 'Could not find a common VG between devices' in str(error)
+        assert 'Could not find a common VG between devices' in str(error.value)
 
     def test_ssd_device_fails_multiple_osds(self, stub_vgs, fakedevice, factory, conf_ceph):
         conf_ceph(get_safe=lambda *a: '15120')
         args = factory(filtered_devices=[], osds_per_device=2, journal_size=None)
         devices = [
-            fakedevice(is_lvm_member=False, sys_api=dict(rotational='0', size=16073740000)),
-            fakedevice(is_lvm_member=False, sys_api=dict(rotational='1', size=16073740000))
+            fakedevice(is_lvm_member=False, rotational=False, sys_api=dict(size=16073740000)),
+            fakedevice(is_lvm_member=False, rotational=True, sys_api=dict(size=16073740000))
         ]
         with pytest.raises(RuntimeError) as error:
             filestore.MixedType(devices, args)
         msg = "Not enough space in fast devices (14.97 GB) to create 2 x 14.77 GB journal LV"
-        assert msg in str(error)
+        assert msg in str(error.value)

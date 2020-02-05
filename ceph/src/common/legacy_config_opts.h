@@ -137,7 +137,8 @@ OPTION(ms_bind_retry_delay, OPT_INT) // Delay between attemps to bind
 OPTION(ms_bind_before_connect, OPT_BOOL)
 OPTION(ms_tcp_listen_backlog, OPT_INT)
 OPTION(ms_rwthread_stack_bytes, OPT_U64)
-OPTION(ms_tcp_read_timeout, OPT_U64)
+OPTION(ms_connection_ready_timeout, OPT_U64)
+OPTION(ms_connection_idle_timeout, OPT_U64)
 OPTION(ms_pq_max_tokens_per_priority, OPT_U64)
 OPTION(ms_pq_min_cost, OPT_U64)
 OPTION(ms_inject_socket_failures, OPT_U64)
@@ -199,6 +200,7 @@ OPTION(mon_osd_cache_size, OPT_INT)  // the size of osdmaps cache, not to rely o
 
 OPTION(mon_cpu_threads, OPT_INT)
 OPTION(mon_osd_mapping_pgs_per_chunk, OPT_INT)
+OPTION(mon_clean_pg_upmaps_per_chunk, OPT_INT)
 OPTION(mon_osd_max_creating_pgs, OPT_INT)
 OPTION(mon_tick_interval, OPT_INT)
 OPTION(mon_session_timeout, OPT_INT)    // must send keepalive or subscribe
@@ -649,6 +651,7 @@ OPTION(osd_map_dedup, OPT_BOOL)
 OPTION(osd_map_max_advance, OPT_INT) // make this < cache_size!
 OPTION(osd_map_cache_size, OPT_INT)
 OPTION(osd_map_message_max, OPT_INT)  // max maps per MOSDMap message
+OPTION(osd_map_message_max_bytes, OPT_U64)  // max maps per MOSDMap message
 OPTION(osd_map_share_max_epochs, OPT_INT)  // cap on # of inc maps we send to peers, clients
 OPTION(osd_inject_bad_map_crc_probability, OPT_FLOAT)
 OPTION(osd_inject_failure_on_pg_removal, OPT_BOOL)
@@ -980,6 +983,7 @@ OPTION(bdev_nvme_retry_count, OPT_INT) // -1 means by default which is 4
 OPTION(objectstore_blackhole, OPT_BOOL)
 
 OPTION(bluefs_alloc_size, OPT_U64)
+OPTION(bluefs_shared_alloc_size, OPT_U64)
 OPTION(bluefs_max_prefetch, OPT_U64)
 OPTION(bluefs_min_log_runway, OPT_U64)  // alloc when we get this low
 OPTION(bluefs_max_log_runway, OPT_U64)  // alloc this much at a time
@@ -1028,6 +1032,7 @@ OPTION(bluestore_block_wal_path, OPT_STR)
 OPTION(bluestore_block_wal_size, OPT_U64) // rocksdb wal
 OPTION(bluestore_block_wal_create, OPT_BOOL)
 OPTION(bluestore_block_preallocate_file, OPT_BOOL) //whether preallocate space if block/db_path/wal_path is file rather that block device.
+OPTION(bluestore_ignore_data_csum, OPT_BOOL)
 OPTION(bluestore_csum_type, OPT_STR) // none|xxhash32|xxhash64|crc32c|crc32c_16|crc32c_8
 OPTION(bluestore_csum_min_block, OPT_U32)
 OPTION(bluestore_csum_max_block, OPT_U32)
@@ -1465,6 +1470,8 @@ OPTION(rgw_gc_max_objs, OPT_INT)
 OPTION(rgw_gc_obj_min_wait, OPT_INT)    // wait time before object may be handled by gc
 OPTION(rgw_gc_processor_max_time, OPT_INT)  // total run time for a single gc processor work
 OPTION(rgw_gc_processor_period, OPT_INT)  // gc processor cycle time
+OPTION(rgw_gc_max_concurrent_io, OPT_INT)  // gc processor cycle time
+OPTION(rgw_gc_max_trim_chunk, OPT_INT)  // gc trim chunk size
 OPTION(rgw_s3_success_create_obj_status, OPT_INT) // alternative success status response for create-obj (0 - default)
 OPTION(rgw_resolve_cname, OPT_BOOL)  // should rgw try to resolve hostname as a dns cname record
 OPTION(rgw_obj_stripe_size, OPT_INT)
@@ -1585,3 +1592,4 @@ OPTION(rgw_max_objs_per_shard, OPT_INT)
 OPTION(rgw_reshard_thread_interval, OPT_U32) // maximum time between rounds of reshard thread processing
 
 OPTION(rgw_acl_grants_max_num, OPT_INT) // According to AWS S3(http://docs.aws.amazon.com/AmazonS3/latest/dev/acl-overview.html), An ACL can have up to 100 grants.
+OPTION(rgw_cors_rules_max_num, OPT_INT) // According to AWS S3(http://docs.aws.amazon.com/AmazonS3/latest/dev/cors.html), An cors can have up to 100 rules.

@@ -21,14 +21,23 @@
   <ItemGroup>
     <ClCompile Include="..\..\..\lib\common\entropy_common.c" />
     <ClCompile Include="..\..\..\lib\common\error_private.c" />
+    <ClCompile Include="..\..\..\lib\common\pool.c" />
+    <ClCompile Include="..\..\..\lib\common\threading.c" />
     <ClCompile Include="..\..\..\lib\common\xxhash.c" />
     <ClCompile Include="..\..\..\lib\common\zstd_common.c" />
     <ClCompile Include="..\..\..\lib\common\fse_decompress.c" />
     <ClCompile Include="..\..\..\lib\compress\fse_compress.c" />
     <ClCompile Include="..\..\..\lib\compress\huf_compress.c" />
+    <ClCompile Include="..\..\..\lib\compress\zstdmt_compress.c" />
     <ClCompile Include="..\..\..\lib\compress\zstd_compress.c" />
+    <ClCompile Include="..\..\..\lib\compress\zstd_fast.c" />
+    <ClCompile Include="..\..\..\lib\compress\zstd_double_fast.c" />
+    <ClCompile Include="..\..\..\lib\compress\zstd_lazy.c" />
+    <ClCompile Include="..\..\..\lib\compress\zstd_opt.c" />
+    <ClCompile Include="..\..\..\lib\compress\zstd_ldm.c" />
     <ClCompile Include="..\..\..\lib\decompress\huf_decompress.c" />
     <ClCompile Include="..\..\..\lib\decompress\zstd_decompress.c" />
+    <ClCompile Include="..\..\..\lib\dictBuilder\cover.c" />
     <ClCompile Include="..\..\..\lib\dictBuilder\divsufsort.c" />
     <ClCompile Include="..\..\..\lib\dictBuilder\zdict.c" />
     <ClCompile Include="..\..\..\lib\legacy\zstd_v01.c" />
@@ -45,7 +54,10 @@
     <ClCompile Include="..\..\..\programs\zstdcli.c" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="..\..\..\lib\common\pool.h" />
+    <ClInclude Include="..\..\..\lib\common\threading.h" />
     <ClInclude Include="..\..\..\lib\common\xxhash.h" />
+    <ClInclude Include="..\..\..\lib\compress\zstdmt_compress.h" />
     <ClInclude Include="..\..\..\lib\dictBuilder\zdict.h" />
     <ClInclude Include="..\..\..\lib\dictBuilder\divsufsort.h" />
     <ClInclude Include="..\..\..\lib\common\fse.h" />
@@ -53,7 +65,12 @@
     <ClInclude Include="..\..\..\lib\zstd.h" />
     <ClInclude Include="..\..\..\lib\common\zstd_internal.h" />
     <ClInclude Include="..\..\..\lib\common\zstd_errors.h" />
+    <ClInclude Include="..\..\..\lib\compress\zstd_compress.h" />
+    <ClInclude Include="..\..\..\lib\compress\zstd_fast.h" />
+    <ClInclude Include="..\..\..\lib\compress\zstd_double_fast.h" />
+    <ClInclude Include="..\..\..\lib\compress\zstd_lazy.h" />
     <ClInclude Include="..\..\..\lib\compress\zstd_opt.h" />
+    <ClInclude Include="..\..\..\lib\compress\zstd_ldm.h" />
     <ClInclude Include="..\..\..\lib\legacy\zstd_legacy.h" />
     <ClInclude Include="..\..\..\lib\legacy\zstd_v01.h" />
     <ClInclude Include="..\..\..\lib\legacy\zstd_v02.h" />
@@ -66,6 +83,7 @@
     <ClInclude Include="..\..\..\programs\datagen.h" />
     <ClInclude Include="..\..\..\programs\dibio.h" />
     <ClInclude Include="..\..\..\programs\fileio.h" />
+    <ClInclude Include="..\..\..\programs\platform.h" />
     <ClInclude Include="..\..\..\programs\util.h" />
   </ItemGroup>
   <ItemGroup>
@@ -119,25 +137,25 @@
   <PropertyGroup Label="UserMacros" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <LinkIncremental>true</LinkIncremental>
-    <IncludePath>$(IncludePath);$(SolutionDir)..\..\lib;$(SolutionDir)..\..\lib\legacy;$(SolutionDir)..\..\lib\common;$(SolutionDir)..\..\lib\dictBuilder;$(UniversalCRT_IncludePath);</IncludePath>
+    <IncludePath>$(IncludePath);$(SolutionDir)..\..\lib;$(SolutionDir)..\..\lib\compress;$(SolutionDir)..\..\lib\legacy;$(SolutionDir)..\..\lib\common;$(SolutionDir)..\..\lib\dictBuilder;$(UniversalCRT_IncludePath);</IncludePath>
     <RunCodeAnalysis>false</RunCodeAnalysis>
     <LibraryPath>$(LibraryPath)</LibraryPath>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <LinkIncremental>true</LinkIncremental>
-    <IncludePath>$(IncludePath);$(SolutionDir)..\..\lib;$(SolutionDir)..\..\lib\legacy;$(SolutionDir)..\..\lib\common;$(SolutionDir)..\..\lib\dictBuilder;$(UniversalCRT_IncludePath);</IncludePath>
+    <IncludePath>$(IncludePath);$(SolutionDir)..\..\lib;$(SolutionDir)..\..\lib\compress;$(SolutionDir)..\..\lib\legacy;$(SolutionDir)..\..\lib\common;$(SolutionDir)..\..\lib\dictBuilder;$(UniversalCRT_IncludePath);</IncludePath>
     <RunCodeAnalysis>false</RunCodeAnalysis>
     <LibraryPath>$(LibraryPath);</LibraryPath>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
     <LinkIncremental>false</LinkIncremental>
-    <IncludePath>$(IncludePath);$(SolutionDir)..\..\lib;$(SolutionDir)..\..\lib\legacy;$(SolutionDir)..\..\lib\common;$(SolutionDir)..\..\lib\dictBuilder;$(UniversalCRT_IncludePath);</IncludePath>
+    <IncludePath>$(IncludePath);$(SolutionDir)..\..\lib;$(SolutionDir)..\..\lib\compress;$(SolutionDir)..\..\lib\legacy;$(SolutionDir)..\..\lib\common;$(SolutionDir)..\..\lib\dictBuilder;$(UniversalCRT_IncludePath);</IncludePath>
     <RunCodeAnalysis>false</RunCodeAnalysis>
     <LibraryPath>$(LibraryPath)</LibraryPath>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <LinkIncremental>false</LinkIncremental>
-    <IncludePath>$(IncludePath);$(SolutionDir)..\..\lib;$(SolutionDir)..\..\lib\legacy;$(SolutionDir)..\..\lib\common;$(SolutionDir)..\..\lib\dictBuilder;$(UniversalCRT_IncludePath);</IncludePath>
+    <IncludePath>$(IncludePath);$(SolutionDir)..\..\lib;$(SolutionDir)..\..\lib\compress;$(SolutionDir)..\..\lib\legacy;$(SolutionDir)..\..\lib\common;$(SolutionDir)..\..\lib\dictBuilder;$(UniversalCRT_IncludePath);</IncludePath>
     <RunCodeAnalysis>false</RunCodeAnalysis>
     <LibraryPath>$(LibraryPath);</LibraryPath>
   </PropertyGroup>
@@ -147,7 +165,7 @@
       </PrecompiledHeader>
       <WarningLevel>Level4</WarningLevel>
       <Optimization>Disabled</Optimization>
-      <PreprocessorDefinitions>ZSTD_LEGACY_SUPPORT=1;WIN32;_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>ZSTD_MULTITHREAD=1;ZSTD_LEGACY_SUPPORT=4;WIN32;_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <TreatWarningAsError>true</TreatWarningAsError>
       <EnablePREfast>false</EnablePREfast>
     </ClCompile>
@@ -163,7 +181,7 @@
       </PrecompiledHeader>
       <WarningLevel>Level4</WarningLevel>
       <Optimization>Disabled</Optimization>
-      <PreprocessorDefinitions>ZSTD_LEGACY_SUPPORT=1;WIN32;_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>ZSTD_MULTITHREAD=1;ZSTD_LEGACY_SUPPORT=4;WIN32;_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <TreatWarningAsError>true</TreatWarningAsError>
       <EnablePREfast>false</EnablePREfast>
     </ClCompile>
@@ -181,7 +199,7 @@
       <Optimization>MaxSpeed</Optimization>
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
-      <PreprocessorDefinitions>ZSTD_LEGACY_SUPPORT=1;WIN32;NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>ZSTD_MULTITHREAD=1;ZSTD_LEGACY_SUPPORT=4;WIN32;NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <EnablePREfast>false</EnablePREfast>
       <TreatWarningAsError>false</TreatWarningAsError>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
@@ -202,10 +220,11 @@
       <Optimization>MaxSpeed</Optimization>
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
-      <PreprocessorDefinitions>ZSTD_LEGACY_SUPPORT=1;WIN32;NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>ZSTD_MULTITHREAD=1;ZSTD_LEGACY_SUPPORT=4;WIN32;NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <TreatWarningAsError>false</TreatWarningAsError>
       <EnablePREfast>false</EnablePREfast>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
+      <AdditionalOptions>/DZSTD_MULTITHREAD %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>

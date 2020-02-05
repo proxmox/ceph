@@ -315,6 +315,9 @@ void osd_stat_t::dump(Formatter *f) const
   f->dump_unsigned("num_pgs", num_pgs);
   f->dump_unsigned("kb", kb);
   f->dump_unsigned("kb_used", kb_used);
+  f->dump_unsigned("kb_used_data", kb_used_data);
+  f->dump_unsigned("kb_used_omap", kb_used_omap);
+  f->dump_unsigned("kb_used_meta", kb_used_meta);
   f->dump_unsigned("kb_avail", kb_avail);
   f->open_array_section("hb_peers");
   for (auto p : hb_peers)
@@ -328,11 +331,66 @@ void osd_stat_t::dump(Formatter *f) const
   f->open_object_section("perf_stat");
   os_perf_stat.dump(f);
   f->close_section();
+  f->open_array_section("network_ping_times");
+  for (auto &i : hb_pingtime) {
+    f->open_object_section("entry");
+    f->dump_int("osd", i.first);
+    const time_t lu(i.second.last_update);
+    char buffer[26];
+    string lustr(ctime_r(&lu, buffer));
+    lustr.pop_back();   // Remove trailing \n
+    f->dump_string("last update", lustr);
+    f->open_array_section("interfaces");
+    f->open_object_section("interface");
+    f->dump_string("interface", "back");
+    f->open_object_section("average");
+    f->dump_format_unquoted("1min", "%s", fixed_u_to_string(i.second.back_pingtime[0],3).c_str());
+    f->dump_format_unquoted("5min", "%s", fixed_u_to_string(i.second.back_pingtime[1],3).c_str());
+    f->dump_format_unquoted("15min", "%s", fixed_u_to_string(i.second.back_pingtime[2],3).c_str());
+    f->close_section(); // average
+    f->open_object_section("min");
+    f->dump_format_unquoted("1min", "%s", fixed_u_to_string(i.second.back_min[0],3).c_str());
+    f->dump_format_unquoted("5min", "%s", fixed_u_to_string(i.second.back_min[1],3).c_str());
+    f->dump_format_unquoted("15min", "%s", fixed_u_to_string(i.second.back_min[2],3).c_str());
+    f->close_section(); // min
+    f->open_object_section("max");
+    f->dump_format_unquoted("1min", "%s", fixed_u_to_string(i.second.back_max[0],3).c_str());
+    f->dump_format_unquoted("5min", "%s", fixed_u_to_string(i.second.back_max[1],3).c_str());
+    f->dump_format_unquoted("15min", "%s", fixed_u_to_string(i.second.back_max[2],3).c_str());
+    f->close_section(); // max
+    f->dump_format_unquoted("last", "%s", fixed_u_to_string(i.second.back_last,3).c_str());
+    f->close_section(); // interface
+
+    if (i.second.front_pingtime[0] != 0) {
+      f->open_object_section("interface");
+      f->dump_string("interface", "front");
+      f->open_object_section("average");
+      f->dump_format_unquoted("1min", "%s", fixed_u_to_string(i.second.front_pingtime[0],3).c_str());
+      f->dump_format_unquoted("5min", "%s", fixed_u_to_string(i.second.front_pingtime[1],3).c_str());
+      f->dump_format_unquoted("15min", "%s", fixed_u_to_string(i.second.front_pingtime[2],3).c_str());
+      f->close_section(); // average
+      f->open_object_section("min");
+      f->dump_format_unquoted("1min", "%s", fixed_u_to_string(i.second.front_min[0],3).c_str());
+      f->dump_format_unquoted("5min", "%s", fixed_u_to_string(i.second.front_min[1],3).c_str());
+      f->dump_format_unquoted("15min", "%s", fixed_u_to_string(i.second.front_min[2],3).c_str());
+      f->close_section(); // min
+      f->open_object_section("max");
+      f->dump_format_unquoted("1min", "%s", fixed_u_to_string(i.second.front_max[0],3).c_str());
+      f->dump_format_unquoted("5min", "%s", fixed_u_to_string(i.second.front_max[1],3).c_str());
+      f->dump_format_unquoted("15min", "%s", fixed_u_to_string(i.second.front_max[2],3).c_str());
+      f->close_section(); // max
+      f->dump_format_unquoted("last", "%s", fixed_u_to_string(i.second.front_last,3).c_str());
+      f->close_section(); // interface
+    }
+    f->close_section(); // interfaces
+    f->close_section(); // entry
+  }
+  f->close_section(); // network_ping_time
 }
 
 void osd_stat_t::encode(bufferlist &bl) const
 {
-  ENCODE_START(7, 2, bl);
+  ENCODE_START(14, 2, bl);
   ::encode(kb, bl);
   ::encode(kb_used, bl);
   ::encode(kb_avail, bl);
@@ -345,12 +403,67 @@ void osd_stat_t::encode(bufferlist &bl) const
   ::encode(up_from, bl);
   ::encode(seq, bl);
   ::encode(num_pgs, bl);
+  ::encode(kb_used_data, bl);
+  ::encode(kb_used_omap, bl);
+  ::encode(kb_used_meta, bl);
+
+  // Compatibility
+  // Build statfs just like decode handles old versions (pre version 9) in later releases
+  store_statfs_t statfs;
+  statfs.total = kb << 10;
+  statfs.available = kb_avail << 10;
+  statfs.internally_reserved =
+    statfs.total > statfs.available ? statfs.total - statfs.available : 0;
+  int64_t used = kb_used << 10;
+  if ((int64_t)statfs.internally_reserved > used) {
+    statfs.internally_reserved -= used;
+  } else {
+    statfs.internally_reserved = 0;
+  }
+  statfs.allocated = kb_used_data << 10;
+  statfs.omap_allocated = kb_used_omap << 10;
+  statfs.internal_metadata = kb_used_meta << 10;
+  ::encode(statfs, bl);
+  ///////////////////////////////////
+  os_alerts_t os_alerts;
+  ::encode(os_alerts, bl);
+  ::encode((uint64_t)0, bl); // num_shards_repaired
+  ::encode((uint32_t)0, bl); // num_osds
+  ::encode((uint32_t)0, bl); // num_per_pool_osds
+  ::encode((uint32_t)0, bl); // num_per_pool_omap_osds
+
+  // hb_pingtime map
+  ::encode((int)hb_pingtime.size(), bl);
+  for (auto i : hb_pingtime) {
+    ::encode(i.first, bl); // osd
+    ::encode(i.second.last_update, bl);
+    ::encode(i.second.back_pingtime[0], bl);
+    ::encode(i.second.back_pingtime[1], bl);
+    ::encode(i.second.back_pingtime[2], bl);
+    ::encode(i.second.back_min[0], bl);
+    ::encode(i.second.back_min[1], bl);
+    ::encode(i.second.back_min[2], bl);
+    ::encode(i.second.back_max[0], bl);
+    ::encode(i.second.back_max[1], bl);
+    ::encode(i.second.back_max[2], bl);
+    ::encode(i.second.back_last, bl);
+    ::encode(i.second.front_pingtime[0], bl);
+    ::encode(i.second.front_pingtime[1], bl);
+    ::encode(i.second.front_pingtime[2], bl);
+    ::encode(i.second.front_min[0], bl);
+    ::encode(i.second.front_min[1], bl);
+    ::encode(i.second.front_min[2], bl);
+    ::encode(i.second.front_max[0], bl);
+    ::encode(i.second.front_max[1], bl);
+    ::encode(i.second.front_max[2], bl);
+    ::encode(i.second.front_last, bl);
+  }
   ENCODE_FINISH(bl);
 }
 
 void osd_stat_t::decode(bufferlist::iterator &bl)
 {
-  DECODE_START_LEGACY_COMPAT_LEN(6, 2, 2, bl);
+  DECODE_START_LEGACY_COMPAT_LEN(14, 2, 2, bl);
   ::decode(kb, bl);
   ::decode(kb_used, bl);
   ::decode(kb_avail, bl);
@@ -370,6 +483,68 @@ void osd_stat_t::decode(bufferlist::iterator &bl)
   if (struct_v >= 7) {
     ::decode(num_pgs, bl);
   }
+  if (struct_v >= 8) {
+    ::decode(kb_used_data, bl);
+    ::decode(kb_used_omap, bl);
+    ::decode(kb_used_meta, bl);
+  } else {
+    kb_used_data = kb_used;
+    kb_used_omap = 0;
+    kb_used_meta = 0;
+  }
+  if (struct_v >= 9) {
+    store_statfs_t statfs;
+    ::decode(statfs, bl);
+  }
+  if (struct_v >= 10) {
+    os_alerts_t os_alerts;
+    ::decode(os_alerts, bl);
+  }
+  if (struct_v >= 11) {
+    uint64_t dummy;
+    ::decode(dummy, bl);
+  }
+  if (struct_v >= 12) {
+    uint32_t dummy;
+    ::decode(dummy, bl);
+    ::decode(dummy, bl);
+  }
+  if (struct_v >= 13) {
+    uint32_t dummy;
+    ::decode(dummy, bl);
+  }
+  hb_pingtime.clear();
+  if (struct_v >= 14) {
+    int count;
+    ::decode(count, bl);
+    for (int i = 0 ; i < count ; i++) {
+      int osd;
+      ::decode(osd, bl);
+      struct Interfaces ifs;
+      ::decode(ifs.last_update, bl);
+      ::decode(ifs.back_pingtime[0],bl);
+      ::decode(ifs.back_pingtime[1], bl);
+      ::decode(ifs.back_pingtime[2], bl);
+      ::decode(ifs.back_min[0],bl);
+      ::decode(ifs.back_min[1], bl);
+      ::decode(ifs.back_min[2], bl);
+      ::decode(ifs.back_max[0],bl);
+      ::decode(ifs.back_max[1], bl);
+      ::decode(ifs.back_max[2], bl);
+      ::decode(ifs.back_last, bl);
+      ::decode(ifs.front_pingtime[0], bl);
+      ::decode(ifs.front_pingtime[1], bl);
+      ::decode(ifs.front_pingtime[2], bl);
+      ::decode(ifs.front_min[0], bl);
+      ::decode(ifs.front_min[1], bl);
+      ::decode(ifs.front_min[2], bl);
+      ::decode(ifs.front_max[0], bl);
+      ::decode(ifs.front_max[1], bl);
+      ::decode(ifs.front_max[2], bl);
+      ::decode(ifs.front_last, bl);
+      hb_pingtime[osd] = ifs;
+    }
+  }
   DECODE_FINISH(bl);
 }
 
@@ -378,12 +553,22 @@ void osd_stat_t::generate_test_instances(std::list<osd_stat_t*>& o)
   o.push_back(new osd_stat_t);
 
   o.push_back(new osd_stat_t);
-  o.back()->kb = 1;
-  o.back()->kb_used = 2;
+  o.back()->kb = 9;
+  o.back()->kb_used = 6;
+  o.back()->kb_used_data = 3;
+  o.back()->kb_used_omap = 2;
+  o.back()->kb_used_meta = 1;
   o.back()->kb_avail = 3;
   o.back()->hb_peers.push_back(7);
   o.back()->snap_trim_queue_len = 8;
   o.back()->num_snap_trimming = 99;
+  struct Interfaces gen_interfaces = {
+	123456789, { 1000, 900, 800 }, { 990, 890, 790 }, { 1010, 910, 810 }, 1001,
+	 { 1100, 1000, 900 }, { 1090, 990, 890 }, { 1110, 1010, 910 }, 1101 };
+  o.back()->hb_pingtime[20] = gen_interfaces;
+  gen_interfaces = {
+	987654321, { 100, 200, 300 }, { 90, 190, 290 }, { 110, 210, 310 }, 101 };
+  o.back()->hb_pingtime[30] = gen_interfaces;
 }
 
 // -- pg_t --
@@ -1964,11 +2149,13 @@ void object_stat_sum_t::dump(Formatter *f) const
   f->dump_int("num_objects_pinned", num_objects_pinned);
   f->dump_int("num_legacy_snapsets", num_legacy_snapsets);
   f->dump_int("num_large_omap_objects", num_large_omap_objects);
+  f->dump_int("num_omap_bytes", num_omap_bytes);
+  f->dump_int("num_omap_keys", num_omap_keys);
 }
 
 void object_stat_sum_t::encode(bufferlist& bl) const
 {
-  ENCODE_START(17, 14, bl);
+  ENCODE_START(18, 14, bl);
 #if defined(CEPH_LITTLE_ENDIAN)
   bl.append((char *)(&num_bytes), sizeof(object_stat_sum_t));
 #else
@@ -2008,6 +2195,8 @@ void object_stat_sum_t::encode(bufferlist& bl) const
   ::encode(num_objects_missing, bl);
   ::encode(num_legacy_snapsets, bl);
   ::encode(num_large_omap_objects, bl);
+  ::encode(num_omap_bytes, bl);
+  ::encode(num_omap_keys, bl);
 #endif
   ENCODE_FINISH(bl);
 }
@@ -2015,9 +2204,9 @@ void object_stat_sum_t::encode(bufferlist& bl) const
 void object_stat_sum_t::decode(bufferlist::iterator& bl)
 {
   bool decode_finish = false;
-  DECODE_START(17, bl);  // make sure to also update fast decode below
+  DECODE_START(18, bl);  // make sure to also update fast decode below
 #if defined(CEPH_LITTLE_ENDIAN)
-  if (struct_v >= 17) {  // this must match newest decode version
+  if (struct_v >= 18) {  // this must match newest decode version
     bl.copy(sizeof(object_stat_sum_t), (char*)(&num_bytes));
     decode_finish = true;
   }
@@ -2065,6 +2254,10 @@ void object_stat_sum_t::decode(bufferlist::iterator& bl)
     if (struct_v >= 17) {
       ::decode(num_large_omap_objects, bl);
     }
+    if (struct_v >= 18) {
+      ::decode(num_omap_bytes, bl);
+      ::decode(num_omap_keys, bl);
+    }
   }
   DECODE_FINISH(bl);
 }
@@ -2105,6 +2298,8 @@ void object_stat_sum_t::generate_test_instances(list<object_stat_sum_t*>& o)
   a.num_evict_mode_full = 0;
   a.num_objects_pinned = 20;
   a.num_large_omap_objects = 5;
+  a.num_omap_bytes = 20000;
+  a.num_omap_keys = 200;
   o.push_back(new object_stat_sum_t(a));
 }
 
@@ -2146,6 +2341,8 @@ void object_stat_sum_t::add(const object_stat_sum_t& o)
   num_objects_pinned += o.num_objects_pinned;
   num_legacy_snapsets += o.num_legacy_snapsets;
   num_large_omap_objects += o.num_large_omap_objects;
+  num_omap_bytes += o.num_omap_bytes;
+  num_omap_keys += o.num_omap_keys;
 }
 
 void object_stat_sum_t::sub(const object_stat_sum_t& o)
@@ -2186,6 +2383,8 @@ void object_stat_sum_t::sub(const object_stat_sum_t& o)
   num_objects_pinned -= o.num_objects_pinned;
   num_legacy_snapsets -= o.num_legacy_snapsets;
   num_large_omap_objects -= o.num_large_omap_objects;
+  num_omap_bytes -= o.num_omap_bytes;
+  num_omap_keys -= o.num_omap_keys;
 }
 
 bool operator==(const object_stat_sum_t& l, const object_stat_sum_t& r)
@@ -2226,7 +2425,9 @@ bool operator==(const object_stat_sum_t& l, const object_stat_sum_t& r)
     l.num_evict_mode_full == r.num_evict_mode_full &&
     l.num_objects_pinned == r.num_objects_pinned &&
     l.num_legacy_snapsets == r.num_legacy_snapsets &&
-    l.num_large_omap_objects == r.num_large_omap_objects;
+    l.num_large_omap_objects == r.num_large_omap_objects &&
+    l.num_omap_bytes == r.num_omap_bytes &&
+    l.num_omap_keys == r.num_omap_keys;
 }
 
 // -- object_stat_collection_t --
@@ -4339,11 +4540,41 @@ void pg_log_t::generate_test_instances(list<pg_log_t*>& o)
     o.back()->log.push_back(**p);
 }
 
-void pg_log_t::copy_after(const pg_log_t &other, eversion_t v) 
+static void _handle_dups(CephContext* cct, pg_log_t &target, const pg_log_t &other, unsigned maxdups)
+{
+  auto earliest_dup_version =
+	        target.head.version < maxdups ? 0u : target.head.version - maxdups + 1;
+  lgeneric_subdout(cct, osd, 20) << "copy_up_to/copy_after earliest_dup_version " << earliest_dup_version << dendl;
+
+  for (auto d = other.dups.cbegin(); d != other.dups.cend(); ++d) {
+    if (d->version.version >= earliest_dup_version) {
+      lgeneric_subdout(cct, osd, 20)
+	      << "copy_up_to/copy_after copy dup version "
+	      << d->version << dendl;
+      target.dups.push_back(pg_log_dup_t(*d));
+    }
+  }
+
+  for (auto i = other.log.cbegin(); i != other.log.cend(); ++i) {
+    ceph_assert(i->version > other.tail);
+    if (i->version > target.tail)
+      break;
+    if (i->version.version >= earliest_dup_version) {
+      lgeneric_subdout(cct, osd, 20)
+		<< "copy_up_to/copy_after copy dup from log version "
+		<< i->version << dendl;
+      target.dups.push_back(pg_log_dup_t(*i));
+    }
+  }
+}
+
+
+void pg_log_t::copy_after(CephContext* cct, const pg_log_t &other, eversion_t v)
 {
   can_rollback_to = other.can_rollback_to;
   head = other.head;
   tail = other.tail;
+  lgeneric_subdout(cct, osd, 20) << __func__ << " v " << v << dendl;
   for (list<pg_log_entry_t>::const_reverse_iterator i = other.log.rbegin();
        i != other.log.rend();
        ++i) {
@@ -4353,45 +4584,31 @@ void pg_log_t::copy_after(const pg_log_t &other, eversion_t v)
       tail = i->version;
       break;
     }
+    lgeneric_subdout(cct, osd, 20) << __func__ << " copy log version " << i->version << dendl;
     log.push_front(*i);
   }
+  _handle_dups(cct, *this, other, cct->_conf->osd_pg_log_dups_tracked);
 }
 
-void pg_log_t::copy_range(const pg_log_t &other, eversion_t from, eversion_t to)
-{
-  can_rollback_to = other.can_rollback_to;
-  list<pg_log_entry_t>::const_reverse_iterator i = other.log.rbegin();
-  assert(i != other.log.rend());
-  while (i->version > to) {
-    ++i;
-    assert(i != other.log.rend());
-  }
-  assert(i->version == to);
-  head = to;
-  for ( ; i != other.log.rend(); ++i) {
-    if (i->version <= from) {
-      tail = i->version;
-      break;
-    }
-    log.push_front(*i);
-  }
-}
-
-void pg_log_t::copy_up_to(const pg_log_t &other, int max)
+void pg_log_t::copy_up_to(CephContext* cct, const pg_log_t &other, int max)
 {
   can_rollback_to = other.can_rollback_to;
   int n = 0;
   head = other.head;
   tail = other.tail;
+  lgeneric_subdout(cct, osd, 20) << __func__ << " max " << max << dendl;
   for (list<pg_log_entry_t>::const_reverse_iterator i = other.log.rbegin();
        i != other.log.rend();
        ++i) {
+    ceph_assert(i->version > other.tail);
     if (n++ >= max) {
       tail = i->version;
       break;
     }
+    lgeneric_subdout(cct, osd, 20) << __func__ << " copy log version " << i->version << dendl;
     log.push_front(*i);
   }
+  _handle_dups(cct, *this, other, cct->_conf->osd_pg_log_dups_tracked);
 }
 
 ostream& pg_log_t::print(ostream& out) const
@@ -5868,7 +6085,7 @@ void ScrubMap::generate_test_instances(list<ScrubMap*>& o)
 void ScrubMap::object::encode(bufferlist& bl) const
 {
   bool compat_read_error = read_error || ec_hash_mismatch || ec_size_mismatch;
-  ENCODE_START(9, 7, bl);
+  ENCODE_START(10, 7, bl);
   ::encode(size, bl);
   ::encode(negative, bl);
   ::encode(attrs, bl);
@@ -5886,12 +6103,14 @@ void ScrubMap::object::encode(bufferlist& bl) const
   ::encode(large_omap_object_found, bl);
   ::encode(large_omap_object_key_count, bl);
   ::encode(large_omap_object_value_size, bl);
+  ::encode(object_omap_bytes, bl);
+  ::encode(object_omap_keys, bl);
   ENCODE_FINISH(bl);
 }
 
 void ScrubMap::object::decode(bufferlist::iterator& bl)
 {
-  DECODE_START(9, bl);
+  DECODE_START(10, bl);
   ::decode(size, bl);
   bool tmp, compat_read_error = false;
   ::decode(tmp, bl);
@@ -5928,6 +6147,10 @@ void ScrubMap::object::decode(bufferlist::iterator& bl)
     large_omap_object_found = tmp;
     ::decode(large_omap_object_key_count, bl);
     ::decode(large_omap_object_value_size, bl);
+  }
+  if (struct_v >= 10) {
+    ::decode(object_omap_bytes, bl);
+    ::decode(object_omap_keys, bl);
   }
   DECODE_FINISH(bl);
 }
@@ -6007,6 +6230,7 @@ ostream& operator<<(ostream& out, const OSDOp& op)
     case CEPH_OSD_OP_ZERO:
     case CEPH_OSD_OP_APPEND:
     case CEPH_OSD_OP_MAPEXT:
+    case CEPH_OSD_OP_CMPEXT:
       out << " " << op.op.extent.offset << "~" << op.op.extent.length;
       if (op.op.extent.truncate_seq)
 	out << " [" << op.op.extent.truncate_seq << "@"
@@ -6102,10 +6326,12 @@ bool store_statfs_t::operator==(const store_statfs_t& other) const
   return total == other.total
     && available == other.available
     && allocated == other.allocated
-    && stored == other.stored
-    && compressed == other.compressed
-    && compressed_allocated == other.compressed_allocated
-    && compressed_original == other.compressed_original;
+    && data_stored == other.data_stored
+    && data_compressed == other.data_compressed
+    && data_compressed_allocated == other.data_compressed_allocated
+    && data_compressed_original == other.data_compressed_original
+    && omap_allocated == other.omap_allocated
+    && internal_metadata == other.internal_metadata;
 }
 
 void store_statfs_t::dump(Formatter *f) const
@@ -6113,10 +6339,12 @@ void store_statfs_t::dump(Formatter *f) const
   f->dump_int("total", total);
   f->dump_int("available", available);
   f->dump_int("allocated", allocated);
-  f->dump_int("stored", stored);
-  f->dump_int("compressed", compressed);
-  f->dump_int("compressed_allocated", compressed_allocated);
-  f->dump_int("compressed_original", compressed_original);
+  f->dump_int("data_stored", data_stored);
+  f->dump_int("data_compressed", data_compressed);
+  f->dump_int("data_compressed_allocated", data_compressed_allocated);
+  f->dump_int("data_compressed_original", data_compressed_original);
+  f->dump_int("omap_allocated", omap_allocated);
+  f->dump_int("internal_metadata", internal_metadata);
 }
 
 ostream& operator<<(ostream& out, const store_statfs_t &s)
@@ -6124,11 +6352,13 @@ ostream& operator<<(ostream& out, const store_statfs_t &s)
   out << std::hex
       << "store_statfs(0x" << s.available
       << "/0x"  << s.total
-      << ", stored 0x" << s.stored
+      << ", data 0x" << s.data_stored
       << "/0x"  << s.allocated
-      << ", compress 0x" << s.compressed
-      << "/0x"  << s.compressed_allocated
-      << "/0x"  << s.compressed_original
+      << ", compress 0x" << s.data_compressed
+      << "/0x"  << s.data_compressed_allocated
+      << "/0x"  << s.data_compressed_original
+      << ", omap 0x" << s.omap_allocated
+      << ", meta 0x" << s.internal_metadata
       << std::dec
       << ")";
   return out;

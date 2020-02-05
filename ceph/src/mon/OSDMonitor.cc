@@ -578,7 +578,6 @@ void OSDMonitor::update_from_paxos(bool *need_bootstrap)
 
   share_map_with_random_osd();
   update_logger();
-
   process_failures();
 
   // make sure our feature bits reflect the latest map
@@ -941,7 +940,7 @@ void OSDMonitor::maybe_prime_pg_temp()
     dout(10) << __func__ << " no pools, no pg_temp priming" << dendl;
   } else if (all) {
     PrimeTempJob job(next, this);
-    mapper.queue(&job, g_conf->mon_osd_mapping_pgs_per_chunk);
+    mapper.queue(&job, g_conf->mon_osd_mapping_pgs_per_chunk, {});
     if (job.wait_for(g_conf->mon_osd_prime_pg_temp_max_time)) {
       dout(10) << __func__ << " done in " << job.get_duration() << dendl;
     } else {
@@ -1089,6 +1088,23 @@ void OSDMonitor::encode_pending(MonitorDBStore::TransactionRef t)
     OSDMap tmp;
     tmp.deepish_copy_from(osdmap);
     tmp.apply_incremental(pending_inc);
+
+    // clean inappropriate pg_upmap/pg_upmap_items (if any)
+    {
+      // check every upmapped pg for now
+      // until we could reliably identify certain cases to ignore,
+      // which is obviously the hard part TBD..
+      vector<pg_t> pgs_to_check;
+      tmp.get_upmap_pgs(&pgs_to_check);
+      if (pgs_to_check.size() < g_conf->mon_clean_pg_upmaps_per_chunk * 2) {
+        // not enough pgs, do it inline
+        tmp.clean_pg_upmaps(cct, &pending_inc);
+      } else {
+        CleanUpmapJob job(cct, tmp, pending_inc);
+        mapper.queue(&job, g_conf->mon_clean_pg_upmaps_per_chunk, pgs_to_check);
+        job.wait();
+      }
+    }
 
     if (tmp.require_osd_release >= CEPH_RELEASE_LUMINOUS) {
       // remove any legacy osdmap nearfull/full flags
@@ -1409,9 +1425,6 @@ void OSDMonitor::encode_pending(MonitorDBStore::TransactionRef t)
       dout(2) << " osd." << i->first << " WEIGHT " << hex << i->second << dec << dendl;
     }
   }
-
-  // clean inappropriate pg_upmap/pg_upmap_items (if any)
-  osdmap.maybe_remove_pg_upmaps(cct, osdmap, &pending_inc);
 
   // features for osdmap and its incremental
   uint64_t features;
@@ -1854,17 +1867,22 @@ bool OSDMonitor::preprocess_get_osdmap(MonOpRequestRef op)
   epoch_t first = get_first_committed();
   epoch_t last = osdmap.get_epoch();
   int max = g_conf->osd_map_message_max;
+  ssize_t max_bytes = g_conf->osd_map_message_max_bytes;
   for (epoch_t e = MAX(first, m->get_full_first());
-       e <= MIN(last, m->get_full_last()) && max > 0;
+       e <= MIN(last, m->get_full_last()) && max > 0 && max_bytes > 0;
        ++e, --max) {
-    int r = get_version_full(e, features, reply->maps[e]);
+    bufferlist& bl = reply->maps[e];
+    int r = get_version_full(e, features, bl);
     assert(r >= 0);
+    max_bytes -= bl.length();
   }
   for (epoch_t e = MAX(first, m->get_inc_first());
-       e <= MIN(last, m->get_inc_last()) && max > 0;
+       e <= MIN(last, m->get_inc_last()) && max > 0 && max_bytes > 0;
        ++e, --max) {
-    int r = get_version(e, features, reply->incremental_maps[e]);
-    assert(r >= 0);
+    bufferlist& bl = reply->incremental_maps[e];
+    int r = get_version(e, features, bl);
+    ceph_assert(r >= 0);
+    max_bytes -= bl.length();
   }
   reply->oldest_map = first;
   reply->newest_map = last;
@@ -2189,23 +2207,27 @@ bool OSDMonitor::check_failure(utime_t now, int target_osd, failure_info_t& fi)
   // help us localize the grace correction to a subset of the system
   // (say, a rack with a bad switch) that is unhappy.
   assert(fi.reporters.size());
-  for (map<int,failure_reporter_t>::iterator p = fi.reporters.begin();
-	p != fi.reporters.end();
-	++p) {
+  for (auto p = fi.reporters.begin(); p != fi.reporters.end();) {
     // get the parent bucket whose type matches with "reporter_subtree_level".
     // fall back to OSD if the level doesn't exist.
-    map<string, string> reporter_loc = osdmap.crush->get_full_location(p->first);
-    map<string, string>::iterator iter = reporter_loc.find(reporter_subtree_level);
-    if (iter == reporter_loc.end()) {
-      reporters_by_subtree.insert("osd." + to_string(p->first));
+    if (osdmap.exists(p->first)) {
+      auto reporter_loc = osdmap.crush->get_full_location(p->first);
+      auto iter = reporter_loc.find(reporter_subtree_level);
+      if (iter == reporter_loc.end()) {
+        reporters_by_subtree.insert("osd." + to_string(p->first));
+      } else {
+        reporters_by_subtree.insert(iter->second);
+      }
+      if (g_conf->mon_osd_adjust_heartbeat_grace) {
+        const osd_xinfo_t& xi = osdmap.get_xinfo(p->first);
+        utime_t elapsed = now - xi.down_stamp;
+        double decay = exp((double)elapsed * decay_k);
+        peer_grace += decay * (double)xi.laggy_interval * xi.laggy_probability;
+      }
+      ++p;
     } else {
-      reporters_by_subtree.insert(iter->second);
-    }
-    if (g_conf->mon_osd_adjust_heartbeat_grace) {
-      const osd_xinfo_t& xi = osdmap.get_xinfo(p->first);
-      utime_t elapsed = now - xi.down_stamp;
-      double decay = exp((double)elapsed * decay_k);
-      peer_grace += decay * (double)xi.laggy_interval * xi.laggy_probability;
+      fi.cancel_report(p->first);;
+      p = fi.reporters.erase(p);
     }
   }
   
@@ -2270,6 +2292,8 @@ bool OSDMonitor::prepare_failure(MonOpRequestRef op)
   assert(osdmap.is_up(target_osd));
   assert(osdmap.get_addr(target_osd) == m->get_target().addr);
 
+  mon->no_reply(op);
+
   if (m->if_osd_failed()) {
     // calculate failure time
     utime_t now = ceph_clock_now();
@@ -2281,7 +2305,6 @@ bool OSDMonitor::prepare_failure(MonOpRequestRef op)
       mon->clog->debug() << m->get_target() << " reported immediately failed by "
             << m->get_orig_source_inst();
       force_failure(target_osd, reporter);
-      mon->no_reply(op);
       return true;
     }
     mon->clog->debug() << m->get_target() << " reported failed by "
@@ -2315,7 +2338,6 @@ bool OSDMonitor::prepare_failure(MonOpRequestRef op)
     } else {
       dout(10) << " no failure_info for osd." << target_osd << dendl;
     }
-    mon->no_reply(op);
   }
 
   return false;
@@ -6074,7 +6096,11 @@ int OSDMonitor::prepare_pool_size(const unsigned pool_type,
       err = get_erasure_code(erasure_code_profile, &erasure_code, ss);
       if (err == 0) {
 	*size = erasure_code->get_chunk_count();
-	*min_size = MIN(erasure_code->get_data_chunk_count() + 1, *size);
+	*min_size =
+	  erasure_code->get_data_chunk_count() +
+	  MIN(1, erasure_code->get_coding_chunk_count() - 1);
+	assert(*min_size <= *size);
+	assert(*min_size >= erasure_code->get_data_chunk_count());
       }
     }
     break;
@@ -6588,9 +6614,9 @@ int OSDMonitor::prepare_command_pool_set(map<string,cmd_vartype> &cmdmap,
     int64_t new_pgs = n - p.get_pg_num();
     if (new_pgs > g_conf->mon_osd_max_split_count * expected_osds) {
       ss << "specified pg_num " << n << " is too large (creating "
-	 << new_pgs << " new PGs on ~" << expected_osds
-	 << " OSDs exceeds per-OSD max of " << g_conf->mon_osd_max_split_count
-	 << ')';
+         << new_pgs << " new PGs on ~" << expected_osds
+         << " OSDs would exceed the per-OSD max of " << g_conf->mon_osd_max_split_count
+         << " given by mon_osd_max_split_count); please increase the pg_num in smaller steps";
       return -E2BIG;
     }
     p.set_pg_num(n);
@@ -9553,7 +9579,7 @@ bool OSDMonitor::prepare_command_impl(MonOpRequestRef op,
           (idvec[0] == "any" || idvec[0] == "all" || idvec[0] == "*")) {
         if (prefix == "osd in") {
           // touch out osds only
-          osdmap.get_out_osds(osds);
+          osdmap.get_out_existing_osds(osds);
         } else {
           osdmap.get_all_osds(osds);
         }

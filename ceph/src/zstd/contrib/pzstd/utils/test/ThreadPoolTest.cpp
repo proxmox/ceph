@@ -1,15 +1,16 @@
-/**
+/*
  * Copyright (c) 2016-present, Facebook, Inc.
  * All rights reserved.
  *
- * This source code is licensed under the BSD-style license found in the
- * LICENSE file in the root directory of this source tree. An additional grant
- * of patent rights can be found in the PATENTS file in the same directory.
+ * This source code is licensed under both the BSD-style license (found in the
+ * LICENSE file in the root directory of this source tree) and the GPLv2 (found
+ * in the COPYING file in the root directory of this source tree).
  */
 #include "utils/ThreadPool.h"
 
 #include <gtest/gtest.h>
 #include <atomic>
+#include <iostream>
 #include <thread>
 #include <vector>
 
@@ -34,16 +35,19 @@ TEST(ThreadPool, AllJobsFinished) {
   std::atomic<unsigned> numFinished{0};
   std::atomic<bool> start{false};
   {
+    std::cerr << "Creating executor" << std::endl;
     ThreadPool executor(5);
     for (int i = 0; i < 10; ++i) {
       executor.add([ &numFinished, &start ] {
         while (!start.load()) {
-          // spin
+          std::this_thread::yield();
         }
         ++numFinished;
       });
     }
+    std::cerr << "Starting" << std::endl;
     start.store(true);
+    std::cerr << "Finishing" << std::endl;
   }
   EXPECT_EQ(10, numFinished.load());
 }

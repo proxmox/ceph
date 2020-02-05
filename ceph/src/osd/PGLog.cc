@@ -57,8 +57,9 @@ void PGLog::IndexedLog::trim(
   auto earliest_dup_version =
     log.rbegin()->version.version < cct->_conf->osd_pg_log_dups_tracked
     ? 0u
-    : log.rbegin()->version.version - cct->_conf->osd_pg_log_dups_tracked;
+    : log.rbegin()->version.version - cct->_conf->osd_pg_log_dups_tracked + 1;
 
+  lgeneric_subdout(cct, osd, 20) << "earliest_dup_version = " << earliest_dup_version << dendl;
   while (!log.empty()) {
     const pg_log_entry_t &e = *log.begin();
     if (e.version > s)
@@ -70,7 +71,6 @@ void PGLog::IndexedLog::trim(
     unindex(e);         // remove from index,
 
     // add to dup list
-    lgeneric_subdout(cct, osd, 20) << "earliest_dup_version = " << earliest_dup_version << dendl;
     if (e.version.version >= earliest_dup_version) {
       if (write_from_dups != nullptr && *write_from_dups > e.version) {
 	lgeneric_subdout(cct, osd, 20) << "updating write_from_dups from " << *write_from_dups << " to " << e.version << dendl;
@@ -257,6 +257,11 @@ void PGLog::proc_replica_log(
     limit :
     first_non_divergent->version;
 
+  // we merge and adjust the replica's log, rollback the rollbackable divergent entry, 
+  // remove the unrollbackable divergent entry and mark the according object as missing. 
+  // the rollback boundary must choose crt of the olog which going to be merged. 
+  // The replica log's(olog) crt will not be modified, so it could get passed
+  // to _merge_divergent_entries() directly.
   IndexedLog folog(olog);
   auto divergent = folog.rewind_from_head(lu);
   _merge_divergent_entries(
@@ -306,7 +311,11 @@ void PGLog::rewind_divergent_log(eversion_t newhead,
   dout(10) << "rewind_divergent_log truncate divergent future " <<
     newhead << dendl;
 
-
+  // We need to preserve the original crt before it gets updated in rewind_from_head().
+  // Later, in merge_object_divergent_entries(), we use it to check whether we can rollback
+  // a divergent entry or not.
+  eversion_t original_crt = log.get_can_rollback_to();
+  dout(20) << __func__ << " original_crt = " << original_crt << dendl;
   if (info.last_complete > newhead)
     info.last_complete = newhead;
 
@@ -323,7 +332,7 @@ void PGLog::rewind_divergent_log(eversion_t newhead,
     log,
     divergent,
     info,
-    log.get_can_rollback_to(),
+    original_crt,
     missing,
     rollbacker,
     this);
@@ -421,6 +430,11 @@ void PGLog::merge_log(pg_info_t &oinfo, pg_log_t &olog, pg_shard_t fromosd,
 	     << lower_bound << dendl;
     mark_dirty_from(lower_bound);
 
+    // We need to preserve the original crt before it gets updated in rewind_from_head().
+    // Later, in merge_object_divergent_entries(), we use it to check whether we can rollback
+    // a divergent entry or not.
+    eversion_t original_crt = log.get_can_rollback_to();
+    dout(20) << __func__ << " original_crt = " << original_crt << dendl;
     auto divergent = log.rewind_from_head(lower_bound);
     // move aside divergent items
     for (auto &&oe: divergent) {
@@ -444,7 +458,7 @@ void PGLog::merge_log(pg_info_t &oinfo, pg_log_t &olog, pg_shard_t fromosd,
       log,
       divergent,
       info,
-      log.get_can_rollback_to(),
+      original_crt,
       missing,
       rollbacker,
       this);
@@ -543,12 +557,12 @@ bool PGLog::merge_log_dups(const pg_log_t& olog) {
   }
 
   // remove any dup entries that overlap with pglog
-  if (!log.dups.empty() && log.dups.back().version >= log.tail) {
-    dout(10) << "merge_log removed dups overlapping log entries [" <<
+  if (!log.dups.empty() && log.dups.back().version > log.tail) {
+    dout(10) << "merge_log removed dups overlapping log entries (" <<
       log.tail << "," << log.dups.back().version << "]" << dendl;
     changed = true;
 
-    while (!log.dups.empty() && log.dups.back().version >= log.tail) {
+    while (!log.dups.empty() && log.dups.back().version > log.tail) {
       log.unindex(log.dups.back());
       mark_dirty_from_dups(log.dups.back().version);
       log.dups.pop_back();

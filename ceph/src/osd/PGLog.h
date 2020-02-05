@@ -104,13 +104,19 @@ public:
     mempool::osd_pglog::list<pg_log_entry_t>::reverse_iterator
       rollback_info_trimmed_to_riter;
 
+    /*
+     * return true if we need to mark the pglog as dirty
+     */
     template <typename F>
-    void advance_can_rollback_to(eversion_t to, F &&f) {
-      if (to > can_rollback_to)
-	can_rollback_to = to;
+    bool advance_can_rollback_to(eversion_t to, F &&f) {
+      bool dirty_log = to > can_rollback_to || to > rollback_info_trimmed_to;
+      if (dirty_log) {
+	if (to > can_rollback_to)
+	  can_rollback_to = to;
 
-      if (to > rollback_info_trimmed_to)
-	rollback_info_trimmed_to = to;
+	if (to > rollback_info_trimmed_to)
+	  rollback_info_trimmed_to = to;
+      }
 
       while (rollback_info_trimmed_to_riter != log.rbegin()) {
 	--rollback_info_trimmed_to_riter;
@@ -120,6 +126,8 @@ public:
 	}
 	f(*rollback_info_trimmed_to_riter);
       }
+
+      return dirty_log;
     }
 
     void reset_rollback_info_trimmed_to_riter() {
@@ -174,8 +182,8 @@ public:
 	  h->trim(entry);
 	});
     }
-    void roll_forward_to(eversion_t to, LogEntryHandler *h) {
-      advance_can_rollback_to(
+    bool roll_forward_to(eversion_t to, LogEntryHandler *h) {
+      return advance_can_rollback_to(
 	to,
 	[&](pg_log_entry_t &entry) {
 	  h->rollforward(entry);
@@ -562,6 +570,7 @@ protected:
   bool pg_log_debug;
   /// Log is clean on [dirty_to, dirty_from)
   bool touched_log;
+  bool dirty_log;
   bool clear_divergent_priors;
   bool rebuilt_missing_with_deletes = false;
 
@@ -587,7 +596,7 @@ protected:
   }
 public:
   bool is_dirty() const {
-    return !touched_log ||
+    return !touched_log || dirty_log ||
       (dirty_to != eversion_t()) ||
       (dirty_from != eversion_t::max()) ||
       (writeout_from != eversion_t::max()) ||
@@ -633,6 +642,7 @@ protected:
     dirty_to = eversion_t();
     dirty_from = eversion_t::max();
     touched_log = true;
+    dirty_log = false;
     trimmed.clear();
     trimmed_dups.clear();
     writeout_from = eversion_t::max();
@@ -654,6 +664,7 @@ public:
     cct(cct),
     pg_log_debug(!(cct && !(cct->_conf->osd_debug_pg_log_writeout))),
     touched_log(false),
+    dirty_log(false),
     clear_divergent_priors(false)
   { }
 
@@ -711,9 +722,10 @@ public:
   void roll_forward_to(
     eversion_t roll_forward_to,
     LogEntryHandler *h) {
-    log.roll_forward_to(
-      roll_forward_to,
-      h);
+    if (log.roll_forward_to(
+	  roll_forward_to,
+	  h))
+      dirty_log = true;
   }
 
   eversion_t get_can_rollback_to() const {
@@ -724,6 +736,10 @@ public:
     roll_forward_to(
       log.head,
       h);
+  }
+
+  void skip_rollforward() {
+    log.skip_can_rollback_to_to_head();
   }
 
   //////////////////// get or set log & missing ////////////////////
@@ -774,6 +790,8 @@ public:
   }
 
   void reset_complete_to(pg_info_t *info) {
+    if (log.log.empty()) // caller is split_into()
+      return;
     log.complete_to = log.log.begin();
     while (!missing.get_items().empty() && log.complete_to->version <
 	   missing.get_items().at(
@@ -843,7 +861,7 @@ protected:
     const hobject_t &hoid,               ///< [in] object we are merging
     const mempool::osd_pglog::list<pg_log_entry_t> &orig_entries, ///< [in] entries for hoid to merge
     const pg_info_t &info,              ///< [in] info for merging entries
-    eversion_t olog_can_rollback_to,     ///< [in] rollback boundary
+    eversion_t olog_can_rollback_to,     ///< [in] rollback boundary of input InedexedLog
     missing_type &missing,               ///< [in,out] missing to adjust, use
     LogEntryHandler *rollbacker,         ///< [in] optional rollbacker object
     const DoutPrefixProvider *dpp        ///< [in] logging provider
@@ -907,6 +925,8 @@ protected:
     const bool object_not_in_store =
       !missing.is_missing(hoid) &&
       entries.rbegin()->is_delete();
+    ldpp_dout(dpp, 10) << __func__ << ": hoid " << " object_not_in_store: "
+                       << object_not_in_store << dendl;
     ldpp_dout(dpp, 10) << __func__ << ": hoid " << hoid
 		       << " prior_version: " << prior_version
 		       << " first_divergent_update: " << first_divergent_update
@@ -1000,6 +1020,11 @@ protected:
 		       << " attempting to rollback"
 		       << dendl;
     bool can_rollback = true;
+    // We are going to make an important decision based on the
+    // olog_can_rollback_to value we have received, better known it.
+    ldpp_dout(dpp, 10) << __func__ << ": hoid " << hoid
+                       << " olog_can_rollback_to: "
+                       << olog_can_rollback_to << dendl;
     /// Distinguish between 4) and 5)
     for (list<pg_log_entry_t>::const_reverse_iterator i = entries.rbegin();
 	 i != entries.rend();
@@ -1053,7 +1078,7 @@ protected:
     const IndexedLog &log,               ///< [in] log to merge against
     mempool::osd_pglog::list<pg_log_entry_t> &entries,       ///< [in] entries to merge
     const pg_info_t &oinfo,              ///< [in] info for merging entries
-    eversion_t olog_can_rollback_to,     ///< [in] rollback boundary
+    eversion_t olog_can_rollback_to,     ///< [in] rollback boundary of input IndexedLog
     missing_type &omissing,              ///< [in,out] missing to adjust, use
     LogEntryHandler *rollbacker,         ///< [in] optional rollbacker object
     const DoutPrefixProvider *dpp        ///< [in] logging provider
