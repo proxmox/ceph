@@ -87,6 +87,13 @@ void AioCompletion::complete() {
     ictx->journal->commit_io_event(journal_tid, rval);
   }
 
+  if ((aio_type == AIO_TYPE_CLOSE) ||
+      (aio_type == AIO_TYPE_OPEN && rval < 0)) {
+    // must destroy ImageCtx prior to invoking callback
+    delete ictx;
+    ictx = nullptr;
+  }
+
   state = AIO_STATE_CALLBACK;
   if (complete_cb) {
     lock.Unlock();
@@ -120,14 +127,17 @@ void AioCompletion::init_time(ImageCtx *i, aio_type_t t) {
   }
 }
 
-void AioCompletion::start_op(bool ignore_type) {
+void AioCompletion::start_op() {
   Mutex::Locker locker(lock);
   assert(ictx != nullptr);
-  assert(!async_op.started());
-  if (state == AIO_STATE_PENDING &&
-      (ignore_type || aio_type != AIO_TYPE_FLUSH)) {
-    async_op.start_op(*ictx);
+
+  if (aio_type == AIO_TYPE_OPEN || aio_type == AIO_TYPE_CLOSE) {
+    // no need to track async open/close operations
+    return;
   }
+
+  assert(!async_op.started());
+  async_op.start_op(*ictx);
 }
 
 void AioCompletion::fail(int r)

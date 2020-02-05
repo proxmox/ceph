@@ -78,7 +78,8 @@ void usage()
   cout << "  subuser rm                 remove subuser\n";
   cout << "  key create                 create access key\n";
   cout << "  key rm                     remove access key\n";
-  cout << "  bucket list                list buckets\n";
+  cout << "  bucket list                list buckets (specify --allow-unordered for\n";
+  cout << "                             faster, unsorted listing)\n";
   cout << "  bucket limit check         show bucket sharding stats\n";
   cout << "  bucket link                link bucket to specified user\n";
   cout << "  bucket unlink              unlink bucket from specified user\n";
@@ -161,7 +162,8 @@ void usage()
   cout << "  usage trim                 trim usage (by user, date range)\n";
   cout << "  gc list                    dump expired garbage collection objects (specify\n";
   cout << "                             --include-all to list all entries, including unexpired)\n";
-  cout << "  gc process                 manually process garbage\n";
+  cout << "  gc process                 manually process garbage (specify\n";
+  cout << "                             --include-all to process all entries, including unexpired)\n";
   cout << "  lc list                    list all bucket lifecycle progress\n";
   cout << "  lc process                 manually process lifecycle\n";
   cout << "  metadata get               get metadata info\n";
@@ -327,6 +329,7 @@ void usage()
   cout << "   --orphan-stale-secs       num of seconds to wait before declaring an object to be an orphan (default: 86400)\n";
   cout << "   --job-id                  set the job id (for orphans find)\n";
   cout << "   --max-concurrent-ios      maximum concurrent ios for orphans find (default: 32)\n";
+  cout << "   --detail                  detailed mode, log and stat head objects as well\n";
   cout << "\nOrphans list-jobs options:\n";
   cout << "   --extra-info              provide extra info in job list\n";
   cout << "\nRole options:\n";
@@ -2340,7 +2343,7 @@ static int bucket_source_sync_status(RGWRados *store, const RGWZone& zone,
   out << indented{width, "source zone"} << source.id << " (" << source.name << ")\n";
 
   // syncing from this zone?
-  if (!zone.syncs_from(source.id)) {
+  if (!zone.syncs_from(source.name)) {
     out << indented{width} << "not in sync_from\n";
     return 0;
   }
@@ -2667,6 +2670,7 @@ int main(int argc, const char **argv)
   bool have_max_objects = false;
   bool have_max_size = false;
   int include_all = false;
+  int allow_unordered = false;
 
   int sync_stats = false;
   int reset_stats = false;
@@ -2689,6 +2693,7 @@ int main(int argc, const char **argv)
   bool num_shards_specified = false;
   int max_concurrent_ios = 32;
   uint64_t orphan_stale_secs = (24 * 3600);
+  int detail = false;
 
   std::string val;
   std::ostringstream errs;
@@ -2912,6 +2917,8 @@ int main(int argc, const char **argv)
       // do nothing
     } else if (ceph_argparse_binary_flag(args, i, &include_all, NULL, "--include-all", (char*)NULL)) {
      // do nothing
+    } else if (ceph_argparse_binary_flag(args, i, &allow_unordered, NULL, "--allow-unordered", (char*)NULL)) {
+     // do nothing
     } else if (ceph_argparse_binary_flag(args, i, &extra_info, NULL, "--extra-info", (char*)NULL)) {
      // do nothing
     } else if (ceph_argparse_binary_flag(args, i, &bypass_gc, NULL, "--bypass-gc", (char*)NULL)) {
@@ -3045,6 +3052,8 @@ int main(int argc, const char **argv)
       path_prefix = val;
     } else if (ceph_argparse_witharg(args, i, &val, "--trim-delay-ms", (char*)NULL)) {
       trim_delay_ms = atoi(val.c_str());
+    } else if (ceph_argparse_binary_flag(args, i, &detail, NULL, "--detail", (char*)NULL)) {
+      // do nothing
     } else if (strncmp(*i, "-", 1) == 0) {
       cerr << "ERROR: invalid flag " << *i << std::endl;
       return EINVAL;
@@ -4658,6 +4667,26 @@ int main(int argc, const char **argv)
     return 0;
   }
 
+  bool non_master_cmd = (!store->is_meta_master() && !yes_i_really_mean_it);
+  std::set<int> non_master_ops_list = {OPT_USER_CREATE, OPT_USER_RM, 
+                                        OPT_USER_MODIFY, OPT_USER_ENABLE,
+                                        OPT_USER_SUSPEND, OPT_SUBUSER_CREATE,
+                                        OPT_SUBUSER_MODIFY, OPT_SUBUSER_RM,
+                                        OPT_BUCKET_LINK, OPT_BUCKET_UNLINK,
+                                        OPT_BUCKET_RESHARD, OPT_BUCKET_RM,
+                                        OPT_METADATA_PUT, OPT_METADATA_RM,
+                                        OPT_RESHARD_CANCEL, OPT_RESHARD_ADD,
+                                        OPT_CAPS_ADD, OPT_CAPS_RM};
+
+  bool print_warning_message = (non_master_ops_list.find(opt_cmd) != non_master_ops_list.end() &&
+                                non_master_cmd);
+
+  if (print_warning_message) {
+      cerr << "Please run the command on master zone. Performing this operation on non-master zone leads to inconsistent metadata between zones" << std::endl;
+      cerr << "Are you sure you want to go ahead? (requires --yes-i-really-mean-it)" << std::endl;
+      return EINVAL;
+  }
+
   if (!user_id.empty()) {
     user_op.set_user_id(user_id);
     bucket_op.set_user_id(user_id);
@@ -5257,6 +5286,7 @@ int main(int argc, const char **argv)
       list_op.params.ns = ns;
       list_op.params.enforce_ns = false;
       list_op.params.list_versions = true;
+      list_op.params.allow_unordered = bool(allow_unordered);
 
       do {
         ret = list_op.list_objects(max_entries - count, &result, &common_prefixes, &truncated);
@@ -6093,7 +6123,7 @@ next:
     RGWReshard reshard(store);
 
     cls_rgw_reshard_entry entry;
-    //entry.tenant = tenant;
+    entry.tenant = tenant;
     entry.bucket_name = bucket_name;
     //entry.bucket_id = bucket_id;
 
@@ -6164,6 +6194,8 @@ next:
         handled = dump_string("tag", bl, formatter);
       } else if (iter->first == RGW_ATTR_ETAG) {
         handled = dump_string("etag", bl, formatter);
+      } else if (iter->first == RGW_ATTR_DELETE_AT) {
+        handled = decode_dump<utime_t>("delete_at", bl, formatter);
       }
 
       if (!handled)
@@ -6192,7 +6224,7 @@ next:
   }
 
   if (opt_cmd == OPT_BUCKET_RM) {
-    if (inconsistent_index == false) {
+    if (!inconsistent_index) {
       RGWBucketAdminOp::remove_bucket(store, bucket_op, bypass_gc, true);
     } else {
       if (!yes_i_really_mean_it) {
@@ -6241,7 +6273,7 @@ next:
   }
 
   if (opt_cmd == OPT_GC_PROCESS) {
-    int ret = store->process_gc();
+    int ret = store->process_gc(!include_all);
     if (ret < 0) {
       cerr << "ERROR: gc processing returned error: " << cpp_strerror(-ret) << std::endl;
       return 1;
@@ -6312,7 +6344,7 @@ next:
     info.job_name = job_id;
     info.num_shards = num_shards;
 
-    int ret = search.init(job_id, &info);
+    int ret = search.init(job_id, &info, detail);
     if (ret < 0) {
       cerr << "could not init search, ret=" << ret << std::endl;
       return -ret;
@@ -6381,13 +6413,20 @@ next:
 
     string user_str = user_id.to_str();
     if (reset_stats) {
-      if (!bucket_name.empty()){
-	cerr << "ERROR: recalculate doesn't work on buckets" << std::endl;
+      if (!bucket_name.empty()) {
+	cerr << "ERROR: --reset-stats does not work on buckets and "
+	  "bucket specified" << std::endl;
+	return EINVAL;
+      }
+      if (sync_stats) {
+	cerr << "ERROR: sync-stats includes the reset-stats functionality, "
+	  "so at most one of the two should be specified" << std::endl;
 	return EINVAL;
       }
       ret = store->cls_user_reset_stats(user_str);
       if (ret < 0) {
-	cerr << "ERROR: could not clear user stats: " << cpp_strerror(-ret) << std::endl;
+	cerr << "ERROR: could not reset user stats: " << cpp_strerror(-ret) <<
+	  std::endl;
 	return -ret;
       }
     }
@@ -6396,13 +6435,15 @@ next:
       if (!bucket_name.empty()) {
         int ret = rgw_bucket_sync_user_stats(store, tenant, bucket_name);
         if (ret < 0) {
-          cerr << "ERROR: could not sync bucket stats: " << cpp_strerror(-ret) << std::endl;
+          cerr << "ERROR: could not sync bucket stats: " <<
+	    cpp_strerror(-ret) << std::endl;
           return -ret;
         }
       } else {
         int ret = rgw_user_sync_all_stats(store, user_id);
         if (ret < 0) {
-          cerr << "ERROR: failed to sync user stats: " << cpp_strerror(-ret) << std::endl;
+          cerr << "ERROR: could not sync user stats: " <<
+	    cpp_strerror(-ret) << std::endl;
           return -ret;
         }
       }
@@ -6635,8 +6676,12 @@ next:
     }
     RGWMetadataLog *meta_log = store->meta_mgr->get_log(period_id);
 
-    ret = meta_log->trim(shard_id, start_time.to_real_time(), end_time.to_real_time(), start_marker, end_marker);
-    if (ret < 0) {
+    // trim until -ENODATA
+    do {
+      ret = meta_log->trim(shard_id, start_time.to_real_time(),
+                           end_time.to_real_time(), start_marker, end_marker);
+    } while (ret == 0);
+    if (ret < 0 && ret != -ENODATA) {
       cerr << "ERROR: meta_log->trim(): " << cpp_strerror(-ret) << std::endl;
       return -ret;
     }
@@ -7271,9 +7316,20 @@ next:
     if (ret < 0)
       return -ret;
 
-    RGWDataChangesLog *log = store->data_log;
-    ret = log->trim_entries(start_time.to_real_time(), end_time.to_real_time(), start_marker, end_marker);
-    if (ret < 0) {
+    if (!specified_shard_id) {
+      cerr << "ERROR: requires a --shard-id" << std::endl;
+      return EINVAL;
+    }
+
+    // loop until -ENODATA
+    do {
+      auto datalog = store->data_log;
+      ret = datalog->trim_entries(shard_id, start_time.to_real_time(),
+                                  end_time.to_real_time(),
+                                  start_marker, end_marker);
+    } while (ret == 0);
+
+    if (ret < 0 && ret != -ENODATA) {
       cerr << "ERROR: trim_entries(): " << cpp_strerror(-ret) << std::endl;
       return -ret;
     }

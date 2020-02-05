@@ -72,7 +72,10 @@ which are as follows:
   Remove access key.
 
 :command:`bucket list`
-  List all buckets.
+  List buckets, or, if bucket specified with --bucket=<bucket>,
+  list its objects. If bucket specified adding --allow-unordered
+  removes ordering requirement, possibly generating results more
+  quickly in buckets with large number of objects.
 
 :command:`bucket link`
   Link bucket to specified user.
@@ -226,6 +229,20 @@ which are as follows:
 :command:`orphans finish`
   Clean up search for leaked rados objects
 
+:command:`reshard add`
+  Schedule a resharding of a bucket
+
+:command:`reshard list`
+  List all bucket resharding or scheduled to be resharded
+
+:command:`reshard process`
+  Process of scheduled reshard jobs
+
+:command:`reshard status`
+  Resharding status of a bucket
+
+:command:`reshard cancel`
+  Cancel resharding a bucket
 
 Options
 =======

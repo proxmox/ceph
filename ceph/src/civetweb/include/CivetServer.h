@@ -1,4 +1,4 @@
-/* Copyright (c) 2013-2014 the Civetweb developers
+/* Copyright (c) 2013-2017 the Civetweb developers
  * Copyright (c) 2013 No Face Press, LLC
  *
  * License http://opensource.org/licenses/mit-license.php MIT License
@@ -227,9 +227,11 @@ class CIVETWEB_API CivetServer
 	 * @throws CivetException
 	 */
 	CivetServer(const char **options,
-	            const struct CivetCallbacks *callbacks = 0);
+	            const struct CivetCallbacks *callbacks = 0,
+	            const void *UserContext = 0);
 	CivetServer(std::vector<std::string> options,
-	            const struct CivetCallbacks *callbacks = 0);
+	            const struct CivetCallbacks *callbacks = 0,
+	            const void *UserContext = 0);
 
 	/**
 	 * Destructor
@@ -531,6 +533,14 @@ class CIVETWEB_API CivetServer
 	                      std::string &dst,
 	                      bool append = false);
 
+	// generic user context which can be set/read,
+	// the server does nothing with this apart from keep it.
+	const void *
+	getUserContext() const
+	{
+		return UserContext;
+	}
+
   protected:
 	class CivetConnection
 	{
@@ -544,6 +554,10 @@ class CIVETWEB_API CivetServer
 
 	struct mg_context *context;
 	std::map<struct mg_connection *, class CivetConnection> connections;
+
+	// generic user context which can be set/read,
+	// the server does nothing with this apart from keep it.
+	const void *UserContext;
 
   private:
 	/**

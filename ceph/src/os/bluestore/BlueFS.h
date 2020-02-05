@@ -38,6 +38,19 @@ enum {
   l_bluefs_last,
 };
 
+class BlueFSDeviceExpander {
+protected:
+  ~BlueFSDeviceExpander() {}
+public:
+  /** Reports amount of space that can be transferred to BlueFS.
+   * This gives either current state, when alloc_size is currently used
+   * BlueFS's size, or simulation when alloc_size is different.
+   * @params
+   * alloc_size - allocation unit size to check
+   */
+  virtual size_t available_freespace(uint64_t alloc_size) = 0;
+};
+
 class BlueFS {
 public:
   CephContext* cct;
@@ -253,7 +266,13 @@ private:
   vector<interval_set<uint64_t> > block_all;  ///< extents in bdev we own
   vector<uint64_t> block_total;               ///< sum of block_all
   vector<Allocator*> alloc;                   ///< allocators for bdevs
+  vector<uint64_t> alloc_size;                ///< alloc size for each device
   vector<interval_set<uint64_t>> pending_release; ///< extents to release
+
+  BlueFSDeviceExpander* slow_dev_expander = nullptr;
+
+  class SocketHook;
+  SocketHook* asok_hook = nullptr;
 
   void _init_logger();
   void _shutdown_logger();
@@ -267,6 +286,8 @@ private:
   FileRef _get_file(uint64_t ino);
   void _drop_link(FileRef f);
 
+  int _get_slow_device_id() { return bdev[BDEV_SLOW] ? BDEV_SLOW : BDEV_DB; }
+  const char* get_device_name(unsigned id);
   int _allocate(uint8_t bdev, uint64_t len,
 		bluefs_fnode_t* node);
   int _flush_range(FileWriter *h, uint64_t offset, uint64_t length);
@@ -334,9 +355,12 @@ public:
   void umount();
 
   void collect_metadata(map<string,string> *pm);
+  uint64_t get_alloc_size(int id) {
+    return alloc_size[id];
+  }
   int fsck();
 
-  uint64_t get_fs_usage();
+  uint64_t get_used();
   uint64_t get_total(unsigned id);
   uint64_t get_free(unsigned id);
   void get_usage(vector<pair<uint64_t,uint64_t>> *usage); // [<free,total> ...]
@@ -394,6 +418,9 @@ public:
   /// sync any uncommitted state to disk
   void sync_metadata();
 
+   void set_slow_device_expander(BlueFSDeviceExpander* a) {
+    slow_dev_expander = a;
+  }
   int add_block_device(unsigned bdev, const string& path);
   bool bdev_support_label(unsigned id);
   uint64_t get_block_device_size(unsigned bdev);

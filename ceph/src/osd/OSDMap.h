@@ -694,7 +694,7 @@ public:
 
   void get_all_osds(set<int32_t>& ls) const;
   void get_up_osds(set<int32_t>& ls) const;
-  void get_out_osds(set<int32_t>& ls) const;
+  void get_out_existing_osds(set<int32_t>& ls) const;
   unsigned get_num_pg_temp() const {
     return pg_temp->size();
   }
@@ -997,9 +997,18 @@ public:
    */
   uint64_t get_up_osd_features() const;
 
-  void maybe_remove_pg_upmaps(CephContext *cct,
-                              const OSDMap& osdmap,
-                              Incremental *pending_inc);
+  void get_upmap_pgs(vector<pg_t> *upmap_pgs) const;
+  bool check_pg_upmaps(
+    CephContext *cct,
+    const vector<pg_t>& to_check,
+    vector<pg_t> *to_cancel,
+    map<pg_t, mempool::osdmap::vector<pair<int,int>>> *to_remap) const;
+  void clean_pg_upmaps(
+    CephContext *cct,
+    Incremental *pending_inc,
+    const vector<pg_t>& to_cancel,
+    const map<pg_t, mempool::osdmap::vector<pair<int,int>>>& to_remap) const;
+  bool clean_pg_upmaps(CephContext *cct, Incremental *pending_inc) const;
 
   int apply_incremental(const Incremental &inc);
 
@@ -1134,7 +1143,8 @@ public:
    * raw and primary must be non-NULL
    */
   void pg_to_raw_osds(pg_t pg, vector<int> *raw, int *primary) const;
-  void pg_to_raw_upmap(pg_t pg, vector<int> *raw_upmap) const;
+  void pg_to_raw_upmap(pg_t pg, vector<int> *raw,
+                       vector<int> *raw_upmap) const;
   /// map a pg to its acting set. @return acting set size
   void pg_to_acting_osds(const pg_t& pg, vector<int> *acting,
                         int *acting_primary) const {
@@ -1312,21 +1322,18 @@ public:
     return calc_pg_role(osd, group, group.size()) >= 0;
   }
 
-  int clean_pg_upmaps(
-    CephContext *cct,
-    Incremental *pending_inc) const;
-
   bool try_pg_upmap(
     CephContext *cct,
     pg_t pg,                       ///< pg to potentially remap
     const set<int>& overfull,      ///< osds we'd want to evacuate
     const vector<int>& underfull,  ///< osds to move to, in order of preference
+    const vector<int>& more_underfull,  ///< less full osds to move to, in order of preference
     vector<int> *orig,
     vector<int> *out);             ///< resulting alternative mapping
 
   int calc_pg_upmaps(
     CephContext *cct,
-    float max_deviation, ///< max deviation from target (value < 1.0)
+    uint32_t max_deviation, ///< max deviation from target (value >= 1)
     int max_iterations,  ///< max iterations to run
     const set<int64_t>& pools,        ///< [optional] restrict to pool
     Incremental *pending_inc

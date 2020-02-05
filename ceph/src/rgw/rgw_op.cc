@@ -376,13 +376,20 @@ static int read_obj_policy(RGWRados *store,
     if (ret < 0) {
       return ret;
     }
-
     const rgw_user& bucket_owner = bucket_policy.get_owner().get_id();
     if (bucket_owner.compare(s->user->user_id) != 0 &&
-        ! s->auth.identity->is_admin_of(bucket_owner) &&
-        ! bucket_policy.verify_permission(*s->auth.identity, s->perm_mask,
-                                          RGW_PERM_READ)) {
-      ret = -EACCES;
+        ! s->auth.identity->is_admin_of(bucket_owner)) {
+      if (policy) {
+        auto r =  policy->eval(s->env, *s->auth.identity, rgw::IAM::s3ListBucket, ARN(bucket));
+        if (r == Effect::Allow)
+          return -ENOENT;
+        if (r == Effect::Deny)
+          return -EACCES;
+      }
+      if (! bucket_policy.verify_permission(*s->auth.identity, s->perm_mask, RGW_PERM_READ))
+        ret = -EACCES;
+      else
+        ret = -ENOENT;
     } else {
       ret = -ENOENT;
     }
@@ -475,8 +482,7 @@ int rgw_build_bucket_policies(RGWRados* store, struct req_state* s)
         s->bucket_acl->get_owner().get_display_name(),
       };
     } else {
-      s->bucket_acl->create_default(s->user->user_id, s->user->display_name);
-      ret = -ERR_NO_SUCH_BUCKET;
+      return -ERR_NO_SUCH_BUCKET;
     }
 
     s->bucket_owner = s->bucket_acl->get_owner();
@@ -3657,6 +3663,10 @@ void RGWPutObj::execute()
                                (delete_at ? *delete_at : real_time()), if_match, if_nomatch,
                                (user_data.empty() ? nullptr : &user_data));
 
+  // only atomic upload will upate version_id here
+  if (!multipart) 
+    version_id = (static_cast<RGWPutObjProcessor_Atomic *>(processor))->get_version_id();
+
   /* produce torrent */
   if (s->cct->_conf->rgw_torrent_flag && (ofs == torrent.get_data_len()))
   {
@@ -4356,6 +4366,7 @@ bool RGWCopyObj::parse_copy_location(const boost::string_view& url_src,
   boost::string_view name_str;
   boost::string_view params_str;
 
+  // search for ? before url-decoding so we don't accidentally match %3F
   size_t pos = url_src.find('?');
   if (pos == string::npos) {
     name_str = url_src;
@@ -4369,14 +4380,11 @@ bool RGWCopyObj::parse_copy_location(const boost::string_view& url_src,
     dec_src.remove_prefix(1);
 
   pos = dec_src.find('/');
-  if (pos ==string::npos)
+  if (pos == string::npos)
     return false;
 
-  boost::string_view bn_view{dec_src.substr(0, pos)};
-  bucket_name = std::string{bn_view.data(), bn_view.size()};
-
-  boost::string_view kn_view{dec_src.substr(pos + 1)};
-  key.name = std::string{kn_view.data(), kn_view.size()};
+  bucket_name = url_decode(dec_src.substr(0, pos));
+  key.name = url_decode(dec_src.substr(pos + 1));
 
   if (key.name.empty()) {
     return false;
@@ -4953,7 +4961,7 @@ void RGWPutLC::execute()
   op_ret = rgw_bucket_set_attrs(store, s->bucket_info, attrs, &s->bucket_info.objv_tracker);
   if (op_ret < 0)
     return;
-  string shard_id = s->bucket.tenant + ':' + s->bucket.name + ':' + s->bucket.bucket_id;  
+  string shard_id = s->bucket.tenant + ':' + s->bucket.name + ':' + s->bucket.marker;  
   string oid; 
   get_lc_oid(s, oid);
   pair<string, int> entry(shard_id, lc_uninitial);
@@ -5049,7 +5057,7 @@ void RGWGetCORS::execute()
 
   if (!cors_exist) {
     dout(2) << "No CORS configuration set yet for this bucket" << dendl;
-    op_ret = -ENOENT;
+    op_ret = -ERR_NO_CORS_FOUND;
     return;
   }
 }
@@ -5390,7 +5398,6 @@ void RGWCompleteMultipart::execute()
   RGWMPObj mp;
   RGWObjManifest manifest;
   uint64_t olh_epoch = 0;
-  string version_id;
 
   op_ret = get_params();
   if (op_ret < 0)
@@ -5597,7 +5604,12 @@ void RGWCompleteMultipart::execute()
 
   target_obj.init(s->bucket, s->object.name);
   if (versioned_object) {
-    store->gen_rand_obj_instance_name(&target_obj);
+    if (!version_id.empty()) {
+      target_obj.key.set_instance(version_id);
+    } else {
+      store->gen_rand_obj_instance_name(&target_obj);
+      version_id = target_obj.key.get_instance();
+    }
   }
 
   RGWObjectCtx& obj_ctx = *static_cast<RGWObjectCtx *>(s->obj_ctx);

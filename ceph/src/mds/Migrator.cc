@@ -796,6 +796,11 @@ void Migrator::export_dir(CDir *dir, mds_rank_t dest)
   assert(dir->is_auth());
   assert(dest != mds->get_nodeid());
    
+  if (!mds->is_stopping() && !dir->inode->is_exportable(dest)) {
+    dout(25) << "dir is export pinned" << dendl;
+    return;
+  }
+
   if (!(mds->is_active() || mds->is_stopping())) {
     dout(7) << "i'm not active, no exports for now" << dendl;
     return;
@@ -822,11 +827,6 @@ void Migrator::export_dir(CDir *dir, mds_rank_t dest)
   if (parent_dir && parent_dir->inode->is_stray()) {
     if (parent_dir->get_parent_dir()->ino() != MDS_INO_MDSDIR(dest)) {
       dout(7) << "i won't export anything in stray" << dendl;
-      return;
-    }
-  } else {
-    if (!mds->is_stopping() && !dir->inode->is_exportable(dest)) {
-      dout(7) << "dir is export pinned" << dendl;
       return;
     }
   }
@@ -2617,6 +2617,7 @@ void Migrator::handle_export_prep(MExportDirPrep *m)
   if (!finished.empty())
     mds->queue_waiters(finished);
 
+  MDSGatherBuilder gather(g_ceph_context);
 
   bool success = true;
   if (mds->is_active()) {
@@ -2640,9 +2641,8 @@ void Migrator::handle_export_prep(MExportDirPrep *m)
 	CDir *bound = cache->get_dirfrag(dirfrag_t(p->first, *q));
 	if (!bound) {
 	  dout(7) << "  opening bounding dirfrag " << *q << " on " << *in << dendl;
-	  cache->open_remote_dirfrag(in, *q,
-	      new C_MDS_RetryMessage(mds, m));
-	  return;
+	  cache->open_remote_dirfrag(in, *q, gather.new_sub());
+	  continue;
 	}
 
 	if (!bound->state_test(CDir::STATE_IMPORTBOUND)) {
@@ -2654,6 +2654,12 @@ void Migrator::handle_export_prep(MExportDirPrep *m)
 	}
 	import_bounds.insert(bound);
       }
+    }
+
+    if (gather.has_subs()) {
+      gather.set_finisher(new C_MDS_RetryMessage(mds, m));
+      gather.activate();
+      return;
     }
 
     dout(7) << " all ready, noting auth and freezing import region" << dendl;

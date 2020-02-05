@@ -1,11 +1,11 @@
-# ##########################################################################
+# ################################################################
 # Copyright (c) 2016-present, Facebook, Inc.
 # All rights reserved.
 #
-# This source code is licensed under the BSD-style license found in the
-# LICENSE file in the root directory of this source tree. An additional grant
-# of patent rights can be found in the PATENTS file in the same directory.
-# ##########################################################################
+# This source code is licensed under both the BSD-style license (found in the
+# LICENSE file in the root directory of this source tree) and the GPLv2 (found
+# in the COPYING file in the root directory of this source tree).
+# ################################################################
 
 # Standard variables for installation
 DESTDIR ?=
@@ -26,7 +26,7 @@ POSTCOMPILE = mv -f $*.Td $*.d
 
 # CFLAGS, CXXFLAGS, CPPFLAGS, and LDFLAGS are for the users to override
 CFLAGS   ?= -O3 -Wall -Wextra
-CXXFLAGS ?= -O3 -Wall -Wextra -pedantic -std=c++11
+CXXFLAGS ?= -O3 -Wall -Wextra -pedantic
 CPPFLAGS ?=
 LDFLAGS  ?=
 
@@ -37,7 +37,7 @@ GTEST_INC  = -isystem googletest/googletest/include
 PZSTD_CPPFLAGS  = $(PZSTD_INC)
 PZSTD_CCXXFLAGS =
 PZSTD_CFLAGS    = $(PZSTD_CCXXFLAGS)
-PZSTD_CXXFLAGS  = $(PZSTD_CCXXFLAGS)
+PZSTD_CXXFLAGS  = $(PZSTD_CCXXFLAGS) -std=c++11
 PZSTD_LDFLAGS   =
 EXTRA_FLAGS     =
 ALL_CFLAGS      = $(EXTRA_FLAGS) $(CPPFLAGS) $(PZSTD_CPPFLAGS) $(CFLAGS)   $(PZSTD_CFLAGS)
@@ -85,6 +85,23 @@ endif
 .PHONY: default
 default: all
 
+.PHONY: test-pzstd
+test-pzstd: TESTFLAGS=--gtest_filter=-*ExtremelyLarge*
+test-pzstd: clean googletest pzstd tests check
+
+.PHONY: test-pzstd32
+test-pzstd32: clean googletest32 all32 check
+
+.PHONY: test-pzstd-tsan
+test-pzstd-tsan: LDFLAGS=-fuse-ld=gold
+test-pzstd-tsan: TESTFLAGS=--gtest_filter=-*ExtremelyLarge*
+test-pzstd-tsan: clean googletest tsan check
+
+.PHONY: test-pzstd-asan
+test-pzstd-asan: LDFLAGS=-fuse-ld=gold
+test-pzstd-asan: TESTFLAGS=--gtest_filter=-*ExtremelyLarge*
+test-pzstd-asan: clean asan check
+
 .PHONY: check
 check:
 	$(TESTPROG) ./utils/test/BufferTest$(EXT) $(TESTFLAGS)
@@ -117,7 +134,7 @@ debug: pzstd$(EXT) tests roundtrip
 
 .PHONY: tsan
 tsan: PZSTD_CCXXFLAGS += -fsanitize=thread -fPIC
-tsan: PZSTD_LDFLAGS   += -fsanitize=thread -pie
+tsan: PZSTD_LDFLAGS   += -fsanitize=thread
 tsan: debug
 
 .PHONY: asan

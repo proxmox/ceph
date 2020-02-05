@@ -123,7 +123,7 @@ struct AioCompletion {
   }
 
   void init_time(ImageCtx *i, aio_type_t t);
-  void start_op(bool ignore_type = false);
+  void start_op();
   void fail(int r);
 
   void complete();
@@ -169,16 +169,10 @@ struct AioCompletion {
     int n = --ref;
     lock.Unlock();
     if (!n) {
-      if (ictx) {
-        if (event_notify) {
-          ictx->completed_reqs_lock.Lock();
-          m_xlist_item.remove_myself();
-          ictx->completed_reqs_lock.Unlock();
-        }
-        if (aio_type == AIO_TYPE_CLOSE ||
-            (aio_type == AIO_TYPE_OPEN && rval < 0)) {
-          delete ictx;
-        }
+      if (ictx != nullptr && event_notify) {
+        ictx->completed_reqs_lock.Lock();
+        m_xlist_item.remove_myself();
+        ictx->completed_reqs_lock.Unlock();
       }
       delete this;
     }

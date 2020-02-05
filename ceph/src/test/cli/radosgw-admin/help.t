@@ -17,7 +17,8 @@
     subuser rm                 remove subuser
     key create                 create access key
     key rm                     remove access key
-    bucket list                list buckets
+    bucket list                list buckets (specify --allow-unordered for
+                               faster, unsorted listing)
     bucket limit check         show bucket sharding stats
     bucket link                link bucket to specified user
     bucket unlink              unlink bucket from specified user
@@ -100,7 +101,8 @@
     usage trim                 trim usage (by user, date range)
     gc list                    dump expired garbage collection objects (specify
                                --include-all to list all entries, including unexpired)
-    gc process                 manually process garbage
+    gc process                 manually process garbage (specify
+                               --include-all to process all entries, including unexpired)
     lc list                    list all bucket lifecycle progress
     lc process                 manually process lifecycle
     metadata get               get metadata info
@@ -268,6 +270,7 @@
      --orphan-stale-secs       num of seconds to wait before declaring an object to be an orphan (default: 86400)
      --job-id                  set the job id (for orphans find)
      --max-concurrent-ios      maximum concurrent ios for orphans find (default: 32)
+     --detail                  detailed mode, log and stat head objects as well
   
   Orphans list-jobs options:
      --extra-info              provide extra info in job list

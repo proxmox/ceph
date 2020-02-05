@@ -2,6 +2,7 @@
 #include "gtest/gtest.h"
 #include "osd/OSDMap.h"
 #include "osd/OSDMapMapping.h"
+#include "mon/OSDMonitor.h"
 
 #include "global/global_context.h"
 #include "global/global_init.h"
@@ -183,6 +184,21 @@ public:
     cout << "any: " << *any << std::endl;;
     cout << "first: " << *first << std::endl;;
     cout << "primary: " << *primary << std::endl;;
+  }
+  void clean_pg_upmaps(CephContext *cct,
+                       const OSDMap& om,
+                       OSDMap::Incremental& pending_inc) {
+    int cpu_num = 8;
+    int pgs_per_chunk = 256;
+    ThreadPool tp(cct, "BUG_40104::clean_upmap_tp", "clean_upmap_tp", cpu_num);
+    tp.start();
+    ParallelPGMapper mapper(cct, &tp);
+    vector<pg_t> pgs_to_check;
+    om.get_upmap_pgs(&pgs_to_check);
+    OSDMonitor::CleanUpmapJob job(cct, om, pending_inc);
+    mapper.queue(&job, pgs_per_chunk, pgs_to_check);
+    job.wait();
+    tp.stop();
   }
 };
 
@@ -631,7 +647,7 @@ TEST_F(OSDMapTest, CleanPGUpmaps) {
     nextmap.apply_incremental(pending_inc);
     ASSERT_TRUE(nextmap.have_pg_upmaps(pgid));
     OSDMap::Incremental new_pending_inc(nextmap.get_epoch() + 1);
-    nextmap.clean_pg_upmaps(g_ceph_context, &new_pending_inc);
+    clean_pg_upmaps(g_ceph_context, nextmap, new_pending_inc);
     nextmap.apply_incremental(new_pending_inc);
     ASSERT_TRUE(!nextmap.have_pg_upmaps(pgid));
   }
@@ -678,9 +694,9 @@ TEST_F(OSDMapTest, CleanPGUpmaps) {
       ASSERT_TRUE(tmpmap.have_pg_upmaps(ec_pgid));
     }
     {
-      // confirm *maybe_remove_pg_upmaps* won't do anything bad
+      // confirm *clean_pg_upmaps* won't do anything bad
       OSDMap::Incremental pending_inc(tmpmap.get_epoch() + 1);
-      tmpmap.maybe_remove_pg_upmaps(g_ceph_context, tmpmap, &pending_inc);
+      clean_pg_upmaps(g_ceph_context, tmpmap, pending_inc);
       tmpmap.apply_incremental(pending_inc);
       ASSERT_TRUE(tmpmap.have_pg_upmaps(ec_pgid));
     }
@@ -728,11 +744,9 @@ TEST_F(OSDMapTest, CleanPGUpmaps) {
       ASSERT_TRUE(tmpmap.have_pg_upmaps(ec_pgid));
     }
     {
-      // *maybe_remove_pg_upmaps* should be able to remove the above *bad* mapping
+      // *clean_pg_upmaps* should be able to remove the above *bad* mapping
       OSDMap::Incremental pending_inc(tmpmap.get_epoch() + 1);
-      OSDMap nextmap;
-      nextmap.deepish_copy_from(tmpmap);
-      nextmap.maybe_remove_pg_upmaps(g_ceph_context, nextmap, &pending_inc);
+      clean_pg_upmaps(g_ceph_context, tmpmap, pending_inc);
       tmpmap.apply_incremental(pending_inc);
       ASSERT_TRUE(!tmpmap.have_pg_upmaps(ec_pgid));
     }
@@ -854,11 +868,9 @@ TEST_F(OSDMapTest, CleanPGUpmaps) {
       ASSERT_TRUE(tmp.have_pg_upmaps(ec_pgid));
     }
     {
-      // *maybe_remove_pg_upmaps* should not remove the above upmap_item
+      // *clean_pg_upmaps* should not remove the above upmap_item
       OSDMap::Incremental pending_inc(tmp.get_epoch() + 1);
-      OSDMap nextmap;
-      nextmap.deepish_copy_from(tmp);
-      nextmap.maybe_remove_pg_upmaps(g_ceph_context, nextmap, &pending_inc);
+      clean_pg_upmaps(g_ceph_context, tmp, pending_inc);
       tmp.apply_incremental(pending_inc);
       ASSERT_TRUE(tmp.have_pg_upmaps(ec_pgid));
     }
@@ -923,7 +935,7 @@ TEST_F(OSDMapTest, CleanPGUpmaps) {
     {
       // STEP-2: apply cure
       OSDMap::Incremental pending_inc(osdmap.get_epoch() + 1);
-      osdmap.maybe_remove_pg_upmaps(g_ceph_context, osdmap, &pending_inc);
+      clean_pg_upmaps(g_ceph_context, osdmap, pending_inc);
       osdmap.apply_incremental(pending_inc);
       {
         // validate pg_upmap is gone (reverted)
@@ -1057,7 +1069,7 @@ TEST_F(OSDMapTest, CleanPGUpmaps) {
     {
       // STEP-4: apply cure
       OSDMap::Incremental pending_inc(osdmap.get_epoch() + 1);
-      osdmap.maybe_remove_pg_upmaps(g_ceph_context, osdmap, &pending_inc);
+      clean_pg_upmaps(g_ceph_context, osdmap, pending_inc);
       osdmap.apply_incremental(pending_inc);
       {
         // validate pg_upmap_items is gone (reverted)
@@ -1275,21 +1287,159 @@ TEST_F(OSDMapTest, BUG_38897) {
 
   // ready to go
   {
-    // require perfect distribution!
-    auto ret = g_ceph_context->_conf->set_val(
-      "osd_calc_pg_upmaps_max_stddev", "0");
-    ASSERT_EQ(0, ret);
-    g_ceph_context->_conf->apply_changes(nullptr);
     set<int64_t> only_pools;
     ASSERT_TRUE(pool_1_id >= 0);
     only_pools.insert(pool_1_id);
     OSDMap::Incremental pending_inc(osdmap.get_epoch() + 1);
+    // require perfect distribution! (max deviation 0)
     osdmap.calc_pg_upmaps(g_ceph_context,
                           0, // so we can force optimizing
                           100,
                           only_pools,
                           &pending_inc);
     osdmap.apply_incremental(pending_inc);
+  }
+}
+
+TEST_F(OSDMapTest, BUG_40104) {
+  // http://tracker.ceph.com/issues/40104
+  int big_osd_num = 5000;
+  int big_pg_num = 10000;
+  set_up_map(big_osd_num, true);
+  int pool_id;
+  {
+    OSDMap::Incremental pending_inc(osdmap.get_epoch() + 1);
+    pending_inc.new_pool_max = osdmap.get_pool_max();
+    pool_id = ++pending_inc.new_pool_max;
+    pg_pool_t empty;
+    auto p = pending_inc.get_new_pool(pool_id, &empty);
+    p->size = 3;
+    p->min_size = 1;
+    p->set_pg_num(big_pg_num);
+    p->set_pgp_num(big_pg_num);
+    p->type = pg_pool_t::TYPE_REPLICATED;
+    p->crush_rule = 0;
+    p->set_flag(pg_pool_t::FLAG_HASHPSPOOL);
+    pending_inc.new_pool_names[pool_id] = "big_pool";
+    osdmap.apply_incremental(pending_inc);
+    ASSERT_TRUE(osdmap.have_pg_pool(pool_id));
+    ASSERT_TRUE(osdmap.get_pool_name(pool_id) == "big_pool");
+  }
+  {
+    // generate pg_upmap_items for each pg
+    OSDMap::Incremental pending_inc(osdmap.get_epoch() + 1);
+    for (int i = 0; i < big_pg_num; i++) {
+      pg_t rawpg(i, pool_id);
+      pg_t pgid = osdmap.raw_pg_to_pg(rawpg);
+      vector<int> up;
+      int up_primary;
+      osdmap.pg_to_raw_up(pgid, &up, &up_primary);
+      ASSERT_TRUE(up.size() == 3);
+      int victim = up[0];
+      int replaced_by = random() % big_osd_num;
+      vector<pair<int32_t,int32_t>> new_pg_upmap_items;
+      // note that it might or might not be valid, we don't care
+      new_pg_upmap_items.push_back(make_pair(victim, replaced_by));
+      pending_inc.new_pg_upmap_items[pgid] =
+        mempool::osdmap::vector<pair<int32_t,int32_t>>(
+          new_pg_upmap_items.begin(), new_pg_upmap_items.end());
+    }
+    osdmap.apply_incremental(pending_inc);
+  }
+  {
+    OSDMap::Incremental pending_inc(osdmap.get_epoch() + 1);
+    auto start = ceph_clock_now();
+    clean_pg_upmaps(g_ceph_context, osdmap, pending_inc);
+    auto latency = ceph_clock_now() - start;
+    std::cout << "clean_pg_upmaps (~" << big_pg_num
+              << " pg_upmap_items) latency:" << latency
+              << std::endl;
+  }
+}
+
+TEST_F(OSDMapTest, BUG_42052) {
+  // https://tracker.ceph.com/issues/42052
+  set_up_map(6, true);
+  const string pool_name("pool");
+  // build customized crush rule for "pool"
+  CrushWrapper crush;
+  get_crush(osdmap, crush);
+  string rule_name = "rule";
+  int rule_type = pg_pool_t::TYPE_REPLICATED;
+  ASSERT_TRUE(!crush.rule_exists(rule_name));
+  int rno;
+  for (rno = 0; rno < crush.get_max_rules(); rno++) {
+    if (!crush.rule_exists(rno) && !crush.ruleset_exists(rno))
+      break;
+  }
+  int min_size = 3;
+  int max_size = 3;
+  int steps = 8;
+  crush_rule *rule = crush_make_rule(steps, rno, rule_type, min_size, max_size);
+  int step = 0;
+  crush_rule_set_step(rule, step++, CRUSH_RULE_SET_CHOOSELEAF_TRIES, 5, 0);
+  crush_rule_set_step(rule, step++, CRUSH_RULE_SET_CHOOSE_TRIES, 100, 0);
+  // always choose osd.0, osd.1, osd.2
+  crush_rule_set_step(rule, step++, CRUSH_RULE_TAKE, 0, 0);
+  crush_rule_set_step(rule, step++, CRUSH_RULE_EMIT, 0, 0);
+  crush_rule_set_step(rule, step++, CRUSH_RULE_TAKE, 0, 1);
+  crush_rule_set_step(rule, step++, CRUSH_RULE_EMIT, 0, 0);
+  crush_rule_set_step(rule, step++, CRUSH_RULE_TAKE, 0, 2);
+  crush_rule_set_step(rule, step++, CRUSH_RULE_EMIT, 0, 0);
+  ASSERT_TRUE(step == steps);
+  auto r = crush_add_rule(crush.get_crush_map(), rule, rno);
+  ASSERT_TRUE(r >= 0);
+  crush.set_rule_name(rno, rule_name);
+  {
+    OSDMap::Incremental pending_inc(osdmap.get_epoch() + 1);
+    pending_inc.crush.clear();
+    crush.encode(pending_inc.crush, CEPH_FEATURES_SUPPORTED_DEFAULT);
+    osdmap.apply_incremental(pending_inc);
+  }
+
+  // create "pool"
+  OSDMap::Incremental pending_inc(osdmap.get_epoch() + 1);
+  pending_inc.new_pool_max = osdmap.get_pool_max();
+  auto pool_id = ++pending_inc.new_pool_max;
+  pg_pool_t empty;
+  auto p = pending_inc.get_new_pool(pool_id, &empty);
+  p->size = 3;
+  p->min_size = 1;
+  p->set_pg_num(1);
+  p->set_pgp_num(1);
+  p->type = pg_pool_t::TYPE_REPLICATED;
+  p->crush_rule = rno;
+  p->set_flag(pg_pool_t::FLAG_HASHPSPOOL);
+  pending_inc.new_pool_names[pool_id] = pool_name;
+  osdmap.apply_incremental(pending_inc);
+  ASSERT_TRUE(osdmap.have_pg_pool(pool_id));
+  ASSERT_TRUE(osdmap.get_pool_name(pool_id) == pool_name);
+  pg_t rawpg(0, pool_id);
+  pg_t pgid = osdmap.raw_pg_to_pg(rawpg);
+  {
+    // pg_upmap 1.0 [2,3,5]
+    vector<int32_t> new_up{2,3,5};
+    OSDMap::Incremental pending_inc(osdmap.get_epoch() + 1);
+    pending_inc.new_pg_upmap[pgid] = mempool::osdmap::vector<int32_t>(
+      new_up.begin(), new_up.end());
+    osdmap.apply_incremental(pending_inc);
+  }
+  {
+    // pg_upmap_items 1.0 [0,3,4,5]
+    vector<pair<int32_t,int32_t>> new_pg_upmap_items;
+    new_pg_upmap_items.push_back(make_pair(0, 3));
+    new_pg_upmap_items.push_back(make_pair(4, 5));
+    OSDMap::Incremental pending_inc(osdmap.get_epoch() + 1);
+    pending_inc.new_pg_upmap_items[pgid] =
+    mempool::osdmap::vector<pair<int32_t,int32_t>>(
+      new_pg_upmap_items.begin(), new_pg_upmap_items.end());
+    osdmap.apply_incremental(pending_inc);
+  }
+  {
+    OSDMap::Incremental pending_inc(osdmap.get_epoch() + 1);
+    clean_pg_upmaps(g_ceph_context, osdmap, pending_inc);
+    osdmap.apply_incremental(pending_inc);
+    ASSERT_FALSE(osdmap.have_pg_upmaps(pgid));
   }
 }
 

@@ -22,7 +22,7 @@ from nose.tools import eq_ as eq
 from nose.plugins.attrib import attr
 from nose.plugins.skip import SkipTest
 
-from .multisite import Zone, ZoneGroup
+from .multisite import Zone, ZoneGroup, Credentials
 
 from .conn import get_gateway_connection
 
@@ -951,9 +951,13 @@ def test_zonegroup_remove():
     z1, z2 = zonegroup.zones[0:2]
     c1, c2 = (z1.cluster, z2.cluster)
 
+    # get admin credentials out of existing zone
+    system_key = z1.data['system_key']
+    admin_creds = Credentials(system_key['access_key'], system_key['secret_key'])
+
     # create a new zone in zonegroup on c2 and commit
     zone = Zone('remove', zonegroup, c2)
-    zone.create(c2)
+    zone.create(c2, admin_creds.credential_args())
     zonegroup.zones.append(zone)
     zonegroup.period.update(zone, commit=True)
 
@@ -1220,3 +1224,13 @@ def test_bucket_index_log_trim():
     # verify cold bucket has empty bilog
     cold_bilog = bilog_list(zone.zone, cold_bucket.name)
     assert(len(cold_bilog) == 0)
+
+def test_bucket_creation_time():
+    zonegroup = realm.master_zonegroup()
+    zonegroup_conns = ZonegroupConns(zonegroup)
+
+    zone_buckets = [zone.get_connection().get_all_buckets() for zone in zonegroup_conns.rw_zones]
+    for z1, z2 in combinations(zone_buckets, 2):
+        for a, b in zip(z1, z2):
+            eq(a.name, b.name)
+            eq(a.creation_date, b.creation_date)

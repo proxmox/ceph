@@ -10,6 +10,7 @@
 #include "BlockDevice.h"
 #include "Allocator.h"
 #include "include/assert.h"
+#include "common/admin_socket.h"
 
 #define dout_context cct
 #define dout_subsys ceph_subsys_bluefs
@@ -25,6 +26,78 @@ MEMPOOL_DEFINE_OBJECT_FACTORY(BlueFS::FileReader, bluefs_file_reader, bluefs);
 MEMPOOL_DEFINE_OBJECT_FACTORY(BlueFS::FileLock, bluefs_file_lock, bluefs);
 
 
+class BlueFS::SocketHook : public AdminSocketHook {
+  BlueFS* bluefs;
+public:
+  static BlueFS::SocketHook* create(BlueFS* bluefs)
+  {
+    BlueFS::SocketHook* hook = nullptr;
+    AdminSocket* admin_socket = bluefs->cct->get_admin_socket();
+    if (admin_socket) {
+      hook = new BlueFS::SocketHook(bluefs);
+      int r = admin_socket->register_command("bluestore bluefs available",
+                                             "bluestore bluefs available "
+                                             "name=alloc_size,type=CephInt,req=false",
+                                             hook,
+                                             "Report available space for bluefs. "
+                                             "If alloc_size set, make simulation.");
+      if (r != 0) {
+        ldout(bluefs->cct, 1) << __func__ << " cannot register SocketHook" << dendl;
+        delete hook;
+        hook = nullptr;
+      }
+    }
+    return hook;
+  }
+
+  ~SocketHook() {
+    AdminSocket* admin_socket = bluefs->cct->get_admin_socket();
+    int r = admin_socket->unregister_command("bluestore bluefs available");
+    ceph_assert(r == 0);
+  }
+private:
+  SocketHook(BlueFS* bluefs) :
+    bluefs(bluefs) {}
+  bool call(std::string command, cmdmap_t& cmdmap,
+              std::string format, bufferlist& out) override {
+      stringstream ss;
+      bool r = true;
+      if (command == "bluestore bluefs available") {
+        int64_t alloc_size = 0;
+        cmd_getval(bluefs->cct, cmdmap, "alloc_size", alloc_size);
+        if ((alloc_size & (alloc_size - 1)) != 0) {
+          ss << "Invalid allocation size:'" << alloc_size << std::endl;
+        }
+        if (alloc_size == 0)
+          alloc_size = bluefs->cct->_conf->bluefs_alloc_size;
+        Formatter *f = Formatter::create(format, "json-pretty", "json-pretty");
+        f->open_object_section("bluefs_available_space");
+        for (unsigned dev = BDEV_WAL; dev <= BDEV_SLOW; dev++) {
+          if (bluefs->bdev[dev]) {
+            f->open_object_section("dev");
+            f->dump_string("device", bluefs->get_device_name(dev));
+            ceph_assert(bluefs->alloc[dev]);
+            f->dump_int("free", bluefs->alloc[dev]->get_free());
+            f->close_section();
+          }
+        }
+        size_t extra_space = 0;
+        if (bluefs->slow_dev_expander) {
+          extra_space = bluefs->slow_dev_expander->available_freespace(alloc_size);
+        }
+        f->dump_int("available_from_bluestore", extra_space);
+        f->close_section();
+        f->flush(ss);
+        delete f;
+      } else {
+        ss << "Invalid command" << std::endl;
+        r = false;
+      }
+      out.append(ss);
+      return r;
+    }
+};
+
 BlueFS::BlueFS(CephContext* cct)
   : cct(cct),
     bdev(MAX_BDEV),
@@ -32,10 +105,12 @@ BlueFS::BlueFS(CephContext* cct)
     block_all(MAX_BDEV),
     block_total(MAX_BDEV, 0)
 {
+  asok_hook = SocketHook::create(this);
 }
 
 BlueFS::~BlueFS()
 {
+  delete asok_hook;
   for (auto p : ioc) {
     if (p)
       p->aio_wait();
@@ -194,8 +269,8 @@ int BlueFS::reclaim_blocks(unsigned id, uint64_t want,
   assert(id < alloc.size());
   assert(alloc[id]);
 
-  int64_t got = alloc[id]->allocate(want, cct->_conf->bluefs_alloc_size, 0,
-				    extents);
+  int64_t got = alloc[id]->allocate(want, alloc_size[id], 0, extents);
+  ceph_assert(got != 0);
   if (got < 0) {
     derr << __func__ << " failed to allocate space to return to bluestore"
       << dendl;
@@ -220,14 +295,16 @@ int BlueFS::reclaim_blocks(unsigned id, uint64_t want,
   return 0;
 }
 
-uint64_t BlueFS::get_fs_usage()
+uint64_t BlueFS::get_used()
 {
   std::lock_guard<std::mutex> l(lock);
-  uint64_t total_bytes = 0;
-  for (auto& p : file_map) {
-    total_bytes += p.second->fnode.get_allocated();
+  uint64_t used = 0;
+  for (unsigned id = 0; id < MAX_BDEV; ++id) {
+    if (alloc[id]) {
+      used += block_all[id].size() - alloc[id]->get_free();
+    }
   }
-  return total_bytes;
+  return used;
 }
 
 uint64_t BlueFS::get_total(unsigned id)
@@ -383,15 +460,38 @@ void BlueFS::_init_alloc()
 {
   dout(20) << __func__ << dendl;
   alloc.resize(MAX_BDEV);
+  alloc_size.resize(MAX_BDEV, 0);
   pending_release.resize(MAX_BDEV);
+
+  if (bdev[BDEV_WAL]) {
+    alloc_size[BDEV_WAL] = cct->_conf->bluefs_alloc_size;
+  }
+  if (bdev[BDEV_SLOW]) {
+    alloc_size[BDEV_DB] = cct->_conf->bluefs_alloc_size;
+    alloc_size[BDEV_SLOW] = cct->_conf->bluefs_shared_alloc_size;
+  } else {
+    alloc_size[BDEV_DB] = cct->_conf->bluefs_shared_alloc_size;
+  }
+
   for (unsigned id = 0; id < bdev.size(); ++id) {
     if (!bdev[id]) {
       continue;
     }
     assert(bdev[id]->get_size());
+    ceph_assert(bdev[id]->get_size());
+    std::string name = "bluefs-";
+    const char* devnames[] = {"wal","db","slow"};
+    if (id <= BDEV_SLOW)
+      name += devnames[id];
+    else
+      name += to_string(uintptr_t(this));
+    ceph_assert(alloc_size[id]);
+    dout(1) << __func__ << " id " << id
+	     << " alloc_size 0x" << std::hex << alloc_size[id]
+	     << " size 0x" << bdev[id]->get_size() << std::dec << dendl;
     alloc[id] = Allocator::create(cct, cct->_conf->bluefs_allocator,
 				  bdev[id]->get_size(),
-				  cct->_conf->bluefs_alloc_size);
+				  alloc_size[id], name);
     interval_set<uint64_t>& p = block_all[id];
     for (interval_set<uint64_t>::iterator q = p.begin(); q != p.end(); ++q) {
       alloc[id]->init_add_free(q.get_start(), q.get_len());
@@ -1255,9 +1355,13 @@ void BlueFS::_compact_log_async(std::unique_lock<std::mutex>& l)
   log_t.clear();
   _compact_log_dump_metadata(&t);
 
+  uint64_t max_alloc_size = std::max(alloc_size[BDEV_WAL],
+				     std::max(alloc_size[BDEV_DB],
+					      alloc_size[BDEV_SLOW]));
+
   // conservative estimate for final encoded size
   new_log_jump_to = ROUND_UP_TO(t.op_bl.length() + super.block_size * 2,
-                                cct->_conf->bluefs_alloc_size);
+                                max_alloc_size);
   t.op_jump(log_seq, new_log_jump_to);
 
   bufferlist bl;
@@ -1850,33 +1954,39 @@ void BlueFS::flush_bdev()
   }
 }
 
+const char* BlueFS::get_device_name(unsigned id)
+{
+  if (id >= MAX_BDEV) return "BDEV_INV";
+  const char* names[] = {"BDEV_WAL", "BDEV_DB", "BDEV_SLOW", "BDEV_NEWWAL", "BDEV_NEWDB"};
+  return names[id];
+}
+
 int BlueFS::_allocate(uint8_t id, uint64_t len,
 		      bluefs_fnode_t* node)
 {
   dout(10) << __func__ << " len 0x" << std::hex << len << std::dec
            << " from " << (int)id << dendl;
-  assert(id < alloc.size());
-  uint64_t min_alloc_size = cct->_conf->bluefs_alloc_size;
-
-  uint64_t left = ROUND_UP_TO(len, min_alloc_size);
+  ceph_assert(id < alloc.size());
   int64_t alloc_len = 0;
   PExtentVector extents;
-  
   if (alloc[id]) {
     uint64_t hint = 0;
     if (!node->extents.empty() && node->extents.back().bdev == id) {
       hint = node->extents.back().end();
     }
     extents.reserve(4);  // 4 should be (more than) enough for most allocations
-    alloc_len = alloc[id]->allocate(left, min_alloc_size, hint, &extents);
+    alloc_len = alloc[id]->allocate(ROUND_UP_TO(len, alloc_size[id]),
+				    alloc_size[id], hint, &extents);
   }
-  if (alloc_len < (int64_t)left) {
-    if (alloc_len != 0) {
+  if (!alloc[id] ||
+      alloc_len < 0 ||
+      alloc_len < (int64_t)ROUND_UP_TO(len, alloc_size[id])) {
+    if (alloc_len > 0) {
       alloc[id]->release(extents);
     }
     if (id != BDEV_SLOW) {
       if (bdev[id]) {
-	dout(1) << __func__ << " failed to allocate 0x" << std::hex << left
+	dout(1) << __func__ << " failed to allocate 0x" << std::hex << len
 		<< " on bdev " << (int)id
 		<< ", free 0x" << alloc[id]->get_free()
 		<< "; fallback to bdev " << (int)id + 1

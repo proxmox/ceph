@@ -204,6 +204,7 @@ Server::Server(MDSRank *m) :
   terminating_sessions(false),
   recall_throttle(ceph_clock_now(), g_conf->get_val<double>("mds_recall_max_decay_rate"))
 {
+  cap_revoke_eviction_timeout = g_conf->get_val<double>("mds_cap_revoke_eviction_timeout");
 }
 
 
@@ -766,6 +767,8 @@ void Server::find_idle_sessions()
   double queue_max_age = mds->get_dispatch_queue_max_age(ceph_clock_now());
   double cutoff = queue_max_age + mds->mdsmap->get_session_timeout();
 
+  std::vector<Session*> to_evict;
+
   const auto sessions_p1 = mds->sessionmap.by_state.find(Session::STATE_OPEN);
   if (sessions_p1 != mds->sessionmap.by_state.end() && !sessions_p1->second->empty()) {
     std::vector<Session*> new_stale;
@@ -787,9 +790,29 @@ void Server::find_idle_sessions()
 	}
       }
 
-      dout(10) << "new stale session " << session->info.inst
-	       << " last renewed caps " << last_cap_renew_span << "s ago" << dendl;
-      new_stale.push_back(session);
+      auto it = session->info.client_metadata.find("timeout");
+      if (it != session->info.client_metadata.end()) {
+	unsigned timeout = strtoul(it->second.c_str(), nullptr, 0);
+	if (timeout == 0) {
+	  dout(10) << "skipping session " << session->info.inst
+		   << ", infinite timeout specified" << dendl;
+	  continue;
+	}
+	double cutoff = queue_max_age + timeout;
+	if  (last_cap_renew_span < cutoff) {
+	  dout(10) << "skipping session " << session->info.inst
+		   << ", timeout (" << timeout << ") specified"
+		   << " and renewed caps recently (" << last_cap_renew_span << "s ago)" << dendl;
+	  continue;
+	}
+
+	// do not go through stale, evict it directly.
+	to_evict.push_back(session);
+      } else {
+	dout(10) << "new stale session " << session->info.inst
+		 << " last renewed caps " << last_cap_renew_span << "s ago" << dendl;
+	new_stale.push_back(session);
+      }
     }
 
     for (auto session : new_stale) {
@@ -817,33 +840,31 @@ void Server::find_idle_sessions()
   }
 
   // Collect a list of sessions exceeding the autoclose threshold
-  std::vector<Session *> to_evict;
   const auto sessions_p2 = mds->sessionmap.by_state.find(Session::STATE_STALE);
-  if (sessions_p2 == mds->sessionmap.by_state.end() || sessions_p2->second->empty()) {
-    return;
+  if (sessions_p2 != mds->sessionmap.by_state.end() && !sessions_p2->second->empty()) {
+    for (auto session : *(sessions_p2->second)) {
+      assert(session->is_stale());
+      auto last_cap_renew_span = std::chrono::duration<double>(now - session->last_cap_renew).count();
+      if (last_cap_renew_span < cutoff) {
+	dout(20) << "oldest stale session is " << session->info.inst
+		 << " and recently renewed caps " << last_cap_renew_span << "s ago" << dendl;
+	break;
+      }
+      to_evict.push_back(session);
+    }
   }
-  const auto &stale_sessions = sessions_p2->second;
-  assert(stale_sessions != nullptr);
 
-  for (const auto &session: *stale_sessions) {
-    auto last_cap_renew_span = std::chrono::duration<double>(now-session->last_cap_renew).count();
+  for (auto session: to_evict) {
     if (session->is_importing()) {
-      dout(10) << "stopping at importing session " << session->info.inst << dendl;
-      break;
-    }
-    assert(session->is_stale());
-    if (last_cap_renew_span < cutoff) {
-      dout(20) << "oldest stale session is " << session->info.inst << " and recently renewed caps " << last_cap_renew_span << "s ago" << dendl;
-      break;
+      dout(10) << "skipping session " << session->info.inst << ", it's being imported" << dendl;
+      continue;
     }
 
-    to_evict.push_back(session);
-  }
-
-  for (const auto &session: to_evict) {
-    auto last_cap_renew_span = std::chrono::duration<double>(now-session->last_cap_renew).count();
-    mds->clog->warn() << "evicting unresponsive client " << *session << ", after " << last_cap_renew_span << " seconds";
-    dout(10) << "autoclosing stale session " << session->info.inst << " last renewed caps " << last_cap_renew_span << "s ago" << dendl;
+    auto last_cap_renew_span = std::chrono::duration<double>(now - session->last_cap_renew).count();
+    mds->clog->warn() << "evicting unresponsive client " << *session
+		      << ", after " << last_cap_renew_span << " seconds";
+    dout(10) << "autoclosing stale session " << session->info.inst
+	     << " last renewed caps " << last_cap_renew_span << "s ago" << dendl;
 
     if (g_conf->mds_session_blacklist_on_timeout) {
       std::stringstream ss;
@@ -1008,7 +1029,10 @@ void Server::handle_client_reconnect(MClientReconnect *m)
   dout(7) << "handle_client_reconnect " << m->get_source() << dendl;
   client_t from = m->get_source().num();
   Session *session = mds->get_session(m);
-  assert(session);
+  if (!session) {
+    m->put();
+    return;
+  }
 
   if (!mds->is_reconnect() && mds->get_want_state() == CEPH_MDS_STATE_RECONNECT) {
     dout(10) << " we're almost in reconnect state (mdsmap delivery race?); waiting" << dendl;
@@ -1286,9 +1310,14 @@ std::pair<bool, uint64_t> Server::recall_client_state(MDSGatherBuilder* gather, 
       uint64_t recall = std::min<uint64_t>(recall_max_caps, num_caps-newlim);
       newlim = num_caps-recall;
       const uint64_t session_recall_throttle = session->get_recall_caps_throttle();
+      const uint64_t session_recall_throttle2o = session->get_recall_caps_throttle2o();
       const uint64_t global_recall_throttle = recall_throttle.get(ceph_clock_now());
       if (session_recall_throttle+recall > recall_max_decay_threshold) {
         dout(15) << "  session recall threshold (" << recall_max_decay_threshold << ") hit at " << session_recall_throttle << "; skipping!" << dendl;
+        throttled = true;
+        continue;
+      } else if (session_recall_throttle2o+recall > recall_max_caps*2) {
+        dout(15) << "  session recall 2nd-order threshold (" << 2*recall_max_caps << ") hit at " << session_recall_throttle2o << "; skipping!" << dendl;
         throttled = true;
         continue;
       } else if (global_recall_throttle+recall > recall_global_max_decay_threshold) {
@@ -1309,7 +1338,9 @@ std::pair<bool, uint64_t> Server::recall_client_state(MDSGatherBuilder* gather, 
            * session threshold for the session's cap recall throttle.
            */
           dout(15) << "  2*session_release < session_recall"
-                      " (2*" << session_release << " < " << session_recall << ");"
+                      " (2*" << session_release << " < " << session_recall << ") &&"
+                      " 2*session_recall < recall_max_decay_threshold"
+                      " (2*" << session_recall << " > " << recall_max_decay_threshold << ")"
                       " Skipping because we are unlikely to get more released." << dendl;
           continue;
         } else if (recall < recall_max_caps && 2*recall < session_recall) {
@@ -2925,7 +2956,7 @@ void Server::apply_allocated_inos(MDRequestRef& mdr, Session *session)
     assert(session);
     session->pending_prealloc_inos.subtract(mdr->prealloc_inos);
     session->info.prealloc_inos.insert(mdr->prealloc_inos);
-    mds->sessionmap.mark_dirty(session);
+    mds->sessionmap.mark_dirty(session, !mdr->used_prealloc_ino);
     mds->inotable->apply_alloc_ids(mdr->prealloc_inos);
   }
   if (mdr->used_prealloc_ino) {
@@ -5451,6 +5482,11 @@ void Server::handle_client_mkdir(MDRequestRef& mdr)
   ls->open_files.push_back(&newi->item_open_file);
 
   journal_and_reply(mdr, newi, dn, le, new C_MDS_mknod_finish(this, mdr, dn, newi));
+
+  // We hit_dir (via hit_inode) in our finish callback, but by then we might
+  // have overshot the split size (multiple mkdir in flight), so here is
+  // an early chance to split the dir if this mkdir makes it oversized.
+  mds->balancer->maybe_fragment(dir, false);
 }
 
 
@@ -7183,6 +7219,7 @@ void Server::handle_client_rename(MDRequestRef& mdr)
   C_MDS_rename_finish *fin = new C_MDS_rename_finish(this, mdr, srcdn, destdn, straydn);
 
   journal_and_reply(mdr, srci, destdn, le, fin);
+  mds->balancer->maybe_fragment(destdn->get_dir(), false);
 }
 
 

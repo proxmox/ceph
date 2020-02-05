@@ -142,7 +142,8 @@ class Metric(object):
 
         def promethize(path):
             ''' replace illegal metric name characters '''
-            result = path.replace('.', '_').replace('+', '_plus').replace('::', '_')
+            result = path.replace('.', '_').replace(
+                '+', '_plus').replace('::', '_').replace(' ', '_')
 
             # Hyphens usually turn into underscores, unless they are
             # trailing
@@ -507,6 +508,7 @@ class Module(MgrModule):
                     'osd.{}'.format(id_),
                 ))
 
+            osd_dev_node = None
             if obj_store == "filestore":
             # collect filestore backend device
                 osd_dev_node = osd_metadata.get('backend_filestore_dev_node', None)
@@ -676,7 +678,8 @@ class Module(MgrModule):
                     raise cherrypy.HTTPError(503, 'No MON connection')
 
         # Make the cache timeout for collecting configurable
-        self.collect_timeout = self.get_localized_config('scrape_interval', 5.0)
+        self.collect_timeout = float(self.get_localized_config(
+            'scrape_interval', 5.0))
 
         server_addr = self.get_localized_config('server_addr', DEFAULT_ADDR)
         server_port = self.get_localized_config('server_port', DEFAULT_PORT)

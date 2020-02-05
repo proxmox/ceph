@@ -707,7 +707,11 @@ std::vector<Option> get_global_options() {
     .set_default(1_M)
     .set_description(""),
 
-    Option("ms_tcp_read_timeout", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
+    Option("ms_connection_ready_timeout", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
+    .set_default(10)
+    .set_description("Time before we declare a not yet ready connection as dead (seconds)"),
+
+    Option("ms_connection_idle_timeout", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
     .set_default(900)
     .set_description(""),
 
@@ -908,6 +912,11 @@ std::vector<Option> get_global_options() {
     Option("mon_osd_mapping_pgs_per_chunk", Option::TYPE_INT, Option::LEVEL_ADVANCED)
     .set_default(4096)
     .set_description(""),
+
+    Option("mon_clean_pg_upmaps_per_chunk", Option::TYPE_INT, Option::LEVEL_DEV)
+    .set_default(256)
+    .add_service("mon")
+    .set_description("granularity of PG upmap validation background work"),
 
     Option("mon_osd_max_creating_pgs", Option::TYPE_INT, Option::LEVEL_ADVANCED)
     .set_default(1024)
@@ -1161,6 +1170,24 @@ std::vector<Option> get_global_options() {
     .set_default(true)
     .set_description("Enable POOL_APP_NOT_ENABLED health check"),
 
+    Option("mon_warn_on_too_few_osds", Option::TYPE_BOOL, Option::LEVEL_ADVANCED)
+    .set_default(true)
+    .add_service("mgr")
+    .set_description("Issue a health warning if there are fewer OSDs than osd_pool_default_size"),
+
+    Option("mon_warn_on_slow_ping_time", Option::TYPE_FLOAT, Option::LEVEL_ADVANCED)
+    .set_default(0)
+    .add_service("mgr")
+    .set_description("Override mon_warn_on_slow_ping_ratio with specified threshold in milliseconds")
+    .add_see_also("mon_warn_on_slow_ping_ratio"),
+
+    Option("mon_warn_on_slow_ping_ratio", Option::TYPE_FLOAT, Option::LEVEL_ADVANCED)
+    .set_default(.05)
+    .add_service("mgr")
+    .set_description("Issue a health warning if heartbeat ping longer than percentage of osd_heartbeat_grace")
+    .add_see_also("osd_heartbeat_grace")
+    .add_see_also("mon_warn_on_slow_ping_time"),
+
     Option("mon_min_osdmap_epochs", Option::TYPE_INT, Option::LEVEL_ADVANCED)
     .set_default(500)
     .set_description(""),
@@ -1266,7 +1293,7 @@ std::vector<Option> get_global_options() {
 
     Option("mon_data_avail_warn", Option::TYPE_INT, Option::LEVEL_ADVANCED)
     .set_default(30)
-    .set_description(""),
+    .set_description("issue MON_DISK_LOW health warning when mon available space below this percentage"),
 
     Option("mon_data_size_warn", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
     .set_default(15_G)
@@ -1632,11 +1659,6 @@ std::vector<Option> get_global_options() {
                      "by doing a fairly exhaustive search of existing PGs "
                      "that can be unmapped or upmapped"),
 
-    Option("osd_calc_pg_upmaps_max_stddev", Option::TYPE_FLOAT, Option::LEVEL_ADVANCED)
-    .set_default(1.0)
-    .set_description("standard deviation below which there is no attempt made "
-                     "while trying to calculate PG upmaps"),
-
     Option("osd_calc_pg_upmaps_local_fallback_retries", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
     .set_default(100)
     .set_description("Maximum number of PGs we can attempt to unmap or upmap "
@@ -1652,11 +1674,12 @@ std::vector<Option> get_global_options() {
 
     Option("osd_max_backfills", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
     .set_default(1)
-    .set_description(""),
+    .set_description("Maximum number of concurrent local and remote backfills or recoveries per OSD ")
+    .set_long_description("There can be osd_max_backfills local reservations AND the same remote reservations per OSD. So a value of 1 lets this OSD participate as 1 PG primary in recovery and 1 shard of another recovering PG."),
 
     Option("osd_min_recovery_priority", Option::TYPE_INT, Option::LEVEL_ADVANCED)
     .set_default(0)
-    .set_description(""),
+    .set_description("Minimum priority below which recovery is not performed"),
 
     Option("osd_backfill_retry_interval", Option::TYPE_FLOAT, Option::LEVEL_ADVANCED)
     .set_default(30.0)
@@ -1928,7 +1951,11 @@ std::vector<Option> get_global_options() {
 
     Option("osd_map_message_max", Option::TYPE_INT, Option::LEVEL_ADVANCED)
     .set_default(40)
-    .set_description(""),
+    .set_description("maximum number of OSDMaps to include in a single message"),
+
+    Option("osd_map_message_max_bytes", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
+    .set_default(10_M)
+    .set_description("maximum number of bytes worth of OSDMaps to include in a single message"),
 
     Option("osd_map_share_max_epochs", Option::TYPE_INT, Option::LEVEL_ADVANCED)
     .set_default(40)
@@ -2386,7 +2413,19 @@ std::vector<Option> get_global_options() {
 
     Option("osd_snap_trim_sleep", Option::TYPE_FLOAT, Option::LEVEL_ADVANCED)
     .set_default(0)
-    .set_description(""),
+    .set_description("Time in seconds to sleep before next snap trim (overrides values below)"),
+
+    Option("osd_snap_trim_sleep_hdd", Option::TYPE_FLOAT, Option::LEVEL_ADVANCED)
+    .set_default(5)
+    .set_description("Time in seconds to sleep before next snap trim for HDDs"),
+
+    Option("osd_snap_trim_sleep_ssd", Option::TYPE_FLOAT, Option::LEVEL_ADVANCED)
+    .set_default(0)
+    .set_description("Time in seconds to sleep before next snap trim for SSDs"),
+
+    Option("osd_snap_trim_sleep_hybrid", Option::TYPE_FLOAT, Option::LEVEL_ADVANCED)
+    .set_default(2)
+    .set_description("Time in seconds to sleep before next snap trim when data is on HDD and journal is on SSD"),
 
     Option("osd_scrub_invalid_stats", Option::TYPE_BOOL, Option::LEVEL_ADVANCED)
     .set_default(true)
@@ -2412,13 +2451,21 @@ std::vector<Option> get_global_options() {
     .set_default(entity_addr_t())
     .set_description(""),
 
-    Option("osd_heartbeat_interval", Option::TYPE_INT, Option::LEVEL_ADVANCED)
+    Option("osd_heartbeat_interval", Option::TYPE_INT, Option::LEVEL_DEV)
     .set_default(6)
-    .set_description(""),
+    .set_min_max(1, 60)
+    .set_description("Interval (in seconds) between peer pings"),
 
     Option("osd_heartbeat_grace", Option::TYPE_INT, Option::LEVEL_ADVANCED)
     .set_default(20)
     .set_description(""),
+
+    Option("osd_heartbeat_stale", Option::TYPE_INT, Option::LEVEL_ADVANCED)
+    .set_default(600)
+    .set_description("Interval (in seconds) we mark an unresponsive heartbeat peer as stale.")
+    .set_long_description("Automatically mark unresponsive heartbeat sessions as stale and tear them down. "
+		          "The primary benefit is that OSD doesn't need to keep a flood of "
+			  "blocked heartbeat messages around in memory."),
 
     Option("osd_heartbeat_min_peers", Option::TYPE_INT, Option::LEVEL_ADVANCED)
     .set_default(10)
@@ -2447,6 +2494,11 @@ std::vector<Option> get_global_options() {
     Option("osd_mon_heartbeat_interval", Option::TYPE_INT, Option::LEVEL_ADVANCED)
     .set_default(30)
     .set_description(""),
+
+    Option("osd_mon_heartbeat_stat_stale", Option::TYPE_INT, Option::LEVEL_ADVANCED)
+    .set_default(1_hr)
+    .set_description("Stop reporting on heartbeat ping times not updated for this many seconds.")
+    .set_long_description("Stop reporting on old heartbeat information unless this is set to zero"),
 
     Option("osd_mon_report_interval_max", Option::TYPE_INT, Option::LEVEL_ADVANCED)
     .set_default(600)
@@ -2632,7 +2684,7 @@ std::vector<Option> get_global_options() {
     .set_description("Update overall object digest only if object was last modified longer ago than this"),
 
     Option("osd_deep_scrub_large_omap_object_key_threshold", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
-    .set_default(2000000)
+    .set_default(200000)
     .set_description("Warn when we encounter an object with more omap keys than this")
     .add_service("osd")
     .add_see_also("osd_deep_scrub_large_omap_object_value_sum_threshold"),
@@ -3065,7 +3117,7 @@ std::vector<Option> get_global_options() {
 
     Option("osd_recovery_op_priority", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
     .set_default(3)
-    .set_description(""),
+    .set_description("Priority to use for recovery operations if not specified for the pool"),
 
     Option("osd_snap_trim_priority", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
     .set_default(5)
@@ -3089,7 +3141,8 @@ std::vector<Option> get_global_options() {
 
     Option("osd_recovery_priority", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
     .set_default(5)
-    .set_description(""),
+    .set_description("Priority of recovery in the work queue")
+    .set_long_description("Not related to a pool's recovery_priority"),
 
     Option("osd_recovery_cost", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
     .set_default(20<<20)
@@ -3275,7 +3328,11 @@ std::vector<Option> get_global_options() {
 
     Option("bluefs_alloc_size", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
     .set_default(1_M)
-    .set_description(""),
+    .set_description("Allocation unit size for DB and WAL devices"),
+
+    Option("bluefs_shared_alloc_size", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
+    .set_default(64_K)
+    .set_description("Allocation unit size for primary/shared device"),
 
     Option("bluefs_max_prefetch", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
     .set_default(1_M)
@@ -3314,7 +3371,7 @@ std::vector<Option> get_global_options() {
     .set_description(""),
 
     Option("bluefs_allocator", Option::TYPE_STR, Option::LEVEL_DEV)
-    .set_default("stupid")
+    .set_default("bitmap")
     .set_description(""),
 
     Option("bluefs_preextend_wal_files", Option::TYPE_BOOL, Option::LEVEL_ADVANCED)
@@ -3431,6 +3488,10 @@ std::vector<Option> get_global_options() {
     .set_default(false)
     .add_tag("mkfs")
     .set_description("Preallocate file created via bluestore_block*_create"),
+
+    Option("bluestore_ignore_data_csum", Option::TYPE_BOOL, Option::LEVEL_DEV)
+    .set_default(false)
+    .set_description("Ignore checksum errors on read and do not generate an EIO error"),
 
     Option("bluestore_csum_type", Option::TYPE_STR, Option::LEVEL_ADVANCED)
     .set_default("crc32c")
@@ -3655,7 +3716,7 @@ std::vector<Option> get_global_options() {
     .set_description("Key value database to use for bluestore"),
 
     Option("bluestore_allocator", Option::TYPE_STR, Option::LEVEL_DEV)
-    .set_default("stupid")
+    .set_default("bitmap")
     .set_enum_allowed({"bitmap", "stupid"})
     .set_description("Allocator policy"),
 
@@ -3676,7 +3737,7 @@ std::vector<Option> get_global_options() {
     .set_description("Max transactions with deferred writes that can accumulate before we force flush deferred writes"),
 
     Option("bluestore_rocksdb_options", Option::TYPE_STR, Option::LEVEL_ADVANCED)
-    .set_default("compression=kNoCompression,max_write_buffer_number=4,min_write_buffer_number_to_merge=1,recycle_log_file_num=4,write_buffer_size=268435456,writable_file_max_buffer_size=0,compaction_readahead_size=2097152")
+    .set_default("compression=kNoCompression,max_write_buffer_number=4,min_write_buffer_number_to_merge=1,recycle_log_file_num=4,write_buffer_size=268435456,writable_file_max_buffer_size=0,compaction_readahead_size=2097152,max_background_compactions=2")
     .set_description("Rocksdb options"),
 
     Option("bluestore_fsck_on_mount", Option::TYPE_BOOL, Option::LEVEL_DEV)
@@ -4439,6 +4500,14 @@ std::vector<Option> get_global_options() {
     Option("debug_asserts_on_shutdown", Option::TYPE_BOOL,Option::LEVEL_DEV)
     .set_default(false)
     .set_description("Enable certain asserts to check for refcounting bugs on shutdown; see http://tracker.ceph.com/issues/21738"),
+
+    Option("debug_disable_randomized_ping", Option::TYPE_BOOL, Option::LEVEL_DEV)
+    .set_default(false)
+    .set_description("Disable heartbeat ping randomization for testing purposes"),
+
+    Option("debug_heartbeat_testing_span", Option::TYPE_INT, Option::LEVEL_DEV)
+    .set_default(0)
+    .set_description("Override 60 second periods for testing only"),
   });
 }
 
@@ -4447,6 +4516,10 @@ std::vector<Option> get_rgw_options() {
     Option("rgw_acl_grants_max_num", Option::TYPE_INT, Option::LEVEL_ADVANCED)
     .set_default(100)
     .set_description("Max number of ACL grants in a single request"),
+
+    Option("rgw_cors_rules_max_num", Option::TYPE_INT, Option::LEVEL_ADVANCED)
+    .set_default(100)
+    .set_description("Max number of cors rules in a single request"),
 
     Option("rgw_max_chunk_size", Option::TYPE_INT, Option::LEVEL_ADVANCED)
     .set_default(4_M)
@@ -5169,17 +5242,17 @@ std::vector<Option> get_rgw_options() {
     .set_long_description(
         "The number of garbage collector data shards, is the number of RADOS objects that "
         "RGW will use to store the garbage collection information on.")
-    .add_see_also({"rgw_gc_obj_min_wait", "rgw_gc_processor_max_time", "rgw_gc_processor_period"}),
+    .add_see_also({"rgw_gc_obj_min_wait", "rgw_gc_processor_max_time", "rgw_gc_processor_period", "rgw_gc_max_concurrent_io"}),
 
     Option("rgw_gc_obj_min_wait", Option::TYPE_INT, Option::LEVEL_ADVANCED)
     .set_default(2_hr)
-    .set_description("Garabge collection object expiration time")
+    .set_description("Garbage collection object expiration time")
     .set_long_description(
        "The length of time (in seconds) that the RGW collector will wait before purging "
        "a deleted object's data. RGW will not remove object immediately, as object could "
        "still have readers. A mechanism exists to increase the object's expiration time "
        "when it's being read.")
-    .add_see_also({"rgw_gc_max_objs", "rgw_gc_processor_max_time", "rgw_gc_processor_period"}),
+    .add_see_also({"rgw_gc_max_objs", "rgw_gc_processor_max_time", "rgw_gc_processor_period", "rgw_gc_max_concurrent_io"}),
 
     Option("rgw_gc_processor_max_time", Option::TYPE_INT, Option::LEVEL_ADVANCED)
     .set_default(1_hr)
@@ -5188,10 +5261,10 @@ std::vector<Option> get_rgw_options() {
         "Garbage collection thread in RGW process holds a lease on its data shards. These "
         "objects contain the information about the objects that need to be removed. RGW "
         "takes a lease in order to prevent multiple RGW processes from handling the same "
-        "objects concurrently. This time signifies that maximum amount of time that RGW "
+        "objects concurrently. This time signifies that maximum amount of time (in seconds) that RGW "
         "is allowed to hold that lease. In the case where RGW goes down uncleanly, this "
         "is the amount of time where processing of that data shard will be blocked.")
-    .add_see_also({"rgw_gc_max_objs", "rgw_gc_obj_min_wait", "rgw_gc_processor_period"}),
+    .add_see_also({"rgw_gc_max_objs", "rgw_gc_obj_min_wait", "rgw_gc_processor_period", "rgw_gc_max_concurrent_io"}),
 
     Option("rgw_gc_processor_period", Option::TYPE_INT, Option::LEVEL_ADVANCED)
     .set_default(1_hr)
@@ -5200,7 +5273,20 @@ std::vector<Option> get_rgw_options() {
         "The amount of time between the start of consecutive runs of the garbage collector "
         "threads. If garbage collector runs takes more than this period, it will not wait "
         "before running again.")
-    .add_see_also({"rgw_gc_max_objs", "rgw_gc_obj_min_wait", "rgw_gc_processor_max_time"}),
+    .add_see_also({"rgw_gc_max_objs", "rgw_gc_obj_min_wait", "rgw_gc_processor_max_time", "rgw_gc_max_concurrent_io", "rgw_gc_max_trim_chunk"}),
+
+    Option("rgw_gc_max_concurrent_io", Option::TYPE_INT, Option::LEVEL_ADVANCED)
+    .set_default(10)
+    .set_description("Max concurrent RADOS IO operations for garbage collection")
+    .set_long_description(
+        "The maximum number of concurrent IO operations that the RGW garbage collection "
+        "thread will use when purging old data.")
+    .add_see_also({"rgw_gc_max_objs", "rgw_gc_obj_min_wait", "rgw_gc_processor_max_time", "rgw_gc_max_trim_chunk"}),
+
+    Option("rgw_gc_max_trim_chunk", Option::TYPE_INT, Option::LEVEL_ADVANCED)
+    .set_default(16)
+    .set_description("Max number of keys to remove from garbage collector log in a single operation")
+    .add_see_also({"rgw_gc_max_objs", "rgw_gc_obj_min_wait", "rgw_gc_processor_max_time", "rgw_gc_max_concurrent_io"}),
 
     Option("rgw_s3_success_create_obj_status", Option::TYPE_INT, Option::LEVEL_ADVANCED)
     .set_default(0)
@@ -5493,6 +5579,14 @@ std::vector<Option> get_rgw_options() {
         "This configurable controls whether RGW handles the website control APIs. RGW can "
         "server static websites if s3website hostnames are configured, and unrelated to "
         "this configurable."),
+
+     Option("rgw_user_unique_email", Option::TYPE_BOOL, Option::LEVEL_BASIC)
+    .set_default(true)
+    .set_description("Require local RGW users to have unique email addresses")
+    .set_long_description(
+        "Enforce builtin user accounts to have unique email addresses.  This "
+	"setting is historical.  In future, non-enforcement of email address "
+        "uniqueness is likely to become the default."),
 
     Option("rgw_log_http_headers", Option::TYPE_STR, Option::LEVEL_BASIC)
     .set_default("")

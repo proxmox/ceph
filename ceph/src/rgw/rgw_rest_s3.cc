@@ -462,7 +462,9 @@ void RGWListBuckets_ObjStore_S3::send_response_begin(bool has_buckets)
     set_req_state_err(s, op_ret);
   dump_errno(s);
   dump_start(s);
-  end_header(s, NULL, "application/xml");
+  // Explicitly use chunked transfer encoding so that we can stream the result
+  // to the user without having to wait for the full length of it.
+  end_header(s, NULL, "application/xml", CHUNKED_TRANSFER_ENCODING);
 
   if (! op_ret) {
     list_all_buckets_start(s);
@@ -537,7 +539,9 @@ void RGWGetUsage_ObjStore_S3::send_response()
     set_req_state_err(s, op_ret);
   dump_errno(s);
 
-  end_header(s, this, "application/xml");
+  // Explicitly use chunked transfer encoding so that we can stream the result
+  // to the user without having to wait for the full length of it.
+  end_header(s, this, "application/xml", CHUNKED_TRANSFER_ENCODING);
   dump_start(s);
   if (op_ret < 0)
     return;
@@ -771,7 +775,9 @@ void RGWListBucket_ObjStore_S3::send_response()
     set_req_state_err(s, op_ret);
   dump_errno(s);
 
-  end_header(s, this, "application/xml");
+  // Explicitly use chunked transfer encoding so that we can stream the result
+  // to the user without having to wait for the full length of it.
+  end_header(s, this, "application/xml", CHUNKED_TRANSFER_ENCODING);
   dump_start(s);
   if (op_ret < 0)
     return;
@@ -1406,10 +1412,12 @@ void RGWPutObj_ObjStore_S3::send_response()
       dump_errno(s);
       dump_etag(s, etag);
       dump_content_length(s, 0);
+      dump_header_if_nonempty(s, "x-amz-version-id", version_id);
       for (auto &it : crypt_http_responses)
         dump_header(s, it.first, it.second);
     } else {
       dump_errno(s);
+      dump_header_if_nonempty(s, "x-amz-version-id", version_id);
       end_header(s, this, "application/xml");
       dump_start(s);
       struct tm tmp;
@@ -2156,7 +2164,9 @@ void RGWCopyObj_ObjStore_S3::send_partial_response(off_t ofs)
     set_req_state_err(s, op_ret);
     dump_errno(s);
 
-    end_header(s, this, "application/xml");
+    // Explicitly use chunked transfer encoding so that we can stream the result
+    // to the user without having to wait for the full length of it.
+    end_header(s, this, "application/xml", CHUNKED_TRANSFER_ENCODING);
     dump_start(s);
     if (op_ret == 0) {
       s->formatter->open_object_section_in_ns("CopyObjectResult", XMLNS_AWS_S3);
@@ -2357,6 +2367,23 @@ int RGWPutCORS_ObjStore_S3::get_params()
 					     "CORSConfiguration"));
   if (!cors_config) {
     return -EINVAL;
+  }
+
+#define CORS_RULES_MAX_NUM      100
+  int max_num = s->cct->_conf->rgw_cors_rules_max_num;
+  if (max_num < 0) {
+    max_num = CORS_RULES_MAX_NUM;
+  }
+  int cors_rules_num = cors_config->get_rules().size();
+  if (cors_rules_num > max_num) {
+    ldout(s->cct, 4) << "An cors config can have up to "
+                     << max_num
+                     << " rules, request cors rules num: "
+                     << cors_rules_num << dendl;
+    op_ret = -ERR_INVALID_CORS_RULES_ERROR;
+    s->err.message = "The number of CORS rules should not exceed allowed limit of "
+                     + std::to_string(max_num) + " rules.";
+    return -ERR_INVALID_REQUEST;
   }
 
   // forward bucket cors requests to meta master zone
@@ -2563,6 +2590,7 @@ void RGWCompleteMultipart_ObjStore_S3::send_response()
   if (op_ret)
     set_req_state_err(s, op_ret);
   dump_errno(s);
+  dump_header_if_nonempty(s, "x-amz-version-id", version_id);
   end_header(s, this, "application/xml");
   if (op_ret == 0) {
     dump_start(s);
@@ -2607,7 +2635,9 @@ void RGWListMultipart_ObjStore_S3::send_response()
   if (op_ret)
     set_req_state_err(s, op_ret);
   dump_errno(s);
-  end_header(s, this, "application/xml");
+  // Explicitly use chunked transfer encoding so that we can stream the result
+  // to the user without having to wait for the full length of it.
+  end_header(s, this, "application/xml", CHUNKED_TRANSFER_ENCODING);
 
   if (op_ret == 0) {
     dump_start(s);
@@ -2658,7 +2688,9 @@ void RGWListBucketMultiparts_ObjStore_S3::send_response()
     set_req_state_err(s, op_ret);
   dump_errno(s);
 
-  end_header(s, this, "application/xml");
+  // Explicitly use chunked transfer encoding so that we can stream the result
+  // to the user without having to wait for the full length of it.
+  end_header(s, this, "application/xml", CHUNKED_TRANSFER_ENCODING);
   dump_start(s);
   if (op_ret < 0)
     return;
@@ -2741,7 +2773,9 @@ void RGWDeleteMultiObj_ObjStore_S3::begin_response()
   }
 
   dump_start(s);
-  end_header(s, this, "application/xml");
+  // Explicitly use chunked transfer encoding so that we can stream the result
+  // to the user without having to wait for the full length of it.
+  end_header(s, this, "application/xml", CHUNKED_TRANSFER_ENCODING);
   s->formatter->open_object_section_in_ns("DeleteResult", XMLNS_AWS_S3);
 
   rgw_flush_formatter(s, s->formatter);
@@ -2774,7 +2808,7 @@ void RGWDeleteMultiObj_ObjStore_S3::send_partial_response(rgw_obj_key& key,
 
       s->formatter->dump_string("Key", key.name);
       s->formatter->dump_string("VersionId", key.instance);
-      s->formatter->dump_int("Code", r.http_ret);
+      s->formatter->dump_string("Code", r.s3_code);
       s->formatter->dump_string("Message", r.s3_code);
       s->formatter->close_section();
     }
@@ -3305,7 +3339,7 @@ int RGWHandler_REST_S3::init(RGWRados *store, struct req_state *s,
       (! s->info.env->get("HTTP_X_AMZ_COPY_SOURCE_RANGE")) &&
       (! s->info.args.exists("uploadId"))) {
 
-    ret = RGWCopyObj::parse_copy_location(url_decode(copy_source),
+    ret = RGWCopyObj::parse_copy_location(copy_source,
                                           s->init_state.src_bucket,
                                           s->src_object);
     if (!ret) {

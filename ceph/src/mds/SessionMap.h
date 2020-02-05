@@ -120,6 +120,8 @@ private:
   mutable DecayCounter release_caps;
   // throttle on caps recalled
   mutable DecayCounter recall_caps_throttle;
+  // second order throttle that prevents recalling too quickly
+  mutable DecayCounter recall_caps_throttle2o;
   // New limit in SESSION_RECALL
   uint32_t recall_limit = 0;
 
@@ -179,6 +181,9 @@ public:
   uint64_t notify_recall_sent(size_t new_limit);
   double get_recall_caps_throttle() const {
     return recall_caps_throttle.get(ceph_clock_now());
+  }
+  double get_recall_caps_throttle2o() const {
+    return recall_caps_throttle2o.get(ceph_clock_now());
   }
   double get_recall_caps() const {
     return recall_caps.get(ceph_clock_now());
@@ -385,6 +390,7 @@ public:
     recall_caps(ceph_clock_now(), g_conf->get_val<double>("mds_recall_warning_decay_rate")),
     release_caps(ceph_clock_now(), g_conf->get_val<double>("mds_recall_warning_decay_rate")),
     recall_caps_throttle(ceph_clock_now(), g_conf->get_val<double>("mds_recall_max_decay_rate")),
+    recall_caps_throttle2o(ceph_clock_now(), 0.5),
     birth_time(clock::now()),
     auth_caps(g_ceph_context),
     item_session_list(this),
@@ -637,16 +643,6 @@ public:
     get_client_sessions(f);
   }
 
-  void replay_open_sessions(map<client_t,entity_inst_t>& client_map) {
-    for (map<client_t,entity_inst_t>::iterator p = client_map.begin(); 
-	 p != client_map.end(); 
-	 ++p) {
-      Session *s = get_or_add_session(p->second);
-      set_state(s, Session::STATE_OPEN);
-      replay_dirty_session(s);
-    }
-  }
-
   // helpers
   entity_inst_t& get_inst(entity_name_t w) {
     assert(session_map.count(w));
@@ -697,7 +693,7 @@ protected:
   std::set<entity_name_t> dirty_sessions;
   std::set<entity_name_t> null_sessions;
   bool loaded_legacy = false;
-  void _mark_dirty(Session *session);
+  void _mark_dirty(Session *session, bool may_save);
 public:
 
   /**
@@ -708,7 +704,7 @@ public:
    * to the backing store.  Must have called
    * mark_projected previously for this session.
    */
-  void mark_dirty(Session *session);
+  void mark_dirty(Session *session, bool may_save=true);
 
   /**
    * Advance the projected version, and mark this
@@ -735,6 +731,13 @@ public:
    * and `projected` to account for that.
    */
   void replay_advance_version();
+
+  /**
+   * During replay, open sessions, advance versions and
+   * mark these sessions as dirty.
+   */
+  void replay_open_sessions(version_t event_cmapv,
+			    map<client_t,entity_inst_t>& client_map);
 
   /**
    * For these session IDs, if a session exists with this ID, and it has

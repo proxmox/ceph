@@ -219,6 +219,8 @@ using ceph::crypto::MD5;
 #define ERR_MALFORMED_ACL_ERROR  2212
 #define ERR_ZONEGROUP_DEFAULT_PLACEMENT_MISCONFIGURATION 2213
 #define ERR_INVALID_ENCRYPTION_ALGORITHM                 2214
+#define ERR_INVALID_CORS_RULES_ERROR                     2215
+#define ERR_NO_CORS_FOUND        2216
 
 #define ERR_BUSY_RESHARDING      2300
 
@@ -1532,6 +1534,10 @@ struct rgw_obj_key {
 
   void set_instance(const string& i) {
     instance = i;
+  }
+
+  const string& get_instance() const {
+    return instance;
   }
 
   string get_index_key_name() const {

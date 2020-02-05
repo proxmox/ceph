@@ -3788,16 +3788,24 @@ bool MDCache::expire_recursive(
 void MDCache::trim_unlinked_inodes()
 {
   dout(7) << "trim_unlinked_inodes" << dendl;
-  list<CInode*> q;
+  int count = 0;
+  vector<CInode*> q;
   for (auto &p : inode_map) {
     CInode *in = p.second;
     if (in->get_parent_dn() == NULL && !in->is_base()) {
       dout(7) << " will trim from " << *in << dendl;
       q.push_back(in);
     }
+
+    if (!(++count % 1000))
+      mds->heartbeat_reset();
   }
-  for (list<CInode*>::iterator p = q.begin(); p != q.end(); ++p)
-    remove_inode_recursive(*p);
+  for (auto& in : q) {
+    remove_inode_recursive(in);
+
+    if (!(++count % 1000))
+      mds->heartbeat_reset();
+  }
 }
 
 /** recalc_auth_bits()
@@ -5522,6 +5530,7 @@ void MDCache::choose_lock_states_and_reconnect_caps()
 
   map<client_t,MClientSnap*> splits;
 
+  int count = 0;
   for (auto i : inode_map) {
     CInode *in = i.second;
 
@@ -5573,6 +5582,9 @@ void MDCache::choose_lock_states_and_reconnect_caps()
       if (missing_snap_parent)
 	missing_snap_parents[realm->inode].insert(in);
     }
+
+    if (!(++count % 1000))
+      mds->heartbeat_reset();
   }    
 
   send_snaps(splits);
@@ -5681,6 +5693,7 @@ void MDCache::export_remaining_imported_caps()
 
   stringstream warn_str;
 
+  int count = 0;
   for (auto p = cap_imports.begin(); p != cap_imports.end(); ++p) {
     warn_str << " ino " << p->first << "\n";
     for (auto q = p->second.begin(); q != p->second.end(); ++q) {
@@ -5693,7 +5706,8 @@ void MDCache::export_remaining_imported_caps()
       }
     }
 
-    mds->heartbeat_reset();
+    if (!(++count % 1000))
+      mds->heartbeat_reset();
   }
 
   for (map<inodeno_t, list<MDSInternalContextBase*> >::iterator p = cap_reconnect_waiters.begin();
@@ -6146,7 +6160,9 @@ void MDCache::reissue_all_caps()
 {
   dout(10) << "reissue_all_caps" << dendl;
 
+  int count = 0;
   for (auto &p : inode_map) {
+    int n = 1;
     CInode *in = p.second;
     if (in->is_head() && in->is_any_caps()) {
       // called by MDSRank::active_start(). There shouldn't be any frozen subtree.
@@ -6155,8 +6171,12 @@ void MDCache::reissue_all_caps()
 	continue;
       }
       if (!mds->locker->eval(in, CEPH_CAP_LOCKS))
-	mds->locker->issue_caps(in);
+	n += mds->locker->issue_caps(in);
     }
+
+    if ((count % 1000) + n >= 1000)
+      mds->heartbeat_reset();
+    count += n;
   }
 }
 
@@ -6234,6 +6254,7 @@ void MDCache::_queued_file_recover_cow(CInode *in, MutationRef& mut)
 void MDCache::identify_files_to_recover()
 {
   dout(10) << "identify_files_to_recover" << dendl;
+  int count = 0;
   for (auto &p : inode_map) {
     CInode *in = p.second;
     if (!in->is_auth())
@@ -6272,6 +6293,9 @@ void MDCache::identify_files_to_recover()
     } else {
       rejoin_check_q.push_back(in);
     }
+
+    if (!(++count % 1000))
+      mds->heartbeat_reset();
   }
 }
 
@@ -7222,6 +7246,12 @@ void MDCache::standby_trim_segment(LogSegment *ls)
   while (!ls->dirty_dirfrag_dirfragtree.empty()) {
     CInode *in = ls->dirty_dirfrag_dirfragtree.front();
     in->dirfragtreelock.remove_dirty();
+  }
+  while (!ls->truncating_inodes.empty()) {
+    auto it = ls->truncating_inodes.begin();
+    CInode *in = *it;
+    ls->truncating_inodes.erase(it);
+    in->put(CInode::PIN_TRUNCATING);
   }
 }
 
@@ -11952,10 +11982,13 @@ void MDCache::force_readonly()
   mds->server->force_clients_readonly();
 
   // revoke write caps
+  int count = 0;
   for (auto &p : inode_map) {
     CInode *in = p.second;
     if (in->is_head())
       mds->locker->eval(in, CEPH_CAP_LOCKS);
+    if (!(++count % 1000))
+      mds->heartbeat_reset();
   }
 
   mds->mdlog->flush();
@@ -11965,7 +11998,7 @@ void MDCache::force_readonly()
 // ==============================================================
 // debug crap
 
-void MDCache::show_subtrees(int dbl)
+void MDCache::show_subtrees(int dbl, bool force_print)
 {
   if (g_conf->mds_thrash_exports)
     dbl += 15;
@@ -11977,6 +12010,13 @@ void MDCache::show_subtrees(int dbl)
 
   if (subtrees.empty()) {
     dout(dbl) << "show_subtrees - no subtrees" << dendl;
+    return;
+  }
+
+  if (!force_print && subtrees.size() > SUBTREES_COUNT_THRESHOLD &&
+      !g_conf->subsys.should_gather(ceph_subsys_mds, 25)) {
+    dout(dbl) << "number of subtrees = " << subtrees.size() << "; not "
+		"printing subtrees" << dendl;
     return;
   }
 
@@ -12000,10 +12040,10 @@ void MDCache::show_subtrees(int dbl)
 
   set<CDir*> subtrees_seen;
 
-  int depth = 0;
+  unsigned int depth = 0;
   while (!q.empty()) {
     CDir *dir = q.front().first;
-    int d = q.front().second;
+    unsigned int d = q.front().second;
     q.pop_front();
 
     if (subtrees.count(dir) == 0) continue;
@@ -12029,6 +12069,12 @@ void MDCache::show_subtrees(int dbl)
     }
   }
 
+  if (!force_print && depth > SUBTREES_DEPTH_THRESHOLD &&
+      !g_conf->subsys.should_gather(ceph_subsys_mds, 25)) {
+    dout(dbl) << "max depth among subtrees = " << depth << "; not printing "
+		"subtrees" << dendl;
+    return;
+  }
 
   // print tree
   for (list<CDir*>::iterator p = basefrags.begin(); p != basefrags.end(); ++p) 

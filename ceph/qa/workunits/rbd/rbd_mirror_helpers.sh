@@ -64,6 +64,15 @@
 #     ../qa/workunits/rbd/rbd_mirror.sh cleanup
 #
 
+if type xmlstarlet > /dev/null 2>&1; then
+    XMLSTARLET=xmlstarlet
+elif type xml > /dev/null 2>&1; then
+    XMLSTARLET=xml
+else
+    echo "Missing xmlstarlet binary!"
+    exit 1
+fi
+
 CLUSTER1=cluster1
 CLUSTER2=cluster2
 POOL=mirror
@@ -246,15 +255,15 @@ cleanup()
 	done
     done
 
+    CEPH_ARGS='' ceph --cluster ${CLUSTER1} osd pool rm ${POOL} ${POOL} --yes-i-really-really-mean-it
+    CEPH_ARGS='' ceph --cluster ${CLUSTER2} osd pool rm ${POOL} ${POOL} --yes-i-really-really-mean-it
+    CEPH_ARGS='' ceph --cluster ${CLUSTER1} osd pool rm ${PARENT_POOL} ${PARENT_POOL} --yes-i-really-really-mean-it
+    CEPH_ARGS='' ceph --cluster ${CLUSTER2} osd pool rm ${PARENT_POOL} ${PARENT_POOL} --yes-i-really-really-mean-it
+
     if [ -z "${RBD_MIRROR_USE_EXISTING_CLUSTER}" ]; then
         cd ${CEPH_ROOT}
         CEPH_ARGS='' ${CEPH_SRC}/mstop.sh ${CLUSTER1}
         CEPH_ARGS='' ${CEPH_SRC}/mstop.sh ${CLUSTER2}
-    else
-        CEPH_ARGS='' ceph --cluster ${CLUSTER1} osd pool rm ${POOL} ${POOL} --yes-i-really-really-mean-it
-        CEPH_ARGS='' ceph --cluster ${CLUSTER2} osd pool rm ${POOL} ${POOL} --yes-i-really-really-mean-it
-        CEPH_ARGS='' ceph --cluster ${CLUSTER1} osd pool rm ${PARENT_POOL} ${PARENT_POOL} --yes-i-really-really-mean-it
-        CEPH_ARGS='' ceph --cluster ${CLUSTER2} osd pool rm ${PARENT_POOL} ${PARENT_POOL} --yes-i-really-really-mean-it
     fi
     test "${RBD_MIRROR_TEMDIR}" = "${TEMPDIR}" ||
     rm -Rf ${TEMPDIR}
@@ -544,11 +553,44 @@ test_status_in_pool_dir()
     local state_pattern=$4
     local description_pattern=$5
 
-    local status_log=${TEMPDIR}/${cluster}-${image}.mirror_status
+    local status_log=${TEMPDIR}/${cluster}-${pool}-${image}.mirror_status
     rbd --cluster ${cluster} -p ${pool} mirror image status ${image} |
 	tee ${status_log} >&2
     grep "state: .*${state_pattern}" ${status_log} || return 1
     grep "description: .*${description_pattern}" ${status_log} || return 1
+
+    # recheck using `mirror pool status` command to stress test it.
+
+    local last_update="$(sed -nEe 's/^ *last_update: *(.*) *$/\1/p' ${status_log})"
+    test_mirror_pool_status_verbose \
+        ${cluster} ${pool} ${image} "${state_pattern}" "${last_update}" &&
+    return 0
+
+    echo "'mirror pool status' test failed" >&2
+    exit 1
+}
+
+test_mirror_pool_status_verbose()
+{
+    local cluster=$1
+    local pool=$2
+    local image=$3
+    local state_pattern="$4"
+    local prev_last_update="$5"
+
+    local status_log=${TEMPDIR}/${cluster}-${pool}.mirror_status
+
+    rbd --cluster ${cluster} mirror pool status ${pool} --verbose --format xml \
+        > ${status_log}
+
+    local last_update state
+    last_update=$($XMLSTARLET sel -t -v \
+        "//images/image[name='${image}']/last_update" < ${status_log})
+    state=$($XMLSTARLET sel -t -v \
+        "//images/image[name='${image}']/state" < ${status_log})
+
+    echo "${state}" | grep "${state_pattern}" ||
+    test "${last_update}" '>' "${prev_last_update}"
 }
 
 wait_for_status_in_pool_dir()
@@ -635,6 +677,22 @@ remove_image_retry()
         sleep ${s}
     done
     return 1
+}
+
+trash_move() {
+    local cluster=$1
+    local pool=$2
+    local image=$3
+
+    rbd --cluster=${cluster} -p ${pool} trash move ${image}
+}
+
+trash_restore() {
+    local cluster=$1
+    local pool=$2
+    local image_id=$3
+
+    rbd --cluster=${cluster} -p ${pool} trash restore ${image_id}
 }
 
 clone_image()
