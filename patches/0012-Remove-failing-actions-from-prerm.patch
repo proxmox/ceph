@@ -1,0 +1,164 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Dominic=20J=C3=A4ger?= <d.jaeger@proxmox.com>
+Date: Mon, 3 Feb 2020 11:57:22 +0100
+Subject: [PATCH] Remove failing actions from prerm
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The first part of the script fails (/sbin/stop doesn't exist and invoke-rc.d
+fails) and doesn't let us continue to #DEBHELPER#. #DEBHELPER#, however, gets
+replaced by a systemd call that successfully stops the ceph services.
+
+Signed-off-by: Dominic Jäger <d.jaeger@proxmox.com>
+---
+ debian/ceph-base.prerm | 17 -----------------
+ debian/ceph-mds.prerm  | 17 -----------------
+ debian/ceph-mgr.prerm  | 17 -----------------
+ debian/ceph-mon.prerm  | 17 -----------------
+ debian/ceph-osd.prerm  | 17 -----------------
+ 5 files changed, 85 deletions(-)
+
+diff --git a/debian/ceph-base.prerm b/debian/ceph-base.prerm
+index bfd7d3d6f..37460790a 100644
+--- a/debian/ceph-base.prerm
++++ b/debian/ceph-base.prerm
+@@ -1,23 +1,6 @@
+ #!/bin/sh
+ # vim: set noet ts=8:
+ 
+-set -e
+-
+-case "$1" in
+-    remove)
+-	[ -x /sbin/stop ] && stop ceph-all || true
+-	invoke-rc.d ceph stop || {
+-	    RESULT=$?
+-	    if [ $RESULT != 100 ]; then
+-		exit $RESULT
+-	    fi
+-	}
+-	;;
+-
+-    *)
+-	;;
+-esac
+-
+ #DEBHELPER#
+ 
+ exit 0
+diff --git a/debian/ceph-mds.prerm b/debian/ceph-mds.prerm
+index 654518a7d..37460790a 100644
+--- a/debian/ceph-mds.prerm
++++ b/debian/ceph-mds.prerm
+@@ -1,23 +1,6 @@
+ #!/bin/sh
+ # vim: set noet ts=8:
+ 
+-set -e
+-
+-case "$1" in
+-    remove)
+-	[ -x /sbin/stop ] && stop ceph-mds-all || :
+-	invoke-rc.d ceph stop mds || {
+-	    RESULT=$?
+-	    if [ $RESULT != 100 ]; then
+-		exit $RESULT
+-	    fi
+-	}
+-	;;
+-
+-    *)
+-	;;
+-esac
+-
+ #DEBHELPER#
+ 
+ exit 0
+diff --git a/debian/ceph-mgr.prerm b/debian/ceph-mgr.prerm
+index 6fb7b245a..37460790a 100644
+--- a/debian/ceph-mgr.prerm
++++ b/debian/ceph-mgr.prerm
+@@ -1,23 +1,6 @@
+ #!/bin/sh
+ # vim: set noet ts=8:
+ 
+-set -e
+-
+-case "$1" in
+-    remove)
+-	[ -x /sbin/stop ] && stop ceph-mgr-all || :
+-	invoke-rc.d ceph stop mgr || {
+-	    RESULT=$?
+-	    if [ $RESULT != 100 ]; then
+-		exit $RESULT
+-	    fi
+-	}
+-	;;
+-
+-    *)
+-	;;
+-esac
+-
+ #DEBHELPER#
+ 
+ exit 0
+diff --git a/debian/ceph-mon.prerm b/debian/ceph-mon.prerm
+index 5f64058a5..37460790a 100644
+--- a/debian/ceph-mon.prerm
++++ b/debian/ceph-mon.prerm
+@@ -1,23 +1,6 @@
+ #!/bin/sh
+ # vim: set noet ts=8:
+ 
+-set -e
+-
+-case "$1" in
+-    remove)
+-	[ -x /sbin/stop ] && stop ceph-mon-all || true
+-	invoke-rc.d ceph stop mon || {
+-	    RESULT=$?
+-	    if [ $RESULT != 100 ]; then
+-		exit $RESULT
+-	    fi
+-	}
+-	;;
+-
+-    *)
+-	;;
+-esac
+-
+ #DEBHELPER#
+ 
+ exit 0
+diff --git a/debian/ceph-osd.prerm b/debian/ceph-osd.prerm
+index 40f07b621..37460790a 100644
+--- a/debian/ceph-osd.prerm
++++ b/debian/ceph-osd.prerm
+@@ -1,23 +1,6 @@
+ #!/bin/sh
+ # vim: set noet ts=8:
+ 
+-set -e
+-
+-case "$1" in
+-    remove)
+-	[ -x /sbin/stop ] && stop ceph-osd-all || true
+-	invoke-rc.d ceph stop osd || {
+-	    RESULT=$?
+-	    if [ $RESULT != 100 ]; then
+-		exit $RESULT
+-	    fi
+-	}
+-	;;
+-
+-    *)
+-	;;
+-esac
+-
+ #DEBHELPER#
+ 
+ exit 0
+-- 
+2.20.1
+
