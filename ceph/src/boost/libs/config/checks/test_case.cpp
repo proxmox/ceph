@@ -1,4 +1,4 @@
-//  This file was automatically generated on Wed Jan 03 23:31:31 2018
+//  This file was automatically generated on Fri Aug 23 11:11:12 2019
 //  by libs/config/tools/generate.cpp
 //  Copyright John Maddock 2002-4.
 //  Use, modification and distribution are subject to the 
@@ -24,6 +24,11 @@
 #ifdef TEST_BOOST_HAS_CLOCK_GETTIME
 #  ifndef BOOST_HAS_CLOCK_GETTIME
 #     error "Feature macro BOOST_HAS_CLOCK_GETTIME is not defined."
+#  endif
+#endif
+#ifdef TEST_BOOST_HAS_PRAGMA_DETECT_MISMATCH
+#  ifndef BOOST_HAS_PRAGMA_DETECT_MISMATCH
+#     error "Feature macro BOOST_HAS_PRAGMA_DETECT_MISMATCH is not defined."
 #  endif
 #endif
 #ifdef TEST_BOOST_HAS_DIRENT_H
@@ -296,6 +301,11 @@
 #     error "Defect macro BOOST_NO_CXX11_DEFAULTED_MOVES is defined."
 #  endif
 #endif
+#ifdef TEST_BOOST_NO_CXX11_HDR_EXCEPTION
+#  ifdef BOOST_NO_CXX11_HDR_EXCEPTION
+#     error "Defect macro BOOST_NO_CXX11_HDR_EXCEPTION is defined."
+#  endif
+#endif
 #ifdef TEST_BOOST_NO_CXX11_FINAL
 #  ifdef BOOST_NO_CXX11_FINAL
 #     error "Defect macro BOOST_NO_CXX11_FINAL is defined."
@@ -509,6 +519,26 @@
 #ifdef TEST_BOOST_NO_CXX17_FOLD_EXPRESSIONS
 #  ifdef BOOST_NO_CXX17_FOLD_EXPRESSIONS
 #     error "Defect macro BOOST_NO_CXX17_FOLD_EXPRESSIONS is defined."
+#  endif
+#endif
+#ifdef TEST_BOOST_NO_CXX17_HDR_OPTIONAL
+#  ifdef BOOST_NO_CXX17_HDR_OPTIONAL
+#     error "Defect macro BOOST_NO_CXX17_HDR_OPTIONAL is defined."
+#  endif
+#endif
+#ifdef TEST_BOOST_NO_CXX17_HDR_STRING_VIEW
+#  ifdef BOOST_NO_CXX17_HDR_STRING_VIEW
+#     error "Defect macro BOOST_NO_CXX17_HDR_STRING_VIEW is defined."
+#  endif
+#endif
+#ifdef TEST_BOOST_NO_CXX17_HDR_VARIANT
+#  ifdef BOOST_NO_CXX17_HDR_VARIANT
+#     error "Defect macro BOOST_NO_CXX17_HDR_VARIANT is defined."
+#  endif
+#endif
+#ifdef TEST_BOOST_NO_CXX17_IF_CONSTEXPR
+#  ifdef BOOST_NO_CXX17_IF_CONSTEXPR
+#     error "Defect macro BOOST_NO_CXX17_IF_CONSTEXPR is defined."
 #  endif
 #endif
 #ifdef TEST_BOOST_NO_CXX17_INLINE_VARIABLES

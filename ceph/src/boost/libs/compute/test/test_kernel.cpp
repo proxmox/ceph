@@ -13,6 +13,7 @@
 
 #include <boost/compute/buffer.hpp>
 #include <boost/compute/kernel.hpp>
+#include <boost/compute/types.hpp>
 #include <boost/compute/system.hpp>
 #include <boost/compute/utility/source.hpp>
 
@@ -113,6 +114,21 @@ BOOST_AUTO_TEST_CASE(kernel_set_args)
 }
 #endif // BOOST_COMPUTE_NO_VARIADIC_TEMPLATES
 
+// Originally failed to compile on macOS (several types are resolved differently)
+BOOST_AUTO_TEST_CASE(kernel_set_args_mac)
+{
+    compute::kernel k = compute::kernel::create_with_source(
+        "__kernel void test(unsigned int a, unsigned long b) { }", "test", context
+    );
+
+    compute::uint_  a;
+    compute::ulong_ b;
+
+    k.set_arg(0, a);
+    k.set_arg(1, b);
+}
+
+
 #ifdef BOOST_COMPUTE_CL_VERSION_1_2
 BOOST_AUTO_TEST_CASE(get_arg_info)
 {
@@ -177,11 +193,14 @@ BOOST_AUTO_TEST_CASE(get_sub_group_info_ext)
         local_work_size
     );
 
+    #ifdef BOOST_COMPUTE_CL_VERSION_2_1
     if(device.check_version(2, 1))
     {
         BOOST_CHECK(count);
     }
-    else if(device.check_version(2, 0) && device.supports_extension("cl_khr_subgroups"))
+    else
+    #endif // BOOST_COMPUTE_CL_VERSION_2_1
+    if(device.check_version(2, 0) && device.supports_extension("cl_khr_subgroups"))
     {
         // for device with cl_khr_subgroups it should return some value
         BOOST_CHECK(count);
@@ -200,11 +219,14 @@ BOOST_AUTO_TEST_CASE(get_sub_group_info_ext)
         &local_work_size[0]
     );
 
+    #ifdef BOOST_COMPUTE_CL_VERSION_2_1
     if(device.check_version(2, 1))
     {
         BOOST_CHECK(count);
     }
-    else if(device.check_version(2, 0) && device.supports_extension("cl_khr_subgroups"))
+    else
+    #endif // BOOST_COMPUTE_CL_VERSION_2_1
+    if(device.check_version(2, 0) && device.supports_extension("cl_khr_subgroups"))
     {
         // for device with cl_khr_subgroups it should return some value
         BOOST_CHECK(count);

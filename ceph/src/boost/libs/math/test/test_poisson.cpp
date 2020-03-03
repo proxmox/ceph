@@ -25,7 +25,7 @@
 
 #define BOOST_TEST_MAIN
 #include <boost/test/unit_test.hpp> // Boost.Test
-#include <boost/test/floating_point_comparison.hpp>
+#include <boost/test/tools/floating_point_comparison.hpp>
 
 #include <boost/math/concepts/real_concept.hpp> // for real_concept
 #include <boost/math/distributions/poisson.hpp>
@@ -449,7 +449,7 @@ void test_spots(RealType)
   for(unsigned i = 0; i < poisson_quantile_data.size(); ++i)
   {
      using namespace boost::math::policies;
-     typedef policy<discrete_quantile<real> > P1;
+     typedef policy<discrete_quantile<boost::math::policies::real> > P1;
      typedef policy<discrete_quantile<integer_round_down> > P2;
      typedef policy<discrete_quantile<integer_round_up> > P3;
      typedef policy<discrete_quantile<integer_round_outwards> > P4;

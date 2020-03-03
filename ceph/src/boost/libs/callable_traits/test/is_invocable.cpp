@@ -11,7 +11,7 @@ Distributed under the Boost Software License, Version 1.0.
 #include "test.hpp"
 
 #ifdef BOOST_CLBL_TRTS_GCC_OLDER_THAN_4_9_2
-//gcc >= 4.8 doesn't like the invoke_case pattern used here
+//gcc < 4.9 doesn't like the invoke_case pattern used here
 int main(){}
 #else
 
@@ -24,7 +24,14 @@ template<bool Expect, typename... Args>
 struct invoke_case {
    template<typename Callable>
    void operator()(tag<Callable>) const {
+
+// when available, test parity with std implementation (c++2a breaks our expectations but we still match std impl)
+#if defined(__cpp_lib_is_invocable) || __cplusplus >= 201707L
+       CT_ASSERT((std::is_invocable<Callable, Args...>() == boost::callable_traits::is_invocable<Callable, Args...>()));
+#else
        CT_ASSERT((Expect == boost::callable_traits::is_invocable<Callable, Args...>()));
+#endif
+
    }
 };
 
@@ -232,6 +239,71 @@ int main() {
         ,invoke_case<false, void*>
     >();
 
+    auto g = [](){};
+
+    run_tests<decltype(g)
+        ,invoke_case<true>
+        ,invoke_case<false, char>
+        ,invoke_case<false, void*>
+    >();
+
+    run_tests<decltype(g)&
+        ,invoke_case<true>
+        ,invoke_case<false, char>
+        ,invoke_case<false, void*>
+    >();
+
+    run_tests<decltype(std::ref(g))
+        ,invoke_case<true>
+        ,invoke_case<false, char>
+        ,invoke_case<false, void*>
+    >();
+
+    run_tests<decltype(std::ref(g))&
+        ,invoke_case<true>
+        ,invoke_case<false, char>
+        ,invoke_case<false, void*>
+    >();
+
+    run_tests<decltype(std::ref(g))&&
+        ,invoke_case<true>
+        ,invoke_case<false, char>
+        ,invoke_case<false, void*>
+    >();
+
+    run_tests<decltype(std::ref(g)) const &
+        ,invoke_case<true>
+        ,invoke_case<false, char>
+        ,invoke_case<false, void*>
+    >();
+
+    run_tests<decltype(std::ref(g)) const &&
+        ,invoke_case<true>
+        ,invoke_case<false, char>
+        ,invoke_case<false, void*>
+    >();
+
+    run_tests<decltype(g)&&
+        ,invoke_case<true>
+        ,invoke_case<false, char>
+        ,invoke_case<false, void*>
+    >();
+
+    run_tests<decltype(g) const &
+        ,invoke_case<true>
+        ,invoke_case<false, char>
+        ,invoke_case<false, void*>
+    >();
+
+    run_tests<decltype(g) const &&
+        ,invoke_case<true>
+        ,invoke_case<false, char>
+        ,invoke_case<false, void*>
+    >();
+
+// libc++ requires constructible types be passed to std::is_invocable
+#ifndef  _LIBCPP_VERSION
+
     run_tests<void(int)
         ,invoke_case<true, int>
         ,invoke_case<true, char>
@@ -267,7 +339,7 @@ int main() {
         ,invoke_case<false, foo&&, int>
         ,invoke_case<false, std::reference_wrapper<foo>, int>
     >();
-
+#endif
 
     run_tests<int
         ,invoke_case<false, foo>

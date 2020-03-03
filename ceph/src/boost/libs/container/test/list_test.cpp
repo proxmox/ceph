@@ -168,16 +168,19 @@ int main ()
    ////////////////////////////////////
    //    Testing allocator implementations
    ////////////////////////////////////
-   //       std:allocator
-   if(test_cont_variants< std::allocator<void> >()){
-      std::cerr << "test_cont_variants< std::allocator<void> > failed" << std::endl;
+   //       int variants
+   if (test::list_test<list<int, std::allocator<int> >, true>())
       return 1;
-   }
-   //       boost::container::adaptive_pool
-   if(test_cont_variants< adaptive_pool<void> >()){
-      std::cerr << "test_cont_variants< adaptive_pool<void> > failed" << std::endl;
+   if (test::list_test<list<int>, true>())
       return 1;
-   }
+   if (test::list_test<list<int, adaptive_pool<int> >, true>())
+      return 1;
+   if (test::list_test<list<test::movable_int>, true>())
+      return 1;
+   if (test::list_test<list<test::movable_and_copyable_int>, true>())
+      return 1;
+   if (test::list_test<list<test::copyable_int>, true>())
+      return 1;
 
    ////////////////////////////////////
    //    Emplace testing
@@ -207,6 +210,72 @@ int main ()
       cont_int a; a.push_back(0); a.push_back(1); a.push_back(2);
       boost::intrusive::test::test_iterator_bidirectional< cont_int >(a);
       if(boost::report_errors() != 0) {
+         return 1;
+      }
+   }
+
+#ifndef BOOST_CONTAINER_NO_CXX17_CTAD
+   ////////////////////////////////////
+   //    Constructor Template Auto Deduction Tests
+   ////////////////////////////////////
+   {
+      auto gold = std::list{ 1, 2, 3 };
+      auto test = boost::container::list(gold.begin(), gold.end());
+      if (test.size() != 3) {
+         return 1;
+      }
+      if (test.front() != 1)
+         return 1;
+      test.pop_front();
+      if (test.front() != 2)
+         return 1;
+      test.pop_front();
+      if (test.front() != 3)
+         return 1;
+      test.pop_front();
+   }
+   {
+      auto gold = std::list{ 1, 2, 3 };
+      auto test = boost::container::list(gold.begin(), gold.end(), new_allocator<int>());
+      if (test.size() != 3) {
+         return 1;
+      }
+      if (test.front() != 1)
+         return 1;
+      test.pop_front();
+      if (test.front() != 2)
+         return 1;
+      test.pop_front();
+      if (test.front() != 3)
+         return 1;
+      test.pop_front();
+   }
+#endif
+
+   ////////////////////////////////////
+   //    has_trivial_destructor_after_move testing
+   ////////////////////////////////////
+   // default allocator
+   {
+      typedef boost::container::list<int> cont;
+      typedef cont::allocator_type allocator_type;
+      typedef boost::container::allocator_traits<allocator_type>::pointer pointer;
+      if (boost::has_trivial_destructor_after_move<cont>::value !=
+          boost::has_trivial_destructor_after_move<allocator_type>::value &&
+          boost::has_trivial_destructor_after_move<pointer>::value) {
+         std::cerr << "has_trivial_destructor_after_move(default allocator) test failed" << std::endl;
+         return 1;
+      }
+   }
+   // std::allocator
+   {
+      typedef boost::container::list<int, std::allocator<int> > cont;
+      typedef cont::allocator_type allocator_type;
+      typedef boost::container::allocator_traits<allocator_type>::pointer pointer;
+      if (boost::has_trivial_destructor_after_move<cont>::value !=
+          boost::has_trivial_destructor_after_move<allocator_type>::value &&
+          boost::has_trivial_destructor_after_move<pointer>::value) {
+         std::cerr << "has_trivial_destructor_after_move(std::allocator) test failed" << std::endl;
          return 1;
       }
    }

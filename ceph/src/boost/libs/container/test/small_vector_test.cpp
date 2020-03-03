@@ -18,32 +18,6 @@
 
 #include <iostream>
 
-namespace boost {
-namespace container {
-
-template class small_vector<char, 0>;
-template class small_vector<char, 1>;
-template class small_vector<char, 2>;
-template class small_vector<char, 10>;
-
-template class small_vector<int, 0>;
-template class small_vector<int, 1>;
-template class small_vector<int, 2>;
-template class small_vector<int, 10>;
-
-//Explicit instantiation to detect compilation errors
-template class boost::container::small_vector
-   < test::movable_and_copyable_int
-   , 10
-   , test::simple_allocator<test::movable_and_copyable_int> >;
-
-template class boost::container::small_vector
-   < test::movable_and_copyable_int
-   , 10
-   , allocator<test::movable_and_copyable_int> >;
-
-}}
-
 struct boost_container_small_vector;
 
 namespace boost { namespace container {   namespace test {
@@ -234,6 +208,26 @@ int main()
       cont_int a; a.push_back(0); a.push_back(1); a.push_back(2);
       boost::intrusive::test::test_iterator_random< cont_int >(a);
       if(boost::report_errors() != 0) {
+         return 1;
+      }
+   }
+
+   ////////////////////////////////////
+   //    has_trivial_destructor_after_move testing
+   ////////////////////////////////////
+   // default allocator
+   {
+      typedef boost::container::small_vector<int, 0> cont;
+      if (boost::has_trivial_destructor_after_move<cont>::value) {
+         std::cerr << "has_trivial_destructor_after_move(default allocator) test failed" << std::endl;
+         return 1;
+      }
+   }
+   // std::allocator
+   {
+      typedef boost::container::small_vector<int, 0, std::allocator<int> > cont;
+      if (boost::has_trivial_destructor_after_move<cont>::value) {
+         std::cerr << "has_trivial_destructor_after_move(std::allocator) test failed" << std::endl;
          return 1;
       }
    }

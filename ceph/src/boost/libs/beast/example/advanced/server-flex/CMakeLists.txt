@@ -14,9 +14,7 @@ if (OPENSSL_FOUND)
 
     add_executable (advanced-server-flex
         ${BOOST_BEAST_FILES}
-        ${PROJECT_SOURCE_DIR}/example/common/detect_ssl.hpp
         ${PROJECT_SOURCE_DIR}/example/common/server_certificate.hpp
-        ${PROJECT_SOURCE_DIR}/example/common/ssl_stream.hpp
         Jamfile
         advanced_server_flex.cpp
     )
@@ -24,7 +22,10 @@ if (OPENSSL_FOUND)
     set_property(TARGET advanced-server-flex PROPERTY FOLDER "example-advanced-server")
     
     target_link_libraries (advanced-server-flex
-        ${OPENSSL_LIBRARIES}
+        OpenSSL::SSL OpenSSL::Crypto
+        lib-asio
+        lib-asio-ssl
+        lib-beast
         )
 
 endif()

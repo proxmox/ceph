@@ -1,7 +1,7 @@
 // Boost.Geometry
 // Unit Test
 
-// Copyright (c) 2016, Oracle and/or its affiliates.
+// Copyright (c) 2016-2018, Oracle and/or its affiliates.
 // Contributed and/or modified by Adam Wulkiewicz, on behalf of Oracle
 
 // Use, modification and distribution is subject to the Boost Software License,
@@ -25,6 +25,8 @@
 #include <boost/geometry/policies/relate/direction.hpp>
 #include <boost/geometry/policies/relate/intersection_points.hpp>
 #include <boost/geometry/policies/relate/tupled.hpp>
+
+#include <boost/geometry/algorithms/detail/overlay/segment_as_subrange.hpp>
 
 template <typename T>
 bool equals_relaxed_val(T const& v1, T const& v2, T const& eps_scale)
@@ -75,8 +77,10 @@ void test_strategy_one(S1 const& s1, S2 const& s2,
 
     typedef typename policy_t::return_type return_type;
 
-    // NOTE: robust policy is currently ignored
-    return_type res = strategy.apply(s1, s2, policy_t(), 0);
+    bg::detail::segment_as_subrange<S1> sr1(s1);
+    bg::detail::segment_as_subrange<S2> sr2(s2);
+
+    return_type res = strategy.apply(sr1, sr2, policy_t());
 
     size_t const res_count = boost::get<0>(res).count;
     char const res_method = boost::get<1>(res).how;
@@ -110,16 +114,28 @@ void test_strategy_one(S1 const& s1, S2 const& s2,
     if (res_count > 0 && expected_count > 0)
     {
         P const& res_i0 = boost::get<0>(res).intersections[0];
+        coord_t denom_a0 = boost::get<0>(res).fractions[0].robust_ra.denominator();
+        coord_t denom_b0 = boost::get<0>(res).fractions[0].robust_rb.denominator();
         BOOST_CHECK_MESSAGE(equals_relaxed(res_i0, ip0, eps_scale),
                             "IP0: " << std::setprecision(16) << bg::wkt(res_i0) << " different than expected: " << bg::wkt(ip0)
                                 << " for " << bg::wkt(s1) << " and " << bg::wkt(s2));
+        BOOST_CHECK_MESSAGE(denom_a0 > coord_t(0),
+                            "IP0 fraction A denominator: " << std::setprecision(16) << denom_a0 << " is incorrect");
+        BOOST_CHECK_MESSAGE(denom_b0 > coord_t(0),
+                            "IP0 fraction B denominator: " << std::setprecision(16) << denom_b0 << " is incorrect");
     }
     if (res_count > 1 && expected_count > 1)
     {
         P const& res_i1 = boost::get<0>(res).intersections[1];
+        coord_t denom_a1 = boost::get<0>(res).fractions[1].robust_ra.denominator();
+        coord_t denom_b1 = boost::get<0>(res).fractions[1].robust_rb.denominator();
         BOOST_CHECK_MESSAGE(equals_relaxed(res_i1, ip1, eps_scale),
                             "IP1: " << std::setprecision(16) << bg::wkt(res_i1) << " different than expected: " << bg::wkt(ip1)
                                 << " for " << bg::wkt(s1) << " and " << bg::wkt(s2));
+        BOOST_CHECK_MESSAGE(denom_a1 > coord_t(0),
+                            "IP1 fraction A denominator: " << std::setprecision(16) << denom_a1 << " is incorrect");
+        BOOST_CHECK_MESSAGE(denom_b1 > coord_t(0),
+                            "IP1 fraction B denominator: " << std::setprecision(16) << denom_b1 << " is incorrect");
     }
 
     if (opposite_id >= 0)

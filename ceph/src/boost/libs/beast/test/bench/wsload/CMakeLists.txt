@@ -7,18 +7,18 @@
 # Official repository: https://github.com/boostorg/beast
 #
 
-GroupSources(include/boost/beast beast)
-GroupSources(example/common common)
-GroupSources(test/extras/include/boost/beast extras)
-GroupSources(subtree/unit_test/include/boost/beast extras)
-GroupSources(test/bench/wsload "/")
+GroupSources (include/boost/beast beast)
+GroupSources (test/bench/wsload "/")
 
 add_executable (bench-wsload
     ${BOOST_BEAST_FILES}
-    ${COMMON_FILES}
-    ${EXTRAS_FILES}
     Jamfile
     wsload.cpp
+    )
+
+target_link_libraries(bench-wsload
+    lib-asio
+    lib-beast
     )
 
 set_property(TARGET bench-wsload PROPERTY FOLDER "tests-bench")

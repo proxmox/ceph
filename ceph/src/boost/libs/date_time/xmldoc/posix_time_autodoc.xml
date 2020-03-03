@@ -52,7 +52,10 @@
 <function name="from_ftime"><type>TimeT</type><template>
           <template-type-parameter name="TimeT"/>
           <template-type-parameter name="FileTimeT"/>
-        </template><parameter name="ft"><paramtype>const FileTimeT &amp;</paramtype></parameter><purpose>Function to create a time object from an initialized FILETIME struct. </purpose><description><para>Function to create a time object from an initialized FILETIME struct. A FILETIME struct holds 100-nanosecond units (0.0000001). When built with microsecond resolution the FILETIME's sub second value will be truncated. Nanosecond resolution has no truncation.</para><para><note><para>FILETIME is part of the Win32 API, so it is not portable to non-windows platforms.</para><para>The function is templated on the FILETIME type, so that it can be used with both native FILETIME and the ad-hoc boost::detail::winapi::FILETIME_ type. </para></note>
+        </template><parameter name="ft"><paramtype>const FileTimeT &amp;</paramtype></parameter><purpose>Function to create a time object from an initialized FILETIME struct. </purpose><description><para>Function to create a time object from an initialized FILETIME struct. A FILETIME struct holds 100-nanosecond units (0.0000001). When built with microsecond resolution the FILETIME's sub second value will be truncated. Nanosecond resolution has no truncation.</para><para><note><para>FILETIME is part of the Win32 API, so it is not portable to non-windows platforms.</para>
+</note>
+<note><para>The function is templated on the FILETIME type, so that it can be used with both native FILETIME and the ad-hoc boost::detail::winapi::FILETIME_ type. </para>
+</note>
 </para></description></function>
 </namespace>
 </namespace>
@@ -116,7 +119,37 @@
 <header name="boost/date_time/posix_time/posix_time_config.hpp">
 <namespace name="boost">
 <namespace name="posix_time">
-<class name="time_duration"><inherit access="public">date_time::time_duration&lt; time_duration, time_res_traits &gt;</inherit><purpose>Base time duration type. </purpose><typedef name="rep_type"><type>time_res_traits</type></typedef>
+<class name="millisec_posix_time_system_config"><typedef name="time_rep_type"><type>boost::int64_t</type></typedef>
+<typedef name="date_type"><type>gregorian::date</type></typedef>
+<typedef name="date_duration_type"><type>gregorian::date_duration</type></typedef>
+<typedef name="time_duration_type"><type><classname>time_duration</classname></type></typedef>
+<typedef name="int_type"><type>time_res_traits::tick_type</type></typedef>
+<typedef name="impl_type"><type>time_res_traits::impl_type</type></typedef>
+<typedef name="resolution_traits"><type>time_res_traits</type></typedef>
+<method-group name="public member functions">
+<method name="BOOST_STATIC_CONSTANT"><type/><parameter name=""><paramtype>boost::int64_t</paramtype></parameter><parameter name=""><paramtype>tick_per_second</paramtype><default>1000000</default></parameter></method>
+</method-group>
+</class><class name="posix_time_system_config"><typedef name="time_rep_type"><type><classname>simple_time_rep</classname></type></typedef>
+<typedef name="date_type"><type>gregorian::date</type></typedef>
+<typedef name="date_duration_type"><type>gregorian::date_duration</type></typedef>
+<typedef name="time_duration_type"><type><classname>time_duration</classname></type></typedef>
+<typedef name="int_type"><type>time_res_traits::tick_type</type></typedef>
+<typedef name="resolution_traits"><type>time_res_traits</type></typedef>
+<method-group name="public member functions">
+<method name="BOOST_STATIC_CONSTANT"><type/><parameter name=""><paramtype>boost::int64_t</paramtype></parameter><parameter name=""><paramtype>tick_per_second</paramtype><default>1000000000</default></parameter></method>
+</method-group>
+</class><struct name="simple_time_rep"><purpose>Simple implementation for the time rep. </purpose><typedef name="date_type"><type>gregorian::date</type></typedef>
+<typedef name="time_duration_type"><type><classname>time_duration</classname></type></typedef>
+<data-member name="day"><type>date_type</type></data-member>
+<data-member name="time_of_day"><type><classname>time_duration_type</classname></type></data-member>
+<method-group name="public member functions">
+<method name="is_special" cv="const"><type>bool</type></method>
+<method name="is_pos_infinity" cv="const"><type>bool</type></method>
+<method name="is_neg_infinity" cv="const"><type>bool</type></method>
+<method name="is_not_a_date_time" cv="const"><type>bool</type></method>
+</method-group>
+<constructor><parameter name="d"><paramtype>date_type</paramtype></parameter><parameter name="tod"><paramtype><classname>time_duration_type</classname></paramtype></parameter></constructor>
+</struct><class name="time_duration"><inherit access="public">date_time::time_duration&lt; time_duration, time_res_traits &gt;</inherit><purpose>Base time duration type. </purpose><typedef name="rep_type"><type>time_res_traits</type></typedef>
 <typedef name="day_type"><type>time_res_traits::day_type</type></typedef>
 <typedef name="hour_type"><type>time_res_traits::hour_type</type></typedef>
 <typedef name="min_type"><type>time_res_traits::min_type</type></typedef>
@@ -132,36 +165,6 @@
 <method-group name="protected member functions">
 </method-group>
 <constructor specifiers="explicit"><parameter name="tick_count"><paramtype>impl_type</paramtype></parameter></constructor>
-</class><struct name="simple_time_rep"><purpose>Simple implementation for the time rep. </purpose><typedef name="date_type"><type>gregorian::date</type></typedef>
-<typedef name="time_duration_type"><type><classname>time_duration</classname></type></typedef>
-<data-member name="day"><type>date_type</type></data-member>
-<data-member name="time_of_day"><type><classname>time_duration_type</classname></type></data-member>
-<method-group name="public member functions">
-<method name="is_special" cv="const"><type>bool</type></method>
-<method name="is_pos_infinity" cv="const"><type>bool</type></method>
-<method name="is_neg_infinity" cv="const"><type>bool</type></method>
-<method name="is_not_a_date_time" cv="const"><type>bool</type></method>
-</method-group>
-<constructor><parameter name="d"><paramtype>date_type</paramtype></parameter><parameter name="tod"><paramtype><classname>time_duration_type</classname></paramtype></parameter></constructor>
-</struct><class name="posix_time_system_config"><typedef name="time_rep_type"><type><classname>simple_time_rep</classname></type></typedef>
-<typedef name="date_type"><type>gregorian::date</type></typedef>
-<typedef name="date_duration_type"><type>gregorian::date_duration</type></typedef>
-<typedef name="time_duration_type"><type><classname>time_duration</classname></type></typedef>
-<typedef name="int_type"><type>time_res_traits::tick_type</type></typedef>
-<typedef name="resolution_traits"><type>time_res_traits</type></typedef>
-<method-group name="public member functions">
-<method name="BOOST_STATIC_CONSTANT"><type/><parameter name=""><paramtype>boost::int64_t</paramtype></parameter><parameter name=""><paramtype>tick_per_second</paramtype><default>1000000000</default></parameter></method>
-</method-group>
-</class><class name="millisec_posix_time_system_config"><typedef name="time_rep_type"><type>boost::int64_t</type></typedef>
-<typedef name="date_type"><type>gregorian::date</type></typedef>
-<typedef name="date_duration_type"><type>gregorian::date_duration</type></typedef>
-<typedef name="time_duration_type"><type><classname>time_duration</classname></type></typedef>
-<typedef name="int_type"><type>time_res_traits::tick_type</type></typedef>
-<typedef name="impl_type"><type>time_res_traits::impl_type</type></typedef>
-<typedef name="resolution_traits"><type>time_res_traits</type></typedef>
-<method-group name="public member functions">
-<method name="BOOST_STATIC_CONSTANT"><type/><parameter name=""><paramtype>boost::int64_t</paramtype></parameter><parameter name=""><paramtype>tick_per_second</paramtype><default>1000000</default></parameter></method>
-</method-group>
 </class><typedef name="time_res_traits"><type>date_time::time_resolution_traits&lt; boost::date_time::time_resolution_traits_adapted64_impl, boost::date_time::nano, 1000000000, 9 &gt;</type></typedef>
 
 
@@ -221,17 +224,17 @@
 </method-group>
 <constructor specifiers="explicit"><template>
           <template-type-parameter name="T"/>
-        </template><parameter name="h"><paramtype>T const &amp;</paramtype></parameter><parameter name=""><paramtype>typename boost::enable_if&lt; boost::is_integral&lt; T &gt;, void &gt;::type *</paramtype><default>0</default></parameter></constructor>
+        </template><parameter name="h"><paramtype>T const &amp;</paramtype></parameter><parameter name=""><paramtype>typename boost::enable_if&lt; boost::is_integral&lt; T &gt;, void &gt;::type *</paramtype><default>BOOST_DATE_TIME_NULLPTR</default></parameter></constructor>
 </class><class name="minutes"><inherit access="public">boost::posix_time::time_duration</inherit><description><para>Allows expression of durations as a minute count The argument must be an integral type </para></description><method-group name="public member functions">
 </method-group>
 <constructor specifiers="explicit"><template>
           <template-type-parameter name="T"/>
-        </template><parameter name="m"><paramtype>T const &amp;</paramtype></parameter><parameter name=""><paramtype>typename boost::enable_if&lt; boost::is_integral&lt; T &gt;, void &gt;::type *</paramtype><default>0</default></parameter></constructor>
+        </template><parameter name="m"><paramtype>T const &amp;</paramtype></parameter><parameter name=""><paramtype>typename boost::enable_if&lt; boost::is_integral&lt; T &gt;, void &gt;::type *</paramtype><default>BOOST_DATE_TIME_NULLPTR</default></parameter></constructor>
 </class><class name="seconds"><inherit access="public">boost::posix_time::time_duration</inherit><description><para>Allows expression of durations as a seconds count The argument must be an integral type </para></description><method-group name="public member functions">
 </method-group>
 <constructor specifiers="explicit"><template>
           <template-type-parameter name="T"/>
-        </template><parameter name="s"><paramtype>T const &amp;</paramtype></parameter><parameter name=""><paramtype>typename boost::enable_if&lt; boost::is_integral&lt; T &gt;, void &gt;::type *</paramtype><default>0</default></parameter></constructor>
+        </template><parameter name="s"><paramtype>T const &amp;</paramtype></parameter><parameter name=""><paramtype>typename boost::enable_if&lt; boost::is_integral&lt; T &gt;, void &gt;::type *</paramtype><default>BOOST_DATE_TIME_NULLPTR</default></parameter></constructor>
 </class><typedef name="millisec"><purpose>Allows expression of durations as milli seconds. </purpose><type>date_time::subsecond_duration&lt; <classname>time_duration</classname>, 1000 &gt;</type></typedef>
 <typedef name="milliseconds"><type>date_time::subsecond_duration&lt; <classname>time_duration</classname>, 1000 &gt;</type></typedef>
 <typedef name="microsec"><purpose>Allows expression of durations as micro seconds. </purpose><type>date_time::subsecond_duration&lt; <classname>time_duration</classname>, 1000000 &gt;</type></typedef>
@@ -844,34 +847,5 @@
 </namespace>
 </header>
 <header name="boost/date_time/posix_time/time_serialize.hpp">
-<function name="BOOST_SERIALIZATION_SPLIT_FREE"><type/><parameter name=""><paramtype><classname>boost::posix_time::ptime</classname></paramtype></parameter><description><para>time_duration objects are broken down into 4 parts for serialization: types are hour_type, min_type, sec_type, and fractional_seconds_type as defined in the time_duration class </para></description></function>
-<function name="save"><type>void</type><template>
-          <template-type-parameter name="Archive"/>
-        </template><parameter name="ar"><paramtype>Archive &amp;</paramtype></parameter><parameter name="td"><paramtype>const posix_time::time_duration &amp;</paramtype></parameter><parameter name="version"><paramtype>unsigned int</paramtype></parameter></function>
-<function name="load_td"><type>void</type><template>
-          <template-type-parameter name="TimeResTraitsSize"/>
-          <template-type-parameter name="Archive"/>
-        </template><parameter name="ar"><paramtype>Archive &amp;</paramtype></parameter><parameter name="td"><paramtype>posix_time::time_duration &amp;</paramtype></parameter><purpose>Function to load posix_time::time_duration objects using serialization lib. </purpose><description><para>time_duration objects are broken down into 4 parts for serialization: types are hour_type, min_type, sec_type, and fractional_seconds_type as defined in the time_duration class </para></description></function>
-<function name="load"><type>void</type><template>
-          <template-type-parameter name="Archive"/>
-        </template><parameter name="ar"><paramtype>Archive &amp;</paramtype></parameter><parameter name="td"><paramtype>posix_time::time_duration &amp;</paramtype></parameter><parameter name="version"><paramtype>unsigned int</paramtype></parameter></function>
-<function name="save"><type>void</type><template>
-          <template-type-parameter name="Archive"/>
-        </template><parameter name="ar"><paramtype>Archive &amp;</paramtype></parameter><parameter name="pt"><paramtype>const posix_time::ptime &amp;</paramtype></parameter><parameter name="int"><paramtype>unsigned</paramtype></parameter><purpose>Function to save posix_time::ptime objects using serialization lib. </purpose><description><para>ptime objects are broken down into 2 parts for serialization: a date object and a time_duration onject </para></description></function>
-<function name="load"><type>void</type><template>
-          <template-type-parameter name="Archive"/>
-        </template><parameter name="ar"><paramtype>Archive &amp;</paramtype></parameter><parameter name="pt"><paramtype>posix_time::ptime &amp;</paramtype></parameter><parameter name="int"><paramtype>unsigned</paramtype></parameter><purpose>Function to load posix_time::ptime objects using serialization lib. </purpose><description><para>ptime objects are broken down into 2 parts for serialization: a date object and a time_duration onject </para></description></function>
-<function name="load_construct_data"><type>void</type><template>
-          <template-type-parameter name="Archive"/>
-        </template><parameter name=""><paramtype>Archive &amp;</paramtype></parameter><parameter name="pt"><paramtype>posix_time::ptime *</paramtype></parameter><parameter name="int"><paramtype>const unsigned</paramtype></parameter><purpose>override needed b/c no default constructor </purpose></function>
-<function name="save"><type>void</type><template>
-          <template-type-parameter name="Archive"/>
-        </template><parameter name="ar"><paramtype>Archive &amp;</paramtype></parameter><parameter name="tp"><paramtype>const posix_time::time_period &amp;</paramtype></parameter><parameter name="int"><paramtype>unsigned</paramtype></parameter><purpose>Function to save posix_time::time_period objects using serialization lib. </purpose><description><para>time_period objects are broken down into 2 parts for serialization: a begining ptime object and an ending ptime object </para></description></function>
-<function name="load"><type>void</type><template>
-          <template-type-parameter name="Archive"/>
-        </template><parameter name="ar"><paramtype>Archive &amp;</paramtype></parameter><parameter name="tp"><paramtype>boost::posix_time::time_period &amp;</paramtype></parameter><parameter name="int"><paramtype>unsigned</paramtype></parameter><purpose>Function to load posix_time::time_period objects using serialization lib. </purpose><description><para>time_period objects are broken down into 2 parts for serialization: a begining ptime object and an ending ptime object </para></description></function>
-<function name="load_construct_data"><type>void</type><template>
-          <template-type-parameter name="Archive"/>
-        </template><parameter name=""><paramtype>Archive &amp;</paramtype></parameter><parameter name="tp"><paramtype>boost::posix_time::time_period *</paramtype></parameter><parameter name="int"><paramtype>const unsigned</paramtype></parameter><purpose>override needed b/c no default constructor </purpose></function>
 </header>
 </library-reference>

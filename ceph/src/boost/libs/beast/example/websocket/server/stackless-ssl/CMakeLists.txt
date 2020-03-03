@@ -22,7 +22,10 @@ if (OPENSSL_FOUND)
     set_property(TARGET websocket-server-stackless-ssl PROPERTY FOLDER "example-websocket-server")
 
     target_link_libraries (websocket-server-stackless-ssl
-        ${OPENSSL_LIBRARIES}
+        OpenSSL::SSL OpenSSL::Crypto
+        lib-asio
+        lib-asio-ssl
+        lib-beast
         )
 
 endif()

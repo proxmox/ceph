@@ -1,5 +1,5 @@
 //
-// Copyright (w) 2016-2017 Vinnie Falco (vinnie dot falco at gmail dot com)
+// Copyright (c) 2016-2019 Vinnie Falco (vinnie dot falco at gmail dot com)
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -10,10 +10,14 @@
 // Test that header file is self-contained.
 #include <boost/beast/websocket/stream.hpp>
 
+#include <boost/beast/_experimental/test/stream.hpp>
+#include <boost/beast/_experimental/test/tcp.hpp>
+
 #include "test.hpp"
 
-#include <boost/asio/io_service.hpp>
+#include <boost/asio/io_context.hpp>
 #include <boost/asio/strand.hpp>
+#include <thread>
 
 namespace boost {
 namespace beast {
@@ -93,8 +97,9 @@ public:
             bool called = false;
             try
             {
-                w.handshake_ex(ws, "localhost", "/",
-                    req_decorator{called});
+                ws.set_option(stream_base::decorator(
+                    req_decorator{called}));
+                w.handshake(ws, "localhost", "/");
                 BEAST_EXPECT(called);
             }
             catch(...)
@@ -115,8 +120,9 @@ public:
             response_type res;
             try
             {
-                w.handshake_ex(ws, res, "localhost", "/",
-                    req_decorator{called});
+                ws.set_option(stream_base::decorator(
+                    req_decorator{called}));
+                w.handshake(ws, res, "localhost", "/");
                 // VFALCO validate res?
                 BEAST_EXPECT(called);
             }
@@ -351,7 +357,7 @@ public:
         po.client_max_window_bits = 0;
         po.server_no_context_takeover = false;
         po.client_no_context_takeover = false;
-        
+
         check("permessage-deflate");
 
         po.server_max_window_bits = 10;
@@ -490,7 +496,7 @@ public:
     void
     testMoveOnly()
     {
-        boost::asio::io_context ioc;
+        net::io_context ioc;
         stream<test::stream> ws{ioc};
         ws.async_handshake("", "", move_only_handler{});
     }
@@ -505,15 +511,197 @@ public:
     };
 
     void
-    testAsioHandlerInvoke()
+    testAsync()
     {
-        // make sure things compile, also can set a
-        // breakpoint in asio_handler_invoke to make sure
-        // it is instantiated.
-        boost::asio::io_context ioc;
-        boost::asio::io_service::strand s{ioc};
-        stream<test::stream> ws{ioc};
-        ws.async_handshake("localhost", "/", s.wrap(copyable_handler{}));
+        using tcp = net::ip::tcp;
+
+        net::io_context ioc;
+
+        // success, no timeout
+
+        {
+            stream<tcp::socket> ws1(ioc);
+            stream<tcp::socket> ws2(ioc);
+            test::connect(ws1.next_layer(), ws2.next_layer());
+
+            ws1.async_handshake("test", "/", test::success_handler());
+            ws2.async_accept(test::success_handler());
+            test::run_for(ioc, std::chrono::seconds(1));
+        }
+
+        {
+            stream<test::stream> ws1(ioc);
+            stream<test::stream> ws2(ioc);
+            test::connect(ws1.next_layer(), ws2.next_layer());
+
+            ws1.async_handshake("test", "/", test::success_handler());
+            ws2.async_accept(test::success_handler());
+            test::run_for(ioc, std::chrono::seconds(1));
+        }
+
+        // success, timeout enabled
+
+        {
+            stream<tcp::socket> ws1(ioc);
+            stream<tcp::socket> ws2(ioc);
+            test::connect(ws1.next_layer(), ws2.next_layer());
+
+            ws1.set_option(stream_base::timeout{
+                std::chrono::milliseconds(50),
+                stream_base::none(),
+                false});
+            ws1.async_handshake("test", "/", test::success_handler());
+            ws2.async_accept(test::success_handler());
+            test::run_for(ioc, std::chrono::seconds(1));
+        }
+
+        {
+            stream<test::stream> ws1(ioc);
+            stream<test::stream> ws2(ioc);
+            test::connect(ws1.next_layer(), ws2.next_layer());
+
+            ws1.set_option(stream_base::timeout{
+                std::chrono::milliseconds(50),
+                stream_base::none(),
+                false});
+            ws1.async_handshake("test", "/", test::success_handler());
+            ws2.async_accept(test::success_handler());
+            test::run_for(ioc, std::chrono::seconds(1));
+        }
+
+        // timeout
+
+        {
+            stream<tcp::socket> ws1(ioc);
+            stream<tcp::socket> ws2(ioc);
+            test::connect(ws1.next_layer(), ws2.next_layer());
+
+            ws1.set_option(stream_base::timeout{
+                std::chrono::milliseconds(50),
+                stream_base::none(),
+                false});
+            ws1.async_handshake("test", "/",
+                test::fail_handler(beast::error::timeout));
+            test::run_for(ioc, std::chrono::seconds(1));
+        }
+
+        {
+            stream<test::stream> ws1(ioc);
+            stream<test::stream> ws2(ioc);
+            test::connect(ws1.next_layer(), ws2.next_layer());
+
+            ws1.set_option(stream_base::timeout{
+                std::chrono::milliseconds(50),
+                stream_base::none(),
+                false});
+            ws1.async_handshake("test", "/",
+                test::fail_handler(beast::error::timeout));
+            test::run_for(ioc, std::chrono::seconds(1));
+        }
+
+        // abandoned operation
+
+        {
+            {
+                stream<tcp::socket> ws1(ioc);
+                ws1.async_handshake("test", "/",
+                    test::fail_handler(
+                        net::error::operation_aborted));
+            }
+            test::run(ioc);
+        }
+    }
+
+    // https://github.com/boostorg/beast/issues/1460
+    void
+    testIssue1460()
+    {
+        net::io_context ioc;
+        auto const make_big = [](response_type& res)
+        {
+            res.insert("Date", "Mon, 18 Feb 2019 12:48:36 GMT");
+            res.insert("Set-Cookie",
+                "__cfduid=de1e209833e7f05aaa1044c6d448994761550494116; "
+                "expires=Tue, 18-Feb-20 12:48:36 GMT; path=/; domain=.cryptofacilities.com; HttpOnly; Secure");
+            res.insert("Feature-Policy",
+                "accelerometer 'none'; ambient-light-sensor 'none'; "
+                "animations 'none'; autoplay 'none'; camera 'none'; document-write 'none'; "
+                "encrypted-media 'none'; geolocation 'none'; gyroscope 'none'; legacy-image-formats 'none'; "
+                "magnetometer 'none'; max-downscaling-image 'none'; microphone 'none'; midi 'none'; "
+                "payment 'none'; picture-in-picture 'none'; unsized-media 'none'; usb 'none'; vr 'none'");
+            res.insert("Referrer-Policy", "origin");
+            res.insert("Strict-Transport-Security", "max-age=15552000; includeSubDomains; preload");
+            res.insert("X-Content-Type-Options", "nosniff");
+            res.insert("Content-Security-Policy",
+                "default-src 'none'; manifest-src 'self'; object-src 'self'; "
+                "child-src 'self' https://www.google.com; "
+                "font-src 'self' https://use.typekit.net https://maxcdn.bootstrapcdn.com https://fonts.gstatic.com data:; "
+                "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://ajax.cloudflare.com https://use.typekit.net "
+                "https://www.googletagmanager.com https://www.google-analytics.com https://www.google.com https://www.googleadservices.com "
+                "https://googleads.g.doubleclick.net https://www.gstatic.com; connect-src 'self' wss://*.cryptofacilities.com/ws/v1 wss://*.cryptofacilities.com/ws/indices "
+                "https://uat.cryptofacilities.com https://uat.cf0.io wss://*.cf0.io https://www.googletagmanager.com https://www.google-analytics.com https://www.google.com "
+                "https://fonts.googleapis.com https://google-analytics.com https://use.typekit.net https://p.typekit.net https://fonts.gstatic.com https://www.gstatic.com "
+                "https://chart.googleapis.com; worker-src 'self'; img-src 'self' https://chart.googleapis.com https://p.typekit.net https://www.google.co.uk https://www.google.com "
+                "https://www.google-analytics.com https://stats.g.doubleclick.net data:; style-src 'self' 'unsafe-inline' https://use.typekit.net https://p.typekit.net "
+                "https://fonts.googleapis.com https://maxcdn.bootstrapcdn.com");
+            res.insert("X-Frame-Options", "SAMEORIGIN");
+            res.insert("X-Xss-Protection", "1; mode=block");
+            res.insert("Expect-CT", "max-age=604800, report-uri=\"https://report-uri.cloudflare.com/cdn-cgi/beacon/expect-ct\"");
+            res.insert("Server", "cloudflare");
+            res.insert("CF-RAY", "4ab09be1a9d0cb06-ARN");
+            res.insert("Bulk",
+                "****************************************************************************************************"
+                "****************************************************************************************************"
+                "****************************************************************************************************"
+                "****************************************************************************************************"
+                "****************************************************************************************************"
+                "****************************************************************************************************"
+                "****************************************************************************************************"
+                "****************************************************************************************************"
+                "****************************************************************************************************"
+                "****************************************************************************************************"
+                "****************************************************************************************************"
+                "****************************************************************************************************"
+                "****************************************************************************************************"
+                "****************************************************************************************************"
+                "****************************************************************************************************"
+                "****************************************************************************************************"
+                "****************************************************************************************************"
+                "****************************************************************************************************"
+                "****************************************************************************************************"
+                "****************************************************************************************************");
+        };
+
+        {
+            stream<test::stream> ws1(ioc);
+            stream<test::stream> ws2(ioc);
+            test::connect(ws1.next_layer(), ws2.next_layer());
+
+            ws2.set_option(stream_base::decorator(make_big));
+            error_code ec;
+            ws2.async_accept(test::success_handler());
+            std::thread t(
+                [&ioc]
+                {
+                    ioc.run();
+                    ioc.restart();
+                });
+            ws1.handshake("test", "/", ec);
+            BEAST_EXPECTS(! ec, ec.message());
+            t.join();
+        }
+
+        {
+            stream<test::stream> ws1(ioc);
+            stream<test::stream> ws2(ioc);
+            test::connect(ws1.next_layer(), ws2.next_layer());
+
+            ws2.set_option(stream_base::decorator(make_big));
+            ws2.async_accept(test::success_handler());
+            ws1.async_handshake("test", "/", test::success_handler());
+            ioc.run();
+            ioc.restart();
+        }
     }
 
     void
@@ -524,7 +712,8 @@ public:
         testExtWrite();
         testExtNegotiate();
         testMoveOnly();
-        testAsioHandlerInvoke();
+        testAsync();
+        testIssue1460();
     }
 };
 

@@ -438,6 +438,8 @@ namespace rgw {
 
     int stat(struct stat* st, uint32_t flags = FLAG_NONE) {
       /* partial Unix attrs */
+      /* FIPS zeroization audit 20191115: this memset is not security
+       * related. */
       memset(st, 0, sizeof(struct stat));
       st->st_dev = state.dev;
       st->st_ino = fh.fh_hk.object; // XXX
@@ -508,7 +510,8 @@ namespace rgw {
 	if (pos > 1) {
 	  path += "/";
 	} else {
-	  if (!omit_bucket && (path.front() != '/')) // pretty-print
+	  if (!omit_bucket &&
+	      ((path.length() == 0) || (path.front() != '/')))
 	    path += "/";
 	}
 	path += *s;

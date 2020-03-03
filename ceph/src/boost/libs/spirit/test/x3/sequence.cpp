@@ -14,6 +14,7 @@
 #include <string>
 #include <iostream>
 #include "test.hpp"
+#include "utils.hpp"
 
 int
 main()
@@ -177,6 +178,22 @@ main()
         BOOST_TEST((test("aA", no_case[char_('a') >> 'a'])));
         BOOST_TEST((test("BEGIN END", no_case[lit("begin") >> "end"], space)));
         BOOST_TEST((!test("BEGIN END", no_case[lit("begin") >> "nend"], space)));
+    }
+
+    { // check attribute is passed through unary to another sequence
+        using boost::spirit::x3::eps;
+        std::string s;
+        BOOST_TEST(test_attr("ab", eps >> no_case[char_ >> char_], s));
+        BOOST_TEST("ab" == s);
+        s.clear();
+        BOOST_TEST(test_attr("ab", no_case[char_ >> char_] >> eps, s));
+        BOOST_TEST("ab" == s);
+        s.clear();
+        BOOST_TEST(test_attr("abc", char_ >> no_case[char_ >> char_], s));
+        BOOST_TEST("abc" == s);
+        s.clear();
+        BOOST_TEST(test_attr("abc", no_case[char_ >> char_] >> char_, s));
+        BOOST_TEST("abc" == s);
     }
 
     {
@@ -465,6 +482,21 @@ main()
         BOOST_TEST(test("x 123 \"a string\"", (char_ >> int_ >> "\"a string\"")[f], space));
         BOOST_TEST(c == 'x');
         BOOST_TEST(n == 123);
+    }
+
+    {
+#ifdef SPIRIT_NO_COMPILE_CHECK
+        char const* const s = "";
+        int i;
+        parse(s, s, int_ >> int_, i);
+#endif
+    }
+
+    { // test move only types
+        using boost::spirit::x3::eps;
+        std::vector<move_only> v;
+        BOOST_TEST(test_attr("ssszs", *synth_move_only >> 'z' >> synth_move_only, v));
+        BOOST_TEST_EQ(v.size(), 4);
     }
 
     return boost::report_errors();

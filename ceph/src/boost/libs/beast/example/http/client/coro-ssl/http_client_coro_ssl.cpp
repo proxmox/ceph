@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2016-2017 Vinnie Falco (vinnie dot falco at gmail dot com)
+// Copyright (c) 2016-2019 Vinnie Falco (vinnie dot falco at gmail dot com)
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -17,26 +17,25 @@
 
 #include <boost/beast/core.hpp>
 #include <boost/beast/http.hpp>
+#include <boost/beast/ssl.hpp>
 #include <boost/beast/version.hpp>
-#include <boost/asio/connect.hpp>
 #include <boost/asio/spawn.hpp>
-#include <boost/asio/ip/tcp.hpp>
-#include <boost/asio/ssl/error.hpp>
-#include <boost/asio/ssl/stream.hpp>
 #include <cstdlib>
 #include <functional>
 #include <iostream>
 #include <string>
 
-using tcp = boost::asio::ip::tcp;       // from <boost/asio/ip/tcp.hpp>
+namespace beast = boost::beast;         // from <boost/beast.hpp>
+namespace http = beast::http;           // from <boost/beast/http.hpp>
+namespace net = boost::asio;            // from <boost/asio.hpp>
 namespace ssl = boost::asio::ssl;       // from <boost/asio/ssl.hpp>
-namespace http = boost::beast::http;    // from <boost/beast/http.hpp>
+using tcp = boost::asio::ip::tcp;       // from <boost/asio/ip/tcp.hpp>
 
 //------------------------------------------------------------------------------
 
 // Report a failure
 void
-fail(boost::system::error_code ec, char const* what)
+fail(beast::error_code ec, char const* what)
 {
     std::cerr << what << ": " << ec.message() << "\n";
 }
@@ -48,20 +47,20 @@ do_session(
     std::string const& port,
     std::string const& target,
     int version,
-    boost::asio::io_context& ioc,
+    net::io_context& ioc,
     ssl::context& ctx,
-    boost::asio::yield_context yield)
+    net::yield_context yield)
 {
-    boost::system::error_code ec;
+    beast::error_code ec;
 
     // These objects perform our I/O
-    tcp::resolver resolver{ioc};
-    ssl::stream<tcp::socket> stream{ioc, ctx};
+    tcp::resolver resolver(ioc);
+    beast::ssl_stream<beast::tcp_stream> stream(ioc, ctx);
 
     // Set SNI Hostname (many hosts need this to handshake successfully)
     if(! SSL_set_tlsext_host_name(stream.native_handle(), host.c_str()))
     {
-        ec.assign(static_cast<int>(::ERR_get_error()), boost::asio::error::get_ssl_category());
+        ec.assign(static_cast<int>(::ERR_get_error()), net::error::get_ssl_category());
         std::cerr << ec.message() << "\n";
         return;
     }
@@ -71,10 +70,16 @@ do_session(
     if(ec)
         return fail(ec, "resolve");
 
+    // Set the timeout.
+    beast::get_lowest_layer(stream).expires_after(std::chrono::seconds(30));
+
     // Make the connection on the IP address we get from a lookup
-    boost::asio::async_connect(stream.next_layer(), results.begin(), results.end(), yield[ec]);
+    get_lowest_layer(stream).async_connect(results, yield[ec]);
     if(ec)
         return fail(ec, "connect");
+
+    // Set the timeout.
+    beast::get_lowest_layer(stream).expires_after(std::chrono::seconds(30));
 
     // Perform the SSL handshake
     stream.async_handshake(ssl::stream_base::client, yield[ec]);
@@ -86,13 +91,16 @@ do_session(
     req.set(http::field::host, host);
     req.set(http::field::user_agent, BOOST_BEAST_VERSION_STRING);
 
+    // Set the timeout.
+    beast::get_lowest_layer(stream).expires_after(std::chrono::seconds(30));
+
     // Send the HTTP request to the remote host
     http::async_write(stream, req, yield[ec]);
     if(ec)
         return fail(ec, "write");
 
     // This buffer is used for reading and must be persisted
-    boost::beast::flat_buffer b;
+    beast::flat_buffer b;
 
     // Declare a container to hold the response
     http::response<http::dynamic_body> res;
@@ -105,13 +113,16 @@ do_session(
     // Write the message to standard out
     std::cout << res << std::endl;
 
+    // Set the timeout.
+    beast::get_lowest_layer(stream).expires_after(std::chrono::seconds(30));
+
     // Gracefully close the stream
     stream.async_shutdown(yield[ec]);
-    if(ec == boost::asio::error::eof)
+    if(ec == net::error::eof)
     {
         // Rationale:
         // http://stackoverflow.com/questions/25587403/boost-asio-ssl-async-shutdown-always-finishes-with-an-error
-        ec.assign(0, ec.category());
+        ec = {};
     }
     if(ec)
         return fail(ec, "shutdown");
@@ -139,13 +150,16 @@ int main(int argc, char** argv)
     int version = argc == 5 && !std::strcmp("1.0", argv[4]) ? 10 : 11;
 
     // The io_context is required for all I/O
-    boost::asio::io_context ioc;
+    net::io_context ioc;
 
     // The SSL context is required, and holds certificates
-    ssl::context ctx{ssl::context::sslv23_client};
+    ssl::context ctx{ssl::context::tlsv12_client};
 
     // This holds the root certificate used for verification
     load_root_certificates(ctx);
+
+    // Verify the remote server's certificate
+    ctx.set_verify_mode(ssl::verify_peer);
 
     // Launch the asynchronous operation
     boost::asio::spawn(ioc, std::bind(

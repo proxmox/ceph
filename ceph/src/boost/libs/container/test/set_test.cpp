@@ -22,39 +22,6 @@
 
 using namespace boost::container;
 
-namespace boost {
-namespace container {
-
-//Explicit instantiation to detect compilation errors
-
-//set
-template class set
-   < test::movable_and_copyable_int
-   , std::less<test::movable_and_copyable_int>
-   , test::simple_allocator<test::movable_and_copyable_int>
-   >;
-
-template class set
-   < test::movable_and_copyable_int
-   , std::less<test::movable_and_copyable_int>
-   , new_allocator<test::movable_and_copyable_int>
-   >;
-
-//multiset
-template class multiset
-   < test::movable_and_copyable_int
-   , std::less<test::movable_and_copyable_int>
-   , test::simple_allocator<test::movable_and_copyable_int>
-   >;
-
-template class multiset
-   < test::movable_and_copyable_int
-   , std::less<test::movable_and_copyable_int>
-   , adaptive_pool<test::movable_and_copyable_int>
-   >;
-
-}} //boost::container
-
 //Test recursive structures
 class recursive_set
 {
@@ -239,6 +206,104 @@ struct alloc_propagate_base<boost_container_multiset>
    };
 };
 
+bool constructor_template_auto_deduction_test()
+{
+#ifndef BOOST_CONTAINER_NO_CXX17_CTAD
+   using namespace boost::container;
+   const std::size_t NumElements = 100;
+   {
+      std::set<int> int_set;
+      for (std::size_t i = 0; i != NumElements; ++i) {
+         int_set.insert(static_cast<int>(i));
+      }
+      std::multiset<int> int_mset;
+      for (std::size_t i = 0; i != NumElements; ++i) {
+         int_mset.insert(static_cast<int>(i));
+      }
+
+      typedef std::less<int> comp_int_t;
+      typedef std::allocator<int> alloc_int_t;
+
+      //range
+      {
+         auto fset = set(int_set.begin(), int_set.end());
+         if (!CheckEqualContainers(int_set, fset))
+            return false;
+         auto fmset = multiset(int_mset.begin(), int_mset.end());
+         if (!CheckEqualContainers(int_mset, fmset))
+            return false;
+      }
+      //range+comp
+      {
+         auto fset = set(int_set.begin(), int_set.end(), comp_int_t());
+         if (!CheckEqualContainers(int_set, fset))
+            return false;
+         auto fmset = multiset(int_mset.begin(), int_mset.end(), comp_int_t());
+         if (!CheckEqualContainers(int_mset, fmset))
+            return false;
+      }
+      //range+comp+alloc
+      {
+         auto fset = set(int_set.begin(), int_set.end(), comp_int_t(), alloc_int_t());
+         if (!CheckEqualContainers(int_set, fset))
+            return false;
+         auto fmset = multiset(int_mset.begin(), int_mset.end(), comp_int_t(), alloc_int_t());
+         if (!CheckEqualContainers(int_mset, fmset))
+            return false;
+      }
+      //range+alloc
+      {
+         auto fset = set(int_set.begin(), int_set.end(), alloc_int_t());
+         if (!CheckEqualContainers(int_set, fset))
+            return false;
+         auto fmset = multiset(int_mset.begin(), int_mset.end(), alloc_int_t());
+         if (!CheckEqualContainers(int_mset, fmset))
+            return false;
+      }
+
+      //ordered_unique_range / ordered_range
+
+      //range
+      {
+         auto fset = set(ordered_unique_range, int_set.begin(), int_set.end());
+         if (!CheckEqualContainers(int_set, fset))
+            return false;
+         auto fmset = multiset(ordered_range, int_mset.begin(), int_mset.end());
+         if (!CheckEqualContainers(int_mset, fmset))
+            return false;
+      }
+      //range+comp
+      {
+         auto fset = set(ordered_unique_range, int_set.begin(), int_set.end(), comp_int_t());
+         if (!CheckEqualContainers(int_set, fset))
+            return false;
+         auto fmset = multiset(ordered_range, int_mset.begin(), int_mset.end(), comp_int_t());
+         if (!CheckEqualContainers(int_mset, fmset))
+            return false;
+      }
+      //range+comp+alloc
+      {
+         auto fset = set(ordered_unique_range, int_set.begin(), int_set.end(), comp_int_t(), alloc_int_t());
+         if (!CheckEqualContainers(int_set, fset))
+            return false;
+         auto fmset = multiset(ordered_range, int_mset.begin(), int_mset.end(), comp_int_t(), alloc_int_t());
+         if (!CheckEqualContainers(int_mset, fmset))
+            return false;
+      }
+      //range+alloc
+      {
+         auto fset = set(ordered_unique_range, int_set.begin(), int_set.end(), alloc_int_t());
+         if (!CheckEqualContainers(int_set, fset))
+            return false;
+         auto fmset = multiset(ordered_range, int_mset.begin(), int_mset.end(), alloc_int_t());
+         if (!CheckEqualContainers(int_mset, fmset))
+            return false;
+      }
+   }
+#endif
+   return true;
+}
+
 }}}   //boost::container::test
 
 template<class VoidAllocator, boost::container::tree_type_enum tree_type_value>
@@ -267,55 +332,99 @@ struct GetAllocatorSet
    };
 };
 
-template<class VoidAllocator, boost::container::tree_type_enum tree_type_value>
-int test_set_variants()
-{
-   typedef typename GetAllocatorSet<VoidAllocator, tree_type_value>::template apply<int>::set_type MySet;
-   typedef typename GetAllocatorSet<VoidAllocator, tree_type_value>::template apply<test::movable_int>::set_type MyMoveSet;
-   typedef typename GetAllocatorSet<VoidAllocator, tree_type_value>::template apply<test::copyable_int>::set_type MyCopySet;
-
-   typedef typename GetAllocatorSet<VoidAllocator, tree_type_value>::template apply<int>::multiset_type MyMultiSet;
-   typedef typename GetAllocatorSet<VoidAllocator, tree_type_value>::template apply<test::movable_int>::multiset_type MyMoveMultiSet;
-   typedef typename GetAllocatorSet<VoidAllocator, tree_type_value>::template apply<test::copyable_int>::multiset_type MyCopyMultiSet;
-
-   typedef std::set<int>                                          MyStdSet;
-   typedef std::multiset<int>                                     MyStdMultiSet;
-
-   if (0 != test::set_test<
-                  MySet
-                  ,MyStdSet
-                  ,MyMultiSet
-                  ,MyStdMultiSet>()){
-      std::cout << "Error in set_test<MyBoostSet>" << std::endl;
-      return 1;
-   }
-
-   if (0 != test::set_test<
-                  MyMoveSet
-                  ,MyStdSet
-                  ,MyMoveMultiSet
-                  ,MyStdMultiSet>()){
-      std::cout << "Error in set_test<MyBoostSet>" << std::endl;
-      return 1;
-   }
-
-   if (0 != test::set_test<
-                  MyCopySet
-                  ,MyStdSet
-                  ,MyCopyMultiSet
-                  ,MyStdMultiSet>()){
-      std::cout << "Error in set_test<MyBoostSet>" << std::endl;
-      return 1;
-   }
-
-   return 0;
-}
-
 void test_merge_from_different_comparison()
 {
    set<int> set1;
    set<int, std::greater<int> > set2;
    set1.merge(set2);
+}
+
+bool test_heterogeneous_lookups()
+{
+   typedef set<int, test::less_transparent> set_t;
+   typedef multiset<int, test::less_transparent> mset_t;
+
+   set_t set1;
+   mset_t mset1;
+
+   const set_t &cset1 = set1;
+   const mset_t &cmset1 = mset1;
+
+   set1.insert(1);
+   set1.insert(1);
+   set1.insert(2);
+   set1.insert(2);
+   set1.insert(3);
+
+   mset1.insert(1);
+   mset1.insert(1);
+   mset1.insert(2);
+   mset1.insert(2);
+   mset1.insert(3);
+
+   const test::non_copymovable_int find_me(2);
+
+   //find
+   if(*set1.find(find_me) != 2)
+      return false;
+   if(*cset1.find(find_me) != 2)
+      return false;
+   if(*mset1.find(find_me) != 2)
+      return false;
+   if(*cmset1.find(find_me) != 2)
+      return false;
+
+   //count
+   if(set1.count(find_me) != 1)
+      return false;
+   if(cset1.count(find_me) != 1)
+      return false;
+   if(mset1.count(find_me) != 2)
+      return false;
+   if(cmset1.count(find_me) != 2)
+      return false;
+
+   //contains
+   if(!set1.contains(find_me))
+      return false;
+   if(!cset1.contains(find_me))
+      return false;
+   if(!mset1.contains(find_me))
+      return false;
+   if(!cmset1.contains(find_me))
+      return false;
+
+   //lower_bound
+   if(*set1.lower_bound(find_me) != 2)
+      return false;
+   if(*cset1.lower_bound(find_me) != 2)
+      return false;
+   if(*mset1.lower_bound(find_me) != 2)
+      return false;
+   if(*cmset1.lower_bound(find_me) != 2)
+      return false;
+
+   //upper_bound
+   if(*set1.upper_bound(find_me) != 3)
+      return false;
+   if(*cset1.upper_bound(find_me) != 3)
+      return false;
+   if(*mset1.upper_bound(find_me) != 3)
+      return false;
+   if(*cmset1.upper_bound(find_me) != 3)
+      return false;
+
+   //equal_range
+   if(*set1.equal_range(find_me).first != 2)
+      return false;
+   if(*cset1.equal_range(find_me).second != 3)
+      return false;
+   if(*mset1.equal_range(find_me).first != 2)
+      return false;
+   if(*cmset1.equal_range(find_me).second != 3)
+      return false;
+
+   return true;
 }
 
 int main ()
@@ -350,36 +459,77 @@ int main ()
    test_merge_from_different_comparison();
 
    ////////////////////////////////////
-   //    Testing allocator implementations
+   //    Constructor Template Auto Deduction test
    ////////////////////////////////////
-   //       std:allocator
-   if(test_set_variants< std::allocator<void>, red_black_tree >()){
-      std::cerr << "test_set_variants< std::allocator<void> > failed" << std::endl;
-      return 1;
-   }
-   //       boost::container::adaptive_pool
-   if(test_set_variants< adaptive_pool<void>, red_black_tree>()){
-      std::cerr << "test_set_variants< adaptive_pool<void> > failed" << std::endl;
+   if (!test::constructor_template_auto_deduction_test()) {
       return 1;
    }
 
+   if(!test_heterogeneous_lookups())
+      return 1;
+
    ////////////////////////////////////
-   //    Tree implementations
+   //    Testing allocator implementations
    ////////////////////////////////////
-   //       AVL
-   if(test_set_variants< std::allocator<void>, avl_tree >()){
-      std::cerr << "test_set_variants< std::allocator<void>, avl_tree > failed" << std::endl;
-      return 1;
-   }
-   //    SCAPEGOAT TREE
-   if(test_set_variants< std::allocator<void>, scapegoat_tree >()){
-      std::cerr << "test_set_variants< std::allocator<void>, scapegoat_tree > failed" << std::endl;
-      return 1;
-   }
-   //    SPLAY TREE
-   if(test_set_variants< std::allocator<void>, splay_tree >()){
-      std::cerr << "test_set_variants< std::allocator<void>, splay_tree > failed" << std::endl;
-      return 1;
+   {
+      typedef std::set<int>                                          MyStdSet;
+      typedef std::multiset<int>                                     MyStdMultiSet;
+
+      if (0 != test::set_test
+         < GetAllocatorSet<std::allocator<void>, red_black_tree>::apply<int>::set_type
+         , MyStdSet
+         , GetAllocatorSet<std::allocator<void>, red_black_tree>::apply<int>::multiset_type
+         , MyStdMultiSet>()) {
+         std::cout << "Error in set_test<std::allocator<void>, red_black_tree>" << std::endl;
+         return 1;
+      }
+
+      if (0 != test::set_test
+         < GetAllocatorSet<new_allocator<void>, avl_tree>::apply<int>::set_type
+         , MyStdSet
+         , GetAllocatorSet<new_allocator<void>, avl_tree>::apply<int>::multiset_type
+         , MyStdMultiSet>()) {
+         std::cout << "Error in set_test<new_allocator<void>, avl_tree>" << std::endl;
+         return 1;
+      }
+
+      if (0 != test::set_test
+         < GetAllocatorSet<adaptive_pool<void>, scapegoat_tree>::apply<int>::set_type
+         , MyStdSet
+         , GetAllocatorSet<adaptive_pool<void>, scapegoat_tree>::apply<int>::multiset_type
+         , MyStdMultiSet>()) {
+         std::cout << "Error in set_test<adaptive_pool<void>, scapegoat_tree>" << std::endl;
+         return 1;
+      }
+
+      ///////////
+
+     if (0 != test::set_test
+         < GetAllocatorSet<new_allocator<void>, splay_tree>::apply<test::movable_int>::set_type
+         , MyStdSet
+         , GetAllocatorSet<new_allocator<void>, splay_tree>::apply<test::movable_int>::multiset_type
+         , MyStdMultiSet>()) {
+         std::cout << "Error in set_test<new_allocator<void>, splay_tree>" << std::endl;
+         return 1;
+      }
+
+      if (0 != test::set_test
+         < GetAllocatorSet<new_allocator<void>, red_black_tree>::apply<test::copyable_int>::set_type
+         , MyStdSet
+         , GetAllocatorSet<new_allocator<void>, red_black_tree>::apply<test::copyable_int>::multiset_type
+         , MyStdMultiSet>()) {
+         std::cout << "Error in set_test<new_allocator<void>, red_black_tree>" << std::endl;
+         return 1;
+      }
+
+      if (0 != test::set_test
+         < GetAllocatorSet<new_allocator<void>, red_black_tree>::apply<test::movable_and_copyable_int>::set_type
+         , MyStdSet
+         , GetAllocatorSet<new_allocator<void>, red_black_tree>::apply<test::movable_and_copyable_int>::multiset_type
+         , MyStdMultiSet>()) {
+         std::cout << "Error in set_test<new_allocator<void>, red_black_tree>" << std::endl;
+         return 1;
+      }
    }
 
    ////////////////////////////////////
@@ -454,6 +604,50 @@ int main ()
    ////////////////////////////////////
    if(!node_type_test())
       return 1;
+
+   ////////////////////////////////////
+   //    has_trivial_destructor_after_move testing
+   ////////////////////////////////////
+   // set, default allocator
+   {
+      typedef boost::container::set<int> cont;
+      typedef boost::container::dtl::tree<int, void, std::less<int>, void, void> tree;
+      if (boost::has_trivial_destructor_after_move<cont>::value !=
+          boost::has_trivial_destructor_after_move<tree>::value) {
+         std::cerr << "has_trivial_destructor_after_move(set, default allocator) test failed" << std::endl;
+         return 1;
+      }
+   }
+   // set, std::allocator
+   {
+      typedef boost::container::set<int, std::less<int>, std::allocator<int> > cont;
+      typedef boost::container::dtl::tree<int, void, std::less<int>, std::allocator<int>, void> tree;
+      if (boost::has_trivial_destructor_after_move<cont>::value !=
+          boost::has_trivial_destructor_after_move<tree>::value) {
+         std::cerr << "has_trivial_destructor_after_move(set, std::allocator) test failed" << std::endl;
+         return 1;
+      }
+   }
+   // multiset, default allocator
+   {
+      typedef boost::container::multiset<int> cont;
+      typedef boost::container::dtl::tree<int, void, std::less<int>, void, void> tree;
+      if (boost::has_trivial_destructor_after_move<cont>::value !=
+          boost::has_trivial_destructor_after_move<tree>::value) {
+         std::cerr << "has_trivial_destructor_after_move(multiset, default allocator) test failed" << std::endl;
+         return 1;
+      }
+   }
+   // multiset, std::allocator
+   {
+      typedef boost::container::multiset<int, std::less<int>, std::allocator<int> > cont;
+      typedef boost::container::dtl::tree<int, void, std::less<int>, std::allocator<int>, void> tree;
+      if (boost::has_trivial_destructor_after_move<cont>::value !=
+          boost::has_trivial_destructor_after_move<tree>::value) {
+         std::cerr << "has_trivial_destructor_after_move(multiset, std::allocator) test failed" << std::endl;
+         return 1;
+      }
+   }
 
    return 0;
 }

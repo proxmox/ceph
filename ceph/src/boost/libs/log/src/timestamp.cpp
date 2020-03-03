@@ -77,7 +77,7 @@ struct get_tick_count64_state
 BOOST_ALIGNMENT(BOOST_LOG_CPU_CACHE_LINE_SIZE) static get_tick_count64_state g_state;
 
 //! Artifical implementation of GetTickCount64
-uint64_t WINAPI get_tick_count64()
+uint64_t BOOST_WINAPI_WINAPI_CC get_tick_count64()
 {
     // Note: Even in single-threaded builds we have to implement get_tick_count64 in a thread-safe way because
     //       it can be called in the system thread pool during refreshes concurrently with user's calls.
@@ -94,7 +94,7 @@ uint64_t WINAPI get_tick_count64()
 }
 
 //! The function is called periodically in the system thread pool to make sure g_state.ticks is timely updated
-void NTAPI refresh_get_tick_count64(boost::winapi::PVOID_, boost::winapi::BOOLEAN_)
+void BOOST_WINAPI_NTAPI_CC refresh_get_tick_count64(boost::winapi::PVOID_, boost::winapi::BOOLEAN_)
 {
     get_tick_count64();
 }
@@ -115,7 +115,7 @@ void cleanup_get_tick_count64()
     }
 }
 
-uint64_t WINAPI get_tick_count_init()
+uint64_t BOOST_WINAPI_WINAPI_CC get_tick_count_init()
 {
     boost::winapi::HMODULE_ hKernel32 = boost::winapi::GetModuleHandleW(L"kernel32.dll");
     if (hKernel32)

@@ -7,17 +7,19 @@
 # Official repository: https://github.com/boostorg/beast
 #
 
-GroupSources(test/extras/include/boost/beast extras)
-GroupSources(subtree/unit_test/include/boost/beast extras)
-GroupSources(include/boost/beast beast)
-GroupSources(test/bench/buffers "/")
+GroupSources (include/boost/beast beast)
+GroupSources (test/bench/buffers "/")
 
 add_executable (bench-buffers
     ${BOOST_BEAST_FILES}
-    ${EXTRAS_FILES}
-    ${TEST_MAIN}
     Jamfile
     bench_buffers.cpp
 )
+
+target_link_libraries(bench-buffers
+    lib-asio
+    lib-beast
+    lib-test
+    )
 
 set_property(TARGET bench-buffers PROPERTY FOLDER "tests-bench")

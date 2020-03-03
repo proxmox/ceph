@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2016-2017 Vinnie Falco (vinnie dot falco at gmail dot com)
+// Copyright (c) 2016-2019 Vinnie Falco (vinnie dot falco at gmail dot com)
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -10,12 +10,13 @@
 // Test that header file is self-contained.
 #include <boost/beast/http/file_body.hpp>
 
+#include <boost/beast/core/buffer_traits.hpp>
 #include <boost/beast/core/buffers_prefix.hpp>
 #include <boost/beast/core/file_stdio.hpp>
 #include <boost/beast/core/flat_buffer.hpp>
 #include <boost/beast/http/parser.hpp>
 #include <boost/beast/http/serializer.hpp>
-#include <boost/beast/unit_test/suite.hpp>
+#include <boost/beast/_experimental/unit_test/suite.hpp>
 #include <boost/filesystem.hpp>
 
 namespace boost {
@@ -33,8 +34,8 @@ public:
         void
         operator()(error_code&, ConstBufferSequence const& buffers)
         {
-            buffer.commit(boost::asio::buffer_copy(
-                buffer.prepare(boost::asio::buffer_size(buffers)),
+            buffer.commit(net::buffer_copy(
+                buffer.prepare(buffer_bytes(buffers)),
                 buffers));
         }
     };
@@ -59,7 +60,7 @@ public:
                 temp.string<std::string>().c_str(), file_mode::write, ec);
             BEAST_EXPECTS(! ec, ec.message());
 
-            p.put(boost::asio::buffer(s.data(), s.size()), ec);
+            p.put(net::buffer(s.data(), s.size()), ec);
             BEAST_EXPECTS(! ec, ec.message());
         }
         {

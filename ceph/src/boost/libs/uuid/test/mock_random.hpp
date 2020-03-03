@@ -3,7 +3,7 @@
 //
 // Distributed under the Boost Software License, Version 1.0.
 // (See accompanying file LICENSE_1_0.txt or copy at
-//   http://www.boost.org/LICENCE_1_0.txt)
+//   https://www.boost.org/LICENSE_1_0.txt)
 //
 // Mocks are used to test sad paths by forcing error responses
 //
@@ -88,7 +88,7 @@ bool provider_acquires_context()
     return true;
 }
 
-boost::winapi::NTSTATUS_ WINAPI
+boost::winapi::NTSTATUS_ BOOST_WINAPI_WINAPI_CC
 BCryptOpenAlgorithmProvider(
     boost::winapi::BCRYPT_ALG_HANDLE_ *phAlgorithm,
     boost::winapi::LPCWSTR_           pszAlgId,
@@ -106,7 +106,7 @@ BCryptOpenAlgorithmProvider(
     return result;
 }
 
-boost::winapi::NTSTATUS_ WINAPI
+boost::winapi::NTSTATUS_ BOOST_WINAPI_WINAPI_CC
 BCryptGenRandom(
     boost::winapi::BCRYPT_ALG_HANDLE_ hAlgorithm,
     boost::winapi::PUCHAR_            pbBuffer,
@@ -126,7 +126,7 @@ BCryptGenRandom(
 
 // the implementation ignores the result of close because it
 // happens in a destructor
-boost::winapi::NTSTATUS_ WINAPI
+boost::winapi::NTSTATUS_ BOOST_WINAPI_WINAPI_CC
 BCryptCloseAlgorithmProvider(
     boost::winapi::BCRYPT_ALG_HANDLE_ hAlgorithm,
     boost::winapi::ULONG_             dwFlags
@@ -137,7 +137,46 @@ BCryptCloseAlgorithmProvider(
     return 0;
 }
 
-#elif defined(BOOST_UUID_RANDOM_PROVIDER_GETENTROPY) 
+#elif defined(BOOST_UUID_RANDOM_PROVIDER_GETRANDOM)
+
+#include <deque>
+#include <unistd.h>
+std::deque<bool> getrandom_next_result;
+
+bool expectations_capable()
+{
+    return true;
+}
+
+bool expectations_met()
+{
+    return getrandom_next_result.empty();
+}
+
+void expect_next_call_success(bool success)
+{
+    getrandom_next_result.push_back(success);
+}
+
+bool provider_acquires_context()
+{
+    return false;
+}
+
+ssize_t mock_getrandom(void *buffer, size_t length, unsigned int flags)
+{
+    boost::ignore_unused(buffer);
+    boost::ignore_unused(length);
+    boost::ignore_unused(flags);
+
+    bool success = getrandom_next_result.front();
+    getrandom_next_result.pop_front();
+    return success ? static_cast< ssize_t >(length) : static_cast< ssize_t >(-1);
+}
+
+#define BOOST_UUID_RANDOM_PROVIDER_GETRANDOM_IMPL_GETRANDOM ::mock_getrandom
+
+#elif defined(BOOST_UUID_RANDOM_PROVIDER_GETENTROPY)
 
 //
 // This stubbing technique works on unix because of how the loader resolves
@@ -228,7 +267,7 @@ ssize_t mockread(int fd, void *buf, size_t siz)
 
     bool success = posix_next_result.front();
     posix_next_result.pop_front();
-    return success ? 1 : 0;
+    return success ? 1 : -1;
 }
 
 #define BOOST_UUID_RANDOM_PROVIDER_POSIX_IMPL_OPEN mockopen

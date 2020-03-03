@@ -5,6 +5,7 @@
 //  http://www.boost.org/LICENSE_1_0.txt)
 
 #include <cassert>
+#include <iostream>
 #include "test_helpers.hpp"
 
 #include <boost/array.hpp>
@@ -50,11 +51,17 @@ struct queue_stress_tester
             assert(inserted);
 
             if (Bounded)
-                while(stk.bounded_push(id) == false)
-                    /*thread::yield()*/;
+                while(stk.bounded_push(id) == false) {
+#ifdef __VXWORKS__
+                    thread::yield();
+#endif
+                }
             else
-                while(stk.push(id) == false)
-                    /*thread::yield()*/;
+                while(stk.push(id) == false) {
+#ifdef __VXWORKS__
+                    thread::yield();
+#endif
+                }
             ++push_count;
         }
         writers_finished += 1;
@@ -89,6 +96,10 @@ struct queue_stress_tester
 
             if ( writers_finished.load() == writer_threads )
                 break;
+
+#ifdef __VXWORKS__
+            thread::yield();
+#endif
         }
 
         while (consume_element(q));
@@ -111,16 +122,15 @@ struct queue_stress_tester
         for (int i = 0; i != writer_threads; ++i)
             writer.create_thread(boost::bind(&queue_stress_tester::template add_items<queue>, this, boost::ref(stk)));
 
-        using namespace std;
-        cout << "threads created" << endl;
+        std::cout << "threads created" << std::endl;
 
         writer.join_all();
 
-        cout << "writer threads joined, waiting for readers" << endl;
+        std::cout << "writer threads joined, waiting for readers" << std::endl;
 
         reader.join_all();
 
-        cout << "reader threads joined" << endl;
+        std::cout << "reader threads joined" << std::endl;
 
         BOOST_REQUIRE_EQUAL(data.count_nodes(), (size_t)0);
         BOOST_REQUIRE(stk.empty());

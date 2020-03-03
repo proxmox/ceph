@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2016-2017 Vinnie Falco (vinnie dot falco at gmail dot com)
+// Copyright (c) 2016-2019 Vinnie Falco (vinnie dot falco at gmail dot com)
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -14,8 +14,8 @@
 
 #include <boost/beast/http/message.hpp>
 #include <boost/beast/http/rfc7230.hpp>
+#include <boost/beast/core/buffers_range.hpp>
 #include <boost/beast/core/error.hpp>
-#include <boost/beast/core/type_traits.hpp>
 #include <boost/asio/buffer.hpp>
 #include <boost/system/error_code.hpp>
 #include <boost/throw_exception.hpp>
@@ -30,7 +30,7 @@ namespace http {
 
 namespace detail {
 
-class nodejs_message_category
+class nodejs_message_category final
     : public boost::system::error_category
 {
 public:
@@ -264,14 +264,14 @@ std::size_t
 nodejs_basic_parser<Derived>::write(
     ConstBufferSequence const& buffers, error_code& ec)
 {
-    static_assert(boost::asio::is_const_buffer_sequence<
+    static_assert(net::is_const_buffer_sequence<
         ConstBufferSequence>::value,
-            "ConstBufferSequence requirements not met");
+            "ConstBufferSequence type requirements not met");
     std::size_t bytes_used = 0;
-    for(auto buffer : beast::detail::buffers_range(buffers))
+    for(auto buffer : beast::buffers_range_ref(buffers))
     {
         auto const n = write(
-            reinterpret_cast<void const*>(buffer.data()),
+            static_cast<void const*>(buffer.data()),
                 buffer.size(), ec);
         if(ec)
             return 0;
@@ -571,7 +571,7 @@ private:
         // Transfer-Encoding, see if we can reserve the buffer.
         //
         // r_.reserve(content_length)
-        ec.assign(0, ec.category());
+        ec = {};
     }
 
     bool
@@ -624,7 +624,7 @@ private:
     void
     on_body(void const*, std::size_t, error_code& ec)
     {
-        ec.assign(0, ec.category());
+        ec = {};
     }
 
     void

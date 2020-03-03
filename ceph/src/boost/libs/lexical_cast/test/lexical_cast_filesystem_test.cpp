@@ -2,7 +2,7 @@
 //
 //  See http://www.boost.org for most recent version, including documentation.
 //
-//  Copyright Antony Polukhin, 2013.
+//  Copyright Antony Polukhin, 2013-2019.
 //
 //  Distributed under the Boost
 //  Software License, Version 1.0. (See accompanying file
@@ -23,7 +23,7 @@ void test_filesystem();
 unit_test::test_suite *init_unit_test_suite(int, char *[])
 {
     unit_test::test_suite *suite =
-        BOOST_TEST_SUITE("lexical_cast unit test");
+        BOOST_TEST_SUITE("lexical_cast+filesystem unit test");
     suite->add(BOOST_TEST_CASE(&test_filesystem));
 
     return suite;
@@ -42,5 +42,26 @@ void test_filesystem()
     p = boost::lexical_cast<boost::filesystem::path>(ab);
     BOOST_CHECK(!p.empty());
     BOOST_CHECK_EQUAL(p, ab);
+    
+    // Tests for
+    // https://github.com/boostorg/lexical_cast/issues/25
+
+    const char quoted_path[] = "\"/home/my user\"";
+    p = boost::lexical_cast<boost::filesystem::path>(quoted_path);
+    BOOST_CHECK(!p.empty());
+    const char unquoted_path[] = "/home/my user";
+    BOOST_CHECK_EQUAL(p, boost::filesystem::path(unquoted_path));
+
+    // Converting back to std::string gives the initial string
+    BOOST_CHECK_EQUAL(boost::lexical_cast<std::string>(p), quoted_path);
+    
+    try {
+        // Without quotes the path will have only `/home/my` in it.
+        // `user` remains in the stream, so an exception must be thrown.
+        p = boost::lexical_cast<boost::filesystem::path>(unquoted_path);
+        BOOST_CHECK(false);
+    } catch (const boost::bad_lexical_cast& ) {
+        // Exception is expected
+    }
 }
 

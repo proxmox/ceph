@@ -8,16 +8,17 @@
 
 
 #include <boost/mp11/utility.hpp>
+#include <boost/mp11/detail/config.hpp>
 #include <boost/core/lightweight_test_trait.hpp>
 #include <type_traits>
 
-using boost::mp11::mp_invoke;
+using boost::mp11::mp_invoke_q;
 
 template<class...> struct X {};
 
 template<template<class...> class F, class... T> using Y = X<F<T>...>;
 
-template<class Q, class... T> using Z = X<mp_invoke<Q, T>...>;
+template<class Q, class... T> using Z = X<mp_invoke_q<Q, T>...>;
 
 template<class T, class U> struct P {};
 
@@ -31,21 +32,19 @@ int main()
     {
         using Q = mp_quote<mp_identity_t>;
 
-        BOOST_TEST_TRAIT_TRUE((std::is_same<mp_invoke<Q, void>, void>));
-        BOOST_TEST_TRAIT_TRUE((std::is_same<mp_invoke<Q, int[]>, int[]>));
+        BOOST_TEST_TRAIT_TRUE((std::is_same<mp_invoke_q<Q, void>, void>));
+        BOOST_TEST_TRAIT_TRUE((std::is_same<mp_invoke_q<Q, int[]>, int[]>));
     }
 
     {
         using Q = mp_quote<mp_identity_t>;
 
-#if defined( BOOST_MSVC ) && BOOST_WORKAROUND( BOOST_MSVC, <= 1800 )
-#else
+#if !BOOST_MP11_WORKAROUND( BOOST_MP11_MSVC, <= 1800 )
         using R1 = Y<Q::fn, void, char, int>;
         BOOST_TEST_TRAIT_TRUE((std::is_same<R1, X<void, char, int>>));
 #endif
 
-#if defined( BOOST_MSVC ) && BOOST_WORKAROUND( BOOST_MSVC, < 1920 && BOOST_MSVC >= 1900 )
-#else
+#if !BOOST_MP11_WORKAROUND( BOOST_MP11_MSVC, < 1920 && BOOST_MP11_MSVC >= 1900 )
         using R2 = Z<Q, void, char, int>;
         BOOST_TEST_TRAIT_TRUE((std::is_same<R2, X<void, char, int>>));
 #endif
@@ -54,15 +53,15 @@ int main()
     {
         using Q = mp_quote<P>;
 
-        BOOST_TEST_TRAIT_TRUE((std::is_same<mp_invoke<Q, void, void>, P<void, void>>));
-        BOOST_TEST_TRAIT_TRUE((std::is_same<mp_invoke<Q, char[], int[]>, P<char[], int[]>>));
+        BOOST_TEST_TRAIT_TRUE((std::is_same<mp_invoke_q<Q, void, void>, P<void, void>>));
+        BOOST_TEST_TRAIT_TRUE((std::is_same<mp_invoke_q<Q, char[], int[]>, P<char[], int[]>>));
     }
 
     {
         using Q = mp_quote<first>;
 
-        BOOST_TEST_TRAIT_TRUE((std::is_same<mp_invoke<Q, void, int>, void>));
-        BOOST_TEST_TRAIT_TRUE((std::is_same<mp_invoke<Q, char[], int[]>, char[]>));
+        BOOST_TEST_TRAIT_TRUE((std::is_same<mp_invoke_q<Q, void, int>, void>));
+        BOOST_TEST_TRAIT_TRUE((std::is_same<mp_invoke_q<Q, char[], int[]>, char[]>));
     }
 
     return boost::report_errors();

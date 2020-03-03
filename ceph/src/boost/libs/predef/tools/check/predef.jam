@@ -43,7 +43,7 @@ rule check ( expressions + : language ? : true-properties * : false-properties *
         else
         {
             # Create the check run if we don't have one yet.
-            local key = [ MD5 $(language)::$(expression) ] ;
+            local key = [ MD5 "$(language)::$(expression)" ] ;
             if ! ( $(key) in $(_checks_) )
             {
                 _checks_ += $(key) ;
@@ -88,7 +88,7 @@ local rule check_target ( language key : requirements * )
     local source_path
         = $(predef_jam:D)/predef_check_cc_as_$(language).$(.$(language).ext) ;
     local include_path
-        = $(predef_jam:D)/../../include ;
+        = $(predef_jam:D)/../../include $(BOOST_ROOT) ;
     obj predef_check_cc_$(key)
         : $(source_path)
         : <include>$(include_path) $(requirements) ;
@@ -102,8 +102,8 @@ local rule change_term_to_def ( term )
     if $(parts[3])
     {
         local version_number = [ regex.split $(parts[3]) "[.]" ] ;
-        if ! $(version_number[3]) { version_number += "0" ; }
         if ! $(version_number[2]) { version_number += "0" ; }
+        if ! $(version_number[3]) { version_number += "0" ; }
         parts = $(parts[1-2]) BOOST_VERSION_NUMBER($(version_number:J=",")) ;
     }
     return <define>CHECK=\"$(parts:J=" ")\" ;

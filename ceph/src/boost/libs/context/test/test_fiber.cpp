@@ -256,11 +256,12 @@ void test_ontop() {
                     return std::move( f);
                 }};
         f = std::move( f).resume();
-        f = std::move( f).resume_with(
-               [&i](ctx::fiber && f){
+        // Pass fn by reference to see if the types are properly decayed.
+        auto fn = [&i](ctx::fiber && f){
                    i -= 10;
                    return std::move( f);
-               });
+        };
+        f = std::move( f).resume_with(fn);
         BOOST_CHECK( f);
         BOOST_CHECK_EQUAL( i, 200);
     }
@@ -290,7 +291,7 @@ void test_ontop_exception() {
                     f = std::move( f).resume();
                 } catch ( my_exception & ex) {
                     value2 = ex.what();
-                    return std::move( ex.f); 
+                    return std::move( ex.f);
                 }
             }
             return std::move( f);
@@ -307,7 +308,7 @@ void test_ontop_exception() {
     BOOST_CHECK_EQUAL( std::string( what), value2);
 }
 
-void test_termination() {
+void test_termination1() {
     {
         value1 = 0;
         ctx::fiber f{
@@ -352,6 +353,32 @@ void test_termination() {
         BOOST_CHECK( ! f);
         BOOST_CHECK_EQUAL( i, value1);
     }
+}
+
+void test_termination2() {
+    {
+        value1 = 0;
+        value3 = 0.0;
+        ctx::fiber f{
+            [](ctx::fiber && f){
+                Y y;
+                value1 = 3;
+                value3 = 4.;
+                f = std::move( f).resume();
+                value1 = 7;
+                value3 = 8.;
+                f = std::move( f).resume();
+                return std::move( f);
+            }};
+        BOOST_CHECK_EQUAL( 0, value1);
+        BOOST_CHECK_EQUAL( 0., value3);
+        f = std::move( f).resume();
+        BOOST_CHECK_EQUAL( 3, value1);
+        BOOST_CHECK_EQUAL( 4., value3);
+        f = std::move( f).resume();
+    }
+    BOOST_CHECK_EQUAL( 7, value1);
+    BOOST_CHECK_EQUAL( 8., value3);
 }
 
 void test_sscanf() {
@@ -414,6 +441,72 @@ void test_bug12215() {
 }
 #endif
 
+void test_goodcatch() {
+    value1 = 0;
+    value3 = 0.0;
+    {
+        ctx::fiber f{
+            []( ctx::fiber && f) {
+                Y y;
+                value3 = 2.;
+                f = std::move( f).resume();
+                try {
+                    value3 = 3.;
+                    f = std::move( f).resume();
+                } catch ( boost::context::detail::forced_unwind const&) {
+                    value3 = 4.;
+                    throw;
+                } catch (...) {
+                    value3 = 5.;
+                }
+                value3 = 6.;
+                return std::move( f);
+            }};
+        BOOST_CHECK_EQUAL( 0, value1);
+        BOOST_CHECK_EQUAL( 0., value3);
+        f = std::move( f).resume();
+        BOOST_CHECK_EQUAL( 3, value1);
+        BOOST_CHECK_EQUAL( 2., value3);
+        f = std::move( f).resume();
+        BOOST_CHECK_EQUAL( 3, value1);
+        BOOST_CHECK_EQUAL( 3., value3);
+    }
+    BOOST_CHECK_EQUAL( 7, value1);
+    BOOST_CHECK_EQUAL( 4., value3);
+}
+
+void test_badcatch() {
+#if 0
+    value1 = 0;
+    value3 = 0.;
+    {
+        ctx::fiber f{
+            []( ctx::fiber && f) {
+                Y y;
+                try {
+                    value3 = 3.;
+                    f = std::move( f).resume();
+                } catch (...) {
+                    value3 = 5.;
+                }
+                return std::move( f);
+            }};
+        BOOST_CHECK_EQUAL( 0, value1);
+        BOOST_CHECK_EQUAL( 0., value3);
+        f = std::move( f).resume();
+        BOOST_CHECK_EQUAL( 3, value1);
+        BOOST_CHECK_EQUAL( 3., value3);
+        // the destruction of ctx here will cause a forced_unwind to be thrown that is not caught
+        // in fn19.  That will trigger the "not caught" assertion in ~forced_unwind.  Getting that
+        // assertion to propogate bak here cleanly is non-trivial, and there seems to not be a good
+        // way to hook directly into the assertion when it happens on an alternate stack.
+        std::move( f);
+    }
+    BOOST_CHECK_EQUAL( 7, value1);
+    BOOST_CHECK_EQUAL( 4., value3);
+#endif
+}
+
 boost::unit_test::test_suite * init_unit_test_suite( int, char* [])
 {
     boost::unit_test::test_suite * test =
@@ -427,12 +520,15 @@ boost::unit_test::test_suite * init_unit_test_suite( int, char* [])
     test->add( BOOST_TEST_CASE( & test_prealloc) );
     test->add( BOOST_TEST_CASE( & test_ontop) );
     test->add( BOOST_TEST_CASE( & test_ontop_exception) );
-    test->add( BOOST_TEST_CASE( & test_termination) );
+    test->add( BOOST_TEST_CASE( & test_termination1) );
+    test->add( BOOST_TEST_CASE( & test_termination2) );
     test->add( BOOST_TEST_CASE( & test_sscanf) );
     test->add( BOOST_TEST_CASE( & test_snprintf) );
 #ifdef BOOST_WINDOWS
     test->add( BOOST_TEST_CASE( & test_bug12215) );
 #endif
+    test->add( BOOST_TEST_CASE( & test_goodcatch) );
+    test->add( BOOST_TEST_CASE( & test_badcatch) );
 
     return test;
 }

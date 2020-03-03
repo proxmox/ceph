@@ -32,7 +32,7 @@ int main(int argc, char* argv[])
 {   
      using namespace boost::dll;
     using namespace boost::dll::experimental;
-    boost::filesystem::path pt = b2_workarounds::first_lib_from_argv(argc, argv);
+    boost::dll::fs::path pt = b2_workarounds::first_lib_from_argv(argc, argv);
 
     BOOST_TEST(!pt.empty());
     std::cout << "Library: " << pt << std::endl;
@@ -62,8 +62,9 @@ int main(int argc, char* argv[])
             volatile override_class, int(int, int),
             const volatile override_class, double(double, double)>(sm, "func");
 
+    override_class override_class_varible{};
 
-    override_class *ov = 0;
+    override_class *ov = &override_class_varible;
     volatile override_class *ovv = ov;
     const volatile override_class *ovcv = ov;
 

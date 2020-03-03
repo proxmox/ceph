@@ -408,15 +408,15 @@
 <method-group name="public static functions">
 <method name="unit" specifiers="static"><type><classname>date_duration</classname></type><purpose>Returns the smallest duration – used by to calculate 'end'. </purpose></method>
 </method-group>
-</class><struct name="duration_traits_long"><description><para>Struct for instantiating <classname alt="boost::date_time::date_duration">date_duration</classname> with <emphasis role="bold">NO</emphasis> special values functionality. Allows for transparent implementation of either date_duration&lt;long&gt; or <classname alt="boost::date_time::date_duration">date_duration</classname>&lt;int_adapter&lt;long&gt; &gt; </para></description><typedef name="int_type"><type>long</type></typedef>
-<typedef name="impl_type"><type>long</type></typedef>
-<method-group name="public static functions">
-<method name="as_number" specifiers="static"><type>int_type</type><parameter name="i"><paramtype>impl_type</paramtype></parameter></method>
-</method-group>
-</struct><struct name="duration_traits_adapted"><description><para>Struct for instantiating <classname alt="boost::date_time::date_duration">date_duration</classname> <emphasis role="bold">WITH</emphasis> special values functionality. Allows for transparent implementation of either date_duration&lt;long&gt; or <classname alt="boost::date_time::date_duration">date_duration</classname>&lt;int_adapter&lt;long&gt; &gt; </para></description><typedef name="int_type"><type>long</type></typedef>
+</class><struct name="duration_traits_adapted"><description><para>Struct for instantiating <classname alt="boost::date_time::date_duration">date_duration</classname> <emphasis role="bold">WITH</emphasis> special values functionality. Allows for transparent implementation of either date_duration&lt;long&gt; or <classname alt="boost::date_time::date_duration">date_duration</classname>&lt;int_adapter&lt;long&gt; &gt; </para></description><typedef name="int_type"><type>long</type></typedef>
 <typedef name="impl_type"><type><classname>boost::date_time::int_adapter</classname>&lt; long &gt;</type></typedef>
 <method-group name="public static functions">
 <method name="as_number" specifiers="static"><type>int_type</type><parameter name="i"><paramtype><classname>impl_type</classname></paramtype></parameter></method>
+</method-group>
+</struct><struct name="duration_traits_long"><description><para>Struct for instantiating <classname alt="boost::date_time::date_duration">date_duration</classname> with <emphasis role="bold">NO</emphasis> special values functionality. Allows for transparent implementation of either date_duration&lt;long&gt; or <classname alt="boost::date_time::date_duration">date_duration</classname>&lt;int_adapter&lt;long&gt; &gt; </para></description><typedef name="int_type"><type>long</type></typedef>
+<typedef name="impl_type"><type>long</type></typedef>
+<method-group name="public static functions">
+<method name="as_number" specifiers="static"><type>int_type</type><parameter name="i"><paramtype>impl_type</paramtype></parameter></method>
 </method-group>
 </struct>
 
@@ -457,13 +457,7 @@
 <header name="boost/date_time/date_duration_types.hpp">
 <namespace name="boost">
 <namespace name="date_time">
-<class name="weeks_duration"><template>
-      <template-type-parameter name="duration_config"/>
-    </template><inherit access="public">boost::date_time::date_duration&lt; duration_config &gt;</inherit><purpose>Additional duration type that represents a number of n*7 days. </purpose><method-group name="public member functions">
-</method-group>
-<constructor><parameter name="w"><paramtype>typename duration_config::impl_type</paramtype></parameter></constructor>
-<constructor><parameter name="sv"><paramtype>special_values</paramtype></parameter></constructor>
-</class><class name="months_duration"><template>
+<class name="months_duration"><template>
       <template-type-parameter name="base_config"/>
     </template><purpose>additional duration type that represents a logical month </purpose><description><para>A logical month enables things like: "date(2002,Mar,2) + months(2) -&gt; 
 2002-May2". If the date is a last day-of-the-month, the result will also be a last-day-of-the-month. </para></description><method-group name="public member functions">
@@ -476,8 +470,8 @@
 <method name="operator+="><type><classname>months_type</classname> &amp;</type><parameter name="rhs"><paramtype>const <classname>months_type</classname> &amp;</paramtype></parameter></method>
 <method name="operator-" cv="const"><type><classname>months_type</classname></type><parameter name="rhs"><paramtype>const <classname>months_type</classname> &amp;</paramtype></parameter></method>
 <method name="operator-="><type><classname>months_type</classname> &amp;</type><parameter name="rhs"><paramtype>const <classname>months_type</classname> &amp;</paramtype></parameter></method>
-<method name="operator*" cv="const"><type><classname>months_type</classname></type><parameter name="rhs"><paramtype>const int_type</paramtype></parameter></method>
-<method name="operator*="><type><classname>months_type</classname> &amp;</type><parameter name="rhs"><paramtype>const int_type</paramtype></parameter></method>
+<method name="operator *" cv="const"><type><classname>months_type</classname></type><parameter name="rhs"><paramtype>const int_type</paramtype></parameter></method>
+<method name="operator *="><type><classname>months_type</classname> &amp;</type><parameter name="rhs"><paramtype>const int_type</paramtype></parameter></method>
 <method name="operator/" cv="const"><type><classname>months_type</classname></type><parameter name="rhs"><paramtype>const int_type</paramtype></parameter></method>
 <method name="operator/="><type><classname>months_type</classname> &amp;</type><parameter name="rhs"><paramtype>const int_type</paramtype></parameter></method>
 <method name="operator+" cv="const"><type><classname>months_type</classname></type><parameter name="y"><paramtype>const <classname>years_type</classname> &amp;</paramtype></parameter></method>
@@ -486,6 +480,12 @@
 <method name="operator-="><type><classname>months_type</classname> &amp;</type><parameter name="y"><paramtype>const <classname>years_type</classname> &amp;</paramtype></parameter></method>
 </method-group>
 <constructor><parameter name="num"><paramtype>int_rep</paramtype></parameter></constructor>
+<constructor><parameter name="sv"><paramtype>special_values</paramtype></parameter></constructor>
+</class><class name="weeks_duration"><template>
+      <template-type-parameter name="duration_config"/>
+    </template><inherit access="public">boost::date_time::date_duration&lt; duration_config &gt;</inherit><purpose>Additional duration type that represents a number of n*7 days. </purpose><method-group name="public member functions">
+</method-group>
+<constructor><parameter name="w"><paramtype>typename duration_config::impl_type</paramtype></parameter></constructor>
 <constructor><parameter name="sv"><paramtype>special_values</paramtype></parameter></constructor>
 </class><class name="years_duration"><template>
       <template-type-parameter name="base_config"/>
@@ -500,8 +500,8 @@
 <method name="operator+="><type><classname>years_type</classname> &amp;</type><parameter name="rhs"><paramtype>const <classname>years_type</classname> &amp;</paramtype></parameter></method>
 <method name="operator-" cv="const"><type><classname>years_type</classname></type><parameter name="rhs"><paramtype>const <classname>years_type</classname> &amp;</paramtype></parameter></method>
 <method name="operator-="><type><classname>years_type</classname> &amp;</type><parameter name="rhs"><paramtype>const <classname>years_type</classname> &amp;</paramtype></parameter></method>
-<method name="operator*" cv="const"><type><classname>years_type</classname></type><parameter name="rhs"><paramtype>const int_type</paramtype></parameter></method>
-<method name="operator*="><type><classname>years_type</classname> &amp;</type><parameter name="rhs"><paramtype>const int_type</paramtype></parameter></method>
+<method name="operator *" cv="const"><type><classname>years_type</classname></type><parameter name="rhs"><paramtype>const int_type</paramtype></parameter></method>
+<method name="operator *="><type><classname>years_type</classname> &amp;</type><parameter name="rhs"><paramtype>const int_type</paramtype></parameter></method>
 <method name="operator/" cv="const"><type><classname>years_type</classname></type><parameter name="rhs"><paramtype>const int_type</paramtype></parameter></method>
 <method name="operator/="><type><classname>years_type</classname> &amp;</type><parameter name="rhs"><paramtype>const int_type</paramtype></parameter></method>
 <method name="operator+" cv="const"><type><classname>months_type</classname></type><parameter name="m"><paramtype>const <classname>months_type</classname> &amp;</paramtype></parameter></method>
@@ -554,7 +554,13 @@
       <template-type-parameter name="CharT"/>
       <template-type-parameter name="OutItrT"><default>std::ostreambuf_iterator&lt;CharT, std::char_traits&lt;CharT&gt; &gt;</default></template-type-parameter>
     </template><inherit access="public">facet</inherit><description><para>Class that provides format based I/O facet for date types.</para><para>This class allows the formatting of dates by using format string. Format strings are:</para><para><itemizedlist>
-<listitem><para>A =&gt; long_weekday_format - Full name Ex: Tuesday</para></listitem><listitem><para>a =&gt; short_weekday_format - Three letter abbreviation Ex: Tue</para></listitem><listitem><para>B =&gt; long_month_format - Full name Ex: October</para></listitem><listitem><para>b =&gt; short_month_format - Three letter abbreviation Ex: Oct</para></listitem><listitem><para>x =&gt; standard_format_specifier - defined by the locale</para></listitem><listitem><para>Y-b-d =&gt; default_date_format - YYYY-Mon-dd</para></listitem></itemizedlist>
+<listitem><para>A =&gt; long_weekday_format - Full name Ex: Tuesday</para>
+</listitem><listitem><para>a =&gt; short_weekday_format - Three letter abbreviation Ex: Tue</para>
+</listitem><listitem><para>B =&gt; long_month_format - Full name Ex: October</para>
+</listitem><listitem><para>b =&gt; short_month_format - Three letter abbreviation Ex: Oct</para>
+</listitem><listitem><para>x =&gt; standard_format_specifier - defined by the locale</para>
+</listitem><listitem><para>Y-b-d =&gt; default_date_format - YYYY-Mon-dd</para>
+</listitem></itemizedlist>
 </para><para>Default month format == b Default weekday format == a </para></description><typedef name="duration_type"><type>date_type::duration_type</type></typedef>
 <typedef name="day_of_week_type"><type>date_type::day_of_week_type</type></typedef>
 <typedef name="day_type"><type>date_type::day_type</type></typedef>
@@ -831,7 +837,14 @@
 <header name="boost/date_time/date_formatting_limited.hpp">
 <namespace name="boost">
 <namespace name="date_time">
-<class name="month_formatter"><template>
+<class name="date_formatter"><template>
+      <template-type-parameter name="date_type"/>
+      <template-type-parameter name="format_type"/>
+    </template><purpose>Convert a date to string using format policies. </purpose><method-group name="public static functions">
+<method name="date_to_string" specifiers="static"><type>std::string</type><parameter name="d"><paramtype>date_type</paramtype></parameter><purpose>Convert to a date to standard string using format policies. </purpose></method>
+<method name="date_to_string" specifiers="static"><type>string_type</type><parameter name="d"><paramtype>date_type</paramtype></parameter><purpose>Convert to a date to standard string using format policies. </purpose></method>
+</method-group>
+</class><class name="month_formatter"><template>
       <template-type-parameter name="month_type"/>
       <template-type-parameter name="format_type"/>
     </template><purpose>Formats a month as as string into an ostream. </purpose><method-group name="public static functions">
@@ -844,13 +857,6 @@
     </template><purpose>Convert ymd to a standard string formatting policies. </purpose><method-group name="public static functions">
 <method name="ymd_to_string" specifiers="static"><type>std::string</type><parameter name="ymd"><paramtype>ymd_type</paramtype></parameter><purpose>Convert ymd to a standard string formatting policies. </purpose><description><para>This is standard code for handling date formatting with year-month-day based date information. This function uses the format_type to control whether the string will contain separator characters, and if so what the character will be. In addtion, it can format the month as either an integer or a string as controled by the formatting policy </para></description></method>
 <method name="ymd_to_string" specifiers="static"><type>std::basic_string&lt; charT &gt;</type><parameter name="ymd"><paramtype>ymd_type</paramtype></parameter><purpose>Convert ymd to a standard string formatting policies. </purpose><description><para>This is standard code for handling date formatting with year-month-day based date information. This function uses the format_type to control whether the string will contain separator characters, and if so what the character will be. In addtion, it can format the month as either an integer or a string as controled by the formatting policy </para></description></method>
-</method-group>
-</class><class name="date_formatter"><template>
-      <template-type-parameter name="date_type"/>
-      <template-type-parameter name="format_type"/>
-    </template><purpose>Convert a date to string using format policies. </purpose><method-group name="public static functions">
-<method name="date_to_string" specifiers="static"><type>std::string</type><parameter name="d"><paramtype>date_type</paramtype></parameter><purpose>Convert to a date to standard string using format policies. </purpose></method>
-<method name="date_to_string" specifiers="static"><type>string_type</type><parameter name="d"><paramtype>date_type</paramtype></parameter><purpose>Convert to a date to standard string using format policies. </purpose></method>
 </method-group>
 </class>
 
@@ -891,7 +897,17 @@
 <header name="boost/date_time/date_formatting_locales.hpp">
 <namespace name="boost">
 <namespace name="date_time">
-<class name="ostream_month_formatter"><template>
+<class name="ostream_date_formatter"><template>
+      <template-type-parameter name="date_type"/>
+      <template-type-parameter name="facet_type"/>
+      <template-type-parameter name="charT"><default>char</default></template-type-parameter>
+    </template><purpose>Convert a date to string using format policies. </purpose><typedef name="ostream_type"><type>std::basic_ostream&lt; charT &gt;</type></typedef>
+<typedef name="ymd_type"><type>date_type::ymd_type</type></typedef>
+<method-group name="public static functions">
+<method name="date_put" specifiers="static"><type>void</type><parameter name="d"><paramtype>const date_type &amp;</paramtype></parameter><parameter name="os"><paramtype>ostream_type &amp;</paramtype></parameter><parameter name="f"><paramtype>const facet_type &amp;</paramtype></parameter><purpose>Put date into an ostream. </purpose></method>
+<method name="date_put" specifiers="static"><type>void</type><parameter name="d"><paramtype>const date_type &amp;</paramtype></parameter><parameter name="os"><paramtype>ostream_type &amp;</paramtype></parameter><purpose>Put date into an ostream. </purpose></method>
+</method-group>
+</class><class name="ostream_month_formatter"><template>
       <template-type-parameter name="facet_type"/>
       <template-type-parameter name="charT"><default>char</default></template-type-parameter>
     </template><purpose>Formats a month as as string into an ostream. </purpose><typedef name="month_type"><type>facet_type::month_type</type></typedef>
@@ -918,16 +934,6 @@
 <typedef name="foo_type"><type>std::basic_string&lt; charT &gt;</type></typedef>
 <method-group name="public static functions">
 <method name="ymd_put" specifiers="static"><type>void</type><parameter name="ymd"><paramtype>ymd_type</paramtype></parameter><parameter name="os"><paramtype>ostream_type &amp;</paramtype></parameter><parameter name="f"><paramtype>const facet_type &amp;</paramtype></parameter><purpose>Convert ymd to a standard string formatting policies. </purpose><description><para>This is standard code for handling date formatting with year-month-day based date information. This function uses the format_type to control whether the string will contain separator characters, and if so what the character will be. In addtion, it can format the month as either an integer or a string as controled by the formatting policy </para></description></method>
-</method-group>
-</class><class name="ostream_date_formatter"><template>
-      <template-type-parameter name="date_type"/>
-      <template-type-parameter name="facet_type"/>
-      <template-type-parameter name="charT"><default>char</default></template-type-parameter>
-    </template><purpose>Convert a date to string using format policies. </purpose><typedef name="ostream_type"><type>std::basic_ostream&lt; charT &gt;</type></typedef>
-<typedef name="ymd_type"><type>date_type::ymd_type</type></typedef>
-<method-group name="public static functions">
-<method name="date_put" specifiers="static"><type>void</type><parameter name="d"><paramtype>const date_type &amp;</paramtype></parameter><parameter name="os"><paramtype>ostream_type &amp;</paramtype></parameter><parameter name="f"><paramtype>const facet_type &amp;</paramtype></parameter><purpose>Put date into an ostream. </purpose></method>
-<method name="date_put" specifiers="static"><type>void</type><parameter name="d"><paramtype>const date_type &amp;</paramtype></parameter><parameter name="os"><paramtype>ostream_type &amp;</paramtype></parameter><purpose>Put date into an ostream. </purpose></method>
 </method-group>
 </class>
 
@@ -973,7 +979,13 @@
       <template-type-parameter name="CharT"/>
       <template-type-parameter name="OutItrT"><default>std::ostreambuf_iterator&lt;CharT, std::char_traits&lt;CharT&gt; &gt;</default></template-type-parameter>
     </template><purpose>Formats date_generators for output. </purpose><description><para>Formatting of date_generators follows specific orders for the various types of date_generators.<itemizedlist>
-<listitem><para><classname alt="boost::date_time::partial_date">partial_date</classname> =&gt; "dd Month"</para></listitem><listitem><para>nth_day_of_the_week_in_month =&gt; "nth weekday of month"</para></listitem><listitem><para>first_day_of_the_week_in_month =&gt; "first weekday of month"</para></listitem><listitem><para>last_day_of_the_week_in_month =&gt; "last weekday of month"</para></listitem><listitem><para>first_day_of_the_week_after =&gt; "weekday after"</para></listitem><listitem><para>first_day_of_the_week_before =&gt; "weekday before" While the order of the elements in these phrases cannot be changed, the elements themselves can be. Weekday and Month get their formats and names from the <classname alt="boost::date_time::date_facet">date_facet</classname>. The remaining elements are stored in the <classname alt="boost::date_time::date_generator_formatter">date_generator_formatter</classname> and can be customized upon construction or via a member function. The default elements are those shown in the examples above. </para></listitem></itemizedlist>
+<listitem><para><classname alt="boost::date_time::partial_date">partial_date</classname> =&gt; "dd Month"</para>
+</listitem><listitem><para>nth_day_of_the_week_in_month =&gt; "nth weekday of month"</para>
+</listitem><listitem><para>first_day_of_the_week_in_month =&gt; "first weekday of month"</para>
+</listitem><listitem><para>last_day_of_the_week_in_month =&gt; "last weekday of month"</para>
+</listitem><listitem><para>first_day_of_the_week_after =&gt; "weekday after"</para>
+</listitem><listitem><para>first_day_of_the_week_before =&gt; "weekday before" While the order of the elements in these phrases cannot be changed, the elements themselves can be. Weekday and Month get their formats and names from the <classname alt="boost::date_time::date_facet">date_facet</classname>. The remaining elements are stored in the <classname alt="boost::date_time::date_generator_formatter">date_generator_formatter</classname> and can be customized upon construction or via a member function. The default elements are those shown in the examples above. </para>
+</listitem></itemizedlist>
 </para></description><enum name="phrase_elements"><enumvalue name="first"><default>=0</default></enumvalue><enumvalue name="second"/><enumvalue name="third"/><enumvalue name="fourth"/><enumvalue name="fifth"/><enumvalue name="last"/><enumvalue name="before"/><enumvalue name="after"/><enumvalue name="of"/><enumvalue name="number_of_phrase_elements"/></enum>
 <typedef name="partial_date_type"><type><classname>partial_date</classname>&lt; date_type &gt;</type></typedef>
 <typedef name="nth_kday_type"><type><classname>nth_kday_of_month</classname>&lt; date_type &gt;</type></typedef>
@@ -995,9 +1007,11 @@
 <data-member name="of_string" specifiers="static"><type>const char_type</type></data-member>
 <method-group name="public member functions">
 <method name="elements"><type>void</type><parameter name="new_strings"><paramtype>const collection_type &amp;</paramtype></parameter><parameter name="beg_pos"><paramtype>phrase_elements</paramtype><default>first</default></parameter><purpose>Replace the set of phrase elements with those contained in new_strings. </purpose><description><para>The order of the strings in the given collection is important. They must follow:<itemizedlist>
-<listitem><para>first, second, third, fourth, fifth, last, before, after, of.</para></listitem></itemizedlist>
+<listitem><para>first, second, third, fourth, fifth, last, before, after, of.</para>
+</listitem></itemizedlist>
 </para><para>It is not necessary to send in a complete set if only a few elements are to be replaced as long as the correct beg_pos is used.</para><para>Ex: To keep the default first through fifth elements, but replace the rest with a collection of:<itemizedlist>
-<listitem><para>"final", "prior", "following", "in". The beg_pos of date_generator_formatter::last would be used. </para></listitem></itemizedlist>
+<listitem><para>"final", "prior", "following", "in". The beg_pos of date_generator_formatter::last would be used. </para>
+</listitem></itemizedlist>
 </para></description></method>
 <method name="put_partial_date" cv="const"><type>OutItrT</type><template>
           <template-type-parameter name="facet_type"/>
@@ -1066,7 +1080,13 @@
       <template-type-parameter name="date_type"/>
       <template-type-parameter name="charT"/>
     </template><purpose>Class for date_generator parsing. </purpose><description><para>The elements of a date_generator "phrase" are parsed from the input stream in a particular order. All elements are required and the order in which they appear cannot change, however, the elements themselves can be changed. The default elements and their order are as follows:</para><para><itemizedlist>
-<listitem><para><classname alt="boost::date_time::partial_date">partial_date</classname> =&gt; "dd Month"</para></listitem><listitem><para>nth_day_of_the_week_in_month =&gt; "nth weekday of month"</para></listitem><listitem><para>first_day_of_the_week_in_month =&gt; "first weekday of month"</para></listitem><listitem><para>last_day_of_the_week_in_month =&gt; "last weekday of month"</para></listitem><listitem><para>first_day_of_the_week_after =&gt; "weekday after"</para></listitem><listitem><para>first_day_of_the_week_before =&gt; "weekday before"</para></listitem></itemizedlist>
+<listitem><para><classname alt="boost::date_time::partial_date">partial_date</classname> =&gt; "dd Month"</para>
+</listitem><listitem><para>nth_day_of_the_week_in_month =&gt; "nth weekday of month"</para>
+</listitem><listitem><para>first_day_of_the_week_in_month =&gt; "first weekday of month"</para>
+</listitem><listitem><para>last_day_of_the_week_in_month =&gt; "last weekday of month"</para>
+</listitem><listitem><para>first_day_of_the_week_after =&gt; "weekday after"</para>
+</listitem><listitem><para>first_day_of_the_week_before =&gt; "weekday before"</para>
+</listitem></itemizedlist>
 </para><para>Weekday and Month names and formats are handled via the <classname alt="boost::date_time::date_input_facet">date_input_facet</classname>. </para></description><enum name="phrase_elements"><enumvalue name="first"><default>=0</default></enumvalue><enumvalue name="second"/><enumvalue name="third"/><enumvalue name="fourth"/><enumvalue name="fifth"/><enumvalue name="last"/><enumvalue name="before"/><enumvalue name="after"/><enumvalue name="of"/><enumvalue name="number_of_phrase_elements"/></enum>
 <typedef name="string_type"><type>std::basic_string&lt; charT &gt;</type></typedef>
 <typedef name="stream_itr_type"><type>std::istreambuf_iterator&lt; charT &gt;</type></typedef>
@@ -1158,17 +1178,80 @@
 <header name="boost/date_time/date_generators.hpp">
 <para>Definition and implementation of date algorithm templates </para><namespace name="boost">
 <namespace name="date_time">
-<class name="year_based_generator"><template>
+<class name="first_kday_after"><template>
       <template-type-parameter name="date_type"/>
-    </template><purpose>Base class for all generators that take a year and produce a date. </purpose><description><para>This class is a base class for polymorphic function objects that take a year and produce a concrete date. 
-</para></description><typedef name="calendar_type"><type>date_type::calendar_type</type></typedef>
-<typedef name="year_type"><type>calendar_type::year_type</type></typedef>
+    </template><purpose>Calculate something like "First Sunday after Jan 1,2002. </purpose><description><para>Date generator that takes a date and finds kday after <programlisting language="c++">typedef boost::date_time::first_kday_after&lt;date&gt; firstkdayafter;
+firstkdayafter fkaf(Monday);
+fkaf.get_date(date(2002,Feb,1));
+</programlisting> </para></description><typedef name="calendar_type"><type>date_type::calendar_type</type></typedef>
+<typedef name="day_of_week_type"><type>calendar_type::day_of_week_type</type></typedef>
+<typedef name="duration_type"><type>date_type::duration_type</type></typedef>
 <method-group name="public member functions">
-<method name="get_date" cv="const = 0" specifiers="virtual"><type>date_type</type><parameter name="y"><paramtype>year_type</paramtype></parameter></method>
-<method name="to_string" cv="const = 0" specifiers="virtual"><type>std::string</type><purpose>Returns a string for use in a POSIX time_zone string. </purpose></method>
+<method name="get_date" cv="const"><type>date_type</type><parameter name="start_day"><paramtype>date_type</paramtype></parameter><purpose>Return next kday given. </purpose></method>
+<method name="day_of_week" cv="const"><type>day_of_week_type</type></method>
 </method-group>
-<constructor/>
-<destructor/>
+<constructor><parameter name="dow"><paramtype>day_of_week_type</paramtype></parameter></constructor>
+</class><class name="first_kday_before"><template>
+      <template-type-parameter name="date_type"/>
+    </template><purpose>Calculate something like "First Sunday before Jan 1,2002. </purpose><description><para>Date generator that takes a date and finds kday after <programlisting language="c++">typedef boost::date_time::first_kday_before&lt;date&gt; firstkdaybefore;
+firstkdaybefore fkbf(Monday);
+fkbf.get_date(date(2002,Feb,1));
+</programlisting> </para></description><typedef name="calendar_type"><type>date_type::calendar_type</type></typedef>
+<typedef name="day_of_week_type"><type>calendar_type::day_of_week_type</type></typedef>
+<typedef name="duration_type"><type>date_type::duration_type</type></typedef>
+<method-group name="public member functions">
+<method name="get_date" cv="const"><type>date_type</type><parameter name="start_day"><paramtype>date_type</paramtype></parameter><purpose>Return next kday given. </purpose></method>
+<method name="day_of_week" cv="const"><type>day_of_week_type</type></method>
+</method-group>
+<constructor><parameter name="dow"><paramtype>day_of_week_type</paramtype></parameter></constructor>
+</class><class name="first_kday_of_month"><template>
+      <template-type-parameter name="date_type"/>
+    </template><inherit access="public">boost::date_time::year_based_generator&lt; date_type &gt;</inherit><purpose>Useful generator functor for finding holidays and daylight savings. </purpose><description><para>Similar to <classname alt="boost::date_time::nth_kday_of_month">nth_kday_of_month</classname>, but requires less paramters </para></description><typedef name="calendar_type"><type>date_type::calendar_type</type></typedef>
+<typedef name="day_of_week_type"><type>calendar_type::day_of_week_type</type></typedef>
+<typedef name="month_type"><type>calendar_type::month_type</type></typedef>
+<typedef name="year_type"><type>calendar_type::year_type</type></typedef>
+<typedef name="duration_type"><type>date_type::duration_type</type></typedef>
+<method-group name="public member functions">
+<method name="get_date" cv="const" specifiers="virtual"><type>date_type</type><parameter name="year"><paramtype>year_type</paramtype></parameter><purpose>Return a concrete date when provided with a year specific year. </purpose></method>
+<method name="month" cv="const"><type>month_type</type></method>
+<method name="day_of_week" cv="const"><type>day_of_week_type</type></method>
+<method name="to_string" cv="const" specifiers="virtual"><type>std::string</type><purpose>Returns string suitable for use in POSIX time zone string. </purpose><description><para>Returns a string formatted as "M4.1.0" ==&gt; 1st Sunday in April. </para></description></method>
+</method-group>
+<constructor><parameter name="dow"><paramtype>day_of_week_type</paramtype><description><para>The day of week, eg: Sunday, Monday, etc </para></description></parameter><parameter name="m"><paramtype>month_type</paramtype><description><para>The month of the year, eg: Jan, Feb, Mar, etc </para></description></parameter><purpose>Specify the first 'Sunday' in 'April' spec. </purpose><description><para>
+</para></description></constructor>
+</class><class name="last_kday_of_month"><template>
+      <template-type-parameter name="date_type"><purpose><para>A date class that exports day_of_week, month_type, etc. </para></purpose></template-type-parameter>
+    </template><inherit access="public">boost::date_time::year_based_generator&lt; date_type &gt;</inherit><purpose>Calculate something like Last Sunday of January. </purpose><description><para>Useful generator functor for finding holidays and daylight savings Get the last day of the month and then calculate the difference to the last previous day. 
+</para></description><typedef name="calendar_type"><type>date_type::calendar_type</type></typedef>
+<typedef name="day_of_week_type"><type>calendar_type::day_of_week_type</type></typedef>
+<typedef name="month_type"><type>calendar_type::month_type</type></typedef>
+<typedef name="year_type"><type>calendar_type::year_type</type></typedef>
+<typedef name="duration_type"><type>date_type::duration_type</type></typedef>
+<method-group name="public member functions">
+<method name="get_date" cv="const" specifiers="virtual"><type>date_type</type><parameter name="year"><paramtype>year_type</paramtype></parameter><purpose>Return a concrete date when provided with a year specific year. </purpose></method>
+<method name="month" cv="const"><type>month_type</type></method>
+<method name="day_of_week" cv="const"><type>day_of_week_type</type></method>
+<method name="to_string" cv="const" specifiers="virtual"><type>std::string</type><purpose>Returns string suitable for use in POSIX time zone string. </purpose><description><para>Returns a string formatted as "M4.5.0" ==&gt; last Sunday in April. </para></description></method>
+</method-group>
+<constructor><parameter name="dow"><paramtype>day_of_week_type</paramtype><description><para>The day of week, eg: Sunday, Monday, etc </para></description></parameter><parameter name="m"><paramtype>month_type</paramtype><description><para>The month of the year, eg: Jan, Feb, Mar, etc </para></description></parameter><purpose>Specify the date spec like last 'Sunday' in 'April' spec. </purpose><description><para>
+</para></description></constructor>
+</class><class name="nth_kday_of_month"><template>
+      <template-type-parameter name="date_type"/>
+    </template><inherit access="public">boost::date_time::year_based_generator&lt; date_type &gt;</inherit><purpose>Useful generator functor for finding holidays. </purpose><description><para>Based on the idea in Cal. Calc. for finding holidays that are the 'first Monday of September'. When instantiated with 'fifth' kday of month, the result will be the last kday of month which can be the fourth or fifth depending on the structure of the month.</para><para>The algorithm here basically guesses for the first day of the month. Then finds the first day of the correct type. That is, if the first of the month is a Tuesday and it needs Wenesday then we simply increment by a day and then we can add the length of a week until we get to the 'nth kday'. There are probably more efficient algorithms based on using a mod 7, but this one works reasonably well for basic applications. </para></description><enum name="week_num"><enumvalue name="first"><default>=1</default></enumvalue><enumvalue name="second"/><enumvalue name="third"/><enumvalue name="fourth"/><enumvalue name="fifth"/></enum>
+<typedef name="calendar_type"><type>date_type::calendar_type</type></typedef>
+<typedef name="day_of_week_type"><type>calendar_type::day_of_week_type</type></typedef>
+<typedef name="month_type"><type>calendar_type::month_type</type></typedef>
+<typedef name="year_type"><type>calendar_type::year_type</type></typedef>
+<typedef name="duration_type"><type>date_type::duration_type</type></typedef>
+<method-group name="public member functions">
+<method name="get_date" cv="const" specifiers="virtual"><type>date_type</type><parameter name="y"><paramtype>year_type</paramtype></parameter><purpose>Return a concrete date when provided with a year specific year. </purpose></method>
+<method name="month" cv="const"><type>month_type</type></method>
+<method name="nth_week" cv="const"><type>week_num</type></method>
+<method name="day_of_week" cv="const"><type>day_of_week_type</type></method>
+<method name="nth_week_as_str" cv="const"><type>const char *</type></method>
+<method name="to_string" cv="const" specifiers="virtual"><type>std::string</type><purpose>Returns string suitable for use in POSIX time zone string. </purpose><description><para>Returns a string formatted as "M4.3.0" ==&gt; 3rd Sunday in April. </para></description></method>
+</method-group>
+<constructor><parameter name="week_no"><paramtype>week_num</paramtype></parameter><parameter name="dow"><paramtype>day_of_week_type</paramtype></parameter><parameter name="m"><paramtype>month_type</paramtype></parameter></constructor>
 </class><class name="partial_date"><template>
       <template-type-parameter name="date_type"/>
     </template><inherit access="public">boost::date_time::year_based_generator&lt; date_type &gt;</inherit><purpose>Generates a date by applying the year to the given month and day. </purpose><description><para>Example usage: <programlisting language="c++">partial_date pd(1, Jan);
@@ -1195,80 +1278,17 @@ pg.get_date(2000); // returns 2000-2-29
 </method-group>
 <constructor><parameter name="d"><paramtype>day_type</paramtype></parameter><parameter name="m"><paramtype>month_type</paramtype></parameter></constructor>
 <constructor><parameter name="days"><paramtype>duration_rep</paramtype></parameter><purpose>Partial date created from number of days into year. Range 1-366. </purpose><description><para>Allowable values range from 1 to 366. 1=Jan1, 366=Dec31. If argument exceeds range, <classname alt="boost::date_time::partial_date">partial_date</classname> will be created with closest in-range value. 60 will always be Feb29, if get_date() is called with a non-leap year an exception will be thrown </para></description></constructor>
-</class><class name="nth_kday_of_month"><template>
-      <template-type-parameter name="date_type"/>
-    </template><inherit access="public">boost::date_time::year_based_generator&lt; date_type &gt;</inherit><purpose>Useful generator functor for finding holidays. </purpose><description><para>Based on the idea in Cal. Calc. for finding holidays that are the 'first Monday of September'. When instantiated with 'fifth' kday of month, the result will be the last kday of month which can be the fourth or fifth depending on the structure of the month.</para><para>The algorithm here basically guesses for the first day of the month. Then finds the first day of the correct type. That is, if the first of the month is a Tuesday and it needs Wenesday then we simply increment by a day and then we can add the length of a week until we get to the 'nth kday'. There are probably more efficient algorithms based on using a mod 7, but this one works reasonably well for basic applications. </para></description><enum name="week_num"><enumvalue name="first"><default>=1</default></enumvalue><enumvalue name="second"/><enumvalue name="third"/><enumvalue name="fourth"/><enumvalue name="fifth"/></enum>
-<typedef name="calendar_type"><type>date_type::calendar_type</type></typedef>
-<typedef name="day_of_week_type"><type>calendar_type::day_of_week_type</type></typedef>
-<typedef name="month_type"><type>calendar_type::month_type</type></typedef>
-<typedef name="year_type"><type>calendar_type::year_type</type></typedef>
-<typedef name="duration_type"><type>date_type::duration_type</type></typedef>
-<method-group name="public member functions">
-<method name="get_date" cv="const" specifiers="virtual"><type>date_type</type><parameter name="y"><paramtype>year_type</paramtype></parameter><purpose>Return a concrete date when provided with a year specific year. </purpose></method>
-<method name="month" cv="const"><type>month_type</type></method>
-<method name="nth_week" cv="const"><type>week_num</type></method>
-<method name="day_of_week" cv="const"><type>day_of_week_type</type></method>
-<method name="nth_week_as_str" cv="const"><type>const char *</type></method>
-<method name="to_string" cv="const" specifiers="virtual"><type>std::string</type><purpose>Returns string suitable for use in POSIX time zone string. </purpose><description><para>Returns a string formatted as "M4.3.0" ==&gt; 3rd Sunday in April. </para></description></method>
-</method-group>
-<constructor><parameter name="week_no"><paramtype>week_num</paramtype></parameter><parameter name="dow"><paramtype>day_of_week_type</paramtype></parameter><parameter name="m"><paramtype>month_type</paramtype></parameter></constructor>
-</class><class name="first_kday_of_month"><template>
-      <template-type-parameter name="date_type"/>
-    </template><inherit access="public">boost::date_time::year_based_generator&lt; date_type &gt;</inherit><purpose>Useful generator functor for finding holidays and daylight savings. </purpose><description><para>Similar to <classname alt="boost::date_time::nth_kday_of_month">nth_kday_of_month</classname>, but requires less paramters </para></description><typedef name="calendar_type"><type>date_type::calendar_type</type></typedef>
-<typedef name="day_of_week_type"><type>calendar_type::day_of_week_type</type></typedef>
-<typedef name="month_type"><type>calendar_type::month_type</type></typedef>
-<typedef name="year_type"><type>calendar_type::year_type</type></typedef>
-<typedef name="duration_type"><type>date_type::duration_type</type></typedef>
-<method-group name="public member functions">
-<method name="get_date" cv="const" specifiers="virtual"><type>date_type</type><parameter name="year"><paramtype>year_type</paramtype></parameter><purpose>Return a concrete date when provided with a year specific year. </purpose></method>
-<method name="month" cv="const"><type>month_type</type></method>
-<method name="day_of_week" cv="const"><type>day_of_week_type</type></method>
-<method name="to_string" cv="const" specifiers="virtual"><type>std::string</type><purpose>Returns string suitable for use in POSIX time zone string. </purpose><description><para>Returns a string formatted as "M4.1.0" ==&gt; 1st Sunday in April. </para></description></method>
-</method-group>
-<constructor><parameter name="dow"><paramtype>day_of_week_type</paramtype><description><para>The day of week, eg: Sunday, Monday, etc </para></description></parameter><parameter name="m"><paramtype>month_type</paramtype><description><para>The month of the year, eg: Jan, Feb, Mar, etc </para></description></parameter><purpose>Specify the first 'Sunday' in 'April' spec. </purpose><description><para>
-</para></description></constructor>
-</class><class name="last_kday_of_month"><template>
-      <template-type-parameter name="date_type"/>
-    </template><inherit access="public">boost::date_time::year_based_generator&lt; date_type &gt;</inherit><purpose>Calculate something like Last Sunday of January. </purpose><description><para>Useful generator functor for finding holidays and daylight savings Get the last day of the month and then calculate the difference to the last previous day. 
+</class><class name="year_based_generator"><template>
+      <template-type-parameter name="date_type"><purpose><para>The type representing a date. This type must export a calender_type which defines a year_type. </para></purpose></template-type-parameter>
+    </template><purpose>Base class for all generators that take a year and produce a date. </purpose><description><para>This class is a base class for polymorphic function objects that take a year and produce a concrete date. 
 </para></description><typedef name="calendar_type"><type>date_type::calendar_type</type></typedef>
-<typedef name="day_of_week_type"><type>calendar_type::day_of_week_type</type></typedef>
-<typedef name="month_type"><type>calendar_type::month_type</type></typedef>
 <typedef name="year_type"><type>calendar_type::year_type</type></typedef>
-<typedef name="duration_type"><type>date_type::duration_type</type></typedef>
 <method-group name="public member functions">
-<method name="get_date" cv="const" specifiers="virtual"><type>date_type</type><parameter name="year"><paramtype>year_type</paramtype></parameter><purpose>Return a concrete date when provided with a year specific year. </purpose></method>
-<method name="month" cv="const"><type>month_type</type></method>
-<method name="day_of_week" cv="const"><type>day_of_week_type</type></method>
-<method name="to_string" cv="const" specifiers="virtual"><type>std::string</type><purpose>Returns string suitable for use in POSIX time zone string. </purpose><description><para>Returns a string formatted as "M4.5.0" ==&gt; last Sunday in April. </para></description></method>
+<method name="get_date" cv="const = 0" specifiers="virtual"><type>date_type</type><parameter name="y"><paramtype>year_type</paramtype></parameter></method>
+<method name="to_string" cv="const = 0" specifiers="virtual"><type>std::string</type><purpose>Returns a string for use in a POSIX time_zone string. </purpose></method>
 </method-group>
-<constructor><parameter name="dow"><paramtype>day_of_week_type</paramtype><description><para>The day of week, eg: Sunday, Monday, etc </para></description></parameter><parameter name="m"><paramtype>month_type</paramtype><description><para>The month of the year, eg: Jan, Feb, Mar, etc </para></description></parameter><purpose>Specify the date spec like last 'Sunday' in 'April' spec. </purpose><description><para>
-</para></description></constructor>
-</class><class name="first_kday_after"><template>
-      <template-type-parameter name="date_type"/>
-    </template><purpose>Calculate something like "First Sunday after Jan 1,2002. </purpose><description><para>Date generator that takes a date and finds kday after <programlisting language="c++">typedef <classname alt="boost::date_time::first_kday_after">boost::date_time::first_kday_after&lt;date&gt;</classname> firstkdayafter;
-firstkdayafter fkaf(Monday);
-fkaf.get_date(date(2002,Feb,1));
-</programlisting> </para></description><typedef name="calendar_type"><type>date_type::calendar_type</type></typedef>
-<typedef name="day_of_week_type"><type>calendar_type::day_of_week_type</type></typedef>
-<typedef name="duration_type"><type>date_type::duration_type</type></typedef>
-<method-group name="public member functions">
-<method name="get_date" cv="const"><type>date_type</type><parameter name="start_day"><paramtype>date_type</paramtype></parameter><purpose>Return next kday given. </purpose></method>
-<method name="day_of_week" cv="const"><type>day_of_week_type</type></method>
-</method-group>
-<constructor><parameter name="dow"><paramtype>day_of_week_type</paramtype></parameter></constructor>
-</class><class name="first_kday_before"><template>
-      <template-type-parameter name="date_type"/>
-    </template><purpose>Calculate something like "First Sunday before Jan 1,2002. </purpose><description><para>Date generator that takes a date and finds kday after <programlisting language="c++">typedef <classname alt="boost::date_time::first_kday_before">boost::date_time::first_kday_before&lt;date&gt;</classname> firstkdaybefore;
-firstkdaybefore fkbf(Monday);
-fkbf.get_date(date(2002,Feb,1));
-</programlisting> </para></description><typedef name="calendar_type"><type>date_type::calendar_type</type></typedef>
-<typedef name="day_of_week_type"><type>calendar_type::day_of_week_type</type></typedef>
-<typedef name="duration_type"><type>date_type::duration_type</type></typedef>
-<method-group name="public member functions">
-<method name="get_date" cv="const"><type>date_type</type><parameter name="start_day"><paramtype>date_type</paramtype></parameter><purpose>Return next kday given. </purpose></method>
-<method name="day_of_week" cv="const"><type>day_of_week_type</type></method>
-</method-group>
-<constructor><parameter name="dow"><paramtype>day_of_week_type</paramtype></parameter></constructor>
+<constructor/>
+<destructor/>
 </class>
 
 
@@ -1320,28 +1340,7 @@ fkbf.get_date(date(2002,Feb,1));
 <header name="boost/date_time/date_iterator.hpp">
 <namespace name="boost">
 <namespace name="date_time">
-<class name="date_itr_base"><template>
-      <template-type-parameter name="date_type"/>
-    </template><purpose>Base date iterator type. </purpose><description><para>This class provides the skeleton for the creation of iterators. New and interesting interators can be created by plugging in a new function that derives the next value from the current state. generation of various types of -based information.</para><para><emphasis role="bold">Template Parameters</emphasis></para><para><emphasis role="bold">date_type</emphasis></para><para>The date_type is a concrete date_type. The date_type must define a duration_type and a calendar_type. </para></description><typedef name="duration_type"><type>date_type::duration_type</type></typedef>
-<typedef name="value_type"><type>date_type</type></typedef>
-<typedef name="iterator_category"><type>std::input_iterator_tag</type></typedef>
-<method-group name="public member functions">
-<method name="operator++"><type><classname>date_itr_base</classname> &amp;</type></method>
-<method name="operator--"><type><classname>date_itr_base</classname> &amp;</type></method>
-<method name="get_offset" cv="const = 0" specifiers="virtual"><type>duration_type</type><parameter name="current"><paramtype>const date_type &amp;</paramtype></parameter></method>
-<method name="get_neg_offset" cv="const = 0" specifiers="virtual"><type>duration_type</type><parameter name="current"><paramtype>const date_type &amp;</paramtype></parameter></method>
-<method name="operator*"><type>date_type</type></method>
-<method name="operator-&gt;"><type>date_type *</type></method>
-<method name="operator&lt;"><type>bool</type><parameter name="d"><paramtype>const date_type &amp;</paramtype></parameter></method>
-<method name="operator&lt;="><type>bool</type><parameter name="d"><paramtype>const date_type &amp;</paramtype></parameter></method>
-<method name="operator&gt;"><type>bool</type><parameter name="d"><paramtype>const date_type &amp;</paramtype></parameter></method>
-<method name="operator&gt;="><type>bool</type><parameter name="d"><paramtype>const date_type &amp;</paramtype></parameter></method>
-<method name="operator=="><type>bool</type><parameter name="d"><paramtype>const date_type &amp;</paramtype></parameter></method>
-<method name="operator!="><type>bool</type><parameter name="d"><paramtype>const date_type &amp;</paramtype></parameter></method>
-</method-group>
-<constructor><parameter name="d"><paramtype>date_type</paramtype></parameter></constructor>
-<destructor/>
-</class><class name="date_itr"><template>
+<class name="date_itr"><template>
       <template-type-parameter name="offset_functor"/>
       <template-type-parameter name="date_type"/>
     </template><inherit access="public">boost::date_time::date_itr_base&lt; date_type &gt;</inherit><purpose>Overrides the base date iterator providing hook for functors. </purpose><typedef name="duration_type"><type>date_type::duration_type</type></typedef>
@@ -1352,6 +1351,27 @@ fkbf.get_date(date(2002,Feb,1));
 <method name="get_offset" cv="const" specifiers="virtual"><type>duration_type</type><parameter name="current"><paramtype>const date_type &amp;</paramtype></parameter></method>
 <method name="get_neg_offset" cv="const" specifiers="virtual"><type>duration_type</type><parameter name="current"><paramtype>const date_type &amp;</paramtype></parameter></method>
 </method-group>
+</class><class name="date_itr_base"><template>
+      <template-type-parameter name="date_type"/>
+    </template><purpose>Base date iterator type. </purpose><description><para>This class provides the skeleton for the creation of iterators. New and interesting interators can be created by plugging in a new function that derives the next value from the current state. generation of various types of -based information.</para><para><emphasis role="bold">Template Parameters</emphasis></para><para><emphasis role="bold">date_type</emphasis></para><para>The date_type is a concrete date_type. The date_type must define a duration_type and a calendar_type. </para></description><typedef name="duration_type"><type>date_type::duration_type</type></typedef>
+<typedef name="value_type"><type>date_type</type></typedef>
+<typedef name="iterator_category"><type>std::input_iterator_tag</type></typedef>
+<method-group name="public member functions">
+<method name="operator++"><type><classname>date_itr_base</classname> &amp;</type></method>
+<method name="operator--"><type><classname>date_itr_base</classname> &amp;</type></method>
+<method name="get_offset" cv="const = 0" specifiers="virtual"><type>duration_type</type><parameter name="current"><paramtype>const date_type &amp;</paramtype></parameter></method>
+<method name="get_neg_offset" cv="const = 0" specifiers="virtual"><type>duration_type</type><parameter name="current"><paramtype>const date_type &amp;</paramtype></parameter></method>
+<method name="operator *"><type>date_type</type></method>
+<method name="operator-&gt;"><type>date_type *</type></method>
+<method name="operator&lt;"><type>bool</type><parameter name="d"><paramtype>const date_type &amp;</paramtype></parameter></method>
+<method name="operator&lt;="><type>bool</type><parameter name="d"><paramtype>const date_type &amp;</paramtype></parameter></method>
+<method name="operator&gt;"><type>bool</type><parameter name="d"><paramtype>const date_type &amp;</paramtype></parameter></method>
+<method name="operator&gt;="><type>bool</type><parameter name="d"><paramtype>const date_type &amp;</paramtype></parameter></method>
+<method name="operator=="><type>bool</type><parameter name="d"><paramtype>const date_type &amp;</paramtype></parameter></method>
+<method name="operator!="><type>bool</type><parameter name="d"><paramtype>const date_type &amp;</paramtype></parameter></method>
+</method-group>
+<constructor><parameter name="d"><paramtype>date_type</paramtype></parameter></constructor>
+<destructor/>
 </class><enum name="date_resolutions"><enumvalue name="day"/><enumvalue name="week"/><enumvalue name="months"/><enumvalue name="year"/><enumvalue name="decade"/><enumvalue name="century"/><enumvalue name="NumDateResolutions"/><purpose>An iterator over dates with varying resolution (day, week, month, year, etc) </purpose></enum>
 
 
@@ -1392,12 +1412,41 @@ fkbf.get_date(date(2002,Feb,1));
 <header name="boost/date_time/date_names_put.hpp">
 <namespace name="boost">
 <namespace name="date_time">
-<class name="date_names_put"><template>
+<class name="all_date_names_put"><template>
+      <template-type-parameter name="Config"/>
+      <template-type-parameter name="charT"><default>char</default></template-type-parameter>
+      <template-type-parameter name="OutputIterator"><default>std::ostreambuf_iterator&lt;charT&gt;</default></template-type-parameter>
+    </template><inherit access="public">boost::date_time::date_names_put&lt; Config, charT, OutputIterator &gt;</inherit><purpose>A date name output facet that takes an array of char* to define strings. </purpose><typedef name="iter_type"><type>OutputIterator</type></typedef>
+<typedef name="month_enum"><type>Config::month_enum</type></typedef>
+<typedef name="weekday_enum"><type>Config::weekday_enum</type></typedef>
+<typedef name="special_value_enum"><type>Config::special_value_enum</type></typedef>
+<method-group name="public member functions">
+<method name="get_short_month_names" cv="const"><type>const charT *const  *</type></method>
+<method name="get_long_month_names" cv="const"><type>const charT *const  *</type></method>
+<method name="get_special_value_names" cv="const"><type>const charT *const  *</type></method>
+<method name="get_short_weekday_names" cv="const"><type>const charT *const  *</type></method>
+<method name="get_long_weekday_names" cv="const"><type>const charT *const  *</type></method>
+</method-group>
+<constructor><parameter name="month_short_names"><paramtype>const charT *const</paramtype></parameter><parameter name="month_long_names"><paramtype>const charT *const</paramtype></parameter><parameter name="special_value_names"><paramtype>const charT *const</paramtype></parameter><parameter name="weekday_short_names"><paramtype>const charT *const</paramtype></parameter><parameter name="weekday_long_names"><paramtype>const charT *const</paramtype></parameter><parameter name="separator_char"><paramtype>charT</paramtype><default>'-'</default></parameter><parameter name="order_spec"><paramtype>ymd_order_spec</paramtype><default>ymd_order_iso</default></parameter><parameter name="month_format"><paramtype>month_format_spec</paramtype><default>month_as_short_string</default></parameter></constructor>
+<method-group name="protected member functions">
+<method name="do_put_month_short" cv="const" specifiers="virtual"><type>void</type><parameter name="oitr"><paramtype>iter_type &amp;</paramtype></parameter><parameter name="moy"><paramtype>month_enum</paramtype></parameter><purpose>Generic facet that takes array of chars. </purpose></method>
+<method name="do_put_month_long" cv="const" specifiers="virtual"><type>void</type><parameter name="oitr"><paramtype>iter_type &amp;</paramtype></parameter><parameter name="moy"><paramtype>month_enum</paramtype></parameter><purpose>Long month names. </purpose></method>
+<method name="do_put_special_value" cv="const" specifiers="virtual"><type>void</type><parameter name="oitr"><paramtype>iter_type &amp;</paramtype></parameter><parameter name="sv"><paramtype>special_value_enum</paramtype></parameter><purpose>Special values names. </purpose></method>
+<method name="do_put_weekday_short" cv="const" specifiers="virtual"><type>void</type><parameter name="oitr"><paramtype>iter_type &amp;</paramtype></parameter><parameter name="wd"><paramtype>weekday_enum</paramtype></parameter></method>
+<method name="do_put_weekday_long" cv="const" specifiers="virtual"><type>void</type><parameter name="oitr"><paramtype>iter_type &amp;</paramtype></parameter><parameter name="wd"><paramtype>weekday_enum</paramtype></parameter></method>
+<method name="do_month_sep_char" cv="const" specifiers="virtual"><type>void</type><parameter name="oitr"><paramtype>iter_type &amp;</paramtype></parameter><purpose>char between year-month </purpose></method>
+<method name="do_day_sep_char" cv="const" specifiers="virtual"><type>void</type><parameter name="oitr"><paramtype>iter_type &amp;</paramtype></parameter><purpose>Char to separate month-day. </purpose></method>
+<method name="do_date_order" cv="const" specifiers="virtual"><type>ymd_order_spec</type><purpose>Set the date ordering. </purpose></method>
+<method name="do_month_format" cv="const" specifiers="virtual"><type>month_format_spec</type><purpose>Set the date ordering. </purpose></method>
+</method-group>
+</class><class name="date_names_put"><template>
       <template-type-parameter name="Config"/>
       <template-type-parameter name="charT"><default>char</default></template-type-parameter>
       <template-type-parameter name="OutputIterator"><default>std::ostreambuf_iterator&lt;charT&gt;</default></template-type-parameter>
     </template><inherit access="public">facet</inherit><purpose>Output facet base class for gregorian dates. </purpose><description><para>This class is a base class for date facets used to localize the names of months and the names of days in the week.</para><para>Requirements of Config<itemizedlist>
-<listitem><para>define an enumeration month_enum that enumerates the months. The enumeration should be '1' based eg: Jan==1</para></listitem><listitem><para>define as_short_string and as_long_string</para></listitem></itemizedlist>
+<listitem><para>define an enumeration month_enum that enumerates the months. The enumeration should be '1' based eg: Jan==1</para>
+</listitem><listitem><para>define as_short_string and as_long_string</para>
+</listitem></itemizedlist>
 </para><para>(see langer &amp; kreft p334). </para></description><typedef name="iter_type"><type>OutputIterator</type></typedef>
 <typedef name="month_type"><type>Config::month_type</type></typedef>
 <typedef name="month_enum"><type>Config::month_enum</type></typedef>
@@ -1437,33 +1486,6 @@ fkbf.get_date(date(2002,Feb,1));
 <method name="do_month_format" cv="const" specifiers="virtual"><type>month_format_spec</type><purpose>Default month format. </purpose></method>
 <method name="put_string" cv="const"><type>void</type><parameter name="oi"><paramtype>iter_type &amp;</paramtype></parameter><parameter name="s"><paramtype>const charT *const</paramtype></parameter></method>
 <method name="put_string" cv="const"><type>void</type><parameter name="oi"><paramtype>iter_type &amp;</paramtype></parameter><parameter name="s1"><paramtype>const string_type &amp;</paramtype></parameter></method>
-</method-group>
-</class><class name="all_date_names_put"><template>
-      <template-type-parameter name="Config"/>
-      <template-type-parameter name="charT"><default>char</default></template-type-parameter>
-      <template-type-parameter name="OutputIterator"><default>std::ostreambuf_iterator&lt;charT&gt;</default></template-type-parameter>
-    </template><inherit access="public">boost::date_time::date_names_put&lt; Config, charT, OutputIterator &gt;</inherit><purpose>A date name output facet that takes an array of char* to define strings. </purpose><typedef name="iter_type"><type>OutputIterator</type></typedef>
-<typedef name="month_enum"><type>Config::month_enum</type></typedef>
-<typedef name="weekday_enum"><type>Config::weekday_enum</type></typedef>
-<typedef name="special_value_enum"><type>Config::special_value_enum</type></typedef>
-<method-group name="public member functions">
-<method name="get_short_month_names" cv="const"><type>const charT *const *</type></method>
-<method name="get_long_month_names" cv="const"><type>const charT *const *</type></method>
-<method name="get_special_value_names" cv="const"><type>const charT *const *</type></method>
-<method name="get_short_weekday_names" cv="const"><type>const charT *const *</type></method>
-<method name="get_long_weekday_names" cv="const"><type>const charT *const *</type></method>
-</method-group>
-<constructor><parameter name="month_short_names"><paramtype>const charT *const</paramtype></parameter><parameter name="month_long_names"><paramtype>const charT *const</paramtype></parameter><parameter name="special_value_names"><paramtype>const charT *const</paramtype></parameter><parameter name="weekday_short_names"><paramtype>const charT *const</paramtype></parameter><parameter name="weekday_long_names"><paramtype>const charT *const</paramtype></parameter><parameter name="separator_char"><paramtype>charT</paramtype><default>'-'</default></parameter><parameter name="order_spec"><paramtype>ymd_order_spec</paramtype><default>ymd_order_iso</default></parameter><parameter name="month_format"><paramtype>month_format_spec</paramtype><default>month_as_short_string</default></parameter></constructor>
-<method-group name="protected member functions">
-<method name="do_put_month_short" cv="const" specifiers="virtual"><type>void</type><parameter name="oitr"><paramtype>iter_type &amp;</paramtype></parameter><parameter name="moy"><paramtype>month_enum</paramtype></parameter><purpose>Generic facet that takes array of chars. </purpose></method>
-<method name="do_put_month_long" cv="const" specifiers="virtual"><type>void</type><parameter name="oitr"><paramtype>iter_type &amp;</paramtype></parameter><parameter name="moy"><paramtype>month_enum</paramtype></parameter><purpose>Long month names. </purpose></method>
-<method name="do_put_special_value" cv="const" specifiers="virtual"><type>void</type><parameter name="oitr"><paramtype>iter_type &amp;</paramtype></parameter><parameter name="sv"><paramtype>special_value_enum</paramtype></parameter><purpose>Special values names. </purpose></method>
-<method name="do_put_weekday_short" cv="const" specifiers="virtual"><type>void</type><parameter name="oitr"><paramtype>iter_type &amp;</paramtype></parameter><parameter name="wd"><paramtype>weekday_enum</paramtype></parameter></method>
-<method name="do_put_weekday_long" cv="const" specifiers="virtual"><type>void</type><parameter name="oitr"><paramtype>iter_type &amp;</paramtype></parameter><parameter name="wd"><paramtype>weekday_enum</paramtype></parameter></method>
-<method name="do_month_sep_char" cv="const" specifiers="virtual"><type>void</type><parameter name="oitr"><paramtype>iter_type &amp;</paramtype></parameter><purpose>char between year-month </purpose></method>
-<method name="do_day_sep_char" cv="const" specifiers="virtual"><type>void</type><parameter name="oitr"><paramtype>iter_type &amp;</paramtype></parameter><purpose>Char to separate month-day. </purpose></method>
-<method name="do_date_order" cv="const" specifiers="virtual"><type>ymd_order_spec</type><purpose>Set the date ordering. </purpose></method>
-<method name="do_month_format" cv="const" specifiers="virtual"><type>month_format_spec</type><purpose>Set the date ordering. </purpose></method>
 </method-group>
 </class>
 
@@ -1566,26 +1588,7 @@ fkbf.get_date(date(2002,Feb,1));
 <header name="boost/date_time/dst_rules.hpp">
 <para>Contains template class to provide static dst rule calculations </para><namespace name="boost">
 <namespace name="date_time">
-<class name="dst_calculator"><template>
-      <template-type-parameter name="date_type_"/>
-      <template-type-parameter name="time_duration_type_"/>
-    </template><purpose>Dynamic class used to caluclate dst transition information. </purpose><typedef name="time_duration_type"><type>time_duration_type_</type></typedef>
-<typedef name="date_type"><type>date_type_</type></typedef>
-<method-group name="public static functions">
-<method name="process_local_dst_start_day" specifiers="static"><type>time_is_dst_result</type><parameter name="time_of_day"><paramtype>const time_duration_type &amp;</paramtype><description><para>Time offset in the day for the local time </para></description></parameter><parameter name="dst_start_offset_minutes"><paramtype>unsigned int</paramtype><description><para>Local day offset for start of dst </para></description></parameter><parameter name="dst_length_minutes"><paramtype>long</paramtype><description><para>Number of minutes to adjust clock forward </para></description></parameter><purpose>Check the local time offset when on dst start day. </purpose><description><para>On this dst transition, the time label between the transition boundary and the boudary + the offset are invalid times. If before the boundary then still not in dst. 
-
-</para></description></method>
-<method name="process_local_dst_end_day" specifiers="static"><type>time_is_dst_result</type><parameter name="time_of_day"><paramtype>const time_duration_type &amp;</paramtype><description><para>Time offset in the day for the local time </para></description></parameter><parameter name="dst_end_offset_minutes"><paramtype>unsigned int</paramtype><description><para>Local time of day for end of dst </para></description></parameter><parameter name="dst_length_minutes"><paramtype>long</paramtype></parameter><purpose>Check the local time offset when on the last day of dst. </purpose><description><para>This is the calculation for the DST end day. On that day times prior to the conversion time - dst_length (1 am in US) are still in dst. Times between the above and the switch time are ambiguous. Times after the start_offset are not in dst. 
-
-</para></description></method>
-<method name="local_is_dst" specifiers="static"><type>time_is_dst_result</type><parameter name="current_day"><paramtype>const date_type &amp;</paramtype><description><para>The day to check for dst </para></description></parameter><parameter name="time_of_day"><paramtype>const time_duration_type &amp;</paramtype><description><para>Time offset within the day to check </para></description></parameter><parameter name="dst_start_day"><paramtype>const date_type &amp;</paramtype><description><para>Starting day of dst for the given locality </para></description></parameter><parameter name="dst_start_offset"><paramtype>const time_duration_type &amp;</paramtype><description><para>Time offset within day for dst boundary </para></description></parameter><parameter name="dst_end_day"><paramtype>const date_type &amp;</paramtype><description><para>Ending day of dst for the given locality </para></description></parameter><parameter name="dst_end_offset"><paramtype>const time_duration_type &amp;</paramtype><description><para>Time offset within day given in dst for dst boundary </para></description></parameter><parameter name="dst_length_minutes"><paramtype>const time_duration_type &amp;</paramtype></parameter><purpose>Calculates if the given local time is dst or not. </purpose><description><para>Determines if the time is really in DST or not. Also checks for invalid and ambiguous. 
-
-</para></description></method>
-<method name="local_is_dst" specifiers="static"><type>time_is_dst_result</type><parameter name="current_day"><paramtype>const date_type &amp;</paramtype><description><para>The day to check for dst </para></description></parameter><parameter name="time_of_day"><paramtype>const time_duration_type &amp;</paramtype><description><para>Time offset within the day to check </para></description></parameter><parameter name="dst_start_day"><paramtype>const date_type &amp;</paramtype><description><para>Starting day of dst for the given locality </para></description></parameter><parameter name="dst_start_offset_minutes"><paramtype>unsigned int</paramtype><description><para>Offset within day for dst boundary (eg 120 for US which is 02:00:00) </para></description></parameter><parameter name="dst_end_day"><paramtype>const date_type &amp;</paramtype><description><para>Ending day of dst for the given locality </para></description></parameter><parameter name="dst_end_offset_minutes"><paramtype>unsigned int</paramtype><description><para>Offset within day given in dst for dst boundary (eg 120 for US which is 02:00:00) </para></description></parameter><parameter name="dst_length_minutes"><paramtype>long</paramtype><description><para>Length of dst adjusment (eg: 60 for US) </para></description></parameter><purpose>Calculates if the given local time is dst or not. </purpose><description><para>Determines if the time is really in DST or not. Also checks for invalid and ambiguous. 
-
-</para></description></method>
-</method-group>
-</class><class name="dst_calc_engine"><template>
+<class name="dst_calc_engine"><template>
       <template-type-parameter name="date_type"/>
       <template-type-parameter name="time_duration_type"/>
       <template-type-parameter name="dst_traits"/>
@@ -1599,6 +1602,37 @@ fkbf.get_date(date(2002,Feb,1));
 <method name="dst_offset" specifiers="static"><type>time_duration_type</type><purpose>The time of day for the dst transition (eg: typically 01:00:00 or 02:00:00) </purpose></method>
 <method name="local_dst_start_day" specifiers="static"><type>date_type</type><parameter name="year"><paramtype>year_type</paramtype></parameter></method>
 <method name="local_dst_end_day" specifiers="static"><type>date_type</type><parameter name="year"><paramtype>year_type</paramtype></parameter></method>
+</method-group>
+</class><class name="dst_calculator"><template>
+      <template-type-parameter name="date_type_"/>
+      <template-type-parameter name="time_duration_type_"/>
+    </template><purpose>Dynamic class used to caluclate dst transition information. </purpose><typedef name="time_duration_type"><type>time_duration_type_</type></typedef>
+<typedef name="date_type"><type>date_type_</type></typedef>
+<method-group name="public static functions">
+<method name="process_local_dst_start_day" specifiers="static"><type>time_is_dst_result</type><parameter name="time_of_day"><paramtype>const time_duration_type &amp;</paramtype><description><para>Time offset in the day for the local time </para></description></parameter><parameter name="dst_start_offset_minutes"><paramtype>unsigned int</paramtype><description><para>Local day offset for start of dst </para></description></parameter><parameter name="dst_length_minutes"><paramtype>long</paramtype><description><para>Number of minutes to adjust clock forward </para></description></parameter><purpose>Check the local time offset when on dst start day. </purpose><description><para>On this dst transition, the time label between the transition boundary and the boudary + the offset are invalid times. If before the boundary then still not in dst.</para><para>
+
+</para></description></method>
+<method name="process_local_dst_end_day" specifiers="static"><type>time_is_dst_result</type><parameter name="time_of_day"><paramtype>const time_duration_type &amp;</paramtype><description><para>Time offset in the day for the local time </para></description></parameter><parameter name="dst_end_offset_minutes"><paramtype>unsigned int</paramtype><description><para>Local time of day for end of dst </para></description></parameter><parameter name="dst_length_minutes"><paramtype>long</paramtype></parameter><purpose>Check the local time offset when on the last day of dst. </purpose><description><para>This is the calculation for the DST end day. On that day times prior to the conversion time - dst_length (1 am in US) are still in dst. Times between the above and the switch time are ambiguous. Times after the start_offset are not in dst. 
+
+</para></description></method>
+<method name="local_is_dst" specifiers="static"><type>time_is_dst_result</type><parameter name="current_day"><paramtype>const date_type &amp;</paramtype><description><para>The day to check for dst </para></description></parameter><parameter name="time_of_day"><paramtype>const time_duration_type &amp;</paramtype><description><para>Time offset within the day to check </para></description></parameter><parameter name="dst_start_day"><paramtype>const date_type &amp;</paramtype><description><para>Starting day of dst for the given locality </para></description></parameter><parameter name="dst_start_offset"><paramtype>const time_duration_type &amp;</paramtype><description><para>Time offset within day for dst boundary </para></description></parameter><parameter name="dst_end_day"><paramtype>const date_type &amp;</paramtype><description><para>Ending day of dst for the given locality </para></description></parameter><parameter name="dst_end_offset"><paramtype>const time_duration_type &amp;</paramtype><description><para>Time offset within day given in dst for dst boundary </para></description></parameter><parameter name="dst_length"><paramtype>const time_duration_type &amp;</paramtype></parameter><purpose>Calculates if the given local time is dst or not. </purpose><description><para>Determines if the time is really in DST or not. Also checks for invalid and ambiguous. 
+
+</para></description></method>
+<method name="local_is_dst" specifiers="static"><type>time_is_dst_result</type><parameter name="current_day"><paramtype>const date_type &amp;</paramtype><description><para>The day to check for dst </para></description></parameter><parameter name="time_of_day"><paramtype>const time_duration_type &amp;</paramtype><description><para>Time offset within the day to check </para></description></parameter><parameter name="dst_start_day"><paramtype>const date_type &amp;</paramtype><description><para>Starting day of dst for the given locality </para></description></parameter><parameter name="dst_start_offset_minutes"><paramtype>unsigned int</paramtype><description><para>Offset within day for dst boundary (eg 120 for US which is 02:00:00) </para></description></parameter><parameter name="dst_end_day"><paramtype>const date_type &amp;</paramtype><description><para>Ending day of dst for the given locality </para></description></parameter><parameter name="dst_end_offset_minutes"><paramtype>unsigned int</paramtype><description><para>Offset within day given in dst for dst boundary (eg 120 for US which is 02:00:00) </para></description></parameter><parameter name="dst_length_minutes"><paramtype>long</paramtype><description><para>Length of dst adjusment (eg: 60 for US) </para></description></parameter><purpose>Calculates if the given local time is dst or not. </purpose><description><para>Determines if the time is really in DST or not. Also checks for invalid and ambiguous. 
+
+</para></description></method>
+</method-group>
+</class><class name="null_dst_rules"><template>
+      <template-type-parameter name="date_type_"/>
+      <template-type-parameter name="time_duration_type_"/>
+    </template><purpose>Used for local time adjustments in places that don't use dst. </purpose><typedef name="time_duration_type"><type>time_duration_type_</type></typedef>
+<typedef name="date_type"><type>date_type_</type></typedef>
+<method-group name="public static functions">
+<method name="local_is_dst" specifiers="static"><type>time_is_dst_result</type><parameter name=""><paramtype>const date_type &amp;</paramtype></parameter><parameter name=""><paramtype>const time_duration_type &amp;</paramtype></parameter><purpose>Calculates if the given local time is dst or not. </purpose><description><para>
+</para></description></method>
+<method name="utc_is_dst" specifiers="static"><type>time_is_dst_result</type><parameter name=""><paramtype>const date_type &amp;</paramtype></parameter><parameter name=""><paramtype>const time_duration_type &amp;</paramtype></parameter><purpose>Calculates if the given utc time is in dst. </purpose></method>
+<method name="is_dst_boundary_day" specifiers="static"><type>bool</type><parameter name=""><paramtype>date_type</paramtype></parameter></method>
+<method name="dst_offset" specifiers="static"><type>time_duration_type</type></method>
 </method-group>
 </class><class name="us_dst_rules"><template>
       <template-type-parameter name="date_type_"/>
@@ -1619,18 +1653,6 @@ fkbf.get_date(date(2002,Feb,1));
 <method name="is_dst_boundary_day" specifiers="static"><type>bool</type><parameter name="d"><paramtype>date_type</paramtype></parameter></method>
 <method name="local_dst_start_day" specifiers="static"><type>date_type</type><parameter name="year"><paramtype>year_type</paramtype></parameter></method>
 <method name="local_dst_end_day" specifiers="static"><type>date_type</type><parameter name="year"><paramtype>year_type</paramtype></parameter></method>
-<method name="dst_offset" specifiers="static"><type>time_duration_type</type></method>
-</method-group>
-</class><class name="null_dst_rules"><template>
-      <template-type-parameter name="date_type_"/>
-      <template-type-parameter name="time_duration_type_"/>
-    </template><purpose>Used for local time adjustments in places that don't use dst. </purpose><typedef name="time_duration_type"><type>time_duration_type_</type></typedef>
-<typedef name="date_type"><type>date_type_</type></typedef>
-<method-group name="public static functions">
-<method name="local_is_dst" specifiers="static"><type>time_is_dst_result</type><parameter name=""><paramtype>const date_type &amp;</paramtype></parameter><parameter name=""><paramtype>const time_duration_type &amp;</paramtype></parameter><purpose>Calculates if the given local time is dst or not. </purpose><description><para>
-</para></description></method>
-<method name="utc_is_dst" specifiers="static"><type>time_is_dst_result</type><parameter name=""><paramtype>const date_type &amp;</paramtype></parameter><parameter name=""><paramtype>const time_duration_type &amp;</paramtype></parameter><purpose>Calculates if the given utc time is in dst. </purpose></method>
-<method name="is_dst_boundary_day" specifiers="static"><type>bool</type><parameter name=""><paramtype>date_type</paramtype></parameter></method>
 <method name="dst_offset" specifiers="static"><type>time_duration_type</type></method>
 </method-group>
 </class><enum name="time_is_dst_result"><enumvalue name="is_not_in_dst"/><enumvalue name="is_in_dst"/><enumvalue name="ambiguous"/><enumvalue name="invalid_time_label"/></enum>
@@ -1673,18 +1695,8 @@ fkbf.get_date(date(2002,Feb,1));
 <header name="boost/date_time/dst_transition_generators.hpp">
 <namespace name="boost">
 <namespace name="date_time">
-<class name="dst_day_calc_rule"><template>
-      <template-type-parameter name="date_type"/>
-    </template><purpose>Defines base interface for calculating start and end date of daylight savings. </purpose><typedef name="year_type"><type>date_type::year_type</type></typedef>
-<method-group name="public member functions">
-<method name="start_day" cv="const = 0" specifiers="virtual"><type>date_type</type><parameter name="y"><paramtype>year_type</paramtype></parameter></method>
-<method name="start_rule_as_string" cv="const = 0" specifiers="virtual"><type>std::string</type></method>
-<method name="end_day" cv="const = 0" specifiers="virtual"><type>date_type</type><parameter name="y"><paramtype>year_type</paramtype></parameter></method>
-<method name="end_rule_as_string" cv="const = 0" specifiers="virtual"><type>std::string</type></method>
-</method-group>
-<destructor/>
-</class><class name="day_calc_dst_rule"><template>
-      <template-type-parameter name="spec"/>
+<class name="day_calc_dst_rule"><template>
+      <template-type-parameter name="spec"><purpose><para>Provides a specifiction of the function object types used to generate start and end days of daylight savings as well as the date type. </para></purpose></template-type-parameter>
     </template><inherit access="public">boost::date_time::dst_day_calc_rule&lt; spec::date_type &gt;</inherit><purpose>Canonical form for a class that provides day rule calculation. </purpose><description><para>This class is used to generate specific sets of dst rules</para><para>
 </para></description><typedef name="date_type"><type>spec::date_type</type></typedef>
 <typedef name="year_type"><type>date_type::year_type</type></typedef>
@@ -1697,6 +1709,16 @@ fkbf.get_date(date(2002,Feb,1));
 <method name="end_rule_as_string" cv="const" specifiers="virtual"><type>std::string</type></method>
 </method-group>
 <constructor><parameter name="dst_start"><paramtype>start_rule</paramtype></parameter><parameter name="dst_end"><paramtype>end_rule</paramtype></parameter></constructor>
+</class><class name="dst_day_calc_rule"><template>
+      <template-type-parameter name="date_type"/>
+    </template><purpose>Defines base interface for calculating start and end date of daylight savings. </purpose><typedef name="year_type"><type>date_type::year_type</type></typedef>
+<method-group name="public member functions">
+<method name="start_day" cv="const = 0" specifiers="virtual"><type>date_type</type><parameter name="y"><paramtype>year_type</paramtype></parameter></method>
+<method name="start_rule_as_string" cv="const = 0" specifiers="virtual"><type>std::string</type></method>
+<method name="end_day" cv="const = 0" specifiers="virtual"><type>date_type</type><parameter name="y"><paramtype>year_type</paramtype></parameter></method>
+<method name="end_rule_as_string" cv="const = 0" specifiers="virtual"><type>std::string</type></method>
+</method-group>
+<destructor/>
 </class>
 
 
@@ -1756,7 +1778,8 @@ fkbf.get_date(date(2002,Feb,1));
 <function name="time_from_ftime"><type>TimeT</type><template>
           <template-type-parameter name="TimeT"/>
           <template-type-parameter name="FileTimeT"/>
-        </template><parameter name="ft"><paramtype>const FileTimeT &amp;</paramtype></parameter><purpose>Create a time object from an initialized FILETIME struct. </purpose><description><para>Create a time object from an initialized FILETIME struct. A FILETIME struct holds 100-nanosecond units (0.0000001). When built with microsecond resolution the file_time's sub second value will be truncated. Nanosecond resolution has no truncation.</para><para><note><para>The function is templated on the FILETIME type, so that it can be used with both native FILETIME and the ad-hoc boost::detail::winapi::FILETIME_ type. </para></note>
+        </template><parameter name="ft"><paramtype>const FileTimeT &amp;</paramtype></parameter><purpose>Create a time object from an initialized FILETIME struct. </purpose><description><para>Create a time object from an initialized FILETIME struct. A FILETIME struct holds 100-nanosecond units (0.0000001). When built with microsecond resolution the file_time's sub second value will be truncated. Nanosecond resolution has no truncation.</para><para><note><para>The function is templated on the FILETIME type, so that it can be used with both native FILETIME and the ad-hoc boost::detail::winapi::FILETIME_ type. </para>
+</note>
 </para></description></function>
 
 
@@ -1785,7 +1808,20 @@ fkbf.get_date(date(2002,Feb,1));
       <template-type-parameter name="date_type"/>
       <template-type-parameter name="charT"/>
     </template><purpose>Class with generic date parsing using a format string. </purpose><description><para>The following is the set of recognized format specifiers<itemizedlist>
-<listitem><para>a - Short weekday name</para></listitem><listitem><para>A - Long weekday name</para></listitem><listitem><para>b - Abbreviated month name</para></listitem><listitem><para>B - Full month name</para></listitem><listitem><para>d - Day of the month as decimal 01 to 31</para></listitem><listitem><para>j - Day of year as decimal from 001 to 366</para></listitem><listitem><para>m - Month name as a decimal 01 to 12</para></listitem><listitem><para>U - Week number 00 to 53 with first Sunday as the first day of week 1?</para></listitem><listitem><para>w - Weekday as decimal number 0 to 6 where Sunday == 0</para></listitem><listitem><para>W - Week number 00 to 53 where Monday is first day of week 1</para></listitem><listitem><para>x - facet default date representation</para></listitem><listitem><para>y - Year without the century - eg: 04 for 2004</para></listitem><listitem><para>Y - Year with century</para></listitem></itemizedlist>
+<listitem><para>a - Short weekday name</para>
+</listitem><listitem><para>A - Long weekday name</para>
+</listitem><listitem><para>b - Abbreviated month name</para>
+</listitem><listitem><para>B - Full month name</para>
+</listitem><listitem><para>d - Day of the month as decimal 01 to 31</para>
+</listitem><listitem><para>j - Day of year as decimal from 001 to 366</para>
+</listitem><listitem><para>m - Month name as a decimal 01 to 12</para>
+</listitem><listitem><para>U - Week number 00 to 53 with first Sunday as the first day of week 1?</para>
+</listitem><listitem><para>w - Weekday as decimal number 0 to 6 where Sunday == 0</para>
+</listitem><listitem><para>W - Week number 00 to 53 where Monday is first day of week 1</para>
+</listitem><listitem><para>x - facet default date representation</para>
+</listitem><listitem><para>y - Year without the century - eg: 04 for 2004</para>
+</listitem><listitem><para>Y - Year with century</para>
+</listitem></itemizedlist>
 </para><para>The weekday specifiers (a and A) do not add to the date construction, but they provide a way to skip over the weekday names for formats that provide them.</para><para>todo – Another interesting feature that this approach could provide is an option to fill in any missing fields with the current values from the clock. So if you have m-d the parser would detect the missing year value and fill it in using the clock.</para><para>todo – What to do with the x. x in the classic facet is just bad... </para></description><typedef name="string_type"><type>std::basic_string&lt; charT &gt;</type></typedef>
 <typedef name="stringstream_type"><type>std::basic_istringstream&lt; charT &gt;</type></typedef>
 <typedef name="stream_itr_type"><type>std::istreambuf_iterator&lt; charT &gt;</type></typedef>
@@ -1870,8 +1906,8 @@ fkbf.get_date(date(2002,Feb,1));
 <namespace name="boost">
 <namespace name="date_time">
 <class name="gregorian_calendar_base"><template>
-      <template-type-parameter name="ymd_type_"/>
-      <template-type-parameter name="date_int_type_"/>
+      <template-type-parameter name="ymd_type_"><purpose><para>Struct type representing the year, month, day. The ymd_type must define a of types for the year, month, and day. These types need to be arithmetic types. </para></purpose></template-type-parameter>
+      <template-type-parameter name="date_int_type_"><purpose><para>Underlying type for the date count. Must be an arithmetic type. </para></purpose></template-type-parameter>
     </template><purpose>An implementation of the Gregorian calendar. </purpose><description><para>This is a parameterized implementation of a proleptic Gregorian Calendar that can be used in the creation of date systems or just to perform calculations. All the methods of this class are static functions, so the intent is to never create instances of this class. 
 </para></description><typedef name="ymd_type"><purpose>define a type a date split into components </purpose><type>ymd_type_</type></typedef>
 <typedef name="month_type"><purpose>define a type for representing months </purpose><type>ymd_type::month_type</type></typedef>
@@ -1963,8 +1999,8 @@ fkbf.get_date(date(2002,Feb,1));
           <template-type-parameter name="rhs_type"/>
         </template><parameter name="rhs"><paramtype>const <classname>int_adapter</classname>&lt; rhs_type &gt; &amp;</paramtype></parameter><description><para>Operator allows for subtracting dissimilar <classname alt="boost::date_time::int_adapter">int_adapter</classname> types. The return type will match that of the the calling object's type </para></description></method>
 <method name="operator-" cv="const"><type><classname>int_adapter</classname></type><parameter name="rhs"><paramtype>const int_type</paramtype></parameter></method>
-<method name="operator*" cv="const"><type><classname>int_adapter</classname></type><parameter name="rhs"><paramtype>const <classname>int_adapter</classname> &amp;</paramtype></parameter></method>
-<method name="operator*" cv="const"><type><classname>int_adapter</classname></type><parameter name="rhs"><paramtype>const int</paramtype></parameter><description><para>Provided for cases when automatic conversion from 'int' to '<classname alt="boost::date_time::int_adapter">int_adapter</classname>' causes incorrect results. </para></description></method>
+<method name="operator *" cv="const"><type><classname>int_adapter</classname></type><parameter name="rhs"><paramtype>const <classname>int_adapter</classname> &amp;</paramtype></parameter></method>
+<method name="operator *" cv="const"><type><classname>int_adapter</classname></type><parameter name="rhs"><paramtype>const int</paramtype></parameter><description><para>Provided for cases when automatic conversion from 'int' to '<classname alt="boost::date_time::int_adapter">int_adapter</classname>' causes incorrect results. </para></description></method>
 <method name="operator/" cv="const"><type><classname>int_adapter</classname></type><parameter name="rhs"><paramtype>const <classname>int_adapter</classname> &amp;</paramtype></parameter></method>
 <method name="operator/" cv="const"><type><classname>int_adapter</classname></type><parameter name="rhs"><paramtype>const int</paramtype></parameter><description><para>Provided for cases when automatic conversion from 'int' to '<classname alt="boost::date_time::int_adapter">int_adapter</classname>' causes incorrect results. </para></description></method>
 <method name="operator%" cv="const"><type><classname>int_adapter</classname></type><parameter name="rhs"><paramtype>const <classname>int_adapter</classname> &amp;</paramtype></parameter></method>
@@ -2035,7 +2071,17 @@ fkbf.get_date(date(2002,Feb,1));
 <header name="boost/date_time/iso_format.hpp">
 <namespace name="boost">
 <namespace name="date_time">
-<class name="iso_format_base"><template>
+<class name="iso_extended_format"><template>
+      <template-type-parameter name="charT"/>
+    </template><inherit access="public">boost::date_time::iso_format_base&lt; charT &gt;</inherit><purpose>Extended format uses seperators YYYY-MM-DD. </purpose><method-group name="public static functions">
+<method name="has_date_sep_chars" specifiers="static"><type>bool</type><purpose>Extended format needs char separators. </purpose></method>
+</method-group>
+</class><class name="iso_format"><template>
+      <template-type-parameter name="charT"/>
+    </template><inherit access="public">boost::date_time::iso_format_base&lt; charT &gt;</inherit><purpose>Format description for iso normal YYYYMMDD. </purpose><method-group name="public static functions">
+<method name="has_date_sep_chars" specifiers="static"><type>bool</type><purpose>The ios standard format doesn't use char separators. </purpose></method>
+</method-group>
+</class><class name="iso_format_base"><template>
       <template-type-parameter name="charT"/>
     </template><purpose>Class to provide common iso formatting spec. </purpose><method-group name="public static functions">
 <method name="month_format" specifiers="static"><type>month_format_spec</type><purpose>Describe month format – its an integer in iso format. </purpose></method>
@@ -2082,17 +2128,7 @@ fkbf.get_date(date(2002,Feb,1));
 <method name="is_timezone_sep" specifiers="static"><type>bool</type><parameter name="sep"><paramtype>wchar_t</paramtype></parameter></method>
 <method name="element_sep_char" specifiers="static"><type>wchar_t</type></method>
 </method-group>
-</class-specialization><class name="iso_format"><template>
-      <template-type-parameter name="charT"/>
-    </template><inherit access="public">boost::date_time::iso_format_base&lt; charT &gt;</inherit><purpose>Format description for iso normal YYYYMMDD. </purpose><method-group name="public static functions">
-<method name="has_date_sep_chars" specifiers="static"><type>bool</type><purpose>The ios standard format doesn't use char separators. </purpose></method>
-</method-group>
-</class><class name="iso_extended_format"><template>
-      <template-type-parameter name="charT"/>
-    </template><inherit access="public">boost::date_time::iso_format_base&lt; charT &gt;</inherit><purpose>Extended format uses seperators YYYY-MM-DD. </purpose><method-group name="public static functions">
-<method name="has_date_sep_chars" specifiers="static"><type>bool</type><purpose>Extended format needs char separators. </purpose></method>
-</method-group>
-</class>
+</class-specialization>
 
 
 
@@ -2131,15 +2167,7 @@ fkbf.get_date(date(2002,Feb,1));
 <header name="boost/date_time/local_time_adjustor.hpp">
 <para>Time adjustment calculations for local times </para><namespace name="boost">
 <namespace name="date_time">
-<class name="utc_adjustment"><template>
-      <template-type-parameter name="time_duration_type"/>
-      <template-nontype-parameter name="hours"><type>short</type></template-nontype-parameter>
-      <template-nontype-parameter name="minutes"><type>unsigned short</type><default>0</default></template-nontype-parameter>
-    </template><purpose>Provides a base offset adjustment from utc. </purpose><method-group name="public static functions">
-<method name="local_to_utc_base_offset" specifiers="static"><type>time_duration_type</type></method>
-<method name="utc_to_local_base_offset" specifiers="static"><type>time_duration_type</type></method>
-</method-group>
-</class><class name="dynamic_local_time_adjustor"><template>
+<class name="dynamic_local_time_adjustor"><template>
       <template-type-parameter name="time_type"/>
       <template-type-parameter name="dst_rules"/>
     </template><inherit access="public">dst_rules</inherit><purpose>Allow sliding utc adjustment with fixed dst rules. </purpose><typedef name="time_duration_type"><type>time_type::time_duration_type</type></typedef>
@@ -2148,17 +2176,6 @@ fkbf.get_date(date(2002,Feb,1));
 <method name="utc_offset"><type>time_duration_type</type><parameter name="is_dst"><paramtype>bool</paramtype></parameter><purpose>Presumes local time. </purpose></method>
 </method-group>
 <constructor><parameter name="utc_offset"><paramtype>time_duration_type</paramtype></parameter></constructor>
-</class><class name="static_local_time_adjustor"><template>
-      <template-type-parameter name="time_type"/>
-      <template-type-parameter name="dst_rules"/>
-      <template-type-parameter name="utc_offset_rules"/>
-    </template><inherit access="public">dst_rules</inherit><inherit access="public">utc_offset_rules</inherit><purpose>Embed the rules for local time adjustments at compile time. </purpose><typedef name="time_duration_type"><type>time_type::time_duration_type</type></typedef>
-<typedef name="date_type"><type>time_type::date_type</type></typedef>
-<method-group name="public static functions">
-<method name="utc_to_local_offset" specifiers="static"><type>time_duration_type</type><parameter name="t"><paramtype>const time_type &amp;</paramtype><description><para>UTC time to calculate offset to local time This adjustment depends on the following observations about the workings of the DST boundary offset. Since UTC time labels are monotonically increasing we can determine if a given local time is in DST or not and therefore adjust the offset appropriately.</para></description></parameter><purpose>Calculates the offset from a utc time to local based on dst and utc offset. </purpose><description><para>
-The logic is as follows. Starting with UTC time use the offset to create a label for an non-dst adjusted local time. Then call dst_rules::local_is_dst with the non adjust local time. The results of this function will either unabiguously decide that the initial local time is in dst or return an illegal or ambiguous result. An illegal result only occurs at the end of dst (where labels are skipped) and indicates that dst has ended. An ambiguous result means that we need to recheck by making a dst adjustment and then rechecking. If the dst offset is added to the utc time and the recheck proves non-ambiguous then we are past the boundary. If it is still ambiguous then we are ahead of the boundary and dst is still in effect.</para><para>TODO – check if all dst offsets are positive. If not then the algorithm needs to check for this and reverse the illegal/ambiguous logic. </para></description></method>
-<method name="local_to_utc_offset" specifiers="static"><type>time_duration_type</type><parameter name="t"><paramtype>const time_type &amp;</paramtype></parameter><parameter name="dst"><paramtype>date_time::dst_flags</paramtype><default>date_time::calculate</default></parameter><purpose>Get the offset to UTC given a local time. </purpose></method>
-</method-group>
 </class><class name="local_adjustor"><template>
       <template-type-parameter name="time_type"/>
       <template-nontype-parameter name="utc_offset"><type>short</type></template-nontype-parameter>
@@ -2175,6 +2192,25 @@ typedef date_time::local_adjustor&lt;ptime, -7, no_dst&gt; us_arizona;
 <method-group name="public static functions">
 <method name="utc_to_local" specifiers="static"><type>time_type</type><parameter name="t"><paramtype>const time_type &amp;</paramtype></parameter><purpose>Convert a utc time to local time. </purpose></method>
 <method name="local_to_utc" specifiers="static"><type>time_type</type><parameter name="t"><paramtype>const time_type &amp;</paramtype></parameter><parameter name="dst"><paramtype>date_time::dst_flags</paramtype><default>date_time::calculate</default></parameter><purpose>Convert a local time to utc. </purpose></method>
+</method-group>
+</class><class name="static_local_time_adjustor"><template>
+      <template-type-parameter name="time_type"/>
+      <template-type-parameter name="dst_rules"/>
+      <template-type-parameter name="utc_offset_rules"/>
+    </template><inherit access="public">dst_rules</inherit><inherit access="public">utc_offset_rules</inherit><purpose>Embed the rules for local time adjustments at compile time. </purpose><typedef name="time_duration_type"><type>time_type::time_duration_type</type></typedef>
+<typedef name="date_type"><type>time_type::date_type</type></typedef>
+<method-group name="public static functions">
+<method name="utc_to_local_offset" specifiers="static"><type>time_duration_type</type><parameter name="t"><paramtype>const time_type &amp;</paramtype><description><para>UTC time to calculate offset to local time This adjustment depends on the following observations about the workings of the DST boundary offset. Since UTC time labels are monotonically increasing we can determine if a given local time is in DST or not and therefore adjust the offset appropriately.</para></description></parameter><purpose>Calculates the offset from a utc time to local based on dst and utc offset. </purpose><description><para>
+The logic is as follows. Starting with UTC time use the offset to create a label for an non-dst adjusted local time. Then call dst_rules::local_is_dst with the non adjust local time. The results of this function will either unabiguously decide that the initial local time is in dst or return an illegal or ambiguous result. An illegal result only occurs at the end of dst (where labels are skipped) and indicates that dst has ended. An ambiguous result means that we need to recheck by making a dst adjustment and then rechecking. If the dst offset is added to the utc time and the recheck proves non-ambiguous then we are past the boundary. If it is still ambiguous then we are ahead of the boundary and dst is still in effect.</para><para>TODO – check if all dst offsets are positive. If not then the algorithm needs to check for this and reverse the illegal/ambiguous logic. </para></description></method>
+<method name="local_to_utc_offset" specifiers="static"><type>time_duration_type</type><parameter name="t"><paramtype>const time_type &amp;</paramtype></parameter><parameter name="dst"><paramtype>date_time::dst_flags</paramtype><default>date_time::calculate</default></parameter><purpose>Get the offset to UTC given a local time. </purpose></method>
+</method-group>
+</class><class name="utc_adjustment"><template>
+      <template-type-parameter name="time_duration_type"/>
+      <template-nontype-parameter name="hours"><type>short</type></template-nontype-parameter>
+      <template-nontype-parameter name="minutes"><type>unsigned short</type><default>0</default></template-nontype-parameter>
+    </template><purpose>Provides a base offset adjustment from utc. </purpose><method-group name="public static functions">
+<method name="local_to_utc_base_offset" specifiers="static"><type>time_duration_type</type></method>
+<method name="utc_to_local_base_offset" specifiers="static"><type>time_duration_type</type></method>
 </method-group>
 </class>
 
@@ -2215,12 +2251,62 @@ typedef date_time::local_adjustor&lt;ptime, -7, no_dst&gt; us_arizona;
 <header name="boost/date_time/local_timezone_defs.hpp">
 <namespace name="boost">
 <namespace name="date_time">
-<struct name="us_dst_trait"><template>
+<struct name="acst_dst_trait"><template>
+      <template-type-parameter name="date_type"/>
+    </template><typedef name="day_of_week_type"><type>date_type::day_of_week_type</type></typedef>
+<typedef name="month_type"><type>date_type::month_type</type></typedef>
+<typedef name="year_type"><type>date_type::year_type</type></typedef>
+<typedef name="start_rule_functor"><type><classname>date_time::last_kday_of_month</classname>&lt; date_type &gt;</type></typedef>
+<typedef name="end_rule_functor"><type><classname>date_time::last_kday_of_month</classname>&lt; date_type &gt;</type></typedef>
+<method-group name="public static functions">
+<method name="start_day" specifiers="static"><type>day_of_week_type</type><parameter name=""><paramtype>year_type</paramtype></parameter></method>
+<method name="start_month" specifiers="static"><type>month_type</type><parameter name=""><paramtype>year_type</paramtype></parameter></method>
+<method name="end_day" specifiers="static"><type>day_of_week_type</type><parameter name=""><paramtype>year_type</paramtype></parameter></method>
+<method name="end_month" specifiers="static"><type>month_type</type><parameter name=""><paramtype>year_type</paramtype></parameter></method>
+<method name="dst_start_offset_minutes" specifiers="static"><type>int</type></method>
+<method name="dst_end_offset_minutes" specifiers="static"><type>int</type></method>
+<method name="dst_shift_length_minutes" specifiers="static"><type>int</type></method>
+<method name="local_dst_start_day" specifiers="static"><type>date_type</type><parameter name="year"><paramtype>year_type</paramtype></parameter></method>
+<method name="local_dst_end_day" specifiers="static"><type>date_type</type><parameter name="year"><paramtype>year_type</paramtype></parameter></method>
+</method-group>
+</struct><struct name="eu_dst_trait"><template>
+      <template-type-parameter name="date_type"/>
+    </template><purpose>Rules for daylight savings start in the EU (Last Sun in Mar) </purpose><description><para>These amount to the following:<itemizedlist>
+<listitem><para>Start of dst day is last Sunday in March</para>
+</listitem><listitem><para>End day of dst is last Sunday in Oct</para>
+</listitem><listitem><para>Going forward switch time is 2:00 am (offset 120 minutes)</para>
+</listitem><listitem><para>Going back switch time is 3:00 am (off set 180 minutes)</para>
+</listitem><listitem><para>Shift duration is one hour (60 minutes) </para>
+</listitem></itemizedlist>
+</para></description><typedef name="day_of_week_type"><type>date_type::day_of_week_type</type></typedef>
+<typedef name="month_type"><type>date_type::month_type</type></typedef>
+<typedef name="year_type"><type>date_type::year_type</type></typedef>
+<typedef name="start_rule_functor"><type><classname>date_time::last_kday_of_month</classname>&lt; date_type &gt;</type></typedef>
+<typedef name="end_rule_functor"><type><classname>date_time::last_kday_of_month</classname>&lt; date_type &gt;</type></typedef>
+<method-group name="public static functions">
+<method name="start_day" specifiers="static"><type>day_of_week_type</type><parameter name=""><paramtype>year_type</paramtype></parameter></method>
+<method name="start_month" specifiers="static"><type>month_type</type><parameter name=""><paramtype>year_type</paramtype></parameter></method>
+<method name="end_day" specifiers="static"><type>day_of_week_type</type><parameter name=""><paramtype>year_type</paramtype></parameter></method>
+<method name="end_month" specifiers="static"><type>month_type</type><parameter name=""><paramtype>year_type</paramtype></parameter></method>
+<method name="dst_start_offset_minutes" specifiers="static"><type>int</type></method>
+<method name="dst_end_offset_minutes" specifiers="static"><type>int</type></method>
+<method name="dst_shift_length_minutes" specifiers="static"><type>int</type></method>
+<method name="local_dst_start_day" specifiers="static"><type>date_type</type><parameter name="year"><paramtype>year_type</paramtype></parameter></method>
+<method name="local_dst_end_day" specifiers="static"><type>date_type</type><parameter name="year"><paramtype>year_type</paramtype></parameter></method>
+</method-group>
+</struct><struct name="uk_dst_trait"><template>
+      <template-type-parameter name="date_type"/>
+    </template><inherit access="public">boost::date_time::eu_dst_trait&lt; date_type &gt;</inherit><purpose>Alternative dst traits for some parts of the United Kingdom. </purpose><method-group name="public static functions">
+<method name="dst_start_offset_minutes" specifiers="static"><type>int</type></method>
+<method name="dst_end_offset_minutes" specifiers="static"><type>int</type></method>
+<method name="dst_shift_length_minutes" specifiers="static"><type>int</type></method>
+</method-group>
+</struct><struct name="us_dst_trait"><template>
       <template-type-parameter name="date_type"/>
     </template><purpose>Specification for daylight savings start rules in US. </purpose><description><para>This class is used to configure <classname alt="boost::date_time::dst_calc_engine">dst_calc_engine</classname> template typically as follows: <programlisting language="c++">using namespace boost::gregorian;
 using namespace boost::posix_time;
 typedef us_dst_trait&lt;date&gt; us_dst_traits;
-typedef <classname alt="boost::date_time::dst_calc_engine">boost::date_time::dst_calc_engine</classname>&lt;date, time_duration, 
+typedef boost::date_time::dst_calc_engine&lt;date, time_duration, 
                                           us_dst_traits&gt;  
                                           us_dst_calc;
 //calculate the 2002 transition day of USA April 7 2002
@@ -2254,51 +2340,6 @@ if (us_dst::local_is_dst(t.date(), t.time_of_day())
 <method name="dst_start_offset_minutes" specifiers="static"><type>int</type></method>
 <method name="dst_end_offset_minutes" specifiers="static"><type>int</type></method>
 <method name="dst_shift_length_minutes" specifiers="static"><type>int</type></method>
-</method-group>
-</struct><struct name="eu_dst_trait"><template>
-      <template-type-parameter name="date_type"/>
-    </template><purpose>Rules for daylight savings start in the EU (Last Sun in Mar) </purpose><description><para>These amount to the following:<itemizedlist>
-<listitem><para>Start of dst day is last Sunday in March</para></listitem><listitem><para>End day of dst is last Sunday in Oct</para></listitem><listitem><para>Going forward switch time is 2:00 am (offset 120 minutes)</para></listitem><listitem><para>Going back switch time is 3:00 am (off set 180 minutes)</para></listitem><listitem><para>Shift duration is one hour (60 minutes) </para></listitem></itemizedlist>
-</para></description><typedef name="day_of_week_type"><type>date_type::day_of_week_type</type></typedef>
-<typedef name="month_type"><type>date_type::month_type</type></typedef>
-<typedef name="year_type"><type>date_type::year_type</type></typedef>
-<typedef name="start_rule_functor"><type><classname>date_time::last_kday_of_month</classname>&lt; date_type &gt;</type></typedef>
-<typedef name="end_rule_functor"><type><classname>date_time::last_kday_of_month</classname>&lt; date_type &gt;</type></typedef>
-<method-group name="public static functions">
-<method name="start_day" specifiers="static"><type>day_of_week_type</type><parameter name=""><paramtype>year_type</paramtype></parameter></method>
-<method name="start_month" specifiers="static"><type>month_type</type><parameter name=""><paramtype>year_type</paramtype></parameter></method>
-<method name="end_day" specifiers="static"><type>day_of_week_type</type><parameter name=""><paramtype>year_type</paramtype></parameter></method>
-<method name="end_month" specifiers="static"><type>month_type</type><parameter name=""><paramtype>year_type</paramtype></parameter></method>
-<method name="dst_start_offset_minutes" specifiers="static"><type>int</type></method>
-<method name="dst_end_offset_minutes" specifiers="static"><type>int</type></method>
-<method name="dst_shift_length_minutes" specifiers="static"><type>int</type></method>
-<method name="local_dst_start_day" specifiers="static"><type>date_type</type><parameter name="year"><paramtype>year_type</paramtype></parameter></method>
-<method name="local_dst_end_day" specifiers="static"><type>date_type</type><parameter name="year"><paramtype>year_type</paramtype></parameter></method>
-</method-group>
-</struct><struct name="uk_dst_trait"><template>
-      <template-type-parameter name="date_type"/>
-    </template><inherit access="public">boost::date_time::eu_dst_trait&lt; date_type &gt;</inherit><purpose>Alternative dst traits for some parts of the United Kingdom. </purpose><method-group name="public static functions">
-<method name="dst_start_offset_minutes" specifiers="static"><type>int</type></method>
-<method name="dst_end_offset_minutes" specifiers="static"><type>int</type></method>
-<method name="dst_shift_length_minutes" specifiers="static"><type>int</type></method>
-</method-group>
-</struct><struct name="acst_dst_trait"><template>
-      <template-type-parameter name="date_type"/>
-    </template><typedef name="day_of_week_type"><type>date_type::day_of_week_type</type></typedef>
-<typedef name="month_type"><type>date_type::month_type</type></typedef>
-<typedef name="year_type"><type>date_type::year_type</type></typedef>
-<typedef name="start_rule_functor"><type><classname>date_time::last_kday_of_month</classname>&lt; date_type &gt;</type></typedef>
-<typedef name="end_rule_functor"><type><classname>date_time::last_kday_of_month</classname>&lt; date_type &gt;</type></typedef>
-<method-group name="public static functions">
-<method name="start_day" specifiers="static"><type>day_of_week_type</type><parameter name=""><paramtype>year_type</paramtype></parameter></method>
-<method name="start_month" specifiers="static"><type>month_type</type><parameter name=""><paramtype>year_type</paramtype></parameter></method>
-<method name="end_day" specifiers="static"><type>day_of_week_type</type><parameter name=""><paramtype>year_type</paramtype></parameter></method>
-<method name="end_month" specifiers="static"><type>month_type</type><parameter name=""><paramtype>year_type</paramtype></parameter></method>
-<method name="dst_start_offset_minutes" specifiers="static"><type>int</type></method>
-<method name="dst_end_offset_minutes" specifiers="static"><type>int</type></method>
-<method name="dst_shift_length_minutes" specifiers="static"><type>int</type></method>
-<method name="local_dst_start_day" specifiers="static"><type>date_type</type><parameter name="year"><paramtype>year_type</paramtype></parameter></method>
-<method name="local_dst_end_day" specifiers="static"><type>date_type</type><parameter name="year"><paramtype>year_type</paramtype></parameter></method>
 </method-group>
 </struct>
 
@@ -2355,7 +2396,8 @@ if (us_dst::local_is_dst(t.date(), t.time_of_day())
 </method-group>
 <method-group name="private static functions">
 <method name="create_time" specifiers="static"><type>time_type</type><parameter name="converter"><paramtype>time_converter</paramtype></parameter></method>
-<method name="file_time_to_microseconds" specifiers="static"><type>boost::uint64_t</type><parameter name="ft"><paramtype>boost::winapi::FILETIME_ const &amp;</paramtype></parameter><description><para>The function converts file_time into number of microseconds elapsed since 1970-Jan-01</para><para><note><para>Only dates after 1970-Jan-01 are supported. Dates before will be wrapped. </para></note>
+<method name="file_time_to_microseconds" specifiers="static"><type>boost::uint64_t</type><parameter name="ft"><paramtype>boost::winapi::FILETIME_ const &amp;</paramtype></parameter><description><para>The function converts file_time into number of microseconds elapsed since 1970-Jan-01</para><para><note><para>Only dates after 1970-Jan-01 are supported. Dates before will be wrapped. </para>
+</note>
 </para></description></method>
 </method-group>
 </class>
@@ -2518,7 +2560,12 @@ result:
       <template-type-parameter name="CharT"/>
       <template-type-parameter name="OutItrT"><default>std::ostreambuf_iterator&lt;CharT, std::char_traits&lt;CharT&gt; &gt;</default></template-type-parameter>
     </template><purpose>Not a facet, but a class used to specify and control period formats. </purpose><description><para>Provides settings for the following:<itemizedlist>
-<listitem><para>period_separator – default '/'</para></listitem><listitem><para>period_open_start_delimeter – default '['</para></listitem><listitem><para>period_open_range_end_delimeter – default ')'</para></listitem><listitem><para>period_closed_range_end_delimeter – default ']'</para></listitem><listitem><para>display_as_open_range, display_as_closed_range – default closed_range</para></listitem></itemizedlist>
+<listitem><para>period_separator – default '/'</para>
+</listitem><listitem><para>period_open_start_delimeter – default '['</para>
+</listitem><listitem><para>period_open_range_end_delimeter – default ')'</para>
+</listitem><listitem><para>period_closed_range_end_delimeter – default ']'</para>
+</listitem><listitem><para>display_as_open_range, display_as_closed_range – default closed_range</para>
+</listitem></itemizedlist>
 </para><para>Thus the default formatting for a period is as follows: <programlisting language="c++">[period.start()/period.last()]
 </programlisting> So for a typical date_period this would be <programlisting language="c++">[2004-Jan-04/2004-Feb-01]
 </programlisting> where the date formatting is controlled by the date facet </para></description><enum name="range_display_options"><enumvalue name="AS_OPEN_RANGE"/><enumvalue name="AS_CLOSED_RANGE"/></enum>
@@ -2541,7 +2588,12 @@ result:
           <template-type-parameter name="period_type"/>
           <template-type-parameter name="facet_type"/>
         </template><parameter name="next"><paramtype>OutItrT</paramtype></parameter><parameter name="a_ios"><paramtype>std::ios_base &amp;</paramtype></parameter><parameter name="a_fill"><paramtype>char_type</paramtype></parameter><parameter name="p"><paramtype>const period_type &amp;</paramtype></parameter><parameter name="facet"><paramtype>const facet_type &amp;</paramtype></parameter><purpose>Generic code to output a period – no matter the period type. </purpose><description><para>This generic code will output any period using a facet to to output the 'elements'. For example, in the case of a date_period the elements will be instances of a date which will be formatted according the to setup in the passed facet parameter.</para><para>The steps for formatting a period are always the same:<itemizedlist>
-<listitem><para>put the start delimiter</para></listitem><listitem><para>put start element</para></listitem><listitem><para>put the separator</para></listitem><listitem><para>put either last or end element depending on range settings</para></listitem><listitem><para>put end delimeter depending on range settings</para></listitem></itemizedlist>
+<listitem><para>put the start delimiter</para>
+</listitem><listitem><para>put start element</para>
+</listitem><listitem><para>put the separator</para>
+</listitem><listitem><para>put either last or end element depending on range settings</para>
+</listitem><listitem><para>put end delimeter depending on range settings</para>
+</listitem></itemizedlist>
 </para><para>Thus for a typical date period the result might look like this: <programlisting language="c++">[March 01, 2004/June 07, 2004]   &lt;-- closed range
 [March 01, 2004/June 08, 2004)   &lt;-- open range
 </programlisting> </para></description></method>
@@ -2590,7 +2642,12 @@ result:
       <template-type-parameter name="date_type"/>
       <template-type-parameter name="CharT"/>
     </template><purpose>Not a facet, but a class used to specify and control period parsing. </purpose><description><para>Provides settings for the following:<itemizedlist>
-<listitem><para>period_separator – default '/'</para></listitem><listitem><para>period_open_start_delimeter – default '['</para></listitem><listitem><para>period_open_range_end_delimeter – default ')'</para></listitem><listitem><para>period_closed_range_end_delimeter – default ']'</para></listitem><listitem><para>display_as_open_range, display_as_closed_range – default closed_range</para></listitem></itemizedlist>
+<listitem><para>period_separator – default '/'</para>
+</listitem><listitem><para>period_open_start_delimeter – default '['</para>
+</listitem><listitem><para>period_open_range_end_delimeter – default ')'</para>
+</listitem><listitem><para>period_closed_range_end_delimeter – default ']'</para>
+</listitem><listitem><para>display_as_open_range, display_as_closed_range – default closed_range</para>
+</listitem></itemizedlist>
 </para><para>For a typical date_period, the contents of the input stream would be <programlisting language="c++">[2004-Jan-04/2004-Feb-01]
 </programlisting> where the date format is controlled by the date facet </para></description><enum name="period_range_option"><enumvalue name="AS_OPEN_RANGE"/><enumvalue name="AS_CLOSED_RANGE"/></enum>
 <typedef name="string_type"><type>std::basic_string&lt; CharT &gt;</type></typedef>
@@ -2613,7 +2670,12 @@ result:
           <template-type-parameter name="duration_type"/>
           <template-type-parameter name="facet_type"/>
         </template><parameter name="sitr"><paramtype>stream_itr_type &amp;</paramtype></parameter><parameter name="stream_end"><paramtype>stream_itr_type &amp;</paramtype></parameter><parameter name="a_ios"><paramtype>std::ios_base &amp;</paramtype></parameter><parameter name=""><paramtype>const period_type &amp;</paramtype></parameter><parameter name="dur_unit"><paramtype>const duration_type &amp;</paramtype></parameter><parameter name="facet"><paramtype>const facet_type &amp;</paramtype></parameter><purpose>Generic code to parse a period – no matter the period type. </purpose><description><para>This generic code will parse any period using a facet to to get the 'elements'. For example, in the case of a date_period the elements will be instances of a date which will be parsed according the to setup in the passed facet parameter.</para><para>The steps for parsing a period are always the same:<itemizedlist>
-<listitem><para>consume the start delimiter</para></listitem><listitem><para>get start element</para></listitem><listitem><para>consume the separator</para></listitem><listitem><para>get either last or end element depending on range settings</para></listitem><listitem><para>consume the end delimeter depending on range settings</para></listitem></itemizedlist>
+<listitem><para>consume the start delimiter</para>
+</listitem><listitem><para>get start element</para>
+</listitem><listitem><para>consume the separator</para>
+</listitem><listitem><para>get either last or end element depending on range settings</para>
+</listitem><listitem><para>consume the end delimeter depending on range settings</para>
+</listitem></itemizedlist>
 </para><para>Thus for a typical date period the contents of the input stream might look like this: <programlisting language="c++">[March 01, 2004/June 07, 2004]   &lt;-- closed range
 [March 01, 2004/June 08, 2004)   &lt;-- open range
 </programlisting> </para></description></method>
@@ -2761,7 +2823,12 @@ special_value_formatter svf(&amp;special_value_names[0], &amp;special_value_name
       <template-type-parameter name="date_type"/>
       <template-type-parameter name="charT"/>
     </template><purpose>Class for special_value parsing. </purpose><description><para>TODO: add doc-comments for which elements can be changed Parses input stream for strings representing special_values. Special values parsed are:<itemizedlist>
-<listitem><para>not_a_date_time</para></listitem><listitem><para>neg_infin</para></listitem><listitem><para>pod_infin</para></listitem><listitem><para>min_date_time</para></listitem><listitem><para>max_date_time </para></listitem></itemizedlist>
+<listitem><para>not_a_date_time</para>
+</listitem><listitem><para>neg_infin</para>
+</listitem><listitem><para>pod_infin</para>
+</listitem><listitem><para>min_date_time</para>
+</listitem><listitem><para>max_date_time </para>
+</listitem></itemizedlist>
 </para></description><typedef name="string_type"><type>std::basic_string&lt; charT &gt;</type></typedef>
 <typedef name="stringstream_type"><type>std::basic_stringstream&lt; charT &gt;</type></typedef>
 <typedef name="stream_itr_type"><type>std::istreambuf_iterator&lt; charT &gt;</type></typedef>
@@ -2779,7 +2846,8 @@ special_value_formatter svf(&amp;special_value_names[0], &amp;special_value_name
 <method name="sv_strings"><type>void</type><parameter name="nadt_str"><paramtype>const string_type &amp;</paramtype></parameter><parameter name="neg_inf_str"><paramtype>const string_type &amp;</paramtype></parameter><parameter name="pos_inf_str"><paramtype>const string_type &amp;</paramtype></parameter><parameter name="min_dt_str"><paramtype>const string_type &amp;</paramtype></parameter><parameter name="max_dt_str"><paramtype>const string_type &amp;</paramtype></parameter><purpose>Replace special value strings. </purpose></method>
 <method name="match" cv="const"><type>bool</type><parameter name="sitr"><paramtype>stream_itr_type &amp;</paramtype><description><para>the start iterator </para></description></parameter><parameter name="str_end"><paramtype>stream_itr_type &amp;</paramtype><description><para>the end iterator </para></description></parameter><parameter name="mr"><paramtype><classname>match_results</classname> &amp;</paramtype><description><para>the match result: mr.current_match is set to the corresponding special_value or -1 </para></description></parameter><description><para>Given an input iterator, attempt to match it to a known special value 
 
-</para></description><returns><para>whether something matched </para></returns></method>
+</para></description><returns><para>whether something matched </para>
+</returns></method>
 </method-group>
 <constructor><purpose>Creates a <classname alt="boost::date_time::special_values_parser">special_values_parser</classname> with the default set of "sv_strings". </purpose></constructor>
 <constructor><parameter name="nadt_str"><paramtype>const string_type &amp;</paramtype></parameter><parameter name="neg_inf_str"><paramtype>const string_type &amp;</paramtype></parameter><parameter name="pos_inf_str"><paramtype>const string_type &amp;</paramtype></parameter><parameter name="min_dt_str"><paramtype>const string_type &amp;</paramtype></parameter><parameter name="max_dt_str"><paramtype>const string_type &amp;</paramtype></parameter><purpose>Creates a <classname alt="boost::date_time::special_values_parser">special_values_parser</classname> using a user defined set of element strings. </purpose></constructor>
@@ -2788,7 +2856,8 @@ special_value_formatter svf(&amp;special_value_names[0], &amp;special_value_name
 <method-group name="public static functions">
 <method name="likely" specifiers="static"><type>bool</type><parameter name="str"><paramtype>const string_type &amp;</paramtype><description><para>the string to check </para></description></parameter><description><para>The parser is expensive to create, and not thread-safe so it cannot be static therefore given a string, determine if it is likely to be a special value. A negative response is a definite no, whereas a positive is only likely and match() should be called and return value checked. 
 
-</para></description><returns><para>false if it is definitely not a special value </para></returns></method>
+</para></description><returns><para>false if it is definitely not a special value </para>
+</returns></method>
 </method-group>
 </class>
 
@@ -2959,12 +3028,14 @@ special_value_formatter svf(&amp;special_value_names[0], &amp;special_value_name
           <template-type-parameter name="charT"/>
         </template><parameter name="locale"><paramtype>const std::locale &amp;</paramtype><description><para>The locale to use when gathering the strings </para></description></parameter><parameter name="short_strings"><paramtype>bool</paramtype><default>true</default><description><para>True(default) to gather short strings, false for long strings. </para></description></parameter><purpose>This function gathers up all the month strings from a std::locale. </purpose><description><para>Using the time_put facet, this function creates a collection of all the month strings from a locale. This is handy when building custom date parsers or formatters that need to be localized.</para><para>
 
-</para></description><returns><para>A vector of strings containing the strings in order. eg: Jan, Feb, Mar, etc. </para></returns></function>
+</para></description><returns><para>A vector of strings containing the strings in order. eg: Jan, Feb, Mar, etc. </para>
+</returns></function>
 <function name="gather_weekday_strings"><type>std::vector&lt; std::basic_string&lt; charT &gt; &gt;</type><template>
           <template-type-parameter name="charT"/>
         </template><parameter name="locale"><paramtype>const std::locale &amp;</paramtype><description><para>The locale to use when gathering the strings </para></description></parameter><parameter name="short_strings"><paramtype>bool</paramtype><default>true</default><description><para>True(default) to gather short strings, false for long strings. </para></description></parameter><purpose>This function gathers up all the weekday strings from a std::locale. </purpose><description><para>Using the time_put facet, this function creates a collection of all the weekday strings from a locale starting with the string for 'Sunday'. This is handy when building custom date parsers or formatters that need to be localized.</para><para>
 
-</para></description><returns><para>A vector of strings containing the weekdays in order. eg: Sun, Mon, Tue, Wed, Thu, Fri, Sat </para></returns></function>
+</para></description><returns><para>A vector of strings containing the weekdays in order. eg: Sun, Mon, Tue, Wed, Thu, Fri, Sat </para>
+</returns></function>
 
 
 
@@ -3162,9 +3233,23 @@ special_value_formatter svf(&amp;special_value_names[0], &amp;special_value_name
 <header name="boost/date_time/time_duration.hpp">
 <namespace name="boost">
 <namespace name="date_time">
-<class name="time_duration"><template>
-      <template-type-parameter name="T"/>
-      <template-type-parameter name="rep_type"/>
+<class name="subsecond_duration"><template>
+      <template-type-parameter name="base_duration"/>
+      <template-nontype-parameter name="frac_of_second"><type>boost::int64_t</type></template-nontype-parameter>
+    </template><inherit access="public">base_duration</inherit><purpose>Template for instantiating derived adjusting durations. </purpose><typedef name="impl_type"><type>base_duration::impl_type</type></typedef>
+<typedef name="traits_type"><type>base_duration::traits_type</type></typedef>
+<method-group name="private member functions">
+<method name="BOOST_STATIC_ASSERT_MSG"><type/><parameter name=""><paramtype>(traits_type::ticks_per_second &gt;=frac_of_second ? traits_type::ticks_per_second % frac_of_second :frac_of_second % traits_type::ticks_per_second)</paramtype><default>=0</default></parameter><parameter name=""><paramtype>\ "The base duration resolution must be a multiple of the subsecond duration resolution"</paramtype></parameter></method>
+<method name="BOOST_STATIC_CONSTANT"><type/><parameter name=""><paramtype>boost::int64_t</paramtype></parameter><parameter name=""><paramtype>adjustment_ratio</paramtype><default>(traits_type::ticks_per_second &gt;=frac_of_second ? traits_type::ticks_per_second/frac_of_second :frac_of_second/traits_type::ticks_per_second)</default></parameter></method>
+</method-group>
+<method-group name="public member functions">
+</method-group>
+<constructor specifiers="explicit"><template>
+          <template-type-parameter name="T"/>
+        </template><parameter name="ss"><paramtype>T const &amp;</paramtype></parameter><parameter name=""><paramtype>typename boost::enable_if&lt; boost::is_integral&lt; T &gt;, void &gt;::type *</paramtype><default>BOOST_DATE_TIME_NULLPTR</default></parameter></constructor>
+</class><class name="time_duration"><template>
+      <template-type-parameter name="T"><purpose><para>The subclass type </para></purpose></template-type-parameter>
+      <template-type-parameter name="rep_type"><purpose><para>The time resolution traits for this duration type. </para></purpose></template-type-parameter>
     </template><inherit access="private">boost::less_than_comparable&lt; T, boost::equality_comparable&lt; T &gt; &gt;</inherit><purpose>Represents some amount of elapsed time measure to a given resolution. </purpose><description><para>This class represents a standard set of capabilities for all counted time durations. Time duration implementations should derive from this class passing their type as the first template parameter. This design allows the subclass duration types to provide custom construction policies or other custom features not provided here.</para><para>
 </para></description><typedef name="_is_boost_date_time_duration"><type>void</type></typedef>
 <typedef name="duration_type"><type>T</type></typedef>
@@ -3186,7 +3271,10 @@ special_value_formatter svf(&amp;special_value_names[0], &amp;special_value_name
 <method name="total_microseconds" cv="const"><type>tick_type</type><purpose>Returns total number of microseconds truncating any sub microsecond values. </purpose></method>
 <method name="fractional_seconds" cv="const"><type>fractional_seconds_type</type><purpose>Returns count of fractional seconds at given resolution. </purpose></method>
 <method name="invert_sign" cv="const"><type>duration_type</type></method>
+<method name="abs" cv="const"><type>duration_type</type></method>
 <method name="is_negative" cv="const"><type>bool</type></method>
+<method name="is_zero" cv="const"><type>bool</type></method>
+<method name="is_positive" cv="const"><type>bool</type></method>
 <method name="operator&lt;" cv="const"><type>bool</type><parameter name="rhs"><paramtype>const <classname>time_duration</classname> &amp;</paramtype></parameter></method>
 <method name="operator==" cv="const"><type>bool</type><parameter name="rhs"><paramtype>const <classname>time_duration</classname> &amp;</paramtype></parameter></method>
 <method name="operator-" cv="const"><type>duration_type</type><purpose>unary- Allows for <classname alt="boost::date_time::time_duration">time_duration</classname> td = -td1 </purpose></method>
@@ -3196,8 +3284,8 @@ special_value_formatter svf(&amp;special_value_names[0], &amp;special_value_name
 <method name="operator-="><type>duration_type</type><parameter name="d"><paramtype>const duration_type &amp;</paramtype></parameter></method>
 <method name="operator+="><type>duration_type</type><parameter name="d"><paramtype>const duration_type &amp;</paramtype></parameter></method>
 <method name="operator/="><type>duration_type</type><parameter name="divisor"><paramtype>int</paramtype></parameter><purpose>Division operations on a duration with an integer. </purpose></method>
-<method name="operator*" cv="const"><type>duration_type</type><parameter name="rhs"><paramtype>int</paramtype></parameter><purpose>Multiplication operations an a duration with an integer. </purpose></method>
-<method name="operator*="><type>duration_type</type><parameter name="divisor"><paramtype>int</paramtype></parameter></method>
+<method name="operator *" cv="const"><type>duration_type</type><parameter name="rhs"><paramtype>int</paramtype></parameter><purpose>Multiplication operations an a duration with an integer. </purpose></method>
+<method name="operator *="><type>duration_type</type><parameter name="divisor"><paramtype>int</paramtype></parameter></method>
 <method name="ticks" cv="const"><type>tick_type</type></method>
 <method name="is_special" cv="const"><type>bool</type><purpose>Is ticks_ a special value? </purpose></method>
 <method name="is_pos_infinity" cv="const"><type>bool</type><purpose>Is duration pos-infinity. </purpose></method>
@@ -3218,20 +3306,6 @@ special_value_formatter svf(&amp;special_value_names[0], &amp;special_value_name
 <method-group name="protected member functions">
 </method-group>
 <constructor specifiers="explicit"><parameter name="in"><paramtype>impl_type</paramtype></parameter></constructor>
-</class><class name="subsecond_duration"><template>
-      <template-type-parameter name="base_duration"/>
-      <template-nontype-parameter name="frac_of_second"><type>boost::int64_t</type></template-nontype-parameter>
-    </template><inherit access="public">base_duration</inherit><purpose>Template for instantiating derived adjusting durations. </purpose><typedef name="impl_type"><type>base_duration::impl_type</type></typedef>
-<typedef name="traits_type"><type>base_duration::traits_type</type></typedef>
-<method-group name="private member functions">
-<method name="BOOST_STATIC_ASSERT_MSG"><type/><parameter name=""><paramtype>(traits_type::ticks_per_second &gt;=frac_of_second?traits_type::ticks_per_second%frac_of_second:frac_of_second%traits_type::ticks_per_second)</paramtype><default>=0</default></parameter><parameter name=""><paramtype>\"The base duration resolution must be a multiple of the subsecond duration resolution"</paramtype></parameter></method>
-<method name="BOOST_STATIC_CONSTANT"><type/><parameter name=""><paramtype>boost::int64_t</paramtype></parameter><parameter name=""><paramtype>adjustment_ratio</paramtype><default>(traits_type::ticks_per_second &gt;=frac_of_second?traits_type::ticks_per_second/frac_of_second:frac_of_second/traits_type::ticks_per_second)</default></parameter></method>
-</method-group>
-<method-group name="public member functions">
-</method-group>
-<constructor specifiers="explicit"><template>
-          <template-type-parameter name="T"/>
-        </template><parameter name="ss"><paramtype>T const &amp;</paramtype></parameter><parameter name=""><paramtype>typename boost::enable_if&lt; boost::is_integral&lt; T &gt;, void &gt;::type *</paramtype><default>0</default></parameter></constructor>
 </class>
 
 
@@ -3271,44 +3345,19 @@ special_value_formatter svf(&amp;special_value_names[0], &amp;special_value_name
 <header name="boost/date_time/time_facet.hpp">
 <namespace name="boost">
 <namespace name="date_time">
-<struct name="time_formats"><template>
-      <template-type-parameter name="CharT"/>
-    </template><typedef name="char_type"><type>CharT</type></typedef>
-<data-member name="fractional_seconds_format" specifiers="static"><type>const char_type</type></data-member>
-<data-member name="fractional_seconds_or_none_format" specifiers="static"><type>const char_type</type></data-member>
-<data-member name="seconds_with_fractional_seconds_format" specifiers="static"><type>const char_type</type></data-member>
-<data-member name="seconds_format" specifiers="static"><type>const char_type</type></data-member>
-<data-member name="hours_format" specifiers="static"><type>const char_type</type></data-member>
-<data-member name="unrestricted_hours_format" specifiers="static"><type>const char_type</type></data-member>
-<data-member name="full_24_hour_time_format" specifiers="static"><type>const char_type</type></data-member>
-<data-member name="full_24_hour_time_expanded_format" specifiers="static"><type>const char_type</type></data-member>
-<data-member name="short_24_hour_time_format" specifiers="static"><type>const char_type</type></data-member>
-<data-member name="short_24_hour_time_expanded_format" specifiers="static"><type>const char_type</type></data-member>
-<data-member name="standard_format" specifiers="static"><type>const char_type</type></data-member>
-<data-member name="zone_abbrev_format" specifiers="static"><type>const char_type</type></data-member>
-<data-member name="zone_name_format" specifiers="static"><type>const char_type</type></data-member>
-<data-member name="zone_iso_format" specifiers="static"><type>const char_type</type></data-member>
-<data-member name="zone_iso_extended_format" specifiers="static"><type>const char_type</type></data-member>
-<data-member name="posix_zone_string_format" specifiers="static"><type>const char_type</type></data-member>
-<data-member name="duration_sign_negative_only" specifiers="static"><type>const char_type</type></data-member>
-<data-member name="duration_sign_always" specifiers="static"><type>const char_type</type></data-member>
-<data-member name="duration_seperator" specifiers="static"><type>const char_type</type></data-member>
-<data-member name="negative_sign" specifiers="static"><type>const char_type</type></data-member>
-<data-member name="positive_sign" specifiers="static"><type>const char_type</type></data-member>
-<data-member name="iso_time_format_specifier" specifiers="static"><type>const char_type</type></data-member>
-<data-member name="iso_time_format_extended_specifier" specifiers="static"><type>const char_type</type></data-member>
-<data-member name="default_time_format" specifiers="static"><type>const char_type</type></data-member>
-<data-member name="default_time_input_format" specifiers="static"><type>const char_type</type></data-member>
-<data-member name="default_time_duration_format" specifiers="static"><type>const char_type</type></data-member>
-</struct><class name="time_facet"><template>
+<class name="time_facet"><template>
       <template-type-parameter name="time_type"/>
       <template-type-parameter name="CharT"/>
       <template-type-parameter name="OutItrT"><default>std::ostreambuf_iterator&lt;CharT, std::char_traits&lt;CharT&gt; &gt;</default></template-type-parameter>
     </template><inherit access="public">boost::date_time::date_facet&lt; time_type::date_type, CharT, OutItrT &gt;</inherit><description><para>Facet used for format-based output of time types This class provides for the use of format strings to output times. In addition to the flags for formatting date elements, the following are the allowed format flags:<itemizedlist>
-<listitem><para>x X =&gt; default format - enables addition of more flags to default (ie. "%x %X %z")</para></listitem><listitem><para>f =&gt; fractional seconds ".123456"</para></listitem><listitem><para>F =&gt; fractional seconds or none: like frac sec but empty if frac sec == 0</para></listitem><listitem><para>s =&gt; seconds w/ fractional sec "02.123" (this is the same as "%S%f)
+<listitem><para>x X =&gt; default format - enables addition of more flags to default (ie. "%x %X %z")</para>
+</listitem><listitem><para>f =&gt; fractional seconds ".123456"</para>
+</listitem><listitem><para>F =&gt; fractional seconds or none: like frac sec but empty if frac sec == 0</para>
+</listitem><listitem><para>s =&gt; seconds w/ fractional sec "02.123" (this is the same as "%S%f)
  - %S =&gt; seconds "02"
  - %z =&gt; abbreviated time zone "EDT"
- - %Z =&gt; full time zone name "Eastern Daylight Time" </para></listitem></itemizedlist>
+ - %Z =&gt; full time zone name "Eastern Daylight Time" </para>
+</listitem></itemizedlist>
 </para></description><typedef name="date_type"><type>time_type::date_type</type></typedef>
 <typedef name="time_duration_type"><type>time_type::time_duration_type</type></typedef>
 <typedef name="period_type"><type><classname>boost::date_time::period</classname>&lt; time_type, time_duration_type &gt;</type></typedef>
@@ -3358,7 +3407,36 @@ special_value_formatter svf(&amp;special_value_names[0], &amp;special_value_name
           <template-type-parameter name="IntT"/>
         </template><parameter name="val"><paramtype>IntT</paramtype></parameter><parameter name="width"><paramtype>int</paramtype><default>2</default></parameter></method>
 </method-group>
-</class><class name="time_input_facet"><template>
+</class><struct name="time_formats"><template>
+      <template-type-parameter name="CharT"/>
+    </template><typedef name="char_type"><type>CharT</type></typedef>
+<data-member name="fractional_seconds_format" specifiers="static"><type>const char_type</type></data-member>
+<data-member name="fractional_seconds_or_none_format" specifiers="static"><type>const char_type</type></data-member>
+<data-member name="seconds_with_fractional_seconds_format" specifiers="static"><type>const char_type</type></data-member>
+<data-member name="seconds_format" specifiers="static"><type>const char_type</type></data-member>
+<data-member name="hours_format" specifiers="static"><type>const char_type</type></data-member>
+<data-member name="unrestricted_hours_format" specifiers="static"><type>const char_type</type></data-member>
+<data-member name="full_24_hour_time_format" specifiers="static"><type>const char_type</type></data-member>
+<data-member name="full_24_hour_time_expanded_format" specifiers="static"><type>const char_type</type></data-member>
+<data-member name="short_24_hour_time_format" specifiers="static"><type>const char_type</type></data-member>
+<data-member name="short_24_hour_time_expanded_format" specifiers="static"><type>const char_type</type></data-member>
+<data-member name="standard_format" specifiers="static"><type>const char_type</type></data-member>
+<data-member name="zone_abbrev_format" specifiers="static"><type>const char_type</type></data-member>
+<data-member name="zone_name_format" specifiers="static"><type>const char_type</type></data-member>
+<data-member name="zone_iso_format" specifiers="static"><type>const char_type</type></data-member>
+<data-member name="zone_iso_extended_format" specifiers="static"><type>const char_type</type></data-member>
+<data-member name="posix_zone_string_format" specifiers="static"><type>const char_type</type></data-member>
+<data-member name="duration_sign_negative_only" specifiers="static"><type>const char_type</type></data-member>
+<data-member name="duration_sign_always" specifiers="static"><type>const char_type</type></data-member>
+<data-member name="duration_seperator" specifiers="static"><type>const char_type</type></data-member>
+<data-member name="negative_sign" specifiers="static"><type>const char_type</type></data-member>
+<data-member name="positive_sign" specifiers="static"><type>const char_type</type></data-member>
+<data-member name="iso_time_format_specifier" specifiers="static"><type>const char_type</type></data-member>
+<data-member name="iso_time_format_extended_specifier" specifiers="static"><type>const char_type</type></data-member>
+<data-member name="default_time_format" specifiers="static"><type>const char_type</type></data-member>
+<data-member name="default_time_input_format" specifiers="static"><type>const char_type</type></data-member>
+<data-member name="default_time_duration_format" specifiers="static"><type>const char_type</type></data-member>
+</struct><class name="time_input_facet"><template>
       <template-type-parameter name="time_type"/>
       <template-type-parameter name="CharT"/>
       <template-type-parameter name="InItrT"><default>std::istreambuf_iterator&lt;CharT, std::char_traits&lt;CharT&gt; &gt;</default></template-type-parameter>
@@ -3529,7 +3607,7 @@ special_value_formatter svf(&amp;special_value_names[0], &amp;special_value_name
 <method-group name="public member functions">
 <method name="operator++"><type><classname>time_itr</classname> &amp;</type></method>
 <method name="operator--"><type><classname>time_itr</classname> &amp;</type></method>
-<method name="operator*"><type>time_type</type></method>
+<method name="operator *"><type>time_type</type></method>
 <method name="operator-&gt;"><type>time_type *</type></method>
 <method name="operator&lt;"><type>bool</type><parameter name="t"><paramtype>const time_type &amp;</paramtype></parameter></method>
 <method name="operator&lt;="><type>bool</type><parameter name="t"><paramtype>const time_type &amp;</paramtype></parameter></method>
@@ -3630,34 +3708,10 @@ special_value_formatter svf(&amp;special_value_names[0], &amp;special_value_name
 <header name="boost/date_time/time_resolution_traits.hpp">
 <namespace name="boost">
 <namespace name="date_time">
-<struct name="time_resolution_traits_bi32_impl"><purpose>traits struct for <classname alt="boost::date_time::time_resolution_traits">time_resolution_traits</classname> implementation type </purpose><typedef name="int_type"><type>boost::int32_t</type></typedef>
-<typedef name="impl_type"><type>boost::int32_t</type></typedef>
-<method-group name="public static functions">
-<method name="as_number" specifiers="static"><type>int_type</type><parameter name="i"><paramtype>impl_type</paramtype></parameter></method>
-<method name="is_adapted" specifiers="static"><type>bool</type><purpose>Used to determine if implemented type is <classname alt="boost::date_time::int_adapter">int_adapter</classname> or int. </purpose></method>
-</method-group>
-</struct><struct name="time_resolution_traits_adapted32_impl"><purpose>traits struct for <classname alt="boost::date_time::time_resolution_traits">time_resolution_traits</classname> implementation type </purpose><typedef name="int_type"><type>boost::int32_t</type></typedef>
-<typedef name="impl_type"><type><classname>boost::date_time::int_adapter</classname>&lt; boost::int32_t &gt;</type></typedef>
-<method-group name="public static functions">
-<method name="as_number" specifiers="static"><type>int_type</type><parameter name="i"><paramtype><classname>impl_type</classname></paramtype></parameter></method>
-<method name="is_adapted" specifiers="static"><type>bool</type><purpose>Used to determine if implemented type is <classname alt="boost::date_time::int_adapter">int_adapter</classname> or int. </purpose></method>
-</method-group>
-</struct><struct name="time_resolution_traits_bi64_impl"><purpose>traits struct for <classname alt="boost::date_time::time_resolution_traits">time_resolution_traits</classname> implementation type </purpose><typedef name="int_type"><type>boost::int64_t</type></typedef>
-<typedef name="impl_type"><type>boost::int64_t</type></typedef>
-<method-group name="public static functions">
-<method name="as_number" specifiers="static"><type>int_type</type><parameter name="i"><paramtype>impl_type</paramtype></parameter></method>
-<method name="is_adapted" specifiers="static"><type>bool</type><purpose>Used to determine if implemented type is <classname alt="boost::date_time::int_adapter">int_adapter</classname> or int. </purpose></method>
-</method-group>
-</struct><struct name="time_resolution_traits_adapted64_impl"><purpose>traits struct for <classname alt="boost::date_time::time_resolution_traits">time_resolution_traits</classname> implementation type </purpose><typedef name="int_type"><type>boost::int64_t</type></typedef>
-<typedef name="impl_type"><type><classname>boost::date_time::int_adapter</classname>&lt; boost::int64_t &gt;</type></typedef>
-<method-group name="public static functions">
-<method name="as_number" specifiers="static"><type>int_type</type><parameter name="i"><paramtype><classname>impl_type</classname></paramtype></parameter></method>
-<method name="is_adapted" specifiers="static"><type>bool</type><purpose>Used to determine if implemented type is <classname alt="boost::date_time::int_adapter">int_adapter</classname> or int. </purpose></method>
-</method-group>
-</struct><class name="time_resolution_traits"><template>
+<class name="time_resolution_traits"><template>
       <template-type-parameter name="frac_sec_type"/>
       <template-nontype-parameter name="res"><type>time_resolutions</type></template-nontype-parameter>
-      <template-nontype-parameter name="resolution_adjust"><type>#if(defined(BOOST_MSVC)&amp;&amp;(_MSC_VER&lt; 1300)) boost::int64_t</type></template-nontype-parameter>
+      <template-nontype-parameter name="resolution_adjust"><type>#if(defined(BOOST_MSVC) &amp;&amp;(_MSC_VER&lt; 1300)) boost::int64_t</type></template-nontype-parameter>
       <template-nontype-parameter name="resolution_adjust"><type>#else typename frac_sec_type::int_type</type></template-nontype-parameter>
       <template-nontype-parameter name="frac_digits"><type>#endif unsigned short</type></template-nontype-parameter>
       <template-type-parameter name="var_type"><default>boost::int64_t</default></template-type-parameter>
@@ -3680,7 +3734,31 @@ special_value_formatter svf(&amp;special_value_names[0], &amp;special_value_name
 <method name="BOOST_STATIC_CONSTANT"><type/><parameter name=""><paramtype>boost::int64_t</paramtype></parameter><parameter name=""><paramtype>ticks_per_second</paramtype><default>resolution_adjust</default></parameter></method>
 <method name="BOOST_STATIC_CONSTANT"><type/><parameter name=""><paramtype>fractional_seconds_type</paramtype></parameter><parameter name=""><paramtype>ticks_per_second</paramtype><default>resolution_adjust</default></parameter></method>
 </method-group>
-</class><typedef name="milli_res"><type><classname>time_resolution_traits</classname>&lt; <classname>time_resolution_traits_adapted32_impl</classname>, milli, 1000, 3 &gt;</type></typedef>
+</class><struct name="time_resolution_traits_adapted32_impl"><purpose>traits struct for <classname alt="boost::date_time::time_resolution_traits">time_resolution_traits</classname> implementation type </purpose><typedef name="int_type"><type>boost::int32_t</type></typedef>
+<typedef name="impl_type"><type><classname>boost::date_time::int_adapter</classname>&lt; boost::int32_t &gt;</type></typedef>
+<method-group name="public static functions">
+<method name="as_number" specifiers="static"><type>int_type</type><parameter name="i"><paramtype><classname>impl_type</classname></paramtype></parameter></method>
+<method name="is_adapted" specifiers="static"><type>bool</type><purpose>Used to determine if implemented type is <classname alt="boost::date_time::int_adapter">int_adapter</classname> or int. </purpose></method>
+</method-group>
+</struct><struct name="time_resolution_traits_adapted64_impl"><purpose>traits struct for <classname alt="boost::date_time::time_resolution_traits">time_resolution_traits</classname> implementation type </purpose><typedef name="int_type"><type>boost::int64_t</type></typedef>
+<typedef name="impl_type"><type><classname>boost::date_time::int_adapter</classname>&lt; boost::int64_t &gt;</type></typedef>
+<method-group name="public static functions">
+<method name="as_number" specifiers="static"><type>int_type</type><parameter name="i"><paramtype><classname>impl_type</classname></paramtype></parameter></method>
+<method name="is_adapted" specifiers="static"><type>bool</type><purpose>Used to determine if implemented type is <classname alt="boost::date_time::int_adapter">int_adapter</classname> or int. </purpose></method>
+</method-group>
+</struct><struct name="time_resolution_traits_bi32_impl"><purpose>traits struct for <classname alt="boost::date_time::time_resolution_traits">time_resolution_traits</classname> implementation type </purpose><typedef name="int_type"><type>boost::int32_t</type></typedef>
+<typedef name="impl_type"><type>boost::int32_t</type></typedef>
+<method-group name="public static functions">
+<method name="as_number" specifiers="static"><type>int_type</type><parameter name="i"><paramtype>impl_type</paramtype></parameter></method>
+<method name="is_adapted" specifiers="static"><type>bool</type><purpose>Used to determine if implemented type is <classname alt="boost::date_time::int_adapter">int_adapter</classname> or int. </purpose></method>
+</method-group>
+</struct><struct name="time_resolution_traits_bi64_impl"><purpose>traits struct for <classname alt="boost::date_time::time_resolution_traits">time_resolution_traits</classname> implementation type </purpose><typedef name="int_type"><type>boost::int64_t</type></typedef>
+<typedef name="impl_type"><type>boost::int64_t</type></typedef>
+<method-group name="public static functions">
+<method name="as_number" specifiers="static"><type>int_type</type><parameter name="i"><paramtype>impl_type</paramtype></parameter></method>
+<method name="is_adapted" specifiers="static"><type>bool</type><purpose>Used to determine if implemented type is <classname alt="boost::date_time::int_adapter">int_adapter</classname> or int. </purpose></method>
+</method-group>
+</struct><typedef name="milli_res"><type><classname>time_resolution_traits</classname>&lt; <classname>time_resolution_traits_adapted32_impl</classname>, milli, 1000, 3 &gt;</type></typedef>
 <typedef name="micro_res"><type><classname>time_resolution_traits</classname>&lt; <classname>time_resolution_traits_adapted64_impl</classname>, micro, 1000000, 6 &gt;</type></typedef>
 <typedef name="nano_res"><type><classname>time_resolution_traits</classname>&lt; <classname>time_resolution_traits_adapted64_impl</classname>, nano, 1000000000, 9 &gt;</type></typedef>
 <function name="absolute_value"><type>T</type><template>
@@ -3824,11 +3902,11 @@ special_value_formatter svf(&amp;special_value_names[0], &amp;special_value_name
 <typedef name="date_duration_type"><type>config::date_duration_type</type></typedef>
 <typedef name="int_type"><type>config::int_type</type></typedef>
 <typedef name="resolution_traits"><type>config::resolution_traits</type></typedef>
-<typedef name="wrap_int_type"><type><classname>date_time::wrapping_int</classname>&lt; int_type, INT64_C(86400)*ticks_per_second &gt;</type></typedef>
+<typedef name="wrap_int_type"><type><classname>date_time::wrapping_int</classname>&lt; int_type, INT64_C(86400) *ticks_per_second &gt;</type></typedef>
 <typedef name="wrap_int_type"><type><classname>date_time::wrapping_int</classname>&lt; split_timedate_system::int_type, split_timedate_system::ticks_per_day &gt;</type></typedef>
 <typedef name="wrap_int_type"><type><classname>date_time::wrapping_int</classname>&lt; int_type, ticks_per_day &gt;</type></typedef>
 <method-group name="private member functions">
-<method name="BOOST_STATIC_CONSTANT"><type/><parameter name=""><paramtype>int_type</paramtype></parameter><parameter name=""><paramtype>ticks_per_day</paramtype><default>INT64_C(86400)*config::tick_per_second</default></parameter></method>
+<method name="BOOST_STATIC_CONSTANT"><type/><parameter name=""><paramtype>int_type</paramtype></parameter><parameter name=""><paramtype>ticks_per_day</paramtype><default>INT64_C(86400) *config::tick_per_second</default></parameter></method>
 </method-group>
 <method-group name="public static functions">
 <method name="get_time_rep" specifiers="static"><type>time_rep_type</type><parameter name="sv"><paramtype>special_values</paramtype></parameter></method>
@@ -3883,7 +3961,16 @@ special_value_formatter svf(&amp;special_value_names[0], &amp;special_value_name
 <header name="boost/date_time/time_zone_base.hpp">
 <namespace name="boost">
 <namespace name="date_time">
-<class name="time_zone_base"><template>
+<class name="dst_adjustment_offsets"><template>
+      <template-type-parameter name="time_duration_type"><purpose><para>A type used to represent the offset </para></purpose></template-type-parameter>
+    </template><purpose>Structure which holds the time offsets associated with daylight savings time. </purpose><description><para>
+</para></description><data-member name="dst_adjust_"><type>time_duration_type</type><purpose>Amount DST adjusts the clock eg: plus one hour. </purpose></data-member>
+<data-member name="dst_start_offset_"><type>time_duration_type</type><purpose>Time past midnight on start transition day that dst starts. </purpose></data-member>
+<data-member name="dst_end_offset_"><type>time_duration_type</type><purpose>Time past midnight on end transition day that dst ends. </purpose></data-member>
+<method-group name="public member functions">
+</method-group>
+<constructor><parameter name="dst_adjust"><paramtype>const time_duration_type &amp;</paramtype></parameter><parameter name="dst_start_offset"><paramtype>const time_duration_type &amp;</paramtype></parameter><parameter name="dst_end_offset"><paramtype>const time_duration_type &amp;</paramtype></parameter></constructor>
+</class><class name="time_zone_base"><template>
       <template-type-parameter name="time_type"/>
       <template-type-parameter name="CharT"/>
     </template><purpose>Interface class for dynamic time zones. </purpose><description><para>This class represents the base interface for all timezone representations. Subclasses may provide different systems for identifying a particular zone. For example some may provide a geographical based zone construction while others may specify the offset from GMT. Another possible implementation would be to convert from POSIX timezone strings. Regardless of the construction technique, this is the interface that these time zone types must provide.</para><para>Note that this class is intended to be used as a shared resource (hence the derivation from boost::counted_base. </para></description><typedef name="char_type"><type>CharT</type></typedef>
@@ -3905,15 +3992,6 @@ special_value_formatter svf(&amp;special_value_names[0], &amp;special_value_name
 </method-group>
 <constructor/>
 <destructor/>
-</class><class name="dst_adjustment_offsets"><template>
-      <template-type-parameter name="time_duration_type"/>
-    </template><purpose>Structure which holds the time offsets associated with daylight savings time. </purpose><description><para>
-</para></description><data-member name="dst_adjust_"><type>time_duration_type</type><purpose>Amount DST adjusts the clock eg: plus one hour. </purpose></data-member>
-<data-member name="dst_start_offset_"><type>time_duration_type</type><purpose>Time past midnight on start transition day that dst starts. </purpose></data-member>
-<data-member name="dst_end_offset_"><type>time_duration_type</type><purpose>Time past midnight on end transition day that dst ends. </purpose></data-member>
-<method-group name="public member functions">
-</method-group>
-<constructor><parameter name="dst_adjust"><paramtype>const time_duration_type &amp;</paramtype></parameter><parameter name="dst_start_offset"><paramtype>const time_duration_type &amp;</paramtype></parameter><parameter name="dst_end_offset"><paramtype>const time_duration_type &amp;</paramtype></parameter></constructor>
 </class>
 
 
@@ -3960,8 +4038,9 @@ special_value_formatter svf(&amp;special_value_names[0], &amp;special_value_name
 <data-member name="standard_abbrev" specifiers="static"><type>const char_type</type></data-member>
 <data-member name="non_dst_identifier" specifiers="static"><type>const char_type</type></data-member>
 </struct><class name="time_zone_names_base"><template>
-      <template-type-parameter name="CharT"/>
-    </template><purpose>Base type that holds various string names for timezone output. </purpose><description><para>Class that holds various types of strings used for timezones. For example, for the western United States there is the full name: Pacific Standard Time and the abbreviated name: PST. During daylight savings there are additional names: Pacific Daylight Time and PDT.  CharT Allows class to support different character types </para></description><typedef name="string_type"><type>std::basic_string&lt; CharT &gt;</type></typedef>
+      <template-type-parameter name="CharT"><purpose><para>Allows class to support different character types </para></purpose></template-type-parameter>
+    </template><purpose>Base type that holds various string names for timezone output. </purpose><description><para>Class that holds various types of strings used for timezones. For example, for the western United States there is the full name: Pacific Standard Time and the abbreviated name: PST. During daylight savings there are additional names: Pacific Daylight Time and PDT. 
+</para></description><typedef name="string_type"><type>std::basic_string&lt; CharT &gt;</type></typedef>
 <method-group name="public member functions">
 <method name="dst_zone_abbrev" cv="const"><type>string_type</type></method>
 <method name="std_zone_abbrev" cv="const"><type>string_type</type></method>
@@ -4009,13 +4088,13 @@ special_value_formatter svf(&amp;special_value_names[0], &amp;special_value_name
 <header name="boost/date_time/tz_db_base.hpp">
 <namespace name="boost">
 <namespace name="date_time">
-<class name="data_not_accessible"><inherit access="public">logic_error</inherit><purpose>Exception thrown when tz database cannot locate requested data file. </purpose><method-group name="public member functions">
+<class name="bad_field_count"><inherit access="public">out_of_range</inherit><purpose>Exception thrown when tz database locates incorrect field structure in data file. </purpose><method-group name="public member functions">
+</method-group>
+<constructor><parameter name="s"><paramtype>const std::string &amp;</paramtype></parameter></constructor>
+</class><class name="data_not_accessible"><inherit access="public">logic_error</inherit><purpose>Exception thrown when tz database cannot locate requested data file. </purpose><method-group name="public member functions">
 </method-group>
 <constructor/>
 <constructor><parameter name="filespec"><paramtype>const std::string &amp;</paramtype></parameter></constructor>
-</class><class name="bad_field_count"><inherit access="public">out_of_range</inherit><purpose>Exception thrown when tz database locates incorrect field structure in data file. </purpose><method-group name="public member functions">
-</method-group>
-<constructor><parameter name="s"><paramtype>const std::string &amp;</paramtype></parameter></constructor>
 </class><class name="tz_db_base"><template>
       <template-type-parameter name="time_zone_type"/>
       <template-type-parameter name="rule_type"/>

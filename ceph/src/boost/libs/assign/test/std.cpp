@@ -21,7 +21,19 @@
 #include <utility>
 #include <string>
 
-using namespace std;
+using std::deque;
+using std::list;
+using std::vector;
+using std::set;
+using std::multiset;
+using std::map;
+using std::multimap;
+using std::stack;
+using std::queue;
+using std::priority_queue;
+using std::string;
+using std::pair;
+using std::make_pair;
 using namespace boost::assign;  
     
 template< typename K, typename V >

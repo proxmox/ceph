@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2016-2017 Vinnie Falco (vinnie dot falco at gmail dot com)
+// Copyright (c) 2016-2019 Vinnie Falco (vinnie dot falco at gmail dot com)
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -16,6 +16,7 @@
 #include "example/common/root_certificates.hpp"
 
 #include <boost/beast/core.hpp>
+#include <boost/beast/ssl.hpp>
 #include <boost/beast/websocket.hpp>
 #include <boost/beast/websocket/ssl.hpp>
 #include <boost/asio/connect.hpp>
@@ -25,9 +26,12 @@
 #include <iostream>
 #include <string>
 
-using tcp = boost::asio::ip::tcp;               // from <boost/asio/ip/tcp.hpp>
-namespace ssl = boost::asio::ssl;               // from <boost/asio/ssl.hpp>
-namespace websocket = boost::beast::websocket;  // from <boost/beast/websocket.hpp>
+namespace beast = boost::beast;         // from <boost/beast.hpp>
+namespace http = beast::http;           // from <boost/beast/http.hpp>
+namespace websocket = beast::websocket; // from <boost/beast/websocket.hpp>
+namespace net = boost::asio;            // from <boost/asio.hpp>
+namespace ssl = boost::asio::ssl;       // from <boost/asio/ssl.hpp>
+using tcp = boost::asio::ip::tcp;       // from <boost/asio/ip/tcp.hpp>
 
 // Sends a WebSocket message and prints the response
 int main(int argc, char** argv)
@@ -48,46 +52,55 @@ int main(int argc, char** argv)
         auto const text = argv[3];
 
         // The io_context is required for all I/O
-        boost::asio::io_context ioc;
+        net::io_context ioc;
 
         // The SSL context is required, and holds certificates
-        ssl::context ctx{ssl::context::sslv23_client};
+        ssl::context ctx{ssl::context::tlsv12_client};
 
         // This holds the root certificate used for verification
         load_root_certificates(ctx);
 
         // These objects perform our I/O
         tcp::resolver resolver{ioc};
-        websocket::stream<ssl::stream<tcp::socket>> ws{ioc, ctx};
+        websocket::stream<beast::ssl_stream<tcp::socket>> ws{ioc, ctx};
 
         // Look up the domain name
         auto const results = resolver.resolve(host, port);
 
         // Make the connection on the IP address we get from a lookup
-        boost::asio::connect(ws.next_layer().next_layer(), results.begin(), results.end());
+        net::connect(ws.next_layer().next_layer(), results.begin(), results.end());
 
         // Perform the SSL handshake
         ws.next_layer().handshake(ssl::stream_base::client);
+
+        // Set a decorator to change the User-Agent of the handshake
+        ws.set_option(websocket::stream_base::decorator(
+            [](websocket::request_type& req)
+            {
+                req.set(http::field::user_agent,
+                    std::string(BOOST_BEAST_VERSION_STRING) +
+                        " websocket-client-coro");
+            }));
 
         // Perform the websocket handshake
         ws.handshake(host, "/");
 
         // Send the message
-        ws.write(boost::asio::buffer(std::string(text)));
+        ws.write(net::buffer(std::string(text)));
 
         // This buffer will hold the incoming message
-        boost::beast::multi_buffer b;
+        beast::flat_buffer buffer;
 
         // Read a message into our buffer
-        ws.read(b);
+        ws.read(buffer);
 
         // Close the WebSocket connection
         ws.close(websocket::close_code::normal);
 
         // If we get here then the connection is closed gracefully
 
-        // The buffers() function helps print a ConstBufferSequence
-        std::cout << boost::beast::buffers(b.data()) << std::endl;
+        // The make_printable() function helps print a ConstBufferSequence
+        std::cout << beast::make_printable(buffer.data()) << std::endl;
     }
     catch(std::exception const& e)
     {

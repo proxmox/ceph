@@ -33,23 +33,6 @@
 
 using namespace boost::container;
 
-namespace boost {
-namespace container {
-
-//Explicit instantiation to detect compilation errors
-template class boost::container::vector
-   < test::movable_and_copyable_int
-   , test::simple_allocator<test::movable_and_copyable_int> >;
-
-template class boost::container::vector
-   < test::movable_and_copyable_int
-   , allocator<test::movable_and_copyable_int> >;
-
-template class vec_iterator<int*, true >;
-template class vec_iterator<int*, false>;
-
-}}
-
 int test_expand_bwd()
 {
    //Now test all back insertion possibilities
@@ -71,6 +54,29 @@ int test_expand_bwd()
       return 1;
 
    return 0;
+}
+
+struct X;
+
+template<typename T>
+struct XRef
+{
+   explicit XRef(T* ptr)  : ptr(ptr) {}
+   operator T*() const { return ptr; }
+   T* ptr;
+};
+
+struct X
+{
+   XRef<X const> operator&() const { return XRef<X const>(this); }
+   XRef<X>       operator&()       { return XRef<X>(this); }
+};
+
+
+bool test_smart_ref_type()
+{
+   boost::container::vector<X> x(5);
+   return x.empty();
 }
 
 class recursive_vector
@@ -146,6 +152,47 @@ struct alloc_propagate_base<boost_container_vector>
 
 }}}   //namespace boost::container::test
 
+template<typename T>
+class check_dealloc_allocator : public std::allocator<T>
+{
+   public:
+   bool allocate_zero_called_;
+   bool deallocate_called_without_allocate_;
+
+   check_dealloc_allocator()
+      : std::allocator<T>()
+      , allocate_zero_called_(false)
+      , deallocate_called_without_allocate_(false)
+   {}
+
+   T* allocate(std::size_t n)
+   {
+      if (n == 0) {
+         allocate_zero_called_ = true;
+      }
+      return std::allocator<T>::allocate(n);
+   }
+
+   void deallocate(T* p, std::size_t n)
+   {
+      if (n == 0 && !allocate_zero_called_) {
+         deallocate_called_without_allocate_ = true;
+      }
+      return std::allocator<T>::deallocate(p, n);
+   }
+};
+
+bool test_merge_empty_free()
+{
+   vector<int> source;
+   source.emplace_back(1);
+
+   vector< int, check_dealloc_allocator<int> > empty;
+   empty.merge(source.begin(), source.end());
+
+   return empty.get_stored_allocator().deallocate_called_without_allocate_;
+}
+
 int main()
 {
    {
@@ -201,6 +248,9 @@ int main()
       v.push_back(Test());
    }
 
+   if (test_smart_ref_type())
+      return 1;
+
    ////////////////////////////////////
    //    Backwards expansion test
    ////////////////////////////////////
@@ -250,5 +300,65 @@ int main()
          return 1;
       }
    }
+
+#ifndef BOOST_CONTAINER_NO_CXX17_CTAD
+   ////////////////////////////////////
+   //    Constructor Template Auto Deduction testing
+   ////////////////////////////////////
+   {
+      auto gold = std::vector{ 1, 2, 3 };
+      auto test = boost::container::vector(gold.begin(), gold.end());
+      if (test.size() != 3) {
+         return 1;
+      }
+      if (!(test[0] == 1 && test[1] == 2 && test[2] == 3)) {
+         return 1;
+      }
+   }
+   {
+      auto gold = std::vector{ 1, 2, 3 };
+      auto test = boost::container::vector(gold.begin(), gold.end(), boost::container::new_allocator<int>());
+      if (test.size() != 3) {
+         return 1;
+      }
+      if (!(test[0] == 1 && test[1] == 2 && test[2] == 3)) {
+         return 1;
+      }
+   }
+#endif
+
+   if (test_merge_empty_free()) {
+      std::cerr << "Merge into empty vector test failed" << std::endl;
+      return 1;
+   }
+
+   ////////////////////////////////////
+   //    has_trivial_destructor_after_move testing
+   ////////////////////////////////////
+   // default allocator
+   {
+      typedef boost::container::vector<int> cont;
+      typedef cont::allocator_type allocator_type;
+      typedef boost::container::allocator_traits<allocator_type>::pointer pointer;
+      if (boost::has_trivial_destructor_after_move<cont>::value !=
+          boost::has_trivial_destructor_after_move<allocator_type>::value &&
+          boost::has_trivial_destructor_after_move<pointer>::value) {
+         std::cerr << "has_trivial_destructor_after_move(default allocator) test failed" << std::endl;
+         return 1;
+      }
+   }
+   // std::allocator
+   {
+      typedef boost::container::vector<int, std::allocator<int> > cont;
+      typedef cont::allocator_type allocator_type;
+      typedef boost::container::allocator_traits<allocator_type>::pointer pointer;
+      if (boost::has_trivial_destructor_after_move<cont>::value !=
+          boost::has_trivial_destructor_after_move<allocator_type>::value &&
+          boost::has_trivial_destructor_after_move<pointer>::value) {
+         std::cerr << "has_trivial_destructor_after_move(std::allocator) test failed" << std::endl;
+         return 1;
+      }
+   }
+
    return 0;
 }

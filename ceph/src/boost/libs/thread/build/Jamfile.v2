@@ -38,6 +38,8 @@ import path ;
 import configure ; 
 import threadapi-feature ;
 
+exe has_atomic_flag_lockfree : ../build/has_atomic_flag_lockfree_test.cpp ;
+
 project boost/thread
     : source-location ../src
     : requirements <threading>multi
@@ -52,7 +54,6 @@ project boost/thread
       #<define>BOOST_SYSTEM_NO_DEPRECATED
       #<define>BOOST_THREAD_DONT_PROVIDE_INTERRUPTIONS
 
-      <library>/boost/system//boost_system
        #-pedantic -ansi -std=gnu++0x -Wextra -fpermissive
         <warnings>all
         <toolset>gcc:<cxxflags>-Wextra
@@ -138,10 +139,7 @@ project boost/thread
       #<define>BOOST_THREAD_THROW_IF_PRECONDITION_NOT_SATISFIED
       #<define>BOOST_SYSTEM_NO_DEPRECATED
       #<define>BOOST_THREAD_DONT_PROVIDE_INTERRUPTIONS
-      <library>/boost/system//boost_system
     ;
-
-exe has_atomic_flag_lockfree : ../build/has_atomic_flag_lockfree_test.cpp ; 
 
 rule tag ( name : type ? : property-set )
 {

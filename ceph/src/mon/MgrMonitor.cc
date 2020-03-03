@@ -236,14 +236,11 @@ void MgrMonitor::create_pending()
 health_status_t MgrMonitor::should_warn_about_mgr_down()
 {
   utime_t now = ceph_clock_now();
-  // we warn if
-  //   - we've ever had an active mgr, or
-  //   - we have osds AND we've exceeded the grace period
+  // we warn if we have osds AND we've exceeded the grace period
   // which means a new mon cluster and be HEALTH_OK indefinitely as long as
   // no OSDs are ever created.
-  if (ever_had_active_mgr ||
-      (mon->osdmon()->osdmap.get_num_osds() > 0 &&
-       now > mon->monmap->created + g_conf().get_val<int64_t>("mon_mgr_mkfs_grace"))) {
+  if (mon->osdmon()->osdmap.get_num_osds() > 0 &&
+       now > mon->monmap->created + g_conf().get_val<int64_t>("mon_mgr_mkfs_grace")) {
     health_status_t level = HEALTH_WARN;
     if (first_seen_inactive != utime_t() &&
 	now - first_seen_inactive > g_conf().get_val<int64_t>("mon_mgr_inactive_grace")) {
@@ -874,6 +871,11 @@ bool MgrMonitor::preprocess_command(MonOpRequestRef op)
   } else if (prefix == "mgr module ls") {
     f->open_object_section("modules");
     {
+      f->open_array_section("always_on_modules");
+      for (auto& p : map.get_always_on_modules()) {
+        f->dump_string("module", p);
+      }
+      f->close_section();
       f->open_array_section("enabled_modules");
       for (auto& p : map.modules) {
         if (map.get_always_on_modules().count(p) > 0)

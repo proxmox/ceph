@@ -3,9 +3,6 @@
 // accompanying file LICENSE_1_0.txt or copy at
 // http://www.boost.org/LICENSE_1_0.txt)
 
-// This file doesn't work on other compilers.
-#if defined(__GNUC__) || defined(__KCC)
-
 #include <algorithm>
 #include <numeric>
 #include <boost/config.hpp>
@@ -27,6 +24,21 @@
  standard should be changed to reflect these weaker requirements.
 
 */
+
+/**
+ * Input iterator - explanation from Peter Dimov:
+ *
+ * Requirements say that *it is convertible to the value_type, and it is, in
+ * our case. The problem however is that op== is a template and the first
+ * argument fails deduction. std::find is specified in terms of the exact
+ * expression `*it == value`, so if it doesn't compile (and it doesn't),
+ * `find(it, it, value)` won't compile either.
+ *
+ * To address this, the no_proxy variant of the input iterator is used
+ * instead.
+ */
+
+#define BOOST_CONCEPT_CHECK_COMPATIBLE_INPUT_ITERATOR_ARCHETYPE input_iterator_archetype_no_proxy
 
 boost::detail::dummy_constructor dummy_cons;
 
@@ -64,6 +76,17 @@ namespace accum
   Ret operator+(const T&, const Tin&) {
     return Ret(dummy_cons);
   }
+}
+
+// for std::shuffle
+namespace shuffle
+{
+  struct URBG {
+    typedef unsigned int result_type;
+    result_type BOOST_CONSTEXPR static min() { return 0; }
+    result_type BOOST_CONSTEXPR static max() { return 1; }
+    result_type operator()() { return 1; }
+  };
 }
 
 // for std::inner_product
@@ -147,7 +170,7 @@ main()
   // gcc bug
   {
     typedef equality_comparable2_first_archetype<> Left;
-    input_iterator_archetype< Left > in;
+    BOOST_CONCEPT_CHECK_COMPATIBLE_INPUT_ITERATOR_ARCHETYPE< Left > in;
     equality_comparable2_second_archetype<> value(dummy_cons);
     in = std::find(in, in, value);
   }
@@ -171,14 +194,14 @@ main()
   // gcc bug
   {
     typedef equal_op_first_archetype<> Left;
-    input_iterator_archetype<Left> in;
+    BOOST_CONCEPT_CHECK_COMPATIBLE_INPUT_ITERATOR_ARCHETYPE<Left> in;
     typedef equal_op_second_archetype<> Right;
     forward_iterator_archetype<Right> fo;
     in = std::find_first_of(in, in, fo, fo);
   }
   {
     typedef equal_op_first_archetype<> Left;
-    typedef input_iterator_archetype<Left> InIter;
+    typedef BOOST_CONCEPT_CHECK_COMPATIBLE_INPUT_ITERATOR_ARCHETYPE<Left> InIter;
     InIter in;
     function_requires< InputIterator<InIter> >();
     equal_op_second_archetype<> value(dummy_cons);
@@ -197,10 +220,10 @@ main()
   // gcc bug
   {
     typedef equal_op_first_archetype<> Left;
-    typedef input_iterator_archetype<Left> InIter1;
+    typedef BOOST_CONCEPT_CHECK_COMPATIBLE_INPUT_ITERATOR_ARCHETYPE<Left> InIter1;
     InIter1 in1;
     typedef equal_op_second_archetype<> Right;
-    typedef input_iterator_archetype<Right> InIter2;
+    typedef BOOST_CONCEPT_CHECK_COMPATIBLE_INPUT_ITERATOR_ARCHETYPE<Right> InIter2;
     InIter2 in2;
     std::pair<InIter1, InIter2> p = std::mismatch(in1, in1, in2);
     ignore_unused_variable_warning(p);
@@ -216,9 +239,9 @@ main()
   // gcc bug
   {
     typedef equality_comparable2_first_archetype<> Left;
-    input_iterator_archetype<Left> in1;
+    BOOST_CONCEPT_CHECK_COMPATIBLE_INPUT_ITERATOR_ARCHETYPE<Left> in1;
     typedef equality_comparable2_second_archetype<> Right;
-    input_iterator_archetype<Right> in2;
+    BOOST_CONCEPT_CHECK_COMPATIBLE_INPUT_ITERATOR_ARCHETYPE<Right> in2;
     bool b = std::equal(in1, in1, in2);
     ignore_unused_variable_warning(b);
   }
@@ -309,13 +332,16 @@ main()
     mutable_forward_iterator_archetype<T> a, b;
     std::iter_swap(a, b);
   }
+#if 0
   {
+    // fails on gcc 7.3 and clang 6.0
     typedef mutually_convertible_archetype<int> Tin;
     typedef mutually_convertible_archetype<char> Tout;
     mutable_forward_iterator_archetype<Tin> fi1;
     mutable_forward_iterator_archetype<Tout> fi2;
     fi2 = std::swap_ranges(fi1, fi1, fi2);
   }
+#endif
   {
     typedef null_archetype<int> Tin;
     typedef null_archetype<char> Tout;
@@ -353,13 +379,14 @@ main()
     convertible_to_archetype<FT> value(dummy_cons);
     std::replace_if(fi, fi, pred, value);
   }
-  // gcc bug
+#if !defined(BOOST_MSVC) || BOOST_WORKAROUND(BOOST_MSVC, > 1900)
+  // fails on MSVC 2015 and earlier
   {
     // Issue, the use of ?: inside replace_copy() complicates things
     typedef equal_op_first_archetype<> Tin;
     typedef null_archetype<> Tout;
     typedef equal_op_second_archetype< convertible_to_archetype<Tout> > T;
-    input_iterator_archetype<Tin> in;
+    BOOST_CONCEPT_CHECK_COMPATIBLE_INPUT_ITERATOR_ARCHETYPE<Tin> in;
     output_iterator_archetype<Tout> out(dummy_cons);
     T value(dummy_cons);
     out = std::replace_copy(in, in, out, value, value);
@@ -368,12 +395,13 @@ main()
     // The issue of ?: also affects this function
     typedef null_archetype<> Tout;
     typedef assignable_archetype< convertible_to_archetype<Tout> > Tin;
-    input_iterator_archetype<Tin> in;
+    BOOST_CONCEPT_CHECK_COMPATIBLE_INPUT_ITERATOR_ARCHETYPE<Tin> in;
     output_iterator_archetype<Tout> out(dummy_cons);
     unary_predicate_archetype<Tin> pred(dummy_cons);
     Tin value(dummy_cons);
     out = std::replace_copy_if(in, in, out, pred, value);
   }
+#endif
   {
     typedef assignable_archetype<> FT;
     mutable_forward_iterator_archetype<FT> fi;
@@ -381,6 +409,8 @@ main()
     T value(dummy_cons);
     std::fill(fi, fi, value);
   }  
+#if !defined(BOOST_MSVC) || BOOST_WORKAROUND(BOOST_MSVC, >= 1700)
+  // fails on MSVC 2010
   {
     typedef null_archetype<> Tout;
     typedef convertible_to_archetype<Tout> T;
@@ -389,6 +419,7 @@ main()
     int n = 1;
     out = std::fill_n(out, n, value);
   }
+#endif
   {
     typedef assignable_archetype<> FT;
     typedef convertible_to_archetype<FT> Ret;
@@ -424,7 +455,7 @@ main()
     typedef equality_comparable2_first_archetype<
       convertible_to_archetype<Tout> > Tin;
     typedef equality_comparable2_second_archetype<> T;
-    input_iterator_archetype<Tin> in;
+    BOOST_CONCEPT_CHECK_COMPATIBLE_INPUT_ITERATOR_ARCHETYPE<Tin> in;
     output_iterator_archetype<Tout> out(dummy_cons);
     T value(dummy_cons);
     out = std::remove_copy(in, in, out, value);
@@ -454,7 +485,7 @@ main()
   // gcc bug
   {
     typedef equality_comparable_archetype< sgi_assignable_archetype<> > T;
-    input_iterator_archetype<T> in;
+    BOOST_CONCEPT_CHECK_COMPATIBLE_INPUT_ITERATOR_ARCHETYPE<T> in;
     output_iterator_archetype<T> out(dummy_cons);
     out = std::unique_copy(in, in, out);
   }
@@ -490,6 +521,7 @@ main()
     output_iterator_archetype<Tout> out(dummy_cons);
     out = std::rotate_copy(fi, fi, fi, out);
   }
+#ifndef BOOST_NO_CXX98_RANDOM_SHUFFLE
   {
     typedef sgi_assignable_archetype<> T;
     mutable_random_access_iterator_archetype<T> ri;
@@ -501,6 +533,14 @@ main()
     unary_function_archetype<std::ptrdiff_t, std::ptrdiff_t> ran(dummy_cons);
     std::random_shuffle(ri, ri, ran);
   }
+#else
+  {
+    typedef sgi_assignable_archetype<> T;
+    mutable_random_access_iterator_archetype<T> ri;
+    shuffle::URBG urbg;
+    std::shuffle(ri, ri, urbg);
+  }
+#endif
   {
     typedef null_archetype<> PredArg;
     typedef sgi_assignable_archetype<convertible_to_archetype<PredArg> > FT;
@@ -508,14 +548,16 @@ main()
     unary_predicate_archetype<PredArg> pred(dummy_cons);
     bi = std::partition(bi, bi, pred);
   }
+#ifndef BOOST_MSVC
   {
+    // fails on MSVC
     typedef null_archetype<> PredArg;
     typedef sgi_assignable_archetype<convertible_to_archetype<PredArg> > FT;
     mutable_forward_iterator_archetype<FT> fi;
     unary_predicate_archetype<PredArg> pred(dummy_cons);
     fi = std::stable_partition(fi, fi, pred);
   }
-
+#endif
   //===========================================================================
   // Sorting Algorithms
   {
@@ -567,7 +609,7 @@ main()
     // required to have the same value type, but it is messy.
     typedef sgi_assignable_archetype< 
       less_than_comparable_archetype<> > T;
-    input_iterator_archetype<T> in;
+    BOOST_CONCEPT_CHECK_COMPATIBLE_INPUT_ITERATOR_ARCHETYPE<T> in;
     mutable_random_access_iterator_archetype<T> ri_out;
     ri_out = std::partial_sort_copy(in, in , ri_out, ri_out);
   }
@@ -594,14 +636,14 @@ main()
     std::nth_element(ri, ri, ri, comp);
   }
   {
-#if defined(__GNUC__)
-    typedef less_than_op_first_archetype<> FT;
-    typedef less_than_op_second_archetype<> T;
-#elif defined(__KCC)
+#if defined(__KCC)
     // The KAI version of this uses a one-argument less-than function
     // object.
     typedef less_than_comparable_archetype<> T;
     typedef convertible_to_archetype<T> FT;
+#else
+    typedef less_than_op_first_archetype<> FT;
+    typedef less_than_op_second_archetype<> T;
 #endif
     forward_iterator_archetype<FT> fi;
     T value(dummy_cons);
@@ -618,13 +660,13 @@ main()
     fi = std::lower_bound(fi, fi, value, comp);
   }
   {
-#if defined(__GNUC__)
+#if defined(__KCC)
+    typedef less_than_comparable_archetype<> T;
+    typedef convertible_to_archetype<T> FT;
+#else
     // Note, order of T,FT is flipped from lower_bound
     typedef less_than_op_second_archetype<> FT;
     typedef less_than_op_first_archetype<> T;
-#elif defined(__KCC)
-    typedef less_than_comparable_archetype<> T;
-    typedef convertible_to_archetype<T> FT;
 #endif
     forward_iterator_archetype<FT> fi;
     T value(dummy_cons);
@@ -641,15 +683,17 @@ main()
     binary_predicate_archetype<Arg1, Arg2> comp(dummy_cons);
     fi = std::upper_bound(fi, fi, value, comp);
   }
+#if !defined(BOOST_MSVC) || BOOST_WORKAROUND(BOOST_MSVC, >= 1900)
+  // Fails on MSVC 2013 and earlier
   {
-#if defined(__GNUC__)
+#if defined(__KCC)
+    typedef less_than_comparable_archetype<> T;
+    typedef convertible_to_archetype<T> FT;
+#else
     typedef less_than_op_first_archetype<
       less_than_op_second_archetype< null_archetype<>, optag2>, optag1> FT;
     typedef less_than_op_second_archetype<
       less_than_op_first_archetype< null_archetype<>, optag2>, optag1> T;
-#elif defined(__KCC)
-    typedef less_than_comparable_archetype<> T;
-    typedef convertible_to_archetype<T> FT;
 #endif
     typedef forward_iterator_archetype<FT> FIter;
     FIter fi;
@@ -657,6 +701,7 @@ main()
     std::pair<FIter,FIter> p = std::equal_range(fi, fi, value);
     ignore_unused_variable_warning(p);
   }
+#endif
   {
     typedef null_archetype<int> Arg1;
     typedef null_archetype<char> Arg2;
@@ -672,14 +717,14 @@ main()
     ignore_unused_variable_warning(p);
   }
   {
-#if defined(__GNUC__)
+#if defined(__KCC)
+    typedef less_than_op_first_archetype< less_than_comparable_archetype<> > T;
+    typedef less_than_op_second_archetype< convertible_to_archetype<T> > FT;
+#else
     typedef less_than_op_first_archetype<
       less_than_op_second_archetype<null_archetype<>, optag2>, optag1> FT;
     typedef less_than_op_second_archetype<
       less_than_op_first_archetype<null_archetype<>, optag2>, optag1> T;
-#elif defined(__KCC)
-    typedef less_than_op_first_archetype< less_than_comparable_archetype<> > T;
-    typedef less_than_op_second_archetype< convertible_to_archetype<T> > FT;
 #endif
     forward_iterator_archetype<FT> fi;
     T value(dummy_cons);
@@ -689,12 +734,10 @@ main()
   {
     typedef null_archetype<int> Arg1;
     typedef null_archetype<char> Arg2;
-#if defined(__GNUC__) || defined(__KCC)
     typedef convertible_to_archetype<Arg1,
       convertible_to_archetype<Arg2> > FT;
     typedef convertible_to_archetype<Arg2,
       convertible_to_archetype<Arg1> > T;
-#endif
     typedef forward_iterator_archetype<FT> FIter;
     FIter fi;
     T value(dummy_cons);
@@ -704,17 +747,15 @@ main()
   }
   {
     typedef null_archetype<> Tout;
-#if defined(__GNUC__) || defined(__KCC)
     typedef less_than_op_first_archetype<
       less_than_op_second_archetype<
       convertible_to_archetype<Tout>, optag2>, optag1 > Tin1;
     typedef less_than_op_second_archetype<
       less_than_op_first_archetype<
       convertible_to_archetype<Tout>, optag2> ,optag1> Tin2;
-#endif
     // gcc bug
-    input_iterator_archetype<Tin1> in1;
-    input_iterator_archetype<Tin2> in2;
+    BOOST_CONCEPT_CHECK_COMPATIBLE_INPUT_ITERATOR_ARCHETYPE<Tin1> in1;
+    BOOST_CONCEPT_CHECK_COMPATIBLE_INPUT_ITERATOR_ARCHETYPE<Tin2> in2;
     output_iterator_archetype<Tout> out(dummy_cons);
     out = std::merge(in1, in1, in2, in2, out);
     out = std::set_union(in1, in1, in2, in2, out);
@@ -726,7 +767,6 @@ main()
     typedef null_archetype<> T;
     input_iterator_archetype<T> in1;
     input_iterator_archetype<T,2> in2;
-    typedef convertible_from_archetype<T> Tout;
     output_iterator_archetype<T> out(dummy_cons);
     binary_predicate_archetype<T, T> comp(dummy_cons);
     out = std::merge(in1, in1, in2, in2, out, comp);
@@ -755,8 +795,8 @@ main()
       less_than_op_second_archetype<null_archetype<>, optag1>, optag2> Tin1;
     typedef less_than_op_second_archetype<
       less_than_op_first_archetype<null_archetype<>, optag1>, optag2> Tin2;
-    input_iterator_archetype<Tin1> in1;
-    input_iterator_archetype<Tin2> in2;
+    BOOST_CONCEPT_CHECK_COMPATIBLE_INPUT_ITERATOR_ARCHETYPE<Tin1> in1;
+    BOOST_CONCEPT_CHECK_COMPATIBLE_INPUT_ITERATOR_ARCHETYPE<Tin2> in2;
     bool b = std::includes(in1, in1, in2, in2);
     b = std::lexicographical_compare(in1, in1, in2, in2);
     ignore_unused_variable_warning(b);
@@ -908,9 +948,3 @@ main()
   }
   return 0;
 }
-
-#else
-
-int main() {}
-
-#endif

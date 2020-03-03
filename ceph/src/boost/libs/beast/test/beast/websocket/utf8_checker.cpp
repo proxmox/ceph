@@ -1,5 +1,5 @@
 ﻿//
-// Copyright (c) 2016-2017 Vinnie Falco (vinnie dot falco at gmail dot com)
+// Copyright (c) 2016-2019 Vinnie Falco (vinnie dot falco at gmail dot com)
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -12,7 +12,7 @@
 
 #include <boost/beast/core/buffers_suffix.hpp>
 #include <boost/beast/core/multi_buffer.hpp>
-#include <boost/beast/unit_test/suite.hpp>
+#include <boost/beast/_experimental/unit_test/suite.hpp>
 #include <array>
 
 namespace boost {
@@ -58,15 +58,9 @@ public:
         // three byte sequences
         for(unsigned char c = 224; c < 240; ++c)
         {
-            // fail fast
             utf8_checker u;
-            if (c == 224)
-                BEAST_EXPECT(! u.write(&c, 1));
-            else
-            {
-                BEAST_EXPECT(u.write(&c, 1));
-                BEAST_EXPECT(! u.finish());
-            }
+            BEAST_EXPECT(u.write(&c, 1));
+            BEAST_EXPECT(! u.finish());
         }
 
         // four byte sequences
@@ -74,13 +68,8 @@ public:
         {
             // fail fast
             utf8_checker u;
-            if (c == 240)
-                BEAST_EXPECT(! u.write(&c, 1));
-            else
-            {
-                BEAST_EXPECT(u.write(&c, 1));
-                BEAST_EXPECT(! u.finish());
-            }
+            BEAST_EXPECT(u.write(&c, 1));
+            BEAST_EXPECT(! u.finish());
         }
 
         // invalid lead bytes
@@ -97,7 +86,7 @@ public:
         // Autobahn 6.18.1
         {
             utf8_checker u;
-            BEAST_EXPECT(! u.write(boost::asio::buffer("\xc1\xbf", 2)));
+            BEAST_EXPECT(! u.write(net::buffer("\xc1\xbf", 2)));
         }
 
         utf8_checker u;
@@ -143,7 +132,7 @@ public:
     {
         {
             utf8_checker u;
-            BEAST_EXPECT(u.write(boost::asio::buffer("\xef\xbf\xbf", 3)));
+            BEAST_EXPECT(u.write(net::buffer("\xef\xbf\xbf", 3)));
             BEAST_EXPECT(u.finish());
         }
         utf8_checker u;
@@ -167,8 +156,11 @@ public:
                     BEAST_EXPECT(u.write(buf, 3));
                     BEAST_EXPECT(u.finish());
                     // Segmented sequence
-                    if (i == 224)
-                        BEAST_EXPECT(! u.write(buf, 1));
+                    if (i == 224) 
+                    {
+                        BEAST_EXPECT(u.write(buf, 1));
+                        BEAST_EXPECT(!u.finish());
+                    }
                     else
                     {
                         BEAST_EXPECT(u.write(buf, 1));
@@ -270,8 +262,10 @@ public:
             }
 
             // Segmented sequence second byte invalid
-            if (i == 224)
-                BEAST_EXPECT(! u.write(buf, 1));
+            if (i == 224) {
+                BEAST_EXPECT(u.write(buf, 1));
+                BEAST_EXPECT(!u.finish());
+            }
             else
             {
                 BEAST_EXPECT(u.write(buf, 1));
@@ -284,7 +278,7 @@ public:
     void
     testFourByteSequence()
     {
-        using boost::asio::const_buffer;
+        using net::const_buffer;
         utf8_checker u;
         std::uint8_t buf[4];
         // First byte valid range 240-244
@@ -311,13 +305,8 @@ public:
                         BEAST_EXPECT(u.write(buf, 4));
                         BEAST_EXPECT(u.finish());
                         // Segmented sequence
-                        if (i == 240)
-                            BEAST_EXPECT(! u.write(buf, 1));
-                        else
-                        {
-                            BEAST_EXPECT(u.write(buf, 1));
-                            BEAST_EXPECT(u.write(&buf[1], 3));
-                        }
+                        BEAST_EXPECT(u.write(buf, 1));
+                        BEAST_EXPECT(u.write(&buf[1], 3));
                         u.reset();
                         // Segmented sequence
                         BEAST_EXPECT(u.write(buf, 2));
@@ -424,13 +413,9 @@ public:
             }
 
             // Segmented sequence second byte invalid
-            if (i == 240)
-                BEAST_EXPECT(! u.write(buf, 1));
-            else
-            {
-                BEAST_EXPECT(u.write(buf, 1));
-                BEAST_EXPECT(! u.write(&buf[1], 1));
-            }
+            BEAST_EXPECT(u.write(buf, 1));
+            BEAST_EXPECT(! u.write(&buf[1], 1));
+
             u.reset();
         }
 
@@ -476,13 +461,13 @@ public:
                 static std::size_t constexpr size = 3;
                 std::size_t n = s.size();
                 buffers_suffix<
-                    boost::asio::const_buffer> cb{
-                        boost::asio::const_buffer(s.data(), n)};
+                    net::const_buffer> cb{
+                        net::const_buffer(s.data(), n)};
                 multi_buffer b;
                 while(n)
                 {
                     auto const amount = (std::min)(n, size);
-                    b.commit(boost::asio::buffer_copy(
+                    b.commit(net::buffer_copy(
                         b.prepare(amount), cb));
                     cb.consume(amount);
                     n -= amount;
@@ -534,6 +519,53 @@ public:
         }
     }
 
+    void 
+    AutodeskTests() 
+    {
+        std::vector<std::vector<std::uint8_t>> const data{
+            { 's','t','a','r','t', 0xE0 },
+            { 0xA6, 0x81, 'e','n','d' } };
+        utf8_checker u;
+        for(auto const& s : data)
+        {
+            std::size_t n = s.size();
+            buffers_suffix<net::const_buffer> cb{net::const_buffer(s.data(), n)};
+            multi_buffer b;
+            while(n)
+            {
+                auto const amount = (std::min)(n, std::size_t(3)/*size*/);
+                b.commit(net::buffer_copy(b.prepare(amount), cb));
+                cb.consume(amount);
+                n -= amount;
+            }
+            BEAST_EXPECT(u.write(b.data()));
+        }
+        BEAST_EXPECT(u.finish());
+    }
+
+    void 
+    AutobahnTest(std::vector<std::vector<std::uint8_t>>&& data, std::vector<bool> result) 
+    {
+        BEAST_EXPECT(data.size() == result.size());
+        utf8_checker u;
+        for(std::size_t i = 0; i < data.size(); ++i)
+        {
+            auto const& s = data[i];
+
+            std::size_t n = s.size();
+            buffers_suffix<net::const_buffer> cb{net::const_buffer(s.data(), n)};
+            multi_buffer b;
+            while(n)
+            {
+                auto const amount = (std::min)(n, std::size_t(3)/*size*/);
+                b.commit(net::buffer_copy(b.prepare(amount), cb));
+                cb.consume(amount);
+                n -= amount;
+            }
+            BEAST_EXPECT(u.write(b.data()) == result[i]);
+        }
+    }
+
     void
     run() override
     {
@@ -543,6 +575,17 @@ public:
         testFourByteSequence();
         testWithStreamBuffer();
         testBranches();
+        AutodeskTests();
+        // 6.4.2
+        AutobahnTest(std::vector<std::vector<std::uint8_t>>{
+            { 0xCE, 0xBA, 0xE1, 0xBD, 0xB9, 0xCF, 0x83, 0xCE, 0xBC, 0xCE, 0xB5, 0xF4 },
+            { 0x90 }, { 0x80, 0x80, 0x65, 0x64, 0x69, 0x74, 0x65, 0x64 } },
+            { true, false, false});
+        // 6.4.4
+        AutobahnTest(std::vector<std::vector<std::uint8_t>>{
+            { 0xCE, 0xBA, 0xE1, 0xBD, 0xB9, 0xCF, 0x83, 0xCE, 0xBC, 0xCE, 0xB5, 0xF4 },
+            { 0x90 } },
+            { true, false });
     }
 };
 

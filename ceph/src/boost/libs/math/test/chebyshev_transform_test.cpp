@@ -9,7 +9,7 @@
 #include <boost/cstdfloat.hpp>
 #include <boost/type_index.hpp>
 #include <boost/test/included/unit_test.hpp>
-#include <boost/test/floating_point_comparison.hpp>
+#include <boost/test/tools/floating_point_comparison.hpp>
 #include <boost/math/special_functions/chebyshev.hpp>
 #include <boost/math/special_functions/chebyshev_transform.hpp>
 #include <boost/math/special_functions/sinc.hpp>
@@ -165,7 +165,7 @@ void test_atap_examples()
         {
            BOOST_CHECK_CLOSE_FRACTION(f1(x), cheb1(x), 1.3e-5);
         }
-        BOOST_CHECK_CLOSE_FRACTION(f2(x), cheb2(x), 5e-3);
+        BOOST_CHECK_CLOSE_FRACTION(f2(x), cheb2(x), 6e-3);
         //BOOST_CHECK_CLOSE_FRACTION(f3(x), cheb3(x), 100*tol);
         x += static_cast<Real>(1)/static_cast<Real>(1 << 7);
     }

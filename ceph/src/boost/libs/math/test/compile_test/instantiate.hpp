@@ -305,6 +305,9 @@ void instantiate(RealType)
    boost::math::cyl_bessel_j_zero(v1, i, i, oi);
    boost::math::cyl_neumann_zero(v1, i);
    boost::math::cyl_neumann_zero(v1, i, i, oi);
+   boost::math::lambert_w0(v1);
+   boost::math::lambert_wm1(v1);
+   boost::math::lambert_w0_prime(v1);
 #ifdef TEST_COMPLEX
    boost::math::cyl_hankel_1(v1, v2);
    boost::math::cyl_hankel_1(i, v2);
@@ -324,6 +327,16 @@ void instantiate(RealType)
    boost::math::airy_bi_zero<RealType>(i);
    boost::math::airy_ai_zero<RealType>(i, i, oi);
    boost::math::airy_bi_zero<RealType>(i, i, oi);
+
+   boost::math::hypergeometric_1F0(v1, v2);
+   boost::math::hypergeometric_0F1(v1, v2);
+   boost::math::hypergeometric_2F0(v1, v2, v3);
+#if !defined(BOOST_NO_CXX11_AUTO_DECLARATIONS) && !defined(BOOST_NO_CXX11_LAMBDAS) && !defined(BOOST_NO_CXX11_UNIFIED_INITIALIZATION_SYNTAX) && !defined(BOOST_NO_CXX11_HDR_TUPLE)
+   boost::math::hypergeometric_1F1(v1, v2, v3);
+#ifndef BOOST_NO_CXX11_HDR_INITIALIZER_LIST
+   boost::math::hypergeometric_pFq({ v1 }, { v2 }, v3);
+#endif
+#endif
 
    boost::math::expint(v1);
    boost::math::expint(i);
@@ -506,6 +519,9 @@ void instantiate(RealType)
    boost::math::cyl_bessel_j_zero(v1 * 1, i, i, oi);
    boost::math::cyl_neumann_zero(v1 * 1, i);
    boost::math::cyl_neumann_zero(v1 * 1, i, i, oi);
+   boost::math::lambert_w0(v1 * 1);
+   boost::math::lambert_wm1(v1 * 1);
+   boost::math::lambert_w0_prime(v1 * 1);
 #ifdef TEST_COMPLEX
    boost::math::cyl_hankel_1(v1, v2);
    boost::math::cyl_hankel_1(i, v2);
@@ -685,6 +701,9 @@ void instantiate(RealType)
    boost::math::cyl_bessel_j_zero(v1, i, i, oi, pol);
    boost::math::cyl_neumann_zero(v1, i, pol);
    boost::math::cyl_neumann_zero(v1, i, i, oi, pol);
+   boost::math::lambert_w0(v1, pol);
+   boost::math::lambert_wm1(v1, pol);
+   boost::math::lambert_w0_prime(v1, pol);
 #ifdef TEST_COMPLEX
    boost::math::cyl_hankel_1(v1, v2, pol);
    boost::math::cyl_hankel_1(i, v2, pol);
@@ -704,6 +723,21 @@ void instantiate(RealType)
    boost::math::airy_bi_zero<RealType>(i, pol);
    boost::math::airy_ai_zero<RealType>(i, i, oi, pol);
    boost::math::airy_bi_zero<RealType>(i, i, oi, pol);
+
+   boost::math::hypergeometric_1F0(i, v2, pol);
+   boost::math::hypergeometric_1F0(v1, i, pol);
+   boost::math::hypergeometric_1F0(i, i, pol);
+   boost::math::hypergeometric_0F1(i, v2, pol);
+   boost::math::hypergeometric_0F1(v1, i, pol);
+   boost::math::hypergeometric_0F1(i, i, pol);
+   boost::math::hypergeometric_2F0(i, v2, v3, pol);
+   boost::math::hypergeometric_2F0(v1, i, v3, pol);
+   boost::math::hypergeometric_2F0(v1, v2, i, pol);
+#if !defined(BOOST_NO_CXX11_AUTO_DECLARATIONS) && !defined(BOOST_NO_CXX11_LAMBDAS) && !defined(BOOST_NO_CXX11_UNIFIED_INITIALIZATION_SYNTAX) && !defined(BOOST_NO_CXX11_HDR_TUPLE)
+   boost::math::hypergeometric_1F1(i, v2, v3, pol);
+   boost::math::hypergeometric_1F1(v1, i, v3, pol);
+   boost::math::hypergeometric_1F1(v1, v2, i, pol);
+#endif
 
    boost::math::expint(v1, pol);
    boost::math::expint(i, pol);
@@ -886,6 +920,9 @@ void instantiate(RealType)
    test::cyl_bessel_j_zero(v1, i, i, oi);
    test::cyl_neumann_zero(v1, i);
    test::cyl_neumann_zero(v1, i, i, oi);
+   test::lambert_w0(v1);
+   test::lambert_wm1(v1);
+   test::lambert_w0_prime(v1);
 #ifdef TEST_COMPLEX
    test::cyl_hankel_1(v1, v2);
    test::cyl_hankel_1(i, v2);
@@ -905,6 +942,13 @@ void instantiate(RealType)
    test::airy_bi_zero<RealType>(i);
    test::airy_ai_zero<RealType>(i, i, oi);
    test::airy_bi_zero<RealType>(i, i, oi);
+
+   test::hypergeometric_1F0(v1, v2);
+   test::hypergeometric_0F1(v1, v2);
+   test::hypergeometric_2F0(v1, v1, v2);
+#if !defined(BOOST_NO_CXX11_AUTO_DECLARATIONS) && !defined(BOOST_NO_CXX11_LAMBDAS) && !defined(BOOST_NO_CXX11_UNIFIED_INITIALIZATION_SYNTAX) && !defined(BOOST_NO_CXX11_HDR_TUPLE)
+   test::hypergeometric_1F1(v1, v2, v2);
+#endif
 
    test::expint(v1);
    test::expint(i);
@@ -1264,6 +1308,9 @@ void instantiate_mixed(RealType)
    boost::math::sph_neumann_prime(i, i, pol);
    boost::math::owens_t(fr, dr, pol);
    boost::math::owens_t(i, s, pol);
+   boost::math::lambert_w0(i, pol);
+   boost::math::lambert_wm1(i, pol);
+   boost::math::lambert_w0_prime(i, pol);
 #endif
 #ifdef TEST_GROUP_8
    test::tgamma(i);
@@ -1410,6 +1457,9 @@ void instantiate_mixed(RealType)
    test::airy_bi_prime(i);
    test::owens_t(fr, dr);
    test::owens_t(i, s);
+   boost::math::lambert_w0(i);
+   boost::math::lambert_wm1(i);
+   boost::math::lambert_w0_prime(i);
 #endif
 #endif
 }

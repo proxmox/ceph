@@ -9,16 +9,12 @@
 
 include_directories (./extern)
 include_directories (./extras/include)
-include_directories (../subtree/unit_test/include)
 
 file (GLOB_RECURSE EXTRAS_FILES
     ${PROJECT_SOURCE_DIR}/test/extras/include/*.hpp
     ${PROJECT_SOURCE_DIR}/test/extras/include/*.ipp
-    ${PROJECT_SOURCE_DIR}/subtree/unit_test/include/*.hpp
-    ${PROJECT_SOURCE_DIR}/subtree/unit_test/include/*.ipp
+    ${PROJECT_SOURCE_DIR}/test/lib_ssl.cpp
     )
-
-set (TEST_MAIN ${PROJECT_SOURCE_DIR}/subtree/unit_test/include/boost/beast/unit_test/main.cpp)
 
 if (OPENSSL_FOUND)
     link_libraries (${OPENSSL_LIBRARIES})
@@ -46,6 +42,17 @@ set (ZLIB_SOURCES
     ${CMAKE_CURRENT_LIST_DIR}/extern/zlib-1.2.11/uncompr.c
     ${CMAKE_CURRENT_LIST_DIR}/extern/zlib-1.2.11/zutil.c
 )
+
+set (TEST_MAIN ${PROJECT_SOURCE_DIR}/test/lib_beast.cpp)
+
+GroupSources (. "/")
+
+add_library (
+    lib-test STATIC
+    ${CMAKE_CURRENT_LIST_DIR}/lib_test.cpp
+)
+
+set_property(TARGET lib-test PROPERTY FOLDER "static-libs")
 
 add_subdirectory (beast)
 add_subdirectory (bench)

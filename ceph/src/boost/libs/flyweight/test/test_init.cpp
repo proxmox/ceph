@@ -1,6 +1,6 @@
 /* Boost.Flyweight test of static data initialization facilities.
  *
- * Copyright 2006-2008 Joaquin M Lopez Munoz.
+ * Copyright 2006-2019 Joaquin M Lopez Munoz.
  * Distributed under the Boost Software License, Version 1.0.
  * (See accompanying file LICENSE_1_0.txt or copy at
  * http://www.boost.org/LICENSE_1_0.txt)
@@ -32,16 +32,18 @@ struct marked_hashed_factory:factory_marker
   };
 };
 
-namespace{
+namespace boost_flyweight_test{
+
 bool mark1=false;
 bool init1=flyweight<int,marked_hashed_factory<&mark1> >::init();
 
 bool mark2=false;
 flyweight<int,marked_hashed_factory<&mark2> >::initializer init2;
+
 }
 
 void test_init()
 {
-  BOOST_TEST(mark1);
-  BOOST_TEST(mark2);
+  BOOST_TEST(boost_flyweight_test::mark1);
+  BOOST_TEST(boost_flyweight_test::mark2);
 }

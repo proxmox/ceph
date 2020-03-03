@@ -87,7 +87,9 @@ enum {
 
   // How many items have been finished by PurgeQueue
   l_pq_executing_ops,
+  l_pq_executing_ops_high_water,
   l_pq_executing,
+  l_pq_executing_high_water,
   l_pq_executed,
   l_pq_last
 };
@@ -102,7 +104,7 @@ enum {
  */
 class PurgeQueue
 {
-protected:
+private:
   CephContext *cct;
   const mds_rank_t rank;
   Mutex lock;
@@ -167,6 +169,9 @@ protected:
 
   void _go_readonly(int r);
 
+  uint64_t ops_high_water = 0;
+  uint64_t files_high_water = 0;
+
 public:
   void init();
   void activate();
@@ -208,9 +213,7 @@ public:
 
   void update_op_limit(const MDSMap &mds_map);
 
-  void handle_conf_change(const ConfigProxy& conf,
-                          const std::set <std::string> &changed,
-                          const MDSMap &mds_map);
+  void handle_conf_change(const std::set<std::string>& changed, const MDSMap& mds_map);
 
   PurgeQueue(
       CephContext *cct_,
@@ -220,7 +223,6 @@ public:
       Context *on_error);
   ~PurgeQueue();
 };
-
 
 #endif
 

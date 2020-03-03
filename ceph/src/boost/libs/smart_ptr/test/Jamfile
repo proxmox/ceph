@@ -7,19 +7,25 @@
 #  accompanying file LICENSE_1_0.txt or copy at
 #  http://www.boost.org/LICENSE_1_0.txt)
 
-# bring in rules for testing
 import testing ;
+
+project
+    : requirements
+      <toolset>gcc:<cxxflags>-Wno-non-virtual-dtor
+      <toolset>gcc:<cxxflags>-Wno-deprecated-declarations
+      #<toolset>gcc:<cxxflags>-Wno-delete-non-virtual-dtor (not in 4.4/4.6)
+    ;
 
 # quick test (for CI)
 run quick.cpp ;
 
 # full test suite
 run smart_ptr_test.cpp ;
-run shared_ptr_basic_test.cpp : : : <toolset>gcc:<cxxflags>-Wno-non-virtual-dtor ;
-run shared_ptr_test.cpp : : : <toolset>gcc:<cxxflags>-Wno-non-virtual-dtor ;
+run shared_ptr_basic_test.cpp ;
+run shared_ptr_test.cpp ;
 run weak_ptr_test.cpp ;
 run weak_ptr_move_test.cpp ;
-run shared_from_this_test.cpp : : : <toolset>gcc:<cxxflags>-Wno-non-virtual-dtor ;
+run shared_from_this_test.cpp ;
 run get_deleter_test.cpp ;
 run intrusive_ptr_test.cpp ;
 run intrusive_ptr_move_test.cpp ;
@@ -152,18 +158,18 @@ compile-fail array_fail_dereference.cpp ;
 compile-fail array_fail_member_access.cpp ;
 compile-fail array_fail_array_access.cpp ;
 
-run make_shared_array_test.cpp ;
+run make_shared_array_test.cpp : : : <toolset>msvc-8.0:<build>no ;
 run make_shared_arrays_test.cpp ; # <cxxflags>-fno-deduce-init-list no longer needed for gcc-4.6
-run make_shared_array_throws_test.cpp ;
-run make_shared_array_esft_test.cpp ;
-run make_shared_array_noinit_test.cpp ;
-run make_shared_array_value_test.cpp ;
+run make_shared_array_throws_test.cpp : : : <toolset>msvc-8.0:<build>no ;
+run make_shared_array_esft_test.cpp : : : <toolset>msvc-8.0:<build>no ;
+run make_shared_array_noinit_test.cpp : : : <toolset>msvc-8.0:<build>no ;
+run make_shared_array_value_test.cpp : : : <toolset>msvc-8.0:<build>no ;
 run allocate_shared_array_test.cpp ;
 run allocate_shared_arrays_test.cpp ; # <cxxflags>-fno-deduce-init-list no longer needed for gcc-4.6
-run allocate_shared_array_throws_test.cpp ;
-run allocate_shared_array_esft_test.cpp ;
-run allocate_shared_array_noinit_test.cpp ;
-run allocate_shared_array_value_test.cpp ;
+run allocate_shared_array_throws_test.cpp : : : <toolset>msvc-8.0:<build>no ;
+run allocate_shared_array_esft_test.cpp : : : <toolset>msvc-8.0:<build>no ;
+run allocate_shared_array_noinit_test.cpp : : : <toolset>msvc-8.0:<build>no ;
+run allocate_shared_array_value_test.cpp : : : <toolset>msvc-8.0:<build>no ;
 run allocate_shared_array_construct_test.cpp ;
 
 run make_unique_test.cpp ;
@@ -230,7 +236,7 @@ run shared_ptr_fn_test.cpp ;
 run get_deleter_test2.cpp ;
 run get_deleter_test3.cpp ;
 run get_deleter_array_test2.cpp ;
-run get_deleter_array_test3.cpp ;
+run get_deleter_array_test3.cpp : : : <toolset>msvc-8.0:<build>no ;
 
 run sp_convertible_test2.cpp ;
 
@@ -269,6 +275,61 @@ run local_sp_fn_test.cpp ;
 run lsp_convertible_test.cpp ;
 run lsp_convertible_test2.cpp ;
 
-run make_shared_array_tmp_test.cpp ;
+run make_shared_array_tmp_test.cpp : : : <toolset>msvc-8.0:<build>no ;
 
 run lw_thread_test.cpp : : : <threading>multi ;
+
+compile sp_windows_h_test.cpp ;
+compile spinlock_windows_h_test.cpp ;
+compile yield_k_windows_h_test.cpp ;
+
+lib dll_test : dll_test_lib.cpp : <link>shared:<define>DLL_TEST_DYN_LINK=1 ;
+explicit dll_test ;
+
+run dll_test_main.cpp dll_test : : : <link>static : dll_test_static ;
+run dll_test_main.cpp dll_test : : : <link>shared : dll_test_shared ;
+
+run make_shared_const_test.cpp ;
+run make_local_shared_const_test.cpp ;
+
+lib abi_test_mt : abi_test_lib.cpp : <link>static ;
+explicit abi_test_mt ;
+
+obj abi_test_lib_nt : abi_test_lib.cpp : <define>BOOST_DISABLE_THREADS ;
+explicit abi_test_lib_nt ;
+
+lib abi_test_nt : abi_test_lib_nt : <link>static ;
+explicit abi_test_nt ;
+
+run abi_test_main.cpp abi_test_mt : : : <define>BOOST_DISABLE_THREADS : abi_test_nt_mt ;
+run abi_test_main.cpp abi_test_nt : : : : abi_test_mt_nt ;
+
+run abi_test_main.cpp abi_test_mt/<cxxstd>0x : : : <cxxstd>98 : abi_test_03_11 ;
+run abi_test_main.cpp abi_test_mt/<cxxstd>98 : : : <cxxstd>0x : abi_test_11_03 ;
+
+run weak_ptr_alias_test.cpp ;
+run weak_ptr_alias_move_test.cpp ;
+
+run sp_typeinfo_test.cpp : : : <rtti>off : sp_typeinfo_test_no_rtti ;
+
+run get_deleter_test.cpp : : : <rtti>off <toolset>gcc-4.4.7,<cxxstd>0x:<build>no : get_deleter_test_no_rtti ;
+run get_deleter_test2.cpp : : : <rtti>off <toolset>gcc-4.4.7,<cxxstd>0x:<build>no : get_deleter_test2_no_rtti ;
+run get_deleter_test3.cpp : : : <rtti>off <toolset>gcc-4.4.7,<cxxstd>0x:<build>no : get_deleter_test3_no_rtti ;
+
+run shared_from_test.cpp ;
+run weak_from_test.cpp ;
+run weak_from_test2.cpp ;
+
+run allocate_unique_aggregate_test.cpp ;
+run allocate_unique_args_test.cpp ;
+run allocate_unique_array_construct_test.cpp ;
+run allocate_unique_array_noinit_test.cpp ;
+run allocate_unique_arrays_test.cpp ;
+run allocate_unique_array_test.cpp ;
+run allocate_unique_array_throws_test.cpp ;
+run allocate_unique_array_value_test.cpp ;
+run allocate_unique_construct_test.cpp ;
+run allocate_unique_noinit_test.cpp ;
+run allocate_unique_test.cpp ;
+run allocate_unique_throws_test.cpp ;
+run allocate_unique_value_test.cpp ;

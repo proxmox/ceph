@@ -10,6 +10,45 @@
 
 #include "real.hpp"
 
+template <typename T, typename P>
+void basic_real_parser_test(P parser)
+{
+    using spirit_test::test;
+    using spirit_test::test_attr;
+
+    T attr;
+
+    BOOST_TEST(test("-1234", parser));
+    BOOST_TEST(test_attr("-1234", parser, attr) && compare(attr, T(-1234l)));
+
+    BOOST_TEST(test("-1.2e3", parser));
+    BOOST_TEST(test_attr("-1.2e3", parser, attr) && compare(attr, T(-1.2e3l)));
+
+    BOOST_TEST(test("+1.2e3", parser));
+    BOOST_TEST(test_attr("+1.2e3", parser, attr) && compare(attr, T(1.2e3l)));
+
+    BOOST_TEST(test("-0.1", parser));
+    BOOST_TEST(test_attr("-0.1", parser, attr) && compare(attr, T(-0.1l)));
+
+    BOOST_TEST(test("-1.2e-3", parser));
+    BOOST_TEST(test_attr("-1.2e-3", parser, attr) && compare(attr, T(-1.2e-3l)));
+
+    BOOST_TEST(test("-1.e2", parser));
+    BOOST_TEST(test_attr("-1.e2", parser, attr) && compare(attr, T(-1.e2l)));
+
+    BOOST_TEST(test("-.2e3", parser));
+    BOOST_TEST(test_attr("-.2e3", parser, attr) && compare(attr, T(-.2e3l)));
+
+    BOOST_TEST(test("-2e3", parser));
+    BOOST_TEST(test_attr("-2e3", parser, attr) && compare(attr, T(-2e3l)));
+
+    BOOST_TEST(!test("-e3", parser));
+    BOOST_TEST(!test_attr("-e3", parser, attr));
+
+    BOOST_TEST(!test("-1.2e", parser));
+    BOOST_TEST(!test_attr("-1.2e", parser, attr));
+}
+
 int
 main()
 {
@@ -19,39 +58,14 @@ main()
     //  signed real number tests
     ///////////////////////////////////////////////////////////////////////////
     {
+        basic_real_parser_test<float>(boost::spirit::x3::float_);
+        basic_real_parser_test<double>(boost::spirit::x3::double_);
+        basic_real_parser_test<long double>(boost::spirit::x3::long_double);
+    }
+
+    {
         using boost::spirit::x3::double_;
-        using boost::spirit::x3::parse;
         double  d;
-
-        BOOST_TEST(test("-1234", double_));
-        BOOST_TEST(test_attr("-1234", double_, d) && compare(d, -1234));
-
-        BOOST_TEST(test("-1.2e3", double_));
-        BOOST_TEST(test_attr("-1.2e3", double_, d) && compare(d, -1.2e3));
-
-        BOOST_TEST(test("+1.2e3", double_));
-        BOOST_TEST(test_attr("+1.2e3", double_, d) && compare(d, 1.2e3));
-
-        BOOST_TEST(test("-0.1", double_));
-        BOOST_TEST(test_attr("-0.1", double_, d) && compare(d, -0.1));
-
-        BOOST_TEST(test("-1.2e-3", double_));
-        BOOST_TEST(test_attr("-1.2e-3", double_, d) && compare(d, -1.2e-3));
-
-        BOOST_TEST(test("-1.e2", double_));
-        BOOST_TEST(test_attr("-1.e2", double_, d) && compare(d, -1.e2));
-
-        BOOST_TEST(test("-.2e3", double_));
-        BOOST_TEST(test_attr("-.2e3", double_, d) && compare(d, -.2e3));
-
-        BOOST_TEST(test("-2e3", double_));
-        BOOST_TEST(test_attr("-2e3", double_, d) && compare(d, -2e3));
-
-        BOOST_TEST(!test("-e3", double_));
-        BOOST_TEST(!test_attr("-e3", double_, d));
-
-        BOOST_TEST(!test("-1.2e", double_));
-        BOOST_TEST(!test_attr("-1.2e", double_, d));
 
 #if defined(BOOST_SPIRIT_TEST_REAL_PRECISION)
         BOOST_TEST(test_attr("-5.7222349715140557e+307", double_, d));
@@ -96,6 +110,22 @@ main()
         BOOST_TEST(test("-NAN(...)", double_));
         BOOST_TEST(test_attr("-NAN(...)", double_, d) &&
             FP_NAN == fpclassify(d) && signbit(d));
+
+        BOOST_TEST(!test("1e999", double_));
+        BOOST_TEST(!test("1e-999", double_));
+        BOOST_TEST(test_attr("2.1111111e-303", double_, d) &&
+            compare(d, 2.1111111e-303));
+        BOOST_TEST(!test_attr("1.1234e", double_, d) && compare(d, 1.1234));
+
+        // https://svn.boost.org/trac10/ticket/11608
+        BOOST_TEST(test_attr("1267650600228229401496703205376", double_, d) &&
+            compare(d, 1.2676506002282291E+30));    // Note Qi has better precision
+
+        BOOST_TEST(test_attr("12676506.00228229401496703205376", double_, d) &&
+            compare(d, 1.2676506002282292E7));      // Note Qi has better precision
+
+        BOOST_TEST(test_attr("12676506.00228229401496703205376E6", double_, d) &&
+            compare(d, 1.2676506002282291016E13));  // Note Qi has better precision
     }
 
     return boost::report_errors();

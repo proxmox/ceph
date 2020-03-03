@@ -17,6 +17,7 @@
 #include <cstddef> // size_t
 #include <cwchar>
 #include <boost/config.hpp>
+#include <boost/core/no_exceptions_support.hpp>
 
 #define BOOST_UTF8_BEGIN_NAMESPACE namespace boost { namespace detail {
 #define BOOST_UTF8_END_NAMESPACE } }

@@ -49,7 +49,7 @@
 
 #include <boost/config.hpp>
 #include <boost/concept_check.hpp>
-
+#include <boost/core/ignore_unused.hpp>
 #include <boost/foreach.hpp>
 
 #include <string_from_type.hpp>
@@ -67,7 +67,7 @@
 # pragma clang diagnostic ignored "-Wshorten-64-to-32"
 #endif
 
-# include <boost/test/floating_point_comparison.hpp>
+# include <boost/test/tools/floating_point_comparison.hpp>
 #ifndef BOOST_TEST_MODULE
 # include <boost/test/included/test_exec_monitor.hpp>
 //#  include <boost/test/included/prg_exec_monitor.hpp>
@@ -101,6 +101,7 @@
 // - do NOT use "using namespace boost::geometry" to make clear what is Boost.Geometry
 // - use bg:: as short alias
 #include <boost/geometry/core/coordinate_type.hpp>
+#include <boost/geometry/core/config.hpp>
 #include <boost/geometry/core/closure.hpp>
 #include <boost/geometry/core/point_order.hpp>
 #include <boost/geometry/core/tag.hpp>
@@ -113,7 +114,7 @@ inline T1 if_typed_tt(T1 value_tt, T2 value)
 #if defined(HAVE_TTMATH)
     return boost::is_same<CoordinateType, ttmath_big>::type::value ? value_tt : value;
 #else
-    boost::ignore_unused_variable_warning(value_tt);
+    boost::ignore_unused(value_tt);
     return value;
 #endif
 }
@@ -160,6 +161,42 @@ struct mathematical_policy
 
 };
 
+typedef double default_test_type;
 
+#if defined(BOOST_GEOMETRY_USE_RESCALING)
+#define BG_IF_RESCALED(a, b) a
+#else
+#define BG_IF_RESCALED(a, b) b
+#endif
+
+#if defined(BOOST_GEOMETRY_USE_KRAMER_RULE)
+#define BG_IF_KRAMER(a, b) a
+#else
+#define BG_IF_KRAMER(a, b) b
+#endif
+
+inline void BoostGeometryWriteTestConfiguration()
+{
+    std::cout << std::endl << "Test configuration:" << std::endl;
+#if defined(BOOST_GEOMETRY_USE_RESCALING)
+    std::cout << "  - Using rescaling" << std::endl;
+#endif
+#if defined(BOOST_GEOMETRY_USE_KRAMER_RULE)
+    std::cout << "  - Using Kramer rule" << std::endl;
+#else
+    std::cout << "  - Using general form" << std::endl;
+#endif
+#if defined(BOOST_GEOMETRY_TEST_ONLY_ONE_TYPE)
+    std::cout << "  - Testing only one type" << std::endl;
+#endif
+#if defined(BOOST_GEOMETRY_TEST_ONLY_ONE_ORDER)
+    std::cout << "  - Testing only one order" << std::endl;
+#endif
+#if defined(BOOST_GEOMETRY_TEST_FAILURES)
+    std::cout << "  - Including failing test cases" << std::endl;
+#endif
+    std::cout << "  - Default test type: " << string_from_type<default_test_type>::name() << std::endl;
+    std::cout << std::endl;
+}
 
 #endif // GEOMETRY_TEST_GEOMETRY_TEST_COMMON_HPP

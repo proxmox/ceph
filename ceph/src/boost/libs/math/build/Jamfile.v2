@@ -121,7 +121,3 @@ lib boost_math_c99l : ../src/tr1/$(C99_SOURCES)l.cpp pch
    ;
 
 boost-install boost_math_c99 boost_math_c99f boost_math_c99l boost_math_tr1 boost_math_tr1f boost_math_tr1l ;
-
-
-
-

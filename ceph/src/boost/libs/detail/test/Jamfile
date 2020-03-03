@@ -7,7 +7,7 @@
 
 build-project container_fwd ;
 
-project detail/test 
+project detail/test
   : requirements
     <toolset>clang:<cxxflags>-Wno-unused
     <toolset>clang:<cxxflags>-Wno-tautological-compare
@@ -22,7 +22,11 @@ project detail/test
 import ../../config/checks/config : requires ;
 
 run binary_search_test.cpp ;
+run blank_test.cpp ;
 run is_sorted_test.cpp ;
 run numeric_traits_test.cpp ;
+run is_xxx_test.cpp ;
 # run test_utf8_codecvt.cpp : : : [ requires std_wstreambuf ] ;
 run test_utf8_codecvt.cpp ;
+run allocator_utilities_test.cpp ;
+run reference_content_test.cpp ;

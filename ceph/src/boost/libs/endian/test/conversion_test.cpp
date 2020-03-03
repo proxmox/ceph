@@ -14,6 +14,7 @@
 #include <boost/core/lightweight_test.hpp>
 #include <iostream>
 #include <cstring>
+#include <algorithm>
 
 namespace be = boost::endian;
 using std::cout;
@@ -27,6 +28,13 @@ using boost::uint32_t;
 using boost::int64_t;
 using boost::uint64_t;
 
+template <class T> inline T std_endian_reverse(T x) BOOST_NOEXCEPT
+{
+    T tmp(x);
+    std::reverse( reinterpret_cast<unsigned char*>(&tmp), reinterpret_cast<unsigned char*>(&tmp) + sizeof(T) );
+    return tmp;
+}
+
 namespace
 {
 
@@ -34,7 +42,7 @@ namespace
 
   void native_value(int8_t& x) {x = static_cast<int8_t>(0xF0U);}
   void native_value(uint8_t& x) {x = static_cast<uint8_t>(0xF0U);}
-# ifdef BOOST_BIG_ENDIAN
+# if BOOST_ENDIAN_BIG_BYTE
   void big_value(int8_t& x) {x = static_cast<int8_t>(0xF0U);}
   void big_value(uint8_t& x) {x = static_cast<uint8_t>(0xF0U);}
   void little_value(int8_t& x) {x = static_cast<int8_t>(0xF0U);}
@@ -48,7 +56,7 @@ namespace
 
   void native_value(int16_t& x) {x = static_cast<int16_t>(0xF102U);}
   void native_value(uint16_t& x) {x = static_cast<uint16_t>(0xF102U);}
-# ifdef BOOST_BIG_ENDIAN
+# if BOOST_ENDIAN_BIG_BYTE
   void big_value(int16_t& x) {x = static_cast<int16_t>(0xF102U);}
   void big_value(uint16_t& x) {x = static_cast<uint16_t>(0xF102U);}
   void little_value(int16_t& x) {x = static_cast<int16_t>(0x02F1U);}
@@ -62,7 +70,7 @@ namespace
 
   void native_value(int32_t& x) {x = static_cast<int32_t>(0xF1E21304UL);}
   void native_value(uint32_t& x) {x = static_cast<uint32_t>(0xF1E21304UL);}
-# ifdef BOOST_BIG_ENDIAN
+# if BOOST_ENDIAN_BIG_BYTE
   void big_value(int32_t& x) {x = static_cast<int32_t>(0xF1E21304UL);}
   void big_value(uint32_t& x) {x = static_cast<uint32_t>(0xF1E21304UL);}
   void little_value(int32_t& x) {x = static_cast<int32_t>(0x0413E2F1UL);}
@@ -76,7 +84,7 @@ namespace
 
   void native_value(int64_t& x) {x = static_cast<int64_t>(0xF1E2D3C444231201ULL);}
   void native_value(uint64_t& x) {x = static_cast<uint64_t>(0xF1E2D3C444231201ULL);}
-# ifdef BOOST_BIG_ENDIAN
+# if BOOST_ENDIAN_BIG_BYTE
   void big_value(int64_t& x) {x = static_cast<int64_t>(0xF1E2D3C444231201ULL);}
   void big_value(uint64_t& x) {x = static_cast<uint64_t>(0xF1E2D3C444231201ULL);}
   void little_value(int64_t& x) {x = static_cast<int64_t>(0x01122344C4D3E2F1ULL);}
@@ -100,11 +108,11 @@ namespace
 
     //  validate the values used by the tests below
 
-# ifdef BOOST_BIG_ENDIAN
+# if BOOST_ENDIAN_BIG_BYTE
     BOOST_TEST_EQ(native, big);
-    BOOST_TEST_EQ(be::detail::std_endian_reverse(native), little);
+    BOOST_TEST_EQ(::std_endian_reverse(native), little);
 # else
-    BOOST_TEST_EQ(be::detail::std_endian_reverse(native), big);
+    BOOST_TEST_EQ(::std_endian_reverse(native), big);
     BOOST_TEST_EQ(native, little);
 # endif
 

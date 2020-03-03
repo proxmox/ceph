@@ -852,7 +852,11 @@
           <template-type-parameter name="charT"/>
           <template-type-parameter name="traits"/>
         </template><parameter name="os"><paramtype>std::basic_ostream&lt; charT, traits &gt; &amp;</paramtype></parameter><parameter name="d"><paramtype>const <classname>date</classname> &amp;</paramtype></parameter><purpose>ostream operator for <classname alt="boost::gregorian::date">gregorian::date</classname> </purpose><description><para>Uses the date facet to determine various output parameters including:<itemizedlist>
-<listitem><para>string values for the month (eg: Jan, Feb, Mar) (default: English)</para></listitem><listitem><para>string values for special values (eg: not-a-date-time) (default: English)</para></listitem><listitem><para>selection of long, short strings, or numerical month representation (default: short string)</para></listitem><listitem><para>month day year order (default yyyy-mmm-dd) </para></listitem></itemizedlist>
+<listitem><para>string values for the month (eg: Jan, Feb, Mar) (default: English)</para>
+</listitem><listitem><para>string values for special values (eg: not-a-date-time) (default: English)</para>
+</listitem><listitem><para>selection of long, short strings, or numerical month representation (default: short string)</para>
+</listitem><listitem><para>month day year order (default yyyy-mmm-dd) </para>
+</listitem></itemizedlist>
 </para></description></function>
 <function name="operator&lt;&lt;"><type>std::basic_ostream&lt; charT, traits &gt; &amp;</type><template>
           <template-type-parameter name="charT"/>
@@ -1044,137 +1048,6 @@
 </namespace>
 </header>
 <header name="boost/date_time/gregorian/greg_serialize.hpp">
-<namespace name="serialization">
-<function name="serialize"><type>void</type><template>
-          <template-type-parameter name="Archive"/>
-        </template><parameter name="ar"><paramtype>Archive &amp;</paramtype></parameter><parameter name="d"><paramtype>::<classname>boost::gregorian::date</classname> &amp;</paramtype></parameter><parameter name="file_version"><paramtype>const unsigned int</paramtype></parameter><description><para>Method that does serialization for gregorian::date – splits to load/save </para></description></function>
-<function name="save"><type>void</type><template>
-          <template-type-parameter name="Archive"/>
-        </template><parameter name="ar"><paramtype>Archive &amp;</paramtype></parameter><parameter name="d"><paramtype>const ::<classname>boost::gregorian::date</classname> &amp;</paramtype></parameter><parameter name="int"><paramtype>unsigned</paramtype></parameter><purpose>Function to save gregorian::date objects using serialization lib. </purpose><description><para>Dates are serialized into a string for transport and storage. While it would be more efficient to store the internal integer used to manipulate the dates, it is an unstable solution. </para></description></function>
-<function name="load"><type>void</type><template>
-          <template-type-parameter name="Archive"/>
-        </template><parameter name="ar"><paramtype>Archive &amp;</paramtype></parameter><parameter name="d"><paramtype>::<classname>boost::gregorian::date</classname> &amp;</paramtype></parameter><parameter name="int"><paramtype>unsigned</paramtype></parameter><purpose>Function to load gregorian::date objects using serialization lib. </purpose><description><para>Dates are serialized into a string for transport and storage. While it would be more efficient to store the internal integer used to manipulate the dates, it is an unstable solution. </para></description></function>
-<function name="load_construct_data"><type>void</type><template>
-          <template-type-parameter name="Archive"/>
-        </template><parameter name=""><paramtype>Archive &amp;</paramtype></parameter><parameter name="dp"><paramtype>::<classname>boost::gregorian::date</classname> *</paramtype></parameter><parameter name="int"><paramtype>const unsigned</paramtype></parameter><purpose>override needed b/c no default constructor </purpose></function>
-<function name="save"><type>void</type><template>
-          <template-type-parameter name="Archive"/>
-        </template><parameter name="ar"><paramtype>Archive &amp;</paramtype></parameter><parameter name="dd"><paramtype>const gregorian::date_duration &amp;</paramtype></parameter><parameter name="int"><paramtype>unsigned</paramtype></parameter><purpose>Function to save gregorian::date_duration objects using serialization lib. </purpose></function>
-<function name="load"><type>void</type><template>
-          <template-type-parameter name="Archive"/>
-        </template><parameter name="ar"><paramtype>Archive &amp;</paramtype></parameter><parameter name="dd"><paramtype>gregorian::date_duration &amp;</paramtype></parameter><parameter name="int"><paramtype>unsigned</paramtype></parameter><purpose>Function to load gregorian::date_duration objects using serialization lib. </purpose></function>
-<function name="load_construct_data"><type>void</type><template>
-          <template-type-parameter name="Archive"/>
-        </template><parameter name=""><paramtype>Archive &amp;</paramtype></parameter><parameter name="dd"><paramtype>gregorian::date_duration *</paramtype></parameter><parameter name="int"><paramtype>const unsigned</paramtype></parameter><purpose>override needed b/c no default constructor </purpose></function>
-<function name="save"><type>void</type><template>
-          <template-type-parameter name="Archive"/>
-        </template><parameter name="ar"><paramtype>Archive &amp;</paramtype></parameter><parameter name="dr"><paramtype>const gregorian::date_duration::duration_rep &amp;</paramtype></parameter><parameter name="int"><paramtype>unsigned</paramtype></parameter><purpose>helper unction to save date_duration objects using serialization lib </purpose></function>
-<function name="load"><type>void</type><template>
-          <template-type-parameter name="Archive"/>
-        </template><parameter name="ar"><paramtype>Archive &amp;</paramtype></parameter><parameter name="dr"><paramtype>gregorian::date_duration::duration_rep &amp;</paramtype></parameter><parameter name="int"><paramtype>unsigned</paramtype></parameter><purpose>helper function to load date_duration objects using serialization lib </purpose></function>
-<function name="load_construct_data"><type>void</type><template>
-          <template-type-parameter name="Archive"/>
-        </template><parameter name=""><paramtype>Archive &amp;</paramtype></parameter><parameter name="dr"><paramtype>gregorian::date_duration::duration_rep *</paramtype></parameter><parameter name="int"><paramtype>const unsigned</paramtype></parameter><purpose>override needed b/c no default constructor </purpose></function>
-<function name="save"><type>void</type><template>
-          <template-type-parameter name="Archive"/>
-        </template><parameter name="ar"><paramtype>Archive &amp;</paramtype></parameter><parameter name="dp"><paramtype>const gregorian::date_period &amp;</paramtype></parameter><parameter name="int"><paramtype>unsigned</paramtype></parameter><purpose>Function to save gregorian::date_period objects using serialization lib. </purpose><description><para>date_period objects are broken down into 2 parts for serialization: the begining date object and the end date object </para></description></function>
-<function name="load"><type>void</type><template>
-          <template-type-parameter name="Archive"/>
-        </template><parameter name="ar"><paramtype>Archive &amp;</paramtype></parameter><parameter name="dp"><paramtype>gregorian::date_period &amp;</paramtype></parameter><parameter name="int"><paramtype>unsigned</paramtype></parameter><purpose>Function to load gregorian::date_period objects using serialization lib. </purpose><description><para>date_period objects are broken down into 2 parts for serialization: the begining date object and the end date object </para></description></function>
-<function name="load_construct_data"><type>void</type><template>
-          <template-type-parameter name="Archive"/>
-        </template><parameter name=""><paramtype>Archive &amp;</paramtype></parameter><parameter name="dp"><paramtype>gregorian::date_period *</paramtype></parameter><parameter name="int"><paramtype>const unsigned</paramtype></parameter><purpose>override needed b/c no default constructor </purpose></function>
-<function name="save"><type>void</type><template>
-          <template-type-parameter name="Archive"/>
-        </template><parameter name="ar"><paramtype>Archive &amp;</paramtype></parameter><parameter name="gy"><paramtype>const gregorian::greg_year &amp;</paramtype></parameter><parameter name="int"><paramtype>unsigned</paramtype></parameter><purpose>Function to save gregorian::greg_year objects using serialization lib. </purpose></function>
-<function name="load"><type>void</type><template>
-          <template-type-parameter name="Archive"/>
-        </template><parameter name="ar"><paramtype>Archive &amp;</paramtype></parameter><parameter name="gy"><paramtype>gregorian::greg_year &amp;</paramtype></parameter><parameter name="int"><paramtype>unsigned</paramtype></parameter><purpose>Function to load gregorian::greg_year objects using serialization lib. </purpose></function>
-<function name="load_construct_data"><type>void</type><template>
-          <template-type-parameter name="Archive"/>
-        </template><parameter name=""><paramtype>Archive &amp;</paramtype></parameter><parameter name="gy"><paramtype>gregorian::greg_year *</paramtype></parameter><parameter name="int"><paramtype>const unsigned</paramtype></parameter><purpose>override needed b/c no default constructor </purpose></function>
-<function name="save"><type>void</type><template>
-          <template-type-parameter name="Archive"/>
-        </template><parameter name="ar"><paramtype>Archive &amp;</paramtype></parameter><parameter name="gm"><paramtype>const gregorian::greg_month &amp;</paramtype></parameter><parameter name="int"><paramtype>unsigned</paramtype></parameter><purpose>Function to save gregorian::greg_month objects using serialization lib. </purpose></function>
-<function name="load"><type>void</type><template>
-          <template-type-parameter name="Archive"/>
-        </template><parameter name="ar"><paramtype>Archive &amp;</paramtype></parameter><parameter name="gm"><paramtype>gregorian::greg_month &amp;</paramtype></parameter><parameter name="int"><paramtype>unsigned</paramtype></parameter><purpose>Function to load gregorian::greg_month objects using serialization lib. </purpose></function>
-<function name="load_construct_data"><type>void</type><template>
-          <template-type-parameter name="Archive"/>
-        </template><parameter name=""><paramtype>Archive &amp;</paramtype></parameter><parameter name="gm"><paramtype>gregorian::greg_month *</paramtype></parameter><parameter name="int"><paramtype>const unsigned</paramtype></parameter><purpose>override needed b/c no default constructor </purpose></function>
-<function name="save"><type>void</type><template>
-          <template-type-parameter name="Archive"/>
-        </template><parameter name="ar"><paramtype>Archive &amp;</paramtype></parameter><parameter name="gd"><paramtype>const gregorian::greg_day &amp;</paramtype></parameter><parameter name="int"><paramtype>unsigned</paramtype></parameter><purpose>Function to save gregorian::greg_day objects using serialization lib. </purpose></function>
-<function name="load"><type>void</type><template>
-          <template-type-parameter name="Archive"/>
-        </template><parameter name="ar"><paramtype>Archive &amp;</paramtype></parameter><parameter name="gd"><paramtype>gregorian::greg_day &amp;</paramtype></parameter><parameter name="int"><paramtype>unsigned</paramtype></parameter><purpose>Function to load gregorian::greg_day objects using serialization lib. </purpose></function>
-<function name="load_construct_data"><type>void</type><template>
-          <template-type-parameter name="Archive"/>
-        </template><parameter name=""><paramtype>Archive &amp;</paramtype></parameter><parameter name="gd"><paramtype>gregorian::greg_day *</paramtype></parameter><parameter name="int"><paramtype>const unsigned</paramtype></parameter><purpose>override needed b/c no default constructor </purpose></function>
-<function name="save"><type>void</type><template>
-          <template-type-parameter name="Archive"/>
-        </template><parameter name="ar"><paramtype>Archive &amp;</paramtype></parameter><parameter name="gd"><paramtype>const gregorian::greg_weekday &amp;</paramtype></parameter><parameter name="int"><paramtype>unsigned</paramtype></parameter><purpose>Function to save gregorian::greg_weekday objects using serialization lib. </purpose></function>
-<function name="load"><type>void</type><template>
-          <template-type-parameter name="Archive"/>
-        </template><parameter name="ar"><paramtype>Archive &amp;</paramtype></parameter><parameter name="gd"><paramtype>gregorian::greg_weekday &amp;</paramtype></parameter><parameter name="int"><paramtype>unsigned</paramtype></parameter><purpose>Function to load gregorian::greg_weekday objects using serialization lib. </purpose></function>
-<function name="load_construct_data"><type>void</type><template>
-          <template-type-parameter name="Archive"/>
-        </template><parameter name=""><paramtype>Archive &amp;</paramtype></parameter><parameter name="gd"><paramtype>gregorian::greg_weekday *</paramtype></parameter><parameter name="int"><paramtype>const unsigned</paramtype></parameter><purpose>override needed b/c no default constructor </purpose></function>
-<function name="save"><type>void</type><template>
-          <template-type-parameter name="Archive"/>
-        </template><parameter name="ar"><paramtype>Archive &amp;</paramtype></parameter><parameter name="pd"><paramtype>const gregorian::partial_date &amp;</paramtype></parameter><parameter name="int"><paramtype>unsigned</paramtype></parameter><purpose>Function to save gregorian::partial_date objects using serialization lib. </purpose><description><para>partial_date objects are broken down into 2 parts for serialization: the day (typically greg_day) and month (typically greg_month) objects </para></description></function>
-<function name="load"><type>void</type><template>
-          <template-type-parameter name="Archive"/>
-        </template><parameter name="ar"><paramtype>Archive &amp;</paramtype></parameter><parameter name="pd"><paramtype>gregorian::partial_date &amp;</paramtype></parameter><parameter name="int"><paramtype>unsigned</paramtype></parameter><purpose>Function to load gregorian::partial_date objects using serialization lib. </purpose><description><para>partial_date objects are broken down into 2 parts for serialization: the day (greg_day) and month (greg_month) objects </para></description></function>
-<function name="load_construct_data"><type>void</type><template>
-          <template-type-parameter name="Archive"/>
-        </template><parameter name=""><paramtype>Archive &amp;</paramtype></parameter><parameter name="pd"><paramtype>gregorian::partial_date *</paramtype></parameter><parameter name="int"><paramtype>const unsigned</paramtype></parameter><purpose>override needed b/c no default constructor </purpose></function>
-<function name="save"><type>void</type><template>
-          <template-type-parameter name="Archive"/>
-        </template><parameter name="ar"><paramtype>Archive &amp;</paramtype></parameter><parameter name="nkd"><paramtype>const gregorian::nth_kday_of_month &amp;</paramtype></parameter><parameter name="int"><paramtype>unsigned</paramtype></parameter><purpose>Function to save nth_day_of_the_week_in_month objects using serialization lib. </purpose><description><para>nth_day_of_the_week_in_month objects are broken down into 3 parts for serialization: the week number, the day of the week, and the month </para></description></function>
-<function name="load"><type>void</type><template>
-          <template-type-parameter name="Archive"/>
-        </template><parameter name="ar"><paramtype>Archive &amp;</paramtype></parameter><parameter name="nkd"><paramtype>gregorian::nth_kday_of_month &amp;</paramtype></parameter><parameter name="int"><paramtype>unsigned</paramtype></parameter><purpose>Function to load nth_day_of_the_week_in_month objects using serialization lib. </purpose><description><para>nth_day_of_the_week_in_month objects are broken down into 3 parts for serialization: the week number, the day of the week, and the month </para></description></function>
-<function name="load_construct_data"><type>void</type><template>
-          <template-type-parameter name="Archive"/>
-        </template><parameter name=""><paramtype>Archive &amp;</paramtype></parameter><parameter name="nkd"><paramtype>gregorian::nth_kday_of_month *</paramtype></parameter><parameter name="int"><paramtype>const unsigned</paramtype></parameter><purpose>override needed b/c no default constructor </purpose></function>
-<function name="save"><type>void</type><template>
-          <template-type-parameter name="Archive"/>
-        </template><parameter name="ar"><paramtype>Archive &amp;</paramtype></parameter><parameter name="fkd"><paramtype>const gregorian::first_kday_of_month &amp;</paramtype></parameter><parameter name="int"><paramtype>unsigned</paramtype></parameter><purpose>Function to save first_day_of_the_week_in_month objects using serialization lib. </purpose><description><para>first_day_of_the_week_in_month objects are broken down into 2 parts for serialization: the day of the week, and the month </para></description></function>
-<function name="load"><type>void</type><template>
-          <template-type-parameter name="Archive"/>
-        </template><parameter name="ar"><paramtype>Archive &amp;</paramtype></parameter><parameter name="fkd"><paramtype>gregorian::first_kday_of_month &amp;</paramtype></parameter><parameter name="int"><paramtype>unsigned</paramtype></parameter><purpose>Function to load first_day_of_the_week_in_month objects using serialization lib. </purpose><description><para>first_day_of_the_week_in_month objects are broken down into 2 parts for serialization: the day of the week, and the month </para></description></function>
-<function name="load_construct_data"><type>void</type><template>
-          <template-type-parameter name="Archive"/>
-        </template><parameter name=""><paramtype>Archive &amp;</paramtype></parameter><parameter name="fkd"><paramtype>gregorian::first_kday_of_month *</paramtype></parameter><parameter name="int"><paramtype>const unsigned</paramtype></parameter><purpose>override needed b/c no default constructor </purpose></function>
-<function name="save"><type>void</type><template>
-          <template-type-parameter name="Archive"/>
-        </template><parameter name="ar"><paramtype>Archive &amp;</paramtype></parameter><parameter name="lkd"><paramtype>const gregorian::last_kday_of_month &amp;</paramtype></parameter><parameter name="int"><paramtype>unsigned</paramtype></parameter><purpose>Function to save last_day_of_the_week_in_month objects using serialization lib. </purpose><description><para>last_day_of_the_week_in_month objects are broken down into 2 parts for serialization: the day of the week, and the month </para></description></function>
-<function name="load"><type>void</type><template>
-          <template-type-parameter name="Archive"/>
-        </template><parameter name="ar"><paramtype>Archive &amp;</paramtype></parameter><parameter name="lkd"><paramtype>gregorian::last_kday_of_month &amp;</paramtype></parameter><parameter name="int"><paramtype>unsigned</paramtype></parameter><purpose>Function to load last_day_of_the_week_in_month objects using serialization lib. </purpose><description><para>last_day_of_the_week_in_month objects are broken down into 2 parts for serialization: the day of the week, and the month </para></description></function>
-<function name="load_construct_data"><type>void</type><template>
-          <template-type-parameter name="Archive"/>
-        </template><parameter name=""><paramtype>Archive &amp;</paramtype></parameter><parameter name="lkd"><paramtype>gregorian::last_kday_of_month *</paramtype></parameter><parameter name="int"><paramtype>const unsigned</paramtype></parameter><purpose>override needed b/c no default constructor </purpose></function>
-<function name="save"><type>void</type><template>
-          <template-type-parameter name="Archive"/>
-        </template><parameter name="ar"><paramtype>Archive &amp;</paramtype></parameter><parameter name="fkdb"><paramtype>const gregorian::first_kday_before &amp;</paramtype></parameter><parameter name="int"><paramtype>unsigned</paramtype></parameter><purpose>Function to save first_day_of_the_week_before objects using serialization lib. </purpose></function>
-<function name="load"><type>void</type><template>
-          <template-type-parameter name="Archive"/>
-        </template><parameter name="ar"><paramtype>Archive &amp;</paramtype></parameter><parameter name="fkdb"><paramtype>gregorian::first_kday_before &amp;</paramtype></parameter><parameter name="int"><paramtype>unsigned</paramtype></parameter><purpose>Function to load first_day_of_the_week_before objects using serialization lib. </purpose></function>
-<function name="load_construct_data"><type>void</type><template>
-          <template-type-parameter name="Archive"/>
-        </template><parameter name=""><paramtype>Archive &amp;</paramtype></parameter><parameter name="fkdb"><paramtype>gregorian::first_kday_before *</paramtype></parameter><parameter name="int"><paramtype>const unsigned</paramtype></parameter><purpose>override needed b/c no default constructor </purpose></function>
-<function name="save"><type>void</type><template>
-          <template-type-parameter name="Archive"/>
-        </template><parameter name="ar"><paramtype>Archive &amp;</paramtype></parameter><parameter name="fkda"><paramtype>const gregorian::first_kday_after &amp;</paramtype></parameter><parameter name="int"><paramtype>unsigned</paramtype></parameter><purpose>Function to save first_day_of_the_week_after objects using serialization lib. </purpose></function>
-<function name="load"><type>void</type><template>
-          <template-type-parameter name="Archive"/>
-        </template><parameter name="ar"><paramtype>Archive &amp;</paramtype></parameter><parameter name="fkda"><paramtype>gregorian::first_kday_after &amp;</paramtype></parameter><parameter name="int"><paramtype>unsigned</paramtype></parameter><purpose>Function to load first_day_of_the_week_after objects using serialization lib. </purpose></function>
-<function name="load_construct_data"><type>void</type><template>
-          <template-type-parameter name="Archive"/>
-        </template><parameter name=""><paramtype>Archive &amp;</paramtype></parameter><parameter name="fkda"><paramtype>gregorian::first_kday_after *</paramtype></parameter><parameter name="int"><paramtype>const unsigned</paramtype></parameter><purpose>override needed b/c no default constructor </purpose></function>
-</namespace>
 </header>
 <header name="boost/date_time/gregorian/greg_weekday.hpp">
 <namespace name="boost">

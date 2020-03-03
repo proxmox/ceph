@@ -26,22 +26,6 @@
 
 using namespace boost::container;
 
-namespace boost {
-namespace container {
-
-//Explicit instantiation to detect compilation errors
-template class stable_vector<test::movable_and_copyable_int,
-   test::simple_allocator<test::movable_and_copyable_int> >;
-
-template class stable_vector
-   < test::movable_and_copyable_int
-   , node_allocator<test::movable_and_copyable_int> >;
-
-template class stable_vector_iterator<int*, false>;
-template class stable_vector_iterator<int*, true >;
-
-}}
-
 class recursive_vector
 {
    public:
@@ -189,6 +173,50 @@ int main()
       cont_int a; a.push_back(0); a.push_back(1); a.push_back(2);
       boost::intrusive::test::test_iterator_random< cont_int >(a);
       if(boost::report_errors() != 0) {
+         return 1;
+      }
+   }
+
+#ifndef BOOST_CONTAINER_NO_CXX17_CTAD
+   ////////////////////////////////////
+   //    Constructor Template Auto Deduction testing
+   ////////////////////////////////////
+   {
+      auto gold = std::vector{ 1, 2, 3 };
+      auto test = boost::container::stable_vector(gold.begin(), gold.end());
+      if (test.size() != 3) {
+         return 1;
+      }
+      if (!(test[0] == 1 && test[1] == 2 && test[2] == 3)) {
+         return 1;
+      }
+   }
+#endif
+
+   ////////////////////////////////////
+   //    has_trivial_destructor_after_move testing
+   ////////////////////////////////////
+   // default allocator
+   {
+      typedef boost::container::stable_vector<int> cont;
+      typedef cont::allocator_type allocator_type;
+      typedef boost::container::allocator_traits<allocator_type>::pointer pointer;
+      if (boost::has_trivial_destructor_after_move<cont>::value !=
+          boost::has_trivial_destructor_after_move<allocator_type>::value &&
+          boost::has_trivial_destructor_after_move<pointer>::value) {
+         std::cerr << "has_trivial_destructor_after_move(default allocator) test failed" << std::endl;
+         return 1;
+      }
+   }
+   // std::allocator
+   {
+      typedef boost::container::stable_vector<int, std::allocator<int> > cont;
+      typedef cont::allocator_type allocator_type;
+      typedef boost::container::allocator_traits<allocator_type>::pointer pointer;
+      if (boost::has_trivial_destructor_after_move<cont>::value !=
+          boost::has_trivial_destructor_after_move<allocator_type>::value &&
+          boost::has_trivial_destructor_after_move<pointer>::value) {
+         std::cerr << "has_trivial_destructor_after_move(std::allocator) test failed" << std::endl;
          return 1;
       }
    }

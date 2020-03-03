@@ -66,6 +66,7 @@ project
     [ run algorithm/zip2.cpp ]
     [ run algorithm/zip_ignore.cpp ]
     [ run algorithm/flatten.cpp ]
+    [ compile algorithm/ticket-5490.cpp ]
 
     [ run sequence/as_deque.cpp ]
     [ run sequence/as_list.cpp ]
@@ -237,6 +238,7 @@ project
     [ run sequence/ref_vector.cpp ]
     [ run sequence/flatten_view.cpp ]
     [ compile sequence/github-159.cpp ]
+    [ run sequence/github-176.cpp ]
 
     [ compile sequence/size.cpp ]
 
@@ -255,6 +257,7 @@ project
     [ run sequence/swap.cpp ]
 
     [ compile support/is_sequence.cpp ]
+    [ compile support/is_view.cpp ]
     [ compile support/pair_deque.cpp ]
     [ compile support/pair_list.cpp ]
     [ compile support/pair_map.cpp ]
@@ -266,6 +269,7 @@ project
     [ compile support/and.cpp
         : [ requires cxx11_variadic_templates ] ]
     [ compile support/tag_of.cpp ]
+    [ compile support/unused.cpp ]
 
 #   [ compile-fail xxx.cpp  ]
 

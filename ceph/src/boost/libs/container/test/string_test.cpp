@@ -31,28 +31,6 @@
 
 using namespace boost::container;
 
-typedef test::simple_allocator<char>           SimpleCharAllocator;
-typedef basic_string<char, std::char_traits<char>, SimpleCharAllocator> SimpleString;
-typedef test::simple_allocator<SimpleString>    SimpleStringAllocator;
-typedef test::simple_allocator<wchar_t>              SimpleWCharAllocator;
-typedef basic_string<wchar_t, std::char_traits<wchar_t>, SimpleWCharAllocator> SimpleWString;
-typedef test::simple_allocator<SimpleWString>         SimpleWStringAllocator;
-
-namespace boost {
-namespace container {
-
-//Explicit instantiations of container::basic_string
-template class basic_string<char,    std::char_traits<char>, SimpleCharAllocator>;
-template class basic_string<wchar_t, std::char_traits<wchar_t>, SimpleWCharAllocator>;
-template class basic_string<char,    std::char_traits<char>, std::allocator<char> >;
-template class basic_string<wchar_t, std::char_traits<wchar_t>, std::allocator<wchar_t> >;
-
-//Explicit instantiation of container::vectors of container::strings
-template class vector<SimpleString, SimpleStringAllocator>;
-template class vector<SimpleWString, SimpleWStringAllocator>;
-
-}}
-
 struct StringEqual
 {
    template<class Str1, class Str2>
@@ -478,6 +456,18 @@ int string_test()
             return 1;
       }
 
+#ifndef BOOST_CONTAINER_NO_CXX17_CTAD
+      //Chect Constructor Template Auto Deduction
+      {
+         auto gold = StdString(string_literals<CharType>::String());
+         auto test = basic_string(gold.begin(), gold.end());
+         if(!StringEqual()(gold, test)) {
+            return 1;
+         }
+      }
+#endif
+
+
       //When done, delete vector
       delete boostStringVect;
       delete stdStringVect;
@@ -570,6 +560,34 @@ int main()
          return 1;
       if(!boost::container::test::test_container_comparisons<wstring>())
          return 1;
+   }
+
+   ////////////////////////////////////
+   //    has_trivial_destructor_after_move testing
+   ////////////////////////////////////
+   // default allocator
+   {
+      typedef boost::container::basic_string<char> cont;
+      typedef cont::allocator_type allocator_type;
+      typedef boost::container::allocator_traits<allocator_type>::pointer pointer;
+      if (boost::has_trivial_destructor_after_move<cont>::value !=
+          boost::has_trivial_destructor_after_move<allocator_type>::value &&
+          boost::has_trivial_destructor_after_move<pointer>::value) {
+         std::cerr << "has_trivial_destructor_after_move(default allocator) test failed" << std::endl;
+         return 1;
+      }
+   }
+   // std::allocator
+   {
+      typedef boost::container::basic_string<char, std::char_traits<char>, std::allocator<char> > cont;
+      typedef cont::allocator_type allocator_type;
+      typedef boost::container::allocator_traits<allocator_type>::pointer pointer;
+      if (boost::has_trivial_destructor_after_move<cont>::value !=
+          boost::has_trivial_destructor_after_move<allocator_type>::value &&
+          boost::has_trivial_destructor_after_move<pointer>::value) {
+         std::cerr << "has_trivial_destructor_after_move(std::allocator) test failed" << std::endl;
+         return 1;
+      }
    }
 
    return boost::report_errors();

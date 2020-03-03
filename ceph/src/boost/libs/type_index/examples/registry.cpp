@@ -1,4 +1,4 @@
-// Copyright 2013-2017 Antony Polukhin
+// Copyright 2013-2019 Antony Polukhin
 
 // Distributed under the Boost Software License, Version 1.0.
 // (See the accompanying file LICENSE_1_0.txt
@@ -45,6 +45,9 @@ int main() {
     
     // We have erased the `float` type, only `int` remains
     assert(*types.begin() == boost::typeindex::type_id<int>());
+//<-
+    return boost::report_errors();
+//->
 }
 
 //] [/type_index_registry_example]

@@ -5,7 +5,7 @@
 //            Copyright (c) 2014 Riccardo Marcangelo 
 //
 // Copyright (c) 2014 Glen Joseph Fernandes
-// glenfe at live dot com
+// (glenjofe@gmail.com)
 //
 // Distributed under the Boost Software License, Version 1.0.
 //    (See accompanying file LICENSE_1_0.txt or copy at
@@ -14,11 +14,11 @@
 // -----------------------------------------------------------
 
 #include "bitset_test.hpp"
-#include "boost/dynamic_bitset/dynamic_bitset.hpp"
-#include "boost/limits.hpp"
-#include "boost/config.hpp"
+#include <boost/dynamic_bitset/dynamic_bitset.hpp>
+#include <boost/limits.hpp>
+#include <boost/config.hpp>
 
-#include "boost/detail/workaround.hpp"
+#include <boost/config/workaround.hpp>
 
 #if !defined(BOOST_NO_CXX11_ALLOCATOR)
 #include <cstdlib>
@@ -517,10 +517,15 @@ void run_test_cases( BOOST_EXPLICIT_TEMPLATE_TYPE(Block) )
      bitset_test<Bitset>::max_size(b);
   }
 #endif
+  // Test copy-initialize with default constructor
+  {
+    boost::dynamic_bitset<Block> b[1] = {};
+    (void)b;
+  }
 }
 
 int
-test_main(int, char*[])
+main()
 {
   run_test_cases<unsigned char>();
   run_test_cases<unsigned short>();
@@ -530,5 +535,5 @@ test_main(int, char*[])
   run_test_cases< ::boost::ulong_long_type>();
 # endif
 
-  return 0;
+  return boost::report_errors();
 }

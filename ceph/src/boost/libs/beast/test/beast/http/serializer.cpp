@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2016-2017 Vinnie Falco (vinnie dot falco at gmail dot com)
+// Copyright (c) 2016-2019 Vinnie Falco (vinnie dot falco at gmail dot com)
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -10,8 +10,9 @@
 // Test that header file is self-contained.
 #include <boost/beast/http/serializer.hpp>
 
+#include <boost/beast/core/buffer_traits.hpp>
 #include <boost/beast/http/string_body.hpp>
-#include <boost/beast/unit_test/suite.hpp>
+#include <boost/beast/_experimental/unit_test/suite.hpp>
 
 namespace boost {
 namespace beast {
@@ -20,40 +21,6 @@ namespace http {
 class serializer_test : public beast::unit_test::suite
 {
 public:
-    struct deprecated_body
-    {
-        using value_type = std::string;
-
-        class writer
-        {
-        public:
-            using const_buffers_type =
-                boost::asio::const_buffer;
-
-            value_type const& body_;
-
-            template<bool isRequest, class Fields>
-            explicit
-            writer(message<isRequest, deprecated_body, Fields> const& m):
-                body_{m.body()}
-            {
-            }
-
-            void init(error_code& ec)
-            {
-                ec.assign(0,  ec.category());
-            }
-
-            boost::optional<std::pair<const_buffers_type, bool>>
-            get(error_code& ec)
-            {
-                ec.assign(0, ec.category());
-                return {{const_buffers_type{
-                    body_.data(), body_.size()}, false}};
-            }
-        };
-    };
-
     struct const_body
     {
         struct value_type{};
@@ -61,7 +28,7 @@ public:
         struct writer
         {
             using const_buffers_type =
-                boost::asio::const_buffer;
+                net::const_buffer;
 
             template<bool isRequest, class Fields>
             writer(header<isRequest, Fields> const&, value_type const&);
@@ -81,7 +48,7 @@ public:
         struct writer
         {
             using const_buffers_type =
-                boost::asio::const_buffer;
+                net::const_buffer;
 
             template<bool isRequest, class Fields>
             writer(header<isRequest, Fields>&, value_type&);
@@ -125,7 +92,7 @@ public:
         operator()(error_code&,
             ConstBufferSequence const& buffers)
         {
-            size = boost::asio::buffer_size(buffers);
+            size = buffer_bytes(buffers);
         }
     };
 
@@ -149,20 +116,10 @@ public:
         }
     }
 
-    void testBodyWriterCtor()
-    {
-        response<deprecated_body> res;
-        request<deprecated_body> req;
-        serializer<false, deprecated_body> sr1{res};
-        serializer<true, deprecated_body> sr2{req};
-        boost::ignore_unused(sr1, sr2);
-    }
-
     void
     run() override
     {
         testWriteLimit();
-        testBodyWriterCtor();
     }
 };
 

@@ -21,7 +21,6 @@ local here = [ modules.binding $(__name__) ] ;
 project.push-current [ project.current ] ;
 project.load [ path.join [ path.make $(here:D) ] ../config/message-compiler ] ;
 project.load [ path.join [ path.make $(here:D) ] ../config/x86-ext ] ;
-project.load [ path.join [ path.make $(here:D) ] ../config/visibility ] ;
 project.load [ path.join [ path.make $(here:D) ] ../config/pthread-mutex-robust ] ;
 project.load [ path.join [ path.make $(here:D) ] ../config/native-syslog ] ;
 project.load [ path.join [ path.make $(here:D) ] ../config/atomic-int32 ] ;
@@ -82,19 +81,6 @@ rule select-regex-backend ( properties * )
         [ has-config-flag BOOST_LOG_USE_BOOST_XPRESSIVE : $(properties) ] )
     {
         result = <library>/boost/regex//boost_regex ;
-    }
-
-    return $(result) ;
-}
-
-rule check-visibility ( properties * )
-{
-    local result = ;
-
-    local has_visibility = [ configure.builds /boost/log/visibility//visibility : $(properties) : compiler-supports-visibility ] ;
-    if $(has_visibility)
-    {
-        result = <cxxflags>"-fvisibility=hidden" ;
     }
 
     return $(result) ;
@@ -176,7 +162,6 @@ project boost/log
         <conditional>@check-instruction-set
         <conditional>@check-atomic-int32
         <conditional>@select-regex-backend
-        <conditional>@check-visibility
         <conditional>@check-pthread-mutex-robust
         <conditional>@check-native-syslog
         <conditional>@check-message-compiler
@@ -230,7 +215,6 @@ project boost/log
 
         <library>/boost/date_time//boost_date_time
         <library>/boost/filesystem//boost_filesystem
-        <library>/boost/system//boost_system
         <threading>single:<define>BOOST_LOG_NO_THREADS
         <threading>multi:<library>/boost/atomic//boost_atomic
         <threading>multi:<library>/boost/thread//boost_thread
@@ -242,6 +226,8 @@ project boost/log
         <target-os>cygwin:<library>ws2_32
         <target-os>cygwin:<library>mswsock
         <target-os>cygwin:<library>advapi32
+        # Boost.Interprocess does not compile on Cygwin: https://github.com/boostorg/interprocess/issues/76
+        <target-os>cygwin:<define>BOOST_LOG_WITHOUT_IPC
 
         <target-os>linux:<library>rt
 
@@ -288,7 +274,6 @@ local BOOST_LOG_COMMON_SRC =
     format_parser.cpp
     date_time_format_parser.cpp
     named_scope_format_parser.cpp
-    unhandled_exception_count.cpp
     permissions.cpp
     dump.cpp
     ;

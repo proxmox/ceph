@@ -23,29 +23,28 @@
 #include <boost/thread/mutex.hpp>
 #include <boost/thread/thread.hpp>
 #include <boost/detail/lightweight_test.hpp>
+#include "../../../../../timming.hpp"
 
 
 boost::mutex m;
 
 #if defined BOOST_THREAD_USES_CHRONO
-typedef boost::chrono::system_clock Clock;
+typedef boost::chrono::high_resolution_clock Clock;
 typedef Clock::time_point time_point;
 typedef Clock::duration duration;
 typedef boost::chrono::milliseconds ms;
 typedef boost::chrono::nanoseconds ns;
+time_point t0;
+time_point t1;
 #else
 #endif
 
-#ifdef BOOST_THREAD_PLATFORM_WIN32
-const ms max_diff(250);
-#else
-const ms max_diff(75);
-#endif
+const ms max_diff(BOOST_THREAD_TEST_TIME_MS);
 
 void f()
 {
 #if defined BOOST_THREAD_USES_CHRONO
-  time_point t0 = Clock::now();
+  t0 = Clock::now();
   {
     boost::unique_lock<boost::mutex> lk(m, boost::try_to_lock);
     BOOST_TEST(lk.owns_lock() == false);
@@ -61,14 +60,12 @@ void f()
   for (;;)
   {
     boost::unique_lock<boost::mutex> lk(m, boost::try_to_lock);
-    if (lk.owns_lock()) break;
+    if (lk.owns_lock()) {
+      t1 = Clock::now();
+      break;
+    }
   }
-  time_point t1 = Clock::now();
   //m.unlock();
-  ns d = t1 - t0 - ms(250);
-  std::cout << "diff= " << d.count() << std::endl;
-  std::cout << "max_diff= " << max_diff.count() << std::endl;
-  BOOST_TEST(d < max_diff);
 #else
 //  time_point t0 = Clock::now();
 //  {
@@ -99,11 +96,24 @@ int main()
   m.lock();
   boost::thread t(f);
 #if defined BOOST_THREAD_USES_CHRONO
+  time_point t2 = Clock::now();
   boost::this_thread::sleep_for(ms(250));
+  time_point t3 = Clock::now();
 #else
 #endif
   m.unlock();
   t.join();
+
+#if defined BOOST_THREAD_USES_CHRONO
+  ns sleep_time = t3 - t2;
+  ns d_ns = t1 - t0 - sleep_time;
+  ms d_ms = boost::chrono::duration_cast<boost::chrono::milliseconds>(d_ns);
+  std::cout << "d_ns: " << d_ns.count() << std::endl;
+  std::cout << "d_ms: " << d_ms.count() << std::endl;
+  // BOOST_TEST_GE(d_ms.count(), 0);
+  BOOST_THREAD_TEST_IT(d_ms, max_diff);
+  BOOST_THREAD_TEST_IT(d_ns, ns(max_diff));
+#endif
 
   return boost::report_errors();
 }

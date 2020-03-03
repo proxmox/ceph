@@ -13,10 +13,8 @@
 #include <string>
 
 #include <boost/spirit/include/lex_lexertl.hpp>
-#include <boost/spirit/include/phoenix_object.hpp>
+#include <boost/spirit/include/phoenix_function.hpp>
 #include <boost/spirit/include/phoenix_operator.hpp>
-#include <boost/spirit/include/phoenix_statement.hpp>
-#include <boost/spirit/include/phoenix_container.hpp>
 
 namespace lex = boost::spirit::lex;
 namespace phoenix = boost::phoenix;
@@ -67,7 +65,7 @@ struct test_impl
     void operator()(TokenId const& tokenid, Value const& val) const
     {
         BOOST_TEST(sequence_counter < sizeof(data)/sizeof(data[0]));
-        BOOST_TEST(data[sequence_counter].tokenid == tokenid);
+        BOOST_TEST(data[sequence_counter].tokenid == tokenids(tokenid));
         BOOST_TEST(0 == val.which());
 
         typedef boost::iterator_range<wstring_type::iterator> iterator_range;

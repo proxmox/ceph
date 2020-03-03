@@ -95,7 +95,6 @@ struct MonSession : public RefCountedObject {
     map<string,string> args;
     return caps.is_capable(
       g_ceph_context,
-      CEPH_ENTITY_TYPE_MON,
       entity_name,
       service, "", args,
       mask & MON_CAP_R, mask & MON_CAP_W, mask & MON_CAP_X,
@@ -135,7 +134,8 @@ struct MonSessionMap {
     }
     s->sub_map.clear();
     s->item.remove_myself();
-    if (s->name.is_osd()) {
+    if (s->name.is_osd() &&
+	s->name.num() >= 0) {
       for (multimap<int,MonSession*>::iterator p = by_osd.find(s->name.num());
 	   p->first == s->name.num();
 	   ++p)
@@ -164,7 +164,8 @@ struct MonSessionMap {
   void add_session(MonSession *s) {
     sessions.push_back(&s->item);
     s->get();
-    if (s->name.is_osd()) {
+    if (s->name.is_osd() &&
+	s->name.num() >= 0) {
       by_osd.insert(pair<int,MonSession*>(s->name.num(), s));
     }
     if (s->con_features) {

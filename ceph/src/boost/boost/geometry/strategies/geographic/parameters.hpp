@@ -1,6 +1,6 @@
 // Boost.Geometry
 
-// Copyright (c) 2017, Oracle and/or its affiliates.
+// Copyright (c) 2017-2019, Oracle and/or its affiliates.
 // Contributed and/or modified by Adam Wulkiewicz, on behalf of Oracle
 
 // Use, modification and distribution is subject to the Boost Software License,
@@ -10,12 +10,13 @@
 #ifndef BOOST_GEOMETRY_STRATEGIES_GEOGRAPHIC_PARAMETERS_HPP
 #define BOOST_GEOMETRY_STRATEGIES_GEOGRAPHIC_PARAMETERS_HPP
 
-
 #include <boost/geometry/formulas/andoyer_inverse.hpp>
 #include <boost/geometry/formulas/thomas_direct.hpp>
 #include <boost/geometry/formulas/thomas_inverse.hpp>
 #include <boost/geometry/formulas/vincenty_direct.hpp>
 #include <boost/geometry/formulas/vincenty_inverse.hpp>
+//#include <boost/geometry/formulas/karney_direct.hpp>
+//#include <boost/geometry/formulas/karney_inverse.hpp>
 
 #include <boost/mpl/assert.hpp>
 #include <boost/mpl/integral_c.hpp>
@@ -26,7 +27,6 @@ namespace boost { namespace geometry { namespace strategy
 
 struct andoyer
 {
-    //TODO: this should be replaced by an andoyer direct formula
     template
     <
         typename CT,
@@ -38,7 +38,8 @@ struct andoyer
     struct direct
             : formula::thomas_direct
               <
-                  CT, EnableCoordinates, EnableReverseAzimuth,
+                  CT, false,
+                  EnableCoordinates, EnableReverseAzimuth,
                   EnableReducedLength, EnableGeodesicScale
               >
     {};
@@ -75,7 +76,8 @@ struct thomas
     struct direct
             : formula::thomas_direct
               <
-                  CT, EnableCoordinates, EnableReverseAzimuth,
+                  CT, true,
+                  EnableCoordinates, EnableReverseAzimuth,
                   EnableReducedLength, EnableGeodesicScale
               >
     {};
@@ -135,8 +137,48 @@ struct vincenty
             >
     {};
 };
+/*
+struct karney
+{
+    template
+    <
+        typename CT,
+        bool EnableCoordinates = true,
+        bool EnableReverseAzimuth = false,
+        bool EnableReducedLength = false,
+        bool EnableGeodesicScale = false,
+        size_t SeriesOrder = 8
+    >
+    struct direct
+            : formula::karney_direct
+              <
+                  CT, EnableCoordinates, EnableReverseAzimuth,
+                  EnableReducedLength, EnableGeodesicScale,
+                  SeriesOrder
+              >
+    {};
 
-
+    template
+    <
+        typename CT,
+        bool EnableDistance,
+        bool EnableAzimuth,
+        bool EnableReverseAzimuth = false,
+        bool EnableReducedLength = false,
+        bool EnableGeodesicScale = false,
+        size_t SeriesOrder = 8
+    >
+    struct inverse
+        : formula::karney_inverse
+            <
+                CT, EnableDistance,
+                EnableAzimuth, EnableReverseAzimuth,
+                EnableReducedLength, EnableGeodesicScale,
+                SeriesOrder
+            >
+    {};
+};
+*/
 template <typename FormulaPolicy>
 struct default_order
 {
@@ -161,6 +203,12 @@ template<>
 struct default_order<vincenty>
     : boost::mpl::integral_c<unsigned int, 4>
 {};
+/*
+template<>
+struct default_order<karney>
+    : boost::mpl::integral_c<unsigned int, 8>
+{};
+*/
 
 }}} // namespace boost::geometry::strategy
 

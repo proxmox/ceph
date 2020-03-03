@@ -78,7 +78,7 @@ main()
 
         BOOST_TEST(test_attr("4.9406564584124654e-324", double_, d));   // DBL_DENORM_MIN
         BOOST_TEST(d == 4.9406564584124654e-324); // exact!
-        
+
         BOOST_TEST(test_attr("219721.03839999999", double_, d));
         BOOST_TEST(d == 219721.03839999999); // exact!
 
@@ -101,10 +101,10 @@ main()
 
         BOOST_TEST(test_attr("219721.03839999999", float_, f));
         BOOST_TEST(f == 219721.03839999999f); // inexact
-        
+
         BOOST_TEST(test_attr("2.2204460492503131e-16", float_, f));
         BOOST_TEST(f == 2.2204460492503131e-16f); // inexact
-        
+
         // big exponents!
         // fail, but do not assert!
         BOOST_TEST(!test_attr("123e1234000000", double_, d));
@@ -139,6 +139,32 @@ main()
         BOOST_TEST(test("-NAN(...)", double_));
         BOOST_TEST(test_attr("-NAN(...)", double_, d) &&
             FP_NAN == fpclassify(d) && signbit(d));
+
+        BOOST_TEST(!test("1e999", double_));
+        BOOST_TEST(!test("1e-999", double_));
+        BOOST_TEST(test_attr("2.1111111e-303", double_, d) &&
+            compare(d, 2.1111111e-303));
+        BOOST_TEST(!test_attr("1.1234e", double_, d) && compare(d, 1.1234));
+
+        // https://svn.boost.org/trac10/ticket/11608
+        BOOST_TEST(test_attr("1267650600228229401496703205376", double_, d) &&
+            compare(d, 1.2676506002282294e+30));
+
+        BOOST_TEST(test_attr("12676506.00228229401496703205376", double_, d) &&
+            compare(d, 12676506.00228229, 0.00000001));
+
+        BOOST_TEST(test_attr("12676506.00228229401496703205376E6", double_, d) &&
+            compare(d, 12676506002282.29, 0.01));
+
+        char const* long_number = "17976931348623157081452742373170435679807056"
+            "7525844996598917476803157260780028538760589558632766878171540458953"
+            "5143824642343213268894641827684675467035375169860499105765512820762"
+            "4549009038932894407586850845513394230458323690322294816580855933212"
+            "3348274797826204144723168738177180919299881250404026184124858368.00"
+            "00000000000000";
+
+        BOOST_TEST(test_attr(long_number, double_, d) &&
+            compare(d, 1.7976931348623157e+308));
     }
 
     return boost::report_errors();

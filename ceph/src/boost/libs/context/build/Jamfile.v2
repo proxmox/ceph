@@ -36,6 +36,8 @@ project boost/context
       <toolset>intel,<link>static:<define>BOOST_CONTEXT_EXPORT=
       <toolset>msvc,<link>shared:<define>BOOST_CONTEXT_EXPORT=EXPORT
       <toolset>msvc,<link>static:<define>BOOST_CONTEXT_EXPORT=
+      <toolset>clang-win,<link>shared:<define>BOOST_CONTEXT_EXPORT=EXPORT
+      <toolset>clang-win,<link>static:<define>BOOST_CONTEXT_EXPORT=
       <link>shared:<define>BOOST_CONTEXT_DYN_LINK=1
       <define>BOOST_CONTEXT_SOURCE
       <threading>multi
@@ -102,58 +104,6 @@ feature.feature context-impl
 feature.set-default context-impl : fcontext ;
 feature.compose <context-impl>ucontext : <define>BOOST_USE_UCONTEXT ;
 feature.compose <context-impl>winfib : <define>BOOST_USE_WINFIB ;
-
-
-actions gas32
-{
-    cpp -x assembler-with-cpp "$(>)" | as --32 -o "$(<)"
-}
-
-actions gas64
-{
-    cpp -x assembler-with-cpp "$(>)" | as --64 -o "$(<)"
-}
-
-actions gasx32
-{
-    cpp -x assembler-with-cpp "$(>)" | as --x32 -o "$(<)"
-}
-
-actions gas
-{
-    cpp -x assembler-with-cpp "$(>)" | as -o "$(<)"
-}
-
-actions armasm
-{
-    armasm "$(>)" "$(<)"
-}
-
-actions masm
-{
-    ml /c /Fo"$(<)" "$(>)"
-}
-
-actions masm64
-{
-    ml64 /c /Fo"$(<)" "$(>)"
-}
-
-
-rule configure ( properties * )
-{
-    local result  ;
-
-#   if ( ! ( <toolset>gcc in $(properties)
-#           || <toolset>intel in $(properties)
-#           || <toolset>msvc in $(properties) ) )
-#   {
-#       result = <build>no ;
-#       ECHO "toolset not supported" ;
-#   }
-
-    return $(result) ;
-}
 
 # ARM
 # ARM/AAPCS/ELF
@@ -274,7 +224,7 @@ alias asm_sources
    ;
 
 # MIPS
-# MIPS/O32/ELF
+# MIPS32/O32/ELF
 alias asm_sources
    : asm/make_mips32_o32_elf_gas.S
      asm/jump_mips32_o32_elf_gas.S
@@ -297,12 +247,36 @@ alias asm_sources
      <toolset>gcc
    ;
 
+# MIPS64/N64/ELF
+alias asm_sources
+   : asm/make_mips64_n64_elf_gas.S
+     asm/jump_mips64_n64_elf_gas.S
+     asm/ontop_mips64_n64_elf_gas.S
+   : <abi>n64
+     <address-model>64
+     <architecture>mips1
+     <binary-format>elf
+     <toolset>clang
+   ;
+
+alias asm_sources
+   : asm/make_mips64_n64_elf_gas.S
+     asm/jump_mips64_n64_elf_gas.S
+     asm/ontop_mips64_n64_elf_gas.S
+   : <abi>n64
+     <address-model>64
+     <architecture>mips1
+     <binary-format>elf
+     <toolset>gcc
+   ;
+
 # POWERPC_32
 # POWERPC_32/SYSV/ELF
 alias asm_sources
    : asm/make_ppc32_sysv_elf_gas.S
      asm/jump_ppc32_sysv_elf_gas.S
      asm/ontop_ppc32_sysv_elf_gas.S
+     asm/tail_ppc32_sysv_elf_gas.cpp
    : <abi>sysv
      <address-model>32
      <architecture>power
@@ -314,11 +288,12 @@ alias asm_sources
    : asm/make_ppc32_sysv_elf_gas.S
      asm/jump_ppc32_sysv_elf_gas.S
      asm/ontop_ppc32_sysv_elf_gas.S
+     asm/tail_ppc32_sysv_elf_gas.cpp
    : <abi>sysv
      <address-model>32
      <architecture>power
      <binary-format>elf
-     <toolset>clang
+     <toolset>gcc
    ;
 
 alias asm_sources
@@ -439,6 +414,32 @@ alias asm_sources
      <binary-format>mach-o
    ;
 
+# RISCV64
+# RISCV64/SYSV/ELF
+alias asm_sources
+   : asm/make_riscv64_sysv_elf_gas.S
+     asm/jump_riscv64_sysv_elf_gas.S
+     asm/ontop_riscv64_sysv_elf_gas.S
+   : <abi>sysv
+     <address-model>64
+     <architecture>riscv
+     <binary-format>elf
+     <toolset>gcc
+   ;
+
+# S390X
+# S390X/SYSV/ELF
+alias asm_sources
+   : asm/make_s390x_sysv_elf_gas.S
+     asm/jump_s390x_sysv_elf_gas.S
+     asm/ontop_s390x_sysv_elf_gas.S
+   : <abi>sysv
+     <address-model>64
+     <architecture>s390x
+     <binary-format>elf
+     <toolset>gcc
+   ;
+
 # X86
 # X86/SYSV/ELF
 alias asm_sources
@@ -511,9 +512,9 @@ alias asm_sources
    ;
 
 alias asm_sources
-   : asm/make_i386_ms_pe_gas.asm
-     asm/jump_i386_ms_pe_gas.asm
-     asm/ontop_i386_ms_pe_gas.asm
+   : asm/make_i386_ms_pe_masm.asm
+     asm/jump_i386_ms_pe_masm.asm
+     asm/ontop_i386_ms_pe_masm.asm
      dummy.cpp
    : <abi>ms
      <address-model>32
@@ -641,9 +642,9 @@ alias asm_sources
    ;
 
 alias asm_sources
-   : asm/make_x86_64_ms_pe_gas.asm
-     asm/jump_x86_64_ms_pe_gas.asm
-     asm/ontop_x86_64_ms_pe_gas.asm
+   : asm/make_x86_64_ms_pe_masm.asm
+     asm/jump_x86_64_ms_pe_masm.asm
+     asm/ontop_x86_64_ms_pe_masm.asm
      dummy.cpp
    : <abi>ms
      <address-model>64
@@ -820,7 +821,6 @@ explicit stack_traits_sources ;
 
 lib boost_context
    : impl_sources
-     execution_context.cpp
      stack_traits_sources
    ;
 

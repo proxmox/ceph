@@ -68,15 +68,22 @@ run get_pointer_test.cpp ;
 
 run lightweight_test_test.cpp ;
 run lightweight_test_test.cpp : : : <exception-handling>off : lightweight_test_test_no_except ;
-
 run lightweight_test_test2.cpp ;
-run lightweight_test_all_eq_test.cpp ;
 run lightweight_test_all_with_test.cpp ;
-run lightweight_test_all_with_fail.cpp ;
 run lightweight_test_lt_le_test.cpp ;
 run lightweight_test_gt_ge_test.cpp ;
-
 run lightweight_test_eq_nullptr.cpp ;
+run lightweight_test_test3.cpp ;
+run lightweight_test_test4.cpp ;
+run lightweight_test_test5.cpp : : :
+    <warnings>extra
+    <toolset>msvc:<warnings-as-errors>on
+    <toolset>gcc:<warnings-as-errors>on
+    <toolset>clang:<warnings-as-errors>on
+    <toolset>gcc-4.4.7:<cxxflags>-Wno-sign-compare ;
+
+run-fail lightweight_test_all_eq_test.cpp ;
+run-fail lightweight_test_all_with_fail.cpp ;
 
 run-fail lightweight_test_fail.cpp ;
 run-fail lightweight_test_fail2.cpp ;
@@ -90,6 +97,8 @@ run-fail lightweight_test_fail8.cpp ;
 run-fail lightweight_test_fail8.cpp : : : <rtti>off : lightweight_test_fail8_no_rtti ;
 run-fail lightweight_test_fail9.cpp ;
 run-fail lightweight_test_fail10.cpp ;
+run-fail lightweight_test_fail11.cpp ;
+run-fail lightweight_test_fail12.cpp ;
 run-fail lightweight_test_lt_fail.cpp ;
 run-fail lightweight_test_le_fail.cpp ;
 run-fail lightweight_test_gt_fail.cpp ;
@@ -120,6 +129,43 @@ run pointer_traits_difference_type_test.cpp ;
 run pointer_traits_rebind_test.cpp ;
 run pointer_traits_pointer_to_test.cpp ;
 run to_address_test.cpp ;
+
+run exchange_test.cpp ;
+run exchange_move_test.cpp ;
+
+run first_scalar_test.cpp ;
+compile first_scalar_constexpr_test.cpp ;
+
+run empty_value_test.cpp ;
+run empty_value_size_test.cpp ;
+run empty_value_final_test.cpp ;
+
+run quick_exit_test.cpp ;
+run-fail quick_exit_fail.cpp ;
+
+compile use_default_test.cpp ;
+
+run default_allocator_test.cpp ;
+run noinit_adaptor_test.cpp ;
+run alloc_construct_test.cpp ;
+run alloc_construct_throws_test.cpp ;
+run alloc_construct_cxx11_test.cpp ;
+
+run nvp_test.cpp ;
+
+lib lib_typeid : lib_typeid.cpp : <link>shared:<define>LIB_TYPEID_DYN_LINK=1 ;
+
+run test_lib_typeid.cpp lib_typeid : : : <link>shared : test_lib_typeid_shared ;
+run test_lib_typeid.cpp lib_typeid : : : <link>static : test_lib_typeid_static ;
+
+run test_lib_typeid.cpp lib_typeid : : : <link>shared <rtti>off : test_lib_typeid_shared_no_rtti ;
+run test_lib_typeid.cpp lib_typeid : : : <link>static <rtti>off : test_lib_typeid_static_no_rtti ;
+
+run uncaught_exceptions.cpp : : : <exception-handling>on ;
+run uncaught_exceptions_np.cpp : : : <exception-handling>on ;
+
+run no_exceptions_support_test.cpp ;
+run no_exceptions_support_test.cpp : : : <exception-handling>off : no_exceptions_support_test_nx ;
 
 use-project /boost/core/swap : ./swap ;
 build-project ./swap ;

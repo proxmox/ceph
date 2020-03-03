@@ -15,6 +15,7 @@
 #include <boost/container/detail/pair.hpp>
 #include <boost/container/detail/mpl.hpp>
 #include <boost/move/unique_ptr.hpp>
+#include <boost/move/utility_core.hpp>
 
 #include <cstddef>
 #include <boost/container/detail/iterator.hpp>
@@ -107,6 +108,47 @@ bool CheckEqualPairContainers(const MyBoostCont &boostcont, const MyStdCont &std
    }
    return true;
 }
+
+struct less_transparent
+{
+   typedef void is_transparent;
+
+   template<class T, class U>
+   bool operator()(const T &t, const U &u) const
+   {
+      return t < u;
+   }
+};
+
+struct equal_transparent
+{
+   typedef void is_transparent;
+
+   template<class T, class U>
+   bool operator()(const T &t, const U &u) const
+   {
+      return t == u;
+   }
+};
+
+struct move_op
+{
+   template<class T>
+   typename boost::move_detail::add_rvalue_reference<T>::type operator()(T &t)
+   {
+      return boost::move(t);
+   }
+};
+
+struct const_ref_op
+{
+   template<class T>
+   const T & operator()(const T &t)
+   {
+      return t;
+   }
+
+};
 
 }  //namespace test{
 }  //namespace container {

@@ -14,6 +14,7 @@
 #include <boost/container/detail/config_begin.hpp>
 #include "check_equal_containers.hpp"
 #include "print_container.hpp"
+#include "movable_int.hpp"
 #include <boost/move/utility_core.hpp>
 #include <boost/move/iterator.hpp>
 #include <boost/move/make_unique.hpp>
@@ -580,11 +581,20 @@ int set_test ()
 
    //Compare count with std containers
    for(int i = 0; i < MaxElem; ++i){
-      IntType count_me(i);
-      if(boostset.count(count_me) != stdset.count(i)){
+      IntType k(i);
+      if(boostset.count(k) != stdset.count(i)){
          return -1;
       }
-      if(boostmultiset.count(count_me) != stdmultiset.count(i)){
+
+      if(boostset.contains(k) != (stdset.find(i) != stdset.end())){
+         return -1;
+      }
+
+      if(boostmultiset.count(k) != stdmultiset.count(i)){
+         return -1;
+      }
+
+      if(boostmultiset.contains(k) != (stdmultiset.find(i) != stdmultiset.end())){
          return -1;
       }
    }

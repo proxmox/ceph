@@ -6,9 +6,6 @@
     file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
 =============================================================================*/
 
-// this file intentionally contains non-ascii characters
-// boostinspect:noascii
-
 #define BOOST_SPIRIT_X3_UNICODE
 
 #include <boost/detail/lightweight_test.hpp>
@@ -22,6 +19,7 @@ int
 main()
 {
     using spirit_test::test;
+    using spirit_test::test_failure;
     using spirit_test::test_attr;
 
     using boost::spirit::x3::unused_type;
@@ -103,16 +101,10 @@ main()
         BOOST_TEST(test("f", xdigit));
         BOOST_TEST(!test("g", xdigit));
 
-// needed for VC7.1 only
-#if BOOST_WORKAROUND(BOOST_MSVC, BOOST_TESTED_AT(1310))
-#pragma setlocale("german")
-#endif
-        BOOST_TEST(test("é", alpha));
-        BOOST_TEST(test("é", lower));
-        BOOST_TEST(!test("é", upper));
-#if BOOST_WORKAROUND(BOOST_MSVC, BOOST_TESTED_AT(1310))
-#pragma setlocale("")
-#endif
+        // test extended ASCII characters
+        BOOST_TEST(test("\xE9", alpha));
+        BOOST_TEST(test("\xE9", lower));
+        BOOST_TEST(!test("\xE9", upper));
     }
 
     {
@@ -198,18 +190,21 @@ main()
         BOOST_TEST(!test(L" ", braille));
         BOOST_TEST(test(L" ", ~braille));
         // $$$ TODO $$$ Add more unicode tests
+    }
 
-// needed for VC7.1 only
-#if BOOST_WORKAROUND(BOOST_MSVC, BOOST_TESTED_AT(1310))
-#pragma setlocale("german")
-#endif
-        BOOST_TEST(test("é", alpha));
-        BOOST_TEST(test("é", lower));
-        BOOST_TEST(!test("é", upper));
+    {   // test invalid unicode literals
+        using namespace boost::spirit::x3::unicode;
 
-#if BOOST_WORKAROUND(BOOST_MSVC, BOOST_TESTED_AT(1310))
-#pragma setlocale("")
-#endif
+        auto const invalid_unicode = char32_t{0x7FFFFFFF};
+        auto const input           = boost::u32string_view(&invalid_unicode, 1);
+
+        BOOST_TEST(test_failure(input, char_));
+
+        // force unicode category lookup
+        // related issue: https://github.com/boostorg/spirit/issues/524
+        BOOST_TEST(test_failure(input, alpha));
+        BOOST_TEST(test_failure(input, upper));
+        BOOST_TEST(test_failure(input, lower));
     }
 
     {   // test attribute extraction

@@ -3,13 +3,10 @@
 //  Distributed under the Boost Software License, Version 1.0. (See accompanying 
 //  file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
 
-// #define BOOST_SPIRIT_LEXERTL_DEBUG
-
 #include <boost/detail/lightweight_test.hpp>
 #include <boost/spirit/include/phoenix_object.hpp>
 #include <boost/spirit/include/phoenix_operator.hpp>
-#include <boost/spirit/include/phoenix_statement.hpp>
-#include <boost/spirit/include/phoenix_stl.hpp>
+#include <boost/spirit/include/phoenix_container.hpp>
 #include <boost/spirit/include/lex_lexertl.hpp>
 #include <boost/foreach.hpp>
 
@@ -81,9 +78,8 @@ struct handle_whitespace
 
     std::stack<unsigned int>& indents_;
 
-private:
     // silence MSVC warning C4512: assignment operator could not be generated
-    handle_whitespace& operator= (handle_whitespace const&);
+    BOOST_DELETED_FUNCTION(handle_whitespace& operator= (handle_whitespace const&));
 };
 
 ///////////////////////////////////////////////////////////////////////////////

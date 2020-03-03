@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2016-2017 Vinnie Falco (vinnie dot falco at gmail dot com)
+// Copyright (c) 2016-2019 Vinnie Falco (vinnie dot falco at gmail dot com)
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -12,10 +12,11 @@
 
 #include "message_fuzz.hpp"
 
+#include <boost/beast/core/buffers_to_string.hpp>
 #include <boost/beast/core/static_string.hpp>
 #include <boost/beast/http/fields.hpp>
 #include <boost/beast/test/fuzz.hpp>
-#include <boost/beast/unit_test/suite.hpp>
+#include <boost/beast/_experimental/unit_test/suite.hpp>
 #include <boost/optional.hpp>
 #include <random>
 
@@ -35,30 +36,16 @@ public:
     BOOST_STATIC_ASSERT(
         ! detail::is_chunk_extensions<not_chunk_extensions>::value);
 
-    template<class ConstBufferSequence>
-    static
-    std::string
-    to_string(ConstBufferSequence const& buffers)
-    {
-        std::string s;
-        s.reserve(boost::asio::buffer_size(buffers));
-        for(boost::asio::const_buffer b : beast::detail::buffers_range(buffers))
-            s.append(
-                reinterpret_cast<char const*>(b.data()),
-                b.size());
-        return s;
-    }
-
     template<class T, class... Args>
     void
     check(string_view match, Args&&... args)
     {
         T t(std::forward<Args>(args)...);
-        BEAST_EXPECT(to_string(t) == match);
+        BEAST_EXPECT(buffers_to_string(t) == match);
         T t2(t);
-        BEAST_EXPECT(to_string(t2) == match);
+        BEAST_EXPECT(buffers_to_string(t2) == match);
         T t3(std::move(t2));
-        BEAST_EXPECT(to_string(t3) == match);
+        BEAST_EXPECT(buffers_to_string(t3) == match);
     }
 
     template<class T, class... Args>
@@ -66,14 +53,14 @@ public:
     check_fwd(string_view match, Args&&... args)
     {
         T t(std::forward<Args>(args)...);
-        BEAST_EXPECT(to_string(t) == match);
+        BEAST_EXPECT(buffers_to_string(t) == match);
         T t2(t);
-        BEAST_EXPECT(to_string(t2) == match);
+        BEAST_EXPECT(buffers_to_string(t2) == match);
         T t3(std::move(t2));
-        BEAST_EXPECT(to_string(t3) == match);
+        BEAST_EXPECT(buffers_to_string(t3) == match);
     }
 
-    using cb_t = boost::asio::const_buffer;
+    using cb_t = net::const_buffer;
 
     static
     cb_t
@@ -208,11 +195,11 @@ public:
                 std::string s;
                 for(auto const& v : ce)
                 {
-                    s.append(v.first.to_string());
+                    s.append(std::string(v.first));
                     s.push_back(',');
                     if(! v.second.empty())
                     {
-                        s.append(v.second.to_string());
+                        s.append(std::string(v.second));
                         s.push_back(',');
                     }
                 }

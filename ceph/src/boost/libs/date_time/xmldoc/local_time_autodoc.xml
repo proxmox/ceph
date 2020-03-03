@@ -83,21 +83,21 @@
 <header name="boost/date_time/local_time/dst_transition_day_rules.hpp">
 <namespace name="boost">
 <namespace name="local_time">
-<struct name="partial_date_rule_spec"><typedef name="date_type"><type>gregorian::date</type></typedef>
-<typedef name="start_rule"><type>gregorian::partial_date</type></typedef>
-<typedef name="end_rule"><type>gregorian::partial_date</type></typedef>
-</struct><struct name="first_last_rule_spec"><typedef name="date_type"><type>gregorian::date</type></typedef>
+<struct name="first_last_rule_spec"><typedef name="date_type"><type>gregorian::date</type></typedef>
 <typedef name="start_rule"><type>gregorian::first_kday_of_month</type></typedef>
 <typedef name="end_rule"><type>gregorian::last_kday_of_month</type></typedef>
 </struct><struct name="last_last_rule_spec"><typedef name="date_type"><type>gregorian::date</type></typedef>
 <typedef name="start_rule"><type>gregorian::last_kday_of_month</type></typedef>
 <typedef name="end_rule"><type>gregorian::last_kday_of_month</type></typedef>
-</struct><struct name="nth_last_rule_spec"><typedef name="date_type"><type>gregorian::date</type></typedef>
-<typedef name="start_rule"><type>gregorian::nth_kday_of_month</type></typedef>
-<typedef name="end_rule"><type>gregorian::last_kday_of_month</type></typedef>
 </struct><struct name="nth_kday_rule_spec"><typedef name="date_type"><type>gregorian::date</type></typedef>
 <typedef name="start_rule"><type>gregorian::nth_kday_of_month</type></typedef>
 <typedef name="end_rule"><type>gregorian::nth_kday_of_month</type></typedef>
+</struct><struct name="nth_last_rule_spec"><typedef name="date_type"><type>gregorian::date</type></typedef>
+<typedef name="start_rule"><type>gregorian::nth_kday_of_month</type></typedef>
+<typedef name="end_rule"><type>gregorian::last_kday_of_month</type></typedef>
+</struct><struct name="partial_date_rule_spec"><typedef name="date_type"><type>gregorian::date</type></typedef>
+<typedef name="start_rule"><type>gregorian::partial_date</type></typedef>
+<typedef name="end_rule"><type>gregorian::partial_date</type></typedef>
 </struct><typedef name="dst_calc_rule"><purpose>Provides rule of the form starting Apr 30 ending Oct 21. </purpose><type>date_time::dst_day_calc_rule&lt; gregorian::date &gt;</type></typedef>
 <typedef name="partial_date_dst_rule"><purpose>Provides rule of the form first Sunday in April, last Saturday in Oct. </purpose><type>date_time::day_calc_dst_rule&lt; <classname>partial_date_rule_spec</classname> &gt;</type></typedef>
 <typedef name="first_last_dst_rule"><purpose>Provides rule of the form first Sunday in April, last Saturday in Oct. </purpose><type>date_time::day_calc_dst_rule&lt; <classname>first_last_rule_spec</classname> &gt;</type></typedef>
@@ -125,9 +125,6 @@
 <namespace name="boost">
 <namespace name="local_time">
 <struct name="ambiguous_result"><inherit access="public">logic_error</inherit><purpose>simple exception for reporting when STD or DST cannot be determined </purpose><method-group name="public member functions">
-</method-group>
-<constructor><parameter name="msg"><paramtype>std::string const &amp;</paramtype><default>std::string()</default></parameter></constructor>
-</struct><struct name="time_label_invalid"><inherit access="public">logic_error</inherit><purpose>simple exception for when time label given cannot exist </purpose><method-group name="public member functions">
 </method-group>
 <constructor><parameter name="msg"><paramtype>std::string const &amp;</paramtype><default>std::string()</default></parameter></constructor>
 </struct><struct name="dst_not_valid"><inherit access="public">logic_error</inherit><method-group name="public member functions">
@@ -166,7 +163,7 @@
 <method name="operator+="><type><classname>local_date_time_base</classname></type><parameter name="td"><paramtype>const time_duration_type &amp;</paramtype></parameter><purpose>Local_date_time += time_duration. </purpose></method>
 <method name="operator-" cv="const"><type><classname>local_date_time_base</classname></type><parameter name="td"><paramtype>const time_duration_type &amp;</paramtype></parameter><purpose>Local_date_time - time_duration. </purpose></method>
 <method name="operator-="><type><classname>local_date_time_base</classname></type><parameter name="td"><paramtype>const time_duration_type &amp;</paramtype></parameter><purpose>Local_date_time -= time_duration. </purpose></method>
-<method name="operator-" cv="const"><type>time_duration_type</type><parameter name="rhs"><paramtype>const <classname>local_date_time_base</classname> &amp;</paramtype></parameter><purpose>local_date_time -= local_date_time –&gt; time_duration_type </purpose></method>
+<method name="operator-" cv="const"><type>time_duration_type</type><parameter name="rhs"><paramtype>const <classname>local_date_time_base</classname> &amp;</paramtype></parameter><purpose>local_date_time -= local_date_time --&gt; time_duration_type </purpose></method>
 </method-group>
 <constructor><parameter name="t"><paramtype>utc_time_type</paramtype><description><para>A UTC time </para></description></parameter><parameter name="tz"><paramtype>boost::shared_ptr&lt; tz_type &gt;</paramtype><description><para>Timezone for to adjust the UTC time to. </para></description></parameter><description><para>This constructor interprets the passed time as a UTC time. So, for example, if the passed timezone is UTC-5 then the time will be adjusted back 5 hours. The time zone allows for automatic calculation of whether the particular time is adjusted for daylight savings, etc. If the time zone shared pointer is null then time stays unadjusted. 
 </para></description></constructor>
@@ -183,7 +180,10 @@
 <method name="construction_adjustment"><type>utc_time_type</type><parameter name="t"><paramtype>utc_time_type</paramtype></parameter><parameter name="z"><paramtype>boost::shared_ptr&lt; tz_type &gt;</paramtype></parameter><parameter name="dst_flag"><paramtype>bool</paramtype></parameter><description><para>Adjust the passed in time to UTC? </para></description></method>
 <method name="zone_as_offset" cv="const"><type>std::string</type><parameter name="td"><paramtype>const time_duration_type &amp;</paramtype></parameter><parameter name="separator"><paramtype>const std::string &amp;</paramtype></parameter><description><para>Simple formatting code – todo remove this? </para></description></method>
 </method-group>
-</class><typedef name="local_date_time"><purpose>Use the default parameters to define local_date_time. </purpose><type><classname>local_date_time_base</classname></type></typedef>
+</class><struct name="time_label_invalid"><inherit access="public">logic_error</inherit><purpose>simple exception for when time label given cannot exist </purpose><method-group name="public member functions">
+</method-group>
+<constructor><parameter name="msg"><paramtype>std::string const &amp;</paramtype><default>std::string()</default></parameter></constructor>
+</struct><typedef name="local_date_time"><purpose>Use the default parameters to define local_date_time. </purpose><type><classname>local_date_time_base</classname></type></typedef>
 
 
 
@@ -269,10 +269,10 @@
 <header name="boost/date_time/local_time/posix_time_zone.hpp">
 <namespace name="boost">
 <namespace name="local_time">
-<struct name="bad_offset"><inherit access="public">out_of_range</inherit><purpose>simple exception for UTC and Daylight savings start/end offsets </purpose><method-group name="public member functions">
+<struct name="bad_adjustment"><inherit access="public">out_of_range</inherit><purpose>simple exception for UTC daylight savings adjustment </purpose><method-group name="public member functions">
 </method-group>
 <constructor><parameter name="msg"><paramtype>std::string const &amp;</paramtype><default>std::string()</default></parameter></constructor>
-</struct><struct name="bad_adjustment"><inherit access="public">out_of_range</inherit><purpose>simple exception for UTC daylight savings adjustment </purpose><method-group name="public member functions">
+</struct><struct name="bad_offset"><inherit access="public">out_of_range</inherit><purpose>simple exception for UTC and Daylight savings start/end offsets </purpose><method-group name="public member functions">
 </method-group>
 <constructor><parameter name="msg"><paramtype>std::string const &amp;</paramtype><default>std::string()</default></parameter></constructor>
 </struct><class name="posix_time_zone_base"><template>

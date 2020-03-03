@@ -101,7 +101,7 @@
 # main package definition
 #################################################################################
 Name:		ceph
-Version:	14.2.6
+Version:	14.2.8
 Release:	0%{?dist}
 %if 0%{?fedora} || 0%{?rhel}
 Epoch:		2
@@ -117,7 +117,7 @@ License:	LGPL-2.1 and CC-BY-SA-3.0 and GPL-2.0 and BSL-1.0 and BSD-3-Clause and 
 Group:		System/Filesystems
 %endif
 URL:		http://ceph.com/
-Source0:	%{?_remote_tarball_prefix}ceph-14.2.6.tar.bz2
+Source0:	%{?_remote_tarball_prefix}ceph-14.2.8.tar.bz2
 %if 0%{?suse_version}
 # _insert_obs_source_lines_here
 ExclusiveArch:  x86_64 aarch64 ppc64le s390x
@@ -149,11 +149,7 @@ BuildRequires:	fuse-devel
 %if 0%{?rhel} == 7
 # devtoolset offers newer make and valgrind-devel, but the old ones are good
 # enough.
-%ifarch x86_64
 BuildRequires:	devtoolset-8-gcc-c++ >= 8.2.1
-%else
-BuildRequires:	devtoolset-7-gcc-c++ >= 7.3.1-5.13
-%endif
 %else
 BuildRequires:	gcc-c++
 %endif
@@ -296,6 +292,7 @@ BuildRequires:	python%{_python_buildid}-PyJWT
 BuildRequires:	python%{_python_buildid}-Routes
 BuildRequires:	python%{_python_buildid}-Werkzeug
 BuildRequires:	python%{_python_buildid}-numpy-devel
+BuildRequires:	rpm-build
 BuildRequires:  xmlsec1-devel
 %endif
 %endif
@@ -1105,7 +1102,7 @@ This package provides Ceph’s default alerts for Prometheus.
 # common
 #################################################################################
 %prep
-%autosetup -p1 -n ceph-14.2.6
+%autosetup -p1 -n ceph-14.2.8
 
 %build
 # LTO can be enabled as soon as the following GCC bug is fixed:
@@ -1554,6 +1551,7 @@ fi
 %files mgr
 %{_bindir}/ceph-mgr
 %dir %{_datadir}/ceph/mgr
+%{_datadir}/ceph/mgr/alerts
 %{_datadir}/ceph/mgr/ansible
 %{_datadir}/ceph/mgr/balancer
 %{_datadir}/ceph/mgr/crash

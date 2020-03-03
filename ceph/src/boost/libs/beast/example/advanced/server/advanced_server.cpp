@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2016-2017 Vinnie Falco (vinnie dot falco at gmail dot com)
+// Copyright (c) 2016-2019 Vinnie Falco (vinnie dot falco at gmail dot com)
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -18,12 +18,10 @@
 #include <boost/beast/websocket.hpp>
 #include <boost/beast/version.hpp>
 #include <boost/asio/bind_executor.hpp>
-#include <boost/asio/ip/tcp.hpp>
 #include <boost/asio/signal_set.hpp>
 #include <boost/asio/strand.hpp>
-#include <boost/asio/steady_timer.hpp>
 #include <boost/make_unique.hpp>
-#include <boost/config.hpp>
+#include <boost/optional.hpp>
 #include <algorithm>
 #include <cstdlib>
 #include <functional>
@@ -33,20 +31,22 @@
 #include <thread>
 #include <vector>
 
+namespace beast = boost::beast;                 // from <boost/beast.hpp>
+namespace http = beast::http;                   // from <boost/beast/http.hpp>
+namespace websocket = beast::websocket;         // from <boost/beast/websocket.hpp>
+namespace net = boost::asio;                    // from <boost/asio.hpp>
 using tcp = boost::asio::ip::tcp;               // from <boost/asio/ip/tcp.hpp>
-namespace http = boost::beast::http;            // from <boost/beast/http.hpp>
-namespace websocket = boost::beast::websocket;  // from <boost/beast/websocket.hpp>
 
 // Return a reasonable mime type based on the extension of a file.
-boost::beast::string_view
-mime_type(boost::beast::string_view path)
+beast::string_view
+mime_type(beast::string_view path)
 {
-    using boost::beast::iequals;
+    using beast::iequals;
     auto const ext = [&path]
     {
         auto const pos = path.rfind(".");
-        if(pos == boost::beast::string_view::npos)
-            return boost::beast::string_view{};
+        if(pos == beast::string_view::npos)
+            return beast::string_view{};
         return path.substr(pos);
     }();
     if(iequals(ext, ".htm"))  return "text/html";
@@ -77,13 +77,13 @@ mime_type(boost::beast::string_view path)
 // The returned path is normalized for the platform.
 std::string
 path_cat(
-    boost::beast::string_view base,
-    boost::beast::string_view path)
+    beast::string_view base,
+    beast::string_view path)
 {
     if(base.empty())
-        return path.to_string();
-    std::string result = base.to_string();
-#if BOOST_MSVC
+        return std::string(path);
+    std::string result(base);
+#ifdef BOOST_MSVC
     char constexpr path_separator = '\\';
     if(result.back() == path_separator)
         result.resize(result.size() - 1);
@@ -109,45 +109,45 @@ template<
     class Send>
 void
 handle_request(
-    boost::beast::string_view doc_root,
+    beast::string_view doc_root,
     http::request<Body, http::basic_fields<Allocator>>&& req,
     Send&& send)
 {
     // Returns a bad request response
     auto const bad_request =
-    [&req](boost::beast::string_view why)
+    [&req](beast::string_view why)
     {
         http::response<http::string_body> res{http::status::bad_request, req.version()};
         res.set(http::field::server, BOOST_BEAST_VERSION_STRING);
         res.set(http::field::content_type, "text/html");
         res.keep_alive(req.keep_alive());
-        res.body() = why.to_string();
+        res.body() = std::string(why);
         res.prepare_payload();
         return res;
     };
 
     // Returns a not found response
     auto const not_found =
-    [&req](boost::beast::string_view target)
+    [&req](beast::string_view target)
     {
         http::response<http::string_body> res{http::status::not_found, req.version()};
         res.set(http::field::server, BOOST_BEAST_VERSION_STRING);
         res.set(http::field::content_type, "text/html");
         res.keep_alive(req.keep_alive());
-        res.body() = "The resource '" + target.to_string() + "' was not found.";
+        res.body() = "The resource '" + std::string(target) + "' was not found.";
         res.prepare_payload();
         return res;
     };
 
     // Returns a server error response
     auto const server_error =
-    [&req](boost::beast::string_view what)
+    [&req](beast::string_view what)
     {
         http::response<http::string_body> res{http::status::internal_server_error, req.version()};
         res.set(http::field::server, BOOST_BEAST_VERSION_STRING);
         res.set(http::field::content_type, "text/html");
         res.keep_alive(req.keep_alive());
-        res.body() = "An error occurred: '" + what.to_string() + "'";
+        res.body() = "An error occurred: '" + std::string(what) + "'";
         res.prepare_payload();
         return res;
     };
@@ -160,7 +160,7 @@ handle_request(
     // Request path must be absolute and not contain "..".
     if( req.target().empty() ||
         req.target()[0] != '/' ||
-        req.target().find("..") != boost::beast::string_view::npos)
+        req.target().find("..") != beast::string_view::npos)
         return send(bad_request("Illegal request-target"));
 
     // Build the path to the requested file
@@ -169,12 +169,12 @@ handle_request(
         path.append("index.html");
 
     // Attempt to open the file
-    boost::beast::error_code ec;
+    beast::error_code ec;
     http::file_body::value_type body;
-    body.open(path.c_str(), boost::beast::file_mode::scan, ec);
+    body.open(path.c_str(), beast::file_mode::scan, ec);
 
     // Handle the case where the file doesn't exist
-    if(ec == boost::system::errc::no_such_file_or_directory)
+    if(ec == beast::errc::no_such_file_or_directory)
         return send(not_found(req.target()));
 
     // Handle an unknown error
@@ -211,7 +211,7 @@ handle_request(
 
 // Report a failure
 void
-fail(boost::system::error_code ec, char const* what)
+fail(beast::error_code ec, char const* what)
 {
     std::cerr << what << ": " << ec.message() << "\n";
 }
@@ -219,168 +219,53 @@ fail(boost::system::error_code ec, char const* what)
 // Echoes back all received WebSocket messages
 class websocket_session : public std::enable_shared_from_this<websocket_session>
 {
-    websocket::stream<tcp::socket> ws_;
-    boost::asio::strand<
-        boost::asio::io_context::executor_type> strand_;
-    boost::asio::steady_timer timer_;
-    boost::beast::multi_buffer buffer_;
-    char ping_state_ = 0;
+    websocket::stream<beast::tcp_stream> ws_;
+    beast::flat_buffer buffer_;
 
 public:
     // Take ownership of the socket
     explicit
-    websocket_session(tcp::socket socket)
+    websocket_session(tcp::socket&& socket)
         : ws_(std::move(socket))
-        , strand_(ws_.get_executor())
-        , timer_(ws_.get_executor().context(),
-            (std::chrono::steady_clock::time_point::max)())
     {
     }
 
-    // Start the asynchronous operation
+    // Start the asynchronous accept operation
     template<class Body, class Allocator>
     void
     do_accept(http::request<Body, http::basic_fields<Allocator>> req)
     {
-        // Set the control callback. This will be called
-        // on every incoming ping, pong, and close frame.
-        ws_.control_callback(
-            std::bind(
-                &websocket_session::on_control_callback,
-                this,
-                std::placeholders::_1,
-                std::placeholders::_2));
+        // Set suggested timeout settings for the websocket
+        ws_.set_option(
+            websocket::stream_base::timeout::suggested(
+                beast::role_type::server));
 
-        // Run the timer. The timer is operated
-        // continuously, this simplifies the code.
-        on_timer({});
-
-        // Set the timer
-        timer_.expires_after(std::chrono::seconds(15));
+        // Set a decorator to change the Server of the handshake
+        ws_.set_option(websocket::stream_base::decorator(
+            [](websocket::response_type& res)
+            {
+                res.set(http::field::server,
+                    std::string(BOOST_BEAST_VERSION_STRING) +
+                        " advanced-server");
+            }));
 
         // Accept the websocket handshake
         ws_.async_accept(
             req,
-            boost::asio::bind_executor(
-                strand_,
-                std::bind(
-                    &websocket_session::on_accept,
-                    shared_from_this(),
-                    std::placeholders::_1)));
+            beast::bind_front_handler(
+                &websocket_session::on_accept,
+                shared_from_this()));
     }
 
+private:
     void
-    on_accept(boost::system::error_code ec)
+    on_accept(beast::error_code ec)
     {
-        // Happens when the timer closes the socket
-        if(ec == boost::asio::error::operation_aborted)
-            return;
-
         if(ec)
             return fail(ec, "accept");
 
         // Read a message
         do_read();
-    }
-
-    // Called when the timer expires.
-    void
-    on_timer(boost::system::error_code ec)
-    {
-        if(ec && ec != boost::asio::error::operation_aborted)
-            return fail(ec, "timer");
-
-        // See if the timer really expired since the deadline may have moved.
-        if(timer_.expiry() <= std::chrono::steady_clock::now())
-        {
-            // If this is the first time the timer expired,
-            // send a ping to see if the other end is there.
-            if(ws_.is_open() && ping_state_ == 0)
-            {
-                // Note that we are sending a ping
-                ping_state_ = 1;
-
-                // Set the timer
-                timer_.expires_after(std::chrono::seconds(15));
-
-                // Now send the ping
-                ws_.async_ping({},
-                    boost::asio::bind_executor(
-                        strand_,
-                        std::bind(
-                            &websocket_session::on_ping,
-                            shared_from_this(),
-                            std::placeholders::_1)));
-            }
-            else
-            {
-                // The timer expired while trying to handshake,
-                // or we sent a ping and it never completed or
-                // we never got back a control frame, so close.
-
-                // Closing the socket cancels all outstanding operations. They
-                // will complete with boost::asio::error::operation_aborted
-                ws_.next_layer().shutdown(tcp::socket::shutdown_both, ec);
-                ws_.next_layer().close(ec);
-                return;
-            }
-        }
-
-        // Wait on the timer
-        timer_.async_wait(
-            boost::asio::bind_executor(
-                strand_,
-                std::bind(
-                    &websocket_session::on_timer,
-                    shared_from_this(),
-                    std::placeholders::_1)));
-    }
-
-    // Called to indicate activity from the remote peer
-    void
-    activity()
-    {
-        // Note that the connection is alive
-        ping_state_ = 0;
-
-        // Set the timer
-        timer_.expires_after(std::chrono::seconds(15));
-    }
-
-    // Called after a ping is sent.
-    void
-    on_ping(boost::system::error_code ec)
-    {
-        // Happens when the timer closes the socket
-        if(ec == boost::asio::error::operation_aborted)
-            return;
-
-        if(ec)
-            return fail(ec, "ping");
-
-        // Note that the ping was sent.
-        if(ping_state_ == 1)
-        {
-            ping_state_ = 2;
-        }
-        else
-        {
-            // ping_state_ could have been set to 0
-            // if an incoming control frame was received
-            // at exactly the same time we sent a ping.
-            BOOST_ASSERT(ping_state_ == 0);
-        }
-    }
-
-    void
-    on_control_callback(
-        websocket::frame_type kind,
-        boost::beast::string_view payload)
-    {
-        boost::ignore_unused(kind, payload);
-
-        // Note that there is activity
-        activity();
     }
 
     void
@@ -389,25 +274,17 @@ public:
         // Read a message into our buffer
         ws_.async_read(
             buffer_,
-            boost::asio::bind_executor(
-                strand_,
-                std::bind(
-                    &websocket_session::on_read,
-                    shared_from_this(),
-                    std::placeholders::_1,
-                    std::placeholders::_2)));
+            beast::bind_front_handler(
+                &websocket_session::on_read,
+                shared_from_this()));
     }
 
     void
     on_read(
-        boost::system::error_code ec,
+        beast::error_code ec,
         std::size_t bytes_transferred)
     {
         boost::ignore_unused(bytes_transferred);
-
-        // Happens when the timer closes the socket
-        if(ec == boost::asio::error::operation_aborted)
-            return;
 
         // This indicates that the websocket_session was closed
         if(ec == websocket::error::closed)
@@ -416,32 +293,21 @@ public:
         if(ec)
             fail(ec, "read");
 
-        // Note that there is activity
-        activity();
-
         // Echo the message
         ws_.text(ws_.got_text());
         ws_.async_write(
             buffer_.data(),
-            boost::asio::bind_executor(
-                strand_,
-                std::bind(
-                    &websocket_session::on_write,
-                    shared_from_this(),
-                    std::placeholders::_1,
-                    std::placeholders::_2)));
+            beast::bind_front_handler(
+                &websocket_session::on_write,
+                shared_from_this()));
     }
 
     void
     on_write(
-        boost::system::error_code ec,
+        beast::error_code ec,
         std::size_t bytes_transferred)
     {
         boost::ignore_unused(bytes_transferred);
-
-        // Happens when the timer closes the socket
-        if(ec == boost::asio::error::operation_aborted)
-            return;
 
         if(ec)
             return fail(ec, "write");
@@ -453,6 +319,8 @@ public:
         do_read();
     }
 };
+
+//------------------------------------------------------------------------------
 
 // Handles an HTTP server connection
 class http_session : public std::enable_shared_from_this<http_session>
@@ -528,15 +396,12 @@ class http_session : public std::enable_shared_from_this<http_session>
                 operator()()
                 {
                     http::async_write(
-                        self_.socket_,
+                        self_.stream_,
                         msg_,
-                        boost::asio::bind_executor(
-                            self_.strand_,
-                            std::bind(
-                                &http_session::on_write,
-                                self_.shared_from_this(),
-                                std::placeholders::_1,
-                                msg_.need_eof())));
+                        beast::bind_front_handler(
+                            &http_session::on_write,
+                            self_.shared_from_this(),
+                            msg_.need_eof()));
                 }
             };
 
@@ -550,94 +415,61 @@ class http_session : public std::enable_shared_from_this<http_session>
         }
     };
 
-    tcp::socket socket_;
-    boost::asio::strand<
-        boost::asio::io_context::executor_type> strand_;
-    boost::asio::steady_timer timer_;
-    boost::beast::flat_buffer buffer_;
-    std::string const& doc_root_;
-    http::request<http::string_body> req_;
+    beast::tcp_stream stream_;
+    beast::flat_buffer buffer_;
+    std::shared_ptr<std::string const> doc_root_;
     queue queue_;
+
+    // The parser is stored in an optional container so we can
+    // construct it from scratch it at the beginning of each new message.
+    boost::optional<http::request_parser<http::string_body>> parser_;
 
 public:
     // Take ownership of the socket
-    explicit
     http_session(
-        tcp::socket socket,
-        std::string const& doc_root)
-        : socket_(std::move(socket))
-        , strand_(socket_.get_executor())
-        , timer_(socket_.get_executor().context(),
-            (std::chrono::steady_clock::time_point::max)())
+        tcp::socket&& socket,
+        std::shared_ptr<std::string const> const& doc_root)
+        : stream_(std::move(socket))
         , doc_root_(doc_root)
         , queue_(*this)
     {
     }
 
-    // Start the asynchronous operation
+    // Start the session
     void
     run()
     {
-        // Run the timer. The timer is operated
-        // continuously, this simplifies the code.
-        on_timer({});
-
         do_read();
     }
 
+private:
     void
     do_read()
     {
-        // Set the timer
-        timer_.expires_after(std::chrono::seconds(15));
+        // Construct a new parser for each message
+        parser_.emplace();
 
-        // Make the request empty before reading,
-        // otherwise the operation behavior is undefined.
-        req_ = {};
+        // Apply a reasonable limit to the allowed size
+        // of the body in bytes to prevent abuse.
+        parser_->body_limit(10000);
 
-        // Read a request
-        http::async_read(socket_, buffer_, req_,
-            boost::asio::bind_executor(
-                strand_,
-                std::bind(
-                    &http_session::on_read,
-                    shared_from_this(),
-                    std::placeholders::_1)));
-    }
+        // Set the timeout.
+        stream_.expires_after(std::chrono::seconds(30));
 
-    // Called when the timer expires.
-    void
-    on_timer(boost::system::error_code ec)
-    {
-        if(ec && ec != boost::asio::error::operation_aborted)
-            return fail(ec, "timer");
-
-        // Verify that the timer really expired since the deadline may have moved.
-        if(timer_.expiry() <= std::chrono::steady_clock::now())
-        {
-            // Closing the socket cancels all outstanding operations. They
-            // will complete with boost::asio::error::operation_aborted
-            socket_.shutdown(tcp::socket::shutdown_both, ec);
-            socket_.close(ec);
-            return;
-        }
-
-        // Wait on the timer
-        timer_.async_wait(
-            boost::asio::bind_executor(
-                strand_,
-                std::bind(
-                    &http_session::on_timer,
-                    shared_from_this(),
-                    std::placeholders::_1)));
+        // Read a request using the parser-oriented interface
+        http::async_read(
+            stream_,
+            buffer_,
+            *parser_,
+            beast::bind_front_handler(
+                &http_session::on_read,
+                shared_from_this()));
     }
 
     void
-    on_read(boost::system::error_code ec)
+    on_read(beast::error_code ec, std::size_t bytes_transferred)
     {
-        // Happens when the timer closes the socket
-        if(ec == boost::asio::error::operation_aborted)
-            return;
+        boost::ignore_unused(bytes_transferred);
 
         // This means they closed the connection
         if(ec == http::error::end_of_stream)
@@ -647,16 +479,17 @@ public:
             return fail(ec, "read");
 
         // See if it is a WebSocket Upgrade
-        if(websocket::is_upgrade(req_))
+        if(websocket::is_upgrade(parser_->get()))
         {
-            // Create a WebSocket websocket_session by transferring the socket
+            // Create a websocket session, transferring ownership
+            // of both the socket and the HTTP request.
             std::make_shared<websocket_session>(
-                std::move(socket_))->do_accept(std::move(req_));
+                stream_.release_socket())->do_accept(parser_->release());
             return;
         }
 
         // Send the response
-        handle_request(doc_root_, std::move(req_), queue_);
+        handle_request(*doc_root_, parser_->release(), queue_);
 
         // If we aren't at the queue limit, try to pipeline another request
         if(! queue_.is_full())
@@ -664,11 +497,9 @@ public:
     }
 
     void
-    on_write(boost::system::error_code ec, bool close)
+    on_write(bool close, beast::error_code ec, std::size_t bytes_transferred)
     {
-        // Happens when the timer closes the socket
-        if(ec == boost::asio::error::operation_aborted)
-            return;
+        boost::ignore_unused(bytes_transferred);
 
         if(ec)
             return fail(ec, "write");
@@ -692,8 +523,8 @@ public:
     do_close()
     {
         // Send a TCP shutdown
-        boost::system::error_code ec;
-        socket_.shutdown(tcp::socket::shutdown_send, ec);
+        beast::error_code ec;
+        stream_.socket().shutdown(tcp::socket::shutdown_send, ec);
 
         // At this point the connection is closed gracefully
     }
@@ -704,20 +535,20 @@ public:
 // Accepts incoming connections and launches the sessions
 class listener : public std::enable_shared_from_this<listener>
 {
+    net::io_context& ioc_;
     tcp::acceptor acceptor_;
-    tcp::socket socket_;
-    std::string const& doc_root_;
+    std::shared_ptr<std::string const> doc_root_;
 
 public:
     listener(
-        boost::asio::io_context& ioc,
+        net::io_context& ioc,
         tcp::endpoint endpoint,
-        std::string const& doc_root)
-        : acceptor_(ioc)
-        , socket_(ioc)
+        std::shared_ptr<std::string const> const& doc_root)
+        : ioc_(ioc)
+        , acceptor_(net::make_strand(ioc))
         , doc_root_(doc_root)
     {
-        boost::system::error_code ec;
+        beast::error_code ec;
 
         // Open the acceptor
         acceptor_.open(endpoint.protocol(), ec);
@@ -728,7 +559,7 @@ public:
         }
 
         // Allow address reuse
-        acceptor_.set_option(boost::asio::socket_base::reuse_address(true));
+        acceptor_.set_option(net::socket_base::reuse_address(true), ec);
         if(ec)
         {
             fail(ec, "set_option");
@@ -745,7 +576,7 @@ public:
 
         // Start listening for connections
         acceptor_.listen(
-            boost::asio::socket_base::max_listen_connections, ec);
+            net::socket_base::max_listen_connections, ec);
         if(ec)
         {
             fail(ec, "listen");
@@ -757,24 +588,23 @@ public:
     void
     run()
     {
-        if(! acceptor_.is_open())
-            return;
         do_accept();
     }
 
+private:
     void
     do_accept()
     {
+        // The new connection gets its own strand
         acceptor_.async_accept(
-            socket_,
-            std::bind(
+            net::make_strand(ioc_),
+            beast::bind_front_handler(
                 &listener::on_accept,
-                shared_from_this(),
-                std::placeholders::_1));
+                shared_from_this()));
     }
 
     void
-    on_accept(boost::system::error_code ec)
+    on_accept(beast::error_code ec, tcp::socket socket)
     {
         if(ec)
         {
@@ -782,9 +612,9 @@ public:
         }
         else
         {
-            // Create the http_session and run it
+            // Create the http session and run it
             std::make_shared<http_session>(
-                std::move(socket_),
+                std::move(socket),
                 doc_root_)->run();
         }
 
@@ -806,13 +636,13 @@ int main(int argc, char* argv[])
             "    advanced-server 0.0.0.0 8080 . 1\n";
         return EXIT_FAILURE;
     }
-    auto const address = boost::asio::ip::make_address(argv[1]);
+    auto const address = net::ip::make_address(argv[1]);
     auto const port = static_cast<unsigned short>(std::atoi(argv[2]));
-    std::string const doc_root = argv[3];
+    auto const doc_root = std::make_shared<std::string>(argv[3]);
     auto const threads = std::max<int>(1, std::atoi(argv[4]));
 
     // The io_context is required for all I/O
-    boost::asio::io_context ioc{threads};
+    net::io_context ioc{threads};
 
     // Create and launch a listening port
     std::make_shared<listener>(
@@ -821,9 +651,9 @@ int main(int argc, char* argv[])
         doc_root)->run();
 
     // Capture SIGINT and SIGTERM to perform a clean shutdown
-    boost::asio::signal_set signals(ioc, SIGINT, SIGTERM);
+    net::signal_set signals(ioc, SIGINT, SIGTERM);
     signals.async_wait(
-        [&](boost::system::error_code const&, int)
+        [&](beast::error_code const&, int)
         {
             // Stop the `io_context`. This will cause `run()`
             // to return immediately, eventually destroying the

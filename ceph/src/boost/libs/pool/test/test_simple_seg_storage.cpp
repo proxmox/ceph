@@ -26,7 +26,7 @@
 #pragma warning(pop)
 #endif
 
-#include <boost/detail/lightweight_test.hpp>
+#include <boost/core/lightweight_test.hpp>
 
 #include <algorithm>
 #include <functional>
@@ -158,10 +158,10 @@ int main()
 
         BOOST_ASSERT(partition_sz <= 23);
         test_simp_seg_store tstore2;
-        char* const pc2 = track_allocator::malloc(75);
+        char* const pc2 = track_allocator::malloc(88);
         tstore2.add_block(pc2, 24, partition_sz);
-        tstore2.add_block(pc2 + 49, 24, partition_sz);
-        tstore2.add_block(pc2 + 25, 24, partition_sz);
+        tstore2.add_block(pc2 + 64, 24, partition_sz);
+        tstore2.add_block(pc2 + 32, 24, partition_sz);
         tstore2.add_block(track_allocator::malloc(23), 23, partition_sz);
         std::size_t nchunk_ref = (3*(24/partition_sz)) + (23/partition_sz);
         for(nchunk = 0; !tstore2.empty(); tstore2.malloc(), ++nchunk) {}
@@ -300,4 +300,5 @@ int main()
         delete [] *itr;
     }
     track_allocator::allocated_blocks.clear();
+    return boost::report_errors();
 }

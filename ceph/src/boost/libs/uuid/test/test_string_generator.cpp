@@ -5,7 +5,7 @@
 
 // Distributed under the Boost Software License, Version 1.0. (See
 // accompanying file LICENSE_1_0.txt or copy at
-// http://www.boost.org/LICENSE_1_0.txt)
+// https://www.boost.org/LICENSE_1_0.txt)
 
 //  libs/uuid/test/test_string_generator.cpp  -------------------------------//
 
@@ -33,6 +33,7 @@ int main(int, char*[])
     const uuid u_decreasing = {{ 0xfe, 0xdc, 0xba, 0x98, 0x76, 0x54, 0x32, 0x10,0xfe, 0xdc, 0xba, 0x98, 0x76, 0x54, 0x32, 0x10 }};
 
     u = gen("0123456789abcdef0123456789ABCDEF");
+    BOOST_TEST_EQ(memcmp(&u, &u_increasing, sizeof(uuid)), 0);
     BOOST_TEST_EQ(u, u_increasing);
     
     u = gen("{0123456789abcdef0123456789ABCDEF}");

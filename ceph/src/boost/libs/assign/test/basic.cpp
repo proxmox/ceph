@@ -20,16 +20,14 @@
 #include <string>
 
 
-using namespace std;
-using namespace boost;
 using namespace boost::assign;
 
 void check_basic_usage()
 {
-    vector<int> v;
+    std::vector<int> v;
     v += 1,2,3,4,5,6,7,8,9;
     push_back( v )(10)(11);
-    map<string,int> m;
+    std::map<std::string,int> m;
     insert( m )( "foo", 1 )( "bar", 2 );
 }
 
