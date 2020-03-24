@@ -11,8 +11,6 @@ LIB = librte_sched.a
 CFLAGS += -O3
 CFLAGS += $(WERROR_FLAGS)
 
-CFLAGS_rte_red.o := -D_GNU_SOURCE
-
 LDLIBS += -lm
 LDLIBS += -lrt
 LDLIBS += -lrte_eal -lrte_mempool -lrte_mbuf -lrte_net
@@ -20,7 +18,7 @@ LDLIBS += -lrte_timer
 
 EXPORT_MAP := rte_sched_version.map
 
-LIBABIVER := 1
+LIBABIVER := 2
 
 #
 # all source are stored in SRCS-y

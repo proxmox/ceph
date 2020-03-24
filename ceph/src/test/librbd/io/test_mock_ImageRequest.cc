@@ -155,7 +155,7 @@ TEST_F(TestMockIoImageRequest, AioWriteModifyTimestamp) {
   MockImageWriteRequest mock_aio_image_write_1(mock_image_ctx, aio_comp_1,
                                              {{0, 1}}, std::move(bl), 0, {});
   {
-    RWLock::RLocker owner_locker(mock_image_ctx.owner_lock);
+    std::shared_lock owner_locker{mock_image_ctx.owner_lock};
     mock_aio_image_write_1.send();
   }
   ASSERT_EQ(0, aio_comp_ctx_1.wait());
@@ -167,10 +167,42 @@ TEST_F(TestMockIoImageRequest, AioWriteModifyTimestamp) {
   MockImageWriteRequest mock_aio_image_write_2(mock_image_ctx, aio_comp_2,
                                              {{0, 1}}, std::move(bl), 0, {});
   {
-    RWLock::RLocker owner_locker(mock_image_ctx.owner_lock);
+    std::shared_lock owner_locker{mock_image_ctx.owner_lock};
     mock_aio_image_write_2.send();
   }
   ASSERT_EQ(0, aio_comp_ctx_2.wait());
+}
+
+TEST_F(TestMockIoImageRequest, AioWriteEarlyFinish) {
+  librbd::ImageCtx *ictx;
+  ASSERT_EQ(0, open_image(m_image_name, &ictx));
+
+  MockTestImageCtx mock_image_ctx(*ictx);
+
+  C_SaferCond aio_comp_ctx_1, aio_comp_ctx_2;
+  AioCompletion *aio_comp_1 = AioCompletion::create_and_start(
+    &aio_comp_ctx_1, ictx, AIO_TYPE_WRITE);
+  AioCompletion *aio_comp_2 = AioCompletion::create_and_start(
+    &aio_comp_ctx_2, ictx, AIO_TYPE_WRITE);
+
+  bufferlist bl;
+  MockImageWriteRequest mock_aio_image_write_1(mock_image_ctx, aio_comp_1,
+                                             {{0, 0}}, std::move(bl), 0, {});
+  {
+    std::shared_lock owner_locker{mock_image_ctx.owner_lock};
+    mock_aio_image_write_1.send();
+  }
+  ASSERT_EQ(0, aio_comp_ctx_1.wait());
+
+  mock_image_ctx.snap_id = 123;
+  bl.append("1");
+  MockImageWriteRequest mock_aio_image_write_2(mock_image_ctx, aio_comp_2,
+                                             {{0, 1}}, std::move(bl), 0, {});
+  {
+    std::shared_lock owner_locker{mock_image_ctx.owner_lock};
+    mock_aio_image_write_2.send();
+  }
+  ASSERT_EQ(-EROFS, aio_comp_ctx_2.wait());
 }
 
 TEST_F(TestMockIoImageRequest, AioReadAccessTimestamp) {
@@ -209,7 +241,7 @@ TEST_F(TestMockIoImageRequest, AioReadAccessTimestamp) {
   MockImageReadRequest mock_aio_image_read_1(mock_image_ctx, aio_comp_1,
                                              {{0, 1}}, std::move(rr), 0, {});
   {
-    RWLock::RLocker owner_locker(mock_image_ctx.owner_lock);
+    std::shared_lock owner_locker{mock_image_ctx.owner_lock};
     mock_aio_image_read_1.send();
   }
   ASSERT_EQ(1, aio_comp_ctx_1.wait());
@@ -221,7 +253,7 @@ TEST_F(TestMockIoImageRequest, AioReadAccessTimestamp) {
   MockImageReadRequest mock_aio_image_read_2(mock_image_ctx, aio_comp_2,
                                              {{0, 1}}, std::move(rr), 0, {});
   {
-    RWLock::RLocker owner_locker(mock_image_ctx.owner_lock);
+    std::shared_lock owner_locker{mock_image_ctx.owner_lock};
     mock_aio_image_read_2.send();
   }
   ASSERT_EQ(1, aio_comp_ctx_2.wait());
@@ -247,7 +279,7 @@ TEST_F(TestMockIoImageRequest, PartialDiscard) {
     mock_image_ctx, aio_comp, {{16, 63}, {84, 100}},
     ictx->discard_granularity_bytes, {});
   {
-    RWLock::RLocker owner_locker(mock_image_ctx.owner_lock);
+    std::shared_lock owner_locker{mock_image_ctx.owner_lock};
     mock_aio_image_discard.send();
   }
   ASSERT_EQ(0, aio_comp_ctx.wait());
@@ -275,7 +307,7 @@ TEST_F(TestMockIoImageRequest, TailDiscard) {
     {{ictx->layout.object_size - 1024, 1024}},
     ictx->discard_granularity_bytes, {});
   {
-    RWLock::RLocker owner_locker(mock_image_ctx.owner_lock);
+    std::shared_lock owner_locker{mock_image_ctx.owner_lock};
     mock_aio_image_discard.send();
   }
   ASSERT_EQ(0, aio_comp_ctx.wait());
@@ -305,7 +337,7 @@ TEST_F(TestMockIoImageRequest, DiscardGranularity) {
     {{16, 63}, {96, 31}, {84, 100}, {ictx->layout.object_size - 33, 33}},
     ictx->discard_granularity_bytes, {});
   {
-    RWLock::RLocker owner_locker(mock_image_ctx.owner_lock);
+    std::shared_lock owner_locker{mock_image_ctx.owner_lock};
     mock_aio_image_discard.send();
   }
   ASSERT_EQ(0, aio_comp_ctx.wait());
@@ -335,7 +367,7 @@ TEST_F(TestMockIoImageRequest, AioWriteJournalAppendDisabled) {
   MockImageWriteRequest mock_aio_image_write(mock_image_ctx, aio_comp,
                                              {{0, 1}}, std::move(bl), 0, {});
   {
-    RWLock::RLocker owner_locker(mock_image_ctx.owner_lock);
+    std::shared_lock owner_locker{mock_image_ctx.owner_lock};
     mock_aio_image_write.send();
   }
   ASSERT_EQ(0, aio_comp_ctx.wait());
@@ -363,7 +395,7 @@ TEST_F(TestMockIoImageRequest, AioDiscardJournalAppendDisabled) {
   MockImageDiscardRequest mock_aio_image_discard(
     mock_image_ctx, aio_comp, {{0, 1}}, ictx->discard_granularity_bytes, {});
   {
-    RWLock::RLocker owner_locker(mock_image_ctx.owner_lock);
+    std::shared_lock owner_locker{mock_image_ctx.owner_lock};
     mock_aio_image_discard.send();
   }
   ASSERT_EQ(0, aio_comp_ctx.wait());
@@ -391,7 +423,7 @@ TEST_F(TestMockIoImageRequest, AioFlushJournalAppendDisabled) {
   MockImageFlushRequest mock_aio_image_flush(mock_image_ctx, aio_comp,
                                              FLUSH_SOURCE_USER, {});
   {
-    RWLock::RLocker owner_locker(mock_image_ctx.owner_lock);
+    std::shared_lock owner_locker{mock_image_ctx.owner_lock};
     mock_aio_image_flush.send();
   }
   ASSERT_EQ(0, aio_comp_ctx.wait());
@@ -422,7 +454,7 @@ TEST_F(TestMockIoImageRequest, AioWriteSameJournalAppendDisabled) {
                                                      {{0, 1}}, std::move(bl), 0,
                                                      {});
   {
-    RWLock::RLocker owner_locker(mock_image_ctx.owner_lock);
+    std::shared_lock owner_locker{mock_image_ctx.owner_lock};
     mock_aio_image_writesame.send();
   }
   ASSERT_EQ(0, aio_comp_ctx.wait());
@@ -458,7 +490,7 @@ TEST_F(TestMockIoImageRequest, AioCompareAndWriteJournalAppendDisabled) {
                                                        &mismatch_offset,
                                                        0, {});
   {
-    RWLock::RLocker owner_locker(mock_image_ctx.owner_lock);
+    std::shared_lock owner_locker{mock_image_ctx.owner_lock};
     mock_aio_image_write.send();
   }
   ASSERT_EQ(0, aio_comp_ctx.wait());

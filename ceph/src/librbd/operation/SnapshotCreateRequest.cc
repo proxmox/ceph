@@ -10,6 +10,7 @@
 #include "librbd/ObjectMap.h"
 #include "librbd/Utils.h"
 #include "librbd/io/ImageRequestWQ.h"
+#include "librbd/mirror/snapshot/SetImageStateRequest.h"
 
 #define dout_subsys ceph_subsys_rbd
 #undef dout_prefix
@@ -72,7 +73,7 @@ Context *SnapshotCreateRequest<I>::handle_suspend_requests(int *result) {
 template <typename I>
 void SnapshotCreateRequest<I>::send_suspend_aio() {
   I &image_ctx = this->m_image_ctx;
-  ceph_assert(image_ctx.owner_lock.is_locked());
+  ceph_assert(ceph_mutex_is_locked(image_ctx.owner_lock));
 
   CephContext *cct = image_ctx.cct;
   ldout(cct, 5) << this << " " << __func__ << dendl;
@@ -167,9 +168,8 @@ void SnapshotCreateRequest<I>::send_create_snap() {
   CephContext *cct = image_ctx.cct;
   ldout(cct, 5) << this << " " << __func__ << dendl;
 
-  RWLock::RLocker owner_locker(image_ctx.owner_lock);
-  RWLock::RLocker snap_locker(image_ctx.snap_lock);
-  RWLock::RLocker parent_locker(image_ctx.parent_lock);
+  std::shared_lock owner_locker{image_ctx.owner_lock};
+  std::shared_lock image_locker{image_ctx.image_lock};
 
   // should have been canceled prior to releasing lock
   ceph_assert(image_ctx.exclusive_lock == nullptr ||
@@ -217,10 +217,48 @@ template <typename I>
 Context *SnapshotCreateRequest<I>::send_create_object_map() {
   I &image_ctx = this->m_image_ctx;
 
-  image_ctx.snap_lock.get_read();
+  image_ctx.image_lock.lock_shared();
   if (image_ctx.object_map == nullptr || m_skip_object_map) {
-    image_ctx.snap_lock.put_read();
+    image_ctx.image_lock.unlock_shared();
 
+    return send_create_image_state();
+  }
+
+  CephContext *cct = image_ctx.cct;
+  ldout(cct, 5) << this << " " << __func__ << dendl;
+
+  image_ctx.object_map->snapshot_add(
+    m_snap_id, create_context_callback<
+      SnapshotCreateRequest<I>,
+      &SnapshotCreateRequest<I>::handle_create_object_map>(this));
+  image_ctx.image_lock.unlock_shared();
+  return nullptr;
+}
+
+template <typename I>
+Context *SnapshotCreateRequest<I>::handle_create_object_map(int *result) {
+  I &image_ctx = this->m_image_ctx;
+  CephContext *cct = image_ctx.cct;
+  ldout(cct, 5) << this << " " << __func__ << ": r=" << *result << dendl;
+
+  if (*result < 0) {
+    lderr(cct) << this << " " << __func__ << ": failed to snapshot object map: "
+               << cpp_strerror(*result) << dendl;
+
+    update_snap_context();
+    image_ctx.io_work_queue->unblock_writes();
+    return this->create_context_finisher(*result);
+  }
+
+  return send_create_image_state();
+}
+
+template <typename I>
+Context *SnapshotCreateRequest<I>::send_create_image_state() {
+  I &image_ctx = this->m_image_ctx;
+  auto mirror_ns = boost::get<cls::rbd::MirrorSnapshotNamespace>(
+    &m_snap_namespace);
+  if (mirror_ns == nullptr || !mirror_ns->is_primary()) {
     update_snap_context();
     image_ctx.io_work_queue->unblock_writes();
     return this->create_context_finisher(0);
@@ -229,19 +267,16 @@ Context *SnapshotCreateRequest<I>::send_create_object_map() {
   CephContext *cct = image_ctx.cct;
   ldout(cct, 5) << this << " " << __func__ << dendl;
 
-  {
-    RWLock::RLocker object_map_lock(image_ctx.object_map_lock);
-    image_ctx.object_map->snapshot_add(
-      m_snap_id, create_context_callback<
-        SnapshotCreateRequest<I>,
-        &SnapshotCreateRequest<I>::handle_create_object_map>(this));
-  }
-  image_ctx.snap_lock.put_read();
+  auto req = mirror::snapshot::SetImageStateRequest<I>::create(
+      &image_ctx, m_snap_id, create_context_callback<
+      SnapshotCreateRequest<I>,
+      &SnapshotCreateRequest<I>::handle_create_image_state>(this));
+  req->send();
   return nullptr;
 }
 
 template <typename I>
-Context *SnapshotCreateRequest<I>::handle_create_object_map(int *result) {
+Context *SnapshotCreateRequest<I>::handle_create_image_state(int *result) {
   I &image_ctx = this->m_image_ctx;
   CephContext *cct = image_ctx.cct;
   ldout(cct, 5) << this << " " << __func__ << ": r=" << *result << dendl;
@@ -289,8 +324,8 @@ template <typename I>
 void SnapshotCreateRequest<I>::update_snap_context() {
   I &image_ctx = this->m_image_ctx;
 
-  RWLock::RLocker owner_locker(image_ctx.owner_lock);
-  RWLock::WLocker snap_locker(image_ctx.snap_lock);
+  std::shared_lock owner_locker{image_ctx.owner_lock};
+  std::unique_lock image_locker{image_ctx.image_lock};
   if (image_ctx.old_format) {
     return;
   }

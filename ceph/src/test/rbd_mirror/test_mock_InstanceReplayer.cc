@@ -32,8 +32,8 @@ namespace mirror {
 template <>
 struct Threads<librbd::MockTestImageCtx> {
   MockSafeTimer *timer;
-  Mutex &timer_lock;
-  Cond timer_cond;
+  ceph::mutex &timer_lock;
+  ceph::condition_variable timer_cond;
 
   MockContextWQ *work_queue;
 
@@ -50,8 +50,8 @@ struct Threads<librbd::MockTestImageCtx> {
 
 template<>
 struct ServiceDaemon<librbd::MockTestImageCtx> {
-  MOCK_METHOD3(add_or_update_attribute,
-               void(int64_t, const std::string&,
+  MOCK_METHOD4(add_or_update_namespace_attribute,
+               void(int64_t, const std::string&, const std::string&,
                     const service_daemon::AttributeValue&));
 };
 
@@ -65,10 +65,13 @@ struct ImageReplayer<librbd::MockTestImageCtx> {
   std::string global_image_id;
 
   static ImageReplayer *create(
-    Threads<librbd::MockTestImageCtx> *threads,
-    InstanceWatcher<librbd::MockTestImageCtx> *instance_watcher,
-    RadosRef local, const std::string &local_mirror_uuid, int64_t local_pool_id,
-    const std::string &global_image_id) {
+      librados::IoCtx &local_io_ctx, const std::string &local_mirror_uuid,
+      const std::string &global_image_id,
+      Threads<librbd::MockTestImageCtx> *threads,
+      InstanceWatcher<librbd::MockTestImageCtx> *instance_watcher,
+      MirrorStatusUpdater<librbd::MockTestImageCtx>* local_status_updater,
+      journal::CacheManagerHandler *cache_manager_handler,
+      PoolMetaCache* pool_meta_cache) {
     ceph_assert(s_instance != nullptr);
     s_instance->global_image_id = global_image_id;
     return s_instance;
@@ -89,8 +92,8 @@ struct ImageReplayer<librbd::MockTestImageCtx> {
   MOCK_METHOD2(stop, void(Context *, bool));
   MOCK_METHOD0(restart, void());
   MOCK_METHOD0(flush, void());
-  MOCK_METHOD2(print_status, void(Formatter *, stringstream *));
-  MOCK_METHOD2(add_peer, void(const std::string &, librados::IoCtx &));
+  MOCK_METHOD1(print_status, void(Formatter *));
+  MOCK_METHOD1(add_peer, void(const Peer<librbd::MockTestImageCtx>& peer));
   MOCK_METHOD0(get_global_image_id, const std::string &());
   MOCK_METHOD0(get_local_image_id, const std::string &());
   MOCK_METHOD0(is_running, bool());
@@ -104,6 +107,10 @@ struct ImageReplayer<librbd::MockTestImageCtx> {
 };
 
 ImageReplayer<librbd::MockTestImageCtx>* ImageReplayer<librbd::MockTestImageCtx>::s_instance = nullptr;
+
+template<>
+struct MirrorStatusUpdater<librbd::MockTestImageCtx> {
+};
 
 } // namespace mirror
 } // namespace rbd
@@ -129,6 +136,7 @@ public:
   typedef ImageReplayer<librbd::MockTestImageCtx> MockImageReplayer;
   typedef InstanceReplayer<librbd::MockTestImageCtx> MockInstanceReplayer;
   typedef InstanceWatcher<librbd::MockTestImageCtx> MockInstanceWatcher;
+  typedef MirrorStatusUpdater<librbd::MockTestImageCtx> MockMirrorStatusUpdater;
   typedef ServiceDaemon<librbd::MockTestImageCtx> MockServiceDaemon;
 
   void expect_work_queue(MockThreads &mock_threads) {
@@ -143,14 +151,14 @@ public:
     EXPECT_CALL(*mock_threads.timer, add_event_after(_, _))
       .WillOnce(DoAll(
         WithArg<1>(Invoke([this, &mock_threads, timer_ctx](Context *ctx) {
-          ceph_assert(mock_threads.timer_lock.is_locked());
+          ceph_assert(ceph_mutex_is_locked(mock_threads.timer_lock));
           if (timer_ctx != nullptr) {
             *timer_ctx = ctx;
-            mock_threads.timer_cond.SignalOne();
+            mock_threads.timer_cond.notify_one();
           } else {
             m_threads->work_queue->queue(
-              new FunctionContext([&mock_threads, ctx](int) {
-                Mutex::Locker timer_lock(mock_threads.timer_lock);
+              new LambdaContext([&mock_threads, ctx](int) {
+                std::lock_guard timer_lock{mock_threads.timer_lock};
                 ctx->complete(0);
               }), 0);
           }
@@ -167,12 +175,13 @@ public:
 TEST_F(TestMockInstanceReplayer, AcquireReleaseImage) {
   MockThreads mock_threads(m_threads);
   MockServiceDaemon mock_service_daemon;
+  MockMirrorStatusUpdater mock_status_updater;
   MockInstanceWatcher mock_instance_watcher;
   MockImageReplayer mock_image_replayer;
   MockInstanceReplayer instance_replayer(
-    &mock_threads, &mock_service_daemon,
-    rbd::mirror::RadosRef(new librados::Rados(m_local_io_ctx)),
-    "local_mirror_uuid", m_local_io_ctx.get_id());
+      m_local_io_ctx, "local_mirror_uuid",
+      &mock_threads, &mock_service_daemon, &mock_status_updater, nullptr,
+      nullptr);
   std::string global_image_id("global_image_id");
 
   EXPECT_CALL(mock_image_replayer, get_global_image_id())
@@ -183,12 +192,12 @@ TEST_F(TestMockInstanceReplayer, AcquireReleaseImage) {
   Context *timer_ctx = nullptr;
   expect_add_event_after(mock_threads, &timer_ctx);
   instance_replayer.init();
-  instance_replayer.add_peer("peer_uuid", m_remote_io_ctx);
+  instance_replayer.add_peer({"peer_uuid", m_remote_io_ctx, {}, nullptr});
 
   // Acquire
 
   C_SaferCond on_acquire;
-  EXPECT_CALL(mock_image_replayer, add_peer("peer_uuid", _));
+  EXPECT_CALL(mock_image_replayer, add_peer(_));
   EXPECT_CALL(mock_image_replayer, is_stopped()).WillOnce(Return(true));
   EXPECT_CALL(mock_image_replayer, is_blacklisted()).WillOnce(Return(false));
   EXPECT_CALL(mock_image_replayer, is_finished()).WillOnce(Return(false));
@@ -236,12 +245,13 @@ TEST_F(TestMockInstanceReplayer, AcquireReleaseImage) {
 TEST_F(TestMockInstanceReplayer, RemoveFinishedImage) {
   MockThreads mock_threads(m_threads);
   MockServiceDaemon mock_service_daemon;
+  MockMirrorStatusUpdater mock_status_updater;
   MockInstanceWatcher mock_instance_watcher;
   MockImageReplayer mock_image_replayer;
   MockInstanceReplayer instance_replayer(
-    &mock_threads, &mock_service_daemon,
-    rbd::mirror::RadosRef(new librados::Rados(m_local_io_ctx)),
-    "local_mirror_uuid", m_local_io_ctx.get_id());
+      m_local_io_ctx, "local_mirror_uuid",
+      &mock_threads, &mock_service_daemon, &mock_status_updater, nullptr,
+      nullptr);
   std::string global_image_id("global_image_id");
 
   EXPECT_CALL(mock_image_replayer, get_global_image_id())
@@ -252,12 +262,12 @@ TEST_F(TestMockInstanceReplayer, RemoveFinishedImage) {
   Context *timer_ctx1 = nullptr;
   expect_add_event_after(mock_threads, &timer_ctx1);
   instance_replayer.init();
-  instance_replayer.add_peer("peer_uuid", m_remote_io_ctx);
+  instance_replayer.add_peer({"peer_uuid", m_remote_io_ctx, {}, nullptr});
 
   // Acquire
 
   C_SaferCond on_acquire;
-  EXPECT_CALL(mock_image_replayer, add_peer("peer_uuid", _));
+  EXPECT_CALL(mock_image_replayer, add_peer(_));
   EXPECT_CALL(mock_image_replayer, is_stopped()).WillOnce(Return(true));
   EXPECT_CALL(mock_image_replayer, is_blacklisted()).WillOnce(Return(false));
   EXPECT_CALL(mock_image_replayer, is_finished()).WillOnce(Return(false));
@@ -280,7 +290,7 @@ TEST_F(TestMockInstanceReplayer, RemoveFinishedImage) {
 
   ASSERT_TRUE(timer_ctx1 != nullptr);
   {
-    Mutex::Locker timer_locker(mock_threads.timer_lock);
+    std::lock_guard timer_locker{mock_threads.timer_lock};
     timer_ctx1->complete(0);
   }
 
@@ -291,7 +301,8 @@ TEST_F(TestMockInstanceReplayer, RemoveFinishedImage) {
   EXPECT_CALL(mock_image_replayer, is_blacklisted()).WillOnce(Return(false));
   EXPECT_CALL(mock_image_replayer, is_finished()).WillOnce(Return(true));
   EXPECT_CALL(mock_image_replayer, destroy());
-  EXPECT_CALL(mock_service_daemon,add_or_update_attribute(_, _, _)).Times(3);
+  EXPECT_CALL(mock_service_daemon,
+              add_or_update_namespace_attribute(_, _, _, _)).Times(3);
 
   ASSERT_TRUE(start_image_replayers_ctx != nullptr);
   start_image_replayers_ctx->complete(0);
@@ -308,12 +319,13 @@ TEST_F(TestMockInstanceReplayer, RemoveFinishedImage) {
 TEST_F(TestMockInstanceReplayer, Reacquire) {
   MockThreads mock_threads(m_threads);
   MockServiceDaemon mock_service_daemon;
+  MockMirrorStatusUpdater mock_status_updater;
   MockInstanceWatcher mock_instance_watcher;
   MockImageReplayer mock_image_replayer;
   MockInstanceReplayer instance_replayer(
-    &mock_threads, &mock_service_daemon,
-    rbd::mirror::RadosRef(new librados::Rados(m_local_io_ctx)),
-    "local_mirror_uuid", m_local_io_ctx.get_id());
+      m_local_io_ctx, "local_mirror_uuid",
+      &mock_threads, &mock_service_daemon, &mock_status_updater, nullptr,
+      nullptr);
   std::string global_image_id("global_image_id");
 
   EXPECT_CALL(mock_image_replayer, get_global_image_id())
@@ -324,11 +336,11 @@ TEST_F(TestMockInstanceReplayer, Reacquire) {
   Context *timer_ctx = nullptr;
   expect_add_event_after(mock_threads, &timer_ctx);
   instance_replayer.init();
-  instance_replayer.add_peer("peer_uuid", m_remote_io_ctx);
+  instance_replayer.add_peer({"peer_uuid", m_remote_io_ctx, {}, nullptr});
 
   // Acquire
 
-  EXPECT_CALL(mock_image_replayer, add_peer("peer_uuid", _));
+  EXPECT_CALL(mock_image_replayer, add_peer(_));
   EXPECT_CALL(mock_image_replayer, is_stopped()).WillOnce(Return(true));
   EXPECT_CALL(mock_image_replayer, is_blacklisted()).WillOnce(Return(false));
   EXPECT_CALL(mock_image_replayer, is_finished()).WillOnce(Return(false));

@@ -4,12 +4,13 @@
 #ifndef CEPH_RGW_PUBSUB_H
 #define CEPH_RGW_PUBSUB_H
 
-#include "rgw_common.h"
+#include "rgw_sal.h"
+#include "services/svc_sys_obj.h"
 #include "rgw_tools.h"
 #include "rgw_zone.h"
 #include "rgw_rados.h"
 #include "rgw_notify_event_type.h"
-#include "services/svc_sys_obj.h"
+#include <boost/container/flat_map.hpp>
 
 class XMLObj;
 
@@ -41,10 +42,10 @@ struct rgw_s3_key_filter {
 };
 WRITE_CLASS_ENCODER(rgw_s3_key_filter)
 
-using Metadata = std::map<std::string, std::string>;
+using KeyValueList = boost::container::flat_map<std::string, std::string>;
 
-struct rgw_s3_metadata_filter {
-  Metadata metadata;
+struct rgw_s3_key_value_filter {
+  KeyValueList kvl;
   
   bool has_content() const;
   
@@ -53,20 +54,21 @@ struct rgw_s3_metadata_filter {
   
   void encode(bufferlist& bl) const {
     ENCODE_START(1, 1, bl);
-    encode(metadata, bl);
+    encode(kvl, bl);
     ENCODE_FINISH(bl);
   }
   void decode(bufferlist::const_iterator& bl) {
     DECODE_START(1, bl);
-    decode(metadata, bl);
+    decode(kvl, bl);
     DECODE_FINISH(bl);
   }
 };
-WRITE_CLASS_ENCODER(rgw_s3_metadata_filter)
+WRITE_CLASS_ENCODER(rgw_s3_key_value_filter)
 
 struct rgw_s3_filter {
   rgw_s3_key_filter key_filter;
-  rgw_s3_metadata_filter metadata_filter;
+  rgw_s3_key_value_filter metadata_filter;
+  rgw_s3_key_value_filter tag_filter;
 
   bool has_content() const;
   
@@ -74,16 +76,20 @@ struct rgw_s3_filter {
   void dump_xml(Formatter *f) const;
   
   void encode(bufferlist& bl) const {
-    ENCODE_START(1, 1, bl);
+    ENCODE_START(2, 1, bl);
     encode(key_filter, bl);
     encode(metadata_filter, bl);
+    encode(tag_filter, bl);
     ENCODE_FINISH(bl);
   }
 
   void decode(bufferlist::const_iterator& bl) {
-    DECODE_START(1, bl);
+    DECODE_START(2, bl);
     decode(key_filter, bl);
     decode(metadata_filter, bl);
+    if (struct_v >= 2) {
+        decode(tag_filter, bl);
+    }
     DECODE_FINISH(bl);
   }
 };
@@ -91,7 +97,7 @@ WRITE_CLASS_ENCODER(rgw_s3_filter)
 
 using OptionalFilter = std::optional<rgw_s3_filter>;
 
-class rgw_pubsub_topic_filter;
+struct rgw_pubsub_topic_filter;
 /* S3 notification configuration
  * based on: https://docs.aws.amazon.com/AmazonS3/latest/API/RESTBucketPUTnotification.html
 <NotificationConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
@@ -109,6 +115,12 @@ class rgw_pubsub_topic_filter;
           <Value></Value>
         </FilterRule>
       </S3Metadata>
+      <S3Tags>
+        <FilterRule>
+          <Name></Name>
+          <Value></Value>
+        </FilterRule>
+      </S3Tags>
     </Filter>
     <Id>notification1</Id>
     <Topic>arn:aws:sns:<region>:<account>:<topic></Topic>
@@ -132,13 +144,13 @@ struct rgw_pubsub_s3_notification {
 
   rgw_pubsub_s3_notification() = default;
   // construct from rgw_pubsub_topic_filter (used by get/list notifications)
-  rgw_pubsub_s3_notification(const rgw_pubsub_topic_filter& topic_filter);
+  explicit rgw_pubsub_s3_notification(const rgw_pubsub_topic_filter& topic_filter);
 };
 
 // return true if the key matches the prefix/suffix/regex rules of the key filter
 bool match(const rgw_s3_key_filter& filter, const std::string& key);
-// return true if the key matches the metadata rules of the metadata filter
-bool match(const rgw_s3_metadata_filter& filter, const Metadata& metadata);
+// return true if the key matches the metadata/tags rules of the metadata/tags filter
+bool match(const rgw_s3_key_value_filter& filter, const KeyValueList& kvl);
 // return true if the event type matches (equal or contained in) one of the events in the list
 bool match(const rgw::notify::EventTypeList& events, rgw::notify::EventType event);
 
@@ -186,6 +198,7 @@ struct rgw_pubsub_s3_notifications {
         "versionId":"",
         "sequencer": "",
         "metadata": ""
+        "tags": ""
       }
     },
     "eventId":"",
@@ -238,10 +251,15 @@ struct rgw_pubsub_s3_record {
   // this is an rgw extension holding the internal bucket id
   std::string bucket_id;
   // meta data
-  std::map<std::string, std::string> x_meta_map;
+  KeyValueList x_meta_map;
+  // tags
+  KeyValueList tags;
+  // opaque data received from the topic
+  // could be used to identify the gateway
+  std::string opaque_data;
 
   void encode(bufferlist& bl) const {
-    ENCODE_START(2, 1, bl);
+    ENCODE_START(4, 1, bl);
     encode(eventVersion, bl);
     encode(eventSource, bl);
     encode(awsRegion, bl);
@@ -264,11 +282,13 @@ struct rgw_pubsub_s3_record {
     encode(id, bl);
     encode(bucket_id, bl);
     encode(x_meta_map, bl);
+    encode(tags, bl);
+    encode(opaque_data, bl);
     ENCODE_FINISH(bl);
   }
 
   void decode(bufferlist::const_iterator& bl) {
-    DECODE_START(2, bl);
+    DECODE_START(4, bl);
     decode(eventVersion, bl);
     decode(eventSource, bl);
     decode(awsRegion, bl);
@@ -290,8 +310,14 @@ struct rgw_pubsub_s3_record {
     decode(object_sequencer, bl);
     decode(id, bl);
     if (struct_v >= 2) {
-        decode(bucket_id, bl);
-        decode(x_meta_map, bl);
+      decode(bucket_id, bl);
+      decode(x_meta_map, bl);
+    }
+    if (struct_v >= 3) {
+      decode(tags, bl);
+    }
+    if (struct_v >= 4) {
+      decode(opaque_data, bl);
     }
     DECODE_FINISH(bl);
   }
@@ -341,19 +367,21 @@ struct rgw_pubsub_sub_dest {
   std::string push_endpoint;
   std::string push_endpoint_args;
   std::string arn_topic;
+  bool stored_secret = false;
 
   void encode(bufferlist& bl) const {
-    ENCODE_START(3, 1, bl);
+    ENCODE_START(4, 1, bl);
     encode(bucket_name, bl);
     encode(oid_prefix, bl);
     encode(push_endpoint, bl);
     encode(push_endpoint_args, bl);
     encode(arn_topic, bl);
+    encode(stored_secret, bl);
     ENCODE_FINISH(bl);
   }
 
   void decode(bufferlist::const_iterator& bl) {
-    DECODE_START(3, bl);
+    DECODE_START(4, bl);
     decode(bucket_name, bl);
     decode(oid_prefix, bl);
     decode(push_endpoint, bl);
@@ -362,6 +390,9 @@ struct rgw_pubsub_sub_dest {
     }
     if (struct_v >= 3) {
         decode(arn_topic, bl);
+    }
+    if (struct_v >= 4) {
+        decode(stored_secret, bl);
     }
     DECODE_FINISH(bl);
   }
@@ -409,23 +440,28 @@ struct rgw_pubsub_topic {
   std::string name;
   rgw_pubsub_sub_dest dest;
   std::string arn;
+  std::string opaque_data;
 
   void encode(bufferlist& bl) const {
-    ENCODE_START(2, 1, bl);
+    ENCODE_START(3, 1, bl);
     encode(user, bl);
     encode(name, bl);
     encode(dest, bl);
     encode(arn, bl);
+    encode(opaque_data, bl);
     ENCODE_FINISH(bl);
   }
 
   void decode(bufferlist::const_iterator& bl) {
-    DECODE_START(2, bl);
+    DECODE_START(3, bl);
     decode(user, bl);
     decode(name, bl);
     if (struct_v >= 2) {
       decode(dest, bl);
       decode(arn, bl);
+    }
+    if (struct_v >= 3) {
+      decode(opaque_data, bl);
     }
     DECODE_FINISH(bl);
   }
@@ -550,7 +586,7 @@ class RGWUserPubSub
 {
   friend class Bucket;
 
-  RGWRados *store;
+  rgw::sal::RGWRadosStore *store;
   rgw_user user;
   RGWSysObjectCtx obj_ctx;
 
@@ -580,11 +616,7 @@ class RGWUserPubSub
   int write_user_topics(const rgw_pubsub_user_topics& topics, RGWObjVersionTracker *objv_tracker);
 
 public:
-  RGWUserPubSub(RGWRados *_store, const rgw_user& _user) : store(_store),
-                                                           user(_user),
-                                                           obj_ctx(store->svc.sysobj->init_obj_ctx()) {
-    get_user_meta_obj(&user_meta_obj);
-  }
+  RGWUserPubSub(rgw::sal::RGWRadosStore *_store, const rgw_user& _user);
 
   class Bucket {
     friend class RGWUserPubSub;
@@ -608,7 +640,7 @@ public:
     // read the list of topics associated with a bucket and populate into result
     // return 0 on success or if no topic was associated with the bucket, error code otherwise
     int get_topics(rgw_pubsub_bucket_topics *result);
-    // adds a topic + filter (event list, and possibly name and metadata filters) to a bucket
+    // adds a topic + filter (event list, and possibly name metadata or tags filters) to a bucket
     // assigning a notification name is optional (needed for S3 compatible notifications)
     // if the topic already exist on the bucket, the filter event list may be updated
     // for S3 compliant notifications the version with: s3_filter and notif_name should be used
@@ -695,18 +727,11 @@ public:
     }
     return std::make_shared<SubWithEvents<rgw_pubsub_s3_record>>(this, sub);
   }
-  
-  void get_user_meta_obj(rgw_raw_obj *obj) const {
-    *obj = rgw_raw_obj(store->svc.zone->get_zone_params().log_pool, user_meta_oid());
-  }
 
-  void get_bucket_meta_obj(const rgw_bucket& bucket, rgw_raw_obj *obj) const {
-    *obj = rgw_raw_obj(store->svc.zone->get_zone_params().log_pool, bucket_meta_oid(bucket));
-  }
+  void get_user_meta_obj(rgw_raw_obj *obj) const;
+  void get_bucket_meta_obj(const rgw_bucket& bucket, rgw_raw_obj *obj) const;
 
-  void get_sub_meta_obj(const string& name, rgw_raw_obj *obj) const {
-    *obj = rgw_raw_obj(store->svc.zone->get_zone_params().log_pool, sub_meta_oid(name));
-  }
+  void get_sub_meta_obj(const string& name, rgw_raw_obj *obj) const;
 
   // get all topics defined for the user and populate them into "result"
   // return 0 on success or if no topics exist, error code otherwise
@@ -726,22 +751,23 @@ public:
   // create a topic with push destination information and ARN
   // if the topic already exists the destination and ARN values may be updated (considered succsess)
   // return 0 on success, error code otherwise
-  int create_topic(const string& name, const rgw_pubsub_sub_dest& dest, const std::string& arn);
+  int create_topic(const string& name, const rgw_pubsub_sub_dest& dest, const std::string& arn, const std::string& opaque_data);
   // remove a topic according to its name
   // if the topic does not exists it is a no-op (considered success)
   // return 0 on success, error code otherwise
   int remove_topic(const string& name);
 };
 
+
 template <class T>
 int RGWUserPubSub::read(const rgw_raw_obj& obj, T *result, RGWObjVersionTracker *objv_tracker)
 {
   bufferlist bl;
-  int ret = rgw_get_system_obj(store, obj_ctx,
+  int ret = rgw_get_system_obj(obj_ctx,
                                obj.pool, obj.oid,
                                bl,
                                objv_tracker,
-                               nullptr, nullptr, nullptr);
+                               nullptr, null_yield, nullptr, nullptr);
   if (ret < 0) {
     return ret;
   }
@@ -762,14 +788,14 @@ int RGWUserPubSub::write(const rgw_raw_obj& obj, const T& info, RGWObjVersionTra
   bufferlist bl;
   encode(info, bl);
 
-  int ret = rgw_put_system_obj(store, obj.pool, obj.oid,
+  int ret = rgw_put_system_obj(obj_ctx, obj.pool, obj.oid,
                            bl, false, objv_tracker,
                            real_time());
   if (ret < 0) {
     return ret;
   }
 
-  obj_ctx.invalidate(const_cast<rgw_raw_obj&>(obj));
+  obj_ctx.invalidate(obj);
   return 0;
 }
 

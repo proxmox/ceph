@@ -6,6 +6,72 @@
 #include "include/utime.h"
 
 
+void rgw_zone_set_entry::from_str(const string& s)
+{
+  auto pos = s.find(':');
+  if (pos == string::npos) {
+    zone = s;
+    location_key.reset();
+  } else {
+    zone = s.substr(0, pos);
+    location_key = s.substr(pos + 1);
+  }
+}
+
+string rgw_zone_set_entry::to_str() const
+{
+  string s = zone;
+  if (location_key) {
+    s = s + ":" + *location_key;
+  }
+  return s;
+}
+
+void rgw_zone_set_entry::encode(bufferlist &bl) const
+{
+  /* no ENCODE_START, ENCODE_END for backward compatibility */
+  ceph::encode(to_str(), bl);  
+}
+
+void rgw_zone_set_entry::decode(bufferlist::const_iterator &bl)
+{
+  /* no DECODE_START, DECODE_END for backward compatibility */
+  string s;
+  ceph::decode(s, bl);
+  from_str(s);
+}
+
+void rgw_zone_set_entry::dump(Formatter *f) const
+{
+  encode_json("entry", to_str(), f);
+}
+
+void rgw_zone_set_entry::decode_json(JSONObj *obj) {
+  string s;
+  JSONDecoder::decode_json("entry", s, obj);
+  from_str(s);
+}
+
+void rgw_zone_set::insert(const string& zone, std::optional<string> location_key)
+{
+  entries.insert(rgw_zone_set_entry(zone, location_key));
+}
+
+bool rgw_zone_set::exists(const string& zone, std::optional<string> location_key) const
+{
+  return entries.find(rgw_zone_set_entry(zone, location_key)) != entries.end();
+}
+
+void encode_json(const char *name, const rgw_zone_set& zs, ceph::Formatter *f)
+{
+  encode_json(name, zs.entries, f);
+}
+
+void decode_json_obj(rgw_zone_set& zs, JSONObj *obj)
+{
+  decode_json_obj(zs.entries, obj);
+}
+
 void rgw_bucket_pending_info::generate_test_instances(list<rgw_bucket_pending_info*>& o)
 {
   rgw_bucket_pending_info *i = new rgw_bucket_pending_info;
@@ -577,9 +643,9 @@ void rgw_bucket_dir::dump(Formatter *f) const
   f->open_object_section("header");
   header.dump(f);
   f->close_section();
-  map<string, rgw_bucket_dir_entry>::const_iterator iter = m.begin();
+  auto iter = m.cbegin();
   f->open_array_section("map");
-  for (; iter != m.end(); ++iter) {
+  for (; iter != m.cend(); ++iter) {
     f->dump_string("key", iter->first);
     f->open_object_section("dir_entry");
     iter->second.dump(f);
@@ -680,11 +746,12 @@ void cls_rgw_bucket_instance_entry::dump(Formatter *f) const
 
 }
 
-void cls_rgw_bucket_instance_entry::generate_test_instances(list<cls_rgw_bucket_instance_entry*>& ls)
+void cls_rgw_bucket_instance_entry::generate_test_instances(
+  list<cls_rgw_bucket_instance_entry*>& ls)
 {
   ls.push_back(new cls_rgw_bucket_instance_entry);
   ls.push_back(new cls_rgw_bucket_instance_entry);
-  ls.back()->reshard_status = CLS_RGW_RESHARD_IN_PROGRESS;
+  ls.back()->reshard_status = RESHARD_STATUS::IN_PROGRESS;
   ls.back()->new_bucket_instance_id = "new_instance_id";
 }
   

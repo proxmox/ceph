@@ -34,21 +34,33 @@
 SPDK_ROOT_DIR := $(abspath $(CURDIR)/..)
 include $(SPDK_ROOT_DIR)/mk/spdk.common.mk
 
-.PHONY: all clean install
+.PHONY: all clean install uninstall
 
-IPSEC_OPTS=SHARED=n
-INTEL_IPSEC_MB_LIB=
-CRYPTO_ENABLED=n
+DPDK_FRAMEWORK = n
+DPDK_OPTS =
+DPDK_CFLAGS =
 
 ifeq ($(CONFIG_CRYPTO),y)
-ifeq ($(TARGET_MACHINE),x86_64)
-ifneq ($(wildcard $(SPDK_ROOT_DIR)/intel-ipsec-mb/README),)
-INTEL_IPSEC_MB_LIB=$(SPDK_ROOT_DIR)/intel-ipsec-mb/libIPSec_MB.a
-IPSEC_MB_CFLAGS = -fPIC
-CRYPTO_ENABLED = y
+DPDK_FRAMEWORK = y
 DPDK_OPTS += CONFIG_RTE_LIBRTE_PMD_AESNI_MB=y
-DPDK_OPTS += CONFIG_RTE_LIBRTE_CRYPTODEV=y
 DPDK_OPTS += CONFIG_RTE_LIBRTE_REORDER=y
+DPDK_CFLAGS += -I$(IPSEC_MB_DIR)
+DPDK_LDFLAGS += -L$(IPSEC_MB_DIR)
+else
+DPDK_OPTS += CONFIG_RTE_LIBRTE_PMD_AESNI_MB=n
+DPDK_OPTS += CONFIG_RTE_LIBRTE_REORDER=n
+endif
+
+ifeq ($(CONFIG_REDUCE),y)
+DPDK_FRAMEWORK = y
+DPDK_OPTS += CONFIG_RTE_LIBRTE_PMD_ISAL=y
+DPDK_CFLAGS += -I$(ISAL_DIR)
+DPDK_LDFLAGS += -L$(ISAL_DIR)/.libs
+else
+DPDK_OPTS += CONFIG_RTE_LIBRTE_PMD_ISAL=n
+endif
+
+ifeq ($(DPDK_FRAMEWORK),y)
 DPDK_OPTS += CONFIG_RTE_LIBRTE_PMD_QAT=y
 DPDK_OPTS += CONFIG_RTE_LIBRTE_PMD_QAT_SYM=y
 ifeq ($(CONFIG_IGB_UIO_DRIVER),y)
@@ -56,15 +68,7 @@ DPDK_OPTS += CONFIG_RTE_EAL_IGB_UIO=y
 else
 DPDK_OPTS += CONFIG_RTE_EAL_IGB_UIO=n
 endif
-endif
-endif
-endif
-
-ifeq ($(CRYPTO_ENABLED),n)
-DPDK_OPTS += CONFIG_RTE_EAL_IGB_UIO=n
-DPDK_OPTS += CONFIG_RTE_LIBRTE_PMD_AESNI_MB=n
-DPDK_OPTS += CONFIG_RTE_LIBRTE_CRYPTODEV=n
-DPDK_OPTS += CONFIG_RTE_LIBRTE_REORDER=n
+else
 DPDK_OPTS += CONFIG_RTE_LIBRTE_PMD_QAT=n
 DPDK_OPTS += CONFIG_RTE_LIBRTE_PMD_QAT_SYM=n
 endif
@@ -87,17 +91,14 @@ endif
 
 ifeq ($(CC_TYPE),clang)
 DPDK_CONFIG := $(DPDK_CONFIG)-clang
-IPSEC_CC := clang
 else
 DPDK_CONFIG := $(DPDK_CONFIG)-gcc
-IPSEC_CC := gcc
 endif
 
-DPDK_CFLAGS = -fPIC
+DPDK_CFLAGS += -fPIC
 
 ifeq ($(CONFIG_DEBUG),y)
 DPDK_CFLAGS += -O0 -g
-IPSEC_OPTS += DEBUG=y
 endif
 
 ifeq ($(CONFIG_WERROR),y)
@@ -114,20 +115,16 @@ endif
 # Allow users to specify EXTRA_DPDK_CFLAGS if they want to build DPDK using unsupported compiler versions
 DPDK_CFLAGS += $(EXTRA_DPDK_CFLAGS)
 
-$(SPDK_ROOT_DIR)/dpdk/build: $(INTEL_IPSEC_MB_LIB)
+$(SPDK_ROOT_DIR)/dpdk/build:
 	$(Q)$(MAKE) -C $(SPDK_ROOT_DIR)/dpdk config T=$(DPDK_CONFIG) $(DPDK_OPTS)
 
-all: $(SPDK_ROOT_DIR)/dpdk/build $(INTEL_IPSEC_MB_LIB)
-	$(Q)$(MAKE) -C $(SPDK_ROOT_DIR)/dpdk/build EXTRA_CFLAGS="$(DPDK_CFLAGS)" MAKEFLAGS="T=$(DPDK_CONFIG) -j$(NPROC)" $(DPDK_OPTS)
-
-ifeq ($(CONFIG_CRYPTO),y)
-$(SPDK_ROOT_DIR)/intel-ipsec-mb/libIPSec_MB.a:
-	$(Q)$(MAKE) -C $(SPDK_ROOT_DIR)/intel-ipsec-mb EXTRA_CFLAGS="$(IPSEC_MB_CFLAGS)" $(IPSEC_OPTS) MAKEFLAGS="j$(NPROC)" CC=$(IPSEC_CC)
-endif
+all: $(SPDK_ROOT_DIR)/dpdk/build
+	$(Q)$(MAKE) -C $(SPDK_ROOT_DIR)/dpdk/build EXTRA_CFLAGS="$(DPDK_CFLAGS)" EXTRA_LDFLAGS="$(DPDK_LDFLAGS)" MAKEFLAGS="T=$(DPDK_CONFIG) -j$(NPROC)" $(DPDK_OPTS)
 
 clean:
-	$(Q)rm -rf $(SPDK_ROOT_DIR)/dpdk/build; \
-	rm -rf $(SPDK_ROOT_DIR)/intel-ipsec-mb/obj/*; \
-	rm -rf $(SPDK_ROOT_DIR)/intel-ipsec-mb/libIPSec_MB.a
+	$(Q)rm -rf $(SPDK_ROOT_DIR)/dpdk/build
 
 install: all
+
+uninstall:
+	@:

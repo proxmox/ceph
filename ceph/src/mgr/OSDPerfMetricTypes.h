@@ -7,6 +7,8 @@
 #include "include/denc.h"
 #include "include/stringify.h"
 
+#include "mgr/Types.h"
+
 #include <regex>
 
 typedef std::vector<std::string> OSDPerfMetricSubKey; // array of regex match
@@ -92,14 +94,14 @@ struct denc_traits<OSDPerfMetricKeyDescriptor> {
     }
   }
   static void encode(const OSDPerfMetricKeyDescriptor& v,
-                     bufferlist::contiguous_appender& p) {
+		     ceph::buffer::list::contiguous_appender& p) {
     denc_varint(v.size(), p);
     for (auto& i : v) {
       denc(i, p);
     }
   }
   static void decode(OSDPerfMetricKeyDescriptor& v,
-                     bufferptr::const_iterator& p) {
+                     ceph::buffer::ptr::const_iterator& p) {
     unsigned num;
     denc_varint(num, p);
     v.clear();
@@ -125,9 +127,6 @@ struct denc_traits<OSDPerfMetricKeyDescriptor> {
     }
   }
 };
-
-typedef std::pair<uint64_t,uint64_t> PerformanceCounter;
-typedef std::vector<PerformanceCounter> PerformanceCounters;
 
 enum class PerformanceCounterType : uint8_t {
   OPS = 0,
@@ -185,8 +184,8 @@ struct PerformanceCounterDescriptor {
     DENC_FINISH(p);
   }
 
-  void pack_counter(const PerformanceCounter &c, bufferlist *bl) const;
-  void unpack_counter(bufferlist::const_iterator& bl,
+  void pack_counter(const PerformanceCounter &c, ceph::buffer::list *bl) const;
+  void unpack_counter(ceph::buffer::list::const_iterator& bl,
                       PerformanceCounter *c) const;
 };
 WRITE_CLASS_DENC(PerformanceCounterDescriptor)
@@ -212,14 +211,14 @@ struct denc_traits<PerformanceCounterDescriptors> {
     }
   }
   static void encode(const PerformanceCounterDescriptors& v,
-                     bufferlist::contiguous_appender& p) {
+                     ceph::buffer::list::contiguous_appender& p) {
     denc_varint(v.size(), p);
     for (auto& i : v) {
       denc(i, p);
     }
   }
   static void decode(PerformanceCounterDescriptors& v,
-                     bufferptr::const_iterator& p) {
+                     ceph::buffer::ptr::const_iterator& p) {
     unsigned num;
     denc_varint(num, p);
     v.clear();
@@ -265,8 +264,6 @@ WRITE_CLASS_DENC(OSDPerfMetricLimit)
 std::ostream& operator<<(std::ostream& os, const OSDPerfMetricLimit &limit);
 
 typedef std::set<OSDPerfMetricLimit> OSDPerfMetricLimits;
-
-typedef int OSDPerfMetricQueryID;
 
 struct OSDPerfMetricQuery {
   bool operator<(const OSDPerfMetricQuery &other) const {
@@ -329,7 +326,7 @@ struct OSDPerfMetricQuery {
     }
   }
 
-  void pack_counters(const PerformanceCounters &counters, bufferlist *bl) const;
+  void pack_counters(const PerformanceCounters &counters, ceph::buffer::list *bl) const;
 
   OSDPerfMetricKeyDescriptor key_descriptor;
   PerformanceCounterDescriptors performance_counter_descriptors;
@@ -340,7 +337,7 @@ std::ostream& operator<<(std::ostream& os, const OSDPerfMetricQuery &query);
 
 struct OSDPerfMetricReport {
   PerformanceCounterDescriptors performance_counter_descriptors;
-  std::map<OSDPerfMetricKey, bufferlist> group_packed_performance_counters;
+  std::map<OSDPerfMetricKey, ceph::buffer::list> group_packed_performance_counters;
 
   DENC(OSDPerfMetricReport, v, p) {
     DENC_START(1, 1, p);

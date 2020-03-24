@@ -8,14 +8,14 @@ meta:
 - desc: install ceph/mimic latest
 tasks:
 - install:
-    branch: mimic 
+    branch: mimic
     exclude_packages:
       - librados3
       - ceph-mgr-dashboard
       - ceph-mgr-diskprediction-local
-      - ceph-mgr-diskprediction-cloud
       - ceph-mgr-rook
-      - ceph-mgr-ssh
+      - ceph-mgr-cephadm
+      - cephadm
     extra_packages: ['librados2']
 - print: "**** done install mimic"
 - ceph:

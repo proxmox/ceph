@@ -108,13 +108,22 @@ class SettingsControllerTest(ControllerTestCase, KVStoreMockMixin):
 
     def test_settings_list(self):
         self._get('/api/settings')
-        data = self.jsonBody()
+        data = self.json_body()
         self.assertTrue(len(data) > 0)
         self.assertStatus(200)
         self.assertIn('default', data[0].keys())
         self.assertIn('type', data[0].keys())
         self.assertIn('name', data[0].keys())
         self.assertIn('value', data[0].keys())
+
+    def test_settings_list_filtered(self):
+        self._get('/api/settings?names=GRAFANA_ENABLED,PWD_POLICY_ENABLED')
+        self.assertStatus(200)
+        data = self.json_body()
+        self.assertTrue(len(data) == 2)
+        names = [option['name'] for option in data]
+        self.assertIn('GRAFANA_ENABLED', names)
+        self.assertIn('PWD_POLICY_ENABLED', names)
 
     def test_rgw_daemon_get(self):
         self._get('/api/settings/grafana-api-username')
@@ -136,7 +145,7 @@ class SettingsControllerTest(ControllerTestCase, KVStoreMockMixin):
         self.assertInJsonBody('type')
         self.assertInJsonBody('name')
         self.assertInJsonBody('value')
-        self.assertEqual(self.jsonBody()['value'], 'foo')
+        self.assertEqual(self.json_body()['value'], 'foo')
 
     def test_bulk_set(self):
         self._put('/api/settings', {
@@ -147,13 +156,13 @@ class SettingsControllerTest(ControllerTestCase, KVStoreMockMixin):
 
         self._get('/api/settings/grafana-api-username')
         self.assertStatus(200)
-        body = self.jsonBody()
+        body = self.json_body()
         self.assertEqual(body['value'], 'foo')
 
         self._get('/api/settings/grafana-api-username')
         self.assertStatus(200)
-        self.assertEqual(self.jsonBody()['value'], 'foo')
+        self.assertEqual(self.json_body()['value'], 'foo')
 
         self._get('/api/settings/grafana-api-host')
         self.assertStatus(200)
-        self.assertEqual(self.jsonBody()['value'], 'somehost')
+        self.assertEqual(self.json_body()['value'], 'somehost')

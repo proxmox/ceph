@@ -5,16 +5,15 @@
 #ifndef _RTE_AESNI_MB_PMD_PRIVATE_H_
 #define _RTE_AESNI_MB_PMD_PRIVATE_H_
 
-#include "aesni_mb_ops.h"
+#include <intel-ipsec-mb.h>
 
-/*
- * IMB_VERSION_NUM macro was introduced in version Multi-buffer 0.50,
- * so if macro is not defined, it means that the version is 0.49.
- */
-#if !defined(IMB_VERSION_NUM)
-#define IMB_VERSION(a, b, c) (((a) << 16) + ((b) << 8) + (c))
-#define IMB_VERSION_NUM IMB_VERSION(0, 49, 0)
-#endif
+enum aesni_mb_vector_mode {
+	RTE_AESNI_MB_NOT_SUPPORTED = 0,
+	RTE_AESNI_MB_SSE,
+	RTE_AESNI_MB_AVX,
+	RTE_AESNI_MB_AVX2,
+	RTE_AESNI_MB_AVX512
+};
 
 #define CRYPTODEV_NAME_AESNI_MB_PMD	crypto_aesni_mb
 /**< AES-NI Multi buffer PMD device name */
@@ -31,8 +30,8 @@ int aesni_mb_logtype_driver;
 #define HMAC_IPAD_VALUE			(0x36)
 #define HMAC_OPAD_VALUE			(0x5C)
 
-/* Maximum length for digest (SHA-512 truncated needs 32 bytes) */
-#define DIGEST_LENGTH_MAX 32
+/* Maximum length for digest */
+#define DIGEST_LENGTH_MAX 64
 static const unsigned auth_blocksize[] = {
 		[MD5]		= 64,
 		[SHA1]		= 64,
@@ -64,7 +63,7 @@ static const unsigned auth_truncated_digest_byte_lengths[] = {
 		[SHA_384]	= 24,
 		[SHA_512]	= 32,
 		[AES_XCBC]	= 12,
-		[AES_CMAC]	= 16,
+		[AES_CMAC]	= 12,
 		[AES_CCM]	= 8,
 		[NULL_HASH]	= 0
 };
@@ -91,11 +90,20 @@ static const unsigned auth_digest_byte_lengths[] = {
 		[SHA_512]	= 64,
 		[AES_XCBC]	= 16,
 		[AES_CMAC]	= 16,
-		[NULL_HASH]		= 0
+		[AES_GMAC]	= 12,
+		[NULL_HASH]	= 0,
+		[PLAIN_SHA1]	= 20,
+		[PLAIN_SHA_224]	= 28,
+		[PLAIN_SHA_256]	= 32,
+		[PLAIN_SHA_384]	= 48,
+		[PLAIN_SHA_512]	= 64
+	/**< Vector mode dependent pointer table of the multi-buffer APIs */
+
 };
 
 /**
- * Get the output digest size in bytes for a specified authentication algorithm
+ * Get the full digest size in bytes for a specified authentication algorithm
+ * (if available in the Multi-buffer library)
  *
  * @Note: this function will not return a valid value for a non-valid
  * authentication algorithm
@@ -122,6 +130,8 @@ struct aesni_mb_private {
 	/**< CPU vector instruction set mode */
 	unsigned max_nb_queue_pairs;
 	/**< Max number of queue pairs supported by device */
+	MB_MGR *mb_mgr;
+	/**< Multi-buffer instance */
 };
 
 /** AESNI Multi buffer queue pair */
@@ -130,14 +140,14 @@ struct aesni_mb_qp {
 	/**< Queue Pair Identifier */
 	char name[RTE_CRYPTODEV_NAME_MAX_LEN];
 	/**< Unique Queue Pair Name */
-	const struct aesni_mb_op_fns *op_fns;
-	/**< Vector mode dependent pointer table of the multi-buffer APIs */
-	MB_MGR mb_mgr;
+	MB_MGR *mb_mgr;
 	/**< Multi-buffer instance */
 	struct rte_ring *ingress_queue;
-       /**< Ring for placing operations ready for processing */
+	/**< Ring for placing operations ready for processing */
 	struct rte_mempool *sess_mp;
 	/**< Session Mempool */
+	struct rte_mempool *sess_mp_priv;
+	/**< Session Private Data Mempool */
 	struct rte_cryptodev_stats stats;
 	/**< Queue pair statistics */
 	uint8_t digest_idx;
@@ -160,7 +170,9 @@ struct aesni_mb_session {
 	} iv;
 	/**< IV parameters */
 
-	/** Cipher Parameters */
+	/** Cipher Parameters */const struct aesni_mb_op_fns *op_fns;
+	/**< Vector mode dependent pointer table of the multi-buffer APIs */
+
 	struct {
 		/** Cipher direction - encrypt / decrypt */
 		JOB_CIPHER_DIRECTION direction;
@@ -180,6 +192,8 @@ struct aesni_mb_session {
 				const void *ks_ptr[3];
 				uint64_t key[3][16];
 			} exp_3des_keys;
+
+			struct gcm_key_data gcm_key;
 		};
 		/**< Expanded AES keys - Allocating space to
 		 * contain the maximum expanded key size which
@@ -226,8 +240,10 @@ struct aesni_mb_session {
 			} cmac;
 			/**< Expanded XCBC authentication keys */
 		};
-	/** digest size */
-	uint16_t digest_len;
+	/** Generated digest size by the Multi-buffer library */
+	uint16_t gen_digest_len;
+	/** Requested digest size from Cryptodev */
+	uint16_t req_digest_len;
 
 	} auth;
 	struct {
@@ -236,15 +252,10 @@ struct aesni_mb_session {
 	} aead;
 } __rte_cache_aligned;
 
-
-/**
- *
- */
 extern int
-aesni_mb_set_session_parameters(const struct aesni_mb_op_fns *mb_ops,
+aesni_mb_set_session_parameters(const MB_MGR *mb_mgr,
 		struct aesni_mb_session *sess,
 		const struct rte_crypto_sym_xform *xform);
-
 
 /** device specific operations function pointer structure */
 extern struct rte_cryptodev_ops *rte_aesni_mb_pmd_ops;

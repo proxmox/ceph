@@ -1,5 +1,5 @@
 // -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// vim: ts=8 sw=2 smarttab ft=cpp
 
 /*
  * Ceph - scalable distributed file system
@@ -13,8 +13,7 @@
  * 
  */
 
-#ifndef CEPH_RGW_REST_S3WEBSITE_H
-#define CEPH_RGW_REST_S3WEBSITE_H
+#pragma once
  
 #include "rgw_rest_s3.h"
 
@@ -41,7 +40,7 @@ public:
   using RGWHandler_REST_S3::RGWHandler_REST_S3;
   ~RGWHandler_REST_S3Website() override = default;
 
-  int init(RGWRados *store, req_state *s, rgw::io::BasicClient* cio) override;
+  int init(rgw::sal::RGWRadosStore *store, req_state *s, rgw::io::BasicClient* cio) override;
   int error_handler(int err_no, string *error_content) override;
 };
 
@@ -99,5 +98,3 @@ public:
       }
   }
 };
- 
-#endif

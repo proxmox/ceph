@@ -1,11 +1,8 @@
-/*
+/* SPDX-License-Identifier: BSD-3-Clause
  * Copyright (c) 2013-2015 Brocade Communications Systems, Inc.
- *
- * Copyright (c) 2015 QLogic Corporation.
+ * Copyright (c) 2015-2018 Cavium Inc.
  * All rights reserved.
- * www.qlogic.com
- *
- * See LICENSE.bnx2x_pmd for copyright and licensing details.
+ * www.cavium.com
  */
 
 #ifndef BNX2X_VFPF_H
@@ -282,7 +279,7 @@ struct bnx2x_vf_bulletin {
 	uint16_t version;
 	uint16_t length;
 
-	uint64_t valid_bitmap;	/* bitmap indicating wich fields
+	uint64_t valid_bitmap;	/* bitmap indicating which fields
 					 * hold valid values
 					 */
 

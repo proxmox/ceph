@@ -38,7 +38,7 @@
 #include "spdk/util.h"
 
 static void
-spdk_scsi_task_free_data(struct spdk_scsi_task *task);
+scsi_task_free_data(struct spdk_scsi_task *task);
 
 void
 spdk_scsi_task_put(struct spdk_scsi_task *task)
@@ -56,7 +56,7 @@ spdk_scsi_task_put(struct spdk_scsi_task *task)
 			spdk_bdev_free_io(bdev_io);
 		}
 
-		spdk_scsi_task_free_data(task);
+		scsi_task_free_data(task);
 
 		task->free_fn(task);
 	}
@@ -85,7 +85,7 @@ spdk_scsi_task_construct(struct spdk_scsi_task *task,
 }
 
 static void
-spdk_scsi_task_free_data(struct spdk_scsi_task *task)
+scsi_task_free_data(struct spdk_scsi_task *task)
 {
 	if (task->alloc_len != 0) {
 		spdk_dma_free(task->iov.iov_base);
@@ -97,7 +97,7 @@ spdk_scsi_task_free_data(struct spdk_scsi_task *task)
 }
 
 static void *
-spdk_scsi_task_alloc_data(struct spdk_scsi_task *task, uint32_t alloc_len)
+scsi_task_alloc_data(struct spdk_scsi_task *task, uint32_t alloc_len)
 {
 	assert(task->alloc_len == 0);
 
@@ -122,7 +122,7 @@ spdk_scsi_task_scatter_data(struct spdk_scsi_task *task, const void *src, size_t
 	}
 
 	if (task->iovcnt == 1 && iovs[0].iov_base == NULL) {
-		spdk_scsi_task_alloc_data(task, buf_len);
+		scsi_task_alloc_data(task, buf_len);
 		iovs[0] = task->iov;
 	}
 
@@ -169,7 +169,7 @@ spdk_scsi_task_gather_data(struct spdk_scsi_task *task, int *len)
 		return NULL;
 	}
 
-	buf = spdk_dma_malloc(buf_len, 0, NULL);
+	buf = calloc(1, buf_len);
 	if (buf == NULL) {
 		*len = -1;
 		return NULL;
@@ -253,4 +253,50 @@ spdk_scsi_task_copy_status(struct spdk_scsi_task *dst,
 	memcpy(dst->sense_data, src->sense_data, src->sense_data_len);
 	dst->sense_data_len = src->sense_data_len;
 	dst->status = src->status;
+}
+
+void
+spdk_scsi_task_process_null_lun(struct spdk_scsi_task *task)
+{
+	uint8_t buffer[36];
+	uint32_t allocation_len;
+	uint32_t data_len;
+
+	task->length = task->transfer_len;
+	if (task->cdb[0] == SPDK_SPC_INQUIRY) {
+		/*
+		 * SPC-4 states that INQUIRY commands to an unsupported LUN
+		 *  must be served with PERIPHERAL QUALIFIER = 0x3 and
+		 *  PERIPHERAL DEVICE TYPE = 0x1F.
+		 */
+		data_len = sizeof(buffer);
+
+		memset(buffer, 0, data_len);
+		/* PERIPHERAL QUALIFIER(7-5) PERIPHERAL DEVICE TYPE(4-0) */
+		buffer[0] = 0x03 << 5 | 0x1f;
+		/* ADDITIONAL LENGTH */
+		buffer[4] = data_len - 5;
+
+		allocation_len = from_be16(&task->cdb[3]);
+		if (spdk_scsi_task_scatter_data(task, buffer, spdk_min(allocation_len, data_len)) >= 0) {
+			task->data_transferred = data_len;
+			task->status = SPDK_SCSI_STATUS_GOOD;
+		}
+	} else {
+		/* LOGICAL UNIT NOT SUPPORTED */
+		spdk_scsi_task_set_status(task, SPDK_SCSI_STATUS_CHECK_CONDITION,
+					  SPDK_SCSI_SENSE_ILLEGAL_REQUEST,
+					  SPDK_SCSI_ASC_LOGICAL_UNIT_NOT_SUPPORTED,
+					  SPDK_SCSI_ASCQ_CAUSE_NOT_REPORTABLE);
+		task->data_transferred = 0;
+	}
+}
+
+void
+spdk_scsi_task_process_abort(struct spdk_scsi_task *task)
+{
+	spdk_scsi_task_set_status(task, SPDK_SCSI_STATUS_CHECK_CONDITION,
+				  SPDK_SCSI_SENSE_ABORTED_COMMAND,
+				  SPDK_SCSI_ASC_NO_ADDITIONAL_SENSE,
+				  SPDK_SCSI_ASCQ_CAUSE_NOT_REPORTABLE);
 }

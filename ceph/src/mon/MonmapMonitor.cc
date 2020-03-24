@@ -29,6 +29,7 @@
 #define dout_subsys ceph_subsys_mon
 #undef dout_prefix
 #define dout_prefix _prefix(_dout, mon)
+using namespace TOPNSPC::common;
 static ostream& _prefix(std::ostream *_dout, Monitor *mon) {
   return *_dout << "mon." << mon->name << "@" << mon->rank
 		<< "(" << mon->get_state_name()
@@ -122,9 +123,9 @@ void MonmapMonitor::encode_pending(MonitorDBStore::TransactionRef t)
 class C_ApplyFeatures : public Context {
   MonmapMonitor *svc;
   mon_feature_t features;
-  int min_mon_release;
+  ceph_release_t min_mon_release;
 public:
-  C_ApplyFeatures(MonmapMonitor *s, const mon_feature_t& f, int mmr) :
+  C_ApplyFeatures(MonmapMonitor *s, const mon_feature_t& f, ceph_release_t mmr) :
     svc(s), features(f), min_mon_release(mmr) { }
   void finish(int r) override {
     if (r >= 0) {
@@ -140,7 +141,7 @@ public:
 };
 
 void MonmapMonitor::apply_mon_features(const mon_feature_t& features,
-				       int min_mon_release)
+				       ceph_release_t min_mon_release)
 {
   if (!is_writeable()) {
     dout(5) << __func__ << " wait for service to be writeable" << dendl;
@@ -180,7 +181,7 @@ void MonmapMonitor::apply_mon_features(const mon_feature_t& features,
   }
   if (min_mon_release > pending_map.min_mon_release) {
     dout(1) << __func__ << " increasing min_mon_release to "
-	    << (int)min_mon_release << " (" << ceph_release_name(min_mon_release)
+	    << ceph::to_integer<int>(min_mon_release) << " (" << min_mon_release
 	    << ")" << dendl;
     pending_map.min_mon_release = min_mon_release;
   }
@@ -216,7 +217,7 @@ void MonmapMonitor::on_active()
 
 bool MonmapMonitor::preprocess_query(MonOpRequestRef op)
 {
-  PaxosServiceMessage *m = static_cast<PaxosServiceMessage*>(op->get_req());
+  auto m = op->get_req<PaxosServiceMessage>();
   switch (m->get_type()) {
     // READs
   case MSG_MON_COMMAND:
@@ -251,7 +252,7 @@ void MonmapMonitor::dump_info(Formatter *f)
 
 bool MonmapMonitor::preprocess_command(MonOpRequestRef op)
 {
-  MMonCommand *m = static_cast<MMonCommand*>(op->get_req());
+  auto m = op->get_req<MMonCommand>();
   int r = -1;
   bufferlist rdata;
   stringstream ss;
@@ -264,7 +265,7 @@ bool MonmapMonitor::preprocess_command(MonOpRequestRef op)
   }
 
   string prefix;
-  cmd_getval(g_ceph_context, cmdmap, "prefix", prefix);
+  cmd_getval(cmdmap, "prefix", prefix);
 
   MonSession *session = op->get_session();
   if (!session) {
@@ -273,7 +274,7 @@ bool MonmapMonitor::preprocess_command(MonOpRequestRef op)
   }
 
   string format;
-  cmd_getval(g_ceph_context, cmdmap, "format", format, string("plain"));
+  cmd_getval(cmdmap, "format", format, string("plain"));
   boost::scoped_ptr<Formatter> f(Formatter::create(format));
 
   if (prefix == "mon stat") {
@@ -290,7 +291,7 @@ bool MonmapMonitor::preprocess_command(MonOpRequestRef op)
 
     epoch_t epoch;
     int64_t epochnum;
-    cmd_getval(g_ceph_context, cmdmap, "epoch", epochnum, (int64_t)0);
+    cmd_getval(cmdmap, "epoch", epochnum, (int64_t)0);
     epoch = epochnum;
 
     MonMap *p = mon->monmap;
@@ -343,7 +344,7 @@ bool MonmapMonitor::preprocess_command(MonOpRequestRef op)
    
     bool list_with_value = false;
     string with_value;
-    if (cmd_getval(g_ceph_context, cmdmap, "with_value", with_value) &&
+    if (cmd_getval(cmdmap, "with_value", with_value) &&
         with_value == "--with-value") {
       list_with_value = true;
     }
@@ -426,7 +427,7 @@ reply:
 
 bool MonmapMonitor::prepare_update(MonOpRequestRef op)
 {
-  PaxosServiceMessage *m = static_cast<PaxosServiceMessage*>(op->get_req());
+  auto m = op->get_req<PaxosServiceMessage>();
   dout(7) << __func__ << " " << *m << " from " << m->get_orig_source_inst() << dendl;
   
   switch (m->get_type()) {
@@ -449,7 +450,7 @@ bool MonmapMonitor::prepare_update(MonOpRequestRef op)
 
 bool MonmapMonitor::prepare_command(MonOpRequestRef op)
 {
-  MMonCommand *m = static_cast<MMonCommand*>(op->get_req());
+  auto m = op->get_req<MMonCommand>();
   stringstream ss;
   string rs;
   int err = -EINVAL;
@@ -462,7 +463,7 @@ bool MonmapMonitor::prepare_command(MonOpRequestRef op)
   }
 
   string prefix;
-  cmd_getval(g_ceph_context, cmdmap, "prefix", prefix);
+  cmd_getval(cmdmap, "prefix", prefix);
 
   MonSession *session = op->get_session();
   if (!session) {
@@ -523,9 +524,9 @@ bool MonmapMonitor::prepare_command(MonOpRequestRef op)
   bool propose = false;
   if (prefix == "mon add") {
     string name;
-    cmd_getval(g_ceph_context, cmdmap, "name", name);
+    cmd_getval(cmdmap, "name", name);
     string addrstr;
-    cmd_getval(g_ceph_context, cmdmap, "addr", addrstr);
+    cmd_getval(cmdmap, "addr", addrstr);
     entity_addr_t addr;
     bufferlist rdata;
 
@@ -617,7 +618,7 @@ bool MonmapMonitor::prepare_command(MonOpRequestRef op)
   } else if (prefix == "mon remove" ||
              prefix == "mon rm") {
     string name;
-    cmd_getval(g_ceph_context, cmdmap, "name", name);
+    cmd_getval(cmdmap, "name", name);
     if (!monmap.contains(name)) {
       err = 0;
       ss << "mon." << name << " does not exist or has already been removed";
@@ -683,7 +684,7 @@ bool MonmapMonitor::prepare_command(MonOpRequestRef op)
      * 'mon flag set/unset'.
      */
     string feature_name;
-    if (!cmd_getval(g_ceph_context, cmdmap, "feature_name", feature_name)) {
+    if (!cmd_getval(cmdmap, "feature_name", feature_name)) {
       ss << "missing required feature name";
       err = -EINVAL;
       goto reply;
@@ -698,7 +699,7 @@ bool MonmapMonitor::prepare_command(MonOpRequestRef op)
     }
 
     bool sure = false;
-    cmd_getval(g_ceph_context, cmdmap, "yes_i_really_mean_it", sure);
+    cmd_getval(cmdmap, "yes_i_really_mean_it", sure);
     if (!sure) {
       ss << "please specify '--yes-i-really-mean-it' if you "
          << "really, **really** want to set feature '"
@@ -736,8 +737,8 @@ bool MonmapMonitor::prepare_command(MonOpRequestRef op)
   } else if (prefix == "mon set-rank") {
     string name;
     int64_t rank;
-    if (!cmd_getval(g_ceph_context, cmdmap, "name", name) ||
-	!cmd_getval(g_ceph_context, cmdmap, "rank", rank)) {
+    if (!cmd_getval(cmdmap, "name", name) ||
+	!cmd_getval(cmdmap, "rank", rank)) {
       err = -EINVAL;
       goto reply;
     }
@@ -754,8 +755,8 @@ bool MonmapMonitor::prepare_command(MonOpRequestRef op)
   } else if (prefix == "mon set-addrs") {
     string name;
     string addrs;
-    if (!cmd_getval(g_ceph_context, cmdmap, "name", name) ||
-	!cmd_getval(g_ceph_context, cmdmap, "addrs", addrs)) {
+    if (!cmd_getval(cmdmap, "name", name) ||
+	!cmd_getval(cmdmap, "addrs", addrs)) {
       err = -EINVAL;
       goto reply;
     }
@@ -780,6 +781,23 @@ bool MonmapMonitor::prepare_command(MonOpRequestRef op)
     }
     err = 0;
     pending_map.set_addrvec(name, av);
+    pending_map.last_changed = ceph_clock_now();
+    propose = true;
+  } else if (prefix == "mon set-weight") {
+    string name;
+    int64_t weight;
+    if (!cmd_getval(cmdmap, "name", name) ||
+        !cmd_getval(cmdmap, "weight", weight)) {
+      err = -EINVAL;
+      goto reply;
+    }
+    if (!pending_map.contains(name)) {
+      ss << "mon." << name << " does not exist";
+      err = -ENOENT;
+      goto reply;
+    }
+    err = 0;
+    pending_map.set_weight(name, weight);
     pending_map.last_changed = ceph_clock_now();
     propose = true;
   } else if (prefix == "mon enable-msgr2") {
@@ -822,7 +840,7 @@ reply:
 
 bool MonmapMonitor::preprocess_join(MonOpRequestRef op)
 {
-  MMonJoin *join = static_cast<MMonJoin*>(op->get_req());
+  auto join = op->get_req<MMonJoin>();
   dout(10) << __func__ << " " << join->name << " at " << join->addrs << dendl;
 
   MonSession *session = op->get_session();
@@ -846,7 +864,7 @@ bool MonmapMonitor::preprocess_join(MonOpRequestRef op)
 }
 bool MonmapMonitor::prepare_join(MonOpRequestRef op)
 {
-  MMonJoin *join = static_cast<MMonJoin*>(op->get_req());
+  auto join = op->get_req<MMonJoin>();
   dout(0) << "adding/updating " << join->name
 	  << " at " << join->addrs << " to monitor cluster" << dendl;
   if (pending_map.contains(join->name))

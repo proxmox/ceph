@@ -36,9 +36,18 @@
 
 #include "spdk_cunit.h"
 
+#include "common/lib/test_env.c"
+#include "common/lib/test_sock.c"
+
 #include "../common.c"
 #include "iscsi/portal_grp.c"
 #include "unit/lib/json_mock.c"
+
+#include "spdk_internal/thread.h"
+
+DEFINE_STUB(spdk_iscsi_conn_construct, int,
+	    (struct spdk_iscsi_portal *portal, struct spdk_sock *sock),
+	    0);
 
 struct spdk_iscsi_globals g_spdk_iscsi;
 
@@ -178,7 +187,7 @@ parse_portal_ipv4_normal_case(void)
 
 	spdk_cpuset_set_cpu(cpumask_val, 0, true);
 
-	rc = spdk_iscsi_parse_portal(string, &p, 0);
+	rc = iscsi_parse_portal(string, &p, 0);
 	CU_ASSERT(rc == 0);
 	SPDK_CU_ASSERT_FATAL(p != NULL);
 	CU_ASSERT(strcmp(p->host, host_str) == 0);
@@ -206,7 +215,7 @@ parse_portal_ipv6_normal_case(void)
 
 	spdk_cpuset_set_cpu(cpumask_val, 0, true);
 
-	rc = spdk_iscsi_parse_portal(string, &p, 0);
+	rc = iscsi_parse_portal(string, &p, 0);
 	CU_ASSERT(rc == 0);
 	SPDK_CU_ASSERT_FATAL(p != NULL);
 	CU_ASSERT(strcmp(p->host, host_str) == 0);
@@ -231,7 +240,7 @@ parse_portal_ipv4_skip_cpumask_case(void)
 
 	cpumask_val = spdk_app_get_core_mask();
 
-	rc = spdk_iscsi_parse_portal(string, &p, 0);
+	rc = iscsi_parse_portal(string, &p, 0);
 	CU_ASSERT(rc == 0);
 	SPDK_CU_ASSERT_FATAL(p != NULL);
 	CU_ASSERT(strcmp(p->host, host_str) == 0);
@@ -254,7 +263,7 @@ parse_portal_ipv6_skip_cpumask_case(void)
 
 	cpumask_val = spdk_app_get_core_mask();
 
-	rc = spdk_iscsi_parse_portal(string, &p, 0);
+	rc = iscsi_parse_portal(string, &p, 0);
 	CU_ASSERT(rc == 0);
 	SPDK_CU_ASSERT_FATAL(p != NULL);
 	CU_ASSERT(strcmp(p->host, host_str) == 0);
@@ -277,7 +286,7 @@ parse_portal_ipv4_skip_port_and_cpumask_case(void)
 
 	cpumask_val = spdk_app_get_core_mask();
 
-	rc = spdk_iscsi_parse_portal(string, &p, 0);
+	rc = iscsi_parse_portal(string, &p, 0);
 	CU_ASSERT(rc == 0);
 	SPDK_CU_ASSERT_FATAL(p != NULL);
 	CU_ASSERT(strcmp(p->host, host_str) == 0);
@@ -300,7 +309,7 @@ parse_portal_ipv6_skip_port_and_cpumask_case(void)
 
 	cpumask_val = spdk_app_get_core_mask();
 
-	rc = spdk_iscsi_parse_portal(string, &p, 0);
+	rc = iscsi_parse_portal(string, &p, 0);
 	CU_ASSERT(rc == 0);
 	SPDK_CU_ASSERT_FATAL(p != NULL);
 	CU_ASSERT(strcmp(p->host, host_str) == 0);
@@ -381,9 +390,14 @@ portal_grp_register_twice_case(void)
 static void
 portal_grp_add_delete_case(void)
 {
+	struct spdk_sock sock = {};
+	struct spdk_thread *thread;
 	struct spdk_iscsi_portal_grp *pg1, *pg2;
 	struct spdk_iscsi_portal *p;
 	int rc;
+
+	thread = spdk_thread_create(NULL, NULL);
+	spdk_set_thread(thread);
 
 	const char *host = "192.168.2.0";
 	const char *port = "3260";
@@ -398,8 +412,10 @@ portal_grp_add_delete_case(void)
 
 	spdk_iscsi_portal_grp_add_portal(pg1, p);
 
+	MOCK_SET(spdk_sock_listen, &sock);
 	rc = spdk_iscsi_portal_grp_open(pg1);
 	CU_ASSERT(rc == 0);
+	MOCK_CLEAR_P(spdk_sock_listen);
 
 	rc = spdk_iscsi_portal_grp_register(pg1);
 	CU_ASSERT(rc == 0);
@@ -413,6 +429,70 @@ portal_grp_add_delete_case(void)
 
 	CU_ASSERT(TAILQ_EMPTY(&g_spdk_iscsi.portal_head));
 	CU_ASSERT(TAILQ_EMPTY(&g_spdk_iscsi.pg_head));
+
+	spdk_thread_exit(thread);
+	spdk_thread_destroy(thread);
+}
+
+static void
+portal_grp_add_delete_twice_case(void)
+{
+	struct spdk_sock sock = {};
+	struct spdk_thread *thread;
+	struct spdk_iscsi_portal_grp *pg1, *pg2;
+	struct spdk_iscsi_portal *p;
+	int rc;
+
+	const char *host = "192.168.2.0";
+	const char *port1 = "3260", *port2 = "3261";
+	const char *cpumask = "1";
+
+	thread = spdk_thread_create(NULL, NULL);
+	spdk_set_thread(thread);
+
+	/* internal of add_portal_group related */
+	pg1 = spdk_iscsi_portal_grp_create(1);
+	CU_ASSERT(pg1 != NULL);
+
+	p = spdk_iscsi_portal_create(host, port1, cpumask);
+	CU_ASSERT(p != NULL);
+
+	spdk_iscsi_portal_grp_add_portal(pg1, p);
+
+	MOCK_SET(spdk_sock_listen, &sock);
+	rc = spdk_iscsi_portal_grp_open(pg1);
+	CU_ASSERT(rc == 0);
+
+	rc = spdk_iscsi_portal_grp_register(pg1);
+	CU_ASSERT(rc == 0);
+
+	/* internal of add_portal_group related */
+	pg2 = spdk_iscsi_portal_grp_create(2);
+	CU_ASSERT(pg2 != NULL);
+
+	p = spdk_iscsi_portal_create(host, port2, cpumask);
+	CU_ASSERT(p != NULL);
+
+	spdk_iscsi_portal_grp_add_portal(pg2, p);
+
+	rc = spdk_iscsi_portal_grp_open(pg2);
+	CU_ASSERT(rc == 0);
+
+	rc = spdk_iscsi_portal_grp_register(pg2);
+	CU_ASSERT(rc == 0);
+
+	/* internal of destroy_portal_group related */
+	iscsi_portal_grp_close(pg1);
+	iscsi_portal_grp_close(pg2);
+
+	spdk_iscsi_portal_grps_destroy();
+
+	CU_ASSERT(TAILQ_EMPTY(&g_spdk_iscsi.portal_head));
+	CU_ASSERT(TAILQ_EMPTY(&g_spdk_iscsi.pg_head));
+
+	MOCK_CLEAR_P(spdk_sock_listen);
+	spdk_thread_exit(thread);
+	spdk_thread_destroy(thread);
 }
 
 int
@@ -464,6 +544,8 @@ main(int argc, char **argv)
 			       portal_grp_register_twice_case) == NULL
 		|| CU_add_test(suite, "portal group add/delete case",
 			       portal_grp_add_delete_case) == NULL
+		|| CU_add_test(suite, "portal group add/delete twice case",
+			       portal_grp_add_delete_twice_case) == NULL
 	) {
 		CU_cleanup_registry();
 		return CU_get_error();

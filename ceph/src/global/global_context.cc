@@ -12,19 +12,23 @@
  *
  */
 
-#include "common/ceph_context.h"
 #include "global/global_context.h"
 
 #include <string.h>
+#include "common/ceph_context.h"
+#if defined(WITH_SEASTAR) && !defined(WITH_ALIEN)
+#include "crimson/common/config_proxy.h"
+#endif
 
 
 /*
  * Global variables for use from process context.
  */
+namespace TOPNSPC::global {
 CephContext *g_ceph_context = NULL;
 ConfigProxy& g_conf() {
-#ifdef WITH_SEASTAR
-  return ceph::common::local_conf();
+#if defined(WITH_SEASTAR) && !defined(WITH_ALIEN)
+  return crimson::common::local_conf();
 #else
   return g_ceph_context->_conf;
 #endif
@@ -57,14 +61,17 @@ int note_io_error_event(
 {
   g_eio = true;
   if (devname) {
-    strncpy(g_eio_devname, devname, sizeof(g_eio_devname));
+    strncpy(g_eio_devname, devname, sizeof(g_eio_devname) - 1);
+    g_eio_devname[sizeof(g_eio_devname) - 1] = '\0';
   }
   if (path) {
-    strncpy(g_eio_path, path, sizeof(g_eio_path));
+    strncpy(g_eio_path, path, sizeof(g_eio_path) - 1);
+    g_eio_path[sizeof(g_eio_path) - 1] = '\0';
   }
   g_eio_error = error;
   g_eio_iotype = iotype;
   g_eio_offset = offset;
   g_eio_length = length;
   return 0;
+}
 }

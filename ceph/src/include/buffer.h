@@ -64,10 +64,6 @@
 
 #define CEPH_BUFFER_API
 
-#if defined(HAVE_XIO)
-struct xio_reg_mem;
-class XioDispatchHook;
-#endif
 #ifdef HAVE_SEASTAR
 namespace seastar {
 template <typename T> class temporary_buffer;
@@ -77,9 +73,8 @@ class packet;
 }
 #endif // HAVE_SEASTAR
 class deleter;
-template<uint8_t S>
-struct sha_digest_t;
-using sha1_digest_t = sha_digest_t<20>;
+
+template<typename T> class DencDumper;
 
 namespace ceph {
 
@@ -104,7 +99,7 @@ struct unique_leakable_ptr : public std::unique_ptr<T, ceph::nop_delete<T>> {
 };
 
 namespace buffer CEPH_BUFFER_API {
-inline namespace v14_2_0 {
+inline namespace v15_2_0 {
 
   /*
    * exceptions
@@ -157,46 +152,39 @@ inline namespace v14_2_0 {
   class raw_claim_buffer;
 
 
-  class xio_mempool;
-  class xio_msg_buffer;
-
   /*
    * named constructors
    */
   ceph::unique_leakable_ptr<raw> copy(const char *c, unsigned len);
   ceph::unique_leakable_ptr<raw> create(unsigned len);
   ceph::unique_leakable_ptr<raw> create_in_mempool(unsigned len, int mempool);
-  raw* claim_char(unsigned len, char *buf);
-  raw* create_malloc(unsigned len);
-  raw* claim_malloc(unsigned len, char *buf);
-  raw* create_static(unsigned len, char *buf);
+  ceph::unique_leakable_ptr<raw> claim_char(unsigned len, char *buf);
+  ceph::unique_leakable_ptr<raw> create_malloc(unsigned len);
+  ceph::unique_leakable_ptr<raw> claim_malloc(unsigned len, char *buf);
+  ceph::unique_leakable_ptr<raw> create_static(unsigned len, char *buf);
   ceph::unique_leakable_ptr<raw> create_aligned(unsigned len, unsigned align);
   ceph::unique_leakable_ptr<raw> create_aligned_in_mempool(unsigned len, unsigned align, int mempool);
   ceph::unique_leakable_ptr<raw> create_page_aligned(unsigned len);
   ceph::unique_leakable_ptr<raw> create_small_page_aligned(unsigned len);
-  raw* create_unshareable(unsigned len);
-  raw* create_static(unsigned len, char *buf);
-  raw* claim_buffer(unsigned len, char *buf, deleter del);
+  ceph::unique_leakable_ptr<raw> claim_buffer(unsigned len, char *buf, deleter del);
 
 #ifdef HAVE_SEASTAR
   /// create a raw buffer to wrap seastar cpu-local memory, using foreign_ptr to
   /// make it safe to share between cpus
-  raw* create_foreign(seastar::temporary_buffer<char>&& buf);
+  ceph::unique_leakable_ptr<buffer::raw> create_foreign(seastar::temporary_buffer<char>&& buf);
   /// create a raw buffer to wrap seastar cpu-local memory, without the safety
   /// of foreign_ptr. the caller must otherwise guarantee that the buffer ptr is
   /// destructed on this cpu
-  raw* create(seastar::temporary_buffer<char>&& buf);
-#endif
-#if defined(HAVE_XIO)
-  raw* create_msg(unsigned len, char *buf, XioDispatchHook *m_hook);
+  ceph::unique_leakable_ptr<buffer::raw> create(seastar::temporary_buffer<char>&& buf);
 #endif
 
   /*
    * a buffer pointer.  references (a subsequence of) a raw buffer.
    */
   class CEPH_BUFFER_API ptr {
+    friend class list;
+  protected:
     raw *_raw;
-  public: // dirty hack for testing; if it works, this will be abstracted
     unsigned _off, _len;
   private:
 
@@ -225,7 +213,7 @@ inline namespace v14_2_0 {
       using pointer = typename std::conditional<is_const, const char*, char *>::type;
       pointer get_pos_add(size_t n) {
 	auto r = pos;
-	advance(n);
+	*this += n;
 	return r;
       }
       ptr get_ptr(size_t len) {
@@ -233,15 +221,16 @@ inline namespace v14_2_0 {
 	  return buffer::copy(get_pos_add(len), len);
 	} else {
 	  size_t off = pos - bp->c_str();
-	  advance(len);
+	  *this += len;
 	  return ptr(*bp, off, len);
 	}
       }
 
-      void advance(size_t len) {
+      iterator_impl& operator+=(size_t len) {
 	pos += len;
 	if (pos > end_ptr)
 	  throw end_of_buffer();
+        return *this;
       }
 
       const char *get_pos() {
@@ -265,8 +254,6 @@ inline namespace v14_2_0 {
     using iterator = iterator_impl<false>;
 
     ptr() : _raw(nullptr), _off(0), _len(0) {}
-    // cppcheck-suppress noExplicitConstructor
-    ptr(raw* r);
     ptr(ceph::unique_leakable_ptr<raw> r);
     // cppcheck-suppress noExplicitConstructor
     ptr(unsigned l);
@@ -320,7 +307,6 @@ inline namespace v14_2_0 {
     void try_assign_to_mempool(int pool);
 
     // accessors
-    raw *get_raw() const { return _raw; }
     const char *c_str() const;
     char *c_str();
     const char *end_c_str() const;
@@ -412,14 +398,13 @@ inline namespace v14_2_0 {
     create(ceph::unique_leakable_ptr<raw> r) {
       return create_hypercombined(std::move(r));
     }
-    static std::unique_ptr<ptr_node, disposer> create(raw* const r) {
-      return create_hypercombined(r);
-    }
-    static std::unique_ptr<ptr_node, disposer> create(const unsigned l) {
+    static std::unique_ptr<ptr_node, disposer>
+    create(const unsigned l) {
       return create_hypercombined(buffer::create(l));
     }
     template <class... Args>
-    static std::unique_ptr<ptr_node, disposer> create(Args&&... args) {
+    static std::unique_ptr<ptr_node, disposer>
+    create(Args&&... args) {
       return std::unique_ptr<ptr_node, disposer>(
 	new ptr_node(std::forward<Args>(args)...));
     }
@@ -441,8 +426,6 @@ inline namespace v14_2_0 {
 
     static bool dispose_if_hypercombined(ptr_node* delete_this);
     static std::unique_ptr<ptr_node, disposer> create_hypercombined(
-      buffer::raw* r);
-    static std::unique_ptr<ptr_node, disposer> create_hypercombined(
       ceph::unique_leakable_ptr<raw> r);
   };
   /*
@@ -459,7 +442,6 @@ inline namespace v14_2_0 {
       // _root.next can be thought as _head
       ptr_hook _root;
       ptr_hook* _tail;
-      std::size_t _size;
 
     public:
       template <class T>
@@ -528,17 +510,14 @@ inline namespace v14_2_0 {
 
       buffers_t()
         : _root(&_root),
-	  _tail(&_root),
-	  _size(0) {
+	  _tail(&_root) {
       }
       buffers_t(const buffers_t&) = delete;
       buffers_t(buffers_t&& other)
 	: _root(other._root.next == &other._root ? &_root : other._root.next),
-	  _tail(other._tail == &other._root ? &_root : other._tail),
-	  _size(other._size) {
+	  _tail(other._tail == &other._root ? &_root : other._tail) {
 	other._root.next = &other._root;
 	other._tail = &other._root;
-	other._size = 0;
 
 	_tail->next = &_root;
       }
@@ -555,14 +534,12 @@ inline namespace v14_2_0 {
 	// this updates _root.next when called on empty
 	_tail->next = &item;
 	_tail = &item;
-	_size++;
       }
 
       void push_front(reference item) {
 	item.next = _root.next;
 	_root.next = &item;
 	_tail = _tail == &_root ? &item : _tail;
-	_size++;
       }
 
       // *_after
@@ -572,7 +549,6 @@ inline namespace v14_2_0 {
 	it->next = to_erase->next;
 	_root.next = _root.next == to_erase ? to_erase->next : _root.next;
 	_tail = _tail == to_erase ? (ptr_hook*)&*it : _tail;
-	_size--;
 	return it->next;
       }
 
@@ -581,11 +557,10 @@ inline namespace v14_2_0 {
 	it->next = &item;
 	_root.next = it == end() ? &item : _root.next;
 	_tail = const_iterator(_tail) == it ? &item : _tail;
-	_size++;
       }
 
       void splice_back(buffers_t& other) {
-	if (other._size == 0) {
+	if (other.empty()) {
 	  return;
 	}
 
@@ -593,14 +568,11 @@ inline namespace v14_2_0 {
 	// will update root.next if empty() == true
 	_tail->next = other._root.next;
 	_tail = other._tail;
-	_size += other._size;
 
 	other._root.next = &other._root;
 	other._tail = &other._root;
-	other._size = 0;
       }
 
-      std::size_t size() const { return _size; }
       bool empty() const { return _tail == &_root; }
 
       const_iterator begin() const {
@@ -650,7 +622,6 @@ inline namespace v14_2_0 {
 	}
 	_root.next = &_root;
 	_tail = &_root;
-	_size = 0;
       }
       iterator erase_after_and_dispose(iterator it) {
 	auto* to_dispose = &*std::next(it);
@@ -672,7 +643,6 @@ inline namespace v14_2_0 {
 
 	_tail->next = &_root;
 	other._tail->next = &other._root;
-	std::swap(_size, other._size);
       }
     };
 
@@ -686,8 +656,7 @@ inline namespace v14_2_0 {
     // bufferlist holds have this trait -- if somebody ::push_back(const ptr&),
     // he expects it won't change.
     ptr* _carriage;
-    unsigned _len;
-    unsigned _memcopy_count; //the total of memcopy using rebuild().
+    unsigned _len, _num;
 
     template <bool is_const>
     class CEPH_BUFFER_API iterator_impl {
@@ -734,12 +703,9 @@ inline namespace v14_2_0 {
 	return p == ls->end();
 	//return off == bl->length();
       }
-
-      void advance(int o) = delete;
-      void advance(unsigned o);
-      void advance(size_t o) { advance(static_cast<unsigned>(o)); }
       void seek(unsigned o);
       char operator*() const;
+      iterator_impl& operator+=(unsigned o);
       iterator_impl& operator++();
       ptr get_current_ptr() const;
       bool is_pointing_same_raw(const ptr& other) const;
@@ -818,6 +784,7 @@ inline namespace v14_2_0 {
       }
 
       friend class list;
+      template<typename Type> friend class ::DencDumper;
 
     public:
       ~contiguous_appender() {
@@ -836,7 +803,7 @@ inline namespace v14_2_0 {
 	pos += len;
 	return r;
       }
-      char *get_pos() {
+      char *get_pos() const {
 	return pos;
       }
 
@@ -867,7 +834,7 @@ inline namespace v14_2_0 {
 	}
       }
 
-      size_t get_logical_offset() {
+      size_t get_logical_offset() const {
 	return out_of_band_offset + (pos - space.bp_data);
       }
     };
@@ -958,8 +925,6 @@ inline namespace v14_2_0 {
     }
 
   private:
-    mutable iterator last_p;
-
     // always_empty_bptr has no underlying raw but its _len is always 0.
     // This is useful for e.g. get_append_buffer_unused_tail_length() as
     // it allows to avoid conditionals on hot paths.
@@ -971,27 +936,31 @@ inline namespace v14_2_0 {
     list()
       : _carriage(&always_empty_bptr),
         _len(0),
-        _memcopy_count(0),
-        last_p(this) {
+        _num(0) {
     }
     // cppcheck-suppress noExplicitConstructor
     // cppcheck-suppress noExplicitConstructor
     list(unsigned prealloc)
       : _carriage(&always_empty_bptr),
         _len(0),
-        _memcopy_count(0),
-	last_p(this) {
+        _num(0) {
       reserve(prealloc);
     }
 
     list(const list& other)
       : _carriage(&always_empty_bptr),
         _len(other._len),
-        _memcopy_count(other._memcopy_count),
-        last_p(this) {
+        _num(other._num) {
       _buffers.clone_from(other._buffers);
     }
-    list(list&& other) noexcept;
+
+    list(list&& other) noexcept
+      : _buffers(std::move(other._buffers)),
+        _carriage(other._carriage),
+        _len(other._len),
+        _num(other._num) {
+      other.clear();
+    }
 
     ~list() {
       _buffers.clear_and_dispose();
@@ -1002,7 +971,7 @@ inline namespace v14_2_0 {
         _carriage = &always_empty_bptr;
         _buffers.clone_from(other._buffers);
         _len = other._len;
-        last_p = begin();
+        _num = other._num;
       }
       return *this;
     }
@@ -1010,14 +979,13 @@ inline namespace v14_2_0 {
       _buffers = std::move(other._buffers);
       _carriage = other._carriage;
       _len = other._len;
-      _memcopy_count = other._memcopy_count;
-      last_p = begin();
+      _num = other._num;
       other.clear();
       return *this;
     }
 
     uint64_t get_wasted_space() const;
-    unsigned get_num_buffers() const { return _buffers.size(); }
+    unsigned get_num_buffers() const { return _num; }
     const ptr_node& front() const { return _buffers.front(); }
     const ptr_node& back() const { return _buffers.back(); }
 
@@ -1029,7 +997,6 @@ inline namespace v14_2_0 {
       return _carriage->unused_tail_length();
     }
 
-    unsigned get_memcopy_count() const {return _memcopy_count; }
     const buffers_t& buffers() const { return _buffers; }
     void swap(list& other) noexcept;
     unsigned length() const {
@@ -1051,6 +1018,7 @@ inline namespace v14_2_0 {
     }
 
     bool contents_equal(const buffer::list& other) const;
+    bool contents_equal(const void* other, size_t length) const;
 
     bool is_provided_buffer(const char *dst) const;
     bool is_aligned(unsigned align) const;
@@ -1067,19 +1035,20 @@ inline namespace v14_2_0 {
       _carriage = &always_empty_bptr;
       _buffers.clear_and_dispose();
       _len = 0;
-      _memcopy_count = 0;
-      last_p = begin();
+      _num = 0;
     }
     void push_back(const ptr& bp) {
       if (bp.length() == 0)
 	return;
       _buffers.push_back(*ptr_node::create(bp).release());
       _len += bp.length();
+      _num += 1;
     }
     void push_back(ptr&& bp) {
       if (bp.length() == 0)
 	return;
       _len += bp.length();
+      _num += 1;
       _buffers.push_back(*ptr_node::create(std::move(bp)).release());
       _carriage = &always_empty_bptr;
     }
@@ -1091,15 +1060,15 @@ inline namespace v14_2_0 {
 	return;
       _carriage = bp.get();
       _len += bp->length();
+      _num += 1;
       _buffers.push_back(*bp.release());
     }
-    void push_back(raw* const r) {
-      _buffers.push_back(*ptr_node::create(r).release());
+    void push_back(raw* const r) = delete;
+    void push_back(ceph::unique_leakable_ptr<raw> r) {
+      _buffers.push_back(*ptr_node::create(std::move(r)).release());
       _carriage = &_buffers.back();
       _len += _buffers.back().length();
-    }
-    void push_back(ceph::unique_leakable_ptr<raw> r) {
-      push_back(r.release());
+      _num += 1;
     }
 
     void zero();
@@ -1118,12 +1087,8 @@ inline namespace v14_2_0 {
 
     void reserve(size_t prealloc);
 
-    // assignment-op with move semantics
-    const static unsigned int CLAIM_DEFAULT = 0;
-    const static unsigned int CLAIM_ALLOW_NONSHAREABLE = 1;
-
-    void claim(list& bl, unsigned int flags = CLAIM_DEFAULT);
-    void claim_append(list& bl, unsigned int flags = CLAIM_DEFAULT);
+    void claim(list& bl);
+    void claim_append(list& bl);
     // only for bl is bufferlist::page_aligned_appender
     void claim_append_piecewise(list& bl);
 
@@ -1136,6 +1101,7 @@ inline namespace v14_2_0 {
           _buffers.push_back(*ptr_node::create(bp).release());
         }
         _len = bl._len;
+        _num = bl._num;
       }
     }
 
@@ -1144,30 +1110,22 @@ inline namespace v14_2_0 {
     operator seastar::net::packet() &&;
 #endif
 
-    iterator begin() {
-      return iterator(this, 0);
+    iterator begin(size_t offset=0) {
+      return iterator(this, offset);
     }
     iterator end() {
       return iterator(this, _len, _buffers.end(), 0);
     }
 
-    const_iterator begin() const {
-      return const_iterator(this, 0);
+    const_iterator begin(size_t offset=0) const {
+      return const_iterator(this, offset);
     }
-    const_iterator cbegin() const {
-      return begin();
+    const_iterator cbegin(size_t offset=0) const {
+      return begin(offset);
     }
     const_iterator end() const {
       return const_iterator(this, _len, _buffers.end(), 0);
     }
-
-    // crope lookalikes.
-    // **** WARNING: this are horribly inefficient for large bufferlists. ****
-    void copy(unsigned off, unsigned len, char *dest) const;
-    void copy(unsigned off, unsigned len, list &dest) const;
-    void copy(unsigned off, unsigned len, std::string& dest) const;
-    void copy_in(unsigned off, unsigned len, const char *src, bool crc_reset = true);
-    void copy_in(unsigned off, unsigned len, const list& src);
 
     void append(char c);
     void append(const char *data, unsigned len);
@@ -1217,6 +1175,7 @@ inline namespace v14_2_0 {
 
     void write_stream(std::ostream &out) const;
     void hexdump(std::ostream &out, bool trailing_newline = true) const;
+    ssize_t pread_file(const char *fn, uint64_t off, uint64_t len, std::string *error);
     int read_file(const char *fn, std::string *error);
     ssize_t read_fd(int fd, size_t len);
     int write_file(const char *fn, int mode=0644);
@@ -1225,11 +1184,11 @@ inline namespace v14_2_0 {
     template<typename VectorT>
     void prepare_iov(VectorT *piov) const {
 #ifdef __CEPH__
-      ceph_assert(_buffers.size() <= IOV_MAX);
+      ceph_assert(_num <= IOV_MAX);
 #else
-      assert(_buffers.size() <= IOV_MAX);
+      assert(_num <= IOV_MAX);
 #endif
-      piov->resize(_buffers.size());
+      piov->resize(_num);
       unsigned n = 0;
       for (auto& p : _buffers) {
 	(*piov)[n].iov_base = (void *)p.c_str();
@@ -1239,7 +1198,6 @@ inline namespace v14_2_0 {
     }
     uint32_t crc32c(uint32_t crc) const;
     void invalidate_crc();
-    sha1_digest_t sha1();
 
     // These functions return a bufferlist with a pointer to a single
     // static buffer. They /must/ not outlive the memory they
@@ -1249,7 +1207,7 @@ inline namespace v14_2_0 {
     static list static_from_string(std::string& s);
   };
 
-} // inline namespace v14_2_0
+} // inline namespace v15_2_0
 
   /*
    * efficient hash of one or more bufferlists
@@ -1321,10 +1279,6 @@ inline bufferhash& operator<<(bufferhash& l, const bufferlist &r) {
 }
 
 } // namespace buffer
-
-#if defined(HAVE_XIO)
-xio_reg_mem* get_xio_mp(const buffer::ptr& bp);
-#endif
 
 } // namespace ceph
 

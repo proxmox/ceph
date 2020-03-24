@@ -77,7 +77,7 @@ spdk_tgt_save_pid(const char *pid_path)
 }
 
 
-static void
+static int
 spdk_tgt_parse_arg(int ch, char *arg)
 {
 	switch (ch) {
@@ -89,11 +89,14 @@ spdk_tgt_parse_arg(int ch, char *arg)
 		spdk_vhost_set_socket_path(arg);
 		break;
 #endif
+	default:
+		return -EINVAL;
 	}
+	return 0;
 }
 
 static void
-spdk_tgt_started(void *arg1, void *arg2)
+spdk_tgt_started(void *arg1)
 {
 	if (g_pid_path) {
 		spdk_tgt_save_pid(g_pid_path);
@@ -119,7 +122,7 @@ main(int argc, char **argv)
 		return rc;
 	}
 
-	rc = spdk_app_start(&opts, spdk_tgt_started, NULL, NULL);
+	rc = spdk_app_start(&opts, spdk_tgt_started, NULL);
 	spdk_app_fini();
 
 	return rc;

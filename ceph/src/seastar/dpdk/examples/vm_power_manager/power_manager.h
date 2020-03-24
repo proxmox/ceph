@@ -1,34 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2014 Intel Corporation
  */
 
 #ifndef POWER_MANAGER_H_
@@ -37,9 +8,30 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
+struct core_details {
+	uint64_t last_branches;
+	uint64_t last_branch_misses;
+	uint16_t global_enabled_cpus;
+	uint16_t oob_enabled;
+	int msr_fd;
+};
 
-/* Maximum number of CPUS to manage */
-#define POWER_MGR_MAX_CPUS 64
+struct core_info {
+	uint16_t core_count;
+	struct core_details *cd;
+	float branch_ratio_threshold;
+};
+
+#define BRANCH_RATIO_THRESHOLD 0.1
+
+struct core_info *
+get_core_info(void);
+
+int
+core_info_init(void);
+
+#define RTE_LOGTYPE_POWER_MANAGER RTE_LOGTYPE_USER1
+
 /**
  * Initialize power management.
  * Initializes resources and verifies the number of CPUs on the system.
@@ -113,6 +105,32 @@ int power_manager_scale_mask_min(uint64_t core_mask);
 int power_manager_scale_mask_max(uint64_t core_mask);
 
 /**
+ * Enable Turbo Boost on the cores specified in core_mask.
+ * It is thread-safe.
+ *
+ * @param core_mask
+ *  The uint64_t bit-mask of cores to change frequency.
+ *
+ * @return
+ *  - 1 on success.
+ *  - Negative on error.
+ */
+int power_manager_enable_turbo_mask(uint64_t core_mask);
+
+/**
+ * Disable Turbo Boost on the cores specified in core_mask.
+ * It is thread-safe.
+ *
+ * @param core_mask
+ *  The uint64_t bit-mask of cores to change frequency.
+ *
+ * @return
+ *  - 1 on success.
+ *  - Negative on error.
+ */
+int power_manager_disable_turbo_mask(uint64_t core_mask);
+
+/**
  * Scale up frequency for the core specified by core_num.
  * It is thread-safe.
  *
@@ -168,6 +186,32 @@ int power_manager_scale_core_min(unsigned core_num);
 int power_manager_scale_core_max(unsigned core_num);
 
 /**
+ * Enable Turbo Boost for the core specified by core_num.
+ * It is thread-safe.
+ *
+ * @param core_num
+ *  The core number to boost
+ *
+ * @return
+ *  - 1 on success.
+ *  - Negative on error.
+ */
+int power_manager_enable_turbo_core(unsigned int core_num);
+
+/**
+ * Disable Turbo Boost for the core specified by core_num.
+ * It is thread-safe.
+ *
+ * @param core_num
+ *  The core number to boost
+ *
+ * @return
+ *  - 1 on success.
+ *  - Negative on error.
+ */
+int power_manager_disable_turbo_core(unsigned int core_num);
+
+/**
  * Get the current freuency of the core specified by core_num
  *
  * @param core_num
@@ -179,6 +223,19 @@ int power_manager_scale_core_max(unsigned core_num);
  */
 uint32_t power_manager_get_current_frequency(unsigned core_num);
 
+/**
+ * Scale to medium frequency for the core specified by core_num.
+ * It is thread-safe.
+ *
+ * @param core_num
+ *  The core number to change frequency
+ *
+ * @return
+ *  - 1 on success.
+ *  - 0 if frequency not changed.
+ *  - Negative on error.
+ */
+int power_manager_scale_core_med(unsigned int core_num);
 
 #ifdef __cplusplus
 }

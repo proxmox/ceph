@@ -69,7 +69,7 @@ init_cb(void *ctx, struct spdk_filesystem *fs, int fserrno)
 }
 
 static void
-spdk_mkfs_run(void *arg1, void *arg2)
+spdk_mkfs_run(void *arg1)
 {
 	struct spdk_bdev *bdev;
 	struct spdk_blobfs_opts blobfs_opt;
@@ -103,7 +103,7 @@ mkfs_usage(void)
 	printf(" -C <size>                 cluster size\n");
 }
 
-static void
+static int
 mkfs_parse_arg(int ch, char *arg)
 {
 	bool has_prefix;
@@ -113,9 +113,9 @@ mkfs_parse_arg(int ch, char *arg)
 		spdk_parse_capacity(arg, &g_cluster_size, &has_prefix);
 		break;
 	default:
-		break;
+		return -EINVAL;
 	}
-
+	return 0;
 }
 
 int main(int argc, char **argv)
@@ -132,7 +132,6 @@ int main(int argc, char **argv)
 	opts.name = "spdk_mkfs";
 	opts.config_file = argv[1];
 	opts.reactor_mask = "0x3";
-	opts.mem_size = 1024;
 	opts.shutdown_cb = NULL;
 
 	spdk_fs_set_cache_size(512);
@@ -143,7 +142,7 @@ int main(int argc, char **argv)
 		exit(rc);
 	}
 
-	rc = spdk_app_start(&opts, spdk_mkfs_run, NULL, NULL);
+	rc = spdk_app_start(&opts, spdk_mkfs_run, NULL);
 	spdk_app_fini();
 
 	return rc;

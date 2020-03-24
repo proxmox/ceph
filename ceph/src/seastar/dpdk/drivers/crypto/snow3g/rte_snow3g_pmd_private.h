@@ -1,33 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2016 Intel Corporation. All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2016-2018 Intel Corporation
  */
 
 #ifndef _RTE_SNOW3G_PMD_PRIVATE_H_
@@ -35,46 +7,44 @@
 
 #include <sso_snow3g.h>
 
-#define SNOW3G_LOG_ERR(fmt, args...) \
-	RTE_LOG(ERR, CRYPTODEV, "[%s] %s() line %u: " fmt "\n",  \
-			RTE_STR(CRYPTODEV_NAME_SNOW3G_PMD), \
-			__func__, __LINE__, ## args)
+#define CRYPTODEV_NAME_SNOW3G_PMD	crypto_snow3g
+/**< SNOW 3G PMD device name */
 
-#ifdef RTE_LIBRTE_SNOW3G_DEBUG
-#define SNOW3G_LOG_INFO(fmt, args...) \
-	RTE_LOG(INFO, CRYPTODEV, "[%s] %s() line %u: " fmt "\n", \
-			RTE_STR(CRYPTODEV_NAME_SNOW3G_PMD), \
-			__func__, __LINE__, ## args)
+/** SNOW 3G PMD LOGTYPE DRIVER */
+int snow3g_logtype_driver;
 
-#define SNOW3G_LOG_DBG(fmt, args...) \
-	RTE_LOG(DEBUG, CRYPTODEV, "[%s] %s() line %u: " fmt "\n", \
-			RTE_STR(CRYPTODEV_NAME_SNOW3G_PMD), \
-			__func__, __LINE__, ## args)
-#else
-#define SNOW3G_LOG_INFO(fmt, args...)
-#define SNOW3G_LOG_DBG(fmt, args...)
-#endif
+#define SNOW3G_LOG(level, fmt, ...)  \
+	rte_log(RTE_LOG_ ## level, snow3g_logtype_driver,  \
+			"%s() line %u: " fmt "\n", __func__, __LINE__,  \
+					## __VA_ARGS__)
+
+#define SNOW3G_DIGEST_LENGTH 4
 
 /** private data structure for each virtual SNOW 3G device */
 struct snow3g_private {
 	unsigned max_nb_queue_pairs;
 	/**< Max number of queue pairs supported by device */
-	unsigned max_nb_sessions;
-	/**< Max number of sessions supported by device */
 };
 
 /** SNOW 3G buffer queue pair */
 struct snow3g_qp {
 	uint16_t id;
 	/**< Queue Pair Identifier */
-	char name[RTE_CRYPTODEV_NAME_LEN];
+	char name[RTE_CRYPTODEV_NAME_MAX_LEN];
 	/**< Unique Queue Pair Name */
 	struct rte_ring *processed_ops;
 	/**< Ring for placing processed ops */
 	struct rte_mempool *sess_mp;
 	/**< Session Mempool */
+	struct rte_mempool *sess_mp_priv;
+	/**< Session Private Data Mempool */
 	struct rte_cryptodev_stats qp_stats;
 	/**< Queue pair statistics */
+	uint8_t temp_digest[SNOW3G_DIGEST_LENGTH];
+	/**< Buffer used to store the digest generated
+	 * by the driver when verifying a digest provided
+	 * by the user (using authentication verify operation)
+	 */
 } __rte_cache_aligned;
 
 enum snow3g_operation {
@@ -91,6 +61,8 @@ struct snow3g_session {
 	enum rte_crypto_auth_operation auth_op;
 	sso_snow3g_key_schedule_t pKeySched_cipher;
 	sso_snow3g_key_schedule_t pKeySched_hash;
+	uint16_t cipher_iv_offset;
+	uint16_t auth_iv_offset;
 } __rte_cache_aligned;
 
 

@@ -2,7 +2,7 @@ import sys
 import os
 
 project = u'Ceph'
-copyright = u'2016, Red Hat, Inc, and contributors. Licensed under Creative Commons Attribution Share Alike 3.0 (CC-BY-SA-3.0)'
+copyright = u'2016, Ceph authors and contributors. Licensed under Creative Commons Attribution Share Alike 3.0 (CC-BY-SA-3.0)'
 version = 'dev'
 release = 'dev'
 
@@ -14,9 +14,11 @@ if tags.has('man'):
     master_doc = 'man_index'
     exclude_patterns += ['index.rst', 'architecture.rst', 'glossary.rst', 'release*.rst',
                          'api/*',
+                         'cephadm/*',
                          'cephfs/*',
                          'dev/*',
                          'governance.rst',
+                         'foundation.rst',
                          'install/*',
                          'mon/*',
                          'rados/*',
@@ -41,11 +43,14 @@ html_static_path = ["_static"]
 html_sidebars = {
     '**': ['smarttoc.html', 'searchbox.html'],
     }
-
+html_css_files = [
+    'css/custom.css',
+]
 sys.path.insert(0, os.path.abspath('_ext'))
 
 extensions = [
     'sphinx.ext.autodoc',
+    'sphinx_autodoc_typehints',
     'sphinx.ext.graphviz',
     'sphinx.ext.todo',
     'sphinxcontrib.ditaa',
@@ -106,6 +111,7 @@ class Mock(object):
 sys.modules['ceph_module'] = Mock()
 
 for pybind in [os.path.join(top_level, 'src/pybind'),
-               os.path.join(top_level, 'src/pybind/mgr')]:
+               os.path.join(top_level, 'src/pybind/mgr'),
+               os.path.join(top_level, 'src/python-common')]:
     if pybind not in sys.path:
         sys.path.insert(0, pybind)

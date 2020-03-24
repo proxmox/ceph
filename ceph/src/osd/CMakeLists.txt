@@ -22,19 +22,20 @@ set(osd_srcs
   PGBackend.cc
   OSDCap.cc
   Watch.cc
-  ClassHandler.cc
   Session.cc
   SnapMapper.cc
   ScrubStore.cc
   osd_types.cc
   ECUtil.cc
   ExtentCache.cc
-  mClockOpClassSupport.cc
-  mClockOpClassQueue.cc
-  mClockClientQueue.cc
-  OpQueueItem.cc
+  scheduler/OpScheduler.cc
+  scheduler/OpSchedulerItem.cc
+  scheduler/mClockScheduler.cc
+  PeeringState.cc
+  PGStateUtils.cc
+  MissingLoc.cc
+  osd_perf_counters.cc
   ${CMAKE_SOURCE_DIR}/src/common/TrackedOp.cc
-  ${CMAKE_SOURCE_DIR}/src/objclass/class_api.cc
   ${CMAKE_SOURCE_DIR}/src/mgr/OSDPerfMetricTypes.cc
   ${osd_cyg_functions_src}
   ${osdc_osd_srcs})
@@ -42,17 +43,14 @@ if(HAS_VTA)
   set_source_files_properties(osdcap.cc
     PROPERTIES COMPILE_FLAGS -fno-var-tracking-assignments)
 endif()
-add_library(osd STATIC ${osd_srcs}
-  $<TARGET_OBJECTS:global_common_objs>)
+add_library(osd STATIC ${osd_srcs})
 target_link_libraries(osd
   PUBLIC dmclock::dmclock
-  PRIVATE
-  ${LEVELDB_LIBRARIES}
-  heap_profiler cpu_profiler ${CMAKE_DL_LIBS})
+  PRIVATE os heap_profiler cpu_profiler ${CMAKE_DL_LIBS})
 if(WITH_LTTNG)
   add_dependencies(osd osd-tp pg-tp)
 endif()
-if(WITH_LTTNG AND WITH_EVENTTRACE)
+if(WITH_EVENTTRACE)
   add_dependencies(osd eventtrace_tp)
 endif()
 if(WITH_OSD_INSTRUMENT_FUNCTIONS)
@@ -69,5 +67,5 @@ if(WITH_RBD)
   add_dependencies(osd cls_rbd)
 endif()
 if(WITH_RADOSGW)
-  add_dependencies(osd cls_otp cls_rgw)
+  add_dependencies(osd cls_otp cls_rgw cls_queue cls_rgw_gc)
 endif()

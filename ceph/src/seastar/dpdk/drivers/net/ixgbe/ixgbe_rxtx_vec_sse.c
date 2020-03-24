@@ -1,38 +1,9 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2015 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2015 Intel Corporation
  */
 
 #include <stdint.h>
-#include <rte_ethdev.h>
+#include <rte_ethdev_driver.h>
 #include <rte_malloc.h>
 
 #include "ixgbe_ethdev.h"
@@ -86,7 +57,9 @@ ixgbe_rxq_rearm(struct ixgbe_rx_queue *rxq)
 		mb0 = rxep[0].mbuf;
 		mb1 = rxep[1].mbuf;
 
-		/* load buf_addr(lo 64bit) and buf_physaddr(hi 64bit) */
+		/* load buf_addr(lo 64bit) and buf_iova(hi 64bit) */
+		RTE_BUILD_BUG_ON(offsetof(struct rte_mbuf, buf_iova) !=
+				offsetof(struct rte_mbuf, buf_addr) + 8);
 		vaddr0 = _mm_loadu_si128((__m128i *)&(mb0->buf_addr));
 		vaddr1 = _mm_loadu_si128((__m128i *)&(mb1->buf_addr));
 
@@ -119,6 +92,43 @@ ixgbe_rxq_rearm(struct ixgbe_rx_queue *rxq)
 	/* Update the tail pointer on the NIC */
 	IXGBE_PCI_REG_WRITE(rxq->rdt_reg_addr, rx_id);
 }
+
+#ifdef RTE_LIBRTE_SECURITY
+static inline void
+desc_to_olflags_v_ipsec(__m128i descs[4], struct rte_mbuf **rx_pkts)
+{
+	__m128i sterr, rearm, tmp_e, tmp_p;
+	uint32_t *rearm0 = (uint32_t *)rx_pkts[0]->rearm_data + 2;
+	uint32_t *rearm1 = (uint32_t *)rx_pkts[1]->rearm_data + 2;
+	uint32_t *rearm2 = (uint32_t *)rx_pkts[2]->rearm_data + 2;
+	uint32_t *rearm3 = (uint32_t *)rx_pkts[3]->rearm_data + 2;
+	const __m128i ipsec_sterr_msk =
+			_mm_set1_epi32(IXGBE_RXDADV_IPSEC_STATUS_SECP |
+				       IXGBE_RXDADV_IPSEC_ERROR_AUTH_FAILED);
+	const __m128i ipsec_proc_msk  =
+			_mm_set1_epi32(IXGBE_RXDADV_IPSEC_STATUS_SECP);
+	const __m128i ipsec_err_flag  =
+			_mm_set1_epi32(PKT_RX_SEC_OFFLOAD_FAILED |
+				       PKT_RX_SEC_OFFLOAD);
+	const __m128i ipsec_proc_flag = _mm_set1_epi32(PKT_RX_SEC_OFFLOAD);
+
+	rearm = _mm_set_epi32(*rearm3, *rearm2, *rearm1, *rearm0);
+	sterr = _mm_set_epi32(_mm_extract_epi32(descs[3], 2),
+			      _mm_extract_epi32(descs[2], 2),
+			      _mm_extract_epi32(descs[1], 2),
+			      _mm_extract_epi32(descs[0], 2));
+	sterr = _mm_and_si128(sterr, ipsec_sterr_msk);
+	tmp_e = _mm_cmpeq_epi32(sterr, ipsec_sterr_msk);
+	tmp_p = _mm_cmpeq_epi32(sterr, ipsec_proc_msk);
+	sterr = _mm_or_si128(_mm_and_si128(tmp_e, ipsec_err_flag),
+				_mm_and_si128(tmp_p, ipsec_proc_flag));
+	rearm = _mm_or_si128(rearm, sterr);
+	*rearm0 = _mm_extract_epi32(rearm, 0);
+	*rearm1 = _mm_extract_epi32(rearm, 1);
+	*rearm2 = _mm_extract_epi32(rearm, 2);
+	*rearm3 = _mm_extract_epi32(rearm, 3);
+}
+#endif
 
 static inline void
 desc_to_olflags_v(__m128i descs[4], __m128i mbuf_init, uint8_t vlan_flags,
@@ -214,30 +224,82 @@ desc_to_olflags_v(__m128i descs[4], __m128i mbuf_init, uint8_t vlan_flags,
 	 * appropriate flags means that we have to do a shift and blend for
 	 * each mbuf before we do the write.
 	 */
-#ifdef RTE_MACHINE_CPUFLAG_SSE4_2
-
 	rearm0 = _mm_blend_epi16(mbuf_init, _mm_slli_si128(vtag1, 8), 0x10);
 	rearm1 = _mm_blend_epi16(mbuf_init, _mm_slli_si128(vtag1, 6), 0x10);
 	rearm2 = _mm_blend_epi16(mbuf_init, _mm_slli_si128(vtag1, 4), 0x10);
 	rearm3 = _mm_blend_epi16(mbuf_init, _mm_slli_si128(vtag1, 2), 0x10);
 
-#else
-	rearm0 = _mm_slli_si128(vtag1, 14);
-	rearm1 = _mm_slli_si128(vtag1, 12);
-	rearm2 = _mm_slli_si128(vtag1, 10);
-	rearm3 = _mm_slli_si128(vtag1, 8);
-
-	rearm0 = _mm_or_si128(mbuf_init, _mm_srli_epi64(rearm0, 48));
-	rearm1 = _mm_or_si128(mbuf_init, _mm_srli_epi64(rearm1, 48));
-	rearm2 = _mm_or_si128(mbuf_init, _mm_srli_epi64(rearm2, 48));
-	rearm3 = _mm_or_si128(mbuf_init, _mm_srli_epi64(rearm3, 48));
-
-#endif /* RTE_MACHINE_CPUFLAG_SSE4_2 */
-
+	/* write the rearm data and the olflags in one write */
+	RTE_BUILD_BUG_ON(offsetof(struct rte_mbuf, ol_flags) !=
+			offsetof(struct rte_mbuf, rearm_data) + 8);
+	RTE_BUILD_BUG_ON(offsetof(struct rte_mbuf, rearm_data) !=
+			RTE_ALIGN(offsetof(struct rte_mbuf, rearm_data), 16));
 	_mm_store_si128((__m128i *)&rx_pkts[0]->rearm_data, rearm0);
 	_mm_store_si128((__m128i *)&rx_pkts[1]->rearm_data, rearm1);
 	_mm_store_si128((__m128i *)&rx_pkts[2]->rearm_data, rearm2);
 	_mm_store_si128((__m128i *)&rx_pkts[3]->rearm_data, rearm3);
+}
+
+static inline uint32_t get_packet_type(int index,
+				       uint32_t pkt_info,
+				       uint32_t etqf_check,
+				       uint32_t tunnel_check)
+{
+	if (etqf_check & (0x02 << (index * RTE_IXGBE_DESCS_PER_LOOP)))
+		return RTE_PTYPE_UNKNOWN;
+
+	if (tunnel_check & (0x02 << (index * RTE_IXGBE_DESCS_PER_LOOP))) {
+		pkt_info &= IXGBE_PACKET_TYPE_MASK_TUNNEL;
+		return ptype_table_tn[pkt_info];
+	}
+
+	pkt_info &= IXGBE_PACKET_TYPE_MASK_82599;
+	return ptype_table[pkt_info];
+}
+
+static inline void
+desc_to_ptype_v(__m128i descs[4], uint16_t pkt_type_mask,
+		struct rte_mbuf **rx_pkts)
+{
+	__m128i etqf_mask = _mm_set_epi64x(0x800000008000LL, 0x800000008000LL);
+	__m128i ptype_mask = _mm_set_epi32(
+		pkt_type_mask, pkt_type_mask, pkt_type_mask, pkt_type_mask);
+	__m128i tunnel_mask =
+		_mm_set_epi64x(0x100000001000LL, 0x100000001000LL);
+
+	uint32_t etqf_check, tunnel_check, pkt_info;
+
+	__m128i ptype0 = _mm_unpacklo_epi32(descs[0], descs[2]);
+	__m128i ptype1 = _mm_unpacklo_epi32(descs[1], descs[3]);
+
+	/* interleave low 32 bits,
+	 * now we have 4 ptypes in a XMM register
+	 */
+	ptype0 = _mm_unpacklo_epi32(ptype0, ptype1);
+
+	/* create a etqf bitmask based on the etqf bit. */
+	etqf_check = _mm_movemask_epi8(_mm_and_si128(ptype0, etqf_mask));
+
+	/* shift left by IXGBE_PACKET_TYPE_SHIFT, and apply ptype mask */
+	ptype0 = _mm_and_si128(_mm_srli_epi32(ptype0, IXGBE_PACKET_TYPE_SHIFT),
+			       ptype_mask);
+
+	/* create a tunnel bitmask based on the tunnel bit */
+	tunnel_check = _mm_movemask_epi8(
+		_mm_slli_epi32(_mm_and_si128(ptype0, tunnel_mask), 0x3));
+
+	pkt_info = _mm_extract_epi32(ptype0, 0);
+	rx_pkts[0]->packet_type =
+		get_packet_type(0, pkt_info, etqf_check, tunnel_check);
+	pkt_info = _mm_extract_epi32(ptype0, 1);
+	rx_pkts[1]->packet_type =
+		get_packet_type(1, pkt_info, etqf_check, tunnel_check);
+	pkt_info = _mm_extract_epi32(ptype0, 2);
+	rx_pkts[2]->packet_type =
+		get_packet_type(2, pkt_info, etqf_check, tunnel_check);
+	pkt_info = _mm_extract_epi32(ptype0, 3);
+	rx_pkts[3]->packet_type =
+		get_packet_type(3, pkt_info, etqf_check, tunnel_check);
 }
 
 /*
@@ -256,6 +318,9 @@ _recv_raw_pkts_vec(struct ixgbe_rx_queue *rxq, struct rte_mbuf **rx_pkts,
 	volatile union ixgbe_adv_rx_desc *rxdp;
 	struct ixgbe_rx_entry *sw_ring;
 	uint16_t nb_pkts_recd;
+#ifdef RTE_LIBRTE_SECURITY
+	uint8_t use_ipsec = rxq->using_ipsec;
+#endif
 	int pos;
 	uint64_t var;
 	__m128i shuf_msk;
@@ -266,6 +331,15 @@ _recv_raw_pkts_vec(struct ixgbe_rx_queue *rxq, struct rte_mbuf **rx_pkts,
 				-rxq->crc_len, /* sub crc on pkt_len */
 				0, 0            /* ignore pkt_type field */
 			);
+	/*
+	 * compile-time check the above crc_adjust layout is correct.
+	 * NOTE: the first field (lowest address) is given last in set_epi16
+	 * call above.
+	 */
+	RTE_BUILD_BUG_ON(offsetof(struct rte_mbuf, pkt_len) !=
+			offsetof(struct rte_mbuf, rx_descriptor_fields1) + 4);
+	RTE_BUILD_BUG_ON(offsetof(struct rte_mbuf, data_len) !=
+			offsetof(struct rte_mbuf, rx_descriptor_fields1) + 8);
 	__m128i dd_check, eop_check;
 	__m128i mbuf_init;
 	uint8_t vlan_flags;
@@ -312,6 +386,19 @@ _recv_raw_pkts_vec(struct ixgbe_rx_queue *rxq, struct rte_mbuf **rx_pkts,
 		0xFF, 0xFF,  /* skip 32 bit pkt_type */
 		0xFF, 0xFF
 		);
+	/*
+	 * Compile-time verify the shuffle mask
+	 * NOTE: some field positions already verified above, but duplicated
+	 * here for completeness in case of future modifications.
+	 */
+	RTE_BUILD_BUG_ON(offsetof(struct rte_mbuf, pkt_len) !=
+			offsetof(struct rte_mbuf, rx_descriptor_fields1) + 4);
+	RTE_BUILD_BUG_ON(offsetof(struct rte_mbuf, data_len) !=
+			offsetof(struct rte_mbuf, rx_descriptor_fields1) + 8);
+	RTE_BUILD_BUG_ON(offsetof(struct rte_mbuf, vlan_tci) !=
+			offsetof(struct rte_mbuf, rx_descriptor_fields1) + 10);
+	RTE_BUILD_BUG_ON(offsetof(struct rte_mbuf, hash) !=
+			offsetof(struct rte_mbuf, rx_descriptor_fields1) + 12);
 
 	mbuf_init = _mm_set_epi64x(0, rxq->mbuf_initializer);
 
@@ -321,7 +408,7 @@ _recv_raw_pkts_vec(struct ixgbe_rx_queue *rxq, struct rte_mbuf **rx_pkts,
 	sw_ring = &rxq->sw_ring[rxq->rx_tail];
 
 	/* ensure these 2 flags are in the lower 8 bits */
-	RTE_BUILD_BUG_ON((PKT_RX_VLAN_PKT | PKT_RX_VLAN_STRIPPED) > UINT8_MAX);
+	RTE_BUILD_BUG_ON((PKT_RX_VLAN | PKT_RX_VLAN_STRIPPED) > UINT8_MAX);
 	vlan_flags = rxq->vlan_flags & UINT8_MAX;
 
 	/* A. load 4 packet in one loop
@@ -397,6 +484,11 @@ _recv_raw_pkts_vec(struct ixgbe_rx_queue *rxq, struct rte_mbuf **rx_pkts,
 		/* set ol_flags with vlan packet type */
 		desc_to_olflags_v(descs, mbuf_init, vlan_flags, &rx_pkts[pos]);
 
+#ifdef RTE_LIBRTE_SECURITY
+		if (unlikely(use_ipsec))
+			desc_to_olflags_v_ipsec(descs, &rx_pkts[pos]);
+#endif
+
 		/* D.2 pkt 3,4 set in_port/nb_seg and remove crc */
 		pkt_mb4 = _mm_add_epi16(pkt_mb4, crc_adjust);
 		pkt_mb3 = _mm_add_epi16(pkt_mb3, crc_adjust);
@@ -446,6 +538,8 @@ _recv_raw_pkts_vec(struct ixgbe_rx_queue *rxq, struct rte_mbuf **rx_pkts,
 				pkt_mb2);
 		_mm_storeu_si128((void *)&rx_pkts[pos]->rx_descriptor_fields1,
 				pkt_mb1);
+
+		desc_to_ptype_v(descs, rxq->pkt_type_mask, &rx_pkts[pos]);
 
 		/* C.4 calc avaialbe number of desc */
 		var = __builtin_popcountll(_mm_cvtsi128_si64(staterr));
@@ -526,7 +620,7 @@ vtx1(volatile union ixgbe_adv_tx_desc *txdp,
 {
 	__m128i descriptor = _mm_set_epi64x((uint64_t)pkt->pkt_len << 46 |
 			flags | pkt->data_len,
-			pkt->buf_physaddr + pkt->data_off);
+			pkt->buf_iova + pkt->data_off);
 	_mm_store_si128((__m128i *)&txdp->read, descriptor);
 }
 

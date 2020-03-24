@@ -11,9 +11,9 @@ describe('CdValidators', () => {
   let formHelper: FormHelper;
   let form: CdFormGroup;
 
-  const expectValid = (value) => formHelper.expectValidChange('x', value);
-  const expectPatternError = (value) => formHelper.expectErrorChange('x', value, 'pattern');
-  const updateValidity = (controlName) => form.get(controlName).updateValueAndValidity();
+  const expectValid = (value: any) => formHelper.expectValidChange('x', value);
+  const expectPatternError = (value: any) => formHelper.expectErrorChange('x', value, 'pattern');
+  const updateValidity = (controlName: string) => form.get(controlName).updateValueAndValidity();
 
   beforeEach(() => {
     form = new CdFormGroup({
@@ -117,7 +117,7 @@ describe('CdValidators', () => {
   });
 
   describe('uuid validator', () => {
-    const expectUuidError = (value) =>
+    const expectUuidError = (value: string) =>
       formHelper.expectErrorChange('x', value, 'invalidUuid', true);
     beforeEach(() => {
       form.get('x').setValidators(CdValidators.uuid());
@@ -302,7 +302,7 @@ describe('CdValidators', () => {
     });
 
     it('should error because of successful condition', () => {
-      const conditionFn = (value) => {
+      const conditionFn = (value: string) => {
         return value === 'abc';
       };
       // Define prereqs that force the validator to validate the value of
@@ -321,10 +321,10 @@ describe('CdValidators', () => {
   describe('custom validation', () => {
     beforeEach(() => {
       form = new CdFormGroup({
-        x: new FormControl(3, CdValidators.custom('odd', (x) => x % 2 === 1)),
+        x: new FormControl(3, CdValidators.custom('odd', (x: number) => x % 2 === 1)),
         y: new FormControl(
           5,
-          CdValidators.custom('not-dividable-by-x', (y) => {
+          CdValidators.custom('not-dividable-by-x', (y: number) => {
             const x = (form && form.get('x').value) || 1;
             return y % x !== 0;
           })
@@ -352,8 +352,8 @@ describe('CdValidators', () => {
         y: new FormControl(5)
       });
       CdValidators.validateIf(form.get('x'), () => ((form && form.get('y').value) || 0) > 10, [
-        CdValidators.custom('min', (x) => x < 7),
-        CdValidators.custom('max', (x) => x > 12)
+        CdValidators.custom('min', (x: number) => x < 7),
+        CdValidators.custom('max', (x: number) => x > 12)
       ]);
       formHelper = new FormHelper(form);
     });
@@ -473,6 +473,140 @@ describe('CdValidators', () => {
       formHelper.setValue('x', 'xyz', true);
       tick(500);
       formHelper.expectError('x', 'notUnique');
+    }));
+  });
+
+  describe('composeIf', () => {
+    beforeEach(() => {
+      form = new CdFormGroup({
+        x: new FormControl(true),
+        y: new FormControl('abc'),
+        z: new FormControl('')
+      });
+      formHelper = new FormHelper(form);
+    });
+
+    it('should not error because all conditions are fulfilled', () => {
+      formHelper.setValue('z', 'zyx');
+      const validatorFn = CdValidators.composeIf(
+        {
+          x: true,
+          y: 'abc'
+        },
+        [Validators.required]
+      );
+      expect(validatorFn(form.get('z'))).toBeNull();
+    });
+
+    it('should not error because of unmet prerequisites', () => {
+      // Define prereqs that do not match the current values of the form fields.
+      const validatorFn = CdValidators.composeIf(
+        {
+          x: false,
+          y: 'xyz'
+        },
+        [Validators.required]
+      );
+      // The validator must succeed because the prereqs do not match, so the
+      // validation of the 'z' control will be skipped.
+      expect(validatorFn(form.get('z'))).toBeNull();
+    });
+
+    it('should error because of an empty value', () => {
+      // Define prereqs that force the validator to validate the value of
+      // the 'z' control.
+      const validatorFn = CdValidators.composeIf(
+        {
+          x: true,
+          y: 'abc'
+        },
+        [Validators.required]
+      );
+      // The validator must fail because the value of control 'z' is empty.
+      expect(validatorFn(form.get('z'))).toEqual({ required: true });
+    });
+  });
+
+  describe('dimmlessBinary validators', () => {
+    const i18nMock = (a: string, b: { value: string }) => a.replace('{{value}}', b.value);
+
+    beforeEach(() => {
+      form = new CdFormGroup({
+        x: new FormControl('2 KiB', [CdValidators.binaryMin(1024), CdValidators.binaryMax(3072)])
+      });
+      formHelper = new FormHelper(form);
+    });
+
+    it('should not raise exception an exception for valid change', () => {
+      formHelper.expectValidChange('x', '2.5 KiB');
+    });
+
+    it('should not raise minimum error', () => {
+      formHelper.expectErrorChange('x', '0.5 KiB', 'binaryMin');
+      expect(form.get('x').getError('binaryMin')(i18nMock)).toBe(
+        'Size has to be at least 1 KiB or more'
+      );
+    });
+
+    it('should not raise maximum error', () => {
+      formHelper.expectErrorChange('x', '4 KiB', 'binaryMax');
+      expect(form.get('x').getError('binaryMax')(i18nMock)).toBe(
+        'Size has to be at most 3 KiB or less'
+      );
+    });
+  });
+
+  describe('passwordPolicy', () => {
+    let valid: boolean;
+    let callbackCalled: boolean;
+
+    const fakeUserService = {
+      validatePassword: () => {
+        return observableOf({ valid: valid, credits: 17, valuation: 'foo' });
+      }
+    };
+
+    beforeEach(() => {
+      callbackCalled = false;
+      form = new CdFormGroup({
+        x: new FormControl(
+          '',
+          null,
+          CdValidators.passwordPolicy(
+            fakeUserService,
+            () => 'admin',
+            () => {
+              callbackCalled = true;
+            }
+          )
+        )
+      });
+      formHelper = new FormHelper(form);
+    });
+
+    it('should not error because of empty input', () => {
+      expectValid('');
+      expect(callbackCalled).toBeTruthy();
+    });
+
+    it('should not error because password matches the policy', fakeAsync(() => {
+      valid = true;
+      formHelper.setValue('x', 'abc', true);
+      tick(500);
+      formHelper.expectValid('x');
+    }));
+
+    it('should error because password does not match the policy', fakeAsync(() => {
+      valid = false;
+      formHelper.setValue('x', 'xyz', true);
+      tick(500);
+      formHelper.expectError('x', 'passwordPolicy');
+    }));
+
+    it('should call the callback function', fakeAsync(() => {
+      formHelper.setValue('x', 'xyz', true);
+      tick(500);
+      expect(callbackCalled).toBeTruthy();
     }));
   });
 });

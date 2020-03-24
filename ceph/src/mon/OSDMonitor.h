@@ -227,6 +227,7 @@ public:
   map<int, failure_info_t> failure_info;
   map<int,utime_t>    down_pending_out;  // osd down -> out
   bool priority_convert = false;
+  map<int64_t,set<snapid_t>> pending_pseudo_purged_snaps;
   std::shared_ptr<PriorityCache::PriCache> rocksdb_binned_kv_cache = nullptr;
   std::shared_ptr<PriorityCache::Manager> pcm = nullptr;
   ceph::mutex balancer_lock = ceph::make_mutex("OSDMonitor::balancer_lock");
@@ -264,7 +265,8 @@ public:
     OSDMap::Incremental& pending_inc;
     // lock to protect pending_inc form changing
     // when checking is done
-    Mutex pending_inc_lock = {"CleanUpmapJob::pending_inc_lock"};
+    ceph::mutex pending_inc_lock =
+      ceph::make_mutex("CleanUpmapJob::pending_inc_lock");
 
     CleanUpmapJob(CephContext *cct, const OSDMap& om, OSDMap::Incremental& pi)
       : ParallelPGMapper::Job(&om),
@@ -370,7 +372,8 @@ private:
   void check_osdmap_subs();
   void share_map_with_random_osd();
 
-  Mutex prime_pg_temp_lock = {"OSDMonitor::prime_pg_temp_lock"};
+  ceph::mutex prime_pg_temp_lock =
+    ceph::make_mutex("OSDMonitor::prime_pg_temp_lock");
   struct PrimeTempJob : public ParallelPGMapper::Job {
     OSDMonitor *osdmon;
     PrimeTempJob(const OSDMap& om, OSDMonitor *m)
@@ -432,6 +435,9 @@ private:
   bool prepare_mark_me_down(MonOpRequestRef op);
   void process_failures();
   void take_all_failures(list<MonOpRequestRef>& ls);
+
+  bool preprocess_mark_me_dead(MonOpRequestRef op);
+  bool prepare_mark_me_dead(MonOpRequestRef op);
 
   bool preprocess_full(MonOpRequestRef op);
   bool prepare_full(MonOpRequestRef op);
@@ -525,6 +531,7 @@ private:
                        const unsigned pool_type,
                        const uint64_t expected_num_objects,
                        FastReadType fast_read,
+		       const string& pg_autoscale_mode,
 		       ostream *ss);
   int prepare_new_pool(MonOpRequestRef op);
 
@@ -532,16 +539,23 @@ private:
   void clear_pool_flags(int64_t pool_id, uint64_t flags);
   bool update_pools_status();
 
-  string make_snap_epoch_key(int64_t pool, epoch_t epoch);
-  string make_snap_key(int64_t pool, snapid_t snap);
-  string make_snap_key_value(int64_t pool, snapid_t snap, snapid_t num,
-			     epoch_t epoch, bufferlist *v);
-  string make_snap_purged_key(int64_t pool, snapid_t snap);
-  string make_snap_purged_key_value(int64_t pool, snapid_t snap, snapid_t num,
+  bool _is_removed_snap(int64_t pool_id, snapid_t snapid);
+  bool _is_pending_removed_snap(int64_t pool_id, snapid_t snapid);
+
+  string make_purged_snap_epoch_key(epoch_t epoch);
+  string make_purged_snap_key(int64_t pool, snapid_t snap);
+  string make_purged_snap_key_value(int64_t pool, snapid_t snap, snapid_t num,
 				    epoch_t epoch, bufferlist *v);
+
   bool try_prune_purged_snaps();
-  int lookup_pruned_snap(int64_t pool, snapid_t snap,
+  int lookup_purged_snap(int64_t pool, snapid_t snap,
 			 snapid_t *begin, snapid_t *end);
+
+  void insert_purged_snap_update(
+    int64_t pool,
+    snapid_t start, snapid_t end,
+    epoch_t epoch,
+    MonitorDBStore::TransactionRef t);
 
   bool prepare_set_flag(MonOpRequestRef op, int flag);
   bool prepare_unset_flag(MonOpRequestRef op, int flag);
@@ -606,6 +620,8 @@ private:
 
   bool preprocess_remove_snaps(MonOpRequestRef op);
   bool prepare_remove_snaps(MonOpRequestRef op);
+
+  bool preprocess_get_purged_snaps(MonOpRequestRef op);
 
   int load_metadata(int osd, map<string, string>& m, ostream *err);
   void count_metadata(const string& field, Formatter *f);
@@ -721,10 +737,6 @@ public:
     op->mark_osdmon_event(__func__);
     send_incremental(op, start);
   }
-
-  void get_removed_snaps_range(
-    epoch_t start, epoch_t end,
-    mempool::osdmap::map<int64_t,OSDMap::snap_interval_set_t> *gap_removed_snaps);
 
   int get_version(version_t ver, bufferlist& bl) override;
   int get_version(version_t ver, uint64_t feature, bufferlist& bl);

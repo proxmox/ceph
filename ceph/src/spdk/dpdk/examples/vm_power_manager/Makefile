@@ -9,8 +9,8 @@ ifeq ($(RTE_SDK),)
 $(error "Please define RTE_SDK environment variable")
 endif
 
-# Default target, can be overridden by command line or environment
-RTE_TARGET ?= x86_64-native-linuxapp-gcc
+# Default target, detect a build directory, by looking for a path with a .config
+RTE_TARGET ?= $(notdir $(abspath $(dir $(firstword $(wildcard $(RTE_SDK)/*/.config)))))
 
 include $(RTE_SDK)/mk/rte.vars.mk
 
@@ -30,6 +30,12 @@ CFLAGS += -O3 -I$(RTE_SDK)/lib/librte_power/
 CFLAGS += $(WERROR_FLAGS)
 
 LDLIBS += -lvirt
+
+JANSSON := $(shell pkg-config --exists jansson; echo $$?)
+ifeq ($(JANSSON), 0)
+LDLIBS += $(shell pkg-config --libs jansson)
+CFLAGS += -DUSE_JANSSON
+endif
 
 ifeq ($(CONFIG_RTE_BUILD_SHARED_LIB),y)
 

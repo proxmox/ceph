@@ -2,6 +2,36 @@
 # Please run this script as root.
 
 set -e
+
+function usage()
+{
+	echo ""
+	echo "This script is intended to automate the installation of package dependencies to build SPDK."
+	echo "Please run this script as root user."
+	echo ""
+	echo "$0"
+	echo "  -h --help"
+	echo ""
+	exit 0
+}
+
+INSTALL_CRYPTO=false
+
+while getopts 'hi-:' optchar; do
+	case "$optchar" in
+		-)
+		case "$OPTARG" in
+			help) usage;;
+			*) echo "Invalid argument '$OPTARG'"
+			usage;;
+		esac
+		;;
+	h) usage;;
+	*) echo "Invalid argument '$OPTARG'"
+	usage;;
+	esac
+done
+
 trap 'set +e; trap - ERR; echo "Error!"; exit 1;' ERR
 
 scriptsdir=$(readlink -f $(dirname $0))
@@ -25,7 +55,7 @@ if [ -s /etc/redhat-release ]; then
 	fi
 
 	yum install -y gcc gcc-c++ make CUnit-devel libaio-devel openssl-devel \
-		git astyle python-pep8 lcov python clang-analyzer libuuid-devel \
+		git astyle python-pycodestyle lcov python clang-analyzer libuuid-devel \
 		sg3_utils libiscsi-devel pciutils
 	# Additional (optional) dependencies for showing backtrace in logs
 	yum install -y libunwind-devel || true
@@ -41,10 +71,14 @@ if [ -s /etc/redhat-release ]; then
 	if ! echo "$ID $VERSION_ID" | egrep -q 'rhel 7|centos 7'; then
 		yum install -y python3-configshell python3-pexpect
 	fi
+	# Additional dependencies for ISA-L used in compression
+	yum install -y autoconf automake libtool help2man
 elif [ -f /etc/debian_version ]; then
 	# Includes Ubuntu, Debian
 	apt-get install -y gcc g++ make libcunit1-dev libaio-dev libssl-dev \
 		git astyle pep8 lcov clang uuid-dev sg3-utils libiscsi-dev pciutils
+	# Additional python style checker not available on ubuntu 16.04 or earlier.
+	apt-get install -y pycodestyle || true
 	# Additional (optional) dependencies for showing backtrace in logs
 	apt-get install -y libunwind-dev || true
 	# Additional dependencies for NVMe over Fabrics
@@ -53,13 +87,16 @@ elif [ -f /etc/debian_version ]; then
 	apt-get install -y libnuma-dev nasm
 	# Additional dependencies for building docs
 	apt-get install -y doxygen mscgen graphviz
-	# Additional dependencies for SPDK CLI
-	apt-get install -y python-pip python3-pip
-	pip install configshell_fb pexpect
-	pip3 install configshell_fb pexpect
-elif [ -f /etc/SuSE-release ]; then
+	# Additional dependencies for SPDK CLI - not available on older Ubuntus
+	apt-get install -y python3-configshell-fb python3-pexpect || echo \
+		"Note: Some SPDK CLI dependencies could not be installed."
+	# Additional dependencies for ISA-L used in compression
+	apt-get install -y autoconf automake libtool help2man
+	# Additional dependecies for nvmf performance test script
+	apt-get install -y python3-paramiko
+elif [ -f /etc/SuSE-release ] || [ -f /etc/SUSE-brand ]; then
 	zypper install -y gcc gcc-c++ make cunit-devel libaio-devel libopenssl-devel \
-		git-core lcov python-base python-pep8 libuuid-devel sg3_utils pciutils
+		git-core lcov python-base python-pycodestyle libuuid-devel sg3_utils pciutils
 	# Additional (optional) dependencies for showing backtrace in logs
 	zypper install libunwind-devel || true
 	# Additional dependencies for NVMe over Fabrics
@@ -70,32 +107,16 @@ elif [ -f /etc/SuSE-release ]; then
 	zypper install -y libpmemblk-devel
 	# Additional dependencies for building docs
 	zypper install -y doxygen mscgen graphviz
+	# Additional dependencies for ISA-L used in compression
+	zypper install -y autoconf automake libtool help2man
 elif [ $(uname -s) = "FreeBSD" ] ; then
 	pkg install -y gmake cunit openssl git devel/astyle bash py27-pycodestyle \
 		python misc/e2fsprogs-libuuid sysutils/sg3_utils nasm
 	# Additional dependencies for building docs
 	pkg install -y doxygen mscgen graphviz
+	# Additional dependencies for ISA-L used in compression
+	pkg install -y autoconf automake libtool help2man
 else
 	echo "pkgdep: unknown system type."
 	exit 1
-fi
-
-# Only crypto needs nasm and this lib but because the lib requires root to
-# install we do it here.
-nasm_ver=$(nasm -v | sed 's/[^0-9]*//g' | awk '{print substr ($0, 0, 5)}')
-if [ $nasm_ver -lt "21202" ]; then
-		echo Crypto requires NASM version 2.12.02 or newer.  Please install
-		echo or upgrade and re-run this script if you are going to use Crypto.
-else
-	ipsec="$(find /usr -name intel-ipsec-mb.h 2>/dev/null)"
-	if [ "$ipsec" == "" ]; then
-		ipsec_submodule_cloned="$(find $rootdir/intel-ipsec-mb -name intel-ipsec-mb.h 2>/dev/null)"
-		if [ "$ipsec_submodule_cloned" != "" ]; then
-			su - $SUDO_USER -c "make -C $rootdir/intel-ipsec-mb"
-			make -C $rootdir/intel-ipsec-mb install
-		else
-			echo "The intel-ipsec-mb submodule has not been cloned and will not be installed."
-			echo "To enable crypto, run 'git submodule update --init' and then run this script again."
-		fi
-	fi
 fi

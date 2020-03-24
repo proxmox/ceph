@@ -10,9 +10,11 @@ overrides:
     - \(SLOW_OPS\)
     - overall HEALTH_
     - \(MON_MSGR2_NOT_ENABLED\)
+    - slow request
     conf:
       global:
         bluestore warn on legacy statfs: false
+        bluestore warn on no per pool omap: false
       mon:
         mon warn on osd down out interval zero: false
 
@@ -42,13 +44,12 @@ tasks:
     wait-for-osds-up: true
 - exec:
     mon.a:
-    - ceph mon enable-msgr2
-    - ceph config rm global mon_warn_on_msgr2_not_enabled
-- exec:
-    mon.a:
     - ceph osd dump -f json-pretty
     - ceph versions
-    - ceph osd require-osd-release nautilus
+    - ceph mon enable-msgr2
+    - ceph config rm global mon_warn_on_msgr2_not_enabled
+    - ceph osd require-osd-release octopus
+    - for f in `ceph osd pool ls` ; do ceph osd pool set $f pg_autoscale_mode off ; done
     #- ceph osd set-require-min-compat-client nautilus
 - ceph.healthy:
 - print: "**** done ceph.restart"

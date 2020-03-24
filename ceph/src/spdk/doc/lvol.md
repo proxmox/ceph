@@ -10,6 +10,7 @@ The Logical Volumes library is a flexible storage space management system. It pr
 * Type name:  struct spdk_lvol_store
 
 A logical volume store uses the super blob feature of blobstore to hold uuid (and in future other metadata). Blobstore types are implemented in blobstore itself, and saved on disk. An lvolstore will generate a UUID on creation, so that it can be uniquely identified from other lvolstores.
+By default when creating lvol store data region is unmapped. Optional --clear-method parameter can be passed on creation to change that behavior to writing zeroes or performing no operation.
 
 ## Logical volume {#lvol}
 
@@ -27,6 +28,7 @@ Representation of an SPDK block device (spdk_bdev) with an lvol implementation.
 A logical volume block device translates generic SPDK block device I/O (spdk_bdev_io) operations into the equivalent SPDK blob operations. Combination of lvol name and lvolstore name gives lvol_bdev alias name in a form "lvs_name/lvol_name". block_size of the created bdev is always 4096, due to blobstore page size. Cluster_size is configurable by parameter.
 Size of the new bdev will be rounded up to nearest multiple of cluster_size.
 By default lvol bdevs claim part of lvol store equal to their set size. When thin provision option is enabled, no space is taken from lvol store until data is written to lvol bdev.
+By default when deleting lvol bdev or resizing down, allocated clusters are unmapped. Optional --clear-method parameter can be passed on creation to change that behavior to writing zeroes or performing no operation.
 
 ## Thin provisioning {#lvol_thin_provisioning}
 
@@ -53,7 +55,7 @@ The write operation is performed as shown in the diagram below:
 ![Writing cluster to the clone](lvol_clone_snapshot_write.svg)
 
 User may also create clone of existing snapshot that will be thin provisioned and it will behave in the same way as logical volume from which snapshot is created.
-There is no limit of clones and snapshots that may be created as long as there is enough space on logical volume store. Snapshots are read only. Clones may be created only from snapshots.
+There is no limit of clones and snapshots that may be created as long as there is enough space on logical volume store. Snapshots are read only. Clones may be created only from snapshots or read only logical volumes.
 
 ## Inflation {#lvol_inflation}
 
@@ -63,7 +65,8 @@ Blobs can be inflated to copy data from backing devices (e.g. snapshots) and all
 
 ## Decoupling {#lvol_decoupling}
 
-Blobs can be decoupled from all dependencies by copying data from backing devices (e.g. snapshots) for all allocated clusters. Remaining unallocated clusters are kept thin provisioned.
+Blobs can be decoupled from their parent blob by copying data from backing devices (e.g. snapshots) for all allocated clusters. Remaining unallocated clusters are kept thin provisioned.
+Note: When decouple is performed, only single dependency is removed. To remove all dependencies in a chain of blobs depending on each other, multiple calls need to be issued.
 
 # Configuring Logical Volumes
 
@@ -83,6 +86,7 @@ construct_lvol_store [-h] [-c CLUSTER_SZ] bdev_name lvs_name
     Optional parameters:
     -h  show help
     -c  CLUSTER_SZ Specifies the size of cluster. By default its 4MiB.
+    --clear-method specify data region clear method "none", "unmap" (default), "write_zeroes"
 destroy_lvol_store [-h] [-u UUID] [-l LVS_NAME]
     Destroy lvolstore on specified bdev. Removes lvolstore along with lvols on
     it. User can identify lvol store by UUID or its name. Note that destroying
@@ -105,13 +109,14 @@ rename_lvol_store [-h] old_name new_name
 RPC regarding lvol and spdk bdev:
 
 ```
-construct_lvol_bdev [-h] [-u UUID] [-l LVS_NAME] [-t] lvol_name size
+construct_lvol_bdev [-h] [-u UUID] [-l LVS_NAME] [-t] [-c CLEAR_METHOD] lvol_name size
     Creates lvol with specified size and name on lvolstore specified by its uuid
     or name. Then constructs spdk bdev on top of that lvol and presents it as spdk bdev.
     User may use -t switch to create thin provisioned lvol.
     Returns the name of new spdk bdev
     optional arguments:
     -h, --help  show help
+    -c, --clear-method specify data clusters clear method "none", "unmap" (default), "write_zeroes"
 get_bdevs [-h] [-b NAME]
     User can view created bdevs using this call including those created on top of lvols.
     optional arguments:
@@ -135,6 +140,10 @@ rename_lvol_bdev [-h] old_name new_name
     -h, --help  show help
 resize_lvol_bdev [-h] name size
     Resize existing lvol bdev
+    optional arguments:
+    -h, --help  show help
+set_read_only_lvol_bdev [-h] name
+    Mark lvol bdev as read only
     optional arguments:
     -h, --help  show help
 inflate_lvol_bdev [-h] name

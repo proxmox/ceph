@@ -1,69 +1,7 @@
 /*
- *-
- *   BSD LICENSE
- *
- *   Copyright(c) 2015 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- */
-
-/*
- * Some portions of this software is derived from the producer
- * consumer queues described by Dmitry Vyukov and published  here
- * http://www.1024cores.net
- *
- * Copyright (c) 2010-2011 Dmitry Vyukov. All rights reserved.
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met
- *
- * 1. Redistributions of source code must retain the above copyright notice,
- * this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- * this list of conditions and the following disclaimer in the documentation
- * and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY DMITRY VYUKOV "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
- * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
- * PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL DMITRY VYUKOV OR CONTRIBUTORS
- * BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY,
- * OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT
- * OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS;
- * OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
- * WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE
- * OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE,
- * EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
- * The views and conclusions contained in the software and documentation are
- * those of the authors and should not be interpreted as representing official
- * policies, either expressed or implied, of Dmitry Vyukov.
+ * SPDX-License-Identifier: BSD-3-Clause
+ * Copyright 2015 Intel Corporation.
+ * Copyright 2010-2011 Dmitry Vyukov
  */
 
 #ifndef LTHREAD_POOL_H_
@@ -174,7 +112,7 @@ _qnode_pool_create(const char *name, int prealloc_size) {
 /*
  * Insert a node into the pool
  */
-static inline void __attribute__ ((always_inline))
+static __rte_always_inline void
 _qnode_pool_insert(struct qnode_pool *p, struct qnode *n)
 {
 	n->next = NULL;
@@ -198,7 +136,7 @@ _qnode_pool_insert(struct qnode_pool *p, struct qnode *n)
  * last item from the queue incurs the penalty of an atomic exchange. Since the
  * pool is maintained with a bulk pre-allocation the cost of this is amortised.
  */
-static inline struct qnode *__attribute__ ((always_inline))
+static __rte_always_inline struct qnode *
 _pool_remove(struct qnode_pool *p)
 {
 	struct qnode *head;
@@ -239,7 +177,7 @@ _pool_remove(struct qnode_pool *p)
  * This adds a retry to the _pool_remove function
  * defined above
  */
-static inline struct qnode *__attribute__ ((always_inline))
+static __rte_always_inline struct qnode *
 _qnode_pool_remove(struct qnode_pool *p)
 {
 	struct qnode *n;
@@ -259,7 +197,7 @@ _qnode_pool_remove(struct qnode_pool *p)
  * Allocate a node from the pool
  * If the pool is empty add mode nodes
  */
-static inline struct qnode *__attribute__ ((always_inline))
+static __rte_always_inline struct qnode *
 _qnode_alloc(void)
 {
 	struct qnode_pool *p = (THIS_SCHED)->qnode_pool;
@@ -304,7 +242,7 @@ _qnode_alloc(void)
 /*
 * free a queue node to the per scheduler pool from which it came
 */
-static inline void __attribute__ ((always_inline))
+static __rte_always_inline void
 _qnode_free(struct qnode *n)
 {
 	struct qnode_pool *p = n->pool;

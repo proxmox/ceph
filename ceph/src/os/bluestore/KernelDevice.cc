@@ -20,6 +20,7 @@
 #include <sys/file.h>
 
 #include "KernelDevice.h"
+#include "include/intarith.h"
 #include "include/types.h"
 #include "include/compat.h"
 #include "include/stringify.h"
@@ -29,10 +30,10 @@
 #include "bsm/audit_errno.h"
 #endif
 #include "common/debug.h"
-#include "common/align.h"
 #include "common/numa.h"
 
 #include "global/global_context.h"
+#include "ceph_io_uring.h"
 
 #define dout_context cct
 #define dout_subsys ceph_subsys_bdev
@@ -42,7 +43,6 @@
 KernelDevice::KernelDevice(CephContext* cct, aio_callback_t cb, void *cbpriv, aio_callback_t d_cb, void *d_cbpriv)
   : BlockDevice(cct, cb, cbpriv),
     aio(false), dio(false),
-    aio_queue(cct->_conf->bdev_aio_max_queue_depth),
     discard_callback(d_cb),
     discard_callback_priv(d_cbpriv),
     aio_stop(false),
@@ -54,6 +54,21 @@ KernelDevice::KernelDevice(CephContext* cct, aio_callback_t cb, void *cbpriv, ai
 {
   fd_directs.resize(WRITE_LIFE_MAX, -1);
   fd_buffereds.resize(WRITE_LIFE_MAX, -1);
+
+  bool use_ioring = g_ceph_context->_conf.get_val<bool>("bluestore_ioring");
+  unsigned int iodepth = cct->_conf->bdev_aio_max_queue_depth;
+
+  if (use_ioring && ioring_queue_t::supported()) {
+    io_queue = std::make_unique<ioring_queue_t>(iodepth);
+  } else {
+    static bool once;
+    if (use_ioring && !once) {
+      derr << "WARNING: io_uring API is not supported! Fallback to libaio!"
+           << dendl;
+      once = true;
+    }
+    io_queue = std::make_unique<aio_queue_t>(iodepth);
+  }
 }
 
 int KernelDevice::_lock()
@@ -122,7 +137,7 @@ int KernelDevice::open(const string& p)
   r = posix_fadvise(fd_buffereds[WRITE_LIFE_NOT_SET], 0, 0, POSIX_FADV_RANDOM);
   if (r) {
     r = -r;
-    derr << __func__ << " open got: " << cpp_strerror(r) << dendl;
+    derr << __func__ << " posix_fadvise got: " << cpp_strerror(r) << dendl;
     goto out_fail;
   }
 
@@ -223,7 +238,7 @@ out_fail:
   return r;
 }
 
-int KernelDevice::get_devices(std::set<std::string> *ls)
+int KernelDevice::get_devices(std::set<std::string> *ls) const
 {
   if (devname.empty()) {
     return 0;
@@ -274,6 +289,22 @@ int KernelDevice::collect_metadata(const string& prefix, map<string,string> *pm)
     (*pm)[prefix + "vdo_physical_size"] = stringify(total);
   }
 
+  {
+    string res_names;
+    std::set<std::string> devnames;
+    if (get_devices(&devnames) == 0) {
+      for (auto& dev : devnames) {
+	if (!res_names.empty()) {
+	  res_names += ",";
+	}
+	res_names += dev;
+      }
+      if (res_names.size()) {
+	(*pm)[prefix + "devices"] = res_names;
+      }
+    }
+  }
+
   struct stat st;
   int r = ::fstat(fd_buffereds[WRITE_LIFE_NOT_SET], &st);
   if (r < 0)
@@ -309,9 +340,6 @@ int KernelDevice::collect_metadata(const string& prefix, map<string,string> *pm)
     buffer[0] = '\0';
     blkdev.serial(buffer, sizeof(buffer));
     (*pm)[prefix + "serial"] = buffer;
-
-    if (blkdev.is_nvme())
-      (*pm)[prefix + "type"] = "nvme";
 
     // numa
     int node;
@@ -401,7 +429,7 @@ int KernelDevice::_aio_start()
 {
   if (aio) {
     dout(10) << __func__ << dendl;
-    int r = aio_queue.init();
+    int r = io_queue->init(fd_directs);
     if (r < 0) {
       if (r == -EAGAIN) {
 	derr << __func__ << " io_setup(2) failed with EAGAIN; "
@@ -423,7 +451,7 @@ void KernelDevice::_aio_stop()
     aio_stop = true;
     aio_thread.join();
     aio_stop = false;
-    aio_queue.shutdown();
+    io_queue->shutdown();
   }
 }
 
@@ -483,7 +511,7 @@ void KernelDevice::_aio_thread()
     dout(40) << __func__ << " polling" << dendl;
     int max = cct->_conf->bdev_aio_reap_max;
     aio_t *aio[max];
-    int r = aio_queue.get_next_completed(cct->_conf->bdev_aio_poll_ms,
+    int r = io_queue->get_next_completed(cct->_conf->bdev_aio_poll_ms,
 					 aio, max);
     if (r < 0) {
       derr << __func__ << " got " << cpp_strerror(r) << dendl;
@@ -748,7 +776,7 @@ void KernelDevice::aio_submit(IOContext *ioc)
 
   void *priv = static_cast<void*>(ioc);
   int r, retries = 0;
-  r = aio_queue.submit_batch(ioc->running_aios.begin(), e,
+  r = io_queue->submit_batch(ioc->running_aios.begin(), e,
 			     pending, priv, &retries);
 
   if (retries)
@@ -866,7 +894,10 @@ int KernelDevice::aio_write(
       ioc->pending_aios.push_back(aio_t(ioc, choose_fd(false, write_hint)));
       ++ioc->num_pending;
       auto& aio = ioc->pending_aios.back();
-      aio.pread(off, len);
+      bufferptr p = buffer::create_small_page_aligned(len);
+      aio.bl.append(std::move(p));
+      aio.bl.prepare_iov(&aio.iov);
+      aio.preadv(off, len);
       ++injecting_crash;
     } else {
       if (bl.length() <= RW_IO_MAX) {
@@ -997,7 +1028,10 @@ int KernelDevice::aio_read(
     ioc->pending_aios.push_back(aio_t(ioc, fd_directs[WRITE_LIFE_NOT_SET]));
     ++ioc->num_pending;
     aio_t& aio = ioc->pending_aios.back();
-    aio.pread(off, len);
+    bufferptr p = buffer::create_small_page_aligned(len);
+    aio.bl.append(std::move(p));
+    aio.bl.prepare_iov(&aio.iov);
+    aio.preadv(off, len);
     dout(30) << aio << dendl;
     pbl->append(aio.bl);
     dout(5) << __func__ << " 0x" << std::hex << off << "~" << len
@@ -1013,8 +1047,8 @@ int KernelDevice::aio_read(
 
 int KernelDevice::direct_read_unaligned(uint64_t off, uint64_t len, char *buf)
 {
-  uint64_t aligned_off = align_down(off, block_size);
-  uint64_t aligned_len = align_up(off+len, block_size) - aligned_off;
+  uint64_t aligned_off = p2align(off, block_size);
+  uint64_t aligned_len = p2roundup(off+len, block_size) - aligned_off;
   bufferptr p = buffer::create_small_page_aligned(aligned_len);
   int r = 0;
 

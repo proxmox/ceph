@@ -1,5 +1,5 @@
 // -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// vim: ts=8 sw=2 smarttab ft=cpp
 
 #include "rgw_common.h"
 #include "rgw_rest_client.h"
@@ -7,7 +7,6 @@
 #include "rgw_http_errors.h"
 #include "rgw_rados.h"
 
-#include "common/ceph_crypto_cms.h"
 #include "common/armor.h"
 #include "common/strtol.h"
 #include "include/str_list.h"
@@ -138,7 +137,7 @@ int RGWRESTSimpleRequest::execute(RGWAccessKey& key, const char *_method, const 
   headers.push_back(pair<string, string>("HTTP_DATE", date_str));
 
   string canonical_header;
-  map<string, string> meta_map;
+  meta_map_t meta_map;
   map<string, string> sub_resources;
 
   rgw_create_s3_canonical_header(method.c_str(), NULL, NULL, date_str.c_str(),
@@ -157,7 +156,7 @@ int RGWRESTSimpleRequest::execute(RGWAccessKey& key, const char *_method, const 
   ldout(cct, 15) << "generated auth header: " << auth_hdr << dendl;
 
   headers.push_back(pair<string, string>("AUTHORIZATION", auth_hdr));
-  int r = process();
+  int r = process(null_yield);
   if (r < 0)
     return r;
 
@@ -293,7 +292,7 @@ int RGWRESTSimpleRequest::forward_request(RGWAccessKey& key, req_info& info, siz
     headers.emplace_back(kv);
   }
 
-  map<string, string>& meta_map = new_info.x_meta_map;
+  meta_map_t& meta_map = new_info.x_meta_map;
   for (const auto& kv: meta_map) {
     headers.emplace_back(kv);
   }
@@ -324,7 +323,7 @@ int RGWRESTSimpleRequest::forward_request(RGWAccessKey& key, req_info& info, siz
   method = new_info.method;
   url = new_url;
 
-  int r = process();
+  int r = process(null_yield);
   if (r < 0){
     if (r == -EINVAL){
       // curl_easy has errored, generally means the service is not available
@@ -427,7 +426,7 @@ static void grants_by_type_add_perm(map<int, string>& grants_by_type, int perm, 
   }
 }
 
-static void add_grants_headers(map<int, string>& grants, RGWEnv& env, map<string, string>& meta_map)
+static void add_grants_headers(map<int, string>& grants, RGWEnv& env, meta_map_t& meta_map)
 {
   struct grant_type_to_header *t;
 
@@ -802,7 +801,7 @@ int RGWRESTStreamRWRequest::complete_request(string *etag,
                                              map<string, string> *pattrs,
                                              map<string, string> *pheaders)
 {
-  int ret = wait();
+  int ret = wait(null_yield);
   if (ret < 0) {
     return ret;
   }
@@ -909,13 +908,13 @@ int RGWHTTPStreamRWRequest::receive_data(void *ptr, size_t len, bool *pause)
 }
 
 void RGWHTTPStreamRWRequest::set_stream_write(bool s) {
-  Mutex::Locker wl(write_lock);
+  std::lock_guard wl{write_lock};
   stream_writes = s;
 }
 
 void RGWHTTPStreamRWRequest::unpause_receive()
 {
-  Mutex::Locker req_locker(get_req_lock());
+  std::lock_guard req_locker{get_req_lock()};
   if (!read_paused) {
     _set_read_paused(false);
   }
@@ -923,22 +922,20 @@ void RGWHTTPStreamRWRequest::unpause_receive()
 
 void RGWHTTPStreamRWRequest::add_send_data(bufferlist& bl)
 {
-  Mutex::Locker req_locker(get_req_lock());
-  Mutex::Locker wl(write_lock);
+  std::scoped_lock locker{get_req_lock(), write_lock};
   outbl.claim_append(bl);
   _set_write_paused(false);
 }
 
 uint64_t RGWHTTPStreamRWRequest::get_pending_send_size()
 {
-  Mutex::Locker wl(write_lock);
+  std::lock_guard wl{write_lock};
   return outbl.length();
 }
 
 void RGWHTTPStreamRWRequest::finish_write()
 {
-  Mutex::Locker req_locker(get_req_lock());
-  Mutex::Locker wl(write_lock);
+  std::scoped_lock locker{get_req_lock(), write_lock};
   write_stream_complete = true;
   _set_write_paused(false);
 }
@@ -948,7 +945,7 @@ int RGWHTTPStreamRWRequest::send_data(void *ptr, size_t len, bool *pause)
   uint64_t out_len;
   uint64_t send_size;
   {
-    Mutex::Locker wl(write_lock);
+    std::lock_guard wl{write_lock};
 
     if (outbl.length() == 0) {
       if ((stream_writes && !write_stream_complete) ||

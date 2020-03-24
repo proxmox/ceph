@@ -1,9 +1,7 @@
-/*
- * Copyright (c) 2016 QLogic Corporation.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright (c) 2016 - 2018 Cavium Inc.
  * All rights reserved.
- * www.qlogic.com
- *
- * See LICENSE.qede_pmd for copyright and licensing details.
+ * www.cavium.com
  */
 
 #ifndef __ECORE_INIT_OPS__
@@ -107,5 +105,6 @@ void ecore_init_store_rt_agg(struct ecore_hwfn *p_hwfn,
  *
  * @param p_hwfn
  */
-void ecore_gtt_init(struct ecore_hwfn *p_hwfn);
+void ecore_gtt_init(struct ecore_hwfn *p_hwfn,
+		    struct ecore_ptt *p_ptt);
 #endif /* __ECORE_INIT_OPS__ */

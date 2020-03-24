@@ -1,4 +1,8 @@
-import { HttpClientTestingModule, HttpTestingController } from '@angular/common/http/testing';
+import {
+  HttpClientTestingModule,
+  HttpTestingController,
+  TestRequest
+} from '@angular/common/http/testing';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { ReactiveFormsModule } from '@angular/forms';
 import { RouterTestingModule } from '@angular/router/testing';
@@ -41,7 +45,7 @@ describe('RbdTrashRestoreModalComponent', () => {
     let httpTesting: HttpTestingController;
     let notificationService: NotificationService;
     let modalRef: BsModalRef;
-    let req;
+    let req: TestRequest;
 
     beforeEach(() => {
       httpTesting = TestBed.get(HttpTestingController);
@@ -49,7 +53,9 @@ describe('RbdTrashRestoreModalComponent', () => {
       modalRef = TestBed.get(BsModalRef);
 
       component.poolName = 'foo';
-      component.imageId = 'bar';
+      component.imageName = 'bar';
+      component.imageId = '113cb6963793';
+      component.ngOnInit();
 
       spyOn(modalRef, 'hide').and.stub();
       spyOn(component.restoreForm, 'setErrors').and.stub();
@@ -57,7 +63,7 @@ describe('RbdTrashRestoreModalComponent', () => {
 
       component.restore();
 
-      req = httpTesting.expectOne('api/block/image/trash/foo/bar/restore');
+      req = httpTesting.expectOne('api/block/image/trash/foo%2F113cb6963793/restore');
     });
 
     it('with success', () => {

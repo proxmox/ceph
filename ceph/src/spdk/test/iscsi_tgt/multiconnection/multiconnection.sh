@@ -5,6 +5,10 @@ rootdir=$(readlink -f $testdir/../../..)
 source $rootdir/test/common/autotest_common.sh
 source $rootdir/test/iscsi_tgt/common.sh
 
+# $1 = "iso" - triggers isolation mode (setting up required environment).
+# $2 = test type posix or vpp. defaults to posix.
+iscsitestinit $1 $2
+
 rpc_py="$rootdir/scripts/rpc.py"
 fio_py="$rootdir/scripts/fio.py"
 
@@ -34,11 +38,10 @@ set -e
 timing_enter multiconnection
 
 timing_enter start_iscsi_tgt
-# Start the iSCSI target without using stub.
 $ISCSI_APP --wait-for-rpc &
 iscsipid=$!
 echo "iSCSI target launched. pid: $iscsipid"
-trap "remove_backends; iscsicleanup; killprocess $iscsipid; exit 1" SIGINT SIGTERM EXIT
+trap "remove_backends; iscsicleanup; killprocess $iscsipid; iscsitestfini $1 $2; exit 1" SIGINT SIGTERM EXIT
 
 waitforlisten $iscsipid
 $rpc_py set_iscsi_options -o 30 -a 128
@@ -68,11 +71,10 @@ sleep 1
 echo "Logging into iSCSI target."
 iscsiadm -m discovery -t sendtargets -p $TARGET_IP:$ISCSI_PORT
 iscsiadm -m node --login -p $TARGET_IP:$ISCSI_PORT
-sleep 1
 
 echo "Running FIO"
-$fio_py 131072 64 randrw 5
-$fio_py 262144 16 randwrite 10
+$fio_py -p iscsi -i 131072 -d 64 -t randrw -r 5
+$fio_py -p iscsi -i 262144 -d 16 -t randwrite -r 10
 sync
 
 trap - SIGINT SIGTERM EXIT
@@ -81,4 +83,5 @@ rm -f ./local-job*
 iscsicleanup
 remove_backends
 killprocess $iscsipid
+iscsitestfini $1 $2
 timing_exit multiconnection

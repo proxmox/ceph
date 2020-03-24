@@ -54,7 +54,7 @@ else
 DPDK_LIB_EXT = .so
 endif
 
-DPDK_LIB_LIST = rte_eal rte_mempool rte_ring
+DPDK_LIB_LIST = rte_eal rte_mempool rte_ring rte_mbuf
 
 # librte_mempool_ring was new added from DPDK 17.05. Link this library used for
 #   ring based mempool management API.
@@ -78,18 +78,38 @@ ifneq (, $(wildcard $(DPDK_ABS_DIR)/lib/librte_bus_pci.*))
 DPDK_LIB_LIST += rte_bus_pci
 endif
 
+# There are some complex dependencies when using crypto, reduce or both so
+# here we add the feature specific ones and set a flag to add the common
+# ones after that.
+DPDK_FRAMEWORK=n
 ifeq ($(CONFIG_CRYPTO),y)
-DPDK_LIB_LIST += rte_cryptodev rte_reorder rte_bus_vdev rte_pmd_aesni_mb rte_pmd_qat rte_mbuf
+DPDK_FRAMEWORK=y
+DPDK_LIB_LIST += rte_pmd_aesni_mb rte_reorder
+endif
+
+ifeq ($(CONFIG_REDUCE),y)
+DPDK_FRAMEWORK=y
+DPDK_LIB_LIST += rte_pmd_isal_comp
+endif
+
+ifeq ($(DPDK_FRAMEWORK),y)
+DPDK_LIB_LIST += rte_cryptodev rte_compressdev rte_bus_vdev rte_pmd_qat
 endif
 
 ifneq (, $(wildcard $(DPDK_ABS_DIR)/lib/librte_kvargs.*))
 DPDK_LIB_LIST += rte_kvargs
 endif
 
-DPDK_LIB = $(DPDK_LIB_LIST:%=$(DPDK_ABS_DIR)/lib/lib%$(DPDK_LIB_EXT))
-ifeq ($(CONFIG_CRYPTO),y)
-DPDK_LIB += $(SPDK_ROOT_DIR)/intel-ipsec-mb/libIPSec_MB.a
+ifneq ($(CONFIG_VHOST_INTERNAL_LIB),y)
+ifneq (, $(wildcard $(DPDK_ABS_DIR)/lib/librte_vhost.*))
+DPDK_LIB_LIST += rte_vhost rte_net rte_hash
+ifneq ($(DPDK_FRAMEWORK),y)
+DPDK_LIB_LIST += rte_cryptodev
 endif
+endif
+endif
+
+DPDK_LIB = $(DPDK_LIB_LIST:%=$(DPDK_ABS_DIR)/lib/lib%$(DPDK_LIB_EXT))
 
 # SPDK memory registration requires experimental (deprecated) rte_memory API for DPDK 18.05
 ENV_CFLAGS = $(DPDK_INC) -Wno-deprecated-declarations
@@ -97,6 +117,14 @@ ENV_CXXFLAGS = $(ENV_CFLAGS)
 ENV_DPDK_FILE = $(call spdk_lib_list_to_static_libs,env_dpdk)
 ENV_LIBS = $(ENV_DPDK_FILE) $(DPDK_LIB)
 ENV_LINKER_ARGS = $(ENV_DPDK_FILE) -Wl,--whole-archive $(DPDK_LIB) -Wl,--no-whole-archive
+
+ifeq ($(CONFIG_IPSEC_MB),y)
+ENV_LINKER_ARGS += -lIPSec_MB -L$(IPSEC_MB_DIR)
+endif
+
+ifeq ($(CONFIG_REDUCE),y)
+ENV_LINKER_ARGS += -lisal -L$(ISAL_DIR)/.libs
+endif
 
 ifneq (,$(wildcard $(DPDK_INC_DIR)/rte_config.h))
 ifneq (,$(shell grep -e "define RTE_LIBRTE_VHOST_NUMA 1" -e "define RTE_EAL_NUMA_AWARE_HUGEPAGES 1" $(DPDK_INC_DIR)/rte_config.h))

@@ -34,7 +34,7 @@ int ActivePyModule::load(ActivePyModules *py_modules)
   // with us in logging etc.
   auto pThisPtr = PyCapsule_New(this, nullptr, nullptr);
   auto pPyModules = PyCapsule_New(py_modules, nullptr, nullptr);
-  auto pModuleName = PyString_FromString(get_name().c_str());
+  auto pModuleName = PyUnicode_FromString(get_name().c_str());
   auto pArgs = PyTuple_Pack(3, pModuleName, pPyModules, pThisPtr);
 
   pClassInstance = PyObject_CallObject(py_module->pClass, pArgs);
@@ -53,6 +53,11 @@ int ActivePyModule::load(ActivePyModules *py_modules)
 
 void ActivePyModule::notify(const std::string &notify_type, const std::string &notify_id)
 {
+  if (is_dead()) {
+    dout(5) << "cancelling notify " << notify_type << " " << notify_id << dendl;
+    return;
+  }
+
   ceph_assert(pClassInstance != nullptr);
 
   Gil gil(py_module->pMyThreadState, true);
@@ -76,6 +81,11 @@ void ActivePyModule::notify(const std::string &notify_type, const std::string &n
 
 void ActivePyModule::notify_clog(const LogEntry &log_entry)
 {
+  if (is_dead()) {
+    dout(5) << "cancelling notify_clog" << dendl;
+    return;
+  }
+
   ceph_assert(pClassInstance != nullptr);
 
   Gil gil(py_module->pMyThreadState, true);
@@ -159,11 +169,16 @@ PyObject *ActivePyModule::dispatch_remote(
 
 void ActivePyModule::config_notify()
 {
+  if (is_dead()) {
+    dout(5) << "cancelling config_notify" << dendl;
+    return;
+  }
+
   Gil gil(py_module->pMyThreadState, true);
-  dout(20) << "Calling " << py_module->get_name() << ".config_notify..."
+  dout(20) << "Calling " << py_module->get_name() << "._config_notify..."
 	   << dendl;
   auto remoteResult = PyObject_CallMethod(pClassInstance,
-					  const_cast<char*>("config_notify"),
+					  const_cast<char*>("_config_notify"),
 					  (char*)NULL);
   if (remoteResult != nullptr) {
     Py_DECREF(remoteResult);
@@ -191,10 +206,10 @@ int ActivePyModule::handle_command(
   Gil gil(py_module->pMyThreadState, true);
 
   PyFormatter f;
-  cmdmap_dump(cmdmap, &f);
+  TOPNSPC::common::cmdmap_dump(cmdmap, &f);
   PyObject *py_cmd = f.get();
   string instr;
-  inbuf.copy(0, inbuf.length(), instr);
+  inbuf.begin().copy(inbuf.length(), instr);
 
   ceph_assert(m_session == nullptr);
   m_command_perms = module_command.perm;
@@ -215,9 +230,9 @@ int ActivePyModule::handle_command(
               "returned wrong type!" << dendl;
       r = -EINVAL;
     } else {
-      r = PyInt_AsLong(PyTuple_GetItem(pResult, 0));
-      *ds << PyString_AsString(PyTuple_GetItem(pResult, 1));
-      *ss << PyString_AsString(PyTuple_GetItem(pResult, 2));
+      r = PyLong_AsLong(PyTuple_GetItem(pResult, 0));
+      *ds << PyUnicode_AsUTF8(PyTuple_GetItem(pResult, 1));
+      *ss << PyUnicode_AsUTF8(PyTuple_GetItem(pResult, 2));
     }
 
     Py_DECREF(pResult);
@@ -234,6 +249,10 @@ int ActivePyModule::handle_command(
 
 void ActivePyModule::get_health_checks(health_check_map_t *checks)
 {
+  if (is_dead()) {
+    dout(5) << "cancelling get_health_checks" << dendl;
+    return;
+  }
   checks->merge(health_checks);
 }
 

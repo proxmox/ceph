@@ -35,6 +35,8 @@
 
 #include "spdk/nvme.h"
 #include "spdk/queue.h"
+#include "spdk/string.h"
+#include "spdk/util.h"
 
 struct dev_ctx {
 	TAILQ_ENTRY(dev_ctx)	tailq;
@@ -70,9 +72,14 @@ static int g_expected_removal_times = -1;
 static int g_insert_times;
 static int g_removal_times;
 static int g_shm_id = -1;
+static uint64_t g_timeout_in_us = SPDK_SEC_TO_USEC;
 
 static void
 task_complete(struct perf_task *task);
+
+static void
+timeout_cb(void *cb_arg, struct spdk_nvme_ctrlr *ctrlr,
+	   struct spdk_nvme_qpair *qpair, uint16_t cid);
 
 static void
 register_dev(struct spdk_nvme_ctrlr *ctrlr)
@@ -92,6 +99,8 @@ register_dev(struct spdk_nvme_ctrlr *ctrlr)
 	dev->is_new = true;
 	dev->is_removed = false;
 	dev->is_draining = false;
+
+	spdk_nvme_ctrlr_register_timeout_callback(ctrlr, g_timeout_in_us, timeout_cb, NULL);
 
 	dev->ns = spdk_nvme_ctrlr_get_ns(ctrlr, 1);
 
@@ -314,6 +323,16 @@ remove_cb(void *cb_ctx, struct spdk_nvme_ctrlr *ctrlr)
 }
 
 static void
+timeout_cb(void *cb_arg, struct spdk_nvme_ctrlr *ctrlr,
+	   struct spdk_nvme_qpair *qpair, uint16_t cid)
+{
+	/* leave hotplug monitor loop, use the timeout_cb to monitor the hotplug */
+	if (spdk_nvme_probe(NULL, NULL, probe_cb, attach_cb, remove_cb) != 0) {
+		fprintf(stderr, "spdk_nvme_probe() failed\n");
+	}
+}
+
+static void
 io_loop(void)
 {
 	struct dev_ctx *dev, *dev_tmp;
@@ -387,6 +406,7 @@ static void usage(char *program_name)
 {
 	printf("%s options", program_name);
 	printf("\n");
+	printf("\t[-c timeout for each command in second(default:1s)]\n");
 	printf("\t[-i shm id (optional)]\n");
 	printf("\t[-n expected hot insert times]\n");
 	printf("\t[-r expected hot removal times]\n");
@@ -397,23 +417,37 @@ static int
 parse_args(int argc, char **argv)
 {
 	int op;
+	long int val;
 
 	/* default value */
 	g_time_in_sec = 0;
 
-	while ((op = getopt(argc, argv, "i:n:r:t:")) != -1) {
+	while ((op = getopt(argc, argv, "c:i:n:r:t:")) != -1) {
+		if (op == '?') {
+			usage(argv[0]);
+			return 1;
+		}
+
+		val = spdk_strtol(optarg, 10);
+		if (val < 0) {
+			fprintf(stderr, "Converting a string to integer failed\n");
+			return val;
+		}
 		switch (op) {
+		case 'c':
+			g_timeout_in_us = val * SPDK_SEC_TO_USEC;
+			break;
 		case 'i':
-			g_shm_id = atoi(optarg);
+			g_shm_id = val;
 			break;
 		case 'n':
-			g_expected_insert_times = atoi(optarg);
+			g_expected_insert_times = val;
 			break;
 		case 'r':
-			g_expected_removal_times = atoi(optarg);
+			g_expected_removal_times = val;
 			break;
 		case 't':
-			g_time_in_sec = atoi(optarg);
+			g_time_in_sec = val;
 			break;
 		default:
 			usage(argv[0]);

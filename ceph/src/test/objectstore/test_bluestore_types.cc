@@ -336,9 +336,12 @@ TEST(Blob, put_ref)
 {
   {
     BlueStore store(g_ceph_context, "", 4096);
-    BlueStore::Cache *cache = BlueStore::Cache::create(
+    BlueStore::OnodeCacheShard *oc = BlueStore::OnodeCacheShard::create(
       g_ceph_context, "lru", NULL);
-    BlueStore::Collection coll(&store, cache, coll_t());
+    BlueStore::BufferCacheShard *bc = BlueStore::BufferCacheShard::create(
+      g_ceph_context, "lru", NULL);
+
+    auto coll = ceph::make_ref<BlueStore::Collection>(&store, oc, bc, coll_t());
     BlueStore::Blob b;
     b.shared_blob = new BlueStore::SharedBlob(nullptr);
     b.shared_blob->get();  // hack to avoid dtor from running
@@ -346,19 +349,19 @@ TEST(Blob, put_ref)
     b.dirty_blob().allocated_test(
       bluestore_pextent_t(bluestore_pextent_t::INVALID_OFFSET, 0x8000));
     b.dirty_blob().allocated_test(bluestore_pextent_t(0x4071f000, 0x5000));
-    b.get_ref(&coll, 0, 0x1200);
-    b.get_ref(&coll, 0xae00, 0x4200);
+    b.get_ref(coll.get(), 0, 0x1200);
+    b.get_ref(coll.get(), 0xae00, 0x4200);
     ASSERT_EQ(0x5400u, b.get_referenced_bytes());
     cout << b << std::endl;
     PExtentVector r;
 
-    ASSERT_FALSE(b.put_ref(&coll, 0, 0x1200, &r));
+    ASSERT_FALSE(b.put_ref(coll.get(), 0, 0x1200, &r));
     ASSERT_EQ(0x4200u, b.get_referenced_bytes());
     cout << " r " << r << std::endl;
     cout << b << std::endl;
 
     r.clear();
-    ASSERT_TRUE(b.put_ref(&coll, 0xae00, 0x4200, &r));
+    ASSERT_TRUE(b.put_ref(coll.get(), 0xae00, 0x4200, &r));
     ASSERT_EQ(0u, b.get_referenced_bytes());
     cout << " r " << r << std::endl;
     cout << b << std::endl;
@@ -366,9 +369,11 @@ TEST(Blob, put_ref)
 
   unsigned mas = 4096;
   BlueStore store(g_ceph_context, "", 8192);
-  BlueStore::Cache *cache = BlueStore::Cache::create(
+  BlueStore::OnodeCacheShard *oc = BlueStore::OnodeCacheShard::create(
     g_ceph_context, "lru", NULL);
-  BlueStore::CollectionRef coll(new BlueStore::Collection(&store, cache, coll_t()));
+  BlueStore::BufferCacheShard *bc = BlueStore::BufferCacheShard::create(
+    g_ceph_context, "lru", NULL);
+  auto coll = ceph::make_ref<BlueStore::Collection>(&store, oc, bc, coll_t());
 
   {
     BlueStore::Blob B;
@@ -812,9 +817,12 @@ TEST(Blob, put_ref)
   }
   {
     BlueStore store(g_ceph_context, "", 0x4000);
-    BlueStore::Cache *cache = BlueStore::Cache::create(
+    BlueStore::OnodeCacheShard *oc = BlueStore::OnodeCacheShard::create(
       g_ceph_context, "lru", NULL);
-    BlueStore::CollectionRef coll(new BlueStore::Collection(&store, cache, coll_t()));
+    BlueStore::BufferCacheShard *bc = BlueStore::BufferCacheShard::create(
+      g_ceph_context, "lru", NULL);
+
+    auto coll = ceph::make_ref<BlueStore::Collection>(&store, oc, bc, coll_t());
     BlueStore::Blob B;
     B.shared_blob = new BlueStore::SharedBlob(nullptr);
     B.shared_blob->get();  // hack to avoid dtor from running
@@ -899,9 +907,11 @@ TEST(bluestore_blob_t, prune_tail)
 TEST(Blob, split)
 {
   BlueStore store(g_ceph_context, "", 4096);
-  BlueStore::Cache *cache = BlueStore::Cache::create(
-    g_ceph_context, "lru", NULL);
-  BlueStore::CollectionRef coll(new BlueStore::Collection(&store, cache, coll_t()));
+    BlueStore::OnodeCacheShard *oc = BlueStore::OnodeCacheShard::create(
+      g_ceph_context, "lru", NULL);
+    BlueStore::BufferCacheShard *bc = BlueStore::BufferCacheShard::create(
+      g_ceph_context, "lru", NULL);
+  auto coll = ceph::make_ref<BlueStore::Collection>(&store, oc, bc, coll_t());
   {
     BlueStore::Blob L, R;
     L.shared_blob = new BlueStore::SharedBlob(coll.get());
@@ -955,9 +965,11 @@ TEST(Blob, split)
 TEST(Blob, legacy_decode)
 {
   BlueStore store(g_ceph_context, "", 4096);
-  BlueStore::Cache *cache = BlueStore::Cache::create(
+  BlueStore::OnodeCacheShard *oc = BlueStore::OnodeCacheShard::create(
     g_ceph_context, "lru", NULL);
-  BlueStore::CollectionRef coll(new BlueStore::Collection(&store, cache, coll_t()));
+  BlueStore::BufferCacheShard *bc = BlueStore::BufferCacheShard::create(
+    g_ceph_context, "lru", NULL);
+  auto coll = ceph::make_ref<BlueStore::Collection>(&store, oc, bc, coll_t());
   bufferlist bl, bl2;
   {
     BlueStore::Blob B;
@@ -1033,8 +1045,12 @@ TEST(Blob, legacy_decode)
 TEST(ExtentMap, seek_lextent)
 {
   BlueStore store(g_ceph_context, "", 4096);
-  BlueStore::LRUCache cache(g_ceph_context);
-  BlueStore::CollectionRef coll(new BlueStore::Collection(&store, &cache, coll_t()));
+  BlueStore::OnodeCacheShard *oc = BlueStore::OnodeCacheShard::create(
+    g_ceph_context, "lru", NULL);
+  BlueStore::BufferCacheShard *bc = BlueStore::BufferCacheShard::create(
+    g_ceph_context, "lru", NULL);
+
+  auto coll = ceph::make_ref<BlueStore::Collection>(&store, oc, bc, coll_t());
   BlueStore::Onode onode(coll.get(), ghobject_t(), "");
   BlueStore::ExtentMap em(&onode);
   BlueStore::BlobRef br(new BlueStore::Blob);
@@ -1082,8 +1098,11 @@ TEST(ExtentMap, seek_lextent)
 TEST(ExtentMap, has_any_lextents)
 {
   BlueStore store(g_ceph_context, "", 4096);
-  BlueStore::LRUCache cache(g_ceph_context);
-  BlueStore::CollectionRef coll(new BlueStore::Collection(&store, &cache, coll_t()));
+  BlueStore::OnodeCacheShard *oc = BlueStore::OnodeCacheShard::create(
+    g_ceph_context, "lru", NULL);
+  BlueStore::BufferCacheShard *bc = BlueStore::BufferCacheShard::create(
+    g_ceph_context, "lru", NULL);
+  auto coll = ceph::make_ref<BlueStore::Collection>(&store, oc, bc, coll_t());
   BlueStore::Onode onode(coll.get(), ghobject_t(), "");
   BlueStore::ExtentMap em(&onode);
   BlueStore::BlobRef b(new BlueStore::Blob);
@@ -1129,8 +1148,12 @@ TEST(ExtentMap, has_any_lextents)
 TEST(ExtentMap, compress_extent_map)
 {
   BlueStore store(g_ceph_context, "", 4096);
-  BlueStore::LRUCache cache(g_ceph_context);
-  BlueStore::CollectionRef coll(new BlueStore::Collection(&store, &cache, coll_t()));
+  BlueStore::OnodeCacheShard *oc = BlueStore::OnodeCacheShard::create(
+    g_ceph_context, "lru", NULL);
+  BlueStore::BufferCacheShard *bc = BlueStore::BufferCacheShard::create(
+    g_ceph_context, "lru", NULL);
+  
+  auto coll = ceph::make_ref<BlueStore::Collection>(&store, oc, bc, coll_t());
   BlueStore::Onode onode(coll.get(), ghobject_t(), "");
   BlueStore::ExtentMap em(&onode);
   BlueStore::BlobRef b1(new BlueStore::Blob);
@@ -1181,9 +1204,13 @@ TEST(ExtentMap, compress_extent_map)
 
 TEST(GarbageCollector, BasicTest)
 {
-  BlueStore::LRUCache cache(g_ceph_context);
+  BlueStore::OnodeCacheShard *oc = BlueStore::OnodeCacheShard::create(
+    g_ceph_context, "lru", NULL);
+  BlueStore::BufferCacheShard *bc = BlueStore::BufferCacheShard::create(
+    g_ceph_context, "lru", NULL);
+
   BlueStore store(g_ceph_context, "", 4096);
-  BlueStore::CollectionRef coll(new BlueStore::Collection(&store, &cache, coll_t()));
+  auto coll = ceph::make_ref<BlueStore::Collection>(&store, oc, bc, coll_t());
   BlueStore::Onode onode(coll.get(), ghobject_t(), "");
   BlueStore::ExtentMap em(&onode);
 
@@ -1242,7 +1269,12 @@ TEST(GarbageCollector, BasicTest)
     ASSERT_EQ(saving, 1);
     auto& to_collect = gc.get_extents_to_collect();
     ASSERT_EQ(to_collect.num_intervals(), 1u);
-    ASSERT_EQ(*to_collect.begin(), std::make_pair(100ul, 10ul));
+    {
+      auto it = to_collect.begin();
+      using p = decltype(*it);
+      auto v = p{100ul, 10ul};
+      ASSERT_EQ(*it, v);
+    }
 
     em.clear();
     old_extents.clear();
@@ -1268,7 +1300,7 @@ TEST(GarbageCollector, BasicTest)
   */  
   {
     BlueStore store(g_ceph_context, "", 0x10000);
-    BlueStore::CollectionRef coll(new BlueStore::Collection(&store, &cache, coll_t()));
+    auto coll = ceph::make_ref<BlueStore::Collection>(&store, oc, bc, coll_t());
     BlueStore::Onode onode(coll.get(), ghobject_t(), "");
     BlueStore::ExtentMap em(&onode);
 
@@ -1312,10 +1344,21 @@ TEST(GarbageCollector, BasicTest)
     ASSERT_EQ(saving, 2);
     auto& to_collect = gc.get_extents_to_collect();
     ASSERT_EQ(to_collect.num_intervals(), 2u);
-    ASSERT_TRUE((*to_collect.begin()) == std::make_pair(0x0ul ,0x8000ul) ||
-		  *(++to_collect.begin()) == std::make_pair(0x0ul, 0x8000ul));
-    ASSERT_TRUE((*to_collect.begin()) == std::make_pair(0x3f000ul, 0x1000ul) ||
-		  *(++to_collect.begin()) == std::make_pair(0x3f000ul, 0x1000ul));
+    {
+      auto it1 = to_collect.begin();
+      auto it2 = ++to_collect.begin();
+      using p = decltype(*it1);
+      {
+        auto v1 = p{0x0ul ,0x8000ul};
+        auto v2 = p{0x0ul, 0x8000ul};
+        ASSERT_TRUE(*it1 == v1 || *it2 == v2);
+      }
+      {
+        auto v1 = p{0x3f000ul, 0x1000ul};
+        auto v2 = p{0x3f000ul, 0x1000ul};
+        ASSERT_TRUE(*it1 == v1 || *it2 == v2);
+      }
+    }
 
     em.clear();
     old_extents.clear();
@@ -1384,7 +1427,7 @@ TEST(GarbageCollector, BasicTest)
   */  
   {
     BlueStore store(g_ceph_context, "", 0x10000);
-    BlueStore::CollectionRef coll(new BlueStore::Collection(&store, &cache, coll_t()));
+    auto coll = ceph::make_ref<BlueStore::Collection>(&store, oc, bc, coll_t());
     BlueStore::Onode onode(coll.get(), ghobject_t(), "");
     BlueStore::ExtentMap em(&onode);
 
@@ -1433,10 +1476,21 @@ TEST(GarbageCollector, BasicTest)
     ASSERT_EQ(saving, 2);
     auto& to_collect = gc.get_extents_to_collect();
     ASSERT_EQ(to_collect.num_intervals(), 2u);
-    ASSERT_TRUE(*to_collect.begin() == std::make_pair(0x0ul, 0x8000ul) ||
-		  *(++to_collect.begin()) == std::make_pair(0x0ul, 0x8000ul));
-    ASSERT_TRUE(*to_collect.begin() == std::make_pair(0x3f000ul, 0x1000ul) ||
-		  *(++to_collect.begin()) == std::make_pair(0x3f000ul, 0x1000ul));
+    {
+      auto it1 = to_collect.begin();
+      auto it2 = ++to_collect.begin();
+      using p = decltype(*it1);
+      {
+        auto v1 = p{0x0ul, 0x8000ul};
+        auto v2 = p{0x0ul, 0x8000ul};
+        ASSERT_TRUE(*it1 == v1 || *it2  == v2);
+      }
+      {
+        auto v1 = p{0x3f000ul, 0x1000ul};
+        auto v2 = p{0x3f000ul, 0x1000ul};
+        ASSERT_TRUE(*it1 == v1 || *it2 == v2);
+      }
+    }
 
     em.clear();
     old_extents.clear();

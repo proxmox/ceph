@@ -1,34 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2014 Intel Corporation
  */
 
 #ifndef _MAIN_H_
@@ -47,8 +18,8 @@ extern "C" {
  */
 #define APP_INTERACTIVE_DEFAULT 0
 
-#define APP_RX_DESC_DEFAULT 128
-#define APP_TX_DESC_DEFAULT 256
+#define APP_RX_DESC_DEFAULT 1024
+#define APP_TX_DESC_DEFAULT 1024
 
 #define APP_RING_SIZE (8*1024)
 #define NB_MBUF   (2*1024*1024)
@@ -69,8 +40,13 @@ extern "C" {
 #define BURST_TX_DRAIN_US 100
 
 #ifndef APP_MAX_LCORE
+#if (RTE_MAX_LCORE > 64)
 #define APP_MAX_LCORE 64
+#else
+#define APP_MAX_LCORE RTE_MAX_LCORE
 #endif
+#endif
+
 #define MAX_DATA_STREAMS (APP_MAX_LCORE/2)
 #define MAX_SCHED_SUBPORTS		8
 #define MAX_SCHED_PIPES		4096
@@ -101,8 +77,8 @@ struct thread_conf
 	uint32_t n_mbufs;
 	struct rte_mbuf **m_table;
 
-	uint8_t rx_port;
-	uint8_t tx_port;
+	uint16_t rx_port;
+	uint16_t tx_port;
 	uint16_t rx_queue;
 	uint16_t tx_queue;
 	struct rte_ring *rx_ring;
@@ -120,8 +96,8 @@ struct flow_conf
 	uint32_t rx_core;
 	uint32_t wt_core;
 	uint32_t tx_core;
-	uint8_t rx_port;
-	uint8_t tx_port;
+	uint16_t rx_port;
+	uint16_t tx_port;
 	uint16_t rx_queue;
 	uint16_t tx_queue;
 	struct rte_ring *rx_ring;
@@ -183,13 +159,15 @@ void app_worker_thread(struct thread_conf **qconf);
 void app_mixed_thread(struct thread_conf **qconf);
 
 void app_stat(void);
-int subport_stat(uint8_t port_id, uint32_t subport_id);
-int pipe_stat(uint8_t port_id, uint32_t subport_id, uint32_t pipe_id);
-int qavg_q(uint8_t port_id, uint32_t subport_id, uint32_t pipe_id, uint8_t tc, uint8_t q);
-int qavg_tcpipe(uint8_t port_id, uint32_t subport_id, uint32_t pipe_id, uint8_t tc);
-int qavg_pipe(uint8_t port_id, uint32_t subport_id, uint32_t pipe_id);
-int qavg_tcsubport(uint8_t port_id, uint32_t subport_id, uint8_t tc);
-int qavg_subport(uint8_t port_id, uint32_t subport_id);
+int subport_stat(uint16_t port_id, uint32_t subport_id);
+int pipe_stat(uint16_t port_id, uint32_t subport_id, uint32_t pipe_id);
+int qavg_q(uint16_t port_id, uint32_t subport_id, uint32_t pipe_id,
+	   uint8_t tc, uint8_t q);
+int qavg_tcpipe(uint16_t port_id, uint32_t subport_id, uint32_t pipe_id,
+		uint8_t tc);
+int qavg_pipe(uint16_t port_id, uint32_t subport_id, uint32_t pipe_id);
+int qavg_tcsubport(uint16_t port_id, uint32_t subport_id, uint8_t tc);
+int qavg_subport(uint16_t port_id, uint32_t subport_id);
 
 #ifdef __cplusplus
 }

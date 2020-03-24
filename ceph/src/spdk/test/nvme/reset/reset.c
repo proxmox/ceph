@@ -36,6 +36,7 @@
 #include "spdk/nvme.h"
 #include "spdk/env.h"
 #include "spdk/string.h"
+#include "spdk/pci_ids.h"
 
 struct ctrlr_entry {
 	struct spdk_nvme_ctrlr	*ctrlr;
@@ -81,6 +82,7 @@ static struct ctrlr_entry *g_controllers = NULL;
 static struct ns_entry *g_namespaces = NULL;
 static int g_num_namespaces = 0;
 static struct worker_thread *g_workers = NULL;
+static bool g_qemu_ssd_found = false;
 
 static uint64_t g_tsc_rate;
 
@@ -382,6 +384,7 @@ parse_args(int argc, char **argv)
 	const char *workload_type;
 	int op;
 	bool mix_specified = false;
+	long int val;
 
 	/* default value */
 	g_queue_depth = 0;
@@ -391,26 +394,35 @@ parse_args(int argc, char **argv)
 	g_rw_percentage = -1;
 
 	while ((op = getopt(argc, argv, "m:q:s:t:w:M:")) != -1) {
-		switch (op) {
-		case 'q':
-			g_queue_depth = atoi(optarg);
-			break;
-		case 's':
-			g_io_size_bytes = atoi(optarg);
-			break;
-		case 't':
-			g_time_in_sec = atoi(optarg);
-			break;
-		case 'w':
+		if (op == 'w') {
 			workload_type = optarg;
-			break;
-		case 'M':
-			g_rw_percentage = atoi(optarg);
-			mix_specified = true;
-			break;
-		default:
+		} else if (op == '?') {
 			usage(argv[0]);
-			return 1;
+			return -EINVAL;
+		} else {
+			val = spdk_strtol(optarg, 10);
+			if (val < 0) {
+				fprintf(stderr, "Converting a string to integer failed\n");
+				return val;
+			}
+			switch (op) {
+			case 'q':
+				g_queue_depth = val;
+				break;
+			case 's':
+				g_io_size_bytes = val;
+				break;
+			case 't':
+				g_time_in_sec = val;
+				break;
+			case 'M':
+				g_rw_percentage = val;
+				mix_specified = true;
+				break;
+			default:
+				usage(argv[0]);
+				return -EINVAL;
+			}
 		}
 	}
 
@@ -508,6 +520,7 @@ static bool
 probe_cb(void *cb_ctx, const struct spdk_nvme_transport_id *trid,
 	 struct spdk_nvme_ctrlr_opts *opts)
 {
+	opts->disable_error_logging = true;
 	return true;
 }
 
@@ -515,6 +528,22 @@ static void
 attach_cb(void *cb_ctx, const struct spdk_nvme_transport_id *trid,
 	  struct spdk_nvme_ctrlr *ctrlr, const struct spdk_nvme_ctrlr_opts *opts)
 {
+	if (trid->trtype == SPDK_NVME_TRANSPORT_PCIE) {
+		struct spdk_pci_device *dev = spdk_nvme_ctrlr_get_pci_device(ctrlr);
+
+		/* QEMU emulated SSDs can't handle this test, so we will skip
+		 *  them.  QEMU NVMe SSDs report themselves as VID == Intel.  So we need
+		 *  to check this specific 0x5845 device ID to know whether it's QEMU
+		 *  or not.
+		 */
+		if (spdk_pci_device_get_vendor_id(dev) == SPDK_PCI_VID_INTEL &&
+		    spdk_pci_device_get_device_id(dev) == 0x5845) {
+			g_qemu_ssd_found = true;
+			printf("Skipping QEMU NVMe SSD at %s\n", trid->traddr);
+			return;
+		}
+	}
+
 	register_ctrlr(ctrlr);
 }
 
@@ -646,7 +675,7 @@ int main(int argc, char **argv)
 
 	if (!g_controllers) {
 		printf("No NVMe controller found, %s exiting\n", argv[0]);
-		return 1;
+		return g_qemu_ssd_found ? 0 : 1;
 	}
 
 	task_pool = spdk_mempool_create("task_pool", TASK_POOL_NUM,

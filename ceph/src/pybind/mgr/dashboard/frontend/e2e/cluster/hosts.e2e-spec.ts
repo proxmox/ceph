@@ -1,34 +1,45 @@
-import { Helper } from '../helper.po';
-import { HostsPage } from './hosts.po';
+import { HostsPageHelper } from './hosts.po';
 
 describe('Hosts page', () => {
-  let page: HostsPage;
+  let hosts: HostsPageHelper;
 
   beforeAll(() => {
-    page = new HostsPage();
+    hosts = new HostsPageHelper();
   });
 
-  afterEach(() => {
-    Helper.checkConsole();
+  afterEach(async () => {
+    await HostsPageHelper.checkConsole();
   });
 
-  it('should open and show breadcrumb', () => {
-    page.navigateTo();
-    Helper.waitTextToBePresent(Helper.getBreadcrumb(), 'Hosts');
+  describe('breadcrumb and tab tests', () => {
+    beforeAll(async () => {
+      await hosts.navigateTo();
+    });
+
+    it('should open and show breadcrumb', async () => {
+      await hosts.waitTextToBePresent(hosts.getBreadcrumb(), 'Hosts');
+    });
+
+    it('should show two tabs', async () => {
+      await expect(hosts.getTabsCount()).toEqual(2);
+    });
+
+    it('should show hosts list tab at first', async () => {
+      await expect(hosts.getTabText(0)).toEqual('Hosts List');
+    });
+
+    it('should show overall performance as a second tab', async () => {
+      await expect(hosts.getTabText(1)).toEqual('Overall Performance');
+    });
   });
 
-  it('should show two tabs', () => {
-    page.navigateTo();
-    expect(Helper.getTabsCount()).toEqual(2);
-  });
+  describe('services link test', () => {
+    it('should check at least one host is present', async () => {
+      await hosts.check_for_host();
+    });
 
-  it('should show hosts list tab at first', () => {
-    page.navigateTo();
-    expect(Helper.getTabText(0)).toEqual('Hosts List');
-  });
-
-  it('should show overall performance as a second tab', () => {
-    page.navigateTo();
-    expect(Helper.getTabText(1)).toEqual('Overall Performance');
+    it('should check services link(s) work for first host', async () => {
+      await hosts.check_services_links();
+    });
   });
 });

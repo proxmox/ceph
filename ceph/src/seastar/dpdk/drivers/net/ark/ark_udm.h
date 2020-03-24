@@ -1,34 +1,5 @@
-/*-
- * BSD LICENSE
- *
- * Copyright (c) 2015-2017 Atomic Rules LLC
- * All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- * * Redistributions of source code must retain the above copyright
- * notice, this list of conditions and the following disclaimer.
- * * Redistributions in binary form must reproduce the above copyright
- * notice, this list of conditions and the following disclaimer in
- * the documentation and/or other materials provided with the
- * distribution.
- * * Neither the name of copyright holder nor the names of its
- * contributors may be used to endorse or promote products derived
- * from this software without specific prior written permission.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- * A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- * OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- * LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- * DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright (c) 2015-2018 Atomic Rules LLC
  */
 
 #ifndef _ARK_UDM_H_
@@ -137,7 +108,7 @@ struct ark_udm_tlp_ps_t {
 
 #define ARK_UDM_RT_CFG 0x00e0
 struct ark_udm_rt_cfg_t {
-	phys_addr_t hw_prod_addr;
+	rte_iova_t hw_prod_addr;
 	uint32_t write_interval;	/* 4ns cycles */
 	volatile uint32_t prod_idx;	/* RO */
 };
@@ -171,7 +142,7 @@ void ark_udm_configure(struct ark_udm_t *udm,
 		       uint32_t headroom,
 		       uint32_t dataroom,
 		       uint32_t write_interval_ns);
-void ark_udm_write_addr(struct ark_udm_t *udm, phys_addr_t addr);
+void ark_udm_write_addr(struct ark_udm_t *udm, rte_iova_t addr);
 void ark_udm_stats_reset(struct ark_udm_t *udm);
 void ark_udm_dump_stats(struct ark_udm_t *udm, const char *msg);
 void ark_udm_dump_queue_stats(struct ark_udm_t *udm, const char *msg,

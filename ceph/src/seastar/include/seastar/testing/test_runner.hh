@@ -24,6 +24,7 @@
 #include <memory>
 #include <functional>
 #include <atomic>
+#include <random>
 #include <seastar/core/future.hh>
 #include <seastar/core/posix.hh>
 #include <seastar/testing/exchanger.hh>
@@ -32,17 +33,23 @@ namespace seastar {
 
 namespace testing {
 
+extern thread_local std::default_random_engine local_random_engine;
+
 class test_runner {
 private:
     std::unique_ptr<posix_thread> _thread;
     std::atomic<bool> _started{false};
     exchanger<std::function<future<>()>> _task;
     bool _done = false;
+    int _exit_code{0};
 public:
-    void start(int argc, char** argv);
+    // Returns whether initialization was successful.
+    // Will return as soon as the seastar::app was started.
+    bool start(int argc, char** argv);
     ~test_runner();
     void run_sync(std::function<future<>()> task);
-    void finalize();
+    // Returns the return value of the underlying `seastar::app::run()`.
+    int finalize();
 };
 
 test_runner& global_test_runner();

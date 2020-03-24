@@ -7,11 +7,15 @@
 #include <string>
 #include <seastar/core/future.hh>
 #include "osd/osd_types.h"
+#include "crimson/os/futurized_collection.h"
 
 namespace ceph::os {
-  class CyanStore;
-  class Collection;
   class Transaction;
+}
+
+namespace crimson::os {
+  class FuturizedCollection;
+  class FuturizedStore;
 }
 
 /// metadata shared across PGs, or put in another way,
@@ -19,15 +23,14 @@ namespace ceph::os {
 class OSDMeta {
   template<typename T> using Ref = boost::intrusive_ptr<T>;
 
-  ceph::os::CyanStore* store;
-  Ref<ceph::os::Collection> coll;
+  crimson::os::FuturizedStore* store;
+  Ref<crimson::os::FuturizedCollection> coll;
 
 public:
-  OSDMeta(Ref<ceph::os::Collection> coll,
-          ceph::os::CyanStore* store)
+  OSDMeta(Ref<crimson::os::FuturizedCollection> coll,
+          crimson::os::FuturizedStore* store)
     : store{store}, coll{coll}
   {}
-
 
   auto collection() {
     return coll;

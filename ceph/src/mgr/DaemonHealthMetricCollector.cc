@@ -4,30 +4,6 @@
 #include "include/types.h"
 #include "DaemonHealthMetricCollector.h"
 
-
-
-ostream& operator<<(ostream& os,
-                    const DaemonHealthMetricCollector::DaemonKey& daemon) {
-  return os << daemon.first << "." << daemon.second;
-}
-
-// define operator<<(ostream&, const vector<DaemonKey>&) after
-// ostream& operator<<(ostream&, const DaemonKey&), so that C++'s
-// ADL can use the former instead of using the generic one:
-// operator<<(ostream&, const std::pair<A,B>&)
-ostream& operator<<(
-   ostream& os,
-   const vector<DaemonHealthMetricCollector::DaemonKey>& daemons)
-{
-  os << "[";
-  for (auto d = daemons.begin(); d != daemons.end(); ++d) {
-    if (d != daemons.begin()) os << ",";
-    os << *d;
-  }
-  os << "]";
-  return os;
-}
-
 namespace {
 
 class SlowOps final : public DaemonHealthMetricCollector {
@@ -35,7 +11,7 @@ class SlowOps final : public DaemonHealthMetricCollector {
     return type == daemon_metric::SLOW_OPS;
   }
   health_check_t& _get_check(health_check_map_t& cm) const override {
-    return cm.get_or_add("SLOW_OPS", HEALTH_WARN, "");
+    return cm.get_or_add("SLOW_OPS", HEALTH_WARN, "", 1);
   }
   bool _update(const DaemonKey& daemon,
                const DaemonHealthMetric& metric) override {
@@ -78,7 +54,7 @@ class PendingPGs final : public DaemonHealthMetricCollector {
     return type == daemon_metric::PENDING_CREATING_PGS;
   }
   health_check_t& _get_check(health_check_map_t& cm) const override {
-    return cm.get_or_add("PENDING_CREATING_PGS", HEALTH_WARN, "");
+    return cm.get_or_add("PENDING_CREATING_PGS", HEALTH_WARN, "", 1);
   }
   bool _update(const DaemonKey& osd,
                const DaemonHealthMetric& metric) override {

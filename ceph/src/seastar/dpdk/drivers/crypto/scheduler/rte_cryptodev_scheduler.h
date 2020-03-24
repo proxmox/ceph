@@ -1,34 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2017 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2017 Intel Corporation
  */
 
 #ifndef _RTE_CRYPTO_SCHEDULER_H
@@ -58,12 +29,17 @@ extern "C" {
 #define RTE_CRYPTODEV_SCHEDULER_MAX_NB_SLAVES	(8)
 #endif
 
+/** Maximum number of multi-core worker cores */
+#define RTE_CRYPTODEV_SCHEDULER_MAX_NB_WORKER_CORES	(RTE_MAX_LCORE - 1)
+
 /** Round-robin scheduling mode string */
 #define SCHEDULER_MODE_NAME_ROUND_ROBIN		round-robin
 /** Packet-size based distribution scheduling mode string */
 #define SCHEDULER_MODE_NAME_PKT_SIZE_DISTR	packet-size-distr
 /** Fail-over scheduling mode string */
 #define SCHEDULER_MODE_NAME_FAIL_OVER		fail-over
+/** multi-core scheduling mode string */
+#define SCHEDULER_MODE_NAME_MULTI_CORE		multi-core
 
 /**
  * Crypto scheduler PMD operation modes
@@ -78,6 +54,8 @@ enum rte_cryptodev_scheduler_mode {
 	CDEV_SCHED_MODE_PKT_SIZE_DISTR,
 	/** Fail-over mode */
 	CDEV_SCHED_MODE_FAILOVER,
+	/** multi-core mode */
+	CDEV_SCHED_MODE_MULTICORE,
 
 	CDEV_SCHED_MODE_COUNT /**< number of modes */
 };
@@ -98,6 +76,7 @@ enum rte_cryptodev_schedule_option_type {
 /**
  * Threshold option structure
  */
+#define RTE_CRYPTODEV_SCHEDULER_PARAM_THRES	"threshold"
 struct rte_cryptodev_scheduler_threshold_option {
 	uint32_t threshold;	/**< Threshold for packet-size mode */
 };
@@ -116,6 +95,7 @@ struct rte_cryptodev_scheduler;
  *   - 0 if the scheduler is successfully loaded
  *   - -ENOTSUP if the operation is not supported.
  *   - -EBUSY if device is started.
+ *   - -EINVAL if input values are invalid.
  */
 int
 rte_cryptodev_scheduler_load_user_scheduler(uint8_t scheduler_id,
@@ -186,38 +166,6 @@ enum rte_cryptodev_scheduler_mode
 rte_cryptodev_scheduler_mode_get(uint8_t scheduler_id);
 
 /**
- * @deprecated
- * Set the scheduling mode
- *
- * @param scheduler_id
- *   The target scheduler device ID
- * @param mode
- *   The scheduling mode
- *
- * @return
- *	0 if attaching successful, negative integer if otherwise.
- */
-__rte_deprecated
-int
-rte_crpytodev_scheduler_mode_set(uint8_t scheduler_id,
-		enum rte_cryptodev_scheduler_mode mode);
-
-/**
- * @deprecated
- * Get the current scheduling mode
- *
- * @param scheduler_id
- *   The target scheduler device ID
- *
- * @return
- *	If successful, returns the scheduling mode, negative integer
- *	otherwise
- */
-__rte_deprecated
-enum rte_cryptodev_scheduler_mode
-rte_crpytodev_scheduler_mode_get(uint8_t scheduler_id);
-
-/**
  * Set the crypto ops reordering feature on/off
  *
  * @param scheduler_id
@@ -251,7 +199,7 @@ int
 rte_cryptodev_scheduler_ordering_get(uint8_t scheduler_id);
 
 /**
- * Get the the attached slaves' count and/or ID
+ * Get the attached slaves' count and/or ID
  *
  * @param scheduler_id
  *   The target scheduler device ID
@@ -322,11 +270,13 @@ struct rte_cryptodev_scheduler {
 };
 
 /** Round-robin mode scheduler */
-extern struct rte_cryptodev_scheduler *roundrobin_scheduler;
+extern struct rte_cryptodev_scheduler *crypto_scheduler_roundrobin;
 /** Packet-size based distribution mode scheduler */
-extern struct rte_cryptodev_scheduler *pkt_size_based_distr_scheduler;
+extern struct rte_cryptodev_scheduler *crypto_scheduler_pkt_size_based_distr;
 /** Fail-over mode scheduler */
-extern struct rte_cryptodev_scheduler *failover_scheduler;
+extern struct rte_cryptodev_scheduler *crypto_scheduler_failover;
+/** multi-core mode scheduler */
+extern struct rte_cryptodev_scheduler *crypto_scheduler_multicore;
 
 #ifdef __cplusplus
 }

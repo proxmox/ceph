@@ -12,8 +12,13 @@ Constraints
 In general, bucket names should follow domain name constraints.
 
 - Bucket names must be unique.
-- Bucket names must begin and end with a lowercase letter.
-- Bucket names may contain a dash (-).
+- Bucket names cannot be formatted as IP address.
+- Bucket names can be between 3 and 63 characters long.
+- Bucket names must not contain uppercase characters or underscores.
+- Bucket names must start with a lowercase letter or number.
+- Bucket names must be a series of one or more labels. Adjacent labels are separated by a single period (.). Bucket names can contain lowercase letters, numbers, and hyphens. Each label must start and end with a lowercase letter or a number.
+
+.. note:: The above constraints are relaxed if the option 'rgw_relaxed_s3_bucket_names' is set to true except that the bucket names must still be unique, cannot be formatted as IP address and can contain letters, numbers, periods, dashes and underscores for up to 255 characters long.
 
 Syntax
 ~~~~~~
@@ -509,7 +514,13 @@ Parameters are XML encoded in the body of the request, in the following format:
                         <Name></Name>
                         <Value></Value>
                     </FilterRule>
-                </s3Metadata>
+                </S3Metadata>
+                <S3Tags>
+                    <FilterRule>
+                        <Name></Name>
+                        <Value></Value>
+                    </FilterRule>
+                </S3Tags>
             </Filter>
        </TopicConfiguration>
    </NotificationConfiguration>
@@ -528,15 +539,19 @@ Parameters are XML encoded in the body of the request, in the following format:
 | ``Event``                     | String    | List of supported events see: `S3 Notification Compatibility`_.  Multiple ``Event``  | No       |
 |                               |           | entities can be used. If omitted, all events are handled                             |          |
 +-------------------------------+-----------+--------------------------------------------------------------------------------------+----------+
-| ``Filter``                    | Container | Holding ``S3Key`` and ``S3Metadata`` entities                                        | No       |
+| ``Filter``                    | Container | Holding ``S3Key``, ``S3Metadata`` and ``S3Tags`` entities                            | No       |
 +-------------------------------+-----------+--------------------------------------------------------------------------------------+----------+
 | ``S3Key``                     | Container | Holding a list of ``FilterRule`` entities, for filtering based on object key.        | No       |
 |                               |           | At most, 3 entities may be in the list, with ``Name`` be ``prefix``, ``suffix`` or   |          |
 |                               |           | ``regex``. All filter rules in the list must match for the filter to match.          |          |
 +-------------------------------+-----------+--------------------------------------------------------------------------------------+----------+
 | ``S3Metadata``                | Container | Holding a list of ``FilterRule`` entities, for filtering based on object metadata.   | No       |
-|                               |           | All filter rules in the list must match the ones defined on the object. The object,  |          |
-|                               |           | have other metadata entitied not listed in the filter.                               |          |
+|                               |           | All filter rules in the list must match the metadata defined on the object. However, |          |
+|                               |           | the object still match if it has other metadata entries not listed in the filter.    |          |
++-------------------------------+-----------+--------------------------------------------------------------------------------------+----------+
+| ``S3Tags``                    | Container | Holding a list of ``FilterRule`` entities, for filtering based on object tags.       | No       |
+|                               |           | All filter rules in the list must match the tags defined on the object. However,     |          |
+|                               |           | the object still match it it has other tags not listed in the filter.                |          |
 +-------------------------------+-----------+--------------------------------------------------------------------------------------+----------+
 | ``S3Key.FilterRule``          | Container | Holding ``Name`` and ``Value`` entities. ``Name`` would  be: ``prefix``, ``suffix``  | Yes      |
 |                               |           | or ``regex``. The ``Value`` would hold the key prefix, key suffix or a regular       |          |
@@ -544,7 +559,10 @@ Parameters are XML encoded in the body of the request, in the following format:
 +-------------------------------+-----------+--------------------------------------------------------------------------------------+----------+
 | ``S3Metadata.FilterRule``     | Container | Holding ``Name`` and ``Value`` entities. ``Name`` would be the name of the metadata  | Yes      |
 |                               |           | attribute (e.g. ``x-amz-meta-xxx``). The ``Value`` would be the expected value for   |          | 
-|                               |           | this attribute                                                                       |          |
+|                               |           | this attribute.                                                                      |          |
++-------------------------------+-----------+--------------------------------------------------------------------------------------+----------+
+| ``S3Tags.FilterRule``         | Container | Holding ``Name`` and ``Value`` entities. ``Name`` would be the tag key,              |  Yes     |
+|                               |           | and ``Value`` would be the tag value.                                                |          | 
 +-------------------------------+-----------+--------------------------------------------------------------------------------------+----------+
 
 
@@ -573,7 +591,7 @@ Delete a specific, or all, notifications from a bucket.
 
     - Notification deletion is an extension to the S3 notification API
     - When the bucket is deleted, any notification defined on it is also deleted 
-    - Deleting an unkown notification (e.g. double delete) is not considered an error
+    - Deleting an unknown notification (e.g. double delete) is not considered an error
 
 Syntax
 ~~~~~~
@@ -647,7 +665,13 @@ Response is XML encoded in the body of the request, in the following format:
                         <Name></Name>
                         <Value></Value>
                     </FilterRule>
-                </s3Metadata>
+                </S3Metadata>
+                <S3Tags>
+                    <FilterRule>
+                        <Name></Name>
+                        <Value></Value>
+                    </FilterRule>
+                </S3Tags>
             </Filter>
        </TopicConfiguration>
    </NotificationConfiguration>
@@ -679,4 +703,4 @@ HTTP Response
 | ``404``       | NoSuchKey             | The notification does not exist (if provided)            |
 +---------------+-----------------------+----------------------------------------------------------+
 
-.. _S3 Notification Compatibility: ../s3-notification-compatibility
+.. _S3 Notification Compatibility: ../../s3-notification-compatibility

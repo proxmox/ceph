@@ -16,22 +16,20 @@
 #ifndef CEPH_MGETPOOLSTATSREPLY_H
 #define CEPH_MGETPOOLSTATSREPLY_H
 
-class MGetPoolStatsReply : public MessageInstance<MGetPoolStatsReply, PaxosServiceMessage> {
+class MGetPoolStatsReply : public PaxosServiceMessage {
   static constexpr int HEAD_VERSION = 2;
   static constexpr int COMPAT_VERSION = 1;
 
 public:
-  friend factory;
-
   uuid_d fsid;
-  map<string,pool_stat_t> pool_stats;
+  std::map<std::string,pool_stat_t> pool_stats;
   bool per_pool = false;
 
-  MGetPoolStatsReply() : MessageInstance(MSG_GETPOOLSTATSREPLY, 0,
-					 HEAD_VERSION, COMPAT_VERSION) {}
+  MGetPoolStatsReply() : PaxosServiceMessage{MSG_GETPOOLSTATSREPLY, 0,
+					     HEAD_VERSION, COMPAT_VERSION} {}
   MGetPoolStatsReply(uuid_d& f, ceph_tid_t t, version_t v) :
-    MessageInstance(MSG_GETPOOLSTATSREPLY, v,
-		    HEAD_VERSION, COMPAT_VERSION),
+    PaxosServiceMessage{MSG_GETPOOLSTATSREPLY, v,
+			HEAD_VERSION, COMPAT_VERSION},
     fsid(f) {
     set_tid(t);
   }
@@ -41,7 +39,7 @@ private:
 
 public:
   std::string_view get_type_name() const override { return "getpoolstats"; }
-  void print(ostream& out) const override {
+  void print(std::ostream& out) const override {
     out << "getpoolstatsreply(" << get_tid();
     if (per_pool)
       out << " per_pool";
@@ -67,6 +65,9 @@ public:
       per_pool = false;
     }
   }
+private:
+  template<class T, typename... Args>
+  friend boost::intrusive_ptr<T> ceph::make_message(Args&&... args);
 };
 
 #endif

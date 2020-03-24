@@ -1,8 +1,7 @@
 // -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// vim: ts=8 sw=2 smarttab ft=cpp
 
-#ifndef CEPH_RGW_REST_ROLE_H
-#define CEPH_RGW_REST_ROLE_H
+#pragma once
 
 #include "rgw_role.h"
 
@@ -25,13 +24,13 @@ public:
 class RGWRoleRead : public RGWRestRole {
 public:
   RGWRoleRead() = default;
-  int check_caps(RGWUserCaps& caps) override;
+  int check_caps(const RGWUserCaps& caps) override;
 };
 
 class RGWRoleWrite : public RGWRestRole {
 public:
   RGWRoleWrite() = default;
-  int check_caps(RGWUserCaps& caps) override;
+  int check_caps(const RGWUserCaps& caps) override;
 };
 
 class RGWCreateRole : public RGWRoleWrite {
@@ -127,5 +126,3 @@ public:
   RGWOpType get_type() override { return RGW_OP_DELETE_ROLE_POLICY; }
   uint64_t get_op() { return rgw::IAM::iamDeleteRolePolicy; }
 };
-#endif /* CEPH_RGW_REST_ROLE_H */
-

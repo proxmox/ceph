@@ -1,7 +1,13 @@
 import contextlib
+import datetime
 import os
 import socket
 import logging
+
+try:
+    from typing import Tuple
+except ImportError:
+    TYPE_CHECKING = False  # just for type checking
 
 (
     BLACK,
@@ -82,9 +88,13 @@ def format_bytes(n, width, colored=False):
 def merge_dicts(*args):
     # type: (dict) -> dict
     """
-    >>> assert merge_dicts({1:2}, {3:4}) == {1:2, 3:4}
-        You can also overwrite keys:
-    >>> assert merge_dicts({1:2}, {1:4}) == {1:4}
+    >>> merge_dicts({1:2}, {3:4})
+    {1: 2, 3: 4}
+
+    You can also overwrite keys:
+    >>> merge_dicts({1:2}, {1:4})
+    {1: 4}
+
     :rtype: dict[str, Any]
     """
     ret = {}
@@ -94,6 +104,7 @@ def merge_dicts(*args):
 
 
 def get_default_addr():
+    # type: () -> str
     def is_ipv6_enabled():
         try:
             sock = socket.socket(socket.AF_INET6)
@@ -104,17 +115,60 @@ def get_default_addr():
            return False
 
     try:
-        return get_default_addr.result
+        return get_default_addr.result  # type: ignore
     except AttributeError:
         result = '::' if is_ipv6_enabled() else '0.0.0.0'
-        get_default_addr.result = result
+        get_default_addr.result = result  # type: ignore
         return result
 
 
 class ServerConfigException(Exception):
     pass
 
+
+def create_self_signed_cert(organisation='Ceph', common_name='mgr') -> Tuple[str, str]:
+    """Returns self-signed PEM certificates valid for 10 years.
+    :return cert, pkey
+    """
+
+    from OpenSSL import crypto
+    from uuid import uuid4
+
+    # create a key pair
+    pkey = crypto.PKey()
+    pkey.generate_key(crypto.TYPE_RSA, 2048)
+
+    # create a self-signed cert
+    cert = crypto.X509()
+    cert.get_subject().O = organisation
+    cert.get_subject().CN = common_name
+    cert.set_serial_number(int(uuid4()))
+    cert.gmtime_adj_notBefore(0)
+    cert.gmtime_adj_notAfter(10 * 365 * 24 * 60 * 60)  # 10 years
+    cert.set_issuer(cert.get_subject())
+    cert.set_pubkey(pkey)
+    cert.sign(pkey, 'sha512')
+
+    cert = crypto.dump_certificate(crypto.FILETYPE_PEM, cert)
+    pkey = crypto.dump_privatekey(crypto.FILETYPE_PEM, pkey)
+
+    return cert.decode('utf-8'), pkey.decode('utf-8')
+
+
+def verify_cacrt_content(crt):
+    # type: (str) -> None
+    from OpenSSL import crypto
+    try:
+        x509 = crypto.load_certificate(crypto.FILETYPE_PEM, crt)
+        if x509.has_expired():
+            logger.warning('Certificate has expired: {}'.format(crt))
+    except (ValueError, crypto.Error) as e:
+        raise ServerConfigException(
+            'Invalid certificate: {}'.format(str(e)))
+
+
 def verify_cacrt(cert_fname):
+    # type: (str) -> None
     """Basic validation of a ca cert"""
 
     if not cert_fname:
@@ -122,19 +176,44 @@ def verify_cacrt(cert_fname):
     if not os.path.isfile(cert_fname):
         raise ServerConfigException("Certificate {} does not exist".format(cert_fname))
 
-    from OpenSSL import crypto
     try:
         with open(cert_fname) as f:
-            x509 = crypto.load_certificate(crypto.FILETYPE_PEM, f.read())
-            if x509.has_expired():
-                logger.warning(
-                    'Certificate {} has expired'.format(cert_fname))
-    except (ValueError, crypto.Error) as e:
+            verify_cacrt_content(f.read())
+    except ValueError as e:
         raise ServerConfigException(
             'Invalid certificate {}: {}'.format(cert_fname, str(e)))
 
 
+def verify_tls(crt, key):
+    # type: (str, str) -> None
+    verify_cacrt_content(crt)
+
+    from OpenSSL import crypto, SSL
+    try:
+        _key = crypto.load_privatekey(crypto.FILETYPE_PEM, key)
+        _key.check()
+    except (ValueError, crypto.Error) as e:
+        raise ServerConfigException(
+            'Invalid private key: {}'.format(str(e)))
+    try:
+        _crt = crypto.load_certificate(crypto.FILETYPE_PEM, crt)
+    except ValueError as e:
+        raise ServerConfigException(
+            'Invalid certificate key: {}'.format(str(e))
+        )
+
+    try:
+        context = SSL.Context(SSL.TLSv1_METHOD)
+        context.use_certificate(_crt)
+        context.use_privatekey(_key)
+        context.check_privatekey()
+    except crypto.Error as e:
+        logger.warning(
+            'Private key and certificate do not match up: {}'.format(str(e)))
+
+
 def verify_tls_files(cert_fname, pkey_fname):
+    # type: (str, str) -> None
     """Basic checks for TLS certificate and key files
 
     Do some validations to the private key and certificate:
@@ -176,3 +255,140 @@ def verify_tls_files(cert_fname, pkey_fname):
         logger.warning(
             'Private key {} and certificate {} do not match up: {}'.format(
                 pkey_fname, cert_fname, str(e)))
+
+def get_most_recent_rate(rates):
+    """ Get most recent rate from rates
+
+    :param rates: The derivative between all time series data points [time in seconds, value]
+    :type rates: list[tuple[int, float]]
+
+    :return: The last derivative or 0.0 if none exists
+    :rtype: float
+
+    >>> get_most_recent_rate(None)
+    0.0
+    >>> get_most_recent_rate([])
+    0.0
+    >>> get_most_recent_rate([(1, -2.0)])
+    -2.0
+    >>> get_most_recent_rate([(1, 2.0), (2, 1.5), (3, 5.0)])
+    5.0
+    """
+    if not rates:
+        return 0.0
+    return rates[-1][1]
+
+def get_time_series_rates(data):
+    """ Rates from time series data
+
+    :param data: Time series data [time in seconds, value]
+    :type data: list[tuple[int, float]]
+
+    :return: The derivative between all time series data points [time in seconds, value]
+    :rtype: list[tuple[int, float]]
+
+    >>> logger.debug = lambda s,x,y: print(s % (x,y))
+    >>> get_time_series_rates([])
+    []
+    >>> get_time_series_rates([[0, 1], [1, 3]])
+    [(1, 2.0)]
+    >>> get_time_series_rates([[0, 2], [0, 3], [0, 1], [1, 2], [1, 3]])
+    Duplicate timestamp in time series data: [0, 2], [0, 3]
+    Duplicate timestamp in time series data: [0, 3], [0, 1]
+    Duplicate timestamp in time series data: [1, 2], [1, 3]
+    [(1, 2.0)]
+    >>> get_time_series_rates([[1, 1], [2, 3], [4, 11], [5, 16], [6, 22]])
+    [(2, 2.0), (4, 4.0), (5, 5.0), (6, 6.0)]
+    """
+    data = _filter_time_series(data)
+    if not data:
+        return []
+    return [(data2[0], _derivative(data1, data2)) for data1, data2 in
+            _pairwise(data)]
+
+def _filter_time_series(data):
+    """ Filters time series data
+
+    Filters out samples with the same timestamp in given time series data.
+    It also enforces the list to contain at least two samples.
+
+    All filtered values will be shown in the debug log. If values were filtered it's a bug in the
+    time series data collector, please report it.
+
+    :param data: Time series data [time in seconds, value]
+    :type data: list[tuple[int, float]]
+
+    :return: Filtered time series data [time in seconds, value]
+    :rtype: list[tuple[int, float]]
+
+    >>> logger.debug = lambda s,x,y: print(s % (x,y))
+    >>> _filter_time_series([])
+    []
+    >>> _filter_time_series([[1, 42]])
+    []
+    >>> _filter_time_series([[10, 2], [10, 3]])
+    Duplicate timestamp in time series data: [10, 2], [10, 3]
+    []
+    >>> _filter_time_series([[0, 1], [1, 2]])
+    [[0, 1], [1, 2]]
+    >>> _filter_time_series([[0, 2], [0, 3], [0, 1], [1, 2], [1, 3]])
+    Duplicate timestamp in time series data: [0, 2], [0, 3]
+    Duplicate timestamp in time series data: [0, 3], [0, 1]
+    Duplicate timestamp in time series data: [1, 2], [1, 3]
+    [[0, 1], [1, 3]]
+    >>> _filter_time_series([[1, 1], [2, 3], [4, 11], [5, 16], [6, 22]])
+    [[1, 1], [2, 3], [4, 11], [5, 16], [6, 22]]
+    """
+    filtered = []
+    for i in range(len(data) - 1):
+        if data[i][0] == data[i + 1][0]:  # Same timestamp
+            logger.debug("Duplicate timestamp in time series data: %s, %s", data[i], data[i + 1])
+            continue
+        filtered.append(data[i])
+    if not filtered:
+        return []
+    filtered.append(data[-1])
+    return filtered
+
+def _derivative(p1, p2):
+    """ Derivative between two time series data points
+
+    :param p1: Time series data [time in seconds, value]
+    :type p1: tuple[int, float]
+    :param p2: Time series data [time in seconds, value]
+    :type p2: tuple[int, float]
+
+    :return: Derivative between both points
+    :rtype: float
+
+    >>> _derivative([0, 0], [2, 1])
+    0.5
+    >>> _derivative([0, 1], [2, 0])
+    -0.5
+    >>> _derivative([0, 0], [3, 1])
+    0.3333333333333333
+    """
+    return (p2[1] - p1[1]) / float(p2[0] - p1[0])
+
+def _pairwise(iterable):
+    it = iter(iterable)
+    a = next(it, None)
+
+    for b in it:
+        yield (a, b)
+        a = b
+
+def to_pretty_timedelta(n):
+    if n < datetime.timedelta(seconds=120):
+        return str(n.seconds) + 's'
+    if n < datetime.timedelta(minutes=120):
+        return str(n.seconds // 60) + 'm'
+    if n < datetime.timedelta(hours=48):
+        return str(n.seconds // 3600) + 'h'
+    if n < datetime.timedelta(days=14):
+        return str(n.days) + 'd'
+    if n < datetime.timedelta(days=7*12):
+        return str(n.days // 7) + 'w'
+    if n < datetime.timedelta(days=365*2):
+        return str(n.days // 30) + 'M'
+    return str(n.days // 365) + 'y'

@@ -1,5 +1,5 @@
 // -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// vim: ts=8 sw=2 smarttab ft=cpp
 
 #ifndef CEPH_RGW_DATA_SYNC_H
 #define CEPH_RGW_DATA_SYNC_H
@@ -9,13 +9,52 @@
 #include "common/RWLock.h"
 #include "common/ceph_json.h"
 
-
 #include "rgw_coroutine.h"
 #include "rgw_http_client.h"
-#include "rgw_bucket.h"
+#include "rgw_sal.h"
 
 #include "rgw_sync_module.h"
 #include "rgw_sync_trace.h"
+#include "rgw_sync_policy.h"
+
+#include "rgw_bucket_sync.h"
+
+class JSONObj;
+struct rgw_sync_bucket_pipe;
+
+struct rgw_bucket_sync_pair_info {
+  RGWBucketSyncFlowManager::pipe_handler handler; /* responsible for sync filters */
+  rgw_bucket_shard source_bs;
+  rgw_bucket_shard dest_bs;
+};
+
+inline ostream& operator<<(ostream& out, const rgw_bucket_sync_pair_info& p) {
+  if (p.source_bs.bucket == p.dest_bs.bucket) {
+    return out << p.source_bs;
+  }
+
+  out << p.source_bs;
+
+  out << "->" << p.dest_bs.bucket;
+
+  return out;
+}
+
+struct rgw_bucket_sync_pipe {
+  rgw_bucket_sync_pair_info info;
+  RGWBucketInfo source_bucket_info;
+  map<string, bufferlist> source_bucket_attrs;
+  RGWBucketInfo dest_bucket_info;
+  map<string, bufferlist> dest_bucket_attrs;
+
+  RGWBucketSyncFlowManager::pipe_rules_ref& get_rules() {
+    return info.handler.rules;
+  }
+};
+
+inline ostream& operator<<(ostream& out, const rgw_bucket_sync_pipe& p) {
+  return out << p.info;
+}
 
 struct rgw_datalog_info {
   uint32_t num_shards;
@@ -232,36 +271,35 @@ struct rgw_bucket_entry_owner {
 
 class RGWSyncErrorLogger;
 class RGWRESTConn;
+class RGWServices;
 
 struct RGWDataSyncEnv {
   const DoutPrefixProvider *dpp{nullptr};
   CephContext *cct{nullptr};
-  RGWRados *store{nullptr};
-  RGWRESTConn *conn{nullptr};
+  rgw::sal::RGWRadosStore *store{nullptr};
+  RGWServices *svc{nullptr};
   RGWAsyncRadosProcessor *async_rados{nullptr};
   RGWHTTPManager *http_manager{nullptr};
   RGWSyncErrorLogger *error_logger{nullptr};
   RGWSyncTraceManager *sync_tracer{nullptr};
-  string source_zone;
   RGWSyncModuleInstanceRef sync_module{nullptr};
   PerfCounters* counters{nullptr};
 
   RGWDataSyncEnv() {}
 
-  void init(const DoutPrefixProvider *_dpp, CephContext *_cct, RGWRados *_store, RGWRESTConn *_conn,
+  void init(const DoutPrefixProvider *_dpp, CephContext *_cct, rgw::sal::RGWRadosStore *_store, RGWServices *_svc,
             RGWAsyncRadosProcessor *_async_rados, RGWHTTPManager *_http_manager,
             RGWSyncErrorLogger *_error_logger, RGWSyncTraceManager *_sync_tracer,
-            const string& _source_zone, RGWSyncModuleInstanceRef& _sync_module,
+            RGWSyncModuleInstanceRef& _sync_module,
             PerfCounters* _counters) {
-    dpp = _dpp;
+     dpp = _dpp;
     cct = _cct;
     store = _store;
-    conn = _conn;
+    svc = _svc;
     async_rados = _async_rados;
     http_manager = _http_manager;
     error_logger = _error_logger;
     sync_tracer = _sync_tracer;
-    source_zone = _source_zone;
     sync_module = _sync_module;
     counters = _counters;
   }
@@ -270,15 +308,38 @@ struct RGWDataSyncEnv {
   string status_oid();
 };
 
+struct RGWDataSyncCtx {
+  CephContext *cct{nullptr};
+  RGWDataSyncEnv *env{nullptr};
+
+  RGWRESTConn *conn{nullptr};
+  rgw_zone_id source_zone;
+
+  void init(RGWDataSyncEnv *_env,
+            RGWRESTConn *_conn,
+            const rgw_zone_id& _source_zone) {
+    cct = _env->cct;
+    env = _env;
+    conn = _conn;
+    source_zone = _source_zone;
+  }
+};
+
+class RGWRados;
+class RGWDataChangesLogInfo;
+
 class RGWRemoteDataLog : public RGWCoroutinesManager {
   const DoutPrefixProvider *dpp;
-  RGWRados *store;
+  rgw::sal::RGWRadosStore *store;
+  CephContext *cct;
+  RGWCoroutinesManagerRegistry *cr_registry;
   RGWAsyncRadosProcessor *async_rados;
   RGWHTTPManager http_manager;
 
   RGWDataSyncEnv sync_env;
+  RGWDataSyncCtx sc;
 
-  RWLock lock;
+  ceph::shared_mutex lock = ceph::make_shared_mutex("RGWRemoteDataLog::lock");
   RGWDataSyncControlCR *data_sync_cr;
 
   RGWSyncTraceNodeRef tn;
@@ -286,14 +347,10 @@ class RGWRemoteDataLog : public RGWCoroutinesManager {
   bool initialized;
 
 public:
-  RGWRemoteDataLog(const DoutPrefixProvider *dpp, RGWRados *_store,
-                   RGWAsyncRadosProcessor *async_rados)
-    : RGWCoroutinesManager(_store->ctx(), _store->get_cr_registry()),
-      dpp(dpp), store(_store), async_rados(async_rados),
-      http_manager(store->ctx(), completion_mgr),
-      lock("RGWRemoteDataLog::lock"), data_sync_cr(NULL),
-      initialized(false) {}
-  int init(const string& _source_zone, RGWRESTConn *_conn, RGWSyncErrorLogger *_error_logger,
+  RGWRemoteDataLog(const DoutPrefixProvider *dpp,
+                   rgw::sal::RGWRadosStore *_store,
+                   RGWAsyncRadosProcessor *async_rados);
+  int init(const rgw_zone_id& _source_zone, RGWRESTConn *_conn, RGWSyncErrorLogger *_error_logger,
            RGWSyncTraceManager *_sync_tracer, RGWSyncModuleInstanceRef& module,
            PerfCounters* _counters);
   void finish();
@@ -311,10 +368,9 @@ public:
 };
 
 class RGWDataSyncStatusManager : public DoutPrefixProvider {
-  RGWRados *store;
-  rgw_rados_ref ref;
+  rgw::sal::RGWRadosStore *store;
 
-  string source_zone;
+  rgw_zone_id source_zone;
   RGWRESTConn *conn;
   RGWSyncErrorLogger *error_logger;
   RGWSyncModuleInstanceRef sync_module;
@@ -330,13 +386,13 @@ class RGWDataSyncStatusManager : public DoutPrefixProvider {
   int num_shards;
 
 public:
-  RGWDataSyncStatusManager(RGWRados *_store, RGWAsyncRadosProcessor *async_rados,
-                           const string& _source_zone, PerfCounters* counters)
+  RGWDataSyncStatusManager(rgw::sal::RGWRadosStore *_store, RGWAsyncRadosProcessor *async_rados,
+                           const rgw_zone_id& _source_zone, PerfCounters* counters)
     : store(_store), source_zone(_source_zone), conn(NULL), error_logger(NULL),
       sync_module(nullptr), counters(counters),
       source_log(this, store, async_rados), num_shards(0) {}
-  RGWDataSyncStatusManager(RGWRados *_store, RGWAsyncRadosProcessor *async_rados,
-                           const string& _source_zone, PerfCounters* counters,
+  RGWDataSyncStatusManager(rgw::sal::RGWRadosStore *_store, RGWAsyncRadosProcessor *async_rados,
+                           const rgw_zone_id& _source_zone, PerfCounters* counters,
                            const RGWSyncModuleInstanceRef& _sync_module)
     : store(_store), source_zone(_source_zone), conn(NULL), error_logger(NULL),
       sync_module(_sync_module), counters(counters),
@@ -347,8 +403,8 @@ public:
   int init();
   void finalize();
 
-  static string shard_obj_name(const string& source_zone, int shard_id);
-  static string sync_status_oid(const string& source_zone);
+  static string shard_obj_name(const rgw_zone_id& source_zone, int shard_id);
+  static string sync_status_oid(const rgw_zone_id& source_zone);
 
   int read_sync_status(rgw_data_sync_status *sync_status) {
     return source_log.read_sync_status(sync_status);
@@ -381,12 +437,12 @@ public:
   }
 
   // implements DoutPrefixProvider
-  CephContext *get_cct() const override { return store->ctx(); }
+  CephContext *get_cct() const override;
   unsigned get_subsys() const override;
   std::ostream& gen_prefix(std::ostream& out) const override;
 };
 
-class RGWBucketSyncStatusManager;
+class RGWBucketPipeSyncStatusManager;
 class RGWBucketSyncCR;
 
 struct rgw_bucket_shard_full_sync_marker {
@@ -449,6 +505,7 @@ struct rgw_bucket_shard_sync_info {
     StateInit = 0,
     StateFullSync = 1,
     StateIncrementalSync = 2,
+    StateStopped = 3,
   };
 
   uint16_t state;
@@ -498,61 +555,62 @@ struct rgw_bucket_index_marker_info {
 };
 
 
-class RGWRemoteBucketLog : public RGWCoroutinesManager {
+class RGWRemoteBucketManager {
   const DoutPrefixProvider *dpp;
-  RGWRados *store;
+
+  RGWDataSyncEnv *sync_env;
+
   RGWRESTConn *conn{nullptr};
-  string source_zone;
-  rgw_bucket_shard bs;
+  rgw_zone_id source_zone;
 
-  RGWBucketSyncStatusManager *status_manager;
-  RGWAsyncRadosProcessor *async_rados;
-  RGWHTTPManager *http_manager;
+  vector<rgw_bucket_sync_pair_info> sync_pairs;
 
-  RGWDataSyncEnv sync_env;
+  RGWDataSyncCtx sc;
   rgw_bucket_shard_sync_info init_status;
 
   RGWBucketSyncCR *sync_cr{nullptr};
 
 public:
-  RGWRemoteBucketLog(const DoutPrefixProvider *_dpp, RGWRados *_store,
-                     RGWBucketSyncStatusManager *_sm,
-                     RGWAsyncRadosProcessor *_async_rados,
-                     RGWHTTPManager *_http_manager)
-    : RGWCoroutinesManager(_store->ctx(), _store->get_cr_registry()),
-      dpp(_dpp), store(_store), status_manager(_sm),
-      async_rados(_async_rados), http_manager(_http_manager)
-  {}
+  RGWRemoteBucketManager(const DoutPrefixProvider *_dpp,
+                     RGWDataSyncEnv *_sync_env,
+                     const rgw_zone_id& _source_zone, RGWRESTConn *_conn,
+                     const RGWBucketInfo& source_bucket_info,
+                     const rgw_bucket& dest_bucket);
 
-  int init(const string& _source_zone, RGWRESTConn *_conn,
-           const rgw_bucket& bucket, int shard_id,
-           RGWSyncErrorLogger *_error_logger,
-           RGWSyncTraceManager *_sync_tracer,
-           RGWSyncModuleInstanceRef& _sync_module);
-  void finish();
+  void init(const rgw_zone_id& _source_zone, RGWRESTConn *_conn,
+            const rgw_bucket& source_bucket, int shard_id,
+            const rgw_bucket& dest_bucket);
 
-  RGWCoroutine *read_sync_status_cr(rgw_bucket_shard_sync_info *sync_status);
-  RGWCoroutine *init_sync_status_cr();
-  RGWCoroutine *run_sync_cr();
+  RGWCoroutine *read_sync_status_cr(int num, rgw_bucket_shard_sync_info *sync_status);
+  RGWCoroutine *init_sync_status_cr(int num);
+  RGWCoroutine *run_sync_cr(int num);
+
+  int num_pipes() {
+    return sync_pairs.size();
+  }
 
   void wakeup();
 };
 
-class RGWBucketSyncStatusManager : public DoutPrefixProvider {
-  RGWRados *store;
+class RGWBucketPipeSyncStatusManager : public DoutPrefixProvider {
+  rgw::sal::RGWRadosStore *store;
+
+  RGWDataSyncEnv sync_env;
 
   RGWCoroutinesManager cr_mgr;
 
   RGWHTTPManager http_manager;
 
-  string source_zone;
+  std::optional<rgw_zone_id> source_zone;
+  std::optional<rgw_bucket> source_bucket;
+
   RGWRESTConn *conn;
   RGWSyncErrorLogger *error_logger;
   RGWSyncModuleInstanceRef sync_module;
 
-  rgw_bucket bucket;
+  rgw_bucket dest_bucket;
 
-  map<int, RGWRemoteBucketLog *> source_logs;
+  vector<RGWRemoteBucketManager *> source_mgrs;
 
   string source_status_oid;
   string source_shard_status_oid_prefix;
@@ -563,26 +621,24 @@ class RGWBucketSyncStatusManager : public DoutPrefixProvider {
   int num_shards;
 
 public:
-  RGWBucketSyncStatusManager(RGWRados *_store, const string& _source_zone,
-                             const rgw_bucket& bucket) : store(_store),
-                                                                                     cr_mgr(_store->ctx(), _store->get_cr_registry()),
-                                                                                     http_manager(store->ctx(), cr_mgr.get_completion_mgr()),
-                                                                                     source_zone(_source_zone),
-                                                                                     conn(NULL), error_logger(NULL),
-                                                                                     bucket(bucket),
-                                                                                     num_shards(0) {}
-  ~RGWBucketSyncStatusManager();
+  RGWBucketPipeSyncStatusManager(rgw::sal::RGWRadosStore *_store,
+                             std::optional<rgw_zone_id> _source_zone,
+                             std::optional<rgw_bucket> _source_bucket,
+                             const rgw_bucket& dest_bucket);
+  ~RGWBucketPipeSyncStatusManager();
 
   int init();
 
   map<int, rgw_bucket_shard_sync_info>& get_sync_status() { return sync_status; }
   int init_sync_status();
 
-  static string status_oid(const string& source_zone, const rgw_bucket_shard& bs);
-  static string obj_status_oid(const string& source_zone, const rgw_obj& obj); /* can be used by sync modules */
+  static string status_oid(const rgw_zone_id& source_zone, const rgw_bucket_sync_pair_info& bs);
+  static string obj_status_oid(const rgw_bucket_sync_pipe& sync_pipe,
+                               const rgw_zone_id& source_zone, const rgw_obj& obj); /* specific source obj sync status,
+                                                                                       can be used by sync modules */
 
   // implements DoutPrefixProvider
-  CephContext *get_cct() const override { return store->ctx(); }
+  CephContext *get_cct() const override;
   unsigned get_subsys() const override;
   std::ostream& gen_prefix(std::ostream& out) const override;
 
@@ -591,8 +647,11 @@ public:
 };
 
 /// read the sync status of all bucket shards from the given source zone
-int rgw_bucket_sync_status(const DoutPrefixProvider *dpp, RGWRados *store, const std::string& source_zone,
-                           const RGWBucketInfo& bucket_info,
+int rgw_bucket_sync_status(const DoutPrefixProvider *dpp,
+                           rgw::sal::RGWRadosStore *store,
+                           const rgw_sync_bucket_pipe& pipe,
+                           const RGWBucketInfo& dest_bucket_info,
+                           const RGWBucketInfo *psource_bucket_info,
                            std::vector<rgw_bucket_shard_sync_info> *status);
 
 class RGWDefaultSyncModule : public RGWSyncModule {
@@ -610,16 +669,5 @@ public:
   bool supports_data_export() override { return false; }
   int create_instance(CephContext *cct, const JSONFormattable& config, RGWSyncModuleInstanceRef *instance) override;
 };
-
-// DataLogTrimCR factory function
-extern RGWCoroutine* create_data_log_trim_cr(RGWRados *store,
-                                             RGWHTTPManager *http,
-                                             int num_shards, utime_t interval);
-
-// factory function for datalog trim via radosgw-admin
-RGWCoroutine* create_admin_data_log_trim_cr(RGWRados *store,
-                                            RGWHTTPManager *http,
-                                            int num_shards,
-                                            std::vector<std::string>& markers);
 
 #endif

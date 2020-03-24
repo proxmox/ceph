@@ -1,35 +1,6 @@
-/*
- * Copyright 2008-2010 Cisco Systems, Inc.  All rights reserved.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright 2008-2017 Cisco Systems, Inc.  All rights reserved.
  * Copyright 2007 Nuova Systems, Inc.  All rights reserved.
- *
- * Copyright (c) 2014, Cisco Systems, Inc.
- * All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- * 1. Redistributions of source code must retain the above copyright
- * notice, this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright
- * notice, this list of conditions and the following disclaimer in
- * the documentation and/or other materials provided with the
- * distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS
- * FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE
- * COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT,
- * INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
- * BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
- * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
- * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN
- * ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
- * POSSIBILITY OF SUCH DAMAGE.
- *
  */
 
 #include "vnic_dev.h"
@@ -52,7 +23,7 @@ int vnic_wq_alloc_ring(struct vnic_dev *vdev, struct vnic_wq *wq,
 	char res_name[NAME_MAX];
 	static int instance;
 
-	snprintf(res_name, sizeof(res_name), "%d-wq-%d", instance++, wq->index);
+	snprintf(res_name, sizeof(res_name), "%d-wq-%u", instance++, wq->index);
 	return vnic_dev_alloc_desc_ring(vdev, &wq->ring, desc_count, desc_size,
 		wq->socket_id, res_name);
 }
@@ -61,8 +32,8 @@ static int vnic_wq_alloc_bufs(struct vnic_wq *wq)
 {
 	unsigned int count = wq->ring.desc_count;
        /* Allocate the mbuf ring */
-	wq->bufs = (struct vnic_wq_buf *)rte_zmalloc_socket("wq->bufs",
-		    sizeof(struct vnic_wq_buf) * count,
+	wq->bufs = (struct rte_mbuf **)rte_zmalloc_socket("wq->bufs",
+		    sizeof(struct rte_mbuf *) * count,
 		    RTE_CACHE_LINE_SIZE, wq->socket_id);
 	wq->head_idx = 0;
 	wq->tail_idx = 0;
@@ -142,12 +113,8 @@ void vnic_wq_init(struct vnic_wq *wq, unsigned int cq_index,
 	vnic_wq_init_start(wq, cq_index, 0, 0,
 		error_interrupt_enable,
 		error_interrupt_offset);
+	wq->cq_pend = 0;
 	wq->last_completed_index = 0;
-}
-
-void vnic_wq_error_out(struct vnic_wq *wq, unsigned int error)
-{
-	iowrite32(error, &wq->ctrl->error_status);
 }
 
 unsigned int vnic_wq_error_status(struct vnic_wq *wq)
@@ -179,9 +146,9 @@ int vnic_wq_disable(struct vnic_wq *wq)
 }
 
 void vnic_wq_clean(struct vnic_wq *wq,
-		   void (*buf_clean)(struct vnic_wq_buf *buf))
+		   void (*buf_clean)(struct rte_mbuf **buf))
 {
-	struct vnic_wq_buf *buf;
+	struct rte_mbuf **buf;
 	unsigned int  to_clean = wq->tail_idx;
 
 	buf = &wq->bufs[to_clean];

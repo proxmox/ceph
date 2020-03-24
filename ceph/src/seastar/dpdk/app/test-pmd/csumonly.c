@@ -1,35 +1,6 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
- *   Copyright 2014 6WIND S.A.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2014 Intel Corporation.
+ * Copyright 2014 6WIND S.A.
  */
 
 #include <stdarg.h>
@@ -49,17 +20,14 @@
 #include <rte_cycles.h>
 #include <rte_memory.h>
 #include <rte_memcpy.h>
-#include <rte_memzone.h>
 #include <rte_launch.h>
 #include <rte_eal.h>
 #include <rte_per_lcore.h>
 #include <rte_lcore.h>
 #include <rte_atomic.h>
 #include <rte_branch_prediction.h>
-#include <rte_memory.h>
 #include <rte_mempool.h>
 #include <rte_mbuf.h>
-#include <rte_memcpy.h>
 #include <rte_interrupts.h>
 #include <rte_pci.h>
 #include <rte_ether.h>
@@ -71,6 +39,9 @@
 #include <rte_prefetch.h>
 #include <rte_string_fns.h>
 #include <rte_flow.h>
+#include <rte_gro.h>
+#include <rte_gso.h>
+
 #include "testpmd.h"
 
 #define IP_DEFTTL  64   /* from RFC 1340. */
@@ -78,9 +49,12 @@
 #define IP_HDRLEN  0x05 /* default IP header length == five 32-bits words. */
 #define IP_VHL_DEF (IP_VERSION | IP_HDRLEN)
 
-#define GRE_KEY_PRESENT 0x2000
-#define GRE_KEY_LEN     4
-#define GRE_SUPPORTED_FIELDS GRE_KEY_PRESENT
+#define GRE_CHECKSUM_PRESENT	0x8000
+#define GRE_KEY_PRESENT		0x2000
+#define GRE_SEQUENCE_PRESENT	0x1000
+#define GRE_EXT_LEN		4
+#define GRE_SUPPORTED_FIELDS	(GRE_CHECKSUM_PRESENT | GRE_KEY_PRESENT |\
+				 GRE_SEQUENCE_PRESENT)
 
 /* We cannot use rte_cpu_to_be_16() on a constant in a switch/case */
 #if RTE_BYTE_ORDER == RTE_LITTLE_ENDIAN
@@ -89,9 +63,12 @@
 #define _htons(x) (x)
 #endif
 
+uint16_t vxlan_gpe_udp_port = 4790;
+
 /* structure that caches offload info for the current packet */
 struct testpmd_offload_info {
 	uint16_t ethertype;
+	uint8_t gso_enable;
 	uint16_t l2_len;
 	uint16_t l3_len;
 	uint16_t l4_len;
@@ -134,7 +111,9 @@ parse_ipv4(struct ipv4_hdr *ipv4_hdr, struct testpmd_offload_info *info)
 	if (info->l4_proto == IPPROTO_TCP) {
 		tcp_hdr = (struct tcp_hdr *)((char *)ipv4_hdr + info->l3_len);
 		info->l4_len = (tcp_hdr->data_off & 0xf0) >> 2;
-	} else
+	} else if (info->l4_proto == IPPROTO_UDP)
+		info->l4_len = sizeof(struct udp_hdr);
+	else
 		info->l4_len = 0;
 }
 
@@ -151,7 +130,9 @@ parse_ipv6(struct ipv6_hdr *ipv6_hdr, struct testpmd_offload_info *info)
 	if (info->l4_proto == IPPROTO_TCP) {
 		tcp_hdr = (struct tcp_hdr *)((char *)ipv6_hdr + info->l3_len);
 		info->l4_len = (tcp_hdr->data_off & 0xf0) >> 2;
-	} else
+	} else if (info->l4_proto == IPPROTO_UDP)
+		info->l4_len = sizeof(struct udp_hdr);
+	else
 		info->l4_len = 0;
 }
 
@@ -222,6 +203,70 @@ parse_vxlan(struct udp_hdr *udp_hdr,
 	info->l2_len += ETHER_VXLAN_HLEN; /* add udp + vxlan */
 }
 
+/* Parse a vxlan-gpe header */
+static void
+parse_vxlan_gpe(struct udp_hdr *udp_hdr,
+	    struct testpmd_offload_info *info)
+{
+	struct ether_hdr *eth_hdr;
+	struct ipv4_hdr *ipv4_hdr;
+	struct ipv6_hdr *ipv6_hdr;
+	struct vxlan_gpe_hdr *vxlan_gpe_hdr;
+	uint8_t vxlan_gpe_len = sizeof(*vxlan_gpe_hdr);
+
+	/* Check udp destination port. */
+	if (udp_hdr->dst_port != _htons(vxlan_gpe_udp_port))
+		return;
+
+	vxlan_gpe_hdr = (struct vxlan_gpe_hdr *)((char *)udp_hdr +
+				sizeof(struct udp_hdr));
+
+	if (!vxlan_gpe_hdr->proto || vxlan_gpe_hdr->proto ==
+	    VXLAN_GPE_TYPE_IPV4) {
+		info->is_tunnel = 1;
+		info->outer_ethertype = info->ethertype;
+		info->outer_l2_len = info->l2_len;
+		info->outer_l3_len = info->l3_len;
+		info->outer_l4_proto = info->l4_proto;
+
+		ipv4_hdr = (struct ipv4_hdr *)((char *)vxlan_gpe_hdr +
+			   vxlan_gpe_len);
+
+		parse_ipv4(ipv4_hdr, info);
+		info->ethertype = _htons(ETHER_TYPE_IPv4);
+		info->l2_len = 0;
+
+	} else if (vxlan_gpe_hdr->proto == VXLAN_GPE_TYPE_IPV6) {
+		info->is_tunnel = 1;
+		info->outer_ethertype = info->ethertype;
+		info->outer_l2_len = info->l2_len;
+		info->outer_l3_len = info->l3_len;
+		info->outer_l4_proto = info->l4_proto;
+
+		ipv6_hdr = (struct ipv6_hdr *)((char *)vxlan_gpe_hdr +
+			   vxlan_gpe_len);
+
+		info->ethertype = _htons(ETHER_TYPE_IPv6);
+		parse_ipv6(ipv6_hdr, info);
+		info->l2_len = 0;
+
+	} else if (vxlan_gpe_hdr->proto == VXLAN_GPE_TYPE_ETH) {
+		info->is_tunnel = 1;
+		info->outer_ethertype = info->ethertype;
+		info->outer_l2_len = info->l2_len;
+		info->outer_l3_len = info->l3_len;
+		info->outer_l4_proto = info->l4_proto;
+
+		eth_hdr = (struct ether_hdr *)((char *)vxlan_gpe_hdr +
+			  vxlan_gpe_len);
+
+		parse_ethernet(eth_hdr, info);
+	} else
+		return;
+
+	info->l2_len += ETHER_VXLAN_GPE_HLEN;
+}
+
 /* Parse a gre header */
 static void
 parse_gre(struct simple_gre_hdr *gre_hdr, struct testpmd_offload_info *info)
@@ -231,14 +276,14 @@ parse_gre(struct simple_gre_hdr *gre_hdr, struct testpmd_offload_info *info)
 	struct ipv6_hdr *ipv6_hdr;
 	uint8_t gre_len = 0;
 
-	/* check which fields are supported */
-	if ((gre_hdr->flags & _htons(~GRE_SUPPORTED_FIELDS)) != 0)
-		return;
-
 	gre_len += sizeof(struct simple_gre_hdr);
 
 	if (gre_hdr->flags & _htons(GRE_KEY_PRESENT))
-		gre_len += GRE_KEY_LEN;
+		gre_len += GRE_EXT_LEN;
+	if (gre_hdr->flags & _htons(GRE_SEQUENCE_PRESENT))
+		gre_len += GRE_EXT_LEN;
+	if (gre_hdr->flags & _htons(GRE_CHECKSUM_PRESENT))
+		gre_len += GRE_EXT_LEN;
 
 	if (gre_hdr->proto == _htons(ETHER_TYPE_IPv4)) {
 		info->is_tunnel = 1;
@@ -315,7 +360,7 @@ parse_encap_ip(void *encap_ip, struct testpmd_offload_info *info)
  * depending on the testpmd command line configuration */
 static uint64_t
 process_inner_cksums(void *l3_hdr, const struct testpmd_offload_info *info,
-	uint16_t testpmd_ol_flags)
+	uint64_t tx_offloads)
 {
 	struct ipv4_hdr *ipv4_hdr = l3_hdr;
 	struct udp_hdr *udp_hdr;
@@ -346,7 +391,7 @@ process_inner_cksums(void *l3_hdr, const struct testpmd_offload_info *info,
 		if (info->l4_proto == IPPROTO_TCP && tso_segsz) {
 			ol_flags |= PKT_TX_IP_CKSUM;
 		} else {
-			if (testpmd_ol_flags & TESTPMD_TX_OFFLOAD_IP_CKSUM)
+			if (tx_offloads & DEV_TX_OFFLOAD_IPV4_CKSUM)
 				ol_flags |= PKT_TX_IP_CKSUM;
 			else
 				ipv4_hdr->hdr_checksum =
@@ -362,7 +407,7 @@ process_inner_cksums(void *l3_hdr, const struct testpmd_offload_info *info,
 		/* do not recalculate udp cksum if it was 0 */
 		if (udp_hdr->dgram_cksum != 0) {
 			udp_hdr->dgram_cksum = 0;
-			if (testpmd_ol_flags & TESTPMD_TX_OFFLOAD_UDP_CKSUM)
+			if (tx_offloads & DEV_TX_OFFLOAD_UDP_CKSUM)
 				ol_flags |= PKT_TX_UDP_CKSUM;
 			else {
 				udp_hdr->dgram_cksum =
@@ -370,24 +415,28 @@ process_inner_cksums(void *l3_hdr, const struct testpmd_offload_info *info,
 						info->ethertype);
 			}
 		}
+		if (info->gso_enable)
+			ol_flags |= PKT_TX_UDP_SEG;
 	} else if (info->l4_proto == IPPROTO_TCP) {
 		tcp_hdr = (struct tcp_hdr *)((char *)l3_hdr + info->l3_len);
 		tcp_hdr->cksum = 0;
 		if (tso_segsz)
 			ol_flags |= PKT_TX_TCP_SEG;
-		else if (testpmd_ol_flags & TESTPMD_TX_OFFLOAD_TCP_CKSUM)
+		else if (tx_offloads & DEV_TX_OFFLOAD_TCP_CKSUM)
 			ol_flags |= PKT_TX_TCP_CKSUM;
 		else {
 			tcp_hdr->cksum =
 				get_udptcp_checksum(l3_hdr, tcp_hdr,
 					info->ethertype);
 		}
+		if (info->gso_enable)
+			ol_flags |= PKT_TX_TCP_SEG;
 	} else if (info->l4_proto == IPPROTO_SCTP) {
 		sctp_hdr = (struct sctp_hdr *)((char *)l3_hdr + info->l3_len);
 		sctp_hdr->cksum = 0;
 		/* sctp payload must be a multiple of 4 to be
 		 * offloaded */
-		if ((testpmd_ol_flags & TESTPMD_TX_OFFLOAD_SCTP_CKSUM) &&
+		if ((tx_offloads & DEV_TX_OFFLOAD_SCTP_CKSUM) &&
 			((ipv4_hdr->total_length & 0x3) == 0)) {
 			ol_flags |= PKT_TX_SCTP_CKSUM;
 		} else {
@@ -402,7 +451,7 @@ process_inner_cksums(void *l3_hdr, const struct testpmd_offload_info *info,
 /* Calculate the checksum of outer header */
 static uint64_t
 process_outer_cksums(void *outer_l3_hdr, struct testpmd_offload_info *info,
-	uint16_t testpmd_ol_flags, int tso_enabled)
+	uint64_t tx_offloads, int tso_enabled)
 {
 	struct ipv4_hdr *ipv4_hdr = outer_l3_hdr;
 	struct ipv6_hdr *ipv6_hdr = outer_l3_hdr;
@@ -413,7 +462,7 @@ process_outer_cksums(void *outer_l3_hdr, struct testpmd_offload_info *info,
 		ipv4_hdr->hdr_checksum = 0;
 		ol_flags |= PKT_TX_OUTER_IPV4;
 
-		if (testpmd_ol_flags & TESTPMD_TX_OFFLOAD_OUTER_IP_CKSUM)
+		if (tx_offloads	& DEV_TX_OFFLOAD_OUTER_IPV4_CKSUM)
 			ol_flags |= PKT_TX_OUTER_IP_CKSUM;
 		else
 			ipv4_hdr->hdr_checksum = rte_ipv4_cksum(ipv4_hdr);
@@ -423,10 +472,15 @@ process_outer_cksums(void *outer_l3_hdr, struct testpmd_offload_info *info,
 	if (info->outer_l4_proto != IPPROTO_UDP)
 		return ol_flags;
 
+	/* Skip SW outer UDP checksum generation if HW supports it */
+	if (tx_offloads & DEV_TX_OFFLOAD_OUTER_UDP_CKSUM) {
+		ol_flags |= PKT_TX_OUTER_UDP_CKSUM;
+		return ol_flags;
+	}
+
 	udp_hdr = (struct udp_hdr *)((char *)outer_l3_hdr + info->outer_l3_len);
 
-	/* outer UDP checksum is done in software as we have no hardware
-	 * supporting it today, and no API for it. In the other side, for
+	/* outer UDP checksum is done in software. In the other side, for
 	 * UDP tunneling, like VXLAN or Geneve, outer UDP checksum can be
 	 * set to zero.
 	 *
@@ -521,7 +575,7 @@ mbuf_copy_split(const struct rte_mbuf *ms, struct rte_mbuf *md[],
 
 /*
  * Allocate a new mbuf with up to tx_pkt_nb_segs segments.
- * Copy packet contents and offload information into then new segmented mbuf.
+ * Copy packet contents and offload information into the new segmented mbuf.
  */
 static struct rte_mbuf *
 pkt_copy_split(const struct rte_mbuf *pkt)
@@ -560,7 +614,7 @@ pkt_copy_split(const struct rte_mbuf *pkt)
 	while (i != 0) {
 		p = rte_pktmbuf_alloc(mp);
 		if (p == NULL) {
-			RTE_LOG(ERR, USER1,
+			TESTPMD_LOG(ERR,
 				"failed to allocate %u-th of %u mbuf "
 				"from mempool: %s\n",
 				nb_seg - i, nb_seg, mp->name);
@@ -569,7 +623,7 @@ pkt_copy_split(const struct rte_mbuf *pkt)
 
 		md[--i] = p;
 		if (rte_pktmbuf_tailroom(md[i]) < seglen[i]) {
-			RTE_LOG(ERR, USER1, "mempool %s, %u-th segment: "
+			TESTPMD_LOG(ERR, "mempool %s, %u-th segment: "
 				"expected seglen: %u, "
 				"actual mbuf tailroom: %u\n",
 				mp->name, i, seglen[i],
@@ -582,7 +636,7 @@ pkt_copy_split(const struct rte_mbuf *pkt)
 	if (i == 0) {
 		rc = mbuf_copy_split(pkt, md, seglen, nb_seg);
 		if (rc < 0)
-			RTE_LOG(ERR, USER1,
+			TESTPMD_LOG(ERR,
 				"mbuf_copy_split for %p(len=%u, nb_seg=%u) "
 				"into %u segments failed with error code: %d\n",
 				pkt, pkt->pkt_len, pkt->nb_segs, nb_seg, rc);
@@ -614,6 +668,10 @@ pkt_copy_split(const struct rte_mbuf *pkt)
  *   Ether / (vlan) / IP|IP6 / UDP|TCP|SCTP .
  *   Ether / (vlan) / outer IP|IP6 / outer UDP / VxLAN / Ether / IP|IP6 /
  *           UDP|TCP|SCTP
+ *   Ether / (vlan) / outer IP|IP6 / outer UDP / VXLAN-GPE / Ether / IP|IP6 /
+ *           UDP|TCP|SCTP
+ *   Ether / (vlan) / outer IP|IP6 / outer UDP / VXLAN-GPE / IP|IP6 /
+ *           UDP|TCP|SCTP
  *   Ether / (vlan) / outer IP|IP6 / GRE / Ether / IP|IP6 / UDP|TCP|SCTP
  *   Ether / (vlan) / outer IP|IP6 / GRE / IP|IP6 / UDP|TCP|SCTP
  *   Ether / (vlan) / outer IP|IP6 / IP|IP6 / UDP|TCP|SCTP
@@ -628,20 +686,29 @@ static void
 pkt_burst_checksum_forward(struct fwd_stream *fs)
 {
 	struct rte_mbuf *pkts_burst[MAX_PKT_BURST];
+	struct rte_mbuf *gso_segments[GSO_MAX_PKT_BURST];
+	struct rte_gso_ctx *gso_ctx;
+	struct rte_mbuf **tx_pkts_burst;
 	struct rte_port *txp;
 	struct rte_mbuf *m, *p;
 	struct ether_hdr *eth_hdr;
 	void *l3_hdr = NULL, *outer_l3_hdr = NULL; /* can be IPv4 or IPv6 */
+	void **gro_ctx;
+	uint16_t gro_pkts_num;
+	uint8_t gro_enable;
 	uint16_t nb_rx;
 	uint16_t nb_tx;
 	uint16_t nb_prep;
 	uint16_t i;
 	uint64_t rx_ol_flags, tx_ol_flags;
-	uint16_t testpmd_ol_flags;
+	uint64_t tx_offloads;
 	uint32_t retry;
 	uint32_t rx_bad_ip_csum;
 	uint32_t rx_bad_l4_csum;
+	uint32_t rx_bad_outer_l4_csum;
 	struct testpmd_offload_info info;
+	uint16_t nb_segments = 0;
+	int ret;
 
 #ifdef RTE_TEST_PMD_RECORD_CORE_CYCLES
 	uint64_t start_tsc;
@@ -658,19 +725,22 @@ pkt_burst_checksum_forward(struct fwd_stream *fs)
 				 nb_pkt_per_burst);
 	if (unlikely(nb_rx == 0))
 		return;
-
 #ifdef RTE_TEST_PMD_RECORD_BURST_STATS
 	fs->rx_burst_stats.pkt_burst_spread[nb_rx]++;
 #endif
 	fs->rx_packets += nb_rx;
 	rx_bad_ip_csum = 0;
 	rx_bad_l4_csum = 0;
+	rx_bad_outer_l4_csum = 0;
+	gro_enable = gro_ports[fs->rx_port].enable;
 
 	txp = &ports[fs->tx_port];
-	testpmd_ol_flags = txp->tx_ol_flags;
+	tx_offloads = txp->dev_conf.txmode.offloads;
 	memset(&info, 0, sizeof(info));
 	info.tso_segsz = txp->tso_segsz;
 	info.tunnel_tso_segsz = txp->tunnel_tso_segsz;
+	if (gso_ports[fs->tx_port].enable)
+		info.gso_enable = 1;
 
 	for (i = 0; i < nb_rx; i++) {
 		if (likely(i < nb_rx - 1))
@@ -680,7 +750,8 @@ pkt_burst_checksum_forward(struct fwd_stream *fs)
 		m = pkts_burst[i];
 		info.is_tunnel = 0;
 		info.pkt_len = rte_pktmbuf_pkt_len(m);
-		tx_ol_flags = 0;
+		tx_ol_flags = m->ol_flags &
+			      (IND_ATTACHED_MBUF | EXT_ATTACHED_MBUF);
 		rx_ol_flags = m->ol_flags;
 
 		/* Update the L3/L4 checksum error packet statistics */
@@ -688,6 +759,8 @@ pkt_burst_checksum_forward(struct fwd_stream *fs)
 			rx_bad_ip_csum += 1;
 		if ((rx_ol_flags & PKT_RX_L4_CKSUM_MASK) == PKT_RX_L4_CKSUM_BAD)
 			rx_bad_l4_csum += 1;
+		if (rx_ol_flags & PKT_RX_OUTER_L4_CKSUM_BAD)
+			rx_bad_outer_l4_csum += 1;
 
 		/* step 1: dissect packet, parsing optional vlan, ip4/ip6, vxlan
 		 * and inner headers */
@@ -701,15 +774,22 @@ pkt_burst_checksum_forward(struct fwd_stream *fs)
 		l3_hdr = (char *)eth_hdr + info.l2_len;
 
 		/* check if it's a supported tunnel */
-		if (testpmd_ol_flags & TESTPMD_TX_OFFLOAD_PARSE_TUNNEL) {
+		if (txp->parse_tunnel) {
 			if (info.l4_proto == IPPROTO_UDP) {
 				struct udp_hdr *udp_hdr;
 
 				udp_hdr = (struct udp_hdr *)((char *)l3_hdr +
 					info.l3_len);
-				parse_vxlan(udp_hdr, &info, m->packet_type);
-				if (info.is_tunnel)
-					tx_ol_flags |= PKT_TX_TUNNEL_VXLAN;
+				parse_vxlan_gpe(udp_hdr, &info);
+				if (info.is_tunnel) {
+					tx_ol_flags |= PKT_TX_TUNNEL_VXLAN_GPE;
+				} else {
+					parse_vxlan(udp_hdr, &info,
+						    m->packet_type);
+					if (info.is_tunnel)
+						tx_ol_flags |=
+							PKT_TX_TUNNEL_VXLAN;
+				}
 			} else if (info.l4_proto == IPPROTO_GRE) {
 				struct simple_gre_hdr *gre_hdr;
 
@@ -741,23 +821,26 @@ pkt_burst_checksum_forward(struct fwd_stream *fs)
 
 		/* process checksums of inner headers first */
 		tx_ol_flags |= process_inner_cksums(l3_hdr, &info,
-			testpmd_ol_flags);
+			tx_offloads);
 
 		/* Then process outer headers if any. Note that the software
 		 * checksum will be wrong if one of the inner checksums is
 		 * processed in hardware. */
 		if (info.is_tunnel == 1) {
 			tx_ol_flags |= process_outer_cksums(outer_l3_hdr, &info,
-					testpmd_ol_flags,
+					tx_offloads,
 					!!(tx_ol_flags & PKT_TX_TCP_SEG));
 		}
 
 		/* step 3: fill the mbuf meta data (flags and header lengths) */
 
+		m->tx_offload = 0;
 		if (info.is_tunnel == 1) {
 			if (info.tunnel_tso_segsz ||
-			    (testpmd_ol_flags &
-			    TESTPMD_TX_OFFLOAD_OUTER_IP_CKSUM) ||
+			    (tx_offloads &
+			     DEV_TX_OFFLOAD_OUTER_IPV4_CKSUM) ||
+			    (tx_offloads &
+			     DEV_TX_OFFLOAD_OUTER_UDP_CKSUM) ||
 			    (tx_ol_flags & PKT_TX_OUTER_IPV6)) {
 				m->outer_l2_len = info.outer_l2_len;
 				m->outer_l3_len = info.outer_l3_len;
@@ -819,17 +902,19 @@ pkt_burst_checksum_forward(struct fwd_stream *fs)
 					rte_be_to_cpu_16(info.outer_ethertype),
 					info.outer_l3_len);
 			/* dump tx packet info */
-			if ((testpmd_ol_flags & (TESTPMD_TX_OFFLOAD_IP_CKSUM |
-						TESTPMD_TX_OFFLOAD_UDP_CKSUM |
-						TESTPMD_TX_OFFLOAD_TCP_CKSUM |
-						TESTPMD_TX_OFFLOAD_SCTP_CKSUM)) ||
+			if ((tx_offloads & (DEV_TX_OFFLOAD_IPV4_CKSUM |
+					    DEV_TX_OFFLOAD_UDP_CKSUM |
+					    DEV_TX_OFFLOAD_TCP_CKSUM |
+					    DEV_TX_OFFLOAD_SCTP_CKSUM)) ||
 				info.tso_segsz != 0)
 				printf("tx: m->l2_len=%d m->l3_len=%d "
 					"m->l4_len=%d\n",
 					m->l2_len, m->l3_len, m->l4_len);
 			if (info.is_tunnel == 1) {
-				if ((testpmd_ol_flags &
-				    TESTPMD_TX_OFFLOAD_OUTER_IP_CKSUM) ||
+				if ((tx_offloads &
+				    DEV_TX_OFFLOAD_OUTER_IPV4_CKSUM) ||
+				    (tx_offloads &
+				    DEV_TX_OFFLOAD_OUTER_UDP_CKSUM) ||
 				    (tx_ol_flags & PKT_TX_OUTER_IPV6))
 					printf("tx: m->outer_l2_len=%d "
 						"m->outer_l3_len=%d\n",
@@ -848,13 +933,56 @@ pkt_burst_checksum_forward(struct fwd_stream *fs)
 		}
 	}
 
+	if (unlikely(gro_enable)) {
+		if (gro_flush_cycles == GRO_DEFAULT_FLUSH_CYCLES) {
+			nb_rx = rte_gro_reassemble_burst(pkts_burst, nb_rx,
+					&(gro_ports[fs->rx_port].param));
+		} else {
+			gro_ctx = current_fwd_lcore()->gro_ctx;
+			nb_rx = rte_gro_reassemble(pkts_burst, nb_rx, gro_ctx);
+
+			if (++fs->gro_times >= gro_flush_cycles) {
+				gro_pkts_num = rte_gro_get_pkt_count(gro_ctx);
+				if (gro_pkts_num > MAX_PKT_BURST - nb_rx)
+					gro_pkts_num = MAX_PKT_BURST - nb_rx;
+
+				nb_rx += rte_gro_timeout_flush(gro_ctx, 0,
+						RTE_GRO_TCP_IPV4,
+						&pkts_burst[nb_rx],
+						gro_pkts_num);
+				fs->gro_times = 0;
+			}
+		}
+	}
+
+	if (gso_ports[fs->tx_port].enable == 0)
+		tx_pkts_burst = pkts_burst;
+	else {
+		gso_ctx = &(current_fwd_lcore()->gso_ctx);
+		gso_ctx->gso_size = gso_max_segment_size;
+		for (i = 0; i < nb_rx; i++) {
+			ret = rte_gso_segment(pkts_burst[i], gso_ctx,
+					&gso_segments[nb_segments],
+					GSO_MAX_PKT_BURST - nb_segments);
+			if (ret >= 0)
+				nb_segments += ret;
+			else {
+				TESTPMD_LOG(DEBUG, "Unable to segment packet");
+				rte_pktmbuf_free(pkts_burst[i]);
+			}
+		}
+
+		tx_pkts_burst = gso_segments;
+		nb_rx = nb_segments;
+	}
+
 	nb_prep = rte_eth_tx_prepare(fs->tx_port, fs->tx_queue,
-			pkts_burst, nb_rx);
+			tx_pkts_burst, nb_rx);
 	if (nb_prep != nb_rx)
 		printf("Preparing packet burst to transmit failed: %s\n",
 				rte_strerror(rte_errno));
 
-	nb_tx = rte_eth_tx_burst(fs->tx_port, fs->tx_queue, pkts_burst,
+	nb_tx = rte_eth_tx_burst(fs->tx_port, fs->tx_queue, tx_pkts_burst,
 			nb_prep);
 
 	/*
@@ -865,12 +993,13 @@ pkt_burst_checksum_forward(struct fwd_stream *fs)
 		while (nb_tx < nb_rx && retry++ < burst_tx_retry_num) {
 			rte_delay_us(burst_tx_delay_time);
 			nb_tx += rte_eth_tx_burst(fs->tx_port, fs->tx_queue,
-					&pkts_burst[nb_tx], nb_rx - nb_tx);
+					&tx_pkts_burst[nb_tx], nb_rx - nb_tx);
 		}
 	}
 	fs->tx_packets += nb_tx;
 	fs->rx_bad_ip_csum += rx_bad_ip_csum;
 	fs->rx_bad_l4_csum += rx_bad_l4_csum;
+	fs->rx_bad_outer_l4_csum += rx_bad_outer_l4_csum;
 
 #ifdef RTE_TEST_PMD_RECORD_BURST_STATS
 	fs->tx_burst_stats.pkt_burst_spread[nb_tx]++;
@@ -878,9 +1007,10 @@ pkt_burst_checksum_forward(struct fwd_stream *fs)
 	if (unlikely(nb_tx < nb_rx)) {
 		fs->fwd_dropped += (nb_rx - nb_tx);
 		do {
-			rte_pktmbuf_free(pkts_burst[nb_tx]);
+			rte_pktmbuf_free(tx_pkts_burst[nb_tx]);
 		} while (++nb_tx < nb_rx);
 	}
+
 #ifdef RTE_TEST_PMD_RECORD_CORE_CYCLES
 	end_tsc = rte_rdtsc();
 	core_cycles = (end_tsc - start_tsc);

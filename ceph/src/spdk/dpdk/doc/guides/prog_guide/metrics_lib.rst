@@ -25,7 +25,7 @@ individual device. Since the metrics library is self-contained, the only
 restriction on port numbers is that they are less than ``RTE_MAX_ETHPORTS``
 - there is no requirement for the ports to actually exist.
 
-Initialising the library
+Initializing the library
 ------------------------
 
 Before the library can be used, it has to be initialized by calling
@@ -271,3 +271,12 @@ de-initialise the latency library.
 .. code-block:: c
 
     rte_latencystats_uninit();
+
+Timestamp and latency calculation
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The Latency stats library marks the time in the timestamp field of the
+mbuf for the ingress packets and sets the ``PKT_RX_TIMESTAMP`` flag of
+``ol_flags`` for the mbuf to indicate the marked time as a valid one.
+At the egress, the mbufs with the flag set are considered having valid
+timestamp and are used for the latency calculation.

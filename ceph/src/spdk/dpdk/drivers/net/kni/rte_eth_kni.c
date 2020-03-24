@@ -6,6 +6,7 @@
 #include <pthread.h>
 #include <unistd.h>
 
+#include <rte_string_fns.h>
 #include <rte_ethdev_driver.h>
 #include <rte_ethdev_vdev.h>
 #include <rte_kni.h>
@@ -16,8 +17,10 @@
 /* Only single queue supported */
 #define KNI_MAX_QUEUE_PER_PORT 1
 
-#define MAX_PACKET_SZ 2048
 #define MAX_KNI_PORTS 8
+
+#define KNI_ETHER_MTU(mbuf_size)       \
+	((mbuf_size) - ETHER_HDR_LEN) /**< Ethernet MTU. */
 
 #define ETH_KNI_NO_REQUEST_THREAD_ARG	"no_request_thread"
 static const char * const valid_arguments[] = {
@@ -123,11 +126,13 @@ eth_kni_start(struct rte_eth_dev *dev)
 	struct rte_kni_conf conf;
 	const char *name = dev->device->name + 4; /* remove net_ */
 
-	snprintf(conf.name, RTE_KNI_NAMESIZE, "%s", name);
+	mb_pool = internals->rx_queues[0].mb_pool;
+	strlcpy(conf.name, name, RTE_KNI_NAMESIZE);
 	conf.force_bind = 0;
 	conf.group_id = port_id;
-	conf.mbuf_size = MAX_PACKET_SZ;
-	mb_pool = internals->rx_queues[0].mb_pool;
+	conf.mbuf_size =
+		rte_pktmbuf_data_room_size(mb_pool) - RTE_PKTMBUF_HEADROOM;
+	conf.mtu = KNI_ETHER_MTU(conf.mbuf_size);
 
 	internals->kni = rte_kni_alloc(mb_pool, &conf, NULL);
 	if (internals->kni == NULL) {
@@ -207,7 +212,6 @@ eth_kni_dev_info(struct rte_eth_dev *dev __rte_unused,
 	dev_info->max_rx_queues = KNI_MAX_QUEUE_PER_PORT;
 	dev_info->max_tx_queues = KNI_MAX_QUEUE_PER_PORT;
 	dev_info->min_rx_bufsize = 0;
-	dev_info->rx_offload_capa = DEV_RX_OFFLOAD_CRC_STRIP;
 }
 
 static int
@@ -411,8 +415,7 @@ eth_kni_probe(struct rte_vdev_device *vdev)
 	params = rte_vdev_device_args(vdev);
 	PMD_LOG(INFO, "Initializing eth_kni for %s", name);
 
-	if (rte_eal_process_type() == RTE_PROC_SECONDARY &&
-	    strlen(params) == 0) {
+	if (rte_eal_process_type() == RTE_PROC_SECONDARY) {
 		eth_dev = rte_eth_dev_attach_secondary(name);
 		if (!eth_dev) {
 			PMD_LOG(ERR, "Failed to probe %s", name);
@@ -456,6 +459,7 @@ eth_kni_remove(struct rte_vdev_device *vdev)
 	struct rte_eth_dev *eth_dev;
 	struct pmd_internals *internals;
 	const char *name;
+	int ret;
 
 	name = rte_vdev_device_name(vdev);
 	PMD_LOG(INFO, "Un-Initializing eth_kni for %s", name);
@@ -465,12 +469,18 @@ eth_kni_remove(struct rte_vdev_device *vdev)
 	if (eth_dev == NULL)
 		return -1;
 
+	/* mac_addrs must not be freed alone because part of dev_private */
+	eth_dev->data->mac_addrs = NULL;
+
+	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
+		return rte_eth_dev_release_port(eth_dev);
+
 	eth_kni_dev_stop(eth_dev);
 
 	internals = eth_dev->data->dev_private;
-	rte_kni_release(internals->kni);
-
-	rte_free(internals);
+	ret = rte_kni_release(internals->kni);
+	if (ret)
+		PMD_LOG(WARNING, "Not able to release kni for %s", name);
 
 	rte_eth_dev_release_port(eth_dev);
 

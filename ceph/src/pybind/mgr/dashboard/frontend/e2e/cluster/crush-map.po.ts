@@ -1,7 +1,14 @@
-import { browser } from 'protractor';
+import { $, $$ } from 'protractor';
+import { PageHelper } from '../page-helper.po';
 
-export class CrushMapPage {
-  navigateTo() {
-    return browser.get('/#/crush-map');
+export class CrushMapPageHelper extends PageHelper {
+  pages = { index: '/#/crush-map' };
+
+  getPageTitle() {
+    return $('cd-crushmap .card-header').getText();
+  }
+
+  getCrushNode(idx: number) {
+    return $$('.node-name.type-osd').get(idx);
   }
 }

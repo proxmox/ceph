@@ -1,33 +1,5 @@
-#   BSD LICENSE
-#
-#   Copyright(c) 2010-2017 Intel Corporation. All rights reserved.
-#   All rights reserved.
-#
-#   Redistribution and use in source and binary forms, with or without
-#   modification, are permitted provided that the following conditions
-#   are met:
-#
-#     * Redistributions of source code must retain the above copyright
-#       notice, this list of conditions and the following disclaimer.
-#     * Redistributions in binary form must reproduce the above copyright
-#       notice, this list of conditions and the following disclaimer in
-#       the documentation and/or other materials provided with the
-#       distribution.
-#     * Neither the name of Intel Corporation nor the names of its
-#       contributors may be used to endorse or promote products derived
-#       from this software without specific prior written permission.
-#
-#   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-#   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-#   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-#   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-#   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-#   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-#   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-#   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-#   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-#   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-#   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+# SPDX-License-Identifier: BSD-3-Clause
+# Copyright(c) 2010-2017 Intel Corporation
 
 include $(RTE_SDK)/mk/rte.vars.mk
 
@@ -39,17 +11,22 @@ LIB = librte_pmd_i40e.a
 CFLAGS += -O3
 CFLAGS += $(WERROR_FLAGS) -DPF_DRIVER -DVF_DRIVER -DINTEGRATED_VF
 CFLAGS += -DX722_A0_SUPPORT
+CFLAGS += -DALLOW_EXPERIMENTAL_API
+
+LDLIBS += -lrte_eal -lrte_mbuf -lrte_mempool -lrte_ring
+LDLIBS += -lrte_ethdev -lrte_net -lrte_kvargs -lrte_hash
+LDLIBS += -lrte_bus_pci
 
 EXPORT_MAP := rte_pmd_i40e_version.map
 
-LIBABIVER := 1
+LIBABIVER := 2
 
 #
 # Add extra flags for base driver files (also known as shared code)
 # to disable warnings
 #
 ifeq ($(CONFIG_RTE_TOOLCHAIN_ICC),y)
-CFLAGS_BASE_DRIVER = -wd593 -wd188
+CFLAGS_BASE_DRIVER = -diag-disable 593
 else ifeq ($(CONFIG_RTE_TOOLCHAIN_CLANG),y)
 CFLAGS_BASE_DRIVER += -Wno-sign-compare
 CFLAGS_BASE_DRIVER += -Wno-unused-value
@@ -78,7 +55,7 @@ endif
 
 CFLAGS_i40e_lan_hmc.o += -Wno-error
 endif
-OBJS_BASE_DRIVER=$(patsubst %.c,%.o,$(notdir $(wildcard $(SRCDIR)/base/*.c)))
+OBJS_BASE_DRIVER=$(sort $(patsubst %.c,%.o,$(notdir $(wildcard $(SRCDIR)/base/*.c))))
 $(foreach obj, $(OBJS_BASE_DRIVER), $(eval CFLAGS_$(obj)+=$(CFLAGS_BASE_DRIVER)))
 
 VPATH += $(SRCDIR)/base
@@ -109,10 +86,26 @@ SRCS-$(CONFIG_RTE_LIBRTE_I40E_PMD) += i40e_pf.c
 SRCS-$(CONFIG_RTE_LIBRTE_I40E_PMD) += i40e_fdir.c
 SRCS-$(CONFIG_RTE_LIBRTE_I40E_PMD) += i40e_flow.c
 SRCS-$(CONFIG_RTE_LIBRTE_I40E_PMD) += rte_pmd_i40e.c
+SRCS-$(CONFIG_RTE_LIBRTE_I40E_PMD) += i40e_tm.c
+SRCS-$(CONFIG_RTE_LIBRTE_I40E_PMD) += i40e_vf_representor.c
 
-# vector PMD driver needs SSE4.1 support
-ifeq ($(findstring RTE_MACHINE_CPUFLAG_SSE4_1,$(CFLAGS)),)
-CFLAGS_i40e_rxtx_vec_sse.o += -msse4.1
+ifeq ($(findstring RTE_MACHINE_CPUFLAG_AVX2,$(CFLAGS)),RTE_MACHINE_CPUFLAG_AVX2)
+	CC_AVX2_SUPPORT=1
+else
+	CC_AVX2_SUPPORT=\
+	$(shell $(CC) -march=core-avx2 -dM -E - </dev/null 2>&1 | \
+	grep -q AVX2 && echo 1)
+	ifeq ($(CC_AVX2_SUPPORT), 1)
+		ifeq ($(CONFIG_RTE_TOOLCHAIN_ICC),y)
+			CFLAGS_i40e_rxtx_vec_avx2.o += -march=core-avx2
+		else
+			CFLAGS_i40e_rxtx_vec_avx2.o += -mavx2
+		endif
+	endif
+endif
+
+ifeq ($(CC_AVX2_SUPPORT), 1)
+	SRCS-$(CONFIG_RTE_LIBRTE_I40E_INC_VECTOR) += i40e_rxtx_vec_avx2.c
 endif
 
 # install this header file

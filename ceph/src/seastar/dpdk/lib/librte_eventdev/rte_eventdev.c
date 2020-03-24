@@ -1,33 +1,5 @@
-/*
- *   BSD LICENSE
- *
- *   Copyright(c) 2016 Cavium networks. All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Cavium networks nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2016 Cavium, Inc
  */
 
 #include <ctype.h>
@@ -41,11 +13,11 @@
 #include <sys/types.h>
 #include <sys/queue.h>
 
+#include <rte_string_fns.h>
 #include <rte_byteorder.h>
 #include <rte_log.h>
 #include <rte_debug.h>
 #include <rte_dev.h>
-#include <rte_pci.h>
 #include <rte_memory.h>
 #include <rte_memcpy.h>
 #include <rte_memzone.h>
@@ -57,42 +29,48 @@
 #include <rte_common.h>
 #include <rte_malloc.h>
 #include <rte_errno.h>
+#include <rte_ethdev.h>
+#include <rte_cryptodev.h>
+#include <rte_cryptodev_pmd.h>
 
 #include "rte_eventdev.h"
 #include "rte_eventdev_pmd.h"
 
-struct rte_eventdev rte_event_devices[RTE_EVENT_MAX_DEVS];
+static struct rte_eventdev rte_event_devices[RTE_EVENT_MAX_DEVS];
 
-struct rte_eventdev *rte_eventdevs = &rte_event_devices[0];
+struct rte_eventdev *rte_eventdevs = rte_event_devices;
 
 static struct rte_eventdev_global eventdev_globals = {
 	.nb_devs		= 0
 };
-
-struct rte_eventdev_global *rte_eventdev_globals = &eventdev_globals;
 
 /* Event dev north bound API implementation */
 
 uint8_t
 rte_event_dev_count(void)
 {
-	return rte_eventdev_globals->nb_devs;
+	return eventdev_globals.nb_devs;
 }
 
 int
 rte_event_dev_get_dev_id(const char *name)
 {
 	int i;
+	uint8_t cmp;
 
 	if (!name)
 		return -EINVAL;
 
-	for (i = 0; i < rte_eventdev_globals->nb_devs; i++)
-		if ((strcmp(rte_event_devices[i].data->name, name)
-				== 0) &&
-				(rte_event_devices[i].attached ==
-						RTE_EVENTDEV_ATTACHED))
+	for (i = 0; i < eventdev_globals.nb_devs; i++) {
+		cmp = (strncmp(rte_event_devices[i].data->name, name,
+				RTE_EVENTDEV_NAME_MAX_LEN) == 0) ||
+			(rte_event_devices[i].dev ? (strncmp(
+				rte_event_devices[i].dev->driver->name, name,
+					 RTE_EVENTDEV_NAME_MAX_LEN) == 0) : 0);
+		if (cmp && (rte_event_devices[i].attached ==
+					RTE_EVENTDEV_ATTACHED))
 			return i;
+	}
 	return -ENODEV;
 }
 
@@ -126,60 +104,150 @@ rte_event_dev_info_get(uint8_t dev_id, struct rte_event_dev_info *dev_info)
 	dev_info->dequeue_timeout_ns = dev->data->dev_conf.dequeue_timeout_ns;
 
 	dev_info->dev = dev->dev;
-	if (dev->driver)
-		dev_info->driver_name = dev->driver->pci_drv.driver.name;
 	return 0;
+}
+
+int
+rte_event_eth_rx_adapter_caps_get(uint8_t dev_id, uint16_t eth_port_id,
+				uint32_t *caps)
+{
+	struct rte_eventdev *dev;
+
+	RTE_EVENTDEV_VALID_DEVID_OR_ERR_RET(dev_id, -EINVAL);
+	RTE_ETH_VALID_PORTID_OR_ERR_RET(eth_port_id, -EINVAL);
+
+	dev = &rte_eventdevs[dev_id];
+
+	if (caps == NULL)
+		return -EINVAL;
+	*caps = 0;
+
+	return dev->dev_ops->eth_rx_adapter_caps_get ?
+				(*dev->dev_ops->eth_rx_adapter_caps_get)(dev,
+						&rte_eth_devices[eth_port_id],
+						caps)
+				: 0;
+}
+
+int
+rte_event_timer_adapter_caps_get(uint8_t dev_id, uint32_t *caps)
+{
+	struct rte_eventdev *dev;
+	const struct rte_event_timer_adapter_ops *ops;
+
+	RTE_EVENTDEV_VALID_DEVID_OR_ERR_RET(dev_id, -EINVAL);
+
+	dev = &rte_eventdevs[dev_id];
+
+	if (caps == NULL)
+		return -EINVAL;
+	*caps = 0;
+
+	return dev->dev_ops->timer_adapter_caps_get ?
+				(*dev->dev_ops->timer_adapter_caps_get)(dev,
+									0,
+									caps,
+									&ops)
+				: 0;
+}
+
+int
+rte_event_crypto_adapter_caps_get(uint8_t dev_id, uint8_t cdev_id,
+				  uint32_t *caps)
+{
+	struct rte_eventdev *dev;
+	struct rte_cryptodev *cdev;
+
+	RTE_EVENTDEV_VALID_DEVID_OR_ERR_RET(dev_id, -EINVAL);
+	if (!rte_cryptodev_pmd_is_valid_dev(cdev_id))
+		return -EINVAL;
+
+	dev = &rte_eventdevs[dev_id];
+	cdev = rte_cryptodev_pmd_get_dev(cdev_id);
+
+	if (caps == NULL)
+		return -EINVAL;
+	*caps = 0;
+
+	return dev->dev_ops->crypto_adapter_caps_get ?
+		(*dev->dev_ops->crypto_adapter_caps_get)
+		(dev, cdev, caps) : -ENOTSUP;
+}
+
+int
+rte_event_eth_tx_adapter_caps_get(uint8_t dev_id, uint16_t eth_port_id,
+				uint32_t *caps)
+{
+	struct rte_eventdev *dev;
+	struct rte_eth_dev *eth_dev;
+
+	RTE_EVENTDEV_VALID_DEVID_OR_ERR_RET(dev_id, -EINVAL);
+	RTE_ETH_VALID_PORTID_OR_ERR_RET(eth_port_id, -EINVAL);
+
+	dev = &rte_eventdevs[dev_id];
+	eth_dev = &rte_eth_devices[eth_port_id];
+
+	if (caps == NULL)
+		return -EINVAL;
+
+	*caps = 0;
+
+	return dev->dev_ops->eth_tx_adapter_caps_get ?
+			(*dev->dev_ops->eth_tx_adapter_caps_get)(dev,
+								eth_dev,
+								caps)
+			: 0;
 }
 
 static inline int
 rte_event_dev_queue_config(struct rte_eventdev *dev, uint8_t nb_queues)
 {
 	uint8_t old_nb_queues = dev->data->nb_queues;
-	uint8_t *queues_prio;
+	struct rte_event_queue_conf *queues_cfg;
 	unsigned int i;
 
 	RTE_EDEV_LOG_DEBUG("Setup %d queues on device %u", nb_queues,
 			 dev->data->dev_id);
 
 	/* First time configuration */
-	if (dev->data->queues_prio == NULL && nb_queues != 0) {
-		/* Allocate memory to store queue priority */
-		dev->data->queues_prio = rte_zmalloc_socket(
-				"eventdev->data->queues_prio",
-				sizeof(dev->data->queues_prio[0]) * nb_queues,
+	if (dev->data->queues_cfg == NULL && nb_queues != 0) {
+		/* Allocate memory to store queue configuration */
+		dev->data->queues_cfg = rte_zmalloc_socket(
+				"eventdev->data->queues_cfg",
+				sizeof(dev->data->queues_cfg[0]) * nb_queues,
 				RTE_CACHE_LINE_SIZE, dev->data->socket_id);
-		if (dev->data->queues_prio == NULL) {
+		if (dev->data->queues_cfg == NULL) {
 			dev->data->nb_queues = 0;
-			RTE_EDEV_LOG_ERR("failed to get mem for queue priority,"
+			RTE_EDEV_LOG_ERR("failed to get mem for queue cfg,"
 					"nb_queues %u", nb_queues);
 			return -(ENOMEM);
 		}
 	/* Re-configure */
-	} else if (dev->data->queues_prio != NULL && nb_queues != 0) {
+	} else if (dev->data->queues_cfg != NULL && nb_queues != 0) {
 		RTE_FUNC_PTR_OR_ERR_RET(*dev->dev_ops->queue_release, -ENOTSUP);
 
 		for (i = nb_queues; i < old_nb_queues; i++)
 			(*dev->dev_ops->queue_release)(dev, i);
 
-		/* Re allocate memory to store queue priority */
-		queues_prio = dev->data->queues_prio;
-		queues_prio = rte_realloc(queues_prio,
-				sizeof(queues_prio[0]) * nb_queues,
+		/* Re allocate memory to store queue configuration */
+		queues_cfg = dev->data->queues_cfg;
+		queues_cfg = rte_realloc(queues_cfg,
+				sizeof(queues_cfg[0]) * nb_queues,
 				RTE_CACHE_LINE_SIZE);
-		if (queues_prio == NULL) {
-			RTE_EDEV_LOG_ERR("failed to realloc queue priority,"
+		if (queues_cfg == NULL) {
+			RTE_EDEV_LOG_ERR("failed to realloc queue cfg memory,"
 						" nb_queues %u", nb_queues);
 			return -(ENOMEM);
 		}
-		dev->data->queues_prio = queues_prio;
+		dev->data->queues_cfg = queues_cfg;
 
 		if (nb_queues > old_nb_queues) {
 			uint8_t new_qs = nb_queues - old_nb_queues;
 
-			memset(queues_prio + old_nb_queues, 0,
-				sizeof(queues_prio[0]) * new_qs);
+			memset(queues_cfg + old_nb_queues, 0,
+				sizeof(queues_cfg[0]) * new_qs);
 		}
-	} else if (dev->data->queues_prio != NULL && nb_queues == 0) {
+	} else if (dev->data->queues_cfg != NULL && nb_queues == 0) {
 		RTE_FUNC_PTR_OR_ERR_RET(*dev->dev_ops->queue_release, -ENOTSUP);
 
 		for (i = nb_queues; i < old_nb_queues; i++)
@@ -198,8 +266,7 @@ rte_event_dev_port_config(struct rte_eventdev *dev, uint8_t nb_ports)
 	uint8_t old_nb_ports = dev->data->nb_ports;
 	void **ports;
 	uint16_t *links_map;
-	uint8_t *ports_dequeue_depth;
-	uint8_t *ports_enqueue_depth;
+	struct rte_event_port_conf *ports_cfg;
 	unsigned int i;
 
 	RTE_EDEV_LOG_DEBUG("Setup %d ports on device %u", nb_ports,
@@ -217,26 +284,14 @@ rte_event_dev_port_config(struct rte_eventdev *dev, uint8_t nb_ports)
 			return -(ENOMEM);
 		}
 
-		/* Allocate memory to store ports dequeue depth */
-		dev->data->ports_dequeue_depth =
-			rte_zmalloc_socket("eventdev->ports_dequeue_depth",
-			sizeof(dev->data->ports_dequeue_depth[0]) * nb_ports,
+		/* Allocate memory to store port configurations */
+		dev->data->ports_cfg =
+			rte_zmalloc_socket("eventdev->ports_cfg",
+			sizeof(dev->data->ports_cfg[0]) * nb_ports,
 			RTE_CACHE_LINE_SIZE, dev->data->socket_id);
-		if (dev->data->ports_dequeue_depth == NULL) {
+		if (dev->data->ports_cfg == NULL) {
 			dev->data->nb_ports = 0;
-			RTE_EDEV_LOG_ERR("failed to get mem for port deq meta,"
-					"nb_ports %u", nb_ports);
-			return -(ENOMEM);
-		}
-
-		/* Allocate memory to store ports enqueue depth */
-		dev->data->ports_enqueue_depth =
-			rte_zmalloc_socket("eventdev->ports_enqueue_depth",
-			sizeof(dev->data->ports_enqueue_depth[0]) * nb_ports,
-			RTE_CACHE_LINE_SIZE, dev->data->socket_id);
-		if (dev->data->ports_enqueue_depth == NULL) {
-			dev->data->nb_ports = 0;
-			RTE_EDEV_LOG_ERR("failed to get mem for port enq meta,"
+			RTE_EDEV_LOG_ERR("failed to get mem for port cfg,"
 					"nb_ports %u", nb_ports);
 			return -(ENOMEM);
 		}
@@ -260,8 +315,7 @@ rte_event_dev_port_config(struct rte_eventdev *dev, uint8_t nb_ports)
 		RTE_FUNC_PTR_OR_ERR_RET(*dev->dev_ops->port_release, -ENOTSUP);
 
 		ports = dev->data->ports;
-		ports_dequeue_depth = dev->data->ports_dequeue_depth;
-		ports_enqueue_depth = dev->data->ports_enqueue_depth;
+		ports_cfg = dev->data->ports_cfg;
 		links_map = dev->data->links_map;
 
 		for (i = nb_ports; i < old_nb_ports; i++)
@@ -276,22 +330,12 @@ rte_event_dev_port_config(struct rte_eventdev *dev, uint8_t nb_ports)
 			return -(ENOMEM);
 		}
 
-		/* Realloc memory for ports_dequeue_depth */
-		ports_dequeue_depth = rte_realloc(ports_dequeue_depth,
-			sizeof(ports_dequeue_depth[0]) * nb_ports,
+		/* Realloc memory for ports_cfg */
+		ports_cfg = rte_realloc(ports_cfg,
+			sizeof(ports_cfg[0]) * nb_ports,
 			RTE_CACHE_LINE_SIZE);
-		if (ports_dequeue_depth == NULL) {
-			RTE_EDEV_LOG_ERR("failed to realloc port dequeue meta,"
-						" nb_ports %u", nb_ports);
-			return -(ENOMEM);
-		}
-
-		/* Realloc memory for ports_enqueue_depth */
-		ports_enqueue_depth = rte_realloc(ports_enqueue_depth,
-			sizeof(ports_enqueue_depth[0]) * nb_ports,
-			RTE_CACHE_LINE_SIZE);
-		if (ports_enqueue_depth == NULL) {
-			RTE_EDEV_LOG_ERR("failed to realloc port enqueue meta,"
+		if (ports_cfg == NULL) {
+			RTE_EDEV_LOG_ERR("failed to realloc port cfg mem,"
 						" nb_ports %u", nb_ports);
 			return -(ENOMEM);
 		}
@@ -301,7 +345,7 @@ rte_event_dev_port_config(struct rte_eventdev *dev, uint8_t nb_ports)
 			sizeof(dev->data->links_map[0]) * nb_ports *
 			RTE_EVENT_MAX_QUEUES_PER_DEV,
 			RTE_CACHE_LINE_SIZE);
-		if (dev->data->links_map == NULL) {
+		if (links_map == NULL) {
 			dev->data->nb_ports = 0;
 			RTE_EDEV_LOG_ERR("failed to realloc mem for port_map,"
 					"nb_ports %u", nb_ports);
@@ -317,18 +361,15 @@ rte_event_dev_port_config(struct rte_eventdev *dev, uint8_t nb_ports)
 
 			memset(ports + old_nb_ports, 0,
 				sizeof(ports[0]) * new_ps);
-			memset(ports_dequeue_depth + old_nb_ports, 0,
-				sizeof(ports_dequeue_depth[0]) * new_ps);
-			memset(ports_enqueue_depth + old_nb_ports, 0,
-				sizeof(ports_enqueue_depth[0]) * new_ps);
+			memset(ports_cfg + old_nb_ports, 0,
+				sizeof(ports_cfg[0]) * new_ps);
 			for (i = old_links_map_end; i < links_map_end; i++)
 				links_map[i] =
 					EVENT_QUEUE_SERVICE_PRIORITY_INVALID;
 		}
 
 		dev->data->ports = ports;
-		dev->data->ports_dequeue_depth = ports_dequeue_depth;
-		dev->data->ports_enqueue_depth = ports_enqueue_depth;
+		dev->data->ports_cfg = ports_cfg;
 		dev->data->links_map = links_map;
 	} else if (dev->data->ports != NULL && nb_ports == 0) {
 		RTE_FUNC_PTR_OR_ERR_RET(*dev->dev_ops->port_release, -ENOTSUP);
@@ -369,9 +410,10 @@ rte_event_dev_configure(uint8_t dev_id,
 
 	/* Check dequeue_timeout_ns value is in limit */
 	if (!(dev_conf->event_dev_cfg & RTE_EVENT_DEV_CFG_PER_DEQUEUE_TIMEOUT)) {
-		if (dev_conf->dequeue_timeout_ns < info.min_dequeue_timeout_ns
+		if (dev_conf->dequeue_timeout_ns &&
+		    (dev_conf->dequeue_timeout_ns < info.min_dequeue_timeout_ns
 			|| dev_conf->dequeue_timeout_ns >
-				 info.max_dequeue_timeout_ns) {
+				 info.max_dequeue_timeout_ns)) {
 			RTE_EDEV_LOG_ERR("dev%d invalid dequeue_timeout_ns=%d"
 			" min_dequeue_timeout_ns=%d max_dequeue_timeout_ns=%d",
 			dev_id, dev_conf->dequeue_timeout_ns,
@@ -429,8 +471,9 @@ rte_event_dev_configure(uint8_t dev_id,
 					dev_id);
 		return -EINVAL;
 	}
-	if (dev_conf->nb_event_port_dequeue_depth >
-			 info.max_event_port_dequeue_depth) {
+	if ((info.event_dev_cap & RTE_EVENT_DEV_CAP_BURST_MODE) &&
+		 (dev_conf->nb_event_port_dequeue_depth >
+			 info.max_event_port_dequeue_depth)) {
 		RTE_EDEV_LOG_ERR("dev%d nb_dq_depth=%d > max_dq_depth=%d",
 		dev_id, dev_conf->nb_event_port_dequeue_depth,
 		info.max_event_port_dequeue_depth);
@@ -443,8 +486,9 @@ rte_event_dev_configure(uint8_t dev_id,
 					dev_id);
 		return -EINVAL;
 	}
-	if (dev_conf->nb_event_port_enqueue_depth >
-			 info.max_event_port_enqueue_depth) {
+	if ((info.event_dev_cap & RTE_EVENT_DEV_CAP_BURST_MODE) &&
+		(dev_conf->nb_event_port_enqueue_depth >
+			 info.max_event_port_enqueue_depth)) {
 		RTE_EDEV_LOG_ERR("dev%d nb_enq_depth=%d > max_enq_depth=%d",
 		dev_id, dev_conf->nb_event_port_enqueue_depth,
 		info.max_event_port_enqueue_depth);
@@ -519,13 +563,13 @@ rte_event_queue_default_conf_get(uint8_t dev_id, uint8_t queue_id,
 static inline int
 is_valid_atomic_queue_conf(const struct rte_event_queue_conf *queue_conf)
 {
-	if (queue_conf && (
+	if (queue_conf &&
+		!(queue_conf->event_queue_cfg &
+		  RTE_EVENT_QUEUE_CFG_SINGLE_LINK) &&
 		((queue_conf->event_queue_cfg &
-			RTE_EVENT_QUEUE_CFG_TYPE_MASK)
-			== RTE_EVENT_QUEUE_CFG_ALL_TYPES) ||
-		((queue_conf->event_queue_cfg &
-			RTE_EVENT_QUEUE_CFG_TYPE_MASK)
-			== RTE_EVENT_QUEUE_CFG_ATOMIC_ONLY)
+			 RTE_EVENT_QUEUE_CFG_ALL_TYPES) ||
+		(queue_conf->schedule_type
+			== RTE_SCHED_TYPE_ATOMIC)
 		))
 		return 1;
 	else
@@ -535,13 +579,13 @@ is_valid_atomic_queue_conf(const struct rte_event_queue_conf *queue_conf)
 static inline int
 is_valid_ordered_queue_conf(const struct rte_event_queue_conf *queue_conf)
 {
-	if (queue_conf && (
+	if (queue_conf &&
+		!(queue_conf->event_queue_cfg &
+		  RTE_EVENT_QUEUE_CFG_SINGLE_LINK) &&
 		((queue_conf->event_queue_cfg &
-			RTE_EVENT_QUEUE_CFG_TYPE_MASK)
-			== RTE_EVENT_QUEUE_CFG_ALL_TYPES) ||
-		((queue_conf->event_queue_cfg &
-			RTE_EVENT_QUEUE_CFG_TYPE_MASK)
-			== RTE_EVENT_QUEUE_CFG_ORDERED_ONLY)
+			 RTE_EVENT_QUEUE_CFG_ALL_TYPES) ||
+		(queue_conf->schedule_type
+			== RTE_SCHED_TYPE_ORDERED)
 		))
 		return 1;
 	else
@@ -605,29 +649,8 @@ rte_event_queue_setup(uint8_t dev_id, uint8_t queue_id,
 		queue_conf = &def_conf;
 	}
 
-	dev->data->queues_prio[queue_id] = queue_conf->priority;
+	dev->data->queues_cfg[queue_id] = *queue_conf;
 	return (*dev->dev_ops->queue_setup)(dev, queue_id, queue_conf);
-}
-
-uint8_t
-rte_event_queue_count(uint8_t dev_id)
-{
-	struct rte_eventdev *dev;
-
-	dev = &rte_eventdevs[dev_id];
-	return dev->data->nb_queues;
-}
-
-uint8_t
-rte_event_queue_priority(uint8_t dev_id, uint8_t queue_id)
-{
-	struct rte_eventdev *dev;
-
-	dev = &rte_eventdevs[dev_id];
-	if (dev->data->event_dev_cap & RTE_EVENT_DEV_CAP_QUEUE_QOS)
-		return dev->data->queues_prio[queue_id];
-	else
-		return RTE_EVENT_DEV_PRIORITY_NORMAL;
 }
 
 static inline int
@@ -711,6 +734,15 @@ rte_event_port_setup(uint8_t dev_id, uint8_t port_id,
 		return -EINVAL;
 	}
 
+	if (port_conf && port_conf->disable_implicit_release &&
+	    !(dev->data->event_dev_cap &
+	      RTE_EVENT_DEV_CAP_IMPLICIT_RELEASE_DISABLE)) {
+		RTE_EDEV_LOG_ERR(
+		   "dev%d port%d Implicit release disable not supported",
+			dev_id, port_id);
+		return -EINVAL;
+	}
+
 	if (dev->data->dev_started) {
 		RTE_EDEV_LOG_ERR(
 		    "device %d must be stopped to allow port setup", dev_id);
@@ -726,10 +758,7 @@ rte_event_port_setup(uint8_t dev_id, uint8_t port_id,
 		port_conf = &def_conf;
 	}
 
-	dev->data->ports_dequeue_depth[port_id] =
-			port_conf->dequeue_depth;
-	dev->data->ports_enqueue_depth[port_id] =
-			port_conf->enqueue_depth;
+	dev->data->ports_cfg[port_id] = *port_conf;
 
 	diag = (*dev->dev_ops->port_setup)(dev, port_id, port_conf);
 
@@ -743,31 +772,110 @@ rte_event_port_setup(uint8_t dev_id, uint8_t port_id,
 	return 0;
 }
 
-uint8_t
-rte_event_port_dequeue_depth(uint8_t dev_id, uint8_t port_id)
+int
+rte_event_dev_attr_get(uint8_t dev_id, uint32_t attr_id,
+		       uint32_t *attr_value)
 {
 	struct rte_eventdev *dev;
 
+	if (!attr_value)
+		return -EINVAL;
+	RTE_EVENTDEV_VALID_DEVID_OR_ERR_RET(dev_id, -EINVAL);
 	dev = &rte_eventdevs[dev_id];
-	return dev->data->ports_dequeue_depth[port_id];
+
+	switch (attr_id) {
+	case RTE_EVENT_DEV_ATTR_PORT_COUNT:
+		*attr_value = dev->data->nb_ports;
+		break;
+	case RTE_EVENT_DEV_ATTR_QUEUE_COUNT:
+		*attr_value = dev->data->nb_queues;
+		break;
+	case RTE_EVENT_DEV_ATTR_STARTED:
+		*attr_value = dev->data->dev_started;
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	return 0;
 }
 
-uint8_t
-rte_event_port_enqueue_depth(uint8_t dev_id, uint8_t port_id)
+int
+rte_event_port_attr_get(uint8_t dev_id, uint8_t port_id, uint32_t attr_id,
+			uint32_t *attr_value)
 {
 	struct rte_eventdev *dev;
 
+	if (!attr_value)
+		return -EINVAL;
+
+	RTE_EVENTDEV_VALID_DEVID_OR_ERR_RET(dev_id, -EINVAL);
 	dev = &rte_eventdevs[dev_id];
-	return dev->data->ports_enqueue_depth[port_id];
+	if (!is_valid_port(dev, port_id)) {
+		RTE_EDEV_LOG_ERR("Invalid port_id=%" PRIu8, port_id);
+		return -EINVAL;
+	}
+
+	switch (attr_id) {
+	case RTE_EVENT_PORT_ATTR_ENQ_DEPTH:
+		*attr_value = dev->data->ports_cfg[port_id].enqueue_depth;
+		break;
+	case RTE_EVENT_PORT_ATTR_DEQ_DEPTH:
+		*attr_value = dev->data->ports_cfg[port_id].dequeue_depth;
+		break;
+	case RTE_EVENT_PORT_ATTR_NEW_EVENT_THRESHOLD:
+		*attr_value = dev->data->ports_cfg[port_id].new_event_threshold;
+		break;
+	default:
+		return -EINVAL;
+	};
+	return 0;
 }
 
-uint8_t
-rte_event_port_count(uint8_t dev_id)
+int
+rte_event_queue_attr_get(uint8_t dev_id, uint8_t queue_id, uint32_t attr_id,
+			uint32_t *attr_value)
 {
+	struct rte_event_queue_conf *conf;
 	struct rte_eventdev *dev;
 
+	if (!attr_value)
+		return -EINVAL;
+
+	RTE_EVENTDEV_VALID_DEVID_OR_ERR_RET(dev_id, -EINVAL);
 	dev = &rte_eventdevs[dev_id];
-	return dev->data->nb_ports;
+	if (!is_valid_queue(dev, queue_id)) {
+		RTE_EDEV_LOG_ERR("Invalid queue_id=%" PRIu8, queue_id);
+		return -EINVAL;
+	}
+
+	conf = &dev->data->queues_cfg[queue_id];
+
+	switch (attr_id) {
+	case RTE_EVENT_QUEUE_ATTR_PRIORITY:
+		*attr_value = RTE_EVENT_DEV_PRIORITY_NORMAL;
+		if (dev->data->event_dev_cap & RTE_EVENT_DEV_CAP_QUEUE_QOS)
+			*attr_value = conf->priority;
+		break;
+	case RTE_EVENT_QUEUE_ATTR_NB_ATOMIC_FLOWS:
+		*attr_value = conf->nb_atomic_flows;
+		break;
+	case RTE_EVENT_QUEUE_ATTR_NB_ATOMIC_ORDER_SEQUENCES:
+		*attr_value = conf->nb_atomic_order_sequences;
+		break;
+	case RTE_EVENT_QUEUE_ATTR_EVENT_QUEUE_CFG:
+		*attr_value = conf->event_queue_cfg;
+		break;
+	case RTE_EVENT_QUEUE_ATTR_SCHEDULE_TYPE:
+		if (conf->event_queue_cfg & RTE_EVENT_QUEUE_CFG_ALL_TYPES)
+			return -EOVERFLOW;
+
+		*attr_value = conf->schedule_type;
+		break;
+	default:
+		return -EINVAL;
+	};
+	return 0;
 }
 
 int
@@ -781,13 +889,19 @@ rte_event_port_link(uint8_t dev_id, uint8_t port_id,
 	uint16_t *links_map;
 	int i, diag;
 
-	RTE_EVENTDEV_VALID_DEVID_OR_ERR_RET(dev_id, -EINVAL);
+	RTE_EVENTDEV_VALID_DEVID_OR_ERRNO_RET(dev_id, -EINVAL, 0);
 	dev = &rte_eventdevs[dev_id];
-	RTE_FUNC_PTR_OR_ERR_RET(*dev->dev_ops->port_link, -ENOTSUP);
+
+	if (*dev->dev_ops->port_link == NULL) {
+		RTE_EDEV_LOG_ERR("Function not supported\n");
+		rte_errno = -ENOTSUP;
+		return 0;
+	}
 
 	if (!is_valid_port(dev, port_id)) {
 		RTE_EDEV_LOG_ERR("Invalid port_id=%" PRIu8, port_id);
-		return -EINVAL;
+		rte_errno = -EINVAL;
+		return 0;
 	}
 
 	if (queues == NULL) {
@@ -806,8 +920,10 @@ rte_event_port_link(uint8_t dev_id, uint8_t port_id,
 	}
 
 	for (i = 0; i < nb_links; i++)
-		if (queues[i] >= dev->data->nb_queues)
-			return -EINVAL;
+		if (queues[i] >= dev->data->nb_queues) {
+			rte_errno = -EINVAL;
+			return 0;
+		}
 
 	diag = (*dev->dev_ops->port_link)(dev, dev->data->ports[port_id],
 						queues, priorities, nb_links);
@@ -829,28 +945,52 @@ rte_event_port_unlink(uint8_t dev_id, uint8_t port_id,
 {
 	struct rte_eventdev *dev;
 	uint8_t all_queues[RTE_EVENT_MAX_QUEUES_PER_DEV];
-	int i, diag;
+	int i, diag, j;
 	uint16_t *links_map;
 
-	RTE_EVENTDEV_VALID_DEVID_OR_ERR_RET(dev_id, -EINVAL);
+	RTE_EVENTDEV_VALID_DEVID_OR_ERRNO_RET(dev_id, -EINVAL, 0);
 	dev = &rte_eventdevs[dev_id];
-	RTE_FUNC_PTR_OR_ERR_RET(*dev->dev_ops->port_unlink, -ENOTSUP);
+
+	if (*dev->dev_ops->port_unlink == NULL) {
+		RTE_EDEV_LOG_ERR("Function not supported");
+		rte_errno = -ENOTSUP;
+		return 0;
+	}
 
 	if (!is_valid_port(dev, port_id)) {
 		RTE_EDEV_LOG_ERR("Invalid port_id=%" PRIu8, port_id);
-		return -EINVAL;
+		rte_errno = -EINVAL;
+		return 0;
 	}
+
+	links_map = dev->data->links_map;
+	/* Point links_map to this port specific area */
+	links_map += (port_id * RTE_EVENT_MAX_QUEUES_PER_DEV);
 
 	if (queues == NULL) {
-		for (i = 0; i < dev->data->nb_queues; i++)
-			all_queues[i] = i;
+		j = 0;
+		for (i = 0; i < dev->data->nb_queues; i++) {
+			if (links_map[i] !=
+					EVENT_QUEUE_SERVICE_PRIORITY_INVALID) {
+				all_queues[j] = i;
+				j++;
+			}
+		}
 		queues = all_queues;
-		nb_unlinks = dev->data->nb_queues;
+	} else {
+		for (j = 0; j < nb_unlinks; j++) {
+			if (links_map[queues[j]] ==
+					EVENT_QUEUE_SERVICE_PRIORITY_INVALID)
+				break;
+		}
 	}
 
+	nb_unlinks = j;
 	for (i = 0; i < nb_unlinks; i++)
-		if (queues[i] >= dev->data->nb_queues)
-			return -EINVAL;
+		if (queues[i] >= dev->data->nb_queues) {
+			rte_errno = -EINVAL;
+			return 0;
+		}
 
 	diag = (*dev->dev_ops->port_unlink)(dev, dev->data->ports[port_id],
 					queues, nb_unlinks);
@@ -858,13 +998,32 @@ rte_event_port_unlink(uint8_t dev_id, uint8_t port_id,
 	if (diag < 0)
 		return diag;
 
-	links_map = dev->data->links_map;
-	/* Point links_map to this port specific area */
-	links_map += (port_id * RTE_EVENT_MAX_QUEUES_PER_DEV);
 	for (i = 0; i < diag; i++)
 		links_map[queues[i]] = EVENT_QUEUE_SERVICE_PRIORITY_INVALID;
 
 	return diag;
+}
+
+int
+rte_event_port_unlinks_in_progress(uint8_t dev_id, uint8_t port_id)
+{
+	struct rte_eventdev *dev;
+
+	RTE_EVENTDEV_VALID_DEVID_OR_ERR_RET(dev_id, -EINVAL);
+	dev = &rte_eventdevs[dev_id];
+	if (!is_valid_port(dev, port_id)) {
+		RTE_EDEV_LOG_ERR("Invalid port_id=%" PRIu8, port_id);
+		return -EINVAL;
+	}
+
+	/* Return 0 if the PMD does not implement unlinks in progress.
+	 * This allows PMDs which handle unlink synchronously to not implement
+	 * this function at all.
+	 */
+	RTE_FUNC_PTR_OR_ERR_RET(*dev->dev_ops->port_unlinks_in_progress, 0);
+
+	return (*dev->dev_ops->port_unlinks_in_progress)(dev,
+			dev->data->ports[port_id]);
 }
 
 int
@@ -909,6 +1068,23 @@ rte_event_dequeue_timeout_ticks(uint8_t dev_id, uint64_t ns,
 		return -EINVAL;
 
 	return (*dev->dev_ops->timeout_ticks)(dev, ns, timeout_ticks);
+}
+
+int
+rte_event_dev_service_id_get(uint8_t dev_id, uint32_t *service_id)
+{
+	struct rte_eventdev *dev;
+
+	RTE_EVENTDEV_VALID_DEVID_OR_ERR_RET(dev_id, -EINVAL);
+	dev = &rte_eventdevs[dev_id];
+
+	if (service_id == NULL)
+		return -EINVAL;
+
+	if (dev->data->service_inited)
+		*service_id = dev->data->service_id;
+
+	return dev->data->service_inited ? 0 : -ESRCH;
 }
 
 int
@@ -1008,6 +1184,16 @@ int rte_event_dev_xstats_reset(uint8_t dev_id,
 	return -ENOTSUP;
 }
 
+int rte_event_dev_selftest(uint8_t dev_id)
+{
+	RTE_EVENTDEV_VALID_DEVID_OR_ERR_RET(dev_id, -EINVAL);
+	struct rte_eventdev *dev = &rte_eventdevs[dev_id];
+
+	if (dev->dev_ops->dev_selftest != NULL)
+		return (*dev->dev_ops->dev_selftest)();
+	return -ENOTSUP;
+}
+
 int
 rte_event_dev_start(uint8_t dev_id)
 {
@@ -1031,6 +1217,23 @@ rte_event_dev_start(uint8_t dev_id)
 		dev->data->dev_started = 1;
 	else
 		return diag;
+
+	return 0;
+}
+
+int
+rte_event_dev_stop_flush_callback_register(uint8_t dev_id,
+		eventdev_stop_flush_t callback, void *userdata)
+{
+	struct rte_eventdev *dev;
+
+	RTE_EDEV_LOG_DEBUG("Stop flush register dev_id=%" PRIu8, dev_id);
+
+	RTE_EVENTDEV_VALID_DEVID_OR_ERR_RET(dev_id, -EINVAL);
+	dev = &rte_eventdevs[dev_id];
+
+	dev->dev_ops->dev_stop_flush = callback;
+	dev->data->dev_stop_flush_arg = userdata;
 
 	return 0;
 }
@@ -1118,6 +1321,15 @@ rte_eventdev_find_free_device_index(void)
 	return RTE_EVENT_MAX_DEVS;
 }
 
+static uint16_t
+rte_event_tx_adapter_enqueue(__rte_unused void *port,
+			__rte_unused struct rte_event ev[],
+			__rte_unused uint16_t nb_events)
+{
+	rte_errno = ENOTSUP;
+	return 0;
+}
+
 struct rte_eventdev *
 rte_event_pmd_allocate(const char *name, int socket_id)
 {
@@ -1138,6 +1350,8 @@ rte_event_pmd_allocate(const char *name, int socket_id)
 
 	eventdev = &rte_eventdevs[dev_id];
 
+	eventdev->txa_enqueue = rte_event_tx_adapter_enqueue;
+
 	if (eventdev->data == NULL) {
 		struct rte_eventdev_data *eventdev_data = NULL;
 
@@ -1149,8 +1363,7 @@ rte_event_pmd_allocate(const char *name, int socket_id)
 
 		eventdev->data = eventdev_data;
 
-		snprintf(eventdev->data->name, RTE_EVENTDEV_NAME_MAX_LEN,
-				"%s", name);
+		strlcpy(eventdev->data->name, name, RTE_EVENTDEV_NAME_MAX_LEN);
 
 		eventdev->data->dev_id = dev_id;
 		eventdev->data->socket_id = socket_id;
@@ -1174,10 +1387,6 @@ rte_event_pmd_release(struct rte_eventdev *eventdev)
 	if (eventdev == NULL)
 		return -EINVAL;
 
-	ret = rte_event_dev_close(eventdev->data->dev_id);
-	if (ret < 0)
-		return ret;
-
 	eventdev->attached = RTE_EVENTDEV_DETACHED;
 	eventdev_globals.nb_devs--;
 
@@ -1200,146 +1409,5 @@ rte_event_pmd_release(struct rte_eventdev *eventdev)
 	}
 
 	eventdev->data = NULL;
-	return 0;
-}
-
-struct rte_eventdev *
-rte_event_pmd_vdev_init(const char *name, size_t dev_private_size,
-		int socket_id)
-{
-	struct rte_eventdev *eventdev;
-
-	/* Allocate device structure */
-	eventdev = rte_event_pmd_allocate(name, socket_id);
-	if (eventdev == NULL)
-		return NULL;
-
-	/* Allocate private device structure */
-	if (rte_eal_process_type() == RTE_PROC_PRIMARY) {
-		eventdev->data->dev_private =
-				rte_zmalloc_socket("eventdev device private",
-						dev_private_size,
-						RTE_CACHE_LINE_SIZE,
-						socket_id);
-
-		if (eventdev->data->dev_private == NULL)
-			rte_panic("Cannot allocate memzone for private device"
-					" data");
-	}
-
-	return eventdev;
-}
-
-int
-rte_event_pmd_vdev_uninit(const char *name)
-{
-	struct rte_eventdev *eventdev;
-
-	if (name == NULL)
-		return -EINVAL;
-
-	eventdev = rte_event_pmd_get_named_dev(name);
-	if (eventdev == NULL)
-		return -ENODEV;
-
-	/* Free the event device */
-	rte_event_pmd_release(eventdev);
-
-	return 0;
-}
-
-int
-rte_event_pmd_pci_probe(struct rte_pci_driver *pci_drv,
-			struct rte_pci_device *pci_dev)
-{
-	struct rte_eventdev_driver *eventdrv;
-	struct rte_eventdev *eventdev;
-
-	char eventdev_name[RTE_EVENTDEV_NAME_MAX_LEN];
-
-	int retval;
-
-	eventdrv = (struct rte_eventdev_driver *)pci_drv;
-	if (eventdrv == NULL)
-		return -ENODEV;
-
-	rte_pci_device_name(&pci_dev->addr, eventdev_name,
-			sizeof(eventdev_name));
-
-	eventdev = rte_event_pmd_allocate(eventdev_name,
-			 pci_dev->device.numa_node);
-	if (eventdev == NULL)
-		return -ENOMEM;
-
-	if (rte_eal_process_type() == RTE_PROC_PRIMARY) {
-		eventdev->data->dev_private =
-				rte_zmalloc_socket(
-						"eventdev private structure",
-						eventdrv->dev_private_size,
-						RTE_CACHE_LINE_SIZE,
-						rte_socket_id());
-
-		if (eventdev->data->dev_private == NULL)
-			rte_panic("Cannot allocate memzone for private "
-					"device data");
-	}
-
-	eventdev->dev = &pci_dev->device;
-	eventdev->driver = eventdrv;
-
-	/* Invoke PMD device initialization function */
-	retval = (*eventdrv->eventdev_init)(eventdev);
-	if (retval == 0)
-		return 0;
-
-	RTE_EDEV_LOG_ERR("driver %s: (vendor_id=0x%x device_id=0x%x)"
-			" failed", pci_drv->driver.name,
-			(unsigned int) pci_dev->id.vendor_id,
-			(unsigned int) pci_dev->id.device_id);
-
-	if (rte_eal_process_type() == RTE_PROC_PRIMARY)
-		rte_free(eventdev->data->dev_private);
-
-	eventdev->attached = RTE_EVENTDEV_DETACHED;
-	eventdev_globals.nb_devs--;
-
-	return -ENXIO;
-}
-
-int
-rte_event_pmd_pci_remove(struct rte_pci_device *pci_dev)
-{
-	const struct rte_eventdev_driver *eventdrv;
-	struct rte_eventdev *eventdev;
-	char eventdev_name[RTE_EVENTDEV_NAME_MAX_LEN];
-	int ret;
-
-	if (pci_dev == NULL)
-		return -EINVAL;
-
-	rte_pci_device_name(&pci_dev->addr, eventdev_name,
-			sizeof(eventdev_name));
-
-	eventdev = rte_event_pmd_get_named_dev(eventdev_name);
-	if (eventdev == NULL)
-		return -ENODEV;
-
-	eventdrv = (const struct rte_eventdev_driver *)pci_dev->driver;
-	if (eventdrv == NULL)
-		return -ENODEV;
-
-	/* Invoke PMD device un-init function */
-	if (*eventdrv->eventdev_uninit) {
-		ret = (*eventdrv->eventdev_uninit)(eventdev);
-		if (ret)
-			return ret;
-	}
-
-	/* Free event device */
-	rte_event_pmd_release(eventdev);
-
-	eventdev->dev = NULL;
-	eventdev->driver = NULL;
-
 	return 0;
 }

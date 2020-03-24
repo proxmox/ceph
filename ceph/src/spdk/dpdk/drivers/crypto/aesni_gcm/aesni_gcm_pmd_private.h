@@ -35,11 +35,15 @@ struct aesni_gcm_private {
 	/**< Vector mode */
 	unsigned max_nb_queue_pairs;
 	/**< Max number of queue pairs supported by device */
+	MB_MGR *mb_mgr;
+	/**< Multi-buffer instance */
+	struct aesni_gcm_ops ops[GCM_KEY_NUM];
+	/**< Function pointer table of the gcm APIs */
 };
 
 struct aesni_gcm_qp {
 	const struct aesni_gcm_ops *ops;
-	/**< Architecture dependent function pointer table of the gcm APIs */
+	/**< Function pointer table of the gcm APIs */
 	struct rte_ring *processed_pkts;
 	/**< Ring for placing process packets */
 	struct gcm_context_data gdata_ctx; /* (16 * 5) + 8 = 88 B */
@@ -48,6 +52,8 @@ struct aesni_gcm_qp {
 	/**< Queue pair statistics */
 	struct rte_mempool *sess_mp;
 	/**< Session Mempool */
+	struct rte_mempool *sess_mp_priv;
+	/**< Session Private Data Mempool */
 	uint16_t id;
 	/**< Queue Pair Identifier */
 	char name[RTE_CRYPTODEV_NAME_MAX_LEN];
@@ -76,8 +82,10 @@ struct aesni_gcm_session {
 	/**< IV parameters */
 	uint16_t aad_length;
 	/**< AAD length */
-	uint16_t digest_length;
-	/**< Digest length */
+	uint16_t req_digest_length;
+	/**< Requested digest length */
+	uint16_t gen_digest_length;
+	/**< Generated digest length */
 	enum aesni_gcm_operation op;
 	/**< GCM operation type */
 	enum aesni_gcm_key key;

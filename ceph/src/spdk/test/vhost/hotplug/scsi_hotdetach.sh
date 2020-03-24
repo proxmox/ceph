@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 
 set -e
-BASE_DIR=$(readlink -f $(dirname $0))
-[[ -z "$TEST_DIR" ]] && TEST_DIR="$(cd $BASE_DIR/../../../../ && pwd)"
 
-. $BASE_DIR/common.sh
+testdir=$(readlink -f $(dirname $0))
+rootdir=$(readlink -f $testdir/../../..)
+source $rootdir/test/common/autotest_common.sh
+source $rootdir/test/vhost/common.sh
+source $rootdir/test/vhost/hotplug/common.sh
 
 function get_first_disk() {
     vm_check_scsi_location $1

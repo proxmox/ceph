@@ -4,7 +4,6 @@
 
   <ng-container class="modal-content">
     <form name="settingsForm"
-          class="form"
           #formDir="ngForm"
           [formGroup]="settingsForm"
           novalidate>
@@ -13,8 +12,7 @@
            i18n>Changing these parameters from their default values is usually not necessary.</p>
 
         <div class="form-group row"
-             *ngFor="let setting of settingsForm.controls | keyvalue"
-             [ngClass]="{'has-error': settingsForm.showError(setting.key, formDir)}">
+             *ngFor="let setting of settingsForm.controls | keyvalue">
           <div class="col-sm-12">
             <cd-iscsi-setting [settingsForm]="settingsForm"
                               [formDir]="formDir"

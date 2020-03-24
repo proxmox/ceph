@@ -37,7 +37,7 @@ class DPDKServerSocketImpl : public ServerSocketImpl {
   typename Protocol::listener _listener;
  public:
   DPDKServerSocketImpl(Protocol& proto, uint16_t port, const SocketOptions &opt,
-		       int type);
+		       int type, unsigned addr_slot);
   int listen() {
     return _listener.listen();
   }
@@ -97,7 +97,8 @@ class NativeConnectedSocketImpl : public ConnectedSocketImpl {
     return len - left ? len - left : -EAGAIN;
   }
 
-  virtual ssize_t zero_copy_read(bufferptr &data) override {
+private:
+  ssize_t zero_copy_read(bufferptr &data) {
     auto err = _conn.get_errno();
     if (err <= 0)
       return err;
@@ -135,12 +136,16 @@ class NativeConnectedSocketImpl : public ConnectedSocketImpl {
     }
 
     std::vector<fragment> frags;
-    std::list<bufferptr>::const_iterator pb = bl.buffers().begin();
-    uint64_t left_pbrs = bl.buffers().size();
+    auto pb = bl.buffers().begin();
     uint64_t len = 0;
     uint64_t seglen = 0;
-    while (len < available && left_pbrs--) {
+    while (len < available && pb != bl.buffers().end()) {
       seglen = pb->length();
+      // Buffer length is zero, no need to send, so skip it
+      if (seglen == 0) {
+        ++pb;
+        continue;
+      }
       if (len + seglen > available) {
         // don't continue if we enough at least 1 fragment since no available
         // space for next ptr.
@@ -166,6 +171,8 @@ class NativeConnectedSocketImpl : public ConnectedSocketImpl {
       return _conn.send(Packet(std::move(frags), make_deleter(std::move(del))));
     }
   }
+
+public:
   virtual void shutdown() override {
     _conn.close_write();
   }
@@ -176,16 +183,13 @@ class NativeConnectedSocketImpl : public ConnectedSocketImpl {
   virtual int fd() const override {
     return _conn.fd();
   }
-  virtual int socket_fd() const override {
-    return _conn.fd();
-  }
-
 };
 
 template <typename Protocol>
 DPDKServerSocketImpl<Protocol>::DPDKServerSocketImpl(
-  Protocol& proto, uint16_t port, const SocketOptions &opt, int type)
-  : ServerSocketImpl(type), _listener(proto.listen(port)) {}
+  Protocol& proto, uint16_t port, const SocketOptions &opt,
+  int type, unsigned addr_slot)
+  : ServerSocketImpl(type, addr_slot), _listener(proto.listen(port)) {}
 
 template <typename Protocol>
 int DPDKServerSocketImpl<Protocol>::accept(ConnectedSocket *s, const SocketOptions &options, entity_addr_t *out, Worker *w) {
@@ -229,7 +233,8 @@ class DPDKWorker : public Worker {
 
  public:
   explicit DPDKWorker(CephContext *c, unsigned i): Worker(c, i) {}
-  virtual int listen(entity_addr_t &addr, const SocketOptions &opts, ServerSocket *) override;
+  virtual int listen(entity_addr_t &addr, unsigned addr_slot,
+		     const SocketOptions &opts, ServerSocket *) override;
   virtual int connect(const entity_addr_t &addr, const SocketOptions &opts, ConnectedSocket *socket) override;
   void arp_learn(ethernet_address l2, ipv4_address l3) {
     _impl->_inet.learn(l2, l3);
@@ -247,7 +252,6 @@ class DPDKStack : public NetworkStack {
   explicit DPDKStack(CephContext *cct, const string &t): NetworkStack(cct, t) {
     funcs.resize(cct->_conf->ms_async_max_op_threads);
   }
-  virtual bool support_zero_copy_read() const override { return true; }
   virtual bool support_local_listen_table() const override { return true; }
 
   virtual void spawn_worker(unsigned i, std::function<void ()> &&func) override;

@@ -9,7 +9,6 @@ import operator
 import rados
 from threading import Event
 from datetime import datetime, timedelta, date, time
-import _strptime
 from six import iteritems
 
 TIME_FORMAT = '%Y%m%d-%H%M%S'
@@ -30,7 +29,7 @@ class Module(MgrModule):
     MODULE_OPTIONS = [
         {
             'name': 'enable_monitoring',
-            'default': False,
+            'default': True,
             'type': 'bool',
             'desc': 'monitor device health metrics',
             'runtime': True,
@@ -313,8 +312,6 @@ class Module(MgrModule):
 
     def scrape_daemon(self, daemon_type, daemon_id):
         ioctx = self.open_connection()
-        if daemon_type != 'osd':
-            return -errno.EINVAL, '', 'scraping non-OSDs not currently supported'
         raw_smart_data = self.do_scrape_daemon(daemon_type, daemon_id)
         if raw_smart_data:
             for device, raw_data in raw_smart_data.items():
@@ -332,6 +329,9 @@ class Module(MgrModule):
         ids = []
         for osd in osdmap['osds']:
             ids.append(('osd', str(osd['osd'])))
+        monmap = self.get("mon_map")
+        for mon in monmap['mons']:
+            ids.append(('mon', mon['name']))
         for daemon_type, daemon_id in ids:
             raw_smart_data = self.do_scrape_daemon(daemon_type, daemon_id)
             if not raw_smart_data:
@@ -351,10 +351,10 @@ class Module(MgrModule):
         r = self.get("device " + devid)
         if not r or 'device' not in r.keys():
             return -errno.ENOENT, '', 'device ' + devid + ' not found'
-        daemons = [d for d in r['device'].get('daemons', []) if not d.startswith('osd.')]
+        daemons = r['device'].get('daemons', [])
         if not daemons:
             return (-errno.EAGAIN, '',
-                    'device ' + devid + ' not claimed by any active OSD daemons')
+                    'device ' + devid + ' not claimed by any active daemons')
         (daemon_type, daemon_id) = daemons[0].split('.')
         ioctx = self.open_connection()
         raw_smart_data = self.do_scrape_daemon(daemon_type, daemon_id,
@@ -490,11 +490,11 @@ class Module(MgrModule):
                dev['life_expectancy_max'] == '0.000000':
                 continue
             # life_expectancy_(min/max) is in the format of:
-            # '%Y-%m-%d %H:%M:%S.%f', e.g.:
-            # '2019-01-20 21:12:12.000000'
+            # '%Y-%m-%dT%H:%M:%S.%f%z', e.g.:
+            # '2019-01-20T21:12:12.000000Z'
             life_expectancy_max = datetime.strptime(
                 dev['life_expectancy_max'],
-                '%Y-%m-%d %H:%M:%S.%f')
+                '%Y-%m-%dT%H:%M:%S.%f%z')
             self.log.debug('device %s expectancy max %s', dev,
                            life_expectancy_max)
 
@@ -565,6 +565,7 @@ class Module(MgrModule):
                 checks[warning] = {
                     'severity': 'warning',
                     'summary': HEALTH_MESSAGES[warning] % n,
+                    'count': len(ls),
                     'detail': ls,
                 }
         self.set_health_checks(checks)

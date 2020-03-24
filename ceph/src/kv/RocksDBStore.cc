@@ -22,6 +22,7 @@
 using std::string;
 #include "common/perf_counters.h"
 #include "common/PriorityCache.h"
+#include "include/common_fwd.h"
 #include "include/str_list.h"
 #include "include/stringify.h"
 #include "include/str_map.h"
@@ -242,24 +243,44 @@ int RocksDBStore::tryInterpret(const string &key, const string &val, rocksdb::Op
 
 int RocksDBStore::ParseOptionsFromString(const string &opt_str, rocksdb::Options &opt)
 {
+  return ParseOptionsFromStringStatic(cct, opt_str, opt,
+    [&](const string& k, const string& v, rocksdb::Options& o) {
+      return tryInterpret(k, v, o);
+    }
+  );
+}
+
+int RocksDBStore::ParseOptionsFromStringStatic(
+  CephContext *cct,
+  const string& opt_str,
+  rocksdb::Options& opt,
+  function<int(const string&, const string&, rocksdb::Options&)> interp)
+{
+  // keep aligned with func tryInterpret
+  const set<string> need_interp_keys = {"compaction_threads", "flusher_threads", "compact_on_mount", "disableWAL"};
+
   map<string, string> str_map;
   int r = get_str_map(opt_str, &str_map, ",\n;");
   if (r < 0)
     return r;
   map<string, string>::iterator it;
-  for(it = str_map.begin(); it != str_map.end(); ++it) {
+  for (it = str_map.begin(); it != str_map.end(); ++it) {
     string this_opt = it->first + "=" + it->second;
-    rocksdb::Status status = rocksdb::GetOptionsFromString(opt, this_opt , &opt); 
+    rocksdb::Status status =
+      rocksdb::GetOptionsFromString(opt, this_opt, &opt);
     if (!status.ok()) {
-      //unrecognized by rocksdb, try to interpret by ourselves.
-      r = tryInterpret(it->first, it->second, opt);
+      if (interp != nullptr) {
+	r = interp(it->first, it->second, opt);
+      } else if (!need_interp_keys.count(it->first)) {
+	r = -1;
+      }
       if (r < 0) {
-	derr << status.ToString() << dendl;
-	return -EINVAL;
+        derr << status.ToString() << dendl;
+        return -EINVAL;
       }
     }
     lgeneric_dout(cct, 0) << " set rocksdb option " << it->first
-			  << " = " << it->second << dendl;
+      << " = " << it->second << dendl;
   }
   return 0;
 }
@@ -652,16 +673,16 @@ RocksDBStore::~RocksDBStore()
 void RocksDBStore::close()
 {
   // stop compaction thread
-  compact_queue_lock.Lock();
+  compact_queue_lock.lock();
   if (compact_thread.is_started()) {
     dout(1) << __func__ << " waiting for compaction thread to stop" << dendl;
     compact_queue_stop = true;
-    compact_queue_cond.Signal();
-    compact_queue_lock.Unlock();
+    compact_queue_cond.notify_all();
+    compact_queue_lock.unlock();
     compact_thread.join();
     dout(1) << __func__ << " compaction thread to stopped" << dendl;    
   } else {
-    compact_queue_lock.Unlock();
+    compact_queue_lock.unlock();
   }
 
   if (logger)
@@ -695,7 +716,15 @@ void RocksDBStore::split_stats(const std::string &s, char delim, std::vector<std
     }
 }
 
-int64_t RocksDBStore::estimate_prefix_size(const string& prefix)
+bool RocksDBStore::get_property(
+  const std::string &property,
+  uint64_t *out)
+{
+  return db->GetIntProperty(property, out);
+}
+
+int64_t RocksDBStore::estimate_prefix_size(const string& prefix,
+					   const string& key_prefix)
 {
   auto cf = get_cf_handle(prefix);
   uint64_t size = 0;
@@ -703,15 +732,15 @@ int64_t RocksDBStore::estimate_prefix_size(const string& prefix)
     //rocksdb::DB::INCLUDE_MEMTABLES |  // do not include memtables...
     rocksdb::DB::INCLUDE_FILES;
   if (cf) {
-    string start(1, '\x00');
-    string limit("\xff\xff\xff\xff");
+    string start = key_prefix + string(1, '\x00');
+    string limit = key_prefix + string("\xff\xff\xff\xff");
     rocksdb::Range r(start, limit);
     db->GetApproximateSizes(cf, &r, 1, &size, flags);
   } else {
-    string limit = prefix + "\xff\xff\xff\xff";
-    rocksdb::Range r(prefix, limit);
-    db->GetApproximateSizes(default_cf,
-			    &r, 1, &size, flags);
+    string start = combine_strings(prefix , key_prefix);
+    string limit = combine_strings(prefix , key_prefix + "\xff\xff\xff\xff");
+    rocksdb::Range r(start, limit);
+    db->GetApproximateSizes(default_cf, &r, 1, &size, flags);
   }
   return size;
 }
@@ -871,7 +900,7 @@ void RocksDBStore::RocksDBTransactionImpl::put_bat(
 			   to_set_bl.length()));
   } else {
     rocksdb::Slice key_slice(key);
-    vector<rocksdb::Slice> value_slices(to_set_bl.buffers().size());
+    vector<rocksdb::Slice> value_slices(to_set_bl.get_num_buffers());
     bat.Put(cf,
 	    rocksdb::SliceParts(&key_slice, 1),
             prepare_sliceparts(to_set_bl, &value_slices));
@@ -947,72 +976,32 @@ void RocksDBStore::RocksDBTransactionImpl::rm_single_key(const string &prefix,
 void RocksDBStore::RocksDBTransactionImpl::rmkeys_by_prefix(const string &prefix)
 {
   auto cf = db->get_cf_handle(prefix);
-  if (cf) {
-    if (db->enable_rmrange) {
-      string endprefix("\xff\xff\xff\xff");  // FIXME: this is cheating...
-      if (db->max_items_rmrange) {
-        uint64_t cnt = db->max_items_rmrange;
-        bat.SetSavePoint();
-        auto it = db->get_iterator(prefix);
-        for (it->seek_to_first();
-        it->valid();
-        it->next()) {
-          if (!cnt) {
-            bat.RollbackToSavePoint();
-            bat.DeleteRange(cf, string(), endprefix);
-            return;
-          }
-          bat.Delete(cf, rocksdb::Slice(it->key()));
-          --cnt;
-        }
-        bat.PopSavePoint();
-      } else {
+  uint64_t cnt = db->delete_range_threshold;
+  bat.SetSavePoint();
+  auto it = db->get_iterator(prefix);
+  for (it->seek_to_first(); it->valid(); it->next()) {
+    if (!cnt) {
+      bat.RollbackToSavePoint();
+      if (cf) {
+        string endprefix = "\xff\xff\xff\xff";  // FIXME: this is cheating...
         bat.DeleteRange(cf, string(), endprefix);
-      }
-    } else {
-      auto it = db->get_iterator(prefix);
-      for (it->seek_to_first();
-	   it->valid();
-	   it->next()) {
-	bat.Delete(cf, rocksdb::Slice(it->key()));
-      }
-    }
-  } else {
-    if (db->enable_rmrange) {
-      string endprefix = prefix;
-      endprefix.push_back('\x01');
-      if (db->max_items_rmrange) {
-        uint64_t cnt = db->max_items_rmrange;
-        bat.SetSavePoint();
-        auto it = db->get_iterator(prefix);
-        for (it->seek_to_first();
-             it->valid();
-             it->next()) {
-          if (!cnt) {
-            bat.RollbackToSavePoint();
-            bat.DeleteRange(db->default_cf,
-                combine_strings(prefix, string()),
-                combine_strings(endprefix, string()));
-            return;
-          }
-          bat.Delete(db->default_cf, combine_strings(prefix, it->key()));
-          --cnt;
-        }
-        bat.PopSavePoint();
       } else {
-        bat.DeleteRange(db->default_cf,
-            combine_strings(prefix, string()),
-            combine_strings(endprefix, string()));
+        string endprefix = prefix;
+        endprefix.push_back('\x01');
+	bat.DeleteRange(db->default_cf,
+                        combine_strings(prefix, string()),
+                        combine_strings(endprefix, string()));
       }
-    } else {
-      auto it = db->get_iterator(prefix);
-      for (it->seek_to_first();
-	   it->valid();
-	   it->next()) {
-	bat.Delete(db->default_cf, combine_strings(prefix, it->key()));
-      }
+      return;
     }
+    if (cf) {
+      bat.Delete(cf, rocksdb::Slice(it->key()));
+    } else {
+      bat.Delete(db->default_cf, combine_strings(prefix, it->key()));
+    }
+    --cnt;
   }
+  bat.PopSavePoint();
 }
 
 void RocksDBStore::RocksDBTransactionImpl::rm_range_keys(const string &prefix,
@@ -1020,85 +1009,35 @@ void RocksDBStore::RocksDBTransactionImpl::rm_range_keys(const string &prefix,
                                                          const string &end)
 {
   auto cf = db->get_cf_handle(prefix);
-  if (cf) {
-    if (db->enable_rmrange) {
-      if (db->max_items_rmrange) {
-        uint64_t cnt = db->max_items_rmrange;
-        auto it = db->get_iterator(prefix);
-        bat.SetSavePoint();
-        it->lower_bound(start);
-        while (it->valid()) {
-          if (it->key() >= end) {
-            break;
-          }
-          if (!cnt) {
-            bat.RollbackToSavePoint();
-            bat.DeleteRange(cf, rocksdb::Slice(start), rocksdb::Slice(end));
-            return;
-          }
-          bat.Delete(cf, rocksdb::Slice(it->key()));
-          it->next();
-          --cnt;
-        }
-        bat.PopSavePoint();
-      } else {
+
+  uint64_t cnt = db->delete_range_threshold;
+  auto it = db->get_iterator(prefix);
+  bat.SetSavePoint();
+  it->lower_bound(start);
+  while (it->valid()) {
+    if (it->key() >= end) {
+      break;
+    }
+    if (!cnt) {
+      bat.RollbackToSavePoint();
+      if (cf) {
         bat.DeleteRange(cf, rocksdb::Slice(start), rocksdb::Slice(end));
-      }
-    } else {
-      auto it = db->get_iterator(prefix);
-      it->lower_bound(start);
-      while (it->valid()) {
-	if (it->key() >= end) {
-	  break;
-	}
-	bat.Delete(cf, rocksdb::Slice(it->key()));
-	it->next();
-      }
-    }
-  } else {
-    if (db->enable_rmrange) {
-      if (db->max_items_rmrange) {
-        uint64_t cnt = db->max_items_rmrange;
-        auto it = db->get_iterator(prefix);
-        bat.SetSavePoint();
-        it->lower_bound(start);
-        while (it->valid()) {
-          if (it->key() >= end) {
-            break;
-          }
-          if (!cnt) {
-            bat.RollbackToSavePoint();
-            bat.DeleteRange(
-                db->default_cf,
-                rocksdb::Slice(combine_strings(prefix, start)),
-                rocksdb::Slice(combine_strings(prefix, end)));
-            return;
-          }
-          bat.Delete(db->default_cf,
-          combine_strings(prefix, it->key()));
-          it->next();
-          --cnt;
-        }
-        bat.PopSavePoint();
       } else {
-        bat.DeleteRange(
-            db->default_cf,
-            rocksdb::Slice(combine_strings(prefix, start)),
-            rocksdb::Slice(combine_strings(prefix, end)));
+        bat.DeleteRange(db->default_cf,
+                        rocksdb::Slice(combine_strings(prefix, start)),
+                        rocksdb::Slice(combine_strings(prefix, end)));
       }
-    } else {
-      auto it = db->get_iterator(prefix);
-      it->lower_bound(start);
-      while (it->valid()) {
-	if (it->key() >= end) {
-	  break;
-	}
-	bat.Delete(db->default_cf,
-		   combine_strings(prefix, it->key()));
-	it->next();
-      }
+      return;
     }
+    if (cf) {
+      bat.Delete(cf, rocksdb::Slice(it->key()));
+    } else {
+      bat.Delete(db->default_cf, combine_strings(prefix, it->key()));
+    }
+    it->next();
+    --cnt;
   }
+  bat.PopSavePoint();
 }
 
 void RocksDBStore::RocksDBTransactionImpl::merge(
@@ -1117,7 +1056,7 @@ void RocksDBStore::RocksDBTransactionImpl::merge(
     } else {
       // make a copy
       rocksdb::Slice key_slice(k);
-      vector<rocksdb::Slice> value_slices(to_set_bl.buffers().size());
+      vector<rocksdb::Slice> value_slices(to_set_bl.get_num_buffers());
       bat.Merge(cf, rocksdb::SliceParts(&key_slice, 1),
 		prepare_sliceparts(to_set_bl, &value_slices));
     }
@@ -1132,7 +1071,7 @@ void RocksDBStore::RocksDBTransactionImpl::merge(
     } else {
       // make a copy
       rocksdb::Slice key_slice(key);
-      vector<rocksdb::Slice> value_slices(to_set_bl.buffers().size());
+      vector<rocksdb::Slice> value_slices(to_set_bl.get_num_buffers());
       bat.Merge(
 	db->default_cf,
 	rocksdb::SliceParts(&key_slice, 1),
@@ -1292,27 +1231,27 @@ void RocksDBStore::compact()
 
 void RocksDBStore::compact_thread_entry()
 {
-  compact_queue_lock.Lock();
+  std::unique_lock l{compact_queue_lock};
   dout(10) << __func__ << " enter" << dendl;
   while (!compact_queue_stop) {
     if (!compact_queue.empty()) {
       pair<string,string> range = compact_queue.front();
       compact_queue.pop_front();
       logger->set(l_rocksdb_compact_queue_len, compact_queue.size());
-      compact_queue_lock.Unlock();
+      l.unlock();
       logger->inc(l_rocksdb_compact_range);
       if (range.first.empty() && range.second.empty()) {
         compact();
       } else {
         compact_range(range.first, range.second);
       }
-      compact_queue_lock.Lock();
+      l.lock();
       continue;
     }
     dout(10) << __func__ << " waiting" << dendl;
-    compact_queue_cond.Wait(compact_queue_lock);
+    compact_queue_cond.wait(l);
   }
-  compact_queue_lock.Unlock();
+  dout(10) << __func__ << " exit" << dendl;
 }
 
 void RocksDBStore::compact_range_async(const string& start, const string& end)
@@ -1328,15 +1267,18 @@ void RocksDBStore::compact_range_async(const string& start, const string& end)
       // dup; no-op
       return;
     }
-    if (p->first <= end && p->first > start) {
-      // merge with existing range to the right
-      compact_queue.push_back(make_pair(start, p->second));
+    if (start <= p->first && p->first <= end) {
+      // new region crosses start of existing range
+      // select right bound that is bigger
+      compact_queue.push_back(make_pair(start, end > p->second ? end : p->second));
       compact_queue.erase(p);
       logger->inc(l_rocksdb_compact_queue_merge);
       break;
     }
-    if (p->second >= start && p->second < end) {
-      // merge with existing range to the left
+    if (start <= p->second && p->second <= end) {
+      // new region crosses end of existing range
+      //p->first < p->second and p->second <= end, so p->first <= end.
+      //But we break if previous condition, so start > p->first.
       compact_queue.push_back(make_pair(p->first, end));
       compact_queue.erase(p);
       logger->inc(l_rocksdb_compact_queue_merge);
@@ -1349,7 +1291,7 @@ void RocksDBStore::compact_range_async(const string& start, const string& end)
     compact_queue.push_back(make_pair(start, end));
     logger->set(l_rocksdb_compact_queue_len, compact_queue.size());
   }
-  compact_queue_cond.Signal();
+  compact_queue_cond.notify_all();
   if (!compact_thread.is_started()) {
     compact_thread.create("rstore_compact");
   }

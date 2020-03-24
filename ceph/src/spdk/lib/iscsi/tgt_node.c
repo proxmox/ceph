@@ -51,7 +51,7 @@
 #define MAX_MASKBUF 128
 
 static bool
-spdk_iscsi_ipv6_netmask_allow_addr(const char *netmask, const char *addr)
+iscsi_ipv6_netmask_allow_addr(const char *netmask, const char *addr)
 {
 	struct in6_addr in6_mask;
 	struct in6_addr in6_addr;
@@ -115,7 +115,7 @@ spdk_iscsi_ipv6_netmask_allow_addr(const char *netmask, const char *addr)
 }
 
 static bool
-spdk_iscsi_ipv4_netmask_allow_addr(const char *netmask, const char *addr)
+iscsi_ipv4_netmask_allow_addr(const char *netmask, const char *addr)
 {
 	struct in_addr in4_mask;
 	struct in_addr in4_addr;
@@ -163,7 +163,7 @@ spdk_iscsi_ipv4_netmask_allow_addr(const char *netmask, const char *addr)
 }
 
 static bool
-spdk_iscsi_netmask_allow_addr(const char *netmask, const char *addr)
+iscsi_netmask_allow_addr(const char *netmask, const char *addr)
 {
 	if (netmask == NULL || addr == NULL) {
 		return false;
@@ -173,12 +173,12 @@ spdk_iscsi_netmask_allow_addr(const char *netmask, const char *addr)
 	}
 	if (netmask[0] == '[') {
 		/* IPv6 */
-		if (spdk_iscsi_ipv6_netmask_allow_addr(netmask, addr)) {
+		if (iscsi_ipv6_netmask_allow_addr(netmask, addr)) {
 			return true;
 		}
 	} else {
 		/* IPv4 */
-		if (spdk_iscsi_ipv4_netmask_allow_addr(netmask, addr)) {
+		if (iscsi_ipv4_netmask_allow_addr(netmask, addr)) {
 			return true;
 		}
 	}
@@ -186,15 +186,15 @@ spdk_iscsi_netmask_allow_addr(const char *netmask, const char *addr)
 }
 
 static bool
-spdk_iscsi_init_grp_allow_addr(struct spdk_iscsi_init_grp *igp,
-			       const char *addr)
+iscsi_init_grp_allow_addr(struct spdk_iscsi_init_grp *igp,
+			  const char *addr)
 {
 	struct spdk_iscsi_initiator_netmask *imask;
 
 	TAILQ_FOREACH(imask, &igp->netmask_head, tailq) {
 		SPDK_DEBUGLOG(SPDK_LOG_ISCSI, "netmask=%s, addr=%s\n",
 			      imask->mask, addr);
-		if (spdk_iscsi_netmask_allow_addr(imask->mask, addr)) {
+		if (iscsi_netmask_allow_addr(imask->mask, addr)) {
 			return true;
 		}
 	}
@@ -202,8 +202,8 @@ spdk_iscsi_init_grp_allow_addr(struct spdk_iscsi_init_grp *igp,
 }
 
 static int
-spdk_iscsi_init_grp_allow_iscsi_name(struct spdk_iscsi_init_grp *igp,
-				     const char *iqn, bool *result)
+iscsi_init_grp_allow_iscsi_name(struct spdk_iscsi_init_grp *igp,
+				const char *iqn, bool *result)
 {
 	struct spdk_iscsi_initiator_name *iname;
 
@@ -226,8 +226,8 @@ spdk_iscsi_init_grp_allow_iscsi_name(struct spdk_iscsi_init_grp *igp,
 }
 
 static struct spdk_iscsi_pg_map *
-spdk_iscsi_tgt_node_find_pg_map(struct spdk_iscsi_tgt_node *target,
-				struct spdk_iscsi_portal_grp *pg);
+iscsi_tgt_node_find_pg_map(struct spdk_iscsi_tgt_node *target,
+			   struct spdk_iscsi_portal_grp *pg);
 
 bool
 spdk_iscsi_tgt_node_access(struct spdk_iscsi_conn *conn,
@@ -246,17 +246,17 @@ spdk_iscsi_tgt_node_access(struct spdk_iscsi_conn *conn,
 
 	SPDK_DEBUGLOG(SPDK_LOG_ISCSI, "pg=%d, iqn=%s, addr=%s\n",
 		      pg->tag, iqn, addr);
-	pg_map = spdk_iscsi_tgt_node_find_pg_map(target, pg);
+	pg_map = iscsi_tgt_node_find_pg_map(target, pg);
 	if (pg_map == NULL) {
 		return false;
 	}
 	TAILQ_FOREACH(ig_map, &pg_map->ig_map_head, tailq) {
-		rc = spdk_iscsi_init_grp_allow_iscsi_name(ig_map->ig, iqn, &allowed);
+		rc = iscsi_init_grp_allow_iscsi_name(ig_map->ig, iqn, &allowed);
 		if (rc == 0) {
 			if (allowed == false) {
 				goto denied;
 			} else {
-				if (spdk_iscsi_init_grp_allow_addr(ig_map->ig, addr)) {
+				if (iscsi_init_grp_allow_addr(ig_map->ig, addr)) {
 					return true;
 				}
 			}
@@ -273,7 +273,7 @@ denied:
 }
 
 static bool
-spdk_iscsi_tgt_node_allow_iscsi_name(struct spdk_iscsi_tgt_node *target, const char *iqn)
+iscsi_tgt_node_allow_iscsi_name(struct spdk_iscsi_tgt_node *target, const char *iqn)
 {
 	struct spdk_iscsi_pg_map *pg_map;
 	struct spdk_iscsi_ig_map *ig_map;
@@ -286,7 +286,7 @@ spdk_iscsi_tgt_node_allow_iscsi_name(struct spdk_iscsi_tgt_node *target, const c
 
 	TAILQ_FOREACH(pg_map, &target->pg_map_head, tailq) {
 		TAILQ_FOREACH(ig_map, &pg_map->ig_map_head, tailq) {
-			rc = spdk_iscsi_init_grp_allow_iscsi_name(ig_map->ig, iqn, &result);
+			rc = iscsi_init_grp_allow_iscsi_name(ig_map->ig, iqn, &result);
 			if (rc == 0) {
 				return result;
 			}
@@ -336,7 +336,7 @@ spdk_iscsi_send_tgts(struct spdk_iscsi_conn *conn, const char *iiqn,
 		    && strcasecmp(tiqn, target->name) != 0) {
 			continue;
 		}
-		rc = spdk_iscsi_tgt_node_allow_iscsi_name(target, iiqn);
+		rc = iscsi_tgt_node_allow_iscsi_name(target, iiqn);
 		if (rc == 0) {
 			continue;
 		}
@@ -406,7 +406,7 @@ spdk_iscsi_find_tgt_node(const char *target_name)
 }
 
 static int
-spdk_iscsi_tgt_node_register(struct spdk_iscsi_tgt_node *target)
+iscsi_tgt_node_register(struct spdk_iscsi_tgt_node *target)
 {
 	pthread_mutex_lock(&g_spdk_iscsi.mutex);
 
@@ -422,7 +422,7 @@ spdk_iscsi_tgt_node_register(struct spdk_iscsi_tgt_node *target)
 }
 
 static int
-spdk_iscsi_tgt_node_unregister(struct spdk_iscsi_tgt_node *target)
+iscsi_tgt_node_unregister(struct spdk_iscsi_tgt_node *target)
 {
 	struct spdk_iscsi_tgt_node *t;
 
@@ -437,8 +437,8 @@ spdk_iscsi_tgt_node_unregister(struct spdk_iscsi_tgt_node *target)
 }
 
 static struct spdk_iscsi_ig_map *
-spdk_iscsi_pg_map_find_ig_map(struct spdk_iscsi_pg_map *pg_map,
-			      struct spdk_iscsi_init_grp *ig)
+iscsi_pg_map_find_ig_map(struct spdk_iscsi_pg_map *pg_map,
+			 struct spdk_iscsi_init_grp *ig)
 {
 	struct spdk_iscsi_ig_map *ig_map;
 
@@ -452,12 +452,12 @@ spdk_iscsi_pg_map_find_ig_map(struct spdk_iscsi_pg_map *pg_map,
 }
 
 static struct spdk_iscsi_ig_map *
-spdk_iscsi_pg_map_add_ig_map(struct spdk_iscsi_pg_map *pg_map,
-			     struct spdk_iscsi_init_grp *ig)
+iscsi_pg_map_add_ig_map(struct spdk_iscsi_pg_map *pg_map,
+			struct spdk_iscsi_init_grp *ig)
 {
 	struct spdk_iscsi_ig_map *ig_map;
 
-	if (spdk_iscsi_pg_map_find_ig_map(pg_map, ig) != NULL) {
+	if (iscsi_pg_map_find_ig_map(pg_map, ig) != NULL) {
 		return NULL;
 	}
 
@@ -475,8 +475,8 @@ spdk_iscsi_pg_map_add_ig_map(struct spdk_iscsi_pg_map *pg_map,
 }
 
 static void
-_spdk_iscsi_pg_map_delete_ig_map(struct spdk_iscsi_pg_map *pg_map,
-				 struct spdk_iscsi_ig_map *ig_map)
+_iscsi_pg_map_delete_ig_map(struct spdk_iscsi_pg_map *pg_map,
+			    struct spdk_iscsi_ig_map *ig_map)
 {
 	TAILQ_REMOVE(&pg_map->ig_map_head, ig_map, tailq);
 	pg_map->num_ig_maps--;
@@ -485,33 +485,33 @@ _spdk_iscsi_pg_map_delete_ig_map(struct spdk_iscsi_pg_map *pg_map,
 }
 
 static int
-spdk_iscsi_pg_map_delete_ig_map(struct spdk_iscsi_pg_map *pg_map,
-				struct spdk_iscsi_init_grp *ig)
+iscsi_pg_map_delete_ig_map(struct spdk_iscsi_pg_map *pg_map,
+			   struct spdk_iscsi_init_grp *ig)
 {
 	struct spdk_iscsi_ig_map *ig_map;
 
-	ig_map = spdk_iscsi_pg_map_find_ig_map(pg_map, ig);
+	ig_map = iscsi_pg_map_find_ig_map(pg_map, ig);
 	if (ig_map == NULL) {
 		return -ENOENT;
 	}
 
-	_spdk_iscsi_pg_map_delete_ig_map(pg_map, ig_map);
+	_iscsi_pg_map_delete_ig_map(pg_map, ig_map);
 	return 0;
 }
 
 static void
-spdk_iscsi_pg_map_delete_all_ig_maps(struct spdk_iscsi_pg_map *pg_map)
+iscsi_pg_map_delete_all_ig_maps(struct spdk_iscsi_pg_map *pg_map)
 {
 	struct spdk_iscsi_ig_map *ig_map, *tmp;
 
 	TAILQ_FOREACH_SAFE(ig_map, &pg_map->ig_map_head, tailq, tmp) {
-		_spdk_iscsi_pg_map_delete_ig_map(pg_map, ig_map);
+		_iscsi_pg_map_delete_ig_map(pg_map, ig_map);
 	}
 }
 
 static struct spdk_iscsi_pg_map *
-spdk_iscsi_tgt_node_find_pg_map(struct spdk_iscsi_tgt_node *target,
-				struct spdk_iscsi_portal_grp *pg)
+iscsi_tgt_node_find_pg_map(struct spdk_iscsi_tgt_node *target,
+			   struct spdk_iscsi_portal_grp *pg)
 {
 	struct spdk_iscsi_pg_map *pg_map;
 
@@ -525,14 +525,14 @@ spdk_iscsi_tgt_node_find_pg_map(struct spdk_iscsi_tgt_node *target,
 }
 
 static struct spdk_iscsi_pg_map *
-spdk_iscsi_tgt_node_add_pg_map(struct spdk_iscsi_tgt_node *target,
-			       struct spdk_iscsi_portal_grp *pg)
+iscsi_tgt_node_add_pg_map(struct spdk_iscsi_tgt_node *target,
+			  struct spdk_iscsi_portal_grp *pg)
 {
 	struct spdk_iscsi_pg_map *pg_map;
 	char port_name[MAX_TMPBUF];
 	int rc;
 
-	if (spdk_iscsi_tgt_node_find_pg_map(target, pg) != NULL) {
+	if (iscsi_tgt_node_find_pg_map(target, pg) != NULL) {
 		return NULL;
 	}
 
@@ -566,8 +566,8 @@ spdk_iscsi_tgt_node_add_pg_map(struct spdk_iscsi_tgt_node *target,
 }
 
 static void
-_spdk_iscsi_tgt_node_delete_pg_map(struct spdk_iscsi_tgt_node *target,
-				   struct spdk_iscsi_pg_map *pg_map)
+_iscsi_tgt_node_delete_pg_map(struct spdk_iscsi_tgt_node *target,
+			      struct spdk_iscsi_pg_map *pg_map)
 {
 	TAILQ_REMOVE(&target->pg_map_head, pg_map, tailq);
 	target->num_pg_maps--;
@@ -579,12 +579,12 @@ _spdk_iscsi_tgt_node_delete_pg_map(struct spdk_iscsi_tgt_node *target,
 }
 
 static int
-spdk_iscsi_tgt_node_delete_pg_map(struct spdk_iscsi_tgt_node *target,
-				  struct spdk_iscsi_portal_grp *pg)
+iscsi_tgt_node_delete_pg_map(struct spdk_iscsi_tgt_node *target,
+			     struct spdk_iscsi_portal_grp *pg)
 {
 	struct spdk_iscsi_pg_map *pg_map;
 
-	pg_map = spdk_iscsi_tgt_node_find_pg_map(target, pg);
+	pg_map = iscsi_tgt_node_find_pg_map(target, pg);
 	if (pg_map == NULL) {
 		return -ENOENT;
 	}
@@ -594,55 +594,118 @@ spdk_iscsi_tgt_node_delete_pg_map(struct spdk_iscsi_tgt_node *target,
 			      pg_map->num_ig_maps);
 	}
 
-	spdk_iscsi_pg_map_delete_all_ig_maps(pg_map);
-	_spdk_iscsi_tgt_node_delete_pg_map(target, pg_map);
+	iscsi_pg_map_delete_all_ig_maps(pg_map);
+	_iscsi_tgt_node_delete_pg_map(target, pg_map);
 	return 0;
 }
 
 static void
-spdk_iscsi_tgt_node_delete_ig_maps(struct spdk_iscsi_tgt_node *target,
-				   struct spdk_iscsi_init_grp *ig)
+iscsi_tgt_node_delete_ig_maps(struct spdk_iscsi_tgt_node *target,
+			      struct spdk_iscsi_init_grp *ig)
 {
 	struct spdk_iscsi_pg_map *pg_map, *tmp;
 
 	TAILQ_FOREACH_SAFE(pg_map, &target->pg_map_head, tailq, tmp) {
-		spdk_iscsi_pg_map_delete_ig_map(pg_map, ig);
+		iscsi_pg_map_delete_ig_map(pg_map, ig);
 		if (pg_map->num_ig_maps == 0) {
-			_spdk_iscsi_tgt_node_delete_pg_map(target, pg_map);
+			_iscsi_tgt_node_delete_pg_map(target, pg_map);
 		}
 	}
 }
 
 static void
-spdk_iscsi_tgt_node_delete_all_pg_maps(struct spdk_iscsi_tgt_node *target)
+iscsi_tgt_node_delete_all_pg_maps(struct spdk_iscsi_tgt_node *target)
 {
 	struct spdk_iscsi_pg_map *pg_map, *tmp;
 
 	TAILQ_FOREACH_SAFE(pg_map, &target->pg_map_head, tailq, tmp) {
-		spdk_iscsi_pg_map_delete_all_ig_maps(pg_map);
-		_spdk_iscsi_tgt_node_delete_pg_map(target, pg_map);
+		iscsi_pg_map_delete_all_ig_maps(pg_map);
+		_iscsi_tgt_node_delete_pg_map(target, pg_map);
 	}
 }
 
 static void
-spdk_iscsi_tgt_node_destruct(struct spdk_iscsi_tgt_node *target)
+_iscsi_tgt_node_destruct(void *cb_arg, int rc)
 {
-	if (target == NULL) {
+	struct spdk_iscsi_tgt_node *target = cb_arg;
+	iscsi_tgt_node_destruct_cb destruct_cb_fn = target->destruct_cb_fn;
+	void *destruct_cb_arg = target->destruct_cb_arg;
+
+	if (rc != 0) {
+		if (destruct_cb_fn) {
+			destruct_cb_fn(destruct_cb_arg, rc);
+		}
 		return;
 	}
 
 	free(target->name);
 	free(target->alias);
-	spdk_iscsi_tgt_node_delete_all_pg_maps(target);
-	spdk_scsi_dev_destruct(target->dev);
+
+	pthread_mutex_lock(&g_spdk_iscsi.mutex);
+	iscsi_tgt_node_delete_all_pg_maps(target);
+	pthread_mutex_unlock(&g_spdk_iscsi.mutex);
 
 	pthread_mutex_destroy(&target->mutex);
 	free(target);
+
+	if (destruct_cb_fn) {
+		destruct_cb_fn(destruct_cb_arg, 0);
+	}
 }
 
 static int
-spdk_iscsi_tgt_node_delete_pg_ig_map(struct spdk_iscsi_tgt_node *target,
-				     int pg_tag, int ig_tag)
+iscsi_tgt_node_check_active_conns(void *arg)
+{
+	struct spdk_iscsi_tgt_node *target = arg;
+
+	if (spdk_iscsi_get_active_conns(target) != 0) {
+		return 1;
+	}
+
+	spdk_poller_unregister(&target->destruct_poller);
+
+	spdk_scsi_dev_destruct(target->dev, _iscsi_tgt_node_destruct, target);
+
+	return 1;
+}
+
+static void
+iscsi_tgt_node_destruct(struct spdk_iscsi_tgt_node *target,
+			iscsi_tgt_node_destruct_cb cb_fn, void *cb_arg)
+{
+	if (target == NULL) {
+		if (cb_fn) {
+			cb_fn(cb_arg, -ENOENT);
+		}
+		return;
+	}
+
+	if (target->destructed) {
+		SPDK_ERRLOG("Destructing %s is already started\n", target->name);
+		if (cb_fn) {
+			cb_fn(cb_arg, -EBUSY);
+		}
+		return;
+	}
+
+	target->destructed = true;
+	target->destruct_cb_fn = cb_fn;
+	target->destruct_cb_arg = cb_arg;
+
+	spdk_iscsi_conns_start_exit(target);
+
+	if (spdk_iscsi_get_active_conns(target) != 0) {
+		target->destruct_poller = spdk_poller_register(iscsi_tgt_node_check_active_conns,
+					  target, 10);
+	} else {
+		spdk_scsi_dev_destruct(target->dev, _iscsi_tgt_node_destruct, target);
+	}
+
+}
+
+static int
+iscsi_tgt_node_delete_pg_ig_map(struct spdk_iscsi_tgt_node *target,
+				int pg_tag, int ig_tag)
 {
 	struct spdk_iscsi_portal_grp	*pg;
 	struct spdk_iscsi_init_grp	*ig;
@@ -660,28 +723,28 @@ spdk_iscsi_tgt_node_delete_pg_ig_map(struct spdk_iscsi_tgt_node *target,
 		return -ENOENT;
 	}
 
-	pg_map = spdk_iscsi_tgt_node_find_pg_map(target, pg);
+	pg_map = iscsi_tgt_node_find_pg_map(target, pg);
 	if (pg_map == NULL) {
 		SPDK_ERRLOG("%s: PortalGroup%d is not mapped\n", target->name, pg_tag);
 		return -ENOENT;
 	}
-	ig_map = spdk_iscsi_pg_map_find_ig_map(pg_map, ig);
+	ig_map = iscsi_pg_map_find_ig_map(pg_map, ig);
 	if (ig_map == NULL) {
 		SPDK_ERRLOG("%s: InitiatorGroup%d is not mapped\n", target->name, pg_tag);
 		return -ENOENT;
 	}
 
-	_spdk_iscsi_pg_map_delete_ig_map(pg_map, ig_map);
+	_iscsi_pg_map_delete_ig_map(pg_map, ig_map);
 	if (pg_map->num_ig_maps == 0) {
-		_spdk_iscsi_tgt_node_delete_pg_map(target, pg_map);
+		_iscsi_tgt_node_delete_pg_map(target, pg_map);
 	}
 
 	return 0;
 }
 
 static int
-spdk_iscsi_tgt_node_add_pg_ig_map(struct spdk_iscsi_tgt_node *target,
-				  int pg_tag, int ig_tag)
+iscsi_tgt_node_add_pg_ig_map(struct spdk_iscsi_tgt_node *target,
+			     int pg_tag, int ig_tag)
 {
 	struct spdk_iscsi_portal_grp	*pg;
 	struct spdk_iscsi_pg_map	*pg_map;
@@ -701,9 +764,9 @@ spdk_iscsi_tgt_node_add_pg_ig_map(struct spdk_iscsi_tgt_node *target,
 	}
 
 	/* get existing pg_map or create new pg_map and add it to target */
-	pg_map = spdk_iscsi_tgt_node_find_pg_map(target, pg);
+	pg_map = iscsi_tgt_node_find_pg_map(target, pg);
 	if (pg_map == NULL) {
-		pg_map = spdk_iscsi_tgt_node_add_pg_map(target, pg);
+		pg_map = iscsi_tgt_node_add_pg_map(target, pg);
 		if (pg_map == NULL) {
 			goto failed;
 		}
@@ -711,7 +774,7 @@ spdk_iscsi_tgt_node_add_pg_ig_map(struct spdk_iscsi_tgt_node *target,
 	}
 
 	/* create new ig_map and add it to pg_map */
-	ig_map = spdk_iscsi_pg_map_add_ig_map(pg_map, ig);
+	ig_map = iscsi_pg_map_add_ig_map(pg_map, ig);
 	if (ig_map == NULL) {
 		goto failed;
 	}
@@ -720,7 +783,7 @@ spdk_iscsi_tgt_node_add_pg_ig_map(struct spdk_iscsi_tgt_node *target,
 
 failed:
 	if (new_pg_map) {
-		_spdk_iscsi_tgt_node_delete_pg_map(target, pg_map);
+		_iscsi_tgt_node_delete_pg_map(target, pg_map);
 	}
 
 	return -1;
@@ -735,8 +798,8 @@ spdk_iscsi_tgt_node_add_pg_ig_maps(struct spdk_iscsi_tgt_node *target,
 
 	pthread_mutex_lock(&g_spdk_iscsi.mutex);
 	for (i = 0; i < num_maps; i++) {
-		rc = spdk_iscsi_tgt_node_add_pg_ig_map(target, pg_tag_list[i],
-						       ig_tag_list[i]);
+		rc = iscsi_tgt_node_add_pg_ig_map(target, pg_tag_list[i],
+						  ig_tag_list[i]);
 		if (rc != 0) {
 			SPDK_ERRLOG("could not add map to target\n");
 			goto invalid;
@@ -747,8 +810,8 @@ spdk_iscsi_tgt_node_add_pg_ig_maps(struct spdk_iscsi_tgt_node *target,
 
 invalid:
 	for (; i > 0; --i) {
-		spdk_iscsi_tgt_node_delete_pg_ig_map(target, pg_tag_list[i - 1],
-						     ig_tag_list[i - 1]);
+		iscsi_tgt_node_delete_pg_ig_map(target, pg_tag_list[i - 1],
+						ig_tag_list[i - 1]);
 	}
 	pthread_mutex_unlock(&g_spdk_iscsi.mutex);
 	return -1;
@@ -763,8 +826,8 @@ spdk_iscsi_tgt_node_delete_pg_ig_maps(struct spdk_iscsi_tgt_node *target,
 
 	pthread_mutex_lock(&g_spdk_iscsi.mutex);
 	for (i = 0; i < num_maps; i++) {
-		rc = spdk_iscsi_tgt_node_delete_pg_ig_map(target, pg_tag_list[i],
-				ig_tag_list[i]);
+		rc = iscsi_tgt_node_delete_pg_ig_map(target, pg_tag_list[i],
+						     ig_tag_list[i]);
 		if (rc != 0) {
 			SPDK_ERRLOG("could not delete map from target\n");
 			goto invalid;
@@ -775,10 +838,10 @@ spdk_iscsi_tgt_node_delete_pg_ig_maps(struct spdk_iscsi_tgt_node *target,
 
 invalid:
 	for (; i > 0; --i) {
-		rc = spdk_iscsi_tgt_node_add_pg_ig_map(target, pg_tag_list[i - 1],
-						       ig_tag_list[i - 1]);
+		rc = iscsi_tgt_node_add_pg_ig_map(target, pg_tag_list[i - 1],
+						  ig_tag_list[i - 1]);
 		if (rc != 0) {
-			spdk_iscsi_tgt_node_delete_all_pg_maps(target);
+			iscsi_tgt_node_delete_all_pg_maps(target);
 			break;
 		}
 	}
@@ -787,10 +850,15 @@ invalid:
 }
 
 static int
-spdk_check_iscsi_name(const char *name)
+check_iscsi_name(const char *name)
 {
 	const unsigned char *up = (const unsigned char *) name;
 	size_t n;
+
+	/* valid iSCSI name no larger than 223 bytes */
+	if (strlen(name) > MAX_TARGET_NAME) {
+		return -1;
+	}
 
 	/* valid iSCSI name? */
 	for (n = 0; up[n] != 0; n++) {
@@ -888,7 +956,7 @@ spdk_iscsi_tgt_node_construct(int target_index,
 		snprintf(fullname, sizeof(fullname), "%s", name);
 	}
 
-	if (spdk_check_iscsi_name(fullname) != 0) {
+	if (check_iscsi_name(fullname) != 0) {
 		SPDK_ERRLOG("TargetName %s contains an invalid character or format.\n",
 			    name);
 		return NULL;
@@ -905,7 +973,7 @@ spdk_iscsi_tgt_node_construct(int target_index,
 	rc = pthread_mutex_init(&target->mutex, NULL);
 	if (rc != 0) {
 		SPDK_ERRLOG("tgt_node%d: mutex_init() failed\n", target->num);
-		spdk_iscsi_tgt_node_destruct(target);
+		iscsi_tgt_node_destruct(target, NULL, NULL);
 		return NULL;
 	}
 
@@ -914,7 +982,7 @@ spdk_iscsi_tgt_node_construct(int target_index,
 	target->name = strdup(fullname);
 	if (!target->name) {
 		SPDK_ERRLOG("Could not allocate TargetName\n");
-		spdk_iscsi_tgt_node_destruct(target);
+		iscsi_tgt_node_destruct(target, NULL, NULL);
 		return NULL;
 	}
 
@@ -924,7 +992,7 @@ spdk_iscsi_tgt_node_construct(int target_index,
 		target->alias = strdup(alias);
 		if (!target->alias) {
 			SPDK_ERRLOG("Could not allocate TargetAlias\n");
-			spdk_iscsi_tgt_node_destruct(target);
+			iscsi_tgt_node_destruct(target, NULL, NULL);
 			return NULL;
 		}
 	}
@@ -933,7 +1001,7 @@ spdk_iscsi_tgt_node_construct(int target_index,
 					      SPDK_SPC_PROTOCOL_IDENTIFIER_ISCSI, NULL, NULL);
 	if (!target->dev) {
 		SPDK_ERRLOG("Could not construct SCSI device\n");
-		spdk_iscsi_tgt_node_destruct(target);
+		iscsi_tgt_node_destruct(target, NULL, NULL);
 		return NULL;
 	}
 
@@ -941,7 +1009,7 @@ spdk_iscsi_tgt_node_construct(int target_index,
 	rc = spdk_iscsi_tgt_node_add_pg_ig_maps(target, pg_tag_list, ig_tag_list, num_maps);
 	if (rc != 0) {
 		SPDK_ERRLOG("could not add map to target\n");
-		spdk_iscsi_tgt_node_destruct(target);
+		iscsi_tgt_node_destruct(target, NULL, NULL);
 		return NULL;
 	}
 
@@ -960,10 +1028,10 @@ spdk_iscsi_tgt_node_construct(int target_index,
 		target->queue_depth = g_spdk_iscsi.MaxQueueDepth;
 	}
 
-	rc = spdk_iscsi_tgt_node_register(target);
+	rc = iscsi_tgt_node_register(target);
 	if (rc != 0) {
 		SPDK_ERRLOG("register target is failed\n");
-		spdk_iscsi_tgt_node_destruct(target);
+		iscsi_tgt_node_destruct(target, NULL, NULL);
 		return NULL;
 	}
 
@@ -971,7 +1039,7 @@ spdk_iscsi_tgt_node_construct(int target_index,
 }
 
 static int
-spdk_iscsi_parse_tgt_node(struct spdk_conf_section *sp)
+iscsi_parse_tgt_node(struct spdk_conf_section *sp)
 {
 	char buf[MAX_TMPBUF];
 	struct spdk_iscsi_tgt_node *target;
@@ -1208,7 +1276,7 @@ int spdk_iscsi_parse_tgt_nodes(void)
 				SPDK_ERRLOG("tag %d is invalid\n", tag);
 				return -1;
 			}
-			rc = spdk_iscsi_parse_tgt_node(sp);
+			rc = iscsi_parse_tgt_node(sp);
 			if (rc < 0) {
 				SPDK_ERRLOG("spdk_iscsi_parse_tgt_node() failed\n");
 				return -1;
@@ -1222,33 +1290,49 @@ int spdk_iscsi_parse_tgt_nodes(void)
 void
 spdk_iscsi_shutdown_tgt_nodes(void)
 {
-	struct spdk_iscsi_tgt_node *target, *tmp;
+	struct spdk_iscsi_tgt_node *target;
 
 	pthread_mutex_lock(&g_spdk_iscsi.mutex);
-	TAILQ_FOREACH_SAFE(target, &g_spdk_iscsi.target_head, tailq, tmp) {
+	while (!TAILQ_EMPTY(&g_spdk_iscsi.target_head)) {
+		target = TAILQ_FIRST(&g_spdk_iscsi.target_head);
 		TAILQ_REMOVE(&g_spdk_iscsi.target_head, target, tailq);
-		spdk_iscsi_tgt_node_destruct(target);
+
+		pthread_mutex_unlock(&g_spdk_iscsi.mutex);
+
+		iscsi_tgt_node_destruct(target, NULL, NULL);
+
+		pthread_mutex_lock(&g_spdk_iscsi.mutex);
 	}
 	pthread_mutex_unlock(&g_spdk_iscsi.mutex);
 }
 
-int
-spdk_iscsi_shutdown_tgt_node_by_name(const char *target_name)
+void
+spdk_iscsi_shutdown_tgt_node_by_name(const char *target_name,
+				     iscsi_tgt_node_destruct_cb cb_fn, void *cb_arg)
 {
 	struct spdk_iscsi_tgt_node *target;
 
 	pthread_mutex_lock(&g_spdk_iscsi.mutex);
 	target = spdk_iscsi_find_tgt_node(target_name);
 	if (target != NULL) {
-		spdk_iscsi_tgt_node_unregister(target);
-		spdk_iscsi_tgt_node_destruct(target);
+		iscsi_tgt_node_unregister(target);
 		pthread_mutex_unlock(&g_spdk_iscsi.mutex);
 
-		return 0;
+		iscsi_tgt_node_destruct(target, cb_fn, cb_arg);
+
+		return;
 	}
 	pthread_mutex_unlock(&g_spdk_iscsi.mutex);
 
-	return -ENOENT;
+	if (cb_fn) {
+		cb_fn(cb_arg, -ENOENT);
+	}
+}
+
+bool
+spdk_iscsi_tgt_node_is_destructed(struct spdk_iscsi_tgt_node *target)
+{
+	return target->destructed;
 }
 
 int
@@ -1276,7 +1360,7 @@ spdk_iscsi_tgt_node_cleanup_luns(struct spdk_iscsi_conn *conn,
 		task->scsi.initiator_port = conn->initiator_port;
 		task->scsi.lun = lun;
 
-		spdk_scsi_dev_queue_mgmt_task(target->dev, &task->scsi, SPDK_SCSI_TASK_FUNC_LUN_RESET);
+		spdk_iscsi_op_abort_task_set(task, SPDK_SCSI_TASK_FUNC_LUN_RESET);
 	}
 
 	return 0;
@@ -1290,10 +1374,10 @@ void spdk_iscsi_tgt_node_delete_map(struct spdk_iscsi_portal_grp *portal_group,
 	pthread_mutex_lock(&g_spdk_iscsi.mutex);
 	TAILQ_FOREACH(target, &g_spdk_iscsi.target_head, tailq) {
 		if (portal_group) {
-			spdk_iscsi_tgt_node_delete_pg_map(target, portal_group);
+			iscsi_tgt_node_delete_pg_map(target, portal_group);
 		}
 		if (initiator_group) {
-			spdk_iscsi_tgt_node_delete_ig_maps(target, initiator_group);
+			iscsi_tgt_node_delete_ig_maps(target, initiator_group);
 		}
 	}
 	pthread_mutex_unlock(&g_spdk_iscsi.mutex);
@@ -1451,8 +1535,8 @@ spdk_iscsi_tgt_nodes_config_text(FILE *fp)
 }
 
 static void
-spdk_iscsi_tgt_node_info_json(struct spdk_iscsi_tgt_node *target,
-			      struct spdk_json_write_ctx *w)
+iscsi_tgt_node_info_json(struct spdk_iscsi_tgt_node *target,
+			 struct spdk_json_write_ctx *w)
 {
 	struct spdk_iscsi_pg_map *pg_map;
 	struct spdk_iscsi_ig_map *ig_map;
@@ -1504,15 +1588,15 @@ spdk_iscsi_tgt_node_info_json(struct spdk_iscsi_tgt_node *target,
 }
 
 static void
-spdk_iscsi_tgt_node_config_json(struct spdk_iscsi_tgt_node *target,
-				struct spdk_json_write_ctx *w)
+iscsi_tgt_node_config_json(struct spdk_iscsi_tgt_node *target,
+			   struct spdk_json_write_ctx *w)
 {
 	spdk_json_write_object_begin(w);
 
 	spdk_json_write_named_string(w, "method", "construct_target_node");
 
 	spdk_json_write_name(w, "params");
-	spdk_iscsi_tgt_node_info_json(target, w);
+	iscsi_tgt_node_info_json(target, w);
 
 	spdk_json_write_object_end(w);
 }
@@ -1523,7 +1607,7 @@ spdk_iscsi_tgt_nodes_info_json(struct spdk_json_write_ctx *w)
 	struct spdk_iscsi_tgt_node *target;
 
 	TAILQ_FOREACH(target, &g_spdk_iscsi.target_head, tailq) {
-		spdk_iscsi_tgt_node_info_json(target, w);
+		iscsi_tgt_node_info_json(target, w);
 	}
 }
 
@@ -1533,6 +1617,6 @@ spdk_iscsi_tgt_nodes_config_json(struct spdk_json_write_ctx *w)
 	struct spdk_iscsi_tgt_node *target;
 
 	TAILQ_FOREACH(target, &g_spdk_iscsi.target_head, tailq) {
-		spdk_iscsi_tgt_node_config_json(target, w);
+		iscsi_tgt_node_config_json(target, w);
 	}
 }

@@ -14,7 +14,6 @@
 #include "librbd/managed_lock/Types.h"
 #include "librbd/watcher/Types.h"
 #include "Instances.h"
-#include "MirrorStatusWatcher.h"
 #include "tools/rbd_mirror/instances/Types.h"
 #include "tools/rbd_mirror/leader_watcher/Types.h"
 
@@ -45,6 +44,7 @@ public:
   void init(Context *on_finish);
   void shut_down(Context *on_finish);
 
+  bool is_blacklisted() const;
   bool is_leader() const;
   bool is_releasing_leader() const;
   bool get_leader_instance_id(std::string *instance_id) const;
@@ -63,11 +63,8 @@ private:
    *  CREATE_OBJECT  * * * * *  (error)               UNREGISTER_WATCH
    *     |                   *                                ^
    *     v                   *                                |
-   *  REGISTER_WATCH * * * * *                        SHUT_DOWN_STATUS_WATCHER
-   *     |                   *                                ^
-   *     v                   *                                |
-   *  INIT_STATUS_WATCHER  * *                        SHUT_DOWN_LEADER_LOCK
-   *     |                                                    |
+   *  REGISTER_WATCH * * * * *                        SHUT_DOWN_LEADER_LOCK
+   *     |                                                    ^
    *     |           (no leader heartbeat and acquire failed) |
    *     | BREAK_LOCK <-------------------------------------\ |
    *     |    |                 (no leader heartbeat)       | | (shut down)
@@ -129,12 +126,12 @@ private:
     }
 
     bool is_leader() const {
-      Mutex::Locker locker(Parent::m_lock);
+      std::lock_guard locker{Parent::m_lock};
       return Parent::is_state_post_acquiring() || Parent::is_state_locked();
     }
 
     bool is_releasing_leader() const {
-      Mutex::Locker locker(Parent::m_lock);
+      std::lock_guard locker{Parent::m_lock};
       return Parent::is_state_pre_releasing();
     }
 
@@ -142,7 +139,7 @@ private:
     void post_acquire_lock_handler(int r, Context *on_finish) {
       if (r == 0) {
         // lock is owned at this point
-        Mutex::Locker locker(Parent::m_lock);
+	std::lock_guard locker{Parent::m_lock};
         Parent::set_state_post_acquiring();
       }
       watcher->handle_post_acquire_leader_lock(r, on_finish);
@@ -208,7 +205,7 @@ private:
   leader_watcher::Listener *m_listener;
 
   InstancesListener m_instances_listener;
-  mutable Mutex m_lock;
+  mutable ceph::mutex m_lock;
   uint64_t m_notifier_id;
   std::string m_instance_id;
   LeaderLock *m_leader_lock;
@@ -216,9 +213,10 @@ private:
   Context *m_on_shut_down_finish = nullptr;
   uint64_t m_acquire_attempts = 0;
   int m_ret_val = 0;
-  MirrorStatusWatcher<ImageCtxT> *m_status_watcher = nullptr;
   Instances<ImageCtxT> *m_instances = nullptr;
   librbd::managed_lock::Locker m_locker;
+
+  bool m_blacklisted = false;
 
   AsyncOpTracker m_timer_op_tracker;
   Context *m_timer_task = nullptr;
@@ -226,8 +224,8 @@ private:
 
   librbd::watcher::NotifyResponse m_heartbeat_response;
 
-  bool is_leader(Mutex &m_lock) const;
-  bool is_releasing_leader(Mutex &m_lock) const;
+  bool is_leader(ceph::mutex &m_lock) const;
+  bool is_releasing_leader(ceph::mutex &m_lock) const;
 
   void cancel_timer_task();
   void schedule_timer_task(const std::string &name,
@@ -263,12 +261,6 @@ private:
 
   void release_leader_lock();
   void handle_release_leader_lock(int r);
-
-  void init_status_watcher();
-  void handle_init_status_watcher(int r);
-
-  void shut_down_status_watcher();
-  void handle_shut_down_status_watcher(int r);
 
   void init_instances();
   void handle_init_instances(int r);

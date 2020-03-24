@@ -14,7 +14,7 @@ and AEAD symmetric and asymmetric Crypto operations.
 Design Principles
 -----------------
 
-The cryptodev library follows the same basic principles as those used in DPDKs
+The cryptodev library follows the same basic principles as those used in DPDK's
 Ethernet Device framework. The Crypto framework provides a generic Crypto device
 framework which supports both physical (hardware) and virtual (software) Crypto
 devices as well as a generic Crypto API which allows Crypto devices to be
@@ -48,7 +48,7 @@ From the command line using the --vdev EAL option
    * If DPDK application requires multiple software crypto PMD devices then required
      number of ``--vdev`` with appropriate libraries are to be added.
 
-   * An Application with crypto PMD instaces sharing the same library requires unique ID.
+   * An Application with crypto PMD instances sharing the same library requires unique ID.
 
    Example: ``--vdev  'crypto_aesni_mb0' --vdev  'crypto_aesni_mb1'``
 
@@ -121,9 +121,19 @@ Each queue pairs resources may be allocated on a specified socket.
                 const struct rte_cryptodev_qp_conf *qp_conf,
                 int socket_id)
 
-    struct rte_cryptodev_qp_conf {
+   struct rte_cryptodev_qp_conf {
         uint32_t nb_descriptors; /**< Number of descriptors per queue pair */
+        struct rte_mempool *mp_session;
+        /**< The mempool for creating session in sessionless mode */
+        struct rte_mempool *mp_session_private;
+        /**< The mempool for creating sess private data in sessionless mode */
     };
+
+
+The fields ``mp_session`` and ``mp_session_private`` are used for creating
+temporary session to process the crypto operations in the session-less mode.
+They can be the same other different mempools. Please note not all Cryptodev
+PMDs supports session-less mode.
 
 
 Logical Cores, Memory and Queues Pair Relationships
@@ -317,6 +327,10 @@ the set API to set the user data and retrieve it using get API.
 	void * rte_cryptodev_sym_session_get_user_data(
 		struct rte_cryptodev_sym_session *sess);
 
+Please note the ``size`` passed to set API cannot be bigger than the predefined
+``user_data_sz`` when creating the session header mempool, otherwise the
+function will return error. Also when ``user_data_sz`` was defined as ``0`` when
+creating the session header mempool, the get API will always return ``NULL``.
 
 For session-less mode, the private user data information can be placed along with the
 ``struct rte_crypto_op``. The ``rte_crypto_op::private_data_offset`` indicates the
@@ -382,7 +396,7 @@ Operation Management and Allocation
 
 The cryptodev library provides an API set for managing Crypto operations which
 utilize the Mempool Library to allocate operation buffers. Therefore, it ensures
-that the crytpo operation is interleaved optimally across the channels and
+that the crypto operation is interleaved optimally across the channels and
 ranks for optimal processing.
 A ``rte_crypto_op`` contains a field indicating the pool that it originated from.
 When calling ``rte_crypto_op_free(op)``, the operation returns to its original pool.
@@ -445,21 +459,23 @@ Crypto workloads.
 
 .. figure:: img/cryptodev_sym_sess.*
 
-The Crypto device framework provides APIs to allocate and initialize sessions
-for crypto devices, where sessions are mempool objects.
-It is the application's responsibility to create and manage the session mempools.
-This approach allows for different scenarios such as having a single session
-mempool for all crypto devices (where the mempool object size is big
-enough to hold the private session of any crypto device), as well as having
-multiple session mempools of different sizes for better memory usage.
+The Crypto device framework provides APIs to create session mempool and allocate
+and initialize sessions for crypto devices, where sessions are mempool objects.
+The application has to use ``rte_cryptodev_sym_session_pool_create()`` to
+create the session header mempool that creates a mempool with proper element
+size automatically and stores necessary information for safely accessing the
+session in the mempool's private data field.
 
-An application can use ``rte_cryptodev_sym_get_private_session_size()`` to
-get the private session size of given crypto device. This function would allow
-an application to calculate the max device session size of all crypto devices
-to create a single session mempool.
-If instead an application creates multiple session mempools, the Crypto device
-framework also provides ``rte_cryptodev_sym_get_header_session_size`` to get
-the size of an uninitialized session.
+To create a mempool for storing session private data, the application has two
+options. The first is to create another mempool with elt size equal to or
+bigger than the maximum session private data size of all crypto devices that
+will share the same session header. The creation of the mempool shall use the
+traditional ``rte_mempool_create()`` with the correct ``elt_size``. The other
+option is to change the ``elt_size`` parameter in
+``rte_cryptodev_sym_session_pool_create()`` to the correct value. The first
+option is more complex to implement but may result in better memory usage as
+a session header normally takes smaller memory footprint as the session private
+data.
 
 Once the session mempools have been created, ``rte_cryptodev_sym_session_create()``
 is used to allocate an uninitialized session from the given mempool.
@@ -586,7 +602,7 @@ Sample code
 
 There are various sample applications that show how to use the cryptodev library,
 such as the L2fwd with Crypto sample application (L2fwd-crypto) and
-the IPSec Security Gateway application (ipsec-secgw).
+the IPsec Security Gateway application (ipsec-secgw).
 
 While these applications demonstrate how an application can be created to perform
 generic crypto operation, the required complexity hides the basic steps of
@@ -613,7 +629,8 @@ using one of the crypto PMDs available in DPDK.
     #define IV_OFFSET            (sizeof(struct rte_crypto_op) + \
                                  sizeof(struct rte_crypto_sym_op))
 
-    struct rte_mempool *mbuf_pool, *crypto_op_pool, *session_pool;
+    struct rte_mempool *mbuf_pool, *crypto_op_pool;
+    struct rte_mempool *session_pool, *session_priv_pool;
     unsigned int session_size;
     int ret;
 
@@ -663,33 +680,56 @@ using one of the crypto PMDs available in DPDK.
     /* Get private session data size. */
     session_size = rte_cryptodev_sym_get_private_session_size(cdev_id);
 
+    #ifdef USE_TWO_MEMPOOLS
+    /* Create session mempool for the session header. */
+    session_pool = rte_cryptodev_sym_session_pool_create("session_pool",
+                                    MAX_SESSIONS,
+                                    0,
+                                    POOL_CACHE_SIZE,
+                                    0,
+                                    socket_id);
+
     /*
-     * Create session mempool, with two objects per session,
-     * one for the session header and another one for the
+     * Create session private data mempool for the
      * private session data for the crypto device.
      */
-    session_pool = rte_mempool_create("session_pool",
-                                    MAX_SESSIONS * 2,
+    session_priv_pool = rte_mempool_create("session_pool",
+                                    MAX_SESSIONS,
                                     session_size,
                                     POOL_CACHE_SIZE,
                                     0, NULL, NULL, NULL,
                                     NULL, socket_id,
                                     0);
 
+    #else
+    /* Use of the same mempool for session header and private data */
+	session_pool = rte_cryptodev_sym_session_pool_create("session_pool",
+                                    MAX_SESSIONS * 2,
+                                    session_size,
+                                    POOL_CACHE_SIZE,
+                                    0,
+                                    socket_id);
+
+	session_priv_pool = session_pool;
+
+    #endif
+
     /* Configure the crypto device. */
     struct rte_cryptodev_config conf = {
         .nb_queue_pairs = 1,
         .socket_id = socket_id
     };
+
     struct rte_cryptodev_qp_conf qp_conf = {
-        .nb_descriptors = 2048
+        .nb_descriptors = 2048,
+        .mp_session = session_pool,
+        .mp_session_private = session_priv_pool
     };
 
     if (rte_cryptodev_configure(cdev_id, &conf) < 0)
         rte_exit(EXIT_FAILURE, "Failed to configure cryptodev %u", cdev_id);
 
-    if (rte_cryptodev_queue_pair_setup(cdev_id, 0, &qp_conf,
-                            socket_id, session_pool) < 0)
+    if (rte_cryptodev_queue_pair_setup(cdev_id, 0, &qp_conf, socket_id) < 0)
         rte_exit(EXIT_FAILURE, "Failed to setup queue pair\n");
 
     if (rte_cryptodev_start(cdev_id) < 0)
@@ -721,7 +761,7 @@ using one of the crypto PMDs available in DPDK.
         rte_exit(EXIT_FAILURE, "Session could not be created\n");
 
     if (rte_cryptodev_sym_session_init(cdev_id, session,
-                    &cipher_xform, session_pool) < 0)
+                    &cipher_xform, session_priv_pool) < 0)
         rte_exit(EXIT_FAILURE, "Session could not be initialized "
                     "for the crypto device\n");
 
@@ -767,7 +807,7 @@ using one of the crypto PMDs available in DPDK.
 
     /*
      * Dequeue the crypto operations until all the operations
-     * are proccessed in the crypto device.
+     * are processed in the crypto device.
      */
     uint16_t num_dequeued_ops, total_num_dequeued_ops = 0;
     do {
@@ -846,7 +886,7 @@ the order in which the transforms are passed indicates the order of the chaining
 Not all asymmetric crypto xforms are supported for chaining. Currently supported
 asymmetric crypto chaining is Diffie-Hellman private key generation followed by
 public generation. Also, currently API does not support chaining of symmetric and
-asymmetric crypto xfroms.
+asymmetric crypto xforms.
 
 Each xform defines specific asymmetric crypto algo. Currently supported are:
 * RSA
@@ -1043,4 +1083,4 @@ Asymmetric Crypto Device API
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 The cryptodev Library API is described in the
-`DPDK API Reference <http://dpdk.org/doc/api/>`_
+`DPDK API Reference <http://doc.dpdk.org/api/>`_

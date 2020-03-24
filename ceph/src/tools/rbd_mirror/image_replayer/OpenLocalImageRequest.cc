@@ -3,7 +3,6 @@
 
 #include "include/compat.h"
 #include "CloseImageRequest.h"
-#include "IsPrimaryRequest.h"
 #include "OpenLocalImageRequest.h"
 #include "common/debug.h"
 #include "common/errno.h"
@@ -15,6 +14,7 @@
 #include "librbd/Utils.h"
 #include "librbd/exclusive_lock/Policy.h"
 #include "librbd/journal/Policy.h"
+#include "librbd/mirror/GetInfoRequest.h"
 #include <type_traits>
 
 #define dout_context g_ceph_context
@@ -45,8 +45,8 @@ struct MirrorExclusiveLockPolicy : public librbd::exclusive_lock::Policy {
   int lock_requested(bool force) override {
     int r = -EROFS;
     {
-      RWLock::RLocker owner_locker(image_ctx->owner_lock);
-      RWLock::RLocker snap_locker(image_ctx->snap_lock);
+      std::shared_lock owner_locker{image_ctx->owner_lock};
+      std::shared_lock image_locker{image_ctx->image_lock};
       if (image_ctx->journal == nullptr || image_ctx->journal->is_tag_owner()) {
         r = 0;
       }
@@ -62,11 +62,13 @@ struct MirrorExclusiveLockPolicy : public librbd::exclusive_lock::Policy {
 
   bool accept_blocked_request(
       librbd::exclusive_lock::OperationRequestType request_type) override {
-    if (request_type ==
-        librbd::exclusive_lock::OPERATION_REQUEST_TYPE_TRASH_SNAP_REMOVE) {
+    switch (request_type) {
+    case librbd::exclusive_lock::OPERATION_REQUEST_TYPE_TRASH_SNAP_REMOVE:
+    case librbd::exclusive_lock::OPERATION_REQUEST_TYPE_FORCE_PROMOTION:
       return true;
+    default:
+      return false;
     }
-    return false;
   }
 };
 
@@ -114,9 +116,14 @@ void OpenLocalImageRequest<I>::send_open_image() {
 
   *m_local_image_ctx = I::create("", m_local_image_id, nullptr,
                                  m_local_io_ctx, false);
+
+  // ensure non-primary images can be modified
+  (*m_local_image_ctx)->read_only_mask =
+    ~librbd::IMAGE_READ_ONLY_FLAG_NON_PRIMARY;
+
   {
-    RWLock::WLocker owner_locker((*m_local_image_ctx)->owner_lock);
-    RWLock::WLocker snap_locker((*m_local_image_ctx)->snap_lock);
+    std::scoped_lock locker{(*m_local_image_ctx)->owner_lock,
+			    (*m_local_image_ctx)->image_lock};
     (*m_local_image_ctx)->set_exclusive_lock_policy(
       new MirrorExclusiveLockPolicy<I>(*m_local_image_ctx));
     (*m_local_image_ctx)->set_journal_policy(
@@ -146,23 +153,25 @@ void OpenLocalImageRequest<I>::handle_open_image(int r) {
     return;
   }
 
-  send_is_primary();
+  send_get_mirror_info();
 }
 
 template <typename I>
-void OpenLocalImageRequest<I>::send_is_primary() {
+void OpenLocalImageRequest<I>::send_get_mirror_info() {
   dout(20) << dendl;
 
   Context *ctx = create_context_callback<
-    OpenLocalImageRequest<I>, &OpenLocalImageRequest<I>::handle_is_primary>(
+    OpenLocalImageRequest<I>,
+    &OpenLocalImageRequest<I>::handle_get_mirror_info>(
       this);
-  IsPrimaryRequest<I> *request = IsPrimaryRequest<I>::create(*m_local_image_ctx,
-                                                             &m_primary, ctx);
+  auto request = librbd::mirror::GetInfoRequest<I>::create(
+    **m_local_image_ctx, &m_mirror_image, &m_promotion_state,
+    &m_primary_mirror_uuid, ctx);
   request->send();
 }
 
 template <typename I>
-void OpenLocalImageRequest<I>::handle_is_primary(int r) {
+void OpenLocalImageRequest<I>::handle_get_mirror_info(int r) {
   dout(20) << ": r=" << r << dendl;
 
   if (r == -ENOENT) {
@@ -176,9 +185,15 @@ void OpenLocalImageRequest<I>::handle_is_primary(int r) {
     return;
   }
 
+  if (m_mirror_image.state == cls::rbd::MIRROR_IMAGE_STATE_DISABLING) {
+    dout(5) << ": local image mirroring is being disabled" << dendl;
+    send_close_image(-ENOENT);
+    return;
+  }
+
   // if the local image owns the tag -- don't steal the lock since
   // we aren't going to mirror peer data into this image anyway
-  if (m_primary) {
+  if (m_promotion_state == librbd::mirror::PROMOTION_STATE_PRIMARY) {
     dout(10) << ": local image is primary -- skipping image replay" << dendl;
     send_close_image(-EREMOTEIO);
     return;
@@ -189,14 +204,19 @@ void OpenLocalImageRequest<I>::handle_is_primary(int r) {
 
 template <typename I>
 void OpenLocalImageRequest<I>::send_lock_image() {
-  dout(20) << dendl;
-
-  RWLock::RLocker owner_locker((*m_local_image_ctx)->owner_lock);
+  std::shared_lock owner_locker{(*m_local_image_ctx)->owner_lock};
   if ((*m_local_image_ctx)->exclusive_lock == nullptr) {
-    derr << ": image does not support exclusive lock" << dendl;
-    send_close_image(-EINVAL);
+    owner_locker.unlock();
+    if (m_mirror_image.mode == cls::rbd::MIRROR_IMAGE_MODE_SNAPSHOT) {
+      finish(0);
+    } else {
+      derr << ": image does not support exclusive lock" << dendl;
+      send_close_image(-EINVAL);
+    }
     return;
   }
+
+  dout(20) << dendl;
 
   // disallow any proxied maintenance operations before grabbing lock
   (*m_local_image_ctx)->exclusive_lock->block_requests(-EROFS);
@@ -220,7 +240,7 @@ void OpenLocalImageRequest<I>::handle_lock_image(int r) {
   }
 
   {
-    RWLock::RLocker owner_locker((*m_local_image_ctx)->owner_lock);
+    std::shared_lock owner_locker{(*m_local_image_ctx)->owner_lock};
     if ((*m_local_image_ctx)->exclusive_lock == nullptr ||
 	!(*m_local_image_ctx)->exclusive_lock->is_lock_owner()) {
       derr << ": image is not locked" << dendl;

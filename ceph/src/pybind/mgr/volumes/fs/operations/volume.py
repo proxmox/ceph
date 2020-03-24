@@ -1,15 +1,16 @@
 import time
 import errno
 import logging
+import sys
+
 from contextlib import contextmanager
 from threading import Lock, Condition
+from typing import no_type_check
 
-try:
-    # py2
-    from threading import _Timer as Timer
-except ImportError:
-    #py3
+if sys.version_info >= (3, 3):
     from threading import Timer
+else:
+    from threading import _Timer as Timer
 
 import cephfs
 import orchestrator
@@ -84,18 +85,23 @@ class ConnectionPool(object):
             log.debug("CephFS mounting...")
             self.fs.mount(filesystem_name=self.fs_name.encode('utf-8'))
             log.debug("Connection to cephfs '{0}' complete".format(self.fs_name))
+            self.mgr._ceph_register_client(self.fs.get_addrs())
 
         def disconnect(self):
             try:
+                assert self.fs
                 assert self.ops_in_progress == 0
                 log.info("disconnecting from cephfs '{0}'".format(self.fs_name))
+                addrs = self.fs.get_addrs()
                 self.fs.shutdown()
+                self.mgr._ceph_unregister_client(addrs)
                 self.fs = None
             except Exception as e:
                 log.debug("disconnect: ({0})".format(e))
                 raise
 
         def abort(self):
+            assert self.fs
             assert self.ops_in_progress == 0
             log.info("aborting connection from cephfs '{0}'".format(self.fs_name))
             self.fs.abort_conn()
@@ -106,6 +112,7 @@ class ConnectionPool(object):
         """
         recurring timer variant of Timer
         """
+        @no_type_check
         def run(self):
             try:
                 while not self.finished.is_set():
@@ -194,30 +201,30 @@ def gen_pool_names(volname):
     """
     return "cephfs.{}.meta".format(volname), "cephfs.{}.data".format(volname)
 
-def create_volume(mgr, volname):
+def create_volume(mgr, volname, placement):
     """
     create volume  (pool, filesystem and mds)
     """
     metadata_pool, data_pool = gen_pool_names(volname)
     # create pools
-    r, outs, outb = create_pool(mgr, metadata_pool, 16)
+    r, outs, outb = create_pool(mgr, metadata_pool)
     if r != 0:
         return r, outb, outs
-    r, outb, outs = create_pool(mgr, data_pool, 8)
+    r, outb, outs = create_pool(mgr, data_pool)
     if r != 0:
         #cleanup
-        remove_pool(metadata_pool)
+        remove_pool(mgr, metadata_pool)
         return r, outb, outs
     # create filesystem
     r, outb, outs = create_filesystem(mgr, volname, metadata_pool, data_pool)
     if r != 0:
         log.error("Filesystem creation error: {0} {1} {2}".format(r, outb, outs))
         #cleanup
-        remove_pool(data_pool)
-        remove_pool(metadata_pool)
+        remove_pool(mgr, data_pool)
+        remove_pool(mgr, metadata_pool)
         return r, outb, outs
     # create mds
-    return create_mds(mgr, volname)
+    return create_mds(mgr, volname, placement)
 
 def delete_volume(mgr, volname):
     """
@@ -225,7 +232,7 @@ def delete_volume(mgr, volname):
     """
     # Tear down MDS daemons
     try:
-        completion = mgr.remove_stateless_service("mds", volname)
+        completion = mgr.remove_service('mds.' + volname)
         mgr._orchestrator_wait([completion])
         orchestrator.raise_if_exception(completion)
     except (ImportError, orchestrator.OrchestratorError):

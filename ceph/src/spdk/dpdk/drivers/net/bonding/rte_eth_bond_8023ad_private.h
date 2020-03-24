@@ -150,6 +150,7 @@ struct mode8023ad_private {
 	uint64_t update_timeout_us;
 	rte_eth_bond_8023ad_ext_slowrx_fn slowrx_cb;
 	uint8_t external_sm;
+	struct ether_addr mac_addr;
 
 	struct rte_eth_link slave_link;
 	/***< slave link properties */
@@ -174,7 +175,7 @@ struct mode8023ad_private {
  * The pool of *port* structures. The size of the pool
  * is configured at compile-time in the <rte_eth_bond_8023ad.c> file.
  */
-extern struct port mode_8023ad_ports[];
+extern struct port bond_mode_8023ad_ports[];
 
 /* Forward declaration */
 struct bond_dev_private;

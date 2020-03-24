@@ -2,19 +2,22 @@
 from __future__ import absolute_import
 
 from functools import partial
+import logging
 
 import cherrypy
 import cephfs
 
 from . import ApiController, RESTController, UiApiController, BaseController, \
               Endpoint, Task, ReadPermission, ControllerDoc, EndpointDoc
-from .. import logger
 from ..security import Scope
 from ..services.cephfs import CephFS
 from ..services.cephx import CephX
 from ..services.exception import serialize_dashboard_exception
 from ..services.ganesha import Ganesha, GaneshaConf, NFSException
 from ..services.rgw_client import RgwClient
+
+
+logger = logging.getLogger('controllers.ganesha')
 
 
 # documentation helpers
@@ -75,7 +78,7 @@ CREATE_EXPORT_SCHEMA = {
 
 
 # pylint: disable=not-callable
-def NfsTask(name, metadata, wait_for):
+def NfsTask(name, metadata, wait_for):  # noqa: N802
     def composed_decorator(func):
         return Task("nfs/{}".format(name), metadata, wait_for,
                     partial(serialize_dashboard_exception,
@@ -99,7 +102,7 @@ class NFSGanesha(RESTController):
         try:
             Ganesha.get_ganesha_clusters()
         except NFSException as e:
-            status['message'] = str(e)
+            status['message'] = str(e)  # type: ignore
             status['available'] = False
 
         return status
@@ -282,19 +285,19 @@ class NFSGaneshaUi(BaseController):
             root_dir = "/"
         depth = int(depth)
         if depth > 5:
-            logger.warning("[NFS] Limiting depth to maximum value of 5: "
+            logger.warning("Limiting depth to maximum value of 5: "
                            "input depth=%s", depth)
             depth = 5
-        root_dir = '{}/'.format(root_dir) \
-                   if not root_dir.endswith('/') else root_dir
-
+        root_dir = '{}{}'.format(root_dir.rstrip('/'), '/')
         try:
             cfs = CephFS()
-            paths = cfs.get_dir_list(root_dir, depth)
-            paths = [p[:-1] for p in paths if p != root_dir]
-            return {'paths': paths}
+            root_dir = root_dir.encode()
+            paths = cfs.ls_dir(root_dir, depth)
+            # Convert (bytes => string) and prettify paths (strip slashes).
+            paths = [p.decode().rstrip('/') for p in paths if p != root_dir]
         except (cephfs.ObjectNotFound, cephfs.PermissionError):
-            return {'paths': []}
+            paths = []
+        return {'paths': paths}
 
     @Endpoint('GET', '/cephfs/filesystems')
     def filesystems(self):

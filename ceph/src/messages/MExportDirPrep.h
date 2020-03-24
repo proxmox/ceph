@@ -19,10 +19,11 @@
 #include "msg/Message.h"
 #include "include/types.h"
 
-class MExportDirPrep : public MessageInstance<MExportDirPrep> {
-public:
-  friend factory;
+class MExportDirPrep : public SafeMessage {
 private:
+  static const int HEAD_VERSION = 1;
+  static const int COMPAT_VERSION = 1;
+
   dirfrag_t dirfrag;
  public:
   bufferlist basedir;
@@ -30,7 +31,7 @@ private:
   list<bufferlist> traces;
 private:
   set<mds_rank_t> bystanders;
-  bool b_did_assim;
+  bool b_did_assim = false;
 
 public:
   dirfrag_t get_dirfrag() const { return dirfrag; }
@@ -41,12 +42,11 @@ public:
   void mark_assim() { b_did_assim = true; }
 
 protected:
-  MExportDirPrep() {
-    b_did_assim = false;
-  }
+  MExportDirPrep() = default;
   MExportDirPrep(dirfrag_t df, uint64_t tid) :
-    MessageInstance(MSG_MDS_EXPORTDIRPREP),
-    dirfrag(df), b_did_assim(false) {
+    SafeMessage{MSG_MDS_EXPORTDIRPREP, HEAD_VERSION, COMPAT_VERSION},
+    dirfrag(df)
+  {
     set_tid(tid);
   }
   ~MExportDirPrep() override {}
@@ -85,6 +85,9 @@ public:
     encode(traces, payload);
     encode(bystanders, payload);
   }
+private:
+  template<class T, typename... Args>
+  friend boost::intrusive_ptr<T> ceph::make_message(Args&&... args);
 };
 
 #endif

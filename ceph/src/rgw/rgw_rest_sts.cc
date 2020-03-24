@@ -1,5 +1,5 @@
 // -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// vim: ts=8 sw=2 smarttab ft=cpp
 
 #include <boost/algorithm/string/predicate.hpp>
 #include <boost/format.hpp>
@@ -37,9 +37,7 @@
 #define dout_context g_ceph_context
 #define dout_subsys ceph_subsys_rgw
 
-namespace rgw {
-namespace auth {
-namespace sts {
+namespace rgw::auth::sts {
 
 bool
 WebTokenEngine::is_applicable(const std::string& token) const noexcept
@@ -63,7 +61,7 @@ WebTokenEngine::get_from_idp(const DoutPrefixProvider* dpp, const std::string& t
     introspect_req.set_post_data(post_data);
     introspect_req.set_send_length(post_data.length());
 
-    int res = introspect_req.process();
+    int res = introspect_req.process(null_yield);
     if (res < 0) {
       ldpp_dout(dpp, 10) << "HTTP request res: " << res << dendl;
       throw -EINVAL;
@@ -118,13 +116,11 @@ WebTokenEngine::authenticate( const DoutPrefixProvider* dpp,
   return result_t::deny(-EACCES);
 }
 
-}; /* namespace sts */
-}; /* namespace auth */
-}; /* namespace rgw */
+} // namespace rgw::auth::s3
 
 int RGWREST_STS::verify_permission()
 {
-  STS::STSService _sts(s->cct, store, s->user->user_id, s->auth.identity.get());
+  STS::STSService _sts(s->cct, store, s->user->get_id(), s->auth.identity.get());
   sts = std::move(_sts);
 
   string rArn = s->info.args.get("RoleArn");
@@ -138,7 +134,7 @@ int RGWREST_STS::verify_permission()
   //Parse the policy
   //TODO - This step should be part of Role Creation
   try {
-    const rgw::IAM::Policy p(s->cct, s->user->user_id.tenant, bl);
+    const rgw::IAM::Policy p(s->cct, s->user->get_tenant(), bl);
     //Check if the input role arn is there as one of the Principals in the policy,
     // If yes, then return 0, else -EPERM
     auto p_res = p.eval_principal(s->env, *s->auth.identity);
@@ -172,7 +168,7 @@ int RGWSTSGetSessionToken::verify_permission()
   rgw::Service service = rgw::Service::s3;
   if (!verify_user_permission(this,
                               s,
-                              rgw::ARN(partition, service, "", s->user->user_id.tenant, ""),
+                              rgw::ARN(partition, service, "", s->user->get_tenant(), ""),
                               rgw::IAM::stsGetSessionToken)) {
     return -EACCES;
   }
@@ -187,7 +183,12 @@ int RGWSTSGetSessionToken::get_params()
   tokenCode = s->info.args.get("TokenCode");
 
   if (! duration.empty()) {
-    uint64_t duration_in_secs = stoull(duration);
+    string err;
+    uint64_t duration_in_secs = strict_strtoll(duration.c_str(), 10, &err);
+    if (!err.empty()) {
+      return -EINVAL;
+    }
+
     if (duration_in_secs < STS::GetSessionTokenRequest::getMinDuration() ||
             duration_in_secs > s->cct->_conf->rgw_sts_max_session_duration)
       return -EINVAL;
@@ -202,7 +203,7 @@ void RGWSTSGetSessionToken::execute()
     return;
   }
 
-  STS::STSService sts(s->cct, store, s->user->user_id, s->auth.identity.get());
+  STS::STSService sts(s->cct, store, s->user->get_id(), s->auth.identity.get());
 
   STS::GetSessionTokenRequest req(duration, serialNumber, tokenCode);
   const auto& [ret, creds] = sts.getSessionToken(req);
@@ -238,7 +239,7 @@ int RGWSTSAssumeRoleWithWebIdentity::get_params()
   if (! policy.empty()) {
     bufferlist bl = bufferlist::static_from_string(policy);
     try {
-      const rgw::IAM::Policy p(s->cct, s->user->user_id.tenant, bl);
+      const rgw::IAM::Policy p(s->cct, s->user->get_tenant(), bl);
     }
     catch (rgw::IAM::PolicyParseException& e) {
       ldout(s->cct, 20) << "failed to parse policy: " << e.what() << "policy" << policy << dendl;
@@ -297,7 +298,7 @@ int RGWSTSAssumeRole::get_params()
   if (! policy.empty()) {
     bufferlist bl = bufferlist::static_from_string(policy);
     try {
-      const rgw::IAM::Policy p(s->cct, s->user->user_id.tenant, bl);
+      const rgw::IAM::Policy p(s->cct, s->user->get_tenant(), bl);
     }
     catch (rgw::IAM::PolicyParseException& e) {
       ldout(s->cct, 20) << "failed to parse policy: " << e.what() << "policy" << policy << dendl;
@@ -335,7 +336,7 @@ void RGWSTSAssumeRole::execute()
 }
 
 int RGW_Auth_STS::authorize(const DoutPrefixProvider *dpp,
-                            RGWRados *store,
+                            rgw::sal::RGWRadosStore *store,
                             const rgw::auth::StrategyRegistry& auth_registry,
                             struct req_state *s)
 {
@@ -353,15 +354,11 @@ void RGWHandler_REST_STS::rgw_sts_parse_input()
       for (const auto& t : tokens) {
         auto pos = t.find("=");
         if (pos != string::npos) {
-           std::string key = t.substr(0, pos);
-           std::string value = t.substr(pos + 1, t.size() - 1);
-           if (key == "RoleArn" || key == "Policy") {
-            value = url_decode(value);
-           }
-           s->info.args.append(key, value);
-         }
-       }
-    }
+          s->info.args.append(t.substr(0,pos),
+                              url_decode(t.substr(pos+1, t.size() -1)));
+        }
+      }
+    } 
   }
   auto payload_hash = rgw::auth::s3::calc_v4_payload_hash(post_body);
   s->info.args.append("PayloadHash", payload_hash);
@@ -385,7 +382,7 @@ RGWOp *RGWHandler_REST_STS::op_post()
   return nullptr;
 }
 
-int RGWHandler_REST_STS::init(RGWRados *store,
+int RGWHandler_REST_STS::init(rgw::sal::RGWRadosStore *store,
                               struct req_state *s,
                               rgw::io::BasicClient *cio)
 {

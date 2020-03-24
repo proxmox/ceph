@@ -59,6 +59,8 @@ TracepointProvider::Traits osd_tracepoint_traits("libosd_tp.so",
                                                  "osd_tracing");
 TracepointProvider::Traits os_tracepoint_traits("libos_tp.so",
                                                 "osd_objectstore_tracing");
+TracepointProvider::Traits bluestore_tracepoint_traits("libbluestore_tp.so",
+						       "bluestore_tracing");
 #ifdef WITH_OSD_INSTRUMENT_FUNCTIONS
 TracepointProvider::Traits cyg_profile_traits("libcyg_profile_tp.so",
                                                  "osd_function_tracing");
@@ -66,12 +68,12 @@ TracepointProvider::Traits cyg_profile_traits("libcyg_profile_tp.so",
 
 } // anonymous namespace
 
-OSD *osd = nullptr;
+OSD *osdptr = nullptr;
 
 void handle_osd_signal(int signum)
 {
-  if (osd)
-    osd->handle_signal(signum);
+  if (osdptr)
+    osdptr->handle_signal(signum);
 }
 
 static void usage()
@@ -321,25 +323,21 @@ int main(int argc, const char **argv)
 
   if (mkkey) {
     common_init_finish(g_ceph_context);
-    KeyRing *keyring = KeyRing::create_empty();
-    if (!keyring) {
-      derr << "Unable to get a Ceph keyring." << dendl;
-      forker.exit(1);
-    }
+    KeyRing keyring;
 
     EntityName ename{g_conf()->name};
     EntityAuth eauth;
 
     std::string keyring_path = g_conf().get_val<std::string>("keyring");
-    int ret = keyring->load(g_ceph_context, keyring_path);
+    int ret = keyring.load(g_ceph_context, keyring_path);
     if (ret == 0 &&
-	keyring->get_auth(ename, eauth)) {
+	keyring.get_auth(ename, eauth)) {
       derr << "already have key in keyring " << keyring_path << dendl;
     } else {
       eauth.key.create(g_ceph_context, CEPH_CRYPTO_AES);
-      keyring->add(ename, eauth);
+      keyring.add(ename, eauth);
       bufferlist bl;
-      keyring->encode_plaintext(bl);
+      keyring.encode_plaintext(bl);
       int r = bl.write_file(keyring_path.c_str(), 0600);
       if (r)
 	derr << TEXT_RED << " ** ERROR: writing new keyring to "
@@ -464,7 +462,7 @@ flushjournal_out:
   
   string magic;
   uuid_d cluster_fsid, osd_fsid;
-  int require_osd_release = 0;
+  ceph_release_t require_osd_release = ceph_release_t::unknown;
   int w;
   int r = OSD::peek_meta(store, &magic, &cluster_fsid, &osd_fsid, &w,
 			 &require_osd_release);
@@ -497,19 +495,13 @@ flushjournal_out:
     forker.exit(0);
   }
 
-  if (require_osd_release > 0 &&
-      require_osd_release + 2 < (int)ceph_release()) {
-    derr << "OSD's recorded require_osd_release " << require_osd_release
-	 << " (" << ceph_release_name(require_osd_release)
-	 << ") is >2 releases older than installed " << ceph_release()
-	 << " (" << ceph_release_name(ceph_release())
-	 << "); you can only upgrade 2 releases at a time" << dendl;
-    derr << "you should first upgrade to "
-	 << (require_osd_release + 1)
-	 << " (" << ceph_release_name(require_osd_release + 1) << ") or "
-	 << (require_osd_release + 2)
-	 << " (" << ceph_release_name(require_osd_release + 2) << ")" << dendl;
-    forker.exit(1);
+  {
+    auto from_release = require_osd_release;
+    ostringstream err;
+    if (!can_upgrade_from(from_release, "require_osd_release", err)) {
+      derr << err.str() << dendl;
+      forker.exit(1);
+    }
   }
 
   // consider objectstore numa node
@@ -532,31 +524,32 @@ flushjournal_out:
 
   public_msg_type = public_msg_type.empty() ? msg_type : public_msg_type;
   cluster_msg_type = cluster_msg_type.empty() ? msg_type : cluster_msg_type;
+  uint64_t nonce = Messenger::get_pid_nonce();
   Messenger *ms_public = Messenger::create(g_ceph_context, public_msg_type,
 					   entity_name_t::OSD(whoami), "client",
-					   getpid(),
+					   nonce,
 					   Messenger::HAS_HEAVY_TRAFFIC |
 					   Messenger::HAS_MANY_CONNECTIONS);
   Messenger *ms_cluster = Messenger::create(g_ceph_context, cluster_msg_type,
 					    entity_name_t::OSD(whoami), "cluster",
-					    getpid(),
+					    nonce,
 					    Messenger::HAS_HEAVY_TRAFFIC |
 					    Messenger::HAS_MANY_CONNECTIONS);
   Messenger *ms_hb_back_client = Messenger::create(g_ceph_context, cluster_msg_type,
 					     entity_name_t::OSD(whoami), "hb_back_client",
-					     getpid(), Messenger::HEARTBEAT);
+					     nonce, Messenger::HEARTBEAT);
   Messenger *ms_hb_front_client = Messenger::create(g_ceph_context, public_msg_type,
 					     entity_name_t::OSD(whoami), "hb_front_client",
-					     getpid(), Messenger::HEARTBEAT);
+					     nonce, Messenger::HEARTBEAT);
   Messenger *ms_hb_back_server = Messenger::create(g_ceph_context, cluster_msg_type,
 						   entity_name_t::OSD(whoami), "hb_back_server",
-						   getpid(), Messenger::HEARTBEAT);
+						   nonce, Messenger::HEARTBEAT);
   Messenger *ms_hb_front_server = Messenger::create(g_ceph_context, public_msg_type,
 						    entity_name_t::OSD(whoami), "hb_front_server",
-						    getpid(), Messenger::HEARTBEAT);
+						    nonce, Messenger::HEARTBEAT);
   Messenger *ms_objecter = Messenger::create(g_ceph_context, public_msg_type,
 					     entity_name_t::OSD(whoami), "ms_objecter",
-					     getpid(), 0);
+					     nonce, 0);
   if (!ms_public || !ms_cluster || !ms_hb_front_client || !ms_hb_back_client || !ms_hb_back_server || !ms_hb_front_server || !ms_objecter)
     forker.exit(1);
   ms_cluster->set_cluster_protocol(CEPH_OSD_PROTOCOL);
@@ -582,7 +575,7 @@ flushjournal_out:
     CEPH_FEATURE_PGID64 |
     CEPH_FEATURE_OSDENC;
 
-  ms_public->set_default_policy(Messenger::Policy::stateless_server(0));
+  ms_public->set_default_policy(Messenger::Policy::stateless_registered_server(0));
   ms_public->set_policy_throttlers(entity_name_t::TYPE_CLIENT,
 				   client_byte_throttler.get(),
 				   nullptr);
@@ -590,10 +583,6 @@ flushjournal_out:
                         Messenger::Policy::lossy_client(osd_required));
   ms_public->set_policy(entity_name_t::TYPE_MGR,
                         Messenger::Policy::lossy_client(osd_required));
-
-  //try to poison pill any OSD connections on the wrong address
-  ms_public->set_policy(entity_name_t::TYPE_OSD,
-			Messenger::Policy::stateless_server(0));
 
   ms_cluster->set_default_policy(Messenger::Policy::stateless_server(0));
   ms_cluster->set_policy(entity_name_t::TYPE_MON, Messenger::Policy::lossy_client(0));
@@ -665,6 +654,7 @@ flushjournal_out:
 
   TracepointProvider::initialize<osd_tracepoint_traits>(g_ceph_context);
   TracepointProvider::initialize<os_tracepoint_traits>(g_ceph_context);
+  TracepointProvider::initialize<bluestore_tracepoint_traits>(g_ceph_context);
 #ifdef WITH_OSD_INSTRUMENT_FUNCTIONS
   TracepointProvider::initialize<cyg_profile_traits>(g_ceph_context);
 #endif
@@ -680,21 +670,21 @@ flushjournal_out:
     forker.exit(1);
   }
 
-  osd = new OSD(g_ceph_context,
-                store,
-                whoami,
-                ms_cluster,
-                ms_public,
-                ms_hb_front_client,
-                ms_hb_back_client,
-                ms_hb_front_server,
-                ms_hb_back_server,
-                ms_objecter,
-                &mc,
-                data_path,
-                journal_path);
+  osdptr = new OSD(g_ceph_context,
+		   store,
+		   whoami,
+		   ms_cluster,
+		   ms_public,
+		   ms_hb_front_client,
+		   ms_hb_back_client,
+		   ms_hb_front_server,
+		   ms_hb_back_server,
+		   ms_objecter,
+		   &mc,
+		   data_path,
+		   journal_path);
 
-  int err = osd->pre_init();
+  int err = osdptr->pre_init();
   if (err < 0) {
     derr << TEXT_RED << " ** ERROR: osd pre_init failed: " << cpp_strerror(-err)
 	 << TEXT_NORMAL << dendl;
@@ -710,7 +700,7 @@ flushjournal_out:
   ms_objecter->start();
 
   // start osd
-  err = osd->init();
+  err = osdptr->init();
   if (err < 0) {
     derr << TEXT_RED << " ** ERROR: osd init failed: " << cpp_strerror(-err)
          << TEXT_NORMAL << dendl;
@@ -728,7 +718,7 @@ flushjournal_out:
   register_async_signal_handler_oneshot(SIGINT, handle_osd_signal);
   register_async_signal_handler_oneshot(SIGTERM, handle_osd_signal);
 
-  osd->final_init();
+  osdptr->final_init();
 
   if (g_conf().get_val<bool>("inject_early_sigterm"))
     kill(getpid(), SIGTERM);
@@ -747,7 +737,7 @@ flushjournal_out:
   shutdown_async_signal_handler();
 
   // done
-  delete osd;
+  delete osdptr;
   delete ms_public;
   delete ms_hb_front_client;
   delete ms_hb_back_client;

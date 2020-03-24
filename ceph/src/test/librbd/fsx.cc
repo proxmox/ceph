@@ -277,11 +277,6 @@ struct ReplayHandler : public journal::ReplayHandler {
                   on_finish(on_finish) {
         }
 
-        void get() override {
-        }
-        void put() override {
-        }
-
         void handle_entries_available() override {
                 while (true) {
                         journal::ReplayEntry replay_entry;
@@ -329,7 +324,8 @@ int register_journal(rados_ioctx_t ioctx, const char *image_name) {
                 return r;
         }
 
-        journal::Journaler journaler(io_ctx, image_id, JOURNAL_CLIENT_ID, {});
+        journal::Journaler journaler(io_ctx, image_id, JOURNAL_CLIENT_ID, {},
+                                     nullptr);
         r = journaler.register_client(bufferlist());
         if (r < 0) {
                 simple_err("failed to register journal client", r);
@@ -348,7 +344,8 @@ int unregister_journal(rados_ioctx_t ioctx, const char *image_name) {
                 return r;
         }
 
-        journal::Journaler journaler(io_ctx, image_id, JOURNAL_CLIENT_ID, {});
+        journal::Journaler journaler(io_ctx, image_id, JOURNAL_CLIENT_ID, {},
+                                     nullptr);
         r = journaler.unregister_client();
         if (r < 0) {
                 simple_err("failed to unregister journal client", r);
@@ -404,7 +401,8 @@ int replay_journal(rados_ioctx_t ioctx, const char *image_name,
                 return r;
         }
 
-        journal::Journaler journaler(io_ctx, image_id, JOURNAL_CLIENT_ID, {});
+        journal::Journaler journaler(io_ctx, image_id, JOURNAL_CLIENT_ID, {},
+                                     nullptr);
         C_SaferCond init_ctx;
         journaler.init(&init_ctx);
         BOOST_SCOPE_EXIT_ALL( (&journaler) ) {
@@ -417,7 +415,8 @@ int replay_journal(rados_ioctx_t ioctx, const char *image_name,
                 return r;
         }
 
-        journal::Journaler replay_journaler(io_ctx, replay_image_id, "", {});
+        journal::Journaler replay_journaler(io_ctx, replay_image_id, "", {},
+                                            nullptr);
 
         C_SaferCond replay_init_ctx;
         replay_journaler.init(&replay_init_ctx);
@@ -856,7 +855,7 @@ __librbd_deep_copy(struct rbd_ctx *ctx, const char *src_snapname,
 int
 __librbd_clone(struct rbd_ctx *ctx, const char *src_snapname,
 	       const char *dst_imagename, int *order, int stripe_unit,
-	       int stripe_count, bool krbd)
+	       int stripe_count)
 {
 	int ret;
 
@@ -880,12 +879,6 @@ __librbd_clone(struct rbd_ctx *ctx, const char *src_snapname,
                 return ret;
         }
 
-	if (krbd) {
-		features &= ~(RBD_FEATURE_OBJECT_MAP     |
-                              RBD_FEATURE_FAST_DIFF      |
-                              RBD_FEATURE_DEEP_FLATTEN   |
-                              RBD_FEATURE_JOURNALING);
-	}
 	if (deep_copy) {
 		ret = __librbd_deep_copy(ctx, src_snapname, dst_imagename, features,
 					 order, stripe_unit, stripe_count);
@@ -914,7 +907,7 @@ librbd_clone(struct rbd_ctx *ctx, const char *src_snapname,
 	     int stripe_count)
 {
 	return __librbd_clone(ctx, src_snapname, dst_imagename, order,
-			      stripe_unit, stripe_count, false);
+			      stripe_unit, stripe_count);
 }
 
 int
@@ -1182,7 +1175,7 @@ krbd_clone(struct rbd_ctx *ctx, const char *src_snapname,
 		return ret;
 
 	return __librbd_clone(ctx, src_snapname, dst_imagename, order,
-			      stripe_unit, stripe_count, true);
+			      stripe_unit, stripe_count);
 }
 
 int
@@ -1322,7 +1315,7 @@ nbd_clone(struct rbd_ctx *ctx, const char *src_snapname,
 		return ret;
 
 	return __librbd_clone(ctx, src_snapname, dst_imagename, order,
-			      stripe_unit, stripe_count, false);
+			      stripe_unit, stripe_count);
 }
 
 const struct rbd_operations nbd_operations = {
@@ -1570,7 +1563,7 @@ ggate_clone(struct rbd_ctx *ctx, const char *src_snapname,
 	}
 
 	return __librbd_clone(ctx, src_snapname, dst_imagename, order,
-			      stripe_unit, stripe_count, false);
+			      stripe_unit, stripe_count);
 }
 
 int

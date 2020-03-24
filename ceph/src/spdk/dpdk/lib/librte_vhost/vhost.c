@@ -8,6 +8,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #ifdef RTE_LIBRTE_VHOST_NUMA
+#include <numa.h>
 #include <numaif.h>
 #endif
 
@@ -343,6 +344,7 @@ vhost_new_device(void)
 	dev->flags = VIRTIO_DEV_BUILTIN_VIRTIO_NET;
 	dev->slave_req_fd = -1;
 	dev->vdpa_dev_id = -1;
+	dev->postcopy_ufd = -1;
 	rte_spinlock_init(&dev->slave_req_lock);
 
 	return i;
@@ -399,19 +401,6 @@ vhost_attach_vdpa_device(int vid, int did)
 }
 
 void
-vhost_detach_vdpa_device(int vid)
-{
-	struct virtio_net *dev = get_device(vid);
-
-	if (dev == NULL)
-		return;
-
-	vhost_user_host_notifier_ctrl(vid, false);
-
-	dev->vdpa_dev_id = -1;
-}
-
-void
 vhost_set_ifname(int vid, const char *if_name, unsigned int if_len)
 {
 	struct virtio_net *dev;
@@ -458,7 +447,7 @@ rte_vhost_get_mtu(int vid, uint16_t *mtu)
 {
 	struct virtio_net *dev = get_device(vid);
 
-	if (!dev)
+	if (dev == NULL || mtu == NULL)
 		return -ENODEV;
 
 	if (!(dev->flags & VIRTIO_DEV_READY))
@@ -480,7 +469,7 @@ rte_vhost_get_numa_node(int vid)
 	int numa_node;
 	int ret;
 
-	if (dev == NULL)
+	if (dev == NULL || numa_available() != 0)
 		return -1;
 
 	ret = get_mempolicy(&numa_node, NULL, 0, dev,
@@ -526,7 +515,7 @@ rte_vhost_get_ifname(int vid, char *buf, size_t len)
 {
 	struct virtio_net *dev = get_device(vid);
 
-	if (dev == NULL)
+	if (dev == NULL || buf == NULL)
 		return -1;
 
 	len = RTE_MIN(len, sizeof(dev->ifname));
@@ -543,7 +532,7 @@ rte_vhost_get_negotiated_features(int vid, uint64_t *features)
 	struct virtio_net *dev;
 
 	dev = get_device(vid);
-	if (!dev)
+	if (dev == NULL || features == NULL)
 		return -1;
 
 	*features = dev->features;
@@ -558,7 +547,7 @@ rte_vhost_get_mem_table(int vid, struct rte_vhost_memory **mem)
 	size_t size;
 
 	dev = get_device(vid);
-	if (!dev)
+	if (dev == NULL || mem == NULL)
 		return -1;
 
 	size = dev->mem->nregions * sizeof(struct rte_vhost_mem_region);
@@ -581,7 +570,7 @@ rte_vhost_get_vhost_vring(int vid, uint16_t vring_idx,
 	struct vhost_virtqueue *vq;
 
 	dev = get_device(vid);
-	if (!dev)
+	if (dev == NULL || vring == NULL)
 		return -1;
 
 	if (vring_idx >= VHOST_MAX_VRING)
@@ -646,12 +635,18 @@ rte_vhost_avail_entries(int vid, uint16_t queue_id)
 }
 
 static inline void
-vhost_enable_notify_split(struct vhost_virtqueue *vq, int enable)
+vhost_enable_notify_split(struct virtio_net *dev,
+		struct vhost_virtqueue *vq, int enable)
 {
-	if (enable)
-		vq->used->flags &= ~VRING_USED_F_NO_NOTIFY;
-	else
-		vq->used->flags |= VRING_USED_F_NO_NOTIFY;
+	if (!(dev->features & (1ULL << VIRTIO_RING_F_EVENT_IDX))) {
+		if (enable)
+			vq->used->flags &= ~VRING_USED_F_NO_NOTIFY;
+		else
+			vq->used->flags |= VRING_USED_F_NO_NOTIFY;
+	} else {
+		if (enable)
+			vhost_avail_event(vq) = vq->last_avail_idx;
+	}
 }
 
 static inline void
@@ -660,8 +655,10 @@ vhost_enable_notify_packed(struct virtio_net *dev,
 {
 	uint16_t flags;
 
-	if (!enable)
+	if (!enable) {
 		vq->device_event->flags = VRING_EVENT_F_DISABLE;
+		return;
+	}
 
 	flags = VRING_EVENT_F_ENABLE;
 	if (dev->features & (1ULL << VIRTIO_RING_F_EVENT_IDX)) {
@@ -689,7 +686,7 @@ rte_vhost_enable_guest_notification(int vid, uint16_t queue_id, int enable)
 	if (vq_is_packed(dev))
 		vhost_enable_notify_packed(dev, vq, enable);
 	else
-		vhost_enable_notify_split(vq, enable);
+		vhost_enable_notify_split(dev, vq, enable);
 
 	return 0;
 }
@@ -766,15 +763,8 @@ int rte_vhost_get_log_base(int vid, uint64_t *log_base,
 {
 	struct virtio_net *dev = get_device(vid);
 
-	if (!dev)
+	if (dev == NULL || log_base == NULL || log_size == NULL)
 		return -1;
-
-	if (unlikely(!(dev->flags & VIRTIO_DEV_BUILTIN_VIRTIO_NET))) {
-		RTE_LOG(ERR, VHOST_DATA,
-			"(%d) %s: built-in vhost net backend is disabled.\n",
-			dev->vid, __func__);
-		return -1;
-	}
 
 	*log_base = dev->log_base;
 	*log_size = dev->log_size;
@@ -787,15 +777,8 @@ int rte_vhost_get_vring_base(int vid, uint16_t queue_id,
 {
 	struct virtio_net *dev = get_device(vid);
 
-	if (!dev)
+	if (dev == NULL || last_avail_idx == NULL || last_used_idx == NULL)
 		return -1;
-
-	if (unlikely(!(dev->flags & VIRTIO_DEV_BUILTIN_VIRTIO_NET))) {
-		RTE_LOG(ERR, VHOST_DATA,
-			"(%d) %s: built-in vhost net backend is disabled.\n",
-			dev->vid, __func__);
-		return -1;
-	}
 
 	*last_avail_idx = dev->virtqueue[queue_id]->last_avail_idx;
 	*last_used_idx = dev->virtqueue[queue_id]->last_used_idx;
@@ -811,15 +794,21 @@ int rte_vhost_set_vring_base(int vid, uint16_t queue_id,
 	if (!dev)
 		return -1;
 
-	if (unlikely(!(dev->flags & VIRTIO_DEV_BUILTIN_VIRTIO_NET))) {
-		RTE_LOG(ERR, VHOST_DATA,
-			"(%d) %s: built-in vhost net backend is disabled.\n",
-			dev->vid, __func__);
-		return -1;
-	}
-
 	dev->virtqueue[queue_id]->last_avail_idx = last_avail_idx;
 	dev->virtqueue[queue_id]->last_used_idx = last_used_idx;
 
+	return 0;
+}
+
+int rte_vhost_extern_callback_register(int vid,
+		struct rte_vhost_user_extern_ops const * const ops, void *ctx)
+{
+	struct virtio_net *dev = get_device(vid);
+
+	if (dev == NULL || ops == NULL)
+		return -1;
+
+	dev->extern_ops = *ops;
+	dev->extern_data = ctx;
 	return 0;
 }

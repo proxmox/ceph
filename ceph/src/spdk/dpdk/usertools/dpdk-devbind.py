@@ -12,6 +12,8 @@ from os.path import exists, abspath, dirname, basename
 # The PCI base class for all devices
 network_class = {'Class': '02', 'Vendor': None, 'Device': None,
                     'SVendor': None, 'SDevice': None}
+ifpga_class = {'Class': '12', 'Vendor': '8086', 'Device': '0b30',
+                    'SVendor': None, 'SDevice': None}
 encryption_class = {'Class': '10', 'Vendor': None, 'Device': None,
                    'SVendor': None, 'SDevice': None}
 intel_processor_class = {'Class': '0b', 'Vendor': '8086', 'Device': None,
@@ -29,10 +31,15 @@ cavium_zip = {'Class': '12', 'Vendor': '177d', 'Device': 'a037',
 avp_vnic = {'Class': '05', 'Vendor': '1af4', 'Device': '1110',
               'SVendor': None, 'SDevice': None}
 
-network_devices = [network_class, cavium_pkx, avp_vnic]
+octeontx2_sso = {'Class': '08', 'Vendor': '177d', 'Device': 'a0f9,a0fa',
+              'SVendor': None, 'SDevice': None}
+octeontx2_npa = {'Class': '08', 'Vendor': '177d', 'Device': 'a0fb,a0fc',
+              'SVendor': None, 'SDevice': None}
+
+network_devices = [network_class, cavium_pkx, avp_vnic, ifpga_class]
 crypto_devices = [encryption_class, intel_processor_class]
-eventdev_devices = [cavium_sso, cavium_tim]
-mempool_devices = [cavium_fpa]
+eventdev_devices = [cavium_sso, cavium_tim, octeontx2_sso]
+mempool_devices = [cavium_fpa, octeontx2_npa]
 compress_devices = [cavium_zip]
 
 # global dict ethernet devices present. Dictionary indexed by PCI address.
@@ -546,14 +553,27 @@ def show_device_status(devices_type, device_name):
             else:
                 kernel_drv.append(devices[d])
 
+    n_devs = len(dpdk_drv) + len(kernel_drv) + len(no_drv)
+
+    # don't bother displaying anything if there are no devices
+    if n_devs == 0:
+        msg = "No '%s' devices detected" % device_name
+        print("")
+        print(msg)
+        print("".join('=' * len(msg)))
+        return
+
     # print each category separately, so we can clearly see what's used by DPDK
-    display_devices("%s devices using DPDK-compatible driver" % device_name,
-                    dpdk_drv, "drv=%(Driver_str)s unused=%(Module_str)s")
-    display_devices("%s devices using kernel driver" % device_name, kernel_drv,
-                    "if=%(Interface)s drv=%(Driver_str)s "
-                    "unused=%(Module_str)s %(Active)s")
-    display_devices("Other %s devices" % device_name, no_drv,
-                    "unused=%(Module_str)s")
+    if len(dpdk_drv) != 0:
+        display_devices("%s devices using DPDK-compatible driver" % device_name,
+                        dpdk_drv, "drv=%(Driver_str)s unused=%(Module_str)s")
+    if len(kernel_drv) != 0:
+        display_devices("%s devices using kernel driver" % device_name, kernel_drv,
+                        "if=%(Interface)s drv=%(Driver_str)s "
+                        "unused=%(Module_str)s %(Active)s")
+    if len(no_drv) != 0:
+        display_devices("Other %s devices" % device_name, no_drv,
+                        "unused=%(Module_str)s")
 
 def show_status():
     '''Function called when the script is passed the "--status" option.
@@ -655,6 +675,13 @@ def do_arg_actions():
 
 def main():
     '''program main function'''
+    # check if lspci is installed, suppress any output
+    with open(os.devnull, 'w') as devnull:
+        ret = subprocess.call(['which', 'lspci'],
+                              stdout=devnull, stderr=devnull)
+        if ret != 0:
+            print("'lspci' not found - please install 'pciutils'")
+            sys.exit(1)
     parse_args()
     check_modules()
     clear_data()

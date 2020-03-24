@@ -4,12 +4,13 @@
 #include "librbd/operation/SnapshotRemoveRequest.h"
 #include "common/dout.h"
 #include "common/errno.h"
+#include "include/ceph_assert.h"
 #include "cls/rbd/cls_rbd_client.h"
-#include "librbd/ExclusiveLock.h"
 #include "librbd/ImageCtx.h"
 #include "librbd/ObjectMap.h"
 #include "librbd/Utils.h"
 #include "librbd/image/DetachChildRequest.h"
+#include "librbd/mirror/snapshot/RemoveImageStateRequest.h"
 
 #define dout_subsys ceph_subsys_rbd
 #undef dout_prefix
@@ -36,10 +37,9 @@ void SnapshotRemoveRequest<I>::send_op() {
   I &image_ctx = this->m_image_ctx;
   CephContext *cct = image_ctx.cct;
 
-  ceph_assert(image_ctx.owner_lock.is_locked());
+  ceph_assert(ceph_mutex_is_locked(image_ctx.owner_lock));
   {
-    RWLock::RLocker snap_locker(image_ctx.snap_lock);
-    RWLock::RLocker object_map_locker(image_ctx.object_map_lock);
+    std::shared_lock image_locker{image_ctx.image_lock};
     if (image_ctx.snap_info.find(m_snap_id) == image_ctx.snap_info.end()) {
       lderr(cct) << "snapshot doesn't exist" << dendl;
       this->async_complete(-ENOENT);
@@ -55,7 +55,7 @@ bool SnapshotRemoveRequest<I>::should_complete(int r) {
   I &image_ctx = this->m_image_ctx;
   CephContext *cct = image_ctx.cct;
   ldout(cct, 5) << "r=" << r << dendl;
-  if (r < 0) {
+  if (r < 0 && r != -EBUSY) {
     lderr(cct) << "encountered error: " << cpp_strerror(r) << dendl;
   }
   return true;
@@ -254,8 +254,7 @@ void SnapshotRemoveRequest<I>::detach_child() {
 
   bool detach_child = false;
   {
-    RWLock::RLocker snap_locker(image_ctx.snap_lock);
-    RWLock::RLocker parent_locker(image_ctx.parent_lock);
+    std::shared_lock image_locker{image_ctx.image_lock};
 
     cls::rbd::ParentImageSpec our_pspec;
     int r = image_ctx.get_parent_spec(m_snap_id, &our_pspec);
@@ -320,9 +319,8 @@ void SnapshotRemoveRequest<I>::remove_object_map() {
   CephContext *cct = image_ctx.cct;
 
   {
-    RWLock::RLocker owner_lock(image_ctx.owner_lock);
-    RWLock::WLocker snap_locker(image_ctx.snap_lock);
-    RWLock::RLocker object_map_locker(image_ctx.object_map_lock);
+    std::shared_lock owner_lock{image_ctx.owner_lock};
+    std::unique_lock image_locker{image_ctx.image_lock};
     if (image_ctx.object_map != nullptr) {
       ldout(cct, 5) << dendl;
 
@@ -335,7 +333,7 @@ void SnapshotRemoveRequest<I>::remove_object_map() {
   }
 
   // object map disabled
-  release_snap_id();
+  remove_image_state();
 }
 
 template <typename I>
@@ -349,6 +347,45 @@ void SnapshotRemoveRequest<I>::handle_remove_object_map(int r) {
                << dendl;
     this->complete(r);
     return;
+  }
+
+  remove_image_state();
+}
+
+template <typename I>
+void SnapshotRemoveRequest<I>::remove_image_state() {
+  I &image_ctx = this->m_image_ctx;
+  auto type = cls::rbd::get_snap_namespace_type(m_snap_namespace);
+
+  if (type != cls::rbd::SNAPSHOT_NAMESPACE_TYPE_MIRROR) {
+    release_snap_id();
+    return;
+  }
+
+  CephContext *cct = image_ctx.cct;
+  ldout(cct, 5) << dendl;
+
+  auto ctx = create_context_callback<
+    SnapshotRemoveRequest<I>,
+    &SnapshotRemoveRequest<I>::handle_remove_image_state>(this);
+  auto req = mirror::snapshot::RemoveImageStateRequest<I>::create(
+    &image_ctx, m_snap_id, ctx);
+  req->send();
+}
+
+template <typename I>
+void SnapshotRemoveRequest<I>::handle_remove_image_state(int r) {
+  I &image_ctx = this->m_image_ctx;
+  CephContext *cct = image_ctx.cct;
+  ldout(cct, 5) << "r=" << r << dendl;
+
+  if (r < 0) {
+    lderr(cct) << "failed to remove image state: " << cpp_strerror(r)
+               << dendl;
+    if (r != -ENOENT) {
+      this->complete(r);
+      return;
+    }
   }
 
   release_snap_id();
@@ -433,7 +470,7 @@ void SnapshotRemoveRequest<I>::remove_snap_context() {
   CephContext *cct = image_ctx.cct;
   ldout(cct, 5) << dendl;
 
-  RWLock::WLocker snap_locker(image_ctx.snap_lock);
+  std::unique_lock image_locker{image_ctx.image_lock};
   image_ctx.rm_snap(m_snap_namespace, m_snap_name, m_snap_id);
 }
 
@@ -441,8 +478,7 @@ template <typename I>
 int SnapshotRemoveRequest<I>::scan_for_parents(
     cls::rbd::ParentImageSpec &pspec) {
   I &image_ctx = this->m_image_ctx;
-  ceph_assert(image_ctx.snap_lock.is_locked());
-  ceph_assert(image_ctx.parent_lock.is_locked());
+  ceph_assert(ceph_mutex_is_locked(image_ctx.image_lock));
 
   if (pspec.pool_id != -1) {
     map<uint64_t, SnapInfo>::iterator it;

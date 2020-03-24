@@ -1,33 +1,5 @@
-/*
- *   BSD LICENSE
- *
- *   Copyright (C) Cavium networks Ltd. 2017.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Cavium networks nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2017 Cavium, Inc
  */
 
 #include <rte_atomic.h>
@@ -35,8 +7,19 @@
 #include <rte_eal.h>
 #include <rte_io.h>
 #include <rte_pci.h>
+#include <rte_bus_pci.h>
 
+#include "octeontx_mbox.h"
 #include "ssovf_evdev.h"
+
+#define PCI_VENDOR_ID_CAVIUM              0x177D
+#define PCI_DEVICE_ID_OCTEONTX_SSOGRP_VF  0xA04B
+#define PCI_DEVICE_ID_OCTEONTX_SSOWS_VF   0xA04D
+
+#define SSO_MAX_VHGRP                     (64)
+#define SSO_MAX_VHWS                      (32)
+
+#define SSO_VHGRP_AQ_THR                  (0x1E0ULL)
 
 struct ssovf_res {
 	uint16_t domain;
@@ -69,7 +52,7 @@ static struct ssodev sdev;
 
 /* Interface functions */
 int
-octeontx_ssovf_info(struct octeontx_ssovf_info *info)
+ssovf_info(struct ssovf_info *info)
 {
 	uint8_t i;
 	uint16_t domain;
@@ -86,7 +69,7 @@ octeontx_ssovf_info(struct octeontx_ssovf_info *info)
 		if (sdev.grp[i].vfid != i ||
 			sdev.grp[i].bar0 == NULL ||
 			sdev.grp[i].domain != domain) {
-			ssovf_log_err("GRP error, vfid=%d/%d domain=%d/%d %p",
+			mbox_log_err("GRP error, vfid=%d/%d domain=%d/%d %p",
 				i, sdev.grp[i].vfid,
 				domain, sdev.grp[i].domain,
 				sdev.grp[i].bar0);
@@ -99,7 +82,7 @@ octeontx_ssovf_info(struct octeontx_ssovf_info *info)
 		if (sdev.hws[i].vfid != i ||
 			sdev.hws[i].bar0 == NULL ||
 			sdev.hws[i].domain != domain) {
-			ssovf_log_err("HWS error, vfid=%d/%d domain=%d/%d %p",
+			mbox_log_err("HWS error, vfid=%d/%d domain=%d/%d %p",
 				i, sdev.hws[i].vfid,
 				domain, sdev.hws[i].domain,
 				sdev.hws[i].bar0);
@@ -114,7 +97,7 @@ octeontx_ssovf_info(struct octeontx_ssovf_info *info)
 }
 
 void*
-octeontx_ssovf_bar(enum octeontx_ssovf_type type, uint8_t id, uint8_t bar)
+ssovf_bar(enum ssovf_type type, uint8_t id, uint8_t bar)
 {
 	if (rte_eal_process_type() != RTE_PROC_PRIMARY ||
 			type > OCTEONTX_SSO_HWS)
@@ -159,6 +142,7 @@ ssowvf_probe(struct rte_pci_driver *pci_drv, struct rte_pci_device *pci_dev)
 	uint16_t vfid;
 	struct ssowvf_res *res;
 	struct ssowvf_identify *id;
+	uint8_t *ram_mbox_base;
 
 	RTE_SET_USED(pci_drv);
 
@@ -169,7 +153,7 @@ ssowvf_probe(struct rte_pci_driver *pci_drv, struct rte_pci_device *pci_dev)
 	if (pci_dev->mem_resource[0].addr == NULL ||
 			pci_dev->mem_resource[2].addr == NULL ||
 			pci_dev->mem_resource[4].addr == NULL) {
-		ssovf_log_err("Empty bars %p %p %p",
+		mbox_log_err("Empty bars %p %p %p",
 				pci_dev->mem_resource[0].addr,
 				pci_dev->mem_resource[2].addr,
 				pci_dev->mem_resource[4].addr);
@@ -177,7 +161,7 @@ ssowvf_probe(struct rte_pci_driver *pci_drv, struct rte_pci_device *pci_dev)
 	}
 
 	if (pci_dev->mem_resource[4].len != SSOW_BAR4_LEN) {
-		ssovf_log_err("Bar4 len mismatch %d != %d",
+		mbox_log_err("Bar4 len mismatch %d != %d",
 			SSOW_BAR4_LEN, (int)pci_dev->mem_resource[4].len);
 		return -EINVAL;
 	}
@@ -185,7 +169,7 @@ ssowvf_probe(struct rte_pci_driver *pci_drv, struct rte_pci_device *pci_dev)
 	id = pci_dev->mem_resource[4].addr;
 	vfid = id->vfid;
 	if (vfid >= SSO_MAX_VHWS) {
-		ssovf_log_err("Invalid vfid(%d/%d)", vfid, SSO_MAX_VHWS);
+		mbox_log_err("Invalid vfid(%d/%d)", vfid, SSO_MAX_VHWS);
 		return -EINVAL;
 	}
 
@@ -197,8 +181,16 @@ ssowvf_probe(struct rte_pci_driver *pci_drv, struct rte_pci_device *pci_dev)
 	res->domain = id->domain;
 
 	sdev.total_ssowvfs++;
+	if (vfid == 0) {
+		ram_mbox_base = ssovf_bar(OCTEONTX_SSO_HWS, 0, 4);
+		if (octeontx_mbox_set_ram_mbox_base(ram_mbox_base)) {
+			mbox_log_err("Invalid Failed to set ram mbox base");
+			return -EINVAL;
+		}
+	}
+
 	rte_wmb();
-	ssovf_log_dbg("Domain=%d hws=%d total_ssowvfs=%d", res->domain,
+	mbox_log_dbg("Domain=%d hws=%d total_ssowvfs=%d", res->domain,
 			res->vfid, sdev.total_ssowvfs);
 	return 0;
 }
@@ -230,6 +222,7 @@ ssovf_probe(struct rte_pci_driver *pci_drv, struct rte_pci_device *pci_dev)
 	uint16_t vfid;
 	uint8_t *idreg;
 	struct ssovf_res *res;
+	uint8_t *reg;
 
 	RTE_SET_USED(pci_drv);
 
@@ -239,7 +232,7 @@ ssovf_probe(struct rte_pci_driver *pci_drv, struct rte_pci_device *pci_dev)
 
 	if (pci_dev->mem_resource[0].addr == NULL ||
 			pci_dev->mem_resource[2].addr == NULL) {
-		ssovf_log_err("Empty bars %p %p",
+		mbox_log_err("Empty bars %p %p",
 			pci_dev->mem_resource[0].addr,
 			pci_dev->mem_resource[2].addr);
 		return -ENODEV;
@@ -252,7 +245,7 @@ ssovf_probe(struct rte_pci_driver *pci_drv, struct rte_pci_device *pci_dev)
 	rte_write64((1ULL << 33) - 1, idreg);
 	vfid = (val >> 16) & 0xffff;
 	if (vfid >= SSO_MAX_VHGRP) {
-		ssovf_log_err("Invalid vfid (%d/%d)", vfid, SSO_MAX_VHGRP);
+		mbox_log_err("Invalid vfid (%d/%d)", vfid, SSO_MAX_VHGRP);
 		return -EINVAL;
 	}
 
@@ -263,8 +256,17 @@ ssovf_probe(struct rte_pci_driver *pci_drv, struct rte_pci_device *pci_dev)
 	res->domain = val & 0xffff;
 
 	sdev.total_ssovfs++;
+	if (vfid == 0) {
+		reg = ssovf_bar(OCTEONTX_SSO_GROUP, 0, 0);
+		reg += SSO_VHGRP_PF_MBOX(1);
+		if (octeontx_mbox_set_reg(reg)) {
+			mbox_log_err("Invalid Failed to set mbox_reg");
+			return -EINVAL;
+		}
+	}
+
 	rte_wmb();
-	ssovf_log_dbg("Domain=%d group=%d total_ssovfs=%d", res->domain,
+	mbox_log_dbg("Domain=%d group=%d total_ssovfs=%d", res->domain,
 			res->vfid, sdev.total_ssovfs);
 	return 0;
 }

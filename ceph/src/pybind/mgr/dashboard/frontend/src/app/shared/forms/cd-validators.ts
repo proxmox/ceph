@@ -6,9 +6,13 @@ import {
   Validators
 } from '@angular/forms';
 
+import { I18n } from '@ngx-translate/i18n-polyfill';
 import * as _ from 'lodash';
 import { Observable, of as observableOf, timer as observableTimer } from 'rxjs';
 import { map, switchMapTo, take } from 'rxjs/operators';
+
+import { DimlessBinaryPipe } from '../pipes/dimless-binary.pipe';
+import { FormatterService } from '../services/formatter.service';
 
 export function isEmptyInputValue(value: any): boolean {
   return value == null || value.length === 0;
@@ -99,7 +103,7 @@ export class CdValidators {
    *   argument. The function must return true to set the validation error.
    * @return {ValidatorFn} Returns the validator function.
    */
-  static requiredIf(prerequisites: Object, condition?: Function | undefined): ValidatorFn {
+  static requiredIf(prerequisites: object, condition?: Function | undefined): ValidatorFn {
     let isWatched = false;
 
     return (control: AbstractControl): ValidationErrors | null => {
@@ -113,7 +117,7 @@ export class CdValidators {
         isWatched = true;
       }
 
-      // Check if all prerequisites matches.
+      // Check if all prerequisites met.
       if (
         !Object.keys(prerequisites).every((key) => {
           return control.parent && control.parent.get(key).value === prerequisites[key];
@@ -125,6 +129,47 @@ export class CdValidators {
         ? condition.call(condition, control.value)
         : isEmptyInputValue(control.value);
       return success ? { required: true } : null;
+    };
+  }
+
+  /**
+   * Compose multiple validators into a single function that returns the union of
+   * the individual error maps for the provided control when the given prerequisites
+   * are fulfilled.
+   *
+   * @param {Object} prerequisites An object containing the prerequisites as
+   *   key/value pairs.
+   *   ### Example
+   *   ```typescript
+   *   {
+   *     'generate_key': true,
+   *     'username': 'Max Mustermann'
+   *   }
+   *   ```
+   * @param {ValidatorFn[]} validators List of validators that should be taken
+   *   into action when the prerequisites are met.
+   * @return {ValidatorFn} Returns the validator function.
+   */
+  static composeIf(prerequisites: object, validators: ValidatorFn[]): ValidatorFn {
+    let isWatched = false;
+    return (control: AbstractControl): ValidationErrors | null => {
+      if (!isWatched && control.parent) {
+        Object.keys(prerequisites).forEach((key) => {
+          control.parent.get(key).valueChanges.subscribe(() => {
+            control.updateValueAndValidity({ emitEvent: false });
+          });
+        });
+        isWatched = true;
+      }
+      // Check if all prerequisites are met.
+      if (
+        !Object.keys(prerequisites).every((key) => {
+          return control.parent && control.parent.get(key).value === prerequisites[key];
+        })
+      ) {
+        return null;
+      }
+      return Validators.compose(validators)(control);
     };
   }
 
@@ -165,22 +210,18 @@ export class CdValidators {
   ) {
     conditionalValidators = conditionalValidators.concat(permanentValidators);
 
-    formControl.setValidators(
-      (
-        control: AbstractControl
-      ): {
-        [key: string]: any;
-      } => {
-        const value = condition.call(this);
-        if (value) {
-          return Validators.compose(conditionalValidators)(control);
-        }
-        if (permanentValidators.length > 0) {
-          return Validators.compose(permanentValidators)(control);
-        }
-        return null;
+    formControl.setValidators((control: AbstractControl): {
+      [key: string]: any;
+    } => {
+      const value = condition.call(this);
+      if (value) {
+        return Validators.compose(conditionalValidators)(control);
       }
-    );
+      if (permanentValidators.length > 0) {
+        return Validators.compose(permanentValidators)(control);
+      }
+      return null;
+    });
 
     watchControls.forEach((control: AbstractControl) => {
       control.valueChanges.subscribe(() => {
@@ -202,6 +243,9 @@ export class CdValidators {
     return (control: AbstractControl): { [key: string]: any } => {
       const ctrl1 = control.get(path1);
       const ctrl2 = control.get(path2);
+      if (!ctrl1 || !ctrl2) {
+        return null;
+      }
       if (ctrl1.value !== ctrl2.value) {
         ctrl2.setErrors({ match: true });
       } else {
@@ -279,6 +323,92 @@ export class CdValidators {
         return null;
       }
       return { invalidUuid: 'This is not a valid UUID' };
+    };
+  }
+
+  /**
+   * A simple minimum validator vor cd-binary inputs.
+   *
+   * To use the validation message pass I18n into the function as it cannot
+   * be called in a static one.
+   */
+  static binaryMin(bytes: number): ValidatorFn {
+    return (control: AbstractControl): { [key: string]: (i18n: I18n) => string } | null => {
+      const formatterService = new FormatterService();
+      const currentBytes = new FormatterService().toBytes(control.value);
+      if (bytes <= currentBytes) {
+        return null;
+      }
+      const value = new DimlessBinaryPipe(formatterService).transform(bytes);
+      return {
+        binaryMin: (i18n: I18n) => i18n(`Size has to be at least {{value}} or more`, { value })
+      };
+    };
+  }
+
+  /**
+   * A simple maximum validator vor cd-binary inputs.
+   *
+   * To use the validation message pass I18n into the function as it cannot
+   * be called in a static one.
+   */
+  static binaryMax(bytes: number): ValidatorFn {
+    return (control: AbstractControl): { [key: string]: (i18n: I18n) => string } | null => {
+      const formatterService = new FormatterService();
+      const currentBytes = formatterService.toBytes(control.value);
+      if (bytes >= currentBytes) {
+        return null;
+      }
+      const value = new DimlessBinaryPipe(formatterService).transform(bytes);
+      return {
+        binaryMax: (i18n: I18n) => i18n(`Size has to be at most {{value}} or less`, { value })
+      };
+    };
+  }
+
+  /**
+   * Asynchronous validator that checks if the password meets the password
+   * policy.
+   * @param userServiceThis The object to be used as the 'this' object
+   *   when calling the 'validatePassword' method of the 'UserService'.
+   * @param usernameFn Function to get the username that should be
+   *   taken into account.
+   * @param callback Callback function that is called after the validation
+   *   has been done.
+   * @return {AsyncValidatorFn} Returns an asynchronous validator function
+   *   that returns an error map with the `passwordPolicy` property if the
+   *   validation check fails, otherwise `null`.
+   */
+  static passwordPolicy(
+    userServiceThis: any,
+    usernameFn?: Function,
+    callback?: (valid: boolean, credits?: number, valuation?: string) => void
+  ): AsyncValidatorFn {
+    return (control: AbstractControl): Observable<ValidationErrors | null> => {
+      if (control.pristine || control.value === '') {
+        if (_.isFunction(callback)) {
+          callback(true, 0);
+        }
+        return observableOf(null);
+      }
+      let username;
+      if (_.isFunction(usernameFn)) {
+        username = usernameFn();
+      }
+      return observableTimer(500).pipe(
+        switchMapTo(_.invoke(userServiceThis, 'validatePassword', control.value, username)),
+        map((resp: { valid: boolean; credits: number; valuation: string }) => {
+          if (_.isFunction(callback)) {
+            callback(resp.valid, resp.credits, resp.valuation);
+          }
+          if (resp.valid) {
+            return null;
+          } else {
+            return { passwordPolicy: true };
+          }
+        }),
+        take(1)
+      );
     };
   }
 }

@@ -10,28 +10,31 @@
 #include "crimson/net/Fwd.h"
 
 class MOSDPing;
-class OSDMapService;
 
-namespace ceph::mon {
+namespace crimson::osd {
+  class ShardServices;
+}
+
+namespace crimson::mon {
   class Client;
 }
 
 template<typename Message> using Ref = boost::intrusive_ptr<Message>;
 
-class Heartbeat : public ceph::net::Dispatcher {
+class Heartbeat : public crimson::net::Dispatcher {
 public:
   using osd_id_t = int;
 
-  Heartbeat(int whoami,
-	    uint32_t nonce,
-	    const OSDMapService& service,
-	    ceph::mon::Client& monc);
+  Heartbeat(const crimson::osd::ShardServices& service,
+	    crimson::mon::Client& monc,
+	    crimson::net::MessengerRef front_msgr,
+	    crimson::net::MessengerRef back_msgr);
 
   seastar::future<> start(entity_addrvec_t front,
 			  entity_addrvec_t back);
   seastar::future<> stop();
 
-  seastar::future<> add_peer(osd_id_t peer, epoch_t epoch);
+  void add_peer(osd_id_t peer, epoch_t epoch);
   seastar::future<> update_peers(int whoami);
   seastar::future<> remove_peer(osd_id_t peer);
 
@@ -41,16 +44,19 @@ public:
   const entity_addrvec_t& get_front_addrs() const;
   const entity_addrvec_t& get_back_addrs() const;
 
+  void set_require_authorizer(bool);
+
   // Dispatcher methods
-  seastar::future<> ms_dispatch(ceph::net::ConnectionRef conn,
+  seastar::future<> ms_dispatch(crimson::net::Connection* conn,
 				MessageRef m) override;
+  seastar::future<> ms_handle_reset(crimson::net::ConnectionRef conn) override;
 
 private:
-  seastar::future<> handle_osd_ping(ceph::net::ConnectionRef conn,
+  seastar::future<> handle_osd_ping(crimson::net::Connection* conn,
 				    Ref<MOSDPing> m);
-  seastar::future<> handle_ping(ceph::net::ConnectionRef conn,
+  seastar::future<> handle_ping(crimson::net::Connection* conn,
 				Ref<MOSDPing> m);
-  seastar::future<> handle_reply(ceph::net::ConnectionRef conn,
+  seastar::future<> handle_reply(crimson::net::Connection* conn,
 				 Ref<MOSDPing> m);
   seastar::future<> handle_you_died();
 
@@ -63,15 +69,13 @@ private:
   /// add enough reporters for fast failure detection
   void add_reporter_peers(int whoami);
 
-  seastar::future<> start_messenger(ceph::net::Messenger* msgr,
+  seastar::future<> start_messenger(crimson::net::Messenger& msgr,
 				    const entity_addrvec_t& addrs);
 private:
-  const int whoami;
-  const uint32_t nonce;
-  ceph::net::Messenger* front_msgr = nullptr;
-  ceph::net::Messenger* back_msgr = nullptr;
-  const OSDMapService& service;
-  ceph::mon::Client& monc;
+  const crimson::osd::ShardServices& service;
+  crimson::mon::Client& monc;
+  crimson::net::MessengerRef front_msgr;
+  crimson::net::MessengerRef back_msgr;
 
   seastar::timer<seastar::lowres_clock> timer;
   // use real_clock so it can be converted to utime_t
@@ -84,9 +88,9 @@ private:
   };
   struct PeerInfo {
     /// peer connection (front)
-    ceph::net::ConnectionRef con_front;
+    crimson::net::ConnectionRef con_front;
     /// peer connection (back)
-    ceph::net::ConnectionRef con_back;
+    crimson::net::ConnectionRef con_back;
     /// time we sent our first ping request
     clock::time_point first_tx;
     /// last time we sent a ping request

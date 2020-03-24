@@ -1,0 +1,34 @@
+<tabset *ngIf="selectedItem">
+  <tab i18n-heading
+       (selectTab)="softRefresh()"
+       heading="Details">
+    <cd-cephfs-detail [data]="details">
+    </cd-cephfs-detail>
+  </tab>
+  <tab (selectTab)="softRefresh()">
+    <ng-template tabHeading>
+      <ng-container i18n>Clients</ng-container>
+      <span class="badge badge-pill badge-tab ml-1">{{ clients.data.length }}</span>
+    </ng-template>
+    <cd-cephfs-clients [id]="id"
+                       [clients]="clients"
+                       (triggerApiUpdate)="refresh()">
+    </cd-cephfs-clients>
+  </tab>
+  <tab i18n-heading
+       (selectTab)="directoriesSelected = true"
+       heading="Directories">
+    <cd-cephfs-directories *ngIf="directoriesSelected"
+                           [id]="id">
+    </cd-cephfs-directories>
+  </tab>
+  <tab i18n-heading
+       *ngIf="grafanaPermission.read && grafanaId"
+       heading="Performance Details">
+    <cd-grafana [grafanaPath]="'mds-performance?var-mds_servers=mds.' + grafanaId"
+                uid="tbO9LAiZz"
+                grafanaStyle="one">
+    </cd-grafana>
+  </tab>
+</tabset>
+

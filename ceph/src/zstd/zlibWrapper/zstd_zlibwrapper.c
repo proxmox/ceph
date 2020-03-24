@@ -31,7 +31,7 @@
 /* ===   Constants   === */
 #define Z_INFLATE_SYNC              8
 #define ZLIB_HEADERSIZE             4
-#define ZSTD_HEADERSIZE             ZSTD_frameHeaderSize_min
+#define ZSTD_HEADERSIZE             ZSTD_FRAMEHEADERSIZE_MIN
 #define ZWRAP_DEFAULT_CLEVEL        3   /* Z_DEFAULT_COMPRESSION is translated to ZWRAP_DEFAULT_CLEVEL for zstd */
 
 
@@ -140,8 +140,8 @@ static int ZWRAP_initializeCStream(ZWRAP_CCtx* zwc, const void* dict, size_t dic
     if (!pledgedSrcSize) pledgedSrcSize = zwc->pledgedSrcSize;
     {   ZSTD_parameters const params = ZSTD_getParams(zwc->compressionLevel, pledgedSrcSize, dictSize);
         size_t initErr;
-        LOG_WRAPPERC("pledgedSrcSize=%d windowLog=%d chainLog=%d hashLog=%d searchLog=%d searchLength=%d strategy=%d\n",
-                    (int)pledgedSrcSize, params.cParams.windowLog, params.cParams.chainLog, params.cParams.hashLog, params.cParams.searchLog, params.cParams.searchLength, params.cParams.strategy);
+        LOG_WRAPPERC("pledgedSrcSize=%d windowLog=%d chainLog=%d hashLog=%d searchLog=%d minMatch=%d strategy=%d\n",
+                    (int)pledgedSrcSize, params.cParams.windowLog, params.cParams.chainLog, params.cParams.hashLog, params.cParams.searchLog, params.cParams.minMatch, params.cParams.strategy);
         initErr = ZSTD_initCStream_advanced(zwc->zbc, dict, dictSize, params, pledgedSrcSize);
         if (ZSTD_isError(initErr)) return Z_STREAM_ERROR;
     }
@@ -270,7 +270,7 @@ ZEXTERN int ZEXPORT z_deflateSetDictionary OF((z_streamp strm,
             zwc->zbc = ZSTD_createCStream_advanced(zwc->customMem);
             if (zwc->zbc == NULL) return ZWRAPC_finishWithError(zwc, strm, 0);
         }
-        { int res = ZWRAP_initializeCStream(zwc, dictionary, dictLength, 0);
+        { int res = ZWRAP_initializeCStream(zwc, dictionary, dictLength, ZSTD_CONTENTSIZE_UNKNOWN);
           if (res != Z_OK) return ZWRAPC_finishWithError(zwc, strm, res); }
         zwc->comprState = ZWRAP_useReset;
     }
@@ -295,7 +295,7 @@ ZEXTERN int ZEXPORT z_deflate OF((z_streamp strm, int flush))
     if (zwc->zbc == NULL) {
         zwc->zbc = ZSTD_createCStream_advanced(zwc->customMem);
         if (zwc->zbc == NULL) return ZWRAPC_finishWithError(zwc, strm, 0);
-        { int const initErr = ZWRAP_initializeCStream(zwc, NULL, 0, (flush == Z_FINISH) ? strm->avail_in : 0);
+        { int const initErr = ZWRAP_initializeCStream(zwc, NULL, 0, (flush == Z_FINISH) ? strm->avail_in : ZSTD_CONTENTSIZE_UNKNOWN);
           if (initErr != Z_OK) return ZWRAPC_finishWithError(zwc, strm, initErr); }
         if (flush != Z_FINISH) zwc->comprState = ZWRAP_useReset;
     } else {
@@ -308,7 +308,7 @@ ZEXTERN int ZEXPORT z_deflate OF((z_streamp strm, int flush))
                     return ZWRAPC_finishWithError(zwc, strm, 0);
                 }
             } else {
-                int const res = ZWRAP_initializeCStream(zwc, NULL, 0, (flush == Z_FINISH) ? strm->avail_in : 0);
+                int const res = ZWRAP_initializeCStream(zwc, NULL, 0, (flush == Z_FINISH) ? strm->avail_in : ZSTD_CONTENTSIZE_UNKNOWN);
                 if (res != Z_OK) return ZWRAPC_finishWithError(zwc, strm, res);
                 if (flush != Z_FINISH) zwc->comprState = ZWRAP_useReset;
             }

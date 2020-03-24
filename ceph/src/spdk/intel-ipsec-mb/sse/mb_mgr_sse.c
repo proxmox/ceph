@@ -30,14 +30,12 @@
 #include <stdlib.h>
 #include <string.h>
 
-#ifdef __WIN32
-#include <intrin.h>
-#endif
-
 #include "intel-ipsec-mb.h"
 #include "save_xmms.h"
 #include "asm.h"
 #include "des.h"
+#include "cpu_feature.h"
+#include "noaesni.h"
 
 JOB_AES_HMAC *submit_job_aes128_enc_sse(MB_MGR_AES_OOO *state,
                                         JOB_AES_HMAC *job);
@@ -92,6 +90,12 @@ JOB_AES_HMAC *submit_job_aes_xcbc_sse(MB_MGR_AES_XCBC_OOO *state,
                                       JOB_AES_HMAC *job);
 JOB_AES_HMAC *flush_job_aes_xcbc_sse(MB_MGR_AES_XCBC_OOO *state);
 
+JOB_AES_HMAC *submit_job_aes_cmac_auth_sse(MB_MGR_CMAC_OOO *state,
+                                           JOB_AES_HMAC *job);
+
+JOB_AES_HMAC *flush_job_aes_cmac_auth_sse(MB_MGR_CMAC_OOO *state);
+
+
 #define SAVE_XMMS save_xmms
 #define RESTORE_XMMS restore_xmms
 #define SUBMIT_JOB_AES128_ENC submit_job_aes128_enc_sse
@@ -143,6 +147,11 @@ JOB_AES_HMAC *flush_job_aes_xcbc_sse(MB_MGR_AES_XCBC_OOO *state);
 #define AES_GCM_ENC_192   aes_gcm_enc_192_sse
 #define AES_GCM_DEC_256   aes_gcm_dec_256_sse
 #define AES_GCM_ENC_256   aes_gcm_enc_256_sse
+
+#define SUBMIT_JOB_AES_GCM_DEC submit_job_aes_gcm_dec_sse
+#define FLUSH_JOB_AES_GCM_DEC  flush_job_aes_gcm_dec_sse
+#define SUBMIT_JOB_AES_GCM_ENC submit_job_aes_gcm_enc_sse
+#define FLUSH_JOB_AES_GCM_ENC  flush_job_aes_gcm_enc_sse
 #endif /* NO_GCM */
 
 /* ====================================================================== */
@@ -150,6 +159,8 @@ JOB_AES_HMAC *flush_job_aes_xcbc_sse(MB_MGR_AES_XCBC_OOO *state);
 #define SUBMIT_JOB         submit_job_sse
 #define FLUSH_JOB          flush_job_sse
 #define SUBMIT_JOB_NOCHECK submit_job_nocheck_sse
+#define GET_NEXT_JOB       get_next_job_sse
+#define GET_COMPLETED_JOB  get_completed_job_sse
 
 #define SUBMIT_JOB_AES128_DEC submit_job_aes128_dec_sse
 #define SUBMIT_JOB_AES192_DEC submit_job_aes192_dec_sse
@@ -176,9 +187,8 @@ void aes128_cbc_mac_x4(AES_ARGS_x8 *args, uint64_t len);
 #define SUBMIT_JOB_AES_CCM_AUTH    submit_job_aes_ccm_auth_arch
 #define AES_CCM_MAX_JOBS 4
 
-#define FLUSH_JOB_AES_CMAC_AUTH    flush_job_aes_cmac_auth_arch
-#define SUBMIT_JOB_AES_CMAC_AUTH   submit_job_aes_cmac_auth_arch
-#define AES_CMAC_MAX_JOBS 4
+#define FLUSH_JOB_AES_CMAC_AUTH    flush_job_aes_cmac_auth_sse
+#define SUBMIT_JOB_AES_CMAC_AUTH   submit_job_aes_cmac_auth_sse
 
 /* ====================================================================== */
 
@@ -188,92 +198,104 @@ void aes128_cbc_mac_x4(AES_ARGS_x8 *args, uint64_t len);
  */
 #define HASH_USE_SHAEXT 1
 
+
 /* ====================================================================== */
 
-struct cpuid_regs {
-        uint32_t eax;
-        uint32_t ebx;
-        uint32_t ecx;
-        uint32_t edx;
-};
-
 /*
- * A C wrapper for CPUID opcode
- *
- * Parameters:
- *    [in] leaf    - CPUID leaf number (EAX)
- *    [in] subleaf - CPUID sub-leaf number (ECX)
- *    [out] out    - registers structure to store results of CPUID into
+ * GCM submit / flush API for SSE arch
  */
-static void
-__mbcpuid(const unsigned leaf, const unsigned subleaf,
-        struct cpuid_regs *out)
+#ifndef NO_GCM
+static JOB_AES_HMAC *
+submit_job_aes_gcm_dec_sse(MB_MGR *state, JOB_AES_HMAC *job)
 {
-#ifdef _WIN32
-        /* Windows */
-        int regs[4];
+        DECLARE_ALIGNED(struct gcm_context_data ctx, 16);
+        (void) state;
 
-        __cpuidex(regs, leaf, subleaf);
-        out->eax = regs[0];
-        out->ebx = regs[1];
-        out->ecx = regs[2];
-        out->edx = regs[3];
-#else
-        /* Linux */
-#ifdef __x86_64__
-        asm volatile("mov %4, %%eax\n\t"
-                     "mov %5, %%ecx\n\t"
-                     "cpuid\n\t"
-                     "mov %%eax, %0\n\t"
-                     "mov %%ebx, %1\n\t"
-                     "mov %%ecx, %2\n\t"
-                     "mov %%edx, %3\n\t"
-                     : "=g" (out->eax), "=g" (out->ebx), "=g" (out->ecx),
-                       "=g" (out->edx)
-                     : "g" (leaf), "g" (subleaf)
-                     : "%eax", "%ebx", "%ecx", "%edx");
-#else
-        asm volatile("push %%ebx\n\t"
-                     "mov %4, %%eax\n\t"
-                     "mov %5, %%ecx\n\t"
-                     "cpuid\n\t"
-                     "mov %%eax, %0\n\t"
-                     "mov %%ebx, %1\n\t"
-                     "mov %%ecx, %2\n\t"
-                     "mov %%edx, %3\n\t"
-                     "pop %%ebx\n\t"
-                     : "=g" (out->eax), "=g" (out->ebx), "=g" (out->ecx),
-                       "=g" (out->edx)
-                     : "g" (leaf), "g" (subleaf)
-                     : "%eax", "%ecx", "%edx");
-#endif
-#endif /* Linux */
+        if (16 == job->aes_key_len_in_bytes)
+                AES_GCM_DEC_128(job->aes_dec_key_expanded, &ctx, job->dst,
+                                job->src +
+                                job->cipher_start_src_offset_in_bytes,
+                                job->msg_len_to_cipher_in_bytes,
+                                job->iv,
+                                job->u.GCM.aad, job->u.GCM.aad_len_in_bytes,
+                                job->auth_tag_output,
+                                job->auth_tag_output_len_in_bytes);
+        else if (24 == job->aes_key_len_in_bytes)
+                AES_GCM_DEC_192(job->aes_dec_key_expanded, &ctx, job->dst,
+                                job->src +
+                                job->cipher_start_src_offset_in_bytes,
+                                job->msg_len_to_cipher_in_bytes,
+                                job->iv,
+                                job->u.GCM.aad, job->u.GCM.aad_len_in_bytes,
+                                job->auth_tag_output,
+                                job->auth_tag_output_len_in_bytes);
+        else /* assume 32 bytes */
+                AES_GCM_DEC_256(job->aes_dec_key_expanded, &ctx, job->dst,
+                                job->src +
+                                job->cipher_start_src_offset_in_bytes,
+                                job->msg_len_to_cipher_in_bytes,
+                                job->iv,
+                                job->u.GCM.aad, job->u.GCM.aad_len_in_bytes,
+                                job->auth_tag_output,
+                                job->auth_tag_output_len_in_bytes);
+
+        job->status = STS_COMPLETED;
+        return job;
 }
 
-/*
- * Uses CPUID instruction to detected presence of SHA extensions.
- *
- * Return value:
- *     0 - SHA extensions not present
- *     1 - SHA extensions present
- */
-static int
-sha_extensions_supported(void)
+static JOB_AES_HMAC *
+flush_job_aes_gcm_dec_sse(MB_MGR *state, JOB_AES_HMAC *job)
 {
-        struct cpuid_regs r;
-
-        /* Check highest leaf number. If less then 7 then SHA not supported. */
-        __mbcpuid(0x0, 0x0, &r);
-        if (r.eax < 0x7)
-                return 0;
-
-        /* Check presence of SHA extensions in the extended feature flags */
-        __mbcpuid(0x7, 0x0, &r);
-        if (r.ebx & (1 << 29))
-                return 1;
-
-        return 0;
+        (void) state;
+        (void) job;
+        return NULL;
 }
+
+static JOB_AES_HMAC *
+submit_job_aes_gcm_enc_sse(MB_MGR *state, JOB_AES_HMAC *job)
+{
+        DECLARE_ALIGNED(struct gcm_context_data ctx, 16);
+        (void) state;
+
+        if (16 == job->aes_key_len_in_bytes)
+                AES_GCM_ENC_128(job->aes_enc_key_expanded, &ctx, job->dst,
+                                job->src +
+                                job->cipher_start_src_offset_in_bytes,
+                                job->msg_len_to_cipher_in_bytes, job->iv,
+                                job->u.GCM.aad, job->u.GCM.aad_len_in_bytes,
+                                job->auth_tag_output,
+                                job->auth_tag_output_len_in_bytes);
+        else if (24 == job->aes_key_len_in_bytes)
+                AES_GCM_ENC_192(job->aes_enc_key_expanded, &ctx, job->dst,
+                                job->src +
+                                job->cipher_start_src_offset_in_bytes,
+                                job->msg_len_to_cipher_in_bytes, job->iv,
+                                job->u.GCM.aad, job->u.GCM.aad_len_in_bytes,
+                                job->auth_tag_output,
+                                job->auth_tag_output_len_in_bytes);
+        else /* assume 32 bytes */
+                AES_GCM_ENC_256(job->aes_enc_key_expanded, &ctx, job->dst,
+                                job->src +
+                                job->cipher_start_src_offset_in_bytes,
+                                job->msg_len_to_cipher_in_bytes, job->iv,
+                                job->u.GCM.aad, job->u.GCM.aad_len_in_bytes,
+                                job->auth_tag_output,
+                                job->auth_tag_output_len_in_bytes);
+
+        job->status = STS_COMPLETED;
+        return job;
+}
+
+static JOB_AES_HMAC *
+flush_job_aes_gcm_enc_sse(MB_MGR *state, JOB_AES_HMAC *job)
+{
+        (void) state;
+        (void) job;
+        return NULL;
+}
+#endif /* NO_GCM */
+
+/* ====================================================================== */
 
 void
 init_mb_mgr_sse(MB_MGR *state)
@@ -281,10 +303,13 @@ init_mb_mgr_sse(MB_MGR *state)
         unsigned int j;
         uint8_t *p;
 
-        state->features &= (~IMB_FEATURE_SHANI);
-        if (!(state->flags & IMB_FLAG_SHANI_OFF))
-                if (sha_extensions_supported())
-                        state->features |= IMB_FEATURE_SHANI;
+        state->features = cpu_feature_adjust(state->flags,
+                                             cpu_feature_detect());
+
+        if (!(state->features & IMB_FEATURE_AESNI)) {
+                init_mb_mgr_sse_no_aesni(state);
+                return;
+        }
 
         /* Init AES out-of-order fields */
         state->aes128_ooo.lens[0] = 0;
@@ -593,9 +618,16 @@ init_mb_mgr_sse(MB_MGR *state)
         state->aes_ccm_ooo.unused_lanes = 0xF3210;
 
         /* Init AES-CMAC auth out-of-order fields */
+        state->aes_cmac_ooo.lens[0] = 0;
+        state->aes_cmac_ooo.lens[1] = 0;
+        state->aes_cmac_ooo.lens[2] = 0;
+        state->aes_cmac_ooo.lens[3] = 0;
+        state->aes_cmac_ooo.lens[4] = 0xFFFF;
+        state->aes_cmac_ooo.lens[5] = 0xFFFF;
+        state->aes_cmac_ooo.lens[6] = 0xFFFF;
+        state->aes_cmac_ooo.lens[7] = 0xFFFF;
         for (j = 0; j < 4; j++) {
                 state->aes_cmac_ooo.init_done[j] = 0;
-                state->aes_cmac_ooo.lens[j] = 0;
                 state->aes_cmac_ooo.job_in_lane[j] = NULL;
         }
         state->aes_cmac_ooo.unused_lanes = 0xF3210;
@@ -618,11 +650,46 @@ init_mb_mgr_sse(MB_MGR *state)
         state->xcbc_keyexp         = aes_xcbc_expand_key_sse;
         state->des_key_sched       = des_key_schedule;
         state->sha1_one_block      = sha1_one_block_sse;
+        state->sha1                = sha1_sse;
         state->sha224_one_block    = sha224_one_block_sse;
+        state->sha224              = sha224_sse;
         state->sha256_one_block    = sha256_one_block_sse;
+        state->sha256              = sha256_sse;
         state->sha384_one_block    = sha384_one_block_sse;
+        state->sha384              = sha384_sse;
         state->sha512_one_block    = sha512_one_block_sse;
+        state->sha512              = sha512_sse;
         state->md5_one_block       = md5_one_block_sse;
+        state->aes128_cfb_one      = aes_cfb_128_one_sse;
+#ifndef NO_GCM
+        state->gcm128_enc          = aes_gcm_enc_128_sse;
+        state->gcm192_enc          = aes_gcm_enc_192_sse;
+        state->gcm256_enc          = aes_gcm_enc_256_sse;
+        state->gcm128_dec          = aes_gcm_dec_128_sse;
+        state->gcm192_dec          = aes_gcm_dec_192_sse;
+        state->gcm256_dec          = aes_gcm_dec_256_sse;
+        state->gcm128_init         = aes_gcm_init_128_sse;
+        state->gcm192_init         = aes_gcm_init_192_sse;
+        state->gcm256_init         = aes_gcm_init_256_sse;
+        state->gcm128_enc_update   = aes_gcm_enc_128_update_sse;
+        state->gcm192_enc_update   = aes_gcm_enc_192_update_sse;
+        state->gcm256_enc_update   = aes_gcm_enc_256_update_sse;
+        state->gcm128_dec_update   = aes_gcm_dec_128_update_sse;
+        state->gcm192_dec_update   = aes_gcm_dec_192_update_sse;
+        state->gcm256_dec_update   = aes_gcm_dec_256_update_sse;
+        state->gcm128_enc_finalize = aes_gcm_enc_128_finalize_sse;
+        state->gcm192_enc_finalize = aes_gcm_enc_192_finalize_sse;
+        state->gcm256_enc_finalize = aes_gcm_enc_256_finalize_sse;
+        state->gcm128_dec_finalize = aes_gcm_dec_128_finalize_sse;
+        state->gcm192_dec_finalize = aes_gcm_dec_192_finalize_sse;
+        state->gcm256_dec_finalize = aes_gcm_dec_256_finalize_sse;
+        state->gcm128_precomp      = aes_gcm_precomp_128_sse;
+        state->gcm192_precomp      = aes_gcm_precomp_192_sse;
+        state->gcm256_precomp      = aes_gcm_precomp_256_sse;
+        state->gcm128_pre          = aes_gcm_pre_128_sse;
+        state->gcm192_pre          = aes_gcm_pre_192_sse;
+        state->gcm256_pre          = aes_gcm_pre_256_sse;
+#endif
 }
 
 #include "mb_mgr_code.h"

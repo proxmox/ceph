@@ -21,6 +21,7 @@
 #include <string>
 #include <string_view>
 #include <tuple>
+#include <optional>
 #include <boost/container/small_vector.hpp>
 #include <boost/optional/optional_io.hpp>
 #include <boost/tuple/tuple.hpp>
@@ -158,7 +159,7 @@ WRITE_INTTYPE_ENCODER(int16_t, le16)
 
 
 #define WRITE_CLASS_ENCODER(cl)						\
-  inline void encode(const cl &c, ::ceph::bufferlist &bl, uint64_t features=0) { \
+  inline void encode(const cl& c, ::ceph::buffer::list &bl, uint64_t features=0) { \
     ENCODE_DUMP_PRE(); c.encode(bl); ENCODE_DUMP_POST(cl); }		\
   inline void decode(cl &c, ::ceph::bufferlist::const_iterator &p) { c.decode(p); }
 
@@ -311,8 +312,8 @@ template<typename Rep, typename Period,
 void encode(const std::chrono::duration<Rep, Period>& d,
 	    ceph::bufferlist &bl) {
   using namespace std::chrono;
-  uint32_t s = duration_cast<seconds>(d).count();
-  uint32_t ns = (duration_cast<nanoseconds>(d) % seconds(1)).count();
+  int32_t s = duration_cast<seconds>(d).count();
+  int32_t ns = (duration_cast<nanoseconds>(d) % seconds(1)).count();
   encode(s, bl);
   encode(ns, bl);
 }
@@ -321,8 +322,8 @@ template<typename Rep, typename Period,
          typename std::enable_if_t<std::is_integral_v<Rep>>* = nullptr>
 void decode(std::chrono::duration<Rep, Period>& d,
 	    bufferlist::const_iterator& p) {
-  uint32_t s;
-  uint32_t ns;
+  int32_t s;
+  int32_t ns;
   decode(s, p);
   decode(ns, p);
   d = std::chrono::seconds(s) + std::chrono::nanoseconds(ns);
@@ -335,6 +336,10 @@ template<typename T>
 inline void encode(const boost::optional<T> &p, bufferlist &bl);
 template<typename T>
 inline void decode(boost::optional<T> &p, bufferlist::const_iterator &bp);
+template<typename T>
+inline void encode(const std::optional<T> &p, bufferlist &bl);
+template<typename T>
+inline void decode(std::optional<T> &p, bufferlist::const_iterator &bp);
 template<class A, class B, class C>
 inline void encode(const boost::tuple<A, B, C> &t, bufferlist& bl);
 template<class A, class B, class C>
@@ -569,6 +574,32 @@ inline void decode(boost::optional<T> &p, bufferlist::const_iterator &bp)
 #pragma GCC diagnostic pop
 #pragma GCC diagnostic warning "-Wpragmas"
 
+// std optional
+template<typename T>
+inline void encode(const std::optional<T> &p, bufferlist &bl)
+{
+  __u8 present = static_cast<bool>(p);
+  encode(present, bl);
+  if (p)
+    encode(*p, bl);
+}
+
+#pragma GCC diagnostic ignored "-Wpragmas"
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wuninitialized"
+template<typename T>
+inline void decode(std::optional<T> &p, bufferlist::const_iterator &bp)
+{
+  __u8 present;
+  decode(present, bp);
+  if (present) {
+    p = T{};
+    decode(*p, bp);
+  } else {
+    p = std::nullopt;
+  }
+}
+
 // std::tuple
 template<typename... Ts>
 inline void encode(const std::tuple<Ts...> &t, bufferlist& bl)
@@ -642,25 +673,20 @@ template<class T, class Alloc, typename traits>
 inline std::enable_if_t<!traits::supported>
   encode(const std::list<T,Alloc>& ls, bufferlist& bl, uint64_t features)
 {
-  // should i pre- or post- count?
-  if (!ls.empty()) {
-    unsigned pos = bl.length();
-    unsigned n = 0;
-    encode(n, bl);
-    for (auto p = ls.begin(); p != ls.end(); ++p) {
-      n++;
-      encode(*p, bl, features);
-    }
-    ceph_le32 en;
-    en = n;
-    bl.copy_in(pos, sizeof(en), (char*)&en);
-  } else {
-    __u32 n = (__u32)(ls.size());    // FIXME: this is slow on a list.
-    encode(n, bl);
-    for (auto p = ls.begin(); p != ls.end(); ++p)
-      encode(*p, bl, features);
+  using counter_encode_t = ceph_le32;
+  unsigned n = 0;
+  auto filler = bl.append_hole(sizeof(counter_encode_t));
+  for (const auto& item : ls) {
+    // we count on our own because of buggy std::list::size() implementation
+    // which doesn't follow the O(1) complexity constraint C++11 has brought.
+    ++n;
+    encode(item, bl, features);
   }
+  counter_encode_t en;
+  en = n;
+  filler.copy_in(sizeof(en), reinterpret_cast<char*>(&en));
 }
+
 template<class T, class Alloc, typename traits>
 inline std::enable_if_t<!traits::supported>
   decode(std::list<T,Alloc>& ls, bufferlist::const_iterator& p)
@@ -1280,7 +1306,7 @@ decode(std::array<T, N>& v, bufferlist::const_iterator& p)
   __u8 struct_v = v;                                         \
   __u8 struct_compat = compat;		                     \
   ceph_le32 struct_len;				             \
-  auto filler = (bl).append_hole(sizeof(struct_v) + 	     \
+  auto filler = (bl).append_hole(sizeof(struct_v) +	     \
     sizeof(struct_compat) + sizeof(struct_len));	     \
   const auto starting_bl_len = (bl).length();		     \
   using ::ceph::encode;					     \
@@ -1334,7 +1360,7 @@ decode(std::array<T, N>& v, bufferlist::const_iterator& p)
   decode(struct_v, bl);						\
   decode(struct_compat, bl);						\
   if (v < struct_compat)						\
-    throw buffer::malformed_input(DECODE_ERR_OLDVERSION(__PRETTY_FUNCTION__, v, struct_compat)); \
+    throw ::ceph::buffer::malformed_input(DECODE_ERR_OLDVERSION(__PRETTY_FUNCTION__, v, struct_compat)); \
   __u32 struct_len;							\
   decode(struct_len, bl);						\
   if (struct_len > bl.get_remaining())					\
@@ -1352,18 +1378,18 @@ decode(std::array<T, N>& v, bufferlist::const_iterator& p)
     __u8 struct_compat;							\
     decode(struct_compat, bl);					\
     if (v < struct_compat)						\
-      throw buffer::malformed_input(DECODE_ERR_OLDVERSION(__PRETTY_FUNCTION__, v, struct_compat)); \
+      throw ::ceph::buffer::malformed_input(DECODE_ERR_OLDVERSION(__PRETTY_FUNCTION__, v, struct_compat)); \
   } else if (skip_v) {							\
     if (bl.get_remaining() < skip_v)					\
-      throw buffer::malformed_input(DECODE_ERR_PAST(__PRETTY_FUNCTION__)); \
-    bl.advance(skip_v);							\
+      throw ::ceph::buffer::malformed_input(DECODE_ERR_PAST(__PRETTY_FUNCTION__)); \
+    bl +=  skip_v;							\
   }									\
   unsigned struct_end = 0;						\
   if (struct_v >= lenv) {						\
     __u32 struct_len;							\
     decode(struct_len, bl);						\
     if (struct_len > bl.get_remaining())				\
-      throw buffer::malformed_input(DECODE_ERR_PAST(__PRETTY_FUNCTION__)); \
+      throw ::ceph::buffer::malformed_input(DECODE_ERR_PAST(__PRETTY_FUNCTION__)); \
     struct_end = bl.get_off() + struct_len;				\
   }									\
   do {
@@ -1394,7 +1420,7 @@ decode(std::array<T, N>& v, bufferlist::const_iterator& p)
     __u8 struct_compat;							\
     decode(struct_compat, bl);						\
     if (v < struct_compat)						\
-      throw buffer::malformed_input(DECODE_ERR_OLDVERSION(		\
+      throw ::ceph::buffer::malformed_input(DECODE_ERR_OLDVERSION(	\
 	__PRETTY_FUNCTION__, v, struct_compat));			\
   }									\
   unsigned struct_end = 0;						\
@@ -1402,7 +1428,7 @@ decode(std::array<T, N>& v, bufferlist::const_iterator& p)
     __u32 struct_len;							\
     decode(struct_len, bl);						\
     if (struct_len > bl.get_remaining())				\
-      throw buffer::malformed_input(DECODE_ERR_PAST(__PRETTY_FUNCTION__)); \
+      throw ::ceph::buffer::malformed_input(DECODE_ERR_PAST(__PRETTY_FUNCTION__)); \
     struct_end = bl.get_off() + struct_len;				\
   }									\
   do {
@@ -1439,9 +1465,9 @@ decode(std::array<T, N>& v, bufferlist::const_iterator& p)
   } while (false);							\
   if (struct_end) {							\
     if (bl.get_off() > struct_end)					\
-      throw buffer::malformed_input(DECODE_ERR_PAST(__PRETTY_FUNCTION__)); \
+      throw ::ceph::buffer::malformed_input(DECODE_ERR_PAST(__PRETTY_FUNCTION__)); \
     if (bl.get_off() < struct_end)					\
-      bl.advance(struct_end - bl.get_off());				\
+      bl += struct_end - bl.get_off();					\
   }
 
 namespace ceph {
@@ -1455,9 +1481,9 @@ inline ssize_t decode_file(int fd, std::string &str)
   bufferlist bl;
   __u32 len = 0;
   bl.read_fd(fd, sizeof(len));
-  decode(len, bl);                                                                                                  
+  decode(len, bl);
   bl.read_fd(fd, len);
-  decode(str, bl);                                                                                                  
+  decode(str, bl);
   return bl.length();
 }
 

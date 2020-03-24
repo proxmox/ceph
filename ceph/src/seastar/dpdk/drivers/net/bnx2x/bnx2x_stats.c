@@ -1,16 +1,14 @@
-/*-
- * Copyright (c) 2007-2013 QLogic Corporation. All rights reserved.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright (c) 2007-2013 Broadcom Corporation.
  *
  * Eric Davis        <edavis@broadcom.com>
  * David Christensen <davidch@broadcom.com>
  * Gary Zambrano     <zambrano@broadcom.com>
  *
  * Copyright (c) 2013-2015 Brocade Communications Systems, Inc.
- * Copyright (c) 2015 QLogic Corporation.
+ * Copyright (c) 2015-2018 Cavium Inc.
  * All rights reserved.
- * www.qlogic.com
- *
- * See LICENSE.bnx2x_pmd for copyright and licensing details.
+ * www.cavium.com
  */
 
 #include "bnx2x.h"
@@ -84,7 +82,7 @@ bnx2x_storm_stats_post(struct bnx2x_softc *sc)
 		sc->fw_stats_req->hdr.drv_stats_counter =
 			htole16(sc->stats_counter++);
 
-		PMD_DEBUG_PERIODIC_LOG(DEBUG,
+		PMD_DEBUG_PERIODIC_LOG(DEBUG, sc,
 				"sending statistics ramrod %d",
 				le16toh(sc->fw_stats_req->hdr.drv_stats_counter));
 
@@ -156,7 +154,7 @@ bnx2x_stats_comp(struct bnx2x_softc *sc)
 
 	while (*stats_comp != DMAE_COMP_VAL) {
 		if (!cnt) {
-			PMD_DRV_LOG(ERR, "Timeout waiting for stats finished");
+			PMD_DRV_LOG(ERR, sc, "Timeout waiting for stats finished");
 			break;
 		}
 
@@ -191,7 +189,7 @@ bnx2x_stats_pmf_update(struct bnx2x_softc *sc)
 	}
 	/* sanity */
 	if (!sc->port.pmf || !sc->port.port_stx) {
-		PMD_DRV_LOG(ERR, "BUG!");
+		PMD_DRV_LOG(ERR, sc, "BUG!");
 		return;
 	}
 
@@ -241,7 +239,7 @@ bnx2x_port_stats_init(struct bnx2x_softc *sc)
 
     /* sanity */
     if (!sc->link_vars.link_up || !sc->port.pmf) {
-	PMD_DRV_LOG(ERR, "BUG!");
+	PMD_DRV_LOG(ERR, sc, "BUG!");
 	return;
     }
 
@@ -465,7 +463,7 @@ bnx2x_func_stats_init(struct bnx2x_softc *sc)
 
     /* sanity */
     if (!sc->func_stx) {
-	PMD_DRV_LOG(ERR, "BUG!");
+	PMD_DRV_LOG(ERR, sc, "BUG!");
 	return;
     }
 
@@ -799,12 +797,12 @@ bnx2x_hw_stats_update(struct bnx2x_softc *sc)
 	break;
 
     case ELINK_MAC_TYPE_NONE: /* unreached */
-	PMD_DRV_LOG(DEBUG,
+	PMD_DRV_LOG(DEBUG, sc,
 	      "stats updated by DMAE but no MAC active");
 	return -1;
 
     default: /* unreached */
-	PMD_DRV_LOG(ERR, "stats update failed, unknown MAC type");
+	PMD_DRV_LOG(ERR, sc, "stats update failed, unknown MAC type");
     }
 
     ADD_EXTEND_64(pstats->brb_drop_hi, pstats->brb_drop_lo,
@@ -839,7 +837,7 @@ bnx2x_hw_stats_update(struct bnx2x_softc *sc)
 	nig_timer_max = SHMEM_RD(sc, port_mb[SC_PORT(sc)].stat_nig_timer);
 	if (nig_timer_max != estats->nig_timer_max) {
 	    estats->nig_timer_max = nig_timer_max;
-	    PMD_DRV_LOG(ERR, "invalid NIG timer max (%u)",
+	    PMD_DRV_LOG(ERR, sc, "invalid NIG timer max (%u)",
 		  estats->nig_timer_max);
 	}
     }
@@ -861,7 +859,7 @@ bnx2x_storm_stats_validate_counters(struct bnx2x_softc *sc)
 
     /* are storm stats valid? */
     if (le16toh(counters->xstats_counter) != cur_stats_counter) {
-	PMD_DRV_LOG(DEBUG,
+	PMD_DRV_LOG(DEBUG, sc,
 	      "stats not updated by xstorm, "
 	      "counter 0x%x != stats_counter 0x%x",
 	      le16toh(counters->xstats_counter), sc->stats_counter);
@@ -869,7 +867,7 @@ bnx2x_storm_stats_validate_counters(struct bnx2x_softc *sc)
     }
 
     if (le16toh(counters->ustats_counter) != cur_stats_counter) {
-	PMD_DRV_LOG(DEBUG,
+	PMD_DRV_LOG(DEBUG, sc,
 	      "stats not updated by ustorm, "
 	      "counter 0x%x != stats_counter 0x%x",
 	      le16toh(counters->ustats_counter), sc->stats_counter);
@@ -877,7 +875,7 @@ bnx2x_storm_stats_validate_counters(struct bnx2x_softc *sc)
     }
 
     if (le16toh(counters->cstats_counter) != cur_stats_counter) {
-	PMD_DRV_LOG(DEBUG,
+	PMD_DRV_LOG(DEBUG, sc,
 	      "stats not updated by cstorm, "
 	      "counter 0x%x != stats_counter 0x%x",
 	      le16toh(counters->cstats_counter), sc->stats_counter);
@@ -885,7 +883,7 @@ bnx2x_storm_stats_validate_counters(struct bnx2x_softc *sc)
     }
 
     if (le16toh(counters->tstats_counter) != cur_stats_counter) {
-	PMD_DRV_LOG(DEBUG,
+	PMD_DRV_LOG(DEBUG, sc,
 	      "stats not updated by tstorm, "
 	      "counter 0x%x != stats_counter 0x%x",
 	      le16toh(counters->tstats_counter), sc->stats_counter);
@@ -931,12 +929,13 @@ bnx2x_storm_stats_update(struct bnx2x_softc *sc)
 
 		uint32_t diff;
 
-		/* PMD_DRV_LOG(DEBUG,
+		/* PMD_DRV_LOG(DEBUG, sc,
 				"queue[%d]: ucast_sent 0x%x bcast_sent 0x%x mcast_sent 0x%x",
 				i, xclient->ucast_pkts_sent, xclient->bcast_pkts_sent,
 				xclient->mcast_pkts_sent);
 
-		PMD_DRV_LOG(DEBUG, "---------------"); */
+		PMD_DRV_LOG(DEBUG, sc, "---------------");
+		 */
 
 		UPDATE_QSTAT(tclient->rcv_bcast_bytes,
 				total_broadcast_bytes_received);
@@ -1290,7 +1289,7 @@ void bnx2x_stats_handle(struct bnx2x_softc *sc, enum bnx2x_stats_event event)
 	bnx2x_stats_stm[state][event].action(sc);
 
 	if (event != STATS_EVENT_UPDATE) {
-		PMD_DRV_LOG(DEBUG,
+		PMD_DRV_LOG(DEBUG, sc,
 				"state %d -> event %d -> state %d",
 				state, event, sc->stats_state);
 	}
@@ -1304,7 +1303,7 @@ bnx2x_port_stats_base_init(struct bnx2x_softc *sc)
 
     /* sanity */
     if (!sc->port.pmf || !sc->port.port_stx) {
-	PMD_DRV_LOG(ERR, "BUG!");
+	PMD_DRV_LOG(ERR, sc, "BUG!");
 	return;
     }
 
@@ -1338,7 +1337,7 @@ bnx2x_prep_fw_stats_req(struct bnx2x_softc *sc)
     int i;
     int first_queue_query_index;
     struct stats_query_header *stats_hdr = &sc->fw_stats_req->hdr;
-    phys_addr_t cur_data_offset;
+    rte_iova_t cur_data_offset;
     struct stats_query_entry *cur_query_entry;
 
     stats_hdr->cmd_num = sc->fw_stats_num;
@@ -1371,9 +1370,9 @@ bnx2x_prep_fw_stats_req(struct bnx2x_softc *sc)
     cur_query_entry = &sc->fw_stats_req->query[BNX2X_PORT_QUERY_IDX];
 
     cur_query_entry->kind = STATS_TYPE_PORT;
-    /* For port query index is a DONT CARE */
+    /* For port query index is a DON'T CARE */
     cur_query_entry->index = SC_PORT(sc);
-    /* For port query funcID is a DONT CARE */
+    /* For port query funcID is a DON'T CARE */
     cur_query_entry->funcID = htole16(SC_FUNC(sc));
     cur_query_entry->address.hi = htole32(U64_HI(cur_data_offset));
     cur_query_entry->address.lo = htole32(U64_LO(cur_data_offset));
@@ -1385,7 +1384,7 @@ bnx2x_prep_fw_stats_req(struct bnx2x_softc *sc)
     cur_query_entry = &sc->fw_stats_req->query[BNX2X_PF_QUERY_IDX];
 
     cur_query_entry->kind = STATS_TYPE_PF;
-    /* For PF query index is a DONT CARE */
+    /* For PF query index is a DON'T CARE */
     cur_query_entry->index = SC_PORT(sc);
     cur_query_entry->funcID = htole16(SC_FUNC(sc));
     cur_query_entry->address.hi = htole32(U64_HI(cur_data_offset));
@@ -1450,7 +1449,7 @@ void bnx2x_memset_stats(struct bnx2x_softc *sc)
 	if (sc->port.pmf && sc->port.port_stx)
 		bnx2x_port_stats_base_init(sc);
 
-	/* mark the end of statistics initializiation */
+	/* mark the end of statistics initialization */
 	sc->stats_init = false;
 }
 
@@ -1476,7 +1475,7 @@ bnx2x_stats_init(struct bnx2x_softc *sc)
 		sc->func_stx = 0;
 	}
 
-	PMD_DRV_LOG(DEBUG, "port_stx 0x%x func_stx 0x%x",
+	PMD_DRV_LOG(DEBUG, sc, "port_stx 0x%x func_stx 0x%x",
 			sc->port.port_stx, sc->func_stx);
 
 	/* pmf should retrieve port statistics from SP on a non-init*/
@@ -1536,7 +1535,7 @@ bnx2x_stats_init(struct bnx2x_softc *sc)
 		bnx2x_port_stats_base_init(sc);
 	}
 
-	/* mark the end of statistics initializiation */
+	/* mark the end of statistics initialization */
 	sc->stats_init = FALSE;
 }
 

@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  *
- *   Copyright 2016 NXP
+ *   Copyright 2016,2018 NXP
  *
  */
 
@@ -19,6 +19,8 @@
 #include <rte_fslmc.h>
 #include <fslmc_vfio.h>
 #include "fslmc_logs.h"
+
+#include <dpaax_iova_table.h>
 
 int dpaa2_logtype_bus;
 
@@ -161,6 +163,8 @@ scan_one_fslmc_device(char *dev_name)
 		return -ENOMEM;
 	}
 
+	dev->device.bus = &rte_fslmc_bus.bus;
+
 	/* Parse the device name and ID */
 	t_ptr = strtok(dup_dev_name, ".");
 	if (!t_ptr) {
@@ -183,6 +187,8 @@ scan_one_fslmc_device(char *dev_name)
 		dev->dev_type = DPAA2_MPORTAL;
 	else if (!strncmp("dpdmai", t_ptr, 6))
 		dev->dev_type = DPAA2_QDMA;
+	else if (!strncmp("dpdmux", t_ptr, 6))
+		dev->dev_type = DPAA2_MUX;
 	else
 		dev->dev_type = DPAA2_UNKNOWN;
 
@@ -191,7 +197,7 @@ scan_one_fslmc_device(char *dev_name)
 
 	t_ptr = strtok(NULL, ".");
 	if (!t_ptr) {
-		DPAA2_BUS_ERR("Incorrect device string observed (%s)", t_ptr);
+		DPAA2_BUS_ERR("Incorrect device string observed (null)");
 		goto cleanup;
 	}
 
@@ -224,47 +230,35 @@ rte_fslmc_parse(const char *name, void *addr)
 {
 	uint16_t dev_id;
 	char *t_ptr;
-	char *sep = strchr(name, ':');
 
-	if (strncmp(name, RTE_STR(FSLMC_BUS_NAME),
-		strlen(RTE_STR(FSLMC_BUS_NAME)))) {
-		return -EINVAL;
-	}
-
-	if (!sep) {
-		DPAA2_BUS_ERR("Incorrect device name observed");
-		return -EINVAL;
-	}
-
-	t_ptr = (char *)(sep + 1);
-
-	if (strncmp("dpni", t_ptr, 4) &&
-	    strncmp("dpseci", t_ptr, 6) &&
-	    strncmp("dpcon", t_ptr, 5) &&
-	    strncmp("dpbp", t_ptr, 4) &&
-	    strncmp("dpio", t_ptr, 4) &&
-	    strncmp("dpci", t_ptr, 4) &&
-	    strncmp("dpmcp", t_ptr, 5) &&
-	    strncmp("dpdmai", t_ptr, 6)) {
-		DPAA2_BUS_ERR("Unknown or unsupported device");
-		return -EINVAL;
+	/* 'name' is expected to contain name of device, for example, dpio.1,
+	 * dpni.2, etc.
+	 */
+	if (strncmp("dpni", name, 4) &&
+	    strncmp("dpseci", name, 6) &&
+	    strncmp("dpcon", name, 5) &&
+	    strncmp("dpbp", name, 4) &&
+	    strncmp("dpio", name, 4) &&
+	    strncmp("dpci", name, 4) &&
+	    strncmp("dpmcp", name, 5) &&
+	    strncmp("dpdmai", name, 6) &&
+	    strncmp("dpdmux", name, 6)) {
+		DPAA2_BUS_DEBUG("Unknown or unsupported device (%s)", name);
+		goto err_out;
 	}
 
 	t_ptr = strchr(name, '.');
-	if (!t_ptr) {
-		DPAA2_BUS_ERR("Incorrect device string observed (%s)", t_ptr);
-		return -EINVAL;
-	}
-
-	t_ptr = (char *)(t_ptr + 1);
-	if (sscanf(t_ptr, "%hu", &dev_id) <= 0) {
-		DPAA2_BUS_ERR("Incorrect device string observed (%s)", t_ptr);
-		return -EINVAL;
+	if (!t_ptr || sscanf(t_ptr + 1, "%hu", &dev_id) != 1) {
+		DPAA2_BUS_ERR("Missing device id in device name (%s)", name);
+		goto err_out;
 	}
 
 	if (addr)
-		strcpy(addr, (char *)(sep + 1));
+		strcpy(addr, name);
+
 	return 0;
+err_out:
+	return -EINVAL;
 }
 
 static int
@@ -289,8 +283,8 @@ rte_fslmc_scan(void)
 		goto scan_fail;
 
 	/* Scan devices on the group */
-	sprintf(fslmc_dirpath, "%s/%d/devices", VFIO_IOMMU_GROUP_PATH,
-		groupid);
+	snprintf(fslmc_dirpath, sizeof(fslmc_dirpath), "%s/%d/devices",
+			VFIO_IOMMU_GROUP_PATH, groupid);
 	dir = opendir(fslmc_dirpath);
 	if (!dir) {
 		DPAA2_BUS_ERR("Unable to open VFIO group directory");
@@ -375,6 +369,19 @@ rte_fslmc_probe(void)
 
 	probe_all = rte_fslmc_bus.bus.conf.scan_mode != RTE_BUS_SCAN_WHITELIST;
 
+	/* In case of PA, the FD addresses returned by qbman APIs are physical
+	 * addresses, which need conversion into equivalent VA address for
+	 * rte_mbuf. For that, a table (a serial array, in memory) is used to
+	 * increase translation efficiency.
+	 * This has to be done before probe as some device initialization
+	 * (during) probe allocate memory (dpaa2_sec) which needs to be pinned
+	 * to this table.
+	 *
+	 * Error is ignored as relevant logs are handled within dpaax and
+	 * handling for unavailable dpaax table too is transparent to caller.
+	 */
+	dpaax_iova_table_populate();
+
 	TAILQ_FOREACH(dev, &rte_fslmc_bus.device_list, next) {
 		TAILQ_FOREACH(drv, &rte_fslmc_bus.driver_list, next) {
 			ret = rte_fslmc_match(drv, dev);
@@ -382,6 +389,9 @@ rte_fslmc_probe(void)
 				continue;
 
 			if (!drv->probe)
+				continue;
+
+			if (rte_dev_is_probed(&dev->device))
 				continue;
 
 			if (dev->device.devargs &&
@@ -396,8 +406,12 @@ rte_fslmc_probe(void)
 			   dev->device.devargs->policy ==
 			   RTE_DEV_WHITELISTED)) {
 				ret = drv->probe(drv, dev);
-				if (ret)
+				if (ret) {
 					DPAA2_BUS_ERR("Unable to probe");
+				} else {
+					dev->driver = drv;
+					dev->device.driver = &drv->driver;
+				}
 			}
 			break;
 		}
@@ -450,6 +464,11 @@ rte_fslmc_driver_unregister(struct rte_dpaa2_driver *driver)
 
 	fslmc_bus = driver->fslmc_bus;
 
+	/* Cleanup the PA->VA Translation table; From whereever this function
+	 * is called from.
+	 */
+	dpaax_iova_table_depopulate();
+
 	TAILQ_REMOVE(&fslmc_bus->driver_list, driver, next);
 	/* Update Bus references */
 	driver->fslmc_bus = NULL;
@@ -489,6 +508,10 @@ rte_dpaa2_get_iommu_class(void)
 
 	if (TAILQ_EMPTY(&rte_fslmc_bus.device_list))
 		return RTE_IOVA_DC;
+
+#ifdef RTE_LIBRTE_DPAA2_USE_PHYS_IOVA
+	return RTE_IOVA_PA;
+#endif
 
 	/* check if all devices on the bus support Virtual addressing or not */
 	has_iova_va = fslmc_all_device_support_iova();

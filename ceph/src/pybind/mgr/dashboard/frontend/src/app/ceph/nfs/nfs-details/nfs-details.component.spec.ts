@@ -14,7 +14,7 @@ describe('NfsDetailsComponent', () => {
   let component: NfsDetailsComponent;
   let fixture: ComponentFixture<NfsDetailsComponent>;
 
-  const elem = (css) => fixture.debugElement.query(By.css(css));
+  const elem = (css: string) => fixture.debugElement.query(By.css(css));
 
   configureTestBed({
     declarations: [NfsDetailsComponent],
@@ -51,7 +51,6 @@ describe('NfsDetailsComponent', () => {
         state: 'LOADING'
       }
     ];
-    component.selection.update();
     component.ngOnChanges();
     fixture.detectChanges();
   });
@@ -85,7 +84,6 @@ describe('NfsDetailsComponent', () => {
       }
     });
     component.selection.selected = [newData];
-    component.selection.update();
     component.ngOnChanges();
     expect(component.data).toEqual({
       'Access Type': 'RW',

@@ -11,12 +11,6 @@
           [columns]="imagesColumns">
 </cd-table>
 
-<ng-template #statusColorTpl
-             let-value="value">
-  <span class="label"
-        [ngClass]="{'label-success': 'up' == value, 'label-danger': 'down' == value}">{{ value }}</span>
-</ng-template>
-
 <ng-template #iscsiSparklineTpl
              let-row="row"
              let-value="value">

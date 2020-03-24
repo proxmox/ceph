@@ -127,9 +127,11 @@ When using a :ref:`mixed spinning and solid drive setup
 ``block.db`` logical volume for Bluestore. Generally, ``block.db`` should have
 *as large as possible* logical volumes.
 
-It is recommended that the ``block.db`` size isn't smaller than 4% of
-``block``. For example, if the ``block`` size is 1TB, then ``block.db``
-shouldn't be less than 40GB.
+The general recommendation is to have ``block.db`` size in between 1% to 4%
+of ``block`` size. For RGW workloads, it is recommended that the ``block.db``
+size isn't smaller than 4% of ``block``, because RGW heavily uses it to store its
+metadata. For example, if the ``block`` size is 1TB, then ``block.db`` shouldn't
+be less than 40GB. For RBD workloads, 1% to 2% of ``block`` size is usually enough.
 
 If *not* using a mix of fast and slow devices, it isn't required to create
 separate logical volumes for ``block.db`` (or ``block.wal``). Bluestore will
@@ -146,7 +148,7 @@ will attempt to keep OSD heap memory usage under a designated target size via
 the ``osd_memory_target`` configuration option.  This is a best effort
 algorithm and caches will not shrink smaller than the amount specified by
 ``osd_memory_cache_min``.  Cache ratios will be chosen based on a hierarchy
-of priorities.  If priority information is not availabe, the
+of priorities.  If priority information is not available, the
 ``bluestore_cache_meta_ratio`` and ``bluestore_cache_kv_ratio`` options are
 used as fallbacks.
 
@@ -159,7 +161,7 @@ used as fallbacks.
 
 ``osd_memory_target``
 
-:Description: When tcmalloc is available and cache autotuning is enabled, try to keep this many bytes mapped in memory. Note: This may not exactly match the RSS memory usage of the process.  While the total amount of heap memory mapped by the process should generally stay close to this target, there is no guarantee that the kernel will actually reclaim  memory that has been unmapped.  During initial developement, it was found that some kernels result in the OSD's RSS Memory exceeding the mapped memory by up to 20%.  It is hypothesised however, that the kernel generally may be more aggressive about reclaiming unmapped memory when there is a high amount of memory pressure.  Your mileage may vary.
+:Description: When tcmalloc is available and cache autotuning is enabled, try to keep this many bytes mapped in memory. Note: This may not exactly match the RSS memory usage of the process.  While the total amount of heap memory mapped by the process should generally stay close to this target, there is no guarantee that the kernel will actually reclaim  memory that has been unmapped.  During initial development, it was found that some kernels result in the OSD's RSS Memory exceeding the mapped memory by up to 20%.  It is hypothesised however, that the kernel generally may be more aggressive about reclaiming unmapped memory when there is a high amount of memory pressure.  Your mileage may vary.
 :Type: Unsigned Integer
 :Required: Yes
 :Default: ``4294967296``
@@ -181,7 +183,7 @@ used as fallbacks.
 ``osd_memory_base``
 
 :Description: When tcmalloc and cache autotuning is enabled, estimate the minimum amount of memory in bytes the OSD will need.  This is used to help the autotuner estimate the expected aggregate memory consumption of the caches.
-:Type: Unsigned Interger
+:Type: Unsigned Integer
 :Required: No
 :Default: ``805306368``
 
@@ -495,4 +497,4 @@ SPDK.::
   bluestore_block_wal_size = 0
 
 Otherwise, the current implementation will setup symbol file to kernel
-filesystem location and uses kernel driver to issue DB/WAL IO.
+file system location and uses kernel driver to issue DB/WAL IO.

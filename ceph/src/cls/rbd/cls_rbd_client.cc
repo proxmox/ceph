@@ -833,10 +833,34 @@ int get_all_features(librados::IoCtx *ioctx, const std::string &oid,
   return get_all_features_finish(&it, all_features);
 }
 
+void copyup(librados::ObjectWriteOperation *op, bufferlist data) {
+  op->exec("rbd", "copyup", data);
+}
+
 int copyup(librados::IoCtx *ioctx, const std::string &oid,
            bufferlist data) {
-  bufferlist out;
-  return ioctx->exec(oid, "rbd", "copyup", data, out);
+  librados::ObjectWriteOperation op;
+  copyup(&op, data);
+
+  return ioctx->operate(oid, &op);
+}
+
+void sparse_copyup(librados::ObjectWriteOperation *op,
+                   const std::map<uint64_t, uint64_t> &extent_map,
+                   bufferlist data) {
+  bufferlist bl;
+  encode(extent_map, bl);
+  encode(data, bl);
+  op->exec("rbd", "sparse_copyup", bl);
+}
+
+int sparse_copyup(librados::IoCtx *ioctx, const std::string &oid,
+                  const std::map<uint64_t, uint64_t> &extent_map,
+                  bufferlist data) {
+  librados::ObjectWriteOperation op;
+  sparse_copyup(&op, extent_map, data);
+
+  return ioctx->operate(oid, &op);
 }
 
 void get_protection_status_start(librados::ObjectReadOperation *op,
@@ -892,24 +916,36 @@ void set_protection_status(librados::ObjectWriteOperation *op,
   op->exec("rbd", "set_protection_status", in);
 }
 
+void snapshot_get_limit_start(librados::ObjectReadOperation *op)
+{
+  bufferlist bl;
+  op->exec("rbd", "snapshot_get_limit", bl);
+}
+
+int snapshot_get_limit_finish(bufferlist::const_iterator *it, uint64_t *limit)
+{
+  try {
+    decode(*limit, *it);
+  } catch (const buffer::error &err) {
+    return -EBADMSG;
+  }
+  return 0;
+}
+
 int snapshot_get_limit(librados::IoCtx *ioctx, const std::string &oid,
                        uint64_t *limit)
 {
-  bufferlist in, out;
-  int r =  ioctx->exec(oid, "rbd", "snapshot_get_limit", in, out);
+  librados::ObjectReadOperation op;
+  snapshot_get_limit_start(&op);
 
+  bufferlist out_bl;
+  int r = ioctx->operate(oid, &op, &out_bl);
   if (r < 0) {
     return r;
   }
 
-  try {
-    auto iter = out.cbegin();
-    decode(*limit, iter);
-  } catch (const buffer::error &err) {
-    return -EBADMSG;
-  }
-
-  return 0;
+  auto it = out_bl.cbegin();
+  return snapshot_get_limit_finish(&it, limit);
 }
 
 void snapshot_set_limit(librados::ObjectWriteOperation *op, uint64_t limit)
@@ -1486,23 +1522,42 @@ int metadata_list_finish(bufferlist::const_iterator *it,
   return 0;
 }
 
+void metadata_get_start(librados::ObjectReadOperation* op,
+                 const std::string &key) {
+  bufferlist bl;
+  encode(key, bl);
+
+  op->exec("rbd", "metadata_get", bl);
+}
+
+int metadata_get_finish(bufferlist::const_iterator *it,
+                         std::string* value) {
+  try {
+    decode(*value, *it);
+  } catch (const buffer::error &err) {
+    return -EBADMSG;
+  }
+  return 0;
+}
+
 int metadata_get(librados::IoCtx *ioctx, const std::string &oid,
                  const std::string &key, string *s)
 {
   ceph_assert(s);
-  bufferlist in, out;
-  encode(key, in);
-  int r = ioctx->exec(oid, "rbd", "metadata_get", in, out);
-  if (r < 0)
-    return r;
+  librados::ObjectReadOperation op;
+  metadata_get_start(&op, key);
 
-  auto iter = out.cbegin();
-  try {
-    decode(*s, iter);
-  } catch (const buffer::error &err) {
-    return -EBADMSG;
+  bufferlist out_bl;
+  int r = ioctx->operate(oid, &op, &out_bl);
+  if (r < 0) {
+    return r;
   }
 
+  auto it = out_bl.cbegin();
+  r = metadata_get_finish(&it, s);
+  if (r < 0) {
+    return r;
+  }
   return 0;
 }
 
@@ -1786,40 +1841,85 @@ int mirror_mode_set(librados::IoCtx *ioctx,
   return 0;
 }
 
-int mirror_peer_list(librados::IoCtx *ioctx,
-                     std::vector<cls::rbd::MirrorPeer> *peers) {
-  bufferlist in_bl;
-  bufferlist out_bl;
-  int r = ioctx->exec(RBD_MIRRORING, "rbd", "mirror_peer_list", in_bl,
-                      out_bl);
-  if (r < 0) {
-    return r;
-  }
+void mirror_peer_list_start(librados::ObjectReadOperation *op) {
+  bufferlist bl;
+  op->exec("rbd", "mirror_peer_list", bl);
+}
 
+int mirror_peer_list_finish(bufferlist::const_iterator *it,
+                            std::vector<cls::rbd::MirrorPeer> *peers) {
   peers->clear();
   try {
-    auto bl_it = out_bl.cbegin();
-    decode(*peers, bl_it);
+    decode(*peers, *it);
   } catch (const buffer::error &err) {
     return -EBADMSG;
   }
   return 0;
 }
 
-int mirror_peer_add(librados::IoCtx *ioctx, const std::string &uuid,
-                    const std::string &cluster_name,
-                    const std::string &client_name) {
-  cls::rbd::MirrorPeer peer(uuid, cluster_name, client_name, -1);
-  bufferlist in_bl;
-  encode(peer, in_bl);
+int mirror_peer_list(librados::IoCtx *ioctx,
+                     std::vector<cls::rbd::MirrorPeer> *peers) {
+  librados::ObjectReadOperation op;
+  mirror_peer_list_start(&op);
 
   bufferlist out_bl;
-  int r = ioctx->exec(RBD_MIRRORING, "rbd", "mirror_peer_add", in_bl,
-                      out_bl);
+  int r = ioctx->operate(RBD_MIRRORING, &op, &out_bl);
+  if (r < 0) {
+    return r;
+  }
+
+  auto it = out_bl.cbegin();
+  r = mirror_peer_list_finish(&it, peers);
   if (r < 0) {
     return r;
   }
   return 0;
+}
+
+int mirror_peer_ping(librados::IoCtx *ioctx,
+                     const std::string& site_name,
+                     const std::string& fsid) {
+  librados::ObjectWriteOperation op;
+  mirror_peer_ping(&op, site_name, fsid);
+
+  int r = ioctx->operate(RBD_MIRRORING, &op);
+  if (r < 0) {
+    return r;
+  }
+
+  return 0;
+}
+
+void mirror_peer_ping(librados::ObjectWriteOperation *op,
+                      const std::string& site_name,
+                      const std::string& fsid) {
+  bufferlist in_bl;
+  encode(site_name, in_bl);
+  encode(fsid, in_bl);
+  encode(static_cast<uint8_t>(cls::rbd::MIRROR_PEER_DIRECTION_TX), in_bl);
+
+  op->exec("rbd", "mirror_peer_ping", in_bl);
+}
+
+int mirror_peer_add(librados::IoCtx *ioctx,
+                    const cls::rbd::MirrorPeer& mirror_peer) {
+  librados::ObjectWriteOperation op;
+  mirror_peer_add(&op, mirror_peer);
+
+  int r = ioctx->operate(RBD_MIRRORING, &op);
+  if (r < 0) {
+    return r;
+  }
+
+  return 0;
+}
+
+void mirror_peer_add(librados::ObjectWriteOperation *op,
+                     const cls::rbd::MirrorPeer& mirror_peer) {
+  bufferlist in_bl;
+  encode(mirror_peer, in_bl);
+
+  op->exec("rbd", "mirror_peer_add", in_bl);
 }
 
 int mirror_peer_remove(librados::IoCtx *ioctx,
@@ -1861,6 +1961,22 @@ int mirror_peer_set_cluster(librados::IoCtx *ioctx,
 
   bufferlist out_bl;
   int r = ioctx->exec(RBD_MIRRORING, "rbd", "mirror_peer_set_cluster",
+                      in_bl, out_bl);
+  if (r < 0) {
+    return r;
+  }
+  return 0;
+}
+
+int mirror_peer_set_direction(
+    librados::IoCtx *ioctx, const std::string &uuid,
+    cls::rbd::MirrorPeerDirection mirror_peer_direction) {
+  bufferlist in_bl;
+  encode(uuid, in_bl);
+  encode(static_cast<uint8_t>(mirror_peer_direction), in_bl);
+
+  bufferlist out_bl;
+  int r = ioctx->exec(RBD_MIRRORING, "rbd", "mirror_peer_set_direction",
                       in_bl, out_bl);
   if (r < 0) {
     return r;
@@ -2017,7 +2133,7 @@ int mirror_image_remove(librados::IoCtx *ioctx, const std::string &image_id) {
 
 int mirror_image_status_set(librados::IoCtx *ioctx,
                             const std::string &global_image_id,
-                            const cls::rbd::MirrorImageStatus &status) {
+                            const cls::rbd::MirrorImageSiteStatus &status) {
   librados::ObjectWriteOperation op;
   mirror_image_status_set(&op, global_image_id, status);
   return ioctx->operate(RBD_MIRRORING, &op);
@@ -2025,25 +2141,11 @@ int mirror_image_status_set(librados::IoCtx *ioctx,
 
 void mirror_image_status_set(librados::ObjectWriteOperation *op,
                              const std::string &global_image_id,
-                             const cls::rbd::MirrorImageStatus &status) {
+                             const cls::rbd::MirrorImageSiteStatus &status) {
   bufferlist bl;
   encode(global_image_id, bl);
   encode(status, bl);
   op->exec("rbd", "mirror_image_status_set", bl);
-}
-
-int mirror_image_status_remove(librados::IoCtx *ioctx,
-                               const std::string &global_image_id) {
-  librados::ObjectWriteOperation op;
-  mirror_image_status_remove(&op, global_image_id);
-  return ioctx->operate(RBD_MIRRORING, &op);
-}
-
-void mirror_image_status_remove(librados::ObjectWriteOperation *op,
-                                const std::string &global_image_id) {
-  bufferlist bl;
-  encode(global_image_id, bl);
-  op->exec("rbd", "mirror_image_status_remove", bl);
 }
 
 int mirror_image_status_get(librados::IoCtx *ioctx,
@@ -2127,10 +2229,12 @@ int mirror_image_status_list_finish(bufferlist::const_iterator *iter,
   return 0;
 }
 
-int mirror_image_status_get_summary(librados::IoCtx *ioctx,
-                                    std::map<cls::rbd::MirrorImageStatusState, int> *states) {
+int mirror_image_status_get_summary(
+    librados::IoCtx *ioctx,
+    const std::vector<cls::rbd::MirrorPeer>& mirror_peer_sites,
+    std::map<cls::rbd::MirrorImageStatusState, int> *states) {
   librados::ObjectReadOperation op;
-  mirror_image_status_get_summary_start(&op);
+  mirror_image_status_get_summary_start(&op, mirror_peer_sites);
 
   bufferlist out_bl;
   int r = ioctx->operate(RBD_MIRRORING, &op, &out_bl);
@@ -2146,13 +2250,17 @@ int mirror_image_status_get_summary(librados::IoCtx *ioctx,
   return 0;
 }
 
-void mirror_image_status_get_summary_start(librados::ObjectReadOperation *op) {
+void mirror_image_status_get_summary_start(
+    librados::ObjectReadOperation *op,
+    const std::vector<cls::rbd::MirrorPeer>& mirror_peer_sites) {
   bufferlist bl;
+  encode(mirror_peer_sites, bl);
   op->exec("rbd", "mirror_image_status_get_summary", bl);
 }
 
-int mirror_image_status_get_summary_finish(bufferlist::const_iterator *iter,
-                                           std::map<cls::rbd::MirrorImageStatusState, int> *states) {
+int mirror_image_status_get_summary_finish(
+    bufferlist::const_iterator *iter,
+    std::map<cls::rbd::MirrorImageStatusState, int> *states) {
   try {
     decode(*states, *iter);
   } catch (const buffer::error &err) {
@@ -2366,6 +2474,46 @@ void mirror_image_map_remove(librados::ObjectWriteOperation *op,
   encode(global_image_id, bl);
 
   op->exec("rbd", "mirror_image_map_remove", bl);
+}
+
+void mirror_image_snapshot_unlink_peer(librados::ObjectWriteOperation *op,
+                                       snapid_t snap_id,
+                                       const std::string &mirror_peer_uuid) {
+  bufferlist bl;
+  encode(snap_id, bl);
+  encode(mirror_peer_uuid, bl);
+
+  op->exec("rbd", "mirror_image_snapshot_unlink_peer", bl);
+}
+
+int mirror_image_snapshot_unlink_peer(librados::IoCtx *ioctx,
+                                      const std::string &oid,
+                                      snapid_t snap_id,
+                                      const std::string &mirror_peer_uuid) {
+  librados::ObjectWriteOperation op;
+  mirror_image_snapshot_unlink_peer(&op, snap_id, mirror_peer_uuid);
+  return ioctx->operate(oid, &op);
+}
+
+void mirror_image_snapshot_set_copy_progress(librados::ObjectWriteOperation *op,
+                                             snapid_t snap_id, bool complete,
+                                             uint64_t copy_progress) {
+  bufferlist bl;
+  encode(snap_id, bl);
+  encode(complete, bl);
+  encode(copy_progress, bl);
+
+  op->exec("rbd", "mirror_image_snapshot_set_copy_progress", bl);
+}
+
+int mirror_image_snapshot_set_copy_progress(librados::IoCtx *ioctx,
+                                            const std::string &oid,
+                                            snapid_t snap_id, bool complete,
+                                            uint64_t copy_progress) {
+  librados::ObjectWriteOperation op;
+  mirror_image_snapshot_set_copy_progress(&op, snap_id, complete,
+                                          copy_progress);
+  return ioctx->operate(oid, &op);
 }
 
 // Groups functions

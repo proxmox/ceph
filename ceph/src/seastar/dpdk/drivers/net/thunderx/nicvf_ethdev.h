@@ -1,39 +1,11 @@
-/*
- *   BSD LICENSE
- *
- *   Copyright (C) Cavium networks Ltd. 2016.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Cavium networks nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2016 Cavium, Inc
  */
 
 #ifndef __THUNDERX_NICVF_ETHDEV_H__
 #define __THUNDERX_NICVF_ETHDEV_H__
 
-#include <rte_ethdev.h>
+#include <rte_ethdev_driver.h>
 
 #define THUNDERX_NICVF_PMD_VERSION      "2.0"
 #define THUNDERX_REG_BYTES		8
@@ -57,6 +29,20 @@
 	ETH_RSS_GENEVE | \
 	ETH_RSS_NVGRE)
 
+#define NICVF_TX_OFFLOAD_CAPA ( \
+	DEV_TX_OFFLOAD_IPV4_CKSUM       | \
+	DEV_TX_OFFLOAD_UDP_CKSUM        | \
+	DEV_TX_OFFLOAD_TCP_CKSUM        | \
+	DEV_TX_OFFLOAD_OUTER_IPV4_CKSUM | \
+	DEV_TX_OFFLOAD_MBUF_FAST_FREE   | \
+	DEV_TX_OFFLOAD_MULTI_SEGS)
+
+#define NICVF_RX_OFFLOAD_CAPA ( \
+	DEV_RX_OFFLOAD_CHECKSUM    | \
+	DEV_RX_OFFLOAD_VLAN_STRIP  | \
+	DEV_RX_OFFLOAD_JUMBO_FRAME | \
+	DEV_RX_OFFLOAD_SCATTER)
+
 #define NICVF_DEFAULT_RX_FREE_THRESH    224
 #define NICVF_DEFAULT_TX_FREE_THRESH    224
 #define NICVF_TX_FREE_MPOOL_THRESH      16
@@ -65,6 +51,7 @@
 
 #define VLAN_TAG_SIZE                   4	/* 802.3ac tag */
 
+#define SKIP_DATA_BYTES "skip_data_bytes"
 static inline struct nicvf *
 nicvf_pmd_priv(struct rte_eth_dev *eth_dev)
 {
@@ -78,7 +65,7 @@ nicvf_mempool_phy_offset(struct rte_mempool *mp)
 
 	hdr = STAILQ_FIRST(&mp->mem_list);
 	assert(hdr != NULL);
-	return (uint64_t)((uintptr_t)hdr->addr - hdr->phys_addr);
+	return (uint64_t)((uintptr_t)hdr->addr - hdr->iova);
 }
 
 static inline uint16_t
@@ -104,7 +91,7 @@ nicvf_netdev_qidx(struct nicvf *nic, uint8_t local_qidx)
  * P = V - offset
  */
 static inline uintptr_t
-nicvf_mbuff_phy2virt(phys_addr_t phy, uint64_t mbuf_phys_off)
+nicvf_mbuff_phy2virt(rte_iova_t phy, uint64_t mbuf_phys_off)
 {
 	return (uintptr_t)(phy + mbuf_phys_off);
 }
@@ -112,7 +99,7 @@ nicvf_mbuff_phy2virt(phys_addr_t phy, uint64_t mbuf_phys_off)
 static inline uintptr_t
 nicvf_mbuff_virt2phy(uintptr_t virt, uint64_t mbuf_phys_off)
 {
-	return (phys_addr_t)(virt - mbuf_phys_off);
+	return (rte_iova_t)(virt - mbuf_phys_off);
 }
 
 static inline void

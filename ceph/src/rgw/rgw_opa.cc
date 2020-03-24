@@ -1,7 +1,8 @@
 // -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// vim: ts=8 sw=2 smarttab ft=cpp
 
 #include "rgw_opa.h"
+#include "rgw_http_client.h"
 
 #define dout_context g_ceph_context
 #define dout_subsys ceph_subsys_rgw
@@ -44,7 +45,7 @@ int rgw_opa_authorize(RGWOp *& op,
   jf.dump_string("params", s->info.request_params.c_str());
   jf.dump_string("request_uri_aws4", s->info.request_uri_aws4.c_str());
   jf.dump_string("object_name", s->object.name.c_str());
-  jf.dump_object("user_info", *s->user);
+  jf.dump_object("user_info", s->user->get_info());
   jf.dump_object("bucket_info", s->bucket_info);
   jf.close_section();
   jf.close_section();
@@ -55,7 +56,7 @@ int rgw_opa_authorize(RGWOp *& op,
   req.set_send_length(ss.str().length());
 
   /* send request */
-  ret = req.process();
+  ret = req.process(null_yield);
   if (ret < 0) {
     ldpp_dout(op, 2) << "OPA process error:" << bl.c_str() << dendl;
     return ret;

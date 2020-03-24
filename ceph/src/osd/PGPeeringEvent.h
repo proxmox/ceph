@@ -26,7 +26,7 @@ struct PGCreateInfo {
 class PGPeeringEvent {
   epoch_t epoch_sent;
   epoch_t epoch_requested;
-  string desc;
+  std::string desc;
 public:
   boost::intrusive_ptr< const boost::statechart::event_base > evt;
   bool requires_pg;
@@ -44,7 +44,7 @@ public:
       evt(evt_.intrusive_from_this()),
       requires_pg(req),
       create_info(ci) {
-    stringstream out;
+    std::stringstream out;
     out << "epoch_sent: " << epoch_sent
 	<< " epoch_requested: " << epoch_requested << " ";
     evt_.print(&out);
@@ -53,40 +53,49 @@ public:
     }
     desc = out.str();
   }
-  epoch_t get_epoch_sent() {
+  epoch_t get_epoch_sent() const {
     return epoch_sent;
   }
-  epoch_t get_epoch_requested() {
+  epoch_t get_epoch_requested() const {
     return epoch_requested;
   }
-  const boost::statechart::event_base &get_event() {
+  const boost::statechart::event_base &get_event() const {
     return *evt;
   }
-  const string& get_desc() {
+  const std::string& get_desc() const {
     return desc;
   }
 };
 typedef std::shared_ptr<PGPeeringEvent> PGPeeringEventRef;
+typedef std::unique_ptr<PGPeeringEvent> PGPeeringEventURef;
 
 struct MInfoRec : boost::statechart::event< MInfoRec > {
   pg_shard_t from;
   pg_info_t info;
   epoch_t msg_epoch;
-  MInfoRec(pg_shard_t from, const pg_info_t &info, epoch_t msg_epoch) :
-    from(from), info(info), msg_epoch(msg_epoch) {}
+  std::optional<pg_lease_t> lease;
+  std::optional<pg_lease_ack_t> lease_ack;
+  MInfoRec(pg_shard_t from, const pg_info_t &info, epoch_t msg_epoch,
+	   std::optional<pg_lease_t> l = {},
+	   std::optional<pg_lease_ack_t> la = {})
+    : from(from), info(info), msg_epoch(msg_epoch),
+      lease(l), lease_ack(la) {}
   void print(std::ostream *out) const {
     *out << "MInfoRec from " << from << " info: " << info;
+    if (lease) {
+      *out << " " << *lease;
+    }
+    if (lease_ack) {
+      *out << " " << *lease_ack;
+    }
   }
 };
 
 struct MLogRec : boost::statechart::event< MLogRec > {
   pg_shard_t from;
   boost::intrusive_ptr<MOSDPGLog> msg;
-  MLogRec(pg_shard_t from, MOSDPGLog *msg) :
-    from(from), msg(msg) {}
-  void print(std::ostream *out) const {
-    *out << "MLogRec from " << from;
-  }
+  MLogRec(pg_shard_t from, MOSDPGLog *msg);
+  void print(std::ostream *out) const;
 };
 
 struct MNotifyRec : boost::statechart::event< MNotifyRec > {
@@ -94,14 +103,11 @@ struct MNotifyRec : boost::statechart::event< MNotifyRec > {
   pg_shard_t from;
   pg_notify_t notify;
   uint64_t features;
-  PastIntervals past_intervals;
-  MNotifyRec(spg_t p, pg_shard_t from, const pg_notify_t &notify, uint64_t f,
-	     const PastIntervals& pi)
-    : pgid(p), from(from), notify(notify), features(f), past_intervals(pi) {}
+  MNotifyRec(spg_t p, pg_shard_t from, const pg_notify_t &notify, uint64_t f)
+    : pgid(p), from(from), notify(notify), features(f) {}
   void print(std::ostream *out) const {
     *out << "MNotifyRec " << pgid << " from " << from << " notify: " << notify
-	 << " features: 0x" << hex << features << dec
-	 << " " << past_intervals;
+	 << " features: 0x" << std::hex << features << std::dec;
   }
 };
 
@@ -129,6 +135,29 @@ struct MTrim : boost::statechart::event<MTrim> {
   void print(std::ostream *out) const {
     *out << "MTrim epoch " << epoch << " from " << from << " shard " << shard
 	 << " trim_to " << trim_to;
+  }
+};
+
+struct MLease : boost::statechart::event<MLease> {
+  epoch_t epoch;
+  int from;
+  pg_lease_t lease;
+  MLease(epoch_t epoch, int from, pg_lease_t l)
+    : epoch(epoch), from(from), lease(l) {}
+  void print(std::ostream *out) const {
+    *out << "MLease epoch " << epoch << " from osd." << from << " " << lease;
+  }
+};
+
+struct MLeaseAck : boost::statechart::event<MLeaseAck> {
+  epoch_t epoch;
+  int from;
+  pg_lease_ack_t lease_ack;
+  MLeaseAck(epoch_t epoch, int from, pg_lease_ack_t l)
+    : epoch(epoch), from(from), lease_ack(l) {}
+  void print(std::ostream *out) const {
+    *out << "MLeaseAck epoch " << epoch << " from osd." << from
+	 << " " << lease_ack;
   }
 };
 
@@ -187,3 +216,5 @@ struct DeferBackfill : boost::statechart::event<DeferBackfill> {
     *out << "DeferBackfill: delay " << delay;
   }
 };
+
+TrivialEvent(RenewLease)

@@ -1,40 +1,13 @@
-..  BSD LICENSE
-    Copyright(c) 2015 Intel Corporation. All rights reserved.
-    All rights reserved.
-
-    Redistribution and use in source and binary forms, with or without
-    modification, are permitted provided that the following conditions
-    are met:
-
-    * Redistributions of source code must retain the above copyright
-    notice, this list of conditions and the following disclaimer.
-    * Redistributions in binary form must reproduce the above copyright
-    notice, this list of conditions and the following disclaimer in
-    the documentation and/or other materials provided with the
-    distribution.
-    * Neither the name of Intel Corporation nor the names of its
-    contributors may be used to endorse or promote products derived
-    from this software without specific prior written permission.
-
-    THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-    "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-    LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-    A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-    OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-    SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-    LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-    DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-    THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-    (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-    OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-
+..  SPDX-License-Identifier: BSD-3-Clause
+    Copyright(c) 2015 Intel Corporation.
 
 dpdk-procinfo Application
 =========================
 
 The dpdk-procinfo application is a Data Plane Development Kit (DPDK) application
 that runs as a DPDK secondary process and is capable of retrieving port
-statistics, resetting port statistics and printing DPDK memory information.
+statistics, resetting port statistics, printing DPDK memory information and
+displaying debug information for port.
 This application extends the original functionality that was supported by
 dump_cfg.
 
@@ -45,7 +18,8 @@ The application has a number of command line options:
 .. code-block:: console
 
    ./$(RTE_TARGET)/app/dpdk-procinfo -- -m | [-p PORTMASK] [--stats | --xstats |
-   --stats-reset | --xstats-reset]
+   --stats-reset | --xstats-reset] [ --show-port | --show-tm | --show-crypto |
+   --show-ring[=name] | --show-mempool[=name] | --iter-mempool=name ]
 
 Parameters
 ~~~~~~~~~~
@@ -68,3 +42,44 @@ The xstats-reset parameter controls the resetting of extended port statistics.
 If no port mask is specified xstats are reset for all DPDK ports.
 
 **-m**: Print DPDK memory information.
+
+**--show-port**
+The show-port parameter displays port level various configuration information
+associated to RX port queue pair.
+
+**--show-tm**
+The show-tm parameter displays per port traffic manager settings, current
+configurations and statistics.
+
+**--show-crypto**
+The show-crypto parameter displays available cryptodev configurations,
+settings and stats per node.
+
+**--show-ring[=name]**
+The show-ring parameter display current allocation of all ring with
+debug information. Specifying the name allows to display details for specific
+ring. For invalid or no ring name, whole list is dump.
+
+**--show-mempool[=name]**
+The show-mempool parameter display current allocation of all mempool
+debug information. Specifying the name allows to display details for specific
+specific mempool. For invalid or no mempool name, whole list is dump.
+
+**--iter-mempool=name**
+The iter-mempool parameter iterates and displays mempool elements specified
+by name. For invalid or no mempool name no elements are displayed.
+
+Limitations
+-----------
+
+* dpdk-procinfo should run alongside primary process with same DPDK version.
+
+* When running ``dpdk-procinfo`` with shared library mode, it is required to
+  pass the same NIC PMD libraries as used for the primary application. Any
+  mismatch in PMD library arguments can lead to undefined behavior and results
+  affecting primary application too.
+
+* Stats retrieval using ``dpdk-procinfo`` is not supported for virtual devices like PCAP and TAP.
+
+* Since default DPDK EAL arguments for ``dpdk-procinfo`` are ``-c1, -n4 & --proc-type=secondary``,
+  It is not expected that the user passes any EAL arguments.

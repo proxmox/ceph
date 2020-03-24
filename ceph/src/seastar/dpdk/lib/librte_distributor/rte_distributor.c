@@ -1,33 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2017 Intel Corporation. All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2017 Intel Corporation
  */
 
 #include <stdio.h>
@@ -41,7 +13,8 @@
 #include <rte_errno.h>
 #include <rte_string_fns.h>
 #include <rte_eal_memconfig.h>
-#include <rte_compat.h>
+#include <rte_pause.h>
+
 #include "rte_distributor_private.h"
 #include "rte_distributor.h"
 #include "rte_distributor_v20.h"
@@ -381,7 +354,7 @@ rte_distributor_process_v1705(struct rte_distributor *d,
 	if (unlikely(num_mbufs == 0)) {
 		/* Flush out all non-full cache-lines to workers. */
 		for (wid = 0 ; wid < d->num_workers; wid++) {
-			if ((d->bufs[wid].bufptr64[0] & RTE_DISTRIB_GET_BUF)) {
+			if (d->bufs[wid].bufptr64[0] & RTE_DISTRIB_GET_BUF) {
 				release(d, wid);
 				handle_returns(d, wid);
 			}
@@ -431,7 +404,7 @@ rte_distributor_process_v1705(struct rte_distributor *d,
 			next_value = (((int64_t)(uintptr_t)next_mb) <<
 					RTE_DISTRIB_FLAG_BITS);
 			/*
-			 * User is advocated to set tag vaue for each
+			 * User is advocated to set tag value for each
 			 * mbuf before calling rte_distributor_process.
 			 * User defined tags are used to identify flows,
 			 * or sessions.
@@ -441,7 +414,7 @@ rte_distributor_process_v1705(struct rte_distributor *d,
 
 			/*
 			 * Uncommenting the next line will cause the find_match
-			 * function to be optimised out, making this function
+			 * function to be optimized out, making this function
 			 * do parallel (non-atomic) distribution
 			 */
 			/* matches[j] = 0; */
@@ -535,7 +508,7 @@ MAP_STATIC_SYMBOL(int rte_distributor_returned_pkts(struct rte_distributor *d,
 
 /*
  * Return the number of packets in-flight in a distributor, i.e. packets
- * being workered on or queued up in a backlog.
+ * being worked on or queued up in a backlog.
  */
 static inline unsigned int
 total_outstanding(const struct rte_distributor *d)
@@ -652,19 +625,17 @@ rte_distributor_create_v1705(const char *name,
 	}
 
 	d = mz->addr;
-	snprintf(d->name, sizeof(d->name), "%s", name);
+	strlcpy(d->name, name, sizeof(d->name));
 	d->num_workers = num_workers;
 	d->alg_type = alg_type;
 
+	d->dist_match_fn = RTE_DIST_MATCH_SCALAR;
 #if defined(RTE_ARCH_X86)
-	if (rte_cpu_get_flag_enabled(RTE_CPUFLAG_SSE4_2))
-		d->dist_match_fn = RTE_DIST_MATCH_VECTOR;
-	else
+	d->dist_match_fn = RTE_DIST_MATCH_VECTOR;
 #endif
-		d->dist_match_fn = RTE_DIST_MATCH_SCALAR;
 
 	/*
-	 * Set up the backog tags so they're pointing at the second cache
+	 * Set up the backlog tags so they're pointing at the second cache
 	 * line for performance during flow matching
 	 */
 	for (i = 0 ; i < num_workers ; i++)

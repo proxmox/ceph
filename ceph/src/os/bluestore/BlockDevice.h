@@ -28,6 +28,7 @@
 
 #include "acconfig.h"
 #include "common/ceph_mutex.h"
+#include "include/common_fwd.h"
 
 #if defined(HAVE_LIBAIO) || defined(HAVE_POSIXAIO)
 #include "ceph_aio.h"
@@ -63,7 +64,6 @@
 #define  WRITE_LIFE_MAX  	1
 #endif
 
-class CephContext;
 
 /// track in-flight io
 struct IOContext {
@@ -138,8 +138,8 @@ private:
   std::atomic_int ioc_reap_count = {0};
 
 protected:
-  uint64_t size;
-  uint64_t block_size;
+  uint64_t size = 0;
+  uint64_t block_size = 0;
   bool support_discard = false;
   bool rotational = true;
   bool lock_exclusive = true;
@@ -149,8 +149,6 @@ public:
   void *aio_callback_priv;
   BlockDevice(CephContext* cct, aio_callback_t cb, void *cbpriv)
   : cct(cct),
-    size(0),
-    block_size(0),
     aio_callback(cb),
     aio_callback_priv(cbpriv)
  {}
@@ -177,10 +175,10 @@ public:
 
   virtual int collect_metadata(const std::string& prefix, std::map<std::string,std::string> *pm) const = 0;
 
-  virtual int get_devname(std::string *out) {
+  virtual int get_devname(std::string *out) const {
     return -ENOENT;
   }
-  virtual int get_devices(std::set<std::string> *ls) {
+  virtual int get_devices(std::set<std::string> *ls) const {
     std::string s;
     if (get_devname(&s) == 0) {
       ls->insert(s);

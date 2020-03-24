@@ -21,22 +21,30 @@ add_executable(unittest_rbd_mirror
   test_mock_ImageMap.cc
   test_mock_ImageReplayer.cc
   test_mock_ImageSync.cc
-  test_mock_ImageSyncThrottler.cc
   test_mock_InstanceReplayer.cc
   test_mock_InstanceWatcher.cc
   test_mock_LeaderWatcher.cc
+  test_mock_MirrorStatusUpdater.cc
+  test_mock_NamespaceReplayer.cc
   test_mock_PoolReplayer.cc
   test_mock_PoolWatcher.cc
+  test_mock_Throttler.cc
   image_deleter/test_mock_SnapshotPurgeRequest.cc
   image_deleter/test_mock_TrashMoveRequest.cc
   image_deleter/test_mock_TrashRemoveRequest.cc
   image_deleter/test_mock_TrashWatcher.cc
   image_replayer/test_mock_BootstrapRequest.cc
   image_replayer/test_mock_CreateImageRequest.cc
-  image_replayer/test_mock_EventPreprocessor.cc
   image_replayer/test_mock_GetMirrorImageIdRequest.cc
   image_replayer/test_mock_PrepareLocalImageRequest.cc
   image_replayer/test_mock_PrepareRemoteImageRequest.cc
+  image_replayer/journal/test_mock_CreateLocalImageRequest.cc
+  image_replayer/journal/test_mock_PrepareReplayRequest.cc
+  image_replayer/journal/test_mock_EventPreprocessor.cc
+  image_replayer/journal/test_mock_Replayer.cc
+  image_replayer/snapshot/test_mock_ApplyImageStateRequest.cc
+  image_replayer/snapshot/test_mock_CreateLocalImageRequest.cc
+  image_replayer/snapshot/test_mock_Replayer.cc
   image_sync/test_mock_SyncPointCreateRequest.cc
   image_sync/test_mock_SyncPointPruneRequest.cc
   pool_watcher/test_mock_RefreshImagesRequest.cc

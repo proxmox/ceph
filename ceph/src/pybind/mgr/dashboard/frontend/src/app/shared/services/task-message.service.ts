@@ -4,6 +4,7 @@ import { I18n } from '@ngx-translate/i18n-polyfill';
 
 import { Components } from '../enum/components.enum';
 import { FinishedTask } from '../models/finished-task';
+import { ImageSpec } from '../models/image-spec';
 import { Task } from '../models/task';
 
 export class TaskMessageOperation {
@@ -22,29 +23,29 @@ class TaskMessage {
   i18n: I18n;
 
   operation: TaskMessageOperation;
-  involves: (object) => string;
-  errors: (metadata) => object;
+  involves: (object: any) => string;
+  errors: (metadata: any) => object;
 
-  failure(metadata): string {
+  failure(metadata: any): string {
     return this.i18n('Failed to {{failure}} {{metadata}}', {
       failure: this.operation.failure,
       metadata: this.involves(metadata)
     });
   }
 
-  running(metadata): string {
+  running(metadata: any): string {
     return `${this.operation.running} ${this.involves(metadata)}`;
   }
 
-  success(metadata): string {
+  success(metadata: any): string {
     return `${this.operation.success} ${this.involves(metadata)}`;
   }
 
   constructor(
     i18n: I18n,
     operation: TaskMessageOperation,
-    involves: (metadata) => string,
-    errors?: (metadata) => object
+    involves: (metadata: any) => string,
+    errors?: (metadata: any) => object
   ) {
     this.i18n = i18n;
     this.operation = operation;
@@ -87,34 +88,69 @@ export class TaskMessageService {
       this.i18n('Deleting'),
       this.i18n('delete'),
       this.i18n('Deleted')
+    ),
+    add: new TaskMessageOperation(this.i18n('Adding'), this.i18n('add'), this.i18n('Added')),
+    remove: new TaskMessageOperation(
+      this.i18n('Removing'),
+      this.i18n('remove'),
+      this.i18n('Removed')
+    ),
+    import: new TaskMessageOperation(
+      this.i18n('Importing'),
+      this.i18n('import'),
+      this.i18n('Imported')
     )
   };
 
   rbd = {
-    default: (metadata) =>
+    default: (metadata: any) =>
       this.i18n(`RBD '{{id}}'`, {
-        id: `${metadata.pool_name}/${metadata.image_name}`
+        id: `${metadata.image_spec}`
       }),
-    child: (metadata) =>
-      this.i18n(`RBD '{{id}}'`, {
-        id: `${metadata.child_pool_name}/${metadata.child_image_name}`
-      }),
-    destination: (metadata) =>
-      this.i18n(`RBD '{{id}}'`, {
-        id: `${metadata.dest_pool_name}/${metadata.dest_image_name}`
-      }),
-    snapshot: (metadata) =>
+    create: (metadata: any) => {
+      const id = new ImageSpec(
+        metadata.pool_name,
+        metadata.namespace,
+        metadata.image_name
+      ).toString();
+      return this.i18n(`RBD '{{id}}'`, {
+        id: id
+      });
+    },
+    child: (metadata: any) => {
+      const id = new ImageSpec(
+        metadata.child_pool_name,
+        metadata.child_namespace,
+        metadata.child_image_name
+      ).toString();
+      return this.i18n(`RBD '{{id}}'`, {
+        id: id
+      });
+    },
+    destination: (metadata: any) => {
+      const id = new ImageSpec(
+        metadata.dest_pool_name,
+        metadata.dest_namespace,
+        metadata.dest_image_name
+      ).toString();
+      return this.i18n(`RBD '{{id}}'`, {
+        id: id
+      });
+    },
+    snapshot: (metadata: any) =>
       this.i18n(`RBD snapshot '{{id}}'`, {
-        id: `${metadata.pool_name}/${metadata.image_name}@${metadata.snapshot_name}`
+        id: `${metadata.image_spec}@${metadata.snapshot_name}`
       })
   };
 
   rbd_mirroring = {
-    pool: (metadata) =>
+    site_name: () => this.i18n('mirroring site name'),
+    bootstrap: () => this.i18n('bootstrap token'),
+    pool: (metadata: any) =>
       this.i18n(`mirror mode for pool '{{id}}'`, {
         id: `${metadata.pool_name}`
       }),
-    pool_peer: (metadata) =>
+    pool_peer: (metadata: any) =>
       this.i18n(`mirror peer for pool '{{id}}'`, {
         id: `${metadata.pool_name}`
       })
@@ -125,6 +161,22 @@ export class TaskMessageService {
   };
 
   messages = {
+    // Host tasks
+    'host/create': this.newTaskMessage(this.commonOperations.create, (metadata) =>
+      this.host(metadata)
+    ),
+    'host/delete': this.newTaskMessage(this.commonOperations.delete, (metadata) =>
+      this.host(metadata)
+    ),
+    // OSD tasks
+    'osd/create': this.newTaskMessage(this.commonOperations.create, (metadata) =>
+      this.i18n(`OSDs (DriveGroups: {{tracking_id}})`, {
+        tracking_id: metadata.tracking_id
+      })
+    ),
+    'osd/delete': this.newTaskMessage(this.commonOperations.delete, (metadata) =>
+      this.osd(metadata)
+    ),
     // Pool tasks
     'pool/create': this.newTaskMessage(
       this.commonOperations.create,
@@ -160,13 +212,26 @@ export class TaskMessageService {
     'ecp/delete': this.newTaskMessage(this.commonOperations.delete, (metadata) =>
       this.ecp(metadata)
     ),
+    // Crush rule tasks
+    'crushRule/create': this.newTaskMessage(
+      this.commonOperations.create,
+      (metadata) => this.crushRule(metadata),
+      (metadata) => ({
+        '17': this.i18n('Name is already used by {{name}}.', {
+          name: this.crushRule(metadata)
+        })
+      })
+    ),
+    'crushRule/delete': this.newTaskMessage(this.commonOperations.delete, (metadata) =>
+      this.crushRule(metadata)
+    ),
     // RBD tasks
     'rbd/create': this.newTaskMessage(
       this.commonOperations.create,
-      this.rbd.default,
+      this.rbd.create,
       (metadata) => ({
         '17': this.i18n('Name is already used by {{rbd_name}}.', {
-          rbd_name: this.rbd.default(metadata)
+          rbd_name: this.rbd.create(metadata)
         })
       })
     ),
@@ -179,6 +244,9 @@ export class TaskMessageService {
       this.commonOperations.delete,
       this.rbd.default,
       (metadata) => ({
+        '16': this.i18n('{{rbd_name}} is busy.', {
+          rbd_name: this.rbd.default(metadata)
+        }),
         '39': this.i18n('{{rbd_name}} contains snapshots.', {
           rbd_name: this.rbd.default(metadata)
         })
@@ -254,7 +322,7 @@ export class TaskMessageService {
       new TaskMessageOperation(this.i18n('Moving'), this.i18n('move'), this.i18n('Moved')),
       (metadata) =>
         this.i18n(`image '{{id}}' to trash`, {
-          id: `${metadata.pool_name}/${metadata.image_name}`
+          id: metadata.image_spec
         }),
       () => ({
         2: this.i18n('Could not find image.')
@@ -264,12 +332,12 @@ export class TaskMessageService {
       new TaskMessageOperation(this.i18n('Restoring'), this.i18n('restore'), this.i18n('Restored')),
       (metadata) =>
         this.i18n(`image '{{id}}' into '{{new_id}}'`, {
-          id: `${metadata.pool_name}@${metadata.image_id}`,
-          new_id: `${metadata.pool_name}/${metadata.new_image_name}`
+          id: metadata.image_id_spec,
+          new_id: metadata.new_image_name
         }),
       (metadata) => ({
         17: this.i18n(`Image name '{{id}}' is already in use.`, {
-          id: `${metadata.pool_name}/${metadata.new_image_name}`
+          id: metadata.new_image_name
         })
       })
     ),
@@ -277,7 +345,7 @@ export class TaskMessageService {
       new TaskMessageOperation(this.i18n('Deleting'), this.i18n('delete'), this.i18n('Deleted')),
       (metadata) =>
         this.i18n(`image '{{id}}'`, {
-          id: `${metadata.pool_name}/${metadata.image_name}@${metadata.image_id}`
+          id: `${metadata.image_id_spec}`
         })
     ),
     'rbd/trash/purge': this.newTaskMessage(
@@ -293,6 +361,21 @@ export class TaskMessageService {
       }
     ),
     // RBD mirroring tasks
+    'rbd/mirroring/site_name/edit': this.newTaskMessage(
+      this.commonOperations.update,
+      this.rbd_mirroring.site_name,
+      () => ({})
+    ),
+    'rbd/mirroring/bootstrap/create': this.newTaskMessage(
+      this.commonOperations.create,
+      this.rbd_mirroring.bootstrap,
+      () => ({})
+    ),
+    'rbd/mirroring/bootstrap/import': this.newTaskMessage(
+      this.commonOperations.import,
+      this.rbd_mirroring.bootstrap,
+      () => ({})
+    ),
     'rbd/mirroring/pool/edit': this.newTaskMessage(
       this.commonOperations.update,
       this.rbd_mirroring.pool,
@@ -337,38 +420,75 @@ export class TaskMessageService {
       this.commonOperations.update,
       this.grafana.update_dashboards,
       () => ({})
+    ),
+    // Orchestrator tasks
+    'orchestrator/identify_device': this.newTaskMessage(
+      new TaskMessageOperation(
+        this.i18n('Identifying'),
+        this.i18n('identify'),
+        this.i18n('Identified')
+      ),
+      (metadata) => this.i18n(`device '{{device}}' on host '{{hostname}}'`, metadata)
     )
   };
 
   newTaskMessage(
     operation: TaskMessageOperation,
-    involves: (metadata) => string,
-    errors?: (metadata) => object
+    involves: (metadata: any) => string,
+    errors?: (metadata: any) => object
   ) {
     return new TaskMessage(this.i18n, operation, involves, errors);
   }
 
-  pool(metadata) {
+  host(metadata: any) {
+    return this.i18n(`host '{{hostname}}'`, {
+      hostname: metadata.hostname
+    });
+  }
+
+  osd(metadata: any) {
+    return this.i18n(`OSD '{{svc_id}}'`, {
+      svc_id: metadata.svc_id
+    });
+  }
+
+  pool(metadata: any) {
     return this.i18n(`pool '{{pool_name}}'`, {
       pool_name: metadata.pool_name
     });
   }
 
-  ecp(metadata) {
+  ecp(metadata: any) {
     return this.i18n(`erasure code profile '{{name}}'`, { name: metadata.name });
   }
 
-  iscsiTarget(metadata) {
+  crushRule(metadata: any) {
+    return this.i18n(`crush rule '{{name}}'`, { name: metadata.name });
+  }
+
+  iscsiTarget(metadata: any) {
     return this.i18n(`target '{{target_iqn}}'`, { target_iqn: metadata.target_iqn });
   }
 
-  nfs(metadata) {
+  nfs(metadata: any) {
     return this.i18n(`NFS {{nfs_id}}`, {
       nfs_id: `'${metadata.cluster_id}:${metadata.export_id ? metadata.export_id : metadata.path}'`
     });
   }
 
   _getTaskTitle(task: Task) {
+    if (task.name && task.name.startsWith('progress/')) {
+      // we don't fill the failure string because, at least for now, all
+      // progress module tasks will be considered successful
+      return this.newTaskMessage(
+        new TaskMessageOperation(
+          task.name.replace('progress/', ''),
+          '',
+          task.name.replace('progress/', '')
+        ),
+        (_metadata) => ''
+      );
+    }
     return this.messages[task.name] || this.defaultMessage;
   }
 

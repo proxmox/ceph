@@ -34,21 +34,21 @@ class SubvolumeBase(object):
     def uid(self):
         return self.user_id
 
-    @property
-    def gid(self):
-        return self.group_id
-
-    @property
-    def mode(self):
-        return self.cmode
-
     @uid.setter
     def uid(self, val):
         self.user_id = val
 
+    @property
+    def gid(self):
+        return self.group_id
+
     @gid.setter
     def gid(self, val):
         self.group_id = val
+
+    @property
+    def mode(self):
+        return self.cmode
 
     @mode.setter
     def mode(self, val):
@@ -70,7 +70,7 @@ class SubvolumeBase(object):
     def legacy_config_path(self):
         m = md5()
         m.update(self.base_path)
-        meta_config = "{0}.meta".format(m.hexdigest())
+        meta_config = "{0}.meta".format(m.digest().hex())
         return os.path.join(self.legacy_dir, meta_config.encode('utf-8'))
 
     @property

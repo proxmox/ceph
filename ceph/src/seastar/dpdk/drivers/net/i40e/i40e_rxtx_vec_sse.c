@@ -1,38 +1,9 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2015 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2015 Intel Corporation
  */
 
 #include <stdint.h>
-#include <rte_ethdev.h>
+#include <rte_ethdev_driver.h>
 #include <rte_malloc.h>
 
 #include "base/i40e_prototype.h"
@@ -86,7 +57,9 @@ i40e_rxq_rearm(struct i40e_rx_queue *rxq)
 		mb0 = rxep[0].mbuf;
 		mb1 = rxep[1].mbuf;
 
-		/* load buf_addr(lo 64bit) and buf_physaddr(hi 64bit) */
+		/* load buf_addr(lo 64bit) and buf_iova(hi 64bit) */
+		RTE_BUILD_BUG_ON(offsetof(struct rte_mbuf, buf_iova) !=
+				offsetof(struct rte_mbuf, buf_addr) + 8);
 		vaddr0 = _mm_loadu_si128((__m128i *)&mb0->buf_addr);
 		vaddr1 = _mm_loadu_si128((__m128i *)&mb1->buf_addr);
 
@@ -117,7 +90,7 @@ i40e_rxq_rearm(struct i40e_rx_queue *rxq)
 }
 
 static inline void
-desc_to_olflags_v(struct i40e_rx_queue *rxq, __m128i descs[4] __rte_unused,
+desc_to_olflags_v(struct i40e_rx_queue *rxq, __m128i descs[4],
 	struct rte_mbuf **rx_pkts)
 {
 	const __m128i mbuf_init = _mm_set_epi64x(0, rxq->mbuf_initializer);
@@ -149,7 +122,7 @@ desc_to_olflags_v(struct i40e_rx_queue *rxq, __m128i descs[4] __rte_unused,
 	/* map rss and vlan type to rss hash and vlan flag */
 	const __m128i vlan_flags = _mm_set_epi8(0, 0, 0, 0,
 			0, 0, 0, 0,
-			0, 0, 0, PKT_RX_VLAN_PKT | PKT_RX_VLAN_STRIPPED,
+			0, 0, 0, PKT_RX_VLAN | PKT_RX_VLAN_STRIPPED,
 			0, 0, 0, 0);
 
 	const __m128i rss_flags = _mm_set_epi8(0, 0, 0, 0,
@@ -203,6 +176,12 @@ desc_to_olflags_v(struct i40e_rx_queue *rxq, __m128i descs[4] __rte_unused,
 	rearm1 = _mm_blend_epi16(mbuf_init, _mm_slli_si128(vlan0, 4), 0x10);
 	rearm2 = _mm_blend_epi16(mbuf_init, vlan0, 0x10);
 	rearm3 = _mm_blend_epi16(mbuf_init, _mm_srli_si128(vlan0, 4), 0x10);
+
+	/* write the rearm data and the olflags in one write */
+	RTE_BUILD_BUG_ON(offsetof(struct rte_mbuf, ol_flags) !=
+			offsetof(struct rte_mbuf, rearm_data) + 8);
+	RTE_BUILD_BUG_ON(offsetof(struct rte_mbuf, rearm_data) !=
+			RTE_ALIGN(offsetof(struct rte_mbuf, rearm_data), 16));
 	_mm_store_si128((__m128i *)&rx_pkts[0]->rearm_data, rearm0);
 	_mm_store_si128((__m128i *)&rx_pkts[1]->rearm_data, rearm1);
 	_mm_store_si128((__m128i *)&rx_pkts[2]->rearm_data, rearm2);
@@ -252,6 +231,15 @@ _recv_raw_pkts_vec(struct i40e_rx_queue *rxq, struct rte_mbuf **rx_pkts,
 				-rxq->crc_len, /* sub crc on pkt_len */
 				0, 0            /* ignore pkt_type field */
 			);
+	/*
+	 * compile-time check the above crc_adjust layout is correct.
+	 * NOTE: the first field (lowest address) is given last in set_epi16
+	 * call above.
+	 */
+	RTE_BUILD_BUG_ON(offsetof(struct rte_mbuf, pkt_len) !=
+			offsetof(struct rte_mbuf, rx_descriptor_fields1) + 4);
+	RTE_BUILD_BUG_ON(offsetof(struct rte_mbuf, data_len) !=
+			offsetof(struct rte_mbuf, rx_descriptor_fields1) + 8);
 	__m128i dd_check, eop_check;
 
 	/* nb_pkts shall be less equal than RTE_I40E_MAX_RX_BURST */
@@ -296,6 +284,19 @@ _recv_raw_pkts_vec(struct i40e_rx_queue *rxq, struct rte_mbuf **rx_pkts,
 		0xFF, 0xFF,  /* pkt_type set as unknown */
 		0xFF, 0xFF  /*pkt_type set as unknown */
 		);
+	/*
+	 * Compile-time verify the shuffle mask
+	 * NOTE: some field positions already verified above, but duplicated
+	 * here for completeness in case of future modifications.
+	 */
+	RTE_BUILD_BUG_ON(offsetof(struct rte_mbuf, pkt_len) !=
+			offsetof(struct rte_mbuf, rx_descriptor_fields1) + 4);
+	RTE_BUILD_BUG_ON(offsetof(struct rte_mbuf, data_len) !=
+			offsetof(struct rte_mbuf, rx_descriptor_fields1) + 8);
+	RTE_BUILD_BUG_ON(offsetof(struct rte_mbuf, vlan_tci) !=
+			offsetof(struct rte_mbuf, rx_descriptor_fields1) + 10);
+	RTE_BUILD_BUG_ON(offsetof(struct rte_mbuf, hash) !=
+			offsetof(struct rte_mbuf, rx_descriptor_fields1) + 12);
 
 	/* Cache is empty -> need to scan the buffer rings, but first move
 	 * the next 'n' mbufs into the cache
@@ -519,7 +520,7 @@ vtx1(volatile struct i40e_tx_desc *txdp,
 			((uint64_t)pkt->data_len << I40E_TXD_QW1_TX_BUF_SZ_SHIFT));
 
 	__m128i descriptor = _mm_set_epi64x(high_qw,
-				pkt->buf_physaddr + pkt->data_off);
+				pkt->buf_iova + pkt->data_off);
 	_mm_store_si128((__m128i *)txdp, descriptor);
 }
 
@@ -621,11 +622,5 @@ i40e_txq_vec_setup(struct i40e_tx_queue __rte_unused *txq)
 int __attribute__((cold))
 i40e_rx_vec_dev_conf_condition_check(struct rte_eth_dev *dev)
 {
-#ifndef RTE_LIBRTE_IEEE1588
-	/* need SSE4.1 support */
-	if (!rte_cpu_get_flag_enabled(RTE_CPUFLAG_SSE4_1))
-		return -1;
-#endif
-
 	return i40e_rx_vec_dev_conf_condition_check_default(dev);
 }

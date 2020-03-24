@@ -5,3 +5,7 @@
 - @subpage bdev_pg
 - @subpage bdev_module
 - @subpage nvmf_tgt_pg
+- @subpage ftl
+- @subpage gdb_macros
+- @subpage reduce
+- @subpage notify

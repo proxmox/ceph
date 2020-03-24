@@ -51,7 +51,6 @@ static const int ASYNC_IOV_MAX = (IOV_MAX >= 1024 ? IOV_MAX / 4 : IOV_MAX);
  * sequence, try to reconnect peer endpoint.
  */
 class AsyncConnection : public Connection {
-
   ssize_t read(unsigned len, char *buffer,
                std::function<void(char *, ssize_t)> callback);
   ssize_t read_until(unsigned needed, char *p);
@@ -106,10 +105,13 @@ class AsyncConnection : public Connection {
     void flush();
   } *delay_state;
 
- public:
+private:
+  FRIEND_MAKE_REF(AsyncConnection);
   AsyncConnection(CephContext *cct, AsyncMessenger *m, DispatchQueue *q,
 		  Worker *w, bool is_msgr2, bool local);
   ~AsyncConnection() override;
+  bool unregistered = false;
+public:
   void maybe_start_delay_thread();
 
   ostream& _conn_prefix(std::ostream *_dout);
@@ -138,6 +140,14 @@ class AsyncConnection : public Connection {
 
   int get_con_mode() const override;
 
+  bool is_unregistered() const {
+    return unregistered;
+  }
+
+  void unregister() {
+    unregistered = true;
+  }
+
  private:
   enum {
     STATE_NONE,
@@ -165,12 +175,14 @@ class AsyncConnection : public Connection {
   int state;
   ConnectedSocket cs;
   int port;
+public:
   Messenger::Policy policy;
+private:
 
   DispatchQueue *dispatch_queue;
 
   // lockfree, only used in own thread
-  bufferlist outcoming_bl;
+  bufferlist outgoing_bl;
   bool open_write = false;
 
   std::mutex write_lock;
@@ -228,11 +240,13 @@ class AsyncConnection : public Connection {
     return logger;
   }
 
+  bool is_msgr2() const override;
+
   friend class Protocol;
   friend class ProtocolV1;
   friend class ProtocolV2;
 }; /* AsyncConnection */
 
-typedef boost::intrusive_ptr<AsyncConnection> AsyncConnectionRef;
+using AsyncConnectionRef = ceph::ref_t<AsyncConnection>;
 
 #endif

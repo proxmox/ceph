@@ -26,6 +26,35 @@ describe('OsdService', () => {
     expect(service).toBeTruthy();
   });
 
+  it('should call create', () => {
+    const post_data = {
+      method: 'drive_groups',
+      data: [
+        {
+          service_name: 'osd',
+          service_id: 'all_hdd',
+          host_pattern: '*',
+          data_devices: {
+            rotational: true
+          }
+        },
+        {
+          service_name: 'osd',
+          service_id: 'host1_ssd',
+          host_pattern: 'host1',
+          data_devices: {
+            rotational: false
+          }
+        }
+      ],
+      tracking_id: 'all_hdd, host1_ssd'
+    };
+    service.create(post_data.data).subscribe();
+    const req = httpTesting.expectOne('api/osd');
+    expect(req.request.method).toBe('POST');
+    expect(req.request.body).toEqual(post_data);
+  });
+
   it('should call getList', () => {
     service.getList().subscribe();
     const req = httpTesting.expectOne('api/osd');
@@ -88,6 +117,13 @@ describe('OsdService', () => {
     expect(req.request.body).toEqual({ weight: 0.5 });
   });
 
+  it('should update OSD', () => {
+    service.update(1, 'hdd').subscribe();
+    const req = httpTesting.expectOne('api/osd/1');
+    expect(req.request.method).toBe('PUT');
+    expect(req.request.body).toEqual({ device_class: 'hdd' });
+  });
+
   it('should mark an OSD lost', () => {
     service.markLost(1).subscribe();
     const req = httpTesting.expectOne('api/osd/1/mark_lost');
@@ -107,8 +143,14 @@ describe('OsdService', () => {
   });
 
   it('should return if it is safe to destroy an OSD', () => {
-    service.safeToDestroy(1).subscribe();
-    const req = httpTesting.expectOne('api/osd/1/safe_to_destroy');
+    service.safeToDestroy('[0,1]').subscribe();
+    const req = httpTesting.expectOne('api/osd/safe_to_destroy?ids=[0,1]');
+    expect(req.request.method).toBe('GET');
+  });
+
+  it('should call the devices endpoint to retrieve smart data', () => {
+    service.getDevices(1).subscribe();
+    const req = httpTesting.expectOne('api/osd/1/devices');
     expect(req.request.method).toBe('GET');
   });
 });

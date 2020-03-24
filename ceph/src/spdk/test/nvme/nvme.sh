@@ -65,6 +65,7 @@ if [ `uname` = Linux ]; then
 		mkfs.ext4 -F /dev/${blkname}p1
 		mkdir -p /tmp/nvmetest
 		mount /dev/${blkname}p1 /tmp/nvmetest
+		sleep 1
 		$rootdir/scripts/setup.sh
 		driver=$(basename $(readlink /sys/bus/pci/devices/$bdf/driver))
 		# check that the nvme driver is still loaded against the device
@@ -88,20 +89,12 @@ fi
 
 if [ `uname` = Linux ]; then
 	start_stub "-s 4096 -i 0 -m 0xF"
-	trap "kill_stub; exit 1" SIGINT SIGTERM EXIT
+	trap "kill_stub -9; exit 1" SIGINT SIGTERM EXIT
 fi
 
-if [ $RUN_NIGHTLY -eq 1 ]; then
-	# TODO: temporarily disabled - temperature AER doesn't fire on emulated controllers
-	#timing_enter aer
-	#$testdir/aer/aer
-	#timing_exit aer
-
-	timing_enter reset
-	$testdir/reset/reset -q 64 -w write -s 4096 -t 2
-	report_test_completion "nightly_nvme_reset"
-	timing_exit reset
-fi
+timing_enter reset
+$testdir/reset/reset -q 64 -w write -s 4096 -t 2
+timing_exit reset
 
 timing_enter identify
 $rootdir/examples/nvme/identify/identify -i 0
@@ -168,19 +161,15 @@ if [ `uname` = Linux ]; then
 	trap - SIGINT SIGTERM EXIT
 	kill_stub
 fi
-PLUGIN_DIR=$rootdir/examples/nvme/fio_plugin
 
-if [ -d /usr/src/fio ]; then
+if [ -d /usr/src/fio ] && [ $SPDK_RUN_ASAN -eq 0 ]; then
+	# Only test when ASAN is not enabled. If ASAN is enabled, we cannot test.
 	timing_enter fio_plugin
+	PLUGIN_DIR=$rootdir/examples/nvme/fio_plugin
 	for bdf in $(iter_pci_class_code 01 08 02); do
-		# Only test when ASAN is not enabled. If ASAN is enabled, we cannot test.
-		if [ $SPDK_RUN_ASAN -eq 0 ]; then
-			LD_PRELOAD=$PLUGIN_DIR/fio_plugin /usr/src/fio/fio $PLUGIN_DIR/example_config.fio --filename="trtype=PCIe traddr=${bdf//:/.} ns=1"
-			report_test_completion "bdev_fio"
-		fi
-		break
+		fio_nvme $PLUGIN_DIR/example_config.fio --filename="trtype=PCIe traddr=${bdf//:/.} ns=1"
+		report_test_completion "bdev_fio"
 	done
-
 	timing_exit fio_plugin
 fi
 

@@ -1,5 +1,5 @@
 // -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// vim: ts=8 sw=2 smarttab ft=cpp
 
 #include "rgw_op.h"
 #include "rgw_usage.h"
@@ -14,7 +14,7 @@ class RGWOp_Usage_Get : public RGWRESTOp {
 public:
   RGWOp_Usage_Get() {}
 
-  int check_caps(RGWUserCaps& caps) override {
+  int check_caps(const RGWUserCaps& caps) override {
     return caps.check_cap("usage", RGW_CAP_READ);
   }
   void execute() override;
@@ -52,7 +52,7 @@ void RGWOp_Usage_Get::execute() {
     }
   }
 
-  http_ret = RGWUsage::show(store, uid, bucket_name, start, end, show_entries, show_summary, &categories, flusher);
+  http_ret = RGWUsage::show(store->getRados(), uid, bucket_name, start, end, show_entries, show_summary, &categories, flusher);
 }
 
 class RGWOp_Usage_Delete : public RGWRESTOp {
@@ -60,7 +60,7 @@ class RGWOp_Usage_Delete : public RGWRESTOp {
 public:
   RGWOp_Usage_Delete() {}
 
-  int check_caps(RGWUserCaps& caps) override {
+  int check_caps(const RGWUserCaps& caps) override {
     return caps.check_cap("usage", RGW_CAP_WRITE);
   }
   void execute() override;
@@ -92,7 +92,7 @@ void RGWOp_Usage_Delete::execute() {
     }
   }
 
-  http_ret = RGWUsage::trim(store, uid, bucket_name, start, end);
+  http_ret = RGWUsage::trim(store->getRados(), uid, bucket_name, start, end);
 }
 
 RGWOp *RGWHandler_Usage::op_get()

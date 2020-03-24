@@ -1,34 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2014 Intel Corporation
  */
 
 #ifndef _MAIN_H_
@@ -56,7 +27,11 @@
 #endif
 
 #ifndef APP_MAX_IO_LCORES
+#if (APP_MAX_LCORES > 16)
 #define APP_MAX_IO_LCORES 16
+#else
+#define APP_MAX_IO_LCORES APP_MAX_LCORES
+#endif
 #endif
 #if (APP_MAX_IO_LCORES > APP_MAX_LCORES)
 #error "APP_MAX_IO_LCORES is too big"
@@ -74,7 +49,11 @@
 #endif
 
 #ifndef APP_MAX_WORKER_LCORES
+#if (APP_MAX_LCORES > 16)
 #define APP_MAX_WORKER_LCORES 16
+#else
+#define APP_MAX_WORKER_LCORES APP_MAX_LCORES
+#endif
 #endif
 #if (APP_MAX_WORKER_LCORES > APP_MAX_LCORES)
 #error "APP_MAX_WORKER_LCORES is too big"
@@ -240,7 +219,7 @@ struct app_lcore_params_io {
 	struct {
 		/* NIC */
 		struct {
-			uint8_t port;
+			uint16_t port;
 			uint8_t queue;
 		} nic_queues[APP_MAX_NIC_RX_QUEUES_PER_IO_LCORE];
 		uint32_t n_nic_queues;
@@ -267,7 +246,7 @@ struct app_lcore_params_io {
 		struct rte_ring *rings[APP_MAX_NIC_PORTS][APP_MAX_WORKER_LCORES];
 
 		/* NIC */
-		uint8_t nic_ports[APP_MAX_NIC_TX_PORTS_PER_IO_LCORE];
+		uint16_t nic_ports[APP_MAX_NIC_TX_PORTS_PER_IO_LCORE];
 		uint32_t n_nic_ports;
 
 		/* Internal buffers */
@@ -360,9 +339,10 @@ void app_print_usage(void);
 void app_init(void);
 int app_lcore_main_loop(void *arg);
 
-int app_get_nic_rx_queues_per_port(uint8_t port);
-int app_get_lcore_for_nic_rx(uint8_t port, uint8_t queue, uint32_t *lcore_out);
-int app_get_lcore_for_nic_tx(uint8_t port, uint32_t *lcore_out);
+int app_get_nic_rx_queues_per_port(uint16_t port);
+int app_get_lcore_for_nic_rx(uint16_t port, uint8_t queue,
+			      uint32_t *lcore_out);
+int app_get_lcore_for_nic_tx(uint16_t port, uint32_t *lcore_out);
 int app_is_socket_used(uint32_t socket);
 uint32_t app_get_lcores_io_rx(void);
 uint32_t app_get_lcores_worker(void);

@@ -134,13 +134,12 @@ struct spdk_iscsi_conn {
 	bool sess_param_state_negotiated[MAX_SESSION_PARAMS];
 	bool conn_param_state_negotiated[MAX_CONNECTION_PARAMS];
 	struct iscsi_chap_auth auth;
-	int authenticated;
-	int req_auth;
-	int req_mutual;
+	bool authenticated;
+	bool require_chap;
+	bool mutual_chap;
 	uint32_t pending_task_cnt;
 	uint32_t data_out_cnt;
 	uint32_t data_in_cnt;
-	bool pending_activate_event;
 
 	int timeout;
 	uint64_t nopininterval;
@@ -166,26 +165,27 @@ struct spdk_iscsi_conn {
 	TAILQ_HEAD(active_r2t_tasks, spdk_iscsi_task)	active_r2t_tasks;
 	TAILQ_HEAD(queued_datain_tasks, spdk_iscsi_task)	queued_datain_tasks;
 
-	struct spdk_scsi_desc	*open_lun_descs[SPDK_SCSI_DEV_MAX_LUN];
+	struct spdk_scsi_lun_desc	*open_lun_descs[SPDK_SCSI_DEV_MAX_LUN];
 };
 
 extern struct spdk_iscsi_conn *g_conns_array;
 
 int spdk_initialize_iscsi_conns(void);
 void spdk_shutdown_iscsi_conns(void);
+void spdk_iscsi_conns_start_exit(struct spdk_iscsi_tgt_node *target);
+int spdk_iscsi_get_active_conns(struct spdk_iscsi_tgt_node *target);
 
 int spdk_iscsi_conn_construct(struct spdk_iscsi_portal *portal, struct spdk_sock *sock);
 void spdk_iscsi_conn_destruct(struct spdk_iscsi_conn *conn);
 void spdk_iscsi_conn_handle_nop(struct spdk_iscsi_conn *conn);
-void spdk_iscsi_conn_migration(struct spdk_iscsi_conn *conn);
+void spdk_iscsi_conn_schedule(struct spdk_iscsi_conn *conn);
 void spdk_iscsi_conn_logout(struct spdk_iscsi_conn *conn);
 int spdk_iscsi_drop_conns(struct spdk_iscsi_conn *conn,
 			  const char *conn_match, int drop_all);
-void spdk_iscsi_conn_set_min_per_core(int count);
-int spdk_iscsi_conn_get_min_per_core(void);
 
-int spdk_iscsi_conn_read_data(struct spdk_iscsi_conn *conn, int len,
-			      void *buf);
+int spdk_iscsi_conn_read_data(struct spdk_iscsi_conn *conn, int len, void *buf);
+int spdk_iscsi_conn_readv_data(struct spdk_iscsi_conn *conn,
+			       struct iovec *iov, int iovcnt);
 void spdk_iscsi_conn_write_pdu(struct spdk_iscsi_conn *conn, struct spdk_iscsi_pdu *pdu);
 
 void spdk_iscsi_conn_free_pdu(struct spdk_iscsi_conn *conn, struct spdk_iscsi_pdu *pdu);

@@ -1,34 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2017 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2017 Intel Corporation
  */
 
 #ifndef _RTE_VHOST_H_
@@ -56,6 +27,54 @@ extern "C" {
 #define RTE_VHOST_USER_CLIENT		(1ULL << 0)
 #define RTE_VHOST_USER_NO_RECONNECT	(1ULL << 1)
 #define RTE_VHOST_USER_DEQUEUE_ZERO_COPY	(1ULL << 2)
+#define RTE_VHOST_USER_IOMMU_SUPPORT	(1ULL << 3)
+#define RTE_VHOST_USER_POSTCOPY_SUPPORT		(1ULL << 4)
+
+/** Protocol features. */
+#ifndef VHOST_USER_PROTOCOL_F_MQ
+#define VHOST_USER_PROTOCOL_F_MQ	0
+#endif
+
+#ifndef VHOST_USER_PROTOCOL_F_LOG_SHMFD
+#define VHOST_USER_PROTOCOL_F_LOG_SHMFD	1
+#endif
+
+#ifndef VHOST_USER_PROTOCOL_F_RARP
+#define VHOST_USER_PROTOCOL_F_RARP	2
+#endif
+
+#ifndef VHOST_USER_PROTOCOL_F_REPLY_ACK
+#define VHOST_USER_PROTOCOL_F_REPLY_ACK	3
+#endif
+
+#ifndef VHOST_USER_PROTOCOL_F_NET_MTU
+#define VHOST_USER_PROTOCOL_F_NET_MTU	4
+#endif
+
+#ifndef VHOST_USER_PROTOCOL_F_SLAVE_REQ
+#define VHOST_USER_PROTOCOL_F_SLAVE_REQ	5
+#endif
+
+#ifndef VHOST_USER_PROTOCOL_F_CRYPTO_SESSION
+#define VHOST_USER_PROTOCOL_F_CRYPTO_SESSION 7
+#endif
+
+#ifndef VHOST_USER_PROTOCOL_F_PAGEFAULT
+#define VHOST_USER_PROTOCOL_F_PAGEFAULT 8
+#endif
+
+#ifndef VHOST_USER_PROTOCOL_F_SLAVE_SEND_FD
+#define VHOST_USER_PROTOCOL_F_SLAVE_SEND_FD 10
+#endif
+
+#ifndef VHOST_USER_PROTOCOL_F_HOST_NOTIFIER
+#define VHOST_USER_PROTOCOL_F_HOST_NOTIFIER 11
+#endif
+
+/** Indicate whether protocol features negotiation is supported. */
+#ifndef VHOST_USER_F_PROTOCOL_FEATURES
+#define VHOST_USER_F_PROTOCOL_FEATURES	30
+#endif
 
 /**
  * Information relating to memory regions including offsets to
@@ -85,9 +104,51 @@ struct rte_vhost_vring {
 	struct vring_used	*used;
 	uint64_t		log_guest_addr;
 
+	/** Deprecated, use rte_vhost_vring_call() instead. */
 	int			callfd;
+
 	int			kickfd;
 	uint16_t		size;
+};
+
+/**
+ * Possible results of the vhost user message handling callbacks
+ */
+enum rte_vhost_msg_result {
+	/* Message handling failed */
+	RTE_VHOST_MSG_RESULT_ERR = -1,
+	/* Message handling successful */
+	RTE_VHOST_MSG_RESULT_OK =  0,
+	/* Message handling successful and reply prepared */
+	RTE_VHOST_MSG_RESULT_REPLY =  1,
+	/* Message not handled */
+	RTE_VHOST_MSG_RESULT_NOT_HANDLED,
+};
+
+/**
+ * Function prototype for the vhost backend to handle specific vhost user
+ * messages.
+ *
+ * @param vid
+ *  vhost device id
+ * @param msg
+ *  Message pointer.
+ * @return
+ *  RTE_VHOST_MSG_RESULT_OK on success,
+ *  RTE_VHOST_MSG_RESULT_REPLY on success with reply,
+ *  RTE_VHOST_MSG_RESULT_ERR on failure,
+ *  RTE_VHOST_MSG_RESULT_NOT_HANDLED if message was not handled.
+ */
+typedef enum rte_vhost_msg_result (*rte_vhost_msg_handle)(int vid, void *msg);
+
+/**
+ * Optional vhost user message handlers.
+ */
+struct rte_vhost_user_extern_ops {
+	/* Called prior to the master message handling. */
+	rte_vhost_msg_handle pre_msg_handle;
+	/* Called after the master message handling. */
+	rte_vhost_msg_handle post_msg_handle;
 };
 
 /**
@@ -107,11 +168,19 @@ struct vhost_device_ops {
 	 */
 	int (*features_changed)(int vid, uint64_t features);
 
-	void *reserved[4]; /**< Reserved for future extension */
+	int (*new_connection)(int vid);
+	void (*destroy_connection)(int vid);
+
+	void *reserved[2]; /**< Reserved for future extension */
 };
 
 /**
  * Convert guest physical address to host virtual address
+ *
+ * This function is deprecated because unsafe.
+ * New rte_vhost_va_from_guest_pa() should be used instead to ensure
+ * guest physical ranges are fully and contiguously mapped into
+ * process virtual address space.
  *
  * @param mem
  *  the guest memory regions
@@ -120,7 +189,8 @@ struct vhost_device_ops {
  * @return
  *  the host virtual address on success, 0 on failure
  */
-static inline uint64_t __attribute__((always_inline))
+__rte_deprecated
+static __rte_always_inline uint64_t
 rte_vhost_gpa_to_vva(struct rte_vhost_memory *mem, uint64_t gpa)
 {
 	struct rte_vhost_mem_region *reg;
@@ -134,6 +204,46 @@ rte_vhost_gpa_to_vva(struct rte_vhost_memory *mem, uint64_t gpa)
 			       reg->host_user_addr;
 		}
 	}
+
+	return 0;
+}
+
+/**
+ * Convert guest physical address to host virtual address safely
+ *
+ * This variant of rte_vhost_gpa_to_vva() takes care all the
+ * requested length is mapped and contiguous in process address
+ * space.
+ *
+ * @param mem
+ *  the guest memory regions
+ * @param gpa
+ *  the guest physical address for querying
+ * @param len
+ *  the size of the requested area to map, updated with actual size mapped
+ * @return
+ *  the host virtual address on success, 0 on failure
+ */
+static __rte_always_inline uint64_t
+rte_vhost_va_from_guest_pa(struct rte_vhost_memory *mem,
+						   uint64_t gpa, uint64_t *len)
+{
+	struct rte_vhost_mem_region *r;
+	uint32_t i;
+
+	for (i = 0; i < mem->nregions; i++) {
+		r = &mem->regions[i];
+		if (gpa >= r->guest_phys_addr &&
+		    gpa <  r->guest_phys_addr + r->size) {
+
+			if (unlikely(*len > r->guest_phys_addr + r->size - gpa))
+				*len = r->guest_phys_addr + r->size - gpa;
+
+			return gpa - r->guest_phys_addr +
+			       r->host_user_addr;
+		}
+	}
+	*len = 0;
 
 	return 0;
 }
@@ -193,6 +303,41 @@ int rte_vhost_driver_register(const char *path, uint64_t flags);
 int rte_vhost_driver_unregister(const char *path);
 
 /**
+ * Set the vdpa device id, enforce single connection per socket
+ *
+ * @param path
+ *  The vhost-user socket file path
+ * @param did
+ *  Device id
+ * @return
+ *  0 on success, -1 on failure
+ */
+int __rte_experimental
+rte_vhost_driver_attach_vdpa_device(const char *path, int did);
+
+/**
+ * Unset the vdpa device id
+ *
+ * @param path
+ *  The vhost-user socket file path
+ * @return
+ *  0 on success, -1 on failure
+ */
+int __rte_experimental
+rte_vhost_driver_detach_vdpa_device(const char *path);
+
+/**
+ * Get the device id
+ *
+ * @param path
+ *  The vhost-user socket file path
+ * @return
+ *  Device id, -1 on failure
+ */
+int __rte_experimental
+rte_vhost_driver_get_vdpa_device_id(const char *path);
+
+/**
  * Set the feature bits the vhost-user driver supports.
  *
  * @param path
@@ -246,6 +391,47 @@ int rte_vhost_driver_disable_features(const char *path, uint64_t features);
  *  0 on success, -1 on failure
  */
 int rte_vhost_driver_get_features(const char *path, uint64_t *features);
+
+/**
+ * Set the protocol feature bits before feature negotiation.
+ *
+ * @param path
+ *  The vhost-user socket file path
+ * @param protocol_features
+ *  Supported protocol features
+ * @return
+ *  0 on success, -1 on failure
+ */
+int __rte_experimental
+rte_vhost_driver_set_protocol_features(const char *path,
+		uint64_t protocol_features);
+
+/**
+ * Get the protocol feature bits before feature negotiation.
+ *
+ * @param path
+ *  The vhost-user socket file path
+ * @param protocol_features
+ *  A pointer to store the queried protocol feature bits
+ * @return
+ *  0 on success, -1 on failure
+ */
+int __rte_experimental
+rte_vhost_driver_get_protocol_features(const char *path,
+		uint64_t *protocol_features);
+
+/**
+ * Get the queue number bits before feature negotiation.
+ *
+ * @param path
+ *  The vhost-user socket file path
+ * @param queue_num
+ *  A pointer to store the queried queue number bits
+ * @return
+ *  0 on success, -1 on failure
+ */
+int __rte_experimental
+rte_vhost_driver_get_queue_num(const char *path, uint32_t *queue_num);
 
 /**
  * Get the feature bits after negotiation
@@ -356,7 +542,7 @@ int rte_vhost_get_ifname(int vid, char *buf, size_t len);
  *  virtio queue index
  *
  * @return
- *  num of avail entires left
+ *  num of avail entries left
  */
 uint16_t rte_vhost_avail_entries(int vid, uint16_t queue_id);
 
@@ -365,7 +551,7 @@ struct rte_mempool;
 /**
  * This function adds buffers to the virtio devices RX virtqueue. Buffers can
  * be received from the physical port or from another virtual device. A packet
- * count is returned to indicate the number of packets that were succesfully
+ * count is returned to indicate the number of packets that were successfully
  * added to the RX queue.
  * @param vid
  *  vhost device ID
@@ -404,7 +590,7 @@ uint16_t rte_vhost_dequeue_burst(int vid, uint16_t queue_id,
 /**
  * Get guest mem table: a list of memory regions.
  *
- * An rte_vhost_vhost_memory object will be allocated internaly, to hold the
+ * An rte_vhost_vhost_memory object will be allocated internally, to hold the
  * guest memory regions. Application should free it at destroy_device()
  * callback.
  *
@@ -431,6 +617,109 @@ int rte_vhost_get_mem_table(int vid, struct rte_vhost_memory **mem);
  */
 int rte_vhost_get_vhost_vring(int vid, uint16_t vring_idx,
 			      struct rte_vhost_vring *vring);
+
+/**
+ * Notify the guest that used descriptors have been added to the vring.  This
+ * function acts as a memory barrier.
+ *
+ * @param vid
+ *  vhost device ID
+ * @param vring_idx
+ *  vring index
+ * @return
+ *  0 on success, -1 on failure
+ */
+int rte_vhost_vring_call(int vid, uint16_t vring_idx);
+
+/**
+ * Get vhost RX queue avail count.
+ *
+ * @param vid
+ *  vhost device ID
+ * @param qid
+ *  virtio queue index in mq case
+ * @return
+ *  num of desc available
+ */
+uint32_t rte_vhost_rx_queue_count(int vid, uint16_t qid);
+
+/**
+ * Get log base and log size of the vhost device
+ *
+ * @param vid
+ *  vhost device ID
+ * @param log_base
+ *  vhost log base
+ * @param log_size
+ *  vhost log size
+ * @return
+ *  0 on success, -1 on failure
+ */
+int __rte_experimental
+rte_vhost_get_log_base(int vid, uint64_t *log_base, uint64_t *log_size);
+
+/**
+ * Get last_avail/used_idx of the vhost virtqueue
+ *
+ * @param vid
+ *  vhost device ID
+ * @param queue_id
+ *  vhost queue index
+ * @param last_avail_idx
+ *  vhost last_avail_idx to get
+ * @param last_used_idx
+ *  vhost last_used_idx to get
+ * @return
+ *  0 on success, -1 on failure
+ */
+int __rte_experimental
+rte_vhost_get_vring_base(int vid, uint16_t queue_id,
+		uint16_t *last_avail_idx, uint16_t *last_used_idx);
+
+/**
+ * Set last_avail/used_idx of the vhost virtqueue
+ *
+ * @param vid
+ *  vhost device ID
+ * @param queue_id
+ *  vhost queue index
+ * @param last_avail_idx
+ *  last_avail_idx to set
+ * @param last_used_idx
+ *  last_used_idx to set
+ * @return
+ *  0 on success, -1 on failure
+ */
+int __rte_experimental
+rte_vhost_set_vring_base(int vid, uint16_t queue_id,
+		uint16_t last_avail_idx, uint16_t last_used_idx);
+
+/**
+ * Register external message handling callbacks
+ *
+ * @param vid
+ *  vhost device ID
+ * @param ops
+ *  virtio external callbacks to register
+ * @param ctx
+ *  additional context passed to the callbacks
+ * @return
+ *  0 on success, -1 on failure
+ */
+int __rte_experimental
+rte_vhost_extern_callback_register(int vid,
+		struct rte_vhost_user_extern_ops const * const ops, void *ctx);
+
+/**
+ * Get vdpa device id for vhost device.
+ *
+ * @param vid
+ *  vhost device id
+ * @return
+ *  device id
+ */
+int __rte_experimental
+rte_vhost_get_vdpa_device_id(int vid);
 
 #ifdef __cplusplus
 }

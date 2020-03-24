@@ -6,3 +6,12 @@
 #include "messages/MOSDPGLog.h"
 
 MEMPOOL_DEFINE_OBJECT_FACTORY(PGPeeringEvent, pg_peering_evt, osd);
+
+MLogRec::MLogRec(pg_shard_t from, MOSDPGLog *msg)
+  : from(from), msg(msg) {}
+
+void MLogRec::print(std::ostream *out) const
+{
+  *out << "MLogRec from " << from << " ";
+  msg->inner_print(*out);
+}

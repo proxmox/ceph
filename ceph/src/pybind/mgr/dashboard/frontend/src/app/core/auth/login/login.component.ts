@@ -34,7 +34,8 @@ export class LoginComponent implements OnInit {
       for (let i = 1; i <= modalsCount; i++) {
         this.bsModalService.hide(i);
       }
-      let token = null;
+
+      let token: string = null;
       if (window.location.hash.indexOf('access_token=') !== -1) {
         token = window.location.hash.split('access_token=')[1];
         const uri = window.location.toString();
@@ -48,7 +49,13 @@ export class LoginComponent implements OnInit {
             window.location.replace(login.login_url);
           }
         } else {
-          this.authStorageService.set(login.username, token, login.permissions);
+          this.authStorageService.set(
+            login.username,
+            token,
+            login.permissions,
+            login.sso,
+            login.pwdExpirationDate
+          );
           this.router.navigate(['']);
         }
       });
@@ -56,7 +63,7 @@ export class LoginComponent implements OnInit {
   }
 
   login() {
-    this.authService.login(this.model).then(() => {
+    this.authService.login(this.model).subscribe(() => {
       this.router.navigate(['']);
     });
   }

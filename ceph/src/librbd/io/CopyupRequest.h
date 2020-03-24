@@ -7,11 +7,12 @@
 #include "include/int_types.h"
 #include "include/rados/librados.hpp"
 #include "include/buffer.h"
-#include "common/Mutex.h"
+#include "common/ceph_mutex.h"
 #include "common/zipkin_trace.h"
 #include "librbd/io/AsyncOperation.h"
 #include "librbd/io/Types.h"
 
+#include <map>
 #include <string>
 #include <vector>
 
@@ -28,15 +29,15 @@ template <typename I> class AbstractObjectWriteRequest;
 template <typename ImageCtxT = librbd::ImageCtx>
 class CopyupRequest {
 public:
-  static CopyupRequest* create(ImageCtxT *ictx, const std::string &oid,
-                               uint64_t objectno, Extents &&image_extents,
+  static CopyupRequest* create(ImageCtxT *ictx, uint64_t objectno,
+                               Extents &&image_extents,
                                const ZTracer::Trace &parent_trace) {
-    return new CopyupRequest(ictx, oid, objectno, std::move(image_extents),
+    return new CopyupRequest(ictx, objectno, std::move(image_extents),
                              parent_trace);
   }
 
-  CopyupRequest(ImageCtxT *ictx, const std::string &oid, uint64_t objectno,
-                Extents &&image_extents, const ZTracer::Trace &parent_trace);
+  CopyupRequest(ImageCtxT *ictx, uint64_t objectno, Extents &&image_extents,
+                const ZTracer::Trace &parent_trace);
   ~CopyupRequest();
 
   void append_request(AbstractObjectWriteRequest<ImageCtxT> *req);
@@ -79,7 +80,6 @@ private:
   typedef std::vector<AbstractObjectWriteRequest<ImageCtxT> *> WriteRequests;
 
   ImageCtxT *m_image_ctx;
-  std::string m_oid;
   uint64_t m_object_no;
   Extents m_image_extents;
   ZTracer::Trace m_trace;
@@ -88,6 +88,7 @@ private:
   bool m_copyup_required = true;
   bool m_copyup_is_zero = true;
 
+  std::map<uint64_t, uint64_t> m_copyup_extent_map;
   ceph::bufferlist m_copyup_data;
 
   AsyncOperation m_async_op;
@@ -95,7 +96,7 @@ private:
   std::vector<uint64_t> m_snap_ids;
   bool m_first_snap_is_clean = false;
 
-  Mutex m_lock;
+  ceph::mutex m_lock = ceph::make_mutex("CopyupRequest", false);
   WriteRequests m_pending_requests;
   unsigned m_pending_copyups = 0;
 

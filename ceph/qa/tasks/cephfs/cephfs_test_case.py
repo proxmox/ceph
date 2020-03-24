@@ -1,7 +1,6 @@
 import time
 import json
 import logging
-from unittest import case
 from tasks.ceph_test_case import CephTestCase
 import os
 import re
@@ -59,18 +58,18 @@ class CephFSTestCase(CephTestCase):
     # requires REQUIRE_FILESYSTEM = True
     REQUIRE_RECOVERY_FILESYSTEM = False
 
-    LOAD_SETTINGS = []
+    LOAD_SETTINGS = [] # type: ignore
 
     def setUp(self):
         super(CephFSTestCase, self).setUp()
 
         if len(self.mds_cluster.mds_ids) < self.MDSS_REQUIRED:
-            raise case.SkipTest("Only have {0} MDSs, require {1}".format(
+            self.skipTest("Only have {0} MDSs, require {1}".format(
                 len(self.mds_cluster.mds_ids), self.MDSS_REQUIRED
             ))
 
         if len(self.mounts) < self.CLIENTS_REQUIRED:
-            raise case.SkipTest("Only have {0} clients, require {1}".format(
+            self.skipTest("Only have {0} clients, require {1}".format(
                 len(self.mounts), self.CLIENTS_REQUIRED
             ))
 
@@ -79,11 +78,11 @@ class CephFSTestCase(CephTestCase):
                 # kclient kill() power cycles nodes, so requires clients to each be on
                 # their own node
                 if self.mounts[0].client_remote.hostname == self.mounts[1].client_remote.hostname:
-                    raise case.SkipTest("kclient clients must be on separate nodes")
+                    self.skipTest("kclient clients must be on separate nodes")
 
         if self.REQUIRE_ONE_CLIENT_REMOTE:
             if self.mounts[0].client_remote.hostname in self.mds_cluster.get_mds_hostnames():
-                raise case.SkipTest("Require first client to be on separate server from MDSs")
+                self.skipTest("Require first client to be on separate server from MDSs")
 
         # Create friendly mount_a, mount_b attrs
         for i in range(0, self.CLIENTS_REQUIRED):
@@ -149,7 +148,7 @@ class CephFSTestCase(CephTestCase):
 
         if self.REQUIRE_RECOVERY_FILESYSTEM:
             if not self.REQUIRE_FILESYSTEM:
-                raise case.SkipTest("Recovery filesystem requires a primary filesystem as well")
+                self.skipTest("Recovery filesystem requires a primary filesystem as well")
             self.fs.mon_manager.raw_cluster_cmd('fs', 'flag', 'set',
                                                 'enable_multiple', 'true',
                                                 '--yes-i-really-mean-it')
@@ -170,8 +169,6 @@ class CephFSTestCase(CephTestCase):
         self.configs_set = set()
 
     def tearDown(self):
-        super(CephFSTestCase, self).tearDown()
-
         self.mds_cluster.clear_firewall()
         for m in self.mounts:
             m.teardown()
@@ -181,6 +178,8 @@ class CephFSTestCase(CephTestCase):
 
         for subsys, key in self.configs_set:
             self.mds_cluster.clear_ceph_conf(subsys, key)
+
+        return super(CephFSTestCase, self).tearDown()
 
     def set_conf(self, subsys, key, value):
         self.configs_set.add((subsys, key))
@@ -304,4 +303,4 @@ class CephFSTestCase(CephTestCase):
                     self.assertTrue(s['export_pin'] == s['auth_first'])
                 return subtrees
             time.sleep(pause)
-        raise RuntimeError("rank {0} failed to reach desired subtree state", rank)
+        raise RuntimeError("rank {0} failed to reach desired subtree state".format(rank))

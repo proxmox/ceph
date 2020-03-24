@@ -24,7 +24,7 @@
 void MDSContext::complete(int r) {
   MDSRank *mds = get_mds();
   ceph_assert(mds != nullptr);
-  ceph_assert(mds->mds_lock.is_locked_by_me());
+  ceph_assert(ceph_mutex_is_locked_by_me(mds->mds_lock));
   dout(10) << "MDSContext::complete: " << typeid(*this).name() << dendl;
   return Context::complete(r);
 }
@@ -90,16 +90,16 @@ void MDSIOContextBase::complete(int r) {
 
   dout(10) << "MDSIOContextBase::complete: " << typeid(*this).name() << dendl;
   ceph_assert(mds != NULL);
+  // Note, MDSIOContext is passed outside the MDS and, strangely, we grab the
+  // lock here when MDSContext::complete would otherwise assume the lock is
+  // already acquired.
   std::lock_guard l(mds->mds_lock);
 
   if (mds->is_daemon_stopping()) {
     dout(4) << "MDSIOContextBase::complete: dropping for stopping "
             << typeid(*this).name() << dendl;
-    MDSContext::complete(r);
-    return;
-  }
-
-  if (r == -EBLACKLISTED) {
+    delete this;
+  } else if (r == -EBLACKLISTED) {
     derr << "MDSIOContextBase: blacklisted!  Restarting..." << dendl;
     mds->respawn();
   } else {

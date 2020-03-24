@@ -10,9 +10,9 @@ tasks:
       - librados3
       - ceph-mgr-dashboard
       - ceph-mgr-diskprediction-local
-      - ceph-mgr-diskprediction-cloud
       - ceph-mgr-rook
-      - ceph-mgr-ssh
+      - ceph-mgr-cephadm
+      - cephadm
     extra_packages: ['librados2']
 - print: "**** done installing mimic"
 - ceph:
@@ -34,6 +34,8 @@ tasks:
       global:
         mon warn on pool no app: false
         bluestore_warn_on_legacy_statfs: false
+        bluestore warn on no per pool omap: false
+        mon pg warn min per osd: 0
 - exec:
     osd.0:
       - ceph osd require-osd-release mimic
@@ -44,6 +46,9 @@ tasks:
     mon.b:
     mon.c:
 - print: "**** done install.upgrade non-client hosts"
+- rgw:
+   - client.1
+- print: "**** done => started rgw client.1"
 - parallel:
     - workload
     - upgrade-sequence

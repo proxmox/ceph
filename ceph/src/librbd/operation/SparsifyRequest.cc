@@ -120,7 +120,7 @@ public:
 
   int send() override {
     I &image_ctx = this->m_image_ctx;
-    ceph_assert(image_ctx.owner_lock.is_locked());
+    ceph_assert(ceph_mutex_is_locked(image_ctx.owner_lock));
 
     ldout(m_cct, 20) << dendl;
 
@@ -136,14 +136,13 @@ public:
     }
 
     {
-      RWLock::RLocker snap_locker(image_ctx.snap_lock);
+      std::shared_lock image_locker{image_ctx.image_lock};
       if (image_ctx.object_map != nullptr &&
           !image_ctx.object_map->object_may_exist(m_object_no)) {
         // can skip because the object does not exist
         return 1;
       }
 
-      RWLock::RLocker parent_locker(image_ctx.parent_lock);
       uint64_t overlap_objects = 0;
       uint64_t overlap;
       int r = image_ctx.get_parent_overlap(CEPH_NOSNAP, &overlap);
@@ -210,14 +209,14 @@ public:
 
     ldout(m_cct, 20) << dendl;
 
-    image_ctx.owner_lock.get_read();
-    image_ctx.snap_lock.get_read();
+    image_ctx.owner_lock.lock_shared();
+    image_ctx.image_lock.lock_shared();
     if (image_ctx.object_map == nullptr) {
       // possible that exclusive lock was lost in background
       lderr(m_cct) << "object map is not initialized" << dendl;
 
-      image_ctx.snap_lock.put_read();
-      image_ctx.owner_lock.put_read();
+      image_ctx.image_lock.unlock_shared();
+      image_ctx.owner_lock.unlock_shared();
       finish_op(-EINVAL);
       return;
     }
@@ -226,8 +225,8 @@ public:
     m_finish_op_ctx = image_ctx.exclusive_lock->start_op(&r);
     if (m_finish_op_ctx == nullptr) {
       lderr(m_cct) << "lost exclusive lock" << dendl;
-      image_ctx.snap_lock.put_read();
-      image_ctx.owner_lock.put_read();
+      image_ctx.image_lock.unlock_shared();
+      image_ctx.owner_lock.unlock_shared();
       finish_op(r);
       return;
     }
@@ -236,15 +235,13 @@ public:
       C_SparsifyObject<I>,
       &C_SparsifyObject<I>::handle_pre_update_object_map>(this);
 
-    image_ctx.object_map_lock.get_write();
     bool sent = image_ctx.object_map->template aio_update<
       Context, &Context::complete>(CEPH_NOSNAP, m_object_no, OBJECT_PENDING,
                                    OBJECT_EXISTS, {}, false, ctx);
 
     // NOTE: state machine might complete before we reach here
-    image_ctx.object_map_lock.put_write();
-    image_ctx.snap_lock.put_read();
-    image_ctx.owner_lock.put_read();
+    image_ctx.image_lock.unlock_shared();
+    image_ctx.owner_lock.unlock_shared();
     if (!sent) {
       finish_op(0);
     }
@@ -304,13 +301,11 @@ public:
       &C_SparsifyObject<I>::handle_post_update_object_map>(this);
     bool sent;
     {
-      RWLock::RLocker owner_locker(image_ctx.owner_lock);
-      RWLock::RLocker snap_locker(image_ctx.snap_lock);
+      std::shared_lock owner_locker{image_ctx.owner_lock};
+      std::shared_lock image_locker{image_ctx.image_lock};
 
       assert(image_ctx.exclusive_lock->is_lock_owner());
       assert(image_ctx.object_map != nullptr);
-
-      RWLock::WLocker object_map_locker(image_ctx.object_map_lock);
 
       sent = image_ctx.object_map->template aio_update<
         Context, &Context::complete>(CEPH_NOSNAP, m_object_no,
@@ -469,16 +464,16 @@ void SparsifyRequest<I>::send_op() {
 template <typename I>
 void SparsifyRequest<I>::sparsify_objects() {
   I &image_ctx = this->m_image_ctx;
-  ceph_assert(image_ctx.owner_lock.is_locked());
+  ceph_assert(ceph_mutex_is_locked(image_ctx.owner_lock));
 
   CephContext *cct = image_ctx.cct;
   ldout(cct, 5) << dendl;
 
-  assert(image_ctx.owner_lock.is_locked());
+  assert(ceph_mutex_is_locked(image_ctx.owner_lock));
 
   uint64_t objects = 0;
   {
-    RWLock::RLocker snap_locker(image_ctx.snap_lock);
+    std::shared_lock image_locker{image_ctx.image_lock};
     objects = image_ctx.get_object_count(CEPH_NOSNAP);
   }
 

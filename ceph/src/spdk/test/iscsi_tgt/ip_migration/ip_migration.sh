@@ -5,6 +5,10 @@ rootdir=$(readlink -f $testdir/../../..)
 source $rootdir/test/common/autotest_common.sh
 source $rootdir/test/iscsi_tgt/common.sh
 
+# $1 = "iso" - triggers isolation mode (setting up required environment).
+# $2 = test type posix or vpp. defaults to posix.
+iscsitestinit $1 $2
+
 rpc_py="$rootdir/scripts/rpc.py"
 fio_py="$rootdir/scripts/fio.py"
 
@@ -43,7 +47,7 @@ for ((i = 0; i < 2; i++)); do
 	rpc_addr="/var/tmp/spdk${i}.sock"
 
 	# TODO: run the different iSCSI instances on non-overlapping CPU masks
-	$ISCSI_APP -r $rpc_addr -s 1000 -i $i -m $ISCSI_TEST_CORE_MASK --wait-for-rpc &
+	$ISCSI_APP -r $rpc_addr -i $i -m $ISCSI_TEST_CORE_MASK --wait-for-rpc &
 	pid=$!
 	echo "Process pid: $pid"
 
@@ -57,7 +61,7 @@ for ((i = 0; i < 2; i++)); do
 	timing_exit start_iscsi_tgt_$i
 
 	rpc_config $rpc_addr $NETMASK
-	trap "kill_all_iscsi_target; exit 1" \
+	trap "kill_all_iscsi_target;  iscsitestfini $1 $2; exit 1" \
 		SIGINT SIGTERM EXIT
 done
 
@@ -70,8 +74,7 @@ sleep 1
 iscsiadm -m node --login -p $MIGRATION_ADDRESS:$ISCSI_PORT
 
 # fio tests for multi-process
-sleep 1
-$fio_py 4096 32 randrw 10 &
+$fio_py -p iscsi -i 4096 -d 32 -t randrw -r 10 &
 fiopid=$!
 sleep 5
 
@@ -87,5 +90,6 @@ trap - SIGINT SIGTERM EXIT
 iscsicleanup
 
 $rpc_py -s $rpc_second_addr kill_instance SIGTERM
-report_test_completion "nightly_iscsi_ip_migration"
+iscsitestfini $1 $2
+report_test_completion "iscsi_ip_migration"
 timing_exit ip_migration

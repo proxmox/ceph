@@ -51,6 +51,8 @@ struct vhost_user_socket {
 	uint64_t supported_features;
 	uint64_t features;
 
+	uint64_t protocol_features;
+
 	/*
 	 * Device id to identify a specific backend device.
 	 * It's set to -1 for the default software implementation.
@@ -88,23 +90,29 @@ static struct vhost_user vhost_user = {
 	.fdset = {
 		.fd = { [0 ... MAX_FDS - 1] = {-1, NULL, NULL, NULL, 0} },
 		.fd_mutex = PTHREAD_MUTEX_INITIALIZER,
+		.fd_pooling_mutex = PTHREAD_MUTEX_INITIALIZER,
 		.num = 0
 	},
 	.vsocket_cnt = 0,
 	.mutex = PTHREAD_MUTEX_INITIALIZER,
 };
 
-/* return bytes# of read on success or negative val on failure. */
+/*
+ * return bytes# of read on success or negative val on failure. Update fdnum
+ * with number of fds read.
+ */
 int
-read_fd_message(int sockfd, char *buf, int buflen, int *fds, int fd_num)
+read_fd_message(int sockfd, char *buf, int buflen, int *fds, int max_fds,
+		int *fd_num)
 {
 	struct iovec iov;
 	struct msghdr msgh;
-	size_t fdsize = fd_num * sizeof(int);
-	char control[CMSG_SPACE(fdsize)];
+	char control[CMSG_SPACE(max_fds * sizeof(int))];
 	struct cmsghdr *cmsg;
 	int got_fds = 0;
 	int ret;
+
+	*fd_num = 0;
 
 	memset(&msgh, 0, sizeof(msgh));
 	iov.iov_base = buf;
@@ -131,13 +139,14 @@ read_fd_message(int sockfd, char *buf, int buflen, int *fds, int fd_num)
 		if ((cmsg->cmsg_level == SOL_SOCKET) &&
 			(cmsg->cmsg_type == SCM_RIGHTS)) {
 			got_fds = (cmsg->cmsg_len - CMSG_LEN(0)) / sizeof(int);
+			*fd_num = got_fds;
 			memcpy(fds, CMSG_DATA(cmsg), got_fds * sizeof(int));
 			break;
 		}
 	}
 
 	/* Clear out unused file descriptors */
-	while (got_fds < fd_num)
+	while (got_fds < max_fds)
 		fds[got_fds++] = -1;
 
 	return ret;
@@ -231,7 +240,7 @@ vhost_user_add_connection(int fd, struct vhost_user_socket *vsocket)
 			RTE_LOG(ERR, VHOST_CONFIG,
 				"failed to add vhost user connection with fd %d\n",
 				fd);
-			goto err;
+			goto err_cleanup;
 		}
 	}
 
@@ -248,7 +257,7 @@ vhost_user_add_connection(int fd, struct vhost_user_socket *vsocket)
 		if (vsocket->notify_ops->destroy_connection)
 			vsocket->notify_ops->destroy_connection(conn->vid);
 
-		goto err;
+		goto err_cleanup;
 	}
 
 	pthread_mutex_lock(&vsocket->conn_mutex);
@@ -258,6 +267,8 @@ vhost_user_add_connection(int fd, struct vhost_user_socket *vsocket)
 	fdset_pipe_notify(&vhost_user.fdset);
 	return;
 
+err_cleanup:
+	vhost_destroy_device(vid);
 err:
 	free(conn);
 	close(fd);
@@ -286,12 +297,18 @@ vhost_user_read_cb(int connfd, void *dat, int *remove)
 
 	ret = vhost_user_msg_handler(conn->vid, connfd);
 	if (ret < 0) {
+		struct virtio_net *dev = get_device(conn->vid);
+
 		close(connfd);
 		*remove = 1;
-		vhost_destroy_device(conn->vid);
+
+		if (dev)
+			vhost_destroy_device_notify(dev);
 
 		if (vsocket->notify_ops->destroy_connection)
 			vsocket->notify_ops->destroy_connection(conn->vid);
+
+		vhost_destroy_device(conn->vid);
 
 		pthread_mutex_lock(&vsocket->conn_mutex);
 		TAILQ_REMOVE(&vsocket->conn_list, conn, next);
@@ -538,6 +555,9 @@ find_vhost_user_socket(const char *path)
 {
 	int i;
 
+	if (path == NULL)
+		return NULL;
+
 	for (i = 0; i < vhost_user.vsocket_cnt; i++) {
 		struct vhost_user_socket *vsocket = vhost_user.vsockets[i];
 
@@ -553,7 +573,7 @@ rte_vhost_driver_attach_vdpa_device(const char *path, int did)
 {
 	struct vhost_user_socket *vsocket;
 
-	if (rte_vdpa_get_device(did) == NULL)
+	if (rte_vdpa_get_device(did) == NULL || path == NULL)
 		return -1;
 
 	pthread_mutex_lock(&vhost_user.mutex);
@@ -699,6 +719,20 @@ unlock_exit:
 }
 
 int
+rte_vhost_driver_set_protocol_features(const char *path,
+		uint64_t protocol_features)
+{
+	struct vhost_user_socket *vsocket;
+
+	pthread_mutex_lock(&vhost_user.mutex);
+	vsocket = find_vhost_user_socket(path);
+	if (vsocket)
+		vsocket->protocol_features = protocol_features;
+	pthread_mutex_unlock(&vhost_user.mutex);
+	return vsocket ? 0 : -1;
+}
+
+int
 rte_vhost_driver_get_protocol_features(const char *path,
 		uint64_t *protocol_features)
 {
@@ -720,7 +754,7 @@ rte_vhost_driver_get_protocol_features(const char *path,
 	did = vsocket->vdpa_dev_id;
 	vdpa_dev = rte_vdpa_get_device(did);
 	if (!vdpa_dev || !vdpa_dev->ops->get_protocol_features) {
-		*protocol_features = VHOST_USER_PROTOCOL_FEATURES;
+		*protocol_features = vsocket->protocol_features;
 		goto unlock_exit;
 	}
 
@@ -733,7 +767,7 @@ rte_vhost_driver_get_protocol_features(const char *path,
 		goto unlock_exit;
 	}
 
-	*protocol_features = VHOST_USER_PROTOCOL_FEATURES
+	*protocol_features = vsocket->protocol_features
 		& vdpa_protocol_features;
 
 unlock_exit:
@@ -852,16 +886,38 @@ rte_vhost_driver_register(const char *path, uint64_t flags)
 	vsocket->use_builtin_virtio_net = true;
 	vsocket->supported_features = VIRTIO_NET_SUPPORTED_FEATURES;
 	vsocket->features           = VIRTIO_NET_SUPPORTED_FEATURES;
+	vsocket->protocol_features  = VHOST_USER_PROTOCOL_FEATURES;
 
-	/* Dequeue zero copy can't assure descriptors returned in order */
+	/*
+	 * Dequeue zero copy can't assure descriptors returned in order.
+	 * Also, it requires that the guest memory is populated, which is
+	 * not compatible with postcopy.
+	 */
 	if (vsocket->dequeue_zero_copy) {
 		vsocket->supported_features &= ~(1ULL << VIRTIO_F_IN_ORDER);
 		vsocket->features &= ~(1ULL << VIRTIO_F_IN_ORDER);
+
+		RTE_LOG(INFO, VHOST_CONFIG,
+			"Dequeue zero copy requested, disabling postcopy support\n");
+		vsocket->protocol_features &=
+			~(1ULL << VHOST_USER_PROTOCOL_F_PAGEFAULT);
 	}
 
 	if (!(flags & RTE_VHOST_USER_IOMMU_SUPPORT)) {
 		vsocket->supported_features &= ~(1ULL << VIRTIO_F_IOMMU_PLATFORM);
 		vsocket->features &= ~(1ULL << VIRTIO_F_IOMMU_PLATFORM);
+	}
+
+	if (!(flags & RTE_VHOST_USER_POSTCOPY_SUPPORT)) {
+		vsocket->protocol_features &=
+			~(1ULL << VHOST_USER_PROTOCOL_F_PAGEFAULT);
+	} else {
+#ifndef RTE_LIBRTE_VHOST_POSTCOPY
+		RTE_LOG(ERR, VHOST_CONFIG,
+			"Postcopy requested but not compiled\n");
+		ret = -1;
+		goto out_mutex;
+#endif
 	}
 
 	if ((flags & RTE_VHOST_USER_CLIENT) != 0) {
@@ -930,13 +986,16 @@ rte_vhost_driver_unregister(const char *path)
 	int count;
 	struct vhost_user_connection *conn, *next;
 
+	if (path == NULL)
+		return -1;
+
+again:
 	pthread_mutex_lock(&vhost_user.mutex);
 
 	for (i = 0; i < vhost_user.vsocket_cnt; i++) {
 		struct vhost_user_socket *vsocket = vhost_user.vsockets[i];
 
 		if (!strcmp(vsocket->path, path)) {
-again:
 			pthread_mutex_lock(&vsocket->conn_mutex);
 			for (conn = TAILQ_FIRST(&vsocket->conn_list);
 			     conn != NULL;
@@ -952,6 +1011,7 @@ again:
 						  conn->connfd) == -1) {
 					pthread_mutex_unlock(
 							&vsocket->conn_mutex);
+					pthread_mutex_unlock(&vhost_user.mutex);
 					goto again;
 				}
 

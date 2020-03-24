@@ -31,13 +31,14 @@ namespace seastar {
 
 namespace net {
 
-std::ostream& operator<<(std::ostream& os, ipv4_address a) {
-    auto ip = a.ip;
-    return fmt_print(os, "{:d}.{:d}.{:d}.{:d}",
-            (ip >> 24) & 0xff,
-            (ip >> 16) & 0xff,
-            (ip >> 8) & 0xff,
-            (ip >> 0) & 0xff);
+ipv4_address::ipv4_address(const std::string& addr) {
+    boost::system::error_code ec;
+    auto ipv4 = boost::asio::ip::address_v4::from_string(addr, ec);
+    if (ec) {
+        throw std::runtime_error(
+            format("Wrong format for IPv4 address {}. Please ensure it's in dotted-decimal format", addr));
+    }
+    ip = static_cast<uint32_t>(std::move(ipv4).to_ulong());
 }
 
 constexpr std::chrono::seconds ipv4::_frag_timeout;
@@ -52,16 +53,20 @@ ipv4::ipv4(interface* netif)
     , _gw_address(0)
     , _netmask(0)
     , _l3(netif, eth_protocol_num::ipv4, [this] { return get_packet(); })
-    , _rx_packets(_l3.receive([this] (packet p, ethernet_address ea) {
-        return handle_received_packet(std::move(p), ea); },
-      [this] (forward_hash& out_hash_data, packet& p, size_t off) {
-        return forward(out_hash_data, p, off);}))
     , _tcp(*this)
     , _icmp(*this)
     , _udp(*this)
     , _l4({ { uint8_t(ip_protocol_num::tcp), &_tcp }, { uint8_t(ip_protocol_num::icmp), &_icmp }, { uint8_t(ip_protocol_num::udp), &_udp }})
 {
     namespace sm = seastar::metrics;
+    // FIXME: ignored future
+    (void)_l3.receive(
+        [this](packet p, ethernet_address ea) {
+            return handle_received_packet(std::move(p), ea);
+        },
+        [this](forward_hash& out_hash_data, packet& p, size_t off) {
+            return forward(out_hash_data, p, off);
+        });
 
     _metrics.add_group("ipv4", {
         //
@@ -324,7 +329,7 @@ void ipv4::set_host_address(ipv4_address ip) {
     _arp.set_self_addr(ip);
 }
 
-ipv4_address ipv4::host_address() {
+ipv4_address ipv4::host_address() const {
     return _host_address;
 }
 
@@ -470,7 +475,8 @@ void icmp::received(packet p, ipaddr from, ipaddr to) {
     hdr->csum = csum.get();
 
     if (_queue_space.try_wait(p.len())) { // drop packets that do not fit the queue
-        _inet.get_l2_dst_address(from).then([this, from, p = std::move(p)] (ethernet_address e_dst) mutable {
+        // FIXME: future is discarded
+        (void)_inet.get_l2_dst_address(from).then([this, from, p = std::move(p)] (ethernet_address e_dst) mutable {
             _packetq.emplace_back(ipv4_traits::l4packet{from, std::move(p), e_dst, ip_protocol_num::icmp});
         });
     }

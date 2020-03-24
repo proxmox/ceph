@@ -28,6 +28,7 @@ extern "C" {
 #define RTE_VHOST_USER_NO_RECONNECT	(1ULL << 1)
 #define RTE_VHOST_USER_DEQUEUE_ZERO_COPY	(1ULL << 2)
 #define RTE_VHOST_USER_IOMMU_SUPPORT	(1ULL << 3)
+#define RTE_VHOST_USER_POSTCOPY_SUPPORT		(1ULL << 4)
 
 /** Protocol features. */
 #ifndef VHOST_USER_PROTOCOL_F_MQ
@@ -56,6 +57,10 @@ extern "C" {
 
 #ifndef VHOST_USER_PROTOCOL_F_CRYPTO_SESSION
 #define VHOST_USER_PROTOCOL_F_CRYPTO_SESSION 7
+#endif
+
+#ifndef VHOST_USER_PROTOCOL_F_PAGEFAULT
+#define VHOST_USER_PROTOCOL_F_PAGEFAULT 8
 #endif
 
 #ifndef VHOST_USER_PROTOCOL_F_SLAVE_SEND_FD
@@ -104,6 +109,46 @@ struct rte_vhost_vring {
 
 	int			kickfd;
 	uint16_t		size;
+};
+
+/**
+ * Possible results of the vhost user message handling callbacks
+ */
+enum rte_vhost_msg_result {
+	/* Message handling failed */
+	RTE_VHOST_MSG_RESULT_ERR = -1,
+	/* Message handling successful */
+	RTE_VHOST_MSG_RESULT_OK =  0,
+	/* Message handling successful and reply prepared */
+	RTE_VHOST_MSG_RESULT_REPLY =  1,
+	/* Message not handled */
+	RTE_VHOST_MSG_RESULT_NOT_HANDLED,
+};
+
+/**
+ * Function prototype for the vhost backend to handle specific vhost user
+ * messages.
+ *
+ * @param vid
+ *  vhost device id
+ * @param msg
+ *  Message pointer.
+ * @return
+ *  RTE_VHOST_MSG_RESULT_OK on success,
+ *  RTE_VHOST_MSG_RESULT_REPLY on success with reply,
+ *  RTE_VHOST_MSG_RESULT_ERR on failure,
+ *  RTE_VHOST_MSG_RESULT_NOT_HANDLED if message was not handled.
+ */
+typedef enum rte_vhost_msg_result (*rte_vhost_msg_handle)(int vid, void *msg);
+
+/**
+ * Optional vhost user message handlers.
+ */
+struct rte_vhost_user_extern_ops {
+	/* Called prior to the master message handling. */
+	rte_vhost_msg_handle pre_msg_handle;
+	/* Called after the master message handling. */
+	rte_vhost_msg_handle post_msg_handle;
 };
 
 /**
@@ -348,6 +393,20 @@ int rte_vhost_driver_disable_features(const char *path, uint64_t features);
 int rte_vhost_driver_get_features(const char *path, uint64_t *features);
 
 /**
+ * Set the protocol feature bits before feature negotiation.
+ *
+ * @param path
+ *  The vhost-user socket file path
+ * @param protocol_features
+ *  Supported protocol features
+ * @return
+ *  0 on success, -1 on failure
+ */
+int __rte_experimental
+rte_vhost_driver_set_protocol_features(const char *path,
+		uint64_t protocol_features);
+
+/**
  * Get the protocol feature bits before feature negotiation.
  *
  * @param path
@@ -483,7 +542,7 @@ int rte_vhost_get_ifname(int vid, char *buf, size_t len);
  *  virtio queue index
  *
  * @return
- *  num of avail entires left
+ *  num of avail entries left
  */
 uint16_t rte_vhost_avail_entries(int vid, uint16_t queue_id);
 
@@ -531,7 +590,7 @@ uint16_t rte_vhost_dequeue_burst(int vid, uint16_t queue_id,
 /**
  * Get guest mem table: a list of memory regions.
  *
- * An rte_vhost_vhost_memory object will be allocated internaly, to hold the
+ * An rte_vhost_vhost_memory object will be allocated internally, to hold the
  * guest memory regions. Application should free it at destroy_device()
  * callback.
  *
@@ -634,6 +693,22 @@ rte_vhost_get_vring_base(int vid, uint16_t queue_id,
 int __rte_experimental
 rte_vhost_set_vring_base(int vid, uint16_t queue_id,
 		uint16_t last_avail_idx, uint16_t last_used_idx);
+
+/**
+ * Register external message handling callbacks
+ *
+ * @param vid
+ *  vhost device ID
+ * @param ops
+ *  virtio external callbacks to register
+ * @param ctx
+ *  additional context passed to the callbacks
+ * @return
+ *  0 on success, -1 on failure
+ */
+int __rte_experimental
+rte_vhost_extern_callback_register(int vid,
+		struct rte_vhost_user_extern_ops const * const ops, void *ctx);
 
 /**
  * Get vdpa device id for vhost device.

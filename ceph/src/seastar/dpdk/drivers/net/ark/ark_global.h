@@ -1,34 +1,5 @@
-/*-
- * BSD LICENSE
- *
- * Copyright (c) 2015-2017 Atomic Rules LLC
- * All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- * * Redistributions of source code must retain the above copyright
- * notice, this list of conditions and the following disclaimer.
- * * Redistributions in binary form must reproduce the above copyright
- * notice, this list of conditions and the following disclaimer in
- * the documentation and/or other materials provided with the
- * distribution.
- * * Neither the name of copyright holder nor the names of its
- * contributors may be used to endorse or promote products derived
- * from this software without specific prior written permission.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- * A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- * OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- * LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- * DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright (c) 2015-2018 Atomic Rules LLC
  */
 
 #ifndef _ARK_GLOBAL_H_
@@ -38,7 +9,7 @@
 #include <assert.h>
 
 #include <rte_mbuf.h>
-#include <rte_ethdev.h>
+#include <rte_ethdev_driver.h>
 #include <rte_malloc.h>
 #include <rte_memcpy.h>
 #include <rte_string_fns.h>
@@ -64,7 +35,7 @@
 #define ARK_RCPACING_BASE 0xb0000
 #define ARK_EXTERNAL_BASE 0x100000
 #define ARK_MPU_QOFFSET   0x00100
-#define ARK_MAX_PORTS     8
+#define ARK_MAX_PORTS     RTE_MAX_ETHPORTS
 
 #define offset8(n)     n
 #define offset16(n)   ((n) / 2)
@@ -97,7 +68,7 @@ struct ark_user_ext {
 	int (*link_update)(struct rte_eth_dev *, int wait_to_complete, void *);
 	int (*dev_set_link_up)(struct rte_eth_dev *, void *);
 	int (*dev_set_link_down)(struct rte_eth_dev *, void *);
-	void (*stats_get)(struct rte_eth_dev *, struct rte_eth_stats *, void *);
+	int (*stats_get)(struct rte_eth_dev *, struct rte_eth_stats *, void *);
 	void (*stats_reset)(struct rte_eth_dev *, void *);
 	void (*mac_addr_add)(struct rte_eth_dev *,
 						  struct ether_addr *,
@@ -106,11 +77,12 @@ struct ark_user_ext {
 						 void *);
 	void (*mac_addr_remove)(struct rte_eth_dev *, uint32_t, void *);
 	void (*mac_addr_set)(struct rte_eth_dev *, struct ether_addr *, void *);
+	int (*set_mtu)(struct rte_eth_dev *, uint16_t, void *);
 };
 
 struct ark_adapter {
 	/* User extension private data */
-	void *user_data;
+	void *user_data[ARK_MAX_PORTS];
 
 	/* Pointers to packet generator and checker */
 	int start_pg;

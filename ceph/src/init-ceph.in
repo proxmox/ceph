@@ -17,6 +17,8 @@ if [ -e /lib/lsb/init-functions ]; then
     . /lib/lsb/init-functions
 fi
 
+[ -z "$BUILD_DIR" ] && BUILD_DIR=build
+
 if [ `dirname $0` = "." ] && [ $PWD != "/etc/init.d" ]; then
     # looks like an autotools src dir build
     BINDIR=.
@@ -33,8 +35,8 @@ else
 	LIBEXECDIR=$CEPH_ROOT/src
 	ETCDIR=.
 	ASSUME_DEV=1
-	CEPH_LIB=$CEPH_ROOT/build/lib
-	echo "$PYTHONPATH" | grep -q $CEPH_LIB || export PYTHONPATH=$CEPH_LIB/cython_modules/lib.@MGR_PYTHON_VERSION_MAJOR@:$PYTHONPATH
+	CEPH_LIB=$CEPH_ROOT/${BUILD_DIR}/lib
+	echo "$PYTHONPATH" | grep -q $CEPH_LIB || export PYTHONPATH=$CEPH_LIB/cython_modules/lib.3:$PYTHONPATH
 	echo "$LD_LIBRARY_PATH" | grep -q $CEPH_LIB || export LD_LIBRARY_PATH=$CEPH_LIB:$LD_LIBRARY_PATH
 	echo "$DYLD_LIBRARY_PATH" | grep -q $CEPH_LIB || export DYLD_LIBRARY_PATH=$CEPH_LIB:$DYLD_LIBRARY_PATH
     else
@@ -141,7 +143,7 @@ stop_daemon() {
 	    cmd=\"kill $signal \$pid\"
 	    printf \"\$cmd...\"
 	    \$cmd
-	    sleep 1
+	    sleep 2
 	    continue
 	done
     fi"

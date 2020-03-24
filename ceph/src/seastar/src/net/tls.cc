@@ -28,6 +28,7 @@
 #include <seastar/core/sstring.hh>
 #include <seastar/core/semaphore.hh>
 #include <seastar/core/timer.hh>
+#include <seastar/core/print.hh>
 #include <seastar/net/tls.hh>
 #include <seastar/net/stack.hh>
 #include <seastar/util/std-compat.hh>
@@ -964,14 +965,14 @@ public:
         if (!std::exchange(_shutdown, true)) {
             auto me = shared_from_this();
             // running in background. try to bye-handshake us nicely, but after 10s we forcefully close.
-            with_timeout(timer<>::clock::now() + std::chrono::seconds(10), shutdown()).finally([this] {
+            (void)with_timeout(timer<>::clock::now() + std::chrono::seconds(10), shutdown()).finally([this] {
                 _eof = true;
                 try {
-                    _in.close().handle_exception([](std::exception_ptr) {}); // should wake any waiters
+                    (void)_in.close().handle_exception([](std::exception_ptr) {}); // should wake any waiters
                 } catch (...) {
                 }
                 try {
-                    _out.close().handle_exception([](std::exception_ptr) {});
+                    (void)_out.close().handle_exception([](std::exception_ptr) {});
                 } catch (...) {
                 }
                 // make sure to wait for handshake attempt to leave semaphores. Must be in same order as
@@ -1113,27 +1114,30 @@ private:
     }
 };
 
-class server_session : public net::server_socket_impl {
+class server_session : public net::api_v2::server_socket_impl {
 public:
-    server_session(shared_ptr<server_credentials> creds, server_socket sock)
+    server_session(shared_ptr<server_credentials> creds, api_v2::server_socket sock)
             : _creds(std::move(creds)), _sock(std::move(sock)) {
     }
-    future<connected_socket, socket_address> accept() override {
+    future<accept_result> accept() override {
         // We're not actually doing anything very SSL until we get
         // an actual connection. Then we create a "server" session
         // and wrap it up after handshaking.
-        return _sock.accept().then([this](connected_socket s, socket_address addr) {
-            return wrap_server(_creds, std::move(s)).then([addr](connected_socket s) {
-                return make_ready_future<connected_socket, socket_address>(std::move(s), addr);
+        return _sock.accept().then([this](accept_result ar) {
+            return wrap_server(_creds, std::move(ar.connection)).then([addr = std::move(ar.remote_address)](connected_socket s) {
+                return make_ready_future<accept_result>(accept_result{std::move(s), addr});
             });
         });
     }
     void abort_accept() override  {
         _sock.abort_accept();
     }
+    socket_address local_address() const override {
+        return _sock.local_address();
+    }
 private:
     shared_ptr<server_credentials> _creds;
-    server_socket _sock;
+    api_v2::server_socket _sock;
 };
 
 class tls_socket_impl : public net::socket_impl {
@@ -1148,6 +1152,12 @@ public:
         return _socket.connect(sa, local, proto).then([cred = std::move(_cred), name = std::move(_name)](connected_socket s) mutable {
             return wrap_client(cred, std::move(s), std::move(name));
         });
+    }
+    void set_reuseaddr(bool reuseaddr) override {
+      _socket.set_reuseaddr(reuseaddr);
+    }
+    bool get_reuseaddr() const override {
+      return _socket.get_reuseaddr();
     }
     virtual void shutdown() override {
         _socket.shutdown();
@@ -1198,7 +1208,7 @@ server_socket tls::listen(shared_ptr<server_credentials> creds, socket_address s
 }
 
 server_socket tls::listen(shared_ptr<server_credentials> creds, server_socket ss) {
-    server_socket ssls(std::make_unique<server_session>(creds, std::move(ss)));
+    api_v2::server_socket ssls(std::make_unique<server_session>(creds, std::move(ss)));
     return server_socket(std::move(ssls));
 }
 

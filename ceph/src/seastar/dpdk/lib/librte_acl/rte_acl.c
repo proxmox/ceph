@@ -1,36 +1,8 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2014 Intel Corporation
  */
 
+#include <rte_string_fns.h>
 #include <rte_acl.h>
 #include "acl.h"
 
@@ -45,7 +17,7 @@ EAL_REGISTER_TAILQ(rte_acl_tailq)
  * If the compiler doesn't support AVX2 instructions,
  * then the dummy one would be used instead for AVX2 classify method.
  */
-int __attribute__ ((weak))
+__rte_weak int
 rte_acl_classify_avx2(__rte_unused const struct rte_acl_ctx *ctx,
 	__rte_unused const uint8_t **data,
 	__rte_unused uint32_t *results,
@@ -55,7 +27,7 @@ rte_acl_classify_avx2(__rte_unused const struct rte_acl_ctx *ctx,
 	return -ENOTSUP;
 }
 
-int __attribute__ ((weak))
+__rte_weak int
 rte_acl_classify_sse(__rte_unused const struct rte_acl_ctx *ctx,
 	__rte_unused const uint8_t **data,
 	__rte_unused uint32_t *results,
@@ -65,7 +37,7 @@ rte_acl_classify_sse(__rte_unused const struct rte_acl_ctx *ctx,
 	return -ENOTSUP;
 }
 
-int __attribute__ ((weak))
+__rte_weak int
 rte_acl_classify_neon(__rte_unused const struct rte_acl_ctx *ctx,
 	__rte_unused const uint8_t **data,
 	__rte_unused uint32_t *results,
@@ -75,7 +47,7 @@ rte_acl_classify_neon(__rte_unused const struct rte_acl_ctx *ctx,
 	return -ENOTSUP;
 }
 
-int __attribute__ ((weak))
+__rte_weak int
 rte_acl_classify_altivec(__rte_unused const struct rte_acl_ctx *ctx,
 	__rte_unused const uint8_t **data,
 	__rte_unused uint32_t *results,
@@ -120,8 +92,7 @@ rte_acl_set_ctx_classify(struct rte_acl_ctx *ctx, enum rte_acl_classify_alg alg)
  * if both conditions are met:
  * at build time compiler supports AVX2 and target cpu supports AVX2.
  */
-static void __attribute__((constructor))
-rte_acl_init(void)
+RTE_INIT(rte_acl_init)
 {
 	enum rte_acl_classify_alg alg = RTE_ACL_CLASSIFY_DEFAULT;
 
@@ -279,7 +250,7 @@ rte_acl_create(const struct rte_acl_param *param)
 		ctx->rule_sz = param->rule_size;
 		ctx->socket_id = param->socket_id;
 		ctx->alg = rte_acl_default_classify;
-		snprintf(ctx->name, sizeof(ctx->name), "%s", param->name);
+		strlcpy(ctx->name, param->name, sizeof(ctx->name));
 
 		te->data = (void *) ctx;
 

@@ -10,12 +10,14 @@
           novalidate>
       <div class="modal-body">
         <p>
-          <ng-container i18n>To purge, select one or All images and click</ng-container>&nbsp;
+          <ng-container i18n>To purge, select one or</ng-container>&nbsp;
+          <kbd i18n>All</kbd>&nbsp;
+          <ng-container i18n>pools and click</ng-container>&nbsp;
           <kbd i18n>Purge Trash</kbd>.&nbsp;
         </p>
 
         <div class="form-group">
-          <label class="center-block"
+          <label class="col-form-label mx-auto"
                  i18n>Pool:</label>
           <input class="form-control"
                  type="text"
@@ -23,7 +25,9 @@
                  i18n-placeholder
                  formControlName="poolName"
                  *ngIf="!poolPermission.read">
-          <select class="form-control"
+          <select id="poolName"
+                  name="poolName"
+                  class="form-control custom-select"
                   formControlName="poolName"
                   *ngIf="poolPermission.read">
             <option value=""
@@ -36,7 +40,8 @@
 
       <div class="modal-footer">
         <div class="button-group text-right">
-          <cd-submit-button [form]="purgeForm"
+          <cd-submit-button id="purgeFormButton"
+                            [form]="purgeForm"
                             (submitAction)="purge()"
                             i18n>Purge Trash</cd-submit-button>
           <cd-back-button [back]="modalRef.hide"

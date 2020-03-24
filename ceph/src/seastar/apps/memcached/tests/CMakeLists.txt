@@ -40,7 +40,8 @@ add_test (
 
 set_tests_properties (Seastar.app.memcached.memcached
   PROPERTIES
-    TIMEOUT ${Seastar_TEST_TIMEOUT})
+    TIMEOUT ${Seastar_TEST_TIMEOUT}
+    ENVIRONMENT ${Seastar_TEST_ENVIRONMENT})
 
 add_executable (app_memcached_test_ascii
   test_ascii_parser.cc)
@@ -58,7 +59,7 @@ target_compile_definitions (app_memcached_test_ascii
 
 target_link_libraries (app_memcached_test_ascii
   PRIVATE
-    seastar_with_flags
+    seastar_private
     seastar_testing)
 
 add_custom_target (app_memcached_test_ascii_run
@@ -72,4 +73,5 @@ add_test (
 
 set_tests_properties (Seastar.app.memcached.ascii
   PROPERTIES
-    TIMEOUT ${Seastar_TEST_TIMEOUT})
+    TIMEOUT ${Seastar_TEST_TIMEOUT}
+    ENVIRONMENT ${Seastar_TEST_ENVIRONMENT})

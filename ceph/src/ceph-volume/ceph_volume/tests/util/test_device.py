@@ -461,36 +461,6 @@ class TestCephDiskDevice(object):
 
         assert disk.is_member is True
 
-    def test_reject_removable_device(self, device_info):
-        data = {"/dev/sdb": {"removable": 1}}
-        device_info(devices=data)
-        disk = device.Device("/dev/sdb")
-        assert not disk.available
-
-    def test_accept_non_removable_device(self, device_info):
-        data = {"/dev/sdb": {"removable": 0, "size": 5368709120}}
-        device_info(devices=data)
-        disk = device.Device("/dev/sdb")
-        assert disk.available
-
-    def test_reject_readonly_device(self, device_info):
-        data = {"/dev/cdrom": {"ro": 1}}
-        device_info(devices=data)
-        disk = device.Device("/dev/cdrom")
-        assert not disk.available
-
-    def test_reject_smaller_than_5gb(self, device_info):
-        data = {"/dev/sda": {"size": 5368709119}}
-        device_info(devices=data)
-        disk = device.Device("/dev/sda")
-        assert not disk.available, 'too small device is available'
-
-    def test_accept_non_readonly_device(self, device_info):
-        data = {"/dev/sda": {"ro": 0, "size": 5368709120}}
-        device_info(devices=data)
-        disk = device.Device("/dev/sda")
-        assert disk.available
-
     @pytest.mark.usefixtures("lsblk_ceph_disk_member",
                              "disable_kernel_queries",
                              "disable_lvm_queries")

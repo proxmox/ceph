@@ -8,7 +8,6 @@
 #include "librbd/ImageState.h"
 #include "librbd/Journal.h"
 #include "librbd/ObjectMap.h"
-#include "librbd/MirroringWatcher.h"
 #include "librbd/image/DetachChildRequest.h"
 #include "librbd/image/PreRemoveRequest.h"
 #include "librbd/journal/RemoveRequest.h"
@@ -122,6 +121,9 @@ void RemoveRequest<I>::handle_pre_remove_image(int r) {
   ldout(m_cct, 5) << "r=" << r << dendl;
 
   if (r < 0) {
+    if (r == -ECHILD) {
+      r = -ENOTEMPTY;
+    }
     send_close_image(r);
     return;
   }
@@ -143,7 +145,7 @@ void RemoveRequest<I>::trim_image() {
     *m_image_ctx, create_context_callback<
       klass, &klass::handle_trim_image>(this));
 
-  RWLock::RLocker owner_lock(m_image_ctx->owner_lock);
+  std::shared_lock owner_lock{m_image_ctx->owner_lock};
   auto req = librbd::operation::TrimRequest<I>::create(
     *m_image_ctx, ctx, m_image_ctx->size, 0, m_prog_ctx);
   req->send();
@@ -215,6 +217,14 @@ void RemoveRequest<I>::handle_disable_mirror(int r) {
     lderr(m_cct) << "error disabling image mirroring: "
                  << cpp_strerror(r) << dendl;
   }
+
+  // one last chance to ensure all snapshots have been deleted
+  m_image_ctx->image_lock.lock_shared();
+  if (!m_image_ctx->snap_info.empty()) {
+    ldout(m_cct, 5) << "image has snapshots - not removing" << dendl;
+    m_ret_val = -ENOTEMPTY;
+  }
+  m_image_ctx->image_lock.unlock_shared();
 
   send_close_image(r);
 }
@@ -415,7 +425,7 @@ template<typename I>
 void RemoveRequest<I>::remove_v1_image() {
   ldout(m_cct, 20) << dendl;
 
-  Context *ctx = new FunctionContext([this] (int r) {
+  Context *ctx = new LambdaContext([this] (int r) {
       r = tmap_rm(m_ioctx, m_image_name);
       handle_remove_v1_image(r);
     });

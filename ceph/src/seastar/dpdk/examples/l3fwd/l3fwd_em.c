@@ -1,34 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2016 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2016 Intel Corporation
  */
 
 #include <stdio.h>
@@ -47,7 +18,6 @@
 #include <rte_debug.h>
 #include <rte_ether.h>
 #include <rte_ethdev.h>
-#include <rte_mempool.h>
 #include <rte_cycles.h>
 #include <rte_mbuf.h>
 #include <rte_ip.h>
@@ -57,7 +27,7 @@
 
 #include "l3fwd.h"
 
-#if defined(RTE_MACHINE_CPUFLAG_SSE4_2) || defined(RTE_MACHINE_CPUFLAG_CRC32)
+#if defined(RTE_ARCH_X86) || defined(RTE_MACHINE_CPUFLAG_CRC32)
 #define EM_HASH_CRC 1
 #endif
 
@@ -246,7 +216,7 @@ static rte_xmm_t mask0;
 static rte_xmm_t mask1;
 static rte_xmm_t mask2;
 
-#if defined(__SSE2__)
+#if defined(RTE_MACHINE_CPUFLAG_SSE2)
 static inline xmm_t
 em_mask_key(void *key, xmm_t mask)
 {
@@ -274,8 +244,8 @@ em_mask_key(void *key, xmm_t mask)
 #error No vector engine (SSE, NEON, ALTIVEC) available, check your toolchain
 #endif
 
-static inline uint8_t
-em_get_ipv4_dst_port(void *ipv4_hdr, uint8_t portid, void *lookup_struct)
+static inline uint16_t
+em_get_ipv4_dst_port(void *ipv4_hdr, uint16_t portid, void *lookup_struct)
 {
 	int ret = 0;
 	union ipv4_5tuple_host key;
@@ -292,11 +262,11 @@ em_get_ipv4_dst_port(void *ipv4_hdr, uint8_t portid, void *lookup_struct)
 
 	/* Find destination port */
 	ret = rte_hash_lookup(ipv4_l3fwd_lookup_struct, (const void *)&key);
-	return (uint8_t)((ret < 0) ? portid : ipv4_l3fwd_out_if[ret]);
+	return (ret < 0) ? portid : ipv4_l3fwd_out_if[ret];
 }
 
-static inline uint8_t
-em_get_ipv6_dst_port(void *ipv6_hdr,  uint8_t portid, void *lookup_struct)
+static inline uint16_t
+em_get_ipv6_dst_port(void *ipv6_hdr, uint16_t portid, void *lookup_struct)
 {
 	int ret = 0;
 	union ipv6_5tuple_host key;
@@ -325,14 +295,14 @@ em_get_ipv6_dst_port(void *ipv6_hdr,  uint8_t portid, void *lookup_struct)
 
 	/* Find destination port */
 	ret = rte_hash_lookup(ipv6_l3fwd_lookup_struct, (const void *)&key);
-	return (uint8_t)((ret < 0) ? portid : ipv6_l3fwd_out_if[ret]);
+	return (ret < 0) ? portid : ipv6_l3fwd_out_if[ret];
 }
 
-#if defined(__SSE4_1__)
+#if defined RTE_ARCH_X86 || defined RTE_MACHINE_CPUFLAG_NEON
 #if defined(NO_HASH_MULTI_LOOKUP)
-#include "l3fwd_em_sse.h"
+#include "l3fwd_em_sequential.h"
 #else
-#include "l3fwd_em_hlm_sse.h"
+#include "l3fwd_em_hlm.h"
 #endif
 #else
 #include "l3fwd_em.h"
@@ -614,7 +584,7 @@ em_parse_ptype(struct rte_mbuf *m)
 				packet_type |= RTE_PTYPE_L4_UDP;
 		} else
 			packet_type |= RTE_PTYPE_L3_IPV4_EXT;
-	} else if (ether_type == rte_cpu_to_be_16(ETHER_TYPE_IPv4)) {
+	} else if (ether_type == rte_cpu_to_be_16(ETHER_TYPE_IPv6)) {
 		ipv6_hdr = (struct ipv6_hdr *)l3;
 		if (ipv6_hdr->proto == IPPROTO_TCP)
 			packet_type |= RTE_PTYPE_L3_IPV6 | RTE_PTYPE_L4_TCP;
@@ -628,7 +598,7 @@ em_parse_ptype(struct rte_mbuf *m)
 }
 
 uint16_t
-em_cb_parse_ptype(uint8_t port __rte_unused, uint16_t queue __rte_unused,
+em_cb_parse_ptype(uint16_t port __rte_unused, uint16_t queue __rte_unused,
 		  struct rte_mbuf *pkts[], uint16_t nb_pkts,
 		  uint16_t max_pkts __rte_unused,
 		  void *user_param __rte_unused)
@@ -649,7 +619,8 @@ em_main_loop(__attribute__((unused)) void *dummy)
 	unsigned lcore_id;
 	uint64_t prev_tsc, diff_tsc, cur_tsc;
 	int i, nb_rx;
-	uint8_t portid, queueid;
+	uint8_t queueid;
+	uint16_t portid;
 	struct lcore_conf *qconf;
 	const uint64_t drain_tsc = (rte_get_tsc_hz() + US_PER_S - 1) /
 		US_PER_S * BURST_TX_DRAIN_US;
@@ -671,7 +642,7 @@ em_main_loop(__attribute__((unused)) void *dummy)
 		portid = qconf->rx_queue_list[i].port_id;
 		queueid = qconf->rx_queue_list[i].queue_id;
 		RTE_LOG(INFO, L3FWD,
-			" -- lcoreid=%u portid=%hhu rxqueueid=%hhu\n",
+			" -- lcoreid=%u portid=%u rxqueueid=%hhu\n",
 			lcore_id, portid, queueid);
 	}
 
@@ -709,13 +680,13 @@ em_main_loop(__attribute__((unused)) void *dummy)
 			if (nb_rx == 0)
 				continue;
 
-#if defined(__SSE4_1__)
+#if defined RTE_ARCH_X86 || defined RTE_MACHINE_CPUFLAG_NEON
 			l3fwd_em_send_packets(nb_rx, pkts_burst,
 							portid, qconf);
 #else
 			l3fwd_em_no_opt_send_packets(nb_rx, pkts_burst,
 							portid, qconf);
-#endif /* __SSE_4_1__ */
+#endif
 		}
 	}
 

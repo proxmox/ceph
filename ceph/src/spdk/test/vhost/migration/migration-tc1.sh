@@ -21,7 +21,7 @@ function migration_tc1_configure_vhost()
 	target_vm=1
 	incoming_vm_ctrlr=naa.Malloc0.$incoming_vm
 	target_vm_ctrlr=naa.Malloc0.$target_vm
-	rpc="$SPDK_BUILD_DIR/scripts/rpc.py -s $(get_vhost_dir)/rpc.sock"
+	rpc="$rootdir/scripts/rpc.py -s $(get_vhost_dir)/rpc.sock"
 
 	trap 'migration_tc1_error_handler; error_exit "${FUNCNAME}" "${LINENO}"' INT ERR EXIT
 
@@ -54,10 +54,10 @@ function migration_tc1()
 	# Use 2 VMs:
 	# incoming VM - the one we want to migrate
 	# targe VM - the one which will accept migration
-	local job_file="$MIGRATION_DIR/migration-tc1.job"
+	local job_file="$testdir/migration-tc1.job"
 
 	# Run vhost
-	spdk_vhost_run
+	vhost_run
 	migration_tc1_configure_vhost
 
 	notice "Setting up VMs"
@@ -68,7 +68,7 @@ function migration_tc1()
 	vm_run $incoming_vm $target_vm
 
 	# Wait only for incoming VM, as target is waiting for migration
-	vm_wait_for_boot 600 $incoming_vm
+	vm_wait_for_boot 300 $incoming_vm
 
 	# Run fio before migration
 	notice "Starting FIO"
@@ -115,7 +115,7 @@ function migration_tc1()
 	migration_tc1_clean_vhost_config
 
 	notice "killing vhost app"
-	spdk_vhost_kill
+	vhost_kill
 
 	notice "Migration TC1 SUCCESS"
 }

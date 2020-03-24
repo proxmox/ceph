@@ -1,8 +1,8 @@
 /*-
  *   BSD LICENSE
  *
- *   Copyright (c) Intel Corporation.
- *   All rights reserved.
+ *   Copyright (c) Intel Corporation. All rights reserved.
+ *   Copyright (c) 2018 Mellanox Technologies LTD. All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
  *   modification, are permitted provided that the following conditions
@@ -43,8 +43,8 @@
 
 #define SPDK_NVMF_MAX_NAMESPACES (1 << 14)
 
-struct spdk_nvmf_tgt_opts *g_spdk_nvmf_tgt_opts = NULL;
 struct spdk_nvmf_tgt_conf *g_spdk_nvmf_tgt_conf = NULL;
+uint32_t g_spdk_nvmf_tgt_max_subsystems = 0;
 
 static int
 spdk_add_nvmf_discovery_subsystem(void)
@@ -64,38 +64,40 @@ spdk_add_nvmf_discovery_subsystem(void)
 }
 
 static void
-spdk_nvmf_read_config_file_tgt_opts(struct spdk_conf_section *sp,
-				    struct spdk_nvmf_tgt_opts *opts)
+spdk_nvmf_read_config_file_tgt_max_subsystems(struct spdk_conf_section *sp,
+		int *deprecated_values)
 {
-	int max_queue_depth;
-	int max_queues_per_sess;
-	int in_capsule_data_size;
-	int max_io_size;
-	int io_unit_size;
+	int tgt_max_subsystems;
+	int deprecated;
 
-	max_queue_depth = spdk_conf_section_get_intval(sp, "MaxQueueDepth");
-	if (max_queue_depth >= 0) {
-		opts->max_queue_depth = max_queue_depth;
+	tgt_max_subsystems = spdk_conf_section_get_intval(sp, "MaxSubsystems");
+	if (tgt_max_subsystems >= 0) {
+		g_spdk_nvmf_tgt_max_subsystems = tgt_max_subsystems;
 	}
 
-	max_queues_per_sess = spdk_conf_section_get_intval(sp, "MaxQueuesPerSession");
-	if (max_queues_per_sess >= 0) {
-		opts->max_qpairs_per_ctrlr = max_queues_per_sess;
+	deprecated = spdk_conf_section_get_intval(sp, "MaxQueueDepth");
+	if (deprecated >= 0) {
+		*deprecated_values = -1;
 	}
 
-	in_capsule_data_size = spdk_conf_section_get_intval(sp, "InCapsuleDataSize");
-	if (in_capsule_data_size >= 0) {
-		opts->in_capsule_data_size = in_capsule_data_size;
+	deprecated = spdk_conf_section_get_intval(sp, "MaxQueuesPerSession");
+	if (deprecated >= 0) {
+		*deprecated_values = -1;
 	}
 
-	max_io_size = spdk_conf_section_get_intval(sp, "MaxIOSize");
-	if (max_io_size >= 0) {
-		opts->max_io_size = max_io_size;
+	deprecated = spdk_conf_section_get_intval(sp, "InCapsuleDataSize");
+	if (deprecated >= 0) {
+		*deprecated_values = -1;
 	}
 
-	io_unit_size = spdk_conf_section_get_intval(sp, "IOUnitSize");
-	if (io_unit_size >= 0) {
-		opts->io_unit_size = io_unit_size;
+	deprecated = spdk_conf_section_get_intval(sp, "MaxIOSize");
+	if (deprecated >= 0) {
+		*deprecated_values = -1;
+	}
+
+	deprecated = spdk_conf_section_get_intval(sp, "IOUnitSize");
+	if (deprecated >= 0) {
+		*deprecated_values = -1;
 	}
 }
 
@@ -111,26 +113,18 @@ spdk_nvmf_read_config_file_tgt_conf(struct spdk_conf_section *sp,
 	}
 }
 
-static struct spdk_nvmf_tgt_opts *
-spdk_nvmf_parse_tgt_opts(void)
+static int
+spdk_nvmf_parse_tgt_max_subsystems(void)
 {
-	struct spdk_nvmf_tgt_opts *opts;
 	struct spdk_conf_section *sp;
-
-	opts = calloc(1, sizeof(*opts));
-	if (!opts) {
-		SPDK_ERRLOG("calloc() failed for target options\n");
-		return NULL;
-	}
-
-	spdk_nvmf_tgt_opts_init(opts);
+	int deprecated_values = 0;
 
 	sp = spdk_conf_find_section(NULL, "Nvmf");
 	if (sp != NULL) {
-		spdk_nvmf_read_config_file_tgt_opts(sp, opts);
+		spdk_nvmf_read_config_file_tgt_max_subsystems(sp, &deprecated_values);
 	}
 
-	return opts;
+	return deprecated_values;
 }
 
 static struct spdk_nvmf_tgt_conf *
@@ -160,12 +154,17 @@ static int
 spdk_nvmf_parse_nvmf_tgt(void)
 {
 	int rc;
+	int using_deprecated_options;
 
-	if (!g_spdk_nvmf_tgt_opts) {
-		g_spdk_nvmf_tgt_opts = spdk_nvmf_parse_tgt_opts();
-		if (!g_spdk_nvmf_tgt_opts) {
-			SPDK_ERRLOG("spdk_nvmf_parse_tgt_opts() failed\n");
-			return -1;
+	if (!g_spdk_nvmf_tgt_max_subsystems) {
+		using_deprecated_options = spdk_nvmf_parse_tgt_max_subsystems();
+		if (using_deprecated_options < 0) {
+			SPDK_ERRLOG("Deprecated options detected for the NVMe-oF target.\n"
+				    "The following options are no longer controlled by the target\n"
+				    "and should be set in the transport on a per-transport basis:\n"
+				    "MaxQueueDepth, MaxQueuesPerSession, InCapsuleDataSize, MaxIOSize, IOUnitSize\n"
+				    "This can be accomplished by setting the options through the create_nvmf_transport RPC.\n"
+				    "You may also continue to configure these options in the conf file under each transport.");
 		}
 	}
 
@@ -177,10 +176,9 @@ spdk_nvmf_parse_nvmf_tgt(void)
 		}
 	}
 
-	g_spdk_nvmf_tgt = spdk_nvmf_tgt_create(g_spdk_nvmf_tgt_opts);
+	g_spdk_nvmf_tgt = spdk_nvmf_tgt_create(g_spdk_nvmf_tgt_max_subsystems);
 
-	free(g_spdk_nvmf_tgt_opts);
-	g_spdk_nvmf_tgt_opts = NULL;
+	g_spdk_nvmf_tgt_max_subsystems = 0;
 
 	if (!g_spdk_nvmf_tgt) {
 		SPDK_ERRLOG("spdk_nvmf_tgt_create() failed\n");
@@ -215,6 +213,7 @@ spdk_nvmf_parse_subsystem(struct spdk_conf_section *sp)
 	int lcore;
 	bool allow_any_host;
 	const char *sn;
+	const char *mn;
 	struct spdk_nvmf_subsystem *subsystem;
 	int num_ns;
 
@@ -276,6 +275,22 @@ spdk_nvmf_parse_subsystem(struct spdk_conf_section *sp)
 		goto done;
 	}
 
+	mn = spdk_conf_section_get_val(sp, "MN");
+	if (mn == NULL) {
+		SPDK_NOTICELOG(
+			"Subsystem %s: missing model number, will use default\n",
+			nqn);
+	}
+
+	if (mn != NULL) {
+		if (spdk_nvmf_subsystem_set_mn(subsystem, mn)) {
+			SPDK_ERRLOG("Subsystem %s: invalid model number '%s'\n", nqn, mn);
+			spdk_nvmf_subsystem_destroy(subsystem);
+			subsystem = NULL;
+			goto done;
+		}
+	}
+
 	for (i = 0; ; i++) {
 		struct spdk_nvmf_ns_opts ns_opts;
 		struct spdk_bdev *bdev;
@@ -323,7 +338,7 @@ spdk_nvmf_parse_subsystem(struct spdk_conf_section *sp)
 			}
 		}
 
-		if (spdk_nvmf_subsystem_add_ns(subsystem, bdev, &ns_opts, sizeof(ns_opts)) == 0) {
+		if (spdk_nvmf_subsystem_add_ns(subsystem, bdev, &ns_opts, sizeof(ns_opts), NULL) == 0) {
 			SPDK_ERRLOG("Unable to add namespace\n");
 			spdk_nvmf_subsystem_destroy(subsystem);
 			subsystem = NULL;
@@ -522,6 +537,26 @@ spdk_nvmf_parse_transport(struct spdk_nvmf_parse_transport_ctx *ctx)
 	if (val >= 0) {
 		opts.max_aq_depth = val;
 	}
+	val = spdk_conf_section_get_intval(ctx->sp, "NumSharedBuffers");
+	if (val >= 0) {
+		opts.num_shared_buffers = val;
+	}
+	val = spdk_conf_section_get_intval(ctx->sp, "BufCacheSize");
+	if (val >= 0) {
+		opts.buf_cache_size = val;
+	}
+
+	val = spdk_conf_section_get_intval(ctx->sp, "MaxSRQDepth");
+	if (val >= 0) {
+		if (trtype == SPDK_NVME_TRANSPORT_RDMA) {
+			opts.max_srq_depth = val;
+		} else {
+			SPDK_ERRLOG("MaxSRQDepth is relevant only for RDMA transport '%s'\n", type);
+			ctx->cb_fn(-1);
+			free(ctx);
+			return;
+		}
+	}
 
 	transport = spdk_nvmf_transport_create(trtype, &opts);
 	if (transport) {
@@ -546,6 +581,13 @@ spdk_nvmf_parse_transports(spdk_nvmf_parse_conf_done_fn cb_fn)
 
 	ctx->cb_fn = cb_fn;
 	ctx->sp = spdk_conf_first_section(NULL);
+	if (ctx->sp == NULL) {
+		free(ctx);
+		cb_fn(0);
+
+		return 0;
+	}
+
 	while (ctx->sp != NULL) {
 		if (spdk_conf_section_match_prefix(ctx->sp, "Transport")) {
 			spdk_nvmf_parse_transport(ctx);
@@ -556,8 +598,7 @@ spdk_nvmf_parse_transports(spdk_nvmf_parse_conf_done_fn cb_fn)
 
 	/* if we get here, there are no transports defined in conf file */
 	free(ctx);
-	cb_fn(spdk_nvmf_parse_subsystems());
-
+	cb_fn(0);
 	return 0;
 }
 

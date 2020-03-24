@@ -1,14 +1,16 @@
 # -*- coding: utf-8 -*-
 from __future__ import absolute_import
 
+import logging
 import cherrypy
-import jwt
 
 from . import ApiController, RESTController
-from .. import logger, mgr
+from .. import mgr
 from ..exceptions import DashboardException
 from ..services.auth import AuthManager, JwtManager
-from ..services.access_control import UserDoesNotExist
+
+
+logger = logging.getLogger('controllers.auth')
 
 
 @ApiController('/auth', secure=False)
@@ -18,7 +20,13 @@ class Auth(RESTController):
     """
 
     def create(self, username, password):
-        user_perms = AuthManager.authenticate(username, password)
+        user_data = AuthManager.authenticate(username, password)
+        user_perms, pwd_expiration_date, pwd_update_required = None, None, None
+        if user_data:
+            user_perms = user_data.get('permissions')
+            pwd_expiration_date = user_data.get('pwdExpirationDate', None)
+            pwd_update_required = user_data.get('pwdUpdateRequired', False)
+
         if user_perms is not None:
             logger.debug('Login successful')
             token = JwtManager.gen_token(username)
@@ -27,7 +35,10 @@ class Auth(RESTController):
             return {
                 'token': token,
                 'username': username,
-                'permissions': user_perms
+                'permissions': user_perms,
+                'pwdExpirationDate': pwd_expiration_date,
+                'sso': mgr.SSO_DB.protocol == 'saml2',
+                'pwdUpdateRequired': pwd_update_required
             }
 
         logger.debug('Login failed')
@@ -55,28 +66,14 @@ class Auth(RESTController):
     @RESTController.Collection('POST')
     def check(self, token):
         if token:
-            try:
-                token = JwtManager.decode_token(token)
-                if not JwtManager.is_blacklisted(token['jti']):
-                    user = AuthManager.get_user(token['username'])
-                    if user.lastUpdate <= token['iat']:
-                        return {
-                            'username': user.username,
-                            'permissions': user.permissions_dict(),
-                        }
-
-                    logger.debug("AMT: user info changed after token was"
-                                 " issued, iat=%s lastUpdate=%s",
-                                 token['iat'], user.lastUpdate)
-                else:
-                    logger.debug('AMT: Token is black-listed')
-            except jwt.exceptions.ExpiredSignatureError:
-                logger.debug("AMT: Token has expired")
-            except jwt.exceptions.InvalidTokenError:
-                logger.debug("AMT: Failed to decode token")
-            except UserDoesNotExist:
-                logger.debug("AMT: Invalid token: user %s does not exist",
-                             token['username'])
+            user = JwtManager.get_user(token)
+            if user:
+                return {
+                    'username': user.username,
+                    'permissions': user.permissions_dict(),
+                    'sso': mgr.SSO_DB.protocol == 'saml2',
+                    'pwdUpdateRequired': user.pwd_update_required
+                }
         return {
-            'login_url': self._get_login_url()
+            'login_url': self._get_login_url(),
         }

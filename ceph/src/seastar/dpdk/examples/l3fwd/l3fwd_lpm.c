@@ -1,34 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2016 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2016 Intel Corporation
  */
 
 #include <stdio.h>
@@ -42,11 +13,12 @@
 #include <errno.h>
 #include <getopt.h>
 #include <stdbool.h>
+#include <sys/socket.h>
+#include <arpa/inet.h>
 
 #include <rte_debug.h>
 #include <rte_ether.h>
 #include <rte_ethdev.h>
-#include <rte_mempool.h>
 #include <rte_cycles.h>
 #include <rte_mbuf.h>
 #include <rte_ip.h>
@@ -69,26 +41,28 @@ struct ipv6_l3fwd_lpm_route {
 	uint8_t  if_out;
 };
 
+/* 192.18.0.0/16 are set aside for RFC2544 benchmarking. */
 static struct ipv4_l3fwd_lpm_route ipv4_l3fwd_lpm_route_array[] = {
-	{IPv4(1, 1, 1, 0), 24, 0},
-	{IPv4(2, 1, 1, 0), 24, 1},
-	{IPv4(3, 1, 1, 0), 24, 2},
-	{IPv4(4, 1, 1, 0), 24, 3},
-	{IPv4(5, 1, 1, 0), 24, 4},
-	{IPv4(6, 1, 1, 0), 24, 5},
-	{IPv4(7, 1, 1, 0), 24, 6},
-	{IPv4(8, 1, 1, 0), 24, 7},
+	{IPv4(192, 18, 0, 0), 24, 0},
+	{IPv4(192, 18, 1, 0), 24, 1},
+	{IPv4(192, 18, 2, 0), 24, 2},
+	{IPv4(192, 18, 3, 0), 24, 3},
+	{IPv4(192, 18, 4, 0), 24, 4},
+	{IPv4(192, 18, 5, 0), 24, 5},
+	{IPv4(192, 18, 6, 0), 24, 6},
+	{IPv4(192, 18, 7, 0), 24, 7},
 };
 
+/* 2001:0200::/48 is IANA reserved range for IPv6 benchmarking (RFC5180) */
 static struct ipv6_l3fwd_lpm_route ipv6_l3fwd_lpm_route_array[] = {
-	{{1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1}, 48, 0},
-	{{2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1}, 48, 1},
-	{{3, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1}, 48, 2},
-	{{4, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1}, 48, 3},
-	{{5, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1}, 48, 4},
-	{{6, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1}, 48, 5},
-	{{7, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1}, 48, 6},
-	{{8, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1}, 48, 7},
+	{{32, 1, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, 48, 0},
+	{{32, 1, 2, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0}, 48, 1},
+	{{32, 1, 2, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0}, 48, 2},
+	{{32, 1, 2, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0}, 48, 3},
+	{{32, 1, 2, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 0, 0, 0}, 48, 4},
+	{{32, 1, 2, 0, 0, 0, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0}, 48, 5},
+	{{32, 1, 2, 0, 0, 0, 0, 0, 0, 6, 0, 0, 0, 0, 0, 0}, 48, 6},
+	{{32, 1, 2, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0, 0, 0, 0}, 48, 7},
 };
 
 #define IPV4_L3FWD_LPM_NUM_ROUTES \
@@ -104,8 +78,95 @@ static struct ipv6_l3fwd_lpm_route ipv6_l3fwd_lpm_route_array[] = {
 struct rte_lpm *ipv4_l3fwd_lpm_lookup_struct[NB_SOCKETS];
 struct rte_lpm6 *ipv6_l3fwd_lpm_lookup_struct[NB_SOCKETS];
 
-#if defined(__SSE4_1__)
+static inline uint16_t
+lpm_get_ipv4_dst_port(void *ipv4_hdr, uint16_t portid, void *lookup_struct)
+{
+	uint32_t next_hop;
+	struct rte_lpm *ipv4_l3fwd_lookup_struct =
+		(struct rte_lpm *)lookup_struct;
+
+	return (uint16_t) ((rte_lpm_lookup(ipv4_l3fwd_lookup_struct,
+		rte_be_to_cpu_32(((struct ipv4_hdr *)ipv4_hdr)->dst_addr),
+		&next_hop) == 0) ? next_hop : portid);
+}
+
+static inline uint16_t
+lpm_get_ipv6_dst_port(void *ipv6_hdr, uint16_t portid, void *lookup_struct)
+{
+	uint32_t next_hop;
+	struct rte_lpm6 *ipv6_l3fwd_lookup_struct =
+		(struct rte_lpm6 *)lookup_struct;
+
+	return (uint16_t) ((rte_lpm6_lookup(ipv6_l3fwd_lookup_struct,
+			((struct ipv6_hdr *)ipv6_hdr)->dst_addr,
+			&next_hop) == 0) ?  next_hop : portid);
+}
+
+static __rte_always_inline uint16_t
+lpm_get_dst_port(const struct lcore_conf *qconf, struct rte_mbuf *pkt,
+		uint16_t portid)
+{
+	struct ipv6_hdr *ipv6_hdr;
+	struct ipv4_hdr *ipv4_hdr;
+	struct ether_hdr *eth_hdr;
+
+	if (RTE_ETH_IS_IPV4_HDR(pkt->packet_type)) {
+
+		eth_hdr = rte_pktmbuf_mtod(pkt, struct ether_hdr *);
+		ipv4_hdr = (struct ipv4_hdr *)(eth_hdr + 1);
+
+		return lpm_get_ipv4_dst_port(ipv4_hdr, portid,
+					     qconf->ipv4_lookup_struct);
+	} else if (RTE_ETH_IS_IPV6_HDR(pkt->packet_type)) {
+
+		eth_hdr = rte_pktmbuf_mtod(pkt, struct ether_hdr *);
+		ipv6_hdr = (struct ipv6_hdr *)(eth_hdr + 1);
+
+		return lpm_get_ipv6_dst_port(ipv6_hdr, portid,
+					     qconf->ipv6_lookup_struct);
+	}
+
+	return portid;
+}
+
+/*
+ * lpm_get_dst_port optimized routine for packets where dst_ipv4 is already
+ * precalculated. If packet is ipv6 dst_addr is taken directly from packet
+ * header and dst_ipv4 value is not used.
+ */
+static __rte_always_inline uint16_t
+lpm_get_dst_port_with_ipv4(const struct lcore_conf *qconf, struct rte_mbuf *pkt,
+	uint32_t dst_ipv4, uint16_t portid)
+{
+	uint32_t next_hop;
+	struct ipv6_hdr *ipv6_hdr;
+	struct ether_hdr *eth_hdr;
+
+	if (RTE_ETH_IS_IPV4_HDR(pkt->packet_type)) {
+		return (uint16_t) ((rte_lpm_lookup(qconf->ipv4_lookup_struct,
+						   dst_ipv4, &next_hop) == 0)
+				   ? next_hop : portid);
+
+	} else if (RTE_ETH_IS_IPV6_HDR(pkt->packet_type)) {
+
+		eth_hdr = rte_pktmbuf_mtod(pkt, struct ether_hdr *);
+		ipv6_hdr = (struct ipv6_hdr *)(eth_hdr + 1);
+
+		return (uint16_t) ((rte_lpm6_lookup(qconf->ipv6_lookup_struct,
+				ipv6_hdr->dst_addr, &next_hop) == 0)
+				? next_hop : portid);
+
+	}
+
+	return portid;
+}
+
+#if defined(RTE_ARCH_X86)
 #include "l3fwd_lpm_sse.h"
+#elif defined RTE_MACHINE_CPUFLAG_NEON
+#include "l3fwd_lpm_neon.h"
+#elif defined(RTE_ARCH_PPC_64)
+#include "l3fwd_lpm_altivec.h"
 #else
 #include "l3fwd_lpm.h"
 #endif
@@ -118,7 +179,8 @@ lpm_main_loop(__attribute__((unused)) void *dummy)
 	unsigned lcore_id;
 	uint64_t prev_tsc, diff_tsc, cur_tsc;
 	int i, nb_rx;
-	uint8_t portid, queueid;
+	uint16_t portid;
+	uint8_t queueid;
 	struct lcore_conf *qconf;
 	const uint64_t drain_tsc = (rte_get_tsc_hz() + US_PER_S - 1) /
 		US_PER_S * BURST_TX_DRAIN_US;
@@ -140,7 +202,7 @@ lpm_main_loop(__attribute__((unused)) void *dummy)
 		portid = qconf->rx_queue_list[i].port_id;
 		queueid = qconf->rx_queue_list[i].queue_id;
 		RTE_LOG(INFO, L3FWD,
-			" -- lcoreid=%u portid=%hhu rxqueueid=%hhu\n",
+			" -- lcoreid=%u portid=%u rxqueueid=%hhu\n",
 			lcore_id, portid, queueid);
 	}
 
@@ -178,13 +240,14 @@ lpm_main_loop(__attribute__((unused)) void *dummy)
 			if (nb_rx == 0)
 				continue;
 
-#if defined(__SSE4_1__)
+#if defined RTE_ARCH_X86 || defined RTE_MACHINE_CPUFLAG_NEON \
+			 || defined RTE_ARCH_PPC_64
 			l3fwd_lpm_send_packets(nb_rx, pkts_burst,
 						portid, qconf);
 #else
 			l3fwd_lpm_no_opt_send_packets(nb_rx, pkts_burst,
 							portid, qconf);
-#endif /* __SSE_4_1__ */
+#endif /* X86 */
 		}
 	}
 
@@ -199,6 +262,7 @@ setup_lpm(const int socketid)
 	unsigned i;
 	int ret;
 	char s[64];
+	char abuf[INET6_ADDRSTRLEN];
 
 	/* create the LPM table */
 	config_ipv4.max_rules = IPV4_L3FWD_LPM_MAX_RULES;
@@ -214,6 +278,7 @@ setup_lpm(const int socketid)
 
 	/* populate the LPM table */
 	for (i = 0; i < IPV4_L3FWD_LPM_NUM_ROUTES; i++) {
+		struct in_addr in;
 
 		/* skip unused ports */
 		if ((1 << ipv4_l3fwd_lpm_route_array[i].if_out &
@@ -231,8 +296,9 @@ setup_lpm(const int socketid)
 				i, socketid);
 		}
 
-		printf("LPM: Adding route 0x%08x / %d (%d)\n",
-			(unsigned)ipv4_l3fwd_lpm_route_array[i].ip,
+		in.s_addr = htonl(ipv4_l3fwd_lpm_route_array[i].ip);
+		printf("LPM: Adding route %s / %d (%d)\n",
+		       inet_ntop(AF_INET, &in, abuf, sizeof(abuf)),
 			ipv4_l3fwd_lpm_route_array[i].depth,
 			ipv4_l3fwd_lpm_route_array[i].if_out);
 	}
@@ -270,9 +336,10 @@ setup_lpm(const int socketid)
 		}
 
 		printf("LPM: Adding route %s / %d (%d)\n",
-			"IPV6",
-			ipv6_l3fwd_lpm_route_array[i].depth,
-			ipv6_l3fwd_lpm_route_array[i].if_out);
+		       inet_ntop(AF_INET6, ipv6_l3fwd_lpm_route_array[i].ip,
+				 abuf, sizeof(abuf)),
+		       ipv6_l3fwd_lpm_route_array[i].depth,
+		       ipv6_l3fwd_lpm_route_array[i].if_out);
 	}
 }
 
@@ -328,7 +395,7 @@ lpm_parse_ptype(struct rte_mbuf *m)
 }
 
 uint16_t
-lpm_cb_parse_ptype(uint8_t port __rte_unused, uint16_t queue __rte_unused,
+lpm_cb_parse_ptype(uint16_t port __rte_unused, uint16_t queue __rte_unused,
 		   struct rte_mbuf *pkts[], uint16_t nb_pkts,
 		   uint16_t max_pkts __rte_unused,
 		   void *user_param __rte_unused)

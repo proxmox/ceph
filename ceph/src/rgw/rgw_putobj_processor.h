@@ -1,5 +1,5 @@
 // -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// vim: ts=8 sw=2 smarttab ft=cpp
 
 /*
  * Ceph - scalable distributed file system
@@ -20,6 +20,7 @@
 #include "rgw_putobj.h"
 #include "rgw_rados.h"
 #include "services/svc_rados.h"
+#include "services/svc_tier_rados.h"
 
 namespace rgw {
 
@@ -31,7 +32,7 @@ namespace putobj {
 class ObjectProcessor : public DataProcessor {
  public:
   // prepare to start processing object data
-  virtual int prepare() = 0;
+  virtual int prepare(optional_yield y) = 0;
 
   // complete the operation and make its result visible to clients
   virtual int complete(size_t accounted_size, const std::string& etag,
@@ -40,7 +41,8 @@ class ObjectProcessor : public DataProcessor {
                        ceph::real_time delete_at,
                        const char *if_match, const char *if_nomatch,
                        const std::string *user_data,
-                       rgw_zone_set *zones_trace, bool *canceled) = 0;
+                       rgw_zone_set *zones_trace, bool *canceled,
+                       optional_yield y) = 0;
 };
 
 // an object processor with special handling for the first chunk of the head.
@@ -77,18 +79,22 @@ using RawObjSet = std::set<rgw_raw_obj>;
 // a data sink that writes to rados objects and deletes them on cancelation
 class RadosWriter : public DataProcessor {
   Aio *const aio;
-  RGWRados *const store;
+  rgw::sal::RGWRadosStore *const store;
   const RGWBucketInfo& bucket_info;
   RGWObjectCtx& obj_ctx;
   const rgw_obj head_obj;
   RGWSI_RADOS::Obj stripe_obj; // current stripe object
   RawObjSet written; // set of written objects for deletion
+  const DoutPrefixProvider *dpp;
+  optional_yield y;
 
  public:
-  RadosWriter(Aio *aio, RGWRados *store, const RGWBucketInfo& bucket_info,
-              RGWObjectCtx& obj_ctx, const rgw_obj& head_obj)
+  RadosWriter(Aio *aio, rgw::sal::RGWRadosStore *store,
+	      const RGWBucketInfo& bucket_info,
+              RGWObjectCtx& obj_ctx, const rgw_obj& head_obj,
+              const DoutPrefixProvider *dpp, optional_yield y)
     : aio(aio), store(store), bucket_info(bucket_info),
-      obj_ctx(obj_ctx), head_obj(head_obj)
+      obj_ctx(obj_ctx), head_obj(head_obj), dpp(dpp), y(y)
   {}
   ~RadosWriter();
 
@@ -106,16 +112,17 @@ class RadosWriter : public DataProcessor {
   // when the operation completes successfully, clear the set of written objects
   // so they aren't deleted on destruction
   void clear_written() { written.clear(); }
+
 };
 
 // a rados object processor that stripes according to RGWObjManifest
 class ManifestObjectProcessor : public HeadObjectProcessor,
                                 public StripeGenerator {
  protected:
-  RGWRados *const store;
+  rgw::sal::RGWRadosStore *const store;
   const RGWBucketInfo& bucket_info;
   rgw_placement_rule tail_placement_rule;
-  const rgw_user& owner;
+  rgw_user owner;
   RGWObjectCtx& obj_ctx;
   rgw_obj head_obj;
 
@@ -124,30 +131,40 @@ class ManifestObjectProcessor : public HeadObjectProcessor,
   RGWObjManifest::generator manifest_gen;
   ChunkProcessor chunk;
   StripeProcessor stripe;
+  const DoutPrefixProvider *dpp;
 
   // implements StripeGenerator
   int next(uint64_t offset, uint64_t *stripe_size) override;
 
  public:
-  ManifestObjectProcessor(Aio *aio, RGWRados *store,
+  ManifestObjectProcessor(Aio *aio, rgw::sal::RGWRadosStore *store,
                           const RGWBucketInfo& bucket_info,
                           const rgw_placement_rule *ptail_placement_rule,
                           const rgw_user& owner, RGWObjectCtx& obj_ctx,
-                          const rgw_obj& head_obj)
+                          const rgw_obj& head_obj,
+                          const DoutPrefixProvider* dpp, optional_yield y)
     : HeadObjectProcessor(0),
       store(store), bucket_info(bucket_info),
       owner(owner),
       obj_ctx(obj_ctx), head_obj(head_obj),
-      writer(aio, store, bucket_info, obj_ctx, head_obj),
-      chunk(&writer, 0), stripe(&chunk, this, 0) {
+      writer(aio, store, bucket_info, obj_ctx, head_obj, dpp, y),
+      chunk(&writer, 0), stripe(&chunk, this, 0), dpp(dpp) {
         if (ptail_placement_rule) {
           tail_placement_rule = *ptail_placement_rule;
         }
       }
 
+  void set_owner(const rgw_user& _owner) {
+    owner = _owner;
+  }
+
+  void set_tail_placement(const rgw_placement_rule& tpr) {
+    tail_placement_rule = tpr;
+  }
   void set_tail_placement(const rgw_placement_rule&& tpr) {
     tail_placement_rule = tpr;
   }
+
 };
 
 
@@ -160,20 +177,21 @@ class AtomicObjectProcessor : public ManifestObjectProcessor {
 
   int process_first_chunk(bufferlist&& data, DataProcessor **processor) override;
  public:
-  AtomicObjectProcessor(Aio *aio, RGWRados *store,
+  AtomicObjectProcessor(Aio *aio, rgw::sal::RGWRadosStore *store,
                         const RGWBucketInfo& bucket_info,
                         const rgw_placement_rule *ptail_placement_rule,
                         const rgw_user& owner,
                         RGWObjectCtx& obj_ctx, const rgw_obj& head_obj,
                         std::optional<uint64_t> olh_epoch,
-                        const std::string& unique_tag)
+                        const std::string& unique_tag,
+                        const DoutPrefixProvider *dpp, optional_yield y)
     : ManifestObjectProcessor(aio, store, bucket_info, ptail_placement_rule,
-                              owner, obj_ctx, head_obj),
+                              owner, obj_ctx, head_obj, dpp, y),
       olh_epoch(olh_epoch), unique_tag(unique_tag)
   {}
 
   // prepare a trivial manifest
-  int prepare() override;
+  int prepare(optional_yield y) override;
   // write the head object atomically in a bucket index transaction
   int complete(size_t accounted_size, const std::string& etag,
                ceph::real_time *mtime, ceph::real_time set_mtime,
@@ -181,7 +199,8 @@ class AtomicObjectProcessor : public ManifestObjectProcessor {
                ceph::real_time delete_at,
                const char *if_match, const char *if_nomatch,
                const std::string *user_data,
-               rgw_zone_set *zones_trace, bool *canceled) override;
+               rgw_zone_set *zones_trace, bool *canceled,
+               optional_yield y) override;
 
 };
 
@@ -202,22 +221,23 @@ class MultipartObjectProcessor : public ManifestObjectProcessor {
   // prepare the head stripe and manifest
   int prepare_head();
  public:
-  MultipartObjectProcessor(Aio *aio, RGWRados *store,
+  MultipartObjectProcessor(Aio *aio, rgw::sal::RGWRadosStore *store,
                            const RGWBucketInfo& bucket_info,
                            const rgw_placement_rule *ptail_placement_rule,
                            const rgw_user& owner, RGWObjectCtx& obj_ctx,
                            const rgw_obj& head_obj,
                            const std::string& upload_id, uint64_t part_num,
-                           const std::string& part_num_str)
+                           const std::string& part_num_str,
+                           const DoutPrefixProvider *dpp, optional_yield y)
     : ManifestObjectProcessor(aio, store, bucket_info, ptail_placement_rule,
-                              owner, obj_ctx, head_obj),
+                              owner, obj_ctx, head_obj, dpp, y),
       target_obj(head_obj), upload_id(upload_id),
       part_num(part_num), part_num_str(part_num_str),
-      mp(head_obj.key.name, upload_id)
+      mp(head_obj.key.name, upload_id) 
   {}
 
   // prepare a multipart manifest
-  int prepare() override;
+  int prepare(optional_yield y) override;
   // write the head object attributes in a bucket index transaction, then
   // register the completed part with the multipart meta object
   int complete(size_t accounted_size, const std::string& etag,
@@ -226,7 +246,9 @@ class MultipartObjectProcessor : public ManifestObjectProcessor {
                ceph::real_time delete_at,
                const char *if_match, const char *if_nomatch,
                const std::string *user_data,
-               rgw_zone_set *zones_trace, bool *canceled) override;
+               rgw_zone_set *zones_trace, bool *canceled,
+               optional_yield y) override;
+
 };
 
   class AppendObjectProcessor : public ManifestObjectProcessor {
@@ -242,20 +264,24 @@ class MultipartObjectProcessor : public ManifestObjectProcessor {
     int process_first_chunk(bufferlist&& data, DataProcessor **processor) override;
 
   public:
-    AppendObjectProcessor(Aio *aio, RGWRados *store, const RGWBucketInfo& bucket_info,
+    AppendObjectProcessor(Aio *aio, rgw::sal::RGWRadosStore *store, const RGWBucketInfo& bucket_info,
                           const rgw_placement_rule *ptail_placement_rule,
                           const rgw_user& owner, RGWObjectCtx& obj_ctx,const rgw_obj& head_obj,
-                          const std::string& unique_tag, uint64_t position, uint64_t *cur_accounted_size)
-            : ManifestObjectProcessor(aio, store, bucket_info, ptail_placement_rule, owner, obj_ctx, head_obj),
+                          const std::string& unique_tag, uint64_t position,
+                          uint64_t *cur_accounted_size,
+                          const DoutPrefixProvider *dpp, optional_yield y)
+            : ManifestObjectProcessor(aio, store, bucket_info, ptail_placement_rule,
+                                      owner, obj_ctx, head_obj, dpp, y),
               position(position), cur_size(0), cur_accounted_size(cur_accounted_size),
               unique_tag(unique_tag), cur_manifest(nullptr)
     {}
-    int prepare() override;
+    int prepare(optional_yield y) override;
     int complete(size_t accounted_size, const string& etag,
                  ceph::real_time *mtime, ceph::real_time set_mtime,
                  map<string, bufferlist>& attrs, ceph::real_time delete_at,
                  const char *if_match, const char *if_nomatch, const string *user_data,
-                 rgw_zone_set *zones_trace, bool *canceled) override;
+                 rgw_zone_set *zones_trace, bool *canceled,
+                 optional_yield y) override;
   };
 
 } // namespace putobj

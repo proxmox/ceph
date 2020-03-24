@@ -3,6 +3,7 @@ import { Component, OnInit, TemplateRef, ViewChild } from '@angular/core';
 import { I18n } from '@ngx-translate/i18n-polyfill';
 
 import { IscsiService } from '../../../shared/api/iscsi.service';
+import { CellTemplate } from '../../../shared/enum/cell-template.enum';
 import { DimlessPipe } from '../../../shared/pipes/dimless.pipe';
 import { IscsiBackstorePipe } from '../../../shared/pipes/iscsi-backstore.pipe';
 
@@ -12,18 +13,16 @@ import { IscsiBackstorePipe } from '../../../shared/pipes/iscsi-backstore.pipe';
   styleUrls: ['./iscsi.component.scss']
 })
 export class IscsiComponent implements OnInit {
-  @ViewChild('statusColorTpl')
-  statusColorTpl: TemplateRef<any>;
-  @ViewChild('iscsiSparklineTpl')
+  @ViewChild('iscsiSparklineTpl', { static: true })
   iscsiSparklineTpl: TemplateRef<any>;
-  @ViewChild('iscsiPerSecondTpl')
+  @ViewChild('iscsiPerSecondTpl', { static: true })
   iscsiPerSecondTpl: TemplateRef<any>;
-  @ViewChild('iscsiRelativeDateTpl')
+  @ViewChild('iscsiRelativeDateTpl', { static: true })
   iscsiRelativeDateTpl: TemplateRef<any>;
 
-  gateways = [];
+  gateways: any[] = [];
   gatewaysColumns: any;
-  images = [];
+  images: any[] = [];
   imagesColumns: any;
 
   constructor(
@@ -42,7 +41,14 @@ export class IscsiComponent implements OnInit {
       {
         name: this.i18n('State'),
         prop: 'state',
-        cellTemplate: this.statusColorTpl
+        flexGrow: 1,
+        cellTransformation: CellTemplate.badge,
+        customTemplateConfig: {
+          map: {
+            up: { class: 'badge-success' },
+            down: { class: 'badge-danger' }
+          }
+        }
       },
       {
         name: this.i18n('# Targets'),
@@ -98,13 +104,13 @@ export class IscsiComponent implements OnInit {
   }
 
   refresh() {
-    this.iscsiService.overview().subscribe((overview: Array<any>) => {
+    this.iscsiService.overview().subscribe((overview: object) => {
       this.gateways = overview['gateways'];
       this.images = overview['images'];
       this.images.map((image) => {
         if (image.stats_history) {
-          image.stats_history.rd_bytes = image.stats_history.rd_bytes.map((i) => i[1]);
-          image.stats_history.wr_bytes = image.stats_history.wr_bytes.map((i) => i[1]);
+          image.stats_history.rd_bytes = image.stats_history.rd_bytes.map((i: any) => i[1]);
+          image.stats_history.wr_bytes = image.stats_history.wr_bytes.map((i: any) => i[1]);
         }
         image.cdIsBinary = true;
         return image;

@@ -9,7 +9,15 @@ if(HAS_VTA)
 endif()
 
 set(dencoder_srcs
+  denc_registry.cc
   ceph_dencoder.cc
+  common_types.cc
+  mds_types.cc
+  osd_types.cc
+  rbd_types.cc
+  rgw_types.cc
+  ../../include/uuid.cc
+  ../../include/utime.cc
   $<TARGET_OBJECTS:common_texttable_obj>)
 if(WITH_RADOSGW)
   list(APPEND dencoder_srcs
@@ -25,6 +33,10 @@ if(WITH_RADOSGW)
   if(WITH_RADOSGW_AMQP_ENDPOINT)
     list(APPEND DENCODER_EXTRALIBS
       rabbitmq)
+  endif()
+  if(WITH_RADOSGW_KAFKA_ENDPOINT)
+    list(APPEND DENCODER_EXTRALIBS
+      rdkafka)
   endif()
 endif()
 

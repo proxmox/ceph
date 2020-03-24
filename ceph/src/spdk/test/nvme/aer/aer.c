@@ -36,6 +36,7 @@
 #include "spdk/log.h"
 #include "spdk/nvme.h"
 #include "spdk/env.h"
+#include "spdk/string.h"
 
 #define MAX_DEVS 64
 
@@ -49,41 +50,42 @@ struct dev {
 
 static void get_feature_test(struct dev *dev);
 
-static struct dev devs[MAX_DEVS];
-static int num_devs = 0;
+static struct dev g_devs[MAX_DEVS];
+static int g_num_devs = 0;
 
 #define foreach_dev(iter) \
-	for (iter = devs; iter - devs < num_devs; iter++)
+	for (iter = g_devs; iter - g_devs < g_num_devs; iter++)
 
-static int outstanding_commands = 0;
-static int aer_done = 0;
-static int temperature_done = 0;
-static int failed = 0;
+static int g_outstanding_commands = 0;
+static int g_aer_done = 0;
+static int g_temperature_done = 0;
+static int g_failed = 0;
 static struct spdk_nvme_transport_id g_trid;
+static char *g_touch_file;
 
 /* Enable AER temperature test */
-static int enable_temp_test = 0;
+static int g_enable_temp_test = 0;
 /* Enable AER namespace attribute notice test, this variable holds
  * the NSID that is expected to be in the Changed NS List.
  */
-static uint32_t expected_ns_test = 0;
+static uint32_t g_expected_ns_test = 0;
 
 static void
 set_temp_completion(void *cb_arg, const struct spdk_nvme_cpl *cpl)
 {
 	struct dev *dev = cb_arg;
 
-	outstanding_commands--;
+	g_outstanding_commands--;
 
 	if (spdk_nvme_cpl_is_error(cpl)) {
 		printf("%s: set feature (temp threshold) failed\n", dev->name);
-		failed = 1;
+		g_failed = 1;
 		return;
 	}
 
 	/* Admin command completions are synchronized by the NVMe driver,
 	 * so we don't need to do any special locking here. */
-	temperature_done++;
+	g_temperature_done++;
 }
 
 static int
@@ -98,7 +100,7 @@ set_temp_threshold(struct dev *dev, uint32_t temp)
 
 	rc = spdk_nvme_ctrlr_cmd_admin_raw(dev->ctrlr, &cmd, NULL, 0, set_temp_completion, dev);
 	if (rc == 0) {
-		outstanding_commands++;
+		g_outstanding_commands++;
 	}
 
 	return rc;
@@ -109,11 +111,11 @@ get_temp_completion(void *cb_arg, const struct spdk_nvme_cpl *cpl)
 {
 	struct dev *dev = cb_arg;
 
-	outstanding_commands--;
+	g_outstanding_commands--;
 
 	if (spdk_nvme_cpl_is_error(cpl)) {
 		printf("%s: get feature (temp threshold) failed\n", dev->name);
-		failed = 1;
+		g_failed = 1;
 		return;
 	}
 
@@ -121,7 +123,7 @@ get_temp_completion(void *cb_arg, const struct spdk_nvme_cpl *cpl)
 	printf("%s: original temperature threshold: %u Kelvin (%d Celsius)\n",
 	       dev->name, dev->orig_temp_threshold, dev->orig_temp_threshold - 273);
 
-	temperature_done++;
+	g_temperature_done++;
 }
 
 static int
@@ -135,7 +137,7 @@ get_temp_threshold(struct dev *dev)
 
 	rc = spdk_nvme_ctrlr_cmd_admin_raw(dev->ctrlr, &cmd, NULL, 0, get_temp_completion, dev);
 	if (rc == 0) {
-		outstanding_commands++;
+		g_outstanding_commands++;
 	}
 
 	return rc;
@@ -153,16 +155,16 @@ get_health_log_page_completion(void *cb_arg, const struct spdk_nvme_cpl *cpl)
 {
 	struct dev *dev = cb_arg;
 
-	outstanding_commands --;
+	g_outstanding_commands --;
 
 	if (spdk_nvme_cpl_is_error(cpl)) {
 		printf("%s: get log page failed\n", dev->name);
-		failed = 1;
+		g_failed = 1;
 		return;
 	}
 
 	print_health_page(dev, dev->health_page);
-	aer_done++;
+	g_aer_done++;
 }
 
 static void
@@ -172,11 +174,11 @@ get_changed_ns_log_page_completion(void *cb_arg, const struct spdk_nvme_cpl *cpl
 	bool found = false;
 	uint32_t i;
 
-	outstanding_commands --;
+	g_outstanding_commands --;
 
 	if (spdk_nvme_cpl_is_error(cpl)) {
 		printf("%s: get log page failed\n", dev->name);
-		failed = 1;
+		g_failed = 1;
 		return;
 	}
 
@@ -185,9 +187,9 @@ get_changed_ns_log_page_completion(void *cb_arg, const struct spdk_nvme_cpl *cpl
 	 */
 	if (dev->changed_ns_list->ns_list[0] != 0xffffffffu) {
 		for (i = 0; i < sizeof(*dev->changed_ns_list) / sizeof(uint32_t); i++) {
-			if (expected_ns_test == dev->changed_ns_list->ns_list[i]) {
+			if (g_expected_ns_test == dev->changed_ns_list->ns_list[i]) {
 				printf("%s: changed NS list contains expected NSID: %u\n",
-				       dev->name, expected_ns_test);
+				       dev->name, g_expected_ns_test);
 				found = true;
 				break;
 			}
@@ -195,11 +197,11 @@ get_changed_ns_log_page_completion(void *cb_arg, const struct spdk_nvme_cpl *cpl
 	}
 
 	if (!found) {
-		printf("%s: Error: Can't find expected NSID %u\n", dev->name, expected_ns_test);
-		failed = 1;
+		printf("%s: Error: Can't find expected NSID %u\n", dev->name, g_expected_ns_test);
+		g_failed = 1;
 	}
 
-	aer_done++;
+	g_aer_done++;
 }
 
 static int
@@ -212,7 +214,7 @@ get_health_log_page(struct dev *dev)
 					      get_health_log_page_completion, dev);
 
 	if (rc == 0) {
-		outstanding_commands++;
+		g_outstanding_commands++;
 	}
 
 	return rc;
@@ -229,7 +231,7 @@ get_changed_ns_log_page(struct dev *dev)
 					      get_changed_ns_log_page_completion, dev);
 
 	if (rc == 0) {
-		outstanding_commands++;
+		g_outstanding_commands++;
 	}
 
 	return rc;
@@ -258,7 +260,7 @@ aer_cb(void *arg, const struct spdk_nvme_cpl *cpl)
 
 	if (spdk_nvme_cpl_is_error(cpl)) {
 		printf("%s: AER failed\n", dev->name);
-		failed = 1;
+		g_failed = 1;
 		return;
 	}
 
@@ -283,6 +285,7 @@ usage(const char *program_name)
 	printf("options:\n");
 	printf(" -T         enable temperature tests\n");
 	printf(" -n         expected Namespace attribute notice ID\n");
+	printf(" -t <file>  touch specified file when ready to receive AER\n");
 	printf(" -r trid    remote NVMe over Fabrics target address\n");
 	printf("    Format: 'key:value [key:value] ...'\n");
 	printf("    Keys:\n");
@@ -293,7 +296,7 @@ usage(const char *program_name)
 	printf("     subnqn      Subsystem NQN (default: %s)\n", SPDK_NVMF_DISCOVERY_NQN);
 	printf("    Example: -r 'trtype:RDMA adrfam:IPv4 traddr:192.168.100.8 trsvcid:4420'\n");
 
-	spdk_tracelog_usage(stdout, "-L");
+	spdk_log_usage(stdout, "-L");
 
 	printf(" -v         verbose (enable warnings)\n");
 	printf(" -H         show this usage\n");
@@ -303,14 +306,20 @@ static int
 parse_args(int argc, char **argv)
 {
 	int op, rc;
+	long int val;
 
 	g_trid.trtype = SPDK_NVME_TRANSPORT_PCIE;
 	snprintf(g_trid.subnqn, sizeof(g_trid.subnqn), "%s", SPDK_NVMF_DISCOVERY_NQN);
 
-	while ((op = getopt(argc, argv, "n:r:HL:T")) != -1) {
+	while ((op = getopt(argc, argv, "n:r:t:HL:T")) != -1) {
 		switch (op) {
 		case 'n':
-			expected_ns_test = atoi(optarg);
+			val = spdk_strtol(optarg, 10);
+			if (val < 0) {
+				fprintf(stderr, "Invalid NS attribute notice ID\n");
+				return val;
+			}
+			g_expected_ns_test = (uint32_t)val;
 			break;
 		case 'r':
 			if (spdk_nvme_transport_id_parse(&g_trid, optarg) != 0) {
@@ -318,8 +327,11 @@ parse_args(int argc, char **argv)
 				return 1;
 			}
 			break;
+		case 't':
+			g_touch_file = optarg;
+			break;
 		case 'L':
-			rc = spdk_log_set_trace_flag(optarg);
+			rc = spdk_log_set_flag(optarg);
 			if (rc < 0) {
 				fprintf(stderr, "unknown flag\n");
 				usage(argv[0]);
@@ -334,7 +346,7 @@ parse_args(int argc, char **argv)
 #endif
 			break;
 		case 'T':
-			enable_temp_test = 1;
+			g_enable_temp_test = 1;
 			break;
 		case 'H':
 		default:
@@ -362,7 +374,7 @@ attach_cb(void *cb_ctx, const struct spdk_nvme_transport_id *trid,
 	struct dev *dev;
 
 	/* add to dev list */
-	dev = &devs[num_devs++];
+	dev = &g_devs[g_num_devs++];
 
 	dev->ctrlr = ctrlr;
 
@@ -374,12 +386,12 @@ attach_cb(void *cb_ctx, const struct spdk_nvme_transport_id *trid,
 	dev->health_page = spdk_dma_zmalloc(sizeof(*dev->health_page), 4096, NULL);
 	if (dev->health_page == NULL) {
 		printf("Allocation error (health page)\n");
-		failed = 1;
+		g_failed = 1;
 	}
 	dev->changed_ns_list = spdk_dma_zmalloc(sizeof(*dev->changed_ns_list), 4096, NULL);
 	if (dev->changed_ns_list == NULL) {
 		printf("Allocation error (changed namespace list page)\n");
-		failed = 1;
+		g_failed = 1;
 	}
 }
 
@@ -388,15 +400,15 @@ get_feature_test_cb(void *cb_arg, const struct spdk_nvme_cpl *cpl)
 {
 	struct dev *dev = cb_arg;
 
-	outstanding_commands--;
+	g_outstanding_commands--;
 
 	if (spdk_nvme_cpl_is_error(cpl)) {
 		printf("%s: get number of queues failed\n", dev->name);
-		failed = 1;
+		g_failed = 1;
 		return;
 	}
 
-	if (aer_done < num_devs) {
+	if (g_aer_done < g_num_devs) {
 		/*
 		 * Resubmit Get Features command to continue filling admin queue
 		 * while the test is running.
@@ -416,11 +428,11 @@ get_feature_test(struct dev *dev)
 	if (spdk_nvme_ctrlr_cmd_admin_raw(dev->ctrlr, &cmd, NULL, 0,
 					  get_feature_test_cb, dev) != 0) {
 		printf("Failed to send Get Features command for dev=%p\n", dev);
-		failed = 1;
+		g_failed = 1;
 		return;
 	}
 
-	outstanding_commands++;
+	g_outstanding_commands++;
 }
 
 static int
@@ -434,25 +446,25 @@ spdk_aer_temperature_test(void)
 		get_temp_threshold(dev);
 	}
 
-	while (!failed && temperature_done < num_devs) {
+	while (!g_failed && g_temperature_done < g_num_devs) {
 		foreach_dev(dev) {
 			spdk_nvme_ctrlr_process_admin_completions(dev->ctrlr);
 		}
 	}
 
-	if (failed) {
-		return failed;
+	if (g_failed) {
+		return g_failed;
 	}
-	temperature_done = 0;
-	aer_done = 0;
+	g_temperature_done = 0;
+	g_aer_done = 0;
 
 	/* Send admin commands to test admin queue wraparound while waiting for the AER */
 	foreach_dev(dev) {
 		get_feature_test(dev);
 	}
 
-	if (failed) {
-		return failed;
+	if (g_failed) {
+		return g_failed;
 	}
 
 	printf("Waiting for all controllers to trigger AER...\n");
@@ -461,18 +473,18 @@ spdk_aer_temperature_test(void)
 		set_temp_threshold(dev, 200);
 	}
 
-	if (failed) {
-		return failed;
+	if (g_failed) {
+		return g_failed;
 	}
 
-	while (!failed && (aer_done < num_devs || temperature_done < num_devs)) {
+	while (!g_failed && (g_aer_done < g_num_devs || g_temperature_done < g_num_devs)) {
 		foreach_dev(dev) {
 			spdk_nvme_ctrlr_process_admin_completions(dev->ctrlr);
 		}
 	}
 
-	if (failed) {
-		return failed;
+	if (g_failed) {
+		return g_failed;
 	}
 
 	return 0;
@@ -483,7 +495,7 @@ spdk_aer_changed_ns_test(void)
 {
 	struct dev *dev;
 
-	aer_done = 0;
+	g_aer_done = 0;
 
 	printf("Starting namespce attribute notice tests for all controllers...\n");
 
@@ -491,18 +503,18 @@ spdk_aer_changed_ns_test(void)
 		get_feature_test(dev);
 	}
 
-	if (failed) {
-		return failed;
+	if (g_failed) {
+		return g_failed;
 	}
 
-	while (!failed && (aer_done < num_devs)) {
+	while (!g_failed && (g_aer_done < g_num_devs)) {
 		foreach_dev(dev) {
 			spdk_nvme_ctrlr_process_admin_completions(dev->ctrlr);
 		}
 	}
 
-	if (failed) {
-		return failed;
+	if (g_failed) {
+		return g_failed;
 	}
 
 	return 0;
@@ -523,7 +535,6 @@ int main(int argc, char **argv)
 	spdk_env_opts_init(&opts);
 	opts.name = "aer";
 	opts.core_mask = "0x1";
-	opts.mem_size = 64;
 	if (spdk_env_init(&opts) < 0) {
 		fprintf(stderr, "Unable to initialize SPDK env\n");
 		return 1;
@@ -536,7 +547,7 @@ int main(int argc, char **argv)
 		return 1;
 	}
 
-	if (failed) {
+	if (g_failed) {
 		goto done;
 	}
 
@@ -545,15 +556,27 @@ int main(int argc, char **argv)
 		spdk_nvme_ctrlr_register_aer_callback(dev->ctrlr, aer_cb, dev);
 	}
 
+	if (g_touch_file) {
+		int fd;
+
+		fd = open(g_touch_file, O_CREAT | O_EXCL | O_RDWR, S_IFREG);
+		if (fd == -1) {
+			fprintf(stderr, "Could not touch %s (%s).\n", g_touch_file, strerror(errno));
+			g_failed = true;
+			goto done;
+		}
+		close(fd);
+	}
+
 	/* AER temperature test */
-	if (enable_temp_test) {
+	if (g_enable_temp_test) {
 		if (spdk_aer_temperature_test()) {
 			goto done;
 		}
 	}
 
 	/* AER changed namespace list test */
-	if (expected_ns_test) {
+	if (g_expected_ns_test) {
 		if (spdk_aer_changed_ns_test()) {
 			goto done;
 		}
@@ -561,14 +584,19 @@ int main(int argc, char **argv)
 
 	printf("Cleaning up...\n");
 
-	while (outstanding_commands) {
+	while (g_outstanding_commands) {
 		foreach_dev(dev) {
 			spdk_nvme_ctrlr_process_admin_completions(dev->ctrlr);
 		}
 	}
 
-	for (i = 0; i < num_devs; i++) {
-		struct dev *dev = &devs[i];
+	/* unregister AER callback so we don't fail on aborted AERs when we close out qpairs. */
+	foreach_dev(dev) {
+		spdk_nvme_ctrlr_register_aer_callback(dev->ctrlr, NULL, NULL);
+	}
+
+	for (i = 0; i < g_num_devs; i++) {
+		struct dev *dev = &g_devs[i];
 
 		spdk_nvme_detach(dev->ctrlr);
 	}
@@ -576,5 +604,5 @@ int main(int argc, char **argv)
 done:
 	cleanup();
 
-	return failed;
+	return g_failed;
 }

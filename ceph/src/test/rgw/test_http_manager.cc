@@ -44,7 +44,7 @@ TEST(HTTPManager, ReadTruncated)
   const auto url = std::string{"http://127.0.0.1:"} + std::to_string(acceptor.local_endpoint().port());
 
   RGWHTTPClient client{g_ceph_context, "GET", url};
-  EXPECT_EQ(-EAGAIN, RGWHTTP::process(&client));
+  EXPECT_EQ(-EAGAIN, RGWHTTP::process(&client, null_yield));
 
   server.join();
 }

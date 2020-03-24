@@ -1,6 +1,7 @@
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 
-import { NodeEvent, Tree, TreeModule } from 'ng2-tree';
+import { TreeModel, TreeModule } from 'angular-tree-component';
+import * as _ from 'lodash';
 
 import { configureTestBed, i18nProviders } from '../../../../testing/unit-test-helper';
 import { CdTableSelection } from '../../../shared/models/cd-table-selection';
@@ -13,7 +14,7 @@ describe('IscsiTargetDetailsComponent', () => {
 
   configureTestBed({
     declarations: [IscsiTargetDetailsComponent],
-    imports: [TreeModule, SharedModule],
+    imports: [TreeModule.forRoot(), SharedModule],
     providers: [i18nProviders]
   });
 
@@ -71,7 +72,6 @@ describe('IscsiTargetDetailsComponent', () => {
         target_controls: { dataout_timeout: 2 }
       }
     ];
-    component.selection.update();
 
     fixture.detectChanges();
   });
@@ -87,7 +87,7 @@ describe('IscsiTargetDetailsComponent', () => {
 
     expect(component.data).toEqual(tempData);
     expect(component.metadata).toEqual({});
-    expect(component.tree).toEqual(undefined);
+    expect(component.nodes).toEqual([]);
 
     component.ngOnChanges();
 
@@ -102,71 +102,79 @@ describe('IscsiTargetDetailsComponent', () => {
       disk_rbd_disk_1: { backstore: 'backstore:1', controls: { hw_max_sectors: 1 } },
       root: { dataout_timeout: 2 }
     });
-    expect(component.tree).toEqual({
-      children: [
-        {
-          children: [{ id: 'disk_rbd_disk_1', value: 'rbd/disk_1' }],
-          settings: {
-            cssClasses: { expanded: 'fa fa-fw fa-hdd-o fa-lg', leaf: 'fa fa-fw fa-hdd-o' },
-            selectionAllowed: false
+    expect(component.nodes).toEqual([
+      {
+        cdIcon: 'fa fa-lg fa fa-bullseye',
+        cdId: 'root',
+        children: [
+          {
+            cdIcon: 'fa fa-lg fa fa-hdd-o',
+            children: [
+              {
+                cdIcon: 'fa fa-hdd-o',
+                cdId: 'disk_rbd_disk_1',
+                name: 'rbd/disk_1'
+              }
+            ],
+            isExpanded: true,
+            name: 'Disks'
           },
-          value: 'Disks'
-        },
-        {
-          children: [{ value: 'node1:192.168.100.201' }],
-          settings: {
-            cssClasses: { expanded: 'fa fa-fw fa-server fa-lg', leaf: 'fa fa-fw fa-server fa-lg' },
-            selectionAllowed: false
+          {
+            cdIcon: 'fa fa-lg fa fa-server',
+            children: [
+              {
+                cdIcon: 'fa fa-server',
+                name: 'node1:192.168.100.201'
+              }
+            ],
+            isExpanded: true,
+            name: 'Portals'
           },
-          value: 'Portals'
-        },
-        {
-          children: [
-            {
-              children: [
-                {
-                  id: 'disk_rbd_disk_1',
-                  settings: {
-                    cssClasses: { expanded: 'fa fa-fw fa-hdd-o fa-lg', leaf: 'fa fa-fw fa-hdd-o' }
-                  },
-                  value: 'rbd/disk_1'
-                }
-              ],
-              id: 'client_iqn.1994-05.com.redhat:rh7-client',
-              status: 'logged_in',
-              value: 'iqn.1994-05.com.redhat:rh7-client'
-            }
-          ],
-          settings: {
-            cssClasses: { expanded: 'fa fa-fw fa-user fa-lg', leaf: 'fa fa-fw fa-user' },
-            selectionAllowed: false
+          {
+            cdIcon: 'fa fa-lg fa fa-user',
+            children: [
+              {
+                cdIcon: 'fa fa-user',
+                cdId: 'client_iqn.1994-05.com.redhat:rh7-client',
+                children: [
+                  {
+                    cdIcon: 'fa fa-hdd-o',
+                    cdId: 'disk_rbd_disk_1',
+                    name: 'rbd/disk_1'
+                  }
+                ],
+                name: 'iqn.1994-05.com.redhat:rh7-client',
+                status: 'logged_in'
+              }
+            ],
+            isExpanded: true,
+            name: 'Initiators'
           },
-          value: 'Initiators'
-        },
-        {
-          children: [],
-          settings: {
-            cssClasses: { expanded: 'fa fa-fw fa-users fa-lg', leaf: 'fa fa-fw fa-users' },
-            selectionAllowed: false
-          },
-          value: 'Groups'
-        }
-      ],
-      id: 'root',
-      settings: { cssClasses: { expanded: 'fa fa-fw fa-bullseye fa-lg' }, static: true },
-      value: 'iqn.2003-01.com.redhat.iscsi-gw:iscsi-igw'
-    });
+          {
+            cdIcon: 'fa fa-lg fa fa-users',
+            children: [],
+            isExpanded: true,
+            name: 'Groups'
+          }
+        ],
+        isExpanded: true,
+        name: 'iqn.2003-01.com.redhat.iscsi-gw:iscsi-igw'
+      }
+    ]);
   });
 
   describe('should update data when onNodeSelected is called', () => {
+    let tree: TreeModel;
+
     beforeEach(() => {
       component.ngOnChanges();
+      tree = component.tree.treeModel;
+      fixture.detectChanges();
     });
 
     it('with target selected', () => {
-      const tree = new Tree(component.tree);
-      const node = new NodeEvent(tree);
-      component.onNodeSelected(node);
+      const node = tree.getNodeBy({ data: { cdId: 'root' } });
+      component.onNodeSelected(tree, node);
       expect(component.data).toEqual([
         { current: 128, default: 128, displayName: 'cmdsn_depth' },
         { current: 2, default: 20, displayName: 'dataout_timeout' }
@@ -174,9 +182,8 @@ describe('IscsiTargetDetailsComponent', () => {
     });
 
     it('with disk selected', () => {
-      const tree = new Tree(component.tree.children[0].children[0]);
-      const node = new NodeEvent(tree);
-      component.onNodeSelected(node);
+      const node = tree.getNodeBy({ data: { cdId: 'disk_rbd_disk_1' } });
+      component.onNodeSelected(tree, node);
       expect(component.data).toEqual([
         { current: 1, default: 1024, displayName: 'hw_max_sectors' },
         { current: 8, default: 8, displayName: 'max_data_area_mb' },
@@ -185,9 +192,8 @@ describe('IscsiTargetDetailsComponent', () => {
     });
 
     it('with initiator selected', () => {
-      const tree = new Tree(component.tree.children[2].children[0]);
-      const node = new NodeEvent(tree);
-      component.onNodeSelected(node);
+      const node = tree.getNodeBy({ data: { cdId: 'client_iqn.1994-05.com.redhat:rh7-client' } });
+      component.onNodeSelected(tree, node);
       expect(component.data).toEqual([
         { current: 'myiscsiusername', default: undefined, displayName: 'user' },
         { current: 'myhost', default: undefined, displayName: 'alias' },
@@ -197,9 +203,8 @@ describe('IscsiTargetDetailsComponent', () => {
     });
 
     it('with any other selected', () => {
-      const tree = new Tree(component.tree.children[1].children[0]);
-      const node = new NodeEvent(tree);
-      component.onNodeSelected(node);
+      const node = tree.getNodeBy({ data: { name: 'Disks' } });
+      component.onNodeSelected(tree, node);
       expect(component.data).toBeUndefined();
     });
   });

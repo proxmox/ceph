@@ -55,6 +55,15 @@
 [submodule "src/seastar"]
 	path = src/seastar
 	url = https://github.com/ceph/seastar.git
+[submodule "src/fmt"]
+	path = src/fmt
+	url = https://github.com/ceph/fmt.git
 [submodule "src/c-ares"]
 	path = src/c-ares
 	url = https://github.com/ceph/c-ares.git
+[submodule "src/spawn"]
+	path = src/spawn
+	url = https://github.com/ceph/spawn.git
+[submodule "src/pybind/mgr/rook/rook-client-python"]
+	path = src/pybind/mgr/rook/rook-client-python
+	url = https://github.com/ceph/rook-client-python.git

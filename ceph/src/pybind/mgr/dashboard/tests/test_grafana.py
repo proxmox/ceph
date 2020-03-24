@@ -6,36 +6,36 @@ try:
 except ImportError:
     from unittest.mock import patch
 
+from requests import RequestException
+
 from . import ControllerTestCase, KVStoreMockMixin
 from ..controllers.grafana import Grafana
 from ..grafana import GrafanaRestClient
 from ..settings import Settings
-from .. import mgr
 
 
-class GrafanaTest(ControllerTestCase):
+class GrafanaTest(ControllerTestCase, KVStoreMockMixin):
     @classmethod
     def setup_server(cls):
-        cls.server_settings()
         # pylint: disable=protected-access
         Grafana._cp_config['tools.authenticate.on'] = False
         cls.setup_controllers([Grafana])
 
-    @classmethod
+    def setUp(self):
+        self.mock_kv_store()
+
+    @staticmethod
     def server_settings(
-            cls,
             url='http://localhost:3000',
             user='admin',
             password='admin',
     ):
-        settings = dict()
         if url is not None:
-            settings['GRAFANA_API_URL'] = url
+            Settings.GRAFANA_API_URL = url
         if user is not None:
-            settings['GRAFANA_API_USERNAME'] = user
+            Settings.GRAFANA_API_USERNAME = user
         if password is not None:
-            settings['GRAFANA_API_PASSWORD'] = password
-        mgr.get_module_option.side_effect = settings.get
+            Settings.GRAFANA_API_PASSWORD = password
 
     def test_url(self):
         self.server_settings()
@@ -43,19 +43,32 @@ class GrafanaTest(ControllerTestCase):
         self.assertStatus(200)
         self.assertJsonBody({'instance': 'http://localhost:3000'})
 
-    def test_validation(self):
+    @patch('dashboard.controllers.grafana.GrafanaRestClient.url_validation')
+    def test_validation_endpoint_returns(self, url_validation):
+        """
+        The point of this test is to see that `validation` is an active endpoint that returns a 200
+        status code.
+        """
+        url_validation.return_value = b'404'
         self.server_settings()
         self._get('/api/grafana/validation/foo')
+        self.assertStatus(200)
+        self.assertBody(b'"404"')
+
+    def test_dashboards_unavailable_no_url(self):
+        self.server_settings(url="")
+        self._post('/api/grafana/dashboards')
         self.assertStatus(500)
 
-    def test_dashboards(self):
-        self.server_settings(url=None)
+    @patch('dashboard.controllers.grafana.GrafanaRestClient.push_dashboard')
+    def test_dashboards_unavailable_no_user(self, pd):
+        pd.side_effect = RequestException
+        self.server_settings(user="")
         self._post('/api/grafana/dashboards')
         self.assertStatus(500)
-        self.server_settings(user=None)
-        self._post('/api/grafana/dashboards')
-        self.assertStatus(500)
-        self.server_settings(password=None)
+
+    def test_dashboards_unavailable_no_password(self):
+        self.server_settings(password="")
         self._post('/api/grafana/dashboards')
         self.assertStatus(500)
 

@@ -24,7 +24,7 @@
 #include "messages/MMonCommand.h"
 
 #include "common/LogClient.h"
-#include "common/Mutex.h"
+#include "common/ceph_mutex.h"
 #include "common/Timer.h"
 #include "include/Context.h"
 #include "include/types.h"
@@ -35,22 +35,15 @@
 #include "MDSMap.h"
 #include "MDSRank.h"
 
-#define CEPH_MDS_PROTOCOL    34 /* cluster internal */
+#define CEPH_MDS_PROTOCOL    35 /* cluster internal */
 
 class Messenger;
 class MonClient;
 
 class MDSDaemon : public Dispatcher {
  public:
-  /* Global MDS lock: every time someone takes this, they must
-   * also check the `stopping` flag.  If stopping is true, you
-   * must either do nothing and immediately drop the lock, or
-   * never drop the lock again (i.e. call respawn()) */
-  Mutex        mds_lock;
-  bool         stopping;
-
-  SafeTimer    timer;
-  std::string gss_ktfile_client{};
+  MDSDaemon(std::string_view n, Messenger *m, MonClient *mc);
+  ~MDSDaemon() override;
 
   mono_time get_starttime() const {
     return starttime;
@@ -59,26 +52,6 @@ class MDSDaemon : public Dispatcher {
     mono_time now = mono_clock::now();
     return chrono::duration<double>(now-starttime);
   }
-
- protected:
-  Beacon  beacon;
-
-  std::string name;
-
-  Messenger    *messenger;
-  MonClient    *monc;
-  MgrClient     mgrc;
-  std::unique_ptr<MDSMap> mdsmap;
-  LogClient    log_client;
-  LogChannelRef clog;
-
-  MDSRankDispatcher *mds_rank;
-
- public:
-  MDSDaemon(std::string_view n, Messenger *m, MonClient *mc);
-  ~MDSDaemon() override;
-  int orig_argc;
-  const char **orig_argv;
 
   // handle a signal (e.g., SIGTERM)
   void handle_signal(int signum);
@@ -92,33 +65,40 @@ class MDSDaemon : public Dispatcher {
    * such that deleting xlists doesn't assert.
    */
   bool is_clean_shutdown();
- protected:
-  // tick and other timer fun
-  Context *tick_event = nullptr;
-  void     reset_tick();
 
-  void wait_for_omap_osds();
+  /* Global MDS lock: every time someone takes this, they must
+   * also check the `stopping` flag.  If stopping is true, you
+   * must either do nothing and immediately drop the lock, or
+   * never drop the lock again (i.e. call respawn()) */
+  ceph::mutex mds_lock = ceph::make_mutex("MDSDaemon::mds_lock");
+  bool stopping = false;
 
- private:
-  bool ms_dispatch2(const Message::ref &m) override;
-  bool ms_get_authorizer(int dest_type, AuthAuthorizer **authorizer) override;
-  int ms_handle_authentication(Connection *con) override;
-  KeyStore *ms_get_auth1_authorizer_keystore() override;
-  void ms_handle_accept(Connection *con) override;
-  void ms_handle_connect(Connection *con) override;
-  bool ms_handle_reset(Connection *con) override;
-  void ms_handle_remote_reset(Connection *con) override;
-  bool ms_handle_refused(Connection *con) override;
+  SafeTimer    timer;
+  std::string gss_ktfile_client{};
+
+  int orig_argc;
+  const char **orig_argv;
+
 
  protected:
   // admin socket handling
   friend class MDSSocketHook;
-  class MDSSocketHook *asok_hook;
+
+  // special message types
+  friend class C_MDS_Send_Command_Reply;
+
+  void reset_tick();
+  void wait_for_omap_osds();
+
   void set_up_admin_socket();
   void clean_up_admin_socket();
   void check_ops_in_flight(); // send off any slow ops to monitor
-  bool asok_command(std::string_view command, const cmdmap_t& cmdmap,
-		    std::string_view format, ostream& ss);
+  void asok_command(
+    std::string_view command,
+    const cmdmap_t& cmdmap,
+    Formatter *f,
+    const bufferlist &inbl,
+    std::function<void(int,const std::string&,bufferlist&)> on_finish);
 
   void dump_status(Formatter *f);
 
@@ -137,37 +117,37 @@ class MDSDaemon : public Dispatcher {
   void respawn();
 
   void tick();
+
+  bool handle_core_message(const cref_t<Message> &m);
   
-protected:
-  bool handle_core_message(const Message::const_ref &m);
-  
-  // special message types
-  friend class C_MDS_Send_Command_Reply;
-  static void send_command_reply(const MCommand::const_ref &m, MDSRank* mds_rank, int r,
-				 bufferlist outbl, std::string_view outs);
-  int _handle_command(
-      const cmdmap_t &cmdmap,
-      const MCommand::const_ref &m,
-      bufferlist *outbl,
-      std::string *outs,
-      Context **run_later,
-      bool *need_reply);
-  void handle_command(const MCommand::const_ref &m);
-  void handle_mds_map(const MMDSMap::const_ref &m);
-  void _handle_mds_map(const MDSMap &oldmap);
+  void handle_command(const cref_t<MCommand> &m);
+  void handle_mds_map(const cref_t<MMDSMap> &m);
 
-private:
-  struct MDSCommand {
-    MDSCommand(std::string_view signature, std::string_view help)
-        : cmdstring(signature), helpstring(help)
-    {}
+  Beacon beacon;
 
-    std::string cmdstring;
-    std::string helpstring;
-    std::string module = "mds";
-  };
+  std::string name;
 
-  static const std::vector<MDSCommand>& get_commands();
+  Messenger    *messenger;
+  MonClient    *monc;
+  MgrClient     mgrc;
+  std::unique_ptr<MDSMap> mdsmap;
+  LogClient    log_client;
+  LogChannelRef clog;
+
+  MDSRankDispatcher *mds_rank = nullptr;
+
+  // tick and other timer fun
+  Context *tick_event = nullptr;
+  class MDSSocketHook *asok_hook = nullptr;
+
+ private:
+  bool ms_dispatch2(const ref_t<Message> &m) override;
+  int ms_handle_authentication(Connection *con) override;
+  void ms_handle_accept(Connection *con) override;
+  void ms_handle_connect(Connection *con) override;
+  bool ms_handle_reset(Connection *con) override;
+  void ms_handle_remote_reset(Connection *con) override;
+  bool ms_handle_refused(Connection *con) override;
 
   bool parse_caps(const AuthCapsInfo&, MDSAuthCaps&);
 

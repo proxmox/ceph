@@ -1,9 +1,7 @@
-/*
- * Copyright (c) 2016 QLogic Corporation.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright (c) 2016 - 2018 Cavium Inc.
  * All rights reserved.
- * www.qlogic.com
- *
- * See LICENSE.qede_pmd for copyright and licensing details.
+ * www.cavium.com
  */
 
 #ifndef __ECORE_PROTO_IF_H__
@@ -22,14 +20,21 @@ struct ecore_eth_pf_params {
 	 */
 	u16	num_cons;
 
+	/* per-VF number of CIDs */
+	u8	num_vf_cons;
+#define ETH_PF_PARAMS_VF_CONS_DEFAULT	(32)
+
 	/* To enable arfs, previous to HW-init a positive number needs to be
 	 * set [as filters require allocated searcher ILT memory].
 	 * This will set the maximal number of configured steering-filters.
 	 */
 	u32	num_arfs_filters;
+
+	/* To allow VF to change its MAC despite of PF set forced MAC. */
+	bool	allow_vf_mac_change;
 };
 
-/* Most of the the parameters below are described in the FW iSCSI / TCP HSI */
+/* Most of the parameters below are described in the FW iSCSI / TCP HSI */
 struct ecore_iscsi_pf_params {
 	u64		glbl_q_params_addr;
 	u64		bdq_pbl_base_addr[2];
@@ -67,6 +72,7 @@ struct ecore_iscsi_pf_params {
 
 	u8		is_target;
 	u8		bdq_pbl_num_entries[2];
+	u8		disable_stats_collection;
 };
 
 enum ecore_rdma_protocol {

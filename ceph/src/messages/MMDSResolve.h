@@ -19,26 +19,54 @@
 
 #include "include/types.h"
 
-class MMDSResolve : public MessageInstance<MMDSResolve> {
-public:
-  friend factory;
+#include "mds/Capability.h"
 
+class MMDSResolve : public SafeMessage {
+  static const int HEAD_VERSION = 1;
+  static const int COMPAT_VERSION = 1;
+
+public:
   map<dirfrag_t, vector<dirfrag_t> > subtrees;
   map<dirfrag_t, vector<dirfrag_t> > ambiguous_imports;
+
+  class slave_inode_cap {
+  public:
+    inodeno_t ino;
+    map<client_t,Capability::Export> cap_exports;
+    slave_inode_cap() {}
+    slave_inode_cap(inodeno_t a, map<client_t, Capability::Export> b) : ino(a), cap_exports(b) {}
+    void encode(bufferlist &bl) const 
+    {
+      ENCODE_START(1, 1, bl);
+      encode(ino, bl);
+      encode(cap_exports, bl);
+      ENCODE_FINISH(bl);
+    }
+    void decode(bufferlist::const_iterator &blp)
+    {
+      DECODE_START(1, blp);
+      decode(ino, blp);
+      decode(cap_exports, blp);
+      DECODE_FINISH(blp);
+    }
+  };
+  WRITE_CLASS_ENCODER(slave_inode_cap)
 
   struct slave_request {
     bufferlist inode_caps;
     bool committing;
     slave_request() : committing(false) {}
     void encode(bufferlist &bl) const {
-      using ceph::encode;
+      ENCODE_START(1, 1, bl);
       encode(inode_caps, bl);
       encode(committing, bl);
+      ENCODE_FINISH(bl);
     }
-    void decode(bufferlist::const_iterator &bl) {
-      using ceph::decode;
-      decode(inode_caps, bl);
-      decode(committing, bl);
+    void decode(bufferlist::const_iterator &blp) {
+      DECODE_START(1, blp);
+      decode(inode_caps, blp);
+      decode(committing, blp);
+      DECODE_FINISH(blp);
     }
   };
 
@@ -68,7 +96,8 @@ public:
   list<table_client> table_clients;
 
 protected:
-  MMDSResolve() : MessageInstance(MSG_MDS_RESOLVE) {}
+  MMDSResolve() : SafeMessage{MSG_MDS_RESOLVE, HEAD_VERSION, COMPAT_VERSION}
+ {}
   ~MMDSResolve() override {}
 
 public:
@@ -118,6 +147,9 @@ public:
     decode(slave_requests, p);
     decode(table_clients, p);
   }
+private:
+  template<class T, typename... Args>
+  friend boost::intrusive_ptr<T> ceph::make_message(Args&&... args);
 };
 
 inline ostream& operator<<(ostream& out, const MMDSResolve::slave_request&) {
@@ -126,4 +158,5 @@ inline ostream& operator<<(ostream& out, const MMDSResolve::slave_request&) {
 
 WRITE_CLASS_ENCODER(MMDSResolve::slave_request)
 WRITE_CLASS_ENCODER(MMDSResolve::table_client)
+WRITE_CLASS_ENCODER(MMDSResolve::slave_inode_cap)
 #endif

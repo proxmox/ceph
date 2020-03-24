@@ -26,9 +26,9 @@ static const struct rte_cryptodev_capabilities openssl_pmd_capabilities[] = {
 					.increment = 1
 				},
 				.digest_size = {
-					.min = 16,
+					.min = 1,
 					.max = 16,
-					.increment = 0
+					.increment = 1
 				},
 				.iv_size = { 0 }
 			}, }
@@ -68,9 +68,9 @@ static const struct rte_cryptodev_capabilities openssl_pmd_capabilities[] = {
 					.increment = 1
 				},
 				.digest_size = {
-					.min = 20,
+					.min = 1,
 					.max = 20,
-					.increment = 0
+					.increment = 1
 				},
 				.iv_size = { 0 }
 			}, }
@@ -110,9 +110,9 @@ static const struct rte_cryptodev_capabilities openssl_pmd_capabilities[] = {
 					.increment = 1
 				},
 				.digest_size = {
-					.min = 28,
+					.min = 1,
 					.max = 28,
-					.increment = 0
+					.increment = 1
 				},
 				.iv_size = { 0 }
 			}, }
@@ -131,9 +131,9 @@ static const struct rte_cryptodev_capabilities openssl_pmd_capabilities[] = {
 					.increment = 0
 				},
 				.digest_size = {
-					.min = 28,
+					.min = 1,
 					.max = 28,
-					.increment = 0
+					.increment = 1
 				},
 				.iv_size = { 0 }
 			}, }
@@ -152,9 +152,9 @@ static const struct rte_cryptodev_capabilities openssl_pmd_capabilities[] = {
 					.increment = 1
 				},
 				.digest_size = {
-					.min = 32,
+					.min = 1,
 					.max = 32,
-					.increment = 0
+					.increment = 1
 				},
 				.iv_size = { 0 }
 			}, }
@@ -194,9 +194,9 @@ static const struct rte_cryptodev_capabilities openssl_pmd_capabilities[] = {
 					.increment = 1
 				},
 				.digest_size = {
-					.min = 48,
+					.min = 1,
 					.max = 48,
-					.increment = 0
+					.increment = 1
 				},
 				.iv_size = { 0 }
 			}, }
@@ -236,9 +236,9 @@ static const struct rte_cryptodev_capabilities openssl_pmd_capabilities[] = {
 					.increment = 1
 				},
 				.digest_size = {
-					.min = 64,
+					.min = 1,
 					.max = 64,
-					.increment = 0
+					.increment = 1
 				},
 				.iv_size = { 0 }
 			}, }
@@ -657,6 +657,11 @@ static int
 openssl_pmd_qp_release(struct rte_cryptodev *dev, uint16_t qp_id)
 {
 	if (dev->data->queue_pairs[qp_id] != NULL) {
+		struct openssl_qp *qp = dev->data->queue_pairs[qp_id];
+
+		if (qp->processed_ops)
+			rte_ring_free(qp->processed_ops);
+
 		rte_free(dev->data->queue_pairs[qp_id]);
 		dev->data->queue_pairs[qp_id] = NULL;
 	}
@@ -710,7 +715,7 @@ openssl_pmd_qp_create_processed_ops_ring(struct openssl_qp *qp,
 static int
 openssl_pmd_qp_setup(struct rte_cryptodev *dev, uint16_t qp_id,
 		const struct rte_cryptodev_qp_conf *qp_conf,
-		int socket_id, struct rte_mempool *session_pool)
+		int socket_id)
 {
 	struct openssl_qp *qp = NULL;
 
@@ -735,7 +740,8 @@ openssl_pmd_qp_setup(struct rte_cryptodev *dev, uint16_t qp_id,
 	if (qp->processed_ops == NULL)
 		goto qp_setup_cleanup;
 
-	qp->sess_mp = session_pool;
+	qp->sess_mp = qp_conf->mp_session;
+	qp->sess_mp_priv = qp_conf->mp_session_private;
 
 	memset(&qp->stats, 0, sizeof(qp->stats));
 
@@ -875,14 +881,14 @@ static int openssl_set_asym_session_parameters(
 				RSA_free(rsa);
 				goto err_rsa;
 			}
-			set_rsa_params(rsa, p, q, ret);
+			ret = set_rsa_params(rsa, p, q);
 			if (ret) {
 				OPENSSL_LOG(ERR,
 					"failed to set rsa params\n");
 				RSA_free(rsa);
 				goto err_rsa;
 			}
-			set_rsa_crt_params(rsa, dmp1, dmq1, iqmp, ret);
+			ret = set_rsa_crt_params(rsa, dmp1, dmq1, iqmp);
 			if (ret) {
 				OPENSSL_LOG(ERR,
 					"failed to set crt params\n");
@@ -896,7 +902,7 @@ static int openssl_set_asym_session_parameters(
 			}
 		}
 
-		set_rsa_keys(rsa, n, e, d, ret);
+		ret = set_rsa_keys(rsa, n, e, d);
 		if (ret) {
 			OPENSSL_LOG(ERR, "Failed to load rsa keys\n");
 			RSA_free(rsa);
@@ -906,22 +912,14 @@ static int openssl_set_asym_session_parameters(
 		asym_session->xfrm_type = RTE_CRYPTO_ASYM_XFORM_RSA;
 		break;
 err_rsa:
-		if (n)
-			BN_free(n);
-		if (e)
-			BN_free(e);
-		if (d)
-			BN_free(d);
-		if (p)
-			BN_free(p);
-		if (q)
-			BN_free(q);
-		if (dmp1)
-			BN_free(dmp1);
-		if (dmq1)
-			BN_free(dmq1);
-		if (iqmp)
-			BN_free(iqmp);
+		BN_free(n);
+		BN_free(e);
+		BN_free(d);
+		BN_free(p);
+		BN_free(q);
+		BN_free(dmp1);
+		BN_free(dmq1);
+		BN_free(iqmp);
 
 		return -1;
 	}
@@ -1005,7 +1003,7 @@ err_rsa:
 				"failed to allocate resources\n");
 			goto err_dh;
 		}
-		set_dh_params(dh, p, g, ret);
+		ret = set_dh_params(dh, p, g);
 		if (ret) {
 			DH_free(dh);
 			goto err_dh;
@@ -1043,10 +1041,8 @@ err_rsa:
 
 err_dh:
 		OPENSSL_LOG(ERR, " failed to set dh params\n");
-		if (p)
-			BN_free(p);
-		if (g)
-			BN_free(g);
+		BN_free(p);
+		BN_free(g);
 		return -1;
 	}
 	case RTE_CRYPTO_ASYM_XFORM_DSA:
@@ -1087,7 +1083,7 @@ err_dh:
 			goto err_dsa;
 		}
 
-		set_dsa_params(dsa, p, q, g, ret);
+		ret = set_dsa_params(dsa, p, q, g);
 		if (ret) {
 			DSA_free(dsa);
 			OPENSSL_LOG(ERR, "Failed to dsa params\n");
@@ -1101,7 +1097,7 @@ err_dh:
 		 * both versions
 		 */
 		/* just set dummy public for very 1st call */
-		set_dsa_keys(dsa, pub_key, priv_key, ret);
+		ret = set_dsa_keys(dsa, pub_key, priv_key);
 		if (ret) {
 			DSA_free(dsa);
 			OPENSSL_LOG(ERR, "Failed to set keys\n");
@@ -1112,16 +1108,11 @@ err_dh:
 		break;
 
 err_dsa:
-		if (p)
-			BN_free(p);
-		if (q)
-			BN_free(q);
-		if (g)
-			BN_free(g);
-		if (priv_key)
-			BN_free(priv_key);
-		if (pub_key)
-			BN_free(pub_key);
+		BN_free(p);
+		BN_free(q);
+		BN_free(g);
+		BN_free(priv_key);
+		BN_free(pub_key);
 		return -1;
 	}
 	default:

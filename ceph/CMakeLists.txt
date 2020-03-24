@@ -1,29 +1,24 @@
-cmake_minimum_required(VERSION 3.5.1)
+cmake_minimum_required(VERSION 3.10.2)
+# remove cmake/modules/FindPython* once 3.12 is required
 
-project(ceph CXX C ASM)
-set(VERSION 14.2.8)
+project(ceph
+  VERSION 15.1.0
+  LANGUAGES CXX C ASM)
 
-if(POLICY CMP0028)
-  cmake_policy(SET CMP0028 NEW)
-endif()
-if(POLICY CMP0046)
-  cmake_policy(SET CMP0046 NEW)
-endif()
-if(POLICY CMP0054)
-  cmake_policy(SET CMP0054 NEW)
-endif()
-if(POLICY CMP0056)
-  cmake_policy(SET CMP0056 NEW)
-endif()
-if(POLICY CMP0065)
-  cmake_policy(SET CMP0065 NEW)
-endif()
-if(POLICY CMP0051)
-  cmake_policy(SET CMP0051 NEW)
-endif()
-if(POLICY CMP0075)
-  cmake_policy(SET CMP0075 NEW)
-endif()
+foreach(policy
+    CMP0028
+    CMP0046
+    CMP0048
+    CMP0051
+    CMP0054
+    CMP0056
+    CMP0065
+    CMP0075)
+  if(POLICY ${policy})
+    cmake_policy(SET ${policy} NEW)
+  endif()
+endforeach()
+
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake/modules/")
 
 if(CMAKE_SYSTEM_NAME MATCHES "Linux")
@@ -34,25 +29,31 @@ elseif(CMAKE_SYSTEM_NAME MATCHES "FreeBSD")
   FIND_PACKAGE(Threads)
 endif(CMAKE_SYSTEM_NAME MATCHES "Linux")
 
-if(CMAKE_CXX_COMPILER_ID STREQUAL GNU)
-  if(CMAKE_CXX_COMPILER_VERSION VERSION_LESS 7)
-    message(FATAL_ERROR "GCC 7+ required due to C++17 requirements")
-  endif()
+if(WIN32)
+  # The Windows headers (e.g. coming from mingw or the Windows SDK) check
+  # the targeted Windows version. The availability of certain functions and
+  # structures will depend on it.
+  set(WIN32_WINNT "0x0A00" CACHE STRING "Targeted Windows version.")
+  add_definitions(-D_WIN32_WINNT=${WIN32_WINNT})
+endif()
+
+if(MINGW)
+  set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,-allow-multiple-definition")
+  set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,-allow-multiple-definition")
 endif()
 
 option(WITH_CCACHE "Build with ccache.")
 if(WITH_CCACHE)
   find_program(CCACHE_FOUND ccache)
-  if(CCACHE_FOUND)
-    message(STATUS "Building with ccache: ${CCACHE_FOUND}, CCACHE_DIR=$ENV{CCACHE_DIR}")
-    set_property(GLOBAL PROPERTY RULE_LAUNCH_COMPILE ccache)
-    # ccache does not accelerate link (ld), but let it handle it. by passing it
-    # along with cc to python's distutils, we are able to workaround
-    # https://bugs.python.org/issue8027.
-    set_property(GLOBAL PROPERTY RULE_LAUNCH_LINK ccache)
-  else(CCACHE_FOUND)
+  if(NOT CCACHE_FOUND)
     message(FATAL_ERROR "Can't find ccache. Is it installed?")
-  endif(CCACHE_FOUND)
+  endif()
+  message(STATUS "Building with ccache: ${CCACHE_FOUND}, CCACHE_DIR=$ENV{CCACHE_DIR}")
+  set_property(GLOBAL PROPERTY RULE_LAUNCH_COMPILE ccache)
+  # ccache does not accelerate link (ld), but let it handle it. by passing it
+  # along with cc to python's distutils, we are able to workaround
+  # https://bugs.python.org/issue8027.
+  set_property(GLOBAL PROPERTY RULE_LAUNCH_LINK ccache)
 endif(WITH_CCACHE)
 
 option(WITH_MANPAGE "Build man pages." ON)
@@ -79,97 +80,13 @@ if(FREEBSD)
   list(APPEND CMAKE_REQUIRED_INCLUDES /usr/local/include)
 endif(FREEBSD)
 
-#Check Includes
-include(CheckIncludeFiles)
-include(CheckIncludeFileCXX)
-include(CheckFunctionExists)
 
 #put all the libs and binaries in one place
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
-
-CHECK_FUNCTION_EXISTS(fallocate CEPH_HAVE_FALLOCATE)
-CHECK_FUNCTION_EXISTS(posix_fadvise HAVE_POSIX_FADVISE)
-CHECK_FUNCTION_EXISTS(posix_fallocate HAVE_POSIX_FALLOCATE)
-CHECK_FUNCTION_EXISTS(syncfs HAVE_SYS_SYNCFS)
-CHECK_FUNCTION_EXISTS(sync_file_range HAVE_SYNC_FILE_RANGE)
-CHECK_FUNCTION_EXISTS(pwritev HAVE_PWRITEV)
-CHECK_FUNCTION_EXISTS(splice CEPH_HAVE_SPLICE)
-CHECK_FUNCTION_EXISTS(getgrouplist HAVE_GETGROUPLIST)
-if(NOT APPLE)
-  CHECK_FUNCTION_EXISTS(fdatasync HAVE_FDATASYNC)
-endif()
-CHECK_FUNCTION_EXISTS(strerror_r HAVE_Strerror_R)
-CHECK_FUNCTION_EXISTS(name_to_handle_at HAVE_NAME_TO_HANDLE_AT)
-CHECK_FUNCTION_EXISTS(pipe2 HAVE_PIPE2)
-CHECK_FUNCTION_EXISTS(accept4 HAVE_ACCEPT4)
-
-include(CMakePushCheckState)
-cmake_push_check_state(RESET)
-set(CMAKE_REQUIRED_LIBRARIES pthread)
-CHECK_FUNCTION_EXISTS(pthread_spin_init HAVE_PTHREAD_SPINLOCK)
-CHECK_FUNCTION_EXISTS(pthread_set_name_np HAVE_PTHREAD_SET_NAME_NP)
-CHECK_FUNCTION_EXISTS(pthread_get_name_np HAVE_PTHREAD_GET_NAME_NP)
-CHECK_FUNCTION_EXISTS(pthread_setname_np HAVE_PTHREAD_SETNAME_NP)
-CHECK_FUNCTION_EXISTS(pthread_getname_np HAVE_PTHREAD_GETNAME_NP)
-CHECK_FUNCTION_EXISTS(pthread_rwlockattr_setkind_np HAVE_PTHREAD_RWLOCKATTR_SETKIND_NP)
-cmake_pop_check_state()
-
-CHECK_FUNCTION_EXISTS(eventfd HAVE_EVENTFD)
-CHECK_FUNCTION_EXISTS(getprogname HAVE_GETPROGNAME)
-
-CHECK_INCLUDE_FILES("linux/types.h" HAVE_LINUX_TYPES_H)
-CHECK_INCLUDE_FILES("linux/version.h" HAVE_LINUX_VERSION_H)
-CHECK_INCLUDE_FILES("arpa/nameser_compat.h" HAVE_ARPA_NAMESER_COMPAT_H)
-CHECK_INCLUDE_FILES("sys/mount.h" HAVE_SYS_MOUNT_H)
-CHECK_INCLUDE_FILES("sys/param.h" HAVE_SYS_PARAM_H)
-CHECK_INCLUDE_FILES("sys/types.h" HAVE_SYS_TYPES_H)
-CHECK_INCLUDE_FILES("sys/vfs.h" HAVE_SYS_VFS_H)
-CHECK_INCLUDE_FILES("sys/prctl.h" HAVE_SYS_PRCTL_H)
-CHECK_INCLUDE_FILES("execinfo.h" HAVE_EXECINFO_H)
-if(LINUX)
-  CHECK_INCLUDE_FILES("sched.h" HAVE_SCHED)
-endif(LINUX)
-CHECK_INCLUDE_FILES("valgrind/helgrind.h" HAVE_VALGRIND_HELGRIND_H)
-
-include(CheckTypeSize)
-set(CMAKE_EXTRA_INCLUDE_FILES "linux/types.h")
-CHECK_TYPE_SIZE(__be16 __BE16) 
-CHECK_TYPE_SIZE(__be32 __BE32) 
-CHECK_TYPE_SIZE(__be64 __BE64) 
-CHECK_TYPE_SIZE(__le16 __LE16) 
-CHECK_TYPE_SIZE(__le32 __LE32) 
-CHECK_TYPE_SIZE(__le64 __LE64) 
-CHECK_TYPE_SIZE(__u8 __U8) 
-CHECK_TYPE_SIZE(__u16 __U16) 
-CHECK_TYPE_SIZE(__u32 __U32) 
-CHECK_TYPE_SIZE(__u64 __U64) 
-CHECK_TYPE_SIZE(__s8 __S8) 
-CHECK_TYPE_SIZE(__s16 __S16) 
-CHECK_TYPE_SIZE(__s32 __S32) 
-CHECK_TYPE_SIZE(__s64 __S64) 
-unset(CMAKE_EXTRA_INCLUDE_FILES)
-
-include(CheckSymbolExists)
-CHECK_SYMBOL_EXISTS(res_nquery "resolv.h" HAVE_RES_NQUERY)
-CHECK_SYMBOL_EXISTS(F_SETPIPE_SZ "linux/fcntl.h" CEPH_HAVE_SETPIPE_SZ)
-CHECK_SYMBOL_EXISTS(__func__ "" HAVE_FUNC)
-CHECK_SYMBOL_EXISTS(__PRETTY_FUNCTION__ "" HAVE_PRETTY_FUNC)
-CHECK_SYMBOL_EXISTS(getentropy "unistd.h" HAVE_GETENTROPY)
-
-include(CheckCXXSourceCompiles)
-CHECK_CXX_SOURCE_COMPILES("
-  #include <string.h>
-  int main() { char x = *strerror_r(0, &x, sizeof(x)); return 0; }
-  " STRERROR_R_CHAR_P)
-
-include(CheckStructHasMember)
-CHECK_STRUCT_HAS_MEMBER("struct stat" st_mtim.tv_nsec sys/stat.h
-  HAVE_STAT_ST_MTIM_TV_NSEC LANGUAGE C)
-CHECK_STRUCT_HAS_MEMBER("struct stat" st_mtimespec.tv_nsec sys/stat.h
-  HAVE_STAT_ST_MTIMESPEC_TV_NSEC LANGUAGE C)
+include(CephChecks)
 
 set(CEPH_MAN_DIR "share/man" CACHE STRING "Install location for man pages (relative to prefix).")
 
@@ -183,15 +100,14 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ${ENABLE_SHARED})
 
 option(WITH_STATIC_LIBSTDCXX "Link against libstdc++ statically" OFF)
 if(WITH_STATIC_LIBSTDCXX)
-  if(CMAKE_COMPILER_IS_GNUCXX)
-    set(static_linker_flags "-static-libstdc++ -static-libgcc")
-    set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} ${static_linker_flags}")
-    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} ${static_linker_flags}")
-    unset(static_linker_flags)
-    set(GPERFTOOLS_USE_STATIC_LIBS TRUE)
-  else()
+  if(NOT CMAKE_COMPILER_IS_GNUCXX)
     message(FATAL_ERROR "Please use GCC to enable WITH_STATIC_LIBSTDCXX")
   endif()
+  set(static_linker_flags "-static-libstdc++ -static-libgcc")
+  set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} ${static_linker_flags}")
+  set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} ${static_linker_flags}")
+  unset(static_linker_flags)
+  set(GPERFTOOLS_USE_STATIC_LIBS TRUE)
 endif()
 include(CheckCxxAtomic)
 if(NOT HAVE_CXX11_ATOMIC)
@@ -210,33 +126,23 @@ endif()
 
 find_package(Backtrace)
 
-# remote block storage
-option(WITH_RBD "Remote block storage is here" ON)
+option(WITH_RBD "Enable RADOS Block Device related targets" ON)
 
 if(LINUX)
   find_package(udev REQUIRED)
   set(HAVE_UDEV ${UDEV_FOUND})
   find_package(blkid REQUIRED)
   set(HAVE_BLKID ${BLKID_FOUND})
-  if(WITH_RBD)
-    find_package(genl REQUIRED)
-    set(HAVE_GENL $GENL_FOUND)
-  endif()
   find_package(keyutils REQUIRED)
   set(HAVE_KEYUTILS ${KEYUTILS_FOUND})
 elseif(FREEBSD)
   set(HAVE_UDEV OFF)
   set(HAVE_LIBAIO OFF)
   set(HAVE_BLKID OFF)
-  set(HAVE_GENL OFF)
   set(HAVE_KEYUTILS OFF)
 else()
   set(HAVE_UDEV OFF)
-  message(STATUS "Not using udev")
   set(HAVE_BLKID OFF)
-  message(STATUS "Not using BLKID")
-  set(HAVE_GENL OFF)
-  message(STATUS "Not using GENL")
 endif(LINUX)
 
 option(WITH_OPENLDAP "OPENLDAP is here" ON)
@@ -280,7 +186,26 @@ if(WITH_BLUESTORE)
   endif()
 endif()
 
-option(WITH_SPDK "Enable SPDK" OFF)
+include(CMakeDependentOption)
+CMAKE_DEPENDENT_OPTION(WITH_LIBURING "Build with liburing library support" OFF
+  "WITH_BLUESTORE;HAVE_LIBAIO" OFF)
+set(HAVE_LIBURING ${WITH_LIBURING})
+
+CMAKE_DEPENDENT_OPTION(WITH_BLUESTORE_PMEM "Enable PMDK libraries" OFF
+  "WITH_BLUESTORE" OFF)
+
+CMAKE_DEPENDENT_OPTION(WITH_RBD_RWL "Enable librbd persistent write back cache" OFF
+  "WITH_RBD" OFF)
+
+CMAKE_DEPENDENT_OPTION(WITH_SYSTEM_PMDK "Require and build with system PMDK" OFF
+  "WITH_RBD_RWL OR WITH_BLUESTORE_PMEM" OFF)
+
+if(WITH_BLUESTORE_PMEM)
+  set(HAVE_BLUESTORE_PMEM ON)
+endif()
+
+CMAKE_DEPENDENT_OPTION(WITH_SPDK "Enable SPDK" OFF
+  "CMAKE_SYSTEM_PROCESSOR MATCHES i386|i686|amd64|x86_64|AMD64|aarch64" OFF)
 if(WITH_SPDK)
   if(NOT WITH_BLUESTORE)
     message(SEND_ERROR "Please enable WITH_BLUESTORE for using SPDK")
@@ -290,19 +215,11 @@ if(WITH_SPDK)
   set(HAVE_SPDK TRUE)
 endif(WITH_SPDK)
 
-option(WITH_PMEM "Enable PMEM" OFF)
-if(WITH_PMEM)
-  set(HAVE_PMEM ON)
-  if(NOT WITH_BLUESTORE)
-    message(SEND_ERROR "Please enable WITH_BLUESTORE for using PMEM")
-  endif()
-endif()
-
 if(WITH_BLUESTORE)
-  if(NOT AIO_FOUND AND NOT HAVE_POSIXAIO AND NOT WITH_SPDK AND NOT WITH_PMEM)
+  if(NOT AIO_FOUND AND NOT HAVE_POSIXAIO AND NOT WITH_SPDK AND NOT WITH_BLUESTORE_PMEM)
     message(SEND_ERROR "WITH_BLUESTORE is ON, "
       "but none of the bluestore backends is enabled. "
-      "Please install libaio, or enable WITH_SPDK or WITH_PMEM (experimental)")
+      "Please install libaio, or enable WITH_SPDK or WITH_BLUESTORE_PMEM (experimental)")
   endif()
 endif()
 
@@ -320,11 +237,10 @@ option(WITH_LIBCEPHFS "libcephfs client library" ON)
 # key-value store
 option(WITH_KVS "Key value store is here" ON)
 
-# KERNEL remote block storage
-option(WITH_KRBD "Kernel Remote block storage is here" ON)
+option(WITH_KRBD "Enable Linux krbd support of 'rbd' utility" ON)
 
-if(WITH_KRBD AND WITHOUT_RBD)
-  message(FATAL_ERROR "Cannot have WITH_KRBD with WITH_RBD.")
+if(WITH_KRBD AND NOT WITH_RBD)
+  message(FATAL_ERROR "Cannot have WITH_KRBD without WITH_RBD.")
 endif()
 if(LINUX)
   if(WITH_LIBCEPHFS OR WITH_KRBD)
@@ -399,29 +315,22 @@ else()
   set(EXE_LINKER_USE_PIE ${ENABLE_SHARED})
 endif()
 
+if (HAVE_LIBTCMALLOC AND TCMALLOC_VERSION_STRING VERSION_LESS 2.6.2)
+  set(LIBTCMALLOC_MISSING_ALIGNED_ALLOC ON)
+endif()
+
 find_package(CURL REQUIRED)
 set(CMAKE_REQUIRED_INCLUDES ${CURL_INCLUDE_DIRS})
 set(CMAKE_REQUIRED_LIBRARIES ${CURL_LIBRARIES})
 CHECK_SYMBOL_EXISTS(curl_multi_wait curl/curl.h HAVE_CURL_MULTI_WAIT)
 
-find_package(NSS REQUIRED)
-find_package(NSPR REQUIRED)
 find_package(OpenSSL REQUIRED)
-# TODO: use NSS only for validation of the OpenSSL-based implementations
-set(USE_NSS 1)
-set(USE_OPENSSL 1)
-set(CRYPTO_LIBS ${NSS_LIBRARIES} ${NSPR_LIBRARIES} OpenSSL::Crypto)
-
-option(WITH_XIO "Enable XIO messaging" OFF)
-if(WITH_XIO)
-  find_package(xio REQUIRED)
-  set(HAVE_XIO ${XIO_FOUND})
-endif()
+set(CRYPTO_LIBS OpenSSL::Crypto)
 
 option(WITH_DPDK "Enable DPDK messaging" OFF)
 if(WITH_DPDK)
   find_package(dpdk)
-  if(NOT DPDK_FOUND AND NOT TARGET dpdk-ext)
+  if(NOT DPDK_FOUND)
     include(BuildDPDK)
     build_dpdk(${CMAKE_BINARY_DIR}/src/dpdk)
   endif()
@@ -445,6 +354,7 @@ option(WITH_RADOSGW_FCGI_FRONTEND "Rados Gateway's FCGI frontend is enabled" OFF
 option(WITH_RADOSGW_BEAST_FRONTEND "Rados Gateway's Beast frontend is enabled" ON)
 option(WITH_RADOSGW_BEAST_OPENSSL "Rados Gateway's Beast frontend uses OpenSSL" ON)
 option(WITH_RADOSGW_AMQP_ENDPOINT "Rados Gateway's pubsub support for AMQP push endpoint" ON)
+option(WITH_RADOSGW_KAFKA_ENDPOINT "Rados Gateway's pubsub support for Kafka push endpoint" ON)
 
 if(WITH_RADOSGW)
   find_package(EXPAT REQUIRED)
@@ -470,68 +380,65 @@ if(WITH_RADOSGW)
     message(WARNING "unable to run curl-config; rgw cannot make ssl requests to external systems reliably")
   endif()
 
-  if (WITH_RADOSGW_BEAST_FRONTEND AND WITH_RADOSGW_BEAST_OPENSSL)
-    find_package(OpenSSL REQUIRED)
-  else()
-    find_package(OpenSSL)
+  if (NOT NO_CURL_SSL_LINK)
+    message(STATUS "libcurl is linked with openssl: explicitly setting locks")
+    set(WITH_CURL_OPENSSL ON)
+  endif() # CURL_SSL_LINK
+  execute_process(
+    COMMAND
+      "sh" "-c"
+      "objdump -p ${OPENSSL_SSL_LIBRARY} | sed -n 's/^  SONAME  *//p'"
+    OUTPUT_VARIABLE LIBSSL_SONAME
+    ERROR_VARIABLE OBJDUMP_ERRORS
+    RESULT_VARIABLE OBJDUMP_RESULTS
+    OUTPUT_STRIP_TRAILING_WHITESPACE)
+  if (OBJDUMP_RESULTS)
+    message(FATAL_ERROR "can't run objdump: ${OBJDUMP_RESULTS}")
   endif()
-
-  if (OPENSSL_FOUND)
-    if (NOT NO_CURL_SSL_LINK)
-      message(STATUS "libcurl is linked with openssl: explicitly setting locks")
-      set(WITH_CURL_OPENSSL ON)
-    endif() # CURL_SSL_LINK
-    execute_process(
-      COMMAND
-	"sh" "-c"
-	"objdump -p ${OPENSSL_SSL_LIBRARY} | sed -n 's/^  SONAME  *//p'"
-      OUTPUT_VARIABLE LIBSSL_SONAME
-      ERROR_VARIABLE OBJDUMP_ERRORS
-      RESULT_VARIABLE OBJDUMP_RESULTS
-      OUTPUT_STRIP_TRAILING_WHITESPACE)
-    if (OBJDUMP_RESULTS)
-      message(FATAL_ERROR "can't run objdump: ${OBJDUMP_RESULTS}")
-    endif()
-    if (NOT OBJDUMP_ERRORS STREQUAL "")
-      message(WARNING "message from objdump: ${OBJDUMP_ERRORS}")
-    endif()
-    execute_process(
-      COMMAND
-	"sh" "-c"
-	"objdump -p ${OPENSSL_CRYPTO_LIBRARY} | sed -n 's/^  SONAME  *//p'"
-      OUTPUT_VARIABLE LIBCRYPTO_SONAME
-      ERROR_VARIABLE OBJDUMP_ERRORS
-      RESULT_VARIABLE OBJDUMP_RESULTS
-      OUTPUT_STRIP_TRAILING_WHITESPACE)
-    if (OBJDUMP_RESULTS)
-      message(FATAL_ERROR "can't run objdump: ${OBJDUMP_RESULTS}")
-    endif()
-    if (NOT OBJDUMP_ERRORS STREQUAL "")
-      message(WARNING "message from objdump: ${OBJDUMP_ERRORS}")
-    endif()
-    message(STATUS "ssl soname: ${LIBSSL_SONAME}")
-    message(STATUS "crypto soname: ${LIBCRYPTO_SONAME}")
-  else()
-    message(WARNING "ssl not found: rgw civetweb may fail to dlopen libssl libcrypto")
-  endif()  # OPENSSL_FOUND
+  if (NOT OBJDUMP_ERRORS STREQUAL "")
+    message(WARNING "message from objdump: ${OBJDUMP_ERRORS}")
+  endif()
+  execute_process(
+    COMMAND
+      "sh" "-c"
+      "objdump -p ${OPENSSL_CRYPTO_LIBRARY} | sed -n 's/^  SONAME  *//p'"
+    OUTPUT_VARIABLE LIBCRYPTO_SONAME
+    ERROR_VARIABLE OBJDUMP_ERRORS
+    RESULT_VARIABLE OBJDUMP_RESULTS
+    OUTPUT_STRIP_TRAILING_WHITESPACE)
+  if (OBJDUMP_RESULTS)
+    message(FATAL_ERROR "can't run objdump: ${OBJDUMP_RESULTS}")
+  endif()
+  if (NOT OBJDUMP_ERRORS STREQUAL "")
+    message(WARNING "message from objdump: ${OBJDUMP_ERRORS}")
+  endif()
+  message(STATUS "ssl soname: ${LIBSSL_SONAME}")
+  message(STATUS "crypto soname: ${LIBCRYPTO_SONAME}")
 endif (WITH_RADOSGW)
 
 #option for CephFS
 option(WITH_CEPHFS "CephFS is enabled" ON)
 
-#option for Mgr
+# Please specify 3.[0-7] if you want to build with a certain version of python3.
+set(WITH_PYTHON3 "3" CACHE STRING "build with specified python3 version")
+if(NOT WITH_PYTHON3)
+  message(FATAL_ERROR "WITH_PYTHON3 should always be enabled")
+elseif(WITH_PYTHON3 MATCHES "^(1|ON|YES|TRUE|Y)$")
+  set(WITH_PYTHON3 "3")
+  message(NOTICE "Please specify a Python3 version instead of a BOOLEAN")
+elseif(NOT WITH_PYTHON3 STREQUAL "3")
+  set(find_python3_exact "EXACT")
+endif()
+find_package(Python3 ${WITH_PYTHON3} ${find_python3_exact} REQUIRED
+  COMPONENTS Interpreter Development)
+unset(find_python3_exact)
+
 option(WITH_MGR "ceph-mgr is enabled" ON)
 if(WITH_MGR)
-  # Please specify 3 or 3.[0-7] if you want to build with python3 support.
-  # FindPyhonInterp and FindPythonLibs think they belong to different families.
-  set(MGR_PYTHON_VERSION "2.7" CACHE
-    STRING "minimal required version of python runtime for running mgr plugins. ")
-  find_package(PythonInterp ${MGR_PYTHON_VERSION} REQUIRED)
-  find_package(PythonLibs ${MGR_PYTHON_VERSION} REQUIRED)
-  set(MGR_PYTHON_EXECUTABLE ${PYTHON_EXECUTABLE})
-  set(MGR_PYTHON_LIBRARIES ${PYTHON_LIBRARIES})
-  set(MGR_PYTHON_VERSION_MAJOR ${PYTHON_VERSION_MAJOR})
-  set(MGR_PYTHON_VERSION_MINOR ${PYTHON_VERSION_MINOR})
+  set(MGR_PYTHON_EXECUTABLE ${Python3_EXECUTABLE})
+  set(MGR_PYTHON_LIBRARIES ${Python3_LIBRARIES})
+  set(MGR_PYTHON_VERSION_MAJOR ${Python3_VERSION_MAJOR})
+  set(MGR_PYTHON_VERSION_MINOR ${Python3_VERSION_MINOR})
   # Boost dependency check deferred to Boost section
 endif(WITH_MGR)
 
@@ -551,7 +458,9 @@ set(HAVE_LIBROCKSDB 1)
 find_package(ZLIB REQUIRED)
 
 #option for EventTrace
-option(WITH_EVENTTRACE "Event tracing support" OFF)
+CMAKE_DEPENDENT_OPTION(
+  WITH_EVENTTRACE "Event tracing support, requires WITH_LTTNG"
+  OFF "USE_LTTNG" OFF)
 
 #option for LTTng
 option(WITH_LTTNG "LTTng tracing is enabled" ON)
@@ -591,7 +500,10 @@ option(WITH_SYSTEM_FIO "require and build with system fio" OFF)
 if(WITH_SYSTEM_FIO)
   find_package(fio REQUIRED)
 elseif(WITH_FIO)
-  set(FIO_INCLUDE_DIR ${CMAKE_BINARY_DIR}/src/fio)
+  if (NOT FIO_INCLUDE_DIR)
+    # Use local external fio if include directory is not set
+    set(FIO_INCLUDE_DIR ${CMAKE_BINARY_DIR}/src/fio)
+  endif()
   include(BuildFIO)
   build_fio()
 endif()
@@ -618,7 +530,7 @@ endif()
 
 option(WITH_UBSAN "build with UBSAN" OFF)
 if(WITH_UBSAN)
-  list(APPEND sanitizers "undefined-behavior")
+  list(APPEND sanitizers "undefined_behavior")
 endif()
 
 if(sanitizers)
@@ -632,7 +544,7 @@ endif()
 # Rocksdb
 option(WITH_SYSTEM_ROCKSDB "require and build with system rocksdb" OFF)
 if (WITH_SYSTEM_ROCKSDB)
-  find_package(RocksDB 5.8 REQUIRED)
+  find_package(RocksDB 5.14 REQUIRED)
 endif()
 
 option(WITH_SEASTAR "Build seastar components")
@@ -694,10 +606,13 @@ set(DASHBOARD_FRONTEND_LANGS "" CACHE STRING
   "List of comma separated ceph-dashboard frontend languages to build. \
   Use value `ALL` to build all languages")
 
+# TODO: make this an option and set it to the same value as WITH_MGR_DASHBOARD_FRONTEND
+set(WITH_MGR_ROOK_CLIENT WITH_MGR_DASHBOARD_FRONTEND)
+
 include_directories(SYSTEM ${PROJECT_BINARY_DIR}/include)
 
 find_package(Threads REQUIRED)
-
+find_package(StdFilesystem)
 
 option(WITH_SELINUX "build SELinux policy" OFF)
 if(WITH_SELINUX)
@@ -719,6 +634,8 @@ add_custom_target(check
   DEPENDS tests)
 
 add_subdirectory(src)
+
+add_subdirectory(qa)
 
 add_subdirectory(doc)
 if(WITH_MANPAGE)
@@ -747,3 +664,7 @@ add_tags(ctags
   EXCLUDE_OPTS ${CTAG_EXCLUDES}
   EXCLUDES "*.js" "*.css")
 add_custom_target(tags DEPENDS ctags)
+
+find_package(CppCheck)
+find_package(IWYU)
+set(VERSION 15.2.0)

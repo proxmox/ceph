@@ -23,6 +23,7 @@
 #include <seastar/core/thread.hh>
 #include <seastar/core/do_with.hh>
 #include <seastar/testing/test_case.hh>
+#include <seastar/testing/thread_test_case.hh>
 #include <seastar/core/sstring.hh>
 #include <seastar/core/reactor.hh>
 #include <seastar/core/semaphore.hh>
@@ -109,32 +110,6 @@ void compute(float& result, bool& done, uint64_t& ctr) {
     }
 }
 
-SEASTAR_TEST_CASE(test_thread_sched_group) {
-    return async([] {
-        float metered_ratio = 0.2;
-        thread_scheduling_group sched_group(1ms, metered_ratio);
-        float metered_result = 0;
-        float unmetered_result = 0;
-        bool done = false;
-        uint64_t u_ctr = 0, m_ctr = 0;
-        thread unmetered([&] { compute(unmetered_result, done, u_ctr); });
-        thread_attributes metered_thread_attributes;
-        metered_thread_attributes.scheduling_group = &sched_group;
-        thread metered(metered_thread_attributes, [&] { compute(metered_result, done, m_ctr); });
-        sleep(500ms).get();
-        done = true;
-        when_all(metered.join(), unmetered.join()).discard_result().get();
-        auto ratio = float(m_ctr) / (u_ctr + m_ctr);
-#ifndef DEBUG
-        BOOST_REQUIRE(ratio > metered_ratio - 0.05);
-        BOOST_REQUIRE(ratio < metered_ratio + 0.05);
-#else
-        // debug mode is too slow to test this accurately
-        (void)ratio;
-#endif
-    });
-}
-
 #if defined(SEASTAR_ASAN_ENABLED) && defined(SEASTAR_HAVE_ASAN_FIBER_SUPPORT)
 volatile int force_write;
 volatile void* shut_up_gcc;
@@ -168,3 +143,8 @@ SEASTAR_TEST_CASE(test_asan_false_positive) {
     });
 }
 #endif
+
+SEASTAR_THREAD_TEST_CASE_EXPECTED_FAILURES(abc, 2) {
+    BOOST_TEST(false);
+    BOOST_TEST(false);
+}

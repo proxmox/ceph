@@ -7,11 +7,13 @@
 #include "common/AsyncOpTracker.h"
 #include "librbd/ManagedLock.h"
 #include "librbd/exclusive_lock/Policy.h"
+#include "common/RefCountedObj.h"
 
 namespace librbd {
 
 template <typename ImageCtxT = ImageCtx>
-class ExclusiveLock : public ManagedLock<ImageCtxT> {
+class ExclusiveLock : public RefCountedObject,
+                      public ManagedLock<ImageCtxT> {
 public:
   static ExclusiveLock *create(ImageCtxT &image_ctx) {
     return new ExclusiveLock<ImageCtxT>(image_ctx);
@@ -96,7 +98,7 @@ private:
 
   int m_acquire_lock_peer_ret_val = 0;
 
-  bool accept_ops(const Mutex &lock) const;
+  bool accept_ops(const ceph::mutex &lock) const;
 
   void handle_init_complete(uint64_t features);
   void handle_post_acquiring_lock(int r);

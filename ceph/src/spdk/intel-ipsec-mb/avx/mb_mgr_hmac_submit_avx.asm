@@ -30,6 +30,7 @@
 %include "mb_mgr_datastruct.asm"
 %include "reg_sizes.asm"
 %include "memcpy.asm"
+%include "const.inc"
 
 extern sha1_mult_avx
 
@@ -123,7 +124,10 @@ submit_job_hmac_avx:
 
         mov	[lane_data + _job_in_lane], job
         mov	dword [lane_data + _outer_done], 0
-        mov	[state + _lens + 2*lane], WORD(tmp)
+
+        vmovdqa xmm0, [state + _lens]
+        XVPINSRW xmm0, xmm1, p, lane, tmp, scale_x16
+        vmovdqa [state + _lens], xmm0
 
         mov	last_len, len
         and	last_len, 63
@@ -175,7 +179,10 @@ end_fast_copy:
         jnz	ge64_bytes
 
 lt64_bytes:
-        mov	[state + _lens + 2*lane], WORD(extra_blocks)
+        vmovdqa xmm0, [state + _lens]
+        XVPINSRW xmm0, xmm1, tmp, lane, extra_blocks, scale_x16
+        vmovdqa [state + _lens], xmm0
+
         lea	tmp, [lane_data + _extra_block + start_offset]
         mov	[state + _args_data_ptr + PTR_SZ*lane], tmp
         mov	dword [lane_data + _extra_blocks], 0
@@ -218,7 +225,11 @@ proc_outer:
         mov	dword [lane_data + _outer_done], 1
         mov	DWORD(size_offset), [lane_data + _size_offset]
         mov	qword [lane_data + _extra_block + size_offset], 0
-        mov	word [state + _lens + 2*idx], 1
+
+        vmovdqa xmm0, [state + _lens]
+        XVPINSRW xmm0, xmm1, tmp, idx, 1, scale_x16
+        vmovdqa [state + _lens], xmm0
+
         lea	tmp, [lane_data + _outer_block]
         mov	job, [lane_data + _job_in_lane]
         mov	[state + _args_data_ptr + PTR_SZ*idx], tmp
@@ -246,7 +257,11 @@ proc_outer:
         align	16
 proc_extra_blocks:
         mov	DWORD(start_offset), [lane_data + _start_offset]
-        mov	[state + _lens + 2*idx], WORD(extra_blocks)
+
+        vmovdqa xmm0, [state + _lens]
+        XVPINSRW xmm0, xmm1, tmp, idx, extra_blocks, scale_x16
+        vmovdqa [state + _lens], xmm0
+
         lea	tmp, [lane_data + _extra_block + start_offset]
         mov	[state + _args_data_ptr + PTR_SZ*idx], tmp
         mov	dword [lane_data + _extra_blocks], 0
@@ -289,6 +304,17 @@ end_loop:
         mov	[p + 0*SHA1_DIGEST_WORD_SIZE], DWORD(tmp)
         mov	[p + 1*SHA1_DIGEST_WORD_SIZE], DWORD(tmp2)
         mov	[p + 2*SHA1_DIGEST_WORD_SIZE], DWORD(tmp3)
+
+        cmp     qword [job_rax + _auth_tag_output_len_in_bytes], 12
+        je      return
+
+        ;; copy remaining 8 bytes to return 20 byte digest
+        mov	DWORD(tmp),  [state + _args_digest + SHA1_DIGEST_WORD_SIZE*idx + 3*SHA1_DIGEST_ROW_SIZE]
+        mov	DWORD(tmp2), [state + _args_digest + SHA1_DIGEST_WORD_SIZE*idx + 4*SHA1_DIGEST_ROW_SIZE]
+        bswap	DWORD(tmp)
+        bswap	DWORD(tmp2)
+        mov	[p + 3*SHA1_DIGEST_WORD_SIZE], DWORD(tmp)
+        mov	[p + 4*SHA1_DIGEST_WORD_SIZE], DWORD(tmp2)
 
 return:
 

@@ -1,8 +1,7 @@
 // -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// vim: ts=8 sw=2 smarttab ft=cpp
 
-#ifndef CEPH_RGW_REST_USER_POLICY_H
-#define CEPH_RGW_REST_USER_POLICY_H
+#pragma once
 
 class RGWRestUserPolicy : public RGWRESTOp {
 protected:
@@ -23,13 +22,13 @@ public:
 class RGWUserPolicyRead : public RGWRestUserPolicy {
 public:
   RGWUserPolicyRead() = default;
-  int check_caps(RGWUserCaps& caps) override;
+  int check_caps(const RGWUserCaps& caps) override;
 };
 
 class RGWUserPolicyWrite : public RGWRestUserPolicy {
 public:
   RGWUserPolicyWrite() = default;
-  int check_caps(RGWUserCaps& caps) override;
+  int check_caps(const RGWUserCaps& caps) override;
 };
 
 class RGWPutUserPolicy : public RGWUserPolicyWrite {
@@ -71,6 +70,3 @@ public:
   uint64_t get_op() override;
   RGWOpType get_type() override { return RGW_OP_DELETE_USER_POLICY; }
 };
-
-#endif /* CEPH_RGW_REST_USER_POLICY_H */
-

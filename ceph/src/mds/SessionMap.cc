@@ -79,6 +79,7 @@ void SessionMap::dump()
 	     << " state " << p->second->get_state_name()
 	     << " completed " << p->second->info.completed_requests
 	     << " prealloc_inos " << p->second->info.prealloc_inos
+	     << " delegated_inos " << p->second->delegated_inos
 	     << " used_inos " << p->second->info.used_inos
 	     << dendl;
 }
@@ -601,7 +602,7 @@ void SessionMapStore::dump(Formatter *f) const
   f->close_section(); // Sessions
 }
 
-void SessionMapStore::generate_test_instances(list<SessionMapStore*>& ls)
+void SessionMapStore::generate_test_instances(std::list<SessionMapStore*>& ls)
 {
   // pretty boring for now
   ls.push_back(new SessionMapStore());
@@ -627,6 +628,7 @@ void SessionMap::wipe_ino_prealloc()
        p != session_map.end(); 
        ++p) {
     p->second->pending_prealloc_inos.clear();
+    p->second->delegated_inos.clear();
     p->second->info.prealloc_inos.clear();
     p->second->info.used_inos.clear();
   }
@@ -891,13 +893,8 @@ void SessionMap::save_if_dirty(const std::set<entity_name_t> &tgt_sessions,
 size_t Session::get_request_count() const
 {
   size_t result = 0;
-
-  auto it = requests.begin(member_offset(MDRequestImpl, item_session_request));
-  while (!it.end()) {
+  for (auto p = requests.begin(); !p.end(); ++p)
     ++result;
-    ++it;
-  }
-
   return result;
 }
 
@@ -1103,8 +1100,15 @@ int SessionFilter::parse(
 
     auto eq = s.find("=");
     if (eq == std::string::npos || eq == s.size()) {
-      *ss << "Invalid filter '" << s << "'";
-      return -EINVAL;
+      // allow this to be a bare id for compatibility with pre-octopus asok
+      // 'session evict'.
+      std::string err;
+      id = strict_strtoll(s.c_str(), 10, &err);
+      if (!err.empty()) {
+	*ss << "Invalid filter '" << s << "'";
+	return -EINVAL;
+      }
+      return 0;
     }
 
     // Keys that start with this are to be taken as referring

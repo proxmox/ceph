@@ -42,9 +42,9 @@ healed itself).
 When the cluster is healthy, the balancer will throttle its changes
 such that the percentage of PGs that are misplaced (i.e., that need to
 be moved) is below a threshold of (by default) 5%.  The
-``target_max_misplaced_ratio`` threshold can be adjusted with::
+``max_misplaced`` threshold can be adjusted with::
 
-  ceph config set mgr target_max_misplaced_ratio .07   # 7%
+  ceph config set mgr mgr/balancer/max_misplaced .07   # 7%
 
 
 Modes
@@ -103,7 +103,7 @@ The balancer operation is broken into a few distinct phases:
 #. evaluating the quality of the data distribution, either for the current PG distribution, or the PG distribution that would result after executing a *plan*
 #. executing the *plan*
 
-To evautate and score the current distribution,::
+To evaluate and score the current distribution::
 
   ceph balancer eval
 

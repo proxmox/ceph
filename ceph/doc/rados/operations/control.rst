@@ -33,12 +33,15 @@ and major events. ::
 Execute the following to show the monitor quorum, including which monitors are
 participating and which one is the leader. ::
 
+	ceph mon stat
 	ceph quorum_status
 
 Execute the following to query the status of a single monitor, including whether
 or not it is in the quorum. ::
 
-	ceph [-m monhost] mon_status
+	ceph tell mon.[id] mon_status
+
+where the value of ``[id]`` can be determined, e.g., from ``ceph -s``.
 
 
 Authentication Subsystem
@@ -60,7 +63,7 @@ To display the statistics for all placement groups, execute the following::
 
 	ceph pg dump [--format {format}]
 
-The valid formats are ``plain`` (default) and ``json``.
+The valid formats are ``plain`` (default), ``json`` ``json-pretty``, ``xml``, and ``xml-pretty``.
 
 To display the statistics for all placement groups stuck in a specified state, 
 execute the following:: 
@@ -68,7 +71,7 @@ execute the following::
 	ceph pg dump_stuck inactive|unclean|stale|undersized|degraded [--format {format}] [-t|--threshold {seconds}]
 
 
-``--format`` may be ``plain`` (default) or ``json``
+``--format`` may be ``plain`` (default), ``json``, ``json-pretty``, ``xml``, or ``xml-pretty``.
 
 ``--threshold`` defines how many seconds "stuck" is (default: 300)
 
@@ -105,13 +108,14 @@ file. ::
 
 	ceph osd getcrushmap -o file
 
-The foregoing functionally equivalent to ::
+The foregoing is functionally equivalent to ::
 
 	ceph osd getmap -o /tmp/osdmap
 	osdmaptool /tmp/osdmap --export-crush file
 
-Dump the OSD map. Valid formats for ``-f`` are ``plain`` and ``json``. If no
-``--format`` option is given, the OSD map is dumped as plain text. ::
+Dump the OSD map. Valid formats for ``-f`` are ``plain``, ``json``, ``json-pretty``,
+``xml``, and ``xml-pretty``. If no ``--format`` option is given, the OSD map is 
+dumped as plain text. ::
 
 	ceph osd dump [--format {format}]
 
@@ -190,31 +194,50 @@ resending pending requests. ::
 	ceph osd pause
 	ceph osd unpause
 
-Set the weight of ``{osd-num}`` to ``{weight}``. Two OSDs with the
+Set the override weight (reweight) of ``{osd-num}`` to ``{weight}``. Two OSDs with the
 same weight will receive roughly the same number of I/O requests and
 store approximately the same amount of data. ``ceph osd reweight``
 sets an override weight on the OSD. This value is in the range 0 to 1,
 and forces CRUSH to re-place (1-weight) of the data that would
-otherwise live on this drive. It does not change the weights assigned
+otherwise live on this drive. It does not change weights assigned
 to the buckets above the OSD in the crush map, and is a corrective
 measure in case the normal CRUSH distribution is not working out quite
 right. For instance, if one of your OSDs is at 90% and the others are
-at 50%, you could reduce this weight to try and compensate for it. ::
+at 50%, you could reduce this weight to compensate. ::
 
 	ceph osd reweight {osd-num} {weight}
 
-Reweights all the OSDs by reducing the weight of OSDs which are
-heavily overused. By default it will adjust the weights downward on
-OSDs which have 120% of the average utilization, but if you include
-threshold it will use that percentage instead. ::
+Balance OSD fullness by reducing the override weight of OSDs which are
+overly utilized.  Note that these override aka ``reweight`` values
+default to 1.00000 and are relative only to each other; they not absolute.
+It is crucial to distinguish them from CRUSH weights, which reflect the
+absolute capacity of a bucket in TiB.  By default this command adjusts
+override weight on OSDs which have + or - 20% of the average utilization,
+but if you include a ``threshold`` that percentage will be used instead. ::
 
-	ceph osd reweight-by-utilization [threshold]
+	ceph osd reweight-by-utilization [threshold [max_change [max_osds]]] [--no-increasing]
 
-Describes what reweight-by-utilization would do. ::
+To limit the step by which any OSD's reweight will be changed, specify
+``max_change`` which defaults to 0.05.  To limit the number of OSDs that will
+be adjusted, specify ``max_osds`` as well; the default is 4.  Increasing these
+parameters can speed leveling of OSD utilization, at the potential cost of
+greater impact on client operations due to more data moving at once.
 
-	ceph osd test-reweight-by-utilization
+To determine which and how many PGs and OSDs will be affected by a given invocation
+you can test before executing. ::
 
-Adds/removes the address to/from the blacklist. When adding an address,
+	ceph osd test-reweight-by-utilization [threshold [max_change max_osds]] [--no-increasing]
+
+Adding ``--no-increasing`` to either command prevents increasing any
+override weights that are currently < 1.00000.  This can be useful when
+you are balancing in a hurry to remedy ``full`` or ``nearful`` OSDs or
+when some OSDs are being evacuated or slowly brought into service.
+
+Deployments utilizing Nautilus (or later revisions of Luminous and Mimic)
+that have no pre-Luminous cients may instead wish to instead enable the
+`balancer`` module for ``ceph-mgr``.
+
+Add/remove an IP address to/from the blacklist. When adding an address,
 you can specify how long it should be blacklisted in seconds; otherwise,
 it will default to 1 hour. A blacklisted address is prevented from
 connecting to any OSD. Blacklisting is most often used to prevent a
@@ -234,7 +257,7 @@ Creates/deletes a snapshot of a pool. ::
 
 Creates/deletes/renames a storage pool. ::
 
-	ceph osd pool create {pool-name} pg_num [pgp_num]
+	ceph osd pool create {pool-name} [pg_num [pgp_num]]
 	ceph osd pool delete {pool-name} [{pool-name} --yes-i-really-really-mean-it]
 	ceph osd pool rename {old-name} {new-name}
 
@@ -376,13 +399,12 @@ This is also available more directly::
 
 The above will block until a quorum is reached.
 
-For a status of just the monitor you connect to (use ``-m HOST:PORT``
-to select)::
+For a status of just a single monitor::
 
-	ceph mon_status -f json-pretty
+	ceph tell mon.[name] mon_status
 	
-	
-.. code-block:: javascript
+where the value of ``[name]`` can be taken from ``ceph quorum_status``. Sample
+output::
 	
 	{
 	    "name": "b",

@@ -1,33 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2016 Intel Corporation. All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2016-2018 Intel Corporation
  */
 
 #include <string.h>
@@ -56,11 +28,7 @@ static const struct rte_cryptodev_capabilities kasumi_pmd_capabilities[] = {
 					.max = 4,
 					.increment = 0
 				},
-				.aad_size = {
-					.min = 8,
-					.max = 8,
-					.increment = 0
-				}
+				.iv_size = { 0 }
 			}, }
 		}, }
 	},
@@ -156,9 +124,10 @@ kasumi_pmd_info_get(struct rte_cryptodev *dev,
 	struct kasumi_private *internals = dev->data->dev_private;
 
 	if (dev_info != NULL) {
-		dev_info->dev_type = dev->dev_type;
+		dev_info->driver_id = dev->driver_id;
 		dev_info->max_nb_queue_pairs = internals->max_nb_queue_pairs;
-		dev_info->sym.max_nb_sessions = internals->max_nb_sessions;
+		/* No limit of number of sessions */
+		dev_info->sym.max_nb_sessions = 0;
 		dev_info->feature_flags = dev->feature_flags;
 		dev_info->capabilities = kasumi_pmd_capabilities;
 	}
@@ -187,7 +156,7 @@ kasumi_pmd_qp_set_unique_name(struct rte_cryptodev *dev,
 			"kasumi_pmd_%u_qp_%u",
 			dev->data->dev_id, qp->id);
 
-	if (n > sizeof(qp->name))
+	if (n >= sizeof(qp->name))
 		return -1;
 
 	return 0;
@@ -203,13 +172,13 @@ kasumi_pmd_qp_create_processed_ops_ring(struct kasumi_qp *qp,
 	r = rte_ring_lookup(qp->name);
 	if (r) {
 		if (rte_ring_get_size(r) == ring_size) {
-			KASUMI_LOG_INFO("Reusing existing ring %s"
+			KASUMI_LOG(INFO, "Reusing existing ring %s"
 					" for processed packets",
 					 qp->name);
 			return r;
 		}
 
-		KASUMI_LOG_ERR("Unable to reuse existing ring %s"
+		KASUMI_LOG(ERR, "Unable to reuse existing ring %s"
 				" for processed packets",
 				 qp->name);
 		return NULL;
@@ -223,7 +192,7 @@ kasumi_pmd_qp_create_processed_ops_ring(struct kasumi_qp *qp,
 static int
 kasumi_pmd_qp_setup(struct rte_cryptodev *dev, uint16_t qp_id,
 		const struct rte_cryptodev_qp_conf *qp_conf,
-		 int socket_id)
+		int socket_id)
 {
 	struct kasumi_qp *qp = NULL;
 
@@ -248,7 +217,8 @@ kasumi_pmd_qp_setup(struct rte_cryptodev *dev, uint16_t qp_id,
 	if (qp->processed_ops == NULL)
 		goto qp_setup_cleanup;
 
-	qp->sess_mp = dev->data->session_pool;
+	qp->sess_mp = qp_conf->mp_session;
+	qp->sess_mp_priv = qp_conf->mp_session_private;
 
 	memset(&qp->qp_stats, 0, sizeof(qp->qp_stats));
 
@@ -260,22 +230,6 @@ qp_setup_cleanup:
 	return -1;
 }
 
-/** Start queue pair */
-static int
-kasumi_pmd_qp_start(__rte_unused struct rte_cryptodev *dev,
-		__rte_unused uint16_t queue_pair_id)
-{
-	return -ENOTSUP;
-}
-
-/** Stop queue pair */
-static int
-kasumi_pmd_qp_stop(__rte_unused struct rte_cryptodev *dev,
-		__rte_unused uint16_t queue_pair_id)
-{
-	return -ENOTSUP;
-}
-
 /** Return the number of allocated queue pairs */
 static uint32_t
 kasumi_pmd_qp_count(struct rte_cryptodev *dev)
@@ -285,39 +239,62 @@ kasumi_pmd_qp_count(struct rte_cryptodev *dev)
 
 /** Returns the size of the KASUMI session structure */
 static unsigned
-kasumi_pmd_session_get_size(struct rte_cryptodev *dev __rte_unused)
+kasumi_pmd_sym_session_get_size(struct rte_cryptodev *dev __rte_unused)
 {
 	return sizeof(struct kasumi_session);
 }
 
 /** Configure a KASUMI session from a crypto xform chain */
-static void *
-kasumi_pmd_session_configure(struct rte_cryptodev *dev __rte_unused,
-		struct rte_crypto_sym_xform *xform,	void *sess)
+static int
+kasumi_pmd_sym_session_configure(struct rte_cryptodev *dev __rte_unused,
+		struct rte_crypto_sym_xform *xform,
+		struct rte_cryptodev_sym_session *sess,
+		struct rte_mempool *mempool)
 {
+	void *sess_private_data;
+	int ret;
+
 	if (unlikely(sess == NULL)) {
-		KASUMI_LOG_ERR("invalid session struct");
-		return NULL;
+		KASUMI_LOG(ERR, "invalid session struct");
+		return -EINVAL;
 	}
 
-	if (kasumi_set_session_parameters(sess, xform) != 0) {
-		KASUMI_LOG_ERR("failed configure session parameters");
-		return NULL;
+	if (rte_mempool_get(mempool, &sess_private_data)) {
+		KASUMI_LOG(ERR,
+				"Couldn't get object from session mempool");
+		return -ENOMEM;
 	}
 
-	return sess;
+	ret = kasumi_set_session_parameters(sess_private_data, xform);
+	if (ret != 0) {
+		KASUMI_LOG(ERR, "failed configure session parameters");
+
+		/* Return session to mempool */
+		rte_mempool_put(mempool, sess_private_data);
+		return ret;
+	}
+
+	set_sym_session_private_data(sess, dev->driver_id,
+		sess_private_data);
+
+	return 0;
 }
 
 /** Clear the memory of session so it doesn't leave key material behind */
 static void
-kasumi_pmd_session_clear(struct rte_cryptodev *dev __rte_unused, void *sess)
+kasumi_pmd_sym_session_clear(struct rte_cryptodev *dev,
+		struct rte_cryptodev_sym_session *sess)
 {
-	/*
-	 * Current just resetting the whole data structure, need to investigate
-	 * whether a more selective reset of key would be more performant
-	 */
-	if (sess)
-		memset(sess, 0, sizeof(struct kasumi_session));
+	uint8_t index = dev->driver_id;
+	void *sess_priv = get_sym_session_private_data(sess, index);
+
+	/* Zero out the whole structure */
+	if (sess_priv) {
+		memset(sess_priv, 0, sizeof(struct kasumi_session));
+		struct rte_mempool *sess_mp = rte_mempool_from_obj(sess_priv);
+		set_sym_session_private_data(sess, index, NULL);
+		rte_mempool_put(sess_mp, sess_priv);
+	}
 }
 
 struct rte_cryptodev_ops kasumi_pmd_ops = {
@@ -333,13 +310,11 @@ struct rte_cryptodev_ops kasumi_pmd_ops = {
 
 		.queue_pair_setup   = kasumi_pmd_qp_setup,
 		.queue_pair_release = kasumi_pmd_qp_release,
-		.queue_pair_start   = kasumi_pmd_qp_start,
-		.queue_pair_stop    = kasumi_pmd_qp_stop,
 		.queue_pair_count   = kasumi_pmd_qp_count,
 
-		.session_get_size   = kasumi_pmd_session_get_size,
-		.session_configure  = kasumi_pmd_session_configure,
-		.session_clear      = kasumi_pmd_session_clear
+		.sym_session_get_size   = kasumi_pmd_sym_session_get_size,
+		.sym_session_configure  = kasumi_pmd_sym_session_configure,
+		.sym_session_clear      = kasumi_pmd_sym_session_clear
 };
 
 struct rte_cryptodev_ops *rte_kasumi_pmd_ops = &kasumi_pmd_ops;

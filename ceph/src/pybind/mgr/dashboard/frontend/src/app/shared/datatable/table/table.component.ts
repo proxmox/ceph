@@ -10,6 +10,7 @@ import {
   OnDestroy,
   OnInit,
   Output,
+  PipeTransform,
   TemplateRef,
   ViewChild
 } from '@angular/core';
@@ -20,11 +21,15 @@ import {
   SortPropDir,
   TableColumnProp
 } from '@swimlane/ngx-datatable';
+import { getterForProp } from '@swimlane/ngx-datatable/release/utils';
 import * as _ from 'lodash';
-import { Observable, timer as observableTimer } from 'rxjs';
+import { Observable, Subject, Subscription, timer as observableTimer } from 'rxjs';
 
+import { Icons } from '../../../shared/enum/icons.enum';
 import { CellTemplate } from '../../enum/cell-template.enum';
 import { CdTableColumn } from '../../models/cd-table-column';
+import { CdTableColumnFilter } from '../../models/cd-table-column-filter';
+import { CdTableColumnFiltersChange } from '../../models/cd-table-column-filters-change';
 import { CdTableFetchDataContext } from '../../models/cd-table-fetch-data-context';
 import { CdTableSelection } from '../../models/cd-table-selection';
 import { CdUserConfig } from '../../models/cd-user-config';
@@ -36,22 +41,26 @@ import { CdUserConfig } from '../../models/cd-user-config';
   changeDetection: ChangeDetectionStrategy.OnPush
 })
 export class TableComponent implements AfterContentChecked, OnInit, OnChanges, OnDestroy {
-  @ViewChild(DatatableComponent)
+  @ViewChild(DatatableComponent, { static: true })
   table: DatatableComponent;
-  @ViewChild('tableCellBoldTpl')
+  @ViewChild('tableCellBoldTpl', { static: true })
   tableCellBoldTpl: TemplateRef<any>;
-  @ViewChild('sparklineTpl')
+  @ViewChild('sparklineTpl', { static: true })
   sparklineTpl: TemplateRef<any>;
-  @ViewChild('routerLinkTpl')
+  @ViewChild('routerLinkTpl', { static: true })
   routerLinkTpl: TemplateRef<any>;
-  @ViewChild('checkIconTpl')
+  @ViewChild('checkIconTpl', { static: true })
   checkIconTpl: TemplateRef<any>;
-  @ViewChild('perSecondTpl')
+  @ViewChild('perSecondTpl', { static: true })
   perSecondTpl: TemplateRef<any>;
-  @ViewChild('executingTpl')
+  @ViewChild('executingTpl', { static: true })
   executingTpl: TemplateRef<any>;
-  @ViewChild('classAddingTpl')
+  @ViewChild('classAddingTpl', { static: true })
   classAddingTpl: TemplateRef<any>;
+  @ViewChild('badgeTpl', { static: true })
+  badgeTpl: TemplateRef<any>;
+  @ViewChild('mapTpl', { static: true })
+  mapTpl: TemplateRef<any>;
 
   // This is the array with the items to be shown.
   @Input()
@@ -65,9 +74,15 @@ export class TableComponent implements AfterContentChecked, OnInit, OnChanges, O
   // Method used for setting column widths.
   @Input()
   columnMode? = 'flex';
+  // Display only actions in header (make sure to disable toolHeader) and use ".only-table-actions"
+  @Input()
+  onlyActionHeader? = false;
   // Display the tool header, including reload button, pagination and search fields?
   @Input()
   toolHeader? = true;
+  // Display search field inside tool header?
+  @Input()
+  searchField? = true;
   // Display the table header?
   @Input()
   header? = true;
@@ -105,9 +120,17 @@ export class TableComponent implements AfterContentChecked, OnInit, OnChanges, O
   @Input()
   autoSave = true;
 
+  // Enable this in order to search through the JSON of any used object.
+  @Input()
+  searchableObjects = false;
+
   // Only needed to set if the classAddingTpl is used
   @Input()
-  customCss?: { [css: string]: number | string | ((any) => boolean) };
+  customCss?: { [css: string]: number | string | ((any: any) => boolean) };
+
+  // Columns that aren't displayed but can be used as filters
+  @Input()
+  extraFilterableColumns: CdTableColumn[] = [];
 
   /**
    * Should be a function to update the input data if undefined nothing will be triggered
@@ -133,48 +156,70 @@ export class TableComponent implements AfterContentChecked, OnInit, OnChanges, O
   updateSelection = new EventEmitter();
 
   /**
+   * This should be defined if you need access to the applied column filters.
+   *
+   * Each time the column filters changes, this will be triggered and
+   * the column filters change event will be sent.
+   *
+   * @memberof TableComponent
+   */
+  @Output() columnFiltersChanged = new EventEmitter<CdTableColumnFiltersChange>();
+
+  /**
    * Use this variable to access the selected row(s).
    */
   selection = new CdTableSelection();
 
   tableColumns: CdTableColumn[];
+  icons = Icons;
   cellTemplates: {
     [key: string]: TemplateRef<any>;
   } = {};
   search = '';
-  rows = [];
+  rows: any[] = [];
   loadingIndicator = true;
   loadingError = false;
   paginationClasses = {
-    pagerLeftArrow: 'i fa fa-angle-double-left',
-    pagerRightArrow: 'i fa fa-angle-double-right',
-    pagerPrevious: 'i fa fa-angle-left',
-    pagerNext: 'i fa fa-angle-right'
+    pagerLeftArrow: Icons.leftArrowDouble,
+    pagerRightArrow: Icons.rightArrowDouble,
+    pagerPrevious: Icons.leftArrow,
+    pagerNext: Icons.rightArrow
   };
   userConfig: CdUserConfig = {};
   tableName: string;
   localStorage = window.localStorage;
-  private saveSubscriber;
-  private reloadSubscriber;
+  private saveSubscriber: Subscription;
+  private reloadSubscriber: Subscription;
   private updating = false;
 
   // Internal variable to check if it is necessary to recalculate the
   // table columns after the browser window has been resized.
   private currentWidth: number;
 
+  columnFilters: CdTableColumnFilter[] = [];
+  selectedFilter: CdTableColumnFilter;
+  get columnFiltered(): boolean {
+    return _.some(this.columnFilters, (filter) => {
+      return filter.value !== undefined;
+    });
+  }
+
   constructor(private ngZone: NgZone, private cdRef: ChangeDetectorRef) {}
+
+  static prepareSearch(search: string) {
+    search = search.toLowerCase().replace(/,/g, '');
+    if (search.match(/['"][^'"]+['"]/)) {
+      search = search.replace(/['"][^'"]+['"]/g, (match: string) => {
+        return match.replace(/(['"])([^'"]+)(['"])/g, '$2').replace(/ /g, '+');
+      });
+    }
+    return search.split(' ').filter((word) => word);
+  }
 
   ngOnInit() {
     // ngx-datatable triggers calculations each time mouse enters a row,
     // this will prevent that.
-    window.addEventListener(
-      'mouseenter',
-      function(event) {
-        event.stopPropagation();
-      },
-      true
-    );
-
+    this.table.element.addEventListener('mouseenter', (e) => e.stopPropagation(), true);
     this._addTemplates();
     if (!this.sorts) {
       // Check whether the specified identifier exists.
@@ -202,7 +247,11 @@ export class TableComponent implements AfterContentChecked, OnInit, OnChanges, O
         c.resizeable = false;
       }
     });
+
+    this.initCheckboxColumn();
     this.filterHiddenColumns();
+    this.initColumnFilters();
+    this.updateColumnFilterOptions();
     // Load the data table content every N ms or at least once.
     // Force showing the loading indicator if there are subscribers to the fetchData
     // event. This is necessary because it has been set to False in useData() when
@@ -244,8 +293,8 @@ export class TableComponent implements AfterContentChecked, OnInit, OnChanges, O
     }
   }
 
-  _calculateUniqueTableName(columns) {
-    const stringToNumber = (s) => {
+  _calculateUniqueTableName(columns: any[]) {
+    const stringToNumber = (s: string) => {
       if (!_.isString(s)) {
         return 0;
       }
@@ -272,13 +321,13 @@ export class TableComponent implements AfterContentChecked, OnInit, OnChanges, O
   }
 
   _initUserConfigAutoSave() {
-    const source = Observable.create(this._initUserConfigProxy.bind(this));
+    const source: Observable<any> = Observable.create(this._initUserConfigProxy.bind(this));
     this.saveSubscriber = source.subscribe(this._saveUserConfig.bind(this));
   }
 
-  _initUserConfigProxy(observer) {
+  _initUserConfigProxy(observer: Subject<any>) {
     this.userConfig = new Proxy(this.userConfig, {
-      set(config, prop, value) {
+      set(config, prop: string, value) {
         config[prop] = value;
         observer.next(config);
         return true;
@@ -286,7 +335,7 @@ export class TableComponent implements AfterContentChecked, OnInit, OnChanges, O
     });
   }
 
-  _saveUserConfig(config) {
+  _saveUserConfig(config: any) {
     this.localStorage.setItem(this.tableName, JSON.stringify(config));
   }
 
@@ -298,8 +347,132 @@ export class TableComponent implements AfterContentChecked, OnInit, OnChanges, O
     }));
   }
 
+  /**
+   * Add a column containing a checkbox if selectionType is 'multiClick'.
+   */
+  initCheckboxColumn() {
+    if (this.selectionType === 'multiClick') {
+      this.columns.unshift({
+        prop: undefined,
+        resizeable: false,
+        sortable: false,
+        draggable: false,
+        checkboxable: true,
+        canAutoResize: false,
+        cellClass: 'cd-datatable-checkbox',
+        width: 30
+      });
+    }
+  }
+
   filterHiddenColumns() {
     this.tableColumns = this.columns.filter((c) => !c.isHidden);
+  }
+
+  initColumnFilters() {
+    let filterableColumns = _.filter(this.columns, { filterable: true });
+    filterableColumns = [...filterableColumns, ...this.extraFilterableColumns];
+    this.columnFilters = filterableColumns.map((col: CdTableColumn) => {
+      return {
+        column: col,
+        options: [],
+        value: col.filterInitValue
+          ? this.createColumnFilterOption(col.filterInitValue, col.pipe)
+          : undefined
+      };
+    });
+    this.selectedFilter = _.first(this.columnFilters);
+  }
+
+  private createColumnFilterOption(
+    value: any,
+    pipe?: PipeTransform
+  ): { raw: string; formatted: string } {
+    return {
+      raw: _.toString(value),
+      formatted: pipe ? pipe.transform(value) : _.toString(value)
+    };
+  }
+
+  updateColumnFilterOptions() {
+    // update all possible values in a column
+    this.columnFilters.forEach((filter) => {
+      let values: any[] = [];
+
+      if (_.isUndefined(filter.column.filterOptions)) {
+        // only allow types that can be easily converted into string
+        const pre = _.filter(_.map(this.data, filter.column.prop), (v) => {
+          return (_.isString(v) && v !== '') || _.isBoolean(v) || _.isFinite(v) || _.isDate(v);
+        });
+        values = _.sortedUniq(pre.sort());
+      } else {
+        values = filter.column.filterOptions;
+      }
+
+      const options = values.map((v) => this.createColumnFilterOption(v, filter.column.pipe));
+
+      // In case a previous value is not available anymore
+      if (filter.value && _.isUndefined(_.find(options, { raw: filter.value.raw }))) {
+        filter.value = undefined;
+      }
+
+      filter.options = options;
+    });
+  }
+
+  onSelectFilter(filter: CdTableColumnFilter) {
+    this.selectedFilter = filter;
+  }
+
+  onChangeFilter(filter: CdTableColumnFilter, option?: { raw: string; formatted: string }) {
+    filter.value = _.isEqual(filter.value, option) ? undefined : option;
+    this.updateFilter();
+  }
+
+  doColumnFiltering() {
+    const appliedFilters: CdTableColumnFiltersChange['filters'] = [];
+    let data = [...this.data];
+    let dataOut: any[] = [];
+    this.columnFilters.forEach((filter) => {
+      if (filter.value === undefined) {
+        return;
+      }
+      appliedFilters.push({
+        name: filter.column.name,
+        prop: filter.column.prop,
+        value: filter.value
+      });
+      // Separate data to filtered and filtered-out parts.
+      const parts = _.partition(data, (row) => {
+        // Use getter from ngx-datatable to handle props like 'sys_api.size'
+        const valueGetter = getterForProp(filter.column.prop);
+        const value = valueGetter(row, filter.column.prop);
+        if (_.isUndefined(filter.column.filterPredicate)) {
+          // By default, test string equal
+          return `${value}` === filter.value.raw;
+        } else {
+          // Use custom function to filter
+          return filter.column.filterPredicate(row, filter.value.raw);
+        }
+      });
+      data = parts[0];
+      dataOut = [...dataOut, ...parts[1]];
+    });
+
+    this.columnFiltersChanged.emit({
+      filters: appliedFilters,
+      data: data,
+      dataOut: dataOut
+    });
+
+    // Remove the selection if previously-selected rows are filtered out.
+    _.forEach(this.selection.selected, (selectedItem) => {
+      if (_.find(data, { [this.identifier]: selectedItem[this.identifier] }) === undefined) {
+        this.selection = new CdTableSelection();
+        this.onSelect(this.selection);
+      }
+    });
+    return data;
   }
 
   ngOnDestroy() {
@@ -319,7 +492,14 @@ export class TableComponent implements AfterContentChecked, OnInit, OnChanges, O
     // https://github.com/swimlane/ngx-datatable/issues/193#issuecomment-329144543
     if (this.table && this.table.element.clientWidth !== this.currentWidth) {
       this.currentWidth = this.table.element.clientWidth;
+      // Recalculate the sizes of the grid.
       this.table.recalculate();
+      // Mark the datatable as changed, Angular's change-detection will
+      // do the rest for us => the grid will be redrawn.
+      // Note, the ChangeDetectorRef variable is private, so we need to
+      // use this workaround to access it and make TypeScript happy.
+      const cdRef = _.get(this.table, 'cd');
+      cdRef.markForCheck();
     }
   }
 
@@ -331,6 +511,8 @@ export class TableComponent implements AfterContentChecked, OnInit, OnChanges, O
     this.cellTemplates.perSecond = this.perSecondTpl;
     this.cellTemplates.executing = this.executingTpl;
     this.cellTemplates.classAdding = this.classAddingTpl;
+    this.cellTemplates.badge = this.badgeTpl;
+    this.cellTemplates.map = this.mapTpl;
   }
 
   useCustomClass(value: any): string {
@@ -349,7 +531,7 @@ export class TableComponent implements AfterContentChecked, OnInit, OnChanges, O
     this.useData();
   }
 
-  setLimit(e) {
+  setLimit(e: any) {
     const value = parseInt(e.target.value, 10);
     if (value > 0) {
       this.userConfig.limit = value;
@@ -381,7 +563,7 @@ export class TableComponent implements AfterContentChecked, OnInit, OnChanges, O
   }
 
   rowIdentity() {
-    return (row) => {
+    return (row: any) => {
       const id = row[this.identifier];
       if (_.isUndefined(id)) {
         throw new Error(`Wrong identifier "${this.identifier}" -> "${id}"`);
@@ -394,11 +576,8 @@ export class TableComponent implements AfterContentChecked, OnInit, OnChanges, O
     if (!this.data) {
       return; // Wait for data
     }
-    if (this.search.length > 0) {
-      this.updateFilter();
-    } else {
-      this.rows = [...this.data];
-    }
+    this.updateColumnFilterOptions();
+    this.updateFilter();
     this.reset();
     this.updateSelected();
   }
@@ -422,7 +601,7 @@ export class TableComponent implements AfterContentChecked, OnInit, OnChanges, O
     if (this.updateSelectionOnRefresh === 'never') {
       return;
     }
-    const newSelected = [];
+    const newSelected: any[] = [];
     this.selection.selected.forEach((selectedItem) => {
       for (const row of this.data) {
         if (selectedItem[this.identifier] === row[this.identifier]) {
@@ -437,11 +616,11 @@ export class TableComponent implements AfterContentChecked, OnInit, OnChanges, O
       return;
     }
     this.selection.selected = newSelected;
-    this.onSelect();
+    this.onSelect(this.selection);
   }
 
-  onSelect() {
-    this.selection.update();
+  onSelect($event: any) {
+    this.selection.selected = $event['selected'];
     this.updateSelection.emit(_.clone(this.selection));
   }
 
@@ -462,7 +641,6 @@ export class TableComponent implements AfterContentChecked, OnInit, OnChanges, O
     const sortProp = this.userConfig.sorts[0].prop;
     if (!_.find(this.tableColumns, (c: CdTableColumn) => c.prop === sortProp)) {
       this.userConfig.sorts = this.createSortingDefinition(this.tableColumns[0].prop);
-      this.table.onColumnSort({ sorts: this.userConfig.sorts });
     }
     this.table.recalculate();
     this.cdRef.detectChanges();
@@ -477,35 +655,44 @@ export class TableComponent implements AfterContentChecked, OnInit, OnChanges, O
     ];
   }
 
-  changeSorting({ sorts }) {
+  changeSorting({ sorts }: any) {
     this.userConfig.sorts = sorts;
   }
 
-  updateFilter(clearSearch = false) {
-    if (clearSearch) {
-      this.search = '';
-    }
-    // prepare search strings
-    let search = this.search.toLowerCase().replace(/,/g, '');
-    const columns = this.columns.filter((c) => c.cellTransformation !== CellTemplate.sparkline);
-    if (search.match(/['"][^'"]+['"]/)) {
-      search = search.replace(/['"][^'"]+['"]/g, (match: string) => {
-        return match.replace(/(['"])([^'"]+)(['"])/g, '$2').replace(/ /g, '+');
-      });
-    }
-    // update the rows
-    this.rows = this.subSearch(this.data, search.split(' ').filter((s) => s.length > 0), columns);
-    // Whenever the filter changes, always go back to the first page
-    this.table.offset = 0;
+  onClearSearch() {
+    this.search = '';
+    this.updateFilter();
   }
 
-  subSearch(data: any[], currentSearch: string[], columns: CdTableColumn[]) {
+  onClearFilters() {
+    this.columnFilters.forEach((filter) => {
+      filter.value = undefined;
+    });
+    this.selectedFilter = _.first(this.columnFilters);
+    this.updateFilter();
+  }
+
+  updateFilter() {
+    let rows = this.columnFilters.length !== 0 ? this.doColumnFiltering() : this.data;
+
+    if (this.search.length > 0) {
+      const columns = this.columns.filter((c) => c.cellTransformation !== CellTemplate.sparkline);
+      // update the rows
+      rows = this.subSearch(rows, TableComponent.prepareSearch(this.search), columns);
+      // Whenever the filter changes, always go back to the first page
+      this.table.offset = 0;
+    }
+
+    this.rows = rows;
+  }
+
+  subSearch(data: any[], currentSearch: string[], columns: CdTableColumn[]): any[] {
     if (currentSearch.length === 0 || data.length === 0) {
       return data;
     }
     const searchTerms: string[] = currentSearch
       .pop()
-      .replace('+', ' ')
+      .replace(/\+/g, ' ')
       .split(':');
     const columnsClone = [...columns];
     if (searchTerms.length === 2) {
@@ -537,6 +724,15 @@ export class TableComponent implements AfterContentChecked, OnInit, OnChanges, O
           } else if (_.isNumber(cellValue) || _.isBoolean(cellValue)) {
             cellValue = cellValue.toString();
           }
+
+          if (_.isObjectLike(cellValue)) {
+            if (this.searchableObjects) {
+              cellValue = JSON.stringify(cellValue);
+            } else {
+              return false;
+            }
+          }
+
           return cellValue.toLowerCase().indexOf(searchTerm) !== -1;
         }).length > 0
       );

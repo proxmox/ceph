@@ -1,11 +1,19 @@
-<cd-error-panel *ngIf="loadingError"
-                i18n>Failed to load data.</cd-error-panel>
+<cd-alert-panel type="error"
+                *ngIf="loadingError"
+                i18n>Failed to load data.</cd-alert-panel>
 
 <div class="dataTables_wrapper">
-  <div class="dataTables_header clearfix form-inline"
+
+  <div *ngIf="onlyActionHeader"
+       class="dataTables_header clearfix">
+    <div class="cd-datatable-actions">
+      <ng-content select=".only-table-actions"></ng-content>
+    </div>
+  </div>
+  <div class="dataTables_header clearfix"
        *ngIf="toolHeader">
     <!-- actions -->
-    <div class="oadatatableactions">
+    <div class="cd-datatable-actions">
       <ng-content select=".table-actions"></ng-content>
     </div>
     <!-- end actions -->
@@ -14,22 +22,72 @@
     <ng-content select=".table-filters"></ng-content>
     <!-- end filters -->
 
+    <!-- column filters -->
+    <div *ngIf="columnFilters.length !== 0"
+         class="btn-group widget-toolbar">
+      <div dropdown
+           class="btn-group tc_filter_name">
+        <a dropdownToggle
+           class="btn btn-light dropdown-toggle"
+           data-toggle="dropdown">
+          <i [ngClass]="[icons.large, icons.filter]"></i>
+          {{ selectedFilter.column.name }}
+        </a>
+        <ul *dropdownMenu
+            class="dropdown-menu px-1"
+            role="menu">
+          <li *ngFor="let filter of columnFilters"
+              role="menuitem">
+            <a href=""
+               class="dropdown-item"
+               (click)="onSelectFilter(filter); false">{{ filter.column.name }}</a>
+          </li>
+        </ul>
+      </div>
+      <div dropdown
+           class="btn-group tc_filter_option">
+        <a dropdownToggle
+           class="btn btn-light dropdown-toggle"
+           [class.disabled]="selectedFilter.options.length === 0"
+           data-toggle="dropdown">
+           {{ selectedFilter.value ? selectedFilter.value.formatted: 'Any' }}
+        </a>
+        <ul *dropdownMenu
+            class="dropdown-menu px-1"
+            role="menu">
+          <li *ngFor="let option of selectedFilter.options"
+              role="menuitem">
+            <a href=""
+               class="dropdown-item"
+               (click)="onChangeFilter(selectedFilter, option); false">{{ option.formatted }}
+              <i *ngIf="selectedFilter.value !== undefined && (selectedFilter.value.raw === option.raw)"
+                 [ngClass]="[icons.check]"></i>
+            </a>
+          </li>
+        </ul>
+      </div>
+    </div>
+    <!-- end column filters -->
+
     <!-- search -->
-    <div class="input-group">
-      <span class="input-group-addon">
-        <i class="glyphicon glyphicon-search"></i>
+    <div class="input-group search"
+         *ngIf="searchField">
+      <span class="input-group-prepend">
+        <span class="input-group-text">
+        <i [ngClass]="[icons.search]"></i>
+        </span>
       </span>
       <input class="form-control"
              type="text"
              [(ngModel)]="search"
              (keyup)="updateFilter()">
-      <span class="input-group-btn">
+      <div class="input-group-append">
         <button type="button"
-                class="btn btn-default clear-input tc_clearInputBtn"
-                (click)="updateFilter(true)">
-          <i class="icon-prepend fa fa-remove"></i>
+                class="btn btn-light"
+                (click)="onClearSearch()">
+          <i class="icon-prepend {{ icons.destroy }}"></i>
         </button>
-      </span>
+      </div>
     </div>
     <!-- end search -->
 
@@ -49,22 +107,27 @@
     <!-- show hide columns -->
     <div class="widget-toolbar">
       <div dropdown
+           [autoClose]="false"
            class="dropdown tc_menuitem tc_menuitem_cluster">
         <a dropdownToggle
-           class="btn btn-sm btn-default dropdown-toggle tc_columnBtn"
+           class="btn btn-light dropdown-toggle tc_columnBtn"
            data-toggle="dropdown">
-          <i class="fa fa-lg fa-table"></i>
+          <i [ngClass]="[icons.large, icons.table]"></i>
         </a>
         <ul *dropdownMenu
-            class="dropdown-menu">
+            class="dropdown-menu px-3">
           <li *ngFor="let column of columns">
-            <label>
-              <input type="checkbox"
+
+            <div class="custom-control custom-checkbox">
+              <input class="custom-control-input"
+                     type="checkbox"
                      (change)="toggleColumn($event)"
                      [name]="column.prop"
+                     [id]="column.prop"
                      [checked]="!column.isHidden">
-              <span>{{ column.name }}</span>
-            </label>
+              <label class="custom-control-label"
+                     [for]="column.prop">{{ column.name }}</label>
+            </div>
           </li>
         </ul>
       </div>
@@ -74,19 +137,45 @@
     <!-- refresh button -->
     <div class="widget-toolbar tc_refreshBtn"
          *ngIf="fetchData.observers.length > 0">
-      <a (click)="refreshBtn()">
-        <i class="fa fa-lg fa-refresh"
+
+      <button type="button"
+              class="btn btn-light"
+              (click)="refreshBtn()">
+        <i [ngClass]="[icons.large, icons.refresh]"
            [class.fa-spin]="updating || loadingIndicator"></i>
-      </a>
+      </button>
     </div>
     <!-- end refresh button -->
   </div>
+  <div class="dataTables_header clearfix"
+       *ngIf="toolHeader && columnFiltered">
+    <!-- filter chips for column filters -->
+    <div class="filter-chips">
+      <span *ngFor="let filter of columnFilters">
+        <span *ngIf="filter.value"
+              class="badge badge-info mr-2">
+          <span class="mr-2">{{ filter.column.name }}: {{ filter.value.formatted }}</span>
+          <a class="badge-remove"
+             (click)="onChangeFilter(filter); false">
+            <i [ngClass]="[icons.destroy]"
+               aria-hidden="true"></i>
+          </a>
+        </span>
+      </span>
+      <a class="tc_clearSelections"
+         href=""
+         (click)="onClearFilters(); false">
+        <ng-container i18n>Clear filters</ng-container>
+      </a>
+    </div>
+    <!-- end filter chips for column filters -->
+  </div>
   <ngx-datatable #table
-                 class="bootstrap oadatatable"
+                 class="bootstrap cd-datatable"
                  [cssClasses]="paginationClasses"
                  [selectionType]="selectionType"
                  [selected]="selection.selected"
-                 (select)="onSelect()"
+                 (select)="onSelect($event)"
                  [sorts]="userConfig.sorts"
                  (sort)="changeSorting($event)"
                  [columns]="tableColumns"
@@ -158,8 +247,8 @@
 
 <ng-template #checkIconTpl
              let-value="value">
-  <i class="fa fa-check fa-fw"
-     [hidden]="!value"></i>
+  <i [ngClass]="[icons.check]"
+     [hidden]="!(value | boolean)"></i>
 </ng-template>
 
 <ng-template #perSecondTpl
@@ -171,7 +260,7 @@
 <ng-template #executingTpl
              let-row="row"
              let-value="value">
-  <i class="fa fa-spinner fa-spin fa-fw"
+  <i [ngClass]="[icons.spinner, icons.spin]"
      *ngIf="row.cdExecuting"></i>
   {{ value }}
   <span *ngIf="row.cdExecuting"
@@ -181,4 +270,23 @@
 <ng-template #classAddingTpl
              let-value="value">
   <span class="{{useCustomClass(value)}}">{{ value }}</span>
+</ng-template>
+
+<ng-template #badgeTpl
+             let-column="column"
+             let-value="value">
+  <span *ngFor="let item of (value | array); last as last">
+    <span class="badge"
+          [ngClass]="(column?.customTemplateConfig?.map && column?.customTemplateConfig?.map[item]?.class) ? column.customTemplateConfig.map[item].class : (column?.customTemplateConfig?.class ? column.customTemplateConfig.class : 'badge-primary')"
+          *ngIf="(column?.customTemplateConfig?.map && column?.customTemplateConfig?.map[item]?.value) ? column.customTemplateConfig.map[item].value : column?.customTemplateConfig?.prefix ? column.customTemplateConfig.prefix + item : item">
+      {{ (column?.customTemplateConfig?.map && column?.customTemplateConfig?.map[item]?.value) ? column.customTemplateConfig.map[item].value : column?.customTemplateConfig?.prefix ? column.customTemplateConfig.prefix + item : item }}
+    </span>
+    <span *ngIf="!last">&nbsp;</span>
+  </span>
+</ng-template>
+
+<ng-template #mapTpl
+             let-column="column"
+             let-value="value">
+  <span>{{ value | map:column?.customTemplateConfig }}</span>
 </ng-template>

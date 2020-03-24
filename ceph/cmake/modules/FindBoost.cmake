@@ -2297,7 +2297,7 @@ if(Boost_FOUND)
         endif()
         if(_Boost_${UPPERCOMPONENT}_COMPILER_FEATURES)
           set_target_properties(Boost::${COMPONENT} PROPERTIES
-            CXX_STANDARD 17)
+            INTERFACE_COMPILE_FEATURES "${_Boost_${UPPERCOMPONENT}_COMPILER_FEATURES}")
         endif()
       endif()
     endif()

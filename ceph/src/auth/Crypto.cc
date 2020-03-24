@@ -14,13 +14,11 @@
 #include <array>
 #include <sstream>
 #include <limits>
-
 #include <fcntl.h>
 
+#include <openssl/aes.h>
+
 #include "Crypto.h"
-#ifdef USE_OPENSSL
-# include <openssl/aes.h>
-#endif
 
 #include "include/ceph_assert.h"
 #include "common/Clock.h"
@@ -169,7 +167,7 @@ std::size_t CryptoKeyHandler::decrypt(
 sha256_digest_t CryptoKeyHandler::hmac_sha256(
   const ceph::bufferlist& in) const
 {
-  ceph::crypto::HMACSHA256 hmac((const unsigned char*)secret.c_str(), secret.length());
+  TOPNSPC::crypto::HMACSHA256 hmac((const unsigned char*)secret.c_str(), secret.length());
 
   for (const auto& bptr : in.buffers()) {
     hmac.Update((const unsigned char *)bptr.c_str(), bptr.length());
@@ -237,7 +235,6 @@ public:
   CryptoKeyHandler *get_key_handler(const bufferptr& secret, string& error) override;
 };
 
-#ifdef USE_OPENSSL
 // when we say AES, we mean AES-128
 static constexpr const std::size_t AES_KEY_LEN{16};
 static constexpr const std::size_t AES_BLOCK_LEN{16};
@@ -416,11 +413,6 @@ public:
     return in.length - pad_len;
   }
 };
-
-#else
-# error "No supported crypto implementation found."
-#endif
-
 
 
 // ------------------------------------------------------------

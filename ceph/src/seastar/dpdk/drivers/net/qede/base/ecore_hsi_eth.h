@@ -1,9 +1,7 @@
-/*
- * Copyright (c) 2016 QLogic Corporation.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright (c) 2016 - 2018 Cavium Inc.
  * All rights reserved.
- * www.qlogic.com
- *
- * See LICENSE.qede_pmd for copyright and licensing details.
+ * www.cavium.com
  */
 
 #ifndef __ECORE_HSI_ETH__
@@ -346,7 +344,7 @@ struct e4_xstorm_eth_conn_ag_ctx {
 	__le16 edpm_num_bds /* physical_q2 */;
 	__le16 tx_bd_cons /* word3 */;
 	__le16 tx_bd_prod /* word4 */;
-	__le16 tx_class /* word5 */;
+	__le16 updated_qm_pq_id /* word5 */;
 	__le16 conn_dpi /* conn_dpi */;
 	u8 byte3 /* byte3 */;
 	u8 byte4 /* byte4 */;
@@ -669,7 +667,7 @@ struct mstorm_eth_conn_st_ctx {
 /*
  * eth connection context
  */
-struct eth_conn_context {
+struct e4_eth_conn_context {
 /* tstorm storm context */
 	struct tstorm_eth_conn_st_ctx tstorm_st_context;
 	struct regpair tstorm_st_padding[2] /* padding */;
@@ -765,6 +763,7 @@ enum eth_event_opcode {
 	ETH_EVENT_RX_DELETE_UDP_FILTER,
 	ETH_EVENT_RX_CREATE_GFT_ACTION,
 	ETH_EVENT_RX_GFT_UPDATE_FILTER,
+	ETH_EVENT_TX_QUEUE_UPDATE,
 	MAX_ETH_EVENT_OPCODE
 };
 
@@ -833,6 +832,26 @@ enum eth_filter_type {
 
 
 /*
+ * inner to inner vlan priority translation configurations
+ */
+struct eth_in_to_in_pri_map_cfg {
+/* If set, non_rdma_in_to_in_pri_map or rdma_in_to_in_pri_map will be used for
+ * inner to inner priority mapping depending on protocol type
+ */
+	u8 inner_vlan_pri_remap_en;
+	u8 reserved[7];
+/* Map for inner to inner vlan priority translation for Non RDMA protocols, used
+ * for TenantDcb. Set inner_vlan_pri_remap_en, when init the map.
+ */
+	u8 non_rdma_in_to_in_pri_map[8];
+/* Map for inner to inner vlan priority translation for RDMA protocols, used for
+ * TenantDcb. Set inner_vlan_pri_remap_en, when init the map.
+ */
+	u8 rdma_in_to_in_pri_map[8];
+};
+
+
+/*
  * eth IPv4 Fragment Type
  */
 enum eth_ipv4_frag_type {
@@ -882,6 +901,7 @@ enum eth_ramrod_cmd_id {
 	ETH_RAMROD_RX_CREATE_GFT_ACTION /* RX - Create a Gft Action */,
 /* RX - Add/Delete a GFT Filter to the Searcher */
 	ETH_RAMROD_GFT_UPDATE_FILTER,
+	ETH_RAMROD_TX_QUEUE_UPDATE /* TX Queue Update Ramrod */,
 	MAX_ETH_RAMROD_CMD_ID
 };
 
@@ -1030,9 +1050,11 @@ struct eth_vport_rx_mode {
 /* accept all broadcast packets (subject to vlan) */
 #define ETH_VPORT_RX_MODE_BCAST_ACCEPT_ALL_MASK        0x1
 #define ETH_VPORT_RX_MODE_BCAST_ACCEPT_ALL_SHIFT       5
-#define ETH_VPORT_RX_MODE_RESERVED1_MASK               0x3FF
-#define ETH_VPORT_RX_MODE_RESERVED1_SHIFT              6
-	__le16 reserved2[3];
+/* accept any VNI in tunnel VNI classification. Used for default queue. */
+#define ETH_VPORT_RX_MODE_ACCEPT_ANY_VNI_MASK          0x1
+#define ETH_VPORT_RX_MODE_ACCEPT_ANY_VNI_SHIFT         6
+#define ETH_VPORT_RX_MODE_RESERVED1_MASK               0x1FF
+#define ETH_VPORT_RX_MODE_RESERVED1_SHIFT              7
 };
 
 
@@ -1044,11 +1066,11 @@ struct eth_vport_tpa_param {
 	u8 tpa_ipv6_en_flg /* Enable TPA for IPv6 packets */;
 	u8 tpa_ipv4_tunn_en_flg /* Enable TPA for IPv4 over tunnel */;
 	u8 tpa_ipv6_tunn_en_flg /* Enable TPA for IPv6 over tunnel */;
-/* If set, start each tpa segment on new SGE (GRO mode). One SGE per segment
- * allowed
+/* If set, start each TPA segment on new BD (GRO mode). One BD per segment
+ * allowed.
  */
 	u8 tpa_pkt_split_flg;
-/* If set, put header of first TPA segment on bd and data on SGE */
+/* If set, put header of first TPA segment on first BD and data on second BD. */
 	u8 tpa_hdr_data_split_flg;
 /* If set, GRO data consistent will checked for TPA continue */
 	u8 tpa_gro_consistent_flg;
@@ -1087,27 +1109,16 @@ struct eth_vport_tx_mode {
 #define ETH_VPORT_TX_MODE_BCAST_ACCEPT_ALL_SHIFT 4
 #define ETH_VPORT_TX_MODE_RESERVED1_MASK         0x7FF
 #define ETH_VPORT_TX_MODE_RESERVED1_SHIFT        5
-	__le16 reserved2[3];
 };
 
 
 /*
- * Ramrod data for rx create gft action
+ * GFT filter update action type.
  */
 enum gft_filter_update_action {
 	GFT_ADD_FILTER,
 	GFT_DELETE_FILTER,
 	MAX_GFT_FILTER_UPDATE_ACTION
-};
-
-
-/*
- * Ramrod data for rx create gft action
- */
-enum gft_logic_filter_type {
-	GFT_FILTER_TYPE /* flow FW is GFT-logic as well */,
-	RFS_FILTER_TYPE /* flow FW is A-RFS-logic */,
-	MAX_GFT_LOGIC_FILTER_TYPE
 };
 
 
@@ -1166,7 +1177,7 @@ struct rx_create_openflow_action_data {
  */
 struct rx_queue_start_ramrod_data {
 	__le16 rx_queue_id /* ID of RX queue */;
-	__le16 num_of_pbl_pages /* Num of pages in CQE PBL */;
+	__le16 num_of_pbl_pages /* Number of pages in CQE PBL */;
 	__le16 bd_max_bytes /* maximal bytes that can be places on the bd */;
 	__le16 sb_id /* Status block ID */;
 	u8 sb_index /* index of the protocol index */;
@@ -1224,7 +1235,9 @@ struct rx_queue_update_ramrod_data {
 	u8 complete_cqe_flg /* post completion to the CQE ring if set */;
 	u8 complete_event_flg /* post completion to the event ring if set */;
 	u8 vport_id /* ID of virtual port */;
-	u8 reserved[4];
+/* If set, update default rss queue to this RX queue. */
+	u8 set_default_rss_queue;
+	u8 reserved[3];
 	u8 reserved1 /* FW reserved. */;
 	u8 reserved2 /* FW reserved. */;
 	u8 reserved3 /* FW reserved. */;
@@ -1254,26 +1267,38 @@ struct rx_udp_filter_data {
 
 
 /*
- * Ramrod to add filter - filter is packet headr of type of packet wished to
- * pass certin FW flow
+ * add or delete GFT filter - filter is packet header of type of packet wished
+ * to pass certain FW flow
  */
 struct rx_update_gft_filter_data {
 /* Pointer to Packet Header That Defines GFT Filter */
 	struct regpair pkt_hdr_addr;
 	__le16 pkt_hdr_length /* Packet Header Length */;
-/* If is_rfs flag is set: Queue Id to associate filter with else: action icid */
-	__le16 rx_qid_or_action_icid;
-/* Field is used if is_rfs flag is set: vport Id of which to associate filter
- * with
+/* Action icid. Valid if action_icid_valid flag set. */
+	__le16 action_icid;
+	__le16 rx_qid /* RX queue ID. Valid if rx_qid_valid set. */;
+	__le16 flow_id /* RX flow ID. Valid if flow_id_valid set. */;
+/* RX vport Id. For drop flow, set to ETH_GFT_TRASHCAN_VPORT. */
+	__le16 vport_id;
+/* If set, action_icid will used for GFT filter update. */
+	u8 action_icid_valid;
+/* If set, rx_qid will used for traffic steering, in additional to vport_id.
+ * flow_id_valid must be cleared. If cleared, queue ID will selected by RSS.
  */
-	u8 vport_id;
-/* Use enum to set type of flow using gft HW logic blocks */
-	u8 filter_type;
+	u8 rx_qid_valid;
+/* If set, flow_id will reported by CQE, rx_qid_valid must be cleared. If
+ * cleared, flow_id 0 will reported by CQE.
+ */
+	u8 flow_id_valid;
 	u8 filter_action /* Use to set type of action on filter */;
 /* 0 - dont assert in case of error. Just return an error code. 1 - assert in
  * case of error.
  */
 	u8 assert_on_error;
+/* If set, inner VLAN will be removed regardless to VPORT configuration.
+ * Supported by E4 only.
+ */
+	u8 inner_vlan_removal_en;
 };
 
 
@@ -1344,6 +1369,31 @@ struct tx_queue_stop_ramrod_data {
 };
 
 
+/*
+ * Ramrod data for tx queue update ramrod
+ */
+struct tx_queue_update_ramrod_data {
+	__le16 update_qm_pq_id_flg /* Flag to Update QM PQ ID */;
+	__le16 qm_pq_id /* Updated QM PQ ID */;
+	__le32 reserved0;
+	struct regpair reserved1[5];
+};
+
+
+/*
+ * Inner to Inner VLAN priority map update mode
+ */
+enum update_in_to_in_pri_map_mode_enum {
+/* Inner to Inner VLAN priority map update Disabled */
+	ETH_IN_TO_IN_PRI_MAP_UPDATE_DISABLED,
+/* Update Inner to Inner VLAN priority map for non RDMA protocols */
+	ETH_IN_TO_IN_PRI_MAP_UPDATE_NON_RDMA_TBL,
+/* Update Inner to Inner VLAN priority map for RDMA protocols */
+	ETH_IN_TO_IN_PRI_MAP_UPDATE_RDMA_TBL,
+	MAX_UPDATE_IN_TO_IN_PRI_MAP_MODE_ENUM
+};
+
+
 
 /*
  * Ramrod data for vport update ramrod
@@ -1388,11 +1438,16 @@ struct vport_start_ramrod_data {
 /* If set, ETH header padding will not inserted. placement_offset will be zero.
  */
 	u8 zero_placement_offset;
-/* If set, Contorl frames will be filtered according to MAC check. */
+/* If set, control frames will be filtered according to MAC check. */
 	u8 ctl_frame_mac_check_en;
-/* If set, Contorl frames will be filtered according to ethtype check. */
+/* If set, control frames will be filtered according to ethtype check. */
 	u8 ctl_frame_ethtype_check_en;
-	u8 reserved[5];
+/* If set, the inner vlan (802.1q tag) priority that is written to cqe will be
+ * zero out, used for TenantDcb
+ */
+	u8 wipe_inner_vlan_pri_en;
+/* inner to inner vlan priority translation configurations */
+	struct eth_in_to_in_pri_map_cfg in_to_in_vlan_pri_map_cfg;
 };
 
 
@@ -1456,11 +1511,18 @@ struct vport_update_ramrod_data_cmn {
  * updated
  */
 	u8 update_ctl_frame_checks_en_flg;
-/* If set, Contorl frames will be filtered according to MAC check. */
+/* If set, control frames will be filtered according to MAC check. */
 	u8 ctl_frame_mac_check_en;
-/* If set, Contorl frames will be filtered according to ethtype check. */
+/* If set, control frames will be filtered according to ethtype check. */
 	u8 ctl_frame_ethtype_check_en;
-	u8 reserved[15];
+/* Indicates to update RDMA or NON-RDMA vlan remapping priority table according
+ * to update_in_to_in_pri_map_mode_enum, used for TenantDcb (use enum
+ * update_in_to_in_pri_map_mode_enum)
+ */
+	u8 update_in_to_in_pri_map_mode;
+/* Map for inner to inner vlan priority translation, used for TenantDcb. */
+	u8 in_to_in_pri_map[8];
+	u8 reserved[6];
 };
 
 struct vport_update_ramrod_mcast {
@@ -1475,6 +1537,7 @@ struct vport_update_ramrod_data {
 	struct vport_update_ramrod_data_cmn common;
 	struct eth_vport_rx_mode rx_mode /* vport rx mode bitmap */;
 	struct eth_vport_tx_mode tx_mode /* vport tx mode bitmap */;
+	__le32 reserved[3];
 /* TPA configuration parameters */
 	struct eth_vport_tpa_param tpa_param;
 	struct vport_update_ramrod_mcast approx_mcast;
@@ -1798,7 +1861,7 @@ struct E4XstormEthConnAgCtxDqExtLdPart {
 	__le16 edpm_num_bds /* physical_q2 */;
 	__le16 tx_bd_cons /* word3 */;
 	__le16 tx_bd_prod /* word4 */;
-	__le16 tx_class /* word5 */;
+	__le16 updated_qm_pq_id /* word5 */;
 	__le16 conn_dpi /* conn_dpi */;
 	u8 byte3 /* byte3 */;
 	u8 byte4 /* byte4 */;
@@ -2142,7 +2205,7 @@ struct e4_xstorm_eth_hw_conn_ag_ctx {
 	__le16 edpm_num_bds /* physical_q2 */;
 	__le16 tx_bd_cons /* word3 */;
 	__le16 tx_bd_prod /* word4 */;
-	__le16 tx_class /* word5 */;
+	__le16 updated_qm_pq_id /* word5 */;
 	__le16 conn_dpi /* conn_dpi */;
 };
 
@@ -2357,7 +2420,7 @@ struct gft_ram_line {
 #define GFT_RAM_LINE_TCP_FLAG_NS_SHIFT             29
 #define GFT_RAM_LINE_DST_PORT_MASK                 0x1
 #define GFT_RAM_LINE_DST_PORT_SHIFT                30
-#define GFT_RAM_LINE_SRC_PORT_MASK                 0x1
+#define GFT_RAM_LINE_SRC_PORT_MASK                 0x1U
 #define GFT_RAM_LINE_SRC_PORT_SHIFT                31
 	__le32 hi;
 #define GFT_RAM_LINE_DSCP_MASK                     0x1

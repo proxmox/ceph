@@ -5,6 +5,10 @@ rootdir=$(readlink -f $testdir/../../..)
 source $rootdir/test/common/autotest_common.sh
 source $rootdir/test/iscsi_tgt/common.sh
 
+# $1 = "iso" - triggers isolation mode (setting up required environment).
+# $2 = test type posix or vpp. defaults to posix.
+iscsitestinit $1 $2
+
 timing_enter iscsi_lvol
 
 MALLOC_BDEV_SIZE=128
@@ -26,7 +30,7 @@ $ISCSI_APP -m $ISCSI_TEST_CORE_MASK --wait-for-rpc &
 pid=$!
 echo "Process pid: $pid"
 
-trap "iscsicleanup; killprocess $pid; exit 1" SIGINT SIGTERM EXIT
+trap "iscsicleanup; killprocess $pid; iscsitestfini $1 $2; exit 1" SIGINT SIGTERM EXIT
 
 waitforlisten $pid
 $rpc_py set_iscsi_options -o 30 -a 16
@@ -70,7 +74,7 @@ iscsiadm -m node --login -p $TARGET_IP:$ISCSI_PORT
 timing_exit discovery
 
 timing_enter fio
-$fio_py 131072 8 randwrite 10 verify
+$fio_py -p iscsi -i 131072 -d 8 -t randwrite -r 10 -v
 timing_exit fio
 
 rm -f ./local-job0-0-verify.state
@@ -79,4 +83,5 @@ trap - SIGINT SIGTERM EXIT
 rm -f ./local-job*
 iscsicleanup
 killprocess $pid
+iscsitestfini $1 $2
 timing_exit iscsi_lvol

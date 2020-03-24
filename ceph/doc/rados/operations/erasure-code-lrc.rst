@@ -5,14 +5,14 @@ Locally repairable erasure code plugin
 With the *jerasure* plugin, when an erasure coded object is stored on
 multiple OSDs, recovering from the loss of one OSD requires reading
 from all the others. For instance if *jerasure* is configured with
-*k=8* and *m=4*, losing one OSD requires reading from the eleven
+*k=8* and *m=4*, losing one OSD requires reading from the eight
 others to repair.
 
 The *lrc* erasure code plugin creates local parity chunks to be able
 to recover using less OSDs. For instance if *lrc* is configured with
 *k=8*, *m=4* and *l=4*, it will create an additional parity chunk for
 every four OSDs. When a single OSD is lost, it can be recovered with
-only four OSDs instead of eleven.
+only four OSDs instead of eight.
 
 Erasure code profile examples
 =============================
@@ -28,7 +28,7 @@ observed.::
              plugin=lrc \
              k=4 m=2 l=3 \
              crush-failure-domain=host
-        $ ceph osd pool create lrcpool 12 12 erasure LRCprofile
+        $ ceph osd pool create lrcpool erasure LRCprofile
 
 
 Reduce recovery bandwidth between racks
@@ -42,7 +42,7 @@ OSD is in the same rack as the lost chunk.::
              k=4 m=2 l=3 \
              crush-locality=rack \
              crush-failure-domain=host
-        $ ceph osd pool create lrcpool 12 12 erasure LRCprofile
+        $ ceph osd pool create lrcpool erasure LRCprofile
 
 
 Create an lrc profile
@@ -188,7 +188,7 @@ Erasure code profile examples using low level configuration
 Minimal testing
 ---------------
 
-It is strictly equivalent to using the default erasure code profile. The *DD*
+It is strictly equivalent to using a *K=2* *M=1* erasure code profile. The *DD*
 implies *K=2*, the *c* implies *M=1* and the *jerasure* plugin is used
 by default.::
 
@@ -196,7 +196,7 @@ by default.::
              plugin=lrc \
              mapping=DD_ \
              layers='[ [ "DDc", "" ] ]'
-        $ ceph osd pool create lrcpool 12 12 erasure LRCprofile
+        $ ceph osd pool create lrcpool erasure LRCprofile
 
 Reduce recovery bandwidth between hosts
 ---------------------------------------
@@ -214,7 +214,7 @@ the layout of the chunks is different::
                        [ "cDDD____", "" ],
                        [ "____cDDD", "" ],
                      ]'
-        $ ceph osd pool create lrcpool 12 12 erasure LRCprofile
+        $ ceph osd pool create lrcpool erasure LRCprofile
 
 
 Reduce recovery bandwidth between racks
@@ -235,7 +235,7 @@ OSD is in the same rack as the lost chunk.::
                              [ "choose", "rack", 2 ],
                              [ "chooseleaf", "host", 4 ],
                             ]'
-        $ ceph osd pool create lrcpool 12 12 erasure LRCprofile
+        $ ceph osd pool create lrcpool erasure LRCprofile
 
 Testing with different Erasure Code backends
 --------------------------------------------
@@ -251,7 +251,7 @@ be used in the lrcpool.::
              plugin=lrc \
              mapping=DD_ \
              layers='[ [ "DDc", "plugin=isa technique=cauchy" ] ]'
-        $ ceph osd pool create lrcpool 12 12 erasure LRCprofile
+        $ ceph osd pool create lrcpool erasure LRCprofile
 
 You could also use a different erasure code profile for for each
 layer.::
@@ -264,7 +264,7 @@ layer.::
                        [ "cDDD____", "plugin=isa" ],
                        [ "____cDDD", "plugin=jerasure" ],
                      ]'
-        $ ceph osd pool create lrcpool 12 12 erasure LRCprofile
+        $ ceph osd pool create lrcpool erasure LRCprofile
 
 
 

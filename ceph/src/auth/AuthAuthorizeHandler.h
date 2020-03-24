@@ -16,6 +16,7 @@
 #define CEPH_AUTHAUTHORIZEHANDLER_H
 
 #include "Auth.h"
+#include "include/common_fwd.h"
 #include "include/types.h"
 #include "common/ceph_mutex.h"
 // Different classes of session crypto handling
@@ -24,17 +25,16 @@
 #define SESSION_SYMMETRIC_AUTHENTICATE 1
 #define SESSION_SYMMETRIC_ENCRYPT 2
 
-class CephContext;
 class KeyRing;
 
 struct AuthAuthorizeHandler {
   virtual ~AuthAuthorizeHandler() {}
   virtual bool verify_authorizer(
     CephContext *cct,
-    KeyStore *keys,
-    const bufferlist& authorizer_data,
+    const KeyStore& keys,
+    const ceph::buffer::list& authorizer_data,
     size_t connection_secret_required_len,
-    bufferlist *authorizer_reply,
+    ceph::buffer::list *authorizer_reply,
     EntityName *entity_name,
     uint64_t *global_id,
     AuthCapsInfo *caps_info,

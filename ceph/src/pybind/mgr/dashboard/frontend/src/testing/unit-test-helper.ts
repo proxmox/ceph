@@ -1,13 +1,16 @@
-import { LOCALE_ID, TRANSLATIONS, TRANSLATIONS_FORMAT } from '@angular/core';
+import { LOCALE_ID, TRANSLATIONS, TRANSLATIONS_FORMAT, Type } from '@angular/core';
 import { async, ComponentFixture, TestBed } from '@angular/core/testing';
 import { AbstractControl } from '@angular/forms';
 import { By } from '@angular/platform-browser';
 
 import { I18n } from '@ngx-translate/i18n-polyfill';
-import * as _ from 'lodash';
+import { BsModalRef } from 'ngx-bootstrap/modal';
 
 import { TableActionsComponent } from '../app/shared/datatable/table-actions/table-actions.component';
+import { Icons } from '../app/shared/enum/icons.enum';
 import { CdFormGroup } from '../app/shared/forms/cd-form-group';
+import { CdTableAction } from '../app/shared/models/cd-table-action';
+import { CdTableSelection } from '../app/shared/models/cd-table-selection';
 import { Permission } from '../app/shared/models/permissions';
 import {
   AlertmanagerAlert,
@@ -17,7 +20,7 @@ import {
 } from '../app/shared/models/prometheus-alerts';
 import { _DEV_ } from '../unit-test-configuration';
 
-export function configureTestBed(configuration, useOldMethod?) {
+export function configureTestBed(configuration: any, useOldMethod?: boolean) {
   if (_DEV_ && !useOldMethod) {
     const resetTestingModule = TestBed.resetTestingModule;
     beforeAll((done) =>
@@ -41,71 +44,73 @@ export function configureTestBed(configuration, useOldMethod?) {
 }
 
 export class PermissionHelper {
-  tableActions: TableActionsComponent;
+  tac: TableActionsComponent;
   permission: Permission;
-  getTableActionComponent: () => TableActionsComponent;
 
-  constructor(permission: Permission, getTableActionComponent: () => TableActionsComponent) {
+  constructor(permission: Permission) {
     this.permission = permission;
-    this.getTableActionComponent = getTableActionComponent;
   }
 
-  setPermissionsAndGetActions(
-    createPerm: number | boolean,
-    updatePerm: number | boolean,
-    deletePerm: number | boolean
-  ): TableActionsComponent {
-    this.permission.create = Boolean(createPerm);
-    this.permission.update = Boolean(updatePerm);
-    this.permission.delete = Boolean(deletePerm);
-    this.tableActions = this.getTableActionComponent();
-    return this.tableActions;
+  setPermissionsAndGetActions(tableActions: CdTableAction[]): any {
+    const result = {};
+    [true, false].forEach((create) => {
+      [true, false].forEach((update) => {
+        [true, false].forEach((deleteP) => {
+          this.permission.create = create;
+          this.permission.update = update;
+          this.permission.delete = deleteP;
+
+          this.tac = new TableActionsComponent();
+          this.tac.selection = new CdTableSelection();
+          this.tac.tableActions = [...tableActions];
+          this.tac.permission = this.permission;
+          this.tac.ngOnInit();
+
+          const perms = [];
+          if (create) {
+            perms.push('create');
+          }
+          if (update) {
+            perms.push('update');
+          }
+          if (deleteP) {
+            perms.push('delete');
+          }
+          const permissionText = perms.join(',');
+
+          result[permissionText !== '' ? permissionText : 'no-permissions'] = {
+            actions: this.tac.tableActions.map((action) => action.name),
+            primary: this.testScenarios()
+          };
+        });
+      });
+    });
+
+    return result;
   }
 
-  // Overwrite if needed
-  createSelection(): object {
-    return {};
+  testScenarios() {
+    const result: any = {};
+    // 'multiple selections'
+    result.multiple = this.testScenario([{}, {}]);
+    // 'select executing item'
+    result.executing = this.testScenario([{ cdExecuting: 'someAction' }]);
+    // 'select non-executing item'
+    result.single = this.testScenario([{}]);
+    // 'no selection'
+    result.no = this.testScenario([]);
+
+    return result;
   }
 
-  testScenarios({
-    fn,
-    empty,
-    single,
-    singleExecuting,
-    multiple
-  }: {
-    fn: () => any;
-    empty: any;
-    single: any;
-    singleExecuting?: any; // uses 'single' if not defined
-    multiple?: any; // uses 'empty' if not defined
-  }) {
-    this.testScenario(
-      // 'multiple selections'
-      [this.createSelection(), this.createSelection()],
-      fn,
-      _.isUndefined(multiple) ? empty : multiple
-    );
-    const executing = this.createSelection();
-    executing['cdExecuting'] = 'someAction';
-    this.testScenario(
-      // 'select executing item'
-      [executing],
-      fn,
-      _.isUndefined(singleExecuting) ? single : singleExecuting
-    );
-    this.testScenario([this.createSelection()], fn, single); // 'select non-executing item'
-    this.testScenario([], fn, empty); // 'no selection'
-  }
-
-  private testScenario(selection: object[], fn: () => any, expected: any) {
+  private testScenario(selection: object[]) {
     this.setSelection(selection);
-    expect(fn()).toBe(expected);
+    const btn = this.tac.getCurrentButton();
+    return btn ? btn.name : '';
   }
 
   setSelection(selection: object[]) {
-    this.tableActions.selection.selected = selection;
-    this.tableActions.selection.update();
+    this.tac.selection.selected = selection;
   }
 }
 
@@ -179,10 +184,34 @@ export class FormHelper {
   }
 }
 
+/**
+ * Use this to mock 'ModalService.show' to make the embedded component with it's fixture usable
+ * in tests. The function gives back all needed parts including the modal reference.
+ *
+ * Please make sure to call this function *inside* your mock and return the reference at the end.
+ */
+export function modalServiceShow(componentClass: Type<any>, modalConfig: any) {
+  const ref = new BsModalRef();
+  const fixture = TestBed.createComponent(componentClass);
+  let component = fixture.componentInstance;
+  if (modalConfig.initialState) {
+    component = Object.assign(component, modalConfig.initialState);
+  }
+  fixture.detectChanges();
+  ref.content = component;
+  return { ref, fixture, component };
+}
+
 export class FixtureHelper {
   fixture: ComponentFixture<any>;
 
-  constructor(fixture: ComponentFixture<any>) {
+  constructor(fixture?: ComponentFixture<any>) {
+    if (fixture) {
+      this.updateFixture(fixture);
+    }
+  }
+
+  updateFixture(fixture: ComponentFixture<any>) {
     this.fixture = fixture;
   }
 
@@ -199,7 +228,7 @@ export class FixtureHelper {
    * Expect a specific element to be visible or not.
    */
   expectElementVisible(css: string, visibility: boolean) {
-    expect(Boolean(this.getElementByCss(css))).toBe(visibility);
+    expect(visibility).toBe(Boolean(this.getElementByCss(css)));
   }
 
   expectFormFieldToBe(css: string, value: string) {
@@ -207,8 +236,19 @@ export class FixtureHelper {
     expect(props['value'] || props['checked'].toString()).toBe(value);
   }
 
+  expectTextToBe(css: string, value: string) {
+    expect(this.getText(css)).toBe(value);
+  }
+
   clickElement(css: string) {
     this.getElementByCss(css).triggerEventHandler('click', null);
+    this.fixture.detectChanges();
+  }
+
+  selectElement(css: string, value: string) {
+    const nativeElement = this.getElementByCss(css).nativeElement;
+    nativeElement.value = value;
+    nativeElement.dispatchEvent(new Event('change'));
     this.fixture.detectChanges();
   }
 
@@ -217,14 +257,26 @@ export class FixtureHelper {
     return e ? e.nativeElement.textContent.trim() : null;
   }
 
+  getTextAll(css: string) {
+    const elements = this.getElementByCssAll(css);
+    return elements.map((element) => {
+      return element ? element.nativeElement.textContent.trim() : null;
+    });
+  }
+
   getElementByCss(css: string) {
     this.fixture.detectChanges();
     return this.fixture.debugElement.query(By.css(css));
   }
+
+  getElementByCssAll(css: string) {
+    this.fixture.detectChanges();
+    return this.fixture.debugElement.queryAll(By.css(css));
+  }
 }
 
 export class PrometheusHelper {
-  createSilence(id) {
+  createSilence(id: string) {
     return {
       id: id,
       createdBy: `Creator of ${id}`,
@@ -241,7 +293,7 @@ export class PrometheusHelper {
     };
   }
 
-  createRule(name, severity, alerts: any[]): PrometheusRule {
+  createRule(name: string, severity: string, alerts: any[]): PrometheusRule {
     return {
       name: name,
       labels: {
@@ -251,7 +303,7 @@ export class PrometheusHelper {
     } as PrometheusRule;
   }
 
-  createAlert(name, state = 'active', timeMultiplier = 1): AlertmanagerAlert {
+  createAlert(name: string, state = 'active', timeMultiplier = 1): AlertmanagerAlert {
     return {
       fingerprint: name,
       status: { state },
@@ -269,7 +321,7 @@ export class PrometheusHelper {
     } as AlertmanagerAlert;
   }
 
-  createNotificationAlert(name, status = 'firing'): AlertmanagerNotificationAlert {
+  createNotificationAlert(name: string, status = 'firing'): AlertmanagerNotificationAlert {
     return {
       status: status,
       labels: {
@@ -290,8 +342,8 @@ export class PrometheusHelper {
     return { alerts, status } as AlertmanagerNotification;
   }
 
-  createLink(url) {
-    return `<a href="${url}" target="_blank"><i class="fa fa-line-chart"></i></a>`;
+  createLink(url: string) {
+    return `<a href="${url}" target="_blank"><i class="${Icons.lineChart}"></i></a>`;
   }
 }
 

@@ -71,7 +71,7 @@ spdk_iscsi_param_free(struct iscsi_param *params)
 }
 
 static int
-spdk_iscsi_find_key_in_array(const char *key, const char *array[])
+iscsi_find_key_in_array(const char *key, const char *array[])
 {
 	int i;
 
@@ -215,15 +215,17 @@ spdk_iscsi_param_set_int(struct iscsi_param *params, const char *key, uint32_t v
  * data = "KEY=VAL<NUL>"
  */
 static int
-spdk_iscsi_parse_param(struct iscsi_param **params, const uint8_t *data)
+iscsi_parse_param(struct iscsi_param **params, const uint8_t *data, uint32_t data_len)
 {
 	int rc;
-	uint8_t *key_copy;
-	const uint8_t *key_end, *val;
+	uint8_t *key_copy, *val_copy;
+	const uint8_t *key_end;
 	int key_len, val_len;
 	int max_len;
 
-	key_end = strchr(data, '=');
+	data_len = strnlen(data, data_len);
+	/* No such thing as strnchr so use memchr instead. */
+	key_end = memchr(data, '=', data_len);
 	if (!key_end) {
 		SPDK_ERRLOG("'=' not found\n");
 		return -1;
@@ -257,8 +259,7 @@ spdk_iscsi_parse_param(struct iscsi_param **params, const uint8_t *data)
 		return -1;
 	}
 
-	val = key_end + 1; /* +1 to skip over the '=' */
-	val_len = strlen(val);
+	val_len = strnlen(key_end + 1, data_len - key_len - 1);
 	/*
 	 * RFC 3720 5.1
 	 * If not otherwise specified, the maximum length of a simple-value
@@ -269,7 +270,7 @@ spdk_iscsi_parse_param(struct iscsi_param **params, const uint8_t *data)
 	 * comma or zero is counted in, otherwise we need to iterate each parameter
 	 * value
 	 */
-	max_len = spdk_iscsi_find_key_in_array(key_copy, non_simple_value_params) ?
+	max_len = iscsi_find_key_in_array(key_copy, non_simple_value_params) ?
 		  ISCSI_TEXT_MAX_VAL_LEN : ISCSI_TEXT_MAX_SIMPLE_VAL_LEN;
 	if (val_len > max_len) {
 		SPDK_ERRLOG("Overflow Val %d\n", val_len);
@@ -277,7 +278,17 @@ spdk_iscsi_parse_param(struct iscsi_param **params, const uint8_t *data)
 		return -1;
 	}
 
-	rc = spdk_iscsi_param_add(params, key_copy, val, NULL, 0);
+	val_copy = calloc(1, val_len + 1);
+	if (val_copy == NULL) {
+		SPDK_ERRLOG("Could not allocate value string\n");
+		free(key_copy);
+		return -1;
+	}
+
+	memcpy(val_copy, key_end + 1, val_len);
+
+	rc = spdk_iscsi_param_add(params, key_copy, val_copy, NULL, 0);
+	free(val_copy);
 	free(key_copy);
 	if (rc < 0) {
 		SPDK_ERRLOG("iscsi_param_add() failed\n");
@@ -313,7 +324,7 @@ spdk_iscsi_parse_params(struct iscsi_param **params, const uint8_t *data,
 		if (!p) {
 			return -1;
 		}
-		rc = spdk_iscsi_parse_param(params, p);
+		rc = iscsi_parse_param(params, p, i + strlen(*partial_parameter));
 		free(p);
 		if (rc < 0) {
 			return -1;
@@ -334,17 +345,33 @@ spdk_iscsi_parse_params(struct iscsi_param **params, const uint8_t *data,
 
 		/*
 		 * reverse iterate the string from the tail not including '\0'
-		 * index of last '\0' is len -1.
 		 */
-		for (i = len - 2; data[i] != '\0' && i > 0; i--) {
+		for (i = len - 1; data[i] != '\0' && i > 0; i--) {
 			;
 		}
-		*partial_parameter = xstrdup(&data[i == 0 ? 0 : i + 1]);
-		len = (i == 0 ? 0 : i + 1);
+		if (i != 0) {
+			/* We found a NULL character - don't copy it into the
+			 * partial parameter.
+			 */
+			i++;
+		}
+
+		*partial_parameter = calloc(1, len - i + 1);
+		if (*partial_parameter == NULL) {
+			SPDK_ERRLOG("could not allocate partial parameter\n");
+			return -1;
+		}
+		memcpy(*partial_parameter, &data[i], len - i);
+		if (i == 0) {
+			/* No full parameters to parse - so return now. */
+			return 0;
+		} else {
+			len = i - 1;
+		}
 	}
 
 	while (offset < len && data[offset] != '\0') {
-		rc = spdk_iscsi_parse_param(params, data + offset);
+		rc = iscsi_parse_param(params, data + offset, len - offset);
 		if (rc < 0) {
 			return -1;
 		}
@@ -432,8 +459,8 @@ static const struct iscsi_param_table sess_param_table[] = {
 };
 
 static int
-spdk_iscsi_params_init_internal(struct iscsi_param **params,
-				const struct iscsi_param_table *table)
+iscsi_params_init_internal(struct iscsi_param **params,
+			   const struct iscsi_param_table *table)
 {
 	int rc;
 	int i;
@@ -461,13 +488,13 @@ spdk_iscsi_params_init_internal(struct iscsi_param **params,
 int
 spdk_iscsi_conn_params_init(struct iscsi_param **params)
 {
-	return spdk_iscsi_params_init_internal(params, &conn_param_table[0]);
+	return iscsi_params_init_internal(params, &conn_param_table[0]);
 }
 
 int
 spdk_iscsi_sess_params_init(struct iscsi_param **params)
 {
-	return spdk_iscsi_params_init_internal(params, &sess_param_table[0]);
+	return iscsi_params_init_internal(params, &sess_param_table[0]);
 }
 
 static const char *chap_type[] = {
@@ -510,10 +537,10 @@ static const char *target_declarative_params[] = {
  * error: -1
  */
 static int
-spdk_iscsi_special_param_construction(struct spdk_iscsi_conn *conn,
-				      struct iscsi_param *param,
-				      bool FirstBurstLength_flag, char *data,
-				      int alloc_len, int total)
+iscsi_special_param_construction(struct spdk_iscsi_conn *conn,
+				 struct iscsi_param *param,
+				 bool FirstBurstLength_flag, char *data,
+				 int alloc_len, int total)
 {
 	int len;
 	struct iscsi_param *param_first;
@@ -596,13 +623,13 @@ spdk_iscsi_special_param_construction(struct spdk_iscsi_conn *conn,
 }
 
 /**
- * spdk_iscsi_construct_data_from_param:
+ * iscsi_construct_data_from_param:
  * To construct the data which will be returned to the initiator
  * return: length of the negotiated data, -1 indicates error;
  */
 static int
-spdk_iscsi_construct_data_from_param(struct iscsi_param *param, char *new_val,
-				     char *data, int alloc_len, int total)
+iscsi_construct_data_from_param(struct iscsi_param *param, char *new_val,
+				char *data, int alloc_len, int total)
 {
 	int len;
 
@@ -627,10 +654,11 @@ spdk_iscsi_construct_data_from_param(struct iscsi_param *param, char *new_val,
  * type = ISPT_LIST
  * return: the negotiated value of the key
  */
-static char *spdk_iscsi_negotiate_param_list(int *add_param_value,
-		struct iscsi_param *param,
-		char *valid_list, char *in_val,
-		char *cur_val)
+static char *
+iscsi_negotiate_param_list(int *add_param_value,
+			   struct iscsi_param *param,
+			   char *valid_list, char *in_val,
+			   char *cur_val)
 {
 	char *val_start, *val_end;
 	char *in_start, *in_end;
@@ -678,10 +706,11 @@ static char *spdk_iscsi_negotiate_param_list(int *add_param_value,
  * type = ISPT_NUMERICAL_MIN/MAX, ISPT_NUMERICAL_DECLARATIVE
  * return: the negotiated value of the key
  */
-static char *spdk_iscsi_negotiate_param_numerical(int *add_param_value,
-		struct iscsi_param *param,
-		char *valid_list, char *in_val,
-		char *cur_val)
+static char *
+iscsi_negotiate_param_numerical(int *add_param_value,
+				struct iscsi_param *param,
+				char *valid_list, char *in_val,
+				char *cur_val)
 {
 	char *valid_next;
 	char *new_val = NULL;
@@ -735,10 +764,11 @@ static char *spdk_iscsi_negotiate_param_numerical(int *add_param_value,
  * type = ISPT_BOOLEAN_OR, ISPT_BOOLEAN_AND
  * return: the negotiated value of the key
  */
-static char *spdk_iscsi_negotiate_param_boolean(int *add_param_value,
-		struct iscsi_param *param,
-		char *in_val, char *cur_val,
-		const char *value)
+static char *
+iscsi_negotiate_param_boolean(int *add_param_value,
+			      struct iscsi_param *param,
+			      char *in_val, char *cur_val,
+			      const char *value)
 {
 	char *new_val = NULL;
 
@@ -771,23 +801,23 @@ static char *spdk_iscsi_negotiate_param_boolean(int *add_param_value,
  * return value: the new negotiated value
  */
 static char *
-spdk_iscsi_negotiate_param_all(int *add_param_value, struct iscsi_param *param,
-			       char *valid_list, char *in_val, char *cur_val)
+iscsi_negotiate_param_all(int *add_param_value, struct iscsi_param *param,
+			  char *valid_list, char *in_val, char *cur_val)
 {
 	char *new_val;
 	switch (param->type) {
 	case ISPT_LIST:
-		new_val = spdk_iscsi_negotiate_param_list(add_param_value,
-				param,
-				valid_list,
-				in_val,
-				cur_val);
+		new_val = iscsi_negotiate_param_list(add_param_value,
+						     param,
+						     valid_list,
+						     in_val,
+						     cur_val);
 		break;
 
 	case ISPT_NUMERICAL_MIN:
 	case ISPT_NUMERICAL_MAX:
 	case ISPT_NUMERICAL_DECLARATIVE:
-		new_val = spdk_iscsi_negotiate_param_numerical(add_param_value,
+		new_val = iscsi_negotiate_param_numerical(add_param_value,
 				param,
 				valid_list,
 				in_val,
@@ -795,18 +825,18 @@ spdk_iscsi_negotiate_param_all(int *add_param_value, struct iscsi_param *param,
 		break;
 
 	case ISPT_BOOLEAN_OR:
-		new_val = spdk_iscsi_negotiate_param_boolean(add_param_value,
-				param,
-				in_val,
-				cur_val,
-				"Yes");
+		new_val = iscsi_negotiate_param_boolean(add_param_value,
+							param,
+							in_val,
+							cur_val,
+							"Yes");
 		break;
 	case ISPT_BOOLEAN_AND:
-		new_val = spdk_iscsi_negotiate_param_boolean(add_param_value,
-				param,
-				in_val,
-				cur_val,
-				"No");
+		new_val = iscsi_negotiate_param_boolean(add_param_value,
+							param,
+							in_val,
+							cur_val,
+							"No");
 		break;
 
 	default:
@@ -823,10 +853,10 @@ spdk_iscsi_negotiate_param_all(int *add_param_value, struct iscsi_param *param,
  * connection's params
  */
 static int
-spdk_iscsi_negotiate_param_init(struct spdk_iscsi_conn *conn,
-				struct iscsi_param **cur_param_p,
-				struct iscsi_param **params_dst_p,
-				struct iscsi_param *param)
+iscsi_negotiate_param_init(struct spdk_iscsi_conn *conn,
+			   struct iscsi_param **cur_param_p,
+			   struct iscsi_param **params_dst_p,
+			   struct iscsi_param *param)
 {
 	int index;
 
@@ -848,8 +878,8 @@ spdk_iscsi_negotiate_param_init(struct spdk_iscsi_conn *conn,
 		} else {
 			index = (*cur_param_p)->state_index;
 			if (conn->sess_param_state_negotiated[index] &&
-			    !spdk_iscsi_find_key_in_array(param->key,
-							  target_declarative_params)) {
+			    !iscsi_find_key_in_array(param->key,
+						     target_declarative_params)) {
 				return SPDK_ISCSI_PARAMETER_EXCHANGE_NOT_ONCE;
 			}
 			conn->sess_param_state_negotiated[index] = true;
@@ -857,8 +887,8 @@ spdk_iscsi_negotiate_param_init(struct spdk_iscsi_conn *conn,
 	} else {
 		index = (*cur_param_p)->state_index;
 		if (conn->conn_param_state_negotiated[index] &&
-		    !spdk_iscsi_find_key_in_array(param->key,
-						  multi_negot_conn_params)) {
+		    !iscsi_find_key_in_array(param->key,
+					     multi_negot_conn_params)) {
 			return SPDK_ISCSI_PARAMETER_EXCHANGE_NOT_ONCE;
 		}
 		conn->conn_param_state_negotiated[index] = true;
@@ -886,6 +916,10 @@ spdk_iscsi_negotiate_params(struct spdk_iscsi_conn *conn,
 	int type;
 
 	total = data_len;
+	if (data_len < 0) {
+		assert(false);
+		return -EINVAL;
+	}
 	if (alloc_len < 1) {
 		return 0;
 	}
@@ -970,22 +1004,21 @@ spdk_iscsi_negotiate_params(struct spdk_iscsi_conn *conn,
 			continue;
 		}
 		/* CHAP keys */
-		if (spdk_iscsi_find_key_in_array(param->key, chap_type)) {
+		if (iscsi_find_key_in_array(param->key, chap_type)) {
 			continue;
 		}
 
 		/* 12.2, 12.10, 12.11, 12.13, 12.14, 12.17, 12.18, 12.19 */
 		if (discovery &&
-		    spdk_iscsi_find_key_in_array(param->key,
-						 discovery_ignored_param)) {
+		    iscsi_find_key_in_array(param->key, discovery_ignored_param)) {
 			snprintf(in_val, ISCSI_TEXT_MAX_VAL_LEN + 1, "%s", "Irrelevant");
 			new_val = in_val;
 			add_param_value = 1;
 		} else {
-			rc = spdk_iscsi_negotiate_param_init(conn,
-							     &cur_param,
-							     &params_dst,
-							     param);
+			rc = iscsi_negotiate_param_init(conn,
+							&cur_param,
+							&params_dst,
+							param);
 			if (rc < 0) {
 				free(valid_list);
 				free(in_val);
@@ -1024,7 +1057,7 @@ spdk_iscsi_negotiate_params(struct spdk_iscsi_conn *conn,
 				} else {
 					MaxBurstLength = SPDK_ISCSI_MAX_BURST_LENGTH;
 				}
-				if (FirstBurstLength < MAX_FIRSTBURSTLENGTH &&
+				if (FirstBurstLength < SPDK_ISCSI_MAX_FIRST_BURST_LENGTH &&
 				    FirstBurstLength > MaxBurstLength) {
 					FirstBurstLength = MaxBurstLength;
 					snprintf(in_val, ISCSI_TEXT_MAX_VAL_LEN, "%d",
@@ -1033,15 +1066,15 @@ spdk_iscsi_negotiate_params(struct spdk_iscsi_conn *conn,
 			}
 
 			/* prevent target's declarative params from being changed by initiator */
-			if (spdk_iscsi_find_key_in_array(param->key, target_declarative_params)) {
+			if (iscsi_find_key_in_array(param->key, target_declarative_params)) {
 				add_param_value = 1;
 			}
 
-			new_val = spdk_iscsi_negotiate_param_all(&add_param_value,
-					param,
-					valid_list,
-					in_val,
-					cur_val);
+			new_val = iscsi_negotiate_param_all(&add_param_value,
+							    param,
+							    valid_list,
+							    in_val,
+							    cur_val);
 		}
 
 		/* check the negotiated value of the key */
@@ -1052,16 +1085,16 @@ spdk_iscsi_negotiate_params(struct spdk_iscsi_conn *conn,
 			if (add_param_value == 0) {
 				spdk_iscsi_param_set(params_dst, param->key, new_val);
 			}
-			total = spdk_iscsi_construct_data_from_param(param,
-					new_val,
-					data,
-					alloc_len,
-					total);
+			total = iscsi_construct_data_from_param(param,
+								new_val,
+								data,
+								alloc_len,
+								total);
 			if (total < 0) {
 				goto final_return;
 			}
 
-			total = spdk_iscsi_special_param_construction(conn,
+			total = iscsi_special_param_construction(conn,
 					param,
 					FirstBurstLength_flag,
 					data,
@@ -1097,8 +1130,8 @@ spdk_iscsi_copy_param2var(struct spdk_iscsi_conn *conn)
 	SPDK_DEBUGLOG(SPDK_LOG_ISCSI,
 		      "copy MaxRecvDataSegmentLength=%s\n", val);
 	conn->MaxRecvDataSegmentLength = (int)strtol(val, NULL, 10);
-	if (conn->MaxRecvDataSegmentLength > SPDK_ISCSI_MAX_SEND_DATA_SEGMENT_LENGTH) {
-		conn->MaxRecvDataSegmentLength = SPDK_ISCSI_MAX_SEND_DATA_SEGMENT_LENGTH;
+	if (conn->MaxRecvDataSegmentLength > SPDK_BDEV_LARGE_BUF_MAX_SIZE) {
+		conn->MaxRecvDataSegmentLength = SPDK_BDEV_LARGE_BUF_MAX_SIZE;
 	}
 
 	val = spdk_iscsi_param_get_val(conn->params, "HeaderDigest");

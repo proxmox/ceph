@@ -50,6 +50,7 @@ else
 LOCAL_SYS_LIBS += -lrt
 endif
 
+SPDK_DEP_LIBS = $(call spdk_lib_list_to_shared_libs,$(SPDK_DEP_LIBNAMES))
 
 .PHONY: all clean $(DIRS-y)
 
@@ -64,7 +65,7 @@ $(SHARED_LINKED_LIB): $(SHARED_REALNAME_LIB)
 
 $(SHARED_REALNAME_LIB): $(LIB)
 	$(Q)echo "  SO $(notdir $@)"; \
-	$(call spdk_build_realname_shared_lib,$^,$(SPDK_MAP_FILE),$(LOCAL_SYS_LIBS))
+	$(call spdk_build_realname_shared_lib,$^,$(SPDK_MAP_FILE),$(LOCAL_SYS_LIBS) $(SPDK_DEP_LIBS))
 
 $(LIB): $(OBJS)
 	$(LIB_C)
@@ -73,6 +74,12 @@ install: all
 	$(INSTALL_LIB)
 ifeq ($(CONFIG_SHARED),y)
 	$(INSTALL_SHARED_LIB)
+endif
+
+uninstall:
+	$(UNINSTALL_LIB)
+ifeq ($(CONFIG_SHARED),y)
+	$(UNINSTALL_SHARED_LIB)
 endif
 
 include $(SPDK_ROOT_DIR)/mk/spdk.deps.mk

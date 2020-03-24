@@ -114,5 +114,30 @@ DPDK_18.05 {
 	dpdmai_open;
 	dpdmai_set_rx_queue;
 	rte_dpaa2_free_dpci_dev;
+	rte_dpaa2_memsegs;
 
 } DPDK_18.02;
+
+DPDK_18.11 {
+	global:
+	dpaa2_dqrr_size;
+	dpaa2_eqcr_size;
+	dpci_get_opr;
+	dpci_set_opr;
+
+} DPDK_18.05;
+
+DPDK_19.05 {
+	global:
+	dpaa2_free_eq_descriptors;
+
+	qbman_eq_desc_set_orp;
+	qbman_eq_desc_set_token;
+	qbman_result_DQ_odpid;
+	qbman_result_DQ_seqnum;
+	qbman_result_eqresp_fd;
+	qbman_result_eqresp_rc;
+	qbman_result_eqresp_rspid;
+	qbman_result_eqresp_set_rspid;
+	qbman_swp_enqueue_multiple_fd;
+} DPDK_18.11;

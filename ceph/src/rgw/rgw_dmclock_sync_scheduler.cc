@@ -1,3 +1,6 @@
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
+// vim: ts=8 sw=2 smarttab ft=cpp
+
 #include "rgw_dmclock_scheduler.h"
 #include "rgw_dmclock_sync_scheduler.h"
 #include "rgw_dmclock_scheduler_ctx.h"
@@ -24,8 +27,9 @@ int SyncScheduler::add_request(const client_id& client, const ReqParams& params,
     }
     queue.request_completed();
     // Perform a blocking wait until the request callback is called
-    if (std::unique_lock<std::mutex> lk(req_mtx); rstate != ReqState::Wait) {
-      req_cv.wait(lk, [&rstate] {return rstate != ReqState::Wait;});
+    {
+      std::unique_lock lock{req_mtx};
+      req_cv.wait(lock, [&rstate] {return rstate != ReqState::Wait;});
     }
     if (rstate == ReqState::Cancelled) {
       //FIXME: decide on error code for cancelled request

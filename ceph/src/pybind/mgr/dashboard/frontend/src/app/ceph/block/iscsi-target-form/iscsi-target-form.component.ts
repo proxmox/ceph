@@ -12,6 +12,7 @@ import { RbdService } from '../../../shared/api/rbd.service';
 import { SelectMessages } from '../../../shared/components/select/select-messages.model';
 import { SelectOption } from '../../../shared/components/select/select-option.model';
 import { ActionLabelsI18n } from '../../../shared/constants/app.constants';
+import { Icons } from '../../../shared/enum/icons.enum';
 import { CdFormGroup } from '../../../shared/forms/cd-form-group';
 import { CdValidators } from '../../../shared/forms/cd-validators';
 import { FinishedTask } from '../../../shared/models/finished-task';
@@ -38,6 +39,8 @@ export class IscsiTargetFormComponent implements OnInit {
   default_backstore: string;
   unsupported_rbd_features: any;
   required_rbd_features: any;
+
+  icons = Icons;
 
   isEdit = false;
   target_iqn: string;
@@ -141,6 +144,10 @@ export class IscsiTargetFormComponent implements OnInit {
       this.imagesAll = _(data[1])
         .flatMap((pool) => pool.value)
         .filter((image) => {
+          // Namespaces are not supported by ceph-iscsi
+          if (image.namespace) {
+            return false;
+          }
           const imageId = `${image.pool_name}/${image.name}`;
           if (usedImages.indexOf(imageId) !== -1) {
             return false;
@@ -159,8 +166,8 @@ export class IscsiTargetFormComponent implements OnInit {
 
       // iscsiService.portals()
       const portals: SelectOption[] = [];
-      data[2].forEach((portal) => {
-        portal.ip_addresses.forEach((ip) => {
+      data[2].forEach((portal: Record<string, any>) => {
+        portal.ip_addresses.forEach((ip: string) => {
           portals.push(new SelectOption(false, portal.name + ':' + ip, ''));
         });
       });
@@ -186,7 +193,7 @@ export class IscsiTargetFormComponent implements OnInit {
       target_controls: new FormControl({}),
       portals: new FormControl([], {
         validators: [
-          CdValidators.custom('minGateways', (value) => {
+          CdValidators.custom('minGateways', (value: any[]) => {
             const gateways = _.uniq(value.map((elem) => elem.split(':')[0]));
             return gateways.length < Math.max(1, this.minimum_gateways);
           })
@@ -194,11 +201,11 @@ export class IscsiTargetFormComponent implements OnInit {
       }),
       disks: new FormControl([], {
         validators: [
-          CdValidators.custom('dupLunId', (value) => {
+          CdValidators.custom('dupLunId', (value: any[]) => {
             const lunIds = this.getLunIds(value);
             return lunIds.length !== _.uniq(lunIds).length;
           }),
-          CdValidators.custom('dupWwn', (value) => {
+          CdValidators.custom('dupWwn', (value: any[]) => {
             const wwns = this.getWwns(value);
             return wwns.length !== _.uniq(wwns).length;
           })
@@ -221,7 +228,7 @@ export class IscsiTargetFormComponent implements OnInit {
     }
   }
 
-  resolveModel(res) {
+  resolveModel(res: Record<string, any>) {
     this.targetForm.patchValue({
       target_iqn: res.target_iqn,
       target_controls: res.target_controls,
@@ -233,7 +240,7 @@ export class IscsiTargetFormComponent implements OnInit {
         auth: res.auth
       });
     }
-    const portals = [];
+    const portals: any[] = [];
     _.forEach(res.portals, (portal) => {
       const id = `${portal.host}:${portal.ip}`;
       portals.push(id);
@@ -242,7 +249,7 @@ export class IscsiTargetFormComponent implements OnInit {
       portals: portals
     });
 
-    const disks = [];
+    const disks: any[] = [];
     _.forEach(res.disks, (disk) => {
       const id = `${disk.pool}/${disk.image}`;
       disks.push(id);
@@ -322,14 +329,14 @@ export class IscsiTargetFormComponent implements OnInit {
     return false;
   }
 
-  removeImageRefs(name) {
+  removeImageRefs(name: string) {
     this.initiators.controls.forEach((element) => {
-      const newImages = element.value.luns.filter((item) => item !== name);
+      const newImages = element.value.luns.filter((item: string) => item !== name);
       element.get('luns').setValue(newImages);
     });
 
     this.groups.controls.forEach((element) => {
-      const newDisks = element.value.disks.filter((item) => item !== name);
+      const newDisks = element.value.disks.filter((item: string) => item !== name);
       element.get('disks').setValue(newDisks);
     });
 
@@ -341,7 +348,7 @@ export class IscsiTargetFormComponent implements OnInit {
     });
   }
 
-  getDefaultBackstore(imageId) {
+  getDefaultBackstore(imageId: string) {
     let result = this.default_backstore;
     const image = this.getImageById(imageId);
     if (!this.validFeatures(image, this.default_backstore)) {
@@ -356,17 +363,17 @@ export class IscsiTargetFormComponent implements OnInit {
     return result;
   }
 
-  isLunIdInUse(lunId, imageId) {
-    const images = this.disks.value.filter((currentImageId) => currentImageId !== imageId);
+  isLunIdInUse(lunId: string, imageId: string) {
+    const images = this.disks.value.filter((currentImageId: string) => currentImageId !== imageId);
     return this.getLunIds(images).includes(lunId);
   }
 
-  getLunIds(images) {
+  getLunIds(images: object) {
     return _.map(images, (image) => this.imagesSettings[image]['lun']);
   }
 
-  nextLunId(imageId) {
-    const images = this.disks.value.filter((currentImageId) => currentImageId !== imageId);
+  nextLunId(imageId: string) {
+    const images = this.disks.value.filter((currentImageId: string) => currentImageId !== imageId);
     const lunIdsInUse = this.getLunIds(images);
     let lunIdCandidate = 0;
     while (lunIdsInUse.includes(lunIdCandidate)) {
@@ -375,12 +382,12 @@ export class IscsiTargetFormComponent implements OnInit {
     return lunIdCandidate;
   }
 
-  getWwns(images) {
+  getWwns(images: object) {
     const wwns = _.map(images, (image) => this.imagesSettings[image]['wwn']);
     return wwns.filter((wwn) => _.isString(wwn) && wwn !== '');
   }
 
-  onImageSelection($event) {
+  onImageSelection($event: any) {
     const option = $event.option;
 
     if (option.selected) {
@@ -421,7 +428,7 @@ export class IscsiTargetFormComponent implements OnInit {
       client_iqn: new FormControl('', {
         validators: [
           Validators.required,
-          CdValidators.custom('notUnique', (client_iqn) => {
+          CdValidators.custom('notUnique', (client_iqn: string) => {
             const flattened = this.initiators.controls.reduce(function(accumulator, currentValue) {
               return accumulator.concat(currentValue.value.client_iqn);
             }, []);
@@ -493,7 +500,7 @@ export class IscsiTargetFormComponent implements OnInit {
     );
   }
 
-  removeInitiator(index) {
+  removeInitiator(index: number) {
     const removed = this.initiators.value[index];
 
     this.initiators.removeAt(index);
@@ -504,7 +511,9 @@ export class IscsiTargetFormComponent implements OnInit {
     });
 
     this.groups.controls.forEach((element) => {
-      const newMembers = element.value.members.filter((item) => item !== removed.client_iqn);
+      const newMembers = element.value.members.filter(
+        (item: string) => item !== removed.client_iqn
+      );
       element.get('members').setValue(newMembers);
     });
 
@@ -537,12 +546,12 @@ export class IscsiTargetFormComponent implements OnInit {
     });
   }
 
-  removeInitiatorImage(initiator: any, lun_index: number, initiator_index: string, image: string) {
+  removeInitiatorImage(initiator: any, lun_index: number, initiator_index: number, image: string) {
     const luns = initiator.getValue('luns');
     luns.splice(lun_index, 1);
     initiator.patchValue({ luns: luns });
 
-    this.imagesInitiatorSelections[initiator_index].forEach((value) => {
+    this.imagesInitiatorSelections[initiator_index].forEach((value: Record<string, any>) => {
       if (value.name === image) {
         value.selected = false;
       }
@@ -580,12 +589,12 @@ export class IscsiTargetFormComponent implements OnInit {
     return fg;
   }
 
-  removeGroup(index) {
+  removeGroup(index: number) {
     this.groups.removeAt(index);
     this.groupDiskSelections.splice(index, 1);
   }
 
-  onGroupMemberSelection($event) {
+  onGroupMemberSelection($event: any) {
     const option = $event.option;
 
     let initiator_index: number;
@@ -604,7 +613,7 @@ export class IscsiTargetFormComponent implements OnInit {
     });
   }
 
-  removeGroupInitiator(group, member_index, group_index) {
+  removeGroupInitiator(group: CdFormGroup, member_index: number, group_index: number) {
     const name = group.getValue('members')[member_index];
     group.getValue('members').splice(member_index, 1);
 
@@ -618,7 +627,7 @@ export class IscsiTargetFormComponent implements OnInit {
     this.onGroupMemberSelection({ option: new SelectOption(false, name, '') });
   }
 
-  removeGroupDisk(group, disk_index, group_index) {
+  removeGroupDisk(group: CdFormGroup, disk_index: number, group_index: number) {
     const name = group.getValue('disks')[disk_index];
     group.getValue('disks').splice(disk_index, 1);
 
@@ -633,7 +642,7 @@ export class IscsiTargetFormComponent implements OnInit {
   submit() {
     const formValue = _.cloneDeep(this.targetForm.value);
 
-    const request = {
+    const request: Record<string, any> = {
       target_iqn: this.targetForm.getValue('target_iqn'),
       target_controls: this.targetForm.getValue('target_controls'),
       acl_enabled: this.targetForm.getValue('acl_enabled'),
@@ -668,7 +677,7 @@ export class IscsiTargetFormComponent implements OnInit {
     }
 
     // Disks
-    formValue.disks.forEach((disk) => {
+    formValue.disks.forEach((disk: string) => {
       const imageSplit = disk.split('/');
       const backstore = this.imagesSettings[disk].backstore;
       request.disks.push({
@@ -682,7 +691,7 @@ export class IscsiTargetFormComponent implements OnInit {
     });
 
     // Portals
-    formValue.portals.forEach((portal) => {
+    formValue.portals.forEach((portal: string) => {
       const index = portal.indexOf(':');
       request.portals.push({
         host: portal.substring(0, index),
@@ -692,7 +701,7 @@ export class IscsiTargetFormComponent implements OnInit {
 
     // Clients
     if (request.acl_enabled) {
-      formValue.initiators.forEach((initiator) => {
+      formValue.initiators.forEach((initiator: Record<string, any>) => {
         if (!initiator.auth.user) {
           initiator.auth.user = '';
         }
@@ -707,8 +716,8 @@ export class IscsiTargetFormComponent implements OnInit {
         }
         delete initiator.cdIsInGroup;
 
-        const newLuns = [];
-        initiator.luns.forEach((lun) => {
+        const newLuns: any[] = [];
+        initiator.luns.forEach((lun: string) => {
           const imageSplit = lun.split('/');
           newLuns.push({
             pool: imageSplit[0],
@@ -723,9 +732,9 @@ export class IscsiTargetFormComponent implements OnInit {
 
     // Groups
     if (request.acl_enabled) {
-      formValue.groups.forEach((group) => {
-        const newDisks = [];
-        group.disks.forEach((disk) => {
+      formValue.groups.forEach((group: Record<string, any>) => {
+        const newDisks: any[] = [];
+        group.disks.forEach((disk: string) => {
           const imageSplit = disk.split('/');
           newDisks.push({
             pool: imageSplit[0],
@@ -776,7 +785,7 @@ export class IscsiTargetFormComponent implements OnInit {
     this.modalRef = this.modalService.show(IscsiTargetIqnSettingsModalComponent, { initialState });
   }
 
-  imageSettingsModal(image) {
+  imageSettingsModal(image: string) {
     const initialState = {
       imagesSettings: this.imagesSettings,
       image: image,
@@ -792,7 +801,7 @@ export class IscsiTargetFormComponent implements OnInit {
     });
   }
 
-  validFeatures(image, backstore) {
+  validFeatures(image: Record<string, any>, backstore: string) {
     const imageFeatures = image.features;
     const requiredFeatures = this.required_rbd_features[backstore];
     const unsupportedFeatures = this.unsupported_rbd_features[backstore];
@@ -803,11 +812,11 @@ export class IscsiTargetFormComponent implements OnInit {
     return validRequiredFeatures && validSupportedFeatures;
   }
 
-  getImageById(imageId) {
+  getImageById(imageId: string) {
     return this.imagesAll.find((image) => imageId === `${image.pool_name}/${image.name}`);
   }
 
-  getValidBackstores(image) {
+  getValidBackstores(image: object) {
     return this.backstores.filter((backstore) => this.validFeatures(image, backstore));
   }
 }

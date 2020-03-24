@@ -31,13 +31,18 @@ case $(distro_id) in
         esac
 		;;
 	centos|fedora|rhel)
-		install git gcc-c++.x86_64 snappy-devel zlib zlib-devel bzip2 bzip2-devel libradospp-devel.x86_64
-        if [ $(distro_id) = "fedora" ]; then
-            install cmake
-        else
-            install_cmake3_on_centos7
-        fi
-		;;
+        case $(distro_id) in
+            centos)
+                # centos needs PowerTools repo for snappy-devel
+                test -x /usr/bin/dnf && sudo dnf config-manager --set-enabled PowerTools || true
+                ;;
+            rhel)
+                # RHEL needs CRB repo for snappy-devel
+                sudo subscription-manager repos --enable "codeready-builder-for-rhel-8-x86_64-rpms"
+                ;;
+        esac
+        install git gcc-c++.x86_64 snappy-devel zlib zlib-devel bzip2 bzip2-devel libradospp-devel.x86_64 cmake
+        ;;
 	opensuse*|suse|sles)
 		install git gcc-c++ snappy-devel zlib-devel libbz2-devel libradospp-devel
 		;;
@@ -72,7 +77,9 @@ if type cmake3 > /dev/null 2>&1 ; then
 else
     CMAKE=cmake
 fi
-mkdir build && cd build && ${CMAKE} -DWITH_LIBRADOS=ON -DWITH_SNAPPY=ON -DWITH_GFLAGS=OFF -DFAIL_ON_WARNINGS=OFF ..
+
+[ -z "$BUILD_DIR" ] && BUILD_DIR=build
+mkdir ${BUILD_DIR} && cd ${BUILD_DIR} && ${CMAKE} -DCMAKE_BUILD_TYPE=Debug -DWITH_TESTS=ON -DWITH_LIBRADOS=ON -DWITH_SNAPPY=ON -DWITH_GFLAGS=OFF -DFAIL_ON_WARNINGS=OFF ..
 make rocksdb_env_librados_test -j8
 
 echo "Copy ceph.conf"

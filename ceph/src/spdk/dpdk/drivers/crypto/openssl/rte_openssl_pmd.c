@@ -768,7 +768,8 @@ get_session(struct openssl_qp *qp, struct rte_crypto_op *op)
 		if (rte_mempool_get(qp->sess_mp, (void **)&_sess))
 			return NULL;
 
-		if (rte_mempool_get(qp->sess_mp, (void **)&_sess_private_data))
+		if (rte_mempool_get(qp->sess_mp_priv,
+				(void **)&_sess_private_data))
 			return NULL;
 
 		sess = (struct openssl_session *)_sess_private_data;
@@ -776,7 +777,7 @@ get_session(struct openssl_qp *qp, struct rte_crypto_op *op)
 		if (unlikely(openssl_set_session_parameters(sess,
 				op->sym->xform) != 0)) {
 			rte_mempool_put(qp->sess_mp, _sess);
-			rte_mempool_put(qp->sess_mp, _sess_private_data);
+			rte_mempool_put(qp->sess_mp_priv, _sess_private_data);
 			sess = NULL;
 		}
 		op->sym->session = (struct rte_cryptodev_sym_session *)_sess;
@@ -1509,15 +1510,7 @@ process_openssl_auth_op(struct openssl_qp *qp, struct rte_crypto_op *op,
 
 	srclen = op->sym->auth.data.length;
 
-	if (sess->auth.operation == RTE_CRYPTO_AUTH_OP_VERIFY)
-		dst = qp->temp_digest;
-	else {
-		dst = op->sym->auth.digest.data;
-		if (dst == NULL)
-			dst = rte_pktmbuf_mtod_offset(mbuf_dst, uint8_t *,
-					op->sym->auth.data.offset +
-					op->sym->auth.data.length);
-	}
+	dst = qp->temp_digest;
 
 	switch (sess->auth.mode) {
 	case OPENSSL_AUTH_AS_AUTH:
@@ -1540,6 +1533,15 @@ process_openssl_auth_op(struct openssl_qp *qp, struct rte_crypto_op *op,
 				sess->auth.digest_length) != 0) {
 			op->status = RTE_CRYPTO_OP_STATUS_AUTH_FAILED;
 		}
+	} else {
+		uint8_t *auth_dst;
+
+		auth_dst = op->sym->auth.digest.data;
+		if (auth_dst == NULL)
+			auth_dst = rte_pktmbuf_mtod_offset(mbuf_dst, uint8_t *,
+					op->sym->auth.data.offset +
+					op->sym->auth.data.length);
+		memcpy(auth_dst, dst, sess->auth.digest_length);
 	}
 
 	if (status != 0)
@@ -1564,7 +1566,7 @@ process_openssl_dsa_sign_op(struct rte_crypto_op *cop,
 		cop->status = RTE_CRYPTO_OP_STATUS_ERROR;
 	} else {
 		const BIGNUM *r = NULL, *s = NULL;
-		get_dsa_sign(sign, r, s);
+		get_dsa_sign(sign, &r, &s);
 
 		op->r.length = BN_bn2bin(r, op->r.data);
 		op->s.length = BN_bn2bin(s, op->s.data);
@@ -1604,12 +1606,9 @@ process_openssl_dsa_verify_op(struct rte_crypto_op *cop,
 			op->y.length,
 			pub_key);
 	if (!r || !s || !pub_key) {
-		if (r)
-			BN_free(r);
-		if (s)
-			BN_free(s);
-		if (pub_key)
-			BN_free(pub_key);
+		BN_free(r);
+		BN_free(s);
+		BN_free(pub_key);
 
 		cop->status = RTE_CRYPTO_OP_STATUS_NOT_PROCESSED;
 		return -1;
@@ -1666,7 +1665,7 @@ process_openssl_dh_op(struct rte_crypto_op *cop,
 			cop->status = RTE_CRYPTO_OP_STATUS_NOT_PROCESSED;
 			return -1;
 		}
-		set_dh_priv_key(dh_key, priv_key, ret);
+		ret = set_dh_priv_key(dh_key, priv_key);
 		if (ret) {
 			OPENSSL_LOG(ERR, "Failed to set private key\n");
 			cop->status = RTE_CRYPTO_OP_STATUS_ERROR;
@@ -1715,7 +1714,7 @@ process_openssl_dh_op(struct rte_crypto_op *cop,
 			cop->status = RTE_CRYPTO_OP_STATUS_NOT_PROCESSED;
 			return -1;
 		}
-		set_dh_priv_key(dh_key, priv_key, ret);
+		ret = set_dh_priv_key(dh_key, priv_key);
 		if (ret) {
 			OPENSSL_LOG(ERR, "Failed to set private key\n");
 			cop->status = RTE_CRYPTO_OP_STATUS_ERROR;
@@ -1743,7 +1742,7 @@ process_openssl_dh_op(struct rte_crypto_op *cop,
 				__func__, __LINE__);
 
 		/* get the generated keys */
-		get_dh_pub_key(dh_key, pub_key);
+		get_dh_pub_key(dh_key, &pub_key);
 
 		/* output public key */
 		op->pub_key.length = BN_bn2bin(pub_key,
@@ -1758,7 +1757,7 @@ process_openssl_dh_op(struct rte_crypto_op *cop,
 				__func__, __LINE__);
 
 		/* get the generated keys */
-		get_dh_priv_key(dh_key, priv_key);
+		get_dh_priv_key(dh_key, &priv_key);
 
 		/* provide generated private key back to user */
 		op->priv_key.length = BN_bn2bin(priv_key,
@@ -1780,10 +1779,8 @@ process_openssl_modinv_op(struct rte_crypto_op *cop,
 	BIGNUM *res = BN_CTX_get(sess->u.m.ctx);
 
 	if (unlikely(base == NULL || res == NULL)) {
-		if (base)
-			BN_free(base);
-		if (res)
-			BN_free(res);
+		BN_free(base);
+		BN_free(res);
 		cop->status = RTE_CRYPTO_OP_STATUS_NOT_PROCESSED;
 		return -1;
 	}
@@ -1793,10 +1790,13 @@ process_openssl_modinv_op(struct rte_crypto_op *cop,
 
 	if (BN_mod_inverse(res, base, sess->u.m.modulus, sess->u.m.ctx)) {
 		cop->status = RTE_CRYPTO_OP_STATUS_SUCCESS;
-		op->modinv.base.length = BN_bn2bin(res, op->modinv.base.data);
+		op->modinv.result.length = BN_bn2bin(res, op->modinv.result.data);
 	} else {
 		cop->status = RTE_CRYPTO_OP_STATUS_ERROR;
 	}
+
+	BN_clear(res);
+	BN_clear(base);
 
 	return 0;
 }
@@ -1811,24 +1811,25 @@ process_openssl_modexp_op(struct rte_crypto_op *cop,
 	BIGNUM *res = BN_CTX_get(sess->u.e.ctx);
 
 	if (unlikely(base == NULL || res == NULL)) {
-		if (base)
-			BN_free(base);
-		if (res)
-			BN_free(res);
+		BN_free(base);
+		BN_free(res);
 		cop->status = RTE_CRYPTO_OP_STATUS_NOT_PROCESSED;
 		return -1;
 	}
 
-	base = BN_bin2bn((const unsigned char *)op->modinv.base.data,
-			op->modinv.base.length, base);
+	base = BN_bin2bn((const unsigned char *)op->modex.base.data,
+			op->modex.base.length, base);
 
 	if (BN_mod_exp(res, base, sess->u.e.exp,
 				sess->u.e.mod, sess->u.e.ctx)) {
-		op->modinv.base.length = BN_bn2bin(res, op->modinv.base.data);
+		op->modex.result.length = BN_bn2bin(res, op->modex.result.data);
 		cop->status = RTE_CRYPTO_OP_STATUS_SUCCESS;
 	} else {
 		cop->status = RTE_CRYPTO_OP_STATUS_ERROR;
 	}
+
+	BN_clear(res);
+	BN_clear(base);
 
 	return 0;
 }
@@ -1842,6 +1843,9 @@ process_openssl_rsa_op(struct rte_crypto_op *cop,
 	struct rte_crypto_asym_op *op = cop->asym;
 	RSA *rsa = sess->u.r.rsa;
 	uint32_t pad = (op->rsa.pad);
+	uint8_t *tmp;
+
+	cop->status = RTE_CRYPTO_OP_STATUS_SUCCESS;
 
 	switch (pad) {
 	case RTE_CRYPTO_RSA_PKCS1_V1_5_BT0:
@@ -1894,9 +1898,15 @@ process_openssl_rsa_op(struct rte_crypto_op *cop,
 		break;
 
 	case RTE_CRYPTO_ASYM_OP_VERIFY:
+		tmp = rte_malloc(NULL, op->rsa.sign.length, 0);
+		if (tmp == NULL) {
+			OPENSSL_LOG(ERR, "Memory allocation failed");
+			cop->status = RTE_CRYPTO_OP_STATUS_ERROR;
+			break;
+		}
 		ret = RSA_public_decrypt(op->rsa.sign.length,
 				op->rsa.sign.data,
-				op->rsa.sign.data,
+				tmp,
 				rsa,
 				pad);
 
@@ -1904,13 +1914,12 @@ process_openssl_rsa_op(struct rte_crypto_op *cop,
 				"Length of public_decrypt %d "
 				"length of message %zd\n",
 				ret, op->rsa.message.length);
-
-		if (memcmp(op->rsa.sign.data, op->rsa.message.data,
-					op->rsa.message.length)) {
-			OPENSSL_LOG(ERR,
-					"RSA sign Verification failed");
-			return -1;
+		if ((ret <= 0) || (memcmp(tmp, op->rsa.message.data,
+				op->rsa.message.length))) {
+			OPENSSL_LOG(ERR, "RSA sign Verification failed");
+			cop->status = RTE_CRYPTO_OP_STATUS_ERROR;
 		}
+		rte_free(tmp);
 		break;
 
 	default:
@@ -2017,8 +2026,9 @@ process_op(struct openssl_qp *qp, struct rte_crypto_op *op,
 		openssl_reset_session(sess);
 		memset(sess, 0, sizeof(struct openssl_session));
 		memset(op->sym->session, 0,
-				rte_cryptodev_sym_get_header_session_size());
-		rte_mempool_put(qp->sess_mp, sess);
+			rte_cryptodev_sym_get_existing_header_session_size(
+				op->sym->session));
+		rte_mempool_put(qp->sess_mp_priv, sess);
 		rte_mempool_put(qp->sess_mp, op->sym->session);
 		op->sym->session = NULL;
 	}
@@ -2115,7 +2125,9 @@ cryptodev_openssl_create(const char *name,
 			RTE_CRYPTODEV_FF_CPU_AESNI |
 			RTE_CRYPTODEV_FF_OOP_SGL_IN_LB_OUT |
 			RTE_CRYPTODEV_FF_OOP_LB_IN_LB_OUT |
-			RTE_CRYPTODEV_FF_ASYMMETRIC_CRYPTO;
+			RTE_CRYPTODEV_FF_ASYMMETRIC_CRYPTO |
+			RTE_CRYPTODEV_FF_RSA_PRIV_OP_KEY_EXP |
+			RTE_CRYPTODEV_FF_RSA_PRIV_OP_KEY_QT;
 
 	/* Set vector instructions mode supported */
 	internals = dev->data->dev_private;

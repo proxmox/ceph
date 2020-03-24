@@ -61,6 +61,7 @@ extern "C" {
 #define SPDK_SCSI_DEV_MAX_NAME			255
 
 #define SPDK_SCSI_PORT_MAX_NAME_LENGTH		255
+#define SPDK_SCSI_MAX_TRANSPORT_ID_LENGTH	255
 
 enum spdk_scsi_data_dir {
 	SPDK_SCSI_DIR_NONE = 0,
@@ -147,9 +148,10 @@ struct spdk_scsi_task {
 struct spdk_scsi_port;
 struct spdk_scsi_dev;
 struct spdk_scsi_lun;
-struct spdk_scsi_desc;
+struct spdk_scsi_lun_desc;
 
-typedef void (*spdk_scsi_remove_cb_t)(struct spdk_scsi_lun *, void *);
+typedef void (*spdk_scsi_lun_remove_cb_t)(struct spdk_scsi_lun *, void *);
+typedef void (*spdk_scsi_dev_destruct_cb_t)(void *cb_arg, int rc);
 
 /**
  * Initialize SCSI layer.
@@ -240,20 +242,23 @@ bool spdk_scsi_dev_has_pending_tasks(const struct spdk_scsi_dev *dev);
  * Destruct the SCSI decice.
  *
  * \param dev SCSI device.
+ * \param cb_fn Callback function.
+ * \param cb_arg Argument to callback function.
  */
-void spdk_scsi_dev_destruct(struct spdk_scsi_dev *dev);
+void spdk_scsi_dev_destruct(struct spdk_scsi_dev *dev,
+			    spdk_scsi_dev_destruct_cb_t cb_fn, void *cb_arg);
 
 /**
  * Execute the SCSI management task.
  *
  * The task can be constructed by the function spdk_scsi_task_construct().
+ * Code of task management function to be executed is set before calling this API.
  *
  * \param dev SCSI device.
  * \param task SCSI task to be executed.
- * \param func Task management function to be executed.
  */
-void spdk_scsi_dev_queue_mgmt_task(struct spdk_scsi_dev *dev, struct spdk_scsi_task *task,
-				   enum spdk_scsi_task_func func);
+void spdk_scsi_dev_queue_mgmt_task(struct spdk_scsi_dev *dev, struct spdk_scsi_task *task);
+
 /**
  * Execute the SCSI task.
  *
@@ -472,6 +477,13 @@ void spdk_scsi_task_copy_status(struct spdk_scsi_task *dst, struct spdk_scsi_tas
 void spdk_scsi_task_process_null_lun(struct spdk_scsi_task *task);
 
 /**
+ * Process the aborted SCSI task.
+ *
+ * \param task SCSI task.
+ */
+void spdk_scsi_task_process_abort(struct spdk_scsi_task *task);
+
+/**
  * Open a logical unit for I/O operations.
  *
  * The registered callback function must get all tasks from the upper layer
@@ -484,15 +496,15 @@ void spdk_scsi_task_process_null_lun(struct spdk_scsi_task *task);
  * \param desc Output parameter for the descriptor when operation is successful.
  * \return 0 if operation is successful, suitable errno value otherwise
  */
-int spdk_scsi_lun_open(struct spdk_scsi_lun *lun, spdk_scsi_remove_cb_t hotremove_cb,
-		       void *hotremove_ctx, struct spdk_scsi_desc **desc);
+int spdk_scsi_lun_open(struct spdk_scsi_lun *lun, spdk_scsi_lun_remove_cb_t hotremove_cb,
+		       void *hotremove_ctx, struct spdk_scsi_lun_desc **desc);
 
 /**
  * Close an opened logical unit.
  *
  * \param desc Descriptor of the logical unit.
  */
-void spdk_scsi_lun_close(struct spdk_scsi_desc *desc);
+void spdk_scsi_lun_close(struct spdk_scsi_lun_desc *desc);
 
 /**
  * Allocate I/O channel for the LUN
@@ -501,15 +513,55 @@ void spdk_scsi_lun_close(struct spdk_scsi_desc *desc);
  *
  * \return 0 on success, -1 on failure.
  */
-int spdk_scsi_lun_allocate_io_channel(struct spdk_scsi_desc *desc);
+int spdk_scsi_lun_allocate_io_channel(struct spdk_scsi_lun_desc *desc);
 
 /**
  * Free I/O channel from the logical unit
  *
  * \param desc Descriptor of the logical unit.
  */
-void spdk_scsi_lun_free_io_channel(struct spdk_scsi_desc *desc);
+void spdk_scsi_lun_free_io_channel(struct spdk_scsi_lun_desc *desc);
 
+/**
+ * Get DIF context for SCSI LUN and SCSI command.
+ *
+ * \param lun Logical unit.
+ * \param cdb SCSI CDB.
+ * \param data_offset Byte offset in the payload.
+ * \param dif_ctx Output parameter which will contain initialized DIF context.
+ *
+ * \return true on success or false otherwise.
+ */
+bool spdk_scsi_lun_get_dif_ctx(struct spdk_scsi_lun *lun, uint8_t *cdb,
+			       uint32_t data_offset, struct spdk_dif_ctx *dif_ctx);
+
+/**
+ * Set iSCSI Initiator port TransportID
+ *
+ * \param port SCSI initiator port.
+ * \param iscsi_name Initiator name.
+ * \param isid Session ID.
+ */
+void spdk_scsi_port_set_iscsi_transport_id(struct spdk_scsi_port *port,
+		char *iscsi_name, uint64_t isid);
+
+/**
+ * Convert LUN ID from integer to LUN format
+ *
+ * \param lun_id Integer LUN ID
+ *
+ * \return LUN format of LUN ID
+ */
+uint64_t spdk_scsi_lun_id_int_to_fmt(int lun_id);
+
+/**
+ * Convert LUN ID from LUN format to integer
+ *
+ * \param fmt_lun LUN format of LUN ID
+ *
+ * \return integer LUN ID
+ */
+int spdk_scsi_lun_id_fmt_to_int(uint64_t fmt_lun);
 #ifdef __cplusplus
 }
 #endif

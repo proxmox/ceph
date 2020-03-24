@@ -113,6 +113,8 @@ int io_getevents(linux_abi::aio_context_t io_context, long min_nr, long nr, linu
 int io_pgetevents(linux_abi::aio_context_t io_context, long min_nr, long nr, linux_abi::io_event* events, const ::timespec* timeout, const sigset_t* sigmask,
         bool force_syscall = false);
 
+void setup_aio_context(size_t nr, linux_abi::aio_context_t* io_context);
+
 }
 
 namespace internal {
@@ -172,6 +174,15 @@ make_poll_iocb(int fd, uint32_t events) {
     iocb.aio_lio_opcode = linux_abi::iocb_cmd::POLL;
     iocb.aio_fildes = fd;
     iocb.aio_buf = events;
+    return iocb;
+}
+
+inline
+linux_abi::iocb
+make_fdsync_iocb(int fd) {
+    linux_abi::iocb iocb{};
+    iocb.aio_lio_opcode = linux_abi::iocb_cmd::FDSYNC;
+    iocb.aio_fildes = fd;
     return iocb;
 }
 

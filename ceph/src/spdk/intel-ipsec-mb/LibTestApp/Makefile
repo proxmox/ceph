@@ -54,7 +54,9 @@ else
 CFLAGS += -O3
 endif
 
-SOURCES := main.c gcm_test.c ctr_test.c customop_test.c des_test.c ccm_test.c cmac_test.c
+SOURCES := main.c gcm_test.c ctr_test.c customop_test.c des_test.c ccm_test.c \
+	cmac_test.c utils.c hmac_sha1_test.c hmac_sha256_sha512_test.c \
+	hmac_md5_test.c aes_test.c sha_test.c
 OBJECTS := $(SOURCES:%.c=%.o)
 
 all: $(APP)
@@ -66,9 +68,15 @@ main.o: main.c do_test.h
 gcm_test.o: gcm_test.c gcm_ctr_vectors_test.h
 ctr_test.o: ctr_test.c gcm_ctr_vectors_test.h
 des_test.o: des_test.c
-ccm_test.o: ccm_test.c
-cmac_test.o: cmac_test.c
+ccm_test.o: ccm_test.c utils.h
+cmac_test.o: cmac_test.c utils.h
+hmac_sha1_test.o: hmac_sha1_test.c utils.h
+hmac_md5_test.o: hmac_md5_test.c utils.h
+hmac_sha256_sha512_test.o: hmac_sha256_sha512_test.c utils.h
+aes_test.o: aes_test.c gcm_ctr_vectors_test.h utils.h
 customop_test.o: customop_test.c customop_test.h
+utils.o: utils.c utils.h
+sha_test.o: sha_test.c utils.h
 
 .PHONY: clean
 clean:
@@ -81,4 +89,4 @@ style:
 	$(CHECKPATCH) --no-tree --no-signoff --emacs --no-color \
 --ignore CODE_INDENT,INITIALISED_STATIC,LEADING_SPACE,SPLIT_STRING,\
 UNSPECIFIED_INT,ARRAY_SIZE,BLOCK_COMMENT_STYLE,GLOBAL_INITIALISERS,\
-AVOID_EXTERNS,USE_FUNC,CONSTANT_COMPARISON $(SOURCES_STYLE)
+AVOID_EXTERNS,COMPLEX_MACRO,USE_FUNC,CONSTANT_COMPARISON,MISSING_SPACE $(SOURCES_STYLE)

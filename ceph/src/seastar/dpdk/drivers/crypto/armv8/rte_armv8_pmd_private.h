@@ -1,37 +1,12 @@
-/*
- *   BSD LICENSE
- *
- *   Copyright (C) Cavium networks Ltd. 2017.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Cavium networks nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2017 Cavium, Inc
  */
 
 #ifndef _RTE_ARMV8_PMD_PRIVATE_H_
 #define _RTE_ARMV8_PMD_PRIVATE_H_
+
+#define CRYPTODEV_NAME_ARMV8_PMD	crypto_armv8
+/**< ARMv8 Crypto PMD device name */
 
 #define ARMV8_CRYPTO_LOG_ERR(fmt, args...) \
 	RTE_LOG(ERR, CRYPTODEV, "[%s] %s() line %u: " fmt "\n",  \
@@ -65,6 +40,9 @@ do {								\
 
 #define NBBY		8		/* Number of bits in a byte */
 #define BYTE_LENGTH(x)	((x) / NBBY)	/* Number of bytes in x (round down) */
+
+/* Maximum length for digest (SHA-256 needs 32 bytes) */
+#define DIGEST_LENGTH_MAX 32
 
 /** ARMv8 operation order mode enumerator */
 enum armv8_crypto_chain_order {
@@ -128,8 +106,6 @@ typedef void (*crypto_key_sched_t)(uint8_t *, const uint8_t *);
 struct armv8_crypto_private {
 	unsigned int max_nb_qpairs;
 	/**< Max number of queue pairs */
-	unsigned int max_nb_sessions;
-	/**< Max number of sessions */
 };
 
 /** ARMv8 crypto queue pair */
@@ -140,10 +116,17 @@ struct armv8_crypto_qp {
 	/**< Ring for placing process packets */
 	struct rte_mempool *sess_mp;
 	/**< Session Mempool */
+	struct rte_mempool *sess_mp_priv;
+       /**< Session Private Data Mempool */
 	struct rte_cryptodev_stats stats;
 	/**< Queue pair statistics */
-	char name[RTE_CRYPTODEV_NAME_LEN];
+	char name[RTE_CRYPTODEV_NAME_MAX_LEN];
 	/**< Unique Queue Pair Name */
+	uint8_t temp_digest[DIGEST_LENGTH_MAX];
+	/**< Buffer used to store the digest generated
+	 * by the driver when verifying a digest provided
+	 * by the user (using authentication verify operation)
+	 */
 } __rte_cache_aligned;
 
 /** ARMv8 crypto private session structure */
@@ -159,8 +142,11 @@ struct armv8_crypto_session {
 		/**< cipher operation direction */
 		enum rte_crypto_cipher_algorithm algo;
 		/**< cipher algorithm */
-		int iv_len;
-		/**< IV length */
+		struct {
+			uint16_t length;
+			uint16_t offset;
+		} iv;
+		/**< IV parameters */
 
 		struct {
 			uint8_t data[256];
@@ -192,10 +178,12 @@ struct armv8_crypto_session {
 				uint8_t o_key_pad[SHA_BLOCK_MAX]
 							__rte_cache_aligned;
 				/**< outer pad (max supported block length) */
-				uint8_t key[SHA_AUTH_KEY_MAX];
-				/**< HMAC key (max supported length)*/
+				uint8_t key[SHA_BLOCK_MAX];
+				/**< HMAC key (max supported block length)*/
 			} hmac;
 		};
+		uint16_t digest_length;
+		/* Digest length */
 	} auth;
 
 } __rte_cache_aligned;

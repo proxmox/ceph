@@ -1,34 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2017 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2017 Intel Corporation
  */
 
 #include <arpa/inet.h>
@@ -52,6 +23,7 @@
 #include <rte_vhost.h>
 #include <rte_ip.h>
 #include <rte_tcp.h>
+#include <rte_pause.h>
 
 #include "main.h"
 
@@ -82,12 +54,6 @@
 #define RTE_TEST_TX_DESC_DEFAULT 512
 
 #define INVALID_PORT_ID 0xFF
-
-/* Max number of devices. Limited by vmdq. */
-#define MAX_DEVICES 64
-
-/* Size of buffers used for snprintfs. */
-#define MAX_PRINT_BUFF 6072
 
 /* Maximum long option length for option parsing. */
 #define MAX_LONG_OPT_SZ 64
@@ -144,21 +110,21 @@ static struct rte_eth_conf vmdq_conf_default = {
 	.rxmode = {
 		.mq_mode        = ETH_MQ_RX_VMDQ_ONLY,
 		.split_hdr_size = 0,
-		.header_split   = 0, /**< Header Split disabled */
-		.hw_ip_checksum = 0, /**< IP checksum offload disabled */
-		.hw_vlan_filter = 0, /**< VLAN filtering disabled */
 		/*
-		 * It is necessary for 1G NIC such as I350,
+		 * VLAN strip is necessary for 1G NIC such as I350,
 		 * this fixes bug of ipv4 forwarding in guest can't
 		 * forward pakets from one virtio dev to another virtio dev.
 		 */
-		.hw_vlan_strip  = 1, /**< VLAN strip enabled. */
-		.jumbo_frame    = 0, /**< Jumbo Frame Support disabled */
-		.hw_strip_crc   = 1, /**< CRC stripped by hardware */
+		.offloads = DEV_RX_OFFLOAD_VLAN_STRIP,
 	},
 
 	.txmode = {
 		.mq_mode = ETH_MQ_TX_NONE,
+		.offloads = (DEV_TX_OFFLOAD_IPV4_CKSUM |
+			     DEV_TX_OFFLOAD_TCP_CKSUM |
+			     DEV_TX_OFFLOAD_VLAN_INSERT |
+			     DEV_TX_OFFLOAD_MULTI_SEGS |
+			     DEV_TX_OFFLOAD_TCP_TSO),
 	},
 	.rx_adv_conf = {
 		/*
@@ -175,8 +141,9 @@ static struct rte_eth_conf vmdq_conf_default = {
 	},
 };
 
+
 static unsigned lcore_ids[RTE_MAX_LCORE];
-static uint8_t ports[RTE_MAX_ETHPORTS];
+static uint16_t ports[RTE_MAX_ETHPORTS];
 static unsigned num_ports = 0; /**< The number of ports specified in command line */
 static uint16_t num_pf_queues, num_vmdq_queues;
 static uint16_t vmdq_pool_base, vmdq_queue_base;
@@ -245,26 +212,11 @@ get_eth_conf(struct rte_eth_conf *eth_conf, uint32_t num_devices)
 }
 
 /*
- * Validate the device number according to the max pool number gotten form
- * dev_info. If the device number is invalid, give the error message and
- * return -1. Each device must have its own pool.
- */
-static inline int
-validate_num_devices(uint32_t max_nb_devices)
-{
-	if (num_devices > max_nb_devices) {
-		RTE_LOG(ERR, VHOST_PORT, "invalid number of devices\n");
-		return -1;
-	}
-	return 0;
-}
-
-/*
  * Initialises a given port using global settings and with the rx buffers
  * coming from the mbuf_pool passed as parameter
  */
 static inline int
-port_init(uint8_t port)
+port_init(uint16_t port)
 {
 	struct rte_eth_dev_info dev_info;
 	struct rte_eth_conf port_conf;
@@ -278,18 +230,9 @@ port_init(uint8_t port)
 	/* The max pool number from dev_info will be used to validate the pool number specified in cmd line */
 	rte_eth_dev_info_get (port, &dev_info);
 
-	if (dev_info.max_rx_queues > MAX_QUEUES) {
-		rte_exit(EXIT_FAILURE,
-			"please define MAX_QUEUES no less than %u in %s\n",
-			dev_info.max_rx_queues, __FILE__);
-	}
-
 	rxconf = &dev_info.default_rxconf;
 	txconf = &dev_info.default_txconf;
 	rxconf->rx_drop_en = 1;
-
-	/* Enable vlan offload */
-	txconf->txq_flags &= ~ETH_TXQ_FLAGS_NOVLANOFFL;
 
 	/*configure the number of supported virtio devices based on VMDQ limits */
 	num_devices = dev_info.max_vmdq_pools;
@@ -309,10 +252,6 @@ port_init(uint8_t port)
 
 	tx_rings = (uint16_t)rte_lcore_count();
 
-	retval = validate_num_devices(MAX_DEVICES);
-	if (retval < 0)
-		return retval;
-
 	/* Get port configuration. */
 	retval = get_eth_conf(&port_conf, num_devices);
 	if (retval < 0)
@@ -327,9 +266,13 @@ port_init(uint8_t port)
 	printf("pf queue num: %u, configured vmdq pool num: %u, each vmdq pool has %u queues\n",
 		num_pf_queues, num_devices, queues_per_pool);
 
-	if (port >= rte_eth_dev_count()) return -1;
+	if (!rte_eth_dev_is_valid_port(port))
+		return -1;
 
 	rx_rings = (uint16_t)dev_info.max_rx_queues;
+	if (dev_info.tx_offload_capa & DEV_TX_OFFLOAD_MBUF_FAST_FREE)
+		port_conf.txmode.offloads |=
+			DEV_TX_OFFLOAD_MBUF_FAST_FREE;
 	/* Configure ethernet device. */
 	retval = rte_eth_dev_configure(port, rx_rings, tx_rings, &port_conf);
 	if (retval != 0) {
@@ -338,7 +281,21 @@ port_init(uint8_t port)
 		return retval;
 	}
 
+	retval = rte_eth_dev_adjust_nb_rx_tx_desc(port, &rx_ring_size,
+		&tx_ring_size);
+	if (retval != 0) {
+		RTE_LOG(ERR, VHOST_PORT, "Failed to adjust number of descriptors "
+			"for port %u: %s.\n", port, strerror(-retval));
+		return retval;
+	}
+	if (rx_ring_size > RTE_TEST_RX_DESC_DEFAULT) {
+		RTE_LOG(ERR, VHOST_PORT, "Mbuf pool has an insufficient size "
+			"for Rx queues on port %u.\n", port);
+		return -1;
+	}
+
 	/* Setup the queues. */
+	rxconf->offloads = port_conf.rxmode.offloads;
 	for (q = 0; q < rx_rings; q ++) {
 		retval = rte_eth_rx_queue_setup(port, q, rx_ring_size,
 						rte_eth_dev_socket_id(port),
@@ -351,6 +308,7 @@ port_init(uint8_t port)
 			return retval;
 		}
 	}
+	txconf->offloads = port_conf.txmode.offloads;
 	for (q = 0; q < tx_rings; q ++) {
 		retval = rte_eth_tx_queue_setup(port, q, tx_ring_size,
 						rte_eth_dev_socket_id(port),
@@ -378,7 +336,7 @@ port_init(uint8_t port)
 	RTE_LOG(INFO, VHOST_PORT, "Max virtio devices supported: %u\n", num_devices);
 	RTE_LOG(INFO, VHOST_PORT, "Port %u MAC: %02"PRIx8" %02"PRIx8" %02"PRIx8
 			" %02"PRIx8" %02"PRIx8" %02"PRIx8"\n",
-			(unsigned)port,
+			port,
 			vmdq_ports_eth_addr[port].addr_bytes[0],
 			vmdq_ports_eth_addr[port].addr_bytes[1],
 			vmdq_ports_eth_addr[port].addr_bytes[2],
@@ -395,12 +353,20 @@ port_init(uint8_t port)
 static int
 us_vhost_parse_socket_path(const char *q_arg)
 {
+	char *old;
+
 	/* parse number string */
 	if (strnlen(q_arg, PATH_MAX) == PATH_MAX)
 		return -1;
 
+	old = socket_files;
 	socket_files = realloc(socket_files, PATH_MAX * (nb_sockets + 1));
-	snprintf(socket_files + nb_sockets * PATH_MAX, PATH_MAX, "%s", q_arg);
+	if (socket_files == NULL) {
+		free(old);
+		return -1;
+	}
+
+	strlcpy(socket_files + nb_sockets * PATH_MAX, q_arg, PATH_MAX);
 	nb_sockets++;
 
 	return 0;
@@ -610,7 +576,8 @@ us_vhost_parse_args(int argc, char **argv)
 				} else {
 					mergeable = !!ret;
 					if (ret) {
-						vmdq_conf_default.rxmode.jumbo_frame = 1;
+						vmdq_conf_default.rxmode.offloads |=
+							DEV_RX_OFFLOAD_JUMBO_FRAME;
 						vmdq_conf_default.rxmode.max_rx_pkt_len
 							= JUMBO_FRAME_MAX_SIZE;
 					}
@@ -653,7 +620,7 @@ us_vhost_parse_args(int argc, char **argv)
 
 	for (i = 0; i < RTE_MAX_ETHPORTS; i++) {
 		if (enabled_port_mask & (1 << i))
-			ports[num_ports++] = (uint8_t)i;
+			ports[num_ports++] = i;
 	}
 
 	if ((num_ports ==  0) || (num_ports > MAX_SUP_PORTS)) {
@@ -681,9 +648,10 @@ static unsigned check_ports_num(unsigned nb_ports)
 	}
 
 	for (portid = 0; portid < num_ports; portid ++) {
-		if (ports[portid] >= nb_ports) {
-			RTE_LOG(INFO, VHOST_PORT, "\nSpecified port ID(%u) exceeds max system port ID(%u)\n",
-				ports[portid], (nb_ports - 1));
+		if (!rte_eth_dev_is_valid_port(ports[portid])) {
+			RTE_LOG(INFO, VHOST_PORT,
+				"\nSpecified port ID(%u) is not valid\n",
+				ports[portid]);
 			ports[portid] = INVALID_PORT_ID;
 			valid_num_ports--;
 		}
@@ -691,7 +659,7 @@ static unsigned check_ports_num(unsigned nb_ports)
 	return valid_num_ports;
 }
 
-static inline struct vhost_dev *__attribute__((always_inline))
+static __rte_always_inline struct vhost_dev *
 find_vhost_dev(struct ether_addr *mac)
 {
 	struct vhost_dev *vdev;
@@ -791,7 +759,7 @@ unlink_vmdq(struct vhost_dev *vdev)
 	}
 }
 
-static inline void __attribute__((always_inline))
+static __rte_always_inline void
 virtio_xmit(struct vhost_dev *dst_vdev, struct vhost_dev *src_vdev,
 	    struct rte_mbuf *m)
 {
@@ -815,7 +783,7 @@ virtio_xmit(struct vhost_dev *dst_vdev, struct vhost_dev *src_vdev,
  * Check if the packet destination MAC address is for a local device. If so then put
  * the packet on that devices RX queue. If not then return.
  */
-static inline int __attribute__((always_inline))
+static __rte_always_inline int
 virtio_tx_local(struct vhost_dev *vdev, struct rte_mbuf *m)
 {
 	struct ether_hdr *pkt_hdr;
@@ -851,7 +819,7 @@ virtio_tx_local(struct vhost_dev *vdev, struct rte_mbuf *m)
  * Check if the destination MAC of a packet is one local VM,
  * and get its vlan tag, and offset if it is.
  */
-static inline int __attribute__((always_inline))
+static __rte_always_inline int
 find_local_dest(struct vhost_dev *vdev, struct rte_mbuf *m,
 	uint32_t *offset, uint16_t *vlan_tag)
 {
@@ -919,7 +887,7 @@ free_pkts(struct rte_mbuf **pkts, uint16_t n)
 		rte_pktmbuf_free(pkts[n]);
 }
 
-static inline void __attribute__((always_inline))
+static __rte_always_inline void
 do_drain_mbuf_table(struct mbuf_table *tx_q)
 {
 	uint16_t count;
@@ -936,7 +904,7 @@ do_drain_mbuf_table(struct mbuf_table *tx_q)
  * This function routes the TX packet to the correct interface. This
  * may be a local device or the physical port.
  */
-static inline void __attribute__((always_inline))
+static __rte_always_inline void
 virtio_tx_route(struct vhost_dev *vdev, struct rte_mbuf *m, uint16_t vlan_tag)
 {
 	struct mbuf_table *tx_q;
@@ -950,7 +918,8 @@ virtio_tx_route(struct vhost_dev *vdev, struct rte_mbuf *m, uint16_t vlan_tag)
 		struct vhost_dev *vdev2;
 
 		TAILQ_FOREACH(vdev2, &vhost_dev_list, global_vdev_entry) {
-			virtio_xmit(vdev2, vdev, m);
+			if (vdev2 != vdev)
+				virtio_xmit(vdev2, vdev, m);
 		}
 		goto queue2nic;
 	}
@@ -1024,7 +993,7 @@ queue2nic:
 }
 
 
-static inline void __attribute__((always_inline))
+static __rte_always_inline void
 drain_mbuf_table(struct mbuf_table *tx_q)
 {
 	static uint64_t prev_tsc;
@@ -1044,7 +1013,7 @@ drain_mbuf_table(struct mbuf_table *tx_q)
 	}
 }
 
-static inline void __attribute__((always_inline))
+static __rte_always_inline void
 drain_eth_rx(struct vhost_dev *vdev)
 {
 	uint16_t rx_count, enqueue_count;
@@ -1088,7 +1057,7 @@ drain_eth_rx(struct vhost_dev *vdev)
 	free_pkts(pkts, rx_count);
 }
 
-static inline void __attribute__((always_inline))
+static __rte_always_inline void
 drain_virtio_tx(struct vhost_dev *vdev)
 {
 	struct rte_mbuf *pkts[MAX_PKT_BURST];
@@ -1237,7 +1206,7 @@ destroy_device(int vid)
 
 /*
  * A new device is added to a data core. First the device is added to the main linked list
- * and the allocated to a specific data core.
+ * and then allocated to a specific data core.
  */
 static int
 new_device(int vid)
@@ -1303,8 +1272,8 @@ static const struct vhost_device_ops virtio_net_device_ops =
  * This is a thread will wake up after a period to print stats if the user has
  * enabled them.
  */
-static void
-print_stats(void)
+static void *
+print_stats(__rte_unused void *arg)
 {
 	struct vhost_dev *vdev;
 	uint64_t tx_dropped, rx_dropped;
@@ -1343,6 +1312,8 @@ print_stats(void)
 
 		printf("===================================================\n");
 	}
+
+	return NULL;
 }
 
 static void
@@ -1429,9 +1400,8 @@ main(int argc, char *argv[])
 	unsigned lcore_id, core_id = 0;
 	unsigned nb_ports, valid_num_ports;
 	int ret, i;
-	uint8_t portid;
+	uint16_t portid;
 	static pthread_t tid;
-	char thread_name[RTE_MAX_THREAD_NAME_LEN];
 	uint64_t flags = 0;
 
 	signal(SIGINT, sigint_handler);
@@ -1459,7 +1429,7 @@ main(int argc, char *argv[])
 		rte_exit(EXIT_FAILURE,"Not enough cores\n");
 
 	/* Get the number of physical ports. */
-	nb_ports = rte_eth_dev_count();
+	nb_ports = rte_eth_dev_count_avail();
 
 	/*
 	 * Update the global var NUM_PORTS and global array PORTS
@@ -1490,7 +1460,7 @@ main(int argc, char *argv[])
 	}
 
 	/* initialize all ports */
-	for (portid = 0; portid < nb_ports; portid++) {
+	RTE_ETH_FOREACH_DEV(portid) {
 		/* skip ports that are not enabled */
 		if ((enabled_port_mask & (1 << portid)) == 0) {
 			RTE_LOG(INFO, VHOST_PORT,
@@ -1504,17 +1474,11 @@ main(int argc, char *argv[])
 
 	/* Enable stats if the user option is set. */
 	if (enable_stats) {
-		ret = pthread_create(&tid, NULL, (void *)print_stats, NULL);
-		if (ret != 0)
+		ret = rte_ctrl_thread_create(&tid, "print-stats", NULL,
+					print_stats, NULL);
+		if (ret < 0)
 			rte_exit(EXIT_FAILURE,
 				"Cannot create print-stats thread\n");
-
-		/* Set thread_name for aid in debugging.  */
-		snprintf(thread_name, RTE_MAX_THREAD_NAME_LEN, "print-stats");
-		ret = rte_thread_setname(tid, thread_name);
-		if (ret != 0)
-			RTE_LOG(DEBUG, VHOST_CONFIG,
-				"Cannot set print-stats name\n");
 	}
 
 	/* Launch all data cores. */

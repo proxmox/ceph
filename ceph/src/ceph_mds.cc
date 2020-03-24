@@ -26,6 +26,7 @@
 
 #include "common/config.h"
 #include "common/strtol.h"
+#include "common/numa.h"
 
 #include "mon/MonMap.h"
 #include "mds/MDSDaemon.h"
@@ -93,6 +94,25 @@ int main(int argc, const char **argv)
 			 0, "mds_data");
   ceph_heap_profiler_init();
 
+  int numa_node = g_conf().get_val<int64_t>("mds_numa_node");
+  size_t numa_cpu_set_size = 0;
+  cpu_set_t numa_cpu_set;
+  if (numa_node >= 0) {
+    int r = get_numa_node_cpu_set(numa_node, &numa_cpu_set_size, &numa_cpu_set);
+    if (r < 0) {
+      dout(1) << __func__ << " unable to determine mds numa node " << numa_node
+              << " CPUs" << dendl;
+      numa_node = -1;
+    } else {
+      r = set_cpu_affinity_all_threads(numa_cpu_set_size, &numa_cpu_set);
+      if (r < 0) {
+        derr << __func__ << " failed to set numa affinity: " << cpp_strerror(r)
+        << dendl;
+      }
+    }
+  } else {
+    dout(1) << __func__ << " not setting numa affinity" << dendl;
+  }
   std::string val, action;
   for (std::vector<const char*>::iterator i = args.begin(); i != args.end(); ) {
     if (ceph_argparse_double_dash(args, i)) {
@@ -143,12 +163,11 @@ int main(int argc, const char **argv)
   common_init_finish(g_ceph_context);
   global_init_chdir(g_ceph_context);
 
-  auto nonce = ceph::util::generate_random_number<uint64_t>();
-
   std::string public_msgr_type = g_conf()->ms_public_type.empty() ? g_conf().get_val<std::string>("ms_type") : g_conf()->ms_public_type;
   Messenger *msgr = Messenger::create(g_ceph_context, public_msgr_type,
 				      entity_name_t::MDS(-1), "mds",
-				      nonce, Messenger::HAS_MANY_CONNECTIONS);
+				      Messenger::get_random_nonce(),
+				      Messenger::HAS_MANY_CONNECTIONS);
   if (!msgr)
     forker.exit(1);
   msgr->set_cluster_protocol(CEPH_MDS_PROTOCOL);
@@ -217,8 +236,8 @@ int main(int argc, const char **argv)
  shutdown:
   // yuck: grab the mds lock, so we can be sure that whoever in *mds
   // called shutdown finishes what they were doing.
-  mds->mds_lock.Lock();
-  mds->mds_lock.Unlock();
+  mds->mds_lock.lock();
+  mds->mds_lock.unlock();
 
   pidfile_remove();
 

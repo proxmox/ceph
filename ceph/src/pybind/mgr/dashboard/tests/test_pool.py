@@ -1,7 +1,10 @@
 # -*- coding: utf-8 -*-
 # pylint: disable=protected-access
 import time
-import mock
+try:
+    import mock
+except ImportError:
+    import unittest.mock as mock
 
 from . import ControllerTestCase
 from ..controllers.pool import Pool
@@ -23,9 +26,10 @@ class PoolControllerTest(ControllerTestCase):
         Pool._cp_config['tools.authenticate.on'] = False
         cls.setup_controllers([Pool, Task])
 
+    @mock.patch('dashboard.services.progress.get_progress_tasks')
     @mock.patch('dashboard.controllers.pool.Pool._get')
     @mock.patch('dashboard.services.ceph_service.CephService.send_command')
-    def test_creation(self, send_command, _get):
+    def test_creation(self, send_command, _get, get_progress_tasks):
         _get.side_effect = [{
             'pool_name': 'test-pool',
             'pg_num': 64,
@@ -46,6 +50,7 @@ class PoolControllerTest(ControllerTestCase):
             time.sleep(3)
 
         send_command.side_effect = _send_cmd
+        get_progress_tasks.return_value = [], []
 
         self._task_post('/api/pool', {
             'pool': 'test-pool',

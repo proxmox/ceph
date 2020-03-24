@@ -12,6 +12,7 @@ import { RgwUserService } from '../../../shared/api/rgw-user.service';
 import { SelectMessages } from '../../../shared/components/select/select-messages.model';
 import { SelectOption } from '../../../shared/components/select/select-option.model';
 import { ActionLabelsI18n } from '../../../shared/constants/app.constants';
+import { Icons } from '../../../shared/enum/icons.enum';
 import { CdFormBuilder } from '../../../shared/forms/cd-form-builder';
 import { CdFormGroup } from '../../../shared/forms/cd-form-group';
 import { CdValidators } from '../../../shared/forms/cd-validators';
@@ -29,15 +30,15 @@ import { NfsFormClientComponent } from '../nfs-form-client/nfs-form-client.compo
   styleUrls: ['./nfs-form.component.scss']
 })
 export class NfsFormComponent implements OnInit {
-  @ViewChild('nfsClients')
+  @ViewChild('nfsClients', { static: true })
   nfsClients: NfsFormClientComponent;
 
   permission: Permission;
   nfsForm: CdFormGroup;
   isEdit = false;
 
-  cluster_id = null;
-  export_id = null;
+  cluster_id: string = null;
+  export_id: string = null;
 
   isNewDirectory = false;
   isNewBucket = false;
@@ -45,6 +46,7 @@ export class NfsFormComponent implements OnInit {
 
   allClusters: string[] = null;
   allDaemons = {};
+  icons = Icons;
 
   allFsals: any[] = [];
   allRgwUsers: any[] = [];
@@ -96,7 +98,7 @@ export class NfsFormComponent implements OnInit {
   }
 
   ngOnInit() {
-    const promises: any[] = [
+    const promises: Observable<any>[] = [
       this.nfsService.daemon(),
       this.nfsService.fsals(),
       this.nfsService.clients(),
@@ -126,7 +128,7 @@ export class NfsFormComponent implements OnInit {
     this.docsUrl = `http://docs.ceph.com/docs/${releaseName}/radosgw/nfs/`;
   }
 
-  getData(promises) {
+  getData(promises: Observable<any>[]) {
     forkJoin(promises).subscribe((data: any[]) => {
       this.resolveDaemons(data[0]);
       this.resolvefsals(data[1]);
@@ -173,14 +175,14 @@ export class NfsFormComponent implements OnInit {
       path: new FormControl(''),
       protocolNfsv3: new FormControl(true, {
         validators: [
-          CdValidators.requiredIf({ protocolNfsv4: false }, (value) => {
+          CdValidators.requiredIf({ protocolNfsv4: false }, (value: boolean) => {
             return !value;
           })
         ]
       }),
       protocolNfsv4: new FormControl(true, {
         validators: [
-          CdValidators.requiredIf({ protocolNfsv3: false }, (value) => {
+          CdValidators.requiredIf({ protocolNfsv3: false }, (value: boolean) => {
             return !value;
           })
         ]
@@ -200,14 +202,14 @@ export class NfsFormComponent implements OnInit {
       }),
       transportUDP: new FormControl(true, {
         validators: [
-          CdValidators.requiredIf({ transportTCP: false }, (value) => {
+          CdValidators.requiredIf({ transportTCP: false }, (value: boolean) => {
             return !value;
           })
         ]
       }),
       transportTCP: new FormControl(true, {
         validators: [
-          CdValidators.requiredIf({ transportUDP: false }, (value) => {
+          CdValidators.requiredIf({ transportUDP: false }, (value: boolean) => {
             return !value;
           })
         ]
@@ -221,7 +223,7 @@ export class NfsFormComponent implements OnInit {
     });
   }
 
-  resolveModel(res) {
+  resolveModel(res: any) {
     if (res.fsal.name === 'CEPH') {
       res.sec_label_xattr = res.fsal.sec_label_xattr;
     }
@@ -240,9 +242,9 @@ export class NfsFormComponent implements OnInit {
     res.transportUDP = res.transports.indexOf('UDP') !== -1;
     delete res.transports;
 
-    res.clients.forEach((client) => {
+    res.clients.forEach((client: any) => {
       let addressStr = '';
-      client.addresses.forEach((address) => {
+      client.addresses.forEach((address: string) => {
         addressStr += address + ', ';
       });
       if (addressStr.length >= 2) {
@@ -256,7 +258,7 @@ export class NfsFormComponent implements OnInit {
     this.nfsClients.resolveModel(res.clients);
   }
 
-  resolveDaemons(daemons) {
+  resolveDaemons(daemons: Record<string, any>) {
     daemons = _.sortBy(daemons, ['daemon_id']);
 
     this.allClusters = _(daemons)
@@ -292,7 +294,7 @@ export class NfsFormComponent implements OnInit {
         this.allFsals.push(fsalItem);
         if (fsalItem.value === 'RGW') {
           this.rgwUserService.list().subscribe((result: any) => {
-            result.forEach((user) => {
+            result.forEach((user: Record<string, any>) => {
               if (user.suspended === 0 && user.keys.length > 0) {
                 this.allRgwUsers.push(user.user_id);
               }
@@ -309,11 +311,11 @@ export class NfsFormComponent implements OnInit {
     }
   }
 
-  resolveClients(clients) {
+  resolveClients(clients: any[]) {
     this.allCephxClients = clients;
   }
 
-  resolveFilesystems(filesystems) {
+  resolveFilesystems(filesystems: any[]) {
     this.allFsNames = filesystems;
     if (filesystems.length === 1) {
       this.nfsForm.patchValue({
@@ -360,7 +362,7 @@ export class NfsFormComponent implements OnInit {
     });
   }
 
-  getAccessTypeHelp(accessType) {
+  getAccessTypeHelp(accessType: string) {
     const accessTypeItem = this.nfsAccessType.find((currentAccessTypeItem) => {
       if (accessType === currentAccessTypeItem.value) {
         return currentAccessTypeItem;
@@ -379,7 +381,7 @@ export class NfsFormComponent implements OnInit {
     return '';
   }
 
-  getPathTypeahead(path) {
+  getPathTypeahead(path: any) {
     if (!_.isString(path) || path === '/') {
       return of([]);
     }
@@ -473,7 +475,7 @@ export class NfsFormComponent implements OnInit {
     this.nfsForm.patchValue({ daemons: [] });
   }
 
-  removeDaemon(index, daemon) {
+  removeDaemon(index: number, daemon: string) {
     this.daemonsSelections.forEach((value) => {
       if (value.name === daemon) {
         value.selected = false;
@@ -564,7 +566,7 @@ export class NfsFormComponent implements OnInit {
     }
     delete requestModel.transportUDP;
 
-    requestModel.clients.forEach((client) => {
+    requestModel.clients.forEach((client: any) => {
       if (_.isString(client.addresses)) {
         client.addresses = _(client.addresses)
           .split(/[ ,]+/)

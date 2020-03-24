@@ -13,6 +13,8 @@
 
 #include "DaemonState.h"
 
+#include <experimental/iterator>
+
 #include "MgrSession.h"
 #include "include/stringify.h"
 #include "common/Formatter.h"
@@ -94,16 +96,17 @@ void DeviceState::dump(Formatter *f) const
 {
   f->dump_string("devid", devid);
   f->open_array_section("location");
-  for (auto& i : devnames) {
+  for (auto& i : attachments) {
     f->open_object_section("attachment");
-    f->dump_string("host", i.first);
-    f->dump_string("dev", i.second);
+    f->dump_string("host", std::get<0>(i));
+    f->dump_string("dev", std::get<1>(i));
+    f->dump_string("path", std::get<2>(i));
     f->close_section();
   }
   f->close_section();
   f->open_array_section("daemons");
   for (auto& i : daemons) {
-    f->dump_string("daemon", to_string(i));
+    f->dump_stream("daemon") << i;
   }
   f->close_section();
   if (life_expectancy.first != utime_t()) {
@@ -117,14 +120,14 @@ void DeviceState::dump(Formatter *f) const
 void DeviceState::print(ostream& out) const
 {
   out << "device " << devid << "\n";
-  for (auto& i : devnames) {
-    out << "attachment " << i.first << ":" << i.second << "\n";
+  for (auto& i : attachments) {
+    out << "attachment " << std::get<0>(i) << " " << std::get<1>(i) << " "
+	<< std::get<2>(i) << "\n";
+    out << "\n";
   }
-  set<string> d;
-  for (auto& j : daemons) {
-    d.insert(to_string(j));
-  }
-  out << "daemons " << d << "\n";
+  std::copy(std::begin(daemons), std::end(daemons),
+            std::experimental::make_ostream_joiner(out, ","));
+  out << '\n';
   if (life_expectancy.first != utime_t()) {
     out << "life_expectancy " << life_expectancy.first << " to "
 	<< life_expectancy.second
@@ -134,7 +137,7 @@ void DeviceState::print(ostream& out) const
 
 void DaemonStateIndex::insert(DaemonStatePtr dm)
 {
-  RWLock::WLocker l(lock);
+  std::unique_lock l{lock};
   _insert(dm);
 }
 
@@ -150,13 +153,19 @@ void DaemonStateIndex::_insert(DaemonStatePtr dm)
   for (auto& i : dm->devices) {
     auto d = _get_or_create_device(i.first);
     d->daemons.insert(dm->key);
-    d->devnames.insert(make_pair(dm->hostname, i.second));
+    auto p = dm->devices_bypath.find(i.first);
+    if (p != dm->devices_bypath.end()) {
+      d->attachments.insert(std::make_tuple(dm->hostname, i.second, p->second));
+    } else {
+      d->attachments.insert(std::make_tuple(dm->hostname, i.second,
+					    std::string()));
+    }
   }
 }
 
 void DaemonStateIndex::_erase(const DaemonKey& dmk)
 {
-  ceph_assert(lock.is_wlocked());
+  ceph_assert(ceph_mutex_is_wlocked(lock));
 
   const auto to_erase = all.find(dmk);
   ceph_assert(to_erase != all.end());
@@ -166,7 +175,12 @@ void DaemonStateIndex::_erase(const DaemonKey& dmk)
     auto d = _get_or_create_device(i.first);
     ceph_assert(d->daemons.count(dmk));
     d->daemons.erase(dmk);
-    d->devnames.erase(make_pair(dm->hostname, i.second));
+    auto p = dm->devices_bypath.find(i.first);
+    if (p != dm->devices_bypath.end()) {
+      d->attachments.erase(make_tuple(dm->hostname, i.second, p->second));
+    } else {
+      d->attachments.erase(make_tuple(dm->hostname, i.second, std::string()));
+    }
     if (d->empty()) {
       _erase_device(d);
     }
@@ -184,13 +198,13 @@ void DaemonStateIndex::_erase(const DaemonKey& dmk)
 DaemonStateCollection DaemonStateIndex::get_by_service(
   const std::string& svc) const
 {
-  RWLock::RLocker l(lock);
+  std::shared_lock l{lock};
 
   DaemonStateCollection result;
 
-  for (const auto &i : all) {
-    if (i.first.first == svc) {
-      result[i.first] = i.second;
+  for (const auto& [key, state] : all) {
+    if (key.type == svc) {
+      result[key] = state;
     }
   }
 
@@ -200,7 +214,7 @@ DaemonStateCollection DaemonStateIndex::get_by_service(
 DaemonStateCollection DaemonStateIndex::get_by_server(
   const std::string &hostname) const
 {
-  RWLock::RLocker l(lock);
+  std::shared_lock l{lock};
 
   if (by_server.count(hostname)) {
     return by_server.at(hostname);
@@ -211,14 +225,14 @@ DaemonStateCollection DaemonStateIndex::get_by_server(
 
 bool DaemonStateIndex::exists(const DaemonKey &key) const
 {
-  RWLock::RLocker l(lock);
+  std::shared_lock l{lock};
 
   return all.count(key) > 0;
 }
 
 DaemonStatePtr DaemonStateIndex::get(const DaemonKey &key)
 {
-  RWLock::RLocker l(lock);
+  std::shared_lock l{lock};
 
   auto iter = all.find(key);
   if (iter != all.end()) {
@@ -230,7 +244,7 @@ DaemonStatePtr DaemonStateIndex::get(const DaemonKey &key)
 
 void DaemonStateIndex::rm(const DaemonKey &key)
 {
-  RWLock::WLocker l(lock);
+  std::unique_lock l{lock};
   _rm(key);
 }
 
@@ -246,15 +260,15 @@ void DaemonStateIndex::cull(const std::string& svc_name,
 {
   std::vector<string> victims;
 
-  RWLock::WLocker l(lock);
+  std::unique_lock l{lock};
   auto begin = all.lower_bound({svc_name, ""});
   auto end = all.end();
   for (auto &i = begin; i != end; ++i) {
     const auto& daemon_key = i->first;
-    if (daemon_key.first != svc_name)
+    if (daemon_key.type != svc_name)
       break;
-    if (names_exist.count(daemon_key.second) == 0) {
-      victims.push_back(daemon_key.second);
+    if (names_exist.count(daemon_key.name) == 0) {
+      victims.push_back(daemon_key.name);
     }
   }
 
@@ -269,11 +283,11 @@ void DaemonStateIndex::cull_services(const std::set<std::string>& types_exist)
 {
   std::set<DaemonKey> victims;
 
-  RWLock::WLocker l(lock);
+  std::unique_lock l{lock};
   for (auto it = all.begin(); it != all.end(); ++it) {
     const auto& daemon_key = it->first;
     if (it->second->service_daemon &&
-        types_exist.count(daemon_key.first) == 0) {
+        types_exist.count(daemon_key.type) == 0) {
       victims.insert(daemon_key);
     }
   }
@@ -284,31 +298,31 @@ void DaemonStateIndex::cull_services(const std::set<std::string>& types_exist)
   }
 }
 
-void DaemonPerfCounters::update(MMgrReport *report)
+void DaemonPerfCounters::update(const MMgrReport& report)
 {
-  dout(20) << "loading " << report->declare_types.size() << " new types, "
-	   << report->undeclare_types.size() << " old types, had "
+  dout(20) << "loading " << report.declare_types.size() << " new types, "
+	   << report.undeclare_types.size() << " old types, had "
 	   << types.size() << " types, got "
-           << report->packed.length() << " bytes of data" << dendl;
+           << report.packed.length() << " bytes of data" << dendl;
 
   // Retrieve session state
-  auto priv = report->get_connection()->get_priv();
+  auto priv = report.get_connection()->get_priv();
   auto session = static_cast<MgrSession*>(priv.get());
 
   // Load any newly declared types
-  for (const auto &t : report->declare_types) {
+  for (const auto &t : report.declare_types) {
     types.insert(std::make_pair(t.path, t));
     session->declared_types.insert(t.path);
   }
   // Remove any old types
-  for (const auto &t : report->undeclare_types) {
+  for (const auto &t : report.undeclare_types) {
     session->declared_types.erase(t);
   }
 
   const auto now = ceph_clock_now();
 
   // Parse packed data according to declared set of types
-  auto p = report->packed.cbegin();
+  auto p = report.packed.cbegin();
   DECODE_START(1, p);
   for (const auto &t_path : session->declared_types) {
     const auto &t = types.at(t_path);

@@ -1,5 +1,4 @@
 <div class="form-group"
-     [ngClass]="{'has-error': settingsForm.showError(setting, formDir)}"
      [formGroup]="settingsForm">
   <label class="col-form-label"
          for="{{ setting }}">{{ setting }}</label>
@@ -26,7 +25,7 @@
 
     <ng-container *ngIf="limits['type'] === 'bool'">
       <br>
-      <div class="radio radio-inline">
+      <div class="custom-control custom-radio custom-control-inline">
         <input type="radio"
                [id]="setting + 'True'"
                [value]="true"
@@ -35,7 +34,7 @@
         <label class="custom-control-label"
                [for]="setting + 'True'">Yes</label>
       </div>
-      <div class="radio radio-inline">
+      <div class="custom-control custom-radio custom-control-inline">
         <input type="radio"
                [id]="setting + 'False'"
                [value]="false"
@@ -47,11 +46,11 @@
     </ng-container>
   </span>
 
-  <span class="help-block"
+  <span class="invalid-feedback"
         *ngIf="settingsForm.showError(setting, formDir, 'min')">
     <ng-container i18n>Must be greater than or equal to {{ limits['min'] }}.</ng-container>
   </span>
-  <span class="help-block"
+  <span class="invalid-feedback"
         *ngIf="settingsForm.showError(setting, formDir, 'max')">
     <ng-container i18n>Must be less than or equal to {{ limits['max'] }}.</ng-container>
   </span>

@@ -1,31 +1,5 @@
-..  BSD LICENSE
-    Copyright(c) 2016 Intel Corporation. All rights reserved.
-
-    Redistribution and use in source and binary forms, with or without
-    modification, are permitted provided that the following conditions
-    are met:
-
-    * Redistributions of source code must retain the above copyright
-    notice, this list of conditions and the following disclaimer.
-    * Redistributions in binary form must reproduce the above copyright
-    notice, this list of conditions and the following disclaimer in
-    the documentation and/or other materials provided with the
-    distribution.
-    * Neither the name of Intel Corporation nor the names of its
-    contributors may be used to endorse or promote products derived
-    from this software without specific prior written permission.
-
-    THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-    "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-    LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-    A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-    OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-    SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-    LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-    DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-    THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-    (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-    OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+..  SPDX-License-Identifier: BSD-3-Clause
+    Copyright(c) 2016 Intel Corporation.
 
 ZUC Crypto Poll Mode Driver
 ===========================
@@ -61,11 +35,11 @@ Installation
 ------------
 
 To build DPDK with the ZUC_PMD the user is required to download
-the export controlled ``libsso_zuc`` library, by requesting it from
-`<https://networkbuilders.intel.com/network-technologies/dpdk>`_.
-Once approval has been granted, the user needs to log in
-`<https://networkbuilders.intel.com/dpdklogin>`_
-and click on "ZUC Library" link, to download the library.
+the export controlled ``libsso_zuc`` library, by registering in
+`Intel Resource & Design Center <https://www.intel.com/content/www/us/en/design/resource-design-center.html>`_.
+Once approval has been granted, the user needs to search for
+*ZUC 128-EAA3 and 128-EIA3 3GPP cryptographic algorithms Software Library* to download the
+library or directly through this `link <https://cdrdv2.intel.com/v1/dl/getContent/575868>`_.
 After downloading the library, the user needs to unpack and compile it
 on their system before building DPDK::
 
@@ -79,13 +53,16 @@ In order to enable this virtual crypto PMD, user must:
 * Export the environmental variable LIBSSO_ZUC_PATH with the path where
   the library was extracted (zuc folder).
 
+* Export the environmental variable LD_LIBRARY_PATH with the path
+  where the built libsso library is (LIBSSO_ZUC_PATH/build).
+
 * Build the LIBSSO_ZUC library (explained in Installation section).
 
 * Build DPDK as follows:
 
 .. code-block:: console
 
-	make config T=x86_64-native-linuxapp-gcc
+	make config T=x86_64-native-linux-gcc
 	sed -i 's,\(CONFIG_RTE_LIBRTE_PMD_ZUC\)=n,\1=y,' build/.config
 	make
 
@@ -108,4 +85,5 @@ Example:
 
 .. code-block:: console
 
-    ./l2fwd-crypto -l 6 -n 4 --vdev="crypto_zuc,socket_id=1,max_nb_sessions=128"
+    ./l2fwd-crypto -l 1 -n 4 --vdev="crypto_zuc,socket_id=0,max_nb_sessions=128" \
+    -- -p 1 --cdev SW --chain CIPHER_ONLY --cipher_algo "zuc-eea3"

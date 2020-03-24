@@ -1,33 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2016 Intel Corporation. All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2016-2017 Intel Corporation
  */
 
 #ifndef _RTE_CRYPTO_H_
@@ -51,6 +23,7 @@ extern "C" {
 #include <rte_common.h>
 
 #include "rte_crypto_sym.h"
+#include "rte_crypto_asym.h"
 
 /** Crypto operation types */
 enum rte_crypto_op_type {
@@ -58,6 +31,8 @@ enum rte_crypto_op_type {
 	/**< Undefined operation type */
 	RTE_CRYPTO_OP_TYPE_SYMMETRIC,
 	/**< Symmetric operation */
+	RTE_CRYPTO_OP_TYPE_ASYMMETRIC
+	/**< Asymmetric operation */
 };
 
 /** Status of crypto operation */
@@ -66,8 +41,6 @@ enum rte_crypto_op_status {
 	/**< Operation completed successfully */
 	RTE_CRYPTO_OP_STATUS_NOT_PROCESSED,
 	/**< Operation has not yet been processed by a crypto device */
-	RTE_CRYPTO_OP_STATUS_ENQUEUED,
-	/**< Operation is enqueued on device */
 	RTE_CRYPTO_OP_STATUS_AUTH_FAILED,
 	/**< Authentication verification failed */
 	RTE_CRYPTO_OP_STATUS_INVALID_SESSION,
@@ -82,6 +55,17 @@ enum rte_crypto_op_status {
 };
 
 /**
+ * Crypto operation session type. This is used to specify whether a crypto
+ * operation has session structure attached for immutable parameters or if all
+ * operation information is included in the operation data structure.
+ */
+enum rte_crypto_op_sess_type {
+	RTE_CRYPTO_OP_WITH_SESSION,	/**< Session based crypto operation */
+	RTE_CRYPTO_OP_SESSIONLESS,	/**< Session-less crypto operation */
+	RTE_CRYPTO_OP_SECURITY_SESSION	/**< Security session crypto operation */
+};
+
+/**
  * Cryptographic Operation.
  *
  * This structure contains data relating to performing cryptographic
@@ -92,32 +76,53 @@ enum rte_crypto_op_status {
  * rte_cryptodev_enqueue_burst() / rte_cryptodev_dequeue_burst() .
  */
 struct rte_crypto_op {
-	enum rte_crypto_op_type type;
-	/**< operation type */
-
-	enum rte_crypto_op_status status;
-	/**<
-	 * operation status - this is reset to
-	 * RTE_CRYPTO_OP_STATUS_NOT_PROCESSED on allocation from mempool and
-	 * will be set to RTE_CRYPTO_OP_STATUS_SUCCESS after crypto operation
-	 * is successfully processed by a crypto PMD
-	 */
-
+	__extension__
+	union {
+		uint64_t raw;
+		__extension__
+		struct {
+			uint8_t type;
+			/**< operation type */
+			uint8_t status;
+			/**<
+			 * operation status - this is reset to
+			 * RTE_CRYPTO_OP_STATUS_NOT_PROCESSED on allocation
+			 * from mempool and will be set to
+			 * RTE_CRYPTO_OP_STATUS_SUCCESS after crypto operation
+			 * is successfully processed by a crypto PMD
+			 */
+			uint8_t sess_type;
+			/**< operation session type */
+			uint8_t reserved[3];
+			/**< Reserved bytes to fill 64 bits for
+			 * future additions
+			 */
+			uint16_t private_data_offset;
+			/**< Offset to indicate start of private data (if any).
+			 * The offset is counted from the start of the
+			 * rte_crypto_op including IV.
+			 * The private data may be used by the application
+			 * to store information which should remain untouched
+			 * in the library/driver
+			 */
+		};
+	};
 	struct rte_mempool *mempool;
 	/**< crypto operation mempool which operation is allocated from */
 
-	phys_addr_t phys_addr;
+	rte_iova_t phys_addr;
 	/**< physical address of crypto operation */
 
-	void *opaque_data;
-	/**< Opaque pointer for user data */
-
-	RTE_STD_C11
+	__extension__
 	union {
-		struct rte_crypto_sym_op *sym;
+		struct rte_crypto_sym_op sym[0];
 		/**< Symmetric operation parameters */
+
+		struct rte_crypto_asym_op asym[0];
+		/**< Asymmetric operation parameters */
+
 	}; /**< operation specific parameters */
-} __rte_cache_aligned;
+};
 
 /**
  * Reset the fields of a crypto operation to their default values.
@@ -130,22 +135,19 @@ __rte_crypto_op_reset(struct rte_crypto_op *op, enum rte_crypto_op_type type)
 {
 	op->type = type;
 	op->status = RTE_CRYPTO_OP_STATUS_NOT_PROCESSED;
+	op->sess_type = RTE_CRYPTO_OP_SESSIONLESS;
 
 	switch (type) {
 	case RTE_CRYPTO_OP_TYPE_SYMMETRIC:
-		/** Symmetric operation structure starts after the end of the
-		 * rte_crypto_op structure.
-		 */
-		op->sym = (struct rte_crypto_sym_op *)(op + 1);
-		op->type = type;
-
 		__rte_crypto_sym_op_reset(op->sym);
 		break;
+	case RTE_CRYPTO_OP_TYPE_ASYMMETRIC:
+		memset(op->asym, 0, sizeof(struct rte_crypto_asym_op));
+	break;
+	case RTE_CRYPTO_OP_TYPE_UNDEFINED:
 	default:
 		break;
 	}
-
-	op->opaque_data = NULL;
 }
 
 /**
@@ -265,8 +267,9 @@ rte_crypto_op_alloc(struct rte_mempool *mempool, enum rte_crypto_op_type type)
  * @param	nb_ops	Number of crypto operations to allocate
  *
  * @returns
- * - On success returns a valid rte_crypto_op structure
- * - On failure returns NULL
+ * - nb_ops if the number of operations requested were allocated.
+ * - 0 if the requested number of ops are not available.
+ *   None are allocated in this case.
  */
 
 static inline unsigned
@@ -307,9 +310,14 @@ __rte_crypto_op_get_priv_data(struct rte_crypto_op *op, uint32_t size)
 	if (likely(op->mempool != NULL)) {
 		priv_size = __rte_crypto_op_get_priv_data_size(op->mempool);
 
-		if (likely(priv_size >= size))
-			return (void *)((uint8_t *)(op + 1) +
+		if (likely(priv_size >= size)) {
+			if (op->type == RTE_CRYPTO_OP_TYPE_SYMMETRIC)
+				return (void *)((uint8_t *)(op + 1) +
 					sizeof(struct rte_crypto_sym_op));
+			if (op->type == RTE_CRYPTO_OP_TYPE_ASYMMETRIC)
+				return (void *)((uint8_t *)(op + 1) +
+					sizeof(struct rte_crypto_asym_op));
+		}
 	}
 
 	return NULL;
@@ -407,7 +415,27 @@ rte_crypto_op_attach_sym_session(struct rte_crypto_op *op,
 	if (unlikely(op->type != RTE_CRYPTO_OP_TYPE_SYMMETRIC))
 		return -1;
 
+	op->sess_type = RTE_CRYPTO_OP_WITH_SESSION;
+
 	return __rte_crypto_sym_op_attach_sym_session(op->sym, sess);
+}
+
+/**
+ * Attach a asymmetric session to a crypto operation
+ *
+ * @param	op	crypto operation, must be of type asymmetric
+ * @param	sess	cryptodev session
+ */
+static inline int
+rte_crypto_op_attach_asym_session(struct rte_crypto_op *op,
+		struct rte_cryptodev_asym_session *sess)
+{
+	if (unlikely(op->type != RTE_CRYPTO_OP_TYPE_ASYMMETRIC))
+		return -1;
+
+	op->sess_type = RTE_CRYPTO_OP_WITH_SESSION;
+	op->asym->session = sess;
+	return 0;
 }
 
 #ifdef __cplusplus

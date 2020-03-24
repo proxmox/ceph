@@ -1,9 +1,7 @@
-/*
- * Copyright (c) 2016 QLogic Corporation.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright (c) 2016 - 2018 Cavium Inc.
  * All rights reserved.
- * www.qlogic.com
- *
- * See LICENSE.qede_pmd for copyright and licensing details.
+ * www.cavium.com
  */
 
 #include "bcm_osal.h"
@@ -165,23 +163,19 @@ static void ecore_set_tunn_ports(struct ecore_tunnel_info *p_tun,
 }
 
 static void
-__ecore_set_ramrod_tunnel_param(u8 *p_tunn_cls, u8 *p_enable_tx_clas,
+__ecore_set_ramrod_tunnel_param(u8 *p_tunn_cls,
 				struct ecore_tunn_update_type *tun_type)
 {
 	*p_tunn_cls = tun_type->tun_cls;
-
-	if (tun_type->b_mode_enabled)
-		*p_enable_tx_clas = 1;
 }
 
 static void
-ecore_set_ramrod_tunnel_param(u8 *p_tunn_cls, u8 *p_enable_tx_clas,
+ecore_set_ramrod_tunnel_param(u8 *p_tunn_cls,
 			      struct ecore_tunn_update_type *tun_type,
 			      u8 *p_update_port, __le16 *p_port,
 			      struct ecore_tunn_update_udp_port *p_udp_port)
 {
-	__ecore_set_ramrod_tunnel_param(p_tunn_cls, p_enable_tx_clas,
-					tun_type);
+	__ecore_set_ramrod_tunnel_param(p_tunn_cls, tun_type);
 	if (p_udp_port->b_update_port) {
 		*p_update_port = 1;
 		*p_port = OSAL_CPU_TO_LE16(p_udp_port->port);
@@ -200,33 +194,27 @@ ecore_tunn_set_pf_update_params(struct ecore_hwfn		*p_hwfn,
 	ecore_set_tunn_ports(p_tun, p_src);
 
 	ecore_set_ramrod_tunnel_param(&p_tunn_cfg->tunnel_clss_vxlan,
-				      &p_tunn_cfg->tx_enable_vxlan,
 				      &p_tun->vxlan,
 				      &p_tunn_cfg->set_vxlan_udp_port_flg,
 				      &p_tunn_cfg->vxlan_udp_port,
 				      &p_tun->vxlan_port);
 
 	ecore_set_ramrod_tunnel_param(&p_tunn_cfg->tunnel_clss_l2geneve,
-				      &p_tunn_cfg->tx_enable_l2geneve,
 				      &p_tun->l2_geneve,
 				      &p_tunn_cfg->set_geneve_udp_port_flg,
 				      &p_tunn_cfg->geneve_udp_port,
 				      &p_tun->geneve_port);
 
 	__ecore_set_ramrod_tunnel_param(&p_tunn_cfg->tunnel_clss_ipgeneve,
-					&p_tunn_cfg->tx_enable_ipgeneve,
 					&p_tun->ip_geneve);
 
 	__ecore_set_ramrod_tunnel_param(&p_tunn_cfg->tunnel_clss_l2gre,
-					&p_tunn_cfg->tx_enable_l2gre,
 					&p_tun->l2_gre);
 
 	__ecore_set_ramrod_tunnel_param(&p_tunn_cfg->tunnel_clss_ipgre,
-					&p_tunn_cfg->tx_enable_ipgre,
 					&p_tun->ip_gre);
 
 	p_tunn_cfg->update_rx_pf_clss = p_tun->b_update_rx_cls;
-	p_tunn_cfg->update_tx_pf_clss = p_tun->b_update_tx_cls;
 }
 
 static void ecore_set_hw_tunn_mode(struct ecore_hwfn *p_hwfn,
@@ -242,6 +230,7 @@ static void ecore_set_hw_tunn_mode(struct ecore_hwfn *p_hwfn,
 }
 
 static void ecore_set_hw_tunn_mode_port(struct ecore_hwfn *p_hwfn,
+					struct ecore_ptt  *p_ptt,
 					struct ecore_tunnel_info *p_tunn)
 {
 	if (ECORE_IS_BB_A0(p_hwfn->p_dev)) {
@@ -251,14 +240,14 @@ static void ecore_set_hw_tunn_mode_port(struct ecore_hwfn *p_hwfn,
 	}
 
 	if (p_tunn->vxlan_port.b_update_port)
-		ecore_set_vxlan_dest_port(p_hwfn, p_hwfn->p_main_ptt,
+		ecore_set_vxlan_dest_port(p_hwfn, p_ptt,
 					  p_tunn->vxlan_port.port);
 
 	if (p_tunn->geneve_port.b_update_port)
-		ecore_set_geneve_dest_port(p_hwfn, p_hwfn->p_main_ptt,
+		ecore_set_geneve_dest_port(p_hwfn, p_ptt,
 					   p_tunn->geneve_port.port);
 
-	ecore_set_hw_tunn_mode(p_hwfn, p_hwfn->p_main_ptt, p_tunn);
+	ecore_set_hw_tunn_mode(p_hwfn, p_ptt, p_tunn);
 }
 
 static void
@@ -282,35 +271,33 @@ ecore_tunn_set_pf_start_params(struct ecore_hwfn *p_hwfn,
 	ecore_set_tunn_ports(p_tun, p_src);
 
 	ecore_set_ramrod_tunnel_param(&p_tunn_cfg->tunnel_clss_vxlan,
-				      &p_tunn_cfg->tx_enable_vxlan,
 				      &p_tun->vxlan,
 				      &p_tunn_cfg->set_vxlan_udp_port_flg,
 				      &p_tunn_cfg->vxlan_udp_port,
 				      &p_tun->vxlan_port);
 
 	ecore_set_ramrod_tunnel_param(&p_tunn_cfg->tunnel_clss_l2geneve,
-				      &p_tunn_cfg->tx_enable_l2geneve,
 				      &p_tun->l2_geneve,
 				      &p_tunn_cfg->set_geneve_udp_port_flg,
 				      &p_tunn_cfg->geneve_udp_port,
 				      &p_tun->geneve_port);
 
 	__ecore_set_ramrod_tunnel_param(&p_tunn_cfg->tunnel_clss_ipgeneve,
-					&p_tunn_cfg->tx_enable_ipgeneve,
 					&p_tun->ip_geneve);
 
 	__ecore_set_ramrod_tunnel_param(&p_tunn_cfg->tunnel_clss_l2gre,
-					&p_tunn_cfg->tx_enable_l2gre,
 					&p_tun->l2_gre);
 
 	__ecore_set_ramrod_tunnel_param(&p_tunn_cfg->tunnel_clss_ipgre,
-					&p_tunn_cfg->tx_enable_ipgre,
 					&p_tun->ip_gre);
 }
 
+#define ETH_P_8021Q 0x8100
+#define ETH_P_8021AD 0x88A8 /* 802.1ad Service VLAN         */
+
 enum _ecore_status_t ecore_sp_pf_start(struct ecore_hwfn *p_hwfn,
+				       struct ecore_ptt *p_ptt,
 				       struct ecore_tunnel_info *p_tunn,
-				       enum ecore_mf_mode mode,
 				       bool allow_npar_tx_switch)
 {
 	struct pf_start_ramrod_data *p_ramrod = OSAL_NULL;
@@ -320,6 +307,7 @@ enum _ecore_status_t ecore_sp_pf_start(struct ecore_hwfn *p_hwfn,
 	struct ecore_sp_init_data init_data;
 	enum _ecore_status_t rc = ECORE_NOTIMPL;
 	u8 page_cnt;
+	u8 i;
 
 	/* update initial eq producer */
 	ecore_eq_prod_update(p_hwfn,
@@ -345,22 +333,37 @@ enum _ecore_status_t ecore_sp_pf_start(struct ecore_hwfn *p_hwfn,
 
 	/* For easier debugging */
 	p_ramrod->dont_log_ramrods = 0;
-	p_ramrod->log_type_mask = OSAL_CPU_TO_LE16(0xf);
+	p_ramrod->log_type_mask = OSAL_CPU_TO_LE16(0x8f);
 
-	switch (mode) {
-	case ECORE_MF_DEFAULT:
-	case ECORE_MF_NPAR:
-		p_ramrod->mf_mode = MF_NPAR;
-		break;
-	case ECORE_MF_OVLAN:
+	if (OSAL_TEST_BIT(ECORE_MF_OVLAN_CLSS, &p_hwfn->p_dev->mf_bits))
 		p_ramrod->mf_mode = MF_OVLAN;
-		break;
-	default:
-		DP_NOTICE(p_hwfn, true,
-			  "Unsupported MF mode, init as DEFAULT\n");
+	else
 		p_ramrod->mf_mode = MF_NPAR;
+
+	p_ramrod->outer_tag_config.outer_tag.tci =
+		OSAL_CPU_TO_LE16(p_hwfn->hw_info.ovlan);
+	if (OSAL_TEST_BIT(ECORE_MF_8021Q_TAGGING, &p_hwfn->p_dev->mf_bits)) {
+		p_ramrod->outer_tag_config.outer_tag.tpid = ETH_P_8021Q;
+	} else if (OSAL_TEST_BIT(ECORE_MF_8021AD_TAGGING,
+		 &p_hwfn->p_dev->mf_bits)) {
+		p_ramrod->outer_tag_config.outer_tag.tpid = ETH_P_8021AD;
+		p_ramrod->outer_tag_config.enable_stag_pri_change = 1;
 	}
-	p_ramrod->outer_tag = p_hwfn->hw_info.ovlan;
+
+	p_ramrod->outer_tag_config.pri_map_valid = 1;
+	for (i = 0; i < ECORE_MAX_PFC_PRIORITIES; i++)
+		p_ramrod->outer_tag_config.inner_to_outer_pri_map[i] = i;
+
+	/* enable_stag_pri_change should be set if port is in BD mode or,
+	 * UFP with Host Control mode or, UFP with DCB over base interface.
+	 */
+	if (OSAL_TEST_BIT(ECORE_MF_UFP_SPECIFIC, &p_hwfn->p_dev->mf_bits)) {
+		if ((p_hwfn->ufp_info.pri_type == ECORE_UFP_PRI_OS) ||
+		    (p_hwfn->p_dcbx_info->results.dcbx_enabled))
+			p_ramrod->outer_tag_config.enable_stag_pri_change = 1;
+		else
+			p_ramrod->outer_tag_config.enable_stag_pri_change = 0;
+	}
 
 	/* Place EQ address in RAMROD */
 	DMA_REGPAIR_LE(p_ramrod->event_ring_pbl_addr,
@@ -373,7 +376,8 @@ enum _ecore_status_t ecore_sp_pf_start(struct ecore_hwfn *p_hwfn,
 	ecore_tunn_set_pf_start_params(p_hwfn, p_tunn,
 				       &p_ramrod->tunnel_config);
 
-	if (IS_MF_SI(p_hwfn))
+	if (OSAL_TEST_BIT(ECORE_MF_INTER_PF_SWITCH,
+			  &p_hwfn->p_dev->mf_bits))
 		p_ramrod->allow_npar_tx_switching = allow_npar_tx_switch;
 
 	switch (p_hwfn->hw_info.personality) {
@@ -399,18 +403,20 @@ enum _ecore_status_t ecore_sp_pf_start(struct ecore_hwfn *p_hwfn,
 	p_ramrod->hsi_fp_ver.minor_ver_arr[ETH_VER_KEY] = ETH_HSI_VER_MINOR;
 
 	DP_VERBOSE(p_hwfn, ECORE_MSG_SPQ,
-		   "Setting event_ring_sb [id %04x index %02x], outer_tag [%d]\n",
-		   sb, sb_index, p_ramrod->outer_tag);
+		   "Setting event_ring_sb [id %04x index %02x], outer_tag.tpid [%d], outer_tag.tci [%d]\n",
+		   sb, sb_index, p_ramrod->outer_tag_config.outer_tag.tpid,
+		   p_ramrod->outer_tag_config.outer_tag.tci);
 
 	rc = ecore_spq_post(p_hwfn, p_ent, OSAL_NULL);
 
 	if (p_tunn)
-		ecore_set_hw_tunn_mode_port(p_hwfn, &p_hwfn->p_dev->tunnel);
+		ecore_set_hw_tunn_mode_port(p_hwfn, p_ptt,
+					    &p_hwfn->p_dev->tunnel);
 
 	return rc;
 }
 
-enum _ecore_status_t ecore_sp_pf_update(struct ecore_hwfn *p_hwfn)
+enum _ecore_status_t ecore_sp_pf_update_dcbx(struct ecore_hwfn *p_hwfn)
 {
 	struct ecore_spq_entry *p_ent = OSAL_NULL;
 	struct ecore_sp_init_data init_data;
@@ -432,6 +438,51 @@ enum _ecore_status_t ecore_sp_pf_update(struct ecore_hwfn *p_hwfn)
 					&p_ent->ramrod.pf_update);
 
 	return ecore_spq_post(p_hwfn, p_ent, OSAL_NULL);
+}
+
+enum _ecore_status_t ecore_sp_pf_update_ufp(struct ecore_hwfn *p_hwfn)
+{
+	struct ecore_spq_entry *p_ent = OSAL_NULL;
+	struct ecore_sp_init_data init_data;
+	enum _ecore_status_t rc = ECORE_NOTIMPL;
+
+	/* Get SPQ entry */
+	OSAL_MEMSET(&init_data, 0, sizeof(init_data));
+	init_data.cid = ecore_spq_get_cid(p_hwfn);
+	init_data.opaque_fid = p_hwfn->hw_info.opaque_fid;
+	init_data.comp_mode = ECORE_SPQ_MODE_CB;
+
+	rc = ecore_sp_init_request(p_hwfn, &p_ent,
+				   COMMON_RAMROD_PF_UPDATE, PROTOCOLID_COMMON,
+				   &init_data);
+	if (rc != ECORE_SUCCESS)
+		return rc;
+
+	p_ent->ramrod.pf_update.update_enable_stag_pri_change = true;
+	if ((p_hwfn->ufp_info.pri_type == ECORE_UFP_PRI_OS) ||
+	    (p_hwfn->p_dcbx_info->results.dcbx_enabled))
+		p_ent->ramrod.pf_update.enable_stag_pri_change = 1;
+	else
+		p_ent->ramrod.pf_update.enable_stag_pri_change = 0;
+
+	return ecore_spq_post(p_hwfn, p_ent, OSAL_NULL);
+}
+
+
+/* QM rate limiter resolution is 1.6Mbps */
+#define QM_RL_RESOLUTION(mb_val)	((mb_val) * 10 / 16)
+
+/* FW uses 1/64k to express gd */
+#define FW_GD_RESOLUTION(gd)		(64 * 1024 / (gd))
+
+u16 ecore_sp_rl_mb_to_qm(u32 mb_val)
+{
+	return (u16)OSAL_MIN_T(u32, (u16)(~0U), QM_RL_RESOLUTION(mb_val));
+}
+
+u16 ecore_sp_rl_gd_denom(u32 gd)
+{
+	return gd ? (u16)OSAL_MIN_T(u32, (u16)(~0U), FW_GD_RESOLUTION(gd)) : 0;
 }
 
 enum _ecore_status_t ecore_sp_rl_update(struct ecore_hwfn *p_hwfn,
@@ -464,15 +515,36 @@ enum _ecore_status_t ecore_sp_rl_update(struct ecore_hwfn *p_hwfn,
 	rl_update->rl_id_first = params->rl_id_first;
 	rl_update->rl_id_last = params->rl_id_last;
 	rl_update->rl_dc_qcn_flg = params->rl_dc_qcn_flg;
+	rl_update->dcqcn_reset_alpha_on_idle =
+		params->dcqcn_reset_alpha_on_idle;
+	rl_update->rl_bc_stage_th = params->rl_bc_stage_th;
+	rl_update->rl_timer_stage_th = params->rl_timer_stage_th;
 	rl_update->rl_bc_rate = OSAL_CPU_TO_LE32(params->rl_bc_rate);
-	rl_update->rl_max_rate = OSAL_CPU_TO_LE16(params->rl_max_rate);
-	rl_update->rl_r_ai = OSAL_CPU_TO_LE16(params->rl_r_ai);
-	rl_update->rl_r_hai = OSAL_CPU_TO_LE16(params->rl_r_hai);
-	rl_update->dcqcn_g = OSAL_CPU_TO_LE16(params->dcqcn_g);
+	rl_update->rl_max_rate =
+		OSAL_CPU_TO_LE16(ecore_sp_rl_mb_to_qm(params->rl_max_rate));
+	rl_update->rl_r_ai =
+		OSAL_CPU_TO_LE16(ecore_sp_rl_mb_to_qm(params->rl_r_ai));
+	rl_update->rl_r_hai =
+		OSAL_CPU_TO_LE16(ecore_sp_rl_mb_to_qm(params->rl_r_hai));
+	rl_update->dcqcn_g =
+		OSAL_CPU_TO_LE16(ecore_sp_rl_gd_denom(params->dcqcn_gd));
 	rl_update->dcqcn_k_us = OSAL_CPU_TO_LE32(params->dcqcn_k_us);
-	rl_update->dcqcn_timeuot_us = OSAL_CPU_TO_LE32(
-		params->dcqcn_timeuot_us);
+	rl_update->dcqcn_timeuot_us =
+		OSAL_CPU_TO_LE32(params->dcqcn_timeuot_us);
 	rl_update->qcn_timeuot_us = OSAL_CPU_TO_LE32(params->qcn_timeuot_us);
+
+	DP_VERBOSE(p_hwfn, ECORE_MSG_SPQ, "rl_params: qcn_update_param_flg %x, dcqcn_update_param_flg %x, rl_init_flg %x, rl_start_flg %x, rl_stop_flg %x, rl_id_first %x, rl_id_last %x, rl_dc_qcn_flg %x,dcqcn_reset_alpha_on_idle %x, rl_bc_stage_th %x, rl_timer_stage_th %x, rl_bc_rate %x, rl_max_rate %x, rl_r_ai %x, rl_r_hai %x, dcqcn_g %x, dcqcn_k_us %x, dcqcn_timeuot_us %x, qcn_timeuot_us %x\n",
+		   rl_update->qcn_update_param_flg,
+		   rl_update->dcqcn_update_param_flg,
+		   rl_update->rl_init_flg, rl_update->rl_start_flg,
+		   rl_update->rl_stop_flg, rl_update->rl_id_first,
+		   rl_update->rl_id_last, rl_update->rl_dc_qcn_flg,
+		   rl_update->dcqcn_reset_alpha_on_idle,
+		   rl_update->rl_bc_stage_th, rl_update->rl_timer_stage_th,
+		   rl_update->rl_bc_rate, rl_update->rl_max_rate,
+		   rl_update->rl_r_ai, rl_update->rl_r_hai,
+		   rl_update->dcqcn_g, rl_update->dcqcn_k_us,
+		   rl_update->dcqcn_timeuot_us, rl_update->qcn_timeuot_us);
 
 	return ecore_spq_post(p_hwfn, p_ent, OSAL_NULL);
 }
@@ -480,6 +552,7 @@ enum _ecore_status_t ecore_sp_rl_update(struct ecore_hwfn *p_hwfn,
 /* Set pf update ramrod command params */
 enum _ecore_status_t
 ecore_sp_pf_update_tunn_cfg(struct ecore_hwfn *p_hwfn,
+			    struct ecore_ptt *p_ptt,
 			    struct ecore_tunnel_info *p_tunn,
 			    enum spq_mode comp_mode,
 			    struct ecore_spq_comp_cb *p_comp_data)
@@ -520,7 +593,7 @@ ecore_sp_pf_update_tunn_cfg(struct ecore_hwfn *p_hwfn,
 	if (rc != ECORE_SUCCESS)
 		return rc;
 
-	ecore_set_hw_tunn_mode_port(p_hwfn, &p_hwfn->p_dev->tunnel);
+	ecore_set_hw_tunn_mode_port(p_hwfn, p_ptt, &p_hwfn->p_dev->tunnel);
 
 	return rc;
 }
@@ -563,6 +636,31 @@ enum _ecore_status_t ecore_sp_heartbeat_ramrod(struct ecore_hwfn *p_hwfn)
 				   &init_data);
 	if (rc != ECORE_SUCCESS)
 		return rc;
+
+	return ecore_spq_post(p_hwfn, p_ent, OSAL_NULL);
+}
+
+enum _ecore_status_t ecore_sp_pf_update_stag(struct ecore_hwfn *p_hwfn)
+{
+	struct ecore_spq_entry *p_ent = OSAL_NULL;
+	struct ecore_sp_init_data init_data;
+	enum _ecore_status_t rc = ECORE_NOTIMPL;
+
+	/* Get SPQ entry */
+	OSAL_MEMSET(&init_data, 0, sizeof(init_data));
+	init_data.cid = ecore_spq_get_cid(p_hwfn);
+	init_data.opaque_fid = p_hwfn->hw_info.opaque_fid;
+	init_data.comp_mode = ECORE_SPQ_MODE_CB;
+
+	rc = ecore_sp_init_request(p_hwfn, &p_ent,
+				   COMMON_RAMROD_PF_UPDATE, PROTOCOLID_COMMON,
+				   &init_data);
+	if (rc != ECORE_SUCCESS)
+		return rc;
+
+	p_ent->ramrod.pf_update.update_mf_vlan_flag = true;
+	p_ent->ramrod.pf_update.mf_vlan =
+				OSAL_CPU_TO_LE16(p_hwfn->hw_info.ovlan);
 
 	return ecore_spq_post(p_hwfn, p_ent, OSAL_NULL);
 }

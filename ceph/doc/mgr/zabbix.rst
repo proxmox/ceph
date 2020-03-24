@@ -68,6 +68,7 @@ Additional configuration keys which can be configured and their default values:
 - zabbix_port: 10051
 - zabbix_sender: /usr/bin/zabbix_sender
 - interval: 60
+- discovery_interval: 100
 
 Configuration keys
 ^^^^^^^^^^^^^^^^^^^
@@ -95,7 +96,7 @@ The current configuration of the module can also be shown:
 
 Template
 ^^^^^^^^
-A `template <https://raw.githubusercontent.com/ceph/ceph/9c54334b615362e0a60442c2f41849ed630598ab/src/pybind/mgr/zabbix/zabbix_template.xml>`_. 
+A `template <https://raw.githubusercontent.com/ceph/ceph/master/src/pybind/mgr/zabbix/zabbix_template.xml>`_. 
 (XML) to be used on the Zabbix server can be found in the source directory of the module.
 
 This template contains all items and a few triggers. You can customize the triggers afterwards to fit your needs.
@@ -128,6 +129,14 @@ This can be done with this command:
     ceph zabbix send
 
 The module will now send its latest data to the Zabbix server.
+
+Items discovery is accomplished also via zabbix_sender, and runs every `discovery_interval * interval` seconds. If you wish to launch discovery 
+manually, this can be done with this command:
+
+::
+
+    ceph zabbix discovery
+
 
 Debugging
 ---------

@@ -15,8 +15,8 @@
  * 
  */
 
-#include <errno.h>
 #include <algorithm>
+#include <cerrno>
 
 #include "ErasureCode.h"
 
@@ -28,6 +28,17 @@
 #define DEFAULT_RULE_ROOT "default"
 #define DEFAULT_RULE_FAILURE_DOMAIN "host"
 
+using std::make_pair;
+using std::map;
+using std::ostream;
+using std::pair;
+using std::set;
+using std::string;
+using std::vector;
+
+using ceph::bufferlist;
+
+namespace ceph {
 const unsigned ErasureCode::SIMD_ALIGN = 32;
 
 int ErasureCode::init(
@@ -156,7 +167,7 @@ int ErasureCode::encode_prepare(const bufferlist &raw,
     unsigned remainder = raw.length() - (k - padded_chunks) * blocksize;
     bufferptr buf(buffer::create_aligned(blocksize, SIMD_ALIGN));
 
-    raw.copy((k - padded_chunks) * blocksize, remainder, buf.c_str());
+    raw.begin((k - padded_chunks) * blocksize).copy(remainder, buf.c_str());
     buf.zero(remainder, blocksize - remainder);
     encoded[chunk_index(k-padded_chunks)].push_back(std::move(buf));
 
@@ -347,4 +358,5 @@ int ErasureCode::decode_concat(const map<int, bufferlist> &chunks,
     }
   }
   return r;
+}
 }

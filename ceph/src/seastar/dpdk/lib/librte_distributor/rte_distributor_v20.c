@@ -1,34 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2014 Intel Corporation
  */
 
 #include <stdio.h>
@@ -41,6 +12,8 @@
 #include <rte_compat.h>
 #include <rte_string_fns.h>
 #include <rte_eal_memconfig.h>
+#include <rte_pause.h>
+
 #include "rte_distributor_v20.h"
 #include "rte_distributor_private.h"
 
@@ -242,7 +215,7 @@ rte_distributor_process_v20(struct rte_distributor_v20 *d,
 			next_value = (((int64_t)(uintptr_t)next_mb)
 					<< RTE_DISTRIB_FLAG_BITS);
 			/*
-			 * User is advocated to set tag vaue for each
+			 * User is advocated to set tag value for each
 			 * mbuf before calling rte_distributor_process.
 			 * User defined tags are used to identify flows,
 			 * or sessions.
@@ -343,7 +316,8 @@ rte_distributor_returned_pkts_v20(struct rte_distributor_v20 *d,
 VERSION_SYMBOL(rte_distributor_returned_pkts, _v20, 2.0);
 
 /* return the number of packets in-flight in a distributor, i.e. packets
- * being workered on or queued up in a backlog. */
+ * being worked on or queued up in a backlog.
+ */
 static inline unsigned
 total_outstanding(const struct rte_distributor_v20 *d)
 {
@@ -412,7 +386,7 @@ rte_distributor_create_v20(const char *name,
 	}
 
 	d = mz->addr;
-	snprintf(d->name, sizeof(d->name), "%s", name);
+	strlcpy(d->name, name, sizeof(d->name));
 	d->num_workers = num_workers;
 
 	distributor_list = RTE_TAILQ_CAST(rte_distributor_tailq.head,

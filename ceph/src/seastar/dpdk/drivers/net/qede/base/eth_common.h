@@ -1,9 +1,7 @@
-/*
- * Copyright (c) 2016 QLogic Corporation.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright (c) 2016 - 2018 Cavium Inc.
  * All rights reserved.
- * www.qlogic.com
- *
- * See LICENSE.qede_pmd for copyright and licensing details.
+ * www.cavium.com
  */
 
 #ifndef __ETH_COMMON__
@@ -79,6 +77,10 @@
 
 /* Maximum number of buffers, used for RX packet placement */
 #define ETH_RX_MAX_BUFF_PER_PKT             5
+/* Minimum number of free BDs in RX ring, that guarantee receiving of at least
+ * one RX packet.
+ */
+#define ETH_RX_BD_THRESHOLD                12
 
 /* num of MAC/VLAN filters */
 #define ETH_NUM_MAC_FILTERS                 512
@@ -114,6 +116,9 @@
 /* Control frame check constants */
 /* Number of etherType values configured by driver for control frame check */
 #define ETH_CTL_FRAME_ETH_TYPE_NUM              4
+
+/* GFS constants */
+#define ETH_GFT_TRASHCAN_VPORT         0x1FF /* GFT drop flow vport number */
 
 
 
@@ -172,6 +177,11 @@ struct eth_tx_1st_bd_flags {
 #define ETH_TX_1ST_BD_FLAGS_TUNN_IP_CSUM_MASK     0x1
 #define ETH_TX_1ST_BD_FLAGS_TUNN_IP_CSUM_SHIFT    6
 /* Recalculate Tunnel UDP/GRE Checksum (Depending on Tunnel Type) */
+#define ETH_TX_1ST_BD_FLAGS_TUNN_L4_CSUM_MASK     0x1
+/* Recalculate Tunnel UDP/GRE Checksum (Depending on Tunnel Type). In case of
+ * GRE tunnel, this flag means GRE CSO, and in this case GRE checksum field
+ * Must be present.
+ */
 #define ETH_TX_1ST_BD_FLAGS_TUNN_L4_CSUM_MASK     0x1
 #define ETH_TX_1ST_BD_FLAGS_TUNN_L4_CSUM_SHIFT    7
 };

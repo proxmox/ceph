@@ -33,30 +33,12 @@
 
 #include "env_dpdk/memory.c"
 
+#define UNIT_TEST_NO_VTOPHYS
+#define UNIT_TEST_NO_PCI_ADDR
 #include "common/lib/test_env.c"
 #include "spdk_cunit.h"
 
 #include "spdk/bit_array.h"
-
-static struct rte_mem_config g_mcfg = {};
-
-static struct rte_config g_cfg = {
-	.mem_config = &g_mcfg,
-};
-
-struct rte_config *
-rte_eal_get_configuration(void)
-{
-	return &g_cfg;
-}
-
-#if RTE_VERSION >= RTE_VERSION_NUM(18, 05, 0, 0)
-DEFINE_STUB(rte_mem_event_callback_register, int, (const char *name, rte_mem_event_callback_t clb,
-		void *arg), 0);
-DEFINE_STUB(rte_memseg_contig_walk, int, (rte_memseg_contig_walk_t func, void *arg), 0);
-DEFINE_STUB(rte_mem_virt2memseg, struct rte_memseg *, (const void *addr,
-		const struct rte_memseg_list *msl), NULL);
-#endif
 
 #define PAGE_ARRAY_SIZE (100)
 static struct spdk_bit_array *g_page_array;
@@ -257,6 +239,12 @@ test_mem_map_translation(void)
 	CU_ASSERT(addr == 0);
 	CU_ASSERT(mapping_length == VALUE_2MB * 3)
 
+	/* Translate an unaligned address */
+	mapping_length = VALUE_2MB * 3;
+	addr = spdk_mem_map_translate(map, VALUE_4KB, &mapping_length);
+	CU_ASSERT(addr == 0);
+	CU_ASSERT(mapping_length == VALUE_2MB * 3 - VALUE_4KB);
+
 	/* Clear translation for the middle page of the larger region. */
 	rc = spdk_mem_map_clear_translation(map, VALUE_2MB, VALUE_2MB);
 	CU_ASSERT(rc == 0);
@@ -289,6 +277,24 @@ test_mem_map_translation(void)
 	 * should translate to 0.
 	 */
 	CU_ASSERT(addr == 0);
+
+	/* Translate only a subset of a 2MB page */
+	mapping_length = 543;
+	addr = spdk_mem_map_translate(map, 0, &mapping_length);
+	CU_ASSERT(addr == 0);
+	CU_ASSERT(mapping_length == 543);
+
+	/* Translate another subset of a 2MB page */
+	mapping_length = 543;
+	addr = spdk_mem_map_translate(map, VALUE_4KB, &mapping_length);
+	CU_ASSERT(addr == 0);
+	CU_ASSERT(mapping_length == 543);
+
+	/* Try to translate an unaligned region that is only partially registered */
+	mapping_length = 543;
+	addr = spdk_mem_map_translate(map, 3 * VALUE_2MB - 196, &mapping_length);
+	CU_ASSERT(addr == 0);
+	CU_ASSERT(mapping_length == 196);
 
 	/* Clear translation for the first page */
 	rc = spdk_mem_map_clear_translation(map, 0, VALUE_2MB);
@@ -338,6 +344,12 @@ test_mem_map_translation(void)
 	addr = spdk_mem_map_translate(map, 0, &mapping_length);
 	CU_ASSERT(addr == 0);
 	CU_ASSERT(mapping_length == VALUE_2MB)
+
+	/* Translate only a subset of a 2MB page */
+	mapping_length = 543;
+	addr = spdk_mem_map_translate(map, 0, &mapping_length);
+	CU_ASSERT(addr == 0);
+	CU_ASSERT(mapping_length == 543);
 
 	/* Clear the translation */
 	rc = spdk_mem_map_clear_translation(map, 0, VALUE_2MB * 3);

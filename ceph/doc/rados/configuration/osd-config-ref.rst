@@ -39,7 +39,7 @@ file. For example:
 General Settings
 ================
 
-The following settings provide an Ceph OSD Daemon's ID, and determine paths to
+The following settings provide a Ceph OSD Daemon's ID, and determine paths to
 data and journals. Ceph deployment scripts typically generate the UUID
 automatically.
 
@@ -195,7 +195,7 @@ See `Pool & PG Config Reference`_ for details.
 Scrubbing
 =========
 
-In addition to making multiple copies of objects, Ceph insures data integrity by
+In addition to making multiple copies of objects, Ceph ensures data integrity by
 scrubbing placement groups. Ceph scrubbing is analogous to ``fsck`` on the
 object storage layer. For each placement group, Ceph generates a catalog of all
 objects and compares each primary object and its replicas to ensure that no
@@ -400,7 +400,7 @@ Operations
 
 :Type: String
 :Valid Choices: prio, wpq, mclock_opclass, mclock_client
-:Default: ``prio``
+:Default: ``wpq``
 
 
 ``osd op queue cut off``
@@ -408,7 +408,7 @@ Operations
 :Description: This selects which priority ops will be sent to the strict
               queue verses the normal queue. The ``low`` setting sends all
               replication ops and higher to the strict queue, while the ``high``
-              option sends only replication acknowledgement ops and higher to
+              option sends only replication acknowledgment ops and higher to
               the strict queue. Setting this to ``high`` should help when a few
               OSDs in the cluster are very busy especially when combined with
               ``wpq`` in the ``osd op queue`` setting. OSDs that are very busy
@@ -417,7 +417,7 @@ Operations
 
 :Type: String
 :Valid Choices: low, high
-:Default: ``low``
+:Default: ``high``
 
 
 ``osd client op priority``
@@ -542,6 +542,8 @@ Operations
 :Default: ``5``
 
 
+.. _dmclock-qos:
+
 QoS Based on mClock
 -------------------
 
@@ -599,7 +601,7 @@ Along with *mclock_opclass* another mclock operation queue named
 *mclock_client* is available. It divides operations based on category
 but also divides them based on the client making the request. This
 helps not only manage the distribution of resources spent on different
-classes of operations but also tries to insure fairness among clients.
+classes of operations but also tries to ensure fairness among clients.
 
 CURRENT IMPLEMENTATION NOTE: the current experimental implementation
 does not enforce the limit values. As a first approximation we decided
@@ -923,8 +925,29 @@ perform well in a degraded state.
               requests will accelerate recovery, but the requests places an
               increased load on the cluster.
 
+	      This value is only used if it is non-zero. Normally it
+	      is ``0``, which means that the ``hdd`` or ``ssd`` values
+	      (below) are used, depending on the type of the primary
+	      device backing the OSD.
+
+:Type: 32-bit Integer
+:Default: ``0``
+
+``osd recovery max active hdd``
+
+:Description: The number of active recovery requests per OSD at one time, if the
+	      primary device is rotational.
+
 :Type: 32-bit Integer
 :Default: ``3``
+
+``osd recovery max active ssd``
+
+:Description: The number of active recovery requests per OSD at one time, if the
+	      primary device is non-rotational (i.e., an SSD).
+
+:Type: 32-bit Integer
+:Default: ``10``
 
 
 ``osd recovery max chunk``
@@ -1069,6 +1092,42 @@ Miscellaneous
 :Description: The maximum time in seconds before timing out a command thread.
 :Type: 32-bit Integer
 :Default: ``10*60``
+
+
+``osd delete sleep``
+
+:Description: Time in seconds to sleep before next removal transaction. This
+              helps to throttle the pg deletion process.
+
+:Type: Float
+:Default: ``0``
+
+
+``osd delete sleep hdd``
+
+:Description: Time in seconds to sleep before next removal transaction
+              for HDDs.
+
+:Type: Float
+:Default: ``5``
+
+
+``osd delete sleep ssd``
+
+:Description: Time in seconds to sleep before next removal transaction
+              for SSDs.
+
+:Type: Float
+:Default: ``0``
+
+
+``osd delete sleep hybrid``
+
+:Description: Time in seconds to sleep before next removal transaction
+              when osd data is on HDD and osd journal is on SSD.
+
+:Type: Float
+:Default: ``2``
 
 
 ``osd command max records``

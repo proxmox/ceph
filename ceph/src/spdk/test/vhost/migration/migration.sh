@@ -2,6 +2,11 @@
 
 set -e
 
+testdir=$(readlink -f $(dirname $0))
+rootdir=$(readlink -f $testdir/../../..)
+source $rootdir/test/common/autotest_common.sh
+source $rootdir/test/vhost/common.sh
+
 vms=()
 declare -A vms_os
 declare -A vms_raw_disks
@@ -21,7 +26,6 @@ function usage()
 	echo "Shortcut script for doing automated test of live migration."
 	echo "Usage: $(basename $1) [OPTIONS]"
 	echo
-	echo "    --work-dir=WORK_DIR   Where to find build file. Must exist. [default: $TEST_DIR]"
 	echo "    --os ARGS             VM configuration. This parameter might be used more than once:"
 	echo "    --fio-bin=FIO         Use specific fio binary (will be uploaded to VM)"
 	echo "    --test-cases=TESTS    Coma-separated list of tests to run. Implemented test cases are: 1"
@@ -39,7 +43,6 @@ for param in "$@"; do
 			usage $0
 			exit 0
 			;;
-		--work-dir=*) TEST_DIR="${param#*=}" ;;
 		--os=*) os_image="${param#*=}" ;;
 		--fio-bin=*) fio_bin="${param}" ;;
 		--test-cases=*) test_cases="${param#*=}" ;;
@@ -55,8 +58,7 @@ for param in "$@"; do
 	esac
 done
 
-. $(readlink -e "$(dirname $0)/../common/common.sh") || exit 1
-MIGRATION_DIR=$(readlink -f $(dirname $0))
+vhosttestinit
 
 [[ ! -z "$test_cases" ]] || fail "Need '--test-cases=' parameter"
 
@@ -143,7 +145,7 @@ for test_case in ${test_cases//,/ }; do
 	notice "==============================="
 
 	timing_enter migration-tc${test_case}
-	source $MIGRATION_DIR/migration-tc${test_case}.sh
+	source $testdir/migration-tc${test_case}.sh
 	timing_exit migration-tc${test_case}
 done
 
@@ -151,3 +153,5 @@ notice "Migration Test SUCCESS"
 notice "==============="
 
 trap - SIGINT ERR EXIT
+
+vhosttestfini

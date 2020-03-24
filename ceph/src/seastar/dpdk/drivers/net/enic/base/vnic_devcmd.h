@@ -1,35 +1,6 @@
-/*
- * Copyright 2008-2016 Cisco Systems, Inc.  All rights reserved.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright 2008-2017 Cisco Systems, Inc.  All rights reserved.
  * Copyright 2007 Nuova Systems, Inc.  All rights reserved.
- *
- * Copyright (c) 2014, Cisco Systems, Inc.
- * All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- * 1. Redistributions of source code must retain the above copyright
- * notice, this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright
- * notice, this list of conditions and the following disclaimer in
- * the documentation and/or other materials provided with the
- * distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS
- * FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE
- * COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT,
- * INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
- * BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
- * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
- * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN
- * ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
- * POSSIBILITY OF SUCH DAMAGE.
- *
  */
 
 #ifndef _VNIC_DEVCMD_H_
@@ -91,6 +62,8 @@
 #define _CMD_FLAGS(cmd)          (((cmd) >> _CMD_FLAGSSHIFT) & _CMD_FLAGSMASK)
 #define _CMD_VTYPE(cmd)          (((cmd) >> _CMD_VTYPESHIFT) & _CMD_VTYPEMASK)
 #define _CMD_N(cmd)              (((cmd) >> _CMD_NSHIFT) & _CMD_NMASK)
+
+#define ARRAY_SIZE(x) (sizeof(x) / sizeof((x)[0]))
 
 enum vnic_devcmd_cmd {
 	CMD_NONE                = _CMDC(_CMD_DIR_NONE, _CMD_VTYPE_NONE, 0),
@@ -165,8 +138,26 @@ enum vnic_devcmd_cmd {
 	/* del VLAN id in (u16)a0 */
 	CMD_VLAN_DEL            = _CMDCNW(_CMD_DIR_WRITE, _CMD_VTYPE_ENET, 15),
 
-	/* nic_cfg in (u32)a0 */
+	/*
+	 * nic_cfg in (u32)a0
+	 *
+	 * Capability query:
+	 * out: (u64) a0= 1 if a1 is valid
+	 *      (u64) a1= (NIC_CFG bits supported) | (flags << 32)
+	 *                              (flags are CMD_NIC_CFG_CAPF_xxx)
+	 */
 	CMD_NIC_CFG             = _CMDCNW(_CMD_DIR_WRITE, _CMD_VTYPE_ALL, 16),
+
+	/*
+	 * nic_cfg_chk  (same as nic_cfg, but may return error)
+	 * in (u32)a0
+	 *
+	 * Capability query:
+	 * out: (u64) a0= 1 if a1 is valid
+	 *      (u64) a1= (NIC_CFG bits supported) | (flags << 32)
+	 *                              (flags are CMD_NIC_CFG_CAPF_xxx)
+	 */
+	CMD_NIC_CFG_CHK         = _CMDC(_CMD_DIR_WRITE, _CMD_VTYPE_ALL, 16),
 
 	/* union vnic_rss_key in mem: (u64)a0=paddr, (u16)a1=len */
 	CMD_RSS_KEY             = _CMDC(_CMD_DIR_WRITE, _CMD_VTYPE_ENET, 17),
@@ -598,11 +589,70 @@ enum vnic_devcmd_cmd {
 	 * out: (u32) a0=filter identifier
 	 *
 	 * Capability query:
-	 * out: (u64) a0= 1 if capabliity query supported
-	 *      (u64) a1= MAX filter type supported
+	 * in:  (u64) a1= supported filter capability exchange modes
+	 * out: (u64) a0= 1 if capability query supported
+	 *      if (u64) a1 = 0: a1 = MAX filter type supported
+	 *      if (u64) a1 & FILTER_CAP_MODE_V1_FLAG:
+	 *                       a1 = bitmask of supported filters
+	 *                       a2 = FILTER_CAP_MODE_V1
+	 *                       a3 = bitmask of supported actions
 	 */
 	CMD_ADD_ADV_FILTER = _CMDC(_CMD_DIR_RW, _CMD_VTYPE_ENET, 77),
+
+	/*
+	 * Allocate a counter for use with CMD_ADD_FILTER
+	 * out:(u32) a0 = counter index
+	 */
+	CMD_COUNTER_ALLOC = _CMDC(_CMD_DIR_READ, _CMD_VTYPE_ENET, 85),
+
+	/*
+	 * Free a counter
+	 * in: (u32) a0 = counter_id
+	 */
+	CMD_COUNTER_FREE = _CMDC(_CMD_DIR_WRITE, _CMD_VTYPE_ENET, 86),
+
+	/*
+	 * Read a counter
+	 * in: (u32) a0 = counter_id
+	 *     (u32) a1 = clear counter if non-zero
+	 * out:(u64) a0 = packet count
+	 *     (u64) a1 = byte count
+	 */
+	CMD_COUNTER_QUERY = _CMDC(_CMD_DIR_RW, _CMD_VTYPE_ENET, 87),
+
+	/*
+	 * Configure periodic counter DMA.  This will trigger an immediate
+	 * DMA of the counters (unless period == 0), and then schedule a DMA
+	 * of the counters every <period> seconds until disdabled.
+	 * Each new COUNTER_DMA_CONFIG will override all previous commands on
+	 * this vnic.
+	 * Setting a2 (period) = 0 will disable periodic DMAs
+	 * If a0 (num_counters) != 0, an immediate DMA will always be done,
+	 * irrespective of the value in a2.
+	 * in: (u32) a0 = number of counters to DMA
+	 *     (u64) a1 = host target DMA address
+	 *     (u32) a2 = DMA period in milliseconds (0 to disable)
+	 */
+	CMD_COUNTER_DMA_CONFIG = _CMDC(_CMD_DIR_WRITE, _CMD_VTYPE_ENET, 88),
+#define VNIC_COUNTER_DMA_MIN_PERIOD 500
+
+	/*
+	 * Clear all counters on a vnic
+	 */
+	CMD_COUNTER_CLEAR_ALL = _CMDC(_CMD_DIR_NONE, _CMD_VTYPE_ENET, 89),
 };
+
+/* Modes for exchanging advanced filter capabilities. The modes supported by
+ * the driver are passed in the CMD_ADD_ADV_FILTER capability command and the
+ * mode selected is returned.
+ *    V0: the maximum filter type supported is returned
+ *    V1: bitmasks of supported filters and actions are returned
+ */
+enum filter_cap_mode {
+	FILTER_CAP_MODE_V0 = 0,  /* Must always be 0 for legacy drivers */
+	FILTER_CAP_MODE_V1 = 1,
+};
+#define FILTER_CAP_MODE_V1_FLAG (1 << FILTER_CAP_MODE_V1)
 
 /* CMD_ENABLE2 flags */
 #define CMD_ENABLE2_STANDBY 0x0
@@ -610,9 +660,13 @@ enum vnic_devcmd_cmd {
 
 /* flags for CMD_OPEN */
 #define CMD_OPENF_OPROM		0x1	/* open coming from option rom */
+#define CMD_OPENF_IG_DESCCACHE	0x2	/* Do not flush IG DESC cache */
 
 /* flags for CMD_INIT */
 #define CMD_INITF_DEFAULT_MAC	0x1	/* init with default mac addr */
+
+/* flags for CMD_NIC_CFG */
+#define CMD_NIC_CFG_CAPF_UDP_WEAK	(1ULL << 0) /* Bodega-style UDP RSS */
 
 /* flags for CMD_PACKET_FILTER */
 #define CMD_PFILTER_DIRECTED		0x01
@@ -837,6 +891,7 @@ struct filter_generic_1 {
 /* Specifies the filter_action type. */
 enum {
 	FILTER_ACTION_RQ_STEERING = 0,
+	FILTER_ACTION_V2 = 1,
 	FILTER_ACTION_MAX
 };
 
@@ -845,6 +900,27 @@ struct filter_action {
 	union {
 		u32 rq_idx;
 	} u;
+} __attribute__((packed));
+
+#define FILTER_ACTION_RQ_STEERING_FLAG	(1 << 0)
+#define FILTER_ACTION_FILTER_ID_FLAG	(1 << 1)
+#define FILTER_ACTION_DROP_FLAG		(1 << 2)
+#define FILTER_ACTION_COUNTER_FLAG      (1 << 3)
+#define FILTER_ACTION_V2_ALL		(FILTER_ACTION_RQ_STEERING_FLAG \
+					 | FILTER_ACTION_FILTER_ID_FLAG \
+					 | FILTER_ACTION_DROP_FLAG \
+					 | FILTER_ACTION_COUNTER_FLAG)
+
+/* Version 2 of filter action must be a strict extension of struct filter_action
+ * where the first fields exactly match in size and meaning.
+ */
+struct filter_action_v2 {
+	u32 type;
+	u32 rq_idx;
+	u32 flags;                     /* use FILTER_ACTION_XXX_FLAG defines */
+	u16 filter_id;
+	u32 counter_index;
+	uint8_t reserved[28];         /* for future expansion */
 } __attribute__((packed));
 
 /* Specifies the filter type. */
@@ -858,6 +934,21 @@ enum filter_type {
 	FILTER_DPDK_1 = 6,
 	FILTER_MAX
 };
+
+#define FILTER_USNIC_ID_FLAG		(1 << FILTER_USNIC_ID)
+#define FILTER_IPV4_5TUPLE_FLAG		(1 << FILTER_IPV4_5TUPLE)
+#define FILTER_MAC_VLAN_FLAG		(1 << FILTER_MAC_VLAN)
+#define FILTER_VLAN_IP_3TUPLE_FLAG	(1 << FILTER_VLAN_IP_3TUPLE)
+#define FILTER_NVGRE_VMQ_FLAG		(1 << FILTER_NVGRE_VMQ)
+#define FILTER_USNIC_IP_FLAG		(1 << FILTER_USNIC_IP)
+#define FILTER_DPDK_1_FLAG		(1 << FILTER_DPDK_1)
+#define FILTER_V1_ALL			(FILTER_USNIC_ID_FLAG | \
+					FILTER_IPV4_5TUPLE_FLAG | \
+					FILTER_MAC_VLAN_FLAG | \
+					FILTER_VLAN_IP_3TUPLE_FLAG | \
+					FILTER_NVGRE_VMQ_FLAG | \
+					FILTER_USNIC_IP_FLAG | \
+					FILTER_DPDK_1_FLAG)
 
 struct filter {
 	u32 type;
@@ -895,15 +986,15 @@ enum {
 };
 
 struct filter_tlv {
-	u_int32_t type;
-	u_int32_t length;
-	u_int32_t val[0];
+	uint32_t type;
+	uint32_t length;
+	uint32_t val[0];
 };
 
 /* Data for CMD_ADD_FILTER is 2 TLV and filter + action structs */
 #define FILTER_MAX_BUF_SIZE 100
 #define FILTER_V2_MAX_BUF_SIZE (sizeof(struct filter_v2) + \
-	sizeof(struct filter_action) + \
+	sizeof(struct filter_action_v2) + \
 	(2 * sizeof(struct filter_tlv)))
 
 /*
@@ -911,10 +1002,10 @@ struct filter_tlv {
  * drivers should use this instead of "sizeof (struct filter_v2)" when
  * computing length for TLV.
  */
-static inline u_int32_t
+static inline uint32_t
 vnic_filter_size(struct filter_v2 *fp)
 {
-	u_int32_t size;
+	uint32_t size;
 
 	switch (fp->type) {
 	case FILTER_USNIC_ID:
@@ -947,6 +1038,30 @@ enum {
 	CLSF_ADD = 0,
 	CLSF_DEL = 1,
 };
+
+/*
+ * Get the action structure size given action type. To be "future-proof,"
+ * drivers should use this instead of "sizeof (struct filter_action_v2)"
+ * when computing length for TLV.
+ */
+static inline uint32_t
+vnic_action_size(struct filter_action_v2 *fap)
+{
+	uint32_t size;
+
+	switch (fap->type) {
+	case FILTER_ACTION_RQ_STEERING:
+		size = sizeof(struct filter_action);
+		break;
+	case FILTER_ACTION_V2:
+		size = sizeof(struct filter_action_v2);
+		break;
+	default:
+		size = sizeof(struct filter_action);
+		break;
+	}
+	return size;
+}
 
 /*
  * Writing cmd register causes STAT_BUSY to get set in status register.
@@ -1032,6 +1147,18 @@ typedef enum {
 } vic_feature_t;
 
 /*
+ * These flags are used in args[1] of devcmd CMD_GET_SUPP_FEATURE_VER
+ * to indicate the host driver about the VxLAN and Multi WQ features
+ * supported
+ */
+#define FEATURE_VXLAN_IPV6_INNER	(1 << 0)
+#define FEATURE_VXLAN_IPV6_OUTER	(1 << 1)
+#define FEATURE_VXLAN_MULTI_WQ		(1 << 2)
+
+#define FEATURE_VXLAN_IPV6		(FEATURE_VXLAN_IPV6_INNER | \
+					 FEATURE_VXLAN_IPV6_OUTER)
+
+/*
  * CMD_CONFIG_GRPINTR subcommands
  */
 typedef enum {
@@ -1039,5 +1166,14 @@ typedef enum {
 	GRPINTR_DISABLE,
 	GRPINTR_UPD_VECT,
 } grpintr_subcmd_t;
+
+/*
+ * Structure for counter DMA
+ * (DMAed by CMD_COUNTER_DMA_CONFIG)
+ */
+struct vnic_counter_counts {
+	u64 vcc_packets;
+	u64 vcc_bytes;
+};
 
 #endif /* _VNIC_DEVCMD_H_ */

@@ -1,33 +1,5 @@
-/*
- *   BSD LICENSE
- *
- *   Copyright (C) Cavium networks Ltd. 2016.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Cavium networks nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2016 Cavium, Inc
  */
 
 #include <assert.h>
@@ -43,12 +15,10 @@
 #include <rte_dev.h>
 #include <rte_eal.h>
 #include <rte_log.h>
-#include <rte_memory.h>
-#include <rte_memzone.h>
 #include <rte_malloc.h>
-#include <rte_pci.h>
+#include <rte_memory.h>
 #include <rte_lcore.h>
-#include <rte_vdev.h>
+#include <rte_bus_vdev.h>
 
 #include "skeleton_eventdev.h"
 
@@ -130,6 +100,7 @@ skeleton_eventdev_info_get(struct rte_eventdev *dev,
 	dev_info->max_event_port_enqueue_depth = 16;
 	dev_info->max_num_events = (1ULL << 20);
 	dev_info->event_dev_cap = RTE_EVENT_DEV_CAP_QUEUE_QOS |
+					RTE_EVENT_DEV_CAP_BURST_MODE |
 					RTE_EVENT_DEV_CAP_EVENT_QOS;
 }
 
@@ -238,6 +209,7 @@ skeleton_eventdev_port_def_conf(struct rte_eventdev *dev, uint8_t port_id,
 	port_conf->new_event_threshold = 32 * 1024;
 	port_conf->dequeue_depth = 16;
 	port_conf->enqueue_depth = 16;
+	port_conf->disable_implicit_release = 0;
 }
 
 static void
@@ -347,7 +319,7 @@ skeleton_eventdev_dump(struct rte_eventdev *dev, FILE *f)
 
 
 /* Initialize and register event driver with DPDK Application */
-static const struct rte_eventdev_ops skeleton_eventdev_ops = {
+static struct rte_eventdev_ops skeleton_eventdev_ops = {
 	.dev_infos_get    = skeleton_eventdev_info_get,
 	.dev_configure    = skeleton_eventdev_configure,
 	.dev_start        = skeleton_eventdev_start,
@@ -375,7 +347,6 @@ skeleton_eventdev_init(struct rte_eventdev *eventdev)
 	PMD_DRV_FUNC_TRACE();
 
 	eventdev->dev_ops       = &skeleton_eventdev_ops;
-	eventdev->schedule      = NULL;
 	eventdev->enqueue       = skeleton_eventdev_enqueue;
 	eventdev->enqueue_burst = skeleton_eventdev_enqueue_burst;
 	eventdev->dequeue       = skeleton_eventdev_dequeue;
@@ -427,18 +398,28 @@ static const struct rte_pci_id pci_id_skeleton_map[] = {
 	},
 };
 
-static struct rte_eventdev_driver pci_eventdev_skeleton_pmd = {
-	.pci_drv = {
-		.id_table = pci_id_skeleton_map,
-		.drv_flags = RTE_PCI_DRV_NEED_MAPPING,
-		.probe = rte_event_pmd_pci_probe,
-		.remove = rte_event_pmd_pci_remove,
-	},
-	.eventdev_init = skeleton_eventdev_init,
-	.dev_private_size = sizeof(struct skeleton_eventdev),
+static int
+event_skeleton_pci_probe(struct rte_pci_driver *pci_drv,
+			 struct rte_pci_device *pci_dev)
+{
+	return rte_event_pmd_pci_probe(pci_drv, pci_dev,
+		sizeof(struct skeleton_eventdev), skeleton_eventdev_init);
+}
+
+static int
+event_skeleton_pci_remove(struct rte_pci_device *pci_dev)
+{
+	return rte_event_pmd_pci_remove(pci_dev, NULL);
+}
+
+static struct rte_pci_driver pci_eventdev_skeleton_pmd = {
+	.id_table = pci_id_skeleton_map,
+	.drv_flags = RTE_PCI_DRV_NEED_MAPPING,
+	.probe = event_skeleton_pci_probe,
+	.remove = event_skeleton_pci_remove,
 };
 
-RTE_PMD_REGISTER_PCI(event_skeleton_pci, pci_eventdev_skeleton_pmd.pci_drv);
+RTE_PMD_REGISTER_PCI(event_skeleton_pci, pci_eventdev_skeleton_pmd);
 RTE_PMD_REGISTER_PCI_TABLE(event_skeleton_pci, pci_id_skeleton_map);
 
 /* VDEV based event device */
@@ -456,7 +437,6 @@ skeleton_eventdev_create(const char *name, int socket_id)
 	}
 
 	eventdev->dev_ops       = &skeleton_eventdev_ops;
-	eventdev->schedule      = NULL;
 	eventdev->enqueue       = skeleton_eventdev_enqueue;
 	eventdev->enqueue_burst = skeleton_eventdev_enqueue_burst;
 	eventdev->dequeue       = skeleton_eventdev_dequeue;

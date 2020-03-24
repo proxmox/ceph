@@ -21,7 +21,7 @@ For example, one may use s3cmd to set or delete a policy thus::
     "Version": "2012-10-17",
     "Statement": [{
       "Effect": "Allow",
-      "Principal": {"AWS": ["arn:aws:iam::usfolks:user/fred"]},
+      "Principal": {"AWS": ["arn:aws:iam::usfolks:user/fred:subuser"]},
       "Action": "s3:PutObjectAcl",
       "Resource": [
         "arn:aws:s3:::happybucket/*"
@@ -66,7 +66,7 @@ Currently, we support only the following actions:
 - s3:GetObjectVersionTorrent
 - s3:GetReplicationConfiguration
 - s3:ListAllMyBuckets
-- s3:ListBucketMultiPartUploads
+- s3:ListBucketMultipartUploads
 - s3:ListBucket
 - s3:ListBucketVersions
 - s3:ListMultipartUploadParts

@@ -128,22 +128,6 @@ enum grinder_state {
 	e_GRINDER_READ_MBUF
 };
 
-/*
- * Path through the scheduler hierarchy used by the scheduler enqueue
- * operation to identify the destination queue for the current
- * packet. Stored in the field pkt.hash.sched of struct rte_mbuf of
- * each packet, typically written by the classification stage and read
- * by scheduler enqueue.
- */
-struct rte_sched_port_hierarchy {
-	uint16_t queue:2;                /**< Queue ID (0 .. 3) */
-	uint16_t traffic_class:2;        /**< Traffic class ID (0 .. 3)*/
-	uint32_t color:2;                /**< Color */
-	uint16_t unused:10;
-	uint16_t subport;                /**< Subport ID */
-	uint32_t pipe;		         /**< Pipe ID */
-};
-
 struct rte_sched_grinder {
 	/* Pipe cache */
 	uint16_t pcache_qmask[RTE_SCHED_GRINDER_PCACHE_SIZE];
@@ -185,6 +169,7 @@ struct rte_sched_port {
 	/* User parameters */
 	uint32_t n_subports_per_port;
 	uint32_t n_pipes_per_subport;
+	uint32_t n_pipes_per_subport_log2;
 	uint32_t rate;
 	uint32_t mtu;
 	uint32_t frame_overhead;
@@ -192,7 +177,7 @@ struct rte_sched_port {
 	uint32_t n_pipe_profiles;
 	uint32_t pipe_tc3_rate_max;
 #ifdef RTE_SCHED_RED
-	struct rte_red_config red_config[RTE_SCHED_TRAFFIC_CLASSES_PER_PIPE][e_RTE_METER_COLORS];
+	struct rte_red_config red_config[RTE_SCHED_TRAFFIC_CLASSES_PER_PIPE][RTE_COLORS];
 #endif
 
 	/* Timing */
@@ -329,7 +314,7 @@ rte_sched_port_check_params(struct rte_sched_port_params *params)
 		return -1;
 
 	/* socket */
-	if ((params->socket < 0) || (params->socket >= RTE_MAX_NUMA_NODES))
+	if (params->socket < 0)
 		return -3;
 
 	/* rate */
@@ -633,7 +618,8 @@ rte_sched_port_config(struct rte_sched_port_params *params)
 		return NULL;
 
 	/* Allocate memory to store the data structures */
-	port = rte_zmalloc("qos_params", mem_size, RTE_CACHE_LINE_SIZE);
+	port = rte_zmalloc_socket("qos_params", mem_size, RTE_CACHE_LINE_SIZE,
+		params->socket);
 	if (port == NULL)
 		return NULL;
 
@@ -644,6 +630,8 @@ rte_sched_port_config(struct rte_sched_port_params *params)
 	/* User parameters */
 	port->n_subports_per_port = params->n_subports_per_port;
 	port->n_pipes_per_subport = params->n_pipes_per_subport;
+	port->n_pipes_per_subport_log2 =
+			__builtin_ctz(params->n_pipes_per_subport);
 	port->rate = params->rate;
 	port->mtu = params->mtu + params->frame_overhead;
 	port->frame_overhead = params->frame_overhead;
@@ -654,7 +642,7 @@ rte_sched_port_config(struct rte_sched_port_params *params)
 	for (i = 0; i < RTE_SCHED_TRAFFIC_CLASSES_PER_PIPE; i++) {
 		uint32_t j;
 
-		for (j = 0; j < e_RTE_METER_COLORS; j++) {
+		for (j = 0; j < RTE_COLORS; j++) {
 			/* if min/max are both zero, then RED is disabled */
 			if ((params->red_params[i][j].min_th |
 			     params->red_params[i][j].max_th) == 0) {
@@ -666,6 +654,7 @@ rte_sched_port_config(struct rte_sched_port_params *params)
 				params->red_params[i][j].min_th,
 				params->red_params[i][j].max_th,
 				params->red_params[i][j].maxp_inv) != 0) {
+				rte_free(port);
 				return NULL;
 			}
 		}
@@ -725,6 +714,7 @@ rte_sched_port_config(struct rte_sched_port_params *params)
 				    bmp_mem_size);
 	if (port->bmp == NULL) {
 		RTE_LOG(ERR, SCHED, "Bitmap init error\n");
+		rte_free(port);
 		return NULL;
 	}
 
@@ -1005,44 +995,52 @@ rte_sched_port_pipe_profile_add(struct rte_sched_port *port,
 	return 0;
 }
 
-void
-rte_sched_port_pkt_write(struct rte_mbuf *pkt,
-			 uint32_t subport, uint32_t pipe, uint32_t traffic_class,
-			 uint32_t queue, enum rte_meter_color color)
+static inline uint32_t
+rte_sched_port_qindex(struct rte_sched_port *port,
+	uint32_t subport,
+	uint32_t pipe,
+	uint32_t traffic_class,
+	uint32_t queue)
 {
-	struct rte_sched_port_hierarchy *sched
-		= (struct rte_sched_port_hierarchy *) &pkt->hash.sched;
-
-	RTE_BUILD_BUG_ON(sizeof(*sched) > sizeof(pkt->hash.sched));
-
-	sched->color = (uint32_t) color;
-	sched->subport = subport;
-	sched->pipe = pipe;
-	sched->traffic_class = traffic_class;
-	sched->queue = queue;
+	return ((subport & (port->n_subports_per_port - 1)) <<
+			(port->n_pipes_per_subport_log2 + 4)) |
+			((pipe & (port->n_pipes_per_subport - 1)) << 4) |
+			((traffic_class &
+			    (RTE_SCHED_TRAFFIC_CLASSES_PER_PIPE - 1)) << 2) |
+			(queue & (RTE_SCHED_QUEUES_PER_TRAFFIC_CLASS - 1));
 }
 
 void
-rte_sched_port_pkt_read_tree_path(const struct rte_mbuf *pkt,
+rte_sched_port_pkt_write(struct rte_sched_port *port,
+			 struct rte_mbuf *pkt,
+			 uint32_t subport, uint32_t pipe,
+			 uint32_t traffic_class,
+			 uint32_t queue, enum rte_color color)
+{
+	uint32_t queue_id = rte_sched_port_qindex(port, subport, pipe,
+			traffic_class, queue);
+	rte_mbuf_sched_set(pkt, queue_id, traffic_class, (uint8_t)color);
+}
+
+void
+rte_sched_port_pkt_read_tree_path(struct rte_sched_port *port,
+				  const struct rte_mbuf *pkt,
 				  uint32_t *subport, uint32_t *pipe,
 				  uint32_t *traffic_class, uint32_t *queue)
 {
-	const struct rte_sched_port_hierarchy *sched
-		= (const struct rte_sched_port_hierarchy *) &pkt->hash.sched;
+	uint32_t queue_id = rte_mbuf_sched_queue_get(pkt);
 
-	*subport = sched->subport;
-	*pipe = sched->pipe;
-	*traffic_class = sched->traffic_class;
-	*queue = sched->queue;
+	*subport = queue_id >> (port->n_pipes_per_subport_log2 + 4);
+	*pipe = (queue_id >> 4) & (port->n_pipes_per_subport - 1);
+	*traffic_class = (queue_id >> 2) &
+				(RTE_SCHED_TRAFFIC_CLASSES_PER_PIPE - 1);
+	*queue = queue_id & (RTE_SCHED_QUEUES_PER_TRAFFIC_CLASS - 1);
 }
 
-enum rte_meter_color
+enum rte_color
 rte_sched_port_pkt_read_color(const struct rte_mbuf *pkt)
 {
-	const struct rte_sched_port_hierarchy *sched
-		= (const struct rte_sched_port_hierarchy *) &pkt->hash.sched;
-
-	return (enum rte_meter_color) sched->color;
+	return (enum rte_color)rte_mbuf_sched_color_get(pkt);
 }
 
 int
@@ -1097,18 +1095,6 @@ rte_sched_queue_read_stats(struct rte_sched_port *port,
 	*qlen = q->qw - q->qr;
 
 	return 0;
-}
-
-static inline uint32_t
-rte_sched_port_qindex(struct rte_sched_port *port, uint32_t subport, uint32_t pipe, uint32_t traffic_class, uint32_t queue)
-{
-	uint32_t result;
-
-	result = subport * port->n_pipes_per_subport + pipe;
-	result = result * RTE_SCHED_TRAFFIC_CLASSES_PER_PIPE + traffic_class;
-	result = result * RTE_SCHED_QUEUES_PER_TRAFFIC_CLASS + queue;
-
-	return result;
 }
 
 #ifdef RTE_SCHED_DEBUG
@@ -1202,7 +1188,7 @@ rte_sched_port_red_drop(struct rte_sched_port *port, struct rte_mbuf *pkt, uint3
 	struct rte_red_config *red_cfg;
 	struct rte_red *red;
 	uint32_t tc_index;
-	enum rte_meter_color color;
+	enum rte_color color;
 
 	tc_index = (qindex >> 2) & 0x3;
 	color = rte_sched_port_pkt_read_color(pkt);
@@ -1271,11 +1257,8 @@ rte_sched_port_enqueue_qptrs_prefetch0(struct rte_sched_port *port,
 #ifdef RTE_SCHED_COLLECT_STATS
 	struct rte_sched_queue_extra *qe;
 #endif
-	uint32_t subport, pipe, traffic_class, queue, qindex;
+	uint32_t qindex = rte_mbuf_sched_queue_get(pkt);
 
-	rte_sched_port_pkt_read_tree_path(pkt, &subport, &pipe, &traffic_class, &queue);
-
-	qindex = rte_sched_port_qindex(port, subport, pipe, traffic_class, queue);
 	q = port->queue + qindex;
 	rte_prefetch0(q);
 #ifdef RTE_SCHED_COLLECT_STATS

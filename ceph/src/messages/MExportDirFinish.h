@@ -17,10 +17,11 @@
 
 #include "msg/Message.h"
 
-class MExportDirFinish : public MessageInstance<MExportDirFinish> {
-public:
-  friend factory;
+class MExportDirFinish : public SafeMessage {
 private:
+  static const int HEAD_VERSION = 1;
+  static const int COMPAT_VERSION = 1;
+
   dirfrag_t dirfrag;
   bool last;
 
@@ -29,9 +30,10 @@ private:
   bool is_last() const { return last; }
   
 protected:
-  MExportDirFinish() : last(false) {}
+  MExportDirFinish() :
+    SafeMessage{MSG_MDS_EXPORTDIRFINISH, HEAD_VERSION, COMPAT_VERSION}, last(false) {}
   MExportDirFinish(dirfrag_t df, bool l, uint64_t tid) :
-    MessageInstance(MSG_MDS_EXPORTDIRFINISH), dirfrag(df), last(l) {
+    SafeMessage{MSG_MDS_EXPORTDIRFINISH, HEAD_VERSION, COMPAT_VERSION}, dirfrag(df), last(l) {
     set_tid(tid);
   }
   ~MExportDirFinish() override {}
@@ -52,7 +54,9 @@ public:
     decode(dirfrag, p);
     decode(last, p);
   }
-
+private:
+  template<class T, typename... Args>
+  friend boost::intrusive_ptr<T> ceph::make_message(Args&&... args);
 };
 
 #endif

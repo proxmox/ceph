@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 set -xe
 
-basedir=$(readlink -f $(dirname $0))
 MAKE="make -j$(( $(nproc)  * 2 ))"
 
 if [[ $1 == "spdk_vhost_scsi" ]]; then

@@ -5,6 +5,7 @@
 #include "test/librbd/test_support.h"
 #include "librbd/Operations.h"
 #include "librbd/api/Image.h"
+#include "librbd/api/Snapshot.h"
 #include "librbd/internal.h"
 #include "librbd/io/ImageRequestWQ.h"
 #include "librbd/io/ReadResult.h"
@@ -59,8 +60,8 @@ struct TestDeepCopy : public TestFixture {
     vector<librbd::snap_info_t> src_snaps, dst_snaps;
 
     EXPECT_EQ(m_src_ictx->size, m_dst_ictx->size);
-    EXPECT_EQ(0, librbd::snap_list(m_src_ictx, src_snaps));
-    EXPECT_EQ(0, librbd::snap_list(m_dst_ictx, dst_snaps));
+    EXPECT_EQ(0, librbd::api::Snapshot<>::list(m_src_ictx, src_snaps));
+    EXPECT_EQ(0, librbd::api::Snapshot<>::list(m_dst_ictx, dst_snaps));
     EXPECT_EQ(src_snaps.size(), dst_snaps.size());
     for (size_t i = 0; i <= src_snaps.size(); i++) {
       const char *src_snap_name = nullptr;
@@ -78,8 +79,8 @@ struct TestDeepCopy : public TestFixture {
                      dst_snap_name));
       uint64_t src_size, dst_size;
       {
-        RWLock::RLocker src_locker(m_src_ictx->snap_lock);
-        RWLock::RLocker dst_locker(m_dst_ictx->snap_lock);
+        std::shared_lock src_locker{m_src_ictx->image_lock};
+        std::shared_lock dst_locker{m_dst_ictx->image_lock};
         src_size = m_src_ictx->get_image_size(m_src_ictx->snap_id);
         dst_size = m_dst_ictx->get_image_size(m_dst_ictx->snap_id);
       }
@@ -87,10 +88,10 @@ struct TestDeepCopy : public TestFixture {
 
       if (m_dst_ictx->test_features(RBD_FEATURE_LAYERING)) {
         bool flags_set;
-        RWLock::RLocker dst_locker(m_dst_ictx->snap_lock);
+        std::shared_lock dst_locker{m_dst_ictx->image_lock};
         EXPECT_EQ(0, m_dst_ictx->test_flags(m_dst_ictx->snap_id,
                                             RBD_FLAG_OBJECT_MAP_INVALID,
-                                            m_dst_ictx->snap_lock, &flags_set));
+                                            m_dst_ictx->image_lock, &flags_set));
         EXPECT_FALSE(flags_set);
       }
 
@@ -357,7 +358,7 @@ struct TestDeepCopy : public TestFixture {
   void test_stress() {
     uint64_t initial_size, size;
     {
-      RWLock::RLocker src_locker(m_src_ictx->snap_lock);
+      std::shared_lock src_locker{m_src_ictx->image_lock};
       size = initial_size = m_src_ictx->get_image_size(CEPH_NOSNAP);
     }
 
@@ -429,7 +430,7 @@ struct TestDeepCopy : public TestFixture {
         std::cout << "resize: " << new_size << std::endl;
         ASSERT_EQ(0, m_src_ictx->operations->resize(new_size, true, no_op));
         {
-          RWLock::RLocker src_locker(m_src_ictx->snap_lock);
+          std::shared_lock src_locker{m_src_ictx->image_lock};
           size = m_src_ictx->get_image_size(CEPH_NOSNAP);
         }
         ASSERT_EQ(new_size, size);

@@ -1,31 +1,6 @@
-..  BSD LICENSE
-    Copyright 2012-2015 6WIND S.A.
-
-    Redistribution and use in source and binary forms, with or without
-    modification, are permitted provided that the following conditions
-    are met:
-
-    * Redistributions of source code must retain the above copyright
-    notice, this list of conditions and the following disclaimer.
-    * Redistributions in binary form must reproduce the above copyright
-    notice, this list of conditions and the following disclaimer in
-    the documentation and/or other materials provided with the
-    distribution.
-    * Neither the name of 6WIND S.A. nor the names of its
-    contributors may be used to endorse or promote products derived
-    from this software without specific prior written permission.
-
-    THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-    "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-    LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-    A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-    OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-    SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-    LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-    DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-    THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-    (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-    OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+..  SPDX-License-Identifier: BSD-3-Clause
+    Copyright 2012 6WIND S.A.
+    Copyright 2015 Mellanox Technologies, Ltd
 
 MLX4 poll mode driver library
 =============================
@@ -71,32 +46,9 @@ This capability allows the PMD to coexist with kernel network interfaces
 which remain functional, although they stop receiving unicast packets as
 long as they share the same MAC address.
 
+The :ref:`flow_isolated_mode` is supported.
+
 Compiling librte_pmd_mlx4 causes DPDK to be linked against libibverbs.
-
-Features
---------
-
-- RSS, also known as RCA, is supported. In this mode the number of
-  configured RX queues must be a power of two.
-- VLAN filtering is supported.
-- Link state information is provided.
-- Promiscuous mode is supported.
-- All multicast mode is supported.
-- Multiple MAC addresses (unicast, multicast) can be configured.
-- Scattered packets are supported for TX and RX.
-- Inner L3/L4 (IP, TCP and UDP) TX/RX checksum offloading and validation.
-- Outer L3 (IP) TX/RX checksum offloading and validation for VXLAN frames.
-- Secondary process TX is supported.
-
-Limitations
------------
-
-- RSS hash key cannot be modified.
-- RSS RETA cannot be configured
-- RSS always includes L3 (IPv4/IPv6) and L4 (UDP/TCP). They cannot be
-  dissociated.
-- Hardware counters are not implemented (they are software counters).
-- Secondary process RX is not supported.
 
 Configuration
 -------------
@@ -110,51 +62,50 @@ These options can be modified in the ``.config`` file.
 
   Toggle compilation of librte_pmd_mlx4 itself.
 
+- ``CONFIG_RTE_IBVERBS_LINK_DLOPEN`` (default **n**)
+
+  Build PMD with additional code to make it loadable without hard
+  dependencies on **libibverbs** nor **libmlx4**, which may not be installed
+  on the target system.
+
+  In this mode, their presence is still required for it to run properly,
+  however their absence won't prevent a DPDK application from starting (with
+  ``CONFIG_RTE_BUILD_SHARED_LIB`` disabled) and they won't show up as
+  missing with ``ldd(1)``.
+
+  It works by moving these dependencies to a purpose-built rdma-core "glue"
+  plug-in which must either be installed in a directory whose name is based
+  on ``CONFIG_RTE_EAL_PMD_PATH`` suffixed with ``-glue`` if set, or in a
+  standard location for the dynamic linker (e.g. ``/lib``) if left to the
+  default empty string (``""``).
+
+  This option has no performance impact.
+
+- ``CONFIG_RTE_IBVERBS_LINK_STATIC`` (default **n**)
+
+  Embed static flavor of the dependencies **libibverbs** and **libmlx4**
+  in the PMD shared library or the executable static binary.
+
 - ``CONFIG_RTE_LIBRTE_MLX4_DEBUG`` (default **n**)
 
   Toggle debugging code and stricter compilation flags. Enabling this option
   adds additional run-time checks and debugging messages at the cost of
   lower performance.
 
-- ``CONFIG_RTE_LIBRTE_MLX4_SGE_WR_N`` (default **4**)
-
-  Number of scatter/gather elements (SGEs) per work request (WR). Lowering
-  this number improves performance but also limits the ability to receive
-  scattered packets (packets that do not fit a single mbuf). The default
-  value is a safe tradeoff.
-
-- ``CONFIG_RTE_LIBRTE_MLX4_MAX_INLINE`` (default **0**)
-
-  Amount of data to be inlined during TX operations. Improves latency but
-  lowers throughput.
-
-- ``CONFIG_RTE_LIBRTE_MLX4_TX_MP_CACHE`` (default **8**)
-
-  Maximum number of cached memory pools (MPs) per TX queue. Each MP from
-  which buffers are to be transmitted must be associated to memory regions
-  (MRs). This is a slow operation that must be cached.
-
-  This value is always 1 for RX queues since they use a single MP.
-
-- ``CONFIG_RTE_LIBRTE_MLX4_SOFT_COUNTERS`` (default **1**)
-
-  Toggle software counters. No counters are available if this option is
-  disabled since hardware counters are not supported.
-
 Environment variables
 ~~~~~~~~~~~~~~~~~~~~~
 
-- ``MLX4_INLINE_RECV_SIZE``
+- ``MLX4_GLUE_PATH``
 
-  A nonzero value enables inline receive for packets up to that size. May
-  significantly improve performance in some cases but lower it in
-  others. Requires careful testing.
+  A list of directories in which to search for the rdma-core "glue" plug-in,
+  separated by colons or semi-colons.
+
+  Only matters when compiled with ``CONFIG_RTE_IBVERBS_LINK_DLOPEN``
+  enabled and most useful when ``CONFIG_RTE_EAL_PMD_PATH`` is also set,
+  since ``LD_LIBRARY_PATH`` has no effect in this case.
 
 Run-time configuration
 ~~~~~~~~~~~~~~~~~~~~~~
-
-- The only constraint when RSS mode is requested is to make sure the number
-  of RX queues is a power of two. This is a hardware requirement.
 
 - librte_pmd_mlx4 brings kernel network interfaces up during initialization
   because it is affected by their state. Forcing them down prevents packets
@@ -167,6 +118,17 @@ Run-time configuration
   This parameter provides a physical port to probe and can be specified multiple
   times for additional ports. All ports are probed by default if left
   unspecified.
+
+- ``mr_ext_memseg_en`` parameter [int]
+
+  A nonzero value enables extending memseg when registering DMA memory. If
+  enabled, the number of entries in MR (Memory Region) lookup table on datapath
+  is minimized and it benefits performance. On the other hand, it worsens memory
+  utilization because registered memory is pinned by kernel driver. Even if a
+  page in the extended chunk is freed, that doesn't become reusable until the
+  entire memory is freed.
+
+  Enabled by default.
 
 Kernel module parameters
 ~~~~~~~~~~~~~~~~~~~~~~~~
@@ -191,6 +153,25 @@ below.
     following limitation: VLAN filtering is not supported with this mode.
     This is the recommended mode in case VLAN filter is not needed.
 
+Limitations
+-----------
+
+- For secondary process:
+
+  - Forked secondary process not supported.
+  - External memory unregistered in EAL memseg list cannot be used for DMA
+    unless such memory has been registered by ``mlx4_mr_update_ext_mp()`` in
+    primary process and remapped to the same virtual address in secondary
+    process. If the external memory is registered by primary process but has
+    different virtual address in secondary process, unexpected error may happen.
+
+- CRC stripping is supported by default and always reported as "true".
+  The ability to enable/disable CRC stripping requires OFED version
+  4.3-1.5.0.0 and above  or rdma-core version v18 and above.
+
+- TSO (Transmit Segmentation Offload) is supported in OFED version
+  4.4 and above.
+
 Prerequisites
 -------------
 
@@ -198,7 +179,7 @@ This driver relies on external libraries and kernel drivers for resources
 allocations and initialization. The following dependencies are not part of
 DPDK and must be installed separately:
 
-- **libibverbs**
+- **libibverbs** (provided by rdma-core package)
 
   User space verbs framework used by librte_pmd_mlx4. This library provides
   a generic interface between the kernel and low-level user space drivers
@@ -208,7 +189,7 @@ DPDK and must be installed separately:
   resources allocations) to be managed by the kernel and fast operations to
   never leave user space.
 
-- **libmlx4**
+- **libmlx4** (provided by rdma-core package)
 
   Low-level user space driver library for Mellanox ConnectX-3 devices,
   it is automatically loaded by libibverbs.
@@ -216,7 +197,7 @@ DPDK and must be installed separately:
   This library basically implements send/receive calls to the hardware
   queues.
 
-- **Kernel modules** (mlnx-ofed-kernel)
+- **Kernel modules**
 
   They provide the kernel-side verbs API and low level device drivers that
   manage actual hardware initialization and resources sharing with user
@@ -242,25 +223,40 @@ DPDK and must be installed separately:
    Both libraries are BSD and GPL licensed. Linux kernel modules are GPL
    licensed.
 
-Currently supported by DPDK:
+Depending on system constraints and user preferences either RDMA core library
+with a recent enough Linux kernel release (recommended) or Mellanox OFED,
+which provides compatibility with older releases.
 
-- Mellanox OFED **4.0-2.0.0.0**.
-- Firmware version **2.40.7000**.
-- Supported architectures:  **x86_64** and **POWER8**.
+Current RDMA core package and Linux kernel (recommended)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Getting Mellanox OFED
-~~~~~~~~~~~~~~~~~~~~~
+- Minimal Linux kernel version: 4.14.
+- Minimal RDMA core version: v15 (see `RDMA core installation documentation`_).
 
-While these libraries and kernel modules are available on OpenFabrics
-Alliance's `website <https://www.openfabrics.org/>`_ and provided by package
-managers on most distributions, this PMD requires Ethernet extensions that
-may not be supported at the moment (this is a work in progress).
+- Starting with rdma-core v21, static libraries can be built::
 
-`Mellanox OFED
-<http://www.mellanox.com/page/products_dyn?product_family=26&mtag=linux_sw_drivers>`_
-includes the necessary support and should be used in the meantime. For DPDK,
-only libibverbs, libmlx4, mlnx-ofed-kernel packages and firmware updates are
-required from that distribution.
+    cd build
+    CFLAGS=-fPIC cmake -DIN_PLACE=1 -DENABLE_STATIC=1 -GNinja ..
+    ninja
+
+.. _`RDMA core installation documentation`: https://raw.githubusercontent.com/linux-rdma/rdma-core/master/README.md
+
+If rdma-core libraries are built but not installed, DPDK makefile can link them,
+thanks to these environment variables:
+
+   - ``EXTRA_CFLAGS=-I/path/to/rdma-core/build/include``
+   - ``EXTRA_LDFLAGS=-L/path/to/rdma-core/build/lib``
+   - ``PKG_CONFIG_PATH=/path/to/rdma-core/build/lib/pkgconfig``
+
+.. _Mellanox_OFED_as_a_fallback:
+
+Mellanox OFED as a fallback
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+- `Mellanox OFED`_ version: **4.4, 4.5, 4.6**.
+- firmware version: **2.42.5000** and above.
+
+.. _`Mellanox OFED`: http://www.mellanox.com/page/products_dyn?product_family=26&mtag=linux_sw_drivers
 
 .. note::
 
@@ -268,10 +264,160 @@ required from that distribution.
    this DPDK release was developed and tested against is strongly
    recommended. Please check the `prerequisites`_.
 
+Installing Mellanox OFED
+^^^^^^^^^^^^^^^^^^^^^^^^
+
+1. Download latest Mellanox OFED.
+
+2. Install the required libraries and kernel modules either by installing
+   only the required set, or by installing the entire Mellanox OFED:
+
+   For bare metal use:
+
+   .. code-block:: console
+
+        ./mlnxofedinstall --dpdk --upstream-libs
+
+   For SR-IOV hypervisors use:
+
+   .. code-block:: console
+
+        ./mlnxofedinstall --dpdk --upstream-libs --enable-sriov --hypervisor
+
+   For SR-IOV virtual machine use:
+
+   .. code-block:: console
+
+        ./mlnxofedinstall --dpdk --upstream-libs --guest
+
+3. Verify the firmware is the correct one:
+
+   .. code-block:: console
+
+        ibv_devinfo
+
+4. Set all ports links to Ethernet, follow instructions on the screen:
+
+   .. code-block:: console
+
+        connectx_port_config
+
+5. Continue with :ref:`section 2 of the Quick Start Guide <QSG_2>`.
+
 Supported NICs
 --------------
 
 * Mellanox(R) ConnectX(R)-3 Pro 40G MCX354A-FCC_Ax (2*40G)
+
+.. _qsg:
+
+Quick Start Guide
+-----------------
+
+1. Set all ports links to Ethernet
+
+   .. code-block:: console
+
+        PCI=<NIC PCI address>
+        echo eth > "/sys/bus/pci/devices/$PCI/mlx4_port0"
+        echo eth > "/sys/bus/pci/devices/$PCI/mlx4_port1"
+
+   .. note::
+
+        If using Mellanox OFED one can permanently set the port link
+        to Ethernet using connectx_port_config tool provided by it.
+        :ref:`Mellanox_OFED_as_a_fallback`:
+
+.. _QSG_2:
+
+2. In case of bare metal or hypervisor, configure optimized steering mode
+   by adding the following line to ``/etc/modprobe.d/mlx4_core.conf``:
+
+   .. code-block:: console
+
+        options mlx4_core log_num_mgm_entry_size=-7
+
+   .. note::
+
+        If VLAN filtering is used, set log_num_mgm_entry_size=-1.
+        Performance degradation can occur on this case.
+
+3. Restart the driver:
+
+   .. code-block:: console
+
+        /etc/init.d/openibd restart
+
+   or:
+
+   .. code-block:: console
+
+        service openibd restart
+
+4. Compile DPDK and you are ready to go. See instructions on
+   :ref:`Development Kit Build System <Development_Kit_Build_System>`
+
+Performance tuning
+------------------
+
+1. Verify the optimized steering mode is configured:
+
+  .. code-block:: console
+
+        cat /sys/module/mlx4_core/parameters/log_num_mgm_entry_size
+
+2. Use the CPU near local NUMA node to which the PCIe adapter is connected,
+   for better performance. For VMs, verify that the right CPU
+   and NUMA node are pinned according to the above. Run:
+
+   .. code-block:: console
+
+        lstopo-no-graphics
+
+   to identify the NUMA node to which the PCIe adapter is connected.
+
+3. If more than one adapter is used, and root complex capabilities allow
+   to put both adapters on the same NUMA node without PCI bandwidth degradation,
+   it is recommended to locate both adapters on the same NUMA node.
+   This in order to forward packets from one to the other without
+   NUMA performance penalty.
+
+4. Disable pause frames:
+
+   .. code-block:: console
+
+        ethtool -A <netdev> rx off tx off
+
+5. Verify IO non-posted prefetch is disabled by default. This can be checked
+   via the BIOS configuration. Please contact you server provider for more
+   information about the settings.
+
+.. note::
+
+        On some machines, depends on the machine integrator, it is beneficial
+        to set the PCI max read request parameter to 1K. This can be
+        done in the following way:
+
+        To query the read request size use:
+
+        .. code-block:: console
+
+                setpci -s <NIC PCI address> 68.w
+
+        If the output is different than 3XXX, set it by:
+
+        .. code-block:: console
+
+                setpci -s <NIC PCI address> 68.w=3XXX
+
+        The XXX can be different on different systems. Make sure to configure
+        according to the setpci output.
+
+6. To minimize overhead of searching Memory Regions:
+
+   - '--socket-mem' is recommended to pin memory by predictable amount.
+   - Configure per-lcore cache when creating Mempools for packet buffer.
+   - Refrain from dynamically allocating/freeing memory in run-time.
 
 Usage example
 -------------

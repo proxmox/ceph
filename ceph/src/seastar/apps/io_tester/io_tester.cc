@@ -28,6 +28,7 @@
 #include <seastar/core/align.hh>
 #include <seastar/core/timer.hh>
 #include <seastar/core/thread.hh>
+#include <seastar/core/print.hh>
 #include <chrono>
 #include <vector>
 #include <boost/range/irange.hpp>
@@ -56,7 +57,7 @@ static std::default_random_engine random_generator(random_seed);
 // that will push the data out of the disk's cache. And static sizes per file are simpler.
 static constexpr uint64_t file_data_size = 1ull << 30;
 
-struct context;
+class context;
 enum class request_type { seqread, seqwrite, randread, randwrite, append, cpu };
 
 namespace std {
@@ -143,13 +144,15 @@ public:
         , _pos_distribution(0,  file_data_size / _config.shard_info.request_size)
     {}
 
+    virtual ~class_data() = default;
+
     future<> issue_requests(std::chrono::steady_clock::time_point stop) {
         _start = std::chrono::steady_clock::now();
         return with_scheduling_group(_sg, [this, stop] {
             return parallel_for_each(boost::irange(0u, parallelism()), [this, stop] (auto dummy) mutable {
                 auto bufptr = allocate_aligned_buffer<char>(this->req_size(), _alignment);
                 auto buf = bufptr.get();
-                return do_until([this, stop] { return std::chrono::steady_clock::now() > stop; }, [this, buf, stop] () mutable {
+                return do_until([stop] { return std::chrono::steady_clock::now() > stop; }, [this, buf, stop] () mutable {
                     auto start = std::chrono::steady_clock::now();
                     return issue_request(buf).then([this, start, stop] (auto size) {
                         auto now = std::chrono::steady_clock::now();
@@ -184,6 +187,13 @@ public:
     // cpu               : CPU-only load, file is not created.
     future<> start(sstring dir) {
         return do_start(dir);
+    }
+
+    future<> stop() {
+        if (_file) {
+            return _file.close();
+        }
+        return make_ready_future<>();
     }
 protected:
     sstring type_str() const {
@@ -296,7 +306,7 @@ public:
                         std::uniform_int_distribution<char> fill('@', '~');
                         memset(buf, fill(random_generator), bufsize);
                         pos = pos * bufsize;
-                        return _file.dma_write(pos, buf, bufsize).finally([this, bufsize, bufptr = std::move(bufptr), perm = std::move(perm), pos] {
+                        return _file.dma_write(pos, buf, bufsize).finally([this, bufptr = std::move(bufptr), perm = std::move(perm), pos] {
                             if ((this->req_type() == request_type::append) && (pos > _last_pos)) {
                                 _last_pos = pos;
                             }
@@ -523,7 +533,11 @@ public:
             , _finished(0)
     {}
 
-    future<> stop() { return make_ready_future<>(); }
+    future<> stop() {
+        return parallel_for_each(_cl, [] (std::unique_ptr<class_data>& cl) {
+            return cl->stop();
+        });
+    }
 
     future<> start() {
         return parallel_for_each(_cl, [this] (std::unique_ptr<class_data>& cl) {
@@ -607,6 +621,7 @@ int main(int ac, char** av) {
                     return c.print_stats();
                 }).get();
             }
+            ctx.stop().get0();
         }).or_terminate();
     });
 }

@@ -1,5 +1,4 @@
 
-from unittest import SkipTest
 from tasks.cephfs.fuse_mount import FuseMount
 from tasks.cephfs.cephfs_test_case import CephFSTestCase
 from teuthology.orchestra.run import CommandFailedError, ConnectionLostError
@@ -7,7 +6,6 @@ import errno
 import time
 import json
 import logging
-import time
 
 log = logging.getLogger(__name__)
 
@@ -21,7 +19,7 @@ class TestMisc(CephFSTestCase):
         """
 
         if not isinstance(self.mount_a, FuseMount):
-            raise SkipTest("Require FUSE client")
+            self.skipTest("Require FUSE client")
 
         # Enable debug. Client will requests CEPH_CAP_XATTR_SHARED
         # on lookup/open
@@ -69,7 +67,7 @@ class TestMisc(CephFSTestCase):
                                             '--yes-i-really-really-mean-it')
         self.fs.mon_manager.raw_cluster_cmd('osd', 'pool', 'create',
                                             self.fs.metadata_pool_name,
-                                            self.fs.get_pgs_per_fs_pool().__str__())
+                                            self.fs.pgs_per_fs_pool.__str__())
 
         dummyfile = '/etc/fstab'
 
@@ -78,7 +76,7 @@ class TestMisc(CephFSTestCase):
         def get_pool_df(fs, name):
             try:
                 return fs.get_pool_df(name)['objects'] > 0
-            except RuntimeError as e:
+            except RuntimeError:
                 return False
 
         self.wait_until_true(lambda: get_pool_df(self.fs, self.fs.metadata_pool_name), timeout=30)
@@ -106,7 +104,7 @@ class TestMisc(CephFSTestCase):
                                             '--yes-i-really-really-mean-it')
         self.fs.mon_manager.raw_cluster_cmd('osd', 'pool', 'create',
                                             self.fs.metadata_pool_name,
-                                            self.fs.get_pgs_per_fs_pool().__str__())
+                                            self.fs.pgs_per_fs_pool.__str__())
         self.fs.mon_manager.raw_cluster_cmd('fs', 'new', self.fs.name,
                                             self.fs.metadata_pool_name,
                                             data_pool_name)
@@ -172,8 +170,7 @@ class TestMisc(CephFSTestCase):
         out = self.fs.mon_manager.raw_cluster_cmd('osd', 'pool', 'get',
                                                   pool_name, 'size',
                                                   '-f', 'json-pretty')
-        j = json.loads(out)
-        pool_size = int(j['size'])
+        _ = json.loads(out)
 
         proc = self.mount_a.run_shell(['df', '.'])
         output = proc.stdout.getvalue()

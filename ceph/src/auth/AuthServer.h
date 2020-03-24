@@ -4,10 +4,10 @@
 #pragma once
 
 #include "AuthRegistry.h"
+#include "include/common_fwd.h"
 
 #include <vector>
 
-class CephContext;
 class Connection;
 
 class AuthServer {
@@ -54,6 +54,6 @@ public:
     AuthConnectionMeta *auth_meta,
     bool more,           ///< true if this is not the first part of the handshake
     uint32_t auth_method,
-    const bufferlist& bl,
-    bufferlist *reply) = 0;
+    const ceph::buffer::list& bl,
+    ceph::buffer::list *reply) = 0;
 };

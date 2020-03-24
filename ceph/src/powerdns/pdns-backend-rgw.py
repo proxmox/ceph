@@ -47,7 +47,7 @@ Should return something like:
 '''
 
 # Copyright: Wido den Hollander <wido@42on.com> 2014
-# License:   LGPL2.1
+# License:   LGPL-2.1 or LGPL-3.0
 
 from ConfigParser import SafeConfigParser, NoSectionError
 from flask import abort, Flask, request, Response
@@ -176,7 +176,7 @@ def init_config():
         cfg.read(config_locations)
     else:
         if not os.path.isfile(args.config):
-            print "Could not open configuration file %s" % args.config
+            print("Could not open configuration file %s" % args.config)
             sys.exit(1)
 
         cfg.read(args.config)
@@ -268,7 +268,8 @@ def generate_app(config):
 # Initialize the configuration and generate the Application
 config = init_config()
 if config == None:
-    print "Could not parse configuration file. Tried to parse %s" % config_locations
+    print("Could not parse configuration file. "
+          "Tried to parse %s" % config_locations)
     sys.exit(1)
 
 app = generate_app(config)

@@ -22,12 +22,9 @@
 #include "include/types.h"
 
 
-class MMgrBeacon : public MessageInstance<MMgrBeacon, PaxosServiceMessage> {
-public:
-  friend factory;
+class MMgrBeacon : public PaxosServiceMessage {
 private:
-
-  static constexpr int HEAD_VERSION = 8;
+  static constexpr int HEAD_VERSION = 10;
   static constexpr int COMPAT_VERSION = 8;
 
 protected:
@@ -48,20 +45,27 @@ protected:
 
   map<string,string> metadata; ///< misc metadata about this osd
 
+  std::vector<entity_addrvec_t> clients;
+
+  uint64_t mgr_features = 0;   ///< reporting mgr's features
+
 public:
   MMgrBeacon()
-    : MessageInstance(MSG_MGR_BEACON, 0, HEAD_VERSION, COMPAT_VERSION),
+    : PaxosServiceMessage{MSG_MGR_BEACON, 0, HEAD_VERSION, COMPAT_VERSION},
       gid(0), available(false)
-  {
-  }
+  {}
 
   MMgrBeacon(const uuid_d& fsid_, uint64_t gid_, const std::string &name_,
              entity_addrvec_t server_addrs_, bool available_,
 	     std::vector<MgrMap::ModuleInfo>&& modules_,
-	     map<string,string>&& metadata_)
-    : MessageInstance(MSG_MGR_BEACON, 0, HEAD_VERSION, COMPAT_VERSION),
+	     map<string,string>&& metadata_,
+             std::vector<entity_addrvec_t> clients,
+	     uint64_t feat)
+    : PaxosServiceMessage{MSG_MGR_BEACON, 0, HEAD_VERSION, COMPAT_VERSION},
       gid(gid_), server_addrs(server_addrs_), available(available_), name(name_),
-      fsid(fsid_), modules(std::move(modules_)), metadata(std::move(metadata_))
+      fsid(fsid_), modules(std::move(modules_)), metadata(std::move(metadata_)),
+      clients(std::move(clients)),
+      mgr_features(feat)
   {
   }
 
@@ -73,10 +77,10 @@ public:
   const std::map<std::string,std::string>& get_metadata() const {
     return metadata;
   }
-
   const std::map<std::string,std::string>& get_services() const {
     return services;
   }
+  uint64_t get_mgr_features() const { return mgr_features; }
 
   void set_services(const std::map<std::string, std::string> &svcs)
   {
@@ -96,6 +100,11 @@ public:
   const std::vector<MgrMap::ModuleInfo> &get_available_modules() const
   {
     return modules;
+  }
+
+  const auto& get_clients() const
+  {
+    return clients;
   }
 
 private:
@@ -142,6 +151,8 @@ public:
     encode(services, payload);
 
     encode(modules, payload);
+    encode(mgr_features, payload);
+    encode(clients, payload, features);
   }
   void decode_payload() override {
     auto p = payload.cbegin();
@@ -178,7 +189,16 @@ public:
     if (header.version >= 7) {
       decode(modules, p);
     }
+    if (header.version >= 9) {
+      decode(mgr_features, p);
+    }
+    if (header.version >= 10) {
+      decode(clients, p);
+    }
   }
+private:
+  template<class T, typename... Args>
+  friend boost::intrusive_ptr<T> ceph::make_message(Args&&... args);
 };
 
 

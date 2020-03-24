@@ -1,3 +1,6 @@
+..  SPDX-License-Identifier: BSD-3-Clause
+    Copyright 2017 The DPDK contributors
+
 DPDK Release 17.05
 ==================
 
@@ -132,6 +135,12 @@ New Features
 * **Added i40e dynamic device personalization support.**
 
   * Added dynamic device personalization processing to i40e firmware.
+
+* **Updated i40e driver to support MPLSoUDP/MPLSoGRE.**
+
+  Updated i40e PMD to support MPLSoUDP/MPLSoGRE with MPLSoUDP/MPLSoGRE
+  supporting profiles which can be programmed by dynamic device personalization
+  (DDP) process.
 
 * **Added Cloud Filter for QinQ steering to i40e.**
 
@@ -518,6 +527,7 @@ The libraries prepended with a plus sign were incremented in this version.
      librte_distributor.so.1
    + librte_eal.so.4
      librte_ethdev.so.6
+   + librte_eventdev.so.1
      librte_hash.so.2
      librte_ip_frag.so.1
      librte_jobstats.so.1

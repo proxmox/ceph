@@ -6,7 +6,7 @@
 #ifndef __CHELSIO_COMMON_H
 #define __CHELSIO_COMMON_H
 
-#include "cxgbe_compat.h"
+#include "../cxgbe_compat.h"
 #include "t4_hw.h"
 #include "t4vf_hw.h"
 #include "t4_chip_type.h"
@@ -157,6 +157,7 @@ struct tp_params {
 	int port_shift;
 	int protocol_shift;
 	int ethertype_shift;
+	int macmatch_shift;
 
 	u64 hash_filter_mask;
 };
@@ -270,6 +271,7 @@ struct adapter_params {
 
 	bool ulptx_memwrite_dsgl;          /* use of T5 DSGL allowed */
 	u8 fw_caps_support;		  /* 32-bit Port Capabilities */
+	u8 filter2_wr_support;            /* FW support for FILTER2_WR */
 };
 
 /* Firmware Port Capabilities types.
@@ -388,6 +390,12 @@ int t4_free_vi(struct adapter *adap, unsigned int mbox,
 int t4_set_rxmode(struct adapter *adap, unsigned int mbox, unsigned int viid,
 		  int mtu, int promisc, int all_multi, int bcast, int vlanex,
 		  bool sleep_ok);
+int t4_free_raw_mac_filt(struct adapter *adap, unsigned int viid,
+			 const u8 *addr, const u8 *mask, unsigned int idx,
+			 u8 lookup_type, u8 port_id, bool sleep_ok);
+int t4_alloc_raw_mac_filt(struct adapter *adap, unsigned int viid,
+			  const u8 *addr, const u8 *mask, unsigned int idx,
+			  u8 lookup_type, u8 port_id, bool sleep_ok);
 int t4_change_mac(struct adapter *adap, unsigned int mbox, unsigned int viid,
 		  int idx, const u8 *addr, bool persist, bool add_smt);
 int t4_enable_vi_params(struct adapter *adap, unsigned int mbox,
@@ -514,7 +522,7 @@ void t4_read_rss_key(struct adapter *adap, u32 *key);
 
 enum t4_bar2_qtype { T4_BAR2_QTYPE_EGRESS, T4_BAR2_QTYPE_INGRESS };
 int t4_bar2_sge_qregs(struct adapter *adapter, unsigned int qid,
-		      unsigned int qtype, u64 *pbar2_qoffset,
+		      enum t4_bar2_qtype qtype, u64 *pbar2_qoffset,
 		      unsigned int *pbar2_qid);
 
 int t4_init_sge_params(struct adapter *adapter);

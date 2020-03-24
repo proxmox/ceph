@@ -15,6 +15,7 @@
 
 #include <errno.h>
 
+#include "common/deleter.h"
 #include "common/dout.h"
 #include "common/errno.h"
 #include "common/TracepointProvider.h"
@@ -22,6 +23,7 @@
 
 #include "cls/rbd/cls_rbd_client.h"
 #include "cls/rbd/cls_rbd_types.h"
+#include "librbd/Features.h"
 #include "librbd/ImageCtx.h"
 #include "librbd/ImageState.h"
 #include "librbd/internal.h"
@@ -69,11 +71,35 @@ namespace {
 
 TracepointProvider::Traits tracepoint_traits("librbd_tp.so", "rbd_tracing");
 
+struct UserBufferDeleter : public deleter::impl {
+  CephContext* cct;
+  librbd::io::AioCompletion* aio_completion;
+
+  UserBufferDeleter(CephContext* cct, librbd::io::AioCompletion* aio_completion)
+    : deleter::impl(deleter()), cct(cct), aio_completion(aio_completion) {
+   aio_completion->block(cct);
+  }
+
+  ~UserBufferDeleter() override {
+    aio_completion->unblock(cct);
+  }
+};
+
 static auto create_write_raw(librbd::ImageCtx *ictx, const char *buf,
-                             size_t len) {
-  // TODO: until librados can guarantee memory won't be referenced after
-  // it ACKs a request, always make a copy of the user-provided memory
-  return buffer::copy(buf, len);
+                             size_t len,
+                             librbd::io::AioCompletion* aio_completion) {
+  if (ictx->disable_zero_copy || aio_completion == nullptr) {
+    // must copy the buffer if writeback/writearound cache is in-use (or using
+    // non-AIO)
+    return buffer::copy(buf, len);
+  }
+
+  // avoid copying memory for AIO operations, but possibly delay completions
+  // until the last reference to the user's memory has been released
+  return ceph::unique_leakable_ptr<ceph::buffer::raw>(
+    buffer::claim_buffer(
+      len, const_cast<char*>(buf),
+      deleter(new UserBufferDeleter(ictx->cct, aio_completion))));
 }
 
 CephContext* get_cct(IoCtx &io_ctx) {
@@ -95,15 +121,16 @@ struct C_AioCompletion : public Context {
     aio_comp->init_time(ictx, aio_type);
     aio_comp->get();
   }
+  virtual ~C_AioCompletion() {
+    aio_comp->put();
+  }
 
   void finish(int r) override {
     ldout(cct, 20) << "C_AioComplete::finish: r=" << r << dendl;
     if (r < 0) {
       aio_comp->fail(r);
     } else {
-      aio_comp->lock.Lock();
       aio_comp->complete();
-      aio_comp->put_unlock();
     }
   }
 };
@@ -186,14 +213,67 @@ void mirror_image_info_cpp_to_c(const librbd::mirror_image_info_t &cpp_info,
   c_info->primary = cpp_info.primary;
 }
 
-void mirror_image_status_cpp_to_c(const librbd::mirror_image_status_t &cpp_status,
-				  rbd_mirror_image_status_t *c_status) {
+int get_local_mirror_image_site_status(
+    const librbd::mirror_image_global_status_t& status,
+    librbd::mirror_image_site_status_t* local_status) {
+  auto it = std::find_if(status.site_statuses.begin(),
+                         status.site_statuses.end(),
+                         [](const librbd::mirror_image_site_status_t& s) {
+      return (s.mirror_uuid ==
+                cls::rbd::MirrorImageSiteStatus::LOCAL_MIRROR_UUID);
+    });
+  if (it == status.site_statuses.end()) {
+    return -ENOENT;
+  }
+
+  *local_status = *it;
+  return 0;
+}
+
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+
+int mirror_image_global_status_cpp_to_c(
+    const librbd::mirror_image_global_status_t &cpp_status,
+    rbd_mirror_image_status_t *c_status) {
   c_status->name = strdup(cpp_status.name.c_str());
   mirror_image_info_cpp_to_c(cpp_status.info, &c_status->info);
-  c_status->state = cpp_status.state;
-  c_status->description = strdup(cpp_status.description.c_str());
-  c_status->last_update = cpp_status.last_update;
-  c_status->up = cpp_status.up;
+
+  librbd::mirror_image_site_status_t local_status;
+  int r = get_local_mirror_image_site_status(cpp_status, &local_status);
+  if (r < 0) {
+    return r;
+  }
+
+  c_status->state = local_status.state;
+  c_status->description = strdup(local_status.description.c_str());
+  c_status->last_update = local_status.last_update;
+  c_status->up = local_status.up;
+  return 0;
+}
+
+#pragma GCC diagnostic pop
+
+void mirror_image_global_status_cpp_to_c(
+    const librbd::mirror_image_global_status_t &cpp_status,
+    rbd_mirror_image_global_status_t *c_status) {
+  c_status->name = strdup(cpp_status.name.c_str());
+  mirror_image_info_cpp_to_c(cpp_status.info, &c_status->info);
+
+  c_status->site_statuses_count = cpp_status.site_statuses.size();
+  c_status->site_statuses = (rbd_mirror_image_site_status_t*)calloc(
+    cpp_status.site_statuses.size(), sizeof(rbd_mirror_image_site_status_t));
+
+  auto idx = 0U;
+  for (auto it = cpp_status.site_statuses.begin();
+       it != cpp_status.site_statuses.end(); ++it) {
+    auto& s_status = c_status->site_statuses[idx++];
+    s_status.mirror_uuid = strdup(it->mirror_uuid.c_str());
+    s_status.state = it->state;
+    s_status.description = strdup(it->description.c_str());
+    s_status.last_update = it->last_update;
+    s_status.up = it->up;
+  }
 }
 
 void trash_image_info_cpp_to_c(const librbd::trash_image_info_t &cpp_info,
@@ -239,15 +319,17 @@ struct C_MirrorImageGetInfo : public Context {
   }
 };
 
-struct C_MirrorImageGetStatus : public Context {
-  rbd_mirror_image_status_t *mirror_image_status;
+struct C_MirrorImageGetGlobalStatus : public Context {
+  rbd_mirror_image_global_status_t *mirror_image_global_status;
   Context *on_finish;
 
-  librbd::mirror_image_status_t cpp_mirror_image_status;
+  librbd::mirror_image_global_status_t cpp_mirror_image_global_status;
 
-  C_MirrorImageGetStatus(rbd_mirror_image_status_t *mirror_image_status,
-                         Context *on_finish)
-    : mirror_image_status(mirror_image_status), on_finish(on_finish) {
+  C_MirrorImageGetGlobalStatus(
+      rbd_mirror_image_global_status_t *mirror_image_global_status,
+      Context *on_finish)
+    : mirror_image_global_status(mirror_image_global_status),
+      on_finish(on_finish) {
   }
 
   void finish(int r) override {
@@ -256,10 +338,58 @@ struct C_MirrorImageGetStatus : public Context {
       return;
     }
 
-    mirror_image_status_cpp_to_c(cpp_mirror_image_status, mirror_image_status);
+    mirror_image_global_status_cpp_to_c(cpp_mirror_image_global_status,
+                                        mirror_image_global_status);
     on_finish->complete(0);
   }
 };
+
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+
+struct C_MirrorImageGetStatus : public Context {
+  librbd::mirror_image_status_t *mirror_image_status_cpp = nullptr;
+  rbd_mirror_image_status_t *mirror_image_status = nullptr;
+  Context *on_finish;
+
+  librbd::mirror_image_global_status_t cpp_mirror_image_global_status;
+
+  C_MirrorImageGetStatus(rbd_mirror_image_status_t *mirror_image_status,
+                         Context *on_finish)
+    : mirror_image_status(mirror_image_status), on_finish(on_finish) {
+  }
+  C_MirrorImageGetStatus(librbd::mirror_image_status_t *mirror_image_status,
+                         Context *on_finish)
+    : mirror_image_status_cpp(mirror_image_status), on_finish(on_finish) {
+  }
+
+
+  void finish(int r) override {
+    if (r < 0) {
+      on_finish->complete(r);
+      return;
+    }
+
+    if (mirror_image_status != nullptr) {
+      r = mirror_image_global_status_cpp_to_c(cpp_mirror_image_global_status,
+                                              mirror_image_status);
+    } else if (mirror_image_status_cpp != nullptr) {
+      librbd::mirror_image_site_status_t local_status;
+      r = get_local_mirror_image_site_status(cpp_mirror_image_global_status,
+                                             &local_status);
+      if (r >= 0) {
+        *mirror_image_status_cpp = {
+          cpp_mirror_image_global_status.name,
+          cpp_mirror_image_global_status.info,
+          local_status.state, local_status.description,
+          local_status.last_update, local_status.up};
+      }
+    }
+    on_finish->complete(r);
+  }
+};
+
+#pragma GCC diagnostic pop
 
 } // anonymous namespace
 
@@ -493,6 +623,28 @@ namespace librbd {
     return 0;
   }
 
+  int RBD::features_to_string(uint64_t features, std::string *str_features)
+  {
+    std::stringstream err;
+    *str_features = librbd::rbd_features_to_string(features, &err);
+    if (!err.str().empty()) {
+      return -EINVAL;
+    }
+
+    return 0;
+  }
+
+  int RBD::features_from_string(const std::string str_features, uint64_t *features)
+  {
+    std::stringstream err;
+    *features = librbd::rbd_features_from_string(str_features, &err);
+    if (!err.str().empty()) {
+      return -EINVAL;
+    }
+
+    return 0;
+  }
+
   int RBD::create(IoCtx& io_ctx, const char *name, uint64_t size, int *order)
   {
     TracepointProvider::initialize<tracepoint_traits>(get_cct(io_ctx));
@@ -719,11 +871,13 @@ namespace librbd {
                io_ctx.get_id());
 
     int r = librbd::api::Image<>::list_images(io_ctx, images);
+#ifdef WITH_LTTNG
     if (r >= 0) {
       for (auto& it : *images) {
         tracepoint(librbd, list_entry, it.name.c_str());
       }
     }
+#endif
     tracepoint(librbd, list_exit, r, r);
     return r;
   }
@@ -840,6 +994,14 @@ namespace librbd {
     return librbd::api::Mirror<>::mode_get(io_ctx, mirror_mode);
   }
 
+  int RBD::mirror_mode_set(IoCtx& io_ctx, rbd_mirror_mode_t mirror_mode) {
+    return librbd::api::Mirror<>::mode_set(io_ctx, mirror_mode);
+  }
+
+  int RBD::mirror_uuid_get(IoCtx& io_ctx, std::string* mirror_uuid) {
+    return librbd::api::Mirror<>::uuid_get(io_ctx, mirror_uuid);
+  }
+
   int RBD::mirror_site_name_get(librados::Rados& rados,
                                 std::string* site_name) {
     return librbd::api::Mirror<>::site_name_get(rados, site_name);
@@ -848,10 +1010,6 @@ namespace librbd {
   int RBD::mirror_site_name_set(librados::Rados& rados,
                                 const std::string& site_name) {
     return librbd::api::Mirror<>::site_name_set(rados, site_name);
-  }
-
-  int RBD::mirror_mode_set(IoCtx& io_ctx, rbd_mirror_mode_t mirror_mode) {
-    return librbd::api::Mirror<>::mode_set(io_ctx, mirror_mode);
   }
 
   int RBD::mirror_peer_bootstrap_create(IoCtx& io_ctx, std::string* token) {
@@ -865,48 +1023,147 @@ namespace librbd {
                                                         token);
   }
 
+  int RBD::mirror_peer_site_add(IoCtx& io_ctx, std::string *uuid,
+                                mirror_peer_direction_t direction,
+                                const std::string &site_name,
+                                const std::string &client_name) {
+    return librbd::api::Mirror<>::peer_site_add(
+      io_ctx, uuid, direction, site_name, client_name);
+  }
+
+  int RBD::mirror_peer_site_remove(IoCtx& io_ctx, const std::string &uuid) {
+    return librbd::api::Mirror<>::peer_site_remove(io_ctx, uuid);
+  }
+
+  int RBD::mirror_peer_site_list(
+      IoCtx& io_ctx, std::vector<mirror_peer_site_t> *peer_sites) {
+    return librbd::api::Mirror<>::peer_site_list(io_ctx, peer_sites);
+  }
+
+  int RBD::mirror_peer_site_set_client_name(
+      IoCtx& io_ctx, const std::string &uuid, const std::string &client_name) {
+    return librbd::api::Mirror<>::peer_site_set_client(io_ctx, uuid,
+                                                       client_name);
+  }
+
+  int RBD::mirror_peer_site_set_name(IoCtx& io_ctx, const std::string &uuid,
+                                     const std::string &site_name) {
+    return librbd::api::Mirror<>::peer_site_set_name(io_ctx, uuid,
+                                                     site_name);
+  }
+
+  int RBD::mirror_peer_site_set_direction(IoCtx& io_ctx,
+                                          const std::string& uuid,
+                                          mirror_peer_direction_t direction) {
+    return librbd::api::Mirror<>::peer_site_set_direction(io_ctx, uuid,
+                                                          direction);
+  }
+
+  int RBD::mirror_peer_site_get_attributes(
+      IoCtx& io_ctx, const std::string &uuid,
+      std::map<std::string, std::string> *key_vals) {
+    return librbd::api::Mirror<>::peer_site_get_attributes(io_ctx, uuid,
+                                                           key_vals);
+  }
+
+  int RBD::mirror_peer_site_set_attributes(
+      IoCtx& io_ctx, const std::string &uuid,
+      const std::map<std::string, std::string>& key_vals) {
+    return librbd::api::Mirror<>::peer_site_set_attributes(io_ctx, uuid,
+                                                           key_vals);
+  }
+
+  int RBD::mirror_image_global_status_list(
+      IoCtx& io_ctx, const std::string &start_id, size_t max,
+      std::map<std::string, mirror_image_global_status_t> *global_statuses) {
+    return librbd::api::Mirror<>::image_global_status_list(
+      io_ctx, start_id, max, global_statuses);
+  }
+
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+
   int RBD::mirror_peer_add(IoCtx& io_ctx, std::string *uuid,
                            const std::string &cluster_name,
                            const std::string &client_name) {
-    return librbd::api::Mirror<>::peer_add(io_ctx, uuid, cluster_name,
-                                           client_name);
+    return librbd::api::Mirror<>::peer_site_add(
+      io_ctx, uuid, RBD_MIRROR_PEER_DIRECTION_RX_TX, cluster_name, client_name);
   }
 
   int RBD::mirror_peer_remove(IoCtx& io_ctx, const std::string &uuid) {
-    return librbd::api::Mirror<>::peer_remove(io_ctx, uuid);
+    return librbd::api::Mirror<>::peer_site_remove(io_ctx, uuid);
   }
 
   int RBD::mirror_peer_list(IoCtx& io_ctx, std::vector<mirror_peer_t> *peers) {
-    return librbd::api::Mirror<>::peer_list(io_ctx, peers);
+    std::vector<mirror_peer_site_t> peer_sites;
+    int r = librbd::api::Mirror<>::peer_site_list(io_ctx, &peer_sites);
+    if (r < 0) {
+      return r;
+    }
+
+    peers->clear();
+    peers->reserve(peer_sites.size());
+    for (auto& peer_site : peer_sites) {
+      peers->push_back({peer_site.uuid, peer_site.site_name,
+                        peer_site.client_name});
+    }
+    return 0;
   }
 
   int RBD::mirror_peer_set_client(IoCtx& io_ctx, const std::string &uuid,
                                   const std::string &client_name) {
-    return librbd::api::Mirror<>::peer_set_client(io_ctx, uuid, client_name);
+    return librbd::api::Mirror<>::peer_site_set_client(io_ctx, uuid,
+                                                       client_name);
   }
 
   int RBD::mirror_peer_set_cluster(IoCtx& io_ctx, const std::string &uuid,
                                    const std::string &cluster_name) {
-    return librbd::api::Mirror<>::peer_set_cluster(io_ctx, uuid, cluster_name);
+    return librbd::api::Mirror<>::peer_site_set_name(io_ctx, uuid,
+                                                     cluster_name);
   }
 
   int RBD::mirror_peer_get_attributes(
       IoCtx& io_ctx, const std::string &uuid,
       std::map<std::string, std::string> *key_vals) {
-    return librbd::api::Mirror<>::peer_get_attributes(io_ctx, uuid, key_vals);
+    return librbd::api::Mirror<>::peer_site_get_attributes(io_ctx, uuid,
+                                                           key_vals);
   }
 
   int RBD::mirror_peer_set_attributes(
       IoCtx& io_ctx, const std::string &uuid,
       const std::map<std::string, std::string>& key_vals) {
-    return librbd::api::Mirror<>::peer_set_attributes(io_ctx, uuid, key_vals);
+    return librbd::api::Mirror<>::peer_site_set_attributes(io_ctx, uuid,
+                                                           key_vals);
   }
 
   int RBD::mirror_image_status_list(IoCtx& io_ctx, const std::string &start_id,
       size_t max, std::map<std::string, mirror_image_status_t> *images) {
-    return librbd::api::Mirror<>::image_status_list(io_ctx, start_id, max,
-                                                    images);
+    std::map<std::string, mirror_image_global_status_t> global_statuses;
+
+    int r = librbd::api::Mirror<>::image_global_status_list(
+      io_ctx, start_id, max, &global_statuses);
+    if (r < 0) {
+      return r;
+    }
+
+    images->clear();
+    for (auto &[id, global_status] : global_statuses) {
+      if (global_status.site_statuses.empty() ||
+          global_status.site_statuses[0].mirror_uuid !=
+            cls::rbd::MirrorImageSiteStatus::LOCAL_MIRROR_UUID) {
+        continue;
+      }
+
+      auto& site_status = global_status.site_statuses[0];
+      (*images)[id] = mirror_image_status_t{
+        global_status.name, global_status.info, site_status.state,
+        site_status.description, site_status.last_update, site_status.up};
+    }
+
+    return 0;
   }
+
+#pragma GCC diagnostic pop
 
   int RBD::mirror_image_status_summary(IoCtx& io_ctx,
       std::map<mirror_image_status_state_t, int> *states) {
@@ -918,6 +1175,15 @@ namespace librbd {
       std::map<std::string, std::string> *instance_ids) {
     return librbd::api::Mirror<>::image_instance_id_list(io_ctx, start_id, max,
                                                          instance_ids);
+  }
+
+  int RBD::mirror_image_info_list(
+      IoCtx& io_ctx, mirror_image_mode_t *mode_filter,
+      const std::string &start_id, size_t max,
+      std::map<std::string, std::pair<mirror_image_mode_t,
+                                      mirror_image_info_t>> *entries) {
+    return librbd::api::Mirror<>::image_info_list(io_ctx, mode_filter, start_id,
+                                                  max, entries);
   }
 
   int RBD::group_create(IoCtx& io_ctx, const char *group_name)
@@ -1148,8 +1414,10 @@ namespace librbd {
 
   RBD::AioCompletion::AioCompletion(void *cb_arg, callback_t complete_cb)
   {
-    pc = reinterpret_cast<void*>(librbd::io::AioCompletion::create(
-      cb_arg, complete_cb, this));
+    auto aio_comp = librbd::io::AioCompletion::create(
+      cb_arg, complete_cb, this);
+    aio_comp->external_callback = true;
+    pc = reinterpret_cast<void*>(aio_comp);
   }
 
   bool RBD::AioCompletion::is_complete()
@@ -1421,7 +1689,7 @@ namespace librbd {
     tracepoint(librbd, get_access_timestamp_enter, ictx, ictx->name.c_str(),
                ictx->read_only);
     {
-      RWLock::RLocker timestamp_locker(ictx->timestamp_lock);
+      std::shared_lock timestamp_locker{ictx->timestamp_lock};
       utime_t time = ictx->get_access_timestamp();
       time.to_timespec(timestamp);
     }
@@ -1435,7 +1703,7 @@ namespace librbd {
     tracepoint(librbd, get_modify_timestamp_enter, ictx, ictx->name.c_str(),
                ictx->read_only);
     {
-      RWLock::RLocker timestamp_locker(ictx->timestamp_lock);
+      std::shared_lock timestamp_locker{ictx->timestamp_lock};
       utime_t time = ictx->get_modify_timestamp();
       time.to_timespec(timestamp);
     }
@@ -1817,13 +2085,14 @@ namespace librbd {
                ictx->snap_name.c_str(), ictx->read_only);
 
     int r = librbd::api::Image<>::list_children(ictx, images);
+#ifdef WITH_LTTNG
     if (r >= 0) {
       for (auto& it : *images) {
         tracepoint(librbd, list_children_entry, it.pool_name.c_str(),
                    it.image_name.c_str());
       }
     }
-
+#endif
     tracepoint(librbd, list_children_exit, r);
     return r;
   }
@@ -1904,7 +2173,7 @@ namespace librbd {
     ImageCtx *ictx = (ImageCtx *)ctx;
     tracepoint(librbd, snap_remove_enter, ictx, ictx->name.c_str(), ictx->snap_name.c_str(), ictx->read_only, snap_name);
     librbd::NoOpProgressContext prog_ctx;
-    int r = librbd::snap_remove(ictx, snap_name, 0, prog_ctx);
+    int r = librbd::api::Snapshot<>::remove(ictx, snap_name, 0, prog_ctx);
     tracepoint(librbd, snap_remove_exit, r);
     return r;
   }
@@ -1913,7 +2182,7 @@ namespace librbd {
   {
     ImageCtx *ictx = (ImageCtx *)ctx;
     tracepoint(librbd, snap_remove2_enter, ictx, ictx->name.c_str(), ictx->snap_name.c_str(), ictx->read_only, snap_name, flags);
-    int r = librbd::snap_remove(ictx, snap_name, flags, pctx);
+    int r = librbd::api::Snapshot<>::remove(ictx, snap_name, flags, pctx);
     tracepoint(librbd, snap_remove_exit, r);
     return r;
   }
@@ -1975,7 +2244,7 @@ namespace librbd {
   {
     ImageCtx *ictx = (ImageCtx *)ctx;
     tracepoint(librbd, snap_is_protected_enter, ictx, ictx->name.c_str(), ictx->snap_name.c_str(), ictx->read_only, snap_name);
-    int r = librbd::snap_is_protected(ictx, snap_name, is_protected);
+    int r = librbd::api::Snapshot<>::is_protected(ictx, snap_name, is_protected);
     tracepoint(librbd, snap_is_protected_exit, r, *is_protected ? 1 : 0);
     return r;
   }
@@ -1984,7 +2253,7 @@ namespace librbd {
   {
     ImageCtx *ictx = (ImageCtx *)ctx;
     tracepoint(librbd, snap_list_enter, ictx, ictx->name.c_str(), ictx->snap_name.c_str(), ictx->read_only, &snaps);
-    int r = librbd::snap_list(ictx, snaps);
+    int r = librbd::api::Snapshot<>::list(ictx, snaps);
     if (r >= 0) {
       for (int i = 0, n = snaps.size(); i < n; i++) {
 	tracepoint(librbd, snap_list_entry, snaps[i].id, snaps[i].size, snaps[i].name.c_str());
@@ -2006,7 +2275,7 @@ namespace librbd {
     tracepoint(librbd, snap_exists_enter, ictx, ictx->name.c_str(), 
       ictx->snap_name.c_str(), ictx->read_only, snap_name);
     bool exists; 
-    int r = librbd::snap_exists(ictx, cls::rbd::UserSnapshotNamespace(), snap_name, &exists);
+    int r = librbd::api::Snapshot<>::exists(ictx, cls::rbd::UserSnapshotNamespace(), snap_name, &exists);
     tracepoint(librbd, snap_exists_exit, r, exists);
     if (r < 0) {
       // lie to caller since we don't know the real answer yet.
@@ -2021,7 +2290,7 @@ namespace librbd {
     ImageCtx *ictx = (ImageCtx *)ctx;
     tracepoint(librbd, snap_exists_enter, ictx, ictx->name.c_str(), 
       ictx->snap_name.c_str(), ictx->read_only, snap_name);
-    int r = librbd::snap_exists(ictx, cls::rbd::UserSnapshotNamespace(), snap_name, exists);
+    int r = librbd::api::Snapshot<>::exists(ictx, cls::rbd::UserSnapshotNamespace(), snap_name, exists);
     tracepoint(librbd, snap_exists_exit, r, *exists);
     return r;
   }
@@ -2030,7 +2299,7 @@ namespace librbd {
   {
     ImageCtx *ictx = (ImageCtx *)ctx;
     tracepoint(librbd, snap_get_timestamp_enter, ictx, ictx->name.c_str());
-    int r = librbd::snap_get_timestamp(ictx, snap_id, timestamp);
+    int r = librbd::api::Snapshot<>::get_timestamp(ictx, snap_id, timestamp);
     tracepoint(librbd, snap_get_timestamp_exit, r);
     return r;
   }
@@ -2039,7 +2308,7 @@ namespace librbd {
   {
     ImageCtx *ictx = (ImageCtx *)ctx;
     tracepoint(librbd, snap_get_limit_enter, ictx, ictx->name.c_str());
-    int r = librbd::snap_get_limit(ictx, limit);
+    int r = librbd::api::Snapshot<>::get_limit(ictx, limit);
     tracepoint(librbd, snap_get_limit_exit, r, *limit);
     return r;
   }
@@ -2078,6 +2347,20 @@ namespace librbd {
                                                         original_name);
   }
 
+  int Image::snap_get_mirror_namespace(
+      uint64_t snap_id, snap_mirror_namespace_t *mirror_snap,
+      size_t mirror_snap_size) {
+    ImageCtx *ictx = (ImageCtx *)ctx;
+
+    if (mirror_snap_size != sizeof(snap_mirror_namespace_t)) {
+      return -ERANGE;
+    }
+
+    int r = librbd::api::Snapshot<>::get_mirror_namespace(
+        ictx, snap_id, mirror_snap);
+    return r;
+  }
+
   int Image::snap_set_limit(uint64_t limit)
   {
     ImageCtx *ictx = (ImageCtx *)ctx;
@@ -2102,6 +2385,18 @@ namespace librbd {
   {
     ImageCtx *ictx = (ImageCtx *)ctx;
     return librbd::api::Image<>::snap_set(ictx, snap_id);
+  }
+
+  int Image::snap_get_name(uint64_t snap_id, std::string *snap_name)
+  {
+    ImageCtx *ictx = (ImageCtx *)ctx;
+    return librbd::api::Snapshot<>::get_name(ictx, snap_id, snap_name);
+  }
+
+  int Image::snap_get_id(const std::string snap_name, uint64_t *snap_id)
+  {
+    ImageCtx *ictx = (ImageCtx *)ctx;
+    return librbd::api::Snapshot<>::get_id(ictx, snap_name, snap_id);
   }
 
   ssize_t Image::read(uint64_t ofs, size_t len, bufferlist& bl)
@@ -2222,7 +2517,7 @@ namespace librbd {
   {
     ImageCtx *ictx = (ImageCtx *)ctx;
     tracepoint(librbd, discard_enter, ictx, ictx->name.c_str(), ictx->snap_name.c_str(), ictx->read_only, ofs, len);
-    if (len > std::numeric_limits<int32_t>::max()) {
+    if (len > static_cast<uint64_t>(std::numeric_limits<int32_t>::max())) {
         tracepoint(librbd, discard_exit, -EINVAL);
         return -EINVAL;
     }
@@ -2239,7 +2534,7 @@ namespace librbd {
                ictx->read_only, ofs, len, bl.length() <= 0 ? NULL : bl.c_str(), bl.length(),
                op_flags);
     if (bl.length() <= 0 || len % bl.length() ||
-        len > std::numeric_limits<int>::max()) {
+        len > static_cast<size_t>(std::numeric_limits<int>::max())) {
       tracepoint(librbd, writesame_exit, -EINVAL);
       return -EINVAL;
     }
@@ -2490,8 +2785,12 @@ namespace librbd {
   }
 
   int Image::mirror_image_enable() {
+    return mirror_image_enable2(RBD_MIRROR_IMAGE_MODE_JOURNAL);
+  }
+
+  int Image::mirror_image_enable2(mirror_image_mode_t mode) {
     ImageCtx *ictx = (ImageCtx *)ctx;
-    return librbd::api::Mirror<>::image_enable(ictx, false);
+    return librbd::api::Mirror<>::image_enable(ictx, mode, false);
   }
 
   int Image::mirror_image_disable(bool force) {
@@ -2515,6 +2814,12 @@ namespace librbd {
     return librbd::api::Mirror<>::image_resync(ictx);
   }
 
+  int Image::mirror_image_create_snapshot(uint64_t *snap_id)
+  {
+    ImageCtx *ictx = (ImageCtx *)ctx;
+    return librbd::api::Mirror<>::image_snapshot_create(ictx, snap_id);
+  }
+
   int Image::mirror_image_get_info(mirror_image_info_t *mirror_image_info,
                                    size_t info_size) {
     ImageCtx *ictx = (ImageCtx *)ctx;
@@ -2526,6 +2831,28 @@ namespace librbd {
     return librbd::api::Mirror<>::image_get_info(ictx, mirror_image_info);
   }
 
+  int Image::mirror_image_get_mode(mirror_image_mode_t *mode) {
+    ImageCtx *ictx = (ImageCtx *)ctx;
+
+    return librbd::api::Mirror<>::image_get_mode(ictx, mode);
+  }
+
+  int Image::mirror_image_get_global_status(
+      mirror_image_global_status_t *mirror_image_global_status,
+      size_t status_size) {
+    ImageCtx *ictx = (ImageCtx *)ctx;
+
+    if (sizeof(mirror_image_global_status_t) != status_size) {
+      return -ERANGE;
+    }
+
+    return librbd::api::Mirror<>::image_get_global_status(
+      ictx, mirror_image_global_status);
+  }
+
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+
   int Image::mirror_image_get_status(mirror_image_status_t *mirror_image_status,
 				     size_t status_size) {
     ImageCtx *ictx = (ImageCtx *)ctx;
@@ -2534,8 +2861,28 @@ namespace librbd {
       return -ERANGE;
     }
 
-    return librbd::api::Mirror<>::image_get_status(ictx, mirror_image_status);
+    mirror_image_global_status_t mirror_image_global_status;
+    int r = librbd::api::Mirror<>::image_get_global_status(
+      ictx, &mirror_image_global_status);
+    if (r < 0) {
+      return r;
+    }
+
+    librbd::mirror_image_site_status_t local_status;
+    r = get_local_mirror_image_site_status(mirror_image_global_status,
+                                           &local_status);
+    if (r < 0) {
+      return r;
+    }
+
+    *mirror_image_status = mirror_image_status_t{
+      mirror_image_global_status.name, mirror_image_global_status.info,
+      local_status.state, local_status.description, local_status.last_update,
+      local_status.up};
+    return 0;
   }
+
+#pragma GCC diagnostic pop
 
   int Image::mirror_image_get_instance_id(std::string *instance_id) {
     ImageCtx *ictx = (ImageCtx *)ctx;
@@ -2575,6 +2922,34 @@ namespace librbd {
     return 0;
   }
 
+  int Image::aio_mirror_image_get_mode(mirror_image_mode_t *mode,
+                                       RBD::AioCompletion *c) {
+    ImageCtx *ictx = (ImageCtx *)ctx;
+
+    librbd::api::Mirror<>::image_get_mode(
+      ictx, mode, new C_AioCompletion(ictx, librbd::io::AIO_TYPE_GENERIC,
+                                      get_aio_completion(c)));
+    return 0;
+  }
+
+  int Image::aio_mirror_image_get_global_status(
+      mirror_image_global_status_t *status, size_t status_size,
+      RBD::AioCompletion *c) {
+    ImageCtx *ictx = (ImageCtx *)ctx;
+
+    if (sizeof(mirror_image_global_status_t) != status_size) {
+      return -ERANGE;
+    }
+
+    librbd::api::Mirror<>::image_get_global_status(
+      ictx, status, new C_AioCompletion(ictx, librbd::io::AIO_TYPE_GENERIC,
+                                        get_aio_completion(c)));
+    return 0;
+  }
+
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+
   int Image::aio_mirror_image_get_status(mirror_image_status_t *status,
                                          size_t status_size,
                                          RBD::AioCompletion *c) {
@@ -2584,11 +2959,15 @@ namespace librbd {
       return -ERANGE;
     }
 
-    librbd::api::Mirror<>::image_get_status(
-      ictx, status, new C_AioCompletion(ictx, librbd::io::AIO_TYPE_GENERIC,
-                                        get_aio_completion(c)));
+    auto ctx = new C_MirrorImageGetStatus(
+      status, new C_AioCompletion(ictx, librbd::io::AIO_TYPE_GENERIC,
+                                  get_aio_completion(c)));
+    librbd::api::Mirror<>::image_get_global_status(
+      ictx, &ctx->cpp_mirror_image_global_status, ctx);
     return 0;
   }
+
+#pragma GCC diagnostic pop
 
   int Image::update_watch(UpdateWatchCtx *wctx, uint64_t *handle) {
     ImageCtx *ictx = (ImageCtx *)ctx;
@@ -2610,11 +2989,13 @@ namespace librbd {
     ImageCtx *ictx = (ImageCtx *)ctx;
     tracepoint(librbd, list_watchers_enter, ictx, ictx->name.c_str(), ictx->snap_name.c_str(), ictx->read_only);
     int r = librbd::list_watchers(ictx, watchers);
+#ifdef WITH_LTTNG
     if (r >= 0) {
       for (auto &watcher : watchers) {
 	tracepoint(librbd, list_watchers_entry, watcher.addr.c_str(), watcher.id, watcher.cookie);
       }
     }
+#endif
     tracepoint(librbd, list_watchers_exit, r, watchers.size());
     return r;
   }
@@ -2748,6 +3129,28 @@ extern "C" int rbd_mirror_mode_set(rados_ioctx_t p,
   return librbd::api::Mirror<>::mode_set(io_ctx, mirror_mode);
 }
 
+extern "C" int rbd_mirror_uuid_get(rados_ioctx_t p,
+                                   char *mirror_uuid, size_t *max_len) {
+  librados::IoCtx io_ctx;
+  librados::IoCtx::from_rados_ioctx_t(p, io_ctx);
+
+  std::string mirror_uuid_str;
+  int r = librbd::api::Mirror<>::uuid_get(io_ctx, &mirror_uuid_str);
+  if (r < 0) {
+    return r;
+  }
+
+  auto total_len = mirror_uuid_str.size() + 1;
+  if (*max_len < total_len) {
+    *max_len = total_len;
+    return -ERANGE;
+  }
+  *max_len = total_len;
+
+  strcpy(mirror_uuid, mirror_uuid_str.c_str());
+  return 0;
+}
+
 extern "C" int rbd_mirror_peer_bootstrap_create(rados_ioctx_t p, char *token,
                                                 size_t *max_len) {
   librados::IoCtx io_ctx;
@@ -2779,10 +3182,11 @@ extern "C" int rbd_mirror_peer_bootstrap_import(
   return librbd::api::Mirror<>::peer_bootstrap_import(io_ctx, direction, token);
 }
 
-extern "C" int rbd_mirror_peer_add(rados_ioctx_t p, char *uuid,
-                                   size_t uuid_max_length,
-                                   const char *cluster_name,
-                                   const char *client_name) {
+extern "C" int rbd_mirror_peer_site_add(rados_ioctx_t p, char *uuid,
+                                        size_t uuid_max_length,
+                                        rbd_mirror_peer_direction_t direction,
+                                        const char *site_name,
+                                        const char *client_name) {
   static const std::size_t UUID_LENGTH = 36;
 
   librados::IoCtx io_ctx;
@@ -2793,8 +3197,8 @@ extern "C" int rbd_mirror_peer_add(rados_ioctx_t p, char *uuid,
   }
 
   std::string uuid_str;
-  int r = librbd::api::Mirror<>::peer_add(io_ctx, &uuid_str, cluster_name,
-                                          client_name);
+  int r = librbd::api::Mirror<>::peer_site_add(io_ctx, &uuid_str, direction,
+                                               site_name, client_name);
   if (r >= 0) {
     strncpy(uuid, uuid_str.c_str(), uuid_max_length);
     uuid[uuid_max_length - 1] = '\0';
@@ -2802,20 +3206,20 @@ extern "C" int rbd_mirror_peer_add(rados_ioctx_t p, char *uuid,
   return r;
 }
 
-extern "C" int rbd_mirror_peer_remove(rados_ioctx_t p, const char *uuid) {
+extern "C" int rbd_mirror_peer_site_remove(rados_ioctx_t p, const char *uuid) {
   librados::IoCtx io_ctx;
   librados::IoCtx::from_rados_ioctx_t(p, io_ctx);
-  int r = librbd::api::Mirror<>::peer_remove(io_ctx, uuid);
+  int r = librbd::api::Mirror<>::peer_site_remove(io_ctx, uuid);
   return r;
 }
 
-extern "C" int rbd_mirror_peer_list(rados_ioctx_t p,
-                                    rbd_mirror_peer_t *peers, int *max_peers) {
+extern "C" int rbd_mirror_peer_site_list(
+    rados_ioctx_t p, rbd_mirror_peer_site_t *peers, int *max_peers) {
   librados::IoCtx io_ctx;
   librados::IoCtx::from_rados_ioctx_t(p, io_ctx);
 
-  std::vector<librbd::mirror_peer_t> peer_vector;
-  int r = librbd::api::Mirror<>::peer_list(io_ctx, &peer_vector);
+  std::vector<librbd::mirror_peer_site_t> peer_vector;
+  int r = librbd::api::Mirror<>::peer_site_list(io_ctx, &peer_vector);
   if (r < 0) {
     return r;
   }
@@ -2827,44 +3231,56 @@ extern "C" int rbd_mirror_peer_list(rados_ioctx_t p,
 
   for (int i = 0; i < static_cast<int>(peer_vector.size()); ++i) {
     peers[i].uuid = strdup(peer_vector[i].uuid.c_str());
-    peers[i].cluster_name = strdup(peer_vector[i].cluster_name.c_str());
+    peers[i].direction = peer_vector[i].direction;
+    peers[i].site_name = strdup(peer_vector[i].site_name.c_str());
+    peers[i].mirror_uuid = strdup(peer_vector[i].mirror_uuid.c_str());
     peers[i].client_name = strdup(peer_vector[i].client_name.c_str());
   }
   *max_peers = static_cast<int>(peer_vector.size());
   return 0;
 }
 
-extern "C" void rbd_mirror_peer_list_cleanup(rbd_mirror_peer_t *peers,
-                                             int max_peers) {
+extern "C" void rbd_mirror_peer_site_list_cleanup(rbd_mirror_peer_site_t *peers,
+                                                  int max_peers) {
   for (int i = 0; i < max_peers; ++i) {
     free(peers[i].uuid);
-    free(peers[i].cluster_name);
+    free(peers[i].site_name);
+    free(peers[i].mirror_uuid);
     free(peers[i].client_name);
   }
 }
 
-extern "C" int rbd_mirror_peer_set_client(rados_ioctx_t p, const char *uuid,
-                                          const char *client_name) {
+extern "C" int rbd_mirror_peer_site_set_client_name(
+    rados_ioctx_t p, const char *uuid, const char *client_name) {
   librados::IoCtx io_ctx;
   librados::IoCtx::from_rados_ioctx_t(p, io_ctx);
-  return librbd::api::Mirror<>::peer_set_client(io_ctx, uuid, client_name);
+  return librbd::api::Mirror<>::peer_site_set_client(io_ctx, uuid, client_name);
 }
 
-extern "C" int rbd_mirror_peer_set_cluster(rados_ioctx_t p, const char *uuid,
-                                           const char *cluster_name) {
+extern "C" int rbd_mirror_peer_site_set_name(
+    rados_ioctx_t p, const char *uuid, const char *site_name) {
   librados::IoCtx io_ctx;
   librados::IoCtx::from_rados_ioctx_t(p, io_ctx);
-  return librbd::api::Mirror<>::peer_set_cluster(io_ctx, uuid, cluster_name);
+  return librbd::api::Mirror<>::peer_site_set_name(io_ctx, uuid, site_name);
 }
 
-extern "C" int rbd_mirror_peer_get_attributes(
+extern "C" int rbd_mirror_peer_site_set_direction(
+    rados_ioctx_t p, const char *uuid, rbd_mirror_peer_direction_t direction) {
+  librados::IoCtx io_ctx;
+  librados::IoCtx::from_rados_ioctx_t(p, io_ctx);
+  return librbd::api::Mirror<>::peer_site_set_direction(io_ctx, uuid,
+                                                        direction);
+}
+
+extern "C" int rbd_mirror_peer_site_get_attributes(
     rados_ioctx_t p, const char *uuid, char *keys, size_t *max_key_len,
     char *values, size_t *max_val_len, size_t *key_value_count) {
   librados::IoCtx io_ctx;
   librados::IoCtx::from_rados_ioctx_t(p, io_ctx);
 
   std::map<std::string, std::string> attributes;
-  int r = librbd::api::Mirror<>::peer_get_attributes(io_ctx, uuid, &attributes);
+  int r = librbd::api::Mirror<>::peer_site_get_attributes(
+    io_ctx, uuid, &attributes);
   if (r < 0) {
     return r;
   }
@@ -2898,7 +3314,7 @@ extern "C" int rbd_mirror_peer_get_attributes(
   return 0;
 }
 
-extern "C" int rbd_mirror_peer_set_attributes(
+extern "C" int rbd_mirror_peer_site_set_attributes(
     rados_ioctx_t p, const char *uuid, const char *keys, const char *values,
     size_t count) {
   librados::IoCtx io_ctx;
@@ -2914,18 +3330,19 @@ extern "C" int rbd_mirror_peer_set_attributes(
     attributes[key] = value;
   }
 
-  return librbd::api::Mirror<>::peer_set_attributes(io_ctx, uuid, attributes);
+  return librbd::api::Mirror<>::peer_site_set_attributes(
+    io_ctx, uuid, attributes);
 }
 
-extern "C" int rbd_mirror_image_status_list(rados_ioctx_t p,
+extern "C" int rbd_mirror_image_global_status_list(rados_ioctx_t p,
     const char *start_id, size_t max, char **image_ids,
-    rbd_mirror_image_status_t *images, size_t *len) {
+    rbd_mirror_image_global_status_t *images, size_t *len) {
   librados::IoCtx io_ctx;
   librados::IoCtx::from_rados_ioctx_t(p, io_ctx);
-  std::map<std::string, librbd::mirror_image_status_t> cpp_images;
+  std::map<std::string, librbd::mirror_image_global_status_t> cpp_images;
 
-  int r = librbd::api::Mirror<>::image_status_list(io_ctx, start_id, max,
-                                                   &cpp_images);
+  int r = librbd::api::Mirror<>::image_global_status_list(
+    io_ctx, start_id, max, &cpp_images);
   if (r < 0) {
     return r;
   }
@@ -2935,7 +3352,125 @@ extern "C" int rbd_mirror_image_status_list(rados_ioctx_t p,
     ceph_assert(i < max);
     const std::string &image_id = it.first;
     image_ids[i] = strdup(image_id.c_str());
-    mirror_image_status_cpp_to_c(it.second, &images[i]);
+    mirror_image_global_status_cpp_to_c(it.second, &images[i]);
+    i++;
+  }
+  *len = i;
+  return 0;
+}
+
+extern "C" void rbd_mirror_image_global_status_cleanup(
+    rbd_mirror_image_global_status_t *global_status) {
+  free(global_status->name);
+  rbd_mirror_image_get_info_cleanup(&global_status->info);
+  for (auto idx = 0U; idx < global_status->site_statuses_count; ++idx) {
+    free(global_status->site_statuses[idx].mirror_uuid);
+    free(global_status->site_statuses[idx].description);
+  }
+  free(global_status->site_statuses);
+}
+
+extern "C" void rbd_mirror_image_global_status_list_cleanup(
+    char **image_ids, rbd_mirror_image_global_status_t *images, size_t len) {
+  for (size_t i = 0; i < len; i++) {
+    free(image_ids[i]);
+    rbd_mirror_image_global_status_cleanup(&images[i]);
+  }
+}
+
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+
+extern "C" int rbd_mirror_peer_add(rados_ioctx_t p, char *uuid,
+                                   size_t uuid_max_length,
+                                   const char *cluster_name,
+                                   const char *client_name) {
+  return rbd_mirror_peer_site_add(
+    p, uuid, uuid_max_length, RBD_MIRROR_PEER_DIRECTION_RX_TX, cluster_name,
+    client_name);
+}
+
+extern "C" int rbd_mirror_peer_remove(rados_ioctx_t p, const char *uuid) {
+  return rbd_mirror_peer_site_remove(p, uuid);
+}
+
+extern "C" int rbd_mirror_peer_list(rados_ioctx_t p,
+                                    rbd_mirror_peer_t *peers, int *max_peers) {
+  librados::IoCtx io_ctx;
+  librados::IoCtx::from_rados_ioctx_t(p, io_ctx);
+
+  std::vector<librbd::mirror_peer_site_t> peer_vector;
+  int r = librbd::api::Mirror<>::peer_site_list(io_ctx, &peer_vector);
+  if (r < 0) {
+    return r;
+  }
+
+  if (*max_peers < static_cast<int>(peer_vector.size())) {
+    *max_peers = static_cast<int>(peer_vector.size());
+    return -ERANGE;
+  }
+
+  for (int i = 0; i < static_cast<int>(peer_vector.size()); ++i) {
+    peers[i].uuid = strdup(peer_vector[i].uuid.c_str());
+    peers[i].cluster_name = strdup(peer_vector[i].site_name.c_str());
+    peers[i].client_name = strdup(peer_vector[i].client_name.c_str());
+  }
+  *max_peers = static_cast<int>(peer_vector.size());
+  return 0;
+}
+
+extern "C" void rbd_mirror_peer_list_cleanup(rbd_mirror_peer_t *peers,
+                                             int max_peers) {
+  for (int i = 0; i < max_peers; ++i) {
+    free(peers[i].uuid);
+    free(peers[i].cluster_name);
+    free(peers[i].client_name);
+  }
+}
+
+extern "C" int rbd_mirror_peer_set_client(rados_ioctx_t p, const char *uuid,
+                                          const char *client_name) {
+  return rbd_mirror_peer_site_set_client_name(p, uuid, client_name);
+}
+
+extern "C" int rbd_mirror_peer_set_cluster(rados_ioctx_t p, const char *uuid,
+                                           const char *cluster_name) {
+  return rbd_mirror_peer_site_set_name(p, uuid, cluster_name);
+}
+
+extern "C" int rbd_mirror_peer_get_attributes(
+    rados_ioctx_t p, const char *uuid, char *keys, size_t *max_key_len,
+    char *values, size_t *max_val_len, size_t *key_value_count) {
+  return rbd_mirror_peer_site_get_attributes(
+    p, uuid, keys, max_key_len, values, max_val_len, key_value_count);
+}
+
+extern "C" int rbd_mirror_peer_set_attributes(
+    rados_ioctx_t p, const char *uuid, const char *keys, const char *values,
+    size_t count) {
+  return rbd_mirror_peer_site_set_attributes(
+    p, uuid, keys, values, count);
+}
+
+extern "C" int rbd_mirror_image_status_list(rados_ioctx_t p,
+    const char *start_id, size_t max, char **image_ids,
+    rbd_mirror_image_status_t *images, size_t *len) {
+  librados::IoCtx io_ctx;
+  librados::IoCtx::from_rados_ioctx_t(p, io_ctx);
+  std::map<std::string, librbd::mirror_image_global_status_t> cpp_images;
+
+  int r = librbd::api::Mirror<>::image_global_status_list(
+    io_ctx, start_id, max, &cpp_images);
+  if (r < 0) {
+    return r;
+  }
+
+  size_t i = 0;
+  for (auto &it : cpp_images) {
+    ceph_assert(i < max);
+    const std::string &image_id = it.first;
+    image_ids[i] = strdup(image_id.c_str());
+    mirror_image_global_status_cpp_to_c(it.second, &images[i]);
     i++;
   }
   *len = i;
@@ -2947,10 +3482,12 @@ extern "C" void rbd_mirror_image_status_list_cleanup(char **image_ids,
   for (size_t i = 0; i < len; i++) {
     free(image_ids[i]);
     free(images[i].name);
-    free(images[i].info.global_id);
+    rbd_mirror_image_get_info_cleanup(&images[i].info);
     free(images[i].description);
   }
 }
+
+#pragma GCC diagnostic pop
 
 extern "C" int rbd_mirror_image_status_summary(rados_ioctx_t p,
     rbd_mirror_image_status_state_t *states, int *counts, size_t *maxlen) {
@@ -3006,6 +3543,43 @@ extern "C" void rbd_mirror_image_instance_id_list_cleanup(
   for (size_t i = 0; i < len; i++) {
     free(image_ids[i]);
     free(instance_ids[i]);
+  }
+}
+
+extern "C" int rbd_mirror_image_info_list(
+    rados_ioctx_t p, rbd_mirror_image_mode_t *mode_filter,
+    const char *start_id, size_t max, char **image_ids,
+    rbd_mirror_image_mode_t *mode_entries,
+    rbd_mirror_image_info_t *info_entries, size_t *num_entries) {
+  librados::IoCtx io_ctx;
+  librados::IoCtx::from_rados_ioctx_t(p, io_ctx);
+  std::map<std::string, std::pair<librbd::mirror_image_mode_t,
+                                  librbd::mirror_image_info_t>> cpp_entries;
+
+  int r = librbd::api::Mirror<>::image_info_list(io_ctx, mode_filter, start_id,
+                                                 max, &cpp_entries);
+  if (r < 0) {
+    return r;
+  }
+
+  ceph_assert(cpp_entries.size() <= max);
+
+  for (auto &it : cpp_entries) {
+    *(image_ids++) = strdup(it.first.c_str());
+    *(mode_entries++) = it.second.first;
+    mirror_image_info_cpp_to_c(it.second.second, info_entries++);
+  }
+  *num_entries = cpp_entries.size();
+
+  return 0;
+}
+
+extern "C" void rbd_mirror_image_info_list_cleanup(
+    char **image_ids, rbd_mirror_image_info_t *info_entries,
+    size_t num_entries) {
+  for (size_t i = 0; i < num_entries; i++) {
+    free(*(image_ids++));
+    rbd_mirror_image_get_info_cleanup(info_entries++);
   }
 }
 
@@ -4089,6 +4663,35 @@ extern "C" int rbd_aio_open_by_id_read_only(rados_ioctx_t p, const char *id,
   return 0;
 }
 
+extern "C" int rbd_features_to_string(uint64_t features, char *str_features, size_t *size)
+{
+  std::stringstream err;
+  std::string get_str_features = librbd::rbd_features_to_string(features, &err);
+  if (!err.str().empty()) {
+    return -EINVAL;
+  }
+  uint64_t expected_size = get_str_features.size();
+  if (*size <= expected_size) {
+    *size = expected_size + 1;
+    return -ERANGE;
+  }
+  strncpy(str_features, get_str_features.c_str(), expected_size);
+  str_features[expected_size] = '\0';
+  *size = expected_size + 1;
+  return 0;
+}
+
+extern "C" int rbd_features_from_string(const char *str_features, uint64_t *features)
+{
+  std::stringstream err;
+  *features = librbd::rbd_features_from_string(str_features, &err);
+  if (!err.str().empty()) {
+    return -EINVAL;
+  }
+
+  return 0;
+}
+
 extern "C" int rbd_close(rbd_image_t image)
 {
   librbd::ImageCtx *ictx = (librbd::ImageCtx *)image;
@@ -4602,7 +5205,7 @@ extern "C" int rbd_snap_remove(rbd_image_t image, const char *snap_name)
   librbd::ImageCtx *ictx = (librbd::ImageCtx *)image;
   tracepoint(librbd, snap_remove_enter, ictx, ictx->name.c_str(), ictx->snap_name.c_str(), ictx->read_only, snap_name);
   librbd::NoOpProgressContext prog_ctx;
-  int r = librbd::snap_remove(ictx, snap_name, 0, prog_ctx);
+  int r = librbd::api::Snapshot<>::remove(ictx, snap_name, 0, prog_ctx);
   tracepoint(librbd, snap_remove_exit, r);
   return r;
 }
@@ -4613,7 +5216,7 @@ extern "C" int rbd_snap_remove2(rbd_image_t image, const char *snap_name, uint32
   librbd::ImageCtx *ictx = (librbd::ImageCtx *)image;
   tracepoint(librbd, snap_remove2_enter, ictx, ictx->name.c_str(), ictx->snap_name.c_str(), ictx->read_only, snap_name, flags);
   librbd::CProgressContext prog_ctx(cb, cbdata);
-  int r = librbd::snap_remove(ictx, snap_name, flags, prog_ctx);
+  int r = librbd::api::Snapshot<>::remove(ictx, snap_name, flags, prog_ctx);
   tracepoint(librbd, snap_remove_exit, r);
   return r;
 }
@@ -4661,7 +5264,7 @@ extern "C" int rbd_snap_list(rbd_image_t image, rbd_snap_info_t *snaps,
   // FIPS zeroization audit 20191117: this memset is not security related.
   memset(snaps, 0, sizeof(*snaps) * *max_snaps);
 
-  int r = librbd::snap_list(ictx, cpp_snaps);
+  int r = librbd::api::Snapshot<>::list(ictx, cpp_snaps);
   if (r == -ENOENT) {
     tracepoint(librbd, snap_list_exit, 0, *max_snaps);
     return 0;
@@ -4733,7 +5336,7 @@ extern "C" int rbd_snap_is_protected(rbd_image_t image, const char *snap_name,
   librbd::ImageCtx *ictx = (librbd::ImageCtx *)image;
   tracepoint(librbd, snap_is_protected_enter, ictx, ictx->name.c_str(), ictx->snap_name.c_str(), ictx->read_only, snap_name);
   bool protected_snap;
-  int r = librbd::snap_is_protected(ictx, snap_name, &protected_snap);
+  int r = librbd::api::Snapshot<>::is_protected(ictx, snap_name, &protected_snap);
   if (r < 0) {
     tracepoint(librbd, snap_is_protected_exit, r, *is_protected ? 1 : 0);
     return r;
@@ -4747,8 +5350,18 @@ extern "C" int rbd_snap_get_limit(rbd_image_t image, uint64_t *limit)
 {
   librbd::ImageCtx *ictx = (librbd::ImageCtx *)image;
   tracepoint(librbd, snap_get_limit_enter, ictx, ictx->name.c_str());
-  int r = librbd::snap_get_limit(ictx, limit);
+  int r = librbd::api::Snapshot<>::get_limit(ictx, limit);
   tracepoint(librbd, snap_get_limit_exit, r, *limit);
+  return r;
+}
+
+extern "C" int rbd_snap_exists(rbd_image_t image, const char *snapname, bool *exists)
+{
+  librbd::ImageCtx *ictx = (librbd::ImageCtx *)image;
+  tracepoint(librbd, snap_exists_enter, ictx, ictx->name.c_str(), 
+             ictx->snap_name.c_str(), ictx->read_only, snapname);
+  int r = librbd::api::Snapshot<>::exists(ictx, cls::rbd::UserSnapshotNamespace(), snapname, exists);
+  tracepoint(librbd, snap_exists_exit, r, *exists);
   return r;
 }
 
@@ -4756,7 +5369,7 @@ extern "C" int rbd_snap_get_timestamp(rbd_image_t image, uint64_t snap_id, struc
 {
   librbd::ImageCtx *ictx = (librbd::ImageCtx *)image;
   tracepoint(librbd, snap_get_timestamp_enter, ictx, ictx->name.c_str());
-  int r = librbd::snap_get_timestamp(ictx, snap_id, timestamp);
+  int r = librbd::api::Snapshot<>::get_timestamp(ictx, snap_id, timestamp);
   tracepoint(librbd, snap_get_timestamp_exit, r);
   return r;
 }
@@ -4765,7 +5378,7 @@ extern "C" int rbd_snap_set_limit(rbd_image_t image, uint64_t limit)
 {
   librbd::ImageCtx *ictx = (librbd::ImageCtx *)image;
   tracepoint(librbd, snap_set_limit_enter, ictx, ictx->name.c_str(), limit);
-  int r = librbd::snap_set_limit(ictx, limit);
+  int r = librbd::api::Snapshot<>::set_limit(ictx, limit);
   tracepoint(librbd, snap_set_limit_exit, r);
   return r;
 }
@@ -4784,6 +5397,28 @@ extern "C" int rbd_snap_set_by_id(rbd_image_t image, uint64_t snap_id)
 {
   librbd::ImageCtx *ictx = (librbd::ImageCtx *)image;
   return librbd::api::Image<>::snap_set(ictx, snap_id);
+}
+
+extern "C" int rbd_snap_get_name(rbd_image_t image, uint64_t snap_id, char *snapname, size_t *name_len)
+{
+  librbd::ImageCtx *ictx = (librbd::ImageCtx *)image;
+  std::string snap_name;
+  int r = librbd::api::Snapshot<>::get_name(ictx, snap_id, &snap_name);
+  size_t expected_size = snap_name.size();
+  if (*name_len <= expected_size) {
+    *name_len = expected_size + 1;
+    return  -ERANGE;
+  }
+  strncpy(snapname, snap_name.c_str(), expected_size);
+  snapname[expected_size] = '\0';
+  *name_len = expected_size + 1;
+  return r;
+}
+
+extern "C" int rbd_snap_get_id(rbd_image_t image, const char *snapname, uint64_t *snap_id)
+{
+  librbd::ImageCtx *ictx = (librbd::ImageCtx *)image;
+  return librbd::api::Snapshot<>::get_id(ictx, snapname, snap_id);
 }
 
 extern "C" ssize_t rbd_list_children(rbd_image_t image, char *pools,
@@ -5174,7 +5809,7 @@ extern "C" ssize_t rbd_write(rbd_image_t image, uint64_t ofs, size_t len,
   tracepoint(librbd, write_enter, ictx, ictx->name.c_str(), ictx->snap_name.c_str(), ictx->read_only, ofs, len, buf);
 
   bufferlist bl;
-  bl.push_back(create_write_raw(ictx, buf, len));
+  bl.push_back(create_write_raw(ictx, buf, len, nullptr));
   int r = ictx->io_work_queue->write(ofs, len, std::move(bl), 0);
   tracepoint(librbd, write_exit, r);
   return r;
@@ -5188,7 +5823,7 @@ extern "C" ssize_t rbd_write2(rbd_image_t image, uint64_t ofs, size_t len,
 	      ictx->snap_name.c_str(), ictx->read_only, ofs, len, buf, op_flags);
 
   bufferlist bl;
-  bl.push_back(create_write_raw(ictx, buf, len));
+  bl.push_back(create_write_raw(ictx, buf, len, nullptr));
   int r = ictx->io_work_queue->write(ofs, len, std::move(bl), op_flags);
   tracepoint(librbd, write_exit, r);
   return r;
@@ -5200,7 +5835,7 @@ extern "C" int rbd_discard(rbd_image_t image, uint64_t ofs, uint64_t len)
   librbd::ImageCtx *ictx = (librbd::ImageCtx *)image;
   tracepoint(librbd, discard_enter, ictx, ictx->name.c_str(),
              ictx->snap_name.c_str(), ictx->read_only, ofs, len);
-  if (len > std::numeric_limits<int>::max()) {
+  if (len > static_cast<uint64_t>(std::numeric_limits<int>::max())) {
     tracepoint(librbd, discard_exit, -EINVAL);
     return -EINVAL;
   }
@@ -5219,7 +5854,7 @@ extern "C" ssize_t rbd_writesame(rbd_image_t image, uint64_t ofs, size_t len,
              ictx->read_only, ofs, len, data_len == 0 ? NULL : buf, data_len, op_flags);
 
   if (data_len == 0 || len % data_len ||
-      len > std::numeric_limits<int>::max()) {
+      len > static_cast<uint64_t>(std::numeric_limits<int>::max())) {
     tracepoint(librbd, writesame_exit, -EINVAL);
     return -EINVAL;
   }
@@ -5232,7 +5867,7 @@ extern "C" ssize_t rbd_writesame(rbd_image_t image, uint64_t ofs, size_t len,
   }
 
   bufferlist bl;
-  bl.push_back(create_write_raw(ictx, buf, data_len));
+  bl.push_back(create_write_raw(ictx, buf, data_len, nullptr));
   int r = ictx->io_work_queue->writesame(ofs, len, std::move(bl), op_flags);
   tracepoint(librbd, writesame_exit, r);
   return r;
@@ -5251,9 +5886,9 @@ extern "C" ssize_t rbd_compare_and_write(rbd_image_t image,
              len, cmp_buf, buf, op_flags);
 
   bufferlist cmp_bl;
-  cmp_bl.push_back(create_write_raw(ictx, cmp_buf, len));
+  cmp_bl.push_back(create_write_raw(ictx, cmp_buf, len, nullptr));
   bufferlist bl;
-  bl.push_back(create_write_raw(ictx, buf, len));
+  bl.push_back(create_write_raw(ictx, buf, len, nullptr));
 
   int r = ictx->io_work_queue->compare_and_write(ofs, len, std::move(cmp_bl),
                                                  std::move(bl), mismatch_off,
@@ -5279,10 +5914,10 @@ extern "C" int rbd_aio_write(rbd_image_t image, uint64_t off, size_t len,
   librbd::RBD::AioCompletion *comp = (librbd::RBD::AioCompletion *)c;
   tracepoint(librbd, aio_write_enter, ictx, ictx->name.c_str(), ictx->snap_name.c_str(), ictx->read_only, off, len, buf, comp->pc);
 
+  auto aio_completion = get_aio_completion(comp);
   bufferlist bl;
-  bl.push_back(create_write_raw(ictx, buf, len));
-  ictx->io_work_queue->aio_write(get_aio_completion(comp), off, len,
-                                 std::move(bl), 0);
+  bl.push_back(create_write_raw(ictx, buf, len, aio_completion));
+  ictx->io_work_queue->aio_write(aio_completion, off, len, std::move(bl), 0);
   tracepoint(librbd, aio_write_exit, 0);
   return 0;
 }
@@ -5295,10 +5930,11 @@ extern "C" int rbd_aio_write2(rbd_image_t image, uint64_t off, size_t len,
   tracepoint(librbd, aio_write2_enter, ictx, ictx->name.c_str(), ictx->snap_name.c_str(),
 	      ictx->read_only, off, len, buf, comp->pc, op_flags);
 
+  auto aio_completion = get_aio_completion(comp);
   bufferlist bl;
-  bl.push_back(create_write_raw(ictx, buf, len));
-  ictx->io_work_queue->aio_write(get_aio_completion(comp), off, len,
-                                 std::move(bl), op_flags);
+  bl.push_back(create_write_raw(ictx, buf, len, aio_completion));
+  ictx->io_work_queue->aio_write(aio_completion, off, len, std::move(bl),
+                                 op_flags);
   tracepoint(librbd, aio_write_exit, 0);
   return 0;
 }
@@ -5310,6 +5946,7 @@ extern "C" int rbd_aio_writev(rbd_image_t image, const struct iovec *iov,
   librbd::RBD::AioCompletion *comp = (librbd::RBD::AioCompletion *)c;
 
   // convert the scatter list into a bufferlist
+  auto aio_completion = get_aio_completion(comp);
   ssize_t len = 0;
   bufferlist bl;
   for (int i = 0; i < iovcnt; ++i) {
@@ -5320,7 +5957,7 @@ extern "C" int rbd_aio_writev(rbd_image_t image, const struct iovec *iov,
     }
 
     bl.push_back(create_write_raw(ictx, static_cast<char*>(io.iov_base),
-                                  io.iov_len));
+                                  io.iov_len, aio_completion));
   }
 
   int r = 0;
@@ -5332,8 +5969,7 @@ extern "C" int rbd_aio_writev(rbd_image_t image, const struct iovec *iov,
              ictx->snap_name.c_str(), ictx->read_only, off, len, NULL,
              comp->pc);
   if (r == 0) {
-    ictx->io_work_queue->aio_write(get_aio_completion(comp), off, len,
-                                   std::move(bl), 0);
+    ictx->io_work_queue->aio_write(aio_completion, off, len, std::move(bl), 0);
   }
   tracepoint(librbd, aio_write_exit, r);
   return r;
@@ -5454,10 +6090,11 @@ extern "C" int rbd_aio_writesame(rbd_image_t image, uint64_t off, size_t len,
     return 0;
   }
 
+  auto aio_completion = get_aio_completion(comp);
   bufferlist bl;
-  bl.push_back(create_write_raw(ictx, buf, data_len));
-  ictx->io_work_queue->aio_writesame(get_aio_completion(comp), off, len,
-                                     std::move(bl), op_flags);
+  bl.push_back(create_write_raw(ictx, buf, data_len, aio_completion));
+  ictx->io_work_queue->aio_writesame(aio_completion, off, len, std::move(bl),
+                                     op_flags);
   tracepoint(librbd, aio_writesame_exit, 0);
   return 0;
 }
@@ -5473,11 +6110,12 @@ extern "C" ssize_t rbd_aio_compare_and_write(rbd_image_t image, uint64_t off,
   tracepoint(librbd, aio_compare_and_write_enter, ictx, ictx->name.c_str(), ictx->snap_name.c_str(),
 	      ictx->read_only, off, len, cmp_buf, buf, comp->pc, op_flags);
 
+  auto aio_completion = get_aio_completion(comp);
   bufferlist cmp_bl;
-  cmp_bl.push_back(create_write_raw(ictx, cmp_buf, len));
+  cmp_bl.push_back(create_write_raw(ictx, cmp_buf, len, aio_completion));
   bufferlist bl;
-  bl.push_back(create_write_raw(ictx, buf, len));
-  ictx->io_work_queue->aio_compare_and_write(get_aio_completion(comp), off, len,
+  bl.push_back(create_write_raw(ictx, buf, len, aio_completion));
+  ictx->io_work_queue->aio_compare_and_write(aio_completion, off, len,
                                              std::move(cmp_bl), std::move(bl),
                                              mismatch_off, op_flags, false);
 
@@ -5588,8 +6226,14 @@ extern "C" int rbd_metadata_list(rbd_image_t image, const char *start, uint64_t 
 
 extern "C" int rbd_mirror_image_enable(rbd_image_t image)
 {
+  return rbd_mirror_image_enable2(image, RBD_MIRROR_IMAGE_MODE_JOURNAL);
+}
+
+extern "C" int rbd_mirror_image_enable2(rbd_image_t image,
+                                        rbd_mirror_image_mode_t mode)
+{
   librbd::ImageCtx *ictx = (librbd::ImageCtx *)image;
-  return librbd::api::Mirror<>::image_enable(ictx, false);
+  return librbd::api::Mirror<>::image_enable(ictx, mode, false);
 }
 
 extern "C" int rbd_mirror_image_disable(rbd_image_t image, bool force)
@@ -5616,6 +6260,13 @@ extern "C" int rbd_mirror_image_resync(rbd_image_t image)
   return librbd::api::Mirror<>::image_resync(ictx);
 }
 
+extern "C" int rbd_mirror_image_create_snapshot(rbd_image_t image,
+                                                uint64_t *snap_id)
+{
+  librbd::ImageCtx *ictx = (librbd::ImageCtx *)image;
+  return librbd::api::Mirror<>::image_snapshot_create(ictx, snap_id);
+}
+
 extern "C" int rbd_mirror_image_get_info(rbd_image_t image,
                                          rbd_mirror_image_info_t *mirror_image_info,
                                          size_t info_size)
@@ -5636,6 +6287,43 @@ extern "C" int rbd_mirror_image_get_info(rbd_image_t image,
   return 0;
 }
 
+extern "C" void rbd_mirror_image_get_info_cleanup(
+    rbd_mirror_image_info_t *mirror_image_info)
+{
+  free(mirror_image_info->global_id);
+}
+
+extern "C" int rbd_mirror_image_get_mode(rbd_image_t image,
+                                         rbd_mirror_image_mode_t *mode)
+{
+  librbd::ImageCtx *ictx = (librbd::ImageCtx *)image;
+
+  return librbd::api::Mirror<>::image_get_mode(ictx, mode);
+}
+
+extern "C" int rbd_mirror_image_get_global_status(
+    rbd_image_t image, rbd_mirror_image_global_status_t *status,
+    size_t status_size)
+{
+  librbd::ImageCtx *ictx = (librbd::ImageCtx *)image;
+
+  if (sizeof(rbd_mirror_image_global_status_t) != status_size) {
+    return -ERANGE;
+  }
+
+  librbd::mirror_image_global_status_t cpp_status;
+  int r = librbd::api::Mirror<>::image_get_global_status(ictx, &cpp_status);
+  if (r < 0) {
+    return r;
+  }
+
+  mirror_image_global_status_cpp_to_c(cpp_status, status);
+  return 0;
+}
+
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+
 extern "C" int rbd_mirror_image_get_status(rbd_image_t image,
 					   rbd_mirror_image_status_t *status,
 					   size_t status_size)
@@ -5646,15 +6334,17 @@ extern "C" int rbd_mirror_image_get_status(rbd_image_t image,
     return -ERANGE;
   }
 
-  librbd::mirror_image_status_t cpp_status;
-  int r = librbd::api::Mirror<>::image_get_status(ictx, &cpp_status);
+  librbd::mirror_image_global_status_t cpp_status;
+  int r = librbd::api::Mirror<>::image_get_global_status(ictx, &cpp_status);
   if (r < 0) {
     return r;
   }
 
-  mirror_image_status_cpp_to_c(cpp_status, status);
+  mirror_image_global_status_cpp_to_c(cpp_status, status);
   return 0;
 }
+
+#pragma GCC diagnostic pop
 
 extern "C" int rbd_mirror_image_get_instance_id(rbd_image_t image,
                                                 char *instance_id,
@@ -5717,10 +6407,42 @@ extern "C" int rbd_aio_mirror_image_get_info(rbd_image_t image,
   return 0;
 }
 
-extern "C" int rbd_aio_mirror_image_get_status(rbd_image_t image,
-                                               rbd_mirror_image_status_t *status,
-                                               size_t status_size,
-                                               rbd_completion_t c) {
+extern "C" int rbd_aio_mirror_image_get_mode(rbd_image_t image,
+                                             rbd_mirror_image_mode_t *mode,
+                                             rbd_completion_t c) {
+  librbd::ImageCtx *ictx = (librbd::ImageCtx *)image;
+  librbd::RBD::AioCompletion *comp = (librbd::RBD::AioCompletion *)c;
+
+  librbd::api::Mirror<>::image_get_mode(
+    ictx, mode, new C_AioCompletion(ictx, librbd::io::AIO_TYPE_GENERIC,
+                                    get_aio_completion(comp)));
+  return 0;
+}
+
+extern "C" int rbd_aio_mirror_image_get_global_status(
+    rbd_image_t image, rbd_mirror_image_global_status_t *status,
+    size_t status_size, rbd_completion_t c) {
+  librbd::ImageCtx *ictx = (librbd::ImageCtx *)image;
+  librbd::RBD::AioCompletion *comp = (librbd::RBD::AioCompletion *)c;
+
+  if (sizeof(rbd_mirror_image_global_status_t) != status_size) {
+    return -ERANGE;
+  }
+
+  auto ctx = new C_MirrorImageGetGlobalStatus(
+    status, new C_AioCompletion(ictx, librbd::io::AIO_TYPE_GENERIC,
+                                get_aio_completion(comp)));
+  librbd::api::Mirror<>::image_get_global_status(
+    ictx, &ctx->cpp_mirror_image_global_status, ctx);
+  return 0;
+}
+
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+
+extern "C" int rbd_aio_mirror_image_get_status(
+    rbd_image_t image, rbd_mirror_image_status_t *status, size_t status_size,
+    rbd_completion_t c) {
   librbd::ImageCtx *ictx = (librbd::ImageCtx *)image;
   librbd::RBD::AioCompletion *comp = (librbd::RBD::AioCompletion *)c;
 
@@ -5731,10 +6453,12 @@ extern "C" int rbd_aio_mirror_image_get_status(rbd_image_t image,
   auto ctx = new C_MirrorImageGetStatus(
     status, new C_AioCompletion(ictx, librbd::io::AIO_TYPE_GENERIC,
                                 get_aio_completion(comp)));
-  librbd::api::Mirror<>::image_get_status(ictx, &ctx->cpp_mirror_image_status,
-                                          ctx);
+  librbd::api::Mirror<>::image_get_global_status(
+    ictx, &ctx->cpp_mirror_image_global_status, ctx);
   return 0;
 }
+
+#pragma GCC diagnostic pop
 
 extern "C" int rbd_update_watch(rbd_image_t image, uint64_t *handle,
 				rbd_update_callback_t watch_cb, void *arg)
@@ -6219,7 +6943,6 @@ extern "C" int rbd_snap_get_group_namespace(rbd_image_t image, uint64_t snap_id,
 extern "C" int rbd_snap_group_namespace_cleanup(rbd_snap_group_namespace_t *group_snap,
                                                 size_t snap_group_namespace_size) {
   if (snap_group_namespace_size != sizeof(rbd_snap_group_namespace_t)) {
-    tracepoint(librbd, snap_get_group_namespace_exit, -ERANGE);
     return -ERANGE;
   }
 
@@ -6247,6 +6970,59 @@ extern "C" int rbd_snap_get_trash_namespace(rbd_image_t image, uint64_t snap_id,
   strcpy(original_name, cpp_original_name.c_str());
   return 0;
 }
+
+extern "C" int rbd_snap_get_mirror_namespace(
+    rbd_image_t image, uint64_t snap_id,
+    rbd_snap_mirror_namespace_t *mirror_snap,
+    size_t mirror_snap_size) {
+  librbd::ImageCtx *ictx = (librbd::ImageCtx *)image;
+
+  if (mirror_snap_size != sizeof(rbd_snap_mirror_namespace_t)) {
+    return -ERANGE;
+  }
+
+  librbd::snap_mirror_namespace_t mirror_namespace;
+  int r = librbd::api::Snapshot<>::get_mirror_namespace(
+      ictx, snap_id, &mirror_namespace);
+  if (r < 0) {
+    return r;
+  }
+
+  mirror_snap->state = mirror_namespace.state;
+  mirror_snap->primary_mirror_uuid =
+    strdup(mirror_namespace.primary_mirror_uuid.c_str());
+  mirror_snap->primary_snap_id = mirror_namespace.primary_snap_id;
+  mirror_snap->mirror_peer_uuids_count =
+    mirror_namespace.mirror_peer_uuids.size();
+  size_t len = 0;
+  for (auto &peer : mirror_namespace.mirror_peer_uuids) {
+    len += peer.size() + 1;
+  }
+  mirror_snap->mirror_peer_uuids = (char *)malloc(len);
+  char *p = mirror_snap->mirror_peer_uuids;
+  for (auto &peer : mirror_namespace.mirror_peer_uuids) {
+    strncpy(p, peer.c_str(), peer.size() + 1);
+    p += peer.size() + 1;
+  }
+  mirror_snap->complete = mirror_namespace.complete;
+  mirror_snap->last_copied_object_number =
+    mirror_namespace.last_copied_object_number;
+
+  return 0;
+}
+
+extern "C" int rbd_snap_mirror_namespace_cleanup(
+    rbd_snap_mirror_namespace_t *mirror_snap,
+    size_t mirror_snap_size) {
+  if (mirror_snap_size != sizeof(rbd_snap_mirror_namespace_t)) {
+    return -ERANGE;
+  }
+
+  free(mirror_snap->primary_mirror_uuid);
+  free(mirror_snap->mirror_peer_uuids);
+  return 0;
+}
+
 extern "C" int rbd_watchers_list(rbd_image_t image,
 				 rbd_image_watcher_t *watchers,
 				 size_t *max_watchers) {

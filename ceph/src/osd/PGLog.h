@@ -18,9 +18,16 @@
 
 // re-include our assert to clobber boost's
 #include "include/ceph_assert.h"
+#include "include/common_fwd.h"
 #include "osd_types.h"
 #include "os/ObjectStore.h"
 #include <list>
+
+#ifdef WITH_SEASTAR
+#include <seastar/core/future.hh>
+#include "crimson/os/futurized_store.h"
+#include "crimson/os/cyanstore/cyan_collection.h"
+#endif
 
 constexpr auto PGLOG_INDEXED_OBJECTS          = 1 << 0;
 constexpr auto PGLOG_INDEXED_CALLER_OPS       = 1 << 1;
@@ -30,8 +37,6 @@ constexpr auto PGLOG_INDEXED_ALL              = PGLOG_INDEXED_OBJECTS
                                               | PGLOG_INDEXED_CALLER_OPS 
                                               | PGLOG_INDEXED_EXTRA_CALLER_OPS 
                                               | PGLOG_INDEXED_DUPS;
-
-class CephContext;
 
 struct PGLog : DoutPrefixProvider {
   std::ostream& gen_prefix(std::ostream& out) const override {
@@ -59,6 +64,7 @@ struct PGLog : DoutPrefixProvider {
       version_t v) = 0;
     virtual ~LogEntryHandler() {}
   };
+  using LogEntryHandlerRef = unique_ptr<LogEntryHandler>;
 
 public:
   /**
@@ -260,7 +266,8 @@ public:
       const osd_reqid_t &r,
       eversion_t *version,
       version_t *user_version,
-      int *return_code) const
+      int *return_code,
+      vector<pg_log_op_return_item_t> *op_returns) const
     {
       ceph_assert(version);
       ceph_assert(user_version);
@@ -274,6 +281,7 @@ public:
 	*version = p->second->version;
 	*user_version = p->second->user_version;
 	*return_code = p->second->return_code;
+	*op_returns = p->second->op_returns;
 	return true;
       }
 
@@ -292,6 +300,7 @@ public:
 	    *version = p->second->version;
 	    *user_version = i->second;
 	    *return_code = p->second->return_code;
+	    *op_returns = p->second->op_returns;
 	    if (*return_code >= 0) {
 	      auto it = p->second->extra_reqid_return_codes.find(idx);
 	      if (it != p->second->extra_reqid_return_codes.end()) {
@@ -312,9 +321,20 @@ public:
 	*version = q->second->version;
 	*user_version = q->second->user_version;
 	*return_code = q->second->return_code;
+	*op_returns = q->second->op_returns;
 	return true;
       }
 
+      return false;
+    }
+
+    bool has_write_since(const hobject_t &oid, const eversion_t &bound) const {
+      for (auto i = log.rbegin(); i != log.rend(); ++i) {
+	if (i->version <= bound)
+	  return false;
+	if (i->soid.get_head() == oid.get_head())
+	  return true;
+      }
       return false;
     }
 
@@ -573,7 +593,7 @@ protected:
   bool touched_log;
   bool dirty_log;
   bool clear_divergent_priors;
-  bool rebuilt_missing_with_deletes = false;
+  bool may_include_deletes_in_missing_dirty = false;
 
   void mark_dirty_to(eversion_t to) {
     if (to > dirty_to)
@@ -596,8 +616,12 @@ protected:
       dirty_from_dups = from;
   }
 public:
+  bool needs_write() const {
+    return !touched_log || is_dirty();
+  }
+
   bool is_dirty() const {
-    return !touched_log || dirty_log ||
+    return dirty_log ||
       (dirty_to != eversion_t()) ||
       (dirty_from != eversion_t::max()) ||
       (writeout_from != eversion_t::max()) ||
@@ -607,8 +631,9 @@ public:
       (dirty_to_dups != eversion_t()) ||
       (dirty_from_dups != eversion_t::max()) ||
       (write_from_dups != eversion_t::max()) ||
-      rebuilt_missing_with_deletes;
+      may_include_deletes_in_missing_dirty;
   }
+
   void mark_log_for_rewrite() {
     mark_dirty_to(eversion_t::max());
     mark_dirty_from(eversion_t());
@@ -616,8 +641,8 @@ public:
     mark_dirty_from_dups(eversion_t());
     touched_log = false;
   }
-  bool get_rebuilt_missing_with_deletes() const {
-    return rebuilt_missing_with_deletes;
+  bool get_may_include_deletes_in_missing_dirty() const {
+    return may_include_deletes_in_missing_dirty;
   }
 protected:
 
@@ -764,8 +789,9 @@ public:
     opg_log->mark_dirty_to_dups(eversion_t::max());
     mark_dirty_to(eversion_t::max());
     mark_dirty_to_dups(eversion_t::max());
-    if (missing.may_include_deletes)
-      opg_log->rebuilt_missing_with_deletes = true;
+    if (missing.may_include_deletes) {
+      opg_log->set_missing_may_contain_deletes();
+    }
   }
 
   void merge_from(
@@ -839,6 +865,11 @@ public:
   void proc_replica_log(pg_info_t &oinfo,
 			const pg_log_t &olog,
 			pg_missing_t& omissing, pg_shard_t from) const;
+
+  void set_missing_may_contain_deletes() {
+    missing.may_include_deletes = true;
+    may_include_deletes_in_missing_dirty = true;
+  }
 
   void rebuild_missing_set_with_deletes(ObjectStore *store,
 					ObjectStore::CollectionHandle& ch,
@@ -971,6 +1002,7 @@ protected:
 	ceph_assert(!missing.is_missing(hoid));
       }
       missing.revise_have(hoid, eversion_t());
+      missing.mark_fully_dirty(hoid);
       if (rollbacker) {
 	if (!object_not_in_store) {
 	  rollbacker->remove(hoid);
@@ -1160,7 +1192,6 @@ public:
   template <typename missing_type>
   static bool append_log_entries_update_missing(
     const hobject_t &last_backfill,
-    bool last_backfill_bitwise,
     const mempool::osd_pglog::list<pg_log_entry_t> &entries,
     bool maintain_rollback,
     IndexedLog *log,
@@ -1204,12 +1235,10 @@ public:
   }
   bool append_new_log_entries(
     const hobject_t &last_backfill,
-    bool last_backfill_bitwise,
     const mempool::osd_pglog::list<pg_log_entry_t> &entries,
     LogEntryHandler *rollbacker) {
     bool invalidate_stats = append_log_entries_update_missing(
       last_backfill,
-      last_backfill_bitwise,
       entries,
       true,
       &log,
@@ -1293,7 +1322,7 @@ public:
     eversion_t dirty_to_dups,
     eversion_t dirty_from_dups,
     eversion_t write_from_dups,
-    bool *rebuilt_missing_with_deletes,
+    bool *may_include_deletes_in_missing_dirty,
     set<string> *log_keys_debug
     );
 
@@ -1374,10 +1403,11 @@ public:
 	  pg_missing_item item;
 	  decode(oid, bp);
 	  decode(item, bp);
+          ldpp_dout(dpp, 20) << "read_log_and_missing " << item << dendl;
 	  if (item.is_delete()) {
 	    ceph_assert(missing.may_include_deletes);
 	  }
-	  missing.add(oid, item.need, item.have, item.is_delete());
+	  missing.add(oid, std::move(item));
 	} else if (p->key().substr(0, 4) == string("dup_")) {
 	  pg_log_dup_t dup;
 	  decode(dup, bp);
@@ -1422,7 +1452,6 @@ public:
 	for (list<pg_log_entry_t>::reverse_iterator i = log.log.rbegin();
 	     i != log.log.rend();
 	     ++i) {
-	  if (!debug_verify_stored_missing && i->version <= info.last_complete) break;
 	  if (i->soid > info.last_backfill)
 	    continue;
 	  if (i->is_error())
@@ -1443,7 +1472,9 @@ public:
 	    object_info_t oi(bv);
 	    if (oi.version < i->version) {
 	      ldpp_dout(dpp, 15) << "read_log_and_missing  missing " << *i
-				 << " (have " << oi.version << ")" << dendl;
+                           << " (have " << oi.version << ")"
+                           << " clean_regions " << i->clean_regions << dendl;
+
 	      if (debug_verify_stored_missing) {
 		auto miter = missing.get_items().find(i->soid);
 		ceph_assert(miter != missing.get_items().end());
@@ -1562,4 +1593,133 @@ public:
     }
     ldpp_dout(dpp, 10) << "read_log_and_missing done" << dendl;
   } // static read_log_and_missing
+
+#ifdef WITH_SEASTAR
+  seastar::future<> read_log_and_missing_crimson(
+    crimson::os::FuturizedStore &store,
+    crimson::os::CollectionRef ch,
+    const pg_info_t &info,
+    ghobject_t pgmeta_oid
+    ) {
+    return read_log_and_missing_crimson(
+      store, ch, info,
+      log, missing, pgmeta_oid,
+      this);
+  }
+
+  template <typename missing_type>
+  struct FuturizedStoreLogReader {
+    crimson::os::FuturizedStore &store;
+    crimson::os::CollectionRef ch;
+    const pg_info_t &info;
+    IndexedLog &log;
+    missing_type &missing;
+    ghobject_t pgmeta_oid;
+    const DoutPrefixProvider *dpp;
+
+    eversion_t on_disk_can_rollback_to;
+    eversion_t on_disk_rollback_info_trimmed_to;
+
+    std::map<eversion_t, hobject_t> divergent_priors;
+    bool must_rebuild = false;
+    std::list<pg_log_entry_t> entries;
+    std::list<pg_log_dup_t> dups;
+
+    std::optional<std::string> next;
+
+    void process_entry(const std::pair<std::string, ceph::bufferlist> &p) {
+      if (p.first[0] == '_')
+	return;
+      ceph::bufferlist bl = p.second;//Copy bufferlist before creating iterator
+      auto bp = bl.cbegin();
+      if (p.first == "divergent_priors") {
+	decode(divergent_priors, bp);
+	ldpp_dout(dpp, 20) << "read_log_and_missing " << divergent_priors.size()
+			   << " divergent_priors" << dendl;
+	ceph_assert("crimson shouldn't have had divergent_priors" == 0);
+      } else if (p.first == "can_rollback_to") {
+	decode(on_disk_can_rollback_to, bp);
+      } else if (p.first == "rollback_info_trimmed_to") {
+	decode(on_disk_rollback_info_trimmed_to, bp);
+      } else if (p.first == "may_include_deletes_in_missing") {
+	missing.may_include_deletes = true;
+      } else if (p.first.substr(0, 7) == string("missing")) {
+	hobject_t oid;
+	pg_missing_item item;
+	decode(oid, bp);
+	decode(item, bp);
+	if (item.is_delete()) {
+	  ceph_assert(missing.may_include_deletes);
+	}
+	missing.add(oid, std::move(item));
+      } else if (p.first.substr(0, 4) == string("dup_")) {
+	pg_log_dup_t dup;
+	decode(dup, bp);
+	if (!dups.empty()) {
+	  ceph_assert(dups.back().version < dup.version);
+	}
+	dups.push_back(dup);
+      } else {
+	pg_log_entry_t e;
+	e.decode_with_checksum(bp);
+	ldpp_dout(dpp, 20) << "read_log_and_missing " << e << dendl;
+	if (!entries.empty()) {
+	  pg_log_entry_t last_e(entries.back());
+	  ceph_assert(last_e.version.version < e.version.version);
+	  ceph_assert(last_e.version.epoch <= e.version.epoch);
+	}
+	entries.push_back(e);
+      }
+    }
+
+
+    seastar::future<> start() {
+      // will get overridden if recorded
+      on_disk_can_rollback_to = info.last_update;
+      missing.may_include_deletes = false;
+
+      auto reader = std::unique_ptr<FuturizedStoreLogReader>(this);
+      return seastar::repeat(
+	[this]() {
+	  return store.omap_get_values(ch, pgmeta_oid, next).then(
+	    [this](
+	      bool done, crimson::os::FuturizedStore::omap_values_t values) {
+	      for (auto &&p : values) {
+		process_entry(p);
+	      }
+	      return done ? seastar::stop_iteration::yes
+		: seastar::stop_iteration::no;
+	    });
+	}).then([this, reader{std::move(reader)}]() {
+          log = IndexedLog(
+	     info.last_update,
+	     info.log_tail,
+	     on_disk_can_rollback_to,
+	     on_disk_rollback_info_trimmed_to,
+	     std::move(entries),
+	     std::move(dups));
+          return seastar::now();
+        });
+    }
+  };
+
+  template <typename missing_type>
+  static seastar::future<> read_log_and_missing_crimson(
+    crimson::os::FuturizedStore &store,
+    crimson::os::CollectionRef ch,
+    const pg_info_t &info,
+    IndexedLog &log,
+    missing_type &missing,
+    ghobject_t pgmeta_oid,
+    const DoutPrefixProvider *dpp = nullptr
+    ) {
+    ldpp_dout(dpp, 20) << "read_log_and_missing coll "
+		       << ch->get_cid()
+		       << " " << pgmeta_oid << dendl;
+    return (new FuturizedStoreLogReader<missing_type>{
+      store, ch, info, log, missing, pgmeta_oid, dpp})->start();
+  }
+
+#endif
+
 }; // struct PGLog

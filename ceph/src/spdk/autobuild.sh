@@ -2,6 +2,14 @@
 
 set -e
 
+# If the configuration of tests is not provided, no tests will be carried out.
+if [[ ! -f $1 ]]; then
+	echo "ERROR: SPDK test configuration not specified"
+	exit 1
+fi
+
+source "$1"
+
 rootdir=$(readlink -f $(dirname $0))
 source "$rootdir/test/common/autotest_common.sh"
 
@@ -13,6 +21,17 @@ cd $rootdir
 
 date -u
 git describe --tags
+
+if [ "$SPDK_TEST_OCF" -eq 1 ]; then
+	# We compile OCF sources ourselves
+	# They don't need to be checked with scanbuild and code coverage is not applicable
+	# So we precompile OCF now for further use as standalone static library
+	./configure $(echo $config_params | sed 's/--enable-coverage//g')
+	$MAKE $MAKEFLAGS include/spdk/config.h
+	CC=gcc CCAR=ar $MAKE $MAKEFLAGS -C lib/bdev/ocf/env exportlib O=$rootdir/build/ocf.a
+	# Set config to use precompiled library
+	config_params="$config_params --with-ocf=/$rootdir/build/ocf.a"
+fi
 
 ./configure $config_params
 
@@ -30,14 +49,6 @@ if [ $SPDK_RUN_CHECK_FORMAT -eq 1 ]; then
 	./scripts/check_format.sh
 fi
 timing_exit check_format
-
-$MAKE $MAKEFLAGS clean
-if [ $SPDK_BUILD_SHARED_OBJECT -eq 1 ]; then
-	./configure $config_params --with-shared
-	$MAKE $MAKEFLAGS
-	$MAKE $MAKEFLAGS clean
-	report_test_completion "shared_object_build"
-fi
 
 scanbuild=''
 make_timing_label='make'
@@ -63,6 +74,15 @@ fi
 echo $scanbuild
 
 timing_enter "$make_timing_label"
+
+$MAKE $MAKEFLAGS clean
+if [ $SPDK_BUILD_SHARED_OBJECT -eq 1 ]; then
+	./configure $config_params --with-shared
+	$MAKE $MAKEFLAGS
+	$MAKE $MAKEFLAGS clean
+	report_test_completion "shared_object_build"
+fi
+
 fail=0
 ./configure $config_params
 time $scanbuild $MAKE $MAKEFLAGS || fail=1
@@ -83,7 +103,7 @@ timing_exit "$make_timing_label"
 timing_enter generated_files_check
 if [ `git status --porcelain --ignore-submodules | wc -l` -ne 0 ]; then
 	echo "Generated files missing from .gitignore:"
-	git status --porcelain
+	git status --porcelain --ignore-submodules
 	exit 1
 fi
 timing_exit generated_files_check
@@ -109,9 +129,22 @@ timing_enter make_install
 rm -rf /tmp/spdk
 mkdir /tmp/spdk
 $MAKE $MAKEFLAGS install DESTDIR=/tmp/spdk prefix=/usr
-ls -lR /tmp/spdk
-rm -rf /tmp/spdk
 timing_exit make_install
+
+# Test 'make uninstall'
+timing_enter make_uninstall
+# Create empty file to check if it is not deleted by target uninstall
+touch /tmp/spdk/usr/lib/sample_xyz.a
+$MAKE $MAKEFLAGS uninstall DESTDIR=/tmp/spdk prefix=/usr
+if [[ $(ls -A /tmp/spdk/usr | wc -l) -ne 2 ]] || [[ $(ls -A /tmp/spdk/usr/lib/ | wc -l) -ne 1 ]]; then
+	ls -lR /tmp/spdk
+	rm -rf /tmp/spdk
+	echo "Make uninstall failed"
+	exit 1
+else
+	rm -rf /tmp/spdk
+fi
+timing_exit make_uninstall
 
 timing_enter doxygen
 if [ $SPDK_BUILD_DOC -eq 1 ] && hash doxygen; then

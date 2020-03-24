@@ -1,11 +1,8 @@
-/*
+/* SPDX-License-Identifier: BSD-3-Clause
  * Copyright (c) 2013-2015 Brocade Communications Systems, Inc.
- *
- * Copyright (c) 2015 QLogic Corporation.
+ * Copyright (c) 2015-2018 Cavium Inc.
  * All rights reserved.
- * www.qlogic.com
- *
- * See LICENSE.bnx2x_pmd for copyright and licensing details.
+ * www.cavium.com
  */
 
 #ifndef PMD_BNX2X_ETHDEV_H
@@ -33,9 +30,8 @@
 #include <rte_debug.h>
 #include <rte_pci.h>
 #include <rte_malloc.h>
-#include <rte_ethdev.h>
+#include <rte_ethdev_driver.h>
 #include <rte_spinlock.h>
-#include <rte_memzone.h>
 #include <rte_eal.h>
 #include <rte_mempool.h>
 #include <rte_mbuf.h>
@@ -51,6 +47,7 @@
 #define FALSE               0
 #define TRUE                1
 
+typedef int bool;
 #define false               0
 #define true                1
 #define min(a,b)        RTE_MIN(a,b)
@@ -58,7 +55,6 @@
 #define mb()    rte_mb()
 #define wmb()   rte_wmb()
 #define rmb()   rte_rmb()
-
 
 #define MAX_QUEUES sysconf(_SC_NPROCESSORS_CONF)
 
@@ -72,6 +68,8 @@
 #define BNX2X_TX_TICKS 50
 /* Maximum number of Rx packets to process at a time */
 #define BNX2X_RX_BUDGET 0xffffffff
+
+#define BNX2X_SP_TIMER_PERIOD US_PER_S /* 1 second */
 
 #endif
 

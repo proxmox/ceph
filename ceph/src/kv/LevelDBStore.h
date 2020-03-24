@@ -27,11 +27,10 @@
 #include "common/Cond.h"
 
 #include "common/ceph_context.h"
+#include "include/common_fwd.h"
 
 // reinclude our assert to clobber the system one
 # include "include/ceph_assert.h"
-
-class PerfCounters;
 
 enum {
   l_leveldb_first = 34300,
@@ -69,8 +68,9 @@ class LevelDBStore : public KeyValueDB {
   int do_open(ostream &out, bool create_if_missing);
 
   // manage async compactions
-  Mutex compact_queue_lock;
-  Cond compact_queue_cond;
+  ceph::mutex compact_queue_lock =
+    ceph::make_mutex("LevelDBStore::compact_thread_lock");
+  ceph::condition_variable compact_queue_cond;
   list< pair<string,string> > compact_queue;
   bool compact_queue_stop;
   class CompactThread : public Thread {
@@ -166,7 +166,6 @@ public:
 #ifdef HAVE_LEVELDB_FILTER_POLICY
     filterpolicy(NULL),
 #endif
-    compact_queue_lock("LevelDBStore::compact_thread_lock"),
     compact_queue_stop(false),
     compact_thread(this),
     options()

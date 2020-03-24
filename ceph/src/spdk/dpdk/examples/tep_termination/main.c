@@ -71,9 +71,6 @@
 
 #define INVALID_PORT_ID 0xFFFF
 
-/* Size of buffers used for snprintfs. */
-#define MAX_PRINT_BUFF 6072
-
 /* Maximum character device basename size. */
 #define MAX_BASENAME_SZ 20
 
@@ -194,7 +191,7 @@ us_vhost_parse_basename(const char *q_arg)
 	if (strlen(q_arg) >= MAX_BASENAME_SZ)
 		return -1;
 	else
-		snprintf((char *)&dev_basename, MAX_BASENAME_SZ, "%s", q_arg);
+		strlcpy((char *)&dev_basename, q_arg, MAX_BASENAME_SZ);
 
 	return 0;
 }

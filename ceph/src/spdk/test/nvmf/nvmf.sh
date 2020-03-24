@@ -11,53 +11,60 @@ source $rootdir/test/nvmf/common.sh
 
 timing_enter nvmf_tgt
 
-# NVMF_TEST_CORE_MASK is the biggest core mask specified by
-#  any of the nvmf_tgt tests.  Using this mask for the stub
-#  ensures that if this mask spans CPU sockets, that we will
-#  allocate memory from both sockets.  The stub will *not*
-#  run anything on the extra cores (and will sleep on master
-#  core 0) so there is no impact to the nvmf_tgt tests by
-#  specifying the bigger core mask.
-start_stub "-s 2048 -i 0 -m $NVMF_TEST_CORE_MASK"
-trap "kill_stub; exit 1" SIGINT SIGTERM EXIT
+trap "exit 1" SIGINT SIGTERM EXIT
 
-export NVMF_APP_SHM_ID="0"
-export NVMF_APP="./app/nvmf_tgt/nvmf_tgt -i $NVMF_APP_SHM_ID -e 0xFFFF"
+TEST_ARGS=$@
 
-run_test suite test/nvmf/filesystem/filesystem.sh
-run_test suite test/nvmf/discovery/discovery.sh
+run_test suite test/nvmf/target/filesystem.sh $TEST_ARGS
+run_test suite test/nvmf/target/discovery.sh $TEST_ARGS
+run_test suite test/nvmf/target/connect_disconnect.sh $TEST_ARGS
 if [ $SPDK_TEST_NVME_CLI -eq 1 ]; then
-	run_test suite test/nvmf/nvme_cli/nvme_cli.sh
+	run_test suite test/nvmf/target/nvme_cli.sh $TEST_ARGS
 fi
-run_test suite test/nvmf/lvol/nvmf_lvol.sh
-run_test suite test/nvmf/shutdown/shutdown.sh
-run_test suite test/nvmf/bdev_io_wait/bdev_io_wait.sh
-run_test suite test/nvmf/create_transport/create_transport.sh
+run_test suite test/nvmf/target/nvmf_lvol.sh $TEST_ARGS
+#TODO: disabled due to intermittent failures. Need to triage.
+# run_test suite test/nvmf/target/srq_overwhelm.sh $TEST_ARGS
+run_test suite test/nvmf/target/nvmf_vhost.sh $TEST_ARGS
+run_test suite test/nvmf/target/shutdown.sh $TEST_ARGS
+run_test suite test/nvmf/target/bdev_io_wait.sh $TEST_ARGS
+run_test suite test/nvmf/target/create_transport.sh $TEST_ARGS
 
 if [ $RUN_NIGHTLY -eq 1 ]; then
-	run_test suite test/nvmf/multiconnection/multiconnection.sh
+	run_test suite test/nvmf/target/multiconnection.sh $TEST_ARGS
+fi
+
+run_test suite test/nvmf/target/nmic.sh $TEST_ARGS
+run_test suite test/nvmf/target/rpc.sh $TEST_ARGS
+run_test suite test/nvmf/target/fio.sh $TEST_ARGS
+# bdevio currently fails with tcp transport - see issue #808
+if [ "$TEST_TRANSPORT" == "rdma" ]; then
+    run_test suite test/nvmf/target/bdevio.sh $TEST_ARGS
 fi
 
 timing_enter host
 
-run_test suite test/nvmf/host/bdevperf.sh
-run_test suite test/nvmf/host/identify.sh
-run_test suite test/nvmf/host/perf.sh
-# TODO: disabled due to intermittent failures (RDMA_CM_EVENT_UNREACHABLE/ETIMEDOUT)
-#run_test test/nvmf/host/identify_kernel_nvmf.sh
-run_test suite test/nvmf/host/aer.sh
-run_test suite test/nvmf/host/fio.sh
+run_test suite test/nvmf/host/bdevperf.sh $TEST_ARGS
+run_test suite test/nvmf/host/identify.sh $TEST_ARGS
+run_test suite test/nvmf/host/perf.sh $TEST_ARGS
+# This script has traditionally tested the tcp transport, and then
+# also the rdma transport if it's available.  Now that this script
+# is parameterized, explicitly run the test a second time for the
+# tcp transport, at least until the test pool is set up with a VM
+# that can run all of the tcp tests.  At that point, this whole
+# script will be run twice, once for rdma and once for tcp, and
+# then this second invocation can be removed.
+run_test suite test/nvmf/host/perf.sh $TEST_ARGS --transport=tcp
 
-run_test suite test/nvmf/nmic/nmic.sh
+# TODO: disabled due to intermittent failures (RDMA_CM_EVENT_UNREACHABLE/ETIMEDOUT)
+#run_test test/nvmf/host/identify_kernel_nvmf.sh $TEST_ARGS
+run_test suite test/nvmf/host/aer.sh $TEST_ARGS
+if [ $SPDK_RUN_ASAN -eq 0 ]; then
+    run_test suite test/nvmf/host/fio.sh $TEST_ARGS
+fi
 
 timing_exit host
-trap - SIGINT SIGTERM EXIT
-kill_stub
 
-# TODO: enable nvme device detachment for multi-process so that
-#  we can use the stub for this test
-run_test suite test/nvmf/rpc/rpc.sh
-run_test suite test/nvmf/fio/fio.sh
+trap - SIGINT SIGTERM EXIT
 revert_soft_roce
 
 report_test_completion "nvmf"

@@ -42,10 +42,24 @@ C_SRCS = bdev.c part.c scsi_nvme.c
 C_SRCS-$(CONFIG_VTUNE) += vtune.c
 LIBNAME = bdev
 
-DIRS-y += error gpt lvol malloc null nvme passthru raid rpc split
+DIRS-y += delay error gpt lvol malloc null nvme passthru raid rpc split
 
 ifeq ($(CONFIG_CRYPTO),y)
 DIRS-y += crypto
+endif
+
+ifeq ($(CONFIG_OCF), y)
+DIRS-y += ocf
+DIRS-y += ocf/env
+DEPDIRS-ocf := ocf/env
+endif
+
+ifeq ($(CONFIG_REDUCE),y)
+DIRS-y += compress
+endif
+
+ifeq ($(CONFIG_URING),y)
+DIRS-y += uring
 endif
 
 ifeq ($(OS),Linux)

@@ -48,9 +48,7 @@
 
 // metadata ops.
 
-class MClientRequest : public MessageInstance<MClientRequest> {
-public:
-  friend factory;
+class MClientRequest : public SafeMessage {
 private:
   static constexpr int HEAD_VERSION = 4;
   static constexpr int COMPAT_VERSION = 1;
@@ -91,9 +89,9 @@ public:
 protected:
   // cons
   MClientRequest()
-    : MessageInstance(CEPH_MSG_CLIENT_REQUEST, HEAD_VERSION, COMPAT_VERSION) {}
+    : SafeMessage(CEPH_MSG_CLIENT_REQUEST, HEAD_VERSION, COMPAT_VERSION) {}
   MClientRequest(int op)
-    : MessageInstance(CEPH_MSG_CLIENT_REQUEST, HEAD_VERSION, COMPAT_VERSION) {
+    : SafeMessage(CEPH_MSG_CLIENT_REQUEST, HEAD_VERSION, COMPAT_VERSION) {
     memset(&head, 0, sizeof(head));
     head.op = op;
   }
@@ -134,6 +132,9 @@ public:
   bool is_replay() const {
     return get_flags() & CEPH_MDS_FLAG_REPLAY;
   }
+  bool is_async() const {
+    return get_flags() & CEPH_MDS_FLAG_ASYNC;
+  }
 
   // normal fields
   void set_stamp(utime_t t) { stamp = t; }
@@ -156,6 +157,9 @@ public:
   }
   void set_replayed_op() {
     head.flags = head.flags | CEPH_MDS_FLAG_REPLAY;
+  }
+  void set_async_op() {
+    head.flags = head.flags | CEPH_MDS_FLAG_ASYNC;
   }
 
   utime_t get_stamp() const { return stamp; }
@@ -195,7 +199,7 @@ public:
 
 	localmask &= ~CEPH_SETATTR_BTIME;
 
-	head.args.setattr.btime = { 0 };
+	head.args.setattr.btime = { init_le32(0), init_le32(0) };
 	head.args.setattr.mask = localmask;
       }
     }
@@ -269,7 +273,9 @@ public:
       out << " " << stamp;
     if (head.num_retry)
       out << " RETRY=" << (int)head.num_retry;
-    if (get_flags() & CEPH_MDS_FLAG_REPLAY)
+    if (is_async())
+      out << " ASYNC";
+    if (is_replay())
       out << " REPLAY";
     if (queued_for_replay)
       out << " QUEUED_FOR_REPLAY";
@@ -281,7 +287,9 @@ public:
     out << '}'
 	<< ")";
   }
-
+private:
+  template<class T, typename... Args>
+  friend boost::intrusive_ptr<T> ceph::make_message(Args&&... args);
 };
 
 WRITE_CLASS_ENCODER(MClientRequest::Release)

@@ -264,8 +264,9 @@ virtio_scsi_dev_init(struct virtio_scsi_dev *svdev, uint16_t max_queues)
 
 	eventq = vdev->vqs[VIRTIO_SCSI_EVENTQ];
 	num_events = spdk_min(eventq->vq_nentries, VIRTIO_SCSI_EVENTQ_BUFFER_COUNT);
-	svdev->eventq_ios = spdk_dma_zmalloc(sizeof(*svdev->eventq_ios) * num_events,
-					     0, NULL);
+	svdev->eventq_ios = spdk_zmalloc(sizeof(*svdev->eventq_ios) * num_events,
+					 0, NULL, SPDK_ENV_LCORE_ID_ANY,
+					 SPDK_MALLOC_DMA);
 	if (svdev->eventq_ios == NULL) {
 		SPDK_ERRLOG("cannot allocate memory for %"PRIu16" eventq buffers\n",
 			    num_events);
@@ -456,7 +457,7 @@ static struct spdk_bdev_module virtio_scsi_if = {
 	.async_fini = true,
 };
 
-SPDK_BDEV_MODULE_REGISTER(&virtio_scsi_if)
+SPDK_BDEV_MODULE_REGISTER(virtio_scsi, &virtio_scsi_if)
 
 static struct virtio_scsi_io_ctx *
 bdev_virtio_init_io_vreq(struct spdk_io_channel *ch, struct spdk_bdev_io *bdev_io)
@@ -569,7 +570,7 @@ bdev_virtio_reset(struct spdk_io_channel *ch, struct spdk_bdev_io *bdev_io)
 	tmf_req->type = VIRTIO_SCSI_T_TMF;
 	tmf_req->subtype = VIRTIO_SCSI_T_TMF_LOGICAL_UNIT_RESET;
 
-	enqueued_count = spdk_ring_enqueue(svdev->ctrlq_ring, (void **)&bdev_io, 1);
+	enqueued_count = spdk_ring_enqueue(svdev->ctrlq_ring, (void **)&bdev_io, 1, NULL);
 	if (spdk_likely(enqueued_count == 1)) {
 		return;
 	} else {
@@ -578,7 +579,7 @@ bdev_virtio_reset(struct spdk_io_channel *ch, struct spdk_bdev_io *bdev_io)
 }
 
 static void
-bdev_virtio_unmap(struct spdk_io_channel *ch, struct spdk_bdev_io *bdev_io)
+bdev_virtio_unmap(struct spdk_io_channel *ch, struct spdk_bdev_io *bdev_io, bool success)
 {
 	struct virtio_scsi_io_ctx *io_ctx = bdev_virtio_init_io_vreq(ch, bdev_io);
 	struct virtio_scsi_cmd_req *req = &io_ctx->req;
@@ -586,6 +587,11 @@ bdev_virtio_unmap(struct spdk_io_channel *ch, struct spdk_bdev_io *bdev_io)
 	uint8_t *buf;
 	uint64_t offset_blocks, num_blocks;
 	uint16_t cmd_len;
+
+	if (!success) {
+		spdk_bdev_io_complete(bdev_io, SPDK_BDEV_IO_STATUS_FAILED);
+		return;
+	}
 
 	buf = bdev_io->u.bdev.iovs[0].iov_base;
 
@@ -622,13 +628,25 @@ bdev_virtio_unmap(struct spdk_io_channel *ch, struct spdk_bdev_io *bdev_io)
 	bdev_virtio_send_io(ch, bdev_io);
 }
 
+static void
+bdev_virtio_get_buf_cb(struct spdk_io_channel *ch, struct spdk_bdev_io *bdev_io,
+		       bool success)
+{
+	if (!success) {
+		spdk_bdev_io_complete(bdev_io, SPDK_BDEV_IO_STATUS_FAILED);
+		return;
+	}
+
+	bdev_virtio_rw(ch, bdev_io);
+}
+
 static int _bdev_virtio_submit_request(struct spdk_io_channel *ch, struct spdk_bdev_io *bdev_io)
 {
 	struct virtio_scsi_disk *disk = SPDK_CONTAINEROF(bdev_io->bdev, struct virtio_scsi_disk, bdev);
 
 	switch (bdev_io->type) {
 	case SPDK_BDEV_IO_TYPE_READ:
-		spdk_bdev_io_get_buf(bdev_io, bdev_virtio_rw,
+		spdk_bdev_io_get_buf(bdev_io, bdev_virtio_get_buf_cb,
 				     bdev_io->u.bdev.num_blocks * bdev_io->bdev->blocklen);
 		return 0;
 	case SPDK_BDEV_IO_TYPE_WRITE:
@@ -911,7 +929,7 @@ bdev_virtio_tmf_abort_ioerr_cb(void *ctx)
 static void
 bdev_virtio_tmf_abort(struct spdk_bdev_io *bdev_io, int status)
 {
-	spdk_thread_fn fn;
+	spdk_msg_fn fn;
 
 	if (status == -ENOMEM) {
 		fn = bdev_virtio_tmf_abort_nomem_cb;
@@ -1033,7 +1051,7 @@ _virtio_scsi_dev_scan_finish(struct virtio_scsi_scan_base *base, int errnum)
 	}
 
 	if (base->cb_fn == NULL) {
-		spdk_dma_free(base);
+		spdk_free(base);
 		return;
 	}
 
@@ -1046,7 +1064,7 @@ _virtio_scsi_dev_scan_finish(struct virtio_scsi_scan_base *base, int errnum)
 	}
 
 	base->cb_fn(base->cb_arg, errnum, bdevs, bdevs_cnt);
-	spdk_dma_free(base);
+	spdk_free(base);
 }
 
 static int
@@ -1448,8 +1466,8 @@ process_scan_resp(struct virtio_scsi_scan_base *base)
 		base->retries--;
 		if (base->retries == 0) {
 			SPDK_NOTICELOG("Target %"PRIu8" is present, but unavailable.\n", target_id);
-			SPDK_TRACEDUMP(SPDK_LOG_VIRTIO, "CDB", req->cdb, sizeof(req->cdb));
-			SPDK_TRACEDUMP(SPDK_LOG_VIRTIO, "SENSE DATA", resp->sense, sizeof(resp->sense));
+			SPDK_LOGDUMP(SPDK_LOG_VIRTIO, "CDB", req->cdb, sizeof(req->cdb));
+			SPDK_LOGDUMP(SPDK_LOG_VIRTIO, "SENSE DATA", resp->sense, sizeof(resp->sense));
 			_virtio_scsi_dev_scan_next(base, -EBUSY);
 			return;
 		}
@@ -1631,7 +1649,8 @@ _virtio_scsi_dev_scan_init(struct virtio_scsi_dev *svdev)
 		return -EBUSY;
 	}
 
-	base = spdk_dma_zmalloc(sizeof(*base), 64, NULL);
+	base = spdk_zmalloc(sizeof(*base), 64, NULL,
+			    SPDK_ENV_LCORE_ID_ANY, SPDK_MALLOC_DMA);
 	if (base == NULL) {
 		SPDK_ERRLOG("couldn't allocate memory for scsi target scan.\n");
 		return -ENOMEM;
@@ -1826,7 +1845,7 @@ _virtio_scsi_dev_unregister_cb(void *io_device)
 
 	remove_cb = svdev->remove_cb;
 	remove_ctx = svdev->remove_ctx;
-	spdk_dma_free(svdev->eventq_ios);
+	spdk_free(svdev->eventq_ios);
 	free(svdev);
 
 	if (remove_cb) {
@@ -2002,8 +2021,7 @@ bdev_virtio_scsi_dev_list(struct spdk_json_write_ctx *w)
 	TAILQ_FOREACH(svdev, &g_virtio_scsi_devs, tailq) {
 		spdk_json_write_object_begin(w);
 
-		spdk_json_write_name(w, "name");
-		spdk_json_write_string(w, svdev->vdev.name);
+		spdk_json_write_named_string(w, "name", svdev->vdev.name);
 
 		virtio_dev_dump_json_info(&svdev->vdev, w);
 

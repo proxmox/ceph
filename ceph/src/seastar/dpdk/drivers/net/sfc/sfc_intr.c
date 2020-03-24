@@ -1,32 +1,10 @@
-/*-
- *   BSD LICENSE
+/* SPDX-License-Identifier: BSD-3-Clause
  *
- * Copyright (c) 2016-2017 Solarflare Communications Inc.
+ * Copyright (c) 2016-2018 Solarflare Communications Inc.
  * All rights reserved.
  *
  * This software was jointly developed between OKTET Labs (under contract
  * for Solarflare) and Solarflare Communications, Inc.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice,
- *    this list of conditions and the following disclaimer.
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
- * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
- * PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR
- * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
- * EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
- * PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS;
- * OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
- * WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR
- * OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE,
- * EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
 /*
@@ -57,8 +35,9 @@ sfc_intr_handle_mgmt_evq(struct sfc_adapter *sa)
 
 	evq = sa->mgmt_evq;
 
-	if (evq->init_state != SFC_EVQ_STARTED) {
-		sfc_log_init(sa, "interrupt on stopped EVQ %u", evq->evq_index);
+	if (!sa->mgmt_evq_running) {
+		sfc_log_init(sa, "interrupt on not running management EVQ %u",
+			     evq->evq_index);
 	} else {
 		sfc_ev_qpoll(evq);
 
@@ -77,7 +56,7 @@ sfc_intr_line_handler(void *cb_arg)
 	boolean_t fatal;
 	uint32_t qmask;
 	unsigned int lsc_seq = sa->port.lsc_seq;
-	struct rte_pci_device *pci_dev = SFC_DEV_TO_PCI(sa->eth_dev);
+	struct rte_pci_device *pci_dev = RTE_ETH_DEV_TO_PCI(sa->eth_dev);
 
 	sfc_log_init(sa, "entry");
 
@@ -107,11 +86,12 @@ sfc_intr_line_handler(void *cb_arg)
 
 exit:
 	if (lsc_seq != sa->port.lsc_seq) {
-		sfc_info(sa, "link status change event: link %s",
+		sfc_notice(sa, "link status change event: link %s",
 			 sa->eth_dev->data->dev_link.link_status ?
 			 "UP" : "DOWN");
 		_rte_eth_dev_callback_process(sa->eth_dev,
-					      RTE_ETH_EVENT_INTR_LSC, NULL);
+					      RTE_ETH_EVENT_INTR_LSC,
+					      NULL);
 	}
 }
 
@@ -122,7 +102,7 @@ sfc_intr_message_handler(void *cb_arg)
 	efx_nic_t *enp = sa->nic;
 	boolean_t fatal;
 	unsigned int lsc_seq = sa->port.lsc_seq;
-	struct rte_pci_device *pci_dev = SFC_DEV_TO_PCI(sa->eth_dev);
+	struct rte_pci_device *pci_dev = RTE_ETH_DEV_TO_PCI(sa->eth_dev);
 
 	sfc_log_init(sa, "entry");
 
@@ -150,9 +130,10 @@ sfc_intr_message_handler(void *cb_arg)
 
 exit:
 	if (lsc_seq != sa->port.lsc_seq) {
-		sfc_info(sa, "link status change event");
+		sfc_notice(sa, "link status change event");
 		_rte_eth_dev_callback_process(sa->eth_dev,
-					      RTE_ETH_EVENT_INTR_LSC, NULL);
+					      RTE_ETH_EVENT_INTR_LSC,
+					      NULL);
 	}
 }
 
@@ -177,7 +158,7 @@ sfc_intr_start(struct sfc_adapter *sa)
 	if (rc != 0)
 		goto fail_intr_init;
 
-	pci_dev = SFC_DEV_TO_PCI(sa->eth_dev);
+	pci_dev = RTE_ETH_DEV_TO_PCI(sa->eth_dev);
 	intr_handle = &pci_dev->intr_handle;
 
 	if (intr->handler != NULL) {
@@ -232,7 +213,7 @@ void
 sfc_intr_stop(struct sfc_adapter *sa)
 {
 	struct sfc_intr *intr = &sa->intr;
-	struct rte_pci_device *pci_dev = SFC_DEV_TO_PCI(sa->eth_dev);
+	struct rte_pci_device *pci_dev = RTE_ETH_DEV_TO_PCI(sa->eth_dev);
 
 	sfc_log_init(sa, "entry");
 
@@ -270,7 +251,7 @@ sfc_intr_configure(struct sfc_adapter *sa)
 	intr->handler = NULL;
 	intr->lsc_intr = (sa->eth_dev->data->dev_conf.intr_conf.lsc != 0);
 	if (!intr->lsc_intr) {
-		sfc_info(sa, "LSC tracking using interrupts is disabled");
+		sfc_notice(sa, "LSC tracking using interrupts is disabled");
 		goto done;
 	}
 
@@ -306,12 +287,12 @@ int
 sfc_intr_attach(struct sfc_adapter *sa)
 {
 	struct sfc_intr *intr = &sa->intr;
-	struct rte_pci_device *pci_dev = SFC_DEV_TO_PCI(sa->eth_dev);
+	struct rte_pci_device *pci_dev = RTE_ETH_DEV_TO_PCI(sa->eth_dev);
 
 	sfc_log_init(sa, "entry");
 
 	switch (pci_dev->intr_handle.type) {
-#ifdef RTE_EXEC_ENV_LINUXAPP
+#ifdef RTE_EXEC_ENV_LINUX
 	case RTE_INTR_HANDLE_UIO_INTX:
 	case RTE_INTR_HANDLE_VFIO_LEGACY:
 		intr->type = EFX_INTR_LINE;

@@ -67,13 +67,16 @@ hello_bdev_usage(void)
 /*
  * This function is called to parse the parameters that are specific to this application
  */
-static void hello_bdev_parse_arg(int ch, char *arg)
+static int hello_bdev_parse_arg(int ch, char *arg)
 {
 	switch (ch) {
 	case 'b':
 		g_bdev_name = arg;
 		break;
+	default:
+		return -EINVAL;
 	}
+	return 0;
 }
 
 /*
@@ -185,7 +188,7 @@ hello_write(void *arg)
  * Our initial event that kicks off everything from main().
  */
 static void
-hello_start(void *arg1, void *arg2)
+hello_start(void *arg1)
 {
 	struct hello_context_t *hello_context = arg1;
 	uint32_t blk_size, buf_align;
@@ -257,7 +260,6 @@ main(int argc, char **argv)
 	/* Set default values in opts structure. */
 	spdk_app_opts_init(&opts);
 	opts.name = "hello_bdev";
-	opts.config_file = "bdev.conf";
 
 	/*
 	 * The user can provide the config file and bdev name at run time.
@@ -265,12 +267,16 @@ main(int argc, char **argv)
 	 * ./hello_bdev -c bdev.conf -b Malloc0
 	 * To use passthru bdev PT0 run with params
 	 * ./hello_bdev -c bdev.conf -b PT0
-	 * If none of the parameters are provide the application will use the
-	 * default parameters(-c bdev.conf -b Malloc0).
+	 * If the bdev name is not specified,
+	 * then Malloc0 is used by default
 	 */
 	if ((rc = spdk_app_parse_args(argc, argv, &opts, "b:", NULL, hello_bdev_parse_arg,
 				      hello_bdev_usage)) != SPDK_APP_PARSE_ARGS_SUCCESS) {
 		exit(rc);
+	}
+	if (opts.config_file == NULL) {
+		SPDK_ERRLOG("configfile must be specified using -c <conffile> e.g. -c bdev.conf\n");
+		exit(1);
 	}
 	hello_context.bdev_name = g_bdev_name;
 
@@ -280,7 +286,7 @@ main(int argc, char **argv)
 	 * hello_start() returns), or if an error occurs during
 	 * spdk_app_start() before hello_start() runs.
 	 */
-	rc = spdk_app_start(&opts, hello_start, &hello_context, NULL);
+	rc = spdk_app_start(&opts, hello_start, &hello_context);
 	if (rc) {
 		SPDK_ERRLOG("ERROR starting application\n");
 	}

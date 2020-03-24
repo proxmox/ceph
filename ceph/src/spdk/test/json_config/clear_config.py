@@ -3,6 +3,7 @@
 import os
 import sys
 import argparse
+import logging
 sys.path.append(os.path.join(os.path.dirname(__file__), "../../scripts"))
 import rpc   # noqa
 from rpc.client import print_dict, JSONRPCException  # noqa
@@ -53,7 +54,10 @@ def get_bdev_destroy_method(bdev):
                           'construct_error_bdev': "delete_error_bdev",
                           'construct_split_vbdev': "destruct_split_vbdev",
                           'construct_virtio_dev': "remove_virtio_bdev",
-                          'construct_crypto_bdev': "delete_crypto_bdev"
+                          'construct_crypto_bdev': "delete_crypto_bdev",
+                          'bdev_delay_create': "bdev_delay_delete",
+                          'construct_passthru_bdev': "delete_passthru_bdev",
+                          'construct_compress_bdev': 'delete_compress_bdev',
                           }
     destroy_method = None
     if 'method' in bdev:
@@ -177,7 +181,10 @@ if __name__ == "__main__":
     parser.add_argument('-s', dest='server_addr', default='/var/tmp/spdk.sock')
     parser.add_argument('-p', dest='port', default=5260, type=int)
     parser.add_argument('-t', dest='timeout', default=60.0, type=float)
-    parser.add_argument('-v', dest='verbose', action='store_true')
+    parser.add_argument('-v', dest='verbose', action='store_const', const="INFO",
+                        help='Set verbose mode to INFO', default="ERROR")
+    parser.add_argument('--verbose', dest='verbose', choices=['DEBUG', 'INFO', 'ERROR'],
+                        help="""Set verbose level. """)
     subparsers = parser.add_subparsers(help='RPC methods')
 
     @call_test_cmd
@@ -204,9 +211,10 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    try:
-        args.client = rpc.client.JSONRPCClient(args.server_addr, args.port, args.verbose, args.timeout)
-    except JSONRPCException as ex:
-        print((ex.message))
-        exit(1)
-    args.func(args)
+    with rpc.client.JSONRPCClient(args.server_addr, args.port, args.timeout, log_level=getattr(logging, args.verbose.upper())) as client:
+        try:
+            args.client = client
+            args.func(args)
+        except JSONRPCException as ex:
+            print((ex.message))
+            exit(1)

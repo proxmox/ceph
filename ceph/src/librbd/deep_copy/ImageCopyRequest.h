@@ -6,7 +6,8 @@
 
 #include "include/int_types.h"
 #include "include/rados/librados.hpp"
-#include "common/Mutex.h"
+#include "common/bit_vector.hpp"
+#include "common/ceph_mutex.h"
 #include "common/RefCountedObj.h"
 #include "librbd/Types.h"
 #include "librbd/deep_copy/Types.h"
@@ -30,19 +31,23 @@ class ImageCopyRequest : public RefCountedObject {
 public:
   static ImageCopyRequest* create(ImageCtxT *src_image_ctx,
                                   ImageCtxT *dst_image_ctx,
-                                  librados::snap_t snap_id_start,
-                                  librados::snap_t snap_id_end, bool flatten,
+                                  librados::snap_t src_snap_id_start,
+                                  librados::snap_t src_snap_id_end,
+                                  librados::snap_t dst_snap_id_start,
+                                  bool flatten,
                                   const ObjectNumber &object_number,
                                   const SnapSeqs &snap_seqs,
                                   ProgressContext *prog_ctx,
                                   Context *on_finish) {
-    return new ImageCopyRequest(src_image_ctx, dst_image_ctx, snap_id_start,
-                                snap_id_end, flatten, object_number, snap_seqs,
-                                prog_ctx, on_finish);
+    return new ImageCopyRequest(src_image_ctx, dst_image_ctx, src_snap_id_start,
+                                src_snap_id_end, dst_snap_id_start, flatten,
+                                object_number, snap_seqs, prog_ctx, on_finish);
   }
 
   ImageCopyRequest(ImageCtxT *src_image_ctx, ImageCtxT *dst_image_ctx,
-                   librados::snap_t snap_id_start, librados::snap_t snap_id_end,
+                   librados::snap_t src_snap_id_start,
+                   librados::snap_t src_snap_id_end,
+                   librados::snap_t dst_snap_id_start,
                    bool flatten, const ObjectNumber &object_number,
                    const SnapSeqs &snap_seqs, ProgressContext *prog_ctx,
                    Context *on_finish);
@@ -55,6 +60,10 @@ private:
    * @verbatim
    *
    * <start>
+   *    |
+   *    v
+   * COMPUTE_DIFF
+   *    |
    *    |      . . . . .
    *    |      .       .  (parallel execution of
    *    v      v       .   multiple objects at once)
@@ -68,8 +77,9 @@ private:
 
   ImageCtxT *m_src_image_ctx;
   ImageCtxT *m_dst_image_ctx;
-  librados::snap_t m_snap_id_start;
-  librados::snap_t m_snap_id_end;
+  librados::snap_t m_src_snap_id_start;
+  librados::snap_t m_src_snap_id_end;
+  librados::snap_t m_dst_snap_id_start;
   bool m_flatten;
   ObjectNumber m_object_number;
   SnapSeqs m_snap_seqs;
@@ -77,7 +87,7 @@ private:
   Context *m_on_finish;
 
   CephContext *m_cct;
-  Mutex m_lock;
+  ceph::mutex m_lock;
   bool m_canceled = false;
 
   uint64_t m_object_no = 0;
@@ -89,8 +99,13 @@ private:
   SnapMap m_snap_map;
   int m_ret_val = 0;
 
+  BitVector<2> m_object_diff_state;
+
+  void compute_diff();
+  void handle_compute_diff(int r);
+
   void send_object_copies();
-  void send_next_object_copy();
+  int send_next_object_copy();
   void handle_object_copy(uint64_t object_no, int r);
 
   void finish(int r);

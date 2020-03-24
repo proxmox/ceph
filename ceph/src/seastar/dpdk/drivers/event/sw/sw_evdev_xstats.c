@@ -1,38 +1,10 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2016-2017 Intel Corporation. All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2016-2017 Intel Corporation
  */
 
+#include <rte_event_ring.h>
 #include "sw_evdev.h"
-#include "iq_ring.h"
-#include "event_ring.h"
+#include "iq_chunk.h"
 
 enum xstats_type {
 	/* common stats */
@@ -53,10 +25,10 @@ enum xstats_type {
 	pkt_cycles,
 	poll_return, /* for zero-count and used also for port bucket loop */
 	/* qid_specific */
-	iq_size,
 	iq_used,
 	/* qid port mapping specific */
 	pinned,
+	pkts, /* note: qid-to-port pkts */
 };
 
 typedef uint64_t (*xstats_fn)(const struct sw_evdev *dev,
@@ -104,10 +76,10 @@ get_port_stat(const struct sw_evdev *sw, uint16_t obj_idx,
 	case calls: return p->total_polls;
 	case credits: return p->inflight_credits;
 	case poll_return: return p->zero_polls;
-	case rx_used: return qe_ring_count(p->rx_worker_ring);
-	case rx_free: return qe_ring_free_count(p->rx_worker_ring);
-	case tx_used: return qe_ring_count(p->cq_worker_ring);
-	case tx_free: return qe_ring_free_count(p->cq_worker_ring);
+	case rx_used: return rte_event_ring_count(p->rx_worker_ring);
+	case rx_free: return rte_event_ring_free_count(p->rx_worker_ring);
+	case tx_used: return rte_event_ring_count(p->cq_worker_ring);
+	case tx_free: return rte_event_ring_free_count(p->cq_worker_ring);
 	default: return -1;
 	}
 }
@@ -143,7 +115,6 @@ get_qid_stat(const struct sw_evdev *sw, uint16_t obj_idx,
 			return infl;
 		} while (0);
 		break;
-	case iq_size: return RTE_DIM(qid->iq[0]->ring);
 	default: return -1;
 	}
 }
@@ -156,7 +127,7 @@ get_qid_iq_stat(const struct sw_evdev *sw, uint16_t obj_idx,
 	const int iq_idx = extra_arg;
 
 	switch (type) {
-	case iq_used: return iq_ring_count(qid->iq[iq_idx]);
+	case iq_used: return iq_count(&qid->iq[iq_idx]);
 	default: return -1;
 	}
 }
@@ -179,6 +150,8 @@ get_qid_port_stat(const struct sw_evdev *sw, uint16_t obj_idx,
 			return pin;
 		} while (0);
 		break;
+	case pkts:
+		return qid->to_port[port];
 	default: return -1;
 	}
 }
@@ -233,21 +206,24 @@ sw_xstats_init(struct sw_evdev *sw)
 	/* all bucket dequeues are allowed to be reset, handled in loop below */
 
 	static const char * const qid_stats[] = {"rx", "tx", "drop",
-			"inflight", "iq_size"
+			"inflight"
 	};
 	static const enum xstats_type qid_types[] = { rx, tx, dropped,
-			inflight, iq_size
+			inflight
 	};
 	static const uint8_t qid_reset_allowed[] = {1, 1, 1,
-			0, 0
+			0
 	};
 
 	static const char * const qid_iq_stats[] = { "used" };
 	static const enum xstats_type qid_iq_types[] = { iq_used };
 	/* reset allowed */
 
-	static const char * const qid_port_stats[] = { "pinned_flows" };
-	static const enum xstats_type qid_port_types[] = { pinned };
+	static const char * const qid_port_stats[] = { "pinned_flows",
+		"packets"
+	};
+	static const enum xstats_type qid_port_types[] = { pinned, pkts };
+	static const uint8_t qid_port_reset_allowed[] = {0, 1};
 	/* reset allowed */
 	/* ---- end of stat definitions ---- */
 
@@ -312,8 +288,9 @@ sw_xstats_init(struct sw_evdev *sw)
 					port, port_stats[i]);
 		}
 
-		for (bkt = 0; bkt < (sw->ports[port].cq_worker_ring->size >>
-				SW_DEQ_STAT_BUCKET_SHIFT) + 1; bkt++) {
+		for (bkt = 0; bkt < (rte_event_ring_get_capacity(
+				sw->ports[port].cq_worker_ring) >>
+					SW_DEQ_STAT_BUCKET_SHIFT) + 1; bkt++) {
 			for (i = 0; i < RTE_DIM(port_bucket_stats); i++) {
 				sw->xstats[stat] = (struct sw_xstats_entry){
 					.fn = get_port_bucket_stat,
@@ -376,7 +353,8 @@ sw_xstats_init(struct sw_evdev *sw)
 					.stat = qid_port_types[i],
 					.mode = RTE_EVENT_DEV_XSTATS_QUEUE,
 					.extra_arg = port,
-					.reset_allowed = 0,
+					.reset_allowed =
+						qid_port_reset_allowed[i],
 				};
 				snprintf(sname, sizeof(sname),
 						"qid_%u_port_%u_%s",
@@ -530,7 +508,7 @@ sw_xstats_get(const struct rte_eventdev *dev,
 {
 	struct sw_evdev *sw = sw_pmd_priv(dev);
 	const uint32_t reset = 0;
-	const uint32_t ret_n_lt_stats = 1;
+	const uint32_t ret_n_lt_stats = 0;
 	return sw_xstats_update(sw, mode, queue_port_id, ids, values, n,
 				reset, ret_n_lt_stats);
 }

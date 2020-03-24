@@ -1,32 +1,5 @@
-..  BSD LICENSE
-    Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
-    All rights reserved.
-
-    Redistribution and use in source and binary forms, with or without
-    modification, are permitted provided that the following conditions
-    are met:
-
-    * Redistributions of source code must retain the above copyright
-    notice, this list of conditions and the following disclaimer.
-    * Redistributions in binary form must reproduce the above copyright
-    notice, this list of conditions and the following disclaimer in
-    the documentation and/or other materials provided with the
-    distribution.
-    * Neither the name of Intel Corporation nor the names of its
-    contributors may be used to endorse or promote products derived
-    from this software without specific prior written permission.
-
-    THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-    "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-    LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-    A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-    OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-    SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-    LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-    DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-    THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-    (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-    OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+..  SPDX-License-Identifier: BSD-3-Clause
+    Copyright(c) 2010-2014 Intel Corporation.
 
 System Requirements
 ===================
@@ -43,19 +16,26 @@ BIOS Setting Prerequisite on x86
 
 For the majority of platforms, no special BIOS settings are needed to use basic DPDK functionality.
 However, for additional HPET timer and power management functionality,
-and high performance of small packets on 40G NIC, BIOS setting changes may be needed.
+and high performance of small packets, BIOS setting changes may be needed.
 Consult the section on :ref:`Enabling Additional Functionality <Enabling_Additional_Functionality>`
 for more information on the required changes.
+
+.. note::
+
+   If UEFI secure boot is enabled, the Linux kernel may disallow the use of
+   UIO on the system. Therefore, devices for use by DPDK should be bound to the
+   ``vfio-pci`` kernel module rather than ``igb_uio`` or ``uio_pci_generic``.
+   For more details see :ref:`linux_gsg_binding_kernel`.
 
 Compilation of the DPDK
 -----------------------
 
-**Required Tools:**
+**Required Tools and Libraries:**
 
 .. note::
 
-    Testing has been performed using Fedora 18. The setup commands and installed packages needed on other systems may be different.
-    For details on other Linux distributions and the versions tested, please consult the DPDK Release Notes.
+    The setup commands and installed packages needed on various systems may be different.
+    For details on Linux distributions and the versions tested, please consult the DPDK Release Notes.
 
 *   GNU ``make``.
 
@@ -83,6 +63,21 @@ Compilation of the DPDK
 
        x86_x32 ABI is currently supported with distribution packages only on Ubuntu
        higher than 13.10 or recent Debian distribution. The only supported  compiler is gcc 4.9+.
+
+*   Library for handling NUMA (Non Uniform Memory Access).
+
+    * numactl-devel in Red Hat/Fedora;
+
+    * libnuma-dev in Debian/Ubuntu;
+
+    .. note::
+
+        On systems with NUMA support, `libnuma-dev` (aka `numactl-devel`)
+        is a recommended dependency when `--legacy-mem` switch is used,
+        and a *required* dependency if default memory mode is used.
+        While DPDK will compile and run without `libnuma`
+        even on NUMA-enabled systems,
+        both usability and performance will be degraded.
 
 *   Python, version 2.7+ or 3.2+, to use various helper scripts included in the DPDK package.
 
@@ -112,7 +107,11 @@ System Software
 
 **Required:**
 
-*   Kernel version >= 2.6.34
+*   Kernel version >= 3.16
+
+    The kernel version required is based on the oldest long term stable kernel available
+    at kernel.org when the DPDK version is in development.
+    Compatibility for recent distribution kernels will be kept, notably RHEL/CentOS 7.
 
     The kernel version in use can be checked using the command::
 
@@ -128,8 +127,6 @@ System Software
     the vendor supplied kernel configurations can be used to run most DPDK applications.
 
     For other kernel builds, options which should be enabled for DPDK include:
-
-    *   UIO support
 
     *   HUGETLBFS
 
@@ -181,7 +178,7 @@ In the case of a dual-socket NUMA system,
 the number of hugepages reserved at boot time is generally divided equally between the two sockets
 (on the assumption that sufficient memory is present on both sockets).
 
-See the Documentation/kernel-parameters.txt file in your Linux source tree for further details of these and other kernel options.
+See the Documentation/admin-guide/kernel-parameters.txt file in your Linux source tree for further details of these and other kernel options.
 
 **Alternative:**
 
@@ -200,12 +197,6 @@ On a NUMA machine, pages should be allocated explicitly on separate nodes::
 
     For 1G pages, it is not possible to reserve the hugepage memory after the system has booted.
 
-    On IBM POWER system, the nr_overcommit_hugepages should be set to the same value as nr_hugepages.
-    For example, if the required page number is 128, the following commands are used::
-
-        echo 128 > /sys/kernel/mm/hugepages/hugepages-16384kB/nr_hugepages
-        echo 128 > /sys/kernel/mm/hugepages/hugepages-16384kB/nr_overcommit_hugepages
-
 Using Hugepages with the DPDK
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
@@ -221,56 +212,3 @@ The mount point can be made permanent across reboots, by adding the following li
 For 1GB pages, the page size must be specified as a mount option::
 
     nodev /mnt/huge_1GB hugetlbfs pagesize=1GB 0 0
-
-Xen Domain0 Support in the Linux Environment
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-The existing memory management implementation is based on the Linux kernel hugepage mechanism.
-On the Xen hypervisor, hugepage support for DomainU (DomU) Guests means that DPDK applications work as normal for guests.
-
-However, Domain0 (Dom0) does not support hugepages.
-To work around this limitation, a new kernel module rte_dom0_mm is added to facilitate the allocation and mapping of memory via
-**IOCTL** (allocation) and **MMAP** (mapping).
-
-Enabling Xen Dom0 Mode in the DPDK
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-By default, Xen Dom0 mode is disabled in the DPDK build configuration files.
-To support Xen Dom0, the CONFIG_RTE_LIBRTE_XEN_DOM0 setting should be changed to “y”, which enables the Xen Dom0 mode at compile time.
-
-Furthermore, the CONFIG_RTE_EAL_ALLOW_INV_SOCKET_ID setting should also be changed to “y” in the case of the wrong socket ID being received.
-
-Loading the DPDK rte_dom0_mm Module
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-To run any DPDK application on Xen Dom0, the ``rte_dom0_mm`` module must be loaded into the running kernel with rsv_memsize option.
-The module is found in the kmod sub-directory of the DPDK target directory.
-This module should be loaded using the insmod command as shown below (assuming that the current directory is the DPDK target directory)::
-
-    sudo insmod kmod/rte_dom0_mm.ko rsv_memsize=X
-
-The value X cannot be greater than 4096(MB).
-
-Configuring Memory for DPDK Use
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-After the rte_dom0_mm.ko kernel module has been loaded, the user must configure the memory size for DPDK usage.
-This is done by echoing the memory size to a memsize file in the /sys/devices/ directory.
-Use the following command (assuming that 2048 MB is required)::
-
-    echo 2048 > /sys/kernel/mm/dom0-mm/memsize-mB/memsize
-
-The user can also check how much memory has already been used::
-
-    cat /sys/kernel/mm/dom0-mm/memsize-mB/memsize_rsvd
-
-Xen Domain0 does not support NUMA configuration, as a result the ``--socket-mem`` command line option is invalid for Xen Domain0.
-
-.. note::
-
-    The memsize value cannot be greater than the rsv_memsize value.
-
-Running the DPDK Application on Xen Domain0
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-To run the DPDK application on Xen Domain0, an extra command line option ``--xen-dom0`` is required.

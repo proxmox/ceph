@@ -1,6 +1,6 @@
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 
-import { ChartsModule } from 'ng2-charts/ng2-charts';
+import { ChartsModule } from 'ng2-charts';
 
 import { configureTestBed } from '../../../../testing/unit-test-helper';
 import { CephfsChartComponent } from './cephfs-chart.component';
@@ -58,11 +58,11 @@ describe('CephfsChartComponent', () => {
       },
       {
         x: 10000,
-        y: 2
+        y: 10
       },
       {
         x: 15000,
-        y: 5
+        y: 25
       }
     ]);
   });

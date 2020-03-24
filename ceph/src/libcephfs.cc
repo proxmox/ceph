@@ -20,7 +20,6 @@
 #include "auth/Crypto.h"
 #include "client/Client.h"
 #include "librados/RadosClient.h"
-#include "common/Mutex.h"
 #include "common/ceph_argparse.h"
 #include "common/common_init.h"
 #include "common/config.h"
@@ -229,13 +228,20 @@ public:
     return umask;
   }
 
+  std::string getaddrs()
+  {
+    CachedStackStringStream cos;
+    *cos << messenger->get_myaddrs();
+    return std::string(cos->strv());
+  }
+
   int conf_read_file(const char *path_list)
   {
     int ret = cct->_conf.parse_config_files(path_list, nullptr, 0);
     if (ret)
       return ret;
     cct->_conf.apply_changes(nullptr);
-    cct->_conf.complain_about_parse_errors(cct);
+    cct->_conf.complain_about_parse_error(cct);
     return 0;
   }
 
@@ -362,7 +368,7 @@ extern "C" const char *ceph_version(int *pmajor, int *pminor, int *ppatch)
     *pminor = (n >= 2) ? minor : 0;
   if (ppatch)
     *ppatch = (n >= 3) ? patch : 0;
-  return VERSION;
+  return PROJECT_VERSION;
 }
 
 extern "C" int ceph_create_with_context(struct ceph_mount_info **cmount, CephContext *cct)
@@ -425,6 +431,15 @@ extern "C" uint64_t ceph_get_instance_id(struct ceph_mount_info *cmount)
 {
   if (cmount->is_initialized())
     return cmount->get_client()->get_nodeid().v;
+  return 0;
+}
+
+extern "C" int ceph_getaddrs(struct ceph_mount_info *cmount, char** addrs)
+{
+  if (!cmount->is_initialized())
+    return -ENOTCONN;
+  auto s = cmount->getaddrs();
+  *addrs = strdup(s.c_str());
   return 0;
 }
 
@@ -1642,7 +1657,7 @@ extern "C" int ceph_ll_read(class ceph_mount_info *cmount, Fh* filehandle,
   r = cmount->get_client()->ll_read(filehandle, off, len, &bl);
   if (r >= 0)
     {
-      bl.copy(0, bl.length(), buf);
+      bl.begin().copy(bl.length(), buf);
       r = bl.length();
     }
   return r;
@@ -1786,8 +1801,7 @@ extern "C" int ceph_ll_opendir(class ceph_mount_info *cmount,
 extern "C" int ceph_ll_releasedir(class ceph_mount_info *cmount,
 				  ceph_dir_result *dir)
 {
-  (void) cmount->get_client()->ll_releasedir(reinterpret_cast<dir_result_t*>(dir));
-  return (0);
+  return cmount->get_client()->ll_releasedir(reinterpret_cast<dir_result_t*>(dir));
 }
 
 extern "C" int ceph_ll_rename(class ceph_mount_info *cmount,

@@ -55,14 +55,14 @@ instances or all radosgw-admin commands can be put into the ``[global]`` or the
 :Description: The number of entries in the Ceph Object Gateway cache.
 :Type: Integer
 :Default: ``10000``
-	
+
 
 ``rgw socket path``
 
-:Description: The socket path for the domain socket. ``FastCgiExternalServer`` 
-              uses this socket. If you do not specify a socket path, Ceph 
-              Object Gateway will not run as an external server. The path you 
-              specify here must be the same as the path specified in the 
+:Description: The socket path for the domain socket. ``FastCgiExternalServer``
+              uses this socket. If you do not specify a socket path, Ceph
+              Object Gateway will not run as an external server. The path you
+              specify here must be the same as the path specified in the
               ``rgw.conf`` file.
 
 :Type: String
@@ -76,7 +76,7 @@ instances or all radosgw-admin commands can be put into the ``[global]`` or the
 
 ``rgw host``
 
-:Description: The host for the Ceph Object Gateway instance. Can be an IP 
+:Description: The host for the Ceph Object Gateway instance. Can be an IP
               address or a hostname.
 
 :Type: String
@@ -85,9 +85,9 @@ instances or all radosgw-admin commands can be put into the ``[global]`` or the
 
 ``rgw port``
 
-:Description: Port the instance listens for requests. If not specified, 
+:Description: Port the instance listens for requests. If not specified,
               Ceph Object Gateway runs external FastCGI.
-              
+
 :Type: String
 :Default: None
 
@@ -95,9 +95,9 @@ instances or all radosgw-admin commands can be put into the ``[global]`` or the
 ``rgw dns name``
 
 :Description: The DNS name of the served domain. See also the ``hostnames`` setting within regions.
-:Type: String 
+:Type: String
 :Default: None
-	
+
 
 ``rgw script uri``
 
@@ -126,8 +126,8 @@ instances or all radosgw-admin commands can be put into the ``[global]`` or the
 
 ``rgw remote addr param``
 
-:Description: The remote address parameter. For example, the HTTP field 
-              containing the remote address, or the ``X-Forwarded-For`` 
+:Description: The remote address parameter. For example, the HTTP field
+              containing the remote address, or the ``X-Forwarded-For``
               address if a reverse proxy is operational.
 
 :Type: String
@@ -135,25 +135,25 @@ instances or all radosgw-admin commands can be put into the ``[global]`` or the
 
 
 ``rgw op thread timeout``
-	
+
 :Description: The timeout in seconds for open threads.
 :Type: Integer
 :Default: 600
-	
+
 
 ``rgw op thread suicide timeout``
-	
-:Description: The time ``timeout`` in seconds before a Ceph Object Gateway 
+
+:Description: The time ``timeout`` in seconds before a Ceph Object Gateway
               process dies. Disabled if set to ``0``.
 
-:Type: Integer 
+:Type: Integer
 :Default: ``0``
 
 
 ``rgw thread pool size``
 
 :Description: The size of the thread pool.
-:Type: Integer 
+:Type: Integer
 :Default: 100 threads.
 
 
@@ -168,7 +168,7 @@ instances or all radosgw-admin commands can be put into the ``[global]`` or the
 
 ``rgw init timeout``
 
-:Description: The number of seconds before Ceph Object Gateway gives up on 
+:Description: The number of seconds before Ceph Object Gateway gives up on
               initialization.
 
 :Type: Integer
@@ -177,45 +177,11 @@ instances or all radosgw-admin commands can be put into the ``[global]`` or the
 
 ``rgw mime types file``
 
-:Description: The path and location of the MIME types. Used for Swift 
+:Description: The path and location of the MIME types. Used for Swift
               auto-detection of object types.
 
 :Type: String
 :Default: ``/etc/mime.types``
-
-
-``rgw gc max objs``
-
-:Description: The maximum number of objects that may be handled by 
-              garbage collection in one garbage collection processing cycle.
-
-:Type: Integer
-:Default: ``32``
-
-
-``rgw gc obj min wait``
-
-:Description: The minimum wait time before the object may be removed 
-              and handled by garbage collection processing.
-              
-:Type: Integer
-:Default: ``2 * 3600``
-
-
-``rgw gc processor max time``
-
-:Description: The maximum time between the beginning of two consecutive garbage 
-              collection processing cycles.
-
-:Type: Integer
-:Default: ``3600``
-
-
-``rgw gc processor period``
-
-:Description: The cycle time for garbage collection processing.
-:Type: Integer
-:Default: ``3600``
 
 
 ``rgw s3 success create obj status``
@@ -227,7 +193,7 @@ instances or all radosgw-admin commands can be put into the ``[global]`` or the
 
 ``rgw resolve cname``
 
-:Description: Whether ``rgw`` should use DNS CNAME record of the request 
+:Description: Whether ``rgw`` should use DNS CNAME record of the request
               hostname field (if hostname is not equal to ``rgw dns name``).
 
 :Type: Boolean
@@ -258,7 +224,7 @@ instances or all radosgw-admin commands can be put into the ``[global]`` or the
 
 ``rgw exit timeout secs``
 
-:Description: Number of seconds to wait for a process before exiting 
+:Description: Number of seconds to wait for a process before exiting
               unconditionally.
 
 :Type: Integer
@@ -280,7 +246,7 @@ instances or all radosgw-admin commands can be put into the ``[global]`` or the
 :Type: Integer
 :Default: ``4 << 20``
 
- 
+
 ``rgw relaxed s3 bucket names``
 
 :Description: Enables relaxed S3 bucket names rules for US region buckets.
@@ -312,7 +278,7 @@ instances or all radosgw-admin commands can be put into the ``[global]`` or the
 
 ``rgw curl wait timeout ms``
 
-:Description: The timeout in milliseconds for certain ``curl`` calls. 
+:Description: The timeout in milliseconds for certain ``curl`` calls.
 :Type: Integer
 :Default: ``1000``
 
@@ -327,7 +293,7 @@ instances or all radosgw-admin commands can be put into the ``[global]`` or the
 ``rgw copy obj progress every bytes``
 
 :Description: The minimum bytes between copy progress output.
-:Type: Integer 
+:Type: Integer
 :Default: ``1024 * 1024``
 
 
@@ -416,6 +382,71 @@ instances or all radosgw-admin commands can be put into the ``[global]`` or the
 :Default: ``true``
 
 
+Garbage Collection Settings
+===========================
+
+The Ceph Object Gateway allocates storage for new objects immediately.
+
+The Ceph Object Gateway purges the storage space used for deleted and overwritten 
+objects in the Ceph Storage cluster some time after the gateway deletes the 
+objects from the bucket index. The process of purging the deleted object data 
+from the Ceph Storage cluster is known as Garbage Collection or GC.
+
+To view the queue of objects awaiting garbage collection, execute the following::
+
+  $ radosgw-admin gc list 
+
+  Note: specify --include-all to list all entries, including unexpired
+  
+Garbage collection is a background activity that may
+execute continuously or during times of low loads, depending upon how the
+administrator configures the Ceph Object Gateway. By default, the Ceph Object
+Gateway conducts GC operations continuously. Since GC operations are a normal
+part of Ceph Object Gateway operations, especially with object delete
+operations, objects eligible for garbage collection exist most of the time.
+
+Some workloads may temporarily or permanently outpace the rate of garbage
+collection activity. This is especially true of delete-heavy workloads, where
+many objects get stored for a short period of time and then deleted. For these
+types of workloads, administrators can increase the priority of garbage
+collection operations relative to other operations with the following
+configuration parameters.
+
+
+``rgw gc max objs``
+
+:Description: The maximum number of objects that may be handled by
+              garbage collection in one garbage collection processing cycle.
+              Please do not change this value after the first deployment.
+
+:Type: Integer
+:Default: ``32``
+
+
+``rgw gc obj min wait``
+
+:Description: The minimum wait time before a deleted object may be removed
+              and handled by garbage collection processing.
+
+:Type: Integer
+:Default: ``2 * 3600``
+
+
+``rgw gc processor max time``
+
+:Description: The maximum time between the beginning of two consecutive garbage
+              collection processing cycles.
+
+:Type: Integer
+:Default: ``3600``
+
+
+``rgw gc processor period``
+
+:Description: The cycle time for garbage collection processing.
+:Type: Integer
+:Default: ``3600``
+
 Multisite Settings
 ==================
 
@@ -500,6 +531,15 @@ file under each ``[client.radosgw.{instance-name}]`` instance.
    ``rgw md log max shards`` should not be changed after sync has
    started.
 
+S3 Settings
+===========
+
+``rgw s3 auth use ldap``
+
+:Description: Should S3 authentication use LDAP.
+:Type: Boolean
+:Default: ``false``
+
 
 Swift Settings
 ==============
@@ -509,8 +549,8 @@ Swift Settings
 :Description: Enforces the Swift Access Control List (ACL) settings.
 :Type: Boolean
 :Default: ``true``
-	
-	
+
+
 ``rgw swift token expiration``
 
 :Description: The time in seconds for expiring a Swift token.
@@ -523,7 +563,7 @@ Swift Settings
 :Description: The URL for the Ceph Object Gateway Swift API.
 :Type: String
 :Default: None
-	
+
 
 ``rgw swift url prefix``
 
@@ -556,7 +596,7 @@ Swift Settings
 
 ``rgw swift auth url``
 
-:Description: Default URL for verifying v1 auth tokens (if not using internal 
+:Description: Default URL for verifying v1 auth tokens (if not using internal
               Swift auth).
 
 :Type: String
@@ -610,12 +650,9 @@ Swift Settings
               Those containers cannot be versioned by the S3 object versioning
               mechanism.
 
-	      The ``X-History-Location`` attribute, also understood by
-	      OpenStack Swift for handling ``DELETE`` operations
-	      `slightly differently
-	      <https://docs.openstack.org/swift/latest/overview_object_versioning.html>`_
-	      from ``X-Versions-Location``, is currently not
-	      supported.
+	      A slightly different attribute, ``X-History-Location``, which is also understood by
+              `OpenStack Swift <https://docs.openstack.org/swift/latest/api/object_versioning.html>`_
+              for handling ``DELETE`` operations, is currently not supported.
 :Type: Boolean
 :Default: ``false``
 
@@ -638,7 +675,7 @@ Logging Settings
 
 ``rgw log nonexistent bucket``
 
-:Description: Enables Ceph Object Gateway to log a request for a non-existent 
+:Description: Enables Ceph Object Gateway to log a request for a non-existent
               bucket.
 
 :Type: Boolean
@@ -647,7 +684,7 @@ Logging Settings
 
 ``rgw log object name``
 
-:Description: The logging format for an object name. See manpage 
+:Description: The logging format for an object name. See manpage
               :manpage:`date` for details about format specifiers.
 
 :Type: Date
@@ -656,7 +693,7 @@ Logging Settings
 
 ``rgw log object name utc``
 
-:Description: Whether a logged object name includes a UTC time. 
+:Description: Whether a logged object name includes a UTC time.
               If ``false``, it uses the local time.
 
 :Type: Boolean
@@ -672,7 +709,7 @@ Logging Settings
 
 ``rgw usage max user shards``
 
-:Description: The maximum number of shards used for a single user's 
+:Description: The maximum number of shards used for a single user's
               usage logging.
 
 :Type: Integer
@@ -695,7 +732,7 @@ Logging Settings
 
 ``rgw ops log rados``
 
-:Description: Whether the operations log should be written to the 
+:Description: Whether the operations log should be written to the
               Ceph Storage Cluster backend.
 
 :Type: Boolean
@@ -720,7 +757,7 @@ Logging Settings
 
 ``rgw usage log flush threshold``
 
-:Description: The number of dirty merged entries in the usage log before 
+:Description: The number of dirty merged entries in the usage log before
               flushing synchronously.
 
 :Type: Integer
@@ -747,7 +784,7 @@ Logging Settings
 
 ``rgw intent log object name``
 
-:Description: The logging format for the intent log object name. See manpage 
+:Description: The logging format for the intent log object name. See manpage
               :manpage:`date` for details about format specifiers.
 
 :Type: Date
@@ -756,7 +793,7 @@ Logging Settings
 
 ``rgw intent log object name utc``
 
-:Description: Whether the intent log object name includes a UTC time. 
+:Description: Whether the intent log object name includes a UTC time.
               If ``false``, it uses the local time.
 
 :Type: Boolean
@@ -887,6 +924,19 @@ Keystone Settings
 :Type: Boolean
 :Default: ``true``
 
+
+Server-side encryption Settings
+===============================
+
+``rgw crypt s3 kms backend``
+
+:Description: Where the SSE-KMS encryption keys are stored. Supported KMS
+              systems are OpenStack Barbican (``barbican``, the default) and
+              HashiCorp Vault (``vault``).
+:Type: String
+:Default: None
+
+
 Barbican Settings
 =================
 
@@ -929,6 +979,111 @@ Barbican Settings
               user when using OpenStack Identity API v3.
 :Type: String
 :Default: None
+
+
+HashiCorp Vault Settings
+========================
+
+``rgw crypt vault auth``
+
+:Description: Type of authentication method to be used. The only method
+              currently supported is ``token``.
+:Type: String
+:Default: ``token``
+
+``rgw crypt vault token file``
+
+:Description: If authentication method is ``token``, provide a path to the token
+              file, which should be readable only by Rados Gateway.
+:Type: String
+:Default: None
+
+``rgw crypt vault addr``
+
+:Description: Vault server base address, e.g. ``http://vaultserver:8200``.
+:Type: String
+:Default: None
+
+``rgw crypt vault prefix``
+
+:Description: The Vault secret URL prefix, which can be used to restrict access
+              to a particular subset of the secret space, e.g. ``/v1/secret/data``.
+:Type: String
+:Default: None
+
+``rgw crypt vault secret engine``
+
+:Description: Vault Secret Engine to be used to retrieve encryption keys: choose
+              between kv-v2, transit.
+:Type: String
+:Default: None
+
+``rgw crypt vault namespace``
+
+:Description: If set, Vault Namespace provides tenant isolation for teams and individuals
+              on the same Vault Enterprise instance, e.g. ``acme/tenant1``
+:Type: String
+:Default: None
+
+
+QoS settings
+------------
+
+.. versionadded:: Nautilus
+
+The ``civetweb`` frontend has a threading model that uses a thread per
+connection and hence automatically throttled by ``rgw thread pool size``
+configurable when it comes to accepting connections. The ``beast`` frontend is
+not restricted by the thread pool size when it comes to accepting new
+connections, so a scheduler abstraction is introduced in Nautilus release which
+for supporting ways for scheduling requests in the future.
+
+Currently the scheduler defaults to a throttler which throttles the active
+connections to a configured limit. QoS based on mClock is currently in an
+*experimental* phase and not recommended for production yet. Current
+implementation of *dmclock_client* op queue divides RGW Ops on admin, auth
+(swift auth, sts) metadata & data requests.
+
+
+``rgw max concurrent requests``
+
+:Description: Maximum number of concurrent HTTP requests that the beast frontend
+              will process. Tuning this can help to limit memory usage under
+              heavy load.
+:Type: Integer
+:Default: 1024
+
+
+``rgw scheduler type``
+
+:Description: The type of RGW Scheduler to use. Valid values are throttler,
+              dmclock. Currently defaults to throttler which throttles beast
+              frontend requests. dmclock is *experimental* and will need the
+              experimental flag set
+
+
+The options below are to tune the experimental dmclock scheduler. For some
+further reading on dmclock, see :ref:`dmclock-qos`. `op_class` for the flags below is
+one of admin, auth, metadata or data.
+
+``rgw_dmclock_<op_class>_res``
+
+:Description: The mclock reservation for `op_class` requests
+:Type: float
+:Default: 100.0
+
+``rgw_dmclock_<op_class>_wgt``
+
+:Description: The mclock weight for `op_class` requests
+:Type: float
+:Default: 1.0
+
+``rgw_dmclock_<op_class>_lim``
+
+:Description: The mclock limit for `op_class` requests
+:Type: float
+:Default: 0.0
+
 
 
 .. _Architecture: ../../architecture#data-striping

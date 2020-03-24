@@ -51,6 +51,7 @@ extern "C" {
 #define SPDK_PCI_VID_VIRTUALBOX		0x80ee
 #define SPDK_PCI_VID_VIRTIO		0x1af4
 #define SPDK_PCI_VID_CNEXLABS		0x1d1d
+#define SPDK_PCI_VID_VMWARE		0x15ad
 
 /**
  * PCI class code for NVMe devices.
@@ -117,8 +118,13 @@ extern "C" {
 
 #define PCI_DEVICE_ID_INTEL_IOAT_SKX	0x2021
 
+#define PCI_DEVICE_ID_INTEL_IOAT_ICX	0x0b00
+
 #define PCI_DEVICE_ID_VIRTIO_BLK_MODERN	0x1001
 #define PCI_DEVICE_ID_VIRTIO_SCSI_MODERN 0x1004
+#define PCI_DEVICE_ID_VIRTIO_VHOST_USER 0x1017
+
+#define PCI_DEVICE_ID_INTEL_VMD		0x201d
 
 #ifdef __cplusplus
 }

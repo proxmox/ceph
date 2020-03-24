@@ -1,33 +1,5 @@
-..  BSD LICENSE
-    Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
-    All rights reserved.
-
-    Redistribution and use in source and binary forms, with or without
-    modification, are permitted provided that the following conditions
-    are met:
-
-    * Redistributions of source code must retain the above copyright
-    notice, this list of conditions and the following disclaimer.
-    * Redistributions in binary form must reproduce the above copyright
-    notice, this list of conditions and the following disclaimer in
-    the documentation and/or other materials provided with the
-    distribution.
-    * Neither the name of Intel Corporation nor the names of its
-    contributors may be used to endorse or promote products derived
-    from this software without specific prior written permission.
-
-    THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-    "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-    LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-    A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-    OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-    SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-    LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-    DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-    THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-    (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-    OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-
+..  SPDX-License-Identifier: BSD-3-Clause
+    Copyright(c) 2010-2014 Intel Corporation.
 
 What does "EAL: map_all_hugepages(): open failed: Permission denied Cannot init memory" mean?
 ---------------------------------------------------------------------------------------------
@@ -37,8 +9,8 @@ Alternatively, applications can also be run as regular user.
 For more information, please refer to :ref:`DPDK Getting Started Guide <linux_gsg>`.
 
 
-If I want to change the number of TLB Hugepages allocated, how do I remove the original pages allocated?
---------------------------------------------------------------------------------------------------------
+If I want to change the number of hugepages allocated, how do I remove the original pages allocated?
+----------------------------------------------------------------------------------------------------
 
 The number of pages allocated can be seen by executing the following command::
 
@@ -90,22 +62,16 @@ the wrong socket, the application simply will not start.
 On application startup, there is a lot of EAL information printed. Is there any way to reduce this?
 ---------------------------------------------------------------------------------------------------
 
-Yes, the option ``--log-level=`` accepts one of these numbers:
+Yes, the option ``--log-level=`` accepts either symbolic names (or numbers):
 
-.. code-block:: c
-
-    #define RTE_LOG_EMERG 1U    /* System is unusable. */
-    #define RTE_LOG_ALERT 2U    /* Action must be taken immediately. */
-    #define RTE_LOG_CRIT 3U     /* Critical conditions. */
-    #define RTE_LOG_ERR 4U      /* Error conditions. */
-    #define RTE_LOG_WARNING 5U  /* Warning conditions. */
-    #define RTE_LOG_NOTICE 6U   /* Normal but significant condition. */
-    #define RTE_LOG_INFO 7U     /* Informational. */
-    #define RTE_LOG_DEBUG 8U    /* Debug-level messages. */
-
-It is also possible to change the default level at compile time
-with ``CONFIG_RTE_LOG_LEVEL``.
-
+1. emergency
+2. alert
+3. critical
+4. error
+5. warning
+6. notice
+7. info
+8. debug
 
 How can I tune my network application to achieve lower latency?
 ---------------------------------------------------------------
@@ -115,16 +81,16 @@ but the end-to-end latency of an average packet typically increases as a result.
 Similarly, the application can be tuned to have, on average, a low end-to-end latency at the cost of lower throughput.
 
 To achieve higher throughput, the DPDK attempts to aggregate the cost of processing each packet individually by processing packets in bursts.
-Using the testpmd application as an example, the "burst" size can be set on the command line to a value of 16 (also the default value).
-This allows the application to request 16 packets at a time from the PMD.
-The testpmd application then immediately attempts to transmit all the packets that were received, in this case, all 16 packets.
+Using the testpmd application as an example, the "burst" size can be set on the command line to a value of 32 (also the default value).
+This allows the application to request 32 packets at a time from the PMD.
+The testpmd application then immediately attempts to transmit all the packets that were received, in this case, all 32 packets.
 The packets are not transmitted until the tail pointer is updated on the corresponding TX queue of the network port.
 This behavior is desirable when tuning for high throughput because the cost of tail pointer updates to both the RX and TX queues
-can be spread across 16 packets, effectively hiding the relatively slow MMIO cost of writing to the PCIe* device.
+can be spread across 32 packets, effectively hiding the relatively slow MMIO cost of writing to the PCIe* device.
 
-However, this is not very desirable when tuning for low latency, because the first packet that was received must also wait for the other 15 packets to be received.
-It cannot be transmitted until the other 15 packets have also been processed because the NIC will not know to transmit the packets until the TX tail pointer has been updated,
-which is not done until all 16 packets have been processed for transmission.
+However, this is not very desirable when tuning for low latency, because the first packet that was received must also wait for the other 31 packets to be received.
+It cannot be transmitted until the other 31 packets have also been processed because the NIC will not know to transmit the packets until the TX tail pointer has been updated,
+which is not done until all 32 packets have been processed for transmission.
 
 To consistently achieve low latency even under heavy system load, the application developer should avoid processing packets in bunches.
 The testpmd application can be configured from the command line to use a burst value of 1.
@@ -222,3 +188,10 @@ How can hugepage-backed memory be shared among multiple processes?
 ------------------------------------------------------------------
 
 See the Primary and Secondary examples in the :ref:`multi-process sample application <multi_process_app>`.
+
+
+Why can't my application receive packets on my system with UEFI Secure Boot enabled?
+------------------------------------------------------------------------------------
+
+If UEFI secure boot is enabled, the Linux kernel may disallow the use of UIO on the system.
+Therefore, devices for use by DPDK should be bound to the ``vfio-pci`` kernel module rather than ``igb_uio`` or ``uio_pci_generic``.

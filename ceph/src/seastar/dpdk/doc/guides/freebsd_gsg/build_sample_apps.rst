@@ -1,32 +1,5 @@
-..  BSD LICENSE
-    Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
-    All rights reserved.
-
-    Redistribution and use in source and binary forms, with or without
-    modification, are permitted provided that the following conditions
-    are met:
-
-    * Redistributions of source code must retain the above copyright
-    notice, this list of conditions and the following disclaimer.
-    * Redistributions in binary form must reproduce the above copyright
-    notice, this list of conditions and the following disclaimer in
-    the documentation and/or other materials provided with the
-    distribution.
-    * Neither the name of Intel Corporation nor the names of its
-    contributors may be used to endorse or promote products derived
-    from this software without specific prior written permission.
-
-    THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-    "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-    LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-    A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-    OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-    SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-    LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-    DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-    THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-    (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-    OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+..  SPDX-License-Identifier: BSD-3-Clause
+    Copyright(c) 2010-2014 Intel Corporation.
 
 .. _compiling_sample_apps:
 
@@ -40,7 +13,7 @@ Compiling a Sample Application
 ------------------------------
 
 Once a DPDK target environment directory has been created (such as
-``x86_64-native-bsdapp-clang``), it contains all libraries and header files required
+``x86_64-native-freebsd-clang``), it contains all libraries and header files required
 to build an application.
 
 When compiling an application in the FreeBSD environment on the DPDK,
@@ -49,8 +22,8 @@ the following variables must be exported:
 *   ``RTE_SDK`` - Points to the DPDK installation directory.
 
 *   ``RTE_TARGET`` - Points to the DPDK target environment directory.
-    For FreeBSD, this is the ``x86_64-native-bsdapp-clang`` or
-    ``x86_64-native-bsdapp-gcc`` directory.
+    For FreeBSD, this is the ``x86_64-native-freebsd-clang`` or
+    ``x86_64-native-freebsd-gcc`` directory.
 
 The following is an example of creating the ``helloworld`` application, which runs
 in the DPDK FreeBSD environment. While the example demonstrates compiling
@@ -70,7 +43,7 @@ in the build directory.
     cd $(RTE_SDK)
     cd examples/helloworld/
     setenv RTE_SDK $HOME/DPDK
-    setenv RTE_TARGET x86_64-native-bsdapp-gcc
+    setenv RTE_TARGET x86_64-native-freebsd-gcc
 
     gmake CC=gcc49
       CC main.o
@@ -94,7 +67,7 @@ in the build directory.
     setenv RTE_SDK /home/user/DPDK
     cp -r $(RTE_SDK)/examples/helloworld my_rte_app
     cd my_rte_app/
-    setenv RTE_TARGET x86_64-native-bsdapp-gcc
+    setenv RTE_TARGET x86_64-native-freebsd-gcc
 
     gmake CC=gcc49
       CC main.o
@@ -155,6 +128,9 @@ The EAL options for FreeBSD are as follows:
 *   ``--proc-type``:
     The type of process instance.
 
+*   ``-m MB``:
+    Memory to allocate from hugepages, regardless of processor socket.
+
 Other options, specific to Linux and are not supported under FreeBSD are as follows:
 
 *   ``socket-mem``:
@@ -163,12 +139,11 @@ Other options, specific to Linux and are not supported under FreeBSD are as foll
 *   ``--huge-dir``:
     The directory where hugetlbfs is mounted.
 
+*   ``mbuf-pool-ops-name``:
+    Pool ops name for mbuf to use.
+
 *   ``--file-prefix``:
     The prefix text used for hugepage filenames.
-
-*   ``-m MB``:
-    Memory to allocate from hugepages, regardless of processor socket.
-    It is recommended that ``--socket-mem`` be used instead of this option.
 
 The ``-c`` or ``-l`` option is mandatory; the others are optional.
 

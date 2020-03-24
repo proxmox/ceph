@@ -1,32 +1,5 @@
-..  BSD LICENSE
-    Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
-    All rights reserved.
-
-    Redistribution and use in source and binary forms, with or without
-    modification, are permitted provided that the following conditions
-    are met:
-
-    * Redistributions of source code must retain the above copyright
-    notice, this list of conditions and the following disclaimer.
-    * Redistributions in binary form must reproduce the above copyright
-    notice, this list of conditions and the following disclaimer in
-    the documentation and/or other materials provided with the
-    distribution.
-    * Neither the name of Intel Corporation nor the names of its
-    contributors may be used to endorse or promote products derived
-    from this software without specific prior written permission.
-
-    THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-    "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-    LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-    A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-    OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-    SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-    LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-    DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-    THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-    (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-    OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+..  SPDX-License-Identifier: BSD-3-Clause
+    Copyright(c) 2010-2014 Intel Corporation.
 
 .. _Enabling_Additional_Functionality:
 
@@ -35,8 +8,8 @@ Enabling Additional Functionality
 
 .. _High_Precision_Event_Timer:
 
-High Precision Event Timer HPET) Functionality
-----------------------------------------------
+High Precision Event Timer (HPET) Functionality
+-----------------------------------------------
 
 BIOS Support
 ~~~~~~~~~~~~
@@ -86,6 +59,14 @@ The application can then determine what action to take, if any, if the HPET is n
 
 Running DPDK Applications Without Root Privileges
 --------------------------------------------------------
+
+.. note::
+
+    The instructions below will allow running DPDK as non-root with older
+    Linux kernel versions. However, since version 4.0, the kernel does not allow
+    unprivileged processes to read the physical address information from
+    the pagemaps file, making it impossible for those processes to use HW
+    devices which require physical addresses
 
 Although applications using the DPDK use network ports and other hardware resources directly,
 with a number of small permission adjustments it is possible to run these applications as a user other than "root".
@@ -176,28 +157,3 @@ Also, if ``INTEL_IOMMU_DEFAULT_ON`` is not set in the kernel, the ``intel_iommu=
 This ensures that the Intel IOMMU is being initialized as expected.
 
 Please note that while using ``iommu=pt`` is compulsory for ``igb_uio driver``, the ``vfio-pci`` driver can actually work with both ``iommu=pt`` and ``iommu=on``.
-
-High Performance of Small Packets on 40G NIC
---------------------------------------------
-
-As there might be firmware fixes for performance enhancement in latest version
-of firmware image, the firmware update might be needed for getting high performance.
-Check with the local Intel's Network Division application engineers for firmware updates.
-Users should consult the release notes specific to a DPDK release to identify
-the validated firmware version for a NIC using the i40e driver.
-
-Use 16 Bytes RX Descriptor Size
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-As i40e PMD supports both 16 and 32 bytes RX descriptor sizes, and 16 bytes size can provide helps to high performance of small packets.
-Configuration of ``CONFIG_RTE_LIBRTE_I40E_16BYTE_RX_DESC`` in config files can be changed to use 16 bytes size RX descriptors.
-
-High Performance and per Packet Latency Tradeoff
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-Due to the hardware design, the interrupt signal inside NIC is needed for per
-packet descriptor write-back. The minimum interval of interrupts could be set
-at compile time by ``CONFIG_RTE_LIBRTE_I40E_ITR_INTERVAL`` in configuration files.
-Though there is a default configuration, the interval could be tuned by the
-users with that configuration item depends on what the user cares about more,
-performance or per packet latency.

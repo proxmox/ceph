@@ -1,57 +1,18 @@
-#   BSD LICENSE
-#
-#   Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
-#   All rights reserved.
-#
-#   Redistribution and use in source and binary forms, with or without
-#   modification, are permitted provided that the following conditions
-#   are met:
-#
-#     * Redistributions of source code must retain the above copyright
-#       notice, this list of conditions and the following disclaimer.
-#     * Redistributions in binary form must reproduce the above copyright
-#       notice, this list of conditions and the following disclaimer in
-#       the documentation and/or other materials provided with the
-#       distribution.
-#     * Neither the name of Intel Corporation nor the names of its
-#       contributors may be used to endorse or promote products derived
-#       from this software without specific prior written permission.
-#
-#   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-#   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-#   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-#   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-#   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-#   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-#   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-#   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-#   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-#   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-#   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+# SPDX-License-Identifier: BSD-3-Clause
+# Copyright(c) 2010-2014 Intel Corporation
 
 .PHONY: showversion
 showversion:
-	@set -- \
-		$$(sed -rne 's,^#define RTE_VER_[A-Z_]*[[:space:]]+([0-9]+).*,\1,p' \
-			-e 's,^#define RTE_VER_SUFFIX[[:space:]]+"(.*)",\1,p' \
-			$(RTE_SRCDIR)/lib/librte_eal/common/include/rte_version.h) ;\
-		printf '%d.%02d.%d' "$$1" "$$2" "$$3"; \
-		if [ -z "$$5" ]; then echo; \
-		else printf '%s' "$$4"; \
-			if [ $$5 -lt 16 ] ; then echo $$5; \
-			else echo $$(($$5 - 16)); fi; \
-		fi
+	@cat $(RTE_SRCDIR)/VERSION
 
 .PHONY: showversionum
 showversionum:
-	@set -- \
-		$$(sed -rne 's,^#define RTE_VER_[A-Z_]*[[:space:]]+([0-9]+).*,\1,p' \
-			$(RTE_SRCDIR)/lib/librte_eal/common/include/rte_version.h); \
-		printf '%02d%02d\n' "$$1" "$$2"
+	@cat $(RTE_SRCDIR)/VERSION | awk -F '.' '{print $$1$$2}'
 
-INSTALL_CONFIGS := $(sort $(filter-out %~,\
+INSTALL_CONFIGS := $(sort $(filter-out %app-icc,$(filter-out %app-clang,\
+	$(filter-out %app-gcc,$(filter-out %~,\
 	$(patsubst $(RTE_SRCDIR)/config/defconfig_%,%,\
-	$(wildcard $(RTE_SRCDIR)/config/defconfig_*))))
+	$(wildcard $(RTE_SRCDIR)/config/defconfig_*)))))))
 INSTALL_TARGETS := $(addsuffix _install,$(INSTALL_CONFIGS))
 
 .PHONY: showconfigs
@@ -60,16 +21,47 @@ showconfigs:
 
 .PHONY: notemplate
 notemplate:
-	@printf "No template specified. "
-	@echo "Use T=template among the following list:"
+	@printf "No template specified. Use 'make defconfig' or "
+	@echo "use T=template from the following list:"
 	@$(MAKE) -rR showconfigs | sed 's,^,  ,'
+
+.PHONY: defconfig
+defconfig:
+	@$(MAKE) config T=$(shell \
+                uname -m | awk '{ \
+                if ($$0 == "aarch64") { \
+                        print "arm64-armv8a"} \
+                else if ($$0 == "armv7l") { \
+                        print "arm-armv7a"} \
+                else if ($$0 == "ppc64") { \
+                        print "ppc_64-power8"} \
+                else if ($$0 == "amd64") { \
+                        print "x86_64-native"} \
+                else { \
+                        printf "%s-native", $$0} }' \
+		)-$(shell \
+                uname | awk '{ \
+                if ($$0 == "Linux") { \
+                        print "linux"} \
+                else { \
+                        print "freebsd"} }' \
+		)-$(shell \
+		${CC} --version | grep -o 'cc\|gcc\|icc\|clang' | awk \
+		'{ \
+		if ($$1 == "cc") { \
+			print "gcc" } \
+		else { \
+			print $$1 } \
+		}' \
+		)
 
 .PHONY: config
 ifeq ($(RTE_CONFIG_TEMPLATE),)
 config: notemplate
 else
 config: $(RTE_OUTPUT)/include/rte_config.h $(RTE_OUTPUT)/Makefile
-	@echo "Configuration done"
+	@echo "Configuration done using" \
+		$(patsubst defconfig_%,%,$(notdir $(RTE_CONFIG_TEMPLATE)))
 endif
 
 $(RTE_OUTPUT):
@@ -82,9 +74,16 @@ else
 # To do so the temp config is checked for duplicate keys with cut/sort/uniq
 # Then for each of those identified duplicates as long as there are more than
 # just one left the last match is removed.
+# Part of the config includes the version information taken from "VERSION"
+# in the repo. This needs to be split into the various parts using sed and awk.
+# To ensure correct version comparison, we append ".99" to the version number
+# so that the version of a release is higher than that of its rc's.
 $(RTE_OUTPUT)/.config: $(RTE_CONFIG_TEMPLATE) FORCE | $(RTE_OUTPUT)
 	$(Q)if [ "$(RTE_CONFIG_TEMPLATE)" != "" -a -f "$(RTE_CONFIG_TEMPLATE)" ]; then \
 		$(CPP) -undef -P -x assembler-with-cpp \
+		`cat $(RTE_SRCDIR)/VERSION | \
+		sed -e 's/-rc/.-rc./' -e 's/$$/..99/' | \
+		awk -F '.' '{print "-D__YEAR="int($$1), "-D__MONTH="int($$2), "-D__MINOR="int($$3), "-D__SUFFIX=\""$$4"\"", "-D__RELEASE="int($$5)}'` \
 		-ffreestanding \
 		-o $(RTE_OUTPUT)/.config_tmp $(RTE_CONFIG_TEMPLATE) ; \
 		config=$$(cat $(RTE_OUTPUT)/.config_tmp) ; \
@@ -111,8 +110,7 @@ SDK_RELPATH=$(shell $(RTE_SDK)/buildtools/relpath.sh $(abspath $(RTE_SRCDIR)) \
 OUTPUT_RELPATH=$(shell $(RTE_SDK)/buildtools/relpath.sh $(abspath $(RTE_OUTPUT)) \
 				$(abspath $(RTE_SRCDIR)))
 $(RTE_OUTPUT)/Makefile: | $(RTE_OUTPUT)
-	$(Q)$(RTE_SDK)/buildtools/gen-build-mk.sh $(SDK_RELPATH) $(OUTPUT_RELPATH) \
-		> $(RTE_OUTPUT)/Makefile
+	$(Q)$(RTE_SDK)/buildtools/gen-build-mk.sh $(SDK_RELPATH) > $@
 
 # clean installed files, and generate a new config header file
 # if NODOTCONF variable is defined, don't try to rebuild .config

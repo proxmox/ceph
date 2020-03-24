@@ -1,57 +1,6 @@
-/*-
- *   This file is provided under a dual BSD/LGPLv2 license.  When using or
- *   redistributing this file, you may do so under either license.
- *
- *   GNU LESSER GENERAL PUBLIC LICENSE
- *
- *   Copyright(c) 2010-2013 Intel Corporation. All rights reserved.
- *   Copyright(c) 2014-2017 Wind River Systems, Inc. All rights reserved.
- *
- *   This program is free software; you can redistribute it and/or modify
- *   it under the terms of version 2.1 of the GNU Lesser General Public License
- *   as published by the Free Software Foundation.
- *
- *   This program is distributed in the hope that it will be useful, but
- *   WITHOUT ANY WARRANTY; without even the implied warranty of
- *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- *   Lesser General Public License for more details.
- *
- *   Contact Information:
- *   Wind River Systems, Inc.
- *
- *
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2013 Intel Corporation. All rights reserved.
- *   Copyright(c) 2014-2017 Wind River Systems, Inc. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *   * Redistributions of source code must retain the above copyright
- *     notice, this list of conditions and the following disclaimer.
- *   * Redistributions in binary form must reproduce the above copyright
- *     notice, this list of conditions and the following disclaimer in
- *     the documentation and/or other materials provided with the
- *     distribution.
- *   * Neither the name of Intel Corporation nor the names of its
- *     contributors may be used to endorse or promote products derived
- *     from this software without specific prior written permission.
- *
- *    THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *    "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *    LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *    A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *    OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *    SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *    LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *    DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *    THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *    (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *    OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
+/* SPDX-License-Identifier: (BSD-3-Clause OR LGPL-2.1)
+ * Copyright(c) 2010-2013 Intel Corporation.
+ * Copyright(c) 2014-2017 Wind River Systems, Inc.
  */
 
 #ifndef _RTE_AVP_COMMON_H_
@@ -63,6 +12,7 @@
 #else
 #include <stdint.h>
 #include <rte_common.h>
+#include <rte_config.h>
 #include <rte_memory.h>
 #include <rte_ether.h>
 #include <rte_atomic.h>
@@ -243,7 +193,7 @@ struct rte_avp_desc {
  */
 struct rte_avp_memmap {
 	void *addr;
-	phys_addr_t phys_addr;
+	rte_iova_t phys_addr;
 	uint64_t length;
 };
 
@@ -345,7 +295,7 @@ RTE_AVP_MAKE_VERSION(RTE_AVP_RELEASE_VERSION_1, \
  */
 struct rte_avp_mempool_info {
 	void *addr;
-	phys_addr_t phys_addr;
+	rte_iova_t phys_addr;
 	uint64_t length;
 };
 
@@ -359,10 +309,10 @@ struct rte_avp_device_info {
 
 	char ifname[RTE_AVP_NAMESIZE];	/**< Network device name for AVP */
 
-	phys_addr_t tx_phys;
-	phys_addr_t rx_phys;
-	phys_addr_t alloc_phys;
-	phys_addr_t free_phys;
+	rte_iova_t tx_phys;
+	rte_iova_t rx_phys;
+	rte_iova_t alloc_phys;
+	rte_iova_t free_phys;
 
 	uint32_t features; /**< Supported feature bitmap */
 	uint8_t min_rx_queues; /**< Minimum supported receive/free queues */
@@ -379,14 +329,14 @@ struct rte_avp_device_info {
 	uint32_t free_size;	/**< Size of each free queue */
 
 	/* Used by Ethtool */
-	phys_addr_t req_phys;
-	phys_addr_t resp_phys;
-	phys_addr_t sync_phys;
+	rte_iova_t req_phys;
+	rte_iova_t resp_phys;
+	rte_iova_t sync_phys;
 	void *sync_va;
 
 	/* mbuf mempool (used when a single memory area is supported) */
 	void *mbuf_va;
-	phys_addr_t mbuf_phys;
+	rte_iova_t mbuf_phys;
 
 	/* mbuf mempools */
 	struct rte_avp_mempool_info pool[RTE_AVP_MAX_MEMPOOLS];

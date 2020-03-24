@@ -130,6 +130,8 @@ class Module(MgrModule):
         for key in self._health_filter(lambda ts: ts <= cutoff):
             self.log.info("Removing old health slot key {}".format(key))
             self.set_store(key, None)
+        if not hours:
+            self._health_slot = health_util.HealthHistorySlot()
 
     def _health_report(self, hours):
         """
@@ -307,7 +309,10 @@ class Module(MgrModule):
         the selftest module to manage testing scenarios related to tracking
         health history.
         """
-        hours = long(hours)
+        try:
+            hours = long(hours)
+        except NameError:
+            hours = int(hours)
         health_util.NOW_OFFSET = datetime.timedelta(hours = hours)
         self.log.warning("Setting now time offset {}".format(health_util.NOW_OFFSET))
 

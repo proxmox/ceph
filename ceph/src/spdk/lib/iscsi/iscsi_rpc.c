@@ -653,44 +653,65 @@ static const struct spdk_json_object_decoder rpc_delete_target_node_decoders[] =
 	{"name", offsetof(struct rpc_delete_target_node, name), spdk_json_decode_string},
 };
 
+struct rpc_delete_target_node_ctx {
+	struct rpc_delete_target_node req;
+	struct spdk_jsonrpc_request *request;
+};
+
+static void
+rpc_delete_target_node_done(void *cb_arg, int rc)
+{
+	struct rpc_delete_target_node_ctx *ctx = cb_arg;
+	struct spdk_json_write_ctx *w;
+
+	free_rpc_delete_target_node(&ctx->req);
+
+	w = spdk_jsonrpc_begin_result(ctx->request);
+	if (w == NULL) {
+		goto exit;
+	}
+
+	spdk_json_write_bool(w, rc == 0);
+	spdk_jsonrpc_end_result(ctx->request, w);
+exit:
+	free(ctx);
+}
+
 static void
 spdk_rpc_delete_target_node(struct spdk_jsonrpc_request *request,
 			    const struct spdk_json_val *params)
 {
-	struct rpc_delete_target_node req = {};
-	struct spdk_json_write_ctx *w;
+	struct rpc_delete_target_node_ctx *ctx;
+
+	ctx = calloc(1, sizeof(*ctx));
+	if (!ctx) {
+		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INTERNAL_ERROR,
+						 spdk_strerror(ENOMEM));
+		return;
+	}
 
 	if (spdk_json_decode_object(params, rpc_delete_target_node_decoders,
 				    SPDK_COUNTOF(rpc_delete_target_node_decoders),
-				    &req)) {
+				    &ctx->req)) {
 		SPDK_ERRLOG("spdk_json_decode_object failed\n");
 		goto invalid;
 	}
 
-	if (req.name == NULL) {
+	if (ctx->req.name == NULL) {
 		SPDK_ERRLOG("missing name param\n");
 		goto invalid;
 	}
 
-	if (spdk_iscsi_shutdown_tgt_node_by_name(req.name)) {
-		SPDK_ERRLOG("shutdown_tgt_node_by_name failed\n");
-		goto invalid;
-	}
+	ctx->request = request;
 
-	free_rpc_delete_target_node(&req);
-
-	w = spdk_jsonrpc_begin_result(request);
-	if (w == NULL) {
-		return;
-	}
-
-	spdk_json_write_bool(w, true);
-	spdk_jsonrpc_end_result(request, w);
+	spdk_iscsi_shutdown_tgt_node_by_name(ctx->req.name,
+					     rpc_delete_target_node_done, ctx);
 	return;
 
 invalid:
 	spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INVALID_PARAMS, "Invalid parameters");
-	free_rpc_delete_target_node(&req);
+	free_rpc_delete_target_node(&ctx->req);
+	free(ctx);
 }
 SPDK_RPC_REGISTER("delete_target_node", spdk_rpc_delete_target_node, SPDK_RPC_RUNTIME)
 
@@ -929,11 +950,9 @@ spdk_rpc_get_iscsi_connections(struct spdk_jsonrpc_request *request,
 
 		spdk_json_write_object_begin(w);
 
-		spdk_json_write_name(w, "id");
-		spdk_json_write_int32(w, c->id);
+		spdk_json_write_named_int32(w, "id", c->id);
 
-		spdk_json_write_name(w, "cid");
-		spdk_json_write_int32(w, c->cid);
+		spdk_json_write_named_int32(w, "cid", c->cid);
 
 		/*
 		 * If we try to return data for a connection that has not
@@ -946,20 +965,15 @@ spdk_rpc_get_iscsi_connections(struct spdk_jsonrpc_request *request,
 		} else {
 			tsih = c->sess->tsih;
 		}
-		spdk_json_write_name(w, "tsih");
-		spdk_json_write_int32(w, tsih);
+		spdk_json_write_named_int32(w, "tsih", tsih);
 
-		spdk_json_write_name(w, "lcore_id");
-		spdk_json_write_int32(w, c->lcore);
+		spdk_json_write_named_int32(w, "lcore_id", c->lcore);
 
-		spdk_json_write_name(w, "initiator_addr");
-		spdk_json_write_string(w, c->initiator_addr);
+		spdk_json_write_named_string(w, "initiator_addr", c->initiator_addr);
 
-		spdk_json_write_name(w, "target_addr");
-		spdk_json_write_string(w, c->target_addr);
+		spdk_json_write_named_string(w, "target_addr", c->target_addr);
 
-		spdk_json_write_name(w, "target_node_name");
-		spdk_json_write_string(w, c->target_short_name);
+		spdk_json_write_named_string(w, "target_node_name", c->target_short_name);
 
 		spdk_json_write_object_end(w);
 	}
@@ -1071,15 +1085,14 @@ spdk_rpc_set_iscsi_target_node_auth(struct spdk_jsonrpc_request *request,
 		SPDK_ERRLOG("spdk_json_decode_object failed\n");
 		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INVALID_PARAMS,
 						 "Invalid parameters");
-		return;
+		goto exit;
 	}
 
 	target = spdk_iscsi_find_tgt_node(req.name);
 	if (target == NULL) {
 		spdk_jsonrpc_send_error_response_fmt(request, SPDK_JSONRPC_ERROR_INVALID_PARAMS,
 						     "Could not find target %s", req.name);
-		free_rpc_target_auth(&req);
-		return;
+		goto exit;
 	}
 
 	rc = spdk_iscsi_tgt_node_set_chap_params(target, req.disable_chap, req.require_chap,
@@ -1087,8 +1100,7 @@ spdk_rpc_set_iscsi_target_node_auth(struct spdk_jsonrpc_request *request,
 	if (rc < 0) {
 		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INVALID_PARAMS,
 						 "Invalid combination of auth params");
-		free_rpc_target_auth(&req);
-		return;
+		goto exit;
 	}
 
 	free_rpc_target_auth(&req);
@@ -1100,6 +1112,10 @@ spdk_rpc_set_iscsi_target_node_auth(struct spdk_jsonrpc_request *request,
 
 	spdk_json_write_bool(w, true);
 	spdk_jsonrpc_end_result(request, w);
+	return;
+
+exit:
+	free_rpc_target_auth(&req);
 }
 SPDK_RPC_REGISTER("set_iscsi_target_node_auth", spdk_rpc_set_iscsi_target_node_auth,
 		  SPDK_RPC_RUNTIME)

@@ -18,11 +18,9 @@
 #include "msg/Message.h"
 #include "mds/mdstypes.h"
 
-class MClientSession : public MessageInstance<MClientSession> {
-public:
-  friend factory;
+class MClientSession : public SafeMessage {
 private:
-  static constexpr int HEAD_VERSION = 3;
+  static constexpr int HEAD_VERSION = 4;
   static constexpr int COMPAT_VERSION = 1;
 
 public:
@@ -30,6 +28,7 @@ public:
 
   std::map<std::string, std::string> metadata;
   feature_bitset_t supported_features;
+  metric_spec_t metric_spec;
 
   int get_op() const { return head.op; }
   version_t get_seq() const { return head.seq; }
@@ -38,15 +37,15 @@ public:
   int get_max_leases() const { return head.max_leases; }
 
 protected:
-  MClientSession() : MessageInstance(CEPH_MSG_CLIENT_SESSION, HEAD_VERSION, COMPAT_VERSION) { }
+  MClientSession() : SafeMessage{CEPH_MSG_CLIENT_SESSION, HEAD_VERSION, COMPAT_VERSION} { }
   MClientSession(int o, version_t s=0) : 
-    MessageInstance(CEPH_MSG_CLIENT_SESSION, HEAD_VERSION, COMPAT_VERSION) {
+    SafeMessage{CEPH_MSG_CLIENT_SESSION, HEAD_VERSION, COMPAT_VERSION} {
     memset(&head, 0, sizeof(head));
     head.op = o;
     head.seq = s;
   }
   MClientSession(int o, utime_t st) : 
-    MessageInstance(CEPH_MSG_CLIENT_SESSION, HEAD_VERSION, COMPAT_VERSION) {
+    SafeMessage{CEPH_MSG_CLIENT_SESSION, HEAD_VERSION, COMPAT_VERSION} {
     memset(&head, 0, sizeof(head));
     head.op = o;
     head.seq = 0;
@@ -72,6 +71,9 @@ public:
       decode(metadata, p);
     if (header.version >= 3)
       decode(supported_features, p);
+    if (header.version >= 4) {
+      decode(metric_spec, p);
+    }
   }
   void encode_payload(uint64_t features) override { 
     using ceph::encode;
@@ -85,8 +87,12 @@ public:
       header.version = HEAD_VERSION;
       encode(metadata, payload);
       encode(supported_features, payload);
+      encode(metric_spec, payload);
     }
   }
+private:
+  template<class T, typename... Args>
+  friend boost::intrusive_ptr<T> ceph::make_message(Args&&... args);
 };
 
 #endif

@@ -5,7 +5,7 @@
 #define CEPH_LIBRBD_IMAGE_STATE_H
 
 #include "include/int_types.h"
-#include "common/Mutex.h"
+#include "common/ceph_mutex.h"
 #include <list>
 #include <string>
 #include <utility>
@@ -46,6 +46,7 @@ public:
   void handle_prepare_lock_complete();
 
   int register_update_watcher(UpdateWatchCtx *watcher, uint64_t *handle);
+  void unregister_update_watcher(uint64_t handle, Context *on_finish);
   int unregister_update_watcher(uint64_t handle);
   void flush_update_watchers(Context *on_finish);
   void shut_down_update_watchers(Context *on_finish);
@@ -102,7 +103,7 @@ private:
   ImageCtxT *m_image_ctx;
   State m_state;
 
-  mutable Mutex m_lock;
+  mutable ceph::mutex m_lock;
   ActionsContexts m_actions_contexts;
 
   uint64_t m_last_refresh;

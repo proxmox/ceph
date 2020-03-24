@@ -27,6 +27,7 @@
             "retry_count": 4,
             "timeout_us": 0,
             "nvme_adminq_poll_period_us": 1000000,
+            "nvme_ioq_poll_period_us": 0,
             "action_on_timeout": "none"
           },
           "method": "set_bdev_nvme_options"
@@ -88,14 +89,9 @@
         },
         {
           "params": {
-            "in_capsule_data_size": 4096,
-            "io_unit_size": 131072,
-            "max_qpairs_per_ctrlr": 64,
-            "max_queue_depth": 128,
-            "max_io_size": 131072,
             "max_subsystems": 1024
           },
-          "method": "set_nvmf_target_options"
+          "method": "set_nvmf_target_max_subsystems"
         }
       ]
     },
@@ -127,7 +123,6 @@
             "max_sessions": 128,
             "error_recovery_level": 0,
             "disable_chap": false,
-            "min_connections_per_core": 4,
             "default_time2wait": 2
           },
           "method": "set_iscsi_options"

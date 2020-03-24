@@ -33,9 +33,9 @@
 #include <rte_random.h>
 #include <rte_dev.h>
 
-#include "common.h"
-#include "t4_regs.h"
-#include "t4_msg.h"
+#include "base/common.h"
+#include "base/t4_regs.h"
+#include "base/t4_msg.h"
 #include "cxgbe.h"
 
 static inline void ship_tx_pkt_coalesce_wr(struct adapter *adap,
@@ -397,7 +397,8 @@ static unsigned int refill_fl_usembufs(struct adapter *adap, struct sge_fl *q,
 
 		rte_mbuf_refcnt_set(mbuf, 1);
 		mbuf->data_off =
-			(uint16_t)(RTE_PTR_ALIGN((char *)mbuf->buf_addr +
+			(uint16_t)((char *)
+				   RTE_PTR_ALIGN((char *)mbuf->buf_addr +
 						 RTE_PKTMBUF_HEADROOM,
 						 adap->sge.fl_align) -
 				   (char *)mbuf->buf_addr);
@@ -1494,98 +1495,6 @@ alloc_sw_ring:
 	return tz->addr;
 }
 
-/**
- * t4_pktgl_to_mbuf_usembufs - build an mbuf from a packet gather list
- * @gl: the gather list
- *
- * Builds an mbuf from the given packet gather list.  Returns the mbuf or
- * %NULL if mbuf allocation failed.
- */
-static struct rte_mbuf *t4_pktgl_to_mbuf_usembufs(const struct pkt_gl *gl)
-{
-	/*
-	 * If there's only one mbuf fragment, just return that.
-	 */
-	if (likely(gl->nfrags == 1))
-		return gl->mbufs[0];
-
-	return NULL;
-}
-
-/**
- * t4_pktgl_to_mbuf - build an mbuf from a packet gather list
- * @gl: the gather list
- *
- * Builds an mbuf from the given packet gather list.  Returns the mbuf or
- * %NULL if mbuf allocation failed.
- */
-static struct rte_mbuf *t4_pktgl_to_mbuf(const struct pkt_gl *gl)
-{
-	return t4_pktgl_to_mbuf_usembufs(gl);
-}
-
-/**
- * t4_ethrx_handler - process an ingress ethernet packet
- * @q: the response queue that received the packet
- * @rsp: the response queue descriptor holding the RX_PKT message
- * @si: the gather list of packet fragments
- *
- * Process an ingress ethernet packet and deliver it to the stack.
- */
-int t4_ethrx_handler(struct sge_rspq *q, const __be64 *rsp,
-		     const struct pkt_gl *si)
-{
-	struct rte_mbuf *mbuf;
-	const struct cpl_rx_pkt *pkt;
-	const struct rss_header *rss_hdr;
-	bool csum_ok;
-	struct sge_eth_rxq *rxq = container_of(q, struct sge_eth_rxq, rspq);
-	u16 err_vec;
-
-	rss_hdr = (const void *)rsp;
-	pkt = (const void *)&rsp[1];
-	/* Compressed error vector is enabled for T6 only */
-	if (q->adapter->params.tp.rx_pkt_encap)
-		err_vec = G_T6_COMPR_RXERR_VEC(ntohs(pkt->err_vec));
-	else
-		err_vec = ntohs(pkt->err_vec);
-	csum_ok = pkt->csum_calc && !err_vec;
-
-	mbuf = t4_pktgl_to_mbuf(si);
-	if (unlikely(!mbuf)) {
-		rxq->stats.rx_drops++;
-		return 0;
-	}
-
-	mbuf->port = pkt->iff;
-	if (pkt->l2info & htonl(F_RXF_IP)) {
-		mbuf->packet_type = RTE_PTYPE_L3_IPV4;
-		if (unlikely(!csum_ok))
-			mbuf->ol_flags |= PKT_RX_IP_CKSUM_BAD;
-
-		if ((pkt->l2info & htonl(F_RXF_UDP | F_RXF_TCP)) && !csum_ok)
-			mbuf->ol_flags |= PKT_RX_L4_CKSUM_BAD;
-	} else if (pkt->l2info & htonl(F_RXF_IP6)) {
-		mbuf->packet_type = RTE_PTYPE_L3_IPV6;
-	}
-
-	mbuf->port = pkt->iff;
-
-	if (!rss_hdr->filter_tid && rss_hdr->hash_type) {
-		mbuf->ol_flags |= PKT_RX_RSS_HASH;
-		mbuf->hash.rss = ntohl(rss_hdr->hash_val);
-	}
-
-	if (pkt->vlan_ex) {
-		mbuf->ol_flags |= PKT_RX_VLAN;
-		mbuf->vlan_tci = ntohs(pkt->vlan);
-	}
-	rxq->stats.pkts++;
-	rxq->stats.rx_bytes += mbuf->pkt_len;
-
-	return 0;
-}
-
 #define CXGB4_MSG_AN ((void *)1)
 
 /**
@@ -1602,6 +1511,52 @@ static inline void rspq_next(struct sge_rspq *q)
 		q->gen ^= 1;
 		q->cur_desc = q->desc;
 	}
+}
+
+static inline void cxgbe_set_mbuf_info(struct rte_mbuf *pkt, uint32_t ptype,
+				       uint64_t ol_flags)
+{
+	pkt->packet_type |= ptype;
+	pkt->ol_flags |= ol_flags;
+}
+
+static inline void cxgbe_fill_mbuf_info(struct adapter *adap,
+					const struct cpl_rx_pkt *cpl,
+					struct rte_mbuf *pkt)
+{
+	bool csum_ok;
+	u16 err_vec;
+
+	if (adap->params.tp.rx_pkt_encap)
+		err_vec = G_T6_COMPR_RXERR_VEC(ntohs(cpl->err_vec));
+	else
+		err_vec = ntohs(cpl->err_vec);
+
+	csum_ok = cpl->csum_calc && !err_vec;
+
+	if (cpl->vlan_ex)
+		cxgbe_set_mbuf_info(pkt, RTE_PTYPE_L2_ETHER_VLAN,
+				    PKT_RX_VLAN | PKT_RX_VLAN_STRIPPED);
+	else
+		cxgbe_set_mbuf_info(pkt, RTE_PTYPE_L2_ETHER, 0);
+
+	if (cpl->l2info & htonl(F_RXF_IP))
+		cxgbe_set_mbuf_info(pkt, RTE_PTYPE_L3_IPV4,
+				    csum_ok ? PKT_RX_IP_CKSUM_GOOD :
+					      PKT_RX_IP_CKSUM_BAD);
+	else if (cpl->l2info & htonl(F_RXF_IP6))
+		cxgbe_set_mbuf_info(pkt, RTE_PTYPE_L3_IPV6,
+				    csum_ok ? PKT_RX_IP_CKSUM_GOOD :
+					      PKT_RX_IP_CKSUM_BAD);
+
+	if (cpl->l2info & htonl(F_RXF_TCP))
+		cxgbe_set_mbuf_info(pkt, RTE_PTYPE_L4_TCP,
+				    csum_ok ? PKT_RX_L4_CKSUM_GOOD :
+					      PKT_RX_L4_CKSUM_BAD);
+	else if (cpl->l2info & htonl(F_RXF_UDP))
+		cxgbe_set_mbuf_info(pkt, RTE_PTYPE_L4_UDP,
+				    csum_ok ? PKT_RX_L4_CKSUM_GOOD :
+					      PKT_RX_L4_CKSUM_BAD);
 }
 
 /**
@@ -1655,8 +1610,6 @@ static int process_responses(struct sge_rspq *q, int budget,
 					(const void *)&q->cur_desc[1];
 				struct rte_mbuf *pkt, *npkt;
 				u32 len, bufsz;
-				bool csum_ok;
-				u16 err_vec;
 
 				rc = (const struct rsp_ctrl *)
 				     ((const char *)q->cur_desc +
@@ -1672,16 +1625,6 @@ static int process_responses(struct sge_rspq *q, int budget,
 				npkt = pkt;
 				len = G_RSPD_LEN(len);
 				pkt->pkt_len = len;
-
-				/* Compressed error vector is enabled for
-				 * T6 only
-				 */
-				if (q->adapter->params.tp.rx_pkt_encap)
-					err_vec = G_T6_COMPR_RXERR_VEC(
-							ntohs(cpl->err_vec));
-				else
-					err_vec = ntohs(cpl->err_vec);
-				csum_ok = cpl->csum_calc && !err_vec;
 
 				/* Chain mbufs into len if necessary */
 				while (len) {
@@ -1700,20 +1643,7 @@ static int process_responses(struct sge_rspq *q, int budget,
 				npkt->next = NULL;
 				pkt->nb_segs--;
 
-				if (cpl->l2info & htonl(F_RXF_IP)) {
-					pkt->packet_type = RTE_PTYPE_L3_IPV4;
-					if (unlikely(!csum_ok))
-						pkt->ol_flags |=
-							PKT_RX_IP_CKSUM_BAD;
-
-					if ((cpl->l2info &
-					     htonl(F_RXF_UDP | F_RXF_TCP)) &&
-					    !csum_ok)
-						pkt->ol_flags |=
-							PKT_RX_L4_CKSUM_BAD;
-				} else if (cpl->l2info & htonl(F_RXF_IP6)) {
-					pkt->packet_type = RTE_PTYPE_L3_IPV6;
-				}
+				cxgbe_fill_mbuf_info(q->adapter, cpl, pkt);
 
 				if (!rss_hdr->filter_tid &&
 				    rss_hdr->hash_type) {
@@ -1722,11 +1652,8 @@ static int process_responses(struct sge_rspq *q, int budget,
 						ntohl(rss_hdr->hash_val);
 				}
 
-				if (cpl->vlan_ex) {
-					pkt->ol_flags |= PKT_RX_VLAN |
-							 PKT_RX_VLAN_STRIPPED;
+				if (cpl->vlan_ex)
 					pkt->vlan_tci = ntohs(cpl->vlan);
-				}
 
 				rte_pktmbuf_adj(pkt, s->pktshift);
 				rxq->stats.pkts++;
@@ -1873,10 +1800,9 @@ int t4_sge_alloc_rxq(struct adapter *adap, struct sge_rspq *iq, bool fwevtq,
 	/* Size needs to be multiple of 16, including status entry. */
 	iq->size = cxgbe_roundup(iq->size, 16);
 
-	snprintf(z_name, sizeof(z_name), "%s_%s_%d_%d",
-		 eth_dev->device->driver->name,
-		 fwevtq ? "fwq_ring" : "rx_ring",
-		 eth_dev->data->port_id, queue_id);
+	snprintf(z_name, sizeof(z_name), "eth_p%d_q%d_%s",
+			eth_dev->data->port_id, queue_id,
+			fwevtq ? "fwq_ring" : "rx_ring");
 	snprintf(z_name_sw, sizeof(z_name_sw), "%s_sw_ring", z_name);
 
 	iq->desc = alloc_ring(iq->size, iq->iqe_len, 0, &iq->phys_addr, NULL, 0,
@@ -1938,10 +1864,9 @@ int t4_sge_alloc_rxq(struct adapter *adap, struct sge_rspq *iq, bool fwevtq,
 			fl->size = s->fl_starve_thres - 1 + 2 * 8;
 		fl->size = cxgbe_roundup(fl->size, 8);
 
-		snprintf(z_name, sizeof(z_name), "%s_%s_%d_%d",
-			 eth_dev->device->driver->name,
-			 fwevtq ? "fwq_ring" : "fl_ring",
-			 eth_dev->data->port_id, queue_id);
+		snprintf(z_name, sizeof(z_name), "eth_p%d_q%d_%s",
+				eth_dev->data->port_id, queue_id,
+				fwevtq ? "fwq_ring" : "fl_ring");
 		snprintf(z_name_sw, sizeof(z_name_sw), "%s_sw_ring", z_name);
 
 		fl->desc = alloc_ring(fl->size, sizeof(__be64),
@@ -2144,9 +2069,8 @@ int t4_sge_alloc_eth_txq(struct adapter *adap, struct sge_eth_txq *txq,
 	/* Add status entries */
 	nentries = txq->q.size + s->stat_len / sizeof(struct tx_desc);
 
-	snprintf(z_name, sizeof(z_name), "%s_%s_%d_%d",
-		 eth_dev->device->driver->name, "tx_ring",
-		 eth_dev->data->port_id, queue_id);
+	snprintf(z_name, sizeof(z_name), "eth_p%d_q%d_%s",
+			eth_dev->data->port_id, queue_id, "tx_ring");
 	snprintf(z_name_sw, sizeof(z_name_sw), "%s_sw_ring", z_name);
 
 	txq->q.desc = alloc_ring(txq->q.size, sizeof(struct tx_desc),
@@ -2223,9 +2147,8 @@ int t4_sge_alloc_ctrl_txq(struct adapter *adap, struct sge_ctrl_txq *txq,
 	/* Add status entries */
 	nentries = txq->q.size + s->stat_len / sizeof(struct tx_desc);
 
-	snprintf(z_name, sizeof(z_name), "%s_%s_%d_%d",
-		 eth_dev->device->driver->name, "ctrl_tx_ring",
-		 eth_dev->data->port_id, queue_id);
+	snprintf(z_name, sizeof(z_name), "eth_p%d_q%d_%s",
+			eth_dev->data->port_id, queue_id, "ctrl_tx_ring");
 	snprintf(z_name_sw, sizeof(z_name_sw), "%s_sw_ring", z_name);
 
 	txq->q.desc = alloc_ring(txq->q.size, sizeof(struct tx_desc),

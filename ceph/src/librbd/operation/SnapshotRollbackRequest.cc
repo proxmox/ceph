@@ -47,7 +47,7 @@ public:
                    << m_object_num << dendl;
 
     {
-      RWLock::RLocker snap_locker(image_ctx.snap_lock);
+      std::shared_lock image_locker{image_ctx.image_lock};
       if (m_object_num < m_head_num_objects &&
           m_snap_object_map != nullptr &&
           !image_ctx.object_map->object_may_exist(m_object_num) &&
@@ -97,8 +97,14 @@ SnapshotRollbackRequest<I>::~SnapshotRollbackRequest() {
   if (m_blocking_writes) {
     image_ctx.io_work_queue->unblock_writes();
   }
-  delete m_object_map;
-  delete m_snap_object_map;
+  if (m_object_map) {
+    m_object_map->put();
+    m_object_map = nullptr;
+  }
+  if (m_snap_object_map) {
+    m_snap_object_map->put();
+    m_snap_object_map = nullptr;
+  }
 }
 
 template <typename I>
@@ -139,8 +145,8 @@ void SnapshotRollbackRequest<I>::send_resize_image() {
 
   uint64_t current_size;
   {
-    RWLock::RLocker owner_locker(image_ctx.owner_lock);
-    RWLock::RLocker snap_locker(image_ctx.snap_lock);
+    std::shared_lock owner_locker{image_ctx.owner_lock};
+    std::shared_lock image_locker{image_ctx.image_lock};
     current_size = image_ctx.get_image_size(CEPH_NOSNAP);
   }
 
@@ -154,7 +160,7 @@ void SnapshotRollbackRequest<I>::send_resize_image() {
   CephContext *cct = image_ctx.cct;
   ldout(cct, 5) << this << " " << __func__ << dendl;
 
-  RWLock::RLocker owner_locker(image_ctx.owner_lock);
+  std::shared_lock owner_locker{image_ctx.owner_lock};
   Context *ctx = create_context_callback<
     SnapshotRollbackRequest<I>,
     &SnapshotRollbackRequest<I>::handle_resize_image>(this);
@@ -187,8 +193,8 @@ void SnapshotRollbackRequest<I>::send_get_snap_object_map() {
   bool object_map_enabled;
   CephContext *cct = image_ctx.cct;
   {
-    RWLock::RLocker owner_locker(image_ctx.owner_lock);
-    RWLock::RLocker snap_locker(image_ctx.snap_lock);
+    std::shared_lock owner_locker{image_ctx.owner_lock};
+    std::shared_lock image_locker{image_ctx.image_lock};
     object_map_enabled = (image_ctx.object_map != nullptr);
     int r = image_ctx.get_flags(m_snap_id, &flags);
     if (r < 0) {
@@ -225,7 +231,7 @@ Context *SnapshotRollbackRequest<I>::handle_get_snap_object_map(int *result) {
   if (*result < 0) {
     lderr(cct) << this << " " << __func__ << ": failed to open object map: "
                << cpp_strerror(*result) << dendl;
-    delete m_snap_object_map;
+    m_snap_object_map->put();
     m_snap_object_map = nullptr;
   }
 
@@ -238,9 +244,8 @@ void SnapshotRollbackRequest<I>::send_rollback_object_map() {
   I &image_ctx = this->m_image_ctx;
 
   {
-    RWLock::RLocker owner_locker(image_ctx.owner_lock);
-    RWLock::RLocker snap_locker(image_ctx.snap_lock);
-    RWLock::WLocker object_map_lock(image_ctx.object_map_lock);
+    std::shared_lock owner_locker{image_ctx.owner_lock};
+    std::shared_lock image_locker{image_ctx.image_lock};
     if (image_ctx.object_map != nullptr) {
       CephContext *cct = image_ctx.cct;
       ldout(cct, 5) << this << " " << __func__ << dendl;
@@ -281,10 +286,10 @@ void SnapshotRollbackRequest<I>::send_rollback_objects() {
   CephContext *cct = image_ctx.cct;
   ldout(cct, 5) << this << " " << __func__ << dendl;
 
-  RWLock::RLocker owner_locker(image_ctx.owner_lock);
+  std::shared_lock owner_locker{image_ctx.owner_lock};
   uint64_t num_objects;
   {
-    RWLock::RLocker snap_locker(image_ctx.snap_lock);
+    std::shared_lock image_locker{image_ctx.image_lock};
     num_objects = Striper::get_num_objects(image_ctx.layout,
                                            image_ctx.get_current_size());
   }
@@ -326,8 +331,8 @@ Context *SnapshotRollbackRequest<I>::send_refresh_object_map() {
 
   bool object_map_enabled;
   {
-    RWLock::RLocker owner_locker(image_ctx.owner_lock);
-    RWLock::RLocker snap_locker(image_ctx.snap_lock);
+    std::shared_lock owner_locker{image_ctx.owner_lock};
+    std::shared_lock image_locker{image_ctx.image_lock};
     object_map_enabled = (image_ctx.object_map != nullptr);
   }
   if (!object_map_enabled) {
@@ -355,7 +360,7 @@ Context *SnapshotRollbackRequest<I>::handle_refresh_object_map(int *result) {
   if (*result < 0) {
     lderr(cct) << this << " " << __func__ << ": failed to open object map: "
                << cpp_strerror(*result) << dendl;
-    delete m_object_map;
+    m_object_map->put();
     m_object_map = nullptr;
     apply();
 
@@ -374,11 +379,19 @@ Context *SnapshotRollbackRequest<I>::send_invalidate_cache() {
   CephContext *cct = image_ctx.cct;
   ldout(cct, 5) << this << " " << __func__ << dendl;
 
-  RWLock::RLocker owner_lock(image_ctx.owner_lock);
-  Context *ctx = create_context_callback<
-    SnapshotRollbackRequest<I>,
-    &SnapshotRollbackRequest<I>::handle_invalidate_cache>(this);
-  image_ctx.io_object_dispatcher->invalidate_cache(ctx);
+  std::shared_lock owner_lock{image_ctx.owner_lock};
+  if(m_object_map != nullptr) {
+    Context *ctx = create_context_callback<
+      SnapshotRollbackRequest<I>,
+      &SnapshotRollbackRequest<I>::handle_invalidate_cache>(this, m_object_map);
+    image_ctx.io_object_dispatcher->invalidate_cache(ctx);
+  }
+  else {
+    Context *ctx = create_context_callback<
+      SnapshotRollbackRequest<I>,
+      &SnapshotRollbackRequest<I>::handle_invalidate_cache>(this);
+    image_ctx.io_object_dispatcher->invalidate_cache(ctx);
+  }
   return nullptr;
 }
 
@@ -399,8 +412,8 @@ template <typename I>
 void SnapshotRollbackRequest<I>::apply() {
   I &image_ctx = this->m_image_ctx;
 
-  RWLock::RLocker owner_locker(image_ctx.owner_lock);
-  RWLock::WLocker snap_locker(image_ctx.snap_lock);
+  std::shared_lock owner_locker{image_ctx.owner_lock};
+  std::unique_lock image_locker{image_ctx.image_lock};
   if (image_ctx.object_map != nullptr) {
     std::swap(m_object_map, image_ctx.object_map);
   }

@@ -75,7 +75,7 @@ compile it along with other DPDK PMDs even if no BSP was installed previously.
 Of course, a DPDK app will require such a BSP installed for using the
 NFP PMD, along with a specific NFP firmware application.
 
-Default PMD configuration is at the **common_linuxapp configuration** file:
+Default PMD configuration is at the **common_linux configuration** file:
 
 - **CONFIG_RTE_LIBRTE_NFP_PMD=y**
 
@@ -143,6 +143,18 @@ Because the unusual relationship between a single PCI device and several DPDK
 ports, there are some limitations when using more than one PF DPDK port: there
 is no support for RX interrupts and it is not possible either to use those PF
 ports with the device hotplug functionality.
+
+
+PF multiprocess support
+-----------------------
+
+Due to how the driver needs to access the NFP through a CPP interface, which implies
+to use specific registers inside the chip, the number of secondary processes with PF
+ports is limited to only one.
+
+This limitation will be solved in future versions but having basic multiprocess support
+is important for allowing development and debugging through the PF using a secondary
+process which will create a CPP bridge for user space tools accessing the NFP.
 
 
 System configuration

@@ -1,5 +1,5 @@
 // -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// vim: ts=8 sw=2 smarttab ft=cpp
 
 #ifndef CEPH_RGW_ACL_H
 #define CEPH_RGW_ACL_H
@@ -306,7 +306,7 @@ public:
   uint32_t get_perm(const DoutPrefixProvider* dpp,
                     const rgw::auth::Identity& auth_identity,
                     uint32_t perm_mask);
-  uint32_t get_group_perm(ACLGroupTypeEnum group, uint32_t perm_mask);
+  uint32_t get_group_perm(ACLGroupTypeEnum group, uint32_t perm_mask) const;
   uint32_t get_referer_perm(uint32_t current_perm,
                             std::string http_referer,
                             uint32_t perm_mask);
@@ -344,6 +344,7 @@ public:
   static void generate_test_instances(list<RGWAccessControlList*>& o);
 
   void add_grant(ACLGrant *grant);
+  void remove_canon_user_grant(rgw_user& user_id);
 
   multimap<string, ACLGrant>& get_grant_map() { return grant_map; }
   const multimap<string, ACLGrant>& get_grant_map() const { return grant_map; }
@@ -417,13 +418,14 @@ public:
   uint32_t get_perm(const DoutPrefixProvider* dpp,
                     const rgw::auth::Identity& auth_identity,
                     uint32_t perm_mask,
-                    const char * http_referer);
-  uint32_t get_group_perm(ACLGroupTypeEnum group, uint32_t perm_mask);
+                    const char * http_referer,
+                    bool ignore_public_acls=false);
   bool verify_permission(const DoutPrefixProvider* dpp,
                          const rgw::auth::Identity& auth_identity,
                          uint32_t user_perm_mask,
                          uint32_t perm,
-                         const char * http_referer = nullptr);
+                         const char * http_referer = nullptr,
+                         bool ignore_public_acls=false);
 
   void encode(bufferlist& bl) const {
     ENCODE_START(2, 2, bl);
@@ -463,6 +465,7 @@ public:
   }
 
   virtual bool compare_group_name(string& id, ACLGroupTypeEnum group) { return false; }
+  bool is_public() const;
 };
 WRITE_CLASS_ENCODER(RGWAccessControlPolicy)
 

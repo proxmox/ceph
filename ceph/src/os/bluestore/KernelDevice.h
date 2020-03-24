@@ -45,7 +45,7 @@ class KernelDevice : public BlockDevice {
   std::atomic<bool> io_since_flush = {false};
   ceph::mutex flush_mutex = ceph::make_mutex("KernelDevice::flush_mutex");
 
-  aio_queue_t aio_queue;
+  std::unique_ptr<io_queue_t> io_queue;
   aio_callback_t discard_callback;
   void *discard_callback_priv;
   bool aio_stop;
@@ -115,14 +115,14 @@ public:
   void discard_drain() override;
 
   int collect_metadata(const std::string& prefix, map<std::string,std::string> *pm) const override;
-  int get_devname(std::string *s) override {
+  int get_devname(std::string *s) const override {
     if (devname.empty()) {
       return -ENOENT;
     }
     *s = devname;
     return 0;
   }
-  int get_devices(std::set<std::string> *ls) override;
+  int get_devices(std::set<std::string> *ls) const override;
 
   bool get_thin_utilization(uint64_t *total, uint64_t *avail) const override;
 

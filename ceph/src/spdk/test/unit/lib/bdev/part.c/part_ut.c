@@ -33,12 +33,14 @@
 
 #include "spdk_cunit.h"
 
-#include "common/lib/test_env.c"
+#include "common/lib/ut_multithread.c"
 #include "unit/lib/json_mock.c"
 
 #include "spdk/config.h"
 /* HACK: disable VTune integration so the unit test doesn't need VTune headers and libs to build */
 #undef SPDK_CONFIG_VTUNE
+
+#include "spdk_internal/thread.h"
 
 #include "bdev/bdev.c"
 #include "bdev/part.c"
@@ -53,18 +55,14 @@ struct spdk_trace_histories *g_trace_histories;
 DEFINE_STUB_V(spdk_trace_add_register_fn, (struct spdk_trace_register_fn *reg_fn));
 DEFINE_STUB_V(spdk_trace_register_owner, (uint8_t type, char id_prefix));
 DEFINE_STUB_V(spdk_trace_register_object, (uint8_t type, char id_prefix));
-DEFINE_STUB_V(spdk_trace_register_description, (const char *name, const char *short_name,
+DEFINE_STUB_V(spdk_trace_register_description, (const char *name,
 		uint16_t tpoint_id, uint8_t owner_type,
 		uint8_t object_type, uint8_t new_object,
-		uint8_t arg1_is_ptr, const char *arg1_name));
+		uint8_t arg1_type, const char *arg1_name));
 DEFINE_STUB_V(_spdk_trace_record, (uint64_t tsc, uint16_t tpoint_id, uint16_t poller_id,
 				   uint32_t size, uint64_t object_id, uint64_t arg1));
-
-static void
-_part_send_msg(spdk_thread_fn fn, void *ctx, void *thread_ctx)
-{
-	fn(ctx);
-}
+DEFINE_STUB(spdk_notify_send, uint64_t, (const char *type, const char *ctx), 0);
+DEFINE_STUB(spdk_notify_type_register, struct spdk_notify_type *, (const char *type), NULL);
 
 static void
 _part_cleanup(struct spdk_bdev_part *part)
@@ -90,8 +88,8 @@ struct spdk_bdev_module vbdev_ut_if = {
 	.examine_config = vbdev_ut_examine,
 };
 
-SPDK_BDEV_MODULE_REGISTER(&bdev_ut_if)
-SPDK_BDEV_MODULE_REGISTER(&vbdev_ut_if)
+SPDK_BDEV_MODULE_REGISTER(bdev_ut, &bdev_ut_if)
+SPDK_BDEV_MODULE_REGISTER(vbdev_ut, &vbdev_ut_if)
 
 static void
 vbdev_ut_examine(struct spdk_bdev *bdev)
@@ -138,19 +136,21 @@ part_test(void)
 	rc = spdk_bdev_part_construct(&part2, base, "test2", 100, 100, "test");
 	SPDK_CU_ASSERT_FATAL(rc == 0);
 
-	spdk_bdev_part_base_hotremove(&bdev_base, &tailq);
+	spdk_bdev_part_base_hotremove(base, &tailq);
 
 	spdk_bdev_part_base_free(base);
 	_part_cleanup(&part1);
 	_part_cleanup(&part2);
 	spdk_bdev_unregister(&bdev_base, NULL, NULL);
+
+	poll_threads();
 }
 
 int
 main(int argc, char **argv)
 {
-	CU_pSuite	suite = NULL;
-	unsigned int	num_failures;
+	CU_pSuite		suite = NULL;
+	unsigned int		num_failures;
 
 	if (CU_initialize_registry() != CUE_SUCCESS) {
 		return CU_get_error();
@@ -169,11 +169,15 @@ main(int argc, char **argv)
 		return CU_get_error();
 	}
 
-	spdk_allocate_thread(_part_send_msg, NULL, NULL, NULL, "thread0");
+	allocate_threads(1);
+	set_thread(0);
+
 	CU_basic_set_mode(CU_BRM_VERBOSE);
 	CU_basic_run_tests();
 	num_failures = CU_get_number_of_failures();
 	CU_cleanup_registry();
-	spdk_free_thread();
+
+	free_threads();
+
 	return num_failures;
 }

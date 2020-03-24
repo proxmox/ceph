@@ -42,16 +42,17 @@ rpc_param = {
     'chap_group': 0,
     'header_digest': False,
     'data_digest': False,
-    'trace_flag': 'rpc',
+    'log_flag': 'rpc',
     'cpumask': 0x1
 }
 
 
 class RpcException(Exception):
 
-    def __init__(self, retval, *args):
-        super(RpcException, self).__init__(*args)
+    def __init__(self, retval, msg):
+        super(RpcException, self).__init__(msg)
         self.retval = retval
+        self.message = msg
 
 
 class spdk_rpc(object):
@@ -64,7 +65,7 @@ class spdk_rpc(object):
             cmd = "{} {}".format(self.rpc_py, name)
             for arg in args:
                 cmd += " {}".format(arg)
-            return check_output(cmd, shell=True)
+            return check_output(cmd, shell=True).decode("utf-8")
         return call
 
 
@@ -73,24 +74,24 @@ def verify(expr, retcode, msg):
         raise RpcException(retcode, msg)
 
 
-def verify_trace_flag_rpc_methods(rpc_py, rpc_param):
+def verify_log_flag_rpc_methods(rpc_py, rpc_param):
     rpc = spdk_rpc(rpc_py)
-    output = rpc.get_trace_flags()
+    output = rpc.get_log_flags()
     jsonvalue = json.loads(output)
-    verify(not jsonvalue[rpc_param['trace_flag']], 1,
-           "get_trace_flags returned {}, expected false".format(jsonvalue))
-    rpc.set_trace_flag(rpc_param['trace_flag'])
-    output = rpc.get_trace_flags()
+    verify(not jsonvalue[rpc_param['log_flag']], 1,
+           "get_log_flags returned {}, expected false".format(jsonvalue))
+    rpc.set_log_flag(rpc_param['log_flag'])
+    output = rpc.get_log_flags()
     jsonvalue = json.loads(output)
-    verify(jsonvalue[rpc_param['trace_flag']], 1,
-           "get_trace_flags returned {}, expected true".format(jsonvalue))
-    rpc.clear_trace_flag(rpc_param['trace_flag'])
-    output = rpc.get_trace_flags()
+    verify(jsonvalue[rpc_param['log_flag']], 1,
+           "get_log_flags returned {}, expected true".format(jsonvalue))
+    rpc.clear_log_flag(rpc_param['log_flag'])
+    output = rpc.get_log_flags()
     jsonvalue = json.loads(output)
-    verify(not jsonvalue[rpc_param['trace_flag']], 1,
-           "get_trace_flags returned {}, expected false".format(jsonvalue))
+    verify(not jsonvalue[rpc_param['log_flag']], 1,
+           "get_log_flags returned {}, expected false".format(jsonvalue))
 
-    print("verify_trace_flag_rpc_methods passed")
+    print("verify_log_flag_rpc_methods passed")
 
 
 def verify_iscsi_connection_rpc_methods(rpc_py):
@@ -406,7 +407,7 @@ def verify_get_interfaces(rpc_py):
     nics_names = set(x["name"] for x in nics)
     # parse ip link show to verify the get_interfaces result
     ip_show = ns_cmd + " ip link show"
-    ifcfg_nics = set(re.findall("\S+:\s(\S+?)(?:@\S+){0,1}:\s<.*", check_output(ip_show.split()).decode()))
+    ifcfg_nics = set(re.findall(r'\S+:\s(\S+?)(?:@\S+){0,1}:\s<.*', check_output(ip_show.split()).decode()))
     verify(nics_names == ifcfg_nics, 1, "get_interfaces returned {}".format(nics))
     print("verify_get_interfaces passed.")
 
@@ -460,7 +461,7 @@ def verify_add_nvme_bdev_rpc_methods(rpc_py):
     rpc = spdk_rpc(rpc_py)
     test_pass = 0
     output = check_output(["lspci", "-mm", "-nn"])
-    addrs = re.findall('^([0-9]{2}:[0-9]{2}.[0-9]) "Non-Volatile memory controller \[0108\]".*-p02', output.decode(), re.MULTILINE)
+    addrs = re.findall(r'^([0-9]{2}:[0-9]{2}.[0-9]) "Non-Volatile memory controller \[0108\]".*-p02', output.decode(), re.MULTILINE)
     for addr in addrs:
         ctrlr_address = "-b Nvme{} -t pcie -a 0000:{}".format(addrs.index(addr), addr)
         rpc.construct_nvme_bdev(ctrlr_address)
@@ -483,7 +484,7 @@ if __name__ == "__main__":
     rpc_py = sys.argv[1]
 
     try:
-        verify_trace_flag_rpc_methods(rpc_py, rpc_param)
+        verify_log_flag_rpc_methods(rpc_py, rpc_param)
         verify_get_interfaces(rpc_py)
         verify_add_delete_ip_address(rpc_py)
         create_malloc_bdevs_rpc_methods(rpc_py, rpc_param)

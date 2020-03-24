@@ -3,6 +3,8 @@
 #ifndef CEPH_OS_BLUESTORE_BLUEFS_TYPES_H
 #define CEPH_OS_BLUESTORE_BLUEFS_TYPES_H
 
+#include <optional>
+
 #include "bluestore_types.h"
 #include "include/utime.h"
 #include "include/encoding.h"
@@ -33,12 +35,11 @@ WRITE_CLASS_DENC(bluefs_extent_t)
 
 ostream& operator<<(ostream& out, const bluefs_extent_t& e);
 
-
 struct bluefs_fnode_t {
   uint64_t ino;
   uint64_t size;
   utime_t mtime;
-  uint8_t prefer_bdev;
+  uint8_t __unused__; // was prefer_bdev
   mempool::bluefs::vector<bluefs_extent_t> extents;
 
   // precalculated logical offsets for extents vector entries
@@ -47,7 +48,7 @@ struct bluefs_fnode_t {
 
   uint64_t allocated;
 
-  bluefs_fnode_t() : ino(0), size(0), prefer_bdev(0), allocated(0) {}
+  bluefs_fnode_t() : ino(0), size(0), __unused__(0), allocated(0) {}
 
   uint64_t get_allocated() const {
     return allocated;
@@ -69,7 +70,6 @@ struct bluefs_fnode_t {
   void encode(bufferlist::contiguous_appender& p) const {
     DENC_DUMP_PRE(bluefs_fnode_t);
     _denc_friend(*this, p);
-    DENC_DUMP_POST(bluefs_fnode_t);
   }
   void decode(buffer::ptr::const_iterator& p) {
     _denc_friend(*this, p);
@@ -82,7 +82,7 @@ struct bluefs_fnode_t {
     denc_varint(v.ino, p);
     denc_varint(v.size, p);
     denc(v.mtime, p);
-    denc(v.prefer_bdev, p);
+    denc(v.__unused__, p);
     denc(v.extents, p);
     DENC_FINISH(p);
   }
@@ -132,6 +132,26 @@ WRITE_CLASS_DENC(bluefs_fnode_t)
 
 ostream& operator<<(ostream& out, const bluefs_fnode_t& file);
 
+struct bluefs_layout_t {
+  unsigned shared_bdev = 0;         ///< which bluefs bdev we are sharing
+  bool dedicated_db = false;        ///< whether block.db is present
+  bool dedicated_wal = false;       ///< whether block.wal is present
+
+  bool single_shared_device() const {
+    return !dedicated_db && !dedicated_wal;
+  }
+
+  bool operator==(const bluefs_layout_t& other) const {
+    return shared_bdev == other.shared_bdev &&
+           dedicated_db == other.dedicated_db &&
+           dedicated_wal == other.dedicated_wal;
+  }
+
+  void encode(ceph::bufferlist& bl) const;
+  void decode(ceph::bufferlist::const_iterator& p);
+  void dump(Formatter *f) const;
+};
+WRITE_CLASS_ENCODER(bluefs_layout_t)
 
 struct bluefs_super_t {
   uuid_d uuid;      ///< unique to this bluefs instance
@@ -140,6 +160,8 @@ struct bluefs_super_t {
   uint32_t block_size;
 
   bluefs_fnode_t log_fnode;
+
+  std::optional<bluefs_layout_t> memorized_layout;
 
   bluefs_super_t()
     : version(0),

@@ -1,9 +1,7 @@
-/*
- * Copyright (c) 2016 QLogic Corporation.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright (c) 2016 - 2018 Cavium Inc.
  * All rights reserved.
- * www.qlogic.com
- *
- * See LICENSE.qede_pmd for copyright and licensing details.
+ * www.cavium.com
  */
 
 #ifndef __ECORE_SP_API_H__
@@ -49,6 +47,7 @@ enum _ecore_status_t ecore_eth_cqe_completion(struct ecore_hwfn *p_hwfn,
  * for a physical function (PF).
  *
  * @param p_hwfn
+ * @param p_ptt
  * @param p_tunn - pf update tunneling parameters
  * @param comp_mode - completion mode
  * @param p_comp_data - callback function
@@ -58,6 +57,7 @@ enum _ecore_status_t ecore_eth_cqe_completion(struct ecore_hwfn *p_hwfn,
 
 enum _ecore_status_t
 ecore_sp_pf_update_tunn_cfg(struct ecore_hwfn *p_hwfn,
+			    struct ecore_ptt *p_ptt,
 			    struct ecore_tunnel_info *p_tunn,
 			    enum spq_mode comp_mode,
 			    struct ecore_spq_comp_cb *p_comp_data);

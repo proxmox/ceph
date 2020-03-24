@@ -1,4 +1,4 @@
-  $ ceph osd pool create xrbddiff1 8
+  $ ceph osd pool create xrbddiff1
   pool 'xrbddiff1' created
   $ rbd pool init xrbddiff1
   $ rbd create --thick-provision --size 1M xrbddiff1/xtestdiff1 --no-progress
@@ -19,7 +19,7 @@
   $ rbd diff --from-snap=allzeroes xrbddiff1/xtestdiff1 --format json
   [{"offset":0,"length":1048576,"exists":"true"}]
   $ rbd snap create xrbddiff1/xtestdiff1 --snap=snap1
-  $ rbd snap list xrbddiff1/xtestdiff1 --format json | python -mjson.tool | sed 's/,$/, /'
+  $ rbd snap list xrbddiff1/xtestdiff1 --format json | python3 -mjson.tool --sort-keys | sed 's/,$/, /'
   [
       {
           "id": *,  (glob)

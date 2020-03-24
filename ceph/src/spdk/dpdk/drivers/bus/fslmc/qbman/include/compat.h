@@ -11,13 +11,13 @@
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE
 #endif
+#include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <errno.h>
 #include <string.h>
 #include <malloc.h>
 #include <unistd.h>
-#include <error.h>
 #include <linux/types.h>
 #include <rte_atomic.h>
 
@@ -78,12 +78,13 @@ do { \
 #define lower_32_bits(x) ((uint32_t)(x))
 #define upper_32_bits(x) ((uint32_t)(((x) >> 16) >> 16))
 
-
 #define __iomem
 
 #define __raw_readb(p)	(*(const volatile unsigned char *)(p))
 #define __raw_readl(p)	(*(const volatile unsigned int *)(p))
 #define __raw_writel(v, p) {*(volatile unsigned int *)(p) = (v); }
+
+#define dma_wmb()		rte_smp_mb()
 
 #define atomic_t                rte_atomic32_t
 #define atomic_read(v)          rte_atomic32_read(v)

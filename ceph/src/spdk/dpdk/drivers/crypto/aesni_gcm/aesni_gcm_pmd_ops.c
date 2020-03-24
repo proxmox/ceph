@@ -24,9 +24,9 @@ static const struct rte_cryptodev_capabilities aesni_gcm_pmd_capabilities[] = {
 					.increment = 8
 				},
 				.digest_size = {
-					.min = 8,
+					.min = 1,
 					.max = 16,
-					.increment = 4
+					.increment = 1
 				},
 				.iv_size = {
 					.min = 12,
@@ -49,9 +49,9 @@ static const struct rte_cryptodev_capabilities aesni_gcm_pmd_capabilities[] = {
 					.increment = 8
 				},
 				.digest_size = {
-					.min = 8,
+					.min = 1,
 					.max = 16,
-					.increment = 4
+					.increment = 1
 				},
 				.aad_size = {
 					.min = 0,
@@ -153,6 +153,11 @@ static int
 aesni_gcm_pmd_qp_release(struct rte_cryptodev *dev, uint16_t qp_id)
 {
 	if (dev->data->queue_pairs[qp_id] != NULL) {
+		struct aesni_gcm_qp *qp = dev->data->queue_pairs[qp_id];
+
+		if (qp->processed_pkts)
+			rte_ring_free(qp->processed_pkts);
+
 		rte_free(dev->data->queue_pairs[qp_id]);
 		dev->data->queue_pairs[qp_id] = NULL;
 	}
@@ -201,7 +206,7 @@ aesni_gcm_pmd_qp_create_processed_pkts_ring(struct aesni_gcm_qp *qp,
 static int
 aesni_gcm_pmd_qp_setup(struct rte_cryptodev *dev, uint16_t qp_id,
 		const struct rte_cryptodev_qp_conf *qp_conf,
-		int socket_id, struct rte_mempool *session_pool)
+		int socket_id)
 {
 	struct aesni_gcm_qp *qp = NULL;
 	struct aesni_gcm_private *internals = dev->data->dev_private;
@@ -222,14 +227,15 @@ aesni_gcm_pmd_qp_setup(struct rte_cryptodev *dev, uint16_t qp_id,
 	if (aesni_gcm_pmd_qp_set_unique_name(dev, qp))
 		goto qp_setup_cleanup;
 
-	qp->ops = (const struct aesni_gcm_ops *)gcm_ops[internals->vector_mode];
+	qp->ops = (const struct aesni_gcm_ops *)internals->ops;
 
 	qp->processed_pkts = aesni_gcm_pmd_qp_create_processed_pkts_ring(qp,
 			qp_conf->nb_descriptors, socket_id);
 	if (qp->processed_pkts == NULL)
 		goto qp_setup_cleanup;
 
-	qp->sess_mp = session_pool;
+	qp->sess_mp = qp_conf->mp_session;
+	qp->sess_mp_priv = qp_conf->mp_session_private;
 
 	memset(&qp->qp_stats, 0, sizeof(qp->qp_stats));
 
@@ -277,7 +283,7 @@ aesni_gcm_pmd_sym_session_configure(struct rte_cryptodev *dev __rte_unused,
 				"Couldn't get object from session mempool");
 		return -ENOMEM;
 	}
-	ret = aesni_gcm_set_session_parameters(gcm_ops[internals->vector_mode],
+	ret = aesni_gcm_set_session_parameters(internals->ops,
 				sess_private_data, xform);
 	if (ret != 0) {
 		AESNI_GCM_LOG(ERR, "failed configure session parameters");

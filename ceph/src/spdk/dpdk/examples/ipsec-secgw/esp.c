@@ -96,6 +96,7 @@ esp_inbound(struct rte_mbuf *m, struct ipsec_sa *sa,
 
 		switch (sa->cipher_algo) {
 		case RTE_CRYPTO_CIPHER_NULL:
+		case RTE_CRYPTO_CIPHER_3DES_CBC:
 		case RTE_CRYPTO_CIPHER_AES_CBC:
 			/* Copy IV at the end of crypto operation */
 			rte_memcpy(iv_ptr, iv, sa->iv_len);
@@ -161,7 +162,7 @@ esp_inbound_post(struct rte_mbuf *m, struct ipsec_sa *sa,
 	}
 
 	if (cop->status != RTE_CRYPTO_OP_STATUS_SUCCESS) {
-		RTE_LOG(ERR, IPSEC_ESP, "failed crypto op\n");
+		RTE_LOG(ERR, IPSEC_ESP, "%s() failed crypto op\n", __func__);
 		return -1;
 	}
 
@@ -326,6 +327,7 @@ esp_outbound(struct rte_mbuf *m, struct ipsec_sa *sa,
 	} else {
 		switch (sa->cipher_algo) {
 		case RTE_CRYPTO_CIPHER_NULL:
+		case RTE_CRYPTO_CIPHER_3DES_CBC:
 		case RTE_CRYPTO_CIPHER_AES_CBC:
 			memset(iv, 0, sa->iv_len);
 			break;
@@ -387,6 +389,7 @@ esp_outbound(struct rte_mbuf *m, struct ipsec_sa *sa,
 	} else {
 		switch (sa->cipher_algo) {
 		case RTE_CRYPTO_CIPHER_NULL:
+		case RTE_CRYPTO_CIPHER_3DES_CBC:
 		case RTE_CRYPTO_CIPHER_AES_CBC:
 			sym_cop->cipher.data.offset = ip_hdr_len +
 				sizeof(struct esp_hdr);
@@ -452,7 +455,8 @@ esp_outbound_post(struct rte_mbuf *m,
 	} else {
 		RTE_ASSERT(cop != NULL);
 		if (cop->status != RTE_CRYPTO_OP_STATUS_SUCCESS) {
-			RTE_LOG(ERR, IPSEC_ESP, "Failed crypto op\n");
+			RTE_LOG(ERR, IPSEC_ESP, "%s() failed crypto op\n",
+				__func__);
 			return -1;
 		}
 	}

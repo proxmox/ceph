@@ -39,7 +39,7 @@
 
 #include "common/lib/test_env.c"
 
-struct spdk_trace_flag SPDK_LOG_NVME = {
+struct spdk_log_flag SPDK_LOG_NVME = {
 	.name = "nvme",
 	.enabled = false,
 };
@@ -66,8 +66,6 @@ int set_status_cpl = -1;
 DEFINE_STUB(nvme_ctrlr_cmd_set_host_id, int,
 	    (struct spdk_nvme_ctrlr *ctrlr, void *host_id, uint32_t host_id_size,
 	     spdk_nvme_cmd_cb cb_fn, void *cb_arg), 0);
-DEFINE_STUB(nvme_ctrlr_identify_ns, int, (struct spdk_nvme_ns *ns), 0);
-DEFINE_STUB(nvme_ctrlr_identify_id_desc, int, (struct spdk_nvme_ns *ns), 0);
 DEFINE_STUB_V(nvme_ns_set_identify_data, (struct spdk_nvme_ns *ns));
 
 struct spdk_nvme_ctrlr *nvme_transport_ctrlr_construct(const struct spdk_nvme_transport_id *trid,
@@ -171,15 +169,30 @@ nvme_transport_ctrlr_delete_io_qpair(struct spdk_nvme_ctrlr *ctrlr, struct spdk_
 }
 
 int
-nvme_transport_ctrlr_reinit_io_qpair(struct spdk_nvme_ctrlr *ctrlr, struct spdk_nvme_qpair *qpair)
+nvme_transport_ctrlr_connect_qpair(struct spdk_nvme_ctrlr *ctrlr, struct spdk_nvme_qpair *qpair)
 {
 	return 0;
+}
+
+void
+nvme_transport_ctrlr_disconnect_qpair(struct spdk_nvme_ctrlr *ctrlr, struct spdk_nvme_qpair *qpair)
+{
 }
 
 int
 nvme_transport_qpair_reset(struct spdk_nvme_qpair *qpair)
 {
 	return 0;
+}
+
+void
+nvme_transport_admin_qpair_abort_aers(struct spdk_nvme_qpair *qpair)
+{
+}
+
+void
+nvme_transport_qpair_abort_reqs(struct spdk_nvme_qpair *qpair, uint32_t dnr)
+{
 }
 
 int
@@ -260,6 +273,11 @@ nvme_qpair_disable(struct spdk_nvme_qpair *qpair)
 }
 
 void
+nvme_qpair_complete_error_reqs(struct spdk_nvme_qpair *qpair)
+{
+}
+
+void
 nvme_qpair_enable(struct spdk_nvme_qpair *qpair)
 {
 }
@@ -295,6 +313,13 @@ spdk_nvme_wait_for_completion(struct spdk_nvme_qpair *qpair,
 	return spdk_nvme_wait_for_completion_robust_lock(qpair, status, NULL);
 }
 
+int
+spdk_nvme_wait_for_completion_timeout(struct spdk_nvme_qpair *qpair,
+				      struct nvme_completion_poll_status *status,
+				      uint64_t timeout_in_secs)
+{
+	return spdk_nvme_wait_for_completion_robust_lock(qpair, status, NULL);
+}
 
 int
 nvme_ctrlr_cmd_set_async_event_config(struct spdk_nvme_ctrlr *ctrlr,
@@ -409,6 +434,23 @@ nvme_ctrlr_cmd_fw_image_download(struct spdk_nvme_ctrlr *ctrlr,
 	return 0;
 }
 
+int
+nvme_ctrlr_cmd_security_receive(struct spdk_nvme_ctrlr *ctrlr, uint8_t secp, uint16_t spsp,
+				uint8_t nssf, void *payload, uint32_t payload_size,
+				spdk_nvme_cmd_cb cb_fn, void *cb_arg)
+{
+	return 0;
+}
+
+int
+nvme_ctrlr_cmd_security_send(struct spdk_nvme_ctrlr *ctrlr, uint8_t secp,
+			     uint16_t spsp, uint8_t nssf, void *payload,
+			     uint32_t payload_size, spdk_nvme_cmd_cb cb_fn, void *cb_arg)
+{
+	return 0;
+}
+
+
 void
 nvme_ns_destruct(struct spdk_nvme_ns *ns)
 {
@@ -419,6 +461,11 @@ nvme_ns_construct(struct spdk_nvme_ns *ns, uint32_t id,
 		  struct spdk_nvme_ctrlr *ctrlr)
 {
 	return 0;
+}
+
+void
+spdk_pci_device_detach(struct spdk_pci_device *device)
+{
 }
 
 #define DECLARE_AND_CONSTRUCT_CTRLR()	\
@@ -1501,6 +1548,7 @@ test_ctrlr_get_default_ctrlr_opts(void)
 	CU_ASSERT(strlen(opts.hostnqn) == 0);
 	CU_ASSERT(strlen(opts.src_addr) == 0);
 	CU_ASSERT(strlen(opts.src_svcid) == 0);
+	CU_ASSERT_EQUAL(opts.admin_timeout_ms, 0);
 
 	/* set a consistent opts_size */
 	spdk_nvme_ctrlr_get_default_ctrlr_opts(&opts, sizeof(opts));
@@ -1519,6 +1567,7 @@ test_ctrlr_get_default_ctrlr_opts(void)
 			 sizeof(opts.extended_host_id)) == 0);
 	CU_ASSERT(strlen(opts.src_addr) == 0);
 	CU_ASSERT(strlen(opts.src_svcid) == 0);
+	CU_ASSERT_EQUAL(opts.admin_timeout_ms, NVME_MAX_ADMIN_TIMEOUT_IN_SECS * 1000);
 }
 
 static void
@@ -1662,10 +1711,10 @@ test_spdk_nvme_ctrlr_doorbell_buffer_config(void)
 	ctrlr.cdata.oacs.doorbell_buffer_config = 1;
 	ctrlr.trid.trtype = SPDK_NVME_TRANSPORT_PCIE;
 	ctrlr.page_size = 0x1000;
-	MOCK_CLEAR(spdk_malloc)
-	MOCK_CLEAR(spdk_zmalloc)
-	MOCK_CLEAR(spdk_dma_malloc)
-	MOCK_CLEAR(spdk_dma_zmalloc)
+	MOCK_CLEAR(spdk_malloc);
+	MOCK_CLEAR(spdk_zmalloc);
+	MOCK_CLEAR(spdk_dma_malloc);
+	MOCK_CLEAR(spdk_dma_zmalloc);
 	ret = nvme_ctrlr_set_doorbell_buffer_config(&ctrlr);
 	CU_ASSERT(ret == 0);
 	nvme_ctrlr_free_doorbell_buffer(&ctrlr);
@@ -1732,6 +1781,65 @@ test_nvme_ctrlr_test_active_ns(void)
 	}
 }
 
+static void
+test_nvme_ctrlr_init_delay(void)
+{
+	DECLARE_AND_CONSTRUCT_CTRLR();
+
+	memset(&g_ut_nvme_regs, 0, sizeof(g_ut_nvme_regs));
+
+	/*
+	 * Initial state: CC.EN = 0, CSTS.RDY = 0
+	 * init() should set CC.EN = 1.
+	 */
+	g_ut_nvme_regs.cc.bits.en = 0;
+	g_ut_nvme_regs.csts.bits.rdy = 0;
+
+	/* Delay initiation and default time is 2s */
+	SPDK_CU_ASSERT_FATAL(nvme_ctrlr_construct(&ctrlr) == 0);
+	ctrlr.cdata.nn = 1;
+	ctrlr.page_size = 0x1000;
+	ctrlr.state = NVME_CTRLR_STATE_INIT_DELAY;
+	CU_ASSERT(nvme_ctrlr_process_init(&ctrlr) == 0);
+	CU_ASSERT(ctrlr.state == NVME_CTRLR_STATE_INIT);
+	CU_ASSERT(ctrlr.sleep_timeout_tsc != 0);
+
+	/* delay 1s, just return as sleep time isn't enough */
+	spdk_delay_us(1 * spdk_get_ticks_hz());
+	CU_ASSERT(nvme_ctrlr_process_init(&ctrlr) == 0);
+	CU_ASSERT(ctrlr.state == NVME_CTRLR_STATE_INIT);
+	CU_ASSERT(ctrlr.sleep_timeout_tsc != 0);
+
+	/* sleep timeout, start to initialize */
+	spdk_delay_us(2 * spdk_get_ticks_hz());
+	CU_ASSERT(nvme_ctrlr_process_init(&ctrlr) == 0);
+	CU_ASSERT(ctrlr.state == NVME_CTRLR_STATE_DISABLE_WAIT_FOR_READY_0);
+
+	CU_ASSERT(nvme_ctrlr_process_init(&ctrlr) == 0);
+	CU_ASSERT(ctrlr.state == NVME_CTRLR_STATE_ENABLE);
+
+	CU_ASSERT(nvme_ctrlr_process_init(&ctrlr) == 0);
+	CU_ASSERT(ctrlr.state == NVME_CTRLR_STATE_ENABLE_WAIT_FOR_READY_1);
+	CU_ASSERT(g_ut_nvme_regs.cc.bits.en == 1);
+
+	/*
+	 * Transition to CSTS.RDY = 1.
+	 */
+	g_ut_nvme_regs.csts.bits.rdy = 1;
+	CU_ASSERT(nvme_ctrlr_process_init(&ctrlr) == 0);
+	CU_ASSERT(ctrlr.state == NVME_CTRLR_STATE_ENABLE_ADMIN_QUEUE);
+
+	/*
+	 * Transition to READY.
+	 */
+	while (ctrlr.state != NVME_CTRLR_STATE_READY) {
+		nvme_ctrlr_process_init(&ctrlr);
+	}
+
+	g_ut_nvme_regs.csts.bits.shst = SPDK_NVME_SHST_COMPLETE;
+	nvme_ctrlr_destruct(&ctrlr);
+}
+
 int main(int argc, char **argv)
 {
 	CU_pSuite	suite = NULL;
@@ -1762,6 +1870,8 @@ int main(int argc, char **argv)
 			       test_nvme_ctrlr_init_en_0_rdy_0_ams_wrr) == NULL
 		|| CU_add_test(suite, "test nvme_ctrlr init CC.EN = 0 CSTS.RDY = 0 AMS = VS",
 			       test_nvme_ctrlr_init_en_0_rdy_0_ams_vs) == NULL
+		|| CU_add_test(suite, "test_nvme_ctrlr_init_delay",
+			       test_nvme_ctrlr_init_delay) == NULL
 		|| CU_add_test(suite, "alloc_io_qpair_rr 1", test_alloc_io_qpair_rr_1) == NULL
 		|| CU_add_test(suite, "get_default_ctrlr_opts", test_ctrlr_get_default_ctrlr_opts) == NULL
 		|| CU_add_test(suite, "get_default_io_qpair_opts", test_ctrlr_get_default_io_qpair_opts) == NULL

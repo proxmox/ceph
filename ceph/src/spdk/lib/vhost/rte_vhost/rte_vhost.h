@@ -83,9 +83,6 @@ struct rte_vhost_vring {
 	int			callfd;
 	int			kickfd;
 	uint16_t		size;
-
-	uint16_t		last_avail_idx;
-	uint16_t		last_used_idx;
 };
 
 /**
@@ -106,6 +103,7 @@ struct vhost_device_ops {
 	int (*features_changed)(int vid, uint64_t features);
 	int (*vhost_nvme_admin_passthrough)(int vid, void *cmd, void *cqe, void *buf);
 	int (*vhost_nvme_set_cq_call)(int vid, uint16_t qid, int fd);
+	int (*vhost_nvme_set_bar_mr)(int vid, void *bar_addr, uint64_t bar_size);
 	int (*vhost_nvme_get_cap)(int vid, uint64_t *cap);
 
 	int (*new_connection)(int vid);
@@ -468,7 +466,22 @@ int rte_vhost_get_vhost_vring(int vid, uint16_t vring_idx,
  * @return
  *  0 on success, -1 on failure
  */
-int rte_vhost_set_vhost_vring_last_idx(int vid, uint16_t vring_idx,
-			      uint16_t last_avail_idx, uint16_t last_used_idx);
+int rte_vhost_set_vring_base(int vid, uint16_t queue_id,
+		uint16_t last_avail_idx, uint16_t last_used_idx);
+
+int rte_vhost_get_vring_base(int vid, uint16_t queue_id,
+		uint16_t *last_avail_idx, uint16_t *last_used_idx);
+
+/**
+ * Notify the guest that used descriptors have been added to the vring.
+ *
+ * @param vid
+ *  vhost device ID
+ * @param vring_idx
+ *  vring index
+ * @return
+ *  0 on success, -1 on failure
+ */
+int rte_vhost_vring_call(int vid, uint16_t vring_idx);
 
 #endif /* _RTE_VHOST_H_ */

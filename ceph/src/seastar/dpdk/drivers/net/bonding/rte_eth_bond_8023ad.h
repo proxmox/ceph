@@ -1,34 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2014 Intel Corporation
  */
 
 #ifndef RTE_ETH_BOND_8023AD_H_
@@ -64,13 +35,19 @@ extern "C" {
 #define MARKER_TLV_TYPE_INFO                0x01
 #define MARKER_TLV_TYPE_RESP                0x02
 
-typedef void (*rte_eth_bond_8023ad_ext_slowrx_fn)(uint8_t slave_id,
+typedef void (*rte_eth_bond_8023ad_ext_slowrx_fn)(uint16_t slave_id,
 						  struct rte_mbuf *lacp_pkt);
 
 enum rte_bond_8023ad_selection {
 	UNSELECTED,
 	STANDBY,
 	SELECTED
+};
+
+enum rte_bond_8023ad_agg_selection {
+	AGG_BANDWIDTH,
+	AGG_COUNT,
+	AGG_STABLE
 };
 
 /** Generic slow protocol structure */
@@ -161,6 +138,7 @@ struct rte_eth_bond_8023ad_conf {
 	uint32_t rx_marker_period_ms;
 	uint32_t update_timeout_ms;
 	rte_eth_bond_8023ad_ext_slowrx_fn slowrx_cb;
+	enum rte_bond_8023ad_agg_selection agg_selection;
 };
 
 struct rte_eth_bond_8023ad_slave_info {
@@ -169,7 +147,7 @@ struct rte_eth_bond_8023ad_slave_info {
 	struct port_params actor;
 	uint8_t partner_state;
 	struct port_params partner;
-	uint8_t agg_port_id;
+	uint16_t agg_port_id;
 };
 
 /**
@@ -185,13 +163,7 @@ struct rte_eth_bond_8023ad_slave_info {
  *   -EINVAL if conf is NULL
  */
 int
-rte_eth_bond_8023ad_conf_get(uint8_t port_id,
-		struct rte_eth_bond_8023ad_conf *conf);
-int
-rte_eth_bond_8023ad_conf_get_v20(uint8_t port_id,
-		struct rte_eth_bond_8023ad_conf *conf);
-int
-rte_eth_bond_8023ad_conf_get_v1607(uint8_t port_id,
+rte_eth_bond_8023ad_conf_get(uint16_t port_id,
 		struct rte_eth_bond_8023ad_conf *conf);
 
 /**
@@ -206,13 +178,7 @@ rte_eth_bond_8023ad_conf_get_v1607(uint8_t port_id,
  *   -EINVAL if configuration is invalid.
  */
 int
-rte_eth_bond_8023ad_setup(uint8_t port_id,
-		struct rte_eth_bond_8023ad_conf *conf);
-int
-rte_eth_bond_8023ad_setup_v20(uint8_t port_id,
-		struct rte_eth_bond_8023ad_conf *conf);
-int
-rte_eth_bond_8023ad_setup_v1607(uint8_t port_id,
+rte_eth_bond_8023ad_setup(uint16_t port_id,
 		struct rte_eth_bond_8023ad_conf *conf);
 
 /**
@@ -228,7 +194,7 @@ rte_eth_bond_8023ad_setup_v1607(uint8_t port_id,
  *       bonded device or is not inactive).
  */
 int
-rte_eth_bond_8023ad_slave_info(uint8_t port_id, uint8_t slave_id,
+rte_eth_bond_8023ad_slave_info(uint16_t port_id, uint16_t slave_id,
 		struct rte_eth_bond_8023ad_slave_info *conf);
 
 #ifdef __cplusplus
@@ -246,7 +212,8 @@ rte_eth_bond_8023ad_slave_info(uint8_t port_id, uint8_t slave_id,
  *   -EINVAL if slave is not valid.
  */
 int
-rte_eth_bond_8023ad_ext_collect(uint8_t port_id, uint8_t slave_id, int enabled);
+rte_eth_bond_8023ad_ext_collect(uint16_t port_id, uint16_t slave_id,
+				int enabled);
 
 /**
  * Get COLLECTING flag from slave port actor state.
@@ -259,7 +226,7 @@ rte_eth_bond_8023ad_ext_collect(uint8_t port_id, uint8_t slave_id, int enabled);
  *   -EINVAL if slave is not valid.
  */
 int
-rte_eth_bond_8023ad_ext_collect_get(uint8_t port_id, uint8_t slave_id);
+rte_eth_bond_8023ad_ext_collect_get(uint16_t port_id, uint16_t slave_id);
 
 /**
  * Configure a slave port to start distributing.
@@ -272,7 +239,8 @@ rte_eth_bond_8023ad_ext_collect_get(uint8_t port_id, uint8_t slave_id);
  *   -EINVAL if slave is not valid.
  */
 int
-rte_eth_bond_8023ad_ext_distrib(uint8_t port_id, uint8_t slave_id, int enabled);
+rte_eth_bond_8023ad_ext_distrib(uint16_t port_id, uint16_t slave_id,
+				int enabled);
 
 /**
  * Get DISTRIBUTING flag from slave port actor state.
@@ -285,7 +253,7 @@ rte_eth_bond_8023ad_ext_distrib(uint8_t port_id, uint8_t slave_id, int enabled);
  *   -EINVAL if slave is not valid.
  */
 int
-rte_eth_bond_8023ad_ext_distrib_get(uint8_t port_id, uint8_t slave_id);
+rte_eth_bond_8023ad_ext_distrib_get(uint16_t port_id, uint16_t slave_id);
 
 /**
  * LACPDU transmit path for external 802.3ad state machine.  Caller retains
@@ -299,7 +267,68 @@ rte_eth_bond_8023ad_ext_distrib_get(uint8_t port_id, uint8_t slave_id);
  *   0 on success, negative value otherwise.
  */
 int
-rte_eth_bond_8023ad_ext_slowtx(uint8_t port_id, uint8_t slave_id,
+rte_eth_bond_8023ad_ext_slowtx(uint16_t port_id, uint16_t slave_id,
 		struct rte_mbuf *lacp_pkt);
 
+/**
+ * Enable dedicated hw queues for 802.3ad control plane traffic on on slaves
+ *
+ * This function creates an additional tx and rx queue on each slave for
+ * dedicated 802.3ad control plane traffic . A flow filtering rule is
+ * programmed on each slave to redirect all LACP slow packets to that rx queue
+ * for processing in the LACP state machine, this removes the need to filter
+ * these packets in the bonded devices data path. The additional tx queue is
+ * used to enable the LACP state machine to enqueue LACP packets directly to
+ * slave hw independently of the bonded devices data path.
+ *
+ * To use this feature all slaves must support the programming of the flow
+ * filter rule required for rx and have enough queues that one rx and tx queue
+ * can be reserved for the LACP state machines control packets.
+ *
+ * Bonding port must be stopped to change this configuration.
+ *
+ * @param port_id      Bonding device id
+ *
+ * @return
+ *   0 on success, negative value otherwise.
+ */
+int
+rte_eth_bond_8023ad_dedicated_queues_enable(uint16_t port_id);
+
+/**
+ * Disable slow queue on slaves
+ *
+ * This function disables hardware slow packet filter.
+ *
+ * Bonding port must be stopped to change this configuration.
+ *
+ * @see rte_eth_bond_8023ad_slow_pkt_hw_filter_enable
+ *
+ * @param port_id      Bonding device id
+ * @return
+ *   0 on success, negative value otherwise.
+ *
+ */
+int
+rte_eth_bond_8023ad_dedicated_queues_disable(uint16_t port_id);
+
+/*
+ * Get aggregator mode for 8023ad
+ * @param port_id Bonding device id
+ *
+ * @return
+ *   agregator mode on success, negative value otherwise
+ */
+int
+rte_eth_bond_8023ad_agg_selection_get(uint16_t port_id);
+
+/**
+ * Set aggregator mode for 8023ad
+ * @param port_id Bonding device id
+ * @return
+ *   0 on success, negative value otherwise
+ */
+int
+rte_eth_bond_8023ad_agg_selection_set(uint16_t port_id,
+		enum rte_bond_8023ad_agg_selection agg_selection);
 #endif /* RTE_ETH_BOND_8023AD_H_ */

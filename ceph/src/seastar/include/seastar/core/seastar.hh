@@ -43,6 +43,9 @@
 
 #include <seastar/core/sstring.hh>
 #include <seastar/core/future.hh>
+#include <seastar/core/file-types.hh>
+#include <seastar/util/bool_class.hh>
+#include "./internal/api-level.hh"
 
 namespace seastar {
 
@@ -51,17 +54,23 @@ template <class CharType> class input_stream;
 template <class CharType> class output_stream;
 
 // reactor.hh
-class server_socket;
+SEASTAR_INCLUDE_API_V2 namespace api_v2 { class server_socket; }
+
+#if SEASTAR_API_LEVEL <= 1
+
+SEASTAR_INCLUDE_API_V1 namespace api_v1 { class server_socket; }
+
+#endif
+
 class connected_socket;
 class socket_address;
-class listen_options;
+struct listen_options;
 enum class transport;
 
 // file.hh
 class file;
-class file_open_options;
-enum class open_flags;
-enum class fs_type;
+struct file_open_options;
+struct stat_data;
 
 // Networking API
 
@@ -200,11 +209,12 @@ future<file> open_directory(sstring name);
 /// Creates a new directory.
 ///
 /// \param name name of the directory to create
+/// \param permissions optional file permissions of the directory to create.
 ///
 /// \note
 /// The directory is not guaranteed to be stable on disk, unless the
 /// containing directory is sync'ed.
-future<> make_directory(sstring name);
+future<> make_directory(sstring name, file_permissions permissions = file_permissions::default_dir_permissions);
 
 /// Ensures a directory exists
 ///
@@ -212,22 +222,27 @@ future<> make_directory(sstring name);
 /// the last component of the directory name is created.
 ///
 /// \param name name of the directory to potentially create
+/// \param permissions optional file permissions of the directory to create.
 ///
 /// \note
 /// The directory is not guaranteed to be stable on disk, unless the
 /// containing directory is sync'ed.
-future<> touch_directory(sstring name);
+/// If the directory exists, the provided permissions are not applied.
+future<> touch_directory(sstring name, file_permissions permissions = file_permissions::default_dir_permissions);
 
 /// Recursively ensures a directory exists
 ///
 /// Checks whether each component of a directory exists, and if not, creates it.
 ///
 /// \param name name of the directory to potentially create
-/// \param separator character used as directory separator
+/// \param permissions optional file permissions of the directory to create.
 ///
 /// \note
 /// This function fsyncs each component created, and is therefore guaranteed to be stable on disk.
-future<> recursive_touch_directory(sstring name);
+/// The provided permissions are applied only on the last component in the path, if it needs to be created,
+/// if intermediate directories do not exist, they are created with the default_dir_permissions.
+/// If any directory exists, the provided permissions are not applied.
+future<> recursive_touch_directory(sstring name, file_permissions permissions = file_permissions::default_dir_permissions);
 
 /// Synchronizes a directory to disk
 ///
@@ -239,9 +254,9 @@ future<> recursive_touch_directory(sstring name);
 future<> sync_directory(sstring name);
 
 
-/// Removes (unlinks) a file.
+/// Removes (unlinks) a file or an empty directory
 ///
-/// \param name name of the file to remove
+/// \param name name of the file or the directory to remove
 ///
 /// \note
 /// The removal is not guaranteed to be stable on disk, unless the
@@ -258,10 +273,43 @@ future<> remove_file(sstring name);
 /// both containing directories are sync'ed.
 future<> rename_file(sstring old_name, sstring new_name);
 
+struct follow_symlink_tag { };
+using follow_symlink = bool_class<follow_symlink_tag>;
+
+/// Return stat information about a file.
+///
+/// \param name name of the file to return its stat information
+/// \param follow_symlink follow symbolic links.
+///
+/// \return stat_data of the file identified by name.
+/// If name identifies a symbolic link then stat_data is returned either for the target of the link,
+/// with follow_symlink::yes, or for the link itself, with follow_symlink::no.
+future<stat_data> file_stat(sstring name, follow_symlink fs = follow_symlink::yes);
+
 /// Return the size of a file.
 ///
 /// \param name name of the file to return the size
+///
+/// Note that file_size of a symlink is NOT the size of the symlink -
+/// which is the length of the pathname it contains -
+/// but rather the size of the file to which it points.
 future<uint64_t> file_size(sstring name);
+
+/// Check file access.
+///
+/// \param name name of the file to check
+/// \param flags bit pattern containing type of access to check (read/write/execute or exists).
+///
+/// If only access_flags::exists is queried, returns true if the file exists, or false otherwise.
+/// Throws a compat::filesystem::filesystem_error exception if any error other than ENOENT is encountered.
+///
+/// If any of the access_flags (read/write/execute) is set, returns true if the file exists and is
+/// accessible with the requested flags, or false if the file exists and is not accessible
+/// as queried.
+/// Throws a compat::filesystem::filesystem_error exception if any error other than EACCES is encountered.
+/// Note that if any path component leading to the file is not searchable, the file is considered inaccessible
+/// with the requested mode and false will be returned.
+future<bool> file_accessible(sstring name, access_flags flags);
 
 /// check if a file exists.
 ///
@@ -274,6 +322,13 @@ future<bool> file_exists(sstring name);
 /// \param newpath name of link
 ///
 future<> link_file(sstring oldpath, sstring newpath);
+
+/// Changes the permissions mode of a file or directory
+///
+/// \param name name of the file ot directory to change
+/// \param permissions permissions to set
+///
+future<> chmod(sstring name, file_permissions permissions);
 
 /// Return information about the filesystem where a file is located.
 ///

@@ -179,7 +179,7 @@ function TEST_mon_features() {
     timeout 120 ceph -s > /dev/null || return 1
 
     # expect monmap to contain 3 monitors (a, b, and c)
-    jqinput="$(ceph mon_status --format=json 2>/dev/null)"
+    jqinput="$(ceph quorum_status --format=json 2>/dev/null)"
     jq_success "$jqinput" '.monmap.mons | length == 3' || return 1
     # quorum contains two monitors
     jq_success "$jqinput" '.quorum | length == 2' || return 1
@@ -223,7 +223,7 @@ function TEST_mon_features() {
 
     timeout 300 ceph -s > /dev/null || return 1
 
-    jqinput="$(ceph mon_status --format=json 2>/dev/null)"
+    jqinput="$(ceph quorum_status --format=json 2>/dev/null)"
     # expect quorum to have all three monitors
     jqfilter='.quorum | length == 3'
     jq_success "$jqinput" "$jqfilter" || return 1
@@ -237,7 +237,7 @@ function TEST_mon_features() {
 
     # monmap must have not all k l m persistent
     # features set.
-    jqfilter='.monmap.features.persistent | length == 5'
+    jqfilter='.monmap.features.persistent | length == 6'
     jq_success "$jqinput" "$jqfilter" || return 1
     jqfilter='.monmap.features.persistent[]|select(. == "kraken")'
     jq_success "$jqinput" "$jqfilter" "kraken" || return 1
@@ -249,6 +249,8 @@ function TEST_mon_features() {
     jq_success "$jqinput" "$jqfilter" "osdmap-prune" || return 1
     jqfilter='.monmap.features.persistent[]|select(. == "nautilus")'
     jq_success "$jqinput" "$jqfilter" "nautilus" || return 1
+    jqfilter='.monmap.features.persistent[]|select(. == "octopus")'
+    jq_success "$jqinput" "$jqfilter" "octopus" || return 1
 
     CEPH_ARGS=$CEPH_ARGS_orig
     # that's all folks. thank you for tuning in.

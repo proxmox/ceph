@@ -20,10 +20,11 @@
 #include "mds/locks.h"
 #include "mds/SimpleLock.h"
 
-class MLock : public MessageInstance<MLock> {
-public:
-  friend factory;
+class MLock : public SafeMessage {
 private:
+  static const int HEAD_VERSION = 1;
+  static const int COMPAT_VERSION = 1;
+
   int32_t     action = 0;  // action type
   mds_rank_t  asker = 0;  // who is initiating this request
   metareqid_t reqid;  // for remote lock requests
@@ -45,19 +46,19 @@ public:
   MDSCacheObjectInfo &get_object_info() { return object_info; }
 
 protected:
-  MLock() : MessageInstance(MSG_MDS_LOCK) {}
+  MLock() : SafeMessage{MSG_MDS_LOCK, HEAD_VERSION, COMPAT_VERSION} {}
   MLock(int ac, mds_rank_t as) :
-    MessageInstance(MSG_MDS_LOCK),
+    SafeMessage{MSG_MDS_LOCK, HEAD_VERSION, COMPAT_VERSION},
     action(ac), asker(as),
     lock_type(0) { }
   MLock(SimpleLock *lock, int ac, mds_rank_t as) :
-    MessageInstance(MSG_MDS_LOCK),
+    SafeMessage{MSG_MDS_LOCK, HEAD_VERSION, COMPAT_VERSION},
     action(ac), asker(as),
     lock_type(lock->get_type()) {
     lock->get_parent()->set_object_info(object_info);
   }
   MLock(SimpleLock *lock, int ac, mds_rank_t as, bufferlist& bl) :
-    MessageInstance(MSG_MDS_LOCK),
+    SafeMessage{MSG_MDS_LOCK, HEAD_VERSION, COMPAT_VERSION},
     action(ac), asker(as), lock_type(lock->get_type()) {
     lock->get_parent()->set_object_info(object_info);
     lockdata.claim(bl);
@@ -97,7 +98,9 @@ public:
     encode(object_info, payload);
     encode(lockdata, payload);
   }
-
+private:
+  template<class T, typename... Args>
+  friend boost::intrusive_ptr<T> ceph::make_message(Args&&... args);
 };
 
 #endif

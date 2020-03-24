@@ -30,15 +30,10 @@
 #include "dpaa2_hw_mempool.h"
 #include "dpaa2_hw_mempool_logs.h"
 
-struct dpaa2_bp_info rte_dpaa2_bpid_info[MAX_BPID];
-static struct dpaa2_bp_list *h_bp_list;
+#include <dpaax_iova_table.h>
 
-/* List of all the memseg information locally maintained in dpaa2 driver. This
- * is to optimize the PA_to_VA searches until a better mechanism (algo) is
- * available.
- */
-struct dpaa2_memseg_list rte_dpaa2_memsegs
-	= TAILQ_HEAD_INITIALIZER(rte_dpaa2_memsegs);
+struct dpaa2_bp_info *rte_dpaa2_bpid_info;
+static struct dpaa2_bp_list *h_bp_list;
 
 /* Dynamic logging identified for mempool */
 int dpaa2_logtype_mempool;
@@ -54,6 +49,16 @@ rte_hw_mbuf_create_pool(struct rte_mempool *mp)
 	int ret;
 
 	avail_dpbp = dpaa2_alloc_dpbp_dev();
+
+	if (rte_dpaa2_bpid_info == NULL) {
+		rte_dpaa2_bpid_info = (struct dpaa2_bp_info *)rte_malloc(NULL,
+				      sizeof(struct dpaa2_bp_info) * MAX_BPID,
+				      RTE_CACHE_LINE_SIZE);
+		if (rte_dpaa2_bpid_info == NULL)
+			return -ENOMEM;
+		memset(rte_dpaa2_bpid_info, 0,
+		       sizeof(struct dpaa2_bp_info) * MAX_BPID);
+	}
 
 	if (!avail_dpbp) {
 		DPAA2_MEMPOOL_ERR("DPAA2 pool not available!");
@@ -321,8 +326,8 @@ rte_dpaa2_mbuf_alloc_bulk(struct rte_mempool *pool,
 		 * in pool, qbman_swp_acquire returns 0
 		 */
 		if (ret <= 0) {
-			DPAA2_MEMPOOL_ERR("Buffer acquire failed with"
-					  " err code: %d", ret);
+			DPAA2_MEMPOOL_DP_DEBUG(
+				"Buffer acquire failed with err code: %d", ret);
 			/* The API expect the exact number of requested bufs */
 			/* Releasing all buffers allocated */
 			rte_dpaa2_mbuf_release(pool, obj_table, bpid,
@@ -400,37 +405,14 @@ dpaa2_populate(struct rte_mempool *mp, unsigned int max_objs,
 	      void *vaddr, rte_iova_t paddr, size_t len,
 	      rte_mempool_populate_obj_cb_t *obj_cb, void *obj_cb_arg)
 {
-	struct dpaa2_memseg *ms;
-
-	/* For each memory chunk pinned to the Mempool, a linked list of the
-	 * contained memsegs is created for searching when PA to VA
-	 * conversion is required.
-	 */
-	ms = rte_zmalloc(NULL, sizeof(struct dpaa2_memseg), 0);
-	if (!ms) {
-		DPAA2_MEMPOOL_ERR("Unable to allocate internal memory.");
-		DPAA2_MEMPOOL_WARN("Fast Physical to Virtual Addr translation would not be available.");
-		/* If the element is not added, it would only lead to failure
-		 * in searching for the element and the logic would Fallback
-		 * to traditional DPDK memseg traversal code. So, this is not
-		 * a blocking error - but, error would be printed on screen.
-		 */
-		return 0;
-	}
-
-	ms->vaddr = vaddr;
-	ms->iova = paddr;
-	ms->len = len;
-	/* Head insertions are generally faster than tail insertions as the
-	 * buffers pinned are picked from rear end.
-	 */
-	TAILQ_INSERT_HEAD(&rte_dpaa2_memsegs, ms, next);
+	/* Insert entry into the PA->VA Table */
+	dpaax_iova_table_update(paddr, vaddr, len);
 
 	return rte_mempool_op_populate_default(mp, max_objs, vaddr, paddr, len,
 					       obj_cb, obj_cb_arg);
 }
 
-struct rte_mempool_ops dpaa2_mpool_ops = {
+static const struct rte_mempool_ops dpaa2_mpool_ops = {
 	.name = DPAA2_MEMPOOL_OPS_NAME,
 	.alloc = rte_hw_mbuf_create_pool,
 	.free = rte_hw_mbuf_free_pool,

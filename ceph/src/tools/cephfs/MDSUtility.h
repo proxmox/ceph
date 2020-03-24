@@ -36,7 +36,7 @@ protected:
   Messenger *messenger;
   MonClient *monc;
 
-  Mutex lock;
+  ceph::mutex lock = ceph::make_mutex("MDSUtility::lock");
   Finisher finisher;
 
   Context *waiting_for_mds_map;
@@ -51,7 +51,6 @@ public:
   bool ms_handle_reset(Connection *con) override { return false; }
   void ms_handle_remote_reset(Connection *con) override {}
   bool ms_handle_refused(Connection *con) override { return false; }
-  bool ms_get_authorizer(int dest_type, AuthAuthorizer **authorizer) override;
   int init();
   void shutdown();
 };

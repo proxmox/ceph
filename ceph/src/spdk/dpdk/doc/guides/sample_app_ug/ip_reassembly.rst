@@ -23,8 +23,8 @@ There are two key differences from the L2 Forwarding sample application:
 
 *   The second difference is that the application differentiates between IP and non-IP traffic by means of offload flags.
 
-The Longest Prefix Match (LPM for IPv4, LPM6 for IPv6) table is used to store/lookup an outgoing port number, associated with that IPv4 address. Any unmatched packets are forwarded to the originating port.Compiling the Application
---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+The Longest Prefix Match (LPM for IPv4, LPM6 for IPv6) table is used to store/lookup an outgoing port number,
+associated with that IPv4 address. Any unmatched packets are forwarded to the originating port.
 
 
 Compiling the Application
@@ -57,7 +57,7 @@ where:
     then they are considered as invalid and will be dropped.
     Valid range is 1ms - 3600s. Default value: 1s.
 
-To run the example in linuxapp environment with 2 lcores (2,4) over 2 ports(0,2) with 1 RX queue per lcore:
+To run the example in linux environment with 2 lcores (2,4) over 2 ports(0,2) with 1 RX queue per lcore:
 
 .. code-block:: console
 
@@ -88,7 +88,7 @@ To run the example in linuxapp environment with 2 lcores (2,4) over 2 ports(0,2)
     IP_RSMBL: entering main loop on lcore 2
     IP_RSMBL: -- lcoreid=2 portid=0
 
-To run the example in linuxapp environment with 1 lcore (4) over 2 ports(0,2) with 2 RX queues per lcore:
+To run the example in linux environment with 1 lcore (4) over 2 ports(0,2) with 2 RX queues per lcore:
 
 .. code-block:: console
 

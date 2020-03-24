@@ -1,33 +1,7 @@
-..  BSD LICENSE
-    Copyright(c) 2016 Intel Corporation. All rights reserved.
-    All rights reserved.
+..  SPDX-License-Identifier: BSD-3-Clause
+    Copyright(c) 2016 Intel Corporation.
 
-    Redistribution and use in source and binary forms, with or without
-    modification, are permitted provided that the following conditions
-    are met:
-
-    * Redistributions of source code must retain the above copyright
-    notice, this list of conditions and the following disclaimer.
-    * Redistributions in binary form must reproduce the above copyright
-    notice, this list of conditions and the following disclaimer in
-    the documentation and/or other materials provided with the
-    distribution.
-    * Neither the name of Intel Corporation nor the names of its
-    contributors may be used to endorse or promote products derived
-    from this software without specific prior written permission.
-
-    THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-    "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-    LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-    A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-    OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-    SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-    LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-    DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-    THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-    (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-    OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-
+.. _pdump_tool:
 
 dpdk-pdump Application
 ======================
@@ -38,6 +12,12 @@ a DPDK secondary process and is capable of enabling packet capture on dpdk ports
    .. Note::
       * The ``dpdk-pdump`` tool can only be used in conjunction with a primary
         application which has the packet capture framework initialized already.
+        In dpdk, only the ``testpmd`` is modified to initialize packet capture
+        framework, other applications remain untouched. So, if the ``dpdk-pdump``
+        tool has to be used with any application other than the testpmd, user
+        needs to explicitly modify that application to call packet capture
+        framework initialization code. Refer ``app/test-pmd/testpmd.c``
+        code to see how this is done.
 
       * The ``dpdk-pdump`` tool depends on libpcap based PMD which is disabled
         by default in the build configuration files,
@@ -55,6 +35,7 @@ The tool has a number of command line options:
 .. code-block:: console
 
    ./build/app/dpdk-pdump --
+                          [--multi]
                           --pdump '(port=<port id> | device_id=<pci id or vdev name>),
                                    (queue=<queue_id>),
                                    (rx-dev=<iface or pcap file> |
@@ -62,8 +43,10 @@ The tool has a number of command line options:
                                    [ring-size=<ring size>],
                                    [mbuf-size=<mbuf data size>],
                                    [total-num-mbufs=<number of mbufs>]'
-                          [--server-socket-path=<server socket dir>]
-                          [--client-socket-path=<client socket dir>]
+
+The ``--multi`` command line option is optional argument. If passed, capture
+will be running on unique cores for all ``--pdump`` options. If ignored,
+capture will be running on single core for all ``--pdump`` options.
 
 The ``--pdump`` command line option is mandatory and it takes various sub arguments which are described in
 below section.
@@ -75,14 +58,6 @@ below section.
       * Parameters inside the square brackets represents optional parameters.
 
       * Multiple instances of ``--pdump`` can be passed to capture packets on different port and queue combinations.
-
-The ``--server-socket-path`` command line option is optional. This represents the server socket directory.
-If no value is passed default values are used i.e. ``/var/run/.dpdk/`` for root users and ``~/.dpdk/``
-for non root users.
-
-The ``--client-socket-path`` command line option is optional. This represents the client socket directory.
-If no value is passed default values are used i.e. ``/var/run/.dpdk/`` for root users and ``~/.dpdk/``
-for non root users.
 
 
 The ``--pdump`` parameters
@@ -142,4 +117,5 @@ Example
 
 .. code-block:: console
 
-   $ sudo ./build/app/dpdk-pdump -- --pdump 'port=0,queue=*,rx-dev=/tmp/rx.pcap'
+   $ sudo ./build/app/dpdk-pdump -l 3 -- --pdump 'port=0,queue=*,rx-dev=/tmp/rx.pcap'
+   $ sudo ./build/app/dpdk-pdump -l 3,4,5 -- --multi --pdump 'port=0,queue=*,rx-dev=/tmp/rx-1.pcap' --pdump 'port=1,queue=*,rx-dev=/tmp/rx-2.pcap'

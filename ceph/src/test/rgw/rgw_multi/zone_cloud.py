@@ -12,7 +12,7 @@ import re
 
 from nose.tools import eq_ as eq
 try:
-    from itertools import izip_longest as zip_longest
+    from itertools import izip_longest as zip_longest  # type: ignore
 except ImportError:
     from itertools import zip_longest
 
@@ -116,7 +116,7 @@ class CloudKey:
             self.etag = '"' + self.etag + '"'
 
         new_meta = {}
-        for meta_key, meta_val in k.metadata.iteritems():
+        for meta_key, meta_val in k.metadata.items():
             if not meta_key.startswith('rgwx-'):
                 new_meta[meta_key] = meta_val
 
@@ -139,14 +139,6 @@ class CloudKey:
         self.update()
 
         return r
-
-def append_query_arg(s, n, v):
-    if not v:
-        return s
-    nv = '{n}={v}'.format(n=n, v=v)
-    if not s:
-        return nv
-    return '{s}&{nv}'.format(s=s, nv=nv)
 
 
 class CloudZoneBucket:

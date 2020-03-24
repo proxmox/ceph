@@ -6,12 +6,7 @@ from . import PLUGIN_MANAGER as PM, Interface, Mixin  # pylint: disable=cyclic-i
 
 class CanMgr(Mixin):
     from .. import mgr
-    mgr = mgr
-
-
-class CanLog(Mixin):
-    from .. import logger
-    log = logger
+    mgr = mgr  # type: ignore
 
 
 class CanCherrypy(Mixin):
@@ -35,27 +30,29 @@ class Setupable(Interface):
     def setup(self):
         """
         Placeholder for plugin setup, right after server start.
-        CanMgr.mgr and CanLog.log are initialized by then.
+        CanMgr.mgr is initialized by then.
         """
-        pass
 
 
 @PM.add_interface
 class HasOptions(Interface):
     @PM.add_abcspec
-    def get_options(self): pass
+    def get_options(self):
+        pass
 
 
 @PM.add_interface
 class HasCommands(Interface):
     @PM.add_abcspec
-    def register_commands(self): pass
+    def register_commands(self):
+        pass
 
 
 @PM.add_interface
 class HasControllers(Interface):
     @PM.add_abcspec
-    def get_controllers(self): pass
+    def get_controllers(self):
+        pass
 
 
 @PM.add_interface
@@ -69,4 +66,5 @@ class FilterRequest(object):
     @PM.add_interface
     class BeforeHandler(Interface):
         @PM.add_abcspec
-        def filter_request_before_handler(self, request): pass
+        def filter_request_before_handler(self, request):
+            pass

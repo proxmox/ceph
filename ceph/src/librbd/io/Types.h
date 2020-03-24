@@ -5,6 +5,7 @@
 #define CEPH_LIBRBD_IO_TYPES_H
 
 #include "include/int_types.h"
+#include "osdc/StriperTypes.h"
 #include <map>
 #include <vector>
 
@@ -60,6 +61,8 @@ enum ObjectDispatchLayer {
   OBJECT_DISPATCH_LAYER_NONE = 0,
   OBJECT_DISPATCH_LAYER_CACHE,
   OBJECT_DISPATCH_LAYER_JOURNAL,
+  OBJECT_DISPATCH_LAYER_PARENT_CACHE,
+  OBJECT_DISPATCH_LAYER_SCHEDULER,
   OBJECT_DISPATCH_LAYER_CORE,
   OBJECT_DISPATCH_LAYER_LAST
 };
@@ -74,7 +77,13 @@ enum {
   OBJECT_DISPATCH_FLAG_WILL_RETRY_ON_ERROR      = 1UL << 1
 };
 
-typedef std::vector<std::pair<uint64_t, uint64_t> > Extents;
+using striper::LightweightBufferExtents;
+using striper::LightweightObjectExtent;
+using striper::LightweightObjectExtents;
+
+typedef std::pair<uint64_t,uint64_t> Extent;
+typedef std::vector<Extent> Extents;
+
 typedef std::map<uint64_t, uint64_t> ExtentMap;
 
 } // namespace io

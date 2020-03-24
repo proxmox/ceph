@@ -1,34 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2014 Intel Corporation
  */
 
 #ifndef _IXGBE_RXTX_H_
@@ -87,6 +58,10 @@
 #define IXGBE_PACKET_TYPE_MASK_TUNNEL       0XFF
 #define IXGBE_PACKET_TYPE_TUNNEL_BIT        0X1000
 
+#define IXGBE_PACKET_TYPE_MAX               0X80
+#define IXGBE_PACKET_TYPE_TN_MAX            0X100
+#define IXGBE_PACKET_TYPE_SHIFT             0X04
+
 /**
  * Structure associated with each descriptor of the RX ring of a RX queue.
  */
@@ -134,8 +109,12 @@ struct ixgbe_rx_queue {
 	uint16_t rx_nb_avail; /**< nr of staged pkts ready to ret to app */
 	uint16_t rx_next_avail; /**< idx of next staged pkt to ret to app */
 	uint16_t rx_free_trigger; /**< triggers rx buffer allocation */
-	uint16_t            rx_using_sse;
+	uint8_t            rx_using_sse;
 	/**< indicates that vector RX is in use */
+#ifdef RTE_LIBRTE_SECURITY
+	uint8_t            using_ipsec;
+	/**< indicates that IPsec RX feature is in use */
+#endif
 #ifdef RTE_IXGBE_INC_VECTOR
 	uint16_t            rxrearm_nb;     /**< number of remaining to be re-armed */
 	uint16_t            rxrearm_start;  /**< the idx we start the re-arming from */
@@ -144,12 +123,13 @@ struct ixgbe_rx_queue {
 	uint16_t            queue_id; /**< RX queue index. */
 	uint16_t            reg_idx;  /**< RX queue register index. */
 	uint16_t            pkt_type_mask;  /**< Packet type mask for different NICs. */
-	uint8_t             port_id;  /**< Device port identifier. */
+	uint16_t            port_id;  /**< Device port identifier. */
 	uint8_t             crc_len;  /**< 0 if CRC stripped, 4 otherwise. */
 	uint8_t             drop_en;  /**< If not 0, set SRRCTL.Drop_En. */
 	uint8_t             rx_deferred_start; /**< not in global dev start. */
 	/** flags to set in mbuf when a vlan is detected. */
 	uint64_t            vlan_flags;
+	uint64_t	    offloads; /**< Rx offloads with DEV_RX_OFFLOAD_* */
 	/** need to alloc dummy mbuf, for wraparound when scanning hw ring */
 	struct rte_mbuf fake_mbuf;
 	/** hold packets to return to application */
@@ -179,6 +159,11 @@ union ixgbe_tx_offload {
 		/* fields for TX offloading of tunnels */
 		uint64_t outer_l3_len:8; /**< Outer L3 (IP) Hdr Length. */
 		uint64_t outer_l2_len:8; /**< Outer L2 (MAC) Hdr Length. */
+#ifdef RTE_LIBRTE_SECURITY
+		/* inline ipsec related*/
+		uint64_t sa_idx:8;	/**< TX SA database entry index */
+		uint64_t sec_pad_len:4;	/**< padding length */
+#endif
 	};
 };
 
@@ -233,16 +218,20 @@ struct ixgbe_tx_queue {
 	uint16_t tx_next_rs; /**< next desc to set RS bit */
 	uint16_t            queue_id;      /**< TX queue index. */
 	uint16_t            reg_idx;       /**< TX queue register index. */
-	uint8_t             port_id;       /**< Device port identifier. */
+	uint16_t            port_id;       /**< Device port identifier. */
 	uint8_t             pthresh;       /**< Prefetch threshold register. */
 	uint8_t             hthresh;       /**< Host threshold register. */
 	uint8_t             wthresh;       /**< Write-back threshold reg. */
-	uint32_t txq_flags; /**< Holds flags for this TXq */
+	uint64_t offloads; /**< Tx offload flags of DEV_TX_OFFLOAD_* */
 	uint32_t            ctx_curr;      /**< Hardware context states. */
 	/** Hardware context0 history. */
 	struct ixgbe_advctx_info ctx_cache[IXGBE_CTX_NUM];
 	const struct ixgbe_txq_ops *ops;       /**< txq ops */
 	uint8_t             tx_deferred_start; /**< not in global dev start. */
+#ifdef RTE_LIBRTE_SECURITY
+	uint8_t		    using_ipsec;
+	/**< indicates that IPsec TX feature is in use */
+#endif
 };
 
 struct ixgbe_txq_ops {
@@ -250,20 +239,6 @@ struct ixgbe_txq_ops {
 	void (*free_swring)(struct ixgbe_tx_queue *txq);
 	void (*reset)(struct ixgbe_tx_queue *txq);
 };
-
-/*
- * The "simple" TX queue functions require that the following
- * flags are set when the TX queue is configured:
- *  - ETH_TXQ_FLAGS_NOMULTSEGS
- *  - ETH_TXQ_FLAGS_NOVLANOFFL
- *  - ETH_TXQ_FLAGS_NOXSUMSCTP
- *  - ETH_TXQ_FLAGS_NOXSUMUDP
- *  - ETH_TXQ_FLAGS_NOXSUMTCP
- * and that the RS bit threshold (tx_rs_thresh) is at least equal to
- * RTE_PMD_IXGBE_TX_MAX_BURST.
- */
-#define IXGBE_SIMPLE_FLAGS ((uint32_t)ETH_TXQ_FLAGS_NOMULTSEGS | \
-			    ETH_TXQ_FLAGS_NOOFFLOADS)
 
 /*
  * Populate descriptors with the following info:
@@ -301,6 +276,7 @@ void ixgbe_set_tx_function(struct rte_eth_dev *dev, struct ixgbe_tx_queue *txq);
  */
 void ixgbe_set_rx_function(struct rte_eth_dev *dev);
 
+int ixgbe_check_supported_loopback_mode(struct rte_eth_dev *dev);
 uint16_t ixgbe_recv_pkts_vec(void *rx_queue, struct rte_mbuf **rx_pkts,
 		uint16_t nb_pkts);
 uint16_t ixgbe_recv_scattered_pkts_vec(void *rx_queue,
@@ -309,11 +285,19 @@ int ixgbe_rx_vec_dev_conf_condition_check(struct rte_eth_dev *dev);
 int ixgbe_rxq_vec_setup(struct ixgbe_rx_queue *rxq);
 void ixgbe_rx_queue_release_mbufs_vec(struct ixgbe_rx_queue *rxq);
 
+extern const uint32_t ptype_table[IXGBE_PACKET_TYPE_MAX];
+extern const uint32_t ptype_table_tn[IXGBE_PACKET_TYPE_TN_MAX];
+
 #ifdef RTE_IXGBE_INC_VECTOR
 
 uint16_t ixgbe_xmit_fixed_burst_vec(void *tx_queue, struct rte_mbuf **tx_pkts,
 				    uint16_t nb_pkts);
 int ixgbe_txq_vec_setup(struct ixgbe_tx_queue *txq);
-
 #endif /* RTE_IXGBE_INC_VECTOR */
+
+uint64_t ixgbe_get_tx_port_offloads(struct rte_eth_dev *dev);
+uint64_t ixgbe_get_rx_queue_offloads(struct rte_eth_dev *dev);
+uint64_t ixgbe_get_rx_port_offloads(struct rte_eth_dev *dev);
+uint64_t ixgbe_get_tx_queue_offloads(struct rte_eth_dev *dev);
+
 #endif /* _IXGBE_RXTX_H_ */

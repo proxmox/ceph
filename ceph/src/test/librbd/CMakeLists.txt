@@ -50,6 +50,8 @@ set(unittest_librbd_srcs
   test_mock_ObjectMap.cc
   test_mock_TrashWatcher.cc
   test_mock_Watcher.cc
+  cache/test_mock_WriteAroundObjectDispatch.cc
+  cache/test_mock_ParentImageCache.cc
   deep_copy/test_mock_ImageCopyRequest.cc
   deep_copy/test_mock_MetadataCopyRequest.cc
   deep_copy/test_mock_ObjectCopyRequest.cc
@@ -73,6 +75,7 @@ set(unittest_librbd_srcs
   io/test_mock_ImageRequest.cc
   io/test_mock_ImageRequestWQ.cc
   io/test_mock_ObjectRequest.cc
+  io/test_mock_SimpleSchedulerObjectDispatch.cc
   journal/test_mock_OpenRequest.cc
   journal/test_mock_PromoteRequest.cc
   journal/test_mock_Replay.cc
@@ -82,6 +85,12 @@ set(unittest_librbd_srcs
   managed_lock/test_mock_GetLockerRequest.cc
   managed_lock/test_mock_ReacquireRequest.cc
   managed_lock/test_mock_ReleaseRequest.cc
+  mirror/snapshot/test_mock_CreateNonPrimaryRequest.cc
+  mirror/snapshot/test_mock_CreatePrimaryRequest.cc
+  mirror/snapshot/test_mock_ImageMeta.cc
+  mirror/snapshot/test_mock_PromoteRequest.cc
+  mirror/snapshot/test_mock_UnlinkPeerRequest.cc
+  mirror/snapshot/test_mock_Utils.cc
   mirror/test_mock_DisableRequest.cc
   object_map/test_mock_InvalidateRequest.cc
   object_map/test_mock_LockRequest.cc
@@ -106,6 +115,13 @@ set(unittest_librbd_srcs
   trash/test_mock_RemoveRequest.cc
   watcher/test_mock_RewatchRequest.cc
   )
+
+if(WITH_RBD_RWL)
+   set(unittest_librbd_srcs
+     ${unittest_librbd_srcs}
+     cache/test_mock_ReplicatedWriteLog.cc)
+endif(WITH_RBD_RWL)
+
 add_executable(unittest_librbd
   ${unittest_librbd_srcs}
   $<TARGET_OBJECTS:common_texttable_obj>)

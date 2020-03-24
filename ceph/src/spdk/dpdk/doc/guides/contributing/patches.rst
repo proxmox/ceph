@@ -8,7 +8,7 @@ Contributing Code to DPDK
 
 This document outlines the guidelines for submitting code to DPDK.
 
-The DPDK development process is modelled (loosely) on the Linux Kernel development model so it is worth reading the
+The DPDK development process is modeled (loosely) on the Linux Kernel development model so it is worth reading the
 Linux kernel guide on submitting patches:
 `How to Get Your Change Into the Linux Kernel <https://www.kernel.org/doc/html/latest/process/submitting-patches.html>`_.
 The rationale for many of the DPDK guidelines is explained in greater detail in the kernel guidelines.
@@ -28,9 +28,13 @@ The DPDK development process has the following features:
 * All sub-repositories are merged into main repository for ``-rc1`` and ``-rc2`` versions of the release.
 * After the ``-rc2`` release all patches should target the main repository.
 
-The mailing list for DPDK development is `dev@dpdk.org <http://dpdk.org/ml/archives/dev/>`_.
-Contributors will need to `register for the mailing list <http://dpdk.org/ml/listinfo/dev>`_ in order to submit patches.
-It is also worth registering for the DPDK `Patchwork <http://dpdk.org/dev/patchwork/project/dpdk/list/>`_
+The mailing list for DPDK development is `dev@dpdk.org <http://mails.dpdk.org/archives/dev/>`_.
+Contributors will need to `register for the mailing list <http://mails.dpdk.org/listinfo/dev>`_ in order to submit patches.
+It is also worth registering for the DPDK `Patchwork <http://patches.dpdk.org/project/dpdk/list/>`_
+
+If you are using the GitHub service, you can link your repository to
+the ``travis-ci.org`` build service.  When you push patches to your GitHub
+repository, the travis service will automatically build your changes.
 
 The development process requires some familiarity with the ``git`` version control system.
 Refer to the `Pro Git Book <http://www.git-scm.com/book/>`_ for further information.
@@ -130,7 +134,7 @@ main repository::
     git clone git://dpdk.org/dpdk
     git clone http://dpdk.org/git/dpdk
 
-sub-repositories (`list <http://dpdk.org/browse/next>`_)::
+sub-repositories (`list <http://git.dpdk.org/next>`_)::
 
     git clone git://dpdk.org/next/dpdk-next-*
     git clone http://dpdk.org/git/next/dpdk-next-*
@@ -168,6 +172,11 @@ same patch.
 Larger changes that require different explanations should be separated into logical patches in a patchset.
 A good way of thinking about whether a patch should be split is to consider whether the change could be
 applied without dependencies as a backport.
+
+It is better to keep the related documentation changes in the same patch
+file as the code, rather than one big documentation patch at then end of a
+patchset. This makes it easier for future maintenance and development of the
+code.
 
 As a guide to how patches should be structured run ``git log`` on similar files.
 
@@ -281,7 +290,7 @@ in the body of the commit message. For example::
      Signed-off-by: Alex Smith <alex.smith@example.com>
 
 
-`Bugzilla <https://dpdk.org/tracker>`_
+`Bugzilla <https://bugs.dpdk.org>`_
 is a bug- or issue-tracking system.
 Bug-tracking systems allow individual or groups of developers
 effectively to keep track of outstanding problems with their product.
@@ -303,7 +312,7 @@ Patch for Stable Releases
 ~~~~~~~~~~~~~~~~~~~~~~~~~
 
 All fix patches to the master branch that are candidates for backporting
-should also be CCed to the `stable@dpdk.org <http://dpdk.org/ml/listinfo/stable>`_
+should also be CCed to the `stable@dpdk.org <http://mails.dpdk.org/listinfo/stable>`_
 mailing list.
 In the commit message body the Cc: stable@dpdk.org should be inserted as follows::
 
@@ -426,10 +435,13 @@ Where the range is a ``git log`` option.
 Checking Compilation
 --------------------
 
+Makefile System
+~~~~~~~~~~~~~~~
+
 Compilation of patches and changes should be tested using the ``test-build.sh`` script in the ``devtools``
 directory of the DPDK repo::
 
-  devtools/test-build.sh x86_64-native-linuxapp-gcc+next+shared
+  devtools/test-build.sh x86_64-native-linux-gcc+next+shared
 
 The script usage is::
 
@@ -444,9 +456,9 @@ Where:
 
 Examples of configs are::
 
-   x86_64-native-linuxapp-gcc
-   x86_64-native-linuxapp-gcc+next+shared
-   x86_64-native-linuxapp-clang+shared
+   x86_64-native-linux-gcc
+   x86_64-native-linux-gcc+next+shared
+   x86_64-native-linux-clang+shared
 
 The builds can be modified via the following environmental variables:
 
@@ -460,13 +472,21 @@ These can be set from the command line or in the config files shown above in the
 
 The recommended configurations and options to test compilation prior to submitting patches are::
 
-   x86_64-native-linuxapp-gcc+shared+next
-   x86_64-native-linuxapp-clang+shared
-   i686-native-linuxapp-gcc
+   x86_64-native-linux-gcc+shared+next
+   x86_64-native-linux-clang+shared
+   i686-native-linux-gcc
 
    export DPDK_DEP_ZLIB=y
    export DPDK_DEP_PCAP=y
    export DPDK_DEP_SSL=y
+
+Meson System
+~~~~~~~~~~~~
+
+Compilation of patches is to be tested with ``devtools/test-meson-builds.sh`` script.
+
+The script internally checks for dependencies, then builds for several
+combinations of compilation configuration.
 
 
 Sending Patches
@@ -504,7 +524,7 @@ If the patch is in relation to a previous email thread you can add it to the sam
    git send-email --to dev@dpdk.org --in-reply-to <1234-foo@bar.com> 000*.patch
 
 The Message ID can be found in the raw text of emails or at the top of each Patchwork patch,
-`for example <http://dpdk.org/dev/patchwork/patch/7646/>`_.
+`for example <http://patches.dpdk.org/patch/7646/>`_.
 Shallow threading (``--thread --no-chain-reply-to``) is preferred for a patch series.
 
 Once submitted your patches will appear on the mailing list and in Patchwork.

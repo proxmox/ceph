@@ -20,10 +20,11 @@ set(common_srcs
   HeartbeatMap.cc
   LogClient.cc
   LogEntry.cc
-  Mutex.cc
+  ostream_temp.cc
   OutputDataSocket.cc
   PluginRegistry.cc
   Readahead.cc
+  RefCountedObj.cc
   SloppyCRCMap.cc
   SubProcess.cc
   Thread.cc
@@ -42,12 +43,12 @@ set(common_srcs
   ceph_argparse.cc
   ceph_context.cc
   ceph_crypto.cc
-  ceph_crypto_cms.cc
   ceph_frag.cc
   ceph_fs.cc
   ceph_hash.cc
   ceph_json.cc
   ceph_strings.cc
+  ceph_releases.cc
   ceph_time.cc
   cmdparse.cc
   code_environment.cc
@@ -82,6 +83,8 @@ set(common_srcs
   perf_counters_collection.cc
   perf_histogram.cc
   pick_address.cc
+  rabin.cc
+  random_string.cc
   reverse.c
   run_cmd.cc
   scrub_types.cc
@@ -95,8 +98,7 @@ set(common_srcs
   url_escape.cc
   utf8.c
   util.cc
-  version.cc
-  xattr.c)
+  version.cc)
 
 set_source_files_properties(${CMAKE_SOURCE_DIR}/src/common/version.cc
   APPEND PROPERTY OBJECT_DEPENDS ${CMAKE_BINARY_DIR}/src/include/ceph_ver.h)
@@ -118,14 +120,16 @@ elseif(AIX)
   list(APPEND common_srcs aix_errno.cc)
 endif()
 
-if(WITH_LTTNG AND WITH_EVENTTRACE)
-  message(STATUS " Using EventTrace class.")
-  add_definitions("-DWITH_EVENTTRACE")
+if(WITH_EVENTTRACE)
   list(APPEND common_srcs EventTrace.cc)
 endif()
 
 add_library(common-common-objs OBJECT
   ${common_srcs})
+# Let's not rely on the default system headers and point Cmake to the
+# retrieved OpenSSL location. This is especially important when cross
+# compiling (e.g. targeting Windows).
+target_include_directories(common-common-objs PRIVATE ${OPENSSL_INCLUDE_DIR})
 # for options.cc
 target_compile_definitions(common-common-objs PRIVATE
   "CEPH_LIBDIR=\"${CMAKE_INSTALL_FULL_LIBDIR}\""

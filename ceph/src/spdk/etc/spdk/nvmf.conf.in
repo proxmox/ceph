@@ -60,13 +60,24 @@
 
 # Define NVMf protocol global options
 [Nvmf]
-  # Set the maximum number of submission and completion queues per session.
-  # Setting this to '8', for example, allows for 8 submission and 8 completion queues
-  # per session.
-  MaxQueuesPerSession 4
+  # Set how often the acceptor polls for incoming connections. The acceptor is also
+  # responsible for polling existing connections that have gone idle. 0 means continuously
+  # poll. Units in microseconds.
+  AcceptorPollRate 10000
+
+# One valid transport type must be set in each [Transport].
+# The first is the case of RDMA transport and the second is the case of TCP transport.
+[Transport]
+  # Set RDMA transport type.
+  Type RDMA
 
   # Set the maximum number of outstanding I/O per queue.
   #MaxQueueDepth 128
+
+  # Set the maximum number of submission and completion queues per session.
+  # Setting this to '8', for example, allows for 8 submission and 8 completion queues
+  # per session.
+  #MaxQueuesPerSession 4
 
   # Set the maximum in-capsule data size. Must be a multiple of 16.
   # 0 is a valid choice.
@@ -75,10 +86,53 @@
   # Set the maximum I/O size. Must be a multiple of 4096.
   #MaxIOSize 131072
 
-  # Set how often the acceptor polls for incoming connections. The acceptor is also
-  # responsible for polling existing connections that have gone idle. 0 means continuously
-  # poll. Units in microseconds.
-  AcceptorPollRate 10000
+  # Set the I/O unit size, and this value should not be larger than MaxIOSize
+  #IOUnitSize 131072
+
+  # Set the maximum number of IO for admin queue
+  #MaxAQDepth 32
+
+  # Set the number of pooled data buffers available to the transport
+  # It is used to provide the read/write data buffers for the qpairs on this transport.
+  #NumSharedBuffers 512
+
+  # Set the number of shared buffers to be cached per poll group
+  #BufCacheSize 32
+
+  # Set the maximum number outstanding I/O per shared receive queue. Relevant only for RDMA transport
+  #MaxSRQDepth 4096
+
+[Transport]
+  # Set TCP transport type.
+  Type TCP
+
+  # Set the maximum number of outstanding I/O per queue.
+  #MaxQueueDepth 128
+
+  # Set the maximum number of submission and completion queues per session.
+  # Setting this to '8', for example, allows for 8 submission and 8 completion queues
+  # per session.
+  #MaxQueuesPerSession 4
+
+  # Set the maximum in-capsule data size. Must be a multiple of 16.
+  # 0 is a valid choice.
+  #InCapsuleDataSize 4096
+
+  # Set the maximum I/O size. Must be a multiple of 4096.
+  #MaxIOSize 131072
+
+  # Set the I/O unit size, and this value should not be larger than MaxIOSize
+  #IOUnitSize 131072
+
+  # Set the maximum number of IO for admin queue
+  #MaxAQDepth 32
+
+  # Set the number of pooled data buffers available to the transport
+  # It is used to provide the read/write data buffers for the qpairs on this transport.
+  #NumSharedBuffers 512
+
+  # Set the number of shared buffers to be cached per poll group
+  #BufCacheSize 32
 
 [Nvme]
   # NVMe Device Whitelist
@@ -92,6 +146,8 @@
   TransportID "trtype:PCIe traddr:0000:01:00.0" Nvme1
   TransportID "trtype:PCIe traddr:0000:02:00.0" Nvme2
   TransportID "trtype:PCIe traddr:0000:03:00.0" Nvme3
+  TransportID "trtype:RDMA adrfam:IPv4 traddr:192.168.100.8 trsvcid:4420 hostaddr:192.168.100.9 subnqn:nqn.2016-06.io.spdk:cnode1" Nvme4
+  TransportID "trtype:TCP adrfam:IPv4 traddr:192.168.100.3 trsvcid:4420 hostaddr:192.168.100.4 subnqn:nqn.2016-06.io.spdk:cnode2" Nvme5
 
   # The number of attempts per I/O when an I/O fails. Do not include
   # this key to get the default behavior.
@@ -106,6 +162,9 @@
   # Set how often the admin queue is polled for asynchronous events.
   # Units in microseconds.
   AdminPollRate 100000
+  # Set how often I/O queues are polled from completions.
+  # Units in microseconds.
+  IOPollRate 0
 
   # Disable handling of hotplug (runtime insert and remove) events,
   # users can set to Yes if want to enable it.
@@ -134,8 +193,12 @@
   StripSize 64
   # Number of pre-configured bdevs.
   NumDevices 2
-  # Pre-configured bdevs name.
+  # Pre-configured bdevs name with Nvme.
   Devices Nvme2n1 Nvme3n1
+  # Pre-configured bdevs name with Malloc.
+  #Devices Malloc0 Malloc1
+  # Pre-configured bdevs name with AIO.
+  #Devices AIO0 AIO1
 
 # Define an NVMf Subsystem.
 # - NQN is required and must be unique.
@@ -159,10 +222,11 @@
 # Namespaces backed by physical NVMe devices
 [Subsystem1]
   NQN nqn.2016-06.io.spdk:cnode1
-  Listen RDMA 15.15.15.2:4420
+  Listen TCP 15.15.15.2:4420
   AllowAnyHost No
   Host nqn.2016-06.io.spdk:init
   SN SPDK00000000000001
+  MN SPDK_Controller1
   MaxNamespaces 20
   Namespace Nvme0n1 1
   Namespace Nvme1n1 2
@@ -176,6 +240,7 @@
   AllowAnyHost No
   Host nqn.2016-06.io.spdk:init
   SN SPDK00000000000002
+  MN SPDK_Controller2
   Namespace Malloc0
   Namespace Malloc1
   Namespace AIO0

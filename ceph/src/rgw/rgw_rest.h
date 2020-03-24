@@ -1,8 +1,7 @@
 // -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// vim: ts=8 sw=2 smarttab ft=cpp
 
-#ifndef CEPH_RGW_REST_H
-#define CEPH_RGW_REST_H
+#pragma once
 
 #define TIME_BUF_SIZE 128
 
@@ -17,7 +16,7 @@
 
 extern std::map<std::string, std::string> rgw_to_http_attrs;
 
-extern void rgw_rest_init(CephContext *cct, RGWRados *store, const RGWZoneGroup& zone_group);
+extern void rgw_rest_init(CephContext *cct, const RGWZoneGroup& zone_group);
 
 extern void rgw_flush_formatter_and_reset(struct req_state *s,
 					 ceph::Formatter *formatter);
@@ -163,7 +162,7 @@ protected:
 public:
   RGWGetObj_ObjStore() : sent_header(false) {}
 
-  void init(RGWRados *store, struct req_state *s, RGWHandler *h) override {
+  void init(rgw::sal::RGWRadosStore *store, struct req_state *s, RGWHandler *h) override {
     RGWGetObj::init(store, s, h);
     sent_header = false;
   }
@@ -181,6 +180,36 @@ class RGWPutObjTags_ObjStore: public RGWPutObjTags {
 public:
   RGWPutObjTags_ObjStore() {};
   ~RGWPutObjTags_ObjStore() {};
+};
+
+class RGWGetBucketTags_ObjStore : public RGWGetBucketTags {
+public:
+  RGWGetBucketTags_ObjStore() = default;
+  virtual ~RGWGetBucketTags_ObjStore() = default; 
+};
+
+class RGWPutBucketTags_ObjStore: public RGWPutBucketTags {
+public:
+  RGWPutBucketTags_ObjStore() = default;
+  virtual ~RGWPutBucketTags_ObjStore() = default; 
+};
+
+class RGWGetBucketReplication_ObjStore : public RGWGetBucketReplication {
+public:
+  RGWGetBucketReplication_ObjStore() {};
+  ~RGWGetBucketReplication_ObjStore() {};
+};
+
+class RGWPutBucketReplication_ObjStore: public RGWPutBucketReplication {
+public:
+  RGWPutBucketReplication_ObjStore() = default;
+  virtual ~RGWPutBucketReplication_ObjStore() = default; 
+};
+
+class RGWDeleteBucketReplication_ObjStore: public RGWDeleteBucketReplication {
+public:
+  RGWDeleteBucketReplication_ObjStore() = default;
+  virtual ~RGWDeleteBucketReplication_ObjStore() = default; 
 };
 
 class RGWListBuckets_ObjStore : public RGWListBuckets {
@@ -517,13 +546,13 @@ protected:
   RGWRESTFlusher flusher;
 public:
   RGWRESTOp() : http_ret(0) {}
-  void init(RGWRados *store, struct req_state *s,
+  void init(rgw::sal::RGWRadosStore *store, struct req_state *s,
             RGWHandler *dialect_handler) override {
     RGWOp::init(store, s, dialect_handler);
     flusher.init(s, this);
   }
   void send_response() override;
-  virtual int check_caps(RGWUserCaps& caps)
+  virtual int check_caps(const RGWUserCaps& caps)
     { return -EPERM; } /* should to be implemented! */
   int verify_permission() override;
   dmc::client_id dmclock_client() override { return dmc::client_id::admin; }
@@ -532,7 +561,7 @@ public:
 class RGWHandler_REST : public RGWHandler {
 protected:
 
-  virtual bool is_obj_update_op() { return false; }
+  virtual bool is_obj_update_op() const { return false; }
   virtual RGWOp *op_get() { return NULL; }
   virtual RGWOp *op_put() { return NULL; }
   virtual RGWOp *op_delete() { return NULL; }
@@ -558,7 +587,7 @@ public:
   int init_permissions(RGWOp* op) override;
   int read_permissions(RGWOp* op) override;
 
-  virtual RGWOp* get_op(RGWRados* store);
+  virtual RGWOp* get_op(void);
   virtual void put_op(RGWOp* op);
 };
 
@@ -566,12 +595,10 @@ class RGWHandler_REST_SWIFT;
 class RGWHandler_SWIFT_Auth;
 class RGWHandler_REST_S3;
 
-namespace rgw {
-namespace auth {
+namespace rgw::auth {
 
 class StrategyRegistry;
 
-}
 }
 
 class RGWRESTMgr {
@@ -643,7 +670,7 @@ class RGWREST {
   static int preprocess(struct req_state *s, rgw::io::BasicClient* rio);
 public:
   RGWREST() {}
-  RGWHandler_REST *get_handler(RGWRados *store,
+  RGWHandler_REST *get_handler(rgw::sal::RGWRadosStore *store,
                                struct req_state *s,
                                const rgw::auth::StrategyRegistry& auth_registry,
                                const std::string& frontend_prefix,
@@ -812,5 +839,3 @@ extern int dump_body(struct req_state* s, const char* buf, size_t len);
 extern int dump_body(struct req_state* s, /* const */ ceph::buffer::list& bl);
 extern int dump_body(struct req_state* s, const std::string& str);
 extern int recv_body(struct req_state* s, char* buf, size_t max);
-
-#endif /* CEPH_RGW_REST_H */

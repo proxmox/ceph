@@ -37,6 +37,7 @@
 #include "spdk/event.h"
 #include "spdk_internal/event.h"
 #include "spdk/log.h"
+#include "spdk/string.h"
 
 static uint64_t g_tsc_rate;
 static uint64_t g_tsc_us_rate;
@@ -84,7 +85,7 @@ event_work_fn(void *arg1, void *arg2)
 }
 
 static void
-event_perf_start(void *arg1, void *arg2)
+event_perf_start(void *arg1)
 {
 	uint32_t i;
 
@@ -144,7 +145,6 @@ main(int argc, char **argv)
 	int rc = 0;
 
 	opts.name = "event_perf";
-	opts.mem_size = 256;
 
 	g_time_in_sec = 0;
 
@@ -154,7 +154,11 @@ main(int argc, char **argv)
 			opts.reactor_mask = optarg;
 			break;
 		case 't':
-			g_time_in_sec = atoi(optarg);
+			g_time_in_sec = spdk_strtol(optarg, 10);
+			if (g_time_in_sec < 0) {
+				fprintf(stderr, "Invalid run time\n");
+				return g_time_in_sec;
+			}
 			break;
 		default:
 			usage(argv[0]);
@@ -170,7 +174,7 @@ main(int argc, char **argv)
 	printf("Running I/O for %d seconds...", g_time_in_sec);
 	fflush(stdout);
 
-	rc = spdk_app_start(&opts, event_perf_start, NULL, NULL);
+	rc = spdk_app_start(&opts, event_perf_start, NULL);
 
 	spdk_app_fini();
 	performance_dump(g_time_in_sec);

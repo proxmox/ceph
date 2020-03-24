@@ -17,10 +17,11 @@
 
 #include "msg/Message.h"
 
-class MExportDirNotifyAck : public MessageInstance<MExportDirNotifyAck> {
-public:
-  friend factory;
+class MExportDirNotifyAck : public SafeMessage {
 private:
+  static const int HEAD_VERSION = 1;
+  static const int COMPAT_VERSION = 1;
+
   dirfrag_t dirfrag;
   pair<__s32,__s32> new_auth;
 
@@ -29,9 +30,10 @@ private:
   pair<__s32,__s32> get_new_auth() const { return new_auth; }
   
 protected:
-  MExportDirNotifyAck() {}
+  MExportDirNotifyAck() :
+    SafeMessage{MSG_MDS_EXPORTDIRNOTIFYACK, HEAD_VERSION, COMPAT_VERSION} {}
   MExportDirNotifyAck(dirfrag_t df, uint64_t tid, pair<__s32,__s32> na) :
-    MessageInstance(MSG_MDS_EXPORTDIRNOTIFYACK), dirfrag(df), new_auth(na) {
+    SafeMessage{MSG_MDS_EXPORTDIRNOTIFYACK, HEAD_VERSION, COMPAT_VERSION}, dirfrag(df), new_auth(na) {
     set_tid(tid);
   }
   ~MExportDirNotifyAck() override {}
@@ -53,7 +55,9 @@ public:
     decode(dirfrag, p);
     decode(new_auth, p);
   }
-  
+private:
+  template<class T, typename... Args>
+  friend boost::intrusive_ptr<T> ceph::make_message(Args&&... args);  
 };
 
 #endif

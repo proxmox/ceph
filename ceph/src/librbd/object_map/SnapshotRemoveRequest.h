@@ -40,9 +40,11 @@ public:
    * otherwise, the state machine proceeds to remove the object map.
    */
 
-  SnapshotRemoveRequest(ImageCtx &image_ctx, ceph::BitVector<2> *object_map,
-                        uint64_t snap_id, Context *on_finish)
-    : AsyncRequest(image_ctx, on_finish), m_object_map(*object_map),
+  SnapshotRemoveRequest(ImageCtx &image_ctx, ceph::shared_mutex* object_map_lock,
+                        ceph::BitVector<2> *object_map, uint64_t snap_id,
+                        Context *on_finish)
+    : AsyncRequest(image_ctx, on_finish),
+      m_object_map_lock(object_map_lock), m_object_map(*object_map),
       m_snap_id(snap_id), m_next_snap_id(CEPH_NOSNAP) {
   }
 
@@ -54,6 +56,7 @@ protected:
   }
 
 private:
+  ceph::shared_mutex* m_object_map_lock;
   ceph::BitVector<2> &m_object_map;
   uint64_t m_snap_id;
   uint64_t m_next_snap_id;

@@ -1,35 +1,11 @@
 #!/bin/sh -e
+# SPDX-License-Identifier: BSD-3-Clause
+# Copyright(c) 2017 Cavium, Inc
+#
+
+#
 # Generate tags or gtags or cscope or etags files
 #
-#   BSD LICENSE
-#
-#   Copyright 2017 Cavium Networks
-#
-#   Redistribution and use in source and binary forms, with or without
-#   modification, are permitted provided that the following conditions
-#   are met:
-#
-#     * Redistributions of source code must retain the above copyright
-#       notice, this list of conditions and the following disclaimer.
-#     * Redistributions in binary form must reproduce the above copyright
-#       notice, this list of conditions and the following disclaimer in
-#       the documentation and/or other materials provided with the
-#       distribution.
-#     * Neither the name of Cavium networks nor the names of its
-#       contributors may be used to endorse or promote products derived
-#       from this software without specific prior written permission.
-#
-#   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-#   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-#   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-#   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-#   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-#   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-#   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-#   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-#   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-#   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-#   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 verbose=false
 linux=true
@@ -62,10 +38,10 @@ shift $(($OPTIND - 1))
 #ignore version control files
 ignore="( -name .svn -o -name CVS -o -name .hg -o -name .git ) -prune -o"
 
-source_dirs="test app buildtools drivers examples lib"
+source_dirs="app buildtools drivers examples lib"
 
-skip_bsd="( -name bsdapp ) -prune -o"
-skip_linux="( -name linuxapp ) -prune -o"
+skip_bsd="( -name freebsd ) -prune -o"
+skip_linux="( -name linux ) -prune -o"
 skip_arch="( -name arch ) -prune -o"
 skip_sse="( -name *_sse*.[chS] ) -prune -o"
 skip_avx="( -name *_avx*.[chS] ) -prune -o"
@@ -91,12 +67,12 @@ common_sources()
 
 linux_sources()
 {
-	find_sources "lib/librte_eal/linuxapp" '*.[chS]'
+	find_sources "lib/librte_eal/linux" '*.[chS]'
 }
 
 bsd_sources()
 {
-	find_sources "lib/librte_eal/bsdapp" '*.[chS]'
+	find_sources "lib/librte_eal/freebsd" '*.[chS]'
 }
 
 arm_common()
@@ -153,14 +129,7 @@ ppc_64_sources()
 
 check_valid_target()
 {
-	cfgfound=false
-	allconfigs=$(make showconfigs)
-	for cfg in $allconfigs ; do
-		if [ "$cfg" = "$1" ] ; then
-			cfgfound=true
-		fi
-	done
-	if ! $cfgfound ; then
+	if [ ! -f "config/defconfig_$1" ] ; then
 		echo "Invalid config: $1"
 		print_usage
 		exit 0
@@ -170,8 +139,8 @@ check_valid_target()
 if [ -n "$2" ]; then
 	check_valid_target $2
 
-	echo $2 | grep -q "linuxapp-" || linux=false
-	echo $2 | grep -q "bsdapp-" || bsd=false
+	echo $2 | grep -q "linux" || linux=false
+	echo $2 | grep -q "bsd" || bsd=false
 	echo $2 | grep -q "x86_64-" || x86_64=false
 	echo $2 | grep -q "arm-" || arm_32=false
 	echo $2 | grep -q "arm64-" || arm_64=false

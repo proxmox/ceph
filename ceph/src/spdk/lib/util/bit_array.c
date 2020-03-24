@@ -74,7 +74,7 @@ spdk_bit_array_free(struct spdk_bit_array **bap)
 
 	ba = *bap;
 	*bap = NULL;
-	spdk_dma_free(ba);
+	spdk_free(ba);
 }
 
 static inline uint32_t
@@ -114,7 +114,7 @@ spdk_bit_array_resize(struct spdk_bit_array **bap, uint32_t num_bits)
 	 */
 	new_size += SPDK_BIT_ARRAY_WORD_BYTES;
 
-	new_ba = (struct spdk_bit_array *)spdk_dma_realloc(*bap, new_size, 64, NULL);
+	new_ba = (struct spdk_bit_array *)spdk_realloc(*bap, new_size, 64);
 	if (!new_ba) {
 		return -ENOMEM;
 	}
@@ -310,4 +310,54 @@ uint32_t
 spdk_bit_array_count_clear(const struct spdk_bit_array *ba)
 {
 	return ba->bit_count - spdk_bit_array_count_set(ba);
+}
+
+void
+spdk_bit_array_store_mask(const struct spdk_bit_array *ba, void *mask)
+{
+	uint32_t size, i;
+	uint32_t num_bits = spdk_bit_array_capacity(ba);
+
+	size = num_bits / CHAR_BIT;
+	memcpy(mask, ba->words, size);
+
+	for (i = 0; i < num_bits % CHAR_BIT; i++) {
+		if (spdk_bit_array_get(ba, i + size * CHAR_BIT)) {
+			((uint8_t *)mask)[size] |= (1U << i);
+		} else {
+			((uint8_t *)mask)[size] &= ~(1U << i);
+		}
+	}
+}
+
+void
+spdk_bit_array_load_mask(struct spdk_bit_array *ba, const void *mask)
+{
+	uint32_t size, i;
+	uint32_t num_bits = spdk_bit_array_capacity(ba);
+
+	size = num_bits / CHAR_BIT;
+	memcpy(ba->words, mask, size);
+
+	for (i = 0; i < num_bits % CHAR_BIT; i++) {
+		if (((uint8_t *)mask)[size] & (1U << i)) {
+			spdk_bit_array_set(ba, i + size * CHAR_BIT);
+		} else {
+			spdk_bit_array_clear(ba, i + size * CHAR_BIT);
+		}
+	}
+}
+
+void
+spdk_bit_array_clear_mask(struct spdk_bit_array *ba)
+{
+	uint32_t size, i;
+	uint32_t num_bits = spdk_bit_array_capacity(ba);
+
+	size = num_bits / CHAR_BIT;
+	memset(ba->words, 0, size);
+
+	for (i = 0; i < num_bits % CHAR_BIT; i++) {
+		spdk_bit_array_clear(ba, i + size * CHAR_BIT);
+	}
 }

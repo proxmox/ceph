@@ -120,12 +120,6 @@ private:
    * @endverbatim
    */
 
-  enum LegacySnapshot {
-    LEGACY_SNAPSHOT_DISABLED,
-    LEGACY_SNAPSHOT_ENABLED,
-    LEGACY_SNAPSHOT_ENABLED_NO_TIMESTAMP
-  };
-
   ImageCtxT &m_image_ctx;
   bool m_acquiring_lock;
   bool m_skip_open_parent_image;
@@ -142,7 +136,7 @@ private:
   bufferlist m_out_bl;
 
   bool m_legacy_parent = false;
-  LegacySnapshot m_legacy_snapshot = LEGACY_SNAPSHOT_DISABLED;
+  bool m_legacy_snapshot = false;
 
   uint8_t m_order = 0;
   uint64_t m_size = 0;
@@ -150,9 +144,10 @@ private:
   uint64_t m_incompatible_features = 0;
   uint64_t m_flags = 0;
   uint64_t m_op_features = 0;
+  uint32_t m_read_only_flags = 0U;
+  bool m_read_only = false;
 
   librados::IoCtx m_pool_metadata_io_ctx;
-  std::string m_last_metadata_key;
   std::map<std::string, bufferlist> m_metadata;
 
   std::string m_object_prefix;

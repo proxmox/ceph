@@ -14,8 +14,10 @@ import { delay } from 'rxjs/operators';
 import { ActivatedRouteStub } from '../../../../testing/activated-route-stub';
 import { configureTestBed, i18nProviders } from '../../../../testing/unit-test-helper';
 import { RbdService } from '../../../shared/api/rbd.service';
+import { ImageSpec } from '../../../shared/models/image-spec';
 import { SharedModule } from '../../../shared/shared.module';
 import { RbdConfigurationFormComponent } from '../rbd-configuration-form/rbd-configuration-form.component';
+import { RbdImageFeature } from './rbd-feature.interface';
 import { RbdFormMode } from './rbd-form-mode.enum';
 import { RbdFormComponent } from './rbd-form.component';
 
@@ -24,7 +26,7 @@ describe('RbdFormComponent', () => {
   let fixture: ComponentFixture<RbdFormComponent>;
   let activatedRoute: ActivatedRouteStub;
 
-  const queryNativeElement = (cssSelector) =>
+  const queryNativeElement = (cssSelector: string) =>
     fixture.debugElement.query(By.css(cssSelector)).nativeElement;
 
   configureTestBed({
@@ -58,11 +60,11 @@ describe('RbdFormComponent', () => {
   });
 
   describe('create/edit/clone/copy image', () => {
-    let createAction;
-    let editAction;
-    let cloneAction;
-    let copyAction;
-    let rbdServiceGetSpy;
+    let createAction: jasmine.Spy;
+    let editAction: jasmine.Spy;
+    let cloneAction: jasmine.Spy;
+    let copyAction: jasmine.Spy;
+    let rbdServiceGetSpy: jasmine.Spy;
 
     beforeEach(() => {
       createAction = spyOn(component, 'createAction').and.stub();
@@ -178,17 +180,23 @@ describe('RbdFormComponent', () => {
       spyOn(rbdService, 'get').and.callThrough();
     });
 
-    it('without snapName', () => {
-      activatedRoute.setParams({ pool: 'foo%2Ffoo', name: 'bar%2Fbar', snap: undefined });
+    it('with namespace', () => {
+      activatedRoute.setParams({ image_spec: 'foo%2Fbar%2Fbaz' });
 
-      expect(rbdService.get).toHaveBeenCalledWith('foo/foo', 'bar/bar');
+      expect(rbdService.get).toHaveBeenCalledWith(new ImageSpec('foo', 'bar', 'baz'));
+    });
+
+    it('without snapName', () => {
+      activatedRoute.setParams({ image_spec: 'foo%2Fbar', snap: undefined });
+
+      expect(rbdService.get).toHaveBeenCalledWith(new ImageSpec('foo', null, 'bar'));
       expect(component.snapName).toBeUndefined();
     });
 
     it('with snapName', () => {
-      activatedRoute.setParams({ pool: 'foo%2Ffoo', name: 'bar%2Fbar', snap: 'baz%2Fbaz' });
+      activatedRoute.setParams({ image_spec: 'foo%2Fbar', snap: 'baz%2Fbaz' });
 
-      expect(rbdService.get).toHaveBeenCalledWith('foo/foo', 'bar/bar');
+      expect(rbdService.get).toHaveBeenCalledWith(new ImageSpec('foo', null, 'bar'));
       expect(component.snapName).toBe('baz/baz');
     });
   });
@@ -196,12 +204,20 @@ describe('RbdFormComponent', () => {
   describe('test image configuration component', () => {
     it('is visible', () => {
       fixture.detectChanges();
-      expect(queryNativeElement('cd-rbd-configuration-form').parentElement.hidden).toBe(false);
+      expect(
+        fixture.debugElement.query(By.css('cd-rbd-configuration-form')).nativeElement.parentElement
+          .hidden
+      ).toBe(true);
     });
   });
 
   describe('tests for feature flags', () => {
-    let deepFlatten, layering, exclusiveLock, objectMap, journaling, fastDiff;
+    let deepFlatten: any,
+      layering: any,
+      exclusiveLock: any,
+      objectMap: any,
+      journaling: any,
+      fastDiff: any;
     const defaultFeatures = [
       // Supposed to be enabled by default
       'deep-flatten',
@@ -218,7 +234,7 @@ describe('RbdFormComponent', () => {
       'journaling',
       'fast-diff'
     ];
-    const setFeatures = (features) => {
+    const setFeatures = (features: Record<string, RbdImageFeature>) => {
       component.features = features;
       component.featuresList = component.objToArray(features);
       component.createForm();

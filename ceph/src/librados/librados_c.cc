@@ -244,14 +244,14 @@ extern "C" int _rados_conf_read_file(rados_t cluster, const char *path_list)
   if (ret) {
     if (warnings.tellp() > 0)
       lderr(client->cct) << warnings.str() << dendl;
-    client->cct->_conf.complain_about_parse_errors(client->cct);
+    client->cct->_conf.complain_about_parse_error(client->cct);
     tracepoint(librados, rados_conf_read_file_exit, ret);
     return ret;
   }
   conf.parse_env(client->cct->get_module_type()); // environment variables override
 
   conf.apply_changes(nullptr);
-  client->cct->_conf.complain_about_parse_errors(client->cct);
+  client->cct->_conf.complain_about_parse_error(client->cct);
   tracepoint(librados, rados_conf_read_file_exit, 0);
   return 0;
 }
@@ -442,17 +442,40 @@ extern "C" int _rados_blacklist_add(rados_t cluster, char *client_address,
 }
 LIBRADOS_C_API_BASE_DEFAULT(rados_blacklist_add);
 
+extern "C" int _rados_getaddrs(rados_t cluster, char** addrs)
+{
+  librados::RadosClient *radosp = (librados::RadosClient *)cluster;
+  auto s = radosp->get_addrs();
+  *addrs = strdup(s.c_str());
+  return 0;
+}
+LIBRADOS_C_API_BASE_DEFAULT(rados_getaddrs);
+
 extern "C" void _rados_set_osdmap_full_try(rados_ioctx_t io)
 {
   librados::IoCtxImpl *ctx = (librados::IoCtxImpl *)io;
-  ctx->objecter->set_osdmap_full_try();
+  ctx->objecter->set_pool_full_try();
 }
 LIBRADOS_C_API_BASE_DEFAULT(rados_set_osdmap_full_try);
 
 extern "C" void _rados_unset_osdmap_full_try(rados_ioctx_t io)
 {
   librados::IoCtxImpl *ctx = (librados::IoCtxImpl *)io;
-  ctx->objecter->unset_osdmap_full_try();
+  ctx->objecter->unset_pool_full_try();
+}
+LIBRADOS_C_API_BASE_DEFAULT(rados_unset_pool_full_try);
+
+extern "C" void _rados_set_pool_full_try(rados_ioctx_t io)
+{
+  librados::IoCtxImpl *ctx = (librados::IoCtxImpl *)io;
+  ctx->objecter->set_pool_full_try();
+}
+LIBRADOS_C_API_BASE_DEFAULT(rados_set_pool_full_try);
+
+extern "C" void _rados_unset_pool_full_try(rados_ioctx_t io)
+{
+  librados::IoCtxImpl *ctx = (librados::IoCtxImpl *)io;
+  ctx->objecter->unset_pool_full_try();
 }
 LIBRADOS_C_API_BASE_DEFAULT(rados_unset_osdmap_full_try);
 
@@ -888,6 +911,40 @@ extern "C" int _rados_mgr_command(rados_t cluster, const char **cmd,
 }
 LIBRADOS_C_API_BASE_DEFAULT(rados_mgr_command);
 
+extern "C" int _rados_mgr_command_target(
+  rados_t cluster,
+  const char *name,
+  const char **cmd,
+  size_t cmdlen,
+  const char *inbuf, size_t inbuflen,
+  char **outbuf, size_t *outbuflen,
+  char **outs, size_t *outslen)
+{
+  tracepoint(librados, rados_mgr_command_target_enter, cluster, name, cmdlen,
+	     inbuf, inbuflen);
+
+  librados::RadosClient *client = (librados::RadosClient *)cluster;
+  bufferlist inbl;
+  bufferlist outbl;
+  string outstring;
+  vector<string> cmdvec;
+
+  for (size_t i = 0; i < cmdlen; i++) {
+    tracepoint(librados, rados_mgr_command_target_cmd, cmd[i]);
+    cmdvec.push_back(cmd[i]);
+  }
+
+  inbl.append(inbuf, inbuflen);
+  int ret = client->mgr_command(name, cmdvec, inbl, &outbl, &outstring);
+
+  do_out_buffer(outbl, outbuf, outbuflen);
+  do_out_buffer(outstring, outs, outslen);
+  tracepoint(librados, rados_mgr_command_target_exit, ret, outbuf, outbuflen,
+	     outs, outslen);
+  return ret;
+}
+LIBRADOS_C_API_BASE_DEFAULT(rados_mgr_command_target);
+
 extern "C" int _rados_pg_command(rados_t cluster, const char *pgstr,
 				 const char **cmd, size_t cmdlen,
 				 const char *inbuf, size_t inbuflen,
@@ -1022,11 +1079,13 @@ extern "C" int _rados_ioctx_pool_stat(rados_ioctx_t io,
   }
 
   ::pool_stat_t& r = rawresult[pool_name];
-  uint64_t allocated_bytes = r.get_allocated_bytes(per_pool);
+  uint64_t allocated_bytes = r.get_allocated_data_bytes(per_pool) +
+    r.get_allocated_omap_bytes(per_pool);
   // FIXME: raw_used_rate is unknown hence use 1.0 here
   // meaning we keep net amount aggregated over all replicas
   // Not a big deal so far since this field isn't exposed
-  uint64_t user_bytes = r.get_user_bytes(1.0, per_pool);
+  uint64_t user_bytes = r.get_user_data_bytes(1.0, per_pool) +
+    r.get_user_omap_bytes(1.0, per_pool);
 
   stats->num_kb = shift_round_up(allocated_bytes, 10);
   stats->num_bytes = allocated_bytes;
@@ -1215,7 +1274,7 @@ extern "C" int _rados_read(rados_ioctx_t io, const char *o, char *buf, size_t le
       return -ERANGE;
     }
     if (!bl.is_provided_buffer(buf))
-      bl.copy(0, bl.length(), buf);
+      bl.begin().copy(bl.length(), buf);
     ret = bl.length();    // hrm :/
   }
 
@@ -1248,7 +1307,7 @@ extern "C" int _rados_checksum(rados_ioctx_t io, const char *o,
       return -ERANGE;
     }
 
-    checksum_bl.copy(0, checksum_bl.length(), pchecksum);
+    checksum_bl.begin().copy(checksum_bl.length(), pchecksum);
   }
   tracepoint(librados, rados_checksum_exit, retval, pchecksum, checksum_len);
   return retval;
@@ -1695,7 +1754,7 @@ extern "C" int _rados_getxattr(rados_ioctx_t io, const char *o, const char *name
       return -ERANGE;
     }
     if (!bl.is_provided_buffer(buf))
-      bl.copy(0, bl.length(), buf);
+      bl.begin().copy(bl.length(), buf);
     ret = bl.length();
   }
 
@@ -1888,7 +1947,7 @@ extern "C" int _rados_exec(rados_ioctx_t io, const char *o, const char *cls, con
 	tracepoint(librados, rados_exec_exit, -ERANGE, buf, 0);
 	return -ERANGE;
       }
-      outbl.copy(0, outbl.length(), buf);
+      outbl.begin().copy(outbl.length(), buf);
       ret = outbl.length();   // hrm :/
     }
   }
@@ -2195,6 +2254,20 @@ extern "C" int _rados_aio_create_completion(void *cb_arg,
 }
 LIBRADOS_C_API_BASE_DEFAULT(rados_aio_create_completion);
 
+extern "C" int _rados_aio_create_completion2(void *cb_arg,
+					     rados_callback_t cb_complete,
+					     rados_completion_t *pc)
+{
+  tracepoint(librados, rados_aio_create_completion2_enter, cb_arg, cb_complete);
+  librados::AioCompletionImpl *c = new librados::AioCompletionImpl;
+  if (cb_complete)
+    c->set_complete_callback(cb_arg, cb_complete);
+  *pc = c;
+  tracepoint(librados, rados_aio_create_completion2_exit, 0, *pc);
+  return 0;
+}
+LIBRADOS_C_API_BASE_DEFAULT(rados_aio_create_completion2);
+
 extern "C" int _rados_aio_wait_for_complete(rados_completion_t c)
 {
   tracepoint(librados, rados_aio_wait_for_complete_enter, c);
@@ -2207,7 +2280,7 @@ LIBRADOS_C_API_BASE_DEFAULT(rados_aio_wait_for_complete);
 extern "C" int _rados_aio_wait_for_safe(rados_completion_t c)
 {
   tracepoint(librados, rados_aio_wait_for_safe_enter, c);
-  int retval = ((librados::AioCompletionImpl*)c)->wait_for_safe();
+  int retval = ((librados::AioCompletionImpl*)c)->wait_for_complete();
   tracepoint(librados, rados_aio_wait_for_safe_exit, retval);
   return retval;
 }
@@ -2466,11 +2539,12 @@ static void rados_aio_getxattr_complete(rados_completion_t c, void *arg) {
       rc = -ERANGE;
     } else {
       if (!cdata->bl.is_provided_buffer(cdata->user_buf))
-	cdata->bl.copy(0, cdata->bl.length(), cdata->user_buf);
+	cdata->bl.begin().copy(cdata->bl.length(), cdata->user_buf);
       rc = cdata->bl.length();
     }
   }
   cdata->user_completion.finish(rc);
+  reinterpret_cast<librados::AioCompletionImpl*>(c)->put();
   delete cdata;
 }
 
@@ -2524,6 +2598,7 @@ static void rados_aio_getxattrs_complete(rados_completion_t c, void *arg) {
     cdata->it = 0;
     cdata->user_completion.finish(0);
   }
+  reinterpret_cast<librados::AioCompletionImpl*>(c)->put();
   delete cdata;
 }
 
@@ -2967,6 +3042,7 @@ extern "C" int _rados_aio_unlock(rados_ioctx_t io, const char *o, const char *na
   librados::IoCtx ctx;
   librados::IoCtx::from_rados_ioctx_t(io, ctx);
   librados::AioCompletionImpl *comp = (librados::AioCompletionImpl*)completion;
+  comp->get();
   librados::AioCompletion c(comp);
   int retval = ctx.aio_unlock(o, name, cookie, &c);
   tracepoint(librados, rados_aio_unlock_exit, retval);
@@ -3367,6 +3443,20 @@ extern "C" void _rados_write_op_omap_rm_keys2(rados_write_op_t write_op,
 }
 LIBRADOS_C_API_BASE_DEFAULT(rados_write_op_omap_rm_keys2);
 
+extern "C" void _rados_write_op_omap_rm_range2(rados_write_op_t write_op,
+                                               const char *key_begin,
+                                               size_t key_begin_len,
+                                               const char *key_end,
+                                               size_t key_end_len)
+{
+  tracepoint(librados, rados_write_op_omap_rm_range_enter,
+             write_op, key_begin, key_end);
+  ((::ObjectOperation *)write_op)->omap_rm_range({key_begin, key_begin_len},
+                                                 {key_end, key_end_len});
+  tracepoint(librados, rados_write_op_omap_rm_range_exit);
+}
+LIBRADOS_C_API_BASE_DEFAULT(rados_write_op_omap_rm_range2);
+
 extern "C" void _rados_write_op_omap_clear(rados_write_op_t write_op)
 {
   tracepoint(librados, rados_write_op_omap_clear_enter, write_op);
@@ -3601,7 +3691,7 @@ public:
     if (bytes_read)
       *bytes_read = out_bl.length();
     if (out_buf && !out_bl.is_provided_buffer(out_buf))
-      out_bl.copy(0, out_bl.length(), out_buf);
+      out_bl.begin().copy(out_bl.length(), out_buf);
   }
 };
 

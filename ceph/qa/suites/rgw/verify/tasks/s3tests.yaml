@@ -1,5 +1,5 @@
 tasks:
 - s3tests:
     client.0:
-      force-branch: ceph-nautilus
+      force-branch: ceph-master
       rgw_server: client.0

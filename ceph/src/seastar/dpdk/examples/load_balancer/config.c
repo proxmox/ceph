@@ -1,34 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2014 Intel Corporation
  */
 
 #include <stdio.h>
@@ -47,9 +18,7 @@
 #include <rte_log.h>
 #include <rte_memory.h>
 #include <rte_memcpy.h>
-#include <rte_memzone.h>
 #include <rte_eal.h>
-#include <rte_per_lcore.h>
 #include <rte_launch.h>
 #include <rte_atomic.h>
 #include <rte_cycles.h>
@@ -58,7 +27,6 @@
 #include <rte_per_lcore.h>
 #include <rte_branch_prediction.h>
 #include <rte_interrupts.h>
-#include <rte_pci.h>
 #include <rte_random.h>
 #include <rte_debug.h>
 #include <rte_ether.h>
@@ -153,7 +121,7 @@ str_to_unsigned_array(
 	int i, num_splits = 0;
 
 	/* copy s so we don't modify original string */
-	snprintf(str, sizeof(str), "%s", s);
+	strlcpy(str, s, sizeof(str));
 	num_splits = rte_strsplit(str, sizeof(str), splits, num_vals, separator);
 
 	errno = 0;
@@ -241,7 +209,7 @@ parse_arg_rx(const char *arg)
 		if (lp->io.rx.n_nic_queues >= APP_MAX_NIC_RX_QUEUES_PER_IO_LCORE) {
 			return -9;
 		}
-		lp->io.rx.nic_queues[lp->io.rx.n_nic_queues].port = (uint8_t) port;
+		lp->io.rx.nic_queues[lp->io.rx.n_nic_queues].port = port;
 		lp->io.rx.nic_queues[lp->io.rx.n_nic_queues].queue = (uint8_t) queue;
 		lp->io.rx.n_nic_queues ++;
 
@@ -319,7 +287,7 @@ parse_arg_tx(const char *arg)
 		if (lp->io.tx.n_nic_ports >= APP_MAX_NIC_TX_PORTS_PER_IO_LCORE) {
 			return -9;
 		}
-		lp->io.tx.nic_ports[lp->io.tx.n_nic_ports] = (uint8_t) port;
+		lp->io.tx.nic_ports[lp->io.tx.n_nic_ports] = port;
 		lp->io.tx.n_nic_ports ++;
 
 		n_tuples ++;
@@ -360,7 +328,7 @@ parse_arg_w(const char *arg)
 
 		errno = 0;
 		lcore = strtoul(p, NULL, 0);
-		if ((errno != 0)) {
+		if (errno != 0) {
 			return -2;
 		}
 
@@ -489,7 +457,7 @@ app_check_lpm_table(void)
 static int
 app_check_every_rx_port_is_tx_enabled(void)
 {
-	uint8_t port;
+	uint16_t port;
 
 	for (port = 0; port < APP_MAX_NIC_PORTS; port ++) {
 		if ((app_get_nic_rx_queues_per_port(port) > 0) && (app.nic_tx_port_mask[port] == 0)) {
@@ -763,7 +731,7 @@ app_parse_args(int argc, char **argv)
 }
 
 int
-app_get_nic_rx_queues_per_port(uint8_t port)
+app_get_nic_rx_queues_per_port(uint16_t port)
 {
 	uint32_t i, count;
 
@@ -782,7 +750,7 @@ app_get_nic_rx_queues_per_port(uint8_t port)
 }
 
 int
-app_get_lcore_for_nic_rx(uint8_t port, uint8_t queue, uint32_t *lcore_out)
+app_get_lcore_for_nic_rx(uint16_t port, uint8_t queue, uint32_t *lcore_out)
 {
 	uint32_t lcore;
 
@@ -809,7 +777,7 @@ app_get_lcore_for_nic_rx(uint8_t port, uint8_t queue, uint32_t *lcore_out)
 }
 
 int
-app_get_lcore_for_nic_tx(uint8_t port, uint32_t *lcore_out)
+app_get_lcore_for_nic_tx(uint16_t port, uint32_t *lcore_out)
 {
 	uint32_t lcore;
 
@@ -902,7 +870,7 @@ app_print_params(void)
 	/* Print NIC RX configuration */
 	printf("NIC RX ports: ");
 	for (port = 0; port < APP_MAX_NIC_PORTS; port ++) {
-		uint32_t n_rx_queues = app_get_nic_rx_queues_per_port((uint8_t) port);
+		uint32_t n_rx_queues = app_get_nic_rx_queues_per_port(port);
 
 		if (n_rx_queues == 0) {
 			continue;

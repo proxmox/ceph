@@ -32,11 +32,9 @@
 #include "osd/osd_types.h"
 
 
-class MOSDPing : public MessageInstance<MOSDPing> {
-public:
-  friend factory;
+class MOSDPing : public Message {
 private:
-  static constexpr int HEAD_VERSION = 4;
+  static constexpr int HEAD_VERSION = 5;
   static constexpr int COMPAT_VERSION = 4;
 
  public:
@@ -63,15 +61,32 @@ private:
   uuid_d fsid;
   epoch_t map_epoch = 0;
   __u8 op = 0;
-  utime_t stamp;
-  uint32_t min_message_size;
+  utime_t ping_stamp;               ///< when the PING was sent
+  ceph::signedspan mono_ping_stamp; ///< relative to sender's clock
+  ceph::signedspan mono_send_stamp; ///< replier's send stamp
+  std::optional<ceph::time_detail::signedspan> delta_ub;  ///< ping sender
+  epoch_t up_from = 0;
 
-  MOSDPing(const uuid_d& f, epoch_t e, __u8 o, utime_t s, uint32_t min_message)
-    : MessageInstance(MSG_OSD_PING, HEAD_VERSION, COMPAT_VERSION),
-      fsid(f), map_epoch(e), op(o), stamp(s), min_message_size(min_message)
+  uint32_t min_message_size = 0;
+
+  MOSDPing(const uuid_d& f, epoch_t e, __u8 o,
+	   utime_t s,
+	   ceph::signedspan ms,
+	   ceph::signedspan mss,
+	   epoch_t upf,
+	   uint32_t min_message,
+	   std::optional<ceph::time_detail::signedspan> delta_ub = {})
+    : Message{MSG_OSD_PING, HEAD_VERSION, COMPAT_VERSION},
+      fsid(f), map_epoch(e), op(o),
+      ping_stamp(s),
+      mono_ping_stamp(ms),
+      mono_send_stamp(mss),
+      delta_ub(delta_ub),
+      up_from(upf),
+      min_message_size(min_message)
   { }
   MOSDPing()
-    : MessageInstance(MSG_OSD_PING, HEAD_VERSION, COMPAT_VERSION), min_message_size(0)
+    : Message{MSG_OSD_PING, HEAD_VERSION, COMPAT_VERSION}
   {}
 private:
   ~MOSDPing() override {}
@@ -82,12 +97,20 @@ public:
     decode(fsid, p);
     decode(map_epoch, p);
     decode(op, p);
-    decode(stamp, p);
+    decode(ping_stamp, p);
 
     int payload_mid_length = p.get_off();
     uint32_t size;
     decode(size, p);
-    p.advance(size);
+
+    if (header.version >= 5) {
+      decode(up_from, p);
+      decode(mono_ping_stamp, p);
+      decode(mono_send_stamp, p);
+      decode(delta_ub, p);
+    }
+
+    p += size;
     min_message_size = size + payload_mid_length;
   }
   void encode_payload(uint64_t features) override {
@@ -95,13 +118,19 @@ public:
     encode(fsid, payload);
     encode(map_epoch, payload);
     encode(op, payload);
-    encode(stamp, payload);
+    encode(ping_stamp, payload);
 
     size_t s = 0;
     if (min_message_size > payload.length()) {
       s = min_message_size - payload.length();
     }
     encode((uint32_t)s, payload);
+
+    encode(up_from, payload);
+    encode(mono_ping_stamp, payload);
+    encode(mono_send_stamp, payload);
+    encode(delta_ub, payload);
+
     if (s) {
       // this should be big enough for normal min_message padding sizes. since
       // we are targeting jumbo ethernet frames around 9000 bytes, 16k should
@@ -122,9 +151,17 @@ public:
   void print(ostream& out) const override {
     out << "osd_ping(" << get_op_name(op)
 	<< " e" << map_epoch
-	<< " stamp " << stamp
-	<< ")";
+	<< " up_from " << up_from
+	<< " ping_stamp " << ping_stamp << "/" << mono_ping_stamp
+	<< " send_stamp " << mono_send_stamp;
+    if (delta_ub) {
+      out << " delta_ub " << *delta_ub;
+    }
+    out << ")";
   }
+private:
+  template<class T, typename... Args>
+  friend boost::intrusive_ptr<T> ceph::make_message(Args&&... args);
 };
 
 #endif

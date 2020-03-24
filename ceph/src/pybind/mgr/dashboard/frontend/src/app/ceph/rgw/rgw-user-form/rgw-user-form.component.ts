@@ -9,6 +9,7 @@ import { concat as observableConcat, forkJoin as observableForkJoin, Observable 
 
 import { RgwUserService } from '../../../shared/api/rgw-user.service';
 import { ActionLabelsI18n, URLVerbs } from '../../../shared/constants/app.constants';
+import { Icons } from '../../../shared/enum/icons.enum';
 import { NotificationType } from '../../../shared/enum/notification-type.enum';
 import { CdFormBuilder } from '../../../shared/forms/cd-form-builder';
 import { CdFormGroup } from '../../../shared/forms/cd-form-group';
@@ -36,7 +37,7 @@ export class RgwUserFormComponent implements OnInit {
   error = false;
   loading = false;
   submitObservables: Observable<Object>[] = [];
-
+  icons = Icons;
   subusers: RgwUserSubuser[] = [];
   s3Keys: RgwUserS3Key[] = [];
   swiftKeys: RgwUserSwiftKey[] = [];
@@ -79,7 +80,15 @@ export class RgwUserFormComponent implements OnInit {
         [CdValidators.email],
         [CdValidators.unique(this.rgwUserService.emailExists, this.rgwUserService)]
       ],
-      max_buckets: [1000, [Validators.required, Validators.min(0)]],
+      max_buckets_mode: [1],
+      max_buckets: [
+        1000,
+        [
+          CdValidators.requiredIf({ max_buckets_mode: '1' }),
+          CdValidators.number(false),
+          Validators.min(1)
+        ]
+      ],
       suspended: [false],
       // S3 key
       generate_key: [true],
@@ -91,11 +100,13 @@ export class RgwUserFormComponent implements OnInit {
       user_quota_max_size: [
         null,
         [
-          CdValidators.requiredIf({
-            user_quota_enabled: true,
-            user_quota_max_size_unlimited: false
-          }),
-          this.quotaMaxSizeValidator
+          CdValidators.composeIf(
+            {
+              user_quota_enabled: true,
+              user_quota_max_size_unlimited: false
+            },
+            [Validators.required, this.quotaMaxSizeValidator]
+          )
         ]
       ],
       user_quota_max_objects_unlimited: [true],
@@ -115,11 +126,13 @@ export class RgwUserFormComponent implements OnInit {
       bucket_quota_max_size: [
         null,
         [
-          CdValidators.requiredIf({
-            bucket_quota_enabled: true,
-            bucket_quota_max_size_unlimited: false
-          }),
-          this.quotaMaxSizeValidator
+          CdValidators.composeIf(
+            {
+              bucket_quota_enabled: true,
+              bucket_quota_max_size_unlimited: false
+            },
+            [Validators.required, this.quotaMaxSizeValidator]
+          )
         ]
       ],
       bucket_quota_max_objects_unlimited: [true],
@@ -157,6 +170,20 @@ export class RgwUserFormComponent implements OnInit {
           const defaults = _.clone(this.userForm.value);
           // Extract the values displayed in the form.
           let value = _.pick(resp[0], _.keys(this.userForm.value));
+          // Map the max. buckets values.
+          switch (value['max_buckets']) {
+            case -1:
+              value['max_buckets_mode'] = -1;
+              value['max_buckets'] = '';
+              break;
+            case 0:
+              value['max_buckets_mode'] = 0;
+              value['max_buckets'] = '';
+              break;
+            default:
+              value['max_buckets_mode'] = 1;
+              break;
+          }
           // Map the quota values.
           ['user', 'bucket'].forEach((type) => {
             const quota = resp[1][type + '_quota'];
@@ -190,7 +217,7 @@ export class RgwUserFormComponent implements OnInit {
 
           // Process the capabilities.
           const mapPerm = { 'read, write': '*' };
-          resp[0].caps.forEach((cap) => {
+          resp[0].caps.forEach((cap: any) => {
             if (cap.perm in mapPerm) {
               cap.perm = mapPerm[cap.perm];
             }
@@ -273,7 +300,7 @@ export class RgwUserFormComponent implements OnInit {
    * Add/Update a subuser.
    */
   setSubuser(subuser: RgwUserSubuser, index?: number) {
-    const mapPermissions = {
+    const mapPermissions: Record<string, string> = {
       'full-control': 'full',
       'read-write': 'readwrite'
     };
@@ -515,9 +542,11 @@ export class RgwUserFormComponent implements OnInit {
    * @return {Boolean} Returns TRUE if the general user settings have been modified.
    */
   private _isGeneralDirty(): boolean {
-    return ['display_name', 'email', 'max_buckets', 'suspended'].some((path) => {
-      return this.userForm.get(path).dirty;
-    });
+    return ['display_name', 'email', 'max_buckets_mode', 'max_buckets', 'suspended'].some(
+      (path) => {
+        return this.userForm.get(path).dirty;
+      }
+    );
   }
 
   /**
@@ -579,6 +608,12 @@ export class RgwUserFormComponent implements OnInit {
         secret_key: this.userForm.getValue('secret_key')
       });
     }
+    const maxBucketsMode = parseInt(this.userForm.getValue('max_buckets_mode'), 10);
+    if (_.includes([-1, 0], maxBucketsMode)) {
+      // -1 => Disable bucket creation.
+      //  0 => Unlimited bucket creation.
+      _.merge(result, { max_buckets: maxBucketsMode });
+    }
     return result;
   }
 
@@ -587,10 +622,16 @@ export class RgwUserFormComponent implements OnInit {
    * configuration has been modified.
    */
   private _getUpdateArgs() {
-    const result = {};
+    const result: Record<string, any> = {};
     const keys = ['display_name', 'email', 'max_buckets', 'suspended'];
     for (const key of keys) {
       result[key] = this.userForm.getValue(key);
+    }
+    const maxBucketsMode = parseInt(this.userForm.getValue('max_buckets_mode'), 10);
+    if (_.includes([-1, 0], maxBucketsMode)) {
+      // -1 => Disable bucket creation.
+      //  0 => Unlimited bucket creation.
+      result['max_buckets'] = maxBucketsMode;
     }
     return result;
   }
@@ -599,7 +640,7 @@ export class RgwUserFormComponent implements OnInit {
    * Helper function to get the arguments for the API request when the user
    * quota configuration has been modified.
    */
-  private _getUserQuotaArgs(): object {
+  private _getUserQuotaArgs(): Record<string, any> {
     const result = {
       quota_type: 'user',
       enabled: this.userForm.getValue('user_quota_enabled'),
@@ -622,7 +663,7 @@ export class RgwUserFormComponent implements OnInit {
    * Helper function to get the arguments for the API request when the bucket
    * quota configuration has been modified.
    */
-  private _getBucketQuotaArgs(): object {
+  private _getBucketQuotaArgs(): Record<string, any> {
     const result = {
       quota_type: 'bucket',
       enabled: this.userForm.getValue('bucket_quota_enabled'),

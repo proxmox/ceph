@@ -1,34 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2015 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2015 Intel Corporation
  */
 
 
@@ -86,12 +57,11 @@ port_ieee1588_rx_timestamp_check(portid_t pi, uint32_t index)
 	struct timespec timestamp = {0, 0};
 
 	if (rte_eth_timesync_read_rx_timestamp(pi, &timestamp, index) < 0) {
-		printf("Port %u RX timestamp registers not valid\n",
-		       (unsigned) pi);
+		printf("Port %u RX timestamp registers not valid\n", pi);
 		return;
 	}
 	printf("Port %u RX timestamp value %lu s %lu ns\n",
-	       (unsigned) pi, timestamp.tv_sec, timestamp.tv_nsec);
+		pi, timestamp.tv_sec, timestamp.tv_nsec);
 }
 
 #define MAX_TX_TMST_WAIT_MICROSECS 1000 /**< 1 milli-second */
@@ -110,12 +80,12 @@ port_ieee1588_tx_timestamp_check(portid_t pi)
 	if (wait_us >= MAX_TX_TMST_WAIT_MICROSECS) {
 		printf("Port %u TX timestamp registers not valid after "
 		       "%u micro-seconds\n",
-		       (unsigned) pi, (unsigned) MAX_TX_TMST_WAIT_MICROSECS);
+		       pi, MAX_TX_TMST_WAIT_MICROSECS);
 		return;
 	}
 	printf("Port %u TX timestamp value %lu s %lu ns validated after "
 	       "%u micro-second%s\n",
-	       (unsigned) pi, timestamp.tv_sec, timestamp.tv_nsec, wait_us,
+	       pi, timestamp.tv_sec, timestamp.tv_nsec, wait_us,
 	       (wait_us == 1) ? "" : "s");
 }
 
@@ -148,11 +118,11 @@ ieee1588_packet_fwd(struct fwd_stream *fs)
 		if (eth_type == ETHER_TYPE_1588) {
 			printf("Port %u Received PTP packet not filtered"
 			       " by hardware\n",
-			       (unsigned) fs->rx_port);
+			       fs->rx_port);
 		} else {
 			printf("Port %u Received non PTP packet type=0x%4x "
 			       "len=%u\n",
-			       (unsigned) fs->rx_port, eth_type,
+			       fs->rx_port, eth_type,
 			       (unsigned) mb->pkt_len);
 		}
 		rte_pktmbuf_free(mb);
@@ -161,7 +131,7 @@ ieee1588_packet_fwd(struct fwd_stream *fs)
 	if (eth_type != ETHER_TYPE_1588) {
 		printf("Port %u Received NON PTP packet incorrectly"
 		       " detected by hardware\n",
-		       (unsigned) fs->rx_port);
+		       fs->rx_port);
 		rte_pktmbuf_free(mb);
 		return;
 	}
@@ -175,19 +145,19 @@ ieee1588_packet_fwd(struct fwd_stream *fs)
 	if (ptp_hdr->version != 0x02) {
 		printf("Port %u Received PTP V2 Ethernet frame with wrong PTP"
 		       " protocol version 0x%x (should be 0x02)\n",
-		       (unsigned) fs->rx_port, ptp_hdr->version);
+		       fs->rx_port, ptp_hdr->version);
 		rte_pktmbuf_free(mb);
 		return;
 	}
 	if (ptp_hdr->msg_id != PTP_SYNC_MESSAGE) {
 		printf("Port %u Received PTP V2 Ethernet frame with unexpected"
 		       " message ID 0x%x (expected 0x0 - PTP_SYNC_MESSAGE)\n",
-		       (unsigned) fs->rx_port, ptp_hdr->msg_id);
+		       fs->rx_port, ptp_hdr->msg_id);
 		rte_pktmbuf_free(mb);
 		return;
 	}
 	printf("Port %u IEEE1588 PTP V2 SYNC Message filtered by hardware\n",
-	       (unsigned) fs->rx_port);
+	       fs->rx_port);
 
 	/*
 	 * Check that the received PTP packet has been timestamped by the
@@ -196,7 +166,7 @@ ieee1588_packet_fwd(struct fwd_stream *fs)
 	if (! (mb->ol_flags & PKT_RX_IEEE1588_TMST)) {
 		printf("Port %u Received PTP packet not timestamped"
 		       " by hardware\n",
-		       (unsigned) fs->rx_port);
+		       fs->rx_port);
 		rte_pktmbuf_free(mb);
 		return;
 	}
@@ -216,8 +186,7 @@ ieee1588_packet_fwd(struct fwd_stream *fs)
 	mb->ol_flags |= PKT_TX_IEEE1588_TMST;
 	fs->tx_packets += 1;
 	if (rte_eth_tx_burst(fs->rx_port, fs->tx_queue, &mb, 1) == 0) {
-		printf("Port %u sent PTP packet dropped\n",
-		       (unsigned) fs->rx_port);
+		printf("Port %u sent PTP packet dropped\n", fs->rx_port);
 		fs->fwd_dropped += 1;
 		rte_pktmbuf_free(mb);
 		return;

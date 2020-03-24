@@ -2,12 +2,12 @@
 # as we are usin non-interactive session to connect to remote.
 # Without -m it would be not possible to suspend the process.
 set -m
-source $MIGRATION_DIR/autotest.config
+source $testdir/autotest.config
 
 incoming_vm=1
 target_vm=2
 target_vm_ctrl=naa.VhostScsi0.$target_vm
-rpc="$SPDK_BUILD_DIR/scripts/rpc.py -s $(get_vhost_dir 1)/rpc.sock"
+rpc="$rootdir/scripts/rpc.py -s $(get_vhost_dir 1)/rpc.sock"
 share_dir=$TEST_DIR/share
 
 function host_2_cleanup_vhost()
@@ -20,7 +20,7 @@ function host_2_cleanup_vhost()
 	$rpc remove_vhost_controller $target_vm_ctrl
 
 	notice "Shutting down vhost app"
-	spdk_vhost_kill 1
+	vhost_kill 1
 	sleep 1
 }
 
@@ -33,7 +33,7 @@ function host_2_start_vhost()
 
 	notice "Starting vhost 1 instance on remote server"
 	trap 'host_2_cleanup_vhost; error_exit "${FUNCNAME}" "${LINENO}"' INT ERR EXIT
-	spdk_vhost_run --vhost-num=1 --no-pci
+	vhost_run --vhost-num=1 --no-pci
 
 	$rpc construct_nvme_bdev -b Nvme0 -t rdma -f ipv4 -a $RDMA_TARGET_IP -s 4420 -n "nqn.2018-02.io.spdk:cnode1"
 	$rpc construct_vhost_scsi_controller $target_vm_ctrl

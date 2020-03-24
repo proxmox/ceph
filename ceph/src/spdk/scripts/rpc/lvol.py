@@ -1,10 +1,11 @@
-def construct_lvol_store(client, bdev_name, lvs_name, cluster_sz=None):
+def construct_lvol_store(client, bdev_name, lvs_name, cluster_sz=None, clear_method=None):
     """Construct a logical volume store.
 
     Args:
         bdev_name: bdev on which to construct logical volume store
         lvs_name: name of the logical volume store to create
         cluster_sz: cluster size of the logical volume store in bytes (optional)
+        clear_method: Change clear method for data region. Available: none, unmap, write_zeroes (optional)
 
     Returns:
         UUID of created logical volume store.
@@ -12,6 +13,8 @@ def construct_lvol_store(client, bdev_name, lvs_name, cluster_sz=None):
     params = {'bdev_name': bdev_name, 'lvs_name': lvs_name}
     if cluster_sz:
         params['cluster_sz'] = cluster_sz
+    if clear_method:
+        params['clear_method'] = clear_method
     return client.call('construct_lvol_store', params)
 
 
@@ -29,7 +32,7 @@ def rename_lvol_store(client, old_name, new_name):
     return client.call('rename_lvol_store', params)
 
 
-def construct_lvol_bdev(client, lvol_name, size, thin_provision=False, uuid=None, lvs_name=None):
+def construct_lvol_bdev(client, lvol_name, size, thin_provision=False, uuid=None, lvs_name=None, clear_method=None):
     """Create a logical volume on a logical volume store.
 
     Args:
@@ -54,6 +57,8 @@ def construct_lvol_bdev(client, lvol_name, size, thin_provision=False, uuid=None
         params['uuid'] = uuid
     if lvs_name:
         params['lvs_name'] = lvs_name
+    if clear_method:
+        params['clear_method'] = clear_method
     return client.call('construct_lvol_bdev', params)
 
 
@@ -117,6 +122,18 @@ def resize_lvol_bdev(client, name, size):
         'size': size,
     }
     return client.call('resize_lvol_bdev', params)
+
+
+def set_read_only_lvol_bdev(client, name):
+    """Mark logical volume as read only.
+
+    Args:
+        name: name of logical volume to set as read only
+    """
+    params = {
+        'name': name,
+    }
+    return client.call('set_read_only_lvol_bdev', params)
 
 
 def destroy_lvol_bdev(client, name):

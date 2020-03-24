@@ -6,7 +6,7 @@ Placement Groups Never Get Clean
 ================================
 
 When you create a cluster and your cluster remains in ``active``,
-``active+remapped`` or ``active+degraded`` status and never achieve an
+``active+remapped`` or ``active+degraded`` status and never achieves an
 ``active+clean`` status, you likely have a problem with your configuration.
 
 You may need to review settings in the `Pool, PG and CRUSH Config Reference`_
@@ -476,7 +476,7 @@ If the Ceph cluster only has 8 OSDs and the erasure coded pool needs
 coded pool that requires less OSDs::
 
      ceph osd erasure-code-profile set myprofile k=5 m=3
-     ceph osd pool create erasurepool 16 16 erasure myprofile
+     ceph osd pool create erasurepool erasure myprofile
 
 or add a new OSDs and the PG will automatically use them.
 
@@ -515,7 +515,7 @@ You can resolve the problem by creating a new pool in which PGs are allowed
 to have OSDs residing on the same host with::
 
      ceph osd erasure-code-profile set myprofile crush-failure-domain=osd
-     ceph osd pool create erasurepool 16 16 erasure myprofile
+     ceph osd pool create erasurepool erasure myprofile
 
 CRUSH gives up too soon
 -----------------------

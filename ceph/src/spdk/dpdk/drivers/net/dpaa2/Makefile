@@ -19,13 +19,12 @@ CFLAGS += -I$(RTE_SDK)/drivers/bus/fslmc/qbman/include
 CFLAGS += -I$(RTE_SDK)/drivers/bus/fslmc/mc
 CFLAGS += -I$(RTE_SDK)/drivers/bus/fslmc/portal
 CFLAGS += -I$(RTE_SDK)/drivers/mempool/dpaa2
-CFLAGS += -I$(RTE_SDK)/lib/librte_eal/linuxapp/eal
 
 # versioning export map
 EXPORT_MAP := rte_pmd_dpaa2_version.map
 
 # library version
-LIBABIVER := 1
+LIBABIVER := 2
 
 # depends on fslmc bus which uses experimental API
 CFLAGS += -DALLOW_EXPERIMENTAL_API
@@ -33,12 +32,18 @@ CFLAGS += -DALLOW_EXPERIMENTAL_API
 SRCS-$(CONFIG_RTE_LIBRTE_DPAA2_PMD) += base/dpaa2_hw_dpni.c
 SRCS-$(CONFIG_RTE_LIBRTE_DPAA2_PMD) += dpaa2_rxtx.c
 SRCS-$(CONFIG_RTE_LIBRTE_DPAA2_PMD) += dpaa2_ethdev.c
+SRCS-$(CONFIG_RTE_LIBRTE_DPAA2_PMD) += dpaa2_flow.c
+SRCS-$(CONFIG_RTE_LIBRTE_DPAA2_PMD) += dpaa2_mux.c
 SRCS-$(CONFIG_RTE_LIBRTE_DPAA2_PMD) += mc/dpni.c
 SRCS-$(CONFIG_RTE_LIBRTE_DPAA2_PMD) += mc/dpkg.c
+SRCS-$(CONFIG_RTE_LIBRTE_DPAA2_PMD) += mc/dpdmux.c
 
 LDLIBS += -lrte_bus_fslmc
 LDLIBS += -lrte_mempool_dpaa2
 LDLIBS += -lrte_eal -lrte_mbuf -lrte_mempool -lrte_ring
 LDLIBS += -lrte_ethdev -lrte_net -lrte_kvargs
+LDLIBS += -lrte_common_dpaax
 
+# install this header file
+SYMLINK-$(CONFIG_RTE_LIBRTE_DPAA2_PMD)-include := rte_pmd_dpaa2.h
 include $(RTE_SDK)/mk/rte.lib.mk

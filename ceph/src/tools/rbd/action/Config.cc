@@ -20,6 +20,8 @@
 #include <boost/algorithm/string/predicate.hpp>
 #include <boost/program_options.hpp>
 
+#include "json_spirit/json_spirit.h"
+
 namespace rbd {
 namespace action {
 namespace config {
@@ -30,7 +32,6 @@ namespace po = boost::program_options;
 namespace {
 
 const std::string METADATA_CONF_PREFIX = "conf_";
-const uint32_t MAX_KEYS = 64;
 
 void add_config_entity_option(
     boost::program_options::options_description *positional) {

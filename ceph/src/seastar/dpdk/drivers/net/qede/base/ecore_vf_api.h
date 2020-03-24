@@ -1,9 +1,7 @@
-/*
- * Copyright (c) 2016 QLogic Corporation.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright (c) 2016 - 2018 Cavium Inc.
  * All rights reserved.
- * www.qlogic.com
- *
- * See LICENSE.qede_pmd for copyright and licensing details.
+ * www.cavium.com
  */
 
 #ifndef __ECORE_VF_API_H__
@@ -163,5 +161,18 @@ void ecore_vf_get_fw_version(struct ecore_hwfn *p_hwfn,
 			     u16 *fw_eng);
 void ecore_vf_bulletin_get_udp_ports(struct ecore_hwfn *p_hwfn,
 				     u16 *p_vxlan_port, u16 *p_geneve_port);
+
+#ifdef CONFIG_ECORE_SW_CHANNEL
+/**
+ * @brief set the VF to use a SW/HW channel when communicating with PF.
+ *        NOTICE: today the likely first place to call this from VF
+ *        would be OSAL_VF_FILL_ACQUIRE_RESC_REQ(); Might want to consider
+ *        something a bit more appropriate.
+ *
+ * @param p_hwfn
+ * @param b_is_hw - true iff VF is to use a HW-channel
+ */
+void ecore_vf_set_hw_channel(struct ecore_hwfn *p_hwfn, bool b_is_hw);
+#endif
 #endif
 #endif

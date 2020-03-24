@@ -52,6 +52,7 @@ extern "C" {
 #define SPDK_CONTAINEROF(ptr, type, member) ((type *)((uintptr_t)ptr - offsetof(type, member)))
 
 #define SPDK_SEC_TO_USEC 1000000ULL
+#define SPDK_SEC_TO_NSEC 1000000000ULL
 
 static inline uint32_t
 spdk_u32log2(uint32_t x)
@@ -69,6 +70,22 @@ spdk_align32pow2(uint32_t x)
 	return 1u << (1 + spdk_u32log2(x - 1));
 }
 
+static inline uint64_t
+spdk_u64log2(uint64_t x)
+{
+	if (x == 0) {
+		/* log(0) is undefined */
+		return 0;
+	}
+	return 63u - __builtin_clzl(x);
+}
+
+static inline uint64_t
+spdk_align64pow2(uint64_t x)
+{
+	return 1u << (1 + spdk_u64log2(x - 1));
+}
+
 /**
  * Check if a uint32_t is a power of 2.
  */
@@ -80,6 +97,12 @@ spdk_u32_is_pow2(uint32_t x)
 	}
 
 	return (x & (x - 1)) == 0;
+}
+
+static inline uint64_t
+spdk_divide_round_up(uint64_t num, uint64_t divisor)
+{
+	return (num + divisor - 1) / divisor;
 }
 
 #ifdef __cplusplus

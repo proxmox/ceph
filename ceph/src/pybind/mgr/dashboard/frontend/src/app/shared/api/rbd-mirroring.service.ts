@@ -3,8 +3,10 @@ import { Injectable, NgZone } from '@angular/core';
 
 import { BehaviorSubject, Subscription } from 'rxjs';
 
+import { cdEncode, cdEncodeNot } from '../decorators/cd-encode';
 import { ApiModule } from './api.module';
 
+@cdEncode
 @Injectable({
   providedIn: ApiModule
 })
@@ -52,31 +54,61 @@ export class RbdMirroringService {
     return this.summaryData$.subscribe(next, error);
   }
 
-  getPool(poolName) {
+  getPool(poolName: string) {
     return this.http.get(`api/block/mirroring/pool/${poolName}`);
   }
 
-  updatePool(poolName, request) {
+  updatePool(poolName: string, request: any) {
     return this.http.put(`api/block/mirroring/pool/${poolName}`, request, { observe: 'response' });
   }
 
-  getPeer(poolName, peerUUID) {
+  getSiteName() {
+    return this.http.get(`api/block/mirroring/site_name`);
+  }
+
+  setSiteName(@cdEncodeNot siteName: string) {
+    return this.http.put(
+      `api/block/mirroring/site_name`,
+      { site_name: siteName },
+      { observe: 'response' }
+    );
+  }
+
+  createBootstrapToken(poolName: string) {
+    return this.http.post(`api/block/mirroring/pool/${poolName}/bootstrap/token`, {});
+  }
+
+  importBootstrapToken(
+    poolName: string,
+    @cdEncodeNot direction: string,
+    @cdEncodeNot token: string
+  ) {
+    const request = {
+      direction: direction,
+      token: token
+    };
+    return this.http.post(`api/block/mirroring/pool/${poolName}/bootstrap/peer`, request, {
+      observe: 'response'
+    });
+  }
+
+  getPeer(poolName: string, peerUUID: string) {
     return this.http.get(`api/block/mirroring/pool/${poolName}/peer/${peerUUID}`);
   }
 
-  addPeer(poolName, request) {
+  addPeer(poolName: string, request: any) {
     return this.http.post(`api/block/mirroring/pool/${poolName}/peer`, request, {
       observe: 'response'
     });
   }
 
-  updatePeer(poolName, peerUUID, request) {
+  updatePeer(poolName: string, peerUUID: string, request: any) {
     return this.http.put(`api/block/mirroring/pool/${poolName}/peer/${peerUUID}`, request, {
       observe: 'response'
     });
   }
 
-  deletePeer(poolName, peerUUID) {
+  deletePeer(poolName: string, peerUUID: string) {
     return this.http.delete(`api/block/mirroring/pool/${poolName}/peer/${peerUUID}`, {
       observe: 'response'
     });

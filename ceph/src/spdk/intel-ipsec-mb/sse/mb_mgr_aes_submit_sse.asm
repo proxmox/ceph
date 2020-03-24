@@ -30,10 +30,13 @@
 %include "mb_mgr_datastruct.asm"
 
 %include "reg_sizes.asm"
+%include "const.inc"
 
 %ifndef AES_CBC_ENC_X4
+
 %define AES_CBC_ENC_X4 aes_cbc_enc_128_x4
 %define SUBMIT_JOB_AES_ENC submit_job_aes128_enc_sse
+
 %endif
 
 ; void AES_CBC_ENC_X4(AES_ARGS_x8 *args, UINT64 len_in_bytes);
@@ -100,14 +103,10 @@ SUBMIT_JOB_AES_ENC:
 	mov	unused_lanes, [state + _aes_unused_lanes]
 	movzx	lane, BYTE(unused_lanes)
 	shr	unused_lanes, 8
-	mov	len, [job + _msg_len_to_cipher_in_bytes]
-	and	len, -16		; DOCSIS may pass size unaligned to block size
 	mov	iv, [job + _iv]
 	mov	[state + _aes_unused_lanes], unused_lanes
 
 	mov	[state + _aes_job_in_lane + lane*8], job
-	mov	[state + _aes_lens + 2*lane], WORD(len)
-
 	mov	tmp, [job + _src]
 	add	tmp, [job + _cipher_start_src_offset_in_bytes]
 	movdqu	xmm0, [iv]
@@ -119,11 +118,18 @@ SUBMIT_JOB_AES_ENC:
 	shl	lane, 4	; multiply by 16
 	movdqa	[state + _aes_args_IV + lane], xmm0
 
+        ;; insert len into proper lane
+        mov     len, [job + _msg_len_to_cipher_in_bytes]
+        and     len, -16        ; DOCSIS may pass size unaligned to block size
+
+        movdqa  xmm0, [state + _aes_lens]
+        XPINSRW xmm0, xmm1, tmp, lane, len, no_scale
+        movdqa  [state + _aes_lens], xmm0
+
 	cmp	unused_lanes, 0xff
 	jne	return_null
 
 	; Find min length
-	movdqa	xmm0, [state + _aes_lens]
 	phminposuw	xmm1, xmm0
 	pextrw	len2, xmm1, 0	; min value
 	pextrw	idx, xmm1, 1	; min index (0...3)

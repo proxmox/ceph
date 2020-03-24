@@ -1,34 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2014 Intel Corporation
  */
 
 /*
@@ -56,17 +27,14 @@
 #include <rte_common.h>
 #include <rte_log.h>
 #include <rte_memory.h>
-#include <rte_memzone.h>
 #include <rte_launch.h>
 #include <rte_eal.h>
 #include <rte_per_lcore.h>
 #include <rte_lcore.h>
-#include <rte_debug.h>
 #include <rte_atomic.h>
 #include <rte_branch_prediction.h>
 #include <rte_debug.h>
 #include <rte_interrupts.h>
-#include <rte_pci.h>
 #include <rte_ether.h>
 #include <rte_ethdev.h>
 #include <rte_mempool.h>
@@ -80,8 +48,8 @@
 #define NB_MBUFS 64*1024 /* use 64k mbufs */
 #define MBUF_CACHE_SIZE 256
 #define PKT_BURST 32
-#define RX_RING_SIZE 128
-#define TX_RING_SIZE 512
+#define RX_RING_SIZE 1024
+#define TX_RING_SIZE 1024
 
 #define PARAM_PROC_ID "proc-id"
 #define PARAM_NUM_PROCS "num-procs"
@@ -103,7 +71,7 @@ struct port_stats{
 static int proc_id = -1;
 static unsigned num_procs = 0;
 
-static uint8_t ports[RTE_MAX_ETHPORTS];
+static uint16_t ports[RTE_MAX_ETHPORTS];
 static unsigned num_ports = 0;
 
 static struct lcore_ports lcore_ports[RTE_MAX_LCORE];
@@ -147,7 +115,7 @@ smp_parse_args(int argc, char **argv)
 	int opt, ret;
 	char **argvopt;
 	int option_index;
-	unsigned i, port_mask = 0;
+	uint16_t i, port_mask = 0;
 	char *prgname = argv[0];
 	static struct option lgopts[] = {
 			{PARAM_NUM_PROCS, 1, 0, 0},
@@ -188,7 +156,7 @@ smp_parse_args(int argc, char **argv)
 		smp_usage(prgname, "Invalid or missing port mask\n");
 
 	/* get the port numbers from the port mask */
-	for(i = 0; i < rte_eth_dev_count(); i++)
+	RTE_ETH_FOREACH_DEV(i)
 		if(port_mask & (1 << i))
 			ports[num_ports++] = (uint8_t)i;
 
@@ -203,17 +171,14 @@ smp_parse_args(int argc, char **argv)
  * coming from the mbuf_pool passed as parameter
  */
 static inline int
-smp_port_init(uint8_t port, struct rte_mempool *mbuf_pool, uint16_t num_queues)
+smp_port_init(uint16_t port, struct rte_mempool *mbuf_pool,
+	       uint16_t num_queues)
 {
 	struct rte_eth_conf port_conf = {
 			.rxmode = {
 				.mq_mode	= ETH_MQ_RX_RSS,
 				.split_hdr_size = 0,
-				.header_split   = 0, /**< Header Split disabled */
-				.hw_ip_checksum = 1, /**< IP checksum offload enabled */
-				.hw_vlan_filter = 0, /**< VLAN filtering disabled */
-				.jumbo_frame    = 0, /**< Jumbo Frame Support disabled */
-				.hw_strip_crc   = 1, /**< CRC stripped by hardware */
+				.offloads = DEV_RX_OFFLOAD_CHECKSUM,
 			},
 			.rx_adv_conf = {
 				.rss_conf = {
@@ -227,38 +192,65 @@ smp_port_init(uint8_t port, struct rte_mempool *mbuf_pool, uint16_t num_queues)
 	};
 	const uint16_t rx_rings = num_queues, tx_rings = num_queues;
 	struct rte_eth_dev_info info;
+	struct rte_eth_rxconf rxq_conf;
+	struct rte_eth_txconf txq_conf;
 	int retval;
 	uint16_t q;
+	uint16_t nb_rxd = RX_RING_SIZE;
+	uint16_t nb_txd = TX_RING_SIZE;
+	uint64_t rss_hf_tmp;
 
 	if (rte_eal_process_type() == RTE_PROC_SECONDARY)
 		return 0;
 
-	if (port >= rte_eth_dev_count())
+	if (!rte_eth_dev_is_valid_port(port))
 		return -1;
 
-	printf("# Initialising port %u... ", (unsigned)port);
+	printf("# Initialising port %u... ", port);
 	fflush(stdout);
 
 	rte_eth_dev_info_get(port, &info);
 	info.default_rxconf.rx_drop_en = 1;
 
+	if (info.tx_offload_capa & DEV_TX_OFFLOAD_MBUF_FAST_FREE)
+		port_conf.txmode.offloads |=
+			DEV_TX_OFFLOAD_MBUF_FAST_FREE;
+
+	rss_hf_tmp = port_conf.rx_adv_conf.rss_conf.rss_hf;
+	port_conf.rx_adv_conf.rss_conf.rss_hf &= info.flow_type_rss_offloads;
+	if (port_conf.rx_adv_conf.rss_conf.rss_hf != rss_hf_tmp) {
+		printf("Port %u modified RSS hash function based on hardware support,"
+			"requested:%#"PRIx64" configured:%#"PRIx64"\n",
+			port,
+			rss_hf_tmp,
+			port_conf.rx_adv_conf.rss_conf.rss_hf);
+	}
+
 	retval = rte_eth_dev_configure(port, rx_rings, tx_rings, &port_conf);
 	if (retval < 0)
 		return retval;
 
+	retval = rte_eth_dev_adjust_nb_rx_tx_desc(port, &nb_rxd, &nb_txd);
+	if (retval < 0)
+		return retval;
+
+	rxq_conf = info.default_rxconf;
+	rxq_conf.offloads = port_conf.rxmode.offloads;
 	for (q = 0; q < rx_rings; q ++) {
-		retval = rte_eth_rx_queue_setup(port, q, RX_RING_SIZE,
+		retval = rte_eth_rx_queue_setup(port, q, nb_rxd,
 				rte_eth_dev_socket_id(port),
-				&info.default_rxconf,
+				&rxq_conf,
 				mbuf_pool);
 		if (retval < 0)
 			return retval;
 	}
 
+	txq_conf = info.default_txconf;
+	txq_conf.offloads = port_conf.txmode.offloads;
 	for (q = 0; q < tx_rings; q ++) {
-		retval = rte_eth_tx_queue_setup(port, q, TX_RING_SIZE,
+		retval = rte_eth_tx_queue_setup(port, q, nb_txd,
 				rte_eth_dev_socket_id(port),
-				NULL);
+				&txq_conf);
 		if (retval < 0)
 			return retval;
 	}
@@ -357,11 +349,12 @@ lcore_main(void *arg __rte_unused)
 
 /* Check the link status of all ports in up to 9s, and print them finally */
 static void
-check_all_ports_link_status(uint8_t port_num, uint32_t port_mask)
+check_all_ports_link_status(uint16_t port_num, uint32_t port_mask)
 {
 #define CHECK_INTERVAL 100 /* 100ms */
 #define MAX_CHECK_TIME 90 /* 9s (90 * 100ms) in total */
-	uint8_t portid, count, all_ports_up, print_flag = 0;
+	uint16_t portid;
+	uint8_t count, all_ports_up, print_flag = 0;
 	struct rte_eth_link link;
 
 	printf("\nChecking link status");
@@ -376,14 +369,13 @@ check_all_ports_link_status(uint8_t port_num, uint32_t port_mask)
 			/* print link status if flag set */
 			if (print_flag == 1) {
 				if (link.link_status)
-					printf("Port %d Link Up - speed %u "
-						"Mbps - %s\n", (uint8_t)portid,
-						(unsigned)link.link_speed,
+					printf(
+					"Port%d Link Up. Speed %u Mbps - %s\n",
+						portid, link.link_speed,
 				(link.link_duplex == ETH_LINK_FULL_DUPLEX) ?
 					("full-duplex") : ("half-duplex\n"));
 				else
-					printf("Port %d Link Down\n",
-							(uint8_t)portid);
+					printf("Port %d Link Down\n", portid);
 				continue;
 			}
 			/* clear all_ports_up flag if any link down */
@@ -435,7 +427,7 @@ main(int argc, char **argv)
 	argv += ret;
 
 	/* determine the NIC devices available */
-	if (rte_eth_dev_count() == 0)
+	if (rte_eth_dev_count_avail() == 0)
 		rte_exit(EXIT_FAILURE, "No Ethernet ports - bye\n");
 
 	/* parse application arguments (those after the EAL ones) */

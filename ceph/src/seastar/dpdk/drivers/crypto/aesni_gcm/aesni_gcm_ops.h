@@ -1,33 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2016 Intel Corporation. All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2016-2017 Intel Corporation
  */
 
 #ifndef _AESNI_GCM_OPS_H_
@@ -37,26 +9,60 @@
 #define LINUX
 #endif
 
-#include <isa-l_crypto/aes_gcm.h>
+#include <intel-ipsec-mb.h>
 
-typedef void (*aesni_gcm_init_t)(struct gcm_data *my_ctx_data,
-		uint8_t *iv,
+/** Supported vector modes */
+enum aesni_gcm_vector_mode {
+	RTE_AESNI_GCM_NOT_SUPPORTED = 0,
+	RTE_AESNI_GCM_SSE,
+	RTE_AESNI_GCM_AVX,
+	RTE_AESNI_GCM_AVX2,
+	RTE_AESNI_GCM_AVX512,
+	RTE_AESNI_GCM_VECTOR_NUM
+};
+
+enum aesni_gcm_key {
+	GCM_KEY_128 = 0,
+	GCM_KEY_192,
+	GCM_KEY_256,
+	GCM_KEY_NUM
+};
+
+typedef void (*aesni_gcm_t)(const struct gcm_key_data *gcm_key_data,
+		struct gcm_context_data *gcm_ctx_data, uint8_t *out,
+		const uint8_t *in, uint64_t plaintext_len, const uint8_t *iv,
+		const uint8_t *aad, uint64_t aad_len,
+		uint8_t *auth_tag, uint64_t auth_tag_len);
+
+typedef void (*aesni_gcm_pre_t)(const void *key, struct gcm_key_data *gcm_data);
+
+typedef void (*aesni_gcm_init_t)(const struct gcm_key_data *gcm_key_data,
+		struct gcm_context_data *gcm_ctx_data,
+		const uint8_t *iv,
 		uint8_t const *aad,
 		uint64_t aad_len);
 
-typedef void (*aesni_gcm_update_t)(struct gcm_data *my_ctx_data,
+typedef void (*aesni_gcm_update_t)(const struct gcm_key_data *gcm_key_data,
+		struct gcm_context_data *gcm_ctx_data,
 		uint8_t *out,
 		const uint8_t *in,
 		uint64_t plaintext_len);
 
-typedef void (*aesni_gcm_finalize_t)(struct gcm_data *my_ctx_data,
+typedef void (*aesni_gcm_finalize_t)(const struct gcm_key_data *gcm_key_data,
+		struct gcm_context_data *gcm_ctx_data,
 		uint8_t *auth_tag,
 		uint64_t auth_tag_len);
 
+/** GCM library function pointer table */
 struct aesni_gcm_ops {
+	aesni_gcm_t enc;        /**< GCM encode function pointer */
+	aesni_gcm_t dec;        /**< GCM decode function pointer */
+	aesni_gcm_pre_t pre;    /**< GCM pre-compute */
 	aesni_gcm_init_t init;
-	aesni_gcm_update_t update;
-	aesni_gcm_finalize_t finalize;
+	aesni_gcm_update_t update_enc;
+	aesni_gcm_update_t update_dec;
+	aesni_gcm_finalize_t finalize_enc;
+	aesni_gcm_finalize_t finalize_dec;
 };
 
 #endif /* _AESNI_GCM_OPS_H_ */

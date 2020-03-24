@@ -235,7 +235,7 @@ retry:
 		if (type == SPDK_SOCK_CREATE_LISTEN) {
 			rc = bind(fd, res->ai_addr, res->ai_addrlen);
 			if (rc != 0) {
-				SPDK_ERRLOG("bind() failed, errno = %d\n", errno);
+				SPDK_ERRLOG("bind() failed at port %d, errno = %d\n", port, errno);
 				switch (errno) {
 				case EINTR:
 					/* interrupted? */
@@ -373,6 +373,14 @@ spdk_posix_sock_recv(struct spdk_sock *_sock, void *buf, size_t len)
 }
 
 static ssize_t
+spdk_posix_sock_readv(struct spdk_sock *_sock, struct iovec *iov, int iovcnt)
+{
+	struct spdk_posix_sock *sock = __posix_sock(_sock);
+
+	return readv(sock->fd, iov, iovcnt);
+}
+
+static ssize_t
 spdk_posix_sock_writev(struct spdk_sock *_sock, struct iovec *iov, int iovcnt)
 {
 	struct spdk_posix_sock *sock = __posix_sock(_sock);
@@ -498,6 +506,7 @@ spdk_posix_sock_group_impl_add_sock(struct spdk_sock_group_impl *_group, struct 
 #if defined(__linux__)
 	struct epoll_event event;
 
+	memset(&event, 0, sizeof(event));
 	event.events = EPOLLIN;
 	event.data.ptr = sock;
 
@@ -588,6 +597,7 @@ static struct spdk_net_impl g_posix_net_impl = {
 	.accept		= spdk_posix_sock_accept,
 	.close		= spdk_posix_sock_close,
 	.recv		= spdk_posix_sock_recv,
+	.readv		= spdk_posix_sock_readv,
 	.writev		= spdk_posix_sock_writev,
 	.set_recvlowat	= spdk_posix_sock_set_recvlowat,
 	.set_recvbuf	= spdk_posix_sock_set_recvbuf,

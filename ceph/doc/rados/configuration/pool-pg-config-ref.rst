@@ -87,8 +87,8 @@ Ceph configuration file.
 
 :Description: Issue a ``HEALTH_WARN`` in cluster log if the average object number
               of a certain pool is greater than ``mon pg warn max object skew`` times
-              the average object number of the whole pool. (a non-positive number
-              disables this)
+              the average object number of the whole pool. (zero or a non-positive
+              number disables this). Note that this option applies to the managers.
 :Type: Float
 :Default: ``10``
 
@@ -234,7 +234,16 @@ Ceph configuration file.
               when trimming log files.
 
 :Type: 32-bit Int Unsigned
-:Default: ``1000``
+:Default: ``250``
+
+
+``osd max pg log entries``
+
+:Description: The maximum number of placement group logs to maintain
+              when trimming log files.
+
+:Type: 32-bit Int Unsigned
+:Default: ``10000``
 
 
 ``osd default data pool replay window``

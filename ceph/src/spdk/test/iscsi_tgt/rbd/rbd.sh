@@ -5,6 +5,10 @@ rootdir=$(readlink -f $testdir/../../..)
 source $rootdir/test/common/autotest_common.sh
 source $rootdir/test/iscsi_tgt/common.sh
 
+# $1 = "iso" - triggers isolation mode (setting up required environment).
+# $2 = test type posix or vpp. defaults to posix.
+iscsitestinit $1 $2
+
 if ! hash ceph; then
 	echo "Ceph not detected on this system; skipping RBD tests"
 	exit 0
@@ -25,7 +29,7 @@ timing_enter start_iscsi_tgt
 $ISCSI_APP -m $ISCSI_TEST_CORE_MASK --wait-for-rpc &
 pid=$!
 
-trap "killprocess $pid; rbd_cleanup; exit 1" SIGINT SIGTERM EXIT
+trap "killprocess $pid; rbd_cleanup; iscsitestfini $1 $2; exit 1" SIGINT SIGTERM EXIT
 
 waitforlisten $pid
 $rpc_py set_iscsi_options -o 30 -a 16
@@ -50,9 +54,8 @@ iscsiadm -m node --login -p $TARGET_IP:$ISCSI_PORT
 
 trap "iscsicleanup; killprocess $pid; rbd_cleanup; exit 1" SIGINT SIGTERM EXIT
 
-sleep 1
-$fio_py 4096 1 randrw 1 verify
-$fio_py 131072 32 randrw 1 verify
+$fio_py -p iscsi -i 4096 -d 1 -t randrw -r 1 -v
+$fio_py -p iscsi -i 131072 -d 32 -t randrw -r 1 -v
 
 rm -f ./local-job0-0-verify.state
 
@@ -63,5 +66,6 @@ $rpc_py delete_rbd_bdev $rbd_bdev
 killprocess $pid
 rbd_cleanup
 
+iscsitestfini $1 $2
 report_test_completion "iscsi_rbd"
 timing_exit rbd

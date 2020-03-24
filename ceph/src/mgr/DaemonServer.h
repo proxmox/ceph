@@ -18,8 +18,9 @@
 
 #include <set>
 #include <string>
+#include <boost/variant.hpp>
 
-#include "common/Mutex.h"
+#include "common/ceph_mutex.h"
 #include "common/LogClient.h"
 #include "common/Timer.h"
 
@@ -29,6 +30,7 @@
 #include "ServiceMap.h"
 #include "MgrSession.h"
 #include "DaemonState.h"
+#include "MetricCollector.h"
 #include "OSDPerfMetricCollector.h"
 
 class MMgrReport;
@@ -36,6 +38,7 @@ class MMgrOpen;
 class MMgrClose;
 class MMonMgrReport;
 class MCommand;
+class MMgrCommand;
 struct MonCommand;
 class CommandContext;
 struct OSDPerfMetricQuery;
@@ -76,7 +79,7 @@ protected:
 
   epoch_t pending_service_map_dirty = 0;
 
-  Mutex lock;
+  ceph::mutex lock = ceph::make_mutex("DaemonServer");
 
   static void _generate_command_map(cmdmap_t& cmdmap,
                                     map<string,string> &param_str_map);
@@ -106,8 +109,7 @@ private:
   void tick();
   void schedule_tick_locked(double delay_sec);
 
-  class OSDPerfMetricCollectorListener :
-      public OSDPerfMetricCollector::Listener {
+  class OSDPerfMetricCollectorListener : public MetricListener {
   public:
     OSDPerfMetricCollectorListener(DaemonServer *server)
       : server(server) {
@@ -121,6 +123,29 @@ private:
   OSDPerfMetricCollectorListener osd_perf_metric_collector_listener;
   OSDPerfMetricCollector osd_perf_metric_collector;
   void handle_osd_perf_metric_query_updated();
+
+  void handle_metric_payload(const OSDMetricPayload &payload) {
+    osd_perf_metric_collector.process_reports(payload);
+  }
+
+  void handle_metric_payload(const UnknownMetricPayload &payload) {
+    ceph_abort();
+  }
+
+  struct HandlePayloadVisitor : public boost::static_visitor<void> {
+    DaemonServer *server;
+
+    HandlePayloadVisitor(DaemonServer *server)
+      : server(server) {
+    }
+
+    template <typename MetricPayload>
+    inline void operator()(const MetricPayload &payload) const {
+      server->handle_metric_payload(payload);
+    }
+  };
+
+  void update_task_status(DaemonKey key, const ref_t<MMgrReport>& m);
 
 public:
   int init(uint64_t gid, entity_addrvec_t client_addrs);
@@ -137,19 +162,18 @@ public:
 	       LogChannelRef auditcl);
   ~DaemonServer() override;
 
-  bool ms_dispatch(Message *m) override;
+  bool ms_dispatch2(const ceph::ref_t<Message>& m) override;
   int ms_handle_authentication(Connection *con) override;
   bool ms_handle_reset(Connection *con) override;
   void ms_handle_remote_reset(Connection *con) override {}
   bool ms_handle_refused(Connection *con) override;
-  bool ms_get_authorizer(int dest_type, AuthAuthorizer **authorizer) override;
-  KeyStore *ms_get_auth1_authorizer_keystore() override;
 
-  bool handle_open(MMgrOpen *m);
-  bool handle_close(MMgrClose *m);
-  bool handle_report(MMgrReport *m);
-  bool handle_command(MCommand *m);
-  bool _handle_command(MCommand *m, std::shared_ptr<CommandContext>& cmdctx);
+  bool handle_open(const ceph::ref_t<MMgrOpen>& m);
+  bool handle_close(const ceph::ref_t<MMgrClose>& m);
+  bool handle_report(const ceph::ref_t<MMgrReport>& m);
+  bool handle_command(const ceph::ref_t<MCommand>& m);
+  bool handle_command(const ceph::ref_t<MMgrCommand>& m);
+  bool _handle_command(std::shared_ptr<CommandContext>& cmdctx);
   void send_report();
   void got_service_map();
   void got_mgr_map();
@@ -157,11 +181,11 @@ public:
 
   void _send_configure(ConnectionRef c);
 
-  OSDPerfMetricQueryID add_osd_perf_query(
+  MetricQueryID add_osd_perf_query(
       const OSDPerfMetricQuery &query,
       const std::optional<OSDPerfMetricLimit> &limit);
-  int remove_osd_perf_query(OSDPerfMetricQueryID query_id);
-  int get_osd_perf_counters(OSDPerfMetricQueryID query_id,
+  int remove_osd_perf_query(MetricQueryID query_id);
+  int get_osd_perf_counters(MetricQueryID query_id,
                             std::map<OSDPerfMetricKey, PerformanceCounters> *c);
 
   virtual const char** get_tracked_conf_keys() const override;
@@ -172,6 +196,7 @@ public:
 
   void log_access_denied(std::shared_ptr<CommandContext>& cmdctx,
                          MgrSession* session, std::stringstream& ss);
+  void dump_pg_ready(ceph::Formatter *f);
 };
 
 #endif

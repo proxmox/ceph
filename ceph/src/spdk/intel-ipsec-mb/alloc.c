@@ -32,6 +32,7 @@
 #include <malloc.h> /* _aligned_malloc() and aligned_free() */
 #endif
 #include "intel-ipsec-mb.h"
+#include "cpu_feature.h"
 
 /**
  * @brief Allocates memory for multi-buffer manager instance
@@ -58,9 +59,10 @@ MB_MGR *alloc_mb_mgr(uint64_t flags)
 #else
         ptr = _aligned_malloc(size, alignment);
 #endif
-        if (ptr != NULL)
+        if (ptr != NULL) {
                 ptr->flags = flags; /* save the flags for future use in init */
-
+                ptr->features = cpu_feature_adjust(flags, cpu_feature_detect());
+        }
         IMB_ASSERT(ptr != NULL);
         return ptr;
 }

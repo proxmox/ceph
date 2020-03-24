@@ -164,7 +164,7 @@ spdk_vpp_sock_getaddr(struct spdk_sock *_sock, char *saddr, int slen, uint16_t *
 		      char *caddr, int clen, uint16_t *cport)
 {
 	struct spdk_vpp_sock *sock = __vpp_sock(_sock);
-	struct sockaddr sa;
+	struct sockaddr_storage sa;
 	socklen_t salen;
 	int rc;
 
@@ -173,14 +173,14 @@ spdk_vpp_sock_getaddr(struct spdk_sock *_sock, char *saddr, int slen, uint16_t *
 
 	memset(&sa, 0, sizeof(sa));
 	salen = sizeof(sa);
-	rc = getsockname_vpp(sock->fd, &sa, &salen);
+	rc = getsockname_vpp(sock->fd, (struct sockaddr *)&sa, &salen);
 	if (rc != 0) {
 		errno = -rc;
 		SPDK_ERRLOG("getsockname_vpp() failed (errno=%d)\n", errno);
 		return -1;
 	}
 
-	rc = get_addr_str(&sa, saddr, slen);
+	rc = get_addr_str((struct sockaddr *)&sa, saddr, slen);
 	if (rc != 0) {
 		/* Errno already set by get_addr_str() */
 		SPDK_ERRLOG("get_addr_str() failed (errno=%d)\n", errno);
@@ -197,14 +197,14 @@ spdk_vpp_sock_getaddr(struct spdk_sock *_sock, char *saddr, int slen, uint16_t *
 
 	memset(&sa, 0, sizeof(sa));
 	salen = sizeof(sa);
-	rc = getpeername_vpp(sock->fd, &sa, &salen);
+	rc = getpeername_vpp(sock->fd, (struct sockaddr *)&sa, &salen);
 	if (rc != 0) {
 		errno = -rc;
 		SPDK_ERRLOG("getpeername_vpp() failed (errno=%d)\n", errno);
 		return -1;
 	}
 
-	rc = get_addr_str(&sa, caddr, clen);
+	rc = get_addr_str((struct sockaddr *)&sa, caddr, clen);
 	if (rc != 0) {
 		/* Errno already set by get_addr_str() */
 		SPDK_ERRLOG("get_addr_str() failed (errno=%d)\n", errno);
@@ -386,6 +386,36 @@ spdk_vpp_sock_recv(struct spdk_sock *_sock, void *buf, size_t len)
 }
 
 static ssize_t
+spdk_vpp_sock_readv(struct spdk_sock *_sock, struct iovec *iov, int iovcnt)
+{
+	struct spdk_vpp_sock *sock = __vpp_sock(_sock);
+	ssize_t total = 0;
+	int i, rc;
+
+	assert(sock != NULL);
+	assert(g_vpp_initialized);
+
+	for (i = 0; i < iovcnt; ++i) {
+		rc = vppcom_session_read(sock->fd, iov[i].iov_base, iov[i].iov_len);
+		if (rc < 0) {
+			if (total > 0) {
+				break;
+			} else {
+				errno = -rc;
+				return -1;
+			}
+		} else {
+			total += rc;
+			if (rc < iov[i].iov_len) {
+				/* Read less than buffer provided, no point to continue. */
+				break;
+			}
+		}
+	}
+	return total;
+}
+
+static ssize_t
 spdk_vpp_sock_writev(struct spdk_sock *_sock, struct iovec *iov, int iovcnt)
 {
 	struct spdk_vpp_sock *sock = __vpp_sock(_sock);
@@ -406,11 +436,13 @@ spdk_vpp_sock_writev(struct spdk_sock *_sock, struct iovec *iov, int iovcnt)
 			}
 		} else {
 			total += rc;
+			if (rc < iov[i].iov_len) {
+				break;
+			}
 		}
 	}
 	return total;
 }
-
 
 /*
  * TODO: Check if there are similar parameters to configure in VPP
@@ -525,6 +557,7 @@ spdk_vpp_sock_group_impl_add_sock(struct spdk_sock_group_impl *_group, struct sp
 	assert(group != NULL);
 	assert(g_vpp_initialized);
 
+	memset(&event, 0, sizeof(event));
 	event.events = EPOLLIN;
 	event.data.ptr = sock;
 
@@ -609,6 +642,7 @@ static struct spdk_net_impl g_vpp_net_impl = {
 	.accept		= spdk_vpp_sock_accept,
 	.close		= spdk_vpp_sock_close,
 	.recv		= spdk_vpp_sock_recv,
+	.readv		= spdk_vpp_sock_readv,
 	.writev		= spdk_vpp_sock_writev,
 	.set_recvlowat	= spdk_vpp_sock_set_recvlowat,
 	.set_recvbuf	= spdk_vpp_sock_set_recvbuf,
@@ -624,7 +658,7 @@ static struct spdk_net_impl g_vpp_net_impl = {
 
 SPDK_NET_IMPL_REGISTER(vpp, &g_vpp_net_impl);
 
-static int
+static void
 spdk_vpp_net_framework_init(void)
 {
 	int rc;
@@ -633,7 +667,8 @@ spdk_vpp_net_framework_init(void)
 	app_name = spdk_sprintf_alloc("SPDK_%d", getpid());
 	if (app_name == NULL) {
 		SPDK_ERRLOG("Cannot alloc memory for SPDK app name\n");
-		return -ENOMEM;
+		spdk_net_framework_init_next(-ENOMEM);
+		return;
 	}
 
 	rc = vppcom_app_create(app_name);
@@ -643,7 +678,7 @@ spdk_vpp_net_framework_init(void)
 
 	free(app_name);
 
-	return 0;
+	spdk_net_framework_init_next(0);
 }
 
 static void
@@ -652,6 +687,8 @@ spdk_vpp_net_framework_fini(void)
 	if (g_vpp_initialized) {
 		vppcom_app_destroy();
 	}
+
+	spdk_net_framework_fini_next();
 }
 
 static struct spdk_net_framework g_vpp_net_framework = {

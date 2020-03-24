@@ -1,4 +1,4 @@
-#!/bin/sh -e
+#!/bin/bash -e
 
 if [ ! -d .git ]; then
     echo "no .git present.  run this from the base dir of the git checkout."
@@ -6,9 +6,16 @@ if [ ! -d .git ]; then
 fi
 
 version=$1
-[ -z "$version" ] && version=`git describe --match 'v*' | sed 's/^v//'`
-outfile="ceph-$version"
+[ -z "$version" ] && version=$(git describe --long --match 'v*' | sed 's/^v//')
+if expr index $version '-' > /dev/null; then
+    rpm_version=$(echo $version | cut -d - -f 1-1)
+    rpm_release=$(echo $version | cut -d - -f 2- | sed 's/-/./')
+else
+    rpm_version=$version
+    rpm_release=0
+fi
 
+outfile="ceph-$version"
 echo "version $version"
 
 # update submodules
@@ -67,7 +74,7 @@ build_dashboard_frontend() {
 
   $CURR_DIR/src/tools/setup-virtualenv.sh $TEMP_DIR
   $TEMP_DIR/bin/pip install nodeenv
-  $TEMP_DIR/bin/nodeenv -p --node=10.13.0
+  $TEMP_DIR/bin/nodeenv -p --node=10.18.1
   cd src/pybind/mgr/dashboard/frontend
 
   DEFAULT_LANG=`jq -r .config.locale package.json`
@@ -85,10 +92,12 @@ build_dashboard_frontend() {
       BUILD_TARGET=":{${DASHBOARD_FRONTEND_LANGS_LIST}}"
     fi
   fi
-  [ -z "$MAX_DASHBOARD_PARALLEL_BUILDS" ] && MAX_DASHBOARD_PARALLEL_BUILDS=2
+  # number of frontend languages to build in parallel - default to 1 to work
+  # around https://tracker.ceph.com/issues/43152
+  [ -z "$MAX_DASHBOARD_PARALLEL_BUILDS" ] && MAX_DASHBOARD_PARALLEL_BUILDS=1
 
   . $TEMP_DIR/bin/activate
-  npm ci
+  NG_CLI_ANALYTICS="false" timeout 1h npm ci
   echo "Building ceph-dashboard frontend with build${BUILD_TARGET} script";
   # we need to use "-- --" because so that "--prod" survives accross all
   # scripts redirections inside package.json
@@ -97,6 +106,11 @@ build_dashboard_frontend() {
   cd $CURR_DIR
   rm -rf $TEMP_DIR
   tar cf dashboard_frontend.tar $outfile/src/pybind/mgr/dashboard/frontend/dist
+}
+
+generate_rook_ceph_client() {
+  $outfile/src/pybind/mgr/rook/generate_rook_ceph_client.sh
+  tar cf rook_ceph_client.tar $outfile/src/pybind/mgr/rook/rook_client/*.py
 }
 
 # clean out old cruft...
@@ -113,24 +127,11 @@ bin/git-archive-all.sh --prefix ceph-$version/ \
 # populate files with version strings
 echo "including src/.git_version, ceph.spec"
 
-(git rev-parse HEAD ; git describe) 2> /dev/null > src/.git_version
-
-# if the version has '-' in it, it has a 'release' part,
-# like vX.Y.Z-N-g<shortsha1>.  If it doesn't, it's just
-# vX.Y.Z.  Handle both, and translate - to . for rpm
-# naming rules (the - separates version and release).
-
-if expr index $version '-' > /dev/null; then
-	rpm_version=`echo $version | cut -d - -f 1-1`
-	rpm_release=`echo $version | cut -d - -f 2- | sed 's/-/./'`
-else
-	rpm_version=$version
-	rpm_release=0
-fi
+(git rev-parse HEAD ; echo $version) 2> /dev/null > src/.git_version
 
 for spec in ceph.spec.in alpine/APKBUILD.in; do
     cat $spec |
-        sed "s/@VERSION@/$rpm_version/g" |
+        sed "s/@PROJECT_VERSION@/$rpm_version/g" |
         sed "s/@RPM_RELEASE@/$rpm_release/g" |
         sed "s/@TARBALL_BASENAME@/ceph-$version/g" > `echo $spec | sed 's/.in$//'`
 done
@@ -145,10 +146,12 @@ download_boost $boost_version 59c9b274bc451cf91a9ba1dd2c7fdcaf5d60b1b3aa83f2c9fa
                https://download.ceph.com/qa
 
 build_dashboard_frontend
+generate_rook_ceph_client
 tar --concatenate -f $outfile.all.tar $outfile.version.tar
 tar --concatenate -f $outfile.all.tar $outfile.boost.tar
 tar --concatenate -f $outfile.all.tar $outfile.tar
 tar --concatenate -f $outfile.all.tar dashboard_frontend.tar
+tar --concatenate -f $outfile.all.tar rook_ceph_client.tar
 mv $outfile.all.tar $outfile.tar
 rm $outfile
 rm -f $outfile.version.tar

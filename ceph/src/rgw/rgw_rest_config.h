@@ -1,5 +1,5 @@
 // -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*- 
-// vim: ts=8 sw=2 smarttab
+// vim: ts=8 sw=2 smarttab ft=cpp
 
 /*
  * Ceph - scalable distributed file system
@@ -13,8 +13,7 @@
  *
  */
 
-#ifndef RGW_REST_CONFIG_H
-#define RGW_REST_CONFIG_H
+#pragma once
 
 #include "rgw_zone.h"
 
@@ -25,11 +24,11 @@ public:
   explicit RGWOp_ZoneGroupMap_Get(bool _old_format):old_format(_old_format) {}
   ~RGWOp_ZoneGroupMap_Get() override {}
 
-  int check_caps(RGWUserCaps& caps) override {
+  int check_caps(const RGWUserCaps& caps) override {
     return caps.check_cap("zone", RGW_CAP_READ);
   }
   int verify_permission() override {
-    return check_caps(s->user->caps);
+    return check_caps(s->user->get_caps());
   }
   void execute() override;
   void send_response() override;
@@ -47,11 +46,11 @@ class RGWOp_ZoneConfig_Get : public RGWRESTOp {
 public:
   RGWOp_ZoneConfig_Get() {}
 
-  int check_caps(RGWUserCaps& caps) override {
+  int check_caps(const RGWUserCaps& caps) override {
     return caps.check_cap("zone", RGW_CAP_READ);
   }
   int verify_permission() override {
-    return check_caps(s->user->caps);
+    return check_caps(s->user->get_caps());
   }
   void execute() override {} /* store already has the info we need, just need to send response */
   void send_response() override ;
@@ -84,5 +83,3 @@ public:
     return new RGWHandler_Config(auth_registry);
   }
 };
-
-#endif /* RGW_REST_CONFIG_H */

@@ -80,7 +80,6 @@ include_dir=${1:-build/include}
 	'rte_byteorder_32.h' \
 	'rte_byteorder_64.h' \
 	'generic/*' \
-	'exec-env/*' \
 	'rte_vhost.h' \
 	'rte_eth_vhost.h' \
 	'rte_eal_interrupts.h' \
@@ -90,11 +89,11 @@ include_dir=${1:-build/include}
 	'rte_eth_vhost.h' \
 }
 
-temp_cc=/tmp/${0##*/}.$$.c
+temp_cc=$(mktemp -t dpdk.${0##*/}.XXX.c)
 pass_cc=
 failures_cc=0
 
-temp_cxx=/tmp/${0##*/}.$$.cc
+temp_cxx=$(mktemp -t dpdk.${0##*/}.XXX.cc)
 pass_cxx=
 failures_cxx=0
 

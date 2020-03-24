@@ -1,9 +1,7 @@
-/*
- * Copyright (c) 2016 QLogic Corporation.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright (c) 2016 - 2018 Cavium Inc.
  * All rights reserved.
- * www.qlogic.com
- *
- * See LICENSE.qede_pmd for copyright and licensing details.
+ * www.cavium.com
  */
 
 #ifndef __ECORE_SPQ_H__
@@ -86,6 +84,22 @@ struct ecore_consq {
 	struct ecore_chain	chain;
 };
 
+typedef enum _ecore_status_t
+(*ecore_spq_async_comp_cb)(struct ecore_hwfn *p_hwfn,
+			   u8 opcode,
+			   u16 echo,
+			   union event_ring_data *data,
+			   u8 fw_return_code);
+
+enum _ecore_status_t
+ecore_spq_register_async_cb(struct ecore_hwfn *p_hwfn,
+			    enum protocol_type protocol_id,
+			    ecore_spq_async_comp_cb cb);
+
+void
+ecore_spq_unregister_async_cb(struct ecore_hwfn *p_hwfn,
+			      enum protocol_type protocol_id);
+
 struct ecore_spq {
 	osal_spinlock_t			lock;
 
@@ -99,6 +113,9 @@ struct ecore_spq {
 	/* allocated dma-able memory for spq entries (+ramrod data) */
 	dma_addr_t			p_phys;
 	struct ecore_spq_entry		*p_virt;
+
+	/* SPQ max sleep iterations used in __ecore_spq_block() */
+	u32				block_sleep_max_iter;
 
 	/* Bitmap for handling out-of-order completions */
 #define SPQ_RING_SIZE		\
@@ -124,10 +141,24 @@ struct ecore_spq {
 	u32				comp_count;
 
 	u32				cid;
+
+	u32				db_addr_offset;
+	struct core_db_data		db_data;
+	ecore_spq_async_comp_cb		async_comp_cb[MAX_PROTOCOL_TYPE];
 };
 
 struct ecore_port;
 struct ecore_hwfn;
+
+/**
+ * @brief ecore_set_spq_block_timeout - calculates the maximum sleep
+ * iterations used in __ecore_spq_block();
+ *
+ * @param p_hwfn
+ * @param spq_timeout_ms
+ */
+void ecore_set_spq_block_timeout(struct ecore_hwfn *p_hwfn,
+				 u32 spq_timeout_ms);
 
 /**
  * @brief ecore_spq_post - Posts a Slow hwfn request to FW, or lacking that

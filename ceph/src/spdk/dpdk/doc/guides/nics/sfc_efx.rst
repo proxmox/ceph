@@ -66,7 +66,7 @@ SFC EFX PMD has support for:
 
 - Allmulticast mode
 
-- TCP segmentation offload (TSO)
+- TCP segmentation offload (TSO) including VXLAN and GENEVE encapsulated
 
 - Multicast MAC filter
 
@@ -96,7 +96,7 @@ Non-supported Features
 
 The features not yet supported include:
 
-- Receive queue interupts
+- Receive queue interrupts
 
 - Priority-based flow control
 
@@ -207,12 +207,14 @@ Supported actions:
 
 Validating flow rules depends on the firmware variant.
 
-Ethernet destinaton individual/group match
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The :ref:`flow_isolated_mode` is supported.
+
+Ethernet destination individual/group match
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Ethernet item supports I/G matching, if only the corresponding bit is set
-in the mask of destination address. If destinaton address in the spec is
-multicast, it matches all multicast (and broadcast) packets, oherwise it
+in the mask of destination address. If destination address in the spec is
+multicast, it matches all multicast (and broadcast) packets, otherwise it
 matches unicast packets that are not filtered by other flow rules.
 
 Exceptions to flow rules
@@ -239,6 +241,10 @@ Supported NICs
 - Solarflare XtremeScale Adapters:
 
    - Solarflare X2522 Dual Port SFP28 10/25GbE Adapter
+
+   - Solarflare X2541 Single Port QSFP28 10/25G/100G Adapter
+
+   - Solarflare X2542 Dual Port QSFP28 10/25G/100G Adapter
 
 - Solarflare Flareon [Ultra] Server Adapters:
 
@@ -318,7 +324,7 @@ boolean parameters value.
   **efx** chooses libefx-based datapath which supports Rx scatter.
   **ef10** chooses EF10 (SFN7xxx, SFN8xxx, X2xxx) native datapath which is
   more efficient than libefx-based and provides richer packet type
-  classification, but lacks Rx scatter support.
+  classification.
   **ef10_esps** chooses SFNX2xxx equal stride packed stream datapath
   which may be used on DPDK firmware variant only
   (see notes about its limitations above).
@@ -333,8 +339,7 @@ boolean parameters value.
   Mbuf segments may come from different mempools, and mbuf reference
   counters are treated responsibly.
   **ef10** chooses EF10 (SFN7xxx, SFN8xxx, X2xxx) native datapath which is
-  more efficient than libefx-based but has no VLAN insertion and TSO
-  support yet.
+  more efficient than libefx-based but has no VLAN insertion support yet.
   Mbuf segments may come from different mempools, and mbuf reference
   counters are treated responsibly.
   **ef10_simple** chooses EF10 (SFN7xxx, SFN8xxx, X2xxx) native datapath which
@@ -343,10 +348,10 @@ boolean parameters value.
 
 - ``perf_profile`` [auto|throughput|low-latency] (default **throughput**)
 
-  Choose hardware tunning to be optimized for either throughput or
+  Choose hardware tuning to be optimized for either throughput or
   low-latency.
   **auto** allows NIC firmware to make a choice based on
-  installed licences and firmware variant configured using **sfboot**.
+  installed licenses and firmware variant configured using **sfboot**.
 
 - ``stats_update_period_ms`` [long] (default **1000**)
 

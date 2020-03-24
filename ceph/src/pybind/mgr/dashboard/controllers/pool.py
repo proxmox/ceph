@@ -4,7 +4,7 @@ from __future__ import absolute_import
 import time
 import cherrypy
 
-from . import ApiController, RESTController, Endpoint, ReadPermission, Task
+from . import ApiController, RESTController, Endpoint, ReadPermission, Task, UiApiController
 from .. import mgr
 from ..security import Scope
 from ..services.ceph_service import CephService
@@ -63,7 +63,7 @@ class Pool(RESTController):
     def _get(cls, pool_name, attrs=None, stats=False):
         # type: (str, str, bool) -> dict
         pools = cls._pool_list(attrs, stats)
-        pool = [pool for pool in pools if pool['pool_name'] == pool_name]
+        pool = [p for p in pools if p['pool_name'] == pool_name]
         if not pool:
             raise cherrypy.NotFound('No such pool')
         return pool[0]
@@ -83,6 +83,8 @@ class Pool(RESTController):
     @pool_task('edit', ['{pool_name}'])
     def set(self, pool_name, flags=None, application_metadata=None, configuration=None, **kwargs):
         self._set_pool_values(pool_name, application_metadata, flags, True, kwargs)
+        if kwargs.get('pool'):
+            pool_name = kwargs['pool']
         RbdConfiguration(pool_name).set_configuration(configuration)
         self._wait_for_pgs(pool_name)
 
@@ -124,6 +126,11 @@ class Pool(RESTController):
         def set_key(key, value):
             CephService.send_command('mon', 'osd pool set', pool=pool, var=key, val=str(value))
 
+        quotas = {}
+        quotas['max_objects'] = kwargs.pop('quota_max_objects', None)
+        quotas['max_bytes'] = kwargs.pop('quota_max_bytes', None)
+        self._set_quotas(pool, quotas)
+
         for key, value in kwargs.items():
             if key == 'pool':
                 update_name = True
@@ -134,6 +141,12 @@ class Pool(RESTController):
                     set_key('pgp_num', value)
         if update_name:
             CephService.send_command('mon', 'osd pool rename', srcpool=pool, destpool=destpool)
+
+    def _set_quotas(self, pool, quotas):
+        for field, value in quotas.items():
+            if value is not None:
+                CephService.send_command('mon', 'osd pool set-quota',
+                                         pool=pool, field=field, val=str(value))
 
     def _prepare_compression_removal(self, options, kwargs):
         """
@@ -192,38 +205,53 @@ class Pool(RESTController):
     def configuration(self, pool_name):
         return RbdConfiguration(pool_name).list()
 
+
+@UiApiController('/pool', Scope.POOL)
+class PoolUi(Pool):
     @Endpoint()
     @ReadPermission
-    def _info(self, pool_name=''):
-        # type: (str) -> dict
+    def info(self):
         """Used by the create-pool dialog"""
+        osd_map_crush = mgr.get('osd_map_crush')
+        options = mgr.get('config_options')['options']
 
         def rules(pool_type):
             return [r
-                    for r in mgr.get('osd_map_crush')['rules']
+                    for r in osd_map_crush['rules']
                     if r['type'] == pool_type]
 
         def all_bluestore():
             return all(o['osd_objectstore'] == 'bluestore'
                        for o in mgr.get('osd_metadata').values())
 
-        def compression_enum(conf_name):
+        def get_config_option_enum(conf_name):
             return [[v for v in o['enum_values'] if len(v) > 0]
-                    for o in mgr.get('config_options')['options']
+                    for o in options
                     if o['name'] == conf_name][0]
 
-        result = {
-            "pool_names": [p['pool_name'] for p in self._pool_list()],
+        used_rules = {}
+        pool_names = []
+        for p in self._pool_list():
+            name = p['pool_name']
+            rule = p['crush_rule']
+            pool_names.append(name)
+            if rule in used_rules:
+                used_rules[rule].append(name)
+            else:
+                used_rules[rule] = [name]
+
+        mgr_config = mgr.get('config')
+        return {
+            "pool_names": pool_names,
             "crush_rules_replicated": rules(1),
             "crush_rules_erasure": rules(3),
             "is_all_bluestore": all_bluestore(),
             "osd_count": len(mgr.get('osd_map')['osds']),
-            "bluestore_compression_algorithm": mgr.get('config')['bluestore_compression_algorithm'],
-            "compression_algorithms": compression_enum('bluestore_compression_algorithm'),
-            "compression_modes": compression_enum('bluestore_compression_mode'),
+            "bluestore_compression_algorithm": mgr_config['bluestore_compression_algorithm'],
+            "compression_algorithms": get_config_option_enum('bluestore_compression_algorithm'),
+            "compression_modes": get_config_option_enum('bluestore_compression_mode'),
+            "pg_autoscale_default_mode": mgr_config['osd_pool_default_pg_autoscale_mode'],
+            "pg_autoscale_modes": get_config_option_enum('osd_pool_default_pg_autoscale_mode'),
+            "erasure_code_profiles": CephService.get_erasure_code_profiles(),
+            "used_rules": used_rules
         }
-
-        if pool_name:
-            result['pool_options'] = RbdConfiguration(pool_name).list()
-
-        return result

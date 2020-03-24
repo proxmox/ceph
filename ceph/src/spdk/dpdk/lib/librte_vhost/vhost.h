@@ -18,6 +18,7 @@
 #include <rte_log.h>
 #include <rte_ether.h>
 #include <rte_rwlock.h>
+#include <rte_malloc.h>
 
 #include "rte_vhost.h"
 #include "rte_vdpa.h"
@@ -219,13 +220,6 @@ struct vhost_msg {
 
 #define VIRTIO_F_RING_PACKED 34
 
-#define VRING_DESC_F_NEXT	1
-#define VRING_DESC_F_WRITE	2
-#define VRING_DESC_F_INDIRECT	4
-
-#define VRING_DESC_F_AVAIL	(1ULL << 7)
-#define VRING_DESC_F_USED	(1ULL << 15)
-
 struct vring_packed_desc {
 	uint64_t addr;
 	uint32_t len;
@@ -233,15 +227,22 @@ struct vring_packed_desc {
 	uint16_t flags;
 };
 
-#define VRING_EVENT_F_ENABLE 0x0
-#define VRING_EVENT_F_DISABLE 0x1
-#define VRING_EVENT_F_DESC 0x2
-
 struct vring_packed_desc_event {
 	uint16_t off_wrap;
 	uint16_t flags;
 };
 #endif
+
+/*
+ * Declare below packed ring defines unconditionally
+ * as Kernel header might use different names.
+ */
+#define VRING_DESC_F_AVAIL	(1ULL << 7)
+#define VRING_DESC_F_USED	(1ULL << 15)
+
+#define VRING_EVENT_F_ENABLE 0x0
+#define VRING_EVENT_F_DISABLE 0x1
+#define VRING_EVENT_F_DESC 0x2
 
 /*
  * Available and used descs are in same order
@@ -275,58 +276,14 @@ struct vring_packed_desc_event {
 				(1ULL << VIRTIO_RING_F_EVENT_IDX) | \
 				(1ULL << VIRTIO_NET_F_MTU)  | \
 				(1ULL << VIRTIO_F_IN_ORDER) | \
-				(1ULL << VIRTIO_F_IOMMU_PLATFORM))
+				(1ULL << VIRTIO_F_IOMMU_PLATFORM) | \
+				(1ULL << VIRTIO_F_RING_PACKED))
 
 
 struct guest_page {
 	uint64_t guest_phys_addr;
 	uint64_t host_phys_addr;
 	uint64_t size;
-};
-
-/**
- * function prototype for the vhost backend to handler specific vhost user
- * messages prior to the master message handling
- *
- * @param vid
- *  vhost device id
- * @param msg
- *  Message pointer.
- * @param require_reply
- *  If the handler requires sending a reply, this varaible shall be written 1,
- *  otherwise 0.
- * @param skip_master
- *  If the handler requires skipping the master message handling, this variable
- *  shall be written 1, otherwise 0.
- * @return
- *  0 on success, -1 on failure
- */
-typedef int (*vhost_msg_pre_handle)(int vid, void *msg,
-		uint32_t *require_reply, uint32_t *skip_master);
-
-/**
- * function prototype for the vhost backend to handler specific vhost user
- * messages after the master message handling is done
- *
- * @param vid
- *  vhost device id
- * @param msg
- *  Message pointer.
- * @param require_reply
- *  If the handler requires sending a reply, this varaible shall be written 1,
- *  otherwise 0.
- * @return
- *  0 on success, -1 on failure
- */
-typedef int (*vhost_msg_post_handle)(int vid, void *msg,
-		uint32_t *require_reply);
-
-/**
- * pre and post vhost user message handlers
- */
-struct vhost_user_extern_ops {
-	vhost_msg_pre_handle pre_msg_handle;
-	vhost_msg_post_handle post_msg_handle;
 };
 
 /**
@@ -363,16 +320,19 @@ struct virtio_net {
 	int			slave_req_fd;
 	rte_spinlock_t		slave_req_lock;
 
+	int			postcopy_ufd;
+	int			postcopy_listening;
+
 	/*
 	 * Device id to identify a specific backend device.
 	 * It's set to -1 for the default software implementation.
 	 */
 	int			vdpa_dev_id;
 
-	/* private data for virtio device */
+	/* context data for the external message handlers */
 	void			*extern_data;
 	/* pre and post vhost user message handlers for the device */
-	struct vhost_user_extern_ops extern_ops;
+	struct rte_vhost_user_extern_ops extern_ops;
 } __rte_cache_aligned;
 
 static __rte_always_inline bool
@@ -384,8 +344,10 @@ vq_is_packed(struct virtio_net *dev)
 static inline bool
 desc_is_avail(struct vring_packed_desc *desc, bool wrap_counter)
 {
-	return wrap_counter == !!(desc->flags & VRING_DESC_F_AVAIL) &&
-		wrap_counter != !!(desc->flags & VRING_DESC_F_USED);
+	uint16_t flags = *((volatile uint16_t *) &desc->flags);
+
+	return wrap_counter == !!(flags & VRING_DESC_F_AVAIL) &&
+		wrap_counter != !!(flags & VRING_DESC_F_USED);
 }
 
 #define VHOST_LOG_PAGE	4096
@@ -445,12 +407,9 @@ vhost_log_cache_sync(struct virtio_net *dev, struct vhost_virtqueue *vq)
 		   !dev->log_base))
 		return;
 
-	log_base = (unsigned long *)(uintptr_t)dev->log_base;
+	rte_smp_wmb();
 
-	/*
-	 * It is expected a write memory barrier has been issued
-	 * before this function is called.
-	 */
+	log_base = (unsigned long *)(uintptr_t)dev->log_base;
 
 	for (i = 0; i < vq->log_cache_nb_elem; i++) {
 		struct log_cache_entry *elem = vq->log_cache + i;
@@ -618,7 +577,6 @@ void free_vq(struct virtio_net *dev, struct vhost_virtqueue *vq);
 int alloc_vring_queue(struct virtio_net *dev, uint32_t vring_idx);
 
 void vhost_attach_vdpa_device(int vid, int did);
-void vhost_detach_vdpa_device(int vid);
 
 void vhost_set_ifname(int, const char *if_name, unsigned int if_len);
 void vhost_enable_dequeue_zero_copy(int vid);
@@ -648,6 +606,8 @@ vhost_iova_to_vva(struct virtio_net *dev, struct vhost_virtqueue *vq,
 	return __vhost_iova_to_vva(dev, vq, iova, len, perm);
 }
 
+#define vhost_avail_event(vr) \
+	(*(volatile uint16_t*)&(vr)->used->ring[(vr)->size])
 #define vhost_used_event(vr) \
 	(*(volatile uint16_t*)&(vr)->avail->ring[(vr)->size])
 
@@ -673,16 +633,20 @@ vhost_vring_call_split(struct virtio_net *dev, struct vhost_virtqueue *vq)
 	if (dev->features & (1ULL << VIRTIO_RING_F_EVENT_IDX)) {
 		uint16_t old = vq->signalled_used;
 		uint16_t new = vq->last_used_idx;
+		bool signalled_used_valid = vq->signalled_used_valid;
+
+		vq->signalled_used = new;
+		vq->signalled_used_valid = true;
 
 		VHOST_LOG_DEBUG(VHOST_DATA, "%s: used_event_idx=%d, old=%d, new=%d\n",
 			__func__,
 			vhost_used_event(vq),
 			old, new);
-		if (vhost_need_event(vhost_used_event(vq), new, old)
-			&& (vq->callfd >= 0)) {
-			vq->signalled_used = vq->last_used_idx;
+
+		if ((vhost_need_event(vhost_used_event(vq), new, old) &&
+					(vq->callfd >= 0)) ||
+				unlikely(!signalled_used_valid))
 			eventfd_write(vq->callfd, (eventfd_t) 1);
-		}
 	} else {
 		/* Kick the guest if necessary. */
 		if (!(vq->avail->flags & VRING_AVAIL_F_NO_INTERRUPT)
@@ -740,6 +704,79 @@ vhost_vring_call_packed(struct virtio_net *dev, struct vhost_virtqueue *vq)
 kick:
 	if (kick)
 		eventfd_write(vq->callfd, (eventfd_t)1);
+}
+
+static __rte_always_inline void *
+alloc_copy_ind_table(struct virtio_net *dev, struct vhost_virtqueue *vq,
+		uint64_t desc_addr, uint64_t desc_len)
+{
+	void *idesc;
+	uint64_t src, dst;
+	uint64_t len, remain = desc_len;
+
+	idesc = rte_malloc(__func__, desc_len, 0);
+	if (unlikely(!idesc))
+		return 0;
+
+	dst = (uint64_t)(uintptr_t)idesc;
+
+	while (remain) {
+		len = remain;
+		src = vhost_iova_to_vva(dev, vq, desc_addr, &len,
+				VHOST_ACCESS_RO);
+		if (unlikely(!src || !len)) {
+			rte_free(idesc);
+			return 0;
+		}
+
+		rte_memcpy((void *)(uintptr_t)dst, (void *)(uintptr_t)src, len);
+
+		remain -= len;
+		dst += len;
+		desc_addr += len;
+	}
+
+	return idesc;
+}
+
+static __rte_always_inline void
+free_ind_table(void *idesc)
+{
+	rte_free(idesc);
+}
+
+static __rte_always_inline void
+restore_mbuf(struct rte_mbuf *m)
+{
+	uint32_t mbuf_size, priv_size;
+
+	while (m) {
+		priv_size = rte_pktmbuf_priv_size(m->pool);
+		mbuf_size = sizeof(struct rte_mbuf) + priv_size;
+		/* start of buffer is after mbuf structure and priv data */
+
+		m->buf_addr = (char *)m + mbuf_size;
+		m->buf_iova = rte_mempool_virt2iova(m) + mbuf_size;
+		m = m->next;
+	}
+}
+
+static __rte_always_inline bool
+mbuf_is_consumed(struct rte_mbuf *m)
+{
+	while (m) {
+		if (rte_mbuf_refcnt_read(m) > 1)
+			return false;
+		m = m->next;
+	}
+
+	return true;
+}
+
+static __rte_always_inline void
+put_zmbuf(struct zcopy_mbuf *zmbuf)
+{
+	zmbuf->in_use = 0;
 }
 
 #endif /* _VHOST_NET_CDEV_H_ */

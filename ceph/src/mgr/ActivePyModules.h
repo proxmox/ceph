@@ -16,7 +16,7 @@
 #include "ActivePyModule.h"
 
 #include "common/Finisher.h"
-#include "common/Mutex.h"
+#include "common/ceph_mutex.h"
 
 #include "PyFormatter.h"
 
@@ -39,7 +39,7 @@ class PyModuleRegistry;
 
 class ActivePyModules
 {
-  std::map<std::string, std::unique_ptr<ActivePyModule>> modules;
+  std::map<std::string, std::shared_ptr<ActivePyModule>> modules;
   PyModuleConfig &module_config;
   std::map<std::string, std::string> store_cache;
   DaemonStateIndex &daemon_state;
@@ -57,7 +57,7 @@ private:
 
   map<std::string,ProgressEvent> progress_events;
 
-  mutable Mutex lock{"ActivePyModules::lock"};
+  mutable ceph::mutex lock = ceph::make_mutex("ActivePyModules::lock");
 
 public:
   ActivePyModules(PyModuleConfig &module_config,
@@ -101,11 +101,11 @@ public:
       const std::string &svc_id,
       const std::string &path) const;
 
-  OSDPerfMetricQueryID add_osd_perf_query(
+  MetricQueryID add_osd_perf_query(
       const OSDPerfMetricQuery &query,
       const std::optional<OSDPerfMetricLimit> &limit);
-  void remove_osd_perf_query(OSDPerfMetricQueryID query_id);
-  PyObject *get_osd_perf_counters(OSDPerfMetricQueryID query_id);
+  void remove_osd_perf_query(MetricQueryID query_id);
+  PyObject *get_osd_perf_counters(MetricQueryID query_id);
 
   bool get_store(const std::string &module_name,
       const std::string &key, std::string *val) const;
@@ -133,6 +133,9 @@ public:
   void complete_progress_event(const std::string& evid);
   void clear_all_progress_events();
   void get_progress_events(std::map<std::string,ProgressEvent>* events);
+
+  void register_client(std::string_view name, std::string addrs);
+  void unregister_client(std::string_view name, std::string addrs);
 
   void config_notify();
 

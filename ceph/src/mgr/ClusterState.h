@@ -16,7 +16,7 @@
 
 #include "mds/FSMap.h"
 #include "mon/MgrMap.h"
-#include "common/Mutex.h"
+#include "common/ceph_mutex.h"
 
 #include "osdc/Objecter.h"
 #include "mon/MonClient.h"
@@ -39,7 +39,7 @@ protected:
   Objecter *objecter;
   FSMap fsmap;
   ServiceMap servicemap;
-  mutable Mutex lock;
+  mutable ceph::mutex lock = ceph::make_mutex("ClusterState");
 
   MgrMap mgr_map;
 
@@ -55,7 +55,7 @@ protected:
 public:
 
   void load_digest(MMgrDigest *m);
-  void ingest_pgstats(MPGStats *stats);
+  void ingest_pgstats(ceph::ref_t<MPGStats> stats);
 
   void update_delta_stats();
 
@@ -141,8 +141,10 @@ public:
   }
   void final_init();
   void shutdown();
-  bool asok_command(std::string_view admin_command, const cmdmap_t& cmdmap,
-		       std::string_view format, ostream& ss);
+  bool asok_command(std::string_view admin_command,
+		    const cmdmap_t& cmdmap,
+		    Formatter *f,
+		    ostream& ss);
 };
 
 #endif

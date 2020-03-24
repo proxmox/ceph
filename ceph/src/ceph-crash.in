@@ -1,17 +1,18 @@
-#!@PYTHON_EXECUTABLE@
+#!@Python3_EXECUTABLE@
 # -*- mode:python -*-
 # vim: ts=4 sw=4 smarttab expandtab
 
 import argparse
 import logging
 import os
+import signal
 import socket
 import subprocess
 import sys
 import time
 
 logging.basicConfig(level=logging.INFO)
-log = logging.getLogger(__name__)
+log = logging.getLogger('ceph-crash')
 
 auth_names = ['client.crash.%s' % socket.gethostname(),
               'client.crash',
@@ -75,8 +76,15 @@ def scrape_path(path):
                     (metapath, p, os.path.join('posted/', p))
                 )
 
+def handler(signum, frame):
+    print('*** Interrupted with signal %d ***' % signum)
+    sys.exit(0)
 
 def main():
+    # exit code 0 on SIGINT, SIGTERM
+    signal.signal(signal.SIGINT, handler)
+    signal.signal(signal.SIGTERM, handler)
+
     args = parse_args()
     postdir = os.path.join(args.path, 'posted')
     if args.name:

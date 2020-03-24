@@ -48,6 +48,7 @@
 #include "auth/cephx/CephxKeyServer.h"
 #include "auth/AuthMethodList.h"
 #include "auth/KeyRing.h"
+#include "include/common_fwd.h"
 #include "messages/MMonCommand.h"
 #include "mon/MonitorDBStore.h"
 #include "mgr/MgrClient.h"
@@ -99,18 +100,9 @@ enum {
 class QuorumService;
 class PaxosService;
 
-class PerfCounters;
 class AdminSocketHook;
 
 #define COMPAT_SET_LOC "feature_set"
-
-class C_MonContext final : public FunctionContext {
-  const Monitor *mon;
-public:
-  explicit C_MonContext(Monitor *m, boost::function<void(int)>&& callback)
-    : FunctionContext(std::move(callback)), mon(m) {}
-  void finish(int r) override;
-};
 
 class Monitor : public Dispatcher,
 		public AuthClient,
@@ -125,7 +117,7 @@ public:
   int rank;
   Messenger *messenger;
   ConnectionRef con_self;
-  Mutex lock;
+  ceph::mutex lock = ceph::make_mutex("Monitor::lock");
   SafeTimer timer;
   Finisher finisher;
   ThreadPool cpu_tp;  ///< threadpool for CPU intensive work
@@ -251,7 +243,7 @@ private:
    */
   mon_feature_t quorum_mon_features;
 
-  int quorum_min_mon_release = -1;
+  ceph_release_t quorum_min_mon_release{ceph_release_t::unknown};
 
   set<string> outside_quorum;
 
@@ -405,7 +397,7 @@ public:
   /**
    * force a sync on next mon restart
    */
-  void sync_force(Formatter *f, ostream& ss);
+  void sync_force(Formatter *f);
 
 private:
   /**
@@ -601,15 +593,15 @@ public:
   void start_election();
   void win_standalone_election();
   // end election (called by Elector)
-  void win_election(epoch_t epoch, set<int>& q,
+  void win_election(epoch_t epoch, const set<int>& q,
 		    uint64_t features,
                     const mon_feature_t& mon_features,
-		    int min_mon_release,
+		    ceph_release_t min_mon_release,
 		    const map<int,Metadata>& metadata);
   void lose_election(epoch_t epoch, set<int>& q, int l,
 		     uint64_t features,
                      const mon_feature_t& mon_features,
-		     int min_mon_release);
+		     ceph_release_t min_mon_release);
   // end election (called by Elector)
   void finish_election();
 
@@ -667,7 +659,7 @@ public:
 
   // -- sessions --
   MonSessionMap session_map;
-  Mutex session_map_lock{"Monitor::session_map_lock"};
+  ceph::mutex session_map_lock = ceph::make_mutex("Monitor::session_map_lock");
   AdminSocketHook *admin_hook;
 
   template<typename Func, typename...Args>
@@ -692,10 +684,11 @@ public:
                         const cmdmap_t& cmdmap,
                         const map<string,string>& param_str_map,
                         const MonCommand *this_cmd);
-  void get_mon_status(Formatter *f, ostream& ss);
+  void get_mon_status(Formatter *f);
   void _quorum_status(Formatter *f, ostream& ss);
   bool _add_bootstrap_peer_hint(std::string_view cmd, const cmdmap_t& cmdmap,
 				std::ostream& ss);
+  void handle_tell_command(MonOpRequestRef op);
   void handle_command(MonOpRequestRef op);
   void handle_route(MonOpRequestRef op);
 
@@ -727,7 +720,7 @@ public:
 
   void health_tick_start();
   void health_tick_stop();
-  utime_t health_interval_calc_next_update();
+  ceph::real_clock::time_point health_interval_calc_next_update();
   void health_interval_start();
   void health_interval_stop();
   void health_events_cleanup();
@@ -737,12 +730,6 @@ public:
   void do_health_to_clog_interval();
   void do_health_to_clog(bool force = false);
 
-  health_status_t get_health_status(
-    bool want_detail,
-    Formatter *f,
-    std::string *plain,
-    const char *sep1 = " ",
-    const char *sep2 = "; ");
   void log_health(
     const health_check_map_t& updated,
     const health_check_map_t& previous,
@@ -771,6 +758,9 @@ public:
 
   void reply_command(MonOpRequestRef op, int rc, const string &rs, version_t version);
   void reply_command(MonOpRequestRef op, int rc, const string &rs, bufferlist& rdata, version_t version);
+
+  void reply_tell_command(MonOpRequestRef op, int rc, const string &rs);
+
 
 
   void handle_probe(MonOpRequestRef op);
@@ -833,7 +823,7 @@ public:
       C_MonOp(_op), mon(_mm), rc(r), rs(s), rdata(rd), version(v){}
 
     void _finish(int r) override {
-      MMonCommand *m = static_cast<MMonCommand*>(op->get_req());
+      auto m = op->get_req<MMonCommand>();
       if (r >= 0) {
         ostringstream ss;
         if (!op->get_req()->get_connection()) {
@@ -884,16 +874,14 @@ public:
   //on forwarded messages, so we create a non-locking version for this class
   void _ms_dispatch(Message *m);
   bool ms_dispatch(Message *m) override {
-    lock.Lock();
+    std::lock_guard l{lock};
     _ms_dispatch(m);
-    lock.Unlock();
     return true;
   }
   void dispatch_op(MonOpRequestRef op);
   //mon_caps is used for un-connected messages from monitors
   MonCap mon_caps;
-  bool ms_get_authorizer(int dest_type, AuthAuthorizer **authorizer) override;
-  KeyStore *ms_get_auth1_authorizer_keystore();
+  bool get_authorizer(int dest_type, AuthAuthorizer **authorizer);
 public: // for AuthMonitor msgr1:
   int ms_handle_authentication(Connection *con) override;
 private:
@@ -1000,8 +988,10 @@ private:
   int write_fsid();
   int write_fsid(MonitorDBStore::TransactionRef t);
 
-  void do_admin_command(std::string_view command, const cmdmap_t& cmdmap,
-			std::string_view format, std::ostream& ss);
+  int do_admin_command(std::string_view command, const cmdmap_t& cmdmap,
+		       Formatter *f,
+		       std::ostream& err,
+		       std::ostream& out);
 
 private:
   // don't allow copying
@@ -1046,8 +1036,36 @@ public:
 #define CEPH_MON_FEATURE_INCOMPAT_LUMINOUS CompatSet::Feature(9, "luminous ondisk layout")
 #define CEPH_MON_FEATURE_INCOMPAT_MIMIC CompatSet::Feature(10, "mimic ondisk layout")
 #define CEPH_MON_FEATURE_INCOMPAT_NAUTILUS CompatSet::Feature(11, "nautilus ondisk layout")
+#define CEPH_MON_FEATURE_INCOMPAT_OCTOPUS CompatSet::Feature(12, "octopus ondisk layout")
 // make sure you add your feature to Monitor::get_supported_features
 
 
+/* Callers use:
+ *
+ *      new C_MonContext{...}
+ *
+ * instead of
+ *
+ *      new C_MonContext(...)
+ *
+ * because of gcc bug [1].
+ *
+ * [1] https://gcc.gnu.org/bugzilla/show_bug.cgi?id=85883
+ */
+template<typename T>
+class C_MonContext : public LambdaContext<T> {
+public:
+  C_MonContext(const Monitor* m, T&& f) :
+      LambdaContext<T>(std::forward<T>(f)),
+      mon(m)
+  {}
+  void finish(int r) override {
+    if (mon->is_shutdown())
+      return;
+    LambdaContext<T>::finish(r);
+  }
+private:
+  const Monitor* mon;
+};
 
 #endif

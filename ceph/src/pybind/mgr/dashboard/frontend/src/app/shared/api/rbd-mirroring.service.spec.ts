@@ -8,7 +8,7 @@ describe('RbdMirroringService', () => {
   let service: RbdMirroringService;
   let httpTesting: HttpTestingController;
 
-  const summary = {
+  const summary: Record<string, any> = {
     status: 0,
     content_data: {
       daemons: [],
@@ -46,7 +46,7 @@ describe('RbdMirroringService', () => {
   });
 
   it('should periodically poll summary', fakeAsync(() => {
-    const calledWith = [];
+    const calledWith: any[] = [];
     service.subscribeSummary((data) => {
       calledWith.push(data);
     });
@@ -87,6 +87,39 @@ describe('RbdMirroringService', () => {
     const req = httpTesting.expectOne('api/block/mirroring/pool/poolName');
     expect(req.request.method).toBe('PUT');
     expect(req.request.body).toEqual(request);
+  });
+
+  it('should get site name', () => {
+    service.getSiteName().subscribe();
+
+    const req = httpTesting.expectOne('api/block/mirroring/site_name');
+    expect(req.request.method).toBe('GET');
+  });
+
+  it('should set site name', () => {
+    service.setSiteName('site-a').subscribe();
+
+    const req = httpTesting.expectOne('api/block/mirroring/site_name');
+    expect(req.request.method).toBe('PUT');
+    expect(req.request.body).toEqual({ site_name: 'site-a' });
+  });
+
+  it('should create bootstrap token', () => {
+    service.createBootstrapToken('poolName').subscribe();
+
+    const req = httpTesting.expectOne('api/block/mirroring/pool/poolName/bootstrap/token');
+    expect(req.request.method).toBe('POST');
+  });
+
+  it('should import bootstrap token', () => {
+    service.importBootstrapToken('poolName', 'rx', 'token-1234').subscribe();
+
+    const req = httpTesting.expectOne('api/block/mirroring/pool/poolName/bootstrap/peer');
+    expect(req.request.method).toBe('POST');
+    expect(req.request.body).toEqual({
+      direction: 'rx',
+      token: 'token-1234'
+    });
   });
 
   it('should get peer config', () => {

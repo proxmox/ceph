@@ -59,20 +59,24 @@ struct aio_t {
     }
 #endif
   }
-  void pread(uint64_t _offset, uint64_t len) {
+
+  void preadv(uint64_t _offset, uint64_t len) {
     offset = _offset;
     length = len;
-    bufferptr p = buffer::create_small_page_aligned(length);
 #if defined(HAVE_LIBAIO)
-    io_prep_pread(&iocb, fd, p.c_str(), length, offset);
+    io_prep_preadv(&iocb, fd, &iov[0], iov.size(), offset);
 #elif defined(HAVE_POSIXAIO)
-    n_aiocb = 1;
-    aio.aiocb.aio_fildes = fd;
-    aio.aiocb.aio_buf = p.c_str();
-    aio.aiocb.aio_nbytes = length;
-    aio.aiocb.aio_offset = offset;
+    n_aiocb = iov.size();
+    aio.aiocbp = (struct aiocb*)calloc(iov.size(), sizeof(struct aiocb));
+    for (size_t i = 0; i < iov.size(); i++) {
+      aio.aiocbp[i].aio_fildes = fd;
+      aio.aiocbp[i].aio_buf = iov[i].iov_base;
+      aio.aiocbp[i].aio_nbytes = iov[i].iov_len;
+      aio.aiocbp[i].aio_offset = offset;
+      aio.aiocbp[i].aio_lio_opcode = LIO_READ;
+      offset += iov[i].iov_len;
+    }
 #endif
-    bl.append(std::move(p));
   }
 
   long get_return_value() {
@@ -89,7 +93,19 @@ typedef boost::intrusive::list<
     boost::intrusive::list_member_hook<>,
     &aio_t::queue_item> > aio_list_t;
 
-struct aio_queue_t {
+struct io_queue_t {
+  typedef list<aio_t>::iterator aio_iter;
+
+  virtual ~io_queue_t() {};
+
+  virtual int init(std::vector<int> &fds) = 0;
+  virtual void shutdown() = 0;
+  virtual int submit_batch(aio_iter begin, aio_iter end, uint16_t aios_size,
+			   void *priv, int *retries) = 0;
+  virtual int get_next_completed(int timeout_ms, aio_t **paio, int max) = 0;
+};
+
+struct aio_queue_t final : public io_queue_t {
   int max_iodepth;
 #if defined(HAVE_LIBAIO)
   io_context_t ctx;
@@ -97,17 +113,16 @@ struct aio_queue_t {
   int ctx;
 #endif
 
-  typedef list<aio_t>::iterator aio_iter;
-
   explicit aio_queue_t(unsigned max_iodepth)
     : max_iodepth(max_iodepth),
       ctx(0) {
   }
-  ~aio_queue_t() {
+  ~aio_queue_t() final {
     ceph_assert(ctx == 0);
   }
 
-  int init() {
+  int init(std::vector<int> &fds) final {
+    (void)fds;
     ceph_assert(ctx == 0);
 #if defined(HAVE_LIBAIO)
     int r = io_setup(max_iodepth, &ctx);
@@ -126,7 +141,7 @@ struct aio_queue_t {
       return 0;
 #endif
   }
-  void shutdown() {
+  void shutdown() final {
     if (ctx) {
 #if defined(HAVE_LIBAIO)
       int r = io_destroy(ctx);
@@ -138,7 +153,7 @@ struct aio_queue_t {
     }
   }
 
-  int submit_batch(aio_iter begin, aio_iter end, uint16_t aios_size, 
-		   void *priv, int *retries);
-  int get_next_completed(int timeout_ms, aio_t **paio, int max);
+  int submit_batch(aio_iter begin, aio_iter end, uint16_t aios_size,
+		   void *priv, int *retries) final;
+  int get_next_completed(int timeout_ms, aio_t **paio, int max) final;
 };

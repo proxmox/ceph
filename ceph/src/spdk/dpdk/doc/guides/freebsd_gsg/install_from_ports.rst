@@ -57,12 +57,12 @@ environmental variables should be set as below:
 
 * ``RTE_SDK=/usr/local/share/dpdk``
 
-* ``RTE_TARGET=x86_64-native-bsdapp-clang``
+* ``RTE_TARGET=x86_64-native-freebsd-clang``
 
 .. note::
 
    To install a copy of the DPDK compiled using gcc, please download the
-   official DPDK package from http://dpdk.org/ and install manually using
+   official DPDK package from http://core.dpdk.org/download/ and install manually using
    the instructions given in the next chapter, :ref:`building_from_source`
 
 An example application can therefore be copied to a user's home directory and
@@ -72,7 +72,7 @@ compiled and run as below:
 
     export RTE_SDK=/usr/local/share/dpdk
 
-    export RTE_TARGET=x86_64-native-bsdapp-clang
+    export RTE_TARGET=x86_64-native-freebsd-clang
 
     cp -r /usr/local/share/dpdk/examples/helloworld .
 

@@ -21,8 +21,7 @@
 #include <time.h>
 #include <set>
 #include <list>
-#include "common/Mutex.h"
-#include "common/Cond.h"
+#include "common/ceph_mutex.h"
 #include "common/ceph_argparse.h"
 #include "global/global_init.h"
 #include "msg/Dispatcher.h"
@@ -49,8 +48,6 @@ typedef boost::mt11213b gen_type;
 #undef dout_prefix
 #define dout_prefix *_dout << " ceph_test_msgr "
 
-
-#if GTEST_HAS_PARAM_TEST
 
 #define CHECK_AND_WAIT_TRUE(expr) do {  \
   int n = 1000;                         \
@@ -81,6 +78,7 @@ class MessengerTest : public ::testing::TestWithParam<const char*> {
     server_msgr->set_auth_server(&dummy_auth);
     client_msgr->set_auth_client(&dummy_auth);
     client_msgr->set_auth_server(&dummy_auth);
+    server_msgr->set_require_authorizer(false);
   }
   void TearDown() override {
     ASSERT_EQ(server_msgr->get_dispatch_queue_len(), 0);
@@ -103,20 +101,19 @@ class FakeDispatcher : public Dispatcher {
     uint64_t get_count() { return count; }
   };
 
-  Mutex lock;
-  Cond cond;
+  ceph::mutex lock = ceph::make_mutex("FakeDispatcher::lock");
+  ceph::condition_variable cond;
   bool is_server;
   bool got_new;
   bool got_remote_reset;
   bool got_connect;
   bool loopback;
   entity_addrvec_t last_accept;
+  ConnectionRef *last_accept_con_ptr = nullptr;
 
-  explicit FakeDispatcher(bool s): Dispatcher(g_ceph_context), lock("FakeDispatcher::lock"),
+  explicit FakeDispatcher(bool s): Dispatcher(g_ceph_context),
                           is_server(s), got_new(false), got_remote_reset(false),
                           got_connect(false), loopback(false) {
-    // don't need authorizers
-    ms_set_require_authorizer(false);
   }
   bool ms_can_fast_dispatch_any() const override { return true; }
   bool ms_can_fast_dispatch(const Message *m) const override {
@@ -129,7 +126,7 @@ class FakeDispatcher : public Dispatcher {
   }
 
   void ms_handle_fast_connect(Connection *con) override {
-    lock.Lock();
+    std::scoped_lock l{lock};
     lderr(g_ceph_context) << __func__ << " " << con << dendl;
     auto s = con->get_priv();
     if (!s) {
@@ -139,11 +136,13 @@ class FakeDispatcher : public Dispatcher {
 			    << " count: " << session->count << dendl;
     }
     got_connect = true;
-    cond.Signal();
-    lock.Unlock();
+    cond.notify_all();
   }
   void ms_handle_fast_accept(Connection *con) override {
     last_accept = con->get_peer_addrs();
+    if (last_accept_con_ptr) {
+      *last_accept_con_ptr = con;
+    }
     if (!con->get_priv()) {
       con->set_priv(RefCountedPtr{new Session(con), false});
     }
@@ -161,14 +160,14 @@ class FakeDispatcher : public Dispatcher {
     if (is_server) {
       reply_message(m);
     }
-    Mutex::Locker l(lock);
+    std::lock_guard l{lock};
     got_new = true;
-    cond.Signal();
+    cond.notify_all();
     m->put();
     return true;
   }
   bool ms_handle_reset(Connection *con) override {
-    Mutex::Locker l(lock);
+    std::lock_guard l{lock};
     lderr(g_ceph_context) << __func__ << " " << con << dendl;
     auto priv = con->get_priv();
     if (auto s = static_cast<Session*>(priv.get()); s) {
@@ -178,7 +177,7 @@ class FakeDispatcher : public Dispatcher {
     return true;
   }
   void ms_handle_remote_reset(Connection *con) override {
-    Mutex::Locker l(lock);
+    std::lock_guard l{lock};
     lderr(g_ceph_context) << __func__ << " " << con << dendl;
     auto priv = con->get_priv();
     if (auto s = static_cast<Session*>(priv.get()); s) {
@@ -186,7 +185,7 @@ class FakeDispatcher : public Dispatcher {
       con->set_priv(nullptr);   // break ref <-> session cycle, if any
     }
     got_remote_reset = true;
-    cond.Signal();
+    cond.notify_all();
   }
   bool ms_handle_refused(Connection *con) override {
     return false;
@@ -210,9 +209,9 @@ class FakeDispatcher : public Dispatcher {
       ceph_assert(m->get_source().is_client());
     }
     m->put();
-    Mutex::Locker l(lock);
+    std::lock_guard l{lock};
     got_new = true;
-    cond.Signal();
+    cond.notify_all();
   }
 
   int ms_handle_authentication(Connection *con) override {
@@ -287,9 +286,7 @@ struct TestInterceptor : public Interceptor {
       return *(decisions[step]);
     }
     waiting = true;
-    while(waiting) {
-      cond_var.wait(l);
-    }
+    cond_var.wait(l, [this] { return !waiting; });
     return *(decisions[step]);
   }
 
@@ -339,10 +336,6 @@ struct TestInterceptor : public Interceptor {
  * Scenario: A connects to B, and B connects to A at the same time.
  */ 
 TEST_P(MessengerTest, ConnectionRaceTest) {
-  if (string(GetParam()) == "simple") {
-    return;
-  }
-
   FakeDispatcher cli_dispatcher(false), srv_dispatcher(false);
 
   TestInterceptor *cli_interceptor = new TestInterceptor();
@@ -393,16 +386,14 @@ TEST_P(MessengerTest, ConnectionRaceTest) {
   srv_interceptor->proceed(11, Interceptor::ACTION::CONTINUE);
 
   {
-    Mutex::Locker l(cli_dispatcher.lock);
-    while (!cli_dispatcher.got_new)
-      cli_dispatcher.cond.Wait(cli_dispatcher.lock);
+    std::unique_lock l{cli_dispatcher.lock};
+    cli_dispatcher.cond.wait(l, [&] { return cli_dispatcher.got_new; });
     cli_dispatcher.got_new = false;
   }
 
   {
-    Mutex::Locker l(srv_dispatcher.lock);
-    while (!srv_dispatcher.got_new)
-      srv_dispatcher.cond.Wait(srv_dispatcher.lock);
+    std::unique_lock l{srv_dispatcher.lock};
+    srv_dispatcher.cond.wait(l, [&] { return srv_dispatcher.got_new; });
     srv_dispatcher.got_new = false;
   }
   
@@ -431,10 +422,6 @@ TEST_P(MessengerTest, ConnectionRaceTest) {
  *    - A reconnects
  */ 
 TEST_P(MessengerTest, MissingServerIdenTest) {
-  if (string(GetParam()) == "simple") {
-    return;
-  }
-
   FakeDispatcher cli_dispatcher(false), srv_dispatcher(false);
 
   TestInterceptor *cli_interceptor = new TestInterceptor();
@@ -476,16 +463,14 @@ TEST_P(MessengerTest, MissingServerIdenTest) {
   srv_interceptor->proceed(12, Interceptor::ACTION::FAIL);
 
   {
-    Mutex::Locker l(srv_dispatcher.lock);
-    while (!srv_dispatcher.got_new)
-      srv_dispatcher.cond.Wait(srv_dispatcher.lock);
+    std::unique_lock l{srv_dispatcher.lock};
+    srv_dispatcher.cond.wait(l, [&] { return srv_dispatcher.got_new; });
     srv_dispatcher.got_new = false;
   }
 
   {
-    Mutex::Locker l(cli_dispatcher.lock);
-    while (!cli_dispatcher.got_new)
-      cli_dispatcher.cond.Wait(cli_dispatcher.lock);
+    std::unique_lock l{cli_dispatcher.lock};
+    cli_dispatcher.cond.wait(l, [&] { return cli_dispatcher.got_new; });
     cli_dispatcher.got_new = false;
   }
   
@@ -515,10 +500,6 @@ TEST_P(MessengerTest, MissingServerIdenTest) {
  *    - B reconnects to A
  */ 
 TEST_P(MessengerTest, MissingServerIdenTest2) {
-  if (string(GetParam()) == "simple") {
-    return;
-  }
-
   FakeDispatcher cli_dispatcher(false), srv_dispatcher(false);
 
   TestInterceptor *cli_interceptor = new TestInterceptor();
@@ -558,9 +539,8 @@ TEST_P(MessengerTest, MissingServerIdenTest2) {
   srv_interceptor->proceed(12, Interceptor::ACTION::FAIL);
 
   {
-    Mutex::Locker l(cli_dispatcher.lock);
-    while (!cli_dispatcher.got_new)
-      cli_dispatcher.cond.Wait(cli_dispatcher.lock);
+    std::unique_lock l{cli_dispatcher.lock};
+    cli_dispatcher.cond.wait(l, [&] { return cli_dispatcher.got_new; });
     cli_dispatcher.got_new = false;
   }
   
@@ -590,10 +570,6 @@ TEST_P(MessengerTest, MissingServerIdenTest2) {
  *    - A reconnects
  */ 
 TEST_P(MessengerTest, ReconnectTest) {
-  if (string(GetParam()) == "simple") {
-    return;
-  }
-
   FakeDispatcher cli_dispatcher(false), srv_dispatcher(true);
 
   TestInterceptor *cli_interceptor = new TestInterceptor();
@@ -623,9 +599,8 @@ TEST_P(MessengerTest, ReconnectTest) {
   ASSERT_EQ(c2s->send_message(m1), 0);
 
   {
-    Mutex::Locker l(cli_dispatcher.lock);
-    while (!cli_dispatcher.got_new)
-      cli_dispatcher.cond.Wait(cli_dispatcher.lock);
+    std::unique_lock l{cli_dispatcher.lock};
+    cli_dispatcher.cond.wait(l, [&] { return cli_dispatcher.got_new; });
     cli_dispatcher.got_new = false;
   }
 
@@ -669,9 +644,8 @@ TEST_P(MessengerTest, ReconnectTest) {
   srv_interceptor->proceed(15, Interceptor::ACTION::CONTINUE);
 
   {
-    Mutex::Locker l(cli_dispatcher.lock);
-    while (!cli_dispatcher.got_new)
-      cli_dispatcher.cond.Wait(cli_dispatcher.lock);
+    std::unique_lock l{cli_dispatcher.lock};
+    cli_dispatcher.cond.wait(l, [&] { return cli_dispatcher.got_new; });
     cli_dispatcher.got_new = false;
   }
 
@@ -692,10 +666,6 @@ TEST_P(MessengerTest, ReconnectTest) {
  *    - A reconnects // B reconnects
  */ 
 TEST_P(MessengerTest, ReconnectRaceTest) {
-  if (string(GetParam()) == "simple") {
-    return;
-  }
-
   FakeDispatcher cli_dispatcher(false), srv_dispatcher(true);
 
   TestInterceptor *cli_interceptor = new TestInterceptor();
@@ -725,9 +695,8 @@ TEST_P(MessengerTest, ReconnectRaceTest) {
   ASSERT_EQ(c2s->send_message(m1), 0);
 
   {
-    Mutex::Locker l(cli_dispatcher.lock);
-    while (!cli_dispatcher.got_new)
-      cli_dispatcher.cond.Wait(cli_dispatcher.lock);
+    std::unique_lock l{cli_dispatcher.lock};
+    cli_dispatcher.cond.wait(l, [&] { return cli_dispatcher.got_new; });
     cli_dispatcher.got_new = false;
   }
 
@@ -799,9 +768,8 @@ TEST_P(MessengerTest, ReconnectRaceTest) {
   srv_interceptor->proceed(15, Interceptor::ACTION::CONTINUE);
 
   {
-    Mutex::Locker l(cli_dispatcher.lock);
-    while (!cli_dispatcher.got_new)
-      cli_dispatcher.cond.Wait(cli_dispatcher.lock);
+    std::unique_lock l{cli_dispatcher.lock};
+    cli_dispatcher.cond.wait(l, [&] { return cli_dispatcher.got_new; });
     cli_dispatcher.got_new = false;
   }
 
@@ -817,10 +785,7 @@ TEST_P(MessengerTest, ReconnectRaceTest) {
 TEST_P(MessengerTest, SimpleTest) {
   FakeDispatcher cli_dispatcher(false), srv_dispatcher(true);
   entity_addr_t bind_addr;
-  if (string(GetParam()) == "simple")
-    bind_addr.parse("v1:127.0.0.1");
-  else
-    bind_addr.parse("v2:127.0.0.1");
+  bind_addr.parse("v2:127.0.0.1");
   server_msgr->bind(bind_addr);
   server_msgr->add_dispatcher_head(&srv_dispatcher);
   server_msgr->start();
@@ -834,9 +799,8 @@ TEST_P(MessengerTest, SimpleTest) {
 					       server_msgr->get_myaddrs());
   {
     ASSERT_EQ(conn->send_message(m), 0);
-    Mutex::Locker l(cli_dispatcher.lock);
-    while (!cli_dispatcher.got_new)
-      cli_dispatcher.cond.Wait(cli_dispatcher.lock);
+    std::unique_lock l{cli_dispatcher.lock};
+    cli_dispatcher.cond.wait(l, [&] { return cli_dispatcher.got_new; });
     cli_dispatcher.got_new = false;
   }
   ASSERT_TRUE(conn->is_connected());
@@ -860,9 +824,8 @@ TEST_P(MessengerTest, SimpleTest) {
   {
     m = new MPing();
     ASSERT_EQ(conn->send_message(m), 0);
-    Mutex::Locker l(cli_dispatcher.lock);
-    while (!cli_dispatcher.got_new)
-      cli_dispatcher.cond.Wait(cli_dispatcher.lock);
+    std::unique_lock l{cli_dispatcher.lock};
+    cli_dispatcher.cond.wait(l, [&] { return cli_dispatcher.got_new; });
     cli_dispatcher.got_new = false;
   }
   ASSERT_EQ(1U, static_cast<Session*>(conn->get_priv().get())->get_count());
@@ -886,9 +849,8 @@ TEST_P(MessengerTest, SimpleTest) {
   {
     m = new MPing();
     ASSERT_EQ(conn->send_message(m), 0);
-    Mutex::Locker l(cli_dispatcher.lock);
-    while (!cli_dispatcher.got_new)
-      cli_dispatcher.cond.Wait(cli_dispatcher.lock);
+    std::unique_lock l{cli_dispatcher.lock};
+    cli_dispatcher.cond.wait(l, [&] { return cli_dispatcher.got_new; });
     cli_dispatcher.got_new = false;
   }
   srv_dispatcher.loopback = false;
@@ -922,9 +884,8 @@ TEST_P(MessengerTest, SimpleMsgr2Test) {
     server_msgr->get_myaddrs());
   {
     ASSERT_EQ(conn->send_message(m), 0);
-    Mutex::Locker l(cli_dispatcher.lock);
-    while (!cli_dispatcher.got_new)
-      cli_dispatcher.cond.Wait(cli_dispatcher.lock);
+    std::unique_lock l{cli_dispatcher.lock};
+    cli_dispatcher.cond.wait(l, [&] { return cli_dispatcher.got_new; });
     cli_dispatcher.got_new = false;
   }
   ASSERT_TRUE(conn->is_connected());
@@ -949,9 +910,8 @@ TEST_P(MessengerTest, SimpleMsgr2Test) {
   {
     m = new MPing();
     ASSERT_EQ(conn->send_message(m), 0);
-    Mutex::Locker l(cli_dispatcher.lock);
-    while (!cli_dispatcher.got_new)
-      cli_dispatcher.cond.Wait(cli_dispatcher.lock);
+    std::unique_lock l{cli_dispatcher.lock};
+    cli_dispatcher.cond.wait(l, [&] { return cli_dispatcher.got_new; });
     cli_dispatcher.got_new = false;
   }
   ASSERT_EQ(1U, static_cast<Session*>(conn->get_priv().get())->get_count());
@@ -975,9 +935,8 @@ TEST_P(MessengerTest, SimpleMsgr2Test) {
   {
     m = new MPing();
     ASSERT_EQ(conn->send_message(m), 0);
-    Mutex::Locker l(cli_dispatcher.lock);
-    while (!cli_dispatcher.got_new)
-      cli_dispatcher.cond.Wait(cli_dispatcher.lock);
+    std::unique_lock l{cli_dispatcher.lock};
+    cli_dispatcher.cond.wait(l, [&] { return cli_dispatcher.got_new; });
     cli_dispatcher.got_new = false;
   }
   srv_dispatcher.loopback = false;
@@ -988,50 +947,10 @@ TEST_P(MessengerTest, SimpleMsgr2Test) {
   server_msgr->wait();
 }
 
-TEST_P(MessengerTest, NameAddrTest) {
-  FakeDispatcher cli_dispatcher(false), srv_dispatcher(true);
-  entity_addr_t bind_addr;
-  if (string(GetParam()) == "simple")
-    bind_addr.parse("v1:127.0.0.1");
-  else
-    bind_addr.parse("v2:127.0.0.1");
-  server_msgr->bind(bind_addr);
-  server_msgr->add_dispatcher_head(&srv_dispatcher);
-  server_msgr->start();
-
-  client_msgr->add_dispatcher_head(&cli_dispatcher);
-  client_msgr->start();
-
-  MPing *m = new MPing();
-  ConnectionRef conn = client_msgr->connect_to(server_msgr->get_mytype(),
-					       server_msgr->get_myaddrs());
-  {
-    ASSERT_EQ(conn->send_message(m), 0);
-    Mutex::Locker l(cli_dispatcher.lock);
-    while (!cli_dispatcher.got_new)
-      cli_dispatcher.cond.Wait(cli_dispatcher.lock);
-    cli_dispatcher.got_new = false;
-  }
-  ASSERT_EQ(1U, static_cast<Session*>(conn->get_priv().get())->get_count());
-  ASSERT_TRUE(conn->get_peer_addrs() == server_msgr->get_myaddrs());
-  ConnectionRef server_conn = server_msgr->connect_to(
-    client_msgr->get_mytype(), srv_dispatcher.last_accept);
-  // Verify that server_conn is the one we already accepted from client,
-  // so it means the session counter in server_conn is also incremented.
-  ASSERT_EQ(1U, static_cast<Session*>(server_conn->get_priv().get())->get_count());
-  server_msgr->shutdown();
-  client_msgr->shutdown();
-  server_msgr->wait();
-  client_msgr->wait();
-}
-
 TEST_P(MessengerTest, FeatureTest) {
   FakeDispatcher cli_dispatcher(false), srv_dispatcher(true);
   entity_addr_t bind_addr;
-  if (string(GetParam()) == "simple")
-    bind_addr.parse("v1:127.0.0.1");
-  else
-    bind_addr.parse("v2:127.0.0.1");
+  bind_addr.parse("v2:127.0.0.1");
   uint64_t all_feature_supported, feature_required, feature_supported = 0;
   for (int i = 0; i < 10; i++)
     feature_supported |= 1ULL << i;
@@ -1076,9 +995,8 @@ TEST_P(MessengerTest, FeatureTest) {
   {
     m = new MPing();
     ASSERT_EQ(conn->send_message(m), 0);
-    Mutex::Locker l(cli_dispatcher.lock);
-    while (!cli_dispatcher.got_new)
-      cli_dispatcher.cond.Wait(cli_dispatcher.lock);
+    std::unique_lock l{cli_dispatcher.lock};
+    cli_dispatcher.cond.wait(l, [&] { return cli_dispatcher.got_new; });
     cli_dispatcher.got_new = false;
   }
   ASSERT_EQ(1U, static_cast<Session*>(conn->get_priv().get())->get_count());
@@ -1093,10 +1011,7 @@ TEST_P(MessengerTest, TimeoutTest) {
   g_ceph_context->_conf.set_val("ms_connection_idle_timeout", "1");
   FakeDispatcher cli_dispatcher(false), srv_dispatcher(true);
   entity_addr_t bind_addr;
-  if (string(GetParam()) == "simple")
-    bind_addr.parse("v1:127.0.0.1");
-  else
-    bind_addr.parse("v2:127.0.0.1");
+  bind_addr.parse("v2:127.0.0.1");
   server_msgr->bind(bind_addr);
   server_msgr->add_dispatcher_head(&srv_dispatcher);
   server_msgr->start();
@@ -1110,9 +1025,8 @@ TEST_P(MessengerTest, TimeoutTest) {
 						    server_msgr->get_myaddrs());
   {
     ASSERT_EQ(conn->send_message(m), 0);
-    Mutex::Locker l(cli_dispatcher.lock);
-    while (!cli_dispatcher.got_new)
-      cli_dispatcher.cond.Wait(cli_dispatcher.lock);
+    std::unique_lock l{cli_dispatcher.lock};
+    cli_dispatcher.cond.wait(l, [&] { return cli_dispatcher.got_new; });
     cli_dispatcher.got_new = false;
   }
   ASSERT_TRUE(conn->is_connected());
@@ -1135,10 +1049,7 @@ TEST_P(MessengerTest, StatefulTest) {
   Message *m;
   FakeDispatcher cli_dispatcher(false), srv_dispatcher(true);
   entity_addr_t bind_addr;
-  if (string(GetParam()) == "simple")
-    bind_addr.parse("v1:127.0.0.1");
-  else
-    bind_addr.parse("v2:127.0.0.1");
+  bind_addr.parse("v2:127.0.0.1");
   Messenger::Policy p = Messenger::Policy::stateful_server(0);
   server_msgr->set_policy(entity_name_t::TYPE_CLIENT, p);
   p = Messenger::Policy::lossless_client(0);
@@ -1156,9 +1067,8 @@ TEST_P(MessengerTest, StatefulTest) {
   {
     m = new MPing();
     ASSERT_EQ(conn->send_message(m), 0);
-    Mutex::Locker l(cli_dispatcher.lock);
-    while (!cli_dispatcher.got_new)
-      cli_dispatcher.cond.Wait(cli_dispatcher.lock);
+    std::unique_lock l{cli_dispatcher.lock};
+    cli_dispatcher.cond.wait(l, [&] { return cli_dispatcher.got_new; });
     cli_dispatcher.got_new = false;
   }
   ASSERT_EQ(1U, static_cast<Session*>(conn->get_priv().get())->get_count());
@@ -1175,18 +1085,16 @@ TEST_P(MessengerTest, StatefulTest) {
   {
     m = new MPing();
     ASSERT_EQ(conn->send_message(m), 0);
-    Mutex::Locker l(cli_dispatcher.lock);
-    while (!cli_dispatcher.got_new)
-      cli_dispatcher.cond.Wait(cli_dispatcher.lock);
+    std::unique_lock l{cli_dispatcher.lock};
+    cli_dispatcher.cond.wait(l, [&] { return cli_dispatcher.got_new; });
     cli_dispatcher.got_new = false;
   }
   ASSERT_EQ(1U, static_cast<Session*>(conn->get_priv().get())->get_count());
   server_conn = server_msgr->connect_to(client_msgr->get_mytype(),
 					srv_dispatcher.last_accept);
   {
-    Mutex::Locker l(srv_dispatcher.lock);
-    while (!srv_dispatcher.got_remote_reset)
-      srv_dispatcher.cond.Wait(srv_dispatcher.lock);
+    std::unique_lock l{srv_dispatcher.lock};
+    srv_dispatcher.cond.wait(l, [&] { return srv_dispatcher.got_remote_reset; });
   }
 
   // 2. test for client reconnect
@@ -1198,15 +1106,13 @@ TEST_P(MessengerTest, StatefulTest) {
   ASSERT_FALSE(server_conn->is_connected());
   // ensure client detect server socket closed
   {
-    Mutex::Locker l(cli_dispatcher.lock);
-    while (!cli_dispatcher.got_remote_reset)
-      cli_dispatcher.cond.Wait(cli_dispatcher.lock);
+    std::unique_lock l{cli_dispatcher.lock};
+    cli_dispatcher.cond.wait(l, [&] { return cli_dispatcher.got_remote_reset; });
     cli_dispatcher.got_remote_reset = false;
   }
   {
-    Mutex::Locker l(cli_dispatcher.lock);
-    while (!cli_dispatcher.got_connect)
-      cli_dispatcher.cond.Wait(cli_dispatcher.lock);
+    std::unique_lock l{cli_dispatcher.lock};
+    cli_dispatcher.cond.wait(l, [&] { return cli_dispatcher.got_connect; });
     cli_dispatcher.got_connect = false;
   }
   CHECK_AND_WAIT_TRUE(conn->is_connected());
@@ -1216,9 +1122,8 @@ TEST_P(MessengerTest, StatefulTest) {
     m = new MPing();
     ASSERT_EQ(conn->send_message(m), 0);
     ASSERT_TRUE(conn->is_connected());
-    Mutex::Locker l(cli_dispatcher.lock);
-    while (!cli_dispatcher.got_new)
-      cli_dispatcher.cond.Wait(cli_dispatcher.lock);
+    std::unique_lock l{cli_dispatcher.lock};
+    cli_dispatcher.cond.wait(l, [&] { return cli_dispatcher.got_new; });
     cli_dispatcher.got_new = false;
   }
   // resetcheck happen
@@ -1238,10 +1143,7 @@ TEST_P(MessengerTest, StatelessTest) {
   Message *m;
   FakeDispatcher cli_dispatcher(false), srv_dispatcher(true);
   entity_addr_t bind_addr;
-  if (string(GetParam()) == "simple")
-    bind_addr.parse("v1:127.0.0.1");
-  else
-    bind_addr.parse("v2:127.0.0.1");
+  bind_addr.parse("v2:127.0.0.1");
   Messenger::Policy p = Messenger::Policy::stateless_server(0);
   server_msgr->set_policy(entity_name_t::TYPE_CLIENT, p);
   p = Messenger::Policy::lossy_client(0);
@@ -1259,9 +1161,8 @@ TEST_P(MessengerTest, StatelessTest) {
   {
     m = new MPing();
     ASSERT_EQ(conn->send_message(m), 0);
-    Mutex::Locker l(cli_dispatcher.lock);
-    while (!cli_dispatcher.got_new)
-      cli_dispatcher.cond.Wait(cli_dispatcher.lock);
+    std::unique_lock l{cli_dispatcher.lock};
+    cli_dispatcher.cond.wait(l, [&] { return cli_dispatcher.got_new; });
     cli_dispatcher.got_new = false;
   }
   ASSERT_EQ(1U, static_cast<Session*>(conn->get_priv().get())->get_count());
@@ -1269,24 +1170,24 @@ TEST_P(MessengerTest, StatelessTest) {
   ASSERT_FALSE(conn->is_connected());
 
   srv_dispatcher.got_new = false;
+  ConnectionRef server_conn;
+  srv_dispatcher.last_accept_con_ptr = &server_conn;
   conn = client_msgr->connect_to(server_msgr->get_mytype(),
 				      server_msgr->get_myaddrs());
   {
     m = new MPing();
     ASSERT_EQ(conn->send_message(m), 0);
-    Mutex::Locker l(cli_dispatcher.lock);
-    while (!cli_dispatcher.got_new)
-      cli_dispatcher.cond.Wait(cli_dispatcher.lock);
+    std::unique_lock l{cli_dispatcher.lock};
+    cli_dispatcher.cond.wait(l, [&] { return cli_dispatcher.got_new; });
     cli_dispatcher.got_new = false;
   }
   ASSERT_EQ(1U, static_cast<Session*>(conn->get_priv().get())->get_count());
-  ConnectionRef server_conn = server_msgr->connect_to(client_msgr->get_mytype(),
-						      srv_dispatcher.last_accept);
+  ASSERT_TRUE(server_conn);
+
   // server lose state
   {
-    Mutex::Locker l(srv_dispatcher.lock);
-    while (!srv_dispatcher.got_new)
-      srv_dispatcher.cond.Wait(srv_dispatcher.lock);
+    std::unique_lock l{srv_dispatcher.lock};
+    srv_dispatcher.cond.wait(l, [&] { return srv_dispatcher.got_new; });
   }
   ASSERT_EQ(1U, static_cast<Session*>(server_conn->get_priv().get())->get_count());
 
@@ -1301,12 +1202,89 @@ TEST_P(MessengerTest, StatelessTest) {
   {
     m = new MPing();
     ASSERT_EQ(conn->send_message(m), 0);
-    Mutex::Locker l(cli_dispatcher.lock);
-    while (!cli_dispatcher.got_new)
-      cli_dispatcher.cond.Wait(cli_dispatcher.lock);
+    std::unique_lock l{cli_dispatcher.lock};
+    cli_dispatcher.cond.wait(l, [&] { return cli_dispatcher.got_new; });
     cli_dispatcher.got_new = false;
   }
   ASSERT_EQ(1U, static_cast<Session*>(conn->get_priv().get())->get_count());
+
+  server_msgr->shutdown();
+  client_msgr->shutdown();
+  server_msgr->wait();
+  client_msgr->wait();
+}
+
+TEST_P(MessengerTest, AnonTest) {
+  Message *m;
+  FakeDispatcher cli_dispatcher(false), srv_dispatcher(true);
+  entity_addr_t bind_addr;
+  bind_addr.parse("v2:127.0.0.1");
+  Messenger::Policy p = Messenger::Policy::stateless_server(0);
+  server_msgr->set_policy(entity_name_t::TYPE_CLIENT, p);
+  p = Messenger::Policy::lossy_client(0);
+  client_msgr->set_policy(entity_name_t::TYPE_OSD, p);
+
+  server_msgr->bind(bind_addr);
+  server_msgr->add_dispatcher_head(&srv_dispatcher);
+  server_msgr->start();
+  client_msgr->add_dispatcher_head(&cli_dispatcher);
+  client_msgr->start();
+
+  ConnectionRef server_con_a, server_con_b;
+
+  // a
+  srv_dispatcher.last_accept_con_ptr = &server_con_a;
+  ConnectionRef con_a = client_msgr->connect_to(server_msgr->get_mytype(),
+					    server_msgr->get_myaddrs(),
+					    true);
+  {
+    m = new MPing();
+    ASSERT_EQ(con_a->send_message(m), 0);
+    std::unique_lock l{cli_dispatcher.lock};
+    cli_dispatcher.cond.wait(l, [&] { return cli_dispatcher.got_new; });
+    cli_dispatcher.got_new = false;
+  }
+  ASSERT_EQ(1U, static_cast<Session*>(con_a->get_priv().get())->get_count());
+
+  // b
+  srv_dispatcher.last_accept_con_ptr = &server_con_b;
+  ConnectionRef con_b = client_msgr->connect_to(server_msgr->get_mytype(),
+					    server_msgr->get_myaddrs(),
+					    true);
+  {
+    m = new MPing();
+    ASSERT_EQ(con_b->send_message(m), 0);
+    std::unique_lock l{cli_dispatcher.lock};
+    cli_dispatcher.cond.wait(l, [&] { return cli_dispatcher.got_new; });
+    cli_dispatcher.got_new = false;
+  }
+  ASSERT_EQ(1U, static_cast<Session*>(con_b->get_priv().get())->get_count());
+
+  // these should be distinct
+  ASSERT_NE(con_a, con_b);
+  ASSERT_NE(server_con_a, server_con_b);
+
+  // and both connected
+  {
+    m = new MPing();
+    ASSERT_EQ(con_a->send_message(m), 0);
+    std::unique_lock l{cli_dispatcher.lock};
+    cli_dispatcher.cond.wait(l, [&] { return cli_dispatcher.got_new; });
+    cli_dispatcher.got_new = false;
+  }
+  {
+    m = new MPing();
+    ASSERT_EQ(con_b->send_message(m), 0);
+    std::unique_lock l{cli_dispatcher.lock};
+    cli_dispatcher.cond.wait(l, [&] { return cli_dispatcher.got_new; });
+    cli_dispatcher.got_new = false;
+  }
+
+  // clean up
+  con_a->mark_down();
+  ASSERT_FALSE(con_a->is_connected());
+  con_b->mark_down();
+  ASSERT_FALSE(con_b->is_connected());
 
   server_msgr->shutdown();
   client_msgr->shutdown();
@@ -1318,10 +1296,7 @@ TEST_P(MessengerTest, ClientStandbyTest) {
   Message *m;
   FakeDispatcher cli_dispatcher(false), srv_dispatcher(true);
   entity_addr_t bind_addr;
-  if (string(GetParam()) == "simple")
-    bind_addr.parse("v1:127.0.0.1");
-  else
-    bind_addr.parse("v2:127.0.0.1");
+  bind_addr.parse("v2:127.0.0.1");
   Messenger::Policy p = Messenger::Policy::stateful_server(0);
   server_msgr->set_policy(entity_name_t::TYPE_CLIENT, p);
   p = Messenger::Policy::lossless_peer(0);
@@ -1339,9 +1314,8 @@ TEST_P(MessengerTest, ClientStandbyTest) {
   {
     m = new MPing();
     ASSERT_EQ(conn->send_message(m), 0);
-    Mutex::Locker l(cli_dispatcher.lock);
-    while (!cli_dispatcher.got_new)
-      cli_dispatcher.cond.Wait(cli_dispatcher.lock);
+    std::unique_lock l{cli_dispatcher.lock};
+    cli_dispatcher.cond.wait(l, [&] { return cli_dispatcher.got_new; });
     cli_dispatcher.got_new = false;
   }
   ASSERT_EQ(1U, static_cast<Session*>(conn->get_priv().get())->get_count());
@@ -1360,21 +1334,18 @@ TEST_P(MessengerTest, ClientStandbyTest) {
     m = new MPing();
     ASSERT_EQ(conn->send_message(m), 0);
     {
-      Mutex::Locker l(cli_dispatcher.lock);
-      while (!cli_dispatcher.got_remote_reset)
-        cli_dispatcher.cond.Wait(cli_dispatcher.lock);
+      std::unique_lock l{cli_dispatcher.lock};
+      cli_dispatcher.cond.wait(l, [&] { return cli_dispatcher.got_remote_reset; });
       cli_dispatcher.got_remote_reset = false;
-      while (!cli_dispatcher.got_connect)
-        cli_dispatcher.cond.Wait(cli_dispatcher.lock);
+      cli_dispatcher.cond.wait(l, [&] { return cli_dispatcher.got_connect; });
       cli_dispatcher.got_connect = false;
     }
     CHECK_AND_WAIT_TRUE(conn->is_connected());
     ASSERT_TRUE(conn->is_connected());
     m = new MPing();
     ASSERT_EQ(conn->send_message(m), 0);
-    Mutex::Locker l(cli_dispatcher.lock);
-    while (!cli_dispatcher.got_new)
-      cli_dispatcher.cond.Wait(cli_dispatcher.lock);
+    std::unique_lock l{cli_dispatcher.lock};
+    cli_dispatcher.cond.wait(l, [&] { return cli_dispatcher.got_new; });
     cli_dispatcher.got_new = false;
   }
   ASSERT_EQ(1U, static_cast<Session*>(conn->get_priv().get())->get_count());
@@ -1394,10 +1365,7 @@ TEST_P(MessengerTest, AuthTest) {
   g_ceph_context->_conf.set_val("auth_client_required", "cephx");
   FakeDispatcher cli_dispatcher(false), srv_dispatcher(true);
   entity_addr_t bind_addr;
-  if (string(GetParam()) == "simple")
-    bind_addr.parse("v1:127.0.0.1");
-  else
-    bind_addr.parse("v2:127.0.0.1");
+  bind_addr.parse("v2:127.0.0.1");
   server_msgr->bind(bind_addr);
   server_msgr->add_dispatcher_head(&srv_dispatcher);
   server_msgr->start();
@@ -1411,9 +1379,8 @@ TEST_P(MessengerTest, AuthTest) {
 						    server_msgr->get_myaddrs());
   {
     ASSERT_EQ(conn->send_message(m), 0);
-    Mutex::Locker l(cli_dispatcher.lock);
-    while (!cli_dispatcher.got_new)
-      cli_dispatcher.cond.Wait(cli_dispatcher.lock);
+    std::unique_lock l{cli_dispatcher.lock};
+    cli_dispatcher.cond.wait(l, [&] { return cli_dispatcher.got_new; });
     cli_dispatcher.got_new = false;
   }
   ASSERT_TRUE(conn->is_connected());
@@ -1430,9 +1397,8 @@ TEST_P(MessengerTest, AuthTest) {
   {
     MPing *m = new MPing();
     ASSERT_EQ(conn->send_message(m), 0);
-    Mutex::Locker l(cli_dispatcher.lock);
-    while (!cli_dispatcher.got_new)
-      cli_dispatcher.cond.Wait(cli_dispatcher.lock);
+    std::unique_lock l{cli_dispatcher.lock};
+    cli_dispatcher.cond.wait(l, [&] { return cli_dispatcher.got_new; });
     cli_dispatcher.got_new = false;
   }
   ASSERT_TRUE(conn->is_connected());
@@ -1446,10 +1412,7 @@ TEST_P(MessengerTest, AuthTest) {
 TEST_P(MessengerTest, MessageTest) {
   FakeDispatcher cli_dispatcher(false), srv_dispatcher(true);
   entity_addr_t bind_addr;
-  if (string(GetParam()) == "simple")
-    bind_addr.parse("v1:127.0.0.1");
-  else
-    bind_addr.parse("v2:127.0.0.1");
+  bind_addr.parse("v2:127.0.0.1");
   Messenger::Policy p = Messenger::Policy::stateful_server(0);
   server_msgr->set_policy(entity_name_t::TYPE_CLIENT, p);
   p = Messenger::Policy::lossless_peer(0);
@@ -1477,11 +1440,8 @@ TEST_P(MessengerTest, MessageTest) {
     MCommand *m = new MCommand(uuid);
     m->cmd = cmds;
     conn->send_message(m);
-    utime_t t;
-    t += 1000*1000*500;
-    Mutex::Locker l(cli_dispatcher.lock);
-    while (!cli_dispatcher.got_new)
-      cli_dispatcher.cond.WaitInterval(cli_dispatcher.lock, t);
+    std::unique_lock l{cli_dispatcher.lock};
+    cli_dispatcher.cond.wait_for(l, 500s, [&] { return cli_dispatcher.got_new; });
     ASSERT_TRUE(cli_dispatcher.got_new);
     cli_dispatcher.got_new = false;
   }
@@ -1497,9 +1457,8 @@ TEST_P(MessengerTest, MessageTest) {
     conn->send_message(m);
     utime_t t;
     t += 1000*1000*500;
-    Mutex::Locker l(cli_dispatcher.lock);
-    while (!cli_dispatcher.got_new)
-      cli_dispatcher.cond.WaitInterval(cli_dispatcher.lock, t);
+    std::unique_lock l{cli_dispatcher.lock};
+    cli_dispatcher.cond.wait(l, [&] { return cli_dispatcher.got_new; });
     ASSERT_TRUE(cli_dispatcher.got_new);
     cli_dispatcher.got_new = false;
   }
@@ -1542,8 +1501,8 @@ ostream& operator<<(ostream& out, const Payload &pl)
 
 class SyntheticDispatcher : public Dispatcher {
  public:
-  Mutex lock;
-  Cond cond;
+  ceph::mutex lock = ceph::make_mutex("SyntheticDispatcher::lock");
+  ceph::condition_variable cond;
   bool is_server;
   bool got_new;
   bool got_remote_reset;
@@ -1554,10 +1513,8 @@ class SyntheticDispatcher : public Dispatcher {
   SyntheticWorkload *workload;
 
   SyntheticDispatcher(bool s, SyntheticWorkload *wl):
-      Dispatcher(g_ceph_context), lock("SyntheticDispatcher::lock"), is_server(s), got_new(false),
+      Dispatcher(g_ceph_context), is_server(s), got_new(false),
       got_remote_reset(false), got_connect(false), index(0), workload(wl) {
-    // don't need authorizers
-    ms_set_require_authorizer(false);
   }
   bool ms_can_fast_dispatch_any() const override { return true; }
   bool ms_can_fast_dispatch(const Message *m) const override {
@@ -1571,30 +1528,30 @@ class SyntheticDispatcher : public Dispatcher {
   }
 
   void ms_handle_fast_connect(Connection *con) override {
-    Mutex::Locker l(lock);
+    std::lock_guard l{lock};
     list<uint64_t> c = conn_sent[con];
     for (list<uint64_t>::iterator it = c.begin();
          it != c.end(); ++it)
       sent.erase(*it);
     conn_sent.erase(con);
     got_connect = true;
-    cond.Signal();
+    cond.notify_all();
   }
   void ms_handle_fast_accept(Connection *con) override {
-    Mutex::Locker l(lock);
+    std::lock_guard l{lock};
     list<uint64_t> c = conn_sent[con];
     for (list<uint64_t>::iterator it = c.begin();
          it != c.end(); ++it)
       sent.erase(*it);
     conn_sent.erase(con);
-    cond.Signal();
+    cond.notify_all();
   }
   bool ms_dispatch(Message *m) override {
     ceph_abort();
   }
   bool ms_handle_reset(Connection *con) override;
   void ms_handle_remote_reset(Connection *con) override {
-    Mutex::Locker l(lock);
+    std::lock_guard l{lock};
     list<uint64_t> c = conn_sent[con];
     for (list<uint64_t>::iterator it = c.begin();
          it != c.end(); ++it)
@@ -1619,11 +1576,11 @@ class SyntheticDispatcher : public Dispatcher {
       lderr(g_ceph_context) << __func__ << " conn=" << m->get_connection() << pl << dendl;
       reply_message(m, pl);
       m->put();
-      Mutex::Locker l(lock);
+      std::lock_guard l{lock};
       got_new = true;
-      cond.Signal();
+      cond.notify_all();
     } else {
-      Mutex::Locker l(lock);
+      std::lock_guard l{lock};
       if (sent.count(pl.seq)) {
 	lderr(g_ceph_context) << __func__ << " conn=" << m->get_connection() << pl << dendl;
 	ASSERT_EQ(conn_sent[m->get_connection()].front(), pl.seq);
@@ -1633,7 +1590,7 @@ class SyntheticDispatcher : public Dispatcher {
       }
       m->put();
       got_new = true;
-      cond.Signal();
+      cond.notify_all();
     }
   }
 
@@ -1658,7 +1615,7 @@ class SyntheticDispatcher : public Dispatcher {
     encode(pl, bl);
     m->set_data(bl);
     if (!con->get_messenger()->get_default_policy().lossy) {
-      Mutex::Locker l(lock);
+      std::lock_guard l{lock};
       sent[pl.seq] = pl.data;
       conn_sent[con].push_back(pl.seq);
     }
@@ -1667,12 +1624,12 @@ class SyntheticDispatcher : public Dispatcher {
   }
 
   uint64_t get_pending() {
-    Mutex::Locker l(lock);
+    std::lock_guard l{lock};
     return sent.size();
   }
 
   void clear_pending(ConnectionRef con) {
-    Mutex::Locker l(lock);
+    std::lock_guard l{lock};
 
     for (list<uint64_t>::iterator it = conn_sent[con].begin();
          it != conn_sent[con].end(); ++it)
@@ -1691,8 +1648,8 @@ class SyntheticDispatcher : public Dispatcher {
 
 
 class SyntheticWorkload {
-  Mutex lock;
-  Cond cond;
+  ceph::mutex lock = ceph::make_mutex("SyntheticWorkload::lock");
+  ceph::condition_variable cond;
   set<Messenger*> available_servers;
   set<Messenger*> available_clients;
   Messenger::Policy client_policy;
@@ -1709,8 +1666,7 @@ class SyntheticWorkload {
 
   SyntheticWorkload(int servers, int clients, string type, int random_num,
                     Messenger::Policy srv_policy, Messenger::Policy cli_policy)
-    : lock("SyntheticWorkload::lock"),
-      client_policy(cli_policy),
+    : client_policy(cli_policy),
       dispatcher(false, this),
       rng(time(NULL)),
       dummy_auth(g_ceph_context) {
@@ -1722,8 +1678,7 @@ class SyntheticWorkload {
     for (int i = 0; i < servers; ++i) {
       msgr = Messenger::create(g_ceph_context, type, entity_name_t::OSD(0),
                                "server", getpid()+i, 0);
-      snprintf(addr, sizeof(addr), "%s127.0.0.1:%d",
-	       (type == "simple") ? "v1:":"v2:",
+      snprintf(addr, sizeof(addr), "v2:127.0.0.1:%d",
 	       base_port+i);
       bind_addr.parse(addr);
       msgr->bind(bind_addr);
@@ -1741,8 +1696,7 @@ class SyntheticWorkload {
       msgr = Messenger::create(g_ceph_context, type, entity_name_t::CLIENT(-1),
                                "client", getpid()+i+servers, 0);
       if (cli_policy.standby) {
-        snprintf(addr, sizeof(addr), "%s127.0.0.1:%d",
-		 (type == "simple") ? "v1:":"v2:",
+        snprintf(addr, sizeof(addr), "v2:127.0.0.1:%d",
 		 base_port+i+servers);
         bind_addr.parse(addr);
         msgr->bind(bind_addr);
@@ -1775,11 +1729,11 @@ class SyntheticWorkload {
 
   ConnectionRef _get_random_connection() {
     while (dispatcher.get_pending() > max_in_flight) {
-      lock.Unlock();
+      lock.unlock();
       usleep(500);
-      lock.Lock();
+      lock.lock();
     }
-    ceph_assert(lock.is_locked());
+    ceph_assert(ceph_mutex_is_locked(lock));
     boost::uniform_int<> choose(0, available_connections.size() - 1);
     int index = choose(rng);
     map<ConnectionRef, pair<Messenger*, Messenger*> >::iterator i = available_connections.begin();
@@ -1792,7 +1746,7 @@ class SyntheticWorkload {
   }
 
   void generate_connection() {
-    Mutex::Locker l(lock);
+    std::lock_guard l{lock};
     if (!can_create_connection())
       return ;
 
@@ -1830,7 +1784,7 @@ class SyntheticWorkload {
   }
 
   void send_message() {
-    Mutex::Locker l(lock);
+    std::lock_guard l{lock};
     ConnectionRef conn = _get_random_connection();
     boost::uniform_int<> true_false(0, 99);
     int val = true_false(rng);
@@ -1850,7 +1804,7 @@ class SyntheticWorkload {
   }
 
   void drop_connection() {
-    Mutex::Locker l(lock);
+    std::lock_guard l{lock};
     if (available_connections.size() < 10)
       return;
     ConnectionRef conn = _get_random_connection();
@@ -1874,7 +1828,7 @@ class SyntheticWorkload {
   }
 
   void print_internal_state(bool detail=false) {
-    Mutex::Locker l(lock);
+    std::lock_guard l{lock};
     lderr(g_ceph_context) << "available_connections: " << available_connections.size()
          << " inflight messages: " << dispatcher.get_pending() << dendl;
     if (detail && !available_connections.empty()) {
@@ -1914,7 +1868,7 @@ class SyntheticWorkload {
   }
 
   void handle_reset(Connection *con) {
-    Mutex::Locker l(lock);
+    std::lock_guard l{lock};
     available_connections.erase(con);
     dispatcher.clear_pending(con);
   }
@@ -2129,15 +2083,13 @@ TEST_P(MessengerTest, SyntheticInjectTest4) {
 
 
 class MarkdownDispatcher : public Dispatcher {
-  Mutex lock;
+  ceph::mutex lock = ceph::make_mutex("MarkdownDispatcher::lock");
   set<ConnectionRef> conns;
   bool last_mark;
  public:
   std::atomic<uint64_t> count = { 0 };
-  explicit MarkdownDispatcher(bool s): Dispatcher(g_ceph_context), lock("MarkdownDispatcher::lock"),
+  explicit MarkdownDispatcher(bool s): Dispatcher(g_ceph_context),
                               last_mark(false) {
-    // don't need authorizers
-    ms_set_require_authorizer(false);
   }
   bool ms_can_fast_dispatch_any() const override { return false; }
   bool ms_can_fast_dispatch(const Message *m) const override {
@@ -2151,16 +2103,16 @@ class MarkdownDispatcher : public Dispatcher {
 
   void ms_handle_fast_connect(Connection *con) override {
     lderr(g_ceph_context) << __func__ << " " << con << dendl;
-    Mutex::Locker l(lock);
+    std::lock_guard l{lock};
     conns.insert(con);
   }
   void ms_handle_fast_accept(Connection *con) override {
-    Mutex::Locker l(lock);
+    std::lock_guard l{lock};
     conns.insert(con);
   }
   bool ms_dispatch(Message *m) override {
     lderr(g_ceph_context) << __func__ << " conn: " << m->get_connection() << dendl;
-    Mutex::Locker l(lock);
+    std::lock_guard l{lock};
     count++;
     conns.insert(m->get_connection());
     if (conns.size() < 2 && !last_mark) {
@@ -2184,13 +2136,13 @@ class MarkdownDispatcher : public Dispatcher {
   }
   bool ms_handle_reset(Connection *con) override {
     lderr(g_ceph_context) << __func__ << " " << con << dendl;
-    Mutex::Locker l(lock);
+    std::lock_guard l{lock};
     conns.erase(con);
     usleep(rand() % 500);
     return true;
   }
   void ms_handle_remote_reset(Connection *con) override {
-    Mutex::Locker l(lock);
+    std::lock_guard l{lock};
     conns.erase(con);
     lderr(g_ceph_context) << __func__ << " " << con << dendl;
   }
@@ -2213,19 +2165,13 @@ TEST_P(MessengerTest, MarkdownTest) {
   DummyAuthClientServer dummy_auth(g_ceph_context);
   dummy_auth.auth_registry.refresh_config();
   entity_addr_t bind_addr;
-  if (string(GetParam()) == "simple")
-    bind_addr.parse("v1:127.0.0.1:16800");
-  else
-    bind_addr.parse("v2:127.0.0.1:16800");
+  bind_addr.parse("v2:127.0.0.1:16800");
   server_msgr->bind(bind_addr);
   server_msgr->add_dispatcher_head(&srv_dispatcher);
   server_msgr->set_auth_client(&dummy_auth);
   server_msgr->set_auth_server(&dummy_auth);
   server_msgr->start();
-  if (string(GetParam()) == "simple")
-    bind_addr.parse("v1:127.0.0.1:16801");
-  else
-    bind_addr.parse("v2:127.0.0.1:16801");
+  bind_addr.parse("v2:127.0.0.1:16801");
   server_msgr2->bind(bind_addr);
   server_msgr2->add_dispatcher_head(&srv_dispatcher);
   server_msgr2->set_auth_client(&dummy_auth);
@@ -2273,27 +2219,13 @@ TEST_P(MessengerTest, MarkdownTest) {
   delete server_msgr2;
 }
 
-INSTANTIATE_TEST_CASE_P(
+INSTANTIATE_TEST_SUITE_P(
   Messenger,
   MessengerTest,
   ::testing::Values(
-    "async+posix",
-    "simple"
+    "async+posix"
   )
 );
-
-#else
-
-// Google Test may not support value-parameterized tests with some
-// compilers. If we use conditional compilation to compile out all
-// code referring to the gtest_main library, MSVC linker will not link
-// that library at all and consequently complain about missing entry
-// point defined in that library (fatal error LNK1561: entry point
-// must be defined). This dummy test keeps gtest_main linked in.
-TEST(DummyTest, ValueParameterizedTestsAreNotSupportedOnThisPlatform) {}
-
-#endif
-
 
 int main(int argc, char **argv) {
   vector<const char*> args;

@@ -18,27 +18,44 @@
 
 #include "Fwd.h"
 #include "crimson/thread/Throttle.h"
+#include "msg/Message.h"
 #include "msg/Policy.h"
 
 class AuthAuthorizer;
 
-namespace ceph::net {
+namespace crimson::auth {
+class AuthClient;
+class AuthServer;
+}
 
-using Throttle = ceph::thread::Throttle;
+namespace crimson::net {
+
+#ifdef UNIT_TESTS_BUILT
+class Interceptor;
+#endif
+
+using Throttle = crimson::thread::Throttle;
 using SocketPolicy = ceph::net::Policy<Throttle>;
 
 class Messenger {
   entity_name_t my_name;
   entity_addrvec_t my_addrs;
-  uint32_t global_seq = 0;
   uint32_t crc_flags = 0;
+  crimson::auth::AuthClient* auth_client = nullptr;
+  crimson::auth::AuthServer* auth_server = nullptr;
+  bool require_authorizer = true;
 
- public:
+public:
   Messenger(const entity_name_t& name)
     : my_name(name)
   {}
   virtual ~Messenger() {}
 
+#ifdef UNIT_TESTS_BUILT
+  Interceptor *interceptor = nullptr;
+#endif
+
+  entity_type_t get_mytype() const { return my_name.type(); }
   const entity_name_t& get_myname() const { return my_name; }
   const entity_addrvec_t& get_myaddrs() const { return my_addrs; }
   entity_addr_t get_myaddr() const { return my_addrs.front(); }
@@ -59,7 +76,7 @@ class Messenger {
 
   /// either return an existing connection to the peer,
   /// or a new pending connection
-  virtual seastar::future<ConnectionXRef>
+  virtual ConnectionRef
   connect(const entity_addr_t& peer_addr,
           const entity_type_t& peer_type) = 0;
 
@@ -69,13 +86,6 @@ class Messenger {
   /// stop listenening and wait for all connections to close. safe to destruct
   /// after this future becomes available
   virtual seastar::future<> shutdown() = 0;
-
-  uint32_t get_global_seq(uint32_t old=0) {
-    if (old > global_seq) {
-      global_seq = old;
-    }
-    return ++global_seq;
-  }
 
   uint32_t get_crc_flags() const {
     return crc_flags;
@@ -87,12 +97,20 @@ class Messenger {
     crc_flags |= MSG_CRC_HEADER;
   }
 
-  // get the local messenger shard if it is accessed by another core
-  virtual Messenger* get_local_shard() {
-    return this;
+  crimson::auth::AuthClient* get_auth_client() const { return auth_client; }
+  void set_auth_client(crimson::auth::AuthClient *ac) {
+    auth_client = ac;
+  }
+  crimson::auth::AuthServer* get_auth_server() const { return auth_server; }
+  void set_auth_server(crimson::auth::AuthServer *as) {
+    auth_server = as;
   }
 
   virtual void print(ostream& out) const = 0;
+
+  virtual SocketPolicy get_policy(entity_type_t peer_type) const = 0;
+
+  virtual SocketPolicy get_default_policy() const = 0;
 
   virtual void set_default_policy(const SocketPolicy& p) = 0;
 
@@ -100,11 +118,18 @@ class Messenger {
 
   virtual void set_policy_throttler(entity_type_t peer_type, Throttle* throttle) = 0;
 
-  static seastar::future<Messenger*>
+  // allow unauthenticated connections.  This is needed for compatibility with
+  // pre-nautilus OSDs, which do not authenticate the heartbeat sessions.
+  bool get_require_authorizer() const {
+    return require_authorizer;
+  }
+  void set_require_authorizer(bool r) {
+    require_authorizer = r;
+  }
+  static MessengerRef
   create(const entity_name_t& name,
          const std::string& lname,
-         const uint64_t nonce,
-         const int master_sid=-1);
+         const uint64_t nonce);
 };
 
 inline ostream& operator<<(ostream& out, const Messenger& msgr) {
@@ -114,4 +139,4 @@ inline ostream& operator<<(ostream& out, const Messenger& msgr) {
   return out;
 }
 
-} // namespace ceph::net
+} // namespace crimson::net

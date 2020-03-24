@@ -1,34 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2014 Intel Corporation
  */
 
 #include <stdio.h>
@@ -245,14 +216,15 @@ app_parse_flow_conf(const char *conf_str)
 	struct flow_conf *pconf;
 	uint64_t mask;
 
+	memset(vals, 0, sizeof(vals));
 	ret = app_parse_opt_vals(conf_str, ',', 6, vals);
 	if (ret < 4 || ret > 5)
 		return ret;
 
 	pconf = &qos_conf[nb_pfc];
 
-	pconf->rx_port = (uint8_t)vals[0];
-	pconf->tx_port = (uint8_t)vals[1];
+	pconf->rx_port = vals[0];
+	pconf->tx_port = vals[1];
 	pconf->rx_core = (uint8_t)vals[2];
 	pconf->wt_core = (uint8_t)vals[3];
 	if (ret == 5)
@@ -266,19 +238,19 @@ app_parse_flow_conf(const char *conf_str)
 	}
 
 	if (pconf->rx_port >= RTE_MAX_ETHPORTS) {
-		RTE_LOG(ERR, APP, "pfc %u: invalid rx port %"PRIu8" index\n",
+		RTE_LOG(ERR, APP, "pfc %u: invalid rx port %"PRIu16" index\n",
 				nb_pfc, pconf->rx_port);
 		return -1;
 	}
 	if (pconf->tx_port >= RTE_MAX_ETHPORTS) {
-		RTE_LOG(ERR, APP, "pfc %u: invalid tx port %"PRIu8" index\n",
+		RTE_LOG(ERR, APP, "pfc %u: invalid tx port %"PRIu16" index\n",
 				nb_pfc, pconf->tx_port);
 		return -1;
 	}
 
 	mask = 1lu << pconf->rx_port;
 	if (app_used_rx_port_mask & mask) {
-		RTE_LOG(ERR, APP, "pfc %u: rx port %"PRIu8" is used already\n",
+		RTE_LOG(ERR, APP, "pfc %u: rx port %"PRIu16" is used already\n",
 				nb_pfc, pconf->rx_port);
 		return -1;
 	}
@@ -287,7 +259,7 @@ app_parse_flow_conf(const char *conf_str)
 
 	mask = 1lu << pconf->tx_port;
 	if (app_used_tx_port_mask & mask) {
-		RTE_LOG(ERR, APP, "pfc %u: port %"PRIu8" is used already\n",
+		RTE_LOG(ERR, APP, "pfc %u: port %"PRIu16" is used already\n",
 				nb_pfc, pconf->tx_port);
 		return -1;
 	}

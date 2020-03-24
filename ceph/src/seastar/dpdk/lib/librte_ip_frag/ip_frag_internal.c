@@ -1,42 +1,11 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2014 Intel Corporation
  */
 
 #include <stddef.h>
 
 #include <rte_jhash.h>
-#ifdef RTE_MACHINE_CPUFLAG_SSE4_2
 #include <rte_hash_crc.h>
-#endif /* RTE_MACHINE_CPUFLAG_SSE4_2 */
 
 #include "ip_frag_common.h"
 
@@ -44,24 +13,6 @@
 
 #define	IP_FRAG_TBL_POS(tbl, sig)	\
 	((tbl)->pkt + ((sig) & (tbl)->entry_mask))
-
-#ifdef RTE_LIBRTE_IP_FRAG_TBL_STAT
-#define	IP_FRAG_TBL_STAT_UPDATE(s, f, v)	((s)->f += (v))
-#else
-#define	IP_FRAG_TBL_STAT_UPDATE(s, f, v)	do {} while (0)
-#endif /* IP_FRAG_TBL_STAT */
-
-/* local frag table helper functions */
-static inline void
-ip_frag_tbl_del(struct rte_ip_frag_tbl *tbl, struct rte_ip_frag_death_row *dr,
-	struct ip_frag_pkt *fp)
-{
-	ip_frag_free(fp, dr);
-	ip_frag_key_invalidate(&fp->key);
-	TAILQ_REMOVE(&tbl->lru, fp, lru);
-	tbl->use_entries--;
-	IP_FRAG_TBL_STAT_UPDATE(&tbl->stat, del_num, 1);
-}
 
 static inline void
 ip_frag_tbl_add(struct rte_ip_frag_tbl *tbl,  struct ip_frag_pkt *fp,
@@ -94,14 +45,14 @@ ipv4_frag_hash(const struct ip_frag_key *key, uint32_t *v1, uint32_t *v2)
 
 	p = (const uint32_t *)&key->src_dst;
 
-#ifdef RTE_MACHINE_CPUFLAG_SSE4_2
+#ifdef RTE_ARCH_X86
 	v = rte_hash_crc_4byte(p[0], PRIME_VALUE);
 	v = rte_hash_crc_4byte(p[1], v);
 	v = rte_hash_crc_4byte(key->id, v);
 #else
 
 	v = rte_jhash_3words(p[0], p[1], key->id, PRIME_VALUE);
-#endif /* RTE_MACHINE_CPUFLAG_SSE4_2 */
+#endif /* RTE_ARCH_X86 */
 
 	*v1 =  v;
 	*v2 = (v << 7) + (v >> 14);
@@ -115,7 +66,7 @@ ipv6_frag_hash(const struct ip_frag_key *key, uint32_t *v1, uint32_t *v2)
 
 	p = (const uint32_t *) &key->src_dst;
 
-#ifdef RTE_MACHINE_CPUFLAG_SSE4_2
+#ifdef RTE_ARCH_X86
 	v = rte_hash_crc_4byte(p[0], PRIME_VALUE);
 	v = rte_hash_crc_4byte(p[1], v);
 	v = rte_hash_crc_4byte(p[2], v);
@@ -130,7 +81,7 @@ ipv6_frag_hash(const struct ip_frag_key *key, uint32_t *v1, uint32_t *v2)
 	v = rte_jhash_3words(p[0], p[1], p[2], PRIME_VALUE);
 	v = rte_jhash_3words(p[3], p[4], p[5], v);
 	v = rte_jhash_3words(p[6], p[7], key->id, v);
-#endif /* RTE_MACHINE_CPUFLAG_SSE4_2 */
+#endif /* RTE_ARCH_X86 */
 
 	*v1 =  v;
 	*v2 = (v << 7) + (v >> 14);
@@ -162,7 +113,7 @@ ip_frag_process(struct ip_frag_pkt *fp, struct rte_ip_frag_death_row *dr,
 	}
 
 	/*
-	 * errorneous packet: either exceeed max allowed number of fragments,
+	 * erroneous packet: either exceed max allowed number of fragments,
 	 * or duplicate first/last fragment encountered.
 	 */
 	if (idx >= sizeof (fp->frags) / sizeof (fp->frags[0])) {
@@ -183,7 +134,7 @@ ip_frag_process(struct ip_frag_pkt *fp, struct rte_ip_frag_death_row *dr,
 				fp->frags[IP_LAST_FRAG_IDX].len);
 		else
 			IP_FRAG_LOG(DEBUG, "%s:%d invalid fragmented packet:\n"
-				"ipv4_frag_pkt: %p, key: <" IPv6_KEY_BYTES_FMT ", %#x>, "
+				"ipv6_frag_pkt: %p, key: <" IPv6_KEY_BYTES_FMT ", %#x>, "
 				"total_size: %u, frag_size: %u, last_idx: %u\n"
 				"first fragment: ofs: %u, len: %u\n"
 				"last fragment: ofs: %u, len: %u\n\n",
@@ -241,7 +192,7 @@ ip_frag_process(struct ip_frag_pkt *fp, struct rte_ip_frag_death_row *dr,
 				fp->frags[IP_LAST_FRAG_IDX].len);
 		else
 			IP_FRAG_LOG(DEBUG, "%s:%d invalid fragmented packet:\n"
-				"ipv4_frag_pkt: %p, key: <" IPv6_KEY_BYTES_FMT ", %#x>, "
+				"ipv6_frag_pkt: %p, key: <" IPv6_KEY_BYTES_FMT ", %#x>, "
 				"total_size: %u, frag_size: %u, last_idx: %u\n"
 				"first fragment: ofs: %u, len: %u\n"
 				"last fragment: ofs: %u, len: %u\n\n",
@@ -362,7 +313,7 @@ ip_frag_lookup(struct rte_ip_frag_tbl *tbl,
 		if (p1->key.key_len == IPV4_KEYLEN)
 			IP_FRAG_LOG(DEBUG, "%s:%d:\n"
 					"tbl: %p, max_entries: %u, use_entries: %u\n"
-					"ipv6_frag_pkt line0: %p, index: %u from %u\n"
+					"ipv4_frag_pkt line0: %p, index: %u from %u\n"
 			"key: <%" PRIx64 ", %#x>, start: %" PRIu64 "\n",
 					__func__, __LINE__,
 					tbl, tbl->max_entries, tbl->use_entries,
@@ -388,7 +339,7 @@ ip_frag_lookup(struct rte_ip_frag_tbl *tbl,
 		if (p2->key.key_len == IPV4_KEYLEN)
 			IP_FRAG_LOG(DEBUG, "%s:%d:\n"
 					"tbl: %p, max_entries: %u, use_entries: %u\n"
-					"ipv6_frag_pkt line1: %p, index: %u from %u\n"
+					"ipv4_frag_pkt line1: %p, index: %u from %u\n"
 			"key: <%" PRIx64 ", %#x>, start: %" PRIu64 "\n",
 					__func__, __LINE__,
 					tbl, tbl->max_entries, tbl->use_entries,

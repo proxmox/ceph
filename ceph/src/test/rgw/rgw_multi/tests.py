@@ -7,7 +7,7 @@ import logging
 import errno
 
 try:
-    from itertools import izip_longest as zip_longest
+    from itertools import izip_longest as zip_longest  # type: ignore
 except ImportError:
     from itertools import zip_longest
 from itertools import combinations
@@ -66,18 +66,6 @@ log = logging.getLogger('rgw_multi.tests')
 num_buckets = 0
 run_prefix=''.join(random.choice(string.ascii_lowercase) for _ in range(6))
 
-def get_gateway_connection(gateway, credentials):
-    """ connect to the given gateway """
-    if gateway.connection is None:
-        gateway.connection = boto.connect_s3(
-                aws_access_key_id = credentials.access_key,
-                aws_secret_access_key = credentials.secret,
-                host = gateway.host,
-                port = gateway.port,
-                is_secure = False,
-                calling_format = boto.s3.connection.OrdinaryCallingFormat())
-    return gateway.connection
-
 def get_zone_connection(zone, credentials):
     """ connect to the zone's first gateway """
     if isinstance(credentials, list):
@@ -91,15 +79,6 @@ def mdlog_list(zone, period = None):
     (mdlog_json, _) = zone.cluster.admin(cmd, read_only=True)
     mdlog_json = mdlog_json.decode('utf-8')
     return json.loads(mdlog_json)
-
-def meta_sync_status(zone):
-    while True:
-        cmd = ['metadata', 'sync', 'status'] + zone.zone_args()
-        meta_sync_status_json, retcode = zone.cluster.admin(cmd, check_retcode=False, read_only=True)
-        if retcode == 0:
-            break
-        assert(retcode == 2) # ENOENT
-        time.sleep(5)
 
 def mdlog_autotrim(zone):
     zone.cluster.admin(['mdlog', 'autotrim'])
@@ -282,16 +261,12 @@ def bucket_sync_status(target_zone, source_zone, bucket_name):
         assert(retcode == 2) # ENOENT
 
     bucket_sync_status_json = bucket_sync_status_json.decode('utf-8')
-    log.debug('current bucket sync markers=%s', bucket_sync_status_json)
     sync_status = json.loads(bucket_sync_status_json)
 
     markers={}
     for entry in sync_status:
         val = entry['val']
-        if val['status'] == 'incremental-sync':
-            pos = val['inc_marker']['position'].split('#')[-1] # get rid of shard id; e.g., 6#00000000002.132.3 -> 00000000002.132.3
-        else:
-            pos = ''
+        pos = val['inc_marker']['position'].split('#')[-1] # get rid of shard id; e.g., 6#00000000002.132.3 -> 00000000002.132.3
         markers[entry['key']] = pos
 
     return markers
@@ -366,7 +341,7 @@ def compare_bucket_status(target_zone, source_zone, bucket_name, log_status, syn
     return True
 
 def zone_data_checkpoint(target_zone, source_zone):
-    if target_zone == source_zone:
+    if not target_zone.syncs_from(source_zone.name):
         return
 
     log_status = data_source_log_status(source_zone)
@@ -396,7 +371,7 @@ def zonegroup_data_checkpoint(zonegroup_conns):
             zone_data_checkpoint(target_conn.zone, source_conn.zone)
 
 def zone_bucket_checkpoint(target_zone, source_zone, bucket_name):
-    if target_zone == source_zone:
+    if not target_zone.syncs_from(source_zone.name):
         return
 
     log_status = bucket_source_log_status(source_zone, bucket_name)

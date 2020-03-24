@@ -1,39 +1,16 @@
-..  BSD LICENSE
-    Copyright 2015 Chelsio Communications.
-    All rights reserved.
-
-    Redistribution and use in source and binary forms, with or without
-    modification, are permitted provided that the following conditions
-    are met:
-
-    * Redistributions of source code must retain the above copyright
-    notice, this list of conditions and the following disclaimer.
-    * Redistributions in binary form must reproduce the above copyright
-    notice, this list of conditions and the following disclaimer in
-    the documentation and/or other materials provided with the
-    distribution.
-    * Neither the name of Chelsio Communications nor the names of its
-    contributors may be used to endorse or promote products derived
-    from this software without specific prior written permission.
-
-    THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-    "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-    LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-    A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-    OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-    SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-    LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-    DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-    THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-    (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-    OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+.. SPDX-License-Identifier: BSD-3-Clause
+   Copyright(c) 2014-2018 Chelsio Communications.
+   All rights reserved.
 
 CXGBE Poll Mode Driver
 ======================
 
 The CXGBE PMD (**librte_pmd_cxgbe**) provides poll mode driver support
-for **Chelsio T5** 10/40 Gbps family of adapters. CXGBE PMD has support
-for the latest Linux and FreeBSD operating systems.
+for **Chelsio Terminator** 10/25/40/100 Gbps family of adapters. CXGBE PMD
+has support for the latest Linux and FreeBSD operating systems.
+
+CXGBEVF PMD provides poll mode driver support for SR-IOV Virtual functions
+and has support for the latest Linux operating systems.
 
 More information can be found at `Chelsio Communications Official Website
 <http://www.chelsio.com>`_.
@@ -41,26 +18,32 @@ More information can be found at `Chelsio Communications Official Website
 Features
 --------
 
-CXGBE PMD has support for:
+CXGBE and CXGBEVF PMD has support for:
 
 - Multiple queues for TX and RX
 - Receiver Side Steering (RSS)
+  Receiver Side Steering (RSS) on IPv4, IPv6, IPv4-TCP/UDP, IPv6-TCP/UDP.
+  For 4-tuple, enabling 'RSS on TCP' and 'RSS on TCP + UDP' is supported.
 - VLAN filtering
 - Checksum offload
 - Promiscuous mode
 - All multicast mode
 - Port hardware statistics
 - Jumbo frames
+- Flow API - Support for both Wildcard (LE-TCAM) and Exact (HASH) match filters.
 
 Limitations
 -----------
 
-The Chelsio T5 devices provide two/four ports but expose a single PCI bus
-address, thus, librte_pmd_cxgbe registers itself as a
-PCI driver that allocates one Ethernet device per detected port.
+The Chelsio Terminator series of devices provide two/four ports but
+expose a single PCI bus address, thus, librte_pmd_cxgbe registers
+itself as a PCI driver that allocates one Ethernet device per detected
+port.
 
 For this reason, one cannot whitelist/blacklist a single port without
 whitelisting/blacklisting the other ports on the same device.
+
+.. _t5-nics:
 
 Supported Chelsio T5 NICs
 -------------------------
@@ -70,10 +53,24 @@ Supported Chelsio T5 NICs
 - 40G NICs: T580-CR, T580-LP-CR, T580-SO-CR
 - Other T5 NICs: T522-CR
 
+.. _t6-nics:
+
+Supported Chelsio T6 NICs
+-------------------------
+
+- 25G NICs: T6425-CR, T6225-CR, T6225-LL-CR, T6225-SO-CR
+- 100G NICs: T62100-CR, T62100-LP-CR, T62100-SO-CR
+
+Supported SR-IOV Chelsio NICs
+-----------------------------
+
+SR-IOV virtual functions are supported on all the Chelsio NICs listed
+in :ref:`t5-nics` and :ref:`t6-nics`.
+
 Prerequisites
 -------------
 
-- Requires firmware version **1.13.32.0** and higher. Visit
+- Requires firmware version **1.17.14.0** and higher. Visit
   `Chelsio Download Center <http://service.chelsio.com>`_ to get latest firmware
   bundled with the latest Chelsio Unified Wire package.
 
@@ -103,6 +100,10 @@ enabling debugging options may affect system performance.
 
   Toggle compilation of librte_pmd_cxgbe driver.
 
+  .. note::
+
+     This controls compilation of both CXGBE and CXGBEVF PMD.
+
 - ``CONFIG_RTE_LIBRTE_CXGBE_DEBUG`` (default **n**)
 
   Toggle display of generic debugging messages.
@@ -122,6 +123,32 @@ enabling debugging options may affect system performance.
 - ``CONFIG_RTE_LIBRTE_CXGBE_DEBUG_RX`` (default **n**)
 
   Toggle display of receiving data path run-time check messages.
+
+- ``CONFIG_RTE_LIBRTE_CXGBE_TPUT`` (default **y**)
+
+  Toggle behavior to prefer Throughput or Latency.
+
+Runtime Options
+~~~~~~~~~~~~~~~
+
+The following ``devargs`` options can be enabled at runtime. They must
+be passed as part of EAL arguments. For example,
+
+.. code-block:: console
+
+   testpmd -w 02:00.4,keep_ovlan=1 -- -i
+
+- ``keep_ovlan`` (default **0**)
+
+  Toggle behavior to keep/strip outer VLAN in Q-in-Q packets. If
+  enabled, the outer VLAN tag is preserved in Q-in-Q packets. Otherwise,
+  the outer VLAN tag is stripped in Q-in-Q packets.
+
+- ``force_link_up`` (default **0**)
+
+  When set to 1, CXGBEVF PMD always forces link as up for all VFs on
+  underlying Chelsio NICs. This enables multiple VFs on the same NIC
+  to send traffic to each other even when the physical link is down.
 
 .. _driver-compilation:
 
@@ -197,12 +224,12 @@ Unified Wire package for Linux operating system are as follows:
 
    .. code-block:: console
 
-      firmware-version: 1.13.32.0, TP 0.1.4.8
+      firmware-version: 1.17.14.0, TP 0.1.4.9
 
 Running testpmd
 ~~~~~~~~~~~~~~~
 
-This section demonstrates how to launch **testpmd** with Chelsio T5
+This section demonstrates how to launch **testpmd** with Chelsio
 devices managed by librte_pmd_cxgbe in Linux operating system.
 
 #. Load the kernel module:
@@ -226,7 +253,7 @@ devices managed by librte_pmd_cxgbe in Linux operating system.
 
    .. note::
 
-      Both the interfaces of a Chelsio T5 2-port adapter are bound to the
+      Both the interfaces of a Chelsio 2-port adapter are bound to the
       same PCI bus address.
 
 #. Unload the kernel module:
@@ -243,7 +270,7 @@ devices managed by librte_pmd_cxgbe in Linux operating system.
 
    .. note::
 
-      Currently, CXGBE PMD only supports the binding of PF4 for Chelsio T5 NICs.
+      Currently, CXGBE PMD only supports the binding of PF4 for Chelsio NICs.
 
    Example output:
 
@@ -255,7 +282,7 @@ devices managed by librte_pmd_cxgbe in Linux operating system.
       EAL:   PCI memory mapped at 0x7fd7c0200000
       EAL:   PCI memory mapped at 0x7fd77cdfd000
       EAL:   PCI memory mapped at 0x7fd7c10b7000
-      PMD: rte_cxgbe_pmd: fw: 1.13.32.0, TP: 0.1.4.8
+      PMD: rte_cxgbe_pmd: fw: 1.17.14.0, TP: 0.1.4.9
       PMD: rte_cxgbe_pmd: Coming up as MASTER: Initializing adapter
       Interactive-mode selected
       Configuring Port 0 (socket 0)
@@ -274,6 +301,114 @@ devices managed by librte_pmd_cxgbe in Linux operating system.
 
       Flow control pause TX/RX is disabled by default and can be enabled via
       testpmd. Refer section :ref:`flow-control` for more details.
+
+Configuring SR-IOV Virtual Functions
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+This section demonstrates how to enable SR-IOV virtual functions
+on Chelsio NICs and demonstrates how to run testpmd with SR-IOV
+virtual functions.
+
+#. Load the kernel module:
+
+   .. code-block:: console
+
+      modprobe cxgb4
+
+#. Get the PCI bus addresses of the interfaces bound to cxgb4 driver:
+
+   .. code-block:: console
+
+      dmesg | tail -2
+
+   Example output:
+
+   .. code-block:: console
+
+      cxgb4 0000:02:00.4 p1p1: renamed from eth0
+      cxgb4 0000:02:00.4 p1p2: renamed from eth1
+
+   .. note::
+
+      Both the interfaces of a Chelsio 2-port adapter are bound to the
+      same PCI bus address.
+
+#. Use ifconfig to get the interface name assigned to Chelsio card:
+
+   .. code-block:: console
+
+      ifconfig -a | grep "00:07:43"
+
+   Example output:
+
+   .. code-block:: console
+
+      p1p1      Link encap:Ethernet  HWaddr 00:07:43:2D:EA:C0
+      p1p2      Link encap:Ethernet  HWaddr 00:07:43:2D:EA:C8
+
+#. Bring up the interfaces:
+
+   .. code-block:: console
+
+      ifconfig p1p1 up
+      ifconfig p1p2 up
+
+#. Instantiate SR-IOV Virtual Functions. PF0..3 can be used for
+   SR-IOV VFs. Multiple VFs can be instantiated on each of PF0..3.
+   To instantiate one SR-IOV VF on each PF0 and PF1:
+
+   .. code-block:: console
+
+      echo 1 > /sys/bus/pci/devices/0000\:02\:00.0/sriov_numvfs
+      echo 1 > /sys/bus/pci/devices/0000\:02\:00.1/sriov_numvfs
+
+#. Get the PCI bus addresses of the virtual functions:
+
+   .. code-block:: console
+
+      lspci | grep -i "Chelsio" | grep -i "VF"
+
+   Example output:
+
+   .. code-block:: console
+
+      02:01.0 Ethernet controller: Chelsio Communications Inc T540-CR Unified Wire Ethernet Controller [VF]
+      02:01.1 Ethernet controller: Chelsio Communications Inc T540-CR Unified Wire Ethernet Controller [VF]
+
+#. Running testpmd
+
+   Follow instructions available in the document
+   :ref:`compiling and testing a PMD for a NIC <pmd_build_and_test>`
+   to bind virtual functions and run testpmd.
+
+   Example output:
+
+   .. code-block:: console
+
+      [...]
+      EAL: PCI device 0000:02:01.0 on NUMA socket 0
+      EAL:   probe driver: 1425:5803 net_cxgbevf
+      PMD: rte_cxgbe_pmd: Firmware version: 1.17.14.0
+      PMD: rte_cxgbe_pmd: TP Microcode version: 0.1.4.9
+      PMD: rte_cxgbe_pmd: Chelsio rev 0
+      PMD: rte_cxgbe_pmd: No bootstrap loaded
+      PMD: rte_cxgbe_pmd: No Expansion ROM loaded
+      PMD: rte_cxgbe_pmd:  0000:02:01.0 Chelsio rev 0 1G/10GBASE-SFP
+      EAL: PCI device 0000:02:01.1 on NUMA socket 0
+      EAL:   probe driver: 1425:5803 net_cxgbevf
+      PMD: rte_cxgbe_pmd: Firmware version: 1.17.14.0
+      PMD: rte_cxgbe_pmd: TP Microcode version: 0.1.4.9
+      PMD: rte_cxgbe_pmd: Chelsio rev 0
+      PMD: rte_cxgbe_pmd: No bootstrap loaded
+      PMD: rte_cxgbe_pmd: No Expansion ROM loaded
+      PMD: rte_cxgbe_pmd:  0000:02:01.1 Chelsio rev 0 1G/10GBASE-SFP
+      Configuring Port 0 (socket 0)
+      Port 0: 06:44:29:44:40:00
+      Configuring Port 1 (socket 0)
+      Port 1: 06:44:29:44:40:10
+      Checking link statuses...
+      Done
+      testpmd>
 
 FreeBSD
 -------
@@ -339,12 +474,12 @@ Unified Wire package for FreeBSD operating system are as follows:
 
    .. code-block:: console
 
-      dev.t5nex.0.firmware_version: 1.13.32.0
+      dev.t5nex.0.firmware_version: 1.17.14.0
 
 Running testpmd
 ~~~~~~~~~~~~~~~
 
-This section demonstrates how to launch **testpmd** with Chelsio T5
+This section demonstrates how to launch **testpmd** with Chelsio
 devices managed by librte_pmd_cxgbe in FreeBSD operating system.
 
 #. Change to DPDK source directory where the target has been compiled in
@@ -358,7 +493,7 @@ devices managed by librte_pmd_cxgbe in FreeBSD operating system.
 
    .. code-block:: console
 
-      cp x86_64-native-bsdapp-clang/kmod/contigmem.ko /boot/kernel/
+      cp x86_64-native-freebsd-clang/kmod/contigmem.ko /boot/kernel/
 
 #. Add the following lines to /boot/loader.conf:
 
@@ -413,7 +548,7 @@ devices managed by librte_pmd_cxgbe in FreeBSD operating system.
 
    .. note::
 
-      Both the interfaces of a Chelsio T5 2-port adapter are bound to the
+      Both the interfaces of a Chelsio 2-port adapter are bound to the
       same PCI bus address.
 
 #. Unload the kernel module:
@@ -433,19 +568,19 @@ devices managed by librte_pmd_cxgbe in FreeBSD operating system.
 
    .. note::
 
-      Currently, CXGBE PMD only supports the binding of PF4 for Chelsio T5 NICs.
+      Currently, CXGBE PMD only supports the binding of PF4 for Chelsio NICs.
 
 #. Load nic_uio kernel driver:
 
    .. code-block:: console
 
-      kldload ./x86_64-native-bsdapp-clang/kmod/nic_uio.ko
+      kldload ./x86_64-native-freebsd-clang/kmod/nic_uio.ko
 
 #. Start testpmd with basic parameters:
 
    .. code-block:: console
 
-      ./x86_64-native-bsdapp-clang/app/testpmd -l 0-3 -n 4 -w 0000:02:00.4 -- -i
+      ./x86_64-native-freebsd-clang/app/testpmd -l 0-3 -n 4 -w 0000:02:00.4 -- -i
 
    Example output:
 
@@ -457,7 +592,7 @@ devices managed by librte_pmd_cxgbe in FreeBSD operating system.
       EAL:   PCI memory mapped at 0x8007ec000
       EAL:   PCI memory mapped at 0x842800000
       EAL:   PCI memory mapped at 0x80086c000
-      PMD: rte_cxgbe_pmd: fw: 1.13.32.0, TP: 0.1.4.8
+      PMD: rte_cxgbe_pmd: fw: 1.17.14.0, TP: 0.1.4.9
       PMD: rte_cxgbe_pmd: Coming up as MASTER: Initializing adapter
       Interactive-mode selected
       Configuring Port 0 (socket 0)

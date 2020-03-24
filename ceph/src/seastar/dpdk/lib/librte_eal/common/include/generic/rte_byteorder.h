@@ -1,34 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2014 Intel Corporation
  */
 
 #ifndef _RTE_BYTEORDER_H_
@@ -44,13 +15,14 @@
  */
 
 #include <stdint.h>
-#ifdef RTE_EXEC_ENV_BSDAPP
+#ifdef RTE_EXEC_ENV_FREEBSD
 #include <sys/endian.h>
 #else
 #include <endian.h>
 #endif
 
 #include <rte_common.h>
+#include <rte_config.h>
 
 /*
  * Compile-time endianness detection
@@ -74,6 +46,73 @@
 #elif defined __LITTLE_ENDIAN__
 #define RTE_BYTE_ORDER RTE_LITTLE_ENDIAN
 #endif
+#if !defined(RTE_BYTE_ORDER)
+#error Unknown endianness.
+#endif
+
+#define RTE_STATIC_BSWAP16(v) \
+	((((uint16_t)(v) & UINT16_C(0x00ff)) << 8) | \
+	 (((uint16_t)(v) & UINT16_C(0xff00)) >> 8))
+
+#define RTE_STATIC_BSWAP32(v) \
+	((((uint32_t)(v) & UINT32_C(0x000000ff)) << 24) | \
+	 (((uint32_t)(v) & UINT32_C(0x0000ff00)) <<  8) | \
+	 (((uint32_t)(v) & UINT32_C(0x00ff0000)) >>  8) | \
+	 (((uint32_t)(v) & UINT32_C(0xff000000)) >> 24))
+
+#define RTE_STATIC_BSWAP64(v) \
+	((((uint64_t)(v) & UINT64_C(0x00000000000000ff)) << 56) | \
+	 (((uint64_t)(v) & UINT64_C(0x000000000000ff00)) << 40) | \
+	 (((uint64_t)(v) & UINT64_C(0x0000000000ff0000)) << 24) | \
+	 (((uint64_t)(v) & UINT64_C(0x00000000ff000000)) <<  8) | \
+	 (((uint64_t)(v) & UINT64_C(0x000000ff00000000)) >>  8) | \
+	 (((uint64_t)(v) & UINT64_C(0x0000ff0000000000)) >> 24) | \
+	 (((uint64_t)(v) & UINT64_C(0x00ff000000000000)) >> 40) | \
+	 (((uint64_t)(v) & UINT64_C(0xff00000000000000)) >> 56))
+
+/*
+ * These macros are functionally similar to rte_cpu_to_(be|le)(16|32|64)(),
+ * they take values in host CPU order and return them converted to the
+ * intended endianness.
+ *
+ * They resolve at compilation time to integer constants which can safely be
+ * used with static initializers, since those cannot involve function calls.
+ *
+ * On the other hand, they are not as optimized as their rte_cpu_to_*()
+ * counterparts, therefore applications should refrain from using them on
+ * variable values, particularly inside performance-sensitive code.
+ */
+#if RTE_BYTE_ORDER == RTE_BIG_ENDIAN
+#define RTE_BE16(v) (rte_be16_t)(v)
+#define RTE_BE32(v) (rte_be32_t)(v)
+#define RTE_BE64(v) (rte_be64_t)(v)
+#define RTE_LE16(v) (rte_le16_t)(RTE_STATIC_BSWAP16(v))
+#define RTE_LE32(v) (rte_le32_t)(RTE_STATIC_BSWAP32(v))
+#define RTE_LE64(v) (rte_le64_t)(RTE_STATIC_BSWAP64(v))
+#elif RTE_BYTE_ORDER == RTE_LITTLE_ENDIAN
+#define RTE_BE16(v) (rte_be16_t)(RTE_STATIC_BSWAP16(v))
+#define RTE_BE32(v) (rte_be32_t)(RTE_STATIC_BSWAP32(v))
+#define RTE_BE64(v) (rte_be64_t)(RTE_STATIC_BSWAP64(v))
+#define RTE_LE16(v) (rte_be16_t)(v)
+#define RTE_LE32(v) (rte_be32_t)(v)
+#define RTE_LE64(v) (rte_be64_t)(v)
+#else
+#error Unsupported endianness.
+#endif
+
+/*
+ * The following types should be used when handling values according to a
+ * specific byte ordering, which may differ from that of the host CPU.
+ *
+ * Libraries, public APIs and applications are encouraged to use them for
+ * documentation purposes.
+ */
+typedef uint16_t rte_be16_t; /**< 16-bit big-endian value. */
+typedef uint32_t rte_be32_t; /**< 32-bit big-endian value. */
+typedef uint64_t rte_be64_t; /**< 64-bit big-endian value. */
+typedef uint16_t rte_le16_t; /**< 16-bit little-endian value. */
+typedef uint32_t rte_le32_t; /**< 32-bit little-endian value. */
+typedef uint64_t rte_le64_t; /**< 64-bit little-endian value. */
 
 /*
  * An internal function to swap bytes in a 16-bit value.
@@ -84,8 +123,7 @@
 static inline uint16_t
 rte_constant_bswap16(uint16_t x)
 {
-	return (uint16_t)(((x & 0x00ffU) << 8) |
-		((x & 0xff00U) >> 8));
+	return (uint16_t)RTE_STATIC_BSWAP16(x);
 }
 
 /*
@@ -97,10 +135,7 @@ rte_constant_bswap16(uint16_t x)
 static inline uint32_t
 rte_constant_bswap32(uint32_t x)
 {
-	return  ((x & 0x000000ffUL) << 24) |
-		((x & 0x0000ff00UL) << 8) |
-		((x & 0x00ff0000UL) >> 8) |
-		((x & 0xff000000UL) >> 24);
+	return (uint32_t)RTE_STATIC_BSWAP32(x);
 }
 
 /*
@@ -112,14 +147,7 @@ rte_constant_bswap32(uint32_t x)
 static inline uint64_t
 rte_constant_bswap64(uint64_t x)
 {
-	return  ((x & 0x00000000000000ffULL) << 56) |
-		((x & 0x000000000000ff00ULL) << 40) |
-		((x & 0x0000000000ff0000ULL) << 24) |
-		((x & 0x00000000ff000000ULL) <<  8) |
-		((x & 0x000000ff00000000ULL) >>  8) |
-		((x & 0x0000ff0000000000ULL) >> 24) |
-		((x & 0x00ff000000000000ULL) >> 40) |
-		((x & 0xff00000000000000ULL) >> 56);
+	return (uint64_t)RTE_STATIC_BSWAP64(x);
 }
 
 
@@ -143,65 +171,65 @@ static uint64_t rte_bswap64(uint64_t x);
 /**
  * Convert a 16-bit value from CPU order to little endian.
  */
-static uint16_t rte_cpu_to_le_16(uint16_t x);
+static rte_le16_t rte_cpu_to_le_16(uint16_t x);
 
 /**
  * Convert a 32-bit value from CPU order to little endian.
  */
-static uint32_t rte_cpu_to_le_32(uint32_t x);
+static rte_le32_t rte_cpu_to_le_32(uint32_t x);
 
 /**
  * Convert a 64-bit value from CPU order to little endian.
  */
-static uint64_t rte_cpu_to_le_64(uint64_t x);
+static rte_le64_t rte_cpu_to_le_64(uint64_t x);
 
 
 /**
  * Convert a 16-bit value from CPU order to big endian.
  */
-static uint16_t rte_cpu_to_be_16(uint16_t x);
+static rte_be16_t rte_cpu_to_be_16(uint16_t x);
 
 /**
  * Convert a 32-bit value from CPU order to big endian.
  */
-static uint32_t rte_cpu_to_be_32(uint32_t x);
+static rte_be32_t rte_cpu_to_be_32(uint32_t x);
 
 /**
  * Convert a 64-bit value from CPU order to big endian.
  */
-static uint64_t rte_cpu_to_be_64(uint64_t x);
+static rte_be64_t rte_cpu_to_be_64(uint64_t x);
 
 
 /**
  * Convert a 16-bit value from little endian to CPU order.
  */
-static uint16_t rte_le_to_cpu_16(uint16_t x);
+static uint16_t rte_le_to_cpu_16(rte_le16_t x);
 
 /**
  * Convert a 32-bit value from little endian to CPU order.
  */
-static uint32_t rte_le_to_cpu_32(uint32_t x);
+static uint32_t rte_le_to_cpu_32(rte_le32_t x);
 
 /**
  * Convert a 64-bit value from little endian to CPU order.
  */
-static uint64_t rte_le_to_cpu_64(uint64_t x);
+static uint64_t rte_le_to_cpu_64(rte_le64_t x);
 
 
 /**
  * Convert a 16-bit value from big endian to CPU order.
  */
-static uint16_t rte_be_to_cpu_16(uint16_t x);
+static uint16_t rte_be_to_cpu_16(rte_be16_t x);
 
 /**
  * Convert a 32-bit value from big endian to CPU order.
  */
-static uint32_t rte_be_to_cpu_32(uint32_t x);
+static uint32_t rte_be_to_cpu_32(rte_be32_t x);
 
 /**
  * Convert a 64-bit value from big endian to CPU order.
  */
-static uint64_t rte_be_to_cpu_64(uint64_t x);
+static uint64_t rte_be_to_cpu_64(rte_be64_t x);
 
 #endif /* __DOXYGEN__ */
 

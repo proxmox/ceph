@@ -26,7 +26,6 @@
 #include "gtest/gtest.h"
 #include "common/ceph_argparse.h"
 #include "common/debug.h"
-#include "global/global_init.h"
 #include "include/ceph_assert.h"
 
 #define dout_subsys ceph_subsys_rgw
@@ -242,7 +241,8 @@ TEST(LibRGW, SETUP_HIER1)
 	  std::cout << "creating: " << bucket_name << ":" << obj_name
 		    << std::endl;
 	}
-	RGWPutObjRequest req(cct, fs_private->get_user(), bucket_name, obj_name,
+	rgw::sal::RGWRadosUser ruser(rgwlib.get_store(), *fs_private->get_user());
+	RGWPutObjRequest req(cct, &ruser, bucket_name, obj_name,
 			    bl);
 	int rc = rgwlib.get_fe()->execute_req(&req);
 	int rc2 = req.get_ret();

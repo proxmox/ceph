@@ -1,33 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2017 Intel Corporation. All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2017 Intel Corporation
  */
 
 #include <rte_cryptodev.h>
@@ -67,7 +39,6 @@ schedule_enqueue(void *qp, struct rte_crypto_op **ops, uint16_t nb_ops)
 	struct scheduler_qp_ctx *qp_ctx = qp;
 	struct psd_scheduler_qp_ctx *psd_qp_ctx = qp_ctx->private_qp_ctx;
 	struct rte_crypto_op *sched_ops[NB_PKT_SIZE_SLAVES][nb_ops];
-	struct scheduler_session *sess;
 	uint32_t in_flight_ops[NB_PKT_SIZE_SLAVES] = {
 			psd_qp_ctx->primary_slave.nb_inflight_cops,
 			psd_qp_ctx->secondary_slave.nb_inflight_cops
@@ -97,8 +68,6 @@ schedule_enqueue(void *qp, struct rte_crypto_op **ops, uint16_t nb_ops)
 		rte_prefetch0(ops[i + 7]->sym);
 		rte_prefetch0(ops[i + 7]->sym->session);
 
-		sess = (struct scheduler_session *)
-				ops[i]->sym->session->_private;
 		/* job_len is initialized as cipher data length, once
 		 * it is 0, equals to auth data length
 		 */
@@ -118,11 +87,8 @@ schedule_enqueue(void *qp, struct rte_crypto_op **ops, uint16_t nb_ops)
 		}
 
 		sched_ops[p_enq_op->slave_idx][p_enq_op->pos] = ops[i];
-		ops[i]->sym->session = sess->sessions[p_enq_op->slave_idx];
 		p_enq_op->pos++;
 
-		sess = (struct scheduler_session *)
-				ops[i+1]->sym->session->_private;
 		job_len = ops[i+1]->sym->cipher.data.length;
 		job_len += (ops[i+1]->sym->cipher.data.length == 0) *
 				ops[i+1]->sym->auth.data.length;
@@ -135,11 +101,8 @@ schedule_enqueue(void *qp, struct rte_crypto_op **ops, uint16_t nb_ops)
 		}
 
 		sched_ops[p_enq_op->slave_idx][p_enq_op->pos] = ops[i+1];
-		ops[i+1]->sym->session = sess->sessions[p_enq_op->slave_idx];
 		p_enq_op->pos++;
 
-		sess = (struct scheduler_session *)
-				ops[i+2]->sym->session->_private;
 		job_len = ops[i+2]->sym->cipher.data.length;
 		job_len += (ops[i+2]->sym->cipher.data.length == 0) *
 				ops[i+2]->sym->auth.data.length;
@@ -152,11 +115,7 @@ schedule_enqueue(void *qp, struct rte_crypto_op **ops, uint16_t nb_ops)
 		}
 
 		sched_ops[p_enq_op->slave_idx][p_enq_op->pos] = ops[i+2];
-		ops[i+2]->sym->session = sess->sessions[p_enq_op->slave_idx];
 		p_enq_op->pos++;
-
-		sess = (struct scheduler_session *)
-				ops[i+3]->sym->session->_private;
 
 		job_len = ops[i+3]->sym->cipher.data.length;
 		job_len += (ops[i+3]->sym->cipher.data.length == 0) *
@@ -170,14 +129,10 @@ schedule_enqueue(void *qp, struct rte_crypto_op **ops, uint16_t nb_ops)
 		}
 
 		sched_ops[p_enq_op->slave_idx][p_enq_op->pos] = ops[i+3];
-		ops[i+3]->sym->session = sess->sessions[p_enq_op->slave_idx];
 		p_enq_op->pos++;
 	}
 
 	for (; i < nb_ops; i++) {
-		sess = (struct scheduler_session *)
-				ops[i]->sym->session->_private;
-
 		job_len = ops[i]->sym->cipher.data.length;
 		job_len += (ops[i]->sym->cipher.data.length == 0) *
 				ops[i]->sym->auth.data.length;
@@ -190,7 +145,6 @@ schedule_enqueue(void *qp, struct rte_crypto_op **ops, uint16_t nb_ops)
 		}
 
 		sched_ops[p_enq_op->slave_idx][p_enq_op->pos] = ops[i];
-		ops[i]->sym->session = sess->sessions[p_enq_op->slave_idx];
 		p_enq_op->pos++;
 	}
 
@@ -304,7 +258,7 @@ scheduler_start(struct rte_cryptodev *dev)
 
 	/* for packet size based scheduler, nb_slaves have to >= 2 */
 	if (sched_ctx->nb_slaves < NB_PKT_SIZE_SLAVES) {
-		CS_LOG_ERR("not enough slaves to start");
+		CR_SCHED_LOG(ERR, "not enough slaves to start");
 		return -1;
 	}
 
@@ -348,7 +302,7 @@ scheduler_stop(struct rte_cryptodev *dev)
 
 		if (ps_qp_ctx->primary_slave.nb_inflight_cops +
 				ps_qp_ctx->secondary_slave.nb_inflight_cops) {
-			CS_LOG_ERR("Some crypto ops left in slave queue");
+			CR_SCHED_LOG(ERR, "Some crypto ops left in slave queue");
 			return -1;
 		}
 	}
@@ -365,7 +319,7 @@ scheduler_config_qp(struct rte_cryptodev *dev, uint16_t qp_id)
 	ps_qp_ctx = rte_zmalloc_socket(NULL, sizeof(*ps_qp_ctx), 0,
 			rte_socket_id());
 	if (!ps_qp_ctx) {
-		CS_LOG_ERR("failed allocate memory for private queue pair");
+		CR_SCHED_LOG(ERR, "failed allocate memory for private queue pair");
 		return -ENOMEM;
 	}
 
@@ -380,13 +334,15 @@ scheduler_create_private_ctx(struct rte_cryptodev *dev)
 	struct scheduler_ctx *sched_ctx = dev->data->dev_private;
 	struct psd_scheduler_ctx *psd_ctx;
 
-	if (sched_ctx->private_ctx)
+	if (sched_ctx->private_ctx) {
 		rte_free(sched_ctx->private_ctx);
+		sched_ctx->private_ctx = NULL;
+	}
 
 	psd_ctx = rte_zmalloc_socket(NULL, sizeof(struct psd_scheduler_ctx), 0,
 			rte_socket_id());
 	if (!psd_ctx) {
-		CS_LOG_ERR("failed allocate memory");
+		CR_SCHED_LOG(ERR, "failed allocate memory");
 		return -ENOMEM;
 	}
 
@@ -406,14 +362,14 @@ scheduler_option_set(struct rte_cryptodev *dev, uint32_t option_type,
 
 	if ((enum rte_cryptodev_schedule_option_type)option_type !=
 			CDEV_SCHED_OPTION_THRESHOLD) {
-		CS_LOG_ERR("Option not supported");
+		CR_SCHED_LOG(ERR, "Option not supported");
 		return -EINVAL;
 	}
 
 	threshold = ((struct rte_cryptodev_scheduler_threshold_option *)
 			option)->threshold;
 	if (!rte_is_power_of_2(threshold)) {
-		CS_LOG_ERR("Threshold is not power of 2");
+		CR_SCHED_LOG(ERR, "Threshold is not power of 2");
 		return -EINVAL;
 	}
 
@@ -432,7 +388,7 @@ scheduler_option_get(struct rte_cryptodev *dev, uint32_t option_type,
 
 	if ((enum rte_cryptodev_schedule_option_type)option_type !=
 			CDEV_SCHED_OPTION_THRESHOLD) {
-		CS_LOG_ERR("Option not supported");
+		CR_SCHED_LOG(ERR, "Option not supported");
 		return -EINVAL;
 	}
 
@@ -442,7 +398,7 @@ scheduler_option_get(struct rte_cryptodev *dev, uint32_t option_type,
 	return 0;
 }
 
-struct rte_cryptodev_scheduler_ops scheduler_ps_ops = {
+static struct rte_cryptodev_scheduler_ops scheduler_ps_ops = {
 	slave_attach,
 	slave_detach,
 	scheduler_start,
@@ -453,7 +409,7 @@ struct rte_cryptodev_scheduler_ops scheduler_ps_ops = {
 	scheduler_option_get
 };
 
-struct rte_cryptodev_scheduler psd_scheduler = {
+static struct rte_cryptodev_scheduler psd_scheduler = {
 		.name = "packet-size-based-scheduler",
 		.description = "scheduler which will distribute crypto op "
 				"burst based on the packet size",
@@ -461,4 +417,4 @@ struct rte_cryptodev_scheduler psd_scheduler = {
 		.ops = &scheduler_ps_ops
 };
 
-struct rte_cryptodev_scheduler *pkt_size_based_distr_scheduler = &psd_scheduler;
+struct rte_cryptodev_scheduler *crypto_scheduler_pkt_size_based_distr = &psd_scheduler;

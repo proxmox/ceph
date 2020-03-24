@@ -1,46 +1,19 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2016-2017 Intel Corporation. All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2016-2017 Intel Corporation
  */
 
+#include <inttypes.h>
 #include <string.h>
 
-#include <rte_vdev.h>
-#include <rte_memzone.h>
+#include <rte_bus_vdev.h>
 #include <rte_kvargs.h>
 #include <rte_ring.h>
 #include <rte_errno.h>
+#include <rte_event_ring.h>
+#include <rte_service_component.h>
 
 #include "sw_evdev.h"
-#include "iq_ring.h"
-#include "event_ring.h"
+#include "iq_chunk.h"
 
 #define EVENTDEV_NAME_SW_PMD event_sw
 #define NUMA_NODE_ARG "numa_node"
@@ -61,6 +34,7 @@ sw_port_link(struct rte_eventdev *dev, void *port, const uint8_t queues[],
 	RTE_SET_USED(priorities);
 	for (i = 0; i < num; i++) {
 		struct sw_qid *q = &sw->qids[queues[i]];
+		unsigned int j;
 
 		/* check for qid map overflow */
 		if (q->cq_num_mapped_cqs >= RTE_DIM(q->cq_map)) {
@@ -72,6 +46,15 @@ sw_port_link(struct rte_eventdev *dev, void *port, const uint8_t queues[],
 			rte_errno = -EDQUOT;
 			break;
 		}
+
+		for (j = 0; j < q->cq_num_mapped_cqs; j++) {
+			if (q->cq_map[j] == p->id)
+				break;
+		}
+
+		/* check if port is already linked */
+		if (j < q->cq_num_mapped_cqs)
+			continue;
 
 		if (q->type == SW_SCHED_TYPE_DIRECT) {
 			/* check directed qids only map to one port */
@@ -90,7 +73,8 @@ sw_port_link(struct rte_eventdev *dev, void *port, const uint8_t queues[],
 		} else if (q->type == RTE_SCHED_TYPE_ORDERED) {
 			p->num_ordered_qids++;
 			p->num_qids_mapped++;
-		} else if (q->type == RTE_SCHED_TYPE_ATOMIC) {
+		} else if (q->type == RTE_SCHED_TYPE_ATOMIC ||
+				q->type == RTE_SCHED_TYPE_PARALLEL) {
 			p->num_qids_mapped++;
 		}
 
@@ -129,7 +113,19 @@ sw_port_unlink(struct rte_eventdev *dev, void *port, uint8_t queues[],
 			}
 		}
 	}
+
+	p->unlinks_in_progress += unlinked;
+	rte_smp_mb();
+
 	return unlinked;
+}
+
+static int
+sw_port_unlinks_in_progress(struct rte_eventdev *dev, void *port)
+{
+	RTE_SET_USED(dev);
+	struct sw_port *p = port;
+	return p->unlinks_in_progress;
 }
 
 static int
@@ -138,7 +134,7 @@ sw_port_setup(struct rte_eventdev *dev, uint8_t port_id,
 {
 	struct sw_evdev *sw = sw_pmd_priv(dev);
 	struct sw_port *p = &sw->ports[port_id];
-	char buf[QE_RING_NAMESIZE];
+	char buf[RTE_RING_NAMESIZE];
 	unsigned int i;
 
 	struct rte_event_dev_info info;
@@ -159,10 +155,19 @@ sw_port_setup(struct rte_eventdev *dev, uint8_t port_id,
 	p->id = port_id;
 	p->sw = sw;
 
-	snprintf(buf, sizeof(buf), "sw%d_%s", dev->data->dev_id,
-			"rx_worker_ring");
-	p->rx_worker_ring = qe_ring_create(buf, MAX_SW_PROD_Q_DEPTH,
-			dev->data->socket_id);
+	/* check to see if rings exists - port_setup() can be called multiple
+	 * times legally (assuming device is stopped). If ring exists, free it
+	 * to so it gets re-created with the correct size
+	 */
+	snprintf(buf, sizeof(buf), "sw%d_p%u_%s", dev->data->dev_id,
+			port_id, "rx_worker_ring");
+	struct rte_event_ring *existing_ring = rte_event_ring_lookup(buf);
+	if (existing_ring)
+		rte_event_ring_free(existing_ring);
+
+	p->rx_worker_ring = rte_event_ring_create(buf, MAX_SW_PROD_Q_DEPTH,
+			dev->data->socket_id,
+			RING_F_SP_ENQ | RING_F_SC_DEQ | RING_F_EXACT_SZ);
 	if (p->rx_worker_ring == NULL) {
 		SW_LOG_ERR("Error creating RX worker ring for port %d\n",
 				port_id);
@@ -170,13 +175,20 @@ sw_port_setup(struct rte_eventdev *dev, uint8_t port_id,
 	}
 
 	p->inflight_max = conf->new_event_threshold;
+	p->implicit_release = !conf->disable_implicit_release;
 
-	snprintf(buf, sizeof(buf), "sw%d_%s", dev->data->dev_id,
-			"cq_worker_ring");
-	p->cq_worker_ring = qe_ring_create(buf, conf->dequeue_depth,
-			dev->data->socket_id);
+	/* check if ring exists, same as rx_worker above */
+	snprintf(buf, sizeof(buf), "sw%d_p%u, %s", dev->data->dev_id,
+			port_id, "cq_worker_ring");
+	existing_ring = rte_event_ring_lookup(buf);
+	if (existing_ring)
+		rte_event_ring_free(existing_ring);
+
+	p->cq_worker_ring = rte_event_ring_create(buf, conf->dequeue_depth,
+			dev->data->socket_id,
+			RING_F_SP_ENQ | RING_F_SC_DEQ | RING_F_EXACT_SZ);
 	if (p->cq_worker_ring == NULL) {
-		qe_ring_destroy(p->rx_worker_ring);
+		rte_event_ring_free(p->rx_worker_ring);
 		SW_LOG_ERR("Error creating CQ worker ring for port %d\n",
 				port_id);
 		return -1;
@@ -202,8 +214,8 @@ sw_port_release(void *port)
 	if (p == NULL)
 		return;
 
-	qe_ring_destroy(p->rx_worker_ring);
-	qe_ring_destroy(p->cq_worker_ring);
+	rte_event_ring_free(p->rx_worker_ring);
+	rte_event_ring_free(p->cq_worker_ring);
 	memset(p, 0, sizeof(*p));
 }
 
@@ -214,17 +226,8 @@ qid_init(struct sw_evdev *sw, unsigned int idx, int type,
 	unsigned int i;
 	int dev_id = sw->data->dev_id;
 	int socket_id = sw->data->socket_id;
-	char buf[IQ_RING_NAMESIZE];
+	char buf[IQ_ROB_NAMESIZE];
 	struct sw_qid *qid = &sw->qids[idx];
-
-	for (i = 0; i < SW_IQS_MAX; i++) {
-		snprintf(buf, sizeof(buf), "q_%u_iq_%d", idx, i);
-		qid->iq[i] = iq_ring_create(buf, socket_id);
-		if (!qid->iq[i]) {
-			SW_LOG_DBG("ring create failed");
-			goto cleanup;
-		}
-	}
 
 	/* Initialize the FID structures to no pinning (-1), and zero packets */
 	const struct sw_fid_t fid = {.cq = -1, .pcount = 0};
@@ -303,11 +306,6 @@ qid_init(struct sw_evdev *sw, unsigned int idx, int type,
 	return 0;
 
 cleanup:
-	for (i = 0; i < SW_IQS_MAX; i++) {
-		if (qid->iq[i])
-			iq_ring_destroy(qid->iq[i]);
-	}
-
 	if (qid->reorder_buffer) {
 		rte_free(qid->reorder_buffer);
 		qid->reorder_buffer = NULL;
@@ -321,55 +319,166 @@ cleanup:
 	return -EINVAL;
 }
 
-static int
-sw_queue_setup(struct rte_eventdev *dev, uint8_t queue_id,
-		const struct rte_event_queue_conf *conf)
-{
-	int type;
-
-	/* SINGLE_LINK can be OR-ed with other types, so handle first */
-	if (RTE_EVENT_QUEUE_CFG_SINGLE_LINK & conf->event_queue_cfg) {
-		type = SW_SCHED_TYPE_DIRECT;
-	} else {
-		switch (conf->event_queue_cfg) {
-		case RTE_EVENT_QUEUE_CFG_ATOMIC_ONLY:
-			type = RTE_SCHED_TYPE_ATOMIC;
-			break;
-		case RTE_EVENT_QUEUE_CFG_ORDERED_ONLY:
-			type = RTE_SCHED_TYPE_ORDERED;
-			break;
-		case RTE_EVENT_QUEUE_CFG_PARALLEL_ONLY:
-			type = RTE_SCHED_TYPE_PARALLEL;
-			break;
-		case RTE_EVENT_QUEUE_CFG_ALL_TYPES:
-			SW_LOG_ERR("QUEUE_CFG_ALL_TYPES not supported\n");
-			return -ENOTSUP;
-		default:
-			SW_LOG_ERR("Unknown queue type %d requested\n",
-				   conf->event_queue_cfg);
-			return -EINVAL;
-		}
-	}
-
-	struct sw_evdev *sw = sw_pmd_priv(dev);
-	return qid_init(sw, queue_id, type, conf);
-}
-
 static void
 sw_queue_release(struct rte_eventdev *dev, uint8_t id)
 {
 	struct sw_evdev *sw = sw_pmd_priv(dev);
 	struct sw_qid *qid = &sw->qids[id];
-	uint32_t i;
-
-	for (i = 0; i < SW_IQS_MAX; i++)
-		iq_ring_destroy(qid->iq[i]);
 
 	if (qid->type == RTE_SCHED_TYPE_ORDERED) {
 		rte_free(qid->reorder_buffer);
 		rte_ring_free(qid->reorder_buffer_freelist);
 	}
 	memset(qid, 0, sizeof(*qid));
+}
+
+static int
+sw_queue_setup(struct rte_eventdev *dev, uint8_t queue_id,
+		const struct rte_event_queue_conf *conf)
+{
+	int type;
+
+	type = conf->schedule_type;
+
+	if (RTE_EVENT_QUEUE_CFG_SINGLE_LINK & conf->event_queue_cfg) {
+		type = SW_SCHED_TYPE_DIRECT;
+	} else if (RTE_EVENT_QUEUE_CFG_ALL_TYPES
+			& conf->event_queue_cfg) {
+		SW_LOG_ERR("QUEUE_CFG_ALL_TYPES not supported\n");
+		return -ENOTSUP;
+	}
+
+	struct sw_evdev *sw = sw_pmd_priv(dev);
+
+	if (sw->qids[queue_id].initialized)
+		sw_queue_release(dev, queue_id);
+
+	return qid_init(sw, queue_id, type, conf);
+}
+
+static void
+sw_init_qid_iqs(struct sw_evdev *sw)
+{
+	int i, j;
+
+	/* Initialize the IQ memory of all configured qids */
+	for (i = 0; i < RTE_EVENT_MAX_QUEUES_PER_DEV; i++) {
+		struct sw_qid *qid = &sw->qids[i];
+
+		if (!qid->initialized)
+			continue;
+
+		for (j = 0; j < SW_IQS_MAX; j++)
+			iq_init(sw, &qid->iq[j]);
+	}
+}
+
+static int
+sw_qids_empty(struct sw_evdev *sw)
+{
+	unsigned int i, j;
+
+	for (i = 0; i < sw->qid_count; i++) {
+		for (j = 0; j < SW_IQS_MAX; j++) {
+			if (iq_count(&sw->qids[i].iq[j]))
+				return 0;
+		}
+	}
+
+	return 1;
+}
+
+static int
+sw_ports_empty(struct sw_evdev *sw)
+{
+	unsigned int i;
+
+	for (i = 0; i < sw->port_count; i++) {
+		if ((rte_event_ring_count(sw->ports[i].rx_worker_ring)) ||
+		     rte_event_ring_count(sw->ports[i].cq_worker_ring))
+			return 0;
+	}
+
+	return 1;
+}
+
+static void
+sw_drain_ports(struct rte_eventdev *dev)
+{
+	struct sw_evdev *sw = sw_pmd_priv(dev);
+	eventdev_stop_flush_t flush;
+	unsigned int i;
+	uint8_t dev_id;
+	void *arg;
+
+	flush = dev->dev_ops->dev_stop_flush;
+	dev_id = dev->data->dev_id;
+	arg = dev->data->dev_stop_flush_arg;
+
+	for (i = 0; i < sw->port_count; i++) {
+		struct rte_event ev;
+
+		while (rte_event_dequeue_burst(dev_id, i, &ev, 1, 0)) {
+			if (flush)
+				flush(dev_id, ev, arg);
+
+			ev.op = RTE_EVENT_OP_RELEASE;
+			rte_event_enqueue_burst(dev_id, i, &ev, 1);
+		}
+	}
+}
+
+static void
+sw_drain_queue(struct rte_eventdev *dev, struct sw_iq *iq)
+{
+	struct sw_evdev *sw = sw_pmd_priv(dev);
+	eventdev_stop_flush_t flush;
+	uint8_t dev_id;
+	void *arg;
+
+	flush = dev->dev_ops->dev_stop_flush;
+	dev_id = dev->data->dev_id;
+	arg = dev->data->dev_stop_flush_arg;
+
+	while (iq_count(iq) > 0) {
+		struct rte_event ev;
+
+		iq_dequeue_burst(sw, iq, &ev, 1);
+
+		if (flush)
+			flush(dev_id, ev, arg);
+	}
+}
+
+static void
+sw_drain_queues(struct rte_eventdev *dev)
+{
+	struct sw_evdev *sw = sw_pmd_priv(dev);
+	unsigned int i, j;
+
+	for (i = 0; i < sw->qid_count; i++) {
+		for (j = 0; j < SW_IQS_MAX; j++)
+			sw_drain_queue(dev, &sw->qids[i].iq[j]);
+	}
+}
+
+static void
+sw_clean_qid_iqs(struct rte_eventdev *dev)
+{
+	struct sw_evdev *sw = sw_pmd_priv(dev);
+	int i, j;
+
+	/* Release the IQ memory of all configured qids */
+	for (i = 0; i < RTE_EVENT_MAX_QUEUES_PER_DEV; i++) {
+		struct sw_qid *qid = &sw->qids[i];
+
+		for (j = 0; j < SW_IQS_MAX; j++) {
+			if (!qid->iq[j].head)
+				continue;
+			iq_free_chunk_list(sw, qid->iq[j].head);
+			qid->iq[j].head = NULL;
+		}
+	}
 }
 
 static void
@@ -382,7 +491,7 @@ sw_queue_def_conf(struct rte_eventdev *dev, uint8_t queue_id,
 	static const struct rte_event_queue_conf default_conf = {
 		.nb_atomic_flows = 4096,
 		.nb_atomic_order_sequences = 1,
-		.event_queue_cfg = RTE_EVENT_QUEUE_CFG_ATOMIC_ONLY,
+		.schedule_type = RTE_SCHED_TYPE_ATOMIC,
 		.priority = RTE_EVENT_DEV_PRIORITY_NORMAL,
 	};
 
@@ -399,6 +508,7 @@ sw_port_def_conf(struct rte_eventdev *dev, uint8_t port_id,
 	port_conf->new_event_threshold = 1024;
 	port_conf->dequeue_depth = 16;
 	port_conf->enqueue_depth = 16;
+	port_conf->disable_implicit_release = 0;
 }
 
 static int
@@ -407,15 +517,79 @@ sw_dev_configure(const struct rte_eventdev *dev)
 	struct sw_evdev *sw = sw_pmd_priv(dev);
 	const struct rte_eventdev_data *data = dev->data;
 	const struct rte_event_dev_config *conf = &data->dev_conf;
+	int num_chunks, i;
 
 	sw->qid_count = conf->nb_event_queues;
 	sw->port_count = conf->nb_event_ports;
 	sw->nb_events_limit = conf->nb_events_limit;
 	rte_atomic32_set(&sw->inflights, 0);
 
+	/* Number of chunks sized for worst-case spread of events across IQs */
+	num_chunks = ((SW_INFLIGHT_EVENTS_TOTAL/SW_EVS_PER_Q_CHUNK)+1) +
+			sw->qid_count*SW_IQS_MAX*2;
+
+	/* If this is a reconfiguration, free the previous IQ allocation. All
+	 * IQ chunk references were cleaned out of the QIDs in sw_stop(), and
+	 * will be reinitialized in sw_start().
+	 */
+	if (sw->chunks)
+		rte_free(sw->chunks);
+
+	sw->chunks = rte_malloc_socket(NULL,
+				       sizeof(struct sw_queue_chunk) *
+				       num_chunks,
+				       0,
+				       sw->data->socket_id);
+	if (!sw->chunks)
+		return -ENOMEM;
+
+	sw->chunk_list_head = NULL;
+	for (i = 0; i < num_chunks; i++)
+		iq_free_chunk(sw, &sw->chunks[i]);
+
 	if (conf->event_dev_cfg & RTE_EVENT_DEV_CFG_PER_DEQUEUE_TIMEOUT)
 		return -ENOTSUP;
 
+	return 0;
+}
+
+struct rte_eth_dev;
+
+static int
+sw_eth_rx_adapter_caps_get(const struct rte_eventdev *dev,
+			const struct rte_eth_dev *eth_dev,
+			uint32_t *caps)
+{
+	RTE_SET_USED(dev);
+	RTE_SET_USED(eth_dev);
+	*caps = RTE_EVENT_ETH_RX_ADAPTER_SW_CAP;
+	return 0;
+}
+
+static int
+sw_timer_adapter_caps_get(const struct rte_eventdev *dev,
+			  uint64_t flags,
+			  uint32_t *caps,
+			  const struct rte_event_timer_adapter_ops **ops)
+{
+	RTE_SET_USED(dev);
+	RTE_SET_USED(flags);
+	*caps = 0;
+
+	/* Use default SW ops */
+	*ops = NULL;
+
+	return 0;
+}
+
+static int
+sw_crypto_adapter_caps_get(const struct rte_eventdev *dev,
+			   const struct rte_cryptodev *cdev,
+			   uint32_t *caps)
+{
+	RTE_SET_USED(dev);
+	RTE_SET_USED(cdev);
+	*caps = RTE_EVENT_CRYPTO_ADAPTER_SW_CAP;
 	return 0;
 }
 
@@ -434,8 +608,14 @@ sw_info_get(struct rte_eventdev *dev, struct rte_event_dev_info *info)
 			.max_event_port_dequeue_depth = MAX_SW_CONS_Q_DEPTH,
 			.max_event_port_enqueue_depth = MAX_SW_PROD_Q_DEPTH,
 			.max_num_events = SW_INFLIGHT_EVENTS_TOTAL,
-			.event_dev_cap = (RTE_EVENT_DEV_CAP_QUEUE_QOS |
-					RTE_EVENT_DEV_CAP_EVENT_QOS),
+			.event_dev_cap = (
+				RTE_EVENT_DEV_CAP_QUEUE_QOS |
+				RTE_EVENT_DEV_CAP_BURST_MODE |
+				RTE_EVENT_DEV_CAP_EVENT_QOS |
+				RTE_EVENT_DEV_CAP_IMPLICIT_RELEASE_DISABLE|
+				RTE_EVENT_DEV_CAP_RUNTIME_PORT_LINK |
+				RTE_EVENT_DEV_CAP_MULTIPLE_QUEUE_PORT |
+				RTE_EVENT_DEV_CAP_NONSEQ_MODE),
 	};
 
 	*info = evdev_sw_info;
@@ -509,8 +689,9 @@ sw_dump(struct rte_eventdev *dev, FILE *f)
 		fprintf(f, "\n");
 
 		if (p->rx_worker_ring) {
-			uint64_t used = qe_ring_count(p->rx_worker_ring);
-			uint64_t space = qe_ring_free_count(p->rx_worker_ring);
+			uint64_t used = rte_event_ring_count(p->rx_worker_ring);
+			uint64_t space = rte_event_ring_free_count(
+					p->rx_worker_ring);
 			const char *col = (space == 0) ? COL_RED : COL_RESET;
 			fprintf(f, "\t%srx ring used: %4"PRIu64"\tfree: %4"
 					PRIu64 COL_RESET"\n", col, used, space);
@@ -518,8 +699,9 @@ sw_dump(struct rte_eventdev *dev, FILE *f)
 			fprintf(f, "\trx ring not initialized.\n");
 
 		if (p->cq_worker_ring) {
-			uint64_t used = qe_ring_count(p->cq_worker_ring);
-			uint64_t space = qe_ring_free_count(p->cq_worker_ring);
+			uint64_t used = rte_event_ring_count(p->cq_worker_ring);
+			uint64_t space = rte_event_ring_free_count(
+					p->cq_worker_ring);
 			const char *col = (space == 0) ? COL_RED : COL_RESET;
 			fprintf(f, "\t%scq ring used: %4"PRIu64"\tfree: %4"
 					PRIu64 COL_RESET"\n", col, used, space);
@@ -559,27 +741,27 @@ sw_dump(struct rte_eventdev *dev, FILE *f)
 				inflights += qid->fids[flow].pcount;
 			}
 
-		uint32_t cq;
-		fprintf(f, "\tInflights: %u\tFlows pinned per port: ",
-				inflights);
-		for (cq = 0; cq < sw->port_count; cq++)
-			fprintf(f, "%d ", affinities_per_port[cq]);
-		fprintf(f, "\n");
+		uint32_t port;
+		fprintf(f, "\tPer Port Stats:\n");
+		for (port = 0; port < sw->port_count; port++) {
+			fprintf(f, "\t  Port %d: Pkts: %"PRIu64, port,
+					qid->to_port[port]);
+			fprintf(f, "\tFlows: %d\n", affinities_per_port[port]);
+		}
 
 		uint32_t iq;
 		uint32_t iq_printed = 0;
 		for (iq = 0; iq < SW_IQS_MAX; iq++) {
-			if (!qid->iq[iq]) {
+			if (!qid->iq[iq].head) {
 				fprintf(f, "\tiq %d is not initialized.\n", iq);
 				iq_printed = 1;
 				continue;
 			}
-			uint32_t used = iq_ring_count(qid->iq[iq]);
-			uint32_t free = iq_ring_free_count(qid->iq[iq]);
-			const char *col = (free == 0) ? COL_RED : COL_RESET;
+			uint32_t used = iq_count(&qid->iq[iq]);
+			const char *col = COL_RESET;
 			if (used > 0) {
-				fprintf(f, "\t%siq %d: Used %d\tFree %d"
-					COL_RESET"\n", col, iq, used, free);
+				fprintf(f, "\t%siq %d: Used %d"
+					COL_RESET"\n", col, iq, used);
 				iq_printed = 1;
 			}
 		}
@@ -593,6 +775,16 @@ sw_start(struct rte_eventdev *dev)
 {
 	unsigned int i, j;
 	struct sw_evdev *sw = sw_pmd_priv(dev);
+
+	rte_service_component_runstate_set(sw->service_id, 1);
+
+	/* check a service core is mapped to this service */
+	if (!rte_service_runstate_get(sw->service_id)) {
+		SW_LOG_ERR("Warning: No Service core enabled on service %s\n",
+				sw->service_name);
+		return -ENOENT;
+	}
+
 	/* check all ports are set up */
 	for (i = 0; i < sw->port_count; i++)
 		if (sw->ports[i].rx_worker_ring == NULL) {
@@ -602,8 +794,8 @@ sw_start(struct rte_eventdev *dev)
 
 	/* check all queues are configured and mapped to ports*/
 	for (i = 0; i < sw->qid_count; i++)
-		if (sw->qids[i].iq[0] == NULL ||
-				sw->qids[i].cq_num_mapped_cqs == 0) {
+		if (!sw->qids[i].initialized ||
+		    sw->qids[i].cq_num_mapped_cqs == 0) {
 			SW_LOG_ERR("Queue %d not configured\n", i);
 			return -ENOLINK;
 		}
@@ -624,6 +816,8 @@ sw_start(struct rte_eventdev *dev)
 		}
 	}
 
+	sw_init_qid_iqs(sw);
+
 	if (sw_xstats_init(sw) < 0)
 		return -EINVAL;
 
@@ -637,9 +831,30 @@ static void
 sw_stop(struct rte_eventdev *dev)
 {
 	struct sw_evdev *sw = sw_pmd_priv(dev);
+	int32_t runstate;
+
+	/* Stop the scheduler if it's running */
+	runstate = rte_service_runstate_get(sw->service_id);
+	if (runstate == 1)
+		rte_service_runstate_set(sw->service_id, 0);
+
+	while (rte_service_may_be_active(sw->service_id))
+		rte_pause();
+
+	/* Flush all events out of the device */
+	while (!(sw_qids_empty(sw) && sw_ports_empty(sw))) {
+		sw_event_schedule(dev);
+		sw_drain_ports(dev);
+		sw_drain_queues(dev);
+	}
+
+	sw_clean_qid_iqs(dev);
 	sw_xstats_uninit(sw);
 	sw->started = 0;
 	rte_smp_wmb();
+
+	if (runstate == 1)
+		rte_service_runstate_set(sw->service_id, 1);
 }
 
 static int
@@ -695,10 +910,18 @@ set_credit_quanta(const char *key __rte_unused, const char *value, void *opaque)
 	return 0;
 }
 
+
+static int32_t sw_sched_service_func(void *args)
+{
+	struct rte_eventdev *dev = args;
+	sw_event_schedule(dev);
+	return 0;
+}
+
 static int
 sw_probe(struct rte_vdev_device *vdev)
 {
-	static const struct rte_eventdev_ops evdev_sw_ops = {
+	static struct rte_eventdev_ops evdev_sw_ops = {
 			.dev_configure = sw_dev_configure,
 			.dev_infos_get = sw_info_get,
 			.dev_close = sw_close,
@@ -714,11 +937,20 @@ sw_probe(struct rte_vdev_device *vdev)
 			.port_release = sw_port_release,
 			.port_link = sw_port_link,
 			.port_unlink = sw_port_unlink,
+			.port_unlinks_in_progress = sw_port_unlinks_in_progress,
+
+			.eth_rx_adapter_caps_get = sw_eth_rx_adapter_caps_get,
+
+			.timer_adapter_caps_get = sw_timer_adapter_caps_get,
+
+			.crypto_adapter_caps_get = sw_crypto_adapter_caps_get,
 
 			.xstats_get = sw_xstats_get,
 			.xstats_get_names = sw_xstats_get_names,
 			.xstats_get_by_name = sw_xstats_get_by_name,
 			.xstats_reset = sw_xstats_reset,
+
+			.dev_selftest = test_sw_eventdev,
 	};
 
 	static const char *const args[] = {
@@ -792,9 +1024,10 @@ sw_probe(struct rte_vdev_device *vdev)
 	dev->dev_ops = &evdev_sw_ops;
 	dev->enqueue = sw_event_enqueue;
 	dev->enqueue_burst = sw_event_enqueue_burst;
+	dev->enqueue_new_burst = sw_event_enqueue_burst;
+	dev->enqueue_forward_burst = sw_event_enqueue_burst;
 	dev->dequeue = sw_event_dequeue;
 	dev->dequeue_burst = sw_event_dequeue_burst;
-	dev->schedule = sw_event_schedule;
 
 	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
 		return 0;
@@ -805,6 +1038,25 @@ sw_probe(struct rte_vdev_device *vdev)
 	/* copy values passed from vdev command line to instance */
 	sw->credit_update_quanta = credit_quanta;
 	sw->sched_quanta = sched_quanta;
+
+	/* register service with EAL */
+	struct rte_service_spec service;
+	memset(&service, 0, sizeof(struct rte_service_spec));
+	snprintf(service.name, sizeof(service.name), "%s_service", name);
+	snprintf(sw->service_name, sizeof(sw->service_name), "%s_service",
+			name);
+	service.socket_id = socket_id;
+	service.callback = sw_sched_service_func;
+	service.callback_userdata = (void *)dev;
+
+	int32_t ret = rte_service_component_register(&service, &sw->service_id);
+	if (ret) {
+		SW_LOG_ERR("service register() failed");
+		return -ENOEXEC;
+	}
+
+	dev->data->service_inited = 1;
+	dev->data->service_id = sw->service_id;
 
 	return 0;
 }
@@ -831,3 +1083,13 @@ static struct rte_vdev_driver evdev_sw_pmd_drv = {
 RTE_PMD_REGISTER_VDEV(EVENTDEV_NAME_SW_PMD, evdev_sw_pmd_drv);
 RTE_PMD_REGISTER_PARAM_STRING(event_sw, NUMA_NODE_ARG "=<int> "
 		SCHED_QUANTA_ARG "=<int>" CREDIT_QUANTA_ARG "=<int>");
+
+/* declared extern in header, for access from other .c files */
+int eventdev_sw_log_level;
+
+RTE_INIT(evdev_sw_init_log)
+{
+	eventdev_sw_log_level = rte_log_register("pmd.event.sw");
+	if (eventdev_sw_log_level >= 0)
+		rte_log_set_level(eventdev_sw_log_level, RTE_LOG_NOTICE);
+}

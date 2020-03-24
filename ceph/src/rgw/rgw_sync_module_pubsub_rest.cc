@@ -13,6 +13,7 @@
 #include "rgw_rest_s3.h"
 #include "rgw_arn.h"
 #include "rgw_zone.h"
+#include "services/svc_zone.h"
 
 #define dout_context g_ceph_context
 #define dout_subsys ceph_subsys_rgw
@@ -24,7 +25,12 @@ public:
     
     topic_name = s->object.name;
 
+    opaque_data = s->info.args.get("OpaqueData");
     dest.push_endpoint = s->info.args.get("push-endpoint");
+    
+    if (!validate_and_update_endpoint_secret(dest, s->cct, *(s->info.env))) {
+      return -EINVAL;
+    }
     dest.push_endpoint_args = s->info.args.get_str();
     // dest object only stores endpoint info
     // bucket to store events/records will be set only when subscription is created
@@ -33,8 +39,8 @@ public:
     dest.arn_topic = topic_name;
     // the topic ARN will be sent in the reply
     const rgw::ARN arn(rgw::Partition::aws, rgw::Service::sns, 
-        store->svc.zone->get_zonegroup().get_name(),
-        s->user->user_id.tenant, topic_name);
+        store->svc()->zone->get_zonegroup().get_name(),
+        s->user->get_tenant(), topic_name);
     topic_arn = arn.to_string();
     return 0;
   }
@@ -164,13 +170,16 @@ public:
       return -EINVAL;
     }
 
-    const auto psmodule = static_cast<RGWPSSyncModuleInstance*>(store->get_sync_module().get());
+    const auto psmodule = static_cast<RGWPSSyncModuleInstance*>(store->getRados()->get_sync_module().get());
     const auto& conf = psmodule->get_effective_conf();
 
     dest.push_endpoint = s->info.args.get("push-endpoint");
+    if (!validate_and_update_endpoint_secret(dest, s->cct, *(s->info.env))) {
+      return -EINVAL;
+    }
+    dest.push_endpoint_args = s->info.args.get_str();
     dest.bucket_name = string(conf["data_bucket_prefix"]) + s->owner.get_id().to_str() + "-" + topic_name;
     dest.oid_prefix = string(conf["data_oid_prefix"]) + sub_name + "/";
-    dest.push_endpoint_args = s->info.args.get_str();
     dest.arn_topic = topic_name;
 
     return 0;

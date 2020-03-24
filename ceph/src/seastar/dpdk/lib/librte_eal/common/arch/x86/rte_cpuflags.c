@@ -1,34 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2015 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2015 Intel Corporation
  */
 
 #include "rte_cpuflags.h"
@@ -37,14 +8,7 @@
 #include <errno.h>
 #include <stdint.h>
 
-enum cpu_register_t {
-	RTE_REG_EAX = 0,
-	RTE_REG_EBX,
-	RTE_REG_ECX,
-	RTE_REG_EDX,
-};
-
-typedef uint32_t cpuid_registers_t[4];
+#include "rte_cpuid.h"
 
 /**
  * Struct to hold a processor feature entry
@@ -91,6 +55,7 @@ const struct feature_entry rte_cpu_feature_table[] = {
 	FEAT_DEF(AVX, 0x00000001, 0, RTE_REG_ECX, 28)
 	FEAT_DEF(F16C, 0x00000001, 0, RTE_REG_ECX, 29)
 	FEAT_DEF(RDRAND, 0x00000001, 0, RTE_REG_ECX, 30)
+	FEAT_DEF(HYPERVISOR, 0x00000001, 0, RTE_REG_ECX, 31)
 
 	FEAT_DEF(FPU, 0x00000001, 0, RTE_REG_EDX,  0)
 	FEAT_DEF(VME, 0x00000001, 0, RTE_REG_EDX,  1)
@@ -156,38 +121,12 @@ const struct feature_entry rte_cpu_feature_table[] = {
 	FEAT_DEF(INVTSC, 0x80000007, 0, RTE_REG_EDX,  8)
 };
 
-/*
- * Execute CPUID instruction and get contents of a specific register
- *
- * This function, when compiled with GCC, will generate architecture-neutral
- * code, as per GCC manual.
- */
-static void
-rte_cpu_get_features(uint32_t leaf, uint32_t subleaf, cpuid_registers_t out)
-{
-#if defined(__i386__) && defined(__PIC__)
-	/* %ebx is a forbidden register if we compile with -fPIC or -fPIE */
-	asm volatile("movl %%ebx,%0 ; cpuid ; xchgl %%ebx,%0"
-		 : "=r" (out[RTE_REG_EBX]),
-		   "=a" (out[RTE_REG_EAX]),
-		   "=c" (out[RTE_REG_ECX]),
-		   "=d" (out[RTE_REG_EDX])
-		 : "a" (leaf), "c" (subleaf));
-#else
-	asm volatile("cpuid"
-		 : "=a" (out[RTE_REG_EAX]),
-		   "=b" (out[RTE_REG_EBX]),
-		   "=c" (out[RTE_REG_ECX]),
-		   "=d" (out[RTE_REG_EDX])
-		 : "a" (leaf), "c" (subleaf));
-#endif
-}
-
 int
 rte_cpu_get_flag_enabled(enum rte_cpu_flag_t feature)
 {
 	const struct feature_entry *feat;
 	cpuid_registers_t regs;
+	unsigned int maxleaf;
 
 	if (feature >= RTE_CPUFLAG_NUMFLAGS)
 		/* Flag does not match anything in the feature tables */
@@ -199,13 +138,14 @@ rte_cpu_get_flag_enabled(enum rte_cpu_flag_t feature)
 		/* This entry in the table wasn't filled out! */
 		return -EFAULT;
 
-	rte_cpu_get_features(feat->leaf & 0xffff0000, 0, regs);
-	if (((regs[RTE_REG_EAX] ^ feat->leaf) & 0xffff0000) ||
-	      regs[RTE_REG_EAX] < feat->leaf)
+	maxleaf = __get_cpuid_max(feat->leaf & 0x80000000, NULL);
+
+	if (maxleaf < feat->leaf)
 		return 0;
 
-	/* get the cpuid leaf containing the desired feature */
-	rte_cpu_get_features(feat->leaf, feat->subleaf, regs);
+	 __cpuid_count(feat->leaf, feat->subleaf,
+			 regs[RTE_REG_EAX], regs[RTE_REG_EBX],
+			 regs[RTE_REG_ECX], regs[RTE_REG_EDX]);
 
 	/* check if the feature is enabled */
 	return (regs[feat->reg] >> feat->bit) & 1;

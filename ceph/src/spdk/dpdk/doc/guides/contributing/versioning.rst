@@ -1,33 +1,31 @@
 ..  SPDX-License-Identifier: BSD-3-Clause
     Copyright 2018 The DPDK contributors
 
-Managing ABI updates
-====================
+DPDK ABI/API policy
+===================
 
 Description
 -----------
 
 This document details some methods for handling ABI management in the DPDK.
-Note this document is not exhaustive, in that C library versioning is flexible
-allowing multiple methods to achieve various goals, but it will provide the user
-with some introductory methods
 
 General Guidelines
 ------------------
 
 #. Whenever possible, ABI should be preserved
-#. Libraries or APIs marked in ``experimental`` state may change without constraint.
+#. ABI/API may be changed with a deprecation process
+#. The modification of symbols can generally be managed with versioning
+#. Libraries or APIs marked in ``experimental`` state may change without constraint
 #. New APIs will be marked as ``experimental`` for at least one release to allow
    any issues found by users of the new API to be fixed quickly
 #. The addition of symbols is generally not problematic
-#. The modification of symbols can generally be managed with versioning
 #. The removal of symbols generally is an ABI break and requires bumping of the
    LIBABIVER macro
 #. Updates to the minimum hardware requirements, which drop support for hardware which
    was previously supported, should be treated as an ABI change.
 
 What is an ABI
---------------
+~~~~~~~~~~~~~~
 
 An ABI (Application Binary Interface) is the set of runtime interfaces exposed
 by a library. It is similar to an API (Application Programming Interface) but
@@ -39,8 +37,12 @@ Therefore, in the case of dynamic linking, it is critical that an ABI is
 preserved, or (when modified), done in such a way that the application is unable
 to behave improperly or in an unexpected fashion.
 
-The DPDK ABI policy
+
+ABI/API Deprecation
 -------------------
+
+The DPDK ABI policy
+~~~~~~~~~~~~~~~~~~~
 
 ABI versions are set at the time of major release labeling, and the ABI may
 change multiple times, without warning, between the last release label and the
@@ -71,18 +73,15 @@ being provided. The requirements for doing so are:
      interest" be sought for each deprecation, for example: from NIC vendors,
      CPU vendors, end-users, etc.
 
-#. The changes (including an alternative map file) must be gated with
-   the ``RTE_NEXT_ABI`` option, and provided with a deprecation notice at the
-   same time.
-   It will become the default ABI in the next release.
+#. The changes (including an alternative map file) can be included with
+   deprecation notice, in wrapped way by the ``RTE_NEXT_ABI`` option,
+   to provide more details about oncoming changes.
+   ``RTE_NEXT_ABI`` wrapper will be removed when it become the default ABI.
+   More preferred way to provide this information is sending the feature
+   as a separate patch and reference it in deprecation notice.
 
 #. A full deprecation cycle, as explained above, must be made to offer
    downstream consumers sufficient warning of the change.
-
-#. At the beginning of the next release cycle, every ``RTE_NEXT_ABI``
-   conditions will be removed, the ``LIBABIVER`` variable in the makefile(s)
-   where the ABI is changed will be incremented, and the map files will
-   be updated.
 
 Note that the above process for ABI deprecation should not be undertaken
 lightly. ABI stability is extremely important for downstream consumers of the
@@ -99,8 +98,45 @@ readability purposes should be avoided.
    follow the relevant deprecation policy procedures as above: 3 acks and
    announcement at least one release in advance.
 
+Examples of Deprecation Notices
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The following are some examples of ABI deprecation notices which would be
+added to the Release Notes:
+
+* The Macro ``#RTE_FOO`` is deprecated and will be removed with version 2.0,
+  to be replaced with the inline function ``rte_foo()``.
+
+* The function ``rte_mbuf_grok()`` has been updated to include a new parameter
+  in version 2.0. Backwards compatibility will be maintained for this function
+  until the release of version 2.1
+
+* The members of ``struct rte_foo`` have been reorganized in release 2.0 for
+  performance reasons. Existing binary applications will have backwards
+  compatibility in release 2.0, while newly built binaries will need to
+  reference the new structure variant ``struct rte_foo2``. Compatibility will
+  be removed in release 2.2, and all applications will require updating and
+  rebuilding to the new structure at that time, which will be renamed to the
+  original ``struct rte_foo``.
+
+* Significant ABI changes are planned for the ``librte_dostuff`` library. The
+  upcoming release 2.0 will not contain these changes, but release 2.1 will,
+  and no backwards compatibility is planned due to the extensive nature of
+  these changes. Binaries using this library built prior to version 2.1 will
+  require updating and recompilation.
+
+New API replacing previous one
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+If a new API proposed functionally replaces an existing one, when the new API
+becomes non-experimental then the old one is marked with ``__rte_deprecated``.
+Deprecated APIs are removed completely just after the next LTS.
+
+Reminder that old API should follow deprecation process to be removed.
+
+
 Experimental APIs
-~~~~~~~~~~~~~~~~~
+-----------------
 
 APIs marked as ``experimental`` are not considered part of the ABI and may
 change without warning at any time.  Since changes to APIs are most likely
@@ -130,64 +166,9 @@ is not required. Though, an API should remain in experimental state for at least
 one release. Thereafter, normal process of posting patch for review to mailing
 list can be followed.
 
-Examples of Deprecation Notices
--------------------------------
 
-The following are some examples of ABI deprecation notices which would be
-added to the Release Notes:
-
-* The Macro ``#RTE_FOO`` is deprecated and will be removed with version 2.0,
-  to be replaced with the inline function ``rte_foo()``.
-
-* The function ``rte_mbuf_grok()`` has been updated to include a new parameter
-  in version 2.0. Backwards compatibility will be maintained for this function
-  until the release of version 2.1
-
-* The members of ``struct rte_foo`` have been reorganized in release 2.0 for
-  performance reasons. Existing binary applications will have backwards
-  compatibility in release 2.0, while newly built binaries will need to
-  reference the new structure variant ``struct rte_foo2``. Compatibility will
-  be removed in release 2.2, and all applications will require updating and
-  rebuilding to the new structure at that time, which will be renamed to the
-  original ``struct rte_foo``.
-
-* Significant ABI changes are planned for the ``librte_dostuff`` library. The
-  upcoming release 2.0 will not contain these changes, but release 2.1 will,
-  and no backwards compatibility is planned due to the extensive nature of
-  these changes. Binaries using this library built prior to version 2.1 will
-  require updating and recompilation.
-
-Versioning Macros
------------------
-
-When a symbol is exported from a library to provide an API, it also provides a
-calling convention (ABI) that is embodied in its name, return type and
-arguments. Occasionally that function may need to change to accommodate new
-functionality or behavior. When that occurs, it is desirable to allow for
-backward compatibility for a time with older binaries that are dynamically
-linked to the DPDK.
-
-To support backward compatibility the ``lib/librte_compat/rte_compat.h``
-header file provides macros to use when updating exported functions. These
-macros are used in conjunction with the ``rte_<library>_version.map`` file for
-a given library to allow multiple versions of a symbol to exist in a shared
-library so that older binaries need not be immediately recompiled.
-
-The macros exported are:
-
-* ``VERSION_SYMBOL(b, e, n)``: Creates a symbol version table entry binding
-  versioned symbol ``b@DPDK_n`` to the internal function ``b_e``.
-
-* ``BIND_DEFAULT_SYMBOL(b, e, n)``: Creates a symbol version entry instructing
-  the linker to bind references to symbol ``b`` to the internal symbol
-  ``b_e``.
-
-* ``MAP_STATIC_SYMBOL(f, p)``: Declare the prototype ``f``, and map it to the
-  fully qualified function ``p``, so that if a symbol becomes versioned, it
-  can still be mapped back to the public symbol name.
-
-Setting a Major ABI version
----------------------------
+Library versioning
+------------------
 
 Downstreams might want to provide different DPDK releases at the same time to
 support multiple consumers of DPDK linked against older and newer sonames.
@@ -211,11 +192,44 @@ library - versions defined in the libraries ``LIBABIVER``.
 An example might be ``CONFIG_RTE_MAJOR_ABI=16.11`` which will make all libraries
 ``librte<?>.so.16.11`` instead of ``librte<?>.so.<LIBABIVER>``.
 
+
+ABI versioning
+--------------
+
+Versioning Macros
+~~~~~~~~~~~~~~~~~
+
+When a symbol is exported from a library to provide an API, it also provides a
+calling convention (ABI) that is embodied in its name, return type and
+arguments. Occasionally that function may need to change to accommodate new
+functionality or behavior. When that occurs, it is desirable to allow for
+backward compatibility for a time with older binaries that are dynamically
+linked to the DPDK.
+
+To support backward compatibility the ``rte_compat.h``
+header file provides macros to use when updating exported functions. These
+macros are used in conjunction with the ``rte_<library>_version.map`` file for
+a given library to allow multiple versions of a symbol to exist in a shared
+library so that older binaries need not be immediately recompiled.
+
+The macros exported are:
+
+* ``VERSION_SYMBOL(b, e, n)``: Creates a symbol version table entry binding
+  versioned symbol ``b@DPDK_n`` to the internal function ``b_e``.
+
+* ``BIND_DEFAULT_SYMBOL(b, e, n)``: Creates a symbol version entry instructing
+  the linker to bind references to symbol ``b`` to the internal symbol
+  ``b_e``.
+
+* ``MAP_STATIC_SYMBOL(f, p)``: Declare the prototype ``f``, and map it to the
+  fully qualified function ``p``, so that if a symbol becomes versioned, it
+  can still be mapped back to the public symbol name.
+
 Examples of ABI Macro use
--------------------------
+^^^^^^^^^^^^^^^^^^^^^^^^^
 
 Updating a public API
-~~~~~~~~~~~~~~~~~~~~~
+_____________________
 
 Assume we have a function as follows
 
@@ -425,7 +439,7 @@ and a new DPDK_2.1 version, used by future built applications.
 
 
 Deprecating part of a public API
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+________________________________
 
 Lets assume that you've done the above update, and after a few releases have
 passed you decide you would like to retire the old version of the function.
@@ -483,7 +497,7 @@ possibly incompatible library version:
    +LIBABIVER := 2
 
 Deprecating an entire ABI version
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+_________________________________
 
 While removing a symbol from and ABI may be useful, it is often more practical
 to remove an entire version node at once.  If a version node completely
@@ -532,6 +546,7 @@ Lastly, any VERSION_SYMBOL macros that point to the old version node should be
 removed, taking care to keep, where need old code in place to support newer
 versions of the symbol.
 
+
 Running the ABI Validator
 -------------------------
 
@@ -548,26 +563,29 @@ utilities which can be installed via a package manager. For example::
 
 The syntax of the ``validate-abi.sh`` utility is::
 
-   ./devtools/validate-abi.sh <REV1> <REV2> <TARGET>
+   ./devtools/validate-abi.sh <REV1> <REV2>
 
 Where ``REV1`` and ``REV2`` are valid gitrevisions(7)
 https://www.kernel.org/pub/software/scm/git/docs/gitrevisions.html
-on the local repo and target is the usual DPDK compilation target.
+on the local repo.
 
 For example::
 
    # Check between the previous and latest commit:
-   ./devtools/validate-abi.sh HEAD~1 HEAD x86_64-native-linuxapp-gcc
+   ./devtools/validate-abi.sh HEAD~1 HEAD
+
+   # Check on a specific compilation target:
+   ./devtools/validate-abi.sh -t x86_64-native-linux-gcc HEAD~1 HEAD
 
    # Check between two tags:
-   ./devtools/validate-abi.sh v2.0.0 v2.1.0 x86_64-native-linuxapp-gcc
+   ./devtools/validate-abi.sh v2.0.0 v2.1.0
 
    # Check between git master and local topic-branch "vhost-hacking":
-   ./devtools/validate-abi.sh master vhost-hacking x86_64-native-linuxapp-gcc
+   ./devtools/validate-abi.sh master vhost-hacking
 
 After the validation script completes (it can take a while since it need to
 compile both tags) it will create compatibility reports in the
-``./compat_report`` directory. Listed incompatibilities can be found as
-follows::
+``./abi-check/compat_report`` directory. Listed incompatibilities can be found
+as follows::
 
-  grep -lr Incompatible compat_reports/
+  grep -lr Incompatible abi-check/compat_reports/

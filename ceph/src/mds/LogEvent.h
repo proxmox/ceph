@@ -34,6 +34,7 @@
 #define EVENT_SLAVEUPDATE  21
 #define EVENT_OPEN         22
 #define EVENT_COMMITTED    23
+#define EVENT_PURGED       24
 
 #define EVENT_TABLECLIENT  42
 #define EVENT_TABLESERVER  43
@@ -53,8 +54,8 @@ class EMetaBlob;
 // generic log event
 class LogEvent {
 public:
-  friend class MDLog;
   typedef __u32 EventType;
+  friend class MDLog;
 
   LogEvent() = delete;
   explicit LogEvent(int t) : _type(t) {}
@@ -109,10 +110,10 @@ public:
   virtual EMetaBlob *get_metablob() { return NULL; }
 
 protected:
-  utime_t stamp;
-
   LogSegment* get_segment() { return _segment; }
   LogSegment const* get_segment() const { return _segment; }
+
+  utime_t stamp;
 
 private:
   static const std::map<std::string, LogEvent::EventType> types;

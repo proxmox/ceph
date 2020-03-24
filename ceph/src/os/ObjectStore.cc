@@ -17,47 +17,16 @@
 #include "common/Formatter.h"
 #include "common/safe_io.h"
 
+#ifndef  WITH_SEASTAR
 #include "filestore/FileStore.h"
 #include "memstore/MemStore.h"
+#endif
 #if defined(WITH_BLUESTORE)
 #include "bluestore/BlueStore.h"
 #endif
+#ifndef WITH_SEASTAR
 #include "kstore/KStore.h"
-
-void decode_str_str_map_to_bl(bufferlist::const_iterator& p,
-			      bufferlist *out)
-{
-  auto start = p;
-  __u32 n;
-  decode(n, p);
-  unsigned len = 4;
-  while (n--) {
-    __u32 l;
-    decode(l, p);
-    p.advance(l);
-    len += 4 + l;
-    decode(l, p);
-    p.advance(l);
-    len += 4 + l;
-  }
-  start.copy(len, *out);
-}
-
-void decode_str_set_to_bl(bufferlist::const_iterator& p,
-			  bufferlist *out)
-{
-  auto start = p;
-  __u32 n;
-  decode(n, p);
-  unsigned len = 4;
-  while (n--) {
-    __u32 l;
-    decode(l, p);
-    p.advance(l);
-    len += 4 + l;
-  }
-  start.copy(len, *out);
-}
+#endif
 
 ObjectStore *ObjectStore::create(CephContext *cct,
 				 const string& type,
@@ -65,16 +34,19 @@ ObjectStore *ObjectStore::create(CephContext *cct,
 				 const string& journal,
 				 osflagbits_t flags)
 {
+#ifndef WITH_SEASTAR
   if (type == "filestore") {
     return new FileStore(cct, data, journal, flags);
   }
   if (type == "memstore") {
     return new MemStore(cct, data);
   }
+#endif
 #if defined(WITH_BLUESTORE)
   if (type == "bluestore") {
     return new BlueStore(cct, data);
   }
+#ifndef WITH_SEASTAR
   if (type == "random") {
     if (rand() % 2) {
       return new FileStore(cct, data, journal, flags);
@@ -82,15 +54,20 @@ ObjectStore *ObjectStore::create(CephContext *cct,
       return new BlueStore(cct, data);
     }
   }
+#endif
 #else
+#ifndef WITH_SEASTAR
   if (type == "random") {
     return new FileStore(cct, data, journal, flags);
   }
 #endif
+#endif
+#ifndef WITH_SEASTAR
   if (type == "kstore" &&
       cct->check_experimental_feature_enabled("kstore")) {
     return new KStore(cct, data);
   }
+#endif
   return NULL;
 }
 
@@ -112,6 +89,7 @@ int ObjectStore::probe_block_device_fsid(
   }
 #endif
 
+#ifndef WITH_SEASTAR
   // okay, try FileStore (journal).
   r = FileStore::get_block_device_fsid(cct, path, fsid);
   if (r == 0) {
@@ -119,6 +97,7 @@ int ObjectStore::probe_block_device_fsid(
 			  << *fsid << dendl;
     return r;
   }
+#endif
 
   return -EINVAL;
 }
@@ -149,12 +128,4 @@ int ObjectStore::read_meta(const std::string& key,
   }
   *value = string(buf, r);
   return 0;
-}
-
-
-
-
-ostream& operator<<(ostream& out, const ObjectStore::Transaction& tx) {
-
-  return out << "Transaction(" << &tx << ")"; 
 }

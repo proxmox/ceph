@@ -392,6 +392,7 @@ enum spdk_nvme_sgl_descriptor_type {
 enum spdk_nvme_sgl_descriptor_subtype {
 	SPDK_NVME_SGL_SUBTYPE_ADDRESS		= 0x0,
 	SPDK_NVME_SGL_SUBTYPE_OFFSET		= 0x1,
+	SPDK_NVME_SGL_SUBTYPE_TRANSPORT		= 0xa,
 };
 
 struct __attribute__((packed)) spdk_nvme_sgl_descriptor {
@@ -790,6 +791,7 @@ enum spdk_nvme_feat {
 	SPDK_NVME_FEAT_VOLATILE_WRITE_CACHE			= 0x06,
 	/** cdw11 layout defined by \ref spdk_nvme_feat_number_of_queues */
 	SPDK_NVME_FEAT_NUMBER_OF_QUEUES				= 0x07,
+	/** cdw11 layout defined by \ref spdk_nvme_feat_interrupt_coalescing */
 	SPDK_NVME_FEAT_INTERRUPT_COALESCING			= 0x08,
 	/** cdw11 layout defined by \ref spdk_nvme_feat_interrupt_vector_configuration */
 	SPDK_NVME_FEAT_INTERRUPT_VECTOR_CONFIGURATION		= 0x09,
@@ -1640,32 +1642,57 @@ enum spdk_nvme_reservation_acquire_action {
 
 struct __attribute__((packed)) spdk_nvme_reservation_status_data {
 	/** reservation action generation counter */
-	uint32_t		generation;
+	uint32_t		gen;
 	/** reservation type */
-	uint8_t			type;
+	uint8_t			rtype;
 	/** number of registered controllers */
-	uint16_t		nr_regctl;
+	uint16_t		regctl;
 	uint16_t		reserved1;
 	/** persist through power loss state */
-	uint8_t			ptpl_state;
+	uint8_t			ptpls;
 	uint8_t			reserved[14];
 };
 SPDK_STATIC_ASSERT(sizeof(struct spdk_nvme_reservation_status_data) == 24, "Incorrect size");
 
-struct __attribute__((packed)) spdk_nvme_reservation_ctrlr_data {
-	uint16_t		ctrlr_id;
+struct __attribute__((packed)) spdk_nvme_reservation_status_extended_data {
+	struct spdk_nvme_reservation_status_data	data;
+	uint8_t						reserved[40];
+};
+SPDK_STATIC_ASSERT(sizeof(struct spdk_nvme_reservation_status_extended_data) == 64,
+		   "Incorrect size");
+
+struct __attribute__((packed)) spdk_nvme_registered_ctrlr_data {
+	/** controller id */
+	uint16_t		cntlid;
 	/** reservation status */
 	struct {
 		uint8_t		status    : 1;
 		uint8_t		reserved1 : 7;
 	} rcsts;
 	uint8_t			reserved2[5];
-	/** host identifier */
-	uint64_t		host_id;
+	/** 64-bit host identifier */
+	uint64_t		hostid;
 	/** reservation key */
-	uint64_t		key;
+	uint64_t		rkey;
 };
-SPDK_STATIC_ASSERT(sizeof(struct spdk_nvme_reservation_ctrlr_data) == 24, "Incorrect size");
+SPDK_STATIC_ASSERT(sizeof(struct spdk_nvme_registered_ctrlr_data) == 24, "Incorrect size");
+
+struct __attribute__((packed)) spdk_nvme_registered_ctrlr_extended_data {
+	/** controller id */
+	uint16_t		cntlid;
+	/** reservation status */
+	struct {
+		uint8_t		status    : 1;
+		uint8_t		reserved1 : 7;
+	} rcsts;
+	uint8_t			reserved2[5];
+	/** reservation key */
+	uint64_t		rkey;
+	/** 128-bit host identifier */
+	uint8_t			hostid[16];
+	uint8_t			reserved3[32];
+};
+SPDK_STATIC_ASSERT(sizeof(struct spdk_nvme_registered_ctrlr_extended_data) == 64, "Incorrect size");
 
 /**
  * Change persist through power loss state for
@@ -1709,6 +1736,39 @@ enum spdk_nvme_reservation_release_action {
 };
 
 /**
+ * Reservation notification log page type
+ */
+enum spdk_nvme_reservation_notification_log_page_type {
+	SPDK_NVME_RESERVATION_LOG_PAGE_EMPTY	= 0x0,
+	SPDK_NVME_REGISTRATION_PREEMPTED	= 0x1,
+	SPDK_NVME_RESERVATION_RELEASED		= 0x2,
+	SPDK_NVME_RESERVATION_PREEMPTED		= 0x3,
+};
+
+/**
+ * Reservation notification log
+ */
+struct spdk_nvme_reservation_notification_log {
+	/** 64-bit incrementing reservation notification log page count */
+	uint64_t	log_page_count;
+	/** Reservation notification log page type */
+	uint8_t		type;
+	/** Number of additional available reservation notification log pages */
+	uint8_t		num_avail_log_pages;
+	uint8_t		reserved[2];
+	uint32_t	nsid;
+	uint8_t		reserved1[48];
+};
+SPDK_STATIC_ASSERT(sizeof(struct spdk_nvme_reservation_notification_log) == 64, "Incorrect size");
+
+/* Mask Registration Preempted Notificaton */
+#define SPDK_NVME_REGISTRATION_PREEMPTED_MASK	(1U << 1)
+/* Mask Reservation Released Notification */
+#define SPDK_NVME_RESERVATION_RELEASED_MASK	(1U << 2)
+/* Mask Reservation Preempted Notification */
+#define SPDK_NVME_RESERVATION_PREEMPTED_MASK	(1U << 3)
+
+/**
  * Log page identifiers for SPDK_NVME_OPC_GET_LOG_PAGE
  */
 enum spdk_nvme_log_page {
@@ -1729,7 +1789,16 @@ enum spdk_nvme_log_page {
 	/** Command effects log (optional) */
 	SPDK_NVME_LOG_COMMAND_EFFECTS_LOG	= 0x05,
 
-	/* 0x06-0x6F - reserved */
+	/** Device self test (optional) */
+	SPDK_NVME_LOG_DEVICE_SELF_TEST	= 0x06,
+
+	/** Host initiated telemetry log (optional) */
+	SPDK_NVME_LOG_TELEMETRY_HOST_INITIATED	= 0x07,
+
+	/** Controller initiated telemetry log (optional) */
+	SPDK_NVME_LOG_TELEMETRY_CTRLR_INITIATED	= 0x08,
+
+	/* 0x09-0x6F - reserved */
 
 	/** Discovery(refer to the NVMe over Fabrics specification) */
 	SPDK_NVME_LOG_DISCOVERY		= 0x70,
@@ -1738,6 +1807,9 @@ enum spdk_nvme_log_page {
 
 	/** Reservation notification (optional) */
 	SPDK_NVME_LOG_RESERVATION_NOTIFICATION	= 0x80,
+
+	/** Sanitize status (optional) */
+	SPDK_NVME_LOG_SANITIZE_STATUS = 0x81,
 
 	/* 0x81-0xBF - I/O command set specific */
 
@@ -1860,6 +1932,71 @@ struct spdk_nvme_cmds_and_effect_log_page {
 	uint8_t reserved0[2048];
 };
 SPDK_STATIC_ASSERT(sizeof(struct spdk_nvme_cmds_and_effect_log_page) == 4096, "Incorrect size");
+
+/*
+ * Get Log Page – Telemetry Host/Controller Initiated Log (Log Identifiers 07h/08h)
+ */
+struct spdk_nvme_telemetry_log_page_hdr {
+	/* Log page identifier */
+	uint8_t    lpi;
+	uint8_t    rsvd[4];
+	uint8_t    ieee_oui[3];
+	/* Data area 1 last block */
+	uint16_t   dalb1;
+	/* Data area 2 last block */
+	uint16_t   dalb2;
+	/* Data area 3 last block */
+	uint16_t   dalb3;
+	uint8_t    rsvd1[368];
+	/* Controller initiated data avail */
+	uint8_t    ctrlr_avail;
+	/* Controller initiated telemetry data generation */
+	uint8_t    ctrlr_gen;
+	/* Reason identifier */
+	uint8_t    rsnident[128];
+	uint8_t    telemetry_datablock[0];
+};
+SPDK_STATIC_ASSERT(sizeof(struct spdk_nvme_telemetry_log_page_hdr) == 512, "Incorrect size");
+
+/**
+ * Sanitize Status Type
+ */
+enum spdk_nvme_sanitize_status_type {
+	SPDK_NVME_NEVER_BEEN_SANITIZED		= 0x0,
+	SPDK_NVME_RECENT_SANITIZE_SUCCESSFUL	= 0x1,
+	SPDK_NVME_SANITIZE_IN_PROGRESS		= 0x2,
+	SPDK_NVME_SANITIZE_FAILED		= 0x3,
+};
+
+/**
+ * Sanitize status sstat field
+ */
+struct spdk_nvme_sanitize_status_sstat {
+	uint16_t status			: 3;
+	uint16_t complete_pass		: 5;
+	uint16_t global_data_erase	: 1;
+	uint16_t reserved		: 7;
+};
+
+/**
+ * Sanitize log page
+ */
+struct spdk_nvme_sanitize_status_log_page {
+	/* Sanitize progress */
+	uint16_t				sprog;
+	/* Sanitize status */
+	struct spdk_nvme_sanitize_status_sstat	sstat;
+	/* CDW10 of sanitize command */
+	uint32_t				scdw10;
+	/* Estimated overwrite time in seconds */
+	uint32_t				et_overwrite;
+	/* Estimated block erase time in seconds */
+	uint32_t				et_block_erase;
+	/* Estimated crypto erase time in seconds */
+	uint32_t				et_crypto_erase;
+	uint8_t					reserved[492];
+};
+SPDK_STATIC_ASSERT(sizeof(struct spdk_nvme_sanitize_status_log_page) == 512, "Incorrect size");
 
 /**
  * Asynchronous Event Type
@@ -2073,6 +2210,23 @@ union spdk_nvme_feat_number_of_queues {
 	} bits;
 };
 SPDK_STATIC_ASSERT(sizeof(union spdk_nvme_feat_number_of_queues) == 4, "Incorrect size");
+
+/**
+ * Data used by Set Features/Get Features \ref SPDK_NVME_FEAT_INTERRUPT_COALESCING
+ */
+union spdk_nvme_feat_interrupt_coalescing {
+	uint32_t raw;
+	struct {
+		/** Aggregation Threshold */
+		uint32_t thr : 8;
+
+		/** Aggregration time */
+		uint32_t time : 8;
+
+		uint32_t reserved : 16;
+	} bits;
+};
+SPDK_STATIC_ASSERT(sizeof(union spdk_nvme_feat_interrupt_coalescing) == 4, "Incorrect size");
 
 /**
  * Data used by Set Features/Get Features \ref SPDK_NVME_FEAT_INTERRUPT_VECTOR_CONFIGURATION
@@ -2351,6 +2505,36 @@ struct spdk_nvme_protection_info {
 };
 SPDK_STATIC_ASSERT(sizeof(struct spdk_nvme_protection_info) == 8, "Incorrect size");
 
+/* Data structures for sanitize command */
+/* Sanitize - Command Dword 10 */
+struct spdk_nvme_sanitize {
+	/* Sanitize Action (SANACT) */
+	uint32_t sanact	: 3;
+	/* Allow Unrestricted Sanitize Exit (AUSE) */
+	uint32_t ause	: 1;
+	/* Overwrite Pass Count (OWPASS) */
+	uint32_t owpass	: 4;
+	/* Overwrite Invert Pattern Between Passes */
+	uint32_t oipbp	: 1;
+	/* No Deallocate after sanitize (NDAS) */
+	uint32_t ndas	: 1;
+	/* reserved */
+	uint32_t reserved	: 22;
+};
+SPDK_STATIC_ASSERT(sizeof(struct spdk_nvme_format) == 4, "Incorrect size");
+
+/* Sanitize Action */
+enum spdk_sanitize_action {
+	/* Exit Failure Mode */
+	SPDK_NVME_SANITIZE_EXIT_FAILURE_MODE	= 0x1,
+	/* Start a Block Erase sanitize operation */
+	SPDK_NVME_SANITIZE_BLOCK_ERASE		= 0x2,
+	/* Start an Overwrite sanitize operation */
+	SPDK_NVME_SANITIZE_OVERWRITE		= 0x3,
+	/* Start a Crypto Erase sanitize operation */
+	SPDK_NVME_SANITIZE_CRYPTO_ERASE		= 0x4,
+};
+
 /** Parameters for SPDK_NVME_OPC_FIRMWARE_COMMIT cdw10: commit action */
 enum spdk_nvme_fw_commit_action {
 	/**
@@ -2393,8 +2577,17 @@ struct spdk_nvme_fw_commit {
 };
 SPDK_STATIC_ASSERT(sizeof(struct spdk_nvme_fw_commit) == 4, "Incorrect size");
 
-#define spdk_nvme_cpl_is_error(cpl)					\
-	((cpl)->status.sc != 0 || (cpl)->status.sct != 0)
+#define spdk_nvme_cpl_is_error(cpl)			\
+	((cpl)->status.sc != SPDK_NVME_SC_SUCCESS ||	\
+	 (cpl)->status.sct != SPDK_NVME_SCT_GENERIC)
+
+#define spdk_nvme_cpl_is_success(cpl)	(!spdk_nvme_cpl_is_error(cpl))
+
+#define spdk_nvme_cpl_is_pi_error(cpl)						\
+	((cpl)->status.sct == SPDK_NVME_SCT_MEDIA_ERROR &&			\
+	 ((cpl)->status.sc == SPDK_NVME_SC_GUARD_CHECK_ERROR ||			\
+	  (cpl)->status.sc == SPDK_NVME_SC_APPLICATION_TAG_CHECK_ERROR ||	\
+	  (cpl)->status.sc == SPDK_NVME_SC_REFERENCE_TAG_CHECK_ERROR))
 
 /** Enable protection information checking of the Logical Block Reference Tag field */
 #define SPDK_NVME_IO_FLAGS_PRCHK_REFTAG (1U << 26)

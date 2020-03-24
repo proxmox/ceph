@@ -26,7 +26,7 @@ DEFAULT_CPUS = 1
 DEFAULT_MEM = 4096 # in megabytes
 
 def create_images(ctx, config, managers):
-    for client, client_config in config.iteritems():
+    for client, client_config in config.items():
         disks = client_config.get('disks', DEFAULT_NUM_DISKS)
         if not isinstance(disks, list):
             disks = [{} for n in range(int(disks))]
@@ -48,13 +48,13 @@ def create_images(ctx, config, managers):
                 )
 
 def create_clones(ctx, config, managers):
-    for client, client_config in config.iteritems():
+    for client, client_config in config.items():
         clone = client_config.get('clone', False)
         if clone:
             num_disks = client_config.get('disks', DEFAULT_NUM_DISKS)
             if isinstance(num_disks, list):
                 num_disks = len(num_disks)
-            for i in xrange(num_disks):
+            for i in range(num_disks):
                 create_config = {
                     client: {
                         'image_name':
@@ -74,7 +74,7 @@ def create_dirs(ctx, config):
     Handle directory creation and cleanup
     """
     testdir = teuthology.get_testdir(ctx)
-    for client, client_config in config.iteritems():
+    for client, client_config in config.items():
         assert 'test' in client_config, 'You must specify a test to run'
         (remote,) = ctx.cluster.only(client).remotes.keys()
         remote.run(
@@ -87,7 +87,7 @@ def create_dirs(ctx, config):
     try:
         yield
     finally:
-        for client, client_config in config.iteritems():
+        for client, client_config in config.items():
             assert 'test' in client_config, 'You must specify a test to run'
             (remote,) = ctx.cluster.only(client).remotes.keys()
             remote.run(
@@ -109,7 +109,7 @@ def generate_iso(ctx, config):
     git_url = teuth_config.get_ceph_qa_suite_git_url()
     log.info('Pulling tests from %s ref %s', git_url, refspec)
 
-    for client, client_config in config.iteritems():
+    for client, client_config in config.items():
         assert 'test' in client_config, 'You must specify a test to run'
         test = client_config['test']
 
@@ -122,7 +122,7 @@ def generate_iso(ctx, config):
         userdata_path = os.path.join(testdir, 'qemu', 'userdata.' + client)
         metadata_path = os.path.join(testdir, 'qemu', 'metadata.' + client)
 
-        with file(os.path.join(src_dir, 'userdata_setup.yaml'), 'rb') as f:
+        with open(os.path.join(src_dir, 'userdata_setup.yaml'), 'rb') as f:
             test_setup = ''.join(f.readlines())
             # configuring the commands to setup the nfs mount
             mnt_dir = "/export/{client}".format(client=client)
@@ -130,7 +130,7 @@ def generate_iso(ctx, config):
                 mnt_dir=mnt_dir
             )
 
-        with file(os.path.join(src_dir, 'userdata_teardown.yaml'), 'rb') as f:
+        with open(os.path.join(src_dir, 'userdata_teardown.yaml'), 'rb') as f:
             test_teardown = ''.join(f.readlines())
 
         user_data = test_setup
@@ -138,7 +138,7 @@ def generate_iso(ctx, config):
             num_disks = client_config.get('disks', DEFAULT_NUM_DISKS)
             if isinstance(num_disks, list):
                 num_disks = len(num_disks)
-            for i in xrange(1, num_disks):
+            for i in range(1, num_disks):
                 dev_letter = chr(ord('a') + i)
                 user_data += """
 - |
@@ -174,7 +174,7 @@ def generate_iso(ctx, config):
             ceph_sha1=ctx.config.get('sha1'))
         teuthology.write_file(remote, userdata_path, StringIO(user_data))
 
-        with file(os.path.join(src_dir, 'metadata.yaml'), 'rb') as f:
+        with open(os.path.join(src_dir, 'metadata.yaml'), 'rb') as f:
             teuthology.write_file(remote, metadata_path, f)
 
         test_file = '{tdir}/qemu/{client}.test.sh'.format(tdir=testdir, client=client)
@@ -203,7 +203,7 @@ def generate_iso(ctx, config):
     try:
         yield
     finally:
-        for client in config.iterkeys():
+        for client in config.keys():
             (remote,) = ctx.cluster.only(client).remotes.keys()
             remote.run(
                 args=[
@@ -221,7 +221,7 @@ def download_image(ctx, config):
     """Downland base image, remove image file when done"""
     log.info('downloading base image')
     testdir = teuthology.get_testdir(ctx)
-    for client, client_config in config.iteritems():
+    for client, client_config in config.items():
         (remote,) = ctx.cluster.only(client).remotes.keys()
         base_file = '{tdir}/qemu/base.{client}.qcow2'.format(tdir=testdir, client=client)
         image_url = client_config.get('image_url', DEFAULT_IMAGE_URL)
@@ -253,7 +253,7 @@ def download_image(ctx, config):
         yield
     finally:
         log.debug('cleaning up base image files')
-        for client in config.iterkeys():
+        for client in config.keys():
             base_file = '{tdir}/qemu/base.{client}.qcow2'.format(
                 tdir=testdir,
                 client=client,
@@ -266,7 +266,7 @@ def download_image(ctx, config):
                 )
 
 
-def _setup_nfs_mount(remote, client, mount_dir):
+def _setup_nfs_mount(remote, client, service_name, mount_dir):
     """
     Sets up an nfs mount on the remote that the guest can use to
     store logs. This nfs mount is also used to touch a file
@@ -297,10 +297,10 @@ def _setup_nfs_mount(remote, client, mount_dir):
     if remote.os.package_type == "deb":
         remote.run(args=['sudo', 'service', 'nfs-kernel-server', 'restart'])
     else:
-        remote.run(args=['sudo', 'systemctl', 'restart', 'nfs'])
+        remote.run(args=['sudo', 'systemctl', 'restart', service_name])
 
 
-def _teardown_nfs_mount(remote, client):
+def _teardown_nfs_mount(remote, client, service_name):
     """
     Tears down the nfs mount on the remote used for logging and reporting the
     status of the tests being ran in the guest.
@@ -314,7 +314,7 @@ def _teardown_nfs_mount(remote, client):
         ])
     else:
         remote.run(args=[
-            'sudo', 'systemctl', 'stop', 'nfs'
+            'sudo', 'systemctl', 'stop', service_name
         ])
     log.info("Unmounting exported directory...")
     remote.run(args=[
@@ -335,7 +335,7 @@ def _teardown_nfs_mount(remote, client):
         ])
     else:
         remote.run(args=[
-            'sudo', 'systemctl', 'start', 'nfs'
+            'sudo', 'systemctl', 'start', service_name
         ])
 
 
@@ -344,7 +344,7 @@ def run_qemu(ctx, config):
     """Setup kvm environment and start qemu"""
     procs = []
     testdir = teuthology.get_testdir(ctx)
-    for client, client_config in config.iteritems():
+    for client, client_config in config.items():
         (remote,) = ctx.cluster.only(client).remotes.keys()
         log_dir = '{tdir}/archive/qemu/{client}'.format(tdir=testdir, client=client)
         remote.run(
@@ -354,9 +354,13 @@ def run_qemu(ctx, config):
                 ]
             )
 
+        nfs_service_name = 'nfs'
+        if remote.os.name in ['rhel', 'centos'] and float(remote.os.version) >= 8:
+            nfs_service_name = 'nfs-server'
+
         # make an nfs mount to use for logging and to
         # allow to test to tell teuthology the tests outcome
-        _setup_nfs_mount(remote, client, log_dir)
+        _setup_nfs_mount(remote, client, nfs_service_name, log_dir)
 
         # Hack to make sure /dev/kvm permissions are set correctly
         # See http://tracker.ceph.com/issues/17977 and
@@ -395,7 +399,7 @@ def run_qemu(ctx, config):
         num_disks = client_config.get('disks', DEFAULT_NUM_DISKS)
         if isinstance(num_disks, list):
             num_disks = len(num_disks)
-        for i in xrange(num_disks):
+        for i in range(num_disks):
             suffix = '-clone' if clone else ''
             args.extend([
                 '-drive',
@@ -430,7 +434,7 @@ def run_qemu(ctx, config):
             time.sleep(time_wait)
 
         log.debug('checking that qemu tests succeeded...')
-        for client in config.iterkeys():
+        for client in config.keys():
             (remote,) = ctx.cluster.only(client).remotes.keys()
 
             # ensure we have permissions to all the logs
@@ -443,7 +447,7 @@ def run_qemu(ctx, config):
                 )
 
             # teardown nfs mount
-            _teardown_nfs_mount(remote, client)
+            _teardown_nfs_mount(remote, client, nfs_service_name)
             # check for test status
             remote.run(
                 args=[

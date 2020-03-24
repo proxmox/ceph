@@ -1,106 +1,11 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2016 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2016 Intel Corporation
  */
 
 #ifndef __L3FWD_LPM_SSE_H__
 #define __L3FWD_LPM_SSE_H__
 
 #include "l3fwd_sse.h"
-
-static inline __attribute__((always_inline)) uint16_t
-lpm_get_dst_port(const struct lcore_conf *qconf, struct rte_mbuf *pkt,
-		uint8_t portid)
-{
-	uint32_t next_hop;
-	struct ipv6_hdr *ipv6_hdr;
-	struct ipv4_hdr *ipv4_hdr;
-	struct ether_hdr *eth_hdr;
-
-	if (RTE_ETH_IS_IPV4_HDR(pkt->packet_type)) {
-
-		eth_hdr = rte_pktmbuf_mtod(pkt, struct ether_hdr *);
-		ipv4_hdr = (struct ipv4_hdr *)(eth_hdr + 1);
-
-		return (uint16_t) (
-			(rte_lpm_lookup(qconf->ipv4_lookup_struct,
-					rte_be_to_cpu_32(ipv4_hdr->dst_addr),
-					&next_hop) == 0) ?
-						next_hop : portid);
-
-	} else if (RTE_ETH_IS_IPV6_HDR(pkt->packet_type)) {
-
-		eth_hdr = rte_pktmbuf_mtod(pkt, struct ether_hdr *);
-		ipv6_hdr = (struct ipv6_hdr *)(eth_hdr + 1);
-
-		return (uint16_t) ((rte_lpm6_lookup(qconf->ipv6_lookup_struct,
-				ipv6_hdr->dst_addr, &next_hop) == 0)
-				? next_hop : portid);
-
-	}
-
-	return portid;
-}
-
-/*
- * lpm_get_dst_port optimized routine for packets where dst_ipv4 is already
- * precalculated. If packet is ipv6 dst_addr is taken directly from packet
- * header and dst_ipv4 value is not used.
- */
-static inline __attribute__((always_inline)) uint16_t
-lpm_get_dst_port_with_ipv4(const struct lcore_conf *qconf, struct rte_mbuf *pkt,
-	uint32_t dst_ipv4, uint8_t portid)
-{
-	uint32_t next_hop;
-	struct ipv6_hdr *ipv6_hdr;
-	struct ether_hdr *eth_hdr;
-
-	if (RTE_ETH_IS_IPV4_HDR(pkt->packet_type)) {
-		return (uint16_t) ((rte_lpm_lookup(qconf->ipv4_lookup_struct, dst_ipv4,
-			&next_hop) == 0) ? next_hop : portid);
-
-	} else if (RTE_ETH_IS_IPV6_HDR(pkt->packet_type)) {
-
-		eth_hdr = rte_pktmbuf_mtod(pkt, struct ether_hdr *);
-		ipv6_hdr = (struct ipv6_hdr *)(eth_hdr + 1);
-
-		return (uint16_t) ((rte_lpm6_lookup(qconf->ipv6_lookup_struct,
-				ipv6_hdr->dst_addr, &next_hop) == 0)
-				? next_hop : portid);
-
-	}
-
-	return portid;
-
-}
 
 /*
  * Read packet_type and destination IPV4 addresses from 4 mbufs.
@@ -145,7 +50,7 @@ static inline void
 processx4_step2(const struct lcore_conf *qconf,
 		__m128i dip,
 		uint32_t ipv4_flag,
-		uint8_t portid,
+		uint16_t portid,
 		struct rte_mbuf *pkt[FWDSTEP],
 		uint16_t dprt[FWDSTEP])
 {
@@ -178,7 +83,7 @@ processx4_step2(const struct lcore_conf *qconf,
  */
 static inline void
 l3fwd_lpm_send_packets(int nb_rx, struct rte_mbuf **pkts_burst,
-			uint8_t portid, struct lcore_conf *qconf)
+			uint16_t portid, struct lcore_conf *qconf)
 {
 	int32_t j;
 	uint16_t dst_port[MAX_PKT_BURST];
@@ -199,9 +104,11 @@ l3fwd_lpm_send_packets(int nb_rx, struct rte_mbuf **pkts_burst,
 	case 3:
 		dst_port[j] = lpm_get_dst_port(qconf, pkts_burst[j], portid);
 		j++;
+		/* fall-through */
 	case 2:
 		dst_port[j] = lpm_get_dst_port(qconf, pkts_burst[j], portid);
 		j++;
+		/* fall-through */
 	case 1:
 		dst_port[j] = lpm_get_dst_port(qconf, pkts_burst[j], portid);
 		j++;

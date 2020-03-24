@@ -1,34 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2017 Intel Corporation.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2017 Intel Corporation
  */
 
 #include <stddef.h>
@@ -39,14 +10,16 @@
 #include <rte_common.h>
 #include <rte_net_crc.h>
 
-#if defined(RTE_ARCH_X86_64)				\
-	&& defined(RTE_MACHINE_CPUFLAG_SSE4_2)		\
-	&& defined(RTE_MACHINE_CPUFLAG_PCLMULQDQ)
+#if defined(RTE_ARCH_X86_64) && defined(RTE_MACHINE_CPUFLAG_PCLMULQDQ)
 #define X86_64_SSE42_PCLMULQDQ     1
+#elif defined(RTE_ARCH_ARM64) && defined(RTE_MACHINE_CPUFLAG_PMULL)
+#define ARM64_NEON_PMULL           1
 #endif
 
 #ifdef X86_64_SSE42_PCLMULQDQ
 #include <net_crc_sse.h>
+#elif defined ARM64_NEON_PMULL
+#include <net_crc_neon.h>
 #endif
 
 /* crc tables */
@@ -74,6 +47,11 @@ static rte_net_crc_handler handlers_sse42[] = {
 	[RTE_NET_CRC16_CCITT] = rte_crc16_ccitt_sse42_handler,
 	[RTE_NET_CRC32_ETH] = rte_crc32_eth_sse42_handler,
 };
+#elif defined ARM64_NEON_PMULL
+static rte_net_crc_handler handlers_neon[] = {
+	[RTE_NET_CRC16_CCITT] = rte_crc16_ccitt_neon_handler,
+	[RTE_NET_CRC32_ETH] = rte_crc32_eth_neon_handler,
+};
 #endif
 
 /**
@@ -91,8 +69,8 @@ reflect_32bits(uint32_t val)
 	uint32_t i, res = 0;
 
 	for (i = 0; i < 32; i++)
-		if ((val & (1 << i)) != 0)
-			res |= (uint32_t)(1 << (31 - i));
+		if ((val & (1U << i)) != 0)
+			res |= (uint32_t)(1U << (31 - i));
 
 	return res;
 }
@@ -116,7 +94,7 @@ crc32_eth_init_lut(uint32_t poly,
 	}
 }
 
-static inline __attribute__((always_inline)) uint32_t
+static __rte_always_inline uint32_t
 crc32_eth_calc_lut(const uint8_t *data,
 	uint32_t data_len,
 	uint32_t crc,
@@ -162,14 +140,21 @@ void
 rte_net_crc_set_alg(enum rte_net_crc_alg alg)
 {
 	switch (alg) {
-	case RTE_NET_CRC_SSE42:
 #ifdef X86_64_SSE42_PCLMULQDQ
+	case RTE_NET_CRC_SSE42:
 		handlers = handlers_sse42;
-#else
-		alg = RTE_NET_CRC_SCALAR;
-#endif
 		break;
+#elif defined ARM64_NEON_PMULL
+		/* fall-through */
+	case RTE_NET_CRC_NEON:
+		if (rte_cpu_get_flag_enabled(RTE_CPUFLAG_PMULL)) {
+			handlers = handlers_neon;
+			break;
+		}
+#endif
+		/* fall-through */
 	case RTE_NET_CRC_SCALAR:
+		/* fall-through */
 	default:
 		handlers = handlers_scalar;
 		break;
@@ -191,16 +176,20 @@ rte_net_crc_calc(const void *data,
 }
 
 /* Select highest available crc algorithm as default one */
-static inline void __attribute__((constructor))
-rte_net_crc_init(void)
+RTE_INIT(rte_net_crc_init)
 {
 	enum rte_net_crc_alg alg = RTE_NET_CRC_SCALAR;
 
 	rte_net_crc_scalar_init();
 
 #ifdef X86_64_SSE42_PCLMULQDQ
-		alg = RTE_NET_CRC_SSE42;
-		rte_net_crc_sse42_init();
+	alg = RTE_NET_CRC_SSE42;
+	rte_net_crc_sse42_init();
+#elif defined ARM64_NEON_PMULL
+	if (rte_cpu_get_flag_enabled(RTE_CPUFLAG_PMULL)) {
+		alg = RTE_NET_CRC_NEON;
+		rte_net_crc_neon_init();
+	}
 #endif
 
 	rte_net_crc_set_alg(alg);

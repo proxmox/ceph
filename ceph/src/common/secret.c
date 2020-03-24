@@ -19,6 +19,7 @@
 #include <fcntl.h>
 #include <keyutils.h>
 
+#include "include/compat.h"
 #include "common/armor.h"
 #include "common/safe_io.h"
 
@@ -65,11 +66,11 @@ int set_kernel_secret(const char *secret, const char *key_name)
   if (ret < 0) {
     char error_buf[80];
     fprintf(stderr, "secret is not valid base64: %s.\n",
-	    strerror_r(-ret, error_buf, sizeof(error_buf)));
+	    ceph_strerror_r(-ret, error_buf, sizeof(error_buf)));
     return ret;
   }
 
-  serial = add_key("ceph", key_name, payload, sizeof(payload), KEY_SPEC_PROCESS_KEYRING);
+  serial = add_key("ceph", key_name, payload, ret, KEY_SPEC_PROCESS_KEYRING);
   if (serial == -1) {
     ret = -errno;
   }

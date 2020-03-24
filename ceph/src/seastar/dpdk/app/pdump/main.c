@@ -1,34 +1,5 @@
-/*
- *   BSD LICENSE
- *
- *   Copyright(c) 2016 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2016 Intel Corporation
  */
 
 #include <stdio.h>
@@ -53,9 +24,13 @@
 #include <rte_kvargs.h>
 #include <rte_mempool.h>
 #include <rte_ring.h>
+#include <rte_string_fns.h>
 #include <rte_pdump.h>
 
 #define CMD_LINE_OPT_PDUMP "pdump"
+#define CMD_LINE_OPT_PDUMP_NUM 256
+#define CMD_LINE_OPT_MULTI "multi"
+#define CMD_LINE_OPT_MULTI_NUM 257
 #define PDUMP_PORT_ARG "port"
 #define PDUMP_PCI_ARG "device_id"
 #define PDUMP_QUEUE_ARG "queue"
@@ -65,11 +40,10 @@
 #define PDUMP_RING_SIZE_ARG "ring-size"
 #define PDUMP_MSIZE_ARG "mbuf-size"
 #define PDUMP_NUM_MBUFS_ARG "total-num-mbufs"
-#define CMD_LINE_OPT_SER_SOCK_PATH "server-socket-path"
-#define CMD_LINE_OPT_CLI_SOCK_PATH "client-socket-path"
 
-#define VDEV_PCAP "net_pcap_%s_%d,tx_pcap=%s"
-#define VDEV_IFACE "net_pcap_%s_%d,tx_iface=%s"
+#define VDEV_NAME_FMT "net_pcap_%s_%d"
+#define VDEV_PCAP_ARGS_FMT "tx_pcap=%s"
+#define VDEV_IFACE_ARGS_FMT "tx_iface=%s"
 #define TX_STREAM_SIZE 64
 
 #define MP_NAME "pdump_pool_%d"
@@ -110,7 +84,7 @@ enum pdump_by {
 	DEVICE_ID = 2
 };
 
-const char *valid_pdump_arguments[] = {
+static const char * const valid_pdump_arguments[] = {
 	PDUMP_PORT_ARG,
 	PDUMP_PCI_ARG,
 	PDUMP_QUEUE_ARG,
@@ -131,7 +105,7 @@ struct pdump_stats {
 
 struct pdump_tuples {
 	/* cli params */
-	uint8_t port;
+	uint16_t port;
 	char *device_id;
 	uint16_t queue;
 	char rx_dev[TX_STREAM_SIZE];
@@ -148,8 +122,8 @@ struct pdump_tuples {
 
 	/* params for packet dumping */
 	enum pdump_by dump_by_type;
-	int rx_vdev_id;
-	int tx_vdev_id;
+	uint16_t rx_vdev_id;
+	uint16_t tx_vdev_id;
 	enum pcap_stream rx_vdev_stream_type;
 	enum pcap_stream tx_vdev_stream_type;
 	bool single_pdump_dev;
@@ -165,28 +139,25 @@ struct parse_val {
 	uint64_t val;
 };
 
-int num_tuples;
+static int num_tuples;
 static struct rte_eth_conf port_conf_default;
-volatile uint8_t quit_signal;
-static char server_socket_path[PATH_MAX];
-static char client_socket_path[PATH_MAX];
+static volatile uint8_t quit_signal;
+static uint8_t multiple_core_capture;
 
 /**< display usage */
 static void
 pdump_usage(const char *prgname)
 {
-	printf("usage: %s [EAL options] -- --pdump "
+	printf("usage: %s [EAL options]"
+			" --["CMD_LINE_OPT_MULTI"]\n"
+			" --"CMD_LINE_OPT_PDUMP" "
 			"'(port=<port id> | device_id=<pci id or vdev name>),"
 			"(queue=<queue_id>),"
 			"(rx-dev=<iface or pcap file> |"
 			" tx-dev=<iface or pcap file>,"
 			"[ring-size=<ring size>default:16384],"
 			"[mbuf-size=<mbuf data size>default:2176],"
-			"[total-num-mbufs=<number of mbufs>default:65535]'\n"
-			"[--server-socket-path=<server socket dir>"
-				"default:/var/run/.dpdk/ (or) ~/.dpdk/]\n"
-			"[--client-socket-path=<client socket dir>"
-				"default:/var/run/.dpdk/ (or) ~/.dpdk/]\n",
+			"[total-num-mbufs=<number of mbufs>default:65535]'\n",
 			prgname);
 }
 
@@ -224,12 +195,12 @@ parse_rxtxdev(const char *key, const char *value, void *extra_args)
 	struct pdump_tuples *pt = extra_args;
 
 	if (!strcmp(key, PDUMP_RX_DEV_ARG)) {
-		snprintf(pt->rx_dev, sizeof(pt->rx_dev), "%s", value);
+		strlcpy(pt->rx_dev, value, sizeof(pt->rx_dev));
 		/* identify the tx stream type for pcap vdev */
 		if (if_nametoindex(pt->rx_dev))
 			pt->rx_vdev_stream_type = IFACE;
 	} else if (!strcmp(key, PDUMP_TX_DEV_ARG)) {
-		snprintf(pt->tx_dev, sizeof(pt->tx_dev), "%s", value);
+		strlcpy(pt->tx_dev, value, sizeof(pt->tx_dev));
 		/* identify the tx stream type for pcap vdev */
 		if (if_nametoindex(pt->tx_dev))
 			pt->tx_vdev_stream_type = IFACE;
@@ -301,7 +272,7 @@ parse_pdump(const char *optarg)
 				&parse_uint_value, &v);
 		if (ret < 0)
 			goto free_kvlist;
-		pt->port = (uint8_t) v.val;
+		pt->port = (uint16_t) v.val;
 		pt->dump_by_type = PORT_ID;
 	} else if (cnt2 == 1) {
 		ret = rte_kvargs_process(kvlist, PDUMP_PCI_ARG,
@@ -410,9 +381,8 @@ launch_args_parse(int argc, char **argv, char *prgname)
 	int opt, ret;
 	int option_index;
 	static struct option long_option[] = {
-		{"pdump", 1, 0, 0},
-		{"server-socket-path", 1, 0, 0},
-		{"client-socket-path", 1, 0, 0},
+		{CMD_LINE_OPT_PDUMP, 1, 0, CMD_LINE_OPT_PDUMP_NUM},
+		{CMD_LINE_OPT_MULTI, 0, 0, CMD_LINE_OPT_MULTI_NUM},
 		{NULL, 0, 0, 0}
 	};
 
@@ -423,33 +393,15 @@ launch_args_parse(int argc, char **argv, char *prgname)
 	while ((opt = getopt_long(argc, argv, " ",
 			long_option, &option_index)) != EOF) {
 		switch (opt) {
-		case 0:
-			if (!strncmp(long_option[option_index].name,
-					CMD_LINE_OPT_PDUMP,
-					sizeof(CMD_LINE_OPT_PDUMP))) {
-				ret = parse_pdump(optarg);
-				if (ret) {
-					pdump_usage(prgname);
-					return -1;
-				}
+		case CMD_LINE_OPT_PDUMP_NUM:
+			ret = parse_pdump(optarg);
+			if (ret) {
+				pdump_usage(prgname);
+				return -1;
 			}
-
-			if (!strncmp(long_option[option_index].name,
-					CMD_LINE_OPT_SER_SOCK_PATH,
-					sizeof(CMD_LINE_OPT_SER_SOCK_PATH))) {
-				snprintf(server_socket_path,
-					sizeof(server_socket_path), "%s",
-					optarg);
-			}
-
-			if (!strncmp(long_option[option_index].name,
-					CMD_LINE_OPT_CLI_SOCK_PATH,
-					sizeof(CMD_LINE_OPT_CLI_SOCK_PATH))) {
-				snprintf(client_socket_path,
-					sizeof(client_socket_path), "%s",
-					optarg);
-			}
-
+			break;
+		case CMD_LINE_OPT_MULTI_NUM:
+			multiple_core_capture = 1;
 			break;
 		default:
 			pdump_usage(prgname);
@@ -489,7 +441,7 @@ disable_pdump(struct pdump_tuples *pt)
 }
 
 static inline void
-pdump_rxtx(struct rte_ring *ring, uint8_t vdev_id, struct pdump_stats *stats)
+pdump_rxtx(struct rte_ring *ring, uint16_t vdev_id, struct pdump_stats *stats)
 {
 	/* write input packets of port to vdev for pdump */
 	struct rte_mbuf *rxtx_bufs[BURST_SIZE];
@@ -516,7 +468,7 @@ pdump_rxtx(struct rte_ring *ring, uint8_t vdev_id, struct pdump_stats *stats)
 }
 
 static void
-free_ring_data(struct rte_ring *ring, uint8_t vdev_id,
+free_ring_data(struct rte_ring *ring, uint16_t vdev_id,
 		struct pdump_stats *stats)
 {
 	while (rte_ring_count(ring))
@@ -548,6 +500,7 @@ cleanup_pdump_resources(void)
 {
 	int i;
 	struct pdump_tuples *pt;
+	char name[RTE_ETH_NAME_MAX_LEN];
 
 	/* disable pdump and free the pdump_tuple resources */
 	for (i = 0; i < num_tuples; i++) {
@@ -564,6 +517,21 @@ cleanup_pdump_resources(void)
 			free_ring_data(pt->rx_ring, pt->rx_vdev_id, &pt->stats);
 		if (pt->dir & RTE_PDUMP_FLAG_TX)
 			free_ring_data(pt->tx_ring, pt->tx_vdev_id, &pt->stats);
+
+		/* Remove the vdev(s) created */
+		if (pt->dir & RTE_PDUMP_FLAG_RX) {
+			rte_eth_dev_get_name_by_port(pt->rx_vdev_id, name);
+			rte_eal_hotplug_remove("vdev", name);
+		}
+
+		if (pt->single_pdump_dev)
+			continue;
+
+		if (pt->dir & RTE_PDUMP_FLAG_TX) {
+			rte_eth_dev_get_name_by_port(pt->tx_vdev_id, name);
+			rte_eal_hotplug_remove("vdev", name);
+		}
+
 	}
 	cleanup_rings();
 }
@@ -579,15 +547,14 @@ signal_handler(int sig_num)
 }
 
 static inline int
-configure_vdev(uint8_t port_id)
+configure_vdev(uint16_t port_id)
 {
 	struct ether_addr addr;
 	const uint16_t rxRings = 0, txRings = 1;
-	const uint8_t nb_ports = rte_eth_dev_count();
 	int ret;
 	uint16_t q;
 
-	if (port_id > nb_ports)
+	if (!rte_eth_dev_is_valid_port(port_id))
 		return -1;
 
 	ret = rte_eth_dev_configure(port_id, rxRings, txRings,
@@ -609,7 +576,7 @@ configure_vdev(uint8_t port_id)
 	rte_eth_macaddr_get(port_id, &addr);
 	printf("Port %u MAC: %02"PRIx8" %02"PRIx8" %02"PRIx8
 			" %02"PRIx8" %02"PRIx8" %02"PRIx8"\n",
-			(unsigned)port_id,
+			port_id,
 			addr.addr_bytes[0], addr.addr_bytes[1],
 			addr.addr_bytes[2], addr.addr_bytes[3],
 			addr.addr_bytes[4], addr.addr_bytes[5]);
@@ -623,9 +590,10 @@ static void
 create_mp_ring_vdev(void)
 {
 	int i;
-	uint8_t portid;
+	uint16_t portid;
 	struct pdump_tuples *pt = NULL;
 	struct rte_mempool *mbuf_pool = NULL;
+	char vdev_name[SIZE];
 	char vdev_args[SIZE];
 	char ring_name[SIZE];
 	char mempool_name[SIZE];
@@ -675,16 +643,27 @@ create_mp_ring_vdev(void)
 			}
 
 			/* create vdevs */
+			snprintf(vdev_name, sizeof(vdev_name),
+				 VDEV_NAME_FMT, RX_STR, i);
 			(pt->rx_vdev_stream_type == IFACE) ?
-			snprintf(vdev_args, SIZE, VDEV_IFACE, RX_STR, i,
-			pt->rx_dev) :
-			snprintf(vdev_args, SIZE, VDEV_PCAP, RX_STR, i,
-			pt->rx_dev);
-			if (rte_eth_dev_attach(vdev_args, &portid) < 0) {
+			snprintf(vdev_args, sizeof(vdev_args),
+				 VDEV_IFACE_ARGS_FMT, pt->rx_dev) :
+			snprintf(vdev_args, sizeof(vdev_args),
+				 VDEV_PCAP_ARGS_FMT, pt->rx_dev);
+			if (rte_eal_hotplug_add("vdev", vdev_name,
+						vdev_args) < 0) {
 				cleanup_rings();
 				rte_exit(EXIT_FAILURE,
 					"vdev creation failed:%s:%d\n",
 					__func__, __LINE__);
+			}
+			if (rte_eth_dev_get_port_by_name(vdev_name,
+							 &portid) != 0) {
+				rte_eal_hotplug_remove("vdev", vdev_name);
+				cleanup_rings();
+				rte_exit(EXIT_FAILURE,
+					"cannot find added vdev %s:%s:%d\n",
+					vdev_name, __func__, __LINE__);
 			}
 			pt->rx_vdev_id = portid;
 
@@ -694,17 +673,28 @@ create_mp_ring_vdev(void)
 			if (pt->single_pdump_dev)
 				pt->tx_vdev_id = portid;
 			else {
-				(pt->tx_vdev_stream_type == IFACE) ?
-				snprintf(vdev_args, SIZE, VDEV_IFACE, TX_STR, i,
-				pt->tx_dev) :
-				snprintf(vdev_args, SIZE, VDEV_PCAP, TX_STR, i,
-				pt->tx_dev);
-				if (rte_eth_dev_attach(vdev_args,
-							&portid) < 0) {
+				snprintf(vdev_name, sizeof(vdev_name),
+					 VDEV_NAME_FMT, TX_STR, i);
+				(pt->rx_vdev_stream_type == IFACE) ?
+				snprintf(vdev_args, sizeof(vdev_args),
+					 VDEV_IFACE_ARGS_FMT, pt->tx_dev) :
+				snprintf(vdev_args, sizeof(vdev_args),
+					 VDEV_PCAP_ARGS_FMT, pt->tx_dev);
+				if (rte_eal_hotplug_add("vdev", vdev_name,
+							vdev_args) < 0) {
 					cleanup_rings();
 					rte_exit(EXIT_FAILURE,
 						"vdev creation failed:"
 						"%s:%d\n", __func__, __LINE__);
+				}
+				if (rte_eth_dev_get_port_by_name(vdev_name,
+						&portid) != 0) {
+					rte_eal_hotplug_remove("vdev",
+							       vdev_name);
+					cleanup_rings();
+					rte_exit(EXIT_FAILURE,
+						"cannot find added vdev %s:%s:%d\n",
+						vdev_name, __func__, __LINE__);
 				}
 				pt->tx_vdev_id = portid;
 
@@ -723,16 +713,27 @@ create_mp_ring_vdev(void)
 					rte_strerror(rte_errno));
 			}
 
+			snprintf(vdev_name, sizeof(vdev_name),
+				 VDEV_NAME_FMT, RX_STR, i);
 			(pt->rx_vdev_stream_type == IFACE) ?
-			snprintf(vdev_args, SIZE, VDEV_IFACE, RX_STR, i,
-				pt->rx_dev) :
-			snprintf(vdev_args, SIZE, VDEV_PCAP, RX_STR, i,
-				pt->rx_dev);
-			if (rte_eth_dev_attach(vdev_args, &portid) < 0) {
+			snprintf(vdev_args, sizeof(vdev_args),
+				 VDEV_IFACE_ARGS_FMT, pt->rx_dev) :
+			snprintf(vdev_args, sizeof(vdev_args),
+				 VDEV_PCAP_ARGS_FMT, pt->rx_dev);
+			if (rte_eal_hotplug_add("vdev", vdev_name,
+						vdev_args) < 0) {
 				cleanup_rings();
 				rte_exit(EXIT_FAILURE,
 					"vdev creation failed:%s:%d\n",
 					__func__, __LINE__);
+			}
+			if (rte_eth_dev_get_port_by_name(vdev_name,
+							 &portid) != 0) {
+				rte_eal_hotplug_remove("vdev", vdev_name);
+				cleanup_rings();
+				rte_exit(EXIT_FAILURE,
+					"cannot find added vdev %s:%s:%d\n",
+					vdev_name, __func__, __LINE__);
 			}
 			pt->rx_vdev_id = portid;
 			/* configure vdev */
@@ -749,15 +750,26 @@ create_mp_ring_vdev(void)
 					rte_strerror(rte_errno));
 			}
 
+			snprintf(vdev_name, sizeof(vdev_name),
+				 VDEV_NAME_FMT, TX_STR, i);
 			(pt->tx_vdev_stream_type == IFACE) ?
-			snprintf(vdev_args, SIZE, VDEV_IFACE, TX_STR, i,
-				pt->tx_dev) :
-			snprintf(vdev_args, SIZE, VDEV_PCAP, TX_STR, i,
-				pt->tx_dev);
-			if (rte_eth_dev_attach(vdev_args, &portid) < 0) {
+			snprintf(vdev_args, sizeof(vdev_args),
+				 VDEV_IFACE_ARGS_FMT, pt->tx_dev) :
+			snprintf(vdev_args, sizeof(vdev_args),
+				 VDEV_PCAP_ARGS_FMT, pt->tx_dev);
+			if (rte_eal_hotplug_add("vdev", vdev_name,
+						vdev_args) < 0) {
 				cleanup_rings();
 				rte_exit(EXIT_FAILURE,
 					"vdev creation failed\n");
+			}
+			if (rte_eth_dev_get_port_by_name(vdev_name,
+							 &portid) != 0) {
+				rte_eal_hotplug_remove("vdev", vdev_name);
+				cleanup_rings();
+				rte_exit(EXIT_FAILURE,
+					"cannot find added vdev %s:%s:%d\n",
+					vdev_name, __func__, __LINE__);
 			}
 			pt->tx_vdev_id = portid;
 
@@ -773,22 +785,6 @@ enable_pdump(void)
 	int i;
 	struct pdump_tuples *pt;
 	int ret = 0, ret1 = 0;
-
-	if (server_socket_path[0] != 0)
-		ret = rte_pdump_set_socket_dir(server_socket_path,
-				RTE_PDUMP_SOCKET_SERVER);
-	if (ret == 0 && client_socket_path[0] != 0) {
-		ret = rte_pdump_set_socket_dir(client_socket_path,
-				RTE_PDUMP_SOCKET_CLIENT);
-	}
-	if (ret < 0) {
-		cleanup_pdump_resources();
-		rte_exit(EXIT_FAILURE,
-				"failed to set socket paths of server:%s, "
-				"client:%s\n",
-				server_socket_path,
-				client_socket_path);
-	}
 
 	for (i = 0; i < num_tuples; i++) {
 		pt = &pdump_t[i];
@@ -845,22 +841,73 @@ enable_pdump(void)
 }
 
 static inline void
+pdump_packets(struct pdump_tuples *pt)
+{
+	if (pt->dir & RTE_PDUMP_FLAG_RX)
+		pdump_rxtx(pt->rx_ring, pt->rx_vdev_id, &pt->stats);
+	if (pt->dir & RTE_PDUMP_FLAG_TX)
+		pdump_rxtx(pt->tx_ring, pt->tx_vdev_id, &pt->stats);
+}
+
+static int
+dump_packets_core(void *arg)
+{
+	struct pdump_tuples *pt = (struct pdump_tuples *) arg;
+
+	printf(" core (%u); port %u device (%s) queue %u\n",
+			rte_lcore_id(), pt->port, pt->device_id, pt->queue);
+	fflush(stdout);
+
+	while (!quit_signal)
+		pdump_packets(pt);
+
+	return 0;
+}
+
+static inline void
 dump_packets(void)
 {
 	int i;
-	struct pdump_tuples *pt;
+	uint32_t lcore_id = 0;
 
-	while (!quit_signal) {
-		for (i = 0; i < num_tuples; i++) {
-			pt = &pdump_t[i];
-			if (pt->dir & RTE_PDUMP_FLAG_RX)
-				pdump_rxtx(pt->rx_ring, pt->rx_vdev_id,
-					&pt->stats);
-			if (pt->dir & RTE_PDUMP_FLAG_TX)
-				pdump_rxtx(pt->tx_ring, pt->tx_vdev_id,
-					&pt->stats);
+	if (!multiple_core_capture) {
+		printf(" core (%u), capture for (%d) tuples\n",
+				rte_lcore_id(), num_tuples);
+
+		for (i = 0; i < num_tuples; i++)
+			printf(" - port %u device (%s) queue %u\n",
+				pdump_t[i].port,
+				pdump_t[i].device_id,
+				pdump_t[i].queue);
+
+		while (!quit_signal) {
+			for (i = 0; i < num_tuples; i++)
+				pdump_packets(&pdump_t[i]);
 		}
+
+		return;
 	}
+
+	/* check if there enough core */
+	if ((uint32_t)num_tuples >= rte_lcore_count()) {
+		printf("Insufficient cores to run parallel!\n");
+		return;
+	}
+
+	lcore_id = rte_get_next_lcore(lcore_id, 1, 0);
+
+	for (i = 0; i < num_tuples; i++) {
+		rte_eal_remote_launch(dump_packets_core,
+				&pdump_t[i], lcore_id);
+		lcore_id = rte_get_next_lcore(lcore_id, 1, 0);
+
+		if (rte_eal_wait_lcore(lcore_id) < 0)
+			rte_exit(EXIT_FAILURE, "failed to wait\n");
+	}
+
+	/* master core */
+	while (!quit_signal)
+		;
 }
 
 int
@@ -870,30 +917,31 @@ main(int argc, char **argv)
 	int ret;
 	int i;
 
-	char c_flag[] = "-c1";
 	char n_flag[] = "-n4";
 	char mp_flag[] = "--proc-type=secondary";
-	char *argp[argc + 3];
+	char *argp[argc + 2];
 
 	/* catch ctrl-c so we can print on exit */
 	signal(SIGINT, signal_handler);
 
 	argp[0] = argv[0];
-	argp[1] = c_flag;
-	argp[2] = n_flag;
-	argp[3] = mp_flag;
+	argp[1] = n_flag;
+	argp[2] = mp_flag;
 
 	for (i = 1; i < argc; i++)
-		argp[i + 3] = argv[i];
+		argp[i + 2] = argv[i];
 
-	argc += 3;
+	argc += 2;
 
 	diag = rte_eal_init(argc, argp);
 	if (diag < 0)
 		rte_panic("Cannot init EAL\n");
 
+	if (rte_eth_dev_count_avail() == 0)
+		rte_exit(EXIT_FAILURE, "No Ethernet ports - bye\n");
+
 	argc -= diag;
-	argv += (diag - 3);
+	argv += (diag - 2);
 
 	/* parse app arguments */
 	if (argc > 1) {
@@ -910,6 +958,10 @@ main(int argc, char **argv)
 	cleanup_pdump_resources();
 	/* dump debug stats */
 	print_pdump_stats();
+
+	ret = rte_eal_cleanup();
+	if (ret)
+		printf("Error from rte_eal_cleanup(), %d\n", ret);
 
 	return 0;
 }

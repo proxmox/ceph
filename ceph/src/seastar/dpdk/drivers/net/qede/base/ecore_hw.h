@@ -1,9 +1,7 @@
-/*
- * Copyright (c) 2016 QLogic Corporation.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright (c) 2016 - 2018 Cavium Inc.
  * All rights reserved.
- * www.qlogic.com
- *
- * See LICENSE.qede_pmd for copyright and licensing details.
+ * www.cavium.com
  */
 
 #ifndef __ECORE_HW_H__
@@ -71,8 +69,10 @@ enum _dmae_cmd_crc_mask {
 * @brief ecore_gtt_init - Initialize GTT windows
 *
 * @param p_hwfn
+* @param p_ptt
 */
-void ecore_gtt_init(struct ecore_hwfn *p_hwfn);
+void ecore_gtt_init(struct ecore_hwfn *p_hwfn,
+		    struct ecore_ptt *p_ptt);
 
 /**
  * @brief ecore_ptt_invalidate - Forces all ptt entries to be re-configured
@@ -96,17 +96,6 @@ enum _ecore_status_t ecore_ptt_pool_alloc(struct ecore_hwfn *p_hwfn);
  * @param p_hwfn
  */
 void ecore_ptt_pool_free(struct ecore_hwfn *p_hwfn);
-
-/**
- * @brief ecore_ptt_get_hw_addr - Get PTT's GRC/HW address
- *
- * @param p_hwfn
- * @param p_ptt
- *
- * @return u32
- */
-u32 ecore_ptt_get_hw_addr(struct ecore_hwfn	*p_hwfn,
-			  struct ecore_ptt	*p_ptt);
 
 /**
  * @brief ecore_ptt_get_bar_addr - Get PPT's external BAR address
@@ -145,8 +134,8 @@ struct ecore_ptt *ecore_get_reserved_ptt(struct ecore_hwfn	*p_hwfn,
  *
  * @param p_hwfn
  * @param p_ptt
- * @param val
  * @param hw_addr
+ * @param val
  */
 void ecore_wr(struct ecore_hwfn	*p_hwfn,
 	      struct ecore_ptt	*p_ptt,
@@ -158,7 +147,6 @@ void ecore_wr(struct ecore_hwfn	*p_hwfn,
  *
  * @param p_hwfn
  * @param p_ptt
- * @param val
  * @param hw_addr
  */
 u32 ecore_rd(struct ecore_hwfn	*p_hwfn,
@@ -234,6 +222,18 @@ void ecore_port_unpretend(struct ecore_hwfn	*p_hwfn,
 			  struct ecore_ptt	*p_ptt);
 
 /**
+ * @brief ecore_port_fid_pretend - pretend to another port and another function
+ *        when accessing the ptt window
+ *
+ * @param p_hwfn
+ * @param p_ptt
+ * @param port_id - the port to pretend to
+ * @param fid - fid field of pxp_pretend structure. Can contain either pf / vf.
+ */
+void ecore_port_fid_pretend(struct ecore_hwfn *p_hwfn, struct ecore_ptt *p_ptt,
+			    u8 port_id, u16 fid);
+
+/**
  * @brief ecore_vfid_to_concrete - build a concrete FID for a
  *        given VF ID
  *
@@ -258,39 +258,39 @@ enum _ecore_status_t ecore_dmae_info_alloc(struct ecore_hwfn	*p_hwfn);
 */
 void ecore_dmae_info_free(struct ecore_hwfn	*p_hwfn);
 
-union ecore_qm_pq_params {
-	struct {
-		u8 q_idx;
-	} iscsi;
-
-	struct {
-		u8 tc;
-	} core;
-
-	struct {
-		u8 is_vf;
-		u8 vf_id;
-		u8 tc;
-	} eth;
-
-	struct {
-		u8 dcqcn;
-		u8 qpid; /* roce relative */
-	} roce;
-
-	struct {
-		u8 qidx;
-	} iwarp;
-};
-
-u16 ecore_get_qm_pq(struct ecore_hwfn	*p_hwfn,
-		    enum protocol_type	proto,
-		    union ecore_qm_pq_params *params);
-
 enum _ecore_status_t ecore_init_fw_data(struct ecore_dev *p_dev,
 					const u8 *fw_data);
 
 void ecore_hw_err_notify(struct ecore_hwfn *p_hwfn,
 			 enum ecore_hw_err_type err_type);
+
+enum _ecore_status_t ecore_dmae_sanity(struct ecore_hwfn *p_hwfn,
+				       struct ecore_ptt *p_ptt,
+				       const char *phase);
+
+/**
+ * @brief ecore_ppfid_wr - Write value to BAR using the given ptt while
+ *	pretending to a PF to which the given PPFID pertains.
+ *
+ * @param p_hwfn
+ * @param p_ptt
+ * @param abs_ppfid
+ * @param hw_addr
+ * @param val
+ */
+void ecore_ppfid_wr(struct ecore_hwfn *p_hwfn, struct ecore_ptt *p_ptt,
+		    u8 abs_ppfid, u32 hw_addr, u32 val);
+
+/**
+ * @brief ecore_ppfid_rd - Read value from BAR using the given ptt while
+ *	 pretending to a PF to which the given PPFID pertains.
+ *
+ * @param p_hwfn
+ * @param p_ptt
+ * @param abs_ppfid
+ * @param hw_addr
+ */
+u32 ecore_ppfid_rd(struct ecore_hwfn *p_hwfn, struct ecore_ptt *p_ptt,
+		   u8 abs_ppfid, u32 hw_addr);
 
 #endif /* __ECORE_HW_H__ */

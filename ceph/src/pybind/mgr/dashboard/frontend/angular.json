@@ -21,21 +21,33 @@
             "polyfills": "src/polyfills.ts",
             "assets": [
               "src/assets",
-              "src/favicon.ico"
+              "src/favicon.ico",
+              {
+                "glob": "**/swagger-ui.css",
+                "input": "node_modules/swagger-ui-dist",
+                "output": "."
+              },
+              {
+                "glob": "**/swagger-ui-bundle.js",
+                "input": "node_modules/swagger-ui-dist",
+                "output": "."
+              }
             ],
             "styles": [
               "node_modules/ngx-toastr/toastr.css",
-              "node_modules/bootstrap/dist/css/bootstrap.css",
-              "node_modules/fork-awesome/css/fork-awesome.css",
-              "node_modules/awesome-bootstrap-checkbox/awesome-bootstrap-checkbox.css",
               "node_modules/ngx-bootstrap/datepicker/bs-datepicker.css",
               "src/styles.scss",
-              "src/vendor.overrides.scss",
-              "node_modules/ng2-tree/styles.css"
+              "src/styles/vendor.overrides.scss"
             ],
             "scripts": [
               "node_modules/chart.js/dist/Chart.bundle.js"
-            ]
+            ],
+            "stylePreprocessorOptions": {
+              "includePaths": [
+                "src/styles",
+                "src"
+              ]
+            }
           },
           "configurations": {
             "production": {
@@ -94,6 +106,11 @@
               "i18nFile": "src/locale/messages.ja-JP.xlf",
               "i18nLocale": "ja-JP"
             },
+            "ko-KR": {
+              "outputPath": "dist/ko-KR/",
+              "i18nFile": "src/locale/messages.ko-KR.xlf",
+              "i18nLocale": "ko-KR"
+            },
             "pl-PL": {
               "outputPath": "dist/pl-PL/",
               "i18nFile": "src/locale/messages.pl-PL.xlf",
@@ -150,6 +167,9 @@
             "ja-JP": {
               "browserTarget": "ceph-dashboard:build:ja-JP"
             },
+            "ko-KR": {
+              "browserTarget": "ceph-dashboard:build:ko-KR"
+            },
             "pl-PL": {
               "browserTarget": "ceph-dashboard:build:pl-PL"
             },
@@ -175,14 +195,15 @@
           "options": {
             "tsConfig": [
               "src/tsconfig.app.json",
-              "src/tsconfig.spec.json"
+              "tsconfig.spec.json"
             ],
             "exclude": [
               "**/node_modules/**"
             ]
           }
         }
-      }
+      },
+      "cli": {}
     },
     "ceph-dashboard-e2e": {
       "root": "",
@@ -207,7 +228,8 @@
             ]
           }
         }
-      }
+      },
+      "cli": {}
     }
   },
   "defaultProject": "ceph-dashboard",
@@ -219,5 +241,6 @@
     "@schematics/angular:directive": {
       "prefix": "cd"
     }
-  }
+  },
+  "cli": {}
 }

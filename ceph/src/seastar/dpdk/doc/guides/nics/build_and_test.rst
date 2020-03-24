@@ -1,31 +1,5 @@
-..  BSD LICENSE
-    Copyright(c) 2017 Cavium, Inc.
-
-    Redistribution and use in source and binary forms, with or without
-    modification, are permitted provided that the following conditions
-    are met:
-
-    * Redistributions of source code must retain the above copyright
-    notice, this list of conditions and the following disclaimer.
-    * Redistributions in binary form must reproduce the above copyright
-    notice, this list of conditions and the following disclaimer in
-    the documentation and/or other materials provided with the
-    distribution.
-    * Neither the name of Cavium, Inc. nor the names of its
-    contributors may be used to endorse or promote products derived
-    from this software without specific prior written permission.
-
-    THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-    "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-    LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-    A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-    OWNER(S) OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-    SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-    LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-    DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-    THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-    (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-    OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+..  SPDX-License-Identifier: BSD-3-Clause
+    Copyright(c) 2017 Cavium, Inc
 
 .. _pmd_build_and_test:
 
@@ -59,26 +33,26 @@ Example output:
 
 .. code-block:: console
 
-   arm-armv7a-linuxapp-gcc
-   arm64-armv8a-linuxapp-gcc
-   arm64-dpaa2-linuxapp-gcc
-   arm64-thunderx-linuxapp-gcc
-   arm64-xgene1-linuxapp-gcc
-   i686-native-linuxapp-gcc
-   i686-native-linuxapp-icc
-   ppc_64-power8-linuxapp-gcc
-   x86_64-native-bsdapp-clang
-   x86_64-native-bsdapp-gcc
-   x86_64-native-linuxapp-clang
-   x86_64-native-linuxapp-gcc
-   x86_64-native-linuxapp-icc
-   x86_x32-native-linuxapp-gcc
+   arm-armv7a-linux-gcc
+   arm64-armv8a-linux-gcc
+   arm64-dpaa2-linux-gcc
+   arm64-thunderx-linux-gcc
+   arm64-xgene1-linux-gcc
+   i686-native-linux-gcc
+   i686-native-linux-icc
+   ppc_64-power8-linux-gcc
+   x86_64-native-freebsd-clang
+   x86_64-native-freebsd-gcc
+   x86_64-native-linux-clang
+   x86_64-native-linux-gcc
+   x86_64-native-linux-icc
+   x86_x32-native-linux-gcc
 
 To compile a PMD for Linux x86_64 gcc target, run the following "make" command:
 
 .. code-block:: console
 
-   make install T=x86_64-native-linuxapp-gcc
+   make install T=x86_64-native-linux-gcc
 
 Use ARM (ThunderX, DPAA, X-Gene) or PowerPC target for respective platform.
 
@@ -128,7 +102,7 @@ This section demonstrates how to setup and run ``testpmd`` in Linux.
    .. code-block:: console
 
       modprobe uio
-      insmod ./x86_64-native-linuxapp-gcc/kmod/igb_uio.ko
+      insmod ./x86_64-native-linux-gcc/kmod/igb_uio.ko
 
    or
 
@@ -165,7 +139,7 @@ This section demonstrates how to setup and run ``testpmd`` in Linux.
 
    .. code-block:: console
 
-      ./x86_64-native-linuxapp-gcc/app/testpmd -l 0-3 -n 4 -- -i
+      ./x86_64-native-linux-gcc/app/testpmd -l 0-3 -n 4 -- -i
 
    Successful execution will show initialization messages from EAL, PMD and
    testpmd application. A prompt will be displayed at the end for user commands
@@ -177,3 +151,7 @@ This section demonstrates how to setup and run ``testpmd`` in Linux.
 
    Refer to the :ref:`testpmd runtime functions <testpmd_runtime>` for a list
    of available commands.
+
+   .. note::
+      When ``testpmd`` is built with shared library, use option ``-d`` to load
+      the dynamic PMD for ``rte_eal_init``.

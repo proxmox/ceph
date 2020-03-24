@@ -4,10 +4,13 @@
 #pragma once
 
 #include <seastar/core/condition-variable.hh>
+// pull seastar::timer<...>::timer definitions. FIX SEASTAR or reactor.hh
+// is obligatory and should be included everywhere?
+#include <seastar/core/reactor.hh>
 
 #include "common/ThrottleInterface.h"
 
-namespace ceph::thread {
+namespace crimson::thread {
 
 class Throttle final : public ThrottleInterface {
   size_t max = 0;
@@ -33,4 +36,4 @@ private:
   bool _should_wait(size_t c) const;
 };
 
-} // namespace ceph::thread
+} // namespace crimson::thread

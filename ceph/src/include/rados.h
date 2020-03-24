@@ -132,6 +132,7 @@ struct ceph_eversion {
 #define CEPH_OSD_NODOWN       (1<<9)  /* osd can not be marked down */
 #define CEPH_OSD_NOIN         (1<<10) /* osd can not be marked in */
 #define CEPH_OSD_NOOUT        (1<<11) /* osd can not be marked out */
+#define CEPH_OSD_STOP         (1<<12) /* osd has been stopped by admin */
 
 extern const char *ceph_osd_state_name(int s);
 
@@ -146,8 +147,8 @@ extern const char *ceph_osd_state_name(int s);
 /*
  * osd map flag bits
  */
-#define CEPH_OSDMAP_NEARFULL         (1<<0)  /* sync writes (near ENOSPC) */
-#define CEPH_OSDMAP_FULL             (1<<1)  /* no data writes (ENOSPC) */
+#define CEPH_OSDMAP_NEARFULL         (1<<0)  /* sync writes (near ENOSPC), deprecated since mimic*/
+#define CEPH_OSDMAP_FULL             (1<<1)  /* no data writes (ENOSPC), deprecated since mimic */
 #define CEPH_OSDMAP_PAUSERD          (1<<2)  /* pause all reads */
 #define CEPH_OSDMAP_PAUSEWR          (1<<3)  /* pause all writes */
 #define CEPH_OSDMAP_PAUSEREC         (1<<4)  /* pause recovery */
@@ -199,12 +200,8 @@ extern const char *ceph_osd_state_name(int s);
 #define CEPH_RELEASE_LUMINOUS   12
 #define CEPH_RELEASE_MIMIC      13
 #define CEPH_RELEASE_NAUTILUS   14
-#define CEPH_RELEASE_MAX        15  /* highest + 1 */
-
-extern const char *ceph_release_name(int r);
-extern int ceph_release_from_name(const char *s);
-extern uint64_t ceph_release_features(int r);
-extern int ceph_release_from_features(uint64_t features);
+#define CEPH_RELEASE_OCTOPUS    15
+#define CEPH_RELEASE_MAX        16  /* highest + 1 */
 
 /*
  * The error code to return when an OSD can't handle a write
@@ -295,10 +292,12 @@ extern int ceph_release_from_features(uint64_t features);
 	f(OMAPSETHEADER, __CEPH_OSD_OP(WR, DATA, 22),	"omap-set-header")  \
 	f(OMAPCLEAR,	__CEPH_OSD_OP(WR, DATA, 23),	"omap-clear")	    \
 	f(OMAPRMKEYS,	__CEPH_OSD_OP(WR, DATA, 24),	"omap-rm-keys")	    \
+	f(OMAPRMKEYRANGE, __CEPH_OSD_OP(WR, DATA, 44),	"omap-rm-key-range") \
 	f(OMAP_CMP,	__CEPH_OSD_OP(RD, DATA, 25),	"omap-cmp")	    \
 									    \
 	/* tiering */							    \
 	f(COPY_FROM,	__CEPH_OSD_OP(WR, DATA, 26),	"copy-from")	    \
+	f(COPY_FROM2,	__CEPH_OSD_OP(WR, DATA, 45),	"copy-from2")	    \
 	/* was copy-get-classic */					\
 	f(UNDIRTY,	__CEPH_OSD_OP(WR, DATA, 28),	"undirty")	    \
 	f(ISDIRTY,	__CEPH_OSD_OP(RD, DATA, 29),	"isdirty")	    \
@@ -326,6 +325,7 @@ extern int ceph_release_from_features(uint64_t features);
 	f(SET_CHUNK,	__CEPH_OSD_OP(WR, DATA, 40),	"set-chunk")	    \
 	f(TIER_PROMOTE,	__CEPH_OSD_OP(WR, DATA, 41),	"tier-promote")	    \
 	f(UNSET_MANIFEST, __CEPH_OSD_OP(WR, DATA, 42),	"unset-manifest")   \
+	f(TIER_FLUSH, __CEPH_OSD_OP(WR, DATA, 43),	"tier-flush")	    \
 									    \
 	/** attrs **/							    \
 	/* read */							    \
@@ -470,6 +470,7 @@ enum {
 	CEPH_OSD_FLAG_FULL_TRY =    0x800000,  /* try op despite full flag */
 	CEPH_OSD_FLAG_FULL_FORCE = 0x1000000,  /* force op despite full flag */
 	CEPH_OSD_FLAG_IGNORE_REDIRECT = 0x2000000,  /* ignore redirection */
+	CEPH_OSD_FLAG_RETURNVEC = 0x4000000, /* allow overall result >= 0, and return >= 0 and buffer for each op in opvec */
 };
 
 enum {
@@ -509,7 +510,16 @@ enum {
 	CEPH_OSD_COPY_FROM_FLAG_MAP_SNAP_CLONE = 8, /* map snap direct to
 						     * cloneid */
 	CEPH_OSD_COPY_FROM_FLAG_RWORDERED = 16, /* order with write */
+	CEPH_OSD_COPY_FROM_FLAG_TRUNCATE_SEQ = 32, /* use provided truncate_{seq,size} (copy-from2 only) */
 };
+
+#define CEPH_OSD_COPY_FROM_FLAGS			\
+	(CEPH_OSD_COPY_FROM_FLAG_FLUSH |		\
+	 CEPH_OSD_COPY_FROM_FLAG_IGNORE_OVERLAY |	\
+	 CEPH_OSD_COPY_FROM_FLAG_IGNORE_CACHE |		\
+	 CEPH_OSD_COPY_FROM_FLAG_MAP_SNAP_CLONE |	\
+	 CEPH_OSD_COPY_FROM_FLAG_RWORDERED |		\
+	 CEPH_OSD_COPY_FROM_FLAG_TRUNCATE_SEQ)
 
 enum {
 	CEPH_OSD_TMAP2OMAP_NULLOK = 1,
@@ -642,7 +652,7 @@ struct ceph_osd_op {
 			__le32 chunk_size;
 			__u8 type;              /* CEPH_OSD_CHECKSUM_OP_TYPE_* */
 		} __attribute__ ((packed)) checksum;
-	};
+	} __attribute__ ((packed));
 	__le32 payload_len;
 } __attribute__ ((packed));
 

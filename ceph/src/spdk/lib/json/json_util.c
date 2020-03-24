@@ -331,10 +331,12 @@ spdk_json_decode_object(const struct spdk_json_val *values,
 				if (seen[decidx]) {
 					/* duplicate field name */
 					invalid = true;
+					SPDK_JSON_DEBUG("Duplicate key '%s'\n", dec->name);
 				} else {
 					seen[decidx] = true;
 					if (dec->decode_func(v, field)) {
 						invalid = true;
+						SPDK_JSON_DEBUG("Decoder failed to decode key '%s'\n", dec->name);
 						/* keep going to fill out any other valid keys */
 					}
 				}
@@ -344,6 +346,7 @@ spdk_json_decode_object(const struct spdk_json_val *values,
 
 		if (!found) {
 			invalid = true;
+			SPDK_JSON_DEBUG("Decoder not found for key '%.*s'\n", name->len, (char *)name->start);
 		}
 
 		i += 1 + spdk_json_val_len(v);
@@ -573,7 +576,7 @@ spdk_json_skip_object_or_array(struct spdk_json_val *val)
 		end_type = SPDK_JSON_VAL_ARRAY_END;
 	} else {
 		SPDK_JSON_DEBUG("Expected JSON object (%#x) or array (%#x) but got %#x\n",
-				SPDK_JSON_VAL_OBJECT_BEGIN, SPDK_JSON_VAL_ARRAY_END, val->type);
+				SPDK_JSON_VAL_OBJECT_BEGIN, SPDK_JSON_VAL_ARRAY_BEGIN, val->type);
 		return NULL;
 	}
 

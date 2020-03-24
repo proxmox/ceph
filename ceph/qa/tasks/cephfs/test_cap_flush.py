@@ -2,7 +2,6 @@
 import os
 import time
 from textwrap import dedent
-from unittest import SkipTest
 from tasks.cephfs.fuse_mount import FuseMount
 from tasks.cephfs.cephfs_test_case import CephFSTestCase, for_teuthology
 
@@ -17,14 +16,14 @@ class TestCapFlush(CephFSTestCase):
         """
 
         if not isinstance(self.mount_a, FuseMount):
-            raise SkipTest("Require FUSE client to inject client release failure")
+            self.skipTest("Require FUSE client to inject client release failure")
 
         dir_path = os.path.join(self.mount_a.mountpoint, "testdir")
         py_script = dedent("""
             import os
             os.mkdir("{0}")
             fd = os.open("{0}", os.O_RDONLY)
-            os.fchmod(fd, 0777)
+            os.fchmod(fd, 0o777)
             os.fsync(fd)
             """).format(dir_path)
         self.mount_a.run_python(py_script)
@@ -43,8 +42,8 @@ class TestCapFlush(CephFSTestCase):
             os.chdir("{0}")
             os.setgid(65534)
             os.setuid(65534)
-            fd = os.open("{1}", os.O_CREAT | os.O_RDWR, 0644)
-            os.fchmod(fd, 0640)
+            fd = os.open("{1}", os.O_CREAT | os.O_RDWR, 0o644)
+            os.fchmod(fd, 0o640)
             """).format(dir_path, file_name)
         self.mount_a.run_python(py_script)
 

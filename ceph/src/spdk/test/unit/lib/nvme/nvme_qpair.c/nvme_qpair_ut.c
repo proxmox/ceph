@@ -56,35 +56,22 @@ nvme_request_remove_child(struct nvme_request *parent,
 	TAILQ_REMOVE(&parent->children, child, child_tailq);
 }
 
-int
-nvme_transport_qpair_enable(struct spdk_nvme_qpair *qpair)
+void
+nvme_transport_qpair_abort_reqs(struct spdk_nvme_qpair *qpair, uint32_t dnr)
 {
-	return 0;
-}
-
-int
-nvme_transport_qpair_disable(struct spdk_nvme_qpair *qpair)
-{
-	return 0;
-}
-
-int
-nvme_transport_qpair_fail(struct spdk_nvme_qpair *qpair)
-{
-	return 0;
 }
 
 int
 nvme_transport_qpair_submit_request(struct spdk_nvme_qpair *qpair, struct nvme_request *req)
 {
-	// TODO
+	/* TODO */
 	return 0;
 }
 
 int32_t
 nvme_transport_qpair_process_completions(struct spdk_nvme_qpair *qpair, uint32_t max_completions)
 {
-	// TODO
+	/* TODO */
 	return 0;
 }
 
@@ -300,21 +287,31 @@ static void
 test_get_status_string(void)
 {
 	const char	*status_string;
+	struct spdk_nvme_status status;
 
-	status_string = get_status_string(SPDK_NVME_SCT_GENERIC, SPDK_NVME_SC_SUCCESS);
+	status.sct = SPDK_NVME_SCT_GENERIC;
+	status.sc = SPDK_NVME_SC_SUCCESS;
+	status_string = spdk_nvme_cpl_get_status_string(&status);
 	CU_ASSERT(strcmp(status_string, "SUCCESS") == 0);
 
-	status_string = get_status_string(SPDK_NVME_SCT_COMMAND_SPECIFIC,
-					  SPDK_NVME_SC_COMPLETION_QUEUE_INVALID);
+	status.sct = SPDK_NVME_SCT_COMMAND_SPECIFIC;
+	status.sc = SPDK_NVME_SC_COMPLETION_QUEUE_INVALID;
+	status_string = spdk_nvme_cpl_get_status_string(&status);
 	CU_ASSERT(strcmp(status_string, "INVALID COMPLETION QUEUE") == 0);
 
-	status_string = get_status_string(SPDK_NVME_SCT_MEDIA_ERROR, SPDK_NVME_SC_UNRECOVERED_READ_ERROR);
+	status.sct = SPDK_NVME_SCT_MEDIA_ERROR;
+	status.sc = SPDK_NVME_SC_UNRECOVERED_READ_ERROR;
+	status_string = spdk_nvme_cpl_get_status_string(&status);
 	CU_ASSERT(strcmp(status_string, "UNRECOVERED READ ERROR") == 0);
 
-	status_string = get_status_string(SPDK_NVME_SCT_VENDOR_SPECIFIC, 0);
+	status.sct = SPDK_NVME_SCT_VENDOR_SPECIFIC;
+	status.sc = 0;
+	status_string = spdk_nvme_cpl_get_status_string(&status);
 	CU_ASSERT(strcmp(status_string, "VENDOR SPECIFIC") == 0);
 
-	status_string = get_status_string(100, 0);
+	status.sct = 0x4;
+	status.sc = 0;
+	status_string = spdk_nvme_cpl_get_status_string(&status);
 	CU_ASSERT(strcmp(status_string, "RESERVED") == 0);
 }
 #endif

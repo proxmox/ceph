@@ -3,9 +3,11 @@ import { Component, OnInit } from '@angular/core';
 import { I18n } from '@ngx-translate/i18n-polyfill';
 
 import { CephfsService } from '../../../shared/api/cephfs.service';
+import { CellTemplate } from '../../../shared/enum/cell-template.enum';
 import { CdTableColumn } from '../../../shared/models/cd-table-column';
 import { CdTableFetchDataContext } from '../../../shared/models/cd-table-fetch-data-context';
 import { CdTableSelection } from '../../../shared/models/cd-table-selection';
+import { CdDatePipe } from '../../../shared/pipes/cd-date.pipe';
 
 @Component({
   selector: 'cd-cephfs-list',
@@ -17,7 +19,11 @@ export class CephfsListComponent implements OnInit {
   filesystems: any = [];
   selection = new CdTableSelection();
 
-  constructor(private cephfsService: CephfsService, private i18n: I18n) {}
+  constructor(
+    private cephfsService: CephfsService,
+    private cdDatePipe: CdDatePipe,
+    private i18n: I18n
+  ) {}
 
   ngOnInit() {
     this.columns = [
@@ -29,12 +35,14 @@ export class CephfsListComponent implements OnInit {
       {
         name: this.i18n('Created'),
         prop: 'mdsmap.created',
-        flexGrow: 2
+        flexGrow: 2,
+        pipe: this.cdDatePipe
       },
       {
         name: this.i18n('Enabled'),
         prop: 'mdsmap.enabled',
-        flexGrow: 1
+        flexGrow: 1,
+        cellTransformation: CellTemplate.checkIcon
       }
     ];
   }

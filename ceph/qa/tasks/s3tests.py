@@ -14,7 +14,7 @@ from teuthology import misc as teuthology
 from teuthology import contextutil
 from teuthology.config import config as teuth_config
 from teuthology.orchestra import run
-from teuthology.orchestra.connection import split_user
+from teuthology.exceptions import ConfigError
 
 log = logging.getLogger(__name__)
 
@@ -78,9 +78,9 @@ def _config_user(s3tests_conf, section, user):
     s3tests_conf[section].setdefault('user_id', user)
     s3tests_conf[section].setdefault('email', '{user}+test@test.test'.format(user=user))
     s3tests_conf[section].setdefault('display_name', 'Mr. {user}'.format(user=user))
-    s3tests_conf[section].setdefault('access_key', ''.join(random.choice(string.uppercase) for i in xrange(20)))
+    s3tests_conf[section].setdefault('access_key', ''.join(random.choice(string.uppercase) for i in range(20)))
     s3tests_conf[section].setdefault('secret_key', base64.b64encode(os.urandom(40)))
-    s3tests_conf[section].setdefault('totp_serial', ''.join(random.choice(string.digits) for i in xrange(10)))
+    s3tests_conf[section].setdefault('totp_serial', ''.join(random.choice(string.digits) for i in range(10)))
     s3tests_conf[section].setdefault('totp_seed', base64.b32encode(os.urandom(40)))
     s3tests_conf[section].setdefault('totp_seconds', '5')
 
@@ -98,7 +98,7 @@ def create_users(ctx, config):
         s3tests_conf = config['s3tests_conf'][client]
         s3tests_conf.setdefault('fixtures', {})
         s3tests_conf['fixtures'].setdefault('bucket prefix', 'test-' + client + '-{random}-')
-        for section, user in users.iteritems():
+        for section, user in users.items():
             _config_user(s3tests_conf, section, '{user}.{client}'.format(user=user, client=client))
             log.debug('Creating user {user} on {host}'.format(user=s3tests_conf[section]['user_id'], host=client))
             cluster_name, daemon_type, client_id = teuthology.split_role(client)
@@ -116,6 +116,7 @@ def create_users(ctx, config):
                     '--access-key', s3tests_conf[section]['access_key'],
                     '--secret', s3tests_conf[section]['secret_key'],
                     '--email', s3tests_conf[section]['email'],
+                    '--caps', 'user-policy=*',
                     '--cluster', cluster_name,
                 ],
             )
@@ -168,22 +169,56 @@ def configure(ctx, config):
     assert isinstance(config, dict)
     log.info('Configuring s3-tests...')
     testdir = teuthology.get_testdir(ctx)
-    for client, properties in config['clients'].iteritems():
+    for client, properties in config['clients'].items():
+        properties = properties or {}
         s3tests_conf = config['s3tests_conf'][client]
-        if properties is not None and 'rgw_server' in properties:
-            host = None
-            for target, roles in zip(ctx.config['targets'].iterkeys(), ctx.config['roles']):
-                log.info('roles: ' + str(roles))
-                log.info('target: ' + str(target))
-                if properties['rgw_server'] in roles:
-                    _, host = split_user(target)
-            assert host is not None, "Invalid client specified as the rgw_server"
-            s3tests_conf['DEFAULT']['host'] = host
-        else:
-            s3tests_conf['DEFAULT']['host'] = 'localhost'
+        s3tests_conf['DEFAULT']['calling_format'] = properties.get('calling-format', 'ordinary')
 
-        if properties is not None and 'slow_backend' in properties:
-	    s3tests_conf['fixtures']['slow backend'] = properties['slow_backend']
+        # use rgw_server if given, or default to local client
+        role = properties.get('rgw_server', client)
+
+        endpoint = ctx.rgw.role_endpoints.get(role)
+        assert endpoint, 's3tests: no rgw endpoint for {}'.format(role)
+
+        s3tests_conf['DEFAULT']['host'] = endpoint.dns_name
+
+        website_role = properties.get('rgw_website_server')
+        if website_role:
+            website_endpoint = ctx.rgw.role_endpoints.get(website_role)
+            assert website_endpoint, \
+                    's3tests: no rgw endpoint for rgw_website_server {}'.format(website_role)
+            assert website_endpoint.website_dns_name, \
+                    's3tests: no dns-s3website-name for rgw_website_server {}'.format(website_role)
+            s3tests_conf['DEFAULT']['s3website_domain'] = website_endpoint.website_dns_name
+
+        if hasattr(ctx, 'barbican'):
+            properties = properties['barbican']
+            if properties is not None and 'kms_key' in properties:
+                if not (properties['kms_key'] in ctx.barbican.keys):
+                    raise ConfigError('Key '+properties['kms_key']+' not defined')
+
+                if not (properties['kms_key2'] in ctx.barbican.keys):
+                    raise ConfigError('Key '+properties['kms_key2']+' not defined')
+
+                key = ctx.barbican.keys[properties['kms_key']]
+                s3tests_conf['DEFAULT']['kms_keyid'] = key['id']
+
+                key = ctx.barbican.keys[properties['kms_key2']]
+                s3tests_conf['DEFAULT']['kms_keyid2'] = key['id']
+
+        elif hasattr(ctx, 'vault'):
+            properties = properties['vault_%s' % ctx.vault.engine]
+            s3tests_conf['DEFAULT']['kms_keyid'] = properties['key_path']
+            s3tests_conf['DEFAULT']['kms_keyid2'] = properties['key_path2']
+
+        else:
+            # Fallback scenario where it's the local (ceph.conf) kms being tested
+            s3tests_conf['DEFAULT']['kms_keyid'] = 'testkey-1'
+            s3tests_conf['DEFAULT']['kms_keyid2'] = 'testkey-2'
+
+        slow_backend = properties.get('slow_backend')
+        if slow_backend:
+            s3tests_conf['fixtures']['slow backend'] = slow_backend
 
         (remote,) = ctx.cluster.only(client).remotes.keys()
         remote.run(
@@ -204,8 +239,8 @@ def configure(ctx, config):
 
     log.info('Configuring boto...')
     boto_src = os.path.join(os.path.dirname(__file__), 'boto.cfg.template')
-    for client, properties in config['clients'].iteritems():
-        with file(boto_src, 'rb') as f:
+    for client, properties in config['clients'].items():
+        with open(boto_src, 'rb') as f:
             (remote,) = ctx.cluster.only(client).remotes.keys()
             conf = f.read().format(
                 idle_timeout=config.get('idle_timeout', 30)
@@ -221,7 +256,7 @@ def configure(ctx, config):
 
     finally:
         log.info('Cleaning up boto...')
-        for client, properties in config['clients'].iteritems():
+        for client, properties in config['clients'].items():
             (remote,) = ctx.cluster.only(client).remotes.keys()
             remote.run(
                 args=[
@@ -240,9 +275,8 @@ def run_tests(ctx, config):
     """
     assert isinstance(config, dict)
     testdir = teuthology.get_testdir(ctx)
-    # civetweb > 1.8 && beast parsers are strict on rfc2616
-    attrs = ["!fails_on_rgw", "!lifecycle_expiration", "!fails_strict_rfc2616"]
-    for client, client_config in config.iteritems():
+    for client, client_config in config.items():
+        client_config = client_config or {}
         (remote,) = ctx.cluster.only(client).remotes.keys()
         args = [
             'S3TEST_CONF={tdir}/archive/s3-tests.{client}.conf'.format(tdir=testdir, client=client),
@@ -255,15 +289,20 @@ def run_tests(ctx, config):
             args += ['REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt']
         else:
             args += ['REQUESTS_CA_BUNDLE=/etc/pki/tls/certs/ca-bundle.crt']
+        # civetweb > 1.8 && beast parsers are strict on rfc2616
+        attrs = ["!fails_on_rgw", "!lifecycle_expiration", "!fails_strict_rfc2616"]
+        if client_config.get('calling-format') != 'ordinary':
+            attrs += ['!fails_with_subdomain']
         args += [
-            '{tdir}/s3-tests/virtualenv/bin/nosetests'.format(tdir=testdir),
+            '{tdir}/s3-tests/virtualenv/bin/python'.format(tdir=testdir),
+            '-m', 'nose',
             '-w',
             '{tdir}/s3-tests'.format(tdir=testdir),
             '-v',
             '-a', ','.join(attrs),
             ]
-        if client_config is not None and 'extra_args' in client_config:
-            args.extend(client_config['extra_args'])
+        if 'extra_args' in client_config:
+            args.append(client_config['extra_args'])
 
         remote.run(
             args=args,
@@ -290,7 +329,7 @@ def scan_for_leaked_encryption_keys(ctx, config):
 
         log.debug('Scanning radosgw logs for leaked encryption keys...')
         procs = list()
-        for client, client_config in config.iteritems():
+        for client, client_config in config.items():
             if not client_config.get('scan_for_encryption_keys', True):
                 continue
             cluster_name, daemon_type, client_id = teuthology.split_role(client)
@@ -332,9 +371,7 @@ def task(ctx, config):
         tasks:
         - ceph:
         - rgw: [client.0]
-        - s3tests:
-            client.0:
-              force-branch: ceph-nautilus
+        - s3tests: [client.0]
 
     To run against a server on client.1 and increase the boto timeout to 10m::
 
@@ -343,7 +380,6 @@ def task(ctx, config):
         - rgw: [client.1]
         - s3tests:
             client.0:
-              force-branch: ceph-nautilus
               rgw_server: client.1
               idle_timeout: 600
 
@@ -354,10 +390,8 @@ def task(ctx, config):
         - rgw: [client.0]
         - s3tests:
             client.0:
-              force-branch: ceph-nautilus
               extra_args: ['test_s3:test_object_acl_grand_public_read']
             client.1:
-              force-branch: ceph-nautilus
               extra_args: ['--exclude', 'test_100_continue']
     """
     assert hasattr(ctx, 'rgw'), 's3tests must run after the rgw task'
@@ -374,7 +408,7 @@ def task(ctx, config):
 
     overrides = ctx.config.get('overrides', {})
     # merge each client section, not the top level.
-    for client in config.iterkeys():
+    for client in config.keys():
         if not config[client]:
             config[client] = {}
         teuthology.deep_merge(config[client], overrides.get('s3tests', {}))

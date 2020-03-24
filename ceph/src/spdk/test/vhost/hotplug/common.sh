@@ -1,7 +1,12 @@
+testdir=$(readlink -f $(dirname $0))
+rootdir=$(readlink -f $testdir/../../..)
+source $rootdir/test/common/autotest_common.sh
+source $rootdir/test/vhost/common.sh
+
 dry_run=false
 no_shutdown=false
 fio_bin="fio"
-fio_jobs="$BASE_DIR/fio_jobs/"
+fio_jobs="$testdir/fio_jobs/"
 test_type=spdk_vhost_scsi
 reuse_vms=false
 vms=()
@@ -26,7 +31,6 @@ function usage() {
     echo "-x                        set -x for script debug"
     echo "    --fio-bin=FIO         Use specific fio binary (will be uploaded to VM)"
     echo "    --fio-jobs=           Fio configs to use for tests. Can point to a directory or"
-    echo "    --work-dir=WORK_DIR   Where to find build file. Must exist. [default: $TEST_DIR]"
     echo "    --vm=NUM[,OS][,DISKS] VM configuration. This parameter might be used more than once:"
     echo "                          NUM - VM number (mandatory)"
     echo "                          OS - VM os disk path (optional)"
@@ -40,7 +44,6 @@ while getopts 'xh-:' optchar; do
         -)
         case "$OPTARG" in
             help) usage $0 ;;
-            work-dir=*) TEST_DIR="${OPTARG#*=}" ;;
             fio-bin=*) fio_bin="${OPTARG#*=}" ;;
             fio-jobs=*) fio_jobs="${OPTARG#*=}" ;;
             test-type=*) test_type="${OPTARG#*=}" ;;
@@ -58,12 +61,11 @@ while getopts 'xh-:' optchar; do
 done
 shift $(( OPTIND - 1 ))
 
-fio_job=$BASE_DIR/fio_jobs/default_integrity.job
-tmp_attach_job=$BASE_DIR/fio_jobs/fio_attach.job.tmp
-tmp_detach_job=$BASE_DIR/fio_jobs/fio_detach.job.tmp
-. $BASE_DIR/../common/common.sh
+fio_job=$testdir/fio_jobs/default_integrity.job
+tmp_attach_job=$testdir/fio_jobs/fio_attach.job.tmp
+tmp_detach_job=$testdir/fio_jobs/fio_detach.job.tmp
 
-rpc_py="$SPDK_BUILD_DIR/scripts/rpc.py -s $(get_vhost_dir)/rpc.sock"
+rpc_py="$rootdir/scripts/rpc.py -s $(get_vhost_dir)/rpc.sock"
 
 function print_test_fio_header() {
     notice "==============="
@@ -74,15 +76,6 @@ function print_test_fio_header() {
     if [ $# -gt 0 ]; then
         echo $1
     fi
-}
-
-function run_vhost() {
-    notice "==============="
-    notice ""
-    notice "running SPDK"
-    notice ""
-    spdk_vhost_run --conf-path=$BASE_DIR
-    notice ""
 }
 
 function vms_setup() {
@@ -110,7 +103,7 @@ function vms_setup() {
 
 function vm_run_with_arg() {
     vm_run $@
-    vm_wait_for_boot 600 $@
+    vm_wait_for_boot 300 $@
 }
 
 function vms_setup_and_run() {
@@ -188,7 +181,7 @@ function reboot_all_and_prepare() {
 
 function post_test_case() {
     vm_shutdown_all
-    spdk_vhost_kill
+    vhost_kill
 }
 
 function on_error_exit() {
@@ -208,7 +201,7 @@ function check_disks() {
 
 function get_traddr() {
     local nvme_name=$1
-    local nvme="$( $SPDK_BUILD_DIR/scripts/gen_nvme.sh )"
+    local nvme="$( $rootdir/scripts/gen_nvme.sh )"
     while read -r line; do
         if [[ $line == *"TransportID"* ]] && [[ $line == *$nvme_name* ]]; then
             local word_array=($line)

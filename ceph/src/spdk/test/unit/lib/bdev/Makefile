@@ -40,6 +40,11 @@ ifeq ($(CONFIG_CRYPTO),y)
 DIRS-y += crypto.c
 endif
 
+ifeq ($(CONFIG_REDUCE),y)
+# enable once new mocks are added for compressdev
+DIRS-y += compress.c
+endif
+
 DIRS-$(CONFIG_PMDK) += pmem
 
 .PHONY: all clean $(DIRS-y)

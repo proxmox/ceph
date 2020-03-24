@@ -3,7 +3,7 @@
 
 #include "services/svc_zone.h"
 #include "rgw_b64.h"
-#include "rgw_rados.h"
+#include "rgw_sal.h"
 #include "rgw_pubsub.h"
 #include "rgw_tools.h"
 #include "rgw_xml.h"
@@ -76,8 +76,8 @@ bool rgw_s3_key_filter::has_content() const {
     return !(prefix_rule.empty() && suffix_rule.empty() && regex_rule.empty());
 }
 
-bool rgw_s3_metadata_filter::decode_xml(XMLObj* obj) {
-  metadata.clear();
+bool rgw_s3_key_value_filter::decode_xml(XMLObj* obj) {
+  kvl.clear();
   XMLObjIter iter = obj->find("FilterRule");
   XMLObj *o;
 
@@ -89,13 +89,13 @@ bool rgw_s3_metadata_filter::decode_xml(XMLObj* obj) {
   while ((o = iter.get_next())) {
     RGWXMLDecoder::decode_xml("Name", key, o, throw_if_missing);
     RGWXMLDecoder::decode_xml("Value", value, o, throw_if_missing);
-    metadata.emplace(key, value);
+    kvl.emplace(key, value);
   }
   return true;
 }
 
-void rgw_s3_metadata_filter::dump_xml(Formatter *f) const {
-  for (const auto& key_value : metadata) {
+void rgw_s3_key_value_filter::dump_xml(Formatter *f) const {
+  for (const auto& key_value : kvl) {
     f->open_object_section("FilterRule");
     ::encode_xml("Name", key_value.first, f);
     ::encode_xml("Value", key_value.second, f);
@@ -103,13 +103,14 @@ void rgw_s3_metadata_filter::dump_xml(Formatter *f) const {
   }
 }
 
-bool rgw_s3_metadata_filter::has_content() const {
-    return !metadata.empty();
+bool rgw_s3_key_value_filter::has_content() const {
+    return !kvl.empty();
 }
 
 bool rgw_s3_filter::decode_xml(XMLObj* obj) {
     RGWXMLDecoder::decode_xml("S3Key", key_filter, obj);
     RGWXMLDecoder::decode_xml("S3Metadata", metadata_filter, obj);
+    RGWXMLDecoder::decode_xml("S3Tags", tag_filter, obj);
   return true;
 }
 
@@ -120,11 +121,15 @@ void rgw_s3_filter::dump_xml(Formatter *f) const {
   if (metadata_filter.has_content()) {
       ::encode_xml("S3Metadata", metadata_filter, f);
   }
+  if (tag_filter.has_content()) {
+      ::encode_xml("S3Tags", tag_filter, f);
+  }
 }
 
 bool rgw_s3_filter::has_content() const {
     return key_filter.has_content()  ||
-           metadata_filter.has_content();
+           metadata_filter.has_content() ||
+           tag_filter.has_content();
 }
 
 bool match(const rgw_s3_key_filter& filter, const std::string& key) {
@@ -161,10 +166,10 @@ bool match(const rgw_s3_key_filter& filter, const std::string& key) {
   return true;
 }
 
-bool match(const rgw_s3_metadata_filter& filter, const Metadata& metadata) {
-  // all filter pairs must exist with the same value in the object's metadata
-  // object metadata may include items not in the filter
-  return std::includes(metadata.begin(), metadata.end(), filter.metadata.begin(), filter.metadata.end());
+bool match(const rgw_s3_key_value_filter& filter, const KeyValueList& kvl) {
+  // all filter pairs must exist with the same value in the object's metadata/tags
+  // object metadata/tags may include items not in the filter
+  return std::includes(kvl.begin(), kvl.end(), filter.kvl.begin(), filter.kvl.end());
 }
 
 bool match(const rgw::notify::EventTypeList& events, rgw::notify::EventType event) {
@@ -273,9 +278,11 @@ void rgw_pubsub_s3_record::dump(Formatter *f) const {
         encode_json("versionId", object_versionId, f);
         encode_json("sequencer", object_sequencer, f);
         encode_json("metadata", x_meta_map, f);
+        encode_json("tags", tags, f);
     }
   }
   encode_json("eventId", id, f);
+  encode_json("opaqueData", opaque_data, f);
 }
 
 void rgw_pubsub_event::dump(Formatter *f) const
@@ -293,6 +300,7 @@ void rgw_pubsub_topic::dump(Formatter *f) const
   encode_json("name", name, f);
   encode_json("dest", dest, f);
   encode_json("arn", arn, f);
+  encode_json("opaqueData", opaque_data, f);
 }
 
 void rgw_pubsub_topic::dump_xml(Formatter *f) const
@@ -301,6 +309,7 @@ void rgw_pubsub_topic::dump_xml(Formatter *f) const
   encode_xml("Name", name, f);
   encode_xml("EndPoint", dest, f);
   encode_xml("TopicArn", arn, f);
+  encode_xml("OpaqueData", opaque_data, f);
 }
 
 void encode_json(const char *name, const rgw::notify::EventTypeList& l, Formatter *f)
@@ -372,10 +381,16 @@ void rgw_pubsub_sub_config::dump(Formatter *f) const
   encode_json("s3_id", s3_id, f);
 }
 
+RGWUserPubSub::RGWUserPubSub(rgw::sal::RGWRadosStore* _store, const rgw_user& _user) : 
+                            store(_store),
+                            user(_user),
+                            obj_ctx(store->svc()->sysobj->init_obj_ctx()) {
+    get_user_meta_obj(&user_meta_obj);
+}
 
 int RGWUserPubSub::remove(const rgw_raw_obj& obj, RGWObjVersionTracker *objv_tracker)
 {
-  int ret = rgw_delete_system_obj(store, obj.pool, obj.oid, objv_tracker);
+  int ret = rgw_delete_system_obj(store->svc()->sysobj, obj.pool, obj.oid, objv_tracker);
   if (ret < 0) {
     return ret;
   }
@@ -478,7 +493,7 @@ int RGWUserPubSub::Bucket::create_notification(const string& topic_name, const r
 
 int RGWUserPubSub::Bucket::create_notification(const string& topic_name, const rgw::notify::EventTypeList& events, OptionalFilter s3_filter, const std::string& notif_name) {
   rgw_pubsub_topic_subs user_topic_info;
-  RGWRados *store = ps->store;
+  rgw::sal::RGWRadosStore *store = ps->store;
 
   int ret = ps->get_topic(topic_name, &user_topic_info);
   if (ret < 0) {
@@ -521,7 +536,7 @@ int RGWUserPubSub::Bucket::create_notification(const string& topic_name, const r
 int RGWUserPubSub::Bucket::remove_notification(const string& topic_name)
 {
   rgw_pubsub_topic_subs user_topic_info;
-  RGWRados *store = ps->store;
+  rgw::sal::RGWRadosStore *store = ps->store;
 
   int ret = ps->get_topic(topic_name, &user_topic_info);
   if (ret < 0) {
@@ -550,10 +565,10 @@ int RGWUserPubSub::Bucket::remove_notification(const string& topic_name)
 }
 
 int RGWUserPubSub::create_topic(const string& name) {
-  return create_topic(name, rgw_pubsub_sub_dest(), "");
+  return create_topic(name, rgw_pubsub_sub_dest(), "", "");
 }
 
-int RGWUserPubSub::create_topic(const string& name, const rgw_pubsub_sub_dest& dest, const std::string& arn) {
+int RGWUserPubSub::create_topic(const string& name, const rgw_pubsub_sub_dest& dest, const std::string& arn, const std::string& opaque_data) {
   RGWObjVersionTracker objv_tracker;
   rgw_pubsub_user_topics topics;
 
@@ -569,6 +584,7 @@ int RGWUserPubSub::create_topic(const string& name, const rgw_pubsub_sub_dest& d
   new_topic.topic.name = name;
   new_topic.topic.dest = dest;
   new_topic.topic.arn = arn;
+  new_topic.topic.opaque_data = opaque_data;
 
   ret = write_user_topics(topics, &objv_tracker);
   if (ret < 0) {
@@ -646,7 +662,7 @@ int RGWUserPubSub::Sub::subscribe(const string& topic, const rgw_pubsub_sub_dest
 {
   RGWObjVersionTracker user_objv_tracker;
   rgw_pubsub_user_topics topics;
-  RGWRados *store = ps->store;
+  rgw::sal::RGWRadosStore *store = ps->store;
 
   int ret = ps->read_user_topics(&topics, &user_objv_tracker);
   if (ret < 0) {
@@ -690,7 +706,7 @@ int RGWUserPubSub::Sub::unsubscribe(const string& _topic)
 {
   string topic = _topic;
   RGWObjVersionTracker sobjv_tracker;
-  RGWRados *store = ps->store;
+  rgw::sal::RGWRadosStore *store = ps->store;
 
   if (topic.empty()) {
     rgw_pubsub_sub_config sub_conf;
@@ -747,7 +763,7 @@ void RGWUserPubSub::SubWithEvents<EventType>::list_events_result::dump(Formatter
 template<typename EventType>
 int RGWUserPubSub::SubWithEvents<EventType>::list_events(const string& marker, int max_events)
 {
-  RGWRados *store = ps->store;
+  RGWRados *store = ps->store->getRados();
   rgw_pubsub_sub_config sub_conf;
   int ret = get_conf(&sub_conf);
   if (ret < 0) {
@@ -757,8 +773,7 @@ int RGWUserPubSub::SubWithEvents<EventType>::list_events(const string& marker, i
 
   RGWBucketInfo bucket_info;
   string tenant;
-  RGWSysObjectCtx obj_ctx(store->svc.sysobj->init_obj_ctx());
-  ret = store->get_bucket_info(obj_ctx, tenant, sub_conf.dest.bucket_name, bucket_info, nullptr, nullptr);
+  ret = store->get_bucket_info(&store->svc, tenant, sub_conf.dest.bucket_name, bucket_info, nullptr, null_yield, nullptr);
   if (ret == -ENOENT) {
     list.is_truncated = false;
     return 0;
@@ -776,7 +791,7 @@ int RGWUserPubSub::SubWithEvents<EventType>::list_events(const string& marker, i
 
   std::vector<rgw_bucket_dir_entry> objs;
 
-  ret = list_op.list_objects(max_events, &objs, nullptr, &list.is_truncated);
+  ret = list_op.list_objects(max_events, &objs, nullptr, &list.is_truncated, null_yield);
   if (ret < 0) {
     ldout(store->ctx(), 1) << "ERROR: failed to list bucket: bucket=" << sub_conf.dest.bucket_name << " ret=" << ret << dendl;
     return ret;
@@ -813,7 +828,7 @@ int RGWUserPubSub::SubWithEvents<EventType>::list_events(const string& marker, i
 template<typename EventType>
 int RGWUserPubSub::SubWithEvents<EventType>::remove_event(const string& event_id)
 {
-  RGWRados *store = ps->store;
+  rgw::sal::RGWRadosStore *store = ps->store;
   rgw_pubsub_sub_config sub_conf;
   int ret = get_conf(&sub_conf);
   if (ret < 0) {
@@ -823,8 +838,7 @@ int RGWUserPubSub::SubWithEvents<EventType>::remove_event(const string& event_id
 
   RGWBucketInfo bucket_info;
   string tenant;
-  RGWSysObjectCtx sysobj_ctx(store->svc.sysobj->init_obj_ctx());
-  ret = store->get_bucket_info(sysobj_ctx, tenant, sub_conf.dest.bucket_name, bucket_info, nullptr, nullptr);
+  ret = store->getRados()->get_bucket_info(store->svc(), tenant, sub_conf.dest.bucket_name, bucket_info, nullptr, null_yield, nullptr);
   if (ret < 0) {
     ldout(store->ctx(), 1) << "ERROR: failed to read bucket info for events bucket: bucket=" << sub_conf.dest.bucket_name << " ret=" << ret << dendl;
     return ret;
@@ -837,17 +851,29 @@ int RGWUserPubSub::SubWithEvents<EventType>::remove_event(const string& event_id
 
   obj_ctx.set_atomic(obj);
 
-  RGWRados::Object del_target(store, bucket_info, obj_ctx, obj);
+  RGWRados::Object del_target(store->getRados(), bucket_info, obj_ctx, obj);
   RGWRados::Object::Delete del_op(&del_target);
 
   del_op.params.bucket_owner = bucket_info.owner;
   del_op.params.versioning_status = bucket_info.versioning_status();
 
-  ret = del_op.delete_obj();
+  ret = del_op.delete_obj(null_yield);
   if (ret < 0) {
     ldout(store->ctx(), 1) << "ERROR: failed to remove event (obj=" << obj << "): ret=" << ret << dendl;
   }
   return 0;
+}
+
+void RGWUserPubSub::get_user_meta_obj(rgw_raw_obj *obj) const {
+  *obj = rgw_raw_obj(store->svc()->zone->get_zone_params().log_pool, user_meta_oid());
+}
+
+void RGWUserPubSub::get_bucket_meta_obj(const rgw_bucket& bucket, rgw_raw_obj *obj) const {
+  *obj = rgw_raw_obj(store->svc()->zone->get_zone_params().log_pool, bucket_meta_oid(bucket));
+}
+
+void RGWUserPubSub::get_sub_meta_obj(const string& name, rgw_raw_obj *obj) const {
+  *obj = rgw_raw_obj(store->svc()->zone->get_zone_params().log_pool, sub_meta_oid(name));
 }
 
 template<typename EventType>

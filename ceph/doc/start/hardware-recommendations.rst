@@ -106,7 +106,7 @@ dedicated drive for the operating system and software, and one drive for each
 Ceph OSD Daemon you run on the host. Most "slow OSD" issues arise due to running
 an operating system, multiple OSDs, and/or multiple journals on the same drive.
 Since the cost of troubleshooting performance issues on a small cluster likely
-exceeds the cost of the extra disk drives, you can accelerate your cluster
+exceeds the cost of the extra disk drives, you can optimize your cluster
 design planning by avoiding the temptation to overtax the OSD storage drives.
 
 You may run multiple Ceph OSD Daemons per hard disk drive, but this will likely
@@ -169,7 +169,7 @@ setting defaults to ``/var/lib/ceph/osd/$cluster-$id/journal``. You can mount
 this path to an SSD or to an SSD partition so that it is not merely a file on
 the same disk as the object data.
 
-One way Ceph accelerates CephFS filesystem performance is to segregate the
+One way Ceph accelerates CephFS file system performance is to segregate the
 storage of CephFS metadata from the storage of the CephFS file contents. Ceph
 provides a default ``metadata`` pool for CephFS metadata. You will never have to
 create a pool for CephFS metadata, but you can create a CRUSH map hierarchy for
@@ -205,21 +205,11 @@ is up to date. See `OS Recommendations`_ for notes on ``glibc`` and
 ``syncfs(2)`` to ensure that your hardware performs as expected when running
 multiple OSDs per host.
 
-Hosts with high numbers of OSDs (e.g., > 20) may spawn a lot of threads, 
-especially during recovery and rebalancing. Many Linux kernels default to 
-a relatively small maximum number of threads (e.g., 32k). If you encounter
-problems starting up OSDs on hosts with a high number of OSDs, consider
-setting ``kernel.pid_max`` to a higher number of threads. The theoretical
-maximum is 4,194,303 threads. For example, you could add the following to
-the ``/etc/sysctl.conf`` file:: 
-
-	kernel.pid_max = 4194303
-
 
 Networks
 ========
 
-We recommend that each host have at least two 1Gbps network interface
+We recommend that each host has at least two 1Gbps network interface
 controllers (NICs). Since most commodity hard disk drives have a throughput of
 approximately 100MB/second, your NICs should be able to handle the traffic for
 the OSD disks on your host. We recommend a minimum of two NICs to account for a
@@ -311,49 +301,6 @@ and development clusters can run successfully with modest hardware.
    containing the OS. Generally, we recommend separate disks for the
    OS and the volume storage.
 
-
-Production Cluster Examples
-===========================
-
-Production clusters for petabyte scale data storage may also use commodity
-hardware, but should have considerably more memory, processing power and data
-storage to account for heavy traffic loads.
-
-Dell Example
-------------
-
-A recent (2012) Ceph cluster project is using two fairly robust hardware
-configurations for Ceph OSDs, and a lighter configuration for monitors.
-
-+----------------+----------------+------------------------------------+
-|  Configuration | Criteria       | Minimum Recommended                |
-+================+================+====================================+
-| Dell PE R510   | Processor      |  2x 64-bit quad-core Xeon CPUs     |
-|                +----------------+------------------------------------+
-|                | RAM            |  16 GB                             |
-|                +----------------+------------------------------------+
-|                | Volume Storage |  8x 2TB drives. 1 OS, 7 Storage    |
-|                +----------------+------------------------------------+
-|                | Client Network |  2x 1GB Ethernet NICs              |
-|                +----------------+------------------------------------+
-|                | OSD Network    |  2x 1GB Ethernet NICs              |
-|                +----------------+------------------------------------+
-|                | Mgmt. Network  |  2x 1GB Ethernet NICs              |
-+----------------+----------------+------------------------------------+
-| Dell PE R515   | Processor      |  1x hex-core Opteron CPU           |
-|                +----------------+------------------------------------+
-|                | RAM            |  16 GB                             |
-|                +----------------+------------------------------------+
-|                | Volume Storage |  12x 3TB drives. Storage           |
-|                +----------------+------------------------------------+
-|                | OS Storage     |  1x 500GB drive. Operating System. |
-|                +----------------+------------------------------------+
-|                | Client Network |  2x 1GB Ethernet NICs              |
-|                +----------------+------------------------------------+
-|                | OSD Network    |  2x 1GB Ethernet NICs              |
-|                +----------------+------------------------------------+
-|                | Mgmt. Network  |  2x 1GB Ethernet NICs              |
-+----------------+----------------+------------------------------------+
 
 
 

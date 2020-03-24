@@ -45,7 +45,7 @@ a number of things:
 
 - **Unique Identifier:** The ``fsid`` is a unique identifier for the cluster,
   and stands for File System ID from the days when the Ceph Storage Cluster was
-  principally for the Ceph Filesystem. Ceph now supports native interfaces,
+  principally for the Ceph File System. Ceph now supports native interfaces,
   block devices, and object storage gateway interfaces too, so ``fsid`` is a
   bit of a misnomer.
 
@@ -167,12 +167,16 @@ The procedure is as follows:
 #. Generate a bootstrap-osd keyring, generate a ``client.bootstrap-osd`` user and add
    the user to the keyring. ::
 
-	sudo ceph-authtool --create-keyring /var/lib/ceph/bootstrap-osd/ceph.keyring --gen-key -n client.bootstrap-osd --cap mon 'profile bootstrap-osd'
+	sudo ceph-authtool --create-keyring /var/lib/ceph/bootstrap-osd/ceph.keyring --gen-key -n client.bootstrap-osd --cap mon 'profile bootstrap-osd' --cap mgr 'allow r'
 
 #. Add the generated keys to the ``ceph.mon.keyring``. ::
 
 	sudo ceph-authtool /tmp/ceph.mon.keyring --import-keyring /etc/ceph/ceph.client.admin.keyring
 	sudo ceph-authtool /tmp/ceph.mon.keyring --import-keyring /var/lib/ceph/bootstrap-osd/ceph.keyring
+
+#. Change the owner for ``ceph.mon.keyring``. ::
+
+	sudo chown ceph:ceph /tmp/ceph.mon.keyring
 
 #. Generate a monitor map using the hostname(s), host IP address(es) and the FSID.
    Save it as ``/tmp/monmap``::
@@ -498,7 +502,7 @@ In the below instructions, ``{id}`` is an arbitrary name, such as the hostname o
 
    Then make sure you do not have a keyring set in ceph.conf in the global section; move it to the client section; or add a keyring setting specific to this mds daemon. And verify that you see the same key in the mds data directory and ``ceph auth get mds.{id}`` output.
 
-#. Now you are ready to `create a Ceph filesystem`_.
+#. Now you are ready to `create a Ceph file system`_.
 
 
 Summary
@@ -531,4 +535,4 @@ To add (or remove) additional Ceph OSD Daemons, see `Add/Remove OSDs`_.
 .. _Add/Remove OSDs: ../../rados/operations/add-or-rm-osds
 .. _Network Configuration Reference: ../../rados/configuration/network-config-ref
 .. _Monitor Config Reference - Data: ../../rados/configuration/mon-config-ref#data
-.. _create a Ceph filesystem: ../../cephfs/createfs
+.. _create a Ceph file system: ../../cephfs/createfs

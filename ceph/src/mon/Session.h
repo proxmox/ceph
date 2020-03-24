@@ -15,8 +15,13 @@
 #ifndef CEPH_MON_SESSION_H
 #define CEPH_MON_SESSION_H
 
-#include "global/global_context.h"
+#include <string>
+#include <string_view>
+
+#include "include/utime.h"
 #include "include/xlist.h"
+
+#include "global/global_context.h"
 #include "msg/msg_types.h"
 #include "mon/mon_types.h"
 
@@ -29,13 +34,13 @@ struct MonSession;
 
 struct Subscription {
   MonSession *session;
-  string type;
+  std::string type;
   xlist<Subscription*>::item type_item;
   version_t next;
   bool onetime;
   bool incremental_onetime;  // has CEPH_FEATURE_INCSUBOSDMAP
   
-  Subscription(MonSession *s, const string& t) : session(s), type(t), type_item(this),
+  Subscription(MonSession *s, const std::string& t) : session(s), type(t), type_item(this),
 						 next(0), onetime(false), incremental_onetime(false) {}
 };
 
@@ -49,12 +54,12 @@ struct MonSession : public RefCountedObject {
   utime_t session_timeout;
   bool closed = false;
   xlist<MonSession*>::item item;
-  set<uint64_t> routed_request_tids;
+  std::set<uint64_t> routed_request_tids;
   MonCap caps;
 
   bool authenticated = false;  ///< true if auth handshake is complete
 
-  map<string, Subscription*> sub_map;
+  std::map<std::string, Subscription*> sub_map;
   epoch_t osd_epoch = 0;       ///< the osdmap epoch sent to the mon client
 
   AuthServiceHandler *auth_handler = nullptr;
@@ -63,8 +68,8 @@ struct MonSession : public RefCountedObject {
   ConnectionRef proxy_con;
   uint64_t proxy_tid = 0;
 
-  string remote_host;                ///< remote host name
-  map<string,string> last_config;    ///< most recently shared config
+  std::string remote_host;                ///< remote host name
+  std::map<std::string,std::string,std::less<>> last_config;    ///< most recently shared config
   bool any_config = false;
 
   MonSession(Connection *c)
@@ -91,8 +96,8 @@ struct MonSession : public RefCountedObject {
     delete auth_handler;
   }
 
-  bool is_capable(string service, int mask) {
-    map<string,string> args;
+  bool is_capable(std::string service, int mask) {
+    std::map<std::string,std::string> args;
     return caps.is_capable(
       g_ceph_context,
       entity_name,
@@ -104,13 +109,30 @@ struct MonSession : public RefCountedObject {
   const entity_addr_t& get_peer_socket_addr() {
     return socket_addr;
   }
+
+  void dump(Formatter *f) const {
+    f->dump_stream("name") << name;
+    f->dump_stream("entity_name") << entity_name;
+    f->dump_object("addrs", addrs);
+    f->dump_object("socket_addr", socket_addr);
+    f->dump_string("con_type", ceph_entity_type_name(con_type));
+    f->dump_unsigned("con_features", con_features);
+    f->dump_stream("con_features_hex") << std::hex << con_features << std::dec;
+    f->dump_string("con_features_release",
+		   ceph_release_name(ceph_release_from_features(con_features)));
+    f->dump_bool("open", !closed);
+    f->dump_object("caps", caps);
+    f->dump_bool("authenticated", authenticated);
+    f->dump_unsigned("osd_epoch", osd_epoch);
+    f->dump_string("remote_host", remote_host);
+  }
 };
 
 
 struct MonSessionMap {
   xlist<MonSession*> sessions;
-  map<string, xlist<Subscription*>* > subs;
-  multimap<int, MonSession*> by_osd;
+  std::map<std::string, xlist<Subscription*>* > subs;
+  std::multimap<int, MonSession*> by_osd;
   FeatureMap feature_map; // type -> features -> count
 
   MonSessionMap() {}
@@ -128,7 +150,7 @@ struct MonSessionMap {
 
   void remove_session(MonSession *s) {
     ceph_assert(!s->closed);
-    for (map<string,Subscription*>::iterator p = s->sub_map.begin(); p != s->sub_map.end(); ++p) {
+    for (std::map<std::string,Subscription*>::iterator p = s->sub_map.begin(); p != s->sub_map.end(); ++p) {
       p->second->type_item.remove_myself();
       delete p->second;
     }
@@ -136,7 +158,7 @@ struct MonSessionMap {
     s->item.remove_myself();
     if (s->name.is_osd() &&
 	s->name.num() >= 0) {
-      for (multimap<int,MonSession*>::iterator p = by_osd.find(s->name.num());
+      for (auto p = by_osd.find(s->name.num());
 	   p->first == s->name.num();
 	   ++p)
 	if (p->second == s) {
@@ -166,7 +188,7 @@ struct MonSessionMap {
     s->get();
     if (s->name.is_osd() &&
 	s->name.num() >= 0) {
-      by_osd.insert(pair<int,MonSession*>(s->name.num(), s));
+      by_osd.insert(std::pair<int,MonSession*>(s->name.num(), s));
     }
     if (s->con_features) {
       feature_map.add(s->con_type, s->con_features);
@@ -180,7 +202,7 @@ struct MonSessionMap {
     int n = by_osd.rbegin()->first + 1;
     int r = rand() % n;
 
-    multimap<int,MonSession*>::iterator p = by_osd.lower_bound(r);
+    auto p = by_osd.lower_bound(r);
     if (p == by_osd.end())
       --p;
 
@@ -190,7 +212,8 @@ struct MonSessionMap {
 
     MonSession *s = NULL;
 
-    multimap<int,MonSession*>::iterator b = p, f = p;
+    auto b = p;
+    auto f = p;
     bool backward = true, forward = true;
     while (backward || forward) {
       if (backward) {
@@ -218,7 +241,7 @@ struct MonSessionMap {
     return s;
   }
 
-  void add_update_sub(MonSession *s, const string& what, version_t start, bool onetime, bool incremental_onetime) {
+  void add_update_sub(MonSession *s, const std::string& what, version_t start, bool onetime, bool incremental_onetime) {
     Subscription *sub = 0;
     if (s->sub_map.count(what)) {
       sub = s->sub_map[what];
@@ -242,7 +265,7 @@ struct MonSessionMap {
   }
 };
 
-inline ostream& operator<<(ostream& out, const MonSession& s)
+inline std::ostream& operator<<(std::ostream& out, const MonSession& s)
 {
   out << "MonSession(" << s.name << " " << s.addrs
       << " is " << (s.closed ? "closed" : "open")

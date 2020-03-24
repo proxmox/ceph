@@ -40,29 +40,22 @@
 #include "../common.c"
 #include "iscsi/param.c"
 
+#include "spdk_internal/mock.h"
+
 struct spdk_iscsi_globals g_spdk_iscsi;
 
-struct spdk_iscsi_tgt_node *
-spdk_iscsi_find_tgt_node(const char *target_name)
-{
-	return NULL;
-}
+DEFINE_STUB(spdk_iscsi_find_tgt_node, struct spdk_iscsi_tgt_node *,
+	    (const char *target_name), NULL);
 
-bool
-spdk_iscsi_tgt_node_access(struct spdk_iscsi_conn *conn,
-			   struct spdk_iscsi_tgt_node *target,
-			   const char *iqn, const char *addr)
-{
-	return false;
-}
+DEFINE_STUB(spdk_iscsi_tgt_node_access, bool,
+	    (struct spdk_iscsi_conn *conn, struct spdk_iscsi_tgt_node *target,
+	     const char *iqn, const char *addr),
+	    false);
 
-int
-spdk_iscsi_send_tgts(struct spdk_iscsi_conn *conn, const char *iiqn,
-		     const char *iaddr,
-		     const char *tiqn, uint8_t *data, int alloc_len, int data_len)
-{
-	return 0;
-}
+DEFINE_STUB(spdk_iscsi_send_tgts, int,
+	    (struct spdk_iscsi_conn *conn, const char *iiqn, const char *iaddr,
+	     const char *tiqn, uint8_t *data, int alloc_len, int data_len),
+	    0);
 
 static void
 burst_length_param_negotation(int FirstBurstLength, int MaxBurstLength,
@@ -177,7 +170,7 @@ list_negotiation_test(void)
 	do { \
 		snprintf(valid_list_buf, sizeof(valid_list_buf), "%s", valid_list); \
 		snprintf(in_val_buf, sizeof(in_val_buf), "%s", in_val); \
-		new_val = spdk_iscsi_negotiate_param_list(&add_param_value, &param, valid_list_buf, in_val_buf, NULL); \
+		new_val = iscsi_negotiate_param_list(&add_param_value, &param, valid_list_buf, in_val_buf, NULL); \
 		if (expected_result) { \
 			SPDK_CU_ASSERT_FATAL(new_val != NULL); \
 			CU_ASSERT_STRING_EQUAL(new_val, expected_result); \
@@ -195,7 +188,7 @@ list_negotiation_test(void)
 
 #define PARSE(strconst, partial_enabled, partial_text) \
 	data = strconst; \
-	len = sizeof(strconst); \
+	len = sizeof(strconst) - 1; \
 	rc = spdk_iscsi_parse_params(&params, data, len, partial_enabled, partial_text)
 
 #define EXPECT_VAL(key, expected_value) \
@@ -281,6 +274,18 @@ parse_valid_test(void)
 	EXPECT_VAL("OOOOLL", "MMMM");
 	CU_ASSERT_PTR_NULL(partial_parameter);
 
+	partial_parameter = NULL;
+	data = "PartialKey=";
+	len = 7;
+	rc = spdk_iscsi_parse_params(&params, data, len, true, &partial_parameter);
+	CU_ASSERT(rc == 0);
+	CU_ASSERT_STRING_EQUAL(partial_parameter, "Partial");
+	EXPECT_NULL("PartialKey");
+	PARSE("Key=Value", false, &partial_parameter);
+	CU_ASSERT(rc == 0);
+	EXPECT_VAL("PartialKey", "Value");
+	CU_ASSERT_PTR_NULL(partial_parameter);
+
 	spdk_iscsi_param_free(params);
 }
 
@@ -356,6 +361,18 @@ parse_invalid_test(void)
 	CU_ASSERT(rc != 0);
 	EXPECT_VAL("B", "BB");
 
+	/* Test where data buffer has non-NULL characters past the end of
+	 * the valid data region.  This can happen with SPDK iSCSI target,
+	 * since data buffers are reused and we do not zero the data buffers
+	 * after they are freed since it would be too expensive.  Added as
+	 * part of fixing an intermittent Calsoft failure that triggered this
+	 * bug.
+	 */
+	data = "MaxRecvDataSegmentLength=81928";
+	len = strlen(data) - 1;
+	rc = spdk_iscsi_parse_params(&params, data, len, false, NULL);
+	EXPECT_VAL("MaxRecvDataSegmentLength", "8192");
+	CU_ASSERT(rc == 0);
 	spdk_iscsi_param_free(params);
 }
 

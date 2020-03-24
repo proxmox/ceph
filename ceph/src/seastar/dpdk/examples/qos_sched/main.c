@@ -1,34 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2014 Intel Corporation
  */
 
 #include <unistd.h>
@@ -84,6 +55,7 @@ app_main_loop(__attribute__((unused))void *dummy)
 			flow->rx_thread.rx_port = flow->rx_port;
 			flow->rx_thread.rx_ring =  flow->rx_ring;
 			flow->rx_thread.rx_queue = flow->rx_queue;
+			flow->rx_thread.sched_port = flow->sched_port;
 
 			rx_confs[rx_idx++] = &flow->rx_thread;
 
@@ -125,8 +97,7 @@ app_main_loop(__attribute__((unused))void *dummy)
 	/* initialize mbuf memory */
 	if (mode == APP_RX_MODE) {
 		for (i = 0; i < rx_idx; i++) {
-			RTE_LOG(INFO, APP, "flow %u lcoreid %u "
-					"reading port %"PRIu8"\n",
+			RTE_LOG(INFO, APP, "flow%u lcoreid%u reading port%u\n",
 					i, lcore_id, rx_confs[i]->rx_port);
 		}
 
@@ -140,8 +111,8 @@ app_main_loop(__attribute__((unused))void *dummy)
 			if (wt_confs[i]->m_table == NULL)
 				rte_panic("flow %u unable to allocate memory buffer\n", i);
 
-			RTE_LOG(INFO, APP, "flow %u lcoreid %u sched+write "
-					"port %"PRIu8"\n",
+			RTE_LOG(INFO, APP,
+				"flow %u lcoreid %u sched+write port %u\n",
 					i, lcore_id, wt_confs[i]->tx_port);
 		}
 
@@ -155,8 +126,7 @@ app_main_loop(__attribute__((unused))void *dummy)
 			if (tx_confs[i]->m_table == NULL)
 				rte_panic("flow %u unable to allocate memory buffer\n", i);
 
-			RTE_LOG(INFO, APP, "flow %u lcoreid %u "
-					"writing port %"PRIu8"\n",
+			RTE_LOG(INFO, APP, "flow%u lcoreid%u write port%u\n",
 					i, lcore_id, tx_confs[i]->tx_port);
 		}
 
@@ -186,7 +156,7 @@ app_stat(void)
 		struct flow_conf *flow = &qos_conf[i];
 
 		rte_eth_stats_get(flow->rx_port, &stats);
-		printf("\nRX port %"PRIu8": rx: %"PRIu64 " err: %"PRIu64
+		printf("\nRX port %"PRIu16": rx: %"PRIu64 " err: %"PRIu64
 				" no_mbuf: %"PRIu64 "\n",
 				flow->rx_port,
 				stats.ipackets - rx_stats[i].ipackets,
@@ -195,7 +165,7 @@ app_stat(void)
 		memcpy(&rx_stats[i], &stats, sizeof(stats));
 
 		rte_eth_stats_get(flow->tx_port, &stats);
-		printf("TX port %"PRIu8": tx: %" PRIu64 " err: %" PRIu64 "\n",
+		printf("TX port %"PRIu16": tx: %" PRIu64 " err: %" PRIu64 "\n",
 				flow->tx_port,
 				stats.opackets - tx_stats[i].opackets,
 				stats.oerrors - tx_stats[i].oerrors);

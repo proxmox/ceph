@@ -4,7 +4,7 @@ import { I18n } from '@ngx-translate/i18n-polyfill';
 
 export class AppConstants {
   public static readonly organization = 'ceph';
-  public static readonly projectName = 'Ceph Manager Dashboard';
+  public static readonly projectName = 'Ceph Dashboard';
   public static readonly license = 'Free software (LGPL 2.1).';
 }
 
@@ -58,6 +58,8 @@ export enum ActionLabels {
   /* Non-standard actions */
   COPY = 'Copy',
   CLONE = 'Clone',
+  UPDATE = 'Update',
+  EVICT = 'Evict',
 
   /* Read-only */
   SHOW = 'Show',
@@ -80,10 +82,13 @@ export class ActionLabelsI18n {
   REMOVE: string;
   EDIT: string;
   CANCEL: string;
+  CHANGE: string;
   COPY: string;
   CLONE: string;
   DEEP_SCRUB: string;
   DESTROY: string;
+  EVICT: string;
+  EXPIRE: string;
   FLATTEN: string;
   MARK_DOWN: string;
   MARK_IN: string;
@@ -91,16 +96,18 @@ export class ActionLabelsI18n {
   MARK_OUT: string;
   PROTECT: string;
   PURGE: string;
+  RECREATE: string;
   RENAME: string;
   RESTORE: string;
   REWEIGHT: string;
   ROLLBACK: string;
   SCRUB: string;
+  SET: string;
   SHOW: string;
   TRASH: string;
   UNPROTECT: string;
-  RECREATE: string;
-  EXPIRE: string;
+  UNSET: string;
+  UPDATE: string;
 
   constructor(private i18n: I18n) {
     /* Create a new item */
@@ -111,12 +118,15 @@ export class ActionLabelsI18n {
 
     /* Add an existing item to a container */
     this.ADD = this.i18n('Add');
+    this.SET = this.i18n('Set');
 
     /* Remove an item from a container WITHOUT deleting it */
     this.REMOVE = this.i18n('Remove');
+    this.UNSET = this.i18n('Unset');
 
     /* Make changes to an existing item */
     this.EDIT = this.i18n('Edit');
+    this.UPDATE = this.i18n('Update');
     this.CANCEL = this.i18n('Cancel');
 
     /* Non-standard actions */
@@ -124,6 +134,7 @@ export class ActionLabelsI18n {
     this.COPY = this.i18n('Copy');
     this.DEEP_SCRUB = this.i18n('Deep Scrub');
     this.DESTROY = this.i18n('Destroy');
+    this.EVICT = this.i18n('Evict');
     this.FLATTEN = this.i18n('Flatten');
     this.MARK_DOWN = this.i18n('Mark Down');
     this.MARK_IN = this.i18n('Mark In');
@@ -139,6 +150,7 @@ export class ActionLabelsI18n {
     this.SHOW = this.i18n('Show');
     this.TRASH = this.i18n('Move to Trash');
     this.UNPROTECT = this.i18n('Unprotect');
+    this.CHANGE = this.i18n('Change');
 
     /* Prometheus wording */
     this.RECREATE = this.i18n('Recreate');
@@ -161,9 +173,24 @@ export class SucceededActionLabelsI18n {
   CANCELED: string;
   COPIED: string;
   CLONED: string;
+  DEEP_SCRUBBED: string;
+  DESTROYED: string;
+  FLATTENED: string;
+  MARKED_DOWN: string;
+  MARKED_IN: string;
+  MARKED_LOST: string;
+  MARKED_OUT: string;
+  PROTECTED: string;
+  PURGED: string;
+  RENAMED: string;
+  RESTORED: string;
+  REWEIGHTED: string;
+  ROLLED_BACK: string;
+  SCRUBBED: string;
   SHOWED: string;
   TRASHED: string;
   UNPROTECTED: string;
+  CHANGE: string;
   RECREATED: string;
   EXPIRED: string;
 
@@ -187,9 +214,24 @@ export class SucceededActionLabelsI18n {
     /* Non-standard actions */
     this.CLONED = this.i18n('Cloned');
     this.COPIED = this.i18n('Copied');
+    this.DEEP_SCRUBBED = this.i18n('Deep Scrubbed');
+    this.DESTROYED = this.i18n('Destroyed');
+    this.FLATTENED = this.i18n('Flattened');
+    this.MARKED_DOWN = this.i18n('Marked Down');
+    this.MARKED_IN = this.i18n('Marked In');
+    this.MARKED_LOST = this.i18n('Marked Lost');
+    this.MARKED_OUT = this.i18n('Marked Out');
+    this.PROTECTED = this.i18n('Protected');
+    this.PURGED = this.i18n('Purged');
+    this.RENAMED = this.i18n('Renamed');
+    this.RESTORED = this.i18n('Restored');
+    this.REWEIGHTED = this.i18n('Reweighted');
+    this.ROLLED_BACK = this.i18n('Rolled back');
+    this.SCRUBBED = this.i18n('Scrubbed');
     this.SHOWED = this.i18n('Showed');
     this.TRASHED = this.i18n('Moved to Trash');
     this.UNPROTECTED = this.i18n('Unprotected');
+    this.CHANGE = this.i18n('Change');
 
     /* Prometheus wording */
     this.RECREATED = this.i18n('Recreated');

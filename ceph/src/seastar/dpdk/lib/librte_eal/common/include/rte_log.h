@@ -1,34 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2017 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2017 Intel Corporation
  */
 
 #ifndef _RTE_LOG_H_
@@ -49,8 +20,11 @@ extern "C" {
 #include <stdint.h>
 #include <stdio.h>
 #include <stdarg.h>
+#include <sys/queue.h>
 
 #include <rte_common.h>
+#include <rte_config.h>
+#include <rte_compat.h>
 
 struct rte_log_dynamic_type;
 
@@ -63,7 +37,7 @@ struct rte_logs {
 	struct rte_log_dynamic_type *dynamic_types;
 };
 
-/** Global log informations */
+/** Global log information */
 extern struct rte_logs rte_logs;
 
 /* SDK log type */
@@ -87,6 +61,7 @@ extern struct rte_logs rte_logs;
 #define RTE_LOGTYPE_CRYPTODEV 17 /**< Log related to cryptodev. */
 #define RTE_LOGTYPE_EFD       18 /**< Log related to EFD. */
 #define RTE_LOGTYPE_EVENTDEV  19 /**< Log related to eventdev. */
+#define RTE_LOGTYPE_GSO       20 /**< Log related to GSO. */
 
 /* these log types can be used in an application */
 #define RTE_LOGTYPE_USER1     24 /**< User-defined log type 1. */
@@ -138,12 +113,6 @@ int rte_openlog_stream(FILE *f);
 void rte_log_set_global_level(uint32_t level);
 
 /**
- * Deprecated, replaced by rte_log_set_global_level().
- */
-__rte_deprecated
-void rte_set_log_level(uint32_t level);
-
-/**
  * Get the global log level.
  *
  * @return
@@ -152,39 +121,38 @@ void rte_set_log_level(uint32_t level);
 uint32_t rte_log_get_global_level(void);
 
 /**
- * Deprecated, replaced by rte_log_get_global_level().
- */
-__rte_deprecated
-uint32_t rte_get_log_level(void);
-
-/**
- * Enable or disable the log type.
+ * Get the log level for a given type.
  *
- * @param type
- *   Log type, for example, RTE_LOGTYPE_EAL.
- * @param enable
- *   True for enable; false for disable.
+ * @param logtype
+ *   The log type identifier.
+ * @return
+ *   0 on success, a negative value if logtype is invalid.
  */
-__rte_deprecated
-void rte_set_log_type(uint32_t type, int enable);
+int rte_log_get_level(uint32_t logtype);
 
 /**
- * Get the global log type.
- */
-__rte_deprecated
-uint32_t rte_get_log_type(void);
-
-/**
- * Set the log level for a given type.
+ * Set the log level for a given type based on shell pattern.
  *
  * @param pattern
- *   The regexp identifying the log type.
+ *   The match pattern identifying the log type.
  * @param level
  *   The level to be set.
  * @return
  *   0 on success, a negative value if level is invalid.
  */
-int rte_log_set_level_regexp(const char *pattern, uint32_t level);
+int rte_log_set_level_pattern(const char *pattern, uint32_t level);
+
+/**
+ * Set the log level for a given type based on regular expression.
+ *
+ * @param regex
+ *   The regular expression identifying the log type.
+ * @param level
+ *   The level to be set.
+ * @return
+ *   0 on success, a negative value if level is invalid.
+ */
+int rte_log_set_level_regexp(const char *regex, uint32_t level);
 
 /**
  * Set the log level for a given type.
@@ -236,9 +204,31 @@ int rte_log_cur_msg_logtype(void);
  *   The string identifying the log type.
  * @return
  *   - >0: success, the returned value is the log type identifier.
- *   - (-ENONEM): cannot allocate memory.
+ *   - (-ENOMEM): cannot allocate memory.
  */
 int rte_log_register(const char *name);
+
+/**
+ * @warning
+ * @b EXPERIMENTAL: this API may change without prior notice
+ *
+ * Register a dynamic log type and try to pick its level from EAL options
+ *
+ * rte_log_register() is called inside. If successful, the function tries
+ * to search for matching regexp in the list of EAL log level options and
+ * pick the level from the last matching entry. If nothing can be applied
+ * from the list, the level will be set to the user-defined default value.
+ *
+ * @param name
+ *    Name for the log type to be registered
+ * @param level_def
+ *    Fallback level to be set if the global list has no matching options
+ * @return
+ *    - >=0: the newly registered log type
+ *    - <0: rte_log_register() error value
+ */
+__rte_experimental
+int rte_log_register_type_and_pick_level(const char *name, uint32_t level_def);
 
 /**
  * Dump log information.

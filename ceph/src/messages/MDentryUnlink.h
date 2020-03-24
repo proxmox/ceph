@@ -20,11 +20,11 @@
 
 #include "msg/Message.h"
 
-class MDentryUnlink : public MessageInstance<MDentryUnlink> {
-public:
-  friend factory;
+class MDentryUnlink : public SafeMessage {
 private:
-
+  static const int HEAD_VERSION = 1;
+  static const int COMPAT_VERSION = 1;
+  
   dirfrag_t dirfrag;
   string dn;
 
@@ -37,9 +37,9 @@ private:
 
 protected:
   MDentryUnlink() :
-    MessageInstance(MSG_MDS_DENTRYUNLINK) { }
+    SafeMessage(MSG_MDS_DENTRYUNLINK, HEAD_VERSION, COMPAT_VERSION) { }
   MDentryUnlink(dirfrag_t df, std::string_view n) :
-    MessageInstance(MSG_MDS_DENTRYUNLINK),
+    SafeMessage(MSG_MDS_DENTRYUNLINK, HEAD_VERSION, COMPAT_VERSION),
     dirfrag(df),
     dn(n) {}
   ~MDentryUnlink() override {}
@@ -62,6 +62,9 @@ public:
     encode(dn, payload);
     encode(straybl, payload);
   }
+private:
+  template<class T, typename... Args>
+  friend boost::intrusive_ptr<T> ceph::make_message(Args&&... args);
 };
 
 #endif

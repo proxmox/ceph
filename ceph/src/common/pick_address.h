@@ -6,7 +6,8 @@
 #include <string>
 #include <list>
 
-class CephContext;
+#include "include/common_fwd.h"
+
 struct entity_addr_t;
 class entity_addrvec_t;
 
@@ -19,12 +20,6 @@ class entity_addrvec_t;
 #define CEPH_PICK_ADDRESS_IPV6        0x20
 #define CEPH_PICK_ADDRESS_PREFER_IPV4 0x40
 #define CEPH_PICK_ADDRESS_DEFAULT_MON_PORTS  0x80
-
-enum IfaceType {
-  IFACE_DEFAULT = 0,
-  IFACE_PHY_PORT = 1,
-  IFACE_BOND_PORT = 2
-};
 
 #ifndef WITH_SEASTAR
 /*

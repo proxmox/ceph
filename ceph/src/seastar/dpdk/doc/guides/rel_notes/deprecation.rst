@@ -1,3 +1,6 @@
+..  SPDX-License-Identifier: BSD-3-Clause
+    Copyright 2018 The DPDK contributors
+
 ABI and API Deprecation
 =======================
 
@@ -8,70 +11,52 @@ API and ABI deprecation notices are to be posted here.
 Deprecation Notices
 -------------------
 
-* eal: the following functions are deprecated starting from 17.05 and will
-  be removed in 17.08:
+* meson: The minimum supported version of meson for configuring and building
+  DPDK will be increased to v0.47.1 (from 0.41) from DPDK 19.05 onwards. For
+  those users with a version earlier than 0.47.1, an updated copy of meson
+  can be got using the ``pip``, or ``pip3``, tool for downloading python
+  packages.
 
-  - ``rte_set_log_level``, replaced by ``rte_log_set_global_level``
-  - ``rte_get_log_level``, replaced by ``rte_log_get_global_level``
-  - ``rte_set_log_type``, replaced by ``rte_log_set_level``
-  - ``rte_get_log_type``, replaced by ``rte_log_get_level``
+* network includes: Network structures, definitions and functions will
+  be prefixed by ``rte_`` to resolve conflicts with libc headers.
+  This change will break many DPDK APIs.
 
-* devargs: An ABI change is planned for 17.08 for the structure ``rte_devargs``.
-  The current version is dependent on bus-specific device identifier, which will
-  be made generic and abstracted, in order to make the EAL bus-agnostic.
+* kvargs: The function ``rte_kvargs_process`` will get a new parameter
+  for returning key match count. It will ease handling of no-match case.
 
-  Accompanying this evolution, device command line parameters will thus support
-  explicit bus definition in a device declaration.
+* eal: The function ``rte_eal_remote_launch`` will return new error codes
+  after read or write error on the pipe, instead of calling ``rte_panic``.
 
-* igb_uio: iomem mapping and sysfs files created for iomem and ioport in
-  igb_uio will be removed, because we are able to detect these from what Linux
-  has exposed, like the way we have done with uio-pci-generic. This change
-  targets release 17.05.
+* eal: the ``rte_mem_config`` struct will be made private to remove it from the
+  externally visible ABI and allow it to be updated in the future.
 
-* The VDEV subsystem will be converted as driver of the new bus model.
-  It may imply some EAL API changes in 17.08.
+* eal: both declaring and identifying devices will be streamlined in v18.11.
+  New functions will appear to query a specific port from buses, classes of
+  device and device drivers. Device declaration will be made coherent with the
+  new scheme of device identification.
+  As such, ``rte_devargs`` device representation will change.
 
-* The struct ``rte_pci_driver`` is planned to be removed from
-  ``rte_cryptodev_driver`` and ``rte_eventdev_driver`` in 17.08.
+  - The enum ``rte_devtype`` was used to identify a bus and will disappear.
+  - Functions previously deprecated will change or disappear:
 
-* ethdev: An API change is planned for 17.08 for the function
-  ``_rte_eth_dev_callback_process``. In 17.08 the function will return an ``int``
-  instead of ``void`` and a fourth parameter ``void *ret_param`` will be added.
+    + ``rte_eal_devargs_type_count``
 
-* ethdev: for 17.08 it is planned to deprecate the following nine rte_eth_dev_*
-  functions and move them into the ixgbe PMD:
+* vfio: removal of ``rte_vfio_dma_map`` and ``rte_vfio_dma_unmap`` APIs which
+  have been replaced with ``rte_dev_dma_map`` and ``rte_dev_dma_unmap``
+  functions.  The due date for the removal targets DPDK 20.02.
 
-  ``rte_eth_dev_bypass_init``, ``rte_eth_dev_bypass_state_set``,
-  ``rte_eth_dev_bypass_state_show``, ``rte_eth_dev_bypass_event_store``,
-  ``rte_eth_dev_bypass_event_show``, ``rte_eth_dev_wd_timeout_store``,
-  ``rte_eth_dev_bypass_wd_timeout_show``, ``rte_eth_dev_bypass_ver_show``,
-  ``rte_eth_dev_bypass_wd_reset``.
+* pci: Several exposed functions are misnamed.
+  The following functions are deprecated starting from v17.11 and are replaced:
 
-  The following fields will be removed from ``struct eth_dev_ops``:
+  - ``eal_parse_pci_BDF`` replaced by ``rte_pci_addr_parse``
+  - ``eal_parse_pci_DomBDF`` replaced by ``rte_pci_addr_parse``
+  - ``rte_eal_compare_pci_addr`` replaced by ``rte_pci_addr_cmp``
 
-  ``bypass_init_t``, ``bypass_state_set_t``, ``bypass_state_show_t``,
-  ``bypass_event_set_t``, ``bypass_event_show_t``, ``bypass_wd_timeout_set_t``,
-  ``bypass_wd_timeout_show_t``, ``bypass_ver_show_t``, ``bypass_wd_reset_t``.
-
-  The functions will be renamed to the following, and moved to the ``ixgbe`` PMD:
-
-  ``rte_pmd_ixgbe_bypass_init``, ``rte_pmd_ixgbe_bypass_state_set``,
-  ``rte_pmd_ixgbe_bypass_state_show``, ``rte_pmd_ixgbe_bypass_event_set``,
-  ``rte_pmd_ixgbe_bypass_event_show``, ``rte_pmd_ixgbe_bypass_wd_timeout_set``,
-  ``rte_pmd_ixgbe_bypass_wd_timeout_show``, ``rte_pmd_ixgbe_bypass_ver_show``,
-  ``rte_pmd_ixgbe_bypass_wd_reset``.
-
-* The mbuf flags PKT_RX_VLAN_PKT and PKT_RX_QINQ_PKT are deprecated and
-  are respectively replaced by PKT_RX_VLAN_STRIPPED and
-  PKT_RX_QINQ_STRIPPED, that are better described. The old flags and
-  their behavior will be kept until 17.05 and will be removed in 17.08.
-
-* ethdev: Tx offloads will no longer be enabled by default in 17.08.
-  Instead, the ``rte_eth_txmode`` structure will be extended with
-  bit field to enable each Tx offload.
-  Besides of making the Rx/Tx configuration API more consistent for the
-  application, PMDs will be able to provide a better out of the box performance.
-  As part of the work, ``ETH_TXQ_FLAGS_NO*`` will be superseded as well.
+* dpaa2: removal of ``rte_dpaa2_memsegs`` structure which has been replaced
+  by a pa-va search library. This structure was earlier being used for holding
+  memory segments used by dpaa2 driver for faster pa->va translation. This
+  structure would be made internal (or removed if all dependencies are cleared)
+  in future releases.
 
 * ethdev: the legacy filter API, including
   ``rte_eth_dev_filter_supported()``, ``rte_eth_dev_filter_ctrl()`` as well
@@ -81,50 +66,49 @@ Deprecation Notices
   Target release for removal of the legacy API will be defined once most
   PMDs have switched to rte_flow.
 
-* cryptodev: All PMD names definitions will be moved to the individual PMDs
-  in 17.08.
+* kni: remove KNI ethtool support. To clarify, this is not to remove the KNI,
+  but only to remove ethtool support of it that is disabled by default and
+  can be enabled via ``CONFIG_RTE_KNI_KMOD_ETHTOOL`` config option.
+  Existing KNI ethtool implementation is only supported by ``igb`` & ``ixgbe``
+  drivers, by using a copy of kernel drivers in DPDK. This model cannot be
+  extended to all drivers in DPDK and it is too much effort to maintain
+  kernel modules in DPDK. As a result users won't be able to use ``ethtool``
+  via ``igb`` & ``ixgbe`` anymore.
 
-* cryptodev: The following changes will be done in in 17.08:
+* cryptodev: New member in ``rte_cryptodev_config`` to allow applications to
+  disable features supported by the crypto device. Only the following features
+  would be allowed to be disabled this way,
 
-  - the device type enumeration ``rte_cryptodev_type`` will be removed
-  - the following structures will be changed: ``rte_cryptodev_session``,
-    ``rte_cryptodev_sym_session``, ``rte_cryptodev_info``, ``rte_cryptodev``
-  - the function ``rte_cryptodev_count_devtype`` will be replaced by
-    ``rte_cryptodev_device_count_by_driver``
+  - ``RTE_CRYPTODEV_FF_SYMMETRIC_CRYPTO``
+  - ``RTE_CRYPTODEV_FF_ASYMMETRIC_CRYPTO``
+  - ``RTE_CRYPTODEV_FF_SECURITY``
 
-* cryptodev: API changes are planned for 17.08 for the sessions management
-  to make it agnostic to the underlying devices, removing coupling with
-  crypto PMDs, so a single session can be used on multiple devices.
+  Disabling unused features would facilitate efficient usage of HW/SW offload.
 
-  - ``struct rte_cryptodev_sym_session``, dev_id, dev_type will be removed,
-    _private field changed to the indirect array of private data pointers of
-    all supported devices
+  - Member ``uint64_t ff_disable`` in ``rte_cryptodev_config``
 
-  An API of followed functions will be changed to allow operate on multiple
-  devices with one session:
+  The field would be added in v19.08.
 
-  - ``rte_cryptodev_sym_session_create``
-  - ``rte_cryptodev_sym_session_free``
-  - ``rte_cryptodev_sym_session_pool_create``
+* cryptodev: the ``uint8_t *data`` member of ``key`` structure in the xforms
+  structure (``rte_crypto_cipher_xform``, ``rte_crypto_auth_xform``, and
+  ``rte_crypto_aead_xform``) will be changed to ``const uint8_t *data``.
 
-  While dev_id will not be stored in the ``struct rte_cryptodev_sym_session``,
-  directly, the change of followed API is required:
+* cryptodev: support for using IV with all sizes is added, J0 still can
+  be used but only when IV length in following structs ``rte_crypto_auth_xform``,
+  ``rte_crypto_aead_xform`` is set to zero. When IV length is greater or equal
+  to one it means it represents IV, when is set to zero it means J0 is used
+  directly, in this case 16 bytes of J0 need to be passed.
 
-  - ``rte_cryptodev_queue_pair_attach_sym_session``
-  - ``rte_cryptodev_queue_pair_detach_sym_session``
+* sched: To allow more traffic classes, flexible mapping of pipe queues to
+  traffic classes, and subport level configuration of pipes and queues
+  changes will be made to macros, data structures and API functions defined
+  in "rte_sched.h". These changes are aligned to improvements suggested in the
+  RFC https://mails.dpdk.org/archives/dev/2018-November/120035.html.
 
-* cryptodev: the structures ``rte_crypto_op``, ``rte_crypto_sym_op``
-  and ``rte_crypto_sym_xform`` will be restructured in 17.08,
-  for correctness and improvement.
+* metrics: The function ``rte_metrics_init`` will have a non-void return
+  in order to notify errors instead of calling ``rte_exit``.
 
-* crypto/scheduler: the following two functions are deprecated starting
-  from 17.05 and will be removed in 17.08:
-
-  - ``rte_crpytodev_scheduler_mode_get``, replaced by ``rte_cryptodev_scheduler_mode_get``
-  - ``rte_crpytodev_scheduler_mode_set``, replaced by ``rte_cryptodev_scheduler_mode_set``
-
-* librte_table: The ``key_mask`` parameter will be added to all the hash tables
-  that currently do not have it, as well as to the hash compute function prototype.
-  The non-"do-sig" versions of the hash tables will be removed
-  (including the ``signature_offset`` parameter)
-  and the "do-sig" versions renamed accordingly.
+* power: ``rte_power_set_env`` function will no longer return 0 on attempt
+  to set new power environment if power environment was already initialized.
+  In this case the function will return -1 unless the environment is unset first
+  (using ``rte_power_unset_env``). Other function usage scenarios will not change.

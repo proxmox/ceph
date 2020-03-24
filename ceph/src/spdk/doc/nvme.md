@@ -195,6 +195,10 @@ single NVM subsystem directly, the NVMe library will call `probe_cb`
 for just that subsystem; this allows the user to skip the discovery step
 and connect directly to a subsystem with a known address.
 
+## RDMA Limitations
+
+Please refer to NVMe-oF target's @ref nvmf_rdma_limitations
+
 # NVMe Multi Process {#nvme_multi_process}
 
 This capability enables the SPDK NVMe driver to support multiple processes accessing the
@@ -237,6 +241,8 @@ Example: identical shm_id and non-overlapping core masks
 2. If a primary process exits while secondary processes are still running, those processes
 will continue to run. However, a new primary process cannot be created.
 3. Applications are responsible for coordinating access to logical blocks.
+4. If a process exits unexpectedly, the allocated memory will be released when the last
+process exits.
 
 @sa spdk_nvme_probe, spdk_nvme_ctrlr_process_admin_completions
 

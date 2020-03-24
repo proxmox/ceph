@@ -131,6 +131,7 @@ void usage(ostream& out)
 "                                    convert an object to chunked object\n"
 "   tier-promote <obj-name>	     promote the object to the base tier\n"
 "   unset-manifest <obj-name>	     unset redirect or chunked object\n"
+"   tier-flush <obj-name>	     flush the chunked object\n"
 "\n"
 "IMPORT AND EXPORT\n"
 "   export [filename]\n"
@@ -141,9 +142,9 @@ void usage(ostream& out)
 "ADVISORY LOCKS\n"
 "   lock list <obj-name>\n"
 "       List all advisory locks on an object\n"
-"   lock get <obj-name> <lock-name>\n"
+"   lock get <obj-name> <lock-name> [--lock-cookie locker-cookie] [--lock-tag locker-tag] [--lock-description locker-desc] [--lock-duration locker-dur] [--lock-type locker-type]\n"
 "       Try to acquire a lock\n"
-"   lock break <obj-name> <lock-name> <locker-name>\n"
+"   lock break <obj-name> <lock-name> <locker-name> [--lock-cookie locker-cookie]\n"
 "       Try to break a lock acquired by another client\n"
 "   lock info <obj-name> <lock-name>\n"
 "       Show lock information\n"
@@ -181,7 +182,7 @@ void usage(ostream& out)
 "   --format=[--format plain|json|json-pretty]\n"
 "   -b op_size\n"
 "        set the block size for put/get ops and for write benchmarking\n"
-"   -o object_size\n"
+"   -O object_size\n"
 "        set the object size for put/get ops and for write benchmarking\n"
 "   --max-objects\n"
 "        set the max number of objects for write benchmarking\n"
@@ -408,6 +409,7 @@ void dump_name(Formatter *formatter, const librados::NObjectIterator& i, [[maybe
 } // namespace detail
 
 unsigned default_op_size = 1 << 22;
+static const unsigned MAX_OMAP_BYTES_PER_REQUEST = 1 << 10;
 
 [[noreturn]] static void usage_exit()
 {
@@ -498,8 +500,8 @@ static int do_get(IoCtx& io_ctx, const char *objname, const char *outfile, unsig
 static int do_copy(IoCtx& io_ctx, const char *objname,
 		   IoCtx& target_ctx, const char *target_obj)
 {
-  __le32 src_fadvise_flags = LIBRADOS_OP_FLAG_FADVISE_SEQUENTIAL | LIBRADOS_OP_FLAG_FADVISE_NOCACHE;
-  __le32 dest_fadvise_flags = LIBRADOS_OP_FLAG_FADVISE_SEQUENTIAL | LIBRADOS_OP_FLAG_FADVISE_DONTNEED;
+  uint32_t src_fadvise_flags = LIBRADOS_OP_FLAG_FADVISE_SEQUENTIAL | LIBRADOS_OP_FLAG_FADVISE_NOCACHE;
+  uint32_t dest_fadvise_flags = LIBRADOS_OP_FLAG_FADVISE_SEQUENTIAL | LIBRADOS_OP_FLAG_FADVISE_DONTNEED;
   ObjectWriteOperation op;
   op.copy_from(objname, io_ctx, 0, src_fadvise_flags);
   op.set_op_flags2(dest_fadvise_flags);
@@ -550,7 +552,7 @@ static int do_copy_pool(Rados& rados, const char *src_pool, const char *target_p
 
 static int do_put(IoCtx& io_ctx, 
             const char *objname, const char *infile, int op_size,
-            uint64_t obj_offset,
+            uint64_t obj_offset, bool create_object,
             const bool use_striper)
 {
   string oid(objname);
@@ -593,7 +595,7 @@ static int do_put(IoCtx& io_ctx,
      continue;
     }
 
-    if (0 == offset)
+    if (0 == offset && create_object)
       ret = detail::write_full(io_ctx, oid, indata, use_striper);
     else
       ret = detail::write(io_ctx, oid, indata, count, offset, use_striper);
@@ -765,10 +767,10 @@ public:
     return total;
   }
 
-  Mutex lock;
-  Cond cond;
+  ceph::mutex lock = ceph::make_mutex("LoadGen");
+  ceph::condition_variable cond;
 
-  explicit LoadGen(Rados *_rados) : rados(_rados), going_down(false), lock("LoadGen") {
+  explicit LoadGen(Rados *_rados) : rados(_rados), going_down(false) {
     read_percent = 80;
     min_obj_len = 1024;
     max_obj_len = 5ull * 1024ull * 1024ull * 1024ull;
@@ -789,7 +791,7 @@ public:
   void cleanup();
 
   void io_cb(completion_t c, LoadGenOp *op) {
-    Mutex::Locker l(lock);
+    std::lock_guard l{lock};
 
     total_completed += op->len;
 
@@ -808,7 +810,7 @@ public:
 
     delete op;
 
-    cond.Signal();
+    cond.notify_all();
   }
 };
 
@@ -861,7 +863,7 @@ int LoadGen::bootstrap(const char *pool)
       }
     }
 
-    librados::AioCompletion *c = rados->aio_create_completion(NULL, NULL, NULL);
+    librados::AioCompletion *c = rados->aio_create_completion(nullptr, nullptr);
     completions.push_back(c);
     // generate object
     ret = io_ctx.aio_write(info.name, c, bl, buf_len, info.len - buf_len);
@@ -888,7 +890,7 @@ int LoadGen::bootstrap(const char *pool)
 
 void LoadGen::run_op(LoadGenOp *op)
 {
-  op->completion = rados->aio_create_completion(op, _load_gen_cb, NULL);
+  op->completion = rados->aio_create_completion(op, _load_gen_cb);
 
   switch (op->type) {
   case OP_READ:
@@ -937,14 +939,14 @@ void LoadGen::gen_op(LoadGenOp *op)
 
 uint64_t LoadGen::gen_next_op()
 {
-  lock.Lock();
+  lock.lock();
 
   LoadGenOp *op = new LoadGenOp(this);
   gen_op(op);
   op->id = max_op++;
   pending_ops[op->id] = op;
 
-  lock.Unlock();
+  lock.unlock();
 
   run_op(op);
 
@@ -960,20 +962,20 @@ int LoadGen::run()
   uint32_t total_sec = 0;
 
   while (1) {
-    lock.Lock();
-    utime_t one_second(1, 0);
-    cond.WaitInterval(lock, one_second);
-    lock.Unlock();
+    {
+      std::unique_lock l{lock};
+      cond.wait_for(l, 1s);
+    }
     utime_t now = ceph_clock_now();
 
     if (now > end_time)
       break;
 
     uint64_t expected = total_expected();
-    lock.Lock();
+    lock.lock();
     uint64_t sent = total_sent;
     uint64_t completed = total_completed;
-    lock.Unlock();
+    lock.unlock();
 
     if (now - stamp_time >= utime_t(1, 0)) {
       double rate = (double)cur_completed_rate() / (1024 * 1024);
@@ -994,14 +996,14 @@ int LoadGen::run()
 
   // get a reference to all pending requests
   vector<librados::AioCompletion *> completions;
-  lock.Lock();
+  lock.lock();
   going_down = true;
   map<int, LoadGenOp *>::iterator iter;
   for (iter = pending_ops.begin(); iter != pending_ops.end(); ++iter) {
     LoadGenOp *op = iter->second;
     completions.push_back(op->completion);
   }
-  lock.Unlock();
+  lock.unlock();
 
   cout << "waiting for all operations to complete" << std::endl;
 
@@ -1051,7 +1053,7 @@ protected:
     completions = NULL;
   }
   int create_completion(int slot, void (*cb)(void *, void*), void *arg) override {
-    completions[slot] = rados.aio_create_completion((void *) arg, 0, cb);
+    completions[slot] = rados.aio_create_completion((void *) arg, cb);
 
     if (!completions[slot])
       return -EINVAL;
@@ -1113,11 +1115,11 @@ protected:
   }
 
   bool completion_is_done(int slot) override {
-    return completions[slot]->is_safe();
+    return completions[slot] && completions[slot]->is_complete();
   }
 
   int completion_wait(int slot) override {
-    return completions[slot]->wait_for_safe_and_cb();
+    return completions[slot]->wait_for_complete_and_cb();
   }
   int completion_ret(int slot) override {
     return completions[slot]->get_return_value();
@@ -1328,7 +1330,7 @@ static int do_cache_flush(IoCtx& io_ctx, string oid)
 		     librados::OPERATION_IGNORE_CACHE |
 		     librados::OPERATION_IGNORE_OVERLAY,
 		     NULL);
-  completion->wait_for_safe();
+  completion->wait_for_complete();
   int r = completion->get_return_value();
   completion->release();
   return r;
@@ -1345,7 +1347,7 @@ static int do_cache_try_flush(IoCtx& io_ctx, string oid)
 		     librados::OPERATION_IGNORE_OVERLAY |
 		     librados::OPERATION_SKIPRWLOCKS,
 		     NULL);
-  completion->wait_for_safe();
+  completion->wait_for_complete();
   int r = completion->get_return_value();
   completion->release();
   return r;
@@ -1362,7 +1364,7 @@ static int do_cache_evict(IoCtx& io_ctx, string oid)
 		     librados::OPERATION_IGNORE_OVERLAY |
 		     librados::OPERATION_SKIPRWLOCKS,
 		     NULL);
-  completion->wait_for_safe();
+  completion->wait_for_complete();
   int r = completion->get_return_value();
   completion->release();
   return r;
@@ -1787,7 +1789,7 @@ static int do_get_inconsistent_cmd(const std::vector<const char*> &nargs,
     auto completion = librados::Rados::aio_create_completion();
     ret = do_get_inconsistent(rados, pg, start, max_item_num, completion,
 			      &items, &interval);
-    completion->wait_for_safe();
+    completion->wait_for_complete();
     ret = completion->get_return_value();
     completion->release();
     if (ret < 0) {
@@ -1844,6 +1846,7 @@ static int rados_tool_common(const std::map < std::string, std::string > &opts,
   unsigned object_size = 0;
   unsigned max_objects = 0;
   uint64_t obj_offset = 0;
+  bool obj_offset_specified = false;
   bool block_size_specified = false;
   int bench_write_dest = 0;
   bool cleanup = true;
@@ -1953,6 +1956,7 @@ static int rados_tool_common(const std::map < std::string, std::string > &opts,
     if (rados_sistrtoll(i, &obj_offset)) {
       return -EINVAL;
     }
+    obj_offset_specified = true;
   }
   i = opts.find("snap");
   if (i != opts.end()) {
@@ -2560,7 +2564,8 @@ static int rados_tool_common(const std::map < std::string, std::string > &opts,
       usage(cerr);
       return 1;
     }
-    ret = do_put(io_ctx, nargs[1], nargs[2], op_size, obj_offset, use_striper);
+    bool create_object = !obj_offset_specified;
+    ret = do_put(io_ctx, nargs[1], nargs[2], op_size, obj_offset, create_object, use_striper);
     if (ret < 0) {
       cerr << "error putting " << pool_name << "/" << nargs[1] << ": " << cpp_strerror(ret) << std::endl;
       return 1;
@@ -2871,10 +2876,9 @@ static int rados_tool_common(const std::map < std::string, std::string > &opts,
 
     string oid(nargs[1]);
     string last_read = "";
-    int MAX_READ = 512;
     do {
       map<string, bufferlist> values;
-      ret = io_ctx.omap_get_vals(oid, last_read, MAX_READ, &values);
+      ret = io_ctx.omap_get_vals(oid, last_read, MAX_OMAP_BYTES_PER_REQUEST, &values);
       if (ret < 0) {
 	cerr << "error getting omap keys " << pool_name << "/" << oid << ": "
 	     << cpp_strerror(ret) << std::endl;
@@ -2899,7 +2903,7 @@ static int rados_tool_common(const std::map < std::string, std::string > &opts,
 	it->second.hexdump(cout);
 	cout << std::endl;
       }
-    } while (ret == MAX_READ);
+    } while (ret == MAX_OMAP_BYTES_PER_REQUEST);
     ret = 0;
   }
   else if (strcmp(nargs[0], "cp") == 0) {
@@ -3040,7 +3044,7 @@ static int rados_tool_common(const std::map < std::string, std::string > &opts,
       return 1;
     }
     io_ctx.set_namespace(all_nspaces);
-    io_ctx.set_osdmap_full_try();
+    io_ctx.set_pool_full_try();
     RadosBencher bencher(g_ceph_context, rados, io_ctx);
     ret = bencher.clean_up_slow("", concurrent_ios);
     if (ret >= 0) {
@@ -3343,18 +3347,22 @@ static int rados_tool_common(const std::map < std::string, std::string > &opts,
       return 1;
     }
 
-    set<string> out_keys;
-    ret = io_ctx.omap_get_keys(nargs[1], "", LONG_MAX, &out_keys);
-    if (ret < 0) {
-      cerr << "error getting omap key set " << pool_name << "/"
-	   << nargs[1] << ": "  << cpp_strerror(ret) << std::endl;
-      return 1;
-    }
+    string last_read;
+    bool more = true;
+    do {
+      set<string> out_keys;
+      ret = io_ctx.omap_get_keys2(nargs[1], last_read, MAX_OMAP_BYTES_PER_REQUEST, &out_keys, &more);
+      if (ret < 0) {
+        cerr << "error getting omap key set " << pool_name << "/"
+             << nargs[1] << ": "  << cpp_strerror(ret) << std::endl;
+        return 1;
+      }
 
-    for (set<string>::iterator iter = out_keys.begin();
-	 iter != out_keys.end(); ++iter) {
-      cout << *iter << std::endl;
-    }
+      for (auto &key : out_keys) {
+        cout << key << std::endl;
+        last_read = std::move(key);
+      }
+    } while (more);
   } else if (strcmp(nargs[0], "lock") == 0) {
     if (!pool_name) {
       usage(cerr);
@@ -3774,6 +3782,21 @@ static int rados_tool_common(const std::map < std::string, std::string > &opts,
 	   << cpp_strerror(ret) << std::endl;
       return 1;
     }
+  } else if (strcmp(nargs[0], "tier-flush") == 0) {
+    if (!pool_name || nargs.size() < 2) {
+      usage(cerr);
+      return 1;
+    }
+    string oid(nargs[1]);
+
+    ObjectWriteOperation op;
+    op.tier_flush();
+    ret = io_ctx.operate(oid, &op);
+    if (ret < 0) {
+      cerr << "error tier-flush " << pool_name << "/" << oid << " : " 
+	   << cpp_strerror(ret) << std::endl;
+      return 1;
+    }
   } else if (strcmp(nargs[0], "export") == 0) {
     // export [filename]
     if (!pool_name || nargs.size() > 2) {
@@ -3960,7 +3983,7 @@ int main(int argc, const char **argv)
       opts["max-objects"] = val;
     } else if (ceph_argparse_witharg(args, i, &val, "--offset", (char*)NULL)) {
       opts["offset"] = val;
-    } else if (ceph_argparse_witharg(args, i, &val, "-o", (char*)NULL)) {
+    } else if (ceph_argparse_witharg(args, i, &val, "-O", (char*)NULL)) {
       opts["object-size"] = val;
     } else if (ceph_argparse_witharg(args, i, &val, "-s", "--snap", (char*)NULL)) {
       opts["snap"] = val;

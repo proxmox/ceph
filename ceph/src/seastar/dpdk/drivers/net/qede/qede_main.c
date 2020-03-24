@@ -1,14 +1,13 @@
-/*
- * Copyright (c) 2016 QLogic Corporation.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright (c) 2016 - 2018 Cavium Inc.
  * All rights reserved.
- * www.qlogic.com
- *
- * See LICENSE.qede_pmd for copyright and licensing details.
+ * www.cavium.com
  */
 
 #include <limits.h>
 #include <time.h>
 #include <rte_alarm.h>
+#include <rte_string_fns.h>
 
 #include "qede_ethdev.h"
 
@@ -16,10 +15,10 @@
 #define QEDE_ALARM_TIMEOUT_US 100000
 
 /* Global variable to hold absolute path of fw file */
-char fw_file[PATH_MAX];
+char qede_fw_file[PATH_MAX];
 
-const char *QEDE_DEFAULT_FIRMWARE =
-	"/lib/firmware/qed/qed_init_values-8.18.9.0.bin";
+static const char * const QEDE_DEFAULT_FIRMWARE =
+	"/lib/firmware/qed/qed_init_values-8.37.7.0.bin";
 
 static void
 qed_update_pf_params(struct ecore_dev *edev, struct ecore_pf_params *params)
@@ -36,20 +35,19 @@ static void qed_init_pci(struct ecore_dev *edev, struct rte_pci_device *pci_dev)
 {
 	edev->regview = pci_dev->mem_resource[0].addr;
 	edev->doorbells = pci_dev->mem_resource[2].addr;
+	edev->db_size = pci_dev->mem_resource[2].len;
 }
 
 static int
 qed_probe(struct ecore_dev *edev, struct rte_pci_device *pci_dev,
-	  enum qed_protocol protocol, uint32_t dp_module,
-	  uint8_t dp_level, bool is_vf)
+	  uint32_t dp_module, uint8_t dp_level, bool is_vf)
 {
 	struct ecore_hw_prepare_params hw_prepare_params;
-	struct qede_dev *qdev = (struct qede_dev *)edev;
 	int rc;
 
 	ecore_init_struct(edev);
 	edev->drv_type = DRV_ID_DRV_TYPE_LINUX;
-	qdev->protocol = protocol;
+	/* Protocol type is always fixed to PROTOCOL_ETH */
 
 	if (is_vf)
 		edev->b_is_vf = true;
@@ -62,6 +60,8 @@ qed_probe(struct ecore_dev *edev, struct rte_pci_device *pci_dev,
 	hw_prepare_params.drv_resc_alloc = false;
 	hw_prepare_params.chk_reg_fifo = false;
 	hw_prepare_params.initiate_pf_flr = true;
+	hw_prepare_params.allow_mdump = false;
+	hw_prepare_params.b_en_pacing = false;
 	hw_prepare_params.epoch = (u32)time(NULL);
 	rc = ecore_hw_prepare(edev, &hw_prepare_params);
 	if (rc) {
@@ -126,18 +126,18 @@ static int qed_load_firmware_data(struct ecore_dev *edev)
 	const char *fw = RTE_LIBRTE_QEDE_FW;
 
 	if (strcmp(fw, "") == 0)
-		strcpy(fw_file, QEDE_DEFAULT_FIRMWARE);
+		strcpy(qede_fw_file, QEDE_DEFAULT_FIRMWARE);
 	else
-		strcpy(fw_file, fw);
+		strcpy(qede_fw_file, fw);
 
-	fd = open(fw_file, O_RDONLY);
+	fd = open(qede_fw_file, O_RDONLY);
 	if (fd < 0) {
-		DP_NOTICE(edev, false, "Can't open firmware file\n");
+		DP_ERR(edev, "Can't open firmware file\n");
 		return -ENOENT;
 	}
 
 	if (fstat(fd, &st) < 0) {
-		DP_NOTICE(edev, false, "Can't stat firmware file\n");
+		DP_ERR(edev, "Can't stat firmware file\n");
 		close(fd);
 		return -1;
 	}
@@ -145,20 +145,20 @@ static int qed_load_firmware_data(struct ecore_dev *edev)
 	edev->firmware = rte_zmalloc("qede_fw", st.st_size,
 				    RTE_CACHE_LINE_SIZE);
 	if (!edev->firmware) {
-		DP_NOTICE(edev, false, "Can't allocate memory for firmware\n");
+		DP_ERR(edev, "Can't allocate memory for firmware\n");
 		close(fd);
 		return -ENOMEM;
 	}
 
 	if (read(fd, edev->firmware, st.st_size) != st.st_size) {
-		DP_NOTICE(edev, false, "Can't read firmware data\n");
+		DP_ERR(edev, "Can't read firmware data\n");
 		close(fd);
 		return -1;
 	}
 
 	edev->fw_len = st.st_size;
 	if (edev->fw_len < 104) {
-		DP_NOTICE(edev, false, "Invalid fw size: %" PRIu64 "\n",
+		DP_ERR(edev, "Invalid fw size: %" PRIu64 "\n",
 			  edev->fw_len);
 		close(fd);
 		return -EINVAL;
@@ -222,10 +222,11 @@ static void qed_stop_iov_task(struct ecore_dev *edev)
 static int qed_slowpath_start(struct ecore_dev *edev,
 			      struct qed_slowpath_params *params)
 {
+	struct ecore_drv_load_params drv_load_params;
+	struct ecore_hw_init_params hw_init_params;
+	struct ecore_mcp_drv_version drv_version;
 	const uint8_t *data = NULL;
 	struct ecore_hwfn *hwfn;
-	struct ecore_mcp_drv_version drv_version;
-	struct ecore_hw_init_params hw_init_params;
 	struct ecore_ptt *p_ptt;
 	int rc;
 
@@ -233,7 +234,8 @@ static int qed_slowpath_start(struct ecore_dev *edev,
 #ifdef CONFIG_ECORE_BINARY_FW
 		rc = qed_load_firmware_data(edev);
 		if (rc) {
-			DP_ERR(edev, "Failed to find fw file %s\n", fw_file);
+			DP_ERR(edev, "Failed to find fw file %s\n",
+				qede_fw_file);
 			goto err;
 		}
 #endif
@@ -262,8 +264,7 @@ static int qed_slowpath_start(struct ecore_dev *edev,
 		/* Allocate stream for unzipping */
 		rc = qed_alloc_stream_mem(edev);
 		if (rc) {
-			DP_NOTICE(edev, true,
-			"Failed to allocate stream memory\n");
+			DP_ERR(edev, "Failed to allocate stream memory\n");
 			goto err1;
 		}
 	}
@@ -279,11 +280,17 @@ static int qed_slowpath_start(struct ecore_dev *edev,
 	/* Start the slowpath */
 	memset(&hw_init_params, 0, sizeof(hw_init_params));
 	hw_init_params.b_hw_start = true;
-	hw_init_params.int_mode = ECORE_INT_MODE_MSIX;
+	hw_init_params.int_mode = params->int_mode;
 	hw_init_params.allow_npar_tx_switch = true;
 	hw_init_params.bin_fw_data = data;
-	hw_init_params.mfw_timeout_val = ECORE_LOAD_REQ_LOCK_TO_DEFAULT;
-	hw_init_params.avoid_eng_reset = false;
+
+	memset(&drv_load_params, 0, sizeof(drv_load_params));
+	drv_load_params.mfw_timeout_val = ECORE_LOAD_REQ_LOCK_TO_DEFAULT;
+	drv_load_params.avoid_eng_reset = false;
+	drv_load_params.override_force_load = ECORE_OVERRIDE_FORCE_LOAD_ALWAYS;
+	hw_init_params.avoid_eng_affin = false;
+	hw_init_params.p_drv_load_params = &drv_load_params;
+
 	rc = ecore_hw_init(edev, &hw_init_params);
 	if (rc) {
 		DP_ERR(edev, "ecore_hw_init failed\n");
@@ -297,14 +304,12 @@ static int qed_slowpath_start(struct ecore_dev *edev,
 		drv_version.version = (params->drv_major << 24) |
 		    (params->drv_minor << 16) |
 		    (params->drv_rev << 8) | (params->drv_eng);
-		/* TBD: strlcpy() */
-		strncpy((char *)drv_version.name, (const char *)params->name,
-			MCP_DRV_VER_STR_SIZE - 4);
+		strlcpy((char *)drv_version.name, (const char *)params->name,
+			sizeof(drv_version.name));
 		rc = ecore_mcp_send_drv_version(hwfn, hwfn->p_main_ptt,
 						&drv_version);
 		if (rc) {
-			DP_NOTICE(edev, true,
-				  "Failed sending drv version command\n");
+			DP_ERR(edev, "Failed sending drv version command\n");
 			goto err3;
 		}
 	}
@@ -338,6 +343,7 @@ err:
 static int
 qed_fill_dev_info(struct ecore_dev *edev, struct qed_dev_info *dev_info)
 {
+	struct ecore_hwfn *p_hwfn = ECORE_LEADING_HWFN(edev);
 	struct ecore_ptt *ptt = NULL;
 	struct ecore_tunnel_info *tun = &edev->tunnel;
 
@@ -360,6 +366,7 @@ qed_fill_dev_info(struct ecore_dev *edev, struct qed_dev_info *dev_info)
 	dev_info->num_hwfns = edev->num_hwfns;
 	dev_info->is_mf_default = IS_MF_DEFAULT(&edev->hwfns[0]);
 	dev_info->mtu = ECORE_LEADING_HWFN(edev)->hw_info.mtu;
+	dev_info->dev_type = edev->type;
 
 	rte_memcpy(&dev_info->hw_mac, &edev->hwfns[0].hw_info.hw_mac_addr,
 	       ETHER_ADDR_LEN);
@@ -370,8 +377,13 @@ qed_fill_dev_info(struct ecore_dev *edev, struct qed_dev_info *dev_info)
 	dev_info->fw_eng = FW_ENGINEERING_VERSION;
 
 	if (IS_PF(edev)) {
-		dev_info->mf_mode = edev->mf_mode;
+		dev_info->b_inter_pf_switch =
+			OSAL_TEST_BIT(ECORE_MF_INTER_PF_SWITCH, &edev->mf_bits);
+		if (!OSAL_TEST_BIT(ECORE_MF_DISABLE_ARFS, &edev->mf_bits))
+			dev_info->b_arfs_capable = true;
 		dev_info->tx_switching = false;
+
+		dev_info->smart_an = ecore_mcp_is_smart_an_supported(p_hwfn);
 
 		ptt = ecore_ptt_acquire(ECORE_LEADING_HWFN(edev));
 		if (ptt) {
@@ -415,7 +427,7 @@ qed_fill_eth_dev_info(struct ecore_dev *edev, struct qed_dev_eth_info *info)
 			info->num_queues +=
 			FEAT_NUM(&edev->hwfns[i], ECORE_PF_L2_QUE);
 
-		if (edev->p_iov_info)
+		if (IS_ECORE_SRIOV(edev))
 			max_vf_vlan_filters = edev->p_iov_info->total_vfs *
 					      ECORE_ETH_VF_NUM_VLAN_FILTERS;
 		info->num_vlan_filters = RESC_NUM(&edev->hwfns[0], ECORE_VLAN) -
@@ -426,7 +438,7 @@ qed_fill_eth_dev_info(struct ecore_dev *edev, struct qed_dev_eth_info *info)
 	} else {
 		ecore_vf_get_num_rxqs(ECORE_LEADING_HWFN(edev),
 				      &info->num_queues);
-		if (edev->num_hwfns > 1) {
+		if (ECORE_IS_CMT(edev)) {
 			ecore_vf_get_num_rxqs(&edev->hwfns[1], &queues);
 			info->num_queues += queues;
 		}
@@ -460,22 +472,13 @@ static void qed_set_name(struct ecore_dev *edev, char name[NAME_SIZE])
 
 static uint32_t
 qed_sb_init(struct ecore_dev *edev, struct ecore_sb_info *sb_info,
-	    void *sb_virt_addr, dma_addr_t sb_phy_addr,
-	    uint16_t sb_id, enum qed_sb_type type)
+	    void *sb_virt_addr, dma_addr_t sb_phy_addr, uint16_t sb_id)
 {
 	struct ecore_hwfn *p_hwfn;
 	int hwfn_index;
 	uint16_t rel_sb_id;
-	uint8_t n_hwfns;
+	uint8_t n_hwfns = edev->num_hwfns;
 	uint32_t rc;
-
-	/* RoCE uses single engine and CMT uses two engines. When using both
-	 * we force only a single engine. Storage uses only engine 0 too.
-	 */
-	if (type == QED_SB_TYPE_L2_QUEUE)
-		n_hwfns = edev->num_hwfns;
-	else
-		n_hwfns = 1;
 
 	hwfn_index = sb_id % n_hwfns;
 	p_hwfn = &edev->hwfns[hwfn_index];
@@ -491,6 +494,7 @@ qed_sb_init(struct ecore_dev *edev, struct ecore_sb_info *sb_info,
 }
 
 static void qed_fill_link(struct ecore_hwfn *hwfn,
+			  __rte_unused struct ecore_ptt *ptt,
 			  struct qed_link_output *if_link)
 {
 	struct ecore_mcp_link_params params;
@@ -541,17 +545,42 @@ static void qed_fill_link(struct ecore_hwfn *hwfn,
 
 	if (params.pause.forced_tx)
 		if_link->pause_config |= QED_LINK_PAUSE_TX_ENABLE;
+
+	if (link_caps.default_eee == ECORE_MCP_EEE_UNSUPPORTED) {
+		if_link->eee_supported = false;
+	} else {
+		if_link->eee_supported = true;
+		if_link->eee_active = link.eee_active;
+		if_link->sup_caps = link_caps.eee_speed_caps;
+		/* MFW clears adv_caps on eee disable; use configured value */
+		if_link->eee.adv_caps = link.eee_adv_caps ? link.eee_adv_caps :
+					params.eee.adv_caps;
+		if_link->eee.lp_adv_caps = link.eee_lp_adv_caps;
+		if_link->eee.enable = params.eee.enable;
+		if_link->eee.tx_lpi_enable = params.eee.tx_lpi_enable;
+		if_link->eee.tx_lpi_timer = params.eee.tx_lpi_timer;
+	}
 }
 
 static void
 qed_get_current_link(struct ecore_dev *edev, struct qed_link_output *if_link)
 {
-	qed_fill_link(&edev->hwfns[0], if_link);
+	struct ecore_hwfn *hwfn;
+	struct ecore_ptt *ptt;
 
-#ifdef CONFIG_QED_SRIOV
-	for_each_hwfn(cdev, i)
-		qed_inform_vf_link_state(&cdev->hwfns[i]);
-#endif
+	hwfn = &edev->hwfns[0];
+	if (IS_PF(edev)) {
+		ptt = ecore_ptt_acquire(hwfn);
+		if (!ptt)
+			DP_NOTICE(hwfn, true, "Failed to fill link; No PTT\n");
+
+			qed_fill_link(hwfn, ptt, if_link);
+
+		if (ptt)
+			ecore_ptt_release(hwfn, ptt);
+	} else {
+		qed_fill_link(hwfn, NULL, if_link);
+	}
 }
 
 static int qed_set_link(struct ecore_dev *edev, struct qed_link_params *params)
@@ -590,6 +619,10 @@ static int qed_set_link(struct ecore_dev *edev, struct qed_link_params *params)
 			link_params->pause.forced_tx = false;
 	}
 
+	if (params->override_flags & QED_LINK_OVERRIDE_EEE_CONFIG)
+		memcpy(&link_params->eee, &params->eee,
+		       sizeof(link_params->eee));
+
 	rc = ecore_mcp_set_link(hwfn, ptt, params->link_up);
 
 	ecore_ptt_release(hwfn, ptt);
@@ -599,9 +632,13 @@ static int qed_set_link(struct ecore_dev *edev, struct qed_link_params *params)
 
 void qed_link_update(struct ecore_hwfn *hwfn)
 {
-	struct qed_link_output if_link;
+	struct ecore_dev *edev = hwfn->p_dev;
+	struct qede_dev *qdev = (struct qede_dev *)edev;
+	struct rte_eth_dev *dev = (struct rte_eth_dev *)qdev->ethdev;
 
-	qed_fill_link(hwfn, &if_link);
+	if (!qede_link_update(dev, 0))
+		_rte_eth_dev_callback_process(dev,
+					      RTE_ETH_EVENT_INTR_LSC, NULL);
 }
 
 static int qed_drain(struct ecore_dev *edev)
@@ -617,7 +654,7 @@ static int qed_drain(struct ecore_dev *edev)
 		hwfn = &edev->hwfns[i];
 		ptt = ecore_ptt_acquire(hwfn);
 		if (!ptt) {
-			DP_NOTICE(hwfn, true, "Failed to drain NIG; No PTT\n");
+			DP_ERR(hwfn, "Failed to drain NIG; No PTT\n");
 			return -EBUSY;
 		}
 		rc = ecore_mcp_drain(hwfn, ptt);
@@ -710,7 +747,7 @@ static int qed_get_sb_info(struct ecore_dev *edev, struct ecore_sb_info *sb,
 
 	ptt = ecore_ptt_acquire(hwfn);
 	if (!ptt) {
-		DP_NOTICE(hwfn, true, "Can't acquire PTT\n");
+		DP_ERR(hwfn, "Can't acquire PTT\n");
 		return -EAGAIN;
 	}
 
@@ -737,3 +774,13 @@ const struct qed_common_ops qed_common_ops_pass = {
 	INIT_STRUCT_FIELD(remove, &qed_remove),
 	INIT_STRUCT_FIELD(send_drv_state, &qed_send_drv_state),
 };
+
+const struct qed_eth_ops qed_eth_ops_pass = {
+	INIT_STRUCT_FIELD(common, &qed_common_ops_pass),
+	INIT_STRUCT_FIELD(fill_dev_info, &qed_fill_eth_dev_info),
+};
+
+const struct qed_eth_ops *qed_get_eth_ops(void)
+{
+	return &qed_eth_ops_pass;
+}

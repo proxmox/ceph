@@ -20,11 +20,14 @@ from rgw_multi.zone_cloud import CloudZone as CloudZone
 from rgw_multi.zone_cloud import CloudZoneConfig as CloudZoneConfig
 from rgw_multi.zone_ps import PSZone as PSZone
 from rgw_multi.zone_ps import PSZoneConfig as PSZoneConfig
+from rgw_multi.zone_az import AZone as AZone
+from rgw_multi.zone_az import AZoneConfig as AZoneConfig
 
 # make tests from rgw_multi.tests available to nose
 from rgw_multi.tests import *
 from rgw_multi.tests_es import *
 from rgw_multi.tests_ps import *
+from rgw_multi.tests_az import *
 
 mstart_path = os.getenv('MSTART_PATH')
 if mstart_path is None:
@@ -58,10 +61,10 @@ class Cluster(multisite.Cluster):
         cmd = [test_path + 'test-rgw-call.sh', 'call_rgw_admin', self.cluster_id]
         if args:
             cmd += args
-        cmd += ['--debug-rgw', str(kwargs.pop('debug_rgw', 0))]
-        cmd += ['--debug-ms', str(kwargs.pop('debug_ms', 0))]
+        cmd += ['--debug-rgw=' + str(kwargs.pop('debug_rgw', 0))]
+        cmd += ['--debug-ms=' + str(kwargs.pop('debug_ms', 0))]
         if kwargs.pop('read_only', False):
-            cmd += ['--rgw-cache-enabled', 'false']
+            cmd += ['--rgw-cache-enabled=false']
         return bash(cmd, **kwargs)
 
     def start(self):
@@ -94,7 +97,7 @@ class Gateway(multisite.Gateway):
         # e.g. RGW_FRONTEND=civetweb
         # to run test under valgrind memcheck, set RGW_VALGRIND to 'yes'
         # e.g. RGW_VALGRIND=yes
-        cmd = [mstart_path + 'mrgw.sh', self.cluster.cluster_id, str(self.port)]
+        cmd = [mstart_path + 'mrgw.sh', self.cluster.cluster_id, str(self.port), str(self.ssl_port)]
         if self.id:
             cmd += ['-i', self.id]
         cmd += ['--debug-rgw=20', '--debug-ms=1']
@@ -180,6 +183,7 @@ def init(parse_args):
                                          'checkpoint_retries': 60,
                                          'checkpoint_delay': 5,
                                          'reconfigure_delay': 5,
+                                         'use_ssl': 'false',
                                          })
     try:
         path = os.environ['RGW_MULTI_TEST_CONF']
@@ -210,6 +214,7 @@ def init(parse_args):
     parser.add_argument('--checkpoint-delay', type=int, default=cfg.getint(section, 'checkpoint_delay'))
     parser.add_argument('--reconfigure-delay', type=int, default=cfg.getint(section, 'reconfigure_delay'))
     parser.add_argument('--num-ps-zones', type=int, default=cfg.getint(section, 'num_ps_zones'))
+    parser.add_argument('--use-ssl', type=bool, default=cfg.getboolean(section, 'use_ssl'))
 
 
     es_cfg = []
@@ -224,6 +229,9 @@ def init(parse_args):
             cloud_cfg.append(CloudZoneConfig(cfg, s))
         elif s.startswith('pubsub'):
             ps_cfg.append(PSZoneConfig(cfg, s))
+        elif s.startswith('archive'):
+            az_cfg.append(AZoneConfig(cfg, s))
+
 
     argv = []
 
@@ -260,10 +268,32 @@ def init(parse_args):
     num_es_zones = len(es_cfg)
     num_cloud_zones = len(cloud_cfg)
     num_ps_zones_from_conf = len(ps_cfg)
-    num_ps_zones = args.num_ps_zones if num_ps_zones_from_conf == 0 else num_ps_zones_from_conf 
-    print 'num_ps_zones = ' + str(num_ps_zones)
+    num_az_zones = cfg.getint(section, 'num_az_zones')
 
-    num_zones = args.num_zones + num_es_zones + num_cloud_zones + args.num_ps_zones
+    num_ps_zones = args.num_ps_zones if num_ps_zones_from_conf == 0 else num_ps_zones_from_conf 
+
+    num_zones = args.num_zones + num_es_zones + num_cloud_zones + num_ps_zones + num_az_zones
+
+    use_ssl = cfg.getboolean(section, 'use_ssl')
+
+    if use_ssl and bootstrap:
+        cmd = ['openssl', 'req', 
+                '-x509', 
+                '-newkey', 'rsa:4096', 
+                '-sha256', 
+                '-nodes', 
+                '-keyout', 'key.pem', 
+                '-out', 'cert.pem', 
+                '-subj', '/CN=localhost', 
+                '-days', '3650']
+        bash(cmd)
+        # append key to cert
+        fkey = open('./key.pem', 'r')
+        if fkey.mode == 'r':
+            fcert = open('./cert.pem', 'a')
+            fcert.write(fkey.read())
+            fcert.close()
+        fkey.close()
 
     for zg in range(0, args.num_zonegroups):
         zonegroup = multisite.ZoneGroup(zonegroup_name(zg), period)
@@ -303,7 +333,8 @@ def init(parse_args):
 
             es_zone = (z >= args.num_zones and z < args.num_zones + num_es_zones)
             cloud_zone = (z >= args.num_zones + num_es_zones and z < args.num_zones + num_es_zones + num_cloud_zones)
-            ps_zone = (z >= args.num_zones + num_es_zones + num_cloud_zones)
+            ps_zone = (z >= args.num_zones + num_es_zones + num_cloud_zones and z < args.num_zones + num_es_zones + num_cloud_zones + num_ps_zones)
+            az_zone = (z >= args.num_zones + num_es_zones + num_cloud_zones + num_ps_zones)
 
             # create the zone in its zonegroup
             zone = multisite.Zone(zone_name(zg, z), zonegroup, cluster)
@@ -323,6 +354,9 @@ def init(parse_args):
                     pscfg = ps_cfg[zone_index]
                     zone = PSZone(zone_name(zg, z), zonegroup, cluster,
                                   full_sync=pscfg.full_sync, retention_days=pscfg.retention_days)
+            elif az_zone:
+                zone_index = z - args.num_zones - num_es_zones - num_cloud_zones - num_ps_zones
+                zone = AZone(zone_name(zg, z), zonegroup, cluster)
             else:
                 zone = RadosZone(zone_name(zg, z), zonegroup, cluster)
 
@@ -350,11 +384,13 @@ def init(parse_args):
             if bootstrap:
                 period.update(zone, commit=True)
 
+            ssl_port_offset = 1000
             # start the gateways
             for g in range(0, args.gateways_per_zone):
                 port = gateway_port(zg, g + z * args.gateways_per_zone)
                 client_id = gateway_name(zg, z, g)
-                gateway = Gateway(client_id, 'localhost', port, cluster, zone)
+                gateway = Gateway(client_id, 'localhost', port, cluster, zone, 
+                        ssl_port = port+ssl_port_offset if use_ssl else 0)
                 if bootstrap:
                     gateway.start()
                 zone.gateways.append(gateway)

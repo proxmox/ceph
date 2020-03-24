@@ -36,7 +36,7 @@ export class SummaryService {
   }
 
   refresh() {
-    if (this.router.url !== '/login') {
+    if (!_.includes(['/login', '/login-change-password'], this.router.url)) {
       this.http.get('api/summary').subscribe((data) => {
         this.summaryDataSource.next(data);
       });
@@ -70,7 +70,7 @@ export class SummaryService {
     }
 
     if (_.isArray(current.executing_tasks)) {
-      const exists = current.executing_tasks.find((element) => {
+      const exists = current.executing_tasks.find((element: any) => {
         return element.name === task.name && _.isEqual(element.metadata, task.metadata);
       });
       if (!exists) {

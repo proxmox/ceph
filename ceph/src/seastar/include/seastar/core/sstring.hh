@@ -185,7 +185,13 @@ public:
         }
     }
     basic_sstring(basic_sstring&& x) noexcept {
+#pragma GCC diagnostic push
+        // Is a small-string construction is followed by this move constructor, then the trailing bytes
+        // of x.u are not initialized, but copied. gcc complains, but it is both legitimate to copy
+        // these bytes, and more efficient than a variable-size copy
+#pragma GCC diagnostic ignored "-Wuninitialized"
         u = x.u;
+#pragma GCC diagnostic pop
         x.u.internal.size = 0;
         x.u.internal.str[0] = '\0';
     }
@@ -272,6 +278,7 @@ public:
     operator std::basic_string<char_type>() const {
         return { str(), size() };
     }
+
     size_t size() const noexcept {
         return is_internal() ? u.internal.size : u.external.size;
     }
@@ -361,10 +368,16 @@ public:
         } else if (n < size()) {
             if (is_internal()) {
                 u.internal.size = n;
+                if (NulTerminate) {
+                    u.internal.str[n] = '\0';
+                }
             } else if (n + padding() <= sizeof(u.internal.str)) {
                 *this = basic_sstring(u.external.str, n);
             } else {
                 u.external.size = n;
+                if (NulTerminate) {
+                    u.external.str[n] = '\0';
+                }
             }
         }
     }
@@ -644,7 +657,7 @@ size_type str_len(const basic_sstring<char_type, size_type, max_size, NulTermina
 
 template <typename First, typename Second, typename... Tail>
 static inline
-const size_t str_len(const First& first, const Second& second, const Tail&... tail) {
+size_t str_len(const First& first, const Second& second, const Tail&... tail) {
     return str_len(first) + str_len(second, tail...);
 }
 

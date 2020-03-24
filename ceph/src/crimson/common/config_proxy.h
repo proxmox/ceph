@@ -1,4 +1,5 @@
 // -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
+// vim: ts=8 sw=2 smarttab
 
 #pragma once
 
@@ -9,7 +10,11 @@
 #include "common/config_obs_mgr.h"
 #include "common/errno.h"
 
-namespace ceph::common {
+namespace ceph {
+class Formatter;
+}
+
+namespace crimson::common {
 
 // a facade for managing config. each shard has its own copy of ConfigProxy.
 //
@@ -67,10 +72,9 @@ class ConfigProxy : public seastar::peering_sharded_service<ConfigProxy>
 
             ObserverMgr<ConfigObserver>::rev_obs_map rev_obs;
             proxy.obs_mgr.for_each_change(proxy.values->changed, proxy,
-                                          [&rev_obs](md_config_obs_t *obs,
-                                                     const std::string &key) {
-                                            rev_obs[obs].insert(key);
-                                          }, nullptr);
+              [&rev_obs](ConfigObserver *obs, const std::string& key) {
+                rev_obs[obs].insert(key);
+              }, nullptr);
             for (auto& obs_keys : rev_obs) {
               obs_keys.first->handle_conf_change(proxy, obs_keys.second);
             }
@@ -84,6 +88,9 @@ public:
   ConfigProxy(const EntityName& name, std::string_view cluster);
   const ConfigValues* operator->() const noexcept {
     return values.get();
+  }
+  const ConfigValues get_config_values() {
+     return *values.get();
   }
   ConfigValues* operator->() noexcept {
     return values.get();
@@ -141,9 +148,26 @@ public:
     return get_config().get_osd_pool_default_min_size(*values, size);
   }
 
-  seastar::future<> set_mon_vals(const std::map<std::string,std::string>& kv) {
+  seastar::future<>
+  set_mon_vals(const std::map<std::string,std::string,std::less<>>& kv) {
     return do_change([kv, this](ConfigValues& values) {
       get_config().set_mon_vals(nullptr, values, obs_mgr, kv, nullptr);
+    });
+  }
+
+  void show_config(ceph::Formatter* f) const;
+
+  seastar::future<> parse_argv(std::vector<const char*>& argv) {
+    // we could pass whatever is unparsed to seastar, but seastar::app_template
+    // is used for driving the seastar application, and
+    // crimson::common::ConfigProxy is not available until seastar engine is up
+    // and running, so we have to feed the command line args to app_template
+    // first, then pass them to ConfigProxy.
+    return do_change([&argv, this](ConfigValues& values) {
+      get_config().parse_argv(values,
+			      obs_mgr,
+			      argv,
+			      CONF_CMDLINE);
     });
   }
 

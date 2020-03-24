@@ -1,0 +1,14 @@
+// Angular2-Tree Component
+::ng-deep tree-root {
+  .tree-children {
+    overflow: inherit;
+  }
+}
+
+.quota-origin {
+  &:hover {
+    color: #212121;
+  }
+  cursor: pointer;
+  color: #2b99a8;
+}

@@ -46,6 +46,12 @@ if [ "$cov_avail" = "yes" ]; then
 	# zero out coverage data
 	$LCOV -q -c -i -d . -t "Baseline" -o $UT_COVERAGE/ut_cov_base.info
 fi
+
+# workaround for valgrind v3.13 on arm64
+if [ $(uname -m) = "aarch64" ]; then
+	export LD_HWCAP_MASK=1
+fi
+
 $valgrind $testdir/include/spdk/histogram_data.h/histogram_ut
 
 $valgrind $testdir/lib/bdev/bdev.c/bdev_ut
@@ -57,6 +63,10 @@ $valgrind $testdir/lib/bdev/vbdev_lvol.c/vbdev_lvol_ut
 
 if grep -q '#define SPDK_CONFIG_CRYPTO 1' $rootdir/include/spdk/config.h; then
 	$valgrind $testdir/lib/bdev/crypto.c/crypto_ut
+fi
+
+if grep -q '#define SPDK_CONFIG_REDUCE 1' $rootdir/include/spdk/config.h; then
+        $valgrind $testdir/lib/bdev/compress.c/compress_ut
 fi
 
 if grep -q '#define SPDK_CONFIG_PMDK 1' $rootdir/include/spdk/config.h; then
@@ -87,7 +97,7 @@ $valgrind $testdir/lib/nvme/nvme_ns_ocssd_cmd.c/nvme_ns_ocssd_cmd_ut
 $valgrind $testdir/lib/nvme/nvme_qpair.c/nvme_qpair_ut
 $valgrind $testdir/lib/nvme/nvme_pcie.c/nvme_pcie_ut
 $valgrind $testdir/lib/nvme/nvme_quirks.c/nvme_quirks_ut
-if grep -q '#define SPDK_CONFIG_RDMA 1' $rootdir/config.h; then
+if grep -q '#define SPDK_CONFIG_RDMA 1' $rootdir/include/spdk/config.h; then
 	$valgrind $testdir/lib/nvme/nvme_rdma.c/nvme_rdma_ut
 fi
 
@@ -104,15 +114,21 @@ $valgrind $testdir/lib/log/log.c/log_ut
 $valgrind $testdir/lib/nvmf/ctrlr.c/ctrlr_ut
 $valgrind $testdir/lib/nvmf/ctrlr_bdev.c/ctrlr_bdev_ut
 $valgrind $testdir/lib/nvmf/ctrlr_discovery.c/ctrlr_discovery_ut
-$valgrind $testdir/lib/nvmf/request.c/request_ut
+if grep -q '#define SPDK_CONFIG_RDMA 1' $rootdir/include/spdk/config.h; then
+	$valgrind $testdir/lib/nvmf/rdma.c/rdma_ut
+fi
 $valgrind $testdir/lib/nvmf/subsystem.c/subsystem_ut
+$valgrind $testdir/lib/nvmf/tcp.c/tcp_ut
 
 $valgrind $testdir/lib/scsi/dev.c/dev_ut
 $valgrind $testdir/lib/scsi/lun.c/lun_ut
 $valgrind $testdir/lib/scsi/scsi.c/scsi_ut
 $valgrind $testdir/lib/scsi/scsi_bdev.c/scsi_bdev_ut
+$valgrind $testdir/lib/scsi/scsi_pr.c/scsi_pr_ut
 
 $valgrind $testdir/lib/lvol/lvol.c/lvol_ut
+
+$valgrind $testdir/lib/notify/notify.c/notify_ut
 
 $valgrind $testdir/lib/iscsi/conn.c/conn_ut
 $valgrind $testdir/lib/iscsi/param.c/param_ut
@@ -121,17 +137,31 @@ $valgrind $testdir/lib/iscsi/iscsi.c/iscsi_ut
 $valgrind $testdir/lib/iscsi/init_grp.c/init_grp_ut $testdir/lib/iscsi/init_grp.c/init_grp.conf
 $valgrind $testdir/lib/iscsi/portal_grp.c/portal_grp_ut $testdir/lib/iscsi/portal_grp.c/portal_grp.conf
 
+if grep -q '#define SPDK_CONFIG_REDUCE 1' $rootdir/config.h; then
+	$valgrind $testdir/lib/reduce/reduce.c/reduce_ut
+fi
+
 $valgrind $testdir/lib/thread/thread.c/thread_ut
 
 $valgrind $testdir/lib/util/base64.c/base64_ut
 $valgrind $testdir/lib/util/bit_array.c/bit_array_ut
+$valgrind $testdir/lib/util/cpuset.c/cpuset_ut
 $valgrind $testdir/lib/util/crc16.c/crc16_ut
 $valgrind $testdir/lib/util/crc32_ieee.c/crc32_ieee_ut
 $valgrind $testdir/lib/util/crc32c.c/crc32c_ut
 $valgrind $testdir/lib/util/string.c/string_ut
+$valgrind $testdir/lib/util/dif.c/dif_ut
 
 if [ $(uname -s) = Linux ]; then
 $valgrind $testdir/lib/vhost/vhost.c/vhost_ut
+
+$valgrind $testdir/lib/ftl/ftl_rwb.c/ftl_rwb_ut
+$valgrind $testdir/lib/ftl/ftl_ppa/ftl_ppa_ut
+$valgrind $testdir/lib/ftl/ftl_band.c/ftl_band_ut
+$valgrind $testdir/lib/ftl/ftl_reloc.c/ftl_reloc_ut
+$valgrind $testdir/lib/ftl/ftl_wptr/ftl_wptr_ut
+$valgrind $testdir/lib/ftl/ftl_md/ftl_md_ut
+$valgrind $testdir/lib/ftl/ftl_io.c/ftl_io_ut
 fi
 
 # local unit test coverage

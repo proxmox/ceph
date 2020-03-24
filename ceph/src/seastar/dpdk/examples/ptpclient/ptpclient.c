@@ -1,34 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2015 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2015 Intel Corporation
  */
 
 /*
@@ -49,8 +20,8 @@
 #include <sys/time.h>
 #include <getopt.h>
 
-#define RX_RING_SIZE 128
-#define TX_RING_SIZE 512
+#define RX_RING_SIZE 1024
+#define TX_RING_SIZE 1024
 
 #define NUM_MBUFS            8191
 #define MBUF_CACHE_SIZE       250
@@ -77,7 +48,9 @@ uint8_t ptp_enabled_port_nb;
 static uint8_t ptp_enabled_ports[RTE_MAX_ETHPORTS];
 
 static const struct rte_eth_conf port_conf_default = {
-	.rxmode = { .max_rx_pkt_len = ETHER_MAX_LEN }
+	.rxmode = {
+		.max_rx_pkt_len = ETHER_MAX_LEN,
+	},
 };
 
 static const struct ether_addr ether_multicast = {
@@ -158,12 +131,12 @@ struct ptpv2_data_slave_ordinary {
 	struct clock_id master_clock_id;
 	struct timeval new_adj;
 	int64_t delta;
-	uint8_t portid;
+	uint16_t portid;
 	uint16_t seqID_SYNC;
 	uint16_t seqID_FOLLOWUP;
 	uint8_t ptpset;
 	uint8_t kernel_time_set;
-	uint8_t current_ptp_port;
+	uint16_t current_ptp_port;
 };
 
 static struct ptpv2_data_slave_ordinary ptp_data;
@@ -202,7 +175,7 @@ ns_to_timeval(int64_t nsec)
  * coming from the mbuf_pool passed as a parameter.
  */
 static inline int
-port_init(uint8_t port, struct rte_mempool *mbuf_pool)
+port_init(uint16_t port, struct rte_mempool *mbuf_pool)
 {
 	struct rte_eth_dev_info dev_info;
 	struct rte_eth_conf port_conf = port_conf_default;
@@ -210,18 +183,31 @@ port_init(uint8_t port, struct rte_mempool *mbuf_pool)
 	const uint16_t tx_rings = 1;
 	int retval;
 	uint16_t q;
+	uint16_t nb_rxd = RX_RING_SIZE;
+	uint16_t nb_txd = TX_RING_SIZE;
 
-	if (port >= rte_eth_dev_count())
+	if (!rte_eth_dev_is_valid_port(port))
 		return -1;
+
+	rte_eth_dev_info_get(port, &dev_info);
+	if (dev_info.tx_offload_capa & DEV_TX_OFFLOAD_MBUF_FAST_FREE)
+		port_conf.txmode.offloads |=
+			DEV_TX_OFFLOAD_MBUF_FAST_FREE;
+	/* Force full Tx path in the driver, required for IEEE1588 */
+	port_conf.txmode.offloads |= DEV_TX_OFFLOAD_MULTI_SEGS;
 
 	/* Configure the Ethernet device. */
 	retval = rte_eth_dev_configure(port, rx_rings, tx_rings, &port_conf);
 	if (retval != 0)
 		return retval;
 
+	retval = rte_eth_dev_adjust_nb_rx_tx_desc(port, &nb_rxd, &nb_txd);
+	if (retval != 0)
+		return retval;
+
 	/* Allocate and set up 1 RX queue per Ethernet port. */
 	for (q = 0; q < rx_rings; q++) {
-		retval = rte_eth_rx_queue_setup(port, q, RX_RING_SIZE,
+		retval = rte_eth_rx_queue_setup(port, q, nb_rxd,
 				rte_eth_dev_socket_id(port), NULL, mbuf_pool);
 
 		if (retval < 0)
@@ -230,14 +216,12 @@ port_init(uint8_t port, struct rte_mempool *mbuf_pool)
 
 	/* Allocate and set up 1 TX queue per Ethernet port. */
 	for (q = 0; q < tx_rings; q++) {
-		/* Setup txq_flags */
 		struct rte_eth_txconf *txconf;
 
-		rte_eth_dev_info_get(q, &dev_info);
 		txconf = &dev_info.default_txconf;
-		txconf->txq_flags = 0;
+		txconf->offloads = port_conf.txmode.offloads;
 
-		retval = rte_eth_tx_queue_setup(port, q, TX_RING_SIZE,
+		retval = rte_eth_tx_queue_setup(port, q, nb_txd,
 				rte_eth_dev_socket_id(port), txconf);
 		if (retval < 0)
 			return retval;
@@ -549,7 +533,7 @@ parse_drsp(struct ptpv2_data_slave_ordinary *ptp_data)
  * functionality.
  */
 static void
-parse_ptp_frames(uint8_t portid, struct rte_mbuf *m) {
+parse_ptp_frames(uint16_t portid, struct rte_mbuf *m) {
 	struct ptp_header *ptp_hdr;
 	struct ether_hdr *eth_hdr;
 	uint16_t eth_type;
@@ -587,7 +571,7 @@ parse_ptp_frames(uint8_t portid, struct rte_mbuf *m) {
 static __attribute__((noreturn)) void
 lcore_main(void)
 {
-	uint8_t portid;
+	uint16_t portid;
 	unsigned nb_rx;
 	struct rte_mbuf *m;
 
@@ -722,7 +706,7 @@ main(int argc, char *argv[])
 {
 	unsigned nb_ports;
 
-	uint8_t portid;
+	uint16_t portid;
 
 	/* Initialize the Environment Abstraction Layer (EAL). */
 	int ret = rte_eal_init(argc, argv);
@@ -740,7 +724,7 @@ main(int argc, char *argv[])
 		rte_exit(EXIT_FAILURE, "Error with PTP initialization\n");
 
 	/* Check that there is an even number of ports to send/receive on. */
-	nb_ports = rte_eth_dev_count();
+	nb_ports = rte_eth_dev_count_avail();
 
 	/* Creates a new mempool in memory to hold the mbufs. */
 	mbuf_pool = rte_pktmbuf_pool_create("MBUF_POOL", NUM_MBUFS * nb_ports,
@@ -750,7 +734,7 @@ main(int argc, char *argv[])
 		rte_exit(EXIT_FAILURE, "Cannot create mbuf pool\n");
 
 	/* Initialize all ports. */
-	for (portid = 0; portid < nb_ports; portid++) {
+	RTE_ETH_FOREACH_DEV(portid) {
 		if ((ptp_enabled_port_mask & (1 << portid)) != 0) {
 			if (port_init(portid, mbuf_pool) == 0) {
 				ptp_enabled_ports[ptp_enabled_port_nb] = portid;

@@ -478,6 +478,7 @@ function run_mon() {
         --run-dir=$dir \
         --pid-file=$dir/\$name.pid \
 	--mon-allow-pool-delete \
+	--osd-pool-default-pg-autoscale-mode off \
 	--mon-osd-backfillfull-ratio .99 \
         "$@" || return 1
 
@@ -553,6 +554,7 @@ function run_mgr() {
     shift
     local data=$dir/$id
 
+    ceph config set mgr mgr/devicehealth/enable_monitoring off --force
     ceph-mgr \
         --id $id \
         $EXTRA_OPTS \
@@ -643,6 +645,8 @@ function run_osd() {
     ceph_args+=" --run-dir=$dir"
     ceph_args+=" --admin-socket=$(get_asok_path)"
     ceph_args+=" --debug-osd=20"
+    ceph_args+=" --debug-ms=1"
+    ceph_args+=" --debug-monc=20"
     ceph_args+=" --log-file=$dir/\$name.log"
     ceph_args+=" --pid-file=$dir/\$name.pid"
     ceph_args+=" --osd-max-object-name-len=460"
@@ -696,6 +700,8 @@ function run_osd_filestore() {
     ceph_args+=" --run-dir=$dir"
     ceph_args+=" --admin-socket=$(get_asok_path)"
     ceph_args+=" --debug-osd=20"
+    ceph_args+=" --debug-ms=1"
+    ceph_args+=" --debug-monc=20"
     ceph_args+=" --log-file=$dir/\$name.log"
     ceph_args+=" --pid-file=$dir/\$name.pid"
     ceph_args+=" --osd-max-object-name-len=460"
@@ -991,7 +997,7 @@ function wait_for_quorum() {
     fi
 
     if [[ -z "$quorumsize" ]]; then
-      timeout $timeout ceph mon_status --format=json >&/dev/null || return 1
+      timeout $timeout ceph quorum_status --format=json >&/dev/null || return 1
       return 0
     fi
 
@@ -999,7 +1005,7 @@ function wait_for_quorum() {
     wait_until=$((`date +%s` + $timeout))
     while [[ $(date +%s) -lt $wait_until ]]; do
         jqfilter='.quorum | length == '$quorumsize
-        jqinput="$(timeout $timeout ceph mon_status --format=json 2>/dev/null)"
+        jqinput="$(timeout $timeout ceph quorum_status --format=json 2>/dev/null)"
         res=$(echo $jqinput | jq "$jqfilter")
         if [[ "$res" == "true" ]]; then
           no_quorum=0

@@ -1,34 +1,5 @@
-/*-
- * BSD LICENSE
- *
- * Copyright (c) 2015-2017 Atomic Rules LLC
- * All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- * * Redistributions of source code must retain the above copyright
- * notice, this list of conditions and the following disclaimer.
- * * Redistributions in binary form must reproduce the above copyright
- * notice, this list of conditions and the following disclaimer in
- * the documentation and/or other materials provided with the
- * distribution.
- * * Neither the name of copyright holder nor the names of its
- * contributors may be used to endorse or promote products derived
- * from this software without specific prior written permission.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- * A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- * OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- * LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- * DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright (c) 2015-2018 Atomic Rules LLC
  */
 
 #ifndef _ARK_MPU_H_
@@ -75,7 +46,7 @@ struct ark_mpu_hw_t {
 
 #define ARK_MPU_CFG 0x040
 struct ark_mpu_cfg_t {
-	phys_addr_t ring_base;	/* phys_addr_t is a uint64_t */
+	rte_iova_t ring_base;	/* rte_iova_t is a uint64_t */
 	uint32_t ring_size;
 	uint32_t ring_mask;
 	uint32_t min_host_move;
@@ -137,7 +108,7 @@ int ark_mpu_verify(struct ark_mpu_t *mpu, uint32_t obj_size);
 void ark_mpu_stop(struct ark_mpu_t *mpu);
 void ark_mpu_start(struct ark_mpu_t *mpu);
 int ark_mpu_reset(struct ark_mpu_t *mpu);
-int ark_mpu_configure(struct ark_mpu_t *mpu, phys_addr_t ring,
+int ark_mpu_configure(struct ark_mpu_t *mpu, rte_iova_t ring,
 		      uint32_t ring_size, int is_tx);
 
 void ark_mpu_dump(struct ark_mpu_t *mpu, const char *msg, uint16_t idx);

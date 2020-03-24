@@ -2,6 +2,8 @@ import os
 import errno
 import logging
 
+from ceph.deployment.service_spec import ServiceSpec, PlacementSpec
+
 import cephfs
 import orchestrator
 
@@ -9,9 +11,9 @@ from .exception import VolumeException
 
 log = logging.getLogger(__name__)
 
-def create_pool(mgr, pool_name, pg_num):
+def create_pool(mgr, pool_name):
     # create the given pool
-    command = {'prefix': 'osd pool create', 'pool': pool_name, 'pg_num': pg_num}
+    command = {'prefix': 'osd pool create', 'pool': pool_name}
     return mgr.mon_command(command)
 
 def remove_pool(mgr, pool_name):
@@ -33,11 +35,12 @@ def remove_filesystem(mgr, fs_name):
     command = {'prefix': 'fs rm', 'fs_name': fs_name, 'yes_i_really_mean_it': True}
     return mgr.mon_command(command)
 
-def create_mds(mgr, fs_name):
-    spec = orchestrator.StatelessServiceSpec()
-    spec.name = fs_name
+def create_mds(mgr, fs_name, placement):
+    spec = ServiceSpec(service_type='mds',
+                                    service_id=fs_name,
+                                    placement=PlacementSpec.from_string(placement))
     try:
-        completion = mgr.add_stateless_service("mds", spec)
+        completion = mgr.apply_mds(spec)
         mgr._orchestrator_wait([completion])
         orchestrator.raise_if_exception(completion)
     except (ImportError, orchestrator.OrchestratorError):
@@ -86,7 +89,7 @@ def list_one_entry_at_a_time(fs, dirpath):
     except cephfs.Error as e:
         raise VolumeException(-e.args[0], e.args[1])
 
-def copy_file(fs, src, dst, mode, uid, gid):
+def copy_file(fs, src, dst, mode, cancel_check=None):
     """
     Copy a regular file from @src to @dst. @dst is overwritten if it exists.
     """
@@ -94,7 +97,6 @@ def copy_file(fs, src, dst, mode, uid, gid):
     try:
         src_fd = fs.open(src, os.O_RDONLY);
         dst_fd = fs.open(dst, os.O_CREAT | os.O_TRUNC | os.O_WRONLY, mode)
-        fs.chown(dst, uid, gid)
     except cephfs.Error as e:
         if src_fd is not None:
             fs.close(src_fd)
@@ -105,6 +107,8 @@ def copy_file(fs, src, dst, mode, uid, gid):
     IO_SIZE = 8 * 1024 * 1024
     try:
         while True:
+            if cancel_check and cancel_check():
+                raise VolumeException(-errno.EINTR, "copy operation interrupted")
             data = fs.read(src_fd, -1, IO_SIZE)
             if not len(data):
                 break
@@ -127,6 +131,6 @@ def get_ancestor_xattr(fs, path, attr):
         return fs.getxattr(path, attr).decode('utf-8')
     except cephfs.NoData as e:
         if path == "/":
-            raise VolumeException(-e.args[0]. e.args[1])
+            raise VolumeException(-e.args[0], e.args[1])
         else:
             return get_ancestor_xattr(fs, os.path.split(path)[0], attr)

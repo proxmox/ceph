@@ -1,34 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2014 Intel Corporation
  */
 
 #include <stdio.h>
@@ -47,9 +18,7 @@
 #include <rte_log.h>
 #include <rte_memory.h>
 #include <rte_memcpy.h>
-#include <rte_memzone.h>
 #include <rte_eal.h>
-#include <rte_per_lcore.h>
 #include <rte_launch.h>
 #include <rte_atomic.h>
 #include <rte_cycles.h>
@@ -58,7 +27,6 @@
 #include <rte_per_lcore.h>
 #include <rte_branch_prediction.h>
 #include <rte_interrupts.h>
-#include <rte_pci.h>
 #include <rte_random.h>
 #include <rte_debug.h>
 #include <rte_ether.h>
@@ -106,8 +74,8 @@
 /*
  * Configurable number of RX/TX ring descriptors
  */
-#define RTE_TEST_RX_DESC_DEFAULT 128
-#define RTE_TEST_TX_DESC_DEFAULT 512
+#define RTE_TEST_RX_DESC_DEFAULT 1024
+#define RTE_TEST_TX_DESC_DEFAULT 1024
 static uint16_t nb_rxd = RTE_TEST_RX_DESC_DEFAULT;
 static uint16_t nb_txd = RTE_TEST_TX_DESC_DEFAULT;
 
@@ -117,7 +85,7 @@ static struct ether_addr ports_eth_addr[MAX_PORTS];
 /* mask of enabled ports */
 static uint32_t enabled_port_mask = 0;
 
-static uint8_t nb_ports = 0;
+static uint16_t nb_ports;
 
 static int rx_queue_per_lcore = 1;
 
@@ -141,14 +109,11 @@ static struct rte_eth_conf port_conf = {
 	.rxmode = {
 		.max_rx_pkt_len = JUMBO_FRAME_MAX_SIZE,
 		.split_hdr_size = 0,
-		.header_split   = 0, /**< Header Split disabled */
-		.hw_ip_checksum = 0, /**< IP checksum offload disabled */
-		.hw_vlan_filter = 0, /**< VLAN filtering disabled */
-		.jumbo_frame    = 1, /**< Jumbo Frame Support enabled */
-		.hw_strip_crc   = 1, /**< CRC stripped by hardware */
+		.offloads = DEV_RX_OFFLOAD_JUMBO_FRAME,
 	},
 	.txmode = {
 		.mq_mode = ETH_MQ_TX_NONE,
+		.offloads = DEV_TX_OFFLOAD_MULTI_SEGS,
 	},
 };
 
@@ -196,7 +161,7 @@ static struct mcast_group_params mcast_group_table[] = {
 
 /* Send burst of packets on an output interface */
 static void
-send_burst(struct lcore_queue_conf *qconf, uint8_t port)
+send_burst(struct lcore_queue_conf *qconf, uint16_t port)
 {
 	struct rte_mbuf **m_table;
 	uint16_t n, queueid;
@@ -289,19 +254,9 @@ mcast_out_pkt(struct rte_mbuf *pkt, int use_clone)
 	/* prepend new header */
 	hdr->next = pkt;
 
-
 	/* update header's fields */
 	hdr->pkt_len = (uint16_t)(hdr->data_len + pkt->pkt_len);
-	hdr->nb_segs = (uint8_t)(pkt->nb_segs + 1);
-
-	/* copy metadata from source packet*/
-	hdr->port = pkt->port;
-	hdr->vlan_tci = pkt->vlan_tci;
-	hdr->vlan_tci_outer = pkt->vlan_tci_outer;
-	hdr->tx_offload = pkt->tx_offload;
-	hdr->hash = pkt->hash;
-
-	hdr->ol_flags = pkt->ol_flags;
+	hdr->nb_segs = pkt->nb_segs + 1;
 
 	__rte_mbuf_sanity_check(hdr, 1);
 	return hdr;
@@ -313,7 +268,7 @@ mcast_out_pkt(struct rte_mbuf *pkt, int use_clone)
  */
 static inline void
 mcast_send_pkt(struct rte_mbuf *pkt, struct ether_addr *dest_addr,
-		struct lcore_queue_conf *qconf, uint8_t port)
+		struct lcore_queue_conf *qconf, uint16_t port)
 {
 	struct ether_hdr *ethdr;
 	uint16_t len;
@@ -344,7 +299,7 @@ mcast_forward(struct rte_mbuf *m, struct lcore_queue_conf *qconf)
 	struct ipv4_hdr *iphdr;
 	uint32_t dest_addr, port_mask, port_num, use_clone;
 	int32_t hash;
-	uint8_t port;
+	uint16_t port;
 	union {
 		uint64_t as_int;
 		struct ether_addr as_addr;
@@ -408,7 +363,7 @@ static inline void
 send_timeout_burst(struct lcore_queue_conf *qconf)
 {
 	uint64_t cur_tsc;
-	uint8_t portid;
+	uint16_t portid;
 	const uint64_t drain_tsc = (rte_get_tsc_hz() + US_PER_S - 1) / US_PER_S * BURST_TX_DRAIN_US;
 
 	cur_tsc = rte_rdtsc();
@@ -429,7 +384,7 @@ main_loop(__rte_unused void *dummy)
 	struct rte_mbuf *pkts_burst[MAX_PKT_BURST];
 	unsigned lcore_id;
 	int i, j, nb_rx;
-	uint8_t portid;
+	uint16_t portid;
 	struct lcore_queue_conf *qconf;
 
 	lcore_id = rte_lcore_id();
@@ -449,7 +404,7 @@ main_loop(__rte_unused void *dummy)
 
 		portid = qconf->rx_queue_list[i];
 		RTE_LOG(INFO, IPv4_MULTICAST, " -- lcoreid=%u portid=%d\n",
-		    lcore_id, (int) portid);
+		    lcore_id, portid);
 	}
 
 	while (1) {
@@ -611,18 +566,19 @@ init_mcast_hash(void)
 
 /* Check the link status of all ports in up to 9s, and print them finally */
 static void
-check_all_ports_link_status(uint8_t port_num, uint32_t port_mask)
+check_all_ports_link_status(uint32_t port_mask)
 {
 #define CHECK_INTERVAL 100 /* 100ms */
 #define MAX_CHECK_TIME 90 /* 9s (90 * 100ms) in total */
-	uint8_t portid, count, all_ports_up, print_flag = 0;
+	uint16_t portid;
+	uint8_t count, all_ports_up, print_flag = 0;
 	struct rte_eth_link link;
 
 	printf("\nChecking link status");
 	fflush(stdout);
 	for (count = 0; count <= MAX_CHECK_TIME; count++) {
 		all_ports_up = 1;
-		for (portid = 0; portid < port_num; portid++) {
+		RTE_ETH_FOREACH_DEV(portid) {
 			if ((port_mask & (1 << portid)) == 0)
 				continue;
 			memset(&link, 0, sizeof(link));
@@ -630,14 +586,13 @@ check_all_ports_link_status(uint8_t port_num, uint32_t port_mask)
 			/* print link status if flag set */
 			if (print_flag == 1) {
 				if (link.link_status)
-					printf("Port %d Link Up - speed %u "
-						"Mbps - %s\n", (uint8_t)portid,
-						(unsigned)link.link_speed,
+					printf(
+					"Port%d Link Up. Speed %u Mbps - %s\n",
+					portid, link.link_speed,
 				(link.link_duplex == ETH_LINK_FULL_DUPLEX) ?
 					("full-duplex") : ("half-duplex\n"));
 				else
-					printf("Port %d Link Down\n",
-							(uint8_t)portid);
+					printf("Port %d Link Down\n", portid);
 				continue;
 			}
 			/* clear all_ports_up flag if any link down */
@@ -674,7 +629,7 @@ main(int argc, char **argv)
 	uint16_t queueid;
 	unsigned lcore_id = 0, rx_lcore_id = 0;
 	uint32_t n_tx_queue, nb_lcores;
-	uint8_t portid;
+	uint16_t portid;
 
 	/* init EAL */
 	ret = rte_eal_init(argc, argv);
@@ -707,7 +662,7 @@ main(int argc, char **argv)
 	if (clone_pool == NULL)
 		rte_exit(EXIT_FAILURE, "Cannot init clone mbuf pool\n");
 
-	nb_ports = rte_eth_dev_count();
+	nb_ports = rte_eth_dev_count_avail();
 	if (nb_ports == 0)
 		rte_exit(EXIT_FAILURE, "No physical ports!\n");
 	if (nb_ports > MAX_PORTS)
@@ -716,7 +671,10 @@ main(int argc, char **argv)
 	nb_lcores = rte_lcore_count();
 
 	/* initialize all ports */
-	for (portid = 0; portid < nb_ports; portid++) {
+	RTE_ETH_FOREACH_DEV(portid) {
+		struct rte_eth_rxconf rxq_conf;
+		struct rte_eth_conf local_port_conf = port_conf;
+
 		/* skip ports that are not enabled */
 		if ((enabled_port_mask & (1 << portid)) == 0) {
 			printf("Skipping disabled port %d\n", portid);
@@ -727,8 +685,9 @@ main(int argc, char **argv)
 
 		/* limit the frame size to the maximum supported by NIC */
 		rte_eth_dev_info_get(portid, &dev_info);
-		port_conf.rxmode.max_rx_pkt_len = RTE_MIN(
-		    dev_info.max_rx_pktlen, port_conf.rxmode.max_rx_pkt_len);
+		local_port_conf.rxmode.max_rx_pkt_len = RTE_MIN(
+		    dev_info.max_rx_pktlen,
+		    local_port_conf.rxmode.max_rx_pkt_len);
 
 		/* get the lcore_id for this port */
 		while (rte_lcore_is_enabled(rx_lcore_id) == 0 ||
@@ -751,11 +710,19 @@ main(int argc, char **argv)
 		n_tx_queue = nb_lcores;
 		if (n_tx_queue > MAX_TX_QUEUE_PER_PORT)
 			n_tx_queue = MAX_TX_QUEUE_PER_PORT;
+
 		ret = rte_eth_dev_configure(portid, 1, (uint16_t)n_tx_queue,
-					    &port_conf);
+					    &local_port_conf);
 		if (ret < 0)
 			rte_exit(EXIT_FAILURE, "Cannot configure device: err=%d, port=%d\n",
 				  ret, portid);
+
+		ret = rte_eth_dev_adjust_nb_rx_tx_desc(portid, &nb_rxd,
+						       &nb_txd);
+		if (ret < 0)
+			rte_exit(EXIT_FAILURE,
+				 "Cannot adjust number of descriptors: err=%d, port=%d\n",
+				 ret, portid);
 
 		rte_eth_macaddr_get(portid, &ports_eth_addr[portid]);
 		print_ethaddr(" Address:", &ports_eth_addr[portid]);
@@ -765,9 +732,11 @@ main(int argc, char **argv)
 		queueid = 0;
 		printf("rxq=%hu ", queueid);
 		fflush(stdout);
+		rxq_conf = dev_info.default_rxconf;
+		rxq_conf.offloads = local_port_conf.rxmode.offloads;
 		ret = rte_eth_rx_queue_setup(portid, queueid, nb_rxd,
 					     rte_eth_dev_socket_id(portid),
-					     NULL,
+					     &rxq_conf,
 					     packet_pool);
 		if (ret < 0)
 			rte_exit(EXIT_FAILURE, "rte_eth_tx_queue_setup: err=%d, port=%d\n",
@@ -783,7 +752,7 @@ main(int argc, char **argv)
 			fflush(stdout);
 
 			txconf = &dev_info.default_txconf;
-			txconf->txq_flags = 0;
+			txconf->offloads = local_port_conf.txmode.offloads;
 			ret = rte_eth_tx_queue_setup(portid, queueid, nb_txd,
 						     rte_lcore_to_socket_id(lcore_id), txconf);
 			if (ret < 0)
@@ -794,7 +763,7 @@ main(int argc, char **argv)
 			qconf->tx_queue_id[portid] = queueid;
 			queueid++;
 		}
-
+		rte_eth_allmulticast_enable(portid);
 		/* Start device */
 		ret = rte_eth_dev_start(portid);
 		if (ret < 0)
@@ -804,7 +773,7 @@ main(int argc, char **argv)
 		printf("done:\n");
 	}
 
-	check_all_ports_link_status(nb_ports, enabled_port_mask);
+	check_all_ports_link_status(enabled_port_mask);
 
 	/* initialize the multicast hash */
 	int retval = init_mcast_hash();

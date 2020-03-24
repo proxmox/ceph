@@ -1,33 +1,5 @@
-..  BSD LICENSE
-    Copyright(c) 2016 Intel Corporation. All rights reserved.
-    All rights reserved.
-
-    Redistribution and use in source and binary forms, with or without
-    modification, are permitted provided that the following conditions
-    are met:
-
-    * Redistributions of source code must retain the above copyright
-    notice, this list of conditions and the following disclaimer.
-    * Redistributions in binary form must reproduce the above copyright
-    notice, this list of conditions and the following disclaimer in
-    the documentation and/or other materials provided with the
-    distribution.
-    * Neither the name of Intel Corporation nor the names of its
-    contributors may be used to endorse or promote products derived
-    from this software without specific prior written permission.
-
-    THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-    "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-    LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-    A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-    OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-    SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-    LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-    DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-    THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-    (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-    OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-
+..  SPDX-License-Identifier: BSD-3-Clause
+    Copyright(c) 2016 Intel Corporation.
 
 Flow Bifurcation How-to Guide
 =============================
@@ -70,6 +42,32 @@ module.
 .. figure:: img/flow_bifurcation_overview.*
 
    Flow Bifurcation Overview
+
+
+Using Flow Bifurcation on Mellanox ConnectX
+-------------------------------------------
+
+The Mellanox devices are :ref:`natively bifurcated <bifurcated_driver>`,
+so there is no need to split into SR-IOV PF/VF
+in order to get the flow bifurcation mechanism.
+The full device is already shared with the kernel driver.
+
+The DPDK application can setup some flow steering rules,
+and let the rest go to the kernel stack.
+In order to define the filters strictly with flow rules,
+the :ref:`flow_isolated_mode` can be configured.
+
+There is no specific instructions to follow.
+The recommended reading is the :doc:`../prog_guide/rte_flow` guide.
+Below is an example of testpmd commands
+for receiving VXLAN 42 in 4 queues of the DPDK port 0,
+while all other packets go to the kernel:
+
+.. code-block:: console
+
+   testpmd> flow isolate 0 true
+   testpmd> flow create 0 ingress pattern eth / ipv4 / udp / vxlan vni is 42 / end \
+            actions rss queues 0 1 2 3 end / end
 
 
 Using Flow Bifurcation on IXGBE in Linux
@@ -296,4 +294,4 @@ The typical procedure to achieve this is as follows:
      'not involved', while ``00`` or no mask means 'involved'.
 
    * For more details of the configuration, refer to the
-     `cloud filter test plan <http://dpdk.org/browse/tools/dts/tree/test_plans/cloud_filter_test_plan.rst>`_
+     `cloud filter test plan <http://git.dpdk.org/tools/dts/tree/test_plans/cloud_filter_test_plan.rst>`_

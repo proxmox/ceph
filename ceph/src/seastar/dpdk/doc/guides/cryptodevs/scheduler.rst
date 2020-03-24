@@ -1,32 +1,5 @@
-..  BSD LICENSE
-    Copyright(c) 2017 Intel Corporation. All rights reserved.
-    All rights reserved.
-
-    Redistribution and use in source and binary forms, with or without
-    modification, are permitted provided that the following conditions
-    are met:
-
-    * Redistributions of source code must retain the above copyright
-    notice, this list of conditions and the following disclaimer.
-    * Redistributions in binary form must reproduce the above copyright
-    notice, this list of conditions and the following disclaimer in
-    the documentation and/or other materials provided with the
-    distribution.
-    * Neither the name of Intel Corporation nor the names of its
-    contributors may be used to endorse or promote products derived
-    from this software without specific prior written permission.
-
-    THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-    "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-    LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-    A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-    OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-    SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-    LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-    DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-    THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-    (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-    OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+..  SPDX-License-Identifier: BSD-3-Clause
+    Copyright(c) 2017 Intel Corporation.
 
 Cryptodev Scheduler Poll Mode Driver Library
 ============================================
@@ -72,9 +45,9 @@ Initialization
 
 To use the PMD in an application, user must:
 
-* Call rte_vdev_init("crpyto_scheduler") within the application.
+* Call rte_vdev_init("crypto_scheduler") within the application.
 
-* Use --vdev="crpyto_scheduler" in the EAL options, which will call
+* Use --vdev="crypto_scheduler" in the EAL options, which will call
   rte_vdev_init() internally.
 
 
@@ -98,6 +71,11 @@ two calls:
   mode parameter values are specified in the "Cryptodev Scheduler Modes
   Overview" section.
 
+* mode_param: Specify the mode-specific parameter. Some scheduling modes
+  may be initialized with specific parameters other than the default ones,
+  such as the **threshold** packet size of **packet-size-distr** mode. This
+  parameter fulfills the purpose.
+
 * ordering: Specify the status of the crypto operations ordering feature.
   The value of this parameter can be "enable" or "disable". This feature
   is disabled by default.
@@ -106,7 +84,7 @@ Example:
 
 .. code-block:: console
 
-    ... --vdev "crypto_aesni_mb_pmd,name=aesni_mb_1" --vdev "crypto_aesni_mb_pmd,name=aesni_mb_2" --vdev "crypto_scheduler_pmd,slave=aesni_mb_1,slave=aesni_mb_2" ...
+    ... --vdev "crypto_aesni_mb0,name=aesni_mb_1" --vdev "crypto_aesni_mb1,name=aesni_mb_2" --vdev "crypto_scheduler,slave=aesni_mb_1,slave=aesni_mb_2" ...
 
 .. note::
 
@@ -159,7 +137,12 @@ operation:
    **option_type** must be **CDEV_SCHED_OPTION_THRESHOLD** and **option** should
    point to a rte_cryptodev_scheduler_threshold_option structure filled with
    appropriate threshold value. Please NOTE this threshold has be a power-of-2
-   unsigned integer.
+   unsigned integer. It is possible to use **mode_param** initialization
+   parameter to achieve the same purpose. For example:
+
+   ... --vdev "crypto_scheduler,mode=packet-size-distr,mode_param=threshold:512" ...
+
+   The above parameter will overwrite the threshold value to 512.
 
 *   **CDEV_SCHED_MODE_FAILOVER:**
 
@@ -170,3 +153,30 @@ operation:
    crypto operation burst to the primary slave. When one or more crypto
    operations fail to be enqueued, then they will be enqueued to the secondary
    slave.
+
+*   **CDEV_SCHED_MODE_MULTICORE:**
+
+   *Initialization mode parameter*: **multi-core**
+
+   Multi-core mode, which distributes the workload with several (up to eight)
+   worker cores. The enqueued bursts are distributed among the worker cores in a
+   round-robin manner. If scheduler cannot enqueue entire burst to the same worker,
+   it will enqueue the remaining operations to the next available worker.
+   For pure small packet size (64 bytes) traffic however the multi-core mode is not
+   an optimal solution, as it doesn't give significant per-core performance improvement.
+   For mixed traffic (IMIX) the optimal number of worker cores is around 2-3.
+   For large packets (1.5 kbytes) scheduler shows linear scaling in performance
+   up to eight cores.
+   Each worker uses its own slave cryptodev. Only software cryptodevs
+   are supported. Only the same type of cryptodevs should be used concurrently.
+
+   The multi-core mode uses one extra parameter:
+
+   * corelist: Semicolon-separated list of logical cores to be used as workers.
+     The number of worker cores should be equal to the number of slave cryptodevs.
+     These cores should be present in EAL core list parameter and
+     should not be used by the application or any other process.
+
+   Example:
+    ... --vdev "crypto_aesni_mb1,name=aesni_mb_1" --vdev "crypto_aesni_mb_pmd2,name=aesni_mb_2" \
+    --vdev "crypto_scheduler,slave=aesni_mb_1,slave=aesni_mb_2,mode=multi-core,corelist=23;24" ...

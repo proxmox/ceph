@@ -71,6 +71,13 @@ typedef struct {
 #define IMB_DLL_LOCAL
 #endif
 
+/* Library version */
+#define IMB_VERSION_STR "0.52.0"
+#define IMB_VERSION_NUM 0x3400
+
+/* Macro to translate version number */
+#define IMB_VERSION(a,b,c) (((a) << 16) + ((b) << 8) + (c))
+
 /*
  * Custom ASSERT and DIM macros
  */
@@ -101,9 +108,18 @@ typedef struct {
 #define NUM_SHA_512_DIGEST_WORDS 8
 #define NUM_SHA_384_DIGEST_WORDS 6
 
+#define SHA_DIGEST_WORD_SIZE      4
+#define SHA224_DIGEST_WORD_SIZE   4
+#define SHA256_DIGEST_WORD_SIZE   4
 #define SHA384_DIGEST_WORD_SIZE   8
 #define SHA512_DIGEST_WORD_SIZE   8
 
+#define SHA1_DIGEST_SIZE_IN_BYTES \
+        (NUM_SHA_DIGEST_WORDS * SHA_DIGEST_WORD_SIZE)
+#define SHA224_DIGEST_SIZE_IN_BYTES \
+        (NUM_SHA_224_DIGEST_WORDS * SHA224_DIGEST_WORD_SIZE)
+#define SHA256_DIGEST_SIZE_IN_BYTES \
+        (NUM_SHA_256_DIGEST_WORDS * SHA256_DIGEST_WORD_SIZE)
 #define SHA384_DIGEST_SIZE_IN_BYTES \
         (NUM_SHA_384_DIGEST_WORDS * SHA384_DIGEST_WORD_SIZE)
 #define SHA512_DIGEST_SIZE_IN_BYTES \
@@ -181,20 +197,25 @@ typedef enum {
 } JOB_CIPHER_DIRECTION;
 
 typedef enum {
-        SHA1 = 1,
-        SHA_224,
-        SHA_256,
-        SHA_384,
-        SHA_512,
+        SHA1 = 1,  /* HMAC-SHA1 */
+        SHA_224,   /* HMAC-SHA224 */
+        SHA_256,   /* HMAC-SHA256 */
+        SHA_384,   /* HMAC-SHA384 */
+        SHA_512,   /* HMAC-SHA512 */
         AES_XCBC,
-        MD5,
+        MD5,       /* HMAC-MD5 */
         NULL_HASH,
 #ifndef NO_GCM
         AES_GMAC,
 #endif /* !NO_GCM */
         CUSTOM_HASH,
-        AES_CCM,
-        AES_CMAC,
+        AES_CCM,         /* AES128-CCM */
+        AES_CMAC,        /* AES128-CMAC */
+        PLAIN_SHA1,      /* SHA1 */
+        PLAIN_SHA_224,   /* SHA224 */
+        PLAIN_SHA_256,   /* SHA256 */
+        PLAIN_SHA_384,   /* SHA384 */
+        PLAIN_SHA_512,   /* SHA512 */
 } JOB_HASH_ALG;
 
 typedef enum {
@@ -488,6 +509,112 @@ typedef struct {
         uint32_t num_lanes_inuse;
 } MB_MGR_HMAC_MD5_OOO;
 
+
+/* GCM data structures */
+#define GCM_BLOCK_LEN   16
+
+/**
+ * @brief holds GCM operation context
+ */
+struct gcm_context_data {
+        /* init, update and finalize context data */
+        uint8_t  aad_hash[GCM_BLOCK_LEN];
+        uint64_t aad_length;
+        uint64_t in_length;
+        uint8_t  partial_block_enc_key[GCM_BLOCK_LEN];
+        uint8_t  orig_IV[GCM_BLOCK_LEN];
+        uint8_t  current_counter[GCM_BLOCK_LEN];
+        uint64_t partial_block_length;
+};
+
+/**
+ * @brief GCM argument data per lane
+ */
+struct GCM_ARGS {
+        struct gcm_context_data *ctx[4];
+        const void *keys[4];
+        uint8_t *out[4];
+        const uint8_t *in[4];
+        void *tag[4];
+        uint64_t tag_len[4];
+};
+
+/**
+ * @brief GCM multi-buffer manager structure
+ */
+typedef struct {
+        struct GCM_ARGS args;
+        struct gcm_context_data ctxs[4];
+        uint64_t lens[4];
+        JOB_AES_HMAC *job_in_lane[4];
+        uint64_t unused_lanes;
+} MB_MGR_GCM_OOO;
+
+/* Authenticated Tag Length in bytes.
+ * Valid values are 16 (most likely), 12 or 8. */
+#define MAX_TAG_LEN (16)
+
+/*
+ * IV data is limited to 16 bytes as follows:
+ * 12 bytes is provided by an application -
+ *    pre-counter block j0: 4 byte salt (from Security Association)
+ *    concatenated with 8 byte Initialization Vector (from IPSec ESP
+ *    Payload).
+ * 4 byte value 0x00000001 is padded automatically by the library -
+ *    there is no need to add these 4 bytes on application side anymore.
+ */
+#define GCM_IV_DATA_LEN (12)
+
+#define LONGEST_TESTED_AAD_LENGTH (2 * 1024)
+
+/* Key lengths of 128 and 256 supported */
+#define GCM_128_KEY_LEN (16)
+#define GCM_192_KEY_LEN (24)
+#define GCM_256_KEY_LEN (32)
+
+/* #define GCM_BLOCK_LEN   16 */
+#define GCM_ENC_KEY_LEN 16
+#define GCM_KEY_SETS    (15) /*exp key + 14 exp round keys*/
+
+/**
+ * @brief holds intermediate key data needed to improve performance
+ *
+ * gcm_key_data hold internal key information used by gcm128, gcm192 and gcm256.
+ */
+#ifdef __WIN32
+__declspec(align(64))
+#endif /* WIN32 */
+struct gcm_key_data {
+        uint8_t expanded_keys[GCM_ENC_KEY_LEN * GCM_KEY_SETS];
+        uint8_t padding[GCM_ENC_KEY_LEN];        /* To align HashKey to 64 */
+        /* storage for HashKey mod poly */
+        uint8_t shifted_hkey_8[GCM_ENC_KEY_LEN]; /* HashKey^8<<1 mod poly */
+        uint8_t shifted_hkey_7[GCM_ENC_KEY_LEN]; /* HashKey^7<<1 mod poly */
+        uint8_t shifted_hkey_6[GCM_ENC_KEY_LEN]; /* HashKey^6<<1 mod poly */
+        uint8_t shifted_hkey_5[GCM_ENC_KEY_LEN]; /* HashKey^5<<1 mod poly */
+        uint8_t shifted_hkey_4[GCM_ENC_KEY_LEN]; /* HashKey^4<<1 mod poly */
+        uint8_t shifted_hkey_3[GCM_ENC_KEY_LEN]; /* HashKey^3<<1 mod poly */
+        uint8_t shifted_hkey_2[GCM_ENC_KEY_LEN]; /* HashKey^2<<1 mod poly */
+        uint8_t shifted_hkey_1[GCM_ENC_KEY_LEN]; /* HashKey<<1 mod poly */
+        /*
+         * Storage for XOR of High 64 bits and low 64 bits of HashKey mod poly.
+         * This is needed for Karatsuba purposes.
+         */
+        uint8_t shifted_hkey_1_k[GCM_ENC_KEY_LEN]; /* HashKey<<1 mod poly */
+        uint8_t shifted_hkey_2_k[GCM_ENC_KEY_LEN]; /* HashKey^2<<1 mod poly */
+        uint8_t shifted_hkey_3_k[GCM_ENC_KEY_LEN]; /* HashKey^3<<1 mod poly */
+        uint8_t shifted_hkey_4_k[GCM_ENC_KEY_LEN]; /* HashKey^4<<1 mod poly */
+        uint8_t shifted_hkey_5_k[GCM_ENC_KEY_LEN]; /* HashKey^5<<1 mod poly */
+        uint8_t shifted_hkey_6_k[GCM_ENC_KEY_LEN]; /* HashKey^6<<1 mod poly */
+        uint8_t shifted_hkey_7_k[GCM_ENC_KEY_LEN]; /* HashKey^7<<1 mod poly */
+        uint8_t shifted_hkey_8_k[GCM_ENC_KEY_LEN]; /* HashKey^8<<1 mod poly */
+}
+#ifdef LINUX
+__attribute__((aligned(64)));
+#else
+;
+#endif
+
 /* ========================================================================== */
 /* API data type definitions */
 struct MB_MGR;
@@ -501,18 +628,58 @@ typedef uint32_t (*queue_size_t)(struct MB_MGR *);
 typedef void (*keyexp_t)(const void *, void *, void *);
 typedef void (*cmac_subkey_gen_t)(const void *, void *, void *);
 typedef void (*hash_one_block_t)(const void *, void *);
+typedef void (*hash_fn_t)(const void *, const uint64_t, void *);
 typedef void (*xcbc_keyexp_t)(const void *, void *, void *, void *);
 typedef int (*des_keysched_t)(uint64_t *, const void *);
+typedef void (*aes128_cfb_t)(void *, const void *, const void *, const void *,
+                             uint64_t);
+typedef void (*aes_gcm_enc_dec_t)(const struct gcm_key_data *,
+                                  struct gcm_context_data *,
+                                  uint8_t *, uint8_t const *, uint64_t,
+                                  const uint8_t *, uint8_t const *, uint64_t,
+                                  uint8_t *, uint64_t);
+typedef void (*aes_gcm_init_t)(const struct gcm_key_data *,
+                               struct gcm_context_data *,
+                               const uint8_t *, uint8_t const *, uint64_t);
+typedef void (*aes_gcm_enc_dec_update_t)(const struct gcm_key_data *,
+                                         struct gcm_context_data *,
+                                         uint8_t *, const uint8_t *, uint64_t);
+typedef void (*aes_gcm_enc_dec_finalize_t)(const struct gcm_key_data *,
+                                           struct gcm_context_data *,
+                                           uint8_t *, uint64_t);
+typedef void (*aes_gcm_precomp_t)(struct gcm_key_data *);
+typedef void (*aes_gcm_pre_t)(const void *, struct gcm_key_data *);
 
 /* ========================================================================== */
 /* Multi-buffer manager flags passed to alloc_mb_mgr() */
 
 #define IMB_FLAG_SHANI_OFF (1ULL << 0) /* disable use of SHANI extension */
+#define IMB_FLAG_AESNI_OFF (1ULL << 1) /* disable use of AESNI extension */
 
 /* ========================================================================== */
-/* Multi-buffer manager features - valid after call to init_mb_mgr() */
+/* Multi-buffer manager detected features
+ * - if bit is set then hardware supports given extension
+ * - valid after call to init_mb_mgr() or alloc_mb_mgr()
+ * - some HW supported features can be disabled via IMB_FLAG_xxx (see above)
+ */
 
-#define IMB_FEATURE_SHANI  (1ULL << 0) /* if set SHANI extensions is used */
+#define IMB_FEATURE_SHANI      (1ULL << 0)
+#define IMB_FEATURE_AESNI      (1ULL << 1)
+#define IMB_FEATURE_PCLMULQDQ  (1ULL << 2)
+#define IMB_FEATURE_CMOV       (1ULL << 3)
+#define IMB_FEATURE_SSE4_2     (1ULL << 4)
+#define IMB_FEATURE_AVX        (1ULL << 5)
+#define IMB_FEATURE_AVX2       (1ULL << 6)
+#define IMB_FEATURE_AVX512F    (1ULL << 7)
+#define IMB_FEATURE_AVX512DQ   (1ULL << 8)
+#define IMB_FEATURE_AVX512CD   (1ULL << 9)
+#define IMB_FEATURE_AVX512BW   (1ULL << 10)
+#define IMB_FEATURE_AVX512VL   (1ULL << 11)
+#define IMB_FEATURE_AVX512_SKX (IMB_FEATURE_AVX512F | IMB_FEATURE_AVX512DQ | \
+                                IMB_FEATURE_AVX512CD | IMB_FEATURE_AVX512BW | \
+                                IMB_FEATURE_AVX512VL)
+#define IMB_FEATURE_VAES       (1ULL << 12)
+#define IMB_FEATURE_VPCLMULQDQ (1ULL << 13)
 
 /* ========================================================================== */
 /* TOP LEVEL (MB_MGR) Data structure fields */
@@ -526,6 +693,11 @@ typedef struct MB_MGR {
          */
         uint64_t flags;
         uint64_t features;
+
+        /*
+         * Reserved for the future
+         */
+        uint64_t reserved[6];
 
         /*
          * ARCH handlers / API
@@ -549,6 +721,40 @@ typedef struct MB_MGR {
         hash_one_block_t        sha384_one_block;
         hash_one_block_t        sha512_one_block;
         hash_one_block_t        md5_one_block;
+        hash_fn_t               sha1;
+        hash_fn_t               sha224;
+        hash_fn_t               sha256;
+        hash_fn_t               sha384;
+        hash_fn_t               sha512;
+        aes128_cfb_t            aes128_cfb_one;
+
+        aes_gcm_enc_dec_t       gcm128_enc;
+        aes_gcm_enc_dec_t       gcm192_enc;
+        aes_gcm_enc_dec_t       gcm256_enc;
+        aes_gcm_enc_dec_t       gcm128_dec;
+        aes_gcm_enc_dec_t       gcm192_dec;
+        aes_gcm_enc_dec_t       gcm256_dec;
+        aes_gcm_init_t          gcm128_init;
+        aes_gcm_init_t          gcm192_init;
+        aes_gcm_init_t          gcm256_init;
+        aes_gcm_enc_dec_update_t gcm128_enc_update;
+        aes_gcm_enc_dec_update_t gcm192_enc_update;
+        aes_gcm_enc_dec_update_t gcm256_enc_update;
+        aes_gcm_enc_dec_update_t gcm128_dec_update;
+        aes_gcm_enc_dec_update_t gcm192_dec_update;
+        aes_gcm_enc_dec_update_t gcm256_dec_update;
+        aes_gcm_enc_dec_finalize_t gcm128_enc_finalize;
+        aes_gcm_enc_dec_finalize_t gcm192_enc_finalize;
+        aes_gcm_enc_dec_finalize_t gcm256_enc_finalize;
+        aes_gcm_enc_dec_finalize_t gcm128_dec_finalize;
+        aes_gcm_enc_dec_finalize_t gcm192_dec_finalize;
+        aes_gcm_enc_dec_finalize_t gcm256_dec_finalize;
+        aes_gcm_precomp_t       gcm128_precomp;
+        aes_gcm_precomp_t       gcm192_precomp;
+        aes_gcm_precomp_t       gcm256_precomp;
+        aes_gcm_pre_t           gcm128_pre;
+        aes_gcm_pre_t           gcm192_pre;
+        aes_gcm_pre_t           gcm256_pre;
 
         /* in-order scheduler fields */
         int              earliest_job; /* byte offset, -1 if none */
@@ -576,10 +782,34 @@ typedef struct MB_MGR {
         DECLARE_ALIGNED(MB_MGR_AES_XCBC_OOO aes_xcbc_ooo, 64);
         DECLARE_ALIGNED(MB_MGR_CCM_OOO aes_ccm_ooo, 64);
         DECLARE_ALIGNED(MB_MGR_CMAC_OOO aes_cmac_ooo, 64);
+
+        DECLARE_ALIGNED(MB_MGR_GCM_OOO gcm128_enc_ooo, 64);
+        DECLARE_ALIGNED(MB_MGR_GCM_OOO gcm192_enc_ooo, 64);
+        DECLARE_ALIGNED(MB_MGR_GCM_OOO gcm256_enc_ooo, 64);
+        DECLARE_ALIGNED(MB_MGR_GCM_OOO gcm128_dec_ooo, 64);
+        DECLARE_ALIGNED(MB_MGR_GCM_OOO gcm192_dec_ooo, 64);
+        DECLARE_ALIGNED(MB_MGR_GCM_OOO gcm256_dec_ooo, 64);
 } MB_MGR;
 
 /* ========================================================================== */
 /* API definitions */
+
+/**
+ * @brief Get library version in string format
+ *
+ * @return library version string
+ */
+IMB_DLL_EXPORT const char *imb_get_version_str(void);
+
+/**
+ * @brief Get library version in numerical format
+ *
+ * Use IMB_VERSION() macro to compare this
+ * numerical version against known library version.
+ *
+ * @return library version number
+ */
+IMB_DLL_EXPORT unsigned imb_get_version(void);
 
 /*
  * get_next_job returns a job object. This must be filled in and returned
@@ -597,81 +827,32 @@ IMB_DLL_EXPORT JOB_AES_HMAC *submit_job_avx(MB_MGR *state);
 IMB_DLL_EXPORT JOB_AES_HMAC *submit_job_nocheck_avx(MB_MGR *state);
 IMB_DLL_EXPORT JOB_AES_HMAC *flush_job_avx(MB_MGR *state);
 IMB_DLL_EXPORT uint32_t queue_size_avx(MB_MGR *state);
+IMB_DLL_EXPORT JOB_AES_HMAC *get_completed_job_avx(MB_MGR *state);
+IMB_DLL_EXPORT JOB_AES_HMAC *get_next_job_avx(MB_MGR *state);
 
 IMB_DLL_EXPORT void init_mb_mgr_avx2(MB_MGR *state);
 IMB_DLL_EXPORT JOB_AES_HMAC *submit_job_avx2(MB_MGR *state);
 IMB_DLL_EXPORT JOB_AES_HMAC *submit_job_nocheck_avx2(MB_MGR *state);
 IMB_DLL_EXPORT JOB_AES_HMAC *flush_job_avx2(MB_MGR *state);
 IMB_DLL_EXPORT uint32_t queue_size_avx2(MB_MGR *state);
+IMB_DLL_EXPORT JOB_AES_HMAC *get_completed_job_avx2(MB_MGR *state);
+IMB_DLL_EXPORT JOB_AES_HMAC *get_next_job_avx2(MB_MGR *state);
 
 IMB_DLL_EXPORT void init_mb_mgr_avx512(MB_MGR *state);
 IMB_DLL_EXPORT JOB_AES_HMAC *submit_job_avx512(MB_MGR *state);
 IMB_DLL_EXPORT JOB_AES_HMAC *submit_job_nocheck_avx512(MB_MGR *state);
 IMB_DLL_EXPORT JOB_AES_HMAC *flush_job_avx512(MB_MGR *state);
 IMB_DLL_EXPORT uint32_t queue_size_avx512(MB_MGR *state);
+IMB_DLL_EXPORT JOB_AES_HMAC *get_completed_job_avx512(MB_MGR *state);
+IMB_DLL_EXPORT JOB_AES_HMAC *get_next_job_avx512(MB_MGR *state);
 
 IMB_DLL_EXPORT void init_mb_mgr_sse(MB_MGR *state);
 IMB_DLL_EXPORT JOB_AES_HMAC *submit_job_sse(MB_MGR *state);
 IMB_DLL_EXPORT JOB_AES_HMAC *submit_job_nocheck_sse(MB_MGR *state);
 IMB_DLL_EXPORT JOB_AES_HMAC *flush_job_sse(MB_MGR *state);
 IMB_DLL_EXPORT uint32_t queue_size_sse(MB_MGR *state);
-
-#define get_completed_job_avx  get_completed_job_sse
-#define get_next_job_avx       get_next_job_sse
-
-#define get_completed_job_avx2 get_completed_job_sse
-#define get_next_job_avx2      get_next_job_sse
-
-#define get_completed_job_avx512 get_completed_job_sse
-#define get_next_job_avx512      get_next_job_sse
-
-/*
- * JOBS() and ADV_JOBS() also used in mb_mgr_code.h
- * index in JOBS array using byte offset rather than object index
- */
-__forceinline
-JOB_AES_HMAC *JOBS(MB_MGR *state, const int offset)
-{
-        char *cp = (char *)state->jobs;
-
-        return (JOB_AES_HMAC *)(cp + offset);
-}
-
-__forceinline
-void ADV_JOBS(int *ptr)
-{
-        *ptr += sizeof(JOB_AES_HMAC);
-        if (*ptr >= (int) (MAX_JOBS * sizeof(JOB_AES_HMAC)))
-                *ptr = 0;
-}
-
-__forceinline
-JOB_AES_HMAC *
-get_completed_job_sse(MB_MGR *state)
-{
-        JOB_AES_HMAC *job;
-
-        if (state->earliest_job < 0)
-                return NULL;
-
-        job = JOBS(state, state->earliest_job);
-        if (job->status < STS_COMPLETED)
-                return NULL;
-
-        ADV_JOBS(&state->earliest_job);
-
-        if (state->earliest_job == state->next_job)
-                state->earliest_job = -1;
-
-        return job;
-}
-
-__forceinline
-JOB_AES_HMAC *
-get_next_job_sse(MB_MGR *state)
-{
-        return JOBS(state, state->next_job);
-}
+IMB_DLL_EXPORT JOB_AES_HMAC *get_completed_job_sse(MB_MGR *state);
+IMB_DLL_EXPORT JOB_AES_HMAC *get_next_job_sse(MB_MGR *state);
 
 /*
  * Wrapper macros to call arch API's set up
@@ -688,6 +869,7 @@ get_next_job_sse(MB_MGR *state)
  *   mgr.keyexp_128 will point to aes_keyexp_128_sse()
  *   mgr.keyexp_192 will point to aes_keyexp_192_sse()
  *   mgr.keyexp_256 will point to aes_keyexp_256_sse()
+ *   etc.
  *
  * Direct use of arch API's may result in better performance.
  * Using below indirect interface may produce slightly worse performance but
@@ -700,30 +882,127 @@ get_next_job_sse(MB_MGR *state)
 #define IMB_GET_COMPLETED_JOB(_mgr)  ((_mgr)->get_completed_job((_mgr)))
 #define IMB_FLUSH_JOB(_mgr)          ((_mgr)->flush_job((_mgr)))
 #define IMB_QUEUE_SIZE(_mgr)         ((_mgr)->queue_size((_mgr)))
+
+/* Key expansion and generation API's */
 #define IMB_AES_KEYEXP_128(_mgr, _raw, _enc, _dec)      \
         ((_mgr)->keyexp_128((_raw), (_enc), (_dec)))
 #define IMB_AES_KEYEXP_192(_mgr, _raw, _enc, _dec)      \
         ((_mgr)->keyexp_192((_raw), (_enc), (_dec)))
 #define IMB_AES_KEYEXP_256(_mgr, _raw, _enc, _dec)      \
         ((_mgr)->keyexp_256((_raw), (_enc), (_dec)))
+
 #define IMB_AES_CMAC_SUBKEY_GEN_128(_mgr, _key_exp, _k1, _k2)   \
         ((_mgr)->cmac_subkey_gen_128((_key_exp), (_k1), (_k2)))
+
 #define IMB_AES_XCBC_KEYEXP(_mgr, _key, _k1_exp, _k2, _k3)      \
         ((_mgr)->xcbc_keyexp((_key), (_k1_exp), (_k2), (_k3)))
+
 #define IMB_DES_KEYSCHED(_mgr, _ks, _key)       \
         ((_mgr)->des_key_sched((_ks), (_key)))
+
+/* Hash API's */
 #define IMB_SHA1_ONE_BLOCK(_mgr, _data, _digest)        \
         ((_mgr)->sha1_one_block((_data), (_digest)))
+#define IMB_SHA1(_mgr, _data, _length, _digest)         \
+        ((_mgr)->sha1((_data), (_length), (_digest)))
 #define IMB_SHA224_ONE_BLOCK(_mgr, _data, _digest)      \
         ((_mgr)->sha224_one_block((_data), (_digest)))
+#define IMB_SHA224(_mgr, _data, _length, _digest)       \
+        ((_mgr)->sha224((_data), (_length), (_digest)))
 #define IMB_SHA256_ONE_BLOCK(_mgr, _data, _digest)      \
         ((_mgr)->sha256_one_block((_data), (_digest)))
+#define IMB_SHA256(_mgr, _data, _length, _digest)       \
+        ((_mgr)->sha256((_data), (_length), (_digest)))
 #define IMB_SHA384_ONE_BLOCK(_mgr, _data, _digest)      \
         ((_mgr)->sha384_one_block((_data), (_digest)))
+#define IMB_SHA384(_mgr, _data, _length, _digest)       \
+        ((_mgr)->sha384((_data), (_length), (_digest)))
 #define IMB_SHA512_ONE_BLOCK(_mgr, _data, _digest)      \
         ((_mgr)->sha512_one_block((_data), (_digest)))
+#define IMB_SHA512(_mgr, _data, _length, _digest)       \
+        ((_mgr)->sha512((_data), (_length), (_digest)))
 #define IMB_MD5_ONE_BLOCK(_mgr, _data, _digest)         \
         ((_mgr)->md5_one_block((_data), (_digest)))
+
+/* AES-CFB API */
+#define IMB_AES128_CFB_ONE(_mgr, _out, _in, _iv, _enc, _len)            \
+        ((_mgr)->aes128_cfb_one((_out), (_in), (_iv), (_enc), (_len)))
+
+/* AES-GCM API's */
+#define IMB_AES128_GCM_ENC(_mgr, _key, _ctx, _out, _in, _len, _iv, _aad, _aadl,\
+                           _tag, _tagl)                                 \
+        ((_mgr)->gcm128_enc((_key), (_ctx), (_out), (_in), (_len), (_iv), \
+                            (_aad), (_aadl), (_tag), (_tagl)))
+#define IMB_AES192_GCM_ENC(_mgr, _key, _ctx, _out, _in, _len, _iv, _aad, _aadl,\
+                           _tag, _tagl)                                 \
+        ((_mgr)->gcm192_enc((_key), (_ctx), (_out), (_in), (_len), (_iv), \
+                            (_aad), (_aadl), (_tag), (_tagl)))
+#define IMB_AES256_GCM_ENC(_mgr, _key, _ctx, _out, _in, _len, _iv, _aad, _aadl,\
+                           _tag, _tagl)                                 \
+        ((_mgr)->gcm256_enc((_key), (_ctx), (_out), (_in), (_len), (_iv), \
+                            (_aad), (_aadl), (_tag), (_tagl)))
+
+#define IMB_AES128_GCM_DEC(_mgr, _key, _ctx, _out, _in, _len, _iv, _aad, _aadl,\
+                           _tag, _tagl)                                 \
+        ((_mgr)->gcm128_dec((_key), (_ctx), (_out), (_in), (_len), (_iv), \
+                            (_aad), (_aadl), (_tag), (_tagl)))
+#define IMB_AES192_GCM_DEC(_mgr, _key, _ctx, _out, _in, _len, _iv, _aad, _aadl,\
+                           _tag, _tagl)                                 \
+        ((_mgr)->gcm192_dec((_key), (_ctx), (_out), (_in), (_len), (_iv), \
+                            (_aad), (_aadl), (_tag), (_tagl)))
+#define IMB_AES256_GCM_DEC(_mgr, _key, _ctx, _out, _in, _len, _iv, _aad, _aadl,\
+                           _tag, _tagl)                                 \
+        ((_mgr)->gcm256_dec((_key), (_ctx), (_out), (_in), (_len), (_iv), \
+                            (_aad), (_aadl), (_tag), (_tagl)))
+
+#define IMB_AES128_GCM_INIT(_mgr, _key, _ctx, _iv, _aad, _aadl)        \
+        ((_mgr)->gcm128_init((_key), (_ctx), (_iv), (_aad), (_aadl)))
+#define IMB_AES192_GCM_INIT(_mgr, _key, _ctx, _iv, _aad, _aadl)        \
+        ((_mgr)->gcm192_init((_key), (_ctx), (_iv), (_aad), (_aadl)))
+#define IMB_AES256_GCM_INIT(_mgr, _key, _ctx, _iv, _aad, _aadl)        \
+        ((_mgr)->gcm256_init((_key), (_ctx), (_iv), (_aad), (_aadl)))
+
+#define IMB_AES128_GCM_ENC_UPDATE(_mgr, _key, _ctx, _out, _in, _len)    \
+        ((_mgr)->gcm128_enc_update((_key), (_ctx), (_out), (_in), (_len)))
+#define IMB_AES192_GCM_ENC_UPDATE(_mgr, _key, _ctx, _out, _in, _len)    \
+        ((_mgr)->gcm192_enc_update((_key), (_ctx), (_out), (_in), (_len)))
+#define IMB_AES256_GCM_ENC_UPDATE(_mgr, _key, _ctx, _out, _in, _len)    \
+        ((_mgr)->gcm256_enc_update((_key), (_ctx), (_out), (_in), (_len)))
+
+#define IMB_AES128_GCM_DEC_UPDATE(_mgr, _key, _ctx, _out, _in, _len)    \
+        ((_mgr)->gcm128_dec_update((_key), (_ctx), (_out), (_in), (_len)))
+#define IMB_AES192_GCM_DEC_UPDATE(_mgr, _key, _ctx, _out, _in, _len)    \
+        ((_mgr)->gcm192_dec_update((_key), (_ctx), (_out), (_in), (_len)))
+#define IMB_AES256_GCM_DEC_UPDATE(_mgr, _key, _ctx, _out, _in, _len)    \
+        ((_mgr)->gcm256_dec_update((_key), (_ctx), (_out), (_in), (_len)))
+
+#define IMB_AES128_GCM_ENC_FINALIZE(_mgr, _key, _ctx, _tag, _tagl)      \
+        ((_mgr)->gcm128_enc_finalize((_key), (_ctx), (_tag), (_tagl)))
+#define IMB_AES192_GCM_ENC_FINALIZE(_mgr, _key, _ctx, _tag, _tagl)      \
+        ((_mgr)->gcm192_enc_finalize((_key), (_ctx), (_tag), (_tagl)))
+#define IMB_AES256_GCM_ENC_FINALIZE(_mgr, _key, _ctx, _tag, _tagl)      \
+        ((_mgr)->gcm256_enc_finalize((_key), (_ctx), (_tag), (_tagl)))
+
+#define IMB_AES128_GCM_DEC_FINALIZE(_mgr, _key, _ctx, _tag, _tagl)      \
+        ((_mgr)->gcm128_dec_finalize((_key), (_ctx), (_tag), (_tagl)))
+#define IMB_AES192_GCM_DEC_FINALIZE(_mgr, _key, _ctx, _tag, _tagl)      \
+        ((_mgr)->gcm192_dec_finalize((_key), (_ctx), (_tag), (_tagl)))
+#define IMB_AES256_GCM_DEC_FINALIZE(_mgr, _key, _ctx, _tag, _tagl)      \
+        ((_mgr)->gcm256_dec_finalize((_key), (_ctx), (_tag), (_tagl)))
+
+#define IMB_AES128_GCM_PRECOMP(_mgr, _key) \
+        ((_mgr)->gcm128_precomp((_key)))
+#define IMB_AES192_GCM_PRECOMP(_mgr, _key) \
+        ((_mgr)->gcm192_precomp((_key)))
+#define IMB_AES256_GCM_PRECOMP(_mgr, _key) \
+        ((_mgr)->gcm256_precomp((_key)))
+
+#define IMB_AES128_GCM_PRE(_mgr, _key_in, _key_exp)     \
+        ((_mgr)->gcm128_pre((_key_in), (_key_exp)))
+#define IMB_AES192_GCM_PRE(_mgr, _key_in, _key_exp)     \
+        ((_mgr)->gcm192_pre((_key_in), (_key_exp)))
+#define IMB_AES256_GCM_PRE(_mgr, _key_in, _key_exp)     \
+        ((_mgr)->gcm256_pre((_key_in), (_key_exp)))
 
 /* Auxiliary functions */
 
@@ -743,10 +1022,20 @@ IMB_DLL_EXPORT int
 des_key_schedule(uint64_t *ks, const void *key);
 
 /* SSE */
+IMB_DLL_EXPORT void sha1_sse(const void *data, const uint64_t length,
+                             void *digest);
 IMB_DLL_EXPORT void sha1_one_block_sse(const void *data, void *digest);
+IMB_DLL_EXPORT void sha224_sse(const void *data, const uint64_t length,
+                               void *digest);
 IMB_DLL_EXPORT void sha224_one_block_sse(const void *data, void *digest);
+IMB_DLL_EXPORT void sha256_sse(const void *data, const uint64_t length,
+                               void *digest);
 IMB_DLL_EXPORT void sha256_one_block_sse(const void *data, void *digest);
+IMB_DLL_EXPORT void sha384_sse(const void *data, const uint64_t length,
+                               void *digest);
 IMB_DLL_EXPORT void sha384_one_block_sse(const void *data, void *digest);
+IMB_DLL_EXPORT void sha512_sse(const void *data, const uint64_t length,
+                               void *digest);
 IMB_DLL_EXPORT void sha512_one_block_sse(const void *data, void *digest);
 IMB_DLL_EXPORT void md5_one_block_sse(const void *data, void *digest);
 IMB_DLL_EXPORT void aes_keyexp_128_sse(const void *key, void *enc_exp_keys,
@@ -768,13 +1057,24 @@ IMB_DLL_EXPORT void aes_cmac_subkey_gen_sse(const void *key_exp, void *key1,
 IMB_DLL_EXPORT void aes_cfb_128_one_sse(void *out, const void *in,
                                         const void *iv, const void *keys,
                                         uint64_t len);
+
 /* AVX */
+IMB_DLL_EXPORT void sha1_avx(const void *data, const uint64_t length,
+                             void *digest);
 IMB_DLL_EXPORT void sha1_one_block_avx(const void *data, void *digest);
+IMB_DLL_EXPORT void sha224_avx(const void *data, const uint64_t length,
+                               void *digest);
 IMB_DLL_EXPORT void sha224_one_block_avx(const void *data, void *digest);
+IMB_DLL_EXPORT void sha256_avx(const void *data, const uint64_t length,
+                               void *digest);
 IMB_DLL_EXPORT void sha256_one_block_avx(const void *data, void *digest);
+IMB_DLL_EXPORT void sha384_avx(const void *data, const uint64_t length,
+                               void *digest);
 IMB_DLL_EXPORT void sha384_one_block_avx(const void *data, void *digest);
+IMB_DLL_EXPORT void sha512_avx(const void *data, const uint64_t length,
+                               void *digest);
 IMB_DLL_EXPORT void sha512_one_block_avx(const void *data, void *digest);
-#define md5_one_block_avx       md5_one_block_sse
+IMB_DLL_EXPORT void md5_one_block_avx(const void *data, void *digest);
 IMB_DLL_EXPORT void aes_keyexp_128_avx(const void *key, void *enc_exp_keys,
                                        void *dec_exp_keys);
 IMB_DLL_EXPORT void aes_keyexp_192_avx(const void *key, void *enc_exp_keys,
@@ -796,121 +1096,84 @@ IMB_DLL_EXPORT void aes_cfb_128_one_avx(void *out, const void *in,
                                         uint64_t len);
 
 /* AVX2 */
-#define sha1_one_block_avx2      sha1_one_block_avx
-#define sha224_one_block_avx2    sha224_one_block_avx
-#define sha256_one_block_avx2    sha256_one_block_avx
-#define sha384_one_block_avx2    sha384_one_block_avx
-#define sha512_one_block_avx2    sha512_one_block_avx
-#define md5_one_block_avx2       md5_one_block_avx
-#define aes_keyexp_128_avx2      aes_keyexp_128_avx
-#define aes_keyexp_192_avx2      aes_keyexp_192_avx
-#define aes_keyexp_256_avx2      aes_keyexp_256_avx
-#define aes_xcbc_expand_key_avx2 aes_xcbc_expand_key_avx
-#define aes_keyexp_128_enc_avx2  aes_keyexp_128_enc_avx
-#define aes_keyexp_192_enc_avx2  aes_keyexp_192_enc_avx
-#define aes_keyexp_256_enc_avx2  aes_keyexp_256_enc_avx
-#define aes_cmac_subkey_gen_avx2 aes_cmac_subkey_gen_avx
-#define aes_cfb_128_one_avx2     aes_cfb_128_one_avx
+IMB_DLL_EXPORT void sha1_avx2(const void *data, const uint64_t length,
+                              void *digest);
+IMB_DLL_EXPORT void sha1_one_block_avx2(const void *data, void *digest);
+IMB_DLL_EXPORT void sha224_avx2(const void *data, const uint64_t length,
+                                void *digest);
+IMB_DLL_EXPORT void sha224_one_block_avx2(const void *data, void *digest);
+IMB_DLL_EXPORT void sha256_avx2(const void *data, const uint64_t length,
+                                void *digest);
+IMB_DLL_EXPORT void sha256_one_block_avx2(const void *data, void *digest);
+IMB_DLL_EXPORT void sha384_avx2(const void *data, const uint64_t length,
+                                void *digest);
+IMB_DLL_EXPORT void sha384_one_block_avx2(const void *data, void *digest);
+IMB_DLL_EXPORT void sha512_avx2(const void *data, const uint64_t length,
+                                void *digest);
+IMB_DLL_EXPORT void sha512_one_block_avx2(const void *data, void *digest);
+IMB_DLL_EXPORT void md5_one_block_avx2(const void *data, void *digest);
+IMB_DLL_EXPORT void aes_keyexp_128_avx2(const void *key, void *enc_exp_keys,
+                                        void *dec_exp_keys);
+IMB_DLL_EXPORT void aes_keyexp_192_avx2(const void *key, void *enc_exp_keys,
+                                        void *dec_exp_keys);
+IMB_DLL_EXPORT void aes_keyexp_256_avx2(const void *key, void *enc_exp_keys,
+                                        void *dec_exp_keys);
+IMB_DLL_EXPORT void aes_xcbc_expand_key_avx2(const void *key, void *k1_exp,
+                                             void *k2, void *k3);
+IMB_DLL_EXPORT void aes_keyexp_128_enc_avx2(const void *key,
+                                            void *enc_exp_keys);
+IMB_DLL_EXPORT void aes_keyexp_192_enc_avx2(const void *key,
+                                            void *enc_exp_keys);
+IMB_DLL_EXPORT void aes_keyexp_256_enc_avx2(const void *key,
+                                            void *enc_exp_keys);
+IMB_DLL_EXPORT void aes_cmac_subkey_gen_avx2(const void *key_exp, void *key1,
+                                             void *key2);
+IMB_DLL_EXPORT void aes_cfb_128_one_avx2(void *out, const void *in,
+                                         const void *iv, const void *keys,
+                                         uint64_t len);
 
 /* AVX512 */
-#define sha1_one_block_avx512      sha1_one_block_avx2
-#define sha224_one_block_avx512    sha224_one_block_avx2
-#define sha256_one_block_avx512    sha256_one_block_avx2
-#define sha384_one_block_avx512    sha384_one_block_avx2
-#define sha512_one_block_avx512    sha512_one_block_avx2
-#define md5_one_block_avx512       md5_one_block_avx2
-#define aes_keyexp_128_avx512      aes_keyexp_128_avx2
-#define aes_keyexp_192_avx512      aes_keyexp_192_avx2
-#define aes_keyexp_256_avx512      aes_keyexp_256_avx2
-#define aes_xcbc_expand_key_avx512 aes_xcbc_expand_key_avx2
-#define aes_keyexp_128_enc_avx512  aes_keyexp_128_enc_avx2
-#define aes_keyexp_192_enc_avx512  aes_keyexp_192_enc_avx2
-#define aes_keyexp_256_enc_avx512  aes_keyexp_256_enc_avx2
-#define aes_cmac_subkey_gen_avx512 aes_cmac_subkey_gen_avx2
-#define aes_cfb_128_one_avx512     aes_cfb_128_one_avx2
+IMB_DLL_EXPORT void sha1_avx512(const void *data, const uint64_t length,
+                                 void *digest);
+IMB_DLL_EXPORT void sha1_one_block_avx512(const void *data, void *digest);
+IMB_DLL_EXPORT void sha224_avx512(const void *data, const uint64_t length,
+                                  void *digest);
+IMB_DLL_EXPORT void sha224_one_block_avx512(const void *data, void *digest);
+IMB_DLL_EXPORT void sha256_avx512(const void *data, const uint64_t length,
+                                  void *digest);
+IMB_DLL_EXPORT void sha256_one_block_avx512(const void *data, void *digest);
+IMB_DLL_EXPORT void sha384_avx512(const void *data, const uint64_t length,
+                                  void *digest);
+IMB_DLL_EXPORT void sha384_one_block_avx512(const void *data, void *digest);
+IMB_DLL_EXPORT void sha512_avx512(const void *data, const uint64_t length,
+                                  void *digest);
+IMB_DLL_EXPORT void sha512_one_block_avx512(const void *data, void *digest);
+IMB_DLL_EXPORT void md5_one_block_avx512(const void *data, void *digest);
+IMB_DLL_EXPORT void aes_keyexp_128_avx512(const void *key, void *enc_exp_keys,
+                                          void *dec_exp_keys);
+IMB_DLL_EXPORT void aes_keyexp_192_avx512(const void *key, void *enc_exp_keys,
+                                          void *dec_exp_keys);
+IMB_DLL_EXPORT void aes_keyexp_256_avx512(const void *key, void *enc_exp_keys,
+                                          void *dec_exp_keys);
+IMB_DLL_EXPORT void aes_xcbc_expand_key_avx512(const void *key, void *k1_exp,
+                                               void *k2, void *k3);
+IMB_DLL_EXPORT void aes_keyexp_128_enc_avx512(const void *key,
+                                              void *enc_exp_keys);
+IMB_DLL_EXPORT void aes_keyexp_192_enc_avx512(const void *key,
+                                              void *enc_exp_keys);
+IMB_DLL_EXPORT void aes_keyexp_256_enc_avx512(const void *key,
+                                              void *enc_exp_keys);
+IMB_DLL_EXPORT void aes_cmac_subkey_gen_avx512(const void *key_exp, void *key1,
+                                               void *key2);
+IMB_DLL_EXPORT void aes_cfb_128_one_avx512(void *out, const void *in,
+                                           const void *iv, const void *keys,
+                                           uint64_t len);
 
 /*
  * Direct GCM API.
  * Note that GCM is also availabe through job API.
  */
 #ifndef NO_GCM
-/* Authenticated Tag Length in bytes.
- * Valid values are 16 (most likely), 12 or 8. */
-#define MAX_TAG_LEN (16)
-/*
- * IV data is limited to 16 bytes as follows:
- * 12 bytes is provided by an application -
- *    pre-counter block j0: 4 byte salt (from Security Association)
- *    concatenated with 8 byte Initialization Vector (from IPSec ESP
- *    Payload).
- * 4 byte value 0x00000001 is padded automatically by the library -
- *    there is no need to add these 4 bytes on application side anymore.
- */
-#define GCM_IV_DATA_LEN (12)
-
-#define LONGEST_TESTED_AAD_LENGTH (2 * 1024)
-
-/* Key lengths of 128 and 256 supported */
-#define GCM_128_KEY_LEN (16)
-#define GCM_192_KEY_LEN (24)
-#define GCM_256_KEY_LEN (32)
-
-#define GCM_BLOCK_LEN   16
-#define GCM_ENC_KEY_LEN 16
-#define GCM_KEY_SETS    (15) /*exp key + 14 exp round keys*/
-
-/**
- * @brief holds intermediate key data needed to improve performance
- *
- * gcm_key_data hold internal key information used by gcm128, gcm192 and gcm256.
- */
-#ifdef __WIN32
-__declspec(align(16))
-#endif /* WIN32 */
-struct gcm_key_data {
-        uint8_t expanded_keys[GCM_ENC_KEY_LEN * GCM_KEY_SETS];
-        /* storage for HashKey mod poly */
-        uint8_t shifted_hkey_1[GCM_ENC_KEY_LEN]; /* HashKey<<1 mod poly */
-        uint8_t shifted_hkey_2[GCM_ENC_KEY_LEN]; /* HashKey^2<<1 mod poly */
-        uint8_t shifted_hkey_3[GCM_ENC_KEY_LEN]; /* HashKey^3<<1 mod poly */
-        uint8_t shifted_hkey_4[GCM_ENC_KEY_LEN]; /* HashKey^4<<1 mod poly */
-        uint8_t shifted_hkey_5[GCM_ENC_KEY_LEN]; /* HashKey^5<<1 mod poly */
-        uint8_t shifted_hkey_6[GCM_ENC_KEY_LEN]; /* HashKey^6<<1 mod poly */
-        uint8_t shifted_hkey_7[GCM_ENC_KEY_LEN]; /* HashKey^7<<1 mod poly */
-        uint8_t shifted_hkey_8[GCM_ENC_KEY_LEN]; /* HashKey^8<<1 mod poly */
-        /*
-         * Storage for XOR of High 64 bits and low 64 bits of HashKey mod poly.
-         * This is needed for Karatsuba purposes.
-         */
-        uint8_t shifted_hkey_1_k[GCM_ENC_KEY_LEN]; /* HashKey<<1 mod poly */
-        uint8_t shifted_hkey_2_k[GCM_ENC_KEY_LEN]; /* HashKey^2<<1 mod poly */
-        uint8_t shifted_hkey_3_k[GCM_ENC_KEY_LEN]; /* HashKey^3<<1 mod poly */
-        uint8_t shifted_hkey_4_k[GCM_ENC_KEY_LEN]; /* HashKey^4<<1 mod poly */
-        uint8_t shifted_hkey_5_k[GCM_ENC_KEY_LEN]; /* HashKey^5<<1 mod poly */
-        uint8_t shifted_hkey_6_k[GCM_ENC_KEY_LEN]; /* HashKey^6<<1 mod poly */
-        uint8_t shifted_hkey_7_k[GCM_ENC_KEY_LEN]; /* HashKey^7<<1 mod poly */
-        uint8_t shifted_hkey_8_k[GCM_ENC_KEY_LEN]; /* HashKey^8<<1 mod poly */
-}
-#ifdef LINUX
-__attribute__((aligned(16)));
-#else
-;
-#endif
-
-/**
- * @brief holds GCM operation context
- */
-struct gcm_context_data {
-        /* init, update and finalize context data */
-        uint8_t  aad_hash[GCM_BLOCK_LEN];
-        uint64_t aad_length;
-        uint64_t in_length;
-        uint8_t  partial_block_enc_key[GCM_BLOCK_LEN];
-        uint8_t  orig_IV[GCM_BLOCK_LEN];
-        uint8_t  current_counter[GCM_BLOCK_LEN];
-        uint64_t  partial_block_length;
-};
-
 /**
  * @brief GCM-AES Encryption
  *
@@ -1352,64 +1615,24 @@ IMB_DLL_EXPORT void aes_gcm_precomp_256_avx_gen4(struct gcm_key_data *key_data);
  * @param key_data GCM expanded key data
  *
  */
-__forceinline
-void aes_gcm_pre_128_sse(const void *key, struct gcm_key_data *key_data)
-{
-        aes_keyexp_128_enc_sse(key, key_data->expanded_keys);
-        aes_gcm_precomp_128_sse(key_data);
-}
-__forceinline
-void aes_gcm_pre_128_avx_gen2(const void *key, struct gcm_key_data *key_data)
-{
-        aes_keyexp_128_enc_avx(key, key_data->expanded_keys);
-        aes_gcm_precomp_128_avx_gen2(key_data);
-}
-__forceinline
-void aes_gcm_pre_128_avx_gen4(const void *key, struct gcm_key_data *key_data)
-{
-        aes_keyexp_128_enc_avx2(key, key_data->expanded_keys);
-        aes_gcm_precomp_128_avx_gen4(key_data);
-}
-
-__forceinline
-void aes_gcm_pre_192_sse(const void *key, struct gcm_key_data *key_data)
-{
-        aes_keyexp_192_enc_sse(key, key_data->expanded_keys);
-        aes_gcm_precomp_192_sse(key_data);
-}
-__forceinline
-void aes_gcm_pre_192_avx_gen2(const void *key, struct gcm_key_data *key_data)
-{
-        aes_keyexp_192_enc_avx(key, key_data->expanded_keys);
-        aes_gcm_precomp_192_avx_gen2(key_data);
-}
-__forceinline
-void aes_gcm_pre_192_avx_gen4(const void *key, struct gcm_key_data *key_data)
-{
-        aes_keyexp_192_enc_avx2(key, key_data->expanded_keys);
-        aes_gcm_precomp_192_avx_gen4(key_data);
-}
-
-__forceinline
-void aes_gcm_pre_256_sse(const void *key, struct gcm_key_data *key_data)
-{
-        struct gcm_key_data tmp;
-
-        aes_keyexp_256_sse(key, key_data->expanded_keys, tmp.expanded_keys);
-        aes_gcm_precomp_256_sse(key_data);
-}
-__forceinline
-void aes_gcm_pre_256_avx_gen2(const void *key, struct gcm_key_data *key_data)
-{
-        aes_keyexp_256_enc_avx(key, key_data->expanded_keys);
-        aes_gcm_precomp_256_avx_gen2(key_data);
-}
-__forceinline
-void aes_gcm_pre_256_avx_gen4(const void *key, struct gcm_key_data *key_data)
-{
-        aes_keyexp_256_enc_avx2(key, key_data->expanded_keys);
-        aes_gcm_precomp_256_avx_gen4(key_data);
-}
+IMB_DLL_EXPORT void aes_gcm_pre_128_sse(const void *key,
+                                        struct gcm_key_data *key_data);
+IMB_DLL_EXPORT void aes_gcm_pre_128_avx_gen2(const void *key,
+                                             struct gcm_key_data *key_data);
+IMB_DLL_EXPORT void aes_gcm_pre_128_avx_gen4(const void *key,
+                                             struct gcm_key_data *key_data);
+IMB_DLL_EXPORT void aes_gcm_pre_192_sse(const void *key,
+                                        struct gcm_key_data *key_data);
+IMB_DLL_EXPORT void aes_gcm_pre_192_avx_gen2(const void *key,
+                                             struct gcm_key_data *key_data);
+IMB_DLL_EXPORT void aes_gcm_pre_192_avx_gen4(const void *key,
+                                             struct gcm_key_data *key_data);
+IMB_DLL_EXPORT void aes_gcm_pre_256_sse(const void *key,
+                                        struct gcm_key_data *key_data);
+IMB_DLL_EXPORT void aes_gcm_pre_256_avx_gen2(const void *key,
+                                             struct gcm_key_data *key_data);
+IMB_DLL_EXPORT void aes_gcm_pre_256_avx_gen4(const void *key,
+                                             struct gcm_key_data *key_data);
 #endif /* !NO_GCM */
 
 #ifdef __cplusplus

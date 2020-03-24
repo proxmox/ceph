@@ -1,9 +1,7 @@
-/*
- * Copyright (c) 2016 QLogic Corporation.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright (c) 2016 - 2018 Cavium Inc.
  * All rights reserved.
- * www.qlogic.com
- *
- * See LICENSE.qede_pmd for copyright and licensing details.
+ * www.cavium.com
  */
 
 
@@ -63,9 +61,16 @@
 #define QEDE_FW_RX_ALIGN_END	(1UL << QEDE_RX_ALIGN_SHIFT)
 #define QEDE_CEIL_TO_CACHE_LINE_SIZE(n) (((n) + (QEDE_FW_RX_ALIGN_END - 1)) & \
 					~(QEDE_FW_RX_ALIGN_END - 1))
-/* Note: QEDE_LLC_SNAP_HDR_LEN is optional */
-#define QEDE_ETH_OVERHEAD	((ETHER_HDR_LEN) + ((2 * QEDE_VLAN_TAG_SIZE)) \
-				+ (QEDE_LLC_SNAP_HDR_LEN))
+#define QEDE_FLOOR_TO_CACHE_LINE_SIZE(n) RTE_ALIGN_FLOOR(n, \
+							 QEDE_FW_RX_ALIGN_END)
+
+/* Note: QEDE_LLC_SNAP_HDR_LEN is optional,
+ * +2 is for padding in front of L2 header
+ */
+#define QEDE_ETH_OVERHEAD	(((2 * QEDE_VLAN_TAG_SIZE)) \
+				 + (QEDE_LLC_SNAP_HDR_LEN) + 2)
+
+#define QEDE_MAX_ETHER_HDR_LEN	(ETHER_HDR_LEN + QEDE_ETH_OVERHEAD)
 
 #define QEDE_RSS_OFFLOAD_ALL    (ETH_RSS_IPV4			|\
 				 ETH_RSS_NONFRAG_IPV4_TCP	|\
@@ -73,24 +78,38 @@
 				 ETH_RSS_IPV6			|\
 				 ETH_RSS_NONFRAG_IPV6_TCP	|\
 				 ETH_RSS_NONFRAG_IPV6_UDP	|\
-				 ETH_RSS_VXLAN)
+				 ETH_RSS_VXLAN			|\
+				 ETH_RSS_GENEVE)
 
-#define QEDE_TXQ_FLAGS		((uint32_t)ETH_TXQ_FLAGS_NOMULTSEGS)
-
-#define MAX_NUM_TC		8
-
-#define for_each_queue(i) for (i = 0; i < qdev->num_queues; i++)
-
+#define for_each_rss(i)		for (i = 0; i < qdev->num_rx_queues; i++)
+#define for_each_tss(i)		for (i = 0; i < qdev->num_tx_queues; i++)
+#define QEDE_RXTX_MAX(qdev) \
+	(RTE_MAX(QEDE_RSS_COUNT(qdev), QEDE_TSS_COUNT(qdev)))
 
 /* Macros for non-tunnel packet types lkup table */
 #define QEDE_PKT_TYPE_UNKNOWN				0x0
-#define QEDE_PKT_TYPE_MAX				0xf
+#define QEDE_PKT_TYPE_MAX				0x3f
+
 #define QEDE_PKT_TYPE_IPV4				0x1
 #define QEDE_PKT_TYPE_IPV6				0x2
 #define QEDE_PKT_TYPE_IPV4_TCP				0x5
 #define QEDE_PKT_TYPE_IPV6_TCP				0x6
 #define QEDE_PKT_TYPE_IPV4_UDP				0x9
 #define QEDE_PKT_TYPE_IPV6_UDP				0xa
+
+/* For frag pkts, corresponding IP bits is set */
+#define QEDE_PKT_TYPE_IPV4_FRAG				0x11
+#define QEDE_PKT_TYPE_IPV6_FRAG				0x12
+
+#define QEDE_PKT_TYPE_IPV4_VLAN				0x21
+#define QEDE_PKT_TYPE_IPV6_VLAN				0x22
+#define QEDE_PKT_TYPE_IPV4_TCP_VLAN			0x25
+#define QEDE_PKT_TYPE_IPV6_TCP_VLAN			0x26
+#define QEDE_PKT_TYPE_IPV4_UDP_VLAN			0x29
+#define QEDE_PKT_TYPE_IPV6_UDP_VLAN			0x2a
+
+#define QEDE_PKT_TYPE_IPV4_VLAN_FRAG			0x31
+#define QEDE_PKT_TYPE_IPV6_VLAN_FRAG			0x32
 
 /* Macros for tunneled packets with next protocol lkup table */
 #define QEDE_PKT_TYPE_TUNN_GENEVE			0x1
@@ -99,12 +118,12 @@
 
 /* Bit 2 is don't care bit */
 #define QEDE_PKT_TYPE_TUNN_L2_TENID_NOEXIST_GENEVE	0x9
-#define QEDE_PKT_TYPE_TUNN_L2_TENID_NOEXIST_GRE	0xa
+#define QEDE_PKT_TYPE_TUNN_L2_TENID_NOEXIST_GRE		0xa
 #define QEDE_PKT_TYPE_TUNN_L2_TENID_NOEXIST_VXLAN	0xb
 
 #define QEDE_PKT_TYPE_TUNN_L2_TENID_EXIST_GENEVE	0xd
 #define QEDE_PKT_TYPE_TUNN_L2_TENID_EXIST_GRE		0xe
-#define QEDE_PKT_TYPE_TUNN_L2_TENID_EXIST_VXLAN	0xf
+#define QEDE_PKT_TYPE_TUNN_L2_TENID_EXIST_VXLAN		0xf
 
 
 #define QEDE_PKT_TYPE_TUNN_IPV4_TENID_NOEXIST_GENEVE    0x11
@@ -112,7 +131,7 @@
 #define QEDE_PKT_TYPE_TUNN_IPV4_TENID_NOEXIST_VXLAN     0x13
 
 #define QEDE_PKT_TYPE_TUNN_IPV4_TENID_EXIST_GENEVE	0x15
-#define QEDE_PKT_TYPE_TUNN_IPV4_TENID_EXIST_GRE	0x16
+#define QEDE_PKT_TYPE_TUNN_IPV4_TENID_EXIST_GRE		0x16
 #define QEDE_PKT_TYPE_TUNN_IPV4_TENID_EXIST_VXLAN	0x17
 
 
@@ -130,11 +149,13 @@
 				   PKT_TX_TCP_CKSUM             | \
 				   PKT_TX_UDP_CKSUM             | \
 				   PKT_TX_OUTER_IP_CKSUM        | \
-				   PKT_TX_TCP_SEG)
+				   PKT_TX_TCP_SEG		| \
+				   PKT_TX_IPV4			| \
+				   PKT_TX_IPV6)
 
 #define QEDE_TX_OFFLOAD_MASK (QEDE_TX_CSUM_OFFLOAD_MASK | \
-			      PKT_TX_QINQ_PKT           | \
-			      PKT_TX_VLAN_PKT)
+			      PKT_TX_VLAN_PKT		| \
+			      PKT_TX_TUNNEL_MASK)
 
 #define QEDE_TX_OFFLOAD_NOTSUP_MASK \
 	(PKT_TX_OFFLOAD_MASK ^ QEDE_TX_OFFLOAD_MASK)
@@ -164,12 +185,15 @@ struct qede_rx_queue {
 	uint16_t *hw_cons_ptr;
 	void OSAL_IOMEM *hw_rxq_prod_addr;
 	struct qede_rx_entry *sw_rx_ring;
+	struct ecore_sb_info *sb_info;
 	uint16_t sw_rx_cons;
 	uint16_t sw_rx_prod;
 	uint16_t nb_rx_desc;
 	uint16_t queue_id;
 	uint16_t port_id;
 	uint16_t rx_buf_size;
+	uint16_t rx_alloc_count;
+	uint16_t unused;
 	uint64_t rcv_pkts;
 	uint64_t rx_segs;
 	uint64_t rx_hw_errors;
@@ -212,13 +236,9 @@ struct qede_tx_queue {
 };
 
 struct qede_fastpath {
-	struct qede_dev *qdev;
-	u8 type;
-	uint8_t id;
 	struct ecore_sb_info *sb_info;
 	struct qede_rx_queue *rxq;
-	struct qede_tx_queue *txqs[MAX_NUM_TC];
-	char name[80];
+	struct qede_tx_queue *txq;
 };
 
 /*
@@ -239,16 +259,6 @@ void qede_rx_queue_release(void *rx_queue);
 
 void qede_tx_queue_release(void *tx_queue);
 
-int qede_dev_start(struct rte_eth_dev *eth_dev);
-
-void qede_dev_stop(struct rte_eth_dev *eth_dev);
-
-int qede_reset_fp_rings(struct qede_dev *qdev);
-
-void qede_free_fp_arrays(struct qede_dev *qdev);
-
-void qede_free_mem_load(struct rte_eth_dev *eth_dev);
-
 uint16_t qede_xmit_pkts(void *p_txq, struct rte_mbuf **tx_pkts,
 			uint16_t nb_pkts);
 
@@ -258,9 +268,17 @@ uint16_t qede_xmit_prep_pkts(void *p_txq, struct rte_mbuf **tx_pkts,
 uint16_t qede_recv_pkts(void *p_rxq, struct rte_mbuf **rx_pkts,
 			uint16_t nb_pkts);
 
-uint16_t qede_rxtx_pkts_dummy(__rte_unused void *p_rxq,
-			      __rte_unused struct rte_mbuf **pkts,
-			      __rte_unused uint16_t nb_pkts);
+uint16_t qede_rxtx_pkts_dummy(void *p_rxq,
+			      struct rte_mbuf **pkts,
+			      uint16_t nb_pkts);
+
+int qede_start_queues(struct rte_eth_dev *eth_dev);
+
+void qede_stop_queues(struct rte_eth_dev *eth_dev);
+int qede_calc_rx_buf_size(struct rte_eth_dev *dev, uint16_t mbufsz,
+			  uint16_t max_frame_size);
+int
+qede_rx_descriptor_status(void *rxq, uint16_t offset);
 
 /* Fastpath resource alloc/dealloc helpers */
 int qede_alloc_fp_resc(struct qede_dev *qdev);

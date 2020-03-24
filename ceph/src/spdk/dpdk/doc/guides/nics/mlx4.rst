@@ -46,6 +46,8 @@ This capability allows the PMD to coexist with kernel network interfaces
 which remain functional, although they stop receiving unicast packets as
 long as they share the same MAC address.
 
+The :ref:`flow_isolated_mode` is supported.
+
 Compiling librte_pmd_mlx4 causes DPDK to be linked against libibverbs.
 
 Configuration
@@ -60,7 +62,7 @@ These options can be modified in the ``.config`` file.
 
   Toggle compilation of librte_pmd_mlx4 itself.
 
-- ``CONFIG_RTE_LIBRTE_MLX4_DLOPEN_DEPS`` (default **n**)
+- ``CONFIG_RTE_IBVERBS_LINK_DLOPEN`` (default **n**)
 
   Build PMD with additional code to make it loadable without hard
   dependencies on **libibverbs** nor **libmlx4**, which may not be installed
@@ -79,6 +81,11 @@ These options can be modified in the ``.config`` file.
 
   This option has no performance impact.
 
+- ``CONFIG_RTE_IBVERBS_LINK_STATIC`` (default **n**)
+
+  Embed static flavor of the dependencies **libibverbs** and **libmlx4**
+  in the PMD shared library or the executable static binary.
+
 - ``CONFIG_RTE_LIBRTE_MLX4_DEBUG`` (default **n**)
 
   Toggle debugging code and stricter compilation flags. Enabling this option
@@ -93,7 +100,7 @@ Environment variables
   A list of directories in which to search for the rdma-core "glue" plug-in,
   separated by colons or semi-colons.
 
-  Only matters when compiled with ``CONFIG_RTE_LIBRTE_MLX4_DLOPEN_DEPS``
+  Only matters when compiled with ``CONFIG_RTE_IBVERBS_LINK_DLOPEN``
   enabled and most useful when ``CONFIG_RTE_EAL_PMD_PATH`` is also set,
   since ``LD_LIBRARY_PATH`` has no effect in this case.
 
@@ -111,6 +118,17 @@ Run-time configuration
   This parameter provides a physical port to probe and can be specified multiple
   times for additional ports. All ports are probed by default if left
   unspecified.
+
+- ``mr_ext_memseg_en`` parameter [int]
+
+  A nonzero value enables extending memseg when registering DMA memory. If
+  enabled, the number of entries in MR (Memory Region) lookup table on datapath
+  is minimized and it benefits performance. On the other hand, it worsens memory
+  utilization because registered memory is pinned by kernel driver. Even if a
+  page in the extended chunk is freed, that doesn't become reusable until the
+  entire memory is freed.
+
+  Enabled by default.
 
 Kernel module parameters
 ~~~~~~~~~~~~~~~~~~~~~~~~
@@ -137,6 +155,15 @@ below.
 
 Limitations
 -----------
+
+- For secondary process:
+
+  - Forked secondary process not supported.
+  - External memory unregistered in EAL memseg list cannot be used for DMA
+    unless such memory has been registered by ``mlx4_mr_update_ext_mp()`` in
+    primary process and remapped to the same virtual address in secondary
+    process. If the external memory is registered by primary process but has
+    different virtual address in secondary process, unexpected error may happen.
 
 - CRC stripping is supported by default and always reported as "true".
   The ability to enable/disable CRC stripping requires OFED version
@@ -206,14 +233,27 @@ Current RDMA core package and Linux kernel (recommended)
 - Minimal Linux kernel version: 4.14.
 - Minimal RDMA core version: v15 (see `RDMA core installation documentation`_).
 
+- Starting with rdma-core v21, static libraries can be built::
+
+    cd build
+    CFLAGS=-fPIC cmake -DIN_PLACE=1 -DENABLE_STATIC=1 -GNinja ..
+    ninja
+
 .. _`RDMA core installation documentation`: https://raw.githubusercontent.com/linux-rdma/rdma-core/master/README.md
+
+If rdma-core libraries are built but not installed, DPDK makefile can link them,
+thanks to these environment variables:
+
+   - ``EXTRA_CFLAGS=-I/path/to/rdma-core/build/include``
+   - ``EXTRA_LDFLAGS=-L/path/to/rdma-core/build/lib``
+   - ``PKG_CONFIG_PATH=/path/to/rdma-core/build/lib/pkgconfig``
 
 .. _Mellanox_OFED_as_a_fallback:
 
 Mellanox OFED as a fallback
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-- `Mellanox OFED`_ version: **4.3, 4.4**.
+- `Mellanox OFED`_ version: **4.4, 4.5, 4.6**.
 - firmware version: **2.42.5000** and above.
 
 .. _`Mellanox OFED`: http://www.mellanox.com/page/products_dyn?product_family=26&mtag=linux_sw_drivers

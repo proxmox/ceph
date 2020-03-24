@@ -18,6 +18,7 @@
 #define dout_subsys ceph_subsys_mon
 #undef dout_prefix
 #define dout_prefix _prefix(_dout, mon, this)
+using namespace TOPNSPC::common;
 static ostream& _prefix(std::ostream *_dout, const Monitor *mon,
                         const ConfigMonitor *hmon) {
   return *_dout << "mon." << mon->name << "@" << mon->rank
@@ -143,7 +144,7 @@ static string indent_who(const string& who)
 
 bool ConfigMonitor::preprocess_command(MonOpRequestRef op)
 {
-  MMonCommand *m = static_cast<MMonCommand*>(op->get_req());
+  auto m = op->get_req<MMonCommand>();
   std::stringstream ss;
   int err = 0;
 
@@ -154,17 +155,17 @@ bool ConfigMonitor::preprocess_command(MonOpRequestRef op)
     return true;
   }
   string format;
-  cmd_getval(g_ceph_context, cmdmap, "format", format, string("plain"));
+  cmd_getval(cmdmap, "format", format, string("plain"));
   boost::scoped_ptr<Formatter> f(Formatter::create(format));
 
   string prefix;
-  cmd_getval(g_ceph_context, cmdmap, "prefix", prefix);
+  cmd_getval(cmdmap, "prefix", prefix);
 
   bufferlist odata;
   if (prefix == "config help") {
     stringstream ss;
     string name;
-    cmd_getval(g_ceph_context, cmdmap, "key", name);
+    cmd_getval(cmdmap, "key", name);
     const Option *opt = g_conf().find_option(name);
     if (!opt) {
       opt = mon->mgrmon()->find_module_option(name);
@@ -263,10 +264,11 @@ bool ConfigMonitor::preprocess_command(MonOpRequestRef op)
     }
   } else if (prefix == "config get") {
     string who, name;
-    cmd_getval(g_ceph_context, cmdmap, "who", who);
+    cmd_getval(cmdmap, "who", who);
 
     EntityName entity;
-    if (!entity.from_str(who)) {
+    if (!entity.from_str(who) &&
+	!entity.from_str(who + ".")) {
       ss << "unrecognized entity '" << who << "'";
       err = -EINVAL;
       goto reply;
@@ -285,16 +287,15 @@ bool ConfigMonitor::preprocess_command(MonOpRequestRef op)
 	       << " class " << device_class << dendl;
     }
 
-    std::map<std::string,std::string> config;
     std::map<std::string,pair<std::string,const MaskedOption*>> src;
-    config_map.generate_entity_map(
+    auto config = config_map.generate_entity_map(
       entity,
       crush_location,
       mon->osdmon()->osdmap.crush.get(),
       device_class,
-      &config, &src);
+      &src);
 
-    if (cmd_getval(g_ceph_context, cmdmap, "key", name)) {
+    if (cmd_getval(cmdmap, "key", name)) {
       const Option *opt = g_conf().find_option(name);
       if (!opt) {
 	opt = mon->mgrmon()->find_module_option(name);
@@ -374,7 +375,7 @@ bool ConfigMonitor::preprocess_command(MonOpRequestRef op)
     }
   } else if (prefix == "config log") {
     int64_t num = 10;
-    cmd_getval(g_ceph_context, cmdmap, "num", num);
+    cmd_getval(cmdmap, "num", num);
     ostringstream ds;
     if (f) {
       f->open_array_section("changesets");
@@ -408,7 +409,17 @@ bool ConfigMonitor::preprocess_command(MonOpRequestRef op)
       if (i != mon->monmap->mon_info.begin()) {
 	conf << " ";
       }
-      conf << i->second.public_addrs;
+      if (i->second.public_addrs.size() == 1 &&
+	  i->second.public_addrs.front().is_legacy() &&
+	  i->second.public_addrs.front().get_port() == CEPH_MON_PORT_LEGACY) {
+	// if this is a legacy addr on the legacy default port, then
+	// use the legacy-compatible formatting so that old clients
+	// can use this config.  new code will see the :6789 and correctly
+	// interpret this as a v1 address.
+	conf << i->second.public_addrs.get_legacy_str();
+      } else {
+	conf << i->second.public_addrs;
+      }
     }
     conf << "\n";
     conf << config_map.global.get_minimal_conf();
@@ -433,21 +444,19 @@ bool ConfigMonitor::preprocess_command(MonOpRequestRef op)
 
 void ConfigMonitor::handle_get_config(MonOpRequestRef op)
 {
-  MGetConfig *m = static_cast<MGetConfig*>(op->get_req());
+  auto m = op->get_req<MGetConfig>();
   dout(10) << __func__ << " " << m->name << " host " << m->host << dendl;
 
   const OSDMap& osdmap = mon->osdmon()->osdmap;
   map<string,string> crush_location;
   osdmap.crush->get_full_location(m->host, &crush_location);
-  map<string,string> out;
-  config_map.generate_entity_map(
+  auto out = config_map.generate_entity_map(
     m->name,
     crush_location,
     osdmap.crush.get(),
-    m->device_class,
-    &out);
+    m->device_class);
   dout(20) << " config is " << out << dendl;
-  m->get_connection()->send_message(new MConfig(out));
+  m->get_connection()->send_message(new MConfig{std::move(out)});
 }
 
 bool ConfigMonitor::prepare_update(MonOpRequestRef op)
@@ -470,7 +479,7 @@ bool ConfigMonitor::prepare_update(MonOpRequestRef op)
 
 bool ConfigMonitor::prepare_command(MonOpRequestRef op)
 {
-  MMonCommand *m = static_cast<MMonCommand*>(op->get_req());
+  auto m = op->get_req<MMonCommand>();
   std::stringstream ss;
   int err = -EINVAL;
 
@@ -482,7 +491,7 @@ bool ConfigMonitor::prepare_command(MonOpRequestRef op)
   }
 
   string prefix;
-  cmd_getval(g_ceph_context, cmdmap, "prefix", prefix);
+  cmd_getval(cmdmap, "prefix", prefix);
   bufferlist odata;
 
   if (prefix == "config set" ||
@@ -490,10 +499,10 @@ bool ConfigMonitor::prepare_command(MonOpRequestRef op)
     string who;
     string name, value;
     bool force = false;
-    cmd_getval(g_ceph_context, cmdmap, "who", who);
-    cmd_getval(g_ceph_context, cmdmap, "name", name);
-    cmd_getval(g_ceph_context, cmdmap, "value", value);
-    cmd_getval(g_ceph_context, cmdmap, "force", force);
+    cmd_getval(cmdmap, "who", who);
+    cmd_getval(cmdmap, "name", name);
+    cmd_getval(cmdmap, "value", value);
+    cmd_getval(cmdmap, "force", force);
 
     if (prefix == "config set" && !force) {
       const Option *opt = g_conf().find_option(name);
@@ -550,25 +559,21 @@ bool ConfigMonitor::prepare_command(MonOpRequestRef op)
     }
     goto update;
   } else if (prefix == "config reset") {
-    int64_t num;
-    if (!cmd_getval(g_ceph_context, cmdmap, "num", num)) {
+    int64_t revert_to = -1;
+    cmd_getval(cmdmap, "num", revert_to);
+    if (revert_to < 0 ||
+        revert_to > (int64_t)version) {
       err = -EINVAL;
-      ss << "must specify what to revert to";
+      ss << "must specify a valid historical version to revert to; "
+         << "see 'ceph config log' for a list of avialable configuration "
+         << "historical versions";
       goto reply;
     }
-    if (num < 0 ||
-	(num > 0 && num > (int64_t)version)) {
-      err = -EINVAL;
-      ss << "must specify a valid version to revert to";
-      goto reply;
-    }
-    if (num == (int64_t)version) {
+    if (revert_to == (int64_t)version) {
       err = 0;
       goto reply;
     }
-    ceph_assert(num > 0);
-    ceph_assert((version_t)num < version);
-    for (int64_t v = version; v > num; --v) {
+    for (int64_t v = version; v > revert_to; --v) {
       ConfigChangeSet ch;
       load_changeset(v, &ch);
       for (auto& i : ch.diff) {
@@ -581,84 +586,80 @@ bool ConfigMonitor::prepare_command(MonOpRequestRef op)
 	}
       }
     }
-    pending_description = string("reset to ") + stringify(num);
+    pending_description = string("reset to ") + stringify(revert_to);
     goto update;
   } else if (prefix == "config assimilate-conf") {
     ConfFile cf;
-    deque<string> errors;
     bufferlist bl = m->get_data();
-    err = cf.parse_bufferlist(&bl, &errors, &ss);
+    err = cf.parse_bufferlist(&bl, &ss);
     if (err < 0) {
-      ss << "parse errors: " << errors;
       goto reply;
     }
     bool updated = false;
     ostringstream newconf;
-    for (auto i = cf.sections_begin(); i != cf.sections_end(); ++i) {
-      string section = i->first;
-      const ConfSection& s = i->second;
+    for (auto& [section, s] : cf) {
       dout(20) << __func__ << " [" << section << "]" << dendl;
       bool did_section = false;
-      for (auto& j : s.lines) {
+      for (auto& [key, val] : s) {
 	Option::value_t real_value;
 	string value;
 	string errstr;
-	if (!j.key.size()) {
+	if (key.empty()) {
 	  continue;
 	}
 	// a known and worthy option?
-	const Option *o = g_conf().find_option(j.key);
+	const Option *o = g_conf().find_option(key);
 	if (!o) {
-	  o = mon->mgrmon()->find_module_option(j.key);
+	  o = mon->mgrmon()->find_module_option(key);
 	}
 	if (!o ||
-	    o->flags & Option::FLAG_NO_MON_UPDATE) {
+	    (o->flags & Option::FLAG_NO_MON_UPDATE) ||
+	    (o->flags & Option::FLAG_CLUSTER_CREATE)) {
 	  goto skip;
 	}
 	// normalize
-	err = o->parse_value(j.val, &real_value, &errstr, &value);
+	err = o->parse_value(val, &real_value, &errstr, &value);
 	if (err < 0) {
-	  dout(20) << __func__ << " failed to parse " << j.key << " = '"
-		   << j.val << "'" << dendl;
+	  dout(20) << __func__ << " failed to parse " << key << " = '"
+		   << val << "'" << dendl;
 	  goto skip;
 	}
 	// does it conflict with an existing value?
 	{
 	  const Section *s = config_map.find_section(section);
 	  if (s) {
-	    auto k = s->options.find(j.key);
+	    auto k = s->options.find(key);
 	    if (k != s->options.end()) {
 	      if (value != k->second.raw_value) {
-		dout(20) << __func__ << " have " << j.key
+		dout(20) << __func__ << " have " << key
 			 << " = " << k->second.raw_value
 			 << " (not " << value << ")" << dendl;
 		goto skip;
 	      }
-	      dout(20) << __func__ << " already have " << j.key
+	      dout(20) << __func__ << " already have " << key
 		       << " = " << k->second.raw_value << dendl;
 	      continue;
 	    }
 	  }
 	}
-	dout(20) << __func__ << "  add " << j.key << " = " << value
-		 << " (" << j.val << ")" << dendl;
+	dout(20) << __func__ << "  add " << key << " = " << value
+		 << " (" << val << ")" << dendl;
 	{
-	  string key = section + "/" + j.key;
 	  bufferlist bl;
 	  bl.append(value);
-	  pending[key] = bl;
+	  pending[section + "/" + key] = bl;
 	  updated = true;
 	}
 	continue;
 
        skip:
-	dout(20) << __func__ << " skip " << j.key << " = " << value
-		 << " (" << j.val << ")" << dendl;
+	dout(20) << __func__ << " skip " << key << " = " << value
+		 << " (" << val << ")" << dendl;
 	if (!did_section) {
 	  newconf << "\n[" << section << "]\n";
 	  did_section = true;
 	}
-	newconf << "\t" << j.key << " = " << j.val << "\n";
+	newconf << "\t" << key << " = " << val << "\n";
       }
     }
     odata.append(newconf.str());
@@ -813,13 +814,11 @@ void ConfigMonitor::load_config()
     const OSDMap& osdmap = mon->osdmon()->osdmap;
     map<string,string> crush_location;
     osdmap.crush->get_full_location(g_conf()->host, &crush_location);
-    map<string,string> out;
-    config_map.generate_entity_map(
+    auto out = config_map.generate_entity_map(
       g_conf()->name,
       crush_location,
       osdmap.crush.get(),
-      string(), // no device class
-      &out);
+      string{}); // no device class
     g_conf().set_mon_vals(g_ceph_context, out, nullptr);
   }
 }
@@ -875,13 +874,11 @@ bool ConfigMonitor::refresh_config(MonSession *s)
 
   dout(20) << __func__ << " " << s->entity_name << " crush " << crush_location
 	   << " device_class " << device_class << dendl;
-  map<string,string> out;
-  config_map.generate_entity_map(
+  auto out = config_map.generate_entity_map(
     s->entity_name,
     crush_location,
     osdmap.crush.get(),
-    device_class,
-    &out);
+    device_class);
 
   if (out == s->last_config && s->any_config) {
     dout(20) << __func__ << " no change, " << out << dendl;
@@ -889,7 +886,7 @@ bool ConfigMonitor::refresh_config(MonSession *s)
   }
 
   dout(20) << __func__ << " " << out << dendl;
-  s->last_config = out;
+  s->last_config = std::move(out);
   s->any_config = true;
   return true;
 }

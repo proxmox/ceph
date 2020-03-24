@@ -7,7 +7,7 @@ Bucket Notifications
 .. contents::
 
 Bucket notifications provide a mechanism for sending information out of the radosgw when certain events are happening on the bucket.
-Currently, notifications could be sent to HTTP and AMQP0.9.1 endpoints.
+Currently, notifications could be sent to: HTTP, AMQP0.9.1 and Kafka endpoints.
 
 Note, that if the events should be stored in Ceph, in addition, or instead of being pushed to an endpoint, 
 the `PubSub Module`_ should be used instead of the bucket notification mechanism.
@@ -17,23 +17,23 @@ user can only manage its own topics, and can only associate them with buckets it
 
 In order to send notifications for events for a specific bucket, a notification entity needs to be created. A
 notification can be created on a subset of event types, or for all event types (default).
-The notification may also filter out events based on preffix/suffix and/or regular expression matching of the keys. As well as, 
-on the metadata attributes attached to the object.
+The notification may also filter out events based on prefix/suffix and/or regular expression matching of the keys. As well as,
+on the metadata attributes attached to the object, or the object tags.
 There can be multiple notifications for any specific topic, and the same topic could be used for multiple notifications.
 
 REST API has been defined to provide configuration and control interfaces for the bucket notification
-mechanism. This API is similar to the one defined as S3-compatible API of the pubsub sync module.
+mechanism. This API is similar to the one defined as the S3-compatible API of the pubsub sync module.
 
 .. toctree::
    :maxdepth: 1
 
    S3 Bucket Notification Compatibility <s3-notification-compatibility>
 
-Notificatios Performance Stats
+Notification Performance Stats
 ------------------------------
-Same counters are shared between the pubsub sync module and the bucket notification mechanism.
+The same counters are shared between the pubsub sync module and the bucket notification mechanism.
 
-- ``pubsub_event_triggered``: running counter of events with at lease one topic associated with them
+- ``pubsub_event_triggered``: running counter of events with at least one topic associated with them
 - ``pubsub_event_lost``: running counter of events that had topics associated with them but that were not pushed to any of the endpoints
 - ``pubsub_push_ok``: running counter, for all notifications, of events successfully pushed to their endpoint
 - ``pubsub_push_fail``: running counter, for all notifications, of events failed to be pushed to their endpoint
@@ -55,7 +55,7 @@ Create a Topic
 
 This will create a new topic. The topic should be provided with push endpoint parameters that would be used later
 when a notification is created.
-Upon successful request, the response will include the topic ARN that could be later used to reference this topic in the notification request. 
+Upon a successful request, the response will include the topic ARN that could be later used to reference this topic in the notification request.
 To update a topic, use the same command used for topic creation, with the topic name of an existing topic and different endpoint values.
 
 .. tip:: Any notification already associated with the topic needs to be re-created for the topic update to take effect 
@@ -67,30 +67,55 @@ To update a topic, use the same command used for topic creation, with the topic 
    &Name=<topic-name>
    &push-endpoint=<endpoint>
    [&Attributes.entry.1.key=amqp-exchange&Attributes.entry.1.value=<exchange>]
-   [&Attributes.entry.2.key=amqp-sck-level&Attributes.entry.2.value=ack-level]
-   &Attributes.entry.3.key=verify-sll&Attributes.entry.3.value=true|false]
+   [&Attributes.entry.2.key=amqp-ack-level&Attributes.entry.2.value=none|broker]
+   [&Attributes.entry.3.key=verify-ssl&Attributes.entry.3.value=true|false]
+   [&Attributes.entry.4.key=kafka-ack-level&Attributes.entry.4.value=none|broker]
+   [&Attributes.entry.5.key=use-ssl&Attributes.entry.5.value=true|false]
+   [&Attributes.entry.6.key=ca-location&Attributes.entry.6.value=<file path>]
+   [&Attributes.entry.7.key=OpaqueData&Attributes.entry.7.value=<opaque data>]
 
 Request parameters:
 
-- push-endpoint: URI of endpoint to send push notification to
+- push-endpoint: URI of an endpoint to send push notification to
+- OpaqueData: opaque data is set in the topic configuration and added to all notifications triggered by the ropic
 
- - URI schema is: ``http[s]|amqp://[<user>:<password>@]<fqdn>[:<port>][/<amqp-vhost>]``
- - Same schema is used for HTTP and AMQP endpoints (except amqp-vhost which is specific to AMQP)
- - Default values for HTTP/S: no user/password, port 80/443
- - Default values for AMQP: user/password=guest/guest, port 5672, amqp-vhost is "/"
+- HTTP endpoint 
 
-- verify-ssl: can be used with https endpoints (ignored for other endpoints), indicate whether the server certificate is validated or not ("true" by default)
-- amqp-exchange: mandatory parameter for AMQP endpoint. The exchanges must exist and be able to route messages based on topics
-- amqp-ack-level: No end2end acking is required, as messages may persist in the broker before delivered into their final destination. 2 ack methods exist:
+ - URI: ``http[s]://<fqdn>[:<port]``
+ - port defaults to: 80/443 for HTTP/S accordingly
+ - verify-ssl: indicate whether the server certificate is validated by the client or not ("true" by default)
 
- - "none" - message is considered "delivered" if sent to broker
- - "broker" message is considered "delivered" if acked by broker
+- AMQP0.9.1 endpoint
+
+ - URI: ``amqp://[<user>:<password>@]<fqdn>[:<port>][/<vhost>]``
+ - user/password defaults to: guest/guest
+ - user/password may only be provided over HTTPS. Topic creation request will be rejected if not
+ - port defaults to: 5672
+ - vhost defaults to: "/"
+ - amqp-exchange: the exchanges must exist and be able to route messages based on topics (mandatory parameter for AMQP0.9.1)
+ - amqp-ack-level: no end2end acking is required, as messages may persist in the broker before delivered into their final destination. Two ack methods exist:
+
+  - "none": message is considered "delivered" if sent to broker
+  - "broker": message is considered "delivered" if acked by broker (default)
+
+- Kafka endpoint 
+
+ - URI: ``kafka://[<user>:<password>@]<fqdn>[:<port]``
+ - if ``use-ssl`` is set to "true", secure connection will be used for connecting with the broker ("false" by default)
+ - if ``ca-location`` is provided, and secure connection is used, the specified CA will be used, instead of the default one, to authenticate the broker
+ - user/password may only be provided over HTTPS. Topic creation request will be rejected if not
+ - user/password may only be provided together with ``use-ssl``, connection to the broker would fail if not
+ - port defaults to: 9092
+ - kafka-ack-level: no end2end acking is required, as messages may persist in the broker before delivered into their final destination. Two ack methods exist:
+
+  - "none": message is considered "delivered" if sent to broker
+  - "broker": message is considered "delivered" if acked by broker (default)
 
 .. note:: 
 
     - The key/value of a specific parameter does not have to reside in the same line, or in any specific order, but must use the same index
-    - Attribute indexing does not need to be sequntial or start from any specific value
-    - `AWS Create Topic`_ has detailed explanation on endpoint attributes format. However, in our case different keys and values are used
+    - Attribute indexing does not need to be sequential or start from any specific value
+    - `AWS Create Topic`_ has a detailed explanation of the endpoint attributes format. However, in our case different keys and values are used
 
 The response will have the following format:
 
@@ -136,6 +161,7 @@ Response will have the following format:
                     <EndpointTopic></EndpointTopic>
                 </EndPoint>
                 <TopicArn></TopicArn>
+                <OpaqueData></OpaqueData>
             </Topic>
         </GetTopicResult>
         <ResponseMetadata>
@@ -146,6 +172,7 @@ Response will have the following format:
 - User: name of the user that created the topic
 - Name: name of the topic
 - EndPoinjtAddress: the push-endpoint URL
+- if endpoint URL contain user/password information, request must be made over HTTPS. Topic get request will be rejected if not 
 - EndPointArgs: the push-endpoint args
 - EndpointTopic: the topic name that should be sent to the endpoint (mat be different than the above topic name)
 - TopicArn: topic ARN
@@ -196,6 +223,7 @@ Response will have the following format:
                         <EndpointTopic></EndpointTopic>
                     </EndPoint>
                     <TopicArn></TopicArn>
+                    <OpaqueData></OpaqueData>
                 </member>
             </Topics>
         </ListTopicsResult>
@@ -203,6 +231,8 @@ Response will have the following format:
             <RequestId></RequestId>
         </ResponseMetadata>
     </ListTopicsResponse>    
+
+- if endpoint URL contain user/password information, in any of the topic, request must be made over HTTPS. Topic list request will be rejected if not 
 
 Notifications
 ~~~~~~~~~~~~~
@@ -258,10 +288,12 @@ pushed or pulled using the pubsub sync module.
                    "eTag":"",
                    "versionId":"",
                    "sequencer": "",
-                   "metadata":[]
+                   "metadata":[],
+                   "tags":[]
                }
            },
            "eventId":"",
+           "opaqueData":"",
        }
    ]}
 
@@ -283,7 +315,9 @@ pushed or pulled using the pubsub sync module.
 - s3.object.version: object version in case of versioned bucket
 - s3.object.sequencer: monotonically increasing identifier of the change per object (hexadecimal format)
 - s3.object.metadata: any metadata set on the object sent as: ``x-amz-meta-`` (an extension to the S3 notification API) 
+- s3.object.tags: any tags set on the objcet (an extension to the S3 notification API)
 - s3.eventId: unique ID of the event, that could be used for acking (an extension to the S3 notification API)
+- s3.opaqueData: opaque data is set in the topic configuration and added to all notifications triggered by the ropic (an extension to the S3 notification API)
 
 .. _PubSub Module : ../pubsub-module
 .. _S3 Notification Compatibility: ../s3-notification-compatibility

@@ -1,6 +1,5 @@
 from teuthology.orchestra.run import CommandFailedError
 
-from unittest import case
 from tasks.cephfs.cephfs_test_case import CephFSTestCase
 from tasks.cephfs.fuse_mount import FuseMount
 
@@ -45,7 +44,7 @@ class TestAdminCommands(CephFSTestCase):
         """
 
         p = self.fs.add_data_pool("foo")
-        self.mount_a.run_shell(["mkdir", "subdir"])
+        self.mount_a.run_shell("mkdir subdir")
         self.fs.set_dir_layout(self.mount_a, "subdir", FileLayout(pool=p))
 
     def test_add_data_pool_ec(self):
@@ -141,7 +140,7 @@ class TestConfigCommands(CephFSTestCase):
         """
 
         if not isinstance(self.mount_a, FuseMount):
-            raise case.SkipTest("Test only applies to FUSE clients")
+            self.skipTest("Test only applies to FUSE clients")
 
         test_key = "client_cache_size"
         test_val = "123"

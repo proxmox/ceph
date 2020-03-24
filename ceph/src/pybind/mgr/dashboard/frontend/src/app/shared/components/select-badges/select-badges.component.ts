@@ -2,10 +2,11 @@ import { Component, EventEmitter, Input, Output, ViewChild } from '@angular/core
 import { ValidatorFn } from '@angular/forms';
 
 import { I18n } from '@ngx-translate/i18n-polyfill';
-import * as _ from 'lodash';
 
+import { Icons } from '../../../shared/enum/icons.enum';
 import { SelectMessages } from '../select/select-messages.model';
 import { SelectOption } from '../select/select-option.model';
+import { SelectComponent } from '../select/select.component';
 
 @Component({
   selector: 'cd-select-badges',
@@ -29,8 +30,10 @@ export class SelectBadgesComponent {
   @Output()
   selection = new EventEmitter();
 
-  @ViewChild('cdSelect')
-  cdSelect;
+  @ViewChild('cdSelect', { static: true })
+  cdSelect: SelectComponent;
+
+  icons = Icons;
 
   constructor(private i18n: I18n) {}
 }

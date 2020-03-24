@@ -5,9 +5,11 @@
 #ifndef _RTE_ETH_BOND_PRIVATE_H_
 #define _RTE_ETH_BOND_PRIVATE_H_
 
+#include <stdint.h>
 #include <sys/queue.h>
 
 #include <rte_ethdev_driver.h>
+#include <rte_flow.h>
 #include <rte_spinlock.h>
 #include <rte_bitmap.h>
 #include <rte_flow_driver.h>
@@ -93,11 +95,12 @@ struct rte_flow {
 	/* Slaves flows */
 	struct rte_flow *flows[RTE_MAX_ETHPORTS];
 	/* Flow description for synchronization */
-	struct rte_flow_desc *fd;
+	struct rte_flow_conv_rule rule;
+	uint8_t rule_data[];
 };
 
 typedef void (*burst_xmit_hash_t)(struct rte_mbuf **buf, uint16_t nb_pkts,
-		uint8_t slave_count, uint16_t *slaves);
+		uint16_t slave_count, uint16_t *slaves);
 
 /** Link Bonding PMD device private configuration Structure */
 struct bond_dev_private {
@@ -160,6 +163,11 @@ struct bond_dev_private {
 	/** Bit mask of RSS offloads, the bit offset also means flow type */
 	uint64_t flow_type_rss_offloads;
 
+	struct rte_eth_rxconf default_rxconf;	/**< Default RxQ conf. */
+	struct rte_eth_txconf default_txconf;	/**< Default TxQ conf. */
+	struct rte_eth_desc_lim rx_desc_lim;	/**< Rx descriptor limits */
+	struct rte_eth_desc_lim tx_desc_lim;	/**< Tx descriptor limits */
+
 	uint16_t reta_size;
 	struct rte_eth_rss_reta_entry64 reta_conf[ETH_RSS_RETA_SIZE_512 /
 			RTE_RETA_GROUP_SIZE];
@@ -214,13 +222,6 @@ deactivate_slave(struct rte_eth_dev *eth_dev, uint16_t port_id);
 void
 activate_slave(struct rte_eth_dev *eth_dev, uint16_t port_id);
 
-void
-link_properties_set(struct rte_eth_dev *bonded_eth_dev,
-		struct rte_eth_link *slave_dev_link);
-int
-link_properties_valid(struct rte_eth_dev *bonded_eth_dev,
-		struct rte_eth_link *slave_dev_link);
-
 int
 mac_address_set(struct rte_eth_dev *eth_dev, struct ether_addr *new_mac_addr);
 
@@ -255,15 +256,15 @@ slave_add(struct bond_dev_private *internals,
 
 void
 burst_xmit_l2_hash(struct rte_mbuf **buf, uint16_t nb_pkts,
-		uint8_t slave_count, uint16_t *slaves);
+		uint16_t slave_count, uint16_t *slaves);
 
 void
 burst_xmit_l23_hash(struct rte_mbuf **buf, uint16_t nb_pkts,
-		uint8_t slave_count, uint16_t *slaves);
+		uint16_t slave_count, uint16_t *slaves);
 
 void
 burst_xmit_l34_hash(struct rte_mbuf **buf, uint16_t nb_pkts,
-		uint8_t slave_count, uint16_t *slaves);
+		uint16_t slave_count, uint16_t *slaves);
 
 
 void

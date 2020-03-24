@@ -13,6 +13,8 @@
 #include <errno.h>
 #include <getopt.h>
 #include <stdbool.h>
+#include <sys/socket.h>
+#include <arpa/inet.h>
 
 #include <rte_debug.h>
 #include <rte_ether.h>
@@ -39,26 +41,28 @@ struct ipv6_l3fwd_lpm_route {
 	uint8_t  if_out;
 };
 
+/* 192.18.0.0/16 are set aside for RFC2544 benchmarking. */
 static struct ipv4_l3fwd_lpm_route ipv4_l3fwd_lpm_route_array[] = {
-	{IPv4(1, 1, 1, 0), 24, 0},
-	{IPv4(2, 1, 1, 0), 24, 1},
-	{IPv4(3, 1, 1, 0), 24, 2},
-	{IPv4(4, 1, 1, 0), 24, 3},
-	{IPv4(5, 1, 1, 0), 24, 4},
-	{IPv4(6, 1, 1, 0), 24, 5},
-	{IPv4(7, 1, 1, 0), 24, 6},
-	{IPv4(8, 1, 1, 0), 24, 7},
+	{IPv4(192, 18, 0, 0), 24, 0},
+	{IPv4(192, 18, 1, 0), 24, 1},
+	{IPv4(192, 18, 2, 0), 24, 2},
+	{IPv4(192, 18, 3, 0), 24, 3},
+	{IPv4(192, 18, 4, 0), 24, 4},
+	{IPv4(192, 18, 5, 0), 24, 5},
+	{IPv4(192, 18, 6, 0), 24, 6},
+	{IPv4(192, 18, 7, 0), 24, 7},
 };
 
+/* 2001:0200::/48 is IANA reserved range for IPv6 benchmarking (RFC5180) */
 static struct ipv6_l3fwd_lpm_route ipv6_l3fwd_lpm_route_array[] = {
-	{{1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1}, 48, 0},
-	{{2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1}, 48, 1},
-	{{3, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1}, 48, 2},
-	{{4, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1}, 48, 3},
-	{{5, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1}, 48, 4},
-	{{6, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1}, 48, 5},
-	{{7, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1}, 48, 6},
-	{{8, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1}, 48, 7},
+	{{32, 1, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, 48, 0},
+	{{32, 1, 2, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0}, 48, 1},
+	{{32, 1, 2, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0}, 48, 2},
+	{{32, 1, 2, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0}, 48, 3},
+	{{32, 1, 2, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 0, 0, 0}, 48, 4},
+	{{32, 1, 2, 0, 0, 0, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0}, 48, 5},
+	{{32, 1, 2, 0, 0, 0, 0, 0, 0, 6, 0, 0, 0, 0, 0, 0}, 48, 6},
+	{{32, 1, 2, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0, 0, 0, 0}, 48, 7},
 };
 
 #define IPV4_L3FWD_LPM_NUM_ROUTES \
@@ -258,6 +262,7 @@ setup_lpm(const int socketid)
 	unsigned i;
 	int ret;
 	char s[64];
+	char abuf[INET6_ADDRSTRLEN];
 
 	/* create the LPM table */
 	config_ipv4.max_rules = IPV4_L3FWD_LPM_MAX_RULES;
@@ -273,6 +278,7 @@ setup_lpm(const int socketid)
 
 	/* populate the LPM table */
 	for (i = 0; i < IPV4_L3FWD_LPM_NUM_ROUTES; i++) {
+		struct in_addr in;
 
 		/* skip unused ports */
 		if ((1 << ipv4_l3fwd_lpm_route_array[i].if_out &
@@ -290,8 +296,9 @@ setup_lpm(const int socketid)
 				i, socketid);
 		}
 
-		printf("LPM: Adding route 0x%08x / %d (%d)\n",
-			(unsigned)ipv4_l3fwd_lpm_route_array[i].ip,
+		in.s_addr = htonl(ipv4_l3fwd_lpm_route_array[i].ip);
+		printf("LPM: Adding route %s / %d (%d)\n",
+		       inet_ntop(AF_INET, &in, abuf, sizeof(abuf)),
 			ipv4_l3fwd_lpm_route_array[i].depth,
 			ipv4_l3fwd_lpm_route_array[i].if_out);
 	}
@@ -329,9 +336,10 @@ setup_lpm(const int socketid)
 		}
 
 		printf("LPM: Adding route %s / %d (%d)\n",
-			"IPV6",
-			ipv6_l3fwd_lpm_route_array[i].depth,
-			ipv6_l3fwd_lpm_route_array[i].if_out);
+		       inet_ntop(AF_INET6, ipv6_l3fwd_lpm_route_array[i].ip,
+				 abuf, sizeof(abuf)),
+		       ipv6_l3fwd_lpm_route_array[i].depth,
+		       ipv6_l3fwd_lpm_route_array[i].if_out);
 	}
 }
 

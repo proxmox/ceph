@@ -35,7 +35,9 @@
 
 #include "spdk/nvme.h"
 #include "spdk/env.h"
+#include "spdk/string.h"
 #include "spdk/util.h"
+#include "spdk/opal.h"
 
 #define MAX_DEVS 64
 
@@ -45,6 +47,7 @@ struct dev {
 	const struct spdk_nvme_ctrlr_data	*cdata;
 	struct spdk_nvme_ns_data		*common_ns_data;
 	int					outstanding_admin_cmds;
+	struct spdk_opal_dev			*opal_dev;
 };
 
 static struct dev devs[MAX_DEVS];
@@ -139,7 +142,8 @@ static void usage(void)
 	printf("\t[5: detach namespace from controller]\n");
 	printf("\t[6: format namespace or controller]\n");
 	printf("\t[7: firmware update]\n");
-	printf("\t[8: quit]\n");
+	printf("\t[8: opal]\n");
+	printf("\t[9: quit]\n");
 }
 
 static void
@@ -222,7 +226,7 @@ display_controller(struct dev *dev, int model)
 	struct spdk_nvme_ns			*ns;
 	const struct spdk_nvme_ctrlr_data	*cdata;
 	uint8_t					str[128];
-	uint32_t				i;
+	uint32_t				nsid;
 
 	cdata = spdk_nvme_ctrlr_get_data(dev->ctrlr);
 
@@ -263,11 +267,10 @@ display_controller(struct dev *dev, int model)
 	printf("\n");
 	printf("Namespace Attributes\n");
 	printf("============================\n");
-	for (i = 1; i <= spdk_nvme_ctrlr_get_num_ns(dev->ctrlr); i++) {
-		ns = spdk_nvme_ctrlr_get_ns(dev->ctrlr, i);
-		if (ns == NULL) {
-			continue;
-		}
+	for (nsid = spdk_nvme_ctrlr_get_first_active_ns(dev->ctrlr);
+	     nsid != 0; nsid = spdk_nvme_ctrlr_get_next_active_ns(dev->ctrlr, nsid)) {
+		ns = spdk_nvme_ctrlr_get_ns(dev->ctrlr, nsid);
+		assert(ns != NULL);
 		display_namespace(ns);
 	}
 }
@@ -854,6 +857,235 @@ update_firmware_image(void)
 }
 
 static void
+opal_dump_info(struct spdk_opal_info *opal)
+{
+	if (!opal->opal_ssc_dev) {
+		SPDK_ERRLOG("This device is not Opal enabled. Not Supported!\n");
+		return;
+	}
+
+	if (opal->tper) {
+		printf("\nOpal TPer feature:\n");
+		printf("ACKNACK = %s", (opal->tper_acknack ? "Y, " : "N, "));
+		printf("ASYNC = %s", (opal->tper_async ? "Y, " : "N, "));
+		printf("BufferManagement = %s\n", (opal->tper_buffer_mgt ? "Y, " : "N, "));
+		printf("ComIDManagement = %s", (opal->tper_comid_mgt ? "Y, " : "N, "));
+		printf("Streaming = %s", (opal->tper_streaming ? "Y, " : "N, "));
+		printf("Sync = %s\n", (opal->tper_sync ? "Y" : "N"));
+		printf("\n");
+	}
+
+	if (opal->locking) {
+		printf("Opal Locking feature:\n");
+		printf("Locked = %s", (opal->locking_locked ? "Y, " : "N, "));
+		printf("Locking Enabled = %s", (opal->locking_locking_enabled ? "Y, " : "N, "));
+		printf("Locking supported = %s\n", (opal->locking_locking_supported ? "Y" : "N"));
+
+		printf("MBR done = %s", (opal->locking_mbr_done ? "Y, " : "N, "));
+		printf("MBR enabled = %s", (opal->locking_mbr_enabled ? "Y, " : "N, "));
+		printf("Media encrypt = %s\n", (opal->locking_media_encrypt ? "Y" : "N"));
+		printf("\n");
+	}
+
+	if (opal->geometry) {
+		printf("Opal Geometry feature:\n");
+		printf("Align = %s", (opal->geometry_align ? "Y, " : "N, "));
+		printf("Logical block size = %d, ", opal->geometry_logical_block_size);
+		printf("Lowest aligned LBA = %ld\n", opal->geometry_lowest_aligned_lba);
+		printf("\n");
+	}
+
+	if (opal->single_user_mode) {
+		printf("Opal Single User Mode feature:\n");
+		printf("Any in SUM = %s", (opal->single_user_any ? "Y, " : "N, "));
+		printf("All in SUM = %s", (opal->single_user_all ? "Y, " : "N, "));
+		printf("Policy: %s Authority,\n", (opal->single_user_policy ? "Admin" : "Users"));
+		printf("Number of locking objects = %d\n ", opal->single_user_locking_objects);
+		printf("\n");
+	}
+
+	if (opal->datastore) {
+		printf("Opal DataStore feature:\n");
+		printf("Table alignment = %d, ", opal->datastore_alignment);
+		printf("Max number of tables = %d, ", opal->datastore_max_tables);
+		printf("Max size of tables = %d\n", opal->datastore_max_table_size);
+		printf("\n");
+	}
+
+	if (opal->opal_v100) {
+		printf("Opal V100 feature:\n");
+		printf("Base comID = %d, ", opal->opal_v100_base_comid);
+		printf("Number of comIDs = %d, ", opal->opal_v100_num_comid);
+		printf("Range crossing = %s\n", (opal->opal_v100_range_crossing ? "N" : "Y"));
+		printf("\n");
+	}
+
+	if (opal->opal_v200) {
+		printf("Opal V200 feature:\n");
+		printf("Base comID = %d, ", opal->opal_v200_base_comid);
+		printf("Number of comIDs = %d, ", opal->opal_v200_num_comid);
+		printf("Initial PIN = %d,\n", opal->opal_v200_initial_pin);
+		printf("Reverted PIN = %d, ", opal->opal_v200_reverted_pin);
+		printf("Number of admins = %d, ", opal->opal_v200_num_admin);
+		printf("Number of users = %d\n", opal->opal_v200_num_user);
+		printf("\n\n");
+	}
+}
+
+static void
+opal_usage(void)
+{
+	printf("Opal General Usage:\n");
+	printf("\n");
+	printf("\t[1: scan device]\n");
+	printf("\t[2: take ownership]\n");
+	printf("\t[3: revert tper]\n");
+	printf("\t[0: quit]\n");
+}
+
+static void
+opal_scan(struct dev *iter)
+{
+	if (spdk_nvme_ctrlr_get_flags(iter->ctrlr) & SPDK_NVME_CTRLR_SECURITY_SEND_RECV_SUPPORTED) {
+		iter->opal_dev = spdk_opal_init_dev(iter->ctrlr);
+		if (iter->opal_dev == NULL) {
+			return;
+		}
+
+		if (spdk_opal_supported(iter->opal_dev)) {
+			printf("\n\nOpal Supported:\n");
+			display_controller(iter, CONTROLLER_DISPLAY_SIMPLISTIC);
+			spdk_opal_cmd_scan(iter->opal_dev);
+			opal_dump_info(spdk_opal_get_info(iter->opal_dev));
+		}
+		spdk_opal_close(iter->opal_dev);
+	} else {
+		printf("%04x:%02x:%02x.%02x: NVMe Security Support/Receive Not supported.\n",
+		       iter->pci_addr.domain, iter->pci_addr.bus, iter->pci_addr.dev, iter->pci_addr.func);
+		printf("%04x:%02x:%02x.%02x: Opal Not Supported\n\n\n",
+		       iter->pci_addr.domain, iter->pci_addr.bus, iter->pci_addr.dev, iter->pci_addr.func);
+	}
+}
+
+static void
+opal_take_ownership(struct dev *iter)
+{
+	char new_passwd[MAX_PASSWORD_SIZE] = {0};
+	char *passwd_p;
+	int ret;
+	int ch;
+
+	if (spdk_nvme_ctrlr_get_flags(iter->ctrlr) & SPDK_NVME_CTRLR_SECURITY_SEND_RECV_SUPPORTED) {
+		iter->opal_dev = spdk_opal_init_dev(iter->ctrlr);
+		if (iter->opal_dev == NULL) {
+			return;
+		}
+		if (spdk_opal_supported(iter->opal_dev)) {
+			printf("Please input the new password for ownership:\n");
+			while ((ch = getchar()) != '\n' && ch != EOF);
+			passwd_p = get_line(new_passwd, MAX_PASSWORD_SIZE, stdin);
+			if (passwd_p) {
+				ret = spdk_opal_cmd_take_ownership(iter->opal_dev, passwd_p);
+				if (ret) {
+					printf("Take ownership failure: %d\n", ret);
+					return;
+				}
+				printf("...\n...\nTake Ownership Success\n");
+			} else {
+				printf("Input password invalid. Take ownership failure\n");
+			}
+		}
+		spdk_opal_close(iter->opal_dev);
+	} else {
+		printf("%04x:%02x:%02x.%02x: NVMe Security Support/Receive Not supported.\nOpal Not Supported\n\n\n",
+		       iter->pci_addr.domain, iter->pci_addr.bus, iter->pci_addr.dev, iter->pci_addr.func);
+	}
+}
+
+static void
+opal_revert_tper(struct dev *iter)
+{
+	char passwd[MAX_PASSWORD_SIZE] = {0};
+	char *passwd_p;
+	int ret;
+	int ch;
+
+	if (spdk_nvme_ctrlr_get_flags(iter->ctrlr) & SPDK_NVME_CTRLR_SECURITY_SEND_RECV_SUPPORTED) {
+		iter->opal_dev = spdk_opal_init_dev(iter->ctrlr);
+		if (iter->opal_dev == NULL) {
+			return;
+		}
+		if (spdk_opal_supported(iter->opal_dev)) {
+			printf("Please be noted this operation will erase ALL DATA on this drive\n");
+			printf("Please input password for revert TPer:\n");
+			while ((ch = getchar()) != '\n' && ch != EOF);
+			passwd_p = get_line(passwd, MAX_PASSWORD_SIZE, stdin);
+			if (passwd_p) {
+				ret = spdk_opal_cmd_revert_tper(iter->opal_dev, passwd_p);
+				if (ret) {
+					printf("Revert TPer failure: %d\n", ret);
+					return;
+				}
+				printf("...\n...\nRevert TPer Success\n");
+			} else {
+				printf("Input password invalid. Revert TPer failure\n");
+			}
+		}
+		spdk_opal_close(iter->opal_dev);
+	} else {
+		printf("%04x:%02x:%02x.%02x: NVMe Security Support/Receive Not supported.\nOpal Not Supported\n\n\n",
+		       iter->pci_addr.domain, iter->pci_addr.bus, iter->pci_addr.dev, iter->pci_addr.func);
+	}
+}
+
+static void
+test_opal(void)
+{
+	int exit_flag = false;
+	struct dev *ctrlr;
+
+	ctrlr = get_controller();
+	if (ctrlr == NULL) {
+		printf("Invalid controller PCI Address.\n");
+		return;
+	}
+
+	opal_usage();
+	while (!exit_flag) {
+		int cmd;
+		if (!scanf("%d", &cmd)) {
+			printf("Invalid Command: command must be number 0-2\n");
+			while (getchar() != '\n');
+			opal_usage();
+			continue;
+		}
+
+		switch (cmd) {
+		case 0:
+			exit_flag = true;
+			continue;
+		case 1:
+			opal_scan(ctrlr);
+			break;
+		case 2:
+			opal_take_ownership(ctrlr);
+			break;
+		case 3:
+			opal_revert_tper(ctrlr);
+			break;
+
+		default:
+			printf("Invalid option\n");
+		}
+
+		while (getchar() != '\n');
+		printf("press Enter to display Opal cmd menu ...\n");
+		while (getchar() != '\n');
+		opal_usage();
+	}
+}
+
+static void
 args_usage(const char *program_name)
 {
 	printf("%s [options]", program_name);
@@ -870,7 +1102,11 @@ parse_args(int argc, char **argv)
 	while ((op = getopt(argc, argv, "i:")) != -1) {
 		switch (op) {
 		case 'i':
-			g_shm_id = atoi(optarg);
+			g_shm_id = spdk_strtol(optarg, 10);
+			if (g_shm_id < 0) {
+				fprintf(stderr, "Invalid shared memory ID\n");
+				return g_shm_id;
+			}
 			break;
 		default:
 			args_usage(argv[0]);
@@ -942,6 +1178,9 @@ int main(int argc, char **argv)
 			update_firmware_image();
 			break;
 		case 8:
+			test_opal();
+			break;
+		case 9:
 			exit_flag = true;
 			break;
 		default:

@@ -1,39 +1,15 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2015 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2015 Intel Corporation
  */
 
 #ifndef _E1000_ETHDEV_H_
 #define _E1000_ETHDEV_H_
+
+#include <stdint.h>
+
+#include <rte_flow.h>
 #include <rte_time.h>
+#include <rte_pci.h>
 
 #define E1000_INTEL_VENDOR_ID 0x8086
 
@@ -55,6 +31,7 @@
 #define E1000_CTRL_EXT_EXTEND_VLAN  (1<<26)    /* EXTENDED VLAN */
 #define IGB_VFTA_SIZE 128
 
+#define IGB_HKEY_MAX_INDEX             10
 #define IGB_MAX_RX_QUEUE_NUM           8
 #define IGB_MAX_RX_QUEUE_NUM_82576     16
 
@@ -82,7 +59,7 @@
 #define E1000_MAX_FLEX_FILTER_DWDS \
 	(E1000_MAX_FLEX_FILTER_LEN / sizeof(uint32_t))
 #define E1000_FLEX_FILTERS_MASK_SIZE \
-	(E1000_MAX_FLEX_FILTER_DWDS / 4)
+	(E1000_MAX_FLEX_FILTER_DWDS / 2)
 #define E1000_FHFT_QUEUEING_LEN          0x0000007F
 #define E1000_FHFT_QUEUEING_QUEUE        0x00000700
 #define E1000_FHFT_QUEUEING_PRIO         0x00070000
@@ -110,6 +87,12 @@
 	ETH_RSS_IPV6_EX | \
 	ETH_RSS_IPV6_TCP_EX | \
 	ETH_RSS_IPV6_UDP_EX)
+
+/*
+ * The overhead from MTU to max frame size.
+ * Considering VLAN so a tag needs to be counted.
+ */
+#define E1000_ETH_OVERHEAD (ETHER_HDR_LEN + ETHER_CRC_LEN + VLAN_TAG_SIZE)
 
 /*
  * Maximum number of Ring Descriptors.
@@ -142,6 +125,19 @@
 #define IGB_TX_MAX_MTU_SEG UINT8_MAX
 #define EM_TX_MAX_SEG      UINT8_MAX
 #define EM_TX_MAX_MTU_SEG  UINT8_MAX
+
+#define MAC_TYPE_FILTER_SUP(type)    do {\
+	if ((type) != e1000_82580 && (type) != e1000_i350 &&\
+		(type) != e1000_82576 && (type) != e1000_i210 &&\
+		(type) != e1000_i211)\
+		return -ENOTSUP;\
+} while (0)
+
+#define MAC_TYPE_FILTER_SUP_EXT(type)    do {\
+	if ((type) != e1000_82580 && (type) != e1000_i350 &&\
+		(type) != e1000_i210 && (type) != e1000_i211)\
+		return -ENOTSUP; \
+} while (0)
 
 /* structure for interrupt relative data */
 struct e1000_interrupt {
@@ -237,13 +233,26 @@ struct e1000_2tuple_filter {
 	uint16_t queue;       /* rx queue assigned to */
 };
 
+/* ethertype filter structure */
+struct igb_ethertype_filter {
+	uint16_t ethertype;
+	uint32_t etqf;
+};
+
+struct igb_rte_flow_rss_conf {
+	struct rte_flow_action_rss conf; /**< RSS parameters. */
+	uint8_t key[IGB_HKEY_MAX_INDEX * sizeof(uint32_t)]; /* Hash key. */
+	/* Queues indices to use. */
+	uint16_t queue[IGB_MAX_RX_QUEUE_NUM_82576];
+};
+
 /*
- * Structure to store filters' info.
+ * Structure to store filters'info.
  */
 struct e1000_filter_info {
 	uint8_t ethertype_mask; /* Bit mask for every used ethertype filter */
 	/* store used ethertype filters*/
-	uint16_t ethertype_filters[E1000_MAX_ETQF_FILTERS];
+	struct igb_ethertype_filter ethertype_filters[E1000_MAX_ETQF_FILTERS];
 	uint8_t flex_mask;	/* Bit mask for every used flex filter */
 	struct e1000_flex_filter_list flex_list;
 	/* Bit mask for every used 5tuple filter */
@@ -252,6 +261,10 @@ struct e1000_filter_info {
 	/* Bit mask for every used 2tuple filter */
 	uint8_t twotuple_mask;
 	struct e1000_2tuple_filter_list twotuple_list;
+	/* store the SYN filter info */
+	uint32_t syn_info;
+	/* store the rss filter info */
+	struct igb_rte_flow_rss_conf rss_info;
 };
 
 /*
@@ -291,8 +304,63 @@ struct e1000_adapter {
 #define E1000_DEV_PRIVATE_TO_FILTER_INFO(adapter) \
 	(&((struct e1000_adapter *)adapter)->filter)
 
-#define E1000_DEV_TO_PCI(eth_dev) \
-	RTE_DEV_TO_PCI((eth_dev)->device)
+struct rte_flow {
+	enum rte_filter_type filter_type;
+	void *rule;
+};
+
+/* ntuple filter list structure */
+struct igb_ntuple_filter_ele {
+	TAILQ_ENTRY(igb_ntuple_filter_ele) entries;
+	struct rte_eth_ntuple_filter filter_info;
+};
+
+/* ethertype filter list structure */
+struct igb_ethertype_filter_ele {
+	TAILQ_ENTRY(igb_ethertype_filter_ele) entries;
+	struct rte_eth_ethertype_filter filter_info;
+};
+
+/* syn filter list structure */
+struct igb_eth_syn_filter_ele {
+	TAILQ_ENTRY(igb_eth_syn_filter_ele) entries;
+	struct rte_eth_syn_filter filter_info;
+};
+
+/* flex filter list structure */
+struct igb_flex_filter_ele {
+	TAILQ_ENTRY(igb_flex_filter_ele) entries;
+	struct rte_eth_flex_filter filter_info;
+};
+
+/* rss filter  list structure */
+struct igb_rss_conf_ele {
+	TAILQ_ENTRY(igb_rss_conf_ele) entries;
+	struct igb_rte_flow_rss_conf filter_info;
+};
+
+/* igb_flow memory list structure */
+struct igb_flow_mem {
+	TAILQ_ENTRY(igb_flow_mem) entries;
+	struct rte_flow *flow;
+	struct rte_eth_dev *dev;
+};
+
+TAILQ_HEAD(igb_ntuple_filter_list, igb_ntuple_filter_ele);
+struct igb_ntuple_filter_list igb_filter_ntuple_list;
+TAILQ_HEAD(igb_ethertype_filter_list, igb_ethertype_filter_ele);
+struct igb_ethertype_filter_list igb_filter_ethertype_list;
+TAILQ_HEAD(igb_syn_filter_list, igb_eth_syn_filter_ele);
+struct igb_syn_filter_list igb_filter_syn_list;
+TAILQ_HEAD(igb_flex_filter_list, igb_flex_filter_ele);
+struct igb_flex_filter_list igb_filter_flex_list;
+TAILQ_HEAD(igb_rss_filter_list, igb_rss_conf_ele);
+struct igb_rss_filter_list igb_filter_rss_list;
+TAILQ_HEAD(igb_flow_mem_list, igb_flow_mem);
+struct igb_flow_mem_list igb_flow_list;
+
+extern const struct rte_flow_ops igb_flow_ops;
+
 /*
  * RX/TX IGB function prototypes
  */
@@ -300,6 +368,9 @@ void eth_igb_tx_queue_release(void *txq);
 void eth_igb_rx_queue_release(void *rxq);
 void igb_dev_clear_queues(struct rte_eth_dev *dev);
 void igb_dev_free_queues(struct rte_eth_dev *dev);
+
+uint64_t igb_get_rx_port_offloads_capa(struct rte_eth_dev *dev);
+uint64_t igb_get_rx_queue_offloads_capa(struct rte_eth_dev *dev);
 
 int eth_igb_rx_queue_setup(struct rte_eth_dev *dev, uint16_t rx_queue_id,
 		uint16_t nb_rx_desc, unsigned int socket_id,
@@ -313,6 +384,9 @@ int eth_igb_rx_descriptor_done(void *rx_queue, uint16_t offset);
 
 int eth_igb_rx_descriptor_status(void *rx_queue, uint16_t offset);
 int eth_igb_tx_descriptor_status(void *tx_queue, uint16_t offset);
+
+uint64_t igb_get_tx_port_offloads_capa(struct rte_eth_dev *dev);
+uint64_t igb_get_tx_queue_offloads_capa(struct rte_eth_dev *dev);
 
 int eth_igb_tx_queue_setup(struct rte_eth_dev *dev, uint16_t tx_queue_id,
 		uint16_t nb_tx_desc, unsigned int socket_id,
@@ -361,6 +435,8 @@ void igb_rxq_info_get(struct rte_eth_dev *dev, uint16_t queue_id,
 void igb_txq_info_get(struct rte_eth_dev *dev, uint16_t queue_id,
 	struct rte_eth_txq_info *qinfo);
 
+uint32_t em_get_max_pktlen(struct rte_eth_dev *dev);
+
 /*
  * RX/TX EM function prototypes
  */
@@ -369,6 +445,9 @@ void eth_em_rx_queue_release(void *rxq);
 
 void em_dev_clear_queues(struct rte_eth_dev *dev);
 void em_dev_free_queues(struct rte_eth_dev *dev);
+
+uint64_t em_get_rx_port_offloads_capa(struct rte_eth_dev *dev);
+uint64_t em_get_rx_queue_offloads_capa(struct rte_eth_dev *dev);
 
 int eth_em_rx_queue_setup(struct rte_eth_dev *dev, uint16_t rx_queue_id,
 		uint16_t nb_rx_desc, unsigned int socket_id,
@@ -382,6 +461,9 @@ int eth_em_rx_descriptor_done(void *rx_queue, uint16_t offset);
 
 int eth_em_rx_descriptor_status(void *rx_queue, uint16_t offset);
 int eth_em_tx_descriptor_status(void *tx_queue, uint16_t offset);
+
+uint64_t em_get_tx_port_offloads_capa(struct rte_eth_dev *dev);
+uint64_t em_get_tx_queue_offloads_capa(struct rte_eth_dev *dev);
 
 int eth_em_tx_queue_setup(struct rte_eth_dev *dev, uint16_t tx_queue_id,
 		uint16_t nb_tx_desc, unsigned int socket_id,
@@ -410,5 +492,34 @@ void em_txq_info_get(struct rte_eth_dev *dev, uint16_t queue_id,
 	struct rte_eth_txq_info *qinfo);
 
 void igb_pf_host_uninit(struct rte_eth_dev *dev);
+
+void igb_filterlist_flush(struct rte_eth_dev *dev);
+int igb_delete_5tuple_filter_82576(struct rte_eth_dev *dev,
+		struct e1000_5tuple_filter *filter);
+int igb_delete_2tuple_filter(struct rte_eth_dev *dev,
+		struct e1000_2tuple_filter *filter);
+void igb_remove_flex_filter(struct rte_eth_dev *dev,
+			struct e1000_flex_filter *filter);
+int igb_ethertype_filter_remove(struct e1000_filter_info *filter_info,
+	uint8_t idx);
+int igb_add_del_ntuple_filter(struct rte_eth_dev *dev,
+		struct rte_eth_ntuple_filter *ntuple_filter, bool add);
+int igb_add_del_ethertype_filter(struct rte_eth_dev *dev,
+			struct rte_eth_ethertype_filter *filter,
+			bool add);
+int eth_igb_syn_filter_set(struct rte_eth_dev *dev,
+			struct rte_eth_syn_filter *filter,
+			bool add);
+int eth_igb_add_del_flex_filter(struct rte_eth_dev *dev,
+			struct rte_eth_flex_filter *filter,
+			bool add);
+int igb_rss_conf_init(struct rte_eth_dev *dev,
+		      struct igb_rte_flow_rss_conf *out,
+		      const struct rte_flow_action_rss *in);
+int igb_action_rss_same(const struct rte_flow_action_rss *comp,
+			const struct rte_flow_action_rss *with);
+int igb_config_rss_filter(struct rte_eth_dev *dev,
+			struct igb_rte_flow_rss_conf *conf,
+			bool add);
 
 #endif /* _E1000_ETHDEV_H_ */

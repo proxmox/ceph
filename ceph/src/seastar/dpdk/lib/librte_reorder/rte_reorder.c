@@ -1,42 +1,13 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2014 Intel Corporation
  */
 
 #include <inttypes.h>
 #include <string.h>
 
+#include <rte_string_fns.h>
 #include <rte_log.h>
 #include <rte_mbuf.h>
-#include <rte_memzone.h>
 #include <rte_eal_memconfig.h>
 #include <rte_errno.h>
 #include <rte_malloc.h>
@@ -112,7 +83,7 @@ rte_reorder_init(struct rte_reorder_buffer *b, unsigned int bufsize,
 	}
 
 	memset(b, 0, bufsize);
-	snprintf(b->name, sizeof(b->name), "%s", name);
+	strlcpy(b->name, name, sizeof(b->name));
 	b->memsize = bufsize;
 	b->order_buf.size = b->ready_buf.size = size;
 	b->order_buf.mask = b->ready_buf.mask = size - 1;
@@ -191,7 +162,7 @@ rte_reorder_reset(struct rte_reorder_buffer *b)
 	char name[RTE_REORDER_NAMESIZE];
 
 	rte_reorder_free_mbufs(b);
-	snprintf(name, sizeof(name), "%s", b->name);
+	strlcpy(name, b->name, sizeof(name));
 	/* No error checking as current values should be valid */
 	rte_reorder_init(b, b->memsize, name, b->order_buf.size);
 }
@@ -250,6 +221,11 @@ rte_reorder_find_existing(const char *name)
 	struct rte_reorder_buffer *b = NULL;
 	struct rte_tailq_entry *te;
 	struct rte_reorder_list *reorder_list;
+
+	if (name == NULL) {
+		rte_errno = EINVAL;
+		return NULL;
+	}
 
 	reorder_list = RTE_TAILQ_CAST(rte_reorder_tailq.head, rte_reorder_list);
 
@@ -324,8 +300,14 @@ int
 rte_reorder_insert(struct rte_reorder_buffer *b, struct rte_mbuf *mbuf)
 {
 	uint32_t offset, position;
-	struct cir_buffer *order_buf = &b->order_buf;
+	struct cir_buffer *order_buf;
 
+	if (b == NULL || mbuf == NULL) {
+		rte_errno = EINVAL;
+		return -1;
+	}
+
+	order_buf = &b->order_buf;
 	if (!b->is_initialized) {
 		b->min_seqn = mbuf->seqn;
 		b->is_initialized = 1;

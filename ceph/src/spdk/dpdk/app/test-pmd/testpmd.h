@@ -5,6 +5,8 @@
 #ifndef _TESTPMD_H_
 #define _TESTPMD_H_
 
+#include <stdbool.h>
+
 #include <rte_pci.h>
 #include <rte_bus_pci.h>
 #include <rte_gro.h>
@@ -69,6 +71,16 @@ enum {
 	PORT_TOPOLOGY_LOOP,
 };
 
+enum {
+	MP_ALLOC_NATIVE, /**< allocate and populate mempool natively */
+	MP_ALLOC_ANON,
+	/**< allocate mempool natively, but populate using anonymous memory */
+	MP_ALLOC_XMEM,
+	/**< allocate and populate mempool using anonymous memory */
+	MP_ALLOC_XMEM_HUGE
+	/**< allocate and populate mempool using anonymous hugepage memory */
+};
+
 #ifdef RTE_TEST_PMD_RECORD_BURST_STATS
 /**
  * The data structure associated with RX and TX packet burst statistics
@@ -107,11 +119,13 @@ struct fwd_stream {
 	unsigned int retry_enabled;
 
 	/* "read-write" results */
-	unsigned int rx_packets;  /**< received packets */
-	unsigned int tx_packets;  /**< received packets transmitted */
-	unsigned int fwd_dropped; /**< received packets not forwarded */
-	unsigned int rx_bad_ip_csum ; /**< received packets has bad ip checksum */
-	unsigned int rx_bad_l4_csum ; /**< received packets has bad l4 checksum */
+	uint64_t rx_packets;  /**< received packets */
+	uint64_t tx_packets;  /**< received packets transmitted */
+	uint64_t fwd_dropped; /**< received packets not forwarded */
+	uint64_t rx_bad_ip_csum ; /**< received packets has bad ip checksum */
+	uint64_t rx_bad_l4_csum ; /**< received packets has bad l4 checksum */
+	uint64_t rx_bad_outer_l4_csum;
+	/**< received packets has bad outer l4 checksum */
 	unsigned int gro_times;	/**< GRO operation times */
 #ifdef RTE_TEST_PMD_RECORD_CORE_CYCLES
 	uint64_t     core_cycles; /**< used for RX and TX processing */
@@ -124,15 +138,12 @@ struct fwd_stream {
 
 /** Descriptor for a single flow. */
 struct port_flow {
-	size_t size; /**< Allocated space including data[]. */
 	struct port_flow *next; /**< Next flow in list. */
 	struct port_flow *tmp; /**< Temporary linking. */
 	uint32_t id; /**< Flow rule ID. */
 	struct rte_flow *flow; /**< Opaque flow object returned by PMD. */
-	struct rte_flow_attr attr; /**< Attributes. */
-	struct rte_flow_item *pattern; /**< Pattern. */
-	struct rte_flow_action *actions; /**< Actions. */
-	uint8_t data[]; /**< Storage for pattern/actions. */
+	struct rte_flow_conv_rule rule; /* Saved flow rule description. */
+	uint8_t data[]; /**< Storage for flow rule description */
 };
 
 #ifdef SOFTNIC
@@ -153,21 +164,16 @@ struct rte_port {
 	struct rte_eth_conf     dev_conf;   /**< Port configuration. */
 	struct ether_addr       eth_addr;   /**< Port ethernet address */
 	struct rte_eth_stats    stats;      /**< Last port statistics */
-	uint64_t                tx_dropped; /**< If no descriptor in TX ring */
-	struct fwd_stream       *rx_stream; /**< Port RX stream, if unique */
-	struct fwd_stream       *tx_stream; /**< Port TX stream, if unique */
 	unsigned int            socket_id;  /**< For NUMA support */
 	uint16_t		parse_tunnel:1; /**< Parse internal headers */
 	uint16_t                tso_segsz;  /**< Segmentation offload MSS for non-tunneled packets. */
 	uint16_t                tunnel_tso_segsz; /**< Segmentation offload MSS for tunneled pkts. */
 	uint16_t                tx_vlan_id;/**< The tag ID */
 	uint16_t                tx_vlan_id_outer;/**< The outer tag ID */
-	void                    *fwd_ctx;   /**< Forwarding mode context */
-	uint64_t                rx_bad_ip_csum; /**< rx pkts with bad ip checksum  */
-	uint64_t                rx_bad_l4_csum; /**< rx pkts with bad l4 checksum */
 	uint8_t                 tx_queue_stats_mapping_enabled;
 	uint8_t                 rx_queue_stats_mapping_enabled;
 	volatile uint16_t        port_status;    /**< port started or not */
+	uint8_t                 need_setup;     /**< port just attached */
 	uint8_t                 need_reconfig;  /**< need reconfiguring port or not */
 	uint8_t                 need_reconfig_queues; /**< need reconfiguring queues or not */
 	uint8_t                 rss_flag;   /**< enable rss or not */
@@ -180,9 +186,14 @@ struct rte_port {
 	uint32_t                mc_addr_nb; /**< nb. of addr. in mc_addr_pool */
 	uint8_t                 slave_flag; /**< bonding slave port */
 	struct port_flow        *flow_list; /**< Associated flows. */
+	const struct rte_eth_rxtx_callback *rx_dump_cb[MAX_QUEUE_ID+1];
+	const struct rte_eth_rxtx_callback *tx_dump_cb[MAX_QUEUE_ID+1];
 #ifdef SOFTNIC
 	struct softnic_port     softport;  /**< softnic params */
 #endif
+	/**< metadata value to insert in Tx packets. */
+	rte_be32_t		tx_metadata;
+	const struct rte_eth_rxtx_callback *tx_set_md_cb[MAX_QUEUE_ID+1];
 };
 
 /**
@@ -243,6 +254,7 @@ extern struct fwd_engine rx_only_engine;
 extern struct fwd_engine tx_only_engine;
 extern struct fwd_engine csum_fwd_engine;
 extern struct fwd_engine icmp_echo_engine;
+extern struct fwd_engine noisy_vnf_engine;
 #ifdef SOFTNIC
 extern struct fwd_engine softnic_fwd_engine;
 #endif
@@ -251,6 +263,8 @@ extern struct fwd_engine ieee1588_fwd_engine;
 #endif
 
 extern struct fwd_engine * fwd_engines[]; /**< NULL terminated array. */
+
+extern uint16_t mempool_flags;
 
 /**
  * Forwarding Configuration
@@ -304,13 +318,15 @@ extern uint8_t  numa_support; /**< set by "--numa" parameter */
 extern uint16_t port_topology; /**< set by "--port-topology" parameter */
 extern uint8_t no_flush_rx; /**<set by "--no-flush-rx" parameter */
 extern uint8_t flow_isolate_all; /**< set by "--flow-isolate-all */
-extern uint8_t  mp_anon; /**< set by "--mp-anon" parameter */
+extern uint8_t  mp_alloc_type;
+/**< set by "--mp-anon" or "--mp-alloc" parameter */
 extern uint8_t no_link_check; /**<set by "--disable-link-check" parameter */
 extern volatile int test_done; /* stop packet forwarding when set to 1. */
 extern uint8_t lsc_interrupt; /**< disabled by "--no-lsc-interrupt" parameter */
 extern uint8_t rmv_interrupt; /**< disabled by "--no-rmv-interrupt" parameter */
 extern uint32_t event_print_mask;
 /**< set by "--print-event xxxx" and "--mask-event xxxx parameters */
+extern bool setup_on_probe_event; /**< disabled by port setup-on iterator */
 extern uint8_t hot_plug; /**< enable by "--hot-plug" parameter */
 extern int do_mlockall; /**< set by "--mlockall" or "--no-mlockall" parameter */
 
@@ -375,6 +391,13 @@ extern int8_t rx_drop_en;
 extern int16_t tx_free_thresh;
 extern int16_t tx_rs_thresh;
 
+extern uint16_t noisy_tx_sw_bufsz;
+extern uint16_t noisy_tx_sw_buf_flush_time;
+extern uint64_t noisy_lkup_mem_sz;
+extern uint64_t noisy_lkup_num_writes;
+extern uint64_t noisy_lkup_num_reads;
+extern uint64_t noisy_lkup_num_reads_writes;
+
 extern uint8_t dcb_config;
 extern uint8_t dcb_test;
 
@@ -411,6 +434,8 @@ enum tx_pkt_split {
 
 extern enum tx_pkt_split tx_pkt_split;
 
+extern uint8_t txonly_multi_flow;
+
 extern uint16_t nb_pkt_per_burst;
 extern uint16_t mb_mempool_cache;
 extern int8_t rx_pthresh;
@@ -419,6 +444,12 @@ extern int8_t rx_wthresh;
 extern int8_t tx_pthresh;
 extern int8_t tx_hthresh;
 extern int8_t tx_wthresh;
+
+extern uint16_t tx_udp_src_port;
+extern uint16_t tx_udp_dst_port;
+
+extern uint32_t tx_ip_src_addr;
+extern uint32_t tx_ip_dst_addr;
 
 extern struct fwd_config cur_fwd_config;
 extern struct fwd_engine *cur_fwd_eng;
@@ -459,6 +490,7 @@ extern uint16_t gso_max_segment_size;
 struct vxlan_encap_conf {
 	uint32_t select_ipv4:1;
 	uint32_t select_vlan:1;
+	uint32_t select_tos_ttl:1;
 	uint8_t vni[3];
 	rte_be16_t udp_src;
 	rte_be16_t udp_dst;
@@ -467,6 +499,8 @@ struct vxlan_encap_conf {
 	uint8_t ipv6_src[16];
 	uint8_t ipv6_dst[16];
 	rte_be16_t vlan_tci;
+	uint8_t ip_tos;
+	uint8_t ip_ttl;
 	uint8_t eth_src[ETHER_ADDR_LEN];
 	uint8_t eth_dst[ETHER_ADDR_LEN];
 };
@@ -486,6 +520,68 @@ struct nvgre_encap_conf {
 	uint8_t eth_dst[ETHER_ADDR_LEN];
 };
 struct nvgre_encap_conf nvgre_encap_conf;
+
+/* L2 encap parameters. */
+struct l2_encap_conf {
+	uint32_t select_ipv4:1;
+	uint32_t select_vlan:1;
+	rte_be16_t vlan_tci;
+	uint8_t eth_src[ETHER_ADDR_LEN];
+	uint8_t eth_dst[ETHER_ADDR_LEN];
+};
+struct l2_encap_conf l2_encap_conf;
+
+/* L2 decap parameters. */
+struct l2_decap_conf {
+	uint32_t select_vlan:1;
+};
+struct l2_decap_conf l2_decap_conf;
+
+/* MPLSoGRE encap parameters. */
+struct mplsogre_encap_conf {
+	uint32_t select_ipv4:1;
+	uint32_t select_vlan:1;
+	uint8_t label[3];
+	rte_be32_t ipv4_src;
+	rte_be32_t ipv4_dst;
+	uint8_t ipv6_src[16];
+	uint8_t ipv6_dst[16];
+	rte_be16_t vlan_tci;
+	uint8_t eth_src[ETHER_ADDR_LEN];
+	uint8_t eth_dst[ETHER_ADDR_LEN];
+};
+struct mplsogre_encap_conf mplsogre_encap_conf;
+
+/* MPLSoGRE decap parameters. */
+struct mplsogre_decap_conf {
+	uint32_t select_ipv4:1;
+	uint32_t select_vlan:1;
+};
+struct mplsogre_decap_conf mplsogre_decap_conf;
+
+/* MPLSoUDP encap parameters. */
+struct mplsoudp_encap_conf {
+	uint32_t select_ipv4:1;
+	uint32_t select_vlan:1;
+	uint8_t label[3];
+	rte_be16_t udp_src;
+	rte_be16_t udp_dst;
+	rte_be32_t ipv4_src;
+	rte_be32_t ipv4_dst;
+	uint8_t ipv6_src[16];
+	uint8_t ipv6_dst[16];
+	rte_be16_t vlan_tci;
+	uint8_t eth_src[ETHER_ADDR_LEN];
+	uint8_t eth_dst[ETHER_ADDR_LEN];
+};
+struct mplsoudp_encap_conf mplsoudp_encap_conf;
+
+/* MPLSoUDP decap parameters. */
+struct mplsoudp_decap_conf {
+	uint32_t select_ipv4:1;
+	uint32_t select_vlan:1;
+};
+struct mplsoudp_decap_conf mplsoudp_decap_conf;
 
 static inline unsigned int
 lcore_num(void)
@@ -594,6 +690,8 @@ void nic_xstats_display(portid_t port_id);
 void nic_xstats_clear(portid_t port_id);
 void nic_stats_mapping_display(portid_t port_id);
 void port_infos_display(portid_t port_id);
+void port_summary_display(portid_t port_id);
+void port_summary_header_display(void);
 void port_offload_cap_display(portid_t port_id);
 void rx_queue_infos_display(portid_t port_idi, uint16_t queue_id);
 void tx_queue_infos_display(portid_t port_idi, uint16_t queue_id);
@@ -672,6 +770,8 @@ char *list_pkt_forwarding_modes(void);
 char *list_pkt_forwarding_retry_modes(void);
 void set_pkt_forwarding_mode(const char *fwd_mode);
 void start_packet_forwarding(int with_tx_first);
+void fwd_stats_display(void);
+void fwd_stats_reset(void);
 void stop_packet_forwarding(void);
 void dev_set_link_up(portid_t pid);
 void dev_set_link_down(portid_t pid);
@@ -688,7 +788,7 @@ void stop_port(portid_t pid);
 void close_port(portid_t pid);
 void reset_port(portid_t pid);
 void attach_port(char *identifier);
-void detach_port(portid_t port_id);
+void detach_port_device(portid_t port_id);
 int all_ports_stopped(void);
 int port_is_stopped(portid_t port_id);
 int port_is_started(portid_t port_id);
@@ -708,8 +808,7 @@ int set_queue_rate_limit(portid_t port_id, uint16_t queue_idx, uint16_t rate);
 int set_vf_rate_limit(portid_t port_id, uint16_t vf, uint16_t rate,
 				uint64_t q_msk);
 
-void port_rss_hash_conf_show(portid_t port_id, char rss_info[],
-			     int show_rss_key);
+void port_rss_hash_conf_show(portid_t port_id, int show_rss_key);
 void port_rss_hash_key_update(portid_t port_id, char rss_type[],
 			      uint8_t *hash_key, uint hash_key_len);
 int rx_queue_id_is_invalid(queueid_t rxq_id);
@@ -742,6 +841,25 @@ queueid_t get_allowed_max_nb_rxq(portid_t *pid);
 int check_nb_rxq(queueid_t rxq);
 queueid_t get_allowed_max_nb_txq(portid_t *pid);
 int check_nb_txq(queueid_t txq);
+
+uint16_t dump_rx_pkts(uint16_t port_id, uint16_t queue, struct rte_mbuf *pkts[],
+		      uint16_t nb_pkts, __rte_unused uint16_t max_pkts,
+		      __rte_unused void *user_param);
+
+uint16_t dump_tx_pkts(uint16_t port_id, uint16_t queue, struct rte_mbuf *pkts[],
+		      uint16_t nb_pkts, __rte_unused void *user_param);
+
+void add_rx_dump_callbacks(portid_t portid);
+void remove_rx_dump_callbacks(portid_t portid);
+void add_tx_dump_callbacks(portid_t portid);
+void remove_tx_dump_callbacks(portid_t portid);
+void configure_rxtx_dump_callbacks(uint16_t verbose);
+
+uint16_t tx_pkt_set_md(uint16_t port_id, __rte_unused uint16_t queue,
+		       struct rte_mbuf *pkts[], uint16_t nb_pkts,
+		       __rte_unused void *user_param);
+void add_tx_md_callback(portid_t portid);
+void remove_tx_md_callback(portid_t portid);
 
 /*
  * Work-around of a compilation error with ICC on invocations of the

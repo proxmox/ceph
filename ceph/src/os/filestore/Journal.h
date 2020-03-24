@@ -19,13 +19,13 @@
 #include <errno.h>
 
 #include "include/buffer_fwd.h"
+#include "include/common_fwd.h"
 #include "include/Context.h"
 #include "common/Finisher.h"
 #include "common/TrackedOp.h"
 #include "os/ObjectStore.h"
 #include "common/zipkin_trace.h"
 
-class PerfCounters;
 
 class Journal {
 protected:
@@ -35,11 +35,11 @@ public:
   CephContext* cct;
   PerfCounters *logger;
 protected:
-  Cond *do_sync_cond;
+  ceph::condition_variable *do_sync_cond;
   bool wait_on_full;
 
 public:
-  Journal(CephContext* cct, uuid_d f, Finisher *fin, Cond *c=0) :
+  Journal(CephContext* cct, uuid_d f, Finisher *fin, ceph::condition_variable *c=0) :
     fsid(f), finisher(fin), cct(cct), logger(NULL),
     do_sync_cond(c),
     wait_on_full(false) { }

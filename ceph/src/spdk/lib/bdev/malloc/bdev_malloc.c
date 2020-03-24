@@ -109,7 +109,7 @@ static struct spdk_bdev_module malloc_if = {
 
 };
 
-SPDK_BDEV_MODULE_REGISTER(&malloc_if)
+SPDK_BDEV_MODULE_REGISTER(malloc, &malloc_if)
 
 static void
 malloc_disk_free(struct malloc_disk *malloc_disk)
@@ -119,8 +119,8 @@ malloc_disk_free(struct malloc_disk *malloc_disk)
 	}
 
 	free(malloc_disk->disk.name);
-	spdk_dma_free(malloc_disk->malloc_buf);
-	spdk_dma_free(malloc_disk);
+	spdk_free(malloc_disk->malloc_buf);
+	free(malloc_disk);
 }
 
 static int
@@ -310,6 +310,20 @@ static int _bdev_malloc_submit_request(struct spdk_io_channel *ch, struct spdk_b
 					 bdev_io->u.bdev.offset_blocks * block_size,
 					 bdev_io->u.bdev.num_blocks * block_size);
 
+	case SPDK_BDEV_IO_TYPE_ZCOPY:
+		if (bdev_io->u.bdev.zcopy.start) {
+			void *buf;
+			size_t len;
+
+			buf = ((struct malloc_disk *)bdev_io->bdev->ctxt)->malloc_buf +
+			      bdev_io->u.bdev.offset_blocks * block_size;
+			len = bdev_io->u.bdev.num_blocks * block_size;
+			spdk_bdev_io_set_buf(bdev_io, buf, len);
+
+		}
+		spdk_bdev_io_complete(spdk_bdev_io_from_ctx(bdev_io->driver_ctx),
+				      SPDK_BDEV_IO_STATUS_SUCCESS);
+		return 0;
 	default:
 		return -1;
 	}
@@ -333,6 +347,7 @@ bdev_malloc_io_type_supported(void *ctx, enum spdk_bdev_io_type io_type)
 	case SPDK_BDEV_IO_TYPE_RESET:
 	case SPDK_BDEV_IO_TYPE_UNMAP:
 	case SPDK_BDEV_IO_TYPE_WRITE_ZEROES:
+	case SPDK_BDEV_IO_TYPE_ZCOPY:
 		return true;
 
 	default:
@@ -386,9 +401,9 @@ struct spdk_bdev *create_malloc_disk(const char *name, const struct spdk_uuid *u
 		return NULL;
 	}
 
-	mdisk = spdk_dma_zmalloc(sizeof(*mdisk), 0, NULL);
+	mdisk = calloc(1, sizeof(*mdisk));
 	if (!mdisk) {
-		SPDK_ERRLOG("mdisk spdk_dma_zmalloc() failed\n");
+		SPDK_ERRLOG("mdisk calloc() failed\n");
 		return NULL;
 	}
 
@@ -398,9 +413,10 @@ struct spdk_bdev *create_malloc_disk(const char *name, const struct spdk_uuid *u
 	 * TODO: need to pass a hint so we know which socket to allocate
 	 *  from on multi-socket systems.
 	 */
-	mdisk->malloc_buf = spdk_dma_zmalloc(num_blocks * block_size, 2 * 1024 * 1024, NULL);
+	mdisk->malloc_buf = spdk_zmalloc(num_blocks * block_size, 2 * 1024 * 1024, NULL,
+					 SPDK_ENV_LCORE_ID_ANY, SPDK_MALLOC_DMA);
 	if (!mdisk->malloc_buf) {
-		SPDK_ERRLOG("malloc_buf spdk_dma_zmalloc() failed\n");
+		SPDK_ERRLOG("malloc_buf spdk_zmalloc() failed\n");
 		malloc_disk_free(mdisk);
 		return NULL;
 	}

@@ -9,7 +9,7 @@ Environment Abstraction Layer
 The Environment Abstraction Layer (EAL) is responsible for gaining access to low-level resources such as hardware and memory space.
 It provides a generic interface that hides the environment specifics from the applications and libraries.
 It is the responsibility of the initialization routine to decide how to allocate these resources
-(that is, memory space, PCI devices, timers, consoles, and so on).
+(that is, memory space, devices, timers, consoles, and so on).
 
 Typical services expected from the EAL are:
 
@@ -21,8 +21,6 @@ Typical services expected from the EAL are:
 
 *   System Memory Reservation:
     The EAL facilitates the reservation of different memory zones, for example, physical memory areas for device interactions.
-
-*   PCI Address Abstraction: The EAL provides an interface to access PCI address space.
 
 *   Trace and Debug Functions: Logs, dump_stack, panic and so on.
 
@@ -39,8 +37,6 @@ EAL in a Linux-userland Execution Environment
 ---------------------------------------------
 
 In a Linux user space environment, the DPDK application runs as a user-space application using the pthread library.
-PCI information about devices and address space is discovered through the /sys kernel interface and through kernel modules such as uio_pci_generic, or igb_uio.
-Refer to the UIO: User-space drivers documentation in the Linux kernel. This memory is mmap'd in the application.
 
 The EAL performs physical memory allocation using mmap() in hugetlbfs (using huge page sizes to increase performance).
 This memory is exposed to DPDK service layers such as the :ref:`Mempool Library <Mempool_Library>`.
@@ -58,7 +54,7 @@ A check is also performed at initialization time to ensure that the micro archit
 Then, the main() function is called. The core initialization and launch is done in rte_eal_init() (see the API documentation).
 It consist of calls to the pthread library (more specifically, pthread_self(), pthread_create(), and pthread_setaffinity_np()).
 
-.. _figure_linuxapp_launch:
+.. _figure_linux_launch:
 
 .. figure:: img/linuxapp_launch.*
 
@@ -83,7 +79,7 @@ API documentation for details.
 Multi-process Support
 ~~~~~~~~~~~~~~~~~~~~~
 
-The Linuxapp EAL allows a multi-process as well as a multi-threaded (pthread) deployment model.
+The Linux EAL allows a multi-process as well as a multi-threaded (pthread) deployment model.
 See chapter
 :ref:`Multi-process Support <Multi-process_Support>` for more details.
 
@@ -151,14 +147,13 @@ A default validator callback is provided by EAL, which can be enabled with a
 ``--socket-limit`` command-line option, for a simple way to limit maximum amount
 of memory that can be used by DPDK application.
 
-.. note::
-
-    In multiprocess scenario, all related processes (i.e. primary process, and
-    secondary processes running with the same prefix) must be in the same memory
-    modes. That is, if primary process is run in dynamic memory mode, all of its
-    secondary processes must be run in the same mode. The same is applicable to
-    ``--single-file-segments`` command-line option - both primary and secondary
-    processes must shared this mode.
+.. warning::
+    Memory subsystem uses DPDK IPC internally, so memory allocations/callbacks
+    and IPC must not be mixed: it is not safe to allocate/free memory inside
+    memory-related or IPC callbacks, and it is not safe to use IPC inside
+    memory-related callbacks. See chapter
+    :ref:`Multi-process Support <Multi-process_Support>` for more details about
+    DPDK IPC.
 
 + Legacy memory mode
 
@@ -172,6 +167,20 @@ not allow acquiring or releasing hugepages from the system at runtime.
 
 If neither ``-m`` nor ``--socket-mem`` were specified, the entire available
 hugepage memory will be preallocated.
+
++ Hugepage allocation matching
+
+This behavior is enabled by specifying the ``--match-allocations`` command-line
+switch to the EAL. This switch is Linux-only and not supported with
+``--legacy-mem`` nor ``--no-huge``.
+
+Some applications using memory event callbacks may require that hugepages be
+freed exactly as they were allocated. These applications may also require
+that any allocation from the malloc heap not span across allocations
+associated with two different memory event callbacks. Hugepage allocation
+matching can be used by these types of applications to satisfy both of these
+requirements. This can result in some increased memory usage which is
+very dependent on the memory allocation patterns of the application.
 
 + 32-bit support
 
@@ -213,14 +222,103 @@ Normally, these options do not need to be changed.
     can later be mapped into that preallocated VA space (if dynamic memory mode
     is enabled), and can optionally be mapped into it at startup.
 
-PCI Access
-~~~~~~~~~~
++ Segment file descriptors
 
-The EAL uses the /sys/bus/pci utilities provided by the kernel to scan the content on the PCI bus.
-To access PCI memory, a kernel module called uio_pci_generic provides a /dev/uioX device file
-and resource files in /sys
-that can be mmap'd to obtain access to PCI address space from the application.
-The DPDK-specific igb_uio module can also be used for this. Both drivers use the uio kernel feature (userland driver).
+On Linux, in most cases, EAL will store segment file descriptors in EAL. This
+can become a problem when using smaller page sizes due to underlying limitations
+of ``glibc`` library. For example, Linux API calls such as ``select()`` may not
+work correctly because ``glibc`` does not support more than certain number of
+file descriptors.
+
+There are two possible solutions for this problem. The recommended solution is
+to use ``--single-file-segments`` mode, as that mode will not use a file
+descriptor per each page, and it will keep compatibility with Virtio with
+vhost-user backend. This option is not available when using ``--legacy-mem``
+mode.
+
+Another option is to use bigger page sizes. Since fewer pages are required to
+cover the same memory area, fewer file descriptors will be stored internally
+by EAL.
+
+Support for Externally Allocated Memory
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+It is possible to use externally allocated memory in DPDK. There are two ways in
+which using externally allocated memory can work: the malloc heap API's, and
+manual memory management.
+
++ Using heap API's for externally allocated memory
+
+Using using a set of malloc heap API's is the recommended way to use externally
+allocated memory in DPDK. In this way, support for externally allocated memory
+is implemented through overloading the socket ID - externally allocated heaps
+will have socket ID's that would be considered invalid under normal
+circumstances. Requesting an allocation to take place from a specified
+externally allocated memory is a matter of supplying the correct socket ID to
+DPDK allocator, either directly (e.g. through a call to ``rte_malloc``) or
+indirectly (through data structure-specific allocation API's such as
+``rte_ring_create``). Using these API's also ensures that mapping of externally
+allocated memory for DMA is also performed on any memory segment that is added
+to a DPDK malloc heap.
+
+Since there is no way DPDK can verify whether memory is available or valid, this
+responsibility falls on the shoulders of the user. All multiprocess
+synchronization is also user's responsibility, as well as ensuring  that all
+calls to add/attach/detach/remove memory are done in the correct order. It is
+not required to attach to a memory area in all processes - only attach to memory
+areas as needed.
+
+The expected workflow is as follows:
+
+* Get a pointer to memory area
+* Create a named heap
+* Add memory area(s) to the heap
+    - If IOVA table is not specified, IOVA addresses will be assumed to be
+      unavailable, and DMA mappings will not be performed
+    - Other processes must attach to the memory area before they can use it
+* Get socket ID used for the heap
+* Use normal DPDK allocation procedures, using supplied socket ID
+* If memory area is no longer needed, it can be removed from the heap
+    - Other processes must detach from this memory area before it can be removed
+* If heap is no longer needed, remove it
+    - Socket ID will become invalid and will not be reused
+
+For more information, please refer to ``rte_malloc`` API documentation,
+specifically the ``rte_malloc_heap_*`` family of function calls.
+
++ Using externally allocated memory without DPDK API's
+
+While using heap API's is the recommended method of using externally allocated
+memory in DPDK, there are certain use cases where the overhead of DPDK heap API
+is undesirable - for example, when manual memory management is performed on an
+externally allocated area. To support use cases where externally allocated
+memory will not be used as part of normal DPDK workflow, there is also another
+set of API's under the ``rte_extmem_*`` namespace.
+
+These API's are (as their name implies) intended to allow registering or
+unregistering externally allocated memory to/from DPDK's internal page table, to
+allow API's like ``rte_virt2memseg`` etc. to work with externally allocated
+memory. Memory added this way will not be available for any regular DPDK
+allocators; DPDK will leave this memory for the user application to manage.
+
+The expected workflow is as follows:
+
+* Get a pointer to memory area
+* Register memory within DPDK
+    - If IOVA table is not specified, IOVA addresses will be assumed to be
+      unavailable
+    - Other processes must attach to the memory area before they can use it
+* Perform DMA mapping with ``rte_dev_dma_map`` if needed
+* Use the memory area in your application
+* If memory area is no longer needed, it can be unregistered
+    - If the area was mapped for DMA, unmapping must be performed before
+      unregistering memory
+    - Other processes must detach from the memory area before it can be
+      unregistered
+
+Since these externally allocated memory areas will not be managed by DPDK, it is
+therefore up to the user application to decide how to use them and what to do
+with them once they're registered.
 
 Per-lcore and Shared Variables
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -274,10 +372,10 @@ To ease the idle polling with tiny throughput, it's useful to pause the polling 
 The RX interrupt is the first choice to be such kind of wake-up event, but probably won't be the only one.
 
 EAL provides the event APIs for this event-driven thread mode.
-Taking linuxapp as an example, the implementation relies on epoll. Each thread can monitor an epoll instance
+Taking Linux as an example, the implementation relies on epoll. Each thread can monitor an epoll instance
 in which all the wake-up events' file descriptors are added. The event file descriptors are created and mapped to
 the interrupt vectors according to the UIO/VFIO spec.
-From bsdapp's perspective, kqueue is the alternative way, but not implemented yet.
+From FreeBSD's perspective, kqueue is the alternative way, but not implemented yet.
 
 EAL initializes the mapping between event file descriptors and interrupt vectors, while each device initializes the mapping
 between interrupt vectors and queues. In this way, EAL actually is unaware of the interrupt cause on the specific vector.
@@ -320,6 +418,14 @@ Misc Functions
 ~~~~~~~~~~~~~~
 
 Locks and atomic operations are per-architecture (i686 and x86_64).
+
+IOVA Mode Configuration
+~~~~~~~~~~~~~~~~~~~~~~~
+
+Auto detection of the IOVA mode, based on probing the bus and IOMMU configuration, may not report
+the desired addressing mode when virtual devices that are not directly attached to the bus are present.
+To facilitate forcing the IOVA mode to a specific value the EAL command line option ``--iova-mode`` can
+be used to select either physical addressing('pa') or virtual addressing('va').
 
 Memory Segments and Memory Zones (memzone)
 ------------------------------------------
@@ -418,6 +524,28 @@ Those TLS include *_cpuset* and *_socket_id*:
 *	*_socket_id* stores the NUMA node of the CPU set. If the CPUs in CPU set belong to different NUMA node, the *_socket_id* will be set to SOCKET_ID_ANY.
 
 
+Control Thread API
+~~~~~~~~~~~~~~~~~~
+
+It is possible to create Control Threads using the public API
+``rte_ctrl_thread_create()``.
+Those threads can be used for management/infrastructure tasks and are used
+internally by DPDK for multi process support and interrupt handling.
+
+Those threads will be scheduled on CPUs part of the original process CPU
+affinity from which the dataplane and service lcores are excluded.
+
+For example, on a 8 CPUs system, starting a dpdk application with -l 2,3
+(dataplane cores), then depending on the affinity configuration which can be
+controlled with tools like taskset (Linux) or cpuset (FreeBSD),
+
+- with no affinity configuration, the Control Threads will end up on
+  0-1,4-7 CPUs.
+- with affinity restricted to 2-4, the Control Threads will end up on
+  CPU 4.
+- with affinity restricted to 2-3, the Control Threads will end up on
+  CPU 2 (master lcore, which is the default when no CPU is available).
+
 .. _known_issue_label:
 
 Known Issues
@@ -460,6 +588,16 @@ Known Issues
   4. It MAY be used by preemptible multi-producer and/or preemptible multi-consumer pthreads whose scheduling policy are all SCHED_OTHER(cfs), SCHED_IDLE or SCHED_BATCH. User SHOULD be aware of the performance penalty before using it.
 
   5. It MUST not be used by multi-producer/consumer pthreads, whose scheduling policies are SCHED_FIFO or SCHED_RR.
+
+  Alternatively, applications can use the lock-free stack mempool handler. When
+  considering this handler, note that:
+
+  - It is currently limited to the x86_64 platform, because it uses an
+    instruction (16-byte compare-and-swap) that is not yet available on other
+    platforms.
+  - It has worse average-case performance than the non-preemptive rte_ring, but
+    software caching (e.g. the mempool cache) can mitigate this by reducing the
+    number of stack accesses.
 
 + rte_timer
 
@@ -603,7 +741,7 @@ The most important fields in the structure and how they are used are described b
 
 Malloc heap is a doubly-linked list, where each element keeps track of its
 previous and next elements. Due to the fact that hugepage memory can come and
-go, neighbouring malloc elements may not necessarily be adjacent in memory.
+go, neighboring malloc elements may not necessarily be adjacent in memory.
 Also, since a malloc element may span multiple pages, its contents may not
 necessarily be IOVA-contiguous either - each malloc element is only guaranteed
 to be virtually contiguous.

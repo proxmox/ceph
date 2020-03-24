@@ -83,6 +83,10 @@ add_executable(unittest_rocksdb_option
 add_ceph_unittest(unittest_rocksdb_option)
 target_link_libraries(unittest_rocksdb_option global os ${BLKID_LIBRARIES})
 
+if(WITH_EVENTTRACE)
+  add_dependencies(os eventtrace_tp)
+endif()
+
 if(WITH_BLUESTORE)
 
   add_executable(unittest_alloc
@@ -91,7 +95,6 @@ if(WITH_BLUESTORE)
     )
   add_ceph_unittest(unittest_alloc)
   target_link_libraries(unittest_alloc os global)
-
 
   add_executable(unittest_alloc_bench
     Allocator_bench.cc
@@ -106,6 +109,14 @@ if(WITH_BLUESTORE)
   add_ceph_unittest(unittest_fastbmap_allocator)
   target_link_libraries(unittest_fastbmap_allocator os global)
 
+  set_target_properties(unittest_fastbmap_allocator PROPERTIES COMPILE_FLAGS
+  "${UNITTEST_CXX_FLAGS}")
+
+  add_executable(unittest_alloc_aging EXCLUDE_FROM_ALL
+    Allocator_aging_fragmentation.cc)
+  target_link_libraries(unittest_alloc_aging os global GTest::Main)
+
+  # unittest_bluefs
   add_executable(unittest_bluefs
     test_bluefs.cc
     )
@@ -124,7 +135,7 @@ endif(WITH_BLUESTORE)
 add_executable(unittest_transaction
   test_transaction.cc)
 add_ceph_unittest(unittest_transaction)
-target_link_libraries(unittest_transaction os ceph-common ${XIO_LIBRARY})
+target_link_libraries(unittest_transaction os ceph-common)
 
 # unittest_memstore_clone
 add_executable(unittest_memstore_clone
@@ -132,3 +143,11 @@ add_executable(unittest_memstore_clone
   $<TARGET_OBJECTS:store_test_fixture>)
 add_ceph_unittest(unittest_memstore_clone)
 target_link_libraries(unittest_memstore_clone os global)
+
+if(WITH_BLUESTORE)
+  add_executable(ceph_test_bmap_alloc_replay
+    bmap_allocator_replay_test.cc)
+  target_link_libraries(ceph_test_bmap_alloc_replay os global ${UNITTEST_LIBS})
+  install(TARGETS ceph_test_bmap_alloc_replay
+    DESTINATION bin)
+endif()

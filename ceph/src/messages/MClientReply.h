@@ -262,11 +262,30 @@ struct InodeStat {
   // see CInode::encode_inodestat for encoder.
 };
 
+struct openc_response_t {
+  _inodeno_t			created_ino;
+  interval_set<inodeno_t>	delegated_inos;
 
-class MClientReply : public MessageInstance<MClientReply> {
 public:
-  friend factory;
+  void encode(ceph::buffer::list& bl) const {
+    using ceph::encode;
+    ENCODE_START(1, 1, bl);
+    encode(created_ino, bl);
+    encode(delegated_inos, bl);
+    ENCODE_FINISH(bl);
+  }
+  void decode(bufferlist::const_iterator &p) {
+    using ceph::decode;
+    DECODE_START(1, p);
+    decode(created_ino, p);
+    decode(delegated_inos, p);
+    DECODE_FINISH(p);
+  }
+} __attribute__ ((__may_alias__));
+WRITE_CLASS_ENCODER(openc_response_t)
 
+class MClientReply : public SafeMessage {
+public:
   // reply data
   struct ceph_mds_reply_head head {};
   bufferlist trace_bl;
@@ -289,9 +308,9 @@ public:
   bool is_safe() const { return head.safe; }
 
 protected:
-  MClientReply() : MessageInstance(CEPH_MSG_CLIENT_REPLY) {}
+  MClientReply() : SafeMessage{CEPH_MSG_CLIENT_REPLY} {}
   MClientReply(const MClientRequest &req, int result = 0) :
-    MessageInstance(CEPH_MSG_CLIENT_REPLY) {
+    SafeMessage{CEPH_MSG_CLIENT_REPLY} {
     memset(&head, 0, sizeof(head));
     header.tid = req.get_tid();
     head.op = req.get_op();
@@ -356,6 +375,9 @@ public:
   const bufferlist& get_trace_bl() const {
     return trace_bl;
   }
+private:
+  template<class T, typename... Args>
+  friend boost::intrusive_ptr<T> ceph::make_message(Args&&... args);
 };
 
 #endif

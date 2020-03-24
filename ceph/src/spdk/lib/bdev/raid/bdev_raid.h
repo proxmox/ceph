@@ -104,6 +104,9 @@ struct raid_bdev {
 	/* strip size of raid bdev in blocks */
 	uint32_t                    strip_size;
 
+	/* strip size of raid bdev in KB */
+	uint32_t                    strip_size_kb;
+
 	/* strip size bit shift for optimized calculation */
 	uint32_t                    strip_size_shift;
 
@@ -124,11 +127,14 @@ struct raid_bdev {
 
 	/* Set to true if destruct is called for this raid bdev */
 	bool                        destruct_called;
+
+	/* Set to true if destroy of this raid bdev is started. */
+	bool                        destroy_started;
 };
 
 /*
  * raid_bdev_io is the context part of bdev_io. It contains the information
- * related to bdev_io for a pooled bdev
+ * related to bdev_io for a raid bdev
  */
 struct raid_bdev_io {
 	/* WaitQ entry, used only in waitq logic */
@@ -137,10 +143,11 @@ struct raid_bdev_io {
 	/* Original channel for this IO, used in queuing logic */
 	struct spdk_io_channel		*ch;
 
-	/* Used for tracking progress on resets sent to member disks. */
-	uint8_t				base_bdev_reset_submitted;
-	uint8_t				base_bdev_reset_completed;
-	uint8_t				base_bdev_reset_status;
+	/* Used for tracking progress on io requests sent to member disks. */
+	uint8_t				base_bdev_io_submitted;
+	uint8_t				base_bdev_io_completed;
+	uint8_t				base_bdev_io_expected;
+	uint8_t				base_bdev_io_status;
 };
 
 /*
@@ -199,22 +206,23 @@ struct raid_bdev_io_channel {
 };
 
 /* TAIL heads for various raid bdev lists */
-TAILQ_HEAD(spdk_raid_configured_tailq, raid_bdev);
-TAILQ_HEAD(spdk_raid_configuring_tailq, raid_bdev);
-TAILQ_HEAD(spdk_raid_all_tailq, raid_bdev);
-TAILQ_HEAD(spdk_raid_offline_tailq, raid_bdev);
+TAILQ_HEAD(raid_configured_tailq, raid_bdev);
+TAILQ_HEAD(raid_configuring_tailq, raid_bdev);
+TAILQ_HEAD(raid_all_tailq, raid_bdev);
+TAILQ_HEAD(raid_offline_tailq, raid_bdev);
 
-extern struct spdk_raid_configured_tailq    g_spdk_raid_bdev_configured_list;
-extern struct spdk_raid_configuring_tailq   g_spdk_raid_bdev_configuring_list;
-extern struct spdk_raid_all_tailq           g_spdk_raid_bdev_list;
-extern struct spdk_raid_offline_tailq       g_spdk_raid_bdev_offline_list;
-extern struct raid_config                   g_spdk_raid_config;
+extern struct raid_configured_tailq	g_raid_bdev_configured_list;
+extern struct raid_configuring_tailq	g_raid_bdev_configuring_list;
+extern struct raid_all_tailq		g_raid_bdev_list;
+extern struct raid_offline_tailq	g_raid_bdev_offline_list;
+extern struct raid_config		g_raid_config;
+
+typedef void (*raid_bdev_destruct_cb)(void *cb_ctx, int rc);
 
 int raid_bdev_create(struct raid_bdev_config *raid_cfg);
-void raid_bdev_remove_base_bdev(void *ctx);
 int raid_bdev_add_base_devices(struct raid_bdev_config *raid_cfg);
-void raid_bdev_free_base_bdev_resource(struct raid_bdev *raid_bdev, uint32_t slot);
-void raid_bdev_cleanup(struct raid_bdev *raid_bdev);
+void raid_bdev_remove_base_devices(struct raid_bdev_config *raid_cfg,
+				   raid_bdev_destruct_cb cb_fn, void *cb_ctx);
 int raid_bdev_config_add(const char *raid_name, int strip_size, int num_base_bdevs,
 			 int raid_level, struct raid_bdev_config **_raid_cfg);
 int raid_bdev_config_add_base_bdev(struct raid_bdev_config *raid_cfg,
@@ -222,4 +230,4 @@ int raid_bdev_config_add_base_bdev(struct raid_bdev_config *raid_cfg,
 void raid_bdev_config_cleanup(struct raid_bdev_config *raid_cfg);
 struct raid_bdev_config *raid_bdev_config_find_by_name(const char *raid_name);
 
-#endif // SPDK_BDEV_RAID_INTERNAL_H
+#endif /* SPDK_BDEV_RAID_INTERNAL_H */

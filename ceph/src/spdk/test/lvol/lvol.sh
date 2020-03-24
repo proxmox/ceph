@@ -51,14 +51,16 @@ function usage() {
                                     553: 'unregister_lvol_bdev',
                                     600: 'construct_lvol_store_with_cluster_size_max',
                                     601: 'construct_lvol_store_with_cluster_size_min',
+                                    602: 'construct_lvol_store_with_all_clear_methods',
                                     650: 'thin_provisioning_check_space',
                                     651: 'thin_provisioning_read_empty_bdev',
-                                    652: 'thin_provisionind_data_integrity_test',
+                                    652: 'thin_provisioning_data_integrity_test',
                                     653: 'thin_provisioning_resize',
                                     654: 'thin_overprovisioning',
                                     655: 'thin_provisioning_filling_disks_less_than_lvs_size',
                                     700: 'tasting_positive',
                                     701: 'tasting_lvol_store_positive',
+                                    702: 'tasting_positive_with_different_lvol_store_cluster_size',
                                     750: 'snapshot_readonly',
                                     751: 'snapshot_compare_with_lvol_bdev',
                                     752: 'snapshot_during_io_traffic',
@@ -69,6 +71,7 @@ function usage() {
                                     757: 'clone_inflate',
                                     758: 'clone_decouple_parent',
                                     759: 'clone_decouple_parent_rw',
+                                    760: 'set_read_only',
                                     800: 'rename_positive',
                                     801: 'rename_lvs_nonexistent',
                                     802: 'rename_lvs_EEXIST',
@@ -121,7 +124,6 @@ function vhost_kill()
         sleep 1
     fi
     rm $BASE_DIR/vhost.pid || true
-    rmmod nbd || true
 }
 
 trap "vhost_kill; rm -f $BASE_DIR/aio_bdev_0 $BASE_DIR/aio_bdev_1; exit 1" SIGINT SIGTERM EXIT

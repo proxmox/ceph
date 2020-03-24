@@ -1,8 +1,8 @@
 /*-
  *   BSD LICENSE
  *
- *   Copyright (c) Intel Corporation.
- *   All rights reserved.
+ *   Copyright (c) Intel Corporation. All rights reserved.
+ *   Copyright (c) 2018 Mellanox Technologies LTD. All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
  *   modification, are permitted provided that the following conditions
@@ -63,39 +63,27 @@ struct spdk_nvmf_poll_group;
 struct spdk_json_write_ctx;
 struct spdk_nvmf_transport;
 
-struct spdk_nvmf_tgt_opts {
-	uint16_t max_queue_depth;
-	uint16_t max_qpairs_per_ctrlr;
-	uint32_t in_capsule_data_size;
-	uint32_t max_io_size;
-	uint32_t max_subsystems;
-	uint32_t io_unit_size;
-};
-
 struct spdk_nvmf_transport_opts {
-	uint16_t max_queue_depth;
-	uint16_t max_qpairs_per_ctrlr;
-	uint32_t in_capsule_data_size;
-	uint32_t max_io_size;
-	uint32_t io_unit_size;
-	uint32_t max_aq_depth;
+	uint16_t	max_queue_depth;
+	uint16_t	max_qpairs_per_ctrlr;
+	uint32_t	in_capsule_data_size;
+	uint32_t	max_io_size;
+	uint32_t	io_unit_size;
+	uint32_t	max_aq_depth;
+	uint32_t	num_shared_buffers;
+	uint32_t	buf_cache_size;
+	uint32_t	max_srq_depth;
+	bool		no_srq;
 };
-
-/**
- * Initialize the default value of opts.
- *
- * \param opts Data structure where SPDK will initialize the default options.
- */
-void spdk_nvmf_tgt_opts_init(struct spdk_nvmf_tgt_opts *opts);
 
 /**
  * Construct an NVMe-oF target.
  *
- * \param opts Options.
+ * \param max_subsystems the maximum number of subsystems allowed by the target.
  *
  * \return a pointer to a NVMe-oF target on success, or NULL on failure.
  */
-struct spdk_nvmf_tgt *spdk_nvmf_tgt_create(struct spdk_nvmf_tgt_opts *opts);
+struct spdk_nvmf_tgt *spdk_nvmf_tgt_create(uint32_t max_subsystems);
 
 typedef void (spdk_nvmf_tgt_destroy_done_fn)(void *ctx, int status);
 
@@ -574,11 +562,13 @@ void spdk_nvmf_ns_opts_get_defaults(struct spdk_nvmf_ns_opts *opts, size_t opts_
  * \param bdev Block device to add as a namespace.
  * \param opts Namespace options, or NULL to use defaults.
  * \param opts_size sizeof(*opts)
+ * \param ptpl_file Persist through power loss file path.
  *
  * \return newly added NSID on success, or 0 on failure.
  */
 uint32_t spdk_nvmf_subsystem_add_ns(struct spdk_nvmf_subsystem *subsystem, struct spdk_bdev *bdev,
-				    const struct spdk_nvmf_ns_opts *opts, size_t opts_size);
+				    const struct spdk_nvmf_ns_opts *opts, size_t opts_size,
+				    const char *ptpl_file);
 
 /**
  * Remove a namespace from a subsytem.
@@ -686,6 +676,26 @@ const char *spdk_nvmf_subsystem_get_sn(const struct spdk_nvmf_subsystem *subsyst
 int spdk_nvmf_subsystem_set_sn(struct spdk_nvmf_subsystem *subsystem, const char *sn);
 
 /**
+ * Get the model number of the specified subsystem.
+ *
+ * \param subsystem Subsystem to query.
+ *
+ * \return model number of the specified subsystem.
+ */
+const char *spdk_nvmf_subsystem_get_mn(const struct spdk_nvmf_subsystem *subsystem);
+
+
+/**
+ * Set the model number for the specified subsystem.
+ *
+ * \param subsystem Subsystem to set for.
+ * \param mn model number to set.
+ *
+ * \return 0 on success, -1 on failure.
+ */
+int spdk_nvmf_subsystem_set_mn(struct spdk_nvmf_subsystem *subsystem, const char *mn);
+
+/**
  * Get the NQN of the specified subsystem.
  *
  * \param subsystem Subsystem to query.
@@ -748,6 +758,43 @@ struct spdk_nvmf_transport *spdk_nvmf_tgt_get_transport(struct spdk_nvmf_tgt *tg
 		enum spdk_nvme_transport_type type);
 
 /**
+ * Get the first transport registered with the given target
+ *
+ * \param tgt The NVMe-oF target
+ *
+ * \return The first transport registered on the target
+ */
+struct spdk_nvmf_transport *spdk_nvmf_transport_get_first(struct spdk_nvmf_tgt *tgt);
+
+/**
+ * Get the next transport in a target's list.
+ *
+ * \param transport A handle to a transport object
+ *
+ * \return The next transport associated with the NVMe-oF target
+ */
+struct spdk_nvmf_transport *spdk_nvmf_transport_get_next(struct spdk_nvmf_transport *transport);
+
+/**
+ * Get the opts for a given transport.
+ *
+ * \param transport The transport to query
+ *
+ * \return The opts associated with the given transport
+ */
+const struct spdk_nvmf_transport_opts *spdk_nvmf_get_transport_opts(struct spdk_nvmf_transport
+		*transport);
+
+/**
+ * Get the transport type for a given transport.
+ *
+ * \param transport The transport to query
+ *
+ * \return the transport type for the given transport
+ */
+spdk_nvme_transport_type_t spdk_nvmf_get_transport_type(struct spdk_nvmf_transport *transport);
+
+/**
  * Function to be called once transport add is complete
  *
  * \param cb_arg Callback argument passed to this function.
@@ -791,6 +838,23 @@ int spdk_nvmf_transport_listen(struct spdk_nvmf_transport *transport,
  */
 void
 spdk_nvmf_tgt_transport_write_config_json(struct spdk_json_write_ctx *w, struct spdk_nvmf_tgt *tgt);
+
+#ifdef SPDK_CONFIG_RDMA
+/**
+ * \brief Set the global hooks for the RDMA transport, if necessary.
+ *
+ * This call is optional and must be performed prior to probing for
+ * any devices. By default, the RDMA transport will use the ibverbs
+ * library to create protection domains and register memory. This
+ * is a mechanism to subvert that and use an existing registration.
+ *
+ * This function may only be called one time per process.
+ *
+ * \param hooks for initializing global hooks
+ */
+void
+spdk_nvmf_rdma_init_hooks(struct spdk_nvme_rdma_hooks *hooks);
+#endif
 
 #ifdef __cplusplus
 }

@@ -25,12 +25,15 @@
 
 #include "common/perf_histogram.h"
 #include "include/utime.h"
+#include "include/common_fwd.h"
 #include "common/ceph_mutex.h"
 #include "common/ceph_time.h"
 
-class CephContext;
-class PerfCountersBuilder;
-class PerfCounters;
+namespace TOPNSPC::common {
+  class CephContext;
+  class PerfCountersBuilder;
+  class PerfCounters;
+}
 
 enum perfcounter_type_d : uint8_t
 {
@@ -56,6 +59,7 @@ enum unit_t : uint8_t
  * In the future, we will probably get rid of the first/last arguments, since
  * PerfCountersBuilder can deduce them itself.
  */
+namespace TOPNSPC::common {
 class PerfCountersBuilder
 {
 public:
@@ -115,7 +119,7 @@ private:
   PerfCountersBuilder& operator=(const PerfCountersBuilder &rhs);
   void add_impl(int idx, const char *name,
                 const char *description, const char *nick, int prio, int ty, int unit=UNIT_NONE,
-                unique_ptr<PerfHistogram<>> histogram = nullptr);
+                std::unique_ptr<PerfHistogram<>> histogram = nullptr);
 
   PerfCounters *m_perf_counters;
 
@@ -166,7 +170,7 @@ public:
 	 type(other.type),
 	 unit(other.unit),
 	 u64(other.u64.load()) {
-      pair<uint64_t,uint64_t> a = other.read_avg();
+      auto a = other.read_avg();
       u64 = a.first;
       avgcount = a.second;
       avgcount2 = a.second;
@@ -201,27 +205,27 @@ public:
     // read <sum, count> safely by making sure the post- and pre-count
     // are identical; in other words the whole loop needs to be run
     // without any intervening calls to inc, set, or tinc.
-    pair<uint64_t,uint64_t> read_avg() const {
+    std::pair<uint64_t,uint64_t> read_avg() const {
       uint64_t sum, count;
       do {
 	count = avgcount2;
 	sum = u64;
       } while (avgcount != count);
-      return make_pair(sum, count);
+      return { sum, count };
     }
   };
 
   template <typename T>
   struct avg_tracker {
-    pair<uint64_t, T> last;
-    pair<uint64_t, T> cur;
+    std::pair<uint64_t, T> last;
+    std::pair<uint64_t, T> cur;
     avg_tracker() : last(0, 0), cur(0, 0) {}
     T current_avg() const {
       if (cur.first == last.first)
         return 0;
       return (cur.second - last.second) / (cur.first - last.first);
     }
-    void consume_next(const pair<uint64_t, T> &next) {
+    void consume_next(const std::pair<uint64_t, T> &next) {
       last = cur;
       cur = next;
     }
@@ -250,7 +254,7 @@ public:
                                  const std::string &counter = "") const {
     dump_formatted_generic(f, schema, true, counter);
   }
-  pair<uint64_t, uint64_t> get_tavg_ns(int idx) const;
+  std::pair<uint64_t, uint64_t> get_tavg_ns(int idx) const;
 
   const std::string& get_name() const;
   void set_name(std::string s) {
@@ -285,7 +289,7 @@ private:
 
   int prio_adjust = 0;
 
-#ifndef WITH_SEASTAR
+#if !defined(WITH_SEASTAR) || defined(WITH_ALIEN)
   const std::string m_lock_name;
   /** Protects m_data */
   ceph::mutex m_lock;
@@ -374,5 +378,5 @@ public:
   }
 };
 
-
+}
 #endif

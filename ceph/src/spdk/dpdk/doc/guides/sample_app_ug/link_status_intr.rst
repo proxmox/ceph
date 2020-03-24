@@ -49,7 +49,7 @@ where,
 
 *   -T PERIOD: statistics will be refreshed each PERIOD seconds (0 to disable, 10 default)
 
-To run the application in a linuxapp environment with 4 lcores, 4 memory channels, 16 ports and 8 RX queues per lcore,
+To run the application in a linux environment with 4 lcores, 4 memory channels, 16 ports and 8 RX queues per lcore,
 issue the command:
 
 .. code-block:: console
@@ -137,7 +137,6 @@ The global configuration is stored in a static structure:
     static const struct rte_eth_conf port_conf = {
         .rxmode = {
             .split_hdr_size = 0,
-            .offloads = DEV_RX_OFFLOAD_CRC_STRIP,
         },
         .txmode = {},
         .intr_conf = {

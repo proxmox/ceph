@@ -6,9 +6,9 @@
 
 # The purpose of this script is to provide a simple procedure for spinning up a new
 # virtual test environment capable of running our whole test suite. This script, when
-# applied to a fresh install of fedora 26 server will install all of the necessary dependencies
-# to run almost the complete test suite. The main exception being VHost. Vhost requires the
-# configuration of a second virtual machine. instructions for how to configure
+# applied to a fresh install of fedora 26 or ubuntu 16,18 server will install all of the
+# necessary dependencies to run almost the complete test suite. The main exception being VHost.
+# Vhost requires the configuration of a second virtual machine. instructions for how to configure
 # that vm are included in the file TEST_ENV_SETUP_README inside this repository
 
 # it is important to enable nesting for vms in kernel command line of your machine for the vhost tests.
@@ -24,7 +24,11 @@ VM_SETUP_PATH=$(readlink -f ${BASH_SOURCE%/*})
 
 UPGRADE=false
 INSTALL=false
-CONF="librxe,iscsi,rocksdb,fio,flamegraph,tsocks,qemu,vpp,libiscsi,nvmecli"
+CONF="librxe,iscsi,rocksdb,fio,flamegraph,tsocks,qemu,vpp,libiscsi,nvmecli,qat,ocf"
+LIBRXE_INSTALL=true
+
+OSID=$(source /etc/os-release && echo $ID)
+PACKAGEMNG='undefined'
 
 function install_rxe_cfg()
 {
@@ -80,6 +84,40 @@ function install_iscsi_adm()
             else
                 echo "custom open-iscsi install located, not reinstalling"
             fi
+        fi
+    fi
+}
+
+function install_qat()
+{
+    if echo $CONF | grep -q qat; then
+        qat_tarball=$(basename $DRIVER_LOCATION_QAT)
+        kernel_maj=$(uname -r | cut -d'.' -f1)
+        kernel_min=$(uname -r | cut -d'.' -f2)
+
+        sudo modprobe -r qat_c62x
+        if [ -d /QAT ]; then
+            sudo rm -rf /QAT/
+        fi
+
+        sudo mkdir /QAT
+
+        wget $DRIVER_LOCATION_QAT
+        sudo cp $qat_tarball /QAT/
+        (cd /QAT && sudo tar zxof /QAT/$qat_tarball)
+
+        #The driver version 1.7.l.4.3.0-00033 contains a reference to a deprecated function. Remove it so the build won't fail.
+        if [ $kernel_maj -le 4 ]; then
+            if [ $kernel_min -le 17 ]; then
+                sudo sed -i 's/rdtscll(timestamp);/timestamp = rdtsc_ordered();/g' \
+                /QAT/quickassist/utilities/osal/src/linux/kernel_space/OsalServices.c || true
+            fi
+        fi
+
+        (cd /QAT && sudo ./configure --enable-icp-sriov=host && sudo make install)
+
+        if sudo service qat_service start; then
+            echo "failed to start the qat service. Something may be wrong with your device or package."
         fi
     fi
 }
@@ -142,7 +180,7 @@ function install_qemu()
 {
     if echo $CONF | grep -q qemu; then
         # Qemu is used in the vhost tests.
-        SPDK_QEMU_BRANCH=spdk-2.12
+        SPDK_QEMU_BRANCH=spdk-3.0.0
         mkdir -p qemu
         if [ ! -d "qemu/$SPDK_QEMU_BRANCH" ]; then
             git -C ./qemu clone "${GIT_REPO_QEMU}" -b "$SPDK_QEMU_BRANCH" "$SPDK_QEMU_BRANCH"
@@ -176,7 +214,7 @@ function install_vpp()
         # The actions taken under the vpp_setup script are necessary to fix this issue.
         if [ -d vpp_setup ]; then
             echo "vpp setup already done."
-        else
+        elif [ "$PACKAGEMNG" = "dnf" ]; then
             echo "%_topdir  $HOME/vpp_setup/src/rpm" >> ~/.rpmmacros
             sudo dnf install -y perl-generators
             mkdir -p ~/vpp_setup/src/rpm
@@ -200,25 +238,35 @@ function install_vpp()
         else
             git clone "${GIT_REPO_VPP}"
             git -C ./vpp checkout v18.01.1
-            # VPP 18.01.1 does not support OpenSSL 1.1.
-            # For compilation, a compatibility package is used temporarily.
-            sudo dnf install -y --allowerasing compat-openssl10-devel
-            # Installing required dependencies for building VPP
-            yes | make -C ./vpp install-dep
+            if [ "$PACKAGEMNG" = "dnf" ]; then
+                # VPP 18.01.1 does not support OpenSSL 1.1.
+                # For compilation, a compatibility package is used temporarily.
+                sudo dnf install -y --allowerasing compat-openssl10-devel
+                # Installing required dependencies for building VPP
+                yes | make -C ./vpp install-dep
 
-            make -C ./vpp pkg-rpm -j${jobs}
-            # Reinstall latest OpenSSL devel package.
-            sudo dnf install -y --allowerasing openssl-devel
-            sudo dnf install -y \
-                ./vpp/build_root/vpp-lib-18.01.1-release.x86_64.rpm \
-                ./vpp/build_root/vpp-devel-18.01.1-release.x86_64.rpm \
-                ./vpp/build_root/vpp-18.01.1-release.x86_64.rpm
-            # Since hugepage configuration is done via spdk/scripts/setup.sh,
-            # this default config is not needed.
-            #
-            # NOTE: Parameters kernel.shmmax and vm.max_map_count are set to
-            # very low count and cause issues with hugepage total sizes above 1GB.
-            sudo rm -f /etc/sysctl.d/80-vpp.conf
+                make -C ./vpp pkg-rpm -j${jobs}
+                # Reinstall latest OpenSSL devel package.
+                sudo dnf install -y --allowerasing openssl-devel
+                sudo dnf install -y \
+                    ./vpp/build_root/vpp-lib-18.01.1-release.x86_64.rpm \
+                    ./vpp/build_root/vpp-devel-18.01.1-release.x86_64.rpm \
+                    ./vpp/build_root/vpp-18.01.1-release.x86_64.rpm
+                # Since hugepage configuration is done via spdk/scripts/setup.sh,
+                # this default config is not needed.
+                #
+                # NOTE: Parameters kernel.shmmax and vm.max_map_count are set to
+                # very low count and cause issues with hugepage total sizes above 1GB.
+                sudo rm -f /etc/sysctl.d/80-vpp.conf
+            elif [ "$PACKAGEMNG" = "apt-get" ]; then
+                yes | make -C ./vpp install-dep
+                make -C ./vpp bootstrap -j${jobs}
+                make -C ./vpp pkg-deb -j${jobs}
+                yes | sudo dpkg -i vpp/build-root/vpp-lib_18.01.1-release_amd64.deb \
+                    vpp/build-root/vpp-dev_18.01.1-release_amd64.deb \
+                    vpp/build-root/vpp_18.01.1-release_amd64.deb
+                sudo rm -f /etc/sysctl.d/80-vpp.conf
+            fi
         fi
     fi
 }
@@ -251,20 +299,51 @@ function install_libiscsi()
     fi
 }
 
+function install_ocf()
+{
+    local version="v18.12"
+    local targetdir="/usr/src/ocf"
+
+    if echo $CONF | grep -q ocf; then
+        if [ ! -d "$targetdir" ]; then
+            sudo -E git clone "${GIT_REPO_OCF}" "$targetdir" -b "$version"
+        else
+            echo "OCF already installed. Skipping"
+        fi
+    fi
+}
+
 function usage()
 {
-    echo "This script is intended to automate the environment setup for a fedora linux virtual machine."
+    echo "This script is intended to automate the environment setup for a linux virtual machine."
     echo "Please run this script as your regular user. The script will make calls to sudo as needed."
     echo ""
     echo "./vm_setup.sh"
     echo "  -h --help"
-    echo "  -u --upgrade Run dnf upgrade"
-    echo "  -i --install-deps Install dnf based dependencies"
+    echo "  -u --upgrade Run $PACKAGEMNG upgrade"
+    echo "  -i --install-deps Install $PACKAGEMNG based dependencies"
     echo "  -t --test-conf List of test configurations to enable (${CONF})"
     echo "  -c --conf-path Path to configuration file"
     exit 0
 }
 
+# Get package manager #
+if hash dnf &>/dev/null; then
+    PACKAGEMNG=dnf
+elif hash apt-get &>/dev/null; then
+    PACKAGEMNG=apt-get
+else
+    echo 'Supported package manager not found. Script supports "dnf" and "apt-get".'
+fi
+
+if [ $PACKAGEMNG == 'apt-get' ] && [ $OSID != 'ubuntu' ]; then
+    echo 'Located apt-get package manager, but it was tested for Ubuntu only'
+fi
+if [ $PACKAGEMNG == 'dnf' ] && [ $OSID != 'fedora' ]; then
+    echo 'Located dnf package manager, but it was tested for Fedora only'
+fi
+
+# Parse input arguments #
 while getopts 'iuht:c:-:' optchar; do
     case "$optchar" in
         -)
@@ -310,15 +389,21 @@ cd ~
 : ${GIT_REPO_VPP=https://gerrit.fd.io/r/vpp}; export GIT_REPO_VPP
 : ${GIT_REPO_LIBISCSI=https://github.com/sahlberg/libiscsi}; export GIT_REPO_LIBISCSI
 : ${GIT_REPO_SPDK_NVME_CLI=https://github.com/spdk/nvme-cli}; export GIT_REPO_SPDK_NVME_CLI
+: ${GIT_REPO_INTEL_IPSEC_MB=https://github.com/spdk/intel-ipsec-mb.git}; export GIT_REPO_INTEL_IPSEC_MB
+: ${DRIVER_LOCATION_QAT=https://01.org/sites/default/files/downloads/intelr-quickassist-technology/qat1.7.l.4.3.0-00033.tar.gz}; export DRIVER_LOCATION_QAT
+: ${GIT_REPO_OCF=https://github.com/Open-CAS/ocf}; export GIT_REPO_OCF
 
 jobs=$(($(nproc)*2))
 
 if $UPGRADE; then
-    sudo dnf upgrade -y
+    if [ $PACKAGEMNG == 'apt-get' ]; then
+        sudo $PACKAGEMNG update
+    fi
+    sudo $PACKAGEMNG upgrade -y
 fi
 
 if $INSTALL; then
-    sudo dnf install -y git
+    sudo $PACKAGEMNG install -y git
 fi
 
 mkdir -p spdk_repo/output
@@ -329,54 +414,139 @@ else
     git -C spdk_repo clone "${GIT_REPO_SPDK}"
 fi
 git -C spdk_repo/spdk config submodule.dpdk.url "${GIT_REPO_DPDK}"
+git -C spdk_repo/spdk config submodule.intel-ipsec-mb.url "${GIT_REPO_INTEL_IPSEC_MB}"
 git -C spdk_repo/spdk submodule update --init --recursive
 
 if $INSTALL; then
-    sudo ./scripts/pkgdep.sh
+    sudo spdk_repo/spdk/scripts/pkgdep.sh
 
-    if echo $CONF | grep -q tsocks; then
-        sudo dnf install -y tsocks
+    if [ $PACKAGEMNG == 'dnf' ]; then
+        if echo $CONF | grep -q tsocks; then
+            sudo dnf install -y tsocks
+        fi
+
+        sudo dnf install -y \
+        valgrind \
+        jq \
+        nvme-cli \
+        ceph \
+        gdb \
+        fio \
+        librbd-devel \
+        kernel-devel \
+        gflags-devel \
+        libasan \
+        libubsan \
+        autoconf \
+        automake \
+        libtool \
+        libmount-devel \
+        iscsi-initiator-utils \
+        isns-utils-devel \
+        pmempool \
+        perl-open \
+        glib2-devel \
+        pixman-devel \
+        astyle-devel \
+        elfutils \
+        elfutils-libelf-devel \
+        flex \
+        bison \
+        targetcli \
+        perl-Switch \
+        librdmacm-utils \
+        libibverbs-utils \
+        gdisk \
+        socat \
+        sshfs \
+        sshpass \
+        python3-pandas \
+        btrfs-progs \
+        rpm-build \
+        iptables \
+        bc
+
+    elif [ $PACKAGEMNG == 'apt-get' ]; then
+        echo "Package perl-open is not available at Ubuntu repositories" >&2
+
+        if echo $CONF | grep -q tsocks; then
+            sudo apt-get install -y tsocks
+        fi
+
+        # asan an ubsan have to be installed together to not mix up gcc versions
+        if sudo apt-get install -y libasan5; then
+            sudo apt-get install -y libubsan1
+        else
+            echo "Latest libasan5 is not available" >&2
+            echo "  installing libasan2 and corresponding libubsan0" >&2
+            sudo apt-get install -y libasan2
+            sudo apt-get install -y libubsan0
+        fi
+        if ! sudo apt-get install -y rdma-core; then
+            echo "Package rdma-core is avaliable at Ubuntu 18 [universe] repositorium" >&2
+            sudo apt-get install -y rdmacm-utils
+            sudo apt-get install -y ibverbs-utils
+        else
+            LIBRXE_INSTALL=false
+        fi
+        if ! sudo apt-get install -y libpmempool1; then
+            echo "Package libpmempool1 is available at Ubuntu 18 [universe] repositorium" >&2
+        fi
+        if ! sudo apt-get install -y --no-install-suggests --no-install-recommends open-isns-utils; then
+            echo "Package open-isns-utils is available at Ubuntu 18 [universe] repositorium" >&2
+        fi
+
+        # Package name for Ubuntu 18 is targetcli-fb but for Ubuntu 16 it's targetcli
+        if ! sudo apt-get install -y targetcli-fb; then
+            sudo apt-get install -y targetcli
+        fi
+
+        sudo apt-get install -y \
+        valgrind \
+        jq \
+        nvme-cli \
+        ceph \
+        gdb \
+        fio \
+        librbd-dev \
+        linux-headers-generic \
+        libgflags-dev \
+        autoconf \
+        automake \
+        libtool \
+        libmount-dev \
+        open-iscsi \
+        libglib2.0-dev \
+        libpixman-1-dev \
+        astyle \
+        elfutils \
+        libelf-dev \
+        flex \
+        bison \
+        libswitch-perl \
+        gdisk \
+        socat \
+        sshfs \
+        sshpass \
+        python3-pandas \
+        btrfs-tools \
+        bc
+
+        # rpm-build is not used
+        # iptables installed by default
+
+    else
+        echo "Package manager is undefined, skipping INSTALL step"
     fi
-
-    sudo dnf install -y \
-    valgrind \
-    jq \
-    nvme-cli \
-    ceph \
-    gdb \
-    fio \
-    librbd-devel \
-    kernel-devel \
-    gflags-devel \
-    libasan \
-    libubsan \
-    autoconf \
-    automake \
-    libtool \
-    libmount-devel \
-    iscsi-initiator-utils \
-    isns-utils-devel \
-    pmempool \
-    perl-open \
-    glib2-devel \
-    pixman-devel \
-    astyle-devel \
-    elfutils \
-    elfutils-libelf-devel \
-    flex \
-    bison \
-    targetcli \
-    perl-Switch \
-    librdmacm-utils \
-    libibverbs-utils \
-    gdisk \
-    socat \
-    sshfs
 fi
 
 sudo mkdir -p /usr/src
 
-install_rxe_cfg&
+if [ $LIBRXE_INSTALL = true ]; then
+    #Ubuntu18 integrates librxe to rdma-core, libibverbs-dev no longer ships infiniband/driver.h.
+    #Don't compile librxe on ubuntu18 or later version, install package rdma-core instead.
+    install_rxe_cfg&
+fi
 install_iscsi_adm&
 install_rocksdb&
 install_fio&
@@ -385,6 +555,8 @@ install_qemu&
 install_vpp&
 install_nvmecli&
 install_libiscsi&
+install_qat&
+install_ocf&
 
 wait
 # create autorun-spdk.conf in home folder. This is sourced by the autotest_common.sh file.
@@ -397,28 +569,35 @@ if [ ! -e ~/autorun-spdk.conf ]; then
 	cat > ~/autorun-spdk.conf << EOF
 # assign a value of 1 to all of the pertinent tests
 SPDK_BUILD_DOC=1
+SPDK_BUILD_SHARED_OBJECT=1
 SPDK_RUN_CHECK_FORMAT=1
 SPDK_RUN_SCANBUILD=1
 SPDK_RUN_VALGRIND=1
+SPDK_TEST_CRYPTO=1
+SPDK_RUN_FUNCTIONAL_TEST=1
 SPDK_TEST_UNITTEST=1
 SPDK_TEST_ISCSI=1
 SPDK_TEST_ISCSI_INITIATOR=1
-# nvme and nvme-cli cannot be run at the same time on a VM.
 SPDK_TEST_NVME=1
-SPDK_TEST_NVME_CLI=0
+SPDK_TEST_NVME_CLI=1
 SPDK_TEST_NVMF=1
 SPDK_TEST_RBD=1
-# requires some extra configuration. see TEST_ENV_SETUP_README
-SPDK_TEST_VHOST=0
-SPDK_TEST_VHOST_INIT=0
 SPDK_TEST_BLOCKDEV=1
-# doesn't work on vm
-SPDK_TEST_IOAT=0
 SPDK_TEST_EVENT=1
 SPDK_TEST_BLOBFS=1
 SPDK_TEST_PMDK=1
 SPDK_TEST_LVOL=1
+SPDK_TEST_JSON=1
+SPDK_TEST_OCF=1
 SPDK_RUN_ASAN=1
 SPDK_RUN_UBSAN=1
+# doesn't work on vm
+SPDK_TEST_IOAT=0
+# requires some extra configuration. see TEST_ENV_SETUP_README
+SPDK_TEST_VHOST=0
+SPDK_TEST_VHOST_INIT=0
+# Not configured here
+SPDK_RUN_INSTALLED_DPDK=0
+
 EOF
 fi

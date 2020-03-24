@@ -17,10 +17,12 @@
 #include "librbd/api/Image.h"
 #include "librbd/api/Migration.h"
 #include "librbd/api/PoolMetadata.h"
+#include "librbd/api/Snapshot.h"
 #include "librbd/io/AioCompletion.h"
 #include "librbd/io/ImageRequest.h"
 #include "librbd/io/ImageRequestWQ.h"
 #include "osdc/Striper.h"
+#include "common/Cond.h"
 #include <boost/scope_exit.hpp>
 #include <boost/algorithm/string/predicate.hpp>
 #include <boost/assign/list_of.hpp>
@@ -198,7 +200,7 @@ TEST_F(TestInternal, IsExclusiveLockOwner) {
 
   C_SaferCond ctx;
   {
-    RWLock::WLocker l(ictx->owner_lock);
+    std::unique_lock l{ictx->owner_lock};
     ictx->exclusive_lock->try_acquire_lock(&ctx);
   }
   ASSERT_EQ(0, ctx.wait());
@@ -426,13 +428,13 @@ TEST_F(TestInternal, CancelAsyncResize) {
 
   C_SaferCond ctx;
   {
-    RWLock::WLocker l(ictx->owner_lock);
+    std::unique_lock l{ictx->owner_lock};
     ictx->exclusive_lock->try_acquire_lock(&ctx);
   }
 
   ASSERT_EQ(0, ctx.wait());
   {
-    RWLock::RLocker owner_locker(ictx->owner_lock);
+    std::shared_lock owner_locker{ictx->owner_lock};
     ASSERT_TRUE(ictx->exclusive_lock->is_lock_owner());
   }
 
@@ -446,7 +448,7 @@ TEST_F(TestInternal, CancelAsyncResize) {
 
     size -= std::min<uint64_t>(size, 1 << 18);
     {
-      RWLock::RLocker l(ictx->owner_lock);
+      std::shared_lock l{ictx->owner_lock};
       ictx->operations->execute_resize(size, true, prog_ctx, &ctx, 0);
     }
 
@@ -469,11 +471,11 @@ TEST_F(TestInternal, MultipleResize) {
   if (ictx->exclusive_lock != nullptr) {
     C_SaferCond ctx;
     {
-      RWLock::WLocker l(ictx->owner_lock);
+      std::unique_lock l{ictx->owner_lock};
       ictx->exclusive_lock->try_acquire_lock(&ctx);
     }
 
-    RWLock::RLocker owner_locker(ictx->owner_lock);
+    std::shared_lock owner_locker{ictx->owner_lock};
     ASSERT_EQ(0, ctx.wait());
     ASSERT_TRUE(ictx->exclusive_lock->is_lock_owner());
   }
@@ -493,7 +495,7 @@ TEST_F(TestInternal, MultipleResize) {
       new_size = size;
     }
 
-    RWLock::RLocker l(ictx->owner_lock);
+    std::shared_lock l{ictx->owner_lock};
     contexts.push_back(new C_SaferCond());
     ictx->operations->execute_resize(new_size, true, prog_ctx, contexts.back(), 0);
   }
@@ -576,9 +578,14 @@ TEST_F(TestInternal, SnapshotCopyup)
   librbd::ImageCtx *ictx;
   ASSERT_EQ(0, open_image(m_image_name, &ictx));
 
+  bool sparse_read_supported = is_sparse_read_supported(
+      ictx->data_ctx, ictx->get_object_name(10));
+
   bufferlist bl;
   bl.append(std::string(256, '1'));
   ASSERT_EQ(256, ictx->io_work_queue->write(0, bl.length(), bufferlist{bl}, 0));
+  ASSERT_EQ(256, ictx->io_work_queue->write(1024, bl.length(), bufferlist{bl},
+                                            0));
 
   ASSERT_EQ(0, snap_create(*ictx, "snap1"));
   ASSERT_EQ(0,
@@ -609,10 +616,11 @@ TEST_F(TestInternal, SnapshotCopyup)
   librados::snap_set_t snap_set;
   ASSERT_EQ(0, snap_ctx.list_snaps(ictx2->get_object_name(0), &snap_set));
 
+  uint64_t copyup_end = ictx2->enable_sparse_copyup ? 1024 + 256 : 1 << order;
   std::vector< std::pair<uint64_t,uint64_t> > expected_overlap =
     boost::assign::list_of(
       std::make_pair(0, 256))(
-      std::make_pair(512, 2096640));
+      std::make_pair(512, copyup_end - 512));
   ASSERT_EQ(2U, snap_set.clones.size());
   ASSERT_NE(CEPH_NOSNAP, snap_set.clones[0].cloneid);
   ASSERT_EQ(2U, snap_set.clones[0].snaps.size());
@@ -638,6 +646,12 @@ TEST_F(TestInternal, SnapshotCopyup)
     ASSERT_TRUE(bl.contents_equal(read_bl));
 
     ASSERT_EQ(256,
+              ictx2->io_work_queue->read(1024, 256,
+                                         librbd::io::ReadResult{read_result},
+                                         0));
+    ASSERT_TRUE(bl.contents_equal(read_bl));
+
+    ASSERT_EQ(256,
               ictx2->io_work_queue->read(256, 256,
                                          librbd::io::ReadResult{read_result},
                                          0));
@@ -645,6 +659,51 @@ TEST_F(TestInternal, SnapshotCopyup)
       ASSERT_TRUE(bl.contents_equal(read_bl));
     } else {
       ASSERT_TRUE(read_bl.is_zero());
+    }
+
+    // verify sparseness was preserved
+    {
+      librados::IoCtx io_ctx;
+      io_ctx.dup(m_ioctx);
+      librados::Rados rados(io_ctx);
+      EXPECT_EQ(0, rados.conf_set("rbd_cache", "false"));
+      EXPECT_EQ(0, rados.conf_set("rbd_sparse_read_threshold_bytes", "256"));
+      auto ictx3 = new librbd::ImageCtx(clone_name, "", snap_name, io_ctx,
+                                        true);
+      ASSERT_EQ(0, ictx3->state->open(0));
+      BOOST_SCOPE_EXIT(ictx3) {
+        ictx3->state->close();
+      } BOOST_SCOPE_EXIT_END;
+      std::map<uint64_t, uint64_t> expected_m;
+      bufferlist expected_bl;
+      if (ictx3->enable_sparse_copyup && sparse_read_supported) {
+        if (snap_name == NULL) {
+          expected_m = {{0, 512}, {1024, 256}};
+          expected_bl.append(std::string(256 * 3, '1'));
+        } else {
+          expected_m = {{0, 256}, {1024, 256}};
+          expected_bl.append(std::string(256 * 2, '1'));
+        }
+      } else {
+        expected_m = {{0, 1024 + 256}};
+        if (snap_name == NULL) {
+          expected_bl.append(std::string(256 * 2, '1'));
+          expected_bl.append(std::string(256 * 2, '\0'));
+          expected_bl.append(std::string(256 * 1, '1'));
+        } else {
+          expected_bl.append(std::string(256 * 1, '1'));
+          expected_bl.append(std::string(256 * 3, '\0'));
+          expected_bl.append(std::string(256 * 1, '1'));
+        }
+      }
+      std::map<uint64_t, uint64_t> read_m;
+      librbd::io::ReadResult sparse_read_result{&read_m, &read_bl};
+      EXPECT_EQ(1024 + 256,
+                ictx3->io_work_queue->read(0, 1024 + 256,
+                                           librbd::io::ReadResult{sparse_read_result},
+                                           0));
+      EXPECT_EQ(expected_m, read_m);
+      EXPECT_TRUE(expected_bl.contents_equal(read_bl));
     }
 
     // verify the object map was properly updated
@@ -655,13 +714,14 @@ TEST_F(TestInternal, SnapshotCopyup)
         state = OBJECT_EXISTS_CLEAN;
       }
 
-      librbd::ObjectMap<> object_map(*ictx2, ictx2->snap_id);
+      librbd::ObjectMap<> *object_map = new librbd::ObjectMap<>(*ictx2, ictx2->snap_id);
       C_SaferCond ctx;
-      object_map.open(&ctx);
+      object_map->open(&ctx);
       ASSERT_EQ(0, ctx.wait());
 
-      RWLock::WLocker object_map_locker(ictx2->object_map_lock);
-      ASSERT_EQ(state, object_map[0]);
+      std::shared_lock image_locker{ictx2->image_lock};
+      ASSERT_EQ(state, (*object_map)[0]);
+      object_map->put();
     }
   }
 }
@@ -743,13 +803,14 @@ TEST_F(TestInternal, SnapshotCopyupZeros)
         state = OBJECT_NONEXISTENT;
       }
 
-      librbd::ObjectMap<> object_map(*ictx2, ictx2->snap_id);
+      librbd::ObjectMap<> *object_map = new librbd::ObjectMap<>(*ictx2, ictx2->snap_id);
       C_SaferCond ctx;
-      object_map.open(&ctx);
+      object_map->open(&ctx);
       ASSERT_EQ(0, ctx.wait());
 
-      RWLock::WLocker object_map_locker(ictx2->object_map_lock);
-      ASSERT_EQ(state, object_map[0]);
+      std::shared_lock image_locker{ictx2->image_lock};
+      ASSERT_EQ(state, (*object_map)[0]);
+      object_map->put();
     }
   }
 }
@@ -830,13 +891,14 @@ TEST_F(TestInternal, SnapshotCopyupZerosMigration)
         state = OBJECT_NONEXISTENT;
       }
 
-      librbd::ObjectMap<> object_map(*ictx2, ictx2->snap_id);
+      librbd::ObjectMap<> *object_map = new librbd::ObjectMap<>(*ictx2, ictx2->snap_id);
       C_SaferCond ctx;
-      object_map.open(&ctx);
+      object_map->open(&ctx);
       ASSERT_EQ(0, ctx.wait());
 
-      RWLock::WLocker object_map_locker(ictx2->object_map_lock);
-      ASSERT_EQ(state, object_map[0]);
+      std::shared_lock image_locker{ictx2->image_lock};
+      ASSERT_EQ(state, (*object_map)[0]);
+      object_map->put();
     }
   }
 }
@@ -894,7 +956,7 @@ TEST_F(TestInternal, ResizeCopyup)
 
   {
     // hide the parent from the snapshot
-    RWLock::WLocker snap_locker(ictx2->snap_lock);
+    std::unique_lock image_locker{ictx2->image_lock};
     ictx2->snap_info.begin()->second.parent = librbd::ParentImageInfo();
   }
 
@@ -961,7 +1023,7 @@ TEST_F(TestInternal, DiscardCopyup)
 
   {
     // hide the parent from the snapshot
-    RWLock::WLocker snap_locker(ictx2->snap_lock);
+    std::unique_lock image_locker{ictx2->image_lock};
     ictx2->snap_info.begin()->second.parent = librbd::ParentImageInfo();
   }
 
@@ -1715,7 +1777,7 @@ TEST_F(TestInternal, MissingDataPool) {
   ASSERT_EQ(0, librbd::info(ictx, info, sizeof(info)));
 
   vector<librbd::snap_info_t> snaps;
-  EXPECT_EQ(0, librbd::snap_list(ictx, snaps));
+  EXPECT_EQ(0, librbd::api::Snapshot<>::list(ictx, snaps));
   EXPECT_EQ(1U, snaps.size());
   EXPECT_EQ("snap1", snaps[0].name);
 

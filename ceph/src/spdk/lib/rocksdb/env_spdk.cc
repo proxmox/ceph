@@ -45,6 +45,8 @@ extern "C" {
 #include "spdk/log.h"
 #include "spdk/thread.h"
 #include "spdk/bdev.h"
+
+#include "spdk_internal/thread.h"
 }
 
 namespace rocksdb
@@ -56,11 +58,33 @@ uint32_t g_lcore = 0;
 std::string g_bdev_name;
 volatile bool g_spdk_ready = false;
 volatile bool g_spdk_start_failure = false;
-struct sync_args {
-	struct spdk_io_channel *channel;
+
+static void SpdkInitializeThread(void);
+
+class SpdkThreadCtx
+{
+public:
+	struct spdk_fs_thread_ctx *channel;
+
+	SpdkThreadCtx(void) : channel(NULL)
+	{
+		SpdkInitializeThread();
+	}
+
+	~SpdkThreadCtx(void)
+	{
+		if (channel) {
+			spdk_fs_free_thread_ctx(channel);
+			channel = NULL;
+		}
+	}
+
+private:
+	SpdkThreadCtx(const SpdkThreadCtx &);
+	SpdkThreadCtx &operator=(const SpdkThreadCtx &);
 };
 
-__thread struct sync_args g_sync_args;
+thread_local SpdkThreadCtx g_sync_args;
 
 static void
 __call_fn(void *arg1, void *arg2)
@@ -508,7 +532,6 @@ public:
 		}
 		return Status::OK();
 	}
-	virtual void StartThread(void (*function)(void *arg), void *arg) override;
 	virtual Status LockFile(const std::string &fname, FileLock **lock) override
 	{
 		std::string name = sanitize_path(fname, mDirectory);
@@ -577,44 +600,21 @@ public:
 	}
 };
 
-static void
-_spdk_send_msg(__attribute__((unused)) spdk_thread_fn fn,
-	       __attribute__((unused)) void *ctx,
-	       __attribute__((unused)) void *thread_ctx)
+/* The thread local constructor doesn't work for the main thread, since
+ * the filesystem hasn't been loaded yet.  So we break out this
+ * SpdkInitializeThread function, so that the main thread can explicitly
+ * call it after the filesystem has been loaded.
+ */
+static void SpdkInitializeThread(void)
 {
-	/* Not supported */
-	assert(false);
-}
+	struct spdk_thread *thread;
 
-void SpdkInitializeThread(void)
-{
+	assert(g_sync_args.channel == NULL);
 	if (g_fs != NULL) {
-		/* TODO: Add an event lib call to dynamically register a thread */
-		spdk_allocate_thread(_spdk_send_msg, NULL, NULL, NULL, "spdk_rocksdb");
-		g_sync_args.channel = spdk_fs_alloc_io_channel_sync(g_fs);
+		thread = spdk_thread_create("spdk_rocksdb", NULL);
+		spdk_set_thread(thread);
+		g_sync_args.channel = spdk_fs_alloc_thread_ctx(g_fs);
 	}
-}
-
-struct SpdkThreadState {
-	void (*user_function)(void *);
-	void *arg;
-};
-
-static void SpdkStartThreadWrapper(void *arg)
-{
-	SpdkThreadState *state = reinterpret_cast<SpdkThreadState *>(arg);
-
-	SpdkInitializeThread();
-	state->user_function(state->arg);
-	delete state;
-}
-
-void SpdkEnv::StartThread(void (*function)(void *arg), void *arg)
-{
-	SpdkThreadState *state = new SpdkThreadState;
-	state->user_function = function;
-	state->arg = arg;
-	EnvWrapper::StartThread(SpdkStartThreadWrapper, state);
 }
 
 static void
@@ -628,8 +628,7 @@ fs_load_cb(__attribute__((unused)) void *ctx,
 }
 
 static void
-spdk_rocksdb_run(__attribute__((unused)) void *arg1,
-		 __attribute__((unused)) void *arg2)
+spdk_rocksdb_run(__attribute__((unused)) void *arg1)
 {
 	struct spdk_bdev *bdev;
 
@@ -672,7 +671,7 @@ initialize_spdk(void *arg)
 	struct spdk_app_opts *opts = (struct spdk_app_opts *)arg;
 	int rc;
 
-	rc = spdk_app_start(opts, spdk_rocksdb_run, NULL, NULL);
+	rc = spdk_app_start(opts, spdk_rocksdb_run, NULL);
 	/*
 	 * TODO:  Revisit for case of internal failure of
 	 * spdk_app_start(), itself.  At this time, it's known
@@ -700,7 +699,6 @@ SpdkEnv::SpdkEnv(Env *base_env, const std::string &dir, const std::string &conf,
 	spdk_app_opts_init(opts);
 	opts->name = "rocksdb";
 	opts->config_file = mConfig.c_str();
-	opts->mem_size = 1024 + cache_size_in_mb;
 	opts->shutdown_cb = spdk_rocksdb_shutdown;
 
 	spdk_fs_set_cache_size(cache_size_in_mb);
@@ -729,6 +727,7 @@ SpdkEnv::~SpdkEnv()
 		if (!g_sync_args.channel) {
 			SpdkInitializeThread();
 		}
+
 		iter = spdk_fs_iter_first(g_fs);
 		while (iter != NULL) {
 			file = spdk_fs_iter_get_file(iter);

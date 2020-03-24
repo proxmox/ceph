@@ -1,4 +1,4 @@
-import { Component, OnInit } from '@angular/core';
+import { Component } from '@angular/core';
 import { I18n } from '@ngx-translate/i18n-polyfill';
 import { SortDirection, SortPropDir } from '@swimlane/ngx-datatable';
 
@@ -24,7 +24,7 @@ import { AuthStorageService } from '../../../../shared/services/auth-storage.ser
 import { NotificationService } from '../../../../shared/services/notification.service';
 import { URLBuilderService } from '../../../../shared/services/url-builder.service';
 
-const BASE_URL = 'silence';
+const BASE_URL = 'monitoring/silence';
 
 @Component({
   providers: [{ provide: URLBuilderService, useValue: new URLBuilderService(BASE_URL) }],
@@ -32,7 +32,7 @@ const BASE_URL = 'silence';
   templateUrl: './silence-list.component.html',
   styleUrls: ['./silence-list.component.scss']
 })
-export class SilenceListComponent implements OnInit {
+export class SilenceListComponent {
   silences: AlertmanagerSilence[] = [];
   columns: CdTableColumn[];
   tableActions: CdTableAction[];
@@ -40,9 +40,9 @@ export class SilenceListComponent implements OnInit {
   selection = new CdTableSelection();
   modalRef: BsModalRef;
   customCss = {
-    'label label-danger': 'active',
-    'label label-warning': 'pending',
-    'label label-default': 'expired'
+    'badge badge-danger': 'active',
+    'badge badge-warning': 'pending',
+    'badge badge-default': 'expired'
   };
   sorts: SortPropDir[] = [{ prop: 'endsAt', dir: SortDirection.desc }];
 
@@ -58,16 +58,14 @@ export class SilenceListComponent implements OnInit {
     private succeededLabels: SucceededActionLabelsI18n
   ) {
     this.permission = this.authStorageService.getPermissions().prometheus;
-  }
-
-  ngOnInit() {
     const selectionExpired = (selection: CdTableSelection) =>
-      selection.first() && selection.first().status.state === 'expired';
+      selection.first() && selection.first().status && selection.first().status.state === 'expired';
     this.tableActions = [
       {
         permission: 'create',
         icon: Icons.add,
         routerLink: () => this.urlBuilder.getCreate(),
+        preserveFragment: true,
         canBePrimary: (selection: CdTableSelection) => !selection.hasSingleSelection,
         name: this.actionLabels.CREATE
       },
@@ -82,6 +80,7 @@ export class SilenceListComponent implements OnInit {
           !selectionExpired(selection),
         icon: Icons.copy,
         routerLink: () => this.urlBuilder.getRecreate(this.selection.first().id),
+        preserveFragment: true,
         name: this.actionLabels.RECREATE
       },
       {
@@ -95,6 +94,7 @@ export class SilenceListComponent implements OnInit {
           (selection.first().cdExecuting && !selectionExpired(selection)) ||
           selectionExpired(selection),
         routerLink: () => this.urlBuilder.getEdit(this.selection.first().id),
+        preserveFragment: true,
         name: this.actionLabels.EDIT
       },
       {

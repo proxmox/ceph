@@ -167,6 +167,13 @@ struct guest_page {
 	uint64_t size;
 };
 
+/* struct ether_addr was renamed to struct rte_ether_addr at one point */
+#ifdef RTE_ETHER_ADDR_LEN
+struct ether_addr {
+	uint8_t addr_bytes[RTE_ETHER_ADDR_LEN];
+} __attribute__((__packed__));
+#endif
+
 /**
  * Device structure contains all configuration information relating
  * to the device.
@@ -200,6 +207,8 @@ struct virtio_net {
 	uint32_t		max_guest_pages;
 	struct guest_page       *guest_pages;
 	int                     has_new_mem_table;
+	void			*bar_addr;
+	uint64_t		bar_size;
 	struct VhostUserMemory  mem_table;
 	int                     mem_table_fds[VHOST_MEMORY_MAX_NREGIONS];
 } __rte_cache_aligned;
@@ -299,7 +308,7 @@ gpa_to_hpa(struct virtio_net *dev, uint64_t gpa, uint64_t size)
 
 struct virtio_net *get_device(int vid);
 
-int vhost_new_device(uint64_t features);
+int vhost_new_device(uint64_t features, struct vhost_device_ops const *ops);
 void cleanup_device(struct virtio_net *dev, int destroy);
 void reset_device(struct virtio_net *dev);
 void vhost_destroy_device(int);

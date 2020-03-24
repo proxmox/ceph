@@ -278,7 +278,7 @@ bool CephXTicketManager::verify_service_ticket_reply(CryptoKey& secret,
 						     bufferlist::const_iterator& indata)
 {
   __u8 service_ticket_reply_v;
-  uint32_t num;
+  uint32_t num = 0;
   try {
     decode(service_ticket_reply_v, indata);
     decode(num, indata);
@@ -289,7 +289,7 @@ bool CephXTicketManager::verify_service_ticket_reply(CryptoKey& secret,
   ldout(cct, 10) << "verify_service_ticket_reply got " << num << " keys" << dendl;
 
   for (int i=0; i<(int)num; i++) {
-    uint32_t type;
+    uint32_t type = 0;
     try {
       decode(type, indata);
     } catch (buffer::error& e) {
@@ -409,7 +409,7 @@ bool cephx_decode_ticket(CephContext *cct, KeyStore *keys, uint32_t service_id,
  *
  * {timestamp + 1}^session_key
  */
-bool cephx_verify_authorizer(CephContext *cct, KeyStore *keys,
+bool cephx_verify_authorizer(CephContext *cct, const KeyStore& keys,
 			     bufferlist::const_iterator& indata,
 			     size_t connection_secret_required_len,
 			     CephXServiceTicketInfo& ticket_info,
@@ -440,13 +440,13 @@ bool cephx_verify_authorizer(CephContext *cct, KeyStore *keys,
   if (ticket.secret_id == (uint64_t)-1) {
     EntityName name;
     name.set_type(service_id);
-    if (!keys->get_secret(name, service_secret)) {
+    if (!keys.get_secret(name, service_secret)) {
       ldout(cct, 0) << "verify_authorizer could not get general service secret for service "
 	      << ceph_entity_type_name(service_id) << " secret_id=" << ticket.secret_id << dendl;
       return false;
     }
   } else {
-    if (!keys->get_service_secret(service_id, ticket.secret_id, service_secret)) {
+    if (!keys.get_service_secret(service_id, ticket.secret_id, service_secret)) {
       ldout(cct, 0) << "verify_authorizer could not get service secret for service "
 	      << ceph_entity_type_name(service_id) << " secret_id=" << ticket.secret_id << dendl;
       if (cct->_conf->auth_debug && ticket.secret_id == 0)

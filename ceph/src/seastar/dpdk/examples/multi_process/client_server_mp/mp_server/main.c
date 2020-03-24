@@ -1,34 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2014 Intel Corporation
  */
 
 #include <stdio.h>
@@ -38,16 +9,14 @@
 #include <stdint.h>
 #include <stdarg.h>
 #include <inttypes.h>
-#include <inttypes.h>
 #include <sys/queue.h>
 #include <errno.h>
 #include <netinet/ip.h>
+#include <signal.h>
 
 #include <rte_common.h>
 #include <rte_memory.h>
-#include <rte_memzone.h>
 #include <rte_eal.h>
-#include <rte_byteorder.h>
 #include <rte_launch.h>
 #include <rte_per_lcore.h>
 #include <rte_lcore.h>
@@ -61,7 +30,6 @@
 #include <rte_mbuf.h>
 #include <rte_ether.h>
 #include <rte_interrupts.h>
-#include <rte_pci.h>
 #include <rte_ethdev.h>
 #include <rte_byteorder.h>
 #include <rte_malloc.h>
@@ -90,7 +58,7 @@ struct client_rx_buf {
 static struct client_rx_buf *cl_rx_buf;
 
 static const char *
-get_printable_mac_addr(uint8_t port)
+get_printable_mac_addr(uint16_t port)
 {
 	static const char err_address[] = "00:00:00:00:00:00";
 	static char addresses[RTE_MAX_ETHPORTS][sizeof(err_address)];
@@ -297,9 +265,23 @@ do_packet_forwarding(void)
 	}
 }
 
+static void
+signal_handler(int signal)
+{
+	uint16_t port_id;
+
+	if (signal == SIGINT)
+		RTE_ETH_FOREACH_DEV(port_id) {
+			rte_eth_dev_stop(port_id);
+			rte_eth_dev_close(port_id);
+		}
+	exit(0);
+}
+
 int
 main(int argc, char *argv[])
 {
+	signal(SIGINT, signal_handler);
 	/* initialise the system */
 	if (init(argc, argv) < 0 )
 		return -1;

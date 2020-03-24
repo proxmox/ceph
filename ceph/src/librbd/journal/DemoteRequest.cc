@@ -26,7 +26,7 @@ using librbd::util::create_context_callback;
 template <typename I>
 DemoteRequest<I>::DemoteRequest(I &image_ctx, Context *on_finish)
   : m_image_ctx(image_ctx), m_on_finish(on_finish),
-    m_lock("DemoteRequest::m_lock") {
+    m_lock(ceph::make_mutex("DemoteRequest::m_lock")) {
 }
 
 template <typename I>
@@ -45,7 +45,7 @@ void DemoteRequest<I>::open_journaler() {
   ldout(cct, 20) << dendl;
 
   m_journaler = new Journaler(m_image_ctx.md_ctx, m_image_ctx.id,
-                              Journal<>::IMAGE_CLIENT_ID, {});
+                              Journal<>::IMAGE_CLIENT_ID, {}, nullptr);
   auto ctx = create_async_context_callback(
     m_image_ctx, create_context_callback<
       DemoteRequest<I>, &DemoteRequest<I>::handle_open_journaler>(this));

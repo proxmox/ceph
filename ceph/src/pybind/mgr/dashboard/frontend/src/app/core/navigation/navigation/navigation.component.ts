@@ -1,6 +1,6 @@
-import { Component, OnInit } from '@angular/core';
+import { Component, HostBinding, OnInit } from '@angular/core';
 
-import { PrometheusService } from '../../../shared/api/prometheus.service';
+import { Icons } from '../../../shared/enum/icons.enum';
 import { Permissions } from '../../../shared/models/permissions';
 import { AuthStorageService } from '../../../shared/services/auth-storage.service';
 import {
@@ -15,16 +15,23 @@ import { SummaryService } from '../../../shared/services/summary.service';
   styleUrls: ['./navigation.component.scss']
 })
 export class NavigationComponent implements OnInit {
+  @HostBinding('class.isPwdDisplayed') isPwdDisplayed = false;
+
   permissions: Permissions;
+  enabledFeature$: FeatureTogglesMap$;
   summaryData: any;
+  icons = Icons;
 
   isCollapsed = true;
-  prometheusConfigured = false;
-  enabledFeature$: FeatureTogglesMap$;
+  showMenuSidebar = true;
+  displayedSubMenu = '';
+
+  simplebar = {
+    autoHide: false
+  };
 
   constructor(
     private authStorageService: AuthStorageService,
-    private prometheusService: PrometheusService,
     private summaryService: SummaryService,
     private featureToggles: FeatureTogglesService
   ) {
@@ -39,9 +46,9 @@ export class NavigationComponent implements OnInit {
       }
       this.summaryData = data;
     });
-    if (this.permissions.configOpt.read) {
-      this.prometheusService.ifAlertmanagerConfigured(() => (this.prometheusConfigured = true));
-    }
+    this.authStorageService.isPwdDisplayed$.subscribe((isDisplayed) => {
+      this.isPwdDisplayed = isDisplayed;
+    });
   }
 
   blockHealthColor() {
@@ -51,6 +58,16 @@ export class NavigationComponent implements OnInit {
       } else if (this.summaryData.rbd_mirroring.warnings > 0) {
         return { color: '#f0ad4e' };
       }
+    }
+
+    return undefined;
+  }
+
+  toggleSubMenu(menu: string) {
+    if (this.displayedSubMenu === menu) {
+      this.displayedSubMenu = '';
+    } else {
+      this.displayedSubMenu = menu;
     }
   }
 }

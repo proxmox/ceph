@@ -16,7 +16,7 @@
 #include "librbd/api/Mirror.h"
 #include "common/Cond.h"
 #include "common/errno.h"
-#include "common/Mutex.h"
+#include "common/ceph_mutex.h"
 #include "tools/rbd_mirror/PoolWatcher.h"
 #include "tools/rbd_mirror/Threads.h"
 #include "tools/rbd_mirror/Types.h"
@@ -46,7 +46,7 @@ class TestPoolWatcher : public ::rbd::mirror::TestFixture {
 public:
 
   TestPoolWatcher()
-    : m_lock("TestPoolWatcherLock"), m_pool_watcher_listener(this),
+    : m_pool_watcher_listener(this),
       m_image_number(0), m_snap_number(0)
   {
     m_cluster = std::make_shared<librados::Rados>();
@@ -70,7 +70,7 @@ public:
 
   struct PoolWatcherListener : public rbd::mirror::pool_watcher::Listener {
     TestPoolWatcher *test;
-    Cond cond;
+    ceph::condition_variable cond;
     ImageIds image_ids;
 
     explicit PoolWatcherListener(TestPoolWatcher *test) : test(test) {
@@ -79,12 +79,12 @@ public:
     void handle_update(const std::string &mirror_uuid,
                        ImageIds &&added_image_ids,
                        ImageIds &&removed_image_ids) override {
-      Mutex::Locker locker(test->m_lock);
+      std::lock_guard locker{test->m_lock};
       for (auto &image_id : removed_image_ids) {
         image_ids.erase(image_id);
       }
       image_ids.insert(added_image_ids.begin(), added_image_ids.end());
-      cond.Signal();
+      cond.notify_all();
     }
   };
 
@@ -100,16 +100,16 @@ public:
     ASSERT_EQ(0, m_cluster->ioctx_create2(pool_id, ioctx));
     ioctx.application_enable("rbd", true);
 
-    m_pool_watcher.reset(new PoolWatcher<>(m_threads, ioctx,
+    m_pool_watcher.reset(new PoolWatcher<>(m_threads, ioctx, "mirror uuid",
                                            m_pool_watcher_listener));
 
     if (enable_mirroring) {
       ASSERT_EQ(0, librbd::api::Mirror<>::mode_set(ioctx,
                                                    RBD_MIRROR_MODE_POOL));
       std::string uuid;
-      ASSERT_EQ(0, librbd::api::Mirror<>::peer_add(ioctx, &uuid,
-                                                   peer.cluster_name,
-                                                   peer.client_name));
+      ASSERT_EQ(0, librbd::api::Mirror<>::peer_site_add(
+        ioctx, &uuid, RBD_MIRROR_PEER_DIRECTION_RX_TX, peer.cluster_name,
+        peer.client_name));
     }
     if (name != nullptr) {
       *name = pool_name;
@@ -142,7 +142,7 @@ public:
       librbd::Image image;
       librbd::RBD rbd;
       rbd.open(ioctx, image, name.c_str());
-      image.mirror_image_enable();
+      image.mirror_image_enable2(RBD_MIRROR_IMAGE_MODE_JOURNAL);
 
       librbd::mirror_image_info_t mirror_image_info;
       ASSERT_EQ(0, image.mirror_image_get_info(&mirror_image_info,
@@ -189,7 +189,7 @@ public:
       librbd::Image image;
       librbd::RBD rbd;
       rbd.open(cioctx, image, name.c_str());
-      image.mirror_image_enable();
+      image.mirror_image_enable2(RBD_MIRROR_IMAGE_MODE_JOURNAL);
 
       librbd::mirror_image_info_t mirror_image_info;
       ASSERT_EQ(0, image.mirror_image_get_info(&mirror_image_info,
@@ -204,10 +204,9 @@ public:
   }
 
   void check_images() {
-    Mutex::Locker l(m_lock);
+    std::unique_lock l{m_lock};
     while (m_mirrored_images != m_pool_watcher_listener.image_ids) {
-      if (m_pool_watcher_listener.cond.WaitInterval(
-            m_lock, utime_t(10, 0)) != 0) {
+      if (m_pool_watcher_listener.cond.wait_for(l, 10s) == std::cv_status::timeout) {
         break;
       }
     }
@@ -215,7 +214,7 @@ public:
     ASSERT_EQ(m_mirrored_images, m_pool_watcher_listener.image_ids);
   }
 
-  Mutex m_lock;
+  ceph::mutex m_lock = ceph::make_mutex("TestPoolWatcherLock");
   RadosRef m_cluster;
   PoolWatcherListener m_pool_watcher_listener;
   unique_ptr<PoolWatcher<> > m_pool_watcher;

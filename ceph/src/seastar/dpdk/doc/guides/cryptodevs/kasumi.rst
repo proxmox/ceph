@@ -1,31 +1,5 @@
-..  BSD LICENSE
-        Copyright(c) 2016 Intel Corporation. All rights reserved.
-
-    Redistribution and use in source and binary forms, with or without
-    modification, are permitted provided that the following conditions
-    are met:
-
-    * Redistributions of source code must retain the above copyright
-    notice, this list of conditions and the following disclaimer.
-    * Redistributions in binary form must reproduce the above copyright
-    notice, this list of conditions and the following disclaimer in
-    the documentation and/or other materials provided with the
-    distribution.
-    * Neither the name of Intel Corporation nor the names of its
-    contributors may be used to endorse or promote products derived
-    from this software without specific prior written permission.
-
-    THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-    "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-    LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-    A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-    OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-    SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-    LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-    DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-    THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-    (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-    OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+..  SPDX-License-Identifier: BSD-3-Clause
+    Copyright(c) 2016 Intel Corporation.
 
 KASUMI Crypto Poll Mode Driver
 ===============================
@@ -51,7 +25,7 @@ Limitations
 -----------
 
 * Chained mbufs are not supported.
-* KASUMI(F9) supported only if hash offset field is byte-aligned.
+* KASUMI(F9) supported only if hash offset and length field is byte-aligned.
 * In-place bit-level operations for KASUMI(F8) are not supported
   (if length and/or offset of data to be ciphered is not byte-aligned).
 
@@ -60,15 +34,27 @@ Installation
 ------------
 
 To build DPDK with the KASUMI_PMD the user is required to download
-the export controlled ``libsso_kasumi`` library, by requesting it from
-`<https://networkbuilders.intel.com/network-technologies/dpdk>`_.
-Once approval has been granted, the user needs to log in
-`<https://networkbuilders.intel.com/dpdklogin>`_
-and click on "Kasumi Bit Stream crypto library" link, to download the library.
+the export controlled ``libsso_kasumi`` library, by registering in
+`Intel Resource & Design Center <https://www.intel.com/content/www/us/en/design/resource-design-center.html>`_.
+Once approval has been granted, the user needs to search for
+*Kasumi F8 F9 3GPP cryptographic algorithms Software Library* to download the
+library or directly through this `link <https://cdrdv2.intel.com/v1/dl/getContent/575866>`_.
 After downloading the library, the user needs to unpack and compile it
 on their system before building DPDK::
 
    make
+
+**Note**: When encrypting with KASUMI F8, by default the library
+encrypts full blocks of 8 bytes, regardless the number of bytes to
+be encrypted provided (which leads to a possible buffer overflow).
+To avoid this situation, it is necessary not to pass
+3GPP_SAFE_BUFFERS as a compilation flag.
+Also, this is required when using chained operations
+(cipher-then-auth/auth-then-cipher).
+For this, in the Makefile of the library, make sure that this flag
+is commented out::
+
+  #EXTRA_CFLAGS  += -D_3GPP_SAFE_BUFFERS
 
 **Note**: To build the PMD as a shared library, the libsso_kasumi
 library must be built as follows::
@@ -107,4 +93,22 @@ Example:
 
 .. code-block:: console
 
-    ./l2fwd-crypto -l 6 -n 4 --vdev="crypto_kasumi,socket_id=1,max_nb_sessions=128"
+    ./l2fwd-crypto -l 1 -n 4 --vdev="crypto_kasumi,socket_id=0,max_nb_sessions=128" \
+    -- -p 1 --cdev SW --chain CIPHER_ONLY --cipher_algo "kasumi-f8"
+
+Extra notes on KASUMI F9
+------------------------
+
+When using KASUMI F9 authentication algorithm, the input buffer must be
+constructed according to the 3GPP KASUMI specifications (section 4.4, page 13):
+`<http://cryptome.org/3gpp/35201-900.pdf>`_.
+Input buffer has to have COUNT (4 bytes), FRESH (4 bytes), MESSAGE and DIRECTION (1 bit)
+concatenated. After the DIRECTION bit, a single '1' bit is appended, followed by
+between 0 and 7 '0' bits, so that the total length of the buffer is multiple of 8 bits.
+Note that the actual message can be any length, specified in bits.
+
+Once this buffer is passed this way, when creating the crypto operation,
+length of data to authenticate (op.sym.auth.data.length) must be the length
+of all the items described above, including the padding at the end.
+Also, offset of data to authenticate (op.sym.auth.data.offset)
+must be such that points at the start of the COUNT bytes.

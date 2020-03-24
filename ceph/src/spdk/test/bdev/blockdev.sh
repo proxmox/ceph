@@ -4,17 +4,16 @@ set -e
 
 testdir=$(readlink -f $(dirname $0))
 rootdir=$(readlink -f $testdir/../..)
-plugindir=$rootdir/examples/bdev/fio_plugin
 rpc_py="$rootdir/scripts/rpc.py"
 
 function run_fio()
 {
 	if [ $RUN_NIGHTLY -eq 0 ]; then
-		LD_PRELOAD=$plugindir/fio_plugin /usr/src/fio/fio --ioengine=spdk_bdev --iodepth=8 --bs=4k --runtime=10 $testdir/bdev.fio "$@"
+		fio_bdev --ioengine=spdk_bdev --iodepth=8 --bs=4k --runtime=10 $testdir/bdev.fio "$@"
 	elif [ $RUN_NIGHTLY_FAILING -eq 1 ]; then
 		# Use size 192KB which both exceeds typical 128KB max NVMe I/O
 		#  size and will cross 128KB Intel DC P3700 stripe boundaries.
-		LD_PRELOAD=$plugindir/fio_plugin /usr/src/fio/fio --ioengine=spdk_bdev --iodepth=128 --bs=192k --runtime=100 $testdir/bdev.fio "$@"
+		fio_bdev --ioengine=spdk_bdev --iodepth=128 --bs=192k --runtime=100 $testdir/bdev.fio "$@"
 	fi
 }
 
@@ -41,6 +40,7 @@ function nbd_function_test() {
 		echo "Process nbd pid: $nbd_pid"
 		waitforlisten $nbd_pid $rpc_server
 
+		nbd_rpc_start_stop_verify $rpc_server "${bdev_list[*]}"
 		nbd_rpc_data_verify $rpc_server "${bdev_list[*]}" "${nbd_list[*]}"
 
 		$rpc_py -s $rpc_server delete_passthru_bdev TestPT
@@ -68,7 +68,7 @@ if [ $SPDK_TEST_RBD -eq 1 ]; then
 fi
 
 if [ $SPDK_TEST_CRYPTO -eq 1 ]; then
-	$rootdir/scripts/gen_crypto.sh Malloc6 >> $testdir/bdev.conf
+	$testdir/gen_crypto.sh Malloc6 Malloc7 >> $testdir/bdev.conf
 fi
 
 if hash pmempool; then
@@ -78,14 +78,23 @@ if hash pmempool; then
 	echo "  Blk /tmp/spdk-pmem-pool Pmem0" >> $testdir/bdev.conf
 fi
 
-timing_enter hello_bdev
-if grep -q Nvme0 $testdir/bdev.conf; then
-	$rootdir/examples/bdev/hello_world/hello_bdev -c $testdir/bdev.conf -b Nvme0n1
+if [ $RUN_NIGHTLY -eq 1 ]; then
+	timing_enter hello_bdev
+	if grep -q Nvme0 $testdir/bdev.conf; then
+		$rootdir/examples/bdev/hello_world/hello_bdev -c $testdir/bdev.conf -b Nvme0n1
+	fi
+	timing_exit hello_bdev
 fi
-timing_exit hello_bdev
 
 timing_enter bounds
-$testdir/bdevio/bdevio -c $testdir/bdev.conf
+if [ $(uname -s) = Linux ]; then
+	# Test dynamic memory management. All hugepages will be reserved at runtime
+	PRE_RESERVED_MEM=0
+else
+	# Dynamic memory management is not supported on BSD
+	PRE_RESERVED_MEM=2048
+fi
+$testdir/bdevio/bdevio -s $PRE_RESERVED_MEM -c $testdir/bdev.conf
 timing_exit bounds
 
 timing_enter nbd_gpt
@@ -113,7 +122,7 @@ if [ -d /usr/src/fio ] && [ $SPDK_RUN_ASAN -eq 0 ]; then
 		fio_config_add_job $testdir/bdev.fio $b
 	done
 
-	run_fio --spdk_conf=./test/bdev/bdev.conf
+	run_fio --spdk_conf=./test/bdev/bdev.conf --spdk_mem=$PRE_RESERVED_MEM
 
 	rm -f *.state
 	rm -f $testdir/bdev.fio

@@ -32,20 +32,27 @@
 
 #include "include/ceph_assert.h"
 
+using std::list;
+using std::map;
+using std::ostream;
+using std::pair;
+using std::string;
+using std::vector;
+
+using ceph::bufferlist;
+using ceph::Formatter;
+
 static inline bool is_not_alnum_space(char c)
 {
   return !(isalpha(c) || isdigit(c) || (c == '-') || (c == '_'));
 }
 
-static string maybe_quote_string(const std::string& str)
+static std::string maybe_quote_string(const std::string& str)
 {
   if (find_if(str.begin(), str.end(), is_not_alnum_space) == str.end())
     return str;
   return string("\"") + str + string("\"");
 }
-
-using std::ostream;
-using std::vector;
 
 #define dout_subsys ceph_subsys_mon
 
@@ -88,7 +95,7 @@ ostream& operator<<(ostream& out, const MonCapGrant& m)
     out << " command " << maybe_quote_string(m.command);
     if (!m.command_args.empty()) {
       out << " with";
-      for (map<string,StringConstraint>::const_iterator p = m.command_args.begin();
+      for (auto p = m.command_args.begin();
 	   p != m.command_args.end();
 	   ++p) {
         switch (p->second.match_type) {
@@ -195,13 +202,18 @@ void MonCapGrant::expand_profile(const EntityName& name) const
     profile_grants.push_back(MonCapGrant("auth", MON_CAP_R | MON_CAP_X));
     profile_grants.push_back(MonCapGrant("config-key", MON_CAP_R | MON_CAP_W));
     profile_grants.push_back(MonCapGrant("config", MON_CAP_R | MON_CAP_W));
+    // cephadm orchestrator provisions new daemon keys
+    profile_grants.push_back(MonCapGrant("auth get-or-create"));
+    profile_grants.push_back(MonCapGrant("auth rm"));
+    // tell commands (this is a bit of a kludge)
+    profile_grants.push_back(MonCapGrant("smart"));
   }
   if (profile == "osd" || profile == "mds" || profile == "mon" ||
       profile == "mgr") {
     StringConstraint constraint(StringConstraint::MATCH_TYPE_PREFIX,
                                 string("daemon-private/") + stringify(name) +
                                 string("/"));
-    string prefix = string("daemon-private/") + stringify(name) + string("/");
+    std::string prefix = string("daemon-private/") + stringify(name) + string("/");
     profile_grants.push_back(MonCapGrant("config-key get", "key", constraint));
     profile_grants.push_back(MonCapGrant("config-key put", "key", constraint));
     profile_grants.push_back(MonCapGrant("config-key set", "key", constraint));
@@ -321,7 +333,7 @@ mon_rwxa_t MonCapGrant::get_allowed(CephContext *cct,
   if (profile.length()) {
     expand_profile(name);
     mon_rwxa_t a;
-    for (list<MonCapGrant>::const_iterator p = profile_grants.begin();
+    for (auto p = profile_grants.begin();
 	 p != profile_grants.end(); ++p)
       a = a | p->get_allowed(cct, name, s, c, c_args);
     return a;
@@ -458,7 +470,7 @@ void MonCap::encode(bufferlist& bl) const
 
 void MonCap::decode(bufferlist::const_iterator& bl)
 {
-  string s;
+  std::string s;
   DECODE_START(4, bl);
   decode(s, bl);
   DECODE_FINISH(bl);

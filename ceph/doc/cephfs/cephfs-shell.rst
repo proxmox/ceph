@@ -3,7 +3,7 @@
 CephFS Shell
 =============
 
-The File System (FS) shell includes various shell-like commands that directly interact with the :term:`Ceph Filesystem`.
+The File System (FS) shell includes various shell-like commands that directly interact with the :term:`Ceph File System`.
 
 Usage :
 
@@ -13,6 +13,18 @@ Options :
     -c, --config FILE     Set Configuration file.
     -b, --batch FILE      Process a batch file.
     -t, --test FILE       Test against transcript(s) in FILE
+
+
+.. note::
+
+    Latest version of the cmd2 module is required for running cephfs-shell.
+    If CephFS is installed through source, execute cephfs-shell in the build
+    directory. It can also be executed as following using virtualenv:
+
+.. code:: bash
+
+    [build]$ virtualenv -p python3 venv && source venv/bin/activate && pip3 install cmd2
+    [build]$ source vstart_environment.sh && source venv/bin/activate && python3 ../src/tools/cephfs/cephfs-shell
 
 Commands
 ========
@@ -35,7 +47,7 @@ Options :
 put
 ---
 
-Copy a file/directory to Ceph Filesystem from Local Filesystem.
+Copy a file/directory to Ceph File System from Local File System.
 
 Usage : 
     
@@ -55,13 +67,13 @@ Options :
 get
 ---
  
-Copy a file from Ceph Filesystem to Local Filesystem.
+Copy a file from Ceph File System to Local File System.
 
 Usage : 
 
     get [options] <source_path> [target_path]
 
-* source_path - remote file/directory path which is to be copied to local filesystem.
+* source_path - remote file/directory path which is to be copied to local file system.
     * if `.` copies all the file/directories in the remote working directory.
                     
 * target_path - local directory path where the files/directories are to be copied to.
@@ -226,18 +238,21 @@ Usage:
 * name - name of the alias being looked up, added, or replaced
 * value - what the alias will be resolved to (if adding or replacing) this can contain spaces and does not need to be quoted
 
-pyscript
---------
+run_pyscript
+------------
 
 Runs a python script file inside the console
 
 Usage: 
     
-    pyscript <script_path> [script_arguments]
+    run_pyscript <script_path> [script_arguments]
 
 * Console commands can be executed inside this script with cmd ("your command")
-  However, you cannot run nested "py" or "pyscript" commands from within this script
-  Paths or arguments that contain spaces must be enclosed in quotes
+  However, you cannot run nested "py" or "pyscript" commands from within this
+  script. Paths or arguments that contain spaces must be enclosed in quotes
+
+.. note:: This command is available as ``pyscript`` for cmd2 versions 0.9.13
+   or less.
 
 py
 --
@@ -253,6 +268,10 @@ shortcuts
 ---------
 
 Lists shortcuts (aliases) available
+
+Usage :
+
+    shortcuts
 
 history
 -------
@@ -296,10 +315,10 @@ Usage :
 
 * Call without arguments for a list of settable parameters with their values.
 
- Options :
- -h     show this help message and exit
- -a     display read-only settings as well
- -l     describe function of parameter
+Options :
+  -h     show this help message and exit
+  -a     display read-only settings as well
+  -l     describe function of parameter
 
 edit
 ----
@@ -312,18 +331,21 @@ Usage:
 
 * file_path - path to a file to open in editor
 
-load
-----
+run_script
+----------
 
 Runs commands in script file that is encoded as either ASCII or UTF-8 text.
+Each command in the script should be separated by a newline.
 
 Usage:  
     
-    load <file_path>
+    run_script <file_path>
+
 
 * file_path - a file path pointing to a script
 
-* Script should contain one command per line, just like command would betyped in console.
+.. note:: This command is available as ``load`` for cmd2 versions 0.9.13
+   or less.
 
 shell
 -----
@@ -337,12 +359,85 @@ Usage:
 locate
 ------
 
-Find an item in Filesystem
+Find an item in File System
 
 Usage:
+
      locate [options] <name>
 
 Options :
   -c       Count number of items found
   -i       Ignore case 
 
+stat
+------
+
+Display file status.
+
+Usage :
+
+     stat [-h] <file_name> [file_name ...]
+
+Options :
+  -h     Shows the help message
+
+snap
+----
+
+Create or Delete Snapshot
+
+Usage:
+
+     snap {create|delete} <snap_name> <dir_name>
+
+* snap_name - Snapshot name to be created or deleted
+
+* dir_name - directory under which snapshot should be created or deleted
+
+setxattr
+--------
+
+Set extended attribute for a file
+
+Usage :
+
+     setxattr [-h] <path> <name> <value>
+
+*  path - Path to the file
+
+*  name - Extended attribute name to get or set
+
+*  value - Extended attribute value to be set
+
+Options:
+  -h, --help   Shows the help message
+
+getxattr
+--------
+
+Get extended attribute value for the name associated with the path
+
+Usage :
+
+     getxattr [-h] <path> <name>
+
+*  path - Path to the file
+
+*  name - Extended attribute name to get or set
+
+Options:
+  -h, --help   Shows the help message
+
+listxattr
+---------
+
+List extended attribute names associated with the path
+
+Usage :
+
+     listxattr [-h] <path>
+
+*  path - Path to the file
+
+Options:
+  -h, --help   Shows the help message

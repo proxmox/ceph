@@ -4,16 +4,16 @@
 #include "msg/Message.h"
 
 
-class MGatherCaps : public MessageInstance<MGatherCaps> {
+class MGatherCaps : public Message {
+  static constexpr int HEAD_VERSION = 1;
+  static constexpr int COMPAT_VERSION = 1;
+
 public:
-  friend factory;
-
-
   inodeno_t ino;
 
 protected:
   MGatherCaps() :
-    MessageInstance(MSG_MDS_GATHERCAPS) {}
+    Message{MSG_MDS_GATHERCAPS, HEAD_VERSION, COMPAT_VERSION} {}
   ~MGatherCaps() override {}
 
 public:
@@ -31,7 +31,9 @@ public:
     auto p = payload.cbegin();
     decode(ino, p);
   }
-
+private:
+  template<class T, typename... Args>
+  friend boost::intrusive_ptr<T> ceph::make_message(Args&&... args);
 };
 
 #endif

@@ -49,7 +49,7 @@
  * include it here.
  */
 #include "../lib/blob/blobstore.h"
-static void cli_start(void *arg1, void *arg2);
+static void cli_start(void *arg1);
 
 static const char *program_name = "blobcli";
 /* default name for .conf file, any name can be used however with -c switch */
@@ -197,7 +197,7 @@ static void
 cli_cleanup(struct cli_context_t *cli_context)
 {
 	if (cli_context->buff) {
-		spdk_dma_free(cli_context->buff);
+		spdk_free(cli_context->buff);
 	}
 	if (cli_context->cli_mode == CLI_MODE_SCRIPT) {
 		int i;
@@ -233,7 +233,7 @@ unload_complete(void *cb_arg, int bserrno)
 		/* when action is CLI_NONE, we know we need to remain in the shell */
 		cli_context->bs = NULL;
 		cli_context->action = CLI_NONE;
-		cli_start(cli_context, NULL);
+		cli_start(cli_context);
 	}
 }
 
@@ -408,7 +408,7 @@ show_bs_cb(void *arg1, spdk_blob_id blobid, int bserrno)
 	printf("\t# free clusters: %" PRIu64 "\n", val);
 
 	bstype = spdk_bs_get_bstype(cli_context->bs);
-	spdk_trace_dump(stdout, "\tblobstore type:", &bstype, sizeof(bstype));
+	spdk_log_dump(stdout, "\tblobstore type:", &bstype, sizeof(bstype));
 
 	/*
 	 * Private info isn't accessible via the public API but
@@ -466,7 +466,7 @@ show_blob(struct cli_context_t *cli_context)
 		printf("\n(%d) Name:%s\n", i,
 		       spdk_xattr_names_get_name(names, i));
 		printf("(%d) Value:\n", i);
-		spdk_trace_dump(stdout, "", value, value_len);
+		spdk_log_dump(stdout, "", value, value_len);
 	}
 
 	/*
@@ -685,8 +685,8 @@ dump_imp_open_cb(void *cb_arg, struct spdk_blob *blob, int bserrno)
 	 * We'll transfer just one io_unit at a time to keep the buffer
 	 * small. This could be bigger of course.
 	 */
-	cli_context->buff = spdk_dma_malloc(cli_context->io_unit_size,
-					    ALIGN_4K, NULL);
+	cli_context->buff = spdk_malloc(cli_context->io_unit_size, ALIGN_4K, NULL,
+					SPDK_ENV_LCORE_ID_ANY, SPDK_MALLOC_DMA);
 	if (cli_context->buff == NULL) {
 		printf("Error in allocating memory\n");
 		spdk_blob_close(cli_context->blob, close_cb, cli_context);
@@ -780,8 +780,8 @@ fill_blob_cb(void *arg1, struct spdk_blob *blob, int bserrno)
 	cli_context->blob = blob;
 	cli_context->io_unit_count = 0;
 	cli_context->blob_io_units = spdk_blob_get_num_io_units(cli_context->blob);
-	cli_context->buff = spdk_dma_malloc(cli_context->io_unit_size,
-					    ALIGN_4K, NULL);
+	cli_context->buff = spdk_malloc(cli_context->io_unit_size, ALIGN_4K, NULL,
+					SPDK_ENV_LCORE_ID_ANY, SPDK_MALLOC_DMA);
 	if (cli_context->buff == NULL) {
 		unload_bs(cli_context, "Error in allocating memory",
 			  -ENOMEM);
@@ -912,7 +912,7 @@ list_bdevs(struct cli_context_t *cli_context)
 		spdk_app_stop(0);
 	} else {
 		cli_context->action = CLI_NONE;
-		cli_start(cli_context, NULL);
+		cli_start(cli_context);
 	}
 }
 
@@ -973,7 +973,7 @@ spdk_bsdump_done(void *arg, int bserrno)
 		spdk_app_stop(0);
 	} else {
 		cli_context->action = CLI_NONE;
-		cli_start(cli_context, NULL);
+		cli_start(cli_context);
 	}
 }
 
@@ -1070,7 +1070,7 @@ cmd_parser(int argc, char **argv, struct cli_context_t *cli_context)
 			if (argv[optind] != NULL) {
 				cmd_chosen++;
 				cli_context->action = CLI_DUMP_BLOB;
-				cli_context->blobid = atoll(optarg);
+				cli_context->blobid = spdk_strtoll(optarg, 10);
 				snprintf(cli_context->file, BUFSIZE, "%s", argv[optind]);
 			} else {
 				usage(cli_context, "ERROR: missing parameter.\n");
@@ -1080,8 +1080,8 @@ cmd_parser(int argc, char **argv, struct cli_context_t *cli_context)
 			if (argv[optind] != NULL) {
 				cmd_chosen++;
 				cli_context->action = CLI_FILL;
-				cli_context->blobid = atoll(optarg);
-				cli_context->fill_value = atoi(argv[optind]);
+				cli_context->blobid = spdk_strtoll(optarg, 10);
+				cli_context->fill_value = spdk_strtol(argv[optind], 10);
 			} else {
 				usage(cli_context, "ERROR: missing parameter.\n");
 			}
@@ -1113,7 +1113,7 @@ cmd_parser(int argc, char **argv, struct cli_context_t *cli_context)
 			if (argv[optind] != NULL) {
 				cmd_chosen++;
 				cli_context->action = CLI_REM_XATTR;
-				cli_context->blobid = atoll(optarg);
+				cli_context->blobid = spdk_strtoll(optarg, 10);
 				snprintf(cli_context->key, BUFSIZE, "%s", argv[optind]);
 			} else {
 				usage(cli_context, "ERROR: missing parameter.\n");
@@ -1134,14 +1134,14 @@ cmd_parser(int argc, char **argv, struct cli_context_t *cli_context)
 			if (argv[optind] != NULL) {
 				cmd_chosen++;
 				cli_context->action = CLI_IMPORT_BLOB;
-				cli_context->blobid = atoll(optarg);
+				cli_context->blobid = spdk_strtoll(optarg, 10);
 				snprintf(cli_context->file, BUFSIZE, "%s", argv[optind]);
 			} else {
 				usage(cli_context, "ERROR: missing parameter.\n");
 			}
 			break;
 		case 'n':
-			cli_context->num_clusters = atoi(optarg);
+			cli_context->num_clusters = spdk_strtol(optarg, 10);
 			if (cli_context->num_clusters > 0) {
 				cmd_chosen++;
 				cli_context->action = CLI_CREATE_BLOB;
@@ -1152,7 +1152,7 @@ cmd_parser(int argc, char **argv, struct cli_context_t *cli_context)
 		case 'p':
 			cmd_chosen++;
 			cli_context->action = CLI_SET_SUPER;
-			cli_context->superid = atoll(optarg);
+			cli_context->superid = spdk_strtoll(optarg, 10);
 			break;
 		case 'S':
 			if (cli_context->cli_mode == CLI_MODE_CMD) {
@@ -1167,7 +1167,7 @@ cmd_parser(int argc, char **argv, struct cli_context_t *cli_context)
 				cli_context->action = CLI_SHOW_BS;
 			} else {
 				cli_context->action = CLI_SHOW_BLOB;
-				cli_context->blobid = atoll(optarg);
+				cli_context->blobid = spdk_strtoll(optarg, 10);
 			}
 			break;
 		case 'T':
@@ -1192,7 +1192,7 @@ cmd_parser(int argc, char **argv, struct cli_context_t *cli_context)
 			if (argv[optind] != NULL || argv[optind + 1] != NULL) {
 				cmd_chosen++;
 				cli_context->action = CLI_SET_XATTR;
-				cli_context->blobid = atoll(optarg);
+				cli_context->blobid = spdk_strtoll(optarg, 10);
 				snprintf(cli_context->key, BUFSIZE, "%s", argv[optind]);
 				snprintf(cli_context->value, BUFSIZE, "%s", argv[optind + 1]);
 			} else {
@@ -1251,7 +1251,7 @@ line_parser(struct cli_context_t *cli_context)
 		cli_context->argv[cli_context->argc] = strdup(tok);
 		if (tok[0] == '$' && tok[1] == 'B') {
 			tok += 2;
-			blob_num = atoi(tok);
+			blob_num = spdk_strtol(tok, 10);
 			if (blob_num >= 0 && blob_num < MAX_SCRIPT_BLOBS) {
 				cli_context->argv[cli_context->argc] =
 					realloc(cli_context->argv[cli_context->argc], BUFSIZE);
@@ -1424,7 +1424,7 @@ cli_shell(void *arg1, void *arg2)
  * called first.
  */
 static void
-cli_start(void *arg1, void *arg2)
+cli_start(void *arg1)
 {
 	struct cli_context_t *cli_context = arg1;
 
@@ -1561,7 +1561,7 @@ main(int argc, char **argv)
 	opts.config_file = cli_context->config_file;
 
 	cli_context->app_started = true;
-	rc = spdk_app_start(&opts, cli_start, cli_context, NULL);
+	rc = spdk_app_start(&opts, cli_start, cli_context);
 	if (rc) {
 		printf("ERROR!\n");
 	}

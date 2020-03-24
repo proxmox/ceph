@@ -39,5 +39,7 @@ DPDK Tools User Guides
     pdump
     pmdinfo
     devbind
+    testbbdev
     cryptoperf
-
+    comp_perf
+    testeventdev

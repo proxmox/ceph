@@ -1,34 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2016-2017 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2016-2017 Intel Corporation
  */
 
 #include <stdint.h>
@@ -53,13 +24,10 @@
 #include <rte_launch.h>
 #include <rte_lcore.h>
 #include <rte_ring.h>
-#include <rte_launch.h>
-#include <rte_lcore.h>
 #include <rte_debug.h>
 #include <rte_mempool.h>
 #include <rte_mbuf.h>
 #include <rte_interrupts.h>
-#include <rte_pci.h>
 #include <rte_ether.h>
 #include <rte_ethdev.h>
 #include <rte_string_fns.h>
@@ -79,7 +47,7 @@ static uint8_t node_id;
 #define MBQ_CAPACITY 32
 
 /* maps input ports to output ports for packets */
-static uint8_t output_ports[RTE_MAX_ETHPORTS];
+static uint16_t output_ports[RTE_MAX_ETHPORTS];
 
 /* buffers up a set of packet that are ready to send */
 struct rte_eth_dev_tx_buffer *tx_buffer[RTE_MAX_ETHPORTS];
@@ -156,7 +124,7 @@ static void
 flush_tx_error_callback(struct rte_mbuf **unsent, uint16_t count,
 		void *userdata) {
 	int i;
-	uint8_t port_id = (uintptr_t)userdata;
+	uint16_t port_id = (uintptr_t)userdata;
 
 	tx_stats->tx_drop[port_id] += count;
 
@@ -167,7 +135,7 @@ flush_tx_error_callback(struct rte_mbuf **unsent, uint16_t count,
 }
 
 static void
-configure_tx_buffer(uint8_t port_id, uint16_t size)
+configure_tx_buffer(uint16_t port_id, uint16_t size)
 {
 	int ret;
 
@@ -176,16 +144,17 @@ configure_tx_buffer(uint8_t port_id, uint16_t size)
 			RTE_ETH_TX_BUFFER_SIZE(size), 0,
 			rte_eth_dev_socket_id(port_id));
 	if (tx_buffer[port_id] == NULL)
-		rte_exit(EXIT_FAILURE, "Cannot allocate buffer for tx "
-				"on port %u\n", (unsigned int) port_id);
+		rte_exit(EXIT_FAILURE,
+			"Cannot allocate buffer for tx on port %u\n", port_id);
 
 	rte_eth_tx_buffer_init(tx_buffer[port_id], size);
 
 	ret = rte_eth_tx_buffer_set_err_callback(tx_buffer[port_id],
 			flush_tx_error_callback, (void *)(intptr_t)port_id);
 	if (ret < 0)
-		rte_exit(EXIT_FAILURE, "Cannot set error callback for "
-			"tx buffer on port %u\n", (unsigned int) port_id);
+		rte_exit(EXIT_FAILURE,
+			"Cannot set error callback for tx buffer on port %u\n",
+			port_id);
 }
 
 /*
@@ -284,8 +253,8 @@ static inline void
 transmit_packet(struct rte_mbuf *buf)
 {
 	int sent;
-	const uint8_t in_port = buf->port;
-	const uint8_t out_port = output_ports[in_port];
+	const uint16_t in_port = buf->port;
+	const uint16_t out_port = output_ports[in_port];
 	struct rte_eth_dev_tx_buffer *buffer = tx_buffer[out_port];
 
 	sent = rte_eth_tx_buffer(out_port, node_id, buffer, buf);
@@ -351,7 +320,7 @@ main(int argc, char *argv[])
 	if (parse_app_args(argc, argv) < 0)
 		rte_exit(EXIT_FAILURE, "Invalid command-line arguments\n");
 
-	if (rte_eth_dev_count() == 0)
+	if (rte_eth_dev_count_avail() == 0)
 		rte_exit(EXIT_FAILURE, "No Ethernet ports - bye\n");
 
 	rx_ring = rte_ring_lookup(get_rx_queue_name(node_id));
@@ -383,7 +352,7 @@ main(int argc, char *argv[])
 
 	for (;;) {
 		uint16_t  rx_pkts = PKT_READ_SIZE;
-		uint8_t port;
+		uint16_t port;
 
 		/*
 		 * Try dequeuing max possible packets first, if that fails,

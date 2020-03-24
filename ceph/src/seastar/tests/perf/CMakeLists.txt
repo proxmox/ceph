@@ -20,15 +20,6 @@
 # Copyright (C) 2018 Scylladb, Ltd.
 #
 
-add_library (seastar_perf_testing
-  perf_tests.hh
-  perf_tests.cc)
-
-target_link_libraries (seastar_perf_testing
-  PUBLIC
-    fmt::fmt
-    seastar_with_flags)
-
 # Logical target for all perf tests.
 add_custom_target (perf_tests)
 
@@ -46,10 +37,10 @@ macro (seastar_add_test name)
   add_executable (${target} ${parsed_args_SOURCES})
 
   if (parsed_args_NO_SEASTAR_PERF_TESTING_LIBRARY)
-    set (libraries seastar_with_flags)
+    set (libraries seastar_private)
   else ()
     set (libraries
-      seastar_with_flags
+      seastar_private
       seastar_perf_testing)
   endif ()
 
@@ -63,7 +54,7 @@ macro (seastar_add_test name)
 
   set_target_properties (${target}
     PROPERTIES
-      OUTPUT_NAME ${name})
+      OUTPUT_NAME ${name}_perf)
 
   add_dependencies (perf_tests ${target})
   set (${name}_test ${target})
@@ -75,3 +66,6 @@ seastar_add_test (fstream
 
 seastar_add_test (future_util
   SOURCES future_util_perf.cc)
+
+seastar_add_test (rpc
+  SOURCES rpc_perf.cc)

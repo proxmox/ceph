@@ -38,6 +38,7 @@
 #include "spdk/env.h"
 
 #include "spdk_internal/virtio.h"
+#include "spdk_internal/memory.h"
 
 struct virtio_hw {
 	uint8_t	    use_msix;
@@ -121,9 +122,8 @@ pci_dump_json_info(struct virtio_dev *dev, struct spdk_json_write_ctx *w)
 		spdk_json_write_string(w, "pci-legacy");
 	}
 
-	spdk_json_write_name(w, "pci_address");
 	spdk_pci_addr_fmt(addr, sizeof(addr), &pci_addr);
-	spdk_json_write_string(w, addr);
+	spdk_json_write_named_string(w, "pci_address", addr);
 }
 
 static void
@@ -268,20 +268,27 @@ modern_setup_queue(struct virtio_dev *dev, struct virtqueue *vq)
 	 * only a single hugepage (2MB). As of Virtio 1.0, the queue size
 	 * always falls within this limit.
 	 */
-	if (vq->vq_ring_size > 0x200000) {
+	if (vq->vq_ring_size > VALUE_2MB) {
 		return -ENOMEM;
 	}
 
-	queue_mem = spdk_dma_zmalloc(vq->vq_ring_size, 0x200000, &queue_mem_phys_addr);
+	queue_mem = spdk_zmalloc(vq->vq_ring_size, VALUE_2MB, NULL,
+				 SPDK_ENV_LCORE_ID_ANY, SPDK_MALLOC_DMA);
 	if (queue_mem == NULL) {
 		return -ENOMEM;
+	}
+
+	queue_mem_phys_addr = spdk_vtophys(queue_mem, NULL);
+	if (queue_mem_phys_addr == SPDK_VTOPHYS_ERROR) {
+		spdk_free(queue_mem);
+		return -EFAULT;
 	}
 
 	vq->vq_ring_mem = queue_mem_phys_addr;
 	vq->vq_ring_virt_mem = queue_mem;
 
 	if (!check_vq_phys_addr_ok(vq)) {
-		spdk_dma_free(queue_mem);
+		spdk_free(queue_mem);
 		return -ENOMEM;
 	}
 
@@ -331,7 +338,7 @@ modern_del_queue(struct virtio_dev *dev, struct virtqueue *vq)
 
 	spdk_mmio_write_2(&hw->common_cfg->queue_enable, 0);
 
-	spdk_dma_free(vq->vq_ring_virt_mem);
+	spdk_free(vq->vq_ring_virt_mem);
 }
 
 static void
@@ -549,7 +556,8 @@ virtio_pci_dev_enumerate(virtio_pci_create_cb enum_cb, void *enum_ctx,
 	ctx.enum_ctx = enum_ctx;
 	ctx.device_id = pci_device_id;
 
-	return spdk_pci_virtio_enumerate(virtio_pci_dev_probe_cb, &ctx);
+	return spdk_pci_enumerate(spdk_pci_virtio_get_driver(),
+				  virtio_pci_dev_probe_cb, &ctx);
 }
 
 int
@@ -567,7 +575,8 @@ virtio_pci_dev_attach(virtio_pci_create_cb enum_cb, void *enum_ctx,
 	ctx.enum_ctx = enum_ctx;
 	ctx.device_id = pci_device_id;
 
-	return spdk_pci_virtio_device_attach(virtio_pci_dev_probe_cb, &ctx, pci_address);
+	return spdk_pci_device_attach(spdk_pci_virtio_get_driver(),
+				      virtio_pci_dev_probe_cb, &ctx, pci_address);
 }
 
 int

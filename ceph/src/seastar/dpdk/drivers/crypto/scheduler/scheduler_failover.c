@@ -1,33 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2017 Intel Corporation. All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2017 Intel Corporation
  */
 
 #include <rte_cryptodev.h>
@@ -48,57 +20,18 @@ struct fo_scheduler_qp_ctx {
 	uint8_t deq_idx;
 };
 
-static inline uint16_t __attribute__((always_inline))
-failover_slave_enqueue(struct scheduler_slave *slave, uint8_t slave_idx,
+static __rte_always_inline uint16_t
+failover_slave_enqueue(struct scheduler_slave *slave,
 		struct rte_crypto_op **ops, uint16_t nb_ops)
 {
 	uint16_t i, processed_ops;
-	struct rte_cryptodev_sym_session *sessions[nb_ops];
-	struct scheduler_session *sess0, *sess1, *sess2, *sess3;
 
 	for (i = 0; i < nb_ops && i < 4; i++)
 		rte_prefetch0(ops[i]->sym->session);
 
-	for (i = 0; (i < (nb_ops - 8)) && (nb_ops > 8); i += 4) {
-		rte_prefetch0(ops[i + 4]->sym->session);
-		rte_prefetch0(ops[i + 5]->sym->session);
-		rte_prefetch0(ops[i + 6]->sym->session);
-		rte_prefetch0(ops[i + 7]->sym->session);
-
-		sess0 = (struct scheduler_session *)
-				ops[i]->sym->session->_private;
-		sess1 = (struct scheduler_session *)
-				ops[i+1]->sym->session->_private;
-		sess2 = (struct scheduler_session *)
-				ops[i+2]->sym->session->_private;
-		sess3 = (struct scheduler_session *)
-				ops[i+3]->sym->session->_private;
-
-		sessions[i] = ops[i]->sym->session;
-		sessions[i + 1] = ops[i + 1]->sym->session;
-		sessions[i + 2] = ops[i + 2]->sym->session;
-		sessions[i + 3] = ops[i + 3]->sym->session;
-
-		ops[i]->sym->session = sess0->sessions[slave_idx];
-		ops[i + 1]->sym->session = sess1->sessions[slave_idx];
-		ops[i + 2]->sym->session = sess2->sessions[slave_idx];
-		ops[i + 3]->sym->session = sess3->sessions[slave_idx];
-	}
-
-	for (; i < nb_ops; i++) {
-		sess0 = (struct scheduler_session *)
-				ops[i]->sym->session->_private;
-		sessions[i] = ops[i]->sym->session;
-		ops[i]->sym->session = sess0->sessions[slave_idx];
-	}
-
 	processed_ops = rte_cryptodev_enqueue_burst(slave->dev_id,
 			slave->qp_id, ops, nb_ops);
 	slave->nb_inflight_cops += processed_ops;
-
-	if (unlikely(processed_ops < nb_ops))
-		for (i = processed_ops; i < nb_ops; i++)
-			ops[i]->sym->session = sessions[i];
 
 	return processed_ops;
 }
@@ -114,11 +47,11 @@ schedule_enqueue(void *qp, struct rte_crypto_op **ops, uint16_t nb_ops)
 		return 0;
 
 	enqueued_ops = failover_slave_enqueue(&qp_ctx->primary_slave,
-			PRIMARY_SLAVE_IDX, ops, nb_ops);
+			ops, nb_ops);
 
 	if (enqueued_ops < nb_ops)
 		enqueued_ops += failover_slave_enqueue(&qp_ctx->secondary_slave,
-				SECONDARY_SLAVE_IDX, &ops[enqueued_ops],
+				&ops[enqueued_ops],
 				nb_ops - enqueued_ops);
 
 	return enqueued_ops;
@@ -206,7 +139,7 @@ scheduler_start(struct rte_cryptodev *dev)
 	uint16_t i;
 
 	if (sched_ctx->nb_slaves < 2) {
-		CS_LOG_ERR("Number of slaves shall no less than 2");
+		CR_SCHED_LOG(ERR, "Number of slaves shall no less than 2");
 		return -ENOMEM;
 	}
 
@@ -249,7 +182,7 @@ scheduler_config_qp(struct rte_cryptodev *dev, uint16_t qp_id)
 	fo_qp_ctx = rte_zmalloc_socket(NULL, sizeof(*fo_qp_ctx), 0,
 			rte_socket_id());
 	if (!fo_qp_ctx) {
-		CS_LOG_ERR("failed allocate memory for private queue pair");
+		CR_SCHED_LOG(ERR, "failed allocate memory for private queue pair");
 		return -ENOMEM;
 	}
 
@@ -264,7 +197,7 @@ scheduler_create_private_ctx(__rte_unused struct rte_cryptodev *dev)
 	return 0;
 }
 
-struct rte_cryptodev_scheduler_ops scheduler_fo_ops = {
+static struct rte_cryptodev_scheduler_ops scheduler_fo_ops = {
 	slave_attach,
 	slave_detach,
 	scheduler_start,
@@ -275,7 +208,7 @@ struct rte_cryptodev_scheduler_ops scheduler_fo_ops = {
 	NULL	/*option_get */
 };
 
-struct rte_cryptodev_scheduler fo_scheduler = {
+static struct rte_cryptodev_scheduler fo_scheduler = {
 		.name = "failover-scheduler",
 		.description = "scheduler which enqueues to the primary slave, "
 				"and only then enqueues to the secondary slave "
@@ -284,4 +217,4 @@ struct rte_cryptodev_scheduler fo_scheduler = {
 		.ops = &scheduler_fo_ops
 };
 
-struct rte_cryptodev_scheduler *failover_scheduler = &fo_scheduler;
+struct rte_cryptodev_scheduler *crypto_scheduler_failover = &fo_scheduler;

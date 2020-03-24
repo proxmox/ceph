@@ -1,4 +1,8 @@
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
+// vim: ts=8 sw=2 smarttab ft=cpp
+
 #include "include/random.h"
+#include "include/Context.h"
 #include "common/errno.h"
 
 #include "svc_notify.h"
@@ -91,7 +95,7 @@ public:
       register_completion->release();
       register_completion = nullptr;
     }
-    register_completion = librados::Rados::aio_create_completion(nullptr, nullptr, nullptr);
+    register_completion = librados::Rados::aio_create_completion(nullptr, nullptr);
     register_ret = obj.aio_watch(register_completion, &watch_handle, this);
     if (register_ret < 0) {
       register_completion->release();
@@ -107,7 +111,7 @@ public:
     if (!register_completion) {
       return -EINVAL;
     }
-    register_completion->wait_for_safe();
+    register_completion->wait_for_complete();
     int r = register_completion->get_return_value();
     register_completion->release();
     register_completion = nullptr;
@@ -306,7 +310,7 @@ int RGWSI_Notify::unwatch(RGWSI_RADOS::Obj& obj, uint64_t watch_handle)
 void RGWSI_Notify::add_watcher(int i)
 {
   ldout(cct, 20) << "add_watcher() i=" << i << dendl;
-  RWLock::WLocker l(watchers_lock);
+  std::unique_lock l{watchers_lock};
   watchers_set.insert(i);
   if (watchers_set.size() ==  (size_t)num_watchers) {
     ldout(cct, 2) << "all " << num_watchers << " watchers are set, enabling cache" << dendl;
@@ -317,7 +321,7 @@ void RGWSI_Notify::add_watcher(int i)
 void RGWSI_Notify::remove_watcher(int i)
 {
   ldout(cct, 20) << "remove_watcher() i=" << i << dendl;
-  RWLock::WLocker l(watchers_lock);
+  std::unique_lock l{watchers_lock};
   size_t orig_size = watchers_set.size();
   watchers_set.erase(i);
   if (orig_size == (size_t)num_watchers &&
@@ -332,7 +336,7 @@ int RGWSI_Notify::watch_cb(uint64_t notify_id,
                            uint64_t notifier_id,
                            bufferlist& bl)
 {
-  RWLock::RLocker l(watchers_lock);
+  std::shared_lock l{watchers_lock};
   if (cb) {
     return cb->watch_cb(notify_id, cookie, notifier_id, bl);
   }
@@ -341,7 +345,7 @@ int RGWSI_Notify::watch_cb(uint64_t notify_id,
 
 void RGWSI_Notify::set_enabled(bool status)
 {
-  RWLock::WLocker l(watchers_lock);
+  std::unique_lock l{watchers_lock};
   _set_enabled(status);
 }
 
@@ -353,23 +357,25 @@ void RGWSI_Notify::_set_enabled(bool status)
   }
 }
 
-int RGWSI_Notify::distribute(const string& key, bufferlist& bl)
+int RGWSI_Notify::distribute(const string& key, bufferlist& bl,
+                             optional_yield y)
 {
   RGWSI_RADOS::Obj notify_obj = pick_control_obj(key);
 
   ldout(cct, 10) << "distributing notification oid=" << notify_obj.get_ref().obj
       << " bl.length()=" << bl.length() << dendl;
-  return robust_notify(notify_obj, bl);
+  return robust_notify(notify_obj, bl, y);
 }
 
-int RGWSI_Notify::robust_notify(RGWSI_RADOS::Obj& notify_obj, bufferlist& bl)
+int RGWSI_Notify::robust_notify(RGWSI_RADOS::Obj& notify_obj, bufferlist& bl,
+                                optional_yield y)
 {
   // The reply of every machine that acks goes in here.
   boost::container::flat_set<std::pair<uint64_t, uint64_t>> acks;
   bufferlist rbl;
 
   // First, try to send, without being fancy about it.
-  auto r = notify_obj.notify(bl, 0, &rbl);
+  auto r = notify_obj.notify(bl, 0, &rbl, y);
 
   // If that doesn't work, get serious.
   if (r < 0) {
@@ -390,7 +396,7 @@ int RGWSI_Notify::robust_notify(RGWSI_RADOS::Obj& notify_obj, bufferlist& bl)
 	ldout(cct, 20) << "robust_notify: acked by " << id << dendl;
 	uint32_t blen;
 	decode(blen, p);
-	p.advance(blen);
+	p += blen;
       }
     } catch (const buffer::error& e) {
       ldout(cct, 0) << "robust_notify: notify response parse failed: "
@@ -409,7 +415,7 @@ int RGWSI_Notify::robust_notify(RGWSI_RADOS::Obj& notify_obj, bufferlist& bl)
       rbl.clear();
       // Reset the timeouts, we're only concerned with new ones.
       timeouts.clear();
-      r = notify_obj.notify(bl, 0, &rbl);
+      r = notify_obj.notify(bl, 0, &rbl, y);
       if (r < 0) {
 	ldout(cct, 1) << "robust_notify: retry " << tries << " failed: "
 		      << cpp_strerror(-r) << dendl;
@@ -429,7 +435,7 @@ int RGWSI_Notify::robust_notify(RGWSI_RADOS::Obj& notify_obj, bufferlist& bl)
 	    }
 	    uint32_t blen;
 	    decode(blen, p);
-	    p.advance(blen);
+	    p += blen;
 	  }
 
 	  uint32_t num_timeouts;
@@ -463,7 +469,7 @@ int RGWSI_Notify::robust_notify(RGWSI_RADOS::Obj& notify_obj, bufferlist& bl)
 
 void RGWSI_Notify::register_watch_cb(CB *_cb)
 {
-  RWLock::WLocker l(watchers_lock);
+  std::unique_lock l{watchers_lock};
   cb = _cb;
   _set_enabled(enabled);
 }

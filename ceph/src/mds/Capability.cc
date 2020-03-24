@@ -66,7 +66,7 @@ void Capability::Export::dump(Formatter *f) const
   f->dump_stream("last_issue_stamp") << last_issue_stamp;
 }
 
-void Capability::Export::generate_test_instances(list<Capability::Export*>& ls)
+void Capability::Export::generate_test_instances(std::list<Capability::Export*>& ls)
 {
   ls.push_back(new Export);
   ls.push_back(new Export);
@@ -132,7 +132,7 @@ void Capability::revoke_info::dump(Formatter *f) const
   f->dump_unsigned("last_issue", last_issue);
 }
 
-void Capability::revoke_info::generate_test_instances(list<Capability::revoke_info*>& ls)
+void Capability::revoke_info::generate_test_instances(std::list<Capability::revoke_info*>& ls)
 {
   ls.push_back(new revoke_info);
   ls.push_back(new revoke_info);
@@ -146,15 +146,10 @@ void Capability::revoke_info::generate_test_instances(list<Capability::revoke_in
  * Capability
  */
 Capability::Capability(CInode *i, Session *s, uint64_t id) :
-  client_follows(0),
-  client_xattr_version(0), client_inline_version(0),
-  last_rbytes(0), last_rsize(0),
   item_session_caps(this), item_snaprealm_caps(this),
   item_revoking_caps(this), item_client_revoking_caps(this),
-  inode(i), session(s),
-  cap_id(id), _wanted(0), num_revoke_warnings(0),
-  _pending(0), _issued(0), last_sent(0), last_issue(0), mseq(0),
-  suppress(0), state(0)
+  lock_caches(member_offset(MDLockCache, item_cap_lock_cache)),
+  inode(i), session(s), cap_id(id)
 {
   if (session) {
     session->touch_cap_bottom(this);
@@ -171,6 +166,8 @@ Capability::Capability(CInode *i, Session *s, uint64_t id) :
       if (!conn->has_feature(CEPH_FEATURE_MDS_QUOTA))
 	state |= STATE_NOQUOTA;
     }
+  } else {
+    cap_gen = 0;
   }
 }
 
@@ -274,7 +271,7 @@ void Capability::dump(Formatter *f) const
   f->close_section();
 }
 
-void Capability::generate_test_instances(list<Capability*>& ls)
+void Capability::generate_test_instances(std::list<Capability*>& ls)
 {
   ls.push_back(new Capability);
   ls.push_back(new Capability);

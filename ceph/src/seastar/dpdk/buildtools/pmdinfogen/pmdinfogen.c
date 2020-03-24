@@ -8,7 +8,6 @@
  *
  */
 
-#define _GNU_SOURCE
 #include <stdio.h>
 #include <ctype.h>
 #include <string.h>
@@ -26,6 +25,7 @@
 #define ADDR_SIZE 32
 #endif
 
+static int use_stdin, use_stdout;
 
 static const char *sym_name(struct elf_info *elf, Elf_Sym *sym)
 {
@@ -39,11 +39,36 @@ static void *grab_file(const char *filename, unsigned long *size)
 {
 	struct stat st;
 	void *map = MAP_FAILED;
-	int fd;
+	int fd = -1;
 
-	fd = open(filename, O_RDONLY);
-	if (fd < 0)
-		return NULL;
+	if (!use_stdin) {
+		fd = open(filename, O_RDONLY);
+		if (fd < 0)
+			return NULL;
+	} else {
+		/* from stdin, use a temporary file to mmap */
+		FILE *infile;
+		char buffer[1024];
+		int n;
+
+		infile = tmpfile();
+		if (infile == NULL) {
+			perror("tmpfile");
+			return NULL;
+		}
+		fd = dup(fileno(infile));
+		fclose(infile);
+		if (fd < 0)
+			return NULL;
+
+		n = read(STDIN_FILENO, buffer, sizeof(buffer));
+		while (n > 0) {
+			if (write(fd, buffer, n) != n)
+				goto failed;
+			n = read(STDIN_FILENO, buffer, sizeof(buffer));
+		}
+	}
+
 	if (fstat(fd, &st))
 		goto failed;
 
@@ -158,7 +183,8 @@ static int parse_elf(struct elf_info *info, const char *filename)
 		 * There are more than 64k sections,
 		 * read count from .sh_size.
 		 */
-		info->num_sections = TO_NATIVE(endian, 32, sechdrs[0].sh_size);
+		info->num_sections =
+			TO_NATIVE(endian, ADDR_SIZE, sechdrs[0].sh_size);
 	} else {
 		info->num_sections = hdr->e_shnum;
 	}
@@ -181,7 +207,7 @@ static int parse_elf(struct elf_info *info, const char *filename)
 		sechdrs[i].sh_offset    =
 			TO_NATIVE(endian, ADDR_SIZE, sechdrs[i].sh_offset);
 		sechdrs[i].sh_size      =
-			TO_NATIVE(endian, 32, sechdrs[i].sh_size);
+			TO_NATIVE(endian, ADDR_SIZE, sechdrs[i].sh_size);
 		sechdrs[i].sh_link      =
 			TO_NATIVE(endian, 32, sechdrs[i].sh_link);
 		sechdrs[i].sh_info      =
@@ -327,6 +353,10 @@ static int locate_pmd_entries(struct elf_info *info)
 
 	do {
 		new = calloc(sizeof(struct pmd_driver), 1);
+		if (new == NULL) {
+			fprintf(stderr, "Failed to calloc memory\n");
+			return -1;
+		}
 		new->name_sym = find_sym_in_symtab(info, "this_pmd_name", last);
 		last = new->name_sym;
 		if (!new->name_sym)
@@ -353,10 +383,14 @@ static void output_pmd_info_string(struct elf_info *info, char *outfile)
 	struct rte_pci_id *pci_ids;
 	int idx = 0;
 
-	ofd = fopen(outfile, "w+");
-	if (!ofd) {
-		fprintf(stderr, "Unable to open output file\n");
-		return;
+	if (use_stdout)
+		ofd = stdout;
+	else {
+		ofd = fopen(outfile, "w+");
+		if (!ofd) {
+			fprintf(stderr, "Unable to open output file\n");
+			return;
+		}
 	}
 
 	drv = info->drivers;
@@ -397,7 +431,7 @@ static void output_pmd_info_string(struct elf_info *info, char *outfile)
 
 int main(int argc, char **argv)
 {
-	struct elf_info info;
+	struct elf_info info = {0};
 	int rc = 1;
 
 	if (argc < 3) {
@@ -406,9 +440,12 @@ int main(int argc, char **argv)
 			basename(argv[0]));
 		exit(127);
 	}
+	use_stdin = !strcmp(argv[1], "-");
+	use_stdout = !strcmp(argv[2], "-");
 	parse_elf(&info, argv[1]);
 
-	locate_pmd_entries(&info);
+	if (locate_pmd_entries(&info) < 0)
+		exit(1);
 
 	if (info.drivers) {
 		output_pmd_info_string(&info, argv[2]);

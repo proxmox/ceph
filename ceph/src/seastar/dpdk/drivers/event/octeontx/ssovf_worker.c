@@ -1,38 +1,10 @@
-/*
- *   BSD LICENSE
- *
- *   Copyright (C) Cavium networks Ltd. 2017.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Cavium networks nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2017 Cavium, Inc
  */
 
 #include "ssovf_worker.h"
 
-static force_inline void
+static __rte_always_inline void
 ssows_new_event(struct ssows *ws, const struct rte_event *ev)
 {
 	const uint64_t event_ptr = ev->u64;
@@ -43,7 +15,7 @@ ssows_new_event(struct ssows *ws, const struct rte_event *ev)
 	ssows_add_work(ws, event_ptr, tag, new_tt, grp);
 }
 
-static force_inline void
+static __rte_always_inline void
 ssows_fwd_swtag(struct ssows *ws, const struct rte_event *ev, const uint8_t grp)
 {
 	const uint8_t cur_tt = ws->cur_tt;
@@ -72,7 +44,7 @@ ssows_fwd_swtag(struct ssows *ws, const struct rte_event *ev, const uint8_t grp)
 
 #define OCT_EVENT_TYPE_GRP_FWD (RTE_EVENT_TYPE_MAX - 1)
 
-static force_inline void
+static __rte_always_inline void
 ssows_fwd_group(struct ssows *ws, const struct rte_event *ev, const uint8_t grp)
 {
 	const uint64_t event_ptr = ev->u64;
@@ -95,7 +67,7 @@ ssows_fwd_group(struct ssows *ws, const struct rte_event *ev, const uint8_t grp)
 	ssows_add_work(ws, event_ptr, tag, new_tt, grp);
 }
 
-static force_inline void
+static __rte_always_inline void
 ssows_forward_event(struct ssows *ws, const struct rte_event *ev)
 {
 	const uint8_t grp = ev->queue_id;
@@ -112,39 +84,39 @@ ssows_forward_event(struct ssows *ws, const struct rte_event *ev)
 		ssows_fwd_group(ws, ev, grp);
 }
 
-static force_inline void
+static __rte_always_inline void
 ssows_release_event(struct ssows *ws)
 {
 	if (likely(ws->cur_tt != SSO_SYNC_UNTAGGED))
 		ssows_swtag_untag(ws);
 }
 
-force_inline uint16_t __hot
+__rte_always_inline uint16_t __hot
 ssows_deq(void *port, struct rte_event *ev, uint64_t timeout_ticks)
 {
 	struct ssows *ws = port;
 
 	RTE_SET_USED(timeout_ticks);
 
-	ssows_swtag_wait(ws);
 	if (ws->swtag_req) {
 		ws->swtag_req = 0;
+		ssows_swtag_wait(ws);
 		return 1;
 	} else {
 		return ssows_get_work(ws, ev);
 	}
 }
 
-force_inline uint16_t __hot
+__rte_always_inline uint16_t __hot
 ssows_deq_timeout(void *port, struct rte_event *ev, uint64_t timeout_ticks)
 {
 	struct ssows *ws = port;
 	uint64_t iter;
 	uint16_t ret = 1;
 
-	ssows_swtag_wait(ws);
 	if (ws->swtag_req) {
 		ws->swtag_req = 0;
+		ssows_swtag_wait(ws);
 	} else {
 		ret = ssows_get_work(ws, ev);
 		for (iter = 1; iter < timeout_ticks && (ret == 0); iter++)
@@ -171,7 +143,7 @@ ssows_deq_timeout_burst(void *port, struct rte_event ev[], uint16_t nb_events,
 	return ssows_deq_timeout(port, ev, timeout_ticks);
 }
 
-force_inline uint16_t __hot
+__rte_always_inline uint16_t __hot
 ssows_enq(void *port, const struct rte_event *ev)
 {
 	struct ssows *ws = port;
@@ -179,6 +151,7 @@ ssows_enq(void *port, const struct rte_event *ev)
 
 	switch (ev->op) {
 	case RTE_EVENT_OP_NEW:
+		rte_smp_wmb();
 		ssows_new_event(ws, ev);
 		break;
 	case RTE_EVENT_OP_FORWARD:
@@ -200,14 +173,40 @@ ssows_enq_burst(void *port, const struct rte_event ev[], uint16_t nb_events)
 	return ssows_enq(port, ev);
 }
 
+uint16_t __hot
+ssows_enq_new_burst(void *port, const struct rte_event ev[], uint16_t nb_events)
+{
+	uint16_t i;
+	struct ssows *ws = port;
+
+	rte_smp_wmb();
+	for (i = 0; i < nb_events; i++)
+		ssows_new_event(ws,  &ev[i]);
+
+	return nb_events;
+}
+
+uint16_t __hot
+ssows_enq_fwd_burst(void *port, const struct rte_event ev[], uint16_t nb_events)
+{
+	struct ssows *ws = port;
+	RTE_SET_USED(nb_events);
+
+	ssows_forward_event(ws,  ev);
+
+	return 1;
+}
+
 void
-ssows_flush_events(struct ssows *ws, uint8_t queue_id)
+ssows_flush_events(struct ssows *ws, uint8_t queue_id,
+				ssows_handle_event_t fn, void *arg)
 {
 	uint32_t reg_off;
-	uint64_t aq_cnt = 1;
-	uint64_t cq_ds_cnt = 1;
-	uint64_t enable, get_work0, get_work1;
-	uint8_t *base = octeontx_ssovf_bar(OCTEONTX_SSO_GROUP, queue_id, 0);
+	struct rte_event ev;
+	uint64_t enable, aq_cnt = 1, cq_ds_cnt = 1;
+	uint64_t get_work0, get_work1;
+	uint64_t sched_type_queue;
+	uint8_t *base = ssovf_bar(OCTEONTX_SSO_GROUP, queue_id, 0);
 
 	enable = ssovf_read64(base + SSO_VHGRP_QCTL);
 	if (!enable)
@@ -222,11 +221,23 @@ ssows_flush_events(struct ssows *ws, uint8_t queue_id)
 		cq_ds_cnt = ssovf_read64(base + SSO_VHGRP_INT_CNT);
 		/* Extract cq and ds count */
 		cq_ds_cnt &= 0x1FFF1FFF0000;
-		ssovf_load_pair(get_work0, get_work1, ws->base + reg_off);
-	}
 
-	RTE_SET_USED(get_work0);
-	RTE_SET_USED(get_work1);
+		ssovf_load_pair(get_work0, get_work1, ws->base + reg_off);
+
+		sched_type_queue = (get_work0 >> 32) & 0xfff;
+		ws->cur_tt = sched_type_queue & 0x3;
+		ws->cur_grp = sched_type_queue >> 2;
+		sched_type_queue = sched_type_queue << 38;
+		ev.event = sched_type_queue | (get_work0 & 0xffffffff);
+		if (get_work1 && ev.event_type == RTE_EVENT_TYPE_ETHDEV)
+			ev.mbuf = ssovf_octeontx_wqe_to_pkt(get_work1,
+					(ev.event >> 20) & 0x7F);
+		else
+			ev.u64 = get_work1;
+
+		if (fn != NULL && ev.u64 != 0)
+			fn(arg, ev);
+	}
 }
 
 void
@@ -249,4 +260,48 @@ ssows_reset(struct ssows *ws)
 		if (tt == SSO_SYNC_ORDERED || tt == SSO_SYNC_ATOMIC)
 			ssows_swtag_untag(ws);
 	}
+}
+
+uint16_t
+sso_event_tx_adapter_enqueue(void *port,
+		struct rte_event ev[], uint16_t nb_events)
+{
+	uint16_t port_id;
+	uint16_t queue_id;
+	struct rte_mbuf *m;
+	struct rte_eth_dev *ethdev;
+	struct ssows *ws = port;
+	struct octeontx_txq *txq;
+	octeontx_dq_t *dq;
+
+	RTE_SET_USED(nb_events);
+	switch (ev->sched_type) {
+	case SSO_SYNC_ORDERED:
+		ssows_swtag_norm(ws, ev->event, SSO_SYNC_ATOMIC);
+		rte_cio_wmb();
+		ssows_swtag_wait(ws);
+		break;
+	case SSO_SYNC_UNTAGGED:
+		ssows_swtag_full(ws, ev->u64, ev->event, SSO_SYNC_ATOMIC,
+				ev->queue_id);
+		rte_cio_wmb();
+		ssows_swtag_wait(ws);
+		break;
+	case SSO_SYNC_ATOMIC:
+		rte_cio_wmb();
+		break;
+	}
+
+	m = ev[0].mbuf;
+	port_id = m->port;
+	queue_id = rte_event_eth_tx_adapter_txq_get(m);
+	ethdev = &rte_eth_devices[port_id];
+	txq = ethdev->data->tx_queues[queue_id];
+	dq = &txq->dq;
+
+	if (__octeontx_xmit_pkts(dq->lmtline_va, dq->ioreg_va, dq->fc_status_va,
+				m) < 0)
+		return 0;
+
+	return 1;
 }

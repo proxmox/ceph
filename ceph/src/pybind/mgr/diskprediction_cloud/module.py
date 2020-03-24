@@ -142,7 +142,7 @@ class Module(MgrModule):
         for opt in self.MODULE_OPTIONS:
             setattr(self,
                     opt['name'],
-                    self.get_module_option(opt['name']) or opt['default'])
+                    self.get_module_option(opt['name']))
             self.log.debug(' %s = %s', opt['name'], getattr(self, opt['name']))
         if not self._activated_cloud and self.get_ceph_option('device_failure_prediction_mode') == 'cloud':
             self._event.set()
@@ -189,7 +189,7 @@ class Module(MgrModule):
 
     def _show_prediction_config(self, cmd):
         self.show_module_config()
-        return 0, json.dumps(self.config, indent=4), ''
+        return 0, json.dumps(self.config, indent=4, sort_keys=True), ''
 
     def _set_ssl_target_name(self, cmd):
         str_ssl_target = cmd.get('ssl_target_name', '')

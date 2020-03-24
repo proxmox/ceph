@@ -9,7 +9,9 @@ default_path=$PATH
 # - DPDK_BUILD_TEST_CONFIGS (defconfig1+option1+option2 defconfig2)
 # - DPDK_DEP_ARCHIVE
 # - DPDK_DEP_CFLAGS
+# - DPDK_DEP_ELF (y/[n])
 # - DPDK_DEP_ISAL (y/[n])
+# - DPDK_DEP_JSON (y/[n])
 # - DPDK_DEP_LDFLAGS
 # - DPDK_DEP_MLX (y/[n])
 # - DPDK_DEP_NUMA ([y]/n)
@@ -17,6 +19,7 @@ default_path=$PATH
 # - DPDK_DEP_SSL (y/[n])
 # - DPDK_DEP_IPSEC_MB (y/[n])
 # - DPDK_DEP_SZE (y/[n])
+# - DPDK_DEP_NFB (y/[n])
 # - DPDK_DEP_ZLIB (y/[n])
 # - DPDK_MAKE_JOBS (int)
 # - DPDK_NOTIFY (notify-send)
@@ -44,7 +47,7 @@ print_help () {
 	        -v    verbose build
 
 	config: defconfig[[~][+]option1[[~][+]option2...]]
-	        Example: x86_64-native-linuxapp-gcc+debug~RXTX_CALLBACKS
+	        Example: x86_64-native-linux-gcc+debug~RXTX_CALLBACKS
 	        The lowercase options are defined inside $(basename $0).
 	        The uppercase options can be the end of a defconfig option
 	        to enable if prefixed with '+' or to disable if prefixed with '~'.
@@ -95,7 +98,9 @@ reset_env ()
 	unset CROSS
 	unset DPDK_DEP_ARCHIVE
 	unset DPDK_DEP_CFLAGS
+	unset DPDK_DEP_ELF
 	unset DPDK_DEP_ISAL
+	unset DPDK_DEP_JSON
 	unset DPDK_DEP_LDFLAGS
 	unset DPDK_DEP_MLX
 	unset DPDK_DEP_NUMA
@@ -146,13 +151,15 @@ config () # <directory> <target> <options>
 		test "$DPDK_DEP_ARCHIVE" != y || \
 		sed -ri       's,(RESOURCE_TAR=)n,\1y,' $1/.config
 		test "$DPDK_DEP_ISAL" != y || \
-		sed -ri           's,(ISAL_PMD=)n,\1y,' $1/.config
+		sed -ri           's,(PMD_ISAL=)n,\1y,' $1/.config
 		test "$DPDK_DEP_MLX" != y || \
 		sed -ri           's,(MLX._PMD=)n,\1y,' $1/.config
 		test "$DPDK_DEP_SZE" != y || \
 		sed -ri       's,(PMD_SZEDATA2=)n,\1y,' $1/.config
 		test "$DPDK_DEP_ZLIB" != y || \
 		sed -ri          's,(BNX2X_PMD=)n,\1y,' $1/.config
+		test "$DPDK_DEP_ZLIB" != y || \
+		sed -ri           's,(PMD_ZLIB=)n,\1y,' $1/.config
 		test "$DPDK_DEP_ZLIB" != y || \
 		sed -ri   's,(COMPRESSDEV_TEST=)n,\1y,' $1/.config
 		test "$DPDK_DEP_PCAP" != y || \
@@ -174,14 +181,20 @@ config () # <directory> <target> <options>
 		test "$DPDK_DEP_SSL" != y || \
 		sed -ri        's,(PMD_OPENSSL=)n,\1y,' $1/.config
 		test "$DPDK_DEP_SSL" != y || \
-		sed -ri            's,(PMD_QAT=)n,\1y,' $1/.config
+		sed -ri            's,(QAT_SYM=)n,\1y,' $1/.config
 		test -z "$FLEXRAN_SDK" || \
 		sed -ri     's,(BBDEV_TURBO_SW=)n,\1y,' $1/.config
 		sed -ri           's,(SCHED_.*=)n,\1y,' $1/.config
 		test -z "$LIBMUSDK_PATH" || \
-		sed -ri    's,(PMD_MVSAM_CRYPTO=)n,\1y,' $1/.config
+		sed -ri   's,(PMD_MVSAM_CRYPTO=)n,\1y,' $1/.config
 		test -z "$LIBMUSDK_PATH" || \
 		sed -ri          's,(MVPP2_PMD=)n,\1y,' $1/.config
+		test -z "$LIBMUSDK_PATH" || \
+		sed -ri         's,(MVNETA_PMD=)n,\1y,' $1/.config
+		test "$DPDK_DEP_ELF" != y || \
+		sed -ri            's,(BPF_ELF=)n,\1y,' $1/.config
+		test "$DPDK_DEP_JSON" != y || \
+		sed -ri          's,(TELEMETRY=)n,\1y,' $1/.config
 		build_config_hook $1 $2 $3
 
 		# Explicit enabler/disabler (uppercase)
@@ -217,9 +230,6 @@ for conf in $configs ; do
 	make -j$J EXTRA_CFLAGS="$maxerr $DPDK_DEP_CFLAGS" \
 		EXTRA_LDFLAGS="$DPDK_DEP_LDFLAGS" $verbose O=$dir
 	! $short || break
-	echo "================== Build tests for $dir"
-	make test-build -j$J EXTRA_CFLAGS="$maxerr $DPDK_DEP_CFLAGS" \
-		EXTRA_LDFLAGS="$DPDK_DEP_LDFLAGS" $verbose O=$dir
 	echo "================== Build examples for $dir"
 	export RTE_SDK=$(pwd)
 	export RTE_TARGET=$dir

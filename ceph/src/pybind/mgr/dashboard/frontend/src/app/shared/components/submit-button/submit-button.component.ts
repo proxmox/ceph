@@ -1,5 +1,6 @@
 import { Component, ElementRef, EventEmitter, Input, OnInit, Output } from '@angular/core';
 import { AbstractControl, FormGroup, FormGroupDirective, NgForm } from '@angular/forms';
+import { Icons } from '../../../shared/enum/icons.enum';
 
 import * as _ from 'lodash';
 
@@ -29,14 +30,22 @@ import * as _ from 'lodash';
 export class SubmitButtonComponent implements OnInit {
   @Input()
   form: FormGroup | NgForm;
+
   @Input()
   type = 'submit';
-  @Output()
-  submitAction = new EventEmitter();
+
   @Input()
   disabled = false;
 
+  // A CSS class string to apply to the button's main element.
+  @Input()
+  btnClass: string;
+
+  @Output()
+  submitAction = new EventEmitter();
+
   loading = false;
+  icons = Icons;
 
   constructor(private elRef: ElementRef) {}
 
@@ -53,7 +62,7 @@ export class SubmitButtonComponent implements OnInit {
     });
   }
 
-  submit($event) {
+  submit($event: any) {
     this.focusButton();
 
     // Special handling for Template driven forms.

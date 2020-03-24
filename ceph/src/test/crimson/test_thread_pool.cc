@@ -1,10 +1,11 @@
 #include <chrono>
+#include <iostream>
 #include <numeric>
 #include <seastar/core/app-template.hh>
 #include "crimson/thread/ThreadPool.h"
 
 using namespace std::chrono_literals;
-using ThreadPool = ceph::thread::ThreadPool;
+using ThreadPool = crimson::thread::ThreadPool;
 
 seastar::future<> test_accumulate(ThreadPool& tp) {
   static constexpr auto N = 5;
@@ -24,6 +25,12 @@ seastar::future<> test_accumulate(ThreadPool& tp) {
   });
 }
 
+seastar::future<> test_void_return(ThreadPool& tp) {
+  return tp.submit([=] {
+    std::this_thread::sleep_for(10ns);
+  });
+}
+
 int main(int argc, char** argv)
 {
   ThreadPool tp{2, 128, 0};
@@ -31,6 +38,8 @@ int main(int argc, char** argv)
   return app.run(argc, argv, [&tp] {
       return tp.start().then([&tp] {
           return test_accumulate(tp);
+        }).then([&tp] {
+          return test_void_return(tp);
         }).handle_exception([](auto e) {
           std::cerr << "Error: " << e << std::endl;
           seastar::engine().exit(1);

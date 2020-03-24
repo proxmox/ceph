@@ -27,6 +27,7 @@
 #define dout_subsys ceph_subsys_mon
 #undef dout_prefix
 #define dout_prefix _prefix(_dout, mon, this)
+using namespace TOPNSPC::common;
 static ostream& _prefix(std::ostream *_dout, const Monitor *mon,
                         const ConfigKeyService *service) {
   return *_dout << "mon." << mon->name << "@" << mon->rank
@@ -195,13 +196,13 @@ bool ConfigKeyService::service_dispatch(MonOpRequestRef op)
   string prefix;
   cmdmap_t cmdmap;
 
-  if (!cmdmap_from_json(cmd->cmd, &cmdmap, ss)) {
+  if (!TOPNSPC::common::cmdmap_from_json(cmd->cmd, &cmdmap, ss)) {
     return false;
   }
 
-  cmd_getval(g_ceph_context, cmdmap, "prefix", prefix);
+  cmd_getval(cmdmap, "prefix", prefix);
   string key;
-  cmd_getval(g_ceph_context, cmdmap, "key", key);
+  cmd_getval(cmdmap, "key", key);
 
   if (prefix == "config-key get") {
     ret = store_get(key, rdata);
@@ -222,7 +223,7 @@ bool ConfigKeyService::service_dispatch(MonOpRequestRef op)
 
     bufferlist data;
     string val;
-    if (cmd_getval(g_ceph_context, cmdmap, "val", val)) {
+    if (cmd_getval(cmdmap, "val", val)) {
       // they specified a value in the command instead of a file
       data.append(val);
     } else if (cmd->get_data_len() > 0) {
@@ -235,18 +236,6 @@ bool ConfigKeyService::service_dispatch(MonOpRequestRef op)
          << g_conf()->mon_config_key_max_entry_size << " bytes. "
          << "Use 'mon config key max entry size' to manually adjust";
       goto out;
-    }
-
-    std::string mgr_prefix = "mgr/";
-    if (key.size() >= mgr_prefix.size() &&
-        key.substr(0, mgr_prefix.size()) == mgr_prefix) {
-      // In <= mimic, we used config-key for mgr module configuration,
-      // and we bring values forward in an upgrade, but subsequent
-      // `set` operations will not be picked up.  Warn user about this.
-      ss << "WARNING: it looks like you might be trying to set a ceph-mgr "
-            "module configuration key.  Since Ceph 13.0.0 (Mimic), mgr module "
-            "configuration is done with `config set`, and new values "
-            "set using `config-key set` will be ignored.\n";
     }
 
     ss << "set " << key;
@@ -293,7 +282,7 @@ bool ConfigKeyService::service_dispatch(MonOpRequestRef op)
 
   } else if (prefix == "config-key dump") {
     string prefix;
-    cmd_getval(g_ceph_context, cmdmap, "key", prefix);
+    cmd_getval(cmdmap, "key", prefix);
     stringstream tmp_ss;
     store_dump(tmp_ss, prefix);
     rdata.append(tmp_ss);

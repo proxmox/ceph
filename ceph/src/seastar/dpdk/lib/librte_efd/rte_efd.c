@@ -1,34 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2016-2017 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2016-2017 Intel Corporation
  */
 #include <stdio.h>
 #include <string.h>
@@ -38,11 +9,11 @@
 #include <stdarg.h>
 #include <sys/queue.h>
 
+#include <rte_string_fns.h>
 #include <rte_log.h>
 #include <rte_eal_memconfig.h>
 #include <rte_errno.h>
 #include <rte_malloc.h>
-#include <rte_memzone.h>
 #include <rte_prefetch.h>
 #include <rte_branch_prediction.h>
 #include <rte_memcpy.h>
@@ -53,6 +24,8 @@
 #include "rte_efd.h"
 #if defined(RTE_ARCH_X86)
 #include "rte_efd_x86.h"
+#elif defined(RTE_ARCH_ARM64)
+#include "rte_efd_arm64.h"
 #endif
 
 #define EFD_KEY(key_idx, table) (table->keys + ((key_idx) * table->key_len))
@@ -103,6 +76,7 @@ allocated memory
 enum efd_lookup_internal_function {
 	EFD_LOOKUP_SCALAR = 0,
 	EFD_LOOKUP_AVX2,
+	EFD_LOOKUP_NEON,
 	EFD_LOOKUP_NUM
 };
 
@@ -585,7 +559,7 @@ rte_efd_create(const char *name, uint32_t max_num_rules, uint32_t key_len,
 	}
 
 	/* Create a new EFD table management structure */
-	table = (struct rte_efd_table *) rte_zmalloc_socket(NULL,
+	table = rte_zmalloc_socket(NULL,
 			sizeof(struct rte_efd_table),
 			RTE_CACHE_LINE_SIZE,
 			offline_cpu_socket);
@@ -607,7 +581,7 @@ rte_efd_create(const char *name, uint32_t max_num_rules, uint32_t key_len,
 	table->key_len = key_len;
 
 	/* key_array */
-	key_array = (uint8_t *) rte_zmalloc_socket(NULL,
+	key_array = rte_zmalloc_socket(NULL,
 			table->max_num_rules * table->key_len,
 			RTE_CACHE_LINE_SIZE,
 			offline_cpu_socket);
@@ -618,7 +592,7 @@ rte_efd_create(const char *name, uint32_t max_num_rules, uint32_t key_len,
 		goto error_unlock_exit;
 	}
 	table->keys = key_array;
-	snprintf(table->name, sizeof(table->name), "%s", name);
+	strlcpy(table->name, name, sizeof(table->name));
 
 	RTE_LOG(DEBUG, EFD, "Creating an EFD table with %u chunks,"
 			" which potentially supports %u entries\n",
@@ -643,7 +617,7 @@ rte_efd_create(const char *name, uint32_t max_num_rules, uint32_t key_len,
 			 * as a continuous block
 			 */
 			table->chunks[socket_id] =
-				(struct efd_online_chunk *) rte_zmalloc_socket(
+				rte_zmalloc_socket(
 				NULL,
 				online_table_size,
 				RTE_CACHE_LINE_SIZE,
@@ -674,6 +648,16 @@ rte_efd_create(const char *name, uint32_t max_num_rules, uint32_t key_len,
 		table->lookup_fn = EFD_LOOKUP_AVX2;
 	else
 #endif
+#if defined(RTE_ARCH_ARM64)
+	/*
+	 * For less than or equal to 16 bits, scalar function performs better
+	 * than vectorised version
+	 */
+	if (RTE_EFD_VALUE_NUM_BITS > 16 &&
+	    rte_cpu_get_flag_enabled(RTE_CPUFLAG_NEON))
+		table->lookup_fn = EFD_LOOKUP_NEON;
+	else
+#endif
 		table->lookup_fn = EFD_LOOKUP_SCALAR;
 
 	/*
@@ -683,7 +667,7 @@ rte_efd_create(const char *name, uint32_t max_num_rules, uint32_t key_len,
 	 */
 	offline_table_size = num_chunks * sizeof(struct efd_offline_chunk_rules);
 	table->offline_chunks =
-			(struct efd_offline_chunk_rules *) rte_zmalloc_socket(NULL,
+			rte_zmalloc_socket(NULL,
 			offline_table_size,
 			RTE_CACHE_LINE_SIZE,
 			offline_cpu_socket);
@@ -709,7 +693,8 @@ rte_efd_create(const char *name, uint32_t max_num_rules, uint32_t key_len,
 			offline_cpu_socket, 0);
 	if (r == NULL) {
 		RTE_LOG(ERR, EFD, "memory allocation failed\n");
-		goto error_unlock_exit;
+		rte_efd_free(table);
+		return NULL;
 	}
 
 	/* Populate free slots ring. Entry zero is reserved for key misses. */
@@ -756,6 +741,8 @@ void
 rte_efd_free(struct rte_efd_table *table)
 {
 	uint8_t socket_id;
+	struct rte_efd_list *efd_list;
+	struct rte_tailq_entry *te, *temp;
 
 	if (table == NULL)
 		return;
@@ -763,6 +750,18 @@ rte_efd_free(struct rte_efd_table *table)
 	for (socket_id = 0; socket_id < RTE_MAX_NUMA_NODES; socket_id++)
 		rte_free(table->chunks[socket_id]);
 
+	efd_list = RTE_TAILQ_CAST(rte_efd_tailq.head, rte_efd_list);
+	rte_rwlock_write_lock(RTE_EAL_TAILQ_RWLOCK);
+
+	TAILQ_FOREACH_SAFE(te, efd_list, next, temp) {
+		if (te->data == (void *) table) {
+			TAILQ_REMOVE(efd_list, te, next);
+			rte_free(te);
+			break;
+		}
+	}
+
+	rte_rwlock_write_unlock(RTE_EAL_TAILQ_RWLOCK);
 	rte_ring_free(table->free_slots);
 	rte_free(table->offline_chunks);
 	rte_free(table->keys);
@@ -940,7 +939,7 @@ revert_groups(struct efd_offline_group_rules *previous_group,
  *     This operation was still successful, and entry contains a valid update
  *   RTE_EFD_UPDATE_FAILED
  *     Either the EFD failed to find a suitable perfect hash or the group was full
- *     This is a fatal error, and the table is now in an indeterminite state
+ *     This is a fatal error, and the table is now in an indeterminate state
  *   RTE_EFD_UPDATE_NO_CHANGE
  *     Operation resulted in no change to the table (same value already exists)
  *   0
@@ -1265,12 +1264,21 @@ efd_lookup_internal(const struct efd_online_group_entry * const group,
 
 	switch (lookup_fn) {
 
-#if defined(RTE_ARCH_X86)
+#if defined(RTE_ARCH_X86) && defined(CC_SUPPORT_AVX2)
 	case EFD_LOOKUP_AVX2:
 		return efd_lookup_internal_avx2(group->hash_idx,
 					group->lookup_table,
 					hash_val_a,
 					hash_val_b);
+		break;
+#endif
+#if defined(RTE_ARCH_ARM64)
+	case EFD_LOOKUP_NEON:
+		return efd_lookup_internal_neon(group->hash_idx,
+					group->lookup_table,
+					hash_val_a,
+					hash_val_b);
+		break;
 #endif
 	case EFD_LOOKUP_SCALAR:
 	/* Fall-through */

@@ -1,34 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2014 Intel Corporation
  */
 
 #include <stdint.h>
@@ -56,7 +27,6 @@
 #include <rte_memcpy.h>
 #include <rte_mbuf.h>
 #include <rte_interrupts.h>
-#include <rte_pci.h>
 #include <rte_ether.h>
 #include <rte_ethdev.h>
 #include <rte_malloc.h>
@@ -67,12 +37,10 @@
 #include "args.h"
 #include "init.h"
 
-#define MBUFS_PER_CLIENT 1536
-#define MBUFS_PER_PORT 1536
 #define MBUF_CACHE_SIZE 512
 
-#define RTE_MP_RX_DESC_DEFAULT 512
-#define RTE_MP_TX_DESC_DEFAULT 512
+#define RTE_MP_RX_DESC_DEFAULT 1024
+#define RTE_MP_TX_DESC_DEFAULT 1024
 #define CLIENT_QUEUE_RINGSIZE 128
 
 #define NO_FLAGS 0
@@ -93,8 +61,15 @@ struct port_info *ports;
 static int
 init_mbuf_pools(void)
 {
-	const unsigned num_mbufs = (num_clients * MBUFS_PER_CLIENT) \
-			+ (ports->num_ports * MBUFS_PER_PORT);
+	const unsigned int num_mbufs_server =
+		RTE_MP_RX_DESC_DEFAULT * ports->num_ports;
+	const unsigned int num_mbufs_client =
+		num_clients * (CLIENT_QUEUE_RINGSIZE +
+			       RTE_MP_TX_DESC_DEFAULT * ports->num_ports);
+	const unsigned int num_mbufs_mp_cache =
+		(num_clients + 1) * MBUF_CACHE_SIZE;
+	const unsigned int num_mbufs =
+		num_mbufs_server + num_mbufs_client + num_mbufs_mp_cache;
 
 	/* don't pass single-producer/single-consumer flags to mbuf create as it
 	 * seems faster to use a cache instead */
@@ -114,7 +89,7 @@ init_mbuf_pools(void)
  * - start the port and report its status to stdout
  */
 static int
-init_port(uint8_t port_num)
+init_port(uint16_t port_num)
 {
 	/* for port configuration all features are off by default */
 	const struct rte_eth_conf port_conf = {
@@ -123,19 +98,24 @@ init_port(uint8_t port_num)
 		}
 	};
 	const uint16_t rx_rings = 1, tx_rings = num_clients;
-	const uint16_t rx_ring_size = RTE_MP_RX_DESC_DEFAULT;
-	const uint16_t tx_ring_size = RTE_MP_TX_DESC_DEFAULT;
+	uint16_t rx_ring_size = RTE_MP_RX_DESC_DEFAULT;
+	uint16_t tx_ring_size = RTE_MP_TX_DESC_DEFAULT;
 
 	uint16_t q;
 	int retval;
 
-	printf("Port %u init ... ", (unsigned)port_num);
+	printf("Port %u init ... ", port_num);
 	fflush(stdout);
 
 	/* Standard DPDK port initialisation - config port, then set up
 	 * rx and tx rings */
 	if ((retval = rte_eth_dev_configure(port_num, rx_rings, tx_rings,
 		&port_conf)) != 0)
+		return retval;
+
+	retval = rte_eth_dev_adjust_nb_rx_tx_desc(port_num, &rx_ring_size,
+			&tx_ring_size);
+	if (retval != 0)
 		return retval;
 
 	for (q = 0; q < rx_rings; q++) {
@@ -195,11 +175,12 @@ init_shm_rings(void)
 
 /* Check the link status of all ports in up to 9s, and print them finally */
 static void
-check_all_ports_link_status(uint8_t port_num, uint32_t port_mask)
+check_all_ports_link_status(uint16_t port_num, uint32_t port_mask)
 {
 #define CHECK_INTERVAL 100 /* 100ms */
 #define MAX_CHECK_TIME 90 /* 9s (90 * 100ms) in total */
-	uint8_t portid, count, all_ports_up, print_flag = 0;
+	uint16_t portid;
+	uint8_t count, all_ports_up, print_flag = 0;
 	struct rte_eth_link link;
 
 	printf("\nChecking link status");
@@ -257,7 +238,7 @@ init(int argc, char *argv[])
 {
 	int retval;
 	const struct rte_memzone *mz;
-	uint8_t i, total_ports;
+	uint16_t i, total_ports;
 
 	/* init EAL, parsing EAL args */
 	retval = rte_eal_init(argc, argv);
@@ -267,7 +248,7 @@ init(int argc, char *argv[])
 	argv += retval;
 
 	/* get total number of ports */
-	total_ports = rte_eth_dev_count();
+	total_ports = rte_eth_dev_count_total();
 
 	/* set up array for port data */
 	mz = rte_memzone_reserve(MZ_PORT_INFO, sizeof(*ports),

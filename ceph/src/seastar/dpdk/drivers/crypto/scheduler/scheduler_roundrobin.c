@@ -1,33 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2017 Intel Corporation. All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2017 Intel Corporation
  */
 
 #include <rte_cryptodev.h>
@@ -52,47 +24,12 @@ schedule_enqueue(void *qp, struct rte_crypto_op **ops, uint16_t nb_ops)
 	uint32_t slave_idx = rr_qp_ctx->last_enq_slave_idx;
 	struct scheduler_slave *slave = &rr_qp_ctx->slaves[slave_idx];
 	uint16_t i, processed_ops;
-	struct rte_cryptodev_sym_session *sessions[nb_ops];
-	struct scheduler_session *sess0, *sess1, *sess2, *sess3;
 
 	if (unlikely(nb_ops == 0))
 		return 0;
 
 	for (i = 0; i < nb_ops && i < 4; i++)
 		rte_prefetch0(ops[i]->sym->session);
-
-	for (i = 0; (i < (nb_ops - 8)) && (nb_ops > 8); i += 4) {
-		sess0 = (struct scheduler_session *)
-				ops[i]->sym->session->_private;
-		sess1 = (struct scheduler_session *)
-				ops[i+1]->sym->session->_private;
-		sess2 = (struct scheduler_session *)
-				ops[i+2]->sym->session->_private;
-		sess3 = (struct scheduler_session *)
-				ops[i+3]->sym->session->_private;
-
-		sessions[i] = ops[i]->sym->session;
-		sessions[i + 1] = ops[i + 1]->sym->session;
-		sessions[i + 2] = ops[i + 2]->sym->session;
-		sessions[i + 3] = ops[i + 3]->sym->session;
-
-		ops[i]->sym->session = sess0->sessions[slave_idx];
-		ops[i + 1]->sym->session = sess1->sessions[slave_idx];
-		ops[i + 2]->sym->session = sess2->sessions[slave_idx];
-		ops[i + 3]->sym->session = sess3->sessions[slave_idx];
-
-		rte_prefetch0(ops[i + 4]->sym->session);
-		rte_prefetch0(ops[i + 5]->sym->session);
-		rte_prefetch0(ops[i + 6]->sym->session);
-		rte_prefetch0(ops[i + 7]->sym->session);
-	}
-
-	for (; i < nb_ops; i++) {
-		sess0 = (struct scheduler_session *)
-				ops[i]->sym->session->_private;
-		sessions[i] = ops[i]->sym->session;
-		ops[i]->sym->session = sess0->sessions[slave_idx];
-	}
 
 	processed_ops = rte_cryptodev_enqueue_burst(slave->dev_id,
 			slave->qp_id, ops, nb_ops);
@@ -101,12 +38,6 @@ schedule_enqueue(void *qp, struct rte_crypto_op **ops, uint16_t nb_ops)
 
 	rr_qp_ctx->last_enq_slave_idx += 1;
 	rr_qp_ctx->last_enq_slave_idx %= rr_qp_ctx->nb_slaves;
-
-	/* recover session if enqueue is failed */
-	if (unlikely(processed_ops < nb_ops)) {
-		for (i = processed_ops; i < nb_ops; i++)
-			ops[i]->sym->session = sessions[i];
-	}
 
 	return processed_ops;
 }
@@ -244,7 +175,7 @@ scheduler_config_qp(struct rte_cryptodev *dev, uint16_t qp_id)
 	rr_qp_ctx = rte_zmalloc_socket(NULL, sizeof(*rr_qp_ctx), 0,
 			rte_socket_id());
 	if (!rr_qp_ctx) {
-		CS_LOG_ERR("failed allocate memory for private queue pair");
+		CR_SCHED_LOG(ERR, "failed allocate memory for private queue pair");
 		return -ENOMEM;
 	}
 
@@ -259,7 +190,7 @@ scheduler_create_private_ctx(__rte_unused struct rte_cryptodev *dev)
 	return 0;
 }
 
-struct rte_cryptodev_scheduler_ops scheduler_rr_ops = {
+static struct rte_cryptodev_scheduler_ops scheduler_rr_ops = {
 	slave_attach,
 	slave_detach,
 	scheduler_start,
@@ -270,7 +201,7 @@ struct rte_cryptodev_scheduler_ops scheduler_rr_ops = {
 	NULL	/* option_get */
 };
 
-struct rte_cryptodev_scheduler scheduler = {
+static struct rte_cryptodev_scheduler scheduler = {
 		.name = "roundrobin-scheduler",
 		.description = "scheduler which will round robin burst across "
 				"slave crypto devices",
@@ -278,4 +209,4 @@ struct rte_cryptodev_scheduler scheduler = {
 		.ops = &scheduler_rr_ops
 };
 
-struct rte_cryptodev_scheduler *roundrobin_scheduler = &scheduler;
+struct rte_cryptodev_scheduler *crypto_scheduler_roundrobin = &scheduler;

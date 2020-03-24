@@ -43,13 +43,17 @@ using librbd::util::create_rados_callback;
 template <typename I>
 ObjectCopyRequest<I>::ObjectCopyRequest(I *src_image_ctx,
                                         I *dst_image_ctx,
+                                        librados::snap_t src_snap_id_start,
+                                        librados::snap_t dst_snap_id_start,
                                         const SnapMap &snap_map,
                                         uint64_t dst_object_number,
                                         bool flatten, Context *on_finish)
   : m_src_image_ctx(src_image_ctx),
     m_dst_image_ctx(dst_image_ctx), m_cct(dst_image_ctx->cct),
-    m_snap_map(snap_map), m_dst_object_number(dst_object_number),
-    m_flatten(flatten), m_on_finish(on_finish) {
+    m_src_snap_id_start(src_snap_id_start),
+    m_dst_snap_id_start(dst_snap_id_start), m_snap_map(snap_map),
+    m_dst_object_number(dst_object_number), m_flatten(flatten),
+    m_on_finish(on_finish) {
   ceph_assert(src_image_ctx->data_ctx.is_valid());
   ceph_assert(dst_image_ctx->data_ctx.is_valid());
   ceph_assert(!m_snap_map.empty());
@@ -226,14 +230,12 @@ void ObjectCopyRequest<I>::handle_read_object(int r) {
 
 template <typename I>
 void ObjectCopyRequest<I>::send_read_from_parent() {
-  m_src_image_ctx->snap_lock.get_read();
-  m_src_image_ctx->parent_lock.get_read();
+  m_src_image_ctx->image_lock.lock_shared();
   io::Extents image_extents;
   compute_read_from_parent_ops(&image_extents);
-  m_src_image_ctx->snap_lock.put_read();
+  m_src_image_ctx->image_lock.unlock_shared();
 
   if (image_extents.empty()) {
-    m_src_image_ctx->parent_lock.put_read();
     handle_read_from_parent(0);
     return;
   }
@@ -254,7 +256,6 @@ void ObjectCopyRequest<I>::send_read_from_parent() {
                                 std::move(image_extents),
                                 io::ReadResult{&m_read_from_parent_data}, 0,
                                 ZTracer::Trace());
-  src_image_ctx->parent_lock.put_read();
 }
 
 template <typename I>
@@ -321,12 +322,15 @@ void ObjectCopyRequest<I>::send_write_object() {
     }
 
     // write snapshot context should be before actual snapshot
-    if (snap_map_it != m_snap_map.begin()) {
-      --snap_map_it;
-      ceph_assert(!snap_map_it->second.empty());
-      dst_snap_seq = snap_map_it->second.front();
-      dst_snap_ids = snap_map_it->second;
+    ceph_assert(!snap_map_it->second.empty());
+    auto dst_snap_ids_it = snap_map_it->second.begin();
+    ++dst_snap_ids_it;
+
+    dst_snap_ids = SnapIds{dst_snap_ids_it, snap_map_it->second.end()};
+    if (!dst_snap_ids.empty()) {
+      dst_snap_seq = dst_snap_ids.front();
     }
+    ceph_assert(dst_snap_seq != CEPH_NOSNAP);
   }
 
   ldout(m_cct, 20) << "dst_snap_seq=" << dst_snap_seq << ", "
@@ -385,7 +389,7 @@ void ObjectCopyRequest<I>::send_write_object() {
   int r;
   Context *finish_op_ctx;
   {
-    RWLock::RLocker owner_locker(m_dst_image_ctx->owner_lock);
+    std::shared_lock owner_locker{m_dst_image_ctx->owner_lock};
     finish_op_ctx = start_lock_op(m_dst_image_ctx->owner_lock, &r);
   }
   if (finish_op_ctx == nullptr) {
@@ -394,7 +398,7 @@ void ObjectCopyRequest<I>::send_write_object() {
     return;
   }
 
-  auto ctx = new FunctionContext([this, finish_op_ctx](int r) {
+  auto ctx = new LambdaContext([this, finish_op_ctx](int r) {
       handle_write_object(r);
       finish_op_ctx->complete(0);
     });
@@ -439,14 +443,14 @@ void ObjectCopyRequest<I>::send_update_object_map() {
     return;
   }
 
-  m_dst_image_ctx->owner_lock.get_read();
-  m_dst_image_ctx->snap_lock.get_read();
+  m_dst_image_ctx->owner_lock.lock_shared();
+  m_dst_image_ctx->image_lock.lock_shared();
   if (m_dst_image_ctx->object_map == nullptr) {
     // possible that exclusive lock was lost in background
     lderr(m_cct) << "object map is not initialized" << dendl;
 
-    m_dst_image_ctx->snap_lock.put_read();
-    m_dst_image_ctx->owner_lock.put_read();
+    m_dst_image_ctx->image_lock.unlock_shared();
+    m_dst_image_ctx->owner_lock.unlock_shared();
     finish(-EINVAL);
     return;
   }
@@ -465,27 +469,25 @@ void ObjectCopyRequest<I>::send_update_object_map() {
   auto finish_op_ctx = start_lock_op(m_dst_image_ctx->owner_lock, &r);
   if (finish_op_ctx == nullptr) {
     lderr(m_cct) << "lost exclusive lock" << dendl;
-    m_dst_image_ctx->snap_lock.put_read();
-    m_dst_image_ctx->owner_lock.put_read();
+    m_dst_image_ctx->image_lock.unlock_shared();
+    m_dst_image_ctx->owner_lock.unlock_shared();
     finish(r);
     return;
   }
 
-  auto ctx = new FunctionContext([this, finish_op_ctx](int r) {
+  auto ctx = new LambdaContext([this, finish_op_ctx](int r) {
       handle_update_object_map(r);
       finish_op_ctx->complete(0);
     });
 
   auto dst_image_ctx = m_dst_image_ctx;
-  dst_image_ctx->object_map_lock.get_write();
   bool sent = dst_image_ctx->object_map->template aio_update<
     Context, &Context::complete>(dst_snap_id, m_dst_object_number, object_state,
                                  {}, {}, false, ctx);
 
   // NOTE: state machine might complete before we reach here
-  dst_image_ctx->object_map_lock.put_write();
-  dst_image_ctx->snap_lock.put_read();
-  dst_image_ctx->owner_lock.put_read();
+  dst_image_ctx->image_lock.unlock_shared();
+  dst_image_ctx->owner_lock.unlock_shared();
   if (!sent) {
     ceph_assert(dst_snap_id == CEPH_NOSNAP);
     ctx->complete(0);
@@ -510,10 +512,11 @@ void ObjectCopyRequest<I>::handle_update_object_map(int r) {
 }
 
 template <typename I>
-Context *ObjectCopyRequest<I>::start_lock_op(RWLock &owner_lock, int* r) {
-  ceph_assert(m_dst_image_ctx->owner_lock.is_locked());
+Context *ObjectCopyRequest<I>::start_lock_op(ceph::shared_mutex &owner_lock,
+					     int* r) {
+  ceph_assert(ceph_mutex_is_locked(m_dst_image_ctx->owner_lock));
   if (m_dst_image_ctx->exclusive_lock == nullptr) {
-    return new FunctionContext([](int r) {});
+    return new LambdaContext([](int r) {});
   }
   return m_dst_image_ctx->exclusive_lock->start_op(r);
 }
@@ -580,15 +583,15 @@ void ObjectCopyRequest<I>::compute_read_ops() {
   m_read_snaps = {};
   m_zero_interval = {};
 
-  m_src_image_ctx->parent_lock.get_read();
+  m_src_image_ctx->image_lock.lock_shared();
   bool hide_parent = (m_src_image_ctx->parent != nullptr);
-  m_src_image_ctx->parent_lock.put_read();
+  m_src_image_ctx->image_lock.unlock_shared();
 
   librados::snap_t src_copy_point_snap_id = m_snap_map.rbegin()->first;
-  bool prev_exists = hide_parent;
+  bool prev_exists = (hide_parent || m_src_snap_id_start > 0);
   uint64_t prev_end_size = prev_exists ?
       m_src_image_ctx->layout.object_size : 0;
-  librados::snap_t start_src_snap_id = 0;
+  librados::snap_t start_src_snap_id = m_src_snap_id_start;
 
   for (auto &pair : m_snap_map) {
     ceph_assert(!pair.second.empty());
@@ -634,7 +637,7 @@ void ObjectCopyRequest<I>::compute_read_ops() {
       // clip diff to size of object (in case it was truncated)
       if (end_size < prev_end_size) {
         interval_set<uint64_t> trunc;
-        trunc.insert(end_size, prev_end_size);
+        trunc.insert(end_size, prev_end_size - end_size);
         trunc.intersection_of(diff);
         diff.subtract(trunc);
         ldout(m_cct, 20) << "clearing truncate diff: " << trunc << dendl;
@@ -719,8 +722,7 @@ void ObjectCopyRequest<I>::compute_read_ops() {
 template <typename I>
 void ObjectCopyRequest<I>::compute_read_from_parent_ops(
     io::Extents *parent_image_extents) {
-  assert(m_src_image_ctx->snap_lock.is_locked());
-  assert(m_src_image_ctx->parent_lock.is_locked());
+  assert(ceph_mutex_is_locked(m_src_image_ctx->image_lock));
 
   m_read_ops = {};
   m_zero_interval = {};
@@ -853,9 +855,9 @@ void ObjectCopyRequest<I>::compute_zero_ops() {
   bool fast_diff = m_dst_image_ctx->test_features(RBD_FEATURE_FAST_DIFF);
   uint64_t prev_end_size = 0;
 
-  m_src_image_ctx->parent_lock.get_read();
+  m_src_image_ctx->image_lock.lock_shared();
   bool hide_parent = (m_src_image_ctx->parent != nullptr);
-  m_src_image_ctx->parent_lock.put_read();
+  m_src_image_ctx->image_lock.unlock_shared();
 
   for (auto &it : m_dst_zero_interval) {
     auto src_snap_seq = it.first;
@@ -875,10 +877,10 @@ void ObjectCopyRequest<I>::compute_zero_ops() {
     }
 
     if (hide_parent) {
-      RWLock::RLocker snap_locker(m_dst_image_ctx->snap_lock);
-      RWLock::RLocker parent_locker(m_dst_image_ctx->parent_lock);
+      std::shared_lock image_locker{m_dst_image_ctx->image_lock};
       uint64_t parent_overlap = 0;
-      int r = m_dst_image_ctx->get_parent_overlap(dst_snap_seq, &parent_overlap);
+      int r = m_dst_image_ctx->get_parent_overlap(dst_snap_seq,
+                                                  &parent_overlap);
       if (r < 0) {
         ldout(m_cct, 5) << "failed getting parent overlap for snap_id: "
                         << dst_snap_seq << ": " << cpp_strerror(r) << dendl;
@@ -974,7 +976,7 @@ void ObjectCopyRequest<I>::finish(int r) {
 
 template <typename I>
 void ObjectCopyRequest<I>::compute_dst_object_may_exist() {
-  RWLock::RLocker snap_locker(m_dst_image_ctx->snap_lock);
+  std::shared_lock image_locker{m_dst_image_ctx->image_lock};
 
   auto snap_ids = m_dst_image_ctx->snaps;
   snap_ids.push_back(CEPH_NOSNAP);

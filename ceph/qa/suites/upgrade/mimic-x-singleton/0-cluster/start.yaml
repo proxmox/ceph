@@ -12,12 +12,14 @@ overrides:
       global:
         ms dump corrupt message level: 0
         ms bind msgr2: false
+        bluestore warn on legacy statfs: false
+        bluestore warn on no per pool omap: false
+        mon pg warn min per osd: 0
       mds:
         debug ms: 1
         debug mds: 20
 roles:
 - - mon.a
-  - mgr.x
   - mds.a
   - osd.0
   - osd.1
@@ -29,6 +31,7 @@ roles:
   - osd.6
   - osd.7
 - - mon.c
+  - mgr.x
   - mgr.y
   - osd.8
   - osd.9

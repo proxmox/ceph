@@ -113,7 +113,7 @@ Application stages
 Initialization
 ~~~~~~~~~~~~~~
 
-During this stage, EAL layer is initialised and application specific arguments are parsed. Furthermore, the data strcutures
+During this stage, EAL layer is initialised and application specific arguments are parsed. Furthermore, the data structures
 (i.e. linked lists) for application objects are initialized. In case of any initialization error, an error message
 is displayed and the application is terminated.
 
@@ -185,7 +185,7 @@ Examples
    +-----------------------+----------------------+----------------+------------------------------------+
    | IP routing            | LPM (IPv4)           | Forward        | 1. Mempool Create                  |
    |                       |                      |                | 2. Link create                     |
-   |                       | * Key = IP dest addr |                | 3. Pipeline creat                  |
+   |                       | * Key = IP dest addr |                | 3. Pipeline create                 |
    |                       | * Offset = 286       |                | 4. Pipeline port in/out            |
    |                       | * Table size = 4K    |                | 5. Pipeline table                  |
    |                       |                      |                | 6. Pipeline port in table          |
@@ -304,6 +304,15 @@ Kni
     [thread <thread_id>]
 
 
+Cryptodev
+~~~~~~~~~
+
+  Create cryptodev port ::
+
+   cryptodev <cryptodev_name>
+    dev <DPDK Cryptodev PMD name>
+    queue <n_queues> <queue_size>
+
 Action profile
 ~~~~~~~~~~~~~~
 
@@ -330,6 +339,8 @@ Action profile
    [ttl drop | fwd
        stats none | pkts]
    [stats pkts | bytes | both]
+   [sym_crypto cryptodev <cryptodev_name>
+       mempool_create <mempool_name> mempool_init <mempool_name>]
    [time]
 
 
@@ -471,6 +482,18 @@ Add rule to table for specific pipeline instance ::
      [ttl dec | keep]
      [stats]
      [time]
+     [sym_crypto
+        encrypt | decrypt
+        type
+        | cipher
+           cipher_algo <algo> cipher_key <key> cipher_iv <iv>
+        | cipher_auth
+           cipher_algo <algo> cipher_key <key> cipher_iv <iv>
+           auth_algo <algo> auth_key <key> digest_size <size>
+        | aead
+           aead_algo <algo> aead_key <key> aead_iv <iv> aead_aad <aad>
+           digest_size <size>
+        data_offset <data_offset>]
 
   where:
      <pa> ::= g | y | r | drop

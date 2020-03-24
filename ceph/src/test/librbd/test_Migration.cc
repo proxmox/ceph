@@ -11,12 +11,13 @@
 #include "librbd/api/Migration.h"
 #include "librbd/api/Mirror.h"
 #include "librbd/api/Namespace.h"
+#include "librbd/api/Snapshot.h"
 #include "librbd/image/AttachChildRequest.h"
 #include "librbd/image/AttachParentRequest.h"
 #include "librbd/internal.h"
 #include "librbd/io/ImageRequestWQ.h"
 #include "librbd/io/ReadResult.h"
-
+#include "common/Cond.h"
 #include <boost/scope_exit.hpp>
 
 void register_test_migration() {
@@ -70,8 +71,8 @@ struct TestMigration : public TestFixture {
     vector<librbd::snap_info_t> src_snaps, dst_snaps;
 
     EXPECT_EQ(m_ref_ictx->size, m_ictx->size);
-    EXPECT_EQ(0, librbd::snap_list(m_ref_ictx, src_snaps));
-    EXPECT_EQ(0, librbd::snap_list(m_ictx, dst_snaps));
+    EXPECT_EQ(0, librbd::api::Snapshot<>::list(m_ref_ictx, src_snaps));
+    EXPECT_EQ(0, librbd::api::Snapshot<>::list(m_ictx, dst_snaps));
     EXPECT_EQ(src_snaps.size(), dst_snaps.size());
     for (size_t i = 0; i <= src_snaps.size(); i++) {
       const char *src_snap_name = nullptr;
@@ -97,8 +98,8 @@ struct TestMigration : public TestFixture {
                      librbd::ImageCtx *dst_ictx) {
     uint64_t src_size, dst_size;
     {
-      RWLock::RLocker src_locker(src_ictx->snap_lock);
-      RWLock::RLocker dst_locker(dst_ictx->snap_lock);
+      std::shared_lock src_locker{src_ictx->image_lock};
+      std::shared_lock dst_locker{dst_ictx->image_lock};
       src_size = src_ictx->get_image_size(src_ictx->snap_id);
       dst_size = dst_ictx->get_image_size(dst_ictx->snap_id);
     }
@@ -109,10 +110,10 @@ struct TestMigration : public TestFixture {
 
     if (dst_ictx->test_features(RBD_FEATURE_LAYERING)) {
       bool flags_set;
-      RWLock::RLocker dst_locker(dst_ictx->snap_lock);
+      std::shared_lock dst_locker{dst_ictx->image_lock};
       EXPECT_EQ(0, dst_ictx->test_flags(dst_ictx->snap_id,
                                         RBD_FLAG_OBJECT_MAP_INVALID,
-                                        dst_ictx->snap_lock, &flags_set));
+                                        dst_ictx->image_lock, &flags_set));
       EXPECT_FALSE(flags_set);
     }
 
@@ -141,8 +142,8 @@ struct TestMigration : public TestFixture {
                   << std::endl;
         char *c = getenv("TEST_RBD_MIGRATION_VERBOSE");
         if (c != NULL && *c != '\0') {
-          std::cout << "src block: " << std::endl; src_bl.hexdump(std::cout);
-          std::cout << "dst block: " << std::endl; dst_bl.hexdump(std::cout);
+          std::cout << "src block: " << src_ictx->id << ": " << std::endl; src_bl.hexdump(std::cout);
+          std::cout << "dst block: " << dst_ictx->id << ": " << std::endl; dst_bl.hexdump(std::cout);
         }
       }
       EXPECT_TRUE(src_bl.contents_equal(dst_bl));
@@ -635,7 +636,8 @@ TEST_F(TestMigration, MirroringSamePool)
 
   ASSERT_EQ(0, librbd::api::Mirror<>::mode_set(m_ioctx, RBD_MIRROR_MODE_IMAGE));
 
-  ASSERT_EQ(0, librbd::api::Mirror<>::image_enable(m_ictx, false));
+  ASSERT_EQ(0, librbd::api::Mirror<>::image_enable(
+              m_ictx, RBD_MIRROR_IMAGE_MODE_JOURNAL, false));
   librbd::mirror_image_info_t info;
   ASSERT_EQ(0, librbd::api::Mirror<>::image_get_info(m_ictx, &info));
   ASSERT_EQ(RBD_MIRROR_IMAGE_ENABLED, info.state);
@@ -652,7 +654,8 @@ TEST_F(TestMigration, MirroringAbort)
 
   ASSERT_EQ(0, librbd::api::Mirror<>::mode_set(m_ioctx, RBD_MIRROR_MODE_IMAGE));
 
-  ASSERT_EQ(0, librbd::api::Mirror<>::image_enable(m_ictx, false));
+  ASSERT_EQ(0, librbd::api::Mirror<>::image_enable(
+              m_ictx, RBD_MIRROR_IMAGE_MODE_JOURNAL, false));
   librbd::mirror_image_info_t info;
   ASSERT_EQ(0, librbd::api::Mirror<>::image_get_info(m_ictx, &info));
   ASSERT_EQ(RBD_MIRROR_IMAGE_ENABLED, info.state);
@@ -674,7 +677,8 @@ TEST_F(TestMigration, MirroringOtherPoolDisabled)
 
   ASSERT_EQ(0, librbd::api::Mirror<>::mode_set(m_ioctx, RBD_MIRROR_MODE_IMAGE));
 
-  ASSERT_EQ(0, librbd::api::Mirror<>::image_enable(m_ictx, false));
+  ASSERT_EQ(0, librbd::api::Mirror<>::image_enable(
+              m_ictx, RBD_MIRROR_IMAGE_MODE_JOURNAL, false));
   librbd::mirror_image_info_t info;
   ASSERT_EQ(0, librbd::api::Mirror<>::image_get_info(m_ictx, &info));
   ASSERT_EQ(RBD_MIRROR_IMAGE_ENABLED, info.state);
@@ -693,7 +697,8 @@ TEST_F(TestMigration, MirroringOtherPoolEnabled)
   ASSERT_EQ(0, librbd::api::Mirror<>::mode_set(_other_pool_ioctx,
                                                RBD_MIRROR_MODE_IMAGE));
 
-  ASSERT_EQ(0, librbd::api::Mirror<>::image_enable(m_ictx, false));
+  ASSERT_EQ(0, librbd::api::Mirror<>::image_enable(
+              m_ictx, RBD_MIRROR_IMAGE_MODE_JOURNAL, false));
   librbd::mirror_image_info_t info;
   ASSERT_EQ(0, librbd::api::Mirror<>::image_get_info(m_ictx, &info));
   ASSERT_EQ(RBD_MIRROR_IMAGE_ENABLED, info.state);

@@ -19,7 +19,7 @@ class TestPluginDebug(ControllerTestCase, CLICommandTestMixin):
         self._get('/api/unexisting_controller')
         self.assertStatus(404)
 
-        data = self.jsonBody()
+        data = self.json_body()
         self.assertGreater(len(data), 0)
         self.assertNotIn('traceback', data)
         self.assertNotIn('version', data)
@@ -31,7 +31,7 @@ class TestPluginDebug(ControllerTestCase, CLICommandTestMixin):
         self._get('/api/unexisting_controller')
         self.assertStatus(404)
 
-        data = self.jsonBody()
+        data = self.json_body()
         self.assertGreater(len(data), 0)
         self.assertIn('traceback', data)
         self.assertIn('version', data)

@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 set -e
-BASE_DIR=$(readlink -f $(dirname $0))
-[[ -z "$TEST_DIR" ]] && TEST_DIR="$(cd $BASE_DIR/../../../../ && pwd)"
 
-. $BASE_DIR/common.sh
+testdir=$(readlink -f $(dirname $0))
+rootdir=$(readlink -f $testdir/../../..)
+source $rootdir/test/common/autotest_common.sh
+source $rootdir/test/vhost/common.sh
+source $rootdir/test/vhost/hotplug/common.sh
 
 function prepare_fio_cmd_tc1() {
     print_test_fio_header
@@ -94,7 +96,6 @@ function cleanup_after_tests() {
     $rpc_py remove_vhost_scsi_target naa.Nvme0n1p0.0 1
     $rpc_py remove_vhost_scsi_target naa.Nvme0n1p1.0 0
     $rpc_py remove_vhost_scsi_target naa.Nvme0n1p2.1 0
-    $rpc_py delete_nvme_controller Nvme0
 }
 
 hotattach_tc1

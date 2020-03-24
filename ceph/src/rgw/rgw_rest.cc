@@ -1,5 +1,5 @@
 // -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// vim: ts=8 sw=2 smarttab ft=cpp
 
 
 #include <errno.h>
@@ -176,7 +176,7 @@ string uppercase_underscore_http_attr(const string& orig)
 static set<string> hostnames_set;
 static set<string> hostnames_s3website_set;
 
-void rgw_rest_init(CephContext *cct, RGWRados *store, const RGWZoneGroup& zone_group)
+void rgw_rest_init(CephContext *cct, const RGWZoneGroup& zone_group)
 {
   for (const auto& rgw2http : base_rgw_to_http_attrs)  {
     rgw_to_http_attrs[rgw2http.rgw_attr] = rgw2http.http_attr;
@@ -567,7 +567,7 @@ void end_header(struct req_state* s, RGWOp* op, const char *content_type,
   dump_trans_id(s);
 
   if ((!s->is_err()) &&
-      (s->bucket_info.owner != s->user->user_id) &&
+      (s->bucket_info.owner != s->user->get_id()) &&
       (s->bucket_info.requester_pays)) {
     dump_header(s, "x-amz-request-charged", "requester");
   }
@@ -660,13 +660,13 @@ void abort_early(struct req_state *s, RGWOp* op, int err_no,
   if (op != NULL) {
     int new_err_no;
     new_err_no = op->error_handler(err_no, &error_content);
-    ldout(s->cct, 20) << "op->ERRORHANDLER: err_no=" << err_no
+    ldout(s->cct, 1) << "op->ERRORHANDLER: err_no=" << err_no
 		      << " new_err_no=" << new_err_no << dendl;
     err_no = new_err_no;
   } else if (handler != NULL) {
     int new_err_no;
     new_err_no = handler->error_handler(err_no, &error_content);
-    ldout(s->cct, 20) << "handler->ERRORHANDLER: err_no=" << err_no
+    ldout(s->cct, 1) << "handler->ERRORHANDLER: err_no=" << err_no
 		      << " new_err_no=" << new_err_no << dendl;
     err_no = new_err_no;
   }
@@ -1552,8 +1552,8 @@ int RGWCompleteMultipart_ObjStore::get_params()
     return op_ret;
   }
 
-#define COMPLETE_MULTIPART_MAX_LEN (1024 * 1024) /* api defines max 10,000 parts, this should be enough */
-  std::tie(op_ret, data) = rgw_rest_read_all_input(s, COMPLETE_MULTIPART_MAX_LEN);
+  const auto max_size = s->cct->_conf->rgw_max_put_param_size;
+  std::tie(op_ret, data) = rgw_rest_read_all_input(s, max_size);
   if (op_ret < 0)
     return op_ret;
 
@@ -1599,6 +1599,16 @@ int RGWListBucketMultiparts_ObjStore::get_params()
     return op_ret;
   }
 
+  if (auto encoding_type = s->info.args.get_optional("encoding-type");
+      encoding_type != boost::none) {
+    if (strcasecmp(encoding_type->c_str(), "url") != 0) {
+      op_ret = -EINVAL;
+      s->err.message="Invalid Encoding Method specified in Request";
+      return op_ret;
+    }
+    encode_url = true;
+  }
+
   string key_marker = s->info.args.get("key-marker");
   string upload_id_marker = s->info.args.get("upload-id-marker");
   if (!key_marker.empty())
@@ -1636,10 +1646,10 @@ void RGWRESTOp::send_response()
 
 int RGWRESTOp::verify_permission()
 {
-  return check_caps(s->user->caps);
+  return check_caps(s->user->get_info().caps);
 }
 
-RGWOp* RGWHandler_REST::get_op(RGWRados* store)
+RGWOp* RGWHandler_REST::get_op(void)
 {
   RGWOp *op;
   switch (s->op) {
@@ -1762,7 +1772,6 @@ int RGWHandler_REST::reallocate_formatter(struct req_state *s, int type)
 
   return 0;
 }
-
 // This function enforces Amazon's spec for bucket names.
 // (The requirements, not the recommendations.)
 int RGWHandler_REST::validate_bucket_name(const string& bucket)
@@ -1837,16 +1846,16 @@ int RGWHandler_REST::init_permissions(RGWOp* op)
 {
   if (op->get_type() == RGW_OP_CREATE_BUCKET) {
     // We don't need user policies in case of STS token returned by AssumeRole, hence the check for user type
-    if (! s->user->user_id.empty() && s->auth.identity->get_identity_type() != TYPE_ROLE) {
+    if (! s->user->get_id().empty() && s->auth.identity->get_identity_type() != TYPE_ROLE) {
       try {
         map<string, bufferlist> uattrs;
-        if (auto ret = rgw_get_user_attrs_by_uid(store, s->user->user_id, uattrs); ! ret) {
+        if (auto ret = store->ctl()->user->get_attrs_by_uid(s->user->get_id(), &uattrs, null_yield); ! ret) {
           if (s->iam_user_policies.empty()) {
-            s->iam_user_policies = get_iam_user_policy_from_attr(s->cct, store, uattrs, s->user->user_id.tenant);
+            s->iam_user_policies = get_iam_user_policy_from_attr(s->cct, store, uattrs, s->user->get_tenant());
           } else {
           // This scenario can happen when a STS token has a policy, then we need to append other user policies
           // to the existing ones. (e.g. token returned by GetSessionToken)
-          auto user_policies = get_iam_user_policy_from_attr(s->cct, store, uattrs, s->user->user_id.tenant);
+          auto user_policies = get_iam_user_policy_from_attr(s->cct, store, uattrs, s->user->get_tenant());
           s->iam_user_policies.insert(s->iam_user_policies.end(), user_policies.begin(), user_policies.end());
           }
         }
@@ -2033,9 +2042,17 @@ int RGWREST::preprocess(struct req_state *s, rgw::io::BasicClient* cio)
   bool s3website_enabled = api_priority_s3website >= 0;
 
   if (info.host.size()) {
-    ssize_t pos = info.host.find(':');
-    if (pos >= 0) {
-      info.host = info.host.substr(0, pos);
+    ssize_t pos;
+    if (info.host.find('[') == 0) {
+      pos = info.host.find(']');
+      if (pos >=1) {
+        info.host = info.host.substr(1, pos-1);
+      }
+    } else {
+      pos = info.host.find(':');
+      if (pos >= 0) {
+        info.host = info.host.substr(0, pos);
+      }
     }
     ldout(s->cct, 10) << "host=" << info.host << dendl;
     string domain;
@@ -2255,7 +2272,7 @@ int RGWREST::preprocess(struct req_state *s, rgw::io::BasicClient* cio)
 }
 
 RGWHandler_REST* RGWREST::get_handler(
-  RGWRados * const store,
+  rgw::sal::RGWRadosStore * const store,
   struct req_state* const s,
   const rgw::auth::StrategyRegistry& auth_registry,
   const std::string& frontend_prefix,

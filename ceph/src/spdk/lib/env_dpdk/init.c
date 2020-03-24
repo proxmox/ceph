@@ -36,6 +36,7 @@
 #include "env_internal.h"
 
 #include "spdk/version.h"
+#include "spdk/env_dpdk.h"
 
 #include <rte_config.h>
 #include <rte_eal.h>
@@ -47,8 +48,9 @@
 #define SPDK_ENV_DPDK_DEFAULT_MEM_CHANNEL	-1
 #define SPDK_ENV_DPDK_DEFAULT_CORE_MASK		"0x1"
 
-static char **eal_cmdline;
-static int eal_cmdline_argcount;
+static char **g_eal_cmdline;
+static int g_eal_cmdline_argcount;
+static bool g_external_init = true;
 
 static char *
 _sprintf_alloc(const char *format, ...)
@@ -161,6 +163,7 @@ spdk_push_arg(char *args[], int *argcount, char *arg)
 
 	tmp = realloc(args, sizeof(char *) * (*argcount + 1));
 	if (tmp == NULL) {
+		free(arg);
 		spdk_free_args(args, *argcount);
 		return NULL;
 	}
@@ -170,13 +173,6 @@ spdk_push_arg(char *args[], int *argcount, char *arg)
 
 	return tmp;
 }
-
-static void
-spdk_destruct_eal_cmdline(void)
-{
-	spdk_free_args(eal_cmdline, eal_cmdline_argcount);
-}
-
 
 static int
 spdk_build_eal_cmdline(const struct spdk_env_opts *opts)
@@ -267,11 +263,21 @@ spdk_build_eal_cmdline(const struct spdk_env_opts *opts)
 		}
 	}
 
+	/* use a specific hugetlbfs mount */
+	if (opts->hugedir) {
+		args = spdk_push_arg(args, &argcount, _sprintf_alloc("--huge-dir=%s", opts->hugedir));
+		if (args == NULL) {
+			return -1;
+		}
+	}
+
 #if RTE_VERSION >= RTE_VERSION_NUM(18, 05, 0, 0) && RTE_VERSION < RTE_VERSION_NUM(18, 5, 1, 0)
 	/* Dynamic memory management is buggy in DPDK 18.05.0. Don't use it. */
-	args = spdk_push_arg(args, &argcount, _sprintf_alloc("--legacy-mem"));
-	if (args == NULL) {
-		return -1;
+	if (!opts->env_context || strcmp(opts->env_context, "--legacy-mem") != 0) {
+		args = spdk_push_arg(args, &argcount, _sprintf_alloc("--legacy-mem"));
+		if (args == NULL) {
+			return -1;
+		}
 	}
 #endif
 
@@ -292,7 +298,65 @@ spdk_build_eal_cmdline(const struct spdk_env_opts *opts)
 		}
 	}
 
+	/* Lower default EAL loglevel to RTE_LOG_NOTICE - normal, but significant messages.
+	 * This can be overridden by specifying the same option in opts->env_context
+	 */
+	args = spdk_push_arg(args, &argcount, strdup("--log-level=lib.eal:6"));
+	if (args == NULL) {
+		return -1;
+	}
+
+	/* Lower default CRYPTO loglevel to RTE_LOG_ERR to avoid a ton of init msgs.
+	 * This can be overridden by specifying the same option in opts->env_context
+	 */
+	args = spdk_push_arg(args, &argcount, strdup("--log-level=lib.cryptodev:5"));
+	if (args == NULL) {
+		return -1;
+	}
+
+	/* `user1` log type is used by rte_vhost, which prints an INFO log for each received
+	 * vhost user message. We don't want that. The same log type is also used by a couple
+	 * of other DPDK libs, but none of which we make use right now. If necessary, this can
+	 * be overridden via opts->env_context.
+	 */
+	args = spdk_push_arg(args, &argcount, strdup("--log-level=user1:6"));
+	if (args == NULL) {
+		return -1;
+	}
+
+	if (opts->env_context) {
+		args = spdk_push_arg(args, &argcount, strdup(opts->env_context));
+		if (args == NULL) {
+			return -1;
+		}
+	}
+
 #ifdef __linux__
+	/* Set the base virtual address - it must be an address that is not in the
+	 * ASAN shadow region, otherwise ASAN-enabled builds will ignore the
+	 * mmap hint.
+	 *
+	 * Ref: https://github.com/google/sanitizers/wiki/AddressSanitizerAlgorithm
+	 */
+	args = spdk_push_arg(args, &argcount, _sprintf_alloc("--base-virtaddr=0x200000000000"));
+	if (args == NULL) {
+		return -1;
+	}
+
+	/* --match-allocation prevents DPDK from merging or splitting system memory allocations under the hood.
+	 * This is critical for RDMA when attempting to use an rte_mempool based buffer pool. If DPDK merges two
+	 * physically or IOVA contiguous memory regions, then when we go to allocate a buffer pool, it can split
+	 * the memory for a buffer over two allocations meaning the buffer will be split over a memory region.
+	 */
+#if RTE_VERSION >= RTE_VERSION_NUM(19, 02, 0, 0)
+	if (!opts->env_context || strcmp(opts->env_context, "--legacy-mem") != 0) {
+		args = spdk_push_arg(args, &argcount, _sprintf_alloc("%s", "--match-allocations"));
+		if (args == NULL) {
+			return -1;
+		}
+	}
+#endif
+
 	if (opts->shm_id < 0) {
 		args = spdk_push_arg(args, &argcount, _sprintf_alloc("--file-prefix=spdk_pid%d",
 				     getpid()));
@@ -306,17 +370,6 @@ spdk_build_eal_cmdline(const struct spdk_env_opts *opts)
 			return -1;
 		}
 
-		/* Set the base virtual address - it must be an address that is not in the
-		 * ASAN shadow region, otherwise ASAN-enabled builds will ignore the
-		 * mmap hint.
-		 *
-		 * Ref: https://github.com/google/sanitizers/wiki/AddressSanitizerAlgorithm
-		 */
-		args = spdk_push_arg(args, &argcount, _sprintf_alloc("--base-virtaddr=0x200000000000"));
-		if (args == NULL) {
-			return -1;
-		}
-
 		/* set the process type */
 		args = spdk_push_arg(args, &argcount, _sprintf_alloc("--proc-type=auto"));
 		if (args == NULL) {
@@ -325,20 +378,44 @@ spdk_build_eal_cmdline(const struct spdk_env_opts *opts)
 	}
 #endif
 
-	eal_cmdline = args;
-	eal_cmdline_argcount = argcount;
-	if (atexit(spdk_destruct_eal_cmdline) != 0) {
-		fprintf(stderr, "Failed to register cleanup handler\n");
-	}
-
+	g_eal_cmdline = args;
+	g_eal_cmdline_argcount = argcount;
 	return argcount;
 }
 
-int spdk_env_init(const struct spdk_env_opts *opts)
+int
+spdk_env_dpdk_post_init(void)
+{
+	spdk_pci_init();
+
+	if (spdk_mem_map_init() < 0) {
+		fprintf(stderr, "Failed to allocate mem_map\n");
+		return -1;
+	}
+	if (spdk_vtophys_init() < 0) {
+		fprintf(stderr, "Failed to initialize vtophys\n");
+		return -1;
+	}
+
+	return 0;
+}
+
+void
+spdk_env_dpdk_post_fini(void)
+{
+	spdk_pci_fini();
+
+	spdk_free_args(g_eal_cmdline, g_eal_cmdline_argcount);
+}
+
+int
+spdk_env_init(const struct spdk_env_opts *opts)
 {
 	char **dpdk_args = NULL;
 	int i, rc;
 	int orig_optind;
+
+	g_external_init = false;
 
 	rc = spdk_build_eal_cmdline(opts);
 	if (rc < 0) {
@@ -348,8 +425,8 @@ int spdk_env_init(const struct spdk_env_opts *opts)
 
 	printf("Starting %s / %s initialization...\n", SPDK_VERSION_STRING, rte_version());
 	printf("[ DPDK EAL parameters: ");
-	for (i = 0; i < eal_cmdline_argcount; i++) {
-		printf("%s ", eal_cmdline[i]);
+	for (i = 0; i < g_eal_cmdline_argcount; i++) {
+		printf("%s ", g_eal_cmdline[i]);
 	}
 	printf("]\n");
 
@@ -357,17 +434,17 @@ int spdk_env_init(const struct spdk_env_opts *opts)
 	 * before passing so we can still free the individual strings
 	 * correctly.
 	 */
-	dpdk_args = calloc(eal_cmdline_argcount, sizeof(char *));
+	dpdk_args = calloc(g_eal_cmdline_argcount, sizeof(char *));
 	if (dpdk_args == NULL) {
 		fprintf(stderr, "Failed to allocate dpdk_args\n");
 		return -1;
 	}
-	memcpy(dpdk_args, eal_cmdline, sizeof(char *) * eal_cmdline_argcount);
+	memcpy(dpdk_args, g_eal_cmdline, sizeof(char *) * g_eal_cmdline_argcount);
 
 	fflush(stdout);
 	orig_optind = optind;
 	optind = 1;
-	rc = rte_eal_init(eal_cmdline_argcount, dpdk_args);
+	rc = rte_eal_init(g_eal_cmdline_argcount, dpdk_args);
 	optind = orig_optind;
 
 	free(dpdk_args);
@@ -388,14 +465,17 @@ int spdk_env_init(const struct spdk_env_opts *opts)
 		spdk_env_unlink_shared_files();
 	}
 
-	if (spdk_mem_map_init() < 0) {
-		fprintf(stderr, "Failed to allocate mem_map\n");
-		return -1;
-	}
-	if (spdk_vtophys_init() < 0) {
-		fprintf(stderr, "Failed to initialize vtophys\n");
-		return -1;
-	}
+	return spdk_env_dpdk_post_init();
+}
 
-	return 0;
+void
+spdk_env_fini(void)
+{
+	spdk_env_dpdk_post_fini();
+}
+
+bool
+spdk_env_dpdk_external_init(void)
+{
+	return g_external_init;
 }

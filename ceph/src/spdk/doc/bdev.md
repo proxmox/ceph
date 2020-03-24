@@ -31,7 +31,7 @@ chapters is done by using JSON-RPC commands. SPDK provides a python-based
 command line tool for sending RPC commands located at `scripts/rpc.py`. User
 can list available commands by running this script with `-h` or `--help` flag.
 Additionally user can retrieve currently supported set of RPC commands
-directly from SPDK application by running `scripts/rpc.py get_rpc_methods`.
+directly from SPDK application by running `scripts/rpc.py rpc_get_methods`.
 Detailed help for each command can be displayed by adding `-h` flag as a
 command parameter.
 
@@ -81,13 +81,26 @@ specified.  When both rate limits are enabled, the first met limit will
 take effect.  The value 0 may be specified to disable the corresponding rate
 limit. Users can run this command with `-h` or `--help` for more information.
 
-## delete_bdev {#bdev_ug_delete_bdev}
+## Histograms {#rpc_bdev_histogram}
 
-To remove previously created bdev user can use `delete_bdev` RPC command.
-Bdev can be deleted at any time and this will be fully handled by any upper
-layers. As an argument user should provide bdev name. This RPC command
-should be used only for debugging purpose. To remove a particular bdev please
-use the delete command specific to its bdev module.
+The `enable_bdev_histogram` RPC command allows to enable or disable gathering
+latency data for specified bdev. Histogram can be downloaded by the user by
+calling `get_bdev_histogram` and parsed using scripts/histogram.py script.
+
+Example command
+
+`rpc.py enable_bdev_histogram Nvme0n1 --enable`
+
+The command will enable gathering data for histogram on Nvme0n1 device.
+
+`rpc.py get_bdev_histogram Nvme0n1 | histogram.py`
+
+The command will download gathered histogram data. The script will parse
+the data and show table containing IO count for latency ranges.
+
+`rpc.py enable_bdev_histogram Nvme0n1 --disable`
+
+The command will disable histogram on Nvme0n1 device.
 
 # Ceph RBD {#bdev_config_rbd}
 
@@ -235,6 +248,35 @@ To delete an aio bdev use the delete_aio_bdev command.
 
 `rpc.py delete_aio_bdev aio0`
 
+# OCF Virtual bdev {#bdev_config_cas}
+
+OCF virtual bdev module is based on [Open CAS Framework](https://github.com/Open-CAS/ocf) - a
+high performance block storage caching meta-library.
+To enable the module, configure SPDK using `--with-ocf` flag.
+OCF bdev can be used to enable caching for any underlying bdev.
+
+Below is an example command for creating OCF bdev:
+
+`rpc.py construct_ocf_bdev Cache1 wt Malloc0 Nvme0n1`
+
+This command will create new OCF bdev `Cache1` having bdev `Malloc0` as caching-device
+and `Nvme0n1` as core-device and initial cache mode `Write-Through`.
+`Malloc0` will be used as cache for `Nvme0n1`, so  data written to `Cache1` will be present
+on `Nvme0n1` eventually.
+By default, OCF will be configured with cache line size equal 4KiB
+and non-volatile metadata will be disabled.
+
+To remove `Cache1`:
+
+`rpc.py delete_ocf_bdev Cache1`
+
+During removal OCF-cache will be stopped and all cached data will be written to the core device.
+
+Note that OCF has a per-device RAM requirement
+of about 56000 + _cache device size_ * 58 / _cache line size_ (in bytes).
+To get more information on OCF
+please visit [OCF documentation](https://open-cas.github.io/).
+
 # Malloc bdev {#bdev_config_malloc}
 
 Malloc bdevs are ramdisks. Because of its nature they are volatile. They are created from hugepage memory given to SPDK
@@ -336,6 +378,26 @@ Example commands
 `rpc.py construct_lvol_bdev lvol1 25 -l lvs`
 
 `rpc.py construct_lvol_bdev lvol2 25 -u 330a6ab2-f468-11e7-983e-001e67edf35d`
+
+# RAID {#bdev_ug_raid}
+
+RAID virtual bdev module provides functionality to combine any SPDK bdevs into
+one RAID bdev. Currently SPDK supports only RAID 0. RAID functionality does not
+store on-disk metadata on the member disks, so user must reconstruct the RAID
+volume when restarting application. User may specify member disks to create RAID
+volume event if they do not exists yet - as the member disks are registered at
+a later time, the RAID module will claim them and will surface the RAID volume
+after all of the member disks are available. It is allowed to use disks of
+different sizes - the smallest disk size will be the amount of space used on
+each member disk.
+
+Example commands
+
+`rpc.py construct_raid_bdev -n Raid0 -z 64 -r 0 -b "lvol0 lvol1 lvol2 lvol3"`
+
+`rpc.py get_raid_bdevs`
+
+`rpc.py destroy_raid_bdev Raid0`
 
 # Passthru {#bdev_config_passthru}
 

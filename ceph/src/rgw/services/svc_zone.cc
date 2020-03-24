@@ -1,3 +1,6 @@
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
+// vim: ts=8 sw=2 smarttab ft=cpp
+
 #include "svc_zone.h"
 #include "svc_rados.h"
 #include "svc_sys_obj.h"
@@ -5,6 +8,7 @@
 
 #include "rgw/rgw_zone.h"
 #include "rgw/rgw_rest_conn.h"
+#include "rgw/rgw_bucket_sync.h"
 
 #include "common/errno.h"
 #include "include/random.h"
@@ -19,11 +23,13 @@ RGWSI_Zone::RGWSI_Zone(CephContext *cct) : RGWServiceInstance(cct)
 
 void RGWSI_Zone::init(RGWSI_SysObj *_sysobj_svc,
                       RGWSI_RADOS * _rados_svc,
-                      RGWSI_SyncModules * _sync_modules_svc)
+                      RGWSI_SyncModules * _sync_modules_svc,
+		      RGWSI_Bucket_Sync *_bucket_sync_svc)
 {
   sysobj_svc = _sysobj_svc;
   rados_svc = _rados_svc;
   sync_modules_svc = _sync_modules_svc;
+  bucket_sync_svc = _bucket_sync_svc;
 
   realm = new RGWRealm();
   zonegroup = new RGWZoneGroup();
@@ -39,6 +45,17 @@ RGWSI_Zone::~RGWSI_Zone()
   delete zone_public_config;
   delete zone_params;
   delete current_period;
+}
+
+std::shared_ptr<RGWBucketSyncPolicyHandler> RGWSI_Zone::get_sync_policy_handler(std::optional<rgw_zone_id> zone) const {
+  if (!zone || *zone == zone_id()) {
+    return sync_policy_handler;
+  }
+  auto iter = sync_policy_handlers.find(*zone);
+  if (iter == sync_policy_handlers.end()) {
+    return std::shared_ptr<RGWBucketSyncPolicyHandler>();
+  }
+  return iter->second;
 }
 
 bool RGWSI_Zone::zone_syncs_from(const RGWZone& target_zone, const RGWZone& source_zone) const
@@ -60,10 +77,7 @@ int RGWSI_Zone::do_start()
   if (ret < 0) {
     return ret;
   }
-  ret = sync_modules_svc->start();
-  if (ret < 0) {
-    return ret;
-  }
+
   ret = realm->init(cct, sysobj_svc);
   if (ret < 0 && ret != -ENOENT) {
     ldout(cct, 0) << "failed reading realm info: ret "<< ret << " " << cpp_strerror(-ret) << dendl;
@@ -128,6 +142,9 @@ int RGWSI_Zone::do_start()
     lderr(cct) << "failed reading zone info: ret "<< ret << " " << cpp_strerror(-ret) << dendl;
     return ret;
   }
+
+  cur_zone_id = rgw_zone_id(zone_params->get_id());
+
   auto zone_iter = zonegroup->zones.find(zone_params->get_id());
   if (zone_iter == zonegroup->zones.end()) {
     if (using_local) {
@@ -143,7 +160,7 @@ int RGWSI_Zone::do_start()
   }
   if (zone_iter != zonegroup->zones.end()) {
     *zone_public_config = zone_iter->second;
-    ldout(cct, 20) << "zone " << zone_params->get_name() << dendl;
+    ldout(cct, 20) << "zone " << zone_params->get_name() << " found"  << dendl;
   } else {
     lderr(cct) << "Cannot find zone id=" << zone_params->get_id() << " (name=" << zone_params->get_name() << ")" << dendl;
     return -EINVAL;
@@ -151,17 +168,45 @@ int RGWSI_Zone::do_start()
 
   zone_short_id = current_period->get_map().get_zone_short_id(zone_params->get_id());
 
+  for (auto ziter : zonegroup->zones) {
+    auto zone_handler = std::make_shared<RGWBucketSyncPolicyHandler>(this, sync_modules_svc, bucket_sync_svc, ziter.second.id);
+    ret = zone_handler->init(null_yield);
+    if (ret < 0) {
+      lderr(cct) << "ERROR: could not initialize zone policy handler for zone=" << ziter.second.name << dendl;
+      return ret;
+      }
+    sync_policy_handlers[ziter.second.id] = zone_handler;
+  }
+
+  sync_policy_handler = sync_policy_handlers[zone_id()]; /* we made sure earlier that zonegroup->zones has our zone */
+
+  set<rgw_zone_id> source_zones;
+  set<rgw_zone_id> target_zones;
+
+  sync_policy_handler->reflect(nullptr, nullptr,
+                               nullptr, nullptr,
+                               &source_zones,
+                               &target_zones,
+                               false); /* relaxed: also get all zones that we allow to sync to/from */
+
+  ret = sync_modules_svc->start();
+  if (ret < 0) {
+    return ret;
+  }
+
+  auto sync_modules = sync_modules_svc->get_manager();
   RGWSyncModuleRef sm;
-  if (!sync_modules_svc->get_manager()->get_module(zone_public_config->tier_type, &sm)) {
+  if (!sync_modules->get_module(zone_public_config->tier_type, &sm)) {
     lderr(cct) << "ERROR: tier type not found: " << zone_public_config->tier_type << dendl;
     return -EINVAL;
   }
 
   writeable_zone = sm->supports_writes();
+  exports_data = sm->supports_data_export();
 
   /* first build all zones index */
   for (auto ziter : zonegroup->zones) {
-    const string& id = ziter.first;
+    const rgw_zone_id& id = ziter.first;
     RGWZone& z = ziter.second;
     zone_id_by_name[z.name] = id;
     zone_by_id[id] = z;
@@ -170,9 +215,9 @@ int RGWSI_Zone::do_start()
   if (zone_by_id.find(zone_id()) == zone_by_id.end()) {
     ldout(cct, 0) << "WARNING: could not find zone config in zonegroup for local zone (" << zone_id() << "), will use defaults" << dendl;
   }
-  *zone_public_config = zone_by_id[zone_id()];
+
   for (const auto& ziter : zonegroup->zones) {
-    const string& id = ziter.first;
+    const rgw_zone_id& id = ziter.first;
     const RGWZone& z = ziter.second;
     if (id == zone_id()) {
       continue;
@@ -184,18 +229,24 @@ int RGWSI_Zone::do_start()
     ldout(cct, 20) << "generating connection object for zone " << z.name << " id " << z.id << dendl;
     RGWRESTConn *conn = new RGWRESTConn(cct, this, z.id, z.endpoints);
     zone_conn_map[id] = conn;
-    if (zone_syncs_from(*zone_public_config, z) ||
-        zone_syncs_from(z, *zone_public_config)) {
-      if (zone_syncs_from(*zone_public_config, z)) {
+
+    bool zone_is_source = source_zones.find(z.id) != source_zones.end();
+    bool zone_is_target = target_zones.find(z.id) != target_zones.end();
+
+    if (zone_is_source || zone_is_target) {
+      if (zone_is_source && sync_modules->supports_data_export(z.tier_type)) {
         data_sync_source_zones.push_back(&z);
       }
-      if (zone_syncs_from(z, *zone_public_config)) {
+      if (zone_is_target) {
         zone_data_notify_to_map[id] = conn;
       }
     } else {
       ldout(cct, 20) << "NOTICE: not syncing to/from zone " << z.name << " id " << z.id << dendl;
     }
   }
+
+  ldout(cct, 20) << "started zone id=" << zone_params->get_id() << " (name=" << zone_params->get_name() << 
+        ") with tier type = " << zone_public_config->tier_type << dendl;
 
   return 0;
 }
@@ -204,14 +255,13 @@ void RGWSI_Zone::shutdown()
 {
   delete rest_master_conn;
 
-  map<string, RGWRESTConn *>::iterator iter;
-  for (iter = zone_conn_map.begin(); iter != zone_conn_map.end(); ++iter) {
-    RGWRESTConn *conn = iter->second;
+  for (auto& item : zone_conn_map) {
+    auto conn = item.second;
     delete conn;
   }
 
-  for (iter = zonegroup_conn_map.begin(); iter != zonegroup_conn_map.end(); ++iter) {
-    RGWRESTConn *conn = iter->second;
+  for (auto& item : zonegroup_conn_map) {
+    auto conn = item.second;
     delete conn;
   }
 }
@@ -221,7 +271,7 @@ int RGWSI_Zone::list_regions(list<string>& regions)
   RGWZoneGroup zonegroup;
   RGWSI_SysObj::Pool syspool = sysobj_svc->get_pool(zonegroup.get_pool(cct));
 
-  return syspool.op().list_prefixed_objs(region_info_oid_prefix, &regions);
+  return syspool.list_prefixed_objs(region_info_oid_prefix, &regions);
 }
 
 int RGWSI_Zone::list_zonegroups(list<string>& zonegroups)
@@ -229,7 +279,7 @@ int RGWSI_Zone::list_zonegroups(list<string>& zonegroups)
   RGWZoneGroup zonegroup;
   RGWSI_SysObj::Pool syspool = sysobj_svc->get_pool(zonegroup.get_pool(cct));
 
-  return syspool.op().list_prefixed_objs(zonegroup_names_oid_prefix, &zonegroups);
+  return syspool.list_prefixed_objs(zonegroup_names_oid_prefix, &zonegroups);
 }
 
 int RGWSI_Zone::list_zones(list<string>& zones)
@@ -237,7 +287,7 @@ int RGWSI_Zone::list_zones(list<string>& zones)
   RGWZoneParams zoneparams;
   RGWSI_SysObj::Pool syspool = sysobj_svc->get_pool(zoneparams.get_pool(cct));
 
-  return syspool.op().list_prefixed_objs(zone_names_oid_prefix, &zones);
+  return syspool.list_prefixed_objs(zone_names_oid_prefix, &zones);
 }
 
 int RGWSI_Zone::list_realms(list<string>& realms)
@@ -245,7 +295,7 @@ int RGWSI_Zone::list_realms(list<string>& realms)
   RGWRealm realm(cct, sysobj_svc);
   RGWSI_SysObj::Pool syspool = sysobj_svc->get_pool(realm.get_pool(cct));
 
-  return syspool.op().list_prefixed_objs(realm_names_oid_prefix, &realms);
+  return syspool.list_prefixed_objs(realm_names_oid_prefix, &realms);
 }
 
 int RGWSI_Zone::list_periods(list<string>& periods)
@@ -253,7 +303,7 @@ int RGWSI_Zone::list_periods(list<string>& periods)
   RGWPeriod period;
   list<string> raw_periods;
   RGWSI_SysObj::Pool syspool = sysobj_svc->get_pool(period.get_pool(cct));
-  int ret = syspool.op().list_prefixed_objs(period.get_info_oid_prefix(), &raw_periods);
+  int ret = syspool.list_prefixed_objs(period.get_info_oid_prefix(), &raw_periods);
   if (ret < 0) {
     return ret;
   }
@@ -310,7 +360,7 @@ int RGWSI_Zone::replace_region_with_zonegroup()
   RGWSysObjectCtx obj_ctx = sysobj_svc->init_obj_ctx();
   RGWSysObj sysobj = sysobj_svc->get_obj(obj_ctx, rgw_raw_obj(pool, oid));
 
-  int ret = sysobj.rop().read(&bl);
+  int ret = sysobj.rop().read(&bl, null_yield);
   if (ret < 0 && ret !=  -ENOENT) {
     ldout(cct, 0) << __func__ << " failed to read converted: ret "<< ret << " " << cpp_strerror(-ret)
 		  << dendl;
@@ -359,7 +409,8 @@ int RGWSI_Zone::replace_region_with_zonegroup()
     return 0;
   }
 
-  string master_region, master_zone;
+  string master_region;
+  rgw_zone_id master_zone;
   for (list<string>::iterator iter = regions.begin(); iter != regions.end(); ++iter) {
     if (*iter != default_zonegroup_name){
       RGWZoneGroup region(*iter);
@@ -379,7 +430,7 @@ int RGWSI_Zone::replace_region_with_zonegroup()
      The realm name will be the region and zone concatenated
      realm id will be mds of its name */
   if (realm->get_id().empty() && !master_region.empty() && !master_zone.empty()) {
-    string new_realm_name = master_region + "." + master_zone;
+    string new_realm_name = master_region + "." + master_zone.id;
     unsigned char md5[CEPH_CRYPTO_MD5_DIGESTSIZE];
     char md5_str[CEPH_CRYPTO_MD5_DIGESTSIZE * 2 + 1];
     MD5 hash;
@@ -461,11 +512,11 @@ int RGWSI_Zone::replace_region_with_zonegroup()
         return ret;
       }
     }
-    for (map<string, RGWZone>::const_iterator iter = zonegroup.zones.begin(); iter != zonegroup.zones.end();
+    for (auto iter = zonegroup.zones.begin(); iter != zonegroup.zones.end();
          ++iter) {
       ldout(cct, 0) << __func__ << " Converting zone" << iter->first << dendl;
-      RGWZoneParams zoneparams(iter->first, iter->first);
-      zoneparams.set_id(iter->first);
+      RGWZoneParams zoneparams(iter->first, iter->second.name);
+      zoneparams.set_id(iter->first.id);
       zoneparams.realm_id = realm->get_id();
       ret = zoneparams.init(cct, sysobj_svc);
       if (ret < 0 && ret != -ENOENT) {
@@ -533,7 +584,7 @@ int RGWSI_Zone::replace_region_with_zonegroup()
   /* mark as converted */
   ret = sysobj.wop()
               .set_exclusive(true)
-              .write(bl);
+              .write(bl, null_yield);
   if (ret < 0 ) {
     ldout(cct, 0) << __func__ << " failed to mark cluster as converted: ret "<< ret << " " << cpp_strerror(-ret)
 		  << dendl;
@@ -727,7 +778,7 @@ int RGWSI_Zone::convert_regionmap()
   RGWSysObjectCtx obj_ctx = sysobj_svc->init_obj_ctx();
   RGWSysObj sysobj = sysobj_svc->get_obj(obj_ctx, rgw_raw_obj(pool, oid));
 
-  int ret = sysobj.rop().read(&bl);
+  int ret = sysobj.rop().read(&bl, null_yield);
   if (ret < 0 && ret != -ENOENT) {
     return ret;
   } else if (ret == -ENOENT) {
@@ -765,7 +816,7 @@ int RGWSI_Zone::convert_regionmap()
   current_period->set_bucket_quota(zonegroupmap.bucket_quota);
 
   // remove the region_map so we don't try to convert again
-  ret = sysobj.wop().remove();
+  ret = sysobj.wop().remove(null_yield);
   if (ret < 0) {
     ldout(cct, 0) << "Error could not remove " << sysobj.get_obj()
         << " after upgrading to zonegroup map: " << cpp_strerror(ret) << dendl;
@@ -811,7 +862,7 @@ const RGWPeriod& RGWSI_Zone::get_current_period() const
   return *current_period;
 }
 
-const string& RGWSI_Zone::get_current_period_id()
+const string& RGWSI_Zone::get_current_period_id() const
 {
   return current_period->get_id();
 }
@@ -838,16 +889,12 @@ uint32_t RGWSI_Zone::get_zone_short_id() const
   return zone_short_id;
 }
 
-const string& RGWSI_Zone::zone_name()
+const string& RGWSI_Zone::zone_name() const
 {
   return get_zone_params().get_name();
 }
-const string& RGWSI_Zone::zone_id()
-{
-  return get_zone_params().get_id();
-}
 
-bool RGWSI_Zone::find_zone_by_id(const string& id, RGWZone **zone)
+bool RGWSI_Zone::find_zone(const rgw_zone_id& id, RGWZone **zone)
 {
   auto iter = zone_by_id.find(id);
   if (iter == zone_by_id.end()) {
@@ -857,8 +904,8 @@ bool RGWSI_Zone::find_zone_by_id(const string& id, RGWZone **zone)
   return true;
 }
 
-RGWRESTConn *RGWSI_Zone::get_zone_conn_by_id(const string& id) {
-  auto citer = zone_conn_map.find(id);
+RGWRESTConn *RGWSI_Zone::get_zone_conn(const rgw_zone_id& zone_id) {
+  auto citer = zone_conn_map.find(zone_id.id);
   if (citer == zone_conn_map.end()) {
     return NULL;
   }
@@ -872,16 +919,23 @@ RGWRESTConn *RGWSI_Zone::get_zone_conn_by_name(const string& name) {
     return NULL;
   }
 
-  return get_zone_conn_by_id(i->second);
+  return get_zone_conn(i->second);
 }
 
-bool RGWSI_Zone::find_zone_id_by_name(const string& name, string *id) {
+bool RGWSI_Zone::find_zone_id_by_name(const string& name, rgw_zone_id *id) {
   auto i = zone_id_by_name.find(name);
   if (i == zone_id_by_name.end()) {
     return false;
   }
   *id = i->second; 
   return true;
+}
+
+bool RGWSI_Zone::need_to_sync() const
+{
+  return !(zonegroup->master_zone.empty() ||
+	   !rest_master_conn ||
+	   current_period->get_id().empty());
 }
 
 bool RGWSI_Zone::need_to_log_data() const
@@ -934,7 +988,7 @@ bool RGWSI_Zone::is_syncing_bucket_meta(const rgw_bucket& bucket)
   }
 
   /* zone is not master */
-  if (zonegroup->master_zone.compare(zone_public_config->id) != 0) {
+  if (zonegroup->master_zone != zone_public_config->id) {
     return false;
   }
 
@@ -1086,7 +1140,7 @@ int RGWSI_Zone::select_legacy_bucket_placement(RGWZonePlacementInfo *rule_info)
   auto obj_ctx = sysobj_svc->init_obj_ctx();
   auto sysobj = obj_ctx.get_obj(obj);
 
-  int ret = sysobj.rop().read(&map_bl);
+  int ret = sysobj.rop().read(&map_bl, null_yield);
   if (ret < 0) {
     goto read_omap;
   }
@@ -1100,7 +1154,7 @@ int RGWSI_Zone::select_legacy_bucket_placement(RGWZonePlacementInfo *rule_info)
 
 read_omap:
   if (m.empty()) {
-    ret = sysobj.omap().get_all(&m);
+    ret = sysobj.omap().get_all(&m, null_yield);
 
     write_map = true;
   }
@@ -1114,7 +1168,7 @@ read_omap:
     ret = rados_svc->pool().create(pools, &retcodes);
     if (ret < 0)
       return ret;
-    ret = sysobj.omap().set(s, bl);
+    ret = sysobj.omap().set(s, bl, null_yield);
     if (ret < 0)
       return ret;
     m[s] = bl;
@@ -1123,7 +1177,7 @@ read_omap:
   if (write_map) {
     bufferlist new_bl;
     encode(m, new_bl);
-    ret = sysobj.wop().write(new_bl);
+    ret = sysobj.wop().write(new_bl, null_yield);
     if (ret < 0) {
       ldout(cct, 0) << "WARNING: could not save avail pools map info ret=" << ret << dendl;
     }
@@ -1156,13 +1210,13 @@ int RGWSI_Zone::update_placement_map()
   auto obj_ctx = sysobj_svc->init_obj_ctx();
   auto sysobj = obj_ctx.get_obj(obj);
 
-  int ret = sysobj.omap().get_all(&m);
+  int ret = sysobj.omap().get_all(&m, null_yield);
   if (ret < 0)
     return ret;
 
   bufferlist new_bl;
   encode(m, new_bl);
-  ret = sysobj.wop().write(new_bl);
+  ret = sysobj.wop().write(new_bl, null_yield);
   if (ret < 0) {
     ldout(cct, 0) << "WARNING: could not save avail pools map info ret=" << ret << dendl;
   }
@@ -1182,7 +1236,7 @@ int RGWSI_Zone::add_bucket_placement(const rgw_pool& new_pool)
   auto sysobj = obj_ctx.get_obj(obj);
 
   bufferlist empty_bl;
-  ret = sysobj.omap().set(new_pool.to_str(), empty_bl);
+  ret = sysobj.omap().set(new_pool.to_str(), empty_bl, null_yield);
 
   // don't care about return value
   update_placement_map();
@@ -1196,7 +1250,7 @@ int RGWSI_Zone::remove_bucket_placement(const rgw_pool& old_pool)
   auto obj_ctx = sysobj_svc->init_obj_ctx();
   auto sysobj = obj_ctx.get_obj(obj);
 
-  int ret = sysobj.omap().del(old_pool.to_str());
+  int ret = sysobj.omap().del(old_pool.to_str(), null_yield);
 
   // don't care about return value
   update_placement_map();
@@ -1212,7 +1266,7 @@ int RGWSI_Zone::list_placement_set(set<rgw_pool>& names)
   rgw_raw_obj obj(zone_params->domain_root, avail_pools);
   auto obj_ctx = sysobj_svc->init_obj_ctx();
   auto sysobj = obj_ctx.get_obj(obj);
-  int ret = sysobj.omap().get_all(&m);
+  int ret = sysobj.omap().get_all(&m, null_yield);
   if (ret < 0)
     return ret;
 

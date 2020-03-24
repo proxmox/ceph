@@ -10,40 +10,54 @@
 #include <boost/optional.hpp>
 #include <seastar/core/future.hh>
 #include <seastar/core/gate.hh>
+#include <seastar/core/reactor.hh>
 #include <seastar/core/semaphore.hh>
 #include <seastar/core/sharded.hh>
 
-#include "Condition.h"
-
-namespace ceph::thread {
+namespace crimson::thread {
 
 struct WorkItem {
   virtual ~WorkItem() {}
   virtual void process() = 0;
 };
 
-template<typename Func, typename T = std::invoke_result_t<Func>>
+template<typename Func>
 struct Task final : WorkItem {
-  Func func;
-  seastar::future_state<T> state;
-  ceph::thread::Condition on_done;
+  using T = std::invoke_result_t<Func>;
+  using future_state_t = std::conditional_t<std::is_void_v<T>,
+					    seastar::future_state<>,
+					    seastar::future_state<T>>;
+  using futurator_t = seastar::futurize<T>;
 public:
   explicit Task(Func&& f)
     : func(std::move(f))
   {}
   void process() override {
     try {
-      state.set(func());
+      if constexpr (std::is_void_v<T>) {
+        func();
+        state.set();
+      } else {
+        state.set(func());
+      }
     } catch (...) {
       state.set_exception(std::current_exception());
     }
-    on_done.notify();
+    on_done.write_side().signal(1);
   }
-  seastar::future<T> get_future() {
-    return on_done.wait().then([this] {
-      return seastar::make_ready_future<T>(state.get0(std::move(state).get()));
+  typename futurator_t::type get_future() {
+    return on_done.wait().then([this](size_t) {
+      if (state.failed()) {
+	return futurator_t::make_exception_future(state.get_exception());
+      } else {
+	return futurator_t::from_tuple(state.get_value());
+      }
     });
   }
+private:
+  Func func;
+  future_state_t state;
+  seastar::readable_eventfd on_done;
 };
 
 struct SubmitQueue {
@@ -84,7 +98,7 @@ public:
    *                 multiple of the number of cores.
    * @param n_threads the number of threads in this thread pool.
    * @param cpu the CPU core to which this thread pool is assigned
-   * @note each @c Task has its own ceph::thread::Condition, which possesses
+   * @note each @c Task has its own crimson::thread::Condition, which possesses
    * possesses an fd, so we should keep the size of queue under a reasonable
    * limit.
    */
@@ -115,4 +129,4 @@ public:
   }
 };
 
-} // namespace ceph::thread
+} // namespace crimson::thread

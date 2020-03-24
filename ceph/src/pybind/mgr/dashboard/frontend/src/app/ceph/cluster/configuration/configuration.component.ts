@@ -5,6 +5,7 @@ import { I18n } from '@ngx-translate/i18n-polyfill';
 import { ConfigurationService } from '../../../shared/api/configuration.service';
 import { ActionLabelsI18n } from '../../../shared/constants/app.constants';
 import { CellTemplate } from '../../../shared/enum/cell-template.enum';
+import { Icons } from '../../../shared/enum/icons.enum';
 import { CdTableAction } from '../../../shared/models/cd-table-action';
 import { CdTableColumn } from '../../../shared/models/cd-table-column';
 import { CdTableFetchDataContext } from '../../../shared/models/cd-table-fetch-data-context';
@@ -20,17 +21,17 @@ import { AuthStorageService } from '../../../shared/services/auth-storage.servic
 export class ConfigurationComponent implements OnInit {
   permission: Permission;
   tableActions: CdTableAction[];
-  data = [];
+  data: any[] = [];
+  icons = Icons;
   columns: CdTableColumn[];
   selection = new CdTableSelection();
-  filters = [
+  filters: CdTableColumn[] = [
     {
-      label: this.i18n('Level'),
+      name: this.i18n('Level'),
       prop: 'level',
-      initValue: 'basic',
-      value: 'basic',
-      options: ['basic', 'advanced', 'dev'],
-      applyFilter: (row, value) => {
+      filterOptions: ['basic', 'advanced', 'dev'],
+      filterInitValue: 'basic',
+      filterPredicate: (row, value) => {
         enum Level {
           basic = 0,
           advanced = 1,
@@ -43,42 +44,45 @@ export class ConfigurationComponent implements OnInit {
       }
     },
     {
-      label: this.i18n('Service'),
+      name: this.i18n('Service'),
       prop: 'services',
-      initValue: 'any',
-      value: 'any',
-      options: ['any', 'mon', 'mgr', 'osd', 'mds', 'common', 'mds_client', 'rgw'],
-      applyFilter: (row, value) => {
-        if (value === 'any') {
-          return true;
-        }
-
+      filterOptions: ['mon', 'mgr', 'osd', 'mds', 'common', 'mds_client', 'rgw'],
+      filterPredicate: (row, value) => {
         return row.services.includes(value);
       }
     },
     {
-      label: this.i18n('Source'),
+      name: this.i18n('Source'),
       prop: 'source',
-      initValue: 'any',
-      value: 'any',
-      options: ['any', 'mon'],
-      applyFilter: (row, value) => {
-        if (value === 'any') {
-          return true;
-        }
-
+      filterOptions: ['mon'],
+      filterPredicate: (row, value) => {
         if (!row.hasOwnProperty('source')) {
           return false;
         }
-
         return row.source.includes(value);
+      }
+    },
+    {
+      name: this.i18n('Modified'),
+      prop: 'modified',
+      filterOptions: ['yes', 'no'],
+      filterPredicate: (row, value) => {
+        if (value === 'yes' && row.hasOwnProperty('value')) {
+          return true;
+        }
+
+        if (value === 'no' && !row.hasOwnProperty('value')) {
+          return true;
+        }
+
+        return false;
       }
     }
   ];
 
-  @ViewChild('confValTpl')
+  @ViewChild('confValTpl', { static: true })
   public confValTpl: TemplateRef<any>;
-  @ViewChild('confFlagTpl')
+  @ViewChild('confFlagTpl', { static: false })
   public confFlagTpl: TemplateRef<any>;
 
   constructor(
@@ -92,7 +96,7 @@ export class ConfigurationComponent implements OnInit {
       this.selection.first() && `${encodeURIComponent(this.selection.first().name)}`;
     const editAction: CdTableAction = {
       permission: 'update',
-      icon: 'fa-pencil',
+      icon: Icons.edit,
       routerLink: () => `/configuration/edit/${getConfigOptUri()}`,
       name: this.actionLabels.EDIT,
       disable: () => !this.isEditable(this.selection)
@@ -134,17 +138,6 @@ export class ConfigurationComponent implements OnInit {
         context.error();
       }
     );
-  }
-
-  updateFilter() {
-    this.data = [...this.data];
-  }
-
-  resetFilter() {
-    this.filters.forEach((item) => {
-      item.value = item.initValue;
-    });
-    this.data = [...this.data];
   }
 
   isEditable(selection: CdTableSelection): boolean {

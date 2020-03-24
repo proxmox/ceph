@@ -62,10 +62,6 @@ class PosixConnectedSocketImpl final : public ConnectedSocketImpl {
     }
   }
 
-  ssize_t zero_copy_read(bufferptr&) override {
-    return -EOPNOTSUPP;
-  }
-
   ssize_t read(char *buf, size_t len) override {
     ssize_t r = ::read(_fd, buf, len);
     if (r < 0)
@@ -113,7 +109,7 @@ class PosixConnectedSocketImpl final : public ConnectedSocketImpl {
   ssize_t send(bufferlist &bl, bool more) override {
     size_t sent_bytes = 0;
     auto pb = std::cbegin(bl.buffers());
-    uint64_t left_pbrs = std::size(bl.buffers());
+    uint64_t left_pbrs = bl.get_num_buffers();
     while (left_pbrs) {
       struct msghdr msg;
       struct iovec msgvec[IOV_MAX];
@@ -162,9 +158,6 @@ class PosixConnectedSocketImpl final : public ConnectedSocketImpl {
   int fd() const override {
     return _fd;
   }
-  int socket_fd() const override {
-    return _fd;
-  }
   friend class PosixServerSocketImpl;
   friend class PosixNetworkStack;
 };
@@ -181,6 +174,7 @@ class PosixServerSocketImpl : public ServerSocketImpl {
   int accept(ConnectedSocket *sock, const SocketOptions &opts, entity_addr_t *out, Worker *w) override;
   void abort_accept() override {
     ::close(_fd);
+    _fd = -1;
   }
   int fd() const override {
     return _fd;

@@ -25,7 +25,7 @@ export enum SupportedLanguages {
   'ja-JP' = '日本語',
   'ko-KR' = '한국어',
   'pl-PL' = 'Polski',
-  'pt-BR' = 'Português',
+  'pt-BR' = 'Português (brasileiro)',
   'zh-CN' = '中文 (简体)',
   'zh-TW' = '中文 (繁體）'
 }

@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
+# pylint: disable=too-many-lines
 from __future__ import absolute_import
 
+import logging
 import re
 
 from orchestrator import OrchestratorError
@@ -8,9 +10,12 @@ from .cephfs import CephFS
 from .cephx import CephX
 from .orchestrator import OrchClient
 from .rgw_client import RgwClient, RequestException, NoCredentialsException
-from .. import mgr, logger
+from .. import mgr
 from ..settings import Settings
 from ..exceptions import DashboardException
+
+
+logger = logging.getLogger('ganesha')
 
 
 class NFSException(DashboardException):
@@ -21,7 +26,7 @@ class NFSException(DashboardException):
 class Ganesha(object):
     @classmethod
     def _get_clusters_locations(cls):
-        result = {}
+        result = {}  # type: ignore
         location_list_str = Settings.GANESHA_CLUSTERS_RADOS_POOL_NAMESPACE
         if not location_list_str:
             raise NFSException("Ganesha config location is not configured. "
@@ -69,7 +74,7 @@ class Ganesha(object):
     @staticmethod
     def _get_orch_nfs_instances():
         try:
-            return OrchClient().list_service_info("nfs")
+            return OrchClient.instance().services.list("nfs")
         except (RuntimeError, OrchestratorError, ImportError):
             return []
 
@@ -79,13 +84,13 @@ class Ganesha(object):
         if not instances:
             return None
 
-        result = {}
+        result = {}  # type: ignore
         for instance in instances:
             if instance.service is None:
                 instance.service = "_default_"
             if instance.service not in result:
                 result[instance.service] = {}
-            result[instance.service][instance.nodename] = {
+            result[instance.service][instance.hostname] = {
                 'status': instance.status,
                 'desc': instance.status_desc,
             }
@@ -128,9 +133,9 @@ class Ganesha(object):
 
     @classmethod
     def reload_daemons(cls, cluster_id, daemons_id):
-        logger.debug("[NFS] issued reload of daemons: %s", daemons_id)
-        if not OrchClient().available():
-            logger.debug("[NFS] orchestrator not available")
+        logger.debug("issued reload of daemons: %s", daemons_id)
+        if not OrchClient.instance().available():
+            logger.debug("orchestrator not available")
             return
         reload_list = []
         daemons = cls.get_daemons_status()
@@ -142,7 +147,7 @@ class Ganesha(object):
                 continue
             if daemons[cluster_id][daemon_id] == 1:
                 reload_list.append((cluster_id, daemon_id))
-        OrchClient().reload_service("nfs", reload_list)
+        OrchClient.instance().reload_service("nfs", reload_list)
 
     @classmethod
     def fsals_available(cls):
@@ -429,8 +434,7 @@ class RGWFSal(FSal):
                 raise NFSException('Cannot create bucket "{}" as it already '
                                    'exists, and belongs to other user.'
                                    .format(path))
-            else:
-                raise exp
+            raise exp
         if not exists:
             logger.info('Creating new RGW bucket "%s" for user "%s"', path,
                         self.rgw_user_id)
@@ -486,9 +490,8 @@ class CephFSFSal(FSal):
             self.cephx_key = CephX.get_client_key(self.user_id)
 
     def create_path(self, path):
-        cfs = CephFS()
-        if not cfs.dir_exists(path):
-            cfs.mkdirs(path)
+        cfs = CephFS(self.fs_name)
+        cfs.mk_dirs(path)
 
     @classmethod
     def from_fsal_block(cls, fsal_block):
@@ -638,7 +641,7 @@ class Export(object):
 
     @classmethod
     def from_export_block(cls, export_block, cluster_id, defaults):
-        logger.debug("[NFS] parsing export block: %s", export_block)
+        logger.debug("parsing export block: %s", export_block)
 
         fsal_block = [b for b in export_block['_blocks_']
                       if b['block_name'] == "FSAL"]
@@ -753,8 +756,8 @@ class GaneshaConf(object):
         self.cluster_id = cluster_id
         self.rados_pool = rados_pool
         self.rados_namespace = rados_namespace
-        self.export_conf_blocks = []
-        self.daemons_conf_blocks = {}
+        self.export_conf_blocks = []  # type: ignore
+        self.daemons_conf_blocks = {}  # type: ignore
         self._defaults = {}
         self.exports = {}
 
@@ -797,7 +800,7 @@ class GaneshaConf(object):
                     size, _ = obj.stat()
                     raw_config = obj.read(size)
                     raw_config = raw_config.decode("utf-8")
-                    logger.debug("[NFS] read export configuration from rados "
+                    logger.debug("read export configuration from rados "
                                  "object %s/%s/%s:\n%s", self.rados_pool,
                                  self.rados_namespace, obj.key, raw_config)
                     self.export_conf_blocks.extend(
@@ -806,7 +809,7 @@ class GaneshaConf(object):
                     size, _ = obj.stat()
                     raw_config = obj.read(size)
                     raw_config = raw_config.decode("utf-8")
-                    logger.debug("[NFS] read daemon configuration from rados "
+                    logger.debug("read daemon configuration from rados "
                                  "object %s/%s/%s:\n%s", self.rados_pool,
                                  self.rados_namespace, obj.key, raw_config)
                     idx = obj.key.find('-')
@@ -820,7 +823,7 @@ class GaneshaConf(object):
                 ioctx.set_namespace(self.rados_namespace)
             ioctx.write_full(obj, raw_config.encode('utf-8'))
             logger.debug(
-                "[NFS] write configuration into rados object %s/%s/%s:\n%s",
+                "write configuration into rados object %s/%s/%s:\n%s",
                 self.rados_pool, self.rados_namespace, obj, raw_config)
 
     @classmethod
@@ -849,7 +852,7 @@ class GaneshaConf(object):
         if squash.lower() in ["all", "all_squash", "allsquash",
                               "all_anonymous", "allanonymous"]:
             return "all_squash"
-        logger.error("[NFS] could not parse squash value: %s", squash)
+        logger.error("could not parse squash value: %s", squash)
         raise NFSException("'{}' is an invalid squash option".format(squash))
 
     @classmethod
@@ -858,7 +861,7 @@ class GaneshaConf(object):
             return 3
         if str(protocol) in ["NFSV4", "4", "V4", "NFS4"]:
             return 4
-        logger.error("[NFS] could not parse protocol value: %s", protocol)
+        logger.error("could not parse protocol value: %s", protocol)
         raise NFSException("'{}' is an invalid NFS protocol version identifier"
                            .format(protocol))
 
@@ -898,11 +901,12 @@ class GaneshaConf(object):
 
             if len_prefix > 1:
                 # validate pseudo path
-                idx = len(parent_export.pseudo)
+                idx = len(parent_export.pseudo)  # type: ignore
                 idx = idx + 1 if idx > 1 else idx
-                real_path = "{}/{}".format(parent_export.path
-                                           if len(parent_export.path) > 1 else "",
-                                           export.pseudo[idx:])
+                real_path = "{}/{}".format(
+                    parent_export.path  # type: ignore
+                    if len(parent_export.path) > 1 else "",  # type: ignore
+                    export.pseudo[idx:])
                 if export.fsal.name == 'CEPH':
                     cfs = CephFS()
                     if export.path != real_path and not cfs.dir_exists(real_path):
@@ -921,7 +925,7 @@ class GaneshaConf(object):
         return nid
 
     def _persist_daemon_configuration(self):
-        daemon_map = {}
+        daemon_map = {}  # type: ignore
         for daemon_id in self.list_daemons():
             daemon_map[daemon_id] = []
 

@@ -16,7 +16,6 @@ set(librbd_internal_srcs
   internal.cc
   Journal.cc
   LibrbdAdminSocketHook.cc
-  LibrbdWriteback.cc
   ManagedLock.cc
   MirroringWatcher.cc
   ObjectMap.cc
@@ -37,7 +36,10 @@ set(librbd_internal_srcs
   api/Trash.cc
   cache/ImageWriteback.cc
   cache/ObjectCacherObjectDispatch.cc
+  cache/ParentCacheObjectDispatch.cc
+  cache/ObjectCacherWriteback.cc
   cache/PassthroughImageCache.cc
+  cache/WriteAroundObjectDispatch.cc
   deep_copy/ImageCopyRequest.cc
   deep_copy/MetadataCopyRequest.cc
   deep_copy/ObjectCopyRequest.cc
@@ -57,6 +59,7 @@ set(librbd_internal_srcs
   image/CreateRequest.cc
   image/DetachChildRequest.cc
   image/DetachParentRequest.cc
+  image/GetMetadataRequest.cc
   image/ListWatchersRequest.cc
   image/OpenRequest.cc
   image/PreRemoveRequest.cc
@@ -78,6 +81,7 @@ set(librbd_internal_srcs
   io/ObjectDispatcher.cc
   io/ObjectRequest.cc
   io/ReadResult.cc
+  io/SimpleSchedulerObjectDispatch.cc
   io/Utils.cc
   journal/CreateRequest.cc
   journal/DemoteRequest.cc
@@ -100,8 +104,24 @@ set(librbd_internal_srcs
   mirror/EnableRequest.cc
   mirror/GetInfoRequest.cc
   mirror/GetStatusRequest.cc
+  mirror/GetUuidRequest.cc
+  mirror/ImageRemoveRequest.cc
+  mirror/ImageStateUpdateRequest.cc
   mirror/PromoteRequest.cc
+  mirror/snapshot/CreateNonPrimaryRequest.cc
+  mirror/snapshot/CreatePrimaryRequest.cc
+  mirror/snapshot/DemoteRequest.cc
+  mirror/snapshot/GetImageStateRequest.cc
+  mirror/snapshot/ImageMeta.cc
+  mirror/snapshot/PromoteRequest.cc
+  mirror/snapshot/RemoveImageStateRequest.cc
+  mirror/snapshot/SetImageStateRequest.cc
+  mirror/snapshot/Types.cc
+  mirror/snapshot/UnlinkPeerRequest.cc
+  mirror/snapshot/Utils.cc
+  mirror/snapshot/WriteImageStateRequest.cc
   object_map/CreateRequest.cc
+  object_map/DiffRequest.cc
   object_map/InvalidateRequest.cc
   object_map/LockRequest.cc
   object_map/RefreshRequest.cc
@@ -139,6 +159,22 @@ set(librbd_internal_srcs
   watcher/RewatchRequest.cc
   ${CMAKE_SOURCE_DIR}/src/common/ContextCompletion.cc)
 
+if(WITH_EVENTTRACE)
+  list(APPEND librbd_internal_srcs ../common/EventTrace.cc)
+endif()
+
+if(WITH_RBD_RWL)
+  set(librbd_internal_srcs
+    ${librbd_internal_srcs}
+    cache/rwl/ImageCacheState.cc
+    cache/rwl/LogEntry.cc
+    cache/rwl/LogOperation.cc
+    cache/rwl/Request.cc
+    cache/rwl/SyncPoint.cc
+    cache/rwl/Types.cc
+    cache/ReplicatedWriteLog.cc)
+endif()
+
 add_library(rbd_api STATIC librbd.cc)
 add_library(rbd_internal STATIC
   ${librbd_internal_srcs}
@@ -149,11 +185,18 @@ if(WITH_LTTNG)
   # io/AioCompletion.cc includes tracing/librbd.h
   add_dependencies(rbd_internal librbd-tp)
 endif()
-if(WITH_LTTNG AND WITH_EVENTTRACE)
+if(WITH_EVENTTRACE)
   add_dependencies(rbd_internal eventtrace_tp)
 endif()
 target_link_libraries(rbd_internal PRIVATE
+  ceph_immutable_object_cache_lib
   osdc)
+
+if(WITH_RBD_RWL)
+  target_link_libraries(rbd_internal PRIVATE
+    pmem::pmemobj
+    pmem::pmem)
+endif()
 
 add_library(librbd ${CEPH_SHARED}
   librbd.cc)

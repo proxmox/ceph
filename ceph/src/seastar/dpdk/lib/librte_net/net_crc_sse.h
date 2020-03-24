@@ -1,34 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2017 Intel Corporation.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2017 Intel Corporation
  */
 
 #ifndef _RTE_NET_CRC_SSE_H_
@@ -50,8 +21,8 @@ struct crc_pclmulqdq_ctx {
 	__m128i rk7_rk8;
 };
 
-struct crc_pclmulqdq_ctx crc32_eth_pclmulqdq __rte_aligned(16);
-struct crc_pclmulqdq_ctx crc16_ccitt_pclmulqdq __rte_aligned(16);
+static struct crc_pclmulqdq_ctx crc32_eth_pclmulqdq __rte_aligned(16);
+static struct crc_pclmulqdq_ctx crc16_ccitt_pclmulqdq __rte_aligned(16);
 /**
  * @brief Performs one folding round
  *
@@ -66,14 +37,14 @@ struct crc_pclmulqdq_ctx crc16_ccitt_pclmulqdq __rte_aligned(16);
  * @param data_block
  *   16 byte data block
  * @param precomp
- *   Precomputed rk1 constanst
+ *   Precomputed rk1 constant
  * @param fold
  *   Current16 byte folded data
  *
  * @return
  *   New 16 byte folded data
  */
-static inline __attribute__((always_inline)) __m128i
+static __rte_always_inline __m128i
 crcr32_folding_round(__m128i data_block,
 		__m128i precomp,
 		__m128i fold)
@@ -96,7 +67,7 @@ crcr32_folding_round(__m128i data_block,
  *  64 bits reduced data
  */
 
-static inline __attribute__((always_inline)) __m128i
+static __rte_always_inline __m128i
 crcr32_reduce_128_to_64(__m128i data128, __m128i precomp)
 {
 	__m128i tmp0, tmp1, tmp2;
@@ -125,7 +96,7 @@ crcr32_reduce_128_to_64(__m128i data128, __m128i precomp)
  *   reduced 32 bits data
  */
 
-static inline __attribute__((always_inline)) uint32_t
+static __rte_always_inline uint32_t
 crcr32_reduce_64_to_32(__m128i data64, __m128i precomp)
 {
 	static const uint32_t mask1[4] __rte_aligned(16) = {
@@ -171,7 +142,7 @@ static const uint8_t crc_xmm_shift_tab[48] __rte_aligned(16) = {
  *   reg << (num * 8)
  */
 
-static inline __attribute__((always_inline)) __m128i
+static __rte_always_inline __m128i
 xmm_shift_left(__m128i reg, const unsigned int num)
 {
 	const __m128i *p = (const __m128i *)(crc_xmm_shift_tab + 16 - num);
@@ -179,7 +150,7 @@ xmm_shift_left(__m128i reg, const unsigned int num)
 	return _mm_shuffle_epi8(reg, _mm_loadu_si128(p));
 }
 
-static inline __attribute__((always_inline)) uint32_t
+static __rte_always_inline uint32_t
 crc32_eth_calc_pclmulqdq(
 	const uint8_t *data,
 	uint32_t data_len,

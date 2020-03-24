@@ -13,6 +13,7 @@ set(libos_srcs
   filestore/IndexManager.cc
   filestore/LFNIndex.cc
   filestore/WBThrottle.cc
+  filestore/os_xattr.c
   memstore/MemStore.cc
   kstore/KStore.cc
   kstore/kstore_types.cc
@@ -32,6 +33,8 @@ if(WITH_BLUESTORE)
     bluestore/FreelistManager.cc
     bluestore/StupidAllocator.cc
     bluestore/BitmapAllocator.cc
+    bluestore/AvlAllocator.cc
+    bluestore/io_uring.cc
   )
 endif(WITH_BLUESTORE)
 
@@ -46,10 +49,10 @@ if(WITH_FUSE)
     FuseStore.cc)
 endif(WITH_FUSE)
 
-if(WITH_PMEM)
+if(WITH_BLUESTORE_PMEM)
   list(APPEND libos_srcs
     bluestore/PMEMDevice.cc)
-endif(WITH_PMEM)
+endif()
 
 if(HAVE_LIBXFS)
   list(APPEND libos_srcs
@@ -104,6 +107,7 @@ endif()
 
 if(WITH_LTTNG)
   add_dependencies(os objectstore-tp)
+  add_dependencies(os bluestore-tp)
 endif()
 
 target_link_libraries(os kv)
@@ -121,32 +125,36 @@ if(WITH_BLUESTORE)
     DESTINATION bin)
 endif()
 
-if(WITH_PMEM)
-  include(ExternalProject)
-  ExternalProject_Add(nvml_ext
-    DOWNLOAD_DIR ${CMAKE_BINARY_DIR}/src/
-    GIT_REPOSITORY "https://github.com/ceph/nvml.git"
-    GIT_TAG "dd622819dd4ee97d3920f913c70be"
-    SOURCE_DIR ${CMAKE_BINARY_DIR}/src/nvml
-    CONFIGURE_COMMAND ""
-    BUILD_COMMAND $(MAKE)
-    BUILD_IN_SOURCE 1
-    INSTALL_COMMAND "true")
+if(WITH_BLUESTORE_PMEM)
+  target_link_libraries(os pmem::pmem)
+endif()
 
-  ExternalProject_Add_Step(nvml_ext forcebuild
-    DEPENDEES configure
-    DEPENDERS build
-    COMMAND "true"
-    ALWAYS 1)
-  add_library(pmem STATIC IMPORTED GLOBAL)
-  add_dependencies(pmem nvml_ext)
-  set_target_properties(pmem PROPERTIES
-    IMPORTED_LOCATION "${CMAKE_BINARY_DIR}/src/nvml/src/nondebug/libpmem.a"
-    INTERFACE_LINK_LIBRARIES ${CMAKE_THREAD_LIBS_INIT})
-  target_link_libraries(os pmem)
-  target_include_directories(os SYSTEM PRIVATE "${CMAKE_BINARY_DIR}/src/nvml/src/include")
-endif(WITH_PMEM)
-
-if(WITH_LTTNG AND WITH_EVENTTRACE)
+if(WITH_EVENTTRACE)
   add_dependencies(os eventtrace_tp)
 endif()
+
+if(WITH_LIBURING)
+  include(ExternalProject)
+  if("${CMAKE_GENERATOR}" MATCHES "Make")
+    set(make_cmd "$(MAKE)")
+  else()
+    set(make_cmd "make")
+  endif()
+  ExternalProject_Add(liburing_ext
+    DOWNLOAD_DIR ${CMAKE_BINARY_DIR}/src/
+    GIT_REPOSITORY http://git.kernel.dk/liburing
+    GIT_TAG "4e360f71131918c36774f51688e5c65dea8d43f2"
+    SOURCE_DIR ${CMAKE_BINARY_DIR}/src/liburing
+    CONFIGURE_COMMAND <SOURCE_DIR>/configure
+    BUILD_COMMAND env CC=${CMAKE_C_COMPILER} ${make_cmd} -C src -s
+    BUILD_IN_SOURCE 1
+    INSTALL_COMMAND "")
+  unset(make_cmd)
+  add_library(liburing STATIC IMPORTED GLOBAL)
+  add_dependencies(liburing liburing_ext)
+  set_target_properties(liburing PROPERTIES
+    IMPORTED_LINK_INTERFACE_LANGUAGES "C"
+    IMPORTED_LOCATION "${CMAKE_BINARY_DIR}/src/liburing/src/liburing.a")
+  target_link_libraries(os liburing)
+  target_include_directories(os SYSTEM PRIVATE "${CMAKE_BINARY_DIR}/src/liburing/src/include")
+endif(WITH_LIBURING)

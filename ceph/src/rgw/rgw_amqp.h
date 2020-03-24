@@ -1,5 +1,5 @@
 // -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*- 
-// vim: ts=8 sw=2 smarttab
+// vim: ts=8 sw=2 smarttab ft=cpp
 
 #pragma once
 
@@ -7,7 +7,7 @@
 #include <functional>
 #include <boost/smart_ptr/intrusive_ptr.hpp>
 
-class CephContext;
+#include "include/common_fwd.h"
 
 namespace rgw::amqp {
 // forward declaration of connection object

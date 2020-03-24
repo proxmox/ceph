@@ -12,7 +12,7 @@
 #     * Neither the name of Intel Corporation nor the names of its contributors
 #       may be used to endorse or promote products derived from this software
 #       without specific prior written permission.
-# 
+#
 # THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
 # AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
 # IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
@@ -24,10 +24,19 @@
 # OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
+
 LIB = libIPSec_MB
-VERSION = 0.49
-SO_VERSION = 0
 SHARED ?= y
+IMB_HDR = intel-ipsec-mb.h
+
+# Detect library version
+IMB_VERSION = $(shell grep -e "IMB_VERSION_STR" $(IMB_HDR) | cut -d'"' -f2)
+ifeq ($(IMB_VERSION),)
+$(error "Failed to detect library version!")
+endif
+
+VERSION = $(shell echo $(IMB_VERSION) | cut -d. -f1-2)
+SO_VERSION = $(shell echo $(VERSION) | cut -d. -f1)
 
 PREFIX ?= /usr
 LIB_INSTALL_DIR ?= $(PREFIX)/lib
@@ -43,7 +52,7 @@ NASM ?= nasm
 
 OBJ_DIR = obj
 
-INCLUDE_DIRS := include .
+INCLUDE_DIRS := include . no-aesni
 INCLUDES := $(foreach i,$(INCLUDE_DIRS),-I $i)
 
 CC ?= gcc
@@ -56,10 +65,28 @@ CFLAGS := -DLINUX $(EXTRA_CFLAGS) $(INCLUDES) \
 	-Wstrict-prototypes -Wmissing-prototypes -Wold-style-definition
 
 ifeq ($(DEBUG),y)
-CFLAGS += -g -O0 -DDEBUG
+CFLAGS += -g -DDEBUG
+OPT = -O0
 LDFLAGS += -g
 else
-CFLAGS += -O3 -fstack-protector -D_FORTIFY_SOURCE=2
+OPT = -O3
+CFLAGS += -fstack-protector -D_FORTIFY_SOURCE=2
+endif
+
+# prevent SIMD optimizations for non-aesni modules
+CFLAGS_NO_SIMD = $(CFLAGS) -O1
+CFLAGS += $(OPT)
+
+# Set architectural optimizations for GCC/CC
+ifeq ($(CC),$(filter $(CC),gcc cc))
+GCC_VERSION = $(shell $(CC) -dumpversion | cut -d. -f1)
+GCC_GE_V5 = $(shell [ $(GCC_VERSION) -ge 5 ] && echo true)
+ifeq ($(GCC_GE_V5),true)
+OPT_SSE = -march=nehalem
+OPT_AVX = -march=sandybridge
+OPT_AVX2 = -march=haswell
+OPT_AVX512 = -march=broadwell
+endif
 endif
 
 # so or static build
@@ -88,50 +115,73 @@ NASM_FLAGS := -felf64 -Xgnu -gdwarf -DLINUX -D__linux__ $(NASM_INCLUDES)
 
 lib_objs := \
 	aes128_cbc_dec_by4_sse.o \
+	aes128_cbc_dec_by4_sse_no_aesni.o \
 	aes128_cbc_dec_by8_avx.o \
 	aes128_cntr_by4_sse.o \
+	aes128_cntr_by4_sse_no_aesni.o \
 	aes128_cntr_by8_avx.o \
 	aes128_ecbenc_x3.o \
 	aes192_cbc_dec_by4_sse.o \
+	aes192_cbc_dec_by4_sse_no_aesni.o \
 	aes192_cbc_dec_by8_avx.o \
 	aes192_cntr_by4_sse.o \
+	aes192_cntr_by4_sse_no_aesni.o \
 	aes192_cntr_by8_avx.o \
 	aes256_cbc_dec_by4_sse.o \
+	aes256_cbc_dec_by4_sse_no_aesni.o \
 	aes256_cbc_dec_by8_avx.o \
 	aes256_cntr_by4_sse.o \
+	aes256_cntr_by4_sse_no_aesni.o \
 	aes256_cntr_by8_avx.o \
 	aes_cfb_128_sse.o \
+	aes_cfb_128_sse_no_aesni.o \
 	aes_cfb_128_avx.o \
 	aes128_cbc_mac_x4.o \
+	aes128_cbc_mac_x4_no_aesni.o \
 	aes128_cbc_mac_x8.o \
 	aes_cbc_enc_128_x4.o \
+	aes_cbc_enc_128_x4_no_aesni.o \
 	aes_cbc_enc_128_x8.o \
 	aes_cbc_enc_192_x4.o \
+	aes_cbc_enc_192_x4_no_aesni.o \
 	aes_cbc_enc_192_x8.o \
 	aes_cbc_enc_256_x4.o \
+	aes_cbc_enc_256_x4_no_aesni.o \
 	aes_cbc_enc_256_x8.o \
 	aes_keyexp_128.o \
 	aes_keyexp_192.o \
 	aes_keyexp_256.o \
 	aes_xcbc_mac_128_x4.o \
+	aes_xcbc_mac_128_x4_no_aesni.o \
 	aes_xcbc_mac_128_x8.o \
 	aes_cmac_subkey_gen.o \
 	mb_mgr_aes192_flush_avx.o \
 	mb_mgr_aes192_flush_sse.o \
+	mb_mgr_aes192_flush_sse_no_aesni.o \
 	mb_mgr_aes192_submit_avx.o \
 	mb_mgr_aes192_submit_sse.o \
+	mb_mgr_aes192_submit_sse_no_aesni.o \
 	mb_mgr_aes256_flush_avx.o \
 	mb_mgr_aes256_flush_sse.o \
+	mb_mgr_aes256_flush_sse_no_aesni.o \
 	mb_mgr_aes256_submit_avx.o \
 	mb_mgr_aes256_submit_sse.o \
+	mb_mgr_aes256_submit_sse_no_aesni.o \
 	mb_mgr_aes_flush_avx.o \
 	mb_mgr_aes_flush_sse.o \
+	mb_mgr_aes_flush_sse_no_aesni.o \
 	mb_mgr_aes_submit_avx.o \
 	mb_mgr_aes_submit_sse.o \
+	mb_mgr_aes_submit_sse_no_aesni.o \
+	mb_mgr_aes_cmac_submit_flush_sse.o \
+	mb_mgr_aes_cmac_submit_flush_sse_no_aesni.o \
+	mb_mgr_aes_cmac_submit_flush_avx.o\
 	mb_mgr_aes_xcbc_flush_avx.o \
 	mb_mgr_aes_xcbc_flush_sse.o \
+	mb_mgr_aes_xcbc_flush_sse_no_aesni.o \
 	mb_mgr_aes_xcbc_submit_avx.o \
 	mb_mgr_aes_xcbc_submit_sse.o \
+	mb_mgr_aes_xcbc_submit_sse_no_aesni.o \
 	mb_mgr_hmac_flush_avx.o \
 	mb_mgr_hmac_flush_avx2.o \
 	mb_mgr_hmac_flush_sse.o \
@@ -213,21 +263,29 @@ lib_objs := \
 	sha512_x8_avx512.o \
 	sha_256_mult_avx.o \
 	sha_256_mult_sse.o \
-	\
 	aes_xcbc_expand_key.o \
 	alloc.o \
 	mb_mgr_avx.o \
 	mb_mgr_avx2.o \
 	mb_mgr_avx512.o \
 	mb_mgr_sse.o \
+	mb_mgr_sse_no_aesni.o \
 	md5_one_block.o \
+	sha_one_block.o \
 	des_key.o \
 	des_basic.o \
-	des_x16_avx512.o
+	des_x16_avx512.o \
+	const.o \
+	version.o \
+	cpu_feature.o \
+	aesni_emu.o
 
-gcm_objs := gcm128_sse.o gcm192_sse.o gcm256_sse.o \
+gcm_objs := gcm.o gcm128_sse.o gcm192_sse.o gcm256_sse.o \
 	gcm128_avx_gen2.o gcm192_avx_gen2.o gcm256_avx_gen2.o \
-	gcm128_avx_gen4.o gcm192_avx_gen4.o gcm256_avx_gen4.o
+	gcm128_avx_gen4.o gcm192_avx_gen4.o gcm256_avx_gen4.o \
+	gcm128_sse_no_aesni.o gcm192_sse_no_aesni.o gcm256_sse_no_aesni.o \
+	gcm128_vaes_avx512.o gcm192_vaes_avx512.o gcm256_vaes_avx512.o \
+	gcm128_avx512.o gcm192_avx512.o gcm256_avx512.o
 
 ifeq ($(NO_GCM), y)
 obj2_files := $(lib_objs:%=$(OBJ_DIR)/%)
@@ -249,9 +307,10 @@ endif
 
 .PHONY: install
 install: $(LIBNAME)
-	install -m 0644 intel-ipsec-mb.h $(HDR_DIR)
+	install -d $(HDR_DIR)
+	install -m 0644 $(IMB_HDR) $(HDR_DIR)
 	install -d $(LIB_INSTALL_DIR)
-	install -m $(LIBPERM) $(LIBNAME) $(LIB_INSTALL_DIR)
+	install -s -m $(LIBPERM) $(LIBNAME) $(LIB_INSTALL_DIR)
 	install -d $(MAN_DIR)
 	install -m 0444 $(MAN1) $(MAN_DIR)
 	install -m 0444 $(MAN2) $(MAN_DIR)
@@ -266,7 +325,7 @@ endif
 
 .PHONY: uninstall
 uninstall: $(LIBNAME)
-	-rm -f $(HDR_DIR)/intel-ipsec-mb.h
+	-rm -f $(HDR_DIR)/$(IMB_HDR)
 	-rm -f $(LIB_INSTALL_DIR)/$(LIBNAME)
 	-rm -f $(MAN_DIR)/$(MAN1)
 	-rm -f $(MAN_DIR)/$(MAN2)
@@ -279,11 +338,9 @@ endif
 $(obj2_files): | $(OBJ_DIR)
 
 $(OBJ_DIR)/%.o:%.c
-	@ echo "Making object file $@ "
 	$(CC) -c $(CFLAGS) $< -o $@
 
 $(OBJ_DIR)/%.o:%.asm
-	@ echo "Making object file $@ "
 ifeq ($(USE_YASM),y)
 	$(YASM) $(YASM_FLAGS) $< -o $@
 else
@@ -291,11 +348,9 @@ else
 endif
 
 $(OBJ_DIR)/%.o:sse/%.c
-	@ echo "Making object file $@ "
-	$(CC) -c $(CFLAGS) $< -o $@
+	$(CC) $(OPT_SSE) -c $(CFLAGS) $< -o $@
 
 $(OBJ_DIR)/%.o:sse/%.asm
-	@ echo "Making object file $@ "
 ifeq ($(USE_YASM),y)
 	$(YASM) $(YASM_FLAGS) $< -o $@
 else
@@ -303,11 +358,9 @@ else
 endif
 
 $(OBJ_DIR)/%.o:avx/%.c
-	@ echo "Making object file $@ "
-	$(CC) -c $(CFLAGS) $< -o $@
+	$(CC) $(OPT_AVX) -c $(CFLAGS) $< -o $@
 
 $(OBJ_DIR)/%.o:avx/%.asm
-	@ echo "Making object file $@ "
 ifeq ($(USE_YASM),y)
 	$(YASM) $(YASM_FLAGS) $< -o $@
 else
@@ -315,11 +368,9 @@ else
 endif
 
 $(OBJ_DIR)/%.o:avx2/%.c
-	@ echo "Making object file $@ "
-	$(CC) -c $(CFLAGS) $< -o $@
+	$(CC) $(OPT_AVX2) -c $(CFLAGS) $< -o $@
 
 $(OBJ_DIR)/%.o:avx2/%.asm
-	@ echo "Making object file $@ "
 ifeq ($(USE_YASM),y)
 	$(YASM) $(YASM_FLAGS) $< -o $@
 else
@@ -327,11 +378,9 @@ else
 endif
 
 $(OBJ_DIR)/%.o:avx512/%.c
-	@ echo "Making object file $@ "
-	$(CC) -c $(CFLAGS) $< -o $@
+	$(CC) $(OPT_AVX512) -c $(CFLAGS) $< -o $@
 
 $(OBJ_DIR)/%.o:avx512/%.asm
-	@ echo "Making object file $@ "
 ifeq ($(USE_YASM),y)
 	$(YASM) $(YASM_FLAGS) $< -o $@
 else
@@ -339,7 +388,16 @@ else
 endif
 
 $(OBJ_DIR)/%.o:include/%.asm
-	@ echo "Making object file $@ "
+ifeq ($(USE_YASM),y)
+	$(YASM) $(YASM_FLAGS) $< -o $@
+else
+	$(NASM) -o $@ $(NASM_FLAGS) $<
+endif
+
+$(OBJ_DIR)/%.o:no-aesni/%.c
+	$(CC) -c $(CFLAGS_NO_SIMD) $< -o $@
+
+$(OBJ_DIR)/%.o:no-aesni/%.asm
 ifeq ($(USE_YASM),y)
 	$(YASM) $(YASM_FLAGS) $< -o $@
 else
@@ -360,21 +418,35 @@ clean:
 	rm -Rf $(obj2_files)
 	rm -f $(LIB).a $(LIB).so*
 
-SOURCES_DIRS := . sse avx avx2 avx512 include
+CHECKPATCH ?= checkpatch.pl
+# checkpatch ignore settings:
+#   SPACING - produces false positives with tyepdefs and *
+#   CONSTANT_COMPARISON - forbids defensive programming technique
+#   USE_FUNC - produces false positives for Windows target
+#   INITIALISED_STATIC, LEADING_SPACE, SPLIT_STRING, CODE_INDENT,
+#   PREFER_ALIGNED, UNSPECIFIED_INT, ARRAY_SIZE, GLOBAL_INITIALISERS,
+#   NEW_TYPEDEFS, AVOID_EXTERNS, COMPLEX_MACRO, BLOCK_COMMENT_STYLE
+#     - found obsolete in this project
+#
+# NOTE: these flags cannot be broken into multiple lines due to
+#       spaces injected by make
+CHECKPATCH_FLAGS = --no-tree --no-signoff --emacs --no-color --ignore CODE_INDENT,INITIALISED_STATIC,LEADING_SPACE,SPLIT_STRING,UNSPECIFIED_INT,ARRAY_SIZE,BLOCK_COMMENT_STYLE,GLOBAL_INITIALISERS,NEW_TYPEDEFS,AVOID_EXTERNS,COMPLEX_MACRO,PREFER_ALIGNED,USE_FUNC,CONSTANT_COMPARISON,SPACING
+
+%.c_style_check : %.c
+	$(CHECKPATCH) $(CHECKPATCH_FLAGS) -f $<
+
+%.h_style_check : %.h
+	$(CHECKPATCH) $(CHECKPATCH_FLAGS) -f $<
+
+%.asm_style_check : %.asm
+	$(CHECKPATCH) $(CHECKPATCH_FLAGS) -f $<
+
+%.inc_style_check : %.inc
+	$(CHECKPATCH) $(CHECKPATCH_FLAGS) -f $<
+
+SOURCES_DIRS := . sse avx avx2 avx512 include no-aesni
 SOURCES := $(foreach dir,$(SOURCES_DIRS),$(wildcard $(dir)/*.[ch]) $(wildcard $(dir)/*.asm) $(wildcard $(dir)/*.inc))
-SOURCES_STYLE := $(foreach infile,$(SOURCES),-f $(infile))
-CHECKPATCH?=checkpatch.pl
-# SPACING - produces false positives with tyepdefs and *
-# CONSTANT_COMPARISON - forbids defensive programming technique
-# USE_FUNC - produces false positives for Windows target
-# INITIALISED_STATIC, LEADING_SPACE, SPLIT_STRING, CODE_INDENT,
-# PREFER_ALIGNED, UNSPECIFIED_INT, ARRAY_SIZE, GLOBAL_INITIALISERS,
-# NEW_TYPEDEFS, AVOID_EXTERNS, COMPLEX_MACRO, BLOCK_COMMENT_STYLE
-# - found obsolete in this project
+SOURCES_STYLE := $(foreach infile,$(SOURCES),$(infile)_style_check)
+
 .PHONY: style
-style:
-	$(CHECKPATCH) --no-tree --no-signoff --emacs --no-color \
---ignore CODE_INDENT,INITIALISED_STATIC,LEADING_SPACE,SPLIT_STRING,\
-UNSPECIFIED_INT,ARRAY_SIZE,BLOCK_COMMENT_STYLE,GLOBAL_INITIALISERS,\
-NEW_TYPEDEFS,AVOID_EXTERNS,COMPLEX_MACRO,PREFER_ALIGNED,USE_FUNC,\
-CONSTANT_COMPARISON,SPACING $(SOURCES_STYLE)
+style: $(SOURCES_STYLE)

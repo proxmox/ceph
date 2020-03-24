@@ -41,7 +41,7 @@ template <typename I>
 void DisableFeaturesRequest<I>::send_op() {
   I &image_ctx = this->m_image_ctx;
   CephContext *cct = image_ctx.cct;
-  ceph_assert(image_ctx.owner_lock.is_locked());
+  ceph_assert(ceph_mutex_is_locked(image_ctx.owner_lock));
 
   ldout(cct, 20) << this << " " << __func__ << ": features=" << m_features
 		 << dendl;
@@ -94,7 +94,7 @@ void DisableFeaturesRequest<I>::send_block_writes() {
   CephContext *cct = image_ctx.cct;
   ldout(cct, 20) << this << " " << __func__ << dendl;
 
-  RWLock::WLocker locker(image_ctx.owner_lock);
+  std::unique_lock locker{image_ctx.owner_lock};
   image_ctx.io_work_queue->block_writes(create_context_callback<
     DisableFeaturesRequest<I>,
     &DisableFeaturesRequest<I>::handle_block_writes>(this));
@@ -113,7 +113,7 @@ Context *DisableFeaturesRequest<I>::handle_block_writes(int *result) {
   m_writes_blocked = true;
 
   {
-    RWLock::WLocker locker(image_ctx.owner_lock);
+    std::unique_lock locker{image_ctx.owner_lock};
     // avoid accepting new requests from peers while we manipulate
     // the image features
     if (image_ctx.exclusive_lock != nullptr &&
@@ -124,34 +124,33 @@ Context *DisableFeaturesRequest<I>::handle_block_writes(int *result) {
     }
   }
 
-  send_acquire_exclusive_lock();
-  return nullptr;
+  return send_acquire_exclusive_lock(result);
 }
 
 template <typename I>
-void DisableFeaturesRequest<I>::send_acquire_exclusive_lock() {
+Context *DisableFeaturesRequest<I>::send_acquire_exclusive_lock(int *result) {
   I &image_ctx = this->m_image_ctx;
   CephContext *cct = image_ctx.cct;
   ldout(cct, 20) << this << " " << __func__ << dendl;
 
-  Context *ctx = create_context_callback<
-    DisableFeaturesRequest<I>,
-    &DisableFeaturesRequest<I>::handle_acquire_exclusive_lock>(this);
-
   {
-    RWLock::WLocker locker(image_ctx.owner_lock);
+    std::unique_lock locker{image_ctx.owner_lock};
     // if disabling features w/ exclusive lock supported, we need to
     // acquire the lock to temporarily block IO against the image
     if (image_ctx.exclusive_lock != nullptr &&
-	!image_ctx.exclusive_lock->is_lock_owner()) {
+        !image_ctx.exclusive_lock->is_lock_owner()) {
       m_acquired_lock = true;
 
+      Context *ctx = create_context_callback<
+        DisableFeaturesRequest<I>,
+        &DisableFeaturesRequest<I>::handle_acquire_exclusive_lock>(
+          this, image_ctx.exclusive_lock);
       image_ctx.exclusive_lock->acquire_lock(ctx);
-      return;
+      return nullptr;
     }
   }
 
-  ctx->complete(0);
+  return handle_acquire_exclusive_lock(result);
 }
 
 template <typename I>
@@ -160,16 +159,16 @@ Context *DisableFeaturesRequest<I>::handle_acquire_exclusive_lock(int *result) {
   CephContext *cct = image_ctx.cct;
   ldout(cct, 20) << this << " " << __func__ << ": r=" << *result << dendl;
 
-  image_ctx.owner_lock.get_read();
+  image_ctx.owner_lock.lock_shared();
   if (*result < 0) {
     lderr(cct) << "failed to lock image: " << cpp_strerror(*result) << dendl;
-    image_ctx.owner_lock.put_read();
+    image_ctx.owner_lock.unlock_shared();
     return handle_finish(*result);
   } else if (image_ctx.exclusive_lock != nullptr &&
              !image_ctx.exclusive_lock->is_lock_owner()) {
     lderr(cct) << "failed to acquire exclusive lock" << dendl;
     *result = image_ctx.exclusive_lock->get_unlocked_op_error();
-    image_ctx.owner_lock.put_read();
+    image_ctx.owner_lock.unlock_shared();
     return handle_finish(*result);
   }
 
@@ -205,7 +204,7 @@ Context *DisableFeaturesRequest<I>::handle_acquire_exclusive_lock(int *result) {
       m_disable_flags |= RBD_FLAG_OBJECT_MAP_INVALID;
     }
   } while (false);
-  image_ctx.owner_lock.put_read();
+  image_ctx.owner_lock.unlock_shared();
 
   if (*result < 0) {
     return handle_finish(*result);
@@ -356,7 +355,7 @@ void DisableFeaturesRequest<I>::send_close_journal() {
   CephContext *cct = image_ctx.cct;
 
   {
-    RWLock::WLocker locker(image_ctx.owner_lock);
+    std::unique_lock locker{image_ctx.owner_lock};
     if (image_ctx.journal != nullptr) {
       ldout(cct, 20) << this << " " << __func__ << dendl;
 
@@ -385,7 +384,7 @@ Context *DisableFeaturesRequest<I>::handle_close_journal(int *result) {
   }
 
   ceph_assert(m_journal != nullptr);
-  delete m_journal;
+  m_journal->put();
   m_journal = nullptr;
 
   send_remove_journal();
@@ -607,7 +606,8 @@ void DisableFeaturesRequest<I>::send_release_exclusive_lock() {
 
   Context *ctx = create_context_callback<
     DisableFeaturesRequest<I>,
-    &DisableFeaturesRequest<I>::handle_release_exclusive_lock>(this);
+    &DisableFeaturesRequest<I>::handle_release_exclusive_lock>(
+      this, image_ctx.exclusive_lock);
 
   image_ctx.exclusive_lock->release_lock(ctx);
 }
@@ -628,7 +628,7 @@ Context *DisableFeaturesRequest<I>::handle_finish(int r) {
   ldout(cct, 20) << this << " " << __func__ << ": r=" << r << dendl;
 
   {
-    RWLock::WLocker locker(image_ctx.owner_lock);
+    std::unique_lock locker{image_ctx.owner_lock};
     if (image_ctx.exclusive_lock != nullptr && m_requests_blocked) {
       image_ctx.exclusive_lock->unblock_requests();
     }

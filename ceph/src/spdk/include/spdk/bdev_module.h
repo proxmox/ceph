@@ -119,7 +119,12 @@ struct spdk_bdev_module {
 	 * First notification that a bdev should be examined by a virtual bdev module.
 	 * Virtual bdev modules may use this to examine newly-added bdevs and automatically
 	 * create their own vbdevs, but no I/O to device can be send to bdev at this point.
-	 * Only vbdevs based on config files can be created here.
+	 * Only vbdevs based on config files can be created here. This callback must make
+	 * its decision to claim the module synchronously.
+	 * It must also call spdk_bdev_module_examine_done() before returning. If the module
+	 * needs to perform asynchronous operations such as I/O after claiming the bdev,
+	 * it may define an examine_disk callback.  The examine_disk callback will then
+	 * be called immediately after the examine_config callback returns.
 	 */
 	void (*examine_config)(struct spdk_bdev *bdev);
 
@@ -261,10 +266,13 @@ struct spdk_bdev {
 	uint64_t blockcnt;
 
 	/**
-	 * This is used to make sure buffers are sector aligned.
-	 * This causes double buffering on writes.
+	 * Specifies an alignment requirement for data buffers associated with an spdk_bdev_io.
+	 * 0 = no alignment requirement
+	 * >0 = alignment requirement is 2 ^ required_alignment.
+	 * bdev layer will automatically double buffer any spdk_bdev_io that violates this
+	 * alignment, before the spdk_bdev_io is submitted to the bdev module.
 	 */
-	bool need_aligned_buffer;
+	uint8_t required_alignment;
 
 	/**
 	 * Specifies whether the optimal_io_boundary is mandatory or
@@ -288,6 +296,39 @@ struct spdk_bdev {
 	 * Fill with zeroes if no uuid is available.
 	 */
 	struct spdk_uuid uuid;
+
+	/** Size in bytes of a metadata for the backend */
+	uint32_t md_len;
+
+	/**
+	 * Specify metadata location and set to true if metadata is interleaved
+	 * with block data or false if metadata is separated with block data.
+	 *
+	 * Note that this field is valid only if there is metadata.
+	 */
+	bool md_interleave;
+
+	/**
+	 * DIF type for this bdev.
+	 *
+	 * Note that this field is valid only if there is metadata.
+	 */
+	enum spdk_dif_type dif_type;
+
+	/*
+	 * DIF location.
+	 *
+	 * Set to true if DIF is set in the first 8 bytes of metadata or false
+	 * if DIF is set in the last 8 bytes of metadata.
+	 *
+	 * Note that this field is valid only if DIF is enabled.
+	 */
+	bool dif_is_head_of_md;
+
+	/**
+	 * Specify whether each DIF check type is enabled.
+	 */
+	uint32_t dif_check_flags;
 
 	/**
 	 * Pointer to the bdev module that registered this bdev.
@@ -353,10 +394,24 @@ struct spdk_bdev {
 
 		/** accumulated I/O statistics for previously deleted channels of this bdev */
 		struct spdk_bdev_io_stat stat;
+
+		/** histogram enabled on this bdev */
+		bool	histogram_enabled;
+		bool	histogram_in_progress;
 	} internal;
 };
 
-typedef void (*spdk_bdev_io_get_buf_cb)(struct spdk_io_channel *ch, struct spdk_bdev_io *bdev_io);
+/**
+ * Callback when buffer is allocated for the bdev I/O.
+ *
+ * \param ch The I/O channel the bdev I/O was handled on.
+ * \param bdev_io The bdev I/O
+ * \param success True if buffer is allocated successfully or the bdev I/O has an SGL
+ * assigned already, or false if it failed. The possible reason of failure is the size
+ * of the buffer to allocate is greater than the permitted maximum.
+ */
+typedef void (*spdk_bdev_io_get_buf_cb)(struct spdk_io_channel *ch, struct spdk_bdev_io *bdev_io,
+					bool success);
 
 #define BDEV_IO_NUM_CHILD_IOV 32
 
@@ -381,6 +436,9 @@ struct spdk_bdev_io {
 			/** For SG buffer cases, number of iovecs in iovec array. */
 			int iovcnt;
 
+			/* Metadata buffer */
+			void *md_buf;
+
 			/** Total size of data to be transferred. */
 			uint64_t num_blocks;
 
@@ -398,6 +456,17 @@ struct spdk_bdev_io {
 
 			/** count of outstanding batched split I/Os */
 			uint32_t split_outstanding;
+
+			struct {
+				/** Whether the buffer should be populated with the real data */
+				uint8_t populate : 1;
+
+				/** Whether the buffer should be committed back to disk */
+				uint8_t commit : 1;
+
+				/** True if this request is in the 'start' phase of zcopy. False if in 'end'. */
+				uint8_t start : 1;
+			} zcopy;
 		} bdev;
 		struct {
 			/** Channel reference held while messages for this reset are in progress. */
@@ -486,6 +555,12 @@ struct spdk_bdev_io {
 		/** requested size of the buffer associated with this I/O */
 		uint64_t buf_len;
 
+		/** if the request is double buffered, store original request iovs here */
+		struct iovec  bounce_iov;
+		struct iovec *orig_iovs;
+		int           orig_iovcnt;
+		void	     *orig_md_buf;
+
 		/** Callback for when buf is allocated */
 		spdk_bdev_io_get_buf_cb get_buf_cb;
 
@@ -519,7 +594,10 @@ struct spdk_bdev_io {
 int spdk_bdev_register(struct spdk_bdev *bdev);
 
 /**
- * Unregister a bdev
+ * Start unregistering a bdev. This will notify each currently open descriptor
+ * on this bdev about the hotremoval in hopes that the upper layers will stop
+ * using this bdev and manually close all the descriptors with spdk_bdev_close().
+ * The actual bdev unregistration may be deferred until all descriptors are closed.
  *
  * \param bdev Block device to unregister.
  * \param cb_fn Callback function to be called when the unregister is complete.
@@ -542,6 +620,10 @@ void spdk_bdev_destruct_done(struct spdk_bdev *bdev, int bdeverrno);
 
 /**
  * Register a virtual bdev.
+ *
+ * This function is deprecated.  Users should call spdk_bdev_register instead.
+ * The bdev layer currently makes no use of the base_bdevs array, so switching
+ * to spdk_bdev_register results in no loss of functionality.
  *
  * \param vbdev Virtual bdev to register.
  * \param base_bdevs Array of bdevs upon which this vbdev is based.
@@ -647,10 +729,14 @@ const struct spdk_bdev_aliases_list *spdk_bdev_get_aliases(const struct spdk_bde
 
 /**
  * Allocate a buffer for given bdev_io.  Allocation will happen
- * only if the bdev_io has no assigned SGL yet. The buffer will be
- * freed automatically on \c spdk_bdev_free_io() call. This call
- * will never fail - in case of lack of memory given callback \c cb
- * will be deferred until enough memory is freed.
+ * only if the bdev_io has no assigned SGL yet or SGL is not
+ * aligned to \c bdev->required_alignment.  If SGL is not aligned,
+ * this call will cause copy from SGL to bounce buffer on write
+ * path or copy from bounce buffer to SGL before completion
+ * callback on read path.  The buffer will be freed automatically
+ * on \c spdk_bdev_free_io() call. This call will never fail.
+ * In case of lack of memory given callback \c cb will be deferred
+ * until enough memory is freed.
  *
  * \param bdev_io I/O to allocate buffer for.
  * \param cb callback to be called when the buffer is allocated
@@ -673,6 +759,15 @@ void spdk_bdev_io_get_buf(struct spdk_bdev_io *bdev_io, spdk_bdev_io_get_buf_cb 
  *
  */
 void spdk_bdev_io_set_buf(struct spdk_bdev_io *bdev_io, void *buf, size_t len);
+
+/**
+ * Set the given buffer as metadata buffer described by this bdev_io.
+ *
+ * \param bdev_io I/O to set the buffer on.
+ * \param md_buf The buffer to set as the active metadata buffer.
+ * \param len The length of the metadata buffer.
+ */
+void spdk_bdev_io_set_md_buf(struct spdk_bdev_io *bdev_io, void *md_buf, size_t len);
 
 /**
  * Complete a bdev_io
@@ -711,6 +806,14 @@ void spdk_bdev_io_complete_scsi_status(struct spdk_bdev_io *bdev_io, enum spdk_s
  * \return thread that submitted the I/O
  */
 struct spdk_thread *spdk_bdev_io_get_thread(struct spdk_bdev_io *bdev_io);
+
+/**
+ * Get the bdev module's I/O channel that the given bdev_io was submitted on.
+ *
+ * \param bdev_io I/O
+ * \return the bdev module's I/O channel that the given bdev_io was submitted on.
+ */
+struct spdk_io_channel *spdk_bdev_io_get_io_channel(struct spdk_bdev_io *bdev_io);
 
 /**
  * Resize for a bdev.
@@ -848,10 +951,11 @@ int spdk_bdev_part_free(struct spdk_bdev_part *part);
 /**
  * Calls spdk_bdev_unregister on the bdev for each part associated with base_bdev.
  *
- * \param base_bdev The spdk_bdev upon which an spdk_bdev-part_base is built
+ * \param part_base The part base object built on top of an spdk_bdev
  * \param tailq The list of spdk_bdev_part bdevs associated with this base bdev.
  */
-void spdk_bdev_part_base_hotremove(struct spdk_bdev *base_bdev, struct bdev_part_tailq *tailq);
+void spdk_bdev_part_base_hotremove(struct spdk_bdev_part_base *part_base,
+				   struct bdev_part_tailq *tailq);
 
 /**
  * Construct a new spdk_bdev_part_base on top of the provided bdev.
@@ -954,24 +1058,12 @@ struct spdk_bdev *spdk_bdev_part_get_base_bdev(struct spdk_bdev_part *part);
 uint64_t spdk_bdev_part_get_offset_blocks(struct spdk_bdev_part *part);
 
 /*
- * Macro used to register module for later initialization.
+ *  Macro used to register module for later initialization.
  */
-#define SPDK_BDEV_MODULE_REGISTER(_module)							\
-	__attribute__((constructor)) static void						\
-	SPDK_BDEV_MODULE_REGISTER_FN_NAME(__LINE__)  (void)					\
-	{											\
-	    spdk_bdev_module_list_add(_module);							\
-	}
-
-/*
- * This is helper macro for automatic function generation.
- *
- */
-#define SPDK_BDEV_MODULE_REGISTER_FN_NAME(line) SPDK_BDEV_MODULE_REGISTER_FN_NAME_(line)
-
-/*
- *  Second helper macro for "stringize" trick to work.
- */
-#define SPDK_BDEV_MODULE_REGISTER_FN_NAME_(line) spdk_bdev_module_register_ ## line
+#define SPDK_BDEV_MODULE_REGISTER(name, module) \
+static void __attribute__((constructor)) spdk_bdev_module_register_##name(void) \
+{ \
+	spdk_bdev_module_list_add(module); \
+} \
 
 #endif /* SPDK_BDEV_MODULE_H */

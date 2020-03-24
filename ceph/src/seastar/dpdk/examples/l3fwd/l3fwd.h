@@ -1,34 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2016 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2016 Intel Corporation
  */
 
 #ifndef __L3_FWD_H__
@@ -83,7 +54,7 @@ struct mbuf_table {
 };
 
 struct lcore_rx_queue {
-	uint8_t port_id;
+	uint16_t port_id;
 	uint8_t queue_id;
 } __rte_cache_aligned;
 
@@ -117,7 +88,7 @@ extern struct lcore_conf lcore_conf[RTE_MAX_LCORE];
 
 /* Send burst of packets on an output interface */
 static inline int
-send_burst(struct lcore_conf *qconf, uint16_t n, uint8_t port)
+send_burst(struct lcore_conf *qconf, uint16_t n, uint16_t port)
 {
 	struct rte_mbuf **m_table;
 	int ret;
@@ -139,7 +110,7 @@ send_burst(struct lcore_conf *qconf, uint16_t n, uint8_t port)
 /* Enqueue a single packet, and send burst if queue is filled */
 static inline int
 send_single_packet(struct lcore_conf *qconf,
-		struct rte_mbuf *m, uint8_t port)
+		   struct rte_mbuf *m, uint16_t port)
 {
 	uint16_t len;
 
@@ -212,11 +183,11 @@ int
 lpm_check_ptype(int portid);
 
 uint16_t
-em_cb_parse_ptype(uint8_t port, uint16_t queue, struct rte_mbuf *pkts[],
+em_cb_parse_ptype(uint16_t port, uint16_t queue, struct rte_mbuf *pkts[],
 		  uint16_t nb_pkts, uint16_t max_pkts, void *user_param);
 
 uint16_t
-lpm_cb_parse_ptype(uint8_t port, uint16_t queue, struct rte_mbuf *pkts[],
+lpm_cb_parse_ptype(uint16_t port, uint16_t queue, struct rte_mbuf *pkts[],
 		   uint16_t nb_pkts, uint16_t max_pkts, void *user_param);
 
 int

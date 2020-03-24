@@ -3,14 +3,12 @@
 NVMF_PORT=4420
 NVMF_IP_PREFIX="192.168.100"
 NVMF_IP_LEAST_ADDR=8
+NVMF_TCP_IP_ADDRESS="127.0.0.1"
 
-if [ -z "$NVMF_APP" ]; then
-	NVMF_APP=./app/nvmf_tgt/nvmf_tgt
-fi
+: ${NVMF_APP_SHM_ID="0"}; export NVMF_APP_SHM_ID
+: ${NVMF_APP="./app/nvmf_tgt/nvmf_tgt -i $NVMF_APP_SHM_ID -e 0xFFFF"}; export NVMF_APP
 
-if [ -z "$NVMF_TEST_CORE_MASK" ]; then
-	NVMF_TEST_CORE_MASK=0xFF
-fi
+have_pci_nics=0
 
 function load_ib_rdma_modules()
 {
@@ -46,50 +44,57 @@ function detect_soft_roce_nics()
 	fi
 }
 
-function detect_mellanox_nics()
-{
-	if ! hash lspci; then
-		echo "No NICs"
-		return 0
-	fi
 
-	nvmf_nic_bdfs=`lspci | grep Ethernet | grep Mellanox | awk -F ' ' '{print "0000:"$1}'`
-	mlx_core_driver="mlx4_core"
-	mlx_ib_driver="mlx4_ib"
-	mlx_en_driver="mlx4_en"
+# args 1 and 2 represent the grep filters for finding our NICS.
+# subsequent args are all drivers that should be loaded if we find these NICs.
+# Those drivers should be supplied in the correct order.
+function detect_nics_and_probe_drivers()
+{
+	NIC_VENDOR="$1"
+	NIC_CLASS="$2"
+
+	nvmf_nic_bdfs=`lspci | grep Ethernet | grep "$NIC_VENDOR" | grep "$NIC_CLASS" | awk -F ' ' '{print "0000:"$1}'`
 
 	if [ -z "$nvmf_nic_bdfs" ]; then
-		echo "No NICs"
 		return 0
 	fi
 
-	# for nvmf target loopback test, suppose we only have one type of card.
-	for nvmf_nic_bdf in $nvmf_nic_bdfs
-	do
-		result=`lspci -vvv -s $nvmf_nic_bdf | grep 'Kernel modules' | awk -F ' ' '{print $3}'`
-		if [ "$result" == "mlx5_core" ]; then
-			mlx_core_driver="mlx5_core"
-			mlx_ib_driver="mlx5_ib"
-			mlx_en_driver=""
-		fi
-		break;
-	done
+	have_pci_nics=1
+	if [ $# -ge 2 ]; then
+		# shift out the first two positional arguments.
+		shift 2
+		# Iterate through the remaining arguments.
+		for i; do
+			modprobe "$i"
+		done
+	fi
+}
 
-	modprobe $mlx_core_driver
-	modprobe $mlx_ib_driver
-	if [ -n "$mlx_en_driver" ]; then
-		modprobe $mlx_en_driver
+
+function detect_pci_nics()
+{
+
+	if ! hash lspci; then
+		return 0
 	fi
 
-	# The mlx4 driver takes an extra few seconds to load after modprobe returns,
-	# otherwise iproute2 operations will do nothing.
+	detect_nics_and_probe_drivers "Mellanox" "ConnectX-4" "mlx4_core" "mlx4_ib" "mlx4_en"
+	detect_nics_and_probe_drivers "Mellanox" "ConnectX-5" "mlx5_core" "mlx5_ib"
+	detect_nics_and_probe_drivers "Intel" "X722" "i40e" "i40iw"
+	detect_nics_and_probe_drivers "Chelsio" "Unified Wire" "cxgb4" "iw_cxgb4"
+
+	if [ "$have_pci_nics" -eq "0" ]; then
+		return 0
+	fi
+
+	# Provide time for drivers to properly load.
 	sleep 5
 }
 
 function detect_rdma_nics()
 {
-	nics=$(detect_mellanox_nics)
-	if [ "$nics" == "No NICs" ]; then
+	detect_pci_nics
+	if [ "$have_pci_nics" -eq "0" ]; then
 		detect_soft_roce_nics
 	fi
 }
@@ -136,7 +141,7 @@ function nvmfcleanup()
 	sync
 	set +e
 	for i in {1..20}; do
-		modprobe -v -r nvme-rdma nvme-fabrics
+		modprobe -v -r nvme-$TEST_TRANSPORT nvme-fabrics
 		if [ $? -eq 0 ]; then
 			set -e
 			return
@@ -147,22 +152,57 @@ function nvmfcleanup()
 
 	# So far unable to remove the kernel modules. Try
 	# one more time and let it fail.
-	modprobe -v -r nvme-rdma nvme-fabrics
+	modprobe -v -r nvme-$TEST_TRANSPORT nvme-fabrics
 }
 
 function nvmftestinit()
 {
-	if [ "$1" == "iso" ]; then
-		$rootdir/scripts/setup.sh
-		rdma_device_init
+	if [ -z $TEST_TRANSPORT ]; then
+		echo "transport not specified - use --transport= to specify"
+		return 1
 	fi
+	if [ "$TEST_MODE" == "iso" ]; then
+		$rootdir/scripts/setup.sh
+		if [ "$TEST_TRANSPORT" == "rdma" ]; then
+			rdma_device_init
+		fi
+	fi
+	if [ "$TEST_TRANSPORT" == "rdma" ]; then
+		RDMA_IP_LIST=$(get_available_rdma_ips)
+		NVMF_FIRST_TARGET_IP=$(echo "$RDMA_IP_LIST" | head -n 1)
+		if [ -z $NVMF_FIRST_TARGET_IP ]; then
+			echo "no NIC for nvmf test"
+			exit 0
+		fi
+	elif [ "$TEST_TRANSPORT" == "tcp" ]; then
+		NVMF_FIRST_TARGET_IP=127.0.0.1
+	fi
+}
+
+function nvmfappstart()
+{
+	timing_enter start_nvmf_tgt
+	$NVMF_APP $1 &
+	nvmfpid=$!
+	trap "process_shm --id $NVMF_APP_SHM_ID; nvmftestfini; exit 1" SIGINT SIGTERM EXIT
+	waitforlisten $nvmfpid
+	# currently we run the host/perf test for TCP even on systems without kernel nvme-tcp
+	#  support; that's fine since the host/perf test uses the SPDK initiator
+	# maybe later we will enforce modprobe to succeed once we have systems in the test pool
+	#  with nvme-tcp kernel support - but until then let this pass so we can still run the
+	#  host/perf test with the tcp transport
+	modprobe nvme-$TEST_TRANSPORT || true
+	timing_exit start_nvmf_tgt
 }
 
 function nvmftestfini()
 {
-	if [ "$1" == "iso" ]; then
+	killprocess $nvmfpid
+	if [ "$TEST_MODE" == "iso" ]; then
 		$rootdir/scripts/setup.sh reset
-		rdma_device_init
+		if [ "$TEST_TRANSPORT" == "rdma" ]; then
+			rdma_device_init
+		fi
 	fi
 }
 
@@ -189,12 +229,29 @@ function check_ip_is_soft_roce()
 	IP=$1
 	if hash rxe_cfg; then
 		dev=$(ip -4 -o addr show | grep $IP | cut -d" " -f2)
-		if rxe_cfg | grep $dev; then
-			return 0
-		else
+		if [ -z $(rxe_cfg | grep $dev | awk '{print $4}') ]; then
 			return 1
+		else
+			return 0
 		fi
 	else
 		return 1
 	fi
+}
+
+function nvme_connect()
+{
+	local init_count=$(nvme list | wc -l)
+
+	nvme connect $@
+	if [ $? != 0 ]; then return $?; fi
+
+	for i in $(seq 1 10); do
+		if [ $(nvme list | wc -l) -gt $init_count ]; then
+			return 0
+		else
+			sleep 1s
+		fi
+	done
+	return 1
 }

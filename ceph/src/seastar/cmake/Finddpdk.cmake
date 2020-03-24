@@ -47,35 +47,55 @@ find_library (dpdk_MBUF_LIBRARY rte_mbuf)
 find_library (dpdk_CFGFILE_LIBRARY rte_cfgfile)
 find_library (dpdk_EAL_LIBRARY rte_eal)
 find_library (dpdk_ETHDEV_LIBRARY rte_ethdev)
+find_library (dpdk_NET_LIBRARY rte_net)
+find_library (dpdk_TIMER_LIBRARY rte_timer)
+find_library (dpdk_PCI_LIBRARY rte_pci)
+find_library (dpdk_BUS_PCI_LIBRARY rte_bus_pci)
+find_library (dpdk_BUS_VDEV_LIBRARY rte_bus_vdev)
 
 include (FindPackageHandleStandardArgs)
 
+set (dpdk_REQUIRED
+  dpdk_INCLUDE_DIR
+  dpdk_PMD_VMXNET3_UIO_LIBRARY
+  dpdk_PMD_I40E_LIBRARY
+  dpdk_PMD_IXGBE_LIBRARY
+  dpdk_PMD_E1000_LIBRARY
+  dpdk_PMD_BNXT_LIBRARY
+  dpdk_PMD_RING_LIBRARY
+  dpdk_PMD_CXGBE_LIBRARY
+  dpdk_PMD_ENA_LIBRARY
+  dpdk_PMD_ENIC_LIBRARY
+  dpdk_PMD_NFP_LIBRARY
+  dpdk_PMD_QEDE_LIBRARY
+  dpdk_RING_LIBRARY
+  dpdk_KVARGS_LIBRARY
+  dpdk_MEMPOOL_LIBRARY
+  dpdk_MEMPOOL_RING_LIBRARY
+  dpdk_HASH_LIBRARY
+  dpdk_CMDLINE_LIBRARY
+  dpdk_MBUF_LIBRARY
+  dpdk_CFGFILE_LIBRARY
+  dpdk_EAL_LIBRARY
+  dpdk_ETHDEV_LIBRARY
+  dpdk_NET_LIBRARY
+  dpdk_TIMER_LIBRARY
+  dpdk_PCI_LIBRARY
+  dpdk_BUS_PCI_LIBRARY
+  dpdk_BUS_VDEV_LIBRARY)
+
+# fm10k, sfc_efx driver can only build on x86
+if (CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64")
+  set (dpdk_REQUIRED
+    ${dpdk_REQUIRED}
+    dpdk_PMD_FM10K_LIBRARY
+    dpdk_PMD_SFC_EFX_LIBRARY)
+endif()
+
 find_package_handle_standard_args (dpdk
   REQUIRED_VARS
-    dpdk_INCLUDE_DIR
-    dpdk_PMD_VMXNET3_UIO_LIBRARY
-    dpdk_PMD_I40E_LIBRARY
-    dpdk_PMD_IXGBE_LIBRARY
-    dpdk_PMD_E1000_LIBRARY
-    dpdk_PMD_BNXT_LIBRARY
-    dpdk_PMD_RING_LIBRARY
-    dpdk_PMD_CXGBE_LIBRARY
-    dpdk_PMD_ENA_LIBRARY
-    dpdk_PMD_ENIC_LIBRARY
-    dpdk_PMD_FM10K_LIBRARY
-    dpdk_PMD_NFP_LIBRARY
-    dpdk_PMD_QEDE_LIBRARY
-    dpdk_RING_LIBRARY
-    dpdk_KVARGS_LIBRARY
-    dpdk_MEMPOOL_LIBRARY
-    dpdk_MEMPOOL_RING_LIBRARY
-    dpdk_PMD_SFC_EFX_LIBRARY
-    dpdk_HASH_LIBRARY
-    dpdk_CMDLINE_LIBRARY
-    dpdk_MBUF_LIBRARY
-    dpdk_CFGFILE_LIBRARY
-    dpdk_EAL_LIBRARY
-    dpdk_ETHDEV_LIBRARY)
+    ${dpdk_REQUIRED}
+)
 
 if (dpdk_FOUND AND NOT (TARGET dpdk::dpdk))
   set (dpdk_LIBRARIES
@@ -83,30 +103,37 @@ if (dpdk_FOUND AND NOT (TARGET dpdk::dpdk))
     ${dpdk_CMDLINE_LIBRARY}
     ${dpdk_ETHDEV_LIBRARY}
     ${dpdk_HASH_LIBRARY}
-    ${dpdk_KVARGS_LIBRARY}
     ${dpdk_MBUF_LIBRARY}
     ${dpdk_EAL_LIBRARY}
+    ${dpdk_KVARGS_LIBRARY}
     ${dpdk_MEMPOOL_LIBRARY}
     ${dpdk_MEMPOOL_RING_LIBRARY}
     ${dpdk_PMD_BNXT_LIBRARY}
     ${dpdk_PMD_E1000_LIBRARY}
     ${dpdk_PMD_ENA_LIBRARY}
     ${dpdk_PMD_ENIC_LIBRARY}
-    ${dpdk_PMD_FM10K_LIBRARY}
     ${dpdk_PMD_QEDE_LIBRARY}
     ${dpdk_PMD_I40E_LIBRARY}
     ${dpdk_PMD_IXGBE_LIBRARY}
     ${dpdk_PMD_NFP_LIBRARY}
     ${dpdk_PMD_RING_LIBRARY}
-    ${dpdk_PMD_SFC_EFX_LIBRARY}
-    ${dpdk_PMD_VMXNET3_UIO_LIBRARY}
-    ${dpdk_RING_LIBRARY})
+    ${dpdk_PMD_VMXNET3_UIO_LIBRARY})
 
-  add_library (_dpdk_common INTERFACE IMPORTED)
+  if (CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64")
+    set (dpdk_LIBRARIES
+      ${dpdk_LIBRARIES}
+      ${dpdk_PMD_FM10K_LIBRARY}
+      ${dpdk_PMD_SFC_EFX_LIBRARY})
+  endif()
 
-  set_target_properties (_dpdk_common
-    PROPERTIES
-      INTERFACE_COMPILE_OPTIONS -march=native)
+  set (dpdk_LIBRARIES
+    ${dpdk_LIBRARIES}
+    ${dpdk_RING_LIBRARY}
+    ${dpdk_NET_LIBRARY}
+    ${dpdk_TIMER_LIBRARY}
+    ${dpdk_PCI_LIBRARY}
+    ${dpdk_BUS_PCI_LIBRARY}
+    ${dpdk_BUS_VDEV_LIBRARY})
 
   #
   # pmd_vmxnet3_uio
@@ -128,7 +155,6 @@ if (dpdk_FOUND AND NOT (TARGET dpdk::dpdk))
   set_target_properties (dpdk::pmd_i40e
     PROPERTIES
       IMPORTED_LOCATION ${dpdk_PMD_I40E_LIBRARY}
-      INTERFACE_LINK_LIBRARIES _dpdk_common
       INTERFACE_INCLUDE_DIRECTORIES ${dpdk_INCLUDE_DIR})
 
   #
@@ -140,7 +166,6 @@ if (dpdk_FOUND AND NOT (TARGET dpdk::dpdk))
   set_target_properties (dpdk::pmd_ixgbe
     PROPERTIES
       IMPORTED_LOCATION ${dpdk_PMD_IXGBE_LIBRARY}
-      INTERFACE_LINK_LIBRARIES _dpdk_common
       INTERFACE_INCLUDE_DIRECTORIES ${dpdk_INCLUDE_DIR})
 
   #
@@ -152,7 +177,6 @@ if (dpdk_FOUND AND NOT (TARGET dpdk::dpdk))
   set_target_properties (dpdk::pmd_e1000
     PROPERTIES
       IMPORTED_LOCATION ${dpdk_PMD_E1000_LIBRARY}
-      INTERFACE_LINK_LIBRARIES _dpdk_common
       INTERFACE_INCLUDE_DIRECTORIES ${dpdk_INCLUDE_DIR})
 
   #
@@ -164,7 +188,6 @@ if (dpdk_FOUND AND NOT (TARGET dpdk::dpdk))
   set_target_properties (dpdk::pmd_bnxt
     PROPERTIES
       IMPORTED_LOCATION ${dpdk_PMD_BNXT_LIBRARY}
-      INTERFACE_LINK_LIBRARIES _dpdk_common
       INTERFACE_INCLUDE_DIRECTORIES ${dpdk_INCLUDE_DIR})
 
   #
@@ -176,7 +199,6 @@ if (dpdk_FOUND AND NOT (TARGET dpdk::dpdk))
   set_target_properties (dpdk::pmd_ring
     PROPERTIES
       IMPORTED_LOCATION ${dpdk_PMD_RING_LIBRARY}
-      INTERFACE_LINK_LIBRARIES _dpdk_common
       INTERFACE_INCLUDE_DIRECTORIES ${dpdk_INCLUDE_DIR})
 
   #
@@ -188,7 +210,6 @@ if (dpdk_FOUND AND NOT (TARGET dpdk::dpdk))
   set_target_properties (dpdk::pmd_cxgbe
     PROPERTIES
       IMPORTED_LOCATION ${dpdk_PMD_CXGBE_LIBRARY}
-      INTERFACE_LINK_LIBRARIES _dpdk_common
       INTERFACE_INCLUDE_DIRECTORIES ${dpdk_INCLUDE_DIR})
 
   #
@@ -200,7 +221,6 @@ if (dpdk_FOUND AND NOT (TARGET dpdk::dpdk))
   set_target_properties (dpdk::pmd_ena
     PROPERTIES
       IMPORTED_LOCATION ${dpdk_PMD_ENA_LIBRARY}
-      INTERFACE_LINK_LIBRARIES _dpdk_common
       INTERFACE_INCLUDE_DIRECTORIES ${dpdk_INCLUDE_DIR})
 
   #
@@ -212,7 +232,6 @@ if (dpdk_FOUND AND NOT (TARGET dpdk::dpdk))
   set_target_properties (dpdk::pmd_enic
     PROPERTIES
       IMPORTED_LOCATION ${dpdk_PMD_ENIC_LIBRARY}
-      INTERFACE_LINK_LIBRARIES _dpdk_common
       INTERFACE_INCLUDE_DIRECTORIES ${dpdk_INCLUDE_DIR})
 
   #
@@ -224,7 +243,6 @@ if (dpdk_FOUND AND NOT (TARGET dpdk::dpdk))
   set_target_properties (dpdk::pmd_fm10k
     PROPERTIES
       IMPORTED_LOCATION ${dpdk_PMD_FM10K_LIBRARY}
-      INTERFACE_LINK_LIBRARIES _dpdk_common
       INTERFACE_INCLUDE_DIRECTORIES ${dpdk_INCLUDE_DIR})
 
   #
@@ -236,7 +254,6 @@ if (dpdk_FOUND AND NOT (TARGET dpdk::dpdk))
   set_target_properties (dpdk::pmd_nfp
     PROPERTIES
       IMPORTED_LOCATION ${dpdk_PMD_NFP_LIBRARY}
-      INTERFACE_LINK_LIBRARIES _dpdk_common
       INTERFACE_INCLUDE_DIRECTORIES ${dpdk_INCLUDE_DIR})
 
   #
@@ -248,7 +265,6 @@ if (dpdk_FOUND AND NOT (TARGET dpdk::dpdk))
   set_target_properties (dpdk::pmd_qede
     PROPERTIES
       IMPORTED_LOCATION ${dpdk_PMD_QEDE_LIBRARY}
-      INTERFACE_LINK_LIBRARIES _dpdk_common
       INTERFACE_INCLUDE_DIRECTORIES ${dpdk_INCLUDE_DIR})
 
   #
@@ -260,7 +276,6 @@ if (dpdk_FOUND AND NOT (TARGET dpdk::dpdk))
   set_target_properties (dpdk::pmd_sfc_efx
     PROPERTIES
       IMPORTED_LOCATION ${dpdk_PMD_SFC_EFX_LIBRARY}
-      INTERFACE_LINK_LIBRARIES _dpdk_common
       INTERFACE_INCLUDE_DIRECTORIES ${dpdk_INCLUDE_DIR})
 
   #
@@ -272,7 +287,6 @@ if (dpdk_FOUND AND NOT (TARGET dpdk::dpdk))
   set_target_properties (dpdk::hash
     PROPERTIES
       IMPORTED_LOCATION ${dpdk_HASH_LIBRARY}
-      INTERFACE_LINK_LIBRARIES _dpdk_common
       INTERFACE_INCLUDE_DIRECTORIES ${dpdk_INCLUDE_DIR})
 
   #
@@ -284,7 +298,6 @@ if (dpdk_FOUND AND NOT (TARGET dpdk::dpdk))
   set_target_properties (dpdk::kvargs
     PROPERTIES
       IMPORTED_LOCATION ${dpdk_KVARGS_LIBRARY}
-      INTERFACE_LINK_LIBRARIES _dpdk_common
       INTERFACE_INCLUDE_DIRECTORIES ${dpdk_INCLUDE_DIR})
 
   #
@@ -296,12 +309,11 @@ if (dpdk_FOUND AND NOT (TARGET dpdk::dpdk))
   set_target_properties (dpdk::mbuf
     PROPERTIES
       IMPORTED_LOCATION ${dpdk_MBUF_LIBRARY}
-      INTERFACE_LINK_LIBRARIES _dpdk_common
       INTERFACE_INCLUDE_DIRECTORIES ${dpdk_INCLUDE_DIR}
       INTERFACE_LINK_LIBRARIES dpdk::eal)
 
   #
-  # eal
+  # eal (since dpdk 18.08, eal depends on kvargs)
   #
 
   add_library (dpdk::eal UNKNOWN IMPORTED)
@@ -309,8 +321,8 @@ if (dpdk_FOUND AND NOT (TARGET dpdk::dpdk))
   set_target_properties (dpdk::eal
     PROPERTIES
       IMPORTED_LOCATION ${dpdk_EAL_LIBRARY}
-      INTERFACE_LINK_LIBRARIES _dpdk_common
-      INTERFACE_INCLUDE_DIRECTORIES ${dpdk_INCLUDE_DIR})
+      INTERFACE_INCLUDE_DIRECTORIES ${dpdk_INCLUDE_DIR}
+      INTERFACE_LINK_LIBRARIES dpdk::kvargs)
 
   #
   # ethdev
@@ -321,7 +333,6 @@ if (dpdk_FOUND AND NOT (TARGET dpdk::dpdk))
   set_target_properties (dpdk::ethdev
     PROPERTIES
       IMPORTED_LOCATION ${dpdk_ETHDEV_LIBRARY}
-      INTERFACE_LINK_LIBRARIES _dpdk_common
       INTERFACE_INCLUDE_DIRECTORIES ${dpdk_INCLUDE_DIR}
       INTERACE_LINK_LIBRARIES dpdk::eal)
 
@@ -334,7 +345,6 @@ if (dpdk_FOUND AND NOT (TARGET dpdk::dpdk))
   set_target_properties (dpdk::mempool
     PROPERTIES
       IMPORTED_LOCATION ${dpdk_MEMPOOL_LIBRARY}
-      INTERFACE_LINK_LIBRARIES _dpdk_common
       INTERFACE_INCLUDE_DIRECTORIES ${dpdk_INCLUDE_DIR})
 
   #
@@ -346,7 +356,6 @@ if (dpdk_FOUND AND NOT (TARGET dpdk::dpdk))
   set_target_properties (dpdk::mempool_ring
     PROPERTIES
       IMPORTED_LOCATION ${dpdk_MEMPOOL_RING_LIBRARY}
-      INTERFACE_LINK_LIBRARIES _dpdk_common
       INTERFACE_INCLUDE_DIRECTORIES ${dpdk_INCLUDE_DIR})
 
   #
@@ -358,7 +367,6 @@ if (dpdk_FOUND AND NOT (TARGET dpdk::dpdk))
   set_target_properties (dpdk::ring
     PROPERTIES
       IMPORTED_LOCATION ${dpdk_RING_LIBRARY}
-      INTERFACE_LINK_LIBRARIES _dpdk_common
       INTERFACE_INCLUDE_DIRECTORIES ${dpdk_INCLUDE_DIR})
 
   #
@@ -370,7 +378,6 @@ if (dpdk_FOUND AND NOT (TARGET dpdk::dpdk))
   set_target_properties (dpdk::cmdline
     PROPERTIES
       IMPORTED_LOCATION ${dpdk_CMDLINE_LIBRARY}
-      INTERFACE_LINK_LIBRARIES _dpdk_common
       INTERFACE_INCLUDE_DIRECTORIES ${dpdk_INCLUDE_DIR})
 
   #
@@ -382,7 +389,61 @@ if (dpdk_FOUND AND NOT (TARGET dpdk::dpdk))
   set_target_properties (dpdk::cfgfile
     PROPERTIES
       IMPORTED_LOCATION ${dpdk_CFGFILE_LIBRARY}
-      INTERFACE_LINK_LIBRARIES _dpdk_common
+      INTERFACE_INCLUDE_DIRECTORIES ${dpdk_INCLUDE_DIR})
+
+  #
+  # net
+  #
+
+  add_library (dpdk::net UNKNOWN IMPORTED)
+
+  set_target_properties (dpdk::net
+    PROPERTIES
+      IMPORTED_LOCATION ${dpdk_NET_LIBRARY}
+      INTERFACE_INCLUDE_DIRECTORIES ${dpdk_INCLUDE_DIR})
+
+  #
+  # timer
+  #
+
+  add_library (dpdk::timer UNKNOWN IMPORTED)
+
+  set_target_properties (dpdk::timer
+    PROPERTIES
+      IMPORTED_LOCATION ${dpdk_TIMER_LIBRARY}
+      INTERFACE_INCLUDE_DIRECTORIES ${dpdk_INCLUDE_DIR})
+
+  #
+  # pci
+  #
+
+  add_library (dpdk::pci UNKNOWN IMPORTED)
+
+  set_target_properties (dpdk::pci
+    PROPERTIES
+      IMPORTED_LOCATION ${dpdk_PCI_LIBRARY}
+      INTERFACE_INCLUDE_DIRECTORIES ${dpdk_INCLUDE_DIR})
+
+  #
+  # bus_pci
+  #
+
+  add_library (dpdk::bus_pci UNKNOWN IMPORTED)
+
+  set_target_properties (dpdk::bus_pci
+    PROPERTIES
+      IMPORTED_LOCATION ${dpdk_BUS_PCI_LIBRARY}
+      INTERFACE_INCLUDE_DIRECTORIES ${dpdk_INCLUDE_DIR})
+
+  #
+  # bus_vdev
+  #
+
+  add_library (dpdk::bus_vdev UNKNOWN IMPORTED)
+
+  set_target_properties (dpdk::bus_vdev
+    PROPERTIES
+      IMPORTED_LOCATION ${dpdk_BUS_VDEV_LIBRARY}
       INTERFACE_INCLUDE_DIRECTORIES ${dpdk_INCLUDE_DIR})
 
   #
@@ -406,15 +467,25 @@ if (dpdk_FOUND AND NOT (TARGET dpdk::dpdk))
     dpdk::pmd_e1000
     dpdk::pmd_ena
     dpdk::pmd_enic
-    dpdk::pmd_fm10k
     dpdk::pmd_qede
     dpdk::pmd_i40e
     dpdk::pmd_ixgbe
     dpdk::pmd_nfp
     dpdk::pmd_ring
-    dpdk::pmd_sfc_efx
     dpdk::pmd_vmxnet3_uio
-    dpdk::ring)
+    dpdk::ring
+    dpdk::net
+    dpdk::timer
+    dpdk::pci
+    dpdk::bus_pci
+    dpdk::bus_vdev)
+
+  if (CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64")
+    set (_dpdk_libraries
+      ${_dpdk_libraries}
+      dpdk::pmd_fm10k
+      dpdk::pmd_sfc_efx)
+  endif()
 
   set_target_properties (dpdk::dpdk
     PROPERTIES

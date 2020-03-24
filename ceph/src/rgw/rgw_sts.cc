@@ -1,5 +1,5 @@
 // -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// vim: ts=8 sw=2 smarttab ft=cpp
 
 #include <errno.h>
 #include <ctime>
@@ -26,6 +26,7 @@
 #include "rgw_user.h"
 #include "rgw_iam_policy.h"
 #include "rgw_sts.h"
+#include "rgw_sal.h"
 
 #define dout_subsys ceph_subsys_rgw
 
@@ -140,7 +141,7 @@ void AssumedRoleUser::dump(Formatter *f) const
 }
 
 int AssumedRoleUser::generateAssumedRoleUser(CephContext* cct,
-                                              RGWRados *store,
+                                              rgw::sal::RGWRadosStore *store,
                                               const string& roleId,
                                               const rgw::ARN& roleArn,
                                               const string& roleSessionName)
@@ -170,12 +171,16 @@ AssumeRoleRequestBase::AssumeRoleRequestBase( const string& duration,
   if (duration.empty()) {
     this->duration = DEFAULT_DURATION_IN_SECS;
   } else {
-    this->duration = std::stoull(duration);
+    this->duration = strict_strtoll(duration.c_str(), 10, &this->err_msg);
   }
 }
 
 int AssumeRoleRequestBase::validate_input() const
 {
+  if (!err_msg.empty()) {
+    return -EINVAL;
+  }
+
   if (duration < MIN_DURATION_IN_SECS ||
           duration > MAX_DURATION_IN_SECS) {
     return -EINVAL;
@@ -251,7 +256,7 @@ std::tuple<int, RGWRole> STSService::getRoleInfo(const string& arn)
   if (auto r_arn = rgw::ARN::parse(arn); r_arn) {
     auto pos = r_arn->resource.find_last_of('/');
     string roleName = r_arn->resource.substr(pos + 1);
-    RGWRole role(cct, store, roleName, r_arn->account);
+    RGWRole role(cct, store->getRados()->pctl, roleName, r_arn->account);
     if (int ret = role.get(); ret < 0) {
       if (ret == -ENOENT) {
         ret = -ERR_NO_ROLE_FOUND;
@@ -270,14 +275,14 @@ int STSService::storeARN(string& arn)
 {
   int ret = 0;
   RGWUserInfo info;
-  if (ret = rgw_get_user_info_by_uid(store, user_id, info); ret < 0) {
+  if (ret = rgw_get_user_info_by_uid(store->ctl()->user, user_id, info); ret < 0) {
     return -ERR_NO_SUCH_ENTITY;
   }
 
   info.assumed_role_arn = arn;
 
   RGWObjVersionTracker objv_tracker;
-  if (ret = rgw_store_user_info(store, info, &info, &objv_tracker, real_time(),
+  if (ret = rgw_store_user_info(store->ctl()->user, info, &info, &objv_tracker, real_time(),
           false); ret < 0) {
     return -ERR_INTERNAL_ERROR;
   }

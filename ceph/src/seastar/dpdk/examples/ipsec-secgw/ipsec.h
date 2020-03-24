@@ -1,34 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2016 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2016-2017 Intel Corporation
  */
 
 #ifndef __IPSEC_H__
@@ -38,15 +9,24 @@
 
 #include <rte_byteorder.h>
 #include <rte_crypto.h>
+#include <rte_security.h>
+#include <rte_flow.h>
+#include <rte_ipsec.h>
 
 #define RTE_LOGTYPE_IPSEC       RTE_LOGTYPE_USER1
 #define RTE_LOGTYPE_IPSEC_ESP   RTE_LOGTYPE_USER2
 #define RTE_LOGTYPE_IPSEC_IPIP  RTE_LOGTYPE_USER3
 
 #define MAX_PKT_BURST 32
+#define MAX_INFLIGHT 128
 #define MAX_QP_PER_LCORE 256
 
 #define MAX_DIGEST_SIZE 32 /* Bytes -- 256 bits */
+
+#define IPSEC_OFFLOAD_ESN_SOFTLIMIT 0xffffff00
+
+#define IV_OFFSET		(sizeof(struct rte_crypto_op) + \
+				sizeof(struct rte_crypto_sym_op))
 
 #define uint32_t_to_char(ip, a, b, c, d) do {\
 		*a = (uint8_t)(ip >> 24 & 0xff);\
@@ -61,10 +41,8 @@
 #define SPI2IDX(spi) (spi & (IPSEC_SA_MAX_ENTRIES - 1))
 #define INVALID_SPI (0)
 
-#define DISCARD (0x80000000)
-#define BYPASS (0x40000000)
-#define PROTECT_MASK (0x3fffffff)
-#define PROTECT(sa_idx) (SPI2IDX(sa_idx) & PROTECT_MASK) /* SA idx 30 bits */
+#define DISCARD	INVALID_SPI
+#define BYPASS	UINT32_MAX
 
 #define IPSEC_XFORM_MAX 2
 
@@ -72,7 +50,6 @@
 
 struct rte_crypto_xform;
 struct ipsec_xform;
-struct rte_cryptodev_session;
 struct rte_mbuf;
 
 struct ipsec_sa;
@@ -92,14 +69,31 @@ struct ip_addr {
 
 #define MAX_KEY_SIZE		32
 
+/*
+ * application wide SA parameters
+ */
+struct app_sa_prm {
+	uint32_t enable; /* use librte_ipsec API for ipsec pkt processing */
+	uint32_t window_size; /* replay window size */
+	uint32_t enable_esn;  /* enable/disable ESN support */
+	uint64_t flags;       /* rte_ipsec_sa_prm.flags */
+};
+
+extern struct app_sa_prm app_sa_prm;
+
 struct ipsec_sa {
+	struct rte_ipsec_session ips; /* one session per sa for now */
 	uint32_t spi;
 	uint32_t cdev_id_qp;
 	uint64_t seq;
 	uint32_t salt;
-	struct rte_cryptodev_sym_session *crypto_session;
+	union {
+		struct rte_cryptodev_sym_session *crypto_session;
+		struct rte_security_session *sec_session;
+	};
 	enum rte_crypto_cipher_algorithm cipher_algo;
 	enum rte_crypto_auth_algorithm auth_algo;
+	enum rte_crypto_aead_algorithm aead_algo;
 	uint16_t digest_len;
 	uint16_t iv_len;
 	uint16_t block_size;
@@ -114,14 +108,35 @@ struct ipsec_sa {
 	uint8_t auth_key[MAX_KEY_SIZE];
 	uint16_t auth_key_len;
 	uint16_t aad_len;
-	struct rte_crypto_sym_xform *xforms;
+	union {
+		struct rte_crypto_sym_xform *xforms;
+		struct rte_security_ipsec_xform *sec_xform;
+	};
+	enum rte_security_session_action_type type;
+	enum rte_security_ipsec_sa_direction direction;
+	uint16_t portid;
+	struct rte_security_ctx *security_ctx;
+	uint32_t ol_flags;
+
+#define MAX_RTE_FLOW_PATTERN (4)
+#define MAX_RTE_FLOW_ACTIONS (3)
+	struct rte_flow_item pattern[MAX_RTE_FLOW_PATTERN];
+	struct rte_flow_action action[MAX_RTE_FLOW_ACTIONS];
+	struct rte_flow_attr attr;
+	union {
+		struct rte_flow_item_ipv4 ipv4_spec;
+		struct rte_flow_item_ipv6 ipv6_spec;
+	};
+	struct rte_flow_item_esp esp_spec;
+	struct rte_flow *flow;
+	struct rte_security_session_conf sess_conf;
 } __rte_cache_aligned;
 
 struct ipsec_mbuf_metadata {
-	uint8_t buf[32];
 	struct ipsec_sa *sa;
 	struct rte_crypto_op cop;
 	struct rte_crypto_sym_op sym_cop;
+	uint8_t buf[32];
 } __rte_cache_aligned;
 
 struct cdev_qp {
@@ -140,12 +155,19 @@ struct ipsec_ctx {
 	uint16_t nb_qps;
 	uint16_t last_qp;
 	struct cdev_qp tbl[MAX_QP_PER_LCORE];
+	struct rte_mempool *session_pool;
+	struct rte_mempool *session_priv_pool;
+	struct rte_mbuf *ol_pkts[MAX_PKT_BURST] __rte_aligned(sizeof(void *));
+	uint16_t ol_pkts_cnt;
+	uint64_t ipv4_offloads;
+	uint64_t ipv6_offloads;
 };
 
 struct cdev_key {
 	uint16_t lcore_id;
 	uint8_t cipher_algo;
 	uint8_t auth_algo;
+	uint8_t aead_algo;
 };
 
 struct socket_ctx {
@@ -158,6 +180,8 @@ struct socket_ctx {
 	struct rt_ctx *rt_ip4;
 	struct rt_ctx *rt_ip6;
 	struct rte_mempool *mbuf_pool;
+	struct rte_mempool *session_pool;
+	struct rte_mempool *session_priv_pool;
 };
 
 struct cnt_blk {
@@ -166,6 +190,20 @@ struct cnt_blk {
 	uint32_t cnt;
 } __attribute__((packed));
 
+struct traffic_type {
+	const uint8_t *data[MAX_PKT_BURST * 2];
+	struct rte_mbuf *pkts[MAX_PKT_BURST * 2];
+	struct ipsec_sa *saptr[MAX_PKT_BURST * 2];
+	uint32_t res[MAX_PKT_BURST * 2];
+	uint32_t num;
+};
+
+struct ipsec_traffic {
+	struct traffic_type ipsec;
+	struct traffic_type ip4;
+	struct traffic_type ip6;
+};
+
 uint16_t
 ipsec_inbound(struct ipsec_ctx *ctx, struct rte_mbuf *pkts[],
 		uint16_t nb_pkts, uint16_t len);
@@ -173,6 +211,20 @@ ipsec_inbound(struct ipsec_ctx *ctx, struct rte_mbuf *pkts[],
 uint16_t
 ipsec_outbound(struct ipsec_ctx *ctx, struct rte_mbuf *pkts[],
 		uint32_t sa_idx[], uint16_t nb_pkts, uint16_t len);
+
+uint16_t
+ipsec_inbound_cqp_dequeue(struct ipsec_ctx *ctx, struct rte_mbuf *pkts[],
+		uint16_t len);
+
+uint16_t
+ipsec_outbound_cqp_dequeue(struct ipsec_ctx *ctx, struct rte_mbuf *pkts[],
+		uint16_t len);
+
+void
+ipsec_process(struct ipsec_ctx *ctx, struct ipsec_traffic *trf);
+
+void
+ipsec_cqp_process(struct ipsec_ctx *ctx, struct ipsec_traffic *trf);
 
 static inline uint16_t
 ipsec_metadata_size(void)
@@ -183,7 +235,7 @@ ipsec_metadata_size(void)
 static inline struct ipsec_mbuf_metadata *
 get_priv(struct rte_mbuf *m)
 {
-	return RTE_PTR_ADD(m, sizeof(struct rte_mbuf));
+	return rte_mbuf_to_priv(m);
 }
 
 static inline void *
@@ -225,10 +277,41 @@ sp4_init(struct socket_ctx *ctx, int32_t socket_id);
 void
 sp6_init(struct socket_ctx *ctx, int32_t socket_id);
 
+/*
+ * Search through SP rules for given SPI.
+ * Returns first rule index if found(greater or equal then zero),
+ * or -ENOENT otherwise.
+ */
+int
+sp4_spi_present(uint32_t spi, int inbound);
+int
+sp6_spi_present(uint32_t spi, int inbound);
+
+/*
+ * Search through SA entries for given SPI.
+ * Returns first entry index if found(greater or equal then zero),
+ * or -ENOENT otherwise.
+ */
+int
+sa_spi_present(uint32_t spi, int inbound);
+
 void
 sa_init(struct socket_ctx *ctx, int32_t socket_id);
 
 void
 rt_init(struct socket_ctx *ctx, int32_t socket_id);
+
+int
+sa_check_offloads(uint16_t port_id, uint64_t *rx_offloads,
+		uint64_t *tx_offloads);
+
+int
+add_dst_ethaddr(uint16_t port, const struct ether_addr *addr);
+
+void
+enqueue_cop_burst(struct cdev_qp *cqp);
+
+int
+create_session(struct ipsec_ctx *ipsec_ctx, struct ipsec_sa *sa);
 
 #endif /* __IPSEC_H__ */

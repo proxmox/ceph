@@ -19,6 +19,7 @@
 #include <rte_ip.h>
 #include <rte_random.h>
 #include <rte_ethdev.h>
+#include <rte_malloc.h>
 
 #include "ipsec.h"
 #include "esp.h"
@@ -79,8 +80,15 @@ const struct supported_cipher_algo cipher_algos[] = {
 		.keyword = "aes-128-ctr",
 		.algo = RTE_CRYPTO_CIPHER_AES_CTR,
 		.iv_len = 8,
-		.block_size = 16, /* XXX AESNI MB limition, should be 4 */
+		.block_size = 4,
 		.key_len = 20
+	},
+	{
+		.keyword = "3des-cbc",
+		.algo = RTE_CRYPTO_CIPHER_3DES_CBC,
+		.iv_len = 8,
+		.block_size = 8,
+		.key_len = 24
 	}
 };
 
@@ -118,11 +126,11 @@ const struct supported_aead_algo aead_algos[] = {
 	}
 };
 
-struct ipsec_sa sa_out[IPSEC_SA_MAX_ENTRIES];
-uint32_t nb_sa_out;
+static struct ipsec_sa sa_out[IPSEC_SA_MAX_ENTRIES];
+static uint32_t nb_sa_out;
 
-struct ipsec_sa sa_in[IPSEC_SA_MAX_ENTRIES];
-uint32_t nb_sa_in;
+static struct ipsec_sa sa_in[IPSEC_SA_MAX_ENTRIES];
+static uint32_t nb_sa_in;
 
 static const struct supported_cipher_algo *
 find_match_cipher_algo(const char *cipher_keyword)
@@ -327,7 +335,8 @@ parse_sa_tokens(char **tokens, uint32_t n_tokens,
 			if (status->status < 0)
 				return;
 
-			if (algo->algo == RTE_CRYPTO_CIPHER_AES_CBC)
+			if (algo->algo == RTE_CRYPTO_CIPHER_AES_CBC ||
+				algo->algo == RTE_CRYPTO_CIPHER_3DES_CBC)
 				rule->salt = (uint32_t)rte_rand();
 
 			if (algo->algo == RTE_CRYPTO_CIPHER_AES_CTR) {
@@ -622,7 +631,7 @@ parse_sa_tokens(char **tokens, uint32_t n_tokens,
 	*ri = *ri + 1;
 }
 
-static inline void
+static void
 print_one_sa_rule(const struct ipsec_sa *sa, int inbound)
 {
 	uint32_t i;
@@ -679,13 +688,29 @@ print_one_sa_rule(const struct ipsec_sa *sa, int inbound)
 		}
 		break;
 	case TRANSPORT:
-		printf("Transport");
+		printf("Transport ");
+		break;
+	}
+	printf(" type:");
+	switch (sa->type) {
+	case RTE_SECURITY_ACTION_TYPE_NONE:
+		printf("no-offload ");
+		break;
+	case RTE_SECURITY_ACTION_TYPE_INLINE_CRYPTO:
+		printf("inline-crypto-offload ");
+		break;
+	case RTE_SECURITY_ACTION_TYPE_INLINE_PROTOCOL:
+		printf("inline-protocol-offload ");
+		break;
+	case RTE_SECURITY_ACTION_TYPE_LOOKASIDE_PROTOCOL:
+		printf("lookaside-protocol-offload ");
 		break;
 	}
 	printf("\n");
 }
 
 struct sa_ctx {
+	void *satbl; /* pointer to array of rte_ipsec_sa objects*/
 	struct ipsec_sa sa[IPSEC_SA_MAX_ENTRIES];
 	union {
 		struct {
@@ -706,8 +731,8 @@ sa_create(const char *name, int32_t socket_id)
 	snprintf(s, sizeof(s), "%s_%u", name, socket_id);
 
 	/* Create SA array table */
-	printf("Creating SA context with %u maximum entries\n",
-			IPSEC_SA_MAX_ENTRIES);
+	printf("Creating SA context with %u maximum entries on socket %d\n",
+			IPSEC_SA_MAX_ENTRIES, socket_id);
 
 	mz_size = sizeof(struct sa_ctx);
 	mz = rte_memzone_reserve(s, mz_size, socket_id,
@@ -756,7 +781,10 @@ sa_add_rules(struct sa_ctx *sa_ctx, const struct ipsec_sa entries[],
 {
 	struct ipsec_sa *sa;
 	uint32_t i, idx;
-	uint16_t iv_length;
+	uint16_t iv_length, aad_length;
+
+	/* for ESN upper 32 bits of SQN also need to be part of AAD */
+	aad_length = (app_sa_prm.enable_esn != 0) ? sizeof(uint32_t) : 0;
 
 	for (i = 0; i < nb_entries; i++) {
 		idx = SPI2IDX(entries[i].spi);
@@ -800,7 +828,7 @@ sa_add_rules(struct sa_ctx *sa_ctx, const struct ipsec_sa entries[],
 			sa_ctx->xf[idx].a.aead.iv.offset = IV_OFFSET;
 			sa_ctx->xf[idx].a.aead.iv.length = iv_length;
 			sa_ctx->xf[idx].a.aead.aad_length =
-				sa->aad_len;
+				sa->aad_len + aad_length;
 			sa_ctx->xf[idx].a.aead.digest_length =
 				sa->digest_len;
 
@@ -810,6 +838,7 @@ sa_add_rules(struct sa_ctx *sa_ctx, const struct ipsec_sa entries[],
 		} else {
 			switch (sa->cipher_algo) {
 			case RTE_CRYPTO_CIPHER_NULL:
+			case RTE_CRYPTO_CIPHER_3DES_CBC:
 			case RTE_CRYPTO_CIPHER_AES_CBC:
 				iv_length = sa->iv_len;
 				break;
@@ -892,9 +921,230 @@ sa_in_add_rules(struct sa_ctx *sa_ctx, const struct ipsec_sa entries[],
 	return sa_add_rules(sa_ctx, entries, nb_entries, 1);
 }
 
+/*
+ * helper function, fills parameters that are identical for all SAs
+ */
+static void
+fill_ipsec_app_sa_prm(struct rte_ipsec_sa_prm *prm,
+	const struct app_sa_prm *app_prm)
+{
+	memset(prm, 0, sizeof(*prm));
+
+	prm->flags = app_prm->flags;
+	prm->ipsec_xform.options.esn = app_prm->enable_esn;
+	prm->replay_win_sz = app_prm->window_size;
+}
+
+/*
+ * Helper function, tries to determine next_proto for SPI
+ * by searching though SP rules.
+ */
+static int
+get_spi_proto(uint32_t spi, enum rte_security_ipsec_sa_direction dir)
+{
+	int32_t rc4, rc6;
+
+	rc4 = sp4_spi_present(spi, dir == RTE_SECURITY_IPSEC_SA_DIR_INGRESS);
+	rc6 = sp6_spi_present(spi, dir == RTE_SECURITY_IPSEC_SA_DIR_INGRESS);
+
+	if (rc4 >= 0) {
+		if (rc6 >= 0) {
+			RTE_LOG(ERR, IPSEC,
+				"%s: SPI %u used simultaeously by "
+				"IPv4(%d) and IPv6 (%d) SP rules\n",
+				__func__, spi, rc4, rc6);
+			return -EINVAL;
+		} else
+			return IPPROTO_IPIP;
+	} else if (rc6 < 0) {
+		RTE_LOG(ERR, IPSEC,
+			"%s: SPI %u is not used by any SP rule\n",
+			__func__, spi);
+		return -EINVAL;
+	} else
+		return IPPROTO_IPV6;
+}
+
+static int
+fill_ipsec_sa_prm(struct rte_ipsec_sa_prm *prm, const struct ipsec_sa *ss,
+	const struct ipv4_hdr *v4, struct ipv6_hdr *v6)
+{
+	int32_t rc;
+
+	/*
+	 * Try to get SPI next proto by searching that SPI in SPD.
+	 * probably not the optimal way, but there seems nothing
+	 * better right now.
+	 */
+	rc = get_spi_proto(ss->spi, ss->direction);
+	if (rc < 0)
+		return rc;
+
+	fill_ipsec_app_sa_prm(prm, &app_sa_prm);
+	prm->userdata = (uintptr_t)ss;
+
+	/* setup ipsec xform */
+	prm->ipsec_xform.spi = ss->spi;
+	prm->ipsec_xform.salt = ss->salt;
+	prm->ipsec_xform.direction = ss->direction;
+	prm->ipsec_xform.proto = RTE_SECURITY_IPSEC_SA_PROTO_ESP;
+	prm->ipsec_xform.mode = (ss->flags == TRANSPORT) ?
+		RTE_SECURITY_IPSEC_SA_MODE_TRANSPORT :
+		RTE_SECURITY_IPSEC_SA_MODE_TUNNEL;
+
+	if (ss->flags == IP4_TUNNEL) {
+		prm->ipsec_xform.tunnel.type = RTE_SECURITY_IPSEC_TUNNEL_IPV4;
+		prm->tun.hdr_len = sizeof(*v4);
+		prm->tun.next_proto = rc;
+		prm->tun.hdr = v4;
+	} else if (ss->flags == IP6_TUNNEL) {
+		prm->ipsec_xform.tunnel.type = RTE_SECURITY_IPSEC_TUNNEL_IPV6;
+		prm->tun.hdr_len = sizeof(*v6);
+		prm->tun.next_proto = rc;
+		prm->tun.hdr = v6;
+	} else {
+		/* transport mode */
+		prm->trs.proto = rc;
+	}
+
+	/* setup crypto section */
+	prm->crypto_xform = ss->xforms;
+	return 0;
+}
+
+static void
+fill_ipsec_session(struct rte_ipsec_session *ss, struct rte_ipsec_sa *sa,
+	const struct ipsec_sa *lsa)
+{
+	ss->sa = sa;
+	ss->type = lsa->type;
+
+	/* setup crypto section */
+	if (ss->type == RTE_SECURITY_ACTION_TYPE_NONE) {
+		ss->crypto.ses = lsa->crypto_session;
+	/* setup session action type */
+	} else {
+		ss->security.ses = lsa->sec_session;
+		ss->security.ctx = lsa->security_ctx;
+		ss->security.ol_flags = lsa->ol_flags;
+	}
+}
+
+/*
+ * Initialise related rte_ipsec_sa object.
+ */
+static int
+ipsec_sa_init(struct ipsec_sa *lsa, struct rte_ipsec_sa *sa, uint32_t sa_size)
+{
+	int rc;
+	struct rte_ipsec_sa_prm prm;
+	struct ipv4_hdr v4  = {
+		.version_ihl = IPVERSION << 4 |
+			sizeof(v4) / IPV4_IHL_MULTIPLIER,
+		.time_to_live = IPDEFTTL,
+		.next_proto_id = IPPROTO_ESP,
+		.src_addr = lsa->src.ip.ip4,
+		.dst_addr = lsa->dst.ip.ip4,
+	};
+	struct ipv6_hdr v6 = {
+		.vtc_flow = htonl(IP6_VERSION << 28),
+		.proto = IPPROTO_ESP,
+	};
+
+	if (lsa->flags == IP6_TUNNEL) {
+		memcpy(v6.src_addr, lsa->src.ip.ip6.ip6_b, sizeof(v6.src_addr));
+		memcpy(v6.dst_addr, lsa->dst.ip.ip6.ip6_b, sizeof(v6.dst_addr));
+	}
+
+	rc = fill_ipsec_sa_prm(&prm, lsa, &v4, &v6);
+	if (rc == 0)
+		rc = rte_ipsec_sa_init(sa, &prm, sa_size);
+	if (rc < 0)
+		return rc;
+
+	fill_ipsec_session(&lsa->ips, sa, lsa);
+	return 0;
+}
+
+/*
+ * Allocate space and init rte_ipsec_sa strcutures,
+ * one per session.
+ */
+static int
+ipsec_satbl_init(struct sa_ctx *ctx, const struct ipsec_sa *ent,
+	uint32_t nb_ent, int32_t socket)
+{
+	int32_t rc, sz;
+	uint32_t i, idx;
+	size_t tsz;
+	struct rte_ipsec_sa *sa;
+	struct ipsec_sa *lsa;
+	struct rte_ipsec_sa_prm prm;
+
+	/* determine SA size */
+	idx = SPI2IDX(ent[0].spi);
+	fill_ipsec_sa_prm(&prm, ctx->sa + idx, NULL, NULL);
+	sz = rte_ipsec_sa_size(&prm);
+	if (sz < 0) {
+		RTE_LOG(ERR, IPSEC, "%s(%p, %u, %d): "
+			"failed to determine SA size, error code: %d\n",
+			__func__, ctx, nb_ent, socket, sz);
+		return sz;
+	}
+
+	tsz = sz * nb_ent;
+
+	ctx->satbl = rte_zmalloc_socket(NULL, tsz, RTE_CACHE_LINE_SIZE, socket);
+	if (ctx->satbl == NULL) {
+		RTE_LOG(ERR, IPSEC,
+			"%s(%p, %u, %d): failed to allocate %zu bytes\n",
+			__func__,  ctx, nb_ent, socket, tsz);
+		return -ENOMEM;
+	}
+
+	rc = 0;
+	for (i = 0; i != nb_ent && rc == 0; i++) {
+
+		idx = SPI2IDX(ent[i].spi);
+
+		sa = (struct rte_ipsec_sa *)((uintptr_t)ctx->satbl + sz * i);
+		lsa = ctx->sa + idx;
+
+		rc = ipsec_sa_init(lsa, sa, sz);
+	}
+
+	return rc;
+}
+
+/*
+ * Walk through all SA rules to find an SA with given SPI
+ */
+int
+sa_spi_present(uint32_t spi, int inbound)
+{
+	uint32_t i, num;
+	const struct ipsec_sa *sar;
+
+	if (inbound != 0) {
+		sar = sa_in;
+		num = nb_sa_in;
+	} else {
+		sar = sa_out;
+		num = nb_sa_out;
+	}
+
+	for (i = 0; i != num; i++) {
+		if (sar[i].spi == spi)
+			return i;
+	}
+
+	return -ENOENT;
+}
+
 void
 sa_init(struct socket_ctx *ctx, int32_t socket_id)
 {
+	int32_t rc;
 	const char *name;
 
 	if (ctx == NULL)
@@ -917,6 +1167,14 @@ sa_init(struct socket_ctx *ctx, int32_t socket_id)
 				name, socket_id);
 
 		sa_in_add_rules(ctx->sa_in, sa_in, nb_sa_in);
+
+		if (app_sa_prm.enable != 0) {
+			rc = ipsec_satbl_init(ctx->sa_in, sa_in, nb_sa_in,
+				socket_id);
+			if (rc != 0)
+				rte_exit(EXIT_FAILURE,
+					"failed to init inbound SAs\n");
+		}
 	} else
 		RTE_LOG(WARNING, IPSEC, "No SA Inbound rule specified\n");
 
@@ -929,6 +1187,14 @@ sa_init(struct socket_ctx *ctx, int32_t socket_id)
 				name, socket_id);
 
 		sa_out_add_rules(ctx->sa_out, sa_out, nb_sa_out);
+
+		if (app_sa_prm.enable != 0) {
+			rc = ipsec_satbl_init(ctx->sa_out, sa_out, nb_sa_out,
+				socket_id);
+			if (rc != 0)
+				rte_exit(EXIT_FAILURE,
+					"failed to init outbound SAs\n");
+		}
 	} else
 		RTE_LOG(WARNING, IPSEC, "No SA Outbound rule "
 			"specified\n");
@@ -938,10 +1204,15 @@ int
 inbound_sa_check(struct sa_ctx *sa_ctx, struct rte_mbuf *m, uint32_t sa_idx)
 {
 	struct ipsec_mbuf_metadata *priv;
+	struct ipsec_sa *sa;
 
 	priv = get_priv(m);
+	sa = priv->sa;
+	if (sa != NULL)
+		return (sa_ctx->sa[sa_idx].spi == sa->spi);
 
-	return (sa_ctx->sa[sa_idx].spi == priv->sa->spi);
+	RTE_LOG(ERR, IPSEC, "SA not saved in private data\n");
+	return 0;
 }
 
 static inline void
@@ -1007,4 +1278,39 @@ outbound_sa_lookup(struct sa_ctx *sa_ctx, uint32_t sa_idx[],
 
 	for (i = 0; i < nb_pkts; i++)
 		sa[i] = &sa_ctx->sa[sa_idx[i]];
+}
+
+/*
+ * Select HW offloads to be used.
+ */
+int
+sa_check_offloads(uint16_t port_id, uint64_t *rx_offloads,
+		uint64_t *tx_offloads)
+{
+	struct ipsec_sa *rule;
+	uint32_t idx_sa;
+
+	*rx_offloads = 0;
+	*tx_offloads = 0;
+
+	/* Check for inbound rules that use offloads and use this port */
+	for (idx_sa = 0; idx_sa < nb_sa_in; idx_sa++) {
+		rule = &sa_in[idx_sa];
+		if ((rule->type == RTE_SECURITY_ACTION_TYPE_INLINE_CRYPTO ||
+				rule->type ==
+				RTE_SECURITY_ACTION_TYPE_INLINE_PROTOCOL)
+				&& rule->portid == port_id)
+			*rx_offloads |= DEV_RX_OFFLOAD_SECURITY;
+	}
+
+	/* Check for outbound rules that use offloads and use this port */
+	for (idx_sa = 0; idx_sa < nb_sa_out; idx_sa++) {
+		rule = &sa_out[idx_sa];
+		if ((rule->type == RTE_SECURITY_ACTION_TYPE_INLINE_CRYPTO ||
+				rule->type ==
+				RTE_SECURITY_ACTION_TYPE_INLINE_PROTOCOL)
+				&& rule->portid == port_id)
+			*tx_offloads |= DEV_TX_OFFLOAD_SECURITY;
+	}
+	return 0;
 }

@@ -30,6 +30,7 @@
 %include "mb_mgr_datastruct.asm"
 %include "reg_sizes.asm"
 %include "memcpy.asm"
+%include "const.inc"
 
 extern sha256_oct_avx2
 
@@ -132,7 +133,10 @@ FUNC:
 
 	mov	[lane_data + _job_in_lane], job
 	mov	dword [lane_data + _outer_done], 0
-	mov	[state + _lens_sha256 + 2*lane], WORD(tmp)
+
+        vmovdqa xmm0, [state + _lens_sha256]
+        XVPINSRW xmm0, xmm1, extra_blocks, lane, tmp, scale_x16
+        vmovdqa [state + _lens_sha256], xmm0
 
 	mov	last_len, len
 	and	last_len, 63
@@ -148,13 +152,13 @@ FUNC:
 	jb	copy_lt64
 
 fast_copy:
-     add	p, len
-     vmovdqu	ymm0, [p - 64 + 0 * 32]
-     vmovdqu	ymm1, [p - 64 + 1 * 32]
-     vmovdqu	[lane_data + _extra_block + 0*32], ymm0
-     vmovdqu	[lane_data + _extra_block + 1*32], ymm1
-end_fast_copy:
+        add	p, len
+        vmovdqu	ymm0, [p - 64 + 0 * 32]
+        vmovdqu	ymm1, [p - 64 + 1 * 32]
+        vmovdqu	[lane_data + _extra_block + 0*32], ymm0
+        vmovdqu	[lane_data + _extra_block + 1*32], ymm1
 
+end_fast_copy:
 	mov	size_offset, extra_blocks
 	shl	size_offset, 6
 	sub	size_offset, last_len
@@ -184,7 +188,10 @@ end_fast_copy:
 	jnz	ge64_bytes
 
 lt64_bytes:
-	mov	[state + _lens_sha256 + 2*lane], WORD(extra_blocks)
+        vmovdqa xmm0, [state + _lens_sha256]
+        XVPINSRW xmm0, xmm1, tmp, lane, extra_blocks, scale_x16
+        vmovdqa [state + _lens_sha256], xmm0
+
 	lea	tmp, [lane_data + _extra_block + start_offset]
 	mov	[state + _args_data_ptr_sha256 + 8*lane], tmp
 	mov	dword [lane_data + _extra_blocks], 0
@@ -227,7 +234,11 @@ proc_outer:
 	mov		dword [lane_data + _outer_done], 1
 	mov		DWORD(size_offset), [lane_data + _size_offset]
 	mov		qword [lane_data + _extra_block + size_offset], 0
-	mov	word [state + _lens_sha256 + 2*idx], 1
+
+        vmovdqa xmm0, [state + _lens_sha256]
+        XVPINSRW xmm0, xmm1, tmp, idx, 1, scale_x16
+        vmovdqa [state + _lens_sha256], xmm0
+
 	lea		tmp, [lane_data + _outer_block]
 	mov		job, [lane_data + _job_in_lane]
 	mov		[state + _args_data_ptr_sha256 + 8*idx], tmp
@@ -247,10 +258,10 @@ proc_outer:
 	vmovdqa	[lane_data + _outer_block], xmm0
 	vmovdqa	[lane_data + _outer_block + 4*4], xmm1
 %ifdef SHA224
-	mov		dword [lane_data + _outer_block + 7*4], 0x80
+	mov	dword [lane_data + _outer_block + 7*4], 0x80
 %endif
 
-	mov		tmp, [job + _auth_key_xor_opad]
+	mov	tmp, [job + _auth_key_xor_opad]
 	vmovdqu	xmm0, [tmp]
 	vmovdqu	xmm1, [tmp + 4*4]
 	vmovd	[state + _args_digest_sha256 + 4*idx + 0*SHA256_DIGEST_ROW_SIZE], xmm0
@@ -267,7 +278,11 @@ proc_outer:
 	align	16
 proc_extra_blocks:
 	mov	DWORD(start_offset), [lane_data + _start_offset]
-	mov	[state + _lens_sha256 + 2*idx], WORD(extra_blocks)
+
+        vmovdqa xmm0, [state + _lens_sha256]
+        XVPINSRW xmm0, xmm1, tmp, idx, extra_blocks, scale_x16
+        vmovdqa [state + _lens_sha256], xmm0
+
 	lea	tmp, [lane_data + _extra_block + start_offset]
 	mov	[state + _args_data_ptr_sha256 + 8*idx], tmp
 	mov	dword [lane_data + _extra_blocks], 0
@@ -278,29 +293,38 @@ copy_lt64:
 	;; less than one message block of data
 	;; beginning of source block
 	;; destination extrablock but backwards by len from where 0x80 pre-populated
-     lea	p2, [lane_data + _extra_block  + 64]
-     sub    p2, len
-     memcpy_avx2_64_1 p2, p, len, tmp, tmp2, ymm0, ymm1
-     mov	unused_lanes, [state + _unused_lanes_sha256]
-     jmp	end_fast_copy
+        lea	p2, [lane_data + _extra_block  + 64]
+        sub     p2, len
+        memcpy_avx2_64_1 p2, p, len, tmp, tmp2, ymm0, ymm1
+        mov	unused_lanes, [state + _unused_lanes_sha256]
+        jmp	end_fast_copy
 
 return_null:
-     xor	job_rax, job_rax
-     jmp	return
+        xor	job_rax, job_rax
+        jmp	return
 
-	align	16
+        align	16
 end_loop:
-     mov	job_rax, [lane_data + _job_in_lane]
-     mov	unused_lanes, [state + _unused_lanes_sha256]
-     mov	qword [lane_data + _job_in_lane], 0
-     or	    dword [job_rax + _status], STS_COMPLETED_HMAC
-     shl	unused_lanes, 4
-     or	    unused_lanes, idx
-     mov	[state + _unused_lanes_sha256], unused_lanes
+        mov	job_rax, [lane_data + _job_in_lane]
+        mov	unused_lanes, [state + _unused_lanes_sha256]
+        mov	qword [lane_data + _job_in_lane], 0
+        or      dword [job_rax + _status], STS_COMPLETED_HMAC
+        shl	unused_lanes, 4
+        or      unused_lanes, idx
+        mov	[state + _unused_lanes_sha256], unused_lanes
 
-     mov	p, [job_rax + _auth_tag_output]
+        mov	p, [job_rax + _auth_tag_output]
 
-	; copy 14 bytes for SHA224 and 16 bytes for SHA256
+        vzeroupper
+
+%ifdef SHA224
+        cmp     qword [job_rax + _auth_tag_output_len_in_bytes], 14
+        jne     copy_full_digest
+%else
+        cmp     qword [job_rax + _auth_tag_output_len_in_bytes], 16
+        jne     copy_full_digest
+%endif
+	;; copy 14 bytes for SHA224 / 16 bytes for SHA256
 	mov	DWORD(tmp),  [state + _args_digest_sha256 + 4*idx + 0*SHA256_DIGEST_ROW_SIZE]
 	mov	DWORD(tmp2), [state + _args_digest_sha256 + 4*idx + 1*SHA256_DIGEST_ROW_SIZE]
 	mov	DWORD(tmp3), [state + _args_digest_sha256 + 4*idx + 2*SHA256_DIGEST_ROW_SIZE]
@@ -312,13 +336,47 @@ end_loop:
 	mov	[p + 0*4], DWORD(tmp)
 	mov	[p + 1*4], DWORD(tmp2)
 	mov	[p + 2*4], DWORD(tmp3)
-
 %ifdef SHA224
 	mov	[p + 3*4], WORD(tmp4)
 %else
 	mov	[p + 3*4], DWORD(tmp4)
 %endif
-        vzeroupper
+        jmp     return
+
+copy_full_digest:
+	;; copy 28 bytes for SHA224 / 32 bytes for SHA256
+	mov	DWORD(tmp),  [state + _args_digest_sha256 + 4*idx + 0*SHA256_DIGEST_ROW_SIZE]
+	mov	DWORD(tmp2), [state + _args_digest_sha256 + 4*idx + 1*SHA256_DIGEST_ROW_SIZE]
+	mov	DWORD(tmp3), [state + _args_digest_sha256 + 4*idx + 2*SHA256_DIGEST_ROW_SIZE]
+	mov	DWORD(tmp4), [state + _args_digest_sha256 + 4*idx + 3*SHA256_DIGEST_ROW_SIZE]
+	bswap	DWORD(tmp)
+	bswap	DWORD(tmp2)
+	bswap	DWORD(tmp3)
+	bswap	DWORD(tmp4)
+	mov	[p + 0*4], DWORD(tmp)
+	mov	[p + 1*4], DWORD(tmp2)
+	mov	[p + 2*4], DWORD(tmp3)
+	mov	[p + 3*4], DWORD(tmp4)
+
+	mov	DWORD(tmp),  [state + _args_digest_sha256 + 4*idx + 4*SHA256_DIGEST_ROW_SIZE]
+	mov	DWORD(tmp2), [state + _args_digest_sha256 + 4*idx + 5*SHA256_DIGEST_ROW_SIZE]
+	mov	DWORD(tmp3), [state + _args_digest_sha256 + 4*idx + 6*SHA256_DIGEST_ROW_SIZE]
+%ifndef SHA224
+	mov	DWORD(tmp4), [state + _args_digest_sha256 + 4*idx + 7*SHA256_DIGEST_ROW_SIZE]
+%endif
+	bswap	DWORD(tmp)
+	bswap	DWORD(tmp2)
+	bswap	DWORD(tmp3)
+%ifndef SHA224
+	bswap	DWORD(tmp4)
+%endif
+	mov	[p + 4*4], DWORD(tmp)
+	mov	[p + 5*4], DWORD(tmp2)
+	mov	[p + 6*4], DWORD(tmp3)
+%ifndef SHA224
+	mov	[p + 7*4], DWORD(tmp4)
+%endif
+
 return:
 	mov	rbx, [rsp + _gpr_save + 8*0]
 	mov	rbp, [rsp + _gpr_save + 8*1]

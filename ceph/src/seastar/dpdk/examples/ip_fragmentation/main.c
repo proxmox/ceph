@@ -1,34 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2014 Intel Corporation
  */
 
 #include <stdio.h>
@@ -48,9 +19,7 @@
 #include <rte_log.h>
 #include <rte_memory.h>
 #include <rte_memcpy.h>
-#include <rte_memzone.h>
 #include <rte_eal.h>
-#include <rte_per_lcore.h>
 #include <rte_launch.h>
 #include <rte_atomic.h>
 #include <rte_cycles.h>
@@ -59,7 +28,6 @@
 #include <rte_per_lcore.h>
 #include <rte_branch_prediction.h>
 #include <rte_interrupts.h>
-#include <rte_pci.h>
 #include <rte_random.h>
 #include <rte_debug.h>
 #include <rte_ether.h>
@@ -88,6 +56,13 @@
 #define	IPV6_MTU_DEFAULT	ETHER_MTU
 
 /*
+ * The overhead from max frame size to MTU.
+ * We have to consider the max possible overhead.
+ */
+#define MTU_OVERHEAD	\
+	(ETHER_HDR_LEN + ETHER_CRC_LEN + 2 * sizeof(struct vlan_hdr))
+
+/*
  * Default payload in bytes for the IPv6 packet.
  */
 #define	IPV4_DEFAULT_PAYLOAD	(IPV4_MTU_DEFAULT - sizeof(struct ipv4_hdr))
@@ -109,8 +84,8 @@
 /*
  * Configurable number of RX/TX ring descriptors
  */
-#define RTE_TEST_RX_DESC_DEFAULT 128
-#define RTE_TEST_TX_DESC_DEFAULT 512
+#define RTE_TEST_RX_DESC_DEFAULT 1024
+#define RTE_TEST_TX_DESC_DEFAULT 1024
 static uint16_t nb_rxd = RTE_TEST_RX_DESC_DEFAULT;
 static uint16_t nb_txd = RTE_TEST_TX_DESC_DEFAULT;
 
@@ -155,7 +130,7 @@ struct rx_queue {
 	struct rte_mempool *indirect_pool;
 	struct rte_lpm *lpm;
 	struct rte_lpm6 *lpm6;
-	uint8_t portid;
+	uint16_t portid;
 };
 
 #define MAX_RX_QUEUE_PER_LCORE 16
@@ -172,14 +147,14 @@ static struct rte_eth_conf port_conf = {
 	.rxmode = {
 		.max_rx_pkt_len = JUMBO_FRAME_MAX_SIZE,
 		.split_hdr_size = 0,
-		.header_split   = 0, /**< Header Split disabled */
-		.hw_ip_checksum = 1, /**< IP checksum offload enabled */
-		.hw_vlan_filter = 0, /**< VLAN filtering disabled */
-		.jumbo_frame    = 1, /**< Jumbo Frame Support enabled */
-		.hw_strip_crc   = 1, /**< CRC stripped by hardware */
+		.offloads = (DEV_RX_OFFLOAD_CHECKSUM |
+			     DEV_RX_OFFLOAD_SCATTER |
+			     DEV_RX_OFFLOAD_JUMBO_FRAME),
 	},
 	.txmode = {
 		.mq_mode = ETH_MQ_TX_NONE,
+		.offloads = (DEV_TX_OFFLOAD_IPV4_CKSUM |
+			     DEV_TX_OFFLOAD_MULTI_SEGS),
 	},
 };
 
@@ -241,7 +216,7 @@ static struct rte_lpm6 *socket_lpm6[RTE_MAX_NUMA_NODES];
 
 /* Send burst of packets on an output interface */
 static inline int
-send_burst(struct lcore_queue_conf *qconf, uint16_t n, uint8_t port)
+send_burst(struct lcore_queue_conf *qconf, uint16_t n, uint16_t port)
 {
 	struct rte_mbuf **m_table;
 	int ret;
@@ -262,11 +237,12 @@ send_burst(struct lcore_queue_conf *qconf, uint16_t n, uint8_t port)
 
 static inline void
 l3fwd_simple_forward(struct rte_mbuf *m, struct lcore_queue_conf *qconf,
-		uint8_t queueid, uint8_t port_in)
+		uint8_t queueid, uint16_t port_in)
 {
 	struct rx_queue *rxq;
 	uint32_t i, len, next_hop;
-	uint8_t port_out, ipv6;
+	uint8_t ipv6;
+	uint16_t port_out;
 	int32_t len2;
 
 	ipv6 = 0;
@@ -404,7 +380,7 @@ main_loop(__attribute__((unused)) void *dummy)
 	unsigned lcore_id;
 	uint64_t prev_tsc, diff_tsc, cur_tsc;
 	int i, j, nb_rx;
-	uint8_t portid;
+	uint16_t portid;
 	struct lcore_queue_conf *qconf;
 	const uint64_t drain_tsc = (rte_get_tsc_hz() + US_PER_S - 1) / US_PER_S * BURST_TX_DRAIN_US;
 
@@ -424,7 +400,7 @@ main_loop(__attribute__((unused)) void *dummy)
 
 		portid = qconf->rx_queue_list[i].portid;
 		RTE_LOG(INFO, IP_FRAG, " -- lcoreid=%u portid=%d\n", lcore_id,
-				(int) portid);
+				portid);
 	}
 
 	while (1) {
@@ -601,18 +577,19 @@ print_ethaddr(const char *name, struct ether_addr *eth_addr)
 
 /* Check the link status of all ports in up to 9s, and print them finally */
 static void
-check_all_ports_link_status(uint8_t port_num, uint32_t port_mask)
+check_all_ports_link_status(uint32_t port_mask)
 {
 #define CHECK_INTERVAL 100 /* 100ms */
 #define MAX_CHECK_TIME 90 /* 9s (90 * 100ms) in total */
-	uint8_t portid, count, all_ports_up, print_flag = 0;
+	uint16_t portid;
+	uint8_t count, all_ports_up, print_flag = 0;
 	struct rte_eth_link link;
 
 	printf("\nChecking link status");
 	fflush(stdout);
 	for (count = 0; count <= MAX_CHECK_TIME; count++) {
 		all_ports_up = 1;
-		for (portid = 0; portid < port_num; portid++) {
+		RTE_ETH_FOREACH_DEV(portid) {
 			if ((port_mask & (1 << portid)) == 0)
 				continue;
 			memset(&link, 0, sizeof(link));
@@ -620,14 +597,13 @@ check_all_ports_link_status(uint8_t port_num, uint32_t port_mask)
 			/* print link status if flag set */
 			if (print_flag == 1) {
 				if (link.link_status)
-					printf("Port %d Link Up - speed %u "
-						"Mbps - %s\n", (uint8_t)portid,
-						(unsigned)link.link_speed,
+					printf(
+					"Port%d Link Up .Speed %u Mbps - %s\n",
+						portid, link.link_speed,
 				(link.link_duplex == ETH_LINK_FULL_DUPLEX) ?
 					("full-duplex") : ("half-duplex\n"));
 				else
-					printf("Port %d Link Down\n",
-							(uint8_t)portid);
+					printf("Port %d Link Down\n", portid);
 				continue;
 			}
 			/* clear all_ports_up flag if any link down */
@@ -709,7 +685,7 @@ parse_ptype(struct rte_mbuf *m)
 
 /* callback function to detect packet type for a queue of a port */
 static uint16_t
-cb_parse_ptype(uint8_t port __rte_unused, uint16_t queue __rte_unused,
+cb_parse_ptype(uint16_t port __rte_unused, uint16_t queue __rte_unused,
 		   struct rte_mbuf *pkts[], uint16_t nb_pkts,
 		   uint16_t max_pkts __rte_unused,
 		   void *user_param __rte_unused)
@@ -873,11 +849,11 @@ main(int argc, char **argv)
 	struct rte_eth_txconf *txconf;
 	struct rx_queue *rxq;
 	int socket, ret;
-	unsigned nb_ports;
+	uint16_t nb_ports;
 	uint16_t queueid = 0;
 	unsigned lcore_id = 0, rx_lcore_id = 0;
 	uint32_t n_tx_queue, nb_lcores;
-	uint8_t portid;
+	uint16_t portid;
 
 	/* init EAL */
 	ret = rte_eal_init(argc, argv);
@@ -891,7 +867,7 @@ main(int argc, char **argv)
 	if (ret < 0)
 		rte_exit(EXIT_FAILURE, "Invalid arguments");
 
-	nb_ports = rte_eth_dev_count();
+	nb_ports = rte_eth_dev_count_avail();
 	if (nb_ports == 0)
 		rte_exit(EXIT_FAILURE, "No ports found!\n");
 
@@ -906,7 +882,10 @@ main(int argc, char **argv)
 		rte_exit(EXIT_FAILURE, "Non-existent ports in portmask!\n");
 
 	/* initialize all ports */
-	for (portid = 0; portid < nb_ports; portid++) {
+	RTE_ETH_FOREACH_DEV(portid) {
+		struct rte_eth_conf local_port_conf = port_conf;
+		struct rte_eth_rxconf rxq_conf;
+
 		/* skip ports that are not enabled */
 		if ((enabled_port_mask & (1 << portid)) == 0) {
 			printf("Skipping disabled port %d\n", portid);
@@ -917,8 +896,9 @@ main(int argc, char **argv)
 
 		/* limit the frame size to the maximum supported by NIC */
 		rte_eth_dev_info_get(portid, &dev_info);
-		port_conf.rxmode.max_rx_pkt_len = RTE_MIN(
-		    dev_info.max_rx_pktlen, port_conf.rxmode.max_rx_pkt_len);
+		local_port_conf.rxmode.max_rx_pkt_len = RTE_MIN(
+		    dev_info.max_rx_pktlen,
+		    local_port_conf.rxmode.max_rx_pkt_len);
 
 		/* get the lcore_id for this port */
 		while (rte_lcore_is_enabled(rx_lcore_id) == 0 ||
@@ -951,8 +931,11 @@ main(int argc, char **argv)
 		n_tx_queue = nb_lcores;
 		if (n_tx_queue > MAX_TX_QUEUE_PER_PORT)
 			n_tx_queue = MAX_TX_QUEUE_PER_PORT;
+		if (dev_info.tx_offload_capa & DEV_TX_OFFLOAD_MBUF_FAST_FREE)
+			local_port_conf.txmode.offloads |=
+				DEV_TX_OFFLOAD_MBUF_FAST_FREE;
 		ret = rte_eth_dev_configure(portid, 1, (uint16_t)n_tx_queue,
-					    &port_conf);
+					    &local_port_conf);
 		if (ret < 0) {
 			printf("\n");
 			rte_exit(EXIT_FAILURE, "Cannot configure device: "
@@ -960,9 +943,29 @@ main(int argc, char **argv)
 				ret, portid);
 		}
 
+		/* set the mtu to the maximum received packet size */
+		ret = rte_eth_dev_set_mtu(portid,
+			local_port_conf.rxmode.max_rx_pkt_len - MTU_OVERHEAD);
+		if (ret < 0) {
+			printf("\n");
+			rte_exit(EXIT_FAILURE, "Set MTU failed: "
+				"err=%d, port=%d\n",
+			ret, portid);
+		}
+
+		ret = rte_eth_dev_adjust_nb_rx_tx_desc(portid, &nb_rxd,
+					    &nb_txd);
+		if (ret < 0) {
+			printf("\n");
+			rte_exit(EXIT_FAILURE, "Cannot adjust number of "
+				"descriptors: err=%d, port=%d\n", ret, portid);
+		}
+
 		/* init one RX queue */
+		rxq_conf = dev_info.default_rxconf;
+		rxq_conf.offloads = local_port_conf.rxmode.offloads;
 		ret = rte_eth_rx_queue_setup(portid, 0, nb_rxd,
-					     socket, NULL,
+					     socket, &rxq_conf,
 					     socket_direct_pool[socket]);
 		if (ret < 0) {
 			printf("\n");
@@ -986,7 +989,7 @@ main(int argc, char **argv)
 			fflush(stdout);
 
 			txconf = &dev_info.default_txconf;
-			txconf->txq_flags = 0;
+			txconf->offloads = local_port_conf.txmode.offloads;
 			ret = rte_eth_tx_queue_setup(portid, queueid, nb_txd,
 						     socket, txconf);
 			if (ret < 0) {
@@ -1006,7 +1009,7 @@ main(int argc, char **argv)
 	printf("\n");
 
 	/* start ports */
-	for (portid = 0; portid < nb_ports; portid++) {
+	RTE_ETH_FOREACH_DEV(portid) {
 		if ((enabled_port_mask & (1 << portid)) == 0) {
 			continue;
 		}
@@ -1020,7 +1023,7 @@ main(int argc, char **argv)
 
 		if (check_ptype(portid) == 0) {
 			rte_eth_add_rx_callback(portid, 0, cb_parse_ptype, NULL);
-			printf("Add Rx callback funciton to detect L3 packet type by SW :"
+			printf("Add Rx callback function to detect L3 packet type by SW :"
 				" port = %d\n", portid);
 		}
 	}
@@ -1028,7 +1031,7 @@ main(int argc, char **argv)
 	if (init_routing_table() < 0)
 		rte_exit(EXIT_FAILURE, "Cannot init routing table\n");
 
-	check_all_ports_link_status((uint8_t)nb_ports, enabled_port_mask);
+	check_all_ports_link_status(enabled_port_mask);
 
 	/* launch per-lcore init on every lcore */
 	rte_eal_mp_remote_launch(main_loop, NULL, CALL_MASTER);

@@ -1,32 +1,5 @@
-..  BSD LICENSE
-    Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
-    All rights reserved.
-
-    Redistribution and use in source and binary forms, with or without
-    modification, are permitted provided that the following conditions
-    are met:
-
-    * Redistributions of source code must retain the above copyright
-    notice, this list of conditions and the following disclaimer.
-    * Redistributions in binary form must reproduce the above copyright
-    notice, this list of conditions and the following disclaimer in
-    the documentation and/or other materials provided with the
-    distribution.
-    * Neither the name of Intel Corporation nor the names of its
-    contributors may be used to endorse or promote products derived
-    from this software without specific prior written permission.
-
-    THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-    "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-    LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-    A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-    OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-    SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-    LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-    DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-    THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-    (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-    OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+..  SPDX-License-Identifier: BSD-3-Clause
+    Copyright(c) 2010-2014 Intel Corporation.
 
 .. _linux_setup_script:
 
@@ -120,25 +93,25 @@ Some options in the script prompt the user for further data before proceeding.
 
     ------------------------------------------------------------------------
 
-    [1] i686-native-linuxapp-gcc
+    [1] i686-native-linux-gcc
 
-    [2] i686-native-linuxapp-icc
+    [2] i686-native-linux-icc
 
-    [3] ppc_64-power8-linuxapp-gcc
+    [3] ppc_64-power8-linux-gcc
 
-    [4] x86_64-native-bsdapp-clang
+    [4] x86_64-native-freebsd-clang
 
-    [5] x86_64-native-bsdapp-gcc
+    [5] x86_64-native-freebsd-gcc
 
-    [6] x86_64-native-linuxapp-clang
+    [6] x86_64-native-linux-clang
 
-    [7] x86_64-native-linuxapp-gcc
+    [7] x86_64-native-linux-gcc
 
-    [8] x86_64-native-linuxapp-icc
+    [8] x86_64-native-linux-icc
 
     ------------------------------------------------------------------------
 
-    Step 2: Setup linuxapp environment
+    Step 2: Setup linux environment
 
     ------------------------------------------------------------------------
 
@@ -162,7 +135,7 @@ Some options in the script prompt the user for further data before proceeding.
 
     ------------------------------------------------------------------------
 
-    Step 3: Run test application for linuxapp environment
+    Step 3: Run test application for linux environment
 
     ------------------------------------------------------------------------
 
@@ -200,19 +173,19 @@ Some options in the script prompt the user for further data before proceeding.
 
 Option:
 
-The following selection demonstrates the creation of the ``x86_64-native-linuxapp-gcc`` DPDK library.
+The following selection demonstrates the creation of the ``x86_64-native-linux-gcc`` DPDK library.
 
 .. code-block:: console
 
     Option: 9
 
-    ================== Installing x86_64-native-linuxapp-gcc
+    ================== Installing x86_64-native-linux-gcc
 
     Configuration done
     == Build lib
     ...
     Build complete
-    RTE_TARGET exported as x86_64-native-linuxapp-gcc
+    RTE_TARGET exported as x86_64-native-linux-gcc
 
 The following selection demonstrates the starting of the DPDK UIO driver.
 

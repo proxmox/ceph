@@ -38,10 +38,6 @@
 
 #include "common/lib/test_env.c"
 
-DEFINE_STUB(spdk_nvme_qpair_process_completions, int32_t,
-	    (struct spdk_nvme_qpair *qpair,
-	     uint32_t max_completions), 0);
-
 static struct nvme_driver _g_nvme_driver = {
 	.lock = PTHREAD_MUTEX_INITIALIZER,
 };
@@ -49,7 +45,7 @@ static struct nvme_driver _g_nvme_driver = {
 static struct nvme_request *g_request = NULL;
 
 int
-spdk_pci_nvme_enumerate(spdk_pci_enum_cb enum_cb, void *enum_ctx)
+spdk_pci_enumerate(struct spdk_pci_driver *driver, spdk_pci_enum_cb enum_cb, void *enum_ctx)
 {
 	return -1;
 }
@@ -172,10 +168,7 @@ nvme_ctrlr_get_ref_count(struct spdk_nvme_ctrlr *ctrlr)
 }
 
 int
-nvme_transport_ctrlr_scan(const struct spdk_nvme_transport_id *trid,
-			  void *cb_ctx,
-			  spdk_nvme_probe_cb probe_cb,
-			  spdk_nvme_remove_cb remove_cb,
+nvme_transport_ctrlr_scan(struct spdk_nvme_probe_ctx *probe_ctx,
 			  bool direct_connect)
 {
 	return 0;
@@ -219,6 +212,7 @@ prepare_for_test(struct spdk_nvme_ns *ns, struct spdk_nvme_ctrlr *ctrlr,
 	for (i = 0; i < num_requests; i++) {
 		struct nvme_request *req = qpair->req_buf + i * sizeof(struct nvme_request);
 
+		req->qpair = qpair;
 		STAILQ_INSERT_HEAD(&qpair->free_req, req, stailq);
 	}
 

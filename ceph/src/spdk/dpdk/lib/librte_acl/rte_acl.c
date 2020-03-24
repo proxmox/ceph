@@ -2,6 +2,7 @@
  * Copyright(c) 2010-2014 Intel Corporation
  */
 
+#include <rte_string_fns.h>
 #include <rte_acl.h>
 #include "acl.h"
 
@@ -16,7 +17,7 @@ EAL_REGISTER_TAILQ(rte_acl_tailq)
  * If the compiler doesn't support AVX2 instructions,
  * then the dummy one would be used instead for AVX2 classify method.
  */
-int __attribute__ ((weak))
+__rte_weak int
 rte_acl_classify_avx2(__rte_unused const struct rte_acl_ctx *ctx,
 	__rte_unused const uint8_t **data,
 	__rte_unused uint32_t *results,
@@ -26,7 +27,7 @@ rte_acl_classify_avx2(__rte_unused const struct rte_acl_ctx *ctx,
 	return -ENOTSUP;
 }
 
-int __attribute__ ((weak))
+__rte_weak int
 rte_acl_classify_sse(__rte_unused const struct rte_acl_ctx *ctx,
 	__rte_unused const uint8_t **data,
 	__rte_unused uint32_t *results,
@@ -36,7 +37,7 @@ rte_acl_classify_sse(__rte_unused const struct rte_acl_ctx *ctx,
 	return -ENOTSUP;
 }
 
-int __attribute__ ((weak))
+__rte_weak int
 rte_acl_classify_neon(__rte_unused const struct rte_acl_ctx *ctx,
 	__rte_unused const uint8_t **data,
 	__rte_unused uint32_t *results,
@@ -46,7 +47,7 @@ rte_acl_classify_neon(__rte_unused const struct rte_acl_ctx *ctx,
 	return -ENOTSUP;
 }
 
-int __attribute__ ((weak))
+__rte_weak int
 rte_acl_classify_altivec(__rte_unused const struct rte_acl_ctx *ctx,
 	__rte_unused const uint8_t **data,
 	__rte_unused uint32_t *results,
@@ -249,7 +250,7 @@ rte_acl_create(const struct rte_acl_param *param)
 		ctx->rule_sz = param->rule_size;
 		ctx->socket_id = param->socket_id;
 		ctx->alg = rte_acl_default_classify;
-		snprintf(ctx->name, sizeof(ctx->name), "%s", param->name);
+		strlcpy(ctx->name, param->name, sizeof(ctx->name));
 
 		te->data = (void *) ctx;
 

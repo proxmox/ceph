@@ -33,8 +33,10 @@
 
 #include "spdk_cunit.h"
 
-#include "common/lib/test_env.c"
+#include "common/lib/ut_multithread.c"
 #include "unit/lib/json_mock.c"
+
+#include "spdk_internal/thread.h"
 
 #include "bdev/pmem/bdev_pmem.c"
 
@@ -98,12 +100,6 @@ static struct spdk_bdev *g_bdev;
 static const char *g_check_version_msg;
 static bool g_pmemblk_open_allow_open = true;
 
-static void
-_pmem_send_msg(spdk_thread_fn fn, void *ctx, void *thread_ctx)
-{
-	fn(ctx);
-}
-
 static PMEMblkpool *
 find_pmemblk_pool(const char *path)
 {
@@ -155,7 +151,7 @@ pmemblk_open(const char *path, size_t bsize)
 void
 spdk_bdev_io_get_buf(struct spdk_bdev_io *bdev_io, spdk_bdev_io_get_buf_cb cb, uint64_t len)
 {
-	cb(NULL, bdev_io);
+	cb(NULL, bdev_io, true);
 }
 
 static void
@@ -368,8 +364,9 @@ ut_pmem_blk_clean(void)
 
 	/* Unload module to free IO channel */
 	g_bdev_pmem_module->module_fini();
+	poll_threads();
 
-	spdk_free_thread();
+	free_threads();
 
 	return 0;
 }
@@ -379,7 +376,8 @@ ut_pmem_blk_init(void)
 {
 	errno = 0;
 
-	spdk_allocate_thread(_pmem_send_msg, NULL, NULL, NULL, NULL);
+	allocate_threads(1);
+	set_thread(0);
 
 	g_pool_ok.buffer = calloc(g_pool_ok.nblock, g_pool_ok.bsize);
 	if (g_pool_ok.buffer == NULL) {
@@ -779,5 +777,6 @@ main(int argc, char **argv)
 	CU_basic_run_tests();
 	num_failures = CU_get_number_of_failures();
 	CU_cleanup_registry();
+
 	return num_failures;
 }

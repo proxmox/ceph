@@ -132,6 +132,7 @@ private:
   void requeue_sent();
   uint64_t discard_requeued_up_to(uint64_t out_seq, uint64_t seq);
   void reset_recv_state();
+  void reset_security();
   void reset_throttle();
   Ct<ProtocolV2> *_fault();
   void discard_out_queue();
@@ -243,8 +244,8 @@ private:
   Ct<ProtocolV2> *handle_client_ident(ceph::bufferlist &payload);
   Ct<ProtocolV2> *handle_ident_missing_features_write(int r);
   Ct<ProtocolV2> *handle_reconnect(ceph::bufferlist &payload);
-  Ct<ProtocolV2> *handle_existing_connection(AsyncConnectionRef existing);
-  Ct<ProtocolV2> *reuse_connection(AsyncConnectionRef existing,
+  Ct<ProtocolV2> *handle_existing_connection(const AsyncConnectionRef& existing);
+  Ct<ProtocolV2> *reuse_connection(const AsyncConnectionRef& existing,
                                    ProtocolV2 *exproto);
   Ct<ProtocolV2> *send_server_ident();
   Ct<ProtocolV2> *send_reconnect_ok();

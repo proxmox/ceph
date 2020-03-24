@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2014, 2015 Netronome Systems, Inc.
+ * Copyright (c) 2014-2018 Netronome Systems, Inc.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -34,7 +34,7 @@
  *
  * @file dpdk/pmd/nfp_net_pmd.h
  *
- * Netronome NFP_NET PDM driver
+ * Netronome NFP_NET PMD driver
  */
 
 #ifndef _NFP_NET_PMD_H_
@@ -42,6 +42,7 @@
 
 #define NFP_NET_PMD_VERSION "0.1"
 #define PCI_VENDOR_ID_NETRONOME         0x19ee
+#define PCI_DEVICE_ID_NFP4000_PF_NIC    0x4000
 #define PCI_DEVICE_ID_NFP6000_PF_NIC    0x6000
 #define PCI_DEVICE_ID_NFP6000_VF_NIC    0x6003
 
@@ -62,6 +63,7 @@ struct nfp_net_adapter;
 #define NFP_NET_CRTL_BAR        0
 #define NFP_NET_TX_BAR          2
 #define NFP_NET_RX_BAR          2
+#define NFP_QCP_QUEUE_AREA_SZ			0x80000
 
 /* Macros for accessing the Queue Controller Peripheral 'CSRs' */
 #define NFP_QCP_QUEUE_OFF(_x)                 ((_x) * 0x800)
@@ -143,6 +145,11 @@ static inline void nn_writel(uint32_t val, volatile void *addr)
 	rte_write32(val, addr);
 }
 
+static inline void nn_writew(uint16_t val, volatile void *addr)
+{
+	rte_write16(val, addr);
+}
+
 static inline uint64_t nn_readq(volatile void *addr)
 {
 	const volatile uint32_t *p = addr;
@@ -178,18 +185,28 @@ static inline void nn_writeq(uint64_t val, volatile void *addr)
 struct nfp_net_tx_desc {
 	union {
 		struct {
-			uint8_t dma_addr_hi;   /* High bits of host buf address */
+			uint8_t dma_addr_hi; /* High bits of host buf address */
 			__le16 dma_len;     /* Length to DMA for this desc */
-			uint8_t offset_eop;    /* Offset in buf where pkt starts +
+			uint8_t offset_eop; /* Offset in buf where pkt starts +
 					     * highest bit is eop flag.
 					     */
 			__le32 dma_addr_lo; /* Low 32bit of host buf addr */
 
-			__le16 lso;         /* MSS to be used for LSO */
-			uint8_t l4_offset;     /* LSO, where the L4 data starts */
-			uint8_t flags;         /* TX Flags, see @PCIE_DESC_TX_* */
+			__le16 mss;         /* MSS to be used for LSO */
+			uint8_t lso_hdrlen; /* LSO, where the data starts */
+			uint8_t flags;      /* TX Flags, see @PCIE_DESC_TX_* */
 
-			__le16 vlan;        /* VLAN tag to add if indicated */
+			union {
+				struct {
+					/*
+					 * L3 and L4 header offsets required
+					 * for TSOv2
+					 */
+					uint8_t l3_offset;
+					uint8_t l4_offset;
+				};
+				__le16 vlan; /* VLAN tag to add if indicated */
+			};
 			__le16 data_len;    /* Length of frame + meta data */
 		} __attribute__((__packed__));
 		__le32 vals[4];
@@ -223,7 +240,7 @@ struct nfp_net_txq {
 	uint32_t tx_free_thresh;
 
 	/*
-	 * For each descriptor keep a reference to the mbuff and
+	 * For each descriptor keep a reference to the mbuf and
 	 * DMA address used until completion is signalled.
 	 */
 	struct {
@@ -241,16 +258,14 @@ struct nfp_net_txq {
 	/*
 	 * At this point 48 bytes have been used for all the fields in the
 	 * TX critical path. We have room for 8 bytes and still all placed
-	 * in a cache line. We are not using the threshold values below nor
-	 * the txq_flags but if we need to, we can add the most used in the
-	 * remaining bytes.
+	 * in a cache line. We are not using the threshold values below but
+	 * if we need to, we can add the most used in the remaining bytes.
 	 */
 	uint32_t tx_rs_thresh; /* not used by now. Future? */
 	uint32_t tx_pthresh;   /* not used by now. Future? */
 	uint32_t tx_hthresh;   /* not used by now. Future? */
 	uint32_t tx_wthresh;   /* not used by now. Future? */
-	uint32_t txq_flags;    /* not used by now. Future? */
-	uint8_t  port_id;
+	uint16_t port_id;
 	int qidx;
 	int tx_qcidx;
 	__le64 dma;
@@ -278,6 +293,8 @@ struct nfp_net_txq {
 #define PCIE_DESC_RX_UDP_CSUM_OK        (1 <<  1)
 #define PCIE_DESC_RX_VLAN               (1 <<  0)
 
+#define PCIE_DESC_RX_L4_CSUM_OK         (PCIE_DESC_RX_TCP_CSUM_OK | \
+					 PCIE_DESC_RX_UDP_CSUM_OK)
 struct nfp_net_rx_desc {
 	union {
 		/* Freelist descriptor */
@@ -424,13 +441,22 @@ struct nfp_net_hw {
 	/* Records starting point for counters */
 	struct rte_eth_stats eth_stats_base;
 
-#ifdef NFP_NET_LIBNFP
 	struct nfp_cpp *cpp;
 	struct nfp_cpp_area *ctrl_area;
-	struct nfp_cpp_area *tx_area;
-	struct nfp_cpp_area *rx_area;
+	struct nfp_cpp_area *hwqueues_area;
 	struct nfp_cpp_area *msix_area;
-#endif
+
+	uint8_t *hw_queues;
+	uint8_t is_pf;
+	uint8_t pf_port_idx;
+	uint8_t pf_multiport_enabled;
+	uint8_t total_ports;
+
+	union eth_table_entry *eth_table;
+
+	struct nfp_hwinfo *hwinfo;
+	struct nfp_rtsym_table *sym_tbl;
+	uint32_t nfp_cpp_service_id;
 };
 
 struct nfp_net_adapter {

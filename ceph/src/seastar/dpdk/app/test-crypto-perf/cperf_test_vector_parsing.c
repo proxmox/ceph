@@ -1,4 +1,7 @@
-#ifdef RTE_EXEC_ENV_BSDAPP
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2016-2017 Intel Corporation
+ */
+#ifdef RTE_EXEC_ENV_FREEBSD
 	#define _WITH_GETLINE
 #endif
 #include <stdio.h>
@@ -15,7 +18,8 @@ free_test_vector(struct cperf_test_vector *vector, struct cperf_options *opts)
 	if (vector == NULL || opts == NULL)
 		return -1;
 
-	rte_free(vector->iv.data);
+	rte_free(vector->cipher_iv.data);
+	rte_free(vector->auth_iv.data);
 	rte_free(vector->aad.data);
 	rte_free(vector->digest.data);
 
@@ -84,15 +88,55 @@ show_test_vector(struct cperf_test_vector *test_vector)
 		printf("\n");
 	}
 
-	if (test_vector->iv.data) {
-		printf("\niv =\n");
-		for (i = 0; i < test_vector->iv.length; ++i) {
+	if (test_vector->aead_key.data) {
+		printf("\naead_key =\n");
+		for (i = 0; i < test_vector->aead_key.length; ++i) {
 			if ((i % wrap == 0) && (i != 0))
 				printf("\n");
-			if (i == (uint32_t)(test_vector->iv.length - 1))
-				printf("0x%02x", test_vector->iv.data[i]);
+			if (i == (uint32_t)(test_vector->aead_key.length - 1))
+				printf("0x%02x", test_vector->aead_key.data[i]);
 			else
-				printf("0x%02x, ", test_vector->iv.data[i]);
+				printf("0x%02x, ",
+					test_vector->aead_key.data[i]);
+		}
+		printf("\n");
+	}
+
+	if (test_vector->cipher_iv.data) {
+		printf("\ncipher_iv =\n");
+		for (i = 0; i < test_vector->cipher_iv.length; ++i) {
+			if ((i % wrap == 0) && (i != 0))
+				printf("\n");
+			if (i == (uint32_t)(test_vector->cipher_iv.length - 1))
+				printf("0x%02x", test_vector->cipher_iv.data[i]);
+			else
+				printf("0x%02x, ", test_vector->cipher_iv.data[i]);
+		}
+		printf("\n");
+	}
+
+	if (test_vector->auth_iv.data) {
+		printf("\nauth_iv =\n");
+		for (i = 0; i < test_vector->auth_iv.length; ++i) {
+			if ((i % wrap == 0) && (i != 0))
+				printf("\n");
+			if (i == (uint32_t)(test_vector->auth_iv.length - 1))
+				printf("0x%02x", test_vector->auth_iv.data[i]);
+			else
+				printf("0x%02x, ", test_vector->auth_iv.data[i]);
+		}
+		printf("\n");
+	}
+
+	if (test_vector->aead_iv.data) {
+		printf("\naead_iv =\n");
+		for (i = 0; i < test_vector->aead_iv.length; ++i) {
+			if ((i % wrap == 0) && (i != 0))
+				printf("\n");
+			if (i == (uint32_t)(test_vector->aead_iv.length - 1))
+				printf("0x%02x", test_vector->aead_iv.data[i]);
+			else
+				printf("0x%02x, ", test_vector->aead_iv.data[i]);
 		}
 		printf("\n");
 	}
@@ -300,19 +344,60 @@ parse_entry(char *entry, struct cperf_test_vector *vector,
 			vector->auth_key.length = opts->auth_key_sz;
 		}
 
-	} else if (strstr(key_token, "iv")) {
-		rte_free(vector->iv.data);
-		vector->iv.data = data;
-		vector->iv.phys_addr = rte_malloc_virt2phy(vector->iv.data);
+	} else if (strstr(key_token, "aead_key")) {
+		rte_free(vector->aead_key.data);
+		vector->aead_key.data = data;
 		if (tc_found)
-			vector->iv.length = data_length;
+			vector->aead_key.length = data_length;
+		else {
+			if (opts->aead_key_sz > data_length) {
+				printf("Global aead_key shorter than "
+					"aead_key_sz\n");
+				return -1;
+			}
+			vector->aead_key.length = opts->aead_key_sz;
+		}
+
+	} else if (strstr(key_token, "cipher_iv")) {
+		rte_free(vector->cipher_iv.data);
+		vector->cipher_iv.data = data;
+		if (tc_found)
+			vector->cipher_iv.length = data_length;
 		else {
 			if (opts->cipher_iv_sz > data_length) {
-				printf("Global iv shorter than "
+				printf("Global cipher iv shorter than "
 					"cipher_iv_sz\n");
 				return -1;
 			}
-			vector->iv.length = opts->cipher_iv_sz;
+			vector->cipher_iv.length = opts->cipher_iv_sz;
+		}
+
+	} else if (strstr(key_token, "auth_iv")) {
+		rte_free(vector->auth_iv.data);
+		vector->auth_iv.data = data;
+		if (tc_found)
+			vector->auth_iv.length = data_length;
+		else {
+			if (opts->auth_iv_sz > data_length) {
+				printf("Global auth iv shorter than "
+					"auth_iv_sz\n");
+				return -1;
+			}
+			vector->auth_iv.length = opts->auth_iv_sz;
+		}
+
+	} else if (strstr(key_token, "aead_iv")) {
+		rte_free(vector->aead_iv.data);
+		vector->aead_iv.data = data;
+		if (tc_found)
+			vector->aead_iv.length = data_length;
+		else {
+			if (opts->aead_iv_sz > data_length) {
+				printf("Global aead iv shorter than "
+					"aead_iv_sz\n");
+				return -1;
+			}
+			vector->aead_iv.length = opts->aead_iv_sz;
 		}
 
 	} else if (strstr(key_token, "ciphertext")) {
@@ -332,32 +417,32 @@ parse_entry(char *entry, struct cperf_test_vector *vector,
 	} else if (strstr(key_token, "aad")) {
 		rte_free(vector->aad.data);
 		vector->aad.data = data;
-		vector->aad.phys_addr = rte_malloc_virt2phy(vector->aad.data);
+		vector->aad.phys_addr = rte_malloc_virt2iova(vector->aad.data);
 		if (tc_found)
 			vector->aad.length = data_length;
 		else {
-			if (opts->auth_aad_sz > data_length) {
+			if (opts->aead_aad_sz > data_length) {
 				printf("Global aad shorter than "
-					"auth_aad_sz\n");
+					"aead_aad_sz\n");
 				return -1;
 			}
-			vector->aad.length = opts->auth_aad_sz;
+			vector->aad.length = opts->aead_aad_sz;
 		}
 
 	} else if (strstr(key_token, "digest")) {
 		rte_free(vector->digest.data);
 		vector->digest.data = data;
-		vector->digest.phys_addr = rte_malloc_virt2phy(
+		vector->digest.phys_addr = rte_malloc_virt2iova(
 			vector->digest.data);
 		if (tc_found)
 			vector->digest.length = data_length;
 		else {
-			if (opts->auth_digest_sz > data_length) {
+			if (opts->digest_sz > data_length) {
 				printf("Global digest shorter than "
-					"auth_digest_sz\n");
+					"digest_sz\n");
 				return -1;
 			}
-			vector->digest.length = opts->auth_digest_sz;
+			vector->digest.length = opts->digest_sz;
 		}
 	} else {
 		printf("Not valid key: '%s'\n", trim_space(key_token));
@@ -421,8 +506,7 @@ parse_file(struct cperf_test_vector *vector, struct cperf_options *opts)
 		if (entry == NULL)
 			return -1;
 
-		memset(entry, 0, strlen(line) + 1);
-		strncpy(entry, line, strlen(line));
+		strcpy(entry, line);
 
 		/* check if entry ends with , or = */
 		if (entry[strlen(entry) - 1] == ','
@@ -439,8 +523,8 @@ parse_file(struct cperf_test_vector *vector, struct cperf_options *opts)
 				if (entry_extended == NULL)
 					goto err;
 				entry = entry_extended;
-
-				strncat(entry, line, strlen(line));
+				/* entry has been allocated accordingly */
+				strcpy(&entry[strlen(entry)], line);
 
 				if (entry[strlen(entry) - 1] != ',')
 					break;

@@ -5,12 +5,10 @@
 #define CEPH_MONCAP_H
 
 #include <ostream>
-using std::ostream;
 
+#include "include/common_fwd.h"
 #include "include/types.h"
 #include "common/entity_name.h"
-
-class CephContext;
 
 static const __u8 MON_CAP_R     = (1 << 1);      // read
 static const __u8 MON_CAP_W     = (1 << 2);      // write
@@ -32,7 +30,7 @@ struct mon_rwxa_t {
   }
 };
 
-ostream& operator<<(ostream& out, const mon_rwxa_t& p);
+std::ostream& operator<<(std::ostream& out, const mon_rwxa_t& p);
 
 struct StringConstraint {
   enum MatchType {
@@ -43,15 +41,15 @@ struct StringConstraint {
   };
 
   MatchType match_type = MATCH_TYPE_NONE;
-  string value;
+  std::string value;
 
   StringConstraint() {}
-  StringConstraint(MatchType match_type, string value)
+  StringConstraint(MatchType match_type, std::string value)
     : match_type(match_type), value(value) {
   }
 };
 
-ostream& operator<<(ostream& out, const StringConstraint& c);
+std::ostream& operator<<(std::ostream& out, const StringConstraint& c);
 
 struct MonCapGrant {
   /*
@@ -78,7 +76,7 @@ struct MonCapGrant {
   std::string service;
   std::string profile;
   std::string command;
-  map<std::string,StringConstraint> command_args;
+  std::map<std::string, StringConstraint> command_args;
 
   // restrict by network
   std::string network;
@@ -94,17 +92,17 @@ struct MonCapGrant {
 
   // explicit grants that a profile grant expands to; populated as
   // needed by expand_profile() (via is_match()) and cached here.
-  mutable list<MonCapGrant> profile_grants;
+  mutable std::list<MonCapGrant> profile_grants;
 
   void expand_profile(const EntityName& name) const;
 
   MonCapGrant() : allow(0) {}
   // cppcheck-suppress noExplicitConstructor
   MonCapGrant(mon_rwxa_t a) : allow(a) {}
-  MonCapGrant(string s, mon_rwxa_t a) : service(std::move(s)), allow(a) {}
-  // cppcheck-suppress noExplicitConstructor  
-  MonCapGrant(string c) : command(std::move(c)) {}
-  MonCapGrant(string c, string a, StringConstraint co) : command(std::move(c)) {
+  MonCapGrant(std::string s, mon_rwxa_t a) : service(std::move(s)), allow(a) {}
+  // cppcheck-suppress noExplicitConstructor
+  MonCapGrant(std::string c) : command(std::move(c)) {}
+  MonCapGrant(std::string c, std::string a, StringConstraint co) : command(std::move(c)) {
     command_args[a] = co;
   }
 
@@ -122,7 +120,7 @@ struct MonCapGrant {
 			 EntityName name,
 			 const std::string& service,
 			 const std::string& command,
-			 const map<string,string>& command_args) const;
+			 const std::map<std::string, std::string>& command_args) const;
 
   bool is_allow_all() const {
     return
@@ -133,22 +131,22 @@ struct MonCapGrant {
   }
 };
 
-ostream& operator<<(ostream& out, const MonCapGrant& g);
+std::ostream& operator<<(std::ostream& out, const MonCapGrant& g);
 
 struct MonCap {
-  string text;
+  std::string text;
   std::vector<MonCapGrant> grants;
 
   MonCap() {}
   explicit MonCap(const std::vector<MonCapGrant> &g) : grants(g) {}
 
-  string get_str() const {
+  std::string get_str() const {
     return text;
   }
 
   bool is_allow_all() const;
   void set_allow_all();
-  bool parse(const std::string& str, ostream *err=NULL);
+  bool parse(const std::string& str, std::ostream *err=NULL);
 
   /**
    * check if we are capable of something
@@ -166,18 +164,19 @@ struct MonCap {
    */
   bool is_capable(CephContext *cct,
 		  EntityName name,
-		  const string& service,
-		  const string& command, const map<string,string>& command_args,
+		  const std::string& service,
+		  const std::string& command,
+		  const std::map<std::string, std::string>& command_args,
 		  bool op_may_read, bool op_may_write, bool op_may_exec,
 		  const entity_addr_t& addr) const;
 
-  void encode(bufferlist& bl) const;
-  void decode(bufferlist::const_iterator& bl);
-  void dump(Formatter *f) const;
-  static void generate_test_instances(list<MonCap*>& ls);
+  void encode(ceph::buffer::list& bl) const;
+  void decode(ceph::buffer::list::const_iterator& bl);
+  void dump(ceph::Formatter *f) const;
+  static void generate_test_instances(std::list<MonCap*>& ls);
 };
 WRITE_CLASS_ENCODER(MonCap)
 
-ostream& operator<<(ostream& out, const MonCap& cap);
+std::ostream& operator<<(std::ostream& out, const MonCap& cap);
 
 #endif

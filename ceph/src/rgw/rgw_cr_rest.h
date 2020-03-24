@@ -1,8 +1,7 @@
 // -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// vim: ts=8 sw=2 smarttab ft=cpp
 
-#ifndef CEPH_RGW_CR_REST_H
-#define CEPH_RGW_CR_REST_H
+#pragma once
 
 #include <boost/intrusive_ptr.hpp>
 #include <mutex>
@@ -90,7 +89,7 @@ public:
 
 
   virtual int wait_result() {
-    return http_op->wait(result);
+    return http_op->wait(result, null_yield);
   }
 
   int request_complete() override {
@@ -138,7 +137,7 @@ class RGWReadRESTResourceCR : public RGWReadRawRESTResourceCR {
   {}
 
   int wait_result() override {
-    return http_op->wait(result);
+    return http_op->wait(result, null_yield);
   }
 
 };
@@ -206,10 +205,10 @@ class RGWSendRawRESTResourceCR: public RGWSimpleCoroutine {
   int request_complete() override {
     int ret;
     if (result || err_result) {
-      ret = http_op->wait(result, err_result);
+      ret = http_op->wait(result, null_yield, err_result);
     } else {
       bufferlist bl;
-      ret = http_op->wait(&bl);
+      ret = http_op->wait(&bl, null_yield);
     }
     auto op = std::move(http_op); // release ref on return
     if (ret < 0) {
@@ -363,7 +362,7 @@ public:
   int request_complete() override {
     int ret;
     bufferlist bl;
-    ret = http_op->wait(&bl);
+    ret = http_op->wait(&bl, null_yield);
     auto op = std::move(http_op); // release ref on return
     if (ret < 0) {
       error_stream << "http operation failed: " << op->to_str()
@@ -386,7 +385,7 @@ public:
 };
 
 class RGWCRHTTPGetDataCB : public RGWHTTPStreamRWRequest::ReceiveCB {
-  Mutex lock;
+  ceph::mutex lock = ceph::make_mutex("RGWCRHTTPGetDataCB");
   RGWCoroutinesEnv *env;
   RGWCoroutine *cr;
   RGWHTTPStreamRWRequest *req;
@@ -589,5 +588,3 @@ public:
 
   int operate() override;
 };
-
-#endif

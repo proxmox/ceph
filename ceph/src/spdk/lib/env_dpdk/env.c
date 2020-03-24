@@ -33,7 +33,7 @@
 
 #include "spdk/stdinc.h"
 
-#include "spdk/env.h"
+#include "env_internal.h"
 
 #include <rte_config.h>
 #include <rte_cycles.h>
@@ -47,19 +47,12 @@ virt_to_phys(void *vaddr)
 {
 	uint64_t ret;
 
-#if RTE_VERSION >= RTE_VERSION_NUM(17, 11, 0, 3)
 	ret = rte_malloc_virt2iova(vaddr);
 	if (ret != RTE_BAD_IOVA) {
 		return ret;
 	}
-#else
-	ret = rte_malloc_virt2phy(vaddr);
-	if (ret != RTE_BAD_PHYS_ADDR) {
-		return ret;
-	}
-#endif
 
-	return spdk_vtophys(vaddr);
+	return spdk_vtophys(vaddr, NULL);
 }
 
 void *
@@ -71,6 +64,9 @@ spdk_malloc(size_t size, size_t align, uint64_t *phys_addr, int socket_id, uint3
 
 	void *buf = rte_malloc_socket(NULL, size, align, socket_id);
 	if (buf && phys_addr) {
+#ifdef DEBUG
+		fprintf(stderr, "phys_addr param in spdk_*malloc() is deprecated\n");
+#endif
 		*phys_addr = virt_to_phys(buf);
 	}
 	return buf;
@@ -84,6 +80,12 @@ spdk_zmalloc(size_t size, size_t align, uint64_t *phys_addr, int socket_id, uint
 		memset(buf, 0, size);
 	}
 	return buf;
+}
+
+void *
+spdk_realloc(void *buf, size_t size, size_t align)
+{
+	return rte_realloc(buf, size, align);
 }
 
 void
@@ -246,9 +248,7 @@ spdk_mempool_get_name(struct spdk_mempool *mp)
 void
 spdk_mempool_free(struct spdk_mempool *mp)
 {
-#if RTE_VERSION >= RTE_VERSION_NUM(16, 7, 0, 1)
 	rte_mempool_free((struct rte_mempool *)mp);
-#endif
 }
 
 void *
@@ -285,11 +285,15 @@ spdk_mempool_put_bulk(struct spdk_mempool *mp, void **ele_arr, size_t count)
 size_t
 spdk_mempool_count(const struct spdk_mempool *pool)
 {
-#if RTE_VERSION < RTE_VERSION_NUM(16, 7, 0, 1)
-	return rte_mempool_count((struct rte_mempool *)pool);
-#else
 	return rte_mempool_avail_count((struct rte_mempool *)pool);
-#endif
+}
+
+uint32_t
+spdk_mempool_obj_iter(struct spdk_mempool *mp, spdk_mempool_obj_cb_t obj_cb,
+		      void *obj_cb_arg)
+{
+	return rte_mempool_obj_iter((struct rte_mempool *)mp, (rte_mempool_obj_cb_t *)obj_cb,
+				    obj_cb_arg);
 }
 
 bool
@@ -311,6 +315,11 @@ uint64_t spdk_get_ticks_hz(void)
 void spdk_delay_us(unsigned int us)
 {
 	rte_delay_us(us);
+}
+
+void spdk_pause(void)
+{
+	rte_pause();
 }
 
 void
@@ -357,17 +366,17 @@ spdk_ring_create(enum spdk_ring_type type, size_t count, int socket_id)
 {
 	char ring_name[64];
 	static uint32_t ring_num = 0;
-	unsigned flags = 0;
+	unsigned flags = RING_F_EXACT_SZ;
 
 	switch (type) {
 	case SPDK_RING_TYPE_SP_SC:
-		flags = RING_F_SP_ENQ | RING_F_SC_DEQ;
+		flags |= RING_F_SP_ENQ | RING_F_SC_DEQ;
 		break;
 	case SPDK_RING_TYPE_MP_SC:
-		flags = RING_F_SC_DEQ;
+		flags |= RING_F_SC_DEQ;
 		break;
 	case SPDK_RING_TYPE_MP_MC:
-		flags = 0;
+		flags |= 0;
 		break;
 	default:
 		return NULL;
@@ -392,28 +401,15 @@ spdk_ring_count(struct spdk_ring *ring)
 }
 
 size_t
-spdk_ring_enqueue(struct spdk_ring *ring, void **objs, size_t count)
+spdk_ring_enqueue(struct spdk_ring *ring, void **objs, size_t count,
+		  size_t *free_space)
 {
-	int rc;
-#if RTE_VERSION < RTE_VERSION_NUM(17, 5, 0, 0)
-	rc = rte_ring_enqueue_bulk((struct rte_ring *)ring, objs, count);
-	if (rc == 0) {
-		return count;
-	}
-
-	return 0;
-#else
-	rc = rte_ring_enqueue_bulk((struct rte_ring *)ring, objs, count, NULL);
-	return rc;
-#endif
+	return rte_ring_enqueue_bulk((struct rte_ring *)ring, objs, count,
+				     (unsigned int *)free_space);
 }
 
 size_t
 spdk_ring_dequeue(struct spdk_ring *ring, void **objs, size_t count)
 {
-#if RTE_VERSION < RTE_VERSION_NUM(17, 5, 0, 0)
-	return rte_ring_dequeue_burst((struct rte_ring *)ring, objs, count);
-#else
 	return rte_ring_dequeue_burst((struct rte_ring *)ring, objs, count, NULL);
-#endif
 }

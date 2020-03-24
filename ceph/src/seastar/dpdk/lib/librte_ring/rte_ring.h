@@ -1,67 +1,11 @@
-/*-
- *   BSD LICENSE
+/* SPDX-License-Identifier: BSD-3-Clause
  *
- *   Copyright(c) 2010-2017 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- */
-
-/*
- * Derived from FreeBSD's bufring.h
- *
- **************************************************************************
- *
+ * Copyright (c) 2010-2017 Intel Corporation
  * Copyright (c) 2007-2009 Kip Macy kmacy@freebsd.org
  * All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice,
- *    this list of conditions and the following disclaimer.
- *
- * 2. The name of Kip Macy nor the names of other
- *    contributors may be used to endorse or promote products derived from
- *    this software without specific prior written permission.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
- * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
- * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
- * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
- * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
- * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
- * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
- * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
- * POSSIBILITY OF SUCH DAMAGE.
- *
- ***************************************************************************/
+ * Derived from FreeBSD's bufring.h
+ * Used as BSD-3 Licensed with permission from Kip Macy.
+ */
 
 #ifndef _RTE_RING_H_
 #define _RTE_RING_H_
@@ -82,8 +26,9 @@
  * - Bulk dequeue.
  * - Bulk enqueue.
  *
- * Note: the ring implementation is not preemptable. A lcore must not
- * be interrupted by another task that uses the same ring.
+ * Note: the ring implementation is not preemptible. Refer to Programmer's
+ * guide/Environment Abstraction Layer/Multiple pthread/Known Issues/rte_ring
+ * for more information.
  *
  */
 
@@ -96,11 +41,13 @@ extern "C" {
 #include <sys/queue.h>
 #include <errno.h>
 #include <rte_common.h>
+#include <rte_config.h>
 #include <rte_memory.h>
 #include <rte_lcore.h>
 #include <rte_atomic.h>
 #include <rte_branch_prediction.h>
 #include <rte_memzone.h>
+#include <rte_pause.h>
 
 #define RTE_TAILQ_RING_NAME "RTE_RING"
 
@@ -110,19 +57,11 @@ enum rte_ring_queue_behavior {
 };
 
 #define RTE_RING_MZ_PREFIX "RG_"
-/**< The maximum length of a ring name. */
+/** The maximum length of a ring name. */
 #define RTE_RING_NAMESIZE (RTE_MEMZONE_NAMESIZE - \
 			   sizeof(RTE_RING_MZ_PREFIX) + 1)
 
 struct rte_memzone; /* forward declaration, so as not to require memzone.h */
-
-#if RTE_CACHE_LINE_SIZE < 128
-#define PROD_ALIGN (RTE_CACHE_LINE_SIZE * 2)
-#define CONS_ALIGN (RTE_CACHE_LINE_SIZE * 2)
-#else
-#define PROD_ALIGN RTE_CACHE_LINE_SIZE
-#define CONS_ALIGN RTE_CACHE_LINE_SIZE
-#endif
 
 /* structure to hold a pair of head/tail values and other metadata */
 struct rte_ring_headtail {
@@ -153,17 +92,31 @@ struct rte_ring {
 			/**< Memzone, if any, containing the rte_ring */
 	uint32_t size;           /**< Size of ring. */
 	uint32_t mask;           /**< Mask (size-1) of ring. */
+	uint32_t capacity;       /**< Usable size of ring */
+
+	char pad0 __rte_cache_aligned; /**< empty cache line */
 
 	/** Ring producer status. */
-	struct rte_ring_headtail prod __rte_aligned(PROD_ALIGN);
+	struct rte_ring_headtail prod __rte_cache_aligned;
+	char pad1 __rte_cache_aligned; /**< empty cache line */
 
 	/** Ring consumer status. */
-	struct rte_ring_headtail cons __rte_aligned(CONS_ALIGN);
+	struct rte_ring_headtail cons __rte_cache_aligned;
+	char pad2 __rte_cache_aligned; /**< empty cache line */
 };
 
 #define RING_F_SP_ENQ 0x0001 /**< The default enqueue is "single-producer". */
 #define RING_F_SC_DEQ 0x0002 /**< The default dequeue is "single-consumer". */
-#define RTE_RING_SZ_MASK  (unsigned)(0x0fffffff) /**< Ring size mask */
+/**
+ * Ring is to hold exactly requested number of entries.
+ * Without this flag set, the ring size requested must be a power of 2, and the
+ * usable space will be that size - 1. With the flag, the requested size will
+ * be rounded up to the next power of two, but the usable space will be exactly
+ * that requested. Worst case, if a power-of-2 size is requested, half the
+ * ring space will be wasted.
+ */
+#define RING_F_EXACT_SZ 0x0004
+#define RTE_RING_SZ_MASK  (0x7fffffffU) /**< Ring size mask */
 
 /* @internal defines for passing to the enqueue dequeue worker functions */
 #define __IS_SP 1
@@ -345,83 +298,20 @@ void rte_ring_dump(FILE *f, const struct rte_ring *r);
 	} \
 } while (0)
 
-static inline __attribute__((always_inline)) void
-update_tail(struct rte_ring_headtail *ht, uint32_t old_val, uint32_t new_val,
-		uint32_t single)
-{
-	/*
-	 * If there are other enqueues/dequeues in progress that preceded us,
-	 * we need to wait for them to complete
-	 */
-	if (!single)
-		while (unlikely(ht->tail != old_val))
-			rte_pause();
-
-	ht->tail = new_val;
-}
-
-/**
- * @internal This function updates the producer head for enqueue
- *
- * @param r
- *   A pointer to the ring structure
- * @param is_sp
- *   Indicates whether multi-producer path is needed or not
- * @param n
- *   The number of elements we will want to enqueue, i.e. how far should the
- *   head be moved
- * @param behavior
- *   RTE_RING_QUEUE_FIXED:    Enqueue a fixed number of items from a ring
- *   RTE_RING_QUEUE_VARIABLE: Enqueue as many items as possible from ring
- * @param old_head
- *   Returns head value as it was before the move, i.e. where enqueue starts
- * @param new_head
- *   Returns the current/new head value i.e. where enqueue finishes
- * @param free_entries
- *   Returns the amount of free space in the ring BEFORE head was moved
- * @return
- *   Actual number of objects enqueued.
- *   If behavior == RTE_RING_QUEUE_FIXED, this will be 0 or n only.
+/* Between load and load. there might be cpu reorder in weak model
+ * (powerpc/arm).
+ * There are 2 choices for the users
+ * 1.use rmb() memory barrier
+ * 2.use one-direction load_acquire/store_release barrier,defined by
+ * CONFIG_RTE_USE_C11_MEM_MODEL=y
+ * It depends on performance test results.
+ * By default, move common functions to rte_ring_generic.h
  */
-static inline __attribute__((always_inline)) unsigned int
-__rte_ring_move_prod_head(struct rte_ring *r, int is_sp,
-		unsigned int n, enum rte_ring_queue_behavior behavior,
-		uint32_t *old_head, uint32_t *new_head,
-		uint32_t *free_entries)
-{
-	const uint32_t mask = r->mask;
-	unsigned int max = n;
-	int success;
-
-	do {
-		/* Reset n to the initial burst count */
-		n = max;
-
-		*old_head = r->prod.head;
-		const uint32_t cons_tail = r->cons.tail;
-		/* The subtraction is done between two unsigned 32bits value
-		 * (the result is always modulo 32 bits even if we have
-		 * *old_head > cons_tail). So 'free_entries' is always between 0
-		 * and size(ring)-1. */
-		*free_entries = (mask + cons_tail - *old_head);
-
-		/* check that we have enough room in ring */
-		if (unlikely(n > *free_entries))
-			n = (behavior == RTE_RING_QUEUE_FIXED) ?
-					0 : *free_entries;
-
-		if (n == 0)
-			return 0;
-
-		*new_head = *old_head + n;
-		if (is_sp)
-			r->prod.head = *new_head, success = 1;
-		else
-			success = rte_atomic32_cmpset(&r->prod.head,
-					*old_head, *new_head);
-	} while (unlikely(success == 0));
-	return n;
-}
+#ifdef RTE_USE_C11_MEM_MODEL
+#include "rte_ring_c11_mem.h"
+#else
+#include "rte_ring_generic.h"
+#endif
 
 /**
  * @internal Enqueue several objects on the ring
@@ -443,10 +333,10 @@ __rte_ring_move_prod_head(struct rte_ring *r, int is_sp,
  *   Actual number of objects enqueued.
  *   If behavior == RTE_RING_QUEUE_FIXED, this will be 0 or n only.
  */
-static inline __attribute__((always_inline)) unsigned int
+static __rte_always_inline unsigned int
 __rte_ring_do_enqueue(struct rte_ring *r, void * const *obj_table,
 		 unsigned int n, enum rte_ring_queue_behavior behavior,
-		 int is_sp, unsigned int *free_space)
+		 unsigned int is_sp, unsigned int *free_space)
 {
 	uint32_t prod_head, prod_next;
 	uint32_t free_entries;
@@ -457,74 +347,11 @@ __rte_ring_do_enqueue(struct rte_ring *r, void * const *obj_table,
 		goto end;
 
 	ENQUEUE_PTRS(r, &r[1], prod_head, obj_table, n, void *);
-	rte_smp_wmb();
 
-	update_tail(&r->prod, prod_head, prod_next, is_sp);
+	update_tail(&r->prod, prod_head, prod_next, is_sp, 1);
 end:
 	if (free_space != NULL)
 		*free_space = free_entries - n;
-	return n;
-}
-
-/**
- * @internal This function updates the consumer head for dequeue
- *
- * @param r
- *   A pointer to the ring structure
- * @param is_sc
- *   Indicates whether multi-consumer path is needed or not
- * @param n
- *   The number of elements we will want to enqueue, i.e. how far should the
- *   head be moved
- * @param behavior
- *   RTE_RING_QUEUE_FIXED:    Dequeue a fixed number of items from a ring
- *   RTE_RING_QUEUE_VARIABLE: Dequeue as many items as possible from ring
- * @param old_head
- *   Returns head value as it was before the move, i.e. where dequeue starts
- * @param new_head
- *   Returns the current/new head value i.e. where dequeue finishes
- * @param entries
- *   Returns the number of entries in the ring BEFORE head was moved
- * @return
- *   - Actual number of objects dequeued.
- *     If behavior == RTE_RING_QUEUE_FIXED, this will be 0 or n only.
- */
-static inline __attribute__((always_inline)) unsigned int
-__rte_ring_move_cons_head(struct rte_ring *r, int is_sc,
-		unsigned int n, enum rte_ring_queue_behavior behavior,
-		uint32_t *old_head, uint32_t *new_head,
-		uint32_t *entries)
-{
-	unsigned int max = n;
-	int success;
-
-	/* move cons.head atomically */
-	do {
-		/* Restore n as it may change every loop */
-		n = max;
-
-		*old_head = r->cons.head;
-		const uint32_t prod_tail = r->prod.tail;
-		/* The subtraction is done between two unsigned 32bits value
-		 * (the result is always modulo 32 bits even if we have
-		 * cons_head > prod_tail). So 'entries' is always between 0
-		 * and size(ring)-1. */
-		*entries = (prod_tail - *old_head);
-
-		/* Set the actual entries for dequeue */
-		if (n > *entries)
-			n = (behavior == RTE_RING_QUEUE_FIXED) ? 0 : *entries;
-
-		if (unlikely(n == 0))
-			return 0;
-
-		*new_head = *old_head + n;
-		if (is_sc)
-			r->cons.head = *new_head, success = 1;
-		else
-			success = rte_atomic32_cmpset(&r->cons.head, *old_head,
-					*new_head);
-	} while (unlikely(success == 0));
 	return n;
 }
 
@@ -548,23 +375,22 @@ __rte_ring_move_cons_head(struct rte_ring *r, int is_sc,
  *   - Actual number of objects dequeued.
  *     If behavior == RTE_RING_QUEUE_FIXED, this will be 0 or n only.
  */
-static inline __attribute__((always_inline)) unsigned int
+static __rte_always_inline unsigned int
 __rte_ring_do_dequeue(struct rte_ring *r, void **obj_table,
 		 unsigned int n, enum rte_ring_queue_behavior behavior,
-		 int is_sc, unsigned int *available)
+		 unsigned int is_sc, unsigned int *available)
 {
 	uint32_t cons_head, cons_next;
 	uint32_t entries;
 
-	n = __rte_ring_move_cons_head(r, is_sc, n, behavior,
+	n = __rte_ring_move_cons_head(r, (int)is_sc, n, behavior,
 			&cons_head, &cons_next, &entries);
 	if (n == 0)
 		goto end;
 
 	DEQUEUE_PTRS(r, &r[1], cons_head, obj_table, n, void *);
-	rte_smp_rmb();
 
-	update_tail(&r->cons, cons_head, cons_next, is_sc);
+	update_tail(&r->cons, cons_head, cons_next, is_sc, 0);
 
 end:
 	if (available != NULL)
@@ -590,7 +416,7 @@ end:
  * @return
  *   The number of objects enqueued, either 0 or n
  */
-static inline unsigned int __attribute__((always_inline))
+static __rte_always_inline unsigned int
 rte_ring_mp_enqueue_bulk(struct rte_ring *r, void * const *obj_table,
 			 unsigned int n, unsigned int *free_space)
 {
@@ -613,7 +439,7 @@ rte_ring_mp_enqueue_bulk(struct rte_ring *r, void * const *obj_table,
  * @return
  *   The number of objects enqueued, either 0 or n
  */
-static inline unsigned int __attribute__((always_inline))
+static __rte_always_inline unsigned int
 rte_ring_sp_enqueue_bulk(struct rte_ring *r, void * const *obj_table,
 			 unsigned int n, unsigned int *free_space)
 {
@@ -640,7 +466,7 @@ rte_ring_sp_enqueue_bulk(struct rte_ring *r, void * const *obj_table,
  * @return
  *   The number of objects enqueued, either 0 or n
  */
-static inline unsigned int __attribute__((always_inline))
+static __rte_always_inline unsigned int
 rte_ring_enqueue_bulk(struct rte_ring *r, void * const *obj_table,
 		      unsigned int n, unsigned int *free_space)
 {
@@ -662,7 +488,7 @@ rte_ring_enqueue_bulk(struct rte_ring *r, void * const *obj_table,
  *   - 0: Success; objects enqueued.
  *   - -ENOBUFS: Not enough room in the ring to enqueue; no object is enqueued.
  */
-static inline int __attribute__((always_inline))
+static __rte_always_inline int
 rte_ring_mp_enqueue(struct rte_ring *r, void *obj)
 {
 	return rte_ring_mp_enqueue_bulk(r, &obj, 1, NULL) ? 0 : -ENOBUFS;
@@ -679,7 +505,7 @@ rte_ring_mp_enqueue(struct rte_ring *r, void *obj)
  *   - 0: Success; objects enqueued.
  *   - -ENOBUFS: Not enough room in the ring to enqueue; no object is enqueued.
  */
-static inline int __attribute__((always_inline))
+static __rte_always_inline int
 rte_ring_sp_enqueue(struct rte_ring *r, void *obj)
 {
 	return rte_ring_sp_enqueue_bulk(r, &obj, 1, NULL) ? 0 : -ENOBUFS;
@@ -700,7 +526,7 @@ rte_ring_sp_enqueue(struct rte_ring *r, void *obj)
  *   - 0: Success; objects enqueued.
  *   - -ENOBUFS: Not enough room in the ring to enqueue; no object is enqueued.
  */
-static inline int __attribute__((always_inline))
+static __rte_always_inline int
 rte_ring_enqueue(struct rte_ring *r, void *obj)
 {
 	return rte_ring_enqueue_bulk(r, &obj, 1, NULL) ? 0 : -ENOBUFS;
@@ -724,7 +550,7 @@ rte_ring_enqueue(struct rte_ring *r, void *obj)
  * @return
  *   The number of objects dequeued, either 0 or n
  */
-static inline unsigned int __attribute__((always_inline))
+static __rte_always_inline unsigned int
 rte_ring_mc_dequeue_bulk(struct rte_ring *r, void **obj_table,
 		unsigned int n, unsigned int *available)
 {
@@ -748,7 +574,7 @@ rte_ring_mc_dequeue_bulk(struct rte_ring *r, void **obj_table,
  * @return
  *   The number of objects dequeued, either 0 or n
  */
-static inline unsigned int __attribute__((always_inline))
+static __rte_always_inline unsigned int
 rte_ring_sc_dequeue_bulk(struct rte_ring *r, void **obj_table,
 		unsigned int n, unsigned int *available)
 {
@@ -775,7 +601,7 @@ rte_ring_sc_dequeue_bulk(struct rte_ring *r, void **obj_table,
  * @return
  *   The number of objects dequeued, either 0 or n
  */
-static inline unsigned int __attribute__((always_inline))
+static __rte_always_inline unsigned int
 rte_ring_dequeue_bulk(struct rte_ring *r, void **obj_table, unsigned int n,
 		unsigned int *available)
 {
@@ -798,10 +624,10 @@ rte_ring_dequeue_bulk(struct rte_ring *r, void **obj_table, unsigned int n,
  *   - -ENOENT: Not enough entries in the ring to dequeue; no object is
  *     dequeued.
  */
-static inline int __attribute__((always_inline))
+static __rte_always_inline int
 rte_ring_mc_dequeue(struct rte_ring *r, void **obj_p)
 {
-	return rte_ring_mc_dequeue_bulk(r, obj_p, 1, NULL)  ? 0 : -ENOBUFS;
+	return rte_ring_mc_dequeue_bulk(r, obj_p, 1, NULL)  ? 0 : -ENOENT;
 }
 
 /**
@@ -816,10 +642,10 @@ rte_ring_mc_dequeue(struct rte_ring *r, void **obj_p)
  *   - -ENOENT: Not enough entries in the ring to dequeue, no object is
  *     dequeued.
  */
-static inline int __attribute__((always_inline))
+static __rte_always_inline int
 rte_ring_sc_dequeue(struct rte_ring *r, void **obj_p)
 {
-	return rte_ring_sc_dequeue_bulk(r, obj_p, 1, NULL) ? 0 : -ENOBUFS;
+	return rte_ring_sc_dequeue_bulk(r, obj_p, 1, NULL) ? 0 : -ENOENT;
 }
 
 /**
@@ -838,44 +664,10 @@ rte_ring_sc_dequeue(struct rte_ring *r, void **obj_p)
  *   - -ENOENT: Not enough entries in the ring to dequeue, no object is
  *     dequeued.
  */
-static inline int __attribute__((always_inline))
+static __rte_always_inline int
 rte_ring_dequeue(struct rte_ring *r, void **obj_p)
 {
 	return rte_ring_dequeue_bulk(r, obj_p, 1, NULL) ? 0 : -ENOENT;
-}
-
-/**
- * Test if a ring is full.
- *
- * @param r
- *   A pointer to the ring structure.
- * @return
- *   - 1: The ring is full.
- *   - 0: The ring is not full.
- */
-static inline int
-rte_ring_full(const struct rte_ring *r)
-{
-	uint32_t prod_tail = r->prod.tail;
-	uint32_t cons_tail = r->cons.tail;
-	return ((cons_tail - prod_tail - 1) & r->mask) == 0;
-}
-
-/**
- * Test if a ring is empty.
- *
- * @param r
- *   A pointer to the ring structure.
- * @return
- *   - 1: The ring is empty.
- *   - 0: The ring is not empty.
- */
-static inline int
-rte_ring_empty(const struct rte_ring *r)
-{
-	uint32_t prod_tail = r->prod.tail;
-	uint32_t cons_tail = r->cons.tail;
-	return !!(cons_tail == prod_tail);
 }
 
 /**
@@ -891,7 +683,8 @@ rte_ring_count(const struct rte_ring *r)
 {
 	uint32_t prod_tail = r->prod.tail;
 	uint32_t cons_tail = r->cons.tail;
-	return (prod_tail - cons_tail) & r->mask;
+	uint32_t count = (prod_tail - cons_tail) & r->mask;
+	return (count > r->capacity) ? r->capacity : count;
 }
 
 /**
@@ -905,9 +698,37 @@ rte_ring_count(const struct rte_ring *r)
 static inline unsigned
 rte_ring_free_count(const struct rte_ring *r)
 {
-	uint32_t prod_tail = r->prod.tail;
-	uint32_t cons_tail = r->cons.tail;
-	return (cons_tail - prod_tail - 1) & r->mask;
+	return r->capacity - rte_ring_count(r);
+}
+
+/**
+ * Test if a ring is full.
+ *
+ * @param r
+ *   A pointer to the ring structure.
+ * @return
+ *   - 1: The ring is full.
+ *   - 0: The ring is not full.
+ */
+static inline int
+rte_ring_full(const struct rte_ring *r)
+{
+	return rte_ring_free_count(r) == 0;
+}
+
+/**
+ * Test if a ring is empty.
+ *
+ * @param r
+ *   A pointer to the ring structure.
+ * @return
+ *   - 1: The ring is empty.
+ *   - 0: The ring is not empty.
+ */
+static inline int
+rte_ring_empty(const struct rte_ring *r)
+{
+	return rte_ring_count(r) == 0;
 }
 
 /**
@@ -916,12 +737,28 @@ rte_ring_free_count(const struct rte_ring *r)
  * @param r
  *   A pointer to the ring structure.
  * @return
- *   The number of elements which can be stored in the ring.
+ *   The size of the data store used by the ring.
+ *   NOTE: this is not the same as the usable space in the ring. To query that
+ *   use ``rte_ring_get_capacity()``.
  */
 static inline unsigned int
 rte_ring_get_size(const struct rte_ring *r)
 {
 	return r->size;
+}
+
+/**
+ * Return the number of elements which can be stored in the ring.
+ *
+ * @param r
+ *   A pointer to the ring structure.
+ * @return
+ *   The usable size of the ring.
+ */
+static inline unsigned int
+rte_ring_get_capacity(const struct rte_ring *r)
+{
+	return r->capacity;
 }
 
 /**
@@ -962,7 +799,7 @@ struct rte_ring *rte_ring_lookup(const char *name);
  * @return
  *   - n: Actual number of objects enqueued.
  */
-static inline unsigned __attribute__((always_inline))
+static __rte_always_inline unsigned
 rte_ring_mp_enqueue_burst(struct rte_ring *r, void * const *obj_table,
 			 unsigned int n, unsigned int *free_space)
 {
@@ -985,7 +822,7 @@ rte_ring_mp_enqueue_burst(struct rte_ring *r, void * const *obj_table,
  * @return
  *   - n: Actual number of objects enqueued.
  */
-static inline unsigned __attribute__((always_inline))
+static __rte_always_inline unsigned
 rte_ring_sp_enqueue_burst(struct rte_ring *r, void * const *obj_table,
 			 unsigned int n, unsigned int *free_space)
 {
@@ -1012,7 +849,7 @@ rte_ring_sp_enqueue_burst(struct rte_ring *r, void * const *obj_table,
  * @return
  *   - n: Actual number of objects enqueued.
  */
-static inline unsigned __attribute__((always_inline))
+static __rte_always_inline unsigned
 rte_ring_enqueue_burst(struct rte_ring *r, void * const *obj_table,
 		      unsigned int n, unsigned int *free_space)
 {
@@ -1040,7 +877,7 @@ rte_ring_enqueue_burst(struct rte_ring *r, void * const *obj_table,
  * @return
  *   - n: Actual number of objects dequeued, 0 if ring is empty
  */
-static inline unsigned __attribute__((always_inline))
+static __rte_always_inline unsigned
 rte_ring_mc_dequeue_burst(struct rte_ring *r, void **obj_table,
 		unsigned int n, unsigned int *available)
 {
@@ -1065,7 +902,7 @@ rte_ring_mc_dequeue_burst(struct rte_ring *r, void **obj_table,
  * @return
  *   - n: Actual number of objects dequeued, 0 if ring is empty
  */
-static inline unsigned __attribute__((always_inline))
+static __rte_always_inline unsigned
 rte_ring_sc_dequeue_burst(struct rte_ring *r, void **obj_table,
 		unsigned int n, unsigned int *available)
 {
@@ -1092,7 +929,7 @@ rte_ring_sc_dequeue_burst(struct rte_ring *r, void **obj_table,
  * @return
  *   - Number of objects dequeued
  */
-static inline unsigned __attribute__((always_inline))
+static __rte_always_inline unsigned
 rte_ring_dequeue_burst(struct rte_ring *r, void **obj_table,
 		unsigned int n, unsigned int *available)
 {

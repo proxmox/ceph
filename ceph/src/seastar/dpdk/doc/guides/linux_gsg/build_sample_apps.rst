@@ -1,32 +1,5 @@
-..  BSD LICENSE
-    Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
-    All rights reserved.
-
-    Redistribution and use in source and binary forms, with or without
-    modification, are permitted provided that the following conditions
-    are met:
-
-    * Redistributions of source code must retain the above copyright
-    notice, this list of conditions and the following disclaimer.
-    * Redistributions in binary form must reproduce the above copyright
-    notice, this list of conditions and the following disclaimer in
-    the documentation and/or other materials provided with the
-    distribution.
-    * Neither the name of Intel Corporation nor the names of its
-    contributors may be used to endorse or promote products derived
-    from this software without specific prior written permission.
-
-    THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-    "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-    LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-    A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-    OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-    SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-    LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-    DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-    THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-    (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-    OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+..  SPDX-License-Identifier: BSD-3-Clause
+    Copyright(c) 2010-2014 Intel Corporation.
 
 Compiling and Running Sample Applications
 =========================================
@@ -42,7 +15,7 @@ It also provides a pointer to where sample applications are stored.
 Compiling a Sample Application
 ------------------------------
 
-Once an DPDK target environment directory has been created (such as ``x86_64-native-linuxapp-gcc``),
+Once an DPDK target environment directory has been created (such as ``x86_64-native-linux-gcc``),
 it contains all libraries and header files required to build an application.
 
 When compiling an application in the Linux* environment on the DPDK, the following variables must be exported:
@@ -63,7 +36,7 @@ By default, the binary is generated in the build directory.
 
     cd examples/helloworld/
     export RTE_SDK=$HOME/DPDK
-    export RTE_TARGET=x86_64-native-linuxapp-gcc
+    export RTE_TARGET=x86_64-native-linux-gcc
 
     make
         CC main.o
@@ -85,7 +58,7 @@ By default, the binary is generated in the build directory.
        export RTE_SDK=/home/user/DPDK
        cp -r $(RTE_SDK)/examples/helloworld my_rte_app
        cd my_rte_app/
-       export RTE_TARGET=x86_64-native-linuxapp-gcc
+       export RTE_TARGET=x86_64-native-linux-gcc
 
        make
          CC main.o
@@ -98,12 +71,14 @@ Running a Sample Application
 
 .. warning::
 
-    The UIO drivers and hugepages must be setup prior to running an application.
+    Before running the application make sure:
 
-.. warning::
+    - Hugepages setup is done.
+    - Any kernel driver being used is loaded.
+    - In case needed, ports being used by the application should be
+      bound to the corresponding kernel driver.
 
-    Any ports to be used by the application must be already bound to an appropriate kernel
-    module, as described in :ref:`linux_gsg_binding_kernel`, prior to running the application.
+    refer to :ref:`linux_gsg_linux_drivers` for more details.
 
 The application is linked with the DPDK target environment's Environmental Abstraction Layer (EAL) library,
 which provides some options that are generic to every DPDK application.
@@ -114,7 +89,7 @@ The following is the list of options that can be given to the EAL:
 
     ./rte-app [-c COREMASK | -l CORELIST] [-n NUM] [-b <domain:bus:devid.func>] \
               [--socket-mem=MB,...] [-d LIB.so|DIR] [-m MB] [-r NUM] [-v] [--file-prefix] \
-	      [--proc-type <primary|secondary|auto>] [-- xen-dom0]
+	      [--proc-type <primary|secondary|auto>]
 
 The EAL options are as follows:
 
@@ -135,7 +110,13 @@ The EAL options are as follows:
   ``[domain:]bus:devid.func`` values. Cannot be used with ``-b`` option.
 
 * ``--socket-mem``:
-  Memory to allocate from hugepages on specific sockets.
+  Memory to allocate from hugepages on specific sockets. In dynamic memory mode,
+  this memory will also be pinned (i.e. not released back to the system until
+  application closes).
+
+* ``--socket-limit``:
+  Limit maximum memory available for allocation on each socket. Does not support
+  legacy memory mode.
 
 * ``-d``:
   Add a driver or driver directory to be loaded.
@@ -155,14 +136,14 @@ The EAL options are as follows:
 * ``--huge-dir``:
   The directory where hugetlbfs is mounted.
 
+* ``mbuf-pool-ops-name``:
+  Pool ops name for mbuf to use.
+
 * ``--file-prefix``:
   The prefix text used for hugepage filenames.
 
 * ``--proc-type``:
   The type of process instance.
-
-* ``--xen-dom0``:
-  Support application running on Xen Domain0 without hugetlbfs.
 
 * ``--vmware-tsc-map``:
   Use VMware TSC map instead of native RDTSC.
@@ -172,6 +153,14 @@ The EAL options are as follows:
 
 * ``--vfio-intr``:
   Specify interrupt type to be used by VFIO (has no effect if VFIO is not used).
+
+* ``--legacy-mem``:
+  Run DPDK in legacy memory mode (disable memory reserve/unreserve at runtime,
+  but provide more IOVA-contiguous memory).
+
+* ``--single-file-segments``:
+  Store memory segments in fewer files (dynamic memory mode only - does not
+  affect legacy memory mode).
 
 The ``-c`` or ``-l`` and option is mandatory; the others are optional.
 

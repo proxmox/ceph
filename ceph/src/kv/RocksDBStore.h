@@ -21,12 +21,12 @@
 #include "common/errno.h"
 #include "common/dout.h"
 #include "include/ceph_assert.h"
+#include "include/common_fwd.h"
 #include "common/Formatter.h"
 #include "common/Cond.h"
 #include "common/ceph_context.h"
 #include "common/PriorityCache.h"
 
-class PerfCounters;
 
 enum {
   l_rocksdb_first = 34300,
@@ -95,8 +95,9 @@ class RocksDBStore : public KeyValueDB {
   int load_rocksdb_options(bool create_if_missing, rocksdb::Options& opt);
 
   // manage async compactions
-  Mutex compact_queue_lock;
-  Cond compact_queue_cond;
+  ceph::mutex compact_queue_lock =
+    ceph::make_mutex("RocksDBStore::compact_thread_lock");
+  ceph::condition_variable compact_queue_cond;
   list< pair<string,string> > compact_queue;
   bool compact_queue_stop;
   class CompactThread : public Thread {
@@ -114,21 +115,25 @@ class RocksDBStore : public KeyValueDB {
 
   void compact_range(const string& start, const string& end);
   void compact_range_async(const string& start, const string& end);
+  int tryInterpret(const string& key, const string& val, rocksdb::Options& opt);
 
 public:
   /// compact the underlying rocksdb store
   bool compact_on_mount;
   bool disableWAL;
-  bool enable_rmrange;
-  const uint64_t max_items_rmrange;
+  const uint64_t delete_range_threshold;
   void compact() override;
 
   void compact_async() override {
     compact_range_async(string(), string());
   }
 
-  int tryInterpret(const string& key, const string& val, rocksdb::Options &opt);
-  int ParseOptionsFromString(const string& opt_str, rocksdb::Options &opt);
+  int ParseOptionsFromString(const string& opt_str, rocksdb::Options& opt);
+  static int ParseOptionsFromStringStatic(
+    CephContext* cct,
+    const string& opt_str,
+    rocksdb::Options &opt,
+    function<int(const string&, const string&, rocksdb::Options&)> interp);
   static int _test_init(const string& dir);
   int init(string options_str) override;
   /// compact rocksdb for all keys with a given prefix
@@ -155,13 +160,11 @@ public:
     db(NULL),
     env(static_cast<rocksdb::Env*>(p)),
     dbstats(NULL),
-    compact_queue_lock("RocksDBStore::compact_thread_lock"),
     compact_queue_stop(false),
     compact_thread(this),
     compact_on_mount(false),
     disableWAL(false),
-    enable_rmrange(cct->_conf->rocksdb_enable_rmrange),
-    max_items_rmrange(cct->_conf.get_val<uint64_t>("rocksdb_max_items_rmrange"))
+    delete_range_threshold(cct->_conf.get_val<uint64_t>("rocksdb_delete_range_threshold"))
   {}
 
   ~RocksDBStore() override;
@@ -197,7 +200,12 @@ public:
     return logger;
   }
 
-  int64_t estimate_prefix_size(const string& prefix) override;
+  bool get_property(
+    const std::string &property,
+    uint64_t *out) final;
+
+  int64_t estimate_prefix_size(const string& prefix,
+			       const string& key_prefix) override;
 
   struct  RocksWBHandler: public rocksdb::WriteBatch::Handler {
     std::string seen ;

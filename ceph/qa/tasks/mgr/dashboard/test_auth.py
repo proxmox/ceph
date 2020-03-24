@@ -6,7 +6,7 @@ import time
 
 import jwt
 
-from .helper import DashboardTestCase
+from .helper import DashboardTestCase, JObj, JLeaf
 
 
 class AuthTest(DashboardTestCase):
@@ -14,6 +14,7 @@ class AuthTest(DashboardTestCase):
     AUTO_AUTHENTICATE = False
 
     def setUp(self):
+        super(AuthTest, self).setUp()
         self.reset_session()
 
     def _validate_jwt_token(self, token, username, permissions):
@@ -40,6 +41,14 @@ class AuthTest(DashboardTestCase):
         self._post("/api/auth", {'username': 'admin', 'password': 'admin'})
         self.assertStatus(201)
         data = self.jsonBody()
+        self.assertSchema(data, JObj(sub_elems={
+            'token': JLeaf(str),
+            'username': JLeaf(str),
+            'permissions': JObj(sub_elems={}, allow_unknown=True),
+            'sso': JLeaf(bool),
+            'pwdExpirationDate': JLeaf(int, none=True),
+            'pwdUpdateRequired': JLeaf(bool)
+        }, allow_unknown=False))
         self._validate_jwt_token(data['token'], "admin", data['permissions'])
 
     def test_login_invalid(self):
@@ -125,7 +134,8 @@ class AuthTest(DashboardTestCase):
         self._get("/api/host")
         self.assertStatus(200)
         time.sleep(1)
-        self._ceph_cmd(['dashboard', 'ac-user-set-password', 'user', 'user2'])
+        self._ceph_cmd(['dashboard', 'ac-user-set-password', '--force-password',
+                        'user', 'user2'])
         time.sleep(1)
         self._get("/api/host")
         self.assertStatus(401)
@@ -136,3 +146,26 @@ class AuthTest(DashboardTestCase):
         self._get("/api/host")
         self.assertStatus(200)
         self.delete_user("user")
+
+    def test_check_token(self):
+        self.login("admin", "admin")
+        self._post("/api/auth/check", {"token": self.jsonBody()["token"]})
+        self.assertStatus(200)
+        data = self.jsonBody()
+        self.assertSchema(data, JObj(sub_elems={
+            "username": JLeaf(str),
+            "permissions": JObj(sub_elems={}, allow_unknown=True),
+            "sso": JLeaf(bool),
+            "pwdUpdateRequired": JLeaf(bool)
+        }, allow_unknown=False))
+        self.logout()
+
+    def test_check_wo_token(self):
+        self.login("admin", "admin")
+        self._post("/api/auth/check", {"token": ""})
+        self.assertStatus(200)
+        data = self.jsonBody()
+        self.assertSchema(data, JObj(sub_elems={
+            "login_url": JLeaf(str)
+        }, allow_unknown=False))
+        self.logout()

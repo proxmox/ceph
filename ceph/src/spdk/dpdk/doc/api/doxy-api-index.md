@@ -22,6 +22,7 @@ The public API headers are grouped by topics:
   [compress]           (@ref rte_comp.h),
   [eventdev]           (@ref rte_eventdev.h),
   [event_eth_rx_adapter]   (@ref rte_event_eth_rx_adapter.h),
+  [event_eth_tx_adapter]   (@ref rte_event_eth_tx_adapter.h),
   [event_timer_adapter]    (@ref rte_event_timer_adapter.h),
   [event_crypto_adapter]   (@ref rte_event_crypto_adapter.h),
   [rawdev]             (@ref rte_rawdev.h),
@@ -36,11 +37,13 @@ The public API headers are grouped by topics:
   [softnic]            (@ref rte_eth_softnic.h),
   [bond]               (@ref rte_eth_bond.h),
   [vhost]              (@ref rte_vhost.h),
+  [vdpa]               (@ref rte_vdpa.h),
   [KNI]                (@ref rte_kni.h),
   [ixgbe]              (@ref rte_pmd_ixgbe.h),
   [i40e]               (@ref rte_pmd_i40e.h),
   [bnxt]               (@ref rte_pmd_bnxt.h),
   [dpaa]               (@ref rte_pmd_dpaa.h),
+  [dpaa2]              (@ref rte_pmd_dpaa2.h),
   [dpaa2_mempool]      (@ref rte_dpaa2_mempool.h),
   [dpaa2_cmdif]        (@ref rte_pmd_dpaa2_cmdif.h),
   [dpaa2_qdma]         (@ref rte_pmd_dpaa2_qdma.h),
@@ -61,7 +64,9 @@ The public API headers are grouped by topics:
 - **locks**:
   [atomic]             (@ref rte_atomic.h),
   [rwlock]             (@ref rte_rwlock.h),
-  [spinlock]           (@ref rte_spinlock.h)
+  [spinlock]           (@ref rte_spinlock.h),
+  [ticketlock]         (@ref rte_ticketlock.h),
+  [RCU]                (@ref rte_rcu_qsbr.h)
 
 - **CPU arch**:
   [branch prediction]  (@ref rte_branch_prediction.h),
@@ -121,6 +126,7 @@ The public API headers are grouped by topics:
   [mbuf]               (@ref rte_mbuf.h),
   [mbuf pool ops]      (@ref rte_mbuf_pool_ops.h),
   [ring]               (@ref rte_ring.h),
+  [stack]              (@ref rte_stack.h),
   [tailq]              (@ref rte_tailq.h),
   [bitmap]             (@ref rte_bitmap.h)
 
@@ -153,6 +159,7 @@ The public API headers are grouped by topics:
 
 - **debug**:
   [jobstats]           (@ref rte_jobstats.h),
+  [telemetry]          (@ref rte_telemetry.h),
   [pdump]              (@ref rte_pdump.h),
   [hexdump]            (@ref rte_hexdump.h),
   [debug]              (@ref rte_debug.h),

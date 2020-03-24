@@ -63,7 +63,7 @@ iscsi_usage(void)
 }
 
 static void
-spdk_startup(void *arg1, void *arg2)
+spdk_startup(void *arg1)
 {
 	if (getenv("MEMZONE_DUMP") != NULL) {
 		spdk_memzone_dump(stdout);
@@ -71,7 +71,7 @@ spdk_startup(void *arg1, void *arg2)
 	}
 }
 
-static void
+static int
 iscsi_parse_arg(int ch, char *arg)
 {
 	switch (ch) {
@@ -79,9 +79,9 @@ iscsi_parse_arg(int ch, char *arg)
 		g_daemon_mode = 1;
 		break;
 	default:
-		assert(false);
-		break;
+		return -EINVAL;
 	}
+	return 0;
 }
 
 int
@@ -100,7 +100,7 @@ main(int argc, char **argv)
 
 	if (g_daemon_mode) {
 		if (daemon(1, 0) < 0) {
-			SPDK_ERRLOG("Start iscsi target daemon faild.\n");
+			SPDK_ERRLOG("Start iscsi target daemon failed.\n");
 			exit(EXIT_FAILURE);
 		}
 	}
@@ -109,7 +109,7 @@ main(int argc, char **argv)
 	opts.usr1_handler = spdk_sigusr1;
 
 	/* Blocks until the application is exiting */
-	rc = spdk_app_start(&opts, spdk_startup, NULL, NULL);
+	rc = spdk_app_start(&opts, spdk_startup, NULL);
 	if (rc) {
 		SPDK_ERRLOG("Start iscsi target daemon:  spdk_app_start() retn non-zero\n");
 	}

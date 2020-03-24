@@ -36,6 +36,8 @@
 #include "spdk/env.h"
 #include "spdk/string.h"
 #include "spdk/trace.h"
+#include "spdk/util.h"
+#include "spdk/barrier.h"
 
 static int g_trace_fd = -1;
 static char g_shm_name[64];
@@ -49,20 +51,23 @@ _spdk_trace_record(uint64_t tsc, uint16_t tpoint_id, uint16_t poller_id, uint32_
 	struct spdk_trace_history *lcore_history;
 	struct spdk_trace_entry *next_entry;
 	unsigned lcore;
+	uint64_t next_circular_entry;
 
 	lcore = spdk_env_get_current_core();
 	if (lcore >= SPDK_TRACE_MAX_LCORE) {
 		return;
 	}
 
-	lcore_history = &g_trace_histories->per_lcore_history[lcore];
+	lcore_history = spdk_get_per_lcore_history(g_trace_histories, lcore);
 	if (tsc == 0) {
 		tsc = spdk_get_ticks();
 	}
 
 	lcore_history->tpoint_count[tpoint_id]++;
 
-	next_entry = &lcore_history->entries[lcore_history->next_entry];
+	/* Get next entry index in the circular buffer */
+	next_circular_entry = lcore_history->next_entry & (lcore_history->num_entries - 1);
+	next_entry = &lcore_history->entries[next_circular_entry];
 	next_entry->tsc = tsc;
 	next_entry->tpoint_id = tpoint_id;
 	next_entry->poller_id = poller_id;
@@ -70,16 +75,23 @@ _spdk_trace_record(uint64_t tsc, uint16_t tpoint_id, uint16_t poller_id, uint32_
 	next_entry->object_id = object_id;
 	next_entry->arg1 = arg1;
 
+	/* Ensure all elements of the trace entry are visible to outside trace tools */
+	spdk_smp_wmb();
 	lcore_history->next_entry++;
-	if (lcore_history->next_entry == SPDK_TRACE_SIZE) {
-		lcore_history->next_entry = 0;
-	}
 }
 
 int
-spdk_trace_init(const char *shm_name)
+spdk_trace_init(const char *shm_name, uint64_t num_entries)
 {
 	int i = 0;
+	int histories_size;
+	uint64_t lcore_offsets[SPDK_TRACE_MAX_LCORE + 1];
+
+	lcore_offsets[0] = sizeof(struct spdk_trace_flags);
+	for (i = 1; i < (int)SPDK_COUNTOF(lcore_offsets); i++) {
+		lcore_offsets[i] = spdk_get_trace_history_size(num_entries) + lcore_offsets[i - 1];
+	}
+	histories_size = sizeof(struct spdk_trace_flags) + lcore_offsets[SPDK_TRACE_MAX_LCORE];
 
 	snprintf(g_shm_name, sizeof(g_shm_name), "%s", shm_name);
 
@@ -90,12 +102,12 @@ spdk_trace_init(const char *shm_name)
 		return 1;
 	}
 
-	if (ftruncate(g_trace_fd, sizeof(*g_trace_histories)) != 0) {
+	if (ftruncate(g_trace_fd, histories_size) != 0) {
 		fprintf(stderr, "could not truncate shm\n");
 		goto trace_init_err;
 	}
 
-	g_trace_histories = mmap(NULL, sizeof(*g_trace_histories), PROT_READ | PROT_WRITE,
+	g_trace_histories = mmap(NULL, histories_size, PROT_READ | PROT_WRITE,
 				 MAP_SHARED, g_trace_fd, 0);
 	if (g_trace_histories == MAP_FAILED) {
 		fprintf(stderr, "could not mmap shm\n");
@@ -107,7 +119,7 @@ spdk_trace_init(const char *shm_name)
 	 * altogether.
 	 */
 #if defined(__linux__)
-	if (mlock(g_trace_histories, sizeof(*g_trace_histories)) != 0) {
+	if (mlock(g_trace_histories, histories_size) != 0) {
 		fprintf(stderr, "Could not mlock shm for tracing - %s.\n", spdk_strerror(errno));
 		if (errno == ENOMEM) {
 			fprintf(stderr, "Check /dev/shm for old tracing files that can be deleted.\n");
@@ -116,15 +128,21 @@ spdk_trace_init(const char *shm_name)
 	}
 #endif
 
-	memset(g_trace_histories, 0, sizeof(*g_trace_histories));
+	memset(g_trace_histories, 0, histories_size);
 
 	g_trace_flags = &g_trace_histories->flags;
 
 	g_trace_flags->tsc_rate = spdk_get_ticks_hz();
 
 	for (i = 0; i < SPDK_TRACE_MAX_LCORE; i++) {
-		g_trace_histories->per_lcore_history[i].lcore = i;
+		struct spdk_trace_history *lcore_history;
+
+		g_trace_flags->lcore_history_offsets[i] = lcore_offsets[i];
+		lcore_history = spdk_get_per_lcore_history(g_trace_histories, i);
+		lcore_history->lcore = i;
+		lcore_history->num_entries = num_entries;
 	}
+	g_trace_flags->lcore_history_offsets[SPDK_TRACE_MAX_LCORE] = lcore_offsets[SPDK_TRACE_MAX_LCORE];
 
 	spdk_trace_flags_init();
 
@@ -132,7 +150,7 @@ spdk_trace_init(const char *shm_name)
 
 trace_init_err:
 	if (g_trace_histories != MAP_FAILED) {
-		munmap(g_trace_histories, sizeof(*g_trace_histories));
+		munmap(g_trace_histories, histories_size);
 	}
 	close(g_trace_fd);
 	g_trace_fd = -1;
@@ -147,17 +165,26 @@ void
 spdk_trace_cleanup(void)
 {
 	bool unlink;
+	int i;
+	struct spdk_trace_history *lcore_history;
 
 	if (g_trace_histories == NULL) {
 		return;
 	}
 
 	/*
-	 * Only unlink the shm if there were no tracepoints enabled.  This ensures the file
+	 * Only unlink the shm if there were no trace_entry recorded. This ensures the file
 	 * can be used after this process exits/crashes for debugging.
 	 * Note that we have to calculate this value before g_trace_histories gets unmapped.
 	 */
-	unlink = spdk_mem_all_zero(g_trace_flags->tpoint_mask, sizeof(g_trace_flags->tpoint_mask));
+	for (i = 0; i < SPDK_TRACE_MAX_LCORE; i++) {
+		lcore_history = spdk_get_per_lcore_history(g_trace_histories, i);
+		unlink = lcore_history->entries[0].tsc == 0;
+		if (!unlink) {
+			break;
+		}
+	}
+
 	munmap(g_trace_histories, sizeof(struct spdk_trace_histories));
 	g_trace_histories = NULL;
 	close(g_trace_fd);

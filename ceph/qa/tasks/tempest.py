@@ -6,7 +6,7 @@ import logging
 
 from teuthology import misc as teuthology
 from teuthology import contextutil
-from teuthology.config import config as teuth_config
+from teuthology.exceptions import ConfigError
 from teuthology.orchestra import run
 
 log = logging.getLogger(__name__)
@@ -58,6 +58,15 @@ def download(ctx, config):
         sha1 = cconf.get('sha1')
         if sha1 is not None:
             run_in_tempest_dir(ctx, client, [ 'git', 'reset', '--hard', sha1 ])
+
+        # tox.ini contains a dead link, replace it with the new one
+        from_url = 'https://git.openstack.org/cgit/openstack/requirements/plain/upper-constraints.txt'
+        to_url = 'https://opendev.org/openstack/requirements/raw/branch/stable/pike/upper-constraints.txt'
+        run_in_tempest_dir(ctx, client, [
+                'sed', '-i',
+                run.Raw('"s|{}|{}|"'.format(from_url, to_url)),
+                'tox.ini'
+            ])
     try:
         yield
     finally:
@@ -133,7 +142,7 @@ def configure_instance(ctx, config):
         to_config(cconfig, params, 'identity', cpar)
         to_config(cconfig, params, 'object-storage', cpar)
         to_config(cconfig, params, 'object-storage-feature-enabled', cpar)
-        cpar.write(file(local_conf, 'w+'))
+        cpar.write(open(local_conf, 'w+'))
 
         remote.put_file(local_conf, tetcdir + '/tempest.conf')
     yield
@@ -238,11 +247,10 @@ def task(ctx, config):
         config = all_clients
     if isinstance(config, list):
         config = dict.fromkeys(config)
-    clients = config.keys()
 
     overrides = ctx.config.get('overrides', {})
     # merge each client section, not the top level.
-    for client in config.iterkeys():
+    for client in config.keys():
         if not config[client]:
             config[client] = {}
         teuthology.deep_merge(config[client], overrides.get('keystone', {}))

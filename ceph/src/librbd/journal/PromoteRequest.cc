@@ -26,7 +26,7 @@ using librbd::util::create_context_callback;
 template <typename I>
 PromoteRequest<I>::PromoteRequest(I *image_ctx, bool force, Context *on_finish)
   : m_image_ctx(image_ctx), m_force(force), m_on_finish(on_finish),
-    m_lock("PromoteRequest::m_lock") {
+    m_lock(ceph::make_mutex("PromoteRequest::m_lock")) {
 }
 
 template <typename I>
@@ -40,7 +40,7 @@ void PromoteRequest<I>::send_open() {
   ldout(cct, 20) << dendl;
 
   m_journaler = new Journaler(m_image_ctx->md_ctx, m_image_ctx->id,
-                              Journal<>::IMAGE_CLIENT_ID, {});
+                              Journal<>::IMAGE_CLIENT_ID, {}, nullptr);
   Context *ctx = create_async_context_callback(
     *m_image_ctx, create_context_callback<
       PromoteRequest<I>, &PromoteRequest<I>::handle_open>(this));

@@ -1,30 +1,36 @@
-<div class="col-sm-6 col-lg-6">
-  <legend i18n>iSCSI Topology</legend>
-  <tree [tree]="tree"
-        (nodeSelected)="onNodeSelected($event)">
-    <ng-template let-node>
-      <span class="node-name"
-            [innerHTML]="node.value"></span>
-      <span>&nbsp;</span>
+<div class="row">
+  <div class="col-6">
+    <legend i18n>iSCSI Topology</legend>
 
-      <span class="label"
-            [ngClass]="{'label-success': ['logged_in'].includes(node.status), 'label-danger': ['logged_out'].includes(node.status)}">
-        {{ node.status }}
-      </span>
-    </ng-template>
-  </tree>
-</div>
+    <tree-root #tree
+               [nodes]="nodes"
+               [options]="treeOptions"
+               (updateData)="onUpdateData()">
+      <ng-template #treeNodeTemplate
+                   let-node
+                   let-index="index">
+        <i [class]="node.data.cdIcon"></i>
+        <span>{{ node.data.name }}</span>
+        &nbsp;
+        <span class="badge"
+              [ngClass]="{'badge-success': ['logged_in'].includes(node.data.status), 'badge-danger': ['logged_out'].includes(node.data.status)}">
+          {{ node.data.status }}
+        </span>
+      </ng-template>
+    </tree-root>
+  </div>
 
-<div class="col-sm-6 col-lg-6 metadata"
-     *ngIf="data">
-  <legend>{{ title }}</legend>
+  <div class="col-6 metadata"
+       *ngIf="data">
+    <legend>{{ title }}</legend>
 
-  <cd-table #detailTable
-            [data]="data"
-            columnMode="flex"
-            [columns]="columns"
-            [limit]="0">
-  </cd-table>
+    <cd-table #detailTable
+              [data]="data"
+              columnMode="flex"
+              [columns]="columns"
+              [limit]="0">
+    </cd-table>
+  </div>
 </div>
 
 <ng-template #highlightTpl

@@ -51,20 +51,24 @@ LIBNAME = $(LIBBASE).lib
 !endif
 OBJ_DIR = obj
 
-
 !ifdef DEBUG
-DCFLAGS = /Od /DDEBUG /Z7
+OPT = /Od
+DCFLAGS = /DDEBUG /Z7
 DAFLAGS = -gcv8
 DLFLAGS = /DEBUG
 !else
-DCFLAGS = /O2 /Oi
+OPT = /O2 /Oi
+DCFLAGS =
 DAFLAGS =
 DLFLAGS = /RELEASE
 !endif
 
 CC = cl
-CFLAGS = $(EXTRA_CFLAGS) $(DCFLAGS) /I. /Iinclude \
+CFLAGS_ALL = $(EXTRA_CFLAGS) /I. /Iinclude /Ino-aesni \
 	/nologo /Y- /W3 /WX- /Gm- /fp:precise /EHsc
+
+CFLAGS = $(CFLAGS_ALL) $(OPT) $(DCFLAGS)
+CFLAGS_NO_SIMD = $(CFLAGS_ALL) /Od $(DCFLAGS)
 
 LIB_TOOL = lib
 LIBFLAGS = /nologo /machine:X64 /nodefaultlib
@@ -77,33 +81,45 @@ AFLAGS = $(DAFLAGS) -fwin64 -Xvc -DWIN_ABI -Iinclude/ -I./ -Iavx/ -Iavx2/ -Iavx5
 
 lib_objs1 = \
 	$(OBJ_DIR)\aes128_cbc_dec_by4_sse.obj \
+        $(OBJ_DIR)\aes128_cbc_dec_by4_sse_no_aesni.obj \
 	$(OBJ_DIR)\aes128_cbc_dec_by8_avx.obj \
 	$(OBJ_DIR)\aes128_cntr_by4_sse.obj \
+        $(OBJ_DIR)\aes128_cntr_by4_sse_no_aesni.obj \
 	$(OBJ_DIR)\aes128_cntr_by8_avx.obj \
 	$(OBJ_DIR)\aes128_ecbenc_x3.obj \
 	$(OBJ_DIR)\aes192_cbc_dec_by4_sse.obj \
+        $(OBJ_DIR)\aes192_cbc_dec_by4_sse_no_aesni.obj \
 	$(OBJ_DIR)\aes192_cbc_dec_by8_avx.obj \
 	$(OBJ_DIR)\aes192_cntr_by4_sse.obj \
+        $(OBJ_DIR)\aes192_cntr_by4_sse_no_aesni.obj \
 	$(OBJ_DIR)\aes192_cntr_by8_avx.obj \
 	$(OBJ_DIR)\aes256_cbc_dec_by4_sse.obj \
+        $(OBJ_DIR)\aes256_cbc_dec_by4_sse_no_aesni.obj \
 	$(OBJ_DIR)\aes256_cbc_dec_by8_avx.obj \
 	$(OBJ_DIR)\aes256_cntr_by4_sse.obj \
+        $(OBJ_DIR)\aes256_cntr_by4_sse_no_aesni.obj \
 	$(OBJ_DIR)\aes256_cntr_by8_avx.obj \
 	$(OBJ_DIR)\aes_cfb_128_sse.obj \
+        $(OBJ_DIR)\aes_cfb_128_sse_no_aesni.obj \
 	$(OBJ_DIR)\aes_cfb_128_avx.obj \
 	$(OBJ_DIR)\aes128_cbc_mac_x4.obj \
+        $(OBJ_DIR)\aes128_cbc_mac_x4_no_aesni.obj \
 	$(OBJ_DIR)\aes128_cbc_mac_x8.obj \
 	$(OBJ_DIR)\aes_cbc_enc_128_x4.obj \
+        $(OBJ_DIR)\aes_cbc_enc_128_x4_no_aesni.obj \
 	$(OBJ_DIR)\aes_cbc_enc_128_x8.obj \
 	$(OBJ_DIR)\aes_cbc_enc_192_x4.obj \
+        $(OBJ_DIR)\aes_cbc_enc_192_x4_no_aesni.obj \
 	$(OBJ_DIR)\aes_cbc_enc_192_x8.obj \
 	$(OBJ_DIR)\aes_cbc_enc_256_x4.obj \
+        $(OBJ_DIR)\aes_cbc_enc_256_x4_no_aesni.obj \
 	$(OBJ_DIR)\aes_cbc_enc_256_x8.obj \
 	$(OBJ_DIR)\aes_keyexp_128.obj \
 	$(OBJ_DIR)\aes_keyexp_192.obj \
 	$(OBJ_DIR)\aes_keyexp_256.obj \
 	$(OBJ_DIR)\aes_cmac_subkey_gen.obj \
 	$(OBJ_DIR)\aes_xcbc_mac_128_x4.obj \
+        $(OBJ_DIR)\aes_xcbc_mac_128_x4_no_aesni.obj \
 	$(OBJ_DIR)\aes_xcbc_mac_128_x8.obj \
 	$(OBJ_DIR)\md5_x4x2_avx.obj \
 	$(OBJ_DIR)\md5_x4x2_sse.obj \
@@ -135,27 +151,40 @@ lib_objs1 = \
 	$(OBJ_DIR)\sha_256_mult_sse.obj \
 	$(OBJ_DIR)\aes_xcbc_expand_key.obj \
 	$(OBJ_DIR)\md5_one_block.obj \
+	$(OBJ_DIR)\sha_one_block.obj \
 	$(OBJ_DIR)\des_key.obj \
 	$(OBJ_DIR)\des_basic.obj \
-	$(OBJ_DIR)\des_x16_avx512.obj
+	$(OBJ_DIR)\des_x16_avx512.obj \
+        $(OBJ_DIR)\const.obj
 
 lib_objs2 = \
 	$(OBJ_DIR)\mb_mgr_aes192_flush_avx.obj \
 	$(OBJ_DIR)\mb_mgr_aes192_flush_sse.obj \
+        $(OBJ_DIR)\mb_mgr_aes192_flush_sse_no_aesni.obj \
 	$(OBJ_DIR)\mb_mgr_aes192_submit_avx.obj \
 	$(OBJ_DIR)\mb_mgr_aes192_submit_sse.obj \
+        $(OBJ_DIR)\mb_mgr_aes192_submit_sse_no_aesni.obj \
 	$(OBJ_DIR)\mb_mgr_aes256_flush_avx.obj \
 	$(OBJ_DIR)\mb_mgr_aes256_flush_sse.obj \
+        $(OBJ_DIR)\mb_mgr_aes256_flush_sse_no_aesni.obj \
 	$(OBJ_DIR)\mb_mgr_aes256_submit_avx.obj \
 	$(OBJ_DIR)\mb_mgr_aes256_submit_sse.obj \
+        $(OBJ_DIR)\mb_mgr_aes256_submit_sse_no_aesni.obj \
 	$(OBJ_DIR)\mb_mgr_aes_flush_avx.obj \
 	$(OBJ_DIR)\mb_mgr_aes_flush_sse.obj \
+        $(OBJ_DIR)\mb_mgr_aes_flush_sse_no_aesni.obj \
 	$(OBJ_DIR)\mb_mgr_aes_submit_avx.obj \
 	$(OBJ_DIR)\mb_mgr_aes_submit_sse.obj \
+        $(OBJ_DIR)\mb_mgr_aes_submit_sse_no_aesni.obj \
+	$(OBJ_DIR)\mb_mgr_aes_cmac_submit_flush_sse.obj \
+        $(OBJ_DIR)\mb_mgr_aes_cmac_submit_flush_sse_no_aesni.obj \
+        $(OBJ_DIR)\mb_mgr_aes_cmac_submit_flush_avx.obj \
 	$(OBJ_DIR)\mb_mgr_aes_xcbc_flush_avx.obj \
 	$(OBJ_DIR)\mb_mgr_aes_xcbc_flush_sse.obj \
+        $(OBJ_DIR)\mb_mgr_aes_xcbc_flush_sse_no_aesni.obj \
 	$(OBJ_DIR)\mb_mgr_aes_xcbc_submit_avx.obj \
 	$(OBJ_DIR)\mb_mgr_aes_xcbc_submit_sse.obj \
+        $(OBJ_DIR)\mb_mgr_aes_xcbc_submit_sse_no_aesni.obj \
 	$(OBJ_DIR)\mb_mgr_hmac_flush_avx.obj \
 	$(OBJ_DIR)\mb_mgr_hmac_flush_avx2.obj \
 	$(OBJ_DIR)\mb_mgr_hmac_flush_sse.obj \
@@ -213,18 +242,32 @@ lib_objs2 = \
 	$(OBJ_DIR)\mb_mgr_avx512.obj \
 	$(OBJ_DIR)\mb_mgr_des_avx512.obj \
 	$(OBJ_DIR)\mb_mgr_sse.obj \
-	$(OBJ_DIR)\alloc.obj
+	$(OBJ_DIR)\mb_mgr_sse_no_aesni.obj \
+	$(OBJ_DIR)\alloc.obj \
+	$(OBJ_DIR)\version.obj \
+	$(OBJ_DIR)\cpu_feature.obj \
+        $(OBJ_DIR)\aesni_emu.obj
 
 gcm_objs = \
+	$(OBJ_DIR)\gcm.obj \
         $(OBJ_DIR)\gcm128_sse.obj \
 	$(OBJ_DIR)\gcm128_avx_gen2.obj \
 	$(OBJ_DIR)\gcm128_avx_gen4.obj \
+	$(OBJ_DIR)\gcm128_avx512.obj \
+	$(OBJ_DIR)\gcm128_vaes_avx512.obj \
         $(OBJ_DIR)\gcm192_sse.obj \
 	$(OBJ_DIR)\gcm192_avx_gen2.obj \
 	$(OBJ_DIR)\gcm192_avx_gen4.obj \
+	$(OBJ_DIR)\gcm192_avx512.obj \
+	$(OBJ_DIR)\gcm192_vaes_avx512.obj \
         $(OBJ_DIR)\gcm256_sse.obj \
 	$(OBJ_DIR)\gcm256_avx_gen2.obj \
-	$(OBJ_DIR)\gcm256_avx_gen4.obj
+	$(OBJ_DIR)\gcm256_avx_gen4.obj \
+	$(OBJ_DIR)\gcm256_avx512.obj \
+	$(OBJ_DIR)\gcm256_vaes_avx512.obj \
+        $(OBJ_DIR)\gcm128_sse_no_aesni.obj \
+	$(OBJ_DIR)\gcm192_sse_no_aesni.obj \
+	$(OBJ_DIR)\gcm256_sse_no_aesni.obj
 
 !ifdef NO_GCM
 all_objs = $(lib_objs1) $(lib_objs2)
@@ -257,21 +300,27 @@ $(all_objs): $(OBJ_DIR)
 	$(AS) -o $@ $(AFLAGS) $<
 
 {avx\}.c{$(OBJ_DIR)}.obj:
-	$(CC) /Fo$@ /c $(CFLAGS) $<
+	$(CC) /arch:AVX /Fo$@ /c $(CFLAGS) $<
 
 {avx\}.asm{$(OBJ_DIR)}.obj:
 	$(AS) -o $@ $(AFLAGS) $<
 
 {avx2\}.c{$(OBJ_DIR)}.obj:
-	$(CC) /Fo$@ /c $(CFLAGS) $<
+	$(CC) /arch:AVX /Fo$@ /c $(CFLAGS) $<
 
 {avx2\}.asm{$(OBJ_DIR)}.obj:
 	$(AS) -o $@ $(AFLAGS) $<
 
 {avx512\}.c{$(OBJ_DIR)}.obj:
-	$(CC) /Fo$@ /c $(CFLAGS) $<
+	$(CC) /arch:AVX /Fo$@ /c $(CFLAGS) $<
 
 {avx512\}.asm{$(OBJ_DIR)}.obj:
+	$(AS) -o $@ $(AFLAGS) $<
+
+{no-aesni\}.c{$(OBJ_DIR)}.obj:
+	$(CC) /Fo$@ /c $(CFLAGS_NO_SIMD) $<
+
+{no-aesni\}.asm{$(OBJ_DIR)}.obj:
 	$(AS) -o $@ $(AFLAGS) $<
 
 {include\}.asm{$(OBJ_DIR)}.obj:

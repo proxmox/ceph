@@ -1,38 +1,13 @@
-..  BSD LICENSE
-    Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
-    All rights reserved.
-
-    Redistribution and use in source and binary forms, with or without
-    modification, are permitted provided that the following conditions
-    are met:
-
-    * Redistributions of source code must retain the above copyright
-    notice, this list of conditions and the following disclaimer.
-    * Redistributions in binary form must reproduce the above copyright
-    notice, this list of conditions and the following disclaimer in
-    the documentation and/or other materials provided with the
-    distribution.
-    * Neither the name of Intel Corporation nor the names of its
-    contributors may be used to endorse or promote products derived
-    from this software without specific prior written permission.
-
-    THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-    "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-    LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-    A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-    OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-    SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-    LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-    DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-    THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-    (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-    OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+..  SPDX-License-Identifier: BSD-3-Clause
+    Copyright(c) 2010-2014 Intel Corporation.
 
 Distributor Sample Application
 ==============================
 
 The distributor sample application is a simple example of packet distribution
-to cores using the Data Plane Development Kit (DPDK).
+to cores using the Data Plane Development Kit (DPDK). It also makes use of
+Intel Speed Select Technology - Base Frequency (Intel SST-BF) to pin the
+distributor to the higher frequency core if available.
 
 Overview
 --------
@@ -53,30 +28,12 @@ generator as shown in the figure below.
 
    Performance Benchmarking Setup (Basic Environment)
 
-
 Compiling the Application
 -------------------------
 
-#.  Go to the sample application directory:
+To compile the sample application see :doc:`compiling`.
 
-    ..  code-block:: console
-
-        export RTE_SDK=/path/to/rte_sdk
-        cd ${RTE_SDK}/examples/distributor
-
-#.  Set the target (a default target is used if not specified). For example:
-
-    ..  code-block:: console
-
-        export RTE_TARGET=x86_64-native-linuxapp-gcc
-
-    See the DPDK Getting Started Guide for possible RTE_TARGET values.
-
-#.  Build the application:
-
-    ..  code-block:: console
-
-        make
+The application is located in the ``distributor`` sub-directory.
 
 Running the Application
 -----------------------
@@ -91,7 +48,7 @@ Running the Application
 
    *   -p PORTMASK: Hexadecimal bitmask of ports to configure
 
-#. To run the application in linuxapp environment with 10 lcores, 4 ports,
+#. To run the application in linux environment with 10 lcores, 4 ports,
    issue the command:
 
    ..  code-block:: console
@@ -145,6 +102,22 @@ final statistics to the user.
 
    Distributor Sample Application Layout
 
+
+Intel SST-BF Support
+--------------------
+
+In DPDK 19.05, support was added to the power management library for
+Intel-SST-BF, a technology that allows some cores to run at a higher
+frequency than others. An application note for Intel SST-BF is available,
+and is entitled
+`Intel Speed Select Technology – Base Frequency - Enhancing Performance <https://builders.intel.com/docs/networkbuilders/intel-speed-select-technology-base-frequency-enhancing-performance.pdf>`_
+
+The distributor application was also enhanced to be aware of these higher
+frequency SST-BF cores, and when starting the application, if high frequency
+SST-BF cores are present in the core mask, the application will identify these
+cores and pin the workloads appropriately. The distributor core is usually
+the bottleneck, so this is given first choice of the high frequency SST-BF
+cores, followed by the rx core and the tx core.
 
 Debug Logging Support
 ---------------------

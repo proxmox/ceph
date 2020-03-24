@@ -1,32 +1,5 @@
-..  BSD LICENSE
-    Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
-    All rights reserved.
-
-    Redistribution and use in source and binary forms, with or without
-    modification, are permitted provided that the following conditions
-    are met:
-
-    * Redistributions of source code must retain the above copyright
-    notice, this list of conditions and the following disclaimer.
-    * Redistributions in binary form must reproduce the above copyright
-    notice, this list of conditions and the following disclaimer in
-    the documentation and/or other materials provided with the
-    distribution.
-    * Neither the name of Intel Corporation nor the names of its
-    contributors may be used to endorse or promote products derived
-    from this software without specific prior written permission.
-
-    THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-    "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-    LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-    A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-    OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-    SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-    LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-    DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-    THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-    (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-    OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+..  SPDX-License-Identifier: BSD-3-Clause
+    Copyright(c) 2010-2014 Intel Corporation.
 
 Link Status Interrupt Sample Application
 ========================================
@@ -55,32 +28,9 @@ and the behavior of L2 forwarding each time the link status changes.
 Compiling the Application
 -------------------------
 
-#.  Go to the example directory:
+To compile the sample application see :doc:`compiling`.
 
-    .. code-block:: console
-
-        export RTE_SDK=/path/to/rte_sdk
-        cd ${RTE_SDK}/examples/link_status_interrupt
-
-#.  Set the target (a default target is used if not specified). For example:
-
-    .. code-block:: console
-
-        export RTE_TARGET=x86_64-native-linuxapp-gcc
-
-    See the *DPDK Getting Started Guide* for possible RTE_TARGET values.
-
-#.  Build the application:
-
-    .. code-block:: console
-
-        make
-
-.. note::
-
-    The compiled application is written to the build subdirectory.
-    To have the application written to a different location,
-    the O=/path/to/build/directory option may be specified on the make command line.
+The application is located in the ``link_status_interrupt`` sub-directory.
 
 Running the Application
 -----------------------
@@ -99,7 +49,7 @@ where,
 
 *   -T PERIOD: statistics will be refreshed each PERIOD seconds (0 to disable, 10 default)
 
-To run the application in a linuxapp environment with 4 lcores, 4 memory channels, 16 ports and 8 RX queues per lcore,
+To run the application in a linux environment with 4 lcores, 4 memory channels, 16 ports and 8 RX queues per lcore,
 issue the command:
 
 .. code-block:: console
@@ -141,15 +91,11 @@ To fully understand this code, it is recommended to study the chapters that rela
     if (rte_pci_probe() < 0)
         rte_exit(EXIT_FAILURE, "Cannot probe PCI\n");
 
-    nb_ports = rte_eth_dev_count();
-    if (nb_ports == 0)
-        rte_exit(EXIT_FAILURE, "No Ethernet ports - bye\n");
-
     /*
      * Each logical core is assigned a dedicated TX queue on each port.
      */
 
-    for (portid = 0; portid < nb_ports; portid++) {
+    RTE_ETH_FOREACH_DEV(portid) {
         /* skip ports that are not enabled */
 
         if ((lsi_enabled_port_mask & (1 << portid)) == 0)
@@ -191,10 +137,6 @@ The global configuration is stored in a static structure:
     static const struct rte_eth_conf port_conf = {
         .rxmode = {
             .split_hdr_size = 0,
-            .header_split = 0,   /**< Header Split disabled */
-            .hw_ip_checksum = 0, /**< IP checksum offload disabled */
-            .hw_vlan_filter = 0, /**< VLAN filtering disabled */
-            .hw_strip_crc= 0,    /**< CRC stripped by hardware */
         },
         .txmode = {},
         .intr_conf = {
@@ -219,7 +161,7 @@ An example callback function that has been written as indicated below.
 .. code-block:: c
 
     static void
-    lsi_event_callback(uint8_t port_id, enum rte_eth_event_type type, void *param)
+    lsi_event_callback(uint16_t port_id, enum rte_eth_event_type type, void *param)
     {
         struct rte_eth_link link;
 
@@ -405,7 +347,7 @@ If the table is full, the whole packets table is transmitted using the lsi_send_
     /* Send the packet on an output interface */
 
     static int
-    lsi_send_packet(struct rte_mbuf *m, uint8_t port)
+    lsi_send_packet(struct rte_mbuf *m, uint16_t port)
     {
         unsigned lcore_id, len;
         struct lcore_queue_conf *qconf;

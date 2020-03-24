@@ -250,7 +250,7 @@ function TEST_0_osd() {
     run_osd $dir 3 || return 1
 
     ceph osd erasure-code-profile set ec-profile m=2 k=2 crush-failure-domain=osd || return 1
-    ceph osd pool create ec 8 erasure ec-profile || return 1
+    ceph osd pool create ec erasure ec-profile || return 1
 
     wait_for_clean || return 1
 

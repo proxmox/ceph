@@ -98,7 +98,7 @@ private:
     eth_protocol_num _proto_num;
 public:
     explicit l3_protocol(interface* netif, eth_protocol_num proto_num, packet_provider_type func);
-    subscription<packet, ethernet_address> receive(
+    future<> receive(
             std::function<future<> (packet, ethernet_address)> rx_fn,
             std::function<bool (forward_hash&, packet&, size_t)> forward);
 private:
@@ -114,7 +114,6 @@ class interface {
     };
     std::unordered_map<uint16_t, l3_rx_stream> _proto_map;
     std::shared_ptr<device> _dev;
-    subscription<packet> _rx;
     ethernet_address _hw_address;
     net::hw_features _hw_features;
     std::vector<l3_protocol::packet_provider_type> _pkt_providers;
@@ -124,7 +123,7 @@ public:
     explicit interface(std::shared_ptr<device> dev);
     ethernet_address hw_address() { return _hw_address; }
     const net::hw_features& hw_features() const { return _hw_features; }
-    subscription<packet, ethernet_address> register_l3(eth_protocol_num proto_num,
+    future<> register_l3(eth_protocol_num proto_num,
             std::function<future<> (packet p, ethernet_address from)> next,
             std::function<bool (forward_hash&, packet&, size_t)> forward);
     void forward(unsigned cpuid, packet p);
@@ -234,7 +233,8 @@ public:
     virtual uint32_t send(circular_buffer<packet>& p) {
         uint32_t sent = 0;
         while (!p.empty()) {
-            send(std::move(p.front()));
+            // FIXME: future is discarded
+            (void)send(std::move(p.front()));
             p.pop_front();
             sent++;
         }
@@ -265,8 +265,11 @@ public:
     virtual ~device() {};
     qp& queue_for_cpu(unsigned cpu) { return *_queues[cpu]; }
     qp& local_queue() { return queue_for_cpu(engine().cpu_id()); }
-    void l2receive(packet p) { _queues[engine().cpu_id()]->_rx_stream.produce(std::move(p)); }
-    subscription<packet> receive(std::function<future<> (packet)> next_packet);
+    void l2receive(packet p) {
+        // FIXME: future is discarded
+        (void)_queues[engine().cpu_id()]->_rx_stream.produce(std::move(p));
+    }
+    future<> receive(std::function<future<> (packet)> next_packet);
     virtual ethernet_address hw_address() = 0;
     virtual net::hw_features hw_features() = 0;
     virtual rss_key_type rss_key() const { return default_rsskey_40bytes; }

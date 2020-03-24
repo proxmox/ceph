@@ -191,16 +191,18 @@ inline namespace v14_2_0 {
 
   struct CEPH_RADOS_API AioCompletion {
     AioCompletion(AioCompletionImpl *pc_) : pc(pc_) {}
+    ~AioCompletion();
     int set_complete_callback(void *cb_arg, callback_t cb);
-    int set_safe_callback(void *cb_arg, callback_t cb);
+    int set_safe_callback(void *cb_arg, callback_t cb)
+      __attribute__ ((deprecated));
     int wait_for_complete();
-    int wait_for_safe();
+    int wait_for_safe() __attribute__ ((deprecated));
     int wait_for_complete_and_cb();
-    int wait_for_safe_and_cb();
+    int wait_for_safe_and_cb() __attribute__ ((deprecated));
     bool is_complete();
-    bool is_safe();
+    bool is_safe() __attribute__ ((deprecated));
     bool is_complete_and_cb();
-    bool is_safe_and_cb();
+    bool is_safe_and_cb() __attribute__ ((deprecated));
     int get_return_value();
     int get_version() __attribute__ ((deprecated));
     uint64_t get_version64();
@@ -210,6 +212,7 @@ inline namespace v14_2_0 {
 
   struct CEPH_RADOS_API PoolAsyncCompletion {
     PoolAsyncCompletion(PoolAsyncCompletionImpl *pc_) : pc(pc_) {}
+    ~PoolAsyncCompletion();
     int set_callback(void *cb_arg, callback_t cb);
     int wait();
     bool is_complete();
@@ -270,10 +273,12 @@ inline namespace v14_2_0 {
     // marked full; ops will either succeed (e.g., delete) or return
     // EDQUOT or ENOSPC
     OPERATION_FULL_TRY           = LIBRADOS_OPERATION_FULL_TRY,
-    //mainly for delete
+    // mainly for delete
     OPERATION_FULL_FORCE	 = LIBRADOS_OPERATION_FULL_FORCE,
     OPERATION_IGNORE_REDIRECT	 = LIBRADOS_OPERATION_IGNORE_REDIRECT,
     OPERATION_ORDERSNAP          = LIBRADOS_OPERATION_ORDERSNAP,
+    // enable/allow return value and per-op return code/buffers
+    OPERATION_RETURNVEC          = LIBRADOS_OPERATION_RETURNVEC,
   };
 
   /*
@@ -302,6 +307,18 @@ inline namespace v14_2_0 {
   public:
     ObjectOperation();
     virtual ~ObjectOperation();
+
+    ObjectOperation(const ObjectOperation&) = delete;
+    ObjectOperation& operator=(const ObjectOperation&) = delete;
+
+    /**
+     * Move constructor.
+     * \warning A moved from ObjectOperation is invalid and may not be used for
+     *          any purpose. This is a hard contract violation and will
+     *          kill your program.
+     */
+    ObjectOperation(ObjectOperation&&);
+    ObjectOperation& operator =(ObjectOperation&&);
 
     size_t size();
     void set_op_flags(ObjectOperationFlags flags) __attribute__((deprecated));
@@ -349,9 +366,7 @@ inline namespace v14_2_0 {
       int *prval);
 
   protected:
-    ObjectOperationImpl *impl;
-    ObjectOperation(const ObjectOperation& rhs);
-    ObjectOperation& operator=(const ObjectOperation& rhs);
+    ObjectOperationImpl* impl;
     friend class IoCtx;
     friend class Rados;
   };
@@ -368,6 +383,9 @@ inline namespace v14_2_0 {
   public:
     ObjectWriteOperation() : unused(NULL) {}
     ~ObjectWriteOperation() override {}
+
+    ObjectWriteOperation(ObjectWriteOperation&&) = default;
+    ObjectWriteOperation& operator =(ObjectWriteOperation&&) = default;
 
     void mtime(time_t *pt);
     void mtime2(struct timespec *pts);
@@ -442,6 +460,26 @@ inline namespace v14_2_0 {
 		   uint64_t src_version, uint32_t src_fadvise_flags);
 
     /**
+     * Copy an object
+     *
+     * Copies an object from another location.  The operation is atomic in that
+     * the copy either succeeds in its entirety or fails (e.g., because the
+     * source object was modified while the copy was in progress).  Instead of
+     * copying truncate_seq and truncate_size from the source object it receives
+     * these values as parameters.
+     *
+     * @param src source object name
+     * @param src_ioctx ioctx for the source object
+     * @param src_version current version of the source object
+     * @param truncate_seq truncate sequence for the destination object
+     * @param truncate_size truncate size for the destination object
+     * @param src_fadvise_flags the fadvise flags for source object
+     */
+    void copy_from2(const std::string& src, const IoCtx& src_ioctx,
+		    uint64_t src_version, uint32_t truncate_seq,
+		    uint64_t truncate_size, uint32_t src_fadvise_flags);
+
+    /**
      * undirty an object
      *
      * Clear an objects dirty flag
@@ -480,6 +518,7 @@ inline namespace v14_2_0 {
                    std::string tgt_oid, uint64_t tgt_offset, int flag = 0);
     void tier_promote();
     void unset_manifest();
+    void tier_flush();
 
 
     friend class IoCtx;
@@ -495,6 +534,9 @@ inline namespace v14_2_0 {
   public:
     ObjectReadOperation() {}
     ~ObjectReadOperation() override {}
+
+    ObjectReadOperation(ObjectReadOperation&&) = default;
+    ObjectReadOperation& operator =(ObjectReadOperation&&) = default;
 
     void stat(uint64_t *psize, time_t *pmtime, int *prval);
     void stat2(uint64_t *psize, struct timespec *pts, int *prval);
@@ -1089,7 +1131,9 @@ inline namespace v14_2_0 {
 
     // compound object operations
     int operate(const std::string& oid, ObjectWriteOperation *op);
+    int operate(const std::string& oid, ObjectWriteOperation *op, int flags);
     int operate(const std::string& oid, ObjectReadOperation *op, bufferlist *pbl);
+    int operate(const std::string& oid, ObjectReadOperation *op, bufferlist *pbl, int flags);
     int aio_operate(const std::string& oid, AioCompletion *c, ObjectWriteOperation *op);
     int aio_operate(const std::string& oid, AioCompletion *c, ObjectWriteOperation *op, int flags);
     /**
@@ -1259,8 +1303,13 @@ inline namespace v14_2_0 {
 
     config_t cct();
 
-    void set_osdmap_full_try();
-    void unset_osdmap_full_try();
+    void set_osdmap_full_try()
+      __attribute__ ((deprecated));
+    void unset_osdmap_full_try()
+      __attribute__ ((deprecated));
+
+    void set_pool_full_try();
+    void unset_pool_full_try();
 
     int application_enable(const std::string& app_name, bool force);
     int application_enable_async(const std::string& app_name,
@@ -1451,7 +1500,9 @@ inline namespace v14_2_0 {
    // -- aio --
     static AioCompletion *aio_create_completion();
     static AioCompletion *aio_create_completion(void *cb_arg, callback_t cb_complete,
-						callback_t cb_safe);
+						callback_t cb_safe)
+      __attribute__ ((deprecated));
+    static AioCompletion *aio_create_completion(void *cb_arg, callback_t cb_complete);
     
     friend std::ostream& operator<<(std::ostream &oss, const Rados& r);
   private:

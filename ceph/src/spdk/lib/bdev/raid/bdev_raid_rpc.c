@@ -122,19 +122,19 @@ spdk_rpc_get_raid_bdevs(struct spdk_jsonrpc_request *request, const struct spdk_
 
 	/* Get raid bdev list based on the category requested */
 	if (strcmp(req.category, "all") == 0) {
-		TAILQ_FOREACH(raid_bdev, &g_spdk_raid_bdev_list, global_link) {
+		TAILQ_FOREACH(raid_bdev, &g_raid_bdev_list, global_link) {
 			spdk_json_write_string(w, raid_bdev->bdev.name);
 		}
 	} else if (strcmp(req.category, "online") == 0) {
-		TAILQ_FOREACH(raid_bdev, &g_spdk_raid_bdev_configured_list, state_link) {
+		TAILQ_FOREACH(raid_bdev, &g_raid_bdev_configured_list, state_link) {
 			spdk_json_write_string(w, raid_bdev->bdev.name);
 		}
 	} else if (strcmp(req.category, "configuring") == 0) {
-		TAILQ_FOREACH(raid_bdev, &g_spdk_raid_bdev_configuring_list, state_link) {
+		TAILQ_FOREACH(raid_bdev, &g_raid_bdev_configuring_list, state_link) {
 			spdk_json_write_string(w, raid_bdev->bdev.name);
 		}
 	} else {
-		TAILQ_FOREACH(raid_bdev, &g_spdk_raid_bdev_offline_list, state_link) {
+		TAILQ_FOREACH(raid_bdev, &g_raid_bdev_offline_list, state_link) {
 			spdk_json_write_string(w, raid_bdev->bdev.name);
 		}
 	}
@@ -162,8 +162,9 @@ struct rpc_construct_raid_bdev {
 	/* Raid bdev name */
 	char                                 *name;
 
-	/* RAID strip size */
+	/* RAID strip size KB, 'strip_size' is deprecated. */
 	uint32_t                             strip_size;
+	uint32_t                             strip_size_kb;
 
 	/* RAID raid level */
 	uint8_t                              raid_level;
@@ -203,9 +204,11 @@ decode_base_bdevs(const struct spdk_json_val *val, void *out)
 /*
  * Decoder object for RPC construct_raid
  */
+/* Note: strip_size is deprecated, one of the two options must be specified but not both. */
 static const struct spdk_json_object_decoder rpc_construct_raid_bdev_decoders[] = {
 	{"name", offsetof(struct rpc_construct_raid_bdev, name), spdk_json_decode_string},
-	{"strip_size", offsetof(struct rpc_construct_raid_bdev, strip_size), spdk_json_decode_uint32},
+	{"strip_size", offsetof(struct rpc_construct_raid_bdev, strip_size), spdk_json_decode_uint32, true},
+	{"strip_size_kb", offsetof(struct rpc_construct_raid_bdev, strip_size_kb), spdk_json_decode_uint32, true},
 	{"raid_level", offsetof(struct rpc_construct_raid_bdev, raid_level), spdk_json_decode_uint32},
 	{"base_bdevs", offsetof(struct rpc_construct_raid_bdev, base_bdevs), decode_base_bdevs},
 };
@@ -224,28 +227,40 @@ static void
 spdk_rpc_construct_raid_bdev(struct spdk_jsonrpc_request *request,
 			     const struct spdk_json_val *params)
 {
-	struct rpc_construct_raid_bdev req = {};
-	struct spdk_json_write_ctx     *w;
-	struct raid_bdev_config        *raid_cfg;
-	int			       rc;
+	struct rpc_construct_raid_bdev	req = {};
+	struct spdk_json_write_ctx	*w;
+	struct raid_bdev_config		*raid_cfg;
+	int				rc;
 
 	if (spdk_json_decode_object(params, rpc_construct_raid_bdev_decoders,
 				    SPDK_COUNTOF(rpc_construct_raid_bdev_decoders),
 				    &req)) {
 		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INVALID_PARAMS,
 						 "Invalid parameters");
-		free_rpc_construct_raid_bdev(&req);
-		return;
+		goto invalid;
 	}
 
-	rc = raid_bdev_config_add(req.name, req.strip_size, req.base_bdevs.num_base_bdevs, req.raid_level,
+	if (req.strip_size == 0 && req.strip_size_kb == 0) {
+		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INVALID_PARAMS,
+						 "strip size not specified");
+		goto invalid;
+	} else if (req.strip_size > 0 && req.strip_size_kb > 0) {
+		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INVALID_PARAMS,
+						 "please use only one strip size option");
+		goto invalid;
+	} else if (req.strip_size > 0 && req.strip_size_kb == 0) {
+		SPDK_ERRLOG("the rpc param strip_size is deprecated.\n");
+		req.strip_size_kb = req.strip_size;
+	}
+
+	rc = raid_bdev_config_add(req.name, req.strip_size_kb, req.base_bdevs.num_base_bdevs,
+				  req.raid_level,
 				  &raid_cfg);
 	if (rc != 0) {
 		spdk_jsonrpc_send_error_response_fmt(request, SPDK_JSONRPC_ERROR_INTERNAL_ERROR,
 						     "Failed to add RAID bdev config %s: %s",
 						     req.name, spdk_strerror(-rc));
-		free_rpc_construct_raid_bdev(&req);
-		return;
+		goto invalid;
 	}
 
 	for (size_t i = 0; i < req.base_bdevs.num_base_bdevs; i++) {
@@ -256,8 +271,7 @@ spdk_rpc_construct_raid_bdev(struct spdk_jsonrpc_request *request,
 							     "Failed to add base bdev %s to RAID bdev config %s: %s",
 							     req.base_bdevs.base_bdevs[i], req.name,
 							     spdk_strerror(-rc));
-			free_rpc_construct_raid_bdev(&req);
-			return;
+			goto invalid;
 		}
 	}
 
@@ -267,8 +281,7 @@ spdk_rpc_construct_raid_bdev(struct spdk_jsonrpc_request *request,
 		spdk_jsonrpc_send_error_response_fmt(request, SPDK_JSONRPC_ERROR_INTERNAL_ERROR,
 						     "Failed to create RAID bdev %s: %s",
 						     req.name, spdk_strerror(-rc));
-		free_rpc_construct_raid_bdev(&req);
-		return;
+		goto invalid;
 	}
 
 	rc = raid_bdev_add_base_devices(raid_cfg);
@@ -276,8 +289,7 @@ spdk_rpc_construct_raid_bdev(struct spdk_jsonrpc_request *request,
 		spdk_jsonrpc_send_error_response_fmt(request, SPDK_JSONRPC_ERROR_INTERNAL_ERROR,
 						     "Failed to add any base bdev to RAID bdev %s: %s",
 						     req.name, spdk_strerror(-rc));
-		free_rpc_construct_raid_bdev(&req);
-		return;
+		goto invalid;
 	}
 
 	free_rpc_construct_raid_bdev(&req);
@@ -289,6 +301,10 @@ spdk_rpc_construct_raid_bdev(struct spdk_jsonrpc_request *request,
 
 	spdk_json_write_bool(w, true);
 	spdk_jsonrpc_end_result(request, w);
+	return;
+
+invalid:
+	free_rpc_construct_raid_bdev(&req);
 }
 SPDK_RPC_REGISTER("construct_raid_bdev", spdk_rpc_construct_raid_bdev, SPDK_RPC_RUNTIME)
 
@@ -321,32 +337,51 @@ static const struct spdk_json_object_decoder rpc_destroy_raid_bdev_decoders[] = 
 	{"name", offsetof(struct rpc_destroy_raid_bdev, name), spdk_json_decode_string},
 };
 
+struct rpc_destroy_raid_bdev_ctx {
+	struct rpc_destroy_raid_bdev req;
+	struct raid_bdev_config *raid_cfg;
+	struct spdk_jsonrpc_request *request;
+};
+
 /*
  * brief:
- * Since destroying raid_bdev is asynchronous operation, so this function is
- * used to check if raid bdev still exists. If raid bdev is still there it will create
- * event and check later, otherwise it will proceed with cleanup
  * params:
- * arg - pointer to raid bdev cfg
+ * cb_arg - pointer to the callback context.
+ * rc - return code of the destruction of the raid bdev.
  * returns:
  * none
  */
 static void
-raid_bdev_config_destroy(void *arg)
+destroy_raid_bdev_done(void *cb_arg, int rc)
 {
-	struct raid_bdev_config	*raid_cfg = arg;
+	struct rpc_destroy_raid_bdev_ctx *ctx = cb_arg;
+	struct raid_bdev_config *raid_cfg;
+	struct spdk_jsonrpc_request *request = ctx->request;
+	struct spdk_json_write_ctx *w;
 
-	assert(raid_cfg != NULL);
-	if (raid_cfg->raid_bdev != NULL) {
-		/*
-		 * If raid bdev exists for this config, wait for raid bdev to get
-		 * destroyed and come back later
-		 */
-		spdk_thread_send_msg(spdk_get_thread(), raid_bdev_config_destroy,
-				     raid_cfg);
-	} else {
-		raid_bdev_config_cleanup(raid_cfg);
+	if (rc != 0) {
+		SPDK_ERRLOG("Failed to destroy raid bdev %s (%d): %s\n",
+			    ctx->req.name, rc, spdk_strerror(-rc));
+		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INTERNAL_ERROR,
+						 spdk_strerror(-rc));
+		goto exit;
 	}
+
+	raid_cfg = ctx->raid_cfg;
+	assert(raid_cfg->raid_bdev == NULL);
+
+	raid_bdev_config_cleanup(raid_cfg);
+
+	w = spdk_jsonrpc_begin_result(request);
+	if (w == NULL) {
+		goto exit;
+	}
+
+	spdk_json_write_bool(w, true);
+	spdk_jsonrpc_end_result(request, w);
+exit:
+	free_rpc_destroy_raid_bdev(&ctx->req);
+	free(ctx);
 }
 
 /*
@@ -363,46 +398,39 @@ raid_bdev_config_destroy(void *arg)
 static void
 spdk_rpc_destroy_raid_bdev(struct spdk_jsonrpc_request *request, const struct spdk_json_val *params)
 {
-	struct rpc_destroy_raid_bdev req = {};
-	struct spdk_json_write_ctx   *w;
-	struct raid_bdev_config      *raid_cfg = NULL;
-	struct spdk_bdev             *base_bdev;
+	struct rpc_destroy_raid_bdev_ctx *ctx;
+
+	ctx = calloc(1, sizeof(*ctx));
+	if (!ctx) {
+		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INTERNAL_ERROR,
+						 spdk_strerror(ENOMEM));
+		return;
+	}
 
 	if (spdk_json_decode_object(params, rpc_destroy_raid_bdev_decoders,
 				    SPDK_COUNTOF(rpc_destroy_raid_bdev_decoders),
-				    &req)) {
+				    &ctx->req)) {
 		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INVALID_PARAMS,
 						 "Invalid parameters");
-		free_rpc_destroy_raid_bdev(&req);
-		return;
+		goto invalid;
 	}
 
-	raid_cfg = raid_bdev_config_find_by_name(req.name);
-	if (raid_cfg == NULL) {
+	ctx->raid_cfg = raid_bdev_config_find_by_name(ctx->req.name);
+	if (ctx->raid_cfg == NULL) {
 		spdk_jsonrpc_send_error_response_fmt(request, SPDK_JSONRPC_ERROR_INVALID_PARAMS,
-						     "raid bdev %s is not found in config", req.name);
-		free_rpc_destroy_raid_bdev(&req);
-		return;
+						     "raid bdev %s is not found in config", ctx->req.name);
+		goto invalid;
 	}
+
+	ctx->request = request;
 
 	/* Remove all the base bdevs from this raid bdev before destroying the raid bdev */
-	for (uint32_t i = 0; i < raid_cfg->num_base_bdevs; i++) {
-		base_bdev = spdk_bdev_get_by_name(raid_cfg->base_bdev[i].name);
-		if (base_bdev != NULL) {
-			raid_bdev_remove_base_bdev(base_bdev);
-		}
-	}
+	raid_bdev_remove_base_devices(ctx->raid_cfg, destroy_raid_bdev_done, ctx);
 
-	raid_bdev_config_destroy(raid_cfg);
+	return;
 
-	free_rpc_destroy_raid_bdev(&req);
-
-	w = spdk_jsonrpc_begin_result(request);
-	if (w == NULL) {
-		return;
-	}
-
-	spdk_json_write_bool(w, true);
-	spdk_jsonrpc_end_result(request, w);
+invalid:
+	free_rpc_destroy_raid_bdev(&ctx->req);
+	free(ctx);
 }
 SPDK_RPC_REGISTER("destroy_raid_bdev", spdk_rpc_destroy_raid_bdev, SPDK_RPC_RUNTIME)

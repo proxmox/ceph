@@ -1,16 +1,14 @@
-/*-
- * Copyright (c) 2007-2013 QLogic Corporation. All rights reserved.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright (c) 2007-2013 Broadcom Corporation.
  *
  * Eric Davis        <edavis@broadcom.com>
  * David Christensen <davidch@broadcom.com>
  * Gary Zambrano     <zambrano@broadcom.com>
  *
  * Copyright (c) 2013-2015 Brocade Communications Systems, Inc.
- * Copyright (c) 2015 QLogic Corporation.
+ * Copyright (c) 2015-2018 Cavium Inc.
  * All rights reserved.
- * www.qlogic.com
- *
- * See LICENSE.bnx2x_pmd for copyright and licensing details.
+ * www.cavium.com
  */
 
 #ifndef ECORE_INIT_H
@@ -304,7 +302,7 @@ static inline void ecore_dcb_config_qm(struct bnx2x_softc *sc, enum cos_mode mod
 
 
 /*
- * congestion managment port init api description
+ * congestion management port init api description
  * the api works as follows:
  * the driver should pass the cmng_init_input struct, the port_init function
  * will prepare the required internal ram structure which will be passed back
@@ -743,7 +741,7 @@ static inline void ecore_disable_blocks_parity(struct bnx2x_softc *sc)
 		if (dis_mask) {
 			REG_WR(sc, ecore_blocks_parity_data[i].mask_addr,
 			       dis_mask);
-			ECORE_MSG("Setting parity mask "
+			ECORE_MSG(sc, "Setting parity mask "
 						 "for %s to\t\t0x%x",
 				    ecore_blocks_parity_data[i].name, dis_mask);
 		}
@@ -778,7 +776,7 @@ static inline void ecore_clear_blocks_parity(struct bnx2x_softc *sc)
 			reg_val = REG_RD(sc, ecore_blocks_parity_data[i].
 					 sts_clr_addr);
 			if (reg_val & reg_mask)
-				ECORE_MSG("Parity errors in %s: 0x%x",
+				ECORE_MSG(sc, "Parity errors in %s: 0x%x",
 					   ecore_blocks_parity_data[i].name,
 					   reg_val & reg_mask);
 		}
@@ -787,7 +785,7 @@ static inline void ecore_clear_blocks_parity(struct bnx2x_softc *sc)
 	/* Check if there were parity attentions in MCP */
 	reg_val = REG_RD(sc, MISC_REG_AEU_AFTER_INVERT_4_MCP);
 	if (reg_val & mcp_aeu_bits)
-		ECORE_MSG("Parity error in MCP: 0x%x",
+		ECORE_MSG(sc, "Parity error in MCP: 0x%x",
 			   reg_val & mcp_aeu_bits);
 
 	/* Clear parity attentions in MCP:

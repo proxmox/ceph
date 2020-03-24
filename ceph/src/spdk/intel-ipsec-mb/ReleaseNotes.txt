@@ -1,6 +1,78 @@
 ========================================================================
 Release Notes for Intel(R) Multi-Buffer Crypto for IPsec Library
 
+v0.52 December 2018
+========================================================================
+
+03 Dec, 2018
+
+General
+- Added AESNI emulation implementation
+- Added AES-GCM multi-buffer implementation for AVX512
+- Added flexible job chain order support
+- GCM submit and flush functions moved into architecture MB manager modules
+- AVX512/AVX2/AVX/SSE AAD GHASH computation performance improvement
+- GCM API's added to MB_MGR structure
+- Added plain SHA support in JOB API
+- Added architectural compiler optimizations for GCC/CC
+
+LibTestApp
+- Added option not to run GCM tests
+- Added AESNI emulation tests
+- Added plain SHA tests
+- Updated to take advantage of new GCM macros
+
+LibPerfApp
+- Buffer alignment update
+- Updated to take advantage of new GCM macros
+
+v0.51 September 2018
+========================================================================
+
+13 Sep, 2018
+
+General
+- AES-CMAC performance optimizations
+- Implemented store to load optimizations in
+  - AES-CMAC submit and flush jobs for SSE and AVX
+  - HMAC-MD5, HMAC-SHA submit jobs for AVX
+  - HMAC-MD5 submit job for AVX2
+- Added zero-sized message support in GCM
+- Stack execution flag disabled in new asm modules
+
+LibTestApp
+- Added AES vectors
+- Added DOCSIS AES vectors
+- Added CFB validation
+
+LibPerfApp
+- Smoke test option added
+
+v0.50 June 2018
+========================================================================
+
+13 Jun, 2018
+
+General
+- Added support for compile time and runtime library version checking
+- Added support for full MD5 digest size
+- Replaced defines for API with symbols for binary compatibility
+- Added HMAC-SHA & HMAC-MD5 vectors to LibTestApp
+- Added support for zero cipher length in AES-CCM
+- Added new API's to compute SHA1, SHA224, SHA256, SHA384 and SHA512 hashes
+  to support key reduction cases where key is longer than a block size
+- Extended support for HMAC full digest sizes for HMAC-SHA1, HMAC-SHA224,
+  HMAC-SHA256, HMAC-SHA384 and HMAC-SHA512. Previously only truncated sizes
+  were supported.
+- Added AES-CMAC support for output digest size between 4 and 16 bytes
+- Added GHASH support for output digest size up to 16 bytes
+- Optimized submit job API's with store to load optimization in SSE, AVX,
+  AVX2 (excluding MD5)
+- Improved performance application accuracy by increase number of
+  test iterations
+- Extended multi-thread features of LibPerfApp Windows version to match
+  Linux version of the application
+
 v0.49 March 2018
 ========================================================================
 

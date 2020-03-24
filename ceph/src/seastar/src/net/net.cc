@@ -26,9 +26,19 @@
 #include <utility>
 #include <seastar/net/toeplitz.hh>
 #include <seastar/core/metrics.hh>
+#include <seastar/core/print.hh>
 #include <seastar/net/inet_address.hh>
 
 namespace seastar {
+
+std::ostream& operator<<(std::ostream &os, ipv4_addr addr) {
+    fmt_print(os, "{:d}.{:d}.{:d}.{:d}",
+            (addr.ip >> 24) & 0xff,
+            (addr.ip >> 16) & 0xff,
+            (addr.ip >> 8) & 0xff,
+            (addr.ip) & 0xff);
+    return os << ":" << addr.port;
+}
 
 using std::move;
 
@@ -49,10 +59,15 @@ ipv4_addr::ipv4_addr(const std::string &addr) {
 ipv4_addr::ipv4_addr(const std::string &addr, uint16_t port_) : ip(boost::asio::ip::address_v4::from_string(addr).to_ulong()), port(port_) {}
 
 ipv4_addr::ipv4_addr(const net::inet_address& a, uint16_t port)
-    : ipv4_addr([&a] {
-  ::in_addr in = a;
-  return net::ntoh(in.s_addr);
-}(), port)
+    : ipv4_addr(::in_addr(a), port)
+{}
+
+ipv4_addr::ipv4_addr(const socket_address &sa)
+    : ipv4_addr(sa.addr(), sa.port())
+{}
+
+ipv4_addr::ipv4_addr(const ::in_addr& in, uint16_t p)
+    : ip(net::ntoh(in.s_addr)), port(p)
 {}
 
 namespace net {
@@ -210,11 +225,11 @@ void qp::build_sw_reta(const std::map<unsigned, float>& cpu_weights) {
     _sw_reta = reta;
 }
 
-subscription<packet>
+future<>
 device::receive(std::function<future<> (packet)> next_packet) {
     auto sub = _queues[engine().cpu_id()]->_rx_stream.listen(std::move(next_packet));
     _queues[engine().cpu_id()]->rx_start();
-    return sub;
+    return sub.done();
 }
 
 void device::set_local_queue(std::unique_ptr<qp> dev) {
@@ -229,7 +244,7 @@ l3_protocol::l3_protocol(interface* netif, eth_protocol_num proto_num, packet_pr
         _netif->register_packet_provider(std::move(func));
 }
 
-subscription<packet, ethernet_address> l3_protocol::receive(
+future<> l3_protocol::receive(
         std::function<future<> (packet p, ethernet_address from)> rx_fn,
         std::function<bool (forward_hash&, packet&, size_t)> forward) {
     return _netif->register_l3(_proto_num, std::move(rx_fn), std::move(forward));
@@ -237,9 +252,12 @@ subscription<packet, ethernet_address> l3_protocol::receive(
 
 interface::interface(std::shared_ptr<device> dev)
     : _dev(dev)
-    , _rx(_dev->receive([this] (packet p) { return dispatch_packet(std::move(p)); }))
     , _hw_address(_dev->hw_address())
     , _hw_features(_dev->hw_features()) {
+    // FIXME: ignored future
+    (void)_dev->receive([this] (packet p) {
+        return dispatch_packet(std::move(p));
+    });
     dev->local_queue().register_packet_provider([this, idx = 0u] () mutable {
             compat::optional<packet> p;
             for (size_t i = 0; i < _pkt_providers.size(); i++) {
@@ -261,14 +279,14 @@ interface::interface(std::shared_ptr<device> dev)
         });
 }
 
-subscription<packet, ethernet_address>
+future<>
 interface::register_l3(eth_protocol_num proto_num,
         std::function<future<> (packet p, ethernet_address from)> next,
         std::function<bool (forward_hash&, packet& p, size_t)> forward) {
     auto i = _proto_map.emplace(std::piecewise_construct, std::make_tuple(uint16_t(proto_num)), std::forward_as_tuple(std::move(forward)));
     assert(i.second);
     l3_rx_stream& l3_rx = i.first->second;
-    return l3_rx.packet_stream.listen(std::move(next));
+    return l3_rx.packet_stream.listen(std::move(next)).done();
 }
 
 unsigned interface::hash2cpu(uint32_t hash) {
@@ -289,7 +307,8 @@ void interface::forward(unsigned cpuid, packet p) {
     if (queue_depth < 1000) {
         queue_depth++;
         auto src_cpu = engine().cpu_id();
-        smp::submit_to(cpuid, [this, p = std::move(p), src_cpu]() mutable {
+        // FIXME: future is discarded
+        (void)smp::submit_to(cpuid, [this, p = std::move(p), src_cpu]() mutable {
             _dev->l2receive(p.free_on_cpu(src_cpu));
         }).then([] {
             queue_depth--;

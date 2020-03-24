@@ -1,3 +1,6 @@
+..  SPDX-License-Identifier: BSD-3-Clause
+    Copyright 2018 The DPDK contributors
+
 .. _doc_guidelines:
 
 DPDK Documentation Guidelines
@@ -19,7 +22,6 @@ The main directories that contain files related to documentation are shown below
    |-- librte_acl
    |-- librte_cfgfile
    |-- librte_cmdline
-   |-- librte_compat
    |-- librte_eal
    |   |-- ...
    ...
@@ -34,18 +36,17 @@ The main directories that contain files related to documentation are shown below
        |-- testpmd_app_ug
        |-- rel_notes
        |-- nics
-       |-- xen
        |-- ...
 
 
-The API documentation is built from `Doxygen <http://www.stack.nl/~dimitri/doxygen/>`_ comments in the header files.
+The API documentation is built from `Doxygen <http://www.doxygen.nl>`_ comments in the header files.
 These files are mainly in the ``lib/librte_*`` directories although some of the Poll Mode Drivers in ``drivers/net``
 are also documented with Doxygen.
 
 The configuration files that are used to control the Doxygen output are in the ``doc/api`` directory.
 
 The user guides such as *The Programmers Guide* and the *FreeBSD* and *Linux Getting Started* Guides are generated
-from RST markup text files using the `Sphinx <http://sphinx-doc.org/index.html>`_ Documentation Generator.
+from RST markup text files using the `Sphinx <http://sphinx-doc.org>`_ Documentation Generator.
 
 These files are included in the ``doc/guides/`` directory.
 The output is controlled by the ``doc/guides/conf.py`` file.
@@ -81,7 +82,7 @@ added to by the developer.
 * **API documentation**
 
   The API documentation explains how to use the public DPDK functions.
-  The `API index page <http://dpdk.org/doc/api/>`_ shows the generated API documentation with related groups of functions.
+  The `API index page <http://doc.dpdk.org/api/>`_ shows the generated API documentation with related groups of functions.
 
   The API documentation should be updated via Doxygen comments when new functions are added.
 
@@ -172,7 +173,8 @@ For full support with figure and table captioning the latest version of Sphinx c
    sudo pip install --upgrade sphinx
    sudo pip install --upgrade sphinx_rtd_theme
 
-For further information on getting started with Sphinx see the `Sphinx Tutorial <http://sphinx-doc.org/tutorial.html>`_.
+For further information on getting started with Sphinx see the
+`Sphinx Getting Started <http://www.sphinx-doc.org/en/master/usage/quickstart.html>`_.
 
 .. Note::
 
@@ -201,6 +203,19 @@ The main required packages can be installed as follows:
 
    # Red Hat/Fedora, selective install.
    sudo dnf     -y install texlive-collection-latexextra
+
+`Latexmk <http://personal.psu.edu/jcc8/software/latexmk-jcc/>`_ is a perl script
+for running LaTeX for resolving cross references,
+and it also runs auxiliary programs like bibtex, makeindex if necessary, and dvips.
+It has also a number of other useful capabilities (see man 1 latexmk).
+
+.. code-block:: console
+
+   # Ubuntu/Debian.
+   sudo apt-get -y install latexmk
+
+   # Red Hat/Fedora.
+   sudo dnf     -y install latexmk
 
 
 Build commands
@@ -282,33 +297,21 @@ The additional guidelines below reiterate or expand upon those guidelines.
 Line Length
 ~~~~~~~~~~~
 
-* The recommended style for the DPDK documentation is to put sentences on separate lines.
-  This allows for easier reviewing of patches.
-  Multiple sentences which are not separated by a blank line are joined automatically into paragraphs, for example::
+* Lines in sentences should be less than 80 characters and wrapped at
+  words. Multiple sentences which are not separated by a blank line are joined
+  automatically into paragraphs.
 
-     Here is an example sentence.
-     Long sentences over the limit shown below can be wrapped onto
-     a new line.
-     These three sentences will be joined into the same paragraph.
+* Lines in literal blocks **must** be less than 80 characters since
+  they are not wrapped by the document formatters and can exceed the page width
+  in PDF documents.
 
-     This is a new paragraph, since it is separated from the
-     previous paragraph by a blank line.
+  Long literal command lines can be shown wrapped with backslashes. For
+  example::
 
-  This would be rendered as follows:
-
-     *Here is an example sentence.
-     Long sentences over the limit shown below can be wrapped onto
-     a new line.
-     These three sentences will be joined into the same paragraph.*
-
-     *This is a new paragraph, since it is separated from the
-     previous paragraph by a blank line.*
-
-
-* Long sentences should be wrapped at 120 characters +/- 10 characters. They should be wrapped at words.
-
-* Lines in literal blocks must by less than 80 characters since they aren't wrapped by the document formatters
-  and can exceed the page width in PDF documents.
+     testpmd -l 2-3 -n 4 \
+             --vdev=virtio_user0,path=/dev/vhost-net,queues=2,queue_size=1024 \
+             -- -i --tx-offloads=0x0000002c --enable-lro --txq=2 --rxq=2 \
+             --txd=1024 --rxd=1024
 
 
 Whitespace
@@ -593,7 +596,7 @@ Doxygen Guidelines
 
 The DPDK API is documented using Doxygen comment annotations in the header files.
 Doxygen is a very powerful tool, it is extremely configurable and with a little effort can be used to create expressive documents.
-See the `Doxygen website <http://www.stack.nl/~dimitri/doxygen/>`_ for full details on how to use it.
+See the `Doxygen website <http://www.doxygen.nl>`_ for full details on how to use it.
 
 The following are some guidelines for use of Doxygen in the DPDK API documentation:
 
@@ -625,19 +628,14 @@ The following are some guidelines for use of Doxygen in the DPDK API documentati
   .. code-block:: c
 
      /**
-      * Attach a new Ethernet device specified by arguments.
+      * Try to take the lock.
       *
-      * @param devargs
-      *  A pointer to a strings array describing the new device
-      *  to be attached. The strings should be a pci address like
-      *  `0000:01:00.0` or **virtual** device name like `net_pcap0`.
-      * @param port_id
-      *  A pointer to a port identifier actually attached.
-      *
+      * @param sl
+      *   A pointer to the spinlock.
       * @return
-      *  0 on success and port_id is filled, negative on error.
+      *   1 if the lock is successfully taken; 0 otherwise.
       */
-     int rte_eth_dev_attach(const char *devargs, uint8_t *port_id);
+     int rte_spinlock_trylock(rte_spinlock_t *sl);
 
 * Doxygen supports Markdown style syntax such as bold, italics, fixed width text and lists.
   For example the second line in the ``devargs`` parameter in the previous example will be rendered as:
@@ -668,7 +666,7 @@ The following are some guidelines for use of Doxygen in the DPDK API documentati
        */
 
   In the API documentation the functions will be rendered as links, see the
-  `online section of the rte_ethdev.h docs <http://dpdk.org/doc/api/rte__ethdev_8h.html>`_ that contains the above text.
+  `online section of the rte_ethdev.h docs <http://doc.dpdk.org/api/rte__ethdev_8h.html>`_ that contains the above text.
 
 * The ``@see`` keyword can be used to create a *see also* link to another file or library.
   This directive should be placed on one line at the bottom of the documentation section.

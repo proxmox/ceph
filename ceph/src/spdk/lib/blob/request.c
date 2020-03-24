@@ -51,7 +51,7 @@ spdk_bs_call_cpl(struct spdk_bs_cpl *cpl, int bserrno)
 		break;
 	case SPDK_BS_CPL_TYPE_BS_HANDLE:
 		cpl->u.bs_handle.cb_fn(cpl->u.bs_handle.cb_arg,
-				       cpl->u.bs_handle.bs,
+				       bserrno == 0 ? cpl->u.bs_handle.bs : NULL,
 				       bserrno);
 		break;
 	case SPDK_BS_CPL_TYPE_BLOB_BASIC:
@@ -60,12 +60,12 @@ spdk_bs_call_cpl(struct spdk_bs_cpl *cpl, int bserrno)
 		break;
 	case SPDK_BS_CPL_TYPE_BLOBID:
 		cpl->u.blobid.cb_fn(cpl->u.blobid.cb_arg,
-				    cpl->u.blobid.blobid,
+				    bserrno == 0 ? cpl->u.blobid.blobid : SPDK_BLOBID_INVALID,
 				    bserrno);
 		break;
 	case SPDK_BS_CPL_TYPE_BLOB_HANDLE:
 		cpl->u.blob_handle.cb_fn(cpl->u.blob_handle.cb_arg,
-					 cpl->u.blob_handle.blob,
+					 bserrno == 0 ? cpl->u.blob_handle.blob : NULL,
 					 bserrno);
 		break;
 	case SPDK_BS_CPL_TYPE_NESTED_SEQUENCE:
@@ -107,7 +107,7 @@ spdk_bs_sequence_start(struct spdk_io_channel *_channel,
 	struct spdk_bs_request_set	*set;
 
 	channel = spdk_io_channel_get_ctx(_channel);
-
+	assert(channel != NULL);
 	set = TAILQ_FIRST(&channel->reqs);
 	if (!set) {
 		return NULL;
@@ -311,7 +311,7 @@ spdk_bs_batch_open(struct spdk_io_channel *_channel,
 	struct spdk_bs_request_set	*set;
 
 	channel = spdk_io_channel_get_ctx(_channel);
-
+	assert(channel != NULL);
 	set = TAILQ_FIRST(&channel->reqs);
 	if (!set) {
 		return NULL;
@@ -466,7 +466,7 @@ spdk_bs_user_op_alloc(struct spdk_io_channel *_channel, struct spdk_bs_cpl *cpl,
 	struct spdk_bs_user_op_args	*args;
 
 	channel = spdk_io_channel_get_ctx(_channel);
-
+	assert(channel != NULL);
 	set = TAILQ_FIRST(&channel->reqs);
 	if (!set) {
 		return NULL;

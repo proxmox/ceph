@@ -112,12 +112,16 @@ class Commands_Rpc(object):
         output = self.rpc.construct_malloc_bdev(total_size, block_size)[0]
         return output.rstrip('\n')
 
-    def construct_lvol_store(self, base_name, lvs_name, cluster_size=None):
+    def construct_lvol_store(self, base_name, lvs_name, cluster_size=None, clear_method=None):
         print("INFO: RPC COMMAND construct_lvol_store")
         if cluster_size:
             output = self.rpc.construct_lvol_store(base_name,
                                                    lvs_name,
                                                    "-c {cluster_sz}".format(cluster_sz=cluster_size))[0]
+        elif clear_method:
+            output = self.rpc.construct_lvol_store(base_name,
+                                                   lvs_name,
+                                                   "--clear-method {clear_m}".format(clear_m=clear_method))[0]
         else:
             output = self.rpc.construct_lvol_store(base_name, lvs_name)[0]
         return output.rstrip('\n')
@@ -145,11 +149,6 @@ class Commands_Rpc(object):
         output, rc = self.rpc.destroy_lvol_store(name_opt, uuid)
         return rc
 
-    def delete_bdev(self, base_name):
-        print("INFO: RPC COMMAND delete_bdev")
-        output, rc = self.rpc.delete_bdev(base_name)
-        return rc
-
     def delete_malloc_bdev(self, base_name):
         print("INFO: RPC COMMAND delete_malloc_bdev")
         output, rc = self.rpc.delete_malloc_bdev(base_name)
@@ -163,6 +162,11 @@ class Commands_Rpc(object):
     def resize_lvol_bdev(self, uuid, new_size):
         print("INFO: RPC COMMAND resize_lvol_bdev")
         output, rc = self.rpc.resize_lvol_bdev(uuid, new_size)
+        return rc
+
+    def set_read_only_lvol_bdev(self, uuid):
+        print("INFO: RPC COMMAND set_read_only_lvol_bdev")
+        output, rc = self.rpc.set_read_only_lvol_bdev(uuid)
         return rc
 
     def start_nbd_disk(self, bdev_name, nbd_name):

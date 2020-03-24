@@ -1,9 +1,7 @@
-/*
- * Copyright (c) 2016 QLogic Corporation.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright (c) 2016 - 2018 Cavium Inc.
  * All rights reserved.
- * www.qlogic.com
- *
- * See LICENSE.qede_pmd for copyright and licensing details.
+ * www.cavium.com
  */
 
 #include "bcm_osal.h"
@@ -41,10 +39,7 @@
 #define TM_ELEM_SIZE	4
 
 /* ILT constants */
-/* If for some reason, HW P size is modified to be less than 32K,
- * special handling needs to be made for CDU initialization
- */
-#define ILT_DEFAULT_HW_P_SIZE	3
+#define ILT_DEFAULT_HW_P_SIZE	4
 
 #define ILT_PAGE_IN_BYTES(hw_p_size)	(1U << ((hw_p_size) + 12))
 #define ILT_CFG_REG(cli, reg)		PSWRQ2_REG_##cli##_##reg##_RT_OFFSET
@@ -59,8 +54,8 @@
 
 /* connection context union */
 union conn_context {
-	struct core_conn_context core_ctx;
-	struct eth_conn_context eth_ctx;
+	struct e4_core_conn_context core_ctx;
+	struct e4_eth_conn_context eth_ctx;
 };
 
 /* TYPE-0 task context - iSCSI, FCOE */
@@ -69,6 +64,7 @@ union type0_task_context {
 
 /* TYPE-1 task context - ROCE */
 union type1_task_context {
+	struct regpair reserved; /* @DPDK */
 };
 
 struct src_ent {
@@ -230,13 +226,6 @@ struct ecore_cxt_mngr {
 	/* TODO - VF arfs filters ? */
 };
 
-/* check if resources/configuration is required according to protocol type */
-static OSAL_INLINE bool src_proto(struct ecore_hwfn *p_hwfn,
-				  enum protocol_type type)
-{
-	return type == PROTOCOLID_TOE;
-}
-
 static OSAL_INLINE bool tm_cid_proto(enum protocol_type type)
 {
 	return type == PROTOCOLID_TOE;
@@ -270,16 +259,12 @@ struct ecore_src_iids {
 	u32 per_vf_cids;
 };
 
-static OSAL_INLINE void ecore_cxt_src_iids(struct ecore_hwfn *p_hwfn,
-					   struct ecore_cxt_mngr *p_mngr,
-					   struct ecore_src_iids *iids)
+static void ecore_cxt_src_iids(struct ecore_cxt_mngr *p_mngr,
+			       struct ecore_src_iids *iids)
 {
 	u32 i;
 
 	for (i = 0; i < MAX_CONN_TYPES; i++) {
-		if (!src_proto(p_hwfn, i))
-			continue;
-
 		iids->pf_cids += p_mngr->conn_cfg[i].cid_count;
 		iids->per_vf_cids += p_mngr->conn_cfg[i].cids_per_vf;
 	}
@@ -297,8 +282,8 @@ struct ecore_tm_iids {
 	u32 per_vf_tids;
 };
 
-static OSAL_INLINE void ecore_cxt_tm_iids(struct ecore_cxt_mngr *p_mngr,
-					  struct ecore_tm_iids *iids)
+static void ecore_cxt_tm_iids(struct ecore_cxt_mngr *p_mngr,
+			      struct ecore_tm_iids *iids)
 {
 	bool tm_vf_required = false;
 	bool tm_required = false;
@@ -395,6 +380,20 @@ static struct ecore_tid_seg *ecore_cxt_tid_seg_info(struct ecore_hwfn *p_hwfn,
 			return &p_cfg->conn_cfg[i].tid_seg[seg];
 	}
 	return OSAL_NULL;
+}
+
+static void ecore_cxt_set_srq_count(struct ecore_hwfn *p_hwfn, u32 num_srqs)
+{
+	struct ecore_cxt_mngr *p_mgr = p_hwfn->p_cxt_mngr;
+
+	p_mgr->srq_count = num_srqs;
+}
+
+u32 ecore_cxt_get_srq_count(struct ecore_hwfn *p_hwfn)
+{
+	struct ecore_cxt_mngr *p_mgr = p_hwfn->p_cxt_mngr;
+
+	return p_mgr->srq_count;
 }
 
 /* set the iids (cid/tid) count per protocol */
@@ -687,7 +686,7 @@ enum _ecore_status_t ecore_cxt_cfg_ilt_compute(struct ecore_hwfn *p_hwfn)
 	p_blk = &p_cli->pf_blks[0];
 
 	ecore_cxt_qm_iids(p_hwfn, &qm_iids);
-	total = ecore_qm_pf_mem_size(p_hwfn->rel_pf_id, qm_iids.cids,
+	total = ecore_qm_pf_mem_size(qm_iids.cids,
 				     qm_iids.vf_cids, qm_iids.tids,
 				     p_hwfn->qm_info.num_pqs,
 				     p_hwfn->qm_info.num_vf_pqs);
@@ -706,7 +705,7 @@ enum _ecore_status_t ecore_cxt_cfg_ilt_compute(struct ecore_hwfn *p_hwfn)
 
 	/* SRC */
 	p_cli = &p_mngr->clients[ILT_CLI_SRC];
-	ecore_cxt_src_iids(p_hwfn, p_mngr, &src_iids);
+	ecore_cxt_src_iids(p_mngr, &src_iids);
 
 	/* Both the PF and VFs searcher connections are stored in the per PF
 	 * database. Thus sum the PF searcher cids and all the VFs searcher
@@ -820,7 +819,7 @@ static enum _ecore_status_t ecore_cxt_src_t2_alloc(struct ecore_hwfn *p_hwfn)
 	if (!p_src->active)
 		return ECORE_SUCCESS;
 
-	ecore_cxt_src_iids(p_hwfn, p_mngr, &src_iids);
+	ecore_cxt_src_iids(p_mngr, &src_iids);
 	conn_num = src_iids.pf_cids + src_iids.per_vf_cids * p_mngr->vf_count;
 	total_size = conn_num * sizeof(struct src_ent);
 
@@ -833,7 +832,7 @@ static enum _ecore_status_t ecore_cxt_src_t2_alloc(struct ecore_hwfn *p_hwfn)
 				 p_mngr->t2_num_pages *
 				 sizeof(struct ecore_dma_mem));
 	if (!p_mngr->t2) {
-		DP_NOTICE(p_hwfn, true, "Failed to allocate t2 table\n");
+		DP_NOTICE(p_hwfn, false, "Failed to allocate t2 table\n");
 		rc = ECORE_NOMEM;
 		goto t2_fail;
 	}
@@ -918,6 +917,9 @@ static void ecore_ilt_shadow_free(struct ecore_hwfn *p_hwfn)
 	struct ecore_cxt_mngr *p_mngr = p_hwfn->p_cxt_mngr;
 	u32 ilt_size, i;
 
+	if (p_mngr->ilt_shadow == OSAL_NULL)
+		return;
+
 	ilt_size = ecore_cxt_ilt_shadow_size(p_cli);
 
 	for (i = 0; p_mngr->ilt_shadow && i < ilt_size; i++) {
@@ -930,6 +932,7 @@ static void ecore_ilt_shadow_free(struct ecore_hwfn *p_hwfn)
 		p_dma->p_virt = OSAL_NULL;
 	}
 	OSAL_FREE(p_hwfn->p_dev, p_mngr->ilt_shadow);
+	p_mngr->ilt_shadow = OSAL_NULL;
 }
 
 static enum _ecore_status_t
@@ -999,8 +1002,7 @@ static enum _ecore_status_t ecore_ilt_shadow_alloc(struct ecore_hwfn *p_hwfn)
 					 size * sizeof(struct ecore_dma_mem));
 
 	if (!p_mngr->ilt_shadow) {
-		DP_NOTICE(p_hwfn, true,
-			  "Failed to allocate ilt shadow table\n");
+		DP_NOTICE(p_hwfn, false, "Failed to allocate ilt shadow table\n");
 		rc = ECORE_NOMEM;
 		goto ilt_shadow_fail;
 	}
@@ -1043,12 +1045,14 @@ static void ecore_cid_map_free(struct ecore_hwfn *p_hwfn)
 
 	for (type = 0; type < MAX_CONN_TYPES; type++) {
 		OSAL_FREE(p_hwfn->p_dev, p_mngr->acquired[type].cid_map);
+		p_mngr->acquired[type].cid_map = OSAL_NULL;
 		p_mngr->acquired[type].max_count = 0;
 		p_mngr->acquired[type].start_cid = 0;
 
 		for (vf = 0; vf < COMMON_MAX_NUM_VFS; vf++) {
 			OSAL_FREE(p_hwfn->p_dev,
 				  p_mngr->acquired_vf[type][vf].cid_map);
+			p_mngr->acquired_vf[type][vf].cid_map = OSAL_NULL;
 			p_mngr->acquired_vf[type][vf].max_count = 0;
 			p_mngr->acquired_vf[type][vf].start_cid = 0;
 		}
@@ -1125,10 +1129,12 @@ enum _ecore_status_t ecore_cxt_mngr_alloc(struct ecore_hwfn *p_hwfn)
 
 	p_mngr = OSAL_ZALLOC(p_hwfn->p_dev, GFP_KERNEL, sizeof(*p_mngr));
 	if (!p_mngr) {
-		DP_NOTICE(p_hwfn, true,
-			  "Failed to allocate `struct ecore_cxt_mngr'\n");
+		DP_NOTICE(p_hwfn, false, "Failed to allocate `struct ecore_cxt_mngr'\n");
 		return ECORE_NOMEM;
 	}
+
+	/* Set the cxt mangr pointer prior to further allocations */
+	p_hwfn->p_cxt_mngr = p_mngr;
 
 	/* Initialize ILT client registers */
 	clients = p_mngr->clients;
@@ -1156,7 +1162,7 @@ enum _ecore_status_t ecore_cxt_mngr_alloc(struct ecore_hwfn *p_hwfn)
 	clients[ILT_CLI_TSDM].last.reg  = ILT_CFG_REG(TSDM, LAST_ILT);
 	clients[ILT_CLI_TSDM].p_size.reg = ILT_CFG_REG(TSDM, P_SIZE);
 
-	/* default ILT page size for all clients is 32K */
+	/* default ILT page size for all clients is 64K */
 	for (i = 0; i < ILT_CLI_MAX; i++)
 		p_mngr->clients[i].p_size.val = ILT_DEFAULT_HW_P_SIZE;
 
@@ -1170,11 +1176,13 @@ enum _ecore_status_t ecore_cxt_mngr_alloc(struct ecore_hwfn *p_hwfn)
 		p_mngr->vf_count = p_hwfn->p_dev->p_iov_info->total_vfs;
 
 	/* Initialize the dynamic ILT allocation mutex */
-	OSAL_MUTEX_ALLOC(p_hwfn, &p_mngr->mutex);
+#ifdef CONFIG_ECORE_LOCK_ALLOC
+	if (OSAL_MUTEX_ALLOC(p_hwfn, &p_mngr->mutex)) {
+		DP_NOTICE(p_hwfn, false, "Failed to alloc p_mngr->mutex\n");
+		return ECORE_NOMEM;
+	}
+#endif
 	OSAL_MUTEX_INIT(&p_mngr->mutex);
-
-	/* Set the cxt mangr pointer priori to further allocations */
-	p_hwfn->p_cxt_mngr = p_mngr;
 
 	return ECORE_SUCCESS;
 }
@@ -1186,21 +1194,21 @@ enum _ecore_status_t ecore_cxt_tables_alloc(struct ecore_hwfn *p_hwfn)
 	/* Allocate the ILT shadow table */
 	rc = ecore_ilt_shadow_alloc(p_hwfn);
 	if (rc) {
-		DP_NOTICE(p_hwfn, true, "Failed to allocate ilt memory\n");
+		DP_NOTICE(p_hwfn, false, "Failed to allocate ilt memory\n");
 		goto tables_alloc_fail;
 	}
 
 	/* Allocate the T2  table */
 	rc = ecore_cxt_src_t2_alloc(p_hwfn);
 	if (rc) {
-		DP_NOTICE(p_hwfn, true, "Failed to allocate T2 memory\n");
+		DP_NOTICE(p_hwfn, false, "Failed to allocate T2 memory\n");
 		goto tables_alloc_fail;
 	}
 
 	/* Allocate and initialize the acquired cids bitmaps */
 	rc = ecore_cid_map_alloc(p_hwfn);
 	if (rc) {
-		DP_NOTICE(p_hwfn, true, "Failed to allocate cid maps\n");
+		DP_NOTICE(p_hwfn, false, "Failed to allocate cid maps\n");
 		goto tables_alloc_fail;
 	}
 
@@ -1219,7 +1227,9 @@ void ecore_cxt_mngr_free(struct ecore_hwfn *p_hwfn)
 	ecore_cid_map_free(p_hwfn);
 	ecore_cxt_src_t2_free(p_hwfn);
 	ecore_ilt_shadow_free(p_hwfn);
+#ifdef CONFIG_ECORE_LOCK_ALLOC
 	OSAL_MUTEX_DEALLOC(&p_hwfn->p_cxt_mngr->mutex);
+#endif
 	OSAL_FREE(p_hwfn->p_dev, p_hwfn->p_cxt_mngr);
 }
 
@@ -1422,29 +1432,34 @@ static void ecore_cdu_init_pf(struct ecore_hwfn *p_hwfn)
 	}
 }
 
-void ecore_qm_init_pf(struct ecore_hwfn *p_hwfn)
+void ecore_qm_init_pf(struct ecore_hwfn *p_hwfn, struct ecore_ptt *p_ptt,
+		      bool is_pf_loading)
 {
 	struct ecore_qm_info *qm_info = &p_hwfn->qm_info;
+	struct ecore_mcp_link_state *p_link;
 	struct ecore_qm_iids iids;
 
 	OSAL_MEM_ZERO(&iids, sizeof(iids));
 	ecore_cxt_qm_iids(p_hwfn, &iids);
 
-	ecore_qm_pf_rt_init(p_hwfn, p_hwfn->p_main_ptt, p_hwfn->port_id,
-			    p_hwfn->rel_pf_id, qm_info->max_phys_tcs_per_port,
-			    p_hwfn->first_on_engine,
+	p_link = &ECORE_LEADING_HWFN(p_hwfn->p_dev)->mcp_info->link_output;
+
+	ecore_qm_pf_rt_init(p_hwfn, p_ptt, p_hwfn->rel_pf_id,
+			    qm_info->max_phys_tcs_per_port,
+			    is_pf_loading,
 			    iids.cids, iids.vf_cids, iids.tids,
 			    qm_info->start_pq,
 			    qm_info->num_pqs - qm_info->num_vf_pqs,
 			    qm_info->num_vf_pqs,
 			    qm_info->start_vport,
 			    qm_info->num_vports, qm_info->pf_wfq,
-			    qm_info->pf_rl, p_hwfn->qm_info.qm_pq_params,
+			    qm_info->pf_rl, p_link->speed,
+			    p_hwfn->qm_info.qm_pq_params,
 			    p_hwfn->qm_info.qm_vport_params);
 }
 
 /* CM PF */
-void ecore_cm_init_pf(struct ecore_hwfn *p_hwfn)
+static void ecore_cm_init_pf(struct ecore_hwfn *p_hwfn)
 {
 	STORE_RT_REG(p_hwfn, XCM_REG_CON_PHY_Q3_RT_OFFSET,
 		     ecore_get_cm_pq_idx(p_hwfn, PQ_FLAGS_LB));
@@ -1639,7 +1654,7 @@ static void ecore_src_init_pf(struct ecore_hwfn *p_hwfn)
 	struct ecore_src_iids src_iids;
 
 	OSAL_MEM_ZERO(&src_iids, sizeof(src_iids));
-	ecore_cxt_src_iids(p_hwfn, p_mngr, &src_iids);
+	ecore_cxt_src_iids(p_mngr, &src_iids);
 	conn_num = src_iids.pf_cids + src_iids.per_vf_cids * p_mngr->vf_count;
 	if (!conn_num)
 		return;
@@ -1766,8 +1781,10 @@ static void ecore_tm_init_pf(struct ecore_hwfn *p_hwfn)
 static void ecore_prs_init_pf(struct ecore_hwfn *p_hwfn)
 {
 	struct ecore_cxt_mngr *p_mngr = p_hwfn->p_cxt_mngr;
-	struct ecore_conn_type_cfg *p_fcoe = &p_mngr->conn_cfg[PROTOCOLID_FCOE];
+	struct ecore_conn_type_cfg *p_fcoe;
 	struct ecore_tid_seg *p_tid;
+
+	p_fcoe = &p_mngr->conn_cfg[PROTOCOLID_FCOE];
 
 	/* If FCoE is active set the MAX OX_ID (tid) in the Parser */
 	if (!p_fcoe->cid_count)
@@ -1785,9 +1802,9 @@ void ecore_cxt_hw_init_common(struct ecore_hwfn *p_hwfn)
 	ecore_cdu_init_common(p_hwfn);
 }
 
-void ecore_cxt_hw_init_pf(struct ecore_hwfn *p_hwfn)
+void ecore_cxt_hw_init_pf(struct ecore_hwfn *p_hwfn, struct ecore_ptt *p_ptt)
 {
-	ecore_qm_init_pf(p_hwfn);
+	ecore_qm_init_pf(p_hwfn, p_ptt, true);
 	ecore_cm_init_pf(p_hwfn);
 	ecore_dq_init_pf(p_hwfn);
 	ecore_cdu_init_pf(p_hwfn);
@@ -1969,20 +1986,6 @@ enum _ecore_status_t ecore_cxt_get_cid_info(struct ecore_hwfn *p_hwfn,
 	return ECORE_SUCCESS;
 }
 
-static void ecore_cxt_set_srq_count(struct ecore_hwfn *p_hwfn, u32 num_srqs)
-{
-	struct ecore_cxt_mngr *p_mgr = p_hwfn->p_cxt_mngr;
-
-	p_mgr->srq_count = num_srqs;
-}
-
-u32 ecore_cxt_get_srq_count(struct ecore_hwfn *p_hwfn)
-{
-	struct ecore_cxt_mngr *p_mgr = p_hwfn->p_cxt_mngr;
-
-	return p_mgr->srq_count;
-}
-
 enum _ecore_status_t ecore_cxt_set_pf_params(struct ecore_hwfn *p_hwfn)
 {
 	/* Set the number of required CORE connections */
@@ -1993,19 +1996,24 @@ enum _ecore_status_t ecore_cxt_set_pf_params(struct ecore_hwfn *p_hwfn)
 	switch (p_hwfn->hw_info.personality) {
 	case ECORE_PCI_ETH:
 		{
-			struct ecore_eth_pf_params *p_params =
+		u32 count = 0;
+
+		struct ecore_eth_pf_params *p_params =
 			    &p_hwfn->pf_params.eth_pf_params;
 
-			/* TODO - we probably want to add VF number to the PF
-			 * params;
-			 * As of now, allocates 16 * 2 per-VF [to retain regular
-			 * functionality].
-			 */
-			ecore_cxt_set_proto_cid_count(p_hwfn, PROTOCOLID_ETH,
-						      p_params->num_cons, 32);
-			p_hwfn->p_cxt_mngr->arfs_count =
-						p_params->num_arfs_filters;
-			break;
+		if (!p_params->num_vf_cons)
+			p_params->num_vf_cons = ETH_PF_PARAMS_VF_CONS_DEFAULT;
+		ecore_cxt_set_proto_cid_count(p_hwfn, PROTOCOLID_ETH,
+					      p_params->num_cons,
+					      p_params->num_vf_cons);
+
+		count = p_params->num_arfs_filters;
+
+		if (!OSAL_TEST_BIT(ECORE_MF_DISABLE_ARFS,
+				   &p_hwfn->p_dev->mf_bits))
+			p_hwfn->p_cxt_mngr->arfs_count = count;
+
+		break;
 		}
 	default:
 		return ECORE_INVAL;
@@ -2106,7 +2114,7 @@ ecore_cxt_dynamic_ilt_alloc(struct ecore_hwfn *p_hwfn,
 
 	ecore_dmae_host2grc(p_hwfn, p_ptt, (u64)(osal_uintptr_t)&ilt_hw_entry,
 			    reg_offset, sizeof(ilt_hw_entry) / sizeof(u32),
-			    0 /* no flags */);
+			    OSAL_NULL /* default parameters */);
 
 	if (elem_type == ECORE_ELEM_CXT) {
 		u32 last_cid_allocated = (1 + (iid / elems_per_p)) *
@@ -2213,41 +2221,10 @@ ecore_cxt_free_ilt_range(struct ecore_hwfn *p_hwfn,
 				    (u64)(osal_uintptr_t)&ilt_hw_entry,
 				    reg_offset,
 				    sizeof(ilt_hw_entry) / sizeof(u32),
-				    0 /* no flags */);
+				    OSAL_NULL /* default parameters */);
 	}
 
 	ecore_ptt_release(p_hwfn, p_ptt);
 
 	return ECORE_SUCCESS;
-}
-
-enum _ecore_status_t ecore_cxt_free_proto_ilt(struct ecore_hwfn *p_hwfn,
-					      enum protocol_type proto)
-{
-	enum _ecore_status_t rc;
-	u32 cid;
-
-	/* Free Connection CXT */
-	rc = ecore_cxt_free_ilt_range(p_hwfn, ECORE_ELEM_CXT,
-				      ecore_cxt_get_proto_cid_start(p_hwfn,
-								    proto),
-				      ecore_cxt_get_proto_cid_count(p_hwfn,
-								    proto,
-								    &cid));
-
-	if (rc)
-		return rc;
-
-	/* Free Task CXT */
-	rc = ecore_cxt_free_ilt_range(p_hwfn, ECORE_ELEM_TASK, 0,
-				      ecore_cxt_get_proto_tid_count(p_hwfn,
-								    proto));
-	if (rc)
-		return rc;
-
-	/* Free TSDM CXT */
-	rc = ecore_cxt_free_ilt_range(p_hwfn, ECORE_ELEM_SRQ, 0,
-				      ecore_cxt_get_srq_count(p_hwfn));
-
-	return rc;
 }

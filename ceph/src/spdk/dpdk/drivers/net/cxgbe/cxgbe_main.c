@@ -33,11 +33,13 @@
 #include <rte_dev.h>
 #include <rte_kvargs.h>
 
-#include "common.h"
-#include "t4_regs.h"
-#include "t4_msg.h"
+#include "base/common.h"
+#include "base/t4_regs.h"
+#include "base/t4_msg.h"
 #include "cxgbe.h"
 #include "clip_tbl.h"
+#include "l2t.h"
+#include "mps_tcam.h"
 
 /**
  * Allocate a chunk of memory. The allocated memory is cleared.
@@ -99,6 +101,10 @@ static int fwevtq_handler(struct sge_rspq *q, const __be64 *rsp,
 		const struct cpl_act_open_rpl *p = (const void *)rsp;
 
 		hash_filter_rpl(q->adapter, p);
+	} else if (opcode == CPL_L2T_WRITE_RPL) {
+		const struct cpl_l2t_write_rpl *p = (const void *)rsp;
+
+		do_l2t_write_rpl(q->adapter, p);
 	} else {
 		dev_err(adapter, "unexpected CPL %#x on FW event queue\n",
 			opcode);
@@ -110,12 +116,13 @@ out:
 /**
  * Setup sge control queues to pass control information.
  */
-int setup_sge_ctrl_txq(struct adapter *adapter)
+int cxgbe_setup_sge_ctrl_txq(struct adapter *adapter)
 {
 	struct sge *s = &adapter->sge;
 	int err = 0, i = 0;
 
 	for_each_port(adapter, i) {
+		struct port_info *pi = adap2pinfo(adapter, i);
 		char name[RTE_ETH_NAME_MAX_LEN];
 		struct sge_ctrl_txq *q = &s->ctrlq[i];
 
@@ -129,16 +136,19 @@ int setup_sge_ctrl_txq(struct adapter *adapter)
 				err);
 			goto out;
 		}
-		snprintf(name, sizeof(name), "cxgbe_ctrl_pool_%d", i);
+		snprintf(name, sizeof(name), "%s_ctrl_pool_%d",
+			 pi->eth_dev->device->driver->name,
+			 pi->eth_dev->data->port_id);
 		q->mb_pool = rte_pktmbuf_pool_create(name, s->ctrlq[i].q.size,
 						     RTE_CACHE_LINE_SIZE,
 						     RTE_MBUF_PRIV_ALIGN,
 						     RTE_MBUF_DEFAULT_BUF_SIZE,
 						     SOCKET_ID_ANY);
 		if (!q->mb_pool) {
-			dev_err(adapter, "Can't create ctrl pool for port: %d",
-				i);
-			err = -ENOMEM;
+			err = -rte_errno;
+			dev_err(adapter,
+				"Can't create ctrl pool for port %d. Err: %d\n",
+				pi->eth_dev->data->port_id, err);
 			goto out;
 		}
 	}
@@ -151,18 +161,18 @@ out:
 /**
  * cxgbe_poll_for_completion: Poll rxq for completion
  * @q: rxq to poll
- * @us: microseconds to delay
+ * @ms: milliseconds to delay
  * @cnt: number of times to poll
  * @c: completion to check for 'done' status
  *
  * Polls the rxq for reples until completion is done or the count
  * expires.
  */
-int cxgbe_poll_for_completion(struct sge_rspq *q, unsigned int us,
+int cxgbe_poll_for_completion(struct sge_rspq *q, unsigned int ms,
 			      unsigned int cnt, struct t4_completion *c)
 {
 	unsigned int i;
-	unsigned int work_done, budget = 4;
+	unsigned int work_done, budget = 32;
 
 	if (!c)
 		return -EINVAL;
@@ -175,12 +185,12 @@ int cxgbe_poll_for_completion(struct sge_rspq *q, unsigned int us,
 			return 0;
 		}
 		t4_os_unlock(&c->lock);
-		udelay(us);
+		rte_delay_ms(ms);
 	}
 	return -ETIMEDOUT;
 }
 
-int setup_sge_fwevtq(struct adapter *adapter)
+int cxgbe_setup_sge_fwevtq(struct adapter *adapter)
 {
 	struct sge *s = &adapter->sge;
 	int err = 0;
@@ -405,7 +415,7 @@ static int tid_init(struct tid_info *t)
 		return -ENOMEM;
 
 	t->atid_tab = (union aopen_entry *)&t->tid_tab[t->ntids];
-	t->ftid_tab = (struct filter_entry *)&t->tid_tab[t->natids];
+	t->ftid_tab = (struct filter_entry *)&t->atid_tab[t->natids];
 	t->ftid_bmap_array = t4_os_alloc(ftid_bmap_size);
 	if (!t->ftid_bmap_array) {
 		tid_free(t);
@@ -455,7 +465,7 @@ static inline bool is_x_10g_port(const struct link_config *lc)
 	return high_speeds != 0;
 }
 
-inline void init_rspq(struct adapter *adap, struct sge_rspq *q,
+static inline void init_rspq(struct adapter *adap, struct sge_rspq *q,
 		      unsigned int us, unsigned int cnt,
 		      unsigned int size, unsigned int iqe_size)
 {
@@ -465,7 +475,7 @@ inline void init_rspq(struct adapter *adap, struct sge_rspq *q,
 	q->size = size;
 }
 
-int cfg_queue_count(struct rte_eth_dev *eth_dev)
+int cxgbe_cfg_queue_count(struct rte_eth_dev *eth_dev)
 {
 	struct port_info *pi = (struct port_info *)(eth_dev->data->dev_private);
 	struct adapter *adap = pi->adapter;
@@ -492,7 +502,7 @@ int cfg_queue_count(struct rte_eth_dev *eth_dev)
 	return 0;
 }
 
-void cfg_queues(struct rte_eth_dev *eth_dev)
+void cxgbe_cfg_queues(struct rte_eth_dev *eth_dev)
 {
 	struct rte_config *config = rte_eal_get_configuration();
 	struct port_info *pi = (struct port_info *)(eth_dev->data->dev_private);
@@ -586,7 +596,7 @@ static void setup_memwin(struct adapter *adap)
 					MEMWIN_NIC));
 }
 
-int init_rss(struct adapter *adap)
+int cxgbe_init_rss(struct adapter *adap)
 {
 	unsigned int i;
 
@@ -613,7 +623,7 @@ int init_rss(struct adapter *adap)
 /**
  * Dump basic information about the adapter.
  */
-void print_adapter_info(struct adapter *adap)
+void cxgbe_print_adapter_info(struct adapter *adap)
 {
 	/**
 	 * Hardware/Firmware/etc. Version/Revision IDs.
@@ -621,7 +631,7 @@ void print_adapter_info(struct adapter *adap)
 	t4_dump_version_info(adap);
 }
 
-void print_port_info(struct adapter *adap)
+void cxgbe_print_port_info(struct adapter *adap)
 {
 	int i;
 	char buf[80];
@@ -769,7 +779,7 @@ static void configure_pcie_ext_tag(struct adapter *adapter)
 }
 
 /* Figure out how many Queue Sets we can support */
-void configure_max_ethqsets(struct adapter *adapter)
+void cxgbe_configure_max_ethqsets(struct adapter *adapter)
 {
 	unsigned int ethqsets;
 
@@ -1135,13 +1145,17 @@ static int adap_init0(struct adapter *adap)
 	 V_FW_PARAMS_PARAM_Y(0) | \
 	 V_FW_PARAMS_PARAM_Z(0))
 
-	params[0] = FW_PARAM_PFVF(FILTER_START);
-	params[1] = FW_PARAM_PFVF(FILTER_END);
-	ret = t4_query_params(adap, adap->mbox, adap->pf, 0, 2, params, val);
+	params[0] = FW_PARAM_PFVF(L2T_START);
+	params[1] = FW_PARAM_PFVF(L2T_END);
+	params[2] = FW_PARAM_PFVF(FILTER_START);
+	params[3] = FW_PARAM_PFVF(FILTER_END);
+	ret = t4_query_params(adap, adap->mbox, adap->pf, 0, 4, params, val);
 	if (ret < 0)
 		goto bye;
-	adap->tids.ftid_base = val[0];
-	adap->tids.nftids = val[1] - val[0] + 1;
+	adap->l2t_start = val[0];
+	adap->l2t_end = val[1];
+	adap->tids.ftid_base = val[2];
+	adap->tids.nftids = val[3] - val[2] + 1;
 
 	params[0] = FW_PARAM_PFVF(CLIP_START);
 	params[1] = FW_PARAM_PFVF(CLIP_END);
@@ -1168,6 +1182,16 @@ static int adap_init0(struct adapter *adap)
 	    is_t6(adap->params.chip)) {
 		if (init_hash_filter(adap) < 0)
 			goto bye;
+	}
+
+	/* See if FW supports FW_FILTER2 work request */
+	if (is_t4(adap->params.chip)) {
+		adap->params.filter2_wr_support = 0;
+	} else {
+		params[0] = FW_PARAM_DEV(FILTER2_WR);
+		ret = t4_query_params(adap, adap->mbox, adap->pf, 0,
+				      1, params, val);
+		adap->params.filter2_wr_support = (ret == 0 && val[0] != 0);
 	}
 
 	/* query tid-related parameters */
@@ -1244,7 +1268,7 @@ static int adap_init0(struct adapter *adap)
 	t4_init_tp_params(adap);
 	configure_pcie_ext_tag(adap);
 	configure_vlan_types(adap);
-	configure_max_ethqsets(adap);
+	cxgbe_configure_max_ethqsets(adap);
 
 	adap->params.drv_memwin = MEMWIN_NIC;
 	adap->flags |= FW_OK;
@@ -1298,7 +1322,7 @@ void t4_os_portmod_changed(const struct adapter *adap, int port_id)
 			 pi->port_id, pi->mod_type);
 }
 
-inline bool force_linkup(struct adapter *adap)
+bool cxgbe_force_linkup(struct adapter *adap)
 {
 	struct rte_pci_device *pdev = adap->pdev;
 
@@ -1316,26 +1340,28 @@ inline bool force_linkup(struct adapter *adap)
  *
  * Performs the MAC and PHY actions needed to enable a port.
  */
-int link_start(struct port_info *pi)
+int cxgbe_link_start(struct port_info *pi)
 {
 	struct adapter *adapter = pi->adapter;
-	int ret;
+	u64 conf_offloads;
 	unsigned int mtu;
+	int ret;
 
 	mtu = pi->eth_dev->data->dev_conf.rxmode.max_rx_pkt_len -
 	      (ETHER_HDR_LEN + ETHER_CRC_LEN);
+
+	conf_offloads = pi->eth_dev->data->dev_conf.rxmode.offloads;
 
 	/*
 	 * We do not set address filters and promiscuity here, the stack does
 	 * that step explicitly.
 	 */
-	ret = t4_set_rxmode(adapter, adapter->mbox, pi->viid, mtu, -1, -1,
-			    -1, 1, true);
+	ret = t4_set_rxmode(adapter, adapter->mbox, pi->viid, mtu, -1, -1, -1,
+			    !!(conf_offloads & DEV_RX_OFFLOAD_VLAN_STRIP),
+			    true);
 	if (ret == 0) {
-		ret = t4_change_mac(adapter, adapter->mbox, pi->viid,
-				    pi->xact_addr_filt,
-				    (u8 *)&pi->eth_dev->data->mac_addrs[0],
-				    true, true);
+		ret = cxgbe_mpstcam_modify(pi, (int)pi->xact_addr_filt,
+				(u8 *)&pi->eth_dev->data->mac_addrs[0]);
 		if (ret >= 0) {
 			pi->xact_addr_filt = ret;
 			ret = 0;
@@ -1356,7 +1382,7 @@ int link_start(struct port_info *pi)
 					  true, true, false);
 	}
 
-	if (ret == 0 && force_linkup(adapter))
+	if (ret == 0 && cxgbe_force_linkup(adapter))
 		pi->eth_dev->data->dev_link.link_status = ETH_LINK_UP;
 	return ret;
 }
@@ -1464,7 +1490,7 @@ int cxgbe_write_rss(const struct port_info *pi, const u16 *queues)
  * We always configure the RSS mapping for all ports since the mapping
  * table has plenty of entries.
  */
-int setup_rss(struct port_info *pi)
+int cxgbe_setup_rss(struct port_info *pi)
 {
 	int j, err;
 	struct adapter *adapter = pi->adapter;
@@ -1679,10 +1705,12 @@ void cxgbe_close(struct adapter *adapter)
 	int i;
 
 	if (adapter->flags & FULL_INIT_DONE) {
+		tid_free(&adapter->tids);
+		t4_cleanup_mpstcam(adapter);
+		t4_cleanup_clip_tbl(adapter);
+		t4_cleanup_l2t(adapter);
 		if (is_pf4(adapter))
 			t4_intr_disable(adapter);
-		tid_free(&adapter->tids);
-		t4_cleanup_clip_tbl(adapter);
 		t4_sge_tx_monitor_stop(adapter);
 		t4_free_sge_resources(adapter);
 		for_each_port(adapter, i) {
@@ -1690,12 +1718,7 @@ void cxgbe_close(struct adapter *adapter)
 			if (pi->viid != 0)
 				t4_free_vi(adapter, adapter->mbox,
 					   adapter->pf, 0, pi->viid);
-			rte_free(pi->eth_dev->data->mac_addrs);
-			/* Skip first port since it'll be freed by DPDK stack */
-			if (i) {
-				rte_free(pi->eth_dev->data->dev_private);
-				rte_eth_dev_release_port(pi->eth_dev);
-			}
+			rte_eth_dev_release_port(pi->eth_dev);
 		}
 		adapter->flags &= ~FULL_INIT_DONE;
 	}
@@ -1841,10 +1864,10 @@ allocate_mac:
 		}
 	}
 
-	cfg_queues(adapter->eth_dev);
+	cxgbe_cfg_queues(adapter->eth_dev);
 
-	print_adapter_info(adapter);
-	print_port_info(adapter);
+	cxgbe_print_adapter_info(adapter);
+	cxgbe_print_port_info(adapter);
 
 	adapter->clipt = t4_init_clip_tbl(adapter->clipt_start,
 					  adapter->clipt_end);
@@ -1855,11 +1878,22 @@ allocate_mac:
 		dev_warn(adapter, "could not allocate CLIP. Continuing\n");
 	}
 
+	adapter->l2t = t4_init_l2t(adapter->l2t_start, adapter->l2t_end);
+	if (!adapter->l2t) {
+		/* We tolerate a lack of L2T, giving up some functionality */
+		dev_warn(adapter, "could not allocate L2T. Continuing\n");
+	}
+
 	if (tid_init(&adapter->tids) < 0) {
 		/* Disable filtering support */
 		dev_warn(adapter, "could not allocate TID table, "
 			 "filter support disabled. Continuing\n");
 	}
+
+	adapter->mpstcam = t4_init_mpstcam(adapter);
+	if (!adapter->mpstcam)
+		dev_warn(adapter, "could not allocate mps tcam table."
+			 " Continuing\n");
 
 	if (is_hashfilter(adapter)) {
 		if (t4_read_reg(adapter, A_LE_DB_CONFIG) & F_HASHEN) {
@@ -1875,7 +1909,7 @@ allocate_mac:
 			 "Maskless filter support disabled. Continuing\n");
 	}
 
-	err = init_rss(adapter);
+	err = cxgbe_init_rss(adapter);
 	if (err)
 		goto out_free;
 
@@ -1887,14 +1921,7 @@ out_free:
 		if (pi->viid != 0)
 			t4_free_vi(adapter, adapter->mbox, adapter->pf,
 				   0, pi->viid);
-		/* Skip first port since it'll be de-allocated by DPDK */
-		if (i == 0)
-			continue;
-		if (pi->eth_dev) {
-			if (pi->eth_dev->data->dev_private)
-				rte_free(pi->eth_dev->data->dev_private);
-			rte_eth_dev_release_port(pi->eth_dev);
-		}
+		rte_eth_dev_release_port(pi->eth_dev);
 	}
 
 	if (adapter->flags & FW_OK)

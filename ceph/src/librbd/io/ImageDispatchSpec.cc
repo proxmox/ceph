@@ -117,7 +117,6 @@ void ImageDispatchSpec<I>::send() {
 
 template <typename I>
 void ImageDispatchSpec<I>::fail(int r) {
-  m_aio_comp->get();
   m_aio_comp->fail(r);
 }
 
@@ -130,6 +129,16 @@ uint64_t ImageDispatchSpec<I>::extents_length() {
     length += extent.second;
   }
   return length;
+}
+
+template <typename I>
+const Extents& ImageDispatchSpec<I>::get_image_extents() const {
+   return this->m_image_extents;
+}
+
+template <typename I>
+uint64_t ImageDispatchSpec<I>::get_tid() {
+  return this->m_tid;
 }
 
 template <typename I>

@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
 set -xe
 
-basedir=$(readlink -f $(dirname $0))
-. $basedir/../common/common.sh
-rpc_py="python $SPDK_BUILD_DIR/scripts/rpc.py -s $(get_vhost_dir)/rpc.sock"
+testdir=$(readlink -f $(dirname $0))
+rootdir=$(readlink -f $testdir/../../..)
+source $rootdir/test/common/autotest_common.sh
+source $rootdir/test/vhost/common.sh
+source $rootdir/test/bdev/nbd_common.sh
+
+rpc_py="$rootdir/scripts/rpc.py -s $(get_vhost_dir)/rpc.sock"
 vm_no="0"
 
 function err_clean
@@ -17,7 +21,7 @@ function err_clean
 	$rpc_py remove_vhost_controller naa.vhost_vm.$vm_no
 	$rpc_py destroy_lvol_bdev $lvb_u
 	$rpc_py destroy_lvol_store -u $lvs_u
-	spdk_vhost_kill
+	vhost_kill
 	exit 1
 }
 
@@ -52,10 +56,12 @@ if [[ -z $os_image ]]; then
 	exit 1
 fi
 
+vhosttestinit
+
 timing_enter vhost_boot
 trap 'err_clean "${FUNCNAME}" "${LINENO}"' ERR
 timing_enter start_vhost
-spdk_vhost_run
+vhost_run
 timing_exit start_vhost
 
 timing_enter create_lvol
@@ -65,13 +71,12 @@ timing_exit create_lvol
 
 timing_enter convert_vm_image
 modprobe nbd
-trap '$rpc_py stop_nbd_disk /dev/nbd0; rmmod nbd; err_clean "${FUNCNAME}" "${LINENO}"' ERR
-$rpc_py start_nbd_disk $lvb_u /dev/nbd0
+trap 'nbd_stop_disks $(get_vhost_dir)/rpc.sock /dev/nbd0; err_clean "${FUNCNAME}" "${LINENO}"' ERR
+nbd_start_disks "$(get_vhost_dir)/rpc.sock" $lvb_u /dev/nbd0
 $QEMU_PREFIX/bin/qemu-img convert $os_image -O raw /dev/nbd0
 sync
-$rpc_py stop_nbd_disk /dev/nbd0
+nbd_stop_disks $(get_vhost_dir)/rpc.sock /dev/nbd0
 sleep 1
-rmmod nbd
 timing_exit convert_vm_image
 
 trap 'err_clean "${FUNCNAME}" "${LINENO}"' ERR
@@ -83,7 +88,7 @@ timing_exit create_vhost_controller
 timing_enter setup_vm
 vm_setup --disk-type=spdk_vhost_scsi --force=$vm_no --disks="vhost_vm" --spdk-boot="vhost_vm"
 vm_run $vm_no
-vm_wait_for_boot 600 $vm_no
+vm_wait_for_boot 300 $vm_no
 timing_exit setup_vm
 
 timing_enter run_vm_cmd
@@ -105,7 +110,9 @@ $rpc_py remove_vhost_scsi_target naa.vhost_vm.$vm_no 0
 $rpc_py remove_vhost_controller naa.vhost_vm.$vm_no
 $rpc_py destroy_lvol_bdev $lvb_u
 $rpc_py destroy_lvol_store -u $lvs_u
-spdk_vhost_kill
+vhost_kill
 timing_exit clean_vhost
 
 timing_exit vhost_boot
+
+vhosttestfini

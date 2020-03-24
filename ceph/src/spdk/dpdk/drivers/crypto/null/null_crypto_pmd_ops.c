@@ -133,6 +133,11 @@ static int
 null_crypto_pmd_qp_release(struct rte_cryptodev *dev, uint16_t qp_id)
 {
 	if (dev->data->queue_pairs[qp_id] != NULL) {
+		struct null_crypto_qp *qp = dev->data->queue_pairs[qp_id];
+
+		if (qp->processed_pkts)
+			rte_ring_free(qp->processed_pkts);
+
 		rte_free(dev->data->queue_pairs[qp_id]);
 		dev->data->queue_pairs[qp_id] = NULL;
 	}
@@ -184,7 +189,7 @@ null_crypto_pmd_qp_create_processed_pkts_ring(struct null_crypto_qp *qp,
 static int
 null_crypto_pmd_qp_setup(struct rte_cryptodev *dev, uint16_t qp_id,
 		const struct rte_cryptodev_qp_conf *qp_conf,
-		int socket_id, struct rte_mempool *session_pool)
+		int socket_id)
 {
 	struct null_crypto_private *internals = dev->data->dev_private;
 	struct null_crypto_qp *qp;
@@ -228,7 +233,8 @@ null_crypto_pmd_qp_setup(struct rte_cryptodev *dev, uint16_t qp_id,
 		goto qp_setup_cleanup;
 	}
 
-	qp->sess_mp = session_pool;
+	qp->sess_mp = qp_conf->mp_session;
+	qp->sess_mp_priv = qp_conf->mp_session_private;
 
 	memset(&qp->qp_stats, 0, sizeof(qp->qp_stats));
 
@@ -308,7 +314,7 @@ null_crypto_pmd_sym_session_clear(struct rte_cryptodev *dev,
 	}
 }
 
-struct rte_cryptodev_ops pmd_ops = {
+static struct rte_cryptodev_ops pmd_ops = {
 		.dev_configure		= null_crypto_pmd_config,
 		.dev_start		= null_crypto_pmd_start,
 		.dev_stop		= null_crypto_pmd_stop,

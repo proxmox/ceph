@@ -1,8 +1,13 @@
-import { HttpClient } from '@angular/common/http';
+import { HttpClient, HttpParams } from '@angular/common/http';
 import { Injectable } from '@angular/core';
 
 import { I18n } from '@ngx-translate/i18n-polyfill';
+import { map } from 'rxjs/operators';
 
+import * as _ from 'lodash';
+import { CdDevice } from '../models/devices';
+import { SmartDataResponseV1 } from '../models/smart';
+import { DeviceService } from '../services/device.service';
 import { ApiModule } from './api.module';
 
 @Injectable({
@@ -56,17 +61,39 @@ export class OsdService {
     ]
   };
 
-  constructor(private http: HttpClient, private i18n: I18n) {}
+  constructor(private http: HttpClient, private i18n: I18n, private deviceService: DeviceService) {}
+
+  create(driveGroups: Object[]) {
+    const request = {
+      method: 'drive_groups',
+      data: driveGroups,
+      tracking_id: _.join(_.map(driveGroups, 'service_id'), ', ')
+    };
+    return this.http.post(this.path, request, { observe: 'response' });
+  }
 
   getList() {
     return this.http.get(`${this.path}`);
   }
 
   getDetails(id: number) {
-    return this.http.get(`${this.path}/${id}`);
+    interface OsdData {
+      osd_map: { [key: string]: any };
+      osd_metadata: { [key: string]: any };
+      histogram: { [key: string]: object };
+      smart: { [device_identifier: string]: any };
+    }
+    return this.http.get<OsdData>(`${this.path}/${id}`);
   }
 
-  scrub(id, deep) {
+  /**
+   * @param id OSD ID
+   */
+  getSmartData(id: number) {
+    return this.http.get<SmartDataResponseV1>(`${this.path}/${id}/smart`);
+  }
+
+  scrub(id: string, deep: boolean) {
     return this.http.post(`${this.path}/${id}/scrub?deep=${deep}`, null);
   }
 
@@ -94,6 +121,10 @@ export class OsdService {
     return this.http.post(`${this.path}/${id}/reweight`, { weight: weight });
   }
 
+  update(id: number, deviceClass: string) {
+    return this.http.put(`${this.path}/${id}`, { device_class: deviceClass });
+  }
+
   markLost(id: number) {
     return this.http.post(`${this.path}/${id}/mark_lost`, null);
   }
@@ -106,11 +137,31 @@ export class OsdService {
     return this.http.post(`${this.path}/${id}/destroy`, null);
   }
 
-  safeToDestroy(id: number) {
+  delete(id: number, force?: boolean) {
+    const options = force ? { params: new HttpParams().set('force', 'true') } : {};
+    options['observe'] = 'response';
+    return this.http.delete(`${this.path}/${id}`, options);
+  }
+
+  safeToDestroy(ids: string) {
     interface SafeToDestroyResponse {
-      'safe-to-destroy': boolean;
+      is_safe_to_destroy: boolean;
       message?: string;
     }
-    return this.http.get<SafeToDestroyResponse>(`${this.path}/${id}/safe_to_destroy`);
+    return this.http.get<SafeToDestroyResponse>(`${this.path}/safe_to_destroy?ids=${ids}`);
+  }
+
+  safeToDelete(ids: string) {
+    interface SafeToDeleteResponse {
+      is_safe_to_delete: boolean;
+      message?: string;
+    }
+    return this.http.get<SafeToDeleteResponse>(`${this.path}/safe_to_delete?svc_ids=${ids}`);
+  }
+
+  getDevices(osdId: number) {
+    return this.http
+      .get<CdDevice[]>(`${this.path}/${osdId}/devices`)
+      .pipe(map((devices) => devices.map((device) => this.deviceService.prepareDevice(device))));
   }
 }

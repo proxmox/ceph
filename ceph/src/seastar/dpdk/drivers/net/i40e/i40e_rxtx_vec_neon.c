@@ -1,39 +1,10 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2015 Intel Corporation. All rights reserved.
- *   Copyright(c) 2016, Linaro Limited
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2015 Intel Corporation.
+ * Copyright(c) 2016-2018, Linaro Limited.
  */
 
 #include <stdint.h>
-#include <rte_ethdev.h>
+#include <rte_ethdev_driver.h>
 #include <rte_malloc.h>
 
 #include "base/i40e_prototype.h"
@@ -81,13 +52,13 @@ i40e_rxq_rearm(struct i40e_rx_queue *rxq)
 		mb0 = rxep[0].mbuf;
 		mb1 = rxep[1].mbuf;
 
-		paddr = mb0->buf_physaddr + RTE_PKTMBUF_HEADROOM;
+		paddr = mb0->buf_iova + RTE_PKTMBUF_HEADROOM;
 		dma_addr0 = vdupq_n_u64(paddr);
 
 		/* flush desc with pa dma_addr */
 		vst1q_u64((uint64_t *)&rxdp++->read, dma_addr0);
 
-		paddr = mb1->buf_physaddr + RTE_PKTMBUF_HEADROOM;
+		paddr = mb1->buf_iova + RTE_PKTMBUF_HEADROOM;
 		dma_addr1 = vdupq_n_u64(paddr);
 		vst1q_u64((uint64_t *)&rxdp++->read, dma_addr1);
 	}
@@ -137,7 +108,7 @@ desc_to_olflags_v(struct i40e_rx_queue *rxq, uint64x2_t descs[4],
 	/* map rss and vlan type to rss hash and vlan flag */
 	const uint8x16_t vlan_flags = {
 			0, 0, 0, 0,
-			PKT_RX_VLAN_PKT | PKT_RX_VLAN_STRIPPED, 0, 0, 0,
+			PKT_RX_VLAN | PKT_RX_VLAN_STRIPPED, 0, 0, 0,
 			0, 0, 0, 0,
 			0, 0, 0, 0};
 
@@ -197,8 +168,7 @@ desc_to_olflags_v(struct i40e_rx_queue *rxq, uint64x2_t descs[4],
 }
 
 #define PKTLEN_SHIFT     10
-
-#define I40E_VPMD_DESC_DD_MASK	0x0001000100010001ULL
+#define I40E_UINT16_BIT (CHAR_BIT * sizeof(uint16_t))
 
 static inline void
 desc_to_ptype_v(uint64x2_t descs[4], struct rte_mbuf **rx_pkts,
@@ -230,7 +200,6 @@ _recv_raw_pkts_vec(struct i40e_rx_queue *rxq, struct rte_mbuf **rx_pkts,
 	struct i40e_rx_entry *sw_ring;
 	uint16_t nb_pkts_recd;
 	int pos;
-	uint64_t var;
 	uint32_t *ptype_tbl = rxq->vsi->adapter->ptype_tbl;
 
 	/* mask to shuffle from desc. to mbuf */
@@ -364,7 +333,6 @@ _recv_raw_pkts_vec(struct i40e_rx_queue *rxq, struct rte_mbuf **rx_pkts,
 		/* C.2 get 4 pkts staterr value  */
 		staterr = vzipq_u16(sterr_tmp1.val[1],
 				    sterr_tmp2.val[1]).val[0];
-		stat = vgetq_lane_u64(vreinterpretq_u64_u16(staterr), 0);
 
 		desc_to_olflags_v(rxq, descs, &rx_pkts[pos]);
 
@@ -429,6 +397,12 @@ _recv_raw_pkts_vec(struct i40e_rx_queue *rxq, struct rte_mbuf **rx_pkts,
 			rx_pkts[pos + 3]->next = NULL;
 		}
 
+		staterr = vshlq_n_u16(staterr, I40E_UINT16_BIT - 1);
+		staterr = vreinterpretq_u16_s16(
+				vshrq_n_s16(vreinterpretq_s16_u16(staterr),
+					    I40E_UINT16_BIT - 1));
+		stat = ~vgetq_lane_u64(vreinterpretq_u64_u16(staterr), 0);
+
 		rte_prefetch_non_temporal(rxdp + RTE_I40E_DESCS_PER_LOOP);
 
 		/* D.3 copy final 1,2 data to rx_pkts */
@@ -438,10 +412,12 @@ _recv_raw_pkts_vec(struct i40e_rx_queue *rxq, struct rte_mbuf **rx_pkts,
 			 pkt_mb1);
 		desc_to_ptype_v(descs, &rx_pkts[pos], ptype_tbl);
 		/* C.4 calc avaialbe number of desc */
-		var = __builtin_popcountll(stat & I40E_VPMD_DESC_DD_MASK);
-		nb_pkts_recd += var;
-		if (likely(var != RTE_I40E_DESCS_PER_LOOP))
+		if (unlikely(stat == 0)) {
+			nb_pkts_recd += RTE_I40E_DESCS_PER_LOOP;
+		} else {
+			nb_pkts_recd += __builtin_ctzl(stat) / I40E_UINT16_BIT;
 			break;
+		}
 	}
 
 	/* Update our internal tail pointer */
@@ -515,7 +491,7 @@ vtx1(volatile struct i40e_tx_desc *txdp,
 			((uint64_t)flags  << I40E_TXD_QW1_CMD_SHIFT) |
 			((uint64_t)pkt->data_len << I40E_TXD_QW1_TX_BUF_SZ_SHIFT));
 
-	uint64x2_t descriptor = {pkt->buf_physaddr + pkt->data_off, high_qw};
+	uint64x2_t descriptor = {pkt->buf_iova + pkt->data_off, high_qw};
 	vst1q_u64((uint64_t *)txdp, descriptor);
 }
 

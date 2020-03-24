@@ -1,5 +1,5 @@
 // -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// vim: ts=8 sw=2 smarttab ft=cpp
 
 #include <boost/tokenizer.hpp>
 
@@ -26,12 +26,8 @@ void RGWHandler_REST_IAM::rgw_iam_parse_input()
       for (const auto& t : tokens) {
         auto pos = t.find("=");
         if (pos != string::npos) {
-          std::string key = t.substr(0, pos);
-          std::string value = t.substr(pos + 1, t.size() - 1);
-          if (key == "AssumeRolePolicyDocument" || key == "Path" || key == "PolicyDocument") {
-            value = url_decode(value);
-          }
-          s->info.args.append(key, value);
+          s->info.args.append(t.substr(0,pos),
+                              url_decode(t.substr(pos+1, t.size() -1)));
         }
       }
     }
@@ -77,7 +73,7 @@ RGWOp *RGWHandler_REST_IAM::op_post()
   return nullptr;
 }
 
-int RGWHandler_REST_IAM::init(RGWRados *store,
+int RGWHandler_REST_IAM::init(rgw::sal::RGWRadosStore *store,
                               struct req_state *s,
                               rgw::io::BasicClient *cio)
 {

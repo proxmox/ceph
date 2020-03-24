@@ -44,6 +44,13 @@ public:
     return TestMemIoCtxImpl::aio_notify(o, c, bl, timeout_ms, pbl);
   }
 
+  MOCK_METHOD5(aio_operate, int(const std::string&, TestObjectOperationImpl&,
+                                AioCompletionImpl*, SnapContext*, int));
+  int do_aio_operate(const std::string& o, TestObjectOperationImpl& ops,
+                     AioCompletionImpl* c, SnapContext* snapc, int flags) {
+    return TestMemIoCtxImpl::aio_operate(o, ops, c, snapc, flags);
+  }
+
   MOCK_METHOD4(aio_watch, int(const std::string& o, AioCompletionImpl *c,
                               uint64_t *handle, librados::WatchCtx2 *ctx));
   int do_aio_watch(const std::string& o, AioCompletionImpl *c,
@@ -61,9 +68,10 @@ public:
     return TestMemIoCtxImpl::assert_exists(oid);
   }
 
-  MOCK_METHOD2(create, int(const std::string&, bool));
-  int do_create(const std::string& oid, bool exclusive) {
-    return TestMemIoCtxImpl::create(oid, exclusive);
+  MOCK_METHOD3(create, int(const std::string&, bool, const SnapContext &));
+  int do_create(const std::string& oid, bool exclusive,
+                const SnapContext &snapc) {
+    return TestMemIoCtxImpl::create(oid, exclusive, snapc);
   }
 
   MOCK_METHOD3(cmpext, int(const std::string&, uint64_t, bufferlist&));
@@ -197,10 +205,11 @@ public:
 
     ON_CALL(*this, clone()).WillByDefault(Invoke(this, &MockTestMemIoCtxImpl::do_clone));
     ON_CALL(*this, aio_notify(_, _, _, _, _)).WillByDefault(Invoke(this, &MockTestMemIoCtxImpl::do_aio_notify));
+    ON_CALL(*this, aio_operate(_, _, _, _, _)).WillByDefault(Invoke(this, &MockTestMemIoCtxImpl::do_aio_operate));
     ON_CALL(*this, aio_watch(_, _, _, _)).WillByDefault(Invoke(this, &MockTestMemIoCtxImpl::do_aio_watch));
     ON_CALL(*this, aio_unwatch(_, _)).WillByDefault(Invoke(this, &MockTestMemIoCtxImpl::do_aio_unwatch));
     ON_CALL(*this, assert_exists(_)).WillByDefault(Invoke(this, &MockTestMemIoCtxImpl::do_assert_exists));
-    ON_CALL(*this, create(_,_)).WillByDefault(Invoke(this, &MockTestMemIoCtxImpl::do_create));
+    ON_CALL(*this, create(_, _, _)).WillByDefault(Invoke(this, &MockTestMemIoCtxImpl::do_create));
     ON_CALL(*this, cmpext(_,_,_)).WillByDefault(Invoke(this, &MockTestMemIoCtxImpl::do_cmpext));
     ON_CALL(*this, exec(_, _, _, _, _, _, _)).WillByDefault(Invoke(this, &MockTestMemIoCtxImpl::do_exec));
     ON_CALL(*this, get_instance_id()).WillByDefault(Invoke(this, &MockTestMemIoCtxImpl::do_get_instance_id));

@@ -1,32 +1,5 @@
-..  BSD LICENSE
-    Copyright(c) 2016 Intel Corporation. All rights reserved.
-    All rights reserved.
-
-    Redistribution and use in source and binary forms, with or without
-    modification, are permitted provided that the following conditions
-    are met:
-
-    * Redistributions of source code must retain the above copyright
-    notice, this list of conditions and the following disclaimer.
-    * Redistributions in binary form must reproduce the above copyright
-    notice, this list of conditions and the following disclaimer in
-    the documentation and/or other materials provided with the
-    distribution.
-    * Neither the name of Intel Corporation nor the names of its
-    contributors may be used to endorse or promote products derived
-    from this software without specific prior written permission.
-
-    THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-    "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-    LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-    A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-    OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-    SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-    LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-    DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-    THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-    (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-    OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+..  SPDX-License-Identifier: BSD-3-Clause
+    Copyright(c) 2016 Intel Corporation.
 
 .. _pdump_library:
 
@@ -61,10 +34,6 @@ or disable the packet capture, and to uninitialize it:
 * ``rte_pdump_uninit()``:
   This API uninitializes the packet capture framework.
 
-* ``rte_pdump_set_socket_dir()``:
-  This API sets the server and client socket paths.
-  Note: This API is not thread-safe.
-
 
 Operation
 ---------
@@ -87,8 +56,8 @@ enabling or disabling the packet capture.
 Implementation Details
 ----------------------
 
-The library API ``rte_pdump_init()``, initializes the packet capture framework by creating the pthread and the server
-socket. The server socket in the pthread context will be listening to the client requests to enable or disable the
+The library API ``rte_pdump_init()``, initializes the packet capture framework by creating the pdump server by calling
+``rte_mp_action_register()`` function. The server will listen to the client requests to enable or disable the
 packet capture.
 
 The library APIs ``rte_pdump_enable()`` and ``rte_pdump_enable_by_deviceid()`` enables the packet capture.
@@ -106,14 +75,8 @@ capture by removing the Ethernet RX and TX callbacks for the given port or devic
 also sends the response back to the client about the status of the request that was processed. After the response is
 received from the server, the client socket is closed.
 
-The library API ``rte_pdump_uninit()``, uninitializes the packet capture framework by closing the pthread and the
-server socket.
-
-The library API ``rte_pdump_set_socket_dir()``, sets the given path as either server socket path
-or client socket path based on the ``type`` argument of the API.
-If the given path is ``NULL``, default path will be selected, i.e. either ``/var/run/.dpdk`` for root user or ``~/.dpdk``
-for non root user. Clients also need to call this API to set their server socket path if the server socket
-path is different from default path.
+The library API ``rte_pdump_uninit()``, uninitializes the packet capture framework by calling ``rte_mp_action_unregister()``
+function.
 
 
 Use Case: Packet Capturing

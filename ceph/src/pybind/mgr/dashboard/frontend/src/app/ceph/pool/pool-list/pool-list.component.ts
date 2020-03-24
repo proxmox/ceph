@@ -10,6 +10,7 @@ import { CriticalConfirmationModalComponent } from '../../../shared/components/c
 import { ActionLabelsI18n, URLVerbs } from '../../../shared/constants/app.constants';
 import { TableComponent } from '../../../shared/datatable/table/table.component';
 import { CellTemplate } from '../../../shared/enum/cell-template.enum';
+import { Icons } from '../../../shared/enum/icons.enum';
 import { ViewCacheStatus } from '../../../shared/enum/view-cache-status.enum';
 import { CdTableAction } from '../../../shared/models/cd-table-action';
 import { CdTableColumn } from '../../../shared/models/cd-table-column';
@@ -24,7 +25,7 @@ import { TaskWrapperService } from '../../../shared/services/task-wrapper.servic
 import { URLBuilderService } from '../../../shared/services/url-builder.service';
 import { PgCategoryService } from '../../shared/pg-category.service';
 import { Pool } from '../pool';
-import { PoolStats } from '../pool-stat';
+import { PoolStat, PoolStats } from '../pool-stat';
 
 const BASE_URL = 'pool';
 
@@ -38,12 +39,12 @@ const BASE_URL = 'pool';
   styleUrls: ['./pool-list.component.scss']
 })
 export class PoolListComponent implements OnInit {
-  @ViewChild(TableComponent)
+  @ViewChild(TableComponent, { static: true })
   table: TableComponent;
-  @ViewChild('poolUsageTpl')
+  @ViewChild('poolUsageTpl', { static: true })
   poolUsageTpl: TemplateRef<any>;
 
-  @ViewChild('poolConfigurationSourceTpl')
+  @ViewChild('poolConfigurationSourceTpl', { static: false })
   poolConfigurationSourceTpl: TemplateRef<any>;
 
   pools: Pool[] = [];
@@ -74,20 +75,20 @@ export class PoolListComponent implements OnInit {
     this.tableActions = [
       {
         permission: 'create',
-        icon: 'fa-plus',
+        icon: Icons.add,
         routerLink: () => this.urlBuilder.getCreate(),
         name: this.actionLabels.CREATE
       },
       {
         permission: 'update',
-        icon: 'fa-pencil',
+        icon: Icons.edit,
         routerLink: () =>
           this.urlBuilder.getEdit(encodeURIComponent(this.selection.first().pool_name)),
         name: this.actionLabels.EDIT
       },
       {
         permission: 'delete',
-        icon: 'fa-trash-o',
+        icon: Icons.destroy,
         click: () => this.deletePoolModal(),
         name: this.actionLabels.DELETE,
         disable: () => !this.selection.first() || !this.monAllowPoolDelete,
@@ -127,7 +128,7 @@ export class PoolListComponent implements OnInit {
       {
         prop: 'application_metadata',
         name: this.i18n('Applications'),
-        flexGrow: 2
+        flexGrow: 3
       },
       {
         prop: 'pg_status',
@@ -140,13 +141,13 @@ export class PoolListComponent implements OnInit {
       {
         prop: 'size',
         name: this.i18n('Replica Size'),
-        flexGrow: 1,
+        flexGrow: 2,
         cellClass: 'text-right'
       },
       {
         prop: 'last_change',
         name: this.i18n('Last Change'),
-        flexGrow: 1,
+        flexGrow: 2,
         cellClass: 'text-right'
       },
       {
@@ -168,7 +169,7 @@ export class PoolListComponent implements OnInit {
       {
         prop: 'stats.rd_bytes.rates',
         name: this.i18n('Read bytes'),
-        comparator: (_valueA, _valueB, rowA: Pool, rowB: Pool) =>
+        comparator: (_valueA: any, _valueB: any, rowA: Pool, rowB: Pool) =>
           compare('stats.rd_bytes.latest', rowA, rowB),
         cellTransformation: CellTemplate.sparkline,
         flexGrow: 3
@@ -176,7 +177,7 @@ export class PoolListComponent implements OnInit {
       {
         prop: 'stats.wr_bytes.rates',
         name: this.i18n('Write bytes'),
-        comparator: (_valueA, _valueB, rowA: Pool, rowB: Pool) =>
+        comparator: (_valueA: any, _valueB: any, rowA: Pool, rowB: Pool) =>
           compare('stats.wr_bytes.latest', rowA, rowB),
         cellTransformation: CellTemplate.sparkline,
         flexGrow: 3
@@ -207,7 +208,7 @@ export class PoolListComponent implements OnInit {
       },
       (task) => task.name.startsWith(`${BASE_URL}/`),
       (pool, task) => task.metadata['pool_name'] === pool.pool_name,
-      { default: (task: ExecutingTask) => new Pool(task.metadata['pool_name']) }
+      { default: (metadata: any) => new Pool(metadata['pool_name']) }
     );
   }
 
@@ -231,7 +232,7 @@ export class PoolListComponent implements OnInit {
     });
   }
 
-  getPgStatusCellClass(_row, _column, value): object {
+  getPgStatusCellClass(_row: any, _column: any, value: string): object {
     return {
       'text-right': true,
       [`pg-${this.pgCategoryService.getTypeByStates(value)}`]: true
@@ -240,7 +241,7 @@ export class PoolListComponent implements OnInit {
 
   transformPoolsData(pools: any) {
     const requiredStats = ['bytes_used', 'max_avail', 'rd_bytes', 'wr_bytes', 'rd', 'wr'];
-    const emptyStat = { latest: 0, rate: 0, rates: [] };
+    const emptyStat: PoolStat = { latest: 0, rate: 0, rates: [] };
 
     _.forEach(pools, (pool: Pool) => {
       pool['pg_status'] = this.transformPgStatus(pool['pg_status']);
@@ -260,7 +261,7 @@ export class PoolListComponent implements OnInit {
       }
 
       ['rd_bytes', 'wr_bytes'].forEach((stat) => {
-        pool.stats[stat].rates = pool.stats[stat].rates.map((point) => point[1]);
+        pool.stats[stat].rates = pool.stats[stat].rates.map((point: any) => point[1]);
       });
       pool.cdIsBinary = true;
     });
@@ -269,7 +270,7 @@ export class PoolListComponent implements OnInit {
   }
 
   transformPgStatus(pgStatus: any): string {
-    const strings = [];
+    const strings: string[] = [];
     _.forEach(pgStatus, (count, state) => {
       strings.push(`${count} ${state}`);
     });
@@ -278,7 +279,9 @@ export class PoolListComponent implements OnInit {
   }
 
   getSelectionTiers() {
-    const cacheTierIds = this.selection.hasSingleSelection ? this.selection.first()['tiers'] : [];
+    const cacheTierIds = this.selection.hasSingleSelection
+      ? this.selection.first()['tiers'] || []
+      : [];
     this.selectionCacheTiers = this.pools.filter((pool) => cacheTierIds.includes(pool.pool));
   }
 
@@ -288,5 +291,7 @@ export class PoolListComponent implements OnInit {
         'Pool deletion is disabled by the mon_allow_pool_delete configuration setting.'
       );
     }
+
+    return undefined;
   }
 }

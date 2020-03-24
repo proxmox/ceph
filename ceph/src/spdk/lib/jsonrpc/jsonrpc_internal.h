@@ -51,8 +51,7 @@ struct spdk_jsonrpc_request {
 	struct spdk_jsonrpc_server_conn *conn;
 
 	/* Copy of request id value */
-	struct spdk_json_val id;
-	uint8_t id_data[SPDK_JSONRPC_ID_MAX_LEN];
+	const struct spdk_json_val *id;
 
 	/* Total space allocated for send_buf */
 	size_t send_buf_size;
@@ -61,6 +60,10 @@ struct spdk_jsonrpc_request {
 	size_t send_len;
 
 	size_t send_offset;
+
+	uint8_t *recv_buffer;
+	struct spdk_json_val *values;
+	size_t values_cnt;
 
 	uint8_t *send_buf;
 
@@ -71,7 +74,6 @@ struct spdk_jsonrpc_server_conn {
 	struct spdk_jsonrpc_server *server;
 	int sockfd;
 	bool closed;
-	struct spdk_json_val values[SPDK_JSONRPC_MAX_VALUES];
 	size_t recv_len;
 	uint8_t recv_buf[SPDK_JSONRPC_RECV_BUF_SIZE];
 	uint32_t outstanding_requests;
@@ -80,6 +82,9 @@ struct spdk_jsonrpc_server_conn {
 	STAILQ_HEAD(, spdk_jsonrpc_request) send_queue;
 
 	struct spdk_jsonrpc_request *send_request;
+
+	spdk_jsonrpc_conn_closed_fn close_cb;
+	void *close_cb_ctx;
 
 	TAILQ_ENTRY(spdk_jsonrpc_server_conn) link;
 };
@@ -106,15 +111,25 @@ struct spdk_jsonrpc_client_request {
 	uint8_t *send_buf;
 };
 
+struct spdk_jsonrpc_client_response_internal {
+	struct spdk_jsonrpc_client_response jsonrpc;
+	bool ready;
+	uint8_t *buf;
+	size_t values_cnt;
+	struct spdk_json_val values[];
+};
+
 struct spdk_jsonrpc_client {
 	int sockfd;
+	bool connected;
 
-	struct spdk_json_val values[SPDK_JSONRPC_MAX_VALUES];
 	size_t recv_buf_size;
-	uint8_t *recv_buf;
+	size_t recv_offset;
+	char *recv_buf;
 
-	spdk_jsonrpc_client_response_parser parser_fn;
-	void *parser_ctx;
+	/* Parsed response */
+	struct spdk_jsonrpc_client_response_internal *resp;
+	struct spdk_jsonrpc_client_request *request;
 };
 
 /* jsonrpc_server_tcp */
@@ -127,7 +142,8 @@ void spdk_jsonrpc_server_handle_error(struct spdk_jsonrpc_request *request, int 
 void spdk_jsonrpc_server_send_response(struct spdk_jsonrpc_request *request);
 
 /* jsonrpc_server */
-int spdk_jsonrpc_parse_request(struct spdk_jsonrpc_server_conn *conn, void *json, size_t size);
+int spdk_jsonrpc_parse_request(struct spdk_jsonrpc_server_conn *conn, const void *json,
+			       size_t size);
 
 /* Must be called only from server poll thread */
 void spdk_jsonrpc_free_request(struct spdk_jsonrpc_request *request);
@@ -136,14 +152,12 @@ void spdk_jsonrpc_free_request(struct spdk_jsonrpc_request *request);
  * Parse JSON data as RPC command response.
  *
  * \param client structure pointer of jsonrpc client
- * \param json Raw JSON data; must be encoded in UTF-8.
- * \param size Size of data in bytes.
  *
- * \return 0 On success
- *         SPDK_JSON_PARSE_INCOMPLETE If the provided data is not a complete JSON value
- *         SPDK_JSON_PARSE_INVALID if the provided data has invalid JSON syntax.
+ * \return 0 On success. Negative error code in error
+ * -EAGAIN - If the provided data is not a complete JSON value (SPDK_JSON_PARSE_INCOMPLETE)
+ * -EINVAL - If the provided data has invalid JSON syntax and can't be parsed (SPDK_JSON_PARSE_INVALID).
+ * -ENOSPC - No space left to store parsed response.
  */
-int spdk_jsonrpc_parse_response(struct spdk_jsonrpc_client *client, void *json,
-				size_t size);
+int spdk_jsonrpc_parse_response(struct spdk_jsonrpc_client *client);
 
 #endif

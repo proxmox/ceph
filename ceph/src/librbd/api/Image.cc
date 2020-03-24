@@ -12,6 +12,7 @@
 #include "librbd/ImageCtx.h"
 #include "librbd/ImageState.h"
 #include "librbd/internal.h"
+#include "librbd/Operations.h"
 #include "librbd/Utils.h"
 #include "librbd/api/Config.h"
 #include "librbd/api/Trash.h"
@@ -23,6 +24,8 @@
 #define dout_subsys ceph_subsys_rbd
 #undef dout_prefix
 #define dout_prefix *_dout << "librbd::api::Image: " << __func__ << ": "
+
+using librados::snap_t;
 
 namespace librbd {
 namespace api {
@@ -103,7 +106,7 @@ int Image<I>::get_op_features(I *ictx, uint64_t *op_features) {
     return r;
   }
 
-  RWLock::RLocker snap_locker(ictx->snap_lock);
+  std::shared_lock image_locker{ictx->image_lock};
   *op_features = ictx->op_features;
   return 0;
 }
@@ -217,14 +220,12 @@ int Image<I>::get_parent(I *ictx,
     return r;
   }
 
-  RWLock::RLocker snap_locker(ictx->snap_lock);
-  RWLock::RLocker parent_locker(ictx->parent_lock);
+  std::shared_lock image_locker{ictx->image_lock};
 
-  bool release_parent_locks = false;
-  BOOST_SCOPE_EXIT_ALL(ictx, &release_parent_locks) {
-    if (release_parent_locks) {
-      ictx->parent->parent_lock.put_read();
-      ictx->parent->snap_lock.put_read();
+  bool release_image_lock = false;
+  BOOST_SCOPE_EXIT_ALL(ictx, &release_image_lock) {
+    if (release_image_lock) {
+      ictx->parent->image_lock.unlock_shared();
     }
   };
 
@@ -232,9 +233,8 @@ int Image<I>::get_parent(I *ictx,
   // of the migration source image
   auto parent = ictx->parent;
   if (!ictx->migration_info.empty() && ictx->parent != nullptr) {
-    release_parent_locks = true;
-    ictx->parent->snap_lock.get_read();
-    ictx->parent->parent_lock.get_read();
+    release_image_lock = true;
+    ictx->parent->image_lock.lock_shared();
 
     parent = ictx->parent->parent;
   }
@@ -247,7 +247,7 @@ int Image<I>::get_parent(I *ictx,
   parent_image->pool_name = parent->md_ctx.get_pool_name();
   parent_image->pool_namespace = parent->md_ctx.get_namespace();
 
-  RWLock::RLocker parent_snap_locker(parent->snap_lock);
+  std::shared_lock parent_image_locker{parent->image_lock};
   parent_snap->id = parent->snap_id;
   parent_snap->namespace_type = RBD_SNAP_NAMESPACE_TYPE_USER;
   if (parent->snap_id != CEPH_NOSNAP) {
@@ -329,7 +329,7 @@ template <typename I>
 int Image<I>::list_descendants(
     I *ictx, const std::optional<size_t> &max_level,
     std::vector<librbd::linked_image_spec_t> *images) {
-  RWLock::RLocker l(ictx->snap_lock);
+  std::shared_lock l{ictx->image_lock};
   std::vector<librados::snap_t> snap_ids;
   if (ictx->snap_id != CEPH_NOSNAP) {
     snap_ids.push_back(ictx->snap_id);
@@ -364,7 +364,7 @@ int Image<I>::list_descendants(
   ldout(cct, 20) << "ictx=" << ictx << dendl;
 
   // no children for non-layered or old format image
-  if (!ictx->test_features(RBD_FEATURE_LAYERING, ictx->snap_lock)) {
+  if (!ictx->test_features(RBD_FEATURE_LAYERING, ictx->image_lock)) {
     return 0;
   }
 
@@ -540,7 +540,7 @@ int Image<I>::deep_copy(I *src, librados::IoCtx& dest_md_ctx,
   uint64_t features;
   uint64_t src_size;
   {
-    RWLock::RLocker snap_locker(src->snap_lock);
+    std::shared_lock image_locker{src->image_lock};
 
     if (!src->migration_info.empty()) {
       lderr(cct) << "cannot deep copy migrating image" << dendl;
@@ -587,8 +587,7 @@ int Image<I>::deep_copy(I *src, librados::IoCtx& dest_md_ctx,
   if (flatten > 0) {
     parent_spec.pool_id = -1;
   } else {
-    RWLock::RLocker snap_locker(src->snap_lock);
-    RWLock::RLocker parent_locker(src->parent_lock);
+    std::shared_lock image_locker{src->image_lock};
 
     // use oldest snapshot or HEAD for parent spec
     if (!src->snap_info.empty()) {
@@ -615,8 +614,9 @@ int Image<I>::deep_copy(I *src, librados::IoCtx& dest_md_ctx,
     C_SaferCond ctx;
     std::string dest_id = util::generate_image_id(dest_md_ctx);
     auto *req = image::CloneRequest<I>::create(
-      config, parent_io_ctx, parent_spec.image_id, "", parent_spec.snap_id,
-      dest_md_ctx, destname, dest_id, opts, "", "", src->op_work_queue, &ctx);
+      config, parent_io_ctx, parent_spec.image_id, "", {}, parent_spec.snap_id,
+      dest_md_ctx, destname, dest_id, opts, cls::rbd::MIRROR_IMAGE_MODE_JOURNAL,
+      "", "", src->op_work_queue, &ctx);
     req->send();
     r = ctx.wait();
   }
@@ -635,7 +635,7 @@ int Image<I>::deep_copy(I *src, librados::IoCtx& dest_md_ctx,
 
   C_SaferCond lock_ctx;
   {
-    RWLock::WLocker locker(dest->owner_lock);
+    std::unique_lock locker{dest->owner_lock};
 
     if (dest->exclusive_lock == nullptr ||
         dest->exclusive_lock->is_lock_owner()) {
@@ -669,7 +669,7 @@ int Image<I>::deep_copy(I *src, I *dest, bool flatten,
   librados::snap_t snap_id_start = 0;
   librados::snap_t snap_id_end;
   {
-    RWLock::RLocker snap_locker(src->snap_lock);
+    std::shared_lock image_locker{src->image_lock};
     snap_id_end = src->snap_id;
   }
 
@@ -680,7 +680,7 @@ int Image<I>::deep_copy(I *src, I *dest, bool flatten,
   C_SaferCond cond;
   SnapSeqs snap_seqs;
   auto req = DeepCopyRequest<I>::create(src, dest, snap_id_start, snap_id_end,
-                                        flatten, boost::none, op_work_queue,
+                                        0U, flatten, boost::none, op_work_queue,
                                         &snap_seqs, &prog_ctx, &cond);
   req->send();
   int r = cond.wait();
@@ -705,7 +705,7 @@ int Image<I>::snap_set(I *ictx,
   uint64_t snap_id = CEPH_NOSNAP;
   std::string name(snap_name == nullptr ? "" : snap_name);
   if (!name.empty()) {
-    RWLock::RLocker snap_locker(ictx->snap_lock);
+    std::shared_lock image_locker{ictx->image_lock};
     snap_id = ictx->get_snap_id(cls::rbd::UserSnapshotNamespace{},
                                 snap_name);
     if (snap_id == CEPH_NOSNAP) {
@@ -788,7 +788,15 @@ int Image<I>::remove(IoCtx& io_ctx, const std::string &image_name,
       // attempt to pre-validate the removal before moving to trash and
       // removing
       r = pre_remove_image<I>(io_ctx, image_id);
-      if (r < 0 && r != -ENOENT) {
+      if (r == -ECHILD) {
+        if (config.get_val<bool>("rbd_move_parent_to_trash_on_remove")) {
+          // keep the image in the trash until the last child is removed
+          trash_image_source = RBD_TRASH_IMAGE_SOURCE_USER_PARENT;
+        } else {
+          lderr(cct) << "image has snapshots - not removing" << dendl;
+          return -ENOTEMPTY;
+        }
+      } else if (r < 0 && r != -ENOENT) {
         return r;
       }
     }
@@ -828,6 +836,93 @@ int Image<I>::remove(IoCtx& io_ctx, const std::string &image_name,
   req->send();
 
   return cond.wait();
+}
+
+template <typename I>
+int Image<I>::flatten_children(I *ictx, const char* snap_name,
+                               ProgressContext& pctx) {
+  CephContext *cct = ictx->cct;
+  ldout(cct, 20) << "children flatten " << ictx->name << dendl;
+
+  int r = ictx->state->refresh_if_required();
+  if (r < 0) {
+    return r;
+  }
+
+  std::shared_lock l{ictx->image_lock};
+  snap_t snap_id = ictx->get_snap_id(cls::rbd::UserSnapshotNamespace(),
+                                     snap_name);
+
+  cls::rbd::ParentImageSpec parent_spec{ictx->md_ctx.get_id(),
+                                        ictx->md_ctx.get_namespace(),
+                                        ictx->id, snap_id};
+  std::vector<librbd::linked_image_spec_t> child_images;
+  r = list_children(ictx, parent_spec, &child_images);
+  if (r < 0) {
+    return r;
+  }
+
+  size_t size = child_images.size();
+  if (size == 0) {
+    return 0;
+  }
+
+  librados::IoCtx child_io_ctx;
+  int64_t child_pool_id = -1;
+  size_t i = 0;
+  for (auto &child_image : child_images){
+    std::string pool = child_image.pool_name;
+    if (child_pool_id == -1 ||
+        child_pool_id != child_image.pool_id ||
+        child_io_ctx.get_namespace() != child_image.pool_namespace) {
+      r = util::create_ioctx(ictx->md_ctx, "child image",
+                             child_image.pool_id, child_image.pool_namespace,
+                             &child_io_ctx);
+      if (r < 0) {
+        return r;
+      }
+
+      child_pool_id = child_image.pool_id;
+    }
+
+    ImageCtx *imctx = new ImageCtx("", child_image.image_id, nullptr,
+                                   child_io_ctx, false);
+    r = imctx->state->open(0);
+    if (r < 0) {
+      lderr(cct) << "error opening image: " << cpp_strerror(r) << dendl;
+      return r;
+    }
+
+    if ((imctx->features & RBD_FEATURE_DEEP_FLATTEN) == 0 &&
+        !imctx->snaps.empty()) {
+      lderr(cct) << "snapshot in-use by " << pool << "/" << imctx->name
+                 << dendl;
+      imctx->state->close();
+      return -EBUSY;
+    }
+
+    librbd::NoOpProgressContext prog_ctx;
+    r = imctx->operations->flatten(prog_ctx);
+    if (r < 0) {
+      lderr(cct) << "error flattening image: " << pool << "/"
+                 << (child_image.pool_namespace.empty() ?
+                      "" : "/" + child_image.pool_namespace)
+                 << child_image.image_name << cpp_strerror(r) << dendl;
+      imctx->state->close();
+      return r;
+    }
+
+    r = imctx->state->close();
+    if (r < 0) {
+      lderr(cct) << "failed to close image: " << cpp_strerror(r) << dendl;
+      return r;
+    }
+
+    pctx.update_progress(++i, size);
+    ceph_assert(i <= size);
+  }
+
+  return 0;
 }
 
 } // namespace api

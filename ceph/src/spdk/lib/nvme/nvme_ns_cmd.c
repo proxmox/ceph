@@ -33,7 +33,8 @@
 
 #include "nvme_internal.h"
 
-static struct nvme_request *_nvme_ns_cmd_rw(struct spdk_nvme_ns *ns, struct spdk_nvme_qpair *qpair,
+static inline struct nvme_request *_nvme_ns_cmd_rw(struct spdk_nvme_ns *ns,
+		struct spdk_nvme_qpair *qpair,
 		const struct nvme_payload *payload, uint32_t payload_offset, uint32_t md_offset,
 		uint64_t lba, uint32_t lba_count, spdk_nvme_cmd_cb cb_fn,
 		void *cb_arg, uint32_t opc, uint32_t io_flags,
@@ -44,11 +45,15 @@ static bool
 spdk_nvme_ns_check_request_length(uint32_t lba_count, uint32_t sectors_per_max_io,
 				  uint32_t sectors_per_stripe, uint32_t qdepth)
 {
-	uint32_t child_per_io;
+	uint32_t child_per_io = UINT32_MAX;
 
+	/* After a namespace is destroyed(e.g. hotplug), all the fields associated with the
+	 * namespace will be cleared to zero, the function will return TRUE for this case,
+	 * and -EINVAL will be returned to caller.
+	 */
 	if (sectors_per_stripe > 0) {
 		child_per_io = (lba_count + sectors_per_stripe - 1) / sectors_per_stripe;
-	} else {
+	} else if (sectors_per_max_io > 0) {
 		child_per_io = (lba_count + sectors_per_max_io - 1) / sectors_per_max_io;
 	}
 
@@ -70,7 +75,8 @@ nvme_cb_complete_child(void *child_arg, const struct spdk_nvme_cpl *cpl)
 	}
 
 	if (parent->num_children == 0) {
-		nvme_complete_request(parent, &parent->parent_status);
+		nvme_complete_request(parent->cb_fn, parent->cb_arg, parent->qpair,
+				      parent, &parent->parent_status);
 		nvme_free_request(parent);
 	}
 }
@@ -382,7 +388,7 @@ _nvme_ns_cmd_split_request_sgl(struct spdk_nvme_ns *ns,
 		req_current_length += sge_length;
 		num_sges++;
 
-		if (num_sges < max_sges) {
+		if (num_sges < max_sges && req_current_length < req->payload_size) {
 			continue;
 		}
 
@@ -430,7 +436,7 @@ _nvme_ns_cmd_split_request_sgl(struct spdk_nvme_ns *ns,
 	return req;
 }
 
-static struct nvme_request *
+static inline struct nvme_request *
 _nvme_ns_cmd_rw(struct spdk_nvme_ns *ns, struct spdk_nvme_qpair *qpair,
 		const struct nvme_payload *payload, uint32_t payload_offset, uint32_t md_offset,
 		uint64_t lba, uint32_t lba_count, spdk_nvme_cmd_cb cb_fn, void *cb_arg, uint32_t opc,

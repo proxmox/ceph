@@ -7,6 +7,7 @@ import { timer as observableTimer } from 'rxjs';
 import { MgrModuleService } from '../../../../shared/api/mgr-module.service';
 import { TableComponent } from '../../../../shared/datatable/table/table.component';
 import { CellTemplate } from '../../../../shared/enum/cell-template.enum';
+import { Icons } from '../../../../shared/enum/icons.enum';
 import { CdTableAction } from '../../../../shared/models/cd-table-action';
 import { CdTableColumn } from '../../../../shared/models/cd-table-column';
 import { CdTableFetchDataContext } from '../../../../shared/models/cd-table-fetch-data-context';
@@ -21,7 +22,7 @@ import { NotificationService } from '../../../../shared/services/notification.se
   styleUrls: ['./mgr-module-list.component.scss']
 })
 export class MgrModuleListComponent {
-  @ViewChild(TableComponent)
+  @ViewChild(TableComponent, { static: true })
   table: TableComponent;
   @BlockUI()
   blockUI: NgBlockUI;
@@ -51,6 +52,14 @@ export class MgrModuleListComponent {
         flexGrow: 1,
         cellClass: 'text-center',
         cellTransformation: CellTemplate.checkIcon
+      },
+      {
+        name: this.i18n('Always-On'),
+        prop: 'always_on',
+        isHidden: true,
+        flexGrow: 1,
+        cellClass: 'text-center',
+        cellTransformation: CellTemplate.checkIcon
       }
     ];
     const getModuleUri = () =>
@@ -67,14 +76,14 @@ export class MgrModuleListComponent {
           return Object.values(this.selection.first().options).length === 0;
         },
         routerLink: () => `/mgr-modules/edit/${getModuleUri()}`,
-        icon: 'fa-pencil'
+        icon: Icons.edit
       },
       {
         name: this.i18n('Enable'),
         permission: 'update',
         click: () => this.updateModuleState(),
         disable: () => this.isTableActionDisabled('enabled'),
-        icon: 'fa-play'
+        icon: Icons.start
       },
       {
         name: this.i18n('Disable'),
@@ -82,7 +91,7 @@ export class MgrModuleListComponent {
         click: () => this.updateModuleState(),
         disable: () => this.isTableActionDisabled('disabled'),
         disableDesc: () => this.getTableActionDisabledDesc(),
-        icon: 'fa-stop'
+        icon: Icons.stop
       }
     ];
   }
@@ -138,6 +147,8 @@ export class MgrModuleListComponent {
         return this.i18n('This Manager module is always on.');
       }
     }
+
+    return undefined;
   }
 
   /**

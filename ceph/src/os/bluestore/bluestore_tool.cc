@@ -431,10 +431,10 @@ int main(int argc, char **argv)
       r = bluestore.quick_fix();
     }
     if (r < 0) {
-      cerr << "error from fsck: " << cpp_strerror(r) << std::endl;
+      cerr << action << " failed: " << cpp_strerror(r) << std::endl;
       exit(EXIT_FAILURE);
     } else if (r > 0) {
-      cerr << action << " found " << r << " error(s)" << std::endl;
+      cerr << action << " status: remaining " << r << " error(s) and warning(s)" << std::endl;
       exit(EXIT_FAILURE);
     } else {
       cout << action << " success" << std::endl;
@@ -844,9 +844,11 @@ int main(int argc, char **argv)
     }
 
     for (auto alloc_name : allocs_name) {
-      ceph::bufferlist out;
+      ceph::bufferlist in, out;
+      ostringstream err;
       bool b = admin_socket->execute_command(
-          "{\"prefix\": \"bluestore allocator " + action_name + " " + alloc_name + "\"}", out);
+	{"{\"prefix\": \"bluestore allocator " + action_name + " " + alloc_name + "\"}"},
+	in, err, &out);
       if (!b) {
         cerr << "failure querying '" << alloc_name << "'" << std::endl;
         exit(EXIT_FAILURE);

@@ -66,6 +66,16 @@ The user can specify below arguments in `--vdev` option.
     It is used to specify the number of queues virtio-net device has.
     (Default: 1)
 
+#.  ``iommu-support``:
+
+    It is used to enable iommu support in vhost library.
+    (Default: 0 (disabled))
+
+#.  ``postcopy-support``:
+
+    It is used to enable postcopy live-migration support in vhost library.
+    (Default: 0 (disabled))
+
 Vhost PMD event handling
 ------------------------
 

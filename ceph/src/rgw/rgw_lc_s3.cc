@@ -1,5 +1,5 @@
 // -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// vim: ts=8 sw=2 smarttab ft=cpp
 
 #include <string.h>
 
@@ -91,12 +91,9 @@ void RGWLifecycleConfiguration_S3::decode_xml(XMLObj *obj)
 
   for (auto& rule : rules) {
     if (rule.get_id().empty()) {
-      string id;
-
       // S3 generates a 48 bit random ID, maybe we could generate shorter IDs
       static constexpr auto LC_ID_LENGTH = 48;
-
-      gen_rand_alphanumeric_lower(cct, &id, LC_ID_LENGTH);
+      string id = gen_rand_alphanumeric_lower(cct, LC_ID_LENGTH);
       rule.set_id(id);
     }
 

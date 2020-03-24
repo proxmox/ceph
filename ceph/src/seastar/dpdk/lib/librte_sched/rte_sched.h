@@ -1,34 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2014 Intel Corporation
  */
 
 #ifndef __INCLUDE_RTE_SCHED_H__
@@ -62,7 +33,7 @@ extern "C" {
  *	    classes of the same subport;
  *           - When any subport traffic class is oversubscribed
  *	    (configuration time event), the usage of subport member
- *	    pipes with high demand for thattraffic class pipes is
+ *	    pipes with high demand for that traffic class pipes is
  *	    truncated to a dynamically adjusted value with no
  *             impact to low demand pipes;
  *     3. Pipe:
@@ -86,6 +57,7 @@ extern "C" {
  */
 
 #include <sys/types.h>
+#include <rte_compat.h>
 #include <rte_mbuf.h>
 #include <rte_meter.h>
 
@@ -233,7 +205,7 @@ struct rte_sched_port_params {
 	 * Every pipe is configured using one of the profiles from this table. */
 	uint32_t n_pipe_profiles;        /**< Profiles in the pipe profile table */
 #ifdef RTE_SCHED_RED
-	struct rte_red_params red_params[RTE_SCHED_TRAFFIC_CLASSES_PER_PIPE][e_RTE_METER_COLORS]; /**< RED parameters */
+	struct rte_red_params red_params[RTE_SCHED_TRAFFIC_CLASSES_PER_PIPE][RTE_COLORS]; /**< RED parameters */
 #endif
 };
 
@@ -261,6 +233,26 @@ rte_sched_port_config(struct rte_sched_port_params *params);
  */
 void
 rte_sched_port_free(struct rte_sched_port *port);
+
+/**
+ * @warning
+ * @b EXPERIMENTAL: this API may change without prior notice.
+ *
+ * Hierarchical scheduler pipe profile add
+ *
+ * @param port
+ *   Handle to port scheduler instance
+ * @param params
+ *   Pipe profile parameters
+ * @param pipe_profile_id
+ *   Set to valid profile id when profile is added successfully.
+ * @return
+ *   0 upon success, error code otherwise
+ */
+int __rte_experimental
+rte_sched_port_pipe_profile_add(struct rte_sched_port *port,
+	struct rte_sched_pipe_params *params,
+	uint32_t *pipe_profile_id);
 
 /**
  * Hierarchical scheduler subport configuration
@@ -363,6 +355,8 @@ rte_sched_queue_read_stats(struct rte_sched_port *port,
  * Scheduler hierarchy path write to packet descriptor. Typically
  * called by the packet classification stage.
  *
+ * @param port
+ *   Handle to port scheduler instance
  * @param pkt
  *   Packet descriptor handle
  * @param subport
@@ -377,9 +371,10 @@ rte_sched_queue_read_stats(struct rte_sched_port *port,
  *   Packet color set
  */
 void
-rte_sched_port_pkt_write(struct rte_mbuf *pkt,
+rte_sched_port_pkt_write(struct rte_sched_port *port,
+			 struct rte_mbuf *pkt,
 			 uint32_t subport, uint32_t pipe, uint32_t traffic_class,
-			 uint32_t queue, enum rte_meter_color color);
+			 uint32_t queue, enum rte_color color);
 
 /**
  * Scheduler hierarchy path read from packet descriptor (struct
@@ -387,6 +382,8 @@ rte_sched_port_pkt_write(struct rte_mbuf *pkt,
  * enqueue operation. The subport, pipe, traffic class and queue
  * parameters need to be pre-allocated by the caller.
  *
+ * @param port
+ *   Handle to port scheduler instance
  * @param pkt
  *   Packet descriptor handle
  * @param subport
@@ -400,11 +397,12 @@ rte_sched_port_pkt_write(struct rte_mbuf *pkt,
  *
  */
 void
-rte_sched_port_pkt_read_tree_path(const struct rte_mbuf *pkt,
+rte_sched_port_pkt_read_tree_path(struct rte_sched_port *port,
+				  const struct rte_mbuf *pkt,
 				  uint32_t *subport, uint32_t *pipe,
 				  uint32_t *traffic_class, uint32_t *queue);
 
-enum rte_meter_color
+enum rte_color
 rte_sched_port_pkt_read_color(const struct rte_mbuf *pkt);
 
 /**

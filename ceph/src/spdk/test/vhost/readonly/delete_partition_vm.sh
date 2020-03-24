@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 
 set -xe
-BASE_DIR=$(readlink -f $(dirname $0))
+
+testdir=$(readlink -f $(dirname $0))
 
 disk_name="vda"
 test_folder_name="readonly_test"
@@ -15,7 +16,7 @@ function error()
 	trap - ERR
 	set +e
 	umount "$test_folder_name"
-	rm -rf "$BASE_DIR/$test_folder_name"
+	rm -rf "$testdir/$test_folder_name"
 	exit 1
 }
 
@@ -36,7 +37,7 @@ mount /dev/$disk_name"1" $test_folder_name
 
 echo "INFO: Removing folder and unmounting $test_folder_name"
 umount "$test_folder_name"
-rm -rf "$BASE_DIR/$test_folder_name"
+rm -rf "$testdir/$test_folder_name"
 
 echo "INFO: Deleting partition"
 echo -e "d\n1\nw" | fdisk /dev/$disk_name

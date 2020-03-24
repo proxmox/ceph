@@ -7,9 +7,8 @@ To extract the inventory (in csv format) use the command:
    grep '^ *# TESTCASE' | sed 's/^ *# TESTCASE //'
 
 """
-from cStringIO import StringIO
 import logging
-import json
+
 
 import boto.exception
 import boto.s3.connection
@@ -549,7 +548,7 @@ def task(ctx, config):
     assert out['usage']['rgw.main']['num_objects'] == 0
 
     # create a bucket for deletion stats
-    useless_bucket = connection.create_bucket('useless_bucket')
+    useless_bucket = connection.create_bucket('useless-bucket')
     useless_key = useless_bucket.new_key('useless_key')
     useless_key.set_contents_from_string('useless string')
 

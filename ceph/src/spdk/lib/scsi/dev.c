@@ -68,19 +68,37 @@ free_dev(struct spdk_scsi_dev *dev)
 	assert(dev->removed == true);
 
 	dev->is_allocated = 0;
+
+	if (dev->remove_cb) {
+		dev->remove_cb(dev->remove_ctx, 0);
+		dev->remove_cb = NULL;
+	}
 }
 
 void
-spdk_scsi_dev_destruct(struct spdk_scsi_dev *dev)
+spdk_scsi_dev_destruct(struct spdk_scsi_dev *dev,
+		       spdk_scsi_dev_destruct_cb_t cb_fn, void *cb_arg)
 {
 	int lun_cnt;
 	int i;
 
-	if (dev == NULL || dev->removed) {
+	if (dev == NULL) {
+		if (cb_fn) {
+			cb_fn(cb_arg, -EINVAL);
+		}
+		return;
+	}
+
+	if (dev->removed) {
+		if (cb_fn) {
+			cb_fn(cb_arg, -EINVAL);
+		}
 		return;
 	}
 
 	dev->removed = true;
+	dev->remove_cb = cb_fn;
+	dev->remove_ctx = cb_arg;
 	lun_cnt = 0;
 
 	for (i = 0; i < SPDK_SCSI_DEV_MAX_LUN; i++) {
@@ -103,7 +121,7 @@ spdk_scsi_dev_destruct(struct spdk_scsi_dev *dev)
 }
 
 static int
-spdk_scsi_dev_find_lowest_free_lun_id(struct spdk_scsi_dev *dev)
+scsi_dev_find_lowest_free_lun_id(struct spdk_scsi_dev *dev)
 {
 	int i;
 
@@ -133,7 +151,7 @@ spdk_scsi_dev_add_lun(struct spdk_scsi_dev *dev, const char *bdev_name, int lun_
 
 	/* Search the lowest free LUN ID if LUN ID is default */
 	if (lun_id == -1) {
-		lun_id = spdk_scsi_dev_find_lowest_free_lun_id(dev);
+		lun_id = scsi_dev_find_lowest_free_lun_id(dev);
 		if (lun_id == -1) {
 			SPDK_ERRLOG("Free LUN ID is not found\n");
 			return -1;
@@ -236,7 +254,7 @@ spdk_scsi_dev_construct(const char *name, const char *bdev_name_list[],
 		rc = spdk_scsi_dev_add_lun(dev, bdev_name_list[i], lun_id_list[i],
 					   hotremove_cb, hotremove_ctx);
 		if (rc < 0) {
-			spdk_scsi_dev_destruct(dev);
+			spdk_scsi_dev_destruct(dev, NULL, NULL);
 			return NULL;
 		}
 	}
@@ -246,13 +264,12 @@ spdk_scsi_dev_construct(const char *name, const char *bdev_name_list[],
 
 void
 spdk_scsi_dev_queue_mgmt_task(struct spdk_scsi_dev *dev,
-			      struct spdk_scsi_task *task,
-			      enum spdk_scsi_task_func func)
+			      struct spdk_scsi_task *task)
 {
 	assert(task != NULL);
 
-	task->function = func;
-	spdk_scsi_lun_task_mgmt_execute(task, func);
+	spdk_scsi_lun_append_mgmt_task(task->lun, task);
+	spdk_scsi_lun_execute_mgmt_task(task->lun);
 }
 
 void
@@ -261,11 +278,12 @@ spdk_scsi_dev_queue_task(struct spdk_scsi_dev *dev,
 {
 	assert(task != NULL);
 
-	spdk_scsi_lun_execute_task(task->lun, task);
+	spdk_scsi_lun_append_task(task->lun, task);
+	spdk_scsi_lun_execute_tasks(task->lun);
 }
 
 static struct spdk_scsi_port *
-spdk_scsi_dev_find_free_port(struct spdk_scsi_dev *dev)
+scsi_dev_find_free_port(struct spdk_scsi_dev *dev)
 {
 	int i;
 
@@ -295,7 +313,7 @@ spdk_scsi_dev_add_port(struct spdk_scsi_dev *dev, uint64_t id, const char *name)
 		return -1;
 	}
 
-	port = spdk_scsi_dev_find_free_port(dev);
+	port = scsi_dev_find_free_port(dev);
 	if (port == NULL) {
 		assert(false);
 		return -1;
@@ -406,7 +424,9 @@ spdk_scsi_dev_has_pending_tasks(const struct spdk_scsi_dev *dev)
 	int i;
 
 	for (i = 0; i < SPDK_SCSI_DEV_MAX_LUN; ++i) {
-		if (dev->lun[i] && spdk_scsi_lun_has_pending_tasks(dev->lun[i])) {
+		if (dev->lun[i] &&
+		    (spdk_scsi_lun_has_pending_tasks(dev->lun[i]) ||
+		     spdk_scsi_lun_has_pending_mgmt_tasks(dev->lun[i]))) {
 			return true;
 		}
 	}

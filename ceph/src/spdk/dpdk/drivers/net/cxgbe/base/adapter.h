@@ -14,9 +14,9 @@
 #include <rte_rwlock.h>
 #include <rte_ethdev.h>
 
-#include "cxgbe_compat.h"
+#include "../cxgbe_compat.h"
+#include "../cxgbe_ofld.h"
 #include "t4_regs_values.h"
-#include "cxgbe_ofld.h"
 
 enum {
 	MAX_ETH_QSETS = 64,           /* # of Ethernet Tx/Rx queue sets */
@@ -324,7 +324,11 @@ struct adapter {
 
 	unsigned int clipt_start; /* CLIP table start */
 	unsigned int clipt_end;   /* CLIP table end */
+	unsigned int l2t_start;   /* Layer 2 table start */
+	unsigned int l2t_end;     /* Layer 2 table end */
 	struct clip_tbl *clipt;   /* CLIP table */
+	struct l2t_data *l2t;     /* Layer 2 table */
+	struct mpstcam_table *mpstcam;
 
 	struct tid_info tids;     /* Info used to access TID related tables */
 };
@@ -797,8 +801,6 @@ void t4_sge_tx_monitor_stop(struct adapter *adap);
 int t4_eth_xmit(struct sge_eth_txq *txq, struct rte_mbuf *mbuf,
 		uint16_t nb_pkts);
 int t4_mgmt_tx(struct sge_ctrl_txq *txq, struct rte_mbuf *mbuf);
-int t4_ethrx_handler(struct sge_rspq *q, const __be64 *rsp,
-		     const struct pkt_gl *gl);
 int t4_sge_init(struct adapter *adap);
 int t4vf_sge_init(struct adapter *adap);
 int t4_sge_alloc_eth_txq(struct adapter *adap, struct sge_eth_txq *txq,

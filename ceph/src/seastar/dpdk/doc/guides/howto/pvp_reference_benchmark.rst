@@ -132,7 +132,7 @@ Build DPDK:
       git clone git://dpdk.org/dpdk
       cd dpdk
       export RTE_SDK=$PWD
-      make install T=x86_64-native-linuxapp-gcc DESTDIR=install
+      make install T=x86_64-native-linux-gcc DESTDIR=install
 
 
 Testpmd launch
@@ -158,7 +158,7 @@ Testpmd launch
       $RTE_SDK/install/bin/testpmd -l 0,2,3,4,5 --socket-mem=1024 -n 4 \
           --vdev 'net_vhost0,iface=/tmp/vhost-user1' \
           --vdev 'net_vhost1,iface=/tmp/vhost-user2' -- \
-          --portmask=f --disable-hw-vlan -i --rxq=1 --txq=1 \
+          --portmask=f -i --rxq=1 --txq=1 \
           --nb-cores=4 --forward-mode=io
 
    With this command, isolated CPUs 2 to 5 will be used as lcores for PMD threads.
@@ -346,7 +346,7 @@ Build DPDK:
       git clone git://dpdk.org/dpdk
       cd dpdk
       export RTE_SDK=$PWD
-      make install T=x86_64-native-linuxapp-gcc DESTDIR=install
+      make install T=x86_64-native-linux-gcc DESTDIR=install
 
 
 Testpmd launch
@@ -375,7 +375,7 @@ Start testpmd:
       $RTE_SDK/install/bin/testpmd -l 0,1,2 --socket-mem 1024 -n 4 \
           --proc-type auto --file-prefix pg -- \
           --portmask=3 --forward-mode=macswap --port-topology=chained \
-          --disable-hw-vlan --disable-rss -i --rxq=1 --txq=1 \
+          --disable-rss -i --rxq=1 --txq=1 \
           --rxd=256 --txd=256 --nb-cores=2 --auto-start
 
 Results template

@@ -20,15 +20,14 @@
 #include <queue>
 #include <boost/intrusive_ptr.hpp>
 #include "include/ceph_assert.h"
+#include "include/common_fwd.h"
 #include "common/Throttle.h"
-#include "common/Mutex.h"
-#include "common/Cond.h"
+#include "common/ceph_mutex.h"
 #include "common/Thread.h"
 #include "common/PrioritizedQueue.h"
 
 #include "Message.h"
 
-class CephContext;
 class Messenger;
 struct Connection;
 
@@ -42,9 +41,9 @@ class DispatchQueue {
   class QueueItem {
     int type;
     ConnectionRef con;
-    Message::ref m;
+    ref_t<Message> m;
   public:
-    explicit QueueItem(const Message::ref& m) : type(-1), con(0), m(m) {}
+    explicit QueueItem(const ref_t<Message>& m) : type(-1), con(0), m(m) {}
     QueueItem(int type, Connection *con) : type(type), con(con), m(0) {}
     bool is_code() const {
       return type != -1;
@@ -53,7 +52,7 @@ class DispatchQueue {
       ceph_assert(is_code());
       return type;
     }
-    const Message::ref& get_message() {
+    const ref_t<Message>& get_message() {
       ceph_assert(!is_code());
       return m;
     }
@@ -65,14 +64,14 @@ class DispatchQueue {
     
   CephContext *cct;
   Messenger *msgr;
-  mutable Mutex lock;
-  Cond cond;
+  mutable ceph::mutex lock;
+  ceph::condition_variable cond;
 
   PrioritizedQueue<QueueItem, uint64_t> mqueue;
 
-  std::set<pair<double, Message::ref>> marrival;
-  map<Message::ref, decltype(marrival)::iterator> marrival_map;
-  void add_arrival(const Message::ref& m) {
+  std::set<pair<double, ref_t<Message>>> marrival;
+  map<ref_t<Message>, decltype(marrival)::iterator> marrival_map;
+  void add_arrival(const ref_t<Message>& m) {
     marrival_map.insert(
       make_pair(
 	m,
@@ -80,7 +79,7 @@ class DispatchQueue {
 	)
       );
   }
-  void remove_arrival(const Message::ref& m) {
+  void remove_arrival(const ref_t<Message>& m) {
     auto it = marrival_map.find(m);
     ceph_assert(it != marrival_map.end());
     marrival.erase(it->second);
@@ -104,10 +103,10 @@ class DispatchQueue {
     }
   } dispatch_thread;
 
-  Mutex local_delivery_lock;
-  Cond local_delivery_cond;
+  ceph::mutex local_delivery_lock;
+  ceph::condition_variable local_delivery_cond;
   bool stop_local_delivery;
-  std::queue<pair<Message::ref, int>> local_messages;
+  std::queue<pair<ref_t<Message>, int>> local_messages;
   class LocalDeliveryThread : public Thread {
     DispatchQueue *dq;
   public:
@@ -118,8 +117,8 @@ class DispatchQueue {
     }
   } local_delivery_thread;
 
-  uint64_t pre_dispatch(const Message::ref& m);
-  void post_dispatch(const Message::ref& m, uint64_t msize);
+  uint64_t pre_dispatch(const ref_t<Message>& m);
+  void post_dispatch(const ref_t<Message>& m, uint64_t msize);
 
  public:
 
@@ -127,16 +126,16 @@ class DispatchQueue {
   Throttle dispatch_throttler;
 
   bool stop;
-  void local_delivery(const Message::ref& m, int priority);
+  void local_delivery(const ref_t<Message>& m, int priority);
   void local_delivery(Message* m, int priority) {
-    return local_delivery(Message::ref(m, false), priority); /* consume ref */
+    return local_delivery(ref_t<Message>(m, false), priority); /* consume ref */
   }
   void run_local_delivery();
 
   double get_max_age(utime_t now) const;
 
   int get_queue_len() const {
-    Mutex::Locker l(lock);
+    std::lock_guard l{lock};
     return mqueue.length();
   }
 
@@ -148,65 +147,65 @@ class DispatchQueue {
   void dispatch_throttle_release(uint64_t msize);
 
   void queue_connect(Connection *con) {
-    Mutex::Locker l(lock);
+    std::lock_guard l{lock};
     if (stop)
       return;
     mqueue.enqueue_strict(
       0,
       CEPH_MSG_PRIO_HIGHEST,
       QueueItem(D_CONNECT, con));
-    cond.Signal();
+    cond.notify_all();
   }
   void queue_accept(Connection *con) {
-    Mutex::Locker l(lock);
+    std::lock_guard l{lock};
     if (stop)
       return;
     mqueue.enqueue_strict(
       0,
       CEPH_MSG_PRIO_HIGHEST,
       QueueItem(D_ACCEPT, con));
-    cond.Signal();
+    cond.notify_all();
   }
   void queue_remote_reset(Connection *con) {
-    Mutex::Locker l(lock);
+    std::lock_guard l{lock};
     if (stop)
       return;
     mqueue.enqueue_strict(
       0,
       CEPH_MSG_PRIO_HIGHEST,
       QueueItem(D_BAD_REMOTE_RESET, con));
-    cond.Signal();
+    cond.notify_all();
   }
   void queue_reset(Connection *con) {
-    Mutex::Locker l(lock);
+    std::lock_guard l{lock};
     if (stop)
       return;
     mqueue.enqueue_strict(
       0,
       CEPH_MSG_PRIO_HIGHEST,
       QueueItem(D_BAD_RESET, con));
-    cond.Signal();
+    cond.notify_all();
   }
   void queue_refused(Connection *con) {
-    Mutex::Locker l(lock);
+    std::lock_guard l{lock};
     if (stop)
       return;
     mqueue.enqueue_strict(
       0,
       CEPH_MSG_PRIO_HIGHEST,
       QueueItem(D_CONN_REFUSED, con));
-    cond.Signal();
+    cond.notify_all();
   }
 
-  bool can_fast_dispatch(const Message::const_ref &m) const;
-  void fast_dispatch(const Message::ref& m);
+  bool can_fast_dispatch(const cref_t<Message> &m) const;
+  void fast_dispatch(const ref_t<Message>& m);
   void fast_dispatch(Message* m) {
-    return fast_dispatch(Message::ref(m, false)); /* consume ref */
+    return fast_dispatch(ref_t<Message>(m, false)); /* consume ref */
   }
-  void fast_preprocess(const Message::ref& m);
-  void enqueue(const Message::ref& m, int priority, uint64_t id);
+  void fast_preprocess(const ref_t<Message>& m);
+  void enqueue(const ref_t<Message>& m, int priority, uint64_t id);
   void enqueue(Message* m, int priority, uint64_t id) {
-    return enqueue(Message::ref(m, false), priority, id); /* consume ref */
+    return enqueue(ref_t<Message>(m, false), priority, id); /* consume ref */
   }
   void discard_queue(uint64_t id);
   void discard_local();
@@ -221,12 +220,12 @@ class DispatchQueue {
 
   DispatchQueue(CephContext *cct, Messenger *msgr, string &name)
     : cct(cct), msgr(msgr),
-      lock("Messenger::DispatchQueue::lock" + name),
+      lock(ceph::make_mutex("Messenger::DispatchQueue::lock" + name)),
       mqueue(cct->_conf->ms_pq_max_tokens_per_priority,
 	     cct->_conf->ms_pq_min_cost),
       next_id(1),
       dispatch_thread(this),
-      local_delivery_lock("Messenger::DispatchQueue::local_delivery_lock" + name),
+      local_delivery_lock(ceph::make_mutex("Messenger::DispatchQueue::local_delivery_lock" + name)),
       stop_local_delivery(false),
       local_delivery_thread(this),
       dispatch_throttler(cct, string("msgr_dispatch_throttler-") + name,

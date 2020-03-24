@@ -16,10 +16,10 @@
 
 #include "common/config_fwd.h"
 #include "common/Cond.h"
-#include "common/Mutex.h"
-#include "common/RWLock.h"
 #include "common/Timer.h"
+#include "common/ceph_mutex.h"
 #include "common/ceph_time.h"
+#include "include/common_fwd.h"
 #include "include/rados/librados.h"
 #include "include/rados/librados.hpp"
 #include "mon/MonClient.h"
@@ -30,7 +30,6 @@
 
 struct AuthAuthorizer;
 struct Context;
-class CephContext;
 struct Connection;
 class Message;
 class MLog;
@@ -61,7 +60,6 @@ private:
   bool _dispatch(Message *m);
   bool ms_dispatch(Message *m) override;
 
-  bool ms_get_authorizer(int dest_type, AuthAuthorizer **authorizer) override;
   void ms_handle_connect(Connection *con) override;
   bool ms_handle_reset(Connection *con) override;
   void ms_handle_remote_reset(Connection *con) override;
@@ -69,8 +67,8 @@ private:
 
   Objecter *objecter;
 
-  Mutex lock;
-  Cond cond;
+  ceph::mutex lock = ceph::make_mutex("librados::RadosClient::lock");
+  ceph::condition_variable cond;
   SafeTimer timer;
   int refcnt;
 
@@ -152,6 +150,10 @@ public:
 	          bufferlist *outbl, string *outs);
   int mgr_command(const vector<string>& cmd, const bufferlist &inbl,
 	          bufferlist *outbl, string *outs);
+  int mgr_command(
+    const string& name,
+    const vector<string>& cmd, const bufferlist &inbl,
+    bufferlist *outbl, string *outs);
   int osd_command(int osd, vector<string>& cmd, const bufferlist& inbl,
                   bufferlist *poutbl, string *prs);
   int pg_command(pg_t pgid, vector<string>& cmd, const bufferlist& inbl,
@@ -164,6 +166,8 @@ public:
   void get();
   bool put();
   void blacklist_self(bool set);
+
+  std::string get_addrs() const;
 
   int service_daemon_register(
     const std::string& service,  ///< service name (e.g., 'rgw')

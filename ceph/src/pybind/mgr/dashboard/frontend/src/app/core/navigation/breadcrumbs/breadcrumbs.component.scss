@@ -1,9 +1,10 @@
-@import '../../../../defaults';
+@import 'defaults';
 
 .breadcrumb {
   padding: 8px 0;
   background-color: transparent;
   border-radius: 0;
+  margin-top: 8px;
 }
 
 .breadcrumb > li + li:before {

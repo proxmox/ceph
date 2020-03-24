@@ -1535,6 +1535,49 @@ TEST_F(TestLibRBD, TestCreateLsDeleteSnapPP)
   ioctx.close();
 }
 
+TEST_F(TestLibRBD, TestGetNameIdSnapPP)
+{
+  librados::IoCtx ioctx;
+  ASSERT_EQ(0, _rados.ioctx_create(m_pool_name.c_str(), ioctx));
+
+  {
+    librbd::RBD rbd;
+    librbd::Image image;
+    int order = 0;
+    std::string name = get_temp_image_name();
+    uint64_t size = 2 << 20;
+
+    ASSERT_EQ(0, create_image_pp(rbd, ioctx, name.c_str(), size, &order));
+    ASSERT_EQ(0, rbd.open(ioctx, image, name.c_str(), NULL));
+
+    ASSERT_EQ(0, image.snap_create("snap1"));
+    ASSERT_EQ(0, image.snap_create("snap2"));
+    ASSERT_EQ(0, image.snap_create("snap3"));
+    vector<librbd::snap_info_t> snaps;
+    int r = image.snap_list(snaps);
+    EXPECT_TRUE(r >= 0);
+
+    for (size_t i = 0; i < snaps.size(); ++i) {
+      std::string expected_snap_name;
+      image.snap_get_name(snaps[i].id, &expected_snap_name);
+      ASSERT_EQ(expected_snap_name, snaps[i].name);
+    }
+
+    for (size_t i = 0; i < snaps.size(); ++i) {
+      uint64_t expected_snap_id;
+      image.snap_get_id(snaps[i].name, &expected_snap_id);
+      ASSERT_EQ(expected_snap_id, snaps[i].id);
+    }
+
+    ASSERT_EQ(0, image.snap_remove("snap1"));
+    ASSERT_EQ(0, image.snap_remove("snap2"));
+    ASSERT_EQ(0, image.snap_remove("snap3"));
+    ASSERT_EQ(0, test_ls_snaps(image, 0));
+  }
+
+  ioctx.close();
+}
+
 TEST_F(TestLibRBD, TestCreateLsRenameSnapPP)
 {
   librados::IoCtx ioctx;
@@ -1905,6 +1948,7 @@ TEST_F(TestLibRBD, TestIO)
   uint64_t size = 2 << 20;  
 
   ASSERT_EQ(0, create_image(ioctx, name.c_str(), size, &order));
+  ASSERT_EQ(0, rados_conf_set(_cluster, "rbd_read_from_replica_policy", "balance"));
   ASSERT_EQ(0, rbd_open(ioctx, name.c_str(), &image, NULL));
   
   char test_data[TEST_IO_SIZE + 1];
@@ -3898,7 +3942,7 @@ public:
 
 typedef ::testing::Types<DiffIterateParams<false>,
                          DiffIterateParams<true> > DiffIterateTypes;
-TYPED_TEST_CASE(DiffIterateTest, DiffIterateTypes);
+TYPED_TEST_SUITE(DiffIterateTest, DiffIterateTypes);
 
 TYPED_TEST(DiffIterateTest, DiffIterate)
 {
@@ -5711,6 +5755,33 @@ TEST_F(TestLibRBD, UpdateFeatures)
     ASSERT_EQ(0, image.update_features(RBD_FEATURE_DEEP_FLATTEN, false));
   }
   ASSERT_EQ(-EINVAL, image.update_features(RBD_FEATURE_DEEP_FLATTEN, true));
+}
+
+TEST_F(TestLibRBD, FeaturesBitmaskString)
+{
+  librbd::RBD rbd;
+  uint64_t features = RBD_FEATURES_DEFAULT;
+
+  std::string features_str;
+  std::string expected_str = "deep-flatten,exclusive-lock,fast-diff,layering,object-map";
+  rbd.features_to_string(features, &features_str);
+  ASSERT_EQ(expected_str, features_str);
+
+  features = RBD_FEATURE_LAYERING;
+  features_str = "";
+  expected_str = "layering";
+  rbd.features_to_string(features, &features_str);
+  ASSERT_EQ(expected_str, features_str);
+
+  uint64_t features_bitmask;
+  features_str = "deep-flatten,exclusive-lock,fast-diff,layering,object-map";
+  rbd.features_from_string(features_str, &features_bitmask);
+  ASSERT_EQ(features_bitmask, RBD_FEATURES_DEFAULT);
+
+  features_str = "layering";
+  features_bitmask = 0;
+  rbd.features_from_string(features_str, &features_bitmask);
+  ASSERT_EQ(features_bitmask, RBD_FEATURE_LAYERING);
 }
 
 TEST_F(TestLibRBD, RebuildObjectMap)
@@ -7888,6 +7959,86 @@ TEST_F(TestLibRBD, ImageSpec) {
     }
   );
   ASSERT_EQ(expected_children, children);
+}
+
+void super_simple_write_cb_pp(librbd::completion_t cb, void *arg)
+{
+}
+
+TEST_F(TestLibRBD, DISABLED_TestSeqWriteAIOPP)
+{
+  librados::IoCtx ioctx;
+  ASSERT_EQ(0, _rados.ioctx_create(m_pool_name.c_str(), ioctx));
+
+  {
+    librbd::RBD rbd;
+    librbd::Image image;
+    int order = 21;
+    std::string name = get_temp_image_name();
+    uint64_t size = 5 * (1 << order);
+
+    ASSERT_EQ(0, create_image_pp(rbd, ioctx, name.c_str(), size, &order));
+    ASSERT_EQ(0, rbd.open(ioctx, image, name.c_str(), NULL));
+
+    char test_data[(TEST_IO_SIZE + 1) * 10];
+
+    for (int i = 0; i < 10; i++) {
+      for (uint64_t j = 0; j < TEST_IO_SIZE; j++) {
+        test_data[(TEST_IO_SIZE + 1) * i + j] = (char)(rand() % (126 - 33) + 33);
+      }
+      test_data[(TEST_IO_SIZE + 1) * i + TEST_IO_SIZE] = '\0';
+    }
+
+    struct timespec start_time;
+    clock_gettime(CLOCK_REALTIME, &start_time);
+
+    std::list<librbd::RBD::AioCompletion *> comps;
+    for (uint64_t i = 0; i < size / TEST_IO_SIZE; ++i) {
+      char *p = test_data + (TEST_IO_SIZE + 1) * (i % 10);
+      ceph::bufferlist bl;
+      bl.append(p, strlen(p));
+      auto comp = new librbd::RBD::AioCompletion(
+          NULL, (librbd::callback_t) super_simple_write_cb_pp);
+      image.aio_write(strlen(p) * i, strlen(p), bl, comp);
+      comps.push_back(comp);
+      if (i % 1000 == 0) {
+        cout << i << " reqs sent" << std::endl;
+        image.flush();
+        for (auto comp : comps) {
+          comp->wait_for_complete();
+          ASSERT_EQ(0, comp->get_return_value());
+          comp->release();
+        }
+        comps.clear();
+      }
+    }
+    int i = 0;
+    for (auto comp : comps) {
+      comp->wait_for_complete();
+      ASSERT_EQ(0, comp->get_return_value());
+      comp->release();
+      if (i % 1000 == 0) {
+        std::cout << i << " reqs completed" << std::endl;
+      }
+      i++;
+    }
+    comps.clear();
+
+    struct timespec end_time;
+    clock_gettime(CLOCK_REALTIME, &end_time);
+    int duration = end_time.tv_sec * 1000 + end_time.tv_nsec / 1000000 -
+      start_time.tv_sec * 1000 - start_time.tv_nsec / 1000000;
+    std::cout << "duration: " << duration << " msec" << std::endl;
+
+    for (uint64_t i = 0; i < size / TEST_IO_SIZE; ++i) {
+      char *p = test_data + (TEST_IO_SIZE + 1) * (i % 10);
+      ASSERT_PASSED(read_test_data, image, p, strlen(p) * i, TEST_IO_SIZE, 0);
+    }
+
+    ASSERT_PASSED(validate_object_map, image);
+  }
+
+  ioctx.close();
 }
 
 TEST_F(TestLibRBD, SnapRemoveWithChildMissing)

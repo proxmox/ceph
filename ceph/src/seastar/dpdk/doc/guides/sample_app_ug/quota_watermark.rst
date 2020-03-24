@@ -1,32 +1,5 @@
-..  BSD LICENSE
-    Copyright(c) 2010-2017 Intel Corporation. All rights reserved.
-    All rights reserved.
-
-    Redistribution and use in source and binary forms, with or without
-    modification, are permitted provided that the following conditions
-    are met:
-
-    * Redistributions of source code must retain the above copyright
-    notice, this list of conditions and the following disclaimer.
-    * Redistributions in binary form must reproduce the above copyright
-    notice, this list of conditions and the following disclaimer in
-    the documentation and/or other materials provided with the
-    distribution.
-    * Neither the name of Intel Corporation nor the names of its
-    contributors may be used to endorse or promote products derived
-    from this software without specific prior written permission.
-
-    THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-    "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-    LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-    A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-    OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-    SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-    LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-    DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-    THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-    (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-    OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+..  SPDX-License-Identifier: BSD-3-Clause
+    Copyright(c) 2010-2017 Intel Corporation.
 
 Quota and Watermark Sample Application
 ======================================
@@ -88,30 +61,12 @@ as shown in :numref:`figure_ring_pipeline_perf_setup`.
 
    Ring-based Processing Pipeline Performance Setup
 
-
 Compiling the Application
 -------------------------
 
-#.  Go to the example directory:
+To compile the sample application see :doc:`compiling`.
 
-    .. code-block:: console
-
-        export RTE_SDK=/path/to/rte_sdk
-        cd ${RTE_SDK}/examples/quota_watermark
-
-#.  Set the target (a default target is used if not specified). For example:
-
-    .. code-block:: console
-
-        export RTE_TARGET=x86_64-native-linuxapp-gcc
-
-    See the *DPDK Getting Started Guide* for possible RTE_TARGET values.
-
-#.  Build the application:
-
-    .. code-block:: console
-
-        make
+The application is located in the ``quota_watermark`` sub-directory.
 
 Running the Application
 -----------------------
@@ -133,7 +88,7 @@ where,
 
 -p PORTMASK: A hexadecimal bitmask of the ports to configure
 
-To run the application in a linuxapp environment with four logical cores and ports 0 and 2,
+To run the application in a linux environment with four logical cores and ports 0 and 2,
 issue the following command:
 
 .. code-block:: console
@@ -155,7 +110,7 @@ The control application requires a number of command line options:
 The --proc-type=secondary option is necessary for the EAL to properly initialize the control application to
 use the same huge pages as the core application and  thus be able to access its rings.
 
-To run the application in a linuxapp environment on logical core 0, issue the following command:
+To run the application in a linux environment on logical core 0, issue the following command:
 
 .. code-block:: console
 
@@ -208,7 +163,7 @@ Then, a call to init_dpdk(), defined in init.c, is made to initialize the poll m
         if (ret < 0)
             rte_exit(EXIT_FAILURE, "rte_pci_probe(): error %d\n", ret);
 
-        if (rte_eth_dev_count() < 2)
+        if (rte_eth_dev_count_avail() < 2)
             rte_exit(EXIT_FAILURE, "Not enough Ethernet port available\n");
     }
 

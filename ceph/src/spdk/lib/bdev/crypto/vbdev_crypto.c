@@ -39,7 +39,9 @@
 #include "spdk/io_channel.h"
 #include "spdk/bdev_module.h"
 
+
 #include <rte_config.h>
+#include <rte_version.h>
 #include <rte_bus_vdev.h>
 #include <rte_crypto.h>
 #include <rte_cryptodev.h>
@@ -104,7 +106,7 @@ static pthread_mutex_t g_device_qp_lock = PTHREAD_MUTEX_INITIALIZER;
  */
 #define NUM_MBUFS		32768
 #define POOL_CACHE_SIZE		256
-#define NUM_SESSIONS		NUM_MBUFS
+#define NUM_SESSIONS		1024
 #define SESS_MEMPOOL_CACHE_SIZE 256
 
 /* This is the max number of IOs we can supply to any crypto device QP at one time.
@@ -151,12 +153,16 @@ struct vbdev_crypto {
 	struct spdk_bdev		crypto_bdev;		/* the crypto virtual bdev */
 	uint8_t				*key;			/* key per bdev */
 	char				*drv_name;		/* name of the crypto device driver */
+	struct rte_cryptodev_sym_session *session_encrypt;	/* encryption session for this bdev */
+	struct rte_cryptodev_sym_session *session_decrypt;	/* decryption session for this bdev */
+	struct rte_crypto_sym_xform	cipher_xform;		/* crypto control struct for this bdev */
 	TAILQ_ENTRY(vbdev_crypto)	link;
 };
 static TAILQ_HEAD(, vbdev_crypto) g_vbdev_crypto = TAILQ_HEAD_INITIALIZER(g_vbdev_crypto);
 
 /* Shared mempools between all devices on this system */
-static struct spdk_mempool *g_session_mp = NULL;	/* session mempool */
+static struct rte_mempool *g_session_mp = NULL;
+static struct rte_mempool *g_session_mp_priv = NULL;
 static struct spdk_mempool *g_mbuf_mp = NULL;		/* mbuf mempool */
 static struct rte_mempool *g_crypto_op_mp = NULL;	/* crypto operations, must be rte* mempool */
 
@@ -168,6 +174,8 @@ struct crypto_io_channel {
 	struct spdk_io_channel		*base_ch;		/* IO channel of base device */
 	struct spdk_poller		*poller;		/* completion poller */
 	struct device_qp		*device_qp;		/* unique device/qp combination for this channel */
+	TAILQ_HEAD(, spdk_bdev_io)	pending_cry_ios;	/* outstanding operations to the crypto device */
+	struct spdk_io_channel_iter	*iter;			/* used with for_each_channel in reset */
 };
 
 /* This is the crypto per IO context that the bdev layer allocates for us opaquely and attaches to
@@ -177,8 +185,6 @@ struct crypto_bdev_io {
 	int cryop_cnt_remaining;			/* counter used when completing crypto ops */
 	struct crypto_io_channel *crypto_ch;		/* need to store for crypto completion handling */
 	struct vbdev_crypto *crypto_bdev;		/* the crypto node struct associated with this IO */
-	enum rte_crypto_cipher_operation crypto_op;	/* the crypto control struct */
-	struct rte_crypto_sym_xform	cipher_xform;	/* crypto control struct for this IO */
 	struct spdk_bdev_io *orig_io;			/* the original IO */
 	struct spdk_bdev_io *read_io;			/* the read IO we issued */
 
@@ -187,6 +193,117 @@ struct crypto_bdev_io {
 	uint64_t cry_offset_blocks;			/* block offset on media */
 	struct iovec cry_iov;				/* iov representing contig write buffer */
 };
+
+/* Called by vbdev_crypto_init_crypto_drivers() to init each discovered crypto device */
+static int
+create_vbdev_dev(uint8_t index, uint16_t num_lcores)
+{
+	struct vbdev_dev *device;
+	uint8_t j, cdev_id, cdrv_id;
+	struct device_qp *dev_qp;
+	struct device_qp *tmp_qp;
+	int rc;
+
+	device = calloc(1, sizeof(struct vbdev_dev));
+	if (!device) {
+		return -ENOMEM;
+	}
+
+	/* Get details about this device. */
+	rte_cryptodev_info_get(index, &device->cdev_info);
+	cdrv_id = device->cdev_info.driver_id;
+	cdev_id = device->cdev_id = index;
+
+	/* Before going any further, make sure we have enough resources for this
+	 * device type to function.  We need a unique queue pair per core accross each
+	 * device type to remain lockless....
+	 */
+	if ((rte_cryptodev_device_count_by_driver(cdrv_id) *
+	     device->cdev_info.max_nb_queue_pairs) < num_lcores) {
+		SPDK_ERRLOG("Insufficient unique queue pairs available for %s\n",
+			    device->cdev_info.driver_name);
+		SPDK_ERRLOG("Either add more crypto devices or decrease core count\n");
+		rc = -EINVAL;
+		goto err;
+	}
+
+	/* Setup queue pairs. */
+	struct rte_cryptodev_config conf = {
+		.nb_queue_pairs = device->cdev_info.max_nb_queue_pairs,
+		.socket_id = SPDK_ENV_SOCKET_ID_ANY
+	};
+
+	rc = rte_cryptodev_configure(cdev_id, &conf);
+	if (rc < 0) {
+		SPDK_ERRLOG("Failed to configure cryptodev %u\n", cdev_id);
+		rc = -EINVAL;
+		goto err;
+	}
+
+	struct rte_cryptodev_qp_conf qp_conf = {
+		.nb_descriptors = CRYPTO_QP_DESCRIPTORS,
+#if RTE_VERSION >= RTE_VERSION_NUM(19, 02, 0, 0)
+		.mp_session = g_session_mp,
+		.mp_session_private = g_session_mp_priv,
+#endif
+	};
+
+	/* Pre-setup all pottential qpairs now and assign them in the channel
+	 * callback. If we were to create them there, we'd have to stop the
+	 * entire device affecting all other threads that might be using it
+	 * even on other queue pairs.
+	 */
+	for (j = 0; j < device->cdev_info.max_nb_queue_pairs; j++) {
+#if RTE_VERSION >= RTE_VERSION_NUM(19, 02, 0, 0)
+		rc = rte_cryptodev_queue_pair_setup(cdev_id, j, &qp_conf, SOCKET_ID_ANY);
+#else
+		rc = rte_cryptodev_queue_pair_setup(cdev_id, j, &qp_conf, SOCKET_ID_ANY,
+						    g_session_mp);
+#endif
+
+		if (rc < 0) {
+			SPDK_ERRLOG("Failed to setup queue pair %u on "
+				    "cryptodev %u\n", j, cdev_id);
+			rc = -EINVAL;
+			goto err;
+		}
+	}
+
+	rc = rte_cryptodev_start(cdev_id);
+	if (rc < 0) {
+		SPDK_ERRLOG("Failed to start device %u: error %d\n",
+			    cdev_id, rc);
+		rc = -EINVAL;
+		goto err;
+	}
+
+	/* Build up list of device/qp combinations */
+	for (j = 0; j < device->cdev_info.max_nb_queue_pairs; j++) {
+		dev_qp = calloc(1, sizeof(struct device_qp));
+		if (!dev_qp) {
+			rc = -ENOMEM;
+			goto err;
+		}
+		dev_qp->device = device;
+		dev_qp->qp = j;
+		dev_qp->in_use = false;
+		TAILQ_INSERT_TAIL(&g_device_qp, dev_qp, link);
+	}
+
+	/* Add to our list of available crypto devices. */
+	TAILQ_INSERT_TAIL(&g_vbdev_devs, device, link);
+
+	return 0;
+err:
+	TAILQ_FOREACH_SAFE(dev_qp, &g_device_qp, link, tmp_qp) {
+		TAILQ_REMOVE(&g_device_qp, dev_qp, link);
+		free(dev_qp);
+	}
+	free(device);
+
+	return rc;
+
+}
 
 /* This is called from the module's init function. We setup all crypto devices early on as we are unable
  * to easily dynamically configure queue pairs after the drivers are up and running.  So, here, we
@@ -197,12 +314,13 @@ static int
 vbdev_crypto_init_crypto_drivers(void)
 {
 	uint8_t cdev_count;
-	uint8_t cdrv_id, cdev_id, i, j;
+	uint8_t cdev_id, i;
 	int rc = 0;
-	struct vbdev_dev *device = NULL;
-	struct device_qp *dev_qp = NULL;
+	struct vbdev_dev *device;
+	struct vbdev_dev *tmp_dev;
 	unsigned int max_sess_size = 0, sess_size;
 	uint16_t num_lcores = rte_lcore_count();
+	uint32_t cache_size;
 
 	/* Only the first call, via RPC or module init should init the crypto drivers. */
 	if (g_session_mp != NULL) {
@@ -211,9 +329,7 @@ vbdev_crypto_init_crypto_drivers(void)
 
 	/* We always init AESNI_MB */
 	rc = rte_vdev_init(AESNI_MB, NULL);
-	if (rc == 0) {
-		SPDK_NOTICELOG("created virtual PMD %s\n", AESNI_MB);
-	} else {
+	if (rc) {
 		SPDK_ERRLOG("error creating virtual PMD %s\n", AESNI_MB);
 		return -EINVAL;
 	}
@@ -238,11 +354,26 @@ vbdev_crypto_init_crypto_drivers(void)
 		}
 	}
 
-	g_session_mp = spdk_mempool_create("session_mp", NUM_SESSIONS * 2, max_sess_size,
-					   SPDK_MEMPOOL_DEFAULT_CACHE_SIZE,
-					   SPDK_ENV_SOCKET_ID_ANY);
+	cache_size = spdk_min(RTE_MEMPOOL_CACHE_MAX_SIZE, NUM_SESSIONS / 2 / num_lcores);
+#if RTE_VERSION >= RTE_VERSION_NUM(19, 02, 0, 0)
+	g_session_mp_priv = rte_mempool_create("session_mp_priv", NUM_SESSIONS, max_sess_size, cache_size,
+					       0, NULL, NULL, NULL, NULL, SOCKET_ID_ANY, 0);
+	if (g_session_mp_priv == NULL) {
+		SPDK_ERRLOG("Cannot create private session pool max size 0x%x\n", max_sess_size);
+		return -ENOMEM;
+	}
+
+	g_session_mp = rte_cryptodev_sym_session_pool_create(
+			       "session_mp",
+			       NUM_SESSIONS, 0, cache_size, 0,
+			       SOCKET_ID_ANY);
+#else
+	g_session_mp = rte_mempool_create("session_mp", NUM_SESSIONS, max_sess_size, cache_size,
+					  0, NULL, NULL, NULL, NULL, SOCKET_ID_ANY, 0);
+#endif
 	if (g_session_mp == NULL) {
 		SPDK_ERRLOG("Cannot create session pool max size 0x%x\n", max_sess_size);
+		goto error_create_session_mp;
 		return -ENOMEM;
 	}
 
@@ -267,111 +398,34 @@ vbdev_crypto_init_crypto_drivers(void)
 		goto error_create_op;
 	}
 
-	/*
-	 * Now lets configure each device.
-	 */
+	/* Init all devices */
 	for (i = 0; i < cdev_count; i++) {
-		device = calloc(1, sizeof(struct vbdev_dev));
-		if (!device) {
-			rc = -ENOMEM;
-			goto error_create_device;
-		}
-
-		/* Get details about this device. */
-		rte_cryptodev_info_get(i, &device->cdev_info);
-		cdrv_id = device->cdev_info.driver_id;
-		cdev_id = device->cdev_id = i;
-
-		/* Before going any further, make sure we have enough resources for this
-		 * device type to function.  We need a unique queue pair per core accross each
-		 * device type to remain lockless....
-		 */
-		if ((rte_cryptodev_device_count_by_driver(cdrv_id) *
-		     device->cdev_info.max_nb_queue_pairs) < num_lcores) {
-			SPDK_ERRLOG("Insufficient unique queue pairs available for %s\n",
-				    device->cdev_info.driver_name);
-			SPDK_ERRLOG("Either add more crypto devices or decrease core count\n");
-			rc = -EINVAL;
-			goto error_qp;
-		}
-
-		/* Setup queue pairs. */
-		struct rte_cryptodev_config conf = {
-			.nb_queue_pairs = device->cdev_info.max_nb_queue_pairs,
-			.socket_id = SPDK_ENV_SOCKET_ID_ANY
-		};
-
-		rc = rte_cryptodev_configure(cdev_id, &conf);
-		if (rc < 0) {
-			SPDK_ERRLOG("Failed to configure cryptodev %u", cdev_id);
-			rc = -EINVAL;
-			goto error_dev_config;
-		}
-
-		struct rte_cryptodev_qp_conf qp_conf = {
-			.nb_descriptors = CRYPTO_QP_DESCRIPTORS
-		};
-
-		/* Pre-setup all pottential qpairs now and assign them in the channel
-		 * callback. If we were to create them there, we'd have to stop the
-		 * entire device affecting all other threads that might be using it
-		 * even on other queue pairs.
-		 */
-		for (j = 0; j < device->cdev_info.max_nb_queue_pairs; j++) {
-			rc = rte_cryptodev_queue_pair_setup(cdev_id, j, &qp_conf, SOCKET_ID_ANY,
-							    (struct rte_mempool *)g_session_mp);
-
-			if (rc < 0) {
-				SPDK_ERRLOG("Failed to setup queue pair %u on "
-					    "cryptodev %u", j, cdev_id);
-				rc = -EINVAL;
-				goto error_qp_setup;
-			}
-		}
-
-		rc = rte_cryptodev_start(cdev_id);
-		if (rc < 0) {
-			SPDK_ERRLOG("Failed to start device %u: error %d\n",
-				    cdev_id, rc);
-			rc = -EINVAL;
-			goto error_device_start;
-		}
-
-		/* Add to our list of available crypto devices. */
-		TAILQ_INSERT_TAIL(&g_vbdev_devs, device, link);
-
-		/* Build up list of device/qp combinations */
-		for (j = 0; j < device->cdev_info.max_nb_queue_pairs; j++) {
-			dev_qp = calloc(1, sizeof(struct device_qp));
-			if (!dev_qp) {
-				rc = -ENOMEM;
-				goto error_create_devqp;
-			}
-			dev_qp->device = device;
-			dev_qp->qp = j;
-			dev_qp->in_use = false;
-			TAILQ_INSERT_TAIL(&g_device_qp, dev_qp, link);
+		rc = create_vbdev_dev(i, num_lcores);
+		if (rc) {
+			goto err;
 		}
 	}
 	return 0;
 
 	/* Error cleanup paths. */
-error_create_devqp:
-	while ((dev_qp = TAILQ_FIRST(&g_device_qp))) {
-		TAILQ_REMOVE(&g_device_qp, dev_qp, link);
-		free(dev_qp);
+err:
+	TAILQ_FOREACH_SAFE(device, &g_vbdev_devs, link, tmp_dev) {
+		TAILQ_REMOVE(&g_vbdev_devs, device, link);
+		free(device);
 	}
-error_device_start:
-error_qp_setup:
-error_dev_config:
-error_qp:
-	free(device);
-error_create_device:
 	rte_mempool_free(g_crypto_op_mp);
+	g_crypto_op_mp = NULL;
 error_create_op:
 	spdk_mempool_free(g_mbuf_mp);
+	g_mbuf_mp = NULL;
 error_create_mbuf:
-	spdk_mempool_free(g_session_mp);
+	rte_mempool_free(g_session_mp);
+	g_session_mp = NULL;
+error_create_session_mp:
+	if (g_session_mp_priv != NULL) {
+		rte_mempool_free(g_session_mp_priv);
+		g_session_mp_priv = NULL;
+	}
 	return rc;
 }
 
@@ -388,41 +442,43 @@ _crypto_operation_complete(struct spdk_bdev_io *bdev_io)
 	struct spdk_bdev_io *free_me = io_ctx->read_io;
 	int rc = 0;
 
-	if (bdev_io->internal.status != SPDK_BDEV_IO_STATUS_FAILED) {
-		if (bdev_io->type == SPDK_BDEV_IO_TYPE_READ) {
+	TAILQ_REMOVE(&crypto_ch->pending_cry_ios, bdev_io, module_link);
 
-			/* Complete the original IO and then free the one that we created
-			 * as a result of issuing an IO via submit_reqeust.
-			 */
+	if (bdev_io->type == SPDK_BDEV_IO_TYPE_READ) {
+
+		/* Complete the original IO and then free the one that we created
+		 * as a result of issuing an IO via submit_reqeust.
+		 */
+		if (bdev_io->internal.status != SPDK_BDEV_IO_STATUS_FAILED) {
 			spdk_bdev_io_complete(bdev_io, SPDK_BDEV_IO_STATUS_SUCCESS);
-			spdk_bdev_free_io(free_me);
+		} else {
+			SPDK_ERRLOG("Issue with decryption on bdev_io %p\n", bdev_io);
+			rc = -EINVAL;
+		}
+		spdk_bdev_free_io(free_me);
 
-		} else if (bdev_io->type == SPDK_BDEV_IO_TYPE_WRITE) {
+	} else if (bdev_io->type == SPDK_BDEV_IO_TYPE_WRITE) {
 
+		if (bdev_io->internal.status != SPDK_BDEV_IO_STATUS_FAILED) {
 			/* Write the encrypted data. */
 			rc = spdk_bdev_writev_blocks(crypto_bdev->base_desc, crypto_ch->base_ch,
 						     &io_ctx->cry_iov, 1, io_ctx->cry_offset_blocks,
 						     io_ctx->cry_num_blocks, _complete_internal_write,
 						     bdev_io);
 		} else {
-
-			/* Something really went haywire if this function got called with a type
-			 * other than read or write.
-			 */
-			rc = -1;
+			SPDK_ERRLOG("Issue with encryption on bdev_io %p\n", bdev_io);
+			rc = -EINVAL;
 		}
+
 	} else {
-		/* If the poller found that one of the crypto ops had failed as part of this
-		 * bdev_io it would have updated the internal status indicate failure.
-		 */
-		rc = -1;
+		SPDK_ERRLOG("Unknown bdev type %u on crypto operation completion\n",
+			    bdev_io->type);
+		rc = -EINVAL;
 	}
 
-	if (rc != 0) {
-		SPDK_ERRLOG("ERROR on crypto operation completion!\n");
+	if (rc) {
 		spdk_bdev_io_complete(bdev_io, SPDK_BDEV_IO_STATUS_FAILED);
 	}
-
 }
 
 /* This is the poller for the crypto device. It uses a single API to dequeue whatever is ready at
@@ -484,12 +540,15 @@ crypto_dev_poller(void *args)
 		/* done encrypting, complete the bdev_io */
 		if (--io_ctx->cryop_cnt_remaining == 0) {
 
+			/* If we're completing this with an outstanding reset we need
+			 * to fail it.
+			 */
+			if (crypto_ch->iter) {
+				bdev_io->internal.status = SPDK_BDEV_IO_STATUS_FAILED;
+			}
+
 			/* Complete the IO */
 			_crypto_operation_complete(bdev_io);
-
-			/* Return session */
-			rte_cryptodev_sym_session_clear(cdev_id, dequeued_ops[i]->sym->session);
-			rte_cryptodev_sym_session_free(dequeued_ops[i]->sym->session);
 		}
 	}
 
@@ -504,6 +563,16 @@ crypto_dev_poller(void *args)
 				      num_mbufs);
 	}
 
+	/* If the channel iter is not NULL, we need to continue to poll
+	 * until the pending list is empty, then we can move on to the
+	 * next channel.
+	 */
+	if (crypto_ch->iter && TAILQ_EMPTY(&crypto_ch->pending_cry_ios)) {
+		SPDK_NOTICELOG("Channel %p has been quiesced.\n", crypto_ch);
+		spdk_for_each_channel_continue(crypto_ch->iter, 0);
+		crypto_ch->iter = NULL;
+	}
+
 	return num_dequeued_ops;
 }
 
@@ -511,7 +580,6 @@ crypto_dev_poller(void *args)
 static int
 _crypto_operation(struct spdk_bdev_io *bdev_io, enum rte_crypto_cipher_operation crypto_op)
 {
-	struct rte_cryptodev_sym_session *session;
 	uint16_t num_enqueued_ops = 0;
 	uint32_t cryop_cnt = bdev_io->u.bdev.num_blocks;
 	struct crypto_bdev_io *io_ctx = (struct crypto_bdev_io *)bdev_io->driver_ctx;
@@ -567,32 +635,6 @@ _crypto_operation(struct spdk_bdev_io *bdev_io, enum rte_crypto_cipher_operation
 		goto error_get_ops;
 	}
 
-	/* Get sessions. */
-	session = rte_cryptodev_sym_session_create((struct rte_mempool *)g_session_mp);
-	if (NULL == session) {
-		SPDK_ERRLOG("ERROR trying to create crypto session!\n");
-		rc = -EINVAL;
-		goto error_session_create;
-	}
-
-	/* Init our session with the desired cipher options. */
-	io_ctx->cipher_xform.type = RTE_CRYPTO_SYM_XFORM_CIPHER;
-	io_ctx->cipher_xform.cipher.key.data = io_ctx->crypto_bdev->key;
-	io_ctx->cipher_xform.cipher.op = io_ctx->crypto_op = crypto_op;
-	io_ctx->cipher_xform.cipher.iv.offset = IV_OFFSET;
-	io_ctx->cipher_xform.cipher.algo = RTE_CRYPTO_CIPHER_AES_CBC;
-	io_ctx->cipher_xform.cipher.key.length = AES_CBC_KEY_LENGTH;
-	io_ctx->cipher_xform.cipher.iv.length = AES_CBC_IV_LENGTH;
-
-	rc = rte_cryptodev_sym_session_init(cdev_id, session,
-					    &io_ctx->cipher_xform,
-					    (struct rte_mempool *)g_session_mp);
-	if (rc < 0) {
-		SPDK_ERRLOG("ERROR trying to init crypto session!\n");
-		rc = -EINVAL;
-		goto error_session_init;
-	}
-
 	/* For encryption, we need to prepare a single contiguous buffer as the encryption
 	 * destination, we'll then pass that along for the write after encryption is done.
 	 * This is done to avoiding encrypting the provided write buffer which may be
@@ -605,7 +647,9 @@ _crypto_operation(struct spdk_bdev_io *bdev_io, enum rte_crypto_cipher_operation
 		 * has a buffer, which ours always will.  So, until we modify that API
 		 * or better yet the current ZCOPY work lands, this is the best we can do.
 		 */
-		io_ctx->cry_iov.iov_base = spdk_dma_malloc(total_length, 0x10, NULL);
+		io_ctx->cry_iov.iov_base = spdk_malloc(total_length,
+						       spdk_bdev_get_buf_align(bdev_io->bdev), NULL,
+						       SPDK_ENV_LCORE_ID_ANY, SPDK_MALLOC_DMA);
 		if (!io_ctx->cry_iov.iov_base) {
 			SPDK_ERRLOG("ERROR trying to allocate write buffer for encryption!\n");
 			rc = -ENOMEM;
@@ -621,7 +665,7 @@ _crypto_operation(struct spdk_bdev_io *bdev_io, enum rte_crypto_cipher_operation
 	io_ctx->cryop_cnt_remaining = cryop_cnt;
 
 	/* As we don't support chaining because of a decision to use LBA as IV, construction
-	 * of crypto operaations is straightforward. We build both the op, the mbuf and the
+	 * of crypto operations is straightforward. We build both the op, the mbuf and the
 	 * dst_mbuf in our local arrays by looping through the length of the bdev IO and
 	 * picking off LBA sized blocks of memory from the IOVs as we walk through them. Each
 	 * LBA sized chunck of memory will correspond 1:1 to a crypto operation and a single
@@ -636,7 +680,7 @@ _crypto_operation(struct spdk_bdev_io *bdev_io, enum rte_crypto_cipher_operation
 
 		/* Set the mbuf elements address and length. Null out the next pointer. */
 		src_mbufs[crypto_index]->buf_addr = current_iov;
-		src_mbufs[crypto_index]->buf_iova = spdk_vtophys((void *)current_iov);
+		src_mbufs[crypto_index]->buf_iova = spdk_vtophys((void *)current_iov, NULL);
 		src_mbufs[crypto_index]->data_len = crypto_len;
 		src_mbufs[crypto_index]->next = NULL;
 		/* Store context in every mbuf as we don't know anything about completion order */
@@ -669,18 +713,31 @@ _crypto_operation(struct spdk_bdev_io *bdev_io, enum rte_crypto_cipher_operation
 
 			/* Set the relevant destination en_mbuf elements. */
 			dst_mbufs[crypto_index]->buf_addr = io_ctx->cry_iov.iov_base + en_offset;
-			dst_mbufs[crypto_index]->buf_iova = spdk_vtophys(dst_mbufs[crypto_index]->buf_addr);
+			dst_mbufs[crypto_index]->buf_iova = spdk_vtophys(dst_mbufs[crypto_index]->buf_addr,
+							    NULL);
 			dst_mbufs[crypto_index]->data_len = crypto_len;
 			crypto_ops[crypto_index]->sym->m_dst = dst_mbufs[crypto_index];
 			en_offset += crypto_len;
 			dst_mbufs[crypto_index]->next = NULL;
-		}
 
-		/* Attach the crypto session to the operation */
-		rc = rte_crypto_op_attach_sym_session(crypto_ops[crypto_index], session);
-		if (rc) {
-			rc = -EINVAL;
-			goto error_attach_session;
+			/* Attach the crypto session to the operation */
+			rc = rte_crypto_op_attach_sym_session(crypto_ops[crypto_index],
+							      io_ctx->crypto_bdev->session_encrypt);
+			if (rc) {
+				rc = -EINVAL;
+				goto error_attach_session;
+			}
+
+		} else {
+			/* Attach the crypto session to the operation */
+			rc = rte_crypto_op_attach_sym_session(crypto_ops[crypto_index],
+							      io_ctx->crypto_bdev->session_decrypt);
+			if (rc) {
+				rc = -EINVAL;
+				goto error_attach_session;
+			}
+
+
 		}
 
 		/* Subtract our running totals for the op in progress and the overall bdev io */
@@ -726,15 +783,14 @@ _crypto_operation(struct spdk_bdev_io *bdev_io, enum rte_crypto_cipher_operation
 		}
 	} while (enqueued < cryop_cnt);
 
+	/* Add this bdev_io to our outstanding list. */
+	TAILQ_INSERT_TAIL(&crypto_ch->pending_cry_ios, bdev_io, module_link);
+
 	return rc;
 
 	/* Error cleanup paths. */
 error_attach_session:
 error_get_write_buffer:
-error_session_init:
-	rte_cryptodev_sym_session_clear(cdev_id, session);
-	rte_cryptodev_sym_session_free(session);
-error_session_create:
 	rte_mempool_put_bulk(g_crypto_op_mp, (void **)crypto_ops, cryop_cnt);
 	allocated = 0;
 error_get_ops:
@@ -752,6 +808,35 @@ error_get_dst:
 	return rc;
 }
 
+/* This function is called after all channels have been quiesced following
+ * a bdev reset.
+ */
+static void
+_ch_quiesce_done(struct spdk_io_channel_iter *i, int status)
+{
+	struct crypto_bdev_io *io_ctx = spdk_io_channel_iter_get_ctx(i);
+
+	assert(TAILQ_EMPTY(&io_ctx->crypto_ch->pending_cry_ios));
+	assert(io_ctx->orig_io != NULL);
+
+	spdk_bdev_io_complete(io_ctx->orig_io, SPDK_BDEV_IO_STATUS_SUCCESS);
+}
+
+/* This function is called per channel to quiesce IOs before completing a
+ * bdev reset that we received.
+ */
+static void
+_ch_quiesce(struct spdk_io_channel_iter *i)
+{
+	struct spdk_io_channel *ch = spdk_io_channel_iter_get_channel(i);
+	struct crypto_io_channel *crypto_ch = spdk_io_channel_get_ctx(ch);
+
+	crypto_ch->iter = i;
+	/* When the poller runs, it will see the non-NULL iter and handle
+	 * the quiesce.
+	 */
+}
+
 /* Completion callback for IO that were issued from this bdev other than read/write.
  * They have their own for readability.
  */
@@ -760,6 +845,20 @@ _complete_internal_io(struct spdk_bdev_io *bdev_io, bool success, void *cb_arg)
 {
 	struct spdk_bdev_io *orig_io = cb_arg;
 	int status = success ? SPDK_BDEV_IO_STATUS_SUCCESS : SPDK_BDEV_IO_STATUS_FAILED;
+
+	if (bdev_io->type == SPDK_BDEV_IO_TYPE_RESET) {
+		struct crypto_bdev_io *orig_ctx = (struct crypto_bdev_io *)orig_io->driver_ctx;
+
+		assert(orig_io == orig_ctx->orig_io);
+
+		spdk_bdev_free_io(bdev_io);
+
+		spdk_for_each_channel(orig_ctx->crypto_bdev,
+				      _ch_quiesce,
+				      orig_ctx,
+				      _ch_quiesce_done);
+		return;
+	}
 
 	spdk_bdev_io_complete(orig_io, status);
 	spdk_bdev_free_io(bdev_io);
@@ -773,7 +872,7 @@ _complete_internal_write(struct spdk_bdev_io *bdev_io, bool success, void *cb_ar
 	int status = success ? SPDK_BDEV_IO_STATUS_SUCCESS : SPDK_BDEV_IO_STATUS_FAILED;
 	struct crypto_bdev_io *orig_ctx = (struct crypto_bdev_io *)orig_io->driver_ctx;
 
-	spdk_dma_free(orig_ctx->cry_iov.iov_base);
+	spdk_free(orig_ctx->cry_iov.iov_base);
 	spdk_bdev_io_complete(orig_io, status);
 	spdk_bdev_free_io(bdev_io);
 }
@@ -790,16 +889,17 @@ _complete_internal_read(struct spdk_bdev_io *bdev_io, bool success, void *cb_arg
 		/* Save off this bdev_io so it can be freed after decryption. */
 		orig_ctx->read_io = bdev_io;
 
-		if (_crypto_operation(orig_io, RTE_CRYPTO_CIPHER_OP_DECRYPT)) {
-			SPDK_ERRLOG("ERROR decrypting");
-			spdk_bdev_io_complete(orig_io, SPDK_BDEV_IO_STATUS_FAILED);
-			spdk_bdev_free_io(bdev_io);
+		if (!_crypto_operation(orig_io, RTE_CRYPTO_CIPHER_OP_DECRYPT)) {
+			return;
+		} else {
+			SPDK_ERRLOG("ERROR decrypting\n");
 		}
 	} else {
-		SPDK_ERRLOG("ERROR on read prior to decrypting");
-		spdk_bdev_io_complete(orig_io, SPDK_BDEV_IO_STATUS_FAILED);
-		spdk_bdev_free_io(bdev_io);
+		SPDK_ERRLOG("ERROR on read prior to decrypting\n");
 	}
+
+	spdk_bdev_io_complete(orig_io, SPDK_BDEV_IO_STATUS_FAILED);
+	spdk_bdev_free_io(bdev_io);
 }
 
 /* Callback for getting a buf from the bdev pool in the event that the caller passed
@@ -807,12 +907,18 @@ _complete_internal_read(struct spdk_bdev_io *bdev_io, bool success, void *cb_arg
  * beneath us before we're done with it.
  */
 static void
-crypto_read_get_buf_cb(struct spdk_io_channel *ch, struct spdk_bdev_io *bdev_io)
+crypto_read_get_buf_cb(struct spdk_io_channel *ch, struct spdk_bdev_io *bdev_io,
+		       bool success)
 {
 	struct vbdev_crypto *crypto_bdev = SPDK_CONTAINEROF(bdev_io->bdev, struct vbdev_crypto,
 					   crypto_bdev);
 	struct crypto_io_channel *crypto_ch = spdk_io_channel_get_ctx(ch);
 	int rc;
+
+	if (!success) {
+		spdk_bdev_io_complete(bdev_io, SPDK_BDEV_IO_STATUS_FAILED);
+		return;
+	}
 
 	rc = spdk_bdev_readv_blocks(crypto_bdev->base_desc, crypto_ch->base_ch, bdev_io->u.bdev.iovs,
 				    bdev_io->u.bdev.iovcnt, bdev_io->u.bdev.offset_blocks,
@@ -907,6 +1013,21 @@ vbdev_crypto_io_type_supported(void *ctx, enum spdk_bdev_io_type io_type)
 	}
 }
 
+/* Callback for unregistering the IO device. */
+static void
+_device_unregister_cb(void *io_device)
+{
+	struct vbdev_crypto *crypto_bdev = io_device;
+
+	/* Done with this crypto_bdev. */
+	rte_cryptodev_sym_session_free(crypto_bdev->session_decrypt);
+	rte_cryptodev_sym_session_free(crypto_bdev->session_encrypt);
+	free(crypto_bdev->drv_name);
+	free(crypto_bdev->key);
+	free(crypto_bdev->crypto_bdev.name);
+	free(crypto_bdev);
+}
+
 /* Called after we've unregistered following a hot remove callback.
  * Our finish entry point will be called next.
  */
@@ -915,18 +1036,18 @@ vbdev_crypto_destruct(void *ctx)
 {
 	struct vbdev_crypto *crypto_bdev = (struct vbdev_crypto *)ctx;
 
+	/* Remove this device from the internal list */
+	TAILQ_REMOVE(&g_vbdev_crypto, crypto_bdev, link);
+
 	/* Unclaim the underlying bdev. */
 	spdk_bdev_module_release_bdev(crypto_bdev->base_bdev);
 
 	/* Close the underlying bdev. */
 	spdk_bdev_close(crypto_bdev->base_desc);
 
-	/* Done with this crypto_bdev. */
-	TAILQ_REMOVE(&g_vbdev_crypto, crypto_bdev, link);
-	free(crypto_bdev->drv_name);
-	free(crypto_bdev->key);
-	free(crypto_bdev->crypto_bdev.name);
-	free(crypto_bdev);
+	/* Unregister the io_device. */
+	spdk_io_device_unregister(crypto_bdev, _device_unregister_cb);
+
 	return 0;
 }
 
@@ -969,9 +1090,9 @@ vbdev_crypto_dump_info_json(void *ctx, struct spdk_json_write_ctx *w)
 static int
 vbdev_crypto_config_json(struct spdk_json_write_ctx *w)
 {
-	struct vbdev_crypto *crypto_bdev, *tmp;
+	struct vbdev_crypto *crypto_bdev;
 
-	TAILQ_FOREACH_SAFE(crypto_bdev, &g_vbdev_crypto, link, tmp) {
+	TAILQ_FOREACH(crypto_bdev, &g_vbdev_crypto, link) {
 		spdk_json_write_object_begin(w);
 		spdk_json_write_named_string(w, "method", "construct_crypto_bdev");
 		spdk_json_write_named_object_begin(w, "params");
@@ -1008,13 +1129,15 @@ crypto_bdev_ch_create_cb(void *io_device, void *ctx_buf)
 		    (device_qp->in_use == false)) {
 			crypto_ch->device_qp = device_qp;
 			device_qp->in_use = true;
-			SPDK_NOTICELOG("Device queue pair assignment: ch %p device %p qpid %u %s\n",
-				       crypto_ch, device_qp->device, crypto_ch->device_qp->qp, crypto_bdev->drv_name);
 			break;
 		}
 	}
 	pthread_mutex_unlock(&g_device_qp_lock);
 	assert(crypto_ch->device_qp);
+
+	/* We use this queue to track outstanding IO in our lyaer. */
+	TAILQ_INIT(&crypto_ch->pending_cry_ios);
+
 	return 0;
 }
 
@@ -1044,6 +1167,13 @@ vbdev_crypto_insert_name(const char *bdev_name, const char *vbdev_name,
 	struct bdev_names *name;
 	int rc, j;
 	bool found = false;
+
+	TAILQ_FOREACH(name, &g_bdev_names, link) {
+		if (strcmp(vbdev_name, name->vbdev_name) == 0) {
+			SPDK_ERRLOG("crypto bdev %s already exists\n", vbdev_name);
+			return -EEXIST;
+		}
+	}
 
 	name = calloc(1, sizeof(struct bdev_names));
 	if (!name) {
@@ -1119,7 +1249,6 @@ create_crypto_disk(const char *bdev_name, const char *vbdev_name,
 		   const char *crypto_pmd, const char *key)
 {
 	struct spdk_bdev *bdev = NULL;
-	struct vbdev_crypto *crypto_bdev, *tmp;
 	int rc = 0;
 
 	bdev = spdk_bdev_get_by_name(bdev_name);
@@ -1130,33 +1259,13 @@ create_crypto_disk(const char *bdev_name, const char *vbdev_name,
 	}
 
 	if (!bdev) {
+		SPDK_NOTICELOG("vbdev creation deferred pending base bdev arrival\n");
 		return 0;
 	}
 
 	rc = vbdev_crypto_claim(bdev);
 	if (rc) {
 		return rc;
-	}
-
-	rc = vbdev_crypto_init_crypto_drivers();
-	if (rc) {
-		return rc;
-	}
-
-	TAILQ_FOREACH_SAFE(crypto_bdev, &g_vbdev_crypto, link, tmp) {
-		if (strcmp(crypto_bdev->base_bdev->name, bdev->name) == 0) {
-			rc = spdk_vbdev_register(&crypto_bdev->crypto_bdev,
-						 &crypto_bdev->base_bdev, 1);
-			if (rc) {
-				SPDK_ERRLOG("could not register crypto_bdev\n");
-				spdk_bdev_close(crypto_bdev->base_desc);
-				TAILQ_REMOVE(&g_vbdev_crypto, crypto_bdev, link);
-				free(crypto_bdev->crypto_bdev.name);
-				free(crypto_bdev->key);
-				free(crypto_bdev);
-			}
-			break;
-		}
 	}
 
 	return rc;
@@ -1236,6 +1345,8 @@ vbdev_crypto_finish(void)
 	struct bdev_names *name;
 	struct vbdev_dev *device;
 	struct device_qp *dev_qp;
+	unsigned i;
+	int rc;
 
 	while ((name = TAILQ_FIRST(&g_bdev_names))) {
 		TAILQ_REMOVE(&g_bdev_names, name, link);
@@ -1247,9 +1358,24 @@ vbdev_crypto_finish(void)
 	}
 
 	while ((device = TAILQ_FIRST(&g_vbdev_devs))) {
+		struct rte_cryptodev *rte_dev;
+
 		TAILQ_REMOVE(&g_vbdev_devs, device, link);
 		rte_cryptodev_stop(device->cdev_id);
+
+		assert(device->cdev_id < RTE_CRYPTO_MAX_DEVS);
+		rte_dev = &rte_cryptodevs[device->cdev_id];
+
+		if (rte_dev->dev_ops->queue_pair_release != NULL) {
+			for (i = 0; i < device->cdev_info.max_nb_queue_pairs; i++) {
+				rte_dev->dev_ops->queue_pair_release(rte_dev, i);
+			}
+		}
 		free(device);
+	}
+	rc = rte_vdev_uninit(AESNI_MB);
+	if (rc) {
+		SPDK_ERRLOG("%d from rte_vdev_uninit\n", rc);
 	}
 
 	while ((dev_qp = TAILQ_FIRST(&g_device_qp))) {
@@ -1259,7 +1385,10 @@ vbdev_crypto_finish(void)
 
 	rte_mempool_free(g_crypto_op_mp);
 	spdk_mempool_free(g_mbuf_mp);
-	spdk_mempool_free(g_session_mp);
+	rte_mempool_free(g_session_mp);
+	if (g_session_mp_priv != NULL) {
+		rte_mempool_free(g_session_mp_priv);
+	}
 }
 
 /* During init we'll be asked how much memory we'd like passed to us
@@ -1328,13 +1457,15 @@ static struct spdk_bdev_module crypto_if = {
 	.config_json = vbdev_crypto_config_json
 };
 
-SPDK_BDEV_MODULE_REGISTER(&crypto_if)
+SPDK_BDEV_MODULE_REGISTER(crypto, &crypto_if)
 
 static int
 vbdev_crypto_claim(struct spdk_bdev *bdev)
 {
 	struct bdev_names *name;
 	struct vbdev_crypto *vbdev;
+	struct vbdev_dev *device;
+	bool found = false;
 	int rc = 0;
 
 	/* Check our list of names from config versus this bdev and if
@@ -1344,8 +1475,8 @@ vbdev_crypto_claim(struct spdk_bdev *bdev)
 		if (strcmp(name->bdev_name, bdev->name) != 0) {
 			continue;
 		}
+		SPDK_DEBUGLOG(SPDK_LOG_VBDEV_crypto, "Match on %s\n", bdev->name);
 
-		SPDK_NOTICELOG("Match on %s\n", bdev->name);
 		vbdev = calloc(1, sizeof(struct vbdev_crypto));
 		if (!vbdev) {
 			SPDK_ERRLOG("could not allocate crypto_bdev\n");
@@ -1378,7 +1509,14 @@ vbdev_crypto_claim(struct spdk_bdev *bdev)
 
 		vbdev->crypto_bdev.product_name = "crypto";
 		vbdev->crypto_bdev.write_cache = bdev->write_cache;
-		vbdev->crypto_bdev.need_aligned_buffer = bdev->need_aligned_buffer;
+		if (strcmp(vbdev->drv_name, QAT) == 0) {
+			vbdev->crypto_bdev.required_alignment =
+				spdk_max(spdk_u32log2(bdev->blocklen), bdev->required_alignment);
+			SPDK_NOTICELOG("QAT in use: Required alignment set to %u\n",
+				       vbdev->crypto_bdev.required_alignment);
+		} else {
+			vbdev->crypto_bdev.required_alignment = bdev->required_alignment;
+		}
 		/* Note: CRYPTO_MAX_IO is in units of bytes, optimal_io_boundary is
 		 * in units of blocks.
 		 */
@@ -1416,12 +1554,83 @@ vbdev_crypto_claim(struct spdk_bdev *bdev)
 			goto error_claim;
 		}
 
-		SPDK_NOTICELOG("registered crypto_bdev for: %s\n", name->vbdev_name);
+		/* To init the session we have to get the cryptoDev device ID for this vbdev */
+		TAILQ_FOREACH(device, &g_vbdev_devs, link) {
+			if (strcmp(device->cdev_info.driver_name, vbdev->drv_name) == 0) {
+				found = true;
+				break;
+			}
+		}
+		if (found == false) {
+			SPDK_ERRLOG("ERROR can't match crypto device driver to crypto vbdev!\n");
+			rc = -EINVAL;
+			goto error_cant_find_devid;
+		}
+
+		/* Get sessions. */
+		vbdev->session_encrypt = rte_cryptodev_sym_session_create(g_session_mp);
+		if (NULL == vbdev->session_encrypt) {
+			SPDK_ERRLOG("ERROR trying to create crypto session!\n");
+			rc = -EINVAL;
+			goto error_session_en_create;
+		}
+
+		vbdev->session_decrypt = rte_cryptodev_sym_session_create(g_session_mp);
+		if (NULL == vbdev->session_decrypt) {
+			SPDK_ERRLOG("ERROR trying to create crypto session!\n");
+			rc = -EINVAL;
+			goto error_session_de_create;
+		}
+
+		/* Init our per vbdev xform with the desired cipher options. */
+		vbdev->cipher_xform.type = RTE_CRYPTO_SYM_XFORM_CIPHER;
+		vbdev->cipher_xform.cipher.key.data = vbdev->key;
+		vbdev->cipher_xform.cipher.iv.offset = IV_OFFSET;
+		vbdev->cipher_xform.cipher.algo = RTE_CRYPTO_CIPHER_AES_CBC;
+		vbdev->cipher_xform.cipher.key.length = AES_CBC_KEY_LENGTH;
+		vbdev->cipher_xform.cipher.iv.length = AES_CBC_IV_LENGTH;
+
+		vbdev->cipher_xform.cipher.op = RTE_CRYPTO_CIPHER_OP_ENCRYPT;
+		rc = rte_cryptodev_sym_session_init(device->cdev_id, vbdev->session_encrypt,
+						    &vbdev->cipher_xform,
+						    g_session_mp_priv ? g_session_mp_priv : g_session_mp);
+		if (rc < 0) {
+			SPDK_ERRLOG("ERROR trying to init encrypt session!\n");
+			rc = -EINVAL;
+			goto error_session_init;
+		}
+
+		vbdev->cipher_xform.cipher.op = RTE_CRYPTO_CIPHER_OP_DECRYPT;
+		rc = rte_cryptodev_sym_session_init(device->cdev_id, vbdev->session_decrypt,
+						    &vbdev->cipher_xform,
+						    g_session_mp_priv ? g_session_mp_priv : g_session_mp);
+		if (rc < 0) {
+			SPDK_ERRLOG("ERROR trying to init decrypt session!\n");
+			rc = -EINVAL;
+			goto error_session_init;
+		}
+
+		rc = spdk_bdev_register(&vbdev->crypto_bdev);
+		if (rc < 0) {
+			SPDK_ERRLOG("ERROR trying to register bdev\n");
+			rc = -EINVAL;
+			goto error_bdev_register;
+		}
+		SPDK_DEBUGLOG(SPDK_LOG_VBDEV_crypto, "registered io_device and virtual bdev for: %s\n",
+			      name->vbdev_name);
+		break;
 	}
 
 	return rc;
 
 	/* Error cleanup paths. */
+error_bdev_register:
+error_session_init:
+	rte_cryptodev_sym_session_free(vbdev->session_decrypt);
+error_session_de_create:
+	rte_cryptodev_sym_session_free(vbdev->session_encrypt);
+error_session_en_create:
+error_cant_find_devid:
 error_claim:
 	spdk_bdev_close(vbdev->base_desc);
 error_open:
@@ -1466,6 +1675,7 @@ delete_crypto_disk(struct spdk_bdev *bdev, spdk_delete_crypto_complete cb_fn,
 		}
 	}
 
+	/* Additional cleanup happens in the destruct callback. */
 	spdk_bdev_unregister(bdev, cb_fn, cb_arg);
 }
 
@@ -1479,27 +1689,7 @@ delete_crypto_disk(struct spdk_bdev *bdev, spdk_delete_crypto_complete cb_fn,
 static void
 vbdev_crypto_examine(struct spdk_bdev *bdev)
 {
-	struct vbdev_crypto *crypto_bdev, *tmp;
-	int rc;
-
 	vbdev_crypto_claim(bdev);
-
-	TAILQ_FOREACH_SAFE(crypto_bdev, &g_vbdev_crypto, link, tmp) {
-		if (strcmp(crypto_bdev->base_bdev->name, bdev->name) == 0) {
-			rc = spdk_vbdev_register(&crypto_bdev->crypto_bdev,
-						 &crypto_bdev->base_bdev, 1);
-			if (rc) {
-				SPDK_ERRLOG("could not register crypto_bdev\n");
-				spdk_bdev_close(crypto_bdev->base_desc);
-				TAILQ_REMOVE(&g_vbdev_crypto, crypto_bdev, link);
-				free(crypto_bdev->crypto_bdev.name);
-				free(crypto_bdev->key);
-				free(crypto_bdev);
-			}
-			break;
-		}
-	}
-
 	spdk_bdev_module_examine_done(&crypto_if);
 }
 

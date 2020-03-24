@@ -1,34 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2014 Intel Corporation
  */
 
 #include <stdint.h>
@@ -47,9 +18,7 @@
 #include <rte_log.h>
 #include <rte_memory.h>
 #include <rte_memcpy.h>
-#include <rte_memzone.h>
 #include <rte_eal.h>
-#include <rte_per_lcore.h>
 #include <rte_launch.h>
 #include <rte_atomic.h>
 #include <rte_cycles.h>
@@ -58,15 +27,12 @@
 #include <rte_per_lcore.h>
 #include <rte_branch_prediction.h>
 #include <rte_interrupts.h>
-#include <rte_pci.h>
 #include <rte_random.h>
 #include <rte_debug.h>
 #include <rte_ether.h>
 #include <rte_ethdev.h>
-#include <rte_log.h>
 #include <rte_mempool.h>
 #include <rte_mbuf.h>
-#include <rte_memcpy.h>
 
 #define MAX_QUEUES 1024
 /*
@@ -82,8 +48,8 @@
 /*
  * Configurable number of RX/TX ring descriptors
  */
-#define RTE_TEST_RX_DESC_DEFAULT 128
-#define RTE_TEST_TX_DESC_DEFAULT 512
+#define RTE_TEST_RX_DESC_DEFAULT 1024
+#define RTE_TEST_TX_DESC_DEFAULT 1024
 
 #define INVALID_PORT_ID 0xFF
 
@@ -99,10 +65,6 @@ static const struct rte_eth_conf vmdq_conf_default = {
 	.rxmode = {
 		.mq_mode        = ETH_MQ_RX_VMDQ_ONLY,
 		.split_hdr_size = 0,
-		.header_split   = 0, /**< Header Split disabled */
-		.hw_ip_checksum = 0, /**< IP checksum offload disabled */
-		.hw_vlan_filter = 0, /**< VLAN filtering disabled */
-		.jumbo_frame    = 0, /**< Jumbo Frame Support disabled */
 	},
 
 	.txmode = {
@@ -124,7 +86,7 @@ static const struct rte_eth_conf vmdq_conf_default = {
 };
 
 static unsigned lcore_ids[RTE_MAX_LCORE];
-static uint8_t ports[RTE_MAX_ETHPORTS];
+static uint16_t ports[RTE_MAX_ETHPORTS];
 static unsigned num_ports; /**< The number of ports specified in command line */
 
 /* array used for printing out statistics */
@@ -189,13 +151,15 @@ get_eth_conf(struct rte_eth_conf *eth_conf, uint32_t num_pools)
  * coming from the mbuf_pool passed as parameter
  */
 static inline int
-port_init(uint8_t port, struct rte_mempool *mbuf_pool)
+port_init(uint16_t port, struct rte_mempool *mbuf_pool)
 {
 	struct rte_eth_dev_info dev_info;
 	struct rte_eth_rxconf *rxconf;
+	struct rte_eth_txconf *txconf;
 	struct rte_eth_conf port_conf;
 	uint16_t rxRings, txRings;
-	const uint16_t rxRingSize = RTE_TEST_RX_DESC_DEFAULT, txRingSize = RTE_TEST_TX_DESC_DEFAULT;
+	uint16_t rxRingSize = RTE_TEST_RX_DESC_DEFAULT;
+	uint16_t txRingSize = RTE_TEST_TX_DESC_DEFAULT;
 	int retval;
 	uint16_t q;
 	uint16_t queues_per_pool;
@@ -236,7 +200,7 @@ port_init(uint8_t port, struct rte_mempool *mbuf_pool)
 		num_pf_queues, num_pools, queues_per_pool);
 	printf("vmdq queue base: %d pool base %d\n",
 		vmdq_queue_base, vmdq_pool_base);
-	if (port >= rte_eth_dev_count())
+	if (!rte_eth_dev_is_valid_port(port))
 		return -1;
 
 	/*
@@ -249,13 +213,30 @@ port_init(uint8_t port, struct rte_mempool *mbuf_pool)
 	 */
 	rxRings = (uint16_t)dev_info.max_rx_queues;
 	txRings = (uint16_t)dev_info.max_tx_queues;
+
+	rte_eth_dev_info_get(port, &dev_info);
+	if (dev_info.tx_offload_capa & DEV_TX_OFFLOAD_MBUF_FAST_FREE)
+		port_conf.txmode.offloads |=
+			DEV_TX_OFFLOAD_MBUF_FAST_FREE;
 	retval = rte_eth_dev_configure(port, rxRings, txRings, &port_conf);
 	if (retval != 0)
 		return retval;
 
-	rte_eth_dev_info_get(port, &dev_info);
+	retval = rte_eth_dev_adjust_nb_rx_tx_desc(port, &rxRingSize,
+				&txRingSize);
+	if (retval != 0)
+		return retval;
+	if (RTE_MAX(rxRingSize, txRingSize) > RTE_MAX(RTE_TEST_RX_DESC_DEFAULT,
+			RTE_TEST_TX_DESC_DEFAULT)) {
+		printf("Mbuf pool has an insufficient size for port %u.\n",
+			port);
+		return -1;
+	}
+
 	rxconf = &dev_info.default_rxconf;
 	rxconf->rx_drop_en = 1;
+	txconf = &dev_info.default_txconf;
+	txconf->offloads = port_conf.txmode.offloads;
 	for (q = 0; q < rxRings; q++) {
 		retval = rte_eth_rx_queue_setup(port, q, rxRingSize,
 					rte_eth_dev_socket_id(port),
@@ -270,7 +251,7 @@ port_init(uint8_t port, struct rte_mempool *mbuf_pool)
 	for (q = 0; q < txRings; q++) {
 		retval = rte_eth_tx_queue_setup(port, q, txRingSize,
 					rte_eth_dev_socket_id(port),
-					NULL);
+					txconf);
 		if (retval < 0) {
 			printf("initialise tx queue %d failed\n", q);
 			return retval;
@@ -556,9 +537,9 @@ static unsigned check_ports_num(unsigned nb_ports)
 	}
 
 	for (portid = 0; portid < num_ports; portid++) {
-		if (ports[portid] >= nb_ports) {
-			printf("\nSpecified port ID(%u) exceeds max system port ID(%u)\n",
-				ports[portid], (nb_ports - 1));
+		if (!rte_eth_dev_is_valid_port(ports[portid])) {
+			printf("\nSpecified port ID(%u) is not valid\n",
+				ports[portid]);
 			ports[portid] = INVALID_PORT_ID;
 			valid_num_ports--;
 		}
@@ -574,7 +555,7 @@ main(int argc, char *argv[])
 	unsigned lcore_id, core_id = 0;
 	int ret;
 	unsigned nb_ports, valid_num_ports;
-	uint8_t portid;
+	uint16_t portid;
 
 	signal(SIGHUP, sighup_handler);
 
@@ -597,7 +578,7 @@ main(int argc, char *argv[])
 	if (rte_lcore_count() > RTE_MAX_LCORE)
 		rte_exit(EXIT_FAILURE, "Not enough cores\n");
 
-	nb_ports = rte_eth_dev_count();
+	nb_ports = rte_eth_dev_count_avail();
 
 	/*
 	 * Update the global var NUM_PORTS and global array PORTS
@@ -617,7 +598,7 @@ main(int argc, char *argv[])
 		rte_exit(EXIT_FAILURE, "Cannot create mbuf pool\n");
 
 	/* initialize all ports */
-	for (portid = 0; portid < nb_ports; portid++) {
+	RTE_ETH_FOREACH_DEV(portid) {
 		/* skip ports that are not enabled */
 		if ((enabled_port_mask & (1 << portid)) == 0) {
 			printf("\nSkipping disabled port %d\n", portid);

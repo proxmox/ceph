@@ -26,6 +26,7 @@
 #include "events/ESlaveUpdate.h"
 #include "events/EOpen.h"
 #include "events/ECommitted.h"
+#include "events/EPurged.h"
 
 #include "events/EExport.h"
 #include "events/EImportStart.h"
@@ -261,6 +262,10 @@ void LogSegment::try_to_expire(MDSRank *mds, MDSGatherBuilder &gather_bld, int o
     dout(10) << "try_to_expire waiting for truncate of " << **p << dendl;
     (*p)->add_waiter(CInode::WAIT_TRUNC, gather_bld.new_sub());
   }
+  // purge inodes
+  dout(10) << "try_to_expire waiting for purge of " << purge_inodes << dendl;
+  if (purge_inodes.size())
+    set_purged_cb(gather_bld.new_sub());
   
   if (gather_bld.has_subs()) {
     dout(6) << "LogSegment(" << seq << "/" << offset << ").try_to_expire waiting" << dendl;
@@ -270,7 +275,6 @@ void LogSegment::try_to_expire(MDSRank *mds, MDSGatherBuilder &gather_bld, int o
     dout(6) << "LogSegment(" << seq << "/" << offset << ").try_to_expire success" << dendl;
   }
 }
-
 
 // -----------------------
 // EMetaBlob
@@ -362,9 +366,9 @@ void EMetaBlob::add_dir_context(CDir *dir, int mode)
   parents.splice(parents.begin(), maybe);
 
   dout(20) << "EMetaBlob::add_dir_context final: " << parents << dendl;
-  for (list<CDentry*>::iterator p = parents.begin(); p != parents.end(); ++p) {
-    ceph_assert((*p)->get_projected_linkage()->is_primary());
-    add_dentry(*p, false);
+  for (const auto& dentry : parents) {
+    ceph_assert(dentry->get_projected_linkage()->is_primary());
+    add_dentry(dentry, false);
   }
 }
 
@@ -508,7 +512,7 @@ void EMetaBlob::fullbit::dump(Formatter *f) const
   }
 }
 
-void EMetaBlob::fullbit::generate_test_instances(list<EMetaBlob::fullbit*>& ls)
+void EMetaBlob::fullbit::generate_test_instances(std::list<EMetaBlob::fullbit*>& ls)
 {
   CInode::mempool_inode inode;
   fragtree_t fragtree;
@@ -531,11 +535,9 @@ void EMetaBlob::fullbit::update_inode(MDSRank *mds, CInode *in)
 	       << dirfragtree << " on " << *in << dendl;
       in->dirfragtree = dirfragtree;
       in->force_dirfrags();
-      if (in->has_dirfrags() && in->authority() == CDIR_AUTH_UNDEF) {
-	list<CDir*> ls;
-	in->get_nested_dirfrags(ls);
-	for (list<CDir*>::iterator p = ls.begin(); p != ls.end(); ++p) {
-	  CDir *dir = *p;
+      if (in->get_num_dirfrags() && in->authority() == CDIR_AUTH_UNDEF) {
+	auto&& ls = in->get_nested_dirfrags();
+	for (const auto& dir : ls) {
 	  if (dir->get_num_any() == 0 &&
 	      mds->mdcache->can_trim_non_auth_dirfrag(dir)) {
 	    dout(10) << " closing empty non-auth dirfrag " << *dir << dendl;
@@ -641,7 +643,7 @@ void EMetaBlob::remotebit::dump(Formatter *f) const
 }
 
 void EMetaBlob::remotebit::
-generate_test_instances(list<EMetaBlob::remotebit*>& ls)
+generate_test_instances(std::list<EMetaBlob::remotebit*>& ls)
 {
   remotebit *remote = new remotebit("/test/dn", 0, 10, 15, 1, IFTODT(S_IFREG), false);
   ls.push_back(remote);
@@ -680,7 +682,7 @@ void EMetaBlob::nullbit::dump(Formatter *f) const
   f->dump_string("dirty", dirty ? "true" : "false");
 }
 
-void EMetaBlob::nullbit::generate_test_instances(list<nullbit*>& ls)
+void EMetaBlob::nullbit::generate_test_instances(std::list<nullbit*>& ls)
 {
   nullbit *sample = new nullbit("/test/dentry", 0, 10, 15, false);
   nullbit *sample2 = new nullbit("/test/dirty", 10, 20, 25, true);
@@ -753,7 +755,7 @@ void EMetaBlob::dirlump::dump(Formatter *f) const
   f->close_section(); // null bits
 }
 
-void EMetaBlob::dirlump::generate_test_instances(list<dirlump*>& ls)
+void EMetaBlob::dirlump::generate_test_instances(std::list<dirlump*>& ls)
 {
   ls.push_back(new dirlump());
 }
@@ -793,7 +795,7 @@ void EMetaBlob::encode(bufferlist& bl, uint64_t features) const
 }
 void EMetaBlob::decode(bufferlist::const_iterator &bl)
 {
-  DECODE_START_LEGACY_COMPAT_LEN(7, 5, 5, bl);
+  DECODE_START_LEGACY_COMPAT_LEN(8, 5, 5, bl);
   decode(lump_order, bl);
   decode(lump_map, bl);
   if (struct_v >= 4) {
@@ -916,7 +918,7 @@ void EMetaBlob::get_paths(
 
   // Whenever we see a dentry within a dirlump, we remember it as a child of
   // the dirlump's inode
-  std::map<inodeno_t, std::list<std::string> > children;
+  std::map<inodeno_t, std::vector<std::string> > children;
 
   // Whenever we see a location for an inode, remember it: this allows us to
   // build a path given an inode
@@ -1084,7 +1086,7 @@ void EMetaBlob::dump(Formatter *f) const
   f->close_section(); // client requests
 }
 
-void EMetaBlob::generate_test_instances(list<EMetaBlob*>& ls)
+void EMetaBlob::generate_test_instances(std::list<EMetaBlob*>& ls)
 {
   ls.push_back(new EMetaBlob());
 }
@@ -1498,11 +1500,7 @@ void EMetaBlob::replay(MDSRank *mds, LogSegment *logseg, MDSlaveUpdate *slaveup)
 	dout(20) << " (session prealloc " << session->info.prealloc_inos << ")" << dendl;
 	if (used_preallocated_ino) {
 	  if (!session->info.prealloc_inos.empty()) {
-	    inodeno_t next = session->next_ino();
 	    inodeno_t i = session->take_ino(used_preallocated_ino);
-	    if (next != i)
-	      mds->clog->warn() << " replayed op " << client_reqs << " used ino " << i
-			       << " but session next is " << next;
 	    ceph_assert(i == used_preallocated_ino);
 	    session->info.used_inos.clear();
 	  }
@@ -1604,6 +1602,60 @@ void EMetaBlob::replay(MDSRank *mds, LogSegment *logseg, MDSlaveUpdate *slaveup)
 }
 
 // -----------------------
+// EPurged
+void EPurged::update_segment()
+{
+  if (inos.size() && inotablev)
+    get_segment()->inotablev = inotablev;
+  return;
+}
+
+void EPurged::replay(MDSRank *mds)
+{
+  if (inos.size()) {
+    LogSegment *ls = mds->mdlog->get_segment(seq);
+    if (ls) {
+      ls->purge_inodes.subtract(inos);
+    }
+    if (mds->inotable->get_version() >= inotablev) {
+      dout(10) << "EPurged.replay inotable " << mds->inotable->get_version()
+	       << " >= " << inotablev << ", noop" << dendl;
+    } else {
+      dout(10) << "EPurged.replay inotable " << mds->inotable->get_version()
+	       << " < " << inotablev << " " << dendl;
+      mds->inotable->replay_release_ids(inos);
+      assert(mds->inotable->get_version() == inotablev);
+    }
+  }
+  update_segment();
+}
+
+void EPurged::encode(bufferlist& bl, uint64_t features) const
+{
+  ENCODE_START(1, 1, bl);
+  encode(inos, bl);
+  encode(inotablev, bl);
+  encode(seq, bl);
+  ENCODE_FINISH(bl);
+}
+
+void EPurged::decode(bufferlist::const_iterator& bl)
+{
+  DECODE_START(1, bl);
+  decode(inos, bl);
+  decode(inotablev, bl);
+  decode(seq, bl);
+  DECODE_FINISH(bl);
+}
+
+void EPurged::dump(Formatter *f) const
+{
+  f->dump_stream("inos") << inos;
+  f->dump_int("inotable version", inotablev);
+  f->dump_int("segment seq", seq);
+}
+
+// -----------------------
 // ESession
 
 void ESession::update_segment()
@@ -1615,6 +1667,9 @@ void ESession::update_segment()
 
 void ESession::replay(MDSRank *mds)
 {
+  if (purge_inos.size())
+    get_segment()->purge_inodes.insert(purge_inos);
+  
   if (mds->sessionmap.get_version() >= cmapv) {
     dout(10) << "ESession.replay sessionmap " << mds->sessionmap.get_version() 
 	     << " >= " << cmapv << ", noop" << dendl;
@@ -1675,7 +1730,7 @@ void ESession::replay(MDSRank *mds)
 
 void ESession::encode(bufferlist &bl, uint64_t features) const
 {
-  ENCODE_START(5, 5, bl);
+  ENCODE_START(6, 5, bl);
   encode(stamp, bl);
   encode(client_inst, bl, features);
   encode(open, bl);
@@ -1683,12 +1738,13 @@ void ESession::encode(bufferlist &bl, uint64_t features) const
   encode(inos, bl);
   encode(inotablev, bl);
   encode(client_metadata, bl);
+  encode(purge_inos, bl);
   ENCODE_FINISH(bl);
 }
 
 void ESession::decode(bufferlist::const_iterator &bl)
 {
-  DECODE_START_LEGACY_COMPAT_LEN(5, 3, 3, bl);
+  DECODE_START_LEGACY_COMPAT_LEN(6, 3, 3, bl);
   if (struct_v >= 2)
     decode(stamp, bl);
   decode(client_inst, bl);
@@ -1701,6 +1757,10 @@ void ESession::decode(bufferlist::const_iterator &bl)
   } else if (struct_v >= 5) {
     decode(client_metadata, bl);
   }
+  if (struct_v >= 6){
+    decode(purge_inos, bl);
+  }
+    
   DECODE_FINISH(bl);
 }
 
@@ -1716,7 +1776,7 @@ void ESession::dump(Formatter *f) const
   f->close_section();  // client_metadata
 }
 
-void ESession::generate_test_instances(list<ESession*>& ls)
+void ESession::generate_test_instances(std::list<ESession*>& ls)
 {
   ls.push_back(new ESession);
 }
@@ -1769,7 +1829,7 @@ void ESessions::dump(Formatter *f) const
   f->close_section(); // client map
 }
 
-void ESessions::generate_test_instances(list<ESessions*>& ls)
+void ESessions::generate_test_instances(std::list<ESessions*>& ls)
 {
   ls.push_back(new ESessions());
 }
@@ -1835,7 +1895,7 @@ void ETableServer::dump(Formatter *f) const
   f->dump_int("version", version);
 }
 
-void ETableServer::generate_test_instances(list<ETableServer*>& ls)
+void ETableServer::generate_test_instances(std::list<ETableServer*>& ls)
 {
   ls.push_back(new ETableServer());
 }
@@ -1874,7 +1934,7 @@ void ETableServer::replay(MDSRank *mds)
     break;
   }
   case TABLESERVER_OP_COMMIT:
-    server->_commit(tid, MMDSTableRequest::ref());
+    server->_commit(tid, ref_t<MMDSTableRequest>());
     server->_note_commit(tid, true);
     break;
   case TABLESERVER_OP_ROLLBACK:
@@ -1927,7 +1987,7 @@ void ETableClient::dump(Formatter *f) const
   f->dump_int("tid", tid);
 }
 
-void ETableClient::generate_test_instances(list<ETableClient*>& ls)
+void ETableClient::generate_test_instances(std::list<ETableClient*>& ls)
 {
   ls.push_back(new ETableClient());
 }
@@ -2025,7 +2085,7 @@ void EUpdate::dump(Formatter *f) const
   f->dump_string("had slaves", had_slaves ? "true" : "false");
 }
 
-void EUpdate::generate_test_instances(list<EUpdate*>& ls)
+void EUpdate::generate_test_instances(std::list<EUpdate*>& ls)
 {
   ls.push_back(new EUpdate());
 }
@@ -2113,7 +2173,7 @@ void EOpen::dump(Formatter *f) const
   f->close_section(); // inos
 }
 
-void EOpen::generate_test_instances(list<EOpen*>& ls)
+void EOpen::generate_test_instances(std::list<EOpen*>& ls)
 {
   ls.push_back(new EOpen());
   ls.push_back(new EOpen());
@@ -2187,7 +2247,7 @@ void ECommitted::dump(Formatter *f) const {
   f->dump_stream("reqid") << reqid;
 }
 
-void ECommitted::generate_test_instances(list<ECommitted*>& ls)
+void ECommitted::generate_test_instances(std::list<ECommitted*>& ls)
 {
   ls.push_back(new ECommitted);
   ls.push_back(new ECommitted);
@@ -2235,7 +2295,7 @@ void link_rollback::dump(Formatter *f) const
   f->dump_stream("old_dir_rctime") << old_dir_rctime;
 }
 
-void link_rollback::generate_test_instances(list<link_rollback*>& ls)
+void link_rollback::generate_test_instances(std::list<link_rollback*>& ls)
 {
   ls.push_back(new link_rollback());
 }
@@ -2274,7 +2334,7 @@ void rmdir_rollback::dump(Formatter *f) const
   f->dump_string("destination dname", dest_dname);
 }
 
-void rmdir_rollback::generate_test_instances(list<rmdir_rollback*>& ls)
+void rmdir_rollback::generate_test_instances(std::list<rmdir_rollback*>& ls)
 {
   ls.push_back(new rmdir_rollback());
 }
@@ -2331,7 +2391,7 @@ void rename_rollback::drec::dump(Formatter *f) const
   f->dump_stream("old ctime") << old_ctime;
 }
 
-void rename_rollback::drec::generate_test_instances(list<drec*>& ls)
+void rename_rollback::drec::generate_test_instances(std::list<drec*>& ls)
 {
   ls.push_back(new drec());
   ls.back()->remote_d_type = IFTODT(S_IFREG);
@@ -2380,7 +2440,7 @@ void rename_rollback::dump(Formatter *f) const
   f->dump_stream("ctime") << ctime;
 }
 
-void rename_rollback::generate_test_instances(list<rename_rollback*>& ls)
+void rename_rollback::generate_test_instances(std::list<rename_rollback*>& ls)
 {
   ls.push_back(new rename_rollback());
   ls.back()->orig_src.remote_d_type = IFTODT(S_IFREG);
@@ -2431,7 +2491,7 @@ void ESlaveUpdate::dump(Formatter *f) const
   f->dump_int("original op", origop);
 }
 
-void ESlaveUpdate::generate_test_instances(list<ESlaveUpdate*>& ls)
+void ESlaveUpdate::generate_test_instances(std::list<ESlaveUpdate*>& ls)
 {
   ls.push_back(new ESlaveUpdate());
 }
@@ -2538,7 +2598,7 @@ void ESubtreeMap::dump(Formatter *f) const
   f->dump_int("expire position", expire_pos);
 }
 
-void ESubtreeMap::generate_test_instances(list<ESubtreeMap*>& ls)
+void ESubtreeMap::generate_test_instances(std::list<ESubtreeMap*>& ls)
 {
   ls.push_back(new ESubtreeMap());
 }
@@ -2678,7 +2738,7 @@ void EFragment::replay(MDSRank *mds)
 {
   dout(10) << "EFragment.replay " << op_name(op) << " " << ino << " " << basefrag << " by " << bits << dendl;
 
-  list<CDir*> resultfrags;
+  std::vector<CDir*> resultfrags;
   MDSContext::vec waiters;
 
   // in may be NULL if it wasn't in our cache yet.  if it's a prepare
@@ -2692,7 +2752,7 @@ void EFragment::replay(MDSRank *mds)
     mds->mdcache->add_uncommitted_fragment(dirfrag_t(ino, basefrag), bits, orig_frags, segment, &rollback);
 
     if (in)
-      mds->mdcache->adjust_dir_fragments(in, basefrag, bits, resultfrags, waiters, true);
+      mds->mdcache->adjust_dir_fragments(in, basefrag, bits, &resultfrags, waiters, true);
     break;
 
   case OP_ROLLBACK: {
@@ -2701,7 +2761,7 @@ void EFragment::replay(MDSRank *mds)
       in->dirfragtree.get_leaves_under(basefrag, old_frags);
       if (orig_frags.empty()) {
 	// old format EFragment
-	mds->mdcache->adjust_dir_fragments(in, basefrag, -bits, resultfrags, waiters, true);
+	mds->mdcache->adjust_dir_fragments(in, basefrag, -bits, &resultfrags, waiters, true);
       } else {
 	for (const auto& fg : orig_frags)
 	  mds->mdcache->force_dir_fragment(in, fg);
@@ -2766,7 +2826,7 @@ void EFragment::dump(Formatter *f) const
   f->dump_int("bits", bits);
 }
 
-void EFragment::generate_test_instances(list<EFragment*>& ls)
+void EFragment::generate_test_instances(std::list<EFragment*>& ls)
 {
   ls.push_back(new EFragment);
   ls.push_back(new EFragment);
@@ -2859,7 +2919,7 @@ void EExport::dump(Formatter *f) const
   f->close_section(); // bounds dirfrags
 }
 
-void EExport::generate_test_instances(list<EExport*>& ls)
+void EExport::generate_test_instances(std::list<EExport*>& ls)
 {
   EExport *sample = new EExport();
   ls.push_back(sample);
@@ -2958,7 +3018,7 @@ void EImportStart::dump(Formatter *f) const
   f->close_section();
 }
 
-void EImportStart::generate_test_instances(list<EImportStart*>& ls)
+void EImportStart::generate_test_instances(std::list<EImportStart*>& ls)
 {
   ls.push_back(new EImportStart);
 }
@@ -3016,7 +3076,7 @@ void EImportFinish::dump(Formatter *f) const
   f->dump_stream("base dirfrag") << base;
   f->dump_string("success", success ? "true" : "false");
 }
-void EImportFinish::generate_test_instances(list<EImportFinish*>& ls)
+void EImportFinish::generate_test_instances(std::list<EImportFinish*>& ls)
 {
   ls.push_back(new EImportFinish);
   ls.push_back(new EImportFinish);
@@ -3046,7 +3106,7 @@ void EResetJournal::dump(Formatter *f) const
   f->dump_stream("timestamp") << stamp;
 }
 
-void EResetJournal::generate_test_instances(list<EResetJournal*>& ls)
+void EResetJournal::generate_test_instances(std::list<EResetJournal*>& ls)
 {
   ls.push_back(new EResetJournal());
 }
@@ -3093,7 +3153,7 @@ void ENoOp::decode(bufferlist::const_iterator &bl)
     // journal debug tools catch it and recognise a malformed entry.
     throw buffer::end_of_buffer();
   } else {
-    bl.advance(pad_size);
+    bl += pad_size;
   }
   DECODE_FINISH(bl);
 }
@@ -3118,10 +3178,10 @@ void ENoOp::replay(MDSRank *mds)
  * True if the event was modified.
  */
 bool EMetaBlob::rewrite_truncate_finish(MDSRank const *mds,
-    std::map<log_segment_seq_t, log_segment_seq_t> const &old_to_new)
+    std::map<LogSegment::seq_t, LogSegment::seq_t> const &old_to_new)
 {
   bool modified = false;
-  map<inodeno_t, log_segment_seq_t> new_trunc_finish;
+  map<inodeno_t, LogSegment::seq_t> new_trunc_finish;
   for (const auto& p : truncate_finish) {
     auto q = old_to_new.find(p.second);
     if (q != old_to_new.end()) {

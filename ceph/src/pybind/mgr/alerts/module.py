@@ -21,7 +21,7 @@ class Alerts(MgrModule):
     MODULE_OPTIONS = [
         {
             'name': 'interval',
-            'type': 'seconds',
+            'type': 'secs',
             'default': 60,
             'desc': 'How frequently to reexamine health status',
             'runtime': True,
@@ -29,6 +29,7 @@ class Alerts(MgrModule):
         # smtp
         {
             'name': 'smtp_host',
+            'default': '',
             'desc': 'SMTP server',
             'runtime': True,
         },
@@ -105,7 +106,7 @@ class Alerts(MgrModule):
         for opt in self.MODULE_OPTIONS:
             setattr(self,
                     opt['name'],
-                    self.get_module_option(opt['name']) or opt['default'])
+                    self.get_module_option(opt['name']))
             self.log.debug(' mgr option %s = %s',
                            opt['name'], getattr(self, opt['name']))
         # Do the same for the native options.
@@ -155,6 +156,8 @@ class Alerts(MgrModule):
             if r:
                 for code, alert in r.items():
                     checks[code] = alert
+        else:
+            self.log.warn('Alert is not sent because smtp_host is not configured')
         self.set_health_checks(checks)
 
     def serve(self):

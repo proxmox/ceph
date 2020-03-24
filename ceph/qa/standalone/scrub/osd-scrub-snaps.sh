@@ -101,11 +101,11 @@ function create_scenario() {
     OBJ5SAVE="$JSON"
     # Starts with a snapmap
     ceph-kvstore-tool bluestore-kv $dir/${osd} list 2> /dev/null > $dir/drk.log
-    grep "^M.*MAP_.*[.]1[.]obj5[.][.]$" $dir/drk.log || return 1
+    grep "^m.*SNA_.*[.]1[.]obj5[.][.]$" $dir/drk.log || return 1
     ceph-objectstore-tool --data-path $dir/${osd} --rmtype nosnapmap "$JSON" remove || return 1
     # Check that snapmap is stil there
     ceph-kvstore-tool bluestore-kv $dir/${osd} list 2> /dev/null > $dir/drk.log
-    grep "^M.*MAP_.*[.]1[.]obj5[.][.]$" $dir/drk.log || return 1
+    grep "^m.*SNA_.*[.]1[.]obj5[.][.]$" $dir/drk.log || return 1
     rm -f $dir/drk.log
 
     JSON="$(ceph-objectstore-tool --data-path $dir/${osd} --op list obj5 | grep \"snapid\":4)"
@@ -121,12 +121,12 @@ function create_scenario() {
 
     # Starts with a snapmap
     ceph-kvstore-tool bluestore-kv $dir/${osd} list 2> /dev/null > $dir/drk.log
-    grep "^M.*MAP_.*[.]7[.]obj16[.][.]$" $dir/drk.log || return 1
+    grep "^m.*SNA_.*[.]7[.]obj16[.][.]$" $dir/drk.log || return 1
     JSON="$(ceph-objectstore-tool --data-path $dir/${osd} --op list obj16 | grep \"snapid\":7)"
     ceph-objectstore-tool --data-path $dir/${osd} --rmtype snapmap "$JSON" remove || return 1
     # Check that snapmap is now removed
     ceph-kvstore-tool bluestore-kv $dir/${osd} list 2> /dev/null > $dir/drk.log
-    ! grep "^M.*MAP_.*[.]7[.]obj16[.][.]$" $dir/drk.log || return 1
+    ! grep "^m.*SNA_.*[.]7[.]obj16[.][.]$" $dir/drk.log || return 1
     rm -f $dir/drk.log
 
     JSON="$(ceph-objectstore-tool --data-path $dir/${osd} --head --op list obj2)"
@@ -201,8 +201,10 @@ function TEST_scrub_snaps() {
 
     for osd in $(seq 0 $(expr $OSDS - 1))
     do
-      run_osd $dir $osd || return 1
+      activate_osd $dir $osd || return 1
     done
+
+    wait_for_clean || return 1
 
     local pgid="${poolid}.0"
     if ! pg_scrub "$pgid" ; then
@@ -222,19 +224,19 @@ function TEST_scrub_snaps() {
     # The injected snapshot errors with a single copy pool doesn't
     # see object errors because all the issues are detected by
     # comparing copies.
-    jq "$jqfilter" << EOF | python -c "$sortkeys" > $dir/checkcsjson
+    jq "$jqfilter" << EOF | python3 -c "$sortkeys" > $dir/checkcsjson
 {
     "epoch": 17,
     "inconsistents": []
 }
 EOF
 
-    jq "$jqfilter" $dir/json | python -c "$sortkeys" > $dir/csjson
+    jq "$jqfilter" $dir/json | python3 -c "$sortkeys" > $dir/csjson
     multidiff $dir/checkcsjson $dir/csjson || test $getjson = "yes" || return 1
 
     rados list-inconsistent-snapset $pgid > $dir/json || return 1
 
-    jq "$jqfilter" << EOF | python -c "$sortkeys" > $dir/checkcsjson
+    jq "$jqfilter" << EOF | python3 -c "$sortkeys" > $dir/checkcsjson
 {
   "inconsistents": [
     {
@@ -343,12 +345,7 @@ EOF
       "locator": "",
       "snap": "head",
       "snapset": {
-        "snap_context": {
-          "seq": 1,
-          "snaps": [
-            1
-          ]
-        },
+        "seq": 1,
         "clones": [
           {
             "snap": 1,
@@ -374,12 +371,7 @@ EOF
       "nspace": "",
       "name": "obj11",
       "snapset": {
-        "snap_context": {
-          "seq": 1,
-          "snaps": [
-            1
-          ]
-        },
+        "seq": 1,
         "clones": []
       }
     },
@@ -389,12 +381,7 @@ EOF
       "locator": "",
       "snap": "head",
       "snapset": {
-        "snap_context": {
-          "seq": 1,
-          "snaps": [
-            1
-          ]
-        },
+        "seq": 1,
         "clones": [
           {
             "snap": 1,
@@ -440,14 +427,7 @@ EOF
       "nspace": "",
       "name": "obj3",
       "snapset": {
-        "snap_context": {
-          "seq": 3,
-          "snaps": [
-            3,
-            2,
-            1
-          ]
-        },
+        "seq": 3,
         "clones": [
           {
             "snap": 1,
@@ -481,18 +461,7 @@ EOF
       "nspace": "",
       "name": "obj4",
       "snapset": {
-        "snap_context": {
-          "seq": 7,
-          "snaps": [
-            7,
-            6,
-            5,
-            4,
-            3,
-            2,
-            1
-          ]
-        },
+        "seq": 7,
         "clones": [
           {
             "snap": 7,
@@ -528,17 +497,7 @@ EOF
       "nspace": "",
       "name": "obj5",
       "snapset": {
-        "snap_context": {
-          "seq": 6,
-          "snaps": [
-            6,
-            5,
-            4,
-            3,
-            2,
-            1
-          ]
-        },
+        "seq": 6,
         "clones": [
           {
             "snap": 1,
@@ -589,12 +548,7 @@ EOF
       "nspace": "",
       "name": "obj6",
       "snapset": {
-        "snap_context": {
-          "seq": 1,
-          "snaps": [
-            1
-          ]
-        },
+        "seq": 1,
         "clones": []
       }
     },
@@ -610,10 +564,7 @@ EOF
       "nspace": "",
       "name": "obj7",
       "snapset": {
-        "snap_context": {
-          "seq": 0,
-          "snaps": []
-        },
+        "seq": 0,
         "clones": []
       }
     },
@@ -626,12 +577,7 @@ EOF
       "nspace": "",
       "name": "obj8",
       "snapset": {
-        "snap_context": {
-          "seq": 0,
-          "snaps": [
-            1
-          ]
-        },
+        "seq": 0,
         "clones": [
           {
             "snap": 1,
@@ -650,12 +596,7 @@ EOF
       "locator": "",
       "snap": "head",
       "snapset": {
-        "snap_context": {
-          "seq": 1,
-          "snaps": [
-            1
-          ]
-        },
+        "seq": 1,
         "clones": [
           {
             "snap": 1,
@@ -674,7 +615,7 @@ EOF
 }
 EOF
 
-    jq "$jqfilter" $dir/json | python -c "$sortkeys" > $dir/csjson
+    jq "$jqfilter" $dir/json | python3 -c "$sortkeys" > $dir/csjson
     multidiff $dir/checkcsjson $dir/csjson || test $getjson = "yes" || return 1
     if test $getjson = "yes"
     then
@@ -811,8 +752,10 @@ function _scrub_snaps_multi() {
 
     for osd in $(seq 0 $(expr $OSDS - 1))
     do
-      run_osd $dir $osd || return 1
+      activate_osd $dir $osd || return 1
     done
+
+    wait_for_clean || return 1
 
     local pgid="${poolid}.0"
     if ! pg_scrub "$pgid" ; then
@@ -836,7 +779,7 @@ function _scrub_snaps_multi() {
     if [ $which = "replica" ];
     then
         scruberrors="20"
-        jq "$jqfilter" << EOF | python -c "$sortkeys" > $dir/checkcsjson
+        jq "$jqfilter" << EOF | python3 -c "$sortkeys" > $dir/checkcsjson
 {
     "epoch": 23,
     "inconsistents": []
@@ -845,7 +788,7 @@ EOF
 
 else
         scruberrors="30"
-        jq "$jqfilter" << EOF | python -c "$sortkeys" > $dir/checkcsjson
+        jq "$jqfilter" << EOF | python3 -c "$sortkeys" > $dir/checkcsjson
 {
     "epoch": 23,
     "inconsistents": [
@@ -919,12 +862,7 @@ else
             "locator": "",
             "snap": "head",
             "snapset": {
-                "snap_context": {
-                    "seq": 1,
-                    "snaps": [
-                        1
-                    ]
-                },
+                "seq": 1,
                 "clones": [
                     {
                         "snap": 1,
@@ -944,12 +882,7 @@ else
             "locator": "",
             "snap": "head",
             "snapset": {
-                "snap_context": {
-                    "seq": 1,
-                    "snaps": [
-                        1
-                    ]
-                },
+                "seq": 1,
                 "clones": []
             },
             "errors": [
@@ -965,12 +898,7 @@ else
             "locator": "",
             "snap": "head",
             "snapset": {
-                "snap_context": {
-                    "seq": 1,
-                    "snaps": [
-                        1
-                    ]
-                },
+                "seq": 1,
                 "clones": [
                     {
                         "snap": 1,
@@ -990,17 +918,7 @@ else
             "locator": "",
             "snap": "head",
             "snapset": {
-                "snap_context": {
-                    "seq": 6,
-                    "snaps": [
-                        6,
-                        5,
-                        4,
-                        3,
-                        2,
-                        1
-                    ]
-                },
+                "seq": 6,
                 "clones": [
                     {
                         "snap": 1,
@@ -1051,12 +969,7 @@ else
             "locator": "",
             "snap": "head",
             "snapset": {
-                "snap_context": {
-                    "seq": 1,
-                    "snaps": [
-                        1
-                    ]
-                },
+                "seq": 1,
                 "clones": []
             },
             "errors": [
@@ -1072,10 +985,7 @@ else
             "locator": "",
             "snap": "head",
             "snapset": {
-                "snap_context": {
-                    "seq": 0,
-                    "snaps": []
-                },
+                "seq": 0,
                 "clones": []
             },
             "errors": [
@@ -1091,12 +1001,7 @@ else
             "locator": "",
             "snap": "head",
             "snapset": {
-                "snap_context": {
-                    "seq": 0,
-                    "snaps": [
-                        1
-                    ]
-                },
+                "seq": 0,
                 "clones": [
                     {
                         "snap": 1,
@@ -1118,12 +1023,7 @@ else
             "locator": "",
             "snap": "head",
             "snapset": {
-                "snap_context": {
-                    "seq": 1,
-                    "snaps": [
-                        1
-                    ]
-                },
+                "seq": 1,
                 "clones": [
                     {
                         "snap": 1,
@@ -1142,7 +1042,7 @@ else
 EOF
 fi
 
-    jq "$jqfilter" $dir/json | python -c "$sortkeys" > $dir/csjson
+    jq "$jqfilter" $dir/json | python3 -c "$sortkeys" > $dir/csjson
     multidiff $dir/checkcsjson $dir/csjson || test $getjson = "yes" || return 1
     if test $getjson = "yes"
     then

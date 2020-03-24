@@ -5,6 +5,7 @@
 #include <inttypes.h>
 #include <string.h>
 
+#include <rte_string_fns.h>
 #include <rte_log.h>
 #include <rte_mbuf.h>
 #include <rte_eal_memconfig.h>
@@ -82,7 +83,7 @@ rte_reorder_init(struct rte_reorder_buffer *b, unsigned int bufsize,
 	}
 
 	memset(b, 0, bufsize);
-	snprintf(b->name, sizeof(b->name), "%s", name);
+	strlcpy(b->name, name, sizeof(b->name));
 	b->memsize = bufsize;
 	b->order_buf.size = b->ready_buf.size = size;
 	b->order_buf.mask = b->ready_buf.mask = size - 1;
@@ -161,7 +162,7 @@ rte_reorder_reset(struct rte_reorder_buffer *b)
 	char name[RTE_REORDER_NAMESIZE];
 
 	rte_reorder_free_mbufs(b);
-	snprintf(name, sizeof(name), "%s", b->name);
+	strlcpy(name, b->name, sizeof(name));
 	/* No error checking as current values should be valid */
 	rte_reorder_init(b, b->memsize, name, b->order_buf.size);
 }
@@ -220,6 +221,11 @@ rte_reorder_find_existing(const char *name)
 	struct rte_reorder_buffer *b = NULL;
 	struct rte_tailq_entry *te;
 	struct rte_reorder_list *reorder_list;
+
+	if (name == NULL) {
+		rte_errno = EINVAL;
+		return NULL;
+	}
 
 	reorder_list = RTE_TAILQ_CAST(rte_reorder_tailq.head, rte_reorder_list);
 
@@ -294,8 +300,14 @@ int
 rte_reorder_insert(struct rte_reorder_buffer *b, struct rte_mbuf *mbuf)
 {
 	uint32_t offset, position;
-	struct cir_buffer *order_buf = &b->order_buf;
+	struct cir_buffer *order_buf;
 
+	if (b == NULL || mbuf == NULL) {
+		rte_errno = EINVAL;
+		return -1;
+	}
+
+	order_buf = &b->order_buf;
 	if (!b->is_initialized) {
 		b->min_seqn = mbuf->seqn;
 		b->is_initialized = 1;

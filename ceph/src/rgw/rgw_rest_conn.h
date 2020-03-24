@@ -1,17 +1,16 @@
 // -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// vim: ts=8 sw=2 smarttab ft=cpp
 
-#ifndef CEPH_RGW_REST_CONN_H
-#define CEPH_RGW_REST_CONN_H
+#pragma once
 
 #include "rgw_rados.h"
 #include "rgw_rest_client.h"
 #include "common/ceph_json.h"
 #include "common/RefCountedObj.h"
+#include "include/common_fwd.h"
 
 #include <atomic>
 
-class CephContext;
 class RGWSI_Zone;
 
 template <class T>
@@ -301,8 +300,8 @@ public:
     return req.get_http_status();
   }
 
-  int wait(bufferlist *pbl) {
-    int ret = req.wait();
+  int wait(bufferlist *pbl, optional_yield y) {
+    int ret = req.wait(y);
     if (ret < 0) {
       return ret;
     }
@@ -315,7 +314,7 @@ public:
   }
 
   template <class T>
-  int wait(T *dest);
+  int wait(T *dest, optional_yield y);
 
   template <class T>
   int fetch(T *dest);
@@ -352,9 +351,9 @@ int RGWRESTReadResource::fetch(T *dest)
 }
 
 template <class T>
-int RGWRESTReadResource::wait(T *dest)
+int RGWRESTReadResource::wait(T *dest, optional_yield y)
 {
-  int ret = req.wait();
+  int ret = req.wait(y);
   if (ret < 0) {
     return ret;
   }
@@ -423,8 +422,8 @@ public:
   }
 
   template <class E = int>
-  int wait(bufferlist *pbl, E *err_result = nullptr) {
-    int ret = req.wait();
+  int wait(bufferlist *pbl, optional_yield y, E *err_result = nullptr) {
+    int ret = req.wait(y);
     *pbl = bl;
 
     if (ret < 0 && err_result ) {
@@ -435,13 +434,13 @@ public:
   }
 
   template <class T, class E = int>
-  int wait(T *dest, E *err_result = nullptr);
+  int wait(T *dest, optional_yield y, E *err_result = nullptr);
 };
 
 template <class T, class E>
-int RGWRESTSendResource::wait(T *dest, E *err_result)
+int RGWRESTSendResource::wait(T *dest, optional_yield y, E *err_result)
 {
-  int ret = req.wait();
+  int ret = req.wait(y);
   if (ret >= 0) {
     ret = req.get_status();
   }
@@ -515,7 +514,3 @@ public:
                                                                   params, extra_headers, _mgr) {}
 
 };
-
-
-
-#endif

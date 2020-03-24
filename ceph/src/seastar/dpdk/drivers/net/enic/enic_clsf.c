@@ -1,40 +1,9 @@
-/*
- * Copyright 2008-2014 Cisco Systems, Inc.  All rights reserved.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright 2008-2017 Cisco Systems, Inc.  All rights reserved.
  * Copyright 2007 Nuova Systems, Inc.  All rights reserved.
- *
- * Copyright (c) 2014, Cisco Systems, Inc.
- * All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- * 1. Redistributions of source code must retain the above copyright
- * notice, this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright
- * notice, this list of conditions and the following disclaimer in
- * the documentation and/or other materials provided with the
- * distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS
- * FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE
- * COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT,
- * INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
- * BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
- * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
- * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN
- * ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
- * POSSIBILITY OF SUCH DAMAGE.
- *
  */
 
-#include <libgen.h>
-
-#include <rte_ethdev.h>
+#include <rte_ethdev_driver.h>
 #include <rte_malloc.h>
 #include <rte_hash.h>
 #include <rte_byteorder.h>
@@ -42,7 +11,6 @@
 #include <rte_tcp.h>
 #include <rte_udp.h>
 #include <rte_sctp.h>
-#include <rte_eth_ctrl.h>
 
 #include "enic_compat.h"
 #include "enic.h"
@@ -57,7 +25,7 @@
 #include "vnic_intr.h"
 #include "vnic_nic.h"
 
-#ifdef RTE_MACHINE_CPUFLAG_SSE4_2
+#ifdef RTE_ARCH_X86
 #include <rte_hash_crc.h>
 #define DEFAULT_HASH_FUNC       rte_hash_crc
 #else
@@ -66,6 +34,13 @@
 #endif
 
 #define ENICPMD_CLSF_HASH_ENTRIES       ENICPMD_FDIR_MAX
+
+static void copy_fltr_v1(struct filter_v2 *fltr,
+		const struct rte_eth_fdir_input *input,
+		const struct rte_eth_fdir_masks *masks);
+static void copy_fltr_v2(struct filter_v2 *fltr,
+		const struct rte_eth_fdir_input *input,
+		const struct rte_eth_fdir_masks *masks);
 
 void enic_fdir_stats_get(struct enic *enic, struct rte_eth_fdir_stats *stats)
 {
@@ -110,9 +85,9 @@ enic_set_layer(struct filter_generic_1 *gp, unsigned int flag,
 /* Copy Flow Director filter to a VIC ipv4 filter (for Cisco VICs
  * without advanced filter support.
  */
-void
-copy_fltr_v1(struct filter_v2 *fltr, struct rte_eth_fdir_input *input,
-	     __rte_unused struct rte_eth_fdir_masks *masks)
+static void
+copy_fltr_v1(struct filter_v2 *fltr, const struct rte_eth_fdir_input *input,
+	     __rte_unused const struct rte_eth_fdir_masks *masks)
 {
 	fltr->type = FILTER_IPV4_5TUPLE;
 	fltr->u.ipv4.src_addr = rte_be_to_cpu_32(
@@ -135,12 +110,11 @@ copy_fltr_v1(struct filter_v2 *fltr, struct rte_eth_fdir_input *input,
 /* Copy Flow Director filter to a VIC generic filter (requires advanced
  * filter support.
  */
-void
-copy_fltr_v2(struct filter_v2 *fltr, struct rte_eth_fdir_input *input,
-	     struct rte_eth_fdir_masks *masks)
+static void
+copy_fltr_v2(struct filter_v2 *fltr, const struct rte_eth_fdir_input *input,
+	     const struct rte_eth_fdir_masks *masks)
 {
 	struct filter_generic_1 *gp = &fltr->u.generic_1;
-	int i;
 
 	fltr->type = FILTER_DPDK_1;
 	memset(gp, 0, sizeof(*gp));
@@ -195,9 +169,11 @@ copy_fltr_v2(struct filter_v2 *fltr, struct rte_eth_fdir_input *input,
 			sctp_val.tag = input->flow.sctp4_flow.verify_tag;
 		}
 
-		/* v4 proto should be 132, override ip4_flow.proto */
-		input->flow.ip4_flow.proto = 132;
-
+		/*
+		 * Unlike UDP/TCP (FILTER_GENERIC_1_{UDP,TCP}), the firmware
+		 * has no "packet is SCTP" flag. Use flag=0 (generic L4) and
+		 * manually set proto_id=sctp below.
+		 */
 		enic_set_layer(gp, 0, FILTER_GENERIC_1_L4, &sctp_mask,
 			       &sctp_val, sizeof(struct sctp_hdr));
 	}
@@ -221,6 +197,10 @@ copy_fltr_v2(struct filter_v2 *fltr, struct rte_eth_fdir_input *input,
 		if (input->flow.ip4_flow.proto) {
 			ip4_mask.next_proto_id = masks->ipv4_mask.proto;
 			ip4_val.next_proto_id = input->flow.ip4_flow.proto;
+		} else if (input->flow_type == RTE_ETH_FLOW_NONFRAG_IPV4_SCTP) {
+			/* Explicitly match the SCTP protocol number */
+			ip4_mask.next_proto_id = 0xff;
+			ip4_val.next_proto_id = IPPROTO_SCTP;
 		}
 		if (input->flow.ip4_flow.src_ip) {
 			ip4_mask.src_addr =  masks->ipv4_mask.src_ip;
@@ -283,9 +263,6 @@ copy_fltr_v2(struct filter_v2 *fltr, struct rte_eth_fdir_input *input,
 			sctp_val.tag = input->flow.sctp6_flow.verify_tag;
 		}
 
-		/* v4 proto should be 132, override ipv6_flow.proto */
-		input->flow.ipv6_flow.proto = 132;
-
 		enic_set_layer(gp, 0, FILTER_GENERIC_1_L4, &sctp_mask,
 			       &sctp_val, sizeof(struct sctp_hdr));
 	}
@@ -301,19 +278,19 @@ copy_fltr_v2(struct filter_v2 *fltr, struct rte_eth_fdir_input *input,
 		if (input->flow.ipv6_flow.proto) {
 			ipv6_mask.proto = masks->ipv6_mask.proto;
 			ipv6_val.proto = input->flow.ipv6_flow.proto;
+		} else if (input->flow_type == RTE_ETH_FLOW_NONFRAG_IPV6_SCTP) {
+			/* See comments for IPv4 SCTP above. */
+			ipv6_mask.proto = 0xff;
+			ipv6_val.proto = IPPROTO_SCTP;
 		}
-		for (i = 0; i < 4; i++) {
-			*(uint32_t *)&ipv6_mask.src_addr[i * 4] =
-					masks->ipv6_mask.src_ip[i];
-			*(uint32_t *)&ipv6_val.src_addr[i * 4] =
-					input->flow.ipv6_flow.src_ip[i];
-		}
-		for (i = 0; i < 4; i++) {
-			*(uint32_t *)&ipv6_mask.dst_addr[i * 4] =
-					masks->ipv6_mask.src_ip[i];
-			*(uint32_t *)&ipv6_val.dst_addr[i * 4] =
-					input->flow.ipv6_flow.dst_ip[i];
-		}
+		memcpy(ipv6_mask.src_addr, masks->ipv6_mask.src_ip,
+		       sizeof(ipv6_mask.src_addr));
+		memcpy(ipv6_val.src_addr, input->flow.ipv6_flow.src_ip,
+		       sizeof(ipv6_val.src_addr));
+		memcpy(ipv6_mask.dst_addr, masks->ipv6_mask.dst_ip,
+		       sizeof(ipv6_mask.dst_addr));
+		memcpy(ipv6_val.dst_addr, input->flow.ipv6_flow.dst_ip,
+		       sizeof(ipv6_val.dst_addr));
 		if (input->flow.ipv6_flow.tc) {
 			ipv6_mask.vtc_flow = masks->ipv6_mask.tc << 12;
 			ipv6_val.vtc_flow = input->flow.ipv6_flow.tc << 12;
@@ -345,7 +322,7 @@ int enic_fdir_del_fltr(struct enic *enic, struct rte_eth_fdir_filter *params)
 
 		/* Delete the filter */
 		vnic_dev_classifier(enic->vdev, CLSF_DEL,
-			&key->fltr_id, NULL);
+			&key->fltr_id, NULL, NULL);
 		rte_free(key);
 		enic->fdir.nodes[pos] = NULL;
 		enic->fdir.stats.free++;
@@ -365,8 +342,10 @@ int enic_fdir_add_fltr(struct enic *enic, struct rte_eth_fdir_filter *params)
 	u32 flowtype_supported;
 	u16 flex_bytes;
 	u16 queue;
+	struct filter_action_v2 action;
 
 	memset(&fltr, 0, sizeof(fltr));
+	memset(&action, 0, sizeof(action));
 	flowtype_supported = enic->fdir.types_mask
 			     & (1 << params->input.flow_type);
 
@@ -439,7 +418,7 @@ int enic_fdir_add_fltr(struct enic *enic, struct rte_eth_fdir_filter *params)
 			 * Delete the filter and add the modified one later
 			 */
 			vnic_dev_classifier(enic->vdev, CLSF_DEL,
-				&key->fltr_id, NULL);
+				&key->fltr_id, NULL, NULL);
 			enic->fdir.stats.free++;
 		}
 
@@ -451,8 +430,11 @@ int enic_fdir_add_fltr(struct enic *enic, struct rte_eth_fdir_filter *params)
 
 	enic->fdir.copy_fltr_fn(&fltr, &params->input,
 				&enic->rte_dev->data->dev_conf.fdir_conf.mask);
+	action.type = FILTER_ACTION_RQ_STEERING;
+	action.rq_idx = queue;
 
-	if (!vnic_dev_classifier(enic->vdev, CLSF_ADD, &queue, &fltr)) {
+	if (!vnic_dev_classifier(enic->vdev, CLSF_ADD, &queue, &fltr,
+	    &action)) {
 		key->fltr_id = queue;
 	} else {
 		dev_err(enic, "Add classifier entry failed\n");
@@ -462,7 +444,8 @@ int enic_fdir_add_fltr(struct enic *enic, struct rte_eth_fdir_filter *params)
 	}
 
 	if (do_free)
-		vnic_dev_classifier(enic->vdev, CLSF_DEL, &old_fltr_id, NULL);
+		vnic_dev_classifier(enic->vdev, CLSF_DEL, &old_fltr_id, NULL,
+				    NULL);
 	else{
 		enic->fdir.stats.free--;
 		enic->fdir.stats.add++;
@@ -488,7 +471,7 @@ void enic_clsf_destroy(struct enic *enic)
 		key = enic->fdir.nodes[index];
 		if (key) {
 			vnic_dev_classifier(enic->vdev, CLSF_DEL,
-				&key->fltr_id, NULL);
+				&key->fltr_id, NULL, NULL);
 			rte_free(key);
 			enic->fdir.nodes[index] = NULL;
 		}

@@ -537,3 +537,4 @@ class MixedType(MixedStrategy):
                 self.block_wal_size,
             )
             raise RuntimeError(msg)
+

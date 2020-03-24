@@ -1,5 +1,5 @@
 =======================
- librbd Settings
+ Config Settings
 =======================
 
 See `Block Device`_ for additional details.
@@ -15,12 +15,20 @@ Generic IO Settings
 :Default: ``none``
 :Values: ``none``, ``compressible``, ``incompressible``
 
+``rbd read from replica policy``
+
+:Description: policy for determining which OSD will receive read operations. If set to `default`, the primary OSD will always be used for read operations. If set to `balance`, read operations will be sent to a randomly selected OSD within the replica set. If set to `localize`, read operations will be sent to the closest OSD as determined by the CRUSH map. Note: this feature requires the cluster to be configured with a minimum compatible OSD release of Octopus.
+:Type: Enum
+:Required: No
+:Default: ``default``
+:Values: ``default``, ``balance``, ``localize``
+
 Cache Settings
 =======================
 
 .. sidebar:: Kernel Caching
 
-	The kernel driver for Ceph block devices can use the Linux page cache to 
+	The kernel driver for Ceph block devices can use the Linux page cache to
 	improve performance.
 
 The user space implementation of the Ceph block device (i.e., ``librbd``) cannot
@@ -30,38 +38,58 @@ disk caching.  When the OS sends a barrier or a flush request, all dirty data is
 written to the OSDs. This means that using write-back caching is just as safe as
 using a well-behaved physical hard disk with a VM that properly sends flushes
 (i.e. Linux kernel >= 2.6.32). The cache uses a Least Recently Used (LRU)
-algorithm, and in write-back mode it  can coalesce contiguous requests for
+algorithm, and in write-back mode it can coalesce contiguous requests for
 better throughput.
 
-.. versionadded:: 0.46
+The librbd cache is enabled by default and supports three different cache
+policies: write-around, write-back, and write-through. Writes return
+immediately under both the write-around and write-back policies, unless there
+are more than ``rbd cache max dirty`` unwritten bytes to the storage cluster.
+The write-around policy differs from the write-back policy in that it does
+not attempt to service read requests from the cache, unlike the write-back
+policy, and is therefore faster for high performance write workloads. Under the
+write-through policy, writes return only when the data is on disk on all
+replicas, but reads may come from the cache.
 
-Ceph supports write-back caching for RBD. To enable it, add  ``rbd cache =
-true`` to the ``[client]`` section of your ``ceph.conf`` file. By default
-``librbd`` does not perform any caching. Writes and reads go directly to the
-storage cluster, and writes return only when the data is on disk on all
-replicas. With caching enabled, writes return immediately, unless there are more
-than ``rbd cache max dirty`` unflushed bytes. In this case, the write triggers
-writeback and blocks until enough bytes are flushed.
+Prior to receiving a flush request, the cache behaves like a write-through cache
+to ensure safe operation for older operating systems that do not send flushes to
+ensure crash consistent behavior.
 
-.. versionadded:: 0.47
+If the librbd cache is disabled, writes and
+reads go directly to the storage cluster, and writes return only when the data
+is on disk on all replicas.
 
-Ceph supports write-through caching for RBD. You can set the size of
-the cache, and you can set targets and limits to switch from
-write-back caching to write through caching. To enable write-through
-mode, set ``rbd cache max dirty`` to 0. This means writes return only
-when the data is on disk on all replicas, but reads may come from the
-cache. The cache is in memory on the client, and each RBD image has
-its own.  Since the cache is local to the client, there's no coherency
-if there are others accessing the image. Running GFS or OCFS on top of
-RBD will not work with caching enabled.
+.. note::
+   The cache is in memory on the client, and each RBD image has
+   its own.  Since the cache is local to the client, there's no coherency
+   if there are others accessing the image. Running GFS or OCFS on top of
+   RBD will not work with caching enabled.
+
 
 The ``ceph.conf`` file settings for RBD should be set in the ``[client]``
-section of your configuration file. The settings include: 
+section of your configuration file. The settings include:
 
 
 ``rbd cache``
 
 :Description: Enable caching for RADOS Block Device (RBD).
+:Type: Boolean
+:Required: No
+:Default: ``true``
+
+
+``rbd cache policy``
+
+:Description: Select the caching policy for librbd.
+:Type: Enum
+:Required: No
+:Default: ``writearound``
+:Values: ``writearound``, ``writeback``, ``writethrough``
+
+
+``rbd cache writethrough until flush``
+
+:Description: Start out in write-through mode, and switch to write-back after the first flush request is received. Enabling this is a conservative but safe setting in case VMs running on rbd are too old to send flushes, like the virtio driver in Linux before 2.6.32.
 :Type: Boolean
 :Required: No
 :Default: ``true``
@@ -73,6 +101,7 @@ section of your configuration file. The settings include:
 :Type: 64-bit Integer
 :Required: No
 :Default: ``32 MiB``
+:Policies: write-back and write-through
 
 
 ``rbd cache max dirty``
@@ -82,6 +111,7 @@ section of your configuration file. The settings include:
 :Required: No
 :Constraint: Must be less than ``rbd cache size``.
 :Default: ``24 MiB``
+:Policies: write-around and write-back
 
 
 ``rbd cache target dirty``
@@ -91,6 +121,7 @@ section of your configuration file. The settings include:
 :Required: No
 :Constraint: Must be less than ``rbd cache max dirty``.
 :Default: ``16 MiB``
+:Policies: write-back
 
 
 ``rbd cache max dirty age``
@@ -99,15 +130,8 @@ section of your configuration file. The settings include:
 :Type: Float
 :Required: No
 :Default: ``1.0``
+:Policies: write-back
 
-.. versionadded:: 0.60
-
-``rbd cache writethrough until flush``
-
-:Description: Start out in write-through mode, and switch to write-back after the first flush request is received. Enabling this is a conservative but safe setting in case VMs running on rbd are too old to send flushes, like the virtio driver in Linux before 2.6.32.
-:Type: Boolean
-:Required: No
-:Default: ``true``
 
 .. _Block Device: ../../rbd
 
@@ -115,12 +139,10 @@ section of your configuration file. The settings include:
 Read-ahead Settings
 =======================
 
-.. versionadded:: 0.86
-
-RBD supports read-ahead/prefetching to optimize small, sequential reads.
+librbd supports read-ahead/prefetching to optimize small, sequential reads.
 This should normally be handled by the guest OS in the case of a VM,
-but boot loaders may not issue efficient reads.
-Read-ahead is automatically disabled if caching is disabled.
+but boot loaders may not issue efficient reads. Read-ahead is automatically
+disabled if caching is disabled or if the policy is write-around.
 
 
 ``rbd readahead trigger requests``
@@ -147,8 +169,8 @@ Read-ahead is automatically disabled if caching is disabled.
 :Default: ``50 MiB``
 
 
-RBD Features
-============
+Image Features
+==============
 
 RBD supports advanced features which can be specified via the command line when creating images or the default features can be specified via Ceph config file via 'rbd_default_features = <sum of feature numeric values>' or 'rbd_default_features = <comma-delimited list of CLI values>'
 
@@ -157,7 +179,7 @@ RBD supports advanced features which can be specified via the command line when 
 :Description: Layering enables you to use cloning.
 :Internal value: 1
 :CLI value: layering
-:Added in: v0.70 (Emperor)
+:Added in: v0.52 (Bobtail)
 :KRBD support: since v3.10
 :Default: yes
 
@@ -166,8 +188,8 @@ RBD supports advanced features which can be specified via the command line when 
 :Description: Striping spreads data across multiple objects. Striping helps with parallelism for sequential read/write workloads.
 :Internal value: 2
 :CLI value: striping
-:Added in: v0.70 (Emperor)
-:KRBD support: since v3.10
+:Added in: v0.55 (Bobtail)
+:KRBD support: since v3.10 (default striping only, "fancy" striping added in v4.17)
 :Default: yes
 
 ``Exclusive locking``
@@ -185,7 +207,7 @@ RBD supports advanced features which can be specified via the command line when 
 :Internal value: 8
 :CLI value: object-map
 :Added in: v0.93 (Hammer)
-:KRBD support: no
+:KRBD support: since v5.3
 :Default: yes
 
 
@@ -195,7 +217,7 @@ RBD supports advanced features which can be specified via the command line when 
 :Internal value: 16
 :CLI value: fast-diff
 :Added in: v9.0.1 (Infernalis)
-:KRBD support: no
+:KRBD support: since v5.3
 :Default: yes
 
 
@@ -205,7 +227,7 @@ RBD supports advanced features which can be specified via the command line when 
 :Internal value: 32
 :CLI value: deep-flatten
 :Added in: v9.0.2 (Infernalis)
-:KRBD support: no
+:KRBD support: since v5.1
 :Default: yes
 
 
@@ -243,11 +265,18 @@ RBD supports advanced features which can be specified via the command line when 
 :Added in: v14.0.1 (Nautilus)
 :KRBD support: no
 
+``Non-primary``
 
-RBD QOS Settings
-================
+:Description: Used to restrict changes to non-primary images using snapshot-based mirroring.
+:Internal value: 1024
+:Added in: v15.2.0 (Octopus)
+:KRBD support: no
 
-RBD supports limiting per image IO, controlled by the following
+
+QOS Settings
+============
+
+librbd supports limiting per image IO, controlled by the following
 settings.
 
 ``rbd qos iops limit``

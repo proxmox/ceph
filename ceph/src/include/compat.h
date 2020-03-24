@@ -193,6 +193,16 @@ int sched_setaffinity(pid_t pid, size_t cpusetsize,
 
 int ceph_posix_fallocate(int fd, off_t offset, off_t len);
 
-int pipe_cloexec(int pipefd[2]);
+int pipe_cloexec(int pipefd[2], int flags);
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+char *ceph_strerror_r(int errnum, char *buf, size_t buflen);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* !CEPH_COMPAT_H */

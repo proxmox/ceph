@@ -64,7 +64,20 @@ Compilation of the DPDK
        x86_x32 ABI is currently supported with distribution packages only on Ubuntu
        higher than 13.10 or recent Debian distribution. The only supported  compiler is gcc 4.9+.
 
-*   libnuma-devel - library for handling NUMA (Non Uniform Memory Access).
+*   Library for handling NUMA (Non Uniform Memory Access).
+
+    * numactl-devel in Red Hat/Fedora;
+
+    * libnuma-dev in Debian/Ubuntu;
+
+    .. note::
+
+        On systems with NUMA support, `libnuma-dev` (aka `numactl-devel`)
+        is a recommended dependency when `--legacy-mem` switch is used,
+        and a *required* dependency if default memory mode is used.
+        While DPDK will compile and run without `libnuma`
+        even on NUMA-enabled systems,
+        both usability and performance will be degraded.
 
 *   Python, version 2.7+ or 3.2+, to use various helper scripts included in the DPDK package.
 
@@ -94,10 +107,11 @@ System Software
 
 **Required:**
 
-*   Kernel version >= 3.2
+*   Kernel version >= 3.16
 
     The kernel version required is based on the oldest long term stable kernel available
     at kernel.org when the DPDK version is in development.
+    Compatibility for recent distribution kernels will be kept, notably RHEL/CentOS 7.
 
     The kernel version in use can be checked using the command::
 
@@ -164,7 +178,7 @@ In the case of a dual-socket NUMA system,
 the number of hugepages reserved at boot time is generally divided equally between the two sockets
 (on the assumption that sufficient memory is present on both sockets).
 
-See the Documentation/kernel-parameters.txt file in your Linux source tree for further details of these and other kernel options.
+See the Documentation/admin-guide/kernel-parameters.txt file in your Linux source tree for further details of these and other kernel options.
 
 **Alternative:**
 
@@ -182,12 +196,6 @@ On a NUMA machine, pages should be allocated explicitly on separate nodes::
 .. note::
 
     For 1G pages, it is not possible to reserve the hugepage memory after the system has booted.
-
-    On IBM POWER system, the nr_overcommit_hugepages should be set to the same value as nr_hugepages.
-    For example, if the required page number is 128, the following commands are used::
-
-        echo 128 > /sys/kernel/mm/hugepages/hugepages-16384kB/nr_hugepages
-        echo 128 > /sys/kernel/mm/hugepages/hugepages-16384kB/nr_overcommit_hugepages
 
 Using Hugepages with the DPDK
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

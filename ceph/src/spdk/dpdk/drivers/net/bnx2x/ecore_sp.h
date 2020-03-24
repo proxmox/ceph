@@ -151,14 +151,15 @@ typedef rte_spinlock_t ECORE_MUTEX_SPIN;
 		}							\
 	} while (0)
 
-#define ECORE_ILT_FREE(x, y, size)                   \
-    do {                                             \
-	if (x) {                                     \
-	    rte_free(x);                             \
-	    x = NULL;                                \
-	    y = 0;                                   \
-	}                                            \
-    } while (0)
+#define ECORE_ILT_FREE(x, y, size)					\
+	do {								\
+		if (x) {						\
+			bnx2x_dma_free((struct bnx2x_dma *)x);		\
+			rte_free(x);					\
+			x = NULL;					\
+			y = 0;						\
+		}							\
+	} while (0)
 
 #define ECORE_IS_VALID_ETHER_ADDR(_mac) TRUE
 
@@ -215,8 +216,8 @@ ECORE_CRC32_LE(uint32_t seed, uint8_t *mac, uint32_t len)
     } while (0)
 
 
-#define ECORE_MSG(m, ...) \
-	PMD_DRV_LOG(DEBUG, m, ##__VA_ARGS__)
+#define ECORE_MSG(sc, m, ...) \
+	PMD_DRV_LOG(DEBUG, sc, m, ##__VA_ARGS__)
 
 typedef struct _ecore_list_entry_t
 {

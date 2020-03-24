@@ -1,4 +1,4 @@
-import { HttpClient } from '@angular/common/http';
+import { HttpClient, HttpParams } from '@angular/common/http';
 import { Injectable } from '@angular/core';
 
 import { UserFormModel } from '../../core/auth/user-form/user-form.model';
@@ -28,5 +28,27 @@ export class UserService {
 
   update(user: UserFormModel) {
     return this.http.put(`api/user/${user.username}`, user);
+  }
+
+  changePassword(username: string, oldPassword: string, newPassword: string) {
+    // Note, the specified user MUST be logged in to be able to change
+    // the password. The backend ensures that the password of another
+    // user can not be changed, otherwise an error will be thrown.
+    return this.http.post(`api/user/${username}/change_password`, {
+      old_password: oldPassword,
+      new_password: newPassword
+    });
+  }
+
+  validatePassword(password: string, username: string = null, oldPassword: string = null) {
+    let params = new HttpParams();
+    params = params.append('password', password);
+    if (username) {
+      params = params.append('username', username);
+    }
+    if (oldPassword) {
+      params = params.append('old_password', oldPassword);
+    }
+    return this.http.post('api/user/validate_password', null, { params });
   }
 }

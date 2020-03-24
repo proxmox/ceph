@@ -269,10 +269,7 @@ There are multiple examples of Blobstore usage in the [repo](https://github.com/
 * **Hello World**: Actually named `hello_blob.c` this is a very basic example of a single threaded application that
 does nothing more than demonstrate the very basic API. Although Blobstore is optimized for NVMe, this example uses
 a RAM disk (malloc) back-end so that it can be executed easily in any development environment. The malloc back-end
-is a `bdev` module thus this example uses not on the SPDK Framework but the `bdev` layer as well.
-
-* **Hello NVME Blob**: `hello_nvme_blob.c` is the non-bdev version of `hello_blob.c` and simply shows how an
-application can directly integrate Blobstore with the SPDK NVMe driver without using the `bdev` layer at all.
+is a `bdev` module thus this example uses not only the SPDK Framework but the `bdev` layer as well.
 
 * **CLI**: The `blobcli.c` example is command line utility intended to not only serve as example code but as a test
 and development tool for Blobstore itself. It is also a simple single threaded application that relies on both the
@@ -330,7 +327,7 @@ a serial fashion or in parallel, respectively. Both are defined using the follow
 struct spdk_bs_request_set;
 ~~~
 
-These requests sets are basically bookkeeping mechanisms to help Blobstore efficiently deal will related groups
+These requests sets are basically bookkeeping mechanisms to help Blobstore efficiently deal with related groups
 of IO. They are an internal construct only and are pre-allocated on a per channel basis (channels were discussed
 earlier). They are removed from a channel associated linked list when the set (sequence or batch) is started and
 then returned to the list when completed.
@@ -344,7 +341,7 @@ the public API is `blob.h`.
 ~~~{.sh}
 struct spdk_blob
 ~~~
-This is an in-memory data structure that contains key elements like the blob identifier, it's current state and two
+This is an in-memory data structure that contains key elements like the blob identifier, its current state and two
 copies of the mutable metadata for the blob; one copy is the current metadata and the other is the last copy written
 to disk.
 

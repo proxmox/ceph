@@ -1,3 +1,6 @@
+..  SPDX-License-Identifier: BSD-3-Clause
+    Copyright 2018 The DPDK contributors
+
 Contributor's Guidelines
 ========================
 
@@ -10,5 +13,6 @@ Contributor's Guidelines
     versioning
     documentation
     patches
+    vulnerability
     stable
     cheatsheet
