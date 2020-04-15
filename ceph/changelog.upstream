@@ -1,8 +1,13 @@
-ceph (14.2.8-1xenial) xenial; urgency=medium
+ceph (14.2.9-1xenial) xenial; urgency=medium
 
-  * 
 
- -- Jenkins Build Slave User <jenkins-build@ceph-builders>  Mon, 02 Mar 2020 18:02:26 +0000
+ -- Jenkins Build Slave User <jenkins-build@braggi12.front.sepia.ceph.com>  Thu, 09 Apr 2020 16:27:54 +0000
+
+ceph (14.2.9-1) stable; urgency=medium
+
+  * New upstream release
+
+ -- Ceph Release Team <ceph-maintainers@ceph.com>  Thu, 09 Apr 2020 16:17:27 +0000
 
 ceph (14.2.8-1) stable; urgency=medium
 
