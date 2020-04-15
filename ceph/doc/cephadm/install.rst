@@ -123,7 +123,7 @@ command.  There are several ways to do this:
 
 * It may be helpful to create an alias::
 
-    # alias ceph='cephadm shell --'
+    # alias ceph='cephadm shell -- ceph'
 
 * You can install the ``ceph-common`` package, which contains all of the
   ceph commands, including ``ceph``, ``rbd``, ``mount.ceph`` (for mounting
@@ -150,12 +150,12 @@ To add each new host to the cluster, perform two steps:
 #. Install the cluster's public SSH key in the new host's root user's
    ``authorized_keys`` file::
 
-     # ssh-copy-id -f -i ceph.pub root@*<new-host>*
+     # ssh-copy-id -f -i /etc/ceph/ceph.pub root@*<new-host>*
 
    For example::
 
-     # ssh-copy-id -f -i ceph.pub root@host2
-     # ssh-copy-id -f -i ceph.pub root@host3
+     # ssh-copy-id -f -i /etc/ceph/ceph.pub root@host2
+     # ssh-copy-id -f -i /etc/ceph/ceph.pub root@host3
 
 #. Tell Ceph that the new node is part of the cluster::
 
@@ -289,7 +289,7 @@ There are a few ways to create new OSDs:
   based on their properties, such device type (SSD or HDD), device
   model names, size, or the hosts on which the devices exist::
 
-    # ceph orch osd create -i spec.yml
+    # ceph orch apply osd -i spec.yml
 
 
 Deploy MDSs
@@ -341,3 +341,18 @@ zone on *myhost1* and *myhost2*::
   # radosgw-admin zonegroup create --rgw-zonegroup=default --master --default
   # radosgw-admin zone create --rgw-zonegroup=default --rgw-zone=us-east-1 --master --default
   # ceph orch apply rgw myorg us-east-1 2 myhost1 myhost2
+
+Deploying NFS ganesha
+=====================
+
+Cephadm deploys NFS Ganesha using a pre-defined RADOS *pool*
+and optional *namespace*
+
+To deploy a NFS Ganesha gateway,::
+
+  # ceph orch apply nfs *<svc_id>* *<pool>* *<namespace>* *<num-daemons>* [*<host1>* ...]
+
+For example, to deploy NFS with a service id of *foo*, that will use the
+RADOS pool *nfs-ganesha* and namespace *nfs-ns*,::
+
+  # ceph orch apply nfs foo nfs-ganesha nfs-ns

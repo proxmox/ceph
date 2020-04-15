@@ -377,13 +377,15 @@ class OrchestratorCli(OrchestratorClientMixin, MgrModule):
     @_cli_read_command(
         'orch ps',
         "name=hostname,type=CephString,req=false "
+        "name=service_name,type=CephString,req=false "
         "name=daemon_type,type=CephString,req=false "
         "name=daemon_id,type=CephString,req=false "
         "name=format,type=CephChoices,strings=json|plain,req=false "
         "name=refresh,type=CephBool,req=false",
         'List daemons known to orchestrator')
-    def _list_daemons(self, hostname=None, daemon_type=None, daemon_id=None, format='plain', refresh=False):
-        completion = self.list_daemons(daemon_type,
+    def _list_daemons(self, hostname=None, service_name=None, daemon_type=None, daemon_id=None, format='plain', refresh=False):
+        completion = self.list_daemons(service_name,
+                                       daemon_type,
                                        daemon_id=daemon_id,
                                        host=hostname,
                                        refresh=refresh)
@@ -783,13 +785,17 @@ Usage:
 
     @_cli_write_command(
         'orch apply nfs',
-        "name=svc_id,type=CephString "
+        'name=svc_id,type=CephString '
+        'name=pool,type=CephString '
+        'name=namespace,type=CephString,req=false '
         'name=placement,type=CephString,req=false '
         'name=unmanaged,type=CephBool,req=false',
         'Scale an NFS service')
-    def _apply_nfs(self, svc_id, placement=None, unmanaged=False):
+    def _apply_nfs(self, svc_id, pool, namespace=None, placement=None, unmanaged=False):
         spec = NFSServiceSpec(
             svc_id,
+            pool=pool,
+            namespace=namespace,
             placement=PlacementSpec.from_string(placement),
             unmanaged=unmanaged,
         )
