@@ -18,7 +18,7 @@ diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
 index b0837ab1d9..f63bf44de3 100644
 --- a/src/CMakeLists.txt
 +++ b/src/CMakeLists.txt
-@@ -206,15 +206,10 @@ set(GCOV_PREFIX_STRIP 4)
+@@ -179,15 +179,10 @@ set(GCOV_PREFIX_STRIP 4)
  # we pull the git version from .git
  option(ENABLE_GIT_VERSION "build Ceph with git version string" ON)
  if(${ENABLE_GIT_VERSION})
