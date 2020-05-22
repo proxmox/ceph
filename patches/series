@@ -1,3 +1,4 @@
+0001-cmake-disable-version-from-git.patch
 0002-enable-systemd-targets-by-default.patch
 0006-debian-control-add-break-libpvestorage-perl.patch
 0007-debian-rules-ship-Ceph-changelog-as-upstream-changel.patch
