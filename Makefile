@@ -53,11 +53,11 @@ python3-cephfs_${PKGVER}_${ARCH}.deb \
 python3-rados_${PKGVER}_${ARCH}.deb \
 python3-rbd_${PKGVER}_${ARCH}.deb \
 python3-rgw_${PKGVER}_${ARCH}.deb \
-python-ceph_${PKGVER}_${ARCH}.deb \
-python-cephfs_${PKGVER}_${ARCH}.deb \
-python-rados_${PKGVER}_${ARCH}.deb \
-python-rbd_${PKGVER}_${ARCH}.deb \
-python-rgw_${PKGVER}_${ARCH}.deb \
+python3-ceph_${PKGVER}_${ARCH}.deb \
+python3-cephfs_${PKGVER}_${ARCH}.deb \
+python3-rados_${PKGVER}_${ARCH}.deb \
+python3-rbd_${PKGVER}_${ARCH}.deb \
+python3-rgw_${PKGVER}_${ARCH}.deb \
 radosgw_${PKGVER}_${ARCH}.deb \
 rados-objclass-dev_${PKGVER}_${ARCH}.deb \
 rbd-fuse_${PKGVER}_${ARCH}.deb \
