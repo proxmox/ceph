@@ -4,11 +4,12 @@ import { I18n } from '@ngx-translate/i18n-polyfill';
 import { CephServiceService } from '../../../shared/api/ceph-service.service';
 import { OrchestratorService } from '../../../shared/api/orchestrator.service';
 import { TableComponent } from '../../../shared/datatable/table/table.component';
+import { CellTemplate } from '../../../shared/enum/cell-template.enum';
 import { CdTableColumn } from '../../../shared/models/cd-table-column';
 import { CdTableFetchDataContext } from '../../../shared/models/cd-table-fetch-data-context';
 import { CdTableSelection } from '../../../shared/models/cd-table-selection';
 import { Permissions } from '../../../shared/models/permissions';
-import { CephService } from '../../../shared/models/service.interface';
+import { CephServiceSpec } from '../../../shared/models/service.interface';
 import { AuthStorageService } from '../../../shared/services/auth-storage.service';
 
 @Component({
@@ -32,7 +33,7 @@ export class ServicesComponent implements OnChanges, OnInit {
   docsUrl: string;
 
   columns: Array<CdTableColumn> = [];
-  services: Array<CephService> = [];
+  services: Array<CephServiceSpec> = [];
   isLoadingServices = false;
   selection = new CdTableSelection();
 
@@ -54,27 +55,31 @@ export class ServicesComponent implements OnChanges, OnInit {
       },
       {
         name: this.i18n('Container image name'),
-        prop: 'container_image_name',
+        prop: 'status.container_image_name',
         flexGrow: 3
       },
       {
         name: this.i18n('Container image ID'),
-        prop: 'container_image_id',
-        flexGrow: 3
+        prop: 'status.container_image_id',
+        flexGrow: 3,
+        cellTransformation: CellTemplate.truncate,
+        customTemplateConfig: {
+          length: 12
+        }
       },
       {
         name: this.i18n('Running'),
-        prop: 'running',
+        prop: 'status.running',
         flexGrow: 1
       },
       {
         name: this.i18n('Size'),
-        prop: 'size',
+        prop: 'status.size',
         flexGrow: 1
       },
       {
         name: this.i18n('Last Refreshed'),
-        prop: 'last_refresh',
+        prop: 'status.last_refresh',
         flexGrow: 1
       }
     ];
@@ -105,7 +110,7 @@ export class ServicesComponent implements OnChanges, OnInit {
     }
     this.isLoadingServices = true;
     this.cephServiceService.list().subscribe(
-      (services: CephService[]) => {
+      (services: CephServiceSpec[]) => {
         this.services = services;
         this.isLoadingServices = false;
       },

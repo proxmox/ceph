@@ -178,7 +178,7 @@ class TestOrchestrator(MgrModule, orchestrator.Orchestrator):
                 raise AssertionError('Fail to determine daemon type from {}'.format(p))
 
             # parse daemon ID. Possible options: `-i <id>`, `--id=<id>`, `--id <id>`
-            patterns = ['-i\s(\w+)', '--id[\s=](\w+)']
+            patterns = [r'-i\s(\w+)', r'--id[\s=](\w+)']
             daemon_id = None
             for pattern in patterns:
                 m = re.search(pattern, p)
@@ -197,10 +197,8 @@ class TestOrchestrator(MgrModule, orchestrator.Orchestrator):
         if self._services:
             # Dummy data
             services = self._services
-            # Can't deduce service type from dummy data (no daemons).
-            # Assume service_type is service_name.
             if service_type is not None:
-                services = list(filter(lambda s: s.service_name == service_type, services))
+                services = list(filter(lambda s: s.spec.service_type == service_type, services))
         else:
             # Deduce services from daemons running on localhost
             all_daemons = self._get_ceph_daemons()
@@ -210,10 +208,13 @@ class TestOrchestrator(MgrModule, orchestrator.Orchestrator):
                     continue
                 daemon_size = len(list(daemons))
                 services.append(orchestrator.ServiceDescription(
-                    service_name=daemon_type, size=daemon_size, running=daemon_size))
+                    spec=ServiceSpec(
+                        service_type=daemon_type,
+                    ),
+                    size=daemon_size, running=daemon_size))
         
         def _filter_func(svc):
-            if service_name is not None and service_name != svc.service_name:
+            if service_name is not None and service_name != svc.spec.service_name():
                 return False
             return True
 
@@ -243,6 +244,9 @@ class TestOrchestrator(MgrModule, orchestrator.Orchestrator):
             return True
 
         return list(filter(_filter_func, daemons))
+
+    def preview_drivegroups(self, drive_group_name=None, dg_specs=None):
+        return [{}]
 
     def create_osds(self, drive_group):
         # type: (DriveGroupSpec) -> TestCompletion

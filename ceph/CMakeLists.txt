@@ -159,7 +159,7 @@ endif()
 
 option(WITH_FUSE "Fuse is here" ON)
 if(WITH_FUSE)
-  find_package(fuse)
+  find_package(FUSE)
   set(HAVE_LIBFUSE ${FUSE_FOUND})
 endif()
 
@@ -667,4 +667,4 @@ add_custom_target(tags DEPENDS ctags)
 
 find_package(CppCheck)
 find_package(IWYU)
-set(VERSION 15.2.1)
+set(VERSION 15.2.2)

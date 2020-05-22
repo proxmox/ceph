@@ -30,6 +30,7 @@ Alternative usage:
 
 """
 
+from six import StringIO
 from io import BytesIO
 from collections import defaultdict
 import getpass
@@ -150,6 +151,11 @@ else:
     SRC_PREFIX = "./"
 
 
+def rm_nonascii_chars(var):
+    var = var.replace('\xe2\x80\x98', '\'')
+    var = var.replace('\xe2\x80\x99', '\'')
+    return var
+
 class LocalRemoteProcess(object):
     def __init__(self, args, subproc, check_status, stdout, stderr):
         self.args = args
@@ -170,6 +176,7 @@ class LocalRemoteProcess(object):
                 return
 
         out, err = self.subproc.communicate()
+        out, err = rm_nonascii_chars(out), rm_nonascii_chars(err)
         self.stdout.write(out)
         self.stderr.write(err)
 
@@ -333,7 +340,7 @@ class LocalRemote(object):
 
         # Filter out helper tools that don't exist in a vstart environment
         args = [a for a in args if a not in {
-            'adjust-ulimits', 'ceph-coverage', 'timeout'}]
+            'adjust-ulimits', 'ceph-coverage'}]
 
         # Adjust binary path prefix if given a bare program name
         if "/" not in args[0]:
@@ -615,33 +622,6 @@ class LocalKernelMount(KernelMount):
         log.info("I think my launching pid was {0}".format(self.fuse_daemon.subproc.pid))
         return path
 
-    def umount(self, force=False):
-        log.debug('Unmounting client client.{id}...'.format(id=self.client_id))
-
-        cmd=['sudo', 'umount', self.mountpoint]
-        if force:
-            cmd.append('-f')
-
-        try:
-            self.client_remote.run(args=cmd, timeout=(15*60), omit_sudo=False)
-        except Exception as e:
-            self.client_remote.run(args=[
-                'sudo',
-                Raw('PATH=/usr/sbin:$PATH'),
-                'lsof',
-                Raw(';'),
-                'ps', 'auxf',
-            ], timeout=(15*60), omit_sudo=False)
-            raise e
-
-        rproc = self.client_remote.run(args=[
-                'rmdir',
-                '--',
-                self.mountpoint,
-            ])
-        rproc.wait()
-        self.mounted = False
-
     def mount(self, mount_path=None, mount_fs_name=None, mount_options=[]):
         self.setupfs(name=mount_fs_name)
 
@@ -803,10 +783,6 @@ class LocalFuseMount(FuseMount):
         log.info("I think my launching pid was {0}".format(self.fuse_daemon.subproc.pid))
         return path
 
-    def umount(self):
-        if self.is_mounted():
-            super(LocalFuseMount, self).umount()
-
     def mount(self, mount_path=None, mount_fs_name=None, mountpoint=None, mount_options=[]):
         if mountpoint is not None:
             self.mountpoint = mountpoint
@@ -935,7 +911,7 @@ class LocalCephManager(CephManager):
         if watch_channel is not None:
             args.append("--watch-channel")
             args.append(watch_channel)
-        proc = self.controller.run(args=args, wait=False, stdout=BytesIO())
+        proc = self.controller.run(args=args, wait=False, stdout=StringIO())
         return proc
 
     def raw_cluster_cmd(self, *args, **kwargs):

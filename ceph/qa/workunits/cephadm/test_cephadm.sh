@@ -3,21 +3,15 @@
 SCRIPT_NAME=$(basename ${BASH_SOURCE[0]})
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 
+# cleanup during exit
+[ -z "$CLEANUP" ] && CLEANUP=true
+
 FSID='00000000-0000-0000-0000-0000deadbeef'
 
 # images that are used
-IMAGE_MASTER=${IMAGE_MASTER:-'quay.io/ceph-ci/ceph:octopus'} # octopus for octopus branch
+IMAGE_MASTER=${IMAGE_MASTER:-'docker.io/ceph/daemon-base:latest-octopus'}
 IMAGE_NAUTILUS=${IMAGE_NAUTILUS:-'docker.io/ceph/daemon-base:latest-nautilus'}
 IMAGE_MIMIC=${IMAGE_MIMIC:-'docker.io/ceph/daemon-base:latest-mimic'}
-
-TMPDIR=$(mktemp -d)
-
-function cleanup()
-{
-    dump_all_logs
-    rm -rf $TMPDIR
-}
-trap cleanup EXIT
 
 OSD_IMAGE_NAME="${SCRIPT_NAME%.*}_osd.img"
 OSD_IMAGE_SIZE='6G'
@@ -86,6 +80,26 @@ if ! [ "$loopdev" = "" ]; then
     $SUDO losetup -d $loopdev
 fi
 
+# TMPDIR for test data
+[ -d "$TMPDIR" ] || TMPDIR=$(mktemp -d tmp.$SCRIPT_NAME.XXXXXX)
+
+function cleanup()
+{
+    if [ $CLEANUP = false ]; then
+        # preserve the TMPDIR state
+        echo "========================"
+        echo "!!! CLEANUP=$CLEANUP !!!"
+        echo
+        echo "TMPDIR=$TMPDIR"
+        echo "========================"
+        return
+    fi
+
+    dump_all_logs $FSID
+    rm -rf $TMPDIR
+}
+trap cleanup EXIT
+
 function expect_false()
 {
         set -x
@@ -114,8 +128,9 @@ function is_available()
 
 function dump_log()
 {
-    local name="$1"
-    local num_lines="$2"
+    local fsid="$1"
+    local name="$2"
+    local num_lines="$3"
 
     if [ -z $num_lines ]; then
         num_lines=100
@@ -125,16 +140,17 @@ function dump_log()
     echo 'dump daemon log:' $name
     echo '-------------------------'
 
-    $CEPHADM logs --name $name -- --no-pager -n $num_lines
+    $CEPHADM logs --fsid $fsid --name $name -- --no-pager -n $num_lines
 }
 
 function dump_all_logs()
 {
-    names=$($CEPHADM ls | jq -r '.[].name')
+    local fsid="$1"
+    local names=$($CEPHADM ls | jq -r '.[] | select(.fsid == "'$fsid'").name')
 
     echo 'dumping logs for daemons: ' $names
     for name in $names; do
-        dump_log $name
+        dump_log $fsid $name
     done
 }
 
@@ -288,16 +304,17 @@ done
 
 for id in `seq 0 $((--OSD_TO_CREATE))`; do
     device_name=/dev/$OSD_VG_NAME/$OSD_LV_NAME.$id
+    CEPH_VOLUME="$CEPHADM ceph-volume \
+                       --fsid $FSID \
+                       --config $CONFIG \
+                       --keyring $TMPDIR/keyring.bootstrap.osd --"
 
     # prepare the osd
-    $CEPHADM ceph-volume --config $CONFIG --keyring $TMPDIR/keyring.bootstrap.osd -- \
-            lvm prepare --bluestore --data $device_name --no-systemd
-    $CEPHADM ceph-volume --config $CONFIG --keyring $TMPDIR/keyring.bootstrap.osd -- \
-            lvm batch --no-auto $device_name --yes --no-systemd
+    $CEPH_VOLUME lvm prepare --bluestore --data $device_name --no-systemd
+    $CEPH_VOLUME lvm batch --no-auto $device_name --yes --no-systemd
 
     # osd id and osd fsid
-    $CEPHADM ceph-volume --config $CONFIG --keyring $TMPDIR/keyring.bootstrap.osd -- \
-            lvm list --format json $device_name > $TMPDIR/osd.map
+    $CEPH_VOLUME lvm list --format json $device_name > $TMPDIR/osd.map
     osd_id=$($SUDO cat $TMPDIR/osd.map | jq -cr '.. | ."ceph.osd_id"? | select(.)')
     osd_fsid=$($SUDO cat $TMPDIR/osd.map | jq -cr '.. | ."ceph.osd_fsid"? | select(.)')
 
@@ -363,8 +380,8 @@ $CEPHADM unit --fsid $FSID --name mon.a -- is-enabled
 ## shell
 $CEPHADM shell --fsid $FSID -- true
 $CEPHADM shell --fsid $FSID -- test -d /var/log/ceph
-expect_false $CEPHADM --timeout 1 shell --fsid $FSID -- sleep 10
-$CEPHADM --timeout 10 shell --fsid $FSID -- sleep 1
+expect_false $CEPHADM --timeout 10 shell --fsid $FSID -- sleep 60
+$CEPHADM --timeout 60 shell --fsid $FSID -- sleep 10
 
 ## enter
 expect_false $CEPHADM enter
@@ -374,12 +391,15 @@ $CEPHADM enter --fsid $FSID --name mon.a -- pidof ceph-mon
 expect_false $CEPHADM enter --fsid $FSID --name mgr.x -- pidof ceph-mon
 $CEPHADM enter --fsid $FSID --name mgr.x -- pidof ceph-mgr
 # this triggers a bug in older versions of podman, including 18.04's 1.6.2
-#expect_false $CEPHADM --timeout 1 enter --fsid $FSID --name mon.a -- sleep 10
-$CEPHADM --timeout 10 enter --fsid $FSID --name mon.a -- sleep 1
+#expect_false $CEPHADM --timeout 5 enter --fsid $FSID --name mon.a -- sleep 30
+$CEPHADM --timeout 60 enter --fsid $FSID --name mon.a -- sleep 10
 
 ## ceph-volume
 $CEPHADM ceph-volume --fsid $FSID -- inventory --format=json \
       | jq '.[]'
+
+## preserve test state
+[ $CLEANUP = false ] && exit 0
 
 ## rm-daemon
 # mon and osd require --force
@@ -391,5 +411,4 @@ $CEPHADM rm-daemon --fsid $FSID --name mgr.x
 expect_false $CEPHADM rm-cluster --fsid $FSID
 $CEPHADM rm-cluster --fsid $FSID --force
 
-rm -rf $TMPDIR
 echo PASS

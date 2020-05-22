@@ -2,6 +2,7 @@ import datetime
 import threading
 import functools
 import os
+import json
 
 from ceph.deployment import inventory
 from ceph.deployment.service_spec import ServiceSpec, NFSServiceSpec, RGWSpec, PlacementSpec
@@ -232,16 +233,18 @@ class RookOrchestrator(MgrModule, orchestrator.Orchestrator):
         for host_name, host_devs in devs.items():
             devs = []
             for d in host_devs:
-                dev = inventory.Device(
-                    path='/dev/' + d['name'],
-                    sys_api=dict(
-                        rotational='1' if d['rotational'] else '0',
-                        size=d['size']
-                    ),
-                    available=d['empty'],
-                    rejected_reasons=[] if d['empty'] else ['not empty'],
-                )
-                devs.append(dev)
+                if 'cephVolumeData' in d and d['cephVolumeData']:
+                    devs.append(inventory.Device.from_json(json.loads(d['cephVolumeData'])))
+                else:
+                    devs.append(inventory.Device(
+                        path = '/dev/' + d['name'],
+                        sys_api = dict(
+                            rotational = '1' if d['rotational'] else '0',
+                            size = d['size']
+                            ),
+                        available = False,
+                        rejected_reasons=['device data coming from ceph-volume not provided'],
+                    ))
 
             result.append(orchestrator.InventoryHost(host_name, inventory.Devices(devs)))
 
@@ -266,7 +269,6 @@ class RookOrchestrator(MgrModule, orchestrator.Orchestrator):
 
         spec = {}
         spec['mon'] = orchestrator.ServiceDescription(
-            service_name='mon',
             spec=ServiceSpec(
                 'mon',
                 placement=PlacementSpec(
@@ -278,7 +280,6 @@ class RookOrchestrator(MgrModule, orchestrator.Orchestrator):
             last_refresh=now,
         )
         spec['mgr'] = orchestrator.ServiceDescription(
-            service_name='mgr',
             spec=ServiceSpec(
                 'mgr',
                 placement=PlacementSpec.from_string('count:1'),
@@ -289,7 +290,6 @@ class RookOrchestrator(MgrModule, orchestrator.Orchestrator):
         )
         if not cl['spec'].get('crashCollector', {}).get('disable', False):
             spec['crash'] = orchestrator.ServiceDescription(
-                service_name='crash',
                 spec=ServiceSpec(
                     'crash',
                     placement=PlacementSpec.from_string('*'),
@@ -313,9 +313,9 @@ class RookOrchestrator(MgrModule, orchestrator.Orchestrator):
             if fs['spec'].get('metadataServer', {}).get('activeStandby', False):
                 total_mds = active * 2
             spec[svc] = orchestrator.ServiceDescription(
-                service_name=svc,
                 spec=ServiceSpec(
-                    svc,
+                    service_type='mds',
+                    service_id=fs['metadata']['name'],
                     placement=PlacementSpec(count=active),
                 ),
                 size=total_mds,
@@ -341,8 +341,8 @@ class RookOrchestrator(MgrModule, orchestrator.Orchestrator):
                 ssl = False
                 port = zone['spec']['gateway']['port'] or 80
             spec[svc] = orchestrator.ServiceDescription(
-                service_name=svc,
                 spec=RGWSpec(
+                    service_id=rgw_realm + '.' + rgw_zone,
                     rgw_realm=rgw_realm,
                     rgw_zone=rgw_zone,
                     ssl=ssl,

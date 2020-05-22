@@ -43,25 +43,20 @@
 %global _remote_tarball_prefix https://download.ceph.com/tarballs/
 %endif
 %if 0%{?suse_version}
-%bcond_with selinux
-%bcond_with cephfs_java
 %bcond_with amqp_endpoint
+%bcond_with cephfs_java
 %bcond_with kafka_endpoint
-#Compat macro for new _fillupdir macro introduced in Nov 2017
-%if ! %{defined _fillupdir}
-%global _fillupdir /var/adm/fillup-templates
-%endif
-%if 0%{?is_opensuse}
-%bcond_without libradosstriper
-%bcond_without ocf
-%else
 %bcond_with libradosstriper
-%bcond_with ocf
-%endif
 %ifarch x86_64 aarch64 ppc64le
 %bcond_without lttng
 %else
 %bcond_with lttng
+%endif
+%bcond_with ocf
+%bcond_with selinux
+#Compat macro for _fillupdir macro introduced in Nov 2017
+%if ! %{defined _fillupdir}
+%global _fillupdir /var/adm/fillup-templates
 %endif
 %endif
 %bcond_with seastar
@@ -103,7 +98,7 @@
 # main package definition
 #################################################################################
 Name:		ceph
-Version:	15.2.1
+Version:	15.2.2
 Release:	0%{?dist}
 %if 0%{?fedora} || 0%{?rhel}
 Epoch:		2
@@ -119,7 +114,7 @@ License:	LGPL-2.1 and LGPL-3.0 and CC-BY-SA-3.0 and GPL-2.0 and BSL-1.0 and BSD-
 Group:		System/Filesystems
 %endif
 URL:		http://ceph.com/
-Source0:	%{?_remote_tarball_prefix}ceph-15.2.1.tar.bz2
+Source0:	%{?_remote_tarball_prefix}ceph-15.2.2.tar.bz2
 %if 0%{?suse_version}
 # _insert_obs_source_lines_here
 ExclusiveArch:  x86_64 aarch64 ppc64le s390x
@@ -526,12 +521,16 @@ Requires:       python%{python3_pkgversion}-cherrypy
 Requires:       python%{python3_pkgversion}-jwt
 Requires:       python%{python3_pkgversion}-routes
 Requires:       python%{python3_pkgversion}-werkzeug
+%if 0%{?weak_deps}
+Recommends:     python%{python3_pkgversion}-saml
+%endif
 %endif
 %if 0%{?suse_version}
 Requires:       python%{python3_pkgversion}-CherryPy
 Requires:       python%{python3_pkgversion}-PyJWT
 Requires:       python%{python3_pkgversion}-Routes
 Requires:       python%{python3_pkgversion}-Werkzeug
+Recommends:     python%{python3_pkgversion}-python3-saml
 %endif
 %description mgr-dashboard
 ceph-mgr-dashboard is a manager module, providing a web-based application
@@ -936,7 +935,7 @@ Summary:	Ceph distributed file system client library
 %if 0%{?suse_version}
 Group:		System/Libraries
 %endif
-Obsoletes:	libcephfs1
+Obsoletes:	libcephfs1 < %{_epoch_prefix}%{version}-%{release}
 %if 0%{?rhel} || 0%{?fedora}
 Obsoletes:	ceph-libs < %{_epoch_prefix}%{version}-%{release}
 Obsoletes:	ceph-libcephfs
@@ -1118,7 +1117,7 @@ This package provides Ceph’s default alerts for Prometheus.
 # common
 #################################################################################
 %prep
-%autosetup -p1 -n ceph-15.2.1
+%autosetup -p1 -n ceph-15.2.2
 
 %build
 # LTO can be enabled as soon as the following GCC bug is fixed:
@@ -1450,6 +1449,7 @@ exit 0
 
 %files -n cephadm
 %{_sbindir}/cephadm
+%{_mandir}/man8/cephadm.8*
 %{_sysconfdir}/sudoers.d/cephadm
 %attr(0700,cephadm,cephadm) %dir %{_sharedstatedir}/cephadm
 %attr(0700,cephadm,cephadm) %dir %{_sharedstatedir}/cephadm/.ssh
@@ -2325,8 +2325,7 @@ if [ $1 -eq 0 ]; then
     fi
 fi
 exit 0
-
-%endif # with selinux
+%endif
 
 %files grafana-dashboards
 %if 0%{?suse_version}
