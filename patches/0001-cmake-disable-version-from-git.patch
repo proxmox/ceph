@@ -1,0 +1,34 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Thomas Lamprecht <t.lamprecht@proxmox.com>
+Date: Fri, 22 May 2020 15:54:24 +0200
+Subject: [PATCH] cmake: disable version from git
+
+to avoid that the parent (packaging) git info is used..
+
+Signed-off-by: Thomas Lamprecht <t.lamprecht@proxmox.com>
+---
+ ceph/src/CMakeLists.txt | 7 -------
+ 1 file changed, 7 deletions(-)
+
+diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
+index bb4a7812d..ea4789522 100644
+--- a/src/CMakeLists.txt
++++ b/src/CMakeLists.txt
+@@ -201,17 +201,10 @@ set(GCOV_PREFIX_STRIP 4)
+ # we pull the git version from .git
+ option(ENABLE_GIT_VERSION "build Ceph with git version string" ON)
+ if(${ENABLE_GIT_VERSION})
+-  get_git_head_revision(GIT_REFSPEC CEPH_GIT_VER)
+-  git_describe(CEPH_GIT_NICE_VER_WITH_V --always)
+-  # remove leading 'v'
+-  string(SUBSTRING ${CEPH_GIT_NICE_VER_WITH_V} 1 -1 CEPH_GIT_NICE_VER)
+-  #if building from a source tarball via make-dist
+-  if(${CEPH_GIT_VER} STREQUAL "GITDIR-NOTFOUND")
+     message(STATUS "Ceph/.git directory not found, parsing ${CMAKE_CURRENT_SOURCE_DIR}/.git_version for CEPH_GIT_VER and CEPH_GIT_NICE_VER")
+     file(STRINGS ${CMAKE_CURRENT_SOURCE_DIR}/.git_version CEPH_GIT_SHA_AND_TAG)
+     list(GET CEPH_GIT_SHA_AND_TAG 0 CEPH_GIT_VER)
+     list(GET CEPH_GIT_SHA_AND_TAG 1 CEPH_GIT_NICE_VER)
+-  endif(${CEPH_GIT_VER} STREQUAL "GITDIR-NOTFOUND")
+ else(${ENABLE_GIT_VERSION})
+   set(CEPH_GIT_VER "no_version")
+   set(CEPH_GIT_NICE_VER "Development")
