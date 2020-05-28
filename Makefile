@@ -80,7 +80,7 @@ ${BUILDSRC}: ${SRCDIR} patches
 	cd $@.tmp; rm -rf .pc ./patches
 	echo "git clone git://git.proxmox.com/git/ceph.git\\ngit checkout ${GITVERSION}" >  $@.tmp/debian/SOURCE
 	echo "debian/SOURCE" >> $@.tmp/debian/docs
-	echo "${GITVERSION}\\nv${VER}" > $@.tmp/src/.git_version
+	echo "${GITVERSION}\\n${VER}" > $@.tmp/src/.git_version
 	cp changelog.Debian $@.tmp/debian/changelog
 	mv $@.tmp $@
 
