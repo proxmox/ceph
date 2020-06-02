@@ -6,7 +6,8 @@ Subject: [PATCH] d/control: move python dependencies over to python3
 Signed-off-by: Thomas Lamprecht <t.lamprecht@proxmox.com>
 ---
  debian/control | 24 ++++++++++++------------
- 1 file changed, 12 insertions(+), 12 deletions(-)
+ debian/rules   | 10 ------------
+ 2 files changed, 12 insertions(+), 22 deletions(-)
 
 diff --git a/debian/control b/debian/control
 index c93aa3c21..aa8edb3d2 100644
@@ -120,3 +121,23 @@ index c93aa3c21..aa8edb3d2 100644
           ${shlibs:Depends},
  Conflicts: ceph-client-tools,
  Replaces: ceph (<< 10),
+diff --git a/debian/rules b/debian/rules
+index c93aa3c21..aa8edb3d2 100755
+--- a/debian/rules
++++ b/debian/rules
+@@ -128,15 +128,6 @@
+ override_dh_shlibdeps:
+ 	dh_shlibdeps -a --exclude=erasure-code --exclude=rados-classes --exclude=compressor
+ 
+-override_dh_python3:
+-	for binding in rados cephfs rbd rgw; do \
+-	  dh_python3 -p python3-$$binding;      \
+-	done
+-	dh_python3 -p python3-ceph-argparse
+-	dh_python3 -p python3-ceph-common
+-	dh_python3 -p cephfs-shell
+-	dh_python3 -p cephadm
+-
+ # do not run tests
+ override_dh_auto_test:
+ 
