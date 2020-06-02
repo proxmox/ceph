@@ -1,0 +1,122 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Thomas Lamprecht <t.lamprecht@proxmox.com>
+Date: Tue, 2 Jun 2020 17:20:44 +0200
+Subject: [PATCH] d/control: move python dependencies over to python3
+
+Signed-off-by: Thomas Lamprecht <t.lamprecht@proxmox.com>
+---
+ debian/control | 24 ++++++++++++------------
+ 1 file changed, 12 insertions(+), 12 deletions(-)
+
+diff --git a/debian/control b/debian/control
+index c93aa3c21..aa8edb3d2 100644
+--- a/debian/control
++++ b/debian/control
+@@ -126,7 +126,7 @@ Depends: binutils,
+          psmisc,
+          xfsprogs,
+          ${misc:Depends},
+-         ${python:Depends},
++         ${python3:Depends},
+          ${shlibs:Depends},
+ Recommends: btrfs-tools,
+             ceph-mds (= ${binary:Version}),
+@@ -172,7 +172,7 @@ Package: cephadm
+ Architecture: linux-any
+ Recommends: podman | docker.io
+ Depends: lvm2,
+-	 ${python:Depends},
++	 ${python3:Depends},
+ Description: cephadm utility to bootstrap ceph daemons with systemd and containers
+  Ceph is a massively scalable, open-source, distributed
+  storage system that runs on commodity hardware and delivers object,
+@@ -223,7 +223,7 @@ Depends: ceph-base (= ${binary:Version}),
+          python3-requests,
+          python3-werkzeug,
+          ${misc:Depends},
+-         ${python:Depends},
++         ${python3:Depends},
+          ${shlibs:Depends},
+ Suggests: ceph-mgr-dashboard,
+           ceph-mgr-diskprediction-local,
+@@ -250,7 +250,7 @@ Depends: ceph-mgr (= ${binary:Version}),
+          python3-werkzeug,
+          python3-routes,
+          ${misc:Depends},
+-         ${python:Depends},
++         ${python3:Depends},
+          ${shlibs:Depends},
+ Description: dashboard module for ceph-mgr
+  Ceph is a massively scalable, open-source, distributed
+@@ -271,7 +271,7 @@ Depends: ceph-mgr (= ${binary:Version}),
+          python3-scipy,
+          python3-sklearn,
+          ${misc:Depends},
+-         ${python:Depends},
++         ${python3:Depends},
+          ${shlibs:Depends},
+ Description: diskprediction-local module for ceph-mgr
+  Ceph is a massively scalable, open-source, distributed
+@@ -285,7 +285,7 @@ Package: ceph-mgr-diskprediction-cloud
+ Architecture: all
+ Depends: ceph-mgr (= ${binary:Version}),
+          ${misc:Depends},
+-         ${python:Depends},
++         ${python3:Depends},
+          ${shlibs:Depends},
+ Description: diskprediction-cloud module for ceph-mgr
+  Ceph is a massively scalable, open-source, distributed
+@@ -298,7 +298,7 @@ Description: diskprediction-cloud module for ceph-mgr
+ Package: ceph-mgr-modules-core
+ Architecture: all
+ Depends: ${misc:Depends},
+-         ${python:Depends},
++         ${python3:Depends},
+          ${shlibs:Depends},
+          python3-dateutil,
+          python3-openssl,
+@@ -319,7 +319,7 @@ Depends: ceph-mgr (= ${binary:Version}),
+          python3-six,
+          python3-jsonpatch
+          ${misc:Depends},
+-         ${python:Depends},
++         ${python3:Depends},
+          ${shlibs:Depends},
+ Description: rook module for ceph-mgr
+  Ceph is a massively scalable, open-source, distributed
+@@ -335,7 +335,7 @@ Architecture: all
+ Depends: ceph-mgr (= ${binary:Version}),
+          python3-kubernetes,
+          ${misc:Depends},
+-         ${python:Depends},
++         ${python3:Depends},
+ Description: kubernetes events module for ceph-mgr
+  Ceph is a massively scalable, open-source, distributed
+  storage system that runs on commodity hardware and delivers object,
+@@ -351,7 +351,7 @@ Depends: ceph-mgr (= ${binary:Version}),
+ 	 cephadm,
+ 	 python3-six,
+          ${misc:Depends},
+-         ${python:Depends},
++         ${python3:Depends},
+          openssh-client
+ Description: cephadm orchestrator module for ceph-mgr
+  Ceph is a massively scalable, open-source, distributed
+@@ -411,7 +411,7 @@ Depends: ceph-base (= ${binary:Version}),
+          lvm2,
+ 	 sudo,
+          ${misc:Depends},
+-         ${python:Depends},
++         ${python3:Depends},
+          ${shlibs:Depends},
+ Replaces: ceph (<< 10), ceph-test (<< 12.2.2-14)
+ Breaks: ceph (<< 10), ceph-test (<< 12.2.2-14)
+@@ -591,7 +591,7 @@ Depends: librbd1 (= ${binary:Version}),
+          python3-rbd (= ${binary:Version}),
+          python3-rgw (= ${binary:Version}),
+          ${misc:Depends},
+-         ${python:Depends},
++         ${python3:Depends},
+          ${shlibs:Depends},
+ Conflicts: ceph-client-tools,
+ Replaces: ceph (<< 10),
