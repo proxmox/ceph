@@ -30,17 +30,23 @@
 %endif
 %if 0%{?fedora} || 0%{?rhel}
 %bcond_without selinux
+%if 0%{?rhel} >= 8
+%bcond_with cephfs_java
+%else
 %bcond_without cephfs_java
+%endif
+%bcond_without amqp_endpoint
 %bcond_without lttng
 %bcond_without libradosstriper
 %bcond_without ocf
-%bcond_without amqp_endpoint
+%bcond_without kafka_endpoint
 %global _remote_tarball_prefix https://download.ceph.com/tarballs/
 %endif
 %if 0%{?suse_version}
 %bcond_with selinux
 %bcond_with cephfs_java
 %bcond_with amqp_endpoint
+%bcond_with kafka_endpoint
 #Compat macro for new _fillupdir macro introduced in Nov 2017
 %if ! %{defined _fillupdir}
 %global _fillupdir /var/adm/fillup-templates
@@ -76,7 +82,9 @@
 %if 0%{without python2}
 %global _defined_if_python2_absent 1
 %endif
-
+%if 0%{?fedora} || 0%{?suse_version} || 0%{?rhel} >= 8
+%global weak_deps 1
+%endif
 %if %{with selinux}
 # get selinux policy version
 %{!?_selinux_policy_version: %global _selinux_policy_version 0.0.0}
@@ -101,7 +109,7 @@
 # main package definition
 #################################################################################
 Name:		ceph
-Version:	14.2.9
+Version:	14.2.10
 Release:	0%{?dist}
 %if 0%{?fedora} || 0%{?rhel}
 Epoch:		2
@@ -117,7 +125,7 @@ License:	LGPL-2.1 and CC-BY-SA-3.0 and GPL-2.0 and BSL-1.0 and BSD-3-Clause and 
 Group:		System/Filesystems
 %endif
 URL:		http://ceph.com/
-Source0:	%{?_remote_tarball_prefix}ceph-14.2.9.tar.bz2
+Source0:	%{?_remote_tarball_prefix}ceph-14.2.10.tar.bz2
 %if 0%{?suse_version}
 # _insert_obs_source_lines_here
 ExclusiveArch:  x86_64 aarch64 ppc64le s390x
@@ -194,22 +202,18 @@ BuildRequires:	yasm
 %if 0%{with amqp_endpoint}
 BuildRequires:  librabbitmq-devel
 %endif
+%if 0%{with kafka_endpoint}
+BuildRequires:  librdkafka-devel
+%endif
 %if 0%{with make_check}
 BuildRequires:  jq
 BuildRequires:	libuuid-devel
 BuildRequires:	python%{_python_buildid}-bcrypt
-BuildRequires:	python%{_python_buildid}-coverage
 BuildRequires:	python%{_python_buildid}-nose
 BuildRequires:	python%{_python_buildid}-pecan
 BuildRequires:	python%{_python_buildid}-requests
 BuildRequires:	python%{_python_buildid}-six
-BuildRequires:	python%{_python_buildid}-tox
 BuildRequires:	python%{_python_buildid}-virtualenv
-%if 0%{?rhel} == 7
-BuildRequires:  pyOpenSSL%{_python_buildid}
-%else
-BuildRequires:  python%{_python_buildid}-pyOpenSSL
-%endif
 BuildRequires:	socat
 %endif
 %if 0%{with seastar}
@@ -268,7 +272,7 @@ BuildRequires:	python2-Cython
 %endif
 BuildRequires:	python%{python3_pkgversion}-devel
 BuildRequires:	python%{python3_pkgversion}-setuptools
-%if 0%{?rhel}
+%if 0%{?rhel} == 7
 BuildRequires:	python%{python3_version_nodots}-Cython
 %else
 BuildRequires:	python%{python3_pkgversion}-Cython
@@ -280,18 +284,31 @@ BuildRequires:	lz4-devel >= 1.7
 # distro-conditional make check dependencies
 %if 0%{with make_check}
 %if 0%{?fedora} || 0%{?rhel}
+BuildRequires:	python%{_python_buildid}-coverage
+BuildRequires:	python%{_python_buildid}-pecan
+BuildRequires:	python%{_python_buildid}-tox
+BuildRequires:  xmlsec1
+%if 0%{?rhel} == 7
+BuildRequires:  pyOpenSSL%{_python_buildid}
+%else
+BuildRequires:  python%{_python_buildid}-pyOpenSSL
+%endif
 BuildRequires:	python%{_python_buildid}-cherrypy
 BuildRequires:	python%{_python_buildid}-jwt
 BuildRequires:	python%{_python_buildid}-routes
+BuildRequires:  python%{_python_buildid}-scipy
 BuildRequires:	python%{_python_buildid}-werkzeug
-BuildRequires:  xmlsec1
 %endif
 %if 0%{?suse_version}
 BuildRequires:	python%{_python_buildid}-CherryPy
 BuildRequires:	python%{_python_buildid}-PyJWT
 BuildRequires:	python%{_python_buildid}-Routes
 BuildRequires:	python%{_python_buildid}-Werkzeug
+BuildRequires:	python%{_python_buildid}-coverage
 BuildRequires:	python%{_python_buildid}-numpy-devel
+BuildRequires:	python%{_python_buildid}-pecan
+BuildRequires:	python%{_python_buildid}-pyOpenSSL
+BuildRequires:	python%{_python_buildid}-tox
 BuildRequires:	rpm-build
 BuildRequires:  xmlsec1-devel
 %endif
@@ -328,6 +345,9 @@ BuildRequires:  libcryptopp-devel
 BuildRequires:  libnuma-devel
 %endif
 %endif
+%if 0%{?rhel} >= 8
+BuildRequires:  /usr/bin/pathfix.py
+%endif
 
 %description
 Ceph is a massively scalable, open-source, distributed storage system that runs
@@ -358,7 +378,6 @@ Requires:      grep
 Requires:      logrotate
 Requires:      parted
 Requires:      psmisc
-Requires:      python%{_python_buildid}-requests
 Requires:      python%{_python_buildid}-setuptools
 Requires:      util-linux
 Requires:      xfsprogs
@@ -370,7 +389,7 @@ Requires:      which
 Requires:      gperftools-libs >= 2.6.1
 %endif
 %endif
-%if 0%{?suse_version}
+%if 0%{?weak_deps}
 Recommends:    chrony
 %endif
 %description base
@@ -389,7 +408,6 @@ Requires:	python%{_python_buildid}-rbd = %{_epoch_prefix}%{version}-%{release}
 Requires:	python%{_python_buildid}-cephfs = %{_epoch_prefix}%{version}-%{release}
 Requires:	python%{_python_buildid}-rgw = %{_epoch_prefix}%{version}-%{release}
 Requires:	python%{_python_buildid}-ceph-argparse = %{_epoch_prefix}%{version}-%{release}
-Requires:	python%{_python_buildid}-requests
 %if 0%{?fedora} || 0%{?rhel}
 Requires:	python%{_python_buildid}-prettytable
 %endif
@@ -439,6 +457,7 @@ Group:          System/Filesystems
 Requires:       ceph-base = %{_epoch_prefix}%{version}-%{release}
 Requires:       python%{_python_buildid}-bcrypt
 Requires:       python%{_python_buildid}-pecan
+Requires:       python%{_python_buildid}-requests
 Requires:       python%{_python_buildid}-six
 %if 0%{?fedora} || 0%{?rhel}
 Requires:       python%{_python_buildid}-cherrypy
@@ -447,13 +466,15 @@ Requires:       python%{_python_buildid}-werkzeug
 %if 0%{?suse_version}
 Requires:       python%{_python_buildid}-CherryPy
 Requires:       python%{_python_buildid}-Werkzeug
-Recommends:     python%{_python_buildid}-influxdb
+%endif
+%if 0%{?weak_deps}
 Recommends:	ceph-mgr-dashboard = %{_epoch_prefix}%{version}-%{release}
 Recommends:	ceph-mgr-diskprediction-local = %{_epoch_prefix}%{version}-%{release}
 Recommends:	ceph-mgr-diskprediction-cloud = %{_epoch_prefix}%{version}-%{release}
 Recommends:	ceph-mgr-rook = %{_epoch_prefix}%{version}-%{release}
 Recommends:	ceph-mgr-k8sevents = %{_epoch_prefix}%{version}-%{release}
 Recommends:	ceph-mgr-ssh = %{_epoch_prefix}%{version}-%{release}
+Recommends:	python%{_python_buildid}-influxdb
 %endif
 %if 0%{?rhel} == 7
 Requires:       pyOpenSSL
@@ -479,6 +500,9 @@ Requires:       python%{_python_buildid}-cherrypy
 Requires:       python%{_python_buildid}-jwt
 Requires:       python%{_python_buildid}-routes
 Requires:       python%{_python_buildid}-werkzeug
+%if 0%{?weak_deps}
+Recommends:     python%{_python_buildid}-saml
+%endif
 %endif
 %if 0%{?suse_version}
 Requires:       python%{_python_buildid}-CherryPy
@@ -878,7 +902,7 @@ Summary:	Ceph distributed file system client library
 %if 0%{?suse_version}
 Group:		System/Libraries
 %endif
-Obsoletes:	libcephfs1
+Obsoletes:	libcephfs1 < %{_epoch_prefix}%{version}-%{release}
 %if 0%{?rhel} || 0%{?fedora}
 Obsoletes:	ceph-libs < %{_epoch_prefix}%{version}-%{release}
 Obsoletes:	ceph-libcephfs
@@ -1102,7 +1126,7 @@ This package provides Ceph’s default alerts for Prometheus.
 # common
 #################################################################################
 %prep
-%autosetup -p1 -n ceph-14.2.9
+%autosetup -p1 -n ceph-14.2.10
 
 %build
 # LTO can be enabled as soon as the following GCC bug is fixed:
@@ -1217,6 +1241,11 @@ ${CMAKE} .. \
 %else
     -DWITH_RADOSGW_AMQP_ENDPOINT=OFF \
 %endif
+%if 0%{with kafka_endpoint}
+    -DWITH_RADOSGW_KAFKA_ENDPOINT=ON \
+%else
+    -DWITH_RADOSGW_KAFKA_ENDPOINT=OFF \
+%endif
     -DBOOST_J=$CEPH_SMP_NCPUS \
     -DWITH_GRAFANA=ON
 
@@ -1263,6 +1292,11 @@ install -m 0644 -D udev/50-rbd.rules %{buildroot}%{_udevrulesdir}/50-rbd.rules
 
 # sudoers.d
 install -m 0600 -D sudoers.d/ceph-osd-smartctl %{buildroot}%{_sysconfdir}/sudoers.d/ceph-osd-smartctl
+
+%if 0%{?rhel} >= 8
+pathfix.py -pni "%{__python3} %{py3_shbang_opts}" %{buildroot}%{_bindir}/*
+pathfix.py -pni "%{__python3} %{py3_shbang_opts}" %{buildroot}%{_sbindir}/*
+%endif
 
 #set up placeholder directories
 mkdir -p %{buildroot}%{_sysconfdir}/ceph
@@ -2075,7 +2109,7 @@ fi
 %files -n libcephfs-devel
 %dir %{_includedir}/cephfs
 %{_includedir}/cephfs/libcephfs.h
-%{_includedir}/cephfs/ceph_statx.h
+%{_includedir}/cephfs/ceph_ll_client.h
 %{_libdir}/libcephfs.so
 
 %if 0%{with python2}
@@ -2242,8 +2276,7 @@ if [ $1 -eq 0 ]; then
     fi
 fi
 exit 0
-
-%endif # with selinux
+%endif
 
 %if 0%{with python2}
 %files -n python-ceph-compat
