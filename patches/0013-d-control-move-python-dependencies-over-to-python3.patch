@@ -101,9 +101,9 @@ index c93aa3c21..aa8edb3d2 100644
           ${misc:Depends},
 -         ${python:Depends},
 +         ${python3:Depends},
-          openssh-client
+          openssh-client,
+          python3-jinja2
  Description: cephadm orchestrator module for ceph-mgr
-  Ceph is a massively scalable, open-source, distributed
 @@ -411,7 +411,7 @@ Depends: ceph-base (= ${binary:Version}),
           lvm2,
  	 sudo,
