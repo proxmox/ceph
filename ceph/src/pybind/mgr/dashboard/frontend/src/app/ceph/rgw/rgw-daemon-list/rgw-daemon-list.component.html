@@ -4,11 +4,11 @@
     <cd-table [data]="daemons"
               [columns]="columns"
               columnMode="flex"
-              selectionType="single"
-              (updateSelection)="updateSelection($event)"
+              [hasDetails]="true"
+              (setExpandedRow)="setExpandedRow($event)"
               (fetchData)="getDaemonList($event)">
       <cd-rgw-daemon-details cdTableDetail
-                             [selection]="selection">
+                             [selection]="expandedRow">
       </cd-rgw-daemon-details>
     </cd-table>
   </tab>
@@ -18,6 +18,15 @@
        heading="Overall Performance">
     <cd-grafana [grafanaPath]="'rgw-overview?'"
                 uid="WAkugZpiz"
+                grafanaStyle="two">
+    </cd-grafana>
+  </tab>
+
+  <tab i18n-heading
+       *ngIf="grafanaPermission.read && isMultiSite"
+       heading="Sync Performance">
+    <cd-grafana [grafanaPath]="'radosgw-sync-overview?'"
+                uid="rgw-sync-overview"
                 grafanaStyle="two">
     </cd-grafana>
   </tab>

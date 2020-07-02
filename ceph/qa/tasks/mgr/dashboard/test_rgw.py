@@ -4,13 +4,13 @@ from __future__ import absolute_import
 import base64
 import logging
 import time
-import urllib
 
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives.twofactor.totp import TOTP
 from cryptography.hazmat.primitives.hashes import SHA1
+from six.moves.urllib import parse
 
-from .helper import DashboardTestCase, JObj, JList, JLeaf
+from tasks.mgr.dashboard.helper import DashboardTestCase, JObj, JList, JLeaf
 
 logger = logging.getLogger(__name__)
 
@@ -110,6 +110,27 @@ class RgwApiCredentialsTest(RgwTestCase):
         self.assertFalse(data['available'])
         self.assertIn('The user "xyz" is unknown to the Object Gateway.',
                       data['message'])
+
+
+class RgwSiteTest(RgwTestCase):
+
+    AUTH_ROLES = ['rgw-manager']
+
+    def test_get_placement_targets(self):
+        data = self._get('/api/rgw/site?query=placement-targets')
+        self.assertStatus(200)
+        self.assertSchema(data, JObj({
+            'zonegroup': str,
+            'placement_targets': JList(JObj({
+                'name': str,
+                'data_pool': str
+            }))
+        }))
+
+    def test_get_realms(self):
+        data = self._get('/api/rgw/site?query=realms')
+        self.assertStatus(200)
+        self.assertSchema(data, JList(str))
 
 
 class RgwBucketTest(RgwTestCase):
@@ -292,7 +313,7 @@ class RgwBucketTest(RgwTestCase):
         def _verify_tenant_bucket(bucket, tenant, uid):
             full_bucket_name = '{}/{}'.format(tenant, bucket)
             _data = self._get('/api/rgw/bucket/{}'.format(
-                urllib.quote_plus(full_bucket_name)))
+                parse.quote_plus(full_bucket_name)))
             self.assertStatus(200)
             self.assertSchema(_data, JObj(sub_elems={
                 'owner': JLeaf(str),
@@ -314,7 +335,7 @@ class RgwBucketTest(RgwTestCase):
         # Update bucket: different user with different tenant, enable versioning.
         self._put(
             '/api/rgw/bucket/{}'.format(
-                urllib.quote_plus('testx/teuth-test-bucket')),
+                parse.quote_plus('testx/teuth-test-bucket')),
             params={
                 'bucket_id': data['id'],
                 'uid': 'testx2$teuth-test-user2',
@@ -326,7 +347,7 @@ class RgwBucketTest(RgwTestCase):
         # Change owner to a non-tenanted user
         self._put(
             '/api/rgw/bucket/{}'.format(
-                urllib.quote_plus('testx2/teuth-test-bucket')),
+                parse.quote_plus('testx2/teuth-test-bucket')),
             params={
                 'bucket_id': data['id'],
                 'uid': 'admin'
@@ -355,7 +376,7 @@ class RgwBucketTest(RgwTestCase):
 
         # Delete the bucket.
         self._delete('/api/rgw/bucket/{}'.format(
-            urllib.quote_plus('testx/teuth-test-bucket')))
+            parse.quote_plus('testx/teuth-test-bucket')))
         self.assertStatus(204)
         data = self._get('/api/rgw/bucket')
         self.assertStatus(200)

@@ -7,6 +7,7 @@ from tasks.cephfs.fuse_mount import FuseMount
 
 from tasks.cephfs.filesystem import FileLayout
 
+
 class TestAdminCommands(CephFSTestCase):
     """
     Tests for administration command.
@@ -22,6 +23,12 @@ class TestAdminCommands(CephFSTestCase):
 
         s = self.fs.mon_manager.raw_cluster_cmd("fs", "status")
         self.assertTrue("active" in s)
+
+        mdsmap = json.loads(self.fs.mon_manager.raw_cluster_cmd("fs", "status", "--format=json-pretty"))["mdsmap"]
+        self.assertEqual(mdsmap[0]["state"], "active")
+
+        mdsmap = json.loads(self.fs.mon_manager.raw_cluster_cmd("fs", "status", "--format=json"))["mdsmap"]
+        self.assertEqual(mdsmap[0]["state"], "active")
 
     def _setup_ec_pools(self, n, metadata=True, overwrites=True):
         if metadata:
@@ -64,6 +71,14 @@ class TestAdminCommands(CephFSTestCase):
         """
 
         p = self.fs.add_data_pool("foo")
+        self.mount_a.run_shell("mkdir subdir")
+        self.fs.set_dir_layout(self.mount_a, "subdir", FileLayout(pool=p))
+
+    def test_add_data_pool_non_alphamueric_name_as_subdir(self):
+        """
+        That a new data pool with non-alphanumeric name can be added and used for a sub-directory.
+        """
+        p = self.fs.add_data_pool("I-am-data_pool00.")
         self.mount_a.run_shell("mkdir subdir")
         self.fs.set_dir_layout(self.mount_a, "subdir", FileLayout(pool=p))
 

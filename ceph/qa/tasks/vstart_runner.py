@@ -130,7 +130,7 @@ try:
     from tasks.cephfs.fuse_mount import FuseMount
     from tasks.cephfs.kernel_mount import KernelMount
     from tasks.cephfs.filesystem import Filesystem, MDSCluster, CephCluster
-    from mgr.mgr_test_case import MgrCluster
+    from tasks.mgr.mgr_test_case import MgrCluster
     from teuthology.contextutil import MaxWhileTries
     from teuthology.task import interactive
 except ImportError:
@@ -339,8 +339,8 @@ class LocalRemote(object):
         shell = any([a for a in args if isinstance(a, Raw)])
 
         # Filter out helper tools that don't exist in a vstart environment
-        args = [a for a in args if a not in {
-            'adjust-ulimits', 'ceph-coverage'}]
+        args = [a for a in args if a not in ('adjust-ulimits',
+                                             'ceph-coverage')]
 
         # Adjust binary path prefix if given a bare program name
         if "/" not in args[0]:
@@ -396,10 +396,22 @@ class LocalRemote(object):
 
         return proc
 
-    def sh(self, command, log_limit=1024, cwd=None, env=None):
+    # XXX: for compatibility keep this method same teuthology.orchestra.remote.sh
+    def sh(self, script, **kwargs):
+        """
+        Shortcut for run method.
 
-        return misc.sh(command=command, log_limit=log_limit, cwd=cwd,
-                        env=env)
+        Usage:
+            my_name = remote.sh('whoami')
+            remote_date = remote.sh('date')
+        """
+        if 'stdout' not in kwargs:
+            kwargs['stdout'] = StringIO()
+        if 'args' not in kwargs:
+            kwargs['args'] = script
+        proc = self.run(**kwargs)
+        return proc.stdout.getvalue()
+
 
 class LocalDaemon(object):
     def __init__(self, daemon_type, daemon_id):
@@ -622,7 +634,7 @@ class LocalKernelMount(KernelMount):
         log.info("I think my launching pid was {0}".format(self.fuse_daemon.subproc.pid))
         return path
 
-    def mount(self, mount_path=None, mount_fs_name=None, mount_options=[]):
+    def mount(self, mount_path=None, mount_fs_name=None, mount_options=[], **kwargs):
         self.setupfs(name=mount_fs_name)
 
         log.info('Mounting kclient client.{id} at {remote} {mnt}...'.format(
@@ -800,7 +812,7 @@ class LocalFuseMount(FuseMount):
                 check_status=False
             )
             if p.exitstatus != 0:
-                log.warn("ls conns failed with {0}, assuming none".format(p.exitstatus))
+                log.warning("ls conns failed with {0}, assuming none".format(p.exitstatus))
                 return []
 
             ls_str = six.ensure_str(p.stdout.getvalue().strip())
@@ -865,6 +877,8 @@ class LocalFuseMount(FuseMount):
             self._fuse_conn = new_conns[0]
 
         self.gather_mount_info()
+
+        self.mounted = True
 
     def _run_python(self, pyscript, py_version='python'):
         """
@@ -1322,7 +1336,7 @@ def exec_test():
     for line in lines:
         if 'ceph-fuse' in line or 'ceph-mds' in line:
             pid = int(line.split()[0])
-            log.warn("Killing stray process {0}".format(line))
+            log.warning("Killing stray process {0}".format(line))
             os.kill(pid, signal.SIGKILL)
 
     # Fire up the Ceph cluster if the user requested it
@@ -1386,7 +1400,7 @@ def exec_test():
         mounts.append(mount)
         if os.path.exists(mount.mountpoint):
             if mount.is_mounted():
-                log.warn("unmounting {0}".format(mount.mountpoint))
+                log.warning("unmounting {0}".format(mount.mountpoint))
                 mount.umount_wait()
             else:
                 os.rmdir(mount.mountpoint)
@@ -1452,11 +1466,11 @@ def exec_test():
 
         if hasattr(fn, 'is_for_teuthology') and getattr(fn, 'is_for_teuthology') is True:
             drop_test = True
-            log.warn("Dropping test because long running: {method_id}".format(method_id=method.id()))
+            log.warning("Dropping test because long running: {method_id}".format(method_id=method.id()))
 
         if getattr(fn, "needs_trimming", False) is True:
             drop_test = (os.getuid() != 0)
-            log.warn("Dropping test because client trim unavailable: {method_id}".format(method_id=method.id()))
+            log.warning("Dropping test because client trim unavailable: {method_id}".format(method_id=method.id()))
 
         if drop_test:
             # Don't drop the test if it was explicitly requested in arguments

@@ -164,6 +164,14 @@ class TestVolumes(CephFSTestCase):
         subvol_md = self._fs_cmd(*args)
         return subvol_md
 
+    def _get_subvolume_snapshot_info(self, vol_name, subvol_name, snapname, group_name=None):
+        args = ["subvolume", "snapshot", "info", vol_name, subvol_name, snapname]
+        if group_name:
+            args.append(group_name)
+        args = tuple(args)
+        snap_md = self._fs_cmd(*args)
+        return snap_md
+
     def _delete_test_volume(self):
         self._fs_cmd("volume", "rm", self.volname, "--yes-i-really-mean-it")
 
@@ -364,7 +372,7 @@ class TestVolumes(CephFSTestCase):
         self.assertNotEqual(subvolpath, None)
 
         # shrink the subvolume
-        nsize = osize/2
+        nsize = osize // 2
         self._fs_cmd("subvolume", "resize", self.volname, subvolname, str(nsize))
 
         # verify the quota
@@ -456,7 +464,7 @@ class TestVolumes(CephFSTestCase):
         self.assertEqual(usedsize, susedsize)
 
         # shrink the subvolume
-        nsize = usedsize/2
+        nsize = usedsize // 2
         try:
             self._fs_cmd("subvolume", "resize", self.volname, subvolname, str(nsize))
         except CommandFailedError:
@@ -496,7 +504,7 @@ class TestVolumes(CephFSTestCase):
         self.assertEqual(usedsize, susedsize)
 
         # shrink the subvolume
-        nsize = usedsize/2
+        nsize = usedsize // 2
         try:
             self._fs_cmd("subvolume", "resize", self.volname, subvolname, str(nsize), "--no_shrink")
         except CommandFailedError as ce:
@@ -531,7 +539,7 @@ class TestVolumes(CephFSTestCase):
         self.mount_a.write_n_mb(os.path.join(subvolpath, filename), file_size)
 
         # create a file of size 5MB and try write more
-        file_size=file_size/2
+        file_size=file_size // 2
         number_of_files=1
         log.debug("filling subvolume {0} with {1} file of size {2}MB".format(subvolname,
                                                                              number_of_files,
@@ -561,6 +569,44 @@ class TestVolumes(CephFSTestCase):
         self._fs_cmd("subvolume", "create", self.volname, subvolume)
 
         # remove subvolume
+        self._fs_cmd("subvolume", "rm", self.volname, subvolume)
+
+        # verify trash dir is clean
+        self._wait_for_trash_empty()
+
+    def test_subvolume_create_idempotence_resize(self):
+        # create subvolume
+        subvolume = self._generate_random_subvolume_name()
+        self._fs_cmd("subvolume", "create", self.volname, subvolume)
+
+        # try creating w/ same subvolume name with size -- should set quota
+        self._fs_cmd("subvolume", "create", self.volname, subvolume, "1000000000")
+
+        # get subvolume metadata
+        subvol_info = json.loads(self._get_subvolume_info(self.volname, subvolume))
+        self.assertEqual(subvol_info["bytes_quota"], 1000000000)
+
+        # remove subvolume
+        self._fs_cmd("subvolume", "rm", self.volname, subvolume)
+
+        # verify trash dir is clean
+        self._wait_for_trash_empty()
+
+    def test_subvolume_create_isolated_namespace(self):
+        """
+        Create subvolume in separate rados namespace
+        """
+
+        # create subvolume
+        subvolume = self._generate_random_subvolume_name()
+        self._fs_cmd("subvolume", "create", self.volname, subvolume, "--namespace-isolated")
+
+        # get subvolume metadata
+        subvol_info = json.loads(self._get_subvolume_info(self.volname, subvolume))
+        self.assertNotEqual(len(subvol_info), 0)
+        self.assertEqual(subvol_info["pool_namespace"], "fsvolumens_" + subvolume)
+
+        # remove subvolumes
         self._fs_cmd("subvolume", "rm", self.volname, subvolume)
 
         # verify trash dir is clean
@@ -745,7 +791,8 @@ class TestVolumes(CephFSTestCase):
         # tests the 'fs subvolume info' command
 
         subvol_md = ["atime", "bytes_pcent", "bytes_quota", "bytes_used", "created_at", "ctime",
-                     "data_pool", "gid", "mode", "mon_addrs", "mtime", "path", "type", "uid"]
+                     "data_pool", "gid", "mode", "mon_addrs", "mtime", "path", "pool_namespace",
+                     "type", "uid"]
 
         # create subvolume
         subvolume = self._generate_random_subvolume_name()
@@ -764,6 +811,7 @@ class TestVolumes(CephFSTestCase):
 
         if subvol_info["bytes_quota"] != "infinite":
             raise RuntimeError("bytes_quota should be set to infinite if quota is not set")
+        self.assertEqual(subvol_info["pool_namespace"], "")
 
         nsize = self.DEFAULT_FILE_SIZE*1024*1024
         try:
@@ -794,7 +842,8 @@ class TestVolumes(CephFSTestCase):
 
         # tests the 'fs subvolume info' command for a clone
         subvol_md = ["atime", "bytes_pcent", "bytes_quota", "bytes_used", "created_at", "ctime",
-                     "data_pool", "gid", "mode", "mon_addrs", "mtime", "path", "type", "uid"]
+                     "data_pool", "gid", "mode", "mon_addrs", "mtime", "path", "pool_namespace",
+                     "type", "uid"]
 
         subvolume = self._generate_random_subvolume_name()
         snapshot = self._generate_random_snapshot_name()
@@ -1143,6 +1192,49 @@ class TestVolumes(CephFSTestCase):
         # verify trash dir is clean
         self._wait_for_trash_empty()
 
+    def test_subvolume_snapshot_info(self):
+
+        """
+        tests the 'fs subvolume snapshot info' command
+        """
+
+        snap_metadata = ["created_at", "data_pool", "has_pending_clones", "protected", "size"]
+
+        subvolume = self._generate_random_subvolume_name()
+        snapshot = self._generate_random_snapshot_name()
+
+        # create subvolume
+        self._fs_cmd("subvolume", "create", self.volname, subvolume)
+
+        # do some IO
+        self._do_subvolume_io(subvolume, number_of_files=1)
+
+        # snapshot subvolume
+        self._fs_cmd("subvolume", "snapshot", "create", self.volname, subvolume, snapshot)
+
+        # now, protect snapshot
+        self._fs_cmd("subvolume", "snapshot", "protect", self.volname, subvolume, snapshot)
+
+        snap_info = json.loads(self._get_subvolume_snapshot_info(self.volname, subvolume, snapshot))
+        self.assertNotEqual(len(snap_info), 0)
+        for md in snap_metadata:
+            if md not in snap_info:
+                raise RuntimeError("%s not present in the metadata of subvolume snapshot" % md)
+        self.assertEqual(snap_info["protected"], "yes")
+        self.assertEqual(snap_info["has_pending_clones"], "no")
+
+        # now, unprotect snapshot
+        self._fs_cmd("subvolume", "snapshot", "unprotect", self.volname, subvolume, snapshot)
+
+        # remove snapshot
+        self._fs_cmd("subvolume", "snapshot", "rm", self.volname, subvolume, snapshot)
+
+        # remove subvolume
+        self._fs_cmd("subvolume", "rm", self.volname, subvolume)
+
+        # verify trash dir is clean
+        self._wait_for_trash_empty()
+
     def test_subvolume_snapshot_create_idempotence(self):
         subvolume = self._generate_random_subvolume_name()
         snapshot = self._generate_random_snapshot_name()
@@ -1388,7 +1480,7 @@ class TestVolumes(CephFSTestCase):
         for subvolume in subvolumes:
             self._fs_cmd("subvolume", "rm", self.volname, subvolume)
 
-        self.mount_a.mount()
+        self.mount_a.mount_wait()
 
         # verify trash dir is clean
         self._wait_for_trash_empty(timeout=300)
@@ -2156,7 +2248,7 @@ class TestVolumes(CephFSTestCase):
         self.fs.add_data_pool(new_pool)
 
         self.fs.mon_manager.raw_cluster_cmd("osd", "pool", "set-quota", new_pool,
-                                            "max_bytes", "{0}".format(pool_capacity / 4))
+                                            "max_bytes", "{0}".format(pool_capacity // 4))
 
         # schedule a clone
         self._fs_cmd("subvolume", "snapshot", "clone", self.volname, subvolume, snapshot, clone1, "--pool_layout", new_pool)

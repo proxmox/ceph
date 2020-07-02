@@ -1,5 +1,6 @@
 import { HttpClientTestingModule } from '@angular/common/http/testing';
 import { async, ComponentFixture, TestBed } from '@angular/core/testing';
+import { BrowserAnimationsModule } from '@angular/platform-browser/animations';
 import { RouterTestingModule } from '@angular/router/testing';
 
 import { BsDropdownModule } from 'ngx-bootstrap/dropdown';
@@ -30,6 +31,7 @@ describe('HostsComponent', () => {
 
   configureTestBed({
     imports: [
+      BrowserAnimationsModule,
       CephSharedModule,
       SharedModule,
       HttpClientTestingModule,
@@ -74,7 +76,8 @@ describe('HostsComponent', () => {
           }
         ],
         hostname: hostname,
-        ceph_version: 'ceph version Development'
+        ceph_version: 'ceph version Development',
+        labels: ['foo', 'bar']
       }
     ];
 

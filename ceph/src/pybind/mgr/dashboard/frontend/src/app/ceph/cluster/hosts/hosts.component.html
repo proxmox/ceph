@@ -6,6 +6,8 @@
               columnMode="flex"
               (fetchData)="getHosts($event)"
               selectionType="single"
+              [hasDetails]="true"
+              (setExpandedRow)="setExpandedRow($event)"
               (updateSelection)="updateSelection($event)">
       <div class="table-actions btn-toolbar">
         <cd-table-actions [permission]="permissions.hosts"
@@ -21,17 +23,16 @@
           <a class="service-link"
              [routerLink]="[service.cdLink]"
              [queryParams]="cdParams"
-             *ngIf="service.canRead">{{ service.type }}.{{ service.id }}
-          </a>
+             *ngIf="service.canRead">{{ service.type }}.{{ service.id }}</a>
           <span *ngIf="!service.canRead">
             {{ service.type }}.{{ service.id }}
           </span>
-          {{ !isLast ? ", " : "" }}
+          <ng-container *ngIf="!isLast">, </ng-container>
         </span>
       </ng-template>
       <cd-host-details cdTableDetail
                        [permissions]="permissions"
-                       [selection]="selection">
+                       [selection]="expandedRow">
       </cd-host-details>
     </cd-table>
   </tab>

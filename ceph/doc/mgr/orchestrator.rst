@@ -70,8 +70,34 @@ List hosts associated with the cluster::
 
 Add and remove hosts::
 
-    ceph orch host add <host>
-    ceph orch host rm <host>
+    ceph orch host add <hostname> [<addr>] [<labels>...]
+    ceph orch host rm <hostname>
+
+Host Specification
+------------------
+
+Many hosts can be added at once using
+``ceph orch apply -i`` by submitting a multi-document YAML file::
+
+    ---
+    service_type: host
+    addr: node-00
+    hostname: node-00
+    labels:
+    - example1
+    - example2
+    ---
+    service_type: host
+    addr: node-01
+    hostname: node-01
+    labels:
+    - grafana
+    ---
+    service_type: host
+    addr: node-02
+    hostname: node-02
+
+This can be combined with service specifications (below) to create a cluster spec file to deploy a whole cluster in one command.  see ``cephadm bootstrap --apply-spec`` also to do this during bootstrap. Cluster SSH Keys must be copied to hosts prior.
 
 OSD Management
 ==============
@@ -88,58 +114,144 @@ filtered to a particular host:
 
 Example::
 
-    # ceph orch device ls
-    Host 192.168.121.206:
-    Device Path           Type       Size    Rotates  Available Model
-    /dev/sdb               hdd      50.0G       True       True ATA/QEMU HARDDISK
-    /dev/sda               hdd      50.0G       True      False ATA/QEMU HARDDISK
+    HOST    PATH      TYPE   SIZE  DEVICE  AVAIL  REJECT REASONS
+    master  /dev/vda  hdd   42.0G          False  locked
+    node1   /dev/vda  hdd   42.0G          False  locked
+    node1   /dev/vdb  hdd   8192M  387836  False  locked, LVM detected, Insufficient space (<5GB) on vgs
+    node1   /dev/vdc  hdd   8192M  450575  False  locked, LVM detected, Insufficient space (<5GB) on vgs
+    node3   /dev/vda  hdd   42.0G          False  locked
+    node3   /dev/vdb  hdd   8192M  395145  False  LVM detected, locked, Insufficient space (<5GB) on vgs
+    node3   /dev/vdc  hdd   8192M  165562  False  LVM detected, locked, Insufficient space (<5GB) on vgs
+    node2   /dev/vda  hdd   42.0G          False  locked
+    node2   /dev/vdb  hdd   8192M  672147  False  LVM detected, Insufficient space (<5GB) on vgs, locked
+    node2   /dev/vdc  hdd   8192M  228094  False  LVM detected, Insufficient space (<5GB) on vgs, locked
 
-    Host 192.168.121.181:
-    Device Path           Type       Size    Rotates  Available Model
-    /dev/sdb               hdd      50.0G       True       True ATA/QEMU HARDDISK
-    /dev/sda               hdd      50.0G       True      False ATA/QEMU HARDDISK
 
-.. note::
-    Output form Ansible orchestrator
+
+
+Erase Devices (Zap Devices)
+---------------------------
+
+Erase (zap) a device so that it can be resued. ``zap`` calls ``ceph-volume zap`` on the remote host.
+
+::
+
+     orch device zap <hostname> <path>
+
+Example command::
+
+     ceph orch device zap my_hostname /dev/sdx
+
 
 Create OSDs
 -----------
 
 Create OSDs on a group of devices on a single host::
 
-    ceph orch osd create <host>:<drive>
-    ceph orch osd create -i <path-to-drive-group.json>
+    ceph orch daemon add osd <host>:device1,device2
+
+or::
+
+    ceph orch apply osd -i <json_file/yaml_file>
 
 
-The output of ``osd create`` is not specified and may vary between orchestrator backends.
+or::
 
-Where ``drive.group.json`` is a JSON file containing the fields defined in
-:class:`ceph.deployment_utils.drive_group.DriveGroupSpec`
+    ceph orch apply osd --all-available-devices
+
+
+For a more in-depth guide to DriveGroups please refer to :ref:`drivegroups`
 
 Example::
 
-    # ceph orch osd create 192.168.121.206:/dev/sdc
-    {"status": "OK", "msg": "", "data": {"event": "playbook_on_stats", "uuid": "7082f3ba-f5b7-4b7c-9477-e74ca918afcb", "stdout": "\r\nPLAY RECAP *********************************************************************\r\n192.168.121.206            : ok=96   changed=3    unreachable=0    failed=0   \r\n", "counter": 932, "pid": 10294, "created": "2019-05-28T22:22:58.527821", "end_line": 1170, "runner_ident": "083cad3c-8197-11e9-b07a-2016b900e38f", "start_line": 1166, "event_data": {"ignored": 0, "skipped": {"192.168.121.206": 186}, "ok": {"192.168.121.206": 96}, "artifact_data": {}, "rescued": 0, "changed": {"192.168.121.206": 3}, "pid": 10294, "dark": {}, "playbook_uuid": "409364a6-9d49-4e44-8b7b-c28e5b3adf89", "playbook": "add-osd.yml", "failures": {}, "processed": {"192.168.121.206": 1}}, "parent_uuid": "409364a6-9d49-4e44-8b7b-c28e5b3adf89"}}
+    # ceph orch daemon add osd node1:/dev/vdd
+    Created osd(s) 6 on host 'node1'
+
+
+If the 'apply' method is used. You will be presented with a preview of what will happen.
+
+Example::
+
+    # ceph orch apply osd --all-available-devices
+    NAME                  HOST  DATA     DB WAL
+    all-available-devices node1 /dev/vdb -  -
+    all-available-devices node2 /dev/vdc -  -
+    all-available-devices node3 /dev/vdd -  -
+
 
 .. note::
-    Output form Ansible orchestrator
+    Output form Cephadm orchestrator
 
-Decommission an OSD
+Remove an OSD
 -------------------
 ::
 
-    ceph orch osd rm <osd-id> [osd-id...]
+    ceph orch osd rm <svc_id>... [--replace] [--force]
 
-Removes one or more OSDs from the cluster and the host, if the OSDs are marked as
-``destroyed``.
+Removes one or more OSDs from the cluster.
 
 Example::
 
     # ceph orch osd rm 4
-    {"status": "OK", "msg": "", "data": {"event": "playbook_on_stats", "uuid": "1a16e631-906d-48e0-9e24-fa7eb593cc0a", "stdout": "\r\nPLAY RECAP *********************************************************************\r\n192.168.121.158            : ok=2    changed=0    unreachable=0    failed=0   \r\n192.168.121.181            : ok=2    changed=0    unreachable=0    failed=0   \r\n192.168.121.206            : ok=2    changed=0    unreachable=0    failed=0   \r\nlocalhost                  : ok=31   changed=8    unreachable=0    failed=0   \r\n", "counter": 240, "pid": 10948, "created": "2019-05-28T22:26:09.264012", "end_line": 308, "runner_ident": "8c093db0-8197-11e9-b07a-2016b900e38f", "start_line": 301, "event_data": {"ignored": 0, "skipped": {"localhost": 37}, "ok": {"192.168.121.181": 2, "192.168.121.158": 2, "192.168.121.206": 2, "localhost": 31}, "artifact_data": {}, "rescued": 0, "changed": {"localhost": 8}, "pid": 10948, "dark": {}, "playbook_uuid": "a12ec40e-bce9-4bc9-b09e-2d8f76a5be02", "playbook": "shrink-osd.yml", "failures": {}, "processed": {"192.168.121.181": 1, "192.168.121.158": 1, "192.168.121.206": 1, "localhost": 1}}, "parent_uuid": "a12ec40e-bce9-4bc9-b09e-2d8f76a5be02"}}
+    Scheduled OSD(s) for removal
 
-.. note::
-    Output form Ansible orchestrator
+
+OSDs that are not safe-to-destroy will be rejected.
+
+You can query the state of the operation with::
+
+    # ceph orch osd rm status
+    NAME  HOST  PGS STARTED_AT
+    osd.7 node1 55 2020-04-22 19:28:38.785761
+    osd.5 node3 3 2020-04-22 19:28:34.201685
+    osd.3 node2 0 2020-04-22 19:28:34.201695
+
+
+When no PGs are left on the osd, it will be decommissioned and removed from the cluster.
+
+
+Replace an OSD
+-------------------
+::
+
+    orch osd rm <svc_id>... --replace [--force]
+
+Example::
+
+    # ceph orch osd rm 4 --replace
+    Scheduled OSD(s) for replacement
+
+
+This follows the same procedure as the "Remove OSD" part with the exception that the OSD is not permanently removed
+from the crush hierarchy, but is assigned a 'destroyed' flag.
+
+**Preserving the OSD ID**
+
+The previously set the 'destroyed' flag is used to determined osd ids that will be reused in the next osd deployment.
+
+If you use OSDSpecs for osd deployment, your newly added disks will be assigned with the osd ids of their replaced
+counterpart, granted the new disk still match the OSDSpecs.
+
+For assistance in this process you can use the 'preview' feature:
+
+Example::
+
+
+    ceph orch apply osd --service-name <name_of_osd_spec> --preview
+    NAME                  HOST  DATA     DB WAL
+    <name_of_osd_spec>    node1 /dev/vdb -  -
+
+Tip: The name of your OSDSpec can be retrieved from **ceph orch ls**
+
+Alternatively, you can use your OSDSpec file::
+
+    ceph orch apply osd -i <osd_spec_file> --preview
+    NAME                  HOST  DATA     DB WAL
+    <name_of_osd_spec>    node1 /dev/vdb -  -
+
+
+If this matches your anticipated behavior, just omit the --preview flag to execute the deployment.
+
 
 ..
     Blink Device Lights
@@ -294,6 +406,7 @@ to specify the deployment of services. For example:
         - host2
         - host3
     spec: ...
+    unmanaged: false
         
 Where the properties of a service specification are the following:
 
@@ -305,6 +418,10 @@ Where the properties of a service specification are the following:
 * ``service_id`` is the name of the service. Omit the service time
 * ``placement`` is a :ref:`orchestrator-cli-placement-spec`
 * ``spec``: additional specifications for a specific service.
+* ``unmanaged``: If set to ``true``, the orchestrator will not deploy nor
+   remove any daemon associated with this service. Placement and all other
+   properties will be ignored. This is useful, if this service should not
+   be managed temporarily.
 
 Each service type can have different requirements for the spec.
 
@@ -462,8 +579,7 @@ Or with hosts:
       hosts: 
         - host1
         - host2
-        - host3
-
+        - host3 
 
 Configuring the Orchestrator CLI
 ================================
@@ -498,7 +614,7 @@ This is an overview of the current implementation status of the orchestrators.
 =================================== ====== =========
  Command                             Rook   Cephadm
 =================================== ====== =========
- apply iscsi                         ⚪      ⚪
+ apply iscsi                         ⚪     ✔
  apply mds                           ✔      ✔
  apply mgr                           ⚪      ✔
  apply mon                           ✔      ✔
@@ -513,10 +629,9 @@ This is an overview of the current implementation status of the orchestrators.
  daemon {stop,start,...}             ⚪      ✔
  device {ident,fault}-(on,off}       ⚪      ✔
  device ls                           ✔      ✔
- iscsi add                           ⚪      ⚪
+ iscsi add                           ⚪     ✔
  mds add                             ✔      ✔
  nfs add                             ✔      ✔
- ps                                  ⚪      ✔
  rbd-mirror add                      ⚪      ✔
  rgw add                             ✔      ✔
  ps                                  ✔      ✔

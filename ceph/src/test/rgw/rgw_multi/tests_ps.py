@@ -1,8 +1,7 @@
 import logging
 import json
 import tempfile
-import BaseHTTPServer
-import SocketServer
+from six.moves import BaseHTTPServer
 import random
 import threading
 import subprocess
@@ -31,7 +30,7 @@ from .zone_ps import PSTopic, \
     put_object_tagging, \
     get_object_tagging, \
     delete_all_objects
-from multisite import User
+from .multisite import User
 from nose import SkipTest
 from nose.tools import assert_not_equal, assert_equal
 import boto.s3.tagging
@@ -126,13 +125,13 @@ class StreamingHTTPServer:
         self.sock.listen(num_workers)
         self.workers = [HTTPServerThread(i, self.sock, addr) for i in range(num_workers)]
 
-    def verify_s3_events(self, keys, exact_match=False, deletions=False):
+    def verify_s3_events(self, keys, exact_match=False, deletions=False, expected_sizes={}):
         """verify stored s3 records agains a list of keys"""
         events = []
         for worker in self.workers:
             events += worker.get_events()
             worker.reset_events()
-        verify_s3_records_by_elements(events, keys, exact_match=exact_match, deletions=deletions)
+        verify_s3_records_by_elements(events, keys, exact_match=exact_match, deletions=deletions, expected_sizes=expected_sizes)
 
     def verify_events(self, keys, exact_match=False, deletions=False):
         """verify stored events agains a list of keys"""
@@ -301,11 +300,12 @@ def verify_events_by_elements(events, keys, exact_match=False, deletions=False):
             assert False, err
 
 
-def verify_s3_records_by_elements(records, keys, exact_match=False, deletions=False):
+def verify_s3_records_by_elements(records, keys, exact_match=False, deletions=False, expected_sizes={}):
     """ verify there is at least one record per element """
     err = ''
     for key in keys:
         key_found = False
+        object_size = 0
         if type(records) is list:
             for record_list in records:
                 if key_found:
@@ -315,9 +315,11 @@ def verify_s3_records_by_elements(records, keys, exact_match=False, deletions=Fa
                         record['s3']['object']['key'] == key.name:
                         if deletions and 'ObjectRemoved' in record['eventName']:
                             key_found = True
+                            object_size = record['s3']['object']['size']
                             break
                         elif not deletions and 'ObjectCreated' in record['eventName']:
                             key_found = True
+                            object_size = record['s3']['object']['size']
                             break
         else:
             for record in records['Records']:
@@ -325,17 +327,18 @@ def verify_s3_records_by_elements(records, keys, exact_match=False, deletions=Fa
                     record['s3']['object']['key'] == key.name:
                     if deletions and 'ObjectRemoved' in record['eventName']:
                         key_found = True
+                        object_size = record['s3']['object']['size']
                         break
                     elif not deletions and 'ObjectCreated' in record['eventName']:
                         key_found = True
+                        object_size = record['s3']['object']['size']
                         break
 
         if not key_found:
             err = 'no ' + ('deletion' if deletions else 'creation') + ' event found for key: ' + str(key)
-            for record_list in records:
-                for record in record_list['Records']:
-                    log.error(str(record['s3']['bucket']['name']) + ',' + str(record['s3']['object']['key']))
             assert False, err
+        elif expected_sizes:
+            assert_equal(object_size, expected_sizes.get(key.name))
 
     if not len(records) == len(keys):
         err = 'superfluous records are found'
@@ -836,7 +839,7 @@ def test_ps_s3_topic_on_master():
     delete_all_s3_topics(master_zone, zonegroup.name)
    
     # create s3 topics
-    endpoint_address = 'amqp://127.0.0.1:7001'
+    endpoint_address = 'amqp://127.0.0.1:7001/vhost_1'
     endpoint_args = 'push-endpoint='+endpoint_address+'&amqp-exchange=amqp.direct&amqp-ack-level=none'
     topic_conf1 = PSTopicS3(master_zone.conn, topic_name+'_1', zonegroup.name, endpoint_args=endpoint_args)
     topic_arn = topic_conf1.set_config()
@@ -1372,7 +1375,7 @@ def test_ps_s3_notification_push_amqp_on_master():
     topic_conf1 = PSTopicS3(master_zone.conn, topic_name1, zonegroup.name, endpoint_args=endpoint_args)
     topic_arn1 = topic_conf1.set_config()
     # without acks from broker
-    endpoint_args = 'push-endpoint='+endpoint_address+'&amqp-exchange=' + exchange +'&amqp-ack-level=none'
+    endpoint_args = 'push-endpoint='+endpoint_address+'&amqp-exchange=' + exchange +'&amqp-ack-level=routable'
     topic_conf2 = PSTopicS3(master_zone.conn, topic_name2, zonegroup.name, endpoint_args=endpoint_args)
     topic_arn2 = topic_conf2.set_config()
     # create s3 notification
@@ -1725,7 +1728,7 @@ def test_ps_s3_notification_multi_delete_on_master():
     if skip_push_tests:
         return SkipTest("PubSub push tests don't run in teuthology")
     hostname = get_ip()
-    zones, _  = init_env(require_ps=False)
+    master_zone, _  = init_env(require_ps=False)
     realm = get_realm()
     zonegroup = realm.master_zonegroup()
     
@@ -1738,13 +1741,13 @@ def test_ps_s3_notification_multi_delete_on_master():
     
     # create bucket
     bucket_name = gen_bucket_name()
-    bucket = zones[0].create_bucket(bucket_name)
+    bucket = master_zone.create_bucket(bucket_name)
     topic_name = bucket_name + TOPIC_SUFFIX
 
     # create s3 topic
     endpoint_address = 'http://'+host+':'+str(port)
     endpoint_args = 'push-endpoint='+endpoint_address
-    topic_conf = PSTopicS3(zones[0].conn, topic_name, zonegroup.name, endpoint_args=endpoint_args)
+    topic_conf = PSTopicS3(master_zone.conn, topic_name, zonegroup.name, endpoint_args=endpoint_args)
     topic_arn = topic_conf.set_config()
     # create s3 notification
     notification_name = bucket_name + NOTIFICATION_SUFFIX
@@ -1752,16 +1755,18 @@ def test_ps_s3_notification_multi_delete_on_master():
                         'TopicArn': topic_arn,
                         'Events': ['s3:ObjectRemoved:*']
                        }]
-    s3_notification_conf = PSNotificationS3(zones[0].conn, bucket_name, topic_conf_list)
+    s3_notification_conf = PSNotificationS3(master_zone.conn, bucket_name, topic_conf_list)
     response, status = s3_notification_conf.set_config()
     assert_equal(status/100, 2)
 
     # create objects in the bucket
     client_threads = []
+    objects_size = {}
     for i in range(number_of_objects):
-        obj_size = randint(1, 1024)
-        content = str(os.urandom(obj_size))
+        object_size = randint(1, 1024)
+        content = str(os.urandom(object_size))
         key = bucket.new_key(str(i))
+        objects_size[key.name] = object_size
         thr = threading.Thread(target = set_contents_from_string, args=(key, content,))
         thr.start()
         client_threads.append(thr)
@@ -1770,21 +1775,21 @@ def test_ps_s3_notification_multi_delete_on_master():
     keys = list(bucket.list())
 
     start_time = time.time()
-    delete_all_objects(zones[0].conn, bucket_name)
+    delete_all_objects(master_zone.conn, bucket_name)
     time_diff = time.time() - start_time
     print('average time for deletion + http notification is: ' + str(time_diff*1000/number_of_objects) + ' milliseconds')
 
     print('wait for 5sec for the messages...')
     time.sleep(5)
-    
+   
     # check http receiver
-    http_server.verify_s3_events(keys, exact_match=True, deletions=True)
+    http_server.verify_s3_events(keys, exact_match=True, deletions=True, expected_sizes=objects_size)
     
     # cleanup
     topic_conf.del_config()
     s3_notification_conf.del_config(notification=notification_name)
     # delete the bucket
-    zones[0].delete_bucket(bucket_name)
+    master_zone.delete_bucket(bucket_name)
     http_server.close()
 
 
@@ -1826,10 +1831,13 @@ def test_ps_s3_notification_push_http_on_master():
 
     # create objects in the bucket
     client_threads = []
+    objects_size = {}
     start_time = time.time()
-    content = 'bar'
     for i in range(number_of_objects):
+        object_size = randint(1, 1024)
+        content = str(os.urandom(object_size))
         key = bucket.new_key(str(i))
+        objects_size[key.name] = object_size
         thr = threading.Thread(target = set_contents_from_string, args=(key, content,))
         thr.start()
         client_threads.append(thr)
@@ -1843,8 +1851,7 @@ def test_ps_s3_notification_push_http_on_master():
     
     # check http receiver
     keys = list(bucket.list())
-    print('total number of objects: ' + str(len(keys)))
-    http_server.verify_s3_events(keys, exact_match=True)
+    http_server.verify_s3_events(keys, exact_match=True, deletions=False, expected_sizes=objects_size)
     
     # delete objects from the bucket
     client_threads = []
@@ -1862,7 +1869,7 @@ def test_ps_s3_notification_push_http_on_master():
     time.sleep(5)
     
     # check http receiver
-    http_server.verify_s3_events(keys, exact_match=True, deletions=True)
+    http_server.verify_s3_events(keys, exact_match=True, deletions=True, expected_sizes=objects_size)
     
     # cleanup
     topic_conf.del_config()
@@ -2564,7 +2571,7 @@ def test_ps_creation_triggers():
     fp.write('bar')
     fp.close()
     uploader = bucket.initiate_multipart_upload('multipart')
-    fp = tempfile.TemporaryFile(mode='r')
+    fp = tempfile.NamedTemporaryFile(mode='r')
     uploader.upload_part_from_file(fp, 1)
     uploader.complete_upload()
     fp.close()
@@ -2635,7 +2642,7 @@ def test_ps_s3_creation_triggers_on_master():
     fp.write('bar')
     fp.close()
     uploader = bucket.initiate_multipart_upload('multipart')
-    fp = tempfile.TemporaryFile(mode='r')
+    fp = tempfile.NamedTemporaryFile(mode='r')
     uploader.upload_part_from_file(fp, 1)
     uploader.complete_upload()
     fp.close()
@@ -2710,8 +2717,9 @@ def test_ps_s3_multipart_on_master():
     assert_equal(status/100, 2)
 
     # create objects in the bucket using multi-part upload
-    fp = tempfile.TemporaryFile(mode='w+b')
-    content = bytearray(os.urandom(1024*1024))
+    fp = tempfile.NamedTemporaryFile(mode='w+b')
+    object_size = 10*1024*1024
+    content = bytearray(os.urandom(object_size))
     fp.write(content)
     fp.flush()
     fp.seek(0)
@@ -2736,6 +2744,7 @@ def test_ps_s3_multipart_on_master():
     assert_equal(len(events), 1)
     assert_equal(events[0]['Records'][0]['eventName'], 's3:ObjectCreated:CompleteMultipartUpload')
     assert_equal(events[0]['Records'][0]['s3']['configurationId'], notification_name+'_3')
+    print(events[0]['Records'][0]['s3']['object']['size'])
 
     # cleanup
     stop_amqp_receiver(receiver1, task1)
@@ -2874,7 +2883,7 @@ def test_ps_s3_metadata_on_master():
 
     # create s3 topic
     endpoint_address = 'amqp://' + hostname
-    endpoint_args = 'push-endpoint='+endpoint_address+'&amqp-exchange=' + exchange +'&amqp-ack-level=broker'
+    endpoint_args = 'push-endpoint='+endpoint_address+'&amqp-exchange=' + exchange +'&amqp-ack-level=routable'
     topic_conf = PSTopicS3(master_zone.conn, topic_name, zonegroup.name, endpoint_args=endpoint_args)
     topic_arn = topic_conf.set_config()
     # create s3 notification
@@ -2904,7 +2913,7 @@ def test_ps_s3_metadata_on_master():
     # create objects in the bucket using COPY
     bucket.copy_key('copy_of_foo', bucket.name, key.name)
     # create objects in the bucket using multi-part upload
-    fp = tempfile.TemporaryFile(mode='w')
+    fp = tempfile.NamedTemporaryFile(mode='w')
     fp.write('bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb')
     fp.close()
     uploader = bucket.initiate_multipart_upload('multipart_foo', 
@@ -2975,7 +2984,7 @@ def test_ps_s3_tags_on_master():
 
     # create s3 topic
     endpoint_address = 'amqp://' + hostname
-    endpoint_args = 'push-endpoint='+endpoint_address+'&amqp-exchange=' + exchange +'&amqp-ack-level=broker'
+    endpoint_args = 'push-endpoint='+endpoint_address+'&amqp-exchange=' + exchange +'&amqp-ack-level=routable'
     topic_conf = PSTopicS3(master_zone.conn, topic_name, zonegroup.name, endpoint_args=endpoint_args)
     topic_arn = topic_conf.set_config()
     # create s3 notification
@@ -3032,6 +3041,81 @@ def test_ps_s3_tags_on_master():
     clean_rabbitmq(proc)
 
 
+def test_ps_s3_versioning_on_master():
+    """ test s3 notification of object versions """
+    if skip_push_tests:
+        return SkipTest("PubSub push tests don't run in teuthology")
+    hostname = get_ip()
+    proc = init_rabbitmq()
+    if proc is None:
+        return SkipTest('end2end amqp tests require rabbitmq-server installed')
+    master_zone, _ = init_env(require_ps=False)
+    realm = get_realm()
+    zonegroup = realm.master_zonegroup()
+
+    # create bucket
+    bucket_name = gen_bucket_name()
+    bucket = master_zone.create_bucket(bucket_name)
+    bucket.configure_versioning(True)
+    topic_name = bucket_name + TOPIC_SUFFIX
+
+    # start amqp receiver
+    exchange = 'ex1'
+    task, receiver = create_amqp_receiver_thread(exchange, topic_name)
+    task.start()
+
+    # create s3 topic
+    endpoint_address = 'amqp://' + hostname
+    endpoint_args = 'push-endpoint='+endpoint_address+'&amqp-exchange=' + exchange +'&amqp-ack-level=broker'
+    topic_conf = PSTopicS3(master_zone.conn, topic_name, zonegroup.name, endpoint_args=endpoint_args)
+    topic_arn = topic_conf.set_config()
+    # create notification
+    notification_name = bucket_name + NOTIFICATION_SUFFIX
+    topic_conf_list = [{'Id': notification_name, 'TopicArn': topic_arn,
+                        'Events': []
+                       }]
+    s3_notification_conf = PSNotificationS3(master_zone.conn, bucket_name, topic_conf_list)
+    _, status = s3_notification_conf.set_config()
+    assert_equal(status/100, 2)
+
+    # create objects in the bucket
+    key_value = 'foo'
+    key = bucket.new_key(key_value)
+    key.set_contents_from_string('hello')
+    ver1 = key.version_id
+    key.set_contents_from_string('world')
+    ver2 = key.version_id
+
+    print('wait for 5sec for the messages...')
+    time.sleep(5)
+
+    # check amqp receiver
+    events = receiver.get_and_reset_events()
+    num_of_versions = 0
+    for event_list in events:
+        for event in event_list['Records']:
+            assert_equal(event['s3']['object']['key'], key_value)
+            version = event['s3']['object']['versionId']
+            num_of_versions += 1
+            if version not in (ver1, ver2):
+                print('version mismatch: '+version+' not in: ('+ver1+', '+ver2+')')
+                assert_equal(1, 0)
+            else:
+                print('version ok: '+version+' in: ('+ver1+', '+ver2+')')
+
+    assert_equal(num_of_versions, 2)
+
+    # cleanup
+    stop_amqp_receiver(receiver, task)
+    s3_notification_conf.del_config()
+    topic_conf.del_config()
+    # delete the bucket
+    bucket.delete_key(key.name, version_id=ver2)
+    bucket.delete_key(key.name, version_id=ver1)
+    master_zone.delete_bucket(bucket_name)
+    clean_rabbitmq(proc)
+
+
 def test_ps_s3_versioned_deletion_on_master():
     """ test s3 notification of deletion markers on master """
     if skip_push_tests:
@@ -3062,7 +3146,6 @@ def test_ps_s3_versioned_deletion_on_master():
     topic_arn = topic_conf.set_config()
     # create s3 notification
     notification_name = bucket_name + NOTIFICATION_SUFFIX
-    # TODO use s3:ObjectRemoved:DeleteMarkerCreated once supported in the code
     topic_conf_list = [{'Id': notification_name+'_1', 'TopicArn': topic_arn,
                         'Events': ['s3:ObjectRemoved:*']
                        },

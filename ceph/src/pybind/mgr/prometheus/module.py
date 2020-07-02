@@ -191,7 +191,7 @@ class Module(MgrModule):
         {'name': 'server_port'},
         {'name': 'scrape_interval'},
         {'name': 'rbd_stats_pools'},
-        {'name': 'rbd_stats_pools_refresh_interval'},
+        {'name': 'rbd_stats_pools_refresh_interval', 'type': 'int', 'default': 300},
     ]
 
     def __init__(self, *args, **kwargs):
@@ -528,7 +528,7 @@ class Module(MgrModule):
                 try:
                     self.metrics["pg_{}".format(state)].set(num, (pool,))
                 except KeyError:
-                    self.log.warn("skipping pg in unknown state {}".format(state))
+                    self.log.warning("skipping pg in unknown state {}".format(state))
 
     def get_osd_stats(self):
         osd_stats = self.get('osd_stats')
@@ -900,6 +900,33 @@ class Module(MgrModule):
             del self.rbd_stats['query']
         self.rbd_stats['pools'].clear()
 
+    def add_fixed_name_metrics(self):
+        """
+        Add fixed name metrics from existing ones that have details in their names
+        that should be in labels (not in name).
+        For backward compatibility, a new fixed name metric is created (instead of replacing)
+        and details are put in new labels.
+        Intended for RGW sync perf. counters but extendable as required.
+        See: https://tracker.ceph.com/issues/45311
+        """
+        new_metrics = {}
+        for metric_path in self.metrics.keys():
+            # Address RGW sync perf. counters.
+            match = re.search('^data-sync-from-(.*)\.', metric_path)
+            if match:
+                new_path = re.sub('from-([^.]*)', 'from-zone', metric_path)
+                if new_path not in new_metrics:
+                    new_metrics[new_path] = Metric(
+                        self.metrics[metric_path].mtype,
+                        new_path,
+                        self.metrics[metric_path].desc,
+                        self.metrics[metric_path].labelnames + ('source_zone',)
+                    )
+                for label_values, value in self.metrics[metric_path].value.items():
+                    new_metrics[new_path].set(value, label_values + (match.group(1),))
+
+        self.metrics.update(new_metrics)
+
     def collect(self):
         # Clear the metrics before scraping
         for k in self.metrics.keys():
@@ -962,6 +989,7 @@ class Module(MgrModule):
                         )
                     self.metrics[path].set(value, labels)
 
+        self.add_fixed_name_metrics()
         self.get_rbd_stats()
 
         # Return formatted metrics and clear no longer used data

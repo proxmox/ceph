@@ -4,15 +4,18 @@ ceph-mgr orchestrator interface
 
 Please see the ceph-mgr module developer's guide for more information.
 """
+
+import copy
+import datetime
+import errno
 import logging
 import pickle
+import re
 import time
+import uuid
+
 from collections import namedtuple
 from functools import wraps
-import uuid
-import datetime
-import copy
-import errno
 
 from ceph.deployment import inventory
 from ceph.deployment.service_spec import ServiceSpec, NFSServiceSpec, RGWSpec, \
@@ -852,24 +855,25 @@ class Orchestrator(object):
         """
         raise NotImplementedError()
 
-    def apply(self, specs: List[ServiceSpec]) -> Completion:
+    def apply(self, specs: List["GenericSpec"]) -> Completion:
         """
         Applies any spec
         """
-        fns: Dict[str, Callable[[ServiceSpec], Completion]] = {
+        fns: Dict[str, function] = {
             'alertmanager': self.apply_alertmanager,
             'crash': self.apply_crash,
             'grafana': self.apply_grafana,
-            'iscsi': cast(Callable[[ServiceSpec], Completion], self.apply_iscsi),
+            'iscsi': self.apply_iscsi,
             'mds': self.apply_mds,
             'mgr': self.apply_mgr,
             'mon': self.apply_mon,
-            'nfs': cast(Callable[[ServiceSpec], Completion], self.apply_nfs),
+            'nfs': self.apply_nfs,
             'node-exporter': self.apply_node_exporter,
-            'osd': cast(Callable[[ServiceSpec], Completion], lambda dg: self.apply_drivegroups([dg])),
+            'osd': lambda dg: self.apply_drivegroups([dg]),
             'prometheus': self.apply_prometheus,
             'rbd-mirror': self.apply_rbd_mirror,
-            'rgw': cast(Callable[[ServiceSpec], Completion], self.apply_rgw),
+            'rgw': self.apply_rgw,
+            'host': self.add_host,
         }
 
         def merge(ls, r):
@@ -879,10 +883,12 @@ class Orchestrator(object):
 
         spec, *specs = specs
 
-        completion = fns[spec.service_type](spec)
+        fn = cast(Callable[["GenericSpec"], Completion], fns[spec.service_type])
+        completion = fn(spec)
         for s in specs:
             def next(ls):
-                return fns[s.service_type](s).then(lambda r: merge(ls, r))
+                fn = cast(Callable[["GenericSpec"], Completion], fns[spec.service_type])
+                return fn(s).then(lambda r: merge(ls, r))
             completion = completion.then(next)
         return completion
 
@@ -946,11 +952,17 @@ class Orchestrator(object):
         """ Update OSD cluster """
         raise NotImplementedError()
 
-    def set_unmanaged_flag(self, service_name: str, unmanaged_flag: bool) -> HandleCommandResult:
+    def set_unmanaged_flag(self,
+                           unmanaged_flag: bool,
+                           service_type: str = 'osd',
+                           service_name=None
+                           ) -> HandleCommandResult:
         raise NotImplementedError()
 
-    def preview_drivegroups(self, drive_group_name: Optional[str] = 'osd',
-                            dg_specs: Optional[List[DriveGroupSpec]] = None) -> List[Dict[str, Dict[Any, Any]]]:
+    def preview_osdspecs(self,
+                         osdspec_name: Optional[str] = 'osd',
+                         osdspecs: Optional[List[DriveGroupSpec]] = None
+                         ) -> Completion:
         """ Get a preview for OSD deployments """
         raise NotImplementedError()
 
@@ -1160,6 +1172,8 @@ class HostSpec(object):
                  labels=None,  # type: Optional[List[str]]
                  status=None,  # type: Optional[str]
                  ):
+        self.service_type = 'host'
+
         #: the bare hostname on the host. Not the FQDN.
         self.hostname = hostname  # type: str
 
@@ -1180,6 +1194,13 @@ class HostSpec(object):
             'status': self.status,
         }
 
+    @classmethod
+    def from_json(cls, host_spec):
+        _cls = cls(host_spec['hostname'],
+                   host_spec['addr'] if 'addr' in host_spec else None,
+                   host_spec['labels'] if 'labels' in host_spec else None)
+        return _cls
+
     def __repr__(self):
         args = [self.hostname]  # type: List[Any]
         if self.addr is not None:
@@ -1197,6 +1218,14 @@ class HostSpec(object):
                self.addr == other.addr and \
                self.labels == other.labels
 
+GenericSpec = Union[ServiceSpec, HostSpec]
+
+def json_to_generic_spec(spec):
+    # type: (dict) -> GenericSpec
+    if 'service_type' in spec and spec['service_type'] == 'host':
+        return HostSpec.from_json(spec)
+    else:
+        return ServiceSpec.from_json(spec)
 
 class UpgradeStatusSpec(object):
     # Orchestrator's report on what's going on with any ongoing upgrade
@@ -1245,6 +1274,7 @@ class DaemonDescription(object):
                  created=None,
                  started=None,
                  last_configured=None,
+                 osdspec_affinity=None,
                  last_deployed=None):
         # Host is at the same granularity as InventoryHost
         self.hostname = hostname
@@ -1282,6 +1312,9 @@ class DaemonDescription(object):
         self.last_configured = last_configured # type: Optional[datetime.datetime]
         self.last_deployed = last_deployed    # type: Optional[datetime.datetime]
 
+        # Affinity to a certain OSDSpec
+        self.osdspec_affinity = osdspec_affinity  # type: Optional[str]
+
     def name(self):
         return '%s.%s' % (self.daemon_type, self.daemon_id)
 
@@ -1292,20 +1325,46 @@ class DaemonDescription(object):
         return False
 
     def service_id(self):
-        if self.daemon_type == 'rgw':
-            if self.hostname and self.hostname in self.daemon_id:
-                pre, post_ = self.daemon_id.split(self.hostname)
+        def _match():
+            err = OrchestratorError("DaemonDescription: Cannot calculate service_id: " \
+                    f"daemon_id='{self.daemon_id}' hostname='{self.hostname}'")
+
+            if not self.hostname:
+                # TODO: can a DaemonDescription exist without a hostname?
+                raise err
+
+            # use the bare hostname, not the FQDN.
+            host = self.hostname.split('.')[0]
+
+            if host == self.daemon_id:
+                # daemon_id == "host"
+                return self.daemon_id
+
+            elif host in self.daemon_id:
+                # daemon_id == "service_id.host"
+                # daemon_id == "service_id.host.random"
+                pre, post = self.daemon_id.rsplit(host, 1)
+                if not pre.endswith('.'):
+                    # '.' sep missing at front of host
+                    raise err
+                elif post and not post.startswith('.'):
+                    # '.' sep missing at end of host
+                    raise err
                 return pre[:-1]
-            else:
-                # daemon_id == "realm.zone.host.random"
+
+            # daemon_id == "service_id.random"
+            if self.daemon_type == 'rgw':
                 v = self.daemon_id.split('.')
-                if len(v) == 4:
+                if len(v) in [3, 4]:
                     return '.'.join(v[0:2])
-                # subcluster or fqdn? undecidable.
-                raise OrchestratorError(f"DaemonDescription: Cannot calculate service_id: {v}")
-        if self.daemon_type in ['mds', 'nfs', 'iscsi']:
-            return self.daemon_id.split('.')[0]
-        return self.daemon_type
+
+            # daemon_id == "service_id"
+            return self.daemon_id
+
+        if self.daemon_type in ['mds', 'nfs', 'iscsi', 'rgw']:
+            return _match()
+
+        return self.daemon_id
 
     def service_name(self):
         if self.daemon_type in ['rgw', 'mds', 'nfs', 'iscsi']:

@@ -5,6 +5,7 @@ import { I18n } from '@ngx-translate/i18n-polyfill';
 import { BsModalRef, BsModalService } from 'ngx-bootstrap/modal';
 
 import { HostService } from '../../../shared/api/host.service';
+import { ListWithDetails } from '../../../shared/classes/list-with-details.class';
 import { CriticalConfirmationModalComponent } from '../../../shared/components/critical-confirmation-modal/critical-confirmation-modal.component';
 import { ActionLabelsI18n } from '../../../shared/constants/app.constants';
 import { Icons } from '../../../shared/enum/icons.enum';
@@ -15,6 +16,7 @@ import { CdTableSelection } from '../../../shared/models/cd-table-selection';
 import { FinishedTask } from '../../../shared/models/finished-task';
 import { Permissions } from '../../../shared/models/permissions';
 import { CephShortVersionPipe } from '../../../shared/pipes/ceph-short-version.pipe';
+import { JoinPipe } from '../../../shared/pipes/join.pipe';
 import { AuthStorageService } from '../../../shared/services/auth-storage.service';
 import { DepCheckerService } from '../../../shared/services/dep-checker.service';
 import { TaskWrapperService } from '../../../shared/services/task-wrapper.service';
@@ -28,7 +30,7 @@ const BASE_URL = 'hosts';
   styleUrls: ['./hosts.component.scss'],
   providers: [{ provide: URLBuilderService, useValue: new URLBuilderService(BASE_URL) }]
 })
-export class HostsComponent implements OnInit {
+export class HostsComponent extends ListWithDetails implements OnInit {
   permissions: Permissions;
   columns: Array<CdTableColumn> = [];
   hosts: Array<object> = [];
@@ -45,6 +47,7 @@ export class HostsComponent implements OnInit {
     private authStorageService: AuthStorageService,
     private hostService: HostService,
     private cephShortVersionPipe: CephShortVersionPipe,
+    private joinPipe: JoinPipe,
     private i18n: I18n,
     private urlBuilder: URLBuilderService,
     private actionLabels: ActionLabelsI18n,
@@ -53,6 +56,7 @@ export class HostsComponent implements OnInit {
     private router: Router,
     private depCheckerService: DepCheckerService
   ) {
+    super();
     this.permissions = this.authStorageService.getPermissions();
     this.tableActions = [
       {
@@ -97,6 +101,12 @@ export class HostsComponent implements OnInit {
         prop: 'services',
         flexGrow: 3,
         cellTemplate: this.servicesTpl
+      },
+      {
+        name: this.i18n('Labels'),
+        prop: 'labels',
+        flexGrow: 1,
+        pipe: this.joinPipe
       },
       {
         name: this.i18n('Version'),

@@ -46,6 +46,8 @@ Synopsis
                               [--config CONFIG] [--keyring KEYRING]
                               command [command ...]
 
+| **cephadm** **unit**  [-h] [--fsid FSID] --name NAME command
+
 | **cephadm** **logs** [-h] [--fsid FSID] --name NAME [command [command ...]]
 
 | **cephadm** **bootstrap** [-h] [--config CONFIG] [--mon-id MON_ID]
@@ -59,12 +61,17 @@ Synopsis
 |                           [--initial-dashboard-user INITIAL_DASHBOARD_USER]
 |                           [--initial-dashboard-password INITIAL_DASHBOARD_PASSWORD]
 |                           [--dashboard-key DASHBOARD_KEY]
-|                           [--dashboard-crt DASHBOARD_CRT] [--skip-mon-network]
+|                           [--dashboard-crt DASHBOARD_CRT]
+|                           [--ssh-config SSH_CONFIG]
+|                           [--ssh-private-key SSH_PRIVATE_KEY]
+|                           [--ssh-public-key SSH_PUBLIC_KEY] [--skip-mon-network]
 |                           [--skip-dashboard] [--dashboard-password-noupdate]
 |                           [--no-minimize-config] [--skip-ping-check]
 |                           [--skip-pull] [--skip-firewalld] [--allow-overwrite]
 |                           [--allow-fqdn-hostname] [--skip-prepare-host]
 |                           [--orphan-initial-daemons] [--skip-monitoring-stack]
+|                           [--apply-spec APPLY_SPEC]
+
 
 
 | **cephadm** **deploy** [-h] --name NAME --fsid FSID [--config CONFIG]
@@ -196,6 +203,9 @@ Arguments:
 * [--initial-dashboard-password INITIAL_DASHBOARD_PASSWORD] Initial password for the initial dashboard user
 * [--dashboard-key DASHBOARD_KEY] Dashboard key
 * [--dashboard-crt DASHBOARD_CRT] Dashboard certificate
+* [--ssh-config SSH_CONFIG] SSH config
+* [--ssh-private-key SSH_PRIVATE_KEY] SSH private key
+* [--ssh-public-key SSH_PUBLIC_KEY] SSH public key
 * [--skip-mon-network]            set mon public_network based on bootstrap mon ip
 * [--skip-dashboard]              do not enable the Ceph Dashboard
 * [--dashboard-password-noupdate] stop forced dashboard password change
@@ -208,7 +218,7 @@ Arguments:
 * [--skip-prepare-host]           Do not prepare host
 * [--orphan-initial-daemons]      Do not create initial mon, mgr, and crash service specs
 * [--skip-monitoring-stack]       Do not automatically provision monitoring stack] (prometheus, grafana, alertmanager, node-exporter)
-
+* [--apply-spec APPLY_SPEC]       Apply cluster spec after bootstrap (copy ssh key, add hosts and apply services)
 
 ceph-volume
 -----------

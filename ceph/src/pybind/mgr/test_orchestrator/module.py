@@ -165,11 +165,10 @@ class TestOrchestrator(MgrModule, orchestrator.Orchestrator):
         types = ("mds", "osd", "mon", "rgw", "mgr")
         out = map(str, check_output(['ps', 'aux']).splitlines())
         processes = [p for p in out if any(
-            [('ceph-' + t in p) for t in types])]
+            [('ceph-{} '.format(t) in p) for t in types])]
 
         daemons = []
         for p in processes:
-            daemon = orchestrator.DaemonDescription()
             # parse daemon type
             m = re.search('ceph-([^ ]+)', p)
             if m:
@@ -179,7 +178,6 @@ class TestOrchestrator(MgrModule, orchestrator.Orchestrator):
 
             # parse daemon ID. Possible options: `-i <id>`, `--id=<id>`, `--id <id>`
             patterns = [r'-i\s(\w+)', r'--id[\s=](\w+)']
-            daemon_id = None
             for pattern in patterns:
                 m = re.search(pattern, p)
                 if m:
@@ -260,9 +258,10 @@ class TestOrchestrator(MgrModule, orchestrator.Orchestrator):
         def run(all_hosts):
             # type: (List[orchestrator.HostSpec]) -> None
             drive_group.validate()
-            if drive_group.placement.host_pattern:
-                if not drive_group.placement.pattern_matches_hosts([h.hostname for h in all_hosts]):
-                    raise orchestrator.OrchestratorValidationError('failed to match')
+            if not drive_group.placement.filter_matching_hosts(lambda label=None, as_hostspec=None:
+                                                               [h.hostname for h in all_hosts]):
+                raise orchestrator.OrchestratorValidationError('failed to match')
+
         return self.get_hosts().then(run).then(
             on_complete=orchestrator.ProgressReference(
                 message='create_osds',
@@ -273,12 +272,13 @@ class TestOrchestrator(MgrModule, orchestrator.Orchestrator):
     def apply_drivegroups(self, specs):
         # type: (List[DriveGroupSpec]) -> TestCompletion
         drive_group = specs[0]
+
         def run(all_hosts):
             # type: (List[orchestrator.HostSpec]) -> None
             drive_group.validate()
-            if drive_group.placement.host_pattern:
-                if not drive_group.placement.pattern_matches_hosts([h.hostname for h in all_hosts]):
-                    raise orchestrator.OrchestratorValidationError('failed to match')
+            if not drive_group.placement.filter_matching_hosts(lambda label=None, as_hostspec=None:
+                                                               [h.hostname for h in all_hosts]):
+                raise orchestrator.OrchestratorValidationError('failed to match')
         return self.get_hosts().then(run).then(
             on_complete=orchestrator.ProgressReference(
                 message='apply_drivesgroups',

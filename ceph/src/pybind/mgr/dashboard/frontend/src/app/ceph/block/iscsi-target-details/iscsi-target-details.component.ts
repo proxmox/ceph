@@ -3,17 +3,16 @@ import { Component, Input, OnChanges, OnInit, TemplateRef, ViewChild } from '@an
 import { I18n } from '@ngx-translate/i18n-polyfill';
 import {
   ITreeOptions,
-  TREE_ACTIONS,
   TreeComponent,
   TreeModel,
-  TreeNode
+  TreeNode,
+  TREE_ACTIONS
 } from 'angular-tree-component';
 import * as _ from 'lodash';
 
 import { TableComponent } from '../../../shared/datatable/table/table.component';
 import { Icons } from '../../../shared/enum/icons.enum';
 import { CdTableColumn } from '../../../shared/models/cd-table-column';
-import { CdTableSelection } from '../../../shared/models/cd-table-selection';
 import { BooleanTextPipe } from '../../../shared/pipes/boolean-text.pipe';
 import { IscsiBackstorePipe } from '../../../shared/pipes/iscsi-backstore.pipe';
 
@@ -24,7 +23,7 @@ import { IscsiBackstorePipe } from '../../../shared/pipes/iscsi-backstore.pipe';
 })
 export class IscsiTargetDetailsComponent implements OnChanges, OnInit {
   @Input()
-  selection: CdTableSelection;
+  selection: any;
   @Input()
   settings: any;
   @Input()
@@ -91,8 +90,8 @@ export class IscsiTargetDetailsComponent implements OnChanges, OnInit {
   }
 
   ngOnChanges() {
-    if (this.selection.hasSelection) {
-      this.selectedItem = this.selection.first();
+    if (this.selection) {
+      this.selectedItem = this.selection;
       this.generateTree();
     }
 

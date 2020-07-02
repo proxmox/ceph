@@ -6,7 +6,7 @@ import six
 import time
 from contextlib import contextmanager
 
-from .helper import DashboardTestCase, JAny, JList, JObj
+from tasks.mgr.dashboard.helper import DashboardTestCase, JAny, JList, JObj
 
 log = logging.getLogger(__name__)
 
@@ -414,4 +414,5 @@ class PoolTest(DashboardTestCase):
             'pg_autoscale_modes': JList(six.string_types),
             'erasure_code_profiles': JList(JObj({}, allow_unknown=True)),
             'used_rules': JObj({}, allow_unknown=True),
+            'used_profiles': JObj({}, allow_unknown=True),
         }))

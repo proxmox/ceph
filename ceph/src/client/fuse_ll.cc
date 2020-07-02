@@ -33,10 +33,10 @@
 #include "ioctl.h"
 #include "common/config.h"
 #include "include/ceph_assert.h"
-#include "include/cephfs/ceph_statx.h"
+#include "include/cephfs/ceph_ll_client.h"
+#include "include/ceph_fuse.h"
 
 #include "fuse_ll.h"
-#include <fuse.h>
 #include <fuse_lowlevel.h>
 
 #define dout_context g_ceph_context
@@ -640,7 +640,13 @@ static void fuse_ll_flush(fuse_req_t req, fuse_ino_t ino,
 }
 
 #ifdef FUSE_IOCTL_COMPAT
-static void fuse_ll_ioctl(fuse_req_t req, fuse_ino_t ino, int cmd, void *arg, struct fuse_file_info *fi,
+static void fuse_ll_ioctl(fuse_req_t req, fuse_ino_t ino,
+#if FUSE_VERSION >= FUSE_MAKE_VERSION(3, 5)
+                          unsigned int cmd,
+#else
+                          int cmd,
+#endif
+                          void *arg, struct fuse_file_info *fi,
 			  unsigned flags, const void *in_buf, size_t in_bufsz, size_t out_bufsz)
 {
   CephFuse::Handle *cfuse = fuse_ll_req_prepare(req);
@@ -937,7 +943,7 @@ static void ino_invalidate_cb(void *handle, vinodeno_t vino, int64_t off,
 }
 
 static void dentry_invalidate_cb(void *handle, vinodeno_t dirino,
-				 vinodeno_t ino, string& name)
+				 vinodeno_t ino, const char *name, size_t len)
 {
   CephFuse::Handle *cfuse = (CephFuse::Handle *)handle;
   fuse_ino_t fdirino = cfuse->make_fake_ino(dirino.ino, dirino.snapid);
@@ -946,12 +952,12 @@ static void dentry_invalidate_cb(void *handle, vinodeno_t dirino,
   if (ino.ino != inodeno_t())
     fino = cfuse->make_fake_ino(ino.ino, ino.snapid);
 #if FUSE_VERSION >= FUSE_MAKE_VERSION(3, 0)
-  fuse_lowlevel_notify_delete(cfuse->se, fdirino, fino, name.c_str(), name.length());
+  fuse_lowlevel_notify_delete(cfuse->se, fdirino, fino, name, len);
 #else
-  fuse_lowlevel_notify_delete(cfuse->ch, fdirino, fino, name.c_str(), name.length());
+  fuse_lowlevel_notify_delete(cfuse->ch, fdirino, fino, name, len);
 #endif
 #elif FUSE_VERSION >= FUSE_MAKE_VERSION(2, 8)
-  fuse_lowlevel_notify_inval_entry(cfuse->ch, fdirino, name.c_str(), name.length());
+  fuse_lowlevel_notify_inval_entry(cfuse->ch, fdirino, name, len);
 #endif
 }
 
@@ -1233,7 +1239,7 @@ int CephFuse::Handle::start()
 #endif
 
 
-  struct client_callback_args args = {
+  struct ceph_client_callback_args args = {
     handle: this,
     ino_cb: client->cct->_conf.get_val<bool>("fuse_use_invalidate_cb") ?
       ino_invalidate_cb : NULL,
@@ -1256,7 +1262,14 @@ int CephFuse::Handle::loop()
   auto fuse_multithreaded = client->cct->_conf.get_val<bool>(
     "fuse_multithreaded");
   if (fuse_multithreaded) {
-#if FUSE_VERSION >= FUSE_MAKE_VERSION(3, 0)
+#if FUSE_VERSION >= FUSE_MAKE_VERSION(3, 1)
+    {
+      struct fuse_loop_config conf = { 0 };
+
+      conf.clone_fd = opts.clone_fd;
+      return fuse_session_loop_mt(se, &conf);
+    }
+#elif FUSE_VERSION >= FUSE_MAKE_VERSION(3, 0)
     return fuse_session_loop_mt(se, opts.clone_fd);
 #else
     return fuse_session_loop_mt(se);

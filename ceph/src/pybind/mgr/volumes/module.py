@@ -69,10 +69,12 @@ class Module(orchestrator.OrchestratorClientMixin, MgrModule):
                    'name=pool_layout,type=CephString,req=false '
                    'name=uid,type=CephInt,req=false '
                    'name=gid,type=CephInt,req=false '
-                   'name=mode,type=CephString,req=false ',
+                   'name=mode,type=CephString,req=false '
+                   'name=namespace_isolated,type=CephBool,req=false ',
             'desc': "Create a CephFS subvolume in a volume, and optionally, "
                     "with a specific size (in bytes), a specific data pool layout, "
-                    "a specific mode, and in a specific subvolume group",
+                    "a specific mode, in a specific subvolume group and in separate "
+                    "RADOS namespace",
             'perm': 'rw'
         },
         {
@@ -151,6 +153,16 @@ class Module(orchestrator.OrchestratorClientMixin, MgrModule):
             'desc': "Create a snapshot of a CephFS subvolume in a volume, "
                     "and optionally, in a specific subvolume group",
             'perm': 'rw'
+        },
+        {
+            'cmd': 'fs subvolume snapshot info '
+                   'name=vol_name,type=CephString '
+                   'name=sub_name,type=CephString '
+                   'name=snap_name,type=CephString '
+                   'name=group_name,type=CephString,req=false ',
+            'desc': "Get the metadata of a CephFS subvolume snapshot "
+                    "and optionally, in a specific subvolume group",
+            'perm': 'r'
         },
         {
             'cmd': 'fs subvolume snapshot rm '
@@ -302,7 +314,8 @@ class Module(orchestrator.OrchestratorClientMixin, MgrModule):
                                         pool_layout=cmd.get('pool_layout', None),
                                         uid=cmd.get('uid', None),
                                         gid=cmd.get('gid', None),
-                                        mode=cmd.get('mode', '755'))
+                                        mode=cmd.get('mode', '755'),
+                                        namespace_isolated=cmd.get('namespace_isolated', False))
 
     def _cmd_fs_subvolume_rm(self, inbuf, cmd):
         """
@@ -358,6 +371,12 @@ class Module(orchestrator.OrchestratorClientMixin, MgrModule):
                                                  snap_name=cmd['snap_name'],
                                                  group_name=cmd.get('group_name', None),
                                                  force=cmd.get('force', False))
+
+    def _cmd_fs_subvolume_snapshot_info(self, inbuf, cmd):
+        return self.vc.subvolume_snapshot_info(vol_name=cmd['vol_name'],
+                                               sub_name=cmd['sub_name'],
+                                               snap_name=cmd['snap_name'],
+                                               group_name=cmd.get('group_name', None))
 
     def _cmd_fs_subvolume_snapshot_ls(self, inbuf, cmd):
         return self.vc.list_subvolume_snapshots(vol_name=cmd['vol_name'],

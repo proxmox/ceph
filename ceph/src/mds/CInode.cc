@@ -1541,7 +1541,7 @@ void InodeStoreBase::decode_bare(bufferlist::const_iterator &bl,
     symlink = std::string_view(tmp);
   }
   decode(dirfragtree, bl);
-  decode(xattrs, bl);
+  decode_noshare(xattrs, bl);
   decode(snap_blob, bl);
 
   decode(old_inodes, bl);
@@ -1965,7 +1965,7 @@ void CInode::decode_lock_ixattr(bufferlist::const_iterator& p)
   utime_t tm;
   decode(tm, p);
   if (inode.ctime < tm) inode.ctime = tm;
-  decode(xattrs, p);
+  decode_noshare(xattrs, p);
   DECODE_FINISH(p);
 }
 
@@ -4066,7 +4066,7 @@ void CInode::_decode_base(bufferlist::const_iterator& p)
     symlink = std::string_view(tmp);
   }
   decode(dirfragtree, p);
-  decode(xattrs, p);
+  decode_noshare(xattrs, p);
   decode(old_inodes, p);
   decode(damage_flags, p);
   decode_snap(p);
@@ -4483,7 +4483,11 @@ void CInode::validate_disk_state(CInode::validated_data *results,
       dout(20) << "ondisk_read_retval: " << results->backtrace.ondisk_read_retval << dendl;
       if (results->backtrace.ondisk_read_retval != 0) {
         results->backtrace.error_str << "failed to read off disk; see retval";
-	goto next;
+        // we probably have a new unwritten file!
+        // so skip the backtrace scrub for this entry and say that all's well
+        if (in->is_dirty_parent())
+          results->backtrace.passed = true;
+        goto next;
       }
 
       // extract the backtrace, and compare it to a newly-constructed one
@@ -4501,6 +4505,11 @@ void CInode::validate_disk_state(CInode::validated_data *results,
         }
         results->backtrace.error_str << "failed to decode on-disk backtrace ("
                                      << bl.length() << " bytes)!";
+        // we probably have a new unwritten file!
+        // so skip the backtrace scrub for this entry and say that all's well
+        if (in->is_dirty_parent())
+          results->backtrace.passed = true;
+
 	goto next;
       }
 
@@ -4508,8 +4517,12 @@ void CInode::validate_disk_state(CInode::validated_data *results,
 					      &equivalent, &divergent);
 
       if (divergent || memory_newer < 0) {
-	// we're divergent, or on-disk version is newer
-	results->backtrace.error_str << "On-disk backtrace is divergent or newer";
+        // we're divergent, or on-disk version is newer
+        results->backtrace.error_str << "On-disk backtrace is divergent or newer";
+        // we probably have a new unwritten file!
+        // so skip the backtrace scrub for this entry and say that all's well
+        if (divergent && in->is_dirty_parent())
+          results->backtrace.passed = true;
       } else {
         results->backtrace.passed = true;
       }

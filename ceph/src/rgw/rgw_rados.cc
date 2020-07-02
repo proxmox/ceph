@@ -7551,8 +7551,12 @@ int RGWRados::get_bucket_stats_async(RGWBucketInfo& bucket_info, int shard_id, R
   return r;
 }
 
-int RGWRados::get_bucket_instance_info(RGWSysObjectCtx& obj_ctx, const string& meta_key, RGWBucketInfo& info,
-                                       real_time *pmtime, map<string, bufferlist> *pattrs, optional_yield y)
+int RGWRados::get_bucket_instance_info(RGWSysObjectCtx& obj_ctx,
+				       const string& meta_key,
+				       RGWBucketInfo& info,
+                                       real_time *pmtime,
+				       map<string, bufferlist> *pattrs,
+				       optional_yield y)
 {
   rgw_bucket bucket;
   rgw_bucket_parse_bucket_key(cct, meta_key, &bucket, nullptr);
@@ -8047,7 +8051,7 @@ int RGWRados::list_lc_progress(const string& marker, uint32_t max_entries, map<s
 
 int RGWRados::process_lc()
 {
-  return lc->process();
+  return lc->process(nullptr);
 }
 
 bool RGWRados::process_expire_objects()
@@ -8344,7 +8348,7 @@ int RGWRados::cls_bucket_list_ordered(RGWBucketInfo& bucket_info,
     // into results_trackers vector
     tracker_idx = candidates.begin()->second;
     auto& tracker = results_trackers.at(tracker_idx);
-    last_entry_visited = &tracker.dir_entry();
+
     const string& name = tracker.entry_name();
     rgw_bucket_dir_entry& dirent = tracker.dir_entry();
 
@@ -8377,10 +8381,12 @@ int RGWRados::cls_bucket_list_ordered(RGWBucketInfo& bucket_info,
       ldout(cct, 10) << "RGWRados::" << __func__ << ": got " <<
 	dirent.key.name << "[" << dirent.key.instance << "]" << dendl;
       m[name] = std::move(dirent);
+      last_entry_visited = &(m[name]);
       ++count;
     } else {
       ldout(cct, 10) << "RGWRados::" << __func__ << ": skipping " <<
 	dirent.key.name << "[" << dirent.key.instance << "]" << dendl;
+      last_entry_visited = &tracker.dir_entry();
     }
 
     // refresh the candidates map
@@ -8432,8 +8438,7 @@ int RGWRados::cls_bucket_list_ordered(RGWBucketInfo& bucket_info,
   }
 
   if (last_entry_visited != nullptr && last_entry) {
-    // since we'll not need this any more, might as well move it...
-    *last_entry = std::move(last_entry_visited->key);
+    *last_entry = last_entry_visited->key;
     ldout(cct, 20) << "RGWRados::" << __func__ <<
       ": returning, last_entry=" << *last_entry << dendl;
   } else {

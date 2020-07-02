@@ -1,7 +1,13 @@
-ceph (15.2.3-1bionic) bionic; urgency=medium
+ceph (15.2.4-1bionic) bionic; urgency=medium
 
 
- -- Jenkins Build Slave User <jenkins-build@braggi13.front.sepia.ceph.com>  Fri, 29 May 2020 16:37:54 +0000
+ -- Jenkins Build Slave User <jenkins-build@braggi13.front.sepia.ceph.com>  Tue, 30 Jun 2020 16:42:44 +0000
+
+ceph (15.2.4-1) stable; urgency=medium
+
+  * New upstream release
+
+ -- Ceph Release Team <ceph-maintainers@ceph.com>  Tue, 30 Jun 2020 15:40:49 +0000
 
 ceph (15.2.3-1) stable; urgency=medium
 

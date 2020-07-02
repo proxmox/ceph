@@ -435,6 +435,12 @@ class MDCache {
   void committed_master_slave(metareqid_t r, mds_rank_t from);
   void finish_committed_masters();
 
+  void add_uncommitted_slave(metareqid_t reqid, LogSegment*, mds_rank_t, MDSlaveUpdate *su=nullptr);
+  void wait_for_uncommitted_slave(metareqid_t reqid, MDSContext *c) {
+    uncommitted_slaves.at(reqid).waiters.push_back(c);
+  }
+  void finish_uncommitted_slave(metareqid_t reqid, bool assert_exist=true);
+  MDSlaveUpdate* get_uncommitted_slave(metareqid_t reqid, mds_rank_t master);
   void _logged_slave_commit(mds_rank_t from, metareqid_t reqid);
 
   void set_recovery_set(set<mds_rank_t>& s);
@@ -463,7 +469,7 @@ class MDCache {
   void add_rollback(metareqid_t reqid, mds_rank_t master) {
     resolve_need_rollback[reqid] = master;
   }
-  void finish_rollback(metareqid_t reqid);
+  void finish_rollback(metareqid_t reqid, MDRequestRef& mdr);
 
   // ambiguous imports
   void add_ambiguous_import(dirfrag_t base, const vector<dirfrag_t>& bounds);
@@ -866,12 +872,16 @@ class MDCache {
   void send_dentry_unlink(CDentry *dn, CDentry *straydn, MDRequestRef& mdr);
 
   void wait_for_uncommitted_fragment(dirfrag_t dirfrag, MDSContext *c) {
-    ceph_assert(uncommitted_fragments.count(dirfrag));
-    uncommitted_fragments[dirfrag].waiters.push_back(c);
+    uncommitted_fragments.at(dirfrag).waiters.push_back(c);
   }
+  bool is_any_uncommitted_fragment() const {
+    return !uncommitted_fragments.empty();
+  }
+  void wait_for_uncommitted_fragments(MDSGather *gather);
+  void rollback_uncommitted_fragments();
+
   void split_dir(CDir *dir, int byn);
   void merge_dir(CInode *diri, frag_t fg);
-  void rollback_uncommitted_fragments();
 
   void find_stale_fragment_freeze();
   void fragment_freeze_inc_num_waiters(CDir *dir);
@@ -994,6 +1004,14 @@ class MDCache {
     bool recovering = false;
   };
 
+  struct uslave {
+    uslave() {}
+    mds_rank_t master;
+    LogSegment *ls = nullptr;
+    MDSlaveUpdate *su = nullptr;
+    MDSContext::vec waiters;
+  };
+
   struct open_ino_info_t {
     open_ino_info_t() {}
     vector<inode_backpointer_t> ancestors;
@@ -1032,9 +1050,6 @@ class MDCache {
   void disambiguate_my_imports();
   void disambiguate_other_imports();
   void trim_unlinked_inodes();
-  void add_uncommitted_slave_update(metareqid_t reqid, mds_rank_t master, MDSlaveUpdate*);
-  void finish_uncommitted_slave_update(metareqid_t reqid, mds_rank_t master);
-  MDSlaveUpdate* get_uncommitted_slave_update(metareqid_t reqid, mds_rank_t master);
 
   void send_slave_resolves();
   void send_subtree_resolves();
@@ -1138,11 +1153,11 @@ class MDCache {
   // from MMDSResolves
   map<mds_rank_t, map<dirfrag_t, vector<dirfrag_t> > > other_ambiguous_imports;
 
-  map<mds_rank_t, map<metareqid_t, MDSlaveUpdate*> > uncommitted_slave_updates;  // slave: for replay.
   map<CInode*, int> uncommitted_slave_rename_olddir;  // slave: preserve the non-auth dir until seeing commit.
   map<CInode*, int> uncommitted_slave_unlink;  // slave: preserve the unlinked inode until seeing commit.
 
   map<metareqid_t, umaster> uncommitted_masters;         // master: req -> slave set
+  map<metareqid_t, uslave> uncommitted_slaves;  // slave: preserve the slave req until seeing commit.
 
   set<metareqid_t> pending_masters;
   map<int, set<metareqid_t> > ambiguous_slave_updates;

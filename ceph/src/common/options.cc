@@ -4004,7 +4004,8 @@ std::vector<Option> get_global_options() {
     .set_description(""),
 
     Option("bluefs_allocator", Option::TYPE_STR, Option::LEVEL_DEV)
-    .set_default("bitmap")
+    .set_default("hybrid")
+    .set_enum_allowed({"bitmap", "stupid", "avl", "hybrid"})
     .set_description(""),
 
     Option("bluefs_preextend_wal_files", Option::TYPE_BOOL, Option::LEVEL_ADVANCED)
@@ -4371,8 +4372,8 @@ std::vector<Option> get_global_options() {
     .set_description("Key value database to use for bluestore"),
 
     Option("bluestore_allocator", Option::TYPE_STR, Option::LEVEL_ADVANCED)
-    .set_default("bitmap")
-    .set_enum_allowed({"bitmap", "stupid", "avl"})
+    .set_default("hybrid")
+    .set_enum_allowed({"bitmap", "stupid", "avl", "hybrid"})
     .set_description("Allocator policy")
     .set_long_description("Allocator to use for bluestore.  Stupid should only be used for testing."),
 
@@ -4625,6 +4626,10 @@ std::vector<Option> get_global_options() {
     Option("bluestore_avl_alloc_bf_free_pct", Option::TYPE_UINT, Option::LEVEL_DEV)
     .set_default(4)
     .set_description(""),
+
+    Option("bluestore_hybrid_alloc_mem_cap", Option::TYPE_UINT, Option::LEVEL_DEV)
+    .set_default(64_M)
+    .set_description("Maximum RAM hybrid allocator should use before enabling bitmap supplement"),
 
     Option("bluestore_volume_selection_policy", Option::TYPE_STR, Option::LEVEL_DEV)
     .set_default("rocksdb_original")
@@ -5532,20 +5537,34 @@ std::vector<Option> get_rgw_options() {
     .set_long_description("Local time window in which the lifecycle maintenance thread can work."),
 
     Option("rgw_lc_lock_max_time", Option::TYPE_INT, Option::LEVEL_DEV)
-    .set_default(60)
+    .set_default(90)
     .set_description(""),
 
     Option("rgw_lc_thread_delay", Option::TYPE_INT, Option::LEVEL_ADVANCED)
     .set_default(0)
     .set_description("Delay after processing of bucket listing chunks (i.e., per 1000 entries) in milliseconds"),
 
+    Option("rgw_lc_max_worker", Option::TYPE_INT, Option::LEVEL_ADVANCED)
+    .set_default(3)
+    .set_description("Number of LCWorker tasks that will be run in parallel")
+    .set_long_description(
+      "Number of LCWorker tasks that will run in parallel--used to permit >1 "
+      "bucket/index shards to be processed simultaneously"),
+
+    Option("rgw_lc_max_wp_worker", Option::TYPE_INT, Option::LEVEL_ADVANCED)
+    .set_default(3)
+    .set_description("Number of workpool threads per LCWorker")
+    .set_long_description(
+      "Number of threads in per-LCWorker workpools--used to accelerate "
+      "per-bucket processing"),
+
     Option("rgw_lc_max_objs", Option::TYPE_INT, Option::LEVEL_ADVANCED)
     .set_default(32)
     .set_description("Number of lifecycle data shards")
     .set_long_description(
-          "Number of RADOS objects to use for storing lifecycle index. This can affect "
-          "concurrency of lifecycle maintenance, but requires multiple RGW processes "
-          "running on the zone to be utilized."),
+          "Number of RADOS objects to use for storing lifecycle index. This "
+	  "affects concurrency of lifecycle maintenance, as shards can be "
+          "processed in parallel."),
 
     Option("rgw_lc_max_rules", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
     .set_default(1000)
@@ -8336,9 +8355,11 @@ std::vector<Option> get_mds_client_options() {
     .set_default(true)
     .set_description("pass atomic_o_trunc flag to FUSE on mount"),
 
-    Option("fuse_debug", Option::TYPE_BOOL, Option::LEVEL_DEV)
+    Option("fuse_debug", Option::TYPE_BOOL, Option::LEVEL_ADVANCED)
     .set_default(false)
-    .set_description(""),
+    .set_flag(Option::FLAG_STARTUP)
+    .set_flag(Option::FLAG_NO_MON_UPDATE)
+    .set_description("enable debugging for the libfuse"),
 
     Option("fuse_multithreaded", Option::TYPE_BOOL, Option::LEVEL_ADVANCED)
     .set_default(true)
