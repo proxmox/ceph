@@ -1,3 +1,9 @@
+ceph (14.2.11-pve1) stable; urgency=medium
+
+  * New upstream Nautilus 14.2.11 stable release
+
+ -- Proxmox Support Team <support@proxmox.com>  Wed, 12 Aug 2020 09:35:34 +0200
+
 ceph (14.2.10-pve1) stable; urgency=medium
 
   * New upstream Nautilus 14.2.10 stable release
