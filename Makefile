@@ -122,7 +122,7 @@ download:
 
 .PHONY: upload
 upload: ${DEBS}
-	tar cf - ${DEBS} | ssh repoman@repo.proxmox.com upload --product ceph-luminous --dist stretch --arch ${ARCH}
+	tar cf - ${DEBS} | ssh repoman@repo.proxmox.com upload --product ceph-nautilus --dist buster --arch ${ARCH}
 
 distclean: clean
 
