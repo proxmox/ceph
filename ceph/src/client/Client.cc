@@ -2083,6 +2083,7 @@ void Client::_closed_mds_session(MetaSession *s)
   mount_cond.Signal();
   remove_session_caps(s);
   kick_requests_closed(s);
+  mds_ranks_closing.erase(s->mds_num);
   mds_sessions.erase(s->mds_num);
 }
 
@@ -4348,10 +4349,12 @@ void Client::trim_caps(MetaSession *s, uint64_t max)
 	  all = false;
         }
       }
+      if (in->ll_ref == 1 && in->ino != MDS_INO_ROOT) {
+         _schedule_ino_release_callback(in.get());
+      }
       if (all && in->ino != MDS_INO_ROOT) {
         ldout(cct, 20) << __func__ << " counting as trimmed: " << *in << dendl;
 	trimmed++;
-	_schedule_ino_release_callback(in.get());
       }
     }
   }
@@ -6006,12 +6009,34 @@ void Client::_close_sessions()
     for (auto &p : mds_sessions) {
       if (p.second.state != MetaSession::STATE_CLOSING) {
 	_close_mds_session(&p.second);
+	mds_ranks_closing.insert(p.first);
       }
     }
 
     // wait for sessions to close
-    ldout(cct, 2) << "waiting for " << mds_sessions.size() << " mds sessions to close" << dendl;
-    mount_cond.Wait(client_lock);
+    double timo = cct->_conf.get_val<std::chrono::seconds>("client_shutdown_timeout").count();
+    ldout(cct, 2) << "waiting for " << mds_ranks_closing.size() << " mds session(s) to close (timeout: "
+                  << timo << "s)" << dendl;
+    if (!timo) {
+      mount_cond.Wait(client_lock);
+    } else {
+      int r = 0;
+      utime_t t;
+      t.set_from_double(timo);
+      while (!mds_ranks_closing.empty() && r == 0) {
+        r = mount_cond.WaitInterval(client_lock, t);
+      }
+      if (r != 0) {
+        ldout(cct, 1) << mds_ranks_closing.size() << " mds(s) did not respond to session close -- timing out." << dendl;
+        while (!mds_ranks_closing.empty()) {
+          auto session = mds_sessions.at(*mds_ranks_closing.begin());
+          // this prunes entry from mds_sessions and mds_ranks_closing
+          _closed_mds_session(&session);
+        }
+      }
+    }
+
+    mds_ranks_closing.clear();
   }
 }
 
@@ -8355,7 +8380,7 @@ static int _readdir_single_dirent_cb(void *p, struct dirent *de,
 struct dirent *Client::readdir(dir_result_t *d)
 {
   int ret;
-  static struct dirent de;
+  auto& de = d->de;
   single_readdir sr;
   sr.de = &de;
   sr.stx = NULL;
@@ -9074,7 +9099,7 @@ int Client::uninline_data(Inode *in, Context *onfinish)
 
 int Client::read(int fd, char *buf, loff_t size, loff_t offset)
 {
-  std::lock_guard lock(client_lock);
+  std::unique_lock lock(client_lock);
   tout(cct) << "read" << std::endl;
   tout(cct) << fd << std::endl;
   tout(cct) << size << std::endl;
@@ -9096,6 +9121,7 @@ int Client::read(int fd, char *buf, loff_t size, loff_t offset)
   int r = _read(f, offset, size, &bl);
   ldout(cct, 3) << "read(" << fd << ", " << (void*)buf << ", " << size << ", " << offset << ") = " << r << dendl;
   if (r >= 0) {
+    lock.unlock();
     bl.copy(0, bl.length(), buf);
     r = bl.length();
   }
@@ -10698,6 +10724,7 @@ Inode *Client::open_snapdir(Inode *diri)
     in->mtime = diri->mtime;
     in->ctime = diri->ctime;
     in->btime = diri->btime;
+    in->atime = diri->atime;
     in->size = diri->size;
     in->change_attr = diri->change_attr;
 
@@ -11536,6 +11563,12 @@ int Client::_setxattr(Inode *in, const char *name, const void *value,
 {
   if (in->snapid != CEPH_NOSNAP) {
     return -EROFS;
+  }
+
+  if (size == 0) {
+    value = "";
+  } else if (value == NULL) {
+      return -EINVAL;
   }
 
   bool posix_acl_xattr = false;

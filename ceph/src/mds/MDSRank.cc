@@ -1916,6 +1916,14 @@ void MDSRank::rejoin_done()
   mdcache->show_subtrees();
   mdcache->show_cache();
 
+  if (mdcache->is_any_uncommitted_fragment()) {
+    dout(1) << " waiting for uncommitted fragments" << dendl;
+    MDSGatherBuilder gather(g_ceph_context, new C_MDS_VoidFn(this, &MDSRank::rejoin_done));
+    mdcache->wait_for_uncommitted_fragments(gather.get());
+    gather.activate();
+    return;
+  }
+
   // funny case: is our cache empty?  no subtrees?
   if (!mdcache->is_subtrees()) {
     if (whoami == 0) {
@@ -3694,6 +3702,7 @@ const char** MDSRankDispatcher::get_tracked_conf_keys() const
     "mds_log_pause",
     "mds_max_export_size",
     "mds_max_purge_files",
+    "mds_forward_all_requests_to_auth",
     "mds_max_purge_ops",
     "mds_max_purge_ops_per_pg",
     "mds_max_snaps_per_dir",

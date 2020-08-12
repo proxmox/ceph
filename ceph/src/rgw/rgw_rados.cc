@@ -2453,14 +2453,9 @@ int RGWRados::Bucket::List::list_objects_ordered(
 
   rgw_obj_index_key prev_marker;
   string skip_after_delim;
-  uint16_t attempt = 0;
-  while (true) {
+  for (uint16_t attempt = 1; /* empty */; ++attempt) {
     ldout(cct, 20) << "RGWRados::Bucket::List::" << __func__ <<
-      " beginning attempt=" << ++attempt << dendl;
-
-    // this loop is generally expected only to have a single
-    // iteration; the standard exit is at the bottom of the loop, but
-    // there's an error condition emergency exit as well
+      " starting attempt " << attempt << dendl;
 
     if (attempt > 1 && !(prev_marker < cur_marker)) {
       // we've failed to make forward progress
@@ -2607,11 +2602,7 @@ int RGWRados::Bucket::List::list_objects_ordered(
       // few, results, return with what we have
       break;
     }
-
-    ldout(cct, 1) << "RGWRados::Bucket::List::" << __func__ <<
-      " INFO ordered bucket listing requires read #" << (1 + attempt) <<
-      dendl;
-  } // read attempt loop
+  } // for (uint16_t attempt...
 
 done:
   if (is_truncated)
@@ -2684,6 +2675,8 @@ int RGWRados::Bucket::List::list_objects_unordered(int64_t max_p,
 
   while (truncated && count <= max) {
     std::vector<rgw_bucket_dir_entry> ent_list;
+    ent_list.reserve(read_ahead);
+
     int r = store->cls_bucket_list_unordered(target->get_bucket_info(),
 					     shard_id,
 					     cur_marker,
@@ -5031,13 +5024,16 @@ int RGWRados::transition_obj(RGWObjectCtx& obj_ctx,
 
 int RGWRados::check_bucket_empty(RGWBucketInfo& bucket_info)
 {
+  constexpr uint NUM_ENTRIES = 1000u;
+
   rgw_obj_index_key marker;
   string prefix;
   bool is_truncated;
 
   do {
     std::vector<rgw_bucket_dir_entry> ent_list;
-    constexpr uint NUM_ENTRIES = 1000u;
+    ent_list.reserve(NUM_ENTRIES);
+
     int r = cls_bucket_list_unordered(bucket_info,
 				      RGW_NO_SHARD,
 				      marker,
@@ -5047,15 +5043,17 @@ int RGWRados::check_bucket_empty(RGWBucketInfo& bucket_info)
 				      ent_list,
 				      &is_truncated,
 				      &marker);
-    if (r < 0)
+    if (r < 0) {
       return r;
+    }
 
     string ns;
     for (auto const& dirent : ent_list) {
       rgw_obj_key obj;
 
-      if (rgw_obj_key::oid_to_key_in_ns(dirent.key.name, &obj, ns))
+      if (rgw_obj_key::oid_to_key_in_ns(dirent.key.name, &obj, ns)) {
         return -ENOTEMPTY;
+      }
     }
   } while (is_truncated);
 
@@ -9221,6 +9219,8 @@ int RGWRados::cls_bucket_list_ordered(RGWBucketInfo& bucket_info,
     ", list_versions=" << list_versions <<
     ", expansion_factor=" << expansion_factor << dendl;
 
+  m.clear();
+
   librados::IoCtx index_ctx;
   // key   - oid (for different shards if there is any)
   // value - list result for the corresponding oid (shard), it is filled by
@@ -9397,6 +9397,7 @@ int RGWRados::cls_bucket_list_unordered(RGWBucketInfo& bucket_info,
     " start " << start.name << "[" << start.instance <<
     "] num_entries " << num_entries << dendl;
 
+  ent_list.clear();
   static MultipartMetaFilter multipart_meta_filter;
 
   *is_truncated = false;

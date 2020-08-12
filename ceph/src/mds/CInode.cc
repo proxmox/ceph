@@ -2931,9 +2931,12 @@ void CInode::choose_lock_state(SimpleLock *lock, int allissued)
     } else if (lock->get_state() != LOCK_MIX) {
       if (issued & (CEPH_CAP_GEXCL | CEPH_CAP_GBUFFER))
 	lock->set_state(LOCK_EXCL);
-      else if (issued & CEPH_CAP_GWR)
-	lock->set_state(LOCK_MIX);
-      else if (lock->is_dirty()) {
+      else if (issued & CEPH_CAP_GWR) {
+        if (issued & (CEPH_CAP_GCACHE | CEPH_CAP_GSHARED))
+          lock->set_state(LOCK_EXCL);
+        else
+          lock->set_state(LOCK_MIX);
+      } else if (lock->is_dirty()) {
 	if (is_replicated())
 	  lock->set_state(LOCK_MIX);
 	else
@@ -4196,7 +4199,11 @@ void CInode::validate_disk_state(CInode::validated_data *results,
       dout(20) << "ondisk_read_retval: " << results->backtrace.ondisk_read_retval << dendl;
       if (results->backtrace.ondisk_read_retval != 0) {
         results->backtrace.error_str << "failed to read off disk; see retval";
-	goto next;
+        // we probably have a new unwritten file!
+        // so skip the backtrace scrub for this entry and say that all's well
+        if (in->is_dirty_parent())
+          results->backtrace.passed = true;
+        goto next;
       }
 
       // extract the backtrace, and compare it to a newly-constructed one
@@ -4214,6 +4221,11 @@ void CInode::validate_disk_state(CInode::validated_data *results,
         }
         results->backtrace.error_str << "failed to decode on-disk backtrace ("
                                      << bl.length() << " bytes)!";
+        // we probably have a new unwritten file!
+        // so skip the backtrace scrub for this entry and say that all's well
+        if (in->is_dirty_parent())
+          results->backtrace.passed = true;
+
 	goto next;
       }
 
@@ -4221,8 +4233,12 @@ void CInode::validate_disk_state(CInode::validated_data *results,
 					      &equivalent, &divergent);
 
       if (divergent || memory_newer < 0) {
-	// we're divergent, or on-disk version is newer
-	results->backtrace.error_str << "On-disk backtrace is divergent or newer";
+        // we're divergent, or on-disk version is newer
+        results->backtrace.error_str << "On-disk backtrace is divergent or newer";
+        // we probably have a new unwritten file!
+        // so skip the backtrace scrub for this entry and say that all's well
+        if (divergent && in->is_dirty_parent())
+          results->backtrace.passed = true;
       } else {
         results->backtrace.passed = true;
       }

@@ -308,10 +308,22 @@ class LocalRemote(object):
 
         return proc
 
-    def sh(self, command, log_limit=1024, cwd=None, env=None):
+    # XXX: for compatibility keep this method same teuthology.orchestra.remote.sh
+    def sh(self, script, **kwargs):
+        """
+        Shortcut for run method.
 
-        return misc.sh(command=command, log_limit=log_limit, cwd=cwd,
-                        env=env)
+        Usage:
+            my_name = remote.sh('whoami')
+            remote_date = remote.sh('date')
+        """
+        if 'stdout' not in kwargs:
+            kwargs['stdout'] = StringIO()
+        if 'args' not in kwargs:
+            kwargs['args'] = script
+        proc = self.run(**kwargs)
+        return proc.stdout.getvalue()
+
 
 class LocalDaemon(object):
     def __init__(self, daemon_type, daemon_id):
@@ -474,16 +486,12 @@ class LocalFuseMount(FuseMount):
         if self.is_mounted():
             super(LocalFuseMount, self).umount()
 
-    def mount(self, mount_path=None, mount_fs_name=None):
+    def mount(self, mount_path=None, mount_fs_name=None, mountpoint=None):
+        if mountpoint is not None:
+            self.mountpoint = mountpoint
         self.setupfs(name=mount_fs_name)
 
-        self.client_remote.run(
-            args=[
-                'mkdir',
-                '--',
-                self.mountpoint,
-            ],
-        )
+        self.client_remote.run(args=['mkdir', '-p', self.mountpoint])
 
         def list_connections():
             self.client_remote.run(
@@ -558,6 +566,8 @@ class LocalFuseMount(FuseMount):
             self._fuse_conn = new_conns[0]
 
         self.gather_mount_info()
+
+        self.mounted = True
 
     def _run_python(self, pyscript, py_version='python'):
         """

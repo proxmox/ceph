@@ -10,6 +10,7 @@ from tasks.cephfs.fuse_mount import FuseMount
 
 from teuthology.orchestra import run
 from teuthology.orchestra.run import CommandFailedError
+from teuthology.contextutil import safe_while
 
 
 log = logging.getLogger(__name__)
@@ -169,8 +170,6 @@ class CephFSTestCase(CephTestCase):
         self.configs_set = set()
 
     def tearDown(self):
-        super(CephFSTestCase, self).tearDown()
-
         self.mds_cluster.clear_firewall()
         for m in self.mounts:
             m.teardown()
@@ -180,6 +179,8 @@ class CephFSTestCase(CephTestCase):
 
         for subsys, key in self.configs_set:
             self.mds_cluster.clear_ceph_conf(subsys, key)
+
+        return super(CephFSTestCase, self).tearDown()
 
     def set_conf(self, subsys, key, value):
         self.configs_set.add((subsys, key))
@@ -266,6 +267,10 @@ class CephFSTestCase(CephTestCase):
         if core_dir:  # Non-default core_pattern with a directory in it
             # We have seen a core_pattern that looks like it's from teuthology's coredump
             # task, so proceed to clear out the core file
+            if core_dir[0] == '|':
+                log.info("Piped core dumps to program {0}, skip cleaning".format(core_dir[1:]))
+                return;
+
             log.info("Clearing core from directory: {0}".format(core_dir))
 
             # Verify that we see the expected single coredump
@@ -304,3 +309,11 @@ class CephFSTestCase(CephTestCase):
                 return subtrees
             time.sleep(pause)
         raise RuntimeError("rank {0} failed to reach desired subtree state", rank)
+
+    def _wait_until_scrub_complete(self, path="/", recursive=True):
+        out_json = self.fs.rank_tell(["scrub", "start", path] + ["recursive"] if recursive else [])
+        with safe_while(sleep=10, tries=10) as proceed:
+            while proceed():
+                out_json = self.fs.rank_tell(["scrub", "status"])
+                if out_json['status'] == "no active scrubs running":
+                    break;
