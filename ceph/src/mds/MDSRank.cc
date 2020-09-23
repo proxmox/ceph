@@ -1010,6 +1010,10 @@ bool MDSRank::_dispatch(const cref_t<Message> &m, bool new_msg)
   if (is_stale_message(m)) {
     return true;
   }
+  // do not proceed if this message cannot be handled
+  if (!is_valid_message(m)) {
+    return false;
+  }
 
   if (beacon.is_laggy()) {
     dout(5) << " laggy, deferring " << *m << dendl;
@@ -1018,10 +1022,7 @@ bool MDSRank::_dispatch(const cref_t<Message> &m, bool new_msg)
     dout(5) << " there are deferred messages, deferring " << *m << dendl;
     waiting_for_nolaggy.push_back(m);
   } else {
-    if (!handle_deferrable_message(m)) {
-      return false;
-    }
-
+    handle_message(m);
     heartbeat_reset();
   }
 
@@ -1132,10 +1133,45 @@ void MDSRank::update_mlogger()
   }
 }
 
+// message types that the mds can handle
+bool MDSRank::is_valid_message(const cref_t<Message> &m) {
+  int port = m->get_type() & 0xff00;
+  int type = m->get_type();
+
+  if (port == MDS_PORT_CACHE ||
+      port == MDS_PORT_MIGRATOR ||
+      type == CEPH_MSG_CLIENT_SESSION ||
+      type == CEPH_MSG_CLIENT_RECONNECT ||
+      type == CEPH_MSG_CLIENT_RECLAIM ||
+      type == CEPH_MSG_CLIENT_REQUEST ||
+      type == MSG_MDS_SLAVE_REQUEST ||
+      type == MSG_MDS_HEARTBEAT ||
+      type == MSG_MDS_TABLE_REQUEST ||
+      type == MSG_MDS_LOCK ||
+      type == MSG_MDS_INODEFILECAPS ||
+      type == CEPH_MSG_CLIENT_CAPS ||
+      type == CEPH_MSG_CLIENT_CAPRELEASE ||
+      type == CEPH_MSG_CLIENT_LEASE) {
+    return true;
+  }
+
+  return false;
+}
+
 /*
  * lower priority messages we defer if we seem laggy
  */
-bool MDSRank::handle_deferrable_message(const cref_t<Message> &m)
+
+#define ALLOW_MESSAGES_FROM(peers)                                      \
+  do {                                                                  \
+    if (m->get_connection() && (m->get_connection()->get_peer_type() & (peers)) == 0) { \
+      dout(0) << __FILE__ << "." << __LINE__ << ": filtered out request, peer=" << m->get_connection()->get_peer_type() \
+              << " allowing=" << #peers << " message=" << *m << dendl;  \
+      return;                                                           \
+    }                                                                   \
+  } while (0)
+
+void MDSRank::handle_message(const cref_t<Message> &m)
 {
   int port = m->get_type() & 0xff00;
 
@@ -1199,11 +1235,9 @@ bool MDSRank::handle_deferrable_message(const cref_t<Message> &m)
       break;
 
     default:
-      return false;
+      derr << "unrecognized message " << *m << dendl;
     }
   }
-
-  return true;
 }
 
 /**
@@ -1239,9 +1273,8 @@ void MDSRank::_advance_queues()
 
     if (!is_stale_message(old)) {
       dout(7) << " processing laggy deferred " << *old << dendl;
-      if (!handle_deferrable_message(old)) {
-        dout(0) << "unrecognized message " << *old << dendl;
-      }
+      ceph_assert(is_valid_message(old));
+      handle_message(old);
     }
 
     heartbeat_reset();
@@ -2399,7 +2432,7 @@ void MDSRankDispatcher::handle_mds_map(
       scrubstack->scrub_abort(c);
     }
   }
-  mdcache->handle_mdsmap(*mdsmap);
+  mdcache->handle_mdsmap(*mdsmap, oldmap);
 }
 
 void MDSRank::handle_mds_recovery(mds_rank_t who)
@@ -2865,7 +2898,10 @@ void MDSRank::command_get_subtrees(Formatter *f)
       f->dump_bool("is_auth", dir->is_auth());
       f->dump_int("auth_first", dir->get_dir_auth().first);
       f->dump_int("auth_second", dir->get_dir_auth().second);
-      f->dump_int("export_pin", dir->inode->get_export_pin());
+      f->dump_int("export_pin", dir->inode->get_export_pin(false, false));
+      f->dump_bool("distributed_ephemeral_pin", dir->inode->is_ephemeral_dist());
+      f->dump_bool("random_ephemeral_pin", dir->inode->is_ephemeral_rand());
+      f->dump_int("ephemeral_pin", mdcache->hash_into_rank_bucket(dir->inode->ino()));
       f->open_object_section("dir");
       dir->dump(f);
       f->close_section();
@@ -3521,6 +3557,9 @@ const char** MDSRankDispatcher::get_tracked_conf_keys() const
     "mds_dump_cache_threshold_file",
     "mds_dump_cache_threshold_formatter",
     "mds_enable_op_tracker",
+    "mds_export_ephemeral_random",
+    "mds_export_ephemeral_random_max",
+    "mds_export_ephemeral_distributed",
     "mds_health_cache_threshold",
     "mds_inject_migrator_session_race",
     "mds_log_pause",
@@ -3571,6 +3610,8 @@ void MDSRankDispatcher::handle_conf_change(const ConfigProxy& conf, const std::s
 
   finisher->queue(new LambdaContext([this, changed](int) {
     std::scoped_lock lock(mds_lock);
+
+    dout(10) << "flushing conf change to components: " << changed << dendl;
 
     if (changed.count("mds_log_pause") && !g_conf()->mds_log_pause) {
       mdlog->kick_submitter();

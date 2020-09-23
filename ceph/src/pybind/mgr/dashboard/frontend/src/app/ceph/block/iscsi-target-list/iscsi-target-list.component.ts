@@ -18,10 +18,8 @@ import { CdTableSelection } from '../../../shared/models/cd-table-selection';
 import { FinishedTask } from '../../../shared/models/finished-task';
 import { Permission } from '../../../shared/models/permissions';
 import { Task } from '../../../shared/models/task';
-import { CephReleaseNamePipe } from '../../../shared/pipes/ceph-release-name.pipe';
 import { NotAvailablePipe } from '../../../shared/pipes/not-available.pipe';
 import { AuthStorageService } from '../../../shared/services/auth-storage.service';
-import { SummaryService } from '../../../shared/services/summary.service';
 import { TaskListService } from '../../../shared/services/task-list.service';
 import { TaskWrapperService } from '../../../shared/services/task-wrapper.service';
 import { IscsiTargetDiscoveryModalComponent } from '../iscsi-target-discovery-modal/iscsi-target-discovery-modal.component';
@@ -38,7 +36,6 @@ export class IscsiTargetListComponent extends ListWithDetails implements OnInit,
 
   available: boolean = undefined;
   columns: CdTableColumn[];
-  docsUrl: string;
   modalRef: BsModalRef;
   permission: Permission;
   selection = new CdTableSelection();
@@ -63,9 +60,7 @@ export class IscsiTargetListComponent extends ListWithDetails implements OnInit,
     private i18n: I18n,
     private iscsiService: IscsiService,
     private taskListService: TaskListService,
-    private cephReleaseNamePipe: CephReleaseNamePipe,
     private notAvailablePipe: NotAvailablePipe,
-    private summaryservice: SummaryService,
     private modalService: BsModalService,
     private taskWrapper: TaskWrapperService,
     public actionLabels: ActionLabelsI18n
@@ -85,7 +80,7 @@ export class IscsiTargetListComponent extends ListWithDetails implements OnInit,
         icon: Icons.edit,
         routerLink: () => `/block/iscsi/targets/edit/${this.selection.first().target_iqn}`,
         name: this.actionLabels.EDIT,
-        disable: () => !this.selection.first() || !_.isUndefined(this.getDeleteDisableDesc()),
+        disable: () => !this.selection.first() || !_.isUndefined(this.getEditDisableDesc()),
         disableDesc: () => this.getEditDisableDesc()
       },
       {
@@ -146,9 +141,6 @@ export class IscsiTargetListComponent extends ListWithDetails implements OnInit,
           this.settings = settings;
         });
       } else {
-        const summary = this.summaryservice.getCurrentSummary();
-        const releaseName = this.cephReleaseNamePipe.transform(summary.version);
-        this.docsUrl = `http://docs.ceph.com/docs/${releaseName}/mgr/dashboard/#enabling-iscsi-management`;
         this.status = result.message;
       }
     });

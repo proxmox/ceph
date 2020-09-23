@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 from __future__ import absolute_import
 
-from tasks.mgr.dashboard.helper import DashboardTestCase, JAny, JLeaf, JList, JObj
+from .helper import DashboardTestCase, JAny, JLeaf, JList, JObj
 
 
 class HealthTest(DashboardTestCase):
@@ -169,7 +169,8 @@ class HealthTest(DashboardTestCase):
                         'wr_bytes': int,
                         'compress_bytes_used': int,
                         'compress_under_bytes': int,
-                        'stored_raw': int
+                        'stored_raw': int,
+                        'avail_raw': int
                     }),
                     'name': str,
                     'id': int

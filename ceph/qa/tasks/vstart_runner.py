@@ -30,8 +30,8 @@ Alternative usage:
 
 """
 
-from six import StringIO
 from io import BytesIO
+from io import StringIO
 from collections import defaultdict
 import getpass
 import signal
@@ -152,8 +152,8 @@ else:
 
 
 def rm_nonascii_chars(var):
-    var = var.replace('\xe2\x80\x98', '\'')
-    var = var.replace('\xe2\x80\x99', '\'')
+    var = var.replace(b'\xe2\x80\x98', b'\'')
+    var = var.replace(b'\xe2\x80\x99', b'\'')
     return var
 
 class LocalRemoteProcess(object):
@@ -177,8 +177,14 @@ class LocalRemoteProcess(object):
 
         out, err = self.subproc.communicate()
         out, err = rm_nonascii_chars(out), rm_nonascii_chars(err)
-        self.stdout.write(out)
-        self.stderr.write(err)
+        if isinstance(self.stdout, StringIO):
+            self.stdout.write(out.decode(errors='ignore'))
+        else:
+            self.stdout.write(out)
+        if isinstance(self.stderr, StringIO):
+            self.stderr.write(err.decode(errors='ignore'))
+        else:
+            self.stderr.write(err)
 
         self.exitstatus = self.returncode = self.subproc.returncode
 
@@ -379,12 +385,12 @@ class LocalRemote(object):
                                        env=env)
 
         if stdin:
-            if not isinstance(stdin, six.string_types):
+            if not isinstance(stdin, str):
                 raise RuntimeError("Can't handle non-string stdins on a vstart cluster")
 
             # Hack: writing to stdin is not deadlock-safe, but it "always" works
             # as long as the input buffer is "small"
-            subproc.stdin.write(stdin)
+            subproc.stdin.write(stdin.encode())
 
         proc = LocalRemoteProcess(
             args, subproc, check_status,
@@ -396,7 +402,8 @@ class LocalRemote(object):
 
         return proc
 
-    # XXX: for compatibility keep this method same teuthology.orchestra.remote.sh
+    # XXX: for compatibility keep this method same as teuthology.orchestra.remote.sh
+    # BytesIO is being used just to keep things identical
     def sh(self, script, **kwargs):
         """
         Shortcut for run method.
@@ -405,13 +412,18 @@ class LocalRemote(object):
             my_name = remote.sh('whoami')
             remote_date = remote.sh('date')
         """
+        from io import BytesIO
+
         if 'stdout' not in kwargs:
-            kwargs['stdout'] = StringIO()
+            kwargs['stdout'] = BytesIO()
         if 'args' not in kwargs:
             kwargs['args'] = script
         proc = self.run(**kwargs)
-        return proc.stdout.getvalue()
-
+        out = proc.stdout.getvalue()
+        if isinstance(out, bytes):
+            return out.decode()
+        else:
+            return out
 
 class LocalDaemon(object):
     def __init__(self, daemon_type, daemon_id):
@@ -1288,6 +1300,7 @@ def exec_test():
     global opt_log_ps_output
     opt_log_ps_output = False
     use_kernel_client = False
+    opt_verbose = True
 
     args = sys.argv[1:]
     flags = [a for a in args if a.startswith("-")]
@@ -1309,6 +1322,8 @@ def exec_test():
             clear_old_log()
         elif f == "--kclient":
             use_kernel_client = True
+        elif '--no-verbose' == f:
+            opt_verbose = False
         else:
             log.error("Unknown option '{0}'".format(f))
             sys.exit(-1)
@@ -1330,7 +1345,8 @@ def exec_test():
 
     # Tolerate no MDSs or clients running at start
     ps_txt = six.ensure_str(remote.run(
-        args=["ps", "-u"+str(os.getuid())]
+        args=["ps", "-u"+str(os.getuid())],
+        stdout=StringIO()
     ).stdout.getvalue().strip())
     lines = ps_txt.split("\n")[1:]
     for line in lines:
@@ -1350,10 +1366,16 @@ def exec_test():
         vstart_env["OSD"] = "4"
         vstart_env["MGR"] = max(max_required_mgr, 1).__str__()
 
-        args = [os.path.join(SRC_PREFIX, "vstart.sh"), "-n", "-d",
-                    "--nolockdep"]
+        args = [
+            os.path.join(SRC_PREFIX, "vstart.sh"),
+            "-n",
+            "--nolockdep",
+        ]
         if require_memstore:
             args.append("--memstore")
+
+        if opt_verbose:
+            args.append("-d")
 
         # usually, i get vstart.sh running completely in less than 100
         # seconds.
@@ -1390,7 +1412,7 @@ def exec_test():
                                  "mds", "allow",
                                  "mon", "allow r"])
 
-            open("./keyring", "a").write(p.stdout.getvalue())
+            open("./keyring", "ab").write(p.stdout.getvalue())
 
         if use_kernel_client:
             mount = LocalKernelMount(ctx, test_dir, client_id)

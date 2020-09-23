@@ -103,6 +103,7 @@ Cephadm writes small wrappers that run a containers. Refer to
 ``/var/lib/ceph/<cluster-fsid>/<service-name>/unit.run`` for the
 container execution command.
 
+.. _cephadm-ssh-errors:
 
 ssh errors
 ----------
@@ -138,7 +139,6 @@ Things users can do:
     
      [root@mon1 ~]# ssh -F config -i key root@mon1
 
-4. There is a limitation right now: the ssh user is always `root`.
 
 
 

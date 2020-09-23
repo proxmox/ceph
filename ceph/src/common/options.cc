@@ -1501,6 +1501,11 @@ std::vector<Option> get_global_options() {
     .add_service("mgr")
     .set_description("issue REQUEST_SLOW health warning if OSD ops are slower than this age (seconds)"),
 
+    Option("mon_osd_warn_num_repaired", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
+    .set_default(10)
+    .add_service("mon")
+    .set_description("issue OSD_TOO_MANY_REPAIRS health warning if an OSD has more than this many read repairs"),
+
     Option("mon_osd_err_op_age_ratio", Option::TYPE_FLOAT, Option::LEVEL_ADVANCED)
     .set_default(128)
     .add_service("mgr")
@@ -2511,7 +2516,7 @@ std::vector<Option> get_global_options() {
     .set_long_description("If this value is exceeded, the OSD will not read any new client data off of the network until memory is freed."),
 
     Option("osd_client_message_cap", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
-    .set_default(100)
+    .set_default(0)
     .set_description("maximum number of in-flight client requests"),
 
     Option("osd_crush_update_weight_set", Option::TYPE_BOOL, Option::LEVEL_ADVANCED)
@@ -3231,6 +3236,7 @@ std::vector<Option> get_global_options() {
 
     Option("osd_scrub_max_preemptions", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
     .set_default(5)
+    .set_min_max(0, 30)
     .set_description("Set the maximum number of times we will preempt a deep scrub due to a client operation before blocking client IO to complete the scrub"),
 
     Option("osd_deep_scrub_interval", Option::TYPE_FLOAT, Option::LEVEL_ADVANCED)
@@ -4015,6 +4021,17 @@ std::vector<Option> get_global_options() {
     Option("bluefs_log_replay_check_allocations", Option::TYPE_BOOL, Option::LEVEL_ADVANCED)
       .set_default(true)
       .set_description("Enables checks for allocations consistency during log replay"),
+
+    Option("bluefs_replay_recovery", Option::TYPE_BOOL, Option::LEVEL_DEV)
+    .set_default(false)
+    .set_description("Attempt to read bluefs log so large that it became unreadable.")
+    .set_long_description("If BlueFS log grows to extreme sizes (200GB+) it is likely that it becames unreadable. "
+			  "This options enables heuristics that scans devices for missing data. "
+			  "DO NOT ENABLE BY DEFAULT"),
+
+    Option("bluefs_replay_recovery_disable_compact", Option::TYPE_BOOL, Option::LEVEL_ADVANCED)
+    .set_default(false)
+    .set_description(""),
 
     Option("bluestore_bluefs", Option::TYPE_BOOL, Option::LEVEL_DEV)
     .set_default(true)
@@ -5925,6 +5942,22 @@ std::vector<Option> get_rgw_options() {
     .set_long_description("use fast S3 attrs from bucket index (assumes NFS "
 			  "mounts are immutable)"),
 
+    Option("rgw_nfs_run_gc_threads", Option::TYPE_BOOL, Option::LEVEL_ADVANCED)
+    .set_default(false)
+    .set_description("run GC threads in librgw (default off)"),
+
+    Option("rgw_nfs_run_lc_threads", Option::TYPE_BOOL, Option::LEVEL_ADVANCED)
+    .set_default(false)
+    .set_description("run lifecycle threads in librgw (default off)"),
+
+    Option("rgw_nfs_run_quota_threads", Option::TYPE_BOOL, Option::LEVEL_ADVANCED)
+    .set_default(false)
+    .set_description("run quota threads in librgw (default off)"),
+
+    Option("rgw_nfs_run_sync_thread", Option::TYPE_BOOL, Option::LEVEL_ADVANCED)
+    .set_default(false)
+    .set_description("run sync thread in librgw (default off)"),
+
     Option("rgw_rados_pool_autoscale_bias", Option::TYPE_FLOAT, Option::LEVEL_ADVANCED)
     .set_default(4.0)
     .set_min_max(0.01, 100000.0)
@@ -6475,8 +6508,9 @@ std::vector<Option> get_rgw_options() {
     .set_default(1000)
     .set_description("Max number of buckets per user")
     .set_long_description(
-        "A user can create this many buckets. Zero means unlimited, negative number means "
-        "user cannot create any buckets (although user will retain buckets already created."),
+      "A user can create at most this number of buckets. Zero means "
+      "no limit; a negative value means users cannot create any new "
+      "buckets, although users will retain buckets already created."),
 
     Option("rgw_objexp_gc_interval", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
     .set_default(10_min)
@@ -7449,6 +7483,12 @@ static std::vector<Option> get_rbd_options() {
     Option("rbd_rwl_path", Option::TYPE_STR, Option::LEVEL_ADVANCED)
     .set_default("/tmp")
     .set_description("location of the persistent write back cache in a DAX-enabled filesystem on persistent memory"),
+
+    Option("rbd_config_pool_override_update_timestamp", Option::TYPE_UINT,
+           Option::LEVEL_DEV)
+    .set_default(0)
+    .set_description("timestamp of last update to pool-level config overrides"),
+
   });
 }
 
@@ -7578,7 +7618,7 @@ static std::vector<Option> get_rbd_mirror_options() {
 static std::vector<Option> get_immutable_object_cache_options() {
   return std::vector<Option>({
     Option("immutable_object_cache_path", Option::TYPE_STR, Option::LEVEL_ADVANCED)
-    .set_default("/tmp")
+    .set_default("/tmp/ceph_immutable_object_cache")
     .set_description("immutable object cache data dir"),
 
     Option("immutable_object_cache_sock", Option::TYPE_STR, Option::LEVEL_ADVANCED)
@@ -7825,6 +7865,25 @@ std::vector<Option> get_mds_options() {
     Option("mds_bal_export_pin", Option::TYPE_BOOL, Option::LEVEL_ADVANCED)
     .set_default(true)
     .set_description("allow setting directory export pins to particular ranks"),
+
+    Option("mds_export_ephemeral_random", Option::TYPE_BOOL, Option::LEVEL_ADVANCED)
+    .set_default(false)
+    .set_flag(Option::FLAG_RUNTIME)
+    .set_description("allow ephemeral random pinning of the loaded subtrees")
+    .set_long_description("probabilistically pin the loaded directory inode and the subtree beneath it to an MDS based on the consistent hash of the inode number. The higher this value the more likely the loaded subtrees get pinned"),
+
+    Option("mds_export_ephemeral_random_max", Option::TYPE_FLOAT, Option::LEVEL_ADVANCED)
+    .set_default(0.01)
+    .set_flag(Option::FLAG_RUNTIME)
+    .set_description("the maximum percent permitted for random ephemeral pin policy")
+    .set_min_max(0.0, 1.0)
+    .add_see_also("mds_export_ephemeral_random"),
+
+    Option("mds_export_ephemeral_distributed", Option::TYPE_BOOL, Option::LEVEL_ADVANCED)
+    .set_default(false)
+    .set_flag(Option::FLAG_RUNTIME)
+    .set_description("allow ephemeral distributed pinning of the loaded subtrees")
+    .set_long_description("pin the immediate child directories of the loaded directory inode based on the consistent hash of the child's inode number. "),
 
     Option("mds_bal_sample_interval", Option::TYPE_FLOAT, Option::LEVEL_ADVANCED)
     .set_default(3.0)
@@ -8420,6 +8479,14 @@ std::vector<Option> get_mds_client_options() {
     Option("debug_allow_any_pool_priority", Option::TYPE_BOOL, Option::LEVEL_DEV)
     .set_default(false)
     .set_description("Allow any pool priority to be set to test conversion to new range"),
+
+    Option("client_shutdown_timeout", Option::TYPE_SECS, Option::LEVEL_ADVANCED)
+    .set_flag(Option::FLAG_RUNTIME)
+    .set_default(30)
+    .set_min(0)
+    .set_description("timeout for shutting down CephFS")
+    .set_long_description("Timeout for shutting down CephFS via unmount or shutdown.")
+    .add_tag("client")
   });
 }
 

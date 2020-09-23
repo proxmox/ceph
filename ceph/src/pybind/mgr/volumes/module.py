@@ -5,6 +5,7 @@ from mgr_module import MgrModule
 import orchestrator
 
 from .fs.volume import VolumeClient
+from .fs.nfs import NFSCluster, FSExport
 
 class Module(orchestrator.OrchestratorClientMixin, MgrModule):
     COMMANDS = [
@@ -113,6 +114,15 @@ class Module(orchestrator.OrchestratorClientMixin, MgrModule):
             'perm': 'r'
         },
         {
+            'cmd': 'fs subvolumegroup pin'
+                   ' name=vol_name,type=CephString'
+                   ' name=group_name,type=CephString,req=true'
+                   ' name=pin_type,type=CephChoices,strings=export|distributed|random'
+                   ' name=pin_setting,type=CephString,req=true',
+            'desc': "Set MDS pinning policy for subvolumegroup",
+            'perm': 'rw'
+        },
+        {
             'cmd': 'fs subvolumegroup snapshot ls '
                    'name=vol_name,type=CephString '
                    'name=group_name,type=CephString ',
@@ -186,12 +196,22 @@ class Module(orchestrator.OrchestratorClientMixin, MgrModule):
             'perm': 'rw'
         },
         {
+            'cmd': 'fs subvolume pin'
+                   ' name=vol_name,type=CephString'
+                   ' name=sub_name,type=CephString'
+                   ' name=pin_type,type=CephChoices,strings=export|distributed|random'
+                   ' name=pin_setting,type=CephString,req=true'
+                   ' name=group_name,type=CephString,req=false',
+            'desc': "Set MDS pinning policy for subvolume",
+            'perm': 'rw'
+        },
+        {
             'cmd': 'fs subvolume snapshot protect '
                    'name=vol_name,type=CephString '
                    'name=sub_name,type=CephString '
                    'name=snap_name,type=CephString '
                    'name=group_name,type=CephString,req=false ',
-            'desc': "Protect snapshot of a CephFS subvolume in a volume, "
+            'desc': "(deprecated) Protect snapshot of a CephFS subvolume in a volume, "
                     "and optionally, in a specific subvolume group",
             'perm': 'rw'
         },
@@ -201,7 +221,7 @@ class Module(orchestrator.OrchestratorClientMixin, MgrModule):
                    'name=sub_name,type=CephString '
                    'name=snap_name,type=CephString '
                    'name=group_name,type=CephString,req=false ',
-            'desc': "Unprotect a snapshot of a CephFS subvolume in a volume, "
+            'desc': "(deprecated) Unprotect a snapshot of a CephFS subvolume in a volume, "
                     "and optionally, in a specific subvolume group",
             'perm': 'rw'
         },
@@ -233,7 +253,81 @@ class Module(orchestrator.OrchestratorClientMixin, MgrModule):
             'desc': "Cancel an pending or ongoing clone operation.",
             'perm': 'r'
         },
-
+        {
+            'cmd': 'nfs export create cephfs '
+            'name=fsname,type=CephString '
+            'name=clusterid,type=CephString '
+            'name=binding,type=CephString '
+            'name=readonly,type=CephBool,req=false '
+            'name=path,type=CephString,req=false ',
+            'desc': "Create a cephfs export",
+            'perm': 'rw'
+        },
+        {
+            'cmd': 'nfs export delete '
+                   'name=clusterid,type=CephString '
+                   'name=binding,type=CephString ',
+            'desc': "Delete a cephfs export",
+            'perm': 'rw'
+        },
+        {
+            'cmd': 'nfs export ls '
+                   'name=clusterid,type=CephString '
+                   'name=detailed,type=CephBool,req=false ',
+            'desc': "List exports of a NFS cluster",
+            'perm': 'r'
+        },
+        {
+            'cmd': 'nfs export get '
+                   'name=clusterid,type=CephString '
+                   'name=binding,type=CephString ',
+            'desc': "Fetch a export of a NFS cluster given the pseudo path/binding",
+            'perm': 'r'
+        },
+        {
+            'cmd': 'nfs cluster create '
+                   'name=type,type=CephString '
+                   'name=clusterid,type=CephString,goodchars=[A-Za-z0-9-_.] '
+                   'name=placement,type=CephString,req=false ',
+            'desc': "Create an NFS Cluster",
+            'perm': 'rw'
+        },
+        {
+            'cmd': 'nfs cluster update '
+                   'name=clusterid,type=CephString '
+                   'name=placement,type=CephString ',
+            'desc': "Updates an NFS Cluster",
+            'perm': 'rw'
+        },
+        {
+            'cmd': 'nfs cluster delete '
+                   'name=clusterid,type=CephString ',
+            'desc': "Deletes an NFS Cluster",
+            'perm': 'rw'
+        },
+        {
+            'cmd': 'nfs cluster ls ',
+            'desc': "List NFS Clusters",
+            'perm': 'r'
+        },
+        {
+            'cmd': 'nfs cluster info '
+                   'name=clusterid,type=CephString,req=false ',
+            'desc': "Displays NFS Cluster info",
+            'perm': 'r'
+        },
+        {
+            'cmd': 'nfs cluster config set '
+                   'name=clusterid,type=CephString ',
+            'desc': "Set NFS-Ganesha config by `-i <config_file>`",
+            'perm': 'rw'
+        },
+        {
+            'cmd': 'nfs cluster config reset '
+                   'name=clusterid,type=CephString ',
+            'desc': "Reset NFS-Ganesha Config to default",
+            'perm': 'rw'
+        },
         # volume ls [recursive]
         # subvolume ls <volume>
         # volume authorize/deauthorize
@@ -254,6 +348,8 @@ class Module(orchestrator.OrchestratorClientMixin, MgrModule):
     def __init__(self, *args, **kwargs):
         super(Module, self).__init__(*args, **kwargs)
         self.vc = VolumeClient(self)
+        self.fs_export = FSExport(self)
+        self.nfs = NFSCluster(self)
 
     def __del__(self):
         self.vc.shutdown()
@@ -344,6 +440,11 @@ class Module(orchestrator.OrchestratorClientMixin, MgrModule):
                                       sub_name=cmd['sub_name'],
                                       group_name=cmd.get('group_name', None))
 
+    def _cmd_fs_subvolumegroup_pin(self, inbuf, cmd):
+        return self.vc.pin_subvolume_group(vol_name=cmd['vol_name'],
+            group_name=cmd['group_name'], pin_type=cmd['pin_type'],
+            pin_setting=cmd['pin_setting'])
+
     def _cmd_fs_subvolumegroup_snapshot_create(self, inbuf, cmd):
         return self.vc.create_subvolume_group_snapshot(vol_name=cmd['vol_name'],
                                                        group_name=cmd['group_name'],
@@ -388,6 +489,12 @@ class Module(orchestrator.OrchestratorClientMixin, MgrModule):
                                         new_size=cmd['new_size'], group_name=cmd.get('group_name', None),
                                         no_shrink=cmd.get('no_shrink', False))
 
+    def _cmd_fs_subvolume_pin(self, inbuf, cmd):
+        return self.vc.subvolume_pin(vol_name=cmd['vol_name'],
+            sub_name=cmd['sub_name'], pin_type=cmd['pin_type'],
+            pin_setting=cmd['pin_setting'],
+            group_name=cmd.get('group_name', None))
+
     def _cmd_fs_subvolume_snapshot_protect(self, inbuf, cmd):
         return self.vc.protect_subvolume_snapshot(vol_name=cmd['vol_name'], sub_name=cmd['sub_name'],
                                                   snap_name=cmd['snap_name'], group_name=cmd.get('group_name', None))
@@ -409,3 +516,39 @@ class Module(orchestrator.OrchestratorClientMixin, MgrModule):
     def _cmd_fs_clone_cancel(self, inbuf, cmd):
         return self.vc.clone_cancel(
             vol_name=cmd['vol_name'], clone_name=cmd['clone_name'],  group_name=cmd.get('group_name', None))
+
+    def _cmd_nfs_export_create_cephfs(self, inbuf, cmd):
+        #TODO Extend export creation for rgw.
+        return self.fs_export.create_export(fs_name=cmd['fsname'], cluster_id=cmd['clusterid'],
+                pseudo_path=cmd['binding'], read_only=cmd.get('readonly', False), path=cmd.get('path', '/'))
+
+    def _cmd_nfs_export_delete(self, inbuf, cmd):
+        return self.fs_export.delete_export(cluster_id=cmd['clusterid'], pseudo_path=cmd['binding'])
+
+    def _cmd_nfs_export_ls(self, inbuf, cmd):
+        return self.fs_export.list_exports(cluster_id=cmd['clusterid'], detailed=cmd.get('detailed', False))
+
+    def _cmd_nfs_export_get(self, inbuf, cmd):
+        return self.fs_export.get_export(cluster_id=cmd['clusterid'], pseudo_path=cmd['binding'])
+
+    def _cmd_nfs_cluster_create(self, inbuf, cmd):
+        return self.nfs.create_nfs_cluster(cluster_id=cmd['clusterid'], export_type=cmd['type'],
+                                           placement=cmd.get('placement', None))
+
+    def _cmd_nfs_cluster_update(self, inbuf, cmd):
+        return self.nfs.update_nfs_cluster(cluster_id=cmd['clusterid'], placement=cmd['placement'])
+
+    def _cmd_nfs_cluster_delete(self, inbuf, cmd):
+        return self.nfs.delete_nfs_cluster(cluster_id=cmd['clusterid'])
+
+    def _cmd_nfs_cluster_ls(self, inbuf, cmd):
+        return self.nfs.list_nfs_cluster()
+
+    def _cmd_nfs_cluster_info(self, inbuf, cmd):
+        return self.nfs.show_nfs_cluster_info(cluster_id=cmd.get('clusterid', None))
+
+    def _cmd_nfs_cluster_config_set(self, inbuf, cmd):
+        return self.nfs.set_nfs_cluster_config(cluster_id=cmd['clusterid'], nfs_config=inbuf)
+
+    def _cmd_nfs_cluster_config_reset(self, inbuf, cmd):
+        return self.nfs.reset_nfs_cluster_config(cluster_id=cmd['clusterid'])

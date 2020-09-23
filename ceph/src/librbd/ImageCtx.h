@@ -42,6 +42,7 @@ class SafeTimer;
 
 namespace librbd {
 
+  template <typename> class ConfigWatcher;
   template <typename> class ExclusiveLock;
   template <typename> class ImageState;
   template <typename> class ImageWatcher;
@@ -109,6 +110,8 @@ namespace librbd {
     cls::rbd::SnapshotNamespace snap_namespace;
     std::string snap_name;
     IoCtx data_ctx, md_ctx;
+
+    ConfigWatcher<ImageCtx> *config_watcher = nullptr;
     ImageWatcher<ImageCtx> *image_watcher;
     Journal<ImageCtx> *journal;
 
@@ -188,9 +191,6 @@ namespace librbd {
     typedef boost::lockfree::queue<
       io::AioCompletion*,
       boost::lockfree::allocator<ceph::allocator<void>>> Completions;
-
-    Completions external_callback_completions;
-    std::atomic<bool> external_callback_in_progress = {false};
 
     Completions event_socket_completions;
     EventSocket event_socket;

@@ -18,6 +18,12 @@ log = logging.getLogger(__name__)
 
 
 class DashboardTestCase(MgrTestCase):
+    # Display full error diffs
+    maxDiff = None
+
+    # Increased x3 (20 -> 60)
+    TIMEOUT_HEALTH_CLEAR = 60
+
     MGRS_REQUIRED = 2
     MDSS_REQUIRED = 1
     REQUIRE_FILESYSTEM = True
@@ -183,7 +189,7 @@ class DashboardTestCase(MgrTestCase):
         super(DashboardTestCase, self).setUp()
         if not self._loggedin and self.AUTO_AUTHENTICATE:
             self.login('admin', 'admin')
-        self.wait_for_health_clear(20)
+        self.wait_for_health_clear(self.TIMEOUT_HEALTH_CLEAR)
 
     @classmethod
     def tearDownClass(cls):
@@ -467,6 +473,7 @@ JList = namedtuple('JList', ['elem_typ'])
 
 JTuple = namedtuple('JList', ['elem_typs'])
 
+JUnion = namedtuple('JUnion', ['elem_typs'])
 
 class JObj(namedtuple('JObj', ['sub_elems', 'allow_unknown', 'none', 'unknown_schema'])):
     def __new__(cls, sub_elems, allow_unknown=False, none=False, unknown_schema=None):
@@ -496,6 +503,10 @@ def _validate_json(val, schema, path=[]):
     ... ds = JObj({'a': int, 'b': str, 'c': JList(int)})
     ... _validate_json(d, ds)
     True
+    >>> _validate_json({'num': 1}, JObj({'num': JUnion([int,float])}))
+    True
+    >>> _validate_json({'num': 'a'}, JObj({'num': JUnion([int,float])}))
+    False
     """
     if isinstance(schema, JAny):
         if not schema.none and val is None:
@@ -514,6 +525,14 @@ def _validate_json(val, schema, path=[]):
     if isinstance(schema, JTuple):
         return all(_validate_json(val[i], typ, path + [i])
                    for i, typ in enumerate(schema.elem_typs))
+    if isinstance(schema, JUnion):
+        for typ in schema.elem_typs:
+            try:
+                if _validate_json(val, typ, path):
+                    return True
+            except _ValError:
+                pass
+        return False
     if isinstance(schema, JObj):
         if val is None and schema.none:
             return True

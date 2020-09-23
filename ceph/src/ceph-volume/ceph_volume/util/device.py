@@ -130,8 +130,14 @@ class Device(object):
                     self.sys_api = part
                     break
 
-        # start with lvm since it can use an absolute or relative path
-        lv = lvm.get_lv_from_argument(self.path)
+        # if the path is not absolute, we have 'vg/lv', let's use LV name
+        # to get the LV.
+        if self.path[0] == '/':
+            lv = lvm.get_first_lv(filters={'lv_path': self.path})
+        else:
+            vgname, lvname = self.path.split('/')
+            lv = lvm.get_first_lv(filters={'lv_name': lvname,
+                                           'vg_name': vgname})
         if lv:
             self.lv_api = lv
             self.lvs = [lv]
@@ -246,7 +252,6 @@ class Device(object):
                     # actually unused (not 100% sure) and can simply be removed
                     self.vg_name = vgs[0]
                     self._is_lvm_member = True
-
                     self.lvs.extend(lvm.get_device_lvs(path))
         return self._is_lvm_member
 
@@ -393,7 +398,7 @@ class Device(object):
         ]
         rejected = [reason for (k, v, reason) in reasons if
                     self.sys_api.get(k, '') == v]
-        # reject disks small than 5GB
+        # reject disks smaller than 5GB
         if int(self.sys_api.get('size', 0)) < 5368709120:
             rejected.append('Insufficient space (<5GB)')
         if self.is_ceph_disk_member:
@@ -403,10 +408,15 @@ class Device(object):
         return rejected
 
     def _check_lvm_reject_reasons(self):
-        rejected = self._check_generic_reject_reasons()
-        available_vgs = [vg for vg in self.vgs if vg.free >= 5368709120]
-        if self.vgs and not available_vgs:
-            rejected.append('Insufficient space (<5GB) on vgs')
+        rejected = []
+        if self.vgs:
+            available_vgs = [vg for vg in self.vgs if vg.free >= 5368709120]
+            if not available_vgs:
+                rejected.append('Insufficient space (<5GB) on vgs')
+        else:
+            # only check generic if no vgs are present. Vgs might hold lvs and
+            # that might cause 'locked' to trigger
+            rejected.extend(self._check_generic_reject_reasons())
 
         return len(rejected) == 0, rejected
 

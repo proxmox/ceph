@@ -3,16 +3,14 @@ import json
 import pytest
 
 from ceph.deployment.service_spec import ServiceSpec, NFSServiceSpec, RGWSpec, \
-    ServiceSpecValidationError, IscsiServiceSpec, PlacementSpec
+    IscsiServiceSpec, AlertManagerSpec
 
 from orchestrator import DaemonDescription, OrchestratorError
 
 
-def test_spec_octopus():
-    # https://tracker.ceph.com/issues/44934
-    # Those are real user data from early octopus.
-    # Please do not modify those JSON values.
-    specs_text = """[
+@pytest.mark.parametrize(
+    "spec_json",
+    json.loads("""[
 {
   "placement": {
     "count": 1
@@ -70,10 +68,48 @@ def test_spec_octopus():
   "rgw_realm": "default-rgw-realm",
   "rgw_zone": "eu-central-1",
   "subcluster": "1"
+},
+{
+  "service_type": "osd",
+  "service_id": "osd_spec_default",
+  "placement": {
+    "host_pattern": "*"
+  },
+  "data_devices": {
+    "model": "MC-55-44-XZ"
+  },
+  "db_devices": {
+    "model": "SSD-123-foo"
+  },
+  "wal_devices": {
+    "model": "NVME-QQQQ-987"
+  }
 }
 ]
-"""
-    dds_text = """[
+""")
+)
+def test_spec_octopus(spec_json):
+    # https://tracker.ceph.com/issues/44934
+    # Those are real user data from early octopus.
+    # Please do not modify those JSON values.
+
+    spec = ServiceSpec.from_json(spec_json)
+    # just some verification that we can sill read old octopus specs
+    def convert_to_old_style_json(j):
+        j_c = dict(j.copy())
+        j_c.pop('service_name', None)
+        if 'spec' in j_c:
+            spec = j_c.pop('spec')
+            j_c.update(spec)
+        j_c.pop('objectstore', None)
+        j_c.pop('filter_logic', None)
+        return j_c
+    assert spec_json == convert_to_old_style_json(spec.to_json())
+
+
+@pytest.mark.parametrize(
+    "dd_json",
+    json.loads("""[
     {
         "hostname": "ceph-001",
         "container_id": "d94d7969094d",
@@ -86,7 +122,8 @@ def test_spec_octopus():
         "status_desc": "running",
         "last_refresh": "2020-04-03T15:31:48.725856",
         "created": "2020-04-02T19:23:08.829543",
-        "started": "2020-04-03T07:29:16.932838" 
+        "started": "2020-04-03T07:29:16.932838",
+        "is_active": false 
     },
     {
         "hostname": "ceph-001",
@@ -100,7 +137,8 @@ def test_spec_octopus():
         "status_desc": "running",
         "last_refresh": "2020-04-03T15:31:48.725903",
         "created": "2020-04-02T19:23:11.390694",
-        "started": "2020-04-03T07:29:16.910897" 
+        "started": "2020-04-03T07:29:16.910897",
+        "is_active": false 
     },
     {
         "hostname": "ceph-001",
@@ -114,7 +152,8 @@ def test_spec_octopus():
         "status_desc": "running",
         "last_refresh": "2020-04-03T15:31:48.725950",
         "created": "2020-04-02T19:23:52.025088",
-        "started": "2020-04-03T07:29:16.847972" 
+        "started": "2020-04-03T07:29:16.847972",
+        "is_active": false 
     },
     {
         "hostname": "ceph-001",
@@ -128,7 +167,8 @@ def test_spec_octopus():
         "status_desc": "running",
         "last_refresh": "2020-04-03T15:31:48.725807",
         "created": "2020-04-02T19:22:18.648584",
-        "started": "2020-04-03T07:29:16.856153" 
+        "started": "2020-04-03T07:29:16.856153",
+        "is_active": false 
     },
     {
         "hostname": "ceph-001",
@@ -142,7 +182,8 @@ def test_spec_octopus():
         "status_desc": "running",
         "last_refresh": "2020-04-03T15:31:48.725715",
         "created": "2020-04-02T19:22:13.863300",
-        "started": "2020-04-03T07:29:17.206024" 
+        "started": "2020-04-03T07:29:17.206024",
+        "is_active": false 
     },
     {
         "hostname": "ceph-001",
@@ -156,7 +197,8 @@ def test_spec_octopus():
         "status_desc": "running",
         "last_refresh": "2020-04-03T15:31:48.725996",
         "created": "2020-04-02T19:23:53.880197",
-        "started": "2020-04-03T07:29:16.880044" 
+        "started": "2020-04-03T07:29:16.880044",
+        "is_active": false 
     },
     {
         "hostname": "ceph-001",
@@ -170,7 +212,8 @@ def test_spec_octopus():
         "status_desc": "running",
         "last_refresh": "2020-04-03T15:31:48.726088",
         "created": "2020-04-02T20:35:02.991435",
-        "started": "2020-04-03T07:29:19.373956" 
+        "started": "2020-04-03T07:29:19.373956",
+        "is_active": false 
     },
     {
         "hostname": "ceph-001",
@@ -184,7 +227,8 @@ def test_spec_octopus():
         "status_desc": "running",
         "last_refresh": "2020-04-03T15:31:48.726134",
         "created": "2020-04-02T20:35:17.142272",
-        "started": "2020-04-03T07:29:19.374002" 
+        "started": "2020-04-03T07:29:19.374002",
+        "is_active": false 
     },
     {
         "hostname": "ceph-001",
@@ -198,30 +242,24 @@ def test_spec_octopus():
         "status_desc": "running",
         "last_refresh": "2020-04-03T15:31:48.726042",
         "created": "2020-04-02T19:24:10.281163",
-        "started": "2020-04-03T07:29:16.926292" 
+        "started": "2020-04-03T07:29:16.926292",
+        "is_active": false 
     },
     {
         "hostname": "ceph-001",
         "daemon_id": "default-rgw-realm.eu-central-1.1.ceph-001.ytywjo",
         "daemon_type": "rgw",
         "status": 1,
-        "status_desc": "starting" 
+        "status_desc": "starting",
+        "is_active": false 
     }
-]"""
-    specs_json = json.loads(specs_text)
-    dds_json = json.loads(dds_text)
-    specs = [ServiceSpec.from_json(j) for j in specs_json]
-    dds = [DaemonDescription.from_json(j) for j in dds_json]
-
-    # just some verification that we can sill read old octopus specs
-    def remove_service_name(j):
-        if 'service_name' in j:
-            j_c = j.copy()
-            del j_c['service_name']
-            return j_c
-        return j
-    assert specs_json == [remove_service_name(s.to_json()) for s in specs]
-    assert dds_json == [d.to_json() for d in dds]
+]""")
+)
+def test_dd_octopus(dd_json):
+    # https://tracker.ceph.com/issues/44934
+    # Those are real user data from early octopus.
+    # Please do not modify those JSON values.
+    assert dd_json == DaemonDescription.from_json(dd_json).to_json()
 
 
 @pytest.mark.parametrize("spec,dd,valid",
@@ -489,3 +527,15 @@ def test_daemon_description_service_name(spec: ServiceSpec,
         with pytest.raises(OrchestratorError):
             dd.service_name()
 
+
+def test_alertmanager_spec_1():
+    spec = AlertManagerSpec()
+    assert spec.service_type == 'alertmanager'
+    assert isinstance(spec.user_data, dict)
+    assert len(spec.user_data.keys()) == 0
+
+
+def test_alertmanager_spec_2():
+    spec = AlertManagerSpec(user_data={'default_webhook_urls': ['foo']})
+    assert isinstance(spec.user_data, dict)
+    assert 'default_webhook_urls' in spec.user_data.keys()

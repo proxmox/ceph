@@ -1915,8 +1915,17 @@ void OSDMonitor::encode_pending(MonitorDBStore::TransactionRef t)
        i != pending_inc.new_state.end();
        ++i) {
     int s = i->second ? i->second : CEPH_OSD_UP;
-    if (s & CEPH_OSD_UP)
+    if (s & CEPH_OSD_UP) {
       dout(2) << " osd." << i->first << " DOWN" << dendl;
+      // Reset laggy parameters if failure interval exceeds a threshold.
+      const osd_xinfo_t& xi = osdmap.get_xinfo(i->first);
+      if ((xi.laggy_probability || xi.laggy_interval) && xi.down_stamp.sec()) {
+        int last_failure_interval = pending_inc.modified.sec() - xi.down_stamp.sec();
+        if (grace_interval_threshold_exceeded(last_failure_interval)) {
+          set_default_laggy_params(i->first);
+        }
+      }
+    }
     if (s & CEPH_OSD_EXISTS)
       dout(2) << " osd." << i->first << " DNE" << dendl;
   }
@@ -2216,7 +2225,7 @@ epoch_t OSDMonitor::get_min_last_epoch_clean() const
   // don't trim past the oldest reported osd epoch
   for (auto& osd_epoch : osd_epochs) {
     if (osd_epoch.second < floor &&
-        osdmap.is_out(osd_epoch.first)) {
+        osdmap.is_in(osd_epoch.first)) {
       floor = osd_epoch.second;
     }
   }
@@ -3317,6 +3326,39 @@ void OSDMonitor::take_all_failures(list<MonOpRequestRef>& ls)
     p->second.take_report_messages(ls);
   }
   failure_info.clear();
+}
+
+int OSDMonitor::get_grace_interval_threshold()
+{
+  int halflife = g_conf()->mon_osd_laggy_halflife;
+  // Scale the halflife period (default: 1_hr) by
+  // a factor (48) to calculate the threshold.
+  int grace_threshold_factor = 48;
+  return halflife * grace_threshold_factor;
+}
+
+bool OSDMonitor::grace_interval_threshold_exceeded(int last_failed_interval)
+{
+  int grace_interval_threshold_secs = get_grace_interval_threshold();
+  if (last_failed_interval > grace_interval_threshold_secs) {
+    dout(1) << " last_failed_interval " << last_failed_interval
+            << " > grace_interval_threshold_secs " << grace_interval_threshold_secs
+            << dendl;
+    return true;
+  }
+  return false;
+}
+
+void OSDMonitor::set_default_laggy_params(int target_osd)
+{
+  if (pending_inc.new_xinfo.count(target_osd) == 0) {
+    pending_inc.new_xinfo[target_osd] = osdmap.osd_xinfo[target_osd];
+  }
+  osd_xinfo_t& xi = pending_inc.new_xinfo[target_osd];
+  xi.down_stamp = pending_inc.modified;
+  xi.laggy_probability = 0.0;
+  xi.laggy_interval = 0;
+  dout(20) << __func__ << " reset laggy, now xi " << xi << dendl;
 }
 
 
@@ -12547,22 +12589,38 @@ bool OSDMonitor::prepare_command_impl(MonOpRequestRef op,
       goto reply;
     }
 
-    if (expected_num_objects > 0 &&
-	cct->_conf->osd_objectstore == "filestore" &&
-	cct->_conf->filestore_merge_threshold > 0) {
+    set<int32_t> osds;
+    osdmap.get_all_osds(osds);
+    bool has_filestore_osd = std::any_of(osds.begin(), osds.end(), [this](int osd) {
+      string type;
+      if (!get_osd_objectstore_type(osd, &type)) {
+        return type == "filestore";
+      } else {
+        return false;
+      }
+    });
+
+    if (has_filestore_osd &&
+        expected_num_objects > 0 &&
+        cct->_conf->filestore_merge_threshold > 0) {
       ss << "'expected_num_objects' requires 'filestore_merge_threshold < 0'";
       err = -EINVAL;
       goto reply;
     }
 
-    if (expected_num_objects == 0 &&
-	cct->_conf->osd_objectstore == "filestore" &&
-	cct->_conf->filestore_merge_threshold < 0) {
+    if (has_filestore_osd &&
+        expected_num_objects == 0 &&
+        cct->_conf->filestore_merge_threshold < 0) {
       int osds = osdmap.get_num_osds();
-      if (osds && (pg_num >= 1024 || pg_num / osds >= 100)) {
+      bool sure = false;
+      cmd_getval(cmdmap, "yes_i_really_mean_it", sure);
+      if (!sure && osds && (pg_num >= 1024 || pg_num / osds >= 100)) {
         ss << "For better initial performance on pools expected to store a "
-	   << "large number of objects, consider supplying the "
-	   << "expected_num_objects parameter when creating the pool.\n";
+           << "large number of objects, consider supplying the "
+           << "expected_num_objects parameter when creating the pool."
+           << " Pass --yes-i-really-mean-it to ignore it";
+        err = -EPERM;
+        goto reply;
       }
     }
 

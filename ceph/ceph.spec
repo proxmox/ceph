@@ -98,7 +98,7 @@
 # main package definition
 #################################################################################
 Name:		ceph
-Version:	15.2.4
+Version:	15.2.5
 Release:	0%{?dist}
 %if 0%{?fedora} || 0%{?rhel}
 Epoch:		2
@@ -114,7 +114,7 @@ License:	LGPL-2.1 and LGPL-3.0 and CC-BY-SA-3.0 and GPL-2.0 and BSL-1.0 and BSD-
 Group:		System/Filesystems
 %endif
 URL:		http://ceph.com/
-Source0:	%{?_remote_tarball_prefix}ceph-15.2.4.tar.bz2
+Source0:	%{?_remote_tarball_prefix}ceph-15.2.5.tar.bz2
 %if 0%{?suse_version}
 # _insert_obs_source_lines_here
 ExclusiveArch:  x86_64 aarch64 ppc64le s390x
@@ -750,6 +750,7 @@ Requires:	ceph-base = %{_epoch_prefix}%{version}-%{release}
 Requires:	lvm2
 Requires:	sudo
 Requires:	libstoragemgmt
+Requires:	python%{python3_pkgversion}-ceph-common = %{_epoch_prefix}%{version}-%{release}
 %description osd
 ceph-osd is the object storage daemon for the Ceph distributed file
 system.  It is responsible for storing objects on a local file system
@@ -991,6 +992,12 @@ descriptions, and submitting the command to the appropriate daemon.
 
 %package -n python%{python3_pkgversion}-ceph-common
 Summary:	Python 3 utility libraries for Ceph
+%if 0%{?fedora} || 0%{?rhel} >= 8
+Requires:       python%{python3_pkgversion}-pyyaml
+%endif
+%if 0%{?suse_version}
+Requires:       python%{python3_pkgversion}-PyYAML
+%endif
 %if 0%{?suse_version}
 Group:		Development/Libraries/Python
 %endif
@@ -1119,7 +1126,7 @@ This package provides Ceph’s default alerts for Prometheus.
 # common
 #################################################################################
 %prep
-%autosetup -p1 -n ceph-15.2.4
+%autosetup -p1 -n ceph-15.2.5
 
 %build
 # LTO can be enabled as soon as the following GCC bug is fixed:

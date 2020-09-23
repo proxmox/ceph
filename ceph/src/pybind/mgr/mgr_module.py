@@ -14,7 +14,9 @@ from collections import defaultdict, namedtuple
 import rados
 import re
 import time
+from mgr_util import profile_method
 
+# Full list of strings in "osd_types.cc:pg_state_string()"
 PG_STATES = [
     "active",
     "clean",
@@ -45,7 +47,12 @@ PG_STATES = [
     "snaptrim_wait",
     "snaptrim_error",
     "creating",
-    "unknown"]
+    "unknown",
+    "premerge",
+    "failed_repair",
+    "laggy",
+    "wait",
+]
 
 
 class CommandResult(object):
@@ -1053,7 +1060,7 @@ class MgrModule(ceph_module.BaseMgrModule, MgrModuleLoggingMixin):
         """
         return self._ceph_get_server(None)
 
-    def get_metadata(self, svc_type, svc_id):
+    def get_metadata(self, svc_type, svc_id, default=None):
         """
         Fetch the daemon metadata for a particular service.
 
@@ -1066,7 +1073,10 @@ class MgrModule(ceph_module.BaseMgrModule, MgrModuleLoggingMixin):
             calling this
         :rtype: dict, or None if no metadata found
         """
-        return self._ceph_get_metadata(svc_type, svc_id)
+        metadata = self._ceph_get_metadata(svc_type, svc_id)
+        if metadata is None:
+            return default
+        return metadata
 
     def get_daemon_status(self, svc_type, svc_id):
         """
@@ -1376,6 +1386,7 @@ class MgrModule(ceph_module.BaseMgrModule, MgrModuleLoggingMixin):
         else:
             return 0, 0
 
+    @profile_method()
     def get_all_perf_counters(self, prio_limit=PRIO_USEFUL,
                               services=("mds", "mon", "osd",
                                         "rbd-mirror", "rgw", "tcmu-runner")):

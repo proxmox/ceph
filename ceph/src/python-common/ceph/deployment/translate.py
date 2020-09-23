@@ -5,23 +5,22 @@ try:
 except ImportError:
     pass
 
-from ceph.deployment.drive_group import DriveGroupSpec
 from ceph.deployment.drive_selection.selector import DriveSelection
 
 logger = logging.getLogger(__name__)
 
 
+# TODO refactor this to a DriveSelection method
 class to_ceph_volume(object):
 
     def __init__(self,
-                 spec,  # type: DriveGroupSpec
                  selection,  # type: DriveSelection
                  osd_id_claims=None,  # type: Optional[List[str]]
                  preview=False  # type: bool
                  ):
 
-        self.spec = spec
         self.selection = selection
+        self.spec = selection.spec
         self.preview = preview
         self.osd_id_claims = osd_id_claims
 

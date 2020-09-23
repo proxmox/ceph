@@ -1781,14 +1781,9 @@ int RGWRados::Bucket::List::list_objects_ordered(
   }
 
   rgw_obj_index_key prev_marker;
-  uint16_t attempt = 0;
-  while (true) {
+  for (uint16_t attempt = 1; /* empty */; ++attempt) {
     ldout(cct, 20) << "RGWRados::Bucket::List::" << __func__ <<
-      " beginning attempt=" << ++attempt << dendl;
-
-    // this loop is generally expected only to have a single
-    // iteration; the standard exit is at the bottom of the loop, but
-    // there's an error condition emergency exit as well
+      " starting attempt " << attempt << dendl;
 
     if (attempt > 1 && !(prev_marker < cur_marker)) {
       // we've failed to make forward progress
@@ -1983,11 +1978,7 @@ int RGWRados::Bucket::List::list_objects_ordered(
       // few, results, return with what we have
       break;
     }
-
-    ldout(cct, 1) << "RGWRados::Bucket::List::" << __func__ <<
-      " INFO ordered bucket listing requires read #" << (1 + attempt) <<
-      dendl;
-  } // read attempt loop
+  } // for (uint16_t attempt...
 
 done:
 
@@ -8044,14 +8035,21 @@ int RGWRados::process_gc(bool expired_only)
   return gc->process(expired_only);
 }
 
-int RGWRados::list_lc_progress(const string& marker, uint32_t max_entries, map<string, int> *progress_map)
+int RGWRados::list_lc_progress(string& marker, uint32_t max_entries,
+			       vector<cls_rgw_lc_entry>& progress_map,
+			       int& index)
 {
-  return lc->list_lc_progress(marker, max_entries, progress_map);
+  return lc->list_lc_progress(marker, max_entries, progress_map, index);
 }
 
 int RGWRados::process_lc()
 {
-  return lc->process(nullptr);
+  RGWLC lc;
+  lc.initialize(cct, this->store);
+  RGWLC::LCWorker worker(&lc, cct, &lc, 0);
+  auto ret = lc.process(&worker, true /* once */);
+  lc.stop_processor(); // sets down_flag, but returns immediately
+  return ret;
 }
 
 bool RGWRados::process_expire_objects()

@@ -6,6 +6,7 @@ import { RouterTestingModule } from '@angular/router/testing';
 
 import { TypeaheadModule } from 'ngx-bootstrap/typeahead';
 import { ToastrModule } from 'ngx-toastr';
+import { of } from 'rxjs';
 
 import { ActivatedRouteStub } from '../../../../testing/activated-route-stub';
 import { configureTestBed, i18nProviders } from '../../../../testing/unit-test-helper';
@@ -21,38 +22,35 @@ describe('NfsFormComponent', () => {
   let httpTesting: HttpTestingController;
   let activatedRoute: ActivatedRouteStub;
 
-  configureTestBed(
-    {
-      declarations: [NfsFormComponent, NfsFormClientComponent],
-      imports: [
-        HttpClientTestingModule,
-        ReactiveFormsModule,
-        RouterTestingModule,
-        SharedModule,
-        ToastrModule.forRoot(),
-        TypeaheadModule.forRoot()
-      ],
-      providers: [
-        {
-          provide: ActivatedRoute,
-          useValue: new ActivatedRouteStub({ cluster_id: undefined, export_id: undefined })
-        },
-        i18nProviders,
-        SummaryService,
-        CephReleaseNamePipe
-      ]
-    },
-    true
-  );
+  configureTestBed({
+    declarations: [NfsFormComponent, NfsFormClientComponent],
+    imports: [
+      HttpClientTestingModule,
+      ReactiveFormsModule,
+      RouterTestingModule,
+      SharedModule,
+      ToastrModule.forRoot(),
+      TypeaheadModule.forRoot()
+    ],
+    providers: [
+      {
+        provide: ActivatedRoute,
+        useValue: new ActivatedRouteStub({ cluster_id: undefined, export_id: undefined })
+      },
+      i18nProviders,
+      SummaryService,
+      CephReleaseNamePipe
+    ]
+  });
 
   beforeEach(() => {
     const summaryService = TestBed.get(SummaryService);
     spyOn(summaryService, 'refresh').and.callFake(() => true);
-    spyOn(summaryService, 'getCurrentSummary').and.callFake(() => {
-      return {
+    spyOn(summaryService, 'subscribeOnce').and.callFake(() =>
+      of({
         version: 'master'
-      };
-    });
+      })
+    );
 
     fixture = TestBed.createComponent(NfsFormComponent);
     component = fixture.componentInstance;

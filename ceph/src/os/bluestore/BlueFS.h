@@ -80,8 +80,8 @@ public:
 
   virtual ~BlueFSVolumeSelector() {
   }
-  virtual void* get_hint_by_device(uint8_t dev) const = 0;
-  virtual void* get_hint_by_dir(const string& dirname) const = 0;
+  virtual void* get_hint_for_log() const = 0;
+  virtual void* get_hint_by_dir(const std::string& dirname) const = 0;
 
   virtual void add_usage(void* file_hint, const bluefs_fnode_t& fnode) = 0;
   virtual void sub_usage(void* file_hint, const bluefs_fnode_t& fnode) = 0;
@@ -352,7 +352,8 @@ private:
 				 PExtentVector* extents);
 
   int _flush_range(FileWriter *h, uint64_t offset, uint64_t length);
-  int _flush(FileWriter *h, bool force);
+  int _flush(FileWriter *h, bool focce, std::unique_lock<ceph::mutex>& l);
+  int _flush(FileWriter *h, bool force, bool *flushed = nullptr);
   int _fsync(FileWriter *h, std::unique_lock<ceph::mutex>& l);
 
 #ifdef HAVE_LIBAIO
@@ -516,6 +517,8 @@ public:
 
   /// sync any uncommitted state to disk
   void sync_metadata(bool avoid_compact);
+  /// test and compact log, if necessary
+  void _maybe_compact_log(std::unique_lock<ceph::mutex>& l);
 
   void set_slow_device_expander(BlueFSDeviceExpander* a) {
     slow_dev_expander = a;
@@ -552,9 +555,10 @@ public:
   // handler for discard event
   void handle_discard(unsigned dev, interval_set<uint64_t>& to_release);
 
-  void flush(FileWriter *h) {
-    std::lock_guard l(lock);
-    _flush(h, false);
+  void flush(FileWriter *h, bool force = false) {
+    std::unique_lock l(lock);
+    int r = _flush(h, force, l);
+    ceph_assert(r == 0);
   }
   void flush_range(FileWriter *h, uint64_t offset, uint64_t length) {
     std::lock_guard l(lock);
@@ -562,7 +566,9 @@ public:
   }
   int fsync(FileWriter *h) {
     std::unique_lock l(lock);
-    return _fsync(h, l);
+    int r = _fsync(h, l);
+    _maybe_compact_log(l);
+    return r;
   }
   int read(FileReader *h, FileReaderBuffer *buf, uint64_t offset, size_t len,
 	   bufferlist *outbl, char *out) {
@@ -590,6 +596,11 @@ public:
     std::lock_guard l(lock);
     return _truncate(h, offset);
   }
+  int do_replay_recovery_read(FileReader *log,
+			      size_t log_pos,
+			      size_t read_offset,
+			      size_t read_len,
+			      bufferlist* bl);
 
   /// test purpose methods
   void debug_inject_duplicate_gift(unsigned bdev, uint64_t offset, uint64_t len);
@@ -610,8 +621,8 @@ public:
     uint64_t _slow_total)
     : wal_total(_wal_total), db_total(_db_total), slow_total(_slow_total) {}
 
-  void* get_hint_by_device(uint8_t dev) const override;
-  void* get_hint_by_dir(const string& dirname) const override;
+  void* get_hint_for_log() const override;
+  void* get_hint_by_dir(const std::string& dirname) const override;
 
   void add_usage(void* hint, const bluefs_fnode_t& fnode) override {
     // do nothing

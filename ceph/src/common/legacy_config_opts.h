@@ -347,7 +347,6 @@ OPTION(client_trace, OPT_STR)
 OPTION(client_readahead_min, OPT_LONGLONG)  // readahead at _least_ this much.
 OPTION(client_readahead_max_bytes, OPT_LONGLONG)  // default unlimited
 OPTION(client_readahead_max_periods, OPT_LONGLONG)  // as multiple of file layout period (object size * num stripes)
-OPTION(client_reconnect_stale, OPT_BOOL)  // automatically reconnect stale session
 OPTION(client_snapdir, OPT_STR)
 OPTION(client_mount_uid, OPT_INT)
 OPTION(client_mount_gid, OPT_INT)
@@ -914,6 +913,8 @@ OPTION(bluefs_sync_write, OPT_BOOL)
 OPTION(bluefs_allocator, OPT_STR)     // stupid | bitmap
 OPTION(bluefs_preextend_wal_files, OPT_BOOL)  // this *requires* that rocksdb has recycling enabled
 OPTION(bluefs_log_replay_check_allocations, OPT_BOOL)
+OPTION(bluefs_replay_recovery, OPT_BOOL)
+OPTION(bluefs_replay_recovery_disable_compact, OPT_BOOL)
 
 OPTION(bluestore_bluefs, OPT_BOOL)
 OPTION(bluestore_bluefs_env_mirror, OPT_BOOL) // mirror to normal Env for debug
@@ -1276,6 +1277,11 @@ OPTION(rgw_enable_quota_threads, OPT_BOOL)
 OPTION(rgw_enable_gc_threads, OPT_BOOL)
 OPTION(rgw_enable_lc_threads, OPT_BOOL)
 
+/* overrides for librgw/nfs */
+OPTION(rgw_nfs_run_gc_threads, OPT_BOOL)
+OPTION(rgw_nfs_run_lc_threads, OPT_BOOL)
+OPTION(rgw_nfs_run_quota_threads, OPT_BOOL)
+OPTION(rgw_nfs_run_sync_thread, OPT_BOOL)
 
 OPTION(rgw_data, OPT_STR)
 OPTION(rgw_enable_apis, OPT_STR)

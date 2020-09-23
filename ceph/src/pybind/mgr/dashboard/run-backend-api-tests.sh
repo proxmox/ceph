@@ -41,7 +41,7 @@ setup_teuthology() {
     TEMP_DIR=`mktemp -d`
     cd $TEMP_DIR
 
-    virtualenv --python=${TEUTHOLOGY_PYTHON_BIN:-/usr/bin/python} venv
+    virtualenv --python=${TEUTHOLOGY_PYTHON_BIN:-/usr/bin/python3} venv
     source venv/bin/activate
     pip install 'setuptools >= 12'
     pip install git+https://github.com/ceph/teuthology#egg=teuthology[test]
@@ -68,7 +68,7 @@ on_tests_error() {
     if [[ -n "$JENKINS_HOME" ]]; then
         CEPH_OUT_DIR=${CEPH_OUT_DIR:-"$LOCAL_BUILD_DIR"/out}
         MGR_LOG_FILES=$(find "$CEPH_OUT_DIR" -iname "mgr.*.log" | tr '\n' ' ')
-        MGR_LOG_FILE_LAST_LINES=60000
+        MGR_LOG_FILE_LAST_LINES=1000
         for mgr_log_file in ${MGR_LOG_FILES[@]}; do
             printf "\n\nDisplaying last ${MGR_LOG_FILE_LAST_LINES} lines of: $mgr_log_file\n\n"
             tail -n ${MGR_LOG_FILE_LAST_LINES} $mgr_log_file
@@ -117,7 +117,7 @@ run_teuthology_tests() {
     export COVERAGE_FILE=.coverage.mgr.dashboard
     find . -iname "*${COVERAGE_FILE}*" -type f -delete
 
-    python ../qa/tasks/vstart_runner.py --ignore-missing-binaries $OPTIONS $(echo $TEST_CASES)
+    python ../qa/tasks/vstart_runner.py --ignore-missing-binaries --no-verbose $OPTIONS $(echo $TEST_CASES)
 
     deactivate
     cd $CURR_DIR

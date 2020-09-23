@@ -92,6 +92,10 @@ transform_old_authinfo(CephContext* const cct,
       return {};
     }
 
+    string get_subuser() const override {
+      return {};
+    }
+
     void to_str(std::ostream& out) const override {
       out << "RGWDummyIdentityApplier(auth_id=" << id
           << ", perm_mask=" << perm_mask
@@ -521,7 +525,8 @@ void rgw::auth::RemoteApplier::create_account(const DoutPrefixProvider* dpp,
   user_info.user_id = new_acct_user;
   user_info.display_name = info.acct_name;
 
-  user_info.max_buckets = cct->_conf->rgw_user_max_buckets;
+  user_info.max_buckets =
+    cct->_conf.get_val<int64_t>("rgw_user_max_buckets");
   rgw_apply_default_bucket_quota(user_info.bucket_quota, cct->_conf);
   rgw_apply_default_user_quota(user_info.user_quota, cct->_conf);
 
@@ -617,7 +622,11 @@ bool rgw::auth::LocalApplier::is_identity(const idset_t& ids) const {
       if (id.get_id() == user_info.user_id.id) {
         return true;
       }
-      if (subuser != NO_SUBUSER) {
+      std::string wildcard_subuser = user_info.user_id.id;
+      wildcard_subuser.append(":*");
+      if (wildcard_subuser == id.get_id()) {
+        return true;
+      } else if (subuser != NO_SUBUSER) {
         std::string user = user_info.user_id.id;
         user.append(":");
         user.append(subuser);

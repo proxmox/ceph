@@ -16,6 +16,7 @@ import {
 import { NfsService } from '../../../shared/api/nfs.service';
 import { TableActionsComponent } from '../../../shared/datatable/table-actions/table-actions.component';
 import { ExecutingTask } from '../../../shared/models/executing-task';
+import { Summary } from '../../../shared/models/summary.model';
 import { SummaryService } from '../../../shared/services/summary.service';
 import { TaskListService } from '../../../shared/services/task-list.service';
 import { SharedModule } from '../../../shared/shared.module';
@@ -29,25 +30,22 @@ describe('NfsListComponent', () => {
   let nfsService: NfsService;
   let httpTesting: HttpTestingController;
 
-  const refresh = (data: object) => {
+  const refresh = (data: Summary) => {
     summaryService['summaryDataSource'].next(data);
   };
 
-  configureTestBed(
-    {
-      declarations: [NfsListComponent, NfsDetailsComponent],
-      imports: [
-        BrowserAnimationsModule,
-        HttpClientTestingModule,
-        RouterTestingModule,
-        SharedModule,
-        ToastrModule.forRoot(),
-        TabsModule.forRoot()
-      ],
-      providers: [TaskListService, i18nProviders]
-    },
-    true
-  );
+  configureTestBed({
+    declarations: [NfsListComponent, NfsDetailsComponent],
+    imports: [
+      BrowserAnimationsModule,
+      HttpClientTestingModule,
+      RouterTestingModule,
+      SharedModule,
+      ToastrModule.forRoot(),
+      TabsModule.forRoot()
+    ],
+    providers: [TaskListService, i18nProviders]
+  });
 
   beforeEach(() => {
     fixture = TestBed.createComponent(NfsListComponent);
@@ -73,7 +71,7 @@ describe('NfsListComponent', () => {
     });
 
     it('should load exports on init', () => {
-      refresh({});
+      refresh(new Summary());
       httpTesting.expectOne('api/nfs-ganesha/export');
       expect(nfsService.list).toHaveBeenCalled();
     });
@@ -130,7 +128,7 @@ describe('NfsListComponent', () => {
       addExport('b');
       addExport('c');
       component.exports = exports;
-      refresh({ executing_tasks: [], finished_tasks: [] });
+      refresh({ executing_tasks: [] });
       spyOn(nfsService, 'list').and.callFake(() => of(exports));
       fixture.detectChanges();
 
