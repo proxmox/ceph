@@ -184,7 +184,6 @@ class MixedType(MixedStrategy):
         self.blank_journal_devs = []
         self.journals_needed = len(self.data_devs) * self.osds_per_device
         self.journal_size = get_journal_size(args)
-        self.system_vgs = lvm.VolumeGroups()
         self.validate_compute()
 
     @classmethod
@@ -352,8 +351,6 @@ class MixedType(MixedStrategy):
         else:
             journal_vg = self.common_vg
 
-        journal_size = prepare.get_journal_size(lv_format=False)
-
         # create 1 vg per data device first, mapping them to the device path,
         # when the lv gets created later, it can create as many as needed (or
         # even just 1)
@@ -372,7 +369,7 @@ class MixedType(MixedStrategy):
                 'osd-data', data_uuid, vg=data_vg, extents=data_lv_extents)
             journal_uuid = system.generate_uuid()
             journal_lv = lvm.create_lv(
-                'osd-journal', journal_uuid, vg=journal_vg, size=journal_size)
+                'osd-journal', journal_uuid, vg=journal_vg, size=self.journal_size)
 
             command = ['--filestore', '--data']
             command.append('%s/%s' % (data_vg.name, data_lv.name))

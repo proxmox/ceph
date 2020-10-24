@@ -1,4 +1,5 @@
 import pytest
+import json
 from ceph_volume.devices.lvm import batch
 
 
@@ -7,54 +8,6 @@ class TestBatch(object):
     def test_batch_instance(self, is_root):
         b = batch.Batch([])
         b.main()
-
-    def test_get_devices(self, monkeypatch):
-        return_value = {
-            '/dev/vdd': {
-                'removable': '0',
-                'vendor': '0x1af4',
-                'model': '',
-                'sas_address': '',
-                'sas_device_handle': '',
-                'sectors': 0,
-                'size': 21474836480.0,
-                'support_discard': '',
-                'partitions': {
-                    'vdd1': {
-                        'start': '2048',
-                        'sectors': '41940959',
-                        'sectorsize': 512,
-                        'size': '20.00 GB'
-                    }
-                },
-                'rotational': '1',
-                'scheduler_mode': 'mq-deadline',
-                'sectorsize': '512',
-                'human_readable_size': '20.00 GB',
-                'path': '/dev/vdd'
-            },
-            '/dev/vdf': {
-                'removable': '0',
-                'vendor': '0x1af4',
-                'model': '',
-                'sas_address': '',
-                'sas_device_handle': '',
-                'sectors': 0,
-                'size': 21474836480.0,
-                'support_discard': '',
-                'partitions': {},
-                'rotational': '1',
-                'scheduler_mode': 'mq-deadline',
-                'sectorsize': '512',
-                'human_readable_size': '20.00 GB',
-                'path': '/dev/vdf'
-            }
-        }
-        monkeypatch.setattr('ceph_volume.devices.lvm.batch.disk.get_devices',
-                            lambda: return_value)
-        b = batch.Batch([])
-        result = b.get_devices().strip()
-        assert result == '* /dev/vdf                  20.00 GB   rotational'
 
     def test_disjoint_device_lists(self, factory):
         device1 = factory(used_by_ceph=False, available=True, abspath="/dev/sda")
@@ -133,7 +86,7 @@ class TestFilterDevices(object):
             abspath="/dev/sda",
             rotational=True,
             is_lvm_member=False,
-            available=True
+            available=True,
         )
         ssd1 = factory(
             used_by_ceph=True,
@@ -143,9 +96,34 @@ class TestFilterDevices(object):
             available=False
         )
         args = factory(devices=[hdd1], db_devices=[ssd1], filtered_devices={},
-                      yes=True)
+                      yes=True, format="", report=False)
         b = batch.Batch([])
         b.args = args
         with pytest.raises(RuntimeError) as ex:
             b._filter_devices()
             assert '1 devices were filtered in non-interactive mode, bailing out' in str(ex.value)
+
+    def test_no_auto_prints_json_on_unavailable_device_and_report(self, factory, capsys):
+        hdd1 = factory(
+            used_by_ceph=False,
+            abspath="/dev/sda",
+            rotational=True,
+            is_lvm_member=False,
+            available=True,
+        )
+        ssd1 = factory(
+            used_by_ceph=True,
+            abspath="/dev/nvme0n1",
+            rotational=False,
+            is_lvm_member=True,
+            available=False
+        )
+        captured = capsys.readouterr()
+        args = factory(devices=[hdd1], db_devices=[ssd1], filtered_devices={},
+                      yes=True, format="json", report=True)
+        b = batch.Batch([])
+        b.args = args
+        with pytest.raises(SystemExit):
+            b._filter_devices()
+            result = json.loads(captured.out)
+            assert not result["changed"]

@@ -1,8 +1,9 @@
 import argparse
 import logging
+import json
 from textwrap import dedent
 from ceph_volume import terminal, decorators
-from ceph_volume.util import disk, prompt_bool
+from ceph_volume.util import prompt_bool
 from ceph_volume.util import arg_validators
 from . import strategies
 
@@ -126,9 +127,6 @@ class Batch(object):
     _help = dedent("""
     Automatically size devices ready for OSD provisioning based on default strategies.
 
-    Detected devices:
-    {detected_devices}
-
     Usage:
 
         ceph-volume lvm batch [DEVICE...]
@@ -142,7 +140,7 @@ class Batch(object):
         parser = argparse.ArgumentParser(
             prog='ceph-volume lvm batch',
             formatter_class=argparse.RawDescriptionHelpFormatter,
-            description=self.print_help(),
+            description=self._help,
         )
 
         parser.add_argument(
@@ -259,18 +257,6 @@ class Batch(object):
         for dev_list in ['', 'db_', 'wal_', 'journal_']:
             setattr(self, '{}usable'.format(dev_list), [])
 
-    def get_devices(self):
-        # remove devices with partitions
-        devices = [(device, details) for device, details in
-                       disk.get_devices().items() if details.get('partitions') == {}]
-        size_sort = lambda x: (x[0], x[1]['size'])
-        return device_formatter(sorted(devices, key=size_sort))
-
-    def print_help(self):
-        return self._help.format(
-            detected_devices=self.get_devices(),
-        )
-
     def report(self):
         if self.args.format == 'pretty':
             self.strategy.report_pretty(self.filtered_devices)
@@ -376,6 +362,11 @@ class Batch(object):
                 # filtered
                 if self.args.yes and dev_list and self.usable and devs != usable:
                     err = '{} devices were filtered in non-interactive mode, bailing out'
+                    if self.args.format == "json" and self.args.report:
+                        # if a json report is requested, report unchanged so idempotency checks
+                        # in ceph-ansible will work
+                        print(json.dumps({"changed": False, "osds": [], "vgs": []}))
+                        raise SystemExit(0)
                     raise RuntimeError(err.format(len(devs) - len(usable)))
 
 
