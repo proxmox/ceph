@@ -109,7 +109,7 @@
 # main package definition
 #################################################################################
 Name:		ceph
-Version:	14.2.12
+Version:	14.2.13
 Release:	0%{?dist}
 %if 0%{?fedora} || 0%{?rhel}
 Epoch:		2
@@ -125,7 +125,7 @@ License:	LGPL-2.1 and CC-BY-SA-3.0 and GPL-2.0 and BSL-1.0 and BSD-3-Clause and 
 Group:		System/Filesystems
 %endif
 URL:		http://ceph.com/
-Source0:	%{?_remote_tarball_prefix}ceph-14.2.12.tar.bz2
+Source0:	%{?_remote_tarball_prefix}ceph-14.2.13.tar.bz2
 %if 0%{?suse_version}
 # _insert_obs_source_lines_here
 ExclusiveArch:  x86_64 aarch64 ppc64le s390x
@@ -478,11 +478,9 @@ Recommends:	python%{_python_buildid}-influxdb
 %endif
 %if 0%{?rhel} == 7
 Requires:       pyOpenSSL
+Requires:       python-enum34
 %else
 Requires:       python%{_python_buildid}-pyOpenSSL
-%endif
-%if 0%{?rhel} < 8 || 0%{?suse_version}
-Requires:       python-enum34
 %endif
 %description mgr
 ceph-mgr enables python modules that provide services (such as the REST
@@ -1133,7 +1131,7 @@ This package provides Ceph’s default alerts for Prometheus.
 # common
 #################################################################################
 %prep
-%autosetup -p1 -n ceph-14.2.12
+%autosetup -p1 -n ceph-14.2.13
 
 %build
 # LTO can be enabled as soon as the following GCC bug is fixed:
