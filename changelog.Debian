@@ -1,3 +1,10 @@
+ceph (15.2.6-pve1) stable; urgency=medium
+
+  * new upstream octopus 15.2.6 stable release:
+    + CVE 2020-25660: Fix a regression in Messenger V2 replay attacks
+
+ -- Proxmox Support Team <support@proxmox.com>  Fri, 20 Nov 2020 09:43:59 +0100
+
 ceph (15.2.5-pve1) stable; urgency=medium
 
   * new upstream octopus 15.2.5 stable release
