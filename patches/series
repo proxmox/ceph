@@ -6,3 +6,4 @@
 0006-remove-legacy-init.d-ceph-script.patch
 0007-only-suggest-mgr-plugins.patch
 0008-Remove-failing-actions-from-prerm.patch
+0009-fix-service-ordering-avoid-Before-remote-fs-pre.targ.patch
