@@ -1,3 +1,10 @@
+ceph (14.2.15-pve3) stable; urgency=medium
+
+  * rebuild with fixes for python modules in build environment,
+    improving compatibillity of ceph-dashboard, amon others
+
+ -- Proxmox Support Team <support@proxmox.com>  Wed, 02 Dec 2020 17:34:16 +0100
+
 ceph (14.2.15-pve2) stable; urgency=medium
 
   * fix bogus Before=remote-fs-pre.target in systemd dependency ordering
