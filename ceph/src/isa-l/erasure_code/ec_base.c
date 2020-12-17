@@ -2,7 +2,7 @@
   Copyright(c) 2011-2015 Intel Corporation All rights reserved.
 
   Redistribution and use in source and binary forms, with or without
-  modification, are permitted provided that the following conditions 
+  modification, are permitted provided that the following conditions
   are met:
     * Redistributions of source code must retain the above copyright
       notice, this list of conditions and the following disclaimer.
@@ -31,7 +31,6 @@
 #include <string.h>		// for memset
 #include "erasure_code.h"
 #include "ec_base.h"		// for GF tables
-#include "types.h"
 
 void ec_init_tables(int k, int rows, unsigned char *a, unsigned char *g_tbls)
 {
@@ -341,9 +340,9 @@ void gf_vect_mul_base(int len, unsigned char *a, unsigned char *src, unsigned ch
 }
 
 struct slver {
-	UINT16 snum;
-	UINT8 ver;
-	UINT8 core;
+	unsigned short snum;
+	unsigned char ver;
+	unsigned char core;
 };
 
 // Version info

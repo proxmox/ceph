@@ -519,6 +519,13 @@ class VolumeGroup(object):
         return int(self.vg_extent_size) * int(self.vg_free_count)
 
     @property
+    def free_percent(self):
+        """
+        Return free space in VG in bytes
+        """
+        return int(self.vg_free_count) / int(self.vg_extent_count)
+
+    @property
     def size(self):
         """
         Returns VG size in bytes
@@ -589,7 +596,7 @@ class VolumeGroup(object):
         '''
         Return how many extents fit the VG slot times
         '''
-        return int(int(self.vg_free_count) / slots)
+        return int(int(self.vg_extent_count) / slots)
 
 
 def create_vg(devices, name=None, name_prefix=None):
@@ -740,7 +747,8 @@ def get_device_vgs(device, name_prefix=''):
 ###############################
 
 LV_FIELDS = 'lv_tags,lv_path,lv_name,vg_name,lv_uuid,lv_size'
-LV_CMD_OPTIONS =  ['--noheadings', '--readonly', '--separator=";"', '-a']
+LV_CMD_OPTIONS =  ['--noheadings', '--readonly', '--separator=";"', '-a',
+                   '--units=b', '--nosuffix']
 
 
 class Volume(object):

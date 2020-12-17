@@ -27,6 +27,7 @@
   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 **********************************************************************/
 
+#define _FILE_OFFSET_BITS 64
 #include <stdio.h>
 #include <stdlib.h>
 #include <assert.h>
@@ -39,17 +40,6 @@
 #ifndef RUN_MEM_SIZE
 # define RUN_MEM_SIZE 2000000000
 #endif
-
-int get_filesize(FILE * f)
-{
-	int curr, end;
-
-	curr = ftell(f);	/* Save current position */
-	fseek(f, 0L, SEEK_END);
-	end = ftell(f);
-	fseek(f, curr, SEEK_SET);	/* Restore position */
-	return end;
-}
 
 void print_histogram(struct isal_huff_histogram *histogram)
 {
@@ -78,8 +68,9 @@ void print_histogram(struct isal_huff_histogram *histogram)
 int main(int argc, char *argv[])
 {
 	FILE *in;
-	unsigned char *inbuf, *outbuf;
-	int i, infile_size, outbuf_size, iterations, avail_in;
+	unsigned char *inbuf;
+	int iterations, avail_in;
+	uint64_t infile_size;
 	struct isal_huff_histogram histogram1, histogram2;
 
 	memset(&histogram1, 0, sizeof(histogram1));
@@ -101,7 +92,6 @@ int main(int argc, char *argv[])
 	 * (assuming some possible expansion on output size)
 	 */
 	infile_size = get_filesize(in);
-	outbuf_size = 2 * infile_size;
 
 	if (infile_size != 0)
 		iterations = RUN_MEM_SIZE / infile_size;
@@ -112,35 +102,28 @@ int main(int argc, char *argv[])
 		iterations = MIN_TEST_LOOPS;
 
 	inbuf = malloc(infile_size);
-	outbuf = malloc(outbuf_size);
 	if (inbuf == NULL) {
 		fprintf(stderr, "Can't allocate input buffer memory\n");
 		exit(0);
 	}
 
-	if (outbuf == NULL) {
-		fprintf(stderr, "Can't allocate output buffer memory\n");
-		exit(0);
-	}
-
 	avail_in = fread(inbuf, 1, infile_size, in);
 	if (avail_in != infile_size) {
+		free(inbuf);
 		fprintf(stderr, "Couldn't fit all of input file into buffer\n");
 		exit(0);
 	}
 
-	struct perf start, stop;
-	perf_start(&start);
-
-	for (i = 0; i < iterations; i++)
-		isal_update_histogram(inbuf, infile_size, &histogram1);
-	perf_stop(&stop);
-
-	printf("  file %s - in_size=%d iter=%d\n", argv[1], infile_size, i);
-	printf("igzip_file: ");
-	perf_print(stop, start, (long long)infile_size * i);
+	struct perf start;
+	BENCHMARK(&start, BENCHMARK_TIME,
+		  isal_update_histogram(inbuf, infile_size, &histogram1));
+	printf("  file %s - in_size=%lu\n", argv[1], infile_size);
+	printf("igzip_hist_file: ");
+	perf_print(start, (long long)infile_size);
 
 	fclose(in);
 	fflush(0);
+	free(inbuf);
+
 	return 0;
 }

@@ -2,7 +2,7 @@
   Copyright(c) 2011-2015 Intel Corporation All rights reserved.
 
   Redistribution and use in source and binary forms, with or without
-  modification, are permitted provided that the following conditions 
+  modification, are permitted provided that the following conditions
   are met:
     * Redistributions of source code must retain the above copyright
       notice, this list of conditions and the following disclaimer.
@@ -45,17 +45,6 @@ extern "C" {
 #ifdef __MINGW32__
 # include <_mingw.h>
 #endif
-typedef unsigned __int64 UINT64;
-typedef          __int64  INT64;
-typedef unsigned __int32 UINT32;
-typedef unsigned __int16 UINT16;
-typedef unsigned char    UINT8;
-#else
-typedef unsigned long int  UINT64;
-typedef          long int   INT64;
-typedef unsigned int       UINT32;
-typedef unsigned short int UINT16;
-typedef unsigned char      UINT8;
 #endif
 
 

@@ -2,7 +2,7 @@
 ;  Copyright(c) 2011-2015 Intel Corporation All rights reserved.
 ;
 ;  Redistribution and use in source and binary forms, with or without
-;  modification, are permitted provided that the following conditions 
+;  modification, are permitted provided that the following conditions
 ;  are met:
 ;    * Redistributions of source code must retain the above copyright
 ;      notice, this list of conditions and the following disclaimer.
@@ -184,7 +184,7 @@ section .text
 %define xp5    xmm6
 
 align 16
-global gf_5vect_dot_prod_avx:function
+global gf_5vect_dot_prod_avx:ISAL_SYM_TYPE_FUNCTION
 func(gf_5vect_dot_prod_avx)
 	FUNC_SAVE
 	sub	len, 16

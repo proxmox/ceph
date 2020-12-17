@@ -2,7 +2,7 @@
 ;  Copyright(c) 2011-2015 Intel Corporation All rights reserved.
 ;
 ;  Redistribution and use in source and binary forms, with or without
-;  modification, are permitted provided that the following conditions 
+;  modification, are permitted provided that the following conditions
 ;  are met:
 ;    * Redistributions of source code must retain the above copyright
 ;      notice, this list of conditions and the following disclaimer.
@@ -194,7 +194,7 @@ section .text
 %define xp     xmm2
 
 align 16
-global gf_vect_dot_prod_sse:function
+global gf_vect_dot_prod_sse:ISAL_SYM_TYPE_FUNCTION
 func(gf_vect_dot_prod_sse)
 	FUNC_SAVE
 	SLDR 	len, len_m

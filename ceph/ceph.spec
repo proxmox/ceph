@@ -98,7 +98,7 @@
 # main package definition
 #################################################################################
 Name:		ceph
-Version:	15.2.6
+Version:	15.2.8
 Release:	0%{?dist}
 %if 0%{?fedora} || 0%{?rhel}
 Epoch:		2
@@ -114,7 +114,7 @@ License:	LGPL-2.1 and LGPL-3.0 and CC-BY-SA-3.0 and GPL-2.0 and BSL-1.0 and BSD-
 Group:		System/Filesystems
 %endif
 URL:		http://ceph.com/
-Source0:	%{?_remote_tarball_prefix}ceph-15.2.6.tar.bz2
+Source0:	%{?_remote_tarball_prefix}ceph-15.2.8.tar.bz2
 %if 0%{?suse_version}
 # _insert_obs_source_lines_here
 ExclusiveArch:  x86_64 aarch64 ppc64le s390x
@@ -475,6 +475,10 @@ Group:		System/Filesystems
 %endif
 Provides:	ceph-test:/usr/bin/ceph-monstore-tool
 Requires:	ceph-base = %{_epoch_prefix}%{version}-%{release}
+%if 0%{?weak_deps}
+Recommends:	nvme-cli
+Recommends:	smartmontools
+%endif
 %description mon
 ceph-mon is the cluster monitor daemon for the Ceph distributed file
 system. One or more instances of ceph-mon form a Paxos part-time
@@ -751,6 +755,10 @@ Requires:	lvm2
 Requires:	sudo
 Requires:	libstoragemgmt
 Requires:	python%{python3_pkgversion}-ceph-common = %{_epoch_prefix}%{version}-%{release}
+%if 0%{?weak_deps}
+Recommends:	nvme-cli
+Recommends:	smartmontools
+%endif
 %description osd
 ceph-osd is the object storage daemon for the Ceph distributed file
 system.  It is responsible for storing objects on a local file system
@@ -1126,7 +1134,7 @@ This package provides Ceph’s default alerts for Prometheus.
 # common
 #################################################################################
 %prep
-%autosetup -p1 -n ceph-15.2.6
+%autosetup -p1 -n ceph-15.2.8
 
 %build
 # LTO can be enabled as soon as the following GCC bug is fixed:
@@ -1302,7 +1310,6 @@ install -m 0644 -D udev/50-rbd.rules %{buildroot}%{_udevrulesdir}/50-rbd.rules
 
 # sudoers.d
 install -m 0600 -D sudoers.d/ceph-osd-smartctl %{buildroot}%{_sysconfdir}/sudoers.d/ceph-osd-smartctl
-install -m 0600 -D sudoers.d/cephadm %{buildroot}%{_sysconfdir}/sudoers.d/cephadm
 
 %if 0%{?rhel} >= 8
 pathfix.py -pni "%{__python3} %{py3_shbang_opts}" %{buildroot}%{_bindir}/*
@@ -1459,7 +1466,6 @@ exit 0
 %files -n cephadm
 %{_sbindir}/cephadm
 %{_mandir}/man8/cephadm.8*
-%{_sysconfdir}/sudoers.d/cephadm
 %attr(0700,cephadm,cephadm) %dir %{_sharedstatedir}/cephadm
 %attr(0700,cephadm,cephadm) %dir %{_sharedstatedir}/cephadm/.ssh
 %attr(0600,cephadm,cephadm) %{_sharedstatedir}/cephadm/.ssh/authorized_keys
@@ -2139,7 +2145,6 @@ fi
 
 %files -n librgw2
 %{_libdir}/librgw.so.*
-%{_libdir}/librgw_admin_user.so.*
 %if %{with lttng}
 %{_libdir}/librgw_op_tp.so.*
 %{_libdir}/librgw_rados_tp.so.*
@@ -2152,10 +2157,8 @@ fi
 %files -n librgw-devel
 %dir %{_includedir}/rados
 %{_includedir}/rados/librgw.h
-%{_includedir}/rados/librgw_admin_user.h
 %{_includedir}/rados/rgw_file.h
 %{_libdir}/librgw.so
-%{_libdir}/librgw_admin_user.so
 %if %{with lttng}
 %{_libdir}/librgw_op_tp.so
 %{_libdir}/librgw_rados_tp.so

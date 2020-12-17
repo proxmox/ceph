@@ -2,7 +2,7 @@
 ;  Copyright(c) 2011-2015 Intel Corporation All rights reserved.
 ;
 ;  Redistribution and use in source and binary forms, with or without
-;  modification, are permitted provided that the following conditions 
+;  modification, are permitted provided that the following conditions
 ;  are met:
 ;    * Redistributions of source code must retain the above copyright
 ;      notice, this list of conditions and the following disclaimer.
@@ -26,12 +26,6 @@
 ;  (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 ;  OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-
-%ifidn __OUTPUT_FORMAT__, elf64
- %define WRT_OPT		wrt ..plt
-%else
- %define WRT_OPT
-%endif
 
 %include "reg_sizes.asm"
 %include "multibinary.asm"
@@ -87,18 +81,10 @@ mbin_interface gf_vect_mad
 %else
 
  mbin_dispatch_init5 gf_vect_mul, gf_vect_mul_base, gf_vect_mul_sse, gf_vect_mul_avx, gf_vect_mul_avx
-
-%ifdef HAVE_AS_KNOWS_AVX512
-  mbin_dispatch_init6 ec_encode_data, ec_encode_data_base, ec_encode_data_sse, ec_encode_data_avx, ec_encode_data_avx2, ec_encode_data_avx512
-  mbin_dispatch_init6 ec_encode_data_update, ec_encode_data_update_base, ec_encode_data_update_sse, ec_encode_data_update_avx, ec_encode_data_update_avx2, ec_encode_data_update_avx512
-  mbin_dispatch_init6 gf_vect_mad, gf_vect_mad_base, gf_vect_mad_sse, gf_vect_mad_avx, gf_vect_mad_avx2, gf_vect_mad_avx512
-  mbin_dispatch_init6 gf_vect_dot_prod, gf_vect_dot_prod_base, gf_vect_dot_prod_sse, gf_vect_dot_prod_avx, gf_vect_dot_prod_avx2, gf_vect_dot_prod_avx512
-%else
-  mbin_dispatch_init5 ec_encode_data, ec_encode_data_base, ec_encode_data_sse, ec_encode_data_avx, ec_encode_data_avx2
-  mbin_dispatch_init5 ec_encode_data_update, ec_encode_data_update_base, ec_encode_data_update_sse, ec_encode_data_update_avx, ec_encode_data_update_avx2
-  mbin_dispatch_init5 gf_vect_mad, gf_vect_mad_base, gf_vect_mad_sse, gf_vect_mad_avx, gf_vect_mad_avx2
-  mbin_dispatch_init5 gf_vect_dot_prod, gf_vect_dot_prod_base, gf_vect_dot_prod_sse, gf_vect_dot_prod_avx, gf_vect_dot_prod_avx2
-%endif
+ mbin_dispatch_init6 ec_encode_data, ec_encode_data_base, ec_encode_data_sse, ec_encode_data_avx, ec_encode_data_avx2, ec_encode_data_avx512
+ mbin_dispatch_init6 ec_encode_data_update, ec_encode_data_update_base, ec_encode_data_update_sse, ec_encode_data_update_avx, ec_encode_data_update_avx2, ec_encode_data_update_avx512
+ mbin_dispatch_init6 gf_vect_mad, gf_vect_mad_base, gf_vect_mad_sse, gf_vect_mad_avx, gf_vect_mad_avx2, gf_vect_mad_avx512
+ mbin_dispatch_init6 gf_vect_dot_prod, gf_vect_dot_prod_base, gf_vect_dot_prod_sse, gf_vect_dot_prod_avx, gf_vect_dot_prod_avx2, gf_vect_dot_prod_avx512
 %endif
 
 ;;;       func                 		core, ver, snum

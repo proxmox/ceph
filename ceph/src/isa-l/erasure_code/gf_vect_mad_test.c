@@ -2,7 +2,7 @@
   Copyright(c) 2011-2015 Intel Corporation All rights reserved.
 
   Redistribution and use in source and binary forms, with or without
-  modification, are permitted provided that the following conditions 
+  modification, are permitted provided that the following conditions
   are met:
     * Redistributions of source code must retain the above copyright
       notice, this list of conditions and the following disclaimer.
@@ -34,18 +34,18 @@
 #include "types.h"
 
 #ifndef ALIGN_SIZE
-# define ALIGN_SIZE 16
+# define ALIGN_SIZE 32
 #endif
 
-//By default, test sse version
 #ifndef FUNCTION_UNDER_TEST
-# define FUNCTION_UNDER_TEST gf_6vect_mad_sse
-# define REF_FUNCTION gf_6vect_dot_prod_sse
-# define VECT 6
+//By default, test multi-binary version
+# define FUNCTION_UNDER_TEST gf_vect_mad
+# define REF_FUNCTION gf_vect_dot_prod
+# define VECT 1
 #endif
 
 #ifndef TEST_MIN_SIZE
-# define TEST_MIN_SIZE  ALIGN_SIZE
+# define TEST_MIN_SIZE 64
 #endif
 
 #define str(s) #s

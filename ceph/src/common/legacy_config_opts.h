@@ -82,6 +82,7 @@ SAFE_OPTION(plugin_dir, OPT_STR)
 
 OPTION(compressor_zlib_isal, OPT_BOOL)
 OPTION(compressor_zlib_level, OPT_INT) //regular zlib compression level, not applicable to isa-l optimized version
+OPTION(compressor_zstd_level, OPT_INT) //regular zstd compression level
 
 OPTION(qat_compressor_enabled, OPT_BOOL)
 
@@ -261,6 +262,7 @@ OPTION(mon_reweight_max_change, OPT_DOUBLE)
 OPTION(mon_health_to_clog, OPT_BOOL)
 OPTION(mon_health_to_clog_interval, OPT_INT)
 OPTION(mon_health_to_clog_tick_interval, OPT_DOUBLE)
+OPTION(mon_health_detail_to_clog, OPT_BOOL)
 OPTION(mon_data_avail_crit, OPT_INT)
 OPTION(mon_data_avail_warn, OPT_INT)
 OPTION(mon_data_size_warn, OPT_U64) // issue a warning when the monitor's data store goes over 15GB (in bytes)
@@ -911,7 +913,6 @@ OPTION(bluefs_compact_log_sync, OPT_BOOL)  // sync or async log compaction?
 OPTION(bluefs_buffered_io, OPT_BOOL)
 OPTION(bluefs_sync_write, OPT_BOOL)
 OPTION(bluefs_allocator, OPT_STR)     // stupid | bitmap
-OPTION(bluefs_preextend_wal_files, OPT_BOOL)  // this *requires* that rocksdb has recycling enabled
 OPTION(bluefs_log_replay_check_allocations, OPT_BOOL)
 OPTION(bluefs_replay_recovery, OPT_BOOL)
 OPTION(bluefs_replay_recovery_disable_compact, OPT_BOOL)
@@ -1239,8 +1240,6 @@ OPTION(journal_discard, OPT_BOOL) //using ssd disk as journal, whether support d
 
 OPTION(fio_dir, OPT_STR) // fio data directory for fio-objectstore
 
-OPTION(rados_mon_op_timeout, OPT_DOUBLE) // how many seconds to wait for a response from the monitor before returning an error from a rados operation. 0 means no limit.
-OPTION(rados_osd_op_timeout, OPT_DOUBLE) // how many seconds to wait for a response from osds before returning an error from a rados operation. 0 means no limit.
 OPTION(rados_tracing, OPT_BOOL) // true if LTTng-UST tracepoints should be enabled
 
 

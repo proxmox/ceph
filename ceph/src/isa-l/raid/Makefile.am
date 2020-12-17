@@ -2,7 +2,7 @@
 #  Copyright(c) 2011-2015 Intel Corporation All rights reserved.
 #
 #  Redistribution and use in source and binary forms, with or without
-#  modification, are permitted provided that the following conditions 
+#  modification, are permitted provided that the following conditions
 #  are met:
 #    * Redistributions of source code must retain the above copyright
 #      notice, this list of conditions and the following disclaimer.
@@ -27,9 +27,12 @@
 #  OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ########################################################################
 
+include raid/aarch64/Makefile.am
+
 lsrc        += 	raid/raid_base.c
 
 lsrc_base_aliases += raid/raid_base_aliases.c
+lsrc_ppc64le      += raid/raid_base_aliases.c
 
 lsrc_x86_64 += \
 		raid/xor_gen_sse.asm \
