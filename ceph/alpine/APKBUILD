@@ -1,7 +1,7 @@
 # Contributor: John Coyle <dx9err@gmail.com>
 # Maintainer: John Coyle <dx9err@gmail.com>
 pkgname=ceph
-pkgver=14.2.15
+pkgver=14.2.16
 pkgrel=0
 pkgdesc="Ceph is a distributed object store and file system"
 pkgusers="ceph"
@@ -64,7 +64,7 @@ makedepends="
 	xmlstarlet
 	yasm
 "
-source="ceph-14.2.15.tar.bz2"
+source="ceph-14.2.16.tar.bz2"
 subpackages="
 	$pkgname-base
 	$pkgname-common
@@ -117,7 +117,7 @@ _sysconfdir=/etc
 _udevrulesdir=/etc/udev/rules.d
 _python_sitelib=/usr/lib/python2.7/site-packages
 
-builddir=$srcdir/ceph-14.2.15
+builddir=$srcdir/ceph-14.2.16
 
 build() {
 	export CEPH_BUILD_VIRTUALENV=$builddir
