@@ -1,4 +1,4 @@
-<cd-orchestrator-doc-panel *ngIf="!hasOrchestrator"></cd-orchestrator-doc-panel>
+<cd-orchestrator-doc-panel *ngIf="showDocPanel"></cd-orchestrator-doc-panel>
 <ng-container *ngIf="hasOrchestrator">
   <cd-table [data]="services"
             [columns]="columns"
@@ -6,10 +6,16 @@
             forceIdentifier="true"
             columnMode="flex"
             selectionType="single"
-            [autoReload]="60000"
+            [autoReload]="5000"
             (fetchData)="getServices($event)"
             [hasDetails]="true"
-            (setExpandedRow)="setExpandedRow($event)">
+            (setExpandedRow)="setExpandedRow($event)"
+            (updateSelection)="updateSelection($event)">
+    <cd-table-actions class="table-actions"
+                      [permission]="permissions.hosts"
+                      [selection]="selection"
+                      [tableActions]="tableActions">
+    </cd-table-actions>
     <cd-service-details cdTableDetail
                         [permissions]="permissions"
                         [selection]="expandedRow">

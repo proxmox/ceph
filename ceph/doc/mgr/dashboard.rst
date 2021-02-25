@@ -270,6 +270,34 @@ commands::
 
   $ ceph dashboard ac-user-create <username> <password> administrator
 
+Account Lock-out
+^^^^^^^^^^^^^^^^
+
+It disables a user account if a user repeatedly enters the wrong credentials
+for multiple times. It is enabled by default to prevent brute-force or dictionary
+attacks. The user can get or set the default number of lock-out attempts using
+these commands respectively::
+
+  $ ceph dashboard get-account-lockout-attempts
+  $ ceph dashboard set-account-lockout-attempts <value:int>
+
+.. warning::
+
+  This feature can be disabled by setting the default number of lock-out attempts to 0.
+  However, by disabling this feature, the account is more vulnerable to brute-force or
+  dictionary based attacks. This can be disabled by::
+
+    $ ceph dashboard set-account-lockout-attempts 0
+
+Enable a Locked User
+^^^^^^^^^^^^^^^^^^^^
+
+If a user account is disabled as a result of multiple invalid login attempts, then
+it needs to be manually enabled by the administrator. This can be done by the following
+command::
+
+  $ ceph dashboard ac-user-enable <username>
+
 Accessing the Dashboard
 ^^^^^^^^^^^^^^^^^^^^^^^
 
@@ -479,7 +507,8 @@ will not be visible in Prometheus.
 After you have set up Grafana and Prometheus, you will need to configure the
 connection information that the Ceph Dashboard will use to access Grafana.
 
-You need to tell the dashboard on which url Grafana instance is running/deployed::
+You need to tell the dashboard on which URL the Grafana instance is
+running/deployed::
 
   $ ceph dashboard set-grafana-api-url <grafana-server-url>  # default: ''
 
@@ -502,6 +531,38 @@ e.g. caused by certificates signed by unknown CA or not matching the host name::
   $ ceph dashboard set-grafana-api-ssl-verify False
 
 You can directly access Grafana Instance as well to monitor your cluster.
+
+Alternative URL for Browsers
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The Ceph Dashboard backend requires the Grafana URL to be able to verify the
+existence of Grafana Dashboards before the frontend even loads them. Due to the
+nature of how Grafana is implemented in Ceph Dashboard, this means that two
+working connections are required in order to be able to see Grafana graphs in
+Ceph Dashboard:
+
+- The backend (Ceph Mgr module) needs to verify the existence of the requested
+  graph. If this request succeeds, it lets the frontend know that it can safely
+  access Grafana.
+- The frontend then requests the Grafana graphs directly from the user's
+  browser using an iframe. The Grafana instance is accessed directly without any
+  detour through Ceph Dashboard.
+
+Now, it might be the case that your environment makes it difficult for the
+user's browser to directly access the URL configured in Ceph Dashboard. To solve
+this issue, a separate URL can be configured which will solely be used to tell
+the frontend (the user's browser) which URL it should use to access Grafana.
+This setting won't ever be changed automatically, unlike the GRAFANA_API_URL
+which is set by :ref:`cephadm` (only if cephadm is used to deploy monitoring
+services).
+
+To change the URL that is returned to the frontend issue the following command::
+
+  $ ceph dashboard set-grafana-frontend-api-url <grafana-server-url>
+
+If no value is set for that option, it will simply fall back to the value of the
+GRAFANA_API_URL option. If set, it will instruct the browser to use this URL to
+access Grafana.
 
 .. _dashboard-sso-support:
 

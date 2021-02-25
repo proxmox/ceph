@@ -571,13 +571,20 @@ void SessionMapStore::decode_legacy(bufferlist::const_iterator& p)
   }
 }
 
-void Session::dump(Formatter *f) const
+void Session::dump(Formatter *f, bool cap_dump) const
 {
   f->dump_int("id", info.inst.name.num());
   f->dump_object("entity", info.inst);
   f->dump_string("state", get_state_name());
   f->dump_int("num_leases", leases.size());
   f->dump_int("num_caps", caps.size());
+  if (cap_dump) {
+    f->open_array_section("caps");
+    for (const auto& cap : caps) {
+      f->dump_object("cap", *cap);
+    }
+    f->close_section();
+  }
   if (is_open() || is_stale()) {
     f->dump_unsigned("request_load_avg", get_load_avg());
   }
@@ -590,6 +597,7 @@ void Session::dump(Formatter *f) const
   f->dump_object("recall_caps_throttle", recall_caps_throttle);
   f->dump_object("recall_caps_throttle2o", recall_caps_throttle2o);
   f->dump_object("session_cache_liveness", session_cache_liveness);
+  f->dump_object("cap_acquisition", cap_acquisition);
   info.dump(f);
 }
 
@@ -1076,6 +1084,13 @@ void SessionMap::handle_conf_change(const std::set<std::string>& changed)
     auto mut = [d](auto s) {
       s->session_cache_liveness = DecayCounter(d);
       s->session_cache_liveness.hit(s->caps.size()); /* so the MDS doesn't immediately start trimming a new session */
+    };
+    apply_to_open_sessions(mut);
+  }
+  if (changed.count("mds_session_cap_acquisition_decay_rate")) {
+    auto d = g_conf().get_val<double>("mds_session_cap_acquisition_decay_rate");
+    auto mut = [d](auto s) {
+      s->cap_acquisition = DecayCounter(d);
     };
     apply_to_open_sessions(mut);
   }

@@ -5,6 +5,7 @@ describe('Configuration page', () => {
 
   beforeEach(() => {
     cy.login();
+    Cypress.Cookies.preserveOnce('token');
     configuration.navigateTo();
   });
 
@@ -19,11 +20,7 @@ describe('Configuration page', () => {
       configuration.getExpandCollapseElement().click();
     });
 
-    it('should verify that selected footer increases when an entry is clicked', () => {
-      configuration.getTableSelectedCount().should('eq', 1);
-    });
-
-    it('should check that details table opens and tab is correct', () => {
+    it('should check that details table opens (w/o tab header)', () => {
       configuration.getStatusTables().should('be.visible');
       configuration.getTabsCount().should('eq', 1);
       configuration.getTabText(0).should('eq', 'Details');

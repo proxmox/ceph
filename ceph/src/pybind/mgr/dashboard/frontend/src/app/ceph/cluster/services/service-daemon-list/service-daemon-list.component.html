@@ -1,10 +1,10 @@
-<cd-orchestrator-doc-panel *ngIf="!hasOrchestrator"></cd-orchestrator-doc-panel>
+<cd-orchestrator-doc-panel *ngIf="showDocPanel"></cd-orchestrator-doc-panel>
 <cd-table *ngIf="hasOrchestrator"
           #daemonsTable
           [data]="daemons"
           [columns]="columns"
           columnMode="flex"
-          [autoReload]="60000"
+          [autoReload]="5000"
           (fetchData)="getDaemons($event)">
 </cd-table>
 

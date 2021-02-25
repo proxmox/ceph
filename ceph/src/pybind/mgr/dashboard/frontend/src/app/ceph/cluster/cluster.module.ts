@@ -34,6 +34,7 @@ import { OsdCreationPreviewModalComponent } from './osd/osd-creation-preview-mod
 import { OsdDetailsComponent } from './osd/osd-details/osd-details.component';
 import { OsdDevicesSelectionGroupsComponent } from './osd/osd-devices-selection-groups/osd-devices-selection-groups.component';
 import { OsdDevicesSelectionModalComponent } from './osd/osd-devices-selection-modal/osd-devices-selection-modal.component';
+import { OsdFlagsIndivModalComponent } from './osd/osd-flags-indiv-modal/osd-flags-indiv-modal.component';
 import { OsdFlagsModalComponent } from './osd/osd-flags-modal/osd-flags-modal.component';
 import { OsdFormComponent } from './osd/osd-form/osd-form.component';
 import { OsdListComponent } from './osd/osd-list/osd-list.component';
@@ -48,8 +49,10 @@ import { RulesListComponent } from './prometheus/rules-list/rules-list.component
 import { SilenceFormComponent } from './prometheus/silence-form/silence-form.component';
 import { SilenceListComponent } from './prometheus/silence-list/silence-list.component';
 import { SilenceMatcherModalComponent } from './prometheus/silence-matcher-modal/silence-matcher-modal.component';
+import { PlacementPipe } from './services/placement.pipe';
 import { ServiceDaemonListComponent } from './services/service-daemon-list/service-daemon-list.component';
 import { ServiceDetailsComponent } from './services/service-details/service-details.component';
+import { ServiceFormComponent } from './services/service-form/service-form.component';
 import { ServicesComponent } from './services/services.component';
 import { TelemetryComponent } from './telemetry/telemetry.component';
 
@@ -58,6 +61,7 @@ import { TelemetryComponent } from './telemetry/telemetry.component';
     OsdDetailsComponent,
     OsdScrubModalComponent,
     OsdFlagsModalComponent,
+    OsdFlagsIndivModalComponent,
     OsdRecvSpeedModalComponent,
     OsdReweightModalComponent,
     OsdPgScrubModalComponent,
@@ -124,7 +128,10 @@ import { TelemetryComponent } from './telemetry/telemetry.component';
     HostFormComponent,
     ServiceDetailsComponent,
     ServiceDaemonListComponent,
-    TelemetryComponent
+    TelemetryComponent,
+    OsdFlagsIndivModalComponent,
+    ServiceFormComponent,
+    PlacementPipe
   ]
 })
 export class ClusterModule {}

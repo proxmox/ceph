@@ -13,7 +13,8 @@ foreach(policy
     CMP0054
     CMP0056
     CMP0065
-    CMP0075)
+    CMP0075
+    CMP0093)
   if(POLICY ${policy})
     cmake_policy(SET ${policy} NEW)
   endif()
@@ -667,4 +668,4 @@ add_custom_target(tags DEPENDS ctags)
 
 find_package(CppCheck)
 find_package(IWYU)
-set(VERSION 15.2.8)
+set(VERSION 15.2.9)

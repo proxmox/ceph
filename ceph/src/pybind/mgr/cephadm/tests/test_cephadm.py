@@ -1,4 +1,3 @@
-import datetime
 import json
 from contextlib import contextmanager
 from unittest.mock import ANY
@@ -7,7 +6,8 @@ import pytest
 
 from ceph.deployment.drive_group import DriveGroupSpec, DeviceSelection
 from cephadm.serve import CephadmServe
-from cephadm.services.osd import OSD, OSDQueue
+from cephadm.services.osd import OSD, OSDRemovalQueue
+from cephadm.utils import CephadmNoImage
 
 try:
     from typing import Any, List
@@ -20,12 +20,13 @@ from ceph.deployment.service_spec import ServiceSpec, PlacementSpec, RGWSpec, \
     NFSServiceSpec, IscsiServiceSpec, HostPlacementSpec, CustomContainerSpec
 from ceph.deployment.drive_selection.selector import DriveSelection
 from ceph.deployment.inventory import Devices, Device
+from ceph.utils import datetime_to_str, datetime_now
 from orchestrator import ServiceDescription, DaemonDescription, InventoryHost, \
     HostSpec, OrchestratorError
 from tests import mock
 from .fixtures import cephadm_module, wait, _run_cephadm, match_glob, with_host, \
     with_cephadm_module, with_service, assert_rm_service
-from cephadm.module import CephadmOrchestrator, CEPH_DATEFMT
+from cephadm.module import CephadmOrchestrator
 
 """
 TODOs:
@@ -195,7 +196,7 @@ class TestCephadm(object):
 
                 # Make sure, _check_daemons does a redeploy due to monmap change:
                 cephadm_module._store['_ceph_get/mon_map'] = {
-                    'modified': datetime.datetime.utcnow().strftime(CEPH_DATEFMT),
+                    'modified': datetime_to_str(datetime_now()),
                     'fsid': 'foobar',
                 }
                 cephadm_module.notify('mon_map', None)
@@ -214,7 +215,7 @@ class TestCephadm(object):
 
                     # Make sure, _check_daemons does a redeploy due to monmap change:
                     cephadm_module.mock_store_set('_ceph_get', 'mon_map', {
-                        'modified': datetime.datetime.utcnow().strftime(CEPH_DATEFMT),
+                        'modified': datetime_to_str(datetime_now()),
                         'fsid': 'foobar',
                     })
                     cephadm_module.notify('mon_map', None)
@@ -294,7 +295,7 @@ class TestCephadm(object):
 
                 # Make sure, _check_daemons does a redeploy due to monmap change:
                 cephadm_module.mock_store_set('_ceph_get', 'mon_map', {
-                    'modified': datetime.datetime.utcnow().strftime(CEPH_DATEFMT),
+                    'modified': datetime_to_str(datetime_now()),
                     'fsid': 'foobar',
                 })
                 cephadm_module.notify('mon_map', None)
@@ -504,11 +505,11 @@ class TestCephadm(object):
                                                       force=False,
                                                       hostname='test',
                                                       fullname='osd.0',
-                                                      process_started_at=datetime.datetime.utcnow(),
-                                                      remove_util=cephadm_module.rm_util
+                                                      process_started_at=datetime_now(),
+                                                      remove_util=cephadm_module.to_remove_osds.rm_util
                                                       ))
-            cephadm_module.rm_util.process_removal_queue()
-            assert cephadm_module.to_remove_osds == OSDQueue()
+            cephadm_module.to_remove_osds.process_removal_queue()
+            assert cephadm_module.to_remove_osds == OSDRemovalQueue(cephadm_module)
 
             c = cephadm_module.remove_osds_status()
             out = wait(cephadm_module, c)
@@ -816,19 +817,19 @@ class TestCephadm(object):
                 raise Exception("boom: connection is dead")
             else:
                 conn.fuse = True
-            return '{}', None, 0
+            return '{}', [], 0
         with mock.patch("remoto.Connection", side_effect=[Connection(), Connection(), Connection()]):
             with mock.patch("remoto.process.check", _check):
                 with with_host(cephadm_module, 'test', refresh_hosts=False):
                     code, out, err = cephadm_module.check_host('test')
                     # First should succeed.
-                    assert err is None
+                    assert err is ''
 
                     # On second it should attempt to reuse the connection, where the
                     # connection is "down" so will recreate the connection. The old
                     # code will blow up here triggering the BOOM!
                     code, out, err = cephadm_module.check_host('test')
-                    assert err is None
+                    assert err is ''
 
     @mock.patch("cephadm.module.CephadmOrchestrator._get_connection")
     @mock.patch("remoto.process.check")
@@ -865,7 +866,7 @@ class TestCephadm(object):
 
             # Make sure, _check_daemons does a redeploy due to monmap change:
             cephadm_module.mock_store_set('_ceph_get', 'mon_map', {
-                'modified': datetime.datetime.utcnow().strftime(CEPH_DATEFMT),
+                'modified': datetime_to_str(datetime_now()),
                 'fsid': 'foobar',
             })
             cephadm_module.notify('mon_map', mock.MagicMock())
@@ -951,3 +952,31 @@ class TestCephadm(object):
                 assert image == 'image@repo_digest'
             else:
                 assert image == 'image'
+
+    @mock.patch("cephadm.module.CephadmOrchestrator._run_cephadm")
+    def test_ceph_volume_no_filter_for_batch(self, _run_cephadm, cephadm_module: CephadmOrchestrator):
+        _run_cephadm.return_value = ('{}', '', 0)
+
+        error_message = """cephadm exited with an error code: 1, stderr:/usr/bin/podman:stderr usage: ceph-volume inventory [-h] [--format {plain,json,json-pretty}] [path]/usr/bin/podman:stderr ceph-volume inventory: error: unrecognized arguments: --filter-for-batch
+Traceback (most recent call last):
+  File "<stdin>", line 6112, in <module>
+  File "<stdin>", line 1299, in _infer_fsid
+  File "<stdin>", line 1382, in _infer_image
+  File "<stdin>", line 3612, in command_ceph_volume
+  File "<stdin>", line 1061, in call_throws"""
+
+        with with_host(cephadm_module, 'test'):
+            _run_cephadm.reset_mock()
+            _run_cephadm.side_effect = OrchestratorError(error_message)
+
+            s = CephadmServe(cephadm_module)._refresh_host_devices('test')
+            assert s == 'host test `cephadm ceph-volume` failed: ' + error_message
+
+            assert _run_cephadm.mock_calls == [
+                mock.call('test', 'osd', 'ceph-volume',
+                          ['--', 'inventory', '--format=json', '--filter-for-batch'], image='',
+                          no_fsid=False),
+                mock.call('test', 'osd', 'ceph-volume',
+                          ['--', 'inventory', '--format=json'], image='',
+                          no_fsid=False),
+            ]

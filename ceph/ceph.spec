@@ -98,7 +98,7 @@
 # main package definition
 #################################################################################
 Name:		ceph
-Version:	15.2.8
+Version:	15.2.9
 Release:	0%{?dist}
 %if 0%{?fedora} || 0%{?rhel}
 Epoch:		2
@@ -114,7 +114,7 @@ License:	LGPL-2.1 and LGPL-3.0 and CC-BY-SA-3.0 and GPL-2.0 and BSL-1.0 and BSD-
 Group:		System/Filesystems
 %endif
 URL:		http://ceph.com/
-Source0:	%{?_remote_tarball_prefix}ceph-15.2.8.tar.bz2
+Source0:	%{?_remote_tarball_prefix}ceph-15.2.9.tar.bz2
 %if 0%{?suse_version}
 # _insert_obs_source_lines_here
 ExclusiveArch:  x86_64 aarch64 ppc64le s390x
@@ -414,10 +414,8 @@ Base is the package that includes all the files shared amongst ceph servers
 
 %package -n cephadm
 Summary:        Utility to bootstrap Ceph clusters
+BuildArch:      noarch
 Requires:       lvm2
-%if 0%{?suse_version}
-Requires:       apparmor-abstractions
-%endif
 Requires:       python%{python3_pkgversion}
 %if 0%{?weak_deps}
 Recommends:     podman
@@ -477,7 +475,11 @@ Provides:	ceph-test:/usr/bin/ceph-monstore-tool
 Requires:	ceph-base = %{_epoch_prefix}%{version}-%{release}
 %if 0%{?weak_deps}
 Recommends:	nvme-cli
+%if 0%{?suse_version}
+Requires:       smartmontools
+%else
 Recommends:	smartmontools
+%endif
 %endif
 %description mon
 ceph-mon is the cluster monitor daemon for the Ceph distributed file
@@ -757,7 +759,11 @@ Requires:	libstoragemgmt
 Requires:	python%{python3_pkgversion}-ceph-common = %{_epoch_prefix}%{version}-%{release}
 %if 0%{?weak_deps}
 Recommends:	nvme-cli
+%if 0%{?suse_version}
+Requires:       smartmontools
+%else
 Recommends:	smartmontools
+%endif
 %endif
 %description osd
 ceph-osd is the object storage daemon for the Ceph distributed file
@@ -1134,7 +1140,7 @@ This package provides Ceph’s default alerts for Prometheus.
 # common
 #################################################################################
 %prep
-%autosetup -p1 -n ceph-15.2.8
+%autosetup -p1 -n ceph-15.2.9
 
 %build
 # LTO can be enabled as soon as the following GCC bug is fixed:
@@ -1309,7 +1315,7 @@ ln -sf %{_sbindir}/mount.ceph %{buildroot}/sbin/mount.ceph
 install -m 0644 -D udev/50-rbd.rules %{buildroot}%{_udevrulesdir}/50-rbd.rules
 
 # sudoers.d
-install -m 0600 -D sudoers.d/ceph-osd-smartctl %{buildroot}%{_sysconfdir}/sudoers.d/ceph-osd-smartctl
+install -m 0440 -D sudoers.d/ceph-osd-smartctl %{buildroot}%{_sysconfdir}/sudoers.d/ceph-osd-smartctl
 
 %if 0%{?rhel} >= 8
 pathfix.py -pni "%{__python3} %{py3_shbang_opts}" %{buildroot}%{_bindir}/*

@@ -3,6 +3,7 @@ import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { BrowserAnimationsModule } from '@angular/platform-browser/animations';
 import { RouterTestingModule } from '@angular/router/testing';
 
+import { ToastrModule } from 'ngx-toastr';
 import { of } from 'rxjs';
 
 import { configureTestBed, i18nProviders } from '../../../../testing/unit-test-helper';
@@ -58,7 +59,8 @@ describe('ServicesComponent', () => {
       CoreModule,
       SharedModule,
       HttpClientTestingModule,
-      RouterTestingModule
+      RouterTestingModule,
+      ToastrModule.forRoot()
     ],
     providers: [{ provide: AuthStorageService, useValue: fakeAuthStorageService }, i18nProviders],
     declarations: []
@@ -81,7 +83,10 @@ describe('ServicesComponent', () => {
   it('should have columns that are sortable', () => {
     expect(
       component.columns
+        // Filter the 'Expand/Collapse Row' column.
         .filter((column) => !(column.cellClass === 'cd-datatable-expand-collapse'))
+        // Filter the 'Placement' column.
+        .filter((column) => !(column.prop === ''))
         .every((column) => Boolean(column.prop))
     ).toBeTruthy();
   });
@@ -89,5 +94,9 @@ describe('ServicesComponent', () => {
   it('should return all services', () => {
     component.getServices(new CdTableFetchDataContext(() => {}));
     expect(component.services.length).toBe(2);
+  });
+
+  it('should not display doc panel if orchestrator is available', () => {
+    expect(component.showDocPanel).toBeFalsy();
   });
 });
