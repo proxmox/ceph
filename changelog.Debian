@@ -1,3 +1,9 @@
+ceph (15.2.9-pve1) stable; urgency=medium
+
+  * new upstream octopus 15.2.9 stable release
+
+ -- Proxmox Support Team <support@proxmox.com>  Thu, 25 Feb 2021 16:58:37 +0100
+
 ceph (15.2.8-pve2) stable; urgency=medium
 
   * new upstream octopus 15.2.8 stable release
