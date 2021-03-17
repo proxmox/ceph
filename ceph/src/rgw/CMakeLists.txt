@@ -19,6 +19,10 @@ function(gperf_generate input output)
     )
 endfunction()
 
+if(Boost_VERSION VERSION_GREATER 1.73)
+  add_definitions(-DBOOST_ASIO_USE_TS_EXECUTOR_AS_DEFAULT)
+endif()
+
 set(librgw_common_srcs
   services/svc_finisher.cc
   services/svc_notify.cc
@@ -43,6 +47,7 @@ set(librgw_common_srcs
   rgw_cache.cc
   rgw_common.cc
   rgw_compression.cc
+  rgw_etag_verifier.cc
   rgw_cors.cc
   rgw_cors_s3.cc
   rgw_dencoder.cc

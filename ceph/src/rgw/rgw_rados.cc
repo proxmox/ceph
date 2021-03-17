@@ -48,6 +48,7 @@
 #include "rgw_tools.h"
 #include "rgw_coroutine.h"
 #include "rgw_compression.h"
+#include "rgw_etag_verifier.h"
 
 #undef fork // fails to compile RGWPeriod::fork() below
 
@@ -2468,8 +2469,13 @@ int RGWRados::Bucket::List::list_objects_ordered(
     }
   }
 
+  // allows us to skip over entries in two conditions: 1) when using a
+  // delimiter and we can skip over "subdirectories" and 2) when
+  // searching for elements in the empty namespace we can skip over
+  // namespaced elements
+  rgw_obj_index_key marker_skip_ahead;
+
   rgw_obj_index_key prev_marker;
-  string skip_after_delim;
   for (uint16_t attempt = 1; /* empty */; ++attempt) {
     ldout(cct, 20) << "RGWRados::Bucket::List::" << __func__ <<
       " starting attempt " << attempt << dendl;
@@ -2484,33 +2490,34 @@ int RGWRados::Bucket::List::list_objects_ordered(
     }
     prev_marker = cur_marker;
 
-    if (skip_after_delim > cur_marker.name) {
-      cur_marker = skip_after_delim;
-
-      ldout(cct, 20) << "setting cur_marker="
-		     << cur_marker.name
-		     << "[" << cur_marker.instance << "]"
-		     << dendl;
+    // see whether we found a way to skip ahead in the previous
+    // iteration
+    if (marker_skip_ahead > cur_marker) {
+      cur_marker = marker_skip_ahead;
+      ldout(cct, 20) << "advancing cur_marker=" << cur_marker << dendl;
     }
 
     std::map<string, rgw_bucket_dir_entry> ent_map;
+    const size_t num_requested = read_ahead + 1 - count;
     int r = store->cls_bucket_list_ordered(target->get_bucket_info(),
 					   shard_id,
 					   cur_marker,
 					   cur_prefix,
-					   read_ahead + 1 - count,
+					   num_requested,
 					   params.list_versions,
 					   attempt,
 					   ent_map,
 					   &truncated,
 					   &cur_marker);
-    if (r < 0)
+    if (r < 0) {
       return r;
+    }
 
     for (auto eiter = ent_map.begin(); eiter != ent_map.end(); ++eiter) {
+      const std::string& key = eiter->first;
       rgw_bucket_dir_entry& entry = eiter->second;
       rgw_obj_index_key index_key = entry.key;
-      rgw_obj_key obj(index_key);
+      rgw_obj_key obj(index_key); // NB: why is this re-set below? can't be const
 
       ldout(cct, 20) << "RGWRados::Bucket::List::" << __func__ <<
 	" considering entry " << entry.key << dendl;
@@ -2527,20 +2534,22 @@ int RGWRados::Bucket::List::list_objects_ordered(
         continue;
       }
 
-      bool matched_ns = (obj.ns == params.ns);
       if (!params.list_versions && !entry.is_visible()) {
         continue;
       }
 
+      const bool matched_ns = (obj.ns == params.ns);
       if (params.enforce_ns && !matched_ns) {
         if (!params.ns.empty()) {
           /* we've iterated past the namespace we're searching -- done now */
           truncated = false;
           goto done;
-        }
-
-        /* we're not looking at the namespace this object is in, next! */
-        continue;
+        } else {
+	  // we're enforcing an empty namespace, so we need to skip
+	  // past the namespace block
+	  marker_skip_ahead = rgw_obj_key::after_namespace_marker(key);
+	  continue;
+	}
       }
 
       if (cur_end_marker_valid && cur_end_marker <= index_key) {
@@ -2553,19 +2562,21 @@ int RGWRados::Bucket::List::list_objects_ordered(
 	next_marker = index_key;
       }
 
-      if (params.filter && !params.filter->filter(obj.name, index_key.name))
+      if (params.filter && !params.filter->filter(obj.name, index_key.name)) {
         continue;
+      }
 
       if (params.prefix.size() &&
-	  (obj.name.compare(0, params.prefix.size(), params.prefix) != 0))
+	  (obj.name.compare(0, params.prefix.size(), params.prefix) != 0)) {
         continue;
+      }
 
       if (!params.delim.empty()) {
         int delim_pos = obj.name.find(params.delim, params.prefix.size());
 
         if (delim_pos >= 0) {
-	  /* extract key -with trailing delimiter- for CommonPrefix */
-          string prefix_key =
+	  /* extract key *with* trailing delimiter for CommonPrefix */
+	  const std::string prefix_key =
 	    obj.name.substr(0, delim_pos + params.delim.length());
 
           if (common_prefixes &&
@@ -2577,10 +2588,13 @@ int RGWRados::Bucket::List::list_objects_ordered(
             next_marker = prefix_key;
             (*common_prefixes)[prefix_key] = true;
 
-            skip_after_delim = obj.name.substr(0, delim_pos);
-            skip_after_delim.append(after_delim_s);
-
-            ldout(cct, 20) << "skip_after_delim=" << skip_after_delim << dendl;
+	    // setting marker_skip_ahead allows the next call to
+	    // cls_bucket_list_ordered to skip over unlisted entries;
+	    // NOTE: after_delim_s
+	    const std::string skip_name = obj.name.substr(0, delim_pos) + after_delim_s;
+	    const rgw_obj_key skip_key(skip_name, "" /* empty instance*/ , obj.ns);
+	    skip_key.get_index_key(&marker_skip_ahead);
+            ldout(cct, 20) << "marker_skip_ahead=" << marker_skip_ahead << dendl;
 
             count++;
           }
@@ -2618,8 +2632,15 @@ int RGWRados::Bucket::List::list_objects_ordered(
   } // for (uint16_t attempt...
 
 done:
-  if (is_truncated)
+
+  auto csz = (common_prefixes) ? common_prefixes->size() : 0;
+  ldout(cct, 10) << "RGWRados::Bucket::List::" << __func__ <<
+    " INFO returning " << result->size() << " entries and "
+		 << csz << " common prefixes" << dendl;
+
+  if (is_truncated) {
     *is_truncated = truncated;
+  }
 
   return 0;
 } // list_objects_ordered
@@ -3899,12 +3920,15 @@ class RGWRadosPutObj : public RGWHTTPStreamRWRequest::ReceiveCB
   rgw_obj obj;
   rgw::putobj::DataProcessor *filter;
   boost::optional<RGWPutObj_Compress>& compressor;
+  bool try_etag_verify;
+  rgw::putobj::etag_verifier_ptr etag_verifier;
   boost::optional<rgw::putobj::ChunkProcessor> buffering;
   CompressorRef& plugin;
   rgw::putobj::ObjectProcessor *processor;
   void (*progress_cb)(off_t, void *);
   void *progress_data;
-  bufferlist extra_data_bl;
+  bufferlist extra_data_bl, manifest_bl;
+  std::optional<RGWCompressionInfo> compression_info;
   uint64_t extra_data_left{0};
   bool need_to_process_attrs{true};
   uint64_t data_len{0};
@@ -3923,6 +3947,7 @@ public:
                        cct(cct),
                        filter(p),
                        compressor(compressor),
+                       try_etag_verify(cct->_conf->rgw_sync_obj_etag_verify),
                        plugin(plugin),
                        processor(p),
                        progress_cb(_progress_cb),
@@ -3939,11 +3964,35 @@ public:
 
       JSONDecoder::decode_json("attrs", src_attrs, &jp);
 
-      src_attrs.erase(RGW_ATTR_COMPRESSION);
-      src_attrs.erase(RGW_ATTR_MANIFEST); // not interested in original object layout
+      auto iter = src_attrs.find(RGW_ATTR_COMPRESSION);
+      if (iter != src_attrs.end()) {
+        const bufferlist bl = std::move(iter->second);
+        src_attrs.erase(iter); // don't preserve source compression info
+
+        if (try_etag_verify) {
+          // if we're trying to verify etags, we need to convert compressed
+          // ranges in the manifest back into logical multipart part offsets
+          RGWCompressionInfo info;
+          bool compressed = false;
+          int r = rgw_compression_info_from_attr(bl, compressed, info);
+          if (r < 0) {
+            ldout(cct, 4) << "failed to decode compression info, "
+                "disabling etag verification" << dendl;
+            try_etag_verify = false;
+          } else if (compressed) {
+            compression_info = std::move(info);
+          }
+        }
+      }
+      /* We need the manifest to recompute the ETag for verification */
+      iter = src_attrs.find(RGW_ATTR_MANIFEST);
+      if (iter != src_attrs.end()) {
+        manifest_bl = std::move(iter->second);
+        src_attrs.erase(iter);
+      }
 
       // filter out olh attributes
-      auto iter = src_attrs.lower_bound(RGW_ATTR_OLH_PREFIX);
+      iter = src_attrs.lower_bound(RGW_ATTR_OLH_PREFIX);
       while (iter != src_attrs.end()) {
         if (!boost::algorithm::starts_with(iter->first, RGW_ATTR_OLH_PREFIX)) {
           break;
@@ -3966,6 +4015,23 @@ public:
       constexpr unsigned buffer_size = 512 * 1024;
       buffering = boost::in_place(&*compressor, buffer_size);
       filter = &*buffering;
+    }
+
+    /*
+     * Presently we don't support ETag based verification if encryption is
+     * requested. We can enable simultaneous support once we have a mechanism
+     * to know the sequence in which the filters must be applied.
+     */
+    if (try_etag_verify && src_attrs.find(RGW_ATTR_CRYPT_MODE) == src_attrs.end()) {
+      ret = rgw::putobj::create_etag_verifier(cct, filter, manifest_bl,
+                                              compression_info,
+                                              etag_verifier);
+      if (ret < 0) {
+        ldout(cct, 4) << "failed to initial etag verifier, "
+            "disabling etag verification" << dendl;
+      } else {
+        filter = etag_verifier.get();
+      }
     }
 
     need_to_process_attrs = false;
@@ -4033,6 +4099,15 @@ public:
 
   uint64_t get_data_len() {
     return data_len;
+  }
+
+  std::string get_verifier_etag() {
+    if (etag_verifier) {
+      etag_verifier->calculate_etag();
+      return etag_verifier->get_calculated_etag();
+    } else {
+      return "";
+    }
   }
 };
 
@@ -4516,6 +4591,23 @@ int RGWRados::fetch_remote_obj(RGWObjectCtx& obj_ctx,
     set_mtime_weight.init(set_mtime, svc.zone->get_zone_short_id(), pg_ver);
   }
 
+  /* Perform ETag verification is we have computed the object's MD5 sum at our end */
+  if (const auto& verifier_etag = cb.get_verifier_etag();
+      !verifier_etag.empty()) {
+    string trimmed_etag = etag;
+
+    /* Remove the leading and trailing double quotes from etag */
+    trimmed_etag.erase(std::remove(trimmed_etag.begin(), trimmed_etag.end(),'\"'),
+      trimmed_etag.end());
+
+    if (verifier_etag != trimmed_etag) {
+      ret = -EIO;
+      ldout(cct, 0) << "ERROR: source and destination objects don't match. Expected etag:"
+        << trimmed_etag << " Computed etag:" << verifier_etag << dendl;
+      goto set_err_state;
+    }
+  }
+
 #define MAX_COMPLETE_RETRY 100
   for (i = 0; i < MAX_COMPLETE_RETRY; i++) {
     bool canceled = false;
@@ -4525,6 +4617,7 @@ int RGWRados::fetch_remote_obj(RGWObjectCtx& obj_ctx,
     if (ret < 0) {
       goto set_err_state;
     }
+
     if (copy_if_newer && canceled) {
       ldout(cct, 20) << "raced with another write of obj: " << dest_obj << dendl;
       obj_ctx.invalidate(dest_obj); /* object was overwritten */
@@ -7052,8 +7145,7 @@ int RGWRados::olh_init_modification_impl(const RGWBucketInfo& bucket_info, RGWOb
 
   if (!has_tag) {
     /* obj tag */
-    string obj_tag;
-    gen_rand_alphanumeric_lower(cct, &obj_tag, 32);
+    string obj_tag = gen_rand_alphanumeric_lower(cct, 32);
 
     bufferlist bl;
     bl.append(obj_tag.c_str(), obj_tag.size());
@@ -7063,8 +7155,7 @@ int RGWRados::olh_init_modification_impl(const RGWBucketInfo& bucket_info, RGWOb
     state.obj_tag = bl;
 
     /* olh tag */
-    string olh_tag;
-    gen_rand_alphanumeric_lower(cct, &olh_tag, 32);
+    string olh_tag = gen_rand_alphanumeric_lower(cct, 32);
 
     bufferlist olh_bl;
     olh_bl.append(olh_tag.c_str(), olh_tag.size());
@@ -7090,8 +7181,7 @@ int RGWRados::olh_init_modification_impl(const RGWBucketInfo& bucket_info, RGWOb
   snprintf(buf, sizeof(buf), "%016llx", (unsigned long long)ut.sec());
   *op_tag = buf;
 
-  string s;
-  gen_rand_alphanumeric_lower(cct, &s, OLH_PENDING_TAG_LEN - op_tag->size());
+  string s = gen_rand_alphanumeric_lower(cct, OLH_PENDING_TAG_LEN - op_tag->size());
 
   op_tag->append(s);
 

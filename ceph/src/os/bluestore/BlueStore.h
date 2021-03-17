@@ -129,7 +129,10 @@ enum {
   l_bluestore_omap_upper_bound_lat,
   l_bluestore_omap_lower_bound_lat,
   l_bluestore_omap_next_lat,
+  l_bluestore_omap_get_keys_lat,
+  l_bluestore_omap_get_values_lat,
   l_bluestore_clist_lat,
+  l_bluestore_remove_lat,
   l_bluestore_last
 };
 
@@ -270,7 +273,7 @@ public:
 	boost::intrusive::list_member_hook<>,
 	&Buffer::state_item> > state_list_t;
 
-    mempool::bluestore_cache_other::map<uint32_t, std::unique_ptr<Buffer>>
+    mempool::bluestore_cache_meta::map<uint32_t, std::unique_ptr<Buffer>>
       buffer_map;
 
     // we use a bare intrusive list here instead of std::map because
@@ -454,7 +457,7 @@ public:
 
     // we use a bare pointer because we don't want to affect the ref
     // count
-    mempool::bluestore_cache_other::unordered_map<uint64_t,SharedBlob*> sb_map;
+    mempool::bluestore_cache_meta::unordered_map<uint64_t,SharedBlob*> sb_map;
 
     SharedBlobRef lookup(uint64_t sbid) {
       std::lock_guard l(lock);
@@ -668,7 +671,7 @@ public:
 #endif
   };
   typedef boost::intrusive_ptr<Blob> BlobRef;
-  typedef mempool::bluestore_cache_other::map<int,BlobRef> blob_map_t;
+  typedef mempool::bluestore_cache_meta::map<int,BlobRef> blob_map_t;
 
   /// a logical extent, pointing to (some portion of) a blob
   typedef boost::intrusive::set_base_hook<boost::intrusive::optimize_size<true> > ExtentBase; //making an alias to avoid build warnings
@@ -774,7 +777,7 @@ public:
       bool loaded = false;   ///< true if shard is loaded
       bool dirty = false;    ///< true if shard is dirty and needs reencoding
     };
-    mempool::bluestore_cache_other::vector<Shard> shards;    ///< shards
+    mempool::bluestore_cache_meta::vector<Shard> shards;    ///< shards
 
     bufferlist inline_bl;    ///< cached encoded map, if unsharded; empty=>dirty
 
@@ -1041,7 +1044,7 @@ public:
     ghobject_t oid;
 
     /// key under PREFIX_OBJ where we are stored
-    mempool::bluestore_cache_other::string key;
+    mempool::bluestore_cache_meta::string key;
 
     boost::intrusive::list_member_hook<> lru_item;
 
@@ -1058,7 +1061,7 @@ public:
     ceph::condition_variable flush_cond;   ///< wait here for uncommitted txns
 
     Onode(Collection *c, const ghobject_t& o,
-	  const mempool::bluestore_cache_other::string& k)
+	  const mempool::bluestore_cache_meta::string& k)
       : nref(0),
 	c(c),
 	oid(o),
@@ -1189,12 +1192,20 @@ public:
 	&Buffer::lru_item> > buffer_lru_list_t;
 
     onode_lru_list_t onode_lru;
+    onode_lru_list_t::iterator last_pinned;
 
     buffer_lru_list_t buffer_lru;
     uint64_t buffer_size = 0;
 
+    void _onode_lru_erase(onode_lru_list_t::iterator it) {
+      if (it == last_pinned) {
+        last_pinned = onode_lru.end();
+      }
+      onode_lru.erase(it);
+    }
+
   public:
-    LRUCache(CephContext* cct) : Cache(cct) {}
+    LRUCache(CephContext* cct) : Cache(cct), last_pinned(onode_lru.end()){}
     uint64_t _get_num_onodes() override {
       return onode_lru.size();
     }
@@ -1206,7 +1217,7 @@ public:
     }
     void _rm_onode(OnodeRef& o) override {
       auto q = onode_lru.iterator_to(*o);
-      onode_lru.erase(q);
+      _onode_lru_erase(q);
     }
     void _touch_onode(OnodeRef& o) override;
 
@@ -1282,6 +1293,7 @@ public:
 	&Buffer::lru_item> > buffer_list_t;
 
     onode_lru_list_t onode_lru;
+    onode_lru_list_t::iterator last_pinned;
 
     buffer_list_t buffer_hot;      ///< "Am" hot buffers
     buffer_list_t buffer_warm_in;  ///< "A1in" newly warm buffers
@@ -1298,8 +1310,14 @@ public:
 
     uint64_t buffer_list_bytes[BUFFER_TYPE_MAX] = {0}; ///< bytes per type
 
+    void _onode_lru_erase(onode_lru_list_t::iterator it) {
+      if (it == last_pinned) {
+        last_pinned = onode_lru.end();
+      }
+      onode_lru.erase(it);
+    }
   public:
-    TwoQCache(CephContext* cct) : Cache(cct) {}
+    TwoQCache(CephContext* cct) : Cache(cct), last_pinned(onode_lru.end()){}
     uint64_t _get_num_onodes() override {
       return onode_lru.size();
     }
@@ -1311,7 +1329,7 @@ public:
     }
     void _rm_onode(OnodeRef& o) override {
       auto q = onode_lru.iterator_to(*o);
-      onode_lru.erase(q);
+      _onode_lru_erase(q);
     }
     void _touch_onode(OnodeRef& o) override;
 
@@ -1364,7 +1382,7 @@ public:
     Cache *cache;
 
     /// forward lookups
-    mempool::bluestore_cache_other::unordered_map<ghobject_t,OnodeRef> onode_map;
+    mempool::bluestore_cache_meta::unordered_map<ghobject_t,OnodeRef> onode_map;
 
     friend class Collection; // for split_cache()
 
@@ -1381,7 +1399,7 @@ public:
     }
     void rename(OnodeRef& o, const ghobject_t& old_oid,
 		const ghobject_t& new_oid,
-		const mempool::bluestore_cache_other::string& new_okey);
+		const mempool::bluestore_cache_meta::string& new_okey);
     void clear();
     bool empty();
 
@@ -2122,8 +2140,14 @@ private:
       MetaCache(BlueStore *s) : MempoolCache(s) {};
 
       virtual uint64_t _get_used_bytes() const {
-        return mempool::bluestore_cache_other::allocated_bytes() +
-            mempool::bluestore_cache_onode::allocated_bytes();
+        return mempool::bluestore_Buffer::allocated_bytes() +
+          mempool::bluestore_Blob::allocated_bytes() +
+          mempool::bluestore_Extent::allocated_bytes() +
+          mempool::bluestore_cache_meta::allocated_bytes() +
+          mempool::bluestore_cache_other::allocated_bytes() +
+	   mempool::bluestore_cache_onode::allocated_bytes() +
+          mempool::bluestore_SharedBlob::allocated_bytes() +
+          mempool::bluestore_inline_bl::allocated_bytes();
       }
 
       virtual string get_cache_name() const {
@@ -2712,6 +2736,8 @@ public:
   void inject_misreference(coll_t cid1, ghobject_t oid1,
 			   coll_t cid2, ghobject_t oid2,
 			   uint64_t offset);
+  void inject_zombie_spanning_blob(coll_t cid, ghobject_t oid, int16_t blob_id);
+  // resets global per_pool_omap in DB
 
   void compact() override {
     ceph_assert(db);
@@ -3343,6 +3369,7 @@ public:
 		      FreelistManager* fm,
 		      uint64_t offset, uint64_t len);
   bool fix_bluefs_extents(std::atomic<uint64_t>& out_of_sync_flag);
+  KeyValueDB::Transaction fix_spanning_blobs(KeyValueDB* db);
 
   void init(uint64_t total_space, uint64_t lres_tracking_unit_size);
 
@@ -3379,6 +3406,7 @@ private:
   KeyValueDB::Transaction fix_shared_blob_txn;
 
   KeyValueDB::Transaction fix_misreferences_txn;
+  KeyValueDB::Transaction fix_onode_txn;
 
   StoreSpaceTracker space_usage_tracker;
 

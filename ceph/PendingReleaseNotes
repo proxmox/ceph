@@ -1,12 +1,6 @@
-14.2.15
+14.2.17
 -------
 
-* MGR: progress module can now be turned on/off, using the commands:
-  ``ceph progress on`` and ``ceph progress off``.
-
-14.2.13
--------
-
-* This release fixes a regression introduced in 14.2.12 which broke deployments
-  that referred to MON hosts using DNS names instead of IP addresses in the
-  ``mon_host`` parameter in ``/etc/ceph/ceph.conf``.
+* $pid expansion in config paths like `admin_socket` will now properly expand
+  to the daemon pid for commands like `ceph-mds` or `ceph-osd`. Previously only
+  `ceph-fuse`/`rbd-nbd` expanded `$pid` with the actual daemon pid.

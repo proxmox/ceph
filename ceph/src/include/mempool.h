@@ -150,12 +150,20 @@ namespace mempool {
   f(bluestore_alloc)		      \
   f(bluestore_cache_data)	      \
   f(bluestore_cache_onode)	      \
+  f(bluestore_cache_meta)	      \
   f(bluestore_cache_other)	      \
+  f(bluestore_Buffer)		      \
+  f(bluestore_Extent)		      \
+  f(bluestore_Blob)		      \
+  f(bluestore_SharedBlob)	      \
+  f(bluestore_inline_bl)	      \
   f(bluestore_fsck)		      \
   f(bluestore_txc)		      \
-  f(bluestore_writing_deferred)	      \
+  f(bluestore_writing_deferred)      \
   f(bluestore_writing)		      \
   f(bluefs)			      \
+  f(bluefs_file_reader)              \
+  f(bluefs_file_writer)              \
   f(buffer_anon)		      \
   f(buffer_meta)		      \
   f(osd)			      \
@@ -246,11 +254,16 @@ public:
 
   void adjust_count(ssize_t items, ssize_t bytes);
 
-  shard_t* pick_a_shard() {
+  static size_t pick_a_shard_int() {
     // Dirt cheap, see:
-    //   http://fossies.org/dox/glibc-2.24/pthread__self_8c_source.html
+    //   https://fossies.org/dox/glibc-2.32/pthread__self_8c_source.html
     size_t me = (size_t)pthread_self();
-    size_t i = (me >> 3) & ((1 << num_shard_bits) - 1);
+    size_t i = (me >> 12) & ((1 << num_shard_bits) - 1);
+    return i;
+  }
+
+  shard_t* pick_a_shard() {
+    size_t i = pick_a_shard_int();
     return &shard[i];
   }
 
