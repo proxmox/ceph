@@ -4,8 +4,12 @@ from __future__ import absolute_import
 
 import json
 import logging
-from collections import namedtuple
+import random
+import re
+import string
 import time
+from collections import namedtuple
+from typing import List
 
 import requests
 import six
@@ -65,14 +69,13 @@ class DashboardTestCase(MgrTestCase):
                 raise ex
 
         user_create_args = [
-            'dashboard', 'ac-user-create', username, password
+            'dashboard', 'ac-user-create', username
         ]
         if force_password:
             user_create_args.append('--force-password')
         if cmd_args:
             user_create_args.extend(cmd_args)
-        cls._ceph_cmd(user_create_args)
-
+        cls._ceph_cmd_with_secret(user_create_args, password)
         if roles:
             set_roles_args = ['dashboard', 'ac-user-set-roles', username]
             for idx, role in enumerate(roles):
@@ -200,7 +203,7 @@ class DashboardTestCase(MgrTestCase):
     @classmethod
     def _request(cls, url, method, data=None, params=None, set_cookies=False):
         url = "{}{}".format(cls._base_uri, url)
-        log.info("Request %s to %s", method, url)
+        log.debug("Request %s to %s", method, url)
         headers = {}
         cookies = {}
         if cls._token:
@@ -310,7 +313,7 @@ class DashboardTestCase(MgrTestCase):
             return None
 
         if cls._resp.status_code != 202:
-            log.info("task finished immediately")
+            log.debug("task finished immediately")
             return res
 
         cls._assertIn('name', res)
@@ -322,8 +325,7 @@ class DashboardTestCase(MgrTestCase):
         res_task = None
         while retries > 0 and not res_task:
             retries -= 1
-            log.info("task (%s, %s) is still executing", task_name,
-                     task_metadata)
+            log.debug("task (%s, %s) is still executing", task_name, task_metadata)
             time.sleep(1)
             _res = cls._get('/api/task?name={}'.format(task_name))
             cls._assertEq(cls._resp.status_code, 200)
@@ -338,7 +340,7 @@ class DashboardTestCase(MgrTestCase):
             raise Exception("Waiting for task ({}, {}) to finish timed out. {}"
                             .format(task_name, task_metadata, _res))
 
-        log.info("task (%s, %s) finished", task_name, task_metadata)
+        log.debug("task (%s, %s) finished", task_name, task_metadata)
         if res_task['success']:
             if method == 'POST':
                 cls._resp.status_code = 201
@@ -424,14 +426,30 @@ class DashboardTestCase(MgrTestCase):
     @classmethod
     def _ceph_cmd(cls, cmd):
         res = cls.mgr_cluster.mon_manager.raw_cluster_cmd(*cmd)
-        log.info("command result: %s", res)
+        log.debug("command result: %s", res)
         return res
 
     @classmethod
     def _ceph_cmd_result(cls, cmd):
         exitstatus = cls.mgr_cluster.mon_manager.raw_cluster_cmd_result(*cmd)
-        log.info("command exit status: %d", exitstatus)
+        log.debug("command exit status: %d", exitstatus)
         return exitstatus
+
+    @classmethod
+    def _ceph_cmd_with_secret(cls, cmd: List[str], secret: str, return_exit_code: bool = False):
+        cmd.append('-i')
+        cmd.append('{}'.format(cls._ceph_create_tmp_file(secret)))
+        if return_exit_code:
+            return cls._ceph_cmd_result(cmd)
+        return cls._ceph_cmd(cmd)
+
+    @classmethod
+    def _ceph_create_tmp_file(cls, content: str) -> str:
+        """Create a temporary file in the remote cluster"""
+        file_name = ''.join(random.choices(string.ascii_letters + string.digits, k=20))
+        file_path = '/tmp/{}'.format(file_name)
+        cls._cmd(['sh', '-c', 'echo -n {} > {}'.format(content, file_path)])
+        return file_path
 
     def set_config_key(self, key, value):
         self._ceph_cmd(['config-key', 'set', key, value])

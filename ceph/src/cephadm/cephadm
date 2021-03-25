@@ -182,7 +182,7 @@ class Monitoring(object):
             ],
         },
         "grafana": {
-            "image": "docker.io/ceph/ceph-grafana:6.6.2",
+            "image": "docker.io/ceph/ceph-grafana:6.7.4",
             "cpus": "2",
             "memory": "4GB",
             "args": [],
@@ -2381,7 +2381,6 @@ class Firewalld(object):
             else:
                 logger.debug('firewalld port %s is enabled in current zone' % tcp_port)
 
-            out, err, ret = call([self.cmd, '--permanent', '--query-port', tcp_port], verbose_on_failure=False)
     def apply_rules(self):
         # type: () -> None
         if not self.available:
@@ -2723,7 +2722,7 @@ def command_inspect_image():
     # type: () -> int
     out, err, ret = call_throws([
         container_path, 'inspect',
-        '--format', '{{.ID}},{{json .RepoDigests}}',
+        '--format', '{{.ID}},{{.RepoDigests}}',
         args.image])
     if ret:
         return errno.ENOENT
@@ -2745,7 +2744,7 @@ def get_image_info_from_inspect(out, image):
         'image_id': normalize_container_id(image_id)
     }
     if digests:
-        json_digests = json.loads(digests)
+        json_digests = digests[1:-1].split(' ')
         if json_digests:
             r['repo_digest'] = json_digests[0]
     return r
@@ -3253,10 +3252,11 @@ def command_bootstrap():
 
         logger.info('Creating initial admin user...')
         password = args.initial_dashboard_password or generate_password()
-        cmd = ['dashboard', 'ac-user-create', args.initial_dashboard_user, password, 'administrator', '--force-password']
+        tmp_password_file = write_tmp(password, uid, gid)
+        cmd = ['dashboard', 'ac-user-create', args.initial_dashboard_user, '-i', '/tmp/dashboard.pw', 'administrator', '--force-password']
         if not args.dashboard_password_noupdate:
             cmd.append('--pwd-update-required')
-        cli(cmd)
+        cli(cmd, extra_mounts={pathify(tmp_password_file.name): '/tmp/dashboard.pw:z'})
         logger.info('Fetching dashboard port number...')
         out = cli(['config', 'get', 'mgr', 'mgr/dashboard/ssl_server_port'])
         port = int(out)

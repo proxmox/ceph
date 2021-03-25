@@ -918,6 +918,7 @@ OPTION(bluefs_allocator, OPT_STR)     // stupid | bitmap
 OPTION(bluefs_log_replay_check_allocations, OPT_BOOL)
 OPTION(bluefs_replay_recovery, OPT_BOOL)
 OPTION(bluefs_replay_recovery_disable_compact, OPT_BOOL)
+OPTION(bluefs_check_for_zeros, OPT_BOOL)
 
 OPTION(bluestore_bluefs, OPT_BOOL)
 OPTION(bluestore_bluefs_env_mirror, OPT_BOOL) // mirror to normal Env for debug
@@ -1014,6 +1015,7 @@ OPTION(bluestore_bitmapallocator_span_size, OPT_INT) // must be power of 2 align
 OPTION(bluestore_max_deferred_txc, OPT_U64)
 OPTION(bluestore_max_defer_interval, OPT_U64)
 OPTION(bluestore_rocksdb_options, OPT_STR)
+OPTION(bluestore_rocksdb_options_annex, OPT_STR)
 OPTION(bluestore_fsck_on_mount, OPT_BOOL)
 OPTION(bluestore_fsck_on_mount_deep, OPT_BOOL)
 OPTION(bluestore_fsck_quick_fix_on_mount, OPT_BOOL)

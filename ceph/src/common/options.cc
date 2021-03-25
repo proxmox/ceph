@@ -4051,6 +4051,14 @@ std::vector<Option> get_global_options() {
     .set_default(false)
     .set_description(""),
 
+    Option("bluefs_check_for_zeros", Option::TYPE_BOOL, Option::LEVEL_DEV)
+    .set_default(false)
+    .set_flag(Option::FLAG_RUNTIME)
+    .set_description("Check data read for suspicious pages")
+    .set_long_description("Looks into data read to check if there is a 4K block entirely filled with zeros. "
+			  "If this happens, we re-read data. If there is difference, we print error to log.")
+    .add_see_also("bluestore_retry_disk_reads"),
+
     Option("bluestore_bluefs", Option::TYPE_BOOL, Option::LEVEL_DEV)
     .set_default(true)
     .set_flag(Option::FLAG_CREATE)
@@ -4434,7 +4442,11 @@ std::vector<Option> get_global_options() {
 
     Option("bluestore_rocksdb_options", Option::TYPE_STR, Option::LEVEL_ADVANCED)
     .set_default("compression=kNoCompression,max_write_buffer_number=4,min_write_buffer_number_to_merge=1,recycle_log_file_num=4,write_buffer_size=268435456,writable_file_max_buffer_size=0,compaction_readahead_size=2097152,max_background_compactions=2")
-    .set_description("Rocksdb options"),
+    .set_description("Full set of rocksdb settings to override"),
+
+    Option("bluestore_rocksdb_options_annex", Option::TYPE_STR, Option::LEVEL_ADVANCED)
+    .set_default("")
+    .set_description("An addition to bluestore_rocksdb_options. Allows setting rocksdb options without repeating the existing defaults."),
 
     Option("bluestore_rocksdb_cf", Option::TYPE_BOOL, Option::LEVEL_ADVANCED)
     .set_default(false)
