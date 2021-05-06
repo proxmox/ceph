@@ -1,9 +1,14 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Alwin Antreich <a.antreich@proxmox.com>
 Date: Wed, 6 Feb 2019 10:16:22 +0100
-Subject: [PATCH] debian/rules: ship Ceph changelog as upstream changelog
+Subject: [PATCH] d/rules: fix instaldoc override and ship upstream changelog
 
 since we replace it with our own.
+
+The `override_dh_installdocs` target was left over as empty override
+by MISTAKE in uptream commit c3a53010af432e77f74bcb46e7205c5500b6af77,
+fix that by just dropping it completely.
+
 ---
  debian/rules | 2 +-
  1 file changed, 1 insertion(+), 1 deletion(-)
@@ -12,12 +17,14 @@ diff --git a/debian/rules b/debian/rules
 index 3ac923f71a..d9927b3e0d 100755
 --- a/debian/rules
 +++ b/debian/rules
-@@ -55,7 +55,7 @@ override_dh_auto_install:
+@@ -65,9 +65,7 @@ override_dh_auto_install:
  
  # doc/changelog is a directory, which confuses dh_installchangelogs
  override_dh_installchangelogs:
 -	dh_installchangelogs --exclude doc/changelog
+-
+-override_dh_installdocs:
 +	dh_installchangelogs --exclude doc/changelog changelog.upstream
  
- override_dh_installdocs:
- 	dh_installdocs -a --all ChangeLog
+ override_dh_installlogrotate:
+	cp src/logrotate.conf debian/ceph-common.logrotate
