@@ -6,13 +6,10 @@ include $(RTE_SDK)/mk/rte.vars.mk
 # library name
 LIB = librte_rawdev.a
 
-# library version
-LIBABIVER := 1
-
 # build flags
 CFLAGS += -O3
 CFLAGS += $(WERROR_FLAGS)
-LDLIBS += -lrte_eal
+LDLIBS += -lrte_eal -lrte_telemetry
 
 # library source files
 SRCS-y += rte_rawdev.c

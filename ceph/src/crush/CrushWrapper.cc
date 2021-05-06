@@ -1123,9 +1123,10 @@ int CrushWrapper::insert_item(
 
   int cur = item;
 
-  // create locations if locations don't exist and add child in
-  // location with 0 weight the more detail in the insert_item method
-  // declaration in CrushWrapper.h
+  // 1. create locations if locations don't exist
+  // 2. add child in the location with 0 weight.
+  // Check more detail of insert_item method declared in
+  // CrushWrapper.h
   for (auto p = type_map.begin(); p != type_map.end(); ++p) {
     // ignore device type
     if (p->first == 0)
@@ -1142,17 +1143,17 @@ int CrushWrapper::insert_item(
 
     if (!name_exists(q->second)) {
       ldout(cct, 5) << "insert_item creating bucket " << q->second << dendl;
-      int empty = 0, newid;
+      int zero_weight = 0, new_bucket_id;
       int r = add_bucket(0, 0,
-			 CRUSH_HASH_DEFAULT, p->first, 1, &cur, &empty, &newid);
+			 CRUSH_HASH_DEFAULT, p->first, 1, &cur, &zero_weight, &new_bucket_id);
       if (r < 0) {
         ldout(cct, 1) << "add_bucket failure error: " << cpp_strerror(r)
 		      << dendl;
         return r;
       }
-      set_item_name(newid, q->second);
+      set_item_name(new_bucket_id, q->second);
       
-      cur = newid;
+      cur = new_bucket_id;
       continue;
     }
 
@@ -1426,6 +1427,12 @@ int CrushWrapper::update_item(
 		    << ((float)old_iweight/(float)0x10000) << " -> " << weight
 		    << dendl;
       adjust_item_weight_in_loc(cct, item, iweight, loc);
+      ret = rebuild_roots_with_classes(cct);
+      if (ret < 0) {
+	ldout(cct, 0) << __func__ << " unable to rebuild roots with classes: "
+		      << cpp_strerror(ret) << dendl;
+	return ret;
+      }
       ret = 1;
     }
     if (get_item_name(item) != name) {
@@ -1608,6 +1615,12 @@ int CrushWrapper::adjust_subtree_weight(CephContext *cct, int id, int weight,
 	q.push_back(sub);
       }
     }
+  }
+  int ret = rebuild_roots_with_classes(cct);
+  if (ret < 0) {
+    ldout(cct, 0) << __func__ << " unable to rebuild roots with classes: "
+		  << cpp_strerror(ret) << dendl;
+    return ret;
   }
   return changed;
 }
@@ -1799,8 +1812,7 @@ int CrushWrapper::populate_classes(
   set<int> roots;
   find_nonshadow_roots(&roots);
   for (auto &r : roots) {
-    if (r >= 0)
-      continue;
+    assert(r < 0);
     for (auto &c : class_name) {
       int clone;
       int res = device_class_clone(r, c.first, old_class_bucket, used_ids,

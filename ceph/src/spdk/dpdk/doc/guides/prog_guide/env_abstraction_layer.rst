@@ -249,7 +249,7 @@ manual memory management.
 
 + Using heap API's for externally allocated memory
 
-Using using a set of malloc heap API's is the recommended way to use externally
+Using a set of malloc heap API's is the recommended way to use externally
 allocated memory in DPDK. In this way, support for externally allocated memory
 is implemented through overloading the socket ID - externally allocated heaps
 will have socket ID's that would be considered invalid under normal
@@ -297,7 +297,7 @@ set of API's under the ``rte_extmem_*`` namespace.
 
 These API's are (as their name implies) intended to allow registering or
 unregistering externally allocated memory to/from DPDK's internal page table, to
-allow API's like ``rte_virt2memseg`` etc. to work with externally allocated
+allow API's like ``rte_mem_virt2memseg`` etc. to work with externally allocated
 memory. Memory added this way will not be available for any regular DPDK
 allocators; DPDK will leave this memory for the user application to manage.
 
@@ -418,6 +418,65 @@ Misc Functions
 ~~~~~~~~~~~~~~
 
 Locks and atomic operations are per-architecture (i686 and x86_64).
+
+IOVA Mode Detection
+~~~~~~~~~~~~~~~~~~~
+
+IOVA Mode is selected by considering what the current usable Devices on the
+system require and/or support.
+
+On FreeBSD, RTE_IOVA_PA is always the default. On Linux, the IOVA mode is
+detected based on a 2-step heuristic detailed below.
+
+For the first step, EAL asks each bus its requirement in terms of IOVA mode
+and decides on a preferred IOVA mode.
+
+- if all buses report RTE_IOVA_PA, then the preferred IOVA mode is RTE_IOVA_PA,
+- if all buses report RTE_IOVA_VA, then the preferred IOVA mode is RTE_IOVA_VA,
+- if all buses report RTE_IOVA_DC, no bus expressed a preferrence, then the
+  preferred mode is RTE_IOVA_DC,
+- if the buses disagree (at least one wants RTE_IOVA_PA and at least one wants
+  RTE_IOVA_VA), then the preferred IOVA mode is RTE_IOVA_DC (see below with the
+  check on Physical Addresses availability),
+
+If the buses have expressed no preference on which IOVA mode to pick, then a
+default is selected using the following logic:
+
+- if physical addresses are not available, RTE_IOVA_VA mode is used
+- if /sys/kernel/iommu_groups is not empty, RTE_IOVA_VA mode is used
+- otherwise, RTE_IOVA_PA mode is used
+
+In the case when the buses had disagreed on their preferred IOVA mode, part of
+the buses won't work because of this decision.
+
+The second step checks if the preferred mode complies with the Physical
+Addresses availability since those are only available to root user in recent
+kernels. Namely, if the preferred mode is RTE_IOVA_PA but there is no access to
+Physical Addresses, then EAL init fails early, since later probing of the
+devices would fail anyway.
+
+.. note::
+
+    The RTE_IOVA_VA mode is preferred as the default in most cases for the
+    following reasons:
+
+    - All drivers are expected to work in RTE_IOVA_VA mode, irrespective of
+      physical address availability.
+    - By default, the mempool, first asks for IOVA-contiguous memory using
+      ``RTE_MEMZONE_IOVA_CONTIG``. This is slow in RTE_IOVA_PA mode and it may
+      affect the application boot time.
+    - It is easy to enable large amount of IOVA-contiguous memory use-cases
+      with IOVA in VA mode.
+
+    It is expected that all PCI drivers work in both RTE_IOVA_PA and
+    RTE_IOVA_VA modes.
+
+    If a PCI driver does not support RTE_IOVA_PA mode, the
+    ``RTE_PCI_DRV_NEED_IOVA_AS_VA`` flag is used to dictate that this PCI
+    driver can only work in RTE_IOVA_VA mode.
+
+    When the KNI kernel module is detected, RTE_IOVA_PA mode is preferred as a
+    performance penalty is expected in RTE_IOVA_VA mode.
 
 IOVA Mode Configuration
 ~~~~~~~~~~~~~~~~~~~~~~~
@@ -592,8 +651,8 @@ Known Issues
   Alternatively, applications can use the lock-free stack mempool handler. When
   considering this handler, note that:
 
-  - It is currently limited to the x86_64 platform, because it uses an
-    instruction (16-byte compare-and-swap) that is not yet available on other
+  - It is currently limited to the aarch64 and x86_64 platforms, because it uses
+    an instruction (16-byte compare-and-swap) that is not yet available on other
     platforms.
   - It has worse average-case performance than the non-preemptive rte_ring, but
     software caching (e.g. the mempool cache) can mitigate this by reducing the

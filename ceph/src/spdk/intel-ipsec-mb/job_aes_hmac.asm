@@ -25,7 +25,7 @@
 ;; OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ;;
 
-%include "datastruct.asm"
+%include "include/datastruct.asm"
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;;; Define constants
@@ -98,9 +98,9 @@ FIELD	_src,				8,	8	; pointer to src buffer
 FIELD	_dst,				8,	8	; pointer to dst buffer
 FIELD	_cipher_start_src_offset_in_bytes, \
 					8,	8
-FIELD	_msg_len_to_cipher_in_bytes,	8,	8
+FIELD	_msg_len_to_cipher,	        8,	8
 FIELD	_hash_start_src_offset_in_bytes,8,	8
-FIELD	_msg_len_to_hash_in_bytes,	8,	8
+FIELD	_msg_len_to_hash,	        8,	8
 FIELD	_iv,				8,	8	; pointer to IV
 FIELD	_iv_len_in_bytes,		8,	8
 FIELD	_auth_tag_output,		8,	8	; pointer to hash output
@@ -121,19 +121,24 @@ FIELD	_user_data,			8,	8
 FIELD	_user_data2,			8,	8
 END_FIELDS
 
+%assign _msg_len_to_cipher_in_bytes _msg_len_to_cipher
+%assign _msg_len_to_cipher_in_bits  _msg_len_to_cipher
+%assign _msg_len_to_hash_in_bytes   _msg_len_to_hash
+%assign _msg_len_to_hash_in_bits    _msg_len_to_hash
+
 %assign _JOB_AES_HMAC_size	_FIELD_OFFSET
 %assign _JOB_AES_HMAC_align	_STRUCT_ALIGN
 
-%assign _auth_key_xor_ipad	_u + __auth_key_xor_ipad
-%assign _auth_key_xor_opad	_u + __auth_key_xor_opad
-%assign _k1_expanded		_u + __k1_expanded
-%assign _k2			_u + __k2
-%assign _k3			_u + __k3
-%assign _cbcmac_aad	        _u + __aad
-%assign _cbcmac_aad_len	        _u + __aad_len
-%assign _key_expanded		_u + __key_expanded
-%assign _skey1			_u + __skey1
-%assign _skey2			_u + __skey2
-%assign _gcm_aad	        _u + __gcm_aad
-%assign _gcm_aad_len	        _u + __gcm_aad_len
+%assign _auth_key_xor_ipad              _u + __auth_key_xor_ipad
+%assign _auth_key_xor_opad	        _u + __auth_key_xor_opad
+%assign _k1_expanded		        _u + __k1_expanded
+%assign _k2			        _u + __k2
+%assign _k3			        _u + __k3
+%assign _cbcmac_aad	                _u + __aad
+%assign _cbcmac_aad_len	                _u + __aad_len
+%assign _key_expanded		        _u + __key_expanded
+%assign _skey1			        _u + __skey1
+%assign _skey2			        _u + __skey2
+%assign _gcm_aad	                _u + __gcm_aad
+%assign _gcm_aad_len	                _u + __gcm_aad_len
 

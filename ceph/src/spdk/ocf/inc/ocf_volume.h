@@ -13,7 +13,7 @@
 
 #include "ocf_types.h"
 #include "ocf_env.h"
-#include "ocf_err.h"
+#include "ocf/ocf_err.h"
 
 struct ocf_io;
 
@@ -89,6 +89,8 @@ struct ocf_volume_ops {
 	 *
 	 * @param[in] volume Volume
 	 * @param[in] volume_params optional volume parameters, opaque to OCF
+	 *
+	 * @return Zero on success, otherwise error code
 	 */
 	int (*open)(ocf_volume_t volume, void *volume_params);
 
@@ -100,16 +102,20 @@ struct ocf_volume_ops {
 	void (*close)(ocf_volume_t volume);
 
 	/**
-	 * @brief Close volume
+	 * @brief Get maximum io size
 	 *
 	 * @param[in] volume Volume
+	 *
+	 * @return Maximum io size in bytes
 	 */
 	unsigned int (*get_max_io_size)(ocf_volume_t volume);
 
 	/**
-	 * @brief Close volume
+	 * @brief Get volume length
 	 *
 	 * @param[in] volume Volume
+	 *
+	 * @return Volume lenght in bytes
 	 */
 	uint64_t (*get_length)(ocf_volume_t volume);
 };
@@ -135,6 +141,9 @@ struct ocf_volume_properties {
 
 	struct ocf_io_ops io_ops;
 		/*!< IO operations */
+
+	void (*deinit)(void);
+		/*!< Deinitialize volume type */
 };
 
 /**
@@ -165,7 +174,7 @@ static inline int ocf_uuid_set_str(ocf_uuid_t uuid, char *str)
  */
 static inline const char *ocf_uuid_to_str(const struct ocf_volume_uuid *uuid)
 {
-	return uuid->data;
+	return (const char *)uuid->data;
 }
 
 /**
@@ -256,10 +265,19 @@ int ocf_volume_is_atomic(ocf_volume_t volume);
  * @brief Allocate new io
  *
  * @param[in] volume Volume
+ * @param[in] queue IO queue handle
+ * @param[in] addr OCF IO destination address
+ * @param[in] bytes OCF IO size in bytes
+ * @param[in] dir OCF IO direction
+ * @param[in] io_class OCF IO destination class
+ * @param[in] flags OCF IO flags
  *
  * @return ocf_io on success atomic, otherwise NULL
  */
-struct ocf_io *ocf_volume_new_io(ocf_volume_t volume);
+struct ocf_io *ocf_volume_new_io(ocf_volume_t volume, ocf_queue_t queue,
+		uint64_t addr, uint32_t bytes, uint32_t dir,
+		uint32_t io_class, uint64_t flags);
+
 
 /**
  * @brief Submit io to volume

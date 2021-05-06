@@ -20,14 +20,13 @@
  */
 
 #include <seastar/core/reactor.hh>
+#include <seastar/core/seastar.hh>
 #include <seastar/core/app-template.hh>
 #include <seastar/core/print.hh>
 #include <seastar/core/memory.hh>
 #include <seastar/util/std-compat.hh>
 
 #include <seastar/net/posix-stack.hh>
-
-#ifdef SEASTAR_HAS_POLYMORPHIC_ALLOCATOR
 
 using namespace seastar;
 
@@ -46,7 +45,7 @@ future<> handle_connection(connected_socket s) {
 
 future<> echo_server_loop() {
     return do_with(
-        api_v2::server_socket(listen(make_ipv4_address({1234}), listen_options{.reuse_address = true})), [](auto& listener) {
+        server_socket(listen(make_ipv4_address({1234}), listen_options{.reuse_address = true})), [](auto& listener) {
               // Connect asynchronously in background.
               (void)connect(make_ipv4_address({"127.0.0.1", 1234})).then([](connected_socket&& socket) {
                   socket.shutdown_output();
@@ -59,17 +58,17 @@ future<> echo_server_loop() {
         });
 }
 
-class my_malloc_allocator : public compat::memory_resource {
+class my_malloc_allocator : public std::pmr::memory_resource {
 public:
     int allocs;
     int frees;
     void* do_allocate(std::size_t bytes, std::size_t alignment) override { allocs++; return malloc(bytes); }
     void do_deallocate(void *ptr, std::size_t bytes, std::size_t alignment) override { frees++; return free(ptr); }
-    virtual bool do_is_equal(const compat::memory_resource& __other) const noexcept override { abort(); }
+    virtual bool do_is_equal(const std::pmr::memory_resource& __other) const noexcept override { abort(); }
 };
 
 my_malloc_allocator malloc_allocator;
-compat::polymorphic_allocator<char> allocator{&malloc_allocator};
+std::pmr::polymorphic_allocator<char> allocator{&malloc_allocator};
 
 int main(int ac, char** av) {
     register_network_stack("posix", boost::program_options::options_description(),
@@ -81,10 +80,3 @@ int main(int ac, char** av) {
        return echo_server_loop().finally([](){ engine().exit((malloc_allocator.allocs == malloc_allocator.frees) ? 0 : 1); });
     });
 }
-
-#else
-
-// nothing to test without polymorphic allocator
-int main() {}
-
-#endif

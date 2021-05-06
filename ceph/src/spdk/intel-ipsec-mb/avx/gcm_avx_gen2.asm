@@ -1,5 +1,5 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;  Copyright(c) 2011-2018 Intel Corporation All rights reserved.
+;  Copyright(c) 2011-2019 Intel Corporation All rights reserved.
 ;
 ;  Redistribution and use in source and binary forms, with or without
 ;  modification, are permitted provided that the following conditions
@@ -111,10 +111,12 @@
 ; throughout the code, one tab and two tab indentations are used. one tab is for GHASH part, two tabs is for AES part.
 ;
 
-%include "os.asm"
-%include "reg_sizes.asm"
-%include "gcm_defines.asm"
-%include "memcpy.asm"
+%include "include/os.asm"
+%include "include/reg_sizes.asm"
+%include "include/clear_regs.asm"
+%include "include/gcm_defines.asm"
+%include "include/gcm_keys_sse_avx.asm"
+%include "include/memcpy.asm"
 
 %ifndef GCM128_MODE
 %ifndef GCM192_MODE
@@ -784,10 +786,14 @@ vmovdqu  %%T_key, [%%GDATA_KEY+16*j]
         vmovdqa  %%T3, %%XMM8
 
         cmp     %%LENGTH, 128
-        jl      %%_initial_blocks_done                  ; no need for precomputed constants
+        jl      %%_initial_blocks_done
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-; Haskey_i_k holds XORed values of the low and high parts of the Haskey_i
+; Prepare 8 counter blocks and perform rounds of AES cipher on them, load plain/cipher text and
+; store cipher/plain text.
+; Keep 8 cipher text blocks for further GHASH computations (XMM1 - XMM8)
+; - combine current GHASH value into block 0 (XMM1)
+
                 vpaddd   %%CTR, [ONE]                   ; INCR Y0
                 vmovdqa  %%XMM1, %%CTR
                 vpshufb  %%XMM1, [SHUF_MASK]             ; perform a 16Byte swap
@@ -1604,6 +1610,10 @@ vmovdqu  %%T_key, [%%GDATA_KEY+16*j]
 
 %macro FUNC_RESTORE 0
 
+%ifdef SAFE_DATA
+        clear_scratch_gps_asm
+        clear_scratch_xmms_avx_asm
+%endif
 %ifidn __OUTPUT_FORMAT__, win64
 	vmovdqu xmm15  , [rsp + LOCAL_STORAGE + 9*16]
 	vmovdqu xmm14  , [rsp + LOCAL_STORAGE + 8*16]
@@ -1989,6 +1999,13 @@ vmovdqu  %%T_key, [%%GDATA_KEY+16*j]
         vmovdqu  [r10], xmm9
 
 %%_return_T_done:
+
+%ifdef SAFE_DATA
+        ;; Clear sensitive data from context structure
+        vpxor   xmm0, xmm0
+        vmovdqu [%%GDATA_CTX + AadHash], xmm0
+        vmovdqu [%%GDATA_CTX + PBlockEncKey], xmm0
+%endif
 %endmacro ; GCM_COMPLETE
 
 
@@ -1998,6 +2015,12 @@ vmovdqu  %%T_key, [%%GDATA_KEY+16*j]
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 MKGLOBAL(FN_NAME(precomp,_),function,)
 FN_NAME(precomp,_):
+
+%ifdef SAFE_PARAM
+        ;; Check key_data != NULL
+        cmp     arg1, 0
+        jz      exit_precomp
+%endif
 
         push    r12
         push    r13
@@ -2048,6 +2071,13 @@ FN_NAME(precomp,_):
         pop     r14
         pop     r13
         pop     r12
+
+%ifdef SAFE_DATA
+        clear_scratch_gps_asm
+        clear_scratch_xmms_avx_asm
+%endif
+exit_precomp:
+
         ret
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -2071,7 +2101,36 @@ FN_NAME(init,_):
 	movdqu	[rsp + 0*16], xmm6
 %endif
 
+%ifdef SAFE_PARAM
+        ;; Check key_data != NULL
+        cmp     arg1, 0
+        jz      exit_init
+
+        ;; Check context_data != NULL
+        cmp     arg2, 0
+        jz      exit_init
+
+        ;; Check IV != NULL
+        cmp     arg3, 0
+        jz      exit_init
+
+        ;; Check if aad_len == 0
+        cmp     arg5, 0
+        jz      skip_aad_check_init
+
+        ;; Check aad != NULL (aad_len != 0)
+        cmp     arg4, 0
+        jz      exit_init
+
+skip_aad_check_init:
+%endif
 	GCM_INIT arg1, arg2, arg3, arg4, arg5
+
+%ifdef SAFE_DATA
+        clear_scratch_gps_asm
+        clear_scratch_xmms_avx_asm
+%endif
+exit_init:
 
 %ifidn __OUTPUT_FORMAT__, win64
 	movdqu	xmm6 , [rsp + 0*16]
@@ -2097,8 +2156,32 @@ FN_NAME(enc,_update_):
 
 	FUNC_SAVE
 
+%ifdef SAFE_PARAM
+        ;; Check key_data != NULL
+        cmp     arg1, 0
+        jz      exit_update_enc
+
+        ;; Check context_data != NULL
+        cmp     arg2, 0
+        jz      exit_update_enc
+
+        ;; Check if plaintext_len == 0
+        cmp     arg5, 0
+        jz      skip_in_out_check_update_enc
+
+        ;; Check out != NULL (plaintext_len != 0)
+        cmp     arg3, 0
+        jz      exit_update_enc
+
+        ;; Check in != NULL (plaintext_len != 0)
+        cmp     arg4, 0
+        jz      exit_update_enc
+
+skip_in_out_check_update_enc:
+%endif
 	GCM_ENC_DEC arg1, arg2, arg3, arg4, arg5, ENC
 
+exit_update_enc:
 	FUNC_RESTORE
 
 	ret
@@ -2115,10 +2198,35 @@ FN_NAME(enc,_update_):
 MKGLOBAL(FN_NAME(dec,_update_),function,)
 FN_NAME(dec,_update_):
 
-        FUNC_SAVE
+	FUNC_SAVE
+
+%ifdef SAFE_PARAM
+        ;; Check key_data != NULL
+        cmp     arg1, 0
+        jz      exit_update_dec
+
+        ;; Check context_data != NULL
+        cmp     arg2, 0
+        jz      exit_update_dec
+
+        ;; Check if plaintext_len == 0
+        cmp     arg5, 0
+        jz      skip_in_out_check_update_dec
+
+        ;; Check out != NULL (plaintext_len != 0)
+        cmp     arg3, 0
+        jz      exit_update_dec
+
+        ;; Check in != NULL (plaintext_len != 0)
+        cmp     arg4, 0
+        jz      exit_update_dec
+
+skip_in_out_check_update_dec:
+%endif
 
 	GCM_ENC_DEC arg1, arg2, arg3, arg4, arg5, DEC
 
+exit_update_dec:
 	FUNC_RESTORE
 
 	ret
@@ -2134,6 +2242,26 @@ FN_NAME(dec,_update_):
 MKGLOBAL(FN_NAME(enc,_finalize_),function,)
 FN_NAME(enc,_finalize_):
 
+%ifdef SAFE_PARAM
+        ;; Check key_data != NULL
+        cmp     arg1, 0
+        jz      exit_enc_fin
+
+        ;; Check context_data != NULL
+        cmp     arg2, 0
+        jz      exit_enc_fin
+
+        ;; Check auth_tag != NULL
+        cmp     arg3, 0
+        jz      exit_enc_fin
+
+        ;; Check auth_tag_len == 0 or > 16
+        cmp     arg4, 0
+        jz      exit_enc_fin
+
+        cmp     arg4, 16
+        ja      exit_enc_fin
+%endif
 	push r12
 
 %ifidn __OUTPUT_FORMAT__, win64
@@ -2157,6 +2285,12 @@ FN_NAME(enc,_finalize_):
 %endif
 
 	pop r12
+
+%ifdef SAFE_DATA
+        clear_scratch_gps_asm
+        clear_scratch_xmms_avx_asm
+%endif
+exit_enc_fin:
         ret
 
 
@@ -2169,6 +2303,27 @@ FN_NAME(enc,_finalize_):
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 MKGLOBAL(FN_NAME(dec,_finalize_),function,)
 FN_NAME(dec,_finalize_):
+
+%ifdef SAFE_PARAM
+        ;; Check key_data != NULL
+        cmp     arg1, 0
+        jz      exit_dec_fin
+
+        ;; Check context_data != NULL
+        cmp     arg2, 0
+        jz      exit_dec_fin
+
+        ;; Check auth_tag != NULL
+        cmp     arg3, 0
+        jz      exit_dec_fin
+
+        ;; Check auth_tag_len == 0 or > 16
+        cmp     arg4, 0
+        jz      exit_dec_fin
+
+        cmp     arg4, 16
+        ja      exit_dec_fin
+%endif
 
 	push r12
 
@@ -2193,7 +2348,13 @@ FN_NAME(dec,_finalize_):
 %endif
 
 	pop r12
-ret
+
+%ifdef SAFE_DATA
+        clear_scratch_gps_asm
+        clear_scratch_xmms_avx_asm
+%endif
+exit_dec_fin:
+	ret
 
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -2214,12 +2375,60 @@ FN_NAME(enc,_):
 
 	FUNC_SAVE
 
+%ifdef SAFE_PARAM
+        ;; Check key_data != NULL
+        cmp     arg1, 0
+        jz      exit_enc
+
+        ;; Check context_data != NULL
+        cmp     arg2, 0
+        jz      exit_enc
+
+        ;; Check IV != NULL
+        cmp     arg6, 0
+        jz      exit_enc
+
+        ;; Check auth_tag != NULL
+        cmp     arg9, 0
+        jz      exit_enc
+
+        ;; Check auth_tag_len == 0 or > 16
+        cmp     arg10, 0
+        jz      exit_enc
+
+        cmp     arg10, 16
+        ja      exit_enc
+
+        ;; Check if plaintext_len == 0
+        cmp     arg5, 0
+        jz      skip_in_out_check_enc
+
+        ;; Check out != NULL (plaintext_len != 0)
+        cmp     arg3, 0
+        jz      exit_enc
+
+        ;; Check in != NULL (plaintext_len != 0)
+        cmp     arg4, 0
+        jz      exit_enc
+
+skip_in_out_check_enc:
+        ;; Check if aad_len == 0
+        cmp     arg8, 0
+        jz      skip_aad_check_enc
+
+        ;; Check aad != NULL (aad_len != 0)
+        cmp     arg7, 0
+        jz      exit_enc
+
+skip_aad_check_enc:
+%endif
 	GCM_INIT arg1, arg2, arg6, arg7, arg8
 
 	GCM_ENC_DEC  arg1, arg2, arg3, arg4, arg5, ENC
 
 	GCM_COMPLETE arg1, arg2, arg9, arg10, ENC
 
+exit_enc:
 	FUNC_RESTORE
 
 	ret
@@ -2242,12 +2451,61 @@ FN_NAME(dec,_):
 
 	FUNC_SAVE
 
+%ifdef SAFE_PARAM
+        ;; Check key_data != NULL
+        cmp     arg1, 0
+        jz      exit_dec
+
+        ;; Check context_data != NULL
+        cmp     arg2, 0
+        jz      exit_dec
+
+        ;; Check IV != NULL
+        cmp     arg6, 0
+        jz      exit_dec
+
+        ;; Check auth_tag != NULL
+        cmp     arg9, 0
+        jz      exit_dec
+
+        ;; Check auth_tag_len == 0 or > 16
+        cmp     arg10, 0
+        jz      exit_dec
+
+        cmp     arg10, 16
+        ja      exit_dec
+
+        ;; Check if plaintext_len == 0
+        cmp     arg5, 0
+        jz      skip_in_out_check_dec
+
+        ;; Check out != NULL (plaintext_len != 0)
+        cmp     arg3, 0
+        jz      exit_dec
+
+        ;; Check in != NULL (plaintext_len != 0)
+        cmp     arg4, 0
+        jz      exit_dec
+
+skip_in_out_check_dec:
+        ;; Check if aad_len == 0
+        cmp     arg8, 0
+        jz      skip_aad_check_dec
+
+        ;; Check aad != NULL (aad_len != 0)
+        cmp     arg7, 0
+        jz      exit_dec
+
+skip_aad_check_dec:
+%endif
+
 	GCM_INIT arg1, arg2, arg6, arg7, arg8
 
 	GCM_ENC_DEC  arg1, arg2, arg3, arg4, arg5, DEC
 
 	GCM_COMPLETE arg1, arg2, arg9, arg10, DEC
 
+exit_dec:
 	FUNC_RESTORE
 
 	ret

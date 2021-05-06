@@ -15,35 +15,33 @@ PMEM_PER_TGT=1
 rpc_py="$rootdir/scripts/rpc.py"
 fio_py="$rootdir/scripts/fio.py"
 
-timing_enter iscsi_pmem
-
 timing_enter start_iscsi_target
-$ISCSI_APP -m $ISCSI_TEST_CORE_MASK --wait-for-rpc &
+"${ISCSI_APP[@]}" -m $ISCSI_TEST_CORE_MASK --wait-for-rpc &
 pid=$!
 echo "Process pid: $pid"
 
-trap "iscsicleanup; killprocess $pid; rm -f /tmp/pool_file*; exit 1" SIGINT SIGTERM EXIT
+trap 'iscsicleanup; killprocess $pid; rm -f /tmp/pool_file*; exit 1' SIGINT SIGTERM EXIT
 
 waitforlisten $pid
-$rpc_py set_iscsi_options -o 30 -a 16
-$rpc_py start_subsystem_init
+$rpc_py iscsi_set_options -o 30 -a 16
+$rpc_py framework_start_init
 echo "iscsi_tgt is listening. Running tests..."
 timing_exit start_iscsi_target
 
 timing_enter setup
-$rpc_py add_portal_group $PORTAL_TAG $TARGET_IP:$ISCSI_PORT
+$rpc_py iscsi_create_portal_group $PORTAL_TAG $TARGET_IP:$ISCSI_PORT
 for i in $(seq 1 $TGT_NR); do
 	INITIATOR_TAG=$((i + 1))
-	$rpc_py add_initiator_group $INITIATOR_TAG $INITIATOR_NAME $NETMASK
+	$rpc_py iscsi_create_initiator_group $INITIATOR_TAG $INITIATOR_NAME $NETMASK
 
 	luns=""
 	for j in $(seq 1 $PMEM_PER_TGT); do
 		$rpc_py create_pmem_pool /tmp/pool_file${i}_${j} $PMEM_SIZE $PMEM_BLOCK_SIZE
-		bdevs_name="$($rpc_py construct_pmem_bdev -n pmem${i}_${j} /tmp/pool_file${i}_${j})"
+		bdevs_name="$($rpc_py bdev_pmem_create -n pmem${i}_${j} /tmp/pool_file${i}_${j})"
 		PMEM_BDEVS+="$bdevs_name "
 		luns+="$bdevs_name:$((j - 1)) "
 	done
-	$rpc_py construct_target_node Target$i Target${i}_alias "$luns" "1:$INITIATOR_TAG " 256 -d
+	$rpc_py iscsi_create_target_node Target$i Target${i}_alias "$luns" "1:$INITIATOR_TAG " 256 -d
 done
 timing_exit setup
 sleep 1
@@ -60,12 +58,12 @@ timing_exit fio_test
 iscsicleanup
 
 for pmem in $PMEM_BDEVS; do
-	$rpc_py delete_pmem_bdev $pmem
+	$rpc_py bdev_pmem_delete $pmem
 done
 
 for i in $(seq 1 $TGT_NR); do
 	for c in $(seq 1 $PMEM_PER_TGT); do
-		$rpc_py delete_pmem_pool /tmp/pool_file${i}_${c}
+		$rpc_py bdev_pmem_delete_pool /tmp/pool_file${i}_${c}
 	done
 done
 
@@ -74,5 +72,3 @@ trap - SIGINT SIGTERM EXIT
 rm -f ./local-job*
 rm -f /tmp/pool_file*
 killprocess $pid
-report_test_completion "nightly_iscsi_pmem"
-timing_exit iscsi_pmem

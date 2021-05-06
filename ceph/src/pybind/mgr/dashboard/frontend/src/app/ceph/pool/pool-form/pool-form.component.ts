@@ -1,38 +1,38 @@
-import { Component, EventEmitter, OnInit, Type, ViewChild } from '@angular/core';
+import { Component, OnInit, Type, ViewChild } from '@angular/core';
 import { FormControl, Validators } from '@angular/forms';
 import { ActivatedRoute, Router } from '@angular/router';
 
-import { I18n } from '@ngx-translate/i18n-polyfill';
-import * as _ from 'lodash';
-import { BsModalService } from 'ngx-bootstrap/modal';
-import { TabsetComponent } from 'ngx-bootstrap/tabs';
-import { TooltipDirective } from 'ngx-bootstrap/tooltip';
-import { Observable, Subscription } from 'rxjs';
+import { NgbNav, NgbTooltip } from '@ng-bootstrap/ng-bootstrap';
+import _ from 'lodash';
+import { Observable, ReplaySubject, Subscription } from 'rxjs';
 
-import { CrushRuleService } from '../../../shared/api/crush-rule.service';
-import { ErasureCodeProfileService } from '../../../shared/api/erasure-code-profile.service';
-import { PoolService } from '../../../shared/api/pool.service';
-import { CrushNodeSelectionClass } from '../../../shared/classes/crush.node.selection.class';
-import { CriticalConfirmationModalComponent } from '../../../shared/components/critical-confirmation-modal/critical-confirmation-modal.component';
-import { SelectOption } from '../../../shared/components/select/select-option.model';
-import { ActionLabelsI18n, URLVerbs } from '../../../shared/constants/app.constants';
-import { Icons } from '../../../shared/enum/icons.enum';
-import { CdFormGroup } from '../../../shared/forms/cd-form-group';
-import { CdValidators } from '../../../shared/forms/cd-validators';
+import { DashboardNotFoundError } from '~/app/core/error/error';
+import { CrushRuleService } from '~/app/shared/api/crush-rule.service';
+import { ErasureCodeProfileService } from '~/app/shared/api/erasure-code-profile.service';
+import { PoolService } from '~/app/shared/api/pool.service';
+import { CrushNodeSelectionClass } from '~/app/shared/classes/crush.node.selection.class';
+import { CriticalConfirmationModalComponent } from '~/app/shared/components/critical-confirmation-modal/critical-confirmation-modal.component';
+import { SelectOption } from '~/app/shared/components/select/select-option.model';
+import { ActionLabelsI18n, URLVerbs } from '~/app/shared/constants/app.constants';
+import { Icons } from '~/app/shared/enum/icons.enum';
+import { CdForm } from '~/app/shared/forms/cd-form';
+import { CdFormGroup } from '~/app/shared/forms/cd-form-group';
+import { CdValidators } from '~/app/shared/forms/cd-validators';
 import {
   RbdConfigurationEntry,
   RbdConfigurationSourceField
-} from '../../../shared/models/configuration';
-import { CrushRule } from '../../../shared/models/crush-rule';
-import { CrushStep } from '../../../shared/models/crush-step';
-import { ErasureCodeProfile } from '../../../shared/models/erasure-code-profile';
-import { FinishedTask } from '../../../shared/models/finished-task';
-import { Permission } from '../../../shared/models/permissions';
-import { PoolFormInfo } from '../../../shared/models/pool-form-info';
-import { DimlessBinaryPipe } from '../../../shared/pipes/dimless-binary.pipe';
-import { AuthStorageService } from '../../../shared/services/auth-storage.service';
-import { FormatterService } from '../../../shared/services/formatter.service';
-import { TaskWrapperService } from '../../../shared/services/task-wrapper.service';
+} from '~/app/shared/models/configuration';
+import { CrushRule } from '~/app/shared/models/crush-rule';
+import { CrushStep } from '~/app/shared/models/crush-step';
+import { ErasureCodeProfile } from '~/app/shared/models/erasure-code-profile';
+import { FinishedTask } from '~/app/shared/models/finished-task';
+import { Permission } from '~/app/shared/models/permissions';
+import { PoolFormInfo } from '~/app/shared/models/pool-form-info';
+import { DimlessBinaryPipe } from '~/app/shared/pipes/dimless-binary.pipe';
+import { AuthStorageService } from '~/app/shared/services/auth-storage.service';
+import { FormatterService } from '~/app/shared/services/formatter.service';
+import { ModalService } from '~/app/shared/services/modal.service';
+import { TaskWrapperService } from '~/app/shared/services/task-wrapper.service';
 import { CrushRuleFormModalComponent } from '../crush-rule-form-modal/crush-rule-form-modal.component';
 import { ErasureCodeProfileFormModalComponent } from '../erasure-code-profile-form/erasure-code-profile-form-modal.component';
 import { Pool } from '../pool';
@@ -52,11 +52,11 @@ interface FormFieldDescription {
   templateUrl: './pool-form.component.html',
   styleUrls: ['./pool-form.component.scss']
 })
-export class PoolFormComponent implements OnInit {
-  @ViewChild('crushInfoTabs', { static: false }) crushInfoTabs: TabsetComponent;
-  @ViewChild('crushDeletionBtn', { static: false }) crushDeletionBtn: TooltipDirective;
-  @ViewChild('ecpInfoTabs', { static: false }) ecpInfoTabs: TabsetComponent;
-  @ViewChild('ecpDeletionBtn', { static: false }) ecpDeletionBtn: TooltipDirective;
+export class PoolFormComponent extends CdForm implements OnInit {
+  @ViewChild('crushInfoTabs') crushInfoTabs: NgbNav;
+  @ViewChild('crushDeletionBtn') crushDeletionBtn: NgbTooltip;
+  @ViewChild('ecpInfoTabs') ecpInfoTabs: NgbNav;
+  @ViewChild('ecpDeletionBtn') ecpDeletionBtn: NgbTooltip;
 
   permission: Permission;
   form: CdFormGroup;
@@ -66,15 +66,15 @@ export class PoolFormComponent implements OnInit {
   editing = false;
   isReplicated = false;
   isErasure = false;
-  data = new PoolFormData(this.i18n);
+  data = new PoolFormData();
   externalPgChange = false;
   current: Record<string, any> = {
     rules: []
   };
-  initializeConfigData = new EventEmitter<{
+  initializeConfigData = new ReplaySubject<{
     initialData: RbdConfigurationEntry[];
     sourceType: RbdConfigurationSourceField;
-  }>();
+  }>(1);
   currentConfigurationValues: { [configKey: string]: any } = {};
   action: string;
   resource: string;
@@ -89,20 +89,19 @@ export class PoolFormComponent implements OnInit {
     private dimlessBinaryPipe: DimlessBinaryPipe,
     private route: ActivatedRoute,
     private router: Router,
-    private modalService: BsModalService,
+    private modalService: ModalService,
     private poolService: PoolService,
     private authStorageService: AuthStorageService,
     private formatter: FormatterService,
-    private bsModalService: BsModalService,
     private taskWrapper: TaskWrapperService,
     private ecpService: ErasureCodeProfileService,
     private crushRuleService: CrushRuleService,
-    private i18n: I18n,
     public actionLabels: ActionLabelsI18n
   ) {
+    super();
     this.editing = this.router.url.startsWith(`/pool/${URLVerbs.EDIT}`);
     this.action = this.editing ? this.actionLabels.EDIT : this.actionLabels.CREATE;
-    this.resource = this.i18n('pool');
+    this.resource = $localize`pool`;
     this.authenticate();
     this.createForm();
   }
@@ -114,7 +113,7 @@ export class PoolFormComponent implements OnInit {
       (!this.permission.update && this.editing) ||
       (!this.permission.create && !this.editing)
     ) {
-      this.router.navigate(['/404']);
+      throw new DashboardNotFoundError();
     }
   }
 
@@ -191,6 +190,7 @@ export class PoolFormComponent implements OnInit {
         this.initEditMode();
       } else {
         this.setAvailableApps();
+        this.loadingReady();
       }
       this.listenToChanges();
       this.setComplexValidators();
@@ -241,6 +241,7 @@ export class PoolFormComponent implements OnInit {
       this.poolService.get(param.name).subscribe((pool: Pool) => {
         this.data.pool = pool;
         this.initEditFormData(pool);
+        this.loadingReady();
       })
     );
   }
@@ -252,7 +253,7 @@ export class PoolFormComponent implements OnInit {
   }
 
   private initEditFormData(pool: Pool) {
-    this.initializeConfigData.emit({
+    this.initializeConfigData.next({
       initialData: pool.configuration,
       sourceType: RbdConfigurationSourceField.pool
     });
@@ -331,8 +332,8 @@ export class PoolFormComponent implements OnInit {
     });
     this.form.get('crushRule').valueChanges.subscribe((rule) => {
       // The crush rule can only be changed if type 'replicated' is set.
-      if (this.crushDeletionBtn && this.crushDeletionBtn.isOpen) {
-        this.crushDeletionBtn.hide();
+      if (this.crushDeletionBtn && this.crushDeletionBtn.isOpen()) {
+        this.crushDeletionBtn.close();
       }
       if (!rule) {
         return;
@@ -348,8 +349,8 @@ export class PoolFormComponent implements OnInit {
     });
     this.form.get('erasureProfile').valueChanges.subscribe((profile) => {
       // The ec profile can only be changed if type 'erasure' is set.
-      if (this.ecpDeletionBtn && this.ecpDeletionBtn.isOpen) {
-        this.ecpDeletionBtn.hide();
+      if (this.ecpDeletionBtn && this.ecpDeletionBtn.isOpen()) {
+        this.ecpDeletionBtn.close();
       }
       if (!profile) {
         return;
@@ -484,7 +485,7 @@ export class PoolFormComponent implements OnInit {
     return (ecpControl.valid || ecpControl.disabled) && ecp ? pgs / (ecp.k + ecp.m) : 0;
   }
 
-  private alignPgs(pgs = this.form.getValue('pgNum')) {
+  alignPgs(pgs = this.form.getValue('pgNum')) {
     this.setPgs(Math.round(this.calculatePgPower(pgs < 1 ? 1 : pgs)));
   }
 
@@ -571,14 +572,14 @@ export class PoolFormComponent implements OnInit {
 
   private addModal(modalComponent: Type<any>, reload: (name: string) => void) {
     this.hideOpenTooltips();
-    const modalRef = this.bsModalService.show(modalComponent);
-    modalRef.content.submitAction.subscribe((item: any) => {
+    const modalRef = this.modalService.show(modalComponent);
+    modalRef.componentInstance.submitAction.subscribe((item: any) => {
       reload(item.name);
     });
   }
 
   private hideOpenTooltips() {
-    const hideTooltip = (btn: TooltipDirective) => btn && btn.isOpen && btn.hide();
+    const hideTooltip = (btn: NgbTooltip) => btn && btn.isOpen() && btn.close();
     hideTooltip(this.ecpDeletionBtn);
     hideTooltip(this.crushDeletionBtn);
   }
@@ -628,9 +629,9 @@ export class PoolFormComponent implements OnInit {
       deletionBtn: this.ecpDeletionBtn,
       dataName: 'erasureInfo',
       getTabs: () => this.ecpInfoTabs,
-      tabPosition: 1,
+      tabPosition: 'used-by-pools',
       nameAttribute: 'name',
-      itemDescription: this.i18n('erasure code profile'),
+      itemDescription: $localize`erasure code profile`,
       reloadFn: () => this.reloadECPs(),
       deleteFn: (name) => this.ecpService.delete(name),
       taskName: 'ecp/delete'
@@ -652,10 +653,10 @@ export class PoolFormComponent implements OnInit {
   }: {
     value: any;
     usage: string[];
-    deletionBtn: TooltipDirective;
+    deletionBtn: NgbTooltip;
     dataName: string;
-    getTabs: () => TabsetComponent;
-    tabPosition: number;
+    getTabs: () => NgbNav;
+    tabPosition: string;
     nameAttribute: string;
     itemDescription: string;
     reloadFn: Function;
@@ -671,24 +672,22 @@ export class PoolFormComponent implements OnInit {
       setTimeout(() => {
         const tabs = getTabs();
         if (tabs) {
-          tabs.tabs[tabPosition].active = true;
+          tabs.select(tabPosition);
         }
       }, 50);
       return;
     }
     const name = value[nameAttribute];
     this.modalService.show(CriticalConfirmationModalComponent, {
-      initialState: {
-        itemDescription,
-        itemNames: [name],
-        submitActionObservable: () => {
-          const deletion = deleteFn(name);
-          deletion.subscribe(() => reloadFn());
-          return this.taskWrapper.wrapTaskAroundCall({
-            task: new FinishedTask(taskName, { name: name }),
-            call: deletion
-          });
-        }
+      itemDescription,
+      itemNames: [name],
+      submitActionObservable: () => {
+        const deletion = deleteFn(name);
+        deletion.subscribe(() => reloadFn());
+        return this.taskWrapper.wrapTaskAroundCall({
+          task: new FinishedTask(taskName, { name: name }),
+          call: deletion
+        });
       }
     });
   }
@@ -718,9 +717,9 @@ export class PoolFormComponent implements OnInit {
       deletionBtn: this.crushDeletionBtn,
       dataName: 'crushInfo',
       getTabs: () => this.crushInfoTabs,
-      tabPosition: 2,
+      tabPosition: 'used-by-pools',
       nameAttribute: 'rule_name',
-      itemDescription: this.i18n('crush rule'),
+      itemDescription: $localize`crush rule`,
       reloadFn: () => this.reloadCrushRules(),
       deleteFn: (name) => this.crushRuleService.delete(name),
       taskName: 'crushRule/delete'
@@ -904,16 +903,15 @@ export class PoolFormComponent implements OnInit {
         }),
         call: this.poolService[this.editing ? URLVerbs.UPDATE : URLVerbs.CREATE](pool)
       })
-      .subscribe(
-        undefined,
-        (resp) => {
+      .subscribe({
+        error: (resp) => {
           if (_.isObject(resp.error) && resp.error.code === '34') {
             this.form.get('pgNum').setErrors({ '34': true });
           }
           this.form.setErrors({ cdSubmitButton: true });
         },
-        () => this.router.navigate(['/pool'])
-      );
+        complete: () => this.router.navigate(['/pool'])
+      });
   }
 
   appSelection() {

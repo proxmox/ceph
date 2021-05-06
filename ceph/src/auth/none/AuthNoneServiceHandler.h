@@ -25,9 +25,9 @@ public:
     : AuthServiceHandler(cct_) {}
   ~AuthNoneServiceHandler() override {}
   
-  int handle_request(bufferlist::const_iterator& indata,
+  int handle_request(ceph::buffer::list::const_iterator& indata,
 		     size_t connection_secret_required_length,
-		     bufferlist *result_bl,
+		     ceph::buffer::list *result_bl,
 		     AuthCapsInfo *caps,
 		     CryptoKey *session_key,
 		     std::string *connection_secret) override {
@@ -36,7 +36,7 @@ public:
 
 private:
   int do_start_session(bool is_new_global_id,
-		       bufferlist *result_bl,
+		       ceph::buffer::list *result_bl,
 		       AuthCapsInfo *caps) override {
     caps->allow_all = true;
     return 1;

@@ -63,8 +63,14 @@ public:
         append_static(s.begin(), s.size());
     }
 
-    void append_static(const compat::string_view& s) {
+    void append_static(const std::string_view& s) {
         append_static(s.data(), s.size());
+    }
+
+    void append(std::string_view v) {
+        if (v.size()) {
+            _p = packet(std::move(_p), temporary_buffer<char>::copy_of(v));
+        }
     }
 
     template <typename size_type, size_type max_size>

@@ -25,12 +25,12 @@
 ;; OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ;;
 
-%include "os.asm"
+%include "include/os.asm"
 %include "job_aes_hmac.asm"
 %include "mb_mgr_datastruct.asm"
 
-%include "reg_sizes.asm"
-%include "const.inc"
+%include "include/reg_sizes.asm"
+%include "include/const.inc"
 
 %ifndef AES_CBC_ENC_X4
 
@@ -39,7 +39,7 @@
 
 %endif
 
-; void AES_CBC_ENC_X4(AES_ARGS_x8 *args, UINT64 len_in_bytes);
+; void AES_CBC_ENC_X4(AES_ARGS *args, UINT64 len_in_bytes);
 extern AES_CBC_ENC_X4
 
 %ifdef LINUX
@@ -148,17 +148,19 @@ SUBMIT_JOB_AES_ENC:
 len_is_0:
 	; process completed job "idx"
 	mov	job_rax, [state + _aes_job_in_lane + idx*8]
-; Don't write back IV
-;	mov	iv, [job_rax + _iv]
 	mov	unused_lanes, [state + _aes_unused_lanes]
 	mov	qword [state + _aes_job_in_lane + idx*8], 0
 	or	dword [job_rax + _status], STS_COMPLETED_AES
 	shl	unused_lanes, 8
 	or	unused_lanes, idx
-;	shl	idx, 4 ; multiply by 16
 	mov	[state + _aes_unused_lanes], unused_lanes
-;	movdqa	xmm0, [state + _aes_args_IV + idx]
-;	movdqu	[iv], xmm0
+%ifdef SAFE_DATA
+        ;; Clear IV
+        pxor    xmm0, xmm0
+        shl     idx, 3 ; multiply by 8
+        movdqa  [state + _aes_args_IV + idx*2], xmm0
+        mov     qword [state + _aes_args_keys + idx], 0
+%endif
 
 return:
 

@@ -14,21 +14,19 @@ apps = [
 	'test-compress-perf',
 	'test-crypto-perf',
 	'test-eventdev',
+	'test-fib',
 	'test-pipeline',
-	'test-pmd']
+	'test-pmd',
+	'test-sad']
 
 # for BSD only
 lib_execinfo = cc.find_library('execinfo', required: false)
 
-default_cflags = machine_args
-
-# specify -D_GNU_SOURCE unconditionally
-default_cflags += '-D_GNU_SOURCE'
+default_cflags = machine_args + ['-DALLOW_EXPERIMENTAL_API']
 
 foreach app:apps
 	build = true
 	name = app
-	allow_experimental_apis = false
 	sources = []
 	includes = []
 	cflags = default_cflags
@@ -53,10 +51,6 @@ foreach app:apps
 		link_libs = []
 		if get_option('default_library') == 'static'
 			link_libs = dpdk_static_libraries + dpdk_drivers
-		endif
-
-		if allow_experimental_apis
-			cflags += '-DALLOW_EXPERIMENTAL_API'
 		endif
 
 		executable('dpdk-' + name,

@@ -1,10 +1,11 @@
 # ################################################################
-# Copyright (c) 2016-present, Yann Collet, Facebook, Inc.
+# Copyright (c) 2016-2020, Yann Collet, Facebook, Inc.
 # All rights reserved.
 #
 # This source code is licensed under both the BSD-style license (found in the
 # LICENSE file in the root directory of this source tree) and the GPLv2 (found
 # in the COPYING file in the root directory of this source tree).
+# You may select, at your option, one of the above-listed licenses.
 # ################################################################
 
 # This Makefile presumes libzstd is installed, using `sudo make install`
@@ -77,7 +78,6 @@ test: all
 	@echo -- Edge cases detection
 	! ./streaming_decompression tmp    # invalid input, must fail
 	! ./simple_decompression tmp       # invalid input, must fail
-	! ./simple_decompression tmp.zst   # unknown input size, must fail
 	touch tmpNull                      # create 0-size file
 	./simple_compression tmpNull
 	./simple_decompression tmpNull.zst # 0-size frame : must work

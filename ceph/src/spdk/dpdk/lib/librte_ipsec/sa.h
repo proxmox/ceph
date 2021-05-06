@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2018 Intel Corporation
+ * Copyright(c) 2018-2020 Intel Corporation
  */
 
 #ifndef _SA_H_
@@ -10,6 +10,7 @@
 #define IPSEC_MAX_HDR_SIZE	64
 #define IPSEC_MAX_IV_SIZE	16
 #define IPSEC_MAX_IV_QWORD	(IPSEC_MAX_IV_SIZE / sizeof(uint64_t))
+#define TUN_HDR_MSK (RTE_IPSEC_SATP_ECN_MASK | RTE_IPSEC_SATP_DSCP_MASK)
 
 /* padding alignment for different algorithms */
 enum {
@@ -87,6 +88,8 @@ struct rte_ipsec_sa {
 		union sym_op_ofslen cipher;
 		union sym_op_ofslen auth;
 	} ctp;
+	/* cpu-crypto offsets */
+	union rte_crypto_sym_ofs cofs;
 	/* tx_offload template for tunnel mbuf */
 	struct {
 		uint64_t msk;
@@ -103,6 +106,7 @@ struct rte_ipsec_sa {
 	uint8_t iv_ofs; /* offset for algo-specific IV inside crypto op */
 	uint8_t iv_len;
 	uint8_t pad_align;
+	uint8_t tos_mask;
 
 	/* template for tunnel header */
 	uint8_t hdr[IPSEC_MAX_HDR_SIZE];
@@ -111,14 +115,11 @@ struct rte_ipsec_sa {
 	 * sqn and replay window
 	 * In case of SA handled by multiple threads *sqn* cacheline
 	 * could be shared by multiple cores.
-	 * To minimise perfomance impact, we try to locate in a separate
+	 * To minimise performance impact, we try to locate in a separate
 	 * place from other frequently accesed data.
 	 */
 	union {
-		union {
-			rte_atomic64_t atom;
-			uint64_t raw;
-		} outb;
+		uint64_t outb;
 		struct {
 			uint32_t rdidx; /* read index */
 			uint32_t wridx; /* write index */
@@ -143,8 +144,20 @@ esp_inb_tun_pkt_process(const struct rte_ipsec_session *ss,
 	struct rte_mbuf *mb[], uint16_t num);
 
 uint16_t
+inline_inb_tun_pkt_process(const struct rte_ipsec_session *ss,
+	struct rte_mbuf *mb[], uint16_t num);
+
+uint16_t
 esp_inb_trs_pkt_process(const struct rte_ipsec_session *ss,
 	struct rte_mbuf *mb[], uint16_t num);
+
+uint16_t
+inline_inb_trs_pkt_process(const struct rte_ipsec_session *ss,
+	struct rte_mbuf *mb[], uint16_t num);
+
+uint16_t
+cpu_inb_pkt_prepare(const struct rte_ipsec_session *ss,
+		struct rte_mbuf *mb[], uint16_t num);
 
 /* outbound processing */
 
@@ -161,6 +174,10 @@ esp_outb_sqh_process(const struct rte_ipsec_session *ss, struct rte_mbuf *mb[],
 	uint16_t num);
 
 uint16_t
+pkt_flag_process(const struct rte_ipsec_session *ss,
+	struct rte_mbuf *mb[], uint16_t num);
+
+uint16_t
 inline_outb_tun_pkt_process(const struct rte_ipsec_session *ss,
 	struct rte_mbuf *mb[], uint16_t num);
 
@@ -171,5 +188,12 @@ inline_outb_trs_pkt_process(const struct rte_ipsec_session *ss,
 uint16_t
 inline_proto_outb_pkt_process(const struct rte_ipsec_session *ss,
 	struct rte_mbuf *mb[], uint16_t num);
+
+uint16_t
+cpu_outb_tun_pkt_prepare(const struct rte_ipsec_session *ss,
+		struct rte_mbuf *mb[], uint16_t num);
+uint16_t
+cpu_outb_trs_pkt_prepare(const struct rte_ipsec_session *ss,
+		struct rte_mbuf *mb[], uint16_t num);
 
 #endif /* _SA_H_ */

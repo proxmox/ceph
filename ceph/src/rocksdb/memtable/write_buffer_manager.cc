@@ -11,10 +11,10 @@
 #include <mutex>
 #include "util/coding.h"
 
-namespace rocksdb {
+namespace ROCKSDB_NAMESPACE {
 #ifndef ROCKSDB_LITE
 namespace {
-const size_t kSizeDummyEntry = 1024 * 1024;
+const size_t kSizeDummyEntry = 256 * 1024;
 // The key will be longer than keys for blocks in SST files so they won't
 // conflict.
 const size_t kCacheKeyPrefix = kMaxVarint64Length * 4 + 1;
@@ -86,7 +86,7 @@ void WriteBufferManager::ReserveMemWithCache(size_t mem) {
   size_t new_mem_used = memory_used_.load(std::memory_order_relaxed) + mem;
   memory_used_.store(new_mem_used, std::memory_order_relaxed);
   while (new_mem_used > cache_rep_->cache_allocated_size_) {
-    // Expand size by at least 1MB.
+    // Expand size by at least 256KB.
     // Add a dummy record to the cache
     Cache::Handle* handle;
     cache_rep_->cache_->Insert(cache_rep_->GetNextCacheKey(), nullptr,
@@ -127,4 +127,4 @@ void WriteBufferManager::FreeMemWithCache(size_t mem) {
   (void)mem;
 #endif  // ROCKSDB_LITE
 }
-}  // namespace rocksdb
+}  // namespace ROCKSDB_NAMESPACE

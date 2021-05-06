@@ -162,6 +162,9 @@ typedef enum {
 	ocf_cache_mode_wi,
 		/*!< Write invalidate cache mode */
 
+	ocf_cache_mode_wo,
+		/*!< Write-only cache mode */
+
 	ocf_cache_mode_max,
 		/*!< Stopper of cache mode enumerator */
 
@@ -190,7 +193,7 @@ typedef enum {
 } ocf_seq_cutoff_policy;
 
 /**
- * OCF supported eviction types
+ * OCF supported eviction policy types
  */
 typedef enum {
 	ocf_eviction_lru = 0,
@@ -202,6 +205,23 @@ typedef enum {
 	ocf_eviction_default = ocf_eviction_lru,
 		/*!< Default eviction policy */
 } ocf_eviction_t;
+
+/**
+ * OCF supported promotion policy types
+ */
+typedef enum {
+	ocf_promotion_always = 0,
+		/*!< No promotion policy. Cache inserts are not filtered */
+
+	ocf_promotion_nhit,
+		/*!< Line can be inserted after N requests for it */
+
+	ocf_promotion_max,
+		/*!< Stopper of enumerator */
+
+	ocf_promotion_default = ocf_promotion_always,
+		/*!< Default promotion policy */
+} ocf_promotion_t;
 
 /**
  * OCF supported Write-Back cleaning policies type
@@ -234,6 +254,9 @@ typedef enum {
  * OCF supported cache line sizes in bytes
  */
 typedef enum {
+	ocf_cache_line_size_none = 0,
+		/*!< None */
+
 	ocf_cache_line_size_4 = 4 * KiB,
 		/*!< 4 kiB */
 
@@ -329,6 +352,6 @@ typedef enum {
  * @}
  */
 
-#define MAX_TRIM_RQ_SIZE	(1 * MiB)
+#define MAX_TRIM_RQ_SIZE	(512 * KiB)
 
 #endif /* __OCF_DEF_H__ */

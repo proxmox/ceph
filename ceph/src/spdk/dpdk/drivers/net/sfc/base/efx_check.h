@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  *
- * Copyright (c) 2012-2018 Solarflare Communications Inc.
- * All rights reserved.
+ * Copyright(c) 2019-2020 Xilinx, Inc.
+ * Copyright(c) 2012-2019 Solarflare Communications Inc.
  */
 
 #ifndef _SYS_EFX_CHECK_H
@@ -119,8 +119,15 @@
 # endif
 #endif /* EFSYS_OPT_MCDI_LOGGING */
 
+#if EFSYS_OPT_MCDI_PROXY_AUTH_SERVER
+/* Support MCDI proxy authorization (server) */
+# if !EFSYS_OPT_MCDI_PROXY_AUTH
+#  error "MCDI_PROXY_AUTH_SERVER requires MCDI_PROXY_AUTH"
+# endif
+#endif /* EFSYS_OPT_MCDI_PROXY_AUTH_SERVER */
+
 #if EFSYS_OPT_MCDI_PROXY_AUTH
-/* Support MCDI proxy authorization */
+/* Support MCDI proxy authorization (client) */
 # if !EFSYS_OPT_MCDI
 #  error "MCDI_PROXY_AUTH requires MCDI"
 # endif
@@ -350,5 +357,12 @@
 #  error "FW_SUBVARIANT_AWARE requires MEDFORD2"
 # endif
 #endif
+
+#if EFSYS_OPT_EVB
+/* Support enterprise virtual bridging */
+# if !(EFX_OPTS_EF10())
+#  error "EVB requires EF10 arch"
+# endif
+#endif /* EFSYS_OPT_EVB */
 
 #endif /* _SYS_EFX_CHECK_H */

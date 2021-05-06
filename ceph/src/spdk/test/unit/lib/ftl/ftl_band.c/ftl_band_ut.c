@@ -43,21 +43,14 @@
 #define TEST_BAND_IDX		68
 #define TEST_LBA		0x68676564
 
-static struct spdk_ocssd_geometry_data g_geo = {
-	.num_grp	= 4,
-	.num_pu		= 3,
-	.num_chk	= 1500,
-	.clba		= 100,
-	.ws_opt		= 16,
-	.ws_min		= 4,
+struct base_bdev_geometry g_geo = {
+	.write_unit_size    = 16,
+	.optimal_open_zones = 9,
+	.zone_size	    = 100,
+	.blockcnt	    = 1500 * 100 * 8,
 };
 
-static struct spdk_ftl_punit_range g_range = {
-	.begin		= 2,
-	.end		= 9,
-};
-
-static struct spdk_ftl_dev		*g_dev;
+static struct spdk_ftl_dev *g_dev;
 static struct ftl_band	*g_band;
 
 static void
@@ -65,8 +58,8 @@ setup_band(void)
 {
 	int rc;
 
-	g_dev = test_init_ftl_dev(&g_geo, &g_range);
-	g_band = test_init_ftl_band(g_dev, TEST_BAND_IDX);
+	g_dev = test_init_ftl_dev(&g_geo);
+	g_band = test_init_ftl_band(g_dev, TEST_BAND_IDX, g_geo.zone_size);
 	rc = ftl_band_alloc_lba_map(g_band);
 	CU_ASSERT_EQUAL_FATAL(rc, 0);
 }
@@ -78,50 +71,48 @@ cleanup_band(void)
 	test_free_ftl_dev(g_dev);
 }
 
-static struct ftl_ppa
-ppa_from_punit(uint64_t punit)
+static struct ftl_addr
+addr_from_punit(uint64_t punit)
 {
-	struct ftl_ppa ppa = {};
+	struct ftl_addr addr = {};
 
-	ppa.grp = punit % g_geo.num_grp;
-	ppa.pu = punit / g_geo.num_grp;
-	return ppa;
+	addr.offset = punit * g_geo.zone_size;
+	return addr;
 }
 
 static void
-test_band_lbkoff_from_ppa_base(void)
+test_band_block_offset_from_addr_base(void)
 {
-	struct ftl_ppa ppa;
+	struct ftl_addr addr;
 	uint64_t offset, i, flat_lun = 0;
 
 	setup_band();
-	for (i = g_range.begin; i < g_range.end; ++i) {
-		ppa = ppa_from_punit(i);
-		ppa.chk = TEST_BAND_IDX;
+	for (i = 0; i < ftl_get_num_punits(g_dev); ++i) {
+		addr = addr_from_punit(i);
+		addr.offset += TEST_BAND_IDX * ftl_get_num_blocks_in_band(g_dev);
 
-		offset = ftl_band_lbkoff_from_ppa(g_band, ppa);
-		CU_ASSERT_EQUAL(offset, flat_lun * ftl_dev_lbks_in_chunk(g_dev));
+		offset = ftl_band_block_offset_from_addr(g_band, addr);
+		CU_ASSERT_EQUAL(offset, flat_lun * ftl_get_num_blocks_in_zone(g_dev));
 		flat_lun++;
 	}
 	cleanup_band();
 }
 
 static void
-test_band_lbkoff_from_ppa_lbk(void)
+test_band_block_offset_from_addr_offset(void)
 {
-	struct ftl_ppa ppa;
+	struct ftl_addr addr;
 	uint64_t offset, expect, i, j;
 
 	setup_band();
-	for (i = g_range.begin; i < g_range.end; ++i) {
-		for (j = 0; j < g_geo.clba; ++j) {
-			ppa = ppa_from_punit(i);
-			ppa.chk = TEST_BAND_IDX;
-			ppa.lbk = j;
+	for (i = 0; i < ftl_get_num_punits(g_dev); ++i) {
+		for (j = 0; j < g_geo.zone_size; ++j) {
+			addr = addr_from_punit(i);
+			addr.offset += TEST_BAND_IDX * ftl_get_num_blocks_in_band(g_dev) + j;
 
-			offset = ftl_band_lbkoff_from_ppa(g_band, ppa);
+			offset = ftl_band_block_offset_from_addr(g_band, addr);
 
-			expect = test_offset_from_ppa(ppa, g_band);
+			expect = test_offset_from_addr(addr, g_band);
 			CU_ASSERT_EQUAL(offset, expect);
 		}
 	}
@@ -129,22 +120,21 @@ test_band_lbkoff_from_ppa_lbk(void)
 }
 
 static void
-test_band_ppa_from_lbkoff(void)
+test_band_addr_from_block_offset(void)
 {
-	struct ftl_ppa ppa, expect;
+	struct ftl_addr addr, expect;
 	uint64_t offset, i, j;
 
 	setup_band();
-	for (i = g_range.begin; i < g_range.end; ++i) {
-		for (j = 0; j < g_geo.clba; ++j) {
-			expect = ppa_from_punit(i);
-			expect.chk = TEST_BAND_IDX;
-			expect.lbk = j;
+	for (i = 0; i < ftl_get_num_punits(g_dev); ++i) {
+		for (j = 0; j < g_geo.zone_size; ++j) {
+			expect = addr_from_punit(i);
+			expect.offset += TEST_BAND_IDX * ftl_get_num_blocks_in_band(g_dev) + j;
 
-			offset = ftl_band_lbkoff_from_ppa(g_band, expect);
-			ppa = ftl_band_ppa_from_lbkoff(g_band, offset);
+			offset = ftl_band_block_offset_from_addr(g_band, expect);
+			addr = ftl_band_addr_from_block_offset(g_band, offset);
 
-			CU_ASSERT_EQUAL(ppa.ppa, expect.ppa);
+			CU_ASSERT_EQUAL(addr.offset, expect.offset);
 		}
 	}
 	cleanup_band();
@@ -154,31 +144,31 @@ static void
 test_band_set_addr(void)
 {
 	struct ftl_lba_map *lba_map;
-	struct ftl_ppa ppa;
+	struct ftl_addr addr;
 	uint64_t offset = 0;
 
 	setup_band();
 	lba_map = &g_band->lba_map;
-	ppa = ppa_from_punit(g_range.begin);
-	ppa.chk = TEST_BAND_IDX;
+	addr = addr_from_punit(0);
+	addr.offset += TEST_BAND_IDX * ftl_get_num_blocks_in_band(g_dev);
 
 	CU_ASSERT_EQUAL(lba_map->num_vld, 0);
 
-	offset = test_offset_from_ppa(ppa, g_band);
+	offset = test_offset_from_addr(addr, g_band);
 
-	ftl_band_set_addr(g_band, TEST_LBA, ppa);
+	ftl_band_set_addr(g_band, TEST_LBA, addr);
 	CU_ASSERT_EQUAL(lba_map->num_vld, 1);
 	CU_ASSERT_EQUAL(lba_map->map[offset], TEST_LBA);
 	CU_ASSERT_TRUE(spdk_bit_array_get(lba_map->vld, offset));
 
-	ppa.pu++;
-	offset = test_offset_from_ppa(ppa, g_band);
-	ftl_band_set_addr(g_band, TEST_LBA + 1, ppa);
+	addr.offset += g_geo.zone_size;
+	offset = test_offset_from_addr(addr, g_band);
+	ftl_band_set_addr(g_band, TEST_LBA + 1, addr);
 	CU_ASSERT_EQUAL(lba_map->num_vld, 2);
 	CU_ASSERT_EQUAL(lba_map->map[offset], TEST_LBA + 1);
 	CU_ASSERT_TRUE(spdk_bit_array_get(lba_map->vld, offset));
-	ppa.pu--;
-	offset = test_offset_from_ppa(ppa, g_band);
+	addr.offset -= g_geo.zone_size;
+	offset = test_offset_from_addr(addr, g_band);
 	CU_ASSERT_TRUE(spdk_bit_array_get(lba_map->vld, offset));
 	cleanup_band();
 }
@@ -187,31 +177,31 @@ static void
 test_invalidate_addr(void)
 {
 	struct ftl_lba_map *lba_map;
-	struct ftl_ppa ppa;
+	struct ftl_addr addr;
 	uint64_t offset[2];
 
 	setup_band();
 	lba_map = &g_band->lba_map;
-	ppa = ppa_from_punit(g_range.begin);
-	ppa.chk = TEST_BAND_IDX;
-	offset[0] = test_offset_from_ppa(ppa, g_band);
+	addr = addr_from_punit(0);
+	addr.offset += TEST_BAND_IDX * ftl_get_num_blocks_in_band(g_dev);
+	offset[0] = test_offset_from_addr(addr, g_band);
 
-	ftl_band_set_addr(g_band, TEST_LBA, ppa);
+	ftl_band_set_addr(g_band, TEST_LBA, addr);
 	CU_ASSERT_EQUAL(lba_map->num_vld, 1);
 	CU_ASSERT_TRUE(spdk_bit_array_get(lba_map->vld, offset[0]));
-	ftl_invalidate_addr(g_band->dev, ppa);
+	ftl_invalidate_addr(g_band->dev, addr);
 	CU_ASSERT_EQUAL(lba_map->num_vld, 0);
 	CU_ASSERT_FALSE(spdk_bit_array_get(lba_map->vld, offset[0]));
 
-	offset[0] = test_offset_from_ppa(ppa, g_band);
-	ftl_band_set_addr(g_band, TEST_LBA, ppa);
-	ppa.pu++;
-	offset[1] = test_offset_from_ppa(ppa, g_band);
-	ftl_band_set_addr(g_band, TEST_LBA + 1, ppa);
+	offset[0] = test_offset_from_addr(addr, g_band);
+	ftl_band_set_addr(g_band, TEST_LBA, addr);
+	addr.offset += g_geo.zone_size;
+	offset[1] = test_offset_from_addr(addr, g_band);
+	ftl_band_set_addr(g_band, TEST_LBA + 1, addr);
 	CU_ASSERT_EQUAL(lba_map->num_vld, 2);
 	CU_ASSERT_TRUE(spdk_bit_array_get(lba_map->vld, offset[0]));
 	CU_ASSERT_TRUE(spdk_bit_array_get(lba_map->vld, offset[1]));
-	ftl_invalidate_addr(g_band->dev, ppa);
+	ftl_invalidate_addr(g_band->dev, addr);
 	CU_ASSERT_EQUAL(lba_map->num_vld, 1);
 	CU_ASSERT_TRUE(spdk_bit_array_get(lba_map->vld, offset[0]));
 	CU_ASSERT_FALSE(spdk_bit_array_get(lba_map->vld, offset[1]));
@@ -219,76 +209,73 @@ test_invalidate_addr(void)
 }
 
 static void
-test_next_xfer_ppa(void)
+test_next_xfer_addr(void)
 {
-	struct ftl_ppa ppa, result, expect;
+	struct ftl_addr addr, result, expect;
 
 	setup_band();
-	/* Verify simple one lbk incremention */
-	ppa = ppa_from_punit(g_range.begin);
-	ppa.chk = TEST_BAND_IDX;
-	ppa.lbk = 0;
-	expect = ppa;
-	expect.lbk = 1;
+	/* Verify simple one block incremention */
+	addr = addr_from_punit(0);
+	addr.offset += TEST_BAND_IDX * ftl_get_num_blocks_in_band(g_dev);
+	expect = addr;
+	expect.offset += 1;
 
-	result = ftl_band_next_xfer_ppa(g_band, ppa, 1);
-	CU_ASSERT_EQUAL(result.ppa, expect.ppa);
+	result = ftl_band_next_xfer_addr(g_band, addr, 1);
+	CU_ASSERT_EQUAL(result.offset, expect.offset);
 
-	/* Verify jumping between chunks */
-	expect = ppa_from_punit(g_range.begin + 1);
-	expect.chk = TEST_BAND_IDX;
-	result = ftl_band_next_xfer_ppa(g_band, ppa, g_dev->xfer_size);
-	CU_ASSERT_EQUAL(result.ppa, expect.ppa);
+	/* Verify jumping between zones */
+	expect = addr_from_punit(1);
+	expect.offset += TEST_BAND_IDX * ftl_get_num_blocks_in_band(g_dev);
+	result = ftl_band_next_xfer_addr(g_band, addr, g_dev->xfer_size);
+	CU_ASSERT_EQUAL(result.offset, expect.offset);
 
 	/* Verify jumping works with unaligned offsets */
-	expect = ppa_from_punit(g_range.begin + 1);
-	expect.chk = TEST_BAND_IDX;
-	expect.lbk = 3;
-	result = ftl_band_next_xfer_ppa(g_band, ppa, g_dev->xfer_size + 3);
-	CU_ASSERT_EQUAL(result.ppa, expect.ppa);
+	expect = addr_from_punit(1);
+	expect.offset += TEST_BAND_IDX * ftl_get_num_blocks_in_band(g_dev) + 3;
+	result = ftl_band_next_xfer_addr(g_band, addr, g_dev->xfer_size + 3);
+	CU_ASSERT_EQUAL(result.offset, expect.offset);
 
-	/* Verify jumping from last chunk to the first one */
-	expect = ppa_from_punit(g_range.begin);
-	expect.chk = TEST_BAND_IDX;
-	expect.lbk = g_dev->xfer_size;
-	ppa = ppa_from_punit(g_range.end);
-	ppa.chk = TEST_BAND_IDX;
-	result = ftl_band_next_xfer_ppa(g_band, ppa, g_dev->xfer_size);
-	CU_ASSERT_EQUAL(result.ppa, expect.ppa);
+	/* Verify jumping from last zone to the first one */
+	expect = addr_from_punit(0);
+	expect.offset += TEST_BAND_IDX * ftl_get_num_blocks_in_band(g_dev) + g_dev->xfer_size;
+	addr = addr_from_punit(ftl_get_num_punits(g_dev) - 1);
+	addr.offset += TEST_BAND_IDX * ftl_get_num_blocks_in_band(g_dev);
+	result = ftl_band_next_xfer_addr(g_band, addr, g_dev->xfer_size);
+	CU_ASSERT_EQUAL(result.offset, expect.offset);
 
-	/* Verify jumping from last chunk to the first one with unaligned offset */
-	expect = ppa_from_punit(g_range.begin);
-	expect.chk = TEST_BAND_IDX;
-	expect.lbk = g_dev->xfer_size + 2;
-	ppa = ppa_from_punit(g_range.end);
-	ppa.chk = TEST_BAND_IDX;
-	result = ftl_band_next_xfer_ppa(g_band, ppa, g_dev->xfer_size + 2);
-	CU_ASSERT_EQUAL(result.ppa, expect.ppa);
+	/* Verify jumping from last zone to the first one with unaligned offset */
+	expect = addr_from_punit(0);
+	expect.offset += TEST_BAND_IDX * ftl_get_num_blocks_in_band(g_dev);
+	expect.offset += g_dev->xfer_size + 2;
+	addr = addr_from_punit(ftl_get_num_punits(g_dev) - 1);
+	addr.offset += TEST_BAND_IDX * ftl_get_num_blocks_in_band(g_dev);
+	result = ftl_band_next_xfer_addr(g_band, addr, g_dev->xfer_size + 2);
+	CU_ASSERT_EQUAL(result.offset, expect.offset);
 
 	/* Verify large offset spanning across the whole band multiple times */
-	expect = ppa_from_punit(g_range.begin);
-	expect.chk = TEST_BAND_IDX;
-	expect.lbk = g_dev->xfer_size * 5 + 4;
-	ppa = ppa_from_punit(g_range.begin);
-	ppa.chk = TEST_BAND_IDX;
-	ppa.lbk = g_dev->xfer_size * 2 + 1;
-	result = ftl_band_next_xfer_ppa(g_band, ppa, 3 * g_dev->xfer_size *
-					ftl_dev_num_punits(g_dev) + 3);
-	CU_ASSERT_EQUAL(result.ppa, expect.ppa);
+	expect = addr_from_punit(0);
+	expect.offset += TEST_BAND_IDX * ftl_get_num_blocks_in_band(g_dev);
+	expect.offset += g_dev->xfer_size * 5 + 4;
+	addr = addr_from_punit(0);
+	addr.offset += TEST_BAND_IDX * ftl_get_num_blocks_in_band(g_dev);
+	addr.offset += g_dev->xfer_size * 2 + 1;
+	result = ftl_band_next_xfer_addr(g_band, addr, 3 * g_dev->xfer_size *
+					 ftl_get_num_punits(g_dev) + 3);
+	CU_ASSERT_EQUAL(result.offset, expect.offset);
 
-	/* Remove one chunk and verify it's skipped properly */
-	g_band->chunk_buf[1].state = FTL_CHUNK_STATE_BAD;
-	CIRCLEQ_REMOVE(&g_band->chunks, &g_band->chunk_buf[1], circleq);
-	g_band->num_chunks--;
-	expect = ppa_from_punit(g_range.begin + 2);
-	expect.chk = TEST_BAND_IDX;
-	expect.lbk = g_dev->xfer_size * 5 + 4;
-	ppa = ppa_from_punit(g_range.begin);
-	ppa.chk = TEST_BAND_IDX;
-	ppa.lbk = g_dev->xfer_size * 2 + 1;
-	result = ftl_band_next_xfer_ppa(g_band, ppa, 3 * g_dev->xfer_size *
-					(ftl_dev_num_punits(g_dev) - 1) + g_dev->xfer_size + 3);
-	CU_ASSERT_EQUAL(result.ppa, expect.ppa);
+	/* Remove one zone and verify it's skipped properly */
+	g_band->zone_buf[1].info.state = SPDK_BDEV_ZONE_STATE_OFFLINE;
+	CIRCLEQ_REMOVE(&g_band->zones, &g_band->zone_buf[1], circleq);
+	g_band->num_zones--;
+	expect = addr_from_punit(2);
+	expect.offset += TEST_BAND_IDX * ftl_get_num_blocks_in_band(g_dev);
+	expect.offset += g_dev->xfer_size * 5 + 4;
+	addr = addr_from_punit(0);
+	addr.offset += TEST_BAND_IDX * ftl_get_num_blocks_in_band(g_dev);
+	addr.offset += g_dev->xfer_size * 2 + 1;
+	result = ftl_band_next_xfer_addr(g_band, addr, 3 * g_dev->xfer_size *
+					 (ftl_get_num_punits(g_dev) - 1) + g_dev->xfer_size + 3);
+	CU_ASSERT_EQUAL(result.offset, expect.offset);
 	cleanup_band();
 }
 
@@ -298,33 +285,18 @@ main(int argc, char **argv)
 	CU_pSuite suite = NULL;
 	unsigned int num_failures;
 
-	if (CU_initialize_registry() != CUE_SUCCESS) {
-		return CU_get_error();
-	}
+	CU_set_error_action(CUEA_ABORT);
+	CU_initialize_registry();
 
 	suite = CU_add_suite("ftl_band_suite", NULL, NULL);
-	if (!suite) {
-		CU_cleanup_registry();
-		return CU_get_error();
-	}
 
-	if (
-		CU_add_test(suite, "test_band_lbkoff_from_ppa_base",
-			    test_band_lbkoff_from_ppa_base) == NULL
-		|| CU_add_test(suite, "test_band_lbkoff_from_ppa_lbk",
-			       test_band_lbkoff_from_ppa_lbk) == NULL
-		|| CU_add_test(suite, "test_band_ppa_from_lbkoff",
-			       test_band_ppa_from_lbkoff) == NULL
-		|| CU_add_test(suite, "test_band_set_addr",
-			       test_band_set_addr) == NULL
-		|| CU_add_test(suite, "test_invalidate_addr",
-			       test_invalidate_addr) == NULL
-		|| CU_add_test(suite, "test_next_xfer_ppa",
-			       test_next_xfer_ppa) == NULL
-	) {
-		CU_cleanup_registry();
-		return CU_get_error();
-	}
+
+	CU_ADD_TEST(suite, test_band_block_offset_from_addr_base);
+	CU_ADD_TEST(suite, test_band_block_offset_from_addr_offset);
+	CU_ADD_TEST(suite, test_band_addr_from_block_offset);
+	CU_ADD_TEST(suite, test_band_set_addr);
+	CU_ADD_TEST(suite, test_invalidate_addr);
+	CU_ADD_TEST(suite, test_next_xfer_addr);
 
 	CU_basic_set_mode(CU_BRM_VERBOSE);
 	CU_basic_run_tests();

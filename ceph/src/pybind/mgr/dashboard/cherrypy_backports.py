@@ -43,8 +43,7 @@ def patch_http_connection_init(v):
     # It was fixed in 3.7.0.  Exact lower bound version is probably earlier,
     # but 3.5.0 is what this monkey patch is tested on.
     if StrictVersion("3.5.0") <= v < StrictVersion("3.7.0"):
-        from cherrypy.wsgiserver.wsgiserver2 import \
-            HTTPConnection, CP_fileobject
+        from cherrypy.wsgiserver.wsgiserver2 import CP_fileobject, HTTPConnection
 
         def fixed_init(hc_self, server, sock, makefile=CP_fileobject):
             hc_self.server = server
@@ -123,12 +122,7 @@ def accept_socket_error_0(v):
         pass
 
     if v < StrictVersion("9.0.0") or cheroot_version < StrictVersion("6.5.5"):
-        import six
-        if six.PY3:
-            generic_socket_error = OSError
-        else:
-            import socket
-            generic_socket_error = socket.error
+        generic_socket_error = OSError
 
         def accept_socket_error_0(func):
             def wrapper(self, sock):
@@ -166,6 +160,7 @@ def patch_request_unique_id(v):
     if v < StrictVersion('11.1.0'):
         import uuid
         from functools import update_wrapper
+
         from cherrypy._cprequest import Request
 
         class LazyUUID4(object):

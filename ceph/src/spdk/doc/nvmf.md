@@ -29,16 +29,11 @@ available [here](https://downloads.openfabrics.org/OFED/).
 
 ### Prerequisites {#nvmf_prereqs}
 
-To build nvmf_tgt with the RDMA transport, there are some additional dependencies.
+To build nvmf_tgt with the RDMA transport, there are some additional dependencies,
+which can be install using pkgdep.sh script.
 
-Fedora:
 ~~~{.sh}
-dnf install libibverbs-devel librdmacm-devel
-~~~
-
-Ubuntu:
-~~~{.sh}
-apt-get install libibverbs-dev librdmacm-dev
+sudo scripts/pkgdep.sh --rdma
 ~~~
 
 Then build SPDK with RDMA enabled:
@@ -48,7 +43,7 @@ Then build SPDK with RDMA enabled:
 make
 ~~~
 
-Once built, the binary will be in `app/nvmf_tgt`.
+Once built, the binary will be in `build/bin`.
 
 ### Prerequisites for InfiniBand/RDMA Verbs {#nvmf_prereqs_verbs}
 
@@ -125,6 +120,33 @@ Using .ini style configuration files for configuration of the NVMe-oF target is 
 be replaced with JSON based RPCs. .ini style configuration files can be converted to json format by way
 of the new script `scripts/config_converter.py`.
 
+## FC transport support {#nvmf_fc_transport}
+
+To build nvmf_tgt with the FC transport, there is an additional FC LLD (Low Level Driver) code dependency.
+Please contact your FC vendor for instructions to obtain FC driver module.
+
+### Broadcom FC LLD code
+
+FC LLD driver for Broadcom FC NVMe capable adapters can be obtained from,
+https://github.com/ecdufcdrvr/bcmufctdrvr.
+
+### Fetch FC LLD module and then build SPDK with FC enabled
+
+After cloning SPDK repo and initialize submodules, FC LLD library is built which then can be linked with
+the fc transport.
+
+~~~{.sh}
+git clone https://github.com/spdk/spdk spdk
+git clone https://github.com/ecdufcdrvr/bcmufctdrvr fc
+cd spdk
+git submodule update --init
+cd ../fc
+make DPDK_DIR=../spdk/dpdk/build SPDK_DIR=../spdk
+cd ../spdk
+./configure --with-fc=../fc/build
+make
+~~~
+
 ### Using RPCs {#nvmf_config_rpc}
 
 Start the nvmf_tgt application with elevated privileges. Once the target is started,
@@ -135,7 +157,7 @@ and an in capsule data size of 0 bytes. The TCP transport is configured with an 
 16384 bytes, 8 max qpairs per controller, and an in capsule data size of 8192 bytes.
 
 ~~~{.sh}
-app/nvmf_tgt/nvmf_tgt
+build/bin/nvmf_tgt
 scripts/rpc.py nvmf_create_transport -t RDMA -u 8192 -p 4 -c 0
 scripts/rpc.py nvmf_create_transport -t TCP -u 16384 -p 8 -c 8192
 ~~~
@@ -145,8 +167,8 @@ NQN, serial number, and IP address with RDMA transport to your own circumstances
 "rdma" with "TCP", then the subsystem will add a listener with TCP transport.
 
 ~~~{.sh}
-scripts/rpc.py construct_malloc_bdev -b Malloc0 512 512
-scripts/rpc.py nvmf_subsystem_create nqn.2016-06.io.spdk:cnode1 -a -s SPDK00000000000001 -d SPDK_Controller1
+scripts/rpc.py bdev_malloc_create -b Malloc0 512 512
+scripts/rpc.py nvmf_create_subsystem nqn.2016-06.io.spdk:cnode1 -a -s SPDK00000000000001 -d SPDK_Controller1
 scripts/rpc.py nvmf_subsystem_add_ns nqn.2016-06.io.spdk:cnode1 Malloc0
 scripts/rpc.py nvmf_subsystem_add_listener nqn.2016-06.io.spdk:cnode1 -t rdma -a 192.168.100.8 -s 4420
 ~~~
@@ -176,6 +198,7 @@ NVMe Domain NQN = "nqn.", year, '-', month, '.', reverse domain, ':', utf-8 stri
 ~~~
 
 Please note that the following types from the definition above are defined elsewhere:
+
 1. utf-8 string: Defined in [rfc 3629](https://tools.ietf.org/html/rfc3629).
 2. reverse domain: Equivalent to domain name as defined in [rfc 1034](https://tools.ietf.org/html/rfc1034).
 
@@ -208,7 +231,7 @@ The `-m` core mask option specifies a bit mask of the CPU cores that
 SPDK is allowed to execute work items on.
 For example, to allow SPDK to use cores 24, 25, 26 and 27:
 ~~~{.sh}
-app/nvmf_tgt/nvmf_tgt -m 0xF000000
+build/bin/nvmf_tgt -m 0xF000000
 ~~~
 
 ## Configuring the Linux NVMe over Fabrics Host {#nvmf_host}

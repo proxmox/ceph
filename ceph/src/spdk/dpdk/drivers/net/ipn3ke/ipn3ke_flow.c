@@ -18,6 +18,12 @@
 #include <rte_malloc.h>
 #include <rte_eth_ctrl.h>
 #include <rte_tailq.h>
+#include <rte_rawdev.h>
+#include <rte_rawdev_pmd.h>
+#include <rte_bus_ifpga.h>
+#include <ifpga_common.h>
+#include <ifpga_logs.h>
+#include <ifpga_rawdev.h>
 
 #include "ipn3ke_rawdev_api.h"
 #include "ipn3ke_flow.h"
@@ -96,7 +102,7 @@ ipn3ke_pattern_vxlan(const struct rte_flow_item patterns[],
 
 			rte_memcpy(&parser->key[0],
 					eth->src.addr_bytes,
-					ETHER_ADDR_LEN);
+					RTE_ETHER_ADDR_LEN);
 			break;
 
 		case RTE_FLOW_ITEM_TYPE_VXLAN:
@@ -160,7 +166,7 @@ ipn3ke_pattern_mac(const struct rte_flow_item patterns[],
 
 			rte_memcpy(parser->key,
 					eth->src.addr_bytes,
-					ETHER_ADDR_LEN);
+					RTE_ETHER_ADDR_LEN);
 			break;
 
 		default:
@@ -1360,6 +1366,7 @@ int ipn3ke_flow_init(void *dev)
 						IPN3KE_CLF_EM_NUM,
 						0,
 						0xFFFFFFFF);
+	IPN3KE_AFU_PMD_DEBUG("IPN3KE_CLF_EN_NUM: %x\n", hw->flow_max_entries);
 	hw->flow_num_entries = 0;
 
 	return 0;
@@ -1371,4 +1378,3 @@ const struct rte_flow_ops ipn3ke_flow_ops = {
 	.destroy = ipn3ke_flow_destroy,
 	.flush = ipn3ke_flow_flush,
 };
-

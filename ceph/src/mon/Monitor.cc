@@ -44,7 +44,6 @@
 #include "messages/MGenericMessage.h"
 #include "messages/MMonCommand.h"
 #include "messages/MMonCommandAck.h"
-#include "messages/MMonMetadata.h"
 #include "messages/MMonSync.h"
 #include "messages/MMonScrub.h"
 #include "messages/MMonProbe.h"
@@ -86,9 +85,8 @@
 #include "MgrMonitor.h"
 #include "MgrStatMonitor.h"
 #include "ConfigMonitor.h"
-#include "mon/QuorumService.h"
+#include "KVMonitor.h"
 #include "mon/HealthMonitor.h"
-#include "mon/ConfigKeyService.h"
 #include "common/config.h"
 #include "common/cmdparse.h"
 #include "include/ceph_assert.h"
@@ -101,6 +99,37 @@
 #undef dout_prefix
 #define dout_prefix _prefix(_dout, this)
 using namespace TOPNSPC::common;
+
+using std::cout;
+using std::dec;
+using std::hex;
+using std::list;
+using std::map;
+using std::make_pair;
+using std::ostream;
+using std::ostringstream;
+using std::pair;
+using std::set;
+using std::setfill;
+using std::string;
+using std::stringstream;
+using std::to_string;
+using std::vector;
+using std::unique_ptr;
+
+using ceph::bufferlist;
+using ceph::decode;
+using ceph::encode;
+using ceph::ErasureCodeInterfaceRef;
+using ceph::ErasureCodeProfile;
+using ceph::Formatter;
+using ceph::JSONFormatter;
+using ceph::make_message;
+using ceph::mono_clock;
+using ceph::mono_time;
+using ceph::timespan_str;
+
+
 static ostream& _prefix(std::ostream *_dout, const Monitor *mon) {
   return *_dout << "mon." << mon->name << "@" << mon->rank
 		<< "(" << mon->get_state_name() << ") e" << mon->monmap->get_epoch() << " ";
@@ -151,7 +180,7 @@ Monitor::Monitor(CephContext* cct_, string nm, MonitorDBStore *s,
   gss_ktfile_client(cct->_conf.get_val<std::string>("gss_ktab_client_file")),
   store(s),
   
-  elector(this),
+  elector(this, map->strategy),
   required_features(0),
   leader(0),
   quorum_con_features(0),
@@ -173,7 +202,6 @@ Monitor::Monitor(CephContext* cct_, string nm, MonitorDBStore *s,
   timecheck_rounds_since_clean(0),
   timecheck_event(NULL),
 
-  paxos_service(PAXOS_NUM),
   admin_hook(NULL),
   routed_request_tid(0),
   op_tracker(cct, g_conf().get_val<bool>("mon_enable_op_tracker"), 1)
@@ -209,19 +237,18 @@ Monitor::Monitor(CephContext* cct_, string nm, MonitorDBStore *s,
       g_conf().get_val<uint64_t>("mon_op_history_slow_op_size"),
       g_conf().get_val<std::chrono::seconds>("mon_op_history_slow_op_threshold").count());
 
-  paxos = new Paxos(this, "paxos");
+  paxos = std::make_unique<Paxos>(*this, "paxos");
 
-  paxos_service[PAXOS_MDSMAP].reset(new MDSMonitor(this, paxos, "mdsmap"));
-  paxos_service[PAXOS_MONMAP].reset(new MonmapMonitor(this, paxos, "monmap"));
-  paxos_service[PAXOS_OSDMAP].reset(new OSDMonitor(cct, this, paxos, "osdmap"));
-  paxos_service[PAXOS_LOG].reset(new LogMonitor(this, paxos, "logm"));
-  paxos_service[PAXOS_AUTH].reset(new AuthMonitor(this, paxos, "auth"));
-  paxos_service[PAXOS_MGR].reset(new MgrMonitor(this, paxos, "mgr"));
-  paxos_service[PAXOS_MGRSTAT].reset(new MgrStatMonitor(this, paxos, "mgrstat"));
-  paxos_service[PAXOS_HEALTH].reset(new HealthMonitor(this, paxos, "health"));
-  paxos_service[PAXOS_CONFIG].reset(new ConfigMonitor(this, paxos, "config"));
-
-  config_key_service = new ConfigKeyService(this, paxos);
+  paxos_service[PAXOS_MDSMAP].reset(new MDSMonitor(*this, *paxos, "mdsmap"));
+  paxos_service[PAXOS_MONMAP].reset(new MonmapMonitor(*this, *paxos, "monmap"));
+  paxos_service[PAXOS_OSDMAP].reset(new OSDMonitor(cct, *this, *paxos, "osdmap"));
+  paxos_service[PAXOS_LOG].reset(new LogMonitor(*this, *paxos, "logm"));
+  paxos_service[PAXOS_AUTH].reset(new AuthMonitor(*this, *paxos, "auth"));
+  paxos_service[PAXOS_MGR].reset(new MgrMonitor(*this, *paxos, "mgr"));
+  paxos_service[PAXOS_MGRSTAT].reset(new MgrStatMonitor(*this, *paxos, "mgrstat"));
+  paxos_service[PAXOS_HEALTH].reset(new HealthMonitor(*this, *paxos, "health"));
+  paxos_service[PAXOS_CONFIG].reset(new ConfigMonitor(*this, *paxos, "config"));
+  paxos_service[PAXOS_KV].reset(new KVMonitor(*this, *paxos, "kv"));
 
   bool r = mon_caps.parse("allow *", NULL);
   ceph_assert(r);
@@ -256,9 +283,7 @@ Monitor::~Monitor()
 {
   op_tracker.on_shutdown();
 
-  paxos_service.clear();
-  delete config_key_service;
-  delete paxos;
+  delete logger;
   ceph_assert(session_map.sessions.empty());
 }
 
@@ -373,6 +398,20 @@ int Monitor::do_admin_command(
     } else {
       err << "needs a valid 'quorum' command" << std::endl;
     }
+  } else if (command == "connection scores dump") {
+    if (!get_quorum_mon_features().contains_all(
+				   ceph::features::mon::FEATURE_PINGING)) {
+      err << "Not all monitors support changing election strategies; \
+              please upgrade them first!";
+    }
+    elector.dump_connection_scores(f);
+  } else if (command == "connection scores reset") {
+    if (!get_quorum_mon_features().contains_all(
+				   ceph::features::mon::FEATURE_PINGING)) {
+      err << "Not all monitors support changing election strategies; \
+              please upgrade them first!";
+    }
+    elector.notify_clear_peer_state();
   } else if (command == "smart") {
     string want_devid;
     cmd_getval(cmdmap, "devid", want_devid);
@@ -478,6 +517,7 @@ CompatSet Monitor::get_supported_features()
   compat.incompat.insert(CEPH_MON_FEATURE_INCOMPAT_MIMIC);
   compat.incompat.insert(CEPH_MON_FEATURE_INCOMPAT_NAUTILUS);
   compat.incompat.insert(CEPH_MON_FEATURE_INCOMPAT_OCTOPUS);
+  compat.incompat.insert(CEPH_MON_FEATURE_INCOMPAT_PACIFIC);
   return compat;
 }
 
@@ -613,7 +653,8 @@ void Monitor::handle_conf_change(const ConfigProxy& conf,
   }
 
   if (changed.count("mon_scrub_interval")) {
-    int scrub_interval = conf->mon_scrub_interval;
+    auto scrub_interval =
+      conf.get_val<std::chrono::seconds>("mon_scrub_interval");
     finisher.queue(new C_MonContext{this, [this, scrub_interval](int) {
       std::lock_guard l{lock};
       scrub_update_interval(scrub_interval);
@@ -934,7 +975,7 @@ void Monitor::refresh_from_paxos(bool *need_bootstrap)
       auto p = bl.cbegin();
       decode(fingerprint, p);
     }
-    catch (buffer::error& e) {
+    catch (ceph::buffer::error& e) {
       dout(10) << __func__ << " failed to decode cluster_fingerprint" << dendl;
     }
   } else {
@@ -1039,8 +1080,6 @@ void Monitor::shutdown()
 
   if (logger) {
     cct->get_perfcounters_collection()->remove(logger);
-    delete logger;
-    logger = NULL;
   }
   if (cluster_logger) {
     if (cluster_logger_registered)
@@ -1147,6 +1186,7 @@ void Monitor::bootstrap()
       dout(0) << " removed from monmap, suicide." << dendl;
       exit(0);
     }
+    elector.notify_clear_peer_state();
   }
   if (newrank >= 0 &&
       monmap->get_addrs(newrank) != messenger->get_myaddrs()) {
@@ -1173,6 +1213,7 @@ void Monitor::bootstrap()
     dout(0) << " my rank is now " << newrank << " (was " << rank << ")" << dendl;
     messenger->set_myname(entity_name_t::MON(newrank));
     rank = newrank;
+    elector.notify_rank_changed(rank);
 
     // reset all connections, or else our peers will think we are someone else.
     messenger->mark_down_all();
@@ -1189,6 +1230,9 @@ void Monitor::bootstrap()
     store->compact();
     dout(10) << "bootstrap -- finished compaction" << dendl;
   }
+
+  // stretch mode bits
+  set_elector_disallowed_leaders(false);
 
   // singleton monitor?
   if (monmap->size() == 1 && rank == 0) {
@@ -1323,9 +1367,6 @@ set<string> Monitor::get_sync_targets_names()
   for (auto& svc : paxos_service) {
     svc->get_store_prefixes(targets);
   }
-  ConfigKeyService *config_key_service_ptr = dynamic_cast<ConfigKeyService*>(config_key_service);
-  ceph_assert(config_key_service_ptr);
-  config_key_service_ptr->get_store_prefixes(targets);
   return targets;
 }
 
@@ -1925,6 +1966,8 @@ void Monitor::handle_probe_probe(MonOpRequestRef op)
     dout(1) << " adding peer " << m->get_source_addrs()
 	    << " to list of hints" << dendl;
     extra_probe_peers.insert(m->get_source_addrs());
+  } else {
+    elector.begin_peer_ping(monmap->get_rank(m->get_source_addr()));
   }
 
  out:
@@ -2341,7 +2384,9 @@ void Monitor::finish_election()
     send_mon_message(
       new MMonJoin(monmap->fsid, name, messenger->get_myaddrs()),
       *quorum.begin());
+    return;
   }
+  do_stretch_mode_election_work();
 }
 
 void Monitor::_apply_compatset_features(CompatSet &new_features)
@@ -2422,6 +2467,13 @@ void Monitor::apply_monmap_to_compatset_features()
     ceph_assert(HAVE_FEATURE(quorum_con_features, SERVER_OCTOPUS));
     new_features.incompat.insert(CEPH_MON_FEATURE_INCOMPAT_OCTOPUS);
   }
+  if (monmap_features.contains_all(ceph::features::mon::FEATURE_PACIFIC)) {
+    ceph_assert(ceph::features::mon::get_persistent().contains_all(
+           ceph::features::mon::FEATURE_PACIFIC));
+    // this feature should only ever be set if the quorum supports it.
+    ceph_assert(HAVE_FEATURE(quorum_con_features, SERVER_PACIFIC));
+    new_features.incompat.insert(CEPH_MON_FEATURE_INCOMPAT_PACIFIC);
+  }
 
   dout(5) << __func__ << dendl;
   _apply_compatset_features(new_features);
@@ -2450,6 +2502,9 @@ void Monitor::calc_quorum_requirements()
   }
   if (features.incompat.contains(CEPH_MON_FEATURE_INCOMPAT_OCTOPUS)) {
     required_features |= CEPH_FEATUREMASK_SERVER_OCTOPUS;
+  }
+  if (features.incompat.contains(CEPH_MON_FEATURE_INCOMPAT_PACIFIC)) {
+    required_features |= CEPH_FEATUREMASK_SERVER_PACIFIC;
   }
 
   // monmap
@@ -2519,7 +2574,7 @@ void Monitor::_quorum_status(Formatter *f, ostream& ss)
     f->dump_string("mon", *p);
   f->close_section(); // quorum_names
 
-  f->dump_string("quorum_leader_name", quorum.empty() ? string() : monmap->get_name(*quorum.begin()));
+  f->dump_string("quorum_leader_name", quorum.empty() ? string() : monmap->get_name(leader));
 
   if (!quorum.empty()) {
     f->dump_int(
@@ -2615,6 +2670,7 @@ void Monitor::get_mon_status(Formatter *f)
   f->close_section();
 
   f->dump_object("feature_map", session_map.feature_map);
+  f->dump_bool("stretch_mode", stretch_mode_engaged);
   f->close_section(); // mon_status
 }
 
@@ -2891,10 +2947,13 @@ void Monitor::log_health(
   }
 }
 
-void Monitor::get_cluster_status(stringstream &ss, Formatter *f)
+void Monitor::get_cluster_status(stringstream &ss, Formatter *f,
+				 MonSession *session)
 {
   if (f)
     f->open_object_section("status");
+
+  const auto&& fs_names = session->get_allowed_fs_names();
 
   mono_clock::time_point now = mono_clock::now();
   if (f) {
@@ -2925,7 +2984,14 @@ void Monitor::get_cluster_status(stringstream &ss, Formatter *f)
     mgrstatmon()->print_summary(f, NULL);
     f->close_section();
     f->open_object_section("fsmap");
-    mdsmon()->get_fsmap().print_summary(f, NULL);
+
+    FSMap fsmap_copy = mdsmon()->get_fsmap();
+    if (!fs_names.empty()) {
+      fsmap_copy.filter(fs_names);
+    }
+    const FSMap *fsmapp = &fsmap_copy;
+
+    fsmapp->print_summary(f, NULL);
     f->close_section();
     f->open_object_section("mgrmap");
     mgrmon()->get_map().print_summary(f, nullptr);
@@ -2977,9 +3043,19 @@ void Monitor::get_cluster_status(stringstream &ss, Formatter *f)
 	mgrmon()->get_map().print_summary(nullptr, &ss);
 	ss << "\n";
       }
-      if (mdsmon()->should_print_status()) {
-        ss << "    mds: " << spacing << mdsmon()->get_fsmap() << "\n";
+
+      FSMap fsmap_copy = mdsmon()->get_fsmap();
+      if (!fs_names.empty()) {
+	fsmap_copy.filter(fs_names);
       }
+      const FSMap *fsmapp = &fsmap_copy;
+
+      if (fsmapp->filesystem_count() > 0 and mdsmon()->should_print_status()){
+        ss << "    mds: " << spacing;
+	fsmapp->print_daemon_summary(ss);
+	ss << "\n";
+      }
+
       ss << "    osd: " << spacing;
       osdmon()->osdmap.print_summary(NULL, ss, string(maxlen + 6, ' '));
       ss << "\n";
@@ -2994,26 +3070,29 @@ void Monitor::get_cluster_status(stringstream &ss, Formatter *f)
       }
     }
 
-    {
-      auto& service_map = mgrstatmon()->get_service_map();
-      if (!service_map.services.empty()) {
-        ss << "\n \n  task status:\n";
-        {
-          for (auto &p : service_map.services) {
-            ss << p.second.get_task_summary(p.first);
-          }
-        }
+    if (auto& service_map = mgrstatmon()->get_service_map();
+        std::any_of(service_map.services.begin(),
+                    service_map.services.end(),
+                    [](auto& service) {
+                      return service.second.has_running_tasks();
+                    })) {
+      ss << "\n \n  task status:\n";
+      for (auto& [name, service] : service_map.services) {
+	ss << service.get_task_summary(name);
       }
     }
 
     ss << "\n \n  data:\n";
+    mdsmon()->print_fs_summary(ss);
     mgrstatmon()->print_summary(NULL, &ss);
 
     auto& pem = mgrstatmon()->get_progress_events();
     if (!pem.empty()) {
       ss << "\n \n  progress:\n";
       for (auto& i : pem) {
+	if (i.second.add_to_ceph_s){
 	ss << "    " << i.second.message << "\n";
+	}
       }
     }
     ss << "\n ";
@@ -3151,7 +3230,7 @@ void Monitor::handle_tell_command(MonOpRequestRef op)
 				"please check usage and/or man page");
     }
   }
-  // see if command is whitelisted
+  // see if command is allowed
   if (!session->caps.is_capable(
       g_ceph_context,
       session->entity_name,
@@ -3235,9 +3314,6 @@ void Monitor::handle_command(MonOpRequestRef op)
     return;
   }
 
-  string module;
-  string err;
-
   dout(0) << "handle_command " << *m << dendl;
 
   string format;
@@ -3254,7 +3330,7 @@ void Monitor::handle_command(MonOpRequestRef op)
     return;
   }
 
-  module = fullcmd[0];
+  std::string_view module = fullcmd[0];
 
   // validate command is in leader map
 
@@ -3447,7 +3523,7 @@ void Monitor::handle_command(MonOpRequestRef op)
   }
 
   if (module == "config-key") {
-    config_key_service->dispatch(op);
+    kvmon()->dispatch(op);
     return;
   }
 
@@ -3524,7 +3600,7 @@ void Monitor::handle_command(MonOpRequestRef op)
 
     if (prefix == "status") {
       // get_cluster_status handles f == NULL
-      get_cluster_status(ds, f.get());
+      get_cluster_status(ds, f.get(), session);
 
       if (f) {
         f->flush(ds);
@@ -4222,7 +4298,7 @@ void Monitor::waitlist_or_zap_client(MonOpRequestRef op)
    * tick() will periodically send them back through so we can send
    * the client elsewhere if we don't think we're getting back in.
    *
-   * But we whitelist a few sorts of messages:
+   * But we allow a few sorts of messages:
    * 1) Monitors can talk to us at any time, of course.
    * 2) auth messages. It's unlikely to go through much faster, but
    * it's possible we've just lost our quorum status and we want to take...
@@ -4348,6 +4424,9 @@ void Monitor::_ms_dispatch(Message *m)
 	   << " (" << s->global_id_status
 	   << ") caps " << s->caps.get_str() << dendl;
 
+  if (!session_stretch_allowed(s, op)) {
+    return;
+  }
   if ((is_synchronizing() ||
        (!s->authenticated && !exited_quorum.is_zero())) &&
       !src_is_mon &&
@@ -4433,9 +4512,6 @@ void Monitor::dispatch_op(MonOpRequestRef op)
     case MSG_GET_CONFIG:
       configmon()->handle_get_config(op);
       return;
-
-    case CEPH_MSG_MON_METADATA:
-      return handle_mon_metadata(op);
 
     case CEPH_MSG_MON_SUBSCRIBE:
       /* FIXME: check what's being subscribed, filter accordingly */
@@ -4587,7 +4663,7 @@ void Monitor::dispatch_op(MonOpRequestRef op)
 
     // elector messages
     case MSG_MON_ELECTION:
-      op->set_type_election();
+      op->set_type_election_or_ping();
       //check privileges here for simplicity
       if (!op->get_session()->is_capable("mon", MON_CAP_X)) {
         dout(0) << "MMonElection received from entity without enough caps!"
@@ -4597,6 +4673,11 @@ void Monitor::dispatch_op(MonOpRequestRef op)
       if (!is_probing() && !is_synchronizing()) {
         elector.dispatch(op);
       }
+      return;
+
+    case MSG_MON_PING:
+      op->set_type_election_or_ping();
+      elector.dispatch(op);
       return;
 
     case MSG_FORWARD:
@@ -5156,6 +5237,8 @@ void Monitor::handle_subscribe(MonOpRequestRef op)
       mgrstatmon()->check_sub(s->sub_map[p->first]);
     } else if (p->first == "config") {
       configmon()->check_sub(s);
+    } else if (p->first.find("kv:") == 0) {
+      kvmon()->check_sub(s->sub_map[p->first]);
     }
   }
 
@@ -5267,27 +5350,6 @@ void Monitor::handle_mon_get_map(MonOpRequestRef op)
   send_latest_monmap(m->get_connection().get());
 }
 
-void Monitor::handle_mon_metadata(MonOpRequestRef op)
-{
-  auto m = op->get_req<MMonMetadata>();
-  if (is_leader()) {
-    dout(10) << __func__ << dendl;
-    update_mon_metadata(m->get_source().num(), std::move(m->data));
-  }
-}
-
-void Monitor::update_mon_metadata(int from, Metadata&& m)
-{
-  // NOTE: this is now for legacy (kraken or jewel) mons only.
-  pending_metadata[from] = std::move(m);
-
-  MonitorDBStore::TransactionRef t = paxos->get_pending_transaction();
-  bufferlist bl;
-  encode(pending_metadata, bl);
-  t->put(MONITOR_STORE_PREFIX, "last_metadata", bl);
-  paxos->trigger_propose();
-}
-
 int Monitor::load_metadata()
 {
   bufferlist bl;
@@ -5336,6 +5398,31 @@ void Monitor::count_metadata(const string& field, Formatter *f)
     f->dump_int(p.first.c_str(), p.second);
   }
   f->close_section();
+}
+
+void Monitor::get_all_versions(std::map<string, list<string> > &versions)
+{
+  // mon
+  get_versions(versions);
+  // osd
+  osdmon()->get_versions(versions);
+  // mgr
+  mgrmon()->get_versions(versions);
+  // mds
+  mdsmon()->get_versions(versions);
+  dout(20) << __func__ << " all versions=" << versions << dendl;
+}
+
+void Monitor::get_versions(std::map<string, list<string> > &versions)
+{
+  for (auto& [rank, metadata] : mon_metadata) {
+    auto q = metadata.find("ceph_version_short");
+    if (q == metadata.end()) {
+      // not likely
+      continue;
+    }
+    versions[q->second].push_back(string("mon.") + monmap->get_name(rank));
+  }
 }
 
 int Monitor::print_nodes(Formatter *f, ostream& err)
@@ -5587,14 +5674,14 @@ void Monitor::scrub_reset()
   scrub_state.reset();
 }
 
-inline void Monitor::scrub_update_interval(int secs)
+inline void Monitor::scrub_update_interval(ceph::timespan interval)
 {
   // we don't care about changes if we are not the leader.
   // changes will be visible if we become the leader.
   if (!is_leader())
     return;
 
-  dout(1) << __func__ << " new interval = " << secs << dendl;
+  dout(1) << __func__ << " new interval = " << interval << dendl;
 
   // if scrub already in progress, all changes will already be visible during
   // the next round.  Nothing to do.
@@ -5612,15 +5699,17 @@ void Monitor::scrub_event_start()
   if (scrub_event)
     scrub_event_cancel();
 
-  if (cct->_conf->mon_scrub_interval <= 0) {
+  auto scrub_interval =
+    cct->_conf.get_val<std::chrono::seconds>("mon_scrub_interval");
+  if (scrub_interval == std::chrono::seconds::zero()) {
     dout(1) << __func__ << " scrub event is disabled"
-            << " (mon_scrub_interval = " << cct->_conf->mon_scrub_interval
+            << " (mon_scrub_interval = " << scrub_interval
             << ")" << dendl;
     return;
   }
 
   scrub_event = timer.add_event_after(
-    cct->_conf->mon_scrub_interval,
+    scrub_interval,
     new C_MonContext{this, [this](int) {
       scrub_start();
       }});
@@ -5894,7 +5983,7 @@ int Monitor::mkfs(bufferlist& osdmapbl)
       OSDMap om;
       om.decode(osdmapbl);
     }
-    catch (buffer::error& e) {
+    catch (ceph::buffer::error& e) {
       derr << "error decoding provided osdmap: " << e.what() << dendl;
       return -EINVAL;
     }
@@ -5918,7 +6007,7 @@ int Monitor::mkfs(bufferlist& osdmapbl)
 	  auto i = bl.cbegin();
 	  keyring.decode_plaintext(i);
 	}
-	catch (const buffer::error& e) {
+	catch (const ceph::buffer::error& e) {
 	  derr << "error decoding keyring " << keyring_plaintext
 	       << ": " << e.what() << dendl;
 	  return -EINVAL;
@@ -6255,7 +6344,7 @@ int Monitor::handle_auth_request(
       assert(mode >= AUTH_MODE_MON && mode <= AUTH_MODE_MON_MAX);
       decode(entity_name, p);
       decode(con->peer_global_id, p);
-    } catch (buffer::error& e) {
+    } catch (ceph::buffer::error& e) {
       dout(1) << __func__ << " failed to decode, " << e.what() << dendl;
       return -EACCES;
     }
@@ -6394,7 +6483,7 @@ int Monitor::ms_handle_authentication(Connection *con)
     string str;
     try {
       decode(str, p);
-    } catch (const buffer::error &err) {
+    } catch (const ceph::buffer::error &err) {
       derr << __func__ << " corrupt cap data for " << con->get_peer_entity_name()
 	   << " in auth db" << dendl;
       str.clear();
@@ -6413,4 +6502,291 @@ int Monitor::ms_handle_authentication(Connection *con)
   }
 
   return ret;
+}
+
+void Monitor::notify_new_monmap()
+{
+  elector.notify_strategy_maybe_changed(monmap->strategy);
+  dout(30) << __func__ << "we have " << monmap->removed_ranks.size() << " removed ranks" << dendl;
+  for (auto i = monmap->removed_ranks.rbegin();
+       i != monmap->removed_ranks.rend(); ++i) {
+    int rank = *i;
+    dout(10) << __func__ << "removing rank " << rank << dendl;
+    elector.notify_rank_removed(rank);
+  }
+
+  if (monmap->stretch_mode_enabled) {
+    maybe_engage_stretch_mode();
+  }
+
+  if (is_stretch_mode()) {
+    if (!monmap->stretch_marked_down_mons.empty()) {
+      set_degraded_stretch_mode();
+    }
+  }
+  set_elector_disallowed_leaders(true);
+}
+
+void Monitor::set_elector_disallowed_leaders(bool allow_election)
+{
+  set<int> dl;
+  for (auto name : monmap->disallowed_leaders) {
+    dl.insert(monmap->get_rank(name));
+  }
+  if (is_stretch_mode()) {
+    for (auto name : monmap->stretch_marked_down_mons) {
+      dl.insert(monmap->get_rank(name));
+    }
+    dl.insert(monmap->get_rank(monmap->tiebreaker_mon));
+  }
+
+  bool disallowed_changed = elector.set_disallowed_leaders(dl);
+  if (disallowed_changed && allow_election) {
+    elector.call_election();
+  }
+}
+
+struct CMonEnableStretchMode : public Context {
+  Monitor *m;
+  CMonEnableStretchMode(Monitor *mon) : m(mon) {}
+  void finish(int r) {
+    m->maybe_engage_stretch_mode();
+  }
+};
+void Monitor::maybe_engage_stretch_mode()
+{
+  dout(20) << __func__ << dendl;
+  if (stretch_mode_engaged) return;
+  if (!osdmon()->is_readable()) {
+    osdmon()->wait_for_readable_ctx(new CMonEnableStretchMode(this));
+  }
+  if (osdmon()->osdmap.stretch_mode_enabled &&
+      monmap->stretch_mode_enabled) {
+    dout(10) << "Engaging stretch mode!" << dendl;
+    stretch_mode_engaged = true;
+    int32_t stretch_divider_id = osdmon()->osdmap.stretch_mode_bucket;
+    stretch_bucket_divider = osdmon()->osdmap.
+      crush->get_type_name(stretch_divider_id);
+    disconnect_disallowed_stretch_sessions();
+  }
+}
+
+void Monitor::do_stretch_mode_election_work()
+{
+  dout(20) << __func__ << dendl;
+  if (!is_stretch_mode() ||
+      !is_leader()) return;
+  dout(20) << "checking for degraded stretch mode" << dendl;
+  map<string, set<string>> old_dead_buckets;
+  old_dead_buckets.swap(dead_mon_buckets);
+  up_mon_buckets.clear();
+  // identify if we've lost a CRUSH bucket, request OSDMonitor check for death
+  map<string,set<string>> down_mon_buckets;
+  for (unsigned i = 0; i < monmap->size(); ++i) {
+    const auto &mi = monmap->mon_info[monmap->get_name(i)];
+    auto ci = mi.crush_loc.find(stretch_bucket_divider);
+    ceph_assert(ci != mi.crush_loc.end());
+    if (quorum.count(i)) {
+      up_mon_buckets.insert(ci->second);
+    } else {
+      down_mon_buckets[ci->second].insert(mi.name);
+    }
+  }
+  dout(20) << "prior dead_mon_buckets: " << old_dead_buckets
+	   << "; down_mon_buckets: " << down_mon_buckets
+	   << "; up_mon_buckets: " << up_mon_buckets << dendl;
+  for (auto di : down_mon_buckets) {
+    if (!up_mon_buckets.count(di.first)) {
+      dead_mon_buckets[di.first] = di.second;
+    }
+  }
+  dout(20) << "new dead_mon_buckets " << dead_mon_buckets << dendl;
+
+  if (dead_mon_buckets != old_dead_buckets &&
+      dead_mon_buckets.size() >= old_dead_buckets.size()) {
+    maybe_go_degraded_stretch_mode();
+  }
+}
+
+struct CMonGoDegraded : public Context {
+  Monitor *m;
+  CMonGoDegraded(Monitor *mon) : m(mon) {}
+  void finish(int r) {
+    m->maybe_go_degraded_stretch_mode();
+  }
+};
+
+struct CMonGoRecovery : public Context {
+  Monitor *m;
+  CMonGoRecovery(Monitor *mon) : m(mon) {}
+  void finish(int r) {
+    m->go_recovery_stretch_mode();
+  }
+};
+void Monitor::go_recovery_stretch_mode()
+{
+  dout(20) << __func__ << dendl;
+  if (!is_leader()) return;
+  if (!is_degraded_stretch_mode()) return;
+  if (is_recovering_stretch_mode()) return;
+
+  if (dead_mon_buckets.size()) {
+    ceph_assert( 0 == "how did we try and do stretch recovery while we have dead monitor buckets?");
+    // we can't recover if we are missing monitors in a zone!
+    return;
+  }
+  
+  if (!osdmon()->is_readable()) {
+    osdmon()->wait_for_readable_ctx(new CMonGoRecovery(this));
+    return;
+  }
+
+  if (!osdmon()->is_writeable()) {
+    osdmon()->wait_for_writeable_ctx(new CMonGoRecovery(this));
+  }
+  recovering_stretch_mode = true;
+  osdmon()->trigger_recovery_stretch_mode();  
+}
+
+void Monitor::maybe_go_degraded_stretch_mode()
+{
+  dout(20) << __func__ << dendl;
+  if (is_degraded_stretch_mode()) return;
+  if (!is_leader()) return;
+  if (dead_mon_buckets.empty()) return;
+  if (!osdmon()->is_readable()) {
+    osdmon()->wait_for_readable_ctx(new CMonGoDegraded(this));
+    return;
+  }
+  ceph_assert(monmap->contains(monmap->tiebreaker_mon));
+  // filter out the tiebreaker zone and check if remaining sites are down by OSDs too
+  const auto &mi = monmap->mon_info[monmap->tiebreaker_mon];
+  auto ci = mi.crush_loc.find(stretch_bucket_divider);
+  map<string, set<string>> filtered_dead_buckets = dead_mon_buckets;
+  filtered_dead_buckets.erase(ci->second);
+
+  set<int> matched_down_buckets;
+  set<string> matched_down_mons;
+  bool dead = osdmon()->check_for_dead_crush_zones(filtered_dead_buckets,
+						   &matched_down_buckets,
+						   &matched_down_mons);
+  if (dead) {
+    if (!osdmon()->is_writeable()) {
+      osdmon()->wait_for_writeable_ctx(new CMonGoDegraded(this));
+    }
+    if (!monmon()->is_writeable()) {
+      monmon()->wait_for_writeable_ctx(new CMonGoDegraded(this));
+    }
+    trigger_degraded_stretch_mode(matched_down_mons, matched_down_buckets);
+  }
+}
+
+void Monitor::trigger_degraded_stretch_mode(const set<string>& dead_mons,
+					    const set<int>& dead_buckets)
+{
+  dout(20) << __func__ << dendl;
+  ceph_assert(osdmon()->is_writeable());
+  ceph_assert(monmon()->is_writeable());
+
+  // figure out which OSD zone(s) remains alive by removing
+  // tiebreaker mon from up_mon_buckets
+  set<string> live_zones = up_mon_buckets;
+  ceph_assert(monmap->contains(monmap->tiebreaker_mon));
+  const auto &mi = monmap->mon_info[monmap->tiebreaker_mon];
+  auto ci = mi.crush_loc.find(stretch_bucket_divider);
+  live_zones.erase(ci->second);
+  ceph_assert(live_zones.size() == 1); // only support 2 zones right now
+  
+  osdmon()->trigger_degraded_stretch_mode(dead_buckets, live_zones);
+  monmon()->trigger_degraded_stretch_mode(dead_mons);
+  set_degraded_stretch_mode();
+}
+
+void Monitor::set_degraded_stretch_mode()
+{
+  degraded_stretch_mode = true;
+  recovering_stretch_mode = false;
+}
+
+struct CMonGoHealthy : public Context {
+  Monitor *m;
+  CMonGoHealthy(Monitor *mon) : m(mon) {}
+  void finish(int r) {
+    m->trigger_healthy_stretch_mode();
+  }
+};
+
+
+void Monitor::trigger_healthy_stretch_mode()
+{
+  dout(20) << __func__ << dendl;
+  if (!is_degraded_stretch_mode()) return;
+  if (!is_leader()) return;
+  if (!osdmon()->is_writeable()) {
+    osdmon()->wait_for_writeable_ctx(new CMonGoHealthy(this));
+  }
+  if (!monmon()->is_writeable()) {
+    monmon()->wait_for_writeable_ctx(new CMonGoHealthy(this));
+  }
+
+  ceph_assert(osdmon()->osdmap.recovering_stretch_mode);
+  set_healthy_stretch_mode();
+  osdmon()->trigger_healthy_stretch_mode();
+  monmon()->trigger_healthy_stretch_mode();
+}
+
+void Monitor::set_healthy_stretch_mode()
+{
+  degraded_stretch_mode = false;
+  recovering_stretch_mode = false;
+}
+
+bool Monitor::session_stretch_allowed(MonSession *s, MonOpRequestRef& op)
+{
+  if (!is_stretch_mode()) return true;
+  if (s->proxy_con) return true;
+  if (s->validated_stretch_connection) return true;
+  if (!s->con) return true;
+  if (s->con->peer_is_osd()) {
+    dout(20) << __func__ << "checking OSD session" << s << dendl;
+    // okay, check the crush location
+    int barrier_id;
+    int retval = osdmon()->osdmap.crush->get_validated_type_id(stretch_bucket_divider,
+							       &barrier_id);
+    ceph_assert(retval >= 0);
+    int osd_bucket_id = osdmon()->osdmap.crush->get_parent_of_type(s->con->peer_id,
+								   barrier_id);
+    const auto &mi = monmap->mon_info.find(name);
+    ceph_assert(mi != monmap->mon_info.end());
+    auto ci = mi->second.crush_loc.find(stretch_bucket_divider);
+    ceph_assert(ci != mi->second.crush_loc.end());
+    int mon_bucket_id = osdmon()->osdmap.crush->get_item_id(ci->second);
+    
+    if (osd_bucket_id != mon_bucket_id) {
+      dout(5) << "discarding session " << *s
+	      << " and sending OSD to matched zone" << dendl;
+      s->con->mark_down();
+      std::lock_guard l(session_map_lock);
+      remove_session(s);
+      if (op) {
+	op->mark_zap();
+      }
+      return false;
+    }
+  }
+
+  s->validated_stretch_connection = true;
+  return true;
+}
+
+void Monitor::disconnect_disallowed_stretch_sessions()
+{
+  dout(20) << __func__ << dendl;
+  MonOpRequestRef blank;
+  auto i = session_map.sessions.begin();
+  while (i != session_map.sessions.end()) {
+    auto j = i;
+    ++i;
+    session_stretch_allowed(*j, blank);
+  }
 }

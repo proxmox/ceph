@@ -1,15 +1,25 @@
 # -*- coding: utf-8 -*-
 from __future__ import absolute_import
+
 from contextlib import contextmanager
 
 import cherrypy
 
-from . import ApiController, RESTController, UiApiController
-from ..settings import Settings as SettingsModule, Options
 from ..security import Scope
+from ..settings import Options
+from ..settings import Settings as SettingsModule
+from . import ApiController, ControllerDoc, EndpointDoc, RESTController, UiApiController
+
+SETTINGS_SCHEMA = [{
+    "name": (str, 'Settings Name'),
+    "default": (bool, 'Default Settings'),
+    "type": (str, 'Type of Settings'),
+    "value": (bool, 'Settings Value')
+}]
 
 
 @ApiController('/settings', Scope.CONFIG_OPT)
+@ControllerDoc("Settings Management API", "Settings")
 class Settings(RESTController):
     """
     Enables to manage the settings of the dashboard (not the Ceph cluster).
@@ -37,11 +47,16 @@ class Settings(RESTController):
     def _to_native(setting):
         return setting.upper().replace('-', '_')
 
+    @EndpointDoc("Display Settings Information",
+                 parameters={
+                     'names': (str, 'Name of Settings'),
+                 },
+                 responses={200: SETTINGS_SCHEMA})
     def list(self, names=None):
         """
         Get the list of available options.
         :param names: A comma separated list of option names that should
-          be processed. Defaults to ``None``.
+        be processed. Defaults to ``None``.
         :type names: None|str
         :return: A list of available options.
         :rtype: list[dict]
@@ -57,11 +72,11 @@ class Settings(RESTController):
 
     def _get(self, name):
         with self._attribute_handler(name) as sname:
-            default, data_type = getattr(Options, sname)
+            setting = getattr(Options, sname)
         return {
             'name': sname,
-            'default': default,
-            'type': data_type.__name__,
+            'default': setting.default_value,
+            'type': setting.types_as_str(),
             'value': getattr(SettingsModule, sname)
         }
 
@@ -70,7 +85,7 @@ class Settings(RESTController):
         Get the given option.
         :param name: The name of the option.
         :return: Returns a dict containing the name, type,
-          default value and current value of the given option.
+        default value and current value of the given option.
         :rtype: dict
         """
         return self._get(name)
@@ -95,7 +110,7 @@ class StandardSettings(RESTController):
         """
         Get various Dashboard related settings.
         :return: Returns a dictionary containing various Dashboard
-            settings.
+        settings.
         :rtype: dict
         """
         return {  # pragma: no cover - no complexity there

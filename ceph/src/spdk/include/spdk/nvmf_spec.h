@@ -46,9 +46,6 @@
 
 #pragma pack(push, 1)
 
-/* Minimum number of admin queue entries defined by NVMe over Fabrics spec */
-#define SPDK_NVMF_MIN_ADMIN_QUEUE_ENTRIES	32
-
 struct spdk_nvmf_capsule_cmd {
 	uint8_t		opcode;
 	uint8_t		reserved1;
@@ -218,8 +215,8 @@ struct spdk_nvmf_fabric_connect_data {
 	uint8_t		hostid[16];
 	uint16_t	cntlid;
 	uint8_t		reserved5[238];
-	uint8_t		subnqn[256];
-	uint8_t		hostnqn[256];
+	uint8_t		subnqn[SPDK_NVME_NQN_FIELD_SIZE];
+	uint8_t		hostnqn[SPDK_NVME_NQN_FIELD_SIZE];
 	uint8_t		reserved6[256];
 };
 SPDK_STATIC_ASSERT(sizeof(struct spdk_nvmf_fabric_connect_data) == 1024, "Incorrect size");
@@ -334,6 +331,7 @@ SPDK_STATIC_ASSERT(sizeof(struct spdk_nvmf_fabric_prop_set_cmd) == 64, "Incorrec
 
 #define SPDK_DOMAIN_LABEL_MAX_LEN 63 /* RFC 1034 max domain label length */
 
+#define SPDK_NVMF_TRSTRING_MAX_LEN 32
 #define SPDK_NVMF_TRADDR_MAX_LEN 256
 #define SPDK_NVMF_TRSVCID_MAX_LEN 32
 
@@ -389,6 +387,8 @@ union spdk_nvmf_transport_specific_address_subtype {
 };
 SPDK_STATIC_ASSERT(sizeof(union spdk_nvmf_transport_specific_address_subtype) == 256,
 		   "Incorrect size");
+
+#define SPDK_NVMF_MIN_ADMIN_MAX_SQ_SIZE 32
 
 /**
  * Discovery Log Page entry

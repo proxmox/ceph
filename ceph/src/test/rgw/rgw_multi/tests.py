@@ -5,14 +5,10 @@ import sys
 import time
 import logging
 import errno
+import dateutil.parser
 
-try:
-    from itertools import izip_longest as zip_longest  # type: ignore
-except ImportError:
-    from itertools import zip_longest
 from itertools import combinations
-from six import StringIO
-from six.moves import range
+from io import StringIO
 
 import boto
 import boto.s3.connection
@@ -83,8 +79,13 @@ def mdlog_list(zone, period = None):
 def mdlog_autotrim(zone):
     zone.cluster.admin(['mdlog', 'autotrim'])
 
-def datalog_list(zone, period = None):
-    cmd = ['datalog', 'list']
+def datalog_list(zone, args = None):
+    cmd = ['datalog', 'list'] + (args or [])
+    (datalog_json, _) = zone.cluster.admin(cmd, read_only=True)
+    return json.loads(datalog_json)
+
+def datalog_status(zone):
+    cmd = ['datalog', 'status']
     (datalog_json, _) = zone.cluster.admin(cmd, read_only=True)
     return json.loads(datalog_json)
 
@@ -369,23 +370,13 @@ def zone_bucket_checkpoint(target_zone, source_zone, bucket_name):
     if not target_zone.syncs_from(source_zone.name):
         return
 
-    log_status = bucket_source_log_status(source_zone, bucket_name)
-    log.info('starting bucket checkpoint for target_zone=%s source_zone=%s bucket=%s', target_zone.name, source_zone.name, bucket_name)
-
-    for _ in range(config.checkpoint_retries):
-        sync_status = bucket_sync_status(target_zone, source_zone, bucket_name)
-
-        log.debug('log_status=%s', log_status)
-        log.debug('sync_status=%s', sync_status)
-
-        if compare_bucket_status(target_zone, source_zone, bucket_name, log_status, sync_status):
-            log.info('finished bucket checkpoint for target_zone=%s source_zone=%s bucket=%s', target_zone.name, source_zone.name, bucket_name)
-            return
-
-        time.sleep(config.checkpoint_delay)
-
-    assert False, 'failed bucket checkpoint for target_zone=%s source_zone=%s bucket=%s' % \
-                  (target_zone.name, source_zone.name, bucket_name)
+    cmd = ['bucket', 'sync', 'checkpoint']
+    cmd += ['--bucket', bucket_name, '--source-zone', source_zone.name]
+    retry_delay_ms = config.checkpoint_delay * 1000
+    timeout_sec = config.checkpoint_retries * config.checkpoint_delay
+    cmd += ['--retry-delay-ms', str(retry_delay_ms), '--timeout-sec', str(timeout_sec)]
+    cmd += target_zone.zone_args()
+    target_zone.cluster.admin(cmd, debug_rgw=1)
 
 def zonegroup_bucket_checkpoint(zonegroup_conns, bucket_name):
     for source_conn in zonegroup_conns.rw_zones:
@@ -957,14 +948,27 @@ def test_datalog_autotrim():
         k = new_key(zone, bucket.name, 'key')
         k.set_contents_from_string('body')
 
-    # wait for data sync to catch up
+    # wait for metadata and data sync to catch up
+    zonegroup_meta_checkpoint(zonegroup)
     zonegroup_data_checkpoint(zonegroup_conns)
 
     # trim each datalog
     for zone, _ in zone_bucket:
+        # read max markers for each shard
+        status = datalog_status(zone.zone)
+
         datalog_autotrim(zone.zone)
-        datalog = datalog_list(zone.zone)
-        assert len(datalog) == 0
+
+        for shard_id, shard_status in enumerate(status):
+            try:
+                before_trim = dateutil.parser.isoparse(shard_status['last_update'])
+            except: # empty timestamps look like "0.000000" and will fail here
+                continue
+            entries = datalog_list(zone.zone, ['--shard-id', str(shard_id), '--max-entries', '1'])
+            if not len(entries):
+                continue
+            after_trim = dateutil.parser.isoparse(entries[0]['timestamp'])
+            assert before_trim < after_trim, "any datalog entries must be newer than trim"
 
 def test_multi_zone_redirect():
     zonegroup = realm.master_zonegroup()
@@ -1099,6 +1103,7 @@ def test_bucket_sync_disable():
     zonegroup = realm.master_zonegroup()
     zonegroup_conns = ZonegroupConns(zonegroup)
     buckets, zone_bucket = create_bucket_per_zone(zonegroup_conns)
+    zonegroup_meta_checkpoint(zonegroup)
 
     for bucket_name in buckets:
         disable_bucket_sync(realm.meta_master_zone(), bucket_name)
@@ -1120,6 +1125,8 @@ def test_bucket_sync_enable_right_after_disable():
         for objname in objnames:
             k = new_key(zone, bucket.name, objname)
             k.set_contents_from_string(content)
+
+    zonegroup_meta_checkpoint(zonegroup)
 
     for bucket_name in buckets:
         zonegroup_bucket_checkpoint(zonegroup_conns, bucket_name)

@@ -3,18 +3,13 @@ import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { BrowserAnimationsModule } from '@angular/platform-browser/animations';
 import { RouterTestingModule } from '@angular/router/testing';
 
-import { ModalModule } from 'ngx-bootstrap/modal';
-import { TabsModule } from 'ngx-bootstrap/tabs';
+import { NgbNavModule } from '@ng-bootstrap/ng-bootstrap';
 import { of } from 'rxjs';
 
-import {
-  configureTestBed,
-  i18nProviders,
-  PermissionHelper
-} from '../../../../testing/unit-test-helper';
-import { RgwBucketService } from '../../../shared/api/rgw-bucket.service';
-import { TableActionsComponent } from '../../../shared/datatable/table-actions/table-actions.component';
-import { SharedModule } from '../../../shared/shared.module';
+import { RgwBucketService } from '~/app/shared/api/rgw-bucket.service';
+import { TableActionsComponent } from '~/app/shared/datatable/table-actions/table-actions.component';
+import { SharedModule } from '~/app/shared/shared.module';
+import { configureTestBed, PermissionHelper } from '~/testing/unit-test-helper';
 import { RgwBucketDetailsComponent } from '../rgw-bucket-details/rgw-bucket-details.component';
 import { RgwBucketListComponent } from './rgw-bucket-list.component';
 
@@ -29,25 +24,25 @@ describe('RgwBucketListComponent', () => {
     imports: [
       BrowserAnimationsModule,
       RouterTestingModule,
-      ModalModule.forRoot(),
       SharedModule,
-      TabsModule.forRoot(),
+      NgbNavModule,
       HttpClientTestingModule
-    ],
-    providers: i18nProviders
+    ]
   });
 
   beforeEach(() => {
-    rgwBucketService = TestBed.get(RgwBucketService);
+    rgwBucketService = TestBed.inject(RgwBucketService);
     rgwBucketServiceListSpy = spyOn(rgwBucketService, 'list');
-    rgwBucketServiceListSpy.and.returnValue(of(null));
+    rgwBucketServiceListSpy.and.returnValue(of([]));
     fixture = TestBed.createComponent(RgwBucketListComponent);
     component = fixture.componentInstance;
+    spyOn(component, 'timeConditionReached').and.stub();
+    fixture.detectChanges();
   });
 
   it('should create', () => {
-    fixture.detectChanges();
     expect(component).toBeTruthy();
+    expect(rgwBucketServiceListSpy).toHaveBeenCalledTimes(1);
   });
 
   it('should test all TableActions combinations', () => {
@@ -116,7 +111,8 @@ describe('RgwBucketListComponent', () => {
         }
       ])
     );
-    fixture.detectChanges();
+    component.getBucketList(null);
+    expect(rgwBucketServiceListSpy).toHaveBeenCalledTimes(2);
     expect(component.buckets).toEqual([
       {
         bucket: 'bucket',
@@ -137,6 +133,7 @@ describe('RgwBucketListComponent', () => {
       }
     ]);
   });
+
   it('should usage bars only if quota enabled', () => {
     rgwBucketServiceListSpy.and.returnValue(
       of([
@@ -151,10 +148,13 @@ describe('RgwBucketListComponent', () => {
         }
       ])
     );
+    component.getBucketList(null);
+    expect(rgwBucketServiceListSpy).toHaveBeenCalledTimes(2);
     fixture.detectChanges();
     const usageBars = fixture.debugElement.nativeElement.querySelectorAll('cd-usage-bar');
     expect(usageBars.length).toBe(2);
   });
+
   it('should not show any usage bars if quota disabled', () => {
     rgwBucketServiceListSpy.and.returnValue(
       of([
@@ -169,6 +169,8 @@ describe('RgwBucketListComponent', () => {
         }
       ])
     );
+    component.getBucketList(null);
+    expect(rgwBucketServiceListSpy).toHaveBeenCalledTimes(2);
     fixture.detectChanges();
     const usageBars = fixture.debugElement.nativeElement.querySelectorAll('cd-usage-bar');
     expect(usageBars.length).toBe(0);

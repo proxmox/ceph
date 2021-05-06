@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2001-2019
+ * Copyright(c) 2001-2020 Intel Corporation
  */
 
 #ifndef _ICE_SWITCH_H_
@@ -11,7 +11,45 @@
 #define ICE_SW_CFG_MAX_BUF_LEN 2048
 #define ICE_MAX_SW 256
 #define ICE_DFLT_VSI_INVAL 0xff
+#define ICE_FLTR_RX BIT(0)
+#define ICE_FLTR_TX BIT(1)
+#define ICE_FLTR_TX_RX (ICE_FLTR_RX | ICE_FLTR_TX)
 
+/* Switch Profile IDs for Profile related switch rules */
+#define ICE_PROFID_IPV4_ESP		71
+#define ICE_PROFID_IPV6_ESP		72
+#define ICE_PROFID_IPV4_AH		73
+#define ICE_PROFID_IPV6_AH		74
+#define ICE_PROFID_IPV4_NAT_T		75
+#define ICE_PROFID_IPV6_NAT_T		76
+#define ICE_PROFID_MAC_IPV4_L2TPV3	77
+#define ICE_PROFID_MAC_IPV6_L2TPV3	78
+#define ICE_PROFID_IPV4_PFCP_NODE	79
+#define ICE_PROFID_IPV4_PFCP_SESSION	80
+#define ICE_PROFID_IPV6_PFCP_NODE	81
+#define ICE_PROFID_IPV6_PFCP_SESSION	82
+
+#define DUMMY_ETH_HDR_LEN		16
+#define ICE_SW_RULE_RX_TX_ETH_HDR_SIZE \
+	(sizeof(struct ice_aqc_sw_rules_elem) - \
+	 sizeof(((struct ice_aqc_sw_rules_elem *)0)->pdata) + \
+	 sizeof(struct ice_sw_rule_lkup_rx_tx) + DUMMY_ETH_HDR_LEN - 1)
+#define ICE_SW_RULE_RX_TX_NO_HDR_SIZE \
+	(sizeof(struct ice_aqc_sw_rules_elem) - \
+	 sizeof(((struct ice_aqc_sw_rules_elem *)0)->pdata) + \
+	 sizeof(struct ice_sw_rule_lkup_rx_tx) - 1)
+#define ICE_SW_RULE_LG_ACT_SIZE(n) \
+	(sizeof(struct ice_aqc_sw_rules_elem) - \
+	 sizeof(((struct ice_aqc_sw_rules_elem *)0)->pdata) + \
+	 sizeof(struct ice_sw_rule_lg_act) - \
+	 sizeof(((struct ice_sw_rule_lg_act *)0)->act) + \
+	 ((n) * sizeof(((struct ice_sw_rule_lg_act *)0)->act)))
+#define ICE_SW_RULE_VSI_LIST_SIZE(n) \
+	(sizeof(struct ice_aqc_sw_rules_elem) - \
+	 sizeof(((struct ice_aqc_sw_rules_elem *)0)->pdata) + \
+	 sizeof(struct ice_sw_rule_vsi_list) - \
+	 sizeof(((struct ice_sw_rule_vsi_list *)0)->vsi) + \
+	 ((n) * sizeof(((struct ice_sw_rule_vsi_list *)0)->vsi)))
 
 /* Worst case buffer length for ice_aqc_opc_get_res_alloc */
 #define ICE_MAX_RES_TYPES 0x80
@@ -20,11 +58,6 @@
 
 #define ICE_VSI_INVAL_ID 0xFFFF
 #define ICE_INVAL_Q_HANDLE 0xFFFF
-
-/* VSI queue context structure */
-struct ice_q_ctx {
-	u16  q_handle;
-};
 
 /* VSI context structure for add/get/update/free operations */
 struct ice_vsi_ctx {
@@ -37,8 +70,6 @@ struct ice_vsi_ctx {
 	u8 alloc_from_pool;
 	u16 num_lan_q_entries[ICE_MAX_TRAFFIC_CLASS];
 	struct ice_q_ctx *lan_q_ctx[ICE_MAX_TRAFFIC_CLASS];
-	struct ice_lock rss_locks;	/* protect rss config in VSI ctx */
-	struct LIST_HEAD_TYPE rss_list_head;
 };
 
 /* This is to be used by add/update mirror rule Admin Queue command */
@@ -84,9 +115,6 @@ struct ice_fltr_info {
 	/* rule ID returned by firmware once filter rule is created */
 	u16 fltr_rule_id;
 	u16 flag;
-#define ICE_FLTR_RX		BIT(0)
-#define ICE_FLTR_TX		BIT(1)
-#define ICE_FLTR_TX_RX		(ICE_FLTR_RX | ICE_FLTR_TX)
 
 	/* Source VSI for LOOKUP_TX or source port for LOOKUP_RX */
 	u16 src;
@@ -152,10 +180,6 @@ struct ice_sw_act_ctrl {
 	/* Source VSI for LOOKUP_TX or source port for LOOKUP_RX */
 	u16 src;
 	u16 flag;
-#define ICE_FLTR_RX             BIT(0)
-#define ICE_FLTR_TX             BIT(1)
-#define ICE_FLTR_TX_RX (ICE_FLTR_RX | ICE_FLTR_TX)
-
 	enum ice_sw_fwd_act_type fltr_act;
 	/* Depending on filter action */
 	union {
@@ -172,11 +196,21 @@ struct ice_sw_act_ctrl {
 	u8 qgrp_size;
 };
 
+struct ice_rule_query_data {
+	/* Recipe ID for which the requested rule was added */
+	u16 rid;
+	/* Rule ID that was added or is supposed to be removed */
+	u16 rule_id;
+	/* vsi_handle for which Rule was added or is supposed to be removed */
+	u16 vsi_handle;
+};
+
 struct ice_adv_rule_info {
 	enum ice_sw_tunnel_type tun_type;
 	struct ice_sw_act_ctrl sw_act;
 	u32 priority;
 	u8 rx; /* true means LOOKUP_RX otherwise LOOKUP_TX */
+	u16 fltr_rule_id;
 };
 
 /* A collection of one or more four word recipe */
@@ -184,6 +218,7 @@ struct ice_sw_recipe {
 	/* For a chained recipe the root recipe is what should be used for
 	 * programming rules
 	 */
+	u8 is_root;
 	u8 root_rid;
 	u8 recp_created;
 
@@ -193,6 +228,7 @@ struct ice_sw_recipe {
 	 * recipe
 	 */
 	struct ice_fv_word ext_words[ICE_MAX_CHAIN_WORDS];
+	u16 word_masks[ICE_MAX_CHAIN_WORDS];
 
 	/* if this recipe is a collection of other recipe */
 	u8 big_recp;
@@ -224,6 +260,10 @@ struct ice_sw_recipe {
 
 	/* Profiles this recipe is associated with */
 	u8 num_profs, *prof_ids;
+
+	/* Possible result indexes are 44, 45, 46 and 47 */
+#define ICE_POSSIBLE_RES_IDX 0x0000F00000000000ULL
+	ice_declare_bitmap(res_idxs, ICE_MAX_FV_WORDS);
 
 	/* This allows user to specify the recipe priority.
 	 * For now, this becomes 'fwd_priority' when recipe
@@ -281,6 +321,8 @@ struct ice_adv_fltr_mgmt_list_entry {
 	struct ice_adv_lkup_elem *lkups;
 	struct ice_adv_rule_info rule_info;
 	u16 lkups_cnt;
+	struct ice_vsi_list_map_info *vsi_list_info;
+	u16 vsi_count;
 };
 
 enum ice_promisc_flags {
@@ -362,6 +404,8 @@ ice_aq_get_res_descs(struct ice_hw *hw, u16 num_entries,
 		     struct ice_sq_cd *cd);
 enum ice_status
 ice_add_vlan(struct ice_hw *hw, struct LIST_HEAD_TYPE *m_list);
+enum ice_status
+ice_remove_vlan(struct ice_hw *hw, struct LIST_HEAD_TYPE *v_list);
 void ice_rem_all_sw_rules_info(struct ice_hw *hw);
 enum ice_status ice_add_mac(struct ice_hw *hw, struct LIST_HEAD_TYPE *m_lst);
 enum ice_status ice_remove_mac(struct ice_hw *hw, struct LIST_HEAD_TYPE *m_lst);
@@ -370,13 +414,9 @@ ice_add_eth_mac(struct ice_hw *hw, struct LIST_HEAD_TYPE *em_list);
 enum ice_status
 ice_remove_eth_mac(struct ice_hw *hw, struct LIST_HEAD_TYPE *em_list);
 enum ice_status
-ice_remove_vlan(struct ice_hw *hw, struct LIST_HEAD_TYPE *v_list);
-#ifndef NO_MACVLAN_SUPPORT
-enum ice_status
 ice_add_mac_vlan(struct ice_hw *hw, struct LIST_HEAD_TYPE *m_list);
 enum ice_status
 ice_remove_mac_vlan(struct ice_hw *hw, struct LIST_HEAD_TYPE *v_list);
-#endif /* !NO_MACVLAN_SUPPORT */
 
 enum ice_status
 ice_add_mac_with_sw_marker(struct ice_hw *hw, struct ice_fltr_info *f_info,
@@ -384,7 +424,6 @@ ice_add_mac_with_sw_marker(struct ice_hw *hw, struct ice_fltr_info *f_info,
 enum ice_status
 ice_add_mac_with_counter(struct ice_hw *hw, struct ice_fltr_info *f_info);
 void ice_remove_vsi_fltr(struct ice_hw *hw, u16 vsi_handle);
-
 
 /* Promisc/defport setup for VSIs */
 enum ice_status
@@ -408,15 +447,46 @@ enum ice_status
 ice_get_vsi_vlan_promisc(struct ice_hw *hw, u16 vsi_handle, u8 *promisc_mask,
 			 u16 *vid);
 
+enum ice_status
+ice_aq_add_recipe(struct ice_hw *hw,
+		  struct ice_aqc_recipe_data_elem *s_recipe_list,
+		  u16 num_recipes, struct ice_sq_cd *cd);
 
+enum ice_status
+ice_aq_get_recipe(struct ice_hw *hw,
+		  struct ice_aqc_recipe_data_elem *s_recipe_list,
+		  u16 *num_recipes, u16 recipe_root, struct ice_sq_cd *cd);
+enum ice_status
+ice_aq_map_recipe_to_profile(struct ice_hw *hw, u32 profile_id, u8 *r_bitmap,
+			     struct ice_sq_cd *cd);
+
+enum ice_status
+ice_aq_get_recipe_to_profile(struct ice_hw *hw, u32 profile_id, u8 *r_bitmap,
+			     struct ice_sq_cd *cd);
+
+enum ice_status ice_alloc_recipe(struct ice_hw *hw, u16 *recipe_id);
+enum ice_status
+ice_add_adv_rule(struct ice_hw *hw, struct ice_adv_lkup_elem *lkups,
+		 u16 lkups_cnt, struct ice_adv_rule_info *rinfo,
+		 struct ice_rule_query_data *added_entry);
+enum ice_status
+ice_rem_adv_rule_for_vsi(struct ice_hw *hw, u16 vsi_handle);
+enum ice_status
+ice_rem_adv_rule_by_id(struct ice_hw *hw,
+		       struct ice_rule_query_data *remove_entry);
+enum ice_status
+ice_rem_adv_rule(struct ice_hw *hw, struct ice_adv_lkup_elem *lkups,
+		 u16 lkups_cnt, struct ice_adv_rule_info *rinfo);
 
 enum ice_status ice_replay_all_fltr(struct ice_hw *hw);
 
-enum ice_status ice_init_def_sw_recp(struct ice_hw *hw);
+enum ice_status
+ice_init_def_sw_recp(struct ice_hw *hw, struct ice_sw_recipe **recp_list);
 u16 ice_get_hw_vsi_num(struct ice_hw *hw, u16 vsi_handle);
 bool ice_is_vsi_valid(struct ice_hw *hw, u16 vsi_handle);
 
 enum ice_status ice_replay_vsi_all_fltr(struct ice_hw *hw, u16 vsi_handle);
 void ice_rm_all_sw_replay_rule_info(struct ice_hw *hw);
+bool ice_is_prof_rule(enum ice_sw_tunnel_type type);
 
 #endif /* _ICE_SWITCH_H_ */

@@ -36,9 +36,14 @@
 
 #include "spdk/stdinc.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #include "spdk/event.h"
 #include "spdk/json.h"
 #include "spdk/thread.h"
+#include "spdk/util.h"
 
 struct spdk_event {
 	uint32_t		lcore;
@@ -47,11 +52,66 @@ struct spdk_event {
 	void			*arg2;
 };
 
+enum spdk_reactor_state {
+	SPDK_REACTOR_STATE_UNINITIALIZED = 0,
+	SPDK_REACTOR_STATE_INITIALIZED = 1,
+	SPDK_REACTOR_STATE_RUNNING = 2,
+	SPDK_REACTOR_STATE_EXITING = 3,
+	SPDK_REACTOR_STATE_SHUTDOWN = 4,
+};
+
+struct spdk_lw_thread {
+	TAILQ_ENTRY(spdk_lw_thread)	link;
+	bool				resched;
+	uint64_t			tsc_start;
+};
+
+struct spdk_reactor {
+	/* Lightweight threads running on this reactor */
+	TAILQ_HEAD(, spdk_lw_thread)			threads;
+	uint32_t					thread_count;
+
+	/* Logical core number for this reactor. */
+	uint32_t					lcore;
+
+	struct {
+		uint32_t				is_valid : 1;
+		uint32_t				reserved : 31;
+	} flags;
+
+	uint64_t					tsc_last;
+
+	struct spdk_ring				*events;
+
+	/* The last known rusage values */
+	struct rusage					rusage;
+	uint64_t					last_rusage;
+
+	uint64_t					busy_tsc;
+	uint64_t					idle_tsc;
+} __attribute__((aligned(SPDK_CACHE_LINE_SIZE)));
+
 int spdk_reactors_init(void);
 void spdk_reactors_fini(void);
 
 void spdk_reactors_start(void);
 void spdk_reactors_stop(void *arg1);
+
+struct spdk_reactor *spdk_reactor_get(uint32_t lcore);
+
+/**
+ * Allocate and pass an event to each reactor, serially.
+ *
+ * The allocated event is processed asynchronously - i.e. spdk_for_each_reactor
+ * will return prior to `fn` being called on each reactor.
+ *
+ * \param fn This is the function that will be called on each reactor.
+ * \param arg1 Argument will be passed to fn when called.
+ * \param arg2 Argument will be passed to fn when called.
+ * \param cpl This will be called on the originating reactor after `fn` has been
+ * called on each reactor.
+ */
+void spdk_for_each_reactor(spdk_event_fn fn, void *arg1, void *arg2, spdk_event_fn cpl);
 
 struct spdk_subsystem {
 	const char *name;
@@ -69,10 +129,9 @@ struct spdk_subsystem {
 	TAILQ_ENTRY(spdk_subsystem) tailq;
 };
 
-TAILQ_HEAD(spdk_subsystem_list, spdk_subsystem);
-extern struct spdk_subsystem_list g_subsystems;
-
-struct spdk_subsystem *spdk_subsystem_find(struct spdk_subsystem_list *list, const char *name);
+struct spdk_subsystem *spdk_subsystem_find(const char *name);
+struct spdk_subsystem *spdk_subsystem_get_first(void);
+struct spdk_subsystem *spdk_subsystem_get_next(struct spdk_subsystem *cur_subsystem);
 
 struct spdk_subsystem_depend {
 	const char *name;
@@ -80,17 +139,22 @@ struct spdk_subsystem_depend {
 	TAILQ_ENTRY(spdk_subsystem_depend) tailq;
 };
 
-TAILQ_HEAD(spdk_subsystem_depend_list, spdk_subsystem_depend);
-extern struct spdk_subsystem_depend_list g_subsystems_deps;
+struct spdk_subsystem_depend *spdk_subsystem_get_first_depend(void);
+struct spdk_subsystem_depend *spdk_subsystem_get_next_depend(struct spdk_subsystem_depend
+		*cur_depend);
 
 void spdk_add_subsystem(struct spdk_subsystem *subsystem);
 void spdk_add_subsystem_depend(struct spdk_subsystem_depend *depend);
 
-void spdk_subsystem_init(spdk_msg_fn cb_fn, void *cb_arg);
+typedef void (*spdk_subsystem_init_fn)(int rc, void *ctx);
+void spdk_subsystem_init(spdk_subsystem_init_fn cb_fn, void *cb_arg);
 void spdk_subsystem_fini(spdk_msg_fn cb_fn, void *cb_arg);
 void spdk_subsystem_init_next(int rc);
 void spdk_subsystem_fini_next(void);
 void spdk_subsystem_config(FILE *fp);
+void spdk_app_json_config_load(const char *json_config_file, const char *rpc_addr,
+			       spdk_subsystem_init_fn cb_fn, void *cb_arg,
+			       bool stop_on_error);
 
 /**
  * Save pointed \c subsystem configuration to the JSON write context \c w. In case of
@@ -125,5 +189,9 @@ void spdk_rpc_finish(void);
 	{											\
 		spdk_add_subsystem_depend(&__subsystem_ ## _name ## _depend_on ## _depends_on); \
 	}
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* SPDK_INTERNAL_EVENT_H */

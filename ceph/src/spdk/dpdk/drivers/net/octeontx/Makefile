@@ -15,8 +15,6 @@ CFLAGS += -I$(RTE_SDK)/drivers/mempool/octeontx/
 
 EXPORT_MAP := rte_pmd_octeontx_version.map
 
-LIBABIVER := 1
-
 OBJS_BASE_DRIVER=$(patsubst %.c,%.o,$(notdir $(wildcard $(SRCDIR)/base/*.c)))
 $(foreach obj, $(OBJS_BASE_DRIVER), $(eval CFLAGS_$(obj)+=$(CFLAGS_BASE_DRIVER)))
 
@@ -30,6 +28,7 @@ SRCS-$(CONFIG_RTE_LIBRTE_OCTEONTX_PMD) += octeontx_pkovf.c
 SRCS-$(CONFIG_RTE_LIBRTE_OCTEONTX_PMD) += octeontx_pkivf.c
 SRCS-$(CONFIG_RTE_LIBRTE_OCTEONTX_PMD) += octeontx_bgx.c
 SRCS-$(CONFIG_RTE_LIBRTE_OCTEONTX_PMD) += octeontx_ethdev.c
+SRCS-$(CONFIG_RTE_LIBRTE_OCTEONTX_PMD) += octeontx_ethdev_ops.c
 
 ifeq ($(CONFIG_RTE_TOOLCHAIN_GCC),y)
 CFLAGS_octeontx_rxtx.o += -fno-prefetch-loop-arrays
@@ -43,8 +42,6 @@ endif
 else
 CFLAGS_octeontx_rxtx.o += -O3 -Ofast
 endif
-
-CFLAGS_octeontx_ethdev.o += -DALLOW_EXPERIMENTAL_API
 
 LDLIBS += -lrte_eal -lrte_mbuf -lrte_mempool -lrte_ring
 LDLIBS += -lrte_ethdev -lrte_net -lrte_kvargs -lrte_common_octeontx

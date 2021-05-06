@@ -18,8 +18,6 @@
 #define MAX_BURST 32
 #define STACK_SIZE (RTE_MAX_LCORE * MAX_BURST)
 
-#define ARRAY_SIZE(x) (sizeof(x) / sizeof((x)[0]))
-
 /*
  * Push/pop bulk sizes, marked volatile so they aren't treated as compile-time
  * constants.
@@ -44,10 +42,10 @@ get_two_hyperthreads(struct lcore_pair *lcp)
 		RTE_LCORE_FOREACH(id[1]) {
 			if (id[0] == id[1])
 				continue;
-			core[0] = lcore_config[id[0]].core_id;
-			core[1] = lcore_config[id[1]].core_id;
-			socket[0] = lcore_config[id[0]].socket_id;
-			socket[1] = lcore_config[id[1]].socket_id;
+			core[0] = rte_lcore_to_cpu_id(id[0]);
+			core[1] = rte_lcore_to_cpu_id(id[1]);
+			socket[0] = rte_lcore_to_socket_id(id[0]);
+			socket[1] = rte_lcore_to_socket_id(id[1]);
 			if ((core[0] == core[1]) && (socket[0] == socket[1])) {
 				lcp->c1 = id[0];
 				lcp->c2 = id[1];
@@ -70,10 +68,10 @@ get_two_cores(struct lcore_pair *lcp)
 		RTE_LCORE_FOREACH(id[1]) {
 			if (id[0] == id[1])
 				continue;
-			core[0] = lcore_config[id[0]].core_id;
-			core[1] = lcore_config[id[1]].core_id;
-			socket[0] = lcore_config[id[0]].socket_id;
-			socket[1] = lcore_config[id[1]].socket_id;
+			core[0] = rte_lcore_to_cpu_id(id[0]);
+			core[1] = rte_lcore_to_cpu_id(id[1]);
+			socket[0] = rte_lcore_to_socket_id(id[0]);
+			socket[1] = rte_lcore_to_socket_id(id[1]);
 			if ((core[0] != core[1]) && (socket[0] == socket[1])) {
 				lcp->c1 = id[0];
 				lcp->c2 = id[1];
@@ -95,8 +93,8 @@ get_two_sockets(struct lcore_pair *lcp)
 		RTE_LCORE_FOREACH(id[1]) {
 			if (id[0] == id[1])
 				continue;
-			socket[0] = lcore_config[id[0]].socket_id;
-			socket[1] = lcore_config[id[1]].socket_id;
+			socket[0] = rte_lcore_to_socket_id(id[0]);
+			socket[1] = rte_lcore_to_socket_id(id[1]);
 			if (socket[0] != socket[1]) {
 				lcp->c1 = id[0];
 				lcp->c2 = id[1];
@@ -176,7 +174,7 @@ run_on_core_pair(struct lcore_pair *cores, struct rte_stack *s,
 	struct thread_args args[2];
 	unsigned int i;
 
-	for (i = 0; i < ARRAY_SIZE(bulk_sizes); i++) {
+	for (i = 0; i < RTE_DIM(bulk_sizes); i++) {
 		rte_atomic32_set(&lcore_barrier, 2);
 
 		args[0].sz = args[1].sz = bulk_sizes[i];
@@ -205,7 +203,7 @@ run_on_n_cores(struct rte_stack *s, lcore_function_t fn, int n)
 	struct thread_args args[RTE_MAX_LCORE];
 	unsigned int i;
 
-	for (i = 0; i < ARRAY_SIZE(bulk_sizes); i++) {
+	for (i = 0; i < RTE_DIM(bulk_sizes); i++) {
 		unsigned int lcore_id;
 		int cnt = 0;
 		double avg;
@@ -280,7 +278,7 @@ test_bulk_push_pop(struct rte_stack *s)
 	void *objs[MAX_BURST];
 	unsigned int sz, i;
 
-	for (sz = 0; sz < ARRAY_SIZE(bulk_sizes); sz++) {
+	for (sz = 0; sz < RTE_DIM(bulk_sizes); sz++) {
 		uint64_t start = rte_rdtsc();
 
 		for (i = 0; i < iterations; i++) {

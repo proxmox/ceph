@@ -1,25 +1,23 @@
 import { HttpClientTestingModule } from '@angular/common/http/testing';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
+import { By } from '@angular/platform-browser';
 import { BrowserAnimationsModule } from '@angular/platform-browser/animations';
 import { RouterTestingModule } from '@angular/router/testing';
 
-import { TabsModule } from 'ngx-bootstrap/tabs';
+import { NgbNavModule } from '@ng-bootstrap/ng-bootstrap';
+import moment from 'moment';
+import { NgxPipeFunctionModule } from 'ngx-pipe-function';
 import { ToastrModule } from 'ngx-toastr';
 import { of } from 'rxjs';
 
-import { By } from '@angular/platform-browser';
-import {
-  configureTestBed,
-  expectItemTasks,
-  i18nProviders
-} from '../../../../testing/unit-test-helper';
-import { RbdService } from '../../../shared/api/rbd.service';
-import { CdTableSelection } from '../../../shared/models/cd-table-selection';
-import { ExecutingTask } from '../../../shared/models/executing-task';
-import { Summary } from '../../../shared/models/summary.model';
-import { SummaryService } from '../../../shared/services/summary.service';
-import { TaskListService } from '../../../shared/services/task-list.service';
-import { SharedModule } from '../../../shared/shared.module';
+import { RbdService } from '~/app/shared/api/rbd.service';
+import { CdTableSelection } from '~/app/shared/models/cd-table-selection';
+import { ExecutingTask } from '~/app/shared/models/executing-task';
+import { Summary } from '~/app/shared/models/summary.model';
+import { SummaryService } from '~/app/shared/services/summary.service';
+import { TaskListService } from '~/app/shared/services/task-list.service';
+import { SharedModule } from '~/app/shared/shared.module';
+import { configureTestBed, expectItemTasks } from '~/testing/unit-test-helper';
 import { RbdTabsComponent } from '../rbd-tabs/rbd-tabs.component';
 import { RbdTrashListComponent } from './rbd-trash-list.component';
 
@@ -36,17 +34,18 @@ describe('RbdTrashListComponent', () => {
       HttpClientTestingModule,
       RouterTestingModule,
       SharedModule,
-      TabsModule.forRoot(),
+      NgbNavModule,
+      NgxPipeFunctionModule,
       ToastrModule.forRoot()
     ],
-    providers: [TaskListService, i18nProviders]
+    providers: [TaskListService]
   });
 
   beforeEach(() => {
     fixture = TestBed.createComponent(RbdTrashListComponent);
     component = fixture.componentInstance;
-    summaryService = TestBed.get(SummaryService);
-    rbdService = TestBed.get(RbdService);
+    summaryService = TestBed.inject(SummaryService);
+    rbdService = TestBed.inject(RbdService);
     fixture.detectChanges();
   });
 
@@ -120,7 +119,7 @@ describe('RbdTrashListComponent', () => {
       images.push({
         id: id,
         pool_name: 'pl',
-        deferment_end_time: 'abc'
+        deferment_end_time: moment()
       });
     };
 

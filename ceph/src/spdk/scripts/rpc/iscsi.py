@@ -1,6 +1,8 @@
+from .helpers import deprecated_alias
 
 
-def set_iscsi_options(
+@deprecated_alias('set_iscsi_options')
+def iscsi_set_options(
         client,
         auth_file=None,
         node_base=None,
@@ -80,10 +82,11 @@ def set_iscsi_options(
     if allow_duplicated_isid:
         params['allow_duplicated_isid'] = allow_duplicated_isid
 
-    return client.call('set_iscsi_options', params)
+    return client.call('iscsi_set_options', params)
 
 
-def set_iscsi_discovery_auth(
+@deprecated_alias('set_iscsi_discovery_auth')
+def iscsi_set_discovery_auth(
         client,
         disable_chap=None,
         require_chap=None,
@@ -111,46 +114,51 @@ def set_iscsi_discovery_auth(
     if chap_group:
         params['chap_group'] = chap_group
 
-    return client.call('set_iscsi_discovery_auth', params)
+    return client.call('iscsi_set_discovery_auth', params)
 
 
-def get_iscsi_auth_groups(client):
+@deprecated_alias('get_iscsi_auth_groups')
+def iscsi_get_auth_groups(client):
     """Display current authentication group configuration.
 
     Returns:
         List of current authentication group configuration.
     """
-    return client.call('get_iscsi_auth_groups')
+    return client.call('iscsi_get_auth_groups')
 
 
-def get_portal_groups(client):
+@deprecated_alias('get_portal_groups')
+def iscsi_get_portal_groups(client):
     """Display current portal group configuration.
 
     Returns:
         List of current portal group configuration.
     """
-    return client.call('get_portal_groups')
+    return client.call('iscsi_get_portal_groups')
 
 
-def get_initiator_groups(client):
+@deprecated_alias('get_initiator_groups')
+def iscsi_get_initiator_groups(client):
     """Display current initiator group configuration.
 
     Returns:
         List of current initiator group configuration.
     """
-    return client.call('get_initiator_groups')
+    return client.call('iscsi_get_initiator_groups')
 
 
-def get_target_nodes(client):
+@deprecated_alias('get_target_nodes')
+def iscsi_get_target_nodes(client):
     """Display target nodes.
 
     Returns:
         List of ISCSI target node objects.
     """
-    return client.call('get_target_nodes')
+    return client.call('iscsi_get_target_nodes')
 
 
-def construct_target_node(
+@deprecated_alias('construct_target_node')
+def iscsi_create_target_node(
         client,
         luns,
         pg_ig_maps,
@@ -201,10 +209,11 @@ def construct_target_node(
         params['header_digest'] = header_digest
     if data_digest:
         params['data_digest'] = data_digest
-    return client.call('construct_target_node', params)
+    return client.call('iscsi_create_target_node', params)
 
 
-def target_node_add_lun(client, name, bdev_name, lun_id=None):
+@deprecated_alias('target_node_add_lun')
+def iscsi_target_node_add_lun(client, name, bdev_name, lun_id=None):
     """Add LUN to the target node.
 
     Args:
@@ -221,10 +230,11 @@ def target_node_add_lun(client, name, bdev_name, lun_id=None):
     }
     if lun_id:
         params['lun_id'] = lun_id
-    return client.call('target_node_add_lun', params)
+    return client.call('iscsi_target_node_add_lun', params)
 
 
-def set_iscsi_target_node_auth(
+@deprecated_alias('set_iscsi_target_node_auth')
+def iscsi_target_node_set_auth(
         client,
         name,
         chap_group=None,
@@ -255,11 +265,12 @@ def set_iscsi_target_node_auth(
         params['require_chap'] = require_chap
     if mutual_chap:
         params['mutual_chap'] = mutual_chap
-    return client.call('set_iscsi_target_node_auth', params)
+    return client.call('iscsi_target_node_set_auth', params)
 
 
-def add_iscsi_auth_group(client, tag, secrets=None):
-    """Add authentication group for CHAP authentication.
+@deprecated_alias('add_iscsi_auth_group')
+def iscsi_create_auth_group(client, tag, secrets=None):
+    """Create authentication group for CHAP authentication.
 
     Args:
         tag: Authentication group tag (unique, integer > 0).
@@ -272,10 +283,11 @@ def add_iscsi_auth_group(client, tag, secrets=None):
 
     if secrets:
         params['secrets'] = secrets
-    return client.call('add_iscsi_auth_group', params)
+    return client.call('iscsi_create_auth_group', params)
 
 
-def delete_iscsi_auth_group(client, tag):
+@deprecated_alias('delete_iscsi_auth_group')
+def iscsi_delete_auth_group(client, tag):
     """Delete an authentication group.
 
     Args:
@@ -285,10 +297,11 @@ def delete_iscsi_auth_group(client, tag):
         True or False
     """
     params = {'tag': tag}
-    return client.call('delete_iscsi_auth_group', params)
+    return client.call('iscsi_delete_auth_group', params)
 
 
-def add_secret_to_iscsi_auth_group(client, tag, user, secret, muser=None, msecret=None):
+@deprecated_alias('add_secret_to_iscsi_auth_group')
+def iscsi_auth_group_add_secret(client, tag, user, secret, muser=None, msecret=None):
     """Add a secret to an authentication group.
 
     Args:
@@ -307,11 +320,12 @@ def add_secret_to_iscsi_auth_group(client, tag, user, secret, muser=None, msecre
         params['muser'] = muser
     if msecret:
         params['msecret'] = msecret
-    return client.call('add_secret_to_iscsi_auth_group', params)
+    return client.call('iscsi_auth_group_add_secret', params)
 
 
-def delete_secret_from_iscsi_auth_group(client, tag, user):
-    """Delete a secret from an authentication group.
+@deprecated_alias('delete_secret_from_iscsi_auth_group')
+def iscsi_auth_group_remove_secret(client, tag, user):
+    """Remove a secret from an authentication group.
 
     Args:
         tag: Authentication group tag (unique, integer > 0)
@@ -321,10 +335,11 @@ def delete_secret_from_iscsi_auth_group(client, tag, user):
         True or False
     """
     params = {'tag': tag, 'user': user}
-    return client.call('delete_secret_from_iscsi_auth_group', params)
+    return client.call('iscsi_auth_group_remove_secret', params)
 
 
-def delete_pg_ig_maps(client, pg_ig_maps, name):
+@deprecated_alias('delete_pg_ig_maps')
+def iscsi_target_node_remove_pg_ig_maps(client, pg_ig_maps, name):
     """Delete PG-IG maps from the target node.
 
     Args:
@@ -338,10 +353,11 @@ def delete_pg_ig_maps(client, pg_ig_maps, name):
         'name': name,
         'pg_ig_maps': pg_ig_maps,
     }
-    return client.call('delete_pg_ig_maps', params)
+    return client.call('iscsi_target_node_remove_pg_ig_maps', params)
 
 
-def add_pg_ig_maps(client, pg_ig_maps, name):
+@deprecated_alias('add_pg_ig_maps')
+def iscsi_target_node_add_pg_ig_maps(client, pg_ig_maps, name):
     """Add PG-IG maps to the target node.
 
     Args:
@@ -355,24 +371,26 @@ def add_pg_ig_maps(client, pg_ig_maps, name):
         'name': name,
         'pg_ig_maps': pg_ig_maps,
     }
-    return client.call('add_pg_ig_maps', params)
+    return client.call('iscsi_target_node_add_pg_ig_maps', params)
 
 
-def add_portal_group(client, portals, tag):
+@deprecated_alias('add_portal_group')
+def iscsi_create_portal_group(client, portals, tag):
     """Add a portal group.
 
     Args:
-        portals: List of portals, e.g. [{'host': ip, 'port': port}] or [{'host': ip, 'port': port, 'cpumask': cpumask}]
+        portals: List of portals, e.g. [{'host': ip, 'port': port}]
         tag: Initiator group tag (unique, integer > 0)
 
     Returns:
         True or False
     """
     params = {'tag': tag, 'portals': portals}
-    return client.call('add_portal_group', params)
+    return client.call('iscsi_create_portal_group', params)
 
 
-def add_initiator_group(client, tag, initiators, netmasks):
+@deprecated_alias('add_initiator_group')
+def iscsi_create_initiator_group(client, tag, initiators, netmasks):
     """Add an initiator group.
 
     Args:
@@ -384,10 +402,11 @@ def add_initiator_group(client, tag, initiators, netmasks):
         True or False
     """
     params = {'tag': tag, 'initiators': initiators, 'netmasks': netmasks}
-    return client.call('add_initiator_group', params)
+    return client.call('iscsi_create_initiator_group', params)
 
 
-def add_initiators_to_initiator_group(
+@deprecated_alias('add_initiators_to_initiator_group')
+def iscsi_initiator_group_add_initiators(
         client,
         tag,
         initiators=None,
@@ -408,10 +427,11 @@ def add_initiators_to_initiator_group(
         params['initiators'] = initiators
     if netmasks:
         params['netmasks'] = netmasks
-    return client.call('add_initiators_to_initiator_group', params)
+    return client.call('iscsi_initiator_group_add_initiators', params)
 
 
-def delete_initiators_from_initiator_group(
+@deprecated_alias('delete_initiators_from_initiator_group')
+def iscsi_initiator_group_remove_initiators(
         client, tag, initiators=None, netmasks=None):
     """Delete initiators from an existing initiator group.
 
@@ -429,10 +449,11 @@ def delete_initiators_from_initiator_group(
         params['initiators'] = initiators
     if netmasks:
         params['netmasks'] = netmasks
-    return client.call('delete_initiators_from_initiator_group', params)
+    return client.call('iscsi_initiator_group_remove_initiators', params)
 
 
-def delete_target_node(client, target_node_name):
+@deprecated_alias('delete_target_node')
+def iscsi_delete_target_node(client, target_node_name):
     """Delete a target node.
 
     Args:
@@ -442,10 +463,11 @@ def delete_target_node(client, target_node_name):
         True or False
     """
     params = {'name': target_node_name}
-    return client.call('delete_target_node', params)
+    return client.call('iscsi_delete_target_node', params)
 
 
-def delete_portal_group(client, tag):
+@deprecated_alias('delete_portal_group')
+def iscsi_delete_portal_group(client, tag):
     """Delete a portal group.
 
     Args:
@@ -455,10 +477,11 @@ def delete_portal_group(client, tag):
         True or False
     """
     params = {'tag': tag}
-    return client.call('delete_portal_group', params)
+    return client.call('iscsi_delete_portal_group', params)
 
 
-def delete_initiator_group(client, tag):
+@deprecated_alias('delete_initiator_group')
+def iscsi_delete_initiator_group(client, tag):
     """Delete an initiator group.
 
     Args:
@@ -468,31 +491,68 @@ def delete_initiator_group(client, tag):
         True or False
     """
     params = {'tag': tag}
-    return client.call('delete_initiator_group', params)
+    return client.call('iscsi_delete_initiator_group', params)
 
 
-def get_iscsi_connections(client):
+def iscsi_portal_group_set_auth(
+        client,
+        tag,
+        chap_group=None,
+        disable_chap=None,
+        require_chap=None,
+        mutual_chap=None):
+    """Set CHAP authentication for discovery sessions specific for the portal group.
+
+    Args:
+        tag: Portal group tag (unique, integer > 0)
+        chap_group: Authentication group ID for this portal group
+        disable_chap: CHAP authentication should be disabled for this portal group
+        require_chap: CHAP authentication should be required for this portal group
+        mutual_chap: CHAP authentication should be mutual/bidirectional
+
+    Returns:
+        True or False
+    """
+    params = {
+        'tag': tag,
+    }
+
+    if chap_group:
+        params['chap_group'] = chap_group
+    if disable_chap:
+        params['disable_chap'] = disable_chap
+    if require_chap:
+        params['require_chap'] = require_chap
+    if mutual_chap:
+        params['mutual_chap'] = mutual_chap
+    return client.call('iscsi_portal_group_set_auth', params)
+
+
+@deprecated_alias('get_iscsi_connections')
+def iscsi_get_connections(client):
     """Display iSCSI connections.
 
     Returns:
         List of iSCSI connection.
     """
-    return client.call('get_iscsi_connections')
+    return client.call('iscsi_get_connections')
 
 
-def get_iscsi_global_params(client):
+@deprecated_alias('get_iscsi_global_params')
+def iscsi_get_options(client):
     """Display iSCSI global parameters.
 
     Returns:
         List of iSCSI global parameter.
     """
-    return client.call('get_iscsi_global_params')
+    return client.call('iscsi_get_options')
 
 
-def get_scsi_devices(client):
+@deprecated_alias('get_iscsi_devices')
+def scsi_get_devices(client):
     """Display SCSI devices.
 
     Returns:
         List of SCSI device.
     """
-    return client.call('get_scsi_devices')
+    return client.call('scsi_get_devices')

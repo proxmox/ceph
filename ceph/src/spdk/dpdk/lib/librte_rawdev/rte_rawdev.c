@@ -29,6 +29,7 @@
 #include <rte_common.h>
 #include <rte_malloc.h>
 #include <rte_errno.h>
+#include <rte_telemetry.h>
 
 #include "rte_rawdev.h"
 #include "rte_rawdev_pmd.h"
@@ -378,7 +379,7 @@ rte_rawdev_selftest(uint16_t dev_id)
 	struct rte_rawdev *dev = &rte_rawdevs[dev_id];
 
 	RTE_FUNC_PTR_OR_ERR_RET(*dev->dev_ops->dev_selftest, -ENOTSUP);
-	return (*dev->dev_ops->dev_selftest)();
+	return (*dev->dev_ops->dev_selftest)(dev_id);
 }
 
 int
@@ -496,15 +497,16 @@ rte_rawdev_pmd_allocate(const char *name, size_t dev_priv_size, int socket_id)
 
 	rawdev = &rte_rawdevs[dev_id];
 
-	rawdev->dev_private = rte_zmalloc_socket("rawdev private",
+	if (dev_priv_size > 0) {
+		rawdev->dev_private = rte_zmalloc_socket("rawdev private",
 				     dev_priv_size,
 				     RTE_CACHE_LINE_SIZE,
 				     socket_id);
-	if (!rawdev->dev_private) {
-		RTE_RDEV_ERR("Unable to allocate memory to Skeleton dev");
-		return NULL;
+		if (!rawdev->dev_private) {
+			RTE_RDEV_ERR("Unable to allocate memory for rawdev");
+			return NULL;
+		}
 	}
-
 
 	rawdev->dev_id = dev_id;
 	rawdev->socket_id = socket_id;
@@ -543,9 +545,81 @@ rte_rawdev_pmd_release(struct rte_rawdev *rawdev)
 	return 0;
 }
 
+static int
+handle_dev_list(const char *cmd __rte_unused,
+		const char *params __rte_unused,
+		struct rte_tel_data *d)
+{
+	int i;
+
+	rte_tel_data_start_array(d, RTE_TEL_INT_VAL);
+	for (i = 0; i < rawdev_globals.nb_devs; i++)
+		if (rte_rawdevices[i].attached == RTE_RAWDEV_ATTACHED)
+			rte_tel_data_add_array_int(d, i);
+	return 0;
+}
+
+static int
+handle_dev_xstats(const char *cmd __rte_unused,
+		const char *params,
+		struct rte_tel_data *d)
+{
+	uint64_t *rawdev_xstats;
+	struct rte_rawdev_xstats_name *xstat_names;
+	int dev_id, num_xstats, i, ret;
+	unsigned int *ids;
+
+	if (params == NULL || strlen(params) == 0 || !isdigit(*params))
+		return -1;
+
+	dev_id = atoi(params);
+	if (!rte_rawdev_pmd_is_valid_dev(dev_id))
+		return -1;
+
+	num_xstats = xstats_get_count(dev_id);
+	if (num_xstats < 0)
+		return -1;
+
+	/* use one malloc for names, stats and ids */
+	rawdev_xstats = malloc((sizeof(uint64_t) +
+			sizeof(struct rte_rawdev_xstats_name) +
+			sizeof(unsigned int)) * num_xstats);
+	if (rawdev_xstats == NULL)
+		return -1;
+	xstat_names = (void *)&rawdev_xstats[num_xstats];
+	ids = (void *)&xstat_names[num_xstats];
+
+	ret = rte_rawdev_xstats_names_get(dev_id, xstat_names, num_xstats);
+	if (ret < 0 || ret > num_xstats) {
+		free(rawdev_xstats);
+		return -1;
+	}
+
+	for (i = 0; i < num_xstats; i++)
+		ids[i] = i;
+
+	ret = rte_rawdev_xstats_get(dev_id, ids, rawdev_xstats, num_xstats);
+	if (ret < 0 || ret > num_xstats) {
+		free(rawdev_xstats);
+		return -1;
+	}
+
+	rte_tel_data_start_dict(d);
+	for (i = 0; i < num_xstats; i++)
+		rte_tel_data_add_dict_u64(d, xstat_names[i].name,
+				rawdev_xstats[i]);
+
+	free(rawdev_xstats);
+	return 0;
+}
+
 RTE_INIT(librawdev_init_log)
 {
 	librawdev_logtype = rte_log_register("lib.rawdev");
 	if (librawdev_logtype >= 0)
 		rte_log_set_level(librawdev_logtype, RTE_LOG_INFO);
+	rte_telemetry_register_cmd("/rawdev/list", handle_dev_list,
+			"Returns list of available rawdev ports. Takes no parameters");
+	rte_telemetry_register_cmd("/rawdev/xstats", handle_dev_xstats,
+			"Returns the xstats for a rawdev port. Parameters: int port_id");
 }

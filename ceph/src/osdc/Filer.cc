@@ -34,6 +34,10 @@
 #undef dout_prefix
 #define dout_prefix *_dout << objecter->messenger->get_myname() << ".filer "
 
+using std::hex;
+using std::dec;
+using std::vector;
+
 class Filer::C_Probe : public Context {
 public:
   Filer *filer;
@@ -67,7 +71,7 @@ public:
 };
 
 int Filer::probe(inodeno_t ino,
-		 file_layout_t *layout,
+		 const file_layout_t *layout,
 		 snapid_t snapid,
 		 uint64_t start_from,
 		 uint64_t *end, // LB, when !fwd
@@ -90,7 +94,7 @@ int Filer::probe(inodeno_t ino,
 }
 
 int Filer::probe(inodeno_t ino,
-		 file_layout_t *layout,
+		 const file_layout_t *layout,
 		 snapid_t snapid,
 		 uint64_t start_from,
 		 uint64_t *end, // LB, when !fwd
@@ -111,7 +115,7 @@ int Filer::probe(inodeno_t ino,
   return probe_impl(probe, layout, start_from, end);
 }
 
-int Filer::probe_impl(Probe* probe, file_layout_t *layout,
+int Filer::probe_impl(Probe* probe, const file_layout_t *layout,
 		      uint64_t start_from, uint64_t *end) // LB, when !fwd
 {
   // period (bytes before we jump unto a new set of object(s))
@@ -156,9 +160,7 @@ void Filer::_probe(Probe *probe, Probe::unique_lock& pl)
 			   probe->probing_len, 0, probe->probing);
 
   std::vector<ObjectExtent> stat_extents;
-  for (vector<ObjectExtent>::iterator p = probe->probing.begin();
-       p != probe->probing.end();
-       ++p) {
+  for (auto p = probe->probing.begin(); p != probe->probing.end(); ++p) {
     ldout(cct, 10) << "_probe  probing " << p->oid << dendl;
     probe->ops.insert(p->oid);
     stat_extents.push_back(*p);
@@ -211,9 +213,7 @@ bool Filer::_probed(Probe *probe, const object_t& oid, uint64_t size,
     std::reverse(probe->probing.begin(), probe->probing.end());
   }
 
-  for (vector<ObjectExtent>::iterator p = probe->probing.begin();
-       p != probe->probing.end();
-       ++p) {
+  for (auto p = probe->probing.begin(); p != probe->probing.end(); ++p) {
     uint64_t shouldbe = p->length + p->offset;
     ldout(cct, 10) << "_probed  " << probe->ino << " object " << hex
 		   << p->oid << dec << " should be " << shouldbe
@@ -231,8 +231,7 @@ bool Filer::_probed(Probe *probe, const object_t& oid, uint64_t size,
       // aha, we found the end!
       // calc offset into buffer_extent to get distance from probe->from.
       uint64_t oleft = probe->known_size[p->oid] - p->offset;
-      for (vector<pair<uint64_t, uint64_t> >::iterator i
-	     = p->buffer_extents.begin();
+      for (auto i = p->buffer_extents.begin();
 	   i != p->buffer_extents.end();
 	   ++i) {
 	if (oleft <= (uint64_t)i->second) {
@@ -405,7 +404,7 @@ struct TruncRange {
 };
 
 void Filer::truncate(inodeno_t ino,
-		     file_layout_t *layout,
+		     const file_layout_t *layout,
 		     const SnapContext& snapc,
 		     uint64_t offset,
 		     uint64_t len,
@@ -419,7 +418,7 @@ void Filer::truncate(inodeno_t ino,
   if (num_objs == 1) {
     vector<ObjectExtent> extents;
     Striper::file_to_extents(cct, ino, layout, offset, len, 0, extents);
-    vector<OSDOp> ops(1);
+    osdc_opvec ops(1);
     ops[0].op.op = CEPH_OSD_OP_TRIMTRUNC;
     ops[0].op.extent.truncate_seq = truncate_seq;
     ops[0].op.extent.truncate_size = extents[0].offset;
@@ -478,7 +477,7 @@ void Filer::_do_truncate_range(TruncRange *tr, int fin)
 
   // Issue objecter ops outside tr->lock to avoid lock dependency loop
   for (const auto& p : extents) {
-    vector<OSDOp> ops(1);
+    osdc_opvec ops(1);
     ops[0].op.op = CEPH_OSD_OP_TRIMTRUNC;
     ops[0].op.extent.truncate_size = p.offset;
     ops[0].op.extent.truncate_seq = tr->truncate_seq;

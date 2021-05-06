@@ -10,6 +10,7 @@
 #include <netcope/txmac.h>
 
 #include <rte_ethdev_pci.h>
+#include <rte_kvargs.h>
 
 #include "nfb_stats.h"
 #include "nfb_rx.h"
@@ -20,7 +21,7 @@
 /**
  * Default MAC addr
  */
-static const struct ether_addr eth_addr = {
+static const struct rte_ether_addr eth_addr = {
 	.addr_bytes = { 0x00, 0x11, 0x17, 0x00, 0x00, 0x00 }
 };
 
@@ -187,7 +188,7 @@ nfb_eth_dev_configure(struct rte_eth_dev *dev __rte_unused)
  * @param[out] info
  *   Info structure output buffer.
  */
-static void
+static int
 nfb_eth_dev_info(struct rte_eth_dev *dev,
 	struct rte_eth_dev_info *dev_info)
 {
@@ -196,6 +197,8 @@ nfb_eth_dev_info(struct rte_eth_dev *dev,
 	dev_info->max_rx_queues = dev->data->nb_rx_queues;
 	dev_info->max_tx_queues = dev->data->nb_tx_queues;
 	dev_info->speed_capa = ETH_LINK_SPEED_100G;
+
+	return 0;
 }
 
 /**
@@ -209,11 +212,15 @@ nfb_eth_dev_info(struct rte_eth_dev *dev,
 static void
 nfb_eth_dev_close(struct rte_eth_dev *dev)
 {
+	struct pmd_internals *internals = dev->data->dev_private;
 	uint16_t i;
 	uint16_t nb_rx = dev->data->nb_rx_queues;
 	uint16_t nb_tx = dev->data->nb_tx_queues;
 
 	nfb_eth_dev_stop(dev);
+
+	nfb_nc_rxmac_deinit(internals->rxmac, internals->max_rxmac);
+	nfb_nc_txmac_deinit(internals->txmac, internals->max_txmac);
 
 	for (i = 0; i < nb_rx; i++) {
 		nfb_eth_rx_queue_release(dev->data->rx_queues[i]);
@@ -225,6 +232,9 @@ nfb_eth_dev_close(struct rte_eth_dev *dev)
 		dev->data->tx_queues[i] = NULL;
 	}
 	dev->data->nb_tx_queues = 0;
+
+	rte_free(dev->data->mac_addrs);
+	dev->data->mac_addrs = NULL;
 }
 
 /**
@@ -352,7 +362,7 @@ nfb_eth_dev_set_link_down(struct rte_eth_dev *dev)
  */
 static int
 nfb_eth_mac_addr_set(struct rte_eth_dev *dev,
-	struct ether_addr *mac_addr)
+	struct rte_ether_addr *mac_addr)
 {
 	unsigned int i;
 	uint64_t mac = 0;
@@ -360,10 +370,10 @@ nfb_eth_mac_addr_set(struct rte_eth_dev *dev,
 	struct pmd_internals *internals = (struct pmd_internals *)
 		data->dev_private;
 
-	if (!is_valid_assigned_ether_addr(mac_addr))
+	if (!rte_is_valid_assigned_ether_addr(mac_addr))
 		return -EINVAL;
 
-	for (i = 0; i < ETHER_ADDR_LEN; i++) {
+	for (i = 0; i < RTE_ETHER_ADDR_LEN; i++) {
 		mac <<= 8;
 		mac |= mac_addr->addr_bytes[i] & 0xFF;
 	}
@@ -371,7 +381,7 @@ nfb_eth_mac_addr_set(struct rte_eth_dev *dev,
 	for (i = 0; i < internals->max_rxmac; ++i)
 		nc_rxmac_set_mac(internals->rxmac[i], 0, mac, 1);
 
-	ether_addr_copy(mac_addr, data->mac_addrs);
+	rte_ether_addr_copy(mac_addr, data->mac_addrs);
 	return 0;
 }
 
@@ -418,7 +428,8 @@ nfb_eth_dev_init(struct rte_eth_dev *dev)
 		data->dev_private;
 	struct rte_pci_device *pci_dev = RTE_ETH_DEV_TO_PCI(dev);
 	struct rte_pci_addr *pci_addr = &pci_dev->addr;
-	struct ether_addr eth_addr_init;
+	struct rte_ether_addr eth_addr_init;
+	struct rte_kvargs *kvlist;
 
 	RTE_LOG(INFO, PMD, "Initializing NFB device (" PCI_PRI_FMT ")\n",
 		pci_addr->domain, pci_addr->bus, pci_addr->devid,
@@ -428,6 +439,24 @@ nfb_eth_dev_init(struct rte_eth_dev *dev)
 		"/dev/nfb/by-pci-slot/" PCI_PRI_FMT,
 		pci_addr->domain, pci_addr->bus, pci_addr->devid,
 		pci_addr->function);
+
+	/* Check validity of device args */
+	if (dev->device->devargs != NULL &&
+			dev->device->devargs->args != NULL &&
+			strlen(dev->device->devargs->args) > 0) {
+		kvlist = rte_kvargs_parse(dev->device->devargs->args,
+						VALID_KEYS);
+		if (kvlist == NULL) {
+			RTE_LOG(ERR, PMD, "Failed to parse device arguments %s",
+				dev->device->devargs->args);
+			rte_kvargs_free(kvlist);
+			return -EINVAL;
+		}
+		rte_kvargs_free(kvlist);
+	}
+
+	/* Let rte_eth_dev_close() release the port resources */
+	dev->data->dev_flags |= RTE_ETH_DEV_CLOSE_REMOVE;
 
 	/*
 	 * Get number of available DMA RX and TX queues, which is maximum
@@ -464,7 +493,7 @@ nfb_eth_dev_init(struct rte_eth_dev *dev)
 	nfb_eth_link_update(dev, 0);
 
 	/* Allocate space for one mac address */
-	data->mac_addrs = rte_zmalloc(data->name, sizeof(struct ether_addr),
+	data->mac_addrs = rte_zmalloc(data->name, sizeof(struct rte_ether_addr),
 		RTE_CACHE_LINE_SIZE);
 	if (data->mac_addrs == NULL) {
 		RTE_LOG(ERR, PMD, "Could not alloc space for MAC address!\n");
@@ -472,7 +501,7 @@ nfb_eth_dev_init(struct rte_eth_dev *dev)
 		return -EINVAL;
 	}
 
-	eth_random_addr(eth_addr_init.addr_bytes);
+	rte_eth_random_addr(eth_addr_init.addr_bytes);
 	eth_addr_init.addr_bytes[0] = eth_addr.addr_bytes[0];
 	eth_addr_init.addr_bytes[1] = eth_addr.addr_bytes[1];
 	eth_addr_init.addr_bytes[2] = eth_addr.addr_bytes[2];
@@ -503,17 +532,10 @@ nfb_eth_dev_init(struct rte_eth_dev *dev)
 static int
 nfb_eth_dev_uninit(struct rte_eth_dev *dev)
 {
-	struct rte_eth_dev_data *data = dev->data;
-	struct pmd_internals *internals = (struct pmd_internals *)
-		data->dev_private;
-
 	struct rte_pci_device *pci_dev = RTE_ETH_DEV_TO_PCI(dev);
 	struct rte_pci_addr *pci_addr = &pci_dev->addr;
 
-	dev->data->mac_addrs = NULL;
-
-	nfb_nc_rxmac_deinit(internals->rxmac, internals->max_rxmac);
-	nfb_nc_txmac_deinit(internals->txmac, internals->max_txmac);
+	nfb_eth_dev_close(dev);
 
 	RTE_LOG(INFO, PMD, "NFB device ("
 		PCI_PRI_FMT ") successfully uninitialized\n",
@@ -527,6 +549,8 @@ static const struct rte_pci_id nfb_pci_id_table[] = {
 	{ RTE_PCI_DEVICE(PCI_VENDOR_ID_NETCOPE, PCI_DEVICE_ID_NFB_40G2) },
 	{ RTE_PCI_DEVICE(PCI_VENDOR_ID_NETCOPE, PCI_DEVICE_ID_NFB_100G2) },
 	{ RTE_PCI_DEVICE(PCI_VENDOR_ID_NETCOPE, PCI_DEVICE_ID_NFB_200G2QL) },
+	{ RTE_PCI_DEVICE(PCI_VENDOR_ID_SILICOM, PCI_DEVICE_ID_FB2CGG3) },
+	{ RTE_PCI_DEVICE(PCI_VENDOR_ID_SILICOM, PCI_DEVICE_ID_FB2CGG3D) },
 	{ .vendor_id = 0, }
 };
 
@@ -577,3 +601,4 @@ static struct rte_pci_driver nfb_eth_driver = {
 RTE_PMD_REGISTER_PCI(RTE_NFB_DRIVER_NAME, nfb_eth_driver);
 RTE_PMD_REGISTER_PCI_TABLE(RTE_NFB_DRIVER_NAME, nfb_pci_id_table);
 RTE_PMD_REGISTER_KMOD_DEP(RTE_NFB_DRIVER_NAME, "* nfb");
+RTE_PMD_REGISTER_PARAM_STRING(RTE_NFB_DRIVER_NAME, TIMESTAMP_ARG "=<0|1>");

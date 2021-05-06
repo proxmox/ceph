@@ -34,7 +34,11 @@
 SPDK_ROOT_DIR := $(abspath $(CURDIR)/../../../..)
 include $(SPDK_ROOT_DIR)/mk/spdk.common.mk
 
-DIRS-y = sock.c
+DIRS-y = sock.c posix.c
+
+ifeq ($(OS), Linux)
+DIRS-$(CONFIG_URING) += uring.c
+endif
 
 .PHONY: all clean $(DIRS-y)
 

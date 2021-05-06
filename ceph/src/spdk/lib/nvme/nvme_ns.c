@@ -1,8 +1,8 @@
 /*-
  *   BSD LICENSE
  *
- *   Copyright (c) Intel Corporation.
- *   All rights reserved.
+ *   Copyright (c) Intel Corporation. All rights reserved.
+ *   Copyright (c) 2020 Mellanox Technologies LTD. All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
  *   modification, are permitted provided that the following conditions
@@ -83,12 +83,20 @@ nvme_ns_set_identify_data(struct spdk_nvme_ns *ns)
 		ns->flags |= SPDK_NVME_NS_DEALLOCATE_SUPPORTED;
 	}
 
+	if (ns->ctrlr->cdata.oncs.compare) {
+		ns->flags |= SPDK_NVME_NS_COMPARE_SUPPORTED;
+	}
+
 	if (ns->ctrlr->cdata.vwc.present) {
 		ns->flags |= SPDK_NVME_NS_FLUSH_SUPPORTED;
 	}
 
 	if (ns->ctrlr->cdata.oncs.write_zeroes) {
 		ns->flags |= SPDK_NVME_NS_WRITE_ZEROES_SUPPORTED;
+	}
+
+	if (ns->ctrlr->cdata.oncs.write_unc) {
+		ns->flags |= SPDK_NVME_NS_WRITE_UNCORRECTABLE_SUPPORTED;
 	}
 
 	if (nsdata->nsrescap.raw) {
@@ -105,25 +113,36 @@ nvme_ns_set_identify_data(struct spdk_nvme_ns *ns)
 static int
 nvme_ctrlr_identify_ns(struct spdk_nvme_ns *ns)
 {
-	struct nvme_completion_poll_status	status;
+	struct nvme_completion_poll_status	*status;
 	struct spdk_nvme_ns_data		*nsdata;
 	int					rc;
+
+	status = calloc(1, sizeof(*status));
+	if (!status) {
+		SPDK_ERRLOG("Failed to allocate status tracker\n");
+		return -ENOMEM;
+	}
 
 	nsdata = _nvme_ns_get_data(ns);
 	rc = nvme_ctrlr_cmd_identify(ns->ctrlr, SPDK_NVME_IDENTIFY_NS, 0, ns->id,
 				     nsdata, sizeof(*nsdata),
-				     nvme_completion_poll_cb, &status);
+				     nvme_completion_poll_cb, status);
 	if (rc != 0) {
+		free(status);
 		return rc;
 	}
 
-	if (spdk_nvme_wait_for_completion_robust_lock(ns->ctrlr->adminq, &status,
+	if (nvme_wait_for_completion_robust_lock(ns->ctrlr->adminq, status,
 			&ns->ctrlr->ctrlr_lock)) {
+		if (!status->timed_out) {
+			free(status);
+		}
 		/* This can occur if the namespace is not active. Simply zero the
 		 * namespace data and continue. */
 		nvme_ns_destruct(ns);
 		return 0;
 	}
+	free(status);
 
 	nvme_ns_set_identify_data(ns);
 
@@ -133,7 +152,7 @@ nvme_ctrlr_identify_ns(struct spdk_nvme_ns *ns)
 static int
 nvme_ctrlr_identify_id_desc(struct spdk_nvme_ns *ns)
 {
-	struct nvme_completion_poll_status      status;
+	struct nvme_completion_poll_status      *status;
 	int                                     rc;
 
 	memset(ns->id_desc_list, 0, sizeof(ns->id_desc_list));
@@ -144,18 +163,29 @@ nvme_ctrlr_identify_id_desc(struct spdk_nvme_ns *ns)
 		return 0;
 	}
 
+	status = calloc(1, sizeof(*status));
+	if (!status) {
+		SPDK_ERRLOG("Failed to allocate status tracker\n");
+		return -ENOMEM;
+	}
+
 	SPDK_DEBUGLOG(SPDK_LOG_NVME, "Attempting to retrieve NS ID Descriptor List\n");
 	rc = nvme_ctrlr_cmd_identify(ns->ctrlr, SPDK_NVME_IDENTIFY_NS_ID_DESCRIPTOR_LIST, 0, ns->id,
 				     ns->id_desc_list, sizeof(ns->id_desc_list),
-				     nvme_completion_poll_cb, &status);
+				     nvme_completion_poll_cb, status);
 	if (rc < 0) {
+		free(status);
 		return rc;
 	}
 
-	rc = spdk_nvme_wait_for_completion_robust_lock(ns->ctrlr->adminq, &status, &ns->ctrlr->ctrlr_lock);
+	rc = nvme_wait_for_completion_robust_lock(ns->ctrlr->adminq, status, &ns->ctrlr->ctrlr_lock);
 	if (rc != 0) {
 		SPDK_WARNLOG("Failed to retrieve NS ID Descriptor List\n");
 		memset(ns->id_desc_list, 0, sizeof(ns->id_desc_list));
+	}
+
+	if (!status->timed_out) {
+		free(status);
 	}
 
 	return rc;
@@ -242,6 +272,12 @@ spdk_nvme_ns_supports_extended_lba(struct spdk_nvme_ns *ns)
 	return (ns->flags & SPDK_NVME_NS_EXTENDED_LBA_SUPPORTED) ? true : false;
 }
 
+bool
+spdk_nvme_ns_supports_compare(struct spdk_nvme_ns *ns)
+{
+	return (ns->flags & SPDK_NVME_NS_COMPARE_SUPPORTED) ? true : false;
+}
+
 uint32_t
 spdk_nvme_ns_get_md_size(struct spdk_nvme_ns *ns)
 {
@@ -274,7 +310,7 @@ spdk_nvme_ns_get_optimal_io_boundary(struct spdk_nvme_ns *ns)
 }
 
 static const void *
-_spdk_nvme_ns_find_id_desc(const struct spdk_nvme_ns *ns, enum spdk_nvme_nidt type, size_t *length)
+nvme_ns_find_id_desc(const struct spdk_nvme_ns *ns, enum spdk_nvme_nidt type, size_t *length)
 {
 	const struct spdk_nvme_ns_id_desc *desc;
 	size_t offset;
@@ -314,7 +350,7 @@ spdk_nvme_ns_get_uuid(const struct spdk_nvme_ns *ns)
 	const struct spdk_uuid *uuid;
 	size_t uuid_size;
 
-	uuid = _spdk_nvme_ns_find_id_desc(ns, SPDK_NVME_NIDT_UUID, &uuid_size);
+	uuid = nvme_ns_find_id_desc(ns, SPDK_NVME_NIDT_UUID, &uuid_size);
 	if (uuid == NULL || uuid_size != sizeof(*uuid)) {
 		return NULL;
 	}
@@ -357,4 +393,9 @@ void nvme_ns_destruct(struct spdk_nvme_ns *ns)
 	ns->sectors_per_max_io = 0;
 	ns->sectors_per_stripe = 0;
 	ns->flags = 0;
+}
+
+int nvme_ns_update(struct spdk_nvme_ns *ns)
+{
+	return nvme_ctrlr_identify_ns(ns);
 }

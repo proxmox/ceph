@@ -10,19 +10,19 @@ import {
   ViewChild,
   ViewChildren
 } from '@angular/core';
-import { I18n } from '@ngx-translate/i18n-polyfill';
 
-import * as _ from 'lodash';
-
+import _ from 'lodash';
 import { Observable, Subscription } from 'rxjs';
-import { CephServiceService } from '../../../../shared/api/ceph-service.service';
-import { HostService } from '../../../../shared/api/host.service';
-import { OrchestratorService } from '../../../../shared/api/orchestrator.service';
-import { TableComponent } from '../../../../shared/datatable/table/table.component';
-import { CellTemplate } from '../../../../shared/enum/cell-template.enum';
-import { CdTableColumn } from '../../../../shared/models/cd-table-column';
-import { CdTableFetchDataContext } from '../../../../shared/models/cd-table-fetch-data-context';
-import { Daemon } from '../../../../shared/models/daemon.interface';
+
+import { CephServiceService } from '~/app/shared/api/ceph-service.service';
+import { HostService } from '~/app/shared/api/host.service';
+import { OrchestratorService } from '~/app/shared/api/orchestrator.service';
+import { TableComponent } from '~/app/shared/datatable/table/table.component';
+import { CellTemplate } from '~/app/shared/enum/cell-template.enum';
+import { CdTableColumn } from '~/app/shared/models/cd-table-column';
+import { CdTableFetchDataContext } from '~/app/shared/models/cd-table-fetch-data-context';
+import { Daemon } from '~/app/shared/models/daemon.interface';
+import { RelativeDatePipe } from '~/app/shared/pipes/relative-date.pipe';
 
 @Component({
   selector: 'cd-service-daemon-list',
@@ -52,34 +52,34 @@ export class ServiceDaemonListComponent implements OnInit, OnChanges, AfterViewI
   private daemonsTableTplsSub: Subscription;
 
   constructor(
-    private i18n: I18n,
     private hostService: HostService,
     private cephServiceService: CephServiceService,
-    private orchService: OrchestratorService
+    private orchService: OrchestratorService,
+    private relativeDatePipe: RelativeDatePipe
   ) {}
 
   ngOnInit() {
     this.columns = [
       {
-        name: this.i18n('Hostname'),
+        name: $localize`Hostname`,
         prop: 'hostname',
         flexGrow: 1,
         filterable: true
       },
       {
-        name: this.i18n('Daemon type'),
+        name: $localize`Daemon type`,
         prop: 'daemon_type',
         flexGrow: 1,
         filterable: true
       },
       {
-        name: this.i18n('Daemon ID'),
+        name: $localize`Daemon ID`,
         prop: 'daemon_id',
         flexGrow: 1,
         filterable: true
       },
       {
-        name: this.i18n('Container ID'),
+        name: $localize`Container ID`,
         prop: 'container_id',
         flexGrow: 3,
         filterable: true,
@@ -89,13 +89,13 @@ export class ServiceDaemonListComponent implements OnInit, OnChanges, AfterViewI
         }
       },
       {
-        name: this.i18n('Container Image name'),
+        name: $localize`Container Image name`,
         prop: 'container_image_name',
         flexGrow: 3,
         filterable: true
       },
       {
-        name: this.i18n('Container Image ID'),
+        name: $localize`Container Image ID`,
         prop: 'container_image_id',
         flexGrow: 3,
         filterable: true,
@@ -105,21 +105,22 @@ export class ServiceDaemonListComponent implements OnInit, OnChanges, AfterViewI
         }
       },
       {
-        name: this.i18n('Version'),
+        name: $localize`Version`,
         prop: 'version',
         flexGrow: 1,
         filterable: true
       },
       {
-        name: this.i18n('Status'),
+        name: $localize`Status`,
         prop: 'status_desc',
         flexGrow: 1,
         filterable: true,
         cellTemplate: this.statusTpl
       },
       {
-        name: this.i18n('Last Refreshed'),
+        name: $localize`Last Refreshed`,
         prop: 'last_refresh',
+        pipe: this.relativeDatePipe,
         flexGrow: 2
       }
     ];
@@ -150,14 +151,14 @@ export class ServiceDaemonListComponent implements OnInit, OnChanges, AfterViewI
     }
   }
 
-  getStatusClass(status: number) {
+  getStatusClass(row: Daemon): string {
     return _.get(
       {
         '-1': 'badge-danger',
         '0': 'badge-warning',
         '1': 'badge-success'
       },
-      status,
+      row.status,
       'badge-dark'
     );
   }

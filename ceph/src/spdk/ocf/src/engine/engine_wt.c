@@ -8,7 +8,7 @@
 #include "engine_wt.h"
 #include "engine_inv.h"
 #include "engine_common.h"
-#include "../utils/utils_req.h"
+#include "../ocf_request.h"
 #include "../utils/utils_io.h"
 #include "../utils/utils_cache_line.h"
 #include "../utils/utils_part.h"
@@ -48,8 +48,7 @@ static void _ocf_write_wt_cache_complete(struct ocf_request *req, int error)
 {
 	if (error) {
 		req->error = req->error ?: error;
-		env_atomic_inc(&req->cache->core[req->core_id].counters->
-				cache_errors.write);
+		ocf_core_stats_cache_error_update(req->core, OCF_WRITE);
 
 		if (req->error)
 			inc_fallback_pt_error_counter(req->cache);
@@ -63,8 +62,7 @@ static void _ocf_write_wt_core_complete(struct ocf_request *req, int error)
 	if (error) {
 		req->error = error;
 		req->info.core_error = 1;
-		env_atomic_inc(&req->cache->core[req->core_id].counters->
-				core_errors.write);
+		ocf_core_stats_core_error_update(req->core, OCF_WRITE);
 	}
 
 	_ocf_write_wt_req_complete(req);
@@ -89,29 +87,27 @@ static inline void _ocf_write_wt_submit(struct ocf_request *req)
 	}
 
 	/* To cache */
-	ocf_submit_cache_reqs(cache, req->map, req, OCF_WRITE,
+	ocf_submit_cache_reqs(cache, req, OCF_WRITE, 0, req->byte_length,
 			ocf_engine_io_count(req), _ocf_write_wt_cache_complete);
 
 	/* To core */
-	ocf_submit_volume_req(&cache->core[req->core_id].volume, req,
+	ocf_submit_volume_req(&req->core->volume, req,
 			_ocf_write_wt_core_complete);
 }
 
 static void _ocf_write_wt_update_bits(struct ocf_request *req)
 {
-	struct ocf_cache *cache = req->cache;
-
 	if (ocf_engine_is_miss(req)) {
-		OCF_METADATA_LOCK_RD();
+		ocf_req_hash_lock_rd(req);
 
 		/* Update valid status bits */
 		ocf_set_valid_map_info(req);
 
-		OCF_METADATA_UNLOCK_RD();
+		ocf_req_hash_unlock_rd(req);
 	}
 
 	if (req->info.dirty_any) {
-		OCF_METADATA_LOCK_WR();
+		ocf_req_hash_lock_wr(req);
 
 		/* Writes goes to SDD and HDD, need to update status bits from
 		 * dirty to clean
@@ -119,20 +115,20 @@ static void _ocf_write_wt_update_bits(struct ocf_request *req)
 
 		ocf_set_clean_map_info(req);
 
-		OCF_METADATA_UNLOCK_WR();
+		ocf_req_hash_unlock_wr(req);
 	}
 
 	if (req->info.re_part) {
 		OCF_DEBUG_RQ(req, "Re-Part");
 
-		OCF_METADATA_LOCK_WR();
+		ocf_req_hash_lock_wr(req);
 
 		/* Probably some cache lines are assigned into wrong
 		 * partition. Need to move it to new one
 		 */
 		ocf_part_move(req);
 
-		OCF_METADATA_UNLOCK_WR();
+		ocf_req_hash_unlock_wr(req);
 	}
 }
 
@@ -147,7 +143,7 @@ static int _ocf_write_wt_do(struct ocf_request *req)
 	/* Submit IO */
 	_ocf_write_wt_submit(req);
 
-	/* Updata statistics */
+	/* Update statistics */
 	ocf_engine_update_request_stats(req);
 	ocf_engine_update_block_stats(req);
 
@@ -158,56 +154,36 @@ static int _ocf_write_wt_do(struct ocf_request *req)
 }
 
 static const struct ocf_io_if _io_if_wt_resume = {
-		.read = _ocf_write_wt_do,
-		.write = _ocf_write_wt_do,
+	.read = _ocf_write_wt_do,
+	.write = _ocf_write_wt_do,
+};
+
+static enum ocf_engine_lock_type ocf_wt_get_lock_type(struct ocf_request *req)
+{
+	return ocf_engine_lock_write;
+}
+
+static const struct ocf_engine_callbacks _wt_engine_callbacks =
+{
+	.get_lock_type = ocf_wt_get_lock_type,
+	.resume = ocf_engine_on_resume,
 };
 
 int ocf_write_wt(struct ocf_request *req)
 {
-	bool mapped;
 	int lock = OCF_LOCK_NOT_ACQUIRED;
-	struct ocf_cache *cache = req->cache;
 
-	ocf_io_start(req->io);
+	ocf_io_start(&req->ioi.io);
 
 	/* Get OCF request - increase reference counter */
 	ocf_req_get(req);
 
-	/* Set resume call backs */
-	req->resume = ocf_engine_on_resume;
+	/* Set resume io_if */
 	req->io_if = &_io_if_wt_resume;
 
-	OCF_METADATA_LOCK_RD(); /*- Metadata READ access, No eviction --------*/
+	lock = ocf_engine_prepare_clines(req, &_wt_engine_callbacks);
 
-	/* Travers to check if request is mapped fully */
-	ocf_engine_traverse(req);
-
-	mapped = ocf_engine_is_mapped(req);
-	if (mapped) {
-		/* All cache line are mapped, lock request for WRITE access */
-		lock = ocf_req_trylock_wr(req);
-	}
-
-	OCF_METADATA_UNLOCK_RD(); /*- END Metadata READ access----------------*/
-
-	if (!mapped) {
-		OCF_METADATA_LOCK_WR(); /*- Metadata WR access, eviction -----*/
-
-		/* Now there is exclusive access for metadata. May traverse once
-		 * again. If there are misses need to call eviction. This
-		 * process is called 'mapping'.
-		 */
-		ocf_engine_map(req);
-
-		if (!req->info.eviction_error) {
-			/* Lock request for WRITE access */
-			lock = ocf_req_trylock_wr(req);
-		}
-
-		OCF_METADATA_UNLOCK_WR(); /*- END Metadata WR access ---------*/
-	}
-
-	if (!req->info.eviction_error) {
+	if (!req->info.mapping_error) {
 		if (lock >= 0) {
 			if (lock != OCF_LOCK_ACQUIRED) {
 				/* WR lock was not acquired, need to wait for resume */

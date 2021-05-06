@@ -13,25 +13,27 @@
 
 #include <errno.h>
 #include <fcntl.h>
-#include <inttypes.h>
 #include <sys/stat.h>
 #include <sys/types.h>
-#include "db/db_impl.h"
+#include <cinttypes>
+#include "db/db_impl/db_impl.h"
+#include "db/db_test_util.h"
 #include "db/log_format.h"
 #include "db/version_set.h"
+#include "env/composite_env_wrapper.h"
+#include "file/filename.h"
 #include "rocksdb/cache.h"
 #include "rocksdb/convenience.h"
 #include "rocksdb/env.h"
 #include "rocksdb/table.h"
 #include "rocksdb/write_batch.h"
-#include "table/block_based_table_builder.h"
+#include "table/block_based/block_based_table_builder.h"
 #include "table/meta_blocks.h"
-#include "util/filename.h"
+#include "test_util/testharness.h"
+#include "test_util/testutil.h"
 #include "util/string_util.h"
-#include "util/testharness.h"
-#include "util/testutil.h"
 
-namespace rocksdb {
+namespace ROCKSDB_NAMESPACE {
 
 static const int kValueSize = 1000;
 
@@ -76,7 +78,11 @@ class CorruptionTest : public testing::Test {
     delete db_;
     db_ = nullptr;
     Options opt = (options ? *options : options_);
-    opt.env = &env_;
+    if (opt.env == Options().env) {
+      // If env is not overridden, replace it with ErrorEnv.
+      // Otherwise, the test already uses a non-default Env.
+      opt.env = &env_;
+    }
     opt.arena_block_size = 4096;
     BlockBasedTableOptions table_options;
     table_options.block_cache = tiny_cache_;
@@ -92,7 +98,7 @@ class CorruptionTest : public testing::Test {
   void RepairDB() {
     delete db_;
     db_ = nullptr;
-    ASSERT_OK(::rocksdb::RepairDB(dbname_, options_));
+    ASSERT_OK(::ROCKSDB_NAMESPACE::RepairDB(dbname_, options_));
   }
 
   void Build(int n, int flush_every = 0) {
@@ -184,6 +190,7 @@ class CorruptionTest : public testing::Test {
     ASSERT_TRUE(s.ok()) << s.ToString();
     Options options;
     EnvOptions env_options;
+    options.file_system.reset(new LegacyFileSystemWrapper(options.env));
     ASSERT_NOK(VerifySstFileChecksum(options, env_options, fname));
   }
 
@@ -321,6 +328,59 @@ TEST_F(CorruptionTest, TableFile) {
   ASSERT_NOK(dbi->VerifyChecksum());
 }
 
+TEST_F(CorruptionTest, VerifyChecksumReadahead) {
+  Options options;
+  SpecialEnv senv(Env::Default());
+  options.env = &senv;
+  // Disable block cache as we are going to check checksum for
+  // the same file twice and measure number of reads.
+  BlockBasedTableOptions table_options_no_bc;
+  table_options_no_bc.no_block_cache = true;
+  options.table_factory.reset(NewBlockBasedTableFactory(table_options_no_bc));
+
+  Reopen(&options);
+
+  Build(10000);
+  DBImpl* dbi = reinterpret_cast<DBImpl*>(db_);
+  dbi->TEST_FlushMemTable();
+  dbi->TEST_CompactRange(0, nullptr, nullptr);
+  dbi->TEST_CompactRange(1, nullptr, nullptr);
+
+  senv.count_random_reads_ = true;
+  senv.random_read_counter_.Reset();
+  ASSERT_OK(dbi->VerifyChecksum());
+
+  // Make sure the counter is enabled.
+  ASSERT_GT(senv.random_read_counter_.Read(), 0);
+
+  // The SST file is about 10MB. Default readahead size is 256KB.
+  // Give a conservative 20 reads for metadata blocks, The number
+  // of random reads should be within 10 MB / 256KB + 20 = 60.
+  ASSERT_LT(senv.random_read_counter_.Read(), 60);
+
+  senv.random_read_bytes_counter_ = 0;
+  ReadOptions ro;
+  ro.readahead_size = size_t{32 * 1024};
+  ASSERT_OK(dbi->VerifyChecksum(ro));
+  // The SST file is about 10MB. We set readahead size to 32KB.
+  // Give 0 to 20 reads for metadata blocks, and allow real read
+  // to range from 24KB to 48KB. The lower bound would be:
+  //   10MB / 48KB + 0 = 213
+  // The higher bound is
+  //   10MB / 24KB + 20 = 447.
+  ASSERT_GE(senv.random_read_counter_.Read(), 213);
+  ASSERT_LE(senv.random_read_counter_.Read(), 447);
+
+  // Test readahead shouldn't break mmap mode (where it should be
+  // disabled).
+  options.allow_mmap_reads = true;
+  Reopen(&options);
+  dbi = static_cast<DBImpl*>(db_);
+  ASSERT_OK(dbi->VerifyChecksum(ro));
+
+  CloseDb();
+}
+
 TEST_F(CorruptionTest, TableFileIndexData) {
   Options options;
   // very big, we'll trigger flushes manually
@@ -333,12 +393,16 @@ TEST_F(CorruptionTest, TableFileIndexData) {
 
   // corrupt an index block of an entire file
   Corrupt(kTableFile, -2000, 500);
-  Reopen();
+  options.paranoid_checks = false;
+  Reopen(&options);
   dbi = reinterpret_cast<DBImpl*>(db_);
   // one full file may be readable, since only one was corrupted
   // the other file should be fully non-readable, since index was corrupted
   Check(0, 5000);
   ASSERT_NOK(dbi->VerifyChecksum());
+
+  // In paranoid mode, the db cannot be opened due to the corrupted file.
+  ASSERT_TRUE(TryReopen().IsCorruption());
 }
 
 TEST_F(CorruptionTest, MissingDescriptor) {
@@ -481,7 +545,8 @@ TEST_F(CorruptionTest, RangeDeletionCorrupted) {
   std::unique_ptr<RandomAccessFile> file;
   ASSERT_OK(options_.env->NewRandomAccessFile(filename, &file, EnvOptions()));
   std::unique_ptr<RandomAccessFileReader> file_reader(
-      new RandomAccessFileReader(std::move(file), filename));
+      new RandomAccessFileReader(NewLegacyRandomAccessFileWrapper(file),
+                                 filename));
 
   uint64_t file_size;
   ASSERT_OK(options_.env->GetFileSize(filename, &file_size));
@@ -493,13 +558,7 @@ TEST_F(CorruptionTest, RangeDeletionCorrupted) {
 
   ASSERT_OK(TryReopen());
   CorruptFile(filename, static_cast<int>(range_del_handle.offset()), 1);
-  // The test case does not fail on TryReopen because failure to preload table
-  // handlers is not considered critical.
-  ASSERT_OK(TryReopen());
-  std::string val;
-  // However, it does fail on any read involving that file since that file
-  // cannot be opened with a corrupt range deletion meta-block.
-  ASSERT_TRUE(db_->Get(ReadOptions(), "a", &val).IsCorruption());
+  ASSERT_TRUE(TryReopen().IsCorruption());
 }
 
 TEST_F(CorruptionTest, FileSystemStateCorrupted) {
@@ -524,18 +583,19 @@ TEST_F(CorruptionTest, FileSystemStateCorrupted) {
       env_.NewWritableFile(filename, &file, EnvOptions());
       file->Append(Slice("corrupted sst"));
       file.reset();
+      Status x = TryReopen(&options);
+      ASSERT_TRUE(x.IsCorruption());
     } else {  // delete the file
       env_.DeleteFile(filename);
+      Status x = TryReopen(&options);
+      ASSERT_TRUE(x.IsPathNotFound());
     }
 
-    Status x = TryReopen(&options);
-    ASSERT_TRUE(x.IsCorruption());
     DestroyDB(dbname_, options_);
-    Reopen(&options);
   }
 }
 
-}  // namespace rocksdb
+}  // namespace ROCKSDB_NAMESPACE
 
 int main(int argc, char** argv) {
   ::testing::InitGoogleTest(&argc, argv);

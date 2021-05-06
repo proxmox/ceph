@@ -1,11 +1,10 @@
 import { ComponentFixture, TestBed } from '@angular/core/testing';
-
-import { TreeModel, TreeModule } from 'angular-tree-component';
-import * as _ from 'lodash';
-
 import { BrowserAnimationsModule } from '@angular/platform-browser/animations';
-import { configureTestBed, i18nProviders } from '../../../../testing/unit-test-helper';
-import { SharedModule } from '../../../shared/shared.module';
+
+import { TreeModel, TreeModule } from '@circlon/angular-tree-component';
+
+import { SharedModule } from '~/app/shared/shared.module';
+import { configureTestBed } from '~/testing/unit-test-helper';
 import { IscsiTargetDetailsComponent } from './iscsi-target-details.component';
 
 describe('IscsiTargetDetailsComponent', () => {
@@ -14,8 +13,7 @@ describe('IscsiTargetDetailsComponent', () => {
 
   configureTestBed({
     declarations: [IscsiTargetDetailsComponent],
-    imports: [BrowserAnimationsModule, TreeModule.forRoot(), SharedModule],
-    providers: [i18nProviders]
+    imports: [BrowserAnimationsModule, TreeModule, SharedModule]
   });
 
   beforeEach(() => {

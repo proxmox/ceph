@@ -8,12 +8,12 @@
 #include "common/Formatter.h"
 #include "common/errno.h"
 
-#include "rgw_rados.h"
 #include "rgw_op.h"
 #include "rgw_multi.h"
 #include "rgw_orphan.h"
 #include "rgw_zone.h"
 #include "rgw_bucket.h"
+#include "rgw_sal_rados.h"
 
 #include "services/svc_zone.h"
 #include "services/svc_sys_obj.h"
@@ -450,7 +450,7 @@ int RGWOrphanSearch::handle_stat_result(map<int, list<string> >& oids, RGWRados:
 
     RGWObjManifest::obj_iterator miter;
     for (miter = manifest.obj_begin(); miter != manifest.obj_end(); ++miter) {
-      const rgw_raw_obj& loc = miter.get_location().get_raw_obj(store->getRados());
+      const rgw_raw_obj& loc = miter.get_location().get_raw_obj(store);
       string s = loc.oid;
       obj_oids.insert(obj_fingerprint(s));
     }
@@ -925,6 +925,8 @@ int RGWOrphanSearch::finish()
 
 
 int RGWRadosList::handle_stat_result(RGWRados::Object::Stat::Result& result,
+				     std::string& bucket_name,
+				     rgw_obj_key& obj_key,
                                      std::set<string>& obj_oids)
 {
   obj_oids.clear();
@@ -948,6 +950,9 @@ int RGWRadosList::handle_stat_result(RGWRados::Object::Stat::Result& result,
       oid << "\"" << dendl;
     return 0;
   }
+
+  bucket_name = bucket.name;
+  obj_key = result.obj.key;
 
   if (!result.manifest) {
     /* a very very old object, or part of a multipart upload during upload */
@@ -1036,7 +1041,7 @@ int RGWRadosList::handle_stat_result(RGWRados::Object::Stat::Result& result,
     RGWObjManifest::obj_iterator miter;
     for (miter = manifest.obj_begin(); miter != manifest.obj_end(); ++miter) {
       const rgw_raw_obj& loc =
-	miter.get_location().get_raw_obj(store->getRados());
+	miter.get_location().get_raw_obj(store);
       string s = loc.oid;
       obj_oids.insert(s);
     }
@@ -1049,7 +1054,9 @@ int RGWRadosList::pop_and_handle_stat_op(
   RGWObjectCtx& obj_ctx,
   std::deque<RGWRados::Object::Stat>& ops)
 {
-  std::set<string> obj_oids;
+  std::string bucket_name;
+  rgw_obj_key obj_key;
+  std::set<std::string> obj_oids;
   RGWRados::Object::Stat& front_op = ops.front();
 
   int ret = front_op.wait();
@@ -1061,7 +1068,7 @@ int RGWRadosList::pop_and_handle_stat_op(
     goto done;
   }
 
-  ret = handle_stat_result(front_op.result, obj_oids);
+  ret = handle_stat_result(front_op.result, bucket_name, obj_key, obj_oids);
   if (ret < 0) {
     lderr(store->ctx()) << "ERROR: handle_stat_result() returned error: " <<
       cpp_strerror(-ret) << dendl;
@@ -1069,7 +1076,14 @@ int RGWRadosList::pop_and_handle_stat_op(
 
   // output results
   for (const auto& o : obj_oids) {
-    std::cout << o << std::endl;
+    if (include_rgw_obj_name) {
+      std::cout << o <<
+	field_separator << bucket_name <<
+	field_separator << obj_key <<
+	std::endl;
+    } else {
+      std::cout << o << std::endl;
+    }
   }
 
 done:
@@ -1341,6 +1355,7 @@ int RGWRadosList::run(const std::string& start_bucket_name)
 {
   RGWSysObjectCtx sys_obj_ctx = store->svc()->sysobj->init_obj_ctx();
   RGWObjectCtx obj_ctx(store);
+  RGWBucketInfo bucket_info;
   int ret;
 
   add_bucket_entire(start_bucket_name);
@@ -1416,10 +1431,13 @@ int RGWRadosList::run(const std::string& start_bucket_name)
     }
   } // while (! bucket_process_map.empty())
 
+  if (include_rgw_obj_name) {
+    goto done;
+  }
+
   // now handle incomplete multipart uploads by going back to the
   // initial bucket
 
-  RGWBucketInfo bucket_info;
   ret = store->getRados()->get_bucket_info(store->svc(),
 					   tenant_name,
 					   start_bucket_name,
@@ -1441,6 +1459,8 @@ int RGWRadosList::run(const std::string& start_bucket_name)
       ": ERROR: do_incomplete_multipart returned ret=" << ret << dendl;
     return ret;
   }
+
+done:
 
   return 0;
 } // RGWRadosList::run(string)
@@ -1525,7 +1545,7 @@ int RGWRadosList::do_incomplete_multipart(
 		 obj_it != manifest.obj_end();
 		 ++obj_it) {
 	      const rgw_raw_obj& loc =
-		obj_it.get_location().get_raw_obj(store->getRados());
+		obj_it.get_location().get_raw_obj(store);
 	      std::cout << loc.oid << std::endl;
 	    }
 	  }

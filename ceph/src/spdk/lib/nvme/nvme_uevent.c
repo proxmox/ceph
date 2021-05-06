@@ -35,7 +35,6 @@
 #include "spdk/string.h"
 
 #include "spdk/log.h"
-#include "spdk/event.h"
 
 #include "nvme_uevent.h"
 
@@ -46,7 +45,7 @@
 #define SPDK_UEVENT_MSG_LEN 4096
 
 int
-spdk_uevent_connect(void)
+nvme_uevent_connect(void)
 {
 	struct sockaddr_nl addr;
 	int netlink_fd;
@@ -169,7 +168,7 @@ parse_event(const char *buf, struct spdk_uevent *event)
 }
 
 int
-spdk_get_uevent(int fd, struct spdk_uevent *uevent)
+nvme_get_uevent(int fd, struct spdk_uevent *uevent)
 {
 	int ret;
 	char buf[SPDK_UEVENT_MSG_LEN];
@@ -201,13 +200,13 @@ spdk_get_uevent(int fd, struct spdk_uevent *uevent)
 #else /* Not Linux */
 
 int
-spdk_uevent_connect(void)
+nvme_uevent_connect(void)
 {
 	return -1;
 }
 
 int
-spdk_get_uevent(int fd, struct spdk_uevent *uevent)
+nvme_get_uevent(int fd, struct spdk_uevent *uevent)
 {
 	return -1;
 }

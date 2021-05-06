@@ -7,8 +7,9 @@
 #include "../engine/cache_engine.h"
 #include "../engine/engine_common.h"
 #include "../concurrency/ocf_concurrency.h"
+#include "../ocf_request.h"
 #include "utils_cleaner.h"
-#include "utils_req.h"
+#include "utils_part.h"
 #include "utils_io.h"
 #include "utils_cache_line.h"
 
@@ -162,7 +163,7 @@ static void _ocf_cleaner_set_error(struct ocf_request *req)
 		return;
 	}
 
-	master->error = -EIO;
+	master->error = -OCF_ERR_IO;
 }
 
 static void _ocf_cleaner_complete_req(struct ocf_request *req)
@@ -196,6 +197,12 @@ static void _ocf_cleaner_complete_req(struct ocf_request *req)
 	cmpl(master->priv, master->error);
 }
 
+static void _ocf_cleaner_on_resume(struct ocf_request *req)
+{
+	OCF_DEBUG_TRACE(req->cache);
+	ocf_engine_push_req_front(req, true);
+}
+
 /*
  * cleaner - Cache line lock, function lock cache lines depends on attributes
  */
@@ -206,7 +213,7 @@ static int _ocf_cleaner_cache_line_lock(struct ocf_request *req)
 
 	OCF_DEBUG_TRACE(req->cache);
 
-	return ocf_req_trylock_rd(req);
+	return ocf_req_async_lock_rd(req, _ocf_cleaner_on_resume);
 }
 
 /*
@@ -269,16 +276,14 @@ static int _ocf_cleaner_fire_flush_cache(struct ocf_request *req)
 
 	OCF_DEBUG_TRACE(req->cache);
 
-	io = ocf_volume_new_io(&req->cache->device->volume);
+	io = ocf_new_cache_io(req->cache, req->io_queue, 0, 0, OCF_WRITE, 0, 0);
 	if (!io) {
 		ocf_metadata_error(req->cache);
-		req->error = -ENOMEM;
-		return -ENOMEM;
+		req->error = -OCF_ERR_NO_MEM;
+		return -OCF_ERR_NO_MEM;
 	}
 
-	ocf_io_configure(io, 0, 0, OCF_WRITE, 0, 0);
 	ocf_io_set_cmpl(io, req, NULL, _ocf_cleaner_flush_cache_io_end);
-	ocf_io_set_queue(io, req->io_queue);
 
 	ocf_volume_submit_flush(io);
 
@@ -311,10 +316,11 @@ static int _ocf_cleaner_update_metadata(struct ocf_request *req)
 	const struct ocf_map_info *iter = req->map;
 	uint32_t i;
 	ocf_cache_line_t cache_line;
+	ocf_core_id_t core_id;
 
 	OCF_DEBUG_TRACE(req->cache);
 
-	OCF_METADATA_LOCK_WR();
+	ocf_metadata_start_exclusive_access(&cache->metadata.lock);
 	/* Update metadata */
 	for (i = 0; i < req->core_line_count; i++, iter++) {
 		if (iter->status == LOOKUP_MISS)
@@ -331,14 +337,15 @@ static int _ocf_cleaner_update_metadata(struct ocf_request *req)
 			continue;
 
 		ocf_metadata_get_core_and_part_id(cache, cache_line,
-				&req->core_id, &req->part_id);
+				&core_id, &req->part_id);
+		req->core = &cache->core[core_id];
 
 		set_cache_line_clean(cache, 0, ocf_line_end_sector(cache), req,
 				i);
 	}
 
 	ocf_metadata_flush_do_asynch(cache, req, _ocf_cleaner_metadata_io_end);
-	OCF_METADATA_UNLOCK_WR();
+	ocf_metadata_end_exclusive_access(&cache->metadata.lock);
 
 	return 0;
 }
@@ -392,6 +399,7 @@ static int _ocf_cleaner_fire_flush_cores(struct ocf_request *req)
 	ocf_core_id_t core_id = OCF_CORE_MAX;
 	struct ocf_cache *cache = req->cache;
 	struct ocf_map_info *iter = req->map;
+	ocf_core_t core;
 	struct ocf_io *io;
 
 	OCF_DEBUG_TRACE(req->cache);
@@ -416,15 +424,15 @@ static int _ocf_cleaner_fire_flush_cores(struct ocf_request *req)
 
 		env_atomic_inc(&req->req_remaining);
 
-		io = ocf_new_core_io(cache, core_id);
+		core = ocf_cache_get_core(cache, core_id);
+		io = ocf_new_core_io(core, req->io_queue, 0, 0,
+				OCF_WRITE, 0, 0);
 		if (!io) {
-			_ocf_cleaner_flush_cores_io_end(iter, req, -ENOMEM);
+			_ocf_cleaner_flush_cores_io_end(iter, req, -OCF_ERR_NO_MEM);
 			continue;
 		}
 
-		ocf_io_configure(io, 0, 0, OCF_WRITE, 0, 0);
 		ocf_io_set_cmpl(io, iter, req, _ocf_cleaner_flush_cores_io_cmpl);
-		ocf_io_set_queue(io, req->io_queue);
 
 		ocf_volume_submit_flush(io);
 	}
@@ -459,12 +467,12 @@ static void _ocf_cleaner_core_io_cmpl(struct ocf_io *io, int error)
 {
 	struct ocf_map_info *map = io->priv1;
 	struct ocf_request *req = io->priv2;
+	ocf_core_t core = ocf_cache_get_core(req->cache, map->core_id);
 
 	if (error) {
 		map->invalid |= 1;
 		_ocf_cleaner_set_error(req);
-		env_atomic_inc(&req->cache->core[map->core_id].counters->
-				core_errors.write);
+		ocf_core_stats_core_error_update(core, OCF_WRITE);
 	}
 
 	_ocf_cleaner_core_io_end(req);
@@ -477,25 +485,22 @@ static void _ocf_cleaner_core_io_for_dirty_range(struct ocf_request *req,
 {
 	uint64_t addr, offset;
 	int err;
-	struct ocf_cache *cache = req->cache;
+	ocf_cache_t cache = req->cache;
 	struct ocf_io *io;
-	struct ocf_counters_block *core_stats =
-		&cache->core[iter->core_id].counters->core_blocks;
+	ocf_core_t core = ocf_cache_get_core(cache, iter->core_id);
 	ocf_part_id_t part_id = ocf_metadata_get_partition_id(cache,
 			iter->coll_idx);
 
-	io = ocf_new_core_io(cache, iter->core_id);
+	addr = (ocf_line_size(cache) * iter->core_line)
+			+ SECTORS_TO_BYTES(begin);
+	offset = (ocf_line_size(cache) * iter->hash)
+			+ SECTORS_TO_BYTES(begin);
+
+	io = ocf_new_core_io(core, req->io_queue, addr,
+			SECTORS_TO_BYTES(end - begin), OCF_WRITE, part_id, 0);
 	if (!io)
 		goto error;
 
-	addr = (ocf_line_size(cache) * iter->core_line)
-			+ SECTORS_TO_BYTES(begin);
-	offset = (ocf_line_size(cache) * iter->hash_key)
-			+ SECTORS_TO_BYTES(begin);
-
-	ocf_io_configure(io, addr, SECTORS_TO_BYTES(end - begin), OCF_WRITE,
-			part_id, 0);
-	ocf_io_set_queue(io, req->io_queue);
 	err = ocf_io_set_data(io, req->data, offset);
 	if (err) {
 		ocf_io_put(io);
@@ -504,7 +509,8 @@ static void _ocf_cleaner_core_io_for_dirty_range(struct ocf_request *req,
 
 	ocf_io_set_cmpl(io, iter, req, _ocf_cleaner_core_io_cmpl);
 
-	env_atomic64_add(SECTORS_TO_BYTES(end - begin), &core_stats->write_bytes);
+	ocf_core_stats_core_block_update(core, part_id, OCF_WRITE,
+			SECTORS_TO_BYTES(end - begin));
 
 	OCF_DEBUG_PARAM(req->cache, "Core write, line = %llu, "
 			"sector = %llu, count = %llu", iter->core_line, begin,
@@ -617,12 +623,12 @@ static void _ocf_cleaner_cache_io_cmpl(struct ocf_io *io, int error)
 {
 	struct ocf_map_info *map = io->priv1;
 	struct ocf_request *req = io->priv2;
+	ocf_core_t core = ocf_cache_get_core(req->cache, map->core_id);
 
 	if (error) {
 		map->invalid |= 1;
 		_ocf_cleaner_set_error(req);
-		env_atomic_inc(&req->cache->core[map->core_id].counters->
-				cache_errors.read);
+		ocf_core_stats_cache_error_update(core, OCF_READ);
 	}
 
 	_ocf_cleaner_cache_io_end(req);
@@ -636,34 +642,24 @@ static void _ocf_cleaner_cache_io_cmpl(struct ocf_io *io, int error)
  */
 static int _ocf_cleaner_fire_cache(struct ocf_request *req)
 {
-	struct ocf_cache *cache = req->cache;
+	ocf_cache_t cache = req->cache;
+	ocf_core_t core;
 	uint32_t i;
 	struct ocf_map_info *iter = req->map;
 	uint64_t addr, offset;
 	ocf_part_id_t part_id;
 	struct ocf_io *io;
 	int err;
-	struct ocf_counters_block *cache_stats;
 
 	/* Protect IO completion race */
 	env_atomic_inc(&req->req_remaining);
 
 	for (i = 0; i < req->core_line_count; i++, iter++) {
-		if (iter->core_id == OCF_CORE_MAX)
+		core = ocf_cache_get_core(cache, iter->core_id);
+		if (!core)
 			continue;
 		if (iter->status == LOOKUP_MISS)
 			continue;
-
-		cache_stats = &cache->core[iter->core_id].
-				counters->cache_blocks;
-
-		io = ocf_new_cache_io(cache);
-		if (!io) {
-			/* Allocation error */
-			iter->invalid = true;
-			_ocf_cleaner_set_error(req);
-			continue;
-		}
 
 		OCF_DEBUG_PARAM(req->cache, "Cache read, line =  %u",
 				iter->coll_idx);
@@ -673,14 +669,21 @@ static int _ocf_cleaner_fire_cache(struct ocf_request *req)
 		addr *= ocf_line_size(cache);
 		addr += cache->device->metadata_offset;
 
-		offset = ocf_line_size(cache) * iter->hash_key;
+		offset = ocf_line_size(cache) * iter->hash;
 
 		part_id = ocf_metadata_get_partition_id(cache, iter->coll_idx);
 
+		io = ocf_new_cache_io(cache, req->io_queue,
+				addr, ocf_line_size(cache),
+				OCF_READ, part_id, 0);
+		if (!io) {
+			/* Allocation error */
+			iter->invalid = true;
+			_ocf_cleaner_set_error(req);
+			continue;
+		}
+
 		ocf_io_set_cmpl(io, iter, req, _ocf_cleaner_cache_io_cmpl);
-		ocf_io_configure(io, addr, ocf_line_size(cache), OCF_READ,
-				part_id, 0);
-		ocf_io_set_queue(io, req->io_queue);
 		err = ocf_io_set_data(io, req->data, offset);
 		if (err) {
 			ocf_io_put(io);
@@ -689,7 +692,8 @@ static int _ocf_cleaner_fire_cache(struct ocf_request *req)
 			continue;
 		}
 
-		env_atomic64_add(ocf_line_size(cache), &cache_stats->read_bytes);
+		ocf_core_stats_cache_block_update(core, part_id, OCF_READ,
+				ocf_line_size(cache));
 
 		ocf_volume_submit_io(io);
 	}
@@ -701,22 +705,14 @@ static int _ocf_cleaner_fire_cache(struct ocf_request *req)
 }
 
 static const struct ocf_io_if _io_if_fire_cache = {
-		.read = _ocf_cleaner_fire_cache,
-		.write = _ocf_cleaner_fire_cache,
+	.read = _ocf_cleaner_fire_cache,
+	.write = _ocf_cleaner_fire_cache,
 };
-
-static void _ocf_cleaner_on_resume(struct ocf_request *req)
-{
-	OCF_DEBUG_TRACE(req->cache);
-	ocf_engine_push_req_front(req, true);
-}
 
 static int _ocf_cleaner_fire(struct ocf_request *req)
 {
 	int result;
 
-	/* Set resume call backs */
-	req->resume = _ocf_cleaner_on_resume;
 	req->io_if = &_io_if_fire_cache;
 
 	/* Handle cache lines locks */
@@ -774,7 +770,7 @@ static int _ocf_cleaner_do_fire(struct ocf_request *req,  uint32_t i_out,
 		req->map[i_out].core_id = OCF_CORE_MAX;
 		req->map[i_out].core_line = ULLONG_MAX;
 		req->map[i_out].status = LOOKUP_MISS;
-		req->map[i_out].hash_key = i_out;
+		req->map[i_out].hash = i_out;
 	}
 
 	if (do_sort) {
@@ -782,7 +778,7 @@ static int _ocf_cleaner_do_fire(struct ocf_request *req,  uint32_t i_out,
 		env_sort(req->map, req->core_line_count, sizeof(req->map[0]),
 			_ocf_cleaner_cmp_private, NULL);
 		for (i = 0; i < req->core_line_count; i++)
-			req->map[i].hash_key = i;
+			req->map[i].hash = i;
 	}
 
 	/* issue actual request */
@@ -843,7 +839,7 @@ void ocf_cleaner_fire(struct ocf_cache *cache,
 	}
 
 	if (!master) {
-		attribs->cmpl_fn(attribs->cmpl_context, -ENOMEM);
+		attribs->cmpl_fn(attribs->cmpl_context, -OCF_ERR_NO_MEM);
 		return;
 	}
 
@@ -875,7 +871,7 @@ void ocf_cleaner_fire(struct ocf_cache *cache,
 
 		/* when request allocation failed stop processing */
 		if (!req) {
-			master->error = -ENOMEM;
+			master->error = -OCF_ERR_NO_MEM;
 			break;
 		}
 
@@ -917,7 +913,7 @@ void ocf_cleaner_fire(struct ocf_cache *cache,
 		req->map[i_out].core_line = core_sector;
 		req->map[i_out].coll_idx = cache_line;
 		req->map[i_out].status = LOOKUP_HIT;
-		req->map[i_out].hash_key = i_out;
+		req->map[i_out].hash = i_out;
 		i_out++;
 
 		if (max == i_out) {
@@ -1013,4 +1009,50 @@ void ocf_cleaner_sort_flush_containers(struct flush_container *fctbl,
 				sizeof(*fctbl[i].flush_data), _ocf_cleaner_cmp,
 				_ocf_cleaner_swap);
 	}
+}
+
+void ocf_cleaner_refcnt_freeze(ocf_cache_t cache)
+{
+	struct ocf_user_part *curr_part;
+	ocf_part_id_t part_id;
+
+	for_each_part(cache, curr_part, part_id)
+		ocf_refcnt_freeze(&cache->refcnt.cleaning[part_id]);
+}
+
+void ocf_cleaner_refcnt_unfreeze(ocf_cache_t cache)
+{
+	struct ocf_user_part *curr_part;
+	ocf_part_id_t part_id;
+
+	for_each_part(cache, curr_part, part_id)
+		ocf_refcnt_unfreeze(&cache->refcnt.cleaning[part_id]);
+}
+
+static void ocf_cleaner_refcnt_register_zero_cb_finish(void *priv)
+{
+	struct ocf_cleaner_wait_context *ctx = priv;
+
+	if (!env_atomic_dec_return(&ctx->waiting))
+		ctx->cb(ctx->priv);
+}
+
+void ocf_cleaner_refcnt_register_zero_cb(ocf_cache_t cache,
+		struct ocf_cleaner_wait_context *ctx,
+		ocf_cleaner_refcnt_zero_cb_t cb, void *priv)
+{
+	struct ocf_user_part *curr_part;
+	ocf_part_id_t part_id;
+
+	env_atomic_set(&ctx->waiting, 1);
+	ctx->cb = cb;
+	ctx->priv = priv;
+
+	for_each_part(cache, curr_part, part_id) {
+		env_atomic_inc(&ctx->waiting);
+		ocf_refcnt_register_zero_cb(&cache->refcnt.cleaning[part_id],
+				ocf_cleaner_refcnt_register_zero_cb_finish, ctx);
+	}
+
+	ocf_cleaner_refcnt_register_zero_cb_finish(ctx);
 }

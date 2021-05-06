@@ -34,7 +34,6 @@
 #include <seastar/core/sstring.hh>
 #include <unordered_map>
 #include <seastar/http/mime_types.hh>
-#include <seastar/core/future-util.hh>
 #include <seastar/core/iostream.hh>
 #include <seastar/util/noncopyable_function.hh>
 
@@ -53,6 +52,7 @@ struct reply {
      * The status of the reply.
      */
     enum class status_type {
+        continue_ = 100, //!< continue
         ok = 200, //!< ok
         created = 201, //!< created
         accepted = 202, //!< accepted

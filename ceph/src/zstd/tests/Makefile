@@ -1,10 +1,11 @@
 # ################################################################
-# Copyright (c) 2015-present, Yann Collet, Facebook, Inc.
+# Copyright (c) 2015-2020, Yann Collet, Facebook, Inc.
 # All rights reserved.
 #
 # This source code is licensed under both the BSD-style license (found in the
 # LICENSE file in the root directory of this source tree) and the GPLv2 (found
 # in the COPYING file in the root directory of this source tree).
+# You may select, at your option, one of the above-listed licenses.
 # ################################################################
 # datagen : Synthetic and parametrable data generator, for tests
 # fullbench  : Precisely measure speed for each zstd inner functions
@@ -90,6 +91,7 @@ allnothread: MULTITHREAD_CPP=
 allnothread: MULTITHREAD_LD=
 allnothread: fullbench fuzzer paramgrill datagen decodecorpus
 
+# note : broken : requires symbols unavailable from dynamic library
 dll: fuzzer-dll zstreamtest-dll
 
 PHONY: zstd zstd32 zstd-nolegacy  # must be phony, only external makefile knows how to build them, or if they need an update
@@ -97,11 +99,14 @@ zstd zstd32 zstd-nolegacy:
 	$(MAKE) -C $(PRGDIR) $@ MOREFLAGS+="$(DEBUGFLAGS)"
 
 gzstd:
-	$(MAKE) -C $(PRGDIR) zstd HAVE_ZLIB=1 MOREFLAGS+="$(DEBUGFLAGS)"
+	$(MAKE) -C $(PRGDIR) $@ HAVE_ZLIB=1 MOREFLAGS+="$(DEBUGFLAGS)"
 
-.PHONY: zstd-dll
-zstd-dll :
+.PHONY: libzstd
+libzstd :
 	$(MAKE) -C $(ZSTDDIR) libzstd
+
+%-dll : libzstd
+%-dll : LDFLAGS+= -L$(ZSTDDIR) -lzstd
 
 .PHONY: zstd-staticLib
 zstd-staticLib :
@@ -140,9 +145,7 @@ fullbench-lib : zstd-staticLib
 fullbench-lib : $(PRGDIR)/datagen.c $(PRGDIR)/util.c $(PRGDIR)/timefn.c $(PRGDIR)/benchfn.c fullbench.c
 	$(CC) $(FLAGS) $(filter %.c,$^) -o $@$(EXT) $(ZSTDDIR)/libzstd.a
 
-# note : broken : requires unavailable symbols
-fullbench-dll : zstd-dll
-fullbench-dll : LDFLAGS+= -L$(ZSTDDIR) -lzstd
+# note : broken : requires symbols unavailable from dynamic library
 fullbench-dll: $(PRGDIR)/datagen.c $(PRGDIR)/util.c $(PRGDIR)/benchfn.c $(PRGDIR)/timefn.c fullbench.c
 #	$(CC) $(FLAGS) $(filter %.c,$^) -o $@$(EXT) -DZSTD_DLL_IMPORT=1 $(ZSTDDIR)/dll/libzstd.dll
 	$(CC) $(FLAGS) $(filter %.c,$^) -o $@$(EXT)
@@ -155,25 +158,16 @@ fuzzer32: $(ZSTD_FILES)
 fuzzer fuzzer32 : $(ZDICT_FILES) $(PRGDIR)/util.c $(PRGDIR)/timefn.c $(PRGDIR)/datagen.c fuzzer.c
 	$(CC) $(FLAGS) $^ -o $@$(EXT)
 
-fuzzer-dll : zstd-dll
-fuzzer-dll : LDFLAGS+= -L$(ZSTDDIR) -lzstd
+# note : broken : requires symbols unavailable from dynamic library
 fuzzer-dll : $(ZSTDDIR)/common/xxhash.c $(PRGDIR)/util.c $(PRGDIR)/timefn.c $(PRGDIR)/datagen.c fuzzer.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(filter %.c,$^) $(LDFLAGS) -o $@$(EXT)
 
-zbufftest : CPPFLAGS += -I$(ZSTDDIR)/deprecated
-zbufftest : CFLAGS += -Wno-deprecated-declarations   # required to silence deprecation warnings
-zbufftest : $(ZSTD_OBJECTS) $(ZBUFF_FILES) $(PRGDIR)/util.c $(PRGDIR)/timefn.c $(PRGDIR)/datagen.c zbufftest.c
+zbufftest zbufftest32 zbufftest-dll : CPPFLAGS += -I$(ZSTDDIR)/deprecated
+zbufftest zbufftest32 zbufftest-dll : CFLAGS += -Wno-deprecated-declarations   # required to silence deprecation warnings
+zbufftest32 : CFLAGS +=  -m32
+zbufftest zbufftest32 : $(ZSTD_OBJECTS) $(ZBUFF_FILES) $(PRGDIR)/util.c $(PRGDIR)/timefn.c $(PRGDIR)/datagen.c zbufftest.c
 	$(CC) $(FLAGS) $^ -o $@$(EXT)
 
-zbufftest32 : CPPFLAGS += -I$(ZSTDDIR)/deprecated
-zbufftest32 : CFLAGS += -Wno-deprecated-declarations -m32
-zbufftest32 : $(ZSTD_FILES) $(ZBUFF_FILES) $(PRGDIR)/util.c $(PRGDIR)/timefn.c $(PRGDIR)/datagen.c zbufftest.c
-	$(CC) $(FLAGS) $^ -o $@$(EXT)
-
-zbufftest-dll : zstd-dll
-zbufftest-dll : CPPFLAGS += -I$(ZSTDDIR)/deprecated
-zbufftest-dll : CFLAGS += -Wno-deprecated-declarations   # required to silence deprecation warnings
-zbufftest-dll : LDFLAGS+= -L$(ZSTDDIR) -lzstd
 zbufftest-dll : $(ZSTDDIR)/common/xxhash.c $(PRGDIR)/util.c $(PRGDIR)/timefn.c $(PRGDIR)/datagen.c zbufftest.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(filter %.c,$^) $(LDFLAGS) -o $@$(EXT)
 
@@ -196,8 +190,7 @@ zstreamtest_tsan : CFLAGS += -fsanitize=thread
 zstreamtest_tsan : $(ZSTREAMFILES)
 	$(CC) $(FLAGS) $(MULTITHREAD) $^ -o $@$(EXT)
 
-zstreamtest-dll : zstd-dll
-zstreamtest-dll : LDFLAGS+= -L$(ZSTDDIR) -lzstd
+# note : broken : requires symbols unavailable from dynamic library
 zstreamtest-dll : $(ZSTDDIR)/common/xxhash.c  # xxh symbols not exposed from dll
 zstreamtest-dll : $(ZSTREAM_LOCAL_FILES)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(filter %.c,$^) $(LDFLAGS) -o $@$(EXT)
@@ -215,6 +208,9 @@ roundTripCrash : $(ZSTD_OBJECTS) roundTripCrash.c
 longmatch  : $(ZSTD_OBJECTS) longmatch.c
 	$(CC) $(FLAGS) $^ -o $@$(EXT)
 
+bigdict: $(ZSTDMT_OBJECTS) $(PRGDIR)/datagen.c bigdict.c
+	$(CC) $(FLAGS) $(MULTITHREAD) $^ -o $@$(EXT)
+
 invalidDictionaries : $(ZSTD_OBJECTS) invalidDictionaries.c
 	$(CC) $(FLAGS) $^ -o $@$(EXT)
 
@@ -225,20 +221,15 @@ legacy : $(ZSTD_FILES) $(wildcard $(ZSTDDIR)/legacy/*.c) legacy.c
 decodecorpus : $(filter-out zstdc_zstd_compress.o, $(ZSTD_OBJECTS)) $(ZDICT_FILES) $(PRGDIR)/util.c $(PRGDIR)/timefn.c decodecorpus.c
 	$(CC) $(FLAGS) $^ -o $@$(EXT) -lm
 
-symbols  : symbols.c zstd-dll
-ifneq (,$(filter Windows%,$(OS)))
-	cp $(ZSTDDIR)/dll/libzstd.dll .
-	$(CC) $(FLAGS) $< -o $@$(EXT) -DZSTD_DLL_IMPORT=1 libzstd.dll
-else
-	$(CC) $(FLAGS) $< -o $@$(EXT) -Wl,-rpath=$(ZSTDDIR) $(ZSTDDIR)/libzstd.so   # broken on Mac
-endif
-
 poolTests : $(PRGDIR)/util.c $(PRGDIR)/timefn.c poolTests.c $(ZSTDDIR)/common/pool.c $(ZSTDDIR)/common/threading.c $(ZSTDDIR)/common/zstd_common.c $(ZSTDDIR)/common/error_private.c
 	$(CC) $(FLAGS) $(MULTITHREAD) $^ -o $@$(EXT)
 
 .PHONY: versionsTest
 versionsTest: clean
 	$(PYTHON) test-zstd-versions.py
+
+automated_benchmarking: clean
+	$(PYTHON) automated_benchmarking.py
 
 checkTag: checkTag.c $(ZSTDDIR)/zstd.h
 	$(CC) $(FLAGS) $< -o $@$(EXT)
@@ -247,7 +238,8 @@ clean:
 	$(MAKE) -C $(ZSTDDIR) clean
 	$(MAKE) -C $(PRGDIR) clean
 	@$(RM) -fR $(TESTARTEFACT)
-	@$(RM) -f core *.o tmp* result* *.gcda dictionary *.zst \
+	@$(RM) -rf tmp*  # some test directories are named tmp*
+	@$(RM) core *.o *.tmp result* *.gcda dictionary *.zst \
         $(PRGDIR)/zstd$(EXT) $(PRGDIR)/zstd32$(EXT) \
         fullbench$(EXT) fullbench32$(EXT) \
         fullbench-lib$(EXT) fullbench-dll$(EXT) \
@@ -256,12 +248,12 @@ clean:
         zstreamtest$(EXT) zstreamtest32$(EXT) \
         datagen$(EXT) paramgrill$(EXT) roundTripCrash$(EXT) longmatch$(EXT) \
         symbols$(EXT) invalidDictionaries$(EXT) legacy$(EXT) poolTests$(EXT) \
-        decodecorpus$(EXT) checkTag$(EXT)
+        decodecorpus$(EXT) checkTag$(EXT) bigdict$(EXT)
 	@echo Cleaning completed
 
 
 #----------------------------------------------------------------------------------
-#make valgrindTest is validated only for Linux, macOS, BSD, Hurd and Solaris targets
+# valgrind tests are validated only for some posix platforms
 #----------------------------------------------------------------------------------
 ifneq (,$(filter $(shell uname),Linux Darwin GNU/kFreeBSD GNU OpenBSD FreeBSD NetBSD DragonFly SunOS))
 HOST_OS = POSIX
@@ -283,7 +275,7 @@ valgrindTest: zstd datagen fuzzer fullbench
 endif
 
 
-ifneq (,$(filter MSYS%,$(shell uname)))
+ifneq (,$(filter MINGW% MSYS%,$(shell uname)))
 HOST_OS = MSYS
 endif
 
@@ -332,7 +324,7 @@ test-zstd-nolegacy: zstd-nolegacy
 
 test-zstd test-zstd32 test-zstd-nolegacy: datagen
 	file $(ZSTD)
-	ZSTD="$(QEMU_SYS) $(ZSTD)" ./playTests.sh $(ZSTDRTTEST)
+	EXE_PREFIX="$(QEMU_SYS)" ZSTD_BIN="$(ZSTD)" DATAGEN_BIN=./datagen ./playTests.sh $(ZSTDRTTEST)
 
 
 test-gzstd: gzstd
@@ -359,6 +351,9 @@ test-zstdgrep: gzstd
 	-echo 'hello world' > test.txt && $(PRGDIR)/zstd test.txt
 	env ZCAT=/tmp/zstdcat $(PRGDIR)/zstdgrep hello test.txt.zst
 	env ZCAT=/tmp/zstdcat $(PRGDIR)/zstdgrep weird test.txt.zst && return 1 || return 0
+	-echo 'hello' > pattern.txt
+	env ZCAT=/tmp/zstdcat $(PRGDIR)/zstdgrep -f pattern.txt test.txt.zst
+	$(RM) test.txt test.txt.zst pattern.txt
 
 test-fullbench: fullbench datagen
 	$(QEMU_SYS) ./fullbench -i1
@@ -394,11 +389,11 @@ test-zstream32: zstreamtest32
 test-longmatch: longmatch
 	$(QEMU_SYS) ./longmatch
 
+test-bigdict: bigdict
+	$(QEMU_SYS) ./bigdict
+
 test-invalidDictionaries: invalidDictionaries
 	$(QEMU_SYS) ./invalidDictionaries
-
-test-symbols: symbols
-	$(QEMU_SYS) ./symbols
 
 test-legacy: legacy
 	$(QEMU_SYS) ./legacy

@@ -44,6 +44,9 @@
 namespace seastar {
 
 /*!
+ * \addtogroup metrics
+ * @{
+ *
  * \namespace seastar::metrics
  * \brief metrics creation and registration
  *
@@ -238,7 +241,7 @@ public:
 };
 
 /*!
- * \namesapce impl
+ * \namespace impl
  * \brief holds the implementation parts of the metrics layer, do not use directly.
  *
  * The metrics layer define a thin API for adding metrics.
@@ -256,27 +259,27 @@ enum class data_type : uint8_t {
 };
 
 /*!
- * \breif A helper class that used to return metrics value.
+ * \brief A helper class that used to return metrics value.
  *
  * Do not use directly @see metrics_creation
  */
 struct metric_value {
-    compat::variant<double, histogram> u;
+    std::variant<double, histogram> u;
     data_type _type;
     data_type type() const {
         return _type;
     }
 
     double d() const {
-        return compat::get<double>(u);
+        return std::get<double>(u);
     }
 
     uint64_t ui() const {
-        return compat::get<double>(u);
+        return std::get<double>(u);
     }
 
     int64_t i() const {
-        return compat::get<double>(u);
+        return std::get<double>(u);
     }
 
     metric_value()
@@ -303,7 +306,7 @@ struct metric_value {
 
     metric_value operator+(const metric_value& c);
     const histogram& get_histogram() const {
-        return compat::get<histogram>(u);
+        return std::get<histogram>(u);
     }
 };
 
@@ -323,6 +326,7 @@ struct metric_definition_impl {
     std::map<sstring, sstring> labels;
     metric_definition_impl& operator ()(bool enabled);
     metric_definition_impl& operator ()(const label_instance& label);
+    metric_definition_impl& set_type(const sstring& type_name);
     metric_definition_impl(
         metric_name_type name,
         metric_type type,
@@ -373,7 +377,6 @@ metric_function make_function(T& val, data_type dt) {
 extern const bool metric_disabled;
 
 extern label shard_label;
-extern label type_label;
 
 /*
  * The metrics definition are defined to be compatible with collectd metrics defintion.
@@ -534,7 +537,7 @@ template<typename T>
 impl::metric_definition_impl make_total_bytes(metric_name_type name,
         T&& val, description d=description(), std::vector<label_instance> labels = {},
         instance_id_type instance = impl::shard()) {
-    return make_derive(name, std::forward<T>(val), d, labels)(type_label("total_bytes"));
+    return make_derive(name, std::forward<T>(val), d, labels).set_type("total_bytes");
 }
 
 /*!
@@ -548,7 +551,7 @@ template<typename T>
 impl::metric_definition_impl make_current_bytes(metric_name_type name,
         T&& val, description d=description(), std::vector<label_instance> labels = {},
         instance_id_type instance = impl::shard()) {
-    return make_derive(name, std::forward<T>(val), d, labels)(type_label("bytes"));
+    return make_derive(name, std::forward<T>(val), d, labels).set_type("bytes");
 }
 
 
@@ -562,7 +565,7 @@ template<typename T>
 impl::metric_definition_impl make_queue_length(metric_name_type name,
         T&& val, description d=description(), std::vector<label_instance> labels = {},
         instance_id_type instance = impl::shard()) {
-    return make_gauge(name, std::forward<T>(val), d, labels)(type_label("queue_length"));
+    return make_gauge(name, std::forward<T>(val), d, labels).set_type("queue_length");
 }
 
 
@@ -576,7 +579,7 @@ template<typename T>
 impl::metric_definition_impl make_total_operations(metric_name_type name,
         T&& val, description d=description(), std::vector<label_instance> labels = {},
         instance_id_type instance = impl::shard()) {
-    return make_derive(name, std::forward<T>(val), d, labels)(type_label("total_operations"));
+    return make_derive(name, std::forward<T>(val), d, labels).set_type("total_operations");
 }
 
 /*! @} */

@@ -2,6 +2,7 @@
  * Copyright(c) 2016 Intel Corporation
  */
 
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
@@ -14,9 +15,11 @@
 #include <sys/queue.h>
 #include <stdarg.h>
 #include <errno.h>
+#include <signal.h>
 #include <getopt.h>
 
 #include <rte_common.h>
+#include <rte_bitmap.h>
 #include <rte_byteorder.h>
 #include <rte_log.h>
 #include <rte_eal.h>
@@ -41,27 +44,28 @@
 #include <rte_jhash.h>
 #include <rte_cryptodev.h>
 #include <rte_security.h>
+#include <rte_eventdev.h>
+#include <rte_ip.h>
+#include <rte_ip_frag.h>
 
+#include "event_helper.h"
 #include "ipsec.h"
+#include "ipsec_worker.h"
 #include "parser.h"
+#include "sad.h"
 
-#define RTE_LOGTYPE_IPSEC RTE_LOGTYPE_USER1
+volatile bool force_quit;
 
 #define MAX_JUMBO_PKT_LEN  9600
 
 #define MEMPOOL_CACHE_SIZE 256
 
-#define NB_MBUF	(32000)
-
 #define CDEV_QUEUE_DESC 2048
 #define CDEV_MAP_ENTRIES 16384
-#define CDEV_MP_NB_OBJS 1024
 #define CDEV_MP_CACHE_SZ 64
 #define MAX_QUEUE_PAIRS 1
 
 #define BURST_TX_DRAIN_US 100 /* TX drain every ~100us */
-
-#define NB_SOCKETS 4
 
 /* Configure how many packets ahead to prefetch, when reading packets */
 #define PREFETCH_OFFSET	3
@@ -69,8 +73,6 @@
 #define MAX_RX_QUEUE_PER_LCORE 16
 
 #define MAX_LCORE_PARAMS 1024
-
-#define UNPROTECTED_PORT(port) (unprotected_port_mask & (1 << portid))
 
 /*
  * Configurable number of RX/TX ring descriptors
@@ -80,39 +82,16 @@
 static uint16_t nb_rxd = IPSEC_SECGW_RX_DESC_DEFAULT;
 static uint16_t nb_txd = IPSEC_SECGW_TX_DESC_DEFAULT;
 
-#if RTE_BYTE_ORDER != RTE_LITTLE_ENDIAN
-#define __BYTES_TO_UINT64(a, b, c, d, e, f, g, h) \
-	(((uint64_t)((a) & 0xff) << 56) | \
-	((uint64_t)((b) & 0xff) << 48) | \
-	((uint64_t)((c) & 0xff) << 40) | \
-	((uint64_t)((d) & 0xff) << 32) | \
-	((uint64_t)((e) & 0xff) << 24) | \
-	((uint64_t)((f) & 0xff) << 16) | \
-	((uint64_t)((g) & 0xff) << 8)  | \
-	((uint64_t)(h) & 0xff))
-#else
-#define __BYTES_TO_UINT64(a, b, c, d, e, f, g, h) \
-	(((uint64_t)((h) & 0xff) << 56) | \
-	((uint64_t)((g) & 0xff) << 48) | \
-	((uint64_t)((f) & 0xff) << 40) | \
-	((uint64_t)((e) & 0xff) << 32) | \
-	((uint64_t)((d) & 0xff) << 24) | \
-	((uint64_t)((c) & 0xff) << 16) | \
-	((uint64_t)((b) & 0xff) << 8) | \
-	((uint64_t)(a) & 0xff))
-#endif
-#define ETHADDR(a, b, c, d, e, f) (__BYTES_TO_UINT64(a, b, c, d, e, f, 0, 0))
-
 #define ETHADDR_TO_UINT64(addr) __BYTES_TO_UINT64( \
 		(addr)->addr_bytes[0], (addr)->addr_bytes[1], \
 		(addr)->addr_bytes[2], (addr)->addr_bytes[3], \
 		(addr)->addr_bytes[4], (addr)->addr_bytes[5], \
 		0, 0)
 
-/* port/source ethernet addr and destination ethernet addr */
-struct ethaddr_info {
-	uint64_t src, dst;
-};
+#define	FRAG_TBL_BUCKET_ENTRIES	4
+#define	MAX_FRAG_TTL_NS		(10LL * NS_PER_S)
+
+#define MTU_TO_FRAMELEN(x)	((x) + RTE_ETHER_HDR_LEN + RTE_ETHER_CRC_LEN)
 
 struct ethaddr_info ethaddr_tbl[RTE_MAX_ETHPORTS] = {
 	{ 0, ETHADDR(0x00, 0x16, 0x3e, 0x7e, 0x94, 0x9a) },
@@ -121,11 +100,24 @@ struct ethaddr_info ethaddr_tbl[RTE_MAX_ETHPORTS] = {
 	{ 0, ETHADDR(0x00, 0x16, 0x3e, 0x49, 0x9e, 0xdd) }
 };
 
+struct flow_info flow_info_tbl[RTE_MAX_ETHPORTS];
+
 #define CMD_LINE_OPT_CONFIG		"config"
 #define CMD_LINE_OPT_SINGLE_SA		"single-sa"
 #define CMD_LINE_OPT_CRYPTODEV_MASK	"cryptodev_mask"
+#define CMD_LINE_OPT_TRANSFER_MODE	"transfer-mode"
+#define CMD_LINE_OPT_SCHEDULE_TYPE	"event-schedule-type"
 #define CMD_LINE_OPT_RX_OFFLOAD		"rxoffload"
 #define CMD_LINE_OPT_TX_OFFLOAD		"txoffload"
+#define CMD_LINE_OPT_REASSEMBLE		"reassemble"
+#define CMD_LINE_OPT_MTU		"mtu"
+#define CMD_LINE_OPT_FRAG_TTL		"frag-ttl"
+
+#define CMD_LINE_ARG_EVENT	"event"
+#define CMD_LINE_ARG_POLL	"poll"
+#define CMD_LINE_ARG_ORDERED	"ordered"
+#define CMD_LINE_ARG_ATOMIC	"atomic"
+#define CMD_LINE_ARG_PARALLEL	"parallel"
 
 enum {
 	/* long options mapped to a short option */
@@ -137,29 +129,39 @@ enum {
 	CMD_LINE_OPT_CONFIG_NUM,
 	CMD_LINE_OPT_SINGLE_SA_NUM,
 	CMD_LINE_OPT_CRYPTODEV_MASK_NUM,
+	CMD_LINE_OPT_TRANSFER_MODE_NUM,
+	CMD_LINE_OPT_SCHEDULE_TYPE_NUM,
 	CMD_LINE_OPT_RX_OFFLOAD_NUM,
 	CMD_LINE_OPT_TX_OFFLOAD_NUM,
+	CMD_LINE_OPT_REASSEMBLE_NUM,
+	CMD_LINE_OPT_MTU_NUM,
+	CMD_LINE_OPT_FRAG_TTL_NUM,
 };
 
 static const struct option lgopts[] = {
 	{CMD_LINE_OPT_CONFIG, 1, 0, CMD_LINE_OPT_CONFIG_NUM},
 	{CMD_LINE_OPT_SINGLE_SA, 1, 0, CMD_LINE_OPT_SINGLE_SA_NUM},
 	{CMD_LINE_OPT_CRYPTODEV_MASK, 1, 0, CMD_LINE_OPT_CRYPTODEV_MASK_NUM},
+	{CMD_LINE_OPT_TRANSFER_MODE, 1, 0, CMD_LINE_OPT_TRANSFER_MODE_NUM},
+	{CMD_LINE_OPT_SCHEDULE_TYPE, 1, 0, CMD_LINE_OPT_SCHEDULE_TYPE_NUM},
 	{CMD_LINE_OPT_RX_OFFLOAD, 1, 0, CMD_LINE_OPT_RX_OFFLOAD_NUM},
 	{CMD_LINE_OPT_TX_OFFLOAD, 1, 0, CMD_LINE_OPT_TX_OFFLOAD_NUM},
+	{CMD_LINE_OPT_REASSEMBLE, 1, 0, CMD_LINE_OPT_REASSEMBLE_NUM},
+	{CMD_LINE_OPT_MTU, 1, 0, CMD_LINE_OPT_MTU_NUM},
+	{CMD_LINE_OPT_FRAG_TTL, 1, 0, CMD_LINE_OPT_FRAG_TTL_NUM},
 	{NULL, 0, 0, 0}
 };
 
+uint32_t unprotected_port_mask;
+uint32_t single_sa_idx;
 /* mask of enabled ports */
 static uint32_t enabled_port_mask;
 static uint64_t enabled_cryptodev_mask = UINT64_MAX;
-static uint32_t unprotected_port_mask;
 static int32_t promiscuous_on = 1;
 static int32_t numa_on = 1; /**< NUMA is enabled by default. */
 static uint32_t nb_lcores;
 static uint32_t single_sa;
-static uint32_t single_sa_idx;
-static uint32_t frame_size;
+static uint32_t nb_bufs_in_pool;
 
 /*
  * RX/TX HW offload capabilities to enable/use on ethernet ports.
@@ -168,8 +170,20 @@ static uint32_t frame_size;
 static uint64_t dev_rx_offload = UINT64_MAX;
 static uint64_t dev_tx_offload = UINT64_MAX;
 
+/*
+ * global values that determine multi-seg policy
+ */
+static uint32_t frag_tbl_sz;
+static uint32_t frame_buf_size = RTE_MBUF_DEFAULT_BUF_SIZE;
+static uint32_t mtu_size = RTE_ETHER_MTU;
+static uint64_t frag_ttl_ns = MAX_FRAG_TTL_NS;
+
 /* application wide librte_ipsec/SA parameters */
-struct app_sa_prm app_sa_prm = {.enable = 0};
+struct app_sa_prm app_sa_prm = {
+			.enable = 0,
+			.cache_sz = SA_CACHE_SZ
+		};
+static const char *cfgfile;
 
 struct lcore_rx_queue {
 	uint16_t port_id;
@@ -204,6 +218,12 @@ struct lcore_conf {
 	struct ipsec_ctx outbound;
 	struct rt_ctx *rt4_ctx;
 	struct rt_ctx *rt6_ctx;
+	struct {
+		struct rte_ip_frag_tbl *tbl;
+		struct rte_mempool *pool_dir;
+		struct rte_mempool *pool_indir;
+		struct rte_ip_frag_death_row dr;
+	} frag;
 } __rte_cache_aligned;
 
 static struct lcore_conf lcore_conf[RTE_MAX_LCORE];
@@ -211,7 +231,7 @@ static struct lcore_conf lcore_conf[RTE_MAX_LCORE];
 static struct rte_eth_conf port_conf = {
 	.rxmode = {
 		.mq_mode	= ETH_MQ_RX_RSS,
-		.max_rx_pkt_len = ETHER_MAX_LEN,
+		.max_rx_pkt_len = RTE_ETHER_MAX_LEN,
 		.split_hdr_size = 0,
 		.offloads = DEV_RX_OFFLOAD_CHECKSUM,
 	},
@@ -227,42 +247,110 @@ static struct rte_eth_conf port_conf = {
 	},
 };
 
-static struct socket_ctx socket_ctx[NB_SOCKETS];
+struct socket_ctx socket_ctx[NB_SOCKETS];
+
+/*
+ * Determine is multi-segment support required:
+ *  - either frame buffer size is smaller then mtu
+ *  - or reassmeble support is requested
+ */
+static int
+multi_seg_required(void)
+{
+	return (MTU_TO_FRAMELEN(mtu_size) + RTE_PKTMBUF_HEADROOM >
+		frame_buf_size || frag_tbl_sz != 0);
+}
+
+static inline void
+adjust_ipv4_pktlen(struct rte_mbuf *m, const struct rte_ipv4_hdr *iph,
+	uint32_t l2_len)
+{
+	uint32_t plen, trim;
+
+	plen = rte_be_to_cpu_16(iph->total_length) + l2_len;
+	if (plen < m->pkt_len) {
+		trim = m->pkt_len - plen;
+		rte_pktmbuf_trim(m, trim);
+	}
+}
+
+static inline void
+adjust_ipv6_pktlen(struct rte_mbuf *m, const struct rte_ipv6_hdr *iph,
+	uint32_t l2_len)
+{
+	uint32_t plen, trim;
+
+	plen = rte_be_to_cpu_16(iph->payload_len) + sizeof(*iph) + l2_len;
+	if (plen < m->pkt_len) {
+		trim = m->pkt_len - plen;
+		rte_pktmbuf_trim(m, trim);
+	}
+}
 
 static inline void
 prepare_one_packet(struct rte_mbuf *pkt, struct ipsec_traffic *t)
 {
-	uint8_t *nlp;
-	struct ether_hdr *eth;
+	const struct rte_ether_hdr *eth;
+	const struct rte_ipv4_hdr *iph4;
+	const struct rte_ipv6_hdr *iph6;
 
-	eth = rte_pktmbuf_mtod(pkt, struct ether_hdr *);
-	if (eth->ether_type == rte_cpu_to_be_16(ETHER_TYPE_IPv4)) {
-		nlp = (uint8_t *)rte_pktmbuf_adj(pkt, ETHER_HDR_LEN);
-		nlp = RTE_PTR_ADD(nlp, offsetof(struct ip, ip_p));
-		if (*nlp == IPPROTO_ESP)
+	eth = rte_pktmbuf_mtod(pkt, const struct rte_ether_hdr *);
+	if (eth->ether_type == rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4)) {
+
+		iph4 = (const struct rte_ipv4_hdr *)rte_pktmbuf_adj(pkt,
+			RTE_ETHER_HDR_LEN);
+		adjust_ipv4_pktlen(pkt, iph4, 0);
+
+		if (iph4->next_proto_id == IPPROTO_ESP)
 			t->ipsec.pkts[(t->ipsec.num)++] = pkt;
 		else {
-			t->ip4.data[t->ip4.num] = nlp;
+			t->ip4.data[t->ip4.num] = &iph4->next_proto_id;
 			t->ip4.pkts[(t->ip4.num)++] = pkt;
 		}
 		pkt->l2_len = 0;
-		pkt->l3_len = sizeof(struct ip);
-	} else if (eth->ether_type == rte_cpu_to_be_16(ETHER_TYPE_IPv6)) {
-		nlp = (uint8_t *)rte_pktmbuf_adj(pkt, ETHER_HDR_LEN);
-		nlp = RTE_PTR_ADD(nlp, offsetof(struct ip6_hdr, ip6_nxt));
-		if (*nlp == IPPROTO_ESP)
+		pkt->l3_len = sizeof(*iph4);
+		pkt->packet_type |= RTE_PTYPE_L3_IPV4;
+	} else if (eth->ether_type == rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV6)) {
+		int next_proto;
+		size_t l3len, ext_len;
+		uint8_t *p;
+
+		/* get protocol type */
+		iph6 = (const struct rte_ipv6_hdr *)rte_pktmbuf_adj(pkt,
+			RTE_ETHER_HDR_LEN);
+		adjust_ipv6_pktlen(pkt, iph6, 0);
+
+		next_proto = iph6->proto;
+
+		/* determine l3 header size up to ESP extension */
+		l3len = sizeof(struct ip6_hdr);
+		p = rte_pktmbuf_mtod(pkt, uint8_t *);
+		while (next_proto != IPPROTO_ESP && l3len < pkt->data_len &&
+			(next_proto = rte_ipv6_get_next_ext(p + l3len,
+						next_proto, &ext_len)) >= 0)
+			l3len += ext_len;
+
+		/* drop packet when IPv6 header exceeds first segment length */
+		if (unlikely(l3len > pkt->data_len)) {
+			rte_pktmbuf_free(pkt);
+			return;
+		}
+
+		if (next_proto == IPPROTO_ESP)
 			t->ipsec.pkts[(t->ipsec.num)++] = pkt;
 		else {
-			t->ip6.data[t->ip6.num] = nlp;
+			t->ip6.data[t->ip6.num] = &iph6->proto;
 			t->ip6.pkts[(t->ip6.num)++] = pkt;
 		}
 		pkt->l2_len = 0;
-		pkt->l3_len = sizeof(struct ip6_hdr);
+		pkt->l3_len = l3len;
+		pkt->packet_type |= RTE_PTYPE_L3_IPV6;
 	} else {
 		/* Unknown/Unsupported type, drop the packet */
 		RTE_LOG(ERR, IPSEC, "Unsupported packet type 0x%x\n",
 			rte_be_to_cpu_16(eth->ether_type));
 		rte_pktmbuf_free(pkt);
+		return;
 	}
 
 	/* Check if the packet has been processed inline. For inline protocol
@@ -325,36 +413,37 @@ prepare_tx_pkt(struct rte_mbuf *pkt, uint16_t port,
 		const struct lcore_conf *qconf)
 {
 	struct ip *ip;
-	struct ether_hdr *ethhdr;
+	struct rte_ether_hdr *ethhdr;
 
 	ip = rte_pktmbuf_mtod(pkt, struct ip *);
 
-	ethhdr = (struct ether_hdr *)rte_pktmbuf_prepend(pkt, ETHER_HDR_LEN);
+	ethhdr = (struct rte_ether_hdr *)
+		rte_pktmbuf_prepend(pkt, RTE_ETHER_HDR_LEN);
 
 	if (ip->ip_v == IPVERSION) {
 		pkt->ol_flags |= qconf->outbound.ipv4_offloads;
 		pkt->l3_len = sizeof(struct ip);
-		pkt->l2_len = ETHER_HDR_LEN;
+		pkt->l2_len = RTE_ETHER_HDR_LEN;
 
 		ip->ip_sum = 0;
 
 		/* calculate IPv4 cksum in SW */
 		if ((pkt->ol_flags & PKT_TX_IP_CKSUM) == 0)
-			ip->ip_sum = rte_ipv4_cksum((struct ipv4_hdr *)ip);
+			ip->ip_sum = rte_ipv4_cksum((struct rte_ipv4_hdr *)ip);
 
-		ethhdr->ether_type = rte_cpu_to_be_16(ETHER_TYPE_IPv4);
+		ethhdr->ether_type = rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4);
 	} else {
 		pkt->ol_flags |= qconf->outbound.ipv6_offloads;
 		pkt->l3_len = sizeof(struct ip6_hdr);
-		pkt->l2_len = ETHER_HDR_LEN;
+		pkt->l2_len = RTE_ETHER_HDR_LEN;
 
-		ethhdr->ether_type = rte_cpu_to_be_16(ETHER_TYPE_IPv6);
+		ethhdr->ether_type = rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV6);
 	}
 
 	memcpy(&ethhdr->s_addr, &ethaddr_tbl[port].src,
-			sizeof(struct ether_addr));
+			sizeof(struct rte_ether_addr));
 	memcpy(&ethhdr->d_addr, &ethaddr_tbl[port].dst,
-			sizeof(struct ether_addr));
+			sizeof(struct rte_ether_addr));
 }
 
 static inline void
@@ -396,9 +485,52 @@ send_burst(struct lcore_conf *qconf, uint16_t n, uint16_t port)
 	return 0;
 }
 
+/*
+ * Helper function to fragment and queue for TX one packet.
+ */
+static inline uint32_t
+send_fragment_packet(struct lcore_conf *qconf, struct rte_mbuf *m,
+	uint16_t port, uint8_t proto)
+{
+	struct buffer *tbl;
+	uint32_t len, n;
+	int32_t rc;
+
+	tbl =  qconf->tx_mbufs + port;
+	len = tbl->len;
+
+	/* free space for new fragments */
+	if (len + RTE_LIBRTE_IP_FRAG_MAX_FRAG >=  RTE_DIM(tbl->m_table)) {
+		send_burst(qconf, len, port);
+		len = 0;
+	}
+
+	n = RTE_DIM(tbl->m_table) - len;
+
+	if (proto == IPPROTO_IP)
+		rc = rte_ipv4_fragment_packet(m, tbl->m_table + len,
+			n, mtu_size, qconf->frag.pool_dir,
+			qconf->frag.pool_indir);
+	else
+		rc = rte_ipv6_fragment_packet(m, tbl->m_table + len,
+			n, mtu_size, qconf->frag.pool_dir,
+			qconf->frag.pool_indir);
+
+	if (rc >= 0)
+		len += rc;
+	else
+		RTE_LOG(ERR, IPSEC,
+			"%s: failed to fragment packet with size %u, "
+			"error code: %d\n",
+			__func__, m->pkt_len, rte_errno);
+
+	rte_pktmbuf_free(m);
+	return len;
+}
+
 /* Enqueue a single packet, and send burst if queue is filled */
 static inline int32_t
-send_single_packet(struct rte_mbuf *m, uint16_t port)
+send_single_packet(struct rte_mbuf *m, uint16_t port, uint8_t proto)
 {
 	uint32_t lcore_id;
 	uint16_t len;
@@ -408,8 +540,16 @@ send_single_packet(struct rte_mbuf *m, uint16_t port)
 
 	qconf = &lcore_conf[lcore_id];
 	len = qconf->tx_mbufs[port].len;
-	qconf->tx_mbufs[port].m_table[len] = m;
-	len++;
+
+	if (m->pkt_len <= mtu_size) {
+		qconf->tx_mbufs[port].m_table[len] = m;
+		len++;
+
+	/* need to fragment the packet */
+	} else if (frag_tbl_sz > 0)
+		len = send_fragment_packet(qconf, m, port, proto);
+	else
+		rte_pktmbuf_free(m);
 
 	/* enough pkts to be sent */
 	if (unlikely(len == MAX_PKT_BURST)) {
@@ -453,7 +593,7 @@ inbound_sp_sa(struct sp_ctx *sp, struct sa_ctx *sa, struct traffic_type *ip,
 			continue;
 		}
 
-		sa_idx = SPI2IDX(res);
+		sa_idx = res - 1;
 		if (!inbound_sa_check(sa, m, sa_idx)) {
 			rte_pktmbuf_free(m);
 			continue;
@@ -540,7 +680,7 @@ outbound_sp(struct sp_ctx *sp, struct traffic_type *ip,
 	j = 0;
 	for (i = 0; i < ip->num; i++) {
 		m = ip->pkts[i];
-		sa_idx = SPI2IDX(ip->res[i]);
+		sa_idx = ip->res[i] - 1;
 		if (ip->res[i] == DISCARD)
 			rte_pktmbuf_free(m);
 		else if (ip->res[i] == BYPASS)
@@ -763,7 +903,7 @@ route4_pkts(struct rt_ctx *rt_ctx, struct rte_mbuf *pkts[], uint8_t nb_pkts)
 			rte_pktmbuf_free(pkts[i]);
 			continue;
 		}
-		send_single_packet(pkts[i], pkt_hop & 0xff);
+		send_single_packet(pkts[i], pkt_hop & 0xff, IPPROTO_IP);
 	}
 }
 
@@ -815,7 +955,7 @@ route6_pkts(struct rt_ctx *rt_ctx, struct rte_mbuf *pkts[], uint8_t nb_pkts)
 			rte_pktmbuf_free(pkts[i]);
 			continue;
 		}
-		send_single_packet(pkts[i], pkt_hop & 0xff);
+		send_single_packet(pkts[i], pkt_hop & 0xff, IPPROTO_IPV6);
 	}
 }
 
@@ -828,12 +968,12 @@ process_pkts(struct lcore_conf *qconf, struct rte_mbuf **pkts,
 	prepare_traffic(pkts, &traffic, nb_pkts);
 
 	if (unlikely(single_sa)) {
-		if (UNPROTECTED_PORT(portid))
+		if (is_unprotected_port(portid))
 			process_pkts_inbound_nosp(&qconf->inbound, &traffic);
 		else
 			process_pkts_outbound_nosp(&qconf->outbound, &traffic);
 	} else {
-		if (UNPROTECTED_PORT(portid))
+		if (is_unprotected_port(portid))
 			process_pkts_inbound(&qconf->inbound, &traffic);
 		else
 			process_pkts_outbound(&qconf->outbound, &traffic);
@@ -944,8 +1084,8 @@ drain_outbound_crypto_queues(const struct lcore_conf *qconf,
 }
 
 /* main processing loop */
-static int32_t
-main_loop(__attribute__((unused)) void *dummy)
+void
+ipsec_poll_mode_worker(void)
 {
 	struct rte_mbuf *pkts[MAX_PKT_BURST];
 	uint32_t lcore_id;
@@ -954,7 +1094,7 @@ main_loop(__attribute__((unused)) void *dummy)
 	uint16_t portid;
 	uint8_t queueid;
 	struct lcore_conf *qconf;
-	int32_t socket_id;
+	int32_t rc, socket_id;
 	const uint64_t drain_tsc = (rte_get_tsc_hz() + US_PER_S - 1)
 			/ US_PER_S * BURST_TX_DRAIN_US;
 	struct lcore_rx_queue *rxql;
@@ -981,11 +1121,21 @@ main_loop(__attribute__((unused)) void *dummy)
 	qconf->outbound.session_pool = socket_ctx[socket_id].session_pool;
 	qconf->outbound.session_priv_pool =
 			socket_ctx[socket_id].session_priv_pool;
+	qconf->frag.pool_dir = socket_ctx[socket_id].mbuf_pool;
+	qconf->frag.pool_indir = socket_ctx[socket_id].mbuf_pool_indir;
+
+	rc = ipsec_sad_lcore_cache_init(app_sa_prm.cache_sz);
+	if (rc != 0) {
+		RTE_LOG(ERR, IPSEC,
+			"SAD cache init on lcore %u, failed with code: %d\n",
+			lcore_id, rc);
+		return;
+	}
 
 	if (qconf->nb_rx_queue == 0) {
 		RTE_LOG(DEBUG, IPSEC, "lcore %u has nothing to do\n",
 			lcore_id);
-		return 0;
+		return;
 	}
 
 	RTE_LOG(INFO, IPSEC, "entering main loop on lcore %u\n", lcore_id);
@@ -998,7 +1148,7 @@ main_loop(__attribute__((unused)) void *dummy)
 			lcore_id, portid, queueid);
 	}
 
-	while (1) {
+	while (!force_quit) {
 		cur_tsc = rte_rdtsc();
 
 		/* TX queue buffer drain */
@@ -1022,7 +1172,7 @@ main_loop(__attribute__((unused)) void *dummy)
 				process_pkts(qconf, pkts, nb_rx, portid);
 
 			/* dequeue and process completed crypto-ops */
-			if (UNPROTECTED_PORT(portid))
+			if (is_unprotected_port(portid))
 				drain_inbound_crypto_queues(qconf,
 					&qconf->inbound);
 			else
@@ -1032,13 +1182,41 @@ main_loop(__attribute__((unused)) void *dummy)
 	}
 }
 
+int
+check_flow_params(uint16_t fdir_portid, uint8_t fdir_qid)
+{
+	uint16_t i;
+	uint16_t portid;
+	uint8_t queueid;
+
+	for (i = 0; i < nb_lcore_params; ++i) {
+		portid = lcore_params_array[i].port_id;
+		if (portid == fdir_portid) {
+			queueid = lcore_params_array[i].queue_id;
+			if (queueid == fdir_qid)
+				break;
+		}
+
+		if (i == nb_lcore_params - 1)
+			return -1;
+	}
+
+	return 1;
+}
+
 static int32_t
-check_params(void)
+check_poll_mode_params(struct eh_conf *eh_conf)
 {
 	uint8_t lcore;
 	uint16_t portid;
 	uint16_t i;
 	int32_t socket_id;
+
+	if (!eh_conf)
+		return -EINVAL;
+
+	if (eh_conf->mode != EH_PKT_TRANSFER_MODE_POLL)
+		return 0;
 
 	if (lcore_params == NULL) {
 		printf("Error: No port/queue/core mappings\n");
@@ -1121,35 +1299,71 @@ print_usage(const char *prgname)
 		" [-w REPLAY_WINDOW_SIZE]"
 		" [-e]"
 		" [-a]"
+		" [-c]"
+		" [-s NUMBER_OF_MBUFS_IN_PKT_POOL]"
 		" -f CONFIG_FILE"
 		" --config (port,queue,lcore)[,(port,queue,lcore)]"
 		" [--single-sa SAIDX]"
 		" [--cryptodev_mask MASK]"
+		" [--transfer-mode MODE]"
+		" [--event-schedule-type TYPE]"
 		" [--" CMD_LINE_OPT_RX_OFFLOAD " RX_OFFLOAD_MASK]"
 		" [--" CMD_LINE_OPT_TX_OFFLOAD " TX_OFFLOAD_MASK]"
+		" [--" CMD_LINE_OPT_REASSEMBLE " REASSEMBLE_TABLE_SIZE]"
+		" [--" CMD_LINE_OPT_MTU " MTU]"
 		"\n\n"
 		"  -p PORTMASK: Hexadecimal bitmask of ports to configure\n"
 		"  -P : Enable promiscuous mode\n"
 		"  -u PORTMASK: Hexadecimal bitmask of unprotected ports\n"
-		"  -j FRAMESIZE: Enable jumbo frame with 'FRAMESIZE' as maximum\n"
-		"                packet size\n"
+		"  -j FRAMESIZE: Data buffer size, minimum (and default)\n"
+		"     value: RTE_MBUF_DEFAULT_BUF_SIZE\n"
 		"  -l enables code-path that uses librte_ipsec\n"
 		"  -w REPLAY_WINDOW_SIZE specifies IPsec SQN replay window\n"
 		"     size for each SA\n"
 		"  -e enables ESN\n"
 		"  -a enables SA SQN atomic behaviour\n"
+		"  -c specifies inbound SAD cache size,\n"
+		"     zero value disables the cache (default value: 128)\n"
+		"  -s number of mbufs in packet pool, if not specified number\n"
+		"     of mbufs will be calculated based on number of cores,\n"
+		"     ports and crypto queues\n"
 		"  -f CONFIG_FILE: Configuration file\n"
-		"  --config (port,queue,lcore): Rx queue configuration\n"
-		"  --single-sa SAIDX: Use single SA index for outbound traffic,\n"
-		"                     bypassing the SP\n"
+		"  --config (port,queue,lcore): Rx queue configuration. In poll\n"
+		"                               mode determines which queues from\n"
+		"                               which ports are mapped to which cores.\n"
+		"                               In event mode this option is not used\n"
+		"                               as packets are dynamically scheduled\n"
+		"                               to cores by HW.\n"
+		"  --single-sa SAIDX: In poll mode use single SA index for\n"
+		"                     outbound traffic, bypassing the SP\n"
+		"                     In event mode selects driver submode,\n"
+		"                     SA index value is ignored\n"
 		"  --cryptodev_mask MASK: Hexadecimal bitmask of the crypto\n"
 		"                         devices to configure\n"
+		"  --transfer-mode MODE\n"
+		"               \"poll\"  : Packet transfer via polling (default)\n"
+		"               \"event\" : Packet transfer via event device\n"
+		"  --event-schedule-type TYPE queue schedule type, used only when\n"
+		"                             transfer mode is set to event\n"
+		"               \"ordered\"  : Ordered (default)\n"
+		"               \"atomic\"   : Atomic\n"
+		"               \"parallel\" : Parallel\n"
 		"  --" CMD_LINE_OPT_RX_OFFLOAD
 		": bitmask of the RX HW offload capabilities to enable/use\n"
 		"                         (DEV_RX_OFFLOAD_*)\n"
 		"  --" CMD_LINE_OPT_TX_OFFLOAD
 		": bitmask of the TX HW offload capabilities to enable/use\n"
 		"                         (DEV_TX_OFFLOAD_*)\n"
+		"  --" CMD_LINE_OPT_REASSEMBLE " NUM"
+		": max number of entries in reassemble(fragment) table\n"
+		"    (zero (default value) disables reassembly)\n"
+		"  --" CMD_LINE_OPT_MTU " MTU"
+		": MTU value on all ports (default value: 1500)\n"
+		"    outgoing packets with bigger size will be fragmented\n"
+		"    incoming packets with bigger size will be discarded\n"
+		"  --" CMD_LINE_OPT_FRAG_TTL " FRAG_TTL_NS"
+		": fragments lifetime in nanoseconds, default\n"
+		"    and maximum value is 10.000.000.000 ns (10 s)\n"
 		"\n",
 		prgname);
 }
@@ -1186,14 +1400,15 @@ parse_portmask(const char *portmask)
 	return pm;
 }
 
-static int32_t
+static int64_t
 parse_decimal(const char *str)
 {
 	char *end = NULL;
-	unsigned long num;
+	uint64_t num;
 
-	num = strtoul(str, &end, 10);
-	if ((str[0] == '\0') || (end == NULL) || (*end != '\0'))
+	num = strtoull(str, &end, 10);
+	if ((str[0] == '\0') || (end == NULL) || (*end != '\0')
+		|| num > INT64_MAX)
 		return -1;
 
 	return num;
@@ -1261,18 +1476,54 @@ print_app_sa_prm(const struct app_sa_prm *prm)
 	printf("librte_ipsec usage: %s\n",
 		(prm->enable == 0) ? "disabled" : "enabled");
 
-	if (prm->enable == 0)
-		return;
-
 	printf("replay window size: %u\n", prm->window_size);
 	printf("ESN: %s\n", (prm->enable_esn == 0) ? "disabled" : "enabled");
 	printf("SA flags: %#" PRIx64 "\n", prm->flags);
+	printf("Frag TTL: %" PRIu64 " ns\n", frag_ttl_ns);
+}
+
+static int
+parse_transfer_mode(struct eh_conf *conf, const char *optarg)
+{
+	if (!strcmp(CMD_LINE_ARG_POLL, optarg))
+		conf->mode = EH_PKT_TRANSFER_MODE_POLL;
+	else if (!strcmp(CMD_LINE_ARG_EVENT, optarg))
+		conf->mode = EH_PKT_TRANSFER_MODE_EVENT;
+	else {
+		printf("Unsupported packet transfer mode\n");
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
+static int
+parse_schedule_type(struct eh_conf *conf, const char *optarg)
+{
+	struct eventmode_conf *em_conf = NULL;
+
+	/* Get eventmode conf */
+	em_conf = conf->mode_params;
+
+	if (!strcmp(CMD_LINE_ARG_ORDERED, optarg))
+		em_conf->ext_params.sched_type = RTE_SCHED_TYPE_ORDERED;
+	else if (!strcmp(CMD_LINE_ARG_ATOMIC, optarg))
+		em_conf->ext_params.sched_type = RTE_SCHED_TYPE_ATOMIC;
+	else if (!strcmp(CMD_LINE_ARG_PARALLEL, optarg))
+		em_conf->ext_params.sched_type = RTE_SCHED_TYPE_PARALLEL;
+	else {
+		printf("Unsupported queue schedule type\n");
+		return -EINVAL;
+	}
+
+	return 0;
 }
 
 static int32_t
-parse_args(int32_t argc, char **argv)
+parse_args(int32_t argc, char **argv, struct eh_conf *eh_conf)
 {
-	int32_t opt, ret;
+	int opt;
+	int64_t ret;
 	char **argvopt;
 	int32_t option_index;
 	char *prgname = argv[0];
@@ -1280,7 +1531,7 @@ parse_args(int32_t argc, char **argv)
 
 	argvopt = argv;
 
-	while ((opt = getopt_long(argc, argvopt, "aelp:Pu:f:j:w:",
+	while ((opt = getopt_long(argc, argvopt, "aelp:Pu:f:j:w:c:s:",
 				lgopts, &option_index)) != EOF) {
 
 		switch (opt) {
@@ -1311,45 +1562,55 @@ parse_args(int32_t argc, char **argv)
 				print_usage(prgname);
 				return -1;
 			}
-			if (parse_cfg_file(optarg) < 0) {
-				printf("parsing file \"%s\" failed\n",
+			cfgfile = optarg;
+			f_present = 1;
+			break;
+
+		case 's':
+			ret = parse_decimal(optarg);
+			if (ret < 0) {
+				printf("Invalid number of buffers in a pool: "
+					"%s\n", optarg);
+				print_usage(prgname);
+				return -1;
+			}
+
+			nb_bufs_in_pool = ret;
+			break;
+
+		case 'j':
+			ret = parse_decimal(optarg);
+			if (ret < RTE_MBUF_DEFAULT_BUF_SIZE ||
+					ret > UINT16_MAX) {
+				printf("Invalid frame buffer size value: %s\n",
 					optarg);
 				print_usage(prgname);
 				return -1;
 			}
-			f_present = 1;
-			break;
-		case 'j':
-			{
-				int32_t size = parse_decimal(optarg);
-				if (size <= 1518) {
-					printf("Invalid jumbo frame size\n");
-					if (size < 0) {
-						print_usage(prgname);
-						return -1;
-					}
-					printf("Using default value 9000\n");
-					frame_size = 9000;
-				} else {
-					frame_size = size;
-				}
-			}
-			printf("Enabled jumbo frames size %u\n", frame_size);
+			frame_buf_size = ret;
+			printf("Custom frame buffer size %u\n", frame_buf_size);
 			break;
 		case 'l':
 			app_sa_prm.enable = 1;
 			break;
 		case 'w':
-			app_sa_prm.enable = 1;
 			app_sa_prm.window_size = parse_decimal(optarg);
 			break;
 		case 'e':
-			app_sa_prm.enable = 1;
 			app_sa_prm.enable_esn = 1;
 			break;
 		case 'a':
 			app_sa_prm.enable = 1;
 			app_sa_prm.flags |= RTE_IPSEC_SAFLAG_SQN_ATOM;
+			break;
+		case 'c':
+			ret = parse_decimal(optarg);
+			if (ret < 0) {
+				printf("Invalid SA cache size: %s\n", optarg);
+				print_usage(prgname);
+				return -1;
+			}
+			app_sa_prm.cache_sz = ret;
 			break;
 		case CMD_LINE_OPT_CONFIG_NUM:
 			ret = parse_config(optarg);
@@ -1361,7 +1622,7 @@ parse_args(int32_t argc, char **argv)
 			break;
 		case CMD_LINE_OPT_SINGLE_SA_NUM:
 			ret = parse_decimal(optarg);
-			if (ret == -1) {
+			if (ret == -1 || ret > UINT32_MAX) {
 				printf("Invalid argument[sa_idx]\n");
 				print_usage(prgname);
 				return -1;
@@ -1370,6 +1631,7 @@ parse_args(int32_t argc, char **argv)
 			/* else */
 			single_sa = 1;
 			single_sa_idx = ret;
+			eh_conf->ipsec_mode = EH_IPSEC_MODE_TYPE_DRIVER;
 			printf("Configured with single SA index %u\n",
 					single_sa_idx);
 			break;
@@ -1384,6 +1646,25 @@ parse_args(int32_t argc, char **argv)
 			/* else */
 			enabled_cryptodev_mask = ret;
 			break;
+
+		case CMD_LINE_OPT_TRANSFER_MODE_NUM:
+			ret = parse_transfer_mode(eh_conf, optarg);
+			if (ret < 0) {
+				printf("Invalid packet transfer mode\n");
+				print_usage(prgname);
+				return -1;
+			}
+			break;
+
+		case CMD_LINE_OPT_SCHEDULE_TYPE_NUM:
+			ret = parse_schedule_type(eh_conf, optarg);
+			if (ret < 0) {
+				printf("Invalid queue schedule type\n");
+				print_usage(prgname);
+				return -1;
+			}
+			break;
+
 		case CMD_LINE_OPT_RX_OFFLOAD_NUM:
 			ret = parse_mask(optarg, &dev_rx_offload);
 			if (ret != 0) {
@@ -1402,6 +1683,36 @@ parse_args(int32_t argc, char **argv)
 				return -1;
 			}
 			break;
+		case CMD_LINE_OPT_REASSEMBLE_NUM:
+			ret = parse_decimal(optarg);
+			if (ret < 0 || ret > UINT32_MAX) {
+				printf("Invalid argument for \'%s\': %s\n",
+					CMD_LINE_OPT_REASSEMBLE, optarg);
+				print_usage(prgname);
+				return -1;
+			}
+			frag_tbl_sz = ret;
+			break;
+		case CMD_LINE_OPT_MTU_NUM:
+			ret = parse_decimal(optarg);
+			if (ret < 0 || ret > RTE_IPV4_MAX_PKT_LEN) {
+				printf("Invalid argument for \'%s\': %s\n",
+					CMD_LINE_OPT_MTU, optarg);
+				print_usage(prgname);
+				return -1;
+			}
+			mtu_size = ret;
+			break;
+		case CMD_LINE_OPT_FRAG_TTL_NUM:
+			ret = parse_decimal(optarg);
+			if (ret < 0 || ret > MAX_FRAG_TTL_NS) {
+				printf("Invalid argument for \'%s\': %s\n",
+					CMD_LINE_OPT_MTU, optarg);
+				print_usage(prgname);
+				return -1;
+			}
+			frag_ttl_ns = ret;
+			break;
 		default:
 			print_usage(prgname);
 			return -1;
@@ -1411,6 +1722,16 @@ parse_args(int32_t argc, char **argv)
 	if (f_present == 0) {
 		printf("Mandatory option \"-f\" not present\n");
 		return -1;
+	}
+
+	/* check do we need to enable multi-seg support */
+	if (multi_seg_required()) {
+		/* legacy mode doesn't support multi-seg */
+		app_sa_prm.enable = 1;
+		printf("frame buf size: %u, mtu: %u, "
+			"number of reassemble entries: %u\n"
+			"multi-segment support is required\n",
+			frame_buf_size, mtu_size, frag_tbl_sz);
 	}
 
 	print_app_sa_prm(&app_sa_prm);
@@ -1424,10 +1745,10 @@ parse_args(int32_t argc, char **argv)
 }
 
 static void
-print_ethaddr(const char *name, const struct ether_addr *eth_addr)
+print_ethaddr(const char *name, const struct rte_ether_addr *eth_addr)
 {
-	char buf[ETHER_ADDR_FMT_SIZE];
-	ether_format_addr(buf, ETHER_ADDR_FMT_SIZE, eth_addr);
+	char buf[RTE_ETHER_ADDR_FMT_SIZE];
+	rte_ether_format_addr(buf, RTE_ETHER_ADDR_FMT_SIZE, eth_addr);
 	printf("%s%s", name, buf);
 }
 
@@ -1435,7 +1756,7 @@ print_ethaddr(const char *name, const struct ether_addr *eth_addr)
  * Update destination ethaddr for the port.
  */
 int
-add_dst_ethaddr(uint16_t port, const struct ether_addr *addr)
+add_dst_ethaddr(uint16_t port, const struct rte_ether_addr *addr)
 {
 	if (port >= RTE_DIM(ethaddr_tbl))
 		return -EINVAL;
@@ -1453,6 +1774,7 @@ check_all_ports_link_status(uint32_t port_mask)
 	uint16_t portid;
 	uint8_t count, all_ports_up, print_flag = 0;
 	struct rte_eth_link link;
+	int ret;
 
 	printf("\nChecking link status");
 	fflush(stdout);
@@ -1462,7 +1784,14 @@ check_all_ports_link_status(uint32_t port_mask)
 			if ((port_mask & (1 << portid)) == 0)
 				continue;
 			memset(&link, 0, sizeof(link));
-			rte_eth_link_get_nowait(portid, &link);
+			ret = rte_eth_link_get_nowait(portid, &link);
+			if (ret < 0) {
+				all_ports_up = 0;
+				if (print_flag == 1)
+					printf("Port %u link get failed: %s\n",
+						portid, rte_strerror(-ret));
+				continue;
+			}
 			/* print link status if flag set */
 			if (print_flag == 1) {
 				if (link.link_status)
@@ -1470,7 +1799,7 @@ check_all_ports_link_status(uint32_t port_mask)
 					"Port%d Link Up - speed %u Mbps -%s\n",
 						portid, link.link_speed,
 				(link.link_duplex == ETH_LINK_FULL_DUPLEX) ?
-					("full-duplex") : ("half-duplex\n"));
+					("full-duplex") : ("half-duplex"));
 				else
 					printf("Port %d Link Down\n", portid);
 				continue;
@@ -1621,14 +1950,17 @@ check_cryptodev_mask(uint8_t cdev_id)
 	return -1;
 }
 
-static int32_t
-cryptodevs_init(void)
+static uint16_t
+cryptodevs_init(uint16_t req_queue_num)
 {
 	struct rte_cryptodev_config dev_conf;
 	struct rte_cryptodev_qp_conf qp_conf;
-	uint16_t idx, max_nb_qps, qp, i;
-	int16_t cdev_id, port_id;
+	uint16_t idx, max_nb_qps, qp, total_nb_qps, i;
+	int16_t cdev_id;
 	struct rte_hash_parameters params = { 0 };
+
+	const uint64_t mseg_flag = multi_seg_required() ?
+				RTE_CRYPTODEV_FF_IN_PLACE_SGL : 0;
 
 	params.entries = CDEV_MAP_ENTRIES;
 	params.key_len = sizeof(struct cdev_key);
@@ -1650,46 +1982,8 @@ cryptodevs_init(void)
 
 	printf("lcore/cryptodev/qp mappings:\n");
 
-	uint32_t max_sess_sz = 0, sess_sz;
-	for (cdev_id = 0; cdev_id < rte_cryptodev_count(); cdev_id++) {
-		void *sec_ctx;
-
-		/* Get crypto priv session size */
-		sess_sz = rte_cryptodev_sym_get_private_session_size(cdev_id);
-		if (sess_sz > max_sess_sz)
-			max_sess_sz = sess_sz;
-
-		/*
-		 * If crypto device is security capable, need to check the
-		 * size of security session as well.
-		 */
-
-		/* Get security context of the crypto device */
-		sec_ctx = rte_cryptodev_get_sec_ctx(cdev_id);
-		if (sec_ctx == NULL)
-			continue;
-
-		/* Get size of security session */
-		sess_sz = rte_security_session_get_size(sec_ctx);
-		if (sess_sz > max_sess_sz)
-			max_sess_sz = sess_sz;
-	}
-	RTE_ETH_FOREACH_DEV(port_id) {
-		void *sec_ctx;
-
-		if ((enabled_port_mask & (1 << port_id)) == 0)
-			continue;
-
-		sec_ctx = rte_eth_dev_get_sec_ctx(port_id);
-		if (sec_ctx == NULL)
-			continue;
-
-		sess_sz = rte_security_session_get_size(sec_ctx);
-		if (sess_sz > max_sess_sz)
-			max_sess_sz = sess_sz;
-	}
-
 	idx = 0;
+	total_nb_qps = 0;
 	for (cdev_id = 0; cdev_id < rte_cryptodev_count(); cdev_id++) {
 		struct rte_cryptodev_info cdev_info;
 
@@ -1697,6 +1991,12 @@ cryptodevs_init(void)
 			continue;
 
 		rte_cryptodev_info_get(cdev_id, &cdev_info);
+
+		if ((mseg_flag & cdev_info.feature_flags) != mseg_flag)
+			rte_exit(EXIT_FAILURE,
+				"Device %hd does not support \'%s\' feature\n",
+				cdev_id,
+				rte_cryptodev_get_feature_name(mseg_flag));
 
 		if (nb_lcore_params > cdev_info.max_nb_queue_pairs)
 			max_nb_qps = cdev_info.max_nb_queue_pairs;
@@ -1714,56 +2014,21 @@ cryptodevs_init(void)
 			i++;
 		}
 
+		qp = RTE_MIN(max_nb_qps, RTE_MAX(req_queue_num, qp));
 		if (qp == 0)
 			continue;
 
+		total_nb_qps += qp;
 		dev_conf.socket_id = rte_cryptodev_socket_id(cdev_id);
 		dev_conf.nb_queue_pairs = qp;
+		dev_conf.ff_disable = RTE_CRYPTODEV_FF_ASYMMETRIC_CRYPTO;
 
 		uint32_t dev_max_sess = cdev_info.sym.max_nb_sessions;
-		if (dev_max_sess != 0 && dev_max_sess < CDEV_MP_NB_OBJS)
+		if (dev_max_sess != 0 &&
+				dev_max_sess < get_nb_crypto_sessions())
 			rte_exit(EXIT_FAILURE,
 				"Device does not support at least %u "
-				"sessions", CDEV_MP_NB_OBJS);
-
-		if (!socket_ctx[dev_conf.socket_id].session_pool) {
-			char mp_name[RTE_MEMPOOL_NAMESIZE];
-			struct rte_mempool *sess_mp;
-
-			snprintf(mp_name, RTE_MEMPOOL_NAMESIZE,
-					"sess_mp_%u", dev_conf.socket_id);
-			sess_mp = rte_cryptodev_sym_session_pool_create(
-					mp_name, CDEV_MP_NB_OBJS,
-					0, CDEV_MP_CACHE_SZ, 0,
-					dev_conf.socket_id);
-			socket_ctx[dev_conf.socket_id].session_pool = sess_mp;
-		}
-
-		if (!socket_ctx[dev_conf.socket_id].session_priv_pool) {
-			char mp_name[RTE_MEMPOOL_NAMESIZE];
-			struct rte_mempool *sess_mp;
-
-			snprintf(mp_name, RTE_MEMPOOL_NAMESIZE,
-					"sess_mp_priv_%u", dev_conf.socket_id);
-			sess_mp = rte_mempool_create(mp_name,
-					CDEV_MP_NB_OBJS,
-					max_sess_sz,
-					CDEV_MP_CACHE_SZ,
-					0, NULL, NULL, NULL,
-					NULL, dev_conf.socket_id,
-					0);
-			socket_ctx[dev_conf.socket_id].session_priv_pool =
-					sess_mp;
-		}
-
-		if (!socket_ctx[dev_conf.socket_id].session_priv_pool ||
-				!socket_ctx[dev_conf.socket_id].session_pool)
-			rte_exit(EXIT_FAILURE,
-				"Cannot create session pool on socket %d\n",
-				dev_conf.socket_id);
-		else
-			printf("Allocated session pool on socket %d\n",
-					dev_conf.socket_id);
+				"sessions", get_nb_crypto_sessions());
 
 		if (rte_cryptodev_configure(cdev_id, &dev_conf))
 			rte_panic("Failed to initialize cryptodev %u\n",
@@ -1785,57 +2050,29 @@ cryptodevs_init(void)
 					cdev_id);
 	}
 
-	/* create session pools for eth devices that implement security */
-	RTE_ETH_FOREACH_DEV(port_id) {
-		if ((enabled_port_mask & (1 << port_id)) &&
-				rte_eth_dev_get_sec_ctx(port_id)) {
-			int socket_id = rte_eth_dev_socket_id(port_id);
-
-			if (!socket_ctx[socket_id].session_priv_pool) {
-				char mp_name[RTE_MEMPOOL_NAMESIZE];
-				struct rte_mempool *sess_mp;
-
-				snprintf(mp_name, RTE_MEMPOOL_NAMESIZE,
-						"sess_mp_%u", socket_id);
-				sess_mp = rte_mempool_create(mp_name,
-						(CDEV_MP_NB_OBJS * 2),
-						max_sess_sz,
-						CDEV_MP_CACHE_SZ,
-						0, NULL, NULL, NULL,
-						NULL, socket_id,
-						0);
-				if (sess_mp == NULL)
-					rte_exit(EXIT_FAILURE,
-						"Cannot create session pool "
-						"on socket %d\n", socket_id);
-				else
-					printf("Allocated session pool "
-						"on socket %d\n", socket_id);
-				socket_ctx[socket_id].session_priv_pool =
-						sess_mp;
-			}
-		}
-	}
-
-
 	printf("\n");
 
-	return 0;
+	return total_nb_qps;
 }
 
 static void
 port_init(uint16_t portid, uint64_t req_rx_offloads, uint64_t req_tx_offloads)
 {
+	uint32_t frame_size;
 	struct rte_eth_dev_info dev_info;
 	struct rte_eth_txconf *txconf;
 	uint16_t nb_tx_queue, nb_rx_queue;
 	uint16_t tx_queueid, rx_queueid, queue, lcore_id;
 	int32_t ret, socket_id;
 	struct lcore_conf *qconf;
-	struct ether_addr ethaddr;
+	struct rte_ether_addr ethaddr;
 	struct rte_eth_conf local_port_conf = port_conf;
 
-	rte_eth_dev_info_get(portid, &dev_info);
+	ret = rte_eth_dev_info_get(portid, &dev_info);
+	if (ret != 0)
+		rte_exit(EXIT_FAILURE,
+			"Error during getting device (port %u) info: %s\n",
+			portid, strerror(-ret));
 
 	/* limit allowed HW offloafs, as user requested */
 	dev_info.rx_offload_capa &= dev_rx_offload;
@@ -1843,7 +2080,12 @@ port_init(uint16_t portid, uint64_t req_rx_offloads, uint64_t req_tx_offloads)
 
 	printf("Configuring device port %u:\n", portid);
 
-	rte_eth_macaddr_get(portid, &ethaddr);
+	ret = rte_eth_macaddr_get(portid, &ethaddr);
+	if (ret != 0)
+		rte_exit(EXIT_FAILURE,
+			"Error getting MAC address (port %u): %s\n",
+			portid, rte_strerror(-ret));
+
 	ethaddr_tbl[portid].src = ETHADDR_TO_UINT64(&ethaddr);
 	print_ethaddr("Address: ", &ethaddr);
 	printf("\n");
@@ -1864,9 +2106,14 @@ port_init(uint16_t portid, uint64_t req_rx_offloads, uint64_t req_tx_offloads)
 	printf("Creating queues: nb_rx_queue=%d nb_tx_queue=%u...\n",
 			nb_rx_queue, nb_tx_queue);
 
-	if (frame_size) {
-		local_port_conf.rxmode.max_rx_pkt_len = frame_size;
+	frame_size = MTU_TO_FRAMELEN(mtu_size);
+	if (frame_size > local_port_conf.rxmode.max_rx_pkt_len)
 		local_port_conf.rxmode.offloads |= DEV_RX_OFFLOAD_JUMBO_FRAME;
+	local_port_conf.rxmode.max_rx_pkt_len = frame_size;
+
+	if (multi_seg_required()) {
+		local_port_conf.rxmode.offloads |= DEV_RX_OFFLOAD_SCATTER;
+		local_port_conf.txmode.offloads |= DEV_TX_OFFLOAD_MULTI_SEGS;
 	}
 
 	local_port_conf.rxmode.offloads |= req_rx_offloads;
@@ -1983,20 +2230,135 @@ port_init(uint16_t portid, uint64_t req_rx_offloads, uint64_t req_tx_offloads)
 	printf("\n");
 }
 
+static size_t
+max_session_size(void)
+{
+	size_t max_sz, sz;
+	void *sec_ctx;
+	int16_t cdev_id, port_id, n;
+
+	max_sz = 0;
+	n =  rte_cryptodev_count();
+	for (cdev_id = 0; cdev_id != n; cdev_id++) {
+		sz = rte_cryptodev_sym_get_private_session_size(cdev_id);
+		if (sz > max_sz)
+			max_sz = sz;
+		/*
+		 * If crypto device is security capable, need to check the
+		 * size of security session as well.
+		 */
+
+		/* Get security context of the crypto device */
+		sec_ctx = rte_cryptodev_get_sec_ctx(cdev_id);
+		if (sec_ctx == NULL)
+			continue;
+
+		/* Get size of security session */
+		sz = rte_security_session_get_size(sec_ctx);
+		if (sz > max_sz)
+			max_sz = sz;
+	}
+
+	RTE_ETH_FOREACH_DEV(port_id) {
+		if ((enabled_port_mask & (1 << port_id)) == 0)
+			continue;
+
+		sec_ctx = rte_eth_dev_get_sec_ctx(port_id);
+		if (sec_ctx == NULL)
+			continue;
+
+		sz = rte_security_session_get_size(sec_ctx);
+		if (sz > max_sz)
+			max_sz = sz;
+	}
+
+	return max_sz;
+}
+
+static void
+session_pool_init(struct socket_ctx *ctx, int32_t socket_id, size_t sess_sz)
+{
+	char mp_name[RTE_MEMPOOL_NAMESIZE];
+	struct rte_mempool *sess_mp;
+	uint32_t nb_sess;
+
+	snprintf(mp_name, RTE_MEMPOOL_NAMESIZE,
+			"sess_mp_%u", socket_id);
+	/*
+	 * Doubled due to rte_security_session_create() uses one mempool for
+	 * session and for session private data.
+	 */
+	nb_sess = (get_nb_crypto_sessions() + CDEV_MP_CACHE_SZ *
+		rte_lcore_count()) * 2;
+	sess_mp = rte_cryptodev_sym_session_pool_create(
+			mp_name, nb_sess, sess_sz, CDEV_MP_CACHE_SZ, 0,
+			socket_id);
+	ctx->session_pool = sess_mp;
+
+	if (ctx->session_pool == NULL)
+		rte_exit(EXIT_FAILURE,
+			"Cannot init session pool on socket %d\n", socket_id);
+	else
+		printf("Allocated session pool on socket %d\n",	socket_id);
+}
+
+static void
+session_priv_pool_init(struct socket_ctx *ctx, int32_t socket_id,
+	size_t sess_sz)
+{
+	char mp_name[RTE_MEMPOOL_NAMESIZE];
+	struct rte_mempool *sess_mp;
+	uint32_t nb_sess;
+
+	snprintf(mp_name, RTE_MEMPOOL_NAMESIZE,
+			"sess_mp_priv_%u", socket_id);
+	/*
+	 * Doubled due to rte_security_session_create() uses one mempool for
+	 * session and for session private data.
+	 */
+	nb_sess = (get_nb_crypto_sessions() + CDEV_MP_CACHE_SZ *
+		rte_lcore_count()) * 2;
+	sess_mp = rte_mempool_create(mp_name,
+			nb_sess,
+			sess_sz,
+			CDEV_MP_CACHE_SZ,
+			0, NULL, NULL, NULL,
+			NULL, socket_id,
+			0);
+	ctx->session_priv_pool = sess_mp;
+
+	if (ctx->session_priv_pool == NULL)
+		rte_exit(EXIT_FAILURE,
+			"Cannot init session priv pool on socket %d\n",
+			socket_id);
+	else
+		printf("Allocated session priv pool on socket %d\n",
+			socket_id);
+}
+
 static void
 pool_init(struct socket_ctx *ctx, int32_t socket_id, uint32_t nb_mbuf)
 {
 	char s[64];
-	uint32_t buff_size = frame_size ? (frame_size + RTE_PKTMBUF_HEADROOM) :
-			RTE_MBUF_DEFAULT_BUF_SIZE;
-
+	int32_t ms;
 
 	snprintf(s, sizeof(s), "mbuf_pool_%d", socket_id);
 	ctx->mbuf_pool = rte_pktmbuf_pool_create(s, nb_mbuf,
 			MEMPOOL_CACHE_SIZE, ipsec_metadata_size(),
-			buff_size,
-			socket_id);
-	if (ctx->mbuf_pool == NULL)
+			frame_buf_size, socket_id);
+
+	/*
+	 * if multi-segment support is enabled, then create a pool
+	 * for indirect mbufs.
+	 */
+	ms = multi_seg_required();
+	if (ms != 0) {
+		snprintf(s, sizeof(s), "mbuf_pool_indir_%d", socket_id);
+		ctx->mbuf_pool_indir = rte_pktmbuf_pool_create(s, nb_mbuf,
+			MEMPOOL_CACHE_SIZE, 0, 0, socket_id);
+	}
+
+	if (ctx->mbuf_pool == NULL || (ms != 0 && ctx->mbuf_pool_indir == NULL))
 		rte_exit(EXIT_FAILURE, "Cannot init mbuf pool on socket %d\n",
 				socket_id);
 	else
@@ -2058,14 +2420,334 @@ inline_ipsec_event_callback(uint16_t port_id, enum rte_eth_event_type type,
 	return -1;
 }
 
+static uint16_t
+rx_callback(__rte_unused uint16_t port, __rte_unused uint16_t queue,
+	struct rte_mbuf *pkt[], uint16_t nb_pkts,
+	__rte_unused uint16_t max_pkts, void *user_param)
+{
+	uint64_t tm;
+	uint32_t i, k;
+	struct lcore_conf *lc;
+	struct rte_mbuf *mb;
+	struct rte_ether_hdr *eth;
+
+	lc = user_param;
+	k = 0;
+	tm = 0;
+
+	for (i = 0; i != nb_pkts; i++) {
+
+		mb = pkt[i];
+		eth = rte_pktmbuf_mtod(mb, struct rte_ether_hdr *);
+		if (eth->ether_type == rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4)) {
+
+			struct rte_ipv4_hdr *iph;
+
+			iph = (struct rte_ipv4_hdr *)(eth + 1);
+			if (rte_ipv4_frag_pkt_is_fragmented(iph)) {
+
+				mb->l2_len = sizeof(*eth);
+				mb->l3_len = sizeof(*iph);
+				tm = (tm != 0) ? tm : rte_rdtsc();
+				mb = rte_ipv4_frag_reassemble_packet(
+					lc->frag.tbl, &lc->frag.dr,
+					mb, tm, iph);
+
+				if (mb != NULL) {
+					/* fix ip cksum after reassemble. */
+					iph = rte_pktmbuf_mtod_offset(mb,
+						struct rte_ipv4_hdr *,
+						mb->l2_len);
+					iph->hdr_checksum = 0;
+					iph->hdr_checksum = rte_ipv4_cksum(iph);
+				}
+			}
+		} else if (eth->ether_type ==
+				rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV6)) {
+
+			struct rte_ipv6_hdr *iph;
+			struct ipv6_extension_fragment *fh;
+
+			iph = (struct rte_ipv6_hdr *)(eth + 1);
+			fh = rte_ipv6_frag_get_ipv6_fragment_header(iph);
+			if (fh != NULL) {
+				mb->l2_len = sizeof(*eth);
+				mb->l3_len = (uintptr_t)fh - (uintptr_t)iph +
+					sizeof(*fh);
+				tm = (tm != 0) ? tm : rte_rdtsc();
+				mb = rte_ipv6_frag_reassemble_packet(
+					lc->frag.tbl, &lc->frag.dr,
+					mb, tm, iph, fh);
+				if (mb != NULL)
+					/* fix l3_len after reassemble. */
+					mb->l3_len = mb->l3_len - sizeof(*fh);
+			}
+		}
+
+		pkt[k] = mb;
+		k += (mb != NULL);
+	}
+
+	/* some fragments were encountered, drain death row */
+	if (tm != 0)
+		rte_ip_frag_free_death_row(&lc->frag.dr, 0);
+
+	return k;
+}
+
+
+static int
+reassemble_lcore_init(struct lcore_conf *lc, uint32_t cid)
+{
+	int32_t sid;
+	uint32_t i;
+	uint64_t frag_cycles;
+	const struct lcore_rx_queue *rxq;
+	const struct rte_eth_rxtx_callback *cb;
+
+	/* create fragment table */
+	sid = rte_lcore_to_socket_id(cid);
+	frag_cycles = (rte_get_tsc_hz() + NS_PER_S - 1) /
+		NS_PER_S * frag_ttl_ns;
+
+	lc->frag.tbl = rte_ip_frag_table_create(frag_tbl_sz,
+		FRAG_TBL_BUCKET_ENTRIES, frag_tbl_sz, frag_cycles, sid);
+	if (lc->frag.tbl == NULL) {
+		printf("%s(%u): failed to create fragment table of size: %u, "
+			"error code: %d\n",
+			__func__, cid, frag_tbl_sz, rte_errno);
+		return -ENOMEM;
+	}
+
+	/* setup reassemble RX callbacks for all queues */
+	for (i = 0; i != lc->nb_rx_queue; i++) {
+
+		rxq = lc->rx_queue_list + i;
+		cb = rte_eth_add_rx_callback(rxq->port_id, rxq->queue_id,
+			rx_callback, lc);
+		if (cb == NULL) {
+			printf("%s(%u): failed to install RX callback for "
+				"portid=%u, queueid=%u, error code: %d\n",
+				__func__, cid,
+				rxq->port_id, rxq->queue_id, rte_errno);
+			return -ENOMEM;
+		}
+	}
+
+	return 0;
+}
+
+static int
+reassemble_init(void)
+{
+	int32_t rc;
+	uint32_t i, lc;
+
+	rc = 0;
+	for (i = 0; i != nb_lcore_params; i++) {
+		lc = lcore_params[i].lcore_id;
+		rc = reassemble_lcore_init(lcore_conf + lc, lc);
+		if (rc != 0)
+			break;
+	}
+
+	return rc;
+}
+
+static void
+create_default_ipsec_flow(uint16_t port_id, uint64_t rx_offloads)
+{
+	struct rte_flow_action action[2];
+	struct rte_flow_item pattern[2];
+	struct rte_flow_attr attr = {0};
+	struct rte_flow_error err;
+	struct rte_flow *flow;
+	int ret;
+
+	if (!(rx_offloads & DEV_RX_OFFLOAD_SECURITY))
+		return;
+
+	/* Add the default rte_flow to enable SECURITY for all ESP packets */
+
+	pattern[0].type = RTE_FLOW_ITEM_TYPE_ESP;
+	pattern[0].spec = NULL;
+	pattern[0].mask = NULL;
+	pattern[0].last = NULL;
+	pattern[1].type = RTE_FLOW_ITEM_TYPE_END;
+
+	action[0].type = RTE_FLOW_ACTION_TYPE_SECURITY;
+	action[0].conf = NULL;
+	action[1].type = RTE_FLOW_ACTION_TYPE_END;
+	action[1].conf = NULL;
+
+	attr.ingress = 1;
+
+	ret = rte_flow_validate(port_id, &attr, pattern, action, &err);
+	if (ret)
+		return;
+
+	flow = rte_flow_create(port_id, &attr, pattern, action, &err);
+	if (flow == NULL)
+		return;
+
+	flow_info_tbl[port_id].rx_def_flow = flow;
+	RTE_LOG(INFO, IPSEC,
+		"Created default flow enabling SECURITY for all ESP traffic on port %d\n",
+		port_id);
+}
+
+static void
+signal_handler(int signum)
+{
+	if (signum == SIGINT || signum == SIGTERM) {
+		printf("\n\nSignal %d received, preparing to exit...\n",
+				signum);
+		force_quit = true;
+	}
+}
+
+static void
+ev_mode_sess_verify(struct ipsec_sa *sa, int nb_sa)
+{
+	struct rte_ipsec_session *ips;
+	int32_t i;
+
+	if (!sa || !nb_sa)
+		return;
+
+	for (i = 0; i < nb_sa; i++) {
+		ips = ipsec_get_primary_session(&sa[i]);
+		if (ips->type != RTE_SECURITY_ACTION_TYPE_INLINE_PROTOCOL)
+			rte_exit(EXIT_FAILURE, "Event mode supports only "
+				 "inline protocol sessions\n");
+	}
+
+}
+
+static int32_t
+check_event_mode_params(struct eh_conf *eh_conf)
+{
+	struct eventmode_conf *em_conf = NULL;
+	struct lcore_params *params;
+	uint16_t portid;
+
+	if (!eh_conf || !eh_conf->mode_params)
+		return -EINVAL;
+
+	/* Get eventmode conf */
+	em_conf = eh_conf->mode_params;
+
+	if (eh_conf->mode == EH_PKT_TRANSFER_MODE_POLL &&
+	    em_conf->ext_params.sched_type != SCHED_TYPE_NOT_SET) {
+		printf("error: option --event-schedule-type applies only to "
+		       "event mode\n");
+		return -EINVAL;
+	}
+
+	if (eh_conf->mode != EH_PKT_TRANSFER_MODE_EVENT)
+		return 0;
+
+	/* Set schedule type to ORDERED if it wasn't explicitly set by user */
+	if (em_conf->ext_params.sched_type == SCHED_TYPE_NOT_SET)
+		em_conf->ext_params.sched_type = RTE_SCHED_TYPE_ORDERED;
+
+	/*
+	 * Event mode currently supports only inline protocol sessions.
+	 * If there are other types of sessions configured then exit with
+	 * error.
+	 */
+	ev_mode_sess_verify(sa_in, nb_sa_in);
+	ev_mode_sess_verify(sa_out, nb_sa_out);
+
+
+	/* Option --config does not apply to event mode */
+	if (nb_lcore_params > 0) {
+		printf("error: option --config applies only to poll mode\n");
+		return -EINVAL;
+	}
+
+	/*
+	 * In order to use the same port_init routine for both poll and event
+	 * modes initialize lcore_params with one queue for each eth port
+	 */
+	lcore_params = lcore_params_array;
+	RTE_ETH_FOREACH_DEV(portid) {
+		if ((enabled_port_mask & (1 << portid)) == 0)
+			continue;
+
+		params = &lcore_params[nb_lcore_params++];
+		params->port_id = portid;
+		params->queue_id = 0;
+		params->lcore_id = rte_get_next_lcore(0, 0, 1);
+	}
+
+	return 0;
+}
+
+static void
+inline_sessions_free(struct sa_ctx *sa_ctx)
+{
+	struct rte_ipsec_session *ips;
+	struct ipsec_sa *sa;
+	int32_t ret;
+	uint32_t i;
+
+	if (!sa_ctx)
+		return;
+
+	for (i = 0; i < sa_ctx->nb_sa; i++) {
+
+		sa = &sa_ctx->sa[i];
+		if (!sa->spi)
+			continue;
+
+		ips = ipsec_get_primary_session(sa);
+		if (ips->type != RTE_SECURITY_ACTION_TYPE_INLINE_PROTOCOL &&
+		    ips->type != RTE_SECURITY_ACTION_TYPE_INLINE_CRYPTO)
+			continue;
+
+		if (!rte_eth_dev_is_valid_port(sa->portid))
+			continue;
+
+		ret = rte_security_session_destroy(
+				rte_eth_dev_get_sec_ctx(sa->portid),
+				ips->security.ses);
+		if (ret)
+			RTE_LOG(ERR, IPSEC, "Failed to destroy security "
+					    "session type %d, spi %d\n",
+					    ips->type, sa->spi);
+	}
+}
+
+static uint32_t
+calculate_nb_mbufs(uint16_t nb_ports, uint16_t nb_crypto_qp, uint32_t nb_rxq,
+		uint32_t nb_txq)
+{
+	return RTE_MAX((nb_rxq * nb_rxd +
+			nb_ports * nb_lcores * MAX_PKT_BURST +
+			nb_ports * nb_txq * nb_txd +
+			nb_lcores * MEMPOOL_CACHE_SIZE +
+			nb_crypto_qp * CDEV_QUEUE_DESC +
+			nb_lcores * frag_tbl_sz *
+			FRAG_TBL_BUCKET_ENTRIES),
+		       8192U);
+}
+
 int32_t
 main(int32_t argc, char **argv)
 {
 	int32_t ret;
-	uint32_t lcore_id;
+	uint32_t lcore_id, nb_txq, nb_rxq = 0;
+	uint32_t cdev_id;
+	uint32_t i;
 	uint8_t socket_id;
-	uint16_t portid;
-	uint64_t req_rx_offloads, req_tx_offloads;
+	uint16_t portid, nb_crypto_qp, nb_ports = 0;
+	uint64_t req_rx_offloads[RTE_MAX_ETHPORTS];
+	uint64_t req_tx_offloads[RTE_MAX_ETHPORTS];
+	struct eh_conf *eh_conf = NULL;
+	size_t sess_sz;
+
+	nb_bufs_in_pool = 0;
 
 	/* init EAL */
 	ret = rte_eal_init(argc, argv);
@@ -2074,18 +2756,38 @@ main(int32_t argc, char **argv)
 	argc -= ret;
 	argv += ret;
 
+	force_quit = false;
+	signal(SIGINT, signal_handler);
+	signal(SIGTERM, signal_handler);
+
+	/* initialize event helper configuration */
+	eh_conf = eh_conf_init();
+	if (eh_conf == NULL)
+		rte_exit(EXIT_FAILURE, "Failed to init event helper config");
+
 	/* parse application arguments (after the EAL ones) */
-	ret = parse_args(argc, argv);
+	ret = parse_args(argc, argv, eh_conf);
 	if (ret < 0)
 		rte_exit(EXIT_FAILURE, "Invalid parameters\n");
+
+	/* parse configuration file */
+	if (parse_cfg_file(cfgfile) < 0) {
+		printf("parsing file \"%s\" failed\n",
+			optarg);
+		print_usage(argv[0]);
+		return -1;
+	}
 
 	if ((unprotected_port_mask & enabled_port_mask) !=
 			unprotected_port_mask)
 		rte_exit(EXIT_FAILURE, "Invalid unprotected portmask 0x%x\n",
 				unprotected_port_mask);
 
-	if (check_params() < 0)
-		rte_exit(EXIT_FAILURE, "check_params failed\n");
+	if (check_poll_mode_params(eh_conf) < 0)
+		rte_exit(EXIT_FAILURE, "check_poll_mode_params failed\n");
+
+	if (check_event_mode_params(eh_conf) < 0)
+		rte_exit(EXIT_FAILURE, "check_event_mode_params failed\n");
 
 	ret = init_lcore_rx_queues();
 	if (ret < 0)
@@ -2093,7 +2795,33 @@ main(int32_t argc, char **argv)
 
 	nb_lcores = rte_lcore_count();
 
-	/* Replicate each context per socket */
+	sess_sz = max_session_size();
+
+	/*
+	 * In event mode request minimum number of crypto queues
+	 * to be reserved equal to number of ports.
+	 */
+	if (eh_conf->mode == EH_PKT_TRANSFER_MODE_EVENT)
+		nb_crypto_qp = rte_eth_dev_count_avail();
+	else
+		nb_crypto_qp = 0;
+
+	nb_crypto_qp = cryptodevs_init(nb_crypto_qp);
+
+	if (nb_bufs_in_pool == 0) {
+		RTE_ETH_FOREACH_DEV(portid) {
+			if ((enabled_port_mask & (1 << portid)) == 0)
+				continue;
+			nb_ports++;
+			nb_rxq += get_port_nb_rx_queues(portid);
+		}
+
+		nb_txq = nb_lcores;
+
+		nb_bufs_in_pool = calculate_nb_mbufs(nb_ports, nb_crypto_qp,
+						nb_rxq, nb_txq);
+	}
+
 	for (lcore_id = 0; lcore_id < RTE_MAX_LCORE; lcore_id++) {
 		if (rte_lcore_is_enabled(lcore_id) == 0)
 			continue;
@@ -2103,38 +2831,47 @@ main(int32_t argc, char **argv)
 		else
 			socket_id = 0;
 
+		/* mbuf_pool is initialised by the pool_init() function*/
 		if (socket_ctx[socket_id].mbuf_pool)
 			continue;
 
-		/* initilaze SPD */
-		sp4_init(&socket_ctx[socket_id], socket_id);
-
-		sp6_init(&socket_ctx[socket_id], socket_id);
-
-		/* initilaze SAD */
-		sa_init(&socket_ctx[socket_id], socket_id);
-
-		rt_init(&socket_ctx[socket_id], socket_id);
-
-		pool_init(&socket_ctx[socket_id], socket_id, NB_MBUF);
+		pool_init(&socket_ctx[socket_id], socket_id, nb_bufs_in_pool);
+		session_pool_init(&socket_ctx[socket_id], socket_id, sess_sz);
+		session_priv_pool_init(&socket_ctx[socket_id], socket_id,
+			sess_sz);
 	}
+	printf("Number of mbufs in packet pool %d\n", nb_bufs_in_pool);
 
 	RTE_ETH_FOREACH_DEV(portid) {
 		if ((enabled_port_mask & (1 << portid)) == 0)
 			continue;
 
-		sa_check_offloads(portid, &req_rx_offloads, &req_tx_offloads);
-		port_init(portid, req_rx_offloads, req_tx_offloads);
+		sa_check_offloads(portid, &req_rx_offloads[portid],
+				&req_tx_offloads[portid]);
+		port_init(portid, req_rx_offloads[portid],
+				req_tx_offloads[portid]);
 	}
 
-	cryptodevs_init();
+	/*
+	 * Set the enabled port mask in helper config for use by helper
+	 * sub-system. This will be used while initializing devices using
+	 * helper sub-system.
+	 */
+	eh_conf->eth_portmask = enabled_port_mask;
+
+	/* Initialize eventmode components */
+	ret = eh_devs_init(eh_conf);
+	if (ret < 0)
+		rte_exit(EXIT_FAILURE, "eh_devs_init failed, err=%d\n", ret);
 
 	/* start ports */
 	RTE_ETH_FOREACH_DEV(portid) {
 		if ((enabled_port_mask & (1 << portid)) == 0)
 			continue;
 
-		/* Start device */
+		/* Create flow before starting the device */
+		create_default_ipsec_flow(portid, req_rx_offloads[portid]);
+
 		ret = rte_eth_dev_start(portid);
 		if (ret < 0)
 			rte_exit(EXIT_FAILURE, "rte_eth_dev_start: "
@@ -2145,21 +2882,89 @@ main(int32_t argc, char **argv)
 		 * to itself through 2 cross-connected  ports of the
 		 * target machine.
 		 */
-		if (promiscuous_on)
-			rte_eth_promiscuous_enable(portid);
+		if (promiscuous_on) {
+			ret = rte_eth_promiscuous_enable(portid);
+			if (ret != 0)
+				rte_exit(EXIT_FAILURE,
+					"rte_eth_promiscuous_enable: err=%s, port=%d\n",
+					rte_strerror(-ret), portid);
+		}
 
 		rte_eth_dev_callback_register(portid,
 			RTE_ETH_EVENT_IPSEC, inline_ipsec_event_callback, NULL);
 	}
 
+	/* fragment reassemble is enabled */
+	if (frag_tbl_sz != 0) {
+		ret = reassemble_init();
+		if (ret != 0)
+			rte_exit(EXIT_FAILURE, "failed at reassemble init");
+	}
+
+	/* Replicate each context per socket */
+	for (i = 0; i < NB_SOCKETS && i < rte_socket_count(); i++) {
+		socket_id = rte_socket_id_by_idx(i);
+		if ((socket_ctx[socket_id].mbuf_pool != NULL) &&
+			(socket_ctx[socket_id].sa_in == NULL) &&
+			(socket_ctx[socket_id].sa_out == NULL)) {
+			sa_init(&socket_ctx[socket_id], socket_id);
+			sp4_init(&socket_ctx[socket_id], socket_id);
+			sp6_init(&socket_ctx[socket_id], socket_id);
+			rt_init(&socket_ctx[socket_id], socket_id);
+		}
+	}
+
 	check_all_ports_link_status(enabled_port_mask);
 
 	/* launch per-lcore init on every lcore */
-	rte_eal_mp_remote_launch(main_loop, NULL, CALL_MASTER);
+	rte_eal_mp_remote_launch(ipsec_launch_one_lcore, eh_conf, CALL_MASTER);
 	RTE_LCORE_FOREACH_SLAVE(lcore_id) {
 		if (rte_eal_wait_lcore(lcore_id) < 0)
 			return -1;
 	}
+
+	/* Uninitialize eventmode components */
+	ret = eh_devs_uninit(eh_conf);
+	if (ret < 0)
+		rte_exit(EXIT_FAILURE, "eh_devs_uninit failed, err=%d\n", ret);
+
+	/* Free eventmode configuration memory */
+	eh_conf_uninit(eh_conf);
+
+	/* Destroy inline inbound and outbound sessions */
+	for (i = 0; i < NB_SOCKETS && i < rte_socket_count(); i++) {
+		socket_id = rte_socket_id_by_idx(i);
+		inline_sessions_free(socket_ctx[socket_id].sa_in);
+		inline_sessions_free(socket_ctx[socket_id].sa_out);
+	}
+
+	for (cdev_id = 0; cdev_id < rte_cryptodev_count(); cdev_id++) {
+		printf("Closing cryptodev %d...", cdev_id);
+		rte_cryptodev_stop(cdev_id);
+		rte_cryptodev_close(cdev_id);
+		printf(" Done\n");
+	}
+
+	RTE_ETH_FOREACH_DEV(portid) {
+		if ((enabled_port_mask & (1 << portid)) == 0)
+			continue;
+
+		printf("Closing port %d...", portid);
+		if (flow_info_tbl[portid].rx_def_flow) {
+			struct rte_flow_error err;
+
+			ret = rte_flow_destroy(portid,
+				flow_info_tbl[portid].rx_def_flow, &err);
+			if (ret)
+				RTE_LOG(ERR, IPSEC, "Failed to destroy flow "
+					" for port %u, err msg: %s\n", portid,
+					err.message);
+		}
+		rte_eth_dev_stop(portid);
+		rte_eth_dev_close(portid);
+		printf(" Done\n");
+	}
+	printf("Bye...\n");
 
 	return 0;
 }

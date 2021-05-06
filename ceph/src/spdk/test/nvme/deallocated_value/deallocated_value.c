@@ -242,7 +242,8 @@ deallocate_test(void)
 	memset(context.FFh_buf, 0xFF, max_block_size);
 
 	for (i = 0; i < NUM_BLOCKS; i++) {
-		context.write_buf[i] = spdk_dma_zmalloc(0x1000, max_block_size, NULL);
+		context.write_buf[i] = spdk_zmalloc(0x1000, max_block_size, NULL, SPDK_ENV_LCORE_ID_ANY,
+						    SPDK_MALLOC_DMA);
 		if (context.write_buf[i] == NULL) {
 			printf("could not allocate buffer for test.\n");
 			cleanup(&context);
@@ -250,7 +251,8 @@ deallocate_test(void)
 		}
 
 		fill_random(context.write_buf[i], 0x1000);
-		context.read_buf[i] = spdk_dma_zmalloc(0x1000, max_block_size, NULL);
+		context.read_buf[i] = spdk_zmalloc(0x1000, max_block_size, NULL, SPDK_ENV_LCORE_ID_ANY,
+						   SPDK_MALLOC_DMA);
 		if (context.read_buf[i] == NULL) {
 			printf("could not allocate buffer for test.\n");
 			cleanup(&context);
@@ -272,7 +274,7 @@ deallocate_test(void)
 		printf("\nController %-20.20s (%-20.20s)\n", data->mn, data->sn);
 		printf("Controller PCI vendor:%u PCI subsystem vendor:%u\n", data->vid, data->ssvid);
 		printf("Namespace Block Size:%u\n", spdk_nvme_ns_get_sector_size(ns_entry->ns));
-		printf("Writing Blocks 0 to %d with random data.\n", NUM_BLOCKS);
+		printf("Writing Blocks 0 to %d with random data.\n", NUM_BLOCKS - 1);
 		printf("On next read, read value will match random data.\n");
 
 		context.ns_entry = ns_entry;
@@ -395,13 +397,13 @@ cleanup(struct deallocate_context *context)
 		ns_entry = next;
 	}
 	for (i = 0; i < NUM_BLOCKS; i++) {
-		if (context->write_buf[i]) {
-			spdk_dma_free(context->write_buf[i]);
+		if (context->write_buf && context->write_buf[i]) {
+			spdk_free(context->write_buf[i]);
 		} else {
 			break;
 		}
-		if (context->read_buf[i]) {
-			spdk_dma_free(context->read_buf[i]);
+		if (context->read_buf && context->read_buf[i]) {
+			spdk_free(context->read_buf[i]);
 		} else {
 			break;
 		}

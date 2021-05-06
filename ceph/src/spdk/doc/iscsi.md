@@ -10,7 +10,7 @@ This following section describes how to run iscsi from your cloned package.
 This guide starts by assuming that you can already build the standard SPDK distribution on your
 platform.
 
-Once built, the binary will be in `app/iscsi_tgt`.
+Once built, the binary will be in `build/bin`.
 
 If you want to kill the application by using signal, make sure use the SIGTERM, then the application
 will release all the shared memory resource before exit, the SIGKILL will make the shared memory
@@ -38,7 +38,7 @@ then run the iscsi_tgt application and pass it the configuration file using the 
 the target requires elevated privileges (root) to run.
 
 ~~~
-app/iscsi_tgt/iscsi_tgt -c /path/to/iscsi.conf
+build/bin/iscsi_tgt -c /path/to/iscsi.conf
 ~~~
 
 ### Assigning CPU Cores to the iSCSI Target {#iscsi_config_lcore}
@@ -80,36 +80,36 @@ In addition to the configuration file, the iSCSI target may also be configured v
 
 ### Portal groups
 
- - add_portal_group -- Add a portal group.
- - delete_portal_group -- Delete an existing portal group.
- - add_pg_ig_maps -- Add initiator group to portal group mappings to an existing iSCSI target node.
- - delete_pg_ig_maps -- Delete initiator group to portal group mappings from an existing iSCSI target node.
- - get_portal_groups -- Show information about all available portal groups.
+ - iscsi_create_portal_group -- Add a portal group.
+ - iscsi_delete_portal_group -- Delete an existing portal group.
+ - iscsi_target_node_add_pg_ig_maps -- Add initiator group to portal group mappings to an existing iSCSI target node.
+ - iscsi_target_node_remove_pg_ig_maps -- Delete initiator group to portal group mappings from an existing iSCSI target node.
+ - iscsi_get_portal_groups -- Show information about all available portal groups.
 
 ~~~
-/path/to/spdk/scripts/rpc.py add_portal_group 1 10.0.0.1:3260
+/path/to/spdk/scripts/rpc.py iscsi_create_portal_group 1 10.0.0.1:3260
 ~~~
 
 ### Initiator groups
 
- - add_initiator_group -- Add an initiator group.
- - delete_initiator_group -- Delete an existing initiator group.
- - add_initiators_to_initiator_group -- Add initiators to an existing initiator group.
- - get_initiator_groups -- Show information about all available initiator groups.
+ - iscsi_create_initiator_group -- Add an initiator group.
+ - iscsi_delete_initiator_group -- Delete an existing initiator group.
+ - iscsi_initiator_group_add_initiators -- Add initiators to an existing initiator group.
+ - iscsi_get_initiator_groups -- Show information about all available initiator groups.
 
 ~~~
-/path/to/spdk/scripts/rpc.py add_initiator_group 2 ANY 10.0.0.2/32
+/path/to/spdk/scripts/rpc.py iscsi_create_initiator_group 2 ANY 10.0.0.2/32
 ~~~
 
 ### Target nodes
 
- - construct_target_node -- Add a iSCSI target node.
- - delete_target_node -- Delete a iSCSI target node.
- - target_node_add_lun -- Add an LUN to an existing iSCSI target node.
- - get_target_nodes -- Show information about all available iSCSI target nodes.
+ - iscsi_create_target_node -- Add an iSCSI target node.
+ - iscsi_delete_target_node -- Delete an iSCSI target node.
+ - iscsi_target_node_add_lun -- Add a LUN to an existing iSCSI target node.
+ - iscsi_get_target_nodes -- Show information about all available iSCSI target nodes.
 
 ~~~
-/path/to/spdk/scripts/rpc.py construct_target_node Target3 Target3_alias MyBdev:0 1:2 64 -d
+/path/to/spdk/scripts/rpc.py iscsi_create_target_node Target3 Target3_alias MyBdev:0 1:2 64 -d
 ~~~
 
 ## Configuring iSCSI Initiator {#iscsi_initiator}
@@ -218,7 +218,7 @@ echo "1024" > /sys/block/sdc/queue/nr_requests
 
 ### Example: Configure simple iSCSI Target with one portal and two LUNs
 
-Assuming we have one iSCSI Target server with portal at 10.0.0.1:3200, two LUNs (Malloc0 and Malloc),
+Assuming we have one iSCSI Target server with portal at 10.0.0.1:3200, two LUNs (Malloc0 and Malloc1),
  and accepting initiators on 10.0.0.2/32, like on diagram below:
 
 ![Sample iSCSI configuration](iscsi_example.svg)
@@ -227,33 +227,33 @@ Assuming we have one iSCSI Target server with portal at 10.0.0.1:3200, two LUNs 
 
 Start iscsi_tgt application:
 ```
-$ ./app/iscsi_tgt/iscsi_tgt
+./build/bin/iscsi_tgt
 ```
 
 Construct two 64MB Malloc block devices with 512B sector size "Malloc0" and "Malloc1":
 
 ```
-$ ./scripts/rpc.py construct_malloc_bdev -b Malloc0 64 512
-$ ./scripts/rpc.py construct_malloc_bdev -b Malloc1 64 512
+./scripts/rpc.py bdev_malloc_create -b Malloc0 64 512
+./scripts/rpc.py bdev_malloc_create -b Malloc1 64 512
 ```
 
 Create new portal group with id 1, and address 10.0.0.1:3260:
 
 ```
-$ ./scripts/rpc.py add_portal_group 1 10.0.0.1:3260
+./scripts/rpc.py iscsi_create_portal_group 1 10.0.0.1:3260
 ```
 
 Create one initiator group with id 2 to accept any connection from 10.0.0.2/32:
 
 ```
-$ ./scripts/rpc.py add_initiator_group 2 ANY 10.0.0.2/32
+./scripts/rpc.py iscsi_create_initiator_group 2 ANY 10.0.0.2/32
 ```
 
 Finally construct one target using previously created bdevs as LUN0 (Malloc0) and LUN1 (Malloc1)
 with a name "disk1" and alias "Data Disk1" using portal group 1 and initiator group 2.
 
 ```
-$ ./scripts/rpc.py construct_target_node disk1 "Data Disk1" "Malloc0:0 Malloc1:1" 1:2 64 -d
+./scripts/rpc.py iscsi_create_target_node disk1 "Data Disk1" "Malloc0:0 Malloc1:1" 1:2 64 -d
 ```
 
 #### Configure initiator
@@ -268,7 +268,7 @@ $ iscsiadm -m discovery -t sendtargets -p 10.0.0.1
 Connect to the target
 
 ~~~
-$ iscsiadm -m node --login
+iscsiadm -m node --login
 ~~~
 
 At this point the iSCSI target should show up as SCSI disks.
@@ -309,20 +309,20 @@ sde
 At the iSCSI level, we provide the following support for Hotplug:
 
 1. bdev/nvme:
-At the bdev/nvme level, we start one hotplug monitor which will call
-spdk_nvme_probe() periodically to get the hotplug events. We provide the
-private attach_cb and remove_cb for spdk_nvme_probe(). For the attach_cb,
-we will create the block device base on the NVMe device attached, and for the
-remove_cb, we will unregister the block device, which will also notify the
-upper level stack (for iSCSI target, the upper level stack is scsi/lun) to
-handle the hot-remove event.
+  At the bdev/nvme level, we start one hotplug monitor which will call
+  spdk_nvme_probe() periodically to get the hotplug events. We provide the
+  private attach_cb and remove_cb for spdk_nvme_probe(). For the attach_cb,
+  we will create the block device base on the NVMe device attached, and for the
+  remove_cb, we will unregister the block device, which will also notify the
+  upper level stack (for iSCSI target, the upper level stack is scsi/lun) to
+  handle the hot-remove event.
 
 2. scsi/lun:
-When the LUN receive the hot-remove notification from block device layer,
-the LUN will be marked as removed, and all the IOs after this point will
-return with check condition status. Then the LUN starts one poller which will
-wait for all the commands which have already been submitted to block device to
-return back; after all the commands return back, the LUN will be deleted.
+  When the LUN receive the hot-remove notification from block device layer,
+  the LUN will be marked as removed, and all the IOs after this point will
+  return with check condition status. Then the LUN starts one poller which will
+  wait for all the commands which have already been submitted to block device to
+  return back; after all the commands return back, the LUN will be deleted.
 
 ## Known bugs and limitations {#iscsi_hotplug_bugs}
 

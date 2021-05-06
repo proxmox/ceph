@@ -31,7 +31,7 @@ Configuration
 
 By default the module will accept HTTP requests on port ``9283`` on all IPv4
 and IPv6 addresses on the host.  The port and listen address are both
-configurable with ``ceph config-key set``, with keys
+configurable with ``ceph config set``, with keys
 ``mgr/prometheus/server_addr`` and ``mgr/prometheus/server_port``.  This port
 is registered with Prometheus's `registry
 <https://github.com/prometheus/prometheus/wiki/Default-port-allocations>`_.
@@ -241,8 +241,8 @@ Example configuration
 ---------------------
 
 This example shows a single node configuration running ceph-mgr and
-node_exporter on a server called ``senta04``. Note that this requires to add the
-appropriate instance label to every ``node_exporter`` target individually.
+node_exporter on a server called ``senta04``. Note that this requires one
+to add an appropriate and unique ``instance`` label to each ``node_exporter`` target.
 
 This is just an example: there are other ways to configure prometheus
 scrape targets and label rewrite rules.

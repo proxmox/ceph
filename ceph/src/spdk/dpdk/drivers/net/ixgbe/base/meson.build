@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: BSD-3-Clause
-# Copyright(c) 2017 Intel Corporation
+# Copyright(c) 2017-2020 Intel Corporation
 
 sources = [
 	'ixgbe_82598.c',
@@ -18,11 +18,10 @@ sources = [
 ]
 
 error_cflags = ['-Wno-unused-value',
-		'-Wno-unused-but-set-variable']
+		'-Wno-unused-but-set-variable',
+		'-Wno-unused-parameter',
+		]
 c_args = cflags
-if allow_experimental_apis
-	c_args += '-DALLOW_EXPERIMENTAL_API'
-endif
 foreach flag: error_cflags
 	if cc.has_argument(flag)
 		c_args += flag

@@ -8,7 +8,7 @@ import jwt
 from teuthology.orchestra.run import \
     CommandFailedError  # pylint: disable=import-error
 
-from .helper import DashboardTestCase, JObj, JLeaf
+from .helper import DashboardTestCase, JLeaf, JObj
 
 
 class AuthTest(DashboardTestCase):
@@ -84,15 +84,6 @@ class AuthTest(DashboardTestCase):
     def test_login_invalid(self):
         # test with Authorization header
         self._post("/api/auth", {'username': 'admin', 'password': 'inval'})
-        self.assertStatus(400)
-        self.assertJsonBody({
-            "component": "auth",
-            "code": "invalid_credentials",
-            "detail": "Invalid credentials"
-        })
-
-        # test with Cookies set
-        self._post("/api/auth", {'username': 'admin', 'password': 'inval'}, set_cookies=True)
         self.assertStatus(400)
         self.assertJsonBody({
             "component": "auth",
@@ -209,13 +200,13 @@ class AuthTest(DashboardTestCase):
         self._ceph_cmd(['dashboard', 'set-jwt-token-ttl', '28800'])
         self.set_jwt_token(None)
 
-    def test_remove_from_blacklist(self):
+    def test_remove_from_blocklist(self):
         # test with Authorization header
         self._ceph_cmd(['dashboard', 'set-jwt-token-ttl', '5'])
         self._post("/api/auth", {'username': 'admin', 'password': 'admin'})
         self.assertStatus(201)
         self.set_jwt_token(self.jsonBody()['token'])
-        # the following call adds the token to the blacklist
+        # the following call adds the token to the blocklist
         self._post("/api/auth/logout")
         self.assertStatus(200)
         self._get("/api/host")
@@ -226,7 +217,7 @@ class AuthTest(DashboardTestCase):
         self._post("/api/auth", {'username': 'admin', 'password': 'admin'})
         self.assertStatus(201)
         self.set_jwt_token(self.jsonBody()['token'])
-        # the following call removes expired tokens from the blacklist
+        # the following call removes expired tokens from the blocklist
         self._post("/api/auth/logout")
         self.assertStatus(200)
 

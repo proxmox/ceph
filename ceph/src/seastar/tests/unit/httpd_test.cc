@@ -10,8 +10,11 @@
 #include <seastar/http/routes.hh>
 #include <seastar/http/exception.hh>
 #include <seastar/http/transformers.hh>
-#include <seastar/core/future-util.hh>
+#include <seastar/core/do_with.hh>
+#include <seastar/core/loop.hh>
+#include <seastar/core/when_all.hh>
 #include <seastar/testing/test_case.hh>
+#include <seastar/testing/thread_test_case.hh>
 #include "loopback_socket.hh"
 #include <boost/algorithm/string.hpp>
 #include <seastar/core/thread.hh>
@@ -70,6 +73,86 @@ SEASTAR_TEST_CASE(test_match_rule)
     BOOST_REQUIRE_EQUAL(res, h);
     BOOST_REQUIRE_EQUAL(param["param"], "val1");
     res = mr.get("/hell/val1", param);
+    httpd::handler_base* nl = nullptr;
+    BOOST_REQUIRE_EQUAL(res, nl);
+    return make_ready_future<>();
+}
+
+SEASTAR_TEST_CASE(test_match_rule_order)
+{
+    parameters param;
+    routes route;
+
+    handl* h1 = new handl();
+    route.add(operation_type::GET, url("/hello"), h1);
+
+    handl* h2 = new handl();
+    route.add(operation_type::GET, url("/hello"), h2);
+
+    auto rh = route.get_handler(GET, "/hello", param);
+    BOOST_REQUIRE_EQUAL(rh, h1);
+
+    return make_ready_future<>();
+}
+
+SEASTAR_TEST_CASE(test_put_drop_rule)
+{
+    routes rts;
+    auto h = std::make_unique<handl>();
+    parameters params;
+
+    {
+        auto reg = handler_registration(rts, *h, "/hello", operation_type::GET);
+        auto res = rts.get_handler(operation_type::GET, "/hello", params);
+        BOOST_REQUIRE_EQUAL(res, h.get());
+    }
+
+    auto res = rts.get_handler(operation_type::GET, "/hello", params);
+    httpd::handler_base* nl = nullptr;
+    BOOST_REQUIRE_EQUAL(res, nl);
+    return make_ready_future<>();
+}
+
+// Putting a duplicated exact rule would result
+// in a memory leak due to the fact that rules are implemented
+// as raw pointers. In order to prevent such leaks,
+// an exception is thrown if somebody tries to put
+// a duplicated rule without removing the old one first.
+// The interface demands that the callee allocates the handle,
+// so it should also expect the callee to free it before
+// overwriting.
+SEASTAR_TEST_CASE(test_duplicated_exact_rule)
+{
+    parameters param;
+    routes route;
+
+    handl* h1 = new handl;
+    route.put(operation_type::GET, "/hello", h1);
+
+    handl* h2 = new handl;
+    BOOST_REQUIRE_THROW(route.put(operation_type::GET, "/hello", h2), std::runtime_error);
+
+    delete route.drop(operation_type::GET, "/hello");
+    route.put(operation_type::GET, "/hello", h2);
+
+    return make_ready_future<>();
+}
+
+SEASTAR_TEST_CASE(test_add_del_cookie)
+{
+    routes rts;
+    handl* h = new handl();
+    match_rule mr(h);
+    mr.add_str("/hello");
+    parameters params;
+
+    {
+        auto reg = rule_registration(rts, mr, operation_type::GET);
+        auto res = rts.get_handler(operation_type::GET, "/hello", params);
+        BOOST_REQUIRE_EQUAL(res, h);
+    }
+
+    auto res = rts.get_handler(operation_type::GET, "/hello", params);
     httpd::handler_base* nl = nullptr;
     BOOST_REQUIRE_EQUAL(res, nl);
     return make_ready_future<>();
@@ -393,7 +476,7 @@ public:
                 httpd::http_server_tester::listeners(*server).emplace_back(lcf.get_server_socket());
 
                 auto client = seastar::async([&lsi, reader] {
-                    connected_socket c_socket = std::get<connected_socket>(lsi.connect(socket_address(ipv4_addr()), socket_address(ipv4_addr())).get());
+                    connected_socket c_socket = lsi.connect(socket_address(ipv4_addr()), socket_address(ipv4_addr())).get0();
                     input_stream<char> input(c_socket.input());
                     output_stream<char> output(c_socket.output());
                     bool more = true;
@@ -418,7 +501,7 @@ public:
                     }
                 });
 
-                auto writer = seastar::async([&server, &write_func] {
+                auto server_setup = seastar::async([&server, &write_func] {
                     class test_handler : public handler_base {
                         size_t count = 0;
                         http_server& _server;
@@ -442,7 +525,7 @@ public:
                     server->_routes.put(GET, "/test", handler);
                     when_all(server->do_accepts(0), handler->wait_for_message()).get();
                 });
-                return when_all(std::move(client), std::move(writer));
+                return when_all(std::move(client), std::move(server_setup));
             }).discard_result().then_wrapped([&server] (auto f) {
                 f.ignore_ready_future();
                 return server->stop();
@@ -456,7 +539,7 @@ public:
                 httpd::http_server_tester::listeners(*server).emplace_back(lcf.get_server_socket());
 
                 auto client = seastar::async([&lsi, tests] {
-                    connected_socket c_socket = std::get<connected_socket>(lsi.connect(socket_address(ipv4_addr()), socket_address(ipv4_addr())).get());
+                    connected_socket c_socket = lsi.connect(socket_address(ipv4_addr()), socket_address(ipv4_addr())).get0();
                     input_stream<char> input(c_socket.input());
                     output_stream<char> output(c_socket.output());
                     bool more = true;
@@ -486,7 +569,7 @@ public:
                     }
                 });
 
-                auto writer = seastar::async([&server, tests] {
+                auto server_setup = seastar::async([&server, tests] {
                     class test_handler : public handler_base {
                         size_t count = 0;
                         http_server& _server;
@@ -512,7 +595,7 @@ public:
                     server->_routes.put(GET, "/test", handler);
                     when_all(server->do_accepts(0), handler->wait_for_message()).get();
                 });
-                return when_all(std::move(client), std::move(writer));
+                return when_all(std::move(client), std::move(server_setup));
             }).discard_result().then_wrapped([&server] (auto f) {
                 f.ignore_ready_future();
                 return server->stop();
@@ -638,6 +721,18 @@ SEASTAR_TEST_CASE(json_stream) {
     });
 }
 
+class json_test_handler : public handler_base {
+    std::function<future<>(output_stream<char> &&)> _write_func;
+public:
+    json_test_handler(std::function<future<>(output_stream<char> &&)>&& write_func) : _write_func(write_func) {
+    }
+    future<std::unique_ptr<reply>> handle(const sstring& path,
+            std::unique_ptr<request> req, std::unique_ptr<reply> rep) override {
+        rep->write_body("json", _write_func);
+        return make_ready_future<std::unique_ptr<reply>>(std::move(rep));
+    }
+};
+
 SEASTAR_TEST_CASE(content_length_limit) {
     return seastar::async([] {
         loopback_connection_factory lcf;
@@ -647,7 +742,7 @@ SEASTAR_TEST_CASE(content_length_limit) {
         httpd::http_server_tester::listeners(server).emplace_back(lcf.get_server_socket());
 
         future<> client = seastar::async([&lsi] {
-            connected_socket c_socket = std::get<connected_socket>(lsi.connect(socket_address(ipv4_addr()), socket_address(ipv4_addr())).get());
+            connected_socket c_socket = lsi.connect(socket_address(ipv4_addr()), socket_address(ipv4_addr())).get0();
             input_stream<char> input(c_socket.input());
             output_stream<char> output(c_socket.output());
 
@@ -671,27 +766,124 @@ SEASTAR_TEST_CASE(content_length_limit) {
             output.close().get();
         });
 
-        future<> writer = seastar::async([&server] {
-            class test_handler : public handler_base {
-                size_t count = 0;
-                http_server& _server;
-                std::function<future<>(output_stream<char> &&)> _write_func;
-            public:
-                test_handler(http_server& server, std::function<future<>(output_stream<char> &&)>&& write_func) : _server(server), _write_func(write_func) {
-                }
-                future<std::unique_ptr<reply>> handle(const sstring& path,
-                        std::unique_ptr<request> req, std::unique_ptr<reply> rep) override {
-                    rep->write_body("json", _write_func);
-                    return make_ready_future<std::unique_ptr<reply>>(std::move(rep));
-                }
-            };
-            auto handler = new test_handler(server, json::stream_object("hello"));
-            server._routes.put(GET, "/test", handler);
-            server.do_accepts(0).get();
-        });
+        auto handler = new json_test_handler(json::stream_object("hello"));
+        server._routes.put(GET, "/test", handler);
+        server.do_accepts(0).get();
 
         client.get();
-        writer.get();
         server.stop().get();
     });
+}
+
+SEASTAR_TEST_CASE(test_100_continue) {
+    return seastar::async([] {
+        loopback_connection_factory lcf;
+        http_server server("test");
+        server.set_content_length_limit(11);
+        loopback_socket_impl lsi(lcf);
+        httpd::http_server_tester::listeners(server).emplace_back(lcf.get_server_socket());
+        future<> client = seastar::async([&lsi] {
+            connected_socket c_socket = lsi.connect(socket_address(ipv4_addr()), socket_address(ipv4_addr())).get0();
+            input_stream<char> input(c_socket.input());
+            output_stream<char> output(c_socket.output());
+
+            for (auto version : {sstring("1.0"), sstring("1.1")}) {
+                for (auto content : {sstring(""), sstring("xxxxxxxxxxx")}) {
+                    for (auto expect : {sstring(""), sstring("Expect: 100-continue\r\n"), sstring("Expect: 100-cOnTInUE\r\n")}) {
+                        auto content_len = content.empty() ? sstring("") : (sstring("Content-Length: ") + to_sstring(content.length()) + sstring("\r\n"));
+                        sstring req = sstring("GET /test HTTP/") + version + sstring("\r\nHost: test\r\nConnection: Keep-Alive\r\n") + content_len + expect + sstring("\r\n");
+                        output.write(req).get();
+                        output.flush().get();
+                        bool already_ok = false;
+                        if (version == "1.1" && expect.length()) {
+                            auto resp = input.read().get0();
+                            BOOST_REQUIRE_NE(std::string(resp.get(), resp.size()).find("100 Continue"), std::string::npos);
+                            already_ok = content.empty() && std::string(resp.get(), resp.size()).find("200 OK") != std::string::npos;
+                        }
+                        if (!already_ok) {
+                            //If the body is empty, the final response might have already been read
+                            output.write(content).get();
+                            output.flush().get();
+                            auto resp = input.read().get0();
+                            BOOST_REQUIRE_EQUAL(std::string(resp.get(), resp.size()).find("100 Continue"), std::string::npos);
+                            BOOST_REQUIRE_NE(std::string(resp.get(), resp.size()).find("200 OK"), std::string::npos);
+                        }
+                    }
+                }
+            }
+            output.write(sstring("GET /test HTTP/1.1\r\nHost: test\r\nContent-Length: 17\r\nExpect: 100-continue\r\n\r\n")).get();
+            output.flush().get();
+            auto resp = input.read().get0();
+            BOOST_REQUIRE_EQUAL(std::string(resp.get(), resp.size()).find("100 Continue"), std::string::npos);
+            BOOST_REQUIRE_NE(std::string(resp.get(), resp.size()).find("413 Payload Too Large"), std::string::npos);
+
+            input.close().get();
+            output.close().get();
+        });
+
+        auto handler = new json_test_handler(json::stream_object("hello"));
+        server._routes.put(GET, "/test", handler);
+        server.do_accepts(0).get();
+
+        client.get();
+        server.stop().get();
+    });
+}
+
+
+SEASTAR_TEST_CASE(test_unparsable_request) {
+    // Test if a message that cannot be parsed as a http request is being replied with a 400 Bad Request response
+    return seastar::async([] {
+        loopback_connection_factory lcf;
+        http_server server("test");
+        loopback_socket_impl lsi(lcf);
+        httpd::http_server_tester::listeners(server).emplace_back(lcf.get_server_socket());
+        future<> client = seastar::async([&lsi] {
+            connected_socket c_socket = lsi.connect(socket_address(ipv4_addr()), socket_address(ipv4_addr())).get0();
+            input_stream<char> input(c_socket.input());
+            output_stream<char> output(c_socket.output());
+
+            output.write(sstring("GET /test HTTP/1.1\r\nhello\r\nContent-Length: 17\r\nExpect: 100-continue\r\n\r\n")).get();
+            output.flush().get();
+            auto resp = input.read().get0();
+            BOOST_REQUIRE_NE(std::string(resp.get(), resp.size()).find("400 Bad Request"), std::string::npos);
+            BOOST_REQUIRE_NE(std::string(resp.get(), resp.size()).find("Can't parse the request"), std::string::npos);
+
+            input.close().get();
+            output.close().get();
+        });
+
+        auto handler = new json_test_handler(json::stream_object("hello"));
+        server._routes.put(GET, "/test", handler);
+        server.do_accepts(0).get();
+
+        client.get();
+        server.stop().get();
+    });
+}
+
+SEASTAR_TEST_CASE(case_insensitive_header) {
+    std::unique_ptr<seastar::httpd::request> req = std::make_unique<seastar::httpd::request>();
+    req->_headers["conTEnt-LengtH"] = "17";
+    BOOST_REQUIRE_EQUAL(req->get_header("content-length"), "17");
+    BOOST_REQUIRE_EQUAL(req->get_header("Content-Length"), "17");
+    BOOST_REQUIRE_EQUAL(req->get_header("cOnTeNT-lEnGTh"), "17");
+    return make_ready_future<>();
+}
+
+SEASTAR_THREAD_TEST_CASE(multiple_connections) {
+    loopback_connection_factory lcf;
+    http_server server("test");
+    httpd::http_server_tester::listeners(server).emplace_back(lcf.get_server_socket());
+    socket_address addr{ipv4_addr()};
+
+    std::vector<connected_socket> socks;
+    // Make sure one shard has two connections pending.
+    for (unsigned i = 0; i <= smp::count; ++i) {
+        socks.push_back(loopback_socket_impl(lcf).connect(addr, addr).get0());
+    }
+
+    server.do_accepts(0).get();
+    server.stop().get();
+    lcf.destroy_all_shards().get();
 }

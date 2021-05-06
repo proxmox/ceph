@@ -13,14 +13,13 @@
 #include "rocksdb/options.h"
 #include "util/compression.h"
 
-namespace rocksdb {
+namespace ROCKSDB_NAMESPACE {
 
 // ImmutableCFOptions is a data struct used by RocksDB internal. It contains a
 // subset of Options that should not be changed during the entire lifetime
 // of DB. Raw pointers defined in this struct do not have ownership to the data
 // they point to. Options contains std::shared_ptr to these data.
 struct ImmutableCFOptions {
-  ImmutableCFOptions();
   explicit ImmutableCFOptions(const Options& options);
 
   ImmutableCFOptions(const ImmutableDBOptions& db_options,
@@ -43,6 +42,8 @@ struct ImmutableCFOptions {
 
   int max_write_buffer_number_to_maintain;
 
+  int64_t max_write_buffer_size_to_maintain;
+
   bool inplace_update_support;
 
   UpdateStatus (*inplace_callback)(char* existing_value,
@@ -59,6 +60,8 @@ struct ImmutableCFOptions {
   InfoLogLevel info_log_level;
 
   Env* env;
+
+  FileSystem* fs;
 
   // Allow the OS to mmap file for reading sst tables. Default: false
   bool allow_mmap_reads;
@@ -122,6 +125,8 @@ struct ImmutableCFOptions {
   std::vector<DbPath> cf_paths;
 
   std::shared_ptr<ConcurrentTaskLimiter> compaction_thread_limiter;
+
+  FileChecksumFunc* sst_file_checksum_func;
 };
 
 struct MutableCFOptions {
@@ -151,6 +156,7 @@ struct MutableCFOptions {
         max_bytes_for_level_base(options.max_bytes_for_level_base),
         max_bytes_for_level_multiplier(options.max_bytes_for_level_multiplier),
         ttl(options.ttl),
+        periodic_compaction_seconds(options.periodic_compaction_seconds),
         max_bytes_for_level_multiplier_additional(
             options.max_bytes_for_level_multiplier_additional),
         compaction_options_fifo(options.compaction_options_fifo),
@@ -186,6 +192,7 @@ struct MutableCFOptions {
         max_bytes_for_level_base(0),
         max_bytes_for_level_multiplier(0),
         ttl(0),
+        periodic_compaction_seconds(0),
         compaction_options_fifo(),
         max_sequential_skip_in_iterations(0),
         paranoid_file_checks(false),
@@ -236,6 +243,7 @@ struct MutableCFOptions {
   uint64_t max_bytes_for_level_base;
   double max_bytes_for_level_multiplier;
   uint64_t ttl;
+  uint64_t periodic_compaction_seconds;
   std::vector<int> max_bytes_for_level_multiplier_additional;
   CompactionOptionsFIFO compaction_options_fifo;
   CompactionOptionsUniversal compaction_options_universal;
@@ -258,4 +266,4 @@ uint64_t MultiplyCheckOverflow(uint64_t op1, double op2);
 uint64_t MaxFileSizeForLevel(const MutableCFOptions& cf_options,
     int level, CompactionStyle compaction_style, int base_level = 1,
     bool level_compaction_dynamic_level_bytes = false);
-}  // namespace rocksdb
+}  // namespace ROCKSDB_NAMESPACE

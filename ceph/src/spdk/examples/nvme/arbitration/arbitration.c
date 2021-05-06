@@ -110,7 +110,7 @@ static struct ctrlr_entry *g_controllers	= NULL;
 static struct ns_entry *g_namespaces		= NULL;
 static struct worker_thread *g_workers		= NULL;
 
-static struct feature features[256];
+static struct feature features[SPDK_NVME_FEAT_ARBITRATION + 1] = {};
 
 static struct arb_context g_arbitration = {
 	.shm_id					= -1,
@@ -138,25 +138,6 @@ static struct arb_context g_arbitration = {
 #define USER_SPECIFIED_HIGH_PRIORITY_WEIGHT	32
 #define USER_SPECIFIED_MEDIUM_PRIORITY_WEIGHT	16
 #define USER_SPECIFIED_LOW_PRIORITY_WEIGHT	8
-#define USER_SPECIFIED_ARBITRATION_BURST	7	/* No limit */
-
-/*
- * Description of dword for priority weight and arbitration burst
- * ------------------------------------------------------------------------------
- *     31 : 24      |       23 : 16      |    15 : 08      | 07 : 03  | 02 : 00
- * ------------------------------------------------------------------------------
- * High Prio Weight | Medium Prio Weight | Low Prio Weight | Reserved | Arb Burst
- * ------------------------------------------------------------------------------
- *
- * The priority weights are zero based value.
- */
-#define SPDK_NVME_HIGH_PRIO_WEIGHT_SHIFT	24
-#define SPDK_NVME_MED_PRIO_WEIGHT_SHIFT		16
-#define SPDK_NVME_LOW_PRIO_WEIGHT_SHIFT		8
-#define SPDK_NVME_PRIO_WEIGHT_MASK		0xFF
-#define SPDK_NVME_ARB_BURST_MASK		0x7
-
-#define SPDK_NVME_QPRIO_MAX			(SPDK_NVME_QPRIO_LOW + 1)
 
 static void task_complete(struct arb_task *task);
 
@@ -177,19 +158,13 @@ register_ns(struct spdk_nvme_ctrlr *ctrlr, struct spdk_nvme_ns *ns)
 
 	cdata = spdk_nvme_ctrlr_get_data(ctrlr);
 
-	if (!spdk_nvme_ns_is_active(ns)) {
-		printf("Controller %-20.20s (%-20.20s): Skipping inactive NS %u\n",
-		       cdata->mn, cdata->sn,
-		       spdk_nvme_ns_get_id(ns));
-		return;
-	}
-
 	if (spdk_nvme_ns_get_size(ns) < g_arbitration.io_size_bytes ||
-	    spdk_nvme_ns_get_sector_size(ns) > g_arbitration.io_size_bytes) {
+	    spdk_nvme_ns_get_extended_sector_size(ns) > g_arbitration.io_size_bytes ||
+	    g_arbitration.io_size_bytes % spdk_nvme_ns_get_extended_sector_size(ns)) {
 		printf("WARNING: controller %-20.20s (%-20.20s) ns %u has invalid "
 		       "ns size %" PRIu64 " / block size %u for I/O size %u\n",
 		       cdata->mn, cdata->sn, spdk_nvme_ns_get_id(ns),
-		       spdk_nvme_ns_get_size(ns), spdk_nvme_ns_get_sector_size(ns),
+		       spdk_nvme_ns_get_size(ns), spdk_nvme_ns_get_extended_sector_size(ns),
 		       g_arbitration.io_size_bytes);
 		return;
 	}
@@ -250,9 +225,10 @@ set_latency_tracking_feature(struct spdk_nvme_ctrlr *ctrlr, bool enable)
 static void
 register_ctrlr(struct spdk_nvme_ctrlr *ctrlr)
 {
-	int nsid, num_ns;
+	uint32_t nsid;
 	struct spdk_nvme_ns *ns;
 	struct ctrlr_entry *entry = calloc(1, sizeof(struct ctrlr_entry));
+	union spdk_nvme_cap_register cap = spdk_nvme_ctrlr_get_regs_cap(ctrlr);
 	const struct spdk_nvme_ctrlr_data *cdata = spdk_nvme_ctrlr_get_data(ctrlr);
 
 	if (entry == NULL) {
@@ -271,8 +247,8 @@ register_ctrlr(struct spdk_nvme_ctrlr *ctrlr)
 		set_latency_tracking_feature(ctrlr, true);
 	}
 
-	num_ns = spdk_nvme_ctrlr_get_num_ns(ctrlr);
-	for (nsid = 1; nsid <= num_ns; nsid++) {
+	for (nsid = spdk_nvme_ctrlr_get_first_active_ns(ctrlr); nsid != 0;
+	     nsid = spdk_nvme_ctrlr_get_next_active_ns(ctrlr, nsid)) {
 		ns = spdk_nvme_ctrlr_get_ns(ctrlr, nsid);
 		if (ns == NULL) {
 			continue;
@@ -280,7 +256,8 @@ register_ctrlr(struct spdk_nvme_ctrlr *ctrlr)
 		register_ns(ctrlr, ns);
 	}
 
-	if (g_arbitration.arbitration_mechanism == SPDK_NVME_CAP_AMS_WRR) {
+	if (g_arbitration.arbitration_mechanism == SPDK_NVME_CAP_AMS_WRR &&
+	    (cap.bits.ams & SPDK_NVME_CAP_AMS_WRR)) {
 		get_arb_feature(ctrlr);
 
 		if (g_arbitration.arbitration_config != 0) {
@@ -338,9 +315,9 @@ submit_single_io(struct ns_worker_ctx *ns_ctx)
 
 	if (rc != 0) {
 		fprintf(stderr, "starting I/O failed\n");
+	} else {
+		ns_ctx->current_queue_depth++;
 	}
-
-	ns_ctx->current_queue_depth++;
 }
 
 static void
@@ -434,8 +411,16 @@ cleanup(uint32_t task_count)
 	};
 
 	while (worker) {
+		struct ns_worker_ctx *ns_ctx = worker->ns_ctx;
+
+		/* ns_worker_ctx is a list in the worker */
+		while (ns_ctx) {
+			struct ns_worker_ctx *next_ns_ctx = ns_ctx->next;
+			free(ns_ctx);
+			ns_ctx = next_ns_ctx;
+		}
+
 		next_worker = worker->next;
-		free(worker->ns_ctx);
 		free(worker);
 		worker = next_worker;
 	};
@@ -859,7 +844,7 @@ register_workers(void)
 			qprio++;
 		}
 
-		worker->qprio = qprio % SPDK_NVME_QPRIO_MAX;
+		worker->qprio = qprio & SPDK_NVME_CREATE_IO_SQ_QPRIO_MASK;
 	}
 
 	return 0;
@@ -986,11 +971,14 @@ static int
 get_feature(struct spdk_nvme_ctrlr *ctrlr, uint8_t fid)
 {
 	struct spdk_nvme_cmd cmd = {};
+	struct feature *feature = &features[fid];
+
+	feature->valid = false;
 
 	cmd.opc = SPDK_NVME_OPC_GET_FEATURES;
-	cmd.cdw10 = fid;
+	cmd.cdw10_bits.get_features.fid = fid;
 
-	return spdk_nvme_ctrlr_cmd_admin_raw(ctrlr, &cmd, NULL, 0, get_feature_completion, &features[fid]);
+	return spdk_nvme_ctrlr_cmd_admin_raw(ctrlr, &cmd, NULL, 0, get_feature_completion, feature);
 }
 
 static void
@@ -1005,26 +993,21 @@ get_arb_feature(struct spdk_nvme_ctrlr *ctrlr)
 	}
 
 	if (features[SPDK_NVME_FEAT_ARBITRATION].valid) {
-		uint32_t arb = features[SPDK_NVME_FEAT_ARBITRATION].result;
-		unsigned ab, lpw, mpw, hpw;
-
-		ab = arb & SPDK_NVME_ARB_BURST_MASK;
-		lpw = ((arb >> SPDK_NVME_LOW_PRIO_WEIGHT_SHIFT) & SPDK_NVME_PRIO_WEIGHT_MASK) + 1;
-		mpw = ((arb >> SPDK_NVME_MED_PRIO_WEIGHT_SHIFT) & SPDK_NVME_PRIO_WEIGHT_MASK) + 1;
-		hpw = ((arb >> SPDK_NVME_HIGH_PRIO_WEIGHT_SHIFT) & SPDK_NVME_PRIO_WEIGHT_MASK) + 1;
+		union spdk_nvme_cmd_cdw11 arb;
+		arb.feat_arbitration.raw = features[SPDK_NVME_FEAT_ARBITRATION].result;
 
 		printf("Current Arbitration Configuration\n");
 		printf("===========\n");
 		printf("Arbitration Burst:           ");
-		if (ab == SPDK_NVME_ARB_BURST_MASK) {
+		if (arb.feat_arbitration.bits.ab == SPDK_NVME_ARBITRATION_BURST_UNLIMITED) {
 			printf("no limit\n");
 		} else {
-			printf("%u\n", 1u << ab);
+			printf("%u\n", 1u << arb.feat_arbitration.bits.ab);
 		}
 
-		printf("Low Priority Weight:         %u\n", lpw);
-		printf("Medium Priority Weight:      %u\n", mpw);
-		printf("High Priority Weight:        %u\n", hpw);
+		printf("Low Priority Weight:         %u\n", arb.feat_arbitration.bits.lpw + 1);
+		printf("Medium Priority Weight:      %u\n", arb.feat_arbitration.bits.mpw + 1);
+		printf("High Priority Weight:        %u\n", arb.feat_arbitration.bits.hpw + 1);
 		printf("\n");
 	}
 }
@@ -1050,21 +1033,17 @@ set_arb_feature(struct spdk_nvme_ctrlr *ctrlr)
 {
 	int ret;
 	struct spdk_nvme_cmd cmd = {};
-	uint32_t arb = 0;
-	unsigned ab, lpw, mpw, hpw;
 
 	cmd.opc = SPDK_NVME_OPC_SET_FEATURES;
-	cmd.cdw10 = SPDK_NVME_FEAT_ARBITRATION;
+	cmd.cdw10_bits.set_features.fid = SPDK_NVME_FEAT_ARBITRATION;
 
 	g_arbitration.outstanding_commands = 0;
 
 	if (features[SPDK_NVME_FEAT_ARBITRATION].valid) {
-		ab = USER_SPECIFIED_ARBITRATION_BURST & SPDK_NVME_ARB_BURST_MASK;
-		hpw = USER_SPECIFIED_HIGH_PRIORITY_WEIGHT << SPDK_NVME_HIGH_PRIO_WEIGHT_SHIFT;
-		mpw = USER_SPECIFIED_MEDIUM_PRIORITY_WEIGHT << SPDK_NVME_MED_PRIO_WEIGHT_SHIFT;
-		lpw = USER_SPECIFIED_LOW_PRIORITY_WEIGHT << SPDK_NVME_LOW_PRIO_WEIGHT_SHIFT;
-		arb = hpw | mpw | lpw | ab;
-		cmd.cdw11 = arb;
+		cmd.cdw11_bits.feat_arbitration.bits.ab = SPDK_NVME_ARBITRATION_BURST_UNLIMITED;
+		cmd.cdw11_bits.feat_arbitration.bits.lpw = USER_SPECIFIED_LOW_PRIORITY_WEIGHT;
+		cmd.cdw11_bits.feat_arbitration.bits.mpw = USER_SPECIFIED_MEDIUM_PRIORITY_WEIGHT;
+		cmd.cdw11_bits.feat_arbitration.bits.hpw = USER_SPECIFIED_HIGH_PRIORITY_WEIGHT;
 	}
 
 	ret = spdk_nvme_ctrlr_cmd_admin_raw(ctrlr, &cmd, NULL, 0,

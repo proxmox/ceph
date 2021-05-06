@@ -1,7 +1,7 @@
 /*
  *   BSD LICENSE
  *
- *   Copyright (c) 2018 Broadcom.  All Rights Reserved.
+ *   Copyright (c) 2018-2019 Broadcom.  All Rights Reserved.
  *   The term "Broadcom" refers to Broadcom Inc. and/or its subsidiaries.
  *
  *   Redistribution and use in source and binary forms, with or without
@@ -87,8 +87,6 @@
 
 #define FCNVME_GOOD_RSP_LEN                     12
 #define FCNVME_ASSOC_HOSTID_LEN                 16
-#define FCNVME_ASSOC_HOSTNQN_LEN                256
-#define FCNVME_ASSOC_SUBNQN_LEN                 256
 
 
 typedef uint64_t FCNVME_BE64;
@@ -280,8 +278,8 @@ struct spdk_nvmf_fc_lsdesc_cr_assoc_cmd {
 	FCNVME_BE16  sqsize;
 	FCNVME_BE32  rsvd52;
 	uint8_t hostid[FCNVME_ASSOC_HOSTID_LEN];
-	uint8_t hostnqn[FCNVME_ASSOC_HOSTNQN_LEN];
-	uint8_t subnqn[FCNVME_ASSOC_SUBNQN_LEN];
+	uint8_t hostnqn[SPDK_NVME_NQN_FIELD_SIZE];
+	uint8_t subnqn[SPDK_NVME_NQN_FIELD_SIZE];
 	uint8_t rsvd584[432];
 };
 SPDK_STATIC_ASSERT(sizeof(struct spdk_nvmf_fc_lsdesc_cr_assoc_cmd) == 1016, "size_mismatch");
@@ -399,5 +397,15 @@ struct spdk_nvmf_fc_ls_rjt {
 	struct spdk_nvmf_fc_lsdesc_rjt rjt;
 };
 SPDK_STATIC_ASSERT(sizeof(struct spdk_nvmf_fc_ls_rjt) == 40, "size_mismatch");
+
+/*
+ * FC World Wide Name
+ */
+struct spdk_nvmf_fc_wwn {
+	union {
+		uint64_t wwn; /* World Wide Names consist of eight bytes */
+		uint8_t octets[sizeof(uint64_t)];
+	} u;
+};
 
 #endif

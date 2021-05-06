@@ -53,7 +53,6 @@ using testing::ByRef;
 using testing::DoAll;
 using testing::Invoke;
 using testing::Return;
-using testing::ReturnNew;
 using testing::SetArgPointee;
 using testing::StaticAssertTypeEq;
 using testing::Unused;
@@ -421,6 +420,33 @@ TEST(DoAllTest, TenActions) {
   EXPECT_EQ('e', e);
   EXPECT_EQ('f', f);
   EXPECT_EQ('g', g);
+}
+
+TEST(DoAllTest, NoArgs) {
+  bool ran_first = false;
+  Action<bool()> a =
+      DoAll([&] { ran_first = true; }, [&] { return ran_first; });
+  EXPECT_TRUE(a.Perform({}));
+}
+
+TEST(DoAllTest, MoveOnlyArgs) {
+  bool ran_first = false;
+  Action<int(std::unique_ptr<int>)> a =
+      DoAll(InvokeWithoutArgs([&] { ran_first = true; }),
+            [](std::unique_ptr<int> p) { return *p; });
+  EXPECT_EQ(7, a.Perform(std::make_tuple(std::unique_ptr<int>(new int(7)))));
+  EXPECT_TRUE(ran_first);
+}
+
+TEST(DoAllTest, ImplicitlyConvertsActionArguments) {
+  bool ran_first = false;
+  // Action<void(std::vector<int>)> isn't an
+  // Action<void(const std::vector<int>&) but can be converted.
+  Action<void(std::vector<int>)> first = [&] { ran_first = true; };
+  Action<int(std::vector<int>)> a =
+      DoAll(first, [](std::vector<int> arg) { return arg.front(); });
+  EXPECT_EQ(7, a.Perform(std::make_tuple(std::vector<int>{7})));
+  EXPECT_TRUE(ran_first);
 }
 
 // The ACTION*() macros trigger warning C4100 (unreferenced formal
@@ -844,49 +870,6 @@ TEST(ActionPnMacroTest, CanExplicitlyInstantiateWithReferenceTypes) {
   EXPECT_EQ(55, a.Perform(empty));
 }
 
-class NullaryConstructorClass {
- public:
-  NullaryConstructorClass() : value_(123) {}
-  int value_;
-};
-
-// Tests using ReturnNew() with a nullary constructor.
-TEST(ReturnNewTest, NoArgs) {
-  Action<NullaryConstructorClass*()> a = ReturnNew<NullaryConstructorClass>();
-  NullaryConstructorClass* c = a.Perform(std::make_tuple());
-  EXPECT_EQ(123, c->value_);
-  delete c;
-}
-
-class UnaryConstructorClass {
- public:
-  explicit UnaryConstructorClass(int value) : value_(value) {}
-  int value_;
-};
-
-// Tests using ReturnNew() with a unary constructor.
-TEST(ReturnNewTest, Unary) {
-  Action<UnaryConstructorClass*()> a = ReturnNew<UnaryConstructorClass>(4000);
-  UnaryConstructorClass* c = a.Perform(std::make_tuple());
-  EXPECT_EQ(4000, c->value_);
-  delete c;
-}
-
-TEST(ReturnNewTest, UnaryWorksWhenMockMethodHasArgs) {
-  Action<UnaryConstructorClass*(bool, int)> a =
-      ReturnNew<UnaryConstructorClass>(4000);
-  UnaryConstructorClass* c = a.Perform(std::make_tuple(false, 5));
-  EXPECT_EQ(4000, c->value_);
-  delete c;
-}
-
-TEST(ReturnNewTest, UnaryWorksWhenMockMethodReturnsPointerToConst) {
-  Action<const UnaryConstructorClass*()> a =
-      ReturnNew<UnaryConstructorClass>(4000);
-  const UnaryConstructorClass* c = a.Perform(std::make_tuple());
-  EXPECT_EQ(4000, c->value_);
-  delete c;
-}
 
 class TenArgConstructorClass {
  public:
@@ -896,17 +879,6 @@ class TenArgConstructorClass {
   }
   int value_;
 };
-
-// Tests using ReturnNew() with a 10-argument constructor.
-TEST(ReturnNewTest, ConstructorThatTakes10Arguments) {
-  Action<TenArgConstructorClass*()> a =
-      ReturnNew<TenArgConstructorClass>(1000000000, 200000000, 30000000,
-                                        4000000, 500000, 60000,
-                                        7000, 800, 90, 0);
-  TenArgConstructorClass* c = a.Perform(std::make_tuple());
-  EXPECT_EQ(1234567890, c->value_);
-  delete c;
-}
 
 // Tests that ACTION_TEMPLATE works when there is no value parameter.
 ACTION_TEMPLATE(CreateNew,

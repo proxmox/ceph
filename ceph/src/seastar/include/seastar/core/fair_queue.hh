@@ -30,12 +30,62 @@
 
 namespace seastar {
 
-/// \brief describes a request that passes through the fair queue
+/// \brief describes a request that passes through the \ref fair_queue.
+///
+/// A ticket is specified by a \c weight and a \c size. For example, one can specify a request of \c weight
+/// 1 and \c size 16kB. If the \ref fair_queue accepts one such request per second, it will sustain 1 IOPS
+/// at 16kB/s bandwidth.
 ///
 /// \related fair_queue
-struct fair_queue_request_descriptor {
-    unsigned weight = 1; ///< the weight of this request for capacity purposes (IOPS).
-    unsigned size = 1;        ///< the effective size of this request
+class fair_queue_ticket {
+    uint32_t _weight = 0; ///< the total weight of these requests for capacity purposes (IOPS).
+    uint32_t _size = 0;        ///< the total effective size of these requests
+public:
+    /// Constructs a fair_queue_ticket with a given \c weight and a given \c size
+    ///
+    /// \param weight the weight of the request
+    /// \param size the size of the request
+    fair_queue_ticket(uint32_t weight, uint32_t size);
+    fair_queue_ticket() {}
+    fair_queue_ticket operator+(fair_queue_ticket desc) const;
+    fair_queue_ticket operator-(fair_queue_ticket desc) const;
+    /// Increase the quantity represented in this ticket by the amount represented by \c desc
+    /// \param desc another \ref fair_queue_ticket whose \c weight \c and size will be added to this one
+    fair_queue_ticket& operator+=(fair_queue_ticket desc);
+    /// Decreases the quantity represented in this ticket by the amount represented by \c desc
+    /// \param desc another \ref fair_queue_ticket whose \c weight \c and size will be decremented from this one
+    fair_queue_ticket& operator-=(fair_queue_ticket desc);
+
+    /// \returns true if this fair_queue_ticket is strictly less than \c rhs.
+    ///
+    /// For a fair_queue_ticket to be considered strictly less than another, both its quantities need to be
+    /// less than the other. Note that there is no total ordering between two fair_queue_tickets
+    //
+    /// \param rhs another \ref fair_queue_ticket to be compared to this one.
+    bool strictly_less(fair_queue_ticket rhs) const;
+
+    /// \returns true if the fair_queue_ticket represents a non-zero quantity.
+    ///
+    /// For a fair_queue ticket to be non-zero, at least one of its represented quantities need to
+    /// be non-zero
+    explicit operator bool() const;
+
+    friend std::ostream& operator<<(std::ostream& os, fair_queue_ticket t);
+
+    /// \returns the normalized value of this \ref fair_queue_ticket along a base axis
+    ///
+    /// The normalization function itself is an implementation detail, but one can expect either weight or
+    /// size to have more or less relative importance depending on which of the dimensions in the
+    /// denominator is relatively higher. For example, given this request a, and two other requests
+    /// b and c, such that that c has the same \c weight but a higher \c size than b, one can expect
+    /// the \c size component of this request to play a larger role.
+    ///
+    /// It is legal for the numerator to have one of the quantities set to zero, in which case only
+    /// the other quantity is taken into consideration.
+    ///
+    /// It is however not legal for the axis to have any quantity set to zero.
+    /// \param axis another \ref fair_queue_ticket to be used as a a base vector against which to normalize this fair_queue_ticket.
+    float normalize(fair_queue_ticket axis) const;
 };
 
 /// \addtogroup io-module
@@ -45,7 +95,7 @@ struct fair_queue_request_descriptor {
 class priority_class {
     struct request {
         noncopyable_function<void()> func;
-        fair_queue_request_descriptor desc;
+        fair_queue_ticket desc;
     };
     friend class fair_queue;
     uint32_t _shares = 0;
@@ -54,15 +104,16 @@ class priority_class {
     bool _queued = false;
 
     friend struct shared_ptr_no_esft<priority_class>;
-    explicit priority_class(uint32_t shares) : _shares(std::max(shares, 1u)) {}
+    explicit priority_class(uint32_t shares) noexcept : _shares(std::max(shares, 1u)) {}
 
-    void update_shares(uint32_t shares) {
-        _shares = (std::max(shares, 1u));
-    }
 public:
     /// \brief return the current amount of shares for this priority class
-    uint32_t shares() const {
+    uint32_t shares() const noexcept {
         return _shares;
+    }
+
+    void update_shares(uint32_t shares) noexcept {
+        _shares = (std::max(shares, 1u));
     }
 };
 /// \endcond
@@ -86,7 +137,7 @@ using priority_class_ptr = lw_shared_ptr<priority_class>;
 /// 1 share. Higher weights for a request will consume a proportionally higher amount of
 /// shares.
 ///
-/// The user of this interface is expected to register multiple \ref priority_class
+/// The user of this interface is expected to register multiple `priority_class`
 /// objects, which will each have a shares attribute.
 ///
 /// Internally, each priority class may keep a separate queue of requests.
@@ -103,7 +154,6 @@ public:
     /// \sets the operation parameters of a \ref fair_queue
     /// \related fair_queue
     struct config {
-        unsigned capacity = std::numeric_limits<unsigned>::max();
         std::chrono::microseconds tau = std::chrono::milliseconds(100);
         unsigned max_req_count = std::numeric_limits<unsigned>::max();
         unsigned max_bytes_count = std::numeric_limits<unsigned>::max();
@@ -118,9 +168,11 @@ private:
     };
 
     config _config;
+    fair_queue_ticket _maximum_capacity;
+    fair_queue_ticket _current_capacity;
+    fair_queue_ticket _resources_executing;
+    fair_queue_ticket _resources_queued;
     unsigned _requests_executing = 0;
-    unsigned _req_count_executing = 0;
-    unsigned _bytes_count_executing = 0;
     unsigned _requests_queued = 0;
     using clock_type = std::chrono::steady_clock::time_point;
     clock_type _base;
@@ -141,21 +193,18 @@ public:
     /// Constructs a fair queue with configuration parameters \c cfg.
     ///
     /// \param cfg an instance of the class \ref config
-    explicit fair_queue(config cfg)
-        : _config(std::move(cfg))
-        , _base(std::chrono::steady_clock::now())
-    {}
+    explicit fair_queue(config cfg);
 
-    /// Constructs a fair queue with a given \c capacity.
+    /// Constructs a fair queue with a given \c capacity, expressed in IOPS.
     ///
     /// \param capacity how many concurrent requests are allowed in this queue.
     /// \param tau the queue exponential decay parameter, as in exp(-1/tau * t)
     explicit fair_queue(unsigned capacity, std::chrono::microseconds tau = std::chrono::milliseconds(100))
-        : fair_queue(config{capacity, tau}) {}
+        : fair_queue(config{tau, capacity}) {}
 
     /// Registers a priority class against this fair queue.
     ///
-    /// \param shares, how many shares to create this class with
+    /// \param shares how many shares to create this class with
     priority_class_ptr register_priority_class(uint32_t shares);
 
     /// Unregister a priority class.
@@ -164,10 +213,18 @@ public:
     void unregister_priority_class(priority_class_ptr pclass);
 
     /// \return how many waiters are currently queued for all classes.
+    [[deprecated("fair_queue users should not track individual requests, but resources (weight, size) passing through the queue")]]
     size_t waiters() const;
 
     /// \return the number of requests currently executing
+    [[deprecated("fair_queue users should not track individual requests, but resources (weight, size) passing through the queue")]]
     size_t requests_currently_executing() const;
+
+    /// \return how much resources (weight, size) are currently queued for all classes.
+    fair_queue_ticket resources_currently_waiting() const;
+
+    /// \return the amount of resources (weight, size) currently executing
+    fair_queue_ticket resources_currently_executing() const;
 
     /// Queue the function \c func through this class' \ref fair_queue, with weight \c weight
     ///
@@ -176,19 +233,14 @@ public:
     ///
     /// The user of this interface is supposed to call \ref notify_requests_finished when the
     /// request finishes executing - regardless of success or failure.
-    void queue(priority_class_ptr pc, fair_queue_request_descriptor desc, noncopyable_function<void()> func);
+    void queue(priority_class_ptr pc, fair_queue_ticket desc, noncopyable_function<void()> func);
 
     /// Notifies that ont request finished
-    /// \param desc an instance of \c fair_queue_request_descriptor structure describing the request that just finished.
-    void notify_requests_finished(fair_queue_request_descriptor& desc);
+    /// \param desc an instance of \c fair_queue_ticket structure describing the request that just finished.
+    void notify_requests_finished(fair_queue_ticket desc, unsigned nr = 1) noexcept;
 
     /// Try to execute new requests if there is capacity left in the queue.
     void dispatch_requests();
-
-    /// Updates the current shares of this priority class
-    ///
-    /// \param new_shares the new number of shares for this priority class
-    static void update_shares(priority_class_ptr pc, uint32_t new_shares);
 };
 /// @}
 

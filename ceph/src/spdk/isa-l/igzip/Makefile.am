@@ -39,6 +39,17 @@ lsrc        += 	igzip/igzip.c \
 lsrc_base_aliases += igzip/igzip_base_aliases.c igzip/proc_heap_base.c
 lsrc_x86_32       += igzip/igzip_base_aliases.c igzip/proc_heap_base.c
 
+lsrc_aarch64 +=	igzip/aarch64/igzip_inflate_multibinary_arm64.S  \
+		igzip/aarch64/igzip_multibinary_arm64.S	\
+		igzip/aarch64/igzip_isal_adler32_neon.S	\
+		igzip/aarch64/igzip_multibinary_aarch64_dispatcher.c \
+		igzip/aarch64/igzip_deflate_body_aarch64.S \
+		igzip/aarch64/igzip_deflate_finish_aarch64.S \
+		igzip/aarch64/isal_deflate_icf_body_hash_hist.S \
+		igzip/aarch64/isal_deflate_icf_finish_hash_hist.S \
+		igzip/aarch64/isal_update_histogram.S \
+		igzip/proc_heap_base.c
+
 lsrc_x86_64 +=	igzip/igzip_body.asm \
 		igzip/igzip_finish.asm \
 		igzip/igzip_icf_body_h1_gr_bt.asm \
@@ -66,9 +77,9 @@ extern_hdrs +=	include/igzip_lib.h
 
 check_tests +=  igzip/igzip_rand_test
 check_tests +=  igzip/igzip_wrapper_hdr_test
-unit_tests  +=  igzip/checksum32_funcs_test
+check_tests +=  igzip/checksum32_funcs_test
 
-other_tests +=  igzip/igzip_file_perf igzip/igzip_stateless_file_perf igzip/igzip_hist_perf
+other_tests +=  igzip/igzip_file_perf igzip/igzip_hist_perf
 other_tests +=  igzip/igzip_perf
 other_tests +=  igzip/igzip_semi_dyn_file_perf
 other_tests +=  igzip/igzip_build_hash_table_perf
@@ -89,6 +100,7 @@ other_src   += 	igzip/bitbuf2.asm  \
 		include/reg_sizes.asm \
 		include/multibinary.asm \
 		include/test.h \
+		include/unaligned.h \
 		igzip/huffman.h \
 		igzip/igzip_level_buf_structs.h \
 		igzip/igzip_decode_block_stateless.asm \
@@ -99,6 +111,8 @@ other_src   += 	igzip/bitbuf2.asm  \
 		igzip/igzip_wrapper.h \
 		igzip/static_inflate.h \
 		igzip/igzip_checksums.h
+
+perf_tests  +=  igzip/adler32_perf
 
 examples    += 	igzip/igzip_example igzip/igzip_sync_flush_example
 
@@ -111,14 +125,10 @@ other_src   += igzip/huff_codes.h
 lsrc        += igzip/huff_codes.c
 
 # Include tools and tests using the reference inflate
-other_tests += igzip/igzip_inflate_perf
 other_tests += igzip/igzip_inflate_test
 lsrc   += igzip/igzip_inflate.c
 other_src   += igzip/checksum_test_ref.h
 
-igzip_inflate_perf: LDLIBS += -lz
-igzip_igzip_inflate_perf_LDADD = libisal.la
-igzip_igzip_inflate_perf_LDFLAGS = -lz
 igzip_perf: LDLIBS += -lz
 igzip_igzip_perf_LDADD = libisal.la
 igzip_igzip_perf_LDFLAGS = -lz

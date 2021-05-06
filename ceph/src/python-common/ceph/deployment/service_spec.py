@@ -1,30 +1,21 @@
-import errno
 import fnmatch
 import re
-from collections import namedtuple, OrderedDict
+from collections import OrderedDict
 from functools import wraps
-from typing import Optional, Dict, Any, List, Union, Callable, Iterable
+from ipaddress import ip_network, ip_address
+from typing import Optional, Dict, Any, List, Union, Callable, Iterable, Type, TypeVar, cast, \
+    NamedTuple
 
-import six
 import yaml
 
-from ceph.deployment.hostspec import HostSpec
+from ceph.deployment.hostspec import HostSpec, SpecValidationError
 from ceph.deployment.utils import unwrap_ipv6
 
-
-class ServiceSpecValidationError(Exception):
-    """
-    Defining an exception here is a bit problematic, cause you cannot properly catch it,
-    if it was raised in a different mgr module.
-    """
-    def __init__(self,
-                 msg: str,
-                 errno: int = -errno.EINVAL):
-        super(ServiceSpecValidationError, self).__init__(msg)
-        self.errno = errno
+ServiceSpecT = TypeVar('ServiceSpecT', bound='ServiceSpec')
+FuncT = TypeVar('FuncT', bound=Callable)
 
 
-def assert_valid_host(name):
+def assert_valid_host(name: str) -> None:
     p = re.compile('^[a-zA-Z0-9-]+$')
     try:
         assert len(name) <= 250, 'name is too long (max 250 chars)'
@@ -33,22 +24,26 @@ def assert_valid_host(name):
             assert len(part) <= 63, '.-delimited name component must not be more than 63 chars'
             assert p.match(part), 'name component must include only a-z, 0-9, and -'
     except AssertionError as e:
-        raise ServiceSpecValidationError(e)
+        raise SpecValidationError(str(e))
 
 
-def handle_type_error(method):
+def handle_type_error(method: FuncT) -> FuncT:
     @wraps(method)
-    def inner(cls, *args, **kwargs):
+    def inner(cls: Any, *args: Any, **kwargs: Any) -> Any:
         try:
             return method(cls, *args, **kwargs)
         except (TypeError, AttributeError) as e:
             error_msg = '{}: {}'.format(cls.__name__, e)
-            raise ServiceSpecValidationError(error_msg)
-    return inner
+            raise SpecValidationError(error_msg)
+    return cast(FuncT, inner)
 
 
-class HostPlacementSpec(namedtuple('HostPlacementSpec', ['hostname', 'network', 'name'])):
-    def __str__(self):
+class HostPlacementSpec(NamedTuple):
+    hostname: str
+    network: str
+    name: str
+
+    def __str__(self) -> str:
         res = ''
         res += self.hostname
         if self.network:
@@ -59,7 +54,7 @@ class HostPlacementSpec(namedtuple('HostPlacementSpec', ['hostname', 'network', 
 
     @classmethod
     @handle_type_error
-    def from_json(cls, data):
+    def from_json(cls, data: Union[dict, str]) -> 'HostPlacementSpec':
         if isinstance(data, str):
             return cls.parse(data)
         return cls(**data)
@@ -108,7 +103,6 @@ class HostPlacementSpec(namedtuple('HostPlacementSpec', ['hostname', 'network', 
         if not require_network:
             return host_spec
 
-        from ipaddress import ip_network, ip_address
         networks = list()  # type: List[str]
         network = host_spec.network
         # in case we have [v2:1.2.3.4:3000,v1:1.2.3.4:6478]
@@ -128,7 +122,7 @@ class HostPlacementSpec(namedtuple('HostPlacementSpec', ['hostname', 'network', 
             try:
                 # if subnets are defined, also verify the validity
                 if '/' in network:
-                    ip_network(six.text_type(network))
+                    ip_network(network)
                 else:
                     ip_address(unwrap_ipv6(network))
             except ValueError as e:
@@ -137,7 +131,7 @@ class HostPlacementSpec(namedtuple('HostPlacementSpec', ['hostname', 'network', 
         host_spec.validate()
         return host_spec
 
-    def validate(self):
+    def validate(self) -> None:
         assert_valid_host(self.hostname)
 
 
@@ -148,9 +142,10 @@ class PlacementSpec(object):
 
     def __init__(self,
                  label=None,  # type: Optional[str]
-                 hosts=None,  # type: Union[List[str],List[HostPlacementSpec]]
+                 hosts=None,  # type: Union[List[str],List[HostPlacementSpec], None]
                  count=None,  # type: Optional[int]
-                 host_pattern=None  # type: Optional[str]
+                 count_per_host=None,  # type: Optional[int]
+                 host_pattern=None,  # type: Optional[str]
                  ):
         # type: (...) -> None
         self.label = label
@@ -160,27 +155,32 @@ class PlacementSpec(object):
             self.set_hosts(hosts)
 
         self.count = count  # type: Optional[int]
+        self.count_per_host = count_per_host   # type: Optional[int]
 
         #: fnmatch patterns to select hosts. Can also be a single host.
         self.host_pattern = host_pattern  # type: Optional[str]
 
         self.validate()
 
-    def is_empty(self):
-        return self.label is None and \
-            not self.hosts and \
-            not self.host_pattern and \
-            self.count is None
+    def is_empty(self) -> bool:
+        return (
+            self.label is None
+            and not self.hosts
+            and not self.host_pattern
+            and self.count is None
+            and self.count_per_host is None
+        )
 
-    def __eq__(self, other):
+    def __eq__(self, other: Any) -> bool:
         if isinstance(other, PlacementSpec):
             return self.label == other.label \
                    and self.hosts == other.hosts \
                    and self.count == other.count \
-                   and self.host_pattern == other.host_pattern
+                   and self.host_pattern == other.host_pattern \
+                   and self.count_per_host == other.count_per_host
         return NotImplemented
 
-    def set_hosts(self, hosts):
+    def set_hosts(self, hosts: Union[List[str], List[HostPlacementSpec]]) -> None:
         # To backpopulate the .hosts attribute when using labels or count
         # in the orchestrator backend.
         if all([isinstance(host, HostPlacementSpec) for host in hosts]):
@@ -197,22 +197,19 @@ class PlacementSpec(object):
         if self.hosts:
             all_hosts = [hs.hostname for hs in hostspecs]
             return [h.hostname for h in self.hosts if h.hostname in all_hosts]
-        elif self.label:
+        if self.label:
             return [hs.hostname for hs in hostspecs if self.label in hs.labels]
-        elif self.host_pattern:
-            all_hosts = [hs.hostname for hs in hostspecs]
+        all_hosts = [hs.hostname for hs in hostspecs]
+        if self.host_pattern:
             return fnmatch.filter(all_hosts, self.host_pattern)
-        else:
-            # This should be caught by the validation but needs to be here for
-            # get_host_selection_size
-            return []
+        return all_hosts
 
-    def get_host_selection_size(self, hostspecs: Iterable[HostSpec]):
+    def get_target_count(self, hostspecs: Iterable[HostSpec]) -> int:
         if self.count:
             return self.count
-        return len(self.filter_matching_hostspecs(hostspecs))
+        return len(self.filter_matching_hostspecs(hostspecs)) * (self.count_per_host or 1)
 
-    def pretty_str(self):
+    def pretty_str(self) -> str:
         """
         >>> #doctest: +SKIP
         ... ps = PlacementSpec(...)  # For all placement specs:
@@ -223,16 +220,20 @@ class PlacementSpec(object):
             kv.append(';'.join([str(h) for h in self.hosts]))
         if self.count:
             kv.append('count:%d' % self.count)
+        if self.count_per_host:
+            kv.append('count-per-host:%d' % self.count_per_host)
         if self.label:
             kv.append('label:%s' % self.label)
         if self.host_pattern:
             kv.append(self.host_pattern)
         return ';'.join(kv)
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         kv = []
         if self.count:
             kv.append('count=%d' % self.count)
+        if self.count_per_host:
+            kv.append('count_per_host=%d' % self.count_per_host)
         if self.label:
             kv.append('label=%s' % repr(self.label))
         if self.hosts:
@@ -243,7 +244,7 @@ class PlacementSpec(object):
 
     @classmethod
     @handle_type_error
-    def from_json(cls, data):
+    def from_json(cls, data: dict) -> 'PlacementSpec':
         c = data.copy()
         hosts = c.get('hosts', [])
         if hosts:
@@ -254,26 +255,48 @@ class PlacementSpec(object):
         _cls.validate()
         return _cls
 
-    def to_json(self):
-        r = {}
+    def to_json(self) -> dict:
+        r: Dict[str, Any] = {}
         if self.label:
             r['label'] = self.label
         if self.hosts:
             r['hosts'] = [host.to_json() for host in self.hosts]
         if self.count:
             r['count'] = self.count
+        if self.count_per_host:
+            r['count_per_host'] = self.count_per_host
         if self.host_pattern:
             r['host_pattern'] = self.host_pattern
         return r
 
-    def validate(self):
+    def validate(self) -> None:
         if self.hosts and self.label:
             # TODO: a less generic Exception
-            raise ServiceSpecValidationError('Host and label are mutually exclusive')
+            raise SpecValidationError('Host and label are mutually exclusive')
         if self.count is not None and self.count <= 0:
-            raise ServiceSpecValidationError("num/count must be > 1")
+            raise SpecValidationError("num/count must be > 1")
+        if self.count_per_host is not None and self.count_per_host < 1:
+            raise SpecValidationError("count-per-host must be >= 1")
+        if self.count_per_host is not None and not (
+                self.label
+                or self.hosts
+                or self.host_pattern
+        ):
+            raise SpecValidationError(
+                "count-per-host must be combined with label or hosts or host_pattern"
+            )
+        if self.count is not None and self.count_per_host is not None:
+            raise SpecValidationError("cannot combine count and count-per-host")
+        if (
+                self.count_per_host is not None
+                and self.hosts
+                and any([hs.network or hs.name for hs in self.hosts])
+        ):
+            raise SpecValidationError(
+                "count-per-host cannot be combined explicit placement with names or networks"
+            )
         if self.host_pattern and self.hosts:
-            raise ServiceSpecValidationError('cannot combine host patterns and hosts')
+            raise SpecValidationError('cannot combine host patterns and hosts')
         for h in self.hosts:
             h.validate()
 
@@ -326,9 +349,10 @@ tPlacementSpec(hostname='host2', network='', name='')])
             else:
                 strings = [arg]
         else:
-            raise ServiceSpecValidationError('invalid placement %s' % arg)
+            raise SpecValidationError('invalid placement %s' % arg)
 
         count = None
+        count_per_host = None
         if strings:
             try:
                 count = int(strings[0])
@@ -338,7 +362,15 @@ tPlacementSpec(hostname='host2', network='', name='')])
         for s in strings:
             if s.startswith('count:'):
                 try:
-                    count = int(s[6:])
+                    count = int(s[len('count:'):])
+                    strings.remove(s)
+                    break
+                except ValueError:
+                    pass
+        for s in strings:
+            if s.startswith('count-per-host:'):
+                try:
+                    count_per_host = int(s[len('count-per-host:'):])
                     strings.remove(s)
                     break
                 except ValueError:
@@ -352,17 +384,18 @@ tPlacementSpec(hostname='host2', network='', name='')])
 
         labels = [x for x in strings if 'label:' in x]
         if len(labels) > 1:
-            raise ServiceSpecValidationError('more than one label provided: {}'.format(labels))
+            raise SpecValidationError('more than one label provided: {}'.format(labels))
         for l in labels:
             strings.remove(l)
         label = labels[0][6:] if labels else None
 
         host_patterns = strings
         if len(host_patterns) > 1:
-            raise ServiceSpecValidationError(
+            raise SpecValidationError(
                 'more than one host pattern provided: {}'.format(host_patterns))
 
         ps = PlacementSpec(count=count,
+                           count_per_host=count_per_host,
                            hosts=advanced_hostspecs,
                            label=label,
                            host_pattern=host_patterns[0] if host_patterns else None)
@@ -382,11 +415,14 @@ class ServiceSpec(object):
     """
     KNOWN_SERVICE_TYPES = 'alertmanager crash grafana iscsi mds mgr mon nfs ' \
                           'node-exporter osd prometheus rbd-mirror rgw ' \
-                          'container'.split()
-    REQUIRES_SERVICE_ID = 'iscsi mds nfs osd rgw container'.split()
+                          'container cephadm-exporter ingress cephfs-mirror'.split()
+    REQUIRES_SERVICE_ID = 'iscsi mds nfs osd rgw container ingress '.split()
+    MANAGED_CONFIG_OPTIONS = [
+        'mds_join_fs',
+    ]
 
     @classmethod
-    def _cls(cls, service_type):
+    def _cls(cls: Type[ServiceSpecT], service_type: str) -> Type[ServiceSpecT]:
         from ceph.deployment.drive_group import DriveGroupSpec
 
         ret = {
@@ -395,13 +431,14 @@ class ServiceSpec(object):
             'osd': DriveGroupSpec,
             'iscsi': IscsiServiceSpec,
             'alertmanager': AlertManagerSpec,
+            'ingress': IngressSpec,
             'container': CustomContainerSpec,
         }.get(service_type, cls)
         if ret == ServiceSpec and not service_type:
-            raise ServiceSpecValidationError('Spec needs a "service_type" key.')
+            raise SpecValidationError('Spec needs a "service_type" key.')
         return ret
 
-    def __new__(cls, *args, **kwargs):
+    def __new__(cls: Type[ServiceSpecT], *args: Any, **kwargs: Any) -> ServiceSpecT:
         """
         Some Python foo to make sure, we don't have an object
         like `ServiceSpec('rgw')` of type `ServiceSpec`. Now we have:
@@ -413,7 +450,7 @@ class ServiceSpec(object):
         if cls != ServiceSpec:
             return object.__new__(cls)
         service_type = kwargs.get('service_type', args[0] if args else None)
-        sub_cls = cls._cls(service_type)
+        sub_cls: Any = cls._cls(service_type)
         return object.__new__(sub_cls)
 
     def __init__(self,
@@ -421,8 +458,10 @@ class ServiceSpec(object):
                  service_id: Optional[str] = None,
                  placement: Optional[PlacementSpec] = None,
                  count: Optional[int] = None,
+                 config: Optional[Dict[str, str]] = None,
                  unmanaged: bool = False,
                  preview_only: bool = False,
+                 networks: Optional[List[str]] = None,
                  ):
         self.placement = PlacementSpec() if placement is None else placement  # type: PlacementSpec
 
@@ -433,14 +472,15 @@ class ServiceSpec(object):
             self.service_id = service_id
         self.unmanaged = unmanaged
         self.preview_only = preview_only
+        self.networks: List[str] = networks or []
+
+        self.config: Optional[Dict[str, str]] = None
+        if config:
+            self.config = {k.replace(' ', '_'): v for k, v in config.items()}
 
     @classmethod
     @handle_type_error
-    def from_json(cls, json_spec):
-        # type: (dict) -> Any
-        # Python 3:
-        # >>> ServiceSpecs = TypeVar('Base', bound=ServiceSpec)
-        # then, the real type is: (dict) -> ServiceSpecs
+    def from_json(cls: Type[ServiceSpecT], json_spec: Dict) -> ServiceSpecT:
         """
         Initialize 'ServiceSpec' object data from a json structure
 
@@ -461,6 +501,9 @@ class ServiceSpec(object):
 
             service_type: nfs
             service_id: foo
+            config:
+              some_option: the_value
+            networks: [10.10.0.0/16]
             spec:
               pool: mypool
               namespace: myns
@@ -474,6 +517,12 @@ class ServiceSpec(object):
 
         :param json_spec: A valid dict with ServiceSpec
         """
+
+        if not isinstance(json_spec, dict):
+            raise SpecValidationError(
+                f'Service Spec is not an (JSON or YAML) object. got "{str(json_spec)}"')
+
+        json_spec = cls.normalize_json(json_spec)
 
         c = json_spec.copy()
 
@@ -496,9 +545,21 @@ class ServiceSpec(object):
 
         return _cls._from_json_impl(c)  # type: ignore
 
+    @staticmethod
+    def normalize_json(json_spec: dict) -> dict:
+        networks = json_spec.get('networks')
+        if networks is None:
+            return json_spec
+        if isinstance(networks, list):
+            return json_spec
+        if not isinstance(networks, str):
+            raise SpecValidationError(f'Networks ({networks}) must be a string or list of strings')
+        json_spec['networks'] = [networks]
+        return json_spec
+
     @classmethod
-    def _from_json_impl(cls, json_spec):
-        args = {}  # type: Dict[str, Dict[Any, Any]]
+    def _from_json_impl(cls: Type[ServiceSpecT], json_spec: dict) -> ServiceSpecT:
+        args = {}  # type: Dict[str, Any]
         for k, v in json_spec.items():
             if k == 'placement':
                 v = PlacementSpec.from_json(v)
@@ -510,11 +571,19 @@ class ServiceSpec(object):
         _cls.validate()
         return _cls
 
-    def service_name(self):
+    def service_name(self) -> str:
         n = self.service_type
         if self.service_id:
             n += '.' + self.service_id
         return n
+
+    def get_port_start(self) -> List[int]:
+        # If defined, we will allocate and number ports starting at this
+        # point.
+        return []
+
+    def get_virtual_ip(self) -> Optional[str]:
+        return None
 
     def to_json(self):
         # type: () -> OrderedDict[str, Any]
@@ -526,6 +595,8 @@ class ServiceSpec(object):
         ret['placement'] = self.placement.to_json()
         if self.unmanaged:
             ret['unmanaged'] = self.unmanaged
+        if self.networks:
+            ret['networks'] = self.networks
 
         c = {}
         for key, val in sorted(self.__dict__.items(), key=lambda tpl: tpl[0]):
@@ -539,33 +610,49 @@ class ServiceSpec(object):
             ret['spec'] = c
         return ret
 
-    def validate(self):
+    def validate(self) -> None:
         if not self.service_type:
-            raise ServiceSpecValidationError('Cannot add Service: type required')
+            raise SpecValidationError('Cannot add Service: type required')
 
         if self.service_type in self.REQUIRES_SERVICE_ID:
             if not self.service_id:
-                raise ServiceSpecValidationError('Cannot add Service: id required')
+                raise SpecValidationError('Cannot add Service: id required')
+            if not re.match('^[a-zA-Z0-9_.-]+$', self.service_id):
+                raise SpecValidationError('Service id contains invalid characters, '
+                                          'only [a-zA-Z0-9_.-] allowed')
         elif self.service_id:
-            raise ServiceSpecValidationError(
+            raise SpecValidationError(
                     f'Service of type \'{self.service_type}\' should not contain a service id')
 
         if self.placement is not None:
             self.placement.validate()
+        if self.config:
+            for k, v in self.config.items():
+                if k in self.MANAGED_CONFIG_OPTIONS:
+                    raise SpecValidationError(
+                        f'Cannot set config option {k} in spec: it is managed by cephadm'
+                    )
+        for network in self.networks or []:
+            try:
+                ip_network(network)
+            except ValueError as e:
+                raise SpecValidationError(
+                    f'Cannot parse network {network}: {e}'
+                )
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return "{}({!r})".format(self.__class__.__name__, self.__dict__)
 
-    def __eq__(self, other):
+    def __eq__(self, other: Any) -> bool:
         return (self.__class__ == other.__class__
                 and
                 self.__dict__ == other.__dict__)
 
-    def one_line_str(self):
+    def one_line_str(self) -> str:
         return '<{} for service_name={}>'.format(self.__class__.__name__, self.service_name())
 
     @staticmethod
-    def yaml_representer(dumper: 'yaml.SafeDumper', data: 'ServiceSpec'):
+    def yaml_representer(dumper: 'yaml.SafeDumper', data: 'ServiceSpec') -> Any:
         return dumper.represent_dict(data.to_json().items())
 
 
@@ -580,12 +667,15 @@ class NFSServiceSpec(ServiceSpec):
                  namespace: Optional[str] = None,
                  placement: Optional[PlacementSpec] = None,
                  unmanaged: bool = False,
-                 preview_only: bool = False
+                 preview_only: bool = False,
+                 config: Optional[Dict[str, str]] = None,
+                 networks: Optional[List[str]] = None,
                  ):
         assert service_type == 'nfs'
         super(NFSServiceSpec, self).__init__(
             'nfs', service_id=service_id,
-            placement=placement, unmanaged=unmanaged, preview_only=preview_only)
+            placement=placement, unmanaged=unmanaged, preview_only=preview_only,
+            config=config, networks=networks)
 
         #: RADOS pool where NFS client recovery data is stored.
         self.pool = pool
@@ -593,11 +683,11 @@ class NFSServiceSpec(ServiceSpec):
         #: RADOS namespace where NFS client recovery data is stored in the pool.
         self.namespace = namespace
 
-    def validate(self):
+    def validate(self) -> None:
         super(NFSServiceSpec, self).validate()
 
         if not self.pool:
-            raise ServiceSpecValidationError(
+            raise SpecValidationError(
                 'Cannot add NFS: No Pool specified')
 
     def rados_config_name(self):
@@ -623,47 +713,50 @@ class RGWSpec(ServiceSpec):
     Settings to configure a (multisite) Ceph RGW
 
     """
+    MANAGED_CONFIG_OPTIONS = ServiceSpec.MANAGED_CONFIG_OPTIONS + [
+        'rgw_zone',
+        'rgw_realm',
+        'rgw_frontends',
+    ]
+
     def __init__(self,
                  service_type: str = 'rgw',
                  service_id: Optional[str] = None,
                  placement: Optional[PlacementSpec] = None,
                  rgw_realm: Optional[str] = None,
                  rgw_zone: Optional[str] = None,
-                 subcluster: Optional[str] = None,
                  rgw_frontend_port: Optional[int] = None,
                  rgw_frontend_ssl_certificate: Optional[List[str]] = None,
-                 rgw_frontend_ssl_key: Optional[List[str]] = None,
+                 rgw_frontend_type: Optional[str] = None,
                  unmanaged: bool = False,
                  ssl: bool = False,
                  preview_only: bool = False,
+                 config: Optional[Dict[str, str]] = None,
+                 networks: Optional[List[str]] = None,
+                 subcluster: Optional[str] = None,  # legacy, only for from_json on upgrade
                  ):
         assert service_type == 'rgw', service_type
-        if service_id:
-            a = service_id.split('.', 2)
-            rgw_realm = a[0]
-            if len(a) > 1:
-                rgw_zone = a[1]
-            if len(a) > 2:
-                subcluster = a[2]
-        else:
-            if subcluster:
-                service_id = '%s.%s.%s' % (rgw_realm, rgw_zone, subcluster)
-            else:
-                service_id = '%s.%s' % (rgw_realm, rgw_zone)
+
+        # for backward compatibility with octopus spec files,
+        if not service_id and (rgw_realm and rgw_zone):
+            service_id = rgw_realm + '.' + rgw_zone
+
         super(RGWSpec, self).__init__(
             'rgw', service_id=service_id,
             placement=placement, unmanaged=unmanaged,
-            preview_only=preview_only)
+            preview_only=preview_only, config=config, networks=networks)
 
         self.rgw_realm = rgw_realm
         self.rgw_zone = rgw_zone
-        self.subcluster = subcluster
         self.rgw_frontend_port = rgw_frontend_port
         self.rgw_frontend_ssl_certificate = rgw_frontend_ssl_certificate
-        self.rgw_frontend_ssl_key = rgw_frontend_ssl_key
+        self.rgw_frontend_type = rgw_frontend_type
         self.ssl = ssl
 
-    def get_port(self):
+    def get_port_start(self) -> List[int]:
+        return [self.get_port()]
+
+    def get_port(self) -> int:
         if self.rgw_frontend_port:
             return self.rgw_frontend_port
         if self.ssl:
@@ -671,25 +764,15 @@ class RGWSpec(ServiceSpec):
         else:
             return 80
 
-    def rgw_frontends_config_value(self):
-        ports = []
-        if self.ssl:
-            ports.append(f"ssl_port={self.get_port()}")
-            ports.append(f"ssl_certificate=config://rgw/cert/{self.rgw_realm}/{self.rgw_zone}.crt")
-            ports.append(f"ssl_key=config://rgw/cert/{self.rgw_realm}/{self.rgw_zone}.key")
-        else:
-            ports.append(f"port={self.get_port()}")
-        return f'beast {" ".join(ports)}'
-
-    def validate(self):
+    def validate(self) -> None:
         super(RGWSpec, self).validate()
 
-        if not self.rgw_realm:
-            raise ServiceSpecValidationError(
-                'Cannot add RGW: No realm specified')
-        if not self.rgw_zone:
-            raise ServiceSpecValidationError(
-                'Cannot add RGW: No zone specified')
+        if self.rgw_realm and not self.rgw_zone:
+            raise SpecValidationError(
+                    'Cannot add RGW: Realm specified but no zone specified')
+        if self.rgw_zone and not self.rgw_realm:
+            raise SpecValidationError(
+                    'Cannot add RGW: Zone specified but no realm specified')
 
 
 yaml.add_representer(RGWSpec, ServiceSpec.yaml_representer)
@@ -709,12 +792,15 @@ class IscsiServiceSpec(ServiceSpec):
                  ssl_key: Optional[str] = None,
                  placement: Optional[PlacementSpec] = None,
                  unmanaged: bool = False,
-                 preview_only: bool = False
+                 preview_only: bool = False,
+                 config: Optional[Dict[str, str]] = None,
+                 networks: Optional[List[str]] = None,
                  ):
         assert service_type == 'iscsi'
         super(IscsiServiceSpec, self).__init__('iscsi', service_id=service_id,
                                                placement=placement, unmanaged=unmanaged,
-                                               preview_only=preview_only)
+                                               preview_only=preview_only,
+                                               config=config, networks=networks)
 
         #: RADOS pool where ceph-iscsi config data is stored.
         self.pool = pool
@@ -729,11 +815,11 @@ class IscsiServiceSpec(ServiceSpec):
         if not self.api_secure and self.ssl_cert and self.ssl_key:
             self.api_secure = True
 
-    def validate(self):
+    def validate(self) -> None:
         super(IscsiServiceSpec, self).validate()
 
         if not self.pool:
-            raise ServiceSpecValidationError(
+            raise SpecValidationError(
                 'Cannot add ISCSI: No Pool specified')
 
         # Do not need to check for api_user and api_password as they
@@ -754,12 +840,14 @@ class AlertManagerSpec(ServiceSpec):
                  unmanaged: bool = False,
                  preview_only: bool = False,
                  user_data: Optional[Dict[str, Any]] = None,
+                 config: Optional[Dict[str, str]] = None,
+                 networks: Optional[List[str]] = None,
                  ):
         assert service_type == 'alertmanager'
         super(AlertManagerSpec, self).__init__(
             'alertmanager', service_id=service_id,
             placement=placement, unmanaged=unmanaged,
-            preview_only=preview_only)
+            preview_only=preview_only, config=config, networks=networks)
 
         # Custom configuration.
         #
@@ -781,14 +869,84 @@ class AlertManagerSpec(ServiceSpec):
 yaml.add_representer(AlertManagerSpec, ServiceSpec.yaml_representer)
 
 
+class IngressSpec(ServiceSpec):
+    def __init__(self,
+                 service_type: str = 'ingress',
+                 service_id: Optional[str] = None,
+                 config: Optional[Dict[str, str]] = None,
+                 networks: Optional[List[str]] = None,
+                 placement: Optional[PlacementSpec] = None,
+                 backend_service: Optional[str] = None,
+                 frontend_port: Optional[int] = None,
+                 ssl_cert: Optional[str] = None,
+                 ssl_dh_param: Optional[str] = None,
+                 ssl_ciphers: Optional[List[str]] = None,
+                 ssl_options: Optional[List[str]] = None,
+                 monitor_port: Optional[int] = None,
+                 monitor_user: Optional[str] = None,
+                 monitor_password: Optional[str] = None,
+                 enable_stats: Optional[bool] = None,
+                 keepalived_password: Optional[str] = None,
+                 virtual_ip: Optional[str] = None,
+                 virtual_interface_networks: Optional[List[str]] = [],
+                 haproxy_container_image: Optional[str] = None,
+                 keepalived_container_image: Optional[str] = None,
+                 ):
+        assert service_type == 'ingress'
+        super(IngressSpec, self).__init__(
+            'ingress', service_id=service_id,
+            placement=placement, config=config,
+            networks=networks
+        )
+        self.backend_service = backend_service
+        self.frontend_port = frontend_port
+        self.ssl_cert = ssl_cert
+        self.ssl_dh_param = ssl_dh_param
+        self.ssl_ciphers = ssl_ciphers
+        self.ssl_options = ssl_options
+        self.monitor_port = monitor_port
+        self.monitor_user = monitor_user
+        self.monitor_password = monitor_password
+        self.keepalived_password = keepalived_password
+        self.virtual_ip = virtual_ip
+        self.virtual_interface_networks = virtual_interface_networks or []
+        self.haproxy_container_image = haproxy_container_image
+        self.keepalived_container_image = keepalived_container_image
+
+    def get_port_start(self) -> List[int]:
+        return [cast(int, self.frontend_port),
+                cast(int, self.monitor_port)]
+
+    def get_virtual_ip(self) -> Optional[str]:
+        return self.virtual_ip
+
+    def validate(self) -> None:
+        super(IngressSpec, self).validate()
+
+        if not self.backend_service:
+            raise SpecValidationError(
+                'Cannot add ingress: No backend_service specified')
+        if not self.frontend_port:
+            raise SpecValidationError(
+                'Cannot add ingress: No frontend_port specified')
+        if not self.monitor_port:
+            raise SpecValidationError(
+                'Cannot add ingress: No monitor_port specified')
+        if not self.virtual_ip:
+            raise SpecValidationError(
+                'Cannot add ingress: No virtual_ip provided')
+
+
 class CustomContainerSpec(ServiceSpec):
     def __init__(self,
                  service_type: str = 'container',
-                 service_id: str = None,
+                 service_id: Optional[str] = None,
+                 config: Optional[Dict[str, str]] = None,
+                 networks: Optional[List[str]] = None,
                  placement: Optional[PlacementSpec] = None,
                  unmanaged: bool = False,
                  preview_only: bool = False,
-                 image: str = None,
+                 image: Optional[str] = None,
                  entrypoint: Optional[str] = None,
                  uid: Optional[int] = None,
                  gid: Optional[int] = None,
@@ -808,7 +966,8 @@ class CustomContainerSpec(ServiceSpec):
         super(CustomContainerSpec, self).__init__(
             service_type, service_id,
             placement=placement, unmanaged=unmanaged,
-            preview_only=preview_only)
+            preview_only=preview_only, config=config,
+            networks=networks)
 
         self.image = image
         self.entrypoint = entrypoint

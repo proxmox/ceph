@@ -1,4 +1,5 @@
 # Notify library {#notify}
+
 The notify library implements an event bus, allowing users to register, generate,
 and listen for events. For example, the bdev library may register a new event type
 for bdev creation. Any time a bdev is created, it "sends" the event. Consumers of
@@ -36,4 +37,4 @@ for example "Nvme0n1"
 
 # RPC Calls {#rpc_calls}
 
-See [JSON-RPC documentation](jsonrpc.md/#rpc_get_notification_types)
+See [JSON-RPC documentation](jsonrpc.md/#rpc_notify_get_types)

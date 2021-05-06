@@ -25,12 +25,12 @@
 ;; OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ;;
 
-%include "os.asm"
+%include "include/os.asm"
 %include "job_aes_hmac.asm"
 %include "mb_mgr_datastruct.asm"
-%include "memcpy.asm"
-%include "reg_sizes.asm"
-%include "const.inc"
+%include "include/memcpy.asm"
+%include "include/reg_sizes.asm"
+%include "include/const.inc"
 
 extern md5_x4x2_sse
 
@@ -306,11 +306,34 @@ end_loop:
         mov	[p + 2*4], DWORD(tmp3)
 
         cmp     DWORD [job_rax + _auth_tag_output_len_in_bytes], 12
-        je      return
+        je      clear_ret
 
         ; copy 16 bytes
         mov	DWORD(tmp3), [state + _args_digest_md5 + MD5_DIGEST_WORD_SIZE*idx + 3*MD5_DIGEST_ROW_SIZE]
         mov	[p + 3*4], DWORD(tmp3)
+
+clear_ret:
+
+%ifdef SAFE_DATA
+        ;; Clear digest (16B), outer_block (16B) and extra_block (64B) of returned job
+        mov     dword [state + _args_digest_md5 + MD5_DIGEST_WORD_SIZE*idx + 0*MD5_DIGEST_ROW_SIZE], 0
+        mov     dword [state + _args_digest_md5 + MD5_DIGEST_WORD_SIZE*idx + 1*MD5_DIGEST_ROW_SIZE], 0
+        mov     dword [state + _args_digest_md5 + MD5_DIGEST_WORD_SIZE*idx + 2*MD5_DIGEST_ROW_SIZE], 0
+        mov     dword [state + _args_digest_md5 + MD5_DIGEST_WORD_SIZE*idx + 3*MD5_DIGEST_ROW_SIZE], 0
+
+        pxor    xmm0, xmm0
+        imul    lane_data, idx, _HMAC_SHA1_LANE_DATA_size
+        lea     lane_data, [state + _ldata_md5 + lane_data]
+        ;; Clear first 64 bytes of extra_block
+%assign offset 0
+%rep 4
+        movdqa  [lane_data + _extra_block + offset], xmm0
+%assign offset (offset + 16)
+%endrep
+
+        ;; Clear first 16 bytes of outer_block
+        movdqa  [lane_data + _outer_block], xmm0
+%endif
 
 return:
 

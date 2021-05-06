@@ -1,5 +1,5 @@
 ;;
-;; Copyright (c) 2012-2018, Intel Corporation
+;; Copyright (c) 2012-2019, Intel Corporation
 ;;
 ;; Redistribution and use in source and binary forms, with or without
 ;; modification, are permitted provided that the following conditions are met:
@@ -25,23 +25,28 @@
 ;; OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ;;
 
-%include "os.asm"
-%include "memcpy.asm"
+%include "include/os.asm"
+%include "job_aes_hmac.asm"
+%include "include/memcpy.asm"
+%include "include/const.inc"
+%include "include/reg_sizes.asm"
 
 ; routine to do AES128 CNTR enc/decrypt "by4"
 ; XMM registers are clobbered. Saving/restoring must be done at a higher level
 
 %ifndef AES_CNTR_128
 %define AES_CNTR_128 aes_cntr_128_sse
+%define AES_CNTR_BIT_128 aes_cntr_bit_128_sse
 %endif
 
-extern byteswap_const, ddq_add_1, ddq_add_2, ddq_add_3, ddq_add_4
+extern byteswap_const, set_byte15, ddq_add_1, ddq_add_2, ddq_add_3, ddq_add_4
 
 %define CONCAT(a,b) a %+ b
 %define MOVDQ movdqu
 
 %define xdata0	xmm0
 %define xdata1	xmm1
+%define xpart	xmm1
 %define xdata2	xmm2
 %define xdata3	xmm3
 %define xdata4	xmm4
@@ -49,46 +54,75 @@ extern byteswap_const, ddq_add_1, ddq_add_2, ddq_add_3, ddq_add_4
 %define xdata6	xmm6
 %define xdata7	xmm7
 %define xcounter xmm8
+%define xtmp    xmm8
 %define xbyteswap xmm9
+%define xtmp2   xmm9
 %define xkey0 	xmm10
+%define xtmp3   xmm10
 %define xkey3 	xmm11
 %define xkey6 	xmm12
 %define xkey9	xmm13
 %define xkeyA	xmm14
 %define xkeyB	xmm15
 
+%ifdef CNTR_CCM_SSE
+%ifdef LINUX
+%define job	  rdi
+%define p_in	  rsi
+%define p_keys	  rdx
+%define p_out	  rcx
+%define num_bytes r8
+%define p_ivlen   r9
+%else ;; LINUX
+%define job	  rcx
+%define p_in	  rdx
+%define p_keys	  r8
+%define p_out	  r9
+%define num_bytes r10
+%define p_ivlen   rax
+%endif ;; LINUX
+%define p_IV    r11
+%else ;; CNTR_CCM_SSE
 %ifdef LINUX
 %define p_in	  rdi
 %define p_IV	  rsi
 %define p_keys	  rdx
 %define p_out	  rcx
 %define num_bytes r8
+%define num_bits  r8
 %define p_ivlen   r9
-%else
+%else ;; LINUX
 %define p_in	  rcx
 %define p_IV	  rdx
 %define p_keys	  r8
 %define p_out	  r9
 %define num_bytes r10
+%define num_bits  r10
 %define p_ivlen   qword [rsp + 8*6]
-%endif
+%endif ;; LINUX
+%endif ;; CNTR_CCM_SSE
 
-%define p_tmp	rsp + _buffer
 %define tmp	r11
+%define flags   r11
 
-%macro do_aes_load 1
-	do_aes %1, 1
+%define r_bits   r12
+%define tmp2    r13
+%define mask    r14
+
+%macro do_aes_load 2
+	do_aes %1, %2, 1
 %endmacro
 
-%macro do_aes_noload 1
-	do_aes %1, 0
+%macro do_aes_noload 2
+	do_aes %1, %2, 0
 %endmacro
 
 ; do_aes num_in_par load_keys
 ; This increments p_in, but not p_out
-%macro do_aes 2
+%macro do_aes 3
 %define %%by %1
-%define %%load_keys %2
+%define %%cntr_type %2
+%define %%load_keys %3
 
 %if (%%load_keys)
 	movdqa	xkey0, [p_keys + 0*16]
@@ -107,7 +141,12 @@ extern byteswap_const, ddq_add_1, ddq_add_2, ddq_add_3, ddq_add_4
 	movdqa	xkeyA, [p_keys + 1*16]
 
 	pxor	xdata0, xkey0
+%ifidn %%cntr_type, CNTR_BIT
+	paddq	xcounter, [rel CONCAT(ddq_add_,%%by)]
+%else
 	paddd	xcounter, [rel CONCAT(ddq_add_,%%by)]
+%endif
+
 %assign i 1
 %rep (%%by - 1)
 	pxor	CONCAT(xdata,i), xkey0
@@ -205,6 +244,42 @@ extern byteswap_const, ddq_add_1, ddq_add_2, ddq_add_3, ddq_add_4
 	pxor	CONCAT(xdata,i), xkeyA
 %endif
 
+%ifidn %%cntr_type, CNTR_BIT
+        ;; check if this is the end of the message
+        mov     tmp, num_bytes
+        and     tmp, ~(%%by*16)
+        jnz     %%skip_preserve
+        ;; Check if there is a partial byte
+        or      r_bits, r_bits
+        jz      %%skip_preserve
+
+%assign idx (%%by - 1)
+        ;; Load output to get last partial byte
+        movdqu         xtmp, [p_out + idx * 16]
+
+        ;; Save RCX in temporary GP register
+        mov             tmp, rcx
+        mov             mask, 0xff
+        mov             cl, BYTE(r_bits)
+        shr             mask, cl ;; e.g. 3 remaining bits -> mask = 00011111
+        mov             rcx, tmp
+
+        movq            xtmp2, mask
+        pslldq          xtmp2, 15
+        ;; At this point, xtmp2 contains a mask with all 0s, but with some ones
+        ;; in the partial byte
+
+        ;; Clear all the bits that do not need to be preserved from the output
+        pand            xtmp, xtmp2
+
+        ;; Clear all bits from the input that are not to be ciphered
+        pandn	        xtmp2, CONCAT(xdata, idx)
+        por             xtmp2, xtmp
+        movdqa		CONCAT(xdata, idx), xtmp2
+
+%%skip_preserve:
+%endif
+
 %assign i 0
 %rep %%by
 	MOVDQ	[p_out  + i*16], CONCAT(xdata,i)
@@ -212,100 +287,178 @@ extern byteswap_const, ddq_add_1, ddq_add_2, ddq_add_3, ddq_add_4
 %endrep
 %endmacro
 
-struc STACK
-_buffer:	resq	2
-_rsp_save:	resq	1
-endstruc
-
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 section .text
 
-;; aes_cntr_128_sse(void *in, void *IV, void *keys, void *out, UINT64 num_bytes, UINT64 iv_len)
-align 32
-MKGLOBAL(AES_CNTR_128,function,internal)
-AES_CNTR_128:
+;; Macro performing AES-CTR.
+;;
+%macro DO_CNTR 1
+%define %%CNTR_TYPE %1 ; [in] Type of CNTR operation to do (CNTR/CNTR_BIT/CCM)
 
+%ifidn %%CNTR_TYPE, CCM
+        mov     p_in, [job + _src]
+        add     p_in, [job + _cipher_start_src_offset_in_bytes]
+        mov     p_ivlen, [job + _iv_len_in_bytes]
+        mov	num_bytes, [job + _msg_len_to_cipher_in_bytes]
+        mov     p_keys, [job + _aes_enc_key_expanded]
+        mov     p_out, [job + _dst]
+
+	movdqa	xbyteswap, [rel byteswap_const]
+        ;; Prepare IV ;;
+
+        ;; Byte 0: flags with L'
+        ;; Calculate L' = 15 - Nonce length - 1 = 14 - IV length
+        mov     flags, 14
+        sub     flags, p_ivlen
+        movd    xcounter, DWORD(flags)
+        ;; Bytes 1 - 13: Nonce (7 - 13 bytes long)
+
+        ;; Bytes 1 - 7 are always copied (first 7 bytes)
+        mov     p_IV, [job + _iv]
+        pinsrb	xcounter, [p_IV], 1
+        pinsrw	xcounter, [p_IV + 1], 1
+        pinsrd  xcounter, [p_IV + 3], 1
+
+        cmp     p_ivlen, 7
+        je      _finish_nonce_move
+
+        cmp     p_ivlen, 8
+        je      _iv_length_8
+        cmp     p_ivlen, 9
+        je      _iv_length_9
+        cmp     p_ivlen, 10
+        je      _iv_length_10
+        cmp     p_ivlen, 11
+        je      _iv_length_11
+        cmp     p_ivlen, 12
+        je      _iv_length_12
+
+        ;; Bytes 8 - 13
+_iv_length_13:
+        pinsrb 	xcounter, [p_IV + 12], 13
+_iv_length_12:
+        pinsrb 	xcounter, [p_IV + 11], 12
+_iv_length_11:
+        pinsrd	xcounter, [p_IV + 7], 2
+        jmp     _finish_nonce_move
+_iv_length_10:
+        pinsrb	xcounter, [p_IV + 9], 10
+_iv_length_9:
+        pinsrb	xcounter, [p_IV + 8], 9
+_iv_length_8:
+        pinsrb	xcounter, [p_IV + 7], 8
+
+_finish_nonce_move:
+        ; last byte = 1
+        por     xcounter, [rel set_byte15]
+%else ;; CNTR/CNTR_BIT
 %ifndef LINUX
 	mov	num_bytes, [rsp + 8*5] ; arg5
 %endif
 
+%ifidn %%CNTR_TYPE, CNTR_BIT
+        push r12
+        push r13
+        push r14
+%endif
+
 	movdqa	xbyteswap, [rel byteswap_const]
+%ifidn %%CNTR_TYPE, CNTR
         test    p_ivlen, 16
-        jnz     iv_is_16_bytes
+        jnz     %%iv_is_16_bytes
         ; Read 12 bytes: Nonce + ESP IV. Then pad with block counter 0x00000001
         mov     DWORD(tmp), 0x01000000
         pinsrq  xcounter, [p_IV], 0
         pinsrd  xcounter, [p_IV + 8], 2
         pinsrd  xcounter, DWORD(tmp), 3
-bswap_iv:
+
+%else ;; CNTR_BIT
+        ; Read 16 byte IV: Nonce + 8-byte block counter (BE)
+        movdqu  xcounter, [p_IV]
+%endif
+%endif ;; CNTR/CNTR_BIT/CCM
+%%bswap_iv:
 	pshufb	xcounter, xbyteswap
 
+        ;; calculate len
+        ;; convert bits to bytes (message length in bits for CNTR_BIT)
+%ifidn %%CNTR_TYPE, CNTR_BIT
+        mov     r_bits, num_bits
+        add     num_bits, 7
+        shr     num_bits, 3 ; "num_bits" and "num_bytes" registers are the same
+        and     r_bits, 7   ; Check if there are remainder bits (0-7)
+%endif
 	mov	tmp, num_bytes
 	and	tmp, 3*16
-	jz	chk             ; x4 > or < 15 (not 3 lines)
+	jz	%%chk             ; x4 > or < 15 (not 3 lines)
 
 	; 1 <= tmp <= 3
 	cmp	tmp, 2*16
-	jg	eq3
-	je	eq2
-eq1:
-	do_aes_load	1	; 1 block
+	jg	%%eq3
+	je	%%eq2
+%%eq1:
+	do_aes_load	1, %%CNTR_TYPE	; 1 block
 	add	p_out, 1*16
-        jmp     chk
+        jmp     %%chk
 
-eq2:
-	do_aes_load	2	; 2 blocks
+%%eq2:
+	do_aes_load	2, %%CNTR_TYPE	; 2 blocks
 	add	p_out, 2*16
-        jmp      chk
+        jmp      %%chk
 
-eq3:
-	do_aes_load	3	; 3 blocks
+%%eq3:
+	do_aes_load	3, %%CNTR_TYPE	; 3 blocks
 	add	p_out, 3*16
 	; fall through to chk
-chk:
+%%chk:
         and	num_bytes, ~(3*16)
-        jz	do_return2
+	jz	%%do_return2
+
         cmp	num_bytes, 16
-        jb	last
+        jb	%%last
 
 	; process multiples of 4 blocks
 	movdqa	xkey0, [p_keys + 0*16]
 	movdqa	xkey3, [p_keys + 3*16]
 	movdqa	xkey6, [p_keys + 6*16]
 	movdqa	xkey9, [p_keys + 9*16]
-	jmp	main_loop2
 
 align 32
-main_loop2:
+%%main_loop2:
 	; num_bytes is a multiple of 4 blocks + partial bytes
-	do_aes_noload	4
+	do_aes_noload	4, %%CNTR_TYPE
 	add	p_out,	4*16
 	sub	num_bytes, 4*16
         cmp	num_bytes, 4*16
-	jae	main_loop2
+	jae	%%main_loop2
 
-	test	num_bytes, 15	; partial bytes to be processed?
-	jnz	last
+        ; Check if there is a partial block
+	or      num_bytes, num_bytes
+        jnz    %%last
 
-do_return2:
-        ; don't return updated IV
-; 	pshufb	xcounter, xbyteswap
-;	movdqu	[p_IV], xcounter
+%%do_return2:
+%ifidn %%CNTR_TYPE, CCM
+	mov	rax, job
+	or	dword [rax + _status], STS_COMPLETED_AES
+%endif
+
+%ifidn %%CNTR_TYPE, CNTR_BIT
+        pop r14
+        pop r13
+        pop r12
+%endif
+
 	ret
 
-last:
-	;; Code dealing with the partial block cases
-	; reserve 16 byte aligned buffer on the stack
-        mov	rax, rsp
-        sub	rsp, STACK_size
-        and	rsp, -16
-	mov	[rsp + _rsp_save], rax ; save SP
+%%last:
 
-	; copy input bytes into scratch buffer
-	memcpy_sse_16_1	p_tmp, p_in, num_bytes, tmp, rax
-	; Encryption of a single partial block (p_tmp)
+	; load partial block into XMM register
+	simd_load_sse_15_1 xpart, p_in, num_bytes
+
+%%final_ctr_enc:
+	; Encryption of a single partial block
         pshufb	xcounter, xbyteswap
         movdqa	xdata0, xcounter
         pxor    xdata0, [p_keys + 16*0]
@@ -316,19 +469,76 @@ last:
 %endrep
 	; created keystream
         aesenclast xdata0, [p_keys + 16*i]
-	; xor keystream with the message (scratch)
-        pxor	xdata0, [p_tmp]
-	movdqa	[p_tmp], xdata0
-	; copy result into the output buffer
-	memcpy_sse_16_1	p_out, p_tmp, num_bytes, tmp, rax
-	; remove the stack frame
-	mov	rsp, [rsp + _rsp_save]	; original SP
-	jmp	do_return2
 
-iv_is_16_bytes:
+	; xor keystream with the message (scratch)
+        pxor    xdata0, xpart
+
+%ifidn %%CNTR_TYPE, CNTR_BIT
+        ;; Check if there is a partial byte
+        or      r_bits, r_bits
+        jz      %%store_output
+
+        ;; Load output to get last partial byte
+        simd_load_sse_15_1 xtmp, p_out, num_bytes
+
+        ;; Save RCX in temporary GP register
+        mov     tmp, rcx
+        mov     mask, 0xff
+%ifidn r_bits, rcx
+%error "r_bits cannot be mapped to rcx!"
+%endif
+        mov     cl, BYTE(r_bits)
+        shr     mask, cl ;; e.g. 3 remaining bits -> mask = 00011111
+        mov     rcx, tmp
+
+        movq    xtmp2, mask
+
+        ;; Get number of full bytes in last block of 16 bytes
+        mov     tmp, num_bytes
+        dec     tmp
+        XPSLLB  xtmp2, tmp, xtmp3, tmp2
+        ;; At this point, xtmp2 contains a mask with all 0s, but with some ones
+        ;; in the partial byte
+
+        ;; Clear all the bits that do not need to be preserved from the output
+        pand    xtmp, xtmp2
+
+        ;; Clear the bits from the input that are not to be ciphered
+        pandn   xtmp2, xdata0
+        por     xtmp2, xtmp
+        movdqa  xdata0, xtmp2
+%endif
+
+%%store_output:
+        ; copy result into the output buffer
+        simd_store_sse_15 p_out, xdata0, num_bytes, tmp, rax
+
+        jmp	%%do_return2
+
+%%iv_is_16_bytes:
         ; Read 16 byte IV: Nonce + ESP IV + block counter (BE)
         movdqu  xcounter, [p_IV]
-        jmp     bswap_iv
+        jmp     %%bswap_iv
+%endmacro
+
+align 32
+%ifdef CNTR_CCM_SSE
+; JOB_AES_HMAC * aes_cntr_ccm_128_sse(JOB_AES_HMAC *job)
+; arg 1 : job
+MKGLOBAL(AES_CNTR_CCM_128,function,internal)
+AES_CNTR_CCM_128:
+        DO_CNTR CCM
+%else
+;; aes_cntr_128_sse(void *in, void *IV, void *keys, void *out, UINT64 num_bytes, UINT64 iv_len)
+MKGLOBAL(AES_CNTR_128,function,internal)
+AES_CNTR_128:
+        DO_CNTR CNTR
+
+;; aes_cntr_bit_128_sse(void *in, void *IV, void *keys, void *out, UINT64 num_bits, UINT64 iv_len)
+MKGLOBAL(AES_CNTR_BIT_128,function,internal)
+AES_CNTR_BIT_128:
+        DO_CNTR CNTR_BIT
+%endif ;; CNTR_CCM_SSE
 
 %ifdef LINUX
 section .note.GNU-stack noalloc noexec nowrite progbits

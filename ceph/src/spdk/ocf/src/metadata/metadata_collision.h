@@ -59,13 +59,6 @@ static inline void ocf_metadata_set_collision_info(
 	cache->metadata.iface.set_collision_info(cache, line, next, prev);
 }
 
-static inline void ocf_metadata_get_collision_info(
-		struct ocf_cache *cache, ocf_cache_line_t line,
-		ocf_cache_line_t *next, ocf_cache_line_t *prev)
-{
-	cache->metadata.iface.get_collision_info(cache, line, next, prev);
-}
-
 static inline void ocf_metadata_set_collision_next(
 		struct ocf_cache *cache, ocf_cache_line_t line,
 		ocf_cache_line_t next)
@@ -80,16 +73,29 @@ static inline void ocf_metadata_set_collision_prev(
 	cache->metadata.iface.set_collision_prev(cache, line, prev);
 }
 
+static inline void ocf_metadata_get_collision_info(
+		struct ocf_cache *cache, ocf_cache_line_t line,
+		ocf_cache_line_t *next, ocf_cache_line_t *prev)
+{
+	cache->metadata.iface.get_collision_info(cache, line, next, prev);
+}
+
 static inline ocf_cache_line_t ocf_metadata_get_collision_next(
 		struct ocf_cache *cache, ocf_cache_line_t line)
 {
-	return cache->metadata.iface.get_collision_next(cache, line);
+	ocf_cache_line_t next;
+
+	ocf_metadata_get_collision_info(cache, line, &next, NULL);
+	return next;
 }
 
 static inline ocf_cache_line_t ocf_metadata_get_collision_prev(
 		struct ocf_cache *cache, ocf_cache_line_t line)
 {
-	return cache->metadata.iface.get_collision_prev(cache, line);
+	ocf_cache_line_t prev;
+
+	ocf_metadata_get_collision_info(cache, line, NULL, &prev);
+	return prev;
 }
 
 void ocf_metadata_add_to_collision(struct ocf_cache *cache,
@@ -98,5 +104,17 @@ void ocf_metadata_add_to_collision(struct ocf_cache *cache,
 
 void ocf_metadata_remove_from_collision(struct ocf_cache *cache,
 		ocf_cache_line_t line, ocf_part_id_t part_id);
+
+static inline void ocf_metadata_start_collision_shared_access(
+		struct ocf_cache *cache, ocf_cache_line_t line)
+{
+	cache->metadata.iface.start_collision_shared_access(cache, line);
+}
+
+static inline void ocf_metadata_end_collision_shared_access(
+		struct ocf_cache *cache, ocf_cache_line_t line)
+{
+	cache->metadata.iface.end_collision_shared_access(cache, line);
+}
 
 #endif /* METADATA_COLLISION_H_ */

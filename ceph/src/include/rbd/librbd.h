@@ -32,7 +32,7 @@ extern "C" {
 #include "features.h"
 
 #define LIBRBD_VER_MAJOR 1
-#define LIBRBD_VER_MINOR 15
+#define LIBRBD_VER_MINOR 16
 #define LIBRBD_VER_EXTRA 0
 
 #define LIBRBD_VERSION(maj, min, extra) ((maj << 16) + (min << 8) + extra)
@@ -48,6 +48,7 @@ extern "C" {
 #define LIBRBD_SUPPORTS_WATCH 0
 #define LIBRBD_SUPPORTS_WRITESAME 1
 #define LIBRBD_SUPPORTS_WRITE_ZEROES 1
+#define LIBRBD_SUPPORTS_ENCRYPTION 1
 
 #if __GNUC__ >= 4
   #define CEPH_RBD_API          __attribute__ ((visibility ("default")))
@@ -118,8 +119,11 @@ typedef struct {
 #define RBD_MAX_IMAGE_NAME_SIZE 96
 #define RBD_MAX_BLOCK_NAME_SIZE 24
 
-#define RBD_SNAP_REMOVE_UNPROTECT	1 << 0
-#define RBD_SNAP_REMOVE_FLATTEN		1 << 1
+#define RBD_SNAP_CREATE_SKIP_QUIESCE		(1 << 0)
+#define RBD_SNAP_CREATE_IGNORE_QUIESCE_ERROR	(1 << 1)
+
+#define RBD_SNAP_REMOVE_UNPROTECT	(1 << 0)
+#define RBD_SNAP_REMOVE_FLATTEN		(1 << 1)
 #define RBD_SNAP_REMOVE_FORCE		(RBD_SNAP_REMOVE_UNPROTECT | RBD_SNAP_REMOVE_FLATTEN)
 
 /**
@@ -364,6 +368,35 @@ typedef enum {
   RBD_POOL_STAT_OPTION_TRASH_SNAPSHOTS
 } rbd_pool_stat_option_t;
 
+/* rbd_write_zeroes / rbd_aio_write_zeroes flags */
+enum {
+  RBD_WRITE_ZEROES_FLAG_THICK_PROVISION = (1U<<0), /* fully allocated zeroed extent */
+};
+
+typedef enum {
+    RBD_ENCRYPTION_FORMAT_LUKS1 = 0,
+    RBD_ENCRYPTION_FORMAT_LUKS2 = 1
+} rbd_encryption_format_t;
+
+typedef enum {
+    RBD_ENCRYPTION_ALGORITHM_AES128 = 0,
+    RBD_ENCRYPTION_ALGORITHM_AES256 = 1
+} rbd_encryption_algorithm_t;
+
+typedef void *rbd_encryption_options_t;
+
+typedef struct {
+    rbd_encryption_algorithm_t alg;
+    const char* passphrase;
+    size_t passphrase_size;
+} rbd_encryption_luks1_format_options_t;
+
+typedef struct {
+    rbd_encryption_algorithm_t alg;
+    const char* passphrase;
+    size_t passphrase_size;
+} rbd_encryption_luks2_format_options_t;
+
 CEPH_RBD_API void rbd_image_options_create(rbd_image_options_t* opts);
 CEPH_RBD_API void rbd_image_options_destroy(rbd_image_options_t opts);
 CEPH_RBD_API int rbd_image_options_set_string(rbd_image_options_t opts,
@@ -468,6 +501,9 @@ CEPH_RBD_API int rbd_migration_prepare(rados_ioctx_t ioctx,
                                        rados_ioctx_t dest_ioctx,
                                        const char *dest_image_name,
                                        rbd_image_options_t opts);
+CEPH_RBD_API int rbd_migration_prepare_import(
+    const char *source_spec, rados_ioctx_t dest_ioctx,
+    const char *dest_image_name, rbd_image_options_t opts);
 CEPH_RBD_API int rbd_migration_execute(rados_ioctx_t ioctx,
                                        const char *image_name);
 CEPH_RBD_API int rbd_migration_execute_with_progress(rados_ioctx_t ioctx,
@@ -718,6 +754,10 @@ CEPH_RBD_API int rbd_get_parent(rbd_image_t image,
                                 rbd_linked_image_spec_t *parent_image,
                                 rbd_snap_spec_t *parent_snap);
 
+CEPH_RBD_API int rbd_get_migration_source_spec(rbd_image_t image,
+                                               char* source_spec,
+                                               size_t* max_len);
+
 CEPH_RBD_API int rbd_get_flags(rbd_image_t image, uint64_t *flags);
 CEPH_RBD_API int rbd_get_group(rbd_image_t image, rbd_group_info_t *group_info,
                                size_t group_info_size);
@@ -776,12 +816,25 @@ CEPH_RBD_API int rbd_deep_copy_with_progress(rbd_image_t image,
                                              librbd_progress_fn_t cb,
                                              void *cbdata);
 
+/* encryption */
+CEPH_RBD_API int rbd_encryption_format(rbd_image_t image,
+                                       rbd_encryption_format_t format,
+                                       rbd_encryption_options_t opts,
+                                       size_t opts_size);
+CEPH_RBD_API int rbd_encryption_load(rbd_image_t image,
+                                     rbd_encryption_format_t format,
+                                     rbd_encryption_options_t opts,
+                                     size_t opts_size);
+
 /* snapshots */
 CEPH_RBD_API int rbd_snap_list(rbd_image_t image, rbd_snap_info_t *snaps,
                                int *max_snaps);
 CEPH_RBD_API void rbd_snap_list_end(rbd_snap_info_t *snaps);
 CEPH_RBD_API int rbd_snap_exists(rbd_image_t image, const char *snapname, bool *exists);
 CEPH_RBD_API int rbd_snap_create(rbd_image_t image, const char *snapname);
+CEPH_RBD_API int rbd_snap_create2(rbd_image_t image, const char *snap_name,
+                                  uint32_t flags, librbd_progress_fn_t cb,
+                                  void *cbdata);
 CEPH_RBD_API int rbd_snap_remove(rbd_image_t image, const char *snapname);
 CEPH_RBD_API int rbd_snap_remove2(rbd_image_t image, const char *snap_name,
                                   uint32_t flags, librbd_progress_fn_t cb,
@@ -1210,6 +1263,9 @@ CEPH_RBD_API int rbd_mirror_image_demote(rbd_image_t image);
 CEPH_RBD_API int rbd_mirror_image_resync(rbd_image_t image);
 CEPH_RBD_API int rbd_mirror_image_create_snapshot(rbd_image_t image,
                                                   uint64_t *snap_id);
+CEPH_RBD_API int rbd_mirror_image_create_snapshot2(rbd_image_t image,
+                                                   uint32_t flags,
+                                                   uint64_t *snap_id);
 CEPH_RBD_API int rbd_mirror_image_get_info(rbd_image_t image,
                                            rbd_mirror_image_info_t *mirror_image_info,
                                            size_t info_size);
@@ -1343,6 +1399,10 @@ CEPH_RBD_API int rbd_group_image_list_cleanup(rbd_group_image_info_t *images,
 CEPH_RBD_API int rbd_group_snap_create(rados_ioctx_t group_p,
                                        const char *group_name,
                                        const char *snap_name);
+CEPH_RBD_API int rbd_group_snap_create2(rados_ioctx_t group_p,
+                                        const char *group_name,
+                                        const char *snap_name,
+                                        uint32_t flags);
 CEPH_RBD_API int rbd_group_snap_remove(rados_ioctx_t group_p,
                                        const char *group_name,
                                        const char *snap_name);
@@ -1385,6 +1445,40 @@ CEPH_RBD_API int rbd_pool_stats_option_add_uint64(rbd_pool_stats_t stats,
 					          int stat_option,
                                                   uint64_t* stat_val);
 CEPH_RBD_API int rbd_pool_stats_get(rados_ioctx_t io, rbd_pool_stats_t stats);
+
+/**
+ * Register a quiesce/unquiesce watcher.
+ *
+ * @param image the image to watch
+ * @param quiesce_cb what to do when librbd wants to quiesce
+ * @param unquiesce_cb what to do when librbd wants to unquiesce
+ * @param arg opaque value to pass to the callbacks
+ * @param handle where to store the internal id assigned to this watch
+ * @returns 0 on success, negative error code on failure
+ */
+CEPH_RBD_API int rbd_quiesce_watch(rbd_image_t image,
+                                   rbd_update_callback_t quiesce_cb,
+                                   rbd_update_callback_t unquiesce_cb,
+                                   void *arg, uint64_t *handle);
+
+/**
+ * Notify quiesce is complete
+ *
+ * @param image the image to notify
+ * @param handle which watch is complete
+ * @param r the return code
+ */
+CEPH_RADOS_API void rbd_quiesce_complete(rbd_image_t image, uint64_t handle,
+                                         int r);
+
+/**
+ * Unregister a quiesce/unquiesce watcher.
+ *
+ * @param image the image to unwatch
+ * @param handle which watch to unregister
+ * @returns 0 on success, negative error code on failure
+ */
+CEPH_RBD_API int rbd_quiesce_unwatch(rbd_image_t image, uint64_t handle);
 
 #if __GNUC__ >= 4
   #pragma GCC diagnostic pop

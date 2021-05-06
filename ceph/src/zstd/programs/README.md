@@ -10,7 +10,7 @@ There are however other Makefile targets that create different variations of CLI
 - `zstd-decompress` : version of CLI which can only decompress zstd format
 
 
-#### Compilation variables
+### Compilation variables
 `zstd` scope can be altered by modifying the following `make` variables :
 
 - __HAVE_THREAD__ : multithreading is automatically enabled when `pthread` is detected.
@@ -37,7 +37,7 @@ There are however other Makefile targets that create different variations of CLI
   `.gz` support is automatically enabled when `zlib` library is detected at build time.
   It's possible to disable `.gz` support, by setting `HAVE_ZLIB=0`.
   Example : `make zstd HAVE_ZLIB=0`
-  It's also possible to force compilation with zlib support, `using HAVE_ZLIB=1`.
+  It's also possible to force compilation with zlib support, using `HAVE_ZLIB=1`.
   In which case, linking stage will fail if `zlib` library cannot be found.
   This is useful to prevent silent feature disabling.
 
@@ -45,7 +45,7 @@ There are however other Makefile targets that create different variations of CLI
   This is ordered through commands `--format=xz` and `--format=lzma` respectively.
   Alternatively, symlinks named `xz`, `unxz`, `lzma`, or `unlzma` will mimic intended behavior.
   `.xz` and `.lzma` support is automatically enabled when `lzma` library is detected at build time.
-  It's possible to disable `.xz` and `.lzma` support, by setting `HAVE_LZMA=0` .
+  It's possible to disable `.xz` and `.lzma` support, by setting `HAVE_LZMA=0`.
   Example : `make zstd HAVE_LZMA=0`
   It's also possible to force compilation with lzma support, using `HAVE_LZMA=1`.
   In which case, linking stage will fail if `lzma` library cannot be found.
@@ -61,6 +61,24 @@ There are however other Makefile targets that create different variations of CLI
   In which case, linking stage will fail if `lz4` library cannot be found.
   This is useful to prevent silent feature disabling.
 
+- __ZSTD_NOBENCH__ : `zstd` cli will be compiled without its integrated benchmark module.
+  This can be useful to produce smaller binaries.
+  In this case, the corresponding unit can also be excluded from compilation target.
+
+- __ZSTD_NODICT__ : `zstd` cli will be compiled without support for the integrated dictionary builder.
+  This can be useful to produce smaller binaries.
+  In this case, the corresponding unit can also be excluded from compilation target.
+
+- __ZSTD_NOCOMPRESS__ : `zstd` cli will be compiled without support for compression.
+  The resulting binary will only be able to decompress files.
+  This can be useful to produce smaller binaries.
+  A corresponding `Makefile` target using this ability is `zstd-decompress`.
+
+- __ZSTD_NODECOMPRESS__ : `zstd` cli will be compiled without support for decompression.
+  The resulting binary will only be able to compress files.
+  This can be useful to produce smaller binaries.
+  A corresponding `Makefile` target using this ability is `zstd-compress`.
+
 - __BACKTRACE__ : `zstd` can display a stack backtrace when execution
   generates a runtime exception. By default, this feature may be
   degraded/disabled on some platforms unless additional compiler directives are
@@ -69,11 +87,11 @@ There are however other Makefile targets that create different variations of CLI
   Example : `make zstd BACKTRACE=1`
 
 
-#### Aggregation of parameters
+### Aggregation of parameters
 CLI supports aggregation of parameters i.e. `-b1`, `-e18`, and `-i1` can be joined into `-b1e18i1`.
 
 
-#### Symlink shortcuts
+### Symlink shortcuts
 It's possible to invoke `zstd` through a symlink.
 When the name of the symlink has a specific value, it triggers an associated behavior.
 - `zstdmt` : compress using all cores available on local system.
@@ -86,7 +104,7 @@ When the name of the symlink has a specific value, it triggers an associated beh
 - `ungz`, `unxz` and `unlzma` will do the same, and will also remove source file by default (use `--keep` to preserve).
 
 
-#### Dictionary builder in Command Line Interface
+### Dictionary builder in Command Line Interface
 Zstd offers a training mode, which can be used to tune the algorithm for a selected
 type of data, by providing it with a few samples. The result of the training is stored
 in a file selected with the `-o` option (default name is `dictionary`),
@@ -106,7 +124,7 @@ Usage of the dictionary builder and created dictionaries with CLI:
 3. Decompress with the dictionary: `zstd --decompress FILE.zst -D dictionaryName`
 
 
-#### Benchmark in Command Line Interface
+### Benchmark in Command Line Interface
 CLI includes in-memory compression benchmark module for zstd.
 The benchmark is conducted using given filenames. The files are read into memory and joined together.
 It makes benchmark more precise as it eliminates I/O overhead.
@@ -118,7 +136,7 @@ One can select compression levels starting from `-b` and ending with `-e`.
 The `-i` parameter selects minimal time used for each of tested levels.
 
 
-#### Usage of Command Line Interface
+### Usage of Command Line Interface
 The full list of options can be obtained with `-h` or `-H` parameter:
 ```
 Usage :
@@ -142,23 +160,34 @@ Advanced arguments :
  -q     : suppress warnings; specify twice to suppress errors too
  -c     : force write to standard output, even if it is the console
  -l     : print information about zstd compressed files
+--exclude-compressed:  only compress files that are not previously compressed
 --ultra : enable levels beyond 19, up to 22 (requires more memory)
---long  : enable long distance matching (requires more memory)
+--long[=#]: enable long distance matching with given window log (default: 27)
+--fast[=#]: switch to very fast compression levels (default: 1)
+--adapt : dynamically adapt compression level to I/O conditions
+--stream-size=# : optimize compression parameters for streaming input of given number of bytes
+--size-hint=# optimize compression parameters for streaming input of approximately this size
+--target-compressed-block-size=# : make compressed block near targeted size
+ -T#    : spawns # compression threads (default: 1, 0==# cores)
+ -B#    : select size of each job (default: 0==automatic)
+--rsyncable : compress using a rsync-friendly method (-B sets block size)
 --no-dictID : don't write dictID into header (dictionary compression)
 --[no-]check : integrity check (default: enabled)
+--[no-]compress-literals : force (un)compressed literals
  -r     : operate recursively on directories
+--output-dir-flat[=directory]: all resulting files stored into `directory`.
+--format=zstd : compress files to the .zst format (default)
 --format=gzip : compress files to the .gz format
---format=xz : compress files to the .xz format
---format=lzma : compress files to the .lzma format
 --test  : test compressed file integrity
 --[no-]sparse : sparse mode (default: disabled)
  -M#    : Set a memory usage limit for decompression
+--no-progress : do not display the progress bar
 --      : All arguments after "--" are treated as files
 
 Dictionary builder :
 --train ## : create a dictionary from a training set of files
---train-cover[=k=#,d=#,steps=#,split=#] : use the cover algorithm with optional args
---train-fastcover[=k=#,d=#,f=#,steps=#,split=#,accel=#] : use the fastcover algorithm with optional args
+--train-cover[=k=#,d=#,steps=#,split=#,shrink[=#]] : use the cover algorithm with optional args
+--train-fastcover[=k=#,d=#,f=#,steps=#,split=#,accel=#,shrink[=#]] : use the fast cover algorithm with optional args
 --train-legacy[=s=#] : use the legacy algorithm with selectivity (default: 9)
  -o file : `file` is dictionary name (default: dictionary)
 --maxdict=# : limit dictionary to specified size (default: 112640)
@@ -172,13 +201,19 @@ Benchmark arguments :
 --priority=rt : set process priority to real-time
 ```
 
-#### Restricted usage of Environment Variables
-Using environment variables to set compression/decompression parameters has security implications. Therefore,
-we intentionally restrict its usage. Currently, only `ZSTD_CLEVEL` is supported for setting compression level.
-If the value of `ZSTD_CLEVEL` is not a valid integer, it will be ignored with a warning message.
-Note that command line options will override corresponding environment variable settings.
+### Passing parameters through Environment Variables
+`ZSTD_CLEVEL` can be used to modify the default compression level of `zstd`
+(usually set to `3`) to another value between 1 and 19 (the "normal" range).
+This can be useful when `zstd` CLI is invoked in a way that doesn't allow passing arguments.
+One such scenario is `tar --zstd`.
+As `ZSTD_CLEVEL` only replaces the default compression level,
+it can then be overridden by corresponding command line arguments.
 
-#### Long distance matching mode
+There is no "generic" way to pass "any kind of parameter" to `zstd` in a pass-through manner.
+Using environment variables for this purpose has security implications.
+Therefore, this avenue is intentionally restricted and only supports `ZSTD_CLEVEL`.
+
+### Long distance matching mode
 The long distance matching mode, enabled with `--long`, is designed to improve
 the compression ratio for files with long matches at a large distance (up to the
 maximum window size, `128 MiB`) while still maintaining compression speed.
@@ -202,12 +237,12 @@ Compression Speed vs Ratio | Decompression Speed
 
 | Method | Compression ratio | Compression speed | Decompression speed  |
 |:-------|------------------:|-------------------------:|---------------------------:|
-| `zstd -1`   | `5.065`   | `284.8 MB/s`  | `759.3 MB/s`  |
+| `zstd -1`  | `5.065`    | `284.8 MB/s`  | `759.3 MB/s`  |
 | `zstd -5`  | `5.826`    | `124.9 MB/s`  | `674.0 MB/s`  |
 | `zstd -10` | `6.504`    | `29.5 MB/s`   | `771.3 MB/s`  |
 | `zstd -1 --long` | `17.426` | `220.6 MB/s` | `1638.4 MB/s` |
-| `zstd -5 --long` | `19.661` | `165.5 MB/s` | `1530.6 MB/s`|
-| `zstd -10 --long`| `21.949` | `75.6 MB/s` | `1632.6 MB/s`|
+| `zstd -5 --long` | `19.661` | `165.5 MB/s` | `1530.6 MB/s` |
+| `zstd -10 --long`| `21.949` |  `75.6 MB/s` | `1632.6 MB/s` |
 
 On this file, the compression ratio improves significantly with minimal impact
 on compression speed, and the decompression speed doubles.
@@ -230,7 +265,7 @@ The below table illustrates this on the [Silesia compression corpus].
 | `zstd -10 --long`| `3.566` | `16.2 MB/s`       | `415.7 MB/s`   |
 
 
-#### zstdgrep
+### zstdgrep
 
 `zstdgrep` is a utility which makes it possible to `grep` directly a `.zst` compressed file.
 It's used the same way as normal `grep`, for example :

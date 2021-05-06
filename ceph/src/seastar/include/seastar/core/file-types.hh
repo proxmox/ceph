@@ -23,9 +23,16 @@
 
 #include <fcntl.h>
 #include <sys/stat.h>
+#include <type_traits>
 
 namespace seastar {
 
+/// \addtogroup fileio-module
+/// @{
+
+/// Enumeration describing how a file is to be opened.
+///
+/// \see file::open_file_dma()
 enum class open_flags {
     rw = O_RDWR,
     ro = O_RDONLY,
@@ -51,9 +58,6 @@ inline open_flags operator&(open_flags a, open_flags b) {
 inline void operator&=(open_flags& a, open_flags b) {
     a = (a & b);
 }
-
-/// \addtogroup fileio-module
-/// @{
 
 /// Enumeration describing the type of a directory entry being listed.
 ///

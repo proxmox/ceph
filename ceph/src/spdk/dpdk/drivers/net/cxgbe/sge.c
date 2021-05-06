@@ -73,7 +73,7 @@ static inline unsigned int fl_mtu_bufsize(struct adapter *adapter,
 {
 	struct sge *s = &adapter->sge;
 
-	return CXGBE_ALIGN(s->pktshift + ETHER_HDR_LEN + VLAN_HLEN + mtu,
+	return CXGBE_ALIGN(s->pktshift + RTE_ETHER_HDR_LEN + VLAN_HLEN + mtu,
 			   s->fl_align);
 }
 
@@ -1004,12 +1004,6 @@ static inline int tx_do_packet_coalesce(struct sge_eth_txq *txq,
 	struct cpl_tx_pkt_core *cpl;
 	struct tx_sw_desc *sd;
 	unsigned int idx = q->coalesce.idx, len = mbuf->pkt_len;
-	unsigned int max_coal_pkt_num = is_pf4(adap) ? ETH_COALESCE_PKT_NUM :
-						       ETH_COALESCE_VF_PKT_NUM;
-
-#ifdef RTE_LIBRTE_CXGBE_TPUT
-	RTE_SET_USED(nb_pkts);
-#endif
 
 	if (q->coalesce.type == 0) {
 		mc = (struct ulp_txpkt *)q->coalesce.ptr;
@@ -1082,13 +1076,15 @@ static inline int tx_do_packet_coalesce(struct sge_eth_txq *txq,
 	sd->coalesce.sgl[idx & 1] = (struct ulptx_sgl *)(cpl + 1);
 	sd->coalesce.idx = (idx & 1) + 1;
 
-	/* send the coaelsced work request if max reached */
-	if (++q->coalesce.idx == max_coal_pkt_num
-#ifndef RTE_LIBRTE_CXGBE_TPUT
-	    || q->coalesce.idx >= nb_pkts
-#endif
-	    )
+	/* Send the coalesced work request, only if max reached. However,
+	 * if lower latency is preferred over throughput, then don't wait
+	 * for coalescing the next Tx burst and send the packets now.
+	 */
+	q->coalesce.idx++;
+	if (q->coalesce.idx == adap->params.max_tx_coalesce_num ||
+	    (adap->devargs.tx_mode_latency && q->coalesce.idx >= nb_pkts))
 		ship_tx_pkt_coalesce_wr(adap, txq);
+
 	return 0;
 }
 
@@ -1128,7 +1124,7 @@ int t4_eth_xmit(struct sge_eth_txq *txq, struct rte_mbuf *mbuf,
 	 * The chip min packet length is 10 octets but play safe and reject
 	 * anything shorter than an Ethernet header.
 	 */
-	if (unlikely(m->pkt_len < ETHER_HDR_LEN)) {
+	if (unlikely(m->pkt_len < RTE_ETHER_HDR_LEN)) {
 out_free:
 		rte_pktmbuf_free(m);
 		return 0;
@@ -1138,14 +1134,15 @@ out_free:
 	    (unlikely(m->pkt_len > max_pkt_len)))
 		goto out_free;
 
-	pi = (struct port_info *)txq->data->dev_private;
+	pi = txq->data->dev_private;
 	adap = pi->adapter;
 
 	cntrl = F_TXPKT_L4CSUM_DIS | F_TXPKT_IPCSUM_DIS;
 	/* align the end of coalesce WR to a 512 byte boundary */
 	txq->q.coalesce.max = (8 - (txq->q.pidx & 7)) * 8;
 
-	if (!((m->ol_flags & PKT_TX_TCP_SEG) || (m->pkt_len > ETHER_MAX_LEN))) {
+	if (!((m->ol_flags & PKT_TX_TCP_SEG) ||
+			m->pkt_len > RTE_ETHER_MAX_LEN)) {
 		if (should_tx_packet_coalesce(txq, mbuf, &cflits, adap)) {
 			if (unlikely(map_mbuf(mbuf, addr) < 0)) {
 				dev_warn(adap, "%s: mapping err for coalesce\n",
@@ -1153,7 +1150,6 @@ out_free:
 				txq->stats.mapping_err++;
 				goto out_free;
 			}
-			rte_prefetch0((volatile void *)addr);
 			return tx_do_packet_coalesce(txq, mbuf, cflits, adap,
 						     pi, addr, nb_pkts);
 		} else {
@@ -1230,7 +1226,7 @@ out_free:
 		v6 = (m->ol_flags & PKT_TX_IPV6) != 0;
 		l3hdr_len = m->l3_len;
 		l4hdr_len = m->l4_len;
-		eth_xtra_len = m->l2_len - ETHER_HDR_LEN;
+		eth_xtra_len = m->l2_len - RTE_ETHER_HDR_LEN;
 		len += sizeof(*lso);
 		wr->op_immdlen = htonl(V_FW_WR_OP(is_pf4(adap) ?
 						  FW_ETH_TX_PKT_WR :
@@ -1791,7 +1787,7 @@ int t4_sge_alloc_rxq(struct adapter *adap, struct sge_rspq *iq, bool fwevtq,
 	int ret, flsz = 0;
 	struct fw_iq_cmd c;
 	struct sge *s = &adap->sge;
-	struct port_info *pi = (struct port_info *)(eth_dev->data->dev_private);
+	struct port_info *pi = eth_dev->data->dev_private;
 	char z_name[RTE_MEMZONE_NAMESIZE];
 	char z_name_sw[RTE_MEMZONE_NAMESIZE];
 	unsigned int nb_refill;
@@ -2061,7 +2057,7 @@ int t4_sge_alloc_eth_txq(struct adapter *adap, struct sge_eth_txq *txq,
 	int ret, nentries;
 	struct fw_eq_eth_cmd c;
 	struct sge *s = &adap->sge;
-	struct port_info *pi = (struct port_info *)(eth_dev->data->dev_private);
+	struct port_info *pi = eth_dev->data->dev_private;
 	char z_name[RTE_MEMZONE_NAMESIZE];
 	char z_name_sw[RTE_MEMZONE_NAMESIZE];
 	u8 pciechan;
@@ -2140,7 +2136,7 @@ int t4_sge_alloc_ctrl_txq(struct adapter *adap, struct sge_ctrl_txq *txq,
 	int ret, nentries;
 	struct fw_eq_ctrl_cmd c;
 	struct sge *s = &adap->sge;
-	struct port_info *pi = (struct port_info *)(eth_dev->data->dev_private);
+	struct port_info *pi = eth_dev->data->dev_private;
 	char z_name[RTE_MEMZONE_NAMESIZE];
 	char z_name_sw[RTE_MEMZONE_NAMESIZE];
 

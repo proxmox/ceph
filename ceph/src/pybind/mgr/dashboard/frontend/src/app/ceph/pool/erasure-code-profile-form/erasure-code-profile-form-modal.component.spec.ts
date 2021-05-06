@@ -2,22 +2,15 @@ import { HttpClientTestingModule } from '@angular/common/http/testing';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { RouterTestingModule } from '@angular/router/testing';
 
-import { NgBootstrapFormValidationModule } from 'ng-bootstrap-form-validation';
-import { BsModalRef } from 'ngx-bootstrap/modal';
+import { NgbActiveModal } from '@ng-bootstrap/ng-bootstrap';
 import { ToastrModule } from 'ngx-toastr';
 import { of } from 'rxjs';
 
-import {
-  configureTestBed,
-  FixtureHelper,
-  FormHelper,
-  i18nProviders,
-  Mocks
-} from '../../../../testing/unit-test-helper';
-import { ErasureCodeProfileService } from '../../../shared/api/erasure-code-profile.service';
-import { CrushNode } from '../../../shared/models/crush-node';
-import { ErasureCodeProfile } from '../../../shared/models/erasure-code-profile';
-import { TaskWrapperService } from '../../../shared/services/task-wrapper.service';
+import { ErasureCodeProfileService } from '~/app/shared/api/erasure-code-profile.service';
+import { CrushNode } from '~/app/shared/models/crush-node';
+import { ErasureCodeProfile } from '~/app/shared/models/erasure-code-profile';
+import { TaskWrapperService } from '~/app/shared/services/task-wrapper.service';
+import { configureTestBed, FixtureHelper, FormHelper, Mocks } from '~/testing/unit-test-helper';
 import { PoolModule } from '../pool.module';
 import { ErasureCodeProfileFormModalComponent } from './erasure-code-profile-form-modal.component';
 
@@ -49,14 +42,8 @@ describe('ErasureCodeProfileFormModalComponent', () => {
   };
 
   configureTestBed({
-    imports: [
-      HttpClientTestingModule,
-      RouterTestingModule,
-      ToastrModule.forRoot(),
-      PoolModule,
-      NgBootstrapFormValidationModule.forRoot()
-    ],
-    providers: [ErasureCodeProfileService, BsModalRef, i18nProviders]
+    imports: [HttpClientTestingModule, RouterTestingModule, ToastrModule.forRoot(), PoolModule],
+    providers: [ErasureCodeProfileService, NgbActiveModal]
   });
 
   beforeEach(() => {
@@ -64,7 +51,7 @@ describe('ErasureCodeProfileFormModalComponent', () => {
     fixtureHelper = new FixtureHelper(fixture);
     component = fixture.componentInstance;
     formHelper = new FormHelper(component.form);
-    ecpService = TestBed.get(ErasureCodeProfileService);
+    ecpService = TestBed.inject(ErasureCodeProfileService);
     data = {
       plugins: ['isa', 'jerasure', 'shec', 'lrc'],
       names: ['ecp1', 'ecp2'],
@@ -517,7 +504,7 @@ describe('ErasureCodeProfileFormModalComponent', () => {
       submittedEcp['packetsize'] = 2048;
       submittedEcp['technique'] = 'reed_sol_van';
 
-      const taskWrapper = TestBed.get(TaskWrapperService);
+      const taskWrapper = TestBed.inject(TaskWrapperService);
       spyOn(taskWrapper, 'wrapTaskAroundCall').and.callThrough();
       spyOn(ecpService, 'create').and.stub();
     });

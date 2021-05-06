@@ -4,16 +4,23 @@
 L3 Forwarding Sample Application
 ================================
 
-The L3 Forwarding application is a simple example of packet processing using the DPDK.
+The L3 Forwarding application is a simple example of packet processing using
+DPDK to demonstrate usage of poll and event mode packet I/O mechanism.
 The application performs L3 forwarding.
 
 Overview
 --------
 
-The application demonstrates the use of the hash and LPM libraries in the DPDK to implement packet forwarding.
-The initialization and run-time paths are very similar to those of the :doc:`l2_forward_real_virtual`.
-The main difference from the L2 Forwarding sample application is that the forwarding decision
-is made based on information read from the input packet.
+The application demonstrates the use of the hash and LPM libraries in the DPDK
+to implement packet forwarding using poll or event mode PMDs for packet I/O.
+The initialization and run-time paths are very similar to those of the
+:doc:`l2_forward_real_virtual` and :doc:`l2_forward_event`.
+The main difference from the L2 Forwarding sample application is that optionally
+packet can be Rx/Tx from/to eventdev instead of port directly and forwarding
+decision is made based on information read from the input packet.
+
+Eventdev can optionally use S/W or H/W (if supported by platform) scheduler
+implementation for packet I/O based on run time parameters.
 
 The lookup method is either hash-based or LPM-based and is selected at run time. When the selected lookup method is hash-based,
 a hash object is used to emulate the flow classification stage.
@@ -56,6 +63,9 @@ The application has a number of command line options::
                              [--ipv6]
                              [--parse-ptype]
                              [--per-port-pool]
+                             [--mode]
+                             [--eventq-sched]
+                             [--event-eth-rxqs]
 
 Where,
 
@@ -85,6 +95,13 @@ Where,
 * ``--parse-ptype:`` Optional, set to use software to analyze packet type. Without this option, hardware will check the packet type.
 
 * ``--per-port-pool:`` Optional, set to use independent buffer pools per port. Without this option, single buffer pool is used for all ports.
+
+* ``--mode:`` Optional, Packet transfer mode for I/O, poll or eventdev.
+
+* ``--eventq-sched:`` Optional, Event queue synchronization method, Ordered, Atomic or Parallel. Only valid if --mode=eventdev.
+
+* ``--event-eth-rxqs:`` Optional, Number of ethernet RX queues per device. Only valid if --mode=eventdev.
+
 
 For example, consider a dual processor socket platform with 8 physical cores, where cores 0-7 and 16-23 appear on socket 0,
 while cores 8-15 and 24-31 appear on socket 1.
@@ -116,6 +133,51 @@ In this command:
 |          |           |           |                                     |
 +----------+-----------+-----------+-------------------------------------+
 
+To use eventdev mode with sync method **ordered** on above mentioned environment,
+Following is the sample command:
+
+.. code-block:: console
+
+    ./build/l3fwd -l 0-3 -n 4 -w <event device> -- -p 0x3 --eventq-sched=ordered
+
+or
+
+.. code-block:: console
+
+    ./build/l3fwd -l 0-3 -n 4 -w <event device> -- -p 0x03 --mode=eventdev --eventq-sched=ordered
+
+In this command:
+
+*   -w option whitelist the event device supported by platform. Way to pass this device may vary based on platform.
+
+*   The --mode option defines PMD to be used for packet I/O.
+
+*   The --eventq-sched option enables synchronization menthod of event queue so that packets will be scheduled accordingly.
+
+If application uses S/W scheduler, it uses following DPDK services:
+
+*   Software scheduler
+*   Rx adapter service function
+*   Tx adapter service function
+
+Application needs service cores to run above mentioned services. Service cores
+must be provided as EAL parameters along with the --vdev=event_sw0 to enable S/W
+scheduler. Following is the sample command:
+
+.. code-block:: console
+
+    ./build/l3fwd -l 0-7 -s 0xf0000 -n 4 --vdev event_sw0 -- -p 0x3 --mode=eventdev --eventq-sched=ordered
+
+In case of eventdev mode, *--config* option is not used for ethernet port
+configuration. Instead each ethernet port will be configured with mentioned
+setup:
+
+*   Single Rx/Tx queue
+
+*   Each Rx queue will be connected to event queue via Rx adapter.
+
+*   Each Tx queue will be connected via Tx adapter.
+
 Refer to the *DPDK Getting Started Guide* for general information on running applications and
 the Environment Abstraction Layer (EAL) options.
 
@@ -125,7 +187,7 @@ Explanation
 -----------
 
 The following sections provide some explanation of the sample application code. As mentioned in the overview section,
-the initialization and run-time paths are very similar to those of the :doc:`l2_forward_real_virtual`.
+the initialization and run-time paths are very similar to those of the :doc:`l2_forward_real_virtual` and :doc:`l2_forward_event`.
 The following sections describe aspects that are specific to the L3 Forwarding sample application.
 
 Hash Initialization
@@ -245,7 +307,7 @@ The get_ipv4_dst_port() function is shown below:
         int ret = 0;
         union ipv4_5tuple_host key;
 
-        ipv4_hdr = (uint8_t *)ipv4_hdr + offsetof(struct ipv4_hdr, time_to_live);
+        ipv4_hdr = (uint8_t *)ipv4_hdr + offsetof(struct rte_ipv4_hdr, time_to_live);
 
         m128i data = _mm_loadu_si128(( m128i*)(ipv4_hdr));
 
@@ -273,10 +335,10 @@ The key code snippet of simple_ipv4_fwd_4pkts() is shown below:
     {
         // ...
 
-        data[0] = _mm_loadu_si128(( m128i*)(rte_pktmbuf_mtod(m[0], unsigned char *) + sizeof(struct ether_hdr) + offsetof(struct ipv4_hdr, time_to_live)));
-        data[1] = _mm_loadu_si128(( m128i*)(rte_pktmbuf_mtod(m[1], unsigned char *) + sizeof(struct ether_hdr) + offsetof(struct ipv4_hdr, time_to_live)));
-        data[2] = _mm_loadu_si128(( m128i*)(rte_pktmbuf_mtod(m[2], unsigned char *) + sizeof(struct ether_hdr) + offsetof(struct ipv4_hdr, time_to_live)));
-        data[3] = _mm_loadu_si128(( m128i*)(rte_pktmbuf_mtod(m[3], unsigned char *) + sizeof(struct ether_hdr) + offsetof(struct ipv4_hdr, time_to_live)));
+        data[0] = _mm_loadu_si128(( m128i*)(rte_pktmbuf_mtod(m[0], unsigned char *) + sizeof(struct rte_ether_hdr) + offsetof(struct rte_ipv4_hdr, time_to_live)));
+        data[1] = _mm_loadu_si128(( m128i*)(rte_pktmbuf_mtod(m[1], unsigned char *) + sizeof(struct rte_ether_hdr) + offsetof(struct rte_ipv4_hdr, time_to_live)));
+        data[2] = _mm_loadu_si128(( m128i*)(rte_pktmbuf_mtod(m[2], unsigned char *) + sizeof(struct rte_ether_hdr) + offsetof(struct rte_ipv4_hdr, time_to_live)));
+        data[3] = _mm_loadu_si128(( m128i*)(rte_pktmbuf_mtod(m[3], unsigned char *) + sizeof(struct rte_ether_hdr) + offsetof(struct rte_ipv4_hdr, time_to_live)));
 
         key[0].xmm = _mm_and_si128(data[0], mask0);
         key[1].xmm = _mm_and_si128(data[1], mask0);
@@ -309,9 +371,14 @@ for LPM-based lookups is done by the get_ipv4_dst_port() function below:
 .. code-block:: c
 
     static inline uint16_t
-    get_ipv4_dst_port(struct ipv4_hdr *ipv4_hdr, uint16_t portid, lookup_struct_t *ipv4_l3fwd_lookup_struct)
+    get_ipv4_dst_port(struct rte_ipv4_hdr *ipv4_hdr, uint16_t portid, lookup_struct_t *ipv4_l3fwd_lookup_struct)
     {
         uint8_t next_hop;
 
         return ((rte_lpm_lookup(ipv4_l3fwd_lookup_struct, rte_be_to_cpu_32(ipv4_hdr->dst_addr), &next_hop) == 0)? next_hop : portid);
     }
+
+Eventdev Driver Initialization
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Eventdev driver initialization is same as L2 forwarding eventdev application.
+Refer :doc:`l2_forward_event` for more details.

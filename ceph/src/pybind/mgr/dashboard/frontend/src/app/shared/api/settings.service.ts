@@ -1,11 +1,9 @@
 import { HttpClient } from '@angular/common/http';
 import { Injectable } from '@angular/core';
 
-import * as _ from 'lodash';
+import _ from 'lodash';
 import { Observable } from 'rxjs';
 import { map } from 'rxjs/operators';
-
-import { ApiModule } from './api.module';
 
 class SettingResponse {
   name: string;
@@ -15,7 +13,7 @@ class SettingResponse {
 }
 
 @Injectable({
-  providedIn: ApiModule
+  providedIn: 'root'
 })
 export class SettingsService {
   constructor(private http: HttpClient) {}

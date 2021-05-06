@@ -1,4 +1,5 @@
 //  Copyright (c) 2011 Helge Bahmann
+//  Copyright (c) 2020 Andrey Semashev
 //
 //  Distributed under the Boost Software License, Version 1.0.
 //  See accompanying file LICENSE_1_0.txt or copy at
@@ -14,16 +15,17 @@
 #include <iostream>
 #include <boost/config.hpp>
 #include <boost/core/lightweight_test.hpp>
+#include "aligned_object.hpp"
 
-static const char * lock_free_level[] = {
+static const char* const lock_free_level[] =
+{
     "never",
     "sometimes",
     "always"
 };
 
-template<typename T>
-void
-verify_lock_free(const char * type_name, int lock_free_macro_val, int lock_free_expect)
+template< typename T >
+void verify_lock_free(const char* type_name, int lock_free_macro_val, int lock_free_expect)
 {
     BOOST_TEST(lock_free_macro_val >= 0 && lock_free_macro_val <= 2);
     BOOST_TEST(lock_free_macro_val == lock_free_expect);
@@ -35,9 +37,19 @@ verify_lock_free(const char * type_name, int lock_free_macro_val, int lock_free_
     if (lock_free_macro_val == 2)
         BOOST_TEST(value.is_lock_free());
 
-    BOOST_TEST(boost::atomic<T>::is_always_lock_free == (lock_free_expect == 2));
+    BOOST_TEST_EQ(boost::atomic<T>::is_always_lock_free, (lock_free_expect == 2));
 
     std::cout << "atomic<" << type_name << "> is " << lock_free_level[lock_free_macro_val] << " lock free\n";
+
+    // atomic<T> may use larger storage than sizeof(T) to achieve lock-free property. In this case atomic_ref<T> may not be lock-free.
+    if (sizeof(boost::atomic<T>) == sizeof(T))
+    {
+        aligned_object<T, boost::atomic_ref<T>::required_alignment> object;
+        boost::atomic_ref<T> ref(object.get());
+
+        BOOST_TEST_EQ(ref.is_lock_free(), value.is_lock_free());
+        BOOST_TEST_EQ(boost::atomic_ref<T>::is_always_lock_free, boost::atomic<T>::is_always_lock_free);
+    }
 }
 
 #if (defined(__GNUC__) || defined(__SUNPRO_CC)) && defined(__i386__)
@@ -62,7 +74,7 @@ verify_lock_free(const char * type_name, int lock_free_macro_val, int lock_free_
 #define EXPECT_INT_LOCK_FREE 2
 #define EXPECT_LONG_LOCK_FREE 2
 #define EXPECT_LLONG_LOCK_FREE 2
-#if defined(BOOST_ATOMIC_DETAIL_X86_HAS_CMPXCHG16B) && (defined(BOOST_HAS_INT128) || !defined(BOOST_NO_ALIGNMENT))
+#if defined(BOOST_ATOMIC_DETAIL_X86_HAS_CMPXCHG16B)
 #define EXPECT_INT128_LOCK_FREE 2
 #else
 #define EXPECT_INT128_LOCK_FREE 0

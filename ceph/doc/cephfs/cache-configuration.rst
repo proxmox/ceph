@@ -10,13 +10,13 @@ may cache and what manipulations clients may perform (e.g. writing to a file).
 
 The MDS and clients both try to enforce a cache size. The mechanism for
 specifying the MDS cache size is described below. Note that the MDS cache size
-is a not a hard limit. The MDS always allows clients to lookup new metadata
-which is loaded into the cache. This is an essential policy as its avoids
+is not a hard limit. The MDS always allows clients to lookup new metadata
+which is loaded into the cache. This is an essential policy as it avoids
 deadlock in client requests (some requests may rely on held capabilities before
 capabilities are released).
 
 When the MDS cache is too large, the MDS will **recall** client state so cache
-items become unpinned and eligble to be dropped. The MDS can only drop cache
+items become unpinned and eligible to be dropped. The MDS can only drop cache
 state when no clients refer to the metadata to be dropped. Also described below
 is how to configure the MDS recall settings for your workload's needs. This is
 necessary if the internal throttles on the MDS recall can not keep up with the
@@ -77,7 +77,12 @@ life for the counter. If the MDS is continually removing items from its cache,
 it will reach a steady state of ``-ln(0.5)/rate*threshold`` items removed per
 second.
 
-The defaults are conservative and may need changed for production MDS with
+.. note:: Increasing the value of the confguration setting
+          ``mds_cache_trim_decay_rate`` leads to the MDS spending less time
+          trimming the cache. To increase the cache trimming rate, set a lower
+          value.
+
+The defaults are conservative and may need to be changed for production MDS with
 large cache sizes.
 
 
@@ -133,12 +138,53 @@ counters as needed to resolve any slow recall warnings in the cluster health
 state.
 
 
+MDS Cap Acquisition Throttle
+----------------------------
+
+A trivial "find" command on a large directory hierarchy will cause the client
+to receive caps significantly faster than it will release. The MDS will try
+to have the client reduce its caps below the ``mds_max_caps_per_client`` limit
+but the recall throttles prevent it from catching up to the pace of acquisition.
+So the readdir is throttled to control cap acquisition via the following
+configurations:
+
+
+The threshold and decay rate for the readdir cap acquisition decay counter::
+
+    mds_session_cap_acquisition_throttle (default: 500K)
+
+and::
+
+    mds_session_cap_acquisition_decay_rate (default: 10 seconds)
+
+The cap acquisition decay counter controls the rate of cap acquisition via
+readdir. The behavior of the decay counter is the same as for cache trimming or
+caps recall. Each readdir call increments the counter by the number of files in
+the result.
+
+The ratio of ``mds_max_maps_per_client`` that client must exceed before readdir
+maybe throttled by cap acquisition throttle::
+
+    mds_session_max_caps_throttle_ratio (default: 1.1)
+
+The timeout in seconds after which a client request is retried due to cap
+acquisition throttling::
+
+    mds_cap_acquisition_throttle_retry_request_timeout (default: 0.5 seconds)
+
+If the number of caps acquired by the client per session is greater than the
+``mds_session_max_caps_throttle_ratio`` and cap acquisition decay counter is
+greater than ``mds_session_cap_acquisition_throttle``, the readdir is throttled.
+The readdir request is retried after ``mds_cap_acquisition_throttle_retry_request_timeout``
+seconds.
+
+
 Session Liveness
 ----------------
 
 The MDS also keeps track of whether sessions are quiescent. If a client session
 is not utilizing its capabilities or is otherwise quiet, the MDS will begin
-recalling state from the session even if its not under cache pressure. This
+recalling state from the session even if it's not under cache pressure. This
 helps the MDS avoid future work when the cluster workload is hot and cache
 pressure is forcing the MDS to recall state. The expectation is that a client
 not utilizing its capabilities is unlikely to use those capabilities anytime
@@ -156,7 +202,7 @@ and::
 The configuration ``mds_session_cache_liveness_decay_rate`` indicates the
 half-life for the decay counter tracking the use of capabilities by the client.
 Each time a client manipulates or acquires a capability, the MDS will increment
-the counter. This is a rough but effective way to monitor utilization of the
+the counter. This is a rough but effective way to monitor the utilization of the
 client cache.
 
 The ``mds_session_cache_liveness_magnitude`` is a base-2 magnitude difference

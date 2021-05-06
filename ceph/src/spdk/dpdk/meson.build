@@ -16,36 +16,48 @@ cc = meson.get_compiler('c')
 dpdk_conf = configuration_data()
 dpdk_libraries = []
 dpdk_static_libraries = []
+dpdk_graph_nodes = []
 dpdk_driver_classes = []
 dpdk_drivers = []
 dpdk_extra_ldflags = []
 dpdk_app_link_libraries = []
+dpdk_libs_disabled = []
+dpdk_drvs_disabled = []
+abi_version_file = files('ABI_VERSION')
+
+if host_machine.cpu_family().startswith('x86')
+	arch_subdir = 'x86'
+elif host_machine.cpu_family().startswith('arm') or host_machine.cpu_family().startswith('aarch')
+	arch_subdir = 'arm'
+elif host_machine.cpu_family().startswith('ppc')
+	arch_subdir = 'ppc'
+endif
 
 # configure the build, and make sure configs here and in config folder are
 # able to be included in any file. We also store a global array of include dirs
 # for passing to pmdinfogen scripts
 global_inc = include_directories('.', 'config',
-	'lib/librte_eal/common/include',
-	'lib/librte_eal/@0@/eal/include'.format(host_machine.system()),
+	'lib/librte_eal/include',
+	'lib/librte_eal/@0@/include'.format(host_machine.system()),
+	'lib/librte_eal/@0@/include'.format(arch_subdir),
 )
 subdir('config')
 
 # build libs and drivers
-subdir('lib')
 subdir('buildtools')
+subdir('lib')
 subdir('drivers')
 
 # build binaries and installable tools
 subdir('usertools')
-subdir('app')
+#subdir('app')
 
 # build docs
 subdir('doc')
 
-# build any examples explicitly requested - useful for developers
-if get_option('examples') != ''
-	subdir('examples')
-endif
+# build any examples explicitly requested - useful for developers - and
+# install any example code into the appropriate install path
+subdir('examples')
 
 # build kernel modules if enabled
 if get_option('enable_kmods')
@@ -64,6 +76,10 @@ configure_file(output: build_cfg,
 dpdk_drivers = ['-Wl,--whole-archive'] + dpdk_drivers + ['-Wl,--no-whole-archive']
 
 pkg = import('pkgconfig')
+pkg_extra_cflags = ['-include', 'rte_config.h'] + machine_args
+if is_freebsd
+	pkg_extra_cflags += ['-D__BSD_VISIBLE']
+endif
 pkg.generate(name: meson.project_name(),
 	filebase: 'lib' + meson.project_name().to_lower(),
 	version: meson.project_version(),
@@ -76,7 +92,7 @@ pkg.generate(name: meson.project_name(),
 Note that CFLAGS might contain an -march flag higher than typical baseline.
 This is required for a number of static inline functions in the public headers.''',
 	subdirs: [get_option('include_subdir_arch'), '.'],
-	extra_cflags: ['-include', 'rte_config.h'] + machine_args
+	extra_cflags: pkg_extra_cflags
 )
 
 # final output, list all the libs and drivers to be built
@@ -107,5 +123,18 @@ foreach class:dpdk_driver_classes
 			output_count = 0
 		endif
 	endforeach
+endforeach
+message(output_message + '\n')
+
+output_message = '\n=================\nContent Skipped\n=================\n'
+output_message += '\nlibs:\n\t'
+foreach lib:dpdk_libs_disabled
+	reason = get_variable(lib.underscorify() + '_disable_reason')
+	output_message += lib + ':\t' + reason + '\n\t'
+endforeach
+output_message += '\ndrivers:\n\t'
+foreach drv:dpdk_drvs_disabled
+	reason = get_variable(drv.underscorify() + '_disable_reason')
+	output_message += drv + ':\t' + reason + '\n\t'
 endforeach
 message(output_message + '\n')

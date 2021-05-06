@@ -10,11 +10,18 @@ git submodule update --init
 
 # Installing Prerequisites {#getting_started_prerequisites}
 
-The `scripts/pkgdep.sh` script will automatically install the full set of
-dependencies required to build and develop SPDK.
+The `scripts/pkgdep.sh` script will automatically install the bare minimum
+dependencies required to build SPDK.
+Use `--help` to see information on installing dependencies for optional components.
 
 ~~~{.sh}
 sudo scripts/pkgdep.sh
+~~~
+
+Option --all will install all dependencies needed by SPDK features.
+
+~~~{.sh}
+sudo scripts/pkgdep.sh --all
 ~~~
 
 # Building {#getting_started_building}
@@ -103,7 +110,7 @@ with no arguments to see the help output. If your system has its IOMMU
 enabled you can run the examples as your regular user. If it doesn't, you'll
 need to run as a privileged user (root).
 
-A good example to start with is `examples/nvme/identify/identify`, which prints
+A good example to start with is `build/examples/identify`, which prints
 out information about all of the NVMe devices on your system.
 
 Larger, more fully functional applications are available in the `app`

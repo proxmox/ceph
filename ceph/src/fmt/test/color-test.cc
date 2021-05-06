@@ -6,6 +6,7 @@
 // For the license information refer to format.h.
 
 #include "fmt/color.h"
+
 #include "gtest-extra.h"
 
 TEST(ColorsTest, ColorsPrint) {
@@ -47,9 +48,11 @@ TEST(ColorsTest, ColorsPrint) {
                "\x1b[105mtbmagenta\x1b[0m");
 }
 
-TEST(ColorsTest, ColorsFormat) {
+TEST(ColorsTest, Format) {
   EXPECT_EQ(fmt::format(fg(fmt::rgb(255, 20, 30)), "rgb(255,20,30)"),
             "\x1b[38;2;255;020;030mrgb(255,20,30)\x1b[0m");
+  EXPECT_EQ(fmt::format(fg(fmt::rgb(255, 20, 30)), L"rgb(255,20,30) wide"),
+            L"\x1b[38;2;255;020;030mrgb(255,20,30) wide\x1b[0m");
   EXPECT_EQ(fmt::format(fg(fmt::color::blue), "blue"),
             "\x1b[38;2;000;000;255mblue\x1b[0m");
   EXPECT_EQ(
@@ -78,4 +81,6 @@ TEST(ColorsTest, ColorsFormat) {
             "\x1b[92mtbgreen\x1b[0m");
   EXPECT_EQ(fmt::format(bg(fmt::terminal_color::bright_magenta), "tbmagenta"),
             "\x1b[105mtbmagenta\x1b[0m");
+  EXPECT_EQ(fmt::format(fg(fmt::terminal_color::red), "{}", "foo"),
+            "\x1b[31mfoo\x1b[0m");
 }

@@ -1,7 +1,6 @@
 # SPDX-License-Identifier: BSD-3-Clause
 # Copyright(c) 2017 Intel Corporation
 
-version = 3
 sources = files('rte_table_acl.c',
 		'rte_table_lpm.c',
 		'rte_table_lpm_ipv6.c',
@@ -29,3 +28,5 @@ deps += ['mbuf', 'port', 'lpm', 'hash', 'acl']
 if arch_subdir == 'x86'
 	headers += files('rte_lru_x86.h')
 endif
+build = false
+reason = 'not needed by SPDK'

@@ -53,7 +53,9 @@ do_recursive_call(void)
 	} actions[] =  {
 			{ "run_secondary_instances", test_mp_secondary },
 #ifdef RTE_LIBRTE_PDUMP
+#ifdef RTE_LIBRTE_RING_PMD
 			{ "run_pdump_server_tests", test_pdump },
+#endif
 #endif
 			{ "test_missing_c_flag", no_action },
 			{ "test_master_lcore_flag", no_action },
@@ -67,12 +69,14 @@ do_recursive_call(void)
 			{ "test_memory_flags", no_action },
 			{ "test_file_prefix", no_action },
 			{ "test_no_huge_flag", no_action },
+#ifdef RTE_LIBRTE_TIMER
 			{ "timer_secondary_spawn_wait", test_timer_secondary },
+#endif
 	};
 
 	if (recursive_call == NULL)
 		return -1;
-	for (i = 0; i < sizeof(actions)/sizeof(actions[0]); i++) {
+	for (i = 0; i < RTE_DIM(actions); i++) {
 		if (strcmp(actions[i].env_var, recursive_call) == 0)
 			return (actions[i].action_fn)();
 	}
@@ -208,14 +212,16 @@ unit_test_suite_runner(struct unit_test_suite *suite)
 		printf(" + Test Suite : %s\n", suite->suite_name);
 	}
 
-	if (suite->setup)
-		if (suite->setup() != 0) {
+	if (suite->setup) {
+		test_success = suite->setup();
+		if (test_success != 0) {
 			/*
-			 * setup failed, so count all enabled tests and mark
-			 * them as failed
+			 * setup did not pass, so count all enabled tests and
+			 * mark them as failed/skipped
 			 */
 			while (suite->unit_test_cases[total].testcase) {
-				if (!suite->unit_test_cases[total].enabled)
+				if (!suite->unit_test_cases[total].enabled ||
+				    test_success == TEST_SKIPPED)
 					skipped++;
 				else
 					failed++;
@@ -223,6 +229,7 @@ unit_test_suite_runner(struct unit_test_suite *suite)
 			}
 			goto suite_summary;
 		}
+	}
 
 	printf(" + ------------------------------------------------------- +\n");
 
@@ -246,6 +253,8 @@ unit_test_suite_runner(struct unit_test_suite *suite)
 			test_success = suite->unit_test_cases[total].testcase();
 			if (test_success == TEST_SUCCESS)
 				succeeded++;
+			else if (test_success == TEST_SKIPPED)
+				skipped++;
 			else if (test_success == -ENOTSUP)
 				unsupported++;
 			else
@@ -262,6 +271,8 @@ unit_test_suite_runner(struct unit_test_suite *suite)
 
 		if (test_success == TEST_SUCCESS)
 			status = "succeeded";
+		else if (test_success == TEST_SKIPPED)
+			status = "skipped";
 		else if (test_success == -ENOTSUP)
 			status = "unsupported";
 		else
@@ -293,7 +304,8 @@ suite_summary:
 	last_test_result = failed;
 
 	if (failed)
-		return -1;
-
-	return 0;
+		return TEST_FAILED;
+	if (total == skipped)
+		return TEST_SKIPPED;
+	return TEST_SUCCESS;
 }

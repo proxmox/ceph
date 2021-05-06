@@ -1,16 +1,15 @@
+import errno
 import logging
-from typing import TYPE_CHECKING, Dict, Tuple, Any, List
+from typing import Dict, Tuple, Any, List, cast, Optional
+
+from mgr_module import HandleCommandResult
 
 from ceph.deployment.service_spec import NFSServiceSpec
 import rados
 
-from orchestrator import OrchestratorError, DaemonDescription
+from orchestrator import DaemonDescription
 
-from cephadm import utils
-from cephadm.services.cephadmservice import AuthEntity, CephadmDaemonSpec, CephService
-
-if TYPE_CHECKING:
-    from cephadm.module import CephadmOrchestrator
+from cephadm.services.cephadmservice import AuthEntity, CephadmDaemonDeploySpec, CephService
 
 logger = logging.getLogger(__name__)
 
@@ -18,35 +17,23 @@ logger = logging.getLogger(__name__)
 class NFSService(CephService):
     TYPE = 'nfs'
 
-    def config(self, spec: NFSServiceSpec) -> None:
+    def config(self, spec: NFSServiceSpec, daemon_id: str) -> None:  # type: ignore
         assert self.TYPE == spec.service_type
         assert spec.pool
         self.mgr._check_pool_exists(spec.pool, spec.service_name())
 
-        logger.info('Saving service %s spec with placement %s' % (
-            spec.service_name(), spec.placement.pretty_str()))
-        self.mgr.spec_store.save(spec)
-
-    def prepare_create(self, daemon_spec: CephadmDaemonSpec[NFSServiceSpec]) -> CephadmDaemonSpec:
+    def prepare_create(self, daemon_spec: CephadmDaemonDeploySpec) -> CephadmDaemonDeploySpec:
         assert self.TYPE == daemon_spec.daemon_type
-        assert daemon_spec.spec
-
-        daemon_id = daemon_spec.daemon_id
-        host = daemon_spec.host
-        spec = daemon_spec.spec
-
-        logger.info('Create daemon %s on host %s with spec %s' % (
-            daemon_id, host, spec))
+        daemon_spec.final_config, daemon_spec.deps = self.generate_config(daemon_spec)
         return daemon_spec
 
-    def generate_config(self, daemon_spec: CephadmDaemonSpec[NFSServiceSpec]) -> Tuple[Dict[str, Any], List[str]]:
+    def generate_config(self, daemon_spec: CephadmDaemonDeploySpec) -> Tuple[Dict[str, Any], List[str]]:
         assert self.TYPE == daemon_spec.daemon_type
-        assert daemon_spec.spec
 
         daemon_type = daemon_spec.daemon_type
         daemon_id = daemon_spec.daemon_id
         host = daemon_spec.host
-        spec = daemon_spec.spec
+        spec = cast(NFSServiceSpec, self.mgr.spec_store[daemon_spec.service_name].spec)
 
         deps: List[str] = []
 
@@ -110,7 +97,7 @@ class NFSService(CephService):
             exists = True
             try:
                 ioctx.stat(obj)
-            except rados.ObjectNotFound as e:
+            except rados.ObjectNotFound:
                 exists = False
 
             if exists and not clobber:
@@ -121,45 +108,39 @@ class NFSService(CephService):
                 logger.info('Creating rados config object: %s' % obj)
                 ioctx.write_full(obj, ''.encode('utf-8'))
 
-    def create_keyring(self, daemon_spec: CephadmDaemonSpec[NFSServiceSpec]) -> str:
-        assert daemon_spec.spec
+    def create_keyring(self, daemon_spec: CephadmDaemonDeploySpec) -> str:
         daemon_id = daemon_spec.daemon_id
-        spec = daemon_spec.spec
+        spec = cast(NFSServiceSpec, self.mgr.spec_store[daemon_spec.service_name].spec)
         entity: AuthEntity = self.get_auth_entity(daemon_id)
 
         osd_caps = 'allow rw pool=%s' % (spec.pool)
         if spec.namespace:
             osd_caps = '%s namespace=%s' % (osd_caps, spec.namespace)
 
-        logger.info('Create keyring: %s' % entity)
-        ret, keyring, err = self.mgr.check_mon_command({
-            'prefix': 'auth get-or-create',
-            'entity': entity,
-            'caps': ['mon', 'allow r',
-                     'osd', osd_caps],
-        })
+        logger.info('Creating key for %s' % entity)
+        keyring = self.get_keyring_with_caps(entity,
+                                             ['mon', 'allow r',
+                                              'osd', osd_caps])
 
         return keyring
 
-    def create_rgw_keyring(self, daemon_spec: CephadmDaemonSpec[NFSServiceSpec]) -> str:
+    def create_rgw_keyring(self, daemon_spec: CephadmDaemonDeploySpec) -> str:
         daemon_id = daemon_spec.daemon_id
         entity: AuthEntity = self.get_auth_entity(f'{daemon_id}-rgw')
 
-        logger.info('Create keyring: %s' % entity)
-        ret, keyring, err = self.mgr.check_mon_command({
-            'prefix': 'auth get-or-create',
-            'entity': entity,
-            'caps': ['mon', 'allow r',
-                     'osd', 'allow rwx tag rgw *=*'],
-        })
+        logger.info('Creating key for %s' % entity)
+        keyring = self.get_keyring_with_caps(entity,
+                                             ['mon', 'allow r',
+                                              'osd', 'allow rwx tag rgw *=*'])
 
         return keyring
 
     def remove_rgw_keyring(self, daemon: DaemonDescription) -> None:
+        assert daemon.daemon_id is not None
         daemon_id: str = daemon.daemon_id
         entity: AuthEntity = self.get_auth_entity(f'{daemon_id}-rgw')
 
-        logger.info(f'Remove keyring: {entity}')
+        logger.info(f'Removing key for {entity}')
         ret, out, err = self.mgr.check_mon_command({
             'prefix': 'auth rm',
             'entity': entity,
@@ -168,3 +149,21 @@ class NFSService(CephService):
     def post_remove(self, daemon: DaemonDescription) -> None:
         super().post_remove(daemon)
         self.remove_rgw_keyring(daemon)
+
+    def ok_to_stop(self,
+                   daemon_ids: List[str],
+                   force: bool = False,
+                   known: Optional[List[str]] = None) -> HandleCommandResult:
+        # if only 1 nfs, alert user (this is not passable with --force)
+        warn, warn_message = self._enough_daemons_to_stop(self.TYPE, daemon_ids, 'NFS', 1, True)
+        if warn:
+            return HandleCommandResult(-errno.EBUSY, '', warn_message)
+
+        # if reached here, there is > 1 nfs daemon.
+        if force:
+            return HandleCommandResult(0, warn_message, '')
+
+        # if reached here, > 1 nfs daemon and no force flag.
+        # Provide warning
+        warn_message = "WARNING: Removing NFS daemons can cause clients to lose connectivity. "
+        return HandleCommandResult(-errno.EBUSY, '', warn_message)

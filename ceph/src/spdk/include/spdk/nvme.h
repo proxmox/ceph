@@ -1,8 +1,8 @@
 /*-
  *   BSD LICENSE
  *
- *   Copyright (c) Intel Corporation.
- *   All rights reserved.
+ *   Copyright (c) Intel Corporation. All rights reserved.
+ *   Copyright (c) 2019, 2020 Mellanox Technologies LTD. All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
  *   modification, are permitted provided that the following conditions
@@ -44,15 +44,16 @@
 extern "C" {
 #endif
 
-#include "spdk/config.h"
 #include "spdk/env.h"
 #include "spdk/nvme_spec.h"
 #include "spdk/nvmf_spec.h"
 
-#define SPDK_NVME_DEFAULT_RETRY_COUNT	(4)
-extern int32_t		spdk_nvme_retry_count;
+#define SPDK_NVME_TRANSPORT_NAME_FC	"FC"
+#define SPDK_NVME_TRANSPORT_NAME_PCIE	"PCIE"
+#define SPDK_NVME_TRANSPORT_NAME_RDMA	"RDMA"
+#define SPDK_NVME_TRANSPORT_NAME_TCP	"TCP"
 
-
+#define SPDK_NVMF_PRIORITY_MAX_LEN 4
 
 /**
  * Opaque handle to a controller. Returned by spdk_nvme_probe()'s attach_cb.
@@ -78,9 +79,42 @@ struct spdk_nvme_ctrlr_opts {
 	bool use_cmb_sqs;
 
 	/**
+	 * Don't initiate shutdown processing
+	 */
+	bool no_shn_notification;
+
+	/**
 	 * Type of arbitration mechanism
 	 */
 	enum spdk_nvme_cc_ams arb_mechanism;
+
+	/**
+	 * Maximum number of commands that the controller may launch at one time.  The
+	 * value is expressed as a power of two, valid values are from 0-7, and 7 means
+	 * unlimited.
+	 */
+	uint8_t arbitration_burst;
+
+	/**
+	 * Number of commands that may be executed from the low priority queue in each
+	 * arbitration round.  This field is only valid when arb_mechanism is set to
+	 * SPDK_NVME_CC_AMS_WRR (weighted round robin).
+	 */
+	uint8_t low_priority_weight;
+
+	/**
+	 * Number of commands that may be executed from the medium priority queue in each
+	 * arbitration round.  This field is only valid when arb_mechanism is set to
+	 * SPDK_NVME_CC_AMS_WRR (weighted round robin).
+	 */
+	uint8_t medium_priority_weight;
+
+	/**
+	 * Number of commands that may be executed from the high priority queue in each
+	 * arbitration round.  This field is only valid when arb_mechanism is set to
+	 * SPDK_NVME_CC_AMS_WRR (weighted round robin).
+	 */
+	uint8_t high_priority_weight;
 
 	/**
 	 * Keep alive timeout in milliseconds (0 = disabled).
@@ -95,7 +129,7 @@ struct spdk_nvme_ctrlr_opts {
 	/**
 	 * Specify the retry number when there is issue with the transport
 	 */
-	int transport_retry_count;
+	uint8_t transport_retry_count;
 
 	/**
 	 * The queue depth of each NVMe I/O queue.
@@ -188,6 +222,32 @@ struct spdk_nvme_ctrlr_opts {
 	 * Defaults to 'false' (errors are logged).
 	 */
 	bool disable_error_logging;
+
+	/**
+	 * It is used for RDMA transport
+	 * Specify the transport ACK timeout. The value should be in range 0-31 where 0 means
+	 * use driver-specific default value. The value is applied to each RDMA qpair
+	 * and affects the time that qpair waits for transport layer acknowledgement
+	 * until it retransmits a packet. The value should be chosen empirically
+	 * to meet the needs of a particular application. A low value means less time
+	 * the qpair waits for ACK which can increase the number of retransmissions.
+	 * A large value can increase the time the connection is closed.
+	 * The value of ACK timeout is calculated according to the formula
+	 * 4.096 * 2^(transport_ack_timeout) usec.
+	 */
+	uint8_t transport_ack_timeout;
+
+	/**
+	 * The queue depth of NVMe Admin queue.
+	 */
+	uint16_t admin_queue_size;
+
+	/**
+	 * The size of spdk_nvme_ctrlr_opts according to the caller of this library is used for ABI
+	 * compatibility.  The library uses this field to know how many fields in this
+	 * structure are valid. And the library will populate any remaining fields with default values.
+	 */
+	size_t opts_size;
 };
 
 /**
@@ -207,6 +267,21 @@ bool spdk_nvme_ctrlr_is_discovery(struct spdk_nvme_ctrlr *ctrlr);
  */
 void spdk_nvme_ctrlr_get_default_ctrlr_opts(struct spdk_nvme_ctrlr_opts *opts,
 		size_t opts_size);
+
+/**
+ * Reason for qpair disconnect at the transport layer.
+ *
+ * NONE implies that the qpair is still connected while UNKNOWN means that the
+ * qpair is disconnected, but the cause was not apparent.
+ */
+enum spdk_nvme_qp_failure_reason {
+	SPDK_NVME_QPAIR_FAILURE_NONE = 0,
+	SPDK_NVME_QPAIR_FAILURE_LOCAL,
+	SPDK_NVME_QPAIR_FAILURE_REMOTE,
+	SPDK_NVME_QPAIR_FAILURE_UNKNOWN,
+};
+
+typedef enum spdk_nvme_qp_failure_reason spdk_nvme_qp_failure_reason;
 
 /**
  * NVMe library transports
@@ -237,6 +312,11 @@ enum spdk_nvme_transport_type {
 	 * TCP Transport
 	 */
 	SPDK_NVME_TRANSPORT_TCP = SPDK_NVMF_TRTYPE_TCP,
+
+	/**
+	 * Custom Transport (Not spec defined)
+	 */
+	SPDK_NVME_TRANSPORT_CUSTOM = 4096,
 };
 
 /* typedef added for coding style reasons */
@@ -251,6 +331,11 @@ typedef enum spdk_nvme_transport_type spdk_nvme_transport_type_t;
  * spdk_nvme_transport_id_parse().
  */
 struct spdk_nvme_transport_id {
+	/**
+	 * NVMe transport string.
+	 */
+	char trstring[SPDK_NVMF_TRSTRING_MAX_LEN + 1];
+
 	/**
 	 * NVMe transport type.
 	 */
@@ -284,6 +369,13 @@ struct spdk_nvme_transport_id {
 	 * Subsystem NQN of the NVMe over Fabrics endpoint. May be a zero length string.
 	 */
 	char subnqn[SPDK_NVMF_NQN_MAX_LEN + 1];
+
+	/**
+	 * The Transport connection priority of the NVMe-oF endpoint. Currently this is
+	 * only supported by posix based sock implementation on Kernel TCP stack. More
+	 * information of this field can be found from the socket(7) man page.
+	 */
+	int priority;
 };
 
 /**
@@ -321,8 +413,11 @@ struct spdk_nvme_host_id {
  * Used for identifying if the controller supports these flags.
  */
 enum spdk_nvme_ctrlr_flags {
-	SPDK_NVME_CTRLR_SGL_SUPPORTED			= 0x1, /**< The SGL is supported */
+	SPDK_NVME_CTRLR_SGL_SUPPORTED			= 0x1, /**< SGL is supported */
 	SPDK_NVME_CTRLR_SECURITY_SEND_RECV_SUPPORTED	= 0x2, /**< security send/receive is supported */
+	SPDK_NVME_CTRLR_WRR_SUPPORTED			= 0x4, /**< Weighted Round Robin is supported */
+	SPDK_NVME_CTRLR_COMPARE_AND_WRITE_SUPPORTED	= 0x8, /**< Compare and write fused operations supported */
+	SPDK_NVME_CTRLR_SGL_REQUIRES_DWORD_ALIGNMENT	= 0x10, /**< Dword alignment is required for SGL */
 };
 
 /**
@@ -350,6 +445,17 @@ enum spdk_nvme_ctrlr_flags {
  */
 int spdk_nvme_transport_id_parse(struct spdk_nvme_transport_id *trid, const char *str);
 
+
+/**
+ * Fill in the trtype and trstring fields of this trid based on a known transport type.
+ *
+ * \param trid The trid to fill out.
+ * \param trtype The transport type to use for filling the trid fields. Only valid for
+ * transport types referenced in the NVMe-oF spec.
+ */
+void spdk_nvme_trid_populate_transport(struct spdk_nvme_transport_id *trid,
+				       enum spdk_nvme_transport_type trtype);
+
 /**
  * Parse the string representation of a host ID.
  *
@@ -374,6 +480,18 @@ int spdk_nvme_transport_id_parse(struct spdk_nvme_transport_id *trid, const char
  * values on failure.
  */
 int spdk_nvme_host_id_parse(struct spdk_nvme_host_id *hostid, const char *str);
+
+/**
+ * Parse the string representation of a transport ID tranport type into the trid struct.
+ *
+ * \param trid The trid to write to
+ * \param trstring Input string representation of transport type (e.g. "PCIe", "RDMA").
+ *
+ * \return 0 if parsing was successful and trtype is filled out, or negated errno
+ * values if the provided string was an invalid transport string.
+ */
+int spdk_nvme_transport_id_populate_trstring(struct spdk_nvme_transport_id *trid,
+		const char *trstring);
 
 /**
  * Parse the string representation of a transport ID tranport type.
@@ -462,9 +580,21 @@ const char *spdk_nvme_prchk_flags_str(uint32_t prchk_flags);
  *
  * \param trtype NVMe over Fabrics transport type to check.
  *
- * \return true if trtype is supported or false if it is not supported.
+ * \return true if trtype is supported or false if it is not supported or if
+ * SPDK_NVME_TRANSPORT_CUSTOM is supplied as trtype since it can represent multiple
+ * transports.
  */
 bool spdk_nvme_transport_available(enum spdk_nvme_transport_type trtype);
+
+/**
+ * Determine whether the NVMe library can handle a specific NVMe over Fabrics
+ * transport type.
+ *
+ * \param transport_name Name of the NVMe over Fabrics transport type to check.
+ *
+ * \return true if transport_name is supported or false if it is not supported.
+ */
+bool spdk_nvme_transport_available_by_name(const char *transport_name);
 
 /**
  * Callback for spdk_nvme_probe() enumeration.
@@ -666,6 +796,25 @@ int spdk_nvme_probe_poll_async(struct spdk_nvme_probe_ctx *probe_ctx);
 int spdk_nvme_detach(struct spdk_nvme_ctrlr *ctrlr);
 
 /**
+ * Update the transport ID for a given controller.
+ *
+ * This function allows the user to set a new trid for a controller only if the
+ * controller is failed. The controller's failed state can be obtained from
+ * spdk_nvme_ctrlr_is_failed(). The controller can also be forced to the failed
+ * state using spdk_nvme_ctrlr_fail().
+ *
+ * This function also requires that the transport type and subnqn of the new trid
+ * be the same as the old trid.
+ *
+ * \param ctrlr Opaque handle to an NVMe controller.
+ * \param trid The new transport ID.
+ *
+ * \return 0 on success, -EINVAL if the trid is invalid,
+ * -EPERM if the ctrlr is not failed.
+ */
+int spdk_nvme_ctrlr_set_trid(struct spdk_nvme_ctrlr *ctrlr, struct spdk_nvme_transport_id *trid);
+
+/**
  * Perform a full hardware reset of the NVMe controller.
  *
  * This function should be called from a single thread while no other threads
@@ -680,6 +829,31 @@ int spdk_nvme_detach(struct spdk_nvme_ctrlr *ctrlr);
  * \return 0 on success, -1 on failure.
  */
 int spdk_nvme_ctrlr_reset(struct spdk_nvme_ctrlr *ctrlr);
+
+/**
+ * Fail the given NVMe controller.
+ *
+ * This function gives the application the opportunity to fail a controller
+ * at will. When a controller is failed, any calls to process completions or
+ * submit I/O on qpairs associated with that controller will fail with an error
+ * code of -ENXIO.
+ * The controller can only be taken from the failed state by
+ * calling spdk_nvme_ctrlr_reset. After the controller has been successfully
+ * reset, any I/O pending when the controller was moved to failed will be
+ * aborted back to the application and can be resubmitted. I/O can then resume.
+ *
+ * \param ctrlr Opaque handle to an NVMe controller.
+ */
+void spdk_nvme_ctrlr_fail(struct spdk_nvme_ctrlr *ctrlr);
+
+/**
+ * This function returns the failed status of a given controller.
+ *
+ * \param ctrlr Opaque handle to an NVMe controller.
+ *
+ * \return True if the controller is failed, false otherwise.
+ */
+bool spdk_nvme_ctrlr_is_failed(struct spdk_nvme_ctrlr *ctrlr);
 
 /**
  * Get the identify controller data as defined by the NVMe specification.
@@ -945,14 +1119,57 @@ struct spdk_nvme_io_qpair_opts {
 
 	/**
 	 * When submitting I/O via spdk_nvme_ns_read/write and similar functions,
-	 * don't immediately write the submission queue doorbell. Instead, write
-	 * to the doorbell as necessary inside spdk_nvme_qpair_process_completions().
+	 * don't immediately submit it to hardware. Instead, queue up new commands
+	 * and submit them to the hardware inside spdk_nvme_qpair_process_completions().
 	 *
-	 * This results in better batching of I/O submission and consequently fewer
-	 * MMIO writes to the doorbell, which may increase performance.
+	 * This results in better batching of I/O commands. Often, it is more efficient
+	 * to submit batches of commands to the underlying hardware than each command
+	 * individually.
 	 *
-	 * This only applies to local PCIe devices. */
-	bool delay_pcie_doorbell;
+	 * This only applies to PCIe and RDMA transports.
+	 *
+	 * The flag was originally named delay_pcie_doorbell. To allow backward compatibility
+	 * both names are kept in unnamed union.
+	 */
+	union {
+		bool delay_cmd_submit;
+		bool delay_pcie_doorbell;
+	};
+
+	/**
+	 * These fields allow specifying the memory buffers for the submission and/or
+	 * completion queues.
+	 * By default, vaddr is set to NULL meaning SPDK will allocate the memory to be used.
+	 * If vaddr is NULL then paddr must be set to 0.
+	 * If vaddr is non-NULL, and paddr is zero, SPDK derives the physical
+	 * address for the NVMe device, in this case the memory must be registered.
+	 * If a paddr value is non-zero, SPDK uses the vaddr and paddr as passed
+	 * SPDK assumes that the memory passed is both virtually and physically
+	 * contiguous.
+	 * If these fields are used, SPDK will NOT impose any restriction
+	 * on the number of elements in the queues.
+	 * The buffer sizes are in number of bytes, and are used to confirm
+	 * that the buffers are large enough to contain the appropriate queue.
+	 * These fields are only used by PCIe attached NVMe devices.  They
+	 * are presently ignored for other transports.
+	 */
+	struct {
+		struct spdk_nvme_cmd *vaddr;
+		uint64_t paddr;
+		uint64_t buffer_size;
+	} sq;
+	struct {
+		struct spdk_nvme_cpl *vaddr;
+		uint64_t paddr;
+		uint64_t buffer_size;
+	} cq;
+
+	/**
+	 * This flag indicates to the alloc_io_qpair function that it should not perform
+	 * the connect portion on this qpair. This allows the user to add the qpair to a
+	 * poll group and then connect it later.
+	 */
+	bool create_only;
 };
 
 /**
@@ -970,12 +1187,16 @@ void spdk_nvme_ctrlr_get_default_io_qpair_opts(struct spdk_nvme_ctrlr *ctrlr,
 /**
  * Allocate an I/O queue pair (submission and completion queue).
  *
+ * This function by default also performs any connection activities required for
+ * a newly created qpair. To avoid that behavior, the user should set the create_only
+ * flag in the opts structure to true.
+ *
  * Each queue pair should only be used from a single thread at a time (mutual
  * exclusion must be enforced by the user).
  *
  * \param ctrlr NVMe controller for which to allocate the I/O queue pair.
  * \param opts I/O qpair creation options, or NULL to use the defaults as returned
- * by spdk_nvme_ctrlr_alloc_io_qpair().
+ * by spdk_nvme_ctrlr_get_default_io_qpair_opts().
  * \param opts_size Must be set to sizeof(struct spdk_nvme_io_qpair_opts), or 0
  * if opts is NULL.
  *
@@ -984,6 +1205,80 @@ void spdk_nvme_ctrlr_get_default_io_qpair_opts(struct spdk_nvme_ctrlr *ctrlr,
 struct spdk_nvme_qpair *spdk_nvme_ctrlr_alloc_io_qpair(struct spdk_nvme_ctrlr *ctrlr,
 		const struct spdk_nvme_io_qpair_opts *opts,
 		size_t opts_size);
+
+/**
+ * Connect a newly created I/O qpair.
+ *
+ * This function does any connection activities required for a newly created qpair.
+ * It should be called after spdk_nvme_ctrlr_alloc_io_qpair has been called with the
+ * create_only flag set to true in the spdk_nvme_io_qpair_opts structure.
+ *
+ * This call will fail if performed on a qpair that is already connected.
+ * For reconnecting qpairs, see spdk_nvme_ctrlr_reconnect_io_qpair.
+ *
+ * For fabrics like TCP and RDMA, this function actually sends the commands over the wire
+ * that connect the qpair. For PCIe, this function performs some internal state machine operations.
+ *
+ * \param ctrlr NVMe controller for which to allocate the I/O queue pair.
+ * \param qpair Opaque handle to the qpair to connect.
+ *
+ * return 0 on success or negated errno on failure. Specifically -EISCONN if the qpair is already connected.
+ *
+ */
+int spdk_nvme_ctrlr_connect_io_qpair(struct spdk_nvme_ctrlr *ctrlr, struct spdk_nvme_qpair *qpair);
+
+/**
+ * Disconnect the given I/O qpair.
+ *
+ * This function must be called from the same thread as spdk_nvme_qpair_process_completions
+ * and the spdk_nvme_ns_cmd_* functions.
+ *
+ * After disconnect, calling spdk_nvme_qpair_process_completions or one of the
+ * spdk_nvme_ns_cmd* on a qpair will result in a return value of -ENXIO. A
+ * disconnected qpair may be reconnected with either the spdk_nvme_ctrlr_connect_io_qpair
+ * or spdk_nvme_ctrlr_reconnect_io_qpair APIs.
+ *
+ * \param qpair The qpair to disconnect.
+ */
+void spdk_nvme_ctrlr_disconnect_io_qpair(struct spdk_nvme_qpair *qpair);
+
+/**
+ * Attempt to reconnect the given qpair.
+ *
+ * This function is intended to be called on qpairs that have already been connected,
+ * but have since entered a failed state as indicated by a return value of -ENXIO from
+ * either spdk_nvme_qpair_process_completions or one of the spdk_nvme_ns_cmd_* functions.
+ * This function must be called from the same thread as spdk_nvme_qpair_process_completions
+ * and the spdk_nvme_ns_cmd_* functions.
+ *
+ * Calling this function has the same effect as calling spdk_nvme_ctrlr_disconnect_io_qpair
+ * followed by spdk_nvme_ctrlr_connect_io_qpair.
+ *
+ * This function may be called on newly created qpairs, but it does extra checks and attempts
+ * to disconnect the qpair before connecting it. The recommended API for newly created qpairs
+ * is spdk_nvme_ctrlr_connect_io_qpair.
+ *
+ * \param qpair The qpair to reconnect.
+ *
+ * \return 0 on success, or if the qpair was already connected.
+ * -EAGAIN if the driver was unable to reconnect during this call,
+ * but the controller is still connected and is either resetting or enabled.
+ * -ENODEV if the controller is removed. In this case, the controller cannot be recovered
+ * and the application will have to destroy it and the associated qpairs.
+ * -ENXIO if the controller is in a failed state but is not yet resetting. In this case,
+ * the application should call spdk_nvme_ctrlr_reset to reset the entire controller.
+ */
+int spdk_nvme_ctrlr_reconnect_io_qpair(struct spdk_nvme_qpair *qpair);
+
+/**
+ * Returns the reason the admin qpair for a given controller is disconnected.
+ *
+ * \param ctrlr The controller to check.
+ *
+ * \return a valid spdk_nvme_qp_failure_reason.
+ */
+spdk_nvme_qp_failure_reason spdk_nvme_ctrlr_get_admin_qp_failure_reason(
+	struct spdk_nvme_ctrlr *ctrlr);
 
 /**
  * Free an I/O queue pair that was allocated by spdk_nvme_ctrlr_alloc_io_qpair().
@@ -1023,7 +1318,9 @@ int spdk_nvme_ctrlr_free_io_qpair(struct spdk_nvme_qpair *qpair);
  * \param cb_fn Callback function invoked when the I/O command completes.
  * \param cb_arg Argument passed to callback function.
  *
- * \return 0 on success, negated errno on failure.
+ * \return 0 if successfully submitted, negated errnos on the following error conditions:
+ * -ENOMEM: The request cannot be allocated.
+ * -ENXIO: The qpair is failed at the transport level.
  */
 
 int spdk_nvme_ctrlr_io_cmd_raw_no_payload_build(struct spdk_nvme_ctrlr *ctrlr,
@@ -1053,7 +1350,11 @@ int spdk_nvme_ctrlr_io_cmd_raw_no_payload_build(struct spdk_nvme_ctrlr *ctrlr,
  * \param cb_fn Callback function invoked when the I/O command completes.
  * \param cb_arg Argument passed to callback function.
  *
- * \return 0 on success, negated errno on failure.
+ * \return 0 if successfully submitted, negated errnos on the following error conditions:
+ * -ENOMEM: The request cannot be allocated.
+ * -ENXIO: The qpair is failed at the transport level.
+ * -EFAULT: Invalid address was specified as part of payload.  cb_fn is also called
+ *          with error status including dnr=1 in this case.
  */
 int spdk_nvme_ctrlr_cmd_io_raw(struct spdk_nvme_ctrlr *ctrlr,
 			       struct spdk_nvme_qpair *qpair,
@@ -1085,7 +1386,11 @@ int spdk_nvme_ctrlr_cmd_io_raw(struct spdk_nvme_ctrlr *ctrlr,
  * \param cb_fn Callback function invoked when the I/O command completes.
  * \param cb_arg Argument passed to callback function.
  *
- * \return 0 on success, negated errno on failure.
+ * \return 0 if successfully submitted, negated errnos on the following error conditions:
+ * -ENOMEM: The request cannot be allocated.
+ * -ENXIO: The qpair is failed at the transport level.
+ * -EFAULT: Invalid address was specified as part of payload.  cb_fn is also called
+ *          with error status including dnr=1 in this case.
  */
 int spdk_nvme_ctrlr_cmd_io_raw_with_md(struct spdk_nvme_ctrlr *ctrlr,
 				       struct spdk_nvme_qpair *qpair,
@@ -1115,10 +1420,20 @@ int spdk_nvme_ctrlr_cmd_io_raw_with_md(struct spdk_nvme_ctrlr *ctrlr,
  * \param max_completions Limit the number of completions to be processed in one
  * call, or 0 for unlimited.
  *
- * \return number of completions processed (may be 0) or negated on error.
+ * \return number of completions processed (may be 0) or negated on error. -ENXIO
+ * in the special case that the qpair is failed at the transport layer.
  */
 int32_t spdk_nvme_qpair_process_completions(struct spdk_nvme_qpair *qpair,
 		uint32_t max_completions);
+
+/**
+ * Returns the reason the qpair is disconnected.
+ *
+ * \param qpair The qpair to check.
+ *
+ * \return a valid spdk_nvme_qp_failure_reason.
+ */
+spdk_nvme_qp_failure_reason spdk_nvme_qpair_get_failure_reason(struct spdk_nvme_qpair *qpair);
 
 /**
  * Send the given admin command to the NVMe controller.
@@ -1143,7 +1458,8 @@ int32_t spdk_nvme_qpair_process_completions(struct spdk_nvme_qpair *qpair,
  * \param cb_fn Callback function invoked when the admin command completes.
  * \param cb_arg Argument passed to callback function.
  *
- * \return 0 on success, negated errno on failure.
+ * \return 0 if successfully submitted, negated errno if resources could not be
+ * allocated for this request, -ENXIO if the admin qpair is failed at the transport layer.
  */
 int spdk_nvme_ctrlr_cmd_admin_raw(struct spdk_nvme_ctrlr *ctrlr,
 				  struct spdk_nvme_cmd *cmd,
@@ -1164,7 +1480,8 @@ int spdk_nvme_ctrlr_cmd_admin_raw(struct spdk_nvme_ctrlr *ctrlr,
  *
  * \param ctrlr Opaque handle to NVMe controller.
  *
- * \return number of completions processed (may be 0) or negated on error.
+ * \return number of completions processed (may be 0) or negated on error. -ENXIO
+ * in the special case that the qpair is failed at the transport layer.
  */
 int32_t spdk_nvme_ctrlr_process_admin_completions(struct spdk_nvme_ctrlr *ctrlr);
 
@@ -1215,13 +1532,53 @@ struct spdk_nvme_ns *spdk_nvme_ctrlr_get_ns(struct spdk_nvme_ctrlr *ctrlr, uint3
  * \param cb_arg Argument to pass to the callback function.
  *
  * \return 0 if successfully submitted, negated errno if resources could not be
- * allocated for this request.
+ * allocated for this request, -ENXIO if the admin qpair is failed at the transport layer.
  */
 int spdk_nvme_ctrlr_cmd_get_log_page(struct spdk_nvme_ctrlr *ctrlr,
 				     uint8_t log_page, uint32_t nsid,
 				     void *payload, uint32_t payload_size,
 				     uint64_t offset,
 				     spdk_nvme_cmd_cb cb_fn, void *cb_arg);
+
+/**
+ * Get a specific log page from the NVMe controller.
+ *
+ * This function is thread safe and can be called at any point while the controller
+ * is attached to the SPDK NVMe driver.
+ *
+ * This function allows specifying extra fields in cdw10 and cdw11 such as
+ * Retain Asynchronous Event and Log Specific Field.
+ *
+ * Call spdk_nvme_ctrlr_process_admin_completions() to poll for completion of
+ * commands submitted through this function.
+ *
+ * \sa spdk_nvme_ctrlr_is_log_page_supported()
+ *
+ * \param ctrlr Opaque handle to NVMe controller.
+ * \param log_page The log page identifier.
+ * \param nsid Depending on the log page, this may be 0, a namespace identifier,
+ * or SPDK_NVME_GLOBAL_NS_TAG.
+ * \param payload The pointer to the payload buffer.
+ * \param payload_size The size of payload buffer.
+ * \param offset Offset in bytes within the log page to start retrieving log page
+ * data. May only be non-zero if the controller supports extended data for Get Log
+ * Page as reported in the controller data log page attributes.
+ * \param cdw10 Value to specify for cdw10.  Specify 0 for numdl - it will be
+ * set by this function based on the payload_size parameter.  Specify 0 for lid -
+ * it will be set by this function based on the log_page parameter.
+ * \param cdw11 Value to specify for cdw11.  Specify 0 for numdu - it will be
+ * set by this function based on the payload_size.
+ * \param cdw14 Value to specify for cdw14.
+ * \param cb_fn Callback function to invoke when the log page has been retrieved.
+ * \param cb_arg Argument to pass to the callback function.
+ *
+ * \return 0 if successfully submitted, negated errno if resources could not be
+ * allocated for this request, -ENXIO if the admin qpair is failed at the transport layer.
+ */
+int spdk_nvme_ctrlr_cmd_get_log_page_ext(struct spdk_nvme_ctrlr *ctrlr, uint8_t log_page,
+		uint32_t nsid, void *payload, uint32_t payload_size,
+		uint64_t offset, uint32_t cdw10, uint32_t cdw11,
+		uint32_t cdw14, spdk_nvme_cmd_cb cb_fn, void *cb_arg);
 
 /**
  * Abort a specific previously-submitted NVMe command.
@@ -1235,13 +1592,33 @@ int spdk_nvme_ctrlr_cmd_get_log_page(struct spdk_nvme_ctrlr *ctrlr,
  * \param cb_fn Callback function to invoke when the abort has completed.
  * \param cb_arg Argument to pass to the callback function.
  *
- * \return 0 if successfully submitted, negated errno value otherwise.
+ * \return 0 if successfully submitted, negated errno if resources could not be
+ * allocated for this request, -ENXIO if the admin qpair is failed at the transport layer.
  */
 int spdk_nvme_ctrlr_cmd_abort(struct spdk_nvme_ctrlr *ctrlr,
 			      struct spdk_nvme_qpair *qpair,
 			      uint16_t cid,
 			      spdk_nvme_cmd_cb cb_fn,
 			      void *cb_arg);
+
+/**
+ * Abort previously submitted commands which have cmd_cb_arg as its callback argument.
+ *
+ * \param ctrlr NVMe controller to which the commands were submitted.
+ * \param qpair NVMe queue pair to which the commands were submitted. For admin
+ * commands, pass NULL for the qpair.
+ * \param cmd_cb_arg Callback argument for the NVMe commands which this function
+ * attempts to abort.
+ * \param cb_fn Callback function to invoke when this function has completed.
+ * \param cb_arg Argument to pass to the callback function.
+ *
+ * \return 0 if successfully submitted, negated errno otherwise.
+ */
+int spdk_nvme_ctrlr_cmd_abort_ext(struct spdk_nvme_ctrlr *ctrlr,
+				  struct spdk_nvme_qpair *qpair,
+				  void *cmd_cb_arg,
+				  spdk_nvme_cmd_cb cb_fn,
+				  void *cb_arg);
 
 /**
  * Set specific feature for the given NVMe controller.
@@ -1264,7 +1641,7 @@ int spdk_nvme_ctrlr_cmd_abort(struct spdk_nvme_ctrlr *ctrlr,
  * \param cb_arg Argument to pass to the callback function.
  *
  * \return 0 if successfully submitted, negated errno if resources could not be
- * allocated for this request.
+ * allocated for this request, -ENXIO if the admin qpair is failed at the transport layer.
  */
 int spdk_nvme_ctrlr_cmd_set_feature(struct spdk_nvme_ctrlr *ctrlr,
 				    uint8_t feature, uint32_t cdw11, uint32_t cdw12,
@@ -1290,8 +1667,8 @@ int spdk_nvme_ctrlr_cmd_set_feature(struct spdk_nvme_ctrlr *ctrlr,
  * \param cb_fn Callback function to invoke when the feature has been retrieved.
  * \param cb_arg Argument to pass to the callback function.
  *
- * \return 0 if successfully submitted, ENOMEM if resources could not be allocated
- * for this request.
+ * \return 0 if successfully submitted, -ENOMEM if resources could not be allocated
+ * for this request, -ENXIO if the admin qpair is failed at the transport layer.
  */
 int spdk_nvme_ctrlr_cmd_get_feature(struct spdk_nvme_ctrlr *ctrlr,
 				    uint8_t feature, uint32_t cdw11,
@@ -1310,8 +1687,8 @@ int spdk_nvme_ctrlr_cmd_get_feature(struct spdk_nvme_ctrlr *ctrlr,
  * \param cb_arg Argument to pass to the callback function.
  * \param ns_id The namespace identifier.
  *
- * \return 0 if successfully submitted, ENOMEM if resources could not be allocated
- * for this request
+ * \return 0 if successfully submitted, -ENOMEM if resources could not be allocated
+ * for this request, -ENXIO if the admin qpair is failed at the transport layer.
  *
  * This function is thread safe and can be called at any point while the controller
  * is attached to the SPDK NVMe driver.
@@ -1338,8 +1715,8 @@ int spdk_nvme_ctrlr_cmd_get_feature_ns(struct spdk_nvme_ctrlr *ctrlr, uint8_t fe
  * \param cb_arg Argument to pass to the callback function.
  * \param ns_id The namespace identifier.
  *
- * \return 0 if successfully submitted, ENOMEM if resources could not be allocated
- * for this request.
+ * \return 0 if successfully submitted, -ENOMEM if resources could not be allocated
+ * for this request, -ENXIO if the admin qpair is failed at the transport layer.
  *
  * This function is thread safe and can be called at any point while the controller
  * is attached to the SPDK NVMe driver.
@@ -1353,6 +1730,51 @@ int spdk_nvme_ctrlr_cmd_set_feature_ns(struct spdk_nvme_ctrlr *ctrlr, uint8_t fe
 				       uint32_t cdw11, uint32_t cdw12, void *payload,
 				       uint32_t payload_size, spdk_nvme_cmd_cb cb_fn,
 				       void *cb_arg, uint32_t ns_id);
+
+/**
+ * Receive security protocol data from controller.
+ *
+ * This function is thread safe and can be called at any point after spdk_nvme_probe().
+ *
+ * \param ctrlr NVMe controller to use for security receive command submission.
+ * \param secp Security Protocol that is used.
+ * \param spsp Security Protocol Specific field.
+ * \param nssf NVMe Security Specific field. Indicate RPMB target when using Security
+ * Protocol EAh.
+ * \param payload The pointer to the payload buffer.
+ * \param payload_size The size of payload buffer.
+ * \param cb_fn Callback function to invoke when the command has been completed.
+ * \param cb_arg Argument to pass to the callback function.
+ *
+ * \return 0 if successfully submitted, negated errno if resources could not be allocated
+ * for this request.
+ */
+int spdk_nvme_ctrlr_cmd_security_receive(struct spdk_nvme_ctrlr *ctrlr, uint8_t secp,
+		uint16_t spsp, uint8_t nssf, void *payload,
+		uint32_t payload_size,
+		spdk_nvme_cmd_cb cb_fn, void *cb_arg);
+
+/**
+ * Send security protocol data to controller.
+ *
+ * This function is thread safe and can be called at any point after spdk_nvme_probe().
+ *
+ * \param ctrlr NVMe controller to use for security send command submission.
+ * \param secp Security Protocol that is used.
+ * \param spsp Security Protocol Specific field.
+ * \param nssf NVMe Security Specific field. Indicate RPMB target when using Security
+ * Protocol EAh.
+ * \param payload The pointer to the payload buffer.
+ * \param payload_size The size of payload buffer.
+ * \param cb_fn Callback function to invoke when the command has been completed.
+ * \param cb_arg Argument to pass to the callback function.
+ *
+ * \return 0 if successfully submitted, negated errno if resources could not be allocated
+ * for this request.
+ */
+int spdk_nvme_ctrlr_cmd_security_send(struct spdk_nvme_ctrlr *ctrlr, uint8_t secp,
+				      uint16_t spsp, uint8_t nssf, void *payload,
+				      uint32_t payload_size, spdk_nvme_cmd_cb cb_fn, void *cb_arg);
 
 /**
  * Receive security protocol data from controller.
@@ -1524,33 +1946,36 @@ int spdk_nvme_ctrlr_update_firmware(struct spdk_nvme_ctrlr *ctrlr, void *payload
 volatile struct spdk_nvme_registers *spdk_nvme_ctrlr_get_registers(struct spdk_nvme_ctrlr *ctrlr);
 
 /**
- * Allocate an I/O buffer from the controller memory buffer (Experimental).
+ * Reserve the controller memory buffer for data transfer use.
  *
- * This function allocates registered memory which belongs to the Controller
- * Memory Buffer (CMB) of the specified NVMe controller. Note that the CMB has
- * to support the WDS and RDS capabilities for the allocation to be successful.
- * Also, due to vtophys contraints the CMB must be at least 4MiB in size. Free
- * memory allocated with this function using spdk_nvme_ctrlr_free_cmb_io_buffer().
+ * This function reserves the full size of the controller memory buffer
+ * for use in data transfers. If submission queues or completion queues are
+ * already placed in the controller memory buffer, this call will fail.
  *
- * \param ctrlr Controller from which to allocate memory buffer.
- * \param size Size of buffer to allocate in bytes.
+ * \param ctrlr Controller from which to allocate memory buffer
  *
- * \return Pointer to controller memory buffer allocation, or NULL if allocation
- * was not possible.
+ * \return The size of the controller memory buffer on success. Negated errno
+ * on failure.
  */
-void *spdk_nvme_ctrlr_alloc_cmb_io_buffer(struct spdk_nvme_ctrlr *ctrlr, size_t size);
+int spdk_nvme_ctrlr_reserve_cmb(struct spdk_nvme_ctrlr *ctrlr);
 
 /**
- * Free a controller memory I/O buffer (Experimental).
+ * Map a previously reserved controller memory buffer so that it's data is
+ * visible from the CPU. This operation is not always possible.
  *
- * Note this function is currently a NOP which is one reason why this and
- * spdk_nvme_ctrlr_alloc_cmb_io_buffer() are currently marked as experimental.
+ * \param ctrlr Controller that contains the memory buffer
+ * \param size Size of buffer that was mapped.
  *
- * \param ctrlr Controller from which the buffer was allocated.
- * \param buf Buffer previously allocated by spdk_nvme_ctrlr_alloc_cmb_io_buffer().
- * \param size Size of buf in bytes.
+ * \return Pointer to controller memory buffer, or NULL on failure.
  */
-void spdk_nvme_ctrlr_free_cmb_io_buffer(struct spdk_nvme_ctrlr *ctrlr, void *buf, size_t size);
+void *spdk_nvme_ctrlr_map_cmb(struct spdk_nvme_ctrlr *ctrlr, size_t *size);
+
+/**
+ * Free a controller memory I/O buffer.
+ *
+ * \param ctrlr Controller from which to unmap the memory buffer.
+ */
+void spdk_nvme_ctrlr_unmap_cmb(struct spdk_nvme_ctrlr *ctrlr);
 
 /**
  * Get the transport ID for a given NVMe controller.
@@ -1560,6 +1985,90 @@ void spdk_nvme_ctrlr_free_cmb_io_buffer(struct spdk_nvme_ctrlr *ctrlr, void *buf
  */
 const struct spdk_nvme_transport_id *spdk_nvme_ctrlr_get_transport_id(
 	struct spdk_nvme_ctrlr *ctrlr);
+
+/**
+ * Opaque handle for a poll group. A poll group is a collection of spdk_nvme_qpair
+ * objects that are polled for completions as a unit.
+ *
+ * Returned by spdk_nvme_poll_group_create().
+ */
+struct spdk_nvme_poll_group;
+
+
+/**
+ * This function alerts the user to disconnected qpairs when calling
+ * spdk_nvme_poll_group_process_completions.
+ */
+typedef void (*spdk_nvme_disconnected_qpair_cb)(struct spdk_nvme_qpair *qpair,
+		void *poll_group_ctx);
+
+/**
+ * Create a new poll group.
+ *
+ * \param ctx A user supplied context that can be retrieved later with spdk_nvme_poll_group_get_ctx
+ *
+ * \return Pointer to the new poll group, or NULL on error.
+ */
+struct spdk_nvme_poll_group *spdk_nvme_poll_group_create(void *ctx);
+
+/**
+ * Add an spdk_nvme_qpair to a poll group. qpairs may only be added to
+ * a poll group if they are in the disconnected state; i.e. either they were
+ * just allocated and not yet connected or they have been disconnected with a call
+ * to spdk_nvme_ctrlr_disconnect_io_qpair.
+ *
+ * \param group The group to which the qpair will be added.
+ * \param qpair The qpair to add to the poll group.
+ *
+ * return 0 on success, -EINVAL if the qpair is not in the disabled state, -ENODEV if the transport
+ * doesn't exist, -ENOMEM on memory allocation failures, or -EPROTO on a protocol (transport) specific failure.
+ */
+int spdk_nvme_poll_group_add(struct spdk_nvme_poll_group *group, struct spdk_nvme_qpair *qpair);
+
+/**
+ * Remove an spdk_nvme_qpair from a poll group.
+ *
+ * \param group The group from which to remove the qpair.
+ * \param qpair The qpair to remove from the poll group.
+ *
+ * return 0 on success, -ENOENT if the qpair is not found in the group, or -EPROTO on a protocol (transport) specific failure.
+ */
+int spdk_nvme_poll_group_remove(struct spdk_nvme_poll_group *group, struct spdk_nvme_qpair *qpair);
+
+/**
+ * Destroy an empty poll group.
+ *
+ * \param group The group to destroy.
+ *
+ * return 0 on success, -EBUSY if the poll group is not empty.
+ */
+int spdk_nvme_poll_group_destroy(struct spdk_nvme_poll_group *group);
+
+/**
+ * Poll for completions on all qpairs in this poll group.
+ *
+ * the disconnected_qpair_cb will be called for all disconnected qpairs in the poll group
+ * including qpairs which fail within the context of this call.
+ * The user is responsible for trying to reconnect or destroy those qpairs.
+ *
+ * \param group The group on which to poll for completions.
+ * \param completions_per_qpair The maximum number of completions per qpair.
+ * \param disconnected_qpair_cb A callback function of type spdk_nvme_disconnected_qpair_cb. Must be non-NULL.
+ *
+ * return The number of completions across all qpairs, -EINVAL if no disconnected_qpair_cb is passed, or
+ * -EIO if the shared completion queue cannot be polled for the RDMA transport.
+ */
+int64_t spdk_nvme_poll_group_process_completions(struct spdk_nvme_poll_group *group,
+		uint32_t completions_per_qpair, spdk_nvme_disconnected_qpair_cb disconnected_qpair_cb);
+
+/**
+ * Retrieve the user context for this specific poll group.
+ *
+ * \param group The poll group from which to retrieve the context.
+ *
+ * \return A pointer to the user provided poll group context.
+ */
+void *spdk_nvme_poll_group_get_ctx(struct spdk_nvme_poll_group *group);
 
 /**
  * Get the identify namespace data as defined by the NVMe specification.
@@ -1712,6 +2221,18 @@ uint32_t spdk_nvme_ns_get_md_size(struct spdk_nvme_ns *ns);
 bool spdk_nvme_ns_supports_extended_lba(struct spdk_nvme_ns *ns);
 
 /**
+ * Check whether if the namespace supports compare operation
+ *
+ * This function is thread safe and can be called at any point while the controller
+ * is attached to the SPDK NVMe driver.
+ *
+ * \param ns Namespace to query.
+ *
+ * \return true if the namespace supports compare operation, or false otherwise.
+ */
+bool spdk_nvme_ns_supports_compare(struct spdk_nvme_ns *ns);
+
+/**
  * Determine the value returned when reading deallocated blocks.
  *
  * If deallocated blocks return 0, the deallocate command can be used as a more
@@ -1758,6 +2279,8 @@ enum spdk_nvme_ns_flags {
 	SPDK_NVME_NS_EXTENDED_LBA_SUPPORTED	= 0x20, /**< The extended lba format is supported,
 							      metadata is transferred as a contiguous
 							      part of the logical block that it is associated with */
+	SPDK_NVME_NS_WRITE_UNCORRECTABLE_SUPPORTED	= 0x40, /**< The write uncorrectable command is supported */
+	SPDK_NVME_NS_COMPARE_SUPPORTED		= 0x80, /**< The compare command is supported */
 };
 
 /**
@@ -1789,7 +2312,8 @@ typedef void (*spdk_nvme_req_reset_sgl_cb)(void *cb_arg, uint32_t offset);
  * The described segment must be physically contiguous.
  *
  * \param cb_arg Argument passed to readv/writev.
- * \param address Virtual address of this segment.
+ * \param address Virtual address of this segment, a value of UINT64_MAX
+ * means the segment should be described via Bit Bucket SGL.
  * \param length Length of this physical segment.
  */
 typedef int (*spdk_nvme_req_next_sge_cb)(void *cb_arg, void **address, uint32_t *length);
@@ -1811,8 +2335,12 @@ typedef int (*spdk_nvme_req_next_sge_cb)(void *cb_arg, void **address, uint32_t 
  * \param io_flags Set flags, defined by the SPDK_NVME_IO_FLAGS_* entries in
  * spdk/nvme_spec.h, for this I/O.
  *
- * \return 0 if successfully submitted, negated errno if an nvme_request structure
- * cannot be allocated for the I/O request
+ * \return 0 if successfully submitted, negated errnos on the following error conditions:
+ * -EINVAL: The request is malformed.
+ * -ENOMEM: The request cannot be allocated.
+ * -ENXIO: The qpair is failed at the transport level.
+ * -EFAULT: Invalid address was specified as part of payload.  cb_fn is also called
+ *          with error status including dnr=1 in this case.
  */
 int spdk_nvme_ns_cmd_write(struct spdk_nvme_ns *ns, struct spdk_nvme_qpair *qpair, void *payload,
 			   uint64_t lba, uint32_t lba_count, spdk_nvme_cmd_cb cb_fn,
@@ -1836,8 +2364,12 @@ int spdk_nvme_ns_cmd_write(struct spdk_nvme_ns *ns, struct spdk_nvme_qpair *qpai
  * \param next_sge_fn Callback function to iterate each scattered payload memory
  * segment.
  *
- * \return 0 if successfully submitted, negated errno if an nvme_request structure
- * cannot be allocated for the I/O request.
+ * \return 0 if successfully submitted, negated errnos on the following error conditions:
+ * -EINVAL: The request is malformed.
+ * -ENOMEM: The request cannot be allocated.
+ * -ENXIO: The qpair is failed at the transport level.
+ * -EFAULT: Invalid address was specified as part of payload.  cb_fn is also called
+ *          with error status including dnr=1 in this case.
  */
 int spdk_nvme_ns_cmd_writev(struct spdk_nvme_ns *ns, struct spdk_nvme_qpair *qpair,
 			    uint64_t lba, uint32_t lba_count,
@@ -1867,8 +2399,12 @@ int spdk_nvme_ns_cmd_writev(struct spdk_nvme_ns *ns, struct spdk_nvme_qpair *qpa
  * \param apptag_mask application tag mask.
  * \param apptag application tag to use end-to-end protection information.
  *
- * \return 0 if successfully submitted, ENOMEM if an nvme_request structure
- * cannot be allocated for the I/O request.
+ * \return 0 if successfully submitted, negated errnos on the following error conditions:
+ * -EINVAL: The request is malformed.
+ * -ENOMEM: The request cannot be allocated.
+ * -ENXIO: The qpair is failed at the transport level.
+ * -EFAULT: Invalid address was specified as part of payload.  cb_fn is also called
+ *          with error status including dnr=1 in this case.
  */
 int spdk_nvme_ns_cmd_writev_with_md(struct spdk_nvme_ns *ns, struct spdk_nvme_qpair *qpair,
 				    uint64_t lba, uint32_t lba_count,
@@ -1898,8 +2434,12 @@ int spdk_nvme_ns_cmd_writev_with_md(struct spdk_nvme_ns *ns, struct spdk_nvme_qp
  * \param apptag_mask Application tag mask.
  * \param apptag Application tag to use end-to-end protection information.
  *
- * \return 0 if successfully submitted, negated errno if an nvme_request structure
- * cannot be allocated for the I/O request.
+ * \return 0 if successfully submitted, negated errnos on the following error conditions:
+ * -EINVAL: The request is malformed.
+ * -ENOMEM: The request cannot be allocated.
+ * -ENXIO: The qpair is failed at the transport level.
+ * -EFAULT: Invalid address was specified as part of payload.  cb_fn is also called
+ *          with error status including dnr=1 in this case.
  */
 int spdk_nvme_ns_cmd_write_with_md(struct spdk_nvme_ns *ns, struct spdk_nvme_qpair *qpair,
 				   void *payload, void *metadata,
@@ -1923,13 +2463,42 @@ int spdk_nvme_ns_cmd_write_with_md(struct spdk_nvme_ns *ns, struct spdk_nvme_qpa
  * \param io_flags Set flags, defined by the SPDK_NVME_IO_FLAGS_* entries in
  * spdk/nvme_spec.h, for this I/O.
  *
- * \return 0 if successfully submitted, negated errno if an nvme_request structure
- * cannot be allocated for the I/O request.
+ * \return 0 if successfully submitted, negated errnos on the following error conditions:
+ * -EINVAL: The request is malformed.
+ * -ENOMEM: The request cannot be allocated.
+ * -ENXIO: The qpair is failed at the transport level.
+ * -EFAULT: Invalid address was specified as part of payload.  cb_fn is also called
+ *          with error status including dnr=1 in this case.
  */
 int spdk_nvme_ns_cmd_write_zeroes(struct spdk_nvme_ns *ns, struct spdk_nvme_qpair *qpair,
 				  uint64_t lba, uint32_t lba_count,
 				  spdk_nvme_cmd_cb cb_fn, void *cb_arg,
 				  uint32_t io_flags);
+
+/**
+ * Submit a write uncorrectable I/O to the specified NVMe namespace.
+ *
+ * The command is submitted to a qpair allocated by spdk_nvme_ctrlr_alloc_io_qpair().
+ * The user must ensure that only one thread submits I/O on a given qpair at any
+ * given time.
+ *
+ * \param ns NVMe namespace to submit the write uncorrectable I/O.
+ * \param qpair I/O queue pair to submit the request.
+ * \param lba Starting LBA for this command.
+ * \param lba_count Length (in sectors) for the write uncorrectable operation.
+ * \param cb_fn Callback function to invoke when the I/O is completed.
+ * \param cb_arg Argument to pass to the callback function.
+ *
+ * \return 0 if successfully submitted, negated errnos on the following error conditions:
+ * -EINVAL: The request is malformed.
+ * -ENOMEM: The request cannot be allocated.
+ * -ENXIO: The qpair is failed at the transport level.
+ * -EFAULT: Invalid address was specified as part of payload.  cb_fn is also called
+ *          with error status including dnr=1 in this case.
+ */
+int spdk_nvme_ns_cmd_write_uncorrectable(struct spdk_nvme_ns *ns, struct spdk_nvme_qpair *qpair,
+		uint64_t lba, uint32_t lba_count,
+		spdk_nvme_cmd_cb cb_fn, void *cb_arg);
 
 /**
  * \brief Submits a read I/O to the specified NVMe namespace.
@@ -1947,8 +2516,12 @@ int spdk_nvme_ns_cmd_write_zeroes(struct spdk_nvme_ns *ns, struct spdk_nvme_qpai
  * \param cb_arg Argument to pass to the callback function.
  * \param io_flags Set flags, defined in nvme_spec.h, for this I/O.
  *
- * \return 0 if successfully submitted, negated errno if an nvme_request structure
- * cannot be allocated for the I/O request.
+ * \return 0 if successfully submitted, negated errnos on the following error conditions:
+ * -EINVAL: The request is malformed.
+ * -ENOMEM: The request cannot be allocated.
+ * -ENXIO: The qpair is failed at the transport level.
+ * -EFAULT: Invalid address was specified as part of payload.  cb_fn is also called
+ *          with error status including dnr=1 in this case.
  */
 int spdk_nvme_ns_cmd_read(struct spdk_nvme_ns *ns, struct spdk_nvme_qpair *qpair, void *payload,
 			  uint64_t lba, uint32_t lba_count, spdk_nvme_cmd_cb cb_fn,
@@ -1972,8 +2545,12 @@ int spdk_nvme_ns_cmd_read(struct spdk_nvme_ns *ns, struct spdk_nvme_qpair *qpair
  * \param next_sge_fn Callback function to iterate each scattered payload memory
  * segment.
  *
- * \return 0 if successfully submitted, negated errno if an nvme_request structure
- * cannot be allocated for the I/O request.
+ * \return 0 if successfully submitted, negated errnos on the following error conditions:
+ * -EINVAL: The request is malformed.
+ * -ENOMEM: The request cannot be allocated.
+ * -ENXIO: The qpair is failed at the transport level.
+ * -EFAULT: Invalid address was specified as part of payload.  cb_fn is also called
+ *          with error status including dnr=1 in this case.
  */
 int spdk_nvme_ns_cmd_readv(struct spdk_nvme_ns *ns, struct spdk_nvme_qpair *qpair,
 			   uint64_t lba, uint32_t lba_count,
@@ -1983,6 +2560,9 @@ int spdk_nvme_ns_cmd_readv(struct spdk_nvme_ns *ns, struct spdk_nvme_qpair *qpai
 
 /**
  * Submit a read I/O to the specified NVMe namespace.
+ *
+ * The command is submitted to a qpair allocated by spdk_nvme_ctrlr_alloc_io_qpair().
+ * The user must ensure that only one thread submits I/O on a given qpair at any given time.
  *
  * \param ns NVMe namespace to submit the read I/O
  * \param qpair I/O queue pair to submit the request
@@ -1999,11 +2579,12 @@ int spdk_nvme_ns_cmd_readv(struct spdk_nvme_ns *ns, struct spdk_nvme_qpair *qpai
  * \param apptag_mask application tag mask.
  * \param apptag application tag to use end-to-end protection information.
  *
- * \return 0 if successfully submitted, ENOMEM if an nvme_request
- *	     structure cannot be allocated for the I/O request
- *
- * The command is submitted to a qpair allocated by spdk_nvme_ctrlr_alloc_io_qpair().
- * The user must ensure that only one thread submits I/O on a given qpair at any given time.
+ * \return 0 if successfully submitted, negated errnos on the following error conditions:
+ * -EINVAL: The request is malformed.
+ * -ENOMEM: The request cannot be allocated.
+ * -ENXIO: The qpair is failed at the transport level.
+ * -EFAULT: Invalid address was specified as part of payload.  cb_fn is also called
+ *          with error status including dnr=1 in this case.
  */
 int spdk_nvme_ns_cmd_readv_with_md(struct spdk_nvme_ns *ns, struct spdk_nvme_qpair *qpair,
 				   uint64_t lba, uint32_t lba_count,
@@ -2014,6 +2595,10 @@ int spdk_nvme_ns_cmd_readv_with_md(struct spdk_nvme_ns *ns, struct spdk_nvme_qpa
 
 /**
  * Submits a read I/O to the specified NVMe namespace.
+ *
+ * The command is submitted to a qpair allocated by spdk_nvme_ctrlr_alloc_io_qpair().
+ * The user must ensure that only one thread submits I/O on a given qpair at any
+ * given time.
  *
  * \param ns NVMe namespace to submit the read I/O
  * \param qpair I/O queue pair to submit the request
@@ -2028,8 +2613,12 @@ int spdk_nvme_ns_cmd_readv_with_md(struct spdk_nvme_ns *ns, struct spdk_nvme_qpa
  * \param apptag_mask Application tag mask.
  * \param apptag Application tag to use end-to-end protection information.
  *
- * \return 0 if successfully submitted, negated errno if an nvme_request structure
- * cannot be allocated for the I/O request.
+ * \return 0 if successfully submitted, negated errnos on the following error conditions:
+ * -EINVAL: The request is malformed.
+ * -ENOMEM: The request cannot be allocated.
+ * -ENXIO: The qpair is failed at the transport level.
+ * -EFAULT: Invalid address was specified as part of payload.  cb_fn is also called
+ *          with error status including dnr=1 in this case.
  */
 int spdk_nvme_ns_cmd_read_with_md(struct spdk_nvme_ns *ns, struct spdk_nvme_qpair *qpair,
 				  void *payload, void *metadata,
@@ -2038,10 +2627,7 @@ int spdk_nvme_ns_cmd_read_with_md(struct spdk_nvme_ns *ns, struct spdk_nvme_qpai
 				  uint16_t apptag_mask, uint16_t apptag);
 
 /**
- * Submit a data set management request to the specified NVMe namespace. Data set
- * management operations are designed to optimize interaction with the block
- * translation layer inside the device. The most common type of operation is
- * deallocate, which is often referred to as TRIM or UNMAP.
+ * Submit a data set management request to the specified NVMe namespace.
  *
  * The command is submitted to a qpair allocated by spdk_nvme_ctrlr_alloc_io_qpair().
  * The user must ensure that only one thread submits I/O on a given qpair at any
@@ -2062,7 +2648,9 @@ int spdk_nvme_ns_cmd_read_with_md(struct spdk_nvme_ns *ns, struct spdk_nvme_qpai
  * \param cb_fn Callback function to invoke when the I/O is completed
  * \param cb_arg Argument to pass to the callback function
  *
- * \return 0 if successfully submitted, negated POSIX errno values otherwise.
+ * \return 0 if successfully submitted, negated errnos on the following error conditions:
+ * -ENOMEM: The request cannot be allocated.
+ * -ENXIO: The qpair is failed at the transport level.
  */
 int spdk_nvme_ns_cmd_dataset_management(struct spdk_nvme_ns *ns, struct spdk_nvme_qpair *qpair,
 					uint32_t type,
@@ -2083,8 +2671,9 @@ int spdk_nvme_ns_cmd_dataset_management(struct spdk_nvme_ns *ns, struct spdk_nvm
  * \param cb_fn Callback function to invoke when the I/O is completed.
  * \param cb_arg Argument to pass to the callback function.
  *
- * \return 0 if successfully submitted, negated errno if an nvme_request structure
- * cannot be allocated for the I/O request.
+ * \return 0 if successfully submitted, negated errnos on the following error conditions:
+ * -ENOMEM: The request cannot be allocated.
+ * -ENXIO: The qpair is failed at the transport level.
  */
 int spdk_nvme_ns_cmd_flush(struct spdk_nvme_ns *ns, struct spdk_nvme_qpair *qpair,
 			   spdk_nvme_cmd_cb cb_fn, void *cb_arg);
@@ -2105,8 +2694,11 @@ int spdk_nvme_ns_cmd_flush(struct spdk_nvme_ns *ns, struct spdk_nvme_qpair *qpai
  * \param cb_fn Callback function to invoke when the I/O is completed.
  * \param cb_arg Argument to pass to the callback function.
  *
- * \return 0 if successfully submitted, negated errno if an nvme_request structure
- * cannot be allocated for the I/O request.
+ * \return 0 if successfully submitted, negated errnos on the following error conditions:
+ * -ENOMEM: The request cannot be allocated.
+ * -ENXIO: The qpair is failed at the transport level.
+ * -EFAULT: Invalid address was specified as part of payload.  cb_fn is also called
+ *          with error status including dnr=1 in this case.
  */
 int spdk_nvme_ns_cmd_reservation_register(struct spdk_nvme_ns *ns,
 		struct spdk_nvme_qpair *qpair,
@@ -2132,8 +2724,11 @@ int spdk_nvme_ns_cmd_reservation_register(struct spdk_nvme_ns *ns,
  * \param cb_fn Callback function to invoke when the I/O is completed.
  * \param cb_arg Argument to pass to the callback function.
  *
- * \return 0 if successfully submitted, negated errno if an nvme_request structure
- * cannot be allocated for the I/O request.
+ * \return 0 if successfully submitted, negated errnos on the following error conditions:
+ * -ENOMEM: The request cannot be allocated.
+ * -ENXIO: The qpair is failed at the transport level.
+ * -EFAULT: Invalid address was specified as part of payload.  cb_fn is also called
+ *          with error status including dnr=1 in this case.
  */
 int spdk_nvme_ns_cmd_reservation_release(struct spdk_nvme_ns *ns,
 		struct spdk_nvme_qpair *qpair,
@@ -2159,8 +2754,11 @@ int spdk_nvme_ns_cmd_reservation_release(struct spdk_nvme_ns *ns,
  * \param cb_fn Callback function to invoke when the I/O is completed.
  * \param cb_arg Argument to pass to the callback function.
  *
- * \return 0 if successfully submitted, negated errno if an nvme_request structure
- * cannot be allocated for the I/O request.
+ * \return 0 if successfully submitted, negated errnos on the following error conditions:
+ * -ENOMEM: The request cannot be allocated.
+ * -ENXIO: The qpair is failed at the transport level.
+ * -EFAULT: Invalid address was specified as part of payload.  cb_fn is also called
+ *          with error status including dnr=1 in this case.
  */
 int spdk_nvme_ns_cmd_reservation_acquire(struct spdk_nvme_ns *ns,
 		struct spdk_nvme_qpair *qpair,
@@ -2184,8 +2782,11 @@ int spdk_nvme_ns_cmd_reservation_acquire(struct spdk_nvme_ns *ns,
  * \param cb_fn Callback function to invoke when the I/O is completed.
  * \param cb_arg Argument to pass to the callback function.
  *
- * \return 0 if successfully submitted, negated errno if an nvme_request structure
- * cannot be allocated for the I/O request.
+ * \return 0 if successfully submitted, negated errnos on the following error conditions:
+ * -ENOMEM: The request cannot be allocated.
+ * -ENXIO: The qpair is failed at the transport level.
+ * -EFAULT: Invalid address was specified as part of payload.  cb_fn is also called
+ *          with error status including dnr=1 in this case.
  */
 int spdk_nvme_ns_cmd_reservation_report(struct spdk_nvme_ns *ns,
 					struct spdk_nvme_qpair *qpair,
@@ -2208,8 +2809,12 @@ int spdk_nvme_ns_cmd_reservation_report(struct spdk_nvme_ns *ns,
  * \param cb_arg Argument to pass to the callback function.
  * \param io_flags Set flags, defined in nvme_spec.h, for this I/O.
  *
- * \return 0 if successfully submitted, negated errno if an nvme_request structure
- * cannot be allocated for the I/O request.
+ * \return 0 if successfully submitted, negated errnos on the following error conditions:
+ * -EINVAL: The request is malformed.
+ * -ENOMEM: The request cannot be allocated.
+ * -ENXIO: The qpair is failed at the transport level.
+ * -EFAULT: Invalid address was specified as part of payload.  cb_fn is also called
+ *          with error status including dnr=1 in this case.
  */
 int spdk_nvme_ns_cmd_compare(struct spdk_nvme_ns *ns, struct spdk_nvme_qpair *qpair, void *payload,
 			     uint64_t lba, uint32_t lba_count, spdk_nvme_cmd_cb cb_fn,
@@ -2233,14 +2838,55 @@ int spdk_nvme_ns_cmd_compare(struct spdk_nvme_ns *ns, struct spdk_nvme_qpair *qp
  * \param next_sge_fn Callback function to iterate each scattered payload memory
  * segment.
  *
- * \return 0 if successfully submitted, negated errno if an nvme_request structure
- * cannot be allocated for the I/O request.
+ * \return 0 if successfully submitted, negated errnos on the following error conditions:
+ * -EINVAL: The request is malformed.
+ * -ENOMEM: The request cannot be allocated.
+ * -ENXIO: The qpair is failed at the transport level.
+ * -EFAULT: Invalid address was specified as part of payload.  cb_fn is also called
+ *          with error status including dnr=1 in this case.
  */
 int spdk_nvme_ns_cmd_comparev(struct spdk_nvme_ns *ns, struct spdk_nvme_qpair *qpair,
 			      uint64_t lba, uint32_t lba_count,
 			      spdk_nvme_cmd_cb cb_fn, void *cb_arg, uint32_t io_flags,
 			      spdk_nvme_req_reset_sgl_cb reset_sgl_fn,
 			      spdk_nvme_req_next_sge_cb next_sge_fn);
+
+/**
+ * Submit a compare I/O to the specified NVMe namespace.
+ *
+ * The command is submitted to a qpair allocated by spdk_nvme_ctrlr_alloc_io_qpair().
+ * The user must ensure that only one thread submits I/O on a given qpair at any
+ * given time.
+ *
+ * \param ns NVMe namespace to submit the compare I/O.
+ * \param qpair I/O queue pair to submit the request.
+ * \param lba Starting LBA to compare the data.
+ * \param lba_count Length (in sectors) for the compare operation.
+ * \param cb_fn Callback function to invoke when the I/O is completed.
+ * \param cb_arg Argument to pass to the callback function.
+ * \param io_flags Set flags, defined in nvme_spec.h, for this I/O.
+ * \param reset_sgl_fn Callback function to reset scattered payload.
+ * \param next_sge_fn Callback function to iterate each scattered payload memory
+ * segment.
+ * \param metadata Virtual address pointer to the metadata payload, the length
+ * of metadata is specified by spdk_nvme_ns_get_md_size()
+ * \param apptag_mask Application tag mask.
+ * \param apptag Application tag to use end-to-end protection information.
+ *
+ * \return 0 if successfully submitted, negated errnos on the following error conditions:
+ * -EINVAL: The request is malformed.
+ * -ENOMEM: The request cannot be allocated.
+ * -ENXIO: The qpair is failed at the transport level.
+ * -EFAULT: Invalid address was specified as part of payload.  cb_fn is also called
+ *          with error status including dnr=1 in this case.
+ */
+int
+spdk_nvme_ns_cmd_comparev_with_md(struct spdk_nvme_ns *ns, struct spdk_nvme_qpair *qpair,
+				  uint64_t lba, uint32_t lba_count,
+				  spdk_nvme_cmd_cb cb_fn, void *cb_arg, uint32_t io_flags,
+				  spdk_nvme_req_reset_sgl_cb reset_sgl_fn,
+				  spdk_nvme_req_next_sge_cb next_sge_fn, void *metadata,
+				  uint16_t apptag_mask, uint16_t apptag);
 
 /**
  * Submit a compare I/O to the specified NVMe namespace.
@@ -2262,8 +2908,12 @@ int spdk_nvme_ns_cmd_comparev(struct spdk_nvme_ns *ns, struct spdk_nvme_qpair *q
  * \param apptag_mask Application tag mask.
  * \param apptag Application tag to use end-to-end protection information.
  *
- * \return 0 if successfully submitted, negated errno if an nvme_request structure
- * cannot be allocated for the I/O request.
+ * \return 0 if successfully submitted, negated errnos on the following error conditions:
+ * -EINVAL: The request is malformed.
+ * -ENOMEM: The request cannot be allocated.
+ * -ENXIO: The qpair is failed at the transport level.
+ * -EFAULT: Invalid address was specified as part of payload.  cb_fn is also called
+ *          with error status including dnr=1 in this case.
  */
 int spdk_nvme_ns_cmd_compare_with_md(struct spdk_nvme_ns *ns, struct spdk_nvme_qpair *qpair,
 				     void *payload, void *metadata,
@@ -2318,7 +2968,48 @@ void spdk_nvme_qpair_remove_cmd_error_injection(struct spdk_nvme_ctrlr *ctrlr,
 		struct spdk_nvme_qpair *qpair,
 		uint8_t opc);
 
-#ifdef SPDK_CONFIG_RDMA
+/**
+ * \brief Given NVMe status, return ASCII string for that error.
+ *
+ * \param status Status from NVMe completion queue element.
+ * \return Returns status as an ASCII string.
+ */
+const char *spdk_nvme_cpl_get_status_string(const struct spdk_nvme_status *status);
+
+/**
+ * \brief Prints (SPDK_NOTICELOG) the contents of an NVMe submission queue entry (command).
+ *
+ * \param qpair Pointer to the NVMe queue pair - used to determine admin versus I/O queue.
+ * \param cmd Pointer to the submission queue command to be formatted.
+ */
+void spdk_nvme_qpair_print_command(struct spdk_nvme_qpair *qpair,
+				   struct spdk_nvme_cmd *cmd);
+
+/**
+ * \brief Prints (SPDK_NOTICELOG) the contents of an NVMe completion queue entry.
+ *
+ * \param qpair Pointer to the NVMe queue pair - presently unused.
+ * \param cpl Pointer to the completion queue element to be formatted.
+ */
+void spdk_nvme_qpair_print_completion(struct spdk_nvme_qpair *qpair,
+				      struct spdk_nvme_cpl *cpl);
+
+/**
+ * \brief Prints (SPDK_NOTICELOG) the contents of an NVMe submission queue entry (command).
+ *
+ * \param qid Queue identifier.
+ * \param cmd Pointer to the submission queue command to be formatted.
+ */
+void spdk_nvme_print_command(uint16_t qid, struct spdk_nvme_cmd *cmd);
+
+/**
+ * \brief Prints (SPDK_NOTICELOG) the contents of an NVMe completion queue entry.
+ *
+ * \param qid Queue identifier.
+ * \param cpl Pointer to the completion queue element to be formatted.
+ */
+void spdk_nvme_print_completion(uint16_t qid, struct spdk_nvme_cpl *cpl);
+
 struct ibv_context;
 struct ibv_pd;
 struct ibv_mr;
@@ -2348,6 +3039,14 @@ struct spdk_nvme_rdma_hooks {
 	 * \return Infiniband remote key (rkey) for this buf
 	 */
 	uint64_t (*get_rkey)(struct ibv_pd *pd, void *buf, size_t size);
+
+	/**
+	 * \brief Put back keys got from get_rkey.
+	 *
+	 * \param key The Infiniband remote key (rkey) got from get_rkey
+	 *
+	 */
+	void (*put_rkey)(uint64_t key);
 };
 
 /**
@@ -2364,7 +3063,171 @@ struct spdk_nvme_rdma_hooks {
  */
 void spdk_nvme_rdma_init_hooks(struct spdk_nvme_rdma_hooks *hooks);
 
-#endif
+/**
+ * Get name of cuse device associated with NVMe controller.
+ *
+ * \param ctrlr Opaque handle to NVMe controller.
+ * \param name	Buffer of be filled with cuse device name.
+ * \param size	Size of name buffer.
+ *
+ * \return 0 on success. Negated errno on the following error conditions:
+ * -ENODEV: No cuse device registered for the controller.
+ * -ENSPC: Too small buffer size passed. Value of size pointer changed to the required length.
+ */
+int spdk_nvme_cuse_get_ctrlr_name(struct spdk_nvme_ctrlr *ctrlr, char *name, size_t *size);
+
+/**
+ * Get name of cuse device associated with NVMe namespace.
+ *
+ * \param ctrlr Opaque handle to NVMe controller.
+ * \param nsid	Namespace id.
+ * \param name	Buffer of be filled with cuse device name.
+ * \param size	Size of name buffer.
+ *
+ * \return 0 on success. Negated errno on the following error conditions:
+ * -ENODEV: No cuse device registered for the namespace.
+ * -ENSPC: Too small buffer size passed. Value of size pointer changed to the required length.
+ */
+int spdk_nvme_cuse_get_ns_name(struct spdk_nvme_ctrlr *ctrlr, uint32_t nsid,
+			       char *name, size_t *size);
+
+/**
+ * Create a character device at the path specified (Experimental)
+ *
+ * The character device can handle ioctls and is compatible with a standard
+ * Linux kernel NVMe device. Tools such as nvme-cli can be used to configure
+ * SPDK devices through this interface.
+ *
+ * The user is expected to be polling the admin qpair for this controller periodically
+ * for the CUSE device to function.
+ *
+ * \param ctrlr Opaque handle to the NVMe controller.
+ *
+ * \return 0 on success. Negated errno on failure.
+ */
+int spdk_nvme_cuse_register(struct spdk_nvme_ctrlr *ctrlr);
+
+/**
+ * Remove a previously created character device (Experimental)
+ *
+ * \param ctrlr Opaque handle to the NVMe controller.
+ *
+ * \return 0 on success. Negated errno on failure.
+ */
+int spdk_nvme_cuse_unregister(struct spdk_nvme_ctrlr *ctrlr);
+
+int spdk_nvme_map_prps(void *prv, struct spdk_nvme_cmd *cmd, struct iovec *iovs,
+		       uint32_t len, size_t mps,
+		       void *(*gpa_to_vva)(void *prv, uint64_t addr, uint64_t len));
+
+/**
+ * Opaque handle for a transport poll group. Used by the transport function table.
+ */
+struct spdk_nvme_transport_poll_group;
+
+/**
+ * Update and populate namespace CUSE devices (Experimental)
+ *
+ * \param ctrlr Opaque handle to the NVMe controller.
+ *
+ */
+void spdk_nvme_cuse_update_namespaces(struct spdk_nvme_ctrlr *ctrlr);
+
+struct nvme_request;
+
+struct spdk_nvme_transport;
+
+struct spdk_nvme_transport_ops {
+	char name[SPDK_NVMF_TRSTRING_MAX_LEN + 1];
+
+	enum spdk_nvme_transport_type type;
+
+	struct spdk_nvme_ctrlr *(*ctrlr_construct)(const struct spdk_nvme_transport_id *trid,
+			const struct spdk_nvme_ctrlr_opts *opts,
+			void *devhandle);
+
+	int (*ctrlr_scan)(struct spdk_nvme_probe_ctx *probe_ctx, bool direct_connect);
+
+	int (*ctrlr_destruct)(struct spdk_nvme_ctrlr *ctrlr);
+
+	int (*ctrlr_enable)(struct spdk_nvme_ctrlr *ctrlr);
+
+	int (*ctrlr_set_reg_4)(struct spdk_nvme_ctrlr *ctrlr, uint32_t offset, uint32_t value);
+
+	int (*ctrlr_set_reg_8)(struct spdk_nvme_ctrlr *ctrlr, uint32_t offset, uint64_t value);
+
+	int (*ctrlr_get_reg_4)(struct spdk_nvme_ctrlr *ctrlr, uint32_t offset, uint32_t *value);
+
+	int (*ctrlr_get_reg_8)(struct spdk_nvme_ctrlr *ctrlr, uint32_t offset, uint64_t *value);
+
+	uint32_t (*ctrlr_get_max_xfer_size)(struct spdk_nvme_ctrlr *ctrlr);
+
+	uint16_t (*ctrlr_get_max_sges)(struct spdk_nvme_ctrlr *ctrlr);
+
+	int (*ctrlr_reserve_cmb)(struct spdk_nvme_ctrlr *ctrlr);
+
+	void *(*ctrlr_map_cmb)(struct spdk_nvme_ctrlr *ctrlr, size_t *size);
+
+	int (*ctrlr_unmap_cmb)(struct spdk_nvme_ctrlr *ctrlr);
+
+	struct spdk_nvme_qpair *(*ctrlr_create_io_qpair)(struct spdk_nvme_ctrlr *ctrlr, uint16_t qid,
+			const struct spdk_nvme_io_qpair_opts *opts);
+
+	int (*ctrlr_delete_io_qpair)(struct spdk_nvme_ctrlr *ctrlr, struct spdk_nvme_qpair *qpair);
+
+	int (*ctrlr_connect_qpair)(struct spdk_nvme_ctrlr *ctrlr, struct spdk_nvme_qpair *qpair);
+
+	void (*ctrlr_disconnect_qpair)(struct spdk_nvme_ctrlr *ctrlr, struct spdk_nvme_qpair *qpair);
+
+	void (*qpair_abort_reqs)(struct spdk_nvme_qpair *qpair, uint32_t dnr);
+
+	int (*qpair_reset)(struct spdk_nvme_qpair *qpair);
+
+	int (*qpair_submit_request)(struct spdk_nvme_qpair *qpair, struct nvme_request *req);
+
+	int32_t (*qpair_process_completions)(struct spdk_nvme_qpair *qpair, uint32_t max_completions);
+
+	int (*qpair_iterate_requests)(struct spdk_nvme_qpair *qpair,
+				      int (*iter_fn)(struct nvme_request *req, void *arg),
+				      void *arg);
+
+	void (*admin_qpair_abort_aers)(struct spdk_nvme_qpair *qpair);
+
+	struct spdk_nvme_transport_poll_group *(*poll_group_create)(void);
+
+	int (*poll_group_add)(struct spdk_nvme_transport_poll_group *tgroup, struct spdk_nvme_qpair *qpair);
+
+	int (*poll_group_remove)(struct spdk_nvme_transport_poll_group *tgroup,
+				 struct spdk_nvme_qpair *qpair);
+
+	int (*poll_group_connect_qpair)(struct spdk_nvme_qpair *qpair);
+
+	int (*poll_group_disconnect_qpair)(struct spdk_nvme_qpair *qpair);
+
+	int64_t (*poll_group_process_completions)(struct spdk_nvme_transport_poll_group *tgroup,
+			uint32_t completions_per_qpair, spdk_nvme_disconnected_qpair_cb disconnected_qpair_cb);
+
+	int (*poll_group_destroy)(struct spdk_nvme_transport_poll_group *tgroup);
+};
+
+/**
+ * Register the operations for a given transport type.
+ *
+ * This function should be invoked by referencing the macro
+ * SPDK_NVME_TRANSPORT_REGISTER macro in the transport's .c file.
+ *
+ * \param ops The operations associated with an NVMe-oF transport.
+ */
+void spdk_nvme_transport_register(const struct spdk_nvme_transport_ops *ops);
+
+/*
+ * Macro used to register new transports.
+ */
+#define SPDK_NVME_TRANSPORT_REGISTER(name, transport_ops) \
+static void __attribute__((constructor)) _spdk_nvme_transport_register_##name(void) \
+{ \
+	spdk_nvme_transport_register(transport_ops); \
+}\
 
 #ifdef __cplusplus
 }

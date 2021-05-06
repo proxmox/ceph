@@ -34,9 +34,14 @@
 SPDK_ROOT_DIR := $(abspath $(CURDIR)/../..)
 include $(SPDK_ROOT_DIR)/mk/spdk.common.mk
 
+SO_VER := 5
+SO_MINOR := 0
+
 CFLAGS += $(ENV_CFLAGS)
 C_SRCS = env.c memory.c pci.c init.c threads.c
-C_SRCS += pci_nvme.c pci_ioat.c pci_virtio.c pci_vmd.c
+C_SRCS += pci_ioat.c pci_virtio.c pci_vmd.c pci_idxd.c
 LIBNAME = env_dpdk
+
+SPDK_MAP_FILE = $(abspath $(CURDIR)/spdk_env_dpdk.map)
 
 include $(SPDK_ROOT_DIR)/mk/spdk.lib.mk

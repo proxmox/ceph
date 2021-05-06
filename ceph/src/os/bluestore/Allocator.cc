@@ -6,9 +6,18 @@
 #include "BitmapAllocator.h"
 #include "AvlAllocator.h"
 #include "HybridAllocator.h"
+#ifdef HAVE_LIBZBD
+#include "ZonedAllocator.h"
+#endif
 #include "common/debug.h"
 #include "common/admin_socket.h"
 #define dout_subsys ceph_subsys_bluestore
+
+using std::string;
+using std::to_string;
+
+using ceph::bufferlist;
+using ceph::Formatter;
 
 class Allocator::SocketHook : public AdminSocketHook {
   Allocator *alloc;
@@ -60,7 +69,13 @@ public:
 	   bufferlist& out) override {
     int r = 0;
     if (command == "bluestore allocator dump " + name) {
-      f->open_array_section("free_regions");
+      f->open_object_section("allocator_dump");
+      f->dump_unsigned("capacity", alloc->get_capacity());
+      f->dump_unsigned("alloc_unit", alloc->get_block_size());
+      f->dump_string("alloc_type", alloc->get_type());
+      f->dump_string("alloc_name", name);
+
+      f->open_array_section("extents");
       auto iterated_allocation = [&](size_t off, size_t len) {
         ceph_assert(len > 0);
         f->open_object_section("free");
@@ -73,6 +88,7 @@ public:
         f->close_section();
       };
       alloc->dump(iterated_allocation);
+      f->close_section();
       f->close_section();
     } else if (command == "bluestore allocator score " + name) {
       f->open_object_section("fragmentation_score");
@@ -90,7 +106,10 @@ public:
   }
 
 };
-Allocator::Allocator(const std::string& name)
+Allocator::Allocator(const std::string& name,
+                     int64_t _capacity,
+                     int64_t _block_size)
+  : capacity(_capacity), block_size(_block_size)
 {
   asok_hook = new SocketHook(this, name);
 }
@@ -110,7 +129,7 @@ Allocator *Allocator::create(CephContext* cct, string type,
 {
   Allocator* alloc = nullptr;
   if (type == "stupid") {
-    alloc = new StupidAllocator(cct, name, block_size);
+    alloc = new StupidAllocator(cct, name, size, block_size);
   } else if (type == "bitmap") {
     alloc = new BitmapAllocator(cct, size, block_size, name);
   } else if (type == "avl") {
@@ -119,6 +138,10 @@ Allocator *Allocator::create(CephContext* cct, string type,
     return new HybridAllocator(cct, size, block_size,
       cct->_conf.get_val<uint64_t>("bluestore_hybrid_alloc_mem_cap"),
       name);
+#ifdef HAVE_LIBZBD
+  } else if (type == "zoned") {
+    return new ZonedAllocator(cct, size, block_size, name);
+#endif
   }
   if (alloc == nullptr) {
     lderr(cct) << "Allocator::" << __func__ << " unknown alloc type "

@@ -5,6 +5,7 @@
 
 #include "ocf/ocf.h"
 #include "metadata.h"
+#include "../ocf_freelist.h"
 #include "../utils/utils_cache_line.h"
 
 static bool _is_cache_line_acting(struct ocf_cache *cache,
@@ -63,7 +64,7 @@ int ocf_metadata_actor(struct ocf_cache *cache,
 			if (_is_cache_line_acting(cache, i, core_id,
 					start_line, end_line)) {
 				if (ocf_cache_line_is_used(cache, i))
-					ret = -EAGAIN;
+					ret = -OCF_ERR_AGAIN;
 				else
 					actor(cache, i);
 			}
@@ -75,7 +76,7 @@ int ocf_metadata_actor(struct ocf_cache *cache,
 			if (_is_cache_line_acting(cache, i, core_id,
 					start_line, end_line)) {
 				if (ocf_cache_line_is_used(cache, i))
-					ret = -EAGAIN;
+					ret = -OCF_ERR_AGAIN;
 				else
 					actor(cache, i);
 			}
@@ -100,12 +101,14 @@ void ocf_metadata_sparse_cache_line(struct ocf_cache *cache,
 
 	ocf_metadata_remove_from_partition(cache, partition_id, cache_line);
 
-	ocf_metadata_add_to_free_list(cache, cache_line);
+	ocf_freelist_put_cache_line(cache->freelist, cache_line);
 }
 
 static void _ocf_metadata_sparse_cache_line(struct ocf_cache *cache,
 		uint32_t cache_line)
 {
+	ocf_metadata_start_collision_shared_access(cache, cache_line);
+
 	set_cache_line_invalid_no_flush(cache, 0, ocf_line_end_sector(cache),
 			cache_line);
 
@@ -113,6 +116,8 @@ static void _ocf_metadata_sparse_cache_line(struct ocf_cache *cache,
 	 * This is especially for removing inactive core
 	 */
 	metadata_clear_dirty(cache, cache_line);
+
+	ocf_metadata_end_collision_shared_access(cache, cache_line);
 }
 
 /* caller must hold metadata lock

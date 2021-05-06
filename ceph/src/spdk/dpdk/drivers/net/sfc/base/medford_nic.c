@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  *
- * Copyright (c) 2015-2018 Solarflare Communications Inc.
- * All rights reserved.
+ * Copyright(c) 2019-2020 Xilinx, Inc.
+ * Copyright(c) 2015-2019 Solarflare Communications Inc.
  */
 
 #include "efx.h"
@@ -66,9 +66,6 @@ medford_board_cfg(
 		 */
 		encp->enc_bug41750_workaround = B_TRUE;
 	}
-
-	/* Chained multicast is always enabled on Medford */
-	encp->enc_bug26807_workaround = B_TRUE;
 
 	/*
 	 * If the bug61265 workaround is enabled, then interrupt holdoff timers

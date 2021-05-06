@@ -1,5 +1,5 @@
 /*
- * Copyright(c) 2019 Intel Corporation
+ * Copyright(c) 2019-2020 Intel Corporation
  * SPDX-License-Identifier: BSD-3-Clause-Clear
  */
 
@@ -11,12 +11,12 @@
 #include <stdbool.h>
 
 /* TODO: Move prefix printing to context logger. */
-#define OCF_LOGO "Intel(R) OCF"
+#define OCF_LOGO "OCF"
 #define OCF_PREFIX_SHORT "[" OCF_LOGO "] "
 #define OCF_PREFIX_LONG "Open CAS Framework"
 
-#define OCF_VERSION_MAIN 1
-#define OCF_VERSION_MAJOR 1
-#define OCF_VERSION_MINOR 1
+#define OCF_VERSION_MAIN 20
+#define OCF_VERSION_MAJOR 3
+#define OCF_VERSION_MINOR 0
 
 #endif /* __OCF_ENV_HEADERS_H__ */

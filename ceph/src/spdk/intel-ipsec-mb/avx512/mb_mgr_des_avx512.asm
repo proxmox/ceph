@@ -41,13 +41,13 @@
 ;;			-----------------------------------------------------------
 ;; Clobbers ZMM0-31, K1-7 (K1-2 and K4-6 here but DES underneath clobbers K1-7).
 
-%include "os.asm"
-%include "reg_sizes.asm"
+%include "include/os.asm"
+%include "include/reg_sizes.asm"
 %include "job_aes_hmac.asm"
 %include "mb_mgr_datastruct.asm"
 %include "constants.asm"
 ;%define DO_DBGPRINT
-%include "dbgprint.asm"
+%include "include/dbgprint.asm"
 
 extern docsis_des_x16_enc_avx512
 extern docsis_des_x16_dec_avx512
@@ -243,6 +243,12 @@ extern des3_x16_cbc_dec_avx512
         mov     rax, [STATE + _des_job_in_lane + MIN_IDX*8]
         mov     qword [STATE + _des_job_in_lane + MIN_IDX*8], 0
         or	dword [rax + _status], STS_COMPLETED_AES
+
+%ifdef SAFE_DATA
+        ;; Clear IV
+        mov     dword [STATE + _des_args_IV + MIN_IDX*4], 0
+        mov     dword [STATE + _des_args_IV + MIN_IDX*4 + (AVX512_NUM_DES_LANES*4)], 0
+%endif
         vzeroupper
 %%_des_submit_return:
 %endmacro
@@ -342,6 +348,12 @@ extern des3_x16_cbc_dec_avx512
         vmovdqa         [STATE + _des_lens + 2*8], XWORD(ZTMP1)
 
         push            MIN_IDX
+%ifdef SAFE_DATA
+        ;; Save k6, which may be clobbered by following functions
+        kmovq           IA0, k6
+        push            IA0
+%endif
+
         mov             arg2, MIN_LEN
 %ifidn %%ENC_DEC, ENC
         ;; encrypt
@@ -366,6 +378,11 @@ extern des3_x16_cbc_dec_avx512
         call            des3_x16_cbc_dec_avx512
 %endif
 %endif                          ; DEC
+%ifdef SAFE_DATA
+        ;; Restore k6, which may have been clobbered by previous functions
+        pop             IA0
+        kmovq           k6, IA0
+%endif
         pop             MIN_IDX
         jmp             %%_des_flush_end
 
@@ -386,6 +403,18 @@ extern des3_x16_cbc_dec_avx512
         or	dword [rax + _status], STS_COMPLETED_AES
         ;; - clear job pointer
         mov     qword [STATE + _des_job_in_lane + MIN_IDX*8], 0
+%ifdef SAFE_DATA
+        ; Set bit of lane of returned job
+        xor     DWORD(IA0), DWORD(IA0)
+        bts     DWORD(IA0), DWORD(MIN_IDX)
+        kmovd   k1, DWORD(IA0)
+        kord    k6, k1, k6
+
+        ;; Clear IV of returned job and "NULL lanes" (k6 contains the mask of the jobs)
+        vpxorq  ZTMP1, ZTMP1
+        vmovdqa32       [STATE + _des_args_IV]{k6}, ZTMP1
+        vmovdqa32       [STATE + _des_args_IV + (16*4)]{k6}, ZTMP1
+%endif
 %%_des_flush_return:
         vzeroupper
 %endmacro

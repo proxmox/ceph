@@ -32,6 +32,7 @@
 namespace seastar {
 
 class reactor;
+class thread_cputime_clock;
 
 namespace internal {
 
@@ -44,7 +45,6 @@ struct cpu_stall_detector_config {
 
 // Detects stalls in continuations that run for too long
 class cpu_stall_detector {
-    reactor* _r;
     timer_t _timer;
     std::atomic<uint64_t> _last_tasks_processed_seen{};
     unsigned _stall_detector_reports_per_minute;
@@ -68,7 +68,9 @@ private:
     void arm_timer();
     void report_suppressions(std::chrono::steady_clock::time_point now);
 public:
-    cpu_stall_detector(reactor* r, cpu_stall_detector_config cfg = {});
+    using clock_type = thread_cputime_clock;
+public:
+    explicit cpu_stall_detector(cpu_stall_detector_config cfg = {});
     ~cpu_stall_detector();
     static int signal_number() { return SIGRTMIN + 1; }
     void start_task_run(std::chrono::steady_clock::time_point now);

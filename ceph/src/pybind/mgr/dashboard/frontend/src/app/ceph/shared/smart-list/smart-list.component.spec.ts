@@ -4,15 +4,15 @@ import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { By } from '@angular/platform-browser';
 import { BrowserAnimationsModule } from '@angular/platform-browser/animations';
 
-import * as _ from 'lodash';
-import { TabsetComponent, TabsetConfig, TabsModule } from 'ngx-bootstrap/tabs';
+import { NgbNavModule } from '@ng-bootstrap/ng-bootstrap';
+import _ from 'lodash';
 import { NgxPipeFunctionModule } from 'ngx-pipe-function';
 import { of } from 'rxjs';
 
-import { configureTestBed, i18nProviders } from '../../../../testing/unit-test-helper';
-import { OsdService } from '../../../shared/api/osd.service';
-import { HddSmartDataV1, NvmeSmartDataV1, SmartDataResult } from '../../../shared/models/smart';
-import { SharedModule } from '../../../shared/shared.module';
+import { OsdService } from '~/app/shared/api/osd.service';
+import { HddSmartDataV1, NvmeSmartDataV1, SmartDataResult } from '~/app/shared/models/smart';
+import { SharedModule } from '~/app/shared/shared.module';
+import { configureTestBed } from '~/testing/unit-test-helper';
 import { SmartListComponent } from './smart-list.component';
 
 describe('OsdSmartListComponent', () => {
@@ -112,12 +112,11 @@ describe('OsdSmartListComponent', () => {
     declarations: [SmartListComponent],
     imports: [
       BrowserAnimationsModule,
-      TabsModule,
       SharedModule,
       HttpClientTestingModule,
+      NgbNavModule,
       NgxPipeFunctionModule
-    ],
-    providers: [i18nProviders, TabsetComponent, TabsetConfig]
+    ]
   });
 
   beforeEach(() => {
@@ -125,7 +124,7 @@ describe('OsdSmartListComponent', () => {
     component = fixture.componentInstance;
     fixture.detectChanges();
 
-    osdService = TestBed.get(OsdService);
+    osdService = TestBed.inject(OsdService);
   });
 
   it('should create', () => {
@@ -214,10 +213,10 @@ describe('OsdSmartListComponent', () => {
     const deviceId: string = _.keys(component.data)[0];
     component.data[deviceId]['info'] = {};
     fixture.detectChanges();
-    component.innerTabset.tabs[0].active = true;
+    component.nav.select(1);
     fixture.detectChanges();
     verifyAlertPanel(
-      'tab.active cd-alert-panel#alert-device-info-unavailable',
+      'cd-alert-panel#alert-device-info-unavailable',
       'No device information available for this device.',
       'info'
     );
@@ -228,10 +227,10 @@ describe('OsdSmartListComponent', () => {
     const deviceId: string = _.keys(component.data)[0];
     component.data[deviceId]['smart'] = {};
     fixture.detectChanges();
-    component.innerTabset.tabs[1].active = true;
+    component.nav.select(2);
     fixture.detectChanges();
     verifyAlertPanel(
-      'tab.active cd-alert-panel#alert-device-smart-data-unavailable',
+      'cd-alert-panel#alert-device-smart-data-unavailable',
       'No SMART data available for this device.',
       'info'
     );

@@ -9,64 +9,42 @@
 #include "engine/cache_engine.h"
 #include "utils/utils_part.h"
 #include "utils/utils_cache_line.h"
-
-#define _ocf_stats_zero(stats) \
-	do { \
-		if (stats) { \
-			typeof(*stats) zero = { { 0 } }; \
-			*stats = zero; \
-		} \
-	} while (0)
-
-static uint64_t _percentage(uint64_t numerator, uint64_t denominator)
-{
-	uint64_t result;
-	if (denominator) {
-		result = 1000 * numerator / denominator;
-	} else {
-		result = 0;
-	}
-	return result;
-}
-
-static uint64_t _lines4k(uint64_t size,
-		ocf_cache_line_size_t cache_line_size)
-{
-	long unsigned int result;
-
-	result = size * (cache_line_size / 4096);
-
-	return result;
-}
-
-static uint64_t _bytes4k(uint64_t bytes)
-{
-	return (bytes + 4095UL) >> 12;
-}
-
-static uint64_t _get_cache_occupancy(ocf_cache_t cache)
-{
-	uint64_t result = 0;
-	uint32_t i;
-
-	for (i = 0; i != OCF_CORE_MAX; ++i) {
-		if (!env_bit_test(i, cache->conf_meta->valid_core_bitmap))
-			continue;
-
-		result += env_atomic_read(
-				&cache->core_runtime_meta[i].cached_clines);
-	}
-
-	return result;
-}
-
-static void _set(struct ocf_stat *stat, uint64_t value, uint64_t denominator)
-{
-	stat->value = value;
-	stat->percent = _percentage(value, denominator);
-}
+#include "utils/utils_stats.h"
 
 static void _fill_req(struct ocf_stats_requests *req, struct ocf_stats_core *s)
+{
+	uint64_t serviced = s->read_reqs.total + s->write_reqs.total;
+	uint64_t total = serviced + s->read_reqs.pass_through +
+			s->write_reqs.pass_through;
+	uint64_t hit;
+
+	/* Reads Section */
+	hit = s->read_reqs.total - (s->read_reqs.full_miss +
+			s->read_reqs.partial_miss);
+	_set(&req->rd_hits, hit, total);
+	_set(&req->rd_partial_misses, s->read_reqs.partial_miss, total);
+	_set(&req->rd_full_misses, s->read_reqs.full_miss, total);
+	_set(&req->rd_total, s->read_reqs.total, total);
+
+	/* Write Section */
+	hit = s->write_reqs.total - (s->write_reqs.full_miss +
+					s->write_reqs.partial_miss);
+	_set(&req->wr_hits, hit, total);
+	_set(&req->wr_partial_misses, s->write_reqs.partial_miss, total);
+	_set(&req->wr_full_misses, s->write_reqs.full_miss, total);
+	_set(&req->wr_total, s->write_reqs.total, total);
+
+	/* Pass-Through section */
+	_set(&req->rd_pt, s->read_reqs.pass_through, total);
+	_set(&req->wr_pt, s->write_reqs.pass_through, total);
+
+	/* Summary */
+	_set(&req->serviced, serviced, total);
+	_set(&req->total, total, total);
+}
+
+static void _fill_req_part(struct ocf_stats_requests *req,
+		struct ocf_stats_io_class *s)
 {
 	uint64_t serviced = s->read_reqs.total + s->write_reqs.total;
 	uint64_t total = serviced + s->read_reqs.pass_through +
@@ -128,6 +106,36 @@ static void _fill_blocks(struct ocf_stats_blocks *blocks,
 	_set(&blocks->volume_total, total, total);
 }
 
+static void _fill_blocks_part(struct ocf_stats_blocks *blocks,
+		struct ocf_stats_io_class *s)
+{
+	uint64_t rd, wr, total;
+
+	/* Core volume */
+	rd = _bytes4k(s->core_blocks.read);
+	wr = _bytes4k(s->core_blocks.write);
+	total = rd + wr;
+	_set(&blocks->core_volume_rd, rd, total);
+	_set(&blocks->core_volume_wr, wr, total);
+	_set(&blocks->core_volume_total, total, total);
+
+	/* Cache volume */
+	rd = _bytes4k(s->cache_blocks.read);
+	wr = _bytes4k(s->cache_blocks.write);
+	total = rd + wr;
+	_set(&blocks->cache_volume_rd, rd, total);
+	_set(&blocks->cache_volume_wr, wr, total);
+	_set(&blocks->cache_volume_total, total, total);
+
+	/* Core (cache volume) */
+	rd = _bytes4k(s->blocks.read);
+	wr = _bytes4k(s->blocks.write);
+	total = rd + wr;
+	_set(&blocks->volume_rd, rd, total);
+	_set(&blocks->volume_wr, wr, total);
+	_set(&blocks->volume_total, total, total);
+}
+
 static void _fill_errors(struct ocf_stats_errors *errors,
 		struct ocf_stats_core *s)
 {
@@ -153,6 +161,158 @@ static void _fill_errors(struct ocf_stats_errors *errors,
 	_set(&errors->total, total, total);
 }
 
+static void _accumulate_block(struct ocf_stats_block *to,
+		const struct ocf_stats_block *from)
+{
+	to->read += from->read;
+	to->write += from->write;
+}
+
+static void _accumulate_reqs(struct ocf_stats_req *to,
+		const struct ocf_stats_req *from)
+{
+	to->full_miss += from->full_miss;
+	to->partial_miss += from->partial_miss;
+	to->total += from->total;
+	to->pass_through += from->pass_through;
+}
+
+static void _accumulate_errors(struct ocf_stats_error *to,
+		const struct ocf_stats_error *from)
+{
+	to->read += from->read;
+	to->write += from->write;
+}
+
+struct io_class_stats_context {
+	struct ocf_stats_io_class *stats;
+	ocf_part_id_t part_id;
+};
+
+static int _accumulate_io_class_stats(ocf_core_t core, void *cntx)
+{
+	int result;
+	struct ocf_stats_io_class stats;
+	struct ocf_stats_io_class *total =
+		((struct io_class_stats_context*)cntx)->stats;
+	ocf_part_id_t part_id = ((struct io_class_stats_context*)cntx)->part_id;
+
+	result = ocf_core_io_class_get_stats(core, part_id, &stats);
+	if (result)
+		return result;
+
+	total->occupancy_clines += stats.occupancy_clines;
+	total->dirty_clines += stats.dirty_clines;
+	total->free_clines = stats.free_clines;
+
+	_accumulate_block(&total->cache_blocks, &stats.cache_blocks);
+	_accumulate_block(&total->core_blocks, &stats.core_blocks);
+	_accumulate_block(&total->blocks, &stats.blocks);
+
+	_accumulate_reqs(&total->read_reqs, &stats.read_reqs);
+	_accumulate_reqs(&total->write_reqs, &stats.write_reqs);
+
+	return 0;
+}
+
+static void _ocf_stats_part_fill(ocf_cache_t cache, ocf_part_id_t part_id,
+		struct ocf_stats_io_class *stats , struct ocf_stats_usage *usage,
+		struct ocf_stats_requests *req, struct ocf_stats_blocks *blocks)
+{
+	uint64_t cache_size, cache_line_size;
+
+	cache_line_size = ocf_cache_get_line_size(cache);
+	cache_size = cache->conf_meta->cachelines;
+
+	if (usage) {
+		_set(&usage->occupancy,
+			_lines4k(stats->occupancy_clines, cache_line_size),
+			_lines4k(cache_size, cache_line_size));
+
+		if (part_id == PARTITION_DEFAULT) {
+			_set(&usage->free,
+				_lines4k(stats->free_clines, cache_line_size),
+				_lines4k(cache_size, cache_line_size));
+		} else {
+			_set(&usage->free,
+				_lines4k(0, cache_line_size),
+				_lines4k(0, cache_line_size));
+		}
+
+		_set(&usage->clean,
+			_lines4k(stats->occupancy_clines - stats->dirty_clines,
+				cache_line_size),
+			_lines4k(stats->occupancy_clines, cache_line_size));
+
+		_set(&usage->dirty,
+			_lines4k(stats->dirty_clines, cache_line_size),
+			_lines4k(stats->occupancy_clines, cache_line_size));
+	}
+
+	if (req)
+		_fill_req_part(req, stats);
+
+	if (blocks)
+		_fill_blocks_part(blocks, stats);
+}
+
+int ocf_stats_collect_part_core(ocf_core_t core, ocf_part_id_t part_id,
+		struct ocf_stats_usage *usage, struct ocf_stats_requests *req,
+		struct ocf_stats_blocks *blocks)
+{
+	struct ocf_stats_io_class s;
+	ocf_cache_t cache;
+	int result = 0;
+
+	OCF_CHECK_NULL(core);
+
+	if (part_id > OCF_IO_CLASS_ID_MAX)
+		return -OCF_ERR_INVAL;
+
+	cache = ocf_core_get_cache(core);
+
+	_ocf_stats_zero(usage);
+	_ocf_stats_zero(req);
+	_ocf_stats_zero(blocks);
+
+	result = ocf_core_io_class_get_stats(core, part_id, &s);
+	if (result)
+		return result;
+
+	_ocf_stats_part_fill(cache, part_id, &s, usage, req, blocks);
+
+	return result;
+}
+
+int ocf_stats_collect_part_cache(ocf_cache_t cache, ocf_part_id_t part_id,
+		struct ocf_stats_usage *usage, struct ocf_stats_requests *req,
+		struct ocf_stats_blocks *blocks)
+{
+	struct io_class_stats_context ctx;
+	struct ocf_stats_io_class s = {};
+	int result = 0;
+
+	OCF_CHECK_NULL(cache);
+
+	if (part_id > OCF_IO_CLASS_ID_MAX)
+		return -OCF_ERR_INVAL;
+
+	_ocf_stats_zero(usage);
+	_ocf_stats_zero(req);
+	_ocf_stats_zero(blocks);
+
+	ctx.part_id = part_id;
+	ctx.stats = &s;
+
+	result = ocf_core_visit(cache, _accumulate_io_class_stats, &ctx, true);
+	if (result)
+		return result;
+
+	_ocf_stats_part_fill(cache, part_id, &s, usage, req, blocks);
+
+	return result;
+}
+
 int ocf_stats_collect_core(ocf_core_t core,
 		struct ocf_stats_usage *usage,
 		struct ocf_stats_requests *req,
@@ -173,7 +333,7 @@ int ocf_stats_collect_core(ocf_core_t core,
 	cache = ocf_core_get_cache(core);
 	cache_line_size = ocf_cache_get_line_size(cache);
 	cache_size = cache->conf_meta->cachelines;
-	cache_occupancy = _get_cache_occupancy(cache);
+	cache_occupancy = ocf_get_cache_occupancy(cache);
 
 	_ocf_stats_zero(usage);
 	_ocf_stats_zero(req);
@@ -208,29 +368,6 @@ int ocf_stats_collect_core(ocf_core_t core,
 		_fill_errors(errors, &s);
 
 	return 0;
-}
-
-static void _accumulate_block(struct ocf_stats_block *to,
-		const struct ocf_stats_block *from)
-{
-	to->read += from->read;
-	to->write += from->write;
-}
-
-static void _accumulate_reqs(struct ocf_stats_req *to,
-		const struct ocf_stats_req *from)
-{
-	to->full_miss += from->full_miss;
-	to->partial_miss += from->partial_miss;
-	to->total += from->total;
-	to->pass_through += from->pass_through;
-}
-
-static void _accumulate_errors(struct ocf_stats_error *to,
-		const struct ocf_stats_error *from)
-{
-	to->read += from->read;
-	to->write += from->write;
 }
 
 static int _accumulate_stats(ocf_core_t core, void *cntx)

@@ -39,11 +39,11 @@
 ;;
 ;; clobbers xmm0-15
 
-%include "os.asm"
+%include "include/os.asm"
 %include "mb_mgr_datastruct.asm"
 
 ;%define DO_DBGPRINT
-%include "dbgprint.asm"
+%include "include/dbgprint.asm"
 
 section .data
 default rel
@@ -429,6 +429,16 @@ Lrounds_16_xx:
 
 	;;;;;;;;;;;;;;;;
 	;; Postamble
+
+        ;; Clear stack frame ((16 + 8)*16 bytes)
+%ifdef SAFE_DATA
+        pxor    xmm0, xmm0
+%assign i 0
+%rep (16+NUM_SHA512_DIGEST_WORDS)
+        movdqa	[rsp + i*SZ2], xmm0
+%assign i (i+1)
+%endrep
+%endif
 
 	add	rsp, STACK_size
 DBGPRINTL "====================== exit sha512_x2_sse code =====================\n"

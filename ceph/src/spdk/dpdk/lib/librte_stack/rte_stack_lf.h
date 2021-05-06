@@ -5,10 +5,14 @@
 #ifndef _RTE_STACK_LF_H_
 #define _RTE_STACK_LF_H_
 
+#if !(defined(RTE_ARCH_X86_64) || defined(RTE_ARCH_ARM64))
+#include "rte_stack_lf_stubs.h"
+#else
 #ifdef RTE_USE_C11_MEM_MODEL
 #include "rte_stack_lf_c11.h"
 #else
 #include "rte_stack_lf_generic.h"
+#endif
 #endif
 
 /**
@@ -23,7 +27,8 @@
  * @return
  *   Actual number of objects enqueued.
  */
-static __rte_always_inline unsigned int __rte_experimental
+__rte_experimental
+static __rte_always_inline unsigned int
 __rte_stack_lf_push(struct rte_stack *s,
 		    void * const *obj_table,
 		    unsigned int n)
@@ -61,7 +66,8 @@ __rte_stack_lf_push(struct rte_stack *s,
  * @return
  *   - Actual number of objects popped.
  */
-static __rte_always_inline unsigned int __rte_experimental
+__rte_experimental
+static __rte_always_inline unsigned int
 __rte_stack_lf_pop(struct rte_stack *s, void **obj_table, unsigned int n)
 {
 	struct rte_stack_lf_elem *first, *last = NULL;

@@ -4,10 +4,12 @@ Deploy and configure Barbican for Teuthology
 import argparse
 import contextlib
 import logging
-import six
-from six.moves import http_client
-from six.moves.urllib.parse import urlparse
+import http
 import json
+import time
+import math
+
+from urllib.parse import urlparse
 
 from teuthology import misc as teuthology
 from teuthology import contextutil
@@ -251,7 +253,7 @@ def create_secrets(ctx, config):
                                                  port=barbican_port)
     log.info("barbican_url=%s", barbican_url)
     #fetching user_id of user that gets secrets for radosgw
-    token_req = http_client.HTTPConnection(keystone_host, keystone_port, timeout=30)
+    token_req = http.client.HTTPConnection(keystone_host, keystone_port, timeout=30)
     token_req.request(
         'POST',
         '/v3/auth/tokens',
@@ -281,7 +283,7 @@ def create_secrets(ctx, config):
             rgw_access_user_resp.status < 300):
         raise Exception("Cannot authenticate user "+rgw_user["username"]+" for secret creation")
     #    baru_resp = json.loads(baru_req.data)
-    rgw_access_user_data = json.loads(six.ensure_str(rgw_access_user_resp.read()))
+    rgw_access_user_data = json.loads(rgw_access_user_resp.read().decode())
     rgw_user_id = rgw_access_user_data['token']['user']['id']
     if 'secrets' in cconfig:
         for secret in cconfig['secrets']:
@@ -296,7 +298,7 @@ def create_secrets(ctx, config):
             if 'password' not in secret:
                 raise ConfigError('barbican.secrets must have "password" field')
 
-            token_req = http_client.HTTPConnection(keystone_host, keystone_port, timeout=30)
+            token_req = http.client.HTTPConnection(keystone_host, keystone_port, timeout=30)
             token_req.request(
                 'POST',
                 '/v3/auth/tokens',
@@ -326,12 +328,16 @@ def create_secrets(ctx, config):
                     token_resp.status < 300):
                 raise Exception("Cannot authenticate user "+secret["username"]+" for secret creation")
 
+            expire = time.time() + 5400		# now + 90m
+            (expire_fract,dummy) = math.modf(expire)
+            expire_format = "%%FT%%T.%06d" % (round(expire_fract*1000000))
+            expiration = time.strftime(expire_format, time.gmtime(expire))
             token_id = token_resp.getheader('x-subject-token')
 
             key1_json = json.dumps(
                 {
                     "name": secret['name'],
-                    "expiration": "2020-12-31T19:14:44.180394",
+                    "expiration": expiration,
                     "algorithm": "aes",
                     "bit_length": 256,
                     "mode": "cbc",
@@ -340,7 +346,7 @@ def create_secrets(ctx, config):
                     "payload_content_encoding": "base64"
                 })
 
-            sec_req = http_client.HTTPConnection(barbican_host, barbican_port, timeout=30)
+            sec_req = http.client.HTTPConnection(barbican_host, barbican_port, timeout=30)
             try:
                 sec_req.request(
                     'POST',
@@ -358,7 +364,7 @@ def create_secrets(ctx, config):
             if not (barbican_sec_resp.status >= 200 and
                     barbican_sec_resp.status < 300):
                 raise Exception("Cannot create secret")
-            barbican_data = json.loads(six.ensure_str(barbican_sec_resp.read()))
+            barbican_data = json.loads(barbican_sec_resp.read().decode())
             if 'secret_ref' not in barbican_data:
                 raise ValueError("Malformed secret creation response")
             secret_ref = barbican_data["secret_ref"]
@@ -371,7 +377,7 @@ def create_secrets(ctx, config):
                         "project-access": True
                     }
                 })
-            acl_req = http_client.HTTPConnection(secret_url_parsed.netloc, timeout=30)
+            acl_req = http.client.HTTPConnection(secret_url_parsed.netloc, timeout=30)
             acl_req.request(
                 'PUT',
                 secret_url_parsed.path+'/acl',

@@ -17,6 +17,8 @@
 
 #include <string_view>
 
+#include <boost/asio/io_context.hpp>
+
 #include "common/DecayCounter.h"
 #include "common/LogClient.h"
 #include "common/Timer.h"
@@ -37,6 +39,7 @@
 #include "MDSContext.h"
 #include "PurgeQueue.h"
 #include "Server.h"
+#include "MetricsHandler.h"
 #include "osdc/Journaler.h"
 
 // Full .h import instead of forward declaration for PerfCounter, for the
@@ -81,6 +84,24 @@ enum {
   l_mds_root_rfiles,
   l_mds_root_rbytes,
   l_mds_root_rsnaps,
+  l_mds_scrub_backtrace_fetch,
+  l_mds_scrub_set_tag,
+  l_mds_scrub_backtrace_repaired,
+  l_mds_scrub_inotable_repaired,
+  l_mds_scrub_dir_inodes,
+  l_mds_scrub_dir_base_inodes,
+  l_mds_scrub_dirfrag_rstats,
+  l_mds_scrub_file_inodes,
+  l_mdss_handle_inode_file_caps,
+  l_mdss_ceph_cap_op_revoke,
+  l_mdss_ceph_cap_op_grant,
+  l_mdss_ceph_cap_op_trunc,
+  l_mdss_ceph_cap_op_flushsnap_ack,
+  l_mdss_ceph_cap_op_flush_ack,
+  l_mdss_handle_client_caps,
+  l_mdss_handle_client_caps_dirty,
+  l_mdss_handle_client_cap_release,
+  l_mdss_process_request_cap_release,
   l_mds_last,
 };
 
@@ -118,6 +139,7 @@ class SnapClient;
 class MDSTableServer;
 class MDSTableClient;
 class Messenger;
+class MetricAggregator;
 class Objecter;
 class MonClient;
 class MgrClient;
@@ -142,6 +164,7 @@ class MDSRank {
 
     MDSRank(
         mds_rank_t whoami_,
+	std::string fs_name_,
         ceph::mutex &mds_lock_,
         LogChannelRef &clog_,
         SafeTimer &timer_,
@@ -151,9 +174,11 @@ class MDSRank {
         MonClient *monc_,
         MgrClient *mgrc,
         Context *respawn_hook_,
-        Context *suicide_hook_);
+        Context *suicide_hook_,
+	boost::asio::io_context& ioc);
 
     mds_rank_t get_nodeid() const { return whoami; }
+    std::string_view get_fs_name() const { return fs_name; }
     int64_t get_metadata_pool();
 
     mono_time get_starttime() const {
@@ -198,6 +223,7 @@ class MDSRank {
     }
 
     void handle_write_error(int err);
+    void handle_write_error_with_lock(int err);
 
     void update_mlogger();
 
@@ -264,6 +290,7 @@ class MDSRank {
     double get_dispatch_queue_max_age(utime_t now) const;
 
     void send_message_mds(const ref_t<Message>& m, mds_rank_t mds);
+    void send_message_mds(const ref_t<Message>& m, const entity_addrvec_t &addr);
     void forward_message_mds(const cref_t<MClientRequest>& req, mds_rank_t mds);
     void send_message_client_counted(const ref_t<Message>& m, client_t client);
     void send_message_client_counted(const ref_t<Message>& m, Session* session);
@@ -330,13 +357,11 @@ class MDSRank {
       return map_targets.count(rank);
     }
 
-    bool evict_client(int64_t session_id, bool wait, bool blacklist,
+    bool evict_client(int64_t session_id, bool wait, bool blocklist,
                       std::ostream& ss, Context *on_killed=nullptr);
     int config_client(int64_t session_id, bool remove,
 		      const std::string& option, const std::string& value,
 		      std::ostream& ss);
-
-    void mark_base_recursively_scrubbed(inodeno_t ino);
 
     // Reference to global MDS::mds_lock, so that users of MDSRank don't
     // carry around references to the outer MDS, and we can substitute
@@ -415,6 +440,7 @@ class MDSRank {
     friend class C_MDS_MonCommand;
 
     const mds_rank_t whoami;
+    std::string fs_name;
 
     ~MDSRank();
 
@@ -435,7 +461,6 @@ class MDSRank {
      /**
      * Share MDSMap with clients
      */
-    void bcast_mds_map();  // to mounted clients
     void create_logger();
 
     void dump_clientreplay_status(Formatter *f) const;
@@ -531,12 +556,16 @@ class MDSRank {
     // because its init/shutdown happens at the top level.
     PurgeQueue purge_queue;
 
+    MetricsHandler metrics_handler;
+    std::unique_ptr<MetricAggregator> metric_aggregator;
+
     list<cref_t<Message>> waiting_for_nolaggy;
     MDSContext::que finished_queue;
     // Dispatch, retry, queues
     int dispatch_depth = 0;
 
     ceph::heartbeat_handle_d *hb = nullptr;  // Heartbeat for threads using mds_lock
+    double heartbeat_grace;
 
     map<mds_rank_t, version_t> peer_mdsmap_epoch;
 
@@ -559,8 +588,6 @@ class MDSRank {
 
     int mds_slow_req_count = 0;
 
-    epoch_t last_client_mdsmap_bcast = 0;
-
     map<mds_rank_t,DecayCounter> export_targets; /* targets this MDS is exporting to or wants/tries to */
 
     Messenger *messenger;
@@ -581,7 +608,12 @@ private:
     void schedule_update_timer_task();
     void send_task_status();
 
+    bool is_rank0() const {
+      return whoami == (mds_rank_t)0;
+    }
+
     mono_time starttime = mono_clock::zero();
+    boost::asio::io_context& ioc;
 };
 
 /* This expects to be given a reference which it is responsible for.
@@ -621,6 +653,7 @@ class MDSRankDispatcher : public MDSRank, public md_config_obs_t
 public:
   MDSRankDispatcher(
       mds_rank_t whoami_,
+      std::string fs_name,
       ceph::mutex &mds_lock_,
       LogChannelRef &clog_,
       SafeTimer &timer_,
@@ -630,7 +663,8 @@ public:
       MonClient *monc_,
       MgrClient *mgrc,
       Context *respawn_hook_,
-      Context *suicide_hook_);
+      Context *suicide_hook_,
+      boost::asio::io_context& ioc);
 
   void init();
   void tick();

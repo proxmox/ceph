@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  *
- * Copyright (c) 2009-2018 Solarflare Communications Inc.
- * All rights reserved.
+ * Copyright(c) 2019-2020 Xilinx, Inc.
+ * Copyright(c) 2009-2019 Solarflare Communications Inc.
  */
 
 #ifndef _SYS_SIENA_IMPL_H
@@ -190,6 +190,12 @@ siena_nvram_partn_size(
 	__in			efx_nic_t *enp,
 	__in			uint32_t partn,
 	__out			size_t *sizep);
+
+extern	__checkReturn		efx_rc_t
+siena_nvram_partn_info(
+	__in			efx_nic_t *enp,
+	__in			uint32_t partn,
+	__out			efx_nvram_info_t * enip);
 
 extern	__checkReturn		efx_rc_t
 siena_nvram_partn_rw_start(

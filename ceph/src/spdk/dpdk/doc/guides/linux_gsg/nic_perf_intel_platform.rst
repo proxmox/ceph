@@ -64,7 +64,7 @@ This aligns with the previous output which showed that each channel has one memo
 Network Interface Card Requirements
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Use a `DPDK supported <http://core.dpdk.org/supported/>`_ high end NIC such as the Intel XL710 40GbE.
+Use a `DPDK supported <https://core.dpdk.org/supported/>`_ high end NIC such as the Intel XL710 40GbE.
 
 Make sure each NIC has been flashed the latest version of NVM/firmware.
 
@@ -150,7 +150,7 @@ Configurations before running DPDK
       # Mount to the specific folder.
       mount -t hugetlbfs nodev /mnt/huge
 
-2. Check the CPU layout using using the DPDK ``cpu_layout`` utility:
+2. Check the CPU layout using the DPDK ``cpu_layout`` utility:
 
    .. code-block:: console
 

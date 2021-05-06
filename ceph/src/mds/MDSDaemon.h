@@ -35,14 +35,16 @@
 #include "MDSMap.h"
 #include "MDSRank.h"
 
-#define CEPH_MDS_PROTOCOL    35 /* cluster internal */
+#define CEPH_MDS_PROTOCOL    36 /* cluster internal */
 
 class Messenger;
 class MonClient;
 
 class MDSDaemon : public Dispatcher {
  public:
-  MDSDaemon(std::string_view n, Messenger *m, MonClient *mc);
+  MDSDaemon(std::string_view n, Messenger *m, MonClient *mc,
+	    boost::asio::io_context& ioctx);
+
   ~MDSDaemon() override;
 
   mono_time get_starttime() const {
@@ -129,6 +131,7 @@ class MDSDaemon : public Dispatcher {
 
   Messenger    *messenger;
   MonClient    *monc;
+  boost::asio::io_context& ioctx;
   MgrClient     mgrc;
   std::unique_ptr<MDSMap> mdsmap;
   LogClient    log_client;

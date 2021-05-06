@@ -14,11 +14,15 @@
 #include "metadata/metadata_partition_structs.h"
 #include "metadata/metadata_updater_priv.h"
 #include "utils/utils_list.h"
+#include "utils/utils_pipeline.h"
 #include "utils/utils_refcnt.h"
+#include "utils/utils_async_lock.h"
 #include "ocf_stats_priv.h"
 #include "cleaning/cleaning.h"
 #include "ocf_logger_priv.h"
 #include "ocf/ocf_trace.h"
+#include "promotion/promotion.h"
+#include "ocf_freelist.h"
 
 #define DIRTY_FLUSHED 1
 #define DIRTY_NOT_FLUSHED 0
@@ -34,55 +38,6 @@ struct ocf_trace {
 	void *trace_ctx;
 
 	env_atomic64 trace_seq_ref;
-};
-
-struct ocf_metadata_uuid {
-	uint32_t size;
-	uint8_t data[OCF_VOLUME_UUID_MAX_SIZE];
-} __packed;
-
-#define OCF_CORE_USER_DATA_SIZE 64
-
-struct ocf_core_meta_config {
-	uint8_t type;
-
-	/* This bit means that object was added into cache */
-	uint32_t added : 1;
-
-	/* Core sequence number used to correlate cache lines with cores
-	 * when recovering from atomic device */
-	ocf_seq_no_t seq_no;
-
-	/* Sequential cutoff threshold (in bytes) */
-	uint32_t seq_cutoff_threshold;
-
-	/* Sequential cutoff policy */
-	ocf_seq_cutoff_policy seq_cutoff_policy;
-
-	/* core object size in bytes */
-	uint64_t length;
-
-	uint8_t user_data[OCF_CORE_USER_DATA_SIZE];
-};
-
-struct ocf_core_meta_runtime {
-	/* Number of blocks from that objects that currently are cached
-	 * on the caching device.
-	 */
-	env_atomic cached_clines;
-	env_atomic dirty_clines;
-	env_atomic initial_dirty_clines;
-
-	env_atomic64 dirty_since;
-
-	struct {
-		/* clines within lru list (?) */
-		env_atomic cached_clines;
-		/* dirty clines assigned to this specific partition within
-		 * cache device
-		 */
-		env_atomic dirty_clines;
-	} part_counters[OCF_IO_CLASS_MAX];
 };
 
 /**
@@ -114,8 +69,6 @@ enum ocf_mngt_cache_init_mode {
 struct ocf_cache_device {
 	struct ocf_volume volume;
 
-	ocf_cache_line_t metadata_offset_line;
-
 	/* Hash Table contains contains pointer to the entry in
 	 * Collision Table so it actually contains collision Table
 	 * indexes.
@@ -131,10 +84,8 @@ struct ocf_cache_device {
 
 	uint64_t metadata_offset;
 
-	struct ocf_part *freelist_part;
-
 	struct {
-		struct ocf_cache_concurrency *cache;
+		struct ocf_cache_line_concurrency *cache_line;
 	} concurrency;
 
 	enum ocf_mngt_cache_init_mode init_mode;
@@ -146,12 +97,9 @@ struct ocf_cache {
 	ocf_ctx_t owner;
 
 	struct list_head list;
-	/* set to make valid */
-	uint8_t valid_ocf_cache_device_t;
+
 	/* unset running to not serve any more I/O requests */
 	unsigned long cache_state;
-
-	env_atomic ref_count;
 
 	struct ocf_superblock_config *conf_meta;
 
@@ -162,18 +110,21 @@ struct ocf_cache {
 
 	struct ocf_metadata metadata;
 
+	ocf_freelist_t freelist;
+
 	ocf_eviction_t eviction_policy_init;
 
-	int cache_id;
-
-	char name[OCF_CACHE_NAME_SIZE];
-
-	env_atomic pending_requests;
-
-	env_atomic pending_cache_requests;
-	env_waitqueue pending_cache_wq;
-
-	struct ocf_refcnt dirty;
+	struct {
+		/* cache get/put counter */
+		struct ocf_refcnt cache;
+		/* # of requests potentially dirtying cachelines */
+		struct ocf_refcnt dirty;
+		/* # of requests accessing attached metadata, excluding
+		 * management reqs */
+		struct ocf_refcnt metadata;
+		/* # of forced cleaning requests (eviction path) */
+		struct ocf_refcnt cleaning[OCF_IO_CLASS_MAX];
+	} refcnt;
 
 	uint32_t fallback_pt_error_threshold;
 	env_atomic fallback_pt_error_counter;
@@ -190,23 +141,18 @@ struct ocf_cache {
 
 	uint16_t ocf_core_inactive_count;
 	struct ocf_core core[OCF_CORE_MAX];
-	struct ocf_core_meta_config *core_conf_meta;
-	struct ocf_core_meta_runtime *core_runtime_meta;
 
 	env_atomic flush_in_progress;
 
-	/* 1 if cache device attached, 0 otherwise */
-	env_atomic attached;
-
-	env_atomic cleaning[OCF_IO_CLASS_MAX];
-
 	struct ocf_cleaner cleaner;
 	struct ocf_metadata_updater metadata_updater;
+	ocf_promotion_policy_t promotion_policy;
 
-	env_rwsem lock;
-	env_atomic lock_waiter;
-	/*!< most of the time this variable is set to 0, unless user requested
-	 *!< interruption of flushing process via ioctl/
+	struct ocf_async_lock lock;
+
+	/*
+	 * Most of the time this variable is set to 0, unless user requested
+	 * interruption of flushing process.
 	 */
 	int flushing_interrupted;
 	env_mutex flush_mutex;
@@ -222,8 +168,30 @@ struct ocf_cache {
 
 	struct ocf_trace trace;
 
+	ocf_pipeline_t stop_pipeline;
+
 	void *priv;
 };
+
+static inline ocf_core_t ocf_cache_get_core(ocf_cache_t cache,
+		ocf_core_id_t core_id)
+{
+	if (core_id >= OCF_CORE_MAX)
+		return NULL;
+
+	return &cache->core[core_id];
+}
+
+#define for_each_core_all(_cache, _core, _id) \
+	for (_id = 0; _core = &_cache->core[_id], _id < OCF_CORE_MAX; _id++)
+
+#define for_each_core(_cache, _core, _id) \
+	for_each_core_all(_cache, _core, _id) \
+		if (_core->added)
+
+#define for_each_core_metadata(_cache, _core, _id) \
+	for_each_core_all(_cache, _core, _id) \
+		if (_core->conf_meta->valid)
 
 #define ocf_cache_log_prefix(cache, lvl, prefix, fmt, ...) \
 	ocf_log_prefix(ocf_cache_get_ctx(cache), lvl, "%s" prefix, \
@@ -234,5 +202,19 @@ struct ocf_cache {
 
 #define ocf_cache_log_rl(cache) \
 	ocf_log_rl(ocf_cache_get_ctx(cache))
+
+static inline uint64_t ocf_get_cache_occupancy(ocf_cache_t cache)
+{
+	uint64_t result = 0;
+	ocf_core_t core;
+	ocf_core_id_t core_id;
+
+	for_each_core(cache, core, core_id)
+		result += env_atomic_read(&core->runtime_meta->cached_clines);
+
+	return result;
+}
+
+int ocf_cache_set_name(ocf_cache_t cache, const char *src, size_t src_size);
 
 #endif /* __OCF_CACHE_PRIV_H__ */

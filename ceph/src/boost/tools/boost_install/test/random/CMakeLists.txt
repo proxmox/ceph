@@ -1,4 +1,4 @@
-# Copyright 2018, 2019 Peter Dimov
+# Copyright 2018-2020 Peter Dimov
 # Distributed under the Boost Software License, Version 1.0.
 # (See accompanying file LICENSE_1_0.txt or copy at http://boost.org/LICENSE_1_0.txt)
 
@@ -28,8 +28,11 @@ else()
 
 endif()
 
-add_executable(main quick.cpp)
-target_link_libraries(main Boost::random)
+add_library(lib lib.cpp)
+target_link_libraries(lib PRIVATE Boost::random)
+
+add_executable(main main.cpp)
+target_link_libraries(main PRIVATE lib Boost::headers)
 
 enable_testing()
 add_custom_target(check COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure -C $<CONFIG>)

@@ -4,11 +4,29 @@ CephFS sub-tasks.
 
 import logging
 import re
-import six
 
-from tasks.cephfs.filesystem import Filesystem
+from tasks.cephfs.filesystem import Filesystem, MDSCluster
 
 log = logging.getLogger(__name__)
+
+def ready(ctx, config):
+    """
+    That the file system is ready for clients.
+    """
+
+    if config is None:
+        config = {}
+    assert isinstance(config, dict), \
+        'task only accepts a dict for configuration'
+
+    timeout = config.get('timeout', 300)
+
+    mdsc = MDSCluster(ctx)
+    status = mdsc.status()
+
+    for filesystem in status.get_filesystems():
+        fs = Filesystem(ctx, fscid=filesystem['id'])
+        fs.wait_for_daemons(timeout=timeout, status=status)
 
 def clients_evicted(ctx, config):
     """
@@ -39,7 +57,7 @@ def clients_evicted(ctx, config):
     for rank in fs.get_ranks(status=status):
         ls = fs.rank_asok(['session', 'ls'], rank=rank['rank'], status=status)
         for session in ls:
-            for client, evicted in six.viewitems(clients):
+            for client, evicted in clients.items():
                 mount = mounts.get(client)
                 if mount is not None:
                     global_id = mount.get_global_id()
@@ -52,15 +70,15 @@ def clients_evicted(ctx, config):
 
     no_session = set(clients) - has_session
     should_assert = False
-    for client, evicted in six.viewitems(clients):
+    for client, evicted in clients.items():
         mount = mounts.get(client)
         if mount is not None:
             if evicted:
-                log.info("confirming client {} is blacklisted".format(client))
-                assert mount.is_blacklisted()
+                log.info("confirming client {} is blocklisted".format(client))
+                assert fs.is_addr_blocklisted(mount.get_global_addr())
             elif client in no_session:
                 log.info("client {} should not be evicted but has no session with an MDS".format(client))
-                mount.is_blacklisted() # for debugging
+                fs.is_addr_blocklisted(mount.get_global_addr()) # for debugging
                 should_assert = True
     if should_assert:
         raise RuntimeError("some clients which should not be evicted have no session with an MDS?")

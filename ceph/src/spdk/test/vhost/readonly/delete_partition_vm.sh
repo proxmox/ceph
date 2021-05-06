@@ -8,15 +8,14 @@ disk_name="vda"
 test_folder_name="readonly_test"
 test_file_name="some_test_file"
 
-function error()
-{
+function error() {
 	echo "==========="
-	echo -e "ERROR: $@"
+	echo -e "ERROR: $*"
 	echo "==========="
 	trap - ERR
 	set +e
 	umount "$test_folder_name"
-	rm -rf "$testdir/$test_folder_name"
+	rm -rf "${testdir:?}/${test_folder_name:?}"
 	exit 1
 }
 
@@ -26,7 +25,7 @@ if [[ ! -d "/sys/block/$disk_name" ]]; then
 	error "No vhost-blk disk found!"
 fi
 
-if (( $(lsblk -r -n -o RO -d "/dev/$disk_name") == 1 )); then
+if (($(lsblk -r -n -o RO -d "/dev/$disk_name") == 1)); then
 	error "Vhost-blk disk is set as readonly!"
 fi
 
@@ -37,7 +36,7 @@ mount /dev/$disk_name"1" $test_folder_name
 
 echo "INFO: Removing folder and unmounting $test_folder_name"
 umount "$test_folder_name"
-rm -rf "$testdir/$test_folder_name"
+rm -rf "${testdir:?}/${test_folder_name:?}"
 
 echo "INFO: Deleting partition"
 echo -e "d\n1\nw" | fdisk /dev/$disk_name

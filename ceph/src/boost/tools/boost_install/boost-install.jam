@@ -1,4 +1,4 @@
-# Copyright 2018, 2019 Peter Dimov
+# Copyright 2018-2020 Peter Dimov
 # Distributed under the Boost Software License, Version 1.0.
 # (See accompanying file LICENSE_1_0.txt or copy at http://boost.org/LICENSE_1_0.txt)
 
@@ -24,6 +24,7 @@ feature.feature boost-install.dependency : : free ;
 feature.feature boost-install.cmakedir : : free ;
 feature.feature boost-install.includedir : : free ;
 feature.feature boost-install.libdir : : free ;
+feature.feature boost-install.lib-target-type : : free ;
 
 if "--verbose" in [ modules.peek : ARGV ]
 {
@@ -151,6 +152,13 @@ rule generate-cmake-variant- ( target : sources * : properties * )
             "  endif()"
             "endif()"
             ""
+            "if(Boost_PYTHON_VERSION_MAJOR)"
+            "  if(NOT \"$(python)\" MATCHES \"^${Boost_PYTHON_VERSION_MAJOR}[.]\")"
+            "    _BOOST_SKIPPED(\"$(fname)\" \"$(python), Boost_PYTHON_VERSION_MAJOR=${Boost_PYTHON_VERSION_MAJOR}\")"
+            "    return()"
+            "  endif()"
+            "endif()"
+            ""
             : true ;
     }
 
@@ -189,7 +197,7 @@ rule generate-cmake-variant- ( target : sources * : properties * )
             "    return()"
             "  endif()"
             "else()"
-            "  if(NOT WIN32)"
+            "  if(NOT WIN32 AND NOT _BOOST_SINGLE_VARIANT)"
             "    _BOOST_SKIPPED(\"$(fname)\" \"static, default is shared, set Boost_USE_STATIC_LIBS=ON to override\")"
             "    return()"
             "  endif()"
@@ -207,7 +215,7 @@ rule generate-cmake-variant- ( target : sources * : properties * )
             "    return()"
             "  endif()"
             "else()"
-            "  if(WIN32)"
+            "  if(WIN32 AND NOT _BOOST_SINGLE_VARIANT)"
             "    _BOOST_SKIPPED(\"$(fname)\" \"shared, default on Windows is static, set Boost_USE_STATIC_LIBS=OFF to override\")"
             "    return()"
             "  endif()"
@@ -268,27 +276,35 @@ rule generate-cmake-variant- ( target : sources * : properties * )
 
     print.text "# threading=$(threading)" "" : true ;
 
-    if $(threading) = "multi"
+    if $(layout) != system
     {
-        print.text
+        if $(threading) = "multi"
+        {
+            print.text
 
-            "if(NOT \"${Boost_USE_MULTITHREADED}\" STREQUAL \"\" AND NOT Boost_USE_MULTITHREADED)"
-            "  _BOOST_SKIPPED(\"$(fname)\" \"multithreaded, Boost_USE_MULTITHREADED=${Boost_USE_MULTITHREADED}\")"
-            "  return()"
-            "endif()"
-            ""
-            : true ;
-    }
-    else
-    {
-        print.text
+                "if(DEFINED Boost_USE_MULTITHREADED AND NOT Boost_USE_MULTITHREADED)"
+                "  _BOOST_SKIPPED(\"$(fname)\" \"multithreaded, Boost_USE_MULTITHREADED=${Boost_USE_MULTITHREADED}\")"
+                "  return()"
+                "endif()"
+                ""
+                : true ;
+        }
+        else
+        {
+            print.text
 
-            "if(Boost_USE_MULTITHREADED)"
-            "  _BOOST_SKIPPED(\"$(fname)\" \"single-threaded, Boost_USE_MULTITHREADED=${Boost_USE_MULTITHREADED}\")"
-            "  return()"
-            "endif()"
-            ""
-            : true ;
+                "if(NOT DEFINED Boost_USE_MULTITHREADED)"
+                "  _BOOST_SKIPPED(\"$(fname)\" \"single-threaded, Boost_USE_MULTITHREADED is not set and defaults to ON, set to OFF to override\")"
+                "  return()"
+                "endif()"
+                ""
+                "if(Boost_USE_MULTITHREADED)"
+                "  _BOOST_SKIPPED(\"$(fname)\" \"single-threaded, Boost_USE_MULTITHREADED=${Boost_USE_MULTITHREADED}\")"
+                "  return()"
+                "endif()"
+                ""
+                : true ;
+        }
     }
 
     print.text "# variant=$(variant)" "" : true ;
@@ -324,19 +340,60 @@ rule generate-cmake-variant- ( target : sources * : properties * )
         ""
         : true ;
 
+    if $(python)
+    {
+        print.text
+
+            "if(NOT Boost_PYTHON_VERSION)"
+            "  if(Boost_DEBUG)"
+            "    message(STATUS \"  Setting Boost_PYTHON_VERSION to $(python)\")"
+            "  endif()"
+            "  set(Boost_PYTHON_VERSION \"$(python)\")"
+            "endif()"
+            ""
+            : true ;
+    }
+
     local lname = [ MATCH boost_(.*) : $(name) ] ;
     .info "  lname=" $(lname) ;
 
     local target = "Boost::$(lname)" ;
     .info "  target=" $(target) ;
 
+    print.text
+
+        "# Create imported target $(target)"
+        ""
+        "if(NOT TARGET $(target))"
+        "  add_library($(target) $(link:U) IMPORTED)"
+        ""
+        "  set_target_properties($(target) PROPERTIES"
+        "    INTERFACE_INCLUDE_DIRECTORIES \"\${_BOOST_INCLUDEDIR}\""
+        "    INTERFACE_COMPILE_DEFINITIONS \"BOOST_ALL_NO_LIB\""
+        "  )"
+        "endif()"
+        ""
+        : true ;
+
     print.text "# Target file name: $(fname)" "" : true ;
+
+    local lib-target-type = [ $(ps).get <boost-install.lib-target-type> ] ;
+    .info "  lib-target-type=" $(lib-target-type) ;
+
+    local loc-prop = LOCATION ;
+
+    if $(lib-target-type) = IMPORT_LIB
+    {
+        loc-prop = IMPLIB ;
+    }
+
+    .info "  loc-prop=" $(loc-prop) ;
 
     print.text
 
-        "get_target_property(__boost_imploc $(target) IMPORTED_LOCATION_$(variant:U))"
+        "get_target_property(__boost_imploc $(target) IMPORTED_$(loc-prop)_$(variant:U))"
         "if(__boost_imploc)"
-        "  message(WARNING \"Target $(target) already has an imported location '${__boost_imploc}', which will be overwritten with '${_BOOST_LIBDIR}/$(fname)'\")"
+        "  message(SEND_ERROR \"Target $(target) already has an imported location '${__boost_imploc}', which is being overwritten with '${_BOOST_LIBDIR}/$(fname)'\")"
         "endif()"
         "unset(__boost_imploc)"
         ""
@@ -344,7 +401,7 @@ rule generate-cmake-variant- ( target : sources * : properties * )
         ""
         "set_target_properties($(target) PROPERTIES"
         "  IMPORTED_LINK_INTERFACE_LANGUAGES_$(variant:U) CXX"
-        "  IMPORTED_LOCATION_$(variant:U) \"${_BOOST_LIBDIR}/$(fname)\""
+        "  IMPORTED_$(loc-prop)_$(variant:U) \"${_BOOST_LIBDIR}/$(fname)\""
         "  )"
         ""
         : true ;
@@ -365,8 +422,8 @@ rule generate-cmake-variant- ( target : sources * : properties * )
     {
         print.text
 
-        "set_target_properties($(target) PROPERTIES"
-        "  INTERFACE_COMPILE_DEFINITIONS \"BOOST_$(lname:U)_DYN_LINK\""
+        "set_property(TARGET $(target) APPEND"
+        "  PROPERTY INTERFACE_COMPILE_DEFINITIONS \"BOOST_$(lname:U)_DYN_LINK\""
         "  )"
         ""
         : true ;
@@ -488,7 +545,13 @@ rule generate-cmake-variant ( project name : property-set : sources * )
     {
         .debug "  lib-target=" [ $(lib-target).name ] ;
 
+        local lib-target-type = [ $(lib-target).type ] ;
+
+        .debug "  lib-target-type=" $(lib-target-type) ;
+
         local tag = [ tag $(name) : : $(property-set) ] ;
+
+        property-set = [ $(property-set).add-raw <boost-install.lib-target-type>$(lib-target-type) ] ;
 
         local a = [ new non-scanning-action $(lib-target) : boost-install.generate-cmake-variant- : $(property-set) ] ;
 
@@ -586,7 +649,7 @@ rule generate-cmake-config- ( target : sources * : properties * )
         ""
         "# Compute the include and library directories relative to this file."
         ""
-        "get_filename_component(_BOOST_CMAKEDIR \"${CMAKE_CURRENT_LIST_DIR}/../\" ABSOLUTE)"
+        "get_filename_component(_BOOST_CMAKEDIR \"${CMAKE_CURRENT_LIST_DIR}/../\" REALPATH)"
         : true ;
 
     if [ path.is-rooted $(cmakedir) ]
@@ -598,12 +661,10 @@ rule generate-cmake-config- ( target : sources * : properties * )
             ""
             "# If the computed and the original directories are symlink-equivalent, use original"
             "if(EXISTS \"$(cmakedir-native)\")"
-            "  get_filename_component(_BOOST_CMAKEDIR_COMPUTED \"${_BOOST_CMAKEDIR}\" REALPATH)"
             "  get_filename_component(_BOOST_CMAKEDIR_ORIGINAL \"$(cmakedir-native)\" REALPATH)"
-            "  if(_BOOST_CMAKEDIR_COMPUTED STREQUAL _BOOST_CMAKEDIR_ORIGINAL)"
+            "  if(_BOOST_CMAKEDIR STREQUAL _BOOST_CMAKEDIR_ORIGINAL)"
             "    set(_BOOST_CMAKEDIR \"$(cmakedir-native)\")"
             "  endif()"
-            "  unset(_BOOST_CMAKEDIR_COMPUTED)"
             "  unset(_BOOST_CMAKEDIR_ORIGINAL)"
             "endif()"
             ""
@@ -611,26 +672,31 @@ rule generate-cmake-config- ( target : sources * : properties * )
     }
 
     get-dir "_BOOST_INCLUDEDIR" : $(includedir) ;
-    get-dir "_BOOST_LIBDIR" : $(libdir) ;
 
-    print.text
-
-        ""
-        "# Create imported target $(ltarget)"
-        ""
-        "add_library($(ltarget) $(library-type) IMPORTED)"
-        ""
-        "set_target_properties($(ltarget) PROPERTIES"
-        "  INTERFACE_INCLUDE_DIRECTORIES \"\${_BOOST_INCLUDEDIR}\""
-        "  INTERFACE_COMPILE_DEFINITIONS \"BOOST_ALL_NO_LIB\""
-        ")"
-        ""
-        : true ;
-
-    if $(library-type) != INTERFACE
+    if $(library-type) = INTERFACE
     {
         print.text
 
+            ""
+            "add_library($(ltarget) INTERFACE IMPORTED)"
+            ""
+            "set_target_properties($(ltarget) PROPERTIES"
+            "  INTERFACE_INCLUDE_DIRECTORIES \"\${_BOOST_INCLUDEDIR}\""
+            "  INTERFACE_COMPILE_DEFINITIONS \"BOOST_ALL_NO_LIB\""
+            ")"
+            ""
+            "unset(_BOOST_INCLUDEDIR)"
+            "unset(_BOOST_CMAKEDIR)"
+            ""
+            : true ;
+    }
+    else
+    {
+        get-dir "_BOOST_LIBDIR" : $(libdir) ;
+
+        print.text
+
+            ""
             "include(${CMAKE_CURRENT_LIST_DIR}/../BoostDetectToolset-$(version).cmake)"
             ""
             "if(Boost_DEBUG)"
@@ -646,6 +712,11 @@ rule generate-cmake-config- ( target : sources * : properties * )
             "  list(APPEND __boost_skipped \"${fname} (${reason})\")"
             "endmacro()"
             ""
+            "list(LENGTH __boost_variants _BOOST_SINGLE_VARIANT)"
+            "if(NOT _BOOST_SINGLE_VARIANT EQUAL 1)"
+            "  set(_BOOST_SINGLE_VARIANT 0)"
+            "endif()"
+            ""
             "foreach(f IN LISTS __boost_variants)"
             "  if(Boost_DEBUG)"
             "    message(STATUS \"  Including ${f}\")"
@@ -653,13 +724,16 @@ rule generate-cmake-config- ( target : sources * : properties * )
             "  include(${f})"
             "endforeach()"
             ""
+            "unset(_BOOST_SINGLE_VARIANT)"
             "unset(_BOOST_LIBDIR)"
             "unset(_BOOST_INCLUDEDIR)"
             "unset(_BOOST_CMAKEDIR)"
             ""
-            "get_target_property(__boost_configs $(ltarget) IMPORTED_CONFIGURATIONS)"
+            "if(NOT __boost_variants AND (Boost_VERBOSE OR Boost_DEBUG))"
+            "  message(STATUS \"  Library has no variants and is considered not found\")"
+            "endif()"
             ""
-            "if(__boost_variants AND NOT __boost_configs)"
+            "if(NOT TARGET $(ltarget))"
             "  set(__boost_message \"No suitable build variant has been found.\")"
             "  if(__boost_skipped)"
             "    set(__boost_message \"${__boost_message}\\nThe following variants have been tried and rejected:\")"
@@ -671,14 +745,12 @@ rule generate-cmake-config- ( target : sources * : properties * )
             "  set($(name)_NOT_FOUND_MESSAGE ${__boost_message})"
             "  unset(__boost_message)"
             "  unset(__boost_skipped)"
-            "  unset(__boost_configs)"
             "  unset(__boost_variants)"
             "  unset(_BOOST_$(lname:U)_DEPS)"
             "  return()"
             "endif()"
             ""
             "unset(__boost_skipped)"
-            "unset(__boost_configs)"
             "unset(__boost_variants)"
             ""
             "if(_BOOST_$(lname:U)_DEPS)"
@@ -752,16 +824,6 @@ rule generate-cmake-config- ( target : sources * : properties * )
             ""
             : true ;
         }
-    }
-    else
-    {
-        print.text
-
-            "unset(_BOOST_LIBDIR)"
-            "unset(_BOOST_INCLUDEDIR)"
-            "unset(_BOOST_CMAKEDIR)"
-            ""
-            : true ;
     }
 
     print.text
@@ -980,11 +1042,9 @@ rule install-cmake-config ( name * )
 
 rule stage-cmake-config ( name * )
 {
-    local stage-locate = [ path.make [ modules.peek boostcpp : BOOST_STAGE_LOCATE ] ] ;
-
     local includedir = [ path.make [ modules.peek boostcpp : BOOST_ROOT ] ] ;
-    local libdir = $(stage-locate)/lib ;
-    local cmakedir = $(stage-locate)/lib/cmake ;
+    local libdir = [ boost-install-dirs.stage-libdir ] ;
+    local cmakedir = $(libdir)/cmake ;
 
     install-or-stage-cmake-config $(name) : stage : $(includedir) : $(libdir) : $(cmakedir) ;
 }
@@ -1065,9 +1125,65 @@ rule generate-dependencies ( project name ? : property-set : sources * )
 
 # boost-install
 
+local rule install-stage-subdir ( properties * )
+{
+    local ps = [ property-set.create $(properties) ] ;
+
+    local r = [ boostcpp.tag boost : STATIC_LIB : $(ps) ] ;
+
+    r = $(r:S=) ;
+
+    local r2 = [ MATCH "lib(.*)" : $(r) ] ;
+    if $(r2) { r = $(r2) ; }
+
+    local python = [ $(ps).get <python> ] ;
+
+    if $(python)
+    {
+        r = $(r:B=$(r:B)-python$(python)) ;
+    }
+
+    return $(r) ;
+}
+
+rule stage-subdir ( properties * )
+{
+    local r = [ install-stage-subdir $(properties) ] ;
+
+    local libdir = [ boost-install-dirs.stage-libdir ] ;
+
+    return <location>$(libdir)/$(r) ;
+}
+
+rule install-subdir ( properties * )
+{
+    local r = [ install-stage-subdir $(properties) ] ;
+
+    local libdir = [ boost-install-dirs.libdir ] ;
+
+    return <location>$(libdir)/$(r) ;
+}
+
 rule boost-install ( libraries * )
 {
     .debug boost-install $(libraries) ;
+
+    local l2 = ;
+    local unprefixed = ;
+
+    for local lib in $(libraries)
+    {
+        if [ MATCH boost_(.*) : $(lib) ]
+        {
+            l2 += $(lib) ;
+        }
+        else
+        {
+            unprefixed += $(lib) ;
+        }
+    }
+
+    libraries = $(l2) ;
 
     # Target install
 
@@ -1082,29 +1198,41 @@ rule boost-install ( libraries * )
 
     $(p).mark-target-as-explicit install-libraries ;
 
+    install install-unprefixed-static : $(unprefixed) : <install-type>STATIC_LIB <conditional>@boost-install%install-subdir ;
+    $(p).mark-target-as-explicit install-unprefixed-static ;
+
+    install install-unprefixed-shared : $(unprefixed) : <install-type>SHARED_LIB <conditional>@boost-install%install-subdir ;
+    $(p).mark-target-as-explicit install-unprefixed-shared ;
+
     install-cmake-config $(libraries) ;
 
     generate install-dependencies : $(libraries) : <generating-rule>@boost-install%generate-dependencies <name>install ;
     $(p).mark-target-as-explicit install-dependencies ;
 
-    alias install : install-libraries install-cmake-config install-dependencies ;
+    alias install : install-libraries install-unprefixed-static install-unprefixed-shared install-cmake-config install-dependencies ;
     $(p).mark-target-as-explicit install ;
 
     # Target stage
 
-    local stage-locate = [ modules.peek boostcpp : BOOST_STAGE_LOCATE ] ;
+    local stage-libdir = [ boost-install-dirs.stage-libdir ] ;
 
     stage-cmake-config $(libraries) ;
 
-    install stage-libraries-static : $(libraries) : <location>$(stage-locate)/lib <install-dependencies>on <install-type>STATIC_LIB ;
+    install stage-libraries-static : $(libraries) : <location>$(stage-libdir) <install-dependencies>on <install-type>STATIC_LIB ;
     $(p).mark-target-as-explicit stage-libraries-static ;
 
-    install stage-libraries-shared : $(libraries) : <location>$(stage-locate)/lib <install-dependencies>on <install-type>SHARED_LIB ;
+    install stage-libraries-shared : $(libraries) : <location>$(stage-libdir) <install-dependencies>on <install-type>SHARED_LIB ;
     $(p).mark-target-as-explicit stage-libraries-shared ;
+
+    install stage-unprefixed-static : $(unprefixed) : <install-type>STATIC_LIB <conditional>@boost-install%stage-subdir ;
+    $(p).mark-target-as-explicit stage-unprefixed-static ;
+
+    install stage-unprefixed-shared : $(unprefixed) : <install-type>SHARED_LIB <conditional>@boost-install%stage-subdir ;
+    $(p).mark-target-as-explicit stage-unprefixed-shared ;
 
     generate stage-dependencies : $(libraries) : <generating-rule>@boost-install%generate-dependencies <name>stage ;
     $(p).mark-target-as-explicit stage-dependencies ;
 
-    alias stage : stage-libraries-static stage-libraries-shared stage-cmake-config stage-dependencies ;
+    alias stage : stage-libraries-static stage-libraries-shared stage-unprefixed-static stage-unprefixed-shared stage-cmake-config stage-dependencies ;
     $(p).mark-target-as-explicit stage ;
 }

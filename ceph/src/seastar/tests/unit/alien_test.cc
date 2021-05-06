@@ -24,9 +24,11 @@
 #include <numeric>
 #include <iostream>
 #include <seastar/core/alien.hh>
+#include <seastar/core/smp.hh>
 #include <seastar/core/app-template.hh>
 #include <seastar/core/posix.hh>
 #include <seastar/core/reactor.hh>
+#include <seastar/util/later.hh>
 
 using namespace seastar;
 
@@ -62,6 +64,10 @@ int main(int argc, char** argv)
                 return seastar::make_ready_future<int>(i);
             }));
         }
+        // std::future<void>
+        alien::submit_to(0, [] {
+            return seastar::make_ready_future<>();
+        }).wait();
         int total = 0;
         for (auto& count : counts) {
             total += count.get();

@@ -18,9 +18,9 @@
 #include "common/escape.h"
 #include "include/buffer.h"
 
+#include <fmt/format.h>
 #include <set>
 #include <limits>
-#include <boost/format.hpp>
 
 // -----------------------
 namespace ceph {
@@ -75,6 +75,8 @@ FormatterAttrs::FormatterAttrs(const char *attr, ...)
   va_end(ap);
 }
 
+void Formatter::write_bin_data(const char*, int){}
+
 Formatter::Formatter() { }
 
 Formatter::~Formatter() { }
@@ -83,9 +85,10 @@ Formatter *Formatter::create(std::string_view type,
 			     std::string_view default_type,
 			     std::string_view fallback)
 {
-  std::string mytype(type);
-  if (mytype == "")
+  std::string_view mytype(type);
+  if (mytype.empty()) {
     mytype = default_type;
+  }
 
   if (mytype == "json")
     return new JSONFormatter(false);
@@ -544,6 +547,13 @@ void XMLFormatter::write_raw_data(const char *data)
   m_ss << data;
 }
 
+void XMLFormatter::write_bin_data(const char* buff, int buf_len)
+{
+  std::stringbuf *pbuf = m_ss.rdbuf();
+  pbuf->sputn(buff, buf_len);
+  m_ss.seekg(buf_len);
+}
+
 void XMLFormatter::get_attrs_str(const FormatterAttrs *attrs, std::string& attrs_str)
 {
   std::stringstream attrs_ss;
@@ -680,11 +690,8 @@ void TableFormatter::flush(std::ostream& os)
           os << "|";
 
           for (size_t j = 0; j < m_vec[i].size(); j++) {
-            os << " ";
-            std::stringstream fs;
-            fs << boost::format("%%-%is") % (m_column_size[j] + 2);
-            os << boost::format(fs.str()) % m_vec[i][j].first;
-            os << "|";
+            os << fmt::format(" {:<{}}|",
+                              m_vec[i][j].first, m_column_size[j] + 2);
           }
           os << "\n";
           os << "+";
@@ -703,8 +710,6 @@ void TableFormatter::flush(std::ostream& os)
     for (size_t j = 0; j < m_vec[i].size(); j++) {
       if (!m_keyval)
         os << " ";
-      std::stringstream fs;
-
       if (m_keyval) {
         os << "key::";
         os << m_vec[i][j].first;
@@ -713,9 +718,7 @@ void TableFormatter::flush(std::ostream& os)
         os << m_vec[i][j].second;
         os << "\" ";
       } else {
-        fs << boost::format("%%-%is") % (m_column_size[j] + 2);
-        os << boost::format(fs.str()) % m_vec[i][j].second;
-        os << "|";
+        os << fmt::format("{:<{}}|", m_vec[i][j].second, m_column_size[j] + 2);
       }
     }
 

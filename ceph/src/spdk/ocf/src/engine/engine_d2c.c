@@ -7,7 +7,7 @@
 #include "engine_d2c.h"
 #include "engine_common.h"
 #include "cache_engine.h"
-#include "../utils/utils_req.h"
+#include "../ocf_request.h"
 #include "../utils/utils_io.h"
 #include "../metadata/metadata.h"
 
@@ -16,17 +16,13 @@
 
 static void _ocf_d2c_completion(struct ocf_request *req, int error)
 {
-	ocf_core_t core = &req->cache->core[req->core_id];
 	req->error = error;
 
 	OCF_DEBUG_RQ(req, "Completion");
 
 	if (req->error) {
 		req->info.core_error = 1;
-		if (req->rw == OCF_READ)
-			env_atomic_inc(&core->counters->core_errors.read);
-		else
-			env_atomic_inc(&core->counters->core_errors.write);
+		ocf_core_stats_core_error_update(req->core, req->rw);
 	}
 
 	/* Complete request */
@@ -38,12 +34,11 @@ static void _ocf_d2c_completion(struct ocf_request *req, int error)
 
 int ocf_io_d2c(struct ocf_request *req)
 {
-	ocf_cache_t cache = req->cache;
-	ocf_core_t core = &cache->core[req->core_id];
+	ocf_core_t core = req->core;
 
 	OCF_DEBUG_TRACE(req->cache);
 
-	ocf_io_start(req->io);
+	ocf_io_start(&req->ioi.io);
 
 	/* Get OCF request - increase reference counter */
 	ocf_req_get(req);
@@ -52,13 +47,8 @@ int ocf_io_d2c(struct ocf_request *req)
 
 	ocf_engine_update_block_stats(req);
 
-	if (req->rw == OCF_READ) {
-		env_atomic64_inc(&core->counters->
-			part_counters[req->part_id].read_reqs.pass_through);
-	} else {
-		env_atomic64_inc(&core->counters->
-			part_counters[req->part_id].write_reqs.pass_through);
-	}
+	ocf_core_stats_request_pt_update(req->core, req->part_id, req->rw,
+			req->info.hit_no, req->core_line_count);
 
 	/* Put OCF request - decrease reference counter */
 	ocf_req_put(req);

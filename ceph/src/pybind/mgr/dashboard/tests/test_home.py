@@ -8,10 +8,9 @@ try:
 except ImportError:
     import unittest.mock as mock
 
-from . import ControllerTestCase, FakeFsMixin
 from .. import mgr
-
 from ..controllers.home import HomeController, LanguageMixin
+from . import ControllerTestCase, FakeFsMixin  # pylint: disable=no-name-in-module
 
 logger = logging.getLogger()
 
@@ -24,7 +23,7 @@ class HomeTest(ControllerTestCase, FakeFsMixin):
         cls.fs.create_dir(frontend_path)
         cls.fs.create_file(
             os.path.join(frontend_path, '..', 'package.json'),
-            contents='{"config":{"locale": "en-US"}}')
+            contents='{"config":{"locale": "en"}}')
         with mock.patch(cls.builtins_open, new=cls.f_open),\
                 mock.patch('os.listdir', new=cls.f_os.listdir):
             lang = LanguageMixin()
@@ -52,7 +51,7 @@ class HomeTest(ControllerTestCase, FakeFsMixin):
     @mock.patch(FakeFsMixin.builtins_open, new=FakeFsMixin.f_open)
     @mock.patch('os.stat', new=FakeFsMixin.f_os.stat)
     @mock.patch('os.listdir', new=FakeFsMixin.f_os.listdir)
-    def test_home_en_us(self):
+    def test_home_en(self):
         self._get('/', headers=[('Accept-Language', 'en-US')])
         self.assertStatus(200)
         logger.info(self.body)

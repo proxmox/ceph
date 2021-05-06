@@ -117,7 +117,7 @@ app_template::run(int ac, char ** av, std::function<future<int> ()>&& func) {
         engine().at_exit([func_done] { return func_done->get_future(); });
         // No need to wait for this future.
         // func's returned exit_code is communicated via engine().exit()
-        (void)futurize_apply(func).finally([func_done] {
+        (void)futurize_invoke(func).finally([func_done] {
             func_done->set_value();
         }).then([] (int exit_code) {
             return engine().exit(exit_code);
@@ -152,6 +152,9 @@ app_template::run_deprecated(int ac, char ** av, std::function<void ()>&& func) 
         return 2;
     }
     if (configuration.count("help")) {
+        if (!_cfg.description.empty()) {
+            std::cout << _cfg.description << "\n";
+        }
         std::cout << _opts << "\n";
         return 1;
     }
@@ -160,7 +163,12 @@ app_template::run_deprecated(int ac, char ** av, std::function<void ()>&& func) 
         return 1;
     }
 
-    bpo::notify(configuration);
+    try {
+        bpo::notify(configuration);
+    } catch (const bpo::required_option& ex) {
+        std::cout << ex.what() << std::endl;
+        return 1;
+    }
 
     // Needs to be before `smp::configure()`.
     try {

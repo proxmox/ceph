@@ -1,7 +1,10 @@
-import os
+from .module import CephadmOrchestrator
 
+__all__ = [
+    "CephadmOrchestrator",
+]
+
+import os
 if 'UNITTEST' in os.environ:
     import tests
-    tests.mock_ceph_modules()  # type: ignore
-
-from .module import CephadmOrchestrator
+    __all__.append(tests.__name__)

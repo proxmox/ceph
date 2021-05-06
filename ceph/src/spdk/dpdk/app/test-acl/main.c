@@ -12,7 +12,7 @@
 #include <rte_lcore.h>
 #include <rte_ip.h>
 
-#define	PRINT_USAGE_START	"%s [EAL options]\n"
+#define	PRINT_USAGE_START	"%s [EAL options] --\n"
 
 #define	RTE_LOGTYPE_TESTACL	RTE_LOGTYPE_USER1
 
@@ -625,7 +625,7 @@ parse_ipv4_net(const char *in, uint32_t *addr, uint32_t *mask_len)
 	GET_CB_FIELD(in, d, 0, UINT8_MAX, '/');
 	GET_CB_FIELD(in, m, 0, sizeof(uint32_t) * CHAR_BIT, 0);
 
-	addr[0] = IPv4(a, b, c, d);
+	addr[0] = RTE_IPV4(a, b, c, d);
 	mask_len[0] = m;
 
 	return 0;
@@ -858,7 +858,7 @@ search_ip5tuples_once(uint32_t categories, uint32_t step, const char *alg)
 }
 
 static int
-search_ip5tuples(__attribute__((unused)) void *arg)
+search_ip5tuples(__rte_unused void *arg)
 {
 	uint64_t pkt, start, tm;
 	uint32_t i, lcore;

@@ -7,6 +7,7 @@
 #include "common/errno.h"
 #include "common/Cond.h"
 #include "cls/rbd/cls_rbd_client.h"
+#include "librbd/AsioEngine.h"
 #include "librbd/DeepCopyRequest.h"
 #include "librbd/ExclusiveLock.h"
 #include "librbd/ImageCtx.h"
@@ -16,10 +17,15 @@
 #include "librbd/Utils.h"
 #include "librbd/api/Config.h"
 #include "librbd/api/Trash.h"
+#include "librbd/api/Utils.h"
+#include "librbd/crypto/FormatRequest.h"
+#include "librbd/crypto/LoadRequest.h"
 #include "librbd/deep_copy/Handler.h"
 #include "librbd/image/CloneRequest.h"
 #include "librbd/image/RemoveRequest.h"
 #include "librbd/image/PreRemoveRequest.h"
+#include "librbd/io/ImageDispatcherInterface.h"
+#include "librbd/io/ObjectDispatcherInterface.h"
 #include <boost/scope_exit.hpp>
 
 #define dout_subsys ceph_subsys_rbd
@@ -396,7 +402,8 @@ int Image<I>::list_descendants(
     }
 
     IoCtx ioctx;
-    r = util::create_ioctx(ictx->md_ctx, "child image", it.first, {}, &ioctx);
+    r = librbd::util::create_ioctx(
+            ictx->md_ctx, "child image", it.first, {}, &ioctx);
     if (r == -ENOENT) {
       continue;
     } else if (r < 0) {
@@ -424,16 +431,17 @@ int Image<I>::list_descendants(
 
   // retrieve clone v2 children attached to this snapshot
   IoCtx parent_io_ctx;
-  r = util::create_ioctx(ictx->md_ctx, "parent image", parent_spec.pool_id,
-                         parent_spec.pool_namespace, &parent_io_ctx);
+  r = librbd::util::create_ioctx(
+          ictx->md_ctx, "parent image",parent_spec.pool_id,
+          parent_spec.pool_namespace, &parent_io_ctx);
   if (r < 0) {
     return r;
   }
 
   cls::rbd::ChildImageSpecs child_images;
-  r = cls_client::children_list(&parent_io_ctx,
-                                util::header_name(parent_spec.image_id),
-                                parent_spec.snap_id, &child_images);
+  r = cls_client::children_list(
+          &parent_io_ctx, librbd::util::header_name(parent_spec.image_id),
+          parent_spec.snap_id, &child_images);
   if (r < 0 && r != -ENOENT && r != -EOPNOTSUPP) {
     lderr(cct) << "error retrieving children: " << cpp_strerror(r) << dendl;
     return r;
@@ -445,8 +453,9 @@ int Image<I>::list_descendants(
       child_image.image_id, "", false});
     if (!child_max_level || *child_max_level > 0) {
       IoCtx ioctx;
-      r = util::create_ioctx(ictx->md_ctx, "child image", child_image.pool_id,
-                             child_image.pool_namespace, &ioctx);
+      r = librbd::util::create_ioctx(
+              ictx->md_ctx, "child image", child_image.pool_id,
+              child_image.pool_namespace, &ioctx);
       if (r == -ENOENT) {
         continue;
       } else if (r < 0) {
@@ -469,8 +478,9 @@ int Image<I>::list_descendants(
   for (auto& image : *images) {
     if (child_pool_id == -1 || child_pool_id != image.pool_id ||
         child_io_ctx.get_namespace() != image.pool_namespace) {
-      r = util::create_ioctx(ictx->md_ctx, "child image", image.pool_id,
-                             image.pool_namespace, &child_io_ctx);
+      r = librbd::util::create_ioctx(
+              ictx->md_ctx, "child image", image.pool_id, image.pool_namespace,
+              &child_io_ctx);
       if (r == -ENOENT) {
         image.pool_name = "";
         image.image_name = "";
@@ -603,8 +613,9 @@ int Image<I>::deep_copy(I *src, librados::IoCtx& dest_md_ctx,
     r = create(dest_md_ctx, destname, "", src_size, opts, "", "", false);
   } else {
     librados::IoCtx parent_io_ctx;
-    r = util::create_ioctx(src->md_ctx, "parent image", parent_spec.pool_id,
-                           parent_spec.pool_namespace, &parent_io_ctx);
+    r = librbd::util::create_ioctx(
+            src->md_ctx, "parent image", parent_spec.pool_id,
+            parent_spec.pool_namespace, &parent_io_ctx);
     if (r < 0) {
       return r;
     }
@@ -613,7 +624,7 @@ int Image<I>::deep_copy(I *src, librados::IoCtx& dest_md_ctx,
     api::Config<I>::apply_pool_overrides(dest_md_ctx, &config);
 
     C_SaferCond ctx;
-    std::string dest_id = util::generate_image_id(dest_md_ctx);
+    std::string dest_id = librbd::util::generate_image_id(dest_md_ctx);
     auto *req = image::CloneRequest<I>::create(
       config, parent_io_ctx, parent_spec.image_id, "", {}, parent_spec.snap_id,
       dest_md_ctx, destname, dest_id, opts, cls::rbd::MIRROR_IMAGE_MODE_JOURNAL,
@@ -666,7 +677,6 @@ int Image<I>::deep_copy(I *src, librados::IoCtx& dest_md_ctx,
 template <typename I>
 int Image<I>::deep_copy(I *src, I *dest, bool flatten,
                         ProgressContext &prog_ctx) {
-  CephContext *cct = src->cct;
   librados::snap_t snap_id_start = 0;
   librados::snap_t snap_id_end;
   {
@@ -674,16 +684,14 @@ int Image<I>::deep_copy(I *src, I *dest, bool flatten,
     snap_id_end = src->snap_id;
   }
 
-  ThreadPool *thread_pool;
-  ContextWQ *op_work_queue;
-  ImageCtx::get_thread_pool_instance(cct, &thread_pool, &op_work_queue);
+  AsioEngine asio_engine(src->md_ctx);
 
   C_SaferCond cond;
   SnapSeqs snap_seqs;
   deep_copy::ProgressHandler progress_handler{&prog_ctx};
   auto req = DeepCopyRequest<I>::create(
-    src, dest, snap_id_start, snap_id_end, 0U, flatten, boost::none, op_work_queue,
-    &snap_seqs, &progress_handler, &cond);
+    src, dest, snap_id_start, snap_id_end, 0U, flatten, boost::none,
+    asio_engine.get_work_queue(), &snap_seqs, &progress_handler, &cond);
   req->send();
   int r = cond.wait();
   if (r < 0) {
@@ -825,16 +833,15 @@ int Image<I>::remove(IoCtx& io_ctx, const std::string &image_name,
     // fall-through if trash isn't supported
   }
 
-  ThreadPool *thread_pool;
-  ContextWQ *op_work_queue;
-  ImageCtx::get_thread_pool_instance(cct, &thread_pool, &op_work_queue);
+  AsioEngine asio_engine(io_ctx);
 
   // might be a V1 image format that cannot be moved to the trash
   // and would not have been listed in the V2 directory -- or the OSDs
   // are too old and don't support the trash feature
   C_SaferCond cond;
   auto req = librbd::image::RemoveRequest<I>::create(
-    io_ctx, image_name, "", false, false, prog_ctx, op_work_queue, &cond);
+    io_ctx, image_name, "", false, false, prog_ctx,
+    asio_engine.get_work_queue(), &cond);
   req->send();
 
   return cond.wait();
@@ -877,9 +884,9 @@ int Image<I>::flatten_children(I *ictx, const char* snap_name,
     if (child_pool_id == -1 ||
         child_pool_id != child_image.pool_id ||
         child_io_ctx.get_namespace() != child_image.pool_namespace) {
-      r = util::create_ioctx(ictx->md_ctx, "child image",
-                             child_image.pool_id, child_image.pool_namespace,
-                             &child_io_ctx);
+      r = librbd::util::create_ioctx(
+              ictx->md_ctx, "child image", child_image.pool_id,
+              child_image.pool_namespace, &child_io_ctx);
       if (r < 0) {
         return r;
       }
@@ -925,6 +932,49 @@ int Image<I>::flatten_children(I *ictx, const char* snap_name,
   }
 
   return 0;
+}
+
+template <typename I>
+int Image<I>::encryption_format(I* ictx, encryption_format_t format,
+                                encryption_options_t opts, size_t opts_size,
+                                bool c_api) {
+  if (ictx->parent != nullptr) {
+    lderr(ictx->cct) << "cannot format a cloned image" << dendl;
+    return -ENOTSUP;
+  }
+
+  crypto::EncryptionFormat<I>* result_format;
+  auto r = util::create_encryption_format(
+          ictx->cct, format, opts, opts_size, c_api, &result_format);
+  if (r != 0) {
+    return r;
+  }
+
+  C_SaferCond cond;
+  auto req = librbd::crypto::FormatRequest<I>::create(
+          ictx, std::unique_ptr<crypto::EncryptionFormat<I>>(result_format),
+          &cond);
+  req->send();
+  return cond.wait();
+}
+
+template <typename I>
+int Image<I>::encryption_load(I* ictx, encryption_format_t format,
+                              encryption_options_t opts, size_t opts_size,
+                              bool c_api) {
+  crypto::EncryptionFormat<I>* result_format;
+  auto r = util::create_encryption_format(
+          ictx->cct, format, opts, opts_size, c_api, &result_format);
+  if (r != 0) {
+    return r;
+  }
+
+  C_SaferCond cond;
+  auto req = librbd::crypto::LoadRequest<I>::create(
+          ictx, std::unique_ptr<crypto::EncryptionFormat<I>>(result_format),
+          &cond);
+  req->send();
+  return cond.wait();
 }
 
 } // namespace api

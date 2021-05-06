@@ -90,7 +90,6 @@ _dif_sgl_get_buf(struct _dif_sgl *s, void **_buf, uint32_t *_buf_len)
 	}
 }
 
-
 static inline bool
 _dif_sgl_append(struct _dif_sgl *s, uint8_t *data, uint32_t data_len)
 {
@@ -106,6 +105,27 @@ _dif_sgl_append(struct _dif_sgl *s, uint8_t *data, uint32_t data_len)
 	} else {
 		return false;
 	}
+}
+
+static inline bool
+_dif_sgl_append_split(struct _dif_sgl *dst, struct _dif_sgl *src, uint32_t data_len)
+{
+	uint8_t *buf;
+	uint32_t buf_len;
+
+	while (data_len != 0) {
+		_dif_sgl_get_buf(src, (void *)&buf, &buf_len);
+		buf_len = spdk_min(buf_len, data_len);
+
+		if (!_dif_sgl_append(dst, buf, buf_len)) {
+			return false;
+		}
+
+		_dif_sgl_advance(src, buf_len);
+		data_len -= buf_len;
+	}
+
+	return true;
 }
 
 /* This function must be used before starting iteration. */
@@ -135,6 +155,12 @@ _dif_sgl_is_valid(struct _dif_sgl *s, uint32_t bytes)
 	}
 
 	return total >= bytes;
+}
+
+static void
+_dif_sgl_copy(struct _dif_sgl *to, struct _dif_sgl *from)
+{
+	memcpy(to, from, sizeof(struct _dif_sgl));
 }
 
 static bool
@@ -230,6 +256,7 @@ spdk_dif_ctx_init(struct spdk_dif_ctx *ctx, uint32_t block_size, uint32_t md_siz
 
 	ctx->block_size = block_size;
 	ctx->md_size = md_size;
+	ctx->md_interleave = md_interleave;
 	ctx->guard_interval = _get_guard_interval(block_size, md_size, dif_loc, md_interleave);
 	ctx->dif_type = dif_type;
 	ctx->dif_flags = dif_flags;
@@ -238,9 +265,33 @@ spdk_dif_ctx_init(struct spdk_dif_ctx *ctx, uint32_t block_size, uint32_t md_siz
 	ctx->app_tag = app_tag;
 	ctx->data_offset = data_offset;
 	ctx->ref_tag_offset = data_offset / data_block_size;
+	ctx->last_guard = guard_seed;
 	ctx->guard_seed = guard_seed;
+	ctx->remapped_init_ref_tag = 0;
 
 	return 0;
+}
+
+void
+spdk_dif_ctx_set_data_offset(struct spdk_dif_ctx *ctx, uint32_t data_offset)
+{
+	uint32_t data_block_size;
+
+	if (ctx->md_interleave) {
+		data_block_size = ctx->block_size - ctx->md_size;
+	} else {
+		data_block_size = ctx->block_size;
+	}
+
+	ctx->data_offset = data_offset;
+	ctx->ref_tag_offset = data_offset / data_block_size;
+}
+
+void
+spdk_dif_ctx_set_remapped_init_ref_tag(struct spdk_dif_ctx *ctx,
+				       uint32_t remapped_init_ref_tag)
+{
+	ctx->remapped_init_ref_tag = remapped_init_ref_tag;
 }
 
 static void
@@ -294,51 +345,66 @@ dif_generate(struct _dif_sgl *sgl, uint32_t num_blocks, const struct spdk_dif_ct
 	}
 }
 
-static void
-_dif_generate_split(struct _dif_sgl *sgl, uint32_t offset_blocks,
-		    const struct spdk_dif_ctx *ctx)
+static uint16_t
+_dif_generate_split(struct _dif_sgl *sgl, uint32_t offset_in_block, uint32_t data_len,
+		    uint16_t guard, uint32_t offset_blocks, const struct spdk_dif_ctx *ctx)
 {
-	uint32_t offset_in_block, offset_in_dif, buf_len;
+	uint32_t offset_in_dif, buf_len;
 	void *buf;
-	uint16_t guard = 0;
 	struct spdk_dif dif = {};
 
-	if (ctx->dif_flags & SPDK_DIF_FLAGS_GUARD_CHECK) {
-		guard = ctx->guard_seed;
-	}
-	offset_in_block = 0;
+	assert(offset_in_block < ctx->guard_interval);
+	assert(offset_in_block + data_len < ctx->guard_interval ||
+	       offset_in_block + data_len == ctx->block_size);
 
+	/* Compute CRC over split logical block data. */
+	while (data_len != 0 && offset_in_block < ctx->guard_interval) {
+		_dif_sgl_get_buf(sgl, &buf, &buf_len);
+		buf_len = spdk_min(buf_len, data_len);
+		buf_len = spdk_min(buf_len, ctx->guard_interval - offset_in_block);
+
+		if (ctx->dif_flags & SPDK_DIF_FLAGS_GUARD_CHECK) {
+			guard = spdk_crc16_t10dif(guard, buf, buf_len);
+		}
+
+		_dif_sgl_advance(sgl, buf_len);
+		offset_in_block += buf_len;
+		data_len -= buf_len;
+	}
+
+	if (offset_in_block < ctx->guard_interval) {
+		return guard;
+	}
+
+	/* If a whole logical block data is parsed, generate DIF
+	 * and save it to the temporary DIF area.
+	 */
+	_dif_generate(&dif, guard, offset_blocks, ctx);
+
+	/* Copy generated DIF field to the split DIF field, and then
+	 * skip metadata field after DIF field (if any).
+	 */
 	while (offset_in_block < ctx->block_size) {
 		_dif_sgl_get_buf(sgl, &buf, &buf_len);
 
-		if (offset_in_block < ctx->guard_interval) {
-			buf_len = spdk_min(buf_len, ctx->guard_interval - offset_in_block);
-
-			if (ctx->dif_flags & SPDK_DIF_FLAGS_GUARD_CHECK) {
-				/* Compute CRC over split logical block data. */
-				guard = spdk_crc16_t10dif(guard, buf, buf_len);
-			}
-
-			if (offset_in_block + buf_len == ctx->guard_interval) {
-				/* If a whole logical block data is parsed, generate DIF
-				 * and save it to the temporary DIF area.
-				 */
-				_dif_generate(&dif, guard, offset_blocks, ctx);
-			}
-		} else if (offset_in_block < ctx->guard_interval + sizeof(struct spdk_dif)) {
-			/* Copy generated DIF to the split DIF field. */
+		if (offset_in_block < ctx->guard_interval + sizeof(struct spdk_dif)) {
 			offset_in_dif = offset_in_block - ctx->guard_interval;
 			buf_len = spdk_min(buf_len, sizeof(struct spdk_dif) - offset_in_dif);
 
 			memcpy(buf, ((uint8_t *)&dif) + offset_in_dif, buf_len);
 		} else {
-			/* Skip metadata field after DIF field. */
 			buf_len = spdk_min(buf_len, ctx->block_size - offset_in_block);
 		}
 
 		_dif_sgl_advance(sgl, buf_len);
 		offset_in_block += buf_len;
 	}
+
+	if (ctx->dif_flags & SPDK_DIF_FLAGS_GUARD_CHECK) {
+		guard = ctx->guard_seed;
+	}
+
+	return guard;
 }
 
 static void
@@ -346,9 +412,14 @@ dif_generate_split(struct _dif_sgl *sgl, uint32_t num_blocks,
 		   const struct spdk_dif_ctx *ctx)
 {
 	uint32_t offset_blocks;
+	uint16_t guard = 0;
+
+	if (ctx->dif_flags & SPDK_DIF_FLAGS_GUARD_CHECK) {
+		guard = ctx->guard_seed;
+	}
 
 	for (offset_blocks = 0; offset_blocks < num_blocks; offset_blocks++) {
-		_dif_generate_split(sgl, offset_blocks, ctx);
+		_dif_generate_split(sgl, 0, ctx->block_size, guard, offset_blocks, ctx);
 	}
 }
 
@@ -522,45 +593,71 @@ dif_verify(struct _dif_sgl *sgl, uint32_t num_blocks,
 }
 
 static int
-_dif_verify_split(struct _dif_sgl *sgl, uint32_t offset_blocks,
+_dif_verify_split(struct _dif_sgl *sgl, uint32_t offset_in_block, uint32_t data_len,
+		  uint16_t *_guard, uint32_t offset_blocks,
 		  const struct spdk_dif_ctx *ctx, struct spdk_dif_error *err_blk)
 {
-	uint32_t offset_in_block, offset_in_dif, buf_len;
+	uint32_t offset_in_dif, buf_len;
 	void *buf;
-	uint16_t guard = 0;
+	uint16_t guard;
 	struct spdk_dif dif = {};
+	int rc;
 
-	if (ctx->dif_flags & SPDK_DIF_FLAGS_GUARD_CHECK) {
-		guard = ctx->guard_seed;
+	assert(_guard != NULL);
+	assert(offset_in_block < ctx->guard_interval);
+	assert(offset_in_block + data_len < ctx->guard_interval ||
+	       offset_in_block + data_len == ctx->block_size);
+
+	guard = *_guard;
+
+	/* Compute CRC over split logical block data. */
+	while (data_len != 0 && offset_in_block < ctx->guard_interval) {
+		_dif_sgl_get_buf(sgl, &buf, &buf_len);
+		buf_len = spdk_min(buf_len, data_len);
+		buf_len = spdk_min(buf_len, ctx->guard_interval - offset_in_block);
+
+		if (ctx->dif_flags & SPDK_DIF_FLAGS_GUARD_CHECK) {
+			guard = spdk_crc16_t10dif(guard, buf, buf_len);
+		}
+
+		_dif_sgl_advance(sgl, buf_len);
+		offset_in_block += buf_len;
+		data_len -= buf_len;
 	}
-	offset_in_block = 0;
 
+	if (offset_in_block < ctx->guard_interval) {
+		*_guard = guard;
+		return 0;
+	}
+
+	/* Copy the split DIF field to the temporary DIF buffer, and then
+	 * skip metadata field after DIF field (if any). */
 	while (offset_in_block < ctx->block_size) {
 		_dif_sgl_get_buf(sgl, &buf, &buf_len);
 
-		if (offset_in_block < ctx->guard_interval) {
-			buf_len = spdk_min(buf_len, ctx->guard_interval - offset_in_block);
-
-			if (ctx->dif_flags & SPDK_DIF_FLAGS_GUARD_CHECK) {
-				/* Compute CRC over split logical block data. */
-				guard = spdk_crc16_t10dif(guard, buf, buf_len);
-			}
-		} else if (offset_in_block < ctx->guard_interval + sizeof(struct spdk_dif)) {
-			/* Copy the split DIF field to the temporary DIF buffer. */
+		if (offset_in_block < ctx->guard_interval + sizeof(struct spdk_dif)) {
 			offset_in_dif = offset_in_block - ctx->guard_interval;
 			buf_len = spdk_min(buf_len, sizeof(struct spdk_dif) - offset_in_dif);
 
 			memcpy((uint8_t *)&dif + offset_in_dif, buf, buf_len);
 		} else {
-			/* Skip metadata field after DIF field. */
 			buf_len = spdk_min(buf_len, ctx->block_size - offset_in_block);
 		}
-
 		_dif_sgl_advance(sgl, buf_len);
 		offset_in_block += buf_len;
 	}
 
-	return _dif_verify(&dif, guard, offset_blocks, ctx, err_blk);
+	rc = _dif_verify(&dif, guard, offset_blocks, ctx, err_blk);
+	if (rc != 0) {
+		return rc;
+	}
+
+	if (ctx->dif_flags & SPDK_DIF_FLAGS_GUARD_CHECK) {
+		guard = ctx->guard_seed;
+	}
+
+	*_guard = guard;
+	return 0;
 }
 
 static int
@@ -568,10 +665,16 @@ dif_verify_split(struct _dif_sgl *sgl, uint32_t num_blocks,
 		 const struct spdk_dif_ctx *ctx, struct spdk_dif_error *err_blk)
 {
 	uint32_t offset_blocks;
+	uint16_t guard = 0;
 	int rc;
 
+	if (ctx->dif_flags & SPDK_DIF_FLAGS_GUARD_CHECK) {
+		guard = ctx->guard_seed;
+	}
+
 	for (offset_blocks = 0; offset_blocks < num_blocks; offset_blocks++) {
-		rc = _dif_verify_split(sgl, offset_blocks, ctx, err_blk);
+		rc = _dif_verify_split(sgl, 0, ctx->block_size, &guard, offset_blocks,
+				       ctx, err_blk);
 		if (rc != 0) {
 			return rc;
 		}
@@ -623,27 +726,28 @@ dif_update_crc32c(struct _dif_sgl *sgl, uint32_t num_blocks,
 }
 
 static uint32_t
-_dif_update_crc32c_split(struct _dif_sgl *sgl, uint32_t crc32c,
-			 const struct spdk_dif_ctx *ctx)
+_dif_update_crc32c_split(struct _dif_sgl *sgl, uint32_t offset_in_block, uint32_t data_len,
+			 uint32_t crc32c, const struct spdk_dif_ctx *ctx)
 {
-	uint32_t data_block_size, offset_in_block, buf_len;
+	uint32_t data_block_size, buf_len;
 	void *buf;
 
 	data_block_size = ctx->block_size - ctx->md_size;
-	offset_in_block = 0;
 
-	while (offset_in_block < ctx->block_size) {
+	assert(offset_in_block + data_len <= ctx->block_size);
+
+	while (data_len != 0) {
 		_dif_sgl_get_buf(sgl, &buf, &buf_len);
+		buf_len = spdk_min(buf_len, data_len);
 
 		if (offset_in_block < data_block_size) {
 			buf_len = spdk_min(buf_len, data_block_size - offset_in_block);
 			crc32c = spdk_crc32c_update(buf, buf_len, crc32c);
-		} else {
-			buf_len = spdk_min(buf_len, ctx->block_size - offset_in_block);
 		}
 
 		_dif_sgl_advance(sgl, buf_len);
 		offset_in_block += buf_len;
+		data_len -= buf_len;
 	}
 
 	return crc32c;
@@ -656,7 +760,7 @@ dif_update_crc32c_split(struct _dif_sgl *sgl, uint32_t num_blocks,
 	uint32_t offset_blocks;
 
 	for (offset_blocks = 0; offset_blocks < num_blocks; offset_blocks++) {
-		crc32c = _dif_update_crc32c_split(sgl, crc32c, ctx);
+		crc32c = _dif_update_crc32c_split(sgl, 0, ctx->block_size, crc32c, ctx);
 	}
 
 	return crc32c;
@@ -1365,110 +1469,16 @@ spdk_dix_inject_error(struct iovec *iovs, int iovcnt, struct iovec *md_iov,
 	return 0;
 }
 
-static int
-dif_set_md_interleave_iovs(struct iovec *iovs, int iovcnt,
-			   uint8_t *buf, uint32_t buf_len,
-			   uint32_t data_offset, uint32_t data_len,
-			   uint32_t *_mapped_len,
-			   const struct spdk_dif_ctx *ctx)
+static uint32_t
+_to_next_boundary(uint32_t offset, uint32_t boundary)
 {
-	uint32_t data_block_size, head_unalign;
-	uint32_t num_blocks, offset_blocks;
-	struct _dif_sgl sgl;
-
-	data_block_size = ctx->block_size - ctx->md_size;
-
-	num_blocks = data_len / data_block_size;
-
-	if (buf_len < num_blocks * ctx->block_size) {
-		SPDK_ERRLOG("Buffer overflow will occur. Buffer size is %" PRIu32 " but"
-			    " necessary size is %" PRIu32 "\n",
-			    buf_len, num_blocks * ctx->block_size);
-		return -ERANGE;
-	}
-
-	offset_blocks = data_offset / data_block_size;
-	head_unalign = data_offset % data_block_size;
-
-	_dif_sgl_init(&sgl, iovs, iovcnt);
-	buf += offset_blocks * ctx->block_size;
-
-	while (offset_blocks < num_blocks) {
-		buf += head_unalign;
-
-		if (!_dif_sgl_append(&sgl, buf, data_block_size - head_unalign)) {
-			break;
-		}
-
-		buf += ctx->block_size - head_unalign;
-		offset_blocks++;
-
-		head_unalign = 0;
-	}
-
-	if (_mapped_len != NULL) {
-		*_mapped_len = sgl.total_size;
-	}
-
-	return iovcnt - sgl.iovcnt;
+	return boundary - (offset % boundary);
 }
 
-static int
-dif_set_md_interleave_iovs_split(struct iovec *iovs, int iovcnt,
-				 struct iovec *buf_iovs, int buf_iovcnt,
-				 uint32_t data_offset, uint32_t data_len,
-				 uint32_t *_mapped_len,
-				 const struct spdk_dif_ctx *ctx)
+static uint32_t
+_to_size_with_md(uint32_t size, uint32_t data_block_size, uint32_t block_size)
 {
-	uint32_t data_block_size, head_unalign;
-	uint32_t num_blocks, offset_blocks;
-	struct _dif_sgl dif_sgl;
-	struct _dif_sgl buf_sgl;
-	uint8_t *buf;
-	uint32_t buf_len, remaining;
-
-	data_block_size = ctx->block_size - ctx->md_size;
-	num_blocks = data_len / data_block_size;
-
-	_dif_sgl_init(&dif_sgl, iovs, iovcnt);
-	_dif_sgl_init(&buf_sgl, buf_iovs, buf_iovcnt);
-
-	if (!_dif_sgl_is_valid(&buf_sgl, num_blocks * ctx->block_size)) {
-		SPDK_ERRLOG("Buffer overflow will occur.\n");
-		return -ERANGE;
-	}
-
-	offset_blocks = data_offset / data_block_size;
-	head_unalign = data_offset % data_block_size;
-
-	_dif_sgl_advance(&buf_sgl, offset_blocks * ctx->block_size);
-
-	while (offset_blocks < num_blocks) {
-		_dif_sgl_advance(&buf_sgl, head_unalign);
-
-		remaining = data_block_size - head_unalign;
-		while (remaining != 0) {
-			_dif_sgl_get_buf(&buf_sgl, (void *)&buf, &buf_len);
-			buf_len = spdk_min(buf_len, remaining);
-
-			if (!_dif_sgl_append(&dif_sgl, buf, buf_len)) {
-				goto end;
-			}
-			_dif_sgl_advance(&buf_sgl, buf_len);
-			remaining -= buf_len;
-		}
-		_dif_sgl_advance(&buf_sgl, ctx->md_size);
-		offset_blocks++;
-
-		head_unalign = 0;
-	}
-
-end:
-	if (_mapped_len != NULL) {
-		*_mapped_len = dif_sgl.total_size;
-	}
-
-	return iovcnt - dif_sgl.iovcnt;
+	return (size / data_block_size) * block_size + (size % data_block_size);
 }
 
 int
@@ -1478,7 +1488,9 @@ spdk_dif_set_md_interleave_iovs(struct iovec *iovs, int iovcnt,
 				uint32_t *_mapped_len,
 				const struct spdk_dif_ctx *ctx)
 {
-	uint32_t data_block_size;
+	uint32_t data_block_size, data_unalign, buf_len, buf_offset, len;
+	struct _dif_sgl dif_sgl;
+	struct _dif_sgl buf_sgl;
 
 	if (iovs == NULL || iovcnt == 0 || buf_iovs == NULL || buf_iovcnt == 0) {
 		return -EINVAL;
@@ -1486,88 +1498,74 @@ spdk_dif_set_md_interleave_iovs(struct iovec *iovs, int iovcnt,
 
 	data_block_size = ctx->block_size - ctx->md_size;
 
-	if ((data_len % data_block_size) != 0) {
-		SPDK_ERRLOG("Data length must be a multiple of data block size\n");
-		return -EINVAL;
-	}
+	data_unalign = ctx->data_offset % data_block_size;
 
-	if (data_offset >= data_len) {
-		SPDK_ERRLOG("Data offset must be smaller than data length\n");
+	buf_len = _to_size_with_md(data_unalign + data_offset + data_len, data_block_size,
+				   ctx->block_size);
+	buf_len -= data_unalign;
+
+	_dif_sgl_init(&dif_sgl, iovs, iovcnt);
+	_dif_sgl_init(&buf_sgl, buf_iovs, buf_iovcnt);
+
+	if (!_dif_sgl_is_valid(&buf_sgl, buf_len)) {
+		SPDK_ERRLOG("Buffer overflow will occur.\n");
 		return -ERANGE;
 	}
 
-	if (buf_iovcnt == 1) {
-		return dif_set_md_interleave_iovs(iovs, iovcnt,
-						  buf_iovs[0].iov_base, buf_iovs[0].iov_len,
-						  data_offset, data_len, _mapped_len, ctx);
-	} else {
-		return dif_set_md_interleave_iovs_split(iovs, iovcnt, buf_iovs, buf_iovcnt,
-							data_offset, data_len, _mapped_len, ctx);
-	}
-}
+	buf_offset = _to_size_with_md(data_unalign + data_offset, data_block_size, ctx->block_size);
+	buf_offset -= data_unalign;
 
-static int
-dif_generate_stream(uint8_t *buf, uint32_t buf_len,
-		    uint32_t data_offset, uint32_t data_len,
-		    const struct spdk_dif_ctx *ctx)
-{
-	uint32_t data_block_size, offset_blocks, num_blocks, i;
-	uint16_t guard = 0;
+	_dif_sgl_advance(&buf_sgl, buf_offset);
 
-	data_block_size = ctx->block_size - ctx->md_size;
-
-	offset_blocks = data_offset / data_block_size;
-	data_len += data_offset % data_block_size;
-
-	data_offset = offset_blocks * ctx->block_size;
-	num_blocks = data_len / data_block_size;
-
-	if (data_offset + num_blocks * ctx->block_size > buf_len) {
-		return -ERANGE;
-	}
-
-	buf += data_offset;
-
-	for (i = 0; i < num_blocks; i++) {
-		if (ctx->dif_flags & SPDK_DIF_FLAGS_GUARD_CHECK) {
-			guard = spdk_crc16_t10dif(ctx->guard_seed, buf, ctx->guard_interval);
+	while (data_len != 0) {
+		len = spdk_min(data_len, _to_next_boundary(ctx->data_offset + data_offset, data_block_size));
+		if (!_dif_sgl_append_split(&dif_sgl, &buf_sgl, len)) {
+			break;
 		}
-
-		_dif_generate(buf + ctx->guard_interval, guard, offset_blocks + i, ctx);
-
-		buf += ctx->block_size;
+		_dif_sgl_advance(&buf_sgl, ctx->md_size);
+		data_offset += len;
+		data_len -= len;
 	}
 
-	return 0;
+	if (_mapped_len != NULL) {
+		*_mapped_len = dif_sgl.total_size;
+	}
+
+	return iovcnt - dif_sgl.iovcnt;
 }
 
 static int
-dif_generate_stream_split(struct iovec *iovs, int iovcnt,
-			  uint32_t data_offset, uint32_t data_len,
-			  const struct spdk_dif_ctx *ctx)
+_dif_sgl_setup_stream(struct _dif_sgl *sgl, uint32_t *_buf_offset, uint32_t *_buf_len,
+		      uint32_t data_offset, uint32_t data_len,
+		      const struct spdk_dif_ctx *ctx)
 {
-	uint32_t data_block_size, offset_blocks, num_blocks, i;
-	struct _dif_sgl sgl;
+	uint32_t data_block_size, data_unalign, buf_len, buf_offset;
 
 	data_block_size = ctx->block_size - ctx->md_size;
 
-	offset_blocks = data_offset / data_block_size;
-	data_len += data_offset % data_block_size;
+	data_unalign = ctx->data_offset % data_block_size;
 
-	data_offset = offset_blocks * ctx->block_size;
-	num_blocks = data_len / data_block_size;
+	/* If the last data block is complete, DIF of the data block is
+	 * inserted or verified in this turn.
+	 */
+	buf_len = _to_size_with_md(data_unalign + data_offset + data_len, data_block_size,
+				   ctx->block_size);
+	buf_len -= data_unalign;
 
-	_dif_sgl_init(&sgl, iovs, iovcnt);
-
-	if (!_dif_sgl_is_valid(&sgl, data_offset + num_blocks * ctx->block_size)) {
+	if (!_dif_sgl_is_valid(sgl, buf_len)) {
 		return -ERANGE;
 	}
 
-	_dif_sgl_advance(&sgl, data_offset);
+	buf_offset = _to_size_with_md(data_unalign + data_offset, data_block_size, ctx->block_size);
+	buf_offset -= data_unalign;
 
-	for (i = 0; i < num_blocks; i++) {
-		_dif_generate_split(&sgl, offset_blocks + i, ctx);
-	}
+	_dif_sgl_advance(sgl, buf_offset);
+	buf_len -= buf_offset;
+
+	buf_offset += data_unalign;
+
+	*_buf_offset = buf_offset;
+	*_buf_len = buf_len;
 
 	return 0;
 }
@@ -1575,16 +1573,427 @@ dif_generate_stream_split(struct iovec *iovs, int iovcnt,
 int
 spdk_dif_generate_stream(struct iovec *iovs, int iovcnt,
 			 uint32_t data_offset, uint32_t data_len,
-			 const struct spdk_dif_ctx *ctx)
+			 struct spdk_dif_ctx *ctx)
 {
+	uint32_t buf_len = 0, buf_offset = 0;
+	uint32_t len, offset_in_block, offset_blocks;
+	uint16_t guard = 0;
+	struct _dif_sgl sgl;
+	int rc;
+
 	if (iovs == NULL || iovcnt == 0) {
 		return -EINVAL;
 	}
 
-	if (iovcnt == 1) {
-		return dif_generate_stream(iovs[0].iov_base, iovs[0].iov_len,
-					   data_offset, data_len, ctx);
-	} else {
-		return dif_generate_stream_split(iovs, iovcnt, data_offset, data_len, ctx);
+	if (ctx->dif_flags & SPDK_DIF_FLAGS_GUARD_CHECK) {
+		guard = ctx->last_guard;
 	}
+
+	_dif_sgl_init(&sgl, iovs, iovcnt);
+
+	rc = _dif_sgl_setup_stream(&sgl, &buf_offset, &buf_len, data_offset, data_len, ctx);
+	if (rc != 0) {
+		return rc;
+	}
+
+	while (buf_len != 0) {
+		len = spdk_min(buf_len, _to_next_boundary(buf_offset, ctx->block_size));
+		offset_in_block = buf_offset % ctx->block_size;
+		offset_blocks = buf_offset / ctx->block_size;
+
+		guard = _dif_generate_split(&sgl, offset_in_block, len, guard, offset_blocks, ctx);
+
+		buf_len -= len;
+		buf_offset += len;
+	}
+
+	if (ctx->dif_flags & SPDK_DIF_FLAGS_GUARD_CHECK) {
+		ctx->last_guard = guard;
+	}
+
+	return 0;
+}
+
+int
+spdk_dif_verify_stream(struct iovec *iovs, int iovcnt,
+		       uint32_t data_offset, uint32_t data_len,
+		       struct spdk_dif_ctx *ctx,
+		       struct spdk_dif_error *err_blk)
+{
+	uint32_t buf_len = 0, buf_offset = 0;
+	uint32_t len, offset_in_block, offset_blocks;
+	uint16_t guard = 0;
+	struct _dif_sgl sgl;
+	int rc = 0;
+
+	if (iovs == NULL || iovcnt == 0) {
+		return -EINVAL;
+	}
+
+	if (ctx->dif_flags & SPDK_DIF_FLAGS_GUARD_CHECK) {
+		guard = ctx->last_guard;
+	}
+
+	_dif_sgl_init(&sgl, iovs, iovcnt);
+
+	rc = _dif_sgl_setup_stream(&sgl, &buf_offset, &buf_len, data_offset, data_len, ctx);
+	if (rc != 0) {
+		return rc;
+	}
+
+	while (buf_len != 0) {
+		len = spdk_min(buf_len, _to_next_boundary(buf_offset, ctx->block_size));
+		offset_in_block = buf_offset % ctx->block_size;
+		offset_blocks = buf_offset / ctx->block_size;
+
+		rc = _dif_verify_split(&sgl, offset_in_block, len, &guard, offset_blocks,
+				       ctx, err_blk);
+		if (rc != 0) {
+			goto error;
+		}
+
+		buf_len -= len;
+		buf_offset += len;
+	}
+
+	if (ctx->dif_flags & SPDK_DIF_FLAGS_GUARD_CHECK) {
+		ctx->last_guard = guard;
+	}
+error:
+	return rc;
+}
+
+int
+spdk_dif_update_crc32c_stream(struct iovec *iovs, int iovcnt,
+			      uint32_t data_offset, uint32_t data_len,
+			      uint32_t *_crc32c, const struct spdk_dif_ctx *ctx)
+{
+	uint32_t buf_len = 0, buf_offset = 0, len, offset_in_block;
+	uint32_t crc32c;
+	struct _dif_sgl sgl;
+	int rc;
+
+	if (iovs == NULL || iovcnt == 0) {
+		return -EINVAL;
+	}
+
+	crc32c = *_crc32c;
+	_dif_sgl_init(&sgl, iovs, iovcnt);
+
+	rc = _dif_sgl_setup_stream(&sgl, &buf_offset, &buf_len, data_offset, data_len, ctx);
+	if (rc != 0) {
+		return rc;
+	}
+
+	while (buf_len != 0) {
+		len = spdk_min(buf_len, _to_next_boundary(buf_offset, ctx->block_size));
+		offset_in_block = buf_offset % ctx->block_size;
+
+		crc32c = _dif_update_crc32c_split(&sgl, offset_in_block, len, crc32c, ctx);
+
+		buf_len -= len;
+		buf_offset += len;
+	}
+
+	*_crc32c = crc32c;
+
+	return 0;
+}
+
+void
+spdk_dif_get_range_with_md(uint32_t data_offset, uint32_t data_len,
+			   uint32_t *_buf_offset, uint32_t *_buf_len,
+			   const struct spdk_dif_ctx *ctx)
+{
+	uint32_t data_block_size, data_unalign, buf_offset, buf_len;
+
+	if (!ctx->md_interleave) {
+		buf_offset = data_offset;
+		buf_len = data_len;
+	} else {
+		data_block_size = ctx->block_size - ctx->md_size;
+
+		data_unalign = data_offset % data_block_size;
+
+		buf_offset = _to_size_with_md(data_offset, data_block_size, ctx->block_size);
+		buf_len = _to_size_with_md(data_unalign + data_len, data_block_size, ctx->block_size) -
+			  data_unalign;
+	}
+
+	if (_buf_offset != NULL) {
+		*_buf_offset = buf_offset;
+	}
+
+	if (_buf_len != NULL) {
+		*_buf_len = buf_len;
+	}
+}
+
+uint32_t
+spdk_dif_get_length_with_md(uint32_t data_len, const struct spdk_dif_ctx *ctx)
+{
+	uint32_t data_block_size;
+
+	if (!ctx->md_interleave) {
+		return data_len;
+	} else {
+		data_block_size = ctx->block_size - ctx->md_size;
+
+		return _to_size_with_md(data_len, data_block_size, ctx->block_size);
+	}
+}
+
+static int
+_dif_remap_ref_tag(struct _dif_sgl *sgl, uint32_t offset_blocks,
+		   const struct spdk_dif_ctx *ctx, struct spdk_dif_error *err_blk)
+{
+	uint32_t offset, buf_len, expected = 0, _actual, remapped;
+	void *buf;
+	struct _dif_sgl tmp_sgl;
+	struct spdk_dif dif;
+
+	/* Fast forward to DIF field. */
+	_dif_sgl_advance(sgl, ctx->guard_interval);
+	_dif_sgl_copy(&tmp_sgl, sgl);
+
+	/* Copy the split DIF field to the temporary DIF buffer */
+	offset = 0;
+	while (offset < sizeof(struct spdk_dif)) {
+		_dif_sgl_get_buf(sgl, &buf, &buf_len);
+		buf_len = spdk_min(buf_len, sizeof(struct spdk_dif) - offset);
+
+		memcpy((uint8_t *)&dif + offset, buf, buf_len);
+
+		_dif_sgl_advance(sgl, buf_len);
+		offset += buf_len;
+	}
+
+	switch (ctx->dif_type) {
+	case SPDK_DIF_TYPE1:
+	case SPDK_DIF_TYPE2:
+		/* If Type 1 or 2 is used, then all DIF checks are disabled when
+		 * the Application Tag is 0xFFFF.
+		 */
+		if (dif.app_tag == 0xFFFF) {
+			goto end;
+		}
+		break;
+	case SPDK_DIF_TYPE3:
+		/* If Type 3 is used, then all DIF checks are disabled when the
+		 * Application Tag is 0xFFFF and the Reference Tag is 0xFFFFFFFF.
+		 */
+		if (dif.app_tag == 0xFFFF && dif.ref_tag == 0xFFFFFFFF) {
+			goto end;
+		}
+		break;
+	default:
+		break;
+	}
+
+	/* For type 1 and 2, the Reference Tag is incremented for each
+	 * subsequent logical block. For type 3, the Reference Tag
+	 * remains the same as the initial Reference Tag.
+	 */
+	if (ctx->dif_type != SPDK_DIF_TYPE3) {
+		expected = ctx->init_ref_tag + ctx->ref_tag_offset + offset_blocks;
+		remapped = ctx->remapped_init_ref_tag + ctx->ref_tag_offset + offset_blocks;
+	} else {
+		remapped = ctx->remapped_init_ref_tag;
+	}
+
+	/* Verify the stored Reference Tag. */
+	switch (ctx->dif_type) {
+	case SPDK_DIF_TYPE1:
+	case SPDK_DIF_TYPE2:
+		/* Compare the DIF Reference Tag field to the computed Reference Tag.
+		 * The computed Reference Tag will be the least significant 4 bytes
+		 * of the LBA when Type 1 is used, and application specific value
+		 * if Type 2 is used.
+		 */
+		_actual = from_be32(&dif.ref_tag);
+		if (_actual != expected) {
+			_dif_error_set(err_blk, SPDK_DIF_REFTAG_ERROR, expected,
+				       _actual, offset_blocks);
+			SPDK_ERRLOG("Failed to compare Ref Tag: LBA=%" PRIu32 "," \
+				    " Expected=%x, Actual=%x\n",
+				    expected, expected, _actual);
+			return -1;
+		}
+		break;
+	case SPDK_DIF_TYPE3:
+		/* For type 3, the computed Reference Tag remains unchanged.
+		 * Hence ignore the Reference Tag field.
+		 */
+		break;
+	default:
+		break;
+	}
+
+	/* Update the stored Reference Tag to the remapped one. */
+	to_be32(&dif.ref_tag, remapped);
+
+	offset = 0;
+	while (offset < sizeof(struct spdk_dif)) {
+		_dif_sgl_get_buf(&tmp_sgl, &buf, &buf_len);
+		buf_len = spdk_min(buf_len, sizeof(struct spdk_dif) - offset);
+
+		memcpy(buf, (uint8_t *)&dif + offset, buf_len);
+
+		_dif_sgl_advance(&tmp_sgl, buf_len);
+		offset += buf_len;
+	}
+
+end:
+	_dif_sgl_advance(sgl, ctx->block_size - ctx->guard_interval - sizeof(struct spdk_dif));
+
+	return 0;
+}
+
+int
+spdk_dif_remap_ref_tag(struct iovec *iovs, int iovcnt, uint32_t num_blocks,
+		       const struct spdk_dif_ctx *ctx, struct spdk_dif_error *err_blk)
+{
+	struct _dif_sgl sgl;
+	uint32_t offset_blocks;
+	int rc;
+
+	_dif_sgl_init(&sgl, iovs, iovcnt);
+
+	if (!_dif_sgl_is_valid(&sgl, ctx->block_size * num_blocks)) {
+		SPDK_ERRLOG("Size of iovec array is not valid.\n");
+		return -EINVAL;
+	}
+
+	if (_dif_is_disabled(ctx->dif_type)) {
+		return 0;
+	}
+
+	if (!(ctx->dif_flags & SPDK_DIF_FLAGS_REFTAG_CHECK)) {
+		return 0;
+	}
+
+	for (offset_blocks = 0; offset_blocks < num_blocks; offset_blocks++) {
+		rc = _dif_remap_ref_tag(&sgl, offset_blocks, ctx, err_blk);
+		if (rc != 0) {
+			return rc;
+		}
+	}
+
+	return 0;
+}
+
+static int
+_dix_remap_ref_tag(struct _dif_sgl *md_sgl, uint32_t offset_blocks,
+		   const struct spdk_dif_ctx *ctx, struct spdk_dif_error *err_blk)
+{
+	uint32_t expected = 0, _actual, remapped;
+	uint8_t *md_buf;
+	struct spdk_dif *dif;
+
+	_dif_sgl_get_buf(md_sgl, (void *)&md_buf, NULL);
+
+	dif = (struct spdk_dif *)(md_buf + ctx->guard_interval);
+
+	switch (ctx->dif_type) {
+	case SPDK_DIF_TYPE1:
+	case SPDK_DIF_TYPE2:
+		/* If Type 1 or 2 is used, then all DIF checks are disabled when
+		 * the Application Tag is 0xFFFF.
+		 */
+		if (dif->app_tag == 0xFFFF) {
+			goto end;
+		}
+		break;
+	case SPDK_DIF_TYPE3:
+		/* If Type 3 is used, then all DIF checks are disabled when the
+		 * Application Tag is 0xFFFF and the Reference Tag is 0xFFFFFFFF.
+		 */
+		if (dif->app_tag == 0xFFFF && dif->ref_tag == 0xFFFFFFFF) {
+			goto end;
+		}
+		break;
+	default:
+		break;
+	}
+
+	/* For type 1 and 2, the Reference Tag is incremented for each
+	 * subsequent logical block. For type 3, the Reference Tag
+	 * remains the same as the initialReference Tag.
+	 */
+	if (ctx->dif_type != SPDK_DIF_TYPE3) {
+		expected = ctx->init_ref_tag + ctx->ref_tag_offset + offset_blocks;
+		remapped = ctx->remapped_init_ref_tag + ctx->ref_tag_offset + offset_blocks;
+	} else {
+		remapped = ctx->remapped_init_ref_tag;
+	}
+
+	/* Verify the stored Reference Tag. */
+	switch (ctx->dif_type) {
+	case SPDK_DIF_TYPE1:
+	case SPDK_DIF_TYPE2:
+		/* Compare the DIF Reference Tag field to the computed Reference Tag.
+		 * The computed Reference Tag will be the least significant 4 bytes
+		 * of the LBA when Type 1 is used, and application specific value
+		 * if Type 2 is used.
+		 */
+		_actual = from_be32(&dif->ref_tag);
+		if (_actual != expected) {
+			_dif_error_set(err_blk, SPDK_DIF_REFTAG_ERROR, expected,
+				       _actual, offset_blocks);
+			SPDK_ERRLOG("Failed to compare Ref Tag: LBA=%" PRIu32 "," \
+				    " Expected=%x, Actual=%x\n",
+				    expected, expected, _actual);
+			return -1;
+		}
+		break;
+	case SPDK_DIF_TYPE3:
+		/* For type 3, the computed Reference Tag remains unchanged.
+		 * Hence ignore the Reference Tag field.
+		 */
+		break;
+	default:
+		break;
+	}
+
+	/* Update the stored Reference Tag to the remapped one. */
+	to_be32(&dif->ref_tag, remapped);
+
+end:
+	_dif_sgl_advance(md_sgl, ctx->md_size);
+
+	return 0;
+}
+
+int
+spdk_dix_remap_ref_tag(struct iovec *md_iov, uint32_t num_blocks,
+		       const struct spdk_dif_ctx *ctx,
+		       struct spdk_dif_error *err_blk)
+{
+	struct _dif_sgl md_sgl;
+	uint32_t offset_blocks;
+	int rc;
+
+	_dif_sgl_init(&md_sgl, md_iov, 1);
+
+	if (!_dif_sgl_is_valid(&md_sgl, ctx->md_size * num_blocks)) {
+		SPDK_ERRLOG("Size of metadata iovec array is not valid.\n");
+		return -EINVAL;
+	}
+
+	if (_dif_is_disabled(ctx->dif_type)) {
+		return 0;
+	}
+
+	if (!(ctx->dif_flags & SPDK_DIF_FLAGS_REFTAG_CHECK)) {
+		return 0;
+	}
+
+	for (offset_blocks = 0; offset_blocks < num_blocks; offset_blocks++) {
+		rc = _dix_remap_ref_tag(&md_sgl, offset_blocks, ctx, err_blk);
+		if (rc != 0) {
+			return rc;
+		}
+	}
+
+	return 0;
 }

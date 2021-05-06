@@ -39,14 +39,40 @@
 #include "mds/mdstypes.h"
 #include "Session.h"
 
+using namespace TOPNSPC::common;
+
+using std::dec;
+using std::hex;
+using std::list;
+using std::map;
+using std::make_pair;
+using std::ostream;
+using std::ostringstream;
+using std::pair;
+using std::set;
+using std::string;
+using std::string_view;
+using std::stringstream;
+using std::to_string;
+using std::vector;
+
+using ceph::bufferlist;
+using ceph::decode;
+using ceph::encode;
+using ceph::ErasureCodeInterfaceRef;
+using ceph::ErasureCodeProfile;
+using ceph::Formatter;
+using ceph::JSONFormatter;
+using ceph::make_message;
+using ceph::mono_clock;
+using ceph::mono_time;
+
 #define dout_subsys ceph_subsys_mon
 #undef dout_prefix
 #define dout_prefix _prefix(_dout, mon, get_fsmap())
-using namespace TOPNSPC::common;
-
-static ostream& _prefix(std::ostream *_dout, Monitor *mon, const FSMap& fsmap) {
-  return *_dout << "mon." << mon->name << "@" << mon->rank
-		<< "(" << mon->get_state_name()
+static ostream& _prefix(std::ostream *_dout, Monitor &mon, const FSMap& fsmap) {
+  return *_dout << "mon." << mon.name << "@" << mon.rank
+		<< "(" << mon.get_state_name()
 		<< ").mds e" << fsmap.get_epoch() << " ";
 }
 
@@ -141,8 +167,8 @@ void MDSMonitor::create_pending()
 {
   auto &fsmap = PaxosFSMap::create_pending();
 
-  if (mon->osdmon()->is_readable()) {
-    const auto &osdmap = mon->osdmon()->osdmap;
+  if (mon.osdmon()->is_readable()) {
+    const auto &osdmap = mon.osdmon()->osdmap;
     fsmap.sanitize([&osdmap](int64_t pool){return osdmap.have_pg_pool(pool);});
   }
 
@@ -172,7 +198,7 @@ void MDSMonitor::encode_pending(MonitorDBStore::TransactionRef t)
   // apply to paxos
   ceph_assert(get_last_committed() + 1 == pending.epoch);
   bufferlist pending_bl;
-  pending.encode(pending_bl, mon->get_quorum_con_features());
+  pending.encode(pending_bl, mon.get_quorum_con_features());
 
   /* put everything in the transaction */
   put_version(t, pending.epoch, pending_bl);
@@ -208,7 +234,7 @@ void MDSMonitor::encode_pending(MonitorDBStore::TransactionRef t)
       health = p->second;
     } else {
       bufferlist bl;
-      mon->store->get(MDS_HEALTH_PREFIX, stringify(gid), bl);
+      mon.store->get(MDS_HEALTH_PREFIX, stringify(gid), bl);
       if (!bl.length()) {
 	derr << "Missing health data for MDS " << gid << dendl;
 	continue;
@@ -295,7 +321,7 @@ bool MDSMonitor::preprocess_query(MonOpRequestRef op)
       return preprocess_command(op);
     } catch (const bad_cmd_get& e) {
       bufferlist bl;
-      mon->reply_command(op, -EINVAL, e.what(), bl, get_last_committed());
+      mon.reply_command(op, -EINVAL, e.what(), bl, get_last_committed());
       return true;
     }
 
@@ -341,8 +367,8 @@ bool MDSMonitor::preprocess_beacon(MonOpRequestRef op)
     goto ignore;
   }
 
-  if (m->get_fsid() != mon->monmap->fsid) {
-    dout(0) << "preprocess_beacon on fsid " << m->get_fsid() << " != " << mon->monmap->fsid << dendl;
+  if (m->get_fsid() != mon.monmap->fsid) {
+    dout(0) << "preprocess_beacon on fsid " << m->get_fsid() << " != " << mon.monmap->fsid << dendl;
     goto ignore;
   }
 
@@ -383,8 +409,8 @@ bool MDSMonitor::preprocess_beacon(MonOpRequestRef op)
       MDSMap null_map;
       null_map.epoch = fsmap.epoch;
       null_map.compat = fsmap.compat;
-      auto m = make_message<MMDSMap>(mon->monmap->fsid, null_map);
-      mon->send_reply(op, m.detach());
+      auto m = make_message<MMDSMap>(mon.monmap->fsid, null_map);
+      mon.send_reply(op, m.detach());
       return true;
     } else {
       return false;  // not booted yet.
@@ -485,16 +511,16 @@ bool MDSMonitor::preprocess_beacon(MonOpRequestRef op)
   ceph_assert(effective_epoch > 0);
   _note_beacon(m);
   {
-    auto beacon = make_message<MMDSBeacon>(mon->monmap->fsid,
+    auto beacon = make_message<MMDSBeacon>(mon.monmap->fsid,
         m->get_global_id(), m->get_name(), effective_epoch,
         state, seq, CEPH_FEATURES_SUPPORTED_DEFAULT);
-    mon->send_reply(op, beacon.detach());
+    mon.send_reply(op, beacon.detach());
   }
   return true;
 
  ignore:
   // I won't reply this beacon, drop it.
-  mon->no_reply(op);
+  mon.no_reply(op);
   return true;
 }
 
@@ -523,7 +549,7 @@ bool MDSMonitor::preprocess_offload_targets(MonOpRequestRef op)
   return false;
 
  ignore:
-  mon->no_reply(op);
+  mon.no_reply(op);
   return true;
 }
 
@@ -544,7 +570,7 @@ bool MDSMonitor::prepare_update(MonOpRequestRef op)
       return prepare_command(op);
     } catch (const bad_cmd_get& e) {
       bufferlist bl;
-      mon->reply_command(op, -EINVAL, e.what(), bl, get_last_committed());
+      mon.reply_command(op, -EINVAL, e.what(), bl, get_last_committed());
       return true;
     }
 
@@ -600,7 +626,7 @@ bool MDSMonitor::prepare_beacon(MonOpRequestRef op)
   // Log the disappearance of health messages at INFO
   for (const auto &old_metric : old_health) {
     if (new_types.count(old_metric.type) == 0) {
-      mon->clog->info() << "MDS health message cleared ("
+      mon.clog->info() << "MDS health message cleared ("
         << m->get_orig_source() << "): " << old_metric.message;
     }
   }
@@ -614,19 +640,19 @@ bool MDSMonitor::prepare_beacon(MonOpRequestRef op)
     if (g_conf()->mds_enforce_unique_name) {
       bool failed_mds = false;
       while (mds_gid_t existing = pending.find_mds_gid_by_name(m->get_name())) {
-        if (!mon->osdmon()->is_writeable()) {
-          mon->osdmon()->wait_for_writeable(op, new C_RetryMessage(this, op));
+        if (!mon.osdmon()->is_writeable()) {
+          mon.osdmon()->wait_for_writeable(op, new C_RetryMessage(this, op));
           return false;
         }
         const MDSMap::mds_info_t &existing_info =
           pending.get_info_gid(existing);
-        mon->clog->info() << existing_info.human_name() << " restarted";
+        mon.clog->info() << existing_info.human_name() << " restarted";
 	fail_mds_gid(pending, existing);
         failed_mds = true;
       }
       if (failed_mds) {
-        ceph_assert(mon->osdmon()->is_writeable());
-        request_proposal(mon->osdmon());
+        ceph_assert(mon.osdmon()->is_writeable());
+        request_proposal(mon.osdmon());
       }
     }
 
@@ -683,8 +709,8 @@ bool MDSMonitor::prepare_beacon(MonOpRequestRef op)
           MDSMap null_map;
           null_map.epoch = fsmap.epoch;
           null_map.compat = fsmap.compat;
-          auto m = make_message<MMDSMap>(mon->monmap->fsid, null_map);
-          mon->send_reply(op, m.detach());
+          auto m = make_message<MMDSMap>(mon.monmap->fsid, null_map);
+          mon.send_reply(op, m.detach());
         } else {
           dispatch(op);        // try again
         }
@@ -732,7 +758,7 @@ bool MDSMonitor::prepare_beacon(MonOpRequestRef op)
       const auto fscid = pending.mds_roles.at(gid);
       const auto &fs = pending.get_filesystem(fscid);
 
-      mon->clog->info() << info.human_name() << " finished "
+      mon.clog->info() << info.human_name() << " finished "
                         << "stopping rank " << info.rank << " in filesystem "
                         << fs->mds_map.fs_name << " (now has "
                         << fs->mds_map.get_num_in_mds() - 1 << " ranks)";
@@ -750,10 +776,10 @@ bool MDSMonitor::prepare_beacon(MonOpRequestRef op)
 
 
     } else if (state == MDSMap::STATE_DAMAGED) {
-      if (!mon->osdmon()->is_writeable()) {
+      if (!mon.osdmon()->is_writeable()) {
         dout(1) << __func__ << ": DAMAGED from rank " << info.rank
-                << " waiting for osdmon writeable to blacklist it" << dendl;
-        mon->osdmon()->wait_for_writeable(op, new C_RetryMessage(this, op));
+                << " waiting for osdmon writeable to blocklist it" << dendl;
+        mon.osdmon()->wait_for_writeable(op, new C_RetryMessage(this, op));
         return false;
       }
 
@@ -763,35 +789,35 @@ bool MDSMonitor::prepare_beacon(MonOpRequestRef op)
               << info.rank << " damaged" << dendl;
 
       utime_t until = ceph_clock_now();
-      until += g_conf().get_val<double>("mon_mds_blacklist_interval");
-      const auto blacklist_epoch = mon->osdmon()->blacklist(info.addrs, until);
-      request_proposal(mon->osdmon());
-      pending.damaged(gid, blacklist_epoch);
+      until += g_conf().get_val<double>("mon_mds_blocklist_interval");
+      const auto blocklist_epoch = mon.osdmon()->blocklist(info.addrs, until);
+      request_proposal(mon.osdmon());
+      pending.damaged(gid, blocklist_epoch);
       last_beacon.erase(gid);
 
       // Respond to MDS, so that it knows it can continue to shut down
       auto beacon = make_message<MMDSBeacon>(
-			mon->monmap->fsid, m->get_global_id(),
+			mon.monmap->fsid, m->get_global_id(),
 			m->get_name(), pending.get_epoch(), state, seq,
 			CEPH_FEATURES_SUPPORTED_DEFAULT);
-      mon->send_reply(op, beacon.detach());
+      mon.send_reply(op, beacon.detach());
     } else if (state == MDSMap::STATE_DNE) {
-      if (!mon->osdmon()->is_writeable()) {
+      if (!mon.osdmon()->is_writeable()) {
         dout(1) << __func__ << ": DNE from rank " << info.rank
-                << " waiting for osdmon writeable to blacklist it" << dendl;
-        mon->osdmon()->wait_for_writeable(op, new C_RetryMessage(this, op));
+                << " waiting for osdmon writeable to blocklist it" << dendl;
+        mon.osdmon()->wait_for_writeable(op, new C_RetryMessage(this, op));
         return false;
       }
 
       fail_mds_gid(pending, gid);
-      ceph_assert(mon->osdmon()->is_writeable());
-      request_proposal(mon->osdmon());
+      ceph_assert(mon.osdmon()->is_writeable());
+      request_proposal(mon.osdmon());
 
       // Respond to MDS, so that it knows it can continue to shut down
-      auto beacon = make_message<MMDSBeacon>(mon->monmap->fsid,
+      auto beacon = make_message<MMDSBeacon>(mon.monmap->fsid,
           m->get_global_id(), m->get_name(), pending.get_epoch(), state, seq,
           CEPH_FEATURES_SUPPORTED_DEFAULT);
-      mon->send_reply(op, beacon.detach());
+      mon.send_reply(op, beacon.detach());
     } else if (info.state == MDSMap::STATE_STANDBY && state != info.state) {
       // Standby daemons should never modify their own
       // state.  Reject any attempts to do so.
@@ -810,7 +836,7 @@ bool MDSMonitor::prepare_beacon(MonOpRequestRef op)
       if (info.state != MDSMap::STATE_ACTIVE && state == MDSMap::STATE_ACTIVE) {
         const auto &fscid = pending.mds_roles.at(gid);
         const auto &fs = pending.get_filesystem(fscid);
-        mon->clog->info() << info.human_name() << " is now active in "
+        mon.clog->info() << info.human_name() << " is now active in "
                           << "filesystem " << fs->mds_map.fs_name << " as rank "
                           << info.rank;
       }
@@ -831,7 +857,7 @@ bool MDSMonitor::prepare_beacon(MonOpRequestRef op)
     if (r >= 0)
       _updated(op);   // success
     else if (r == -ECANCELED) {
-      mon->no_reply(op);
+      mon.no_reply(op);
     } else {
       dispatch(op);        // try again
     }
@@ -853,7 +879,7 @@ bool MDSMonitor::prepare_offload_targets(MonOpRequestRef op)
   } else {
     dout(10) << "prepare_offload_targets " << gid << " not in map" << dendl;
   }
-  mon->no_reply(op);
+  mon.no_reply(op);
   return true;
 }
 
@@ -869,7 +895,7 @@ void MDSMonitor::_updated(MonOpRequestRef op)
   op->mark_mdsmon_event(__func__);
   auto m = op->get_req<MMDSBeacon>();
   dout(10) << "_updated " << m->get_orig_source() << " " << *m << dendl;
-  mon->clog->debug() << m->get_orig_source() << " "
+  mon.clog->debug() << m->get_orig_source() << " "
 		     << m->get_orig_source_addrs() << " "
 		     << ceph_mds_state_name(m->get_state());
 
@@ -878,13 +904,13 @@ void MDSMonitor::_updated(MonOpRequestRef op)
     MDSMap null_map;
     null_map.epoch = fsmap.epoch;
     null_map.compat = fsmap.compat;
-    auto m = make_message<MMDSMap>(mon->monmap->fsid, null_map);
-    mon->send_reply(op, m.detach());
+    auto m = make_message<MMDSMap>(mon.monmap->fsid, null_map);
+    mon.send_reply(op, m.detach());
   } else {
-    auto beacon = make_message<MMDSBeacon>(mon->monmap->fsid,
+    auto beacon = make_message<MMDSBeacon>(mon.monmap->fsid,
         m->get_global_id(), m->get_name(), fsmap.get_epoch(),
         m->get_state(), m->get_seq(), CEPH_FEATURES_SUPPORTED_DEFAULT);
-    mon->send_reply(op, beacon.detach());
+    mon.send_reply(op, beacon.detach());
   }
 }
 
@@ -893,7 +919,7 @@ void MDSMonitor::on_active()
   tick();
 
   if (is_leader()) {
-    mon->clog->debug() << "fsmap " << get_fsmap();
+    mon.clog->debug() << "fsmap " << get_fsmap();
   }
 }
 
@@ -915,13 +941,11 @@ bool MDSMonitor::preprocess_command(MonOpRequestRef op)
   bufferlist rdata;
   stringstream ss, ds;
 
-  const auto &fsmap = get_fsmap();
-
   cmdmap_t cmdmap;
   if (!cmdmap_from_json(m->cmd, &cmdmap, ss)) {
     // ss has reason for failure
     string rs = ss.str();
-    mon->reply_command(op, -EINVAL, rs, rdata, get_last_committed());
+    mon.reply_command(op, -EINVAL, rs, rdata, get_last_committed());
     return true;
   }
 
@@ -933,9 +957,14 @@ bool MDSMonitor::preprocess_command(MonOpRequestRef op)
 
   MonSession *session = op->get_session();
   if (!session) {
-    mon->reply_command(op, -EACCES, "access denied", rdata, get_last_committed());
+    mon.reply_command(op, -EACCES, "access denied", rdata, get_last_committed());
     return true;
   }
+
+  // to use const qualifier filter fsmap beforehand
+  FSMap _fsmap_copy = get_fsmap();
+  _fsmap_copy.filter(session->get_allowed_fs_names());
+  const auto& fsmap = _fsmap_copy;
 
   if (prefix == "mds stat") {
     if (f) {
@@ -1128,7 +1157,7 @@ bool MDSMonitor::preprocess_command(MonOpRequestRef op)
           f->dump_string("name", mds_map.fs_name);
           /* Output both the names and IDs of pools, for use by
            * humans and machines respectively */
-          f->dump_string("metadata_pool", mon->osdmon()->osdmap.get_pool_name(
+          f->dump_string("metadata_pool", mon.osdmon()->osdmap.get_pool_name(
                 mds_map.metadata_pool));
           f->dump_int("metadata_pool_id", mds_map.metadata_pool);
           f->open_array_section("data_pool_ids");
@@ -1139,7 +1168,7 @@ bool MDSMonitor::preprocess_command(MonOpRequestRef op)
 
           f->open_array_section("data_pools");
           for (const auto &id : mds_map.data_pools) {
-            const auto &name = mon->osdmon()->osdmap.get_pool_name(id);
+            const auto &name = mon.osdmon()->osdmap.get_pool_name(id);
             f->dump_string("data_pool", name);
           }
           f->close_section();
@@ -1152,13 +1181,13 @@ bool MDSMonitor::preprocess_command(MonOpRequestRef op)
       for (const auto &p : fsmap.filesystems) {
         const auto &fs = p.second;
         const MDSMap &mds_map = fs->mds_map;
-        const string &md_pool_name = mon->osdmon()->osdmap.get_pool_name(
+        const string &md_pool_name = mon.osdmon()->osdmap.get_pool_name(
             mds_map.metadata_pool);
         
         ds << "name: " << mds_map.fs_name << ", metadata pool: "
            << md_pool_name << ", data pools: [";
         for (const auto &id : mds_map.data_pools) {
-          const string &pool_name = mon->osdmon()->osdmap.get_pool_name(id);
+          const string &pool_name = mon.osdmon()->osdmap.get_pool_name(id);
           ds << pool_name << " ";
         }
         ds << "]" << std::endl;
@@ -1169,6 +1198,23 @@ bool MDSMonitor::preprocess_command(MonOpRequestRef op)
       }
     }
     r = 0;
+  } else if (prefix == "fs feature ls") {
+    if (f) {
+      f->open_array_section("cephfs_features");
+      for (size_t i = 0; i <= CEPHFS_FEATURE_MAX; ++i) {
+	f->open_object_section("feature");
+	f->dump_int("index", i);
+	f->dump_string("name", cephfs_feature_name(i));
+	f->close_section();
+      }
+      f->close_section();
+      f->flush(ds);
+    } else {
+      for (size_t i = 0; i <= CEPHFS_FEATURE_MAX; ++i) {
+        ds << i << " " << cephfs_feature_name(i) << std::endl;
+      }
+    }
+    r = 0;
   }
 
 out:
@@ -1176,7 +1222,7 @@ out:
     rdata.append(ds);
     string rs;
     getline(ss, rs);
-    mon->reply_command(op, r, rs, rdata, get_last_committed());
+    mon.reply_command(op, r, rs, rdata, get_last_committed());
     return true;
   } else
     return false;
@@ -1187,23 +1233,23 @@ bool MDSMonitor::fail_mds_gid(FSMap &fsmap, mds_gid_t gid)
   const auto& info = fsmap.get_info_gid(gid);
   dout(1) << "fail_mds_gid " << gid << " mds." << info.name << " role " << info.rank << dendl;
 
-  ceph_assert(mon->osdmon()->is_writeable());
+  ceph_assert(mon.osdmon()->is_writeable());
 
-  epoch_t blacklist_epoch = 0;
+  epoch_t blocklist_epoch = 0;
   if (info.rank >= 0 && info.state != MDSMap::STATE_STANDBY_REPLAY) {
     utime_t until = ceph_clock_now();
-    until += g_conf().get_val<double>("mon_mds_blacklist_interval");
-    blacklist_epoch = mon->osdmon()->blacklist(info.addrs, until);
+    until += g_conf().get_val<double>("mon_mds_blocklist_interval");
+    blocklist_epoch = mon.osdmon()->blocklist(info.addrs, until);
   }
 
-  fsmap.erase(gid, blacklist_epoch);
+  fsmap.erase(gid, blocklist_epoch);
   last_beacon.erase(gid);
   if (pending_daemon_health.count(gid)) {
     pending_daemon_health.erase(gid);
     pending_daemon_health_rm.insert(gid);
   }
 
-  return blacklist_epoch != 0;
+  return blocklist_epoch != 0;
 }
 
 mds_gid_t MDSMonitor::gid_from_arg(const FSMap &fsmap, const std::string &arg, std::ostream &ss)
@@ -1261,7 +1307,7 @@ int MDSMonitor::fail_mds(FSMap &fsmap, std::ostream &ss,
   if (gid == MDS_GID_NONE) {
     return 0;
   }
-  if (!mon->osdmon()->is_writeable()) {
+  if (!mon.osdmon()->is_writeable()) {
     return -EAGAIN;
   }
 
@@ -1271,8 +1317,8 @@ int MDSMonitor::fail_mds(FSMap &fsmap, std::ostream &ss,
 
   fail_mds_gid(fsmap, gid);
   ss << "failed mds gid " << gid;
-  ceph_assert(mon->osdmon()->is_writeable());
-  request_proposal(mon->osdmon());
+  ceph_assert(mon.osdmon()->is_writeable());
+  request_proposal(mon.osdmon());
   return 0;
 }
 
@@ -1287,7 +1333,7 @@ bool MDSMonitor::prepare_command(MonOpRequestRef op)
   cmdmap_t cmdmap;
   if (!cmdmap_from_json(m->cmd, &cmdmap, ss)) {
     string rs = ss.str();
-    mon->reply_command(op, -EINVAL, rs, rdata, get_last_committed());
+    mon.reply_command(op, -EINVAL, rs, rdata, get_last_committed());
     return true;
   }
 
@@ -1297,7 +1343,7 @@ bool MDSMonitor::prepare_command(MonOpRequestRef op)
   /* Refuse access if message not associated with a valid session */
   MonSession *session = op->get_session();
   if (!session) {
-    mon->reply_command(op, -EACCES, "access denied", rdata, get_last_committed());
+    mon.reply_command(op, -EACCES, "access denied", rdata, get_last_committed());
     return true;
   }
 
@@ -1305,28 +1351,35 @@ bool MDSMonitor::prepare_command(MonOpRequestRef op)
 
   bool batched_propose = false;
   for (const auto &h : handlers) {
-    if (h->can_handle(prefix)) {
-      batched_propose = h->batched_propose();
-      if (batched_propose) {
-        paxos->plug();
-      }
-      r = h->handle(mon, pending, op, cmdmap, ss);
-      if (batched_propose) {
-        paxos->unplug();
-      }
+    r = h->can_handle(prefix, op, pending, cmdmap, ss);
+    if (r == 1) {
+      ; // pass, since we got the right handler.
+    } else if (r == 0) {
+      continue;
+    } else {
+      goto out;
+    }
 
-      if (r == -EAGAIN) {
-        // message has been enqueued for retry; return.
-        dout(4) << __func__ << " enqueue for retry by prepare_command" << dendl;
-        return false;
-      } else {
-        if (r == 0) {
-          // On successful updates, print the updated map
-          print_map(pending);
-        }
-        // Successful or not, we're done: respond.
-        goto out;
+    batched_propose = h->batched_propose();
+    if (batched_propose) {
+      paxos.plug();
+    }
+    r = h->handle(&mon, pending, op, cmdmap, ss);
+    if (batched_propose) {
+      paxos.unplug();
+    }
+
+    if (r == -EAGAIN) {
+      // message has been enqueued for retry; return.
+      dout(4) << __func__ << " enqueue for retry by prepare_command" << dendl;
+      return false;
+    } else {
+      if (r == 0) {
+	// On successful updates, print the updated map
+	print_map(pending);
       }
+      // Successful or not, we're done: respond.
+      goto out;
     }
   }
 
@@ -1361,7 +1414,7 @@ out:
     return true;
   } else {
     // reply immediately
-    mon->reply_command(op, r, rs, rdata, get_last_committed());
+    mon.reply_command(op, r, rs, rdata, get_last_committed());
     return false;
   }
 }
@@ -1392,7 +1445,7 @@ int MDSMonitor::filesystem_command(
          << cmd_vartype_stringify(cmdmap.at("state")) << "'";
       return -EINVAL;
     }
-    if (fsmap.gid_exists(gid)) {
+    if (fsmap.gid_exists(gid, op->get_session()->get_allowed_fs_names())) {
       fsmap.modify_daemon(gid, [state](auto& info) {
         info.state = state;
       });
@@ -1405,14 +1458,31 @@ int MDSMonitor::filesystem_command(
     cmd_getval(cmdmap, "role_or_gid", who);
 
     MDSMap::mds_info_t failed_info;
+    mds_gid_t gid = gid_from_arg(fsmap, who, ss);
+    if (gid == MDS_GID_NONE) {
+      ss << "MDS named '" << who << "' does not exist, is not up or you "
+	 << "lack the permission to see.";
+      return 0;
+    }
+    if(!fsmap.gid_exists(gid, op->get_session()->get_allowed_fs_names())) {
+      ss << "MDS named '" << who << "' does not exist, is not up or you "
+	 << "lack the permission to see.";
+      return -EINVAL;
+    }
+    string_view fs_name = fsmap.fs_name_from_gid(gid);
+    if (!op->get_session()->fs_name_capable(fs_name, MON_CAP_W)) {
+      ss << "Permission denied.";
+      return -EPERM;
+    }
+
     r = fail_mds(fsmap, ss, who, &failed_info);
     if (r < 0 && r == -EAGAIN) {
-      mon->osdmon()->wait_for_writeable(op, new C_RetryMessage(this, op));
+      mon.osdmon()->wait_for_writeable(op, new C_RetryMessage(this, op));
       return -EAGAIN; // don't propose yet; wait for message to be retried
     } else if (r == 0) {
       // Only log if we really did something (not when was already gone)
       if (failed_info.global_id != MDS_GID_NONE) {
-        mon->clog->info() << failed_info.human_name() << " marked failed by "
+        mon.clog->info() << failed_info.human_name() << " marked failed by "
                           << op->get_session()->entity_name;
       }
     }
@@ -1423,21 +1493,25 @@ int MDSMonitor::filesystem_command(
          << cmd_vartype_stringify(cmdmap.at("gid")) << "'";
       return -EINVAL;
     }
-    if (!fsmap.gid_exists(gid)) {
+    if (!fsmap.gid_exists(gid, op->get_session()->get_allowed_fs_names())) {
       ss << "mds gid " << gid << " does not exist";
-      r = 0;
+      return 0;
+    }
+    string_view fs_name = fsmap.fs_name_from_gid(gid);
+    if (!op->get_session()->fs_name_capable(fs_name, MON_CAP_W)) {
+      ss << "Permission denied.";
+      return -EPERM;
+    }
+    const auto &info = fsmap.get_info_gid(gid);
+    MDSMap::DaemonState state = info.state;
+    if (state > 0) {
+    ss << "cannot remove active mds." << info.name
+	<< " rank " << info.rank;
+    return -EBUSY;
     } else {
-      const auto &info = fsmap.get_info_gid(gid);
-      MDSMap::DaemonState state = info.state;
-      if (state > 0) {
-        ss << "cannot remove active mds." << info.name
-           << " rank " << info.rank;
-        return -EBUSY;
-      } else {
-        fsmap.erase(gid, {});
-        ss << "removed mds gid " << gid;
-        return 0;
-      }
+    fsmap.erase(gid, {});
+    ss << "removed mds gid " << gid;
+    return 0;
     }
   } else if (prefix == "mds rmfailed") {
     bool confirm = false;
@@ -1451,10 +1525,16 @@ int MDSMonitor::filesystem_command(
     std::string role_str;
     cmd_getval(cmdmap, "role", role_str);
     mds_role_t role;
-    int r = fsmap.parse_role(role_str, &role, ss);
+    const auto fs_names = op->get_session()->get_allowed_fs_names();
+    int r = fsmap.parse_role(role_str, &role, ss, fs_names);
     if (r < 0) {
       ss << "invalid role '" << role_str << "'";
       return -EINVAL;
+    }
+    string_view fs_name = fsmap.get_filesystem(role.fscid)->mds_map.get_fs_name();
+    if (!op->get_session()->fs_name_capable(fs_name, MON_CAP_W)) {
+      ss << "Permission denied.";
+      return -EPERM;
     }
 
     fsmap.modify_filesystem(
@@ -1502,9 +1582,15 @@ int MDSMonitor::filesystem_command(
     std::string role_str;
     cmd_getval(cmdmap, "role", role_str);
     mds_role_t role;
-    r = fsmap.parse_role(role_str, &role, ss);
+    const auto fs_names = op->get_session()->get_allowed_fs_names();
+    r = fsmap.parse_role(role_str, &role, ss, fs_names);
     if (r < 0) {
       return r;
+    }
+    string_view fs_name = fsmap.get_filesystem(role.fscid)->mds_map.get_fs_name();
+    if (!op->get_session()->fs_name_capable(fs_name, MON_CAP_W)) {
+      ss << "Permission denied.";
+      return -EPERM;
     }
 
     bool modified = fsmap.undamaged(role.fscid, role.rank);
@@ -1521,6 +1607,12 @@ int MDSMonitor::filesystem_command(
     mds_gid_t gid = gid_from_arg(fsmap, who, ss);
     if (gid == MDS_GID_NONE) {
       return -EINVAL;
+    }
+
+    string_view fs_name = fsmap.fs_name_from_gid(gid);
+    if (!op->get_session()->fs_name_capable(fs_name, MON_CAP_W)) {
+      ss << "Permission denied.";
+      return -EPERM;
     }
 
     bool freeze = false;
@@ -1571,7 +1663,7 @@ void MDSMonitor::check_subs()
   }
 
   for (const auto &type : types) {
-    auto& subs = mon->session_map.subs;
+    auto& subs = mon.session_map.subs;
     auto subs_it = subs.find(type);
     if (subs_it == subs.end())
       continue;
@@ -1589,39 +1681,37 @@ void MDSMonitor::check_sub(Subscription *sub)
 {
   dout(20) << __func__ << ": " << sub->type << dendl;
 
-  const auto &fsmap = get_fsmap();
+  // to use const qualifier filter fsmap beforehand
+  FSMap _fsmap_copy = get_fsmap();
+  _fsmap_copy.filter(sub->session->get_allowed_fs_names());
+  const auto& fsmap = _fsmap_copy;
+  if (sub->next > fsmap.get_epoch()) {
+    return;
+  }
 
   if (sub->type == "fsmap") {
-    if (sub->next <= fsmap.get_epoch()) {
-      sub->session->con->send_message(new MFSMap(mon->monmap->fsid, fsmap));
-      if (sub->onetime) {
-        mon->session_map.remove_sub(sub);
-      } else {
-        sub->next = fsmap.get_epoch() + 1;
-      }
+    sub->session->con->send_message(new MFSMap(mon.monmap->fsid, fsmap));
+    if (sub->onetime) {
+      mon.session_map.remove_sub(sub);
+    } else {
+      sub->next = fsmap.get_epoch() + 1;
     }
   } else if (sub->type == "fsmap.user") {
-    if (sub->next <= fsmap.get_epoch()) {
-      FSMapUser fsmap_u;
-      fsmap_u.epoch = fsmap.get_epoch();
-      fsmap_u.legacy_client_fscid = fsmap.legacy_client_fscid;
-      for (const auto &p : fsmap.filesystems) {
-	FSMapUser::fs_info_t& fs_info = fsmap_u.filesystems[p.second->fscid];
-	fs_info.cid = p.second->fscid;
-	fs_info.name = p.second->mds_map.fs_name;
-      }
-      sub->session->con->send_message(new MFSMapUser(mon->monmap->fsid, fsmap_u));
-      if (sub->onetime) {
-	mon->session_map.remove_sub(sub);
-      } else {
-	sub->next = fsmap.get_epoch() + 1;
-      }
+    FSMapUser fsmap_u;
+    fsmap_u.epoch = fsmap.get_epoch();
+    fsmap_u.legacy_client_fscid = fsmap.legacy_client_fscid;
+    for (const auto &p : fsmap.filesystems) {
+      FSMapUser::fs_info_t& fs_info = fsmap_u.filesystems[p.second->fscid];
+      fs_info.cid = p.second->fscid;
+      fs_info.name = p.second->mds_map.fs_name;
+    }
+    sub->session->con->send_message(new MFSMapUser(mon.monmap->fsid, fsmap_u));
+    if (sub->onetime) {
+      mon.session_map.remove_sub(sub);
+    } else {
+      sub->next = fsmap.get_epoch() + 1;
     }
   } else if (sub->type.compare(0, 6, "mdsmap") == 0) {
-    if (sub->next > fsmap.get_epoch()) {
-      return;
-    }
-
     const bool is_mds = sub->session->name.is_mds();
     mds_gid_t mds_gid = MDS_GID_NONE;
     fs_cluster_id_t fscid = FS_CLUSTER_ID_NONE;
@@ -1701,11 +1791,12 @@ void MDSMonitor::check_sub(Subscription *sub)
     if (sub->next > mds_map->epoch) {
       return;
     }
-    auto msg = make_message<MMDSMap>(mon->monmap->fsid, *mds_map);
+    auto msg = make_message<MMDSMap>(mon.monmap->fsid, *mds_map,
+			             mds_map->fs_name);
 
     sub->session->con->send_message(msg.detach());
     if (sub->onetime) {
-      mon->session_map.remove_sub(sub);
+      mon.session_map.remove_sub(sub);
     } else {
       sub->next = mds_map->get_epoch() + 1;
     }
@@ -1721,11 +1812,11 @@ void MDSMonitor::update_metadata(mds_gid_t gid,
   }
   pending_metadata[gid] = metadata;
 
-  MonitorDBStore::TransactionRef t = paxos->get_pending_transaction();
+  MonitorDBStore::TransactionRef t = paxos.get_pending_transaction();
   bufferlist bl;
   encode(pending_metadata, bl);
   t->put(MDS_METADATA_PREFIX, "last_metadata", bl);
-  paxos->trigger_propose();
+  paxos.trigger_propose();
 }
 
 void MDSMonitor::remove_from_metadata(const FSMap &fsmap, MonitorDBStore::TransactionRef t)
@@ -1749,7 +1840,7 @@ void MDSMonitor::remove_from_metadata(const FSMap &fsmap, MonitorDBStore::Transa
 int MDSMonitor::load_metadata(map<mds_gid_t, Metadata>& m)
 {
   bufferlist bl;
-  int r = mon->store->get(MDS_METADATA_PREFIX, "last_metadata", bl);
+  int r = mon.store->get(MDS_METADATA_PREFIX, "last_metadata", bl);
   if (r) {
     dout(5) << "Unable to load 'last_metadata'" << dendl;
     return r;
@@ -1783,6 +1874,20 @@ void MDSMonitor::count_metadata(const std::string &field, Formatter *f)
     f->dump_int(p.first.c_str(), p.second);
   }
   f->close_section();
+}
+
+void MDSMonitor::get_versions(std::map<string, list<string> > &versions)
+{
+  map<mds_gid_t,Metadata> meta;
+  load_metadata(meta);
+  const auto &fsmap = get_fsmap();
+  std::map<mds_gid_t, mds_info_t> map = fsmap.get_mds_info();
+  dout(10) << __func__ << " mds meta=" << meta << dendl;
+  for (auto& p : meta) {
+    auto q = p.second.find("ceph_version_short");
+    if (q == p.second.end()) continue;
+    versions[q->second].push_back(string("mds.") + map[p.first].name);
+  }
 }
 
 int MDSMonitor::dump_metadata(const FSMap& fsmap, const std::string &who,
@@ -1881,7 +1986,7 @@ bool MDSMonitor::maybe_resize_cluster(FSMap &fsmap, fs_cluster_id_t fscid)
 
     dout(1) << "assigned standby " << info->addrs
             << " as mds." << mds << dendl;
-    mon->clog->info() << info->human_name() << " assigned to "
+    mon.clog->info() << info->human_name() << " assigned to "
                          "filesystem " << mds_map.fs_name << " as rank "
                       << mds << " (now has " << mds_map.get_num_in_mds() + 1
                       << " ranks)";
@@ -1892,7 +1997,7 @@ bool MDSMonitor::maybe_resize_cluster(FSMap &fsmap, fs_cluster_id_t fscid)
     const auto &info = mds_map.get_info(target);
     if (mds_map.is_active(target)) {
       dout(1) << "stopping " << target << dendl;
-      mon->clog->info() << "stopping " << info.human_name();
+      mon.clog->info() << "stopping " << info.human_name();
       auto f = [](auto& info) {
         info.state = MDSMap::STATE_STOPPING;
       };
@@ -1943,7 +2048,7 @@ bool MDSMonitor::drop_mds(FSMap &fsmap, mds_gid_t gid, const mds_info_t* rep_inf
 	     << " with " << rep_info->global_id << "/" << rep_info->name << " " << rep_info->addrs
 	     << dendl;
 
-    mon->clog->warn() << "Replacing " << info.human_name()
+    mon.clog->warn() << "Replacing " << info.human_name()
                       << " as rank " << rank
                       << " with standby " << rep_info->human_name();
 
@@ -1962,7 +2067,7 @@ bool MDSMonitor::check_health(FSMap& fsmap, bool* propose_osdmap)
 {
   bool do_propose = false;
   const auto now = mono_clock::now();
-  const bool osdmap_writeable = mon->osdmon()->is_writeable();
+  const bool osdmap_writeable = mon.osdmon()->is_writeable();
   const auto mds_beacon_grace = g_conf().get_val<double>("mds_beacon_grace");
   const auto mds_beacon_interval = g_conf().get_val<double>("mds_beacon_interval");
 
@@ -2000,7 +2105,7 @@ bool MDSMonitor::check_health(FSMap& fsmap, bool* propose_osdmap)
   for (const auto& p : last_beacon) {
     latest_beacon = std::max(p.second.stamp, latest_beacon);
   }
-  auto since = chrono::duration<double>(now-latest_beacon);
+  auto since = std::chrono::duration<double>(now-latest_beacon);
   const bool may_replace = since.count() <
       std::max(g_conf()->mds_beacon_interval, g_conf()->mds_beacon_grace * 0.5);
 
@@ -2008,7 +2113,7 @@ bool MDSMonitor::check_health(FSMap& fsmap, bool* propose_osdmap)
   std::vector<mds_gid_t> to_remove;
   for (auto it = last_beacon.begin(); it != last_beacon.end(); ) {
     auto& [gid, beacon_info] = *it;
-    auto since_last = chrono::duration<double>(now-beacon_info.stamp);
+    auto since_last = std::chrono::duration<double>(now-beacon_info.stamp);
 
     if (!fsmap.gid_exists(gid)) {
       // gid no longer exists, remove from tracked beacons
@@ -2022,7 +2127,7 @@ bool MDSMonitor::check_health(FSMap& fsmap, bool* propose_osdmap)
               << " (gid: " << gid << " addr: " << info.addrs
               << " state: " << ceph_mds_state_name(info.state) << ")"
               << " since " << since_last.count() << dendl;
-      // If the OSDMap is writeable, we can blacklist things, so we can
+      // If the OSDMap is writeable, we can blocklist things, so we can
       // try failing any laggy MDS daemons.  Consider each one for failure.
       if (!info.laggy()) {
         dout(1)  << " marking " << gid << " " << info.addrs
@@ -2046,12 +2151,12 @@ bool MDSMonitor::check_health(FSMap& fsmap, bool* propose_osdmap)
     auto info = fsmap.get_info_gid(gid);
     const mds_info_t* rep_info = nullptr;
     if (info.rank >= 0) {
-      auto fscid = fsmap.gid_fscid(gid);
+      auto fscid = fsmap.fscid_from_gid(gid);
       rep_info = fsmap.find_replacement_for({fscid, info.rank});
     }
     bool dropped = drop_mds(fsmap, gid, rep_info, propose_osdmap);
     if (dropped) {
-      mon->clog->info() << "MDS " << info.human_name()
+      mon.clog->info() << "MDS " << info.human_name()
                         << " is removed because it is dead or otherwise unavailable.";
       do_propose = true;
     }
@@ -2090,13 +2195,13 @@ bool MDSMonitor::check_health(FSMap& fsmap, bool* propose_osdmap)
           }
           if (better_affinity) {
             if (state == MDSMap::STATE_STANDBY_REPLAY) {
-              mon->clog->info() << "Dropping low affinity standby-replay "
+              mon.clog->info() << "Dropping low affinity standby-replay "
                                 << info.human_name()
                                 << " in favor of higher affinity standby.";
               *propose_osdmap |= fail_mds_gid(fsmap, gid);
               /* Now let maybe_promote_standby do the promotion. */
             } else {
-              mon->clog->info() << "Dropping low affinity active "
+              mon.clog->info() << "Dropping low affinity active "
                                 << info.human_name()
                                 << " in favor of higher affinity standby.";
               do_propose |= drop_mds(fsmap, gid, rep_info, propose_osdmap);
@@ -2126,7 +2231,7 @@ bool MDSMonitor::maybe_promote_standby(FSMap &fsmap, Filesystem& fs)
     if (info) {
       dout(1) << " taking over failed mds." << rank << " with " << info->global_id
               << "/" << info->name << " " << info->addrs << dendl;
-      mon->clog->info() << "Standby " << info->human_name()
+      mon.clog->info() << "Standby " << info->human_name()
                         << " assigned to filesystem " << fs.mds_map.fs_name
                         << " as rank " << rank;
 
@@ -2135,7 +2240,7 @@ bool MDSMonitor::maybe_promote_standby(FSMap &fsmap, Filesystem& fs)
     }
   }
 
-  if (!fs.mds_map.is_degraded() && fs.mds_map.allows_standby_replay()) {
+  if (fs.mds_map.is_resizeable() && fs.mds_map.allows_standby_replay()) {
     // There were no failures to replace, so try using any available standbys
     // as standby-replay daemons. Don't do this when the cluster is degraded
     // as a standby-replay daemon may try to read a journal being migrated.
@@ -2187,7 +2292,7 @@ void MDSMonitor::tick()
   }
 
   if (propose_osdmap) {
-    request_proposal(mon->osdmon());
+    request_proposal(mon.osdmon());
   }
 
   if (do_propose) {
@@ -2197,10 +2302,10 @@ void MDSMonitor::tick()
   last_tick = mono_clock::now();
 }
 
-MDSMonitor::MDSMonitor(Monitor *mn, Paxos *p, string service_name)
+MDSMonitor::MDSMonitor(Monitor &mn, Paxos &p, string service_name)
   : PaxosService(mn, p, service_name)
 {
-  handlers = FileSystemCommandHandler::load(p);
+  handlers = FileSystemCommandHandler::load(&p);
 }
 
 void MDSMonitor::on_restart()

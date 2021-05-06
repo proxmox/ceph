@@ -6,6 +6,8 @@
 #ifndef __METADATA_SUPERBLOCK_H__
 #define __METADATA_SUPERBLOCK_H__
 
+#include <ocf/ocf_def.h>
+
 #define CACHE_MAGIC_NUMBER	0x187E1CA6
 
 /**
@@ -24,6 +26,8 @@ struct ocf_superblock_config {
 	/* Currently set cache mode */
 	ocf_cache_mode_t cache_mode;
 
+	char name[OCF_CACHE_NAME_SIZE];
+
 	ocf_cache_line_t cachelines;
 	uint32_t valid_parts_no;
 
@@ -37,12 +41,13 @@ struct ocf_superblock_config {
 	ocf_cleaning_t cleaning_policy_type;
 	struct cleaning_policy_config cleaning[CLEANING_POLICY_TYPE_MAX];
 
+	ocf_promotion_t promotion_policy_type;
+	struct promotion_policy_config promotion[PROMOTION_POLICY_TYPE_MAX];
+
 	ocf_eviction_t eviction_policy_type;
 
 	/* Current core sequence number */
 	ocf_core_id_t curr_core_seq_no;
-
-	struct ocf_user_part_config user_parts[OCF_IO_CLASS_MAX + 1];
 
 	/*
 	 * Checksum for each metadata region.
@@ -55,10 +60,6 @@ struct ocf_superblock_config {
  * @brief OCF cache metadata runtime superblock
  */
 struct ocf_superblock_runtime {
-	struct ocf_part freelist_part;
-
-	struct ocf_user_part_runtime user_parts[OCF_IO_CLASS_MAX + 1];
-
 	uint32_t cleaning_thread_access;
 };
 
@@ -79,12 +80,6 @@ static inline void ocf_metadata_load_superblock(ocf_cache_t cache,
 static inline void ocf_metadata_flush_superblock(ocf_cache_t cache,
 		ocf_metadata_end_t cmpl, void *priv)
 {
-	/* TODO: Shouldn't it be checked by the caller? */
-	if (!cache->device) {
-		cmpl(priv, 0);
-		return;
-	}
-
 	cache->metadata.iface.flush_superblock(cache, cmpl, priv);
 }
 

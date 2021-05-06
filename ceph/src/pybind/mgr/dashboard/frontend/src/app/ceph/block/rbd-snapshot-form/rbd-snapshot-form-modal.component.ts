@@ -1,24 +1,23 @@
-import { Component, OnInit } from '@angular/core';
+import { Component } from '@angular/core';
 import { FormControl, Validators } from '@angular/forms';
 
-import { I18n } from '@ngx-translate/i18n-polyfill';
-import { BsModalRef } from 'ngx-bootstrap/modal';
+import { NgbActiveModal } from '@ng-bootstrap/ng-bootstrap';
 import { Subject } from 'rxjs';
 
-import { RbdService } from '../../../shared/api/rbd.service';
-import { ActionLabelsI18n } from '../../../shared/constants/app.constants';
-import { CdFormGroup } from '../../../shared/forms/cd-form-group';
-import { FinishedTask } from '../../../shared/models/finished-task';
-import { ImageSpec } from '../../../shared/models/image-spec';
-import { NotificationService } from '../../../shared/services/notification.service';
-import { TaskManagerService } from '../../../shared/services/task-manager.service';
+import { RbdService } from '~/app/shared/api/rbd.service';
+import { ActionLabelsI18n } from '~/app/shared/constants/app.constants';
+import { CdFormGroup } from '~/app/shared/forms/cd-form-group';
+import { FinishedTask } from '~/app/shared/models/finished-task';
+import { ImageSpec } from '~/app/shared/models/image-spec';
+import { NotificationService } from '~/app/shared/services/notification.service';
+import { TaskManagerService } from '~/app/shared/services/task-manager.service';
 
 @Component({
   selector: 'cd-rbd-snapshot-form-modal',
   templateUrl: './rbd-snapshot-form-modal.component.html',
   styleUrls: ['./rbd-snapshot-form-modal.component.scss']
 })
-export class RbdSnapshotFormModalComponent implements OnInit {
+export class RbdSnapshotFormModalComponent {
   poolName: string;
   namespace: string;
   imageName: string;
@@ -30,18 +29,17 @@ export class RbdSnapshotFormModalComponent implements OnInit {
   action: string;
   resource: string;
 
-  public onSubmit: Subject<string>;
+  public onSubmit: Subject<string> = new Subject();
 
   constructor(
-    public modalRef: BsModalRef,
+    public activeModal: NgbActiveModal,
     private rbdService: RbdService,
     private taskManagerService: TaskManagerService,
     private notificationService: NotificationService,
-    private i18n: I18n,
     private actionLabels: ActionLabelsI18n
   ) {
     this.action = this.actionLabels.CREATE;
-    this.resource = this.i18n('RBD Snapshot');
+    this.resource = $localize`RBD Snapshot`;
     this.createForm();
   }
 
@@ -51,10 +49,6 @@ export class RbdSnapshotFormModalComponent implements OnInit {
         validators: [Validators.required]
       })
     });
-  }
-
-  ngOnInit() {
-    this.onSubmit = new Subject();
   }
 
   setSnapName(snapName: string) {
@@ -92,7 +86,7 @@ export class RbdSnapshotFormModalComponent implements OnInit {
             this.notificationService.notifyTask(asyncFinishedTask);
           }
         );
-        this.modalRef.hide();
+        this.activeModal.close();
         this.onSubmit.next(this.snapName);
       })
       .catch(() => {
@@ -120,7 +114,7 @@ export class RbdSnapshotFormModalComponent implements OnInit {
             this.notificationService.notifyTask(asyncFinishedTask);
           }
         );
-        this.modalRef.hide();
+        this.activeModal.close();
         this.onSubmit.next(snapshotName);
       })
       .catch(() => {

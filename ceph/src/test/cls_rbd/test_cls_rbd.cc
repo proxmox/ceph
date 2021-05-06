@@ -1811,7 +1811,7 @@ TEST_F(TestClsRbd, mirror_image_status) {
 
   map<std::string, cls::rbd::MirrorImage> images;
   map<std::string, cls::rbd::MirrorImageStatus> statuses;
-  std::map<cls::rbd::MirrorImageStatusState, int> states;
+  std::map<cls::rbd::MirrorImageStatusState, int32_t> states;
   std::map<std::string, entity_inst_t> instances;
   cls::rbd::MirrorImageStatus read_status;
   entity_inst_t read_instance;
@@ -3123,8 +3123,9 @@ TEST_F(TestClsRbd, migration)
   string oid = get_temp_image_name();
   ASSERT_EQ(0, create_image(&ioctx, oid, 0, 22, 0, oid, -1));
 
-  cls::rbd::MigrationSpec migration_spec(cls::rbd::MIGRATION_HEADER_TYPE_DST, 1,
-                                         "name", "ns", "id", {}, 0, false,
+  cls::rbd::MigrationSpec migration_spec(cls::rbd::MIGRATION_HEADER_TYPE_DST,
+                                         -1, "", "", "",
+                                         "{\"format\": \"raw\"}", {}, 0, false,
                                          cls::rbd::MIRROR_IMAGE_MODE_JOURNAL,
                                          false,
                                          cls::rbd::MIGRATION_STATE_PREPARING,
@@ -3195,7 +3196,7 @@ TEST_F(TestClsRbd, migration_v1)
   ASSERT_EQ(0, ioctx.write(oid, header, header.length(), 0));
 
   cls::rbd::MigrationSpec migration_spec(cls::rbd::MIGRATION_HEADER_TYPE_DST, 1,
-                                         "name", "ns", "id", {}, 0, false,
+                                         "name", "ns", "id", "", {}, 0, false,
                                          cls::rbd::MIRROR_IMAGE_MODE_JOURNAL,
                                          false,
                                          cls::rbd::MIGRATION_STATE_PREPARING,

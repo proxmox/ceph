@@ -23,11 +23,15 @@
 #include "rocksdb/slice.h"
 #include "rocksdb/status.h"
 
-namespace rocksdb {
+namespace ROCKSDB_NAMESPACE {
 
 class Iterator : public Cleanable {
  public:
   Iterator() {}
+  // No copying allowed
+  Iterator(const Iterator&) = delete;
+  void operator=(const Iterator&) = delete;
+
   virtual ~Iterator() {}
 
   // An iterator is either positioned at a key/value pair, or
@@ -104,11 +108,6 @@ class Iterator : public Cleanable {
   //   Get the user-key portion of the internal key at which the iteration
   //   stopped.
   virtual Status GetProperty(std::string prop_name, std::string* prop);
-
- private:
-  // No copying allowed
-  Iterator(const Iterator&);
-  void operator=(const Iterator&);
 };
 
 // Return an empty iterator (yields nothing).
@@ -117,4 +116,4 @@ extern Iterator* NewEmptyIterator();
 // Return an empty iterator with the specified status.
 extern Iterator* NewErrorIterator(const Status& status);
 
-}  // namespace rocksdb
+}  // namespace ROCKSDB_NAMESPACE

@@ -38,6 +38,7 @@
 
 #include "json_spirit/json_spirit_reader.h"
 
+
 int get_device_by_path(const char *path, char* partition, char* device,
 		       size_t max)
 {
@@ -76,6 +77,12 @@ int get_device_by_path(const char *path, char* partition, char* device,
 #define UUID_LEN 36
 
 #endif
+
+using namespace std::literals;
+
+using std::string;
+
+using ceph::bufferlist;
 
 
 BlkDev::BlkDev(int f)
@@ -693,8 +700,8 @@ static int block_device_run_smartctl(const string& devname, int timeout,
     timeout);
   smartctl.add_cmd_args(
     "smartctl",
-    "-a",
-    //"-x",
+    //"-a",    // all SMART info
+    "-x",    // all SMART and non-SMART info
     "--json=o",
     device.c_str(),
     NULL);

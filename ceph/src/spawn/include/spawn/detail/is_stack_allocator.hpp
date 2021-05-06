@@ -14,7 +14,8 @@
 
 #include <boost/type_traits/make_void.hpp>
 
-namespace spawn::detail {
+namespace spawn {
+namespace detail {
 
 template <typename T, typename = void>
 struct is_stack_allocator : std::false_type {};
@@ -27,4 +28,5 @@ struct is_stack_allocator<T, boost::void_t<decltype(
     std::declval<T&>().deallocate(std::declval<boost::context::stack_context&>())
     )>> : std::true_type {};
 
-} // namespace spawn::detail
+} // namespace detail
+} // namespace spawn

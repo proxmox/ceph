@@ -20,11 +20,11 @@
 #include <iostream>
 #include <string>
 
+#include "auth/KeyRing.h"
 #include "osd/OSD.h"
 #include "os/ObjectStore.h"
 #include "mon/MonClient.h"
 #include "include/ceph_features.h"
-
 #include "common/config.h"
 
 #include "mon/MonMap.h"
@@ -52,6 +52,15 @@
 
 #define dout_context g_ceph_context
 #define dout_subsys ceph_subsys_osd
+
+using std::cerr;
+using std::cout;
+using std::map;
+using std::ostringstream;
+using std::string;
+using std::vector;
+
+using ceph::bufferlist;
 
 namespace {
 
@@ -128,8 +137,7 @@ int main(int argc, const char **argv)
   auto cct = global_init(
     &defaults,
     args, CEPH_ENTITY_TYPE_OSD,
-    CODE_ENVIRONMENT_DAEMON,
-    0, "osd_data");
+    CODE_ENVIRONMENT_DAEMON, 0);
   ceph_heap_profiler_init();
 
   Preforker forker;
@@ -246,7 +254,7 @@ int main(int argc, const char **argv)
 	try {
 	  decode(e, p);
 	}
-	catch (const buffer::error &e) {
+	catch (const ceph::buffer::error &e) {
 	  derr << "failed to decode LogEntry at offset " << pos << dendl;
 	  forker.exit(1);
 	}
@@ -501,9 +509,8 @@ flushjournal_out:
   }
 
   {
-    auto from_release = require_osd_release;
     ostringstream err;
-    if (!can_upgrade_from(from_release, "require_osd_release", err)) {
+    if (!can_upgrade_from(require_osd_release, "require_osd_release", err)) {
       derr << err.str() << dendl;
       forker.exit(1);
     }
@@ -531,30 +538,19 @@ flushjournal_out:
   cluster_msg_type = cluster_msg_type.empty() ? msg_type : cluster_msg_type;
   uint64_t nonce = Messenger::get_pid_nonce();
   Messenger *ms_public = Messenger::create(g_ceph_context, public_msg_type,
-					   entity_name_t::OSD(whoami), "client",
-					   nonce,
-					   Messenger::HAS_HEAVY_TRAFFIC |
-					   Messenger::HAS_MANY_CONNECTIONS);
+					   entity_name_t::OSD(whoami), "client", nonce);
   Messenger *ms_cluster = Messenger::create(g_ceph_context, cluster_msg_type,
-					    entity_name_t::OSD(whoami), "cluster",
-					    nonce,
-					    Messenger::HAS_HEAVY_TRAFFIC |
-					    Messenger::HAS_MANY_CONNECTIONS);
+					    entity_name_t::OSD(whoami), "cluster", nonce);
   Messenger *ms_hb_back_client = Messenger::create(g_ceph_context, cluster_msg_type,
-					     entity_name_t::OSD(whoami), "hb_back_client",
-					     nonce, Messenger::HEARTBEAT);
+					     entity_name_t::OSD(whoami), "hb_back_client", nonce);
   Messenger *ms_hb_front_client = Messenger::create(g_ceph_context, public_msg_type,
-					     entity_name_t::OSD(whoami), "hb_front_client",
-					     nonce, Messenger::HEARTBEAT);
+					     entity_name_t::OSD(whoami), "hb_front_client", nonce);
   Messenger *ms_hb_back_server = Messenger::create(g_ceph_context, cluster_msg_type,
-						   entity_name_t::OSD(whoami), "hb_back_server",
-						   nonce, Messenger::HEARTBEAT);
+						   entity_name_t::OSD(whoami), "hb_back_server", nonce);
   Messenger *ms_hb_front_server = Messenger::create(g_ceph_context, public_msg_type,
-						    entity_name_t::OSD(whoami), "hb_front_server",
-						    nonce, Messenger::HEARTBEAT);
+						    entity_name_t::OSD(whoami), "hb_front_server", nonce);
   Messenger *ms_objecter = Messenger::create(g_ceph_context, public_msg_type,
-					     entity_name_t::OSD(whoami), "ms_objecter",
-					     nonce, 0);
+					     entity_name_t::OSD(whoami), "ms_objecter", nonce);
   if (!ms_public || !ms_cluster || !ms_hb_front_client || !ms_hb_back_client || !ms_hb_back_server || !ms_hb_front_server || !ms_objecter)
     forker.exit(1);
   ms_cluster->set_cluster_protocol(CEPH_OSD_PROTOCOL);
@@ -669,7 +665,10 @@ flushjournal_out:
 
   srand(time(NULL) + getpid());
 
-  MonClient mc(g_ceph_context);
+  ceph::async::io_context_pool poolctx(
+    cct->_conf.get_val<std::uint64_t>("osd_asio_thread_count"));
+
+  MonClient mc(g_ceph_context, poolctx);
   if (mc.build_initial_monmap() < 0)
     return -1;
   global_init_chdir(g_ceph_context);
@@ -690,7 +689,8 @@ flushjournal_out:
 		   ms_objecter,
 		   &mc,
 		   data_path,
-		   journal_path);
+		   journal_path,
+		   poolctx);
 
   int err = osdptr->pre_init();
   if (err < 0) {
@@ -745,6 +745,7 @@ flushjournal_out:
   shutdown_async_signal_handler();
 
   // done
+  poolctx.stop();
   delete osdptr;
   delete ms_public;
   delete ms_hb_front_client;

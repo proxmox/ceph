@@ -6,13 +6,9 @@ include $(RTE_SDK)/mk/rte.vars.mk
 # library name
 LIB = librte_compressdev.a
 
-# library version
-LIBABIVER := 1
-
 # build flags
 CFLAGS += -O3
 CFLAGS += $(WERROR_FLAGS)
-CFLAGS += -DALLOW_EXPERIMENTAL_API
 LDLIBS += -lrte_eal -lrte_mempool -lrte_kvargs
 
 # library source files

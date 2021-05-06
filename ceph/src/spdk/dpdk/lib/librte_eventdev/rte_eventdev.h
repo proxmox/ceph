@@ -181,9 +181,8 @@
  * The *dequeue* operation gets one or more events from the event ports.
  * The application process the events and send to downstream event queue through
  * rte_event_enqueue_burst() if it is an intermediate stage of event processing,
- * on the final stage, the application may send to different subsystem like
- * ethdev to send the packet/event on the wire using ethdev
- * rte_eth_tx_burst() API.
+ * on the final stage, the application may use Tx adapter API for maintaining
+ * the ingress order and then send the packet/event on the wire.
  *
  * The point at which events are scheduled to ports depends on the device.
  * For hardware devices, scheduling occurs asynchronously without any software
@@ -215,6 +214,8 @@ extern "C" {
 #include <rte_config.h>
 #include <rte_memory.h>
 #include <rte_errno.h>
+
+#include "rte_eventdev_trace_fp.h"
 
 struct rte_mbuf; /* we just use mbuf pointers; no need to include rte_mbuf.h */
 struct rte_event;
@@ -1231,6 +1232,12 @@ typedef uint16_t (*event_tx_adapter_enqueue)(void *port,
 				struct rte_event ev[], uint16_t nb_events);
 /**< @internal Enqueue burst of events on port of a device */
 
+typedef uint16_t (*event_tx_adapter_enqueue_same_dest)(void *port,
+		struct rte_event ev[], uint16_t nb_events);
+/**< @internal Enqueue burst of events on port of a device supporting
+ * burst having same destination Ethernet port & Tx queue.
+ */
+
 #define RTE_EVENTDEV_NAME_MAX_LEN	(64)
 /**< @internal Max length of name of event PMD */
 
@@ -1277,6 +1284,9 @@ struct rte_eventdev_data {
 
 	char name[RTE_EVENTDEV_NAME_MAX_LEN];
 	/**< Unique identifier name */
+
+	uint64_t reserved_64s[4]; /**< Reserved for future fields */
+	void *reserved_ptrs[4];   /**< Reserved for future fields */
 } __rte_cache_aligned;
 
 /** @internal The data structure associated with each event device. */
@@ -1293,6 +1303,10 @@ struct rte_eventdev {
 	/**< Pointer to PMD dequeue function. */
 	event_dequeue_burst_t dequeue_burst;
 	/**< Pointer to PMD dequeue burst function. */
+	event_tx_adapter_enqueue_same_dest txa_enqueue_same_dest;
+	/**< Pointer to PMD eth Tx adapter burst enqueue function with
+	 * events destined to same Eth port & Tx queue.
+	 */
 	event_tx_adapter_enqueue txa_enqueue;
 	/**< Pointer to PMD eth Tx adapter enqueue function. */
 	struct rte_eventdev_data *data;
@@ -1305,6 +1319,9 @@ struct rte_eventdev {
 	RTE_STD_C11
 	uint8_t attached : 1;
 	/**< Flag indicating the device is attached */
+
+	uint64_t reserved_64s[4]; /**< Reserved for future fields */
+	void *reserved_ptrs[4];   /**< Reserved for future fields */
 } __rte_cache_aligned;
 
 extern struct rte_eventdev *rte_eventdevs;
@@ -1319,15 +1336,16 @@ __rte_event_enqueue_burst(uint8_t dev_id, uint8_t port_id,
 
 #ifdef RTE_LIBRTE_EVENTDEV_DEBUG
 	if (dev_id >= RTE_EVENT_MAX_DEVS || !rte_eventdevs[dev_id].attached) {
-		rte_errno = -EINVAL;
+		rte_errno = EINVAL;
 		return 0;
 	}
 
 	if (port_id >= dev->data->nb_ports) {
-		rte_errno = -EINVAL;
+		rte_errno = EINVAL;
 		return 0;
 	}
 #endif
+	rte_eventdev_trace_enq_burst(dev_id, port_id, ev, nb_events, fn);
 	/*
 	 * Allow zero cost non burst mode routine invocation if application
 	 * requests nb_events as const one
@@ -1373,10 +1391,10 @@ __rte_event_enqueue_burst(uint8_t dev_id, uint8_t port_id,
  *   *rte_event*. If the return value is less than *nb_events*, the remaining
  *   events at the end of ev[] are not consumed and the caller has to take care
  *   of them, and rte_errno is set accordingly. Possible errno values include:
- *   - -EINVAL  The port ID is invalid, device ID is invalid, an event's queue
+ *   - EINVAL   The port ID is invalid, device ID is invalid, an event's queue
  *              ID is invalid, or an event's sched type doesn't match the
  *              capabilities of the destination queue.
- *   - -ENOSPC  The event port was backpressured and unable to enqueue
+ *   - ENOSPC   The event port was backpressured and unable to enqueue
  *              one or more events. This error code is only applicable to
  *              closed systems.
  * @see rte_event_port_attr_get(), RTE_EVENT_PORT_ATTR_ENQ_DEPTH
@@ -1423,10 +1441,10 @@ rte_event_enqueue_burst(uint8_t dev_id, uint8_t port_id,
  *   *rte_event*. If the return value is less than *nb_events*, the remaining
  *   events at the end of ev[] are not consumed and the caller has to take care
  *   of them, and rte_errno is set accordingly. Possible errno values include:
- *   - -EINVAL  The port ID is invalid, device ID is invalid, an event's queue
+ *   - EINVAL   The port ID is invalid, device ID is invalid, an event's queue
  *              ID is invalid, or an event's sched type doesn't match the
  *              capabilities of the destination queue.
- *   - -ENOSPC  The event port was backpressured and unable to enqueue
+ *   - ENOSPC   The event port was backpressured and unable to enqueue
  *              one or more events. This error code is only applicable to
  *              closed systems.
  * @see rte_event_port_attr_get(), RTE_EVENT_PORT_ATTR_ENQ_DEPTH
@@ -1474,10 +1492,10 @@ rte_event_enqueue_new_burst(uint8_t dev_id, uint8_t port_id,
  *   *rte_event*. If the return value is less than *nb_events*, the remaining
  *   events at the end of ev[] are not consumed and the caller has to take care
  *   of them, and rte_errno is set accordingly. Possible errno values include:
- *   - -EINVAL  The port ID is invalid, device ID is invalid, an event's queue
+ *   - EINVAL   The port ID is invalid, device ID is invalid, an event's queue
  *              ID is invalid, or an event's sched type doesn't match the
  *              capabilities of the destination queue.
- *   - -ENOSPC  The event port was backpressured and unable to enqueue
+ *   - ENOSPC   The event port was backpressured and unable to enqueue
  *              one or more events. This error code is only applicable to
  *              closed systems.
  * @see rte_event_port_attr_get(), RTE_EVENT_PORT_ATTR_ENQ_DEPTH
@@ -1596,16 +1614,16 @@ rte_event_dequeue_burst(uint8_t dev_id, uint8_t port_id, struct rte_event ev[],
 
 #ifdef RTE_LIBRTE_EVENTDEV_DEBUG
 	if (dev_id >= RTE_EVENT_MAX_DEVS || !rte_eventdevs[dev_id].attached) {
-		rte_errno = -EINVAL;
+		rte_errno = EINVAL;
 		return 0;
 	}
 
 	if (port_id >= dev->data->nb_ports) {
-		rte_errno = -EINVAL;
+		rte_errno = EINVAL;
 		return 0;
 	}
 #endif
-
+	rte_eventdev_trace_deq_burst(dev_id, port_id, ev, nb_events);
 	/*
 	 * Allow zero cost non burst mode routine invocation if application
 	 * requests nb_events as const one
@@ -1674,9 +1692,9 @@ rte_event_dequeue_burst(uint8_t dev_id, uint8_t port_id, struct rte_event ev[],
  * of link[] are not established, and the caller has to take care of them.
  * If return value is less than *nb_links* then implementation shall update the
  * rte_errno accordingly, Possible rte_errno values are
- * (-EDQUOT) Quota exceeded(Application tried to link the queue configured with
+ * (EDQUOT) Quota exceeded(Application tried to link the queue configured with
  *  RTE_EVENT_QUEUE_CFG_SINGLE_LINK to more than one event ports)
- * (-EINVAL) Invalid parameter
+ * (EINVAL) Invalid parameter
  *
  */
 int
@@ -1721,7 +1739,7 @@ rte_event_port_link(uint8_t dev_id, uint8_t port_id,
  * end of queues[] are not unlinked, and the caller has to take care of them.
  * If return value is less than *nb_unlinks* then implementation shall update
  * the rte_errno accordingly, Possible rte_errno values are
- * (-EINVAL) Invalid parameter
+ * (EINVAL) Invalid parameter
  */
 int
 rte_event_port_unlink(uint8_t dev_id, uint8_t port_id,

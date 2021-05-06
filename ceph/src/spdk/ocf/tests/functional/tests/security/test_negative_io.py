@@ -85,7 +85,7 @@ def test_neg_read_too_far(pyocf_ctx, c_uint16_randomize):
 
 
 @pytest.mark.security
-def test_neg_write_offset_outside_of_device(pyocf_ctx, c_int_randomize):
+def test_neg_write_offset_outside_of_device(pyocf_ctx, c_int_sector_randomize):
     """
         Check that write operations are blocked when
         IO offset is located outside of device range
@@ -93,16 +93,16 @@ def test_neg_write_offset_outside_of_device(pyocf_ctx, c_int_randomize):
 
     core = prepare_cache_and_core(Size.from_MiB(2))
     data = Data(int(Size.from_KiB(1)))
-    completion = io_operation(core, data, IoDir.WRITE, offset=c_int_randomize)
+    completion = io_operation(core, data, IoDir.WRITE, offset=c_int_sector_randomize)
 
-    if 0 <= c_int_randomize <= int(Size.from_MiB(2)) - int(Size.from_KiB(1)):
+    if 0 <= c_int_sector_randomize <= int(Size.from_MiB(2)) - int(Size.from_KiB(1)):
         assert completion.results["err"] == 0
     else:
         assert completion.results["err"] != 0
 
 
 @pytest.mark.security
-def test_neg_read_offset_outside_of_device(pyocf_ctx, c_int_randomize):
+def test_neg_read_offset_outside_of_device(pyocf_ctx, c_int_sector_randomize):
     """
         Check that read operations are blocked when
         IO offset is located outside of device range
@@ -110,12 +110,42 @@ def test_neg_read_offset_outside_of_device(pyocf_ctx, c_int_randomize):
 
     core = prepare_cache_and_core(Size.from_MiB(2))
     data = Data(int(Size.from_KiB(1)))
-    completion = io_operation(core, data, IoDir.READ, offset=c_int_randomize)
+    completion = io_operation(core, data, IoDir.READ, offset=c_int_sector_randomize)
 
-    if 0 <= c_int_randomize <= int(Size.from_MiB(2)) - int(Size.from_KiB(1)):
+    if 0 <= c_int_sector_randomize <= int(Size.from_MiB(2)) - int(Size.from_KiB(1)):
         assert completion.results["err"] == 0
     else:
         assert completion.results["err"] != 0
+
+
+@pytest.mark.security
+def test_neg_offset_unaligned(pyocf_ctx, c_int_randomize):
+    """
+        Check that write operations are blocked when
+        IO offset is not aligned
+    """
+
+    core = prepare_cache_and_core(Size.from_MiB(2))
+    data = Data(int(Size.from_KiB(1)))
+    if c_int_randomize % 512 != 0:
+        with pytest.raises(Exception, match="Failed to create io!"):
+            core.new_io(core.cache.get_default_queue(), c_int_randomize, data.size,
+                        IoDir.WRITE, 0, 0)
+
+
+@pytest.mark.security
+def test_neg_size_unaligned(pyocf_ctx, c_uint16_randomize):
+    """
+        Check that write operations are blocked when
+        IO size is not aligned
+    """
+
+    core = prepare_cache_and_core(Size.from_MiB(2))
+    data = Data(int(Size.from_B(c_uint16_randomize)))
+    if c_uint16_randomize % 512 != 0:
+        with pytest.raises(Exception, match="Failed to create io!"):
+            core.new_io(core.cache.get_default_queue(), 0, data.size,
+                        IoDir.WRITE, 0, 0)
 
 
 @pytest.mark.security
@@ -164,10 +194,9 @@ def prepare_cache_and_core(core_size: Size, cache_size: Size = Size.from_MiB(20)
 
 
 def io_operation(core: Core, data: Data, io_direction: int, offset: int = 0, io_class: int = 0):
-    io = core.new_io()
+    io = core.new_io(core.cache.get_default_queue(), offset, data.size,
+                     io_direction, io_class, 0)
     io.set_data(data)
-    io.configure(offset, data.size, io_direction, io_class, 0)
-    io.set_queue(core.cache.get_default_queue())
 
     completion = OcfCompletion([("err", c_int)])
     io.callback = completion.callback

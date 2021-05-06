@@ -7,20 +7,17 @@ source $rootdir/test/nvmf/common.sh
 
 rpc_py="$rootdir/scripts/rpc.py"
 
-set -e
-
-timing_enter aer
 nvmftestinit
-nvmfappstart "-m 0xF"
+nvmfappstart -m 0xF
 
-$rpc_py nvmf_create_transport -t $TEST_TRANSPORT -u 8192
+$rpc_py nvmf_create_transport $NVMF_TRANSPORT_OPTS -u 8192
 
-$rpc_py construct_malloc_bdev 64 512 --name Malloc0
-$rpc_py nvmf_subsystem_create nqn.2016-06.io.spdk:cnode1 -a -s SPDK00000000000001 -m 2
+$rpc_py bdev_malloc_create 64 512 --name Malloc0
+$rpc_py nvmf_create_subsystem nqn.2016-06.io.spdk:cnode1 -a -s SPDK00000000000001 -m 2
 $rpc_py nvmf_subsystem_add_ns nqn.2016-06.io.spdk:cnode1 Malloc0
 $rpc_py nvmf_subsystem_add_listener nqn.2016-06.io.spdk:cnode1 -t $TEST_TRANSPORT -a $NVMF_FIRST_TARGET_IP -s $NVMF_PORT
 
-$rpc_py get_nvmf_subsystems
+$rpc_py nvmf_get_subsystems
 
 AER_TOUCH_FILE=/tmp/aer_touch_file
 rm -f $AER_TOUCH_FILE
@@ -38,18 +35,16 @@ aerpid=$!
 waitforfile $AER_TOUCH_FILE
 
 # Add a new namespace
-$rpc_py construct_malloc_bdev 64 4096 --name Malloc1
+$rpc_py bdev_malloc_create 64 4096 --name Malloc1
 $rpc_py nvmf_subsystem_add_ns nqn.2016-06.io.spdk:cnode1 Malloc1 -n 2
-$rpc_py get_nvmf_subsystems
+$rpc_py nvmf_get_subsystems
 
 wait $aerpid
 
-$rpc_py delete_malloc_bdev Malloc0
-$rpc_py delete_malloc_bdev Malloc1
-$rpc_py delete_nvmf_subsystem nqn.2016-06.io.spdk:cnode1
+$rpc_py bdev_malloc_delete Malloc0
+$rpc_py bdev_malloc_delete Malloc1
+$rpc_py nvmf_delete_subsystem nqn.2016-06.io.spdk:cnode1
 
 trap - SIGINT SIGTERM EXIT
 
-nvmfcleanup
 nvmftestfini
-timing_exit aer

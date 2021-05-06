@@ -17,6 +17,10 @@ public:
 	    crimson::osd::ShardServices& shard_services,
 	    const ec_profile_t& ec_profile,
 	    uint64_t stripe_width);
+  seastar::future<> stop() final {
+    return seastar::now();
+  }
+  void on_actingset_changed(peering_info_t pi) final {}
 private:
   ll_read_errorator::future<ceph::bufferlist> _read(const hobject_t& hoid,
                                                     uint64_t off,
@@ -26,9 +30,9 @@ private:
   _submit_transaction(std::set<pg_shard_t>&& pg_shards,
 		      const hobject_t& hoid,
 		      ceph::os::Transaction&& txn,
-		      osd_reqid_t req_id,
+		      const osd_op_params_t& req,
 		      epoch_t min_epoch, epoch_t max_epoch,
-		      eversion_t ver) final;
+		      std::vector<pg_log_entry_t>&& log_entries) final;
   CollectionRef coll;
   crimson::os::FuturizedStore* store;
 };

@@ -1,33 +1,42 @@
 # -*- coding: utf-8 -*-
+# pylint: disable=C0302
 # pylint: disable=too-many-branches
 # pylint: disable=too-many-lines
 from __future__ import absolute_import
 
-from copy import deepcopy
-import re
 import json
-import cherrypy
+import re
+from copy import deepcopy
 
+import cherrypy
 import rados
 import rbd
 
-from . import ApiController, UiApiController, RESTController, BaseController, Endpoint,\
-    ReadPermission, UpdatePermission, Task
 from .. import mgr
+from ..exceptions import DashboardException
 from ..rest_client import RequestException
 from ..security import Scope
-from ..services.iscsi_client import IscsiClient
 from ..services.iscsi_cli import IscsiGatewaysConfig
+from ..services.iscsi_client import IscsiClient
 from ..services.iscsi_config import IscsiGatewayDoesNotExist
 from ..services.rbd import format_bitmask
 from ..services.tcmu_service import TcmuService
-from ..exceptions import DashboardException
-from ..tools import str_to_bool, TaskManager
+from ..tools import TaskManager, str_to_bool
+from . import ApiController, BaseController, ControllerDoc, Endpoint, \
+    EndpointDoc, ReadPermission, RESTController, Task, UiApiController, \
+    UpdatePermission
 
 try:
     from typing import Any, Dict, List, no_type_check
 except ImportError:
     no_type_check = object()  # Just for type checking
+
+ISCSI_SCHEMA = {
+    'user': (str, 'username'),
+    'password': (str, 'password'),
+    'mutual_user': (str, ''),
+    'mutual_password': (str, '')
+}
 
 
 @UiApiController('/iscsi', Scope.ISCSI)
@@ -188,16 +197,26 @@ class IscsiUi(BaseController):
 
 
 @ApiController('/iscsi', Scope.ISCSI)
+@ControllerDoc("Iscsi Management API", "Iscsi")
 class Iscsi(BaseController):
-
     @Endpoint('GET', 'discoveryauth')
     @ReadPermission
+    @EndpointDoc("Get Iscsi discoveryauth Details",
+                 responses={'200': [ISCSI_SCHEMA]})
     def get_discoveryauth(self):
         gateway = get_available_gateway()
         return self._get_discoveryauth(gateway)
 
-    @Endpoint('PUT', 'discoveryauth')
+    @Endpoint('PUT', 'discoveryauth',
+              query_params=['user', 'password', 'mutual_user', 'mutual_password'])
     @UpdatePermission
+    @EndpointDoc("Set Iscsi discoveryauth",
+                 parameters={
+                     'user': (str, 'Username'),
+                     'password': (str, 'Password'),
+                     'mutual_user': (str, 'Mutual UserName'),
+                     'mutual_password': (str, 'Mutual Password'),
+                 })
     def set_discoveryauth(self, user, password, mutual_user, mutual_password):
         validate_auth({
             'user': user,
@@ -235,6 +254,7 @@ def iscsi_target_task(name, metadata, wait_for=2.0):
 
 
 @ApiController('/iscsi/target', Scope.ISCSI)
+@ControllerDoc("Get Iscsi Target Details", "IscsiTarget")
 class IscsiTarget(RESTController):
 
     def list(self):

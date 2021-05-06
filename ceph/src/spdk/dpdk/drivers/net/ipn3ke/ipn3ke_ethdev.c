@@ -19,6 +19,7 @@
 #include <rte_bus_ifpga.h>
 #include <ifpga_common.h>
 #include <ifpga_logs.h>
+#include <ifpga_rawdev.h>
 
 #include "ipn3ke_rawdev_api.h"
 #include "ipn3ke_flow.h"
@@ -35,6 +36,8 @@ static const struct rte_afu_uuid afu_uuid_ipn3ke_map[] = {
 	{ 0, 0 /* sentinel */ },
 };
 
+struct ipn3ke_pub_func ipn3ke_bridge_func;
+
 static int
 ipn3ke_indirect_read(struct ipn3ke_hw *hw, uint32_t *rd_data,
 	uint32_t addr, uint32_t dev_sel, uint32_t eth_group_sel)
@@ -48,7 +51,6 @@ ipn3ke_indirect_read(struct ipn3ke_hw *hw, uint32_t *rd_data,
 	if (eth_group_sel != 0 && eth_group_sel != 1)
 		return -1;
 
-	addr &= 0x3FF;
 	target_addr = addr | dev_sel << 17;
 
 	indirect_value = RCMD | target_addr << 32;
@@ -86,7 +88,6 @@ ipn3ke_indirect_write(struct ipn3ke_hw *hw, uint32_t wr_data,
 	if (eth_group_sel != 0 && eth_group_sel != 1)
 		return -1;
 
-	addr &= 0x3FF;
 	target_addr = addr | dev_sel << 17;
 
 	indirect_value = WCMD | target_addr << 32 | wr_data;
@@ -192,6 +193,109 @@ ipn3ke_hw_cap_init(struct ipn3ke_hw *hw)
 }
 
 static int
+ipn3ke_vbng_init_done(struct ipn3ke_hw *hw)
+{
+	uint32_t timeout = 10000;
+	while (timeout > 0) {
+		if (IPN3KE_READ_REG(hw, IPN3KE_VBNG_INIT_STS)
+			== IPN3KE_VBNG_INIT_DONE)
+			break;
+		rte_delay_us(1000);
+		timeout--;
+	}
+
+	if (!timeout) {
+		IPN3KE_AFU_PMD_ERR("IPN3KE vBNG INIT timeout.\n");
+		return -1;
+	}
+
+	return 0;
+}
+
+static uint32_t
+ipn3ke_mtu_cal(uint32_t tx, uint32_t rx)
+{
+	uint32_t tmp;
+	tmp = RTE_MIN(tx, rx);
+	tmp = RTE_MAX(tmp, (uint32_t)RTE_ETHER_MIN_MTU);
+	tmp = RTE_MIN(tmp, (uint32_t)(IPN3KE_MAC_FRAME_SIZE_MAX -
+		IPN3KE_ETH_OVERHEAD));
+	return tmp;
+}
+
+static void
+ipn3ke_mtu_set(struct ipn3ke_hw *hw, uint32_t mac_num,
+	uint32_t eth_group_sel, uint32_t txaddr, uint32_t rxaddr)
+{
+	uint32_t tx;
+	uint32_t rx;
+	uint32_t tmp;
+
+	if (!(*hw->f_mac_read) || !(*hw->f_mac_write))
+		return;
+
+	(*hw->f_mac_read)(hw,
+			&tx,
+			txaddr,
+			mac_num,
+			eth_group_sel);
+
+	(*hw->f_mac_read)(hw,
+			&rx,
+			rxaddr,
+			mac_num,
+			eth_group_sel);
+
+	tmp = ipn3ke_mtu_cal(tx, rx);
+
+	(*hw->f_mac_write)(hw,
+			tmp,
+			txaddr,
+			mac_num,
+			eth_group_sel);
+
+	(*hw->f_mac_write)(hw,
+			tmp,
+			rxaddr,
+			mac_num,
+			eth_group_sel);
+}
+
+static void
+ipn3ke_10G_mtu_setup(struct ipn3ke_hw *hw, uint32_t mac_num,
+	uint32_t eth_group_sel)
+{
+	ipn3ke_mtu_set(hw, mac_num, eth_group_sel,
+		IPN3KE_10G_TX_FRAME_MAXLENGTH, IPN3KE_10G_RX_FRAME_MAXLENGTH);
+}
+
+static void
+ipn3ke_25G_mtu_setup(struct ipn3ke_hw *hw, uint32_t mac_num,
+	uint32_t eth_group_sel)
+{
+	ipn3ke_mtu_set(hw, mac_num, eth_group_sel,
+		IPN3KE_25G_MAX_TX_SIZE_CONFIG, IPN3KE_25G_MAX_RX_SIZE_CONFIG);
+}
+
+static void
+ipn3ke_mtu_setup(struct ipn3ke_hw *hw)
+{
+	int i;
+	if (hw->retimer.mac_type == IFPGA_RAWDEV_RETIMER_MAC_TYPE_10GE_XFI) {
+		for (i = 0; i < hw->port_num; i++) {
+			ipn3ke_10G_mtu_setup(hw, i, 0);
+			ipn3ke_10G_mtu_setup(hw, i, 1);
+		}
+	} else if (hw->retimer.mac_type ==
+			IFPGA_RAWDEV_RETIMER_MAC_TYPE_25GE_25GAUI) {
+		for (i = 0; i < hw->port_num; i++) {
+			ipn3ke_25G_mtu_setup(hw, i, 0);
+			ipn3ke_25G_mtu_setup(hw, i, 1);
+		}
+	}
+}
+
+static int
 ipn3ke_hw_init(struct rte_afu_device *afu_dev,
 	struct ipn3ke_hw *hw)
 {
@@ -223,15 +327,31 @@ ipn3ke_hw_init(struct rte_afu_device *afu_dev,
 				"LineSideMACType", &mac_type);
 	hw->retimer.mac_type = (int)mac_type;
 
+	hw->acc_tm = 0;
+	hw->acc_flow = 0;
+
 	if (afu_dev->id.uuid.uuid_low == IPN3KE_UUID_VBNG_LOW &&
 		afu_dev->id.uuid.uuid_high == IPN3KE_UUID_VBNG_HIGH) {
+		/* After power on, wait until init done */
+		if (ipn3ke_vbng_init_done(hw))
+			return -1;
+
 		ipn3ke_hw_cap_init(hw);
+
+		/* Reset vBNG IP */
+		IPN3KE_WRITE_REG(hw, IPN3KE_CTRL_RESET, 1);
+		rte_delay_us(10);
+		IPN3KE_WRITE_REG(hw, IPN3KE_CTRL_RESET, 0);
+
+		/* After reset, wait until init done */
+		if (ipn3ke_vbng_init_done(hw))
+			return -1;
+
+		hw->acc_tm = 1;
+		hw->acc_flow = 1;
+
 		IPN3KE_AFU_PMD_DEBUG("UPL_version is 0x%x\n",
 			IPN3KE_READ_REG(hw, 0));
-
-		/* Reset FPGA IP */
-		IPN3KE_WRITE_REG(hw, IPN3KE_CTRL_RESET, 1);
-		IPN3KE_WRITE_REG(hw, IPN3KE_CTRL_RESET, 0);
 	}
 
 	if (hw->retimer.mac_type == IFPGA_RAWDEV_RETIMER_MAC_TYPE_10GE_XFI) {
@@ -246,13 +366,38 @@ ipn3ke_hw_init(struct rte_afu_device *afu_dev,
 			/* Enable the RX path */
 			ipn3ke_xmac_rx_enable(hw, i, 1);
 
-			/* Clear all TX statistics counters */
-			ipn3ke_xmac_tx_clr_stcs(hw, i, 1);
+			/* Clear NIC side TX statistics counters */
+			ipn3ke_xmac_tx_clr_10G_stcs(hw, i, 1);
 
-			/* Clear all RX statistics counters */
-			ipn3ke_xmac_rx_clr_stcs(hw, i, 1);
+			/* Clear NIC side RX statistics counters */
+			ipn3ke_xmac_rx_clr_10G_stcs(hw, i, 1);
+
+			/* Clear line side TX statistics counters */
+			ipn3ke_xmac_tx_clr_10G_stcs(hw, i, 0);
+
+			/* Clear line RX statistics counters */
+			ipn3ke_xmac_rx_clr_10G_stcs(hw, i, 0);
+		}
+	} else if (hw->retimer.mac_type ==
+			IFPGA_RAWDEV_RETIMER_MAC_TYPE_25GE_25GAUI) {
+		/* Enable inter connect channel */
+		for (i = 0; i < hw->port_num; i++) {
+			/* Clear NIC side TX statistics counters */
+			ipn3ke_xmac_tx_clr_25G_stcs(hw, i, 1);
+
+			/* Clear NIC side RX statistics counters */
+			ipn3ke_xmac_rx_clr_25G_stcs(hw, i, 1);
+
+			/* Clear line side TX statistics counters */
+			ipn3ke_xmac_tx_clr_25G_stcs(hw, i, 0);
+
+			/* Clear line side RX statistics counters */
+			ipn3ke_xmac_rx_clr_25G_stcs(hw, i, 0);
 		}
 	}
+
+	/* init mtu */
+	ipn3ke_mtu_setup(hw);
 
 	ret = rte_eth_switch_domain_alloc(&hw->switch_domain_id);
 	if (ret)
@@ -274,9 +419,6 @@ ipn3ke_hw_init(struct rte_afu_device *afu_dev,
 		hw->flow_hw_enable = 1;
 	}
 
-	hw->acc_tm = 0;
-	hw->acc_flow = 0;
-
 	return 0;
 }
 
@@ -293,11 +435,32 @@ ipn3ke_hw_uninit(struct ipn3ke_hw *hw)
 			/* Disable the RX path */
 			ipn3ke_xmac_rx_disable(hw, i, 1);
 
-			/* Clear all TX statistics counters */
-			ipn3ke_xmac_tx_clr_stcs(hw, i, 1);
+			/* Clear NIC side TX statistics counters */
+			ipn3ke_xmac_tx_clr_10G_stcs(hw, i, 1);
 
-			/* Clear all RX statistics counters */
-			ipn3ke_xmac_rx_clr_stcs(hw, i, 1);
+			/* Clear NIC side RX statistics counters */
+			ipn3ke_xmac_rx_clr_10G_stcs(hw, i, 1);
+
+			/* Clear line side TX statistics counters */
+			ipn3ke_xmac_tx_clr_10G_stcs(hw, i, 0);
+
+			/* Clear line side RX statistics counters */
+			ipn3ke_xmac_rx_clr_10G_stcs(hw, i, 0);
+		}
+	} else if (hw->retimer.mac_type ==
+			IFPGA_RAWDEV_RETIMER_MAC_TYPE_25GE_25GAUI) {
+		for (i = 0; i < hw->port_num; i++) {
+			/* Clear NIC side TX statistics counters */
+			ipn3ke_xmac_tx_clr_25G_stcs(hw, i, 1);
+
+			/* Clear NIC side RX statistics counters */
+			ipn3ke_xmac_rx_clr_25G_stcs(hw, i, 1);
+
+			/* Clear line side TX statistics counters */
+			ipn3ke_xmac_tx_clr_25G_stcs(hw, i, 0);
+
+			/* Clear line side RX statistics counters */
+			ipn3ke_xmac_rx_clr_25G_stcs(hw, i, 0);
 		}
 	}
 }
@@ -306,7 +469,11 @@ static int ipn3ke_vswitch_probe(struct rte_afu_device *afu_dev)
 {
 	char name[RTE_ETH_NAME_MAX_LEN];
 	struct ipn3ke_hw *hw;
-	int i, retval;
+	struct rte_eth_dev *i40e_eth;
+	struct ifpga_rawdev *ifpga_dev;
+	uint16_t port_id;
+	int i, j, retval;
+	char *fvl_bdf;
 
 	/* check if the AFU device has been probed already */
 	/* allocate shared mcp_vswitch structure */
@@ -333,7 +500,14 @@ static int ipn3ke_vswitch_probe(struct rte_afu_device *afu_dev)
 	if (retval)
 		return retval;
 
+	if (ipn3ke_bridge_func.get_ifpga_rawdev == NULL)
+		return -ENOMEM;
+	ifpga_dev = ipn3ke_bridge_func.get_ifpga_rawdev(hw->rawdev);
+		if (!ifpga_dev)
+			IPN3KE_AFU_PMD_ERR("failed to find ifpga_device.");
+
 	/* probe representor ports */
+	j = 0;
 	for (i = 0; i < hw->port_num; i++) {
 		struct ipn3ke_rpst rpst = {
 			.port_id = i,
@@ -345,6 +519,22 @@ static int ipn3ke_vswitch_probe(struct rte_afu_device *afu_dev)
 		snprintf(name, sizeof(name), "net_%s_representor_%d",
 			afu_dev->device.name, i);
 
+		for (; j < 8; j++) {
+			fvl_bdf = ifpga_dev->fvl_bdf[j];
+			retval = rte_eth_dev_get_port_by_name(fvl_bdf,
+				&port_id);
+			if (retval) {
+				continue;
+			} else {
+				i40e_eth = &rte_eth_devices[port_id];
+				rpst.i40e_pf_eth = i40e_eth;
+				rpst.i40e_pf_eth_port_id = port_id;
+
+				j++;
+				break;
+			}
+		}
+
 		retval = rte_eth_dev_create(&afu_dev->device, name,
 			sizeof(struct ipn3ke_rpst), NULL, NULL,
 			ipn3ke_rpst_init, &rpst);
@@ -352,6 +542,7 @@ static int ipn3ke_vswitch_probe(struct rte_afu_device *afu_dev)
 		if (retval)
 			IPN3KE_AFU_PMD_ERR("failed to create ipn3ke representor %s.",
 								name);
+
 	}
 
 	return 0;
@@ -396,254 +587,6 @@ static struct rte_afu_driver afu_ipn3ke_driver = {
 };
 
 RTE_PMD_REGISTER_AFU(net_ipn3ke_afu, afu_ipn3ke_driver);
-
-static const char * const valid_args[] = {
-#define IPN3KE_AFU_NAME         "afu"
-		IPN3KE_AFU_NAME,
-#define IPN3KE_FPGA_ACCELERATION_LIST     "fpga_acc"
-		IPN3KE_FPGA_ACCELERATION_LIST,
-#define IPN3KE_I40E_PF_LIST     "i40e_pf"
-		IPN3KE_I40E_PF_LIST,
-		NULL
-};
-
-static int
-ipn3ke_cfg_parse_acc_list(const char *afu_name,
-	const char *acc_list_name)
-{
-	struct rte_afu_device *afu_dev;
-	struct ipn3ke_hw *hw;
-	const char *p_source;
-	char *p_start;
-	char name[RTE_ETH_NAME_MAX_LEN];
-
-	afu_dev = rte_ifpga_find_afu_by_name(afu_name);
-	if (!afu_dev)
-		return -1;
-	hw = afu_dev->shared.data;
-	if (!hw)
-		return -1;
-
-	p_source = acc_list_name;
-	while (*p_source) {
-		while ((*p_source == '{') || (*p_source == '|'))
-			p_source++;
-		p_start = name;
-		while ((*p_source != '|') && (*p_source != '}'))
-			*p_start++ = *p_source++;
-		*p_start = 0;
-		if (!strcmp(name, "tm") && hw->tm_hw_enable)
-			hw->acc_tm = 1;
-
-		if (!strcmp(name, "flow") && hw->flow_hw_enable)
-			hw->acc_flow = 1;
-
-		if (*p_source == '}')
-			return 0;
-	}
-
-	return 0;
-}
-
-static int
-ipn3ke_cfg_parse_i40e_pf_ethdev(const char *afu_name,
-	const char *pf_name)
-{
-	struct rte_eth_dev *i40e_eth, *rpst_eth;
-	struct rte_afu_device *afu_dev;
-	struct ipn3ke_rpst *rpst;
-	struct ipn3ke_hw *hw;
-	const char *p_source;
-	char *p_start;
-	char name[RTE_ETH_NAME_MAX_LEN];
-	uint16_t port_id;
-	int i;
-	int ret = -1;
-
-	afu_dev = rte_ifpga_find_afu_by_name(afu_name);
-	if (!afu_dev)
-		return -1;
-	hw = afu_dev->shared.data;
-	if (!hw)
-		return -1;
-
-	p_source = pf_name;
-	for (i = 0; i < hw->port_num; i++) {
-		snprintf(name, sizeof(name), "net_%s_representor_%d",
-			afu_name, i);
-		ret = rte_eth_dev_get_port_by_name(name, &port_id);
-		if (ret)
-			return -1;
-		rpst_eth = &rte_eth_devices[port_id];
-		rpst = IPN3KE_DEV_PRIVATE_TO_RPST(rpst_eth);
-
-		while ((*p_source == '{') || (*p_source == '|'))
-			p_source++;
-		p_start = name;
-		while ((*p_source != '|') && (*p_source != '}'))
-			*p_start++ = *p_source++;
-		*p_start = 0;
-
-		ret = rte_eth_dev_get_port_by_name(name, &port_id);
-		if (ret)
-			return -1;
-		i40e_eth = &rte_eth_devices[port_id];
-
-		rpst->i40e_pf_eth = i40e_eth;
-		rpst->i40e_pf_eth_port_id = port_id;
-
-		if ((*p_source == '}') || !(*p_source))
-			break;
-	}
-
-	return 0;
-}
-
-static int
-ipn3ke_cfg_probe(struct rte_vdev_device *dev)
-{
-	struct rte_devargs *devargs;
-	struct rte_kvargs *kvlist = NULL;
-	char *afu_name = NULL;
-	char *acc_name = NULL;
-	char *pf_name = NULL;
-	int afu_name_en = 0;
-	int acc_list_en = 0;
-	int pf_list_en = 0;
-	int ret = -1;
-
-	devargs = dev->device.devargs;
-
-	kvlist = rte_kvargs_parse(devargs->args, valid_args);
-	if (!kvlist) {
-		IPN3KE_AFU_PMD_ERR("error when parsing param");
-		goto end;
-	}
-
-	if (rte_kvargs_count(kvlist, IPN3KE_AFU_NAME) == 1) {
-		if (rte_kvargs_process(kvlist, IPN3KE_AFU_NAME,
-				       &rte_ifpga_get_string_arg,
-				       &afu_name) < 0) {
-			IPN3KE_AFU_PMD_ERR("error to parse %s",
-				     IPN3KE_AFU_NAME);
-			goto end;
-		} else {
-			afu_name_en = 1;
-		}
-	}
-
-	if (rte_kvargs_count(kvlist, IPN3KE_FPGA_ACCELERATION_LIST) == 1) {
-		if (rte_kvargs_process(kvlist, IPN3KE_FPGA_ACCELERATION_LIST,
-				       &rte_ifpga_get_string_arg,
-				       &acc_name) < 0) {
-			IPN3KE_AFU_PMD_ERR("error to parse %s",
-				     IPN3KE_FPGA_ACCELERATION_LIST);
-			goto end;
-		} else {
-			acc_list_en = 1;
-		}
-	}
-
-	if (rte_kvargs_count(kvlist, IPN3KE_I40E_PF_LIST) == 1) {
-		if (rte_kvargs_process(kvlist, IPN3KE_I40E_PF_LIST,
-				       &rte_ifpga_get_string_arg,
-				       &pf_name) < 0) {
-			IPN3KE_AFU_PMD_ERR("error to parse %s",
-				     IPN3KE_I40E_PF_LIST);
-			goto end;
-		} else {
-			pf_list_en = 1;
-		}
-	}
-
-	if (!afu_name_en) {
-		IPN3KE_AFU_PMD_ERR("arg %s is mandatory for ipn3ke",
-			  IPN3KE_AFU_NAME);
-		goto end;
-	}
-
-	if (!pf_list_en) {
-		IPN3KE_AFU_PMD_ERR("arg %s is mandatory for ipn3ke",
-			  IPN3KE_I40E_PF_LIST);
-		goto end;
-	}
-
-	if (acc_list_en) {
-		ret = ipn3ke_cfg_parse_acc_list(afu_name, acc_name);
-		if (ret) {
-			IPN3KE_AFU_PMD_ERR("arg %s parse error for ipn3ke",
-			  IPN3KE_FPGA_ACCELERATION_LIST);
-			goto end;
-		}
-	} else {
-		IPN3KE_AFU_PMD_INFO("arg %s is optional for ipn3ke, using i40e acc",
-			  IPN3KE_FPGA_ACCELERATION_LIST);
-	}
-
-	ret = ipn3ke_cfg_parse_i40e_pf_ethdev(afu_name, pf_name);
-	if (ret)
-		goto end;
-end:
-	if (kvlist)
-		rte_kvargs_free(kvlist);
-	if (afu_name)
-		free(afu_name);
-	if (acc_name)
-		free(acc_name);
-
-	return ret;
-}
-
-static int
-ipn3ke_cfg_remove(struct rte_vdev_device *dev)
-{
-	struct rte_devargs *devargs;
-	struct rte_kvargs *kvlist = NULL;
-	char *afu_name = NULL;
-	struct rte_afu_device *afu_dev;
-	int ret = -1;
-
-	devargs = dev->device.devargs;
-
-	kvlist = rte_kvargs_parse(devargs->args, valid_args);
-	if (!kvlist) {
-		IPN3KE_AFU_PMD_ERR("error when parsing param");
-		goto end;
-	}
-
-	if (rte_kvargs_count(kvlist, IPN3KE_AFU_NAME) == 1) {
-		if (rte_kvargs_process(kvlist, IPN3KE_AFU_NAME,
-				       &rte_ifpga_get_string_arg,
-				       &afu_name) < 0) {
-			IPN3KE_AFU_PMD_ERR("error to parse %s",
-				     IPN3KE_AFU_NAME);
-		} else {
-			afu_dev = rte_ifpga_find_afu_by_name(afu_name);
-			if (!afu_dev)
-				goto end;
-			ret = ipn3ke_vswitch_remove(afu_dev);
-		}
-	} else {
-		IPN3KE_AFU_PMD_ERR("Remove ipn3ke_cfg %p error", dev);
-	}
-
-end:
-	if (kvlist)
-		rte_kvargs_free(kvlist);
-
-	return ret;
-}
-
-static struct rte_vdev_driver ipn3ke_cfg_driver = {
-	.probe = ipn3ke_cfg_probe,
-	.remove = ipn3ke_cfg_remove,
-};
-
-RTE_PMD_REGISTER_VDEV(ipn3ke_cfg, ipn3ke_cfg_driver);
-RTE_PMD_REGISTER_PARAM_STRING(ipn3ke_cfg,
-	"afu=<string> "
-	"fpga_acc=<string>"
-	"i40e_pf=<string>");
 
 RTE_INIT(ipn3ke_afu_init_log)
 {

@@ -40,9 +40,6 @@ struct priv_op_data {
 	struct cperf_op_result *result;
 };
 
-#define max(a, b) (a > b ? (uint64_t)a : (uint64_t)b)
-#define min(a, b) (a < b ? (uint64_t)a : (uint64_t)b)
-
 static void
 cperf_latency_test_free(struct cperf_latency_ctx *ctx)
 {
@@ -129,7 +126,7 @@ cperf_latency_test_runner(void *arg)
 	uint8_t burst_size_idx = 0;
 	uint32_t imix_idx = 0;
 
-	static int only_once;
+	static rte_atomic16_t display_once = RTE_ATOMIC16_INIT(0);
 
 	if (ctx == NULL)
 		return 0;
@@ -254,13 +251,13 @@ cperf_latency_test_runner(void *arg)
 						(void **)ops_processed, ops_deqd);
 
 				deqd_tot += ops_deqd;
-				deqd_max = max(ops_deqd, deqd_max);
-				deqd_min = min(ops_deqd, deqd_min);
+				deqd_max = RTE_MAX(ops_deqd, deqd_max);
+				deqd_min = RTE_MIN(ops_deqd, deqd_min);
 			}
 
 			enqd_tot += ops_enqd;
-			enqd_max = max(ops_enqd, enqd_max);
-			enqd_min = min(ops_enqd, enqd_min);
+			enqd_max = RTE_MAX(ops_enqd, enqd_max);
+			enqd_min = RTE_MIN(ops_enqd, enqd_min);
 
 			b_idx++;
 		}
@@ -284,15 +281,15 @@ cperf_latency_test_runner(void *arg)
 						(void **)ops_processed, ops_deqd);
 
 				deqd_tot += ops_deqd;
-				deqd_max = max(ops_deqd, deqd_max);
-				deqd_min = min(ops_deqd, deqd_min);
+				deqd_max = RTE_MAX(ops_deqd, deqd_max);
+				deqd_min = RTE_MIN(ops_deqd, deqd_min);
 			}
 		}
 
 		for (i = 0; i < tsc_idx; i++) {
 			tsc_val = ctx->res[i].tsc_end - ctx->res[i].tsc_start;
-			tsc_max = max(tsc_val, tsc_max);
-			tsc_min = min(tsc_val, tsc_min);
+			tsc_max = RTE_MAX(tsc_val, tsc_max);
+			tsc_min = RTE_MIN(tsc_val, tsc_min);
 			tsc_tot += tsc_val;
 		}
 
@@ -311,7 +308,7 @@ cperf_latency_test_runner(void *arg)
 		time_min = tunit*(double)(tsc_min) / tsc_hz;
 
 		if (ctx->options->csv) {
-			if (!only_once)
+			if (rte_atomic16_test_and_set(&display_once))
 				printf("\n# lcore, Buffer Size, Burst Size, Pakt Seq #, "
 						"Packet Size, cycles, time (us)");
 
@@ -326,7 +323,6 @@ cperf_latency_test_runner(void *arg)
 						/ tsc_hz);
 
 			}
-			only_once = 1;
 		} else {
 			printf("\n# Device %d on lcore %u\n", ctx->dev_id,
 				ctx->lcore_id);

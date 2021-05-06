@@ -35,7 +35,7 @@ void isal_deflate_body_base(struct isal_zstream *stream)
 	uint64_t code, code_len, code2, code_len2;
 	struct isal_zstate *state = &stream->internal_state;
 	uint16_t *last_seen = state->head;
-	uint8_t *file_start = stream->next_in - stream->total_in;
+	uint8_t *file_start = (uint8_t *) ((uintptr_t) stream->next_in - stream->total_in);
 	uint32_t hist_size = state->dist_mask;
 	uint32_t hash_mask = state->hash_mask;
 
@@ -58,7 +58,7 @@ void isal_deflate_body_base(struct isal_zstream *stream)
 			return;
 		}
 
-		literal = *(uint32_t *) next_in;
+		literal = load_u32(next_in);
 		hash = compute_hash(literal) & hash_mask;
 		dist = (next_in - file_start - last_seen[hash]) & 0xFFFF;
 		last_seen[hash] = (uint64_t) (next_in - file_start);
@@ -79,7 +79,7 @@ void isal_deflate_body_base(struct isal_zstream *stream)
 				next_hash++;
 
 				for (; next_hash < end; next_hash++) {
-					literal = *(uint32_t *) next_hash;
+					literal = load_u32(next_hash);
 					hash = compute_hash(literal) & hash_mask;
 					last_seen[hash] = (uint64_t) (next_hash - file_start);
 				}
@@ -123,7 +123,7 @@ void isal_deflate_finish_base(struct isal_zstream *stream)
 	uint64_t code, code_len, code2, code_len2;
 	struct isal_zstate *state = &stream->internal_state;
 	uint16_t *last_seen = state->head;
-	uint8_t *file_start = stream->next_in - stream->total_in;
+	uint8_t *file_start = (uint8_t *) ((uintptr_t) stream->next_in - stream->total_in);
 	uint32_t hist_size = state->dist_mask;
 	uint32_t hash_mask = state->hash_mask;
 
@@ -140,7 +140,7 @@ void isal_deflate_finish_base(struct isal_zstream *stream)
 				return;
 			}
 
-			literal = *(uint32_t *) next_in;
+			literal = load_u32(next_in);
 			hash = compute_hash(literal) & hash_mask;
 			dist = (next_in - file_start - last_seen[hash]) & 0xFFFF;
 			last_seen[hash] = (uint64_t) (next_in - file_start);
@@ -159,7 +159,7 @@ void isal_deflate_finish_base(struct isal_zstream *stream)
 					next_hash++;
 
 					for (; next_hash < end - 3; next_hash++) {
-						literal = *(uint32_t *) next_hash;
+						literal = load_u32(next_hash);
 						hash = compute_hash(literal) & hash_mask;
 						last_seen[hash] =
 						    (uint64_t) (next_hash - file_start);
@@ -227,7 +227,7 @@ void isal_deflate_hash_base(uint16_t * hash_table, uint32_t hash_mask,
 	uint16_t index = current_index - dict_len;
 
 	while (next_in <= end_in) {
-		literal = *(uint32_t *) next_in;
+		literal = load_u32(next_in);
 		hash = compute_hash(literal) & hash_mask;
 		hash_table[hash] = index;
 		index++;

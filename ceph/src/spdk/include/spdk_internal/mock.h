@@ -116,4 +116,20 @@ DECLARE_WRAPPER(pthread_mutex_init, int,
 DECLARE_WRAPPER(pthread_mutexattr_init, int,
 		(pthread_mutexattr_t *attr));
 
+DECLARE_WRAPPER(recvmsg, ssize_t, (int sockfd, struct msghdr *msg, int flags));
+
+DECLARE_WRAPPER(sendmsg, ssize_t, (int sockfd, const struct msghdr *msg, int flags));
+
+DECLARE_WRAPPER(writev, ssize_t, (int fd, const struct iovec *iov, int iovcnt));
+
+/* unlink is done a bit differently. */
+extern char *g_unlink_path;
+extern void (*g_unlink_callback)(void);
+/* If g_unlink_path is NULL, __wrap_unlink will return ENOENT.
+ * If the __wrap_unlink() parameter does not match g_unlink_path, it will return ENOENT.
+ * If g_unlink_path does match, and g_unlink_callback has been set, g_unlink_callback will
+ * be called before returning 0.
+ */
+int __wrap_unlink(const char *path);
+
 #endif /* SPDK_INTERNAL_MOCK_H */

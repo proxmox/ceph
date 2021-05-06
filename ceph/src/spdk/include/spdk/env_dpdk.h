@@ -35,6 +35,8 @@
  * Encapsulated DPDK specific dependencies
  */
 
+#include "spdk/stdinc.h"
+
 #ifndef SPDK_ENV_DPDK_H
 #define SPDK_ENV_DPDK_H
 
@@ -48,9 +50,11 @@ extern "C" {
  * instead of spdk_env_init, prior to using any other functions in SPDK
  * env library.
  *
+ * \param legacy_mem Indicates whether DPDK was initialized with --legacy-mem
+ *                   eal parameter.
  * \return 0 on success, or negative errno on failure.
  */
-int spdk_env_dpdk_post_init(void);
+int spdk_env_dpdk_post_init(bool legacy_mem);
 
 /**
  * Release any resources of the environment library that were alllocated with
@@ -67,6 +71,13 @@ void spdk_env_dpdk_post_fini(void);
  * \return false otherwise
  */
 bool spdk_env_dpdk_external_init(void);
+
+/**
+ * Dump the env allocated memory to the given file.
+ *
+ * \param file The file object to write to.
+ */
+void spdk_env_dpdk_dump_mem_stats(FILE *file);
 
 #ifdef __cplusplus
 }

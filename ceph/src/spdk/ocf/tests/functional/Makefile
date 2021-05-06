@@ -18,23 +18,26 @@ SRC=$(shell find $(SRCDIR) $(WRAPDIR) -name \*.c)
 OBJS=$(patsubst %.c, %.o, $(SRC))
 OCFLIB=$(ADAPTERDIR)/libocf.so
 
-all: | sync
+all: | sync config_random
 	$(MAKE) $(OCFLIB)
 
 $(OCFLIB): $(OBJS)
 	@echo "Building $@"
-	@$(CC) -shared -o $@ $(CFLAGS) $^ -fPIC $(LDFLAGS)
+	@$(CC) -coverage -shared -o $@ $(CFLAGS) $^ -fPIC $(LDFLAGS)
 
 %.o: %.c
 	@echo "Compiling $@"
-	@$(CC) -c $(CFLAGS) -o $@ -fPIC $^ $(LDFLAGS)
+	@$(CC) -coverage -c $(CFLAGS) -o $@ -fPIC $^ $(LDFLAGS)
 
 sync:
 	@echo "Syncing OCF sources"
 	@mkdir -p $(ADAPTERDIR)/ocf
 	@$(MAKE) -C $(OCFDIR) inc O=$(ADAPTERDIR)/ocf
 	@$(MAKE) -C $(OCFDIR) src O=$(ADAPTERDIR)/ocf
-	@$(MAKE) -C $(OCFDIR) env O=$(ADAPTERDIR)/ocf ENV=posix
+	@$(MAKE) -C $(OCFDIR) env O=$(ADAPTERDIR)/ocf OCF_ENV=posix
+
+config_random:
+	@python3 utils/configure_random.py
 
 clean:
 	@rm -rf $(OCFLIB) $(OBJS)
@@ -46,4 +49,4 @@ distclean: clean
 	@rm -rf $(INCDIR)/ocf
 	@echo "  DISTCLEAN "
 
-.PHONY: all clean sync distclean
+.PHONY: all clean sync config_random distclean

@@ -1,10 +1,9 @@
 # SPDX-License-Identifier: BSD-3-Clause
 # Copyright 2018 NXP
 
-version = 2
-
 if not is_linux
-        build = false
+	build = false
+	reason = 'only supported on linux'
 endif
 
 deps += ['common_dpaax', 'eventdev', 'kvargs']
@@ -22,7 +21,5 @@ sources = files('fslmc_bus.c',
 		'portal/dpaa2_hw_dpio.c',
 		'qbman/qbman_portal.c',
 		'qbman/qbman_debug.c')
-
-allow_experimental_apis = true
 
 includes += include_directories('mc', 'qbman/include', 'portal')

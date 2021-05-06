@@ -1,4 +1,5 @@
-#!/bin/bash -e
+#!/usr/bin/env bash 
+set -e
 #
 # ceph-backport.sh - Ceph backporting script
 #
@@ -21,7 +22,7 @@
 
 full_path="$0"
 
-SCRIPT_VERSION="15.1.0.1009"
+SCRIPT_VERSION="16.0.0.6848"
 active_milestones=""
 backport_pr_labels=""
 backport_pr_number=""
@@ -347,22 +348,8 @@ function debug {
     log debug "$@"
 }
 
-function deprecation_warning {
-    echo "*******************"
-    echo "DEPRECATION WARNING"
-    echo "*******************"
-    echo
-    echo "This is an outdated, unmaintained version of ceph-backport.sh. Using this"
-    echo "version can have unpredictable results. It is recommended to use the"
-    echo "version from the \"master\" branch, instead. In other words, use this:"
-    echo
-    echo "https://github.com/ceph/ceph/blob/master/src/script/ceph-backport.sh"
-    echo
-}
-
 function display_version_message_and_exit {
-    deprecation_warning
-    echo "$this_script: Ceph backporting script, version $SCRIPT_VERSION (DEPRECATED - DO NOT USE)"
+    echo "$this_script: Ceph backporting script, version $SCRIPT_VERSION"
     exit 0 
 }
 
@@ -909,7 +896,6 @@ function milestone_number_from_remote_api {
     local mtt="$1"  # milestone to try
     local mn=""     # milestone number
     local milestones
-    warning "Milestone ->$mtt<- unknown to script - falling back to GitHub API"
     remote_api_output=$(curl -u ${github_user}:${github_token} --silent -X GET "https://api.github.com/repos/ceph/ceph/milestones")
     mn=$(echo "$remote_api_output" | jq --arg milestone "$mtt" '.[] | select(.title==$milestone) | .number')
     if [ "$mn" -gt "0" ] >/dev/null 2>&1 ; then
@@ -1096,7 +1082,8 @@ function try_known_milestones {
         luminous) mn="10" ;;
         mimic) mn="11" ;;
         nautilus) mn="12" ;;
-        octopus) echo "Octopus milestone number is unknown! Update the script now." ; exit 1 ;;
+        octopus) mn="13" ;;
+        pacific) mn="TBD" ;;
     esac
     echo "$mn"
 }
@@ -1413,6 +1400,28 @@ else
     abort_due_to_setup_problem
 fi
 
+#
+# do we have jq available?
+#
+
+if type jq >/dev/null 2>&1 ; then
+    debug "jq is available. Good."
+else
+    error "This script uses jq, but it does not seem to be installed"
+    abort_due_to_setup_problem
+fi
+
+#
+# is jq available?
+#
+
+if command -v jq >/dev/null ; then
+    debug "jq is available. Good."
+else
+    error "This script needs \"jq\" in order to work, and it is not available"
+    abort_due_to_setup_problem
+fi
+
 
 #
 # process command-line arguments
@@ -1460,10 +1469,6 @@ while true ; do
         *) echo "Internal error" ; false ;;
     esac
 done
-
-deprecation_warning
-echo "Sleeping for 5 seconds to give you time to hit CTRL-C..."
-sleep 5
 
 if [ "$ADVICE" ] ; then
     [ "$HELP" ] && usage
@@ -1637,10 +1642,12 @@ fi
 
 milestone_number=$(try_known_milestones "$milestone")
 if [ "$milestone_number" -gt "0" ] >/dev/null 2>&1 ; then
-    target_branch="$milestone"
+    debug "Milestone ->$milestone<- is known to have number ->$milestone_number<-: skipping remote API call"
 else
+    warning "Milestone ->$milestone<- is unknown to the script: falling back to GitHub API"
     milestone_number=$(milestone_number_from_remote_api "$milestone")
 fi
+target_branch="$milestone"
 info "milestone/release is $milestone"
 debug "milestone number is $milestone_number"
 

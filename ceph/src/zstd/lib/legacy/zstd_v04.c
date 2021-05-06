@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2016-present, Yann Collet, Facebook, Inc.
+ * Copyright (c) 2016-2020, Yann Collet, Facebook, Inc.
  * All rights reserved.
  *
  * This source code is licensed under both the BSD-style license (found in the
@@ -16,7 +16,7 @@
 #include <string.h>    /* memcpy */
 
 #include "zstd_v04.h"
-#include "error_private.h"
+#include "../common/error_private.h"
 
 
 /* ******************************************************************
@@ -161,7 +161,7 @@ MEM_STATIC void MEM_write16(void* memPtr, U16 value)
     memcpy(memPtr, &value, sizeof(value));
 }
 
-#endif // MEM_FORCE_MEMORY_ACCESS
+#endif /* MEM_FORCE_MEMORY_ACCESS */
 
 
 MEM_STATIC U16 MEM_readLE16(const void* memPtr)
@@ -187,6 +187,11 @@ MEM_STATIC void MEM_writeLE16(void* memPtr, U16 val)
         p[0] = (BYTE)val;
         p[1] = (BYTE)(val>>8);
     }
+}
+
+MEM_STATIC U32 MEM_readLE24(const void* memPtr)
+{
+    return MEM_readLE16(memPtr) + (((const BYTE*)memPtr)[2] << 16);
 }
 
 MEM_STATIC U32 MEM_readLE32(const void* memPtr)
@@ -622,7 +627,7 @@ MEM_STATIC unsigned BIT_highbit32 (U32 val)
     _BitScanReverse ( &r, val );
     return (unsigned) r;
 #   elif defined(__GNUC__) && (__GNUC__ >= 3)   /* Use GCC Intrinsic */
-    return 31 - __builtin_clz (val);
+    return __builtin_clz (val) ^ 31;
 #   else   /* Software version */
     static const unsigned DeBruijnClz[32] = { 0, 9, 1, 10, 13, 21, 2, 29, 11, 14, 16, 18, 22, 25, 3, 30, 8, 12, 20, 28, 15, 17, 24, 7, 19, 27, 23, 6, 26, 5, 4, 31 };
     U32 v = val;
@@ -2598,7 +2603,9 @@ static size_t ZSTD_getcBlockSize(const void* src, size_t srcSize, blockPropertie
 static size_t ZSTD_copyRawBlock(void* dst, size_t maxDstSize, const void* src, size_t srcSize)
 {
     if (srcSize > maxDstSize) return ERROR(dstSize_tooSmall);
-    memcpy(dst, src, srcSize);
+    if (srcSize > 0) {
+        memcpy(dst, src, srcSize);
+    }
     return srcSize;
 }
 
@@ -2650,6 +2657,7 @@ static size_t ZSTD_decodeLiteralsBlock(ZSTD_DCtx* dctx,
             const size_t litSize = (MEM_readLE32(istart) & 0xFFFFFF) >> 2;   /* no buffer issue : srcSize >= MIN_CBLOCK_SIZE */
             if (litSize > srcSize-11)   /* risk of reading too far with wildcopy */
             {
+                if (litSize > BLOCKSIZE) return ERROR(corruption_detected);
                 if (litSize > srcSize-3) return ERROR(corruption_detected);
                 memcpy(dctx->litBuffer, istart, litSize);
                 dctx->litPtr = dctx->litBuffer;
@@ -2808,13 +2816,12 @@ static void ZSTD_decodeSequence(seq_t* seq, seqState_t* seqState)
     litLength = FSE_decodeSymbol(&(seqState->stateLL), &(seqState->DStream));
     prevOffset = litLength ? seq->offset : seqState->prevOffset;
     if (litLength == MaxLL) {
-        U32 add = *dumps++;
+        const U32 add = dumps<de ? *dumps++ : 0;
         if (add < 255) litLength += add;
-        else {
-            litLength = dumps[0] + (dumps[1]<<8) + (dumps[2]<<16);
+        else if (dumps + 3 <= de) {
+            litLength = MEM_readLE24(dumps);
             dumps += 3;
         }
-        if (dumps > de) { litLength = MaxLL+255; }  /* late correction, to avoid using uninitialized memory */
         if (dumps >= de) { dumps = de-1; }  /* late correction, to avoid read overflow (data is now corrupted anyway) */
     }
 
@@ -2837,13 +2844,12 @@ static void ZSTD_decodeSequence(seq_t* seq, seqState_t* seqState)
     /* MatchLength */
     matchLength = FSE_decodeSymbol(&(seqState->stateML), &(seqState->DStream));
     if (matchLength == MaxML) {
-        U32 add = *dumps++;
+        const U32 add = dumps<de ? *dumps++ : 0;
         if (add < 255) matchLength += add;
-        else {
-            matchLength = dumps[0] + (dumps[1]<<8) + (dumps[2]<<16);
+        else if (dumps + 3 <= de){
+            matchLength = MEM_readLE24(dumps);
             dumps += 3;
         }
-        if (dumps > de) { matchLength = MaxML+255; }  /* late correction, to avoid using uninitialized memory */
         if (dumps >= de) { dumps = de-1; }  /* late correction, to avoid read overflow (data is now corrupted anyway) */
     }
     matchLength += MINMATCH;
@@ -3004,8 +3010,10 @@ static size_t ZSTD_decompressSequences(
             size_t lastLLSize = litEnd - litPtr;
             if (litPtr > litEnd) return ERROR(corruption_detected);
             if (op+lastLLSize > oend) return ERROR(dstSize_tooSmall);
-            if (op != litPtr) memcpy(op, litPtr, lastLLSize);
-            op += lastLLSize;
+            if (lastLLSize > 0) {
+                if (op != litPtr) memcpy(op, litPtr, lastLLSize);
+                op += lastLLSize;
+            }
         }
     }
 
@@ -3031,9 +3039,12 @@ static size_t ZSTD_decompressBlock_internal(ZSTD_DCtx* dctx,
 {
     /* blockType == blockCompressed */
     const BYTE* ip = (const BYTE*)src;
+    size_t litCSize;
+
+    if (srcSize > BLOCKSIZE) return ERROR(corruption_detected);
 
     /* Decode literals sub-block */
-    size_t litCSize = ZSTD_decodeLiteralsBlock(dctx, src, srcSize);
+    litCSize = ZSTD_decodeLiteralsBlock(dctx, src, srcSize);
     if (ZSTD_isError(litCSize)) return litCSize;
     ip += litCSize;
     srcSize -= litCSize;
@@ -3400,7 +3411,9 @@ static size_t ZBUFF_decompressWithDictionary(ZBUFF_DCtx* zbc, const void* src, s
 static size_t ZBUFF_limitCopy(void* dst, size_t maxDstSize, const void* src, size_t srcSize)
 {
     size_t length = MIN(maxDstSize, srcSize);
-    memcpy(dst, src, length);
+    if (length > 0) {
+        memcpy(dst, src, length);
+    }
     return length;
 }
 

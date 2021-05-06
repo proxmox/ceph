@@ -22,8 +22,7 @@ describe('Configuration page', () => {
 
     it('should check that details table opens (w/o tab header)', () => {
       configuration.getStatusTables().should('be.visible');
-      configuration.getTabsCount().should('eq', 1);
-      configuration.getTabText(0).should('eq', 'Details');
+      configuration.getTabs().should('not.exist');
     });
   });
 
@@ -52,12 +51,12 @@ describe('Configuration page', () => {
 
     it('should show only modified configurations', () => {
       configuration.filterTable('Modified', 'yes');
-      configuration.getTableFoundCount().should('eq', 2);
+      configuration.getTableCount('found').should('eq', 2);
     });
 
     it('should hide all modified configurations', () => {
       configuration.filterTable('Modified', 'no');
-      configuration.getTableFoundCount().should('gt', 1);
+      configuration.getTableCount('found').should('gt', 1);
     });
   });
 });

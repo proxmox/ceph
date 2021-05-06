@@ -3,11 +3,11 @@ import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { By } from '@angular/platform-browser';
 import { BrowserAnimationsModule } from '@angular/platform-browser/animations';
 
-import * as _ from 'lodash';
-import { TabsModule } from 'ngx-bootstrap/tabs';
+import { NgbNavModule } from '@ng-bootstrap/ng-bootstrap';
+import _ from 'lodash';
 
-import { configureTestBed, i18nProviders } from '../../../../testing/unit-test-helper';
-import { SharedModule } from '../../../shared/shared.module';
+import { SharedModule } from '~/app/shared/shared.module';
+import { configureTestBed } from '~/testing/unit-test-helper';
 import { NfsDetailsComponent } from './nfs-details.component';
 
 describe('NfsDetailsComponent', () => {
@@ -18,8 +18,7 @@ describe('NfsDetailsComponent', () => {
 
   configureTestBed({
     declarations: [NfsDetailsComponent],
-    imports: [BrowserAnimationsModule, SharedModule, TabsModule.forRoot(), HttpClientTestingModule],
-    providers: i18nProviders
+    imports: [BrowserAnimationsModule, SharedModule, HttpClientTestingModule, NgbNavModule]
   });
 
   beforeEach(() => {
@@ -98,7 +97,7 @@ describe('NfsDetailsComponent', () => {
   });
 
   it('should have 1 client', () => {
-    expect(elem('li.nav-item:nth-of-type(2) span').nativeElement.textContent).toBe('Clients (1)');
+    expect(elem('ul.nav-tabs li:nth-of-type(2) a').nativeElement.textContent).toBe('Clients (1)');
     expect(component.clients).toEqual([
       {
         access_type: 'RW',

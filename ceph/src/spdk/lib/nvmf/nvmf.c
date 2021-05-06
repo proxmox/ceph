@@ -2,7 +2,7 @@
  *   BSD LICENSE
  *
  *   Copyright (c) Intel Corporation. All rights reserved.
- *   Copyright (c) 2018 Mellanox Technologies LTD. All rights reserved.
+ *   Copyright (c) 2018-2019 Mellanox Technologies LTD. All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
  *   modification, are permitted provided that the following conditions
@@ -51,8 +51,10 @@ SPDK_LOG_REGISTER_COMPONENT("nvmf", SPDK_LOG_NVMF)
 
 #define SPDK_NVMF_DEFAULT_MAX_SUBSYSTEMS 1024
 
+static TAILQ_HEAD(, spdk_nvmf_tgt) g_nvmf_tgts = TAILQ_HEAD_INITIALIZER(g_nvmf_tgts);
+
 typedef void (*nvmf_qpair_disconnect_cpl)(void *ctx, int status);
-static void spdk_nvmf_tgt_destroy_poll_group(void *io_device, void *ctx_buf);
+static void nvmf_tgt_destroy_poll_group(void *io_device, void *ctx_buf);
 
 /* supplied to a single call to nvmf_qpair_disconnect */
 struct nvmf_qpair_disconnect_ctx {
@@ -77,8 +79,8 @@ struct nvmf_qpair_disconnect_many_ctx {
 };
 
 static void
-spdk_nvmf_qpair_set_state(struct spdk_nvmf_qpair *qpair,
-			  enum spdk_nvmf_qpair_state state)
+nvmf_qpair_set_state(struct spdk_nvmf_qpair *qpair,
+		     enum spdk_nvmf_qpair_state state)
 {
 	assert(qpair != NULL);
 	assert(qpair->group->thread == spdk_get_thread());
@@ -87,7 +89,7 @@ spdk_nvmf_qpair_set_state(struct spdk_nvmf_qpair *qpair,
 }
 
 static int
-spdk_nvmf_poll_group_poll(void *ctx)
+nvmf_poll_group_poll(void *ctx)
 {
 	struct spdk_nvmf_poll_group *group = ctx;
 	int rc;
@@ -95,18 +97,18 @@ spdk_nvmf_poll_group_poll(void *ctx)
 	struct spdk_nvmf_transport_poll_group *tgroup;
 
 	TAILQ_FOREACH(tgroup, &group->tgroups, link) {
-		rc = spdk_nvmf_transport_poll_group_poll(tgroup);
+		rc = nvmf_transport_poll_group_poll(tgroup);
 		if (rc < 0) {
-			return -1;
+			return SPDK_POLLER_BUSY;
 		}
 		count += rc;
 	}
 
-	return count;
+	return count > 0 ? SPDK_POLLER_BUSY : SPDK_POLLER_IDLE;
 }
 
 static int
-spdk_nvmf_tgt_create_poll_group(void *io_device, void *ctx_buf)
+nvmf_tgt_create_poll_group(void *io_device, void *ctx_buf)
 {
 	struct spdk_nvmf_tgt *tgt = io_device;
 	struct spdk_nvmf_poll_group *group = ctx_buf;
@@ -117,7 +119,7 @@ spdk_nvmf_tgt_create_poll_group(void *io_device, void *ctx_buf)
 	TAILQ_INIT(&group->qpairs);
 
 	TAILQ_FOREACH(transport, &tgt->transports, link) {
-		spdk_nvmf_poll_group_add_transport(group, transport);
+		nvmf_poll_group_add_transport(group, transport);
 	}
 
 	group->num_sgroups = tgt->max_subsystems;
@@ -134,29 +136,38 @@ spdk_nvmf_tgt_create_poll_group(void *io_device, void *ctx_buf)
 			continue;
 		}
 
-		if (spdk_nvmf_poll_group_add_subsystem(group, subsystem, NULL, NULL) != 0) {
-			spdk_nvmf_tgt_destroy_poll_group(io_device, ctx_buf);
+		if (nvmf_poll_group_add_subsystem(group, subsystem, NULL, NULL) != 0) {
+			nvmf_tgt_destroy_poll_group(io_device, ctx_buf);
 			return -1;
 		}
 	}
 
-	group->poller = spdk_poller_register(spdk_nvmf_poll_group_poll, group, 0);
+	pthread_mutex_lock(&tgt->mutex);
+	TAILQ_INSERT_TAIL(&tgt->poll_groups, group, link);
+	pthread_mutex_unlock(&tgt->mutex);
+
+	group->poller = SPDK_POLLER_REGISTER(nvmf_poll_group_poll, group, 0);
 	group->thread = spdk_get_thread();
 
 	return 0;
 }
 
 static void
-spdk_nvmf_tgt_destroy_poll_group(void *io_device, void *ctx_buf)
+nvmf_tgt_destroy_poll_group(void *io_device, void *ctx_buf)
 {
+	struct spdk_nvmf_tgt *tgt = io_device;
 	struct spdk_nvmf_poll_group *group = ctx_buf;
 	struct spdk_nvmf_transport_poll_group *tgroup, *tmp;
 	struct spdk_nvmf_subsystem_poll_group *sgroup;
 	uint32_t sid, nsid;
 
+	pthread_mutex_lock(&tgt->mutex);
+	TAILQ_REMOVE(&tgt->poll_groups, group, link);
+	pthread_mutex_unlock(&tgt->mutex);
+
 	TAILQ_FOREACH_SAFE(tgroup, &group->tgroups, link, tmp) {
 		TAILQ_REMOVE(&group->tgroups, tgroup, link);
-		spdk_nvmf_transport_poll_group_destroy(tgroup);
+		nvmf_transport_poll_group_destroy(tgroup);
 	}
 
 	for (sid = 0; sid < group->num_sgroups; sid++) {
@@ -173,6 +184,10 @@ spdk_nvmf_tgt_destroy_poll_group(void *io_device, void *ctx_buf)
 	}
 
 	free(group->sgroups);
+
+	if (group->destroy_cb_fn) {
+		group->destroy_cb_fn(group->destroy_cb_arg, 0);
+	}
 }
 
 static void
@@ -191,7 +206,7 @@ _nvmf_tgt_disconnect_next_qpair(void *ctx)
 	}
 
 	if (!qpair || rc != 0) {
-		/* When the refcount from the channels reaches 0, spdk_nvmf_tgt_destroy_poll_group will be called. */
+		/* When the refcount from the channels reaches 0, nvmf_tgt_destroy_poll_group will be called. */
 		ch = spdk_io_channel_from_ctx(group);
 		spdk_put_io_channel(ch);
 		free(qpair_ctx);
@@ -199,7 +214,7 @@ _nvmf_tgt_disconnect_next_qpair(void *ctx)
 }
 
 static void
-spdk_nvmf_tgt_destroy_poll_group_qpairs(struct spdk_nvmf_poll_group *group)
+nvmf_tgt_destroy_poll_group_qpairs(struct spdk_nvmf_poll_group *group)
 {
 	struct nvmf_qpair_disconnect_many_ctx *ctx;
 
@@ -217,25 +232,38 @@ spdk_nvmf_tgt_destroy_poll_group_qpairs(struct spdk_nvmf_poll_group *group)
 }
 
 struct spdk_nvmf_tgt *
-spdk_nvmf_tgt_create(uint32_t max_subsystems)
+spdk_nvmf_tgt_create(struct spdk_nvmf_target_opts *opts)
 {
-	struct spdk_nvmf_tgt *tgt;
+	struct spdk_nvmf_tgt *tgt, *tmp_tgt;
+
+	if (strnlen(opts->name, NVMF_TGT_NAME_MAX_LENGTH) == NVMF_TGT_NAME_MAX_LENGTH) {
+		SPDK_ERRLOG("Provided target name exceeds the max length of %u.\n", NVMF_TGT_NAME_MAX_LENGTH);
+		return NULL;
+	}
+
+	TAILQ_FOREACH(tmp_tgt, &g_nvmf_tgts, link) {
+		if (!strncmp(opts->name, tmp_tgt->name, NVMF_TGT_NAME_MAX_LENGTH)) {
+			SPDK_ERRLOG("Provided target name must be unique.\n");
+			return NULL;
+		}
+	}
 
 	tgt = calloc(1, sizeof(*tgt));
 	if (!tgt) {
 		return NULL;
 	}
 
-	if (!max_subsystems) {
+	snprintf(tgt->name, NVMF_TGT_NAME_MAX_LENGTH, "%s", opts->name);
+
+	if (!opts || !opts->max_subsystems) {
 		tgt->max_subsystems = SPDK_NVMF_DEFAULT_MAX_SUBSYSTEMS;
 	} else {
-		tgt->max_subsystems = max_subsystems;
+		tgt->max_subsystems = opts->max_subsystems;
 	}
 
 	tgt->discovery_genctr = 0;
-	tgt->discovery_log_page = NULL;
-	tgt->discovery_log_page_size = 0;
 	TAILQ_INIT(&tgt->transports);
+	TAILQ_INIT(&tgt->poll_groups);
 
 	tgt->subsystems = calloc(tgt->max_subsystems, sizeof(struct spdk_nvmf_subsystem *));
 	if (!tgt->subsystems) {
@@ -243,17 +271,21 @@ spdk_nvmf_tgt_create(uint32_t max_subsystems)
 		return NULL;
 	}
 
+	pthread_mutex_init(&tgt->mutex, NULL);
+
+	TAILQ_INSERT_HEAD(&g_nvmf_tgts, tgt, link);
+
 	spdk_io_device_register(tgt,
-				spdk_nvmf_tgt_create_poll_group,
-				spdk_nvmf_tgt_destroy_poll_group,
+				nvmf_tgt_create_poll_group,
+				nvmf_tgt_destroy_poll_group,
 				sizeof(struct spdk_nvmf_poll_group),
-				"nvmf_tgt");
+				tgt->name);
 
 	return tgt;
 }
 
 static void
-spdk_nvmf_tgt_destroy_cb(void *io_device)
+nvmf_tgt_destroy_cb(void *io_device)
 {
 	struct spdk_nvmf_tgt *tgt = io_device;
 	struct spdk_nvmf_transport *transport, *transport_tmp;
@@ -261,13 +293,10 @@ spdk_nvmf_tgt_destroy_cb(void *io_device)
 	void					*destroy_cb_arg;
 	uint32_t i;
 
-	if (tgt->discovery_log_page) {
-		free(tgt->discovery_log_page);
-	}
-
 	if (tgt->subsystems) {
 		for (i = 0; i < tgt->max_subsystems; i++) {
 			if (tgt->subsystems[i]) {
+				nvmf_subsystem_remove_all_listeners(tgt->subsystems[i], true);
 				spdk_nvmf_subsystem_destroy(tgt->subsystems[i]);
 			}
 		}
@@ -297,21 +326,68 @@ spdk_nvmf_tgt_destroy(struct spdk_nvmf_tgt *tgt,
 	tgt->destroy_cb_fn = cb_fn;
 	tgt->destroy_cb_arg = cb_arg;
 
-	spdk_io_device_unregister(tgt, spdk_nvmf_tgt_destroy_cb);
+	TAILQ_REMOVE(&g_nvmf_tgts, tgt, link);
+
+	spdk_io_device_unregister(tgt, nvmf_tgt_destroy_cb);
+}
+
+const char *
+spdk_nvmf_tgt_get_name(struct spdk_nvmf_tgt *tgt)
+{
+	return tgt->name;
+}
+
+struct spdk_nvmf_tgt *
+spdk_nvmf_get_tgt(const char *name)
+{
+	struct spdk_nvmf_tgt *tgt;
+	uint32_t num_targets = 0;
+
+	TAILQ_FOREACH(tgt, &g_nvmf_tgts, link) {
+		if (name) {
+			if (!strncmp(tgt->name, name, NVMF_TGT_NAME_MAX_LENGTH)) {
+				return tgt;
+			}
+		}
+		num_targets++;
+	}
+
+	/*
+	 * special case. If there is only one target and
+	 * no name was specified, return the only available
+	 * target. If there is more than one target, name must
+	 * be specified.
+	 */
+	if (!name && num_targets == 1) {
+		return TAILQ_FIRST(&g_nvmf_tgts);
+	}
+
+	return NULL;
+}
+
+struct spdk_nvmf_tgt *
+spdk_nvmf_get_first_tgt(void)
+{
+	return TAILQ_FIRST(&g_nvmf_tgts);
+}
+
+struct spdk_nvmf_tgt *
+spdk_nvmf_get_next_tgt(struct spdk_nvmf_tgt *prev)
+{
+	return TAILQ_NEXT(prev, link);
 }
 
 static void
-spdk_nvmf_write_subsystem_config_json(struct spdk_json_write_ctx *w,
-				      struct spdk_nvmf_subsystem *subsystem)
+nvmf_write_subsystem_config_json(struct spdk_json_write_ctx *w,
+				 struct spdk_nvmf_subsystem *subsystem)
 {
 	struct spdk_nvmf_host *host;
-	struct spdk_nvmf_listener *listener;
+	struct spdk_nvmf_subsystem_listener *listener;
 	const struct spdk_nvme_transport_id *trid;
 	struct spdk_nvmf_ns *ns;
 	struct spdk_nvmf_ns_opts ns_opts;
 	uint32_t max_namespaces;
 	char uuid_str[SPDK_UUID_STRING_LEN];
-	const char *trtype;
 	const char *adrfam;
 
 	if (spdk_nvmf_subsystem_get_type(subsystem) != SPDK_NVMF_SUBTYPE_NVME) {
@@ -320,7 +396,7 @@ spdk_nvmf_write_subsystem_config_json(struct spdk_json_write_ctx *w,
 
 	/* { */
 	spdk_json_write_object_begin(w);
-	spdk_json_write_named_string(w, "method", "nvmf_subsystem_create");
+	spdk_json_write_named_string(w, "method", "nvmf_create_subsystem");
 
 	/*     "params" : { */
 	spdk_json_write_named_object_begin(w, "params");
@@ -342,9 +418,8 @@ spdk_nvmf_write_subsystem_config_json(struct spdk_json_write_ctx *w,
 
 	for (listener = spdk_nvmf_subsystem_get_first_listener(subsystem); listener != NULL;
 	     listener = spdk_nvmf_subsystem_get_next_listener(subsystem, listener)) {
-		trid = spdk_nvmf_listener_get_trid(listener);
+		trid = spdk_nvmf_subsystem_listener_get_trid(listener);
 
-		trtype = spdk_nvme_transport_id_trtype_str(trid->trtype);
 		adrfam = spdk_nvme_transport_id_adrfam_str(trid->adrfam);
 
 		spdk_json_write_object_begin(w);
@@ -358,7 +433,7 @@ spdk_nvmf_write_subsystem_config_json(struct spdk_json_write_ctx *w,
 		/*     "listen_address" : { */
 		spdk_json_write_named_object_begin(w, "listen_address");
 
-		spdk_json_write_named_string(w, "trtype", trtype);
+		spdk_json_write_named_string(w, "trtype", trid->trstring);
 		if (adrfam) {
 			spdk_json_write_named_string(w, "adrfam", adrfam);
 		}
@@ -446,7 +521,7 @@ spdk_nvmf_tgt_write_config_json(struct spdk_json_write_ctx *w, struct spdk_nvmf_
 	struct spdk_nvmf_transport *transport;
 
 	spdk_json_write_object_begin(w);
-	spdk_json_write_named_string(w, "method", "set_nvmf_target_max_subsystems");
+	spdk_json_write_named_string(w, "method", "nvmf_set_max_subsystems");
 
 	spdk_json_write_named_object_begin(w, "params");
 	spdk_json_write_named_uint32(w, "max_subsystems", tgt->max_subsystems);
@@ -462,7 +537,8 @@ spdk_nvmf_tgt_write_config_json(struct spdk_json_write_ctx *w, struct spdk_nvmf_
 		spdk_json_write_named_object_begin(w, "params");
 		spdk_json_write_named_string(w, "trtype", spdk_nvme_transport_id_trtype_str(transport->ops->type));
 		spdk_json_write_named_uint32(w, "max_queue_depth", transport->opts.max_queue_depth);
-		spdk_json_write_named_uint32(w, "max_qpairs_per_ctrlr", transport->opts.max_qpairs_per_ctrlr);
+		spdk_json_write_named_uint32(w, "max_io_qpairs_per_ctrlr",
+					     transport->opts.max_qpairs_per_ctrlr - 1);
 		spdk_json_write_named_uint32(w, "in_capsule_data_size", transport->opts.in_capsule_data_size);
 		spdk_json_write_named_uint32(w, "max_io_size", transport->opts.max_io_size);
 		spdk_json_write_named_uint32(w, "io_unit_size", transport->opts.io_unit_size);
@@ -470,6 +546,7 @@ spdk_nvmf_tgt_write_config_json(struct spdk_json_write_ctx *w, struct spdk_nvmf_
 		if (transport->ops->type == SPDK_NVME_TRANSPORT_RDMA) {
 			spdk_json_write_named_uint32(w, "max_srq_depth", transport->opts.max_srq_depth);
 		}
+		spdk_json_write_named_uint32(w, "abort_timeout_sec", transport->opts.abort_timeout_sec);
 		spdk_json_write_object_end(w);
 
 		spdk_json_write_object_end(w);
@@ -477,22 +554,20 @@ spdk_nvmf_tgt_write_config_json(struct spdk_json_write_ctx *w, struct spdk_nvmf_
 
 	subsystem = spdk_nvmf_subsystem_get_first(tgt);
 	while (subsystem) {
-		spdk_nvmf_write_subsystem_config_json(w, subsystem);
+		nvmf_write_subsystem_config_json(w, subsystem);
 		subsystem = spdk_nvmf_subsystem_get_next(subsystem);
 	}
 }
 
-void
+int
 spdk_nvmf_tgt_listen(struct spdk_nvmf_tgt *tgt,
-		     struct spdk_nvme_transport_id *trid,
-		     spdk_nvmf_tgt_listen_done_fn cb_fn,
-		     void *cb_arg)
+		     struct spdk_nvme_transport_id *trid)
 {
 	struct spdk_nvmf_transport *transport;
 	const char *trtype;
 	int rc;
 
-	transport = spdk_nvmf_tgt_get_transport(tgt, trid->trtype);
+	transport = spdk_nvmf_tgt_get_transport(tgt, trid->trstring);
 	if (!transport) {
 		trtype = spdk_nvme_transport_id_trtype_str(trid->trtype);
 		if (trtype != NULL) {
@@ -501,20 +576,45 @@ spdk_nvmf_tgt_listen(struct spdk_nvmf_tgt *tgt,
 			SPDK_ERRLOG("The specified trtype %d is unknown. Please make sure that it is properly registered.\n",
 				    trid->trtype);
 		}
-		cb_fn(cb_arg, -EINVAL);
-		return;
+
+		return -EINVAL;
 	}
 
 	rc = spdk_nvmf_transport_listen(transport, trid);
 	if (rc < 0) {
 		SPDK_ERRLOG("Unable to listen on address '%s'\n", trid->traddr);
-		cb_fn(cb_arg, rc);
-		return;
 	}
 
-	tgt->discovery_genctr++;
+	return rc;
+}
 
-	cb_fn(cb_arg, 0);
+int
+spdk_nvmf_tgt_stop_listen(struct spdk_nvmf_tgt *tgt,
+			  struct spdk_nvme_transport_id *trid)
+{
+	struct spdk_nvmf_transport *transport;
+	const char *trtype;
+	int rc;
+
+	transport = spdk_nvmf_tgt_get_transport(tgt, trid->trstring);
+	if (!transport) {
+		trtype = spdk_nvme_transport_id_trtype_str(trid->trtype);
+		if (trtype != NULL) {
+			SPDK_ERRLOG("Unable to stop listen on transport %s. The transport must be created first.\n",
+				    trtype);
+		} else {
+			SPDK_ERRLOG("The specified trtype %d is unknown. Please make sure that it is properly registered.\n",
+				    trid->trtype);
+		}
+		return -EINVAL;
+	}
+
+	rc = spdk_nvmf_transport_stop_listen(transport, trid);
+	if (rc < 0) {
+		SPDK_ERRLOG("Failed to stop listening on address '%s'\n", trid->traddr);
+		return rc;
+	}
+	return 0;
 }
 
 struct spdk_nvmf_tgt_add_transport_ctx {
@@ -525,7 +625,7 @@ struct spdk_nvmf_tgt_add_transport_ctx {
 };
 
 static void
-_spdk_nvmf_tgt_add_transport_done(struct spdk_io_channel_iter *i, int status)
+_nvmf_tgt_add_transport_done(struct spdk_io_channel_iter *i, int status)
 {
 	struct spdk_nvmf_tgt_add_transport_ctx *ctx = spdk_io_channel_iter_get_ctx(i);
 
@@ -535,14 +635,14 @@ _spdk_nvmf_tgt_add_transport_done(struct spdk_io_channel_iter *i, int status)
 }
 
 static void
-_spdk_nvmf_tgt_add_transport(struct spdk_io_channel_iter *i)
+_nvmf_tgt_add_transport(struct spdk_io_channel_iter *i)
 {
 	struct spdk_nvmf_tgt_add_transport_ctx *ctx = spdk_io_channel_iter_get_ctx(i);
 	struct spdk_io_channel *ch = spdk_io_channel_iter_get_channel(i);
 	struct spdk_nvmf_poll_group *group = spdk_io_channel_get_ctx(ch);
 	int rc;
 
-	rc = spdk_nvmf_poll_group_add_transport(group, ctx->transport);
+	rc = nvmf_poll_group_add_transport(group, ctx->transport);
 	spdk_for_each_channel_continue(i, rc);
 }
 
@@ -553,7 +653,7 @@ void spdk_nvmf_tgt_add_transport(struct spdk_nvmf_tgt *tgt,
 {
 	struct spdk_nvmf_tgt_add_transport_ctx *ctx;
 
-	if (spdk_nvmf_tgt_get_transport(tgt, transport->ops->type)) {
+	if (spdk_nvmf_tgt_get_transport(tgt, transport->ops->name)) {
 		cb_fn(cb_arg, -EEXIST);
 		return; /* transport already created */
 	}
@@ -573,9 +673,9 @@ void spdk_nvmf_tgt_add_transport(struct spdk_nvmf_tgt *tgt,
 	ctx->cb_arg = cb_arg;
 
 	spdk_for_each_channel(tgt,
-			      _spdk_nvmf_tgt_add_transport,
+			      _nvmf_tgt_add_transport,
 			      ctx,
-			      _spdk_nvmf_tgt_add_transport_done);
+			      _nvmf_tgt_add_transport_done);
 }
 
 struct spdk_nvmf_subsystem *
@@ -585,6 +685,12 @@ spdk_nvmf_tgt_find_subsystem(struct spdk_nvmf_tgt *tgt, const char *subnqn)
 	uint32_t sid;
 
 	if (!subnqn) {
+		return NULL;
+	}
+
+	/* Ensure that subnqn is null terminated */
+	if (!memchr(subnqn, '\0', SPDK_NVMF_NQN_MAX_LEN + 1)) {
+		SPDK_ERRLOG("Connect SUBNQN is not null terminated\n");
 		return NULL;
 	}
 
@@ -603,27 +709,82 @@ spdk_nvmf_tgt_find_subsystem(struct spdk_nvmf_tgt *tgt, const char *subnqn)
 }
 
 struct spdk_nvmf_transport *
-spdk_nvmf_tgt_get_transport(struct spdk_nvmf_tgt *tgt, enum spdk_nvme_transport_type type)
+spdk_nvmf_tgt_get_transport(struct spdk_nvmf_tgt *tgt, const char *transport_name)
 {
 	struct spdk_nvmf_transport *transport;
 
 	TAILQ_FOREACH(transport, &tgt->transports, link) {
-		if (transport->ops->type == type) {
+		if (!strncasecmp(transport->ops->name, transport_name, SPDK_NVMF_TRSTRING_MAX_LEN)) {
 			return transport;
 		}
 	}
-
 	return NULL;
 }
 
+struct nvmf_new_qpair_ctx {
+	struct spdk_nvmf_qpair *qpair;
+	struct spdk_nvmf_poll_group *group;
+};
+
+static void
+_nvmf_poll_group_add(void *_ctx)
+{
+	struct nvmf_new_qpair_ctx *ctx = _ctx;
+	struct spdk_nvmf_qpair *qpair = ctx->qpair;
+	struct spdk_nvmf_poll_group *group = ctx->group;
+
+	free(_ctx);
+
+	if (spdk_nvmf_poll_group_add(group, qpair) != 0) {
+		SPDK_ERRLOG("Unable to add the qpair to a poll group.\n");
+		spdk_nvmf_qpair_disconnect(qpair, NULL, NULL);
+	}
+}
+
 void
-spdk_nvmf_tgt_accept(struct spdk_nvmf_tgt *tgt, new_qpair_fn cb_fn)
+spdk_nvmf_tgt_new_qpair(struct spdk_nvmf_tgt *tgt, struct spdk_nvmf_qpair *qpair)
+{
+	struct spdk_nvmf_poll_group *group;
+	struct nvmf_new_qpair_ctx *ctx;
+
+	group = spdk_nvmf_get_optimal_poll_group(qpair);
+	if (group == NULL) {
+		if (tgt->next_poll_group == NULL) {
+			tgt->next_poll_group = TAILQ_FIRST(&tgt->poll_groups);
+			if (tgt->next_poll_group == NULL) {
+				SPDK_ERRLOG("No poll groups exist.\n");
+				spdk_nvmf_qpair_disconnect(qpair, NULL, NULL);
+				return;
+			}
+		}
+		group = tgt->next_poll_group;
+		tgt->next_poll_group = TAILQ_NEXT(group, link);
+	}
+
+	ctx = calloc(1, sizeof(*ctx));
+	if (!ctx) {
+		SPDK_ERRLOG("Unable to send message to poll group.\n");
+		spdk_nvmf_qpair_disconnect(qpair, NULL, NULL);
+		return;
+	}
+
+	ctx->qpair = qpair;
+	ctx->group = group;
+
+	spdk_thread_send_msg(group->thread, _nvmf_poll_group_add, ctx);
+}
+
+uint32_t
+spdk_nvmf_tgt_accept(struct spdk_nvmf_tgt *tgt)
 {
 	struct spdk_nvmf_transport *transport, *tmp;
+	uint32_t count = 0;
 
 	TAILQ_FOREACH_SAFE(transport, &tgt->transports, link, tmp) {
-		spdk_nvmf_transport_accept(transport, cb_fn);
+		count += nvmf_transport_accept(transport);
 	}
+
+	return count;
 }
 
 struct spdk_nvmf_poll_group *
@@ -641,10 +802,16 @@ spdk_nvmf_poll_group_create(struct spdk_nvmf_tgt *tgt)
 }
 
 void
-spdk_nvmf_poll_group_destroy(struct spdk_nvmf_poll_group *group)
+spdk_nvmf_poll_group_destroy(struct spdk_nvmf_poll_group *group,
+			     spdk_nvmf_poll_group_destroy_done_fn cb_fn,
+			     void *cb_arg)
 {
+	assert(group->destroy_cb_fn == NULL);
+	group->destroy_cb_fn = cb_fn;
+	group->destroy_cb_arg = cb_arg;
+
 	/* This function will put the io_channel associated with this poll group */
-	spdk_nvmf_tgt_destroy_poll_group_qpairs(group);
+	nvmf_tgt_destroy_poll_group_qpairs(group);
 }
 
 int
@@ -659,7 +826,7 @@ spdk_nvmf_poll_group_add(struct spdk_nvmf_poll_group *group,
 
 	TAILQ_FOREACH(tgroup, &group->tgroups, link) {
 		if (tgroup->transport == qpair->transport) {
-			rc = spdk_nvmf_transport_poll_group_add(tgroup, qpair);
+			rc = nvmf_transport_poll_group_add(tgroup, qpair);
 			break;
 		}
 	}
@@ -667,7 +834,7 @@ spdk_nvmf_poll_group_add(struct spdk_nvmf_poll_group *group,
 	/* We add the qpair to the group only it is succesfully added into the tgroup */
 	if (rc == 0) {
 		TAILQ_INSERT_TAIL(&group->qpairs, qpair, link);
-		spdk_nvmf_qpair_set_state(qpair, SPDK_NVMF_QPAIR_ACTIVE);
+		nvmf_qpair_set_state(qpair, SPDK_NVMF_QPAIR_ACTIVE);
 	}
 
 	return rc;
@@ -678,11 +845,19 @@ void _nvmf_ctrlr_destruct(void *ctx)
 {
 	struct spdk_nvmf_ctrlr *ctrlr = ctx;
 
-	spdk_nvmf_ctrlr_destruct(ctrlr);
+	nvmf_ctrlr_destruct(ctrlr);
 }
 
 static void
-_spdk_nvmf_ctrlr_free_from_qpair(void *ctx)
+_nvmf_transport_qpair_fini(void *ctx)
+{
+	struct spdk_nvmf_qpair *qpair = ctx;
+
+	nvmf_transport_qpair_fini(qpair);
+}
+
+static void
+_nvmf_ctrlr_free_from_qpair(void *ctx)
 {
 	struct nvmf_qpair_disconnect_ctx *qpair_ctx = ctx;
 	struct spdk_nvmf_ctrlr *ctrlr = qpair_ctx->ctrlr;
@@ -696,31 +871,28 @@ _spdk_nvmf_ctrlr_free_from_qpair(void *ctx)
 		spdk_thread_send_msg(ctrlr->subsys->thread, _nvmf_ctrlr_destruct, ctrlr);
 	}
 
+	spdk_thread_send_msg(qpair_ctx->thread, _nvmf_transport_qpair_fini, qpair_ctx->qpair);
 	if (qpair_ctx->cb_fn) {
 		spdk_thread_send_msg(qpair_ctx->thread, qpair_ctx->cb_fn, qpair_ctx->ctx);
 	}
 	free(qpair_ctx);
 }
 
-static void
-_spdk_nvmf_qpair_destroy(void *ctx, int status)
+void
+spdk_nvmf_poll_group_remove(struct spdk_nvmf_qpair *qpair)
 {
-	struct nvmf_qpair_disconnect_ctx *qpair_ctx = ctx;
-	struct spdk_nvmf_qpair *qpair = qpair_ctx->qpair;
 	struct spdk_nvmf_ctrlr *ctrlr = qpair->ctrlr;
 	struct spdk_nvmf_transport_poll_group *tgroup;
 	struct spdk_nvmf_request *req, *tmp;
 	struct spdk_nvmf_subsystem_poll_group *sgroup;
 	int rc;
 
-	assert(qpair->state == SPDK_NVMF_QPAIR_DEACTIVATING);
-	spdk_nvmf_qpair_set_state(qpair, SPDK_NVMF_QPAIR_ERROR);
-	qpair_ctx->qid = qpair->qid;
+	nvmf_qpair_set_state(qpair, SPDK_NVMF_QPAIR_ERROR);
 
 	/* Find the tgroup and remove the qpair from the tgroup */
 	TAILQ_FOREACH(tgroup, &qpair->group->tgroups, link) {
 		if (tgroup->transport == qpair->transport) {
-			rc = spdk_nvmf_transport_poll_group_remove(tgroup, qpair);
+			rc = nvmf_transport_poll_group_remove(tgroup, qpair);
 			if (rc && (rc != ENOTSUP)) {
 				SPDK_ERRLOG("Cannot remove qpair=%p from transport group=%p\n",
 					    qpair, tgroup);
@@ -734,7 +906,7 @@ _spdk_nvmf_qpair_destroy(void *ctx, int status)
 		TAILQ_FOREACH_SAFE(req, &sgroup->queued, link, tmp) {
 			if (req->qpair == qpair) {
 				TAILQ_REMOVE(&sgroup->queued, req, link);
-				if (spdk_nvmf_transport_req_free(req)) {
+				if (nvmf_transport_req_free(req)) {
 					SPDK_ERRLOG("Transport request free error!\n");
 				}
 			}
@@ -742,10 +914,23 @@ _spdk_nvmf_qpair_destroy(void *ctx, int status)
 	}
 
 	TAILQ_REMOVE(&qpair->group->qpairs, qpair, link);
+	qpair->group = NULL;
+}
 
-	spdk_nvmf_transport_qpair_fini(qpair);
+static void
+_nvmf_qpair_destroy(void *ctx, int status)
+{
+	struct nvmf_qpair_disconnect_ctx *qpair_ctx = ctx;
+	struct spdk_nvmf_qpair *qpair = qpair_ctx->qpair;
+	struct spdk_nvmf_ctrlr *ctrlr = qpair->ctrlr;
+
+	assert(qpair->state == SPDK_NVMF_QPAIR_DEACTIVATING);
+	qpair_ctx->qid = qpair->qid;
+
+	spdk_nvmf_poll_group_remove(qpair);
 
 	if (!ctrlr || !ctrlr->thread) {
+		nvmf_transport_qpair_fini(qpair);
 		if (qpair_ctx->cb_fn) {
 			spdk_thread_send_msg(qpair_ctx->thread, qpair_ctx->cb_fn, qpair_ctx->ctx);
 		}
@@ -754,8 +939,7 @@ _spdk_nvmf_qpair_destroy(void *ctx, int status)
 	}
 
 	qpair_ctx->ctrlr = ctrlr;
-	spdk_thread_send_msg(ctrlr->thread, _spdk_nvmf_ctrlr_free_from_qpair, qpair_ctx);
-
+	spdk_thread_send_msg(ctrlr->thread, _nvmf_ctrlr_free_from_qpair, qpair_ctx);
 }
 
 int
@@ -765,7 +949,7 @@ spdk_nvmf_qpair_disconnect(struct spdk_nvmf_qpair *qpair, nvmf_qpair_disconnect_
 
 	/* If we get a qpair in the uninitialized state, we can just destroy it immediately */
 	if (qpair->state == SPDK_NVMF_QPAIR_UNINITIALIZED) {
-		spdk_nvmf_transport_qpair_fini(qpair);
+		nvmf_transport_qpair_fini(qpair);
 		if (cb_fn) {
 			cb_fn(ctx);
 		}
@@ -789,7 +973,7 @@ spdk_nvmf_qpair_disconnect(struct spdk_nvmf_qpair *qpair, nvmf_qpair_disconnect_
 	}
 
 	assert(qpair->state == SPDK_NVMF_QPAIR_ACTIVE);
-	spdk_nvmf_qpair_set_state(qpair, SPDK_NVMF_QPAIR_DEACTIVATING);
+	nvmf_qpair_set_state(qpair, SPDK_NVMF_QPAIR_DEACTIVATING);
 
 	qpair_ctx = calloc(1, sizeof(struct nvmf_qpair_disconnect_ctx));
 	if (!qpair_ctx) {
@@ -804,13 +988,13 @@ spdk_nvmf_qpair_disconnect(struct spdk_nvmf_qpair *qpair, nvmf_qpair_disconnect_
 
 	/* Check for outstanding I/O */
 	if (!TAILQ_EMPTY(&qpair->outstanding)) {
-		qpair->state_cb = _spdk_nvmf_qpair_destroy;
+		qpair->state_cb = _nvmf_qpair_destroy;
 		qpair->state_cb_arg = qpair_ctx;
-		spdk_nvmf_qpair_free_aer(qpair);
+		nvmf_qpair_free_aer(qpair);
 		return 0;
 	}
 
-	_spdk_nvmf_qpair_destroy(qpair_ctx, 0);
+	_nvmf_qpair_destroy(qpair_ctx, 0);
 
 	return 0;
 }
@@ -819,26 +1003,26 @@ int
 spdk_nvmf_qpair_get_peer_trid(struct spdk_nvmf_qpair *qpair,
 			      struct spdk_nvme_transport_id *trid)
 {
-	return spdk_nvmf_transport_qpair_get_peer_trid(qpair, trid);
+	return nvmf_transport_qpair_get_peer_trid(qpair, trid);
 }
 
 int
 spdk_nvmf_qpair_get_local_trid(struct spdk_nvmf_qpair *qpair,
 			       struct spdk_nvme_transport_id *trid)
 {
-	return spdk_nvmf_transport_qpair_get_local_trid(qpair, trid);
+	return nvmf_transport_qpair_get_local_trid(qpair, trid);
 }
 
 int
 spdk_nvmf_qpair_get_listen_trid(struct spdk_nvmf_qpair *qpair,
 				struct spdk_nvme_transport_id *trid)
 {
-	return spdk_nvmf_transport_qpair_get_listen_trid(qpair, trid);
+	return nvmf_transport_qpair_get_listen_trid(qpair, trid);
 }
 
 int
-spdk_nvmf_poll_group_add_transport(struct spdk_nvmf_poll_group *group,
-				   struct spdk_nvmf_transport *transport)
+nvmf_poll_group_add_transport(struct spdk_nvmf_poll_group *group,
+			      struct spdk_nvmf_transport *transport)
 {
 	struct spdk_nvmf_transport_poll_group *tgroup;
 
@@ -849,12 +1033,13 @@ spdk_nvmf_poll_group_add_transport(struct spdk_nvmf_poll_group *group,
 		}
 	}
 
-	tgroup = spdk_nvmf_transport_poll_group_create(transport);
+	tgroup = nvmf_transport_poll_group_create(transport);
 	if (!tgroup) {
 		SPDK_ERRLOG("Unable to create poll group for transport\n");
 		return -1;
 	}
 
+	tgroup->group = group;
 	TAILQ_INSERT_TAIL(&group->tgroups, tgroup, link);
 
 	return 0;
@@ -869,6 +1054,10 @@ poll_group_update_subsystem(struct spdk_nvmf_poll_group *group,
 	uint32_t i, j;
 	struct spdk_nvmf_ns *ns;
 	struct spdk_nvmf_registrant *reg, *tmp;
+	struct spdk_io_channel *ch;
+	struct spdk_nvmf_subsystem_pg_ns_info *ns_info;
+	struct spdk_nvmf_ctrlr *ctrlr;
+	bool ns_changed;
 
 	/* Make sure our poll group has memory for this subsystem allocated */
 	if (subsystem->id >= group->num_sgroups) {
@@ -880,6 +1069,8 @@ poll_group_update_subsystem(struct spdk_nvmf_poll_group *group,
 	/* Make sure the array of namespace information is the correct size */
 	new_num_ns = subsystem->max_nsid;
 	old_num_ns = sgroup->num_ns;
+
+	ns_changed = false;
 
 	if (old_num_ns == 0) {
 		if (new_num_ns > 0) {
@@ -909,9 +1100,11 @@ poll_group_update_subsystem(struct spdk_nvmf_poll_group *group,
 
 		/* Free the extra I/O channels */
 		for (i = new_num_ns; i < old_num_ns; i++) {
-			if (sgroup->ns_info[i].channel) {
-				spdk_put_io_channel(sgroup->ns_info[i].channel);
-				sgroup->ns_info[i].channel = NULL;
+			ns_info = &sgroup->ns_info[i];
+
+			if (ns_info->channel) {
+				spdk_put_io_channel(ns_info->channel);
+				ns_info->channel = NULL;
 			}
 		}
 
@@ -933,40 +1126,76 @@ poll_group_update_subsystem(struct spdk_nvmf_poll_group *group,
 	/* Detect bdevs that were added or removed */
 	for (i = 0; i < sgroup->num_ns; i++) {
 		ns = subsystem->ns[i];
-		if (ns == NULL && sgroup->ns_info[i].channel == NULL) {
+		ns_info = &sgroup->ns_info[i];
+		ch = ns_info->channel;
+
+		if (ns == NULL && ch == NULL) {
 			/* Both NULL. Leave empty */
-		} else if (ns == NULL && sgroup->ns_info[i].channel != NULL) {
+		} else if (ns == NULL && ch != NULL) {
 			/* There was a channel here, but the namespace is gone. */
-			spdk_put_io_channel(sgroup->ns_info[i].channel);
-			sgroup->ns_info[i].channel = NULL;
-		} else if (ns != NULL && sgroup->ns_info[i].channel == NULL) {
+			ns_changed = true;
+			spdk_put_io_channel(ch);
+			ns_info->channel = NULL;
+		} else if (ns != NULL && ch == NULL) {
 			/* A namespace appeared but there is no channel yet */
-			sgroup->ns_info[i].channel = spdk_bdev_get_io_channel(ns->desc);
-			if (sgroup->ns_info[i].channel == NULL) {
+			ns_changed = true;
+			ch = spdk_bdev_get_io_channel(ns->desc);
+			if (ch == NULL) {
 				SPDK_ERRLOG("Could not allocate I/O channel.\n");
 				return -ENOMEM;
 			}
-		} else {
-			/* A namespace was present before and didn't change. */
+			ns_info->channel = ch;
+		} else if (spdk_uuid_compare(&ns_info->uuid, spdk_bdev_get_uuid(ns->bdev)) != 0) {
+			/* A namespace was here before, but was replaced by a new one. */
+			ns_changed = true;
+			spdk_put_io_channel(ns_info->channel);
+			memset(ns_info, 0, sizeof(*ns_info));
+
+			ch = spdk_bdev_get_io_channel(ns->desc);
+			if (ch == NULL) {
+				SPDK_ERRLOG("Could not allocate I/O channel.\n");
+				return -ENOMEM;
+			}
+			ns_info->channel = ch;
+		} else if (ns_info->num_blocks != spdk_bdev_get_num_blocks(ns->bdev)) {
+			/* Namespace is still there but size has changed */
+			SPDK_DEBUGLOG(SPDK_LOG_NVMF, "Namespace resized: subsystem_id %d,"
+				      " nsid %u, pg %p, old %lu, new %lu\n",
+				      subsystem->id,
+				      ns->nsid,
+				      group,
+				      ns_info->num_blocks,
+				      spdk_bdev_get_num_blocks(ns->bdev));
+			ns_changed = true;
 		}
 
 		if (ns == NULL) {
-			memset(&sgroup->ns_info[i], 0, sizeof(struct spdk_nvmf_subsystem_pg_ns_info));
+			memset(ns_info, 0, sizeof(*ns_info));
 		} else {
-			sgroup->ns_info[i].crkey = ns->crkey;
-			sgroup->ns_info[i].rtype = ns->rtype;
+			ns_info->uuid = *spdk_bdev_get_uuid(ns->bdev);
+			ns_info->num_blocks = spdk_bdev_get_num_blocks(ns->bdev);
+			ns_info->crkey = ns->crkey;
+			ns_info->rtype = ns->rtype;
 			if (ns->holder) {
-				sgroup->ns_info[i].holder_id = ns->holder->hostid;
+				ns_info->holder_id = ns->holder->hostid;
 			}
 
-			memset(&sgroup->ns_info[i].reg_hostid, 0, SPDK_NVMF_MAX_NUM_REGISTRANTS * sizeof(struct spdk_uuid));
+			memset(&ns_info->reg_hostid, 0, SPDK_NVMF_MAX_NUM_REGISTRANTS * sizeof(struct spdk_uuid));
 			j = 0;
 			TAILQ_FOREACH_SAFE(reg, &ns->registrants, link, tmp) {
 				if (j >= SPDK_NVMF_MAX_NUM_REGISTRANTS) {
 					SPDK_ERRLOG("Maximum %u registrants can support.\n", SPDK_NVMF_MAX_NUM_REGISTRANTS);
 					return -EINVAL;
 				}
-				sgroup->ns_info[i].reg_hostid[j++] = reg->hostid;
+				ns_info->reg_hostid[j++] = reg->hostid;
+			}
+		}
+	}
+
+	if (ns_changed) {
+		TAILQ_FOREACH(ctrlr, &subsystem->ctrlrs, link) {
+			if (ctrlr->admin_qpair->group == group) {
+				nvmf_ctrlr_async_event_ns_notice(ctrlr);
 			}
 		}
 	}
@@ -975,16 +1204,16 @@ poll_group_update_subsystem(struct spdk_nvmf_poll_group *group,
 }
 
 int
-spdk_nvmf_poll_group_update_subsystem(struct spdk_nvmf_poll_group *group,
-				      struct spdk_nvmf_subsystem *subsystem)
+nvmf_poll_group_update_subsystem(struct spdk_nvmf_poll_group *group,
+				 struct spdk_nvmf_subsystem *subsystem)
 {
 	return poll_group_update_subsystem(group, subsystem);
 }
 
 int
-spdk_nvmf_poll_group_add_subsystem(struct spdk_nvmf_poll_group *group,
-				   struct spdk_nvmf_subsystem *subsystem,
-				   spdk_nvmf_poll_group_mod_done cb_fn, void *cb_arg)
+nvmf_poll_group_add_subsystem(struct spdk_nvmf_poll_group *group,
+			      struct spdk_nvmf_subsystem *subsystem,
+			      spdk_nvmf_poll_group_mod_done cb_fn, void *cb_arg)
 {
 	int rc = 0;
 	struct spdk_nvmf_subsystem_poll_group *sgroup = &group->sgroups[subsystem->id];
@@ -993,7 +1222,7 @@ spdk_nvmf_poll_group_add_subsystem(struct spdk_nvmf_poll_group *group,
 
 	rc = poll_group_update_subsystem(group, subsystem);
 	if (rc) {
-		spdk_nvmf_poll_group_remove_subsystem(group, subsystem, NULL, NULL);
+		nvmf_poll_group_remove_subsystem(group, subsystem, NULL, NULL);
 		goto fini;
 	}
 
@@ -1073,9 +1302,9 @@ _nvmf_subsystem_disconnect_next_qpair(void *ctx)
 }
 
 void
-spdk_nvmf_poll_group_remove_subsystem(struct spdk_nvmf_poll_group *group,
-				      struct spdk_nvmf_subsystem *subsystem,
-				      spdk_nvmf_poll_group_mod_done cb_fn, void *cb_arg)
+nvmf_poll_group_remove_subsystem(struct spdk_nvmf_poll_group *group,
+				 struct spdk_nvmf_subsystem *subsystem,
+				 spdk_nvmf_poll_group_mod_done cb_fn, void *cb_arg)
 {
 	struct spdk_nvmf_qpair *qpair;
 	struct spdk_nvmf_subsystem_poll_group *sgroup;
@@ -1123,9 +1352,9 @@ fini:
 }
 
 void
-spdk_nvmf_poll_group_pause_subsystem(struct spdk_nvmf_poll_group *group,
-				     struct spdk_nvmf_subsystem *subsystem,
-				     spdk_nvmf_poll_group_mod_done cb_fn, void *cb_arg)
+nvmf_poll_group_pause_subsystem(struct spdk_nvmf_poll_group *group,
+				struct spdk_nvmf_subsystem *subsystem,
+				spdk_nvmf_poll_group_mod_done cb_fn, void *cb_arg)
 {
 	struct spdk_nvmf_subsystem_poll_group *sgroup;
 	int rc = 0;
@@ -1159,9 +1388,9 @@ fini:
 }
 
 void
-spdk_nvmf_poll_group_resume_subsystem(struct spdk_nvmf_poll_group *group,
-				      struct spdk_nvmf_subsystem *subsystem,
-				      spdk_nvmf_poll_group_mod_done cb_fn, void *cb_arg)
+nvmf_poll_group_resume_subsystem(struct spdk_nvmf_poll_group *group,
+				 struct spdk_nvmf_subsystem *subsystem,
+				 spdk_nvmf_poll_group_mod_done cb_fn, void *cb_arg)
 {
 	struct spdk_nvmf_request *req, *tmp;
 	struct spdk_nvmf_subsystem_poll_group *sgroup;
@@ -1192,4 +1421,37 @@ fini:
 	if (cb_fn) {
 		cb_fn(cb_arg, rc);
 	}
+}
+
+
+struct spdk_nvmf_poll_group *
+spdk_nvmf_get_optimal_poll_group(struct spdk_nvmf_qpair *qpair)
+{
+	struct spdk_nvmf_transport_poll_group *tgroup;
+
+	tgroup = nvmf_transport_get_optimal_poll_group(qpair->transport, qpair);
+
+	if (tgroup == NULL) {
+		return NULL;
+	}
+
+	return tgroup->group;
+}
+
+int
+spdk_nvmf_poll_group_get_stat(struct spdk_nvmf_tgt *tgt,
+			      struct spdk_nvmf_poll_group_stat *stat)
+{
+	struct spdk_io_channel *ch;
+	struct spdk_nvmf_poll_group *group;
+
+	if (tgt == NULL || stat == NULL) {
+		return -EINVAL;
+	}
+
+	ch = spdk_get_io_channel(tgt);
+	group = spdk_io_channel_get_ctx(ch);
+	*stat = group->stat;
+	spdk_put_io_channel(ch);
+	return 0;
 }

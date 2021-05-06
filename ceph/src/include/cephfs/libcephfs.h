@@ -44,6 +44,14 @@ extern "C" {
 #define LIBCEPHFS_VERSION(maj, min, extra) ((maj << 16) + (min << 8) + extra)
 #define LIBCEPHFS_VERSION_CODE LIBCEPHFS_VERSION(LIBCEPHFS_VER_MAJOR, LIBCEPHFS_VER_MINOR, LIBCEPHFS_VER_EXTRA)
 
+#if __GNUC__ >= 4
+  #define LIBCEPHFS_DEPRECATED   __attribute__((deprecated))
+  #pragma GCC diagnostic push
+  #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+#else
+  #define LIBCEPHFS_DEPRECATED
+#endif
+
 /*
  * If using glibc check that file offset is 64-bit.
  */
@@ -89,6 +97,19 @@ typedef struct Inode Inode;
 
 struct ceph_mount_info;
 struct ceph_dir_result;
+
+// user supplied key,value pair to be associated with a snapshot.
+// callers can supply an array of this struct via ceph_mksnap().
+struct snap_metadata {
+  const char *key;
+  const char *value;
+};
+
+struct snap_info {
+  uint64_t id;
+  size_t nr_snap_metadata;
+  struct snap_metadata *snap_metadata;
+};
 
 /* setattr mask bits */
 #ifndef CEPH_SETATTR_MODE
@@ -631,6 +652,32 @@ void ceph_seekdir(struct ceph_mount_info *cmount, struct ceph_dir_result *dirp, 
 int ceph_mkdir(struct ceph_mount_info *cmount, const char *path, mode_t mode);
 
 /**
+ * Create a snapshot
+ *
+ * @param cmount the ceph mount handle to use for making the directory.
+ * @param path the path of the directory to create snapshot.  This must be either an
+ *        absolute path or a relative path off of the current working directory.
+ * @param name snapshot name
+ * @param mode the permissions the directory should have once created.
+ * @param snap_metadata array of snap metadata structs
+ * @param nr_snap_metadata number of snap metadata struct entries
+ * @returns 0 on success or a negative return code on error.
+ */
+int ceph_mksnap(struct ceph_mount_info *cmount, const char *path, const char *name,
+                mode_t mode, struct snap_metadata *snap_metadata, size_t nr_snap_metadata);
+
+/**
+ * Remove a snapshot
+ *
+ * @param cmount the ceph mount handle to use for making the directory.
+ * @param path the path of the directory to create snapshot.  This must be either an
+ *        absolute path or a relative path off of the current working directory.
+ * @param name snapshot name
+ * @returns 0 on success or a negative return code on error.
+ */
+int ceph_rmsnap(struct ceph_mount_info *cmount, const char *path, const char *name);
+
+/**
  * Create multiple directories at once.
  *
  * @param cmount the ceph mount handle to use for making the directories.
@@ -699,6 +746,16 @@ int ceph_symlink(struct ceph_mount_info *cmount, const char *existing, const cha
  * @{
  */
 
+
+/**
+ * Checks if deleting a file, link or directory is allowed.
+ *
+ * @param cmount the ceph mount handle to use.
+ * @param path the path of the file, link or directory.
+ * @returns 0 on success or negative error code on failure.
+ */
+int ceph_may_delete(struct ceph_mount_info *cmount, const char *path);
+
 /**
  * Removes a file, link, or symbolic link.  If the file/link has multiple links to it, the
  * file will not disappear from the namespace until all references to it are removed.
@@ -748,25 +805,33 @@ int ceph_statx(struct ceph_mount_info *cmount, const char *path, struct ceph_sta
 /**
  * Get a file's statistics and attributes.
  *
- * @param cmount the ceph mount handle to use for performing the stat.
- * @param path the file or directory to get the statistics of.
- * @param stbuf the stat struct that will be filled in with the file's statistics.
- * @returns 0 on success or negative error code on failure.
- */
-int ceph_stat(struct ceph_mount_info *cmount, const char *path, struct stat *stbuf);
-
-/**
- * Get a file's statistics and attributes, without following symlinks.
+ * ceph_stat() is deprecated, use ceph_statx() instead.
  *
  * @param cmount the ceph mount handle to use for performing the stat.
  * @param path the file or directory to get the statistics of.
  * @param stbuf the stat struct that will be filled in with the file's statistics.
  * @returns 0 on success or negative error code on failure.
  */
-int ceph_lstat(struct ceph_mount_info *cmount, const char *path, struct stat *stbuf);
+int ceph_stat(struct ceph_mount_info *cmount, const char *path, struct stat *stbuf)
+  LIBCEPHFS_DEPRECATED;
+
+/**
+ * Get a file's statistics and attributes, without following symlinks.
+ *
+ * ceph_lstat() is deprecated, use ceph_statx(.., AT_SYMLINK_NOFOLLOW) instead.
+ *
+ * @param cmount the ceph mount handle to use for performing the stat.
+ * @param path the file or directory to get the statistics of.
+ * @param stbuf the stat struct that will be filled in with the file's statistics.
+ * @returns 0 on success or negative error code on failure.
+ */
+int ceph_lstat(struct ceph_mount_info *cmount, const char *path, struct stat *stbuf)
+  LIBCEPHFS_DEPRECATED;
 
 /**
  * Get the open file's statistics.
+ *
+ * ceph_fstat() is deprecated, use ceph_fstatx() instead.
  *
  * @param cmount the ceph mount handle to use for performing the fstat.
  * @param fd the file descriptor of the file to get statistics of.
@@ -774,7 +839,8 @@ int ceph_lstat(struct ceph_mount_info *cmount, const char *path, struct stat *st
  *    function.
  * @returns 0 on success or a negative error code on failure
  */
-int ceph_fstat(struct ceph_mount_info *cmount, int fd, struct stat *stbuf);
+int ceph_fstat(struct ceph_mount_info *cmount, int fd, struct stat *stbuf)
+  LIBCEPHFS_DEPRECATED;
 
 /**
  * Set a file's attributes.
@@ -808,6 +874,17 @@ int ceph_fsetattrx(struct ceph_mount_info *cmount, int fd, struct ceph_statx *st
  * @returns 0 on success or a negative error code on failure.
  */
 int ceph_chmod(struct ceph_mount_info *cmount, const char *path, mode_t mode);
+
+/**
+ * Change the mode bits (permissions) of a file/directory. If the path is a
+ * symbolic link, it's not de-referenced.
+ *
+ * @param cmount the ceph mount handle to use for performing the chmod.
+ * @param path the path of file/directory to change the mode bits on.
+ * @param mode the new permissions to set.
+ * @returns 0 on success or a negative error code on failure.
+ */
+int ceph_lchmod(struct ceph_mount_info *cmount, const char *path, mode_t mode);
 
 /**
  * Change the mode bits (permissions) of an open file.
@@ -1610,6 +1687,10 @@ int ceph_debug_get_file_caps(struct ceph_mount_info *cmount, const char *path);
 /* Low Level */
 struct Inode *ceph_ll_get_inode(struct ceph_mount_info *cmount,
 				vinodeno_t vino);
+
+int ceph_ll_lookup_vino(struct ceph_mount_info *cmount, vinodeno_t vino,
+			Inode **inode);
+
 int ceph_ll_lookup_inode(
     struct ceph_mount_info *cmount,
     struct inodeno_t ino,
@@ -1786,7 +1867,7 @@ int ceph_ll_lazyio(struct ceph_mount_info *cmount, Fh *fh, int enable);
  * Get the amount of time that the client has to return caps
  * @param cmount the ceph mount handle to use.
  *
- * In the event that a client does not return its caps, the MDS may blacklist
+ * In the event that a client does not return its caps, the MDS may blocklist
  * it after this timeout. Applications should check this value and ensure
  * that they set the delegation timeout to a value lower than this.
  *
@@ -1800,7 +1881,7 @@ uint32_t ceph_get_cap_return_timeout(struct ceph_mount_info *cmount);
  * @param cmount the ceph mount handle to use.
  * @param timeout the delegation timeout (in seconds)
  *
- * Since the client could end up blacklisted if it doesn't return delegations
+ * Since the client could end up blocklisted if it doesn't return delegations
  * in time, we mandate that any application wanting to use delegations
  * explicitly set the timeout beforehand. Until this call is done on the
  * mount, attempts to set a delegation will return -ETIME.
@@ -1882,6 +1963,24 @@ void ceph_finish_reclaim(struct ceph_mount_info *cmount);
  */
 void ceph_ll_register_callbacks(struct ceph_mount_info *cmount,
 				struct ceph_client_callback_args *args);
+
+/**
+ * Get snapshot info
+ *
+ * @param cmount the ceph mount handle to use for making the directory.
+ * @param path the path of the snapshot.  This must be either an
+ *        absolute path or a relative path off of the current working directory.
+ * @returns 0 on success or a negative return code on error.
+ */
+int ceph_get_snap_info(struct ceph_mount_info *cmount,
+                       const char *path, struct snap_info *snap_info);
+
+/**
+ * Free snapshot info buffers
+ *
+ * @param snap_info snapshot info struct (fetched via call to ceph_get_snap_info()).
+ */
+void ceph_free_snap_info_buffer(struct snap_info *snap_info);
 #ifdef __cplusplus
 }
 #endif

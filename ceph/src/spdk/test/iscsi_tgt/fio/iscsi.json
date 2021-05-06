@@ -10,7 +10,7 @@
             "nvme_ioq_poll_period_us": 0,
             "action_on_timeout": "none"
           },
-          "method": "set_bdev_nvme_options"
+          "method": "bdev_nvme_set_options"
         }
       ]
     },
@@ -18,7 +18,7 @@
       "subsystem": "iscsi",
       "config": [
         {
-          "method": "set_iscsi_options",
+          "method": "iscsi_set_options",
           "params": {
             "nop_timeout": 30,
             "node_base": "iqn.2016-06.io.spdk",

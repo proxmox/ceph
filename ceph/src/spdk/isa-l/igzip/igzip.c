@@ -31,6 +31,7 @@
 
 #include <assert.h>
 #include <string.h>
+#include <wchar.h>
 #ifdef _WIN32
 # include <intrin.h>
 #endif
@@ -51,6 +52,7 @@
 #include "igzip_level_buf_structs.h"
 #include "igzip_checksums.h"
 #include "igzip_wrapper.h"
+#include "unaligned.h"
 
 #ifdef __FreeBSD__
 #include <sys/types.h>
@@ -373,7 +375,8 @@ static void create_icf_block_hdr(struct isal_zstream *stream, uint8_t * start_in
 	struct BitBuf2 write_buf_tmp;
 	uint32_t out_size = stream->avail_out;
 	uint32_t avail_output, block_start_offset;
-	uint8_t *end_out = stream->next_out + out_size, *block_start;
+	uint8_t *end_out = stream->next_out + out_size;
+	uint64_t cur_in_processed;
 	uint64_t bit_count;
 	uint64_t block_in_size = state->block_end - state->block_next;
 	uint64_t block_size;
@@ -381,9 +384,14 @@ static void create_icf_block_hdr(struct isal_zstream *stream, uint8_t * start_in
 
 	memcpy(&write_buf_tmp, write_buf, sizeof(struct BitBuf2));
 
+	/* Calculate the bytes required to store a type 0 block. Need to account
+	 * for bits stored in the bitbuf. Since 3 bits correspond to the deflate
+	 * type 0 header, we need to add one byte more when the number of bits
+	 * is at least 6 mod 8. */
 	block_size = (TYPE0_BLK_HDR_LEN) * ((block_in_size + TYPE0_MAX_BLK_LEN - 1) /
 					    TYPE0_MAX_BLK_LEN) + block_in_size;
 	block_size = block_size ? block_size : TYPE0_BLK_HDR_LEN;
+	block_size += (write_buf->m_bit_count + 2) / 8;
 
 	/* Write EOB in icf_buf */
 	level_buf->hist.ll_hist[256] = 1;
@@ -413,10 +421,11 @@ static void create_icf_block_hdr(struct isal_zstream *stream, uint8_t * start_in
 
 	/* Assumes that type 0 block has size less than 4G */
 	block_start_offset = (stream->total_in - state->block_next);
-	block_start = stream->next_in - block_start_offset;
+	cur_in_processed = stream->next_in - start_in;
 	avail_output = stream->avail_out + sizeof(state->buffer) -
 	    (stream->total_in - state->block_end);
-	if (bit_count / 8 >= block_size && block_start >= start_in
+
+	if (bit_count / 8 >= block_size && cur_in_processed >= block_start_offset
 	    && block_size <= avail_output) {
 		/* Reset stream for writing out a type0 block */
 		state->has_eob_hdr = 0;
@@ -735,8 +744,8 @@ static int isal_deflate_int_stateless(struct isal_zstream *stream)
 			return STATELESS_OVERFLOW;
 
 	if (stream->avail_in >= 8
-	    && (*(uint64_t *) stream->next_in == 0
-		|| *(uint64_t *) stream->next_in == ~(uint64_t) 0)) {
+	    && (load_u64(stream->next_in) == 0
+		|| load_u64(stream->next_in) == ~(uint64_t) 0)) {
 		repeat_length = detect_repeated_char_length(stream->next_in, stream->avail_in);
 
 		if (stream->avail_in == repeat_length || repeat_length >= MIN_REPEAT_LEN)
@@ -881,7 +890,6 @@ static inline void reset_match_history(struct isal_zstream *stream)
 	struct level_buf *level_buf = (struct level_buf *)stream->level_buf;
 	uint16_t *hash_table;
 	uint32_t hash_table_size;
-	int i = 0;
 
 	hash_table_size = 2 * (state->hash_mask + 1);
 
@@ -901,25 +909,55 @@ static inline void reset_match_history(struct isal_zstream *stream)
 
 	state->has_hist = IGZIP_NO_HIST;
 
-	if ((stream->total_in & 0xFFFF) == 0)
-		memset(hash_table, 0, hash_table_size);
-	else {
-		for (i = 0; i < hash_table_size / 2; i++) {
-			hash_table[i] = (uint16_t) (stream->total_in);
+	/* There is definitely more than 16 bytes in the hash table. Set this
+	 * minimum to avoid a wmemset of size 0 */
+	if (hash_table_size <= sizeof(wchar_t))
+		hash_table_size = sizeof(wchar_t);
+
+	if (sizeof(wchar_t) == 2) {
+		uint16_t hash_init_val;
+
+		hash_init_val = stream->total_in & 0xffff;
+		wmemset((wchar_t *)hash_table, hash_init_val,
+			hash_table_size / sizeof(wchar_t));
+
+	} else if (sizeof(wchar_t) == 4) {
+		uint32_t hash_init_val;
+		int rep_bits;
+
+		hash_init_val = stream->total_in & 0xffff;
+		for (rep_bits = sizeof(uint16_t) * 8; rep_bits < sizeof(wchar_t) * 8;
+		     rep_bits *= 2)
+			hash_init_val |= hash_init_val << rep_bits;
+
+		wmemset((wchar_t *)hash_table, hash_init_val,
+			hash_table_size / sizeof(wchar_t));
+	} else {
+		if ((stream->total_in & 0xFFFF) == 0)
+			memset(hash_table, 0, hash_table_size);
+		else {
+			int i;
+			for (i = 0; i < hash_table_size / 2; i++) {
+				hash_table[i] = (uint16_t) (stream->total_in);
+			}
 		}
 	}
+
 }
 
 static void inline set_dist_mask(struct isal_zstream *stream)
 {
 	struct isal_zstate *state = &stream->internal_state;
-	uint32_t hist_size = (1 << (stream->hist_bits));
+	uint32_t hist_size;
 
-	if (stream->hist_bits != 0 && hist_size < IGZIP_HIST_SIZE)
-		state->dist_mask = hist_size - 1;
-	else
+	if (stream->hist_bits > ISAL_DEF_MAX_HIST_BITS || stream->hist_bits == 0)
+		stream->hist_bits = ISAL_DEF_MAX_HIST_BITS;
+
+	hist_size = (1 << (stream->hist_bits));
+	state->dist_mask = hist_size - 1;
+
+	if (IGZIP_HIST_SIZE < ISAL_DEF_HIST_SIZE && state->dist_mask > IGZIP_HIST_SIZE - 1)
 		state->dist_mask = IGZIP_HIST_SIZE - 1;
-
 }
 
 static void inline set_hash_mask(struct isal_zstream *stream)
@@ -1062,13 +1100,13 @@ uint32_t isal_write_gzip_header(struct isal_zstream *stream, struct isal_gzip_he
 	out_buf[1] = 0x8b;
 	out_buf[2] = DEFLATE_METHOD;
 	out_buf[3] = flags;
-	*(uint32_t *) (out_buf + 4) = gz_hdr->time;
+	store_u32(out_buf + 4, gz_hdr->time);
 	out_buf[8] = gz_hdr->xflags;
 	out_buf[9] = gz_hdr->os;
 
 	out_buf += GZIP_HDR_BASE;
 	if (flags & EXTRA_FLAG) {
-		*(uint16_t *) out_buf = gz_hdr->extra_len;
+		store_u16(out_buf, gz_hdr->extra_len);
 		out_buf += GZIP_EXTRA_LEN;
 
 		memcpy(out_buf, gz_hdr->extra, gz_hdr->extra_len);
@@ -1087,7 +1125,7 @@ uint32_t isal_write_gzip_header(struct isal_zstream *stream, struct isal_gzip_he
 
 	if (flags & HCRC_FLAG) {
 		hcrc = crc32_gzip_refl(0, out_buf_start, out_buf - out_buf_start);
-		*(uint16_t *) out_buf = hcrc;
+		store_u16(out_buf, hcrc);
 		out_buf += GZIP_HCRC_LEN;
 	}
 
@@ -1098,7 +1136,7 @@ uint32_t isal_write_gzip_header(struct isal_zstream *stream, struct isal_gzip_he
 	return ISAL_DECOMP_OK;
 }
 
-uint32_t isal_write_zlib_header(struct isal_zstream * stream, struct isal_zlib_header * z_hdr)
+uint32_t isal_write_zlib_header(struct isal_zstream *stream, struct isal_zlib_header *z_hdr)
 {
 	uint32_t cmf, flg, dict_flag = 0, hdr_size = ZLIB_HDR_BASE;
 	uint8_t *out_buf = stream->next_out;
@@ -1120,7 +1158,7 @@ uint32_t isal_write_zlib_header(struct isal_zstream * stream, struct isal_zlib_h
 	out_buf[1] = flg;
 
 	if (dict_flag)
-		*(uint32_t *) (out_buf + 2) = z_hdr->dict_id;
+		store_u32(out_buf + 2, z_hdr->dict_id);
 
 	stream->next_out += hdr_size;
 	stream->total_out += hdr_size;
@@ -1694,8 +1732,8 @@ static int write_deflate_header_unaligned_stateless(struct isal_zstream *stream)
 	struct isal_hufftables *hufftables = stream->hufftables;
 	unsigned int count;
 	uint64_t bit_count;
-	uint64_t *header_next;
-	uint64_t *header_end;
+	uint8_t *header_next;
+	uint8_t *header_end;
 	uint64_t header_bits;
 
 	if (state->bitbuf.m_bit_count == 0)
@@ -1706,24 +1744,25 @@ static int write_deflate_header_unaligned_stateless(struct isal_zstream *stream)
 
 	set_buf(&state->bitbuf, stream->next_out, stream->avail_out);
 
-	header_next = (uint64_t *) hufftables->deflate_hdr;
-	header_end = header_next + hufftables->deflate_hdr_count / 8;
+	header_next = hufftables->deflate_hdr;
+	header_end = header_next +
+	    (hufftables->deflate_hdr_count / sizeof(header_bits)) * sizeof(header_bits);
 
-	header_bits = *header_next;
+	header_bits = load_u64(header_next);
 
 	if (stream->end_of_stream == 0)
 		header_bits--;
 	else
 		state->has_eob_hdr = 1;
 
-	header_next++;
+	header_next += sizeof(header_bits);
 
 	/* Write out Complete Header bits */
-	for (; header_next <= header_end; header_next++) {
+	for (; header_next <= header_end; header_next += sizeof(header_bits)) {
 		write_bits(&state->bitbuf, header_bits, 32);
 		header_bits >>= 32;
 		write_bits(&state->bitbuf, header_bits, 32);
-		header_bits = *header_next;
+		header_bits = load_u64(header_next);
 	}
 	bit_count =
 	    (hufftables->deflate_hdr_count & 0x7) * 8 + hufftables->deflate_hdr_extra_bits;
@@ -1864,8 +1903,7 @@ static void write_trailer(struct isal_zstream *stream)
 	case IGZIP_GZIP:
 	case IGZIP_GZIP_NO_HDR:
 		if (stream->avail_out - bytes >= gzip_trl_bytes) {
-			*(uint64_t *) stream->next_out =
-			    ((uint64_t) stream->total_in << 32) | crc;
+			store_u64(stream->next_out, ((uint64_t) stream->total_in << 32) | crc);
 			stream->next_out += gzip_trl_bytes;
 			bytes += gzip_trl_bytes;
 			state->state = ZSTATE_END;
@@ -1875,8 +1913,9 @@ static void write_trailer(struct isal_zstream *stream)
 	case IGZIP_ZLIB:
 	case IGZIP_ZLIB_NO_HDR:
 		if (stream->avail_out - bytes >= zlib_trl_bytes) {
-			*(uint32_t *) stream->next_out =
-			    to_be32((crc & 0xFFFF0000) | ((crc & 0xFFFF) + 1) % ADLER_MOD);
+			store_u32(stream->next_out,
+				  to_be32((crc & 0xFFFF0000) | ((crc & 0xFFFF) + 1) %
+					  ADLER_MOD));
 			stream->next_out += zlib_trl_bytes;
 			bytes += zlib_trl_bytes;
 			state->state = ZSTATE_END;

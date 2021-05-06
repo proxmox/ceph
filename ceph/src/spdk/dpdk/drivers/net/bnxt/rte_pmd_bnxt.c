@@ -54,7 +54,7 @@ int rte_pmd_bnxt_set_tx_loopback(uint16_t port, uint8_t on)
 	if (!is_bnxt_supported(eth_dev))
 		return -ENOTSUP;
 
-	bp = (struct bnxt *)eth_dev->data->dev_private;
+	bp = eth_dev->data->dev_private;
 
 	if (!BNXT_PF(bp)) {
 		PMD_DRV_LOG(ERR,
@@ -64,9 +64,9 @@ int rte_pmd_bnxt_set_tx_loopback(uint16_t port, uint8_t on)
 	}
 
 	if (on)
-		bp->pf.evb_mode = BNXT_EVB_MODE_VEB;
+		bp->pf->evb_mode = BNXT_EVB_MODE_VEB;
 	else
-		bp->pf.evb_mode = BNXT_EVB_MODE_VEPA;
+		bp->pf->evb_mode = BNXT_EVB_MODE_VEPA;
 
 	rc = bnxt_hwrm_pf_evb_mode(bp);
 
@@ -96,7 +96,7 @@ int rte_pmd_bnxt_set_all_queues_drop_en(uint16_t port, uint8_t on)
 	if (!is_bnxt_supported(eth_dev))
 		return -ENOTSUP;
 
-	bp = (struct bnxt *)eth_dev->data->dev_private;
+	bp = eth_dev->data->dev_private;
 
 	if (!BNXT_PF(bp)) {
 		PMD_DRV_LOG(ERR,
@@ -118,7 +118,7 @@ int rte_pmd_bnxt_set_all_queues_drop_en(uint16_t port, uint8_t on)
 	}
 
 	/* Stall all active VFs */
-	for (i = 0; i < bp->pf.active_vfs; i++) {
+	for (i = 0; i < bp->pf->active_vfs; i++) {
 		rc = bnxt_hwrm_func_vf_vnic_query_and_config(bp, i,
 				rte_pmd_bnxt_set_all_queues_drop_en_cb, &on,
 				bnxt_hwrm_vnic_cfg);
@@ -132,7 +132,7 @@ int rte_pmd_bnxt_set_all_queues_drop_en(uint16_t port, uint8_t on)
 }
 
 int rte_pmd_bnxt_set_vf_mac_addr(uint16_t port, uint16_t vf,
-				struct ether_addr *mac_addr)
+				struct rte_ether_addr *mac_addr)
 {
 	struct rte_eth_dev *dev;
 	struct rte_eth_dev_info dev_info;
@@ -145,8 +145,16 @@ int rte_pmd_bnxt_set_vf_mac_addr(uint16_t port, uint16_t vf,
 	if (!is_bnxt_supported(dev))
 		return -ENOTSUP;
 
-	rte_eth_dev_info_get(port, &dev_info);
-	bp = (struct bnxt *)dev->data->dev_private;
+	rc = rte_eth_dev_info_get(port, &dev_info);
+	if (rc != 0) {
+		PMD_DRV_LOG(ERR,
+			"Error during getting device (port %u) info: %s\n",
+			port, strerror(-rc));
+
+		return rc;
+	}
+
+	bp = dev->data->dev_private;
 
 	if (vf >= dev_info.max_vfs || mac_addr == NULL)
 		return -EINVAL;
@@ -179,13 +187,20 @@ int rte_pmd_bnxt_set_vf_rate_limit(uint16_t port, uint16_t vf,
 	if (!is_bnxt_supported(eth_dev))
 		return -ENOTSUP;
 
-	rte_eth_dev_info_get(port, &dev_info);
-	bp = (struct bnxt *)eth_dev->data->dev_private;
+	rc = rte_eth_dev_info_get(port, &dev_info);
+	if (rc != 0) {
+		PMD_DRV_LOG(ERR,
+			"Error during getting device (port %u) info: %s\n",
+			port, strerror(-rc));
 
-	if (!bp->pf.active_vfs)
+		return rc;
+	}
+	bp = eth_dev->data->dev_private;
+
+	if (!bp->pf->active_vfs)
 		return -EINVAL;
 
-	if (vf >= bp->pf.max_vfs)
+	if (vf >= bp->pf->max_vfs)
 		return -EINVAL;
 
 	/* Add up the per queue BW and configure MAX BW of the VF */
@@ -201,14 +216,14 @@ int rte_pmd_bnxt_set_vf_rate_limit(uint16_t port, uint16_t vf,
 	}
 
 	/* Requested BW already configured */
-	if (tot_rate == bp->pf.vf_info[vf].max_tx_rate)
+	if (tot_rate == bp->pf->vf_info[vf].max_tx_rate)
 		return 0;
 
 	rc = bnxt_hwrm_func_bw_cfg(bp, vf, tot_rate,
 				HWRM_FUNC_CFG_INPUT_ENABLES_MAX_BW);
 
 	if (!rc)
-		bp->pf.vf_info[vf].max_tx_rate = tot_rate;
+		bp->pf->vf_info[vf].max_tx_rate = tot_rate;
 
 	return rc;
 }
@@ -230,8 +245,15 @@ int rte_pmd_bnxt_set_vf_mac_anti_spoof(uint16_t port, uint16_t vf, uint8_t on)
 	if (!is_bnxt_supported(dev))
 		return -ENOTSUP;
 
-	rte_eth_dev_info_get(port, &dev_info);
-	bp = (struct bnxt *)dev->data->dev_private;
+	rc = rte_eth_dev_info_get(port, &dev_info);
+	if (rc != 0) {
+		PMD_DRV_LOG(ERR,
+			"Error during getting device (port %u) info: %s\n",
+			port, strerror(-rc));
+
+		return rc;
+	}
+	bp = dev->data->dev_private;
 
 	if (!BNXT_PF(bp)) {
 		PMD_DRV_LOG(ERR,
@@ -243,10 +265,10 @@ int rte_pmd_bnxt_set_vf_mac_anti_spoof(uint16_t port, uint16_t vf, uint8_t on)
 		return -EINVAL;
 
 	/* Prev setting same as new setting. */
-	if (on == bp->pf.vf_info[vf].mac_spoof_en)
+	if (on == bp->pf->vf_info[vf].mac_spoof_en)
 		return 0;
 
-	func_flags = bp->pf.vf_info[vf].func_cfg_flags;
+	func_flags = bp->pf->vf_info[vf].func_cfg_flags;
 	func_flags &= ~(HWRM_FUNC_CFG_INPUT_FLAGS_SRC_MAC_ADDR_CHECK_ENABLE |
 	    HWRM_FUNC_CFG_INPUT_FLAGS_SRC_MAC_ADDR_CHECK_DISABLE);
 
@@ -259,8 +281,8 @@ int rte_pmd_bnxt_set_vf_mac_anti_spoof(uint16_t port, uint16_t vf, uint8_t on)
 
 	rc = bnxt_hwrm_func_cfg_vf_set_flags(bp, vf, func_flags);
 	if (!rc) {
-		bp->pf.vf_info[vf].mac_spoof_en = on;
-		bp->pf.vf_info[vf].func_cfg_flags = func_flags;
+		bp->pf->vf_info[vf].mac_spoof_en = on;
+		bp->pf->vf_info[vf].func_cfg_flags = func_flags;
 	}
 
 	return rc;
@@ -282,8 +304,15 @@ int rte_pmd_bnxt_set_vf_vlan_anti_spoof(uint16_t port, uint16_t vf, uint8_t on)
 	if (!is_bnxt_supported(dev))
 		return -ENOTSUP;
 
-	rte_eth_dev_info_get(port, &dev_info);
-	bp = (struct bnxt *)dev->data->dev_private;
+	rc = rte_eth_dev_info_get(port, &dev_info);
+	if (rc != 0) {
+		PMD_DRV_LOG(ERR,
+			"Error during getting device (port %u) info: %s\n",
+			port, strerror(-rc));
+
+		return rc;
+	}
+	bp = dev->data->dev_private;
 
 	if (!BNXT_PF(bp)) {
 		PMD_DRV_LOG(ERR,
@@ -296,12 +325,12 @@ int rte_pmd_bnxt_set_vf_vlan_anti_spoof(uint16_t port, uint16_t vf, uint8_t on)
 
 	rc = bnxt_hwrm_func_cfg_vf_set_vlan_anti_spoof(bp, vf, on);
 	if (!rc) {
-		bp->pf.vf_info[vf].vlan_spoof_en = on;
+		bp->pf->vf_info[vf].vlan_spoof_en = on;
 		if (on) {
 			if (bnxt_hwrm_cfa_vlan_antispoof_cfg(bp,
-				bp->pf.first_vf_id + vf,
-				bp->pf.vf_info[vf].vlan_count,
-				bp->pf.vf_info[vf].vlan_as_table))
+				bp->pf->first_vf_id + vf,
+				bp->pf->vf_info[vf].vlan_count,
+				bp->pf->vf_info[vf].vlan_as_table))
 				rc = -1;
 		}
 	} else {
@@ -332,8 +361,15 @@ rte_pmd_bnxt_set_vf_vlan_stripq(uint16_t port, uint16_t vf, uint8_t on)
 	if (!is_bnxt_supported(dev))
 		return -ENOTSUP;
 
-	rte_eth_dev_info_get(port, &dev_info);
-	bp = (struct bnxt *)dev->data->dev_private;
+	rc = rte_eth_dev_info_get(port, &dev_info);
+	if (rc != 0) {
+		PMD_DRV_LOG(ERR,
+			"Error during getting device (port %u) info: %s\n",
+			port, strerror(-rc));
+
+		return rc;
+	}
+	bp = dev->data->dev_private;
 
 	if (vf >= dev_info.max_vfs)
 		return -EINVAL;
@@ -369,10 +405,17 @@ int rte_pmd_bnxt_set_vf_rxmode(uint16_t port, uint16_t vf,
 	if (!is_bnxt_supported(dev))
 		return -ENOTSUP;
 
-	rte_eth_dev_info_get(port, &dev_info);
-	bp = (struct bnxt *)dev->data->dev_private;
+	rc = rte_eth_dev_info_get(port, &dev_info);
+	if (rc != 0) {
+		PMD_DRV_LOG(ERR,
+			"Error during getting device (port %u) info: %s\n",
+			port, strerror(-rc));
 
-	if (!bp->pf.vf_info)
+		return rc;
+	}
+	bp = dev->data->dev_private;
+
+	if (!bp->pf->vf_info)
 		return -EINVAL;
 
 	if (vf >= bp->pdev->max_vfs)
@@ -393,13 +436,13 @@ int rte_pmd_bnxt_set_vf_rxmode(uint16_t port, uint16_t vf,
 		flag |= BNXT_VNIC_INFO_ALLMULTI | BNXT_VNIC_INFO_MCAST;
 
 	if (on)
-		bp->pf.vf_info[vf].l2_rx_mask |= flag;
+		bp->pf->vf_info[vf].l2_rx_mask |= flag;
 	else
-		bp->pf.vf_info[vf].l2_rx_mask &= ~flag;
+		bp->pf->vf_info[vf].l2_rx_mask &= ~flag;
 
 	rc = bnxt_hwrm_func_vf_vnic_query_and_config(bp, vf,
 					vf_vnic_set_rxmask_cb,
-					&bp->pf.vf_info[vf].l2_rx_mask,
+					&bp->pf->vf_info[vf].l2_rx_mask,
 					bnxt_set_rx_mask_no_vlan);
 	if (rc)
 		PMD_DRV_LOG(ERR, "bnxt_hwrm_func_vf_vnic_set_rxmask failed\n");
@@ -432,10 +475,10 @@ static int bnxt_set_vf_table(struct bnxt *bp, uint16_t vf)
 		memset(&vnic, 0, sizeof(vnic));
 		vnic.fw_vnic_id = dflt_vnic;
 		if (bnxt_hwrm_vnic_qcfg(bp, &vnic,
-					bp->pf.first_vf_id + vf) == 0) {
+					bp->pf->first_vf_id + vf) == 0) {
 			if (bnxt_hwrm_cfa_l2_set_rx_mask(bp, &vnic,
-						bp->pf.vf_info[vf].vlan_count,
-						bp->pf.vf_info[vf].vlan_table))
+						bp->pf->vf_info[vf].vlan_count,
+						bp->pf->vf_info[vf].vlan_table))
 				rc = -1;
 		} else {
 			rc = -1;
@@ -462,20 +505,20 @@ int rte_pmd_bnxt_set_vf_vlan_filter(uint16_t port, uint16_t vlan,
 	if (!is_bnxt_supported(dev))
 		return -ENOTSUP;
 
-	bp = (struct bnxt *)dev->data->dev_private;
-	if (!bp->pf.vf_info)
+	bp = dev->data->dev_private;
+	if (!bp->pf->vf_info)
 		return -EINVAL;
 
 	for (i = 0; vf_mask; i++, vf_mask >>= 1) {
-		cnt = bp->pf.vf_info[i].vlan_count;
+		cnt = bp->pf->vf_info[i].vlan_count;
 		if ((vf_mask & 1)  == 0)
 			continue;
 
-		if (bp->pf.vf_info[i].vlan_table == NULL) {
+		if (bp->pf->vf_info[i].vlan_table == NULL) {
 			rc = -1;
 			continue;
 		}
-		if (bp->pf.vf_info[i].vlan_as_table == NULL) {
+		if (bp->pf->vf_info[i].vlan_as_table == NULL) {
 			rc = -1;
 			continue;
 		}
@@ -483,7 +526,8 @@ int rte_pmd_bnxt_set_vf_vlan_filter(uint16_t port, uint16_t vlan,
 			/* First, search for a duplicate... */
 			for (j = 0; j < cnt; j++) {
 				if (rte_be_to_cpu_16(
-				   bp->pf.vf_info[i].vlan_table[j].vid) == vlan)
+				   bp->pf->vf_info[i].vlan_table[j].vid) ==
+				    vlan)
 					break;
 			}
 			if (j == cnt) {
@@ -500,17 +544,17 @@ int rte_pmd_bnxt_set_vf_vlan_filter(uint16_t port, uint16_t vlan,
 				}
 
 				/* cnt is one less than vlan_count */
-				cnt = bp->pf.vf_info[i].vlan_count++;
+				cnt = bp->pf->vf_info[i].vlan_count++;
 				/*
 				 * And finally, add to the
 				 * end of the table
 				 */
-				vase = &bp->pf.vf_info[i].vlan_as_table[cnt];
+				vase = &bp->pf->vf_info[i].vlan_as_table[cnt];
 				// TODO: Hardcoded TPID
 				vase->tpid = rte_cpu_to_be_16(0x8100);
 				vase->vid = rte_cpu_to_be_16(vlan);
 				vase->mask = rte_cpu_to_be_16(0xfff);
-				ve = &bp->pf.vf_info[i].vlan_table[cnt];
+				ve = &bp->pf->vf_info[i].vlan_table[cnt];
 				/* TODO: Hardcoded TPID */
 				ve->tpid = rte_cpu_to_be_16(0x8100);
 				ve->vid = rte_cpu_to_be_16(vlan);
@@ -518,18 +562,19 @@ int rte_pmd_bnxt_set_vf_vlan_filter(uint16_t port, uint16_t vlan,
 		} else {
 			for (j = 0; j < cnt; j++) {
 				if (rte_be_to_cpu_16(
-				   bp->pf.vf_info[i].vlan_table[j].vid) != vlan)
+				   bp->pf->vf_info[i].vlan_table[j].vid) !=
+				    vlan)
 					continue;
-				memmove(&bp->pf.vf_info[i].vlan_table[j],
-					&bp->pf.vf_info[i].vlan_table[j + 1],
+				memmove(&bp->pf->vf_info[i].vlan_table[j],
+					&bp->pf->vf_info[i].vlan_table[j + 1],
 					getpagesize() - ((j + 1) *
 					sizeof(struct bnxt_vlan_table_entry)));
-				memmove(&bp->pf.vf_info[i].vlan_as_table[j],
-					&bp->pf.vf_info[i].vlan_as_table[j + 1],
+				memmove(&bp->pf->vf_info[i].vlan_as_table[j],
+					&bp->pf->vf_info[i].vlan_as_table[j + 1],
 					getpagesize() - ((j + 1) * sizeof(struct
 					bnxt_vlan_antispoof_table_entry)));
 				j--;
-				cnt = --bp->pf.vf_info[i].vlan_count;
+				cnt = --bp->pf->vf_info[i].vlan_count;
 			}
 		}
 		bnxt_set_vf_table(bp, i);
@@ -545,13 +590,21 @@ int rte_pmd_bnxt_get_vf_stats(uint16_t port,
 	struct rte_eth_dev *dev;
 	struct rte_eth_dev_info dev_info;
 	struct bnxt *bp;
+	int rc;
 
 	dev = &rte_eth_devices[port];
 	if (!is_bnxt_supported(dev))
 		return -ENOTSUP;
 
-	rte_eth_dev_info_get(port, &dev_info);
-	bp = (struct bnxt *)dev->data->dev_private;
+	rc = rte_eth_dev_info_get(port, &dev_info);
+	if (rc != 0) {
+		PMD_DRV_LOG(ERR,
+			"Error during getting device (port %u) info: %s\n",
+			port, strerror(-rc));
+
+		return rc;
+	}
+	bp = dev->data->dev_private;
 
 	if (vf_id >= dev_info.max_vfs)
 		return -EINVAL;
@@ -563,7 +616,8 @@ int rte_pmd_bnxt_get_vf_stats(uint16_t port,
 		return -ENOTSUP;
 	}
 
-	return bnxt_hwrm_func_qstats(bp, bp->pf.first_vf_id + vf_id, stats);
+	return bnxt_hwrm_func_qstats(bp, bp->pf->first_vf_id + vf_id, stats,
+				     NULL);
 }
 
 int rte_pmd_bnxt_reset_vf_stats(uint16_t port,
@@ -572,13 +626,21 @@ int rte_pmd_bnxt_reset_vf_stats(uint16_t port,
 	struct rte_eth_dev *dev;
 	struct rte_eth_dev_info dev_info;
 	struct bnxt *bp;
+	int rc;
 
 	dev = &rte_eth_devices[port];
 	if (!is_bnxt_supported(dev))
 		return -ENOTSUP;
 
-	rte_eth_dev_info_get(port, &dev_info);
-	bp = (struct bnxt *)dev->data->dev_private;
+	rc = rte_eth_dev_info_get(port, &dev_info);
+	if (rc != 0) {
+		PMD_DRV_LOG(ERR,
+			"Error during getting device (port %u) info: %s\n",
+			port, strerror(-rc));
+
+		return rc;
+	}
+	bp = dev->data->dev_private;
 
 	if (vf_id >= dev_info.max_vfs)
 		return -EINVAL;
@@ -590,7 +652,7 @@ int rte_pmd_bnxt_reset_vf_stats(uint16_t port,
 		return -ENOTSUP;
 	}
 
-	return bnxt_hwrm_func_clr_stats(bp, bp->pf.first_vf_id + vf_id);
+	return bnxt_hwrm_func_clr_stats(bp, bp->pf->first_vf_id + vf_id);
 }
 
 int rte_pmd_bnxt_get_vf_rx_status(uint16_t port, uint16_t vf_id)
@@ -598,13 +660,21 @@ int rte_pmd_bnxt_get_vf_rx_status(uint16_t port, uint16_t vf_id)
 	struct rte_eth_dev *dev;
 	struct rte_eth_dev_info dev_info;
 	struct bnxt *bp;
+	int rc;
 
 	dev = &rte_eth_devices[port];
 	if (!is_bnxt_supported(dev))
 		return -ENOTSUP;
 
-	rte_eth_dev_info_get(port, &dev_info);
-	bp = (struct bnxt *)dev->data->dev_private;
+	rc = rte_eth_dev_info_get(port, &dev_info);
+	if (rc != 0) {
+		PMD_DRV_LOG(ERR,
+			"Error during getting device (port %u) info: %s\n",
+			port, strerror(-rc));
+
+		return rc;
+	}
+	bp = dev->data->dev_private;
 
 	if (vf_id >= dev_info.max_vfs)
 		return -EINVAL;
@@ -625,13 +695,21 @@ int rte_pmd_bnxt_get_vf_tx_drop_count(uint16_t port, uint16_t vf_id,
 	struct rte_eth_dev *dev;
 	struct rte_eth_dev_info dev_info;
 	struct bnxt *bp;
+	int rc;
 
 	dev = &rte_eth_devices[port];
 	if (!is_bnxt_supported(dev))
 		return -ENOTSUP;
 
-	rte_eth_dev_info_get(port, &dev_info);
-	bp = (struct bnxt *)dev->data->dev_private;
+	rc = rte_eth_dev_info_get(port, &dev_info);
+	if (rc != 0) {
+		PMD_DRV_LOG(ERR,
+			"Error during getting device (port %u) info: %s\n",
+			port, strerror(-rc));
+
+		return rc;
+	}
+	bp = dev->data->dev_private;
 
 	if (vf_id >= dev_info.max_vfs)
 		return -EINVAL;
@@ -643,11 +721,11 @@ int rte_pmd_bnxt_get_vf_tx_drop_count(uint16_t port, uint16_t vf_id,
 		return -ENOTSUP;
 	}
 
-	return bnxt_hwrm_func_qstats_tx_drop(bp, bp->pf.first_vf_id + vf_id,
+	return bnxt_hwrm_func_qstats_tx_drop(bp, bp->pf->first_vf_id + vf_id,
 					     count);
 }
 
-int rte_pmd_bnxt_mac_addr_add(uint16_t port, struct ether_addr *addr,
+int rte_pmd_bnxt_mac_addr_add(uint16_t port, struct rte_ether_addr *addr,
 				uint32_t vf_id)
 {
 	struct rte_eth_dev *dev;
@@ -655,15 +733,22 @@ int rte_pmd_bnxt_mac_addr_add(uint16_t port, struct ether_addr *addr,
 	struct bnxt *bp;
 	struct bnxt_filter_info *filter;
 	struct bnxt_vnic_info vnic;
-	struct ether_addr dflt_mac;
+	struct rte_ether_addr dflt_mac;
 	int rc;
 
 	dev = &rte_eth_devices[port];
 	if (!is_bnxt_supported(dev))
 		return -ENOTSUP;
 
-	rte_eth_dev_info_get(port, &dev_info);
-	bp = (struct bnxt *)dev->data->dev_private;
+	rc = rte_eth_dev_info_get(port, &dev_info);
+	if (rc != 0) {
+		PMD_DRV_LOG(ERR,
+			"Error during getting device (port %u) info: %s\n",
+			port, strerror(-rc));
+
+		return rc;
+	}
+	bp = dev->data->dev_private;
 
 	if (vf_id >= dev_info.max_vfs)
 		return -EINVAL;
@@ -676,7 +761,7 @@ int rte_pmd_bnxt_mac_addr_add(uint16_t port, struct ether_addr *addr,
 	}
 
 	/* If the VF currently uses a random MAC, update default to this one */
-	if (bp->pf.vf_info[vf_id].random_mac) {
+	if (bp->pf->vf_info[vf_id].random_mac) {
 		if (rte_pmd_bnxt_get_vf_rx_status(port, vf_id) <= 0)
 			bnxt_hwrm_func_vf_mac(bp, vf_id, (uint8_t *)addr);
 	}
@@ -688,17 +773,17 @@ int rte_pmd_bnxt_mac_addr_add(uint16_t port, struct ether_addr *addr,
 
 	memset(&vnic, 0, sizeof(struct bnxt_vnic_info));
 	vnic.fw_vnic_id = rte_le_to_cpu_16(rc);
-	rc = bnxt_hwrm_vnic_qcfg(bp, &vnic, bp->pf.first_vf_id + vf_id);
+	rc = bnxt_hwrm_vnic_qcfg(bp, &vnic, bp->pf->first_vf_id + vf_id);
 	if (rc < 0)
 		goto exit;
 
-	STAILQ_FOREACH(filter, &bp->pf.vf_info[vf_id].filter, next) {
+	STAILQ_FOREACH(filter, &bp->pf->vf_info[vf_id].filter, next) {
 		if (filter->flags ==
 		    HWRM_CFA_L2_FILTER_ALLOC_INPUT_FLAGS_PATH_RX &&
 		    filter->enables ==
 		    (HWRM_CFA_L2_FILTER_ALLOC_INPUT_ENABLES_L2_ADDR |
 		     HWRM_CFA_L2_FILTER_ALLOC_INPUT_ENABLES_L2_ADDR_MASK) &&
-		    memcmp(addr, filter->l2_addr, ETHER_ADDR_LEN) == 0) {
+		    memcmp(addr, filter->l2_addr, RTE_ETHER_ADDR_LEN) == 0) {
 			bnxt_hwrm_clear_l2_filter(bp, filter);
 			break;
 		}
@@ -711,12 +796,12 @@ int rte_pmd_bnxt_mac_addr_add(uint16_t port, struct ether_addr *addr,
 	filter->flags = HWRM_CFA_L2_FILTER_ALLOC_INPUT_FLAGS_PATH_RX;
 	filter->enables = HWRM_CFA_L2_FILTER_ALLOC_INPUT_ENABLES_L2_ADDR |
 			HWRM_CFA_L2_FILTER_ALLOC_INPUT_ENABLES_L2_ADDR_MASK;
-	memcpy(filter->l2_addr, addr, ETHER_ADDR_LEN);
-	memset(filter->l2_addr_mask, 0xff, ETHER_ADDR_LEN);
+	memcpy(filter->l2_addr, addr, RTE_ETHER_ADDR_LEN);
+	memset(filter->l2_addr_mask, 0xff, RTE_ETHER_ADDR_LEN);
 
 	/* Do not add a filter for the default MAC */
 	if (bnxt_hwrm_func_qcfg_vf_default_mac(bp, vf_id, &dflt_mac) ||
-	    memcmp(filter->l2_addr, dflt_mac.addr_bytes, ETHER_ADDR_LEN))
+	    memcmp(filter->l2_addr, dflt_mac.addr_bytes, RTE_ETHER_ADDR_LEN))
 		rc = bnxt_hwrm_set_l2_filter(bp, vnic.fw_vnic_id, filter);
 
 exit:
@@ -738,8 +823,15 @@ rte_pmd_bnxt_set_vf_vlan_insert(uint16_t port, uint16_t vf,
 	if (!is_bnxt_supported(dev))
 		return -ENOTSUP;
 
-	rte_eth_dev_info_get(port, &dev_info);
-	bp = (struct bnxt *)dev->data->dev_private;
+	rc = rte_eth_dev_info_get(port, &dev_info);
+	if (rc != 0) {
+		PMD_DRV_LOG(ERR,
+			"Error during getting device (port %u) info: %s\n",
+			port, strerror(-rc));
+
+		return rc;
+	}
+	bp = dev->data->dev_private;
 
 	if (vf >= dev_info.max_vfs)
 		return -EINVAL;
@@ -751,9 +843,9 @@ rte_pmd_bnxt_set_vf_vlan_insert(uint16_t port, uint16_t vf,
 		return -ENOTSUP;
 	}
 
-	bp->pf.vf_info[vf].dflt_vlan = vlan_id;
+	bp->pf->vf_info[vf].dflt_vlan = vlan_id;
 	if (bnxt_hwrm_func_qcfg_current_vf_vlan(bp, vf) ==
-	    bp->pf.vf_info[vf].dflt_vlan)
+	    bp->pf->vf_info[vf].dflt_vlan)
 		return 0;
 
 	rc = bnxt_hwrm_set_vf_vlan(bp, vf);
@@ -775,8 +867,15 @@ int rte_pmd_bnxt_set_vf_persist_stats(uint16_t port, uint16_t vf, uint8_t on)
 		return -EINVAL;
 
 	dev = &rte_eth_devices[port];
-	rte_eth_dev_info_get(port, &dev_info);
-	bp = (struct bnxt *)dev->data->dev_private;
+	rc = rte_eth_dev_info_get(port, &dev_info);
+	if (rc != 0) {
+		PMD_DRV_LOG(ERR,
+			"Error during getting device (port %u) info: %s\n",
+			port, strerror(-rc));
+
+		return rc;
+	}
+	bp = dev->data->dev_private;
 
 	if (!BNXT_PF(bp)) {
 		PMD_DRV_LOG(ERR,
@@ -789,10 +888,10 @@ int rte_pmd_bnxt_set_vf_persist_stats(uint16_t port, uint16_t vf, uint8_t on)
 		return -EINVAL;
 
 	/* Prev setting same as new setting. */
-	if (on == bp->pf.vf_info[vf].persist_stats)
+	if (on == bp->pf->vf_info[vf].persist_stats)
 		return 0;
 
-	func_flags = bp->pf.vf_info[vf].func_cfg_flags;
+	func_flags = bp->pf->vf_info[vf].func_cfg_flags;
 
 	if (on)
 		func_flags |=
@@ -803,8 +902,8 @@ int rte_pmd_bnxt_set_vf_persist_stats(uint16_t port, uint16_t vf, uint8_t on)
 
 	rc = bnxt_hwrm_func_cfg_vf_set_flags(bp, vf, func_flags);
 	if (!rc) {
-		bp->pf.vf_info[vf].persist_stats = on;
-		bp->pf.vf_info[vf].func_cfg_flags = func_flags;
+		bp->pf->vf_info[vf].persist_stats = on;
+		bp->pf->vf_info[vf].func_cfg_flags = func_flags;
 	}
 
 	return rc;

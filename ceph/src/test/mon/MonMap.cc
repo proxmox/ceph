@@ -20,6 +20,8 @@
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
 
+#include <boost/smart_ptr/intrusive_ptr.hpp>
+
 #include <sstream>
 
 #define TEST_DEBUG 20
@@ -96,10 +98,10 @@ TEST_F(MonMapTest, DISABLED_build_initial_config_from_dns) {
 
 
 
-  CephContext *cct = (new CephContext(CEPH_ENTITY_TYPE_MON))->get();
+  boost::intrusive_ptr<CephContext> cct = new CephContext(CEPH_ENTITY_TYPE_MON);
   cct->_conf.set_val("mon_dns_srv_name", "cephmon");
   MonMap monmap;
-  int r = monmap.build_initial(cct, false, std::cerr);
+  int r = monmap.build_initial(cct.get(), false, std::cerr);
 
   ASSERT_EQ(r, 0);
   ASSERT_EQ(monmap.mon_info.size(), (unsigned int)3);
@@ -133,10 +135,10 @@ TEST_F(MonMapTest, DISABLED_build_initial_config_from_dns_fail) {
       .WillOnce(Return(0));
 #endif
 
-  CephContext *cct = (new CephContext(CEPH_ENTITY_TYPE_MON))->get();
+  boost::intrusive_ptr<CephContext> cct = new CephContext(CEPH_ENTITY_TYPE_MON);
   // using default value of mon_dns_srv_name option
   MonMap monmap;
-  int r = monmap.build_initial(cct, false, std::cerr);
+  int r = monmap.build_initial(cct.get(), false, std::cerr);
 
   ASSERT_EQ(r, -ENOENT);
   ASSERT_EQ(monmap.mon_info.size(), (unsigned int)0);
@@ -194,10 +196,10 @@ TEST_F(MonMapTest, DISABLED_build_initial_config_from_dns_with_domain) {
 
 
 
-  CephContext *cct = (new CephContext(CEPH_ENTITY_TYPE_MON))->get();
+  boost::intrusive_ptr<CephContext> cct = new CephContext(CEPH_ENTITY_TYPE_MON);
   cct->_conf.set_val("mon_dns_srv_name", "cephmon_ceph.com");
   MonMap monmap;
-  int r = monmap.build_initial(cct, false, std::cerr);
+  int r = monmap.build_initial(cct.get(), false, std::cerr);
 
   ASSERT_EQ(r, 0);
   ASSERT_EQ(monmap.mon_info.size(), (unsigned int)3);
@@ -219,10 +221,10 @@ TEST_F(MonMapTest, DISABLED_build_initial_config_from_dns_with_domain) {
 }
 
 TEST(MonMapBuildInitial, build_initial_mon_host_from_dns) {
-  CephContext *cct = (new CephContext(CEPH_ENTITY_TYPE_MON))->get();
+  boost::intrusive_ptr<CephContext> cct = new CephContext(CEPH_ENTITY_TYPE_MON);
   cct->_conf.set_val("mon_host", "ceph.io");
   MonMap monmap;
-  int r = monmap.build_initial(cct, false, std::cerr);
+  int r = monmap.build_initial(cct.get(), false, std::cerr);
   ASSERT_EQ(r, 0);
   ASSERT_GE(monmap.mon_info.size(), 1u);
   for (const auto& [name, info] : monmap.mon_info) {
@@ -231,9 +233,13 @@ TEST(MonMapBuildInitial, build_initial_mon_host_from_dns) {
 }
 
 TEST(MonMapBuildInitial, build_initial_mon_host_from_dns_fail) {
-  CephContext *cct = (new CephContext(CEPH_ENTITY_TYPE_MON))->get();
+  boost::intrusive_ptr<CephContext> cct = new CephContext(CEPH_ENTITY_TYPE_MON);
   cct->_conf.set_val("mon_host", "ceph.noname");
   MonMap monmap;
-  int r = monmap.build_initial(cct, false, std::cerr);
+  int r = monmap.build_initial(cct.get(), false, std::cerr);
+#if defined(__FreeBSD__)
+  ASSERT_EQ(r, -ENOENT);
+#else
   ASSERT_EQ(r, -EINVAL);
+#endif
 }

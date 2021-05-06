@@ -1,11 +1,18 @@
+log-rotate:
+  ceph-mds: 10G
+  ceph-osd: 10G
 tasks:
   - install:
       extra_packages:
         rpm:
         - python3-cephfs
+        - cephfs-top
+        - cephfs-mirror
         deb:
         - python3-cephfs
         - cephfs-shell
+        - cephfs-top
+        - cephfs-mirror
       # For kernel_untar_build workunit
       extra_system_packages:
         deb:
@@ -13,6 +20,9 @@ tasks:
         - flex
         - libelf-dev
         - libssl-dev
+        - network-manager
+        - iproute2
+        - util-linux
         # for xfstests-dev
         - dump
         - indent
@@ -26,6 +36,9 @@ tasks:
         - flex
         - elfutils-libelf-devel
         - openssl-devel
+        - NetworkManager
+        - iproute
+        - util-linux
         # for xfstests-dev
         - libacl-devel
         - libaio-devel

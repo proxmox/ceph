@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2016-present, Yann Collet, Facebook, Inc.
+ * Copyright (c) 2016-2020, Yann Collet, Facebook, Inc.
  * All rights reserved.
  *
  * This source code is licensed under both the BSD-style license (found in the
@@ -44,8 +44,8 @@ static void compressFile_orDie(const char* fname, const char* outName, int cLeve
      * and writes all output produced to the output file.
      */
     size_t const toRead = buffInSize;
-    size_t read;
-    while ((read = fread_orDie(buffIn, toRead, fin))) {
+    for (;;) {
+        size_t read = fread_orDie(buffIn, toRead, fin);
         /* Select the flush mode.
          * If the read may not be finished (read == toRead) we use
          * ZSTD_e_continue. If this is the last chunk, we use ZSTD_e_end.
@@ -76,6 +76,10 @@ static void compressFile_orDie(const char* fname, const char* outName, int cLeve
         } while (!finished);
         CHECK(input.pos == input.size,
               "Impossible: zstd only returns 0 when the input is completely consumed!");
+
+        if (lastChunk) {
+            break;
+        }
     }
 
     ZSTD_freeCCtx(cctx);

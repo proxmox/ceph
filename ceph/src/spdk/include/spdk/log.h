@@ -46,10 +46,23 @@ extern "C" {
 #endif
 
 /**
+ * for passing user-provided log call
+ *
+ * \param level Log level threshold.
+ * \param file Name of the current source file.
+ * \param line Current source file line.
+ * \param func Current source function name.
+ * \param format Format string to the message.
+ * \param args Additional arguments for format string.
+ */
+typedef void logfunc(int level, const char *file, const int line,
+		     const char *func, const char *format, va_list args);
+
+/**
  * Initialize the logging module. Messages prior
  * to this call will be dropped.
  */
-void spdk_log_open(void);
+void spdk_log_open(logfunc *logf);
 
 /**
  * Close the currently active log. Messages after this call
@@ -119,12 +132,20 @@ void spdk_log_set_print_level(enum spdk_log_level level);
  */
 enum spdk_log_level spdk_log_get_print_level(void);
 
+#ifdef DEBUG
+#define SPDK_DEBUGLOG_FLAG_ENABLED(name) spdk_log_get_flag(name)
+#else
+#define SPDK_DEBUGLOG_FLAG_ENABLED(name) false
+#endif
+
 #define SPDK_NOTICELOG(...) \
 	spdk_log(SPDK_LOG_NOTICE, __FILE__, __LINE__, __func__, __VA_ARGS__)
 #define SPDK_WARNLOG(...) \
 	spdk_log(SPDK_LOG_WARN, __FILE__, __LINE__, __func__, __VA_ARGS__)
 #define SPDK_ERRLOG(...) \
 	spdk_log(SPDK_LOG_ERROR, __FILE__, __LINE__, __func__, __VA_ARGS__)
+#define SPDK_PRINTF(...) \
+	spdk_log(SPDK_LOG_NOTICE, NULL, -1, NULL, __VA_ARGS__)
 
 /**
  * Write messages to the log file. If \c level is set to \c SPDK_LOG_DISABLED,
@@ -138,6 +159,20 @@ enum spdk_log_level spdk_log_get_print_level(void);
  */
 void spdk_log(enum spdk_log_level level, const char *file, const int line, const char *func,
 	      const char *format, ...) __attribute__((__format__(__printf__, 5, 6)));
+
+/**
+ * Same as spdk_log except that instead of being called with variable number of
+ * arguments it is called with an argument list as defined in stdarg.h
+ *
+ * \param level Log level threshold.
+ * \param file Name of the current source file.
+ * \param line Current source line number.
+ * \param func Current source function name.
+ * \param format Format string to the message.
+ * \param ap printf arguments
+ */
+void spdk_vlog(enum spdk_log_level level, const char *file, const int line, const char *func,
+	       const char *format, va_list ap);
 
 /**
  * Log the contents of a raw buffer to a file.

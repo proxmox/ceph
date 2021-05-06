@@ -1,8 +1,8 @@
 /*-
  *   BSD LICENSE
  *
- *   Copyright (c) Intel Corporation.
- *   All rights reserved.
+ *   Copyright (c) Intel Corporation. All rights reserved.
+ *   Copyright (c) 2020 Mellanox Technologies LTD. All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
  *   modification, are permitted provided that the following conditions
@@ -35,6 +35,8 @@
 #include "spdk/util.h"
 
 #include "spdk_cunit.h"
+
+#include "spdk_internal/sock.h"
 
 #include "sock/sock.c"
 #include "sock/posix/posix.c"
@@ -73,7 +75,7 @@ spdk_ut_sock_getaddr(struct spdk_sock *_sock, char *saddr, int slen, uint16_t *s
 }
 
 static struct spdk_sock *
-spdk_ut_sock_listen(const char *ip, int port)
+spdk_ut_sock_listen(const char *ip, int port, struct spdk_sock_opts *opts)
 {
 	struct spdk_ut_sock *sock;
 
@@ -91,7 +93,7 @@ spdk_ut_sock_listen(const char *ip, int port)
 }
 
 static struct spdk_sock *
-spdk_ut_sock_connect(const char *ip, int port)
+spdk_ut_sock_connect(const char *ip, int port, struct spdk_sock_opts *opts)
 {
 	struct spdk_ut_sock *sock;
 
@@ -130,6 +132,7 @@ spdk_ut_sock_accept(struct spdk_sock *_sock)
 
 	SPDK_CU_ASSERT_FATAL(g_ut_client_sock != NULL);
 	g_ut_client_sock->peer = new_sock;
+	new_sock->peer = g_ut_client_sock;
 
 	return &new_sock->base;
 }
@@ -145,6 +148,11 @@ spdk_ut_sock_close(struct spdk_sock *_sock)
 	if (sock == g_ut_client_sock) {
 		g_ut_client_sock = NULL;
 	}
+
+	if (sock->peer != NULL) {
+		sock->peer->peer = NULL;
+	}
+
 	free(_sock);
 
 	return 0;
@@ -244,6 +252,20 @@ spdk_ut_sock_is_ipv4(struct spdk_sock *_sock)
 	return true;
 }
 
+static bool
+spdk_ut_sock_is_connected(struct spdk_sock *_sock)
+{
+	struct spdk_ut_sock *sock = __ut_sock(_sock);
+
+	return (sock->peer != NULL);
+}
+
+static int
+spdk_ut_sock_get_placement_id(struct spdk_sock *_sock, int *placement_id)
+{
+	return -1;
+}
+
 static struct spdk_sock_group_impl *
 spdk_ut_sock_group_impl_create(void)
 {
@@ -298,6 +320,7 @@ spdk_ut_sock_group_impl_close(struct spdk_sock_group_impl *_group)
 	struct spdk_ut_sock_group_impl *group = __ut_group(_group);
 
 	CU_ASSERT(group->sock == NULL);
+	free(_group);
 
 	return 0;
 }
@@ -317,6 +340,8 @@ static struct spdk_net_impl g_ut_net_impl = {
 	.set_sendbuf	= spdk_ut_sock_set_sendbuf,
 	.is_ipv6	= spdk_ut_sock_is_ipv6,
 	.is_ipv4	= spdk_ut_sock_is_ipv4,
+	.is_connected	= spdk_ut_sock_is_connected,
+	.get_placement_id	= spdk_ut_sock_get_placement_id,
 	.group_impl_create	= spdk_ut_sock_group_impl_create,
 	.group_impl_add_sock	= spdk_ut_sock_group_impl_add_sock,
 	.group_impl_remove_sock = spdk_ut_sock_group_impl_remove_sock,
@@ -324,10 +349,10 @@ static struct spdk_net_impl g_ut_net_impl = {
 	.group_impl_close	= spdk_ut_sock_group_impl_close,
 };
 
-SPDK_NET_IMPL_REGISTER(ut, &g_ut_net_impl);
+SPDK_NET_IMPL_REGISTER(ut, &g_ut_net_impl, DEFAULT_SOCK_PRIORITY + 2);
 
 static void
-_sock(const char *ip, int port)
+_sock(const char *ip, int port, char *impl_name)
 {
 	struct spdk_sock *listen_sock;
 	struct spdk_sock *server_sock;
@@ -338,14 +363,14 @@ _sock(const char *ip, int port)
 	struct iovec iov;
 	int rc;
 
-	listen_sock = spdk_sock_listen(ip, port);
+	listen_sock = spdk_sock_listen(ip, port, impl_name);
 	SPDK_CU_ASSERT_FATAL(listen_sock != NULL);
 
 	server_sock = spdk_sock_accept(listen_sock);
 	CU_ASSERT(server_sock == NULL);
 	CU_ASSERT(errno == EAGAIN || errno == EWOULDBLOCK);
 
-	client_sock = spdk_sock_connect(ip, port);
+	client_sock = spdk_sock_connect(ip, port, impl_name);
 	SPDK_CU_ASSERT_FATAL(client_sock != NULL);
 
 	/*
@@ -356,6 +381,8 @@ _sock(const char *ip, int port)
 
 	server_sock = spdk_sock_accept(listen_sock);
 	SPDK_CU_ASSERT_FATAL(server_sock != NULL);
+	CU_ASSERT(spdk_sock_is_connected(client_sock) == true);
+	CU_ASSERT(spdk_sock_is_connected(server_sock) == true);
 
 	/* Test spdk_sock_recv */
 	iov.iov_base = test_string;
@@ -403,6 +430,13 @@ _sock(const char *ip, int port)
 	CU_ASSERT(client_sock == NULL);
 	CU_ASSERT(rc == 0);
 
+#if defined(__FreeBSD__)
+	/* On FreeBSD, it takes a small amount of time for a close to propagate to the
+	 * other side, even in loopback. Introduce a small sleep. */
+	sleep(1);
+#endif
+	CU_ASSERT(spdk_sock_is_connected(server_sock) == false);
+
 	rc = spdk_sock_close(&server_sock);
 	CU_ASSERT(server_sock == NULL);
 	CU_ASSERT(rc == 0);
@@ -415,13 +449,13 @@ _sock(const char *ip, int port)
 static void
 posix_sock(void)
 {
-	_sock("127.0.0.1", UT_PORT);
+	_sock("127.0.0.1", UT_PORT, "posix");
 }
 
 static void
 ut_sock(void)
 {
-	_sock(UT_IP, UT_PORT);
+	_sock(UT_IP, UT_PORT, "ut");
 }
 
 static void
@@ -436,7 +470,7 @@ read_data(void *cb_arg, struct spdk_sock_group *group, struct spdk_sock *sock)
 }
 
 static void
-_sock_group(const char *ip, int port)
+_sock_group(const char *ip, int port, char *impl_name)
 {
 	struct spdk_sock_group *group;
 	struct spdk_sock *listen_sock;
@@ -447,14 +481,14 @@ _sock_group(const char *ip, int port)
 	struct iovec iov;
 	int rc;
 
-	listen_sock = spdk_sock_listen(ip, port);
+	listen_sock = spdk_sock_listen(ip, port, impl_name);
 	SPDK_CU_ASSERT_FATAL(listen_sock != NULL);
 
 	server_sock = spdk_sock_accept(listen_sock);
 	CU_ASSERT(server_sock == NULL);
 	CU_ASSERT(errno == EAGAIN || errno == EWOULDBLOCK);
 
-	client_sock = spdk_sock_connect(ip, port);
+	client_sock = spdk_sock_connect(ip, port, impl_name);
 	SPDK_CU_ASSERT_FATAL(client_sock != NULL);
 
 	usleep(1000);
@@ -462,7 +496,7 @@ _sock_group(const char *ip, int port)
 	server_sock = spdk_sock_accept(listen_sock);
 	SPDK_CU_ASSERT_FATAL(server_sock != NULL);
 
-	group = spdk_sock_group_create();
+	group = spdk_sock_group_create(NULL);
 	SPDK_CU_ASSERT_FATAL(group != NULL);
 
 	/* pass null cb_fn */
@@ -496,7 +530,7 @@ _sock_group(const char *ip, int port)
 	g_bytes_read = 0;
 	rc = spdk_sock_group_poll(group);
 
-	CU_ASSERT(rc == 0);
+	CU_ASSERT(rc == 1);
 	CU_ASSERT(g_read_data_called == true);
 	CU_ASSERT(g_bytes_read == 7);
 
@@ -535,13 +569,13 @@ _sock_group(const char *ip, int port)
 static void
 posix_sock_group(void)
 {
-	_sock_group("127.0.0.1", UT_PORT);
+	_sock_group("127.0.0.1", UT_PORT, "posix");
 }
 
 static void
 ut_sock_group(void)
 {
-	_sock_group(UT_IP, UT_PORT);
+	_sock_group(UT_IP, UT_PORT, "ut");
 }
 
 static void
@@ -571,14 +605,14 @@ posix_sock_group_fairness(void)
 	struct iovec iov;
 	int i, rc;
 
-	listen_sock = spdk_sock_listen("127.0.0.1", UT_PORT);
+	listen_sock = spdk_sock_listen("127.0.0.1", UT_PORT, "posix");
 	SPDK_CU_ASSERT_FATAL(listen_sock != NULL);
 
-	group = spdk_sock_group_create();
+	group = spdk_sock_group_create(NULL);
 	SPDK_CU_ASSERT_FATAL(group != NULL);
 
 	for (i = 0; i < 3; i++) {
-		client_sock[i] = spdk_sock_connect("127.0.0.1", UT_PORT);
+		client_sock[i] = spdk_sock_connect("127.0.0.1", UT_PORT, "posix");
 		SPDK_CU_ASSERT_FATAL(client_sock[i] != NULL);
 
 		usleep(1000);
@@ -607,7 +641,7 @@ posix_sock_group_fairness(void)
 	 */
 	g_server_sock_read = NULL;
 	rc = spdk_sock_group_poll_count(group, 1);
-	CU_ASSERT(rc == 0);
+	CU_ASSERT(rc == 1);
 	CU_ASSERT(g_server_sock_read == server_sock[0]);
 
 	/*
@@ -622,17 +656,17 @@ posix_sock_group_fairness(void)
 
 	g_server_sock_read = NULL;
 	rc = spdk_sock_group_poll_count(group, 1);
-	CU_ASSERT(rc == 0);
+	CU_ASSERT(rc == 1);
 	CU_ASSERT(g_server_sock_read == server_sock[1]);
 
 	g_server_sock_read = NULL;
 	rc = spdk_sock_group_poll_count(group, 1);
-	CU_ASSERT(rc == 0);
+	CU_ASSERT(rc == 1);
 	CU_ASSERT(g_server_sock_read == server_sock[2]);
 
 	g_server_sock_read = NULL;
 	rc = spdk_sock_group_poll_count(group, 1);
-	CU_ASSERT(rc == 0);
+	CU_ASSERT(rc == 1);
 	CU_ASSERT(g_server_sock_read == server_sock[0]);
 
 	for (i = 0; i < 3; i++) {
@@ -657,31 +691,285 @@ posix_sock_group_fairness(void)
 	CU_ASSERT(rc == 0);
 }
 
+struct close_ctx {
+	struct spdk_sock_group *group;
+	struct spdk_sock *sock;
+	bool called;
+};
+
+static void
+_first_close_cb(void *cb_arg, int err)
+{
+	struct close_ctx *ctx = cb_arg;
+	int rc;
+
+	ctx->called = true;
+
+	/* Always close the socket here */
+	rc = spdk_sock_group_remove_sock(ctx->group, ctx->sock);
+	CU_ASSERT(rc == 0);
+	spdk_sock_close(&ctx->sock);
+
+	CU_ASSERT(err == 0);
+}
+
+static void
+_second_close_cb(void *cb_arg, int err)
+{
+	*(bool *)cb_arg = true;
+	CU_ASSERT(err == -ECANCELED);
+}
+
+static void
+_sock_close(const char *ip, int port, char *impl_name)
+{
+	struct spdk_sock_group *group;
+	struct spdk_sock *listen_sock;
+	struct spdk_sock *server_sock;
+	struct spdk_sock *client_sock;
+	uint8_t data_buf[64] = {};
+	struct spdk_sock_request *req1, *req2;
+	struct close_ctx ctx = {};
+	bool cb_arg2 = false;
+	int rc;
+
+	listen_sock = spdk_sock_listen(ip, port, impl_name);
+	SPDK_CU_ASSERT_FATAL(listen_sock != NULL);
+
+	client_sock = spdk_sock_connect(ip, port, impl_name);
+	SPDK_CU_ASSERT_FATAL(client_sock != NULL);
+
+	usleep(1000);
+
+	server_sock = spdk_sock_accept(listen_sock);
+	SPDK_CU_ASSERT_FATAL(server_sock != NULL);
+
+	group = spdk_sock_group_create(NULL);
+	SPDK_CU_ASSERT_FATAL(group != NULL);
+
+	rc = spdk_sock_group_add_sock(group, server_sock, read_data, server_sock);
+	CU_ASSERT(rc == 0);
+
+	/* Submit multiple async writevs on the server sock */
+
+	req1 = calloc(1, sizeof(struct spdk_sock_request) + sizeof(struct iovec));
+	SPDK_CU_ASSERT_FATAL(req1 != NULL);
+	SPDK_SOCK_REQUEST_IOV(req1, 0)->iov_base = data_buf;
+	SPDK_SOCK_REQUEST_IOV(req1, 0)->iov_len = 64;
+	ctx.group = group;
+	ctx.sock = server_sock;
+	ctx.called = false;
+	req1->iovcnt = 1;
+	req1->cb_fn = _first_close_cb;
+	req1->cb_arg = &ctx;
+	spdk_sock_writev_async(server_sock, req1);
+	CU_ASSERT(ctx.called == false);
+
+	req2 = calloc(1, sizeof(struct spdk_sock_request) + sizeof(struct iovec));
+	SPDK_CU_ASSERT_FATAL(req2 != NULL);
+	SPDK_SOCK_REQUEST_IOV(req2, 0)->iov_base = data_buf;
+	SPDK_SOCK_REQUEST_IOV(req2, 0)->iov_len = 64;
+	req2->iovcnt = 1;
+	req2->cb_fn = _second_close_cb;
+	req2->cb_arg = &cb_arg2;
+	spdk_sock_writev_async(server_sock, req2);
+	CU_ASSERT(cb_arg2 == false);
+
+	/* Poll the socket so the writev_async's send. The first one's
+	 * callback will close the socket. */
+	spdk_sock_group_poll(group);
+	if (ctx.called == false) {
+		/* Sometimes the zerocopy completion isn't posted immediately. Delay slightly
+		* and poll one more time. */
+		usleep(1000);
+		spdk_sock_group_poll(group);
+	}
+	CU_ASSERT(ctx.called == true);
+	CU_ASSERT(cb_arg2 == true);
+
+	rc = spdk_sock_group_close(&group);
+	CU_ASSERT(group == NULL);
+	CU_ASSERT(rc == 0);
+
+	rc = spdk_sock_close(&client_sock);
+	CU_ASSERT(client_sock == NULL);
+	CU_ASSERT(rc == 0);
+
+	rc = spdk_sock_close(&listen_sock);
+	CU_ASSERT(listen_sock == NULL);
+	CU_ASSERT(rc == 0);
+
+	free(req1);
+	free(req2);
+}
+
+static void
+_posix_sock_close(void)
+{
+	_sock_close("127.0.0.1", UT_PORT, "posix");
+}
+
+static void
+sock_get_default_opts(void)
+{
+	struct spdk_sock_opts opts;
+
+	/* opts_size is 0 */
+	opts.opts_size = 0;
+	opts.priority = 3;
+	spdk_sock_get_default_opts(&opts);
+	CU_ASSERT(opts.priority == 3);
+	CU_ASSERT(opts.opts_size == 0);
+
+	/* opts_size is less than sizeof(opts) */
+	opts.opts_size = 4;
+	opts.priority = 3;
+	spdk_sock_get_default_opts(&opts);
+	CU_ASSERT(opts.priority == 3);
+	CU_ASSERT(opts.opts_size == 4);
+
+	/* opts_size is equal to sizeof(opts) */
+	opts.opts_size = sizeof(opts);
+	opts.priority = 3;
+	spdk_sock_get_default_opts(&opts);
+	CU_ASSERT(opts.priority == SPDK_SOCK_DEFAULT_PRIORITY);
+	CU_ASSERT(opts.opts_size == sizeof(opts));
+
+	/* opts_size is larger then sizeof(opts) */
+	opts.opts_size = sizeof(opts) + 1;
+	opts.priority = 3;
+	spdk_sock_get_default_opts(&opts);
+	CU_ASSERT(opts.priority == SPDK_SOCK_DEFAULT_PRIORITY);
+	CU_ASSERT(opts.opts_size == (sizeof(opts) + 1));
+}
+
+static void
+ut_sock_impl_get_set_opts(void)
+{
+	int rc;
+	size_t len = 0;
+	/* Use any pointer value for opts. It is never dereferenced in this test */
+	struct spdk_sock_impl_opts *opts = (struct spdk_sock_impl_opts *)0x123456789;
+
+	rc = spdk_sock_impl_get_opts("ut", NULL, &len);
+	CU_ASSERT(rc == -1);
+	CU_ASSERT(errno == EINVAL);
+	rc = spdk_sock_impl_get_opts("ut", opts, NULL);
+	CU_ASSERT(rc == -1);
+	CU_ASSERT(errno == EINVAL);
+	rc = spdk_sock_impl_get_opts("ut", opts, &len);
+	CU_ASSERT(rc == -1);
+	CU_ASSERT(errno == ENOTSUP);
+
+	rc = spdk_sock_impl_set_opts("ut", NULL, len);
+	CU_ASSERT(rc == -1);
+	CU_ASSERT(errno == EINVAL);
+	rc = spdk_sock_impl_set_opts("ut", opts, len);
+	CU_ASSERT(rc == -1);
+	CU_ASSERT(errno == ENOTSUP);
+}
+
+static void
+posix_sock_impl_get_set_opts(void)
+{
+	int rc;
+	size_t len = 0;
+	struct spdk_sock_impl_opts opts = {};
+	struct spdk_sock_impl_opts long_opts[2];
+
+	rc = spdk_sock_impl_get_opts("posix", NULL, &len);
+	CU_ASSERT(rc == -1);
+	CU_ASSERT(errno == EINVAL);
+	rc = spdk_sock_impl_get_opts("posix", &opts, NULL);
+	CU_ASSERT(rc == -1);
+	CU_ASSERT(errno == EINVAL);
+
+	/* Check default opts */
+	len = sizeof(opts);
+	rc = spdk_sock_impl_get_opts("posix", &opts, &len);
+	CU_ASSERT(rc == 0);
+	CU_ASSERT(len == sizeof(opts));
+	CU_ASSERT(opts.recv_buf_size == MIN_SO_RCVBUF_SIZE);
+	CU_ASSERT(opts.send_buf_size == MIN_SO_SNDBUF_SIZE);
+
+	/* Try to request more opts */
+	len = sizeof(long_opts);
+	rc = spdk_sock_impl_get_opts("posix", long_opts, &len);
+	CU_ASSERT(rc == 0);
+	CU_ASSERT(len == sizeof(opts));
+
+	/* Try to request zero opts */
+	len = 0;
+	rc = spdk_sock_impl_get_opts("posix", &opts, &len);
+	CU_ASSERT(rc == 0);
+	CU_ASSERT(len == 0);
+
+	rc = spdk_sock_impl_set_opts("posix", NULL, len);
+	CU_ASSERT(rc == -1);
+	CU_ASSERT(errno == EINVAL);
+
+	opts.recv_buf_size = 16;
+	opts.send_buf_size = 4;
+	rc = spdk_sock_impl_set_opts("posix", &opts, sizeof(opts));
+	CU_ASSERT(rc == 0);
+	len = sizeof(opts);
+	memset(&opts, 0, sizeof(opts));
+	rc = spdk_sock_impl_get_opts("posix", &opts, &len);
+	CU_ASSERT(rc == 0);
+	CU_ASSERT(opts.recv_buf_size == 16);
+	CU_ASSERT(opts.send_buf_size == 4);
+
+	/* Try to set more opts */
+	long_opts[0].recv_buf_size = 4;
+	long_opts[0].send_buf_size = 6;
+	long_opts[1].recv_buf_size = 0;
+	long_opts[1].send_buf_size = 0;
+	rc = spdk_sock_impl_set_opts("posix", long_opts, sizeof(long_opts));
+	CU_ASSERT(rc == 0);
+
+	/* Try to set less opts. Opts in the end should be untouched */
+	opts.recv_buf_size = 5;
+	opts.send_buf_size = 10;
+	rc = spdk_sock_impl_set_opts("posix", &opts, sizeof(opts.recv_buf_size));
+	CU_ASSERT(rc == 0);
+	len = sizeof(opts);
+	memset(&opts, 0, sizeof(opts));
+	rc = spdk_sock_impl_get_opts("posix", &opts, &len);
+	CU_ASSERT(rc == 0);
+	CU_ASSERT(opts.recv_buf_size == 5);
+	CU_ASSERT(opts.send_buf_size == 6);
+
+	/* Try to set partial option. It should not be changed */
+	opts.recv_buf_size = 1000;
+	rc = spdk_sock_impl_set_opts("posix", &opts, 1);
+	CU_ASSERT(rc == 0);
+	len = sizeof(opts);
+	memset(&opts, 0, sizeof(opts));
+	rc = spdk_sock_impl_get_opts("posix", &opts, &len);
+	CU_ASSERT(rc == 0);
+	CU_ASSERT(opts.recv_buf_size == 5);
+}
+
 int
 main(int argc, char **argv)
 {
 	CU_pSuite	suite = NULL;
 	unsigned int	num_failures;
 
-	if (CU_initialize_registry() != CUE_SUCCESS) {
-		return CU_get_error();
-	}
+	CU_set_error_action(CUEA_ABORT);
+	CU_initialize_registry();
 
 	suite = CU_add_suite("sock", NULL, NULL);
-	if (suite == NULL) {
-		CU_cleanup_registry();
-		return CU_get_error();
-	}
 
-	if (
-		CU_add_test(suite, "posix_sock", posix_sock) == NULL ||
-		CU_add_test(suite, "ut_sock", ut_sock) == NULL ||
-		CU_add_test(suite, "posix_sock_group", posix_sock_group) == NULL ||
-		CU_add_test(suite, "ut_sock_group", ut_sock_group) == NULL ||
-		CU_add_test(suite, "posix_sock_group_fairness", posix_sock_group_fairness) == NULL) {
-		CU_cleanup_registry();
-		return CU_get_error();
-	}
+	CU_ADD_TEST(suite, posix_sock);
+	CU_ADD_TEST(suite, ut_sock);
+	CU_ADD_TEST(suite, posix_sock_group);
+	CU_ADD_TEST(suite, ut_sock_group);
+	CU_ADD_TEST(suite, posix_sock_group_fairness);
+	CU_ADD_TEST(suite, _posix_sock_close);
+	CU_ADD_TEST(suite, sock_get_default_opts);
+	CU_ADD_TEST(suite, ut_sock_impl_get_set_opts);
+	CU_ADD_TEST(suite, posix_sock_impl_get_set_opts);
 
 	CU_basic_set_mode(CU_BRM_VERBOSE);
 

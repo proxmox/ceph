@@ -27,7 +27,7 @@ is_same_vdpa_device(struct rte_vdpa_dev_addr *a,
 		return false;
 
 	switch (a->type) {
-	case PCI_ADDR:
+	case VDPA_ADDR_PCI:
 		if (a->pci_addr.domain != b->pci_addr.domain ||
 				a->pci_addr.bus != b->pci_addr.bus ||
 				a->pci_addr.devid != b->pci_addr.devid ||
@@ -126,7 +126,7 @@ rte_vdpa_get_device_num(void)
 	return vdpa_device_num;
 }
 
-int __rte_experimental
+int
 rte_vdpa_relay_vring_used(int vid, uint16_t qid, void *vring_m)
 {
 	struct virtio_net *dev = get_device(vid);
@@ -181,7 +181,7 @@ rte_vdpa_relay_vring_used(int vid, uint16_t qid, void *vring_m)
 				return -1;
 
 			if (unlikely(dlen < vq->desc[desc_id].len)) {
-				idesc = alloc_copy_ind_table(dev, vq,
+				idesc = vhost_alloc_copy_ind_table(dev, vq,
 						vq->desc[desc_id].addr,
 						vq->desc[desc_id].len);
 				if (unlikely(!idesc))
@@ -201,7 +201,8 @@ rte_vdpa_relay_vring_used(int vid, uint16_t qid, void *vring_m)
 				goto fail;
 			desc = desc_ring[desc_id];
 			if (desc.flags & VRING_DESC_F_WRITE)
-				vhost_log_write(dev, desc.addr, desc.len);
+				vhost_log_write_iova(dev, vq, desc.addr,
+						     desc.len);
 			desc_id = desc.next;
 		} while (desc.flags & VRING_DESC_F_NEXT);
 

@@ -10,7 +10,7 @@
 #include <rte_malloc.h>
 #include <rte_cryptodev_pmd.h>
 
-#include "rte_mrvl_pmd_private.h"
+#include "mrvl_pmd_private.h"
 
 /**
  * Capabilities list to be used in reporting to DPDK.
@@ -702,17 +702,6 @@ mrvl_crypto_pmd_qp_setup(struct rte_cryptodev *dev, uint16_t qp_id,
 	return -1;
 }
 
-/** Return the number of allocated queue pairs (PMD ops callback).
- *
- * @param dev Pointer to the device structure.
- * @returns Number of allocated queue pairs.
- */
-static uint32_t
-mrvl_crypto_pmd_qp_count(struct rte_cryptodev *dev)
-{
-	return dev->data->nb_queue_pairs;
-}
-
 /** Returns the size of the session structure (PMD ops callback).
  *
  * @param dev Pointer to the device structure [Unused].
@@ -727,7 +716,7 @@ mrvl_crypto_pmd_sym_session_get_size(__rte_unused struct rte_cryptodev *dev)
 /** Configure the session from a crypto xform chain (PMD ops callback).
  *
  * @param dev Pointer to the device structure.
- * @param xform Pointer to the crytpo configuration structure.
+ * @param xform Pointer to the crypto configuration structure.
  * @param sess Pointer to the empty session structure.
  * @returns 0 upon success, negative value otherwise.
  */
@@ -751,6 +740,8 @@ mrvl_crypto_pmd_sym_session_configure(__rte_unused struct rte_cryptodev *dev,
 		return -ENOMEM;
 	}
 
+	memset(sess_private_data, 0, sizeof(struct mrvl_crypto_session));
+
 	ret = mrvl_crypto_set_session_parameters(sess_private_data, xform);
 	if (ret != 0) {
 		MRVL_LOG(ERR, "Failed to configure session parameters!");
@@ -768,6 +759,12 @@ mrvl_crypto_pmd_sym_session_configure(__rte_unused struct rte_cryptodev *dev,
 		MRVL_LOG(DEBUG, "Failed to create session!");
 		return -EIO;
 	}
+
+	/* free the keys memory allocated for session creation */
+	if (mrvl_sess->sam_sess_params.cipher_key != NULL)
+		free(mrvl_sess->sam_sess_params.cipher_key);
+	if (mrvl_sess->sam_sess_params.auth_key != NULL)
+		free(mrvl_sess->sam_sess_params.auth_key);
 
 	return 0;
 }
@@ -819,7 +816,6 @@ static struct rte_cryptodev_ops mrvl_crypto_pmd_ops = {
 
 		.queue_pair_setup	= mrvl_crypto_pmd_qp_setup,
 		.queue_pair_release	= mrvl_crypto_pmd_qp_release,
-		.queue_pair_count	= mrvl_crypto_pmd_qp_count,
 
 		.sym_session_get_size	= mrvl_crypto_pmd_sym_session_get_size,
 		.sym_session_configure	= mrvl_crypto_pmd_sym_session_configure,

@@ -14,6 +14,8 @@ namespace librbd {
 
 class ImageCtx;
 
+namespace plugin { template <typename> struct Api; }
+
 namespace cache {
 
 template <typename ImageCtxT = ImageCtx>
@@ -23,14 +25,16 @@ class ParentCacheObjectDispatch : public io::ObjectDispatchInterface {
   typedef typename TypeTraits::CacheClient CacheClient;
 
 public:
-  static ParentCacheObjectDispatch* create(ImageCtxT* image_ctx) {
-    return new ParentCacheObjectDispatch(image_ctx);
+  static ParentCacheObjectDispatch* create(ImageCtxT* image_ctx,
+                                           plugin::Api<ImageCtxT>& plugin_api) {
+    return new ParentCacheObjectDispatch(image_ctx, plugin_api);
   }
 
-  ParentCacheObjectDispatch(ImageCtxT* image_ctx);
+  ParentCacheObjectDispatch(ImageCtxT* image_ctx,
+                            plugin::Api<ImageCtxT>& plugin_api);
   ~ParentCacheObjectDispatch() override;
 
-  io::ObjectDispatchLayer get_object_dispatch_layer() const override {
+  io::ObjectDispatchLayer get_dispatch_layer() const override {
     return io::OBJECT_DISPATCH_LAYER_PARENT_CACHE;
   }
 
@@ -40,16 +44,15 @@ public:
   }
 
   bool read(
-      uint64_t object_no, uint64_t object_off, uint64_t object_len,
-      librados::snap_t snap_id, int op_flags,
-      const ZTracer::Trace &parent_trace, ceph::bufferlist* read_data,
-      io::ExtentMap* extent_map, int* object_dispatch_flags,
+      uint64_t object_no, io::ReadExtents* extents, IOContext io_context,
+      int op_flags, int read_flags, const ZTracer::Trace &parent_trace,
+      uint64_t* version, int* object_dispatch_flags,
       io::DispatchResult* dispatch_result, Context** on_finish,
       Context* on_dispatched) override;
 
   bool discard(
-      uint64_t object_no, uint64_t object_off, uint64_t object_len, 
-      const ::SnapContext &snapc, int discard_flags,
+      uint64_t object_no, uint64_t object_off, uint64_t object_len,
+      IOContext io_context, int discard_flags,
       const ZTracer::Trace &parent_trace, int* object_dispatch_flags,
       uint64_t* journal_tid, io::DispatchResult* dispatch_result,
       Context** on_finish, Context* on_dispatched) {
@@ -58,7 +61,8 @@ public:
 
   bool write(
       uint64_t object_no, uint64_t object_off, ceph::bufferlist&& data,
-      const ::SnapContext &snapc, int op_flags,
+      IOContext io_context, int op_flags, int write_flags,
+      std::optional<uint64_t> assert_version,
       const ZTracer::Trace &parent_trace, int* object_dispatch_flags,
       uint64_t* journal_tid, io::DispatchResult* dispatch_result,
       Context** on_finish, Context* on_dispatched) {
@@ -67,8 +71,8 @@ public:
 
   bool write_same(
       uint64_t object_no, uint64_t object_off, uint64_t object_len,
-      io::LightweightBufferExtents&& buffer_extents, ceph::bufferlist&& data, 
-      const ::SnapContext &snapc, int op_flags,
+      io::LightweightBufferExtents&& buffer_extents, ceph::bufferlist&& data,
+      IOContext io_context, int op_flags,
       const ZTracer::Trace &parent_trace, int* object_dispatch_flags,
       uint64_t* journal_tid, io::DispatchResult* dispatch_result,
       Context** on_finish, Context* on_dispatched) {
@@ -76,8 +80,8 @@ public:
   }
 
   bool compare_and_write(
-      uint64_t object_no, uint64_t object_off, ceph::bufferlist&& cmp_data, 
-      ceph::bufferlist&& write_data, const ::SnapContext &snapc, int op_flags,
+      uint64_t object_no, uint64_t object_off, ceph::bufferlist&& cmp_data,
+      ceph::bufferlist&& write_data, IOContext io_context, int op_flags,
       const ZTracer::Trace &parent_trace, uint64_t* mismatch_offset,
       int* object_dispatch_flags, uint64_t* journal_tid,
       io::DispatchResult* dispatch_result, Context** on_finish,
@@ -89,6 +93,15 @@ public:
       io::FlushSource flush_source, const ZTracer::Trace &parent_trace,
       uint64_t* journal_id, io::DispatchResult* dispatch_result,
       Context** on_finish, Context* on_dispatched) {
+    return false;
+  }
+
+  bool list_snaps(
+      uint64_t object_no, io::Extents&& extents, io::SnapIds&& snap_ids,
+      int list_snap_flags, const ZTracer::Trace &parent_trace,
+      io::SnapshotDelta* snapshot_delta, int* object_dispatch_flags,
+      io::DispatchResult* dispatch_result, Context** on_finish,
+      Context* on_dispatched) override {
     return false;
   }
 
@@ -105,6 +118,12 @@ public:
       uint64_t journal_tid, uint64_t new_journal_tid) {
   }
 
+  int prepare_copyup(
+      uint64_t object_no,
+      io::SnapshotSparseBufferlist* snapshot_sparse_bufferlist) override {
+    return 0;
+  }
+
   ImageCtxT* get_image_ctx() {
     return m_image_ctx;
   }
@@ -118,16 +137,16 @@ private:
   int read_object(std::string file_path, ceph::bufferlist* read_data,
                   uint64_t offset, uint64_t length, Context *on_finish);
   void handle_read_cache(ceph::immutable_obj_cache::ObjectCacheRequest* ack,
-                         uint64_t object_no, uint64_t read_off,
-                         uint64_t read_len, librados::snap_t snap_id,
+                         uint64_t object_no, io::ReadExtents* extents,
+                         IOContext io_context,
                          const ZTracer::Trace &parent_trace,
-                         ceph::bufferlist* read_data,
                          io::DispatchResult* dispatch_result,
                          Context* on_dispatched);
   int handle_register_client(bool reg);
   void create_cache_session(Context* on_finish, bool is_reconnect);
 
   ImageCtxT* m_image_ctx;
+  plugin::Api<ImageCtxT>& m_plugin_api;
 
   ceph::mutex m_lock;
   CacheClient *m_cache_client = nullptr;

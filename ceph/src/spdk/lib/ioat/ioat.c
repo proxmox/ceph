@@ -37,9 +37,9 @@
 
 #include "spdk/env.h"
 #include "spdk/util.h"
+#include "spdk/memory.h"
 
 #include "spdk_internal/log.h"
-#include "spdk_internal/memory.h"
 
 struct ioat_driver {
 	pthread_mutex_t			lock;
@@ -318,7 +318,7 @@ static int
 ioat_process_channel_events(struct spdk_ioat_chan *ioat)
 {
 	struct ioat_descriptor *desc;
-	uint64_t status, completed_descriptor, hw_desc_phys_addr;
+	uint64_t status, completed_descriptor, hw_desc_phys_addr, events_count = 0;
 	uint32_t tail;
 
 	if (ioat->head == ioat->tail) {
@@ -347,10 +347,12 @@ ioat_process_channel_events(struct spdk_ioat_chan *ioat)
 
 		hw_desc_phys_addr = desc->phys_addr;
 		ioat->tail++;
+		events_count++;
 	} while (hw_desc_phys_addr != completed_descriptor);
 
 	ioat->last_seen = hw_desc_phys_addr;
-	return 0;
+
+	return events_count;
 }
 
 static void
@@ -370,6 +372,12 @@ ioat_channel_destruct(struct spdk_ioat_chan *ioat)
 		spdk_free((void *)ioat->comp_update);
 		ioat->comp_update = NULL;
 	}
+}
+
+uint32_t
+spdk_ioat_get_max_descriptors(struct spdk_ioat_chan *ioat)
+{
+	return 1 << ioat->ring_size_order;
 }
 
 static int

@@ -1,7 +1,12 @@
-def get_subsystems(client):
-    return client.call('get_subsystems')
+from .helpers import deprecated_alias
 
 
-def get_subsystem_config(client, name):
+@deprecated_alias('get_subsystems')
+def framework_get_subsystems(client):
+    return client.call('framework_get_subsystems')
+
+
+@deprecated_alias('get_subsystem_config')
+def framework_get_config(client, name):
     params = {'name': name}
-    return client.call('get_subsystem_config', params)
+    return client.call('framework_get_config', params)

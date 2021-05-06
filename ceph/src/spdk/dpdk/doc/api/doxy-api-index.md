@@ -1,4 +1,4 @@
-API {#index}
+API
 ===
 
 <!--
@@ -31,6 +31,7 @@ The public API headers are grouped by topics:
   [latency]            (@ref rte_latencystats.h),
   [devargs]            (@ref rte_devargs.h),
   [PCI]                (@ref rte_pci.h),
+  [vdev]               (@ref rte_bus_vdev.h),
   [vfio]               (@ref rte_vfio.h)
 
 - **device specific**:
@@ -41,6 +42,7 @@ The public API headers are grouped by topics:
   [KNI]                (@ref rte_kni.h),
   [ixgbe]              (@ref rte_pmd_ixgbe.h),
   [i40e]               (@ref rte_pmd_i40e.h),
+  [ice]                (@ref rte_pmd_ice.h),
   [bnxt]               (@ref rte_pmd_bnxt.h),
   [dpaa]               (@ref rte_pmd_dpaa.h),
   [dpaa2]              (@ref rte_pmd_dpaa2.h),
@@ -63,6 +65,7 @@ The public API headers are grouped by topics:
 
 - **locks**:
   [atomic]             (@ref rte_atomic.h),
+  [mcslock]            (@ref rte_mcslock.h),
   [rwlock]             (@ref rte_rwlock.h),
   [spinlock]           (@ref rte_spinlock.h),
   [ticketlock]         (@ref rte_ticketlock.h),
@@ -89,17 +92,24 @@ The public API headers are grouped by topics:
 - **layers**:
   [ethernet]           (@ref rte_ether.h),
   [ARP]                (@ref rte_arp.h),
+  [HIGIG]              (@ref rte_higig.h),
   [ICMP]               (@ref rte_icmp.h),
   [ESP]                (@ref rte_esp.h),
+  [IPsec]              (@ref rte_ipsec.h),
+  [IPsec group]        (@ref rte_ipsec_group.h),
+  [IPsec SA]           (@ref rte_ipsec_sa.h),
+  [IPsec SAD]          (@ref rte_ipsec_sad.h),
   [IP]                 (@ref rte_ip.h),
   [SCTP]               (@ref rte_sctp.h),
   [TCP]                (@ref rte_tcp.h),
   [UDP]                (@ref rte_udp.h),
+  [GTP]                (@ref rte_gtp.h),
   [GRO]                (@ref rte_gro.h),
   [GSO]                (@ref rte_gso.h),
   [frag/reass]         (@ref rte_ip_frag.h),
   [LPM IPv4 route]     (@ref rte_lpm.h),
-  [LPM IPv6 route]     (@ref rte_lpm6.h)
+  [LPM IPv6 route]     (@ref rte_lpm6.h),
+  [VXLAN]              (@ref rte_vxlan.h)
 
 - **QoS**:
   [metering]           (@ref rte_meter.h),
@@ -149,6 +159,11 @@ The public API headers are grouped by topics:
   * [pipeline]         (@ref rte_pipeline.h)
     [port_in_action]   (@ref rte_port_in_action.h)
     [table_action]     (@ref rte_table_action.h)
+  * [graph]            (@ref rte_graph.h):
+    [graph_worker]     (@ref rte_graph_worker.h)
+  * graph_nodes:
+    [eth_node]         (@ref rte_node_eth_api.h),
+    [ip4_node]         (@ref rte_node_ip4_api.h)
 
 - **basic**:
   [approx fraction]    (@ref rte_approx.h),
@@ -164,10 +179,13 @@ The public API headers are grouped by topics:
   [hexdump]            (@ref rte_hexdump.h),
   [debug]              (@ref rte_debug.h),
   [log]                (@ref rte_log.h),
-  [errno]              (@ref rte_errno.h)
+  [errno]              (@ref rte_errno.h),
+  [trace]              (@ref rte_trace.h),
+  [trace_point]        (@ref rte_trace_point.h)
 
 - **misc**:
   [EAL config]         (@ref rte_eal.h),
   [common]             (@ref rte_common.h),
-  [ABI compat]         (@ref rte_compat.h),
+  [experimental APIs]  (@ref rte_compat.h),
+  [ABI versioning]     (@ref rte_function_versioning.h),
   [version]            (@ref rte_version.h)

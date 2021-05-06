@@ -1,28 +1,28 @@
 import { Component, OnDestroy, OnInit, ViewChild } from '@angular/core';
 
-import { I18n } from '@ngx-translate/i18n-polyfill';
-import * as _ from 'lodash';
-import { BsModalRef, BsModalService } from 'ngx-bootstrap/modal';
+import { NgbModalRef } from '@ng-bootstrap/ng-bootstrap';
+import _ from 'lodash';
 import { Subscription } from 'rxjs';
 
-import { IscsiService } from '../../../shared/api/iscsi.service';
-import { ListWithDetails } from '../../../shared/classes/list-with-details.class';
-import { CriticalConfirmationModalComponent } from '../../../shared/components/critical-confirmation-modal/critical-confirmation-modal.component';
-import { ActionLabelsI18n } from '../../../shared/constants/app.constants';
-import { TableComponent } from '../../../shared/datatable/table/table.component';
-import { CellTemplate } from '../../../shared/enum/cell-template.enum';
-import { Icons } from '../../../shared/enum/icons.enum';
-import { CdTableAction } from '../../../shared/models/cd-table-action';
-import { CdTableColumn } from '../../../shared/models/cd-table-column';
-import { CdTableSelection } from '../../../shared/models/cd-table-selection';
-import { FinishedTask } from '../../../shared/models/finished-task';
-import { Permission } from '../../../shared/models/permissions';
-import { Task } from '../../../shared/models/task';
-import { JoinPipe } from '../../../shared/pipes/join.pipe';
-import { NotAvailablePipe } from '../../../shared/pipes/not-available.pipe';
-import { AuthStorageService } from '../../../shared/services/auth-storage.service';
-import { TaskListService } from '../../../shared/services/task-list.service';
-import { TaskWrapperService } from '../../../shared/services/task-wrapper.service';
+import { IscsiService } from '~/app/shared/api/iscsi.service';
+import { ListWithDetails } from '~/app/shared/classes/list-with-details.class';
+import { CriticalConfirmationModalComponent } from '~/app/shared/components/critical-confirmation-modal/critical-confirmation-modal.component';
+import { ActionLabelsI18n } from '~/app/shared/constants/app.constants';
+import { TableComponent } from '~/app/shared/datatable/table/table.component';
+import { CellTemplate } from '~/app/shared/enum/cell-template.enum';
+import { Icons } from '~/app/shared/enum/icons.enum';
+import { CdTableAction } from '~/app/shared/models/cd-table-action';
+import { CdTableColumn } from '~/app/shared/models/cd-table-column';
+import { CdTableSelection } from '~/app/shared/models/cd-table-selection';
+import { FinishedTask } from '~/app/shared/models/finished-task';
+import { Permission } from '~/app/shared/models/permissions';
+import { Task } from '~/app/shared/models/task';
+import { JoinPipe } from '~/app/shared/pipes/join.pipe';
+import { NotAvailablePipe } from '~/app/shared/pipes/not-available.pipe';
+import { AuthStorageService } from '~/app/shared/services/auth-storage.service';
+import { ModalService } from '~/app/shared/services/modal.service';
+import { TaskListService } from '~/app/shared/services/task-list.service';
+import { TaskWrapperService } from '~/app/shared/services/task-wrapper.service';
 import { IscsiTargetDiscoveryModalComponent } from '../iscsi-target-discovery-modal/iscsi-target-discovery-modal.component';
 
 @Component({
@@ -32,12 +32,12 @@ import { IscsiTargetDiscoveryModalComponent } from '../iscsi-target-discovery-mo
   providers: [TaskListService]
 })
 export class IscsiTargetListComponent extends ListWithDetails implements OnInit, OnDestroy {
-  @ViewChild(TableComponent, { static: false })
+  @ViewChild(TableComponent)
   table: TableComponent;
 
   available: boolean = undefined;
   columns: CdTableColumn[];
-  modalRef: BsModalRef;
+  modalRef: NgbModalRef;
   permission: Permission;
   selection = new CdTableSelection();
   cephIscsiConfigVersion: number;
@@ -58,12 +58,11 @@ export class IscsiTargetListComponent extends ListWithDetails implements OnInit,
 
   constructor(
     private authStorageService: AuthStorageService,
-    private i18n: I18n,
     private iscsiService: IscsiService,
     private joinPipe: JoinPipe,
     private taskListService: TaskListService,
     private notAvailablePipe: NotAvailablePipe,
-    private modalService: BsModalService,
+    private modalService: ModalService,
     private taskWrapper: TaskWrapperService,
     public actionLabels: ActionLabelsI18n
   ) {
@@ -97,25 +96,25 @@ export class IscsiTargetListComponent extends ListWithDetails implements OnInit,
   ngOnInit() {
     this.columns = [
       {
-        name: this.i18n('Target'),
+        name: $localize`Target`,
         prop: 'target_iqn',
         flexGrow: 2,
         cellTransformation: CellTemplate.executing
       },
       {
-        name: this.i18n('Portals'),
+        name: $localize`Portals`,
         prop: 'cdPortals',
         pipe: this.joinPipe,
         flexGrow: 2
       },
       {
-        name: this.i18n('Images'),
+        name: $localize`Images`,
         prop: 'cdImages',
         pipe: this.joinPipe,
         flexGrow: 2
       },
       {
-        name: this.i18n('# Sessions'),
+        name: $localize`# Sessions`,
         prop: 'info.num_sessions',
         pipe: this.notAvailablePipe,
         flexGrow: 1
@@ -157,11 +156,12 @@ export class IscsiTargetListComponent extends ListWithDetails implements OnInit,
   getEditDisableDesc(): string | boolean {
     const first = this.selection.first();
 
-    if (first && first.cdExecuting) {
+    if (first && first?.cdExecuting) {
       return first.cdExecuting;
     }
-    if (first && _.isUndefined(first['info'])) {
-      return this.i18n('Unavailable gateway(s)');
+
+    if (first && _.isUndefined(first?.['info'])) {
+      return $localize`Unavailable gateway(s)`;
     }
 
     return !first;
@@ -170,14 +170,16 @@ export class IscsiTargetListComponent extends ListWithDetails implements OnInit,
   getDeleteDisableDesc(): string | boolean {
     const first = this.selection.first();
 
-    if (first && first.cdExecuting) {
+    if (first?.cdExecuting) {
       return first.cdExecuting;
     }
-    if (first && _.isUndefined(first['info'])) {
-      return this.i18n('Unavailable gateway(s)');
+
+    if (first && _.isUndefined(first?.['info'])) {
+      return $localize`Unavailable gateway(s)`;
     }
-    if (first && first['info'] && first['info']['num_sessions']) {
-      return this.i18n('Target has active sessions');
+
+    if (first && first?.['info']?.['num_sessions']) {
+      return $localize`Target has active sessions`;
     }
 
     return !first;
@@ -216,21 +218,19 @@ export class IscsiTargetListComponent extends ListWithDetails implements OnInit,
     const target_iqn = this.selection.first().target_iqn;
 
     this.modalRef = this.modalService.show(CriticalConfirmationModalComponent, {
-      initialState: {
-        itemDescription: this.i18n('iSCSI target'),
-        itemNames: [target_iqn],
-        submitActionObservable: () =>
-          this.taskWrapper.wrapTaskAroundCall({
-            task: new FinishedTask('iscsi/target/delete', {
-              target_iqn: target_iqn
-            }),
-            call: this.iscsiService.deleteTarget(target_iqn)
-          })
-      }
+      itemDescription: $localize`iSCSI target`,
+      itemNames: [target_iqn],
+      submitActionObservable: () =>
+        this.taskWrapper.wrapTaskAroundCall({
+          task: new FinishedTask('iscsi/target/delete', {
+            target_iqn: target_iqn
+          }),
+          call: this.iscsiService.deleteTarget(target_iqn)
+        })
     });
   }
 
   configureDiscoveryAuth() {
-    this.modalService.show(IscsiTargetDiscoveryModalComponent, {});
+    this.modalService.show(IscsiTargetDiscoveryModalComponent);
   }
 }

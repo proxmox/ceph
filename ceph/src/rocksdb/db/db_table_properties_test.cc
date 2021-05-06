@@ -14,12 +14,12 @@
 #include "port/stack_trace.h"
 #include "rocksdb/db.h"
 #include "rocksdb/utilities/table_properties_collectors.h"
-#include "util/testharness.h"
-#include "util/testutil.h"
+#include "test_util/testharness.h"
+#include "test_util/testutil.h"
 
 #ifndef ROCKSDB_LITE
 
-namespace rocksdb {
+namespace ROCKSDB_NAMESPACE {
 
 // A helper function that ensures the table properties returned in
 // `GetPropertiesOfAllTablesTest` is correct.
@@ -139,12 +139,12 @@ TEST_F(DBTablePropertiesTest, GetPropertiesOfTablesInRange) {
   Options options;
   options.create_if_missing = true;
   options.write_buffer_size = 4096;
-  options.max_write_buffer_number = 3;
+  options.max_write_buffer_number = 2;
   options.level0_file_num_compaction_trigger = 2;
   options.level0_slowdown_writes_trigger = 2;
-  options.level0_stop_writes_trigger = 4;
+  options.level0_stop_writes_trigger = 2;
   options.target_file_size_base = 2048;
-  options.max_bytes_for_level_base = 10240;
+  options.max_bytes_for_level_base = 40960;
   options.max_bytes_for_level_multiplier = 4;
   options.hard_pending_compaction_bytes_limit = 16 * 1024;
   options.num_levels = 8;
@@ -230,7 +230,7 @@ TEST_F(DBTablePropertiesTest, GetColumnFamilyNameProperty) {
 
   // Create one table per CF, then verify it was created with the column family
   // name property.
-  for (int cf = 0; cf < 2; ++cf) {
+  for (uint32_t cf = 0; cf < 2; ++cf) {
     Put(cf, "key", "val");
     Flush(cf);
 
@@ -325,12 +325,12 @@ TEST_F(DBTablePropertiesTest, DeletionTriggeredCompactionMarking) {
 
 }
 
-}  // namespace rocksdb
+}  // namespace ROCKSDB_NAMESPACE
 
 #endif  // ROCKSDB_LITE
 
 int main(int argc, char** argv) {
-  rocksdb::port::InstallStackTraceHandler();
+  ROCKSDB_NAMESPACE::port::InstallStackTraceHandler();
   ::testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();
 }

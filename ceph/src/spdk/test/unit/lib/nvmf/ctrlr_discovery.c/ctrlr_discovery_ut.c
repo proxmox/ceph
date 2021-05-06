@@ -53,24 +53,6 @@ DEFINE_STUB(spdk_nvmf_transport_stop_listen,
 	    (struct spdk_nvmf_transport *transport,
 	     const struct spdk_nvme_transport_id *trid), 0);
 
-uint32_t
-spdk_env_get_current_core(void)
-{
-	return 0;
-}
-
-struct spdk_event *
-spdk_event_allocate(uint32_t core, spdk_event_fn fn, void *arg1, void *arg2)
-{
-	return NULL;
-}
-
-void
-spdk_event_call(struct spdk_event *event)
-{
-
-}
-
 int
 spdk_bdev_open(struct spdk_bdev *bdev, bool write, spdk_bdev_remove_cb_t remove_cb,
 	       void *remove_ctx, struct spdk_bdev_desc **desc)
@@ -102,21 +84,34 @@ spdk_nvmf_transport_listen(struct spdk_nvmf_transport *transport,
 	return 0;
 }
 
+static struct spdk_nvmf_listener g_listener = {};
+
+struct spdk_nvmf_listener *
+nvmf_transport_find_listener(struct spdk_nvmf_transport *transport,
+			     const struct spdk_nvme_transport_id *trid)
+{
+	return &g_listener;
+}
+
 void
-spdk_nvmf_transport_listener_discover(struct spdk_nvmf_transport *transport,
-				      struct spdk_nvme_transport_id *trid,
-				      struct spdk_nvmf_discovery_log_page_entry *entry)
+nvmf_transport_listener_discover(struct spdk_nvmf_transport *transport,
+				 struct spdk_nvme_transport_id *trid,
+				 struct spdk_nvmf_discovery_log_page_entry *entry)
 {
 	entry->trtype = 42;
 }
 
-static struct spdk_nvmf_transport g_transport = {};
+struct spdk_nvmf_transport_ops g_transport_ops = {};
+
+static struct spdk_nvmf_transport g_transport = {
+	.ops = &g_transport_ops
+};
 
 struct spdk_nvmf_transport *
-spdk_nvmf_transport_create(enum spdk_nvme_transport_type type,
+spdk_nvmf_transport_create(const char *transport_name,
 			   struct spdk_nvmf_transport_opts *tprt_opts)
 {
-	if (type == SPDK_NVME_TRANSPORT_RDMA) {
+	if (strcasecmp(transport_name, spdk_nvme_transport_id_trtype_str(SPDK_NVME_TRANSPORT_RDMA))) {
 		return &g_transport;
 	}
 
@@ -130,7 +125,7 @@ spdk_nvmf_tgt_find_subsystem(struct spdk_nvmf_tgt *tgt, const char *subnqn)
 }
 
 struct spdk_nvmf_transport *
-spdk_nvmf_tgt_get_transport(struct spdk_nvmf_tgt *tgt, enum spdk_nvme_transport_type trtype)
+spdk_nvmf_tgt_get_transport(struct spdk_nvmf_tgt *tgt, const char *transport_name)
 {
 	return &g_transport;
 }
@@ -160,49 +155,55 @@ spdk_nvme_transport_id_compare(const struct spdk_nvme_transport_id *trid1,
 }
 
 void
-spdk_nvmf_ctrlr_ns_changed(struct spdk_nvmf_ctrlr *ctrlr, uint32_t nsid)
+nvmf_ctrlr_ns_changed(struct spdk_nvmf_ctrlr *ctrlr, uint32_t nsid)
 {
 }
 
 void
-spdk_nvmf_ctrlr_destruct(struct spdk_nvmf_ctrlr *ctrlr)
+nvmf_ctrlr_destruct(struct spdk_nvmf_ctrlr *ctrlr)
 {
 }
 
 int
-spdk_nvmf_poll_group_update_subsystem(struct spdk_nvmf_poll_group *group,
-				      struct spdk_nvmf_subsystem *subsystem)
+nvmf_poll_group_update_subsystem(struct spdk_nvmf_poll_group *group,
+				 struct spdk_nvmf_subsystem *subsystem)
 {
 	return 0;
 }
 
 int
-spdk_nvmf_poll_group_add_subsystem(struct spdk_nvmf_poll_group *group,
-				   struct spdk_nvmf_subsystem *subsystem,
-				   spdk_nvmf_poll_group_mod_done cb_fn, void *cb_arg)
+nvmf_poll_group_add_subsystem(struct spdk_nvmf_poll_group *group,
+			      struct spdk_nvmf_subsystem *subsystem,
+			      spdk_nvmf_poll_group_mod_done cb_fn, void *cb_arg)
 {
 	return 0;
 }
 
 void
-spdk_nvmf_poll_group_remove_subsystem(struct spdk_nvmf_poll_group *group,
-				      struct spdk_nvmf_subsystem *subsystem,
-				      spdk_nvmf_poll_group_mod_done cb_fn, void *cb_arg)
+nvmf_poll_group_remove_subsystem(struct spdk_nvmf_poll_group *group,
+				 struct spdk_nvmf_subsystem *subsystem,
+				 spdk_nvmf_poll_group_mod_done cb_fn, void *cb_arg)
 {
 }
 
 void
-spdk_nvmf_poll_group_pause_subsystem(struct spdk_nvmf_poll_group *group,
-				     struct spdk_nvmf_subsystem *subsystem,
-				     spdk_nvmf_poll_group_mod_done cb_fn, void *cb_arg)
+nvmf_poll_group_pause_subsystem(struct spdk_nvmf_poll_group *group,
+				struct spdk_nvmf_subsystem *subsystem,
+				spdk_nvmf_poll_group_mod_done cb_fn, void *cb_arg)
 {
 }
 
 void
-spdk_nvmf_poll_group_resume_subsystem(struct spdk_nvmf_poll_group *group,
-				      struct spdk_nvmf_subsystem *subsystem,
-				      spdk_nvmf_poll_group_mod_done cb_fn, void *cb_arg)
+nvmf_poll_group_resume_subsystem(struct spdk_nvmf_poll_group *group,
+				 struct spdk_nvmf_subsystem *subsystem,
+				 spdk_nvmf_poll_group_mod_done cb_fn, void *cb_arg)
 {
+}
+
+static void
+_subsystem_add_listen_done(void *cb_arg, int status)
+{
+	SPDK_CU_ASSERT_FATAL(status == 0);
 }
 
 static void
@@ -226,33 +227,35 @@ test_discovery_log(void)
 	/* Add one subsystem and verify that the discovery log contains it */
 	subsystem = spdk_nvmf_subsystem_create(&tgt, "nqn.2016-06.io.spdk:subsystem1",
 					       SPDK_NVMF_SUBTYPE_NVME, 0);
+	subsystem->allow_any_host = true;
 	SPDK_CU_ASSERT_FATAL(subsystem != NULL);
 
 	trid.trtype = SPDK_NVME_TRANSPORT_RDMA;
 	trid.adrfam = SPDK_NVMF_ADRFAM_IPV4;
 	snprintf(trid.traddr, sizeof(trid.traddr), "1234");
 	snprintf(trid.trsvcid, sizeof(trid.trsvcid), "5678");
-	SPDK_CU_ASSERT_FATAL(spdk_nvmf_subsystem_add_listener(subsystem, &trid) == 0);
+	spdk_nvmf_subsystem_add_listener(subsystem, &trid, _subsystem_add_listen_done, NULL);
 	subsystem->state = SPDK_NVMF_SUBSYSTEM_ACTIVE;
 
 	/* Get only genctr (first field in the header) */
 	memset(buffer, 0xCC, sizeof(buffer));
 	disc_log = (struct spdk_nvmf_discovery_log_page *)buffer;
-	spdk_nvmf_get_discovery_log_page(&tgt, &iov, 1, 0, sizeof(disc_log->genctr));
-	CU_ASSERT(disc_log->genctr == 1); /* one added subsystem */
+	nvmf_get_discovery_log_page(&tgt, "nqn.2016-06.io.spdk:host1", &iov, 1, 0,
+				    sizeof(disc_log->genctr));
+	CU_ASSERT(disc_log->genctr == 2); /* one added subsystem and listener */
 
 	/* Get only the header, no entries */
 	memset(buffer, 0xCC, sizeof(buffer));
 	disc_log = (struct spdk_nvmf_discovery_log_page *)buffer;
-	spdk_nvmf_get_discovery_log_page(&tgt, &iov, 1, 0, sizeof(*disc_log));
-	CU_ASSERT(disc_log->genctr == 1);
+	nvmf_get_discovery_log_page(&tgt, "nqn.2016-06.io.spdk:host1", &iov, 1, 0, sizeof(*disc_log));
+	CU_ASSERT(disc_log->genctr == 2);
 	CU_ASSERT(disc_log->numrec == 1);
 
 	/* Offset 0, exact size match */
 	memset(buffer, 0xCC, sizeof(buffer));
 	disc_log = (struct spdk_nvmf_discovery_log_page *)buffer;
-	spdk_nvmf_get_discovery_log_page(&tgt, &iov, 1, 0,
-					 sizeof(*disc_log) + sizeof(disc_log->entries[0]));
+	nvmf_get_discovery_log_page(&tgt, "nqn.2016-06.io.spdk:host1", &iov, 1, 0,
+				    sizeof(*disc_log) + sizeof(disc_log->entries[0]));
 	CU_ASSERT(disc_log->genctr != 0);
 	CU_ASSERT(disc_log->numrec == 1);
 	CU_ASSERT(disc_log->entries[0].trtype == 42);
@@ -260,7 +263,7 @@ test_discovery_log(void)
 	/* Offset 0, oversize buffer */
 	memset(buffer, 0xCC, sizeof(buffer));
 	disc_log = (struct spdk_nvmf_discovery_log_page *)buffer;
-	spdk_nvmf_get_discovery_log_page(&tgt, &iov, 1, 0, sizeof(buffer));
+	nvmf_get_discovery_log_page(&tgt, "nqn.2016-06.io.spdk:host1", &iov, 1, 0, sizeof(buffer));
 	CU_ASSERT(disc_log->genctr != 0);
 	CU_ASSERT(disc_log->numrec == 1);
 	CU_ASSERT(disc_log->entries[0].trtype == 42);
@@ -270,15 +273,14 @@ test_discovery_log(void)
 	/* Get just the first entry, no header */
 	memset(buffer, 0xCC, sizeof(buffer));
 	entry = (struct spdk_nvmf_discovery_log_page_entry *)buffer;
-	spdk_nvmf_get_discovery_log_page(&tgt, &iov,
-					 1,
-					 offsetof(struct spdk_nvmf_discovery_log_page, entries[0]),
-					 sizeof(*entry));
+	nvmf_get_discovery_log_page(&tgt, "nqn.2016-06.io.spdk:host1", &iov,
+				    1,
+				    offsetof(struct spdk_nvmf_discovery_log_page, entries[0]),
+				    sizeof(*entry));
 	CU_ASSERT(entry->trtype == 42);
 	subsystem->state = SPDK_NVMF_SUBSYSTEM_INACTIVE;
 	spdk_nvmf_subsystem_destroy(subsystem);
 	free(tgt.subsystems);
-	free(tgt.discovery_log_page);
 }
 
 int main(int argc, char **argv)
@@ -286,21 +288,12 @@ int main(int argc, char **argv)
 	CU_pSuite	suite = NULL;
 	unsigned int	num_failures;
 
-	if (CU_initialize_registry() != CUE_SUCCESS) {
-		return CU_get_error();
-	}
+	CU_set_error_action(CUEA_ABORT);
+	CU_initialize_registry();
 
 	suite = CU_add_suite("nvmf", NULL, NULL);
-	if (suite == NULL) {
-		CU_cleanup_registry();
-		return CU_get_error();
-	}
 
-	if (
-		CU_add_test(suite, "discovery_log", test_discovery_log) == NULL) {
-		CU_cleanup_registry();
-		return CU_get_error();
-	}
+	CU_ADD_TEST(suite, test_discovery_log);
 
 	CU_basic_set_mode(CU_BRM_VERBOSE);
 	CU_basic_run_tests();

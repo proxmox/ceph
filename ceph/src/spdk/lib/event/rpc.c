@@ -46,10 +46,10 @@
 static struct spdk_poller *g_rpc_poller = NULL;
 
 static int
-spdk_rpc_subsystem_poll(void *arg)
+rpc_subsystem_poll(void *arg)
 {
 	spdk_rpc_accept();
-	return -1;
+	return SPDK_POLLER_BUSY;
 }
 
 void
@@ -58,6 +58,11 @@ spdk_rpc_initialize(const char *listen_addr)
 	int rc;
 
 	if (listen_addr == NULL) {
+		return;
+	}
+
+	if (!spdk_rpc_verify_methods()) {
+		spdk_app_stop(-EINVAL);
 		return;
 	}
 
@@ -71,7 +76,7 @@ spdk_rpc_initialize(const char *listen_addr)
 	spdk_rpc_set_state(SPDK_RPC_STARTUP);
 
 	/* Register a poller to periodically check for RPCs */
-	g_rpc_poller = spdk_poller_register(spdk_rpc_subsystem_poll, NULL, RPC_SELECT_INTERVAL);
+	g_rpc_poller = SPDK_POLLER_REGISTER(rpc_subsystem_poll, NULL, RPC_SELECT_INTERVAL);
 }
 
 void

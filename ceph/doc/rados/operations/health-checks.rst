@@ -25,6 +25,18 @@ Definitions
 Monitor
 -------
 
+DAEMON_OLD_VERSION
+__________________
+
+Warn if old version(s) of Ceph are running on any daemons.
+It will generate a health error if multiple versions are detected.
+This condition must exist for over mon_warn_older_version_delay (set to 1 week by default) in order for the
+health condition to be triggered.  This allows most upgrades to proceed
+without falsely seeing the warning.  If upgrade is paused for an extended
+time period, health mute can be used like this
+"ceph health mute DAEMON_OLD_VERSION --sticky".  In this case after
+upgrade has finished use "ceph health unmute DAEMON_OLD_VERSION".
+
 MON_DOWN
 ________
 
@@ -566,6 +578,25 @@ This warning can be disabled with::
 
   ceph config set global bluestore_warn_on_no_per_pool_omap false
 
+BLUESTORE_NO_PER_PG_OMAP
+__________________________
+
+Starting with the Pacific release, BlueStore tracks omap space utilization
+by PG, and one or more OSDs have volumes that were created prior to
+Pacific.  Per-PG omap enables faster PG removal when PGs migrate.
+
+The older OSDs can be updated to track by PG by stopping each OSD,
+running a repair operation, and the restarting it.  For example, if
+``osd.123`` needed to be updated,::
+
+  systemctl stop ceph-osd@123
+  ceph-bluestore-tool repair --path /var/lib/ceph/osd/ceph-123
+  systemctl start ceph-osd@123
+
+This warning can be disabled with::
+
+  ceph config set global bluestore_warn_on_no_per_pg_omap false
+
 
 BLUESTORE_DISK_SIZE_MISMATCH
 ____________________________
@@ -597,6 +628,28 @@ are correctly installed and that the OSD daemon(s) have been
 restarted.  If the problem persists, check the OSD log for any clues
 as to the source of the problem.
 
+BLUESTORE_SPURIOUS_READ_ERRORS
+______________________________
+
+One or more OSDs using BlueStore detects spurious read errors at main device.
+BlueStore has recovered from these errors by retrying disk reads.
+Though this might show some issues with underlying hardware, I/O subsystem,
+etc.
+Which theoretically might cause permanent data corruption.
+Some observations on the root cause can be found at 
+https://tracker.ceph.com/issues/22464
+
+This alert doesn't require immediate response but corresponding host might need
+additional attention, e.g. upgrading to the latest OS/kernel versions and
+H/W resource utilization monitoring.
+
+This warning can be disabled on all OSDs with::
+
+  ceph config set osd bluestore_warn_on_spurious_read_errors false
+
+Alternatively, it can be disabled on a specific OSD with::
+
+  ceph config set osd.123 bluestore_warn_on_spurious_read_errors false
 
 
 Device health
@@ -1014,8 +1067,9 @@ Setting the quota value to 0 will disable the quota.
 POOL_NEAR_FULL
 ______________
 
-One or more pools is approaching is quota.  The threshold to trigger
-this warning condition is controlled by the
+One or more pools is approaching a configured fullness threshold.
+
+One threshold that can trigger this warning condition is the
 ``mon_pool_quota_warn_threshold`` configuration option.
 
 Pool quotas can be adjusted up or down (or removed) with::
@@ -1024,6 +1078,11 @@ Pool quotas can be adjusted up or down (or removed) with::
   ceph osd pool set-quota <pool> max_objects <objects>
 
 Setting the quota value to 0 will disable the quota.
+
+Other thresholds that can trigger the above two warning conditions are
+``mon_osd_nearfull_ratio`` and ``mon_osd_full_ratio``.  Visit the
+:ref:`storage-capacity` and :ref:`no-free-drive-space` documents for details
+and resolution.
 
 OBJECT_MISPLACED
 ________________
@@ -1060,12 +1119,12 @@ told to roll back to a previous version of the object. See
 SLOW_OPS
 ________
 
-One or more OSD requests is taking a long time to process.  This can
+One or more OSD or monitor requests is taking a long time to process.  This can
 be an indication of extreme load, a slow storage device, or a software
 bug.
 
-The request queue on the OSD(s) in question can be queried with the
-following command, executed from the OSD host::
+The request queue for the daemon in question can be queried with the
+following command, executed from the daemon's host::
 
   ceph daemon osd.<id> ops
 
@@ -1080,10 +1139,13 @@ The location of an OSD can be found with::
 PG_NOT_SCRUBBED
 _______________
 
-One or more PGs has not been scrubbed recently.  PGs are normally
-scrubbed every ``mon_scrub_interval`` seconds, and this warning
-triggers when ``mon_warn_pg_not_scrubbed_ratio`` percentage of interval has elapsed
-without a scrub since it was due.
+One or more PGs has not been scrubbed recently.  PGs are normally scrubbed
+within every configured interval specified by
+:ref:`osd_scrub_max_interval <osd_scrub_max_interval>` globally. This
+interval can be overriden on per-pool basis with
+:ref:`scrub_max_interval <scrub_max_interval>`. The warning triggers when
+``mon_warn_pg_not_scrubbed_ratio`` percentage of interval has elapsed without a
+scrub since it was due.
 
 PGs will not scrub if they are not flagged as *clean*, which may
 happen if they are misplaced or degraded (see *PG_AVAILABILITY* and
@@ -1129,8 +1191,6 @@ also indicate some other performance issue with the OSDs.
 
 The exact size of the snapshot trim queue is reported by the
 ``snaptrimq_len`` field of ``ceph pg ls -f json-detail``.
-
-
 
 Miscellaneous
 -------------
@@ -1224,7 +1284,6 @@ Alternatively, the capabilities for the user can be updated with::
   ceph auth <entity-name> <daemon-type> <caps> [<daemon-type> <caps> ...]
 
 For more information about auth capabilities, see :ref:`user-management`.
-
 
 OSD_NO_DOWN_OUT_INTERVAL
 ________________________

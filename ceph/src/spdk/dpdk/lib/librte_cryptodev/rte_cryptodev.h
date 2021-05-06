@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2015-2017 Intel Corporation.
+ * Copyright(c) 2015-2020 Intel Corporation.
  */
 
 #ifndef _RTE_CRYPTODEV_H_
@@ -23,6 +23,8 @@ extern "C" {
 #include "rte_dev.h"
 #include <rte_common.h>
 #include <rte_config.h>
+
+#include "rte_cryptodev_trace_fp.h"
 
 extern const char **rte_cyptodev_names;
 
@@ -217,6 +219,14 @@ struct rte_cryptodev_asym_capability_idx {
  *   - Return NULL if the capability not exist.
  */
 const struct rte_cryptodev_symmetric_capability *
+rte_cryptodev_sym_capability_get_v20(uint8_t dev_id,
+		const struct rte_cryptodev_sym_capability_idx *idx);
+
+const struct rte_cryptodev_symmetric_capability *
+rte_cryptodev_sym_capability_get_v21(uint8_t dev_id,
+		const struct rte_cryptodev_sym_capability_idx *idx);
+
+const struct rte_cryptodev_symmetric_capability *
 rte_cryptodev_sym_capability_get(uint8_t dev_id,
 		const struct rte_cryptodev_sym_capability_idx *idx);
 
@@ -230,7 +240,8 @@ rte_cryptodev_sym_capability_get(uint8_t dev_id,
  *   - Return description of the asymmetric crypto capability if exist.
  *   - Return NULL if the capability not exist.
  */
-const struct rte_cryptodev_asymmetric_xform_capability * __rte_experimental
+__rte_experimental
+const struct rte_cryptodev_asymmetric_xform_capability *
 rte_cryptodev_asym_capability_get(uint8_t dev_id,
 		const struct rte_cryptodev_asym_capability_idx *idx);
 
@@ -299,7 +310,8 @@ rte_cryptodev_sym_capability_check_aead(
  *   - Return 1 if the op type is supported
  *   - Return 0 if unsupported
  */
-int __rte_experimental
+__rte_experimental
+int
 rte_cryptodev_asym_xform_capability_check_optype(
 	const struct rte_cryptodev_asymmetric_xform_capability *capability,
 		enum rte_crypto_asym_op_type op_type);
@@ -314,7 +326,8 @@ rte_cryptodev_asym_xform_capability_check_optype(
  *   - Return 0 if the parameters are in range of the capability.
  *   - Return -1 if the parameters are out of range of the capability.
  */
-int __rte_experimental
+__rte_experimental
+int
 rte_cryptodev_asym_xform_capability_check_modlen(
 	const struct rte_cryptodev_asymmetric_xform_capability *capability,
 		uint16_t modlen);
@@ -375,7 +388,8 @@ rte_cryptodev_get_aead_algo_enum(enum rte_crypto_aead_algorithm *algo_enum,
  * - Return -1 if string is not valid
  * - Return 0 if the string is valid
  */
-int __rte_experimental
+__rte_experimental
+int
 rte_cryptodev_asym_get_xform_enum(enum rte_crypto_asym_xform_type *xform_enum,
 		const char *xform_string);
 
@@ -442,6 +456,16 @@ rte_cryptodev_asym_get_xform_enum(enum rte_crypto_asym_xform_type *xform_enum,
 /**< Support RSA Private Key OP with exponent */
 #define RTE_CRYPTODEV_FF_RSA_PRIV_OP_KEY_QT		(1ULL << 18)
 /**< Support RSA Private Key OP with CRT (quintuple) Keys */
+#define RTE_CRYPTODEV_FF_DIGEST_ENCRYPTED		(1ULL << 19)
+/**< Support encrypted-digest operations where digest is appended to data */
+#define RTE_CRYPTODEV_FF_ASYM_SESSIONLESS		(1ULL << 20)
+/**< Support asymmetric session-less operations */
+#define	RTE_CRYPTODEV_FF_SYM_CPU_CRYPTO			(1ULL << 21)
+/**< Support symmetric cpu-crypto processing */
+#define RTE_CRYPTODEV_FF_SYM_SESSIONLESS		(1ULL << 22)
+/**< Support symmetric session-less operations */
+#define RTE_CRYPTODEV_FF_NON_BYTE_ALIGNED_DATA		(1ULL << 23)
+/**< Support operations on data which is not byte aligned */
 
 
 /**
@@ -612,6 +636,13 @@ struct rte_cryptodev_config {
 	int socket_id;			/**< Socket to allocate resources on */
 	uint16_t nb_queue_pairs;
 	/**< Number of queue pairs to configure on device */
+	uint64_t ff_disable;
+	/**< Feature flags to be disabled. Only the following features are
+	 * allowed to be disabled,
+	 *  - RTE_CRYPTODEV_FF_SYMMETRIC_CRYPTO
+	 *  - RTE_CRYPTODEV_FF_ASYMMETRIC_CRYPTO
+	 *  - RTE_CRYTPODEV_FF_SECURITY
+	 */
 };
 
 /**
@@ -741,9 +772,33 @@ rte_cryptodev_stats_reset(uint8_t dev_id);
  * the last valid element has it's op field set to
  * RTE_CRYPTO_OP_TYPE_UNDEFINED.
  */
-extern void
+
+void
 rte_cryptodev_info_get(uint8_t dev_id, struct rte_cryptodev_info *dev_info);
 
+/* An extra element RTE_CRYPTO_AEAD_CHACHA20_POLY1305 is added
+ * to enum rte_crypto_aead_algorithm, also changing the value of
+ *  RTE_CRYPTO_AEAD_LIST_END. To maintain ABI compatibility with applications
+ * which linked against earlier versions, preventing them, for example, from
+ * picking up the new value and using it to index into an array sized too small
+ * for it, it is necessary to have two versions of rte_cryptodev_info_get()
+ * The latest version just returns directly the capabilities retrieved from
+ * the device. The compatible version inspects the capabilities retrieved
+ * from the device, but only returns them directly if the new value
+ * is not included. If the new value is included, it allocates space
+ * for a copy of the device capabilities, trims the new value from this
+ * and returns this copy. It only needs to do this once per device.
+ * For the corner case of a corner case when the alloc may fail,
+ * an empty capability list is returned, as there is no mechanism to return
+ * an error and adding such a mechanism would itself be an ABI breakage.
+ * The compatible version can be removed after the next major ABI release.
+ */
+
+void
+rte_cryptodev_info_get_v20(uint8_t dev_id, struct rte_cryptodev_info *dev_info);
+
+void
+rte_cryptodev_info_get_v21(uint8_t dev_id, struct rte_cryptodev_info *dev_info);
 
 /**
  * Register a callback function for specific device id.
@@ -907,6 +962,7 @@ rte_cryptodev_dequeue_burst(uint8_t dev_id, uint16_t qp_id,
 	nb_ops = (*dev->dequeue_burst)
 			(dev->data->queue_pairs[qp_id], ops, nb_ops);
 
+	rte_cryptodev_trace_dequeue_burst(dev_id, qp_id, (void **)ops, nb_ops);
 	return nb_ops;
 }
 
@@ -947,6 +1003,7 @@ rte_cryptodev_enqueue_burst(uint8_t dev_id, uint16_t qp_id,
 {
 	struct rte_cryptodev *dev = &rte_cryptodevs[dev_id];
 
+	rte_cryptodev_trace_enqueue_burst(dev_id, qp_id, (void **)ops, nb_ops);
 	return (*dev->enqueue_burst)(
 			dev->data->queue_pairs[qp_id], ops, nb_ops);
 }
@@ -1002,7 +1059,8 @@ struct rte_cryptodev_asym_session {
  *  - On success return size of the session
  *  - On failure returns 0
  */
-struct rte_mempool * __rte_experimental
+__rte_experimental
+struct rte_mempool *
 rte_cryptodev_sym_session_pool_create(const char *name, uint32_t nb_elts,
 	uint32_t elt_size, uint32_t cache_size, uint16_t priv_size,
 	int socket_id);
@@ -1028,7 +1086,8 @@ rte_cryptodev_sym_session_create(struct rte_mempool *mempool);
  *  - On success return pointer to asym-session
  *  - On failure returns NULL
  */
-struct rte_cryptodev_asym_session * __rte_experimental
+__rte_experimental
+struct rte_cryptodev_asym_session *
 rte_cryptodev_asym_session_create(struct rte_mempool *mempool);
 
 /**
@@ -1058,7 +1117,8 @@ rte_cryptodev_sym_session_free(struct rte_cryptodev_sym_session *sess);
  *  - -EINVAL if session is NULL.
  *  - -EBUSY if not all device private data has been freed.
  */
-int __rte_experimental
+__rte_experimental
+int
 rte_cryptodev_asym_session_free(struct rte_cryptodev_asym_session *sess);
 
 /**
@@ -1098,7 +1158,8 @@ rte_cryptodev_sym_session_init(uint8_t dev_id,
  *  - -ENOTSUP if crypto device does not support the crypto transform.
  *  - -ENOMEM if the private session could not be allocated.
  */
-int __rte_experimental
+__rte_experimental
+int
 rte_cryptodev_asym_session_init(uint8_t dev_id,
 			struct rte_cryptodev_asym_session *sess,
 			struct rte_crypto_asym_xform *xforms,
@@ -1132,7 +1193,8 @@ rte_cryptodev_sym_session_clear(uint8_t dev_id,
  *  - 0 if successful.
  *  - -EINVAL if device is invalid or session is NULL.
  */
-int __rte_experimental
+__rte_experimental
+int
 rte_cryptodev_asym_session_clear(uint8_t dev_id,
 			struct rte_cryptodev_asym_session *sess);
 
@@ -1157,7 +1219,8 @@ rte_cryptodev_sym_get_header_session_size(void);
  *   the private data size defined within sess.
  *   - If sess is NULL, return 0.
  */
-unsigned int __rte_experimental
+__rte_experimental
+unsigned int
 rte_cryptodev_sym_get_existing_header_session_size(
 		struct rte_cryptodev_sym_session *sess);
 
@@ -1167,7 +1230,8 @@ rte_cryptodev_sym_get_existing_header_session_size(
  * @return
  *   Size of the asymmetric header session.
  */
-unsigned int __rte_experimental
+__rte_experimental
+unsigned int
 rte_cryptodev_asym_get_header_session_size(void);
 
 /**
@@ -1194,7 +1258,8 @@ rte_cryptodev_sym_get_private_session_size(uint8_t dev_id);
  *   - Size of the asymmetric private data, if successful
  *   - 0 if device is invalid or does not have private session
  */
-unsigned int __rte_experimental
+__rte_experimental
+unsigned int
 rte_cryptodev_asym_get_private_session_size(uint8_t dev_id);
 
 /**
@@ -1229,7 +1294,8 @@ const char *rte_cryptodev_driver_name_get(uint8_t driver_id);
  *  - On success, zero.
  *  - On failure, a negative value.
  */
-int __rte_experimental
+__rte_experimental
+int
 rte_cryptodev_sym_session_set_user_data(
 					struct rte_cryptodev_sym_session *sess,
 					void *data,
@@ -1245,9 +1311,28 @@ rte_cryptodev_sym_session_set_user_data(
  *  - On success return pointer to user data.
  *  - On failure returns NULL.
  */
-void * __rte_experimental
+__rte_experimental
+void *
 rte_cryptodev_sym_session_get_user_data(
 					struct rte_cryptodev_sym_session *sess);
+
+/**
+ * Perform actual crypto processing (encrypt/digest or auth/decrypt)
+ * on user provided data.
+ *
+ * @param	dev_id	The device identifier.
+ * @param	sess	Cryptodev session structure
+ * @param	ofs	Start and stop offsets for auth and cipher operations
+ * @param	vec	Vectorized operation descriptor
+ *
+ * @return
+ *  - Returns number of successfully processed packets.
+ */
+__rte_experimental
+uint32_t
+rte_cryptodev_sym_cpu_crypto_process(uint8_t dev_id,
+	struct rte_cryptodev_sym_session *sess, union rte_crypto_sym_ofs ofs,
+	struct rte_crypto_sym_vec *vec);
 
 #ifdef __cplusplus
 }

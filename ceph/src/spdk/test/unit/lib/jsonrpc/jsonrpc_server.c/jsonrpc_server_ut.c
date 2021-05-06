@@ -47,7 +47,7 @@ const struct spdk_json_val *g_cur_param;
 #define PARSE_PASS(in, trailing) \
 	CU_ASSERT(g_cur_param == NULL); \
 	g_cur_param = NULL; \
-	CU_ASSERT(spdk_jsonrpc_parse_request(conn, in, sizeof(in) - 1) == sizeof(in) - sizeof(trailing))
+	CU_ASSERT(jsonrpc_parse_request(conn, in, sizeof(in) - 1) == sizeof(in) - sizeof(trailing))
 
 #define REQ_BEGIN(expected_error) \
 	if (expected_error != 0 ) { \
@@ -56,7 +56,7 @@ const struct spdk_json_val *g_cur_param;
 	}
 
 #define PARSE_FAIL(in) \
-	CU_ASSERT(spdk_jsonrpc_parse_request(conn, in, sizeof(in) - 1) < 0);
+	CU_ASSERT(jsonrpc_parse_request(conn, in, sizeof(in) - 1) < 0);
 
 #define REQ_BEGIN_VALID() \
 		REQ_BEGIN(0); \
@@ -133,13 +133,33 @@ const struct spdk_json_val *g_cur_param;
 	g_cur_param++
 
 #define FREE_REQUEST() \
-	spdk_jsonrpc_free_request(g_request); \
+	ut_jsonrpc_free_request(g_request, g_parse_error); \
 	g_request = NULL; \
 	g_cur_param = NULL; \
 	g_parse_error = 0; \
 	g_method = NULL; \
 	g_cur_param = g_params = NULL
 
+static void
+ut_jsonrpc_free_request(struct spdk_jsonrpc_request *request, int err)
+{
+	struct spdk_json_write_ctx *w;
+
+	if (!request) {
+		return;
+	}
+
+	/* Need to emulate response to get the response write contex free */
+	if (err == 0) {
+		w = spdk_jsonrpc_begin_result(request);
+		spdk_json_write_string(w, "UT PASS response");
+		spdk_jsonrpc_end_result(request, w);
+	} else {
+		spdk_jsonrpc_send_error_response_fmt(request, err, "UT error response");
+	}
+
+	jsonrpc_free_request(request);
+}
 
 static void
 ut_handle(struct spdk_jsonrpc_request *request, int error, const struct spdk_json_val *method,
@@ -153,22 +173,21 @@ ut_handle(struct spdk_jsonrpc_request *request, int error, const struct spdk_jso
 }
 
 void
-spdk_jsonrpc_server_handle_error(struct spdk_jsonrpc_request *request, int error)
+jsonrpc_server_handle_error(struct spdk_jsonrpc_request *request, int error)
 {
 	ut_handle(request, error, NULL, NULL);
 }
 
 void
-spdk_jsonrpc_server_handle_request(struct spdk_jsonrpc_request *request,
-				   const struct spdk_json_val *method, const struct spdk_json_val *params)
+jsonrpc_server_handle_request(struct spdk_jsonrpc_request *request,
+			      const struct spdk_json_val *method, const struct spdk_json_val *params)
 {
 	ut_handle(request, 0, method, params);
 }
 
 void
-spdk_jsonrpc_server_send_response(struct spdk_jsonrpc_request *request)
+jsonrpc_server_send_response(struct spdk_jsonrpc_request *request)
 {
-	/* TODO */
 }
 
 static void
@@ -347,7 +366,7 @@ test_parse_request_streaming(void)
 
 	/* Try every partial length up to the full request length */
 	for (i = 0; i < len; i++) {
-		int rc = spdk_jsonrpc_parse_request(conn, json_req, i);
+		int rc = jsonrpc_parse_request(conn, json_req, i);
 		/* Partial request - no data consumed */
 		CU_ASSERT(rc == 0);
 		CU_ASSERT(g_request == NULL);
@@ -357,7 +376,7 @@ test_parse_request_streaming(void)
 	}
 
 	/* Verify that full request can be parsed successfully */
-	CU_ASSERT(spdk_jsonrpc_parse_request(conn, json_req, len) == (ssize_t)len);
+	CU_ASSERT(jsonrpc_parse_request(conn, json_req, len) == (ssize_t)len);
 	FREE_REQUEST();
 
 	CU_ASSERT(conn->outstanding_requests == 0);
@@ -370,22 +389,13 @@ int main(int argc, char **argv)
 	CU_pSuite	suite = NULL;
 	unsigned int	num_failures;
 
-	if (CU_initialize_registry() != CUE_SUCCESS) {
-		return CU_get_error();
-	}
+	CU_set_error_action(CUEA_ABORT);
+	CU_initialize_registry();
 
 	suite = CU_add_suite("jsonrpc", NULL, NULL);
-	if (suite == NULL) {
-		CU_cleanup_registry();
-		return CU_get_error();
-	}
 
-	if (
-		CU_add_test(suite, "parse_request", test_parse_request) == NULL ||
-		CU_add_test(suite, "parse_request_streaming", test_parse_request_streaming) == NULL) {
-		CU_cleanup_registry();
-		return CU_get_error();
-	}
+	CU_ADD_TEST(suite, test_parse_request);
+	CU_ADD_TEST(suite, test_parse_request_streaming);
 	CU_basic_set_mode(CU_BRM_VERBOSE);
 
 	CU_basic_run_tests();

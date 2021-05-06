@@ -34,16 +34,12 @@
 SPDK_ROOT_DIR := $(abspath $(CURDIR)/../../../..)
 include $(SPDK_ROOT_DIR)/mk/spdk.common.mk
 
-DIRS-y = bdev.c part.c scsi_nvme.c gpt vbdev_lvol.c mt bdev_raid.c
+DIRS-y = bdev.c part.c scsi_nvme.c gpt vbdev_lvol.c mt raid bdev_zone.c vbdev_zone_block.c bdev_ocssd.c
 
-ifeq ($(CONFIG_CRYPTO),y)
-DIRS-y += crypto.c
-endif
+DIRS-$(CONFIG_CRYPTO) += crypto.c
 
-ifeq ($(CONFIG_REDUCE),y)
 # enable once new mocks are added for compressdev
-DIRS-y += compress.c
-endif
+DIRS-$(CONFIG_REDUCE) += compress.c
 
 DIRS-$(CONFIG_PMDK) += pmem
 

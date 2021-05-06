@@ -2,7 +2,7 @@
 //
 //  See http://www.boost.org for most recent version, including documentation.
 //
-//  Copyright Antony Polukhin, 2011-2019.
+//  Copyright Antony Polukhin, 2011-2020.
 //
 //  Distributed under the Boost
 //  Software License, Version 1.0. (See accompanying file
@@ -20,7 +20,7 @@
 
 #include <boost/cstdint.hpp>
 #include <boost/test/unit_test.hpp>
-#include <boost/test/floating_point_comparison.hpp>
+#include <boost/test/tools/floating_point_comparison.hpp>
 #include <boost/math/tools/precision.hpp>
 
 void test_conversion_from_to_float();

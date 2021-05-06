@@ -46,6 +46,7 @@
 #define SPDK_JSONRPC_ID_MAX_LEN		128
 #define SPDK_JSONRPC_MAX_CONNS		64
 #define SPDK_JSONRPC_MAX_VALUES		1024
+#define SPDK_JSONRPC_CLIENT_MAX_VALUES		8192
 
 struct spdk_jsonrpc_request {
 	struct spdk_jsonrpc_server_conn *conn;
@@ -66,6 +67,8 @@ struct spdk_jsonrpc_request {
 	size_t values_cnt;
 
 	uint8_t *send_buf;
+
+	struct spdk_json_write_ctx *response;
 
 	STAILQ_ENTRY(spdk_jsonrpc_request) link;
 };
@@ -133,20 +136,20 @@ struct spdk_jsonrpc_client {
 };
 
 /* jsonrpc_server_tcp */
-void spdk_jsonrpc_server_handle_request(struct spdk_jsonrpc_request *request,
-					const struct spdk_json_val *method,
-					const struct spdk_json_val *params);
-void spdk_jsonrpc_server_handle_error(struct spdk_jsonrpc_request *request, int error);
+void jsonrpc_server_handle_request(struct spdk_jsonrpc_request *request,
+				   const struct spdk_json_val *method,
+				   const struct spdk_json_val *params);
+void jsonrpc_server_handle_error(struct spdk_jsonrpc_request *request, int error);
 
 /* Might be called from any thread */
-void spdk_jsonrpc_server_send_response(struct spdk_jsonrpc_request *request);
+void jsonrpc_server_send_response(struct spdk_jsonrpc_request *request);
 
 /* jsonrpc_server */
-int spdk_jsonrpc_parse_request(struct spdk_jsonrpc_server_conn *conn, const void *json,
-			       size_t size);
+int jsonrpc_parse_request(struct spdk_jsonrpc_server_conn *conn, const void *json,
+			  size_t size);
 
 /* Must be called only from server poll thread */
-void spdk_jsonrpc_free_request(struct spdk_jsonrpc_request *request);
+void jsonrpc_free_request(struct spdk_jsonrpc_request *request);
 
 /*
  * Parse JSON data as RPC command response.
@@ -158,6 +161,6 @@ void spdk_jsonrpc_free_request(struct spdk_jsonrpc_request *request);
  * -EINVAL - If the provided data has invalid JSON syntax and can't be parsed (SPDK_JSON_PARSE_INVALID).
  * -ENOSPC - No space left to store parsed response.
  */
-int spdk_jsonrpc_parse_response(struct spdk_jsonrpc_client *client);
+int jsonrpc_parse_response(struct spdk_jsonrpc_client *client);
 
 #endif

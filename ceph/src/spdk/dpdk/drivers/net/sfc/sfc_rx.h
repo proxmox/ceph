@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  *
- * Copyright (c) 2016-2018 Solarflare Communications Inc.
- * All rights reserved.
+ * Copyright(c) 2019-2020 Xilinx, Inc.
+ * Copyright(c) 2016-2019 Solarflare Communications Inc.
  *
  * This software was jointly developed between OKTET Labs (under contract
  * for Solarflare) and Solarflare Communications, Inc.
@@ -73,6 +73,7 @@ struct sfc_efx_rxq {
 #define SFC_EFX_RXQ_FLAG_STARTED	0x1
 #define SFC_EFX_RXQ_FLAG_RUNNING	0x2
 #define SFC_EFX_RXQ_FLAG_RSS_HASH	0x4
+#define SFC_EFX_RXQ_FLAG_INTR_EN	0x8
 	unsigned int			ptr_mask;
 	unsigned int			pending;
 	unsigned int			completed;

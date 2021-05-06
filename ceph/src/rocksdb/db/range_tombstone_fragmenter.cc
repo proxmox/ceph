@@ -9,14 +9,14 @@
 #include <functional>
 #include <set>
 
-#include <inttypes.h>
 #include <stdio.h>
+#include <cinttypes>
 
 #include "util/autovector.h"
 #include "util/kv_map.h"
 #include "util/vector_iterator.h"
 
-namespace rocksdb {
+namespace ROCKSDB_NAMESPACE {
 
 FragmentedRangeTombstoneList::FragmentedRangeTombstoneList(
     std::unique_ptr<InternalIterator> unfragmented_tombstones,
@@ -407,9 +407,10 @@ bool FragmentedRangeTombstoneIterator::Valid() const {
 }
 
 SequenceNumber FragmentedRangeTombstoneIterator::MaxCoveringTombstoneSeqnum(
-    const Slice& user_key) {
-  SeekToCoveringTombstone(user_key);
-  return ValidPos() && ucmp_->Compare(start_key(), user_key) <= 0 ? seq() : 0;
+    const Slice& target_user_key) {
+  SeekToCoveringTombstone(target_user_key);
+  return ValidPos() && ucmp_->Compare(start_key(), target_user_key) <= 0 ? seq()
+                                                                         : 0;
 }
 
 std::map<SequenceNumber, std::unique_ptr<FragmentedRangeTombstoneIterator>>
@@ -435,4 +436,4 @@ FragmentedRangeTombstoneIterator::SplitBySnapshot(
   return splits;
 }
 
-}  // namespace rocksdb
+}  // namespace ROCKSDB_NAMESPACE

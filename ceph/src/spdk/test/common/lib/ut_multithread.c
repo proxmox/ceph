@@ -44,6 +44,7 @@ int allocate_threads(int num_threads);
 void free_threads(void);
 void poll_threads(void);
 bool poll_thread(uintptr_t thread_id);
+bool poll_thread_times(uintptr_t thread_id, uint32_t max_polls);
 
 struct ut_msg {
 	spdk_msg_fn		fn;
@@ -60,12 +61,12 @@ struct ut_thread *g_ut_threads;
 
 #define INVALID_THREAD 0x1000
 
-static uint64_t g_thread_id = INVALID_THREAD;
+static uint64_t g_ut_thread_id = INVALID_THREAD;
 
 static void
 set_thread(uintptr_t thread_id)
 {
-	g_thread_id = thread_id;
+	g_ut_thread_id = thread_id;
 	if (thread_id == INVALID_THREAD) {
 		spdk_set_thread(NULL);
 	} else {
@@ -101,13 +102,33 @@ allocate_threads(int num_threads)
 void
 free_threads(void)
 {
-	uint32_t i;
+	uint32_t i, num_threads;
+	struct spdk_thread *thread;
 
 	for (i = 0; i < g_ut_num_threads; i++) {
 		set_thread(i);
-		spdk_thread_exit(g_ut_threads[i].thread);
-		spdk_thread_destroy(g_ut_threads[i].thread);
-		g_ut_threads[i].thread = NULL;
+		thread = g_ut_threads[i].thread;
+		spdk_thread_exit(thread);
+	}
+
+	num_threads = g_ut_num_threads;
+
+	while (num_threads != 0) {
+		for (i = 0; i < g_ut_num_threads; i++) {
+			set_thread(i);
+			thread = g_ut_threads[i].thread;
+			if (thread == NULL) {
+				continue;
+			}
+
+			if (spdk_thread_is_exited(thread)) {
+				g_ut_threads[i].thread = NULL;
+				num_threads--;
+				spdk_thread_destroy(thread);
+			} else {
+				spdk_thread_poll(thread, 0, 0);
+			}
+		}
 	}
 
 	g_ut_num_threads = 0;
@@ -118,19 +139,56 @@ free_threads(void)
 }
 
 bool
+poll_thread_times(uintptr_t thread_id, uint32_t max_polls)
+{
+	bool busy = false;
+	struct ut_thread *thread = &g_ut_threads[thread_id];
+	uintptr_t original_thread_id;
+	uint32_t polls_executed = 0;
+	uint64_t now;
+
+	if (max_polls == 0) {
+		/* If max_polls is set to 0,
+		 * poll until no operation is pending. */
+		return poll_thread(thread_id);
+	}
+	assert(thread_id != (uintptr_t)INVALID_THREAD);
+	assert(thread_id < g_ut_num_threads);
+
+	original_thread_id = g_ut_thread_id;
+	set_thread(INVALID_THREAD);
+
+	now = spdk_get_ticks();
+	while (polls_executed < max_polls) {
+		if (spdk_thread_poll(thread->thread, 1, now) > 0) {
+			busy = true;
+		}
+		now = spdk_thread_get_last_tsc(thread->thread);
+		polls_executed++;
+	}
+
+	set_thread(original_thread_id);
+
+	return busy;
+}
+
+bool
 poll_thread(uintptr_t thread_id)
 {
 	bool busy = false;
 	struct ut_thread *thread = &g_ut_threads[thread_id];
 	uintptr_t original_thread_id;
+	uint64_t now;
 
 	assert(thread_id != (uintptr_t)INVALID_THREAD);
 	assert(thread_id < g_ut_num_threads);
 
-	original_thread_id = g_thread_id;
+	original_thread_id = g_ut_thread_id;
 	set_thread(INVALID_THREAD);
 
-	while (spdk_thread_poll(thread->thread, 0, 0) > 0) {
+	now = spdk_get_ticks();
+	while (spdk_thread_poll(thread->thread, 0, now) > 0) {
+		now = spdk_thread_get_last_tsc(thread->thread);
 		busy = true;
 	}
 

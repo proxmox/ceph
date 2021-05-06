@@ -1,19 +1,18 @@
 import { HttpClientTestingModule } from '@angular/common/http/testing';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 
+import { NgbAlertModule } from '@ng-bootstrap/ng-bootstrap';
 import { ToastrModule } from 'ngx-toastr';
 import { of } from 'rxjs';
 
-import { AlertModule } from 'ngx-bootstrap/alert';
-
-import { configureTestBed, i18nProviders } from '../../../../testing/unit-test-helper';
-import { MgrModuleService } from '../../api/mgr-module.service';
-import { UserService } from '../../api/user.service';
-import { Permissions } from '../../models/permissions';
-import { PipesModule } from '../../pipes/pipes.module';
-import { AuthStorageService } from '../../services/auth-storage.service';
-import { NotificationService } from '../../services/notification.service';
-import { TelemetryNotificationService } from '../../services/telemetry-notification.service';
+import { MgrModuleService } from '~/app/shared/api/mgr-module.service';
+import { UserService } from '~/app/shared/api/user.service';
+import { Permissions } from '~/app/shared/models/permissions';
+import { PipesModule } from '~/app/shared/pipes/pipes.module';
+import { AuthStorageService } from '~/app/shared/services/auth-storage.service';
+import { NotificationService } from '~/app/shared/services/notification.service';
+import { TelemetryNotificationService } from '~/app/shared/services/telemetry-notification.service';
+import { configureTestBed } from '~/testing/unit-test-helper';
 import { TelemetryNotificationComponent } from './telemetry-notification.component';
 
 describe('TelemetryActivationNotificationComponent', () => {
@@ -41,16 +40,16 @@ describe('TelemetryActivationNotificationComponent', () => {
 
   configureTestBed({
     declarations: [TelemetryNotificationComponent],
-    imports: [AlertModule.forRoot(), HttpClientTestingModule, ToastrModule.forRoot(), PipesModule],
-    providers: [MgrModuleService, UserService, i18nProviders]
+    imports: [NgbAlertModule, HttpClientTestingModule, ToastrModule.forRoot(), PipesModule],
+    providers: [MgrModuleService, UserService]
   });
 
   beforeEach(() => {
     fixture = TestBed.createComponent(TelemetryNotificationComponent);
     component = fixture.componentInstance;
-    authStorageService = TestBed.get(AuthStorageService);
-    mgrModuleService = TestBed.get(MgrModuleService);
-    notificationService = TestBed.get(NotificationService);
+    authStorageService = TestBed.inject(AuthStorageService);
+    mgrModuleService = TestBed.inject(MgrModuleService);
+    notificationService = TestBed.inject(NotificationService);
 
     isNotificationHiddenSpy = spyOn(component, 'isNotificationHidden').and.returnValue(false);
     getPermissionsSpy = spyOn(authStorageService, 'getPermissions').and.returnValue(
@@ -98,7 +97,7 @@ describe('TelemetryActivationNotificationComponent', () => {
   });
 
   it('should hide the notification if the user logs out', () => {
-    const telemetryNotificationService = TestBed.get(TelemetryNotificationService);
+    const telemetryNotificationService = TestBed.inject(TelemetryNotificationService);
     spyOn(telemetryNotificationService, 'setVisibility');
     fixture.detectChanges();
     component.ngOnDestroy();

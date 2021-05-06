@@ -9,122 +9,6 @@
 #include "metadata_common.h"
 #include "../ocf_cache_priv.h"
 #include "../ocf_ctx_priv.h"
-
-static inline void ocf_metadata_eviction_lock(struct ocf_cache *cache)
-{
-	env_spinlock_lock(&cache->metadata.lock.eviction);
-}
-
-static inline void ocf_metadata_eviction_unlock(struct ocf_cache *cache)
-{
-	env_spinlock_unlock(&cache->metadata.lock.eviction);
-}
-
-#define OCF_METADATA_EVICTION_LOCK() \
-		ocf_metadata_eviction_lock(cache)
-
-#define OCF_METADATA_EVICTION_UNLOCK() \
-		ocf_metadata_eviction_unlock(cache)
-
-static inline void ocf_metadata_lock(struct ocf_cache *cache, int rw)
-{
-	if (rw == OCF_METADATA_WR)
-		env_rwsem_down_write(&cache->metadata.lock.collision);
-	else if (rw == OCF_METADATA_RD)
-		env_rwsem_down_read(&cache->metadata.lock.collision);
-	else
-		ENV_BUG();
-}
-
-
-static inline void ocf_metadata_unlock(struct ocf_cache *cache, int rw)
-{
-	if (rw == OCF_METADATA_WR)
-		env_rwsem_up_write(&cache->metadata.lock.collision);
-	else if (rw == OCF_METADATA_RD)
-		env_rwsem_up_read(&cache->metadata.lock.collision);
-	else
-		ENV_BUG();
-}
-
-static inline int ocf_metadata_try_lock(struct ocf_cache *cache, int rw)
-{
-	int result = 0;
-
-	if (rw == OCF_METADATA_WR) {
-		result = env_rwsem_down_write_trylock(
-				&cache->metadata.lock.collision);
-	} else if (rw == OCF_METADATA_RD) {
-		result = env_rwsem_down_read_trylock(
-				&cache->metadata.lock.collision);
-	} else {
-		ENV_BUG();
-	}
-
-	if (result)
-		return -1;
-
-	return 0;
-}
-
-static inline void ocf_metadata_status_bits_lock(
-		struct ocf_cache *cache, int rw)
-{
-	if (rw == OCF_METADATA_WR)
-		env_rwlock_write_lock(&cache->metadata.lock.status);
-	else if (rw == OCF_METADATA_RD)
-		env_rwlock_read_lock(&cache->metadata.lock.status);
-	else
-		ENV_BUG();
-}
-
-static inline void ocf_metadata_status_bits_unlock(
-		struct ocf_cache *cache, int rw)
-{
-	if (rw == OCF_METADATA_WR)
-		env_rwlock_write_unlock(&cache->metadata.lock.status);
-	else if (rw == OCF_METADATA_RD)
-		env_rwlock_read_unlock(&cache->metadata.lock.status);
-	else
-		ENV_BUG();
-}
-
-#define OCF_METADATA_LOCK_RD() \
-		ocf_metadata_lock(cache, OCF_METADATA_RD)
-
-#define OCF_METADATA_UNLOCK_RD() \
-		ocf_metadata_unlock(cache, OCF_METADATA_RD)
-
-#define OCF_METADATA_LOCK_RD_TRY() \
-		ocf_metadata_try_lock(cache, OCF_METADATA_RD)
-
-#define OCF_METADATA_LOCK_WR() \
-		ocf_metadata_lock(cache, OCF_METADATA_WR)
-
-#define OCF_METADATA_LOCK_WR_TRY() \
-		ocf_metadata_try_lock(cache, OCF_METADATA_WR)
-
-#define OCF_METADATA_UNLOCK_WR() \
-		ocf_metadata_unlock(cache, OCF_METADATA_WR)
-
-#define OCF_METADATA_BITS_LOCK_RD() \
-		ocf_metadata_status_bits_lock(cache, OCF_METADATA_RD)
-
-#define OCF_METADATA_BITS_UNLOCK_RD() \
-		ocf_metadata_status_bits_unlock(cache, OCF_METADATA_RD)
-
-#define OCF_METADATA_BITS_LOCK_WR() \
-		ocf_metadata_status_bits_lock(cache, OCF_METADATA_WR)
-
-#define OCF_METADATA_BITS_UNLOCK_WR() \
-		ocf_metadata_status_bits_unlock(cache, OCF_METADATA_WR)
-
-#define OCF_METADATA_FLUSH_LOCK() \
-		ocf_metadata_flush_lock(cache)
-
-#define OCF_METADATA_FLUSH_UNLOCK() \
-		ocf_metadata_flush_unlock(cache)
-
 #include "metadata_cleaning_policy.h"
 #include "metadata_eviction_policy.h"
 #include "metadata_partition.h"
@@ -175,6 +59,13 @@ void ocf_metadata_init_freelist_partition(struct ocf_cache *cache);
  * @param cache - Cache instance
  */
 void ocf_metadata_init_hash_table(struct ocf_cache *cache);
+
+/**
+ * @brief Initialize collision table
+ *
+ * @param cache - Cache instance
+ */
+void ocf_metadata_init_collision(struct ocf_cache *cache);
 
 /**
  * @brief De-Initialize metadata
@@ -315,6 +206,7 @@ struct ocf_metadata_load_properties {
 	ocf_metadata_layout_t layout;
 	ocf_cache_line_size_t line_size;
 	ocf_cache_mode_t cache_mode;
+	char *cache_name;
 };
 
 typedef void (*ocf_metadata_load_properties_end_t)(void *priv, int error,
@@ -323,24 +215,10 @@ typedef void (*ocf_metadata_load_properties_end_t)(void *priv, int error,
 void ocf_metadata_load_properties(ocf_volume_t volume,
 		ocf_metadata_load_properties_end_t cmpl, void *priv);
 
-/**
- * @brief Validate cache line size
- *
- * @param size Cache line size
- * @return true - cache line size is valid, false - cache line is invalid
- */
-static inline bool ocf_metadata_line_size_is_valid(uint32_t size)
+static inline ocf_cache_line_t ocf_metadata_collision_table_entries(
+		struct ocf_cache *cache)
 {
-	switch (size) {
-	case 4 * KiB:
-	case 8 * KiB:
-	case 16 * KiB:
-	case 32 * KiB:
-	case 64 * KiB:
-		return true;
-	default:
-		return false;
-	}
+	return cache->device->collision_table_entries;
 }
 
 #endif /* METADATA_H_ */

@@ -21,7 +21,7 @@ extern "C" {
 /**
  * MPLS header.
  */
-struct mpls_hdr {
+struct rte_mpls_hdr {
 	uint16_t tag_msb;   /**< Label(msb). */
 #if RTE_BYTE_ORDER == RTE_BIG_ENDIAN
 	uint8_t tag_lsb:4;  /**< Label(lsb). */
@@ -33,7 +33,7 @@ struct mpls_hdr {
 	uint8_t tag_lsb:4;  /**< label(lsb) */
 #endif
 	uint8_t  ttl;       /**< Time to live. */
-} __attribute__((__packed__));
+} __rte_packed;
 
 #ifdef __cplusplus
 }

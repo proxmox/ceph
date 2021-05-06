@@ -13,11 +13,6 @@
 #include "ocf_env_headers.h"
 
 /**
- * @brief cache id type (by default designated as 16 bit unsigned integer)
- */
-typedef uint16_t ocf_cache_id_t;
-
-/**
  * @brief cache line type (by default designated as 32 bit unsigned integer)
  */
 typedef uint32_t ocf_cache_line_t;
@@ -65,7 +60,7 @@ struct ocf_volume_type;
 /**
  * @brief handle to volume type
  */
-typedef const struct ocf_volume_type *ocf_volume_type_t;
+typedef struct ocf_volume_type *ocf_volume_type_t;
 
 /**
  * @brief handle to volume uuid

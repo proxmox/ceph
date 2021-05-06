@@ -13,7 +13,7 @@
  * @param arg
  *   opaque pointer
  */
-__attribute__((noreturn)) void *eal_thread_loop(void *arg);
+__rte_noreturn void *eal_thread_loop(void *arg);
 
 /**
  * Init per-lcore info for master thread
@@ -33,17 +33,6 @@ void eal_thread_init_master(unsigned lcore_id);
  *   socket_id or SOCKET_ID_ANY
  */
 unsigned eal_cpu_socket_id(unsigned cpu_id);
-
-/**
- * Get the NUMA socket id from cpuset.
- * This function is private to EAL.
- *
- * @param cpusetp
- *   The point to a valid cpu set.
- * @return
- *   socket_id or SOCKET_ID_ANY
- */
-int eal_cpuset_socket_id(rte_cpuset_t *cpusetp);
 
 /**
  * Default buffer size to use with eal_thread_dump_affinity()

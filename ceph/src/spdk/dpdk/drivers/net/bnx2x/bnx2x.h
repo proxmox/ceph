@@ -19,18 +19,7 @@
 #include <rte_bus_pci.h>
 #include <rte_io.h>
 
-#if RTE_BYTE_ORDER == RTE_LITTLE_ENDIAN
-#ifndef __LITTLE_ENDIAN
-#define __LITTLE_ENDIAN RTE_LITTLE_ENDIAN
-#endif
-#undef __BIG_ENDIAN
-#elif RTE_BYTE_ORDER == RTE_BIG_ENDIAN
-#ifndef __BIG_ENDIAN
-#define __BIG_ENDIAN    RTE_BIG_ENDIAN
-#endif
-#undef __LITTLE_ENDIAN
-#endif
-
+#include "bnx2x_osal.h"
 #include "bnx2x_ethdev.h"
 #include "ecore_mfw_req.h"
 #include "ecore_fw_defs.h"
@@ -41,7 +30,7 @@
 
 #include "elink.h"
 
-#ifndef __FreeBSD__
+#ifndef RTE_EXEC_ENV_FREEBSD
 #include <linux/pci_regs.h>
 
 #define PCIY_PMG                       PCI_CAP_ID_PM
@@ -71,7 +60,7 @@
 #define IFM_10G_TWINAX                 22 /* 10GBase Twinax copper */
 #define IFM_10G_T                      26 /* 10GBase-T - RJ45 */
 
-#ifndef __FreeBSD__
+#ifndef RTE_EXEC_ENV_FREEBSD
 #define PCIR_EXPRESS_DEVICE_STA        PCI_EXP_TYPE_RC_EC
 #define PCIM_EXP_STA_TRANSACTION_PND   PCI_EXP_DEVSTA_TRPND
 #define PCIR_EXPRESS_LINK_STA          PCI_EXP_LNKSTA
@@ -93,9 +82,6 @@
 
 #ifndef ARRAY_SIZE
 #define ARRAY_SIZE(arr) (sizeof(arr) / sizeof((arr)[0]))
-#endif
-#ifndef ARRSIZE
-#define ARRSIZE(arr) (sizeof(arr) / sizeof((arr)[0]))
 #endif
 #ifndef DIV_ROUND_UP
 #define DIV_ROUND_UP(n, d) (((n) + (d) - 1) / (d))
@@ -155,13 +141,14 @@ struct bnx2x_device_type {
  * Transmit Buffer Descriptor (tx_bd) definitions*
  */
 /* NUM_TX_PAGES must be a power of 2. */
+#define NUM_TX_PAGES		 16
 #define TOTAL_TX_BD_PER_PAGE     (BNX2X_PAGE_SIZE / sizeof(union eth_tx_bd_types)) /*  256 */
 #define USABLE_TX_BD_PER_PAGE    (TOTAL_TX_BD_PER_PAGE - 1)                      /*  255 */
 
 #define TOTAL_TX_BD(q)           (TOTAL_TX_BD_PER_PAGE * q->nb_tx_pages)         /*  512 */
 #define USABLE_TX_BD(q)          (USABLE_TX_BD_PER_PAGE * q->nb_tx_pages)        /*  510 */
 #define MAX_TX_BD(q)             (TOTAL_TX_BD(q) - 1)                            /*  511 */
-
+#define MAX_TX_AVAIL		 (USABLE_TX_BD_PER_PAGE * NUM_TX_PAGES - 2)
 #define NEXT_TX_BD(x)                                                   \
 	((((x) & USABLE_TX_BD_PER_PAGE) ==                              \
 	  (USABLE_TX_BD_PER_PAGE - 1)) ? (x) + 2 : (x) + 1)
@@ -182,13 +169,14 @@ struct bnx2x_device_type {
 /*
  * Receive Buffer Descriptor (rx_bd) definitions*
  */
-//#define NUM_RX_PAGES            1
+#define MAX_RX_PAGES            8
 #define TOTAL_RX_BD_PER_PAGE    (BNX2X_PAGE_SIZE / sizeof(struct eth_rx_bd))      /*  512 */
 #define USABLE_RX_BD_PER_PAGE   (TOTAL_RX_BD_PER_PAGE - 2)                      /*  510 */
 #define RX_BD_PER_PAGE_MASK     (TOTAL_RX_BD_PER_PAGE - 1)                      /*  511 */
 #define TOTAL_RX_BD(q)          (TOTAL_RX_BD_PER_PAGE * q->nb_rx_pages)         /*  512 */
 #define USABLE_RX_BD(q)         (USABLE_RX_BD_PER_PAGE * q->nb_rx_pages)        /*  510 */
 #define MAX_RX_BD(q)            (TOTAL_RX_BD(q) - 1)                            /*  511 */
+#define MAX_RX_AVAIL		(USABLE_RX_BD_PER_PAGE * MAX_RX_PAGES - 2)
 #define RX_BD_NEXT_PAGE_DESC_CNT 2
 
 #define NEXT_RX_BD(x)                                                   \
@@ -243,6 +231,10 @@ struct bnx2x_device_type {
 	(BD_TH_LO(sc) + DROPLESS_FC_HEADROOM)
 #define MIN_RX_AVAIL(sc)				\
 	((sc)->dropless_fc ? BD_TH_HI(sc) + 128 : 128)
+
+#define MIN_RX_SIZE_NONTPA_HW	ETH_MIN_RX_CQES_WITHOUT_TPA
+#define MIN_RX_SIZE_NONTPA	(RTE_MAX((uint32_t)MIN_RX_SIZE_NONTPA_HW,\
+					(uint32_t)MIN_RX_AVAIL(sc)))
 
 /*
  * dropless fc calculations for RCQs
@@ -367,6 +359,9 @@ struct bnx2x_sw_tx_bd {
 struct bnx2x_fastpath {
 	/* pointer back to parent structure */
 	struct bnx2x_softc *sc;
+
+	/* Used to synchronize fastpath Rx access */
+	rte_spinlock_t rx_mtx;
 
 	/* status block */
 	struct bnx2x_dma                 sb_dma;
@@ -1025,6 +1020,8 @@ struct bnx2x_pci_cap {
 	uint16_t addr;
 };
 
+struct ecore_ilt;
+
 struct bnx2x_vfdb;
 
 /* Top level device private data structure. */
@@ -1379,6 +1376,10 @@ struct bnx2x_softc {
 	uint8_t prio_to_cos[BNX2X_MAX_PRIORITY];
 
 	int panic;
+	/* Array of Multicast addrs */
+	struct rte_ether_addr mc_addrs[VF_MAX_MULTICAST_PER_VF];
+	/* Multicast mac addresses number */
+	uint16_t mc_addrs_num;
 }; /* struct bnx2x_softc */
 
 /* IOCTL sub-commands for edebug and firmware upgrade */
@@ -1708,6 +1709,73 @@ static const uint32_t dmae_reg_go_c[] = {
 			 GENERAL_ATTEN_OFFSET(LATCHED_ATTN_RBCP) | \
 			 GENERAL_ATTEN_OFFSET(LATCHED_ATTN_RSVD_GRC))
 
+#define HW_INTERRUT_ASSERT_SET_0 \
+				(AEU_INPUTS_ATTN_BITS_TSDM_HW_INTERRUPT | \
+				 AEU_INPUTS_ATTN_BITS_TCM_HW_INTERRUPT | \
+				 AEU_INPUTS_ATTN_BITS_TSEMI_HW_INTERRUPT | \
+				 AEU_INPUTS_ATTN_BITS_BRB_HW_INTERRUPT | \
+				 AEU_INPUTS_ATTN_BITS_PBCLIENT_HW_INTERRUPT)
+#define HW_PRTY_ASSERT_SET_0	(AEU_INPUTS_ATTN_BITS_BRB_PARITY_ERROR | \
+				 AEU_INPUTS_ATTN_BITS_PARSER_PARITY_ERROR | \
+				 AEU_INPUTS_ATTN_BITS_TSDM_PARITY_ERROR | \
+				 AEU_INPUTS_ATTN_BITS_SEARCHER_PARITY_ERROR |\
+				 AEU_INPUTS_ATTN_BITS_TSEMI_PARITY_ERROR |\
+				 AEU_INPUTS_ATTN_BITS_TCM_PARITY_ERROR |\
+				 AEU_INPUTS_ATTN_BITS_PBCLIENT_PARITY_ERROR)
+#define HW_INTERRUT_ASSERT_SET_1 \
+				(AEU_INPUTS_ATTN_BITS_QM_HW_INTERRUPT | \
+				 AEU_INPUTS_ATTN_BITS_TIMERS_HW_INTERRUPT | \
+				 AEU_INPUTS_ATTN_BITS_XSDM_HW_INTERRUPT | \
+				 AEU_INPUTS_ATTN_BITS_XCM_HW_INTERRUPT | \
+				 AEU_INPUTS_ATTN_BITS_XSEMI_HW_INTERRUPT | \
+				 AEU_INPUTS_ATTN_BITS_USDM_HW_INTERRUPT | \
+				 AEU_INPUTS_ATTN_BITS_UCM_HW_INTERRUPT | \
+				 AEU_INPUTS_ATTN_BITS_USEMI_HW_INTERRUPT | \
+				 AEU_INPUTS_ATTN_BITS_UPB_HW_INTERRUPT | \
+				 AEU_INPUTS_ATTN_BITS_CSDM_HW_INTERRUPT | \
+				 AEU_INPUTS_ATTN_BITS_CCM_HW_INTERRUPT)
+#define HW_PRTY_ASSERT_SET_1	(AEU_INPUTS_ATTN_BITS_PBF_PARITY_ERROR |\
+				 AEU_INPUTS_ATTN_BITS_QM_PARITY_ERROR | \
+				 AEU_INPUTS_ATTN_BITS_TIMERS_PARITY_ERROR |\
+				 AEU_INPUTS_ATTN_BITS_XSDM_PARITY_ERROR | \
+				 AEU_INPUTS_ATTN_BITS_XCM_PARITY_ERROR |\
+				 AEU_INPUTS_ATTN_BITS_XSEMI_PARITY_ERROR | \
+				 AEU_INPUTS_ATTN_BITS_DOORBELLQ_PARITY_ERROR |\
+				 AEU_INPUTS_ATTN_BITS_NIG_PARITY_ERROR |\
+			     AEU_INPUTS_ATTN_BITS_VAUX_PCI_CORE_PARITY_ERROR |\
+				 AEU_INPUTS_ATTN_BITS_DEBUG_PARITY_ERROR | \
+				 AEU_INPUTS_ATTN_BITS_USDM_PARITY_ERROR | \
+				 AEU_INPUTS_ATTN_BITS_UCM_PARITY_ERROR |\
+				 AEU_INPUTS_ATTN_BITS_USEMI_PARITY_ERROR | \
+				 AEU_INPUTS_ATTN_BITS_UPB_PARITY_ERROR | \
+				 AEU_INPUTS_ATTN_BITS_CSDM_PARITY_ERROR |\
+				 AEU_INPUTS_ATTN_BITS_CCM_PARITY_ERROR)
+#define HW_INTERRUT_ASSERT_SET_2 \
+				(AEU_INPUTS_ATTN_BITS_CSEMI_HW_INTERRUPT | \
+				 AEU_INPUTS_ATTN_BITS_CDU_HW_INTERRUPT | \
+				 AEU_INPUTS_ATTN_BITS_DMAE_HW_INTERRUPT | \
+			AEU_INPUTS_ATTN_BITS_PXPPCICLOCKCLIENT_HW_INTERRUPT |\
+				 AEU_INPUTS_ATTN_BITS_MISC_HW_INTERRUPT)
+#define HW_PRTY_ASSERT_SET_2	(AEU_INPUTS_ATTN_BITS_CSEMI_PARITY_ERROR | \
+				 AEU_INPUTS_ATTN_BITS_PXP_PARITY_ERROR | \
+			AEU_INPUTS_ATTN_BITS_PXPPCICLOCKCLIENT_PARITY_ERROR |\
+				 AEU_INPUTS_ATTN_BITS_CFC_PARITY_ERROR | \
+				 AEU_INPUTS_ATTN_BITS_CDU_PARITY_ERROR | \
+				 AEU_INPUTS_ATTN_BITS_DMAE_PARITY_ERROR |\
+				 AEU_INPUTS_ATTN_BITS_IGU_PARITY_ERROR | \
+				 AEU_INPUTS_ATTN_BITS_MISC_PARITY_ERROR)
+
+#define HW_PRTY_ASSERT_SET_3_WITHOUT_SCPAD \
+		(AEU_INPUTS_ATTN_BITS_MCP_LATCHED_ROM_PARITY | \
+		 AEU_INPUTS_ATTN_BITS_MCP_LATCHED_UMP_RX_PARITY | \
+		 AEU_INPUTS_ATTN_BITS_MCP_LATCHED_UMP_TX_PARITY)
+
+#define HW_PRTY_ASSERT_SET_3 (HW_PRTY_ASSERT_SET_3_WITHOUT_SCPAD | \
+			      AEU_INPUTS_ATTN_BITS_MCP_LATCHED_SCPAD_PARITY)
+
+#define HW_PRTY_ASSERT_SET_4 (AEU_INPUTS_ATTN_BITS_PGLUE_PARITY_ERROR | \
+			      AEU_INPUTS_ATTN_BITS_ATC_PARITY_ERROR)
+
 #define MULTI_MASK 0x7f
 
 #define PFS_PER_PORT(sc)                               \
@@ -1838,16 +1906,18 @@ bnx2x_hc_ack_sb(struct bnx2x_softc *sc, uint8_t sb_id, uint8_t storm,
 {
 	uint32_t hc_addr = (HC_REG_COMMAND_REG + SC_PORT(sc) * 32 +
 			COMMAND_REG_INT_ACK);
-	union igu_ack_register igu_ack;
+	struct igu_ack_register igu_ack;
+	uint32_t *val = NULL;
 
-	igu_ack.sb.status_block_index = index;
-	igu_ack.sb.sb_id_and_flags =
+	igu_ack.status_block_index = index;
+	igu_ack.sb_id_and_flags =
 		((sb_id << IGU_ACK_REGISTER_STATUS_BLOCK_ID_SHIFT) |
 		 (storm << IGU_ACK_REGISTER_STORM_ID_SHIFT) |
 		 (update << IGU_ACK_REGISTER_UPDATE_INDEX_SHIFT) |
 		 (op << IGU_ACK_REGISTER_INTERRUPT_MODE_SHIFT));
 
-	REG_WR(sc, hc_addr, igu_ack.raw_data);
+	val = (uint32_t *)&igu_ack;
+	REG_WR(sc, hc_addr, *val);
 
 	/* Make sure that ACK is written */
 	mb();

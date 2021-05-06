@@ -324,7 +324,7 @@ parse_uint8x16(const char *s, uint8_t *v, uint8_t ls)
 }
 
 static int
-parse_mac(const char *str, struct ether_addr *addr)
+parse_mac(const char *str, struct rte_ether_addr *addr)
 {
 	uint32_t i;
 
@@ -499,7 +499,7 @@ cfg_parse_neigh(void *parsed_result, __rte_unused struct cmdline *cl,
 	int32_t rc;
 	struct cfg_neigh_add_item *res;
 	struct parse_status *st;
-	struct ether_addr mac;
+	struct rte_ether_addr mac;
 
 	st = data;
 	res = parsed_result;
@@ -641,6 +641,10 @@ parse_cfg_file(const char *cfg_filename)
 
 	cmdline_stdin_exit(cl);
 	fclose(f);
+
+	sa_sort_arr();
+	sp4_sort_arr();
+	sp6_sort_arr();
 
 	return 0;
 

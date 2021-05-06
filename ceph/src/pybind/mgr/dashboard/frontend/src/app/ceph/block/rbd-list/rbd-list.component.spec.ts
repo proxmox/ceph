@@ -3,27 +3,19 @@ import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { BrowserAnimationsModule } from '@angular/platform-browser/animations';
 import { RouterTestingModule } from '@angular/router/testing';
 
-import { AlertModule } from 'ngx-bootstrap/alert';
-import { BsDropdownModule } from 'ngx-bootstrap/dropdown';
-import { ModalModule } from 'ngx-bootstrap/modal';
-import { TabsModule } from 'ngx-bootstrap/tabs';
-import { TooltipModule } from 'ngx-bootstrap/tooltip';
+import { NgbNavModule, NgbTooltipModule } from '@ng-bootstrap/ng-bootstrap';
 import { ToastrModule } from 'ngx-toastr';
 import { BehaviorSubject, of } from 'rxjs';
 
-import {
-  configureTestBed,
-  expectItemTasks,
-  i18nProviders,
-  PermissionHelper
-} from '../../../../testing/unit-test-helper';
-import { RbdService } from '../../../shared/api/rbd.service';
-import { TableActionsComponent } from '../../../shared/datatable/table-actions/table-actions.component';
-import { ViewCacheStatus } from '../../../shared/enum/view-cache-status.enum';
-import { ExecutingTask } from '../../../shared/models/executing-task';
-import { SummaryService } from '../../../shared/services/summary.service';
-import { TaskListService } from '../../../shared/services/task-list.service';
-import { SharedModule } from '../../../shared/shared.module';
+import { RbdService } from '~/app/shared/api/rbd.service';
+import { TableStatusViewCache } from '~/app/shared/classes/table-status-view-cache';
+import { TableActionsComponent } from '~/app/shared/datatable/table-actions/table-actions.component';
+import { ViewCacheStatus } from '~/app/shared/enum/view-cache-status.enum';
+import { ExecutingTask } from '~/app/shared/models/executing-task';
+import { SummaryService } from '~/app/shared/services/summary.service';
+import { TaskListService } from '~/app/shared/services/task-list.service';
+import { SharedModule } from '~/app/shared/shared.module';
+import { configureTestBed, expectItemTasks, PermissionHelper } from '~/testing/unit-test-helper';
 import { RbdConfigurationListComponent } from '../rbd-configuration-list/rbd-configuration-list.component';
 import { RbdDetailsComponent } from '../rbd-details/rbd-details.component';
 import { RbdSnapshotListComponent } from '../rbd-snapshot-list/rbd-snapshot-list.component';
@@ -45,12 +37,9 @@ describe('RbdListComponent', () => {
     imports: [
       BrowserAnimationsModule,
       SharedModule,
-      BsDropdownModule.forRoot(),
-      TabsModule.forRoot(),
-      ModalModule.forRoot(),
-      TooltipModule.forRoot(),
+      NgbNavModule,
+      NgbTooltipModule,
       ToastrModule.forRoot(),
-      AlertModule.forRoot(),
       RouterTestingModule,
       HttpClientTestingModule
     ],
@@ -61,14 +50,14 @@ describe('RbdListComponent', () => {
       RbdConfigurationListComponent,
       RbdTabsComponent
     ],
-    providers: [TaskListService, i18nProviders]
+    providers: [TaskListService]
   });
 
   beforeEach(() => {
     fixture = TestBed.createComponent(RbdListComponent);
     component = fixture.componentInstance;
-    summaryService = TestBed.get(SummaryService);
-    rbdService = TestBed.get(RbdService);
+    summaryService = TestBed.inject(SummaryService);
+    rbdService = TestBed.inject(RbdService);
 
     // this is needed because summaryService isn't being reset after each test.
     summaryService['summaryDataSource'] = new BehaviorSubject(null);
@@ -99,7 +88,9 @@ describe('RbdListComponent', () => {
       spyOn(component.table, 'reset');
       summaryService['summaryDataSource'].error(undefined);
       expect(component.table.reset).toHaveBeenCalled();
-      expect(component.viewCacheStatusList).toEqual([{ status: ViewCacheStatus.ValueException }]);
+      expect(component.tableStatus).toEqual(
+        new TableStatusViewCache(ViewCacheStatus.ValueException)
+      );
     });
   });
 
@@ -305,5 +296,39 @@ describe('RbdListComponent', () => {
         primary: { multiple: '', executing: '', single: '', no: '' }
       }
     });
+  });
+
+  const getActionDisable = (name: string) =>
+    component.tableActions.find((o) => o.name === name).disable;
+
+  const testActions = (selection: any, expected: string | boolean) => {
+    expect(getActionDisable('Edit')(selection)).toBe(expected);
+    expect(getActionDisable('Delete')(selection)).toBe(expected);
+    expect(getActionDisable('Copy')(selection)).toBe(expected);
+    expect(getActionDisable('Flatten')(selection)).toBeTruthy();
+    expect(getActionDisable('Move to Trash')(selection)).toBe(expected);
+  };
+
+  it('should test TableActions with valid/invalid image name', () => {
+    component.selection.selected = [
+      {
+        name: 'foobar',
+        pool_name: 'rbd',
+        snapshots: []
+      }
+    ];
+    testActions(component.selection, false);
+
+    component.selection.selected = [
+      {
+        name: 'foo/bar',
+        pool_name: 'rbd',
+        snapshots: []
+      }
+    ];
+    testActions(
+      component.selection,
+      `This RBD image has an invalid name and can't be managed by ceph.`
+    );
   });
 });

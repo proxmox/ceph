@@ -12,13 +12,12 @@
 #include <stdint.h>
 
 #include "db/log_format.h"
+#include "file/sequence_file_reader.h"
+#include "rocksdb/options.h"
 #include "rocksdb/slice.h"
 #include "rocksdb/status.h"
-#include "rocksdb/options.h"
 
-namespace rocksdb {
-
-class SequentialFileReader;
+namespace ROCKSDB_NAMESPACE {
 class Logger;
 
 namespace log {
@@ -53,6 +52,9 @@ class Reader {
          // @lint-ignore TXT2 T25377293 Grandfathered in
          std::unique_ptr<SequentialFileReader>&& file, Reporter* reporter,
          bool checksum, uint64_t log_num);
+  // No copying allowed
+  Reader(const Reader&) = delete;
+  void operator=(const Reader&) = delete;
 
   virtual ~Reader();
 
@@ -88,6 +90,12 @@ class Reader {
   SequentialFileReader* file() { return file_.get(); }
 
   Reporter* GetReporter() const { return reporter_; }
+
+  uint64_t GetLogNumber() const { return log_number_; }
+
+  size_t GetReadOffset() const {
+    return static_cast<size_t>(end_of_buffer_offset_);
+  }
 
  protected:
   std::shared_ptr<Logger> info_log_;
@@ -146,11 +154,6 @@ class Reader {
   // buffer_ must be updated to remove the dropped bytes prior to invocation.
   void ReportCorruption(size_t bytes, const char* reason);
   void ReportDrop(size_t bytes, const Status& reason);
-
- private:
-  // No copying allowed
-  Reader(const Reader&);
-  void operator=(const Reader&);
 };
 
 class FragmentBufferedReader : public Reader {
@@ -183,4 +186,4 @@ class FragmentBufferedReader : public Reader {
 };
 
 }  // namespace log
-}  // namespace rocksdb
+}  // namespace ROCKSDB_NAMESPACE

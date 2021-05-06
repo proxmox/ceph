@@ -57,7 +57,7 @@ struct ark_rx_queue {
 
 	/* separate cache line */
 	/* second cache line - fields only used in slow path */
-	MARKER cacheline1 __rte_cache_min_aligned;
+	RTE_MARKER cacheline1 __rte_cache_min_aligned;
 
 	volatile uint32_t prod_index;	/* step 2 filled by FPGA */
 } __rte_cache_aligned;
@@ -121,15 +121,13 @@ eth_ark_dev_rx_queue_setup(struct rte_eth_dev *dev,
 			   struct rte_mempool *mb_pool)
 {
 	static int warning1;		/* = 0 */
-	struct ark_adapter *ark = (struct ark_adapter *)dev->data->dev_private;
+	struct ark_adapter *ark = dev->data->dev_private;
 
 	struct ark_rx_queue *queue;
 	uint32_t i;
 	int status;
 
-	/* Future works: divide the Q's evenly with multi-ports */
-	int port = dev->data->port_id;
-	int qidx = port + queue_idx;
+	int qidx = queue_idx;
 
 	/* We may already be setup, free memory prior to re-allocation */
 	if (dev->data->rx_queues[queue_idx] != NULL) {
@@ -611,7 +609,7 @@ eth_rx_queue_stats_reset(void *vqueue)
 void
 eth_ark_udm_force_close(struct rte_eth_dev *dev)
 {
-	struct ark_adapter *ark = (struct ark_adapter *)dev->data->dev_private;
+	struct ark_adapter *ark = dev->data->dev_private;
 	struct ark_rx_queue *queue;
 	uint32_t index;
 	uint16_t i;

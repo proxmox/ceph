@@ -13,11 +13,9 @@ CFLAGS += $(WERROR_FLAGS)
 
 EXPORT_MAP := rte_pmd_axgbe_version.map
 
-LIBABIVER := 1
-
 LDLIBS += -lrte_eal -lrte_mbuf -lrte_mempool
 LDLIBS += -lrte_pci -lrte_bus_pci
-LDLIBS += -lrte_ethdev
+LDLIBS += -lrte_ethdev -lrte_net
 
 #
 # all source are stored in SRCS-y

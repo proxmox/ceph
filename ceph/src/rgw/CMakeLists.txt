@@ -1,7 +1,3 @@
-if(Boost_VERSION VERSION_GREATER_EQUAL 1.74)
-  add_definitions(-DBOOST_ASIO_USE_TS_EXECUTOR_AS_DEFAULT)
-endif()
-
 add_custom_target(civetweb_h
   COMMAND ${CMAKE_COMMAND} -E make_directory
   "${CMAKE_BINARY_DIR}/src/include/civetweb"
@@ -23,6 +19,8 @@ function(gperf_generate input output)
     )
 endfunction()
 
+find_package(ICU 52.0 COMPONENTS uc REQUIRED)
+
 set(librgw_common_srcs
   services/svc_finisher.cc
   services/svc_bi_rados.cc
@@ -32,7 +30,6 @@ set(librgw_common_srcs
   services/svc_bucket_sync_sobj.cc
   services/svc_cls.cc
   services/svc_config_key_rados.cc
-  services/svc_datalog_rados.cc
   services/svc_mdlog.cc
   services/svc_meta.cc
   services/svc_meta_be.cc
@@ -62,6 +59,7 @@ set(librgw_common_srcs
   rgw_arn.cc
   rgw_basic_types.cc
   rgw_bucket.cc
+  rgw_bucket_layout.cc
   rgw_bucket_sync.cc
   rgw_cache.cc
   rgw_common.cc
@@ -89,6 +87,7 @@ set(librgw_common_srcs
   rgw_sync.cc
   rgw_data_sync.cc
   rgw_sync_counters.cc
+  rgw_sync_error_repo.cc
   rgw_sync_module.cc
   rgw_sync_module_aws.cc
   rgw_sync_module_es.cc
@@ -133,10 +132,12 @@ set(librgw_common_srcs
   rgw_rest_s3.cc
   rgw_role.cc
   rgw_sal.cc
+  rgw_sal_rados.cc
   rgw_string.cc
   rgw_tag.cc
   rgw_tag_s3.cc
   rgw_tools.cc
+  rgw_log_backing.cc
   rgw_user.cc
   rgw_website.cc
   rgw_xml.cc
@@ -154,8 +155,14 @@ set(librgw_common_srcs
   rgw_rest_iam.cc
   rgw_object_lock.cc
   rgw_kms.cc
+  rgw_kmip_client.cc
   rgw_url.cc
-  rgw_oidc_provider)
+  rgw_oidc_provider
+  rgw_datalog.cc
+  cls_fifo_legacy.cc
+  rgw_lua_utils.cc
+  rgw_lua.cc
+  rgw_lua_request.cc)
 
 if(WITH_RADOSGW_AMQP_ENDPOINT)
   list(APPEND librgw_common_srcs rgw_amqp.cc)
@@ -170,16 +177,34 @@ target_include_directories(rgw_common SYSTEM PUBLIC "services")
 target_include_directories(rgw_common PUBLIC "${CMAKE_SOURCE_DIR}/src/dmclock/support/src")
 target_include_directories(rgw_common PUBLIC "${CMAKE_SOURCE_DIR}/src/fmt/include")
 target_include_directories(rgw_common PUBLIC "${CMAKE_SOURCE_DIR}/src/rgw")
+target_include_directories(rgw_common PRIVATE "${LUA_INCLUDE_DIR}")
+target_include_directories(rgw_common SYSTEM PRIVATE "${ICU_INCLUDE_DIRS}")
 
-if(WITH_BOOST_CONTEXT)
-  target_include_directories(rgw_common PRIVATE
-    $<TARGET_PROPERTY:spawn,INTERFACE_INCLUDE_DIRECTORIES>)
-endif()
+
+set(librgw_kmip_srcs
+  rgw_kmip_client_impl.cc)
+
+add_library(rgw_kmip OBJECT ${librgw_kmip_srcs})
+
+target_include_directories(rgw_kmip PRIVATE "${CMAKE_SOURCE_DIR}/src/libkmip")
+
+target_include_directories(rgw_common PRIVATE
+  $<TARGET_PROPERTY:spawn,INTERFACE_INCLUDE_DIRECTORIES>)
+target_compile_definitions(rgw_common PRIVATE
+  $<TARGET_PROPERTY:spawn,INTERFACE_COMPILE_DEFINITIONS>)
+target_include_directories(rgw_kmip PRIVATE
+  $<TARGET_PROPERTY:spawn,INTERFACE_INCLUDE_DIRECTORIES>)
+target_compile_definitions(rgw_kmip PRIVATE
+  $<TARGET_PROPERTY:spawn,INTERFACE_COMPILE_DEFINITIONS>)
 
 if(WITH_LTTNG)
   # rgw/rgw_op.cc includes "tracing/rgw_op.h"
   # rgw/rgw_rados.cc includes "tracing/rgw_rados.h"
   add_dependencies(rgw_common rgw_op-tp rgw_rados-tp)
+endif()
+
+if(WITH_JAEGER)
+  add_dependencies(rgw_common jaegertracing::libjaegertracing)
 endif()
 
 set(rgw_a_srcs
@@ -240,11 +265,12 @@ endif()
 target_link_libraries(rgw_a
   PRIVATE
   librados cls_otp_client cls_lock_client cls_rgw_client cls_refcount_client
-  cls_log_client cls_timeindex_client cls_version_client
-  cls_user_client cls_rgw_gc_client ceph-common common_utf8 global
+  cls_log_client cls_timeindex_client cls_version_client cls_cmpomap_client
+  cls_user_client cls_rgw_gc_client cls_2pc_queue_client ceph-common common_utf8 global
   ${CURL_LIBRARIES}
   ${EXPAT_LIBRARIES}
   ${OPENLDAP_LIBRARIES} ${CRYPTO_LIBS}
+  ICU::uc
   OATH::OATH)
 
 if(WITH_CURL_OPENSSL)
@@ -252,18 +278,24 @@ if(WITH_CURL_OPENSSL)
   target_link_libraries(rgw_a PRIVATE OpenSSL::Crypto)
 endif()
 
-if(WITH_BOOST_CONTEXT)
-  target_link_libraries(rgw_a PUBLIC spawn)
-endif()
+target_link_libraries(rgw_a PRIVATE ${LUA_LIBRARIES})
+target_link_libraries(rgw_a PUBLIC spawn)
 
 set(rgw_libs rgw_a)
 if(WITH_RADOSGW_AMQP_ENDPOINT)
   # used by rgw_amqp.cc
   list(APPEND rgw_libs RabbitMQ::RabbitMQ)
+  list(APPEND rgw_libs OpenSSL::SSL)
 endif()
 if(WITH_RADOSGW_KAFKA_ENDPOINT)
   # used by rgw_kafka.cc
   list(APPEND rgw_libs RDKafka::RDKafka)
+endif()
+
+list(APPEND rgw_libs ${LUA_LIBRARIES})
+
+if(WITH_RADOSGW_LUA_PACKAGES)
+  list(APPEND rgw_libs Boost::filesystem)
 endif()
 
 set(rgw_schedulers_srcs
@@ -291,6 +323,7 @@ target_link_libraries(rgw_schedulers
   PUBLIC dmclock::dmclock)
 
 add_library(radosgw SHARED ${radosgw_srcs} ${rgw_a_srcs} rgw_main.cc
+  $<TARGET_OBJECTS:rgw_kmip>
   $<TARGET_OBJECTS:civetweb_common_objs>)
 
 add_dependencies(radosgw civetweb_h)
@@ -300,7 +333,7 @@ target_include_directories(radosgw PUBLIC "${CMAKE_SOURCE_DIR}/src/dmclock/suppo
 target_include_directories(radosgw SYSTEM PUBLIC "../rapidjson/include")
 
 target_link_libraries(radosgw
-  PRIVATE ${rgw_libs} rgw_schedulers
+  PRIVATE ${rgw_libs} rgw_schedulers kmip
   PUBLIC dmclock::dmclock
 )
 if(WITH_RADOSGW_BEAST_FRONTEND)
@@ -317,7 +350,7 @@ install(TARGETS radosgw DESTINATION ${CMAKE_INSTALL_LIBDIR})
 add_executable(radosgwd radosgw.cc)
 target_link_libraries(radosgwd radosgw librados
   cls_rgw_client cls_otp_client cls_lock_client cls_refcount_client
-  cls_log_client cls_timeindex_client
+  cls_log_client cls_timeindex_client neorados_cls_fifo
   cls_version_client cls_user_client
   global
   ${FCGI_LIBRARY} ${LIB_RESOLV}
@@ -328,11 +361,12 @@ install(TARGETS radosgwd DESTINATION bin)
 
 set(radosgw_admin_srcs
   rgw_admin.cc
+  rgw_sync_checkpoint.cc
   rgw_orphan.cc)
 add_executable(radosgw-admin ${radosgw_admin_srcs})
 target_link_libraries(radosgw-admin ${rgw_libs} librados
   cls_rgw_client cls_otp_client cls_lock_client cls_refcount_client
-  cls_log_client cls_timeindex_client
+  cls_log_client cls_timeindex_client neorados_cls_fifo
   cls_version_client cls_user_client
   global ${FCGI_LIBRARY} ${LIB_RESOLV}
   ${CURL_LIBRARIES} ${EXPAT_LIBRARIES} ${BLKID_LIBRARIES})
@@ -343,7 +377,7 @@ set(radosgw_es_srcs
 add_executable(radosgw-es ${radosgw_es_srcs})
 target_link_libraries(radosgw-es ${rgw_libs} librados
   cls_rgw_client cls_otp_client cls_lock_client cls_refcount_client
-  cls_log_client cls_timeindex_client
+  cls_log_client cls_timeindex_client neorados_cls_fifo
   cls_version_client cls_user_client
   global ${FCGI_LIBRARY} ${LIB_RESOLV}
   ${CURL_LIBRARIES} ${EXPAT_LIBRARIES} ${BLKID_LIBRARIES})
@@ -361,7 +395,7 @@ set(radosgw_object_expirer_srcs
 add_executable(radosgw-object-expirer ${radosgw_object_expirer_srcs})
 target_link_libraries(radosgw-object-expirer ${rgw_libs} librados
   cls_rgw_client cls_otp_client cls_lock_client cls_refcount_client
-  cls_log_client cls_timeindex_client
+  cls_log_client cls_timeindex_client neorados_cls_fifo
   cls_version_client cls_user_client
   global ${FCGI_LIBRARY} ${LIB_RESOLV}
   ${CURL_LIBRARIES} ${EXPAT_LIBRARIES})
@@ -381,6 +415,7 @@ target_link_libraries(rgw
   cls_refcount_client
   cls_log_client
   cls_timeindex_client
+  neorados_cls_fifo
   cls_version_client
   cls_user_client
   global
@@ -392,11 +427,14 @@ target_link_libraries(rgw
 
 if(WITH_RADOSGW_AMQP_ENDPOINT)
   target_link_libraries(rgw PRIVATE RabbitMQ::RabbitMQ)
+  target_link_libraries(rgw PRIVATE OpenSSL::SSL)
 endif()
 
 if(WITH_RADOSGW_KAFKA_ENDPOINT)
   target_link_libraries(rgw PRIVATE RDKafka::RDKafka)
 endif()
+
+target_link_libraries(rgw PRIVATE ${LUA_LIBRARIES})
 
 set_target_properties(rgw PROPERTIES OUTPUT_NAME rgw VERSION 2.0.0
   SOVERSION 2)
@@ -421,5 +459,8 @@ if(WITH_TESTS)
     DESTINATION bin)
 endif(WITH_TESTS)
 
-install(PROGRAMS rgw-orphan-list
+install(PROGRAMS
+  rgw-gap-list
+  rgw-gap-list-comparator
+  rgw-orphan-list
   DESTINATION bin)

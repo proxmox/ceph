@@ -1,6 +1,6 @@
 import { TestBed } from '@angular/core/testing';
 
-import { configureTestBed } from '../../../testing/unit-test-helper';
+import { configureTestBed } from '~/testing/unit-test-helper';
 import { PgCategory } from './pg-category.model';
 import { PgCategoryService } from './pg-category.service';
 
@@ -12,7 +12,7 @@ describe('PgCategoryService', () => {
   });
 
   beforeEach(() => {
-    service = TestBed.get(PgCategoryService);
+    service = TestBed.inject(PgCategoryService);
   });
 
   it('should be created', () => {

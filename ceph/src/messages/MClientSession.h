@@ -18,7 +18,7 @@
 #include "msg/Message.h"
 #include "mds/mdstypes.h"
 
-class MClientSession : public SafeMessage {
+class MClientSession final : public SafeMessage {
 private:
   static constexpr int HEAD_VERSION = 4;
   static constexpr int COMPAT_VERSION = 1;
@@ -51,11 +51,11 @@ protected:
     head.seq = 0;
     st.encode_timeval(&head.stamp);
   }
-  ~MClientSession() override {}
+  ~MClientSession() final {}
 
 public:
   std::string_view get_type_name() const override { return "client_session"; }
-  void print(ostream& out) const override {
+  void print(std::ostream& out) const override {
     out << "client_session(" << ceph_session_op_name(get_op());
     if (get_seq())
       out << " seq " << get_seq();
@@ -64,7 +64,8 @@ public:
     out << ")";
   }
 
-  void decode_payload() override { 
+  void decode_payload() override {
+    using ceph::decode;
     auto p = payload.cbegin();
     decode(head, p);
     if (header.version >= 2)

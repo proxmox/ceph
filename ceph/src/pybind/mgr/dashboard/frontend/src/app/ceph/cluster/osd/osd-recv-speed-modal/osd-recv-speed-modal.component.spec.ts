@@ -3,14 +3,14 @@ import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { ReactiveFormsModule } from '@angular/forms';
 import { RouterTestingModule } from '@angular/router/testing';
 
-import * as _ from 'lodash';
-import { BsModalRef, ModalModule } from 'ngx-bootstrap/modal';
+import { NgbActiveModal } from '@ng-bootstrap/ng-bootstrap';
+import _ from 'lodash';
 import { ToastrModule } from 'ngx-toastr';
 import { of as observableOf } from 'rxjs';
 
-import { configureTestBed, i18nProviders } from '../../../../../testing/unit-test-helper';
-import { ConfigurationService } from '../../../../shared/api/configuration.service';
-import { SharedModule } from '../../../../shared/shared.module';
+import { ConfigurationService } from '~/app/shared/api/configuration.service';
+import { SharedModule } from '~/app/shared/shared.module';
+import { configureTestBed } from '~/testing/unit-test-helper';
 import { OsdRecvSpeedModalComponent } from './osd-recv-speed-modal.component';
 
 describe('OsdRecvSpeedModalComponent', () => {
@@ -21,14 +21,13 @@ describe('OsdRecvSpeedModalComponent', () => {
   configureTestBed({
     imports: [
       HttpClientTestingModule,
-      ModalModule.forRoot(),
       ReactiveFormsModule,
       RouterTestingModule,
       SharedModule,
       ToastrModule.forRoot()
     ],
     declarations: [OsdRecvSpeedModalComponent],
-    providers: [BsModalRef, i18nProviders]
+    providers: [NgbActiveModal]
   });
 
   let configOptions: any[] = [];
@@ -37,7 +36,7 @@ describe('OsdRecvSpeedModalComponent', () => {
     fixture = TestBed.createComponent(OsdRecvSpeedModalComponent);
     component = fixture.componentInstance;
     fixture.detectChanges();
-    configurationService = TestBed.get(ConfigurationService);
+    configurationService = TestBed.inject(ConfigurationService);
     configOptions = [
       {
         name: 'osd_max_backfills',

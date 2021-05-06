@@ -21,20 +21,17 @@ The format of token inspection url is https://[base-server-url]/token/introspect
   [client.radosgw.gateway]
   rgw sts key = {sts key for encrypting/ decrypting the session token}
   rgw s3 auth use sts = true
-  rgw_sts_token_introspection_url = {url for token introspection}
-  rgw_sts_client_id = {client-id}
-  rgw_sts_client_secret = {client-password}
 
 Example showing how to fetch a web token from Keycloak
 ======================================================
 
-Several examples of apps authenticating with Keycloak are given here: https://github.com/keycloak/keycloak/tree/master/examples/demo-template
-Taking the example of customer-portal app given in the link above, its client secret and client password, can be used to fetch the
+Several examples of apps authenticating with Keycloak are given here: https://github.com/keycloak/keycloak-quickstarts/blob/latest/docs/getting-started.md
+Taking the example of app-profile-jee-jsp app given in the link above, its client secret and client password, can be used to fetch the
 access token (web token) as given below::
 
     KC_REALM=demo
-    KC_CLIENT=customer-portal
-    KC_CLIENT_SECRET=password
+    KC_CLIENT=<client id>
+    KC_CLIENT_SECRET=<client secret>
     KC_SERVER=<host>:8080
     KC_CONTEXT=auth
 

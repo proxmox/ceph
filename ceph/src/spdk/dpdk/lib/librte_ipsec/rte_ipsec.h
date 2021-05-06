@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2018 Intel Corporation
+ * Copyright(c) 2018-2020 Intel Corporation
  */
 
 #ifndef _RTE_IPSEC_H_
@@ -33,10 +33,15 @@ struct rte_ipsec_session;
  *   (see rte_ipsec_pkt_process for more details).
  */
 struct rte_ipsec_sa_pkt_func {
-	uint16_t (*prepare)(const struct rte_ipsec_session *ss,
+	union {
+		uint16_t (*async)(const struct rte_ipsec_session *ss,
 				struct rte_mbuf *mb[],
 				struct rte_crypto_op *cop[],
 				uint16_t num);
+		uint16_t (*sync)(const struct rte_ipsec_session *ss,
+				struct rte_mbuf *mb[],
+				uint16_t num);
+	} prepare;
 	uint16_t (*process)(const struct rte_ipsec_session *ss,
 				struct rte_mbuf *mb[],
 				uint16_t num);
@@ -62,6 +67,7 @@ struct rte_ipsec_session {
 	union {
 		struct {
 			struct rte_cryptodev_sym_session *ses;
+			uint8_t dev_id;
 		} crypto;
 		struct {
 			struct rte_security_session *ses;
@@ -84,7 +90,8 @@ struct rte_ipsec_session {
  *   - Zero if operation completed successfully.
  *   - -EINVAL if the parameters are invalid.
  */
-int __rte_experimental
+__rte_experimental
+int
 rte_ipsec_session_prepare(struct rte_ipsec_session *ss);
 
 /**
@@ -108,11 +115,20 @@ rte_ipsec_session_prepare(struct rte_ipsec_session *ss);
  * @return
  *   Number of successfully processed packets, with error code set in rte_errno.
  */
-static inline uint16_t __rte_experimental
+__rte_experimental
+static inline uint16_t
 rte_ipsec_pkt_crypto_prepare(const struct rte_ipsec_session *ss,
 	struct rte_mbuf *mb[], struct rte_crypto_op *cop[], uint16_t num)
 {
-	return ss->pkt_func.prepare(ss, mb, cop, num);
+	return ss->pkt_func.prepare.async(ss, mb, cop, num);
+}
+
+__rte_experimental
+static inline uint16_t
+rte_ipsec_pkt_cpu_prepare(const struct rte_ipsec_session *ss,
+	struct rte_mbuf *mb[], uint16_t num)
+{
+	return ss->pkt_func.prepare.sync(ss, mb, num);
 }
 
 /**
@@ -138,7 +154,8 @@ rte_ipsec_pkt_crypto_prepare(const struct rte_ipsec_session *ss,
  * @return
  *   Number of successfully processed packets, with error code set in rte_errno.
  */
-static inline uint16_t __rte_experimental
+__rte_experimental
+static inline uint16_t
 rte_ipsec_pkt_process(const struct rte_ipsec_session *ss, struct rte_mbuf *mb[],
 	uint16_t num)
 {

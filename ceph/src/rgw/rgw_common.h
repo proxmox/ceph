@@ -18,12 +18,12 @@
 #define CEPH_RGW_COMMON_H
 
 #include <array>
-
-#include <boost/utility/string_view.hpp>
+#include <string_view>
 
 #include "common/ceph_crypto.h"
 #include "common/random_string.h"
 #include "rgw_acl.h"
+#include "rgw_bucket_layout.h"
 #include "rgw_cors.h"
 #include "rgw_iam_policy.h"
 #include "rgw_quota.h"
@@ -32,6 +32,7 @@
 #include "rgw_website.h"
 #include "rgw_object_lock.h"
 #include "rgw_tag.h"
+#include "rgw_op_type.h"
 #include "rgw_sync_policy.h"
 #include "cls/version/cls_version_types.h"
 #include "cls/user/cls_user_types.h"
@@ -45,6 +46,9 @@ namespace ceph {
 
 namespace rgw::sal {
   class RGWUser;
+  class RGWBucket;
+  class RGWObject;
+  using RGWAttrs = std::map<std::string, ceph::buffer::list>;
 }
 
 using ceph::crypto::MD5;
@@ -136,6 +140,8 @@ using ceph::crypto::MD5;
 #define RGW_ATTR_CRYPT_KEYMD5   RGW_ATTR_CRYPT_PREFIX "keymd5"
 #define RGW_ATTR_CRYPT_KEYID    RGW_ATTR_CRYPT_PREFIX "keyid"
 #define RGW_ATTR_CRYPT_KEYSEL   RGW_ATTR_CRYPT_PREFIX "keysel"
+#define RGW_ATTR_CRYPT_CONTEXT  RGW_ATTR_CRYPT_PREFIX "context"
+#define RGW_ATTR_CRYPT_DATAKEY  RGW_ATTR_CRYPT_PREFIX "datakey"
 
 
 #define RGW_FORMAT_PLAIN        0
@@ -435,122 +441,6 @@ enum http_op {
   OP_UNKNOWN,
 };
 
-enum RGWOpType {
-  RGW_OP_UNKNOWN = 0,
-  RGW_OP_GET_OBJ,
-  RGW_OP_LIST_BUCKETS,
-  RGW_OP_STAT_ACCOUNT,
-  RGW_OP_LIST_BUCKET,
-  RGW_OP_GET_BUCKET_LOGGING,
-  RGW_OP_GET_BUCKET_LOCATION,
-  RGW_OP_GET_BUCKET_VERSIONING,
-  RGW_OP_SET_BUCKET_VERSIONING,
-  RGW_OP_GET_BUCKET_WEBSITE,
-  RGW_OP_SET_BUCKET_WEBSITE,
-  RGW_OP_STAT_BUCKET,
-  RGW_OP_CREATE_BUCKET,
-  RGW_OP_DELETE_BUCKET,
-  RGW_OP_PUT_OBJ,
-  RGW_OP_STAT_OBJ,
-  RGW_OP_POST_OBJ,
-  RGW_OP_PUT_METADATA_ACCOUNT,
-  RGW_OP_PUT_METADATA_BUCKET,
-  RGW_OP_PUT_METADATA_OBJECT,
-  RGW_OP_SET_TEMPURL,
-  RGW_OP_DELETE_OBJ,
-  RGW_OP_COPY_OBJ,
-  RGW_OP_GET_ACLS,
-  RGW_OP_PUT_ACLS,
-  RGW_OP_GET_CORS,
-  RGW_OP_PUT_CORS,
-  RGW_OP_DELETE_CORS,
-  RGW_OP_OPTIONS_CORS,
-  RGW_OP_GET_REQUEST_PAYMENT,
-  RGW_OP_SET_REQUEST_PAYMENT,
-  RGW_OP_INIT_MULTIPART,
-  RGW_OP_COMPLETE_MULTIPART,
-  RGW_OP_ABORT_MULTIPART,
-  RGW_OP_LIST_MULTIPART,
-  RGW_OP_LIST_BUCKET_MULTIPARTS,
-  RGW_OP_DELETE_MULTI_OBJ,
-  RGW_OP_BULK_DELETE,
-  RGW_OP_SET_ATTRS,
-  RGW_OP_GET_CROSS_DOMAIN_POLICY,
-  RGW_OP_GET_HEALTH_CHECK,
-  RGW_OP_GET_INFO,
-  RGW_OP_CREATE_ROLE,
-  RGW_OP_DELETE_ROLE,
-  RGW_OP_GET_ROLE,
-  RGW_OP_MODIFY_ROLE,
-  RGW_OP_LIST_ROLES,
-  RGW_OP_PUT_ROLE_POLICY,
-  RGW_OP_GET_ROLE_POLICY,
-  RGW_OP_LIST_ROLE_POLICIES,
-  RGW_OP_DELETE_ROLE_POLICY,
-  RGW_OP_PUT_BUCKET_POLICY,
-  RGW_OP_GET_BUCKET_POLICY,
-  RGW_OP_DELETE_BUCKET_POLICY,
-  RGW_OP_PUT_OBJ_TAGGING,
-  RGW_OP_GET_OBJ_TAGGING,
-  RGW_OP_DELETE_OBJ_TAGGING,
-  RGW_OP_PUT_LC,
-  RGW_OP_GET_LC,
-  RGW_OP_DELETE_LC,
-  RGW_OP_PUT_USER_POLICY,
-  RGW_OP_GET_USER_POLICY,
-  RGW_OP_LIST_USER_POLICIES,
-  RGW_OP_DELETE_USER_POLICY,
-  RGW_OP_PUT_BUCKET_OBJ_LOCK,
-  RGW_OP_GET_BUCKET_OBJ_LOCK,
-  RGW_OP_PUT_OBJ_RETENTION,
-  RGW_OP_GET_OBJ_RETENTION,
-  RGW_OP_PUT_OBJ_LEGAL_HOLD,
-  RGW_OP_GET_OBJ_LEGAL_HOLD,
-  /* rgw specific */
-  RGW_OP_ADMIN_SET_METADATA,
-  RGW_OP_GET_OBJ_LAYOUT,
-  RGW_OP_BULK_UPLOAD,
-  RGW_OP_METADATA_SEARCH,
-  RGW_OP_CONFIG_BUCKET_META_SEARCH,
-  RGW_OP_GET_BUCKET_META_SEARCH,
-  RGW_OP_DEL_BUCKET_META_SEARCH,
-  /* sts specific*/
-  RGW_STS_ASSUME_ROLE,
-  RGW_STS_GET_SESSION_TOKEN,
-  RGW_STS_ASSUME_ROLE_WEB_IDENTITY,
-  /* pubsub */
-  RGW_OP_PUBSUB_TOPIC_CREATE,
-  RGW_OP_PUBSUB_TOPICS_LIST,
-  RGW_OP_PUBSUB_TOPIC_GET,
-  RGW_OP_PUBSUB_TOPIC_DELETE,
-  RGW_OP_PUBSUB_SUB_CREATE,
-  RGW_OP_PUBSUB_SUB_GET,
-  RGW_OP_PUBSUB_SUB_DELETE,
-  RGW_OP_PUBSUB_SUB_PULL,
-  RGW_OP_PUBSUB_SUB_ACK,
-  RGW_OP_PUBSUB_NOTIF_CREATE,
-  RGW_OP_PUBSUB_NOTIF_DELETE,
-  RGW_OP_PUBSUB_NOTIF_LIST,
-  RGW_OP_GET_BUCKET_TAGGING,
-  RGW_OP_PUT_BUCKET_TAGGING,
-  RGW_OP_DELETE_BUCKET_TAGGING,
-  RGW_OP_GET_BUCKET_REPLICATION,
-  RGW_OP_PUT_BUCKET_REPLICATION,
-  RGW_OP_DELETE_BUCKET_REPLICATION,
-
-  /* public access */
-  RGW_OP_GET_BUCKET_POLICY_STATUS,
-  RGW_OP_PUT_BUCKET_PUBLIC_ACCESS_BLOCK,
-  RGW_OP_GET_BUCKET_PUBLIC_ACCESS_BLOCK,
-  RGW_OP_DELETE_BUCKET_PUBLIC_ACCESS_BLOCK,
-
-  /*OIDC provider specific*/
-  RGW_OP_CREATE_OIDC_PROVIDER,
-  RGW_OP_DELETE_OIDC_PROVIDER,
-  RGW_OP_GET_OIDC_PROVIDER,
-  RGW_OP_LIST_OIDC_PROVIDERS,
-};
-
 class RGWAccessControlPolicy;
 class JSONObj;
 
@@ -819,7 +709,7 @@ struct RGWUserInfo
   }
 
   void encode(bufferlist& bl) const {
-     ENCODE_START(21, 9, bl);
+     ENCODE_START(22, 9, bl);
      encode((uint64_t)0, bl); // old auid
      string access_key;
      string secret_key;
@@ -862,10 +752,11 @@ struct RGWUserInfo
      encode(type, bl);
      encode(mfa_ids, bl);
      encode(assumed_role_arn, bl);
+     encode(user_id.ns, bl);
      ENCODE_FINISH(bl);
   }
   void decode(bufferlist::const_iterator& bl) {
-     DECODE_START_LEGACY_COMPAT_LEN_32(21, 9, 9, bl);
+     DECODE_START_LEGACY_COMPAT_LEN_32(22, 9, 9, bl);
      if (struct_v >= 2) {
        uint64_t old_auid;
        decode(old_auid, bl);
@@ -945,6 +836,11 @@ struct RGWUserInfo
     }
     if (struct_v >= 21) {
       decode(assumed_role_arn, bl);
+    }
+    if (struct_v >= 22) {
+      decode(user_id.ns, bl);
+    } else {
+      user_id.ns.clear();
     }
     DECODE_FINISH(bl);
   }
@@ -1093,30 +989,9 @@ enum RGWBucketFlags {
   BUCKET_OBJ_LOCK_ENABLED = 0X20,
 };
 
-enum RGWBucketIndexType {
-  RGWBIType_Normal = 0,
-  RGWBIType_Indexless = 1,
-};
-
-inline ostream& operator<<(ostream& out, const RGWBucketIndexType &index_type) 
-{
-  switch (index_type) {
-    case RGWBIType_Normal:
-      return out << "Normal";
-    case RGWBIType_Indexless:
-      return out << "Indexless";
-    default:
-      return out << "Unknown";
-  }
-}
-
 class RGWSI_Zone;
 
 struct RGWBucketInfo {
-  enum BIShardsHashType {
-    MOD = 0
-  };
-
   rgw_bucket bucket;
   rgw_user owner;
   uint32_t flags{0};
@@ -1127,14 +1002,13 @@ struct RGWBucketInfo {
   RGWObjVersionTracker objv_tracker; /* we don't need to serialize this, for runtime tracking */
   RGWQuotaInfo quota;
 
+  // layout of bucket index objects
+  rgw::BucketLayout layout;
+
   // Represents the number of bucket index object shards:
   //   - value of 0 indicates there is no sharding (this is by default
   //     before this feature is implemented).
   //   - value of UINT32_T::MAX indicates this is a blind bucket.
-  uint32_t num_shards{0};
-
-  // Represents the bucket index shard hash type.
-  uint8_t bucket_index_shard_hash_type{MOD};
 
   // Represents the shard number for blind bucket.
   const static uint32_t NUM_SHARDS_BLIND_BUCKET;
@@ -1143,8 +1017,6 @@ struct RGWBucketInfo {
 
   bool has_website{false};
   RGWBucketWebsiteConf website_conf;
-
-  RGWBucketIndexType index_type = RGWBIType_Normal;
 
   bool swift_versioning{false};
   string swift_ver_location;
@@ -1639,11 +1511,11 @@ struct req_state : DoutPrefixProvider {
   string bucket_tenant;
   string bucket_name;
 
-  rgw_bucket bucket;
-  rgw_obj_key object;
+  std::unique_ptr<rgw::sal::RGWBucket> bucket;
+  std::unique_ptr<rgw::sal::RGWObject> object;
   string src_tenant_name;
   string src_bucket_name;
-  rgw_obj_key src_object;
+  std::unique_ptr<rgw::sal::RGWObject> src_object;
   ACLOwner bucket_owner;
   ACLOwner owner;
 
@@ -1655,8 +1527,6 @@ struct req_state : DoutPrefixProvider {
 
   string redirect;
 
-  RGWBucketInfo bucket_info;
-  obj_version bucket_ep_objv;
   real_time bucket_mtime;
   std::map<std::string, ceph::bufferlist> bucket_attrs;
   bool bucket_exists{false};
@@ -1664,7 +1534,7 @@ struct req_state : DoutPrefixProvider {
 
   bool has_bad_meta{false};
 
-  rgw::sal::RGWUser *user;
+  std::unique_ptr<rgw::sal::RGWUser> user;
 
   struct {
     /* TODO(rzarzynski): switch out to the static_ptr for both members. */
@@ -1750,9 +1620,11 @@ struct req_state : DoutPrefixProvider {
   //token claims from STS token for ops log (can be used for Keystone token also)
   std::vector<string> token_claims;
 
-  req_state(CephContext* _cct, RGWEnv* e, rgw::sal::RGWUser* u, uint64_t id);
+  req_state(CephContext* _cct, RGWEnv* e, uint64_t id);
   ~req_state();
 
+
+  void set_user(std::unique_ptr<rgw::sal::RGWUser>& u) { user.swap(u); }
   bool is_err() const { return err.is_err(); }
 
   // implements DoutPrefixProvider
@@ -1934,7 +1806,7 @@ struct rgw_obj {
         } else {
           ssize_t pos = key.name.find('_', 1);
           if (pos < 0) {
-            throw buffer::error();
+            throw buffer::malformed_input();
           }
           key.name = key.name.substr(pos + 1);
         }
@@ -2108,11 +1980,11 @@ extern void parse_csv_string(const string& ival, vector<string>& ovals);
 extern int parse_key_value(string& in_str, string& key, string& val);
 extern int parse_key_value(string& in_str, const char *delim, string& key, string& val);
 
-extern boost::optional<std::pair<boost::string_view, boost::string_view>>
-parse_key_value(const boost::string_view& in_str,
-                const boost::string_view& delim);
-extern boost::optional<std::pair<boost::string_view, boost::string_view>>
-parse_key_value(const boost::string_view& in_str);
+extern boost::optional<std::pair<std::string_view, std::string_view>>
+parse_key_value(const std::string_view& in_str,
+                const std::string_view& delim);
+extern boost::optional<std::pair<std::string_view, std::string_view>>
+parse_key_value(const std::string_view& in_str);
 
 
 /** time parsing */
@@ -2120,7 +1992,7 @@ extern int parse_time(const char *time_str, real_time *time);
 extern bool parse_rfc2616(const char *s, struct tm *t);
 extern bool parse_iso8601(const char *s, struct tm *t, uint32_t *pns = NULL, bool extended_format = true);
 extern string rgw_trim_whitespace(const string& src);
-extern boost::string_view rgw_trim_whitespace(const boost::string_view& src);
+extern std::string_view rgw_trim_whitespace(const std::string_view& src);
 extern string rgw_trim_quotes(const string& val);
 
 extern void rgw_to_iso8601(const real_time& t, char *dest, int buf_size);
@@ -2131,7 +2003,7 @@ struct perm_state_base {
   CephContext *cct;
   const rgw::IAM::Environment& env;
   rgw::auth::Identity *identity;
-  const RGWBucketInfo& bucket_info;
+  const RGWBucketInfo bucket_info;
   int perm_mask;
   bool defer_to_bucket_acls;
   boost::optional<PublicAccessBlockConfiguration> bucket_access_conf;
@@ -2276,10 +2148,16 @@ extern bool verify_object_permission_no_policy(
   int perm);
 extern bool verify_object_permission_no_policy(const DoutPrefixProvider* dpp, struct req_state *s,
 					       int perm);
+extern int verify_object_lock(
+  const DoutPrefixProvider* dpp,
+  const rgw::sal::RGWAttrs& attrs,
+  const bool bypass_perm,
+  const bool bypass_governance_mode);
+
 /** Convert an input URL into a sane object name
  * by converting %-escaped strings into characters, etc*/
 extern void rgw_uri_escape_char(char c, string& dst);
-extern std::string url_decode(const boost::string_view& src_str,
+extern std::string url_decode(const std::string_view& src_str,
                               bool in_query = false);
 extern void url_encode(const std::string& src, string& dst,
                        bool encode_slash = true);
@@ -2290,7 +2168,7 @@ extern void calc_hmac_sha1(const char *key, int key_len,
                           const char *msg, int msg_len, char *dest);
 
 static inline sha1_digest_t
-calc_hmac_sha1(const boost::string_view& key, const boost::string_view& msg) {
+calc_hmac_sha1(const std::string_view& key, const std::string_view& msg) {
   sha1_digest_t dest;
   calc_hmac_sha1(key.data(), key.size(), msg.data(), msg.size(),
                  reinterpret_cast<char*>(dest.v));
@@ -2312,7 +2190,7 @@ calc_hmac_sha256(const char *key, const int key_len,
 }
 
 static inline sha256_digest_t
-calc_hmac_sha256(const boost::string_view& key, const boost::string_view& msg) {
+calc_hmac_sha256(const std::string_view& key, const std::string_view& msg) {
   sha256_digest_t dest;
   calc_hmac_sha256(key.data(), key.size(),
                    msg.data(), msg.size(),
@@ -2322,7 +2200,7 @@ calc_hmac_sha256(const boost::string_view& key, const boost::string_view& msg) {
 
 static inline sha256_digest_t
 calc_hmac_sha256(const sha256_digest_t &key,
-                 const boost::string_view& msg) {
+                 const std::string_view& msg) {
   sha256_digest_t dest;
   calc_hmac_sha256(reinterpret_cast<const char*>(key.v), sha256_digest_t::SIZE,
                    msg.data(), msg.size(),
@@ -2332,7 +2210,7 @@ calc_hmac_sha256(const sha256_digest_t &key,
 
 static inline sha256_digest_t
 calc_hmac_sha256(const std::vector<unsigned char>& key,
-                 const boost::string_view& msg) {
+                 const std::string_view& msg) {
   sha256_digest_t dest;
   calc_hmac_sha256(reinterpret_cast<const char*>(key.data()), key.size(),
                    msg.data(), msg.size(),
@@ -2343,7 +2221,7 @@ calc_hmac_sha256(const std::vector<unsigned char>& key,
 template<size_t KeyLenN>
 static inline sha256_digest_t
 calc_hmac_sha256(const std::array<unsigned char, KeyLenN>& key,
-                 const boost::string_view& msg) {
+                 const std::string_view& msg) {
   sha256_digest_t dest;
   calc_hmac_sha256(reinterpret_cast<const char*>(key.data()), key.size(),
                    msg.data(), msg.size(),
@@ -2351,7 +2229,7 @@ calc_hmac_sha256(const std::array<unsigned char, KeyLenN>& key,
   return dest;
 }
 
-extern sha256_digest_t calc_hash_sha256(const boost::string_view& msg);
+extern sha256_digest_t calc_hash_sha256(const std::string_view& msg);
 
 extern ceph::crypto::SHA256* calc_hash_sha256_open_stream();
 extern void calc_hash_sha256_update_stream(ceph::crypto::SHA256* hash,
@@ -2367,7 +2245,7 @@ static constexpr uint32_t MATCH_POLICY_RESOURCE = 0x02;
 static constexpr uint32_t MATCH_POLICY_ARN = 0x04;
 static constexpr uint32_t MATCH_POLICY_STRING = 0x08;
 
-extern bool match_policy(boost::string_view pattern, boost::string_view input,
+extern bool match_policy(std::string_view pattern, std::string_view input,
                          uint32_t flag);
 
 extern string camelcase_dash_http_attr(const string& orig);

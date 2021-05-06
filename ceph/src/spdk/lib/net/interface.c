@@ -48,7 +48,7 @@ static TAILQ_HEAD(, spdk_interface) g_interface_head;
 
 static pthread_mutex_t interface_lock = PTHREAD_MUTEX_INITIALIZER;
 
-static int spdk_get_ifc_ipv4(void)
+static int get_ifc_ipv4(void)
 {
 	int ret;
 	int rtattrlen;
@@ -156,7 +156,7 @@ exit:
 }
 
 
-static int spdk_process_new_interface_msg(struct nlmsghdr *h)
+static int process_new_interface_msg(struct nlmsghdr *h)
 {
 	int len;
 	struct spdk_interface *ifc;
@@ -167,7 +167,7 @@ static int spdk_process_new_interface_msg(struct nlmsghdr *h)
 
 	ifc = (struct spdk_interface *) malloc(sizeof(*ifc));
 	if (ifc == NULL) {
-		SPDK_ERRLOG("%s: Malloc failed\n", __func__);
+		SPDK_ERRLOG("Malloc failed\n");
 		return 1;
 	}
 
@@ -196,7 +196,7 @@ static int spdk_process_new_interface_msg(struct nlmsghdr *h)
 	return 0;
 }
 
-static int spdk_prepare_ifc_list(void)
+static int prepare_ifc_list(void)
 {
 	int ret = 0;
 	struct nl_req_s {
@@ -288,7 +288,7 @@ static int spdk_prepare_ifc_list(void)
 					end++;
 					break;
 				case RTM_NEWLINK:	/* This is a RTM_NEWLINK message, which contains lots of information about a link */
-					ret = spdk_process_new_interface_msg(msg_ptr);
+					ret = process_new_interface_msg(msg_ptr);
 					if (ret != 0) {
 						goto exit;
 					}
@@ -304,20 +304,19 @@ exit:
 	return ret;
 }
 
-static int spdk_interface_available(uint32_t ifc_index)
+static struct spdk_interface *
+interface_find_by_index(uint32_t ifc_index)
 {
 	struct spdk_interface *ifc_entry;
 
-	pthread_mutex_lock(&interface_lock);
+	/* Mutex must has benn held by the caller */
 	TAILQ_FOREACH(ifc_entry, &g_interface_head, tailq) {
 		if (ifc_entry->index == ifc_index) {
-			pthread_mutex_unlock(&interface_lock);
-			return 0;
+			return ifc_entry;
 		}
 	}
-	pthread_mutex_unlock(&interface_lock);
 
-	return -1;
+	return NULL;
 }
 
 static int netlink_addr_msg(uint32_t ifc_idx, uint32_t ip_address, uint32_t create)
@@ -335,14 +334,10 @@ static int netlink_addr_msg(uint32_t ifc_idx, uint32_t ip_address, uint32_t crea
 	} req;
 	struct rtattr *rta;
 
-	if (spdk_interface_available(ifc_idx)) {
-		return -1;
-	}
-
 	fd = socket(AF_NETLINK, SOCK_RAW, NETLINK_ROUTE);
 	if (fd < 0) {
 		SPDK_ERRLOG("socket failed!\n");
-		return -1;
+		return errno;
 	}
 
 	/* setup local address & bind using this address. */
@@ -408,7 +403,7 @@ static int netlink_addr_msg(uint32_t ifc_idx, uint32_t ip_address, uint32_t crea
 	return 0;
 }
 
-static void spdk_interface_ip_update(void)
+static void interface_ip_update(void)
 {
 	struct spdk_interface *ifc_entry;
 
@@ -417,8 +412,45 @@ static void spdk_interface_ip_update(void)
 		ifc_entry->num_ip_addresses = 0;
 		memset(ifc_entry->ip_address, 0, sizeof(ifc_entry->ip_address));
 	}
-	spdk_get_ifc_ipv4();
+	get_ifc_ipv4();
 	pthread_mutex_unlock(&interface_lock);
+}
+
+static int
+interface_is_ip_address_in_use(int ifc_index, uint32_t addr, bool add)
+{
+	struct spdk_interface *ifc_entry;
+	bool in_use = false;
+	uint32_t idx = 0;
+
+	interface_ip_update();
+
+	pthread_mutex_lock(&interface_lock);
+	ifc_entry = interface_find_by_index(ifc_index);
+	if (ifc_entry == NULL) {
+		pthread_mutex_unlock(&interface_lock);
+		return -ENODEV;
+	}
+
+	for (idx = 0; idx < ifc_entry->num_ip_addresses; idx++) {
+		if (ifc_entry->ip_address[idx] == addr) {
+			in_use = true;
+			break;
+		}
+	}
+	pthread_mutex_unlock(&interface_lock);
+
+	/* The IP address to add is alerady in use */
+	if (add == true && in_use == true) {
+		return -EADDRINUSE;
+	}
+
+	/* The IP address to delete is not in use */
+	if (add == false && in_use == false) {
+		return -ENXIO;
+	}
+
+	return 0;
 }
 
 int
@@ -427,9 +459,9 @@ spdk_interface_init(void)
 	int rc = 0;
 
 	TAILQ_INIT(&g_interface_head);
-	rc = spdk_prepare_ifc_list();
+	rc = prepare_ifc_list();
 	if (!rc) {
-		rc = spdk_get_ifc_ipv4();
+		rc = get_ifc_ipv4();
 	}
 
 	return rc;
@@ -448,26 +480,40 @@ spdk_interface_destroy(void)
 }
 
 int
-spdk_interface_add_ip_address(int ifc_index, char *ip_addr)
+interface_net_interface_add_ip_address(int ifc_index, char *ip_addr)
 {
 	uint32_t addr;
+	int ret;
 
 	addr = inet_addr(ip_addr);
+
+	ret = interface_is_ip_address_in_use(ifc_index, addr, true);
+	if (ret < 0) {
+		return ret;
+	}
+
 	return netlink_addr_msg(ifc_index, addr, 1);
 }
 
 int
-spdk_interface_delete_ip_address(int ifc_index, char *ip_addr)
+interface_net_interface_delete_ip_address(int ifc_index, char *ip_addr)
 {
 	uint32_t addr;
+	int ret;
 
 	addr = inet_addr(ip_addr);
+
+	ret = interface_is_ip_address_in_use(ifc_index, addr, false);
+	if (ret < 0) {
+		return ret;
+	}
+
 	return netlink_addr_msg(ifc_index, addr, 0);
 }
 
-void *spdk_interface_get_list(void)
+void *interface_get_list(void)
 {
-	spdk_interface_ip_update();
+	interface_ip_update();
 	return &g_interface_head;
 }
 
@@ -485,19 +531,19 @@ spdk_interface_destroy(void)
 }
 
 int
-spdk_interface_add_ip_address(int ifc_index, char *ip_addr)
+interface_net_interface_add_ip_address(int ifc_index, char *ip_addr)
 {
 	return -1;
 }
 
 int
-spdk_interface_delete_ip_address(int ifc_index, char *ip_addr)
+interface_net_interface_delete_ip_address(int ifc_index, char *ip_addr)
 {
 	return -1;
 }
 
 void *
-spdk_interface_get_list(void)
+interface_get_list(void)
 {
 	return NULL;
 }

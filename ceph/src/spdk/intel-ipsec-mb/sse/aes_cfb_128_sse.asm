@@ -1,5 +1,5 @@
 ;;
-;; Copyright (c) 2017-2018, Intel Corporation
+;; Copyright (c) 2017-2019, Intel Corporation
 ;;
 ;; Redistribution and use in source and binary forms, with or without
 ;; modification, are permitted provided that the following conditions are met:
@@ -25,8 +25,9 @@
 ;; OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ;;
 
-%include "os.asm"
-%include "memcpy.asm"
+%include "include/os.asm"
+%include "include/memcpy.asm"
+%include "include/clear_regs.asm"
 
 ;;; Routine to do 128 bit CFB AES encrypt/decrypt operations on one block only.
 ;;; It processes only one buffer at a time.
@@ -80,19 +81,14 @@
 
 %define TMP0	rax
 %define TMP1	r10
-%define PTR0	rsp + _buffer
 
 %define XDATA	xmm0
+%define XIN	xmm1
 
 section .text
 
-struc STACK
-_buffer:	resq	2
-_rsp_save:	resq	1
-endstruc
-
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; void aes_cfb_128_one(void *out, void *in, void *iv, void *keys)
+;; void aes_cfb_128_one(void *out, void *in, void *iv, void *keys, uint64_t len)
 ;; arg 1: OUT : addr to put clear/cipher text out
 ;; arg 2: IN  : addr to take cipher/clear text from
 ;; arg 3: IV  : initialization vector
@@ -116,19 +112,26 @@ AES_CFB_128_ONE:
 %ifndef LINUX
 	mov		LEN, LEN2
 %endif
-        mov		rax, rsp
-        sub		rsp, STACK_size
-        and		rsp, -16
-	mov		[rsp + _rsp_save], rax
+%ifdef SAFE_PARAM
+        cmp             IV, 0
+        jz              exit_cfb
 
-	test		LEN, 16
-	jz		copy_in_lt16
-	movdqu		XDATA, [IN]
-	movdqa		[PTR0], XDATA
-	jmp		copy_in_end
-copy_in_lt16:
-	memcpy_sse_16	PTR0, IN, LEN, TMP0, TMP1
-copy_in_end:
+        cmp             KEYS, 0
+        jz              exit_cfb
+
+        cmp             LEN, 0
+        jz              skip_in_out_check
+
+        cmp             OUT, 0
+        jz              exit_cfb
+
+        cmp             IN, 0
+        jz              exit_cfb
+
+skip_in_out_check:
+%endif
+
+	simd_load_sse_16 XIN, IN, LEN
 
 	;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
@@ -145,20 +148,18 @@ copy_in_end:
 	aesenc		XDATA, [KEYS + 16*9]	; 9. ENC
 	aesenclast	XDATA, [KEYS + 16*10]	; 10. ENC
 
-	pxor		XDATA, [PTR0] 		; plaintext/ciphertext XOR block cipher encryption
+	pxor		XDATA, XIN 		; plaintext/ciphertext XOR block cipher encryption
 
-	test		LEN, 16
-	jz		copy_out_lt16
-	movdqu		[OUT], XDATA
-	jmp		copy_out_end
-copy_out_lt16:
-	movdqa		[PTR0], XDATA
-	memcpy_sse_16	OUT, PTR0, LEN, TMP0, TMP1
-copy_out_end:
+	simd_store_sse	OUT, XDATA, LEN, TMP0, TMP1
 
 	;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-	mov		rsp, [rsp + _rsp_save]	; original SP
+%ifdef SAFE_DATA
+        ;; XDATA and XIN are the only scratch SIMD registers used
+        clear_xmms_sse  XDATA, XIN
+        clear_scratch_gps_asm
+%endif
+exit_cfb:
 	ret
 
 %ifdef LINUX

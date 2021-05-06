@@ -285,8 +285,7 @@ Protecting snapshots prior to cloning was a pre-requisite in the Nautilus releas
 snapshots were introduced for this purpose. This pre-requisite, and hence the commands to protect/unprotect, is being
 deprecated in mainline CephFS, and may be removed from a future release.
 
-The commands being deprecated are::
-
+The commands being deprecated are:
   $ ceph fs subvolume snapshot protect <vol_name> <subvol_name> <snap_name> [--group_name <subvol_group_name>]
   $ ceph fs subvolume snapshot unprotect <vol_name> <subvol_name> <snap_name> [--group_name <subvol_group_name>]
 

@@ -38,6 +38,10 @@
 	ETH_RSS_NONFRAG_IPV4_UDP | \
 	ETH_RSS_NONFRAG_IPV6_UDP)
 
+#define VMXNET3_MANDATORY_V4_RSS ( \
+	ETH_RSS_NONFRAG_IPV4_TCP | \
+	ETH_RSS_NONFRAG_IPV6_TCP)
+
 /* RSS configuration structure - shared with device through GPA */
 typedef struct VMXNET3_RSSConf {
 	uint16_t   hashType;
@@ -71,7 +75,7 @@ struct vmxnet3_hw {
 	uint16_t subsystem_vendor_id;
 	bool adapter_stopped;
 
-	uint8_t perm_addr[ETHER_ADDR_LEN];
+	uint8_t perm_addr[RTE_ETHER_ADDR_LEN];
 	uint8_t num_tx_queues;
 	uint8_t num_rx_queues;
 	uint8_t bufs_per_pkt;

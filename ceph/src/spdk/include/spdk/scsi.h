@@ -233,10 +233,13 @@ struct spdk_scsi_lun *spdk_scsi_dev_get_lun(struct spdk_scsi_dev *dev, int lun_i
  * Check whether the SCSI device has any pending task.
  *
  * \param dev SCSI device.
+ * \param initiator_port Check tasks only from the initiator if specified, or
+ * all all tasks otherwise.
  *
  * \return true if the SCSI device has any pending task, or false otherwise.
  */
-bool spdk_scsi_dev_has_pending_tasks(const struct spdk_scsi_dev *dev);
+bool spdk_scsi_dev_has_pending_tasks(const struct spdk_scsi_dev *dev,
+				     const struct spdk_scsi_port *initiator_port);
 
 /**
  * Destruct the SCSI decice.
@@ -526,14 +529,13 @@ void spdk_scsi_lun_free_io_channel(struct spdk_scsi_lun_desc *desc);
  * Get DIF context for SCSI LUN and SCSI command.
  *
  * \param lun Logical unit.
- * \param cdb SCSI CDB.
- * \param data_offset Byte offset in the payload.
+ * \param task SCSI task which has the payload.
  * \param dif_ctx Output parameter which will contain initialized DIF context.
  *
  * \return true on success or false otherwise.
  */
-bool spdk_scsi_lun_get_dif_ctx(struct spdk_scsi_lun *lun, uint8_t *cdb,
-			       uint32_t data_offset, struct spdk_dif_ctx *dif_ctx);
+bool spdk_scsi_lun_get_dif_ctx(struct spdk_scsi_lun *lun, struct spdk_scsi_task *task,
+			       struct spdk_dif_ctx *dif_ctx);
 
 /**
  * Set iSCSI Initiator port TransportID

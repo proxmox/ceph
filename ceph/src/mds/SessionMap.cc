@@ -78,9 +78,8 @@ void SessionMap::dump()
     dout(10) << p->first << " " << p->second
 	     << " state " << p->second->get_state_name()
 	     << " completed " << p->second->info.completed_requests
-	     << " prealloc_inos " << p->second->info.prealloc_inos
+	     << " free_prealloc_inos " << p->second->free_prealloc_inos
 	     << " delegated_inos " << p->second->delegated_inos
-	     << " used_inos " << p->second->info.used_inos
 	     << dendl;
 }
 
@@ -420,15 +419,15 @@ void SessionMap::save(MDSContext *onsave, version_t needv)
 	session->is_killing()) {
       dout(20) << "  " << name << dendl;
       // Serialize K
-      std::ostringstream k;
-      k << name;
+      CachedStackStringStream css;
+      *css << name;
 
       // Serialize V
       bufferlist bl;
       session->info.encode(bl, mds->mdsmap->get_up_features());
 
       // Add to RADOS op
-      to_set[k.str()] = bl;
+      to_set[std::string(css->strv())] = bl;
 
       session->clear_dirty_completed_requests();
     } else {
@@ -444,9 +443,9 @@ void SessionMap::save(MDSContext *onsave, version_t needv)
   for(std::set<entity_name_t>::const_iterator i = null_sessions.begin();
       i != null_sessions.end(); ++i) {
     dout(20) << "  " << *i << dendl;
-    std::ostringstream k;
-    k << *i;
-    to_remove.insert(k.str());
+    CachedStackStringStream css;
+    *css << *i;
+    to_remove.insert(css->str());
   }
   if (!to_remove.empty()) {
     op.omap_rm_keys(to_remove);
@@ -598,6 +597,16 @@ void Session::dump(Formatter *f, bool cap_dump) const
   f->dump_object("recall_caps_throttle2o", recall_caps_throttle2o);
   f->dump_object("session_cache_liveness", session_cache_liveness);
   f->dump_object("cap_acquisition", cap_acquisition);
+
+  f->open_array_section("delegated_inos");
+  for (const auto& [start, len] : delegated_inos) {
+    f->open_object_section("ino_range");
+    f->dump_stream("start") << start;
+    f->dump_unsigned("length", len);
+    f->close_section();
+  }
+  f->close_section();
+
   info.dump(f);
 }
 
@@ -636,9 +645,9 @@ void SessionMap::wipe_ino_prealloc()
        p != session_map.end(); 
        ++p) {
     p->second->pending_prealloc_inos.clear();
+    p->second->free_prealloc_inos.clear();
     p->second->delegated_inos.clear();
     p->second->info.prealloc_inos.clear();
-    p->second->info.used_inos.clear();
   }
   projected = ++version;
 }
@@ -856,15 +865,15 @@ void SessionMap::save_if_dirty(const std::set<entity_name_t> &tgt_sessions,
     session->clear_dirty_completed_requests();
 
     // Serialize K
-    std::ostringstream k;
-    k << session_id;
+    CachedStackStringStream css;
+    *css << session_id;
 
     // Serialize V
     bufferlist bl;
     session->info.encode(bl, mds->mdsmap->get_up_features());
 
     // Add to RADOS op
-    to_set[k.str()] = bl;
+    to_set[css->str()] = bl;
 
     // Complete this write transaction?
     if (i == write_sessions.size() - 1
@@ -983,6 +992,8 @@ void Session::decode(bufferlist::const_iterator &p)
 {
   info.decode(p);
 
+  free_prealloc_inos = info.prealloc_inos;
+
   _update_human_name();
 }
 
@@ -1005,19 +1016,20 @@ int Session::check_access(CInode *in, unsigned mask,
   if (path.length())
     path = path.substr(1);    // drop leading /
 
-  if (in->inode.is_dir() &&
-      in->inode.has_layout() &&
-      in->inode.layout.pool_ns.length() &&
+  const auto& inode = in->get_inode();
+  if (in->is_dir() &&
+      inode->has_layout() &&
+      inode->layout.pool_ns.length() &&
       !connection->has_feature(CEPH_FEATURE_FS_FILE_LAYOUT_V2)) {
     dout(10) << __func__ << " client doesn't support FS_FILE_LAYOUT_V2" << dendl;
-    return -EIO;
+    return -CEPHFS_EIO;
   }
 
-  if (!auth_caps.is_capable(path, in->inode.uid, in->inode.gid, in->inode.mode,
+  if (!auth_caps.is_capable(path, inode->uid, inode->gid, inode->mode,
 			    caller_uid, caller_gid, caller_gid_list, mask,
 			    new_uid, new_gid,
 			    info.inst.addr)) {
-    return -EACCES;
+    return -CEPHFS_EACCES;
   }
   return 0;
 }
@@ -1107,7 +1119,7 @@ void SessionMap::update_average_session_age() {
 
 int SessionFilter::parse(
     const std::vector<std::string> &args,
-    std::stringstream *ss)
+    std::ostream *ss)
 {
   ceph_assert(ss != NULL);
 
@@ -1122,7 +1134,7 @@ int SessionFilter::parse(
       id = strict_strtoll(s.c_str(), 10, &err);
       if (!err.empty()) {
 	*ss << "Invalid filter '" << s << "'";
-	return -EINVAL;
+	return -CEPHFS_EINVAL;
       }
       return 0;
     }
@@ -1152,13 +1164,13 @@ int SessionFilter::parse(
       id = strict_strtoll(v.c_str(), 10, &err);
       if (!err.empty()) {
         *ss << err;
-        return -EINVAL;
+        return -CEPHFS_EINVAL;
       }
     } else if (k == "reconnecting") {
 
       /**
        * Strict boolean parser.  Allow true/false/0/1.
-       * Anything else is -EINVAL.
+       * Anything else is -CEPHFS_EINVAL.
        */
       auto is_true = [](std::string_view bstr, bool *out) -> bool
       {
@@ -1171,7 +1183,7 @@ int SessionFilter::parse(
           *out = false;
           return 0;
         } else {
-          return -EINVAL;
+          return -CEPHFS_EINVAL;
         }
       };
 
@@ -1181,11 +1193,11 @@ int SessionFilter::parse(
         set_reconnecting(bval);
       } else {
         *ss << "Invalid boolean value '" << v << "'";
-        return -EINVAL;
+        return -CEPHFS_EINVAL;
       }
     } else {
       *ss << "Invalid filter key '" << k << "'";
-      return -EINVAL;
+      return -CEPHFS_EINVAL;
     }
   }
 

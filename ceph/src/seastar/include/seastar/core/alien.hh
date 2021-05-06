@@ -29,14 +29,16 @@
 
 #include <boost/lockfree/queue.hpp>
 
+#include <seastar/core/future.hh>
 #include <seastar/core/cacheline.hh>
 #include <seastar/core/sstring.hh>
 #include <seastar/core/metrics_registration.hh>
-#include <seastar/core/reactor.hh>
 
 /// \file
 
 namespace seastar {
+
+class reactor;
 
 /// \brief Integration with non-seastar applications.
 namespace alien {
@@ -114,7 +116,7 @@ public:
 ///
 /// \param shard designates the shard to run the function on
 /// \param func a callable to run on shard \c t.  If \c func is a temporary object,
-///          its lifetime will be extended by moving it.  If @func is a reference,
+///          its lifetime will be extended by moving it.  If \c func is a reference,
 ///          the caller must guarantee that it will survive the call.
 /// \note the func must not throw and should return \c void. as we cannot identify the
 ///          alien thread, hence we are not able to post the fulfilled promise to the
@@ -128,21 +130,26 @@ void run_on(unsigned shard, Func func) {
 
 namespace internal {
 template<typename Func>
-using return_tuple_t = typename futurize_t<std::result_of_t<Func()>>::value_type;
+using return_value_t = typename futurize<std::invoke_result_t<Func>>::value_type;
 
 template<typename Func,
-         bool = std::is_empty<return_tuple_t<Func>>::value>
+         bool = std::is_empty_v<return_value_t<Func>>>
 struct return_type_of {
     using type = void;
-    static void set(std::promise<void>& p, std::tuple<>&&) {
+    static void set(std::promise<void>& p, return_value_t<Func>&&) {
         p.set_value();
     }
 };
 template<typename Func>
 struct return_type_of<Func, false> {
-    using type = std::tuple_element_t<0, return_tuple_t<Func>>;
-    static void set(std::promise<type>& p, std::tuple<type>&& t) {
+    using return_tuple_t = typename futurize<std::invoke_result_t<Func>>::tuple_type;
+    using type = std::tuple_element_t<0, return_tuple_t>;
+    static void set(std::promise<type>& p, return_value_t<Func>&& t) {
+#if SEASTAR_API_LEVEL < 5
         p.set_value(std::get<0>(std::move(t)));
+#else
+        p.set_value(std::move(t));
+#endif
     }
 };
 template <typename Func> using return_type_t = typename return_type_of<Func>::type;

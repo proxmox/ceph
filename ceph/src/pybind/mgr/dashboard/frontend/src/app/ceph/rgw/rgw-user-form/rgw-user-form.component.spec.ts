@@ -4,16 +4,16 @@ import { FormControl, ReactiveFormsModule } from '@angular/forms';
 import { Router } from '@angular/router';
 import { RouterTestingModule } from '@angular/router/testing';
 
-import { BsModalService } from 'ngx-bootstrap/modal';
-import { TooltipModule } from 'ngx-bootstrap/tooltip';
+import { NgbTooltipModule } from '@ng-bootstrap/ng-bootstrap';
+import { NgxPipeFunctionModule } from 'ngx-pipe-function';
 import { ToastrModule } from 'ngx-toastr';
 import { of as observableOf, throwError } from 'rxjs';
 
-import { configureTestBed, FormHelper, i18nProviders } from '../../../../testing/unit-test-helper';
-import { RgwUserService } from '../../../shared/api/rgw-user.service';
-import { NotificationType } from '../../../shared/enum/notification-type.enum';
-import { NotificationService } from '../../../shared/services/notification.service';
-import { SharedModule } from '../../../shared/shared.module';
+import { RgwUserService } from '~/app/shared/api/rgw-user.service';
+import { NotificationType } from '~/app/shared/enum/notification-type.enum';
+import { NotificationService } from '~/app/shared/services/notification.service';
+import { SharedModule } from '~/app/shared/shared.module';
+import { configureTestBed, FormHelper } from '~/testing/unit-test-helper';
 import { RgwUserCapabilities } from '../models/rgw-user-capabilities';
 import { RgwUserCapability } from '../models/rgw-user-capability';
 import { RgwUserS3Key } from '../models/rgw-user-s3-key';
@@ -33,16 +33,16 @@ describe('RgwUserFormComponent', () => {
       RouterTestingModule,
       SharedModule,
       ToastrModule.forRoot(),
-      TooltipModule.forRoot()
-    ],
-    providers: [BsModalService, i18nProviders]
+      NgbTooltipModule,
+      NgxPipeFunctionModule
+    ]
   });
 
   beforeEach(() => {
     fixture = TestBed.createComponent(RgwUserFormComponent);
     component = fixture.componentInstance;
     fixture.detectChanges();
-    rgwUserService = TestBed.get(RgwUserService);
+    rgwUserService = TestBed.inject(RgwUserService);
     formHelper = new FormHelper(component.userForm);
   });
 
@@ -156,21 +156,21 @@ describe('RgwUserFormComponent', () => {
 
   describe('username validation', () => {
     it('should validate that username is required', () => {
-      formHelper.expectErrorChange('uid', '', 'required', true);
+      formHelper.expectErrorChange('user_id', '', 'required', true);
     });
 
     it('should validate that username is valid', fakeAsync(() => {
       spyOn(rgwUserService, 'get').and.returnValue(throwError('foo'));
-      formHelper.setValue('uid', 'ab', true);
+      formHelper.setValue('user_id', 'ab', true);
       tick(500);
-      formHelper.expectValid('uid');
+      formHelper.expectValid('user_id');
     }));
 
     it('should validate that username is invalid', fakeAsync(() => {
       spyOn(rgwUserService, 'get').and.returnValue(observableOf({}));
-      formHelper.setValue('uid', 'abc', true);
+      formHelper.setValue('user_id', 'abc', true);
       tick(500);
-      formHelper.expectError('uid', 'notUnique');
+      formHelper.expectError('user_id', 'notUnique');
     }));
   });
 
@@ -269,8 +269,8 @@ describe('RgwUserFormComponent', () => {
     let notificationService: NotificationService;
 
     beforeEach(() => {
-      spyOn(TestBed.get(Router), 'navigate').and.stub();
-      notificationService = TestBed.get(NotificationService);
+      spyOn(TestBed.inject(Router), 'navigate').and.stub();
+      notificationService = TestBed.inject(NotificationService);
       spyOn(notificationService, 'show');
     });
 
@@ -294,7 +294,7 @@ describe('RgwUserFormComponent', () => {
       component.onSubmit();
       expect(notificationService.show).toHaveBeenCalledWith(
         NotificationType.success,
-        'Created Object Gateway user ""'
+        `Created Object Gateway user 'null'`
       );
     });
 
@@ -305,7 +305,7 @@ describe('RgwUserFormComponent', () => {
       component.onSubmit();
       expect(notificationService.show).toHaveBeenCalledWith(
         NotificationType.success,
-        'Updated Object Gateway user ""'
+        `Updated Object Gateway user 'null'`
       );
     });
   });
@@ -322,7 +322,7 @@ describe('RgwUserFormComponent', () => {
 
       fixture.detectChanges();
 
-      expect(component.hasAllCapabilities()).toBeTruthy();
+      expect(component.hasAllCapabilities(component.capabilities)).toBeTruthy();
       const capabilityButton = fixture.debugElement.nativeElement.querySelector('.tc_addCapButton');
       expect(capabilityButton.disabled).toBeTruthy();
     });

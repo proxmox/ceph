@@ -110,18 +110,12 @@ echo Other tests using $in_file
 test_start "igzip_file_perf"
 ./igzip_file_perf $in_file
 test_end "igzip_file_perf" $?
-test_start "igzip_stateless_file_perf"
-./igzip_stateless_file_perf $in_file
-test_end "igzip_stateless_file_perf" $?
 test_start "igzip_hist_perf"
 ./igzip_hist_perf $in_file
 test_end "igzip_hist_perf" $?
 test_start "igzip_semi_dyn_file_perf"
 ./igzip_semi_dyn_file_perf $in_file
 test_end "igzip_semi_dyn_file_perf" $?
-test_start "igzip_inflate_perf"
-./igzip_inflate_perf $in_file
-test_end "igzip_inflate_perf" $?
 test_start "igzip_fuzz_inflate"
 ./igzip_fuzz_inflate $in_file
 test_end "igzip_fuzz_inflate" $?
@@ -187,7 +181,7 @@ $MAKE -f Makefile.unx arch=noarch clean
 msg+=$'Noarch build: Pass\n'
 
 # Try mingw build
-if command -V x86_64-w64-mingw32-gcc >/dev/null 2>&1; then
+if [ $(uname -m) == "x86_64" ] && [ command -V x86_64-w64-mingw32-gcc >/dev/null 2>&1 ]; then
     test_start "mingw_build"
     time $MAKE -f Makefile.unx -j $cpus arch=mingw
     test_end "mingw_build" $?

@@ -8,6 +8,7 @@
 #include "common/dout.h"
 #include "common/errno.h"
 #include "cls/rbd/cls_rbd_client.h"
+#include "librbd/AsioEngine.h"
 #include "librbd/ImageCtx.h"
 #include "librbd/ImageState.h"
 #include "librbd/Journal.h"
@@ -35,7 +36,6 @@
 #include "json_spirit/json_spirit.h"
 
 #include <algorithm>
-#include <bitset>
 
 #define dout_subsys ceph_subsys_rbd
 #undef dout_prefix
@@ -357,6 +357,7 @@ struct C_ImageGetGlobalStatus : public C_ImageGetInfo {
 template <typename I>
 struct C_ImageSnapshotCreate : public Context {
   I *ictx;
+  uint64_t snap_create_flags;
   uint64_t *snap_id;
   Context *on_finish;
 
@@ -364,8 +365,10 @@ struct C_ImageSnapshotCreate : public Context {
   mirror::PromotionState promotion_state;
   std::string primary_mirror_uuid;
 
-  C_ImageSnapshotCreate(I *ictx, uint64_t *snap_id, Context *on_finish)
-    : ictx(ictx), snap_id(snap_id), on_finish(on_finish) {
+  C_ImageSnapshotCreate(I *ictx, uint64_t snap_create_flags, uint64_t *snap_id,
+                        Context *on_finish)
+    : ictx(ictx), snap_create_flags(snap_create_flags), snap_id(snap_id),
+      on_finish(on_finish) {
   }
 
   void finish(int r) override {
@@ -382,7 +385,8 @@ struct C_ImageSnapshotCreate : public Context {
     }
 
     auto req = mirror::snapshot::CreatePrimaryRequest<I>::create(
-      ictx, mirror_image.global_image_id, CEPH_NOSNAP, 0U, snap_id, on_finish);
+      ictx, mirror_image.global_image_id, CEPH_NOSNAP, snap_create_flags, 0U,
+      snap_id, on_finish);
     req->send();
   }
 };
@@ -847,7 +851,7 @@ int Mirror<I>::image_get_info(I *ictx, mirror_image_info_t *mirror_image_info) {
 
 template <typename I>
 void Mirror<I>::image_get_info(librados::IoCtx& io_ctx,
-                               ContextWQ *op_work_queue,
+                               asio::ContextWQ *op_work_queue,
                                const std::string &image_id,
                                mirror_image_info_t *mirror_image_info,
                                Context *on_finish) {
@@ -865,7 +869,7 @@ void Mirror<I>::image_get_info(librados::IoCtx& io_ctx,
 
 template <typename I>
 int Mirror<I>::image_get_info(librados::IoCtx& io_ctx,
-                              ContextWQ *op_work_queue,
+                              asio::ContextWQ *op_work_queue,
                               const std::string &image_id,
                               mirror_image_info_t *mirror_image_info) {
   C_SaferCond ctx;
@@ -1870,6 +1874,7 @@ int Mirror<I>::image_global_status_list(
         static_cast<mirror_image_state_t>(info.state),
         false}; // XXX: To set "primary" right would require an additional call.
 
+    bool found_local_site_status = false;
     auto s_it = statuses_.find(image_id);
     if (s_it != statuses_.end()) {
       auto& status = s_it->second;
@@ -1877,6 +1882,11 @@ int Mirror<I>::image_global_status_list(
       global_status.site_statuses.reserve(
         status.mirror_image_site_statuses.size());
       for (auto& site_status : status.mirror_image_site_statuses) {
+        if (site_status.mirror_uuid ==
+              cls::rbd::MirrorImageSiteStatus::LOCAL_MIRROR_UUID) {
+          found_local_site_status = true;
+        }
+
         global_status.site_statuses.push_back(mirror_image_site_status_t{
           site_status.mirror_uuid,
           static_cast<mirror_image_status_state_t>(site_status.state),
@@ -1884,8 +1894,9 @@ int Mirror<I>::image_global_status_list(
             STATUS_NOT_FOUND : site_status.description,
           site_status.last_update.sec(), site_status.up});
       }
-    } else {
-      // older OSD that only returns local status
+    }
+
+    if (!found_local_site_status) {
       global_status.site_statuses.push_back(mirror_image_site_status_t{
         cls::rbd::MirrorImageSiteStatus::LOCAL_MIRROR_UUID,
         MIRROR_IMAGE_STATUS_STATE_UNKNOWN, STATUS_NOT_FOUND, 0, false});
@@ -1907,7 +1918,7 @@ int Mirror<I>::image_status_summary(librados::IoCtx& io_ctx,
     return r;
   }
 
-  std::map<cls::rbd::MirrorImageStatusState, int> states_;
+  std::map<cls::rbd::MirrorImageStatusState, int32_t> states_;
   r = cls_client::mirror_image_status_get_summary(&io_ctx, mirror_peers,
                                                   &states_);
   if (r < 0 && r != -ENOENT) {
@@ -1974,9 +1985,7 @@ int Mirror<I>::image_info_list(
       break;
     }
 
-    ThreadPool *thread_pool;
-    ContextWQ *op_work_queue;
-    ImageCtx::get_thread_pool_instance(cct, &thread_pool, &op_work_queue);
+    AsioEngine asio_engine(io_ctx);
 
     for (auto &it : images) {
       auto &image_id = it.first;
@@ -1991,9 +2000,14 @@ int Mirror<I>::image_info_list(
       // need to call get_info for every image to retrieve promotion state
 
       mirror_image_info_t info;
-      r = image_get_info(io_ctx, op_work_queue, image_id, &info);
-      if (r >= 0) {
-        (*entries)[image_id] = std::make_pair(mode, info);
+      r = image_get_info(io_ctx, asio_engine.get_work_queue(), image_id, &info);
+      if (r < 0) {
+        continue;
+      }
+
+      (*entries)[image_id] = std::make_pair(mode, info);
+      if (entries->size() == max) {
+        break;
       }
     }
 
@@ -2018,22 +2032,24 @@ void Mirror<I>::image_snapshot_create(I *ictx, uint32_t flags,
   CephContext *cct = ictx->cct;
   ldout(cct, 20) << "ictx=" << ictx << dendl;
 
-  if (flags != 0U) {
-    lderr(cct) << "invalid snap create flags: " << std::bitset<32>(flags)
-               << dendl;
-    on_finish->complete(-EINVAL);
+  uint64_t snap_create_flags = 0;
+  int r = util::snap_create_flags_api_to_internal(cct, flags,
+                                                  &snap_create_flags);
+  if (r < 0) {
+    on_finish->complete(r);
     return;
   }
 
   auto on_refresh = new LambdaContext(
-    [ictx, snap_id, on_finish](int r) {
+    [ictx, snap_create_flags, snap_id, on_finish](int r) {
       if (r < 0) {
         lderr(ictx->cct) << "refresh failed: " << cpp_strerror(r) << dendl;
         on_finish->complete(r);
         return;
       }
 
-      auto ctx = new C_ImageSnapshotCreate<I>(ictx, snap_id, on_finish);
+      auto ctx = new C_ImageSnapshotCreate<I>(ictx, snap_create_flags, snap_id,
+                                              on_finish);
       auto req = mirror::GetInfoRequest<I>::create(*ictx, &ctx->mirror_image,
                                                    &ctx->promotion_state,
                                                    &ctx->primary_mirror_uuid,

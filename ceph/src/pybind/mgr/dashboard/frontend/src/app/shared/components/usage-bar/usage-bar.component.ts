@@ -18,8 +18,6 @@ export class UsageBarComponent implements OnChanges {
   usedPercentage: number;
   freePercentage: number;
 
-  constructor() {}
-
   ngOnChanges() {
     this.usedPercentage = this.total > 0 ? (this.used / this.total) * 100 : 0;
     this.freePercentage = 100 - this.usedPercentage;

@@ -41,8 +41,9 @@
 
 #include "spdk/stdinc.h"
 
-#include "spdk/event.h"
+#include "spdk/cpuset.h"
 #include "spdk/json.h"
+#include "spdk/thread.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -313,11 +314,12 @@ int spdk_vhost_scsi_dev_remove_tgt(struct spdk_vhost_dev *vdev, unsigned scsi_tg
  * \param dev_name bdev name to associate with this vhost device
  * \param readonly if set, all writes to the device will fail with
  * \c VIRTIO_BLK_S_IOERR error code.
+ * \param packed_ring this controller supports packed ring if set.
  *
  * \return 0 on success, negative errno on error.
  */
 int spdk_vhost_blk_construct(const char *name, const char *cpumask, const char *dev_name,
-			     bool readonly);
+			     bool readonly, bool packed_ring);
 
 /**
  * Remove a vhost device. The device must not have any open connections on it's socket.
@@ -327,16 +329,6 @@ int spdk_vhost_blk_construct(const char *name, const char *cpumask, const char *
  * \return 0 on success, negative errno on error.
  */
 int spdk_vhost_dev_remove(struct spdk_vhost_dev *vdev);
-
-/**
- * Get underlying SPDK bdev from vhost blk device. The bdev might be NULL, as it
- * could have been hotremoved.
- *
- * \param ctrlr vhost blk device.
- *
- * \return SPDK bdev associated with given vdev.
- */
-struct spdk_bdev *spdk_vhost_blk_get_dev(struct spdk_vhost_dev *ctrlr);
 
 #ifdef __cplusplus
 }

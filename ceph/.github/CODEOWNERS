@@ -7,6 +7,7 @@
 /doc/mgr/dashboard.rst                          @ceph/dashboard
 
 # Dashboard API team
+/src/pybind/mgr/dashboard/openapi.yaml                 @ceph/api
 /src/pybind/mgr/dashboard/controllers                  @ceph/api
 /src/pybind/mgr/dashboard/frontend/src/app/shared/api  @ceph/api
 /src/pybind/mgr/dashboard/run-backend-api-tests.sh     @ceph/api
@@ -36,3 +37,15 @@
 #ceph-volume
 /src/ceph-volume                                @ceph/ceph-volume
 /doc/ceph-volume                                @ceph/ceph-volume
+
+# crimson
+/src/crimson                                    @ceph/crimson
+/src/test/crimson                               @ceph/crimson
+
+# doc-writers
+AUTHORS                                         @ceph/doc-writers
+CodingStyle                                     @ceph/doc-writers
+COPYING*                                        @ceph/doc-writers
+/doc/                                           @ceph/doc-writers
+README*                                         @ceph/doc-writers
+*.rst                                           @ceph/doc-writers

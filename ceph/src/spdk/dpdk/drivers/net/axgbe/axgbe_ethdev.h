@@ -15,8 +15,9 @@
 
 #define AXGBE_TX_MAX_BUF_SIZE		(0x3fff & ~(64 - 1))
 #define AXGBE_RX_MAX_BUF_SIZE		(0x3fff & ~(64 - 1))
-#define AXGBE_RX_MIN_BUF_SIZE		(ETHER_MAX_LEN + VLAN_HLEN)
-#define AXGBE_MAX_MAC_ADDRS		1
+#define AXGBE_RX_MIN_BUF_SIZE		(RTE_ETHER_MAX_LEN + VLAN_HLEN)
+#define AXGBE_MAX_MAC_ADDRS		32
+#define AXGBE_MAX_HASH_MAC_ADDRS	256
 
 #define AXGBE_RX_BUF_ALIGN		64
 
@@ -83,7 +84,7 @@
 	(((_x) < 1024) ? 0 : ((_x) / AXGMAC_FLOW_CONTROL_UNIT) - 2)
 #define AXGMAC_FLOW_CONTROL_MAX		33280
 
-/* Maximum MAC address hash table size (256 bits = 8 bytes) */
+/* Maximum MAC address hash table size (256 bits = 8 dword) */
 #define AXGBE_MAC_HASH_TABLE_SIZE	8
 
 /* Receive Side Scaling */
@@ -438,6 +439,63 @@ struct axgbe_version_data {
 	unsigned int an_cdr_workaround;
 };
 
+struct axgbe_mmc_stats {
+	/* Tx Stats */
+	uint64_t txoctetcount_gb;
+	uint64_t txframecount_gb;
+	uint64_t txbroadcastframes_g;
+	uint64_t txmulticastframes_g;
+	uint64_t tx64octets_gb;
+	uint64_t tx65to127octets_gb;
+	uint64_t tx128to255octets_gb;
+	uint64_t tx256to511octets_gb;
+	uint64_t tx512to1023octets_gb;
+	uint64_t tx1024tomaxoctets_gb;
+	uint64_t txunicastframes_gb;
+	uint64_t txmulticastframes_gb;
+	uint64_t txbroadcastframes_gb;
+	uint64_t txunderflowerror;
+	uint64_t txoctetcount_g;
+	uint64_t txframecount_g;
+	uint64_t txpauseframes;
+	uint64_t txvlanframes_g;
+
+	/* Rx Stats */
+	uint64_t rxframecount_gb;
+	uint64_t rxoctetcount_gb;
+	uint64_t rxoctetcount_g;
+	uint64_t rxbroadcastframes_g;
+	uint64_t rxmulticastframes_g;
+	uint64_t rxcrcerror;
+	uint64_t rxrunterror;
+	uint64_t rxjabbererror;
+	uint64_t rxundersize_g;
+	uint64_t rxoversize_g;
+	uint64_t rx64octets_gb;
+	uint64_t rx65to127octets_gb;
+	uint64_t rx128to255octets_gb;
+	uint64_t rx256to511octets_gb;
+	uint64_t rx512to1023octets_gb;
+	uint64_t rx1024tomaxoctets_gb;
+	uint64_t rxunicastframes_g;
+	uint64_t rxlengtherror;
+	uint64_t rxoutofrangetype;
+	uint64_t rxpauseframes;
+	uint64_t rxfifooverflow;
+	uint64_t rxvlanframes_gb;
+	uint64_t rxwatchdogerror;
+};
+
+/* Flow control parameters */
+struct xgbe_fc_info {
+	uint32_t high_water[AXGBE_PRIORITY_QUEUES];
+	uint32_t low_water[AXGBE_PRIORITY_QUEUES];
+	uint16_t pause_time[AXGBE_PRIORITY_QUEUES];
+	uint16_t send_xon;
+	enum rte_eth_fc_mode mode;
+	uint8_t autoneg;
+};
+
 /*
  * Structure to store private data for each port.
  */
@@ -529,6 +587,7 @@ struct axgbe_port {
 	unsigned int rx_rfa[AXGBE_MAX_QUEUES];
 	unsigned int rx_rfd[AXGBE_MAX_QUEUES];
 	unsigned int fifo;
+	unsigned int pfc_map[AXGBE_MAX_QUEUES];
 
 	/* Receive Side Scaling settings */
 	u8 rss_key[AXGBE_RSS_HASH_KEY_SIZE];
@@ -539,7 +598,7 @@ struct axgbe_port {
 	/* Hardware features of the device */
 	struct axgbe_hw_features hw_feat;
 
-	struct ether_addr mac_addr;
+	struct rte_ether_addr mac_addr;
 
 	/* Software Tx/Rx structure pointers*/
 	void **rx_queues;
@@ -576,11 +635,23 @@ struct axgbe_port {
 	int crc_strip_enable;
 	/* csum enable to hardware */
 	uint32_t rx_csum_enable;
+
+	struct axgbe_mmc_stats mmc_stats;
+	struct xgbe_fc_info fc;
+
+	/* Hash filtering */
+	unsigned int hash_table_shift;
+	unsigned int hash_table_count;
+	unsigned int uc_hash_mac_addr;
+	unsigned int uc_hash_table[AXGBE_MAC_HASH_TABLE_SIZE];
 };
 
 void axgbe_init_function_ptrs_dev(struct axgbe_hw_if *hw_if);
 void axgbe_init_function_ptrs_phy(struct axgbe_phy_if *phy_if);
 void axgbe_init_function_ptrs_phy_v2(struct axgbe_phy_if *phy_if);
 void axgbe_init_function_ptrs_i2c(struct axgbe_i2c_if *i2c_if);
+void axgbe_set_mac_addn_addr(struct axgbe_port *pdata, u8 *addr,
+			     uint32_t index);
+void axgbe_set_mac_hash_table(struct axgbe_port *pdata, u8 *addr, bool add);
 
 #endif /* RTE_ETH_AXGBE_H_ */

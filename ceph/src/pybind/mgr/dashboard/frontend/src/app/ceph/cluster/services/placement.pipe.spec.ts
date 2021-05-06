@@ -1,21 +1,7 @@
-import { TestBed } from '@angular/core/testing';
-import { configureTestBed, i18nProviders } from '../../../../testing/unit-test-helper';
-
-import { I18n } from '@ngx-translate/i18n-polyfill';
-
 import { PlacementPipe } from './placement.pipe';
 
 describe('PlacementPipe', () => {
-  let pipe: PlacementPipe;
-
-  configureTestBed({
-    providers: [i18nProviders]
-  });
-
-  beforeEach(() => {
-    const i18n = TestBed.get(I18n);
-    pipe = new PlacementPipe(i18n);
-  });
+  const pipe = new PlacementPipe();
 
   it('create an instance', () => {
     expect(pipe).toBeTruthy();

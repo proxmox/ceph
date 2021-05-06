@@ -2,10 +2,7 @@
 # pylint: disable=unused-argument
 from __future__ import absolute_import
 
-import six
-
 import cherrypy
-
 import rbd
 
 from .. import mgr
@@ -57,7 +54,7 @@ def format_features(features):
     @DISABLEDOCTEST: >>> format_features('deep-flatten, exclusive-lock')
     32
     """
-    if isinstance(features, six.string_types):
+    if isinstance(features, str):
         features = features.split(',')
 
     if not isinstance(features, list):

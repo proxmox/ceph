@@ -55,11 +55,11 @@ ftl_band_validate_md(struct ftl_band *band)
 {
 	struct spdk_ftl_dev *dev = band->dev;
 	struct ftl_lba_map *lba_map = &band->lba_map;
-	struct ftl_ppa ppa_md, ppa_l2p;
+	struct ftl_addr addr_md, addr_l2p;
 	size_t i, size, seg_off;
 	bool valid = true;
 
-	size = ftl_num_band_lbks(dev);
+	size = ftl_get_num_blocks_in_band(dev);
 
 	pthread_spin_lock(&lba_map->lock);
 	for (i = 0; i < size; ++i) {
@@ -72,14 +72,14 @@ ftl_band_validate_md(struct ftl_band *band)
 			continue;
 		}
 
-		ppa_md = ftl_band_ppa_from_lbkoff(band, i);
-		ppa_l2p = ftl_l2p_get(dev, lba_map->map[i]);
+		addr_md = ftl_band_addr_from_block_offset(band, i);
+		addr_l2p = ftl_l2p_get(dev, lba_map->map[i]);
 
-		if (ppa_l2p.cached) {
+		if (addr_l2p.cached) {
 			continue;
 		}
 
-		if (ppa_l2p.ppa != ppa_md.ppa) {
+		if (addr_l2p.offset != addr_md.offset) {
 			valid = false;
 			break;
 		}
@@ -101,23 +101,23 @@ ftl_dev_dump_bands(struct spdk_ftl_dev *dev)
 	}
 
 	ftl_debug("Bands validity:\n");
-	for (i = 0; i < ftl_dev_num_bands(dev); ++i) {
+	for (i = 0; i < ftl_get_num_bands(dev); ++i) {
 		if (dev->bands[i].state == FTL_BAND_STATE_FREE &&
 		    dev->bands[i].wr_cnt == 0) {
 			continue;
 		}
 
-		if (!dev->bands[i].num_chunks) {
-			ftl_debug(" Band %3zu: all chunks are offline\n", i + 1);
+		if (!dev->bands[i].num_zones) {
+			ftl_debug(" Band %3zu: all zones are offline\n", i + 1);
 			continue;
 		}
 
 		total += dev->bands[i].lba_map.num_vld;
-		ftl_debug(" Band %3zu: %8zu / %zu \tnum_chunks: %zu \twr_cnt: %"PRIu64"\tmerit:"
+		ftl_debug(" Band %3zu: %8zu / %zu \tnum_zones: %zu \twr_cnt: %"PRIu64"\tmerit:"
 			  "%10.3f\tstate: %s\n",
 			  i + 1, dev->bands[i].lba_map.num_vld,
-			  ftl_band_user_lbks(&dev->bands[i]),
-			  dev->bands[i].num_chunks,
+			  ftl_band_user_blocks(&dev->bands[i]),
+			  dev->bands[i].num_zones,
 			  dev->bands[i].wr_cnt,
 			  dev->bands[i].merit,
 			  ftl_band_state_str[dev->bands[i].state]);
@@ -146,7 +146,7 @@ ftl_dev_dump_stats(const struct spdk_ftl_dev *dev)
 	}
 
 	/* Count the number of valid LBAs */
-	for (i = 0; i < ftl_dev_num_bands(dev); ++i) {
+	for (i = 0; i < ftl_get_num_bands(dev); ++i) {
 		total += dev->bands[i].lba_map.num_vld;
 	}
 

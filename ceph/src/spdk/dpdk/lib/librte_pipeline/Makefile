@@ -8,15 +8,12 @@ include $(RTE_SDK)/mk/rte.vars.mk
 #
 LIB = librte_pipeline.a
 
-CFLAGS += -DALLOW_EXPERIMENTAL_API
 CFLAGS += -O3
 CFLAGS += $(WERROR_FLAGS)
 LDLIBS += -lrte_eal -lrte_mempool -lrte_mbuf -lrte_table
 LDLIBS += -lrte_port -lrte_meter -lrte_sched -lrte_cryptodev
 
 EXPORT_MAP := rte_pipeline_version.map
-
-LIBABIVER := 3
 
 #
 # all source are stored in SRCS-y

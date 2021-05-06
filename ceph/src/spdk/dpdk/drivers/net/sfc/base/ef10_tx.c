@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  *
- * Copyright (c) 2012-2018 Solarflare Communications Inc.
- * All rights reserved.
+ * Copyright(c) 2019-2020 Xilinx, Inc.
+ * Copyright(c) 2012-2019 Solarflare Communications Inc.
  */
 
 #include "efx.h"
@@ -82,7 +82,7 @@ efx_mcdi_init_txq(
 	    INIT_TXQ_IN_FLAG_TIMESTAMP, 0);
 
 	MCDI_IN_SET_DWORD(req, INIT_TXQ_IN_OWNER_ID, 0);
-	MCDI_IN_SET_DWORD(req, INIT_TXQ_IN_PORT_ID, EVB_PORT_ID_ASSIGNED);
+	MCDI_IN_SET_DWORD(req, INIT_TXQ_IN_PORT_ID, enp->en_vport_id);
 
 	dma_addr = MCDI_IN2(req, efx_qword_t, INIT_TXQ_IN_DMA_ADDR);
 	addr = EFSYS_MEM_ADDR(esmp);

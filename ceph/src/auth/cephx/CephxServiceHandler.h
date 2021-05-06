@@ -32,23 +32,23 @@ public:
   ~CephxServiceHandler() override {}
   
   int handle_request(
-    bufferlist::const_iterator& indata,
+    ceph::buffer::list::const_iterator& indata,
     size_t connection_secret_required_length,
-    bufferlist *result_bl,
+    ceph::buffer::list *result_bl,
     AuthCapsInfo *caps,
     CryptoKey *session_key,
     std::string *connection_secret) override;
 
 private:
   int do_start_session(bool is_new_global_id,
-		       bufferlist *result_bl,
+		       ceph::buffer::list *result_bl,
 		       AuthCapsInfo *caps) override;
 
   int verify_old_ticket(const CephXAuthenticate& req,
 			CephXServiceTicketInfo& old_ticket_info,
 			bool& should_enc_ticket);
   void build_cephx_response_header(int request_type, int status,
-				   bufferlist& bl);
+				   ceph::buffer::list& bl);
 };
 
 #endif

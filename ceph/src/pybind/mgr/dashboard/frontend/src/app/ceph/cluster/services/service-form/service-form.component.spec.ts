@@ -3,18 +3,14 @@ import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { ReactiveFormsModule } from '@angular/forms';
 import { RouterTestingModule } from '@angular/router/testing';
 
-import * as _ from 'lodash';
-import { TypeaheadModule } from 'ngx-bootstrap/typeahead';
+import { NgbTypeaheadModule } from '@ng-bootstrap/ng-bootstrap';
+import _ from 'lodash';
 import { ToastrModule } from 'ngx-toastr';
 
-import {
-  configureTestBed,
-  FormHelper,
-  i18nProviders
-} from '../../../../../testing/unit-test-helper';
-import { CephServiceService } from '../../../../shared/api/ceph-service.service';
-import { CdFormGroup } from '../../../../shared/forms/cd-form-group';
-import { SharedModule } from '../../../../shared/shared.module';
+import { CephServiceService } from '~/app/shared/api/ceph-service.service';
+import { CdFormGroup } from '~/app/shared/forms/cd-form-group';
+import { SharedModule } from '~/app/shared/shared.module';
+import { configureTestBed, FormHelper } from '~/testing/unit-test-helper';
 import { ServiceFormComponent } from './service-form.component';
 
 describe('ServiceFormComponent', () => {
@@ -28,13 +24,12 @@ describe('ServiceFormComponent', () => {
     declarations: [ServiceFormComponent],
     imports: [
       HttpClientTestingModule,
-      TypeaheadModule,
+      NgbTypeaheadModule,
       ReactiveFormsModule,
       RouterTestingModule,
       SharedModule,
       ToastrModule.forRoot()
-    ],
-    providers: [i18nProviders]
+    ]
   });
 
   beforeEach(() => {
@@ -51,7 +46,7 @@ describe('ServiceFormComponent', () => {
 
   describe('should test form', () => {
     beforeEach(() => {
-      cephServiceService = TestBed.get(CephServiceService);
+      cephServiceService = TestBed.inject(CephServiceService);
       spyOn(cephServiceService, 'create').and.stub();
     });
 
@@ -275,7 +270,7 @@ describe('ServiceFormComponent', () => {
 
       it('should submit iscsi with trusted ips', () => {
         formHelper.setValue('ssl', true);
-        formHelper.setValue('trusted_ip_list', '  172.16.0.5,   192.1.1.10  ');
+        formHelper.setValue('trusted_ip_list', ' 172.16.0.5, 192.1.1.10  ');
         component.onSubmit();
         expect(cephServiceService.create).toHaveBeenCalledWith({
           service_type: 'iscsi',
@@ -287,7 +282,7 @@ describe('ServiceFormComponent', () => {
           api_secure: true,
           ssl_cert: '',
           ssl_key: '',
-          trusted_ip_list: ['172.16.0.5', '192.1.1.10']
+          trusted_ip_list: '172.16.0.5, 192.1.1.10'
         });
       });
 

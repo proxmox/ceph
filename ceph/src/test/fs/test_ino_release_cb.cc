@@ -1,4 +1,5 @@
 #include <string>
+#include <unistd.h>
 #include <include/fs_types.h>
 #include <mds/mdstypes.h>
 #include <include/cephfs/libcephfs.h>
@@ -6,7 +7,7 @@
 #define MAX_CEPH_FILES	1000
 #define DIRNAME		"ino_release_cb"
 
-static volatile bool cb_done = false;
+static std::atomic<bool> cb_done = false;
 
 static void cb(void *hdl, vinodeno_t vino)
 {
@@ -22,7 +23,7 @@ int main(int argc, char *argv[])
 	ceph_conf_read_file(cmount, NULL);
 	ceph_init(cmount);
 
-	int ret = ceph_mount(cmount, NULL);
+	[[maybe_unused]] int ret = ceph_mount(cmount, NULL);
 	assert(ret >= 0);
 	ret = ceph_mkdir(cmount, DIRNAME, 0755);
 	assert(ret >= 0);
@@ -71,7 +72,10 @@ int main(int argc, char *argv[])
 		ret = ceph_ll_lookup_inode(cmount, inos[i], &inodes[i]);
 		assert(ret >= 0);
 	}
+    sleep(45);
 
 	assert(cb_done);
+	ceph_unmount(cmount);
+	ceph_release(cmount);
 	return 0;
 }

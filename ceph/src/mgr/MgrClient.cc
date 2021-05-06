@@ -33,6 +33,9 @@ using std::string;
 using std::vector;
 
 using ceph::bufferlist;
+using ceph::make_message;
+using ceph::ref_cast;
+using ceph::ref_t;
 
 #define dout_subsys ceph_subsys_mgrc
 #undef dout_prefix
@@ -550,7 +553,7 @@ bool MgrClient::handle_command_reply(
 
   auto &op = command_table.get_command(tid);
   if (op.outbl) {
-    op.outbl->claim(data);
+    *op.outbl = std::move(data);
   }
 
   if (op.outs) {

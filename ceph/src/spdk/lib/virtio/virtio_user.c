@@ -35,13 +35,7 @@
 
 #include <sys/eventfd.h>
 
-#include <linux/virtio_scsi.h>
-
-#include <rte_config.h>
-#include <rte_malloc.h>
-#include <rte_alarm.h>
-
-#include "virtio_user/vhost.h"
+#include "vhost_user.h"
 #include "spdk/string.h"
 #include "spdk/config.h"
 
@@ -483,6 +477,8 @@ virtio_user_setup_queue(struct virtio_dev *vdev, struct virtqueue *vq)
 		if (rc < 0) {
 			SPDK_ERRLOG("failed to send VHOST_USER_SET_VRING_ENABLE: %s\n",
 				    spdk_strerror(-rc));
+			close(kickfd);
+			close(callfd);
 			spdk_free(queue_mem);
 			return -rc;
 		}
@@ -493,9 +489,9 @@ virtio_user_setup_queue(struct virtio_dev *vdev, struct virtqueue *vq)
 
 	desc_addr = (uintptr_t)vq->vq_ring_virt_mem;
 	avail_addr = desc_addr + vq->vq_nentries * sizeof(struct vring_desc);
-	used_addr = RTE_ALIGN_CEIL(avail_addr + offsetof(struct vring_avail,
-				   ring[vq->vq_nentries]),
-				   VIRTIO_PCI_VRING_ALIGN);
+	used_addr = SPDK_ALIGN_CEIL(avail_addr + offsetof(struct vring_avail,
+				    ring[vq->vq_nentries]),
+				    VIRTIO_PCI_VRING_ALIGN);
 
 	dev->vrings[queue_idx].num = vq->vq_nentries;
 	dev->vrings[queue_idx].desc = (void *)(uintptr_t)desc_addr;

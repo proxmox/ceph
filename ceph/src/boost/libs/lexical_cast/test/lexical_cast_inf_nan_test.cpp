@@ -2,7 +2,7 @@
 //
 //  See http://www.boost.org for most recent version, including documentation.
 //
-//  Copyright Antony Polukhin, 2011-2019.
+//  Copyright Antony Polukhin, 2011-2020.
 //
 //  Distributed under the Boost
 //  Software License, Version 1.0. (See accompanying file
@@ -23,7 +23,7 @@
 #include <boost/math/special_functions/fpclassify.hpp>
 #include <boost/type_traits/is_same.hpp>
 #include <boost/test/unit_test.hpp>
-#include <boost/test/floating_point_comparison.hpp>
+#include <boost/test/tools/floating_point_comparison.hpp>
 
 #if defined(BOOST_NO_STRINGSTREAM) || defined(BOOST_NO_STD_WSTRING)
 #define BOOST_LCAST_NO_WCHAR_T

@@ -4,11 +4,11 @@
 //  (found in the LICENSE.Apache file in the root directory).
 //
 #include "db/error_handler.h"
-#include "db/db_impl.h"
+#include "db/db_impl/db_impl.h"
 #include "db/event_helpers.h"
-#include "util/sst_file_manager_impl.h"
+#include "file/sst_file_manager_impl.h"
 
-namespace rocksdb {
+namespace ROCKSDB_NAMESPACE {
 
 // Maps to help decide the severity of an error based on the
 // BackgroundErrorReason, Code, SubCode and whether db_options.paranoid_checks
@@ -166,12 +166,6 @@ Status ErrorHandler::SetBGError(const Status& bg_err, BackgroundErrorReason reas
     return Status::OK();
   }
 
-  // Check if recovery is currently in progress. If it is, we will save this
-  // error so we can check it at the end to see if recovery succeeded or not
-  if (recovery_in_prog_ && recovery_error_.ok()) {
-    recovery_error_ = bg_err;
-  }
-
   bool paranoid = db_options_.paranoid_checks;
   Status::Severity sev = Status::Severity::kFatalError;
   Status new_bg_err;
@@ -204,10 +198,15 @@ Status ErrorHandler::SetBGError(const Status& bg_err, BackgroundErrorReason reas
 
   new_bg_err = Status(bg_err, sev);
 
+  // Check if recovery is currently in progress. If it is, we will save this
+  // error so we can check it at the end to see if recovery succeeded or not
+  if (recovery_in_prog_ && recovery_error_.ok()) {
+    recovery_error_ = new_bg_err;
+  }
+
   bool auto_recovery = auto_recovery_;
   if (new_bg_err.severity() >= Status::Severity::kFatalError && auto_recovery) {
     auto_recovery = false;
-    ;
   }
 
   // Allow some error specific overrides
@@ -342,4 +341,4 @@ Status ErrorHandler::RecoverFromBGError(bool is_manual) {
   return bg_error_;
 #endif
 }
-}
+}  // namespace ROCKSDB_NAMESPACE

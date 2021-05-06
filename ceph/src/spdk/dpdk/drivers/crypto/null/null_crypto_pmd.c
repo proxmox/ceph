@@ -10,6 +10,7 @@
 #include "null_crypto_pmd_private.h"
 
 static uint8_t cryptodev_driver_id;
+int null_logtype_driver;
 
 /** verify and set session parameters */
 int
@@ -177,7 +178,8 @@ cryptodev_null_create(const char *name,
 
 	dev->feature_flags = RTE_CRYPTODEV_FF_SYMMETRIC_CRYPTO |
 			RTE_CRYPTODEV_FF_SYM_OPERATION_CHAINING |
-			RTE_CRYPTODEV_FF_IN_PLACE_SGL;
+			RTE_CRYPTODEV_FF_IN_PLACE_SGL |
+			RTE_CRYPTODEV_FF_SYM_SESSIONLESS;
 
 	internals = dev->data->dev_private;
 

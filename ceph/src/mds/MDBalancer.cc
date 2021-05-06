@@ -29,7 +29,6 @@
 #include "msg/Messenger.h"
 
 #include <fstream>
-#include <iostream>
 #include <vector>
 #include <map>
 using std::map;
@@ -92,7 +91,10 @@ void MDBalancer::handle_conf_change(const std::set<std::string>& changed, const 
 
 void MDBalancer::handle_export_pins(void)
 {
-  auto &q = mds->mdcache->export_pin_queue;
+  const mds_rank_t max_mds = mds->mdsmap->get_max_mds();
+  auto mdcache = mds->mdcache;
+
+  auto &q = mdcache->export_pin_queue;
   auto it = q.begin();
   dout(20) << "export_pin_queue size=" << q.size() << dendl;
   while (it != q.end()) {
@@ -100,26 +102,47 @@ void MDBalancer::handle_export_pins(void)
     CInode *in = *cur;
     ceph_assert(in->is_dir());
 
-    in->check_pin_policy();
     mds_rank_t export_pin = in->get_export_pin(false);
-    if (export_pin >= mds->mdsmap->get_max_mds()) {
+    in->check_pin_policy(export_pin);
+
+    if (export_pin >= max_mds) {
       dout(20) << " delay export_pin=" << export_pin << " on " << *in << dendl;
       in->state_clear(CInode::STATE_QUEUEDEXPORTPIN);
       q.erase(cur);
 
       in->state_set(CInode::STATE_DELAYEDEXPORTPIN);
-      mds->mdcache->export_pin_delayed_queue.insert(in);
+      mdcache->export_pin_delayed_queue.insert(in);
       continue;
-    } else {
-      dout(20) << " executing export_pin=" << export_pin << " on " << *in << dendl;
     }
+
+    dout(20) << " executing export_pin=" << export_pin << " on " << *in << dendl;
+    unsigned min_frag_bits = 0;
+    mds_rank_t target = MDS_RANK_NONE;
+    if (export_pin >= 0)
+      target = export_pin;
+    else if (export_pin == MDS_RANK_EPHEMERAL_RAND)
+      target = mdcache->hash_into_rank_bucket(in->ino());
+    else if (export_pin == MDS_RANK_EPHEMERAL_DIST)
+      min_frag_bits = mdcache->get_ephemeral_dist_frag_bits();
 
     bool remove = true;
     for (auto&& dir : in->get_dirfrags()) {
       if (!dir->is_auth())
 	continue;
 
-      if (export_pin == MDS_RANK_NONE) {
+      if (export_pin == MDS_RANK_EPHEMERAL_DIST) {
+	if (dir->get_frag().bits() < min_frag_bits) {
+	  if (!dir->state_test(CDir::STATE_CREATING) &&
+	      !dir->is_frozen() && !dir->is_freezing()) {
+	    queue_split(dir, true);
+	  }
+	  remove = false;
+	  continue;
+	}
+	target = mdcache->hash_into_rank_bucket(in->ino(), dir->get_frag());
+      }
+
+      if (target == MDS_RANK_NONE) {
 	if (dir->state_test(CDir::STATE_AUXSUBTREE)) {
 	  if (dir->is_frozen() || dir->is_freezing()) {
 	    // try again later
@@ -130,7 +153,7 @@ void MDBalancer::handle_export_pins(void)
 	  dir->state_clear(CDir::STATE_AUXSUBTREE);
 	  mds->mdcache->try_subtree_merge(dir);
 	}
-      } else if (export_pin == mds->get_nodeid()) {
+      } else if (target == mds->get_nodeid()) {
         if (dir->state_test(CDir::STATE_AUXSUBTREE)) {
           ceph_assert(dir->is_subtree_root());
         } else if (dir->state_test(CDir::STATE_CREATING) ||
@@ -151,7 +174,7 @@ void MDBalancer::handle_export_pins(void)
          * be sent back by the importer.
          */
         if (dir->get_num_head_items() > 0) {
-	  mds->mdcache->migrator->export_dir(dir, export_pin);
+	  mds->mdcache->migrator->export_dir(dir, target);
         }
 	remove = false;
       }
@@ -163,7 +186,7 @@ void MDBalancer::handle_export_pins(void)
     }
   }
 
-  std::vector<CDir *> authsubs = mds->mdcache->get_auth_subtrees();
+  std::vector<CDir*> authsubs = mdcache->get_auth_subtrees();
   bool print_auth_subtrees = true;
 
   if (authsubs.size() > AUTH_TREES_THRESHOLD &&
@@ -175,18 +198,20 @@ void MDBalancer::handle_export_pins(void)
 
   for (auto &cd : authsubs) {
     mds_rank_t export_pin = cd->inode->get_export_pin();
+    cd->inode->check_pin_policy(export_pin);
 
-    if (print_auth_subtrees) {
-      dout(25) << "auth tree " << *cd << " export_pin=" << export_pin <<
-		  dendl;
+    if (export_pin == MDS_RANK_EPHEMERAL_DIST) {
+      export_pin = mdcache->hash_into_rank_bucket(cd->ino(), cd->get_frag());
+    } else if (export_pin == MDS_RANK_EPHEMERAL_RAND) {
+      export_pin = mdcache->hash_into_rank_bucket(cd->ino());
     }
 
-    if (export_pin >= 0 && export_pin < mds->mdsmap->get_max_mds()) {
-      if (export_pin == mds->get_nodeid()) {
-        cd->get_inode()->check_pin_policy();
-      } else {
-        mds->mdcache->migrator->export_dir(cd, export_pin);
-      }
+    if (print_auth_subtrees)
+      dout(25) << "auth tree " << *cd << " export_pin=" << export_pin << dendl;
+
+    if (export_pin >= 0 && export_pin != mds->get_nodeid() &&
+	export_pin < mds->mdsmap->get_max_mds()) {
+      mdcache->migrator->export_dir(cd, export_pin);
     }
   }
 }
@@ -358,8 +383,8 @@ int MDBalancer::localize_balancer()
   /* success: store the balancer in memory and set the version. */
   if (!r) {
     if (ret_t == std::cv_status::timeout) {
-      mds->objecter->op_cancel(tid, -ECANCELED);
-      return -ETIMEDOUT;
+      mds->objecter->op_cancel(tid, -CEPHFS_ECANCELED);
+      return -CEPHFS_ETIMEDOUT;
     }
     bal_code.assign(lua_src.to_str());
     bal_version.assign(oid.name);
@@ -521,10 +546,10 @@ void MDBalancer::queue_split(const CDir *dir, bool fast)
   dout(10) << __func__ << " enqueuing " << *dir
                        << " (fast=" << fast << ")" << dendl;
 
-  const dirfrag_t frag = dir->dirfrag();
+  const dirfrag_t df = dir->dirfrag();
 
-  auto callback = [this, frag](int r) {
-    if (split_pending.erase(frag) == 0) {
+  auto callback = [this, df](int r) {
+    if (split_pending.erase(df) == 0) {
       // Someone beat me to it.  This can happen in the fast splitting
       // path, because we spawn two contexts, one with mds->timer and
       // one with mds->queue_waiter.  The loser can safely just drop
@@ -532,27 +557,32 @@ void MDBalancer::queue_split(const CDir *dir, bool fast)
       return;
     }
 
-    CDir *split_dir = mds->mdcache->get_dirfrag(frag);
-    if (!split_dir) {
-      dout(10) << "drop split on " << frag << " because not in cache" << dendl;
+    auto mdcache = mds->mdcache;
+
+    CDir *dir = mdcache->get_dirfrag(df);
+    if (!dir) {
+      dout(10) << "drop split on " << df << " because not in cache" << dendl;
       return;
     }
-    if (!split_dir->is_auth()) {
-      dout(10) << "drop split on " << frag << " because non-auth" << dendl;
+    if (!dir->is_auth()) {
+      dout(10) << "drop split on " << df << " because non-auth" << dendl;
       return;
     }
 
     // Pass on to MDCache: note that the split might still not
     // happen if the checks in MDCache::can_fragment fail.
-    dout(10) << __func__ << " splitting " << *split_dir << dendl;
-    mds->mdcache->split_dir(split_dir, g_conf()->mds_bal_split_bits);
+    dout(10) << __func__ << " splitting " << *dir << dendl;
+    int bits = g_conf()->mds_bal_split_bits;
+    if (dir->inode->is_ephemeral_dist()) {
+      unsigned min_frag_bits = mdcache->get_ephemeral_dist_frag_bits();
+      if (df.frag.bits() + bits < min_frag_bits)
+	bits = min_frag_bits - df.frag.bits();
+    }
+    mdcache->split_dir(dir, bits);
   };
 
-  bool is_new = false;
-  if (split_pending.count(frag) == 0) {
-    split_pending.insert(frag);
-    is_new = true;
-  }
+  auto ret = split_pending.insert(df);
+  bool is_new = ret.second;
 
   if (fast) {
     // Do the split ASAP: enqueue it in the MDSRank waiters which are
@@ -579,7 +609,8 @@ void MDBalancer::queue_merge(CDir *dir)
     // starting one), and this context is the only one that erases it.
     merge_pending.erase(frag);
 
-    CDir *dir = mds->mdcache->get_dirfrag(frag);
+    auto mdcache = mds->mdcache;
+    CDir *dir = mdcache->get_dirfrag(frag);
     if (!dir) {
       dout(10) << "drop merge on " << frag << " because not in cache" << dendl;
       return;
@@ -595,8 +626,12 @@ void MDBalancer::queue_merge(CDir *dir)
 
     CInode *diri = dir->get_inode();
 
+    unsigned min_frag_bits = 0;
+    if (diri->is_ephemeral_dist())
+      min_frag_bits = mdcache->get_ephemeral_dist_frag_bits();
+
     frag_t fg = dir->get_frag();
-    while (fg != frag_t()) {
+    while (fg.bits() > min_frag_bits) {
       frag_t sibfg = fg.get_sibling();
       auto&& [complete, sibs] = diri->get_dirfrags_under(sibfg);
       if (!complete) {
@@ -619,7 +654,7 @@ void MDBalancer::queue_merge(CDir *dir)
     }
 
     if (fg != dir->get_frag())
-      mds->mdcache->merge_dir(diri, fg);
+      mdcache->merge_dir(diri, fg);
   };
 
   if (merge_pending.count(frag) == 0) {
@@ -839,7 +874,7 @@ int MDBalancer::mantle_prep_rebalance()
 
   /* mantle doesn't know about cluster size, so check target len here */
   if ((int) state.targets.size() != cluster_size)
-    return -EINVAL;
+    return -CEPHFS_EINVAL;
   else if (ret)
     return ret;
 
@@ -1166,7 +1201,7 @@ void MDBalancer::maybe_fragment(CDir *dir, bool hot)
       !dir->inode->is_stray()) { // not straydir
 
     // split
-    if (g_conf()->mds_bal_split_size > 0 && (dir->should_split() || hot)) {
+    if (dir->should_split() || hot) {
       if (split_pending.count(dir->dirfrag()) == 0) {
         queue_split(dir, false);
       } else {
@@ -1189,6 +1224,8 @@ void MDBalancer::maybe_fragment(CDir *dir, bool hot)
 
 void MDBalancer::hit_dir(CDir *dir, int type, int who, double amount)
 {
+  if (dir->inode->is_stray())
+    return;
   // hit me
   double v = dir->pop_me.get(type).hit(amount);
 
@@ -1224,7 +1261,7 @@ void MDBalancer::hit_dir(CDir *dir, int type, int who, double amount)
     }
 
     if (dir->is_auth() && !dir->is_ambiguous_auth()) {
-      if (!dir->is_rep() &&
+      if (dir->can_rep() &&
 	  dir_pop >= g_conf()->mds_bal_replicate_threshold) {
 	// replicate
 	double rdp = dir->pop_me.get(META_POP_IRD).get();
@@ -1398,7 +1435,7 @@ int MDBalancer::dump_loads(Formatter *f) const
   f->open_object_section("mds_load");
   {
 
-    auto dump_mds_load = [f](mds_load_t& load) {
+    auto dump_mds_load = [f](const mds_load_t& load) {
       f->dump_float("request_rate", load.req_rate);
       f->dump_float("cache_hit_rate", load.cache_hit_rate);
       f->dump_float("queue_length", load.queue_len);
@@ -1413,34 +1450,36 @@ int MDBalancer::dump_loads(Formatter *f) const
       f->close_section();
     };
 
-    for (auto p : mds_load) {
-      stringstream name;
-      name << "mds." << p.first;
-      f->open_object_section(name.str().c_str());
-      dump_mds_load(p.second);
+    for (const auto& [rank, load] : mds_load) {
+      CachedStackStringStream css;
+      *css << "mds." << rank;
+      f->open_object_section(css->strv());
+      dump_mds_load(load);
       f->close_section();
     }
   }
   f->close_section(); // mds_load
 
   f->open_object_section("mds_meta_load");
-  for (auto p : mds_meta_load) {
-    stringstream name;
-    name << "mds." << p.first;
-    f->dump_float(name.str().c_str(), p.second);
+  for (auto& [rank, mload] : mds_meta_load) {
+    CachedStackStringStream css;
+    *css << "mds." << rank;
+    f->dump_float(css->strv(), mload);
   }
   f->close_section(); // mds_meta_load
 
   f->open_object_section("mds_import_map");
-  for (auto p : mds_import_map) {
-    stringstream name1;
-    name1 << "mds." << p.first;
-    f->open_array_section(name1.str().c_str());
-    for (auto q : p.second) {
+  for (auto& [rank, imports] : mds_import_map) {
+    {
+      CachedStackStringStream css;
+      *css << "mds." << rank;
+      f->open_array_section(css->strv());
+    }
+    for (auto& [rank_from, mload] : imports) {
       f->open_object_section("from");
-      stringstream name2;
-      name2 << "mds." << q.first;
-      f->dump_float(name2.str().c_str(), q.second);
+      CachedStackStringStream css;
+      *css << "mds." << rank_from;
+      f->dump_float(css->strv(), mload);
       f->close_section();
     }
     f->close_section(); // mds.? array

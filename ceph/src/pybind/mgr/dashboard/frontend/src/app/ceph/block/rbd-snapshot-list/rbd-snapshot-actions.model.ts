@@ -1,14 +1,10 @@
-import { I18n } from '@ngx-translate/i18n-polyfill';
-import * as _ from 'lodash';
-
-import { ActionLabelsI18n } from '../../../shared/constants/app.constants';
-import { Icons } from '../../../shared/enum/icons.enum';
-import { CdTableAction } from '../../../shared/models/cd-table-action';
-import { CdTableSelection } from '../../../shared/models/cd-table-selection';
+import { RbdService } from '~/app/shared/api/rbd.service';
+import { ActionLabelsI18n } from '~/app/shared/constants/app.constants';
+import { Icons } from '~/app/shared/enum/icons.enum';
+import { CdTableAction } from '~/app/shared/models/cd-table-action';
+import { CdTableSelection } from '~/app/shared/models/cd-table-selection';
 
 export class RbdSnapshotActionsModel {
-  i18n: I18n;
-
   create: CdTableAction;
   rename: CdTableAction;
   protect: CdTableAction;
@@ -19,8 +15,16 @@ export class RbdSnapshotActionsModel {
   deleteSnap: CdTableAction;
   ordering: CdTableAction[];
 
-  constructor(i18n: I18n, actionLabels: ActionLabelsI18n, featuresName: string[]) {
-    this.i18n = i18n;
+  cloneFormatVersion = 1;
+
+  constructor(
+    actionLabels: ActionLabelsI18n,
+    public featuresName: string[],
+    rbdService: RbdService
+  ) {
+    rbdService.cloneFormatVersion().subscribe((version: number) => {
+      this.cloneFormatVersion = version;
+    });
 
     this.create = {
       permission: 'create',
@@ -49,7 +53,8 @@ export class RbdSnapshotActionsModel {
     this.clone = {
       permission: 'create',
       canBePrimary: (selection: CdTableSelection) => selection.hasSingleSelection,
-      disable: (selection: CdTableSelection) => this.getCloneDisableDesc(selection, featuresName),
+      disable: (selection: CdTableSelection) =>
+        this.getCloneDisableDesc(selection, this.featuresName),
       icon: Icons.clone,
       name: actionLabels.CLONE
     };
@@ -89,9 +94,13 @@ export class RbdSnapshotActionsModel {
   }
 
   getCloneDisableDesc(selection: CdTableSelection, featuresName: string[]): boolean | string {
-    if (selection && selection.hasSingleSelection && !selection.first().cdExecuting) {
-      if (!_.includes(featuresName, 'layering')) {
-        return this.i18n('Parent image must support Layering');
+    if (selection.hasSingleSelection && !selection.first().cdExecuting) {
+      if (!featuresName?.includes('layering')) {
+        return $localize`Parent image must support Layering`;
+      }
+
+      if (this.cloneFormatVersion === 1 && !selection.first().is_protected) {
+        return $localize`Snapshot must be protected in order to clone.`;
       }
 
       return false;

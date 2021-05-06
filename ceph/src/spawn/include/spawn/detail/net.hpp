@@ -20,7 +20,9 @@
 
 #define SPAWN_NET_NAMESPACE boost::asio
 
-namespace spawn::detail::net {
+namespace spawn {
+namespace detail {
+namespace net {
 
 using boost::asio::associated_executor_t;
 using boost::asio::get_associated_executor;
@@ -35,4 +37,6 @@ using boost::asio::is_executor;
 
 using boost::asio::strand;
 
-} // namespace spawn::detail::net
+} // namespace net
+} // namespace detail
+} // namespace spawn

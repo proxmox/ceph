@@ -141,6 +141,61 @@ out:
 	return rc;
 }
 
+static int
+spdk_jsonrpc_client_check_null_params_method(struct spdk_jsonrpc_client *client)
+{
+	int rc;
+	bool res = false;
+	struct spdk_jsonrpc_client_response *json_resp = NULL;
+	struct spdk_json_write_ctx *w;
+	struct spdk_jsonrpc_client_request *request;
+
+	request = spdk_jsonrpc_client_create_request();
+	if (request == NULL) {
+		return -ENOMEM;
+	}
+
+	w = spdk_jsonrpc_begin_request(request, 1, "test_null_params");
+	spdk_json_write_name(w, "params");
+	spdk_json_write_null(w);
+	spdk_jsonrpc_end_request(request, w);
+	spdk_jsonrpc_client_send_request(client, request);
+
+	rc = _rpc_client_wait_for_response(client);
+	if (rc <= 0) {
+		goto out;
+	}
+
+	json_resp = spdk_jsonrpc_client_get_response(client);
+	if (json_resp == NULL) {
+		SPDK_ERRLOG("spdk_jsonrpc_client_get_response() failed\n");
+		rc = -1;
+		goto out;
+
+	}
+
+	/* Check for error response */
+	if (json_resp->error != NULL) {
+		SPDK_ERRLOG("Unexpected error response\n");
+		rc = -1;
+		goto out;
+	}
+
+	assert(json_resp->result);
+
+	if (spdk_json_decode_bool(json_resp->result, &res) != 0 || res != true) {
+		SPDK_ERRLOG("Response is not a boolean or it is not 'true'\n");
+		rc = -EINVAL;
+		goto out;
+	} else {
+		rc = 0;
+	}
+
+out:
+	spdk_jsonrpc_client_free_response(json_resp);
+	return rc;
+}
+
 static void
 rpc_test_method_startup(struct spdk_jsonrpc_request *request, const struct spdk_json_val *params)
 {
@@ -156,6 +211,24 @@ rpc_test_method_runtime(struct spdk_jsonrpc_request *request, const struct spdk_
 					 "rpc_test_method_runtime(): Method body not implemented");
 }
 SPDK_RPC_REGISTER("test_method_runtime", rpc_test_method_runtime, SPDK_RPC_RUNTIME)
+
+static void
+rpc_test_method_null_params(struct spdk_jsonrpc_request *request,
+			    const struct spdk_json_val *params)
+{
+	struct spdk_json_write_ctx *w;
+
+	if (params != NULL) {
+		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INVALID_PARAMS,
+						 "rpc_test_method_null_params(): Parameters are not NULL");
+		return;
+	}
+	w = spdk_jsonrpc_begin_result(request);
+	assert(w != NULL);
+	spdk_json_write_bool(w, true);
+	spdk_jsonrpc_end_result(request, w);
+}
+SPDK_RPC_REGISTER("test_null_params", rpc_test_method_null_params, SPDK_RPC_RUNTIME)
 
 static bool g_conn_close_detected;
 
@@ -235,7 +308,7 @@ spdk_jsonrpc_client_hook_conn_close(struct spdk_jsonrpc_client *client)
 
 	/* Check for error response */
 	if (json_resp->error != NULL) {
-		SPDK_ERRLOG("Unexpected error response: %*s\n", json_resp->error->len,
+		SPDK_ERRLOG("Unexpected error response: %.*s\n", json_resp->error->len,
 			    (char *)json_resp->error->start);
 		rc = -EIO;
 		goto out;
@@ -254,21 +327,8 @@ out:
 	return rc;
 }
 
-/* Helper function */
-static int
-_sem_timedwait(sem_t *sem, __time_t sec)
-{
-	struct timespec timeout;
-
-	clock_gettime(CLOCK_REALTIME, &timeout);
-	timeout.tv_sec += sec;
-
-	return sem_timedwait(sem, &timeout);
-}
-
 volatile int g_rpc_server_th_stop;
 static sem_t g_rpc_server_th_listening;
-static sem_t g_rpc_server_th_done;
 
 static void *
 rpc_server_th(void *arg)
@@ -278,6 +338,7 @@ rpc_server_th(void *arg)
 	rc = spdk_rpc_listen(g_rpcsock_addr);
 	if (rc) {
 		fprintf(stderr, "spdk_rpc_listen() failed: %d\n", rc);
+		sem_post(&g_rpc_server_th_listening);
 		goto out;
 	}
 
@@ -290,12 +351,8 @@ rpc_server_th(void *arg)
 
 	spdk_rpc_close();
 out:
-	sem_post(&g_rpc_server_th_done);
-
 	return (void *)(intptr_t)rc;
 }
-
-static sem_t g_rpc_client_th_done;
 
 static void *
 rpc_client_th(void *arg)
@@ -305,7 +362,7 @@ rpc_client_th(void *arg)
 	int rc;
 
 
-	rc = _sem_timedwait(&g_rpc_server_th_listening, 2);
+	rc = sem_wait(&g_rpc_server_th_listening);
 	if (rc == -1) {
 		fprintf(stderr, "Timeout waiting for server thread to start listening: rc=%d errno=%d\n", rc,
 			errno);
@@ -325,6 +382,12 @@ rpc_client_th(void *arg)
 		goto out;
 	}
 
+	rc = spdk_jsonrpc_client_check_null_params_method(client);
+	if (rc) {
+		fprintf(stderr, "spdk_jsonrpc_client_null_params_method() failed: rc=%d errno=%d\n", rc, errno);
+		goto out;
+	}
+
 	rc = spdk_jsonrpc_client_hook_conn_close(client);
 	if (rc) {
 		fprintf(stderr, "spdk_jsonrpc_client_hook_conn_close() failed: rc=%d errno=%d\n", rc, errno);
@@ -336,7 +399,6 @@ out:
 		spdk_jsonrpc_client_close(client);
 	}
 
-	sem_post(&g_rpc_client_th_done);
 	return (void *)(intptr_t)rc;
 }
 
@@ -349,8 +411,6 @@ int main(int argc, char **argv)
 	int rc = 0, err_cnt = 0;
 
 	sem_init(&g_rpc_server_th_listening, 0, 0);
-	sem_init(&g_rpc_server_th_done, 0, 0);
-	sem_init(&g_rpc_client_th_done, 0, 0);
 
 	srv_tid_valid = pthread_create(&srv_tid, NULL, rpc_server_th, NULL);
 	if (srv_tid_valid != 0) {
@@ -366,18 +426,12 @@ int main(int argc, char **argv)
 
 out:
 	if (client_tid_valid == 0) {
-		rc = _sem_timedwait(&g_rpc_client_th_done, JOIN_TIMEOUT_S);
-		if (rc) {
-			fprintf(stderr, "failed to join client thread (rc: %d)\n", rc);
-			err_cnt++;
-		}
-
 		rc = pthread_join(client_tid, (void **)&th_rc);
 		if (rc) {
-			fprintf(stderr, "pthread_join() on cliennt thread failed (rc: %d)\n", rc);
+			fprintf(stderr, "pthread_join() on client thread failed (rc: %d)\n", rc);
 			err_cnt++;
 		} else if (th_rc) {
-			fprintf(stderr, "cliennt thread failed reported failure(thread rc: %d)\n", (int)th_rc);
+			fprintf(stderr, "client thread failed reported failure(thread rc: %d)\n", (int)th_rc);
 			err_cnt++;
 		}
 	}
@@ -385,18 +439,12 @@ out:
 	g_rpc_server_th_stop = 1;
 
 	if (srv_tid_valid == 0) {
-		rc = _sem_timedwait(&g_rpc_server_th_done, JOIN_TIMEOUT_S);
-		if (rc) {
-			fprintf(stderr, "server thread failed to exit in %d sec: (rc: %d)\n", JOIN_TIMEOUT_S, rc);
-			err_cnt++;
-		}
-
 		rc = pthread_join(srv_tid, (void **)&th_rc);
 		if (rc) {
-			fprintf(stderr, "pthread_join() on cliennt thread failed (rc: %d)\n", rc);
+			fprintf(stderr, "pthread_join() on server thread failed (rc: %d)\n", rc);
 			err_cnt++;
 		} else if (th_rc) {
-			fprintf(stderr, "cliennt thread failed reported failure(thread rc: %d)\n", (int)th_rc);
+			fprintf(stderr, "server thread failed reported failure(thread rc: %d)\n", (int)th_rc);
 			err_cnt++;
 		}
 	}
@@ -407,8 +455,6 @@ out:
 	}
 
 	sem_destroy(&g_rpc_server_th_listening);
-	sem_destroy(&g_rpc_server_th_done);
-	sem_destroy(&g_rpc_client_th_done);
 
 	fprintf(stderr, "%s\n", err_cnt == 0 ? "OK" : "FAILED");
 	return err_cnt ? EXIT_FAILURE : 0;

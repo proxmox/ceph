@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: BSD-3-Clause-Clear
 #
 
-from ctypes import c_void_p, Structure, c_char_p, cast, pointer, byref
+from ctypes import c_void_p, Structure, c_char_p, cast, pointer, byref, c_int
 
 from .logger import LoggerOps, Logger
 from .data import DataOps, Data
@@ -51,7 +51,7 @@ class OcfCtx:
             logger_priv=cast(pointer(logger.get_priv()), c_void_p),
         )
 
-        result = self.lib.ocf_ctx_init(byref(self.ctx_handle), byref(self.cfg))
+        result = self.lib.ocf_ctx_create(byref(self.ctx_handle), byref(self.cfg))
         if result != 0:
             raise OcfError("Context initialization failed", result)
 
@@ -74,11 +74,9 @@ class OcfCtx:
         if not vol_type.type_id:
             raise Exception("Already unregistered")
 
-        result = self.lib.ocf_ctx_unregister_volume_type(
+        self.lib.ocf_ctx_unregister_volume_type(
             self.ctx_handle, vol_type.type_id
         )
-        if result != 0:
-            raise OcfError("Volume type unregistration failed", result)
 
         del self.volume_types[vol_type.type_id]
 
@@ -95,9 +93,7 @@ class OcfCtx:
         self.stop_caches()
         self.cleanup_volume_types()
 
-        result = self.lib.ocf_ctx_exit(self.ctx_handle)
-        if result != 0:
-            raise OcfError("Failed quitting OcfCtx", result)
+        self.lib.ocf_ctx_put(self.ctx_handle)
 
         self.cfg = None
         self.logger = None
@@ -119,3 +115,8 @@ def get_default_ctx(logger):
         MetadataUpdater,
         Cleaner,
     )
+
+
+lib = OcfLib.getInstance()
+lib.ocf_mngt_cache_get_by_name.argtypes = [c_void_p, c_void_p, c_void_p]
+lib.ocf_mngt_cache_get_by_name.restype = c_int

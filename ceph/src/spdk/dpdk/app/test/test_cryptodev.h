@@ -44,6 +44,7 @@
 #define TRUNCATED_DIGEST_BYTE_LENGTH_SHA512		(32)
 
 #define MAXIMUM_IV_LENGTH				(16)
+#define AES_GCM_J0_LENGTH				(16)
 
 #define IV_OFFSET			(sizeof(struct rte_crypto_op) + \
 		sizeof(struct rte_crypto_sym_op) + DEFAULT_NUM_XFORMS * \
@@ -66,7 +67,9 @@
 #define CRYPTODEV_NAME_CCP_PMD		crypto_ccp
 #define CRYPTODEV_NAME_VIRTIO_PMD	crypto_virtio
 #define CRYPTODEV_NAME_OCTEONTX_SYM_PMD	crypto_octeontx
+#define CRYPTODEV_NAME_OCTEONTX2_PMD	crypto_octeontx2
 #define CRYPTODEV_NAME_CAAM_JR_PMD	crypto_caam_jr
+#define CRYPTODEV_NAME_NITROX_PMD	crypto_nitrox_sym
 
 /**
  * Write (spread) data from buffer to mbuf data

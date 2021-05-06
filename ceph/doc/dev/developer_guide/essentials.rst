@@ -25,6 +25,7 @@ CephFS    Patrick Donnelly batrick
 Dashboard Lenz Grimmer     LenzGr
 MON       Joao Luis        jecluis
 Build/Ops Ken Dreyer       ktdreyer
+Docs      Zac Dover        zdover23
 ========= ================ =============
 
 The Ceph-specific acronyms in the table are explained in
@@ -57,8 +58,7 @@ the `Ceph "organization"`_.
 
 .. _`Ceph "organization"`: https://github.com/ceph
 
-To make a meaningful contribution to the project as a developer, a working
-knowledge of git_ is essential.
+A working knowledge of git_ is essential to make a meaningful contribution to the project as a developer.
 
 .. _git: https://git-scm.com/doc
 
@@ -89,57 +89,60 @@ click on `New issue`_.
 .. _`jump to the Ceph project`: http://tracker.ceph.com/projects/ceph
 .. _`New issue`: http://tracker.ceph.com/projects/ceph/issues/new
 
-Mailing list
-------------
+.. _mailing-list:
 
+Mailing lists
+-------------
+
+Ceph Development Mailing List
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 The ``dev@ceph.io`` list is for discussion about the development of Ceph,
 its interoperability with other technology, and the operations of the
 project itself.
 
-Ceph development email discussions the list is open to all. Subscribe by
-sending a message to ``dev-request@ceph.io`` with the line: ::
+The email discussion list for Ceph development is open to all. Subscribe by
+sending a message to ``dev-request@ceph.io`` with the following line in the
+body of the message::
 
     subscribe ceph-devel
 
-in the body of the message.
 
+Ceph Client Patch Review Mailing List
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 The ``ceph-devel@vger.kernel.org`` list is for discussion and patch review
 for the Linux kernel Ceph client component. Note that this list used to
-be an all encompassing list for developers. So when searching archives here
-are the generic devel-ceph archives pre mid-2018.
+be an all-encompassing list for developers. When searching the archives, 
+remember that this list contains the generic devel-ceph archives before mid-2018.
 
-Subscription works in the same way, sending a message to
-``majordomo@vger.kernel.org`` with the line: ::
-
-    subscribe ceph-devel
-
-in the body of the message.
-
-
-Ceph development email discussions the list is open to all. Subscribe by
-sending a message to ``dev-request@ceph.io`` with the line: ::
+Subscribe to the list covering the Linux kernel Ceph client component by sending
+a message to ``majordomo@vger.kernel.org`` with the following line in the body
+of the message::
 
     subscribe ceph-devel
 
-in the body of the message.
 
-Subscribing to the
+Other Ceph Mailing Lists
+^^^^^^^^^^^^^^^^^^^^^^^^
 
 There are also `other Ceph-related mailing lists`_.
 
 .. _`other Ceph-related mailing lists`: https://ceph.com/irc/
 
+.. _irc:
+
 
 IRC
 ---
 
-In addition to mailing lists, the Ceph community also communicates in real
-time using `Internet Relay Chat`_.
+In addition to mailing lists, the Ceph community also communicates in real time
+using `Internet Relay Chat`_.
 
 .. _`Internet Relay Chat`: http://www.irchelp.org/
 
 See ``https://ceph.com/irc/`` for how to set up your IRC
 client and a list of channels.
+
+.. _submitting-patches:
 
 Submitting patches
 ------------------
@@ -160,39 +163,56 @@ See instructions at :doc:`/install/build-ceph`.
 
 Using ccache to speed up local builds
 -------------------------------------
+`ccache`_ can make the process of rebuilding the ceph source tree faster. 
 
-Rebuilds of the ceph source tree can benefit significantly from use of
-`ccache`_.
+Before you use `ccache`_ to speed up your rebuilds of the ceph source tree,
+make sure that your source tree is clean and will produce no build failures.
+When you have a clean source tree, you can confidently use `ccache`_, secure in
+the knowledge that you're not using a dirty tree.
 
-Many a times while switching branches and such, one might see build failures
-for certain older branches mostly due to older build artifacts. These rebuilds
-can significantly benefit the use of ccache. For a full clean source tree, one
-could do ::
+Old build artifacts can cause build failures. You might introduce these
+artifacts unknowingly when switching from one branch to another. If you see
+build errors when you attempt a local build, follow the procedure below to
+clean your source tree.
 
-  $ make clean
+Cleaning the Source Tree
+^^^^^^^^^^^^^^^^^^^^^^^^
 
-  # note the following will nuke everything in the source tree that
-  # isn't tracked by git, so make sure to backup any log files /conf options
+.. prompt:: bash $
 
-  $ git clean -fdx; git submodule foreach git clean -fdx
+  make clean
+  
+.. note:: The following commands will remove everything in the source tree 
+          that isn't tracked by git. Make sure to back up your log files 
+          and configuration options before running these commands.
 
-ccache is available as a package in most distros. To build ceph with ccache
-one can::
+.. prompt:: bash $
 
-  $ cmake -DWITH_CCACHE=ON ..
+   git clean -fdx; git submodule foreach git clean -fdx
 
-ccache can also be used for speeding up all builds in the system. for more
-details refer to the `run modes`_ of the ccache manual. The default settings
-of ``ccache`` can be displayed with ``ccache -s``.
+Building Ceph with ccache
+^^^^^^^^^^^^^^^^^^^^^^^^^
+``ccache`` is available as a package in most distros. To build ceph with
+ccache, run the following command.
 
-.. note:: It is recommended to override the ``max_size``, which is the size of
-   cache, defaulting to 10G, to a larger size like 25G or so. Refer to the
-   `configuration`_ section of ccache manual.
+.. prompt:: bash $
+
+  cmake -DWITH_CCACHE=ON ..
+
+Using ccache to Speed Up Build Times
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+``ccache`` can be used for speeding up all builds of the system. For more
+details, refer to the `run modes`_ section of the ccache manual. The default
+settings of ``ccache`` can be displayed with the ``ccache -s`` command.
+
+.. note:: We recommend overriding the ``max_size``. The default is 10G.
+          Use a larger value, like 25G. Refer to the `configuration`_ section
+          of the ccache manual for more information.
 
 To further increase the cache hit rate and reduce compile times in a
-development environment, it is possible to set version information and build
-timestamps to fixed values, which avoids frequent rebuilds of binaries that
-contain this information.
+development environment, set the version information and build timestamps to
+fixed values. This makes it unnecessary to rebuild the binaries that contain
+this information.
 
 This can be achieved by adding the following settings to the ``ccache``
 configuration file ``ccache.conf``::
@@ -202,10 +222,12 @@ configuration file ``ccache.conf``::
 
 Now, set the environment variable ``SOURCE_DATE_EPOCH`` to a fixed value (a
 UNIX timestamp) and set ``ENABLE_GIT_VERSION`` to ``OFF`` when running
-``cmake``::
+``cmake``:
 
-  $ export SOURCE_DATE_EPOCH=946684800
-  $ cmake -DWITH_CCACHE=ON -DENABLE_GIT_VERSION=OFF ..
+.. prompt:: bash $
+
+  export SOURCE_DATE_EPOCH=946684800
+  cmake -DWITH_CCACHE=ON -DENABLE_GIT_VERSION=OFF ..
 
 .. note:: Binaries produced with these build options are not suitable for
   production or debugging purposes, as they do not contain the correct build
@@ -225,6 +247,8 @@ Kubernetes/Rook development cluster
 
 See :ref:`kubernetes-dev`
 
+.. _backporting:
+
 Backporting
 -----------
 
@@ -243,4 +267,4 @@ Guidance for use of cluster log
 -------------------------------
 
 If your patches emit messages to the Ceph cluster log, please consult
-this guidance: :doc:`/dev/logging`.
+this: :doc:`/dev/logging`.

@@ -26,9 +26,10 @@
 ;;
 
 ; Routine to do AES key expansion
-%include "os.asm"
+%include "include/os.asm"
 %define NO_AESNI_RENAME
-%include "aesni_emu.inc"
+%include "include/aesni_emu.inc"
+%include "include/clear_regs.asm"
 
 %macro key_expansion_128_sse 0
 	;; Assumes the xmm3 includes all zeros at this point.
@@ -72,6 +73,16 @@ section .text
 ;
 MKGLOBAL(aes_keyexp_128_sse,function,)
 aes_keyexp_128_sse:
+
+%ifdef SAFE_PARAM
+        cmp     KEY, 0
+        jz      aes_keyexp_128_sse_return
+        cmp     EXP_ENC_KEYS, 0
+        jz      aes_keyexp_128_sse_return
+        cmp     EXP_DEC_KEYS, 0
+        jz      aes_keyexp_128_sse_return
+%endif
+
         movdqu	xmm1, [KEY]	; loading the AES key
 	movdqa	[EXP_ENC_KEYS + 16*0], xmm1
         movdqa	[EXP_DEC_KEYS + 16*10], xmm1  ; Storing key in memory
@@ -136,10 +147,26 @@ aes_keyexp_128_sse:
 	movdqa	[EXP_ENC_KEYS + 16*10], xmm1
         movdqa	[EXP_DEC_KEYS + 16*0], xmm1
 
+aes_keyexp_128_sse_return:
+
+%ifdef SAFE_DATA
+        clear_scratch_gps_asm
+        clear_scratch_xmms_sse_asm
+%endif
 	ret
 
 MKGLOBAL(aes_keyexp_128_sse_no_aesni,function,)
 aes_keyexp_128_sse_no_aesni:
+
+%ifdef SAFE_PARAM
+        cmp     KEY, 0
+        jz      aes_keyexp_128_sse_no_aesni_return
+        cmp     EXP_ENC_KEYS, 0
+        jz      aes_keyexp_128_sse_no_aesni_return
+        cmp     EXP_DEC_KEYS, 0
+        jz      aes_keyexp_128_sse_no_aesni_return
+%endif
+
         movdqu	xmm1, [KEY]	; loading the AES key
 	movdqa	[EXP_ENC_KEYS + 16*0], xmm1
         movdqa	[EXP_DEC_KEYS + 16*10], xmm1  ; Storing key in memory
@@ -204,7 +231,13 @@ aes_keyexp_128_sse_no_aesni:
 	movdqa	[EXP_ENC_KEYS + 16*10], xmm1
         movdqa	[EXP_DEC_KEYS + 16*0], xmm1
 
-	ret
+aes_keyexp_128_sse_no_aesni_return:
+
+%ifdef SAFE_DATA
+        clear_scratch_gps_asm
+        clear_scratch_xmms_sse_asm
+%endif
+        ret
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -217,6 +250,16 @@ MKGLOBAL(aes_keyexp_128_avx512,function,)
 aes_keyexp_128_avx:
 aes_keyexp_128_avx2:
 aes_keyexp_128_avx512:
+
+%ifdef SAFE_PARAM
+        cmp     KEY, 0
+        jz      aes_keyexp_128_avx_return
+        cmp     EXP_ENC_KEYS, 0
+        jz      aes_keyexp_128_avx_return
+        cmp     EXP_DEC_KEYS, 0
+        jz      aes_keyexp_128_avx_return
+%endif
+
         vmovdqu	xmm1, [KEY]	; loading the AES key
 	vmovdqa	[EXP_ENC_KEYS + 16*0], xmm1
         vmovdqa	[EXP_DEC_KEYS + 16*10], xmm1  ; Storing key in memory
@@ -281,7 +324,13 @@ aes_keyexp_128_avx512:
 	vmovdqa	[EXP_ENC_KEYS + 16*10], xmm1
         vmovdqa	[EXP_DEC_KEYS + 16*0], xmm1
 
-	ret
+aes_keyexp_128_avx_return:
+
+%ifdef SAFE_DATA
+        clear_scratch_gps_asm
+        clear_scratch_xmms_avx_asm
+%endif
+        ret
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -296,6 +345,14 @@ aes_keyexp_128_avx512:
 ;
 MKGLOBAL(aes_keyexp_128_enc_sse,function,)
 aes_keyexp_128_enc_sse:
+
+%ifdef SAFE_PARAM
+        cmp     KEY, 0
+        jz      aes_keyexp_128_enc_sse_return
+        cmp     EXP_ENC_KEYS, 0
+        jz      aes_keyexp_128_enc_sse_return
+%endif
+
         movdqu	xmm1, [KEY]	; loading the AES key
 	movdqa	[EXP_ENC_KEYS + 16*0], xmm1
 	pxor	xmm3, xmm3
@@ -340,10 +397,19 @@ aes_keyexp_128_enc_sse:
         key_expansion_128_sse
 	movdqa	[EXP_ENC_KEYS + 16*10], xmm1
 
+aes_keyexp_128_enc_sse_return:
 	ret
 
 MKGLOBAL(aes_keyexp_128_enc_sse_no_aesni,function,)
 aes_keyexp_128_enc_sse_no_aesni:
+
+%ifdef SAFE_PARAM
+        cmp     KEY, 0
+        jz      aes_keyexp_128_enc_sse_no_aesni_return
+        cmp     EXP_ENC_KEYS, 0
+        jz      aes_keyexp_128_enc_sse_no_aesni_return
+%endif
+
         movdqu	xmm1, [KEY]	; loading the AES key
 	movdqa	[EXP_ENC_KEYS + 16*0], xmm1
 	pxor	xmm3, xmm3
@@ -388,6 +454,7 @@ aes_keyexp_128_enc_sse_no_aesni:
         key_expansion_128_sse
 	movdqa	[EXP_ENC_KEYS + 16*10], xmm1
 
+aes_keyexp_128_enc_sse_no_aesni_return:
 	ret
 
 MKGLOBAL(aes_keyexp_128_enc_avx,function,)
@@ -396,6 +463,14 @@ MKGLOBAL(aes_keyexp_128_enc_avx512,function,)
 aes_keyexp_128_enc_avx:
 aes_keyexp_128_enc_avx2:
 aes_keyexp_128_enc_avx512:
+
+%ifdef SAFE_PARAM
+        cmp     KEY, 0
+        jz      aes_keyexp_128_enc_avx_return
+        cmp     EXP_ENC_KEYS, 0
+        jz      aes_keyexp_128_enc_avx_return
+%endif
+
         vmovdqu	xmm1, [KEY]	; loading the AES key
 	vmovdqa	[EXP_ENC_KEYS + 16*0], xmm1
 	vpxor	xmm3, xmm3, xmm3
@@ -440,6 +515,7 @@ aes_keyexp_128_enc_avx512:
         key_expansion_128_avx
 	vmovdqa	[EXP_ENC_KEYS + 16*10], xmm1
 
+aes_keyexp_128_enc_avx_return:
 	ret
 
 %ifdef LINUX

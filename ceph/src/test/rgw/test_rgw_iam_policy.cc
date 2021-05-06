@@ -26,6 +26,7 @@
 #include "rgw/rgw_auth.h"
 #include "rgw/rgw_iam_policy.h"
 #include "rgw/rgw_op.h"
+#include "rgw_sal_rados.h"
 
 
 using std::string;
@@ -850,11 +851,11 @@ protected:
   // 192.168.1.0/24
   const rgw::IAM::MaskedIP allowedIPv4Range = { false, rgw::IAM::Address("11000000101010000000000100000000"), 24 };
   // 192.168.1.1/32
-  const rgw::IAM::MaskedIP blacklistedIPv4 = { false, rgw::IAM::Address("11000000101010000000000100000001"), 32 };
+  const rgw::IAM::MaskedIP blocklistedIPv4 = { false, rgw::IAM::Address("11000000101010000000000100000001"), 32 };
   // 2001:db8:85a3:0:0:8a2e:370:7334/128
   const rgw::IAM::MaskedIP allowedIPv6 = { true, rgw::IAM::Address("00100000000000010000110110111000100001011010001100000000000000000000000000000000100010100010111000000011011100000111001100110100"), 128 };
   // ::1
-  const rgw::IAM::MaskedIP blacklistedIPv6 = { true, rgw::IAM::Address(1), 128 };
+  const rgw::IAM::MaskedIP blocklistedIPv6 = { true, rgw::IAM::Address(1), 128 };
   // 2001:db8:85a3:0:0:8a2e:370:7330/124
   const rgw::IAM::MaskedIP allowedIPv6Range = { true, rgw::IAM::Address("00100000000000010000110110111000100001011010001100000000000000000000000000000000100010100010111000000011011100000111001100110000"), 124 };
 public:
@@ -866,11 +867,11 @@ const string IPPolicyTest::arbitrary_tenant = "arbitrary_tenant";
 
 TEST_F(IPPolicyTest, MaskedIPOperations) {
   EXPECT_EQ(stringify(allowedIPv4Range), "192.168.1.0/24");
-  EXPECT_EQ(stringify(blacklistedIPv4), "192.168.1.1/32");
+  EXPECT_EQ(stringify(blocklistedIPv4), "192.168.1.1/32");
   EXPECT_EQ(stringify(allowedIPv6), "2001:db8:85a3:0:0:8a2e:370:7334/128");
   EXPECT_EQ(stringify(allowedIPv6Range), "2001:db8:85a3:0:0:8a2e:370:7330/124");
-  EXPECT_EQ(stringify(blacklistedIPv6), "0:0:0:0:0:0:0:1/128");
-  EXPECT_EQ(allowedIPv4Range, blacklistedIPv4);
+  EXPECT_EQ(stringify(blocklistedIPv6), "0:0:0:0:0:0:0:1/128");
+  EXPECT_EQ(allowedIPv4Range, blocklistedIPv4);
   EXPECT_EQ(allowedIPv6Range, allowedIPv6);
 }
 
@@ -883,7 +884,7 @@ TEST_F(IPPolicyTest, asNetworkIPv4Range) {
 TEST_F(IPPolicyTest, asNetworkIPv4) {
   auto actualIPv4 = rgw::IAM::Condition::as_network("192.168.1.1");
   ASSERT_TRUE(actualIPv4.is_initialized());
-  EXPECT_EQ(*actualIPv4, blacklistedIPv4);
+  EXPECT_EQ(*actualIPv4, blocklistedIPv4);
 }
 
 TEST_F(IPPolicyTest, asNetworkIPv6Range) {
@@ -910,10 +911,11 @@ TEST_F(IPPolicyTest, IPEnvironment) {
   // Unfortunately RGWCivetWeb is too tightly tied to civetweb to test RGWCivetWeb::init_env.
   RGWEnv rgw_env;
   rgw::sal::RGWRadosStore store;
-  rgw::sal::RGWRadosUser user(&store);
+  std::unique_ptr<rgw::sal::RGWUser> user = store.get_user(rgw_user());
   rgw_env.set("REMOTE_ADDR", "192.168.1.1");
   rgw_env.set("HTTP_HOST", "1.2.3.4");
-  req_state rgw_req_state(cct.get(), &rgw_env, &user, 0);
+  req_state rgw_req_state(cct.get(), &rgw_env, 0);
+  rgw_req_state.set_user(user);
   rgw_build_iam_environment(&store, &rgw_req_state);
   auto ip = rgw_req_state.env.find("aws:SourceIp");
   ASSERT_NE(ip, rgw_req_state.env.end());
@@ -1016,11 +1018,11 @@ TEST_F(IPPolicyTest, EvalIPAddress) {
   auto fullp  = Policy(cct.get(), arbitrary_tenant,
 		   bufferlist::static_from_string(ip_address_full_example));
   Environment e;
-  Environment allowedIP, blacklistedIP, allowedIPv6, blacklistedIPv6;
+  Environment allowedIP, blocklistedIP, allowedIPv6, blocklistedIPv6;
   allowedIP["aws:SourceIp"] = "192.168.1.2";
   allowedIPv6["aws:SourceIp"] = "::1";
-  blacklistedIP["aws:SourceIp"] = "192.168.1.1";
-  blacklistedIPv6["aws:SourceIp"] = "2001:0db8:85a3:0000:0000:8a2e:0370:7334";
+  blocklistedIP["aws:SourceIp"] = "192.168.1.1";
+  blocklistedIPv6["aws:SourceIp"] = "2001:0db8:85a3:0000:0000:8a2e:0370:7334";
 
   auto trueacct = FakeIdentity(
     Principal::tenant("ACCOUNT-ID-WITHOUT-HYPHENS"));
@@ -1038,7 +1040,7 @@ TEST_F(IPPolicyTest, EvalIPAddress) {
 			ARN(Partition::aws, Service::s3,
 			    "", arbitrary_tenant, "example_bucket")),
 	    Effect::Allow);
-  EXPECT_EQ(allowp.eval(blacklistedIPv6, trueacct, s3ListBucket,
+  EXPECT_EQ(allowp.eval(blocklistedIPv6, trueacct, s3ListBucket,
 			ARN(Partition::aws, Service::s3,
 			    "", arbitrary_tenant, "example_bucket")),
 	    Effect::Pass);
@@ -1053,20 +1055,20 @@ TEST_F(IPPolicyTest, EvalIPAddress) {
 			   "", arbitrary_tenant, "example_bucket/myobject")),
 	    Effect::Deny);
 
-  EXPECT_EQ(denyp.eval(blacklistedIP, trueacct, s3ListBucket,
+  EXPECT_EQ(denyp.eval(blocklistedIP, trueacct, s3ListBucket,
 		       ARN(Partition::aws, Service::s3,
 			   "", arbitrary_tenant, "example_bucket")),
 	    Effect::Pass);
-  EXPECT_EQ(denyp.eval(blacklistedIP, trueacct, s3ListBucket,
+  EXPECT_EQ(denyp.eval(blocklistedIP, trueacct, s3ListBucket,
 		       ARN(Partition::aws, Service::s3,
 			   "", arbitrary_tenant, "example_bucket/myobject")),
 	    Effect::Pass);
 
-  EXPECT_EQ(denyp.eval(blacklistedIPv6, trueacct, s3ListBucket,
+  EXPECT_EQ(denyp.eval(blocklistedIPv6, trueacct, s3ListBucket,
 		       ARN(Partition::aws, Service::s3,
 			   "", arbitrary_tenant, "example_bucket")),
 	    Effect::Pass);
-  EXPECT_EQ(denyp.eval(blacklistedIPv6, trueacct, s3ListBucket,
+  EXPECT_EQ(denyp.eval(blocklistedIPv6, trueacct, s3ListBucket,
 		       ARN(Partition::aws, Service::s3,
 			   "", arbitrary_tenant, "example_bucket/myobject")),
 	    Effect::Pass);
@@ -1088,11 +1090,11 @@ TEST_F(IPPolicyTest, EvalIPAddress) {
 			   "", arbitrary_tenant, "example_bucket/myobject")),
 	    Effect::Allow);
 
-  EXPECT_EQ(fullp.eval(blacklistedIP, trueacct, s3ListBucket,
+  EXPECT_EQ(fullp.eval(blocklistedIP, trueacct, s3ListBucket,
 		       ARN(Partition::aws, Service::s3,
 			   "", arbitrary_tenant, "example_bucket")),
 	    Effect::Pass);
-  EXPECT_EQ(fullp.eval(blacklistedIP, trueacct, s3ListBucket,
+  EXPECT_EQ(fullp.eval(blocklistedIP, trueacct, s3ListBucket,
 		       ARN(Partition::aws, Service::s3,
 			   "", arbitrary_tenant, "example_bucket/myobject")),
 	    Effect::Pass);
@@ -1106,11 +1108,11 @@ TEST_F(IPPolicyTest, EvalIPAddress) {
 			   "", arbitrary_tenant, "example_bucket/myobject")),
 	    Effect::Allow);
 
-  EXPECT_EQ(fullp.eval(blacklistedIPv6, trueacct, s3ListBucket,
+  EXPECT_EQ(fullp.eval(blocklistedIPv6, trueacct, s3ListBucket,
 		       ARN(Partition::aws, Service::s3,
 			   "", arbitrary_tenant, "example_bucket")),
 	    Effect::Pass);
-  EXPECT_EQ(fullp.eval(blacklistedIPv6, trueacct, s3ListBucket,
+  EXPECT_EQ(fullp.eval(blocklistedIPv6, trueacct, s3ListBucket,
 		       ARN(Partition::aws, Service::s3,
 			   "", arbitrary_tenant, "example_bucket/myobject")),
 	    Effect::Pass);

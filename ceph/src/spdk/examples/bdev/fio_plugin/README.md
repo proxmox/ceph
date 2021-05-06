@@ -1,22 +1,27 @@
+# Introduction
+
+This directory contains a plug-in module for fio to enable use
+with SPDK. Fio is free software published under version 2 of
+the GPL license.
+
 # Compiling fio
 
 Clone the fio source repository from https://github.com/axboe/fio
 
     git clone https://github.com/axboe/fio
+    cd fio
 
-Then check out the fio 3.3:
-
-    cd fio && git checkout fio-3.3
-
-Finally, compile the code:
+Compile the fio code and install:
 
     make
+    make install
 
 # Compiling SPDK
 
 Clone the SPDK source repository from https://github.com/spdk/spdk
 
     git clone https://github.com/spdk/spdk
+    cd spdk
     git submodule update --init
 
 Then, run the SPDK configure script to enable fio (point it to the root of the fio repository):
@@ -40,7 +45,7 @@ To use the SPDK fio plugin with fio, specify the plugin binary using LD_PRELOAD 
 fio and set ioengine=spdk_bdev in the fio configuration file (see example_config.fio in the same
 directory as this README).
 
-    LD_PRELOAD=<path to spdk repo>/examples/bdev/fio_plugin/fio_plugin fio
+    LD_PRELOAD=<path to spdk repo>/build/fio/spdk_bdev fio
 
 The fio configuration file must contain one new parameter:
 

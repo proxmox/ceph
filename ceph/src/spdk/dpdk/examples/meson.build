@@ -2,15 +2,52 @@
 # Copyright(c) 2017-2019 Intel Corporation
 
 driver_libs = []
+node_libs = []
 if get_option('default_library') == 'static'
 	driver_libs = dpdk_drivers
+	node_libs = dpdk_graph_nodes
 endif
 
 execinfo = cc.find_library('execinfo', required: false)
 
-all_examples = run_command('sh', '-c',
-	'cd $MESON_SOURCE_ROOT/$MESON_SUBDIR && for d in * ; do if [ -d $d ] ; then echo $d ; fi ; done'
-	).stdout().split()
+# list of all example apps. Keep 1-3 per line, in alphabetical order.
+all_examples = [
+	'bbdev_app', 'bond',
+	'cmdline',
+	'distributor', 'ethtool',
+	'eventdev_pipeline',
+	'fips_validation', 'flow_classify',
+	'flow_filtering', 'helloworld',
+	'ioat',
+	'ip_fragmentation', 'ip_pipeline',
+	'ip_reassembly', 'ipsec-secgw',
+	'ipv4_multicast', 'kni',
+	'l2fwd', 'l2fwd-cat', 'l2fwd-event',
+	'l2fwd-crypto', 'l2fwd-jobstats',
+	'l2fwd-keepalive', 'l3fwd',
+	'l3fwd-acl', 'l3fwd-power', 'l3fwd-graph',
+	'link_status_interrupt',
+	'multi_process/client_server_mp/mp_client',
+	'multi_process/client_server_mp/mp_server',
+	'multi_process/hotplug_mp',
+	'multi_process/simple_mp',
+	'multi_process/symmetric_mp',
+	'ntb', 'packet_ordering',
+	'performance-thread/l3fwd-thread',
+	'performance-thread/pthread_shim',
+	'ptpclient',
+	'qos_meter', 'qos_sched',
+	'rxtx_callbacks',
+	'server_node_efd/node',
+	'server_node_efd/server',
+	'service_cores',
+	'skeleton', 'tep_termination',
+	'timer', 'vdpa',
+	'vhost', 'vhost_crypto',
+	'vhost_blk', 'vm_power_manager',
+	'vm_power_manager/guest_cli',
+	'vmdq', 'vmdq_dcb',
+]
 # install all example code on install - irrespective of whether the example in
 # question is to be built as part of this build or not.
 foreach ex:all_examples
@@ -18,6 +55,10 @@ foreach ex:all_examples
 			install_dir: get_option('datadir') + '/dpdk/examples',
 			exclude_files: 'meson.build')
 endforeach
+
+if get_option('examples') == ''
+	subdir_done()
+endif
 
 if get_option('examples').to_lower() == 'all'
 	examples = all_examples
@@ -31,11 +72,8 @@ if cc.has_argument('-Wno-format-truncation')
 	default_cflags += '-Wno-format-truncation'
 endif
 
-# specify -D_GNU_SOURCE unconditionally
-default_cflags += '-D_GNU_SOURCE'
-
 foreach example: examples
-	name = example
+	name = example.split('/')[-1]
 	build = true
 	sources = []
 	allow_experimental_apis = false
@@ -63,7 +101,7 @@ foreach example: examples
 		endif
 		executable('dpdk-' + name, sources,
 			include_directories: includes,
-			link_whole: driver_libs,
+			link_whole: driver_libs + node_libs,
 			link_args: dpdk_extra_ldflags,
 			c_args: cflags,
 			dependencies: dep_objs)

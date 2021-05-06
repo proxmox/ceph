@@ -1,7 +1,7 @@
 import { HttpClientTestingModule, HttpTestingController } from '@angular/common/http/testing';
 import { TestBed } from '@angular/core/testing';
 
-import { configureTestBed, i18nProviders } from '../../../testing/unit-test-helper';
+import { configureTestBed } from '~/testing/unit-test-helper';
 import { OsdService } from './osd.service';
 
 describe('OsdService', () => {
@@ -9,13 +9,13 @@ describe('OsdService', () => {
   let httpTesting: HttpTestingController;
 
   configureTestBed({
-    providers: [OsdService, i18nProviders],
+    providers: [OsdService],
     imports: [HttpClientTestingModule]
   });
 
   beforeEach(() => {
-    service = TestBed.get(OsdService);
-    httpTesting = TestBed.get(HttpTestingController);
+    service = TestBed.inject(OsdService);
+    httpTesting = TestBed.inject(HttpTestingController);
   });
 
   afterEach(() => {
@@ -110,20 +110,23 @@ describe('OsdService', () => {
 
   it('should mark the OSD out', () => {
     service.markOut(1).subscribe();
-    const req = httpTesting.expectOne('api/osd/1/mark_out');
-    expect(req.request.method).toBe('POST');
+    const req = httpTesting.expectOne('api/osd/1/mark');
+    expect(req.request.method).toBe('PUT');
+    expect(req.request.body).toEqual({ action: 'out' });
   });
 
   it('should mark the OSD in', () => {
     service.markIn(1).subscribe();
-    const req = httpTesting.expectOne('api/osd/1/mark_in');
-    expect(req.request.method).toBe('POST');
+    const req = httpTesting.expectOne('api/osd/1/mark');
+    expect(req.request.method).toBe('PUT');
+    expect(req.request.body).toEqual({ action: 'in' });
   });
 
   it('should mark the OSD down', () => {
     service.markDown(1).subscribe();
-    const req = httpTesting.expectOne('api/osd/1/mark_down');
-    expect(req.request.method).toBe('POST');
+    const req = httpTesting.expectOne('api/osd/1/mark');
+    expect(req.request.method).toBe('PUT');
+    expect(req.request.body).toEqual({ action: 'down' });
   });
 
   it('should reweight an OSD', () => {
@@ -142,8 +145,9 @@ describe('OsdService', () => {
 
   it('should mark an OSD lost', () => {
     service.markLost(1).subscribe();
-    const req = httpTesting.expectOne('api/osd/1/mark_lost');
-    expect(req.request.method).toBe('POST');
+    const req = httpTesting.expectOne('api/osd/1/mark');
+    expect(req.request.method).toBe('PUT');
+    expect(req.request.body).toEqual({ action: 'lost' });
   });
 
   it('should purge an OSD', () => {

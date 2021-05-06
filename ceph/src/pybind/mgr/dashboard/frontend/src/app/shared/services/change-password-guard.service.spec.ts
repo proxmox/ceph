@@ -3,7 +3,7 @@ import { fakeAsync, TestBed, tick } from '@angular/core/testing';
 import { Router, Routes } from '@angular/router';
 import { RouterTestingModule } from '@angular/router/testing';
 
-import { configureTestBed } from '../../../testing/unit-test-helper';
+import { configureTestBed } from '~/testing/unit-test-helper';
 import { AuthStorageService } from './auth-storage.service';
 import { ChangePasswordGuardService } from './change-password-guard.service';
 
@@ -24,9 +24,9 @@ describe('ChangePasswordGuardService', () => {
   });
 
   beforeEach(() => {
-    service = TestBed.get(ChangePasswordGuardService);
-    authStorageService = TestBed.get(AuthStorageService);
-    ngZone = TestBed.get(NgZone);
+    service = TestBed.inject(ChangePasswordGuardService);
+    authStorageService = TestBed.inject(AuthStorageService);
+    ngZone = TestBed.inject(NgZone);
   });
 
   it('should be created', () => {
@@ -54,7 +54,7 @@ describe('ChangePasswordGuardService', () => {
     spyOn(authStorageService, 'isLoggedIn').and.returnValue(true);
     spyOn(authStorageService, 'isSSO').and.returnValue(false);
     spyOn(authStorageService, 'getPwdUpdateRequired').and.returnValue(true);
-    const router = TestBed.get(Router);
+    const router = TestBed.inject(Router);
     ngZone.run(() => {
       expect(service.canActivate()).toBeFalsy();
     });

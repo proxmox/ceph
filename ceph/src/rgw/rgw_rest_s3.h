@@ -6,9 +6,10 @@
 #define TIME_BUF_SIZE 128
 
 #include <mutex>
+#include <string_view>
 
-#include <boost/utility/string_view.hpp>
 #include <boost/container/static_vector.hpp>
+#include <boost/crc.hpp> 
 
 #include "common/sstring.hh"
 #include "rgw_op.h"
@@ -42,14 +43,14 @@ protected:
   // just the status line altered.
   int custom_http_ret = 0;
   std::map<std::string, std::string> crypt_http_responses;
-  int override_range_hdr(const rgw::auth::StrategyRegistry& auth_registry);
+  int override_range_hdr(const rgw::auth::StrategyRegistry& auth_registry, optional_yield y);
 public:
   RGWGetObj_ObjStore_S3() {}
   ~RGWGetObj_ObjStore_S3() override {}
 
-  int verify_requester(const rgw::auth::StrategyRegistry& auth_registry) override;
-  int get_params() override;
-  int send_response_data_error() override;
+  int verify_requester(const rgw::auth::StrategyRegistry& auth_registry, optional_yield y) override;
+  int get_params(optional_yield y) override;
+  int send_response_data_error(optional_yield y) override;
   int send_response_data(bufferlist& bl, off_t ofs, off_t len) override;
   void set_custom_http_response(int http_ret) { custom_http_ret = http_ret; }
   int get_decrypt_filter(std::unique_ptr<RGWGetObj_Filter>* filter,
@@ -72,7 +73,7 @@ public:
   RGWPutObjTags_ObjStore_S3() {}
   ~RGWPutObjTags_ObjStore_S3() {}
 
-  int get_params() override;
+  int get_params(optional_yield y) override;
   void send_response() override;
 };
 
@@ -93,7 +94,7 @@ public:
 class RGWPutBucketTags_ObjStore_S3 : public RGWPutBucketTags_ObjStore
 {
 public:
-  int get_params() override;
+  int get_params(optional_yield y) override;
   void send_response() override;
 };
 
@@ -112,7 +113,7 @@ public:
 class RGWPutBucketReplication_ObjStore_S3 : public RGWPutBucketReplication_ObjStore
 {
 public:
-  int get_params() override;
+  int get_params(optional_yield y) override;
   void send_response() override;
 };
 
@@ -129,7 +130,7 @@ public:
   RGWListBuckets_ObjStore_S3() {}
   ~RGWListBuckets_ObjStore_S3() override {}
 
-  int get_params() override {
+  int get_params(optional_yield y) override {
     limit = -1; /* no limit */
     return 0;
   }
@@ -143,7 +144,7 @@ public:
   RGWGetUsage_ObjStore_S3() {}
   ~RGWGetUsage_ObjStore_S3() override {}
 
-  int get_params() override ;
+  int get_params(optional_yield y) override ;
   void send_response() override;
 };
 
@@ -160,7 +161,7 @@ protected:
   }
   ~RGWListBucket_ObjStore_S3() override {}
 
-  int get_params() override;
+  int get_params(optional_yield y) override;
   void send_response() override;
   void send_versioned_response();
 };
@@ -176,7 +177,7 @@ public:
   }
   ~RGWListBucket_ObjStore_S3v2() override {}
 
-  int get_params() override;
+  int get_params(optional_yield y) override;
   void send_response() override;
   void send_versioned_response();
 };
@@ -210,7 +211,7 @@ public:
   RGWSetBucketVersioning_ObjStore_S3() {}
   ~RGWSetBucketVersioning_ObjStore_S3() override {}
 
-  int get_params() override;
+  int get_params(optional_yield y) override;
   void send_response() override;
 };
 
@@ -227,7 +228,7 @@ public:
   RGWSetBucketWebsite_ObjStore_S3() {}
   ~RGWSetBucketWebsite_ObjStore_S3() override {}
 
-  int get_params() override;
+  int get_params(optional_yield y) override;
   void send_response() override;
 };
 
@@ -252,7 +253,7 @@ public:
   RGWCreateBucket_ObjStore_S3() {}
   ~RGWCreateBucket_ObjStore_S3() override {}
 
-  int get_params() override;
+  int get_params(optional_yield y) override;
   void send_response() override;
 };
 
@@ -272,7 +273,7 @@ public:
   RGWPutObj_ObjStore_S3() {}
   ~RGWPutObj_ObjStore_S3() override {}
 
-  int get_params() override;
+  int get_params(optional_yield y) override;
   int get_data(bufferlist& bl) override;
   void send_response() override;
 
@@ -294,9 +295,9 @@ class RGWPostObj_ObjStore_S3 : public RGWPostObj_ObjStore {
 
   const rgw::auth::StrategyRegistry* auth_registry_ptr = nullptr;
 
-  int get_policy();
+  int get_policy(optional_yield y);
   int get_tags();
-  void rebuild_key(string& key);
+  void rebuild_key(rgw::sal::RGWObject* obj);
 
   std::string get_current_filename() const override;
   std::string get_current_content_type() const override;
@@ -305,12 +306,12 @@ public:
   RGWPostObj_ObjStore_S3() {}
   ~RGWPostObj_ObjStore_S3() override {}
 
-  int verify_requester(const rgw::auth::StrategyRegistry& auth_registry) override {
+  int verify_requester(const rgw::auth::StrategyRegistry& auth_registry, optional_yield y) override {
     auth_registry_ptr = &auth_registry;
-    return RGWPostObj_ObjStore::verify_requester(auth_registry);
+    return RGWPostObj_ObjStore::verify_requester(auth_registry, y);
   }
 
-  int get_params() override;
+  int get_params(optional_yield y) override;
   int complete_get_params();
 
   void send_response() override;
@@ -324,7 +325,7 @@ public:
   RGWDeleteObj_ObjStore_S3() {}
   ~RGWDeleteObj_ObjStore_S3() override {}
 
-  int get_params() override;
+  int get_params(optional_yield y) override;
   void send_response() override;
 };
 
@@ -335,8 +336,8 @@ public:
   ~RGWCopyObj_ObjStore_S3() override {}
 
   int init_dest_policy() override;
-  int get_params() override;
-  int check_storage_class(const rgw_placement_rule& src_placement);
+  int get_params(optional_yield y) override;
+  int check_storage_class(const rgw_placement_rule& src_placement) override;
   void send_partial_response(off_t ofs) override;
   void send_response() override;
 };
@@ -356,7 +357,7 @@ public:
 
   int get_policy_from_state(rgw::sal::RGWRadosStore *store, struct req_state *s, stringstream& ss) override;
   void send_response() override;
-  int get_params() override;
+  int get_params(optional_yield y) override;
 };
 
 class RGWGetLC_ObjStore_S3 : public RGWGetLC_ObjStore {
@@ -365,7 +366,7 @@ protected:
 public:
   RGWGetLC_ObjStore_S3() {}
   ~RGWGetLC_ObjStore_S3() override {}
-  void execute() override;
+  void execute(optional_yield y) override;
 
  void send_response() override;
 };
@@ -374,7 +375,7 @@ class RGWPutLC_ObjStore_S3 : public RGWPutLC_ObjStore {
 public:
   RGWPutLC_ObjStore_S3() {}
   ~RGWPutLC_ObjStore_S3() override {}
-  
+
  void send_response() override;
 };
 
@@ -382,7 +383,7 @@ class RGWDeleteLC_ObjStore_S3 : public RGWDeleteLC_ObjStore {
 public:
   RGWDeleteLC_ObjStore_S3() {}
   ~RGWDeleteLC_ObjStore_S3() override {}
-  
+
  void send_response() override;
 };
 
@@ -399,7 +400,7 @@ public:
   RGWPutCORS_ObjStore_S3() {}
   ~RGWPutCORS_ObjStore_S3() override {}
 
-  int get_params() override;
+  int get_params(optional_yield y) override;
   void send_response() override;
 };
 
@@ -432,7 +433,7 @@ public:
   RGWSetRequestPayment_ObjStore_S3() {}
   ~RGWSetRequestPayment_ObjStore_S3() override {}
 
-  int get_params() override;
+  int get_params(optional_yield y) override;
   void send_response() override;
 };
 
@@ -443,7 +444,7 @@ public:
   RGWInitMultipart_ObjStore_S3() {}
   ~RGWInitMultipart_ObjStore_S3() override {}
 
-  int get_params() override;
+  int get_params(optional_yield y) override;
   void send_response() override;
   int prepare_encryption(map<string, bufferlist>& attrs) override;
 };
@@ -453,7 +454,7 @@ public:
   RGWCompleteMultipart_ObjStore_S3() {}
   ~RGWCompleteMultipart_ObjStore_S3() override {}
 
-  int get_params() override;
+  int get_params(optional_yield y) override;
   void send_response() override;
 };
 
@@ -488,7 +489,7 @@ public:
   RGWDeleteMultiObj_ObjStore_S3() {}
   ~RGWDeleteMultiObj_ObjStore_S3() override {}
 
-  int get_params() override;
+  int get_params(optional_yield y) override;
   void send_status() override;
   void begin_response() override;
   void send_partial_response(rgw_obj_key& key, bool delete_marker,
@@ -514,7 +515,7 @@ class RGWPutObjRetention_ObjStore_S3 : public RGWPutObjRetention_ObjStore {
 public:
   RGWPutObjRetention_ObjStore_S3() {}
   ~RGWPutObjRetention_ObjStore_S3() {}
-  int get_params() override;
+  int get_params(optional_yield y) override;
   void send_response() override;
 };
 
@@ -552,7 +553,7 @@ public:
   RGWConfigBucketMetaSearch_ObjStore_S3() {}
   ~RGWConfigBucketMetaSearch_ObjStore_S3() {}
 
-  int get_params() override;
+  int get_params(optional_yield y) override;
   void send_response() override;
 };
 
@@ -592,7 +593,7 @@ public:
   static int authorize(const DoutPrefixProvider *dpp,
                        rgw::sal::RGWRadosStore *store,
                        const rgw::auth::StrategyRegistry& auth_registry,
-                       struct req_state *s);
+                       struct req_state *s, optional_yield y);
 };
 
 class RGWHandler_Auth_S3 : public RGWHandler_REST {
@@ -613,10 +614,10 @@ public:
   int init(rgw::sal::RGWRadosStore *store,
            struct req_state *s,
            rgw::io::BasicClient *cio) override;
-  int authorize(const DoutPrefixProvider *dpp) override {
-    return RGW_Auth_S3::authorize(dpp, store, auth_registry, s);
+  int authorize(const DoutPrefixProvider *dpp, optional_yield y) override {
+    return RGW_Auth_S3::authorize(dpp, store, auth_registry, s, y);
   }
-  int postauth_init() override { return 0; }
+  int postauth_init(optional_yield) override { return 0; }
 };
 
 class RGWHandler_REST_S3 : public RGWHandler_REST {
@@ -624,7 +625,7 @@ class RGWHandler_REST_S3 : public RGWHandler_REST {
 protected:
   const rgw::auth::StrategyRegistry& auth_registry;
 public:
-  static int init_from_header(struct req_state *s, int default_formatter, bool configurable_format);
+  static int init_from_header(rgw::sal::RGWRadosStore *store, struct req_state *s, int default_formatter, bool configurable_format);
 
   explicit RGWHandler_REST_S3(const rgw::auth::StrategyRegistry& auth_registry)
     : RGWHandler_REST(),
@@ -635,8 +636,8 @@ public:
   int init(rgw::sal::RGWRadosStore *store,
            struct req_state *s,
            rgw::io::BasicClient *cio) override;
-  int authorize(const DoutPrefixProvider *dpp) override;
-  int postauth_init() override;
+  int authorize(const DoutPrefixProvider *dpp, optional_yield y) override;
+  int postauth_init(optional_yield y) override;
 };
 
 class RGWHandler_REST_Service_S3 : public RGWHandler_REST_S3 {
@@ -728,8 +729,12 @@ protected:
     return s->info.args.exists("legal-hold");
   }
 
+  bool is_select_op() const {
+    return s->info.args.exists("select-type");
+  }
+
   bool is_obj_update_op() const override {
-    return is_acl_op() || is_tagging_op() || is_obj_retention_op() || is_obj_legal_hold_op();
+    return is_acl_op() || is_tagging_op() || is_obj_retention_op() || is_obj_legal_hold_op() || is_select_op();
   }
   RGWOp *get_obj_op(bool get_data);
 
@@ -760,7 +765,8 @@ public:
 
   ~RGWRESTMgr_S3() override = default;
 
-  RGWHandler_REST *get_handler(struct req_state* s,
+  RGWHandler_REST *get_handler(rgw::sal::RGWRadosStore *store,
+			       struct req_state* s,
                                const rgw::auth::StrategyRegistry& auth_registry,
                                const std::string& frontend_prefix) override;
 };
@@ -794,7 +800,7 @@ static inline bool looks_like_ip_address(const char *bucket)
   return (num_periods == 3);
 }
 
-static inline int valid_s3_object_name(const string& name) {
+inline int valid_s3_object_name(const string& name) {
   if (name.size() > 1024) {
     return -ERR_INVALID_OBJECT_NAME;
   }
@@ -804,7 +810,7 @@ static inline int valid_s3_object_name(const string& name) {
   return 0;
 }
 
-static inline int valid_s3_bucket_name(const string& name, bool relaxed=false)
+inline int valid_s3_bucket_name(const string& name, bool relaxed=false)
 {
   // This function enforces Amazon's spec for bucket names.
   // (The requirements, not the recommendations.)
@@ -875,6 +881,75 @@ static inline int valid_s3_bucket_name(const string& name, bool relaxed=false)
   return 0;
 }
 
+namespace s3selectEngine
+{
+class s3select;
+class csv_object;
+}
+
+class RGWSelectObj_ObjStore_S3 : public RGWGetObj_ObjStore_S3
+{
+
+private:
+  std::unique_ptr<s3selectEngine::s3select> s3select_syntax;
+  std::string m_s3select_query;
+  std::string m_result;
+  std::unique_ptr<s3selectEngine::csv_object> m_s3_csv_object;
+  std::string m_column_delimiter;
+  std::string m_quot;
+  std::string m_row_delimiter;
+  std::string m_compression_type;
+  std::string m_escape_char;
+  std::unique_ptr<char[]>  m_buff_header;
+  std::string m_header_info;
+  std::string m_sql_query;
+
+public:
+  unsigned int chunk_number;
+
+  enum header_name_En
+  {
+    EVENT_TYPE,
+    CONTENT_TYPE,
+    MESSAGE_TYPE
+  };
+  static const char* header_name_str[3];
+
+  enum header_value_En
+  {
+    RECORDS,
+    OCTET_STREAM,
+    EVENT
+  };
+  static const char* header_value_str[3];
+
+  RGWSelectObj_ObjStore_S3();
+  virtual ~RGWSelectObj_ObjStore_S3();
+
+  virtual int send_response_data(bufferlist& bl, off_t ofs, off_t len) override;
+
+  virtual int get_params(optional_yield y) override;
+
+private:
+  void encode_short(char* buff, uint16_t s, int& i);
+
+  void encode_int(char* buff, u_int32_t s, int& i);
+
+  int create_header_records(char* buff);
+
+  std::unique_ptr<boost::crc_32_type> crc32;
+
+  int create_message(std::string&, u_int32_t result_len, u_int32_t header_len);
+
+  int run_s3select(const char* query, const char* input, size_t input_length);
+
+  int extract_by_tag(std::string tag_name, std::string& result);
+
+  void convert_escape_seq(std::string& esc);
+
+  int handle_aws_cli_parameters(std::string& sql_query);
+};
+
 
 namespace rgw::auth::s3 {
 
@@ -893,9 +968,9 @@ public:
   public:
     virtual ~VersionAbstractor() {};
 
-    using access_key_id_t = boost::string_view;
-    using client_signature_t = boost::string_view;
-    using session_token_t = boost::string_view;
+    using access_key_id_t = std::string_view;
+    using client_signature_t = std::string_view;
+    using session_token_t = std::string_view;
     using server_signature_t = basic_sstring<char, uint16_t, SIGNATURE_MAX_SIZE>;
     using string_to_sign_t = std::string;
 
@@ -944,16 +1019,18 @@ protected:
    * the signature get_auth_data() of VersionAbstractor is too complicated.
    * Replace these thing with a simple, dedicated structure. */
   virtual result_t authenticate(const DoutPrefixProvider* dpp,
-                                const boost::string_view& access_key_id,
-                                const boost::string_view& signature,
-                                const boost::string_view& session_token,
+                                const std::string_view& access_key_id,
+                                const std::string_view& signature,
+                                const std::string_view& session_token,
                                 const string_to_sign_t& string_to_sign,
                                 const signature_factory_t& signature_factory,
                                 const completer_factory_t& completer_factory,
-                                const req_state* s) const = 0;
+                                const req_state* s,
+				optional_yield y) const = 0;
 
 public:
-  result_t authenticate(const DoutPrefixProvider* dpp, const req_state* const s) const final;
+  result_t authenticate(const DoutPrefixProvider* dpp, const req_state* const s,
+			optional_yield y) const final;
 };
 
 
@@ -962,7 +1039,7 @@ class AWSGeneralAbstractor : public AWSEngine::VersionAbstractor {
 
   virtual boost::optional<std::string>
   get_v4_canonical_headers(const req_info& info,
-                           const boost::string_view& signedheaders,
+                           const std::string_view& signedheaders,
                            const bool using_qs) const;
 
   auth_data_t get_auth_data_v2(const req_state* s) const;
@@ -979,7 +1056,7 @@ public:
 class AWSGeneralBoto2Abstractor : public AWSGeneralAbstractor {
   boost::optional<std::string>
   get_v4_canonical_headers(const req_info& info,
-                           const boost::string_view& signedheaders,
+                           const std::string_view& signedheaders,
                            const bool using_qs) const override;
 
 public:
@@ -1021,13 +1098,14 @@ protected:
   auth_info_t get_creds_info(const rgw::RGWToken& token) const noexcept;
 
   result_t authenticate(const DoutPrefixProvider* dpp,
-                        const boost::string_view& access_key_id,
-                        const boost::string_view& signature,
-                        const boost::string_view& session_token,
+                        const std::string_view& access_key_id,
+                        const std::string_view& signature,
+                        const std::string_view& session_token,
                         const string_to_sign_t& string_to_sign,
                         const signature_factory_t&,
                         const completer_factory_t& completer_factory,
-                        const req_state* s) const override;
+                        const req_state* s,
+			optional_yield y) const override;
 public:
   LDAPEngine(CephContext* const cct,
              RGWCtl* const ctl,
@@ -1054,13 +1132,14 @@ class LocalEngine : public AWSEngine {
   const rgw::auth::LocalApplier::Factory* const apl_factory;
 
   result_t authenticate(const DoutPrefixProvider* dpp,
-                        const boost::string_view& access_key_id,
-                        const boost::string_view& signature,
-                        const boost::string_view& session_token,
+                        const std::string_view& access_key_id,
+                        const std::string_view& signature,
+                        const std::string_view& session_token,
                         const string_to_sign_t& string_to_sign,
                         const signature_factory_t& signature_factory,
                         const completer_factory_t& completer_factory,
-                        const req_state* s) const override;
+                        const req_state* s,
+			optional_yield y) const override;
 public:
   LocalEngine(CephContext* const cct,
               RGWCtl* const ctl,
@@ -1090,17 +1169,18 @@ class STSEngine : public AWSEngine {
   acl_strategy_t get_acl_strategy() const { return nullptr; };
   auth_info_t get_creds_info(const STS::SessionToken& token) const noexcept;
 
-  int get_session_token(const DoutPrefixProvider* dpp, const boost::string_view& session_token,
+  int get_session_token(const DoutPrefixProvider* dpp, const std::string_view& session_token,
                         STS::SessionToken& token) const;
 
   result_t authenticate(const DoutPrefixProvider* dpp, 
-                        const boost::string_view& access_key_id,
-                        const boost::string_view& signature,
-                        const boost::string_view& session_token,
+                        const std::string_view& access_key_id,
+                        const std::string_view& signature,
+                        const std::string_view& session_token,
                         const string_to_sign_t& string_to_sign,
                         const signature_factory_t& signature_factory,
                         const completer_factory_t& completer_factory,
-                        const req_state* s) const override;
+                        const req_state* s,
+			optional_yield y) const override;
 public:
   STSEngine(CephContext* const cct,
               RGWCtl* const ctl,

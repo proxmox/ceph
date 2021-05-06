@@ -96,9 +96,9 @@ int RGWHandler_REST_IAM::init(rgw::sal::RGWRadosStore *store,
   return RGWHandler_REST::init(store, s, cio);
 }
 
-int RGWHandler_REST_IAM::authorize(const DoutPrefixProvider* dpp)
+int RGWHandler_REST_IAM::authorize(const DoutPrefixProvider* dpp, optional_yield y)
 {
-  return RGW_Auth_S3::authorize(dpp, store, auth_registry, s);
+  return RGW_Auth_S3::authorize(dpp, store, auth_registry, s, y);
 }
 
 int RGWHandler_REST_IAM::init_from_header(struct req_state* s,
@@ -144,9 +144,10 @@ int RGWHandler_REST_IAM::init_from_header(struct req_state* s,
 }
 
 RGWHandler_REST*
-RGWRESTMgr_IAM::get_handler(struct req_state* const s,
-                              const rgw::auth::StrategyRegistry& auth_registry,
-                              const std::string& frontend_prefix)
+RGWRESTMgr_IAM::get_handler(rgw::sal::RGWRadosStore *store,
+			    struct req_state* const s,
+			    const rgw::auth::StrategyRegistry& auth_registry,
+			    const std::string& frontend_prefix)
 {
   return new RGWHandler_REST_IAM(auth_registry);
 }

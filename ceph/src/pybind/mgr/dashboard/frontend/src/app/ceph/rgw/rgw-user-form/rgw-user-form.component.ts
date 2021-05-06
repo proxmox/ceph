@@ -2,20 +2,20 @@ import { Component, OnInit } from '@angular/core';
 import { AbstractControl, ValidationErrors, Validators } from '@angular/forms';
 import { ActivatedRoute, Router } from '@angular/router';
 
-import { I18n } from '@ngx-translate/i18n-polyfill';
-import * as _ from 'lodash';
-import { BsModalService } from 'ngx-bootstrap/modal';
+import _ from 'lodash';
 import { concat as observableConcat, forkJoin as observableForkJoin, Observable } from 'rxjs';
 
-import { RgwUserService } from '../../../shared/api/rgw-user.service';
-import { ActionLabelsI18n, URLVerbs } from '../../../shared/constants/app.constants';
-import { Icons } from '../../../shared/enum/icons.enum';
-import { NotificationType } from '../../../shared/enum/notification-type.enum';
-import { CdFormBuilder } from '../../../shared/forms/cd-form-builder';
-import { CdFormGroup } from '../../../shared/forms/cd-form-group';
-import { CdValidators, isEmptyInputValue } from '../../../shared/forms/cd-validators';
-import { FormatterService } from '../../../shared/services/formatter.service';
-import { NotificationService } from '../../../shared/services/notification.service';
+import { RgwUserService } from '~/app/shared/api/rgw-user.service';
+import { ActionLabelsI18n, URLVerbs } from '~/app/shared/constants/app.constants';
+import { Icons } from '~/app/shared/enum/icons.enum';
+import { NotificationType } from '~/app/shared/enum/notification-type.enum';
+import { CdForm } from '~/app/shared/forms/cd-form';
+import { CdFormBuilder } from '~/app/shared/forms/cd-form-builder';
+import { CdFormGroup } from '~/app/shared/forms/cd-form-group';
+import { CdValidators, isEmptyInputValue } from '~/app/shared/forms/cd-validators';
+import { FormatterService } from '~/app/shared/services/formatter.service';
+import { ModalService } from '~/app/shared/services/modal.service';
+import { NotificationService } from '~/app/shared/services/notification.service';
 import { RgwUserCapabilities } from '../models/rgw-user-capabilities';
 import { RgwUserCapability } from '../models/rgw-user-capability';
 import { RgwUserS3Key } from '../models/rgw-user-s3-key';
@@ -31,11 +31,9 @@ import { RgwUserSwiftKeyModalComponent } from '../rgw-user-swift-key-modal/rgw-u
   templateUrl: './rgw-user-form.component.html',
   styleUrls: ['./rgw-user-form.component.scss']
 })
-export class RgwUserFormComponent implements OnInit {
+export class RgwUserFormComponent extends CdForm implements OnInit {
   userForm: CdFormGroup;
   editing = false;
-  error = false;
-  loading = false;
   submitObservables: Observable<Object>[] = [];
   icons = Icons;
   subusers: RgwUserSubuser[] = [];
@@ -48,21 +46,24 @@ export class RgwUserFormComponent implements OnInit {
   subuserLabel: string;
   s3keyLabel: string;
   capabilityLabel: string;
+  usernameExists: boolean;
+  showTenant = false;
+  previousTenant: string = null;
 
   constructor(
     private formBuilder: CdFormBuilder,
     private route: ActivatedRoute,
     private router: Router,
     private rgwUserService: RgwUserService,
-    private bsModalService: BsModalService,
+    private modalService: ModalService,
     private notificationService: NotificationService,
-    private i18n: I18n,
     public actionLabels: ActionLabelsI18n
   ) {
-    this.resource = this.i18n('user');
-    this.subuserLabel = this.i18n('subuser');
-    this.s3keyLabel = this.i18n('S3 Key');
-    this.capabilityLabel = this.i18n('capability');
+    super();
+    this.resource = $localize`user`;
+    this.subuserLabel = $localize`subuser`;
+    this.s3keyLabel = $localize`S3 Key`;
+    this.capabilityLabel = $localize`capability`;
     this.editing = this.router.url.startsWith(`/rgw/user/${URLVerbs.EDIT}`);
     this.action = this.editing ? this.actionLabels.EDIT : this.actionLabels.CREATE;
     this.createForm();
@@ -71,10 +72,31 @@ export class RgwUserFormComponent implements OnInit {
   createForm() {
     this.userForm = this.formBuilder.group({
       // General
-      uid: [
+      user_id: [
         null,
-        [Validators.required],
-        this.editing ? [] : [CdValidators.unique(this.rgwUserService.exists, this.rgwUserService)]
+        [Validators.required, Validators.pattern(/^[a-zA-Z0-9!@#%^&*()_-]+$/)],
+        this.editing
+          ? []
+          : [
+              CdValidators.unique(this.rgwUserService.exists, this.rgwUserService, () =>
+                this.userForm.getValue('tenant')
+              )
+            ]
+      ],
+      show_tenant: [this.editing],
+      tenant: [
+        null,
+        [Validators.pattern(/^[a-zA-Z0-9!@#%^&*()_-]+$/)],
+        this.editing
+          ? []
+          : [
+              CdValidators.unique(
+                this.rgwUserService.exists,
+                this.rgwUserService,
+                () => this.userForm.getValue('user_id'),
+                true
+              )
+            ]
       ],
       display_name: [null, [Validators.required]],
       email: [
@@ -155,17 +177,16 @@ export class RgwUserFormComponent implements OnInit {
     // Process route parameters.
     this.route.params.subscribe((params: { uid: string }) => {
       if (!params.hasOwnProperty('uid')) {
+        this.loadingReady();
         return;
       }
       const uid = decodeURIComponent(params.uid);
-      this.loading = true;
       // Load the user and quota information.
       const observables = [];
       observables.push(this.rgwUserService.get(uid));
       observables.push(this.rgwUserService.getQuota(uid));
       observableForkJoin(observables).subscribe(
         (resp: any[]) => {
-          this.loading = false;
           // Get the default values.
           const defaults = _.clone(this.userForm.value);
           // Extract the values displayed in the form.
@@ -223,9 +244,11 @@ export class RgwUserFormComponent implements OnInit {
             }
           });
           this.capabilities = resp[0].caps;
+
+          this.loadingReady();
         },
-        (error) => {
-          this.error = error;
+        () => {
+          this.loadingError();
         }
       );
     });
@@ -242,19 +265,19 @@ export class RgwUserFormComponent implements OnInit {
       this.goToListView();
       return;
     }
-    const uid = this.userForm.getValue('uid');
+    const uid = this.getUID();
     if (this.editing) {
       // Edit
       if (this._isGeneralDirty()) {
         const args = this._getUpdateArgs();
         this.submitObservables.push(this.rgwUserService.update(uid, args));
       }
-      notificationTitle = this.i18n('Updated Object Gateway user "{{uid}}"', { uid: uid });
+      notificationTitle = $localize`Updated Object Gateway user '${uid}'`;
     } else {
       // Add
       const args = this._getCreateArgs();
       this.submitObservables.push(this.rgwUserService.create(args));
-      notificationTitle = this.i18n('Created Object Gateway user "{{uid}}"', { uid: uid });
+      notificationTitle = $localize`Created Object Gateway user '${uid}'`;
     }
     // Check if user quota has been modified.
     if (this._isUserQuotaDirty()) {
@@ -277,6 +300,27 @@ export class RgwUserFormComponent implements OnInit {
         this.goToListView();
       }
     });
+  }
+
+  updateFieldsWhenTenanted() {
+    this.showTenant = this.userForm.getValue('show_tenant');
+    if (!this.showTenant) {
+      this.userForm.get('user_id').markAsUntouched();
+      this.userForm.get('tenant').patchValue(this.previousTenant);
+    } else {
+      this.userForm.get('user_id').markAsTouched();
+      this.previousTenant = this.userForm.get('tenant').value;
+      this.userForm.get('tenant').patchValue(null);
+    }
+  }
+
+  getUID(): string {
+    let uid = this.userForm.getValue('user_id');
+    const tenant = this.userForm?.getValue('tenant');
+    if (tenant && tenant.length > 0) {
+      uid = `${this.userForm.getValue('tenant')}$${uid}`;
+    }
+    return uid;
   }
 
   /**
@@ -304,7 +348,7 @@ export class RgwUserFormComponent implements OnInit {
       'full-control': 'full',
       'read-write': 'readwrite'
     };
-    const uid = this.userForm.getValue('uid');
+    const uid = this.getUID();
     const args = {
       subuser: subuser.id,
       access:
@@ -342,9 +386,7 @@ export class RgwUserFormComponent implements OnInit {
   deleteSubuser(index: number) {
     const subuser = this.subusers[index];
     // Create an observable to delete the subuser when the form is submitted.
-    this.submitObservables.push(
-      this.rgwUserService.deleteSubuser(this.userForm.getValue('uid'), subuser.id)
-    );
+    this.submitObservables.push(this.rgwUserService.deleteSubuser(this.getUID(), subuser.id));
     // Remove the associated S3 keys.
     this.s3Keys = this.s3Keys.filter((key) => {
       return key.user !== subuser.id;
@@ -363,7 +405,7 @@ export class RgwUserFormComponent implements OnInit {
    * Add/Update a capability.
    */
   setCapability(cap: RgwUserCapability, index?: number) {
-    const uid = this.userForm.getValue('uid');
+    const uid = this.getUID();
     if (_.isNumber(index)) {
       // Modify
       const oldCap = this.capabilities[index];
@@ -379,7 +421,7 @@ export class RgwUserFormComponent implements OnInit {
       // Add
       // Create an observable to add the capability when the form is submitted.
       this.submitObservables.push(this.rgwUserService.addCapability(uid, cap.type, cap.perm));
-      this.capabilities.push(cap);
+      this.capabilities = [...this.capabilities, cap]; // Notify Angular CD
     }
     // Mark the form as dirty to be able to submit it.
     this.userForm.markAsDirty();
@@ -395,16 +437,17 @@ export class RgwUserFormComponent implements OnInit {
     const cap = this.capabilities[index];
     // Create an observable to delete the capability when the form is submitted.
     this.submitObservables.push(
-      this.rgwUserService.deleteCapability(this.userForm.getValue('uid'), cap.type, cap.perm)
+      this.rgwUserService.deleteCapability(this.getUID(), cap.type, cap.perm)
     );
     // Remove the capability to update the UI.
     this.capabilities.splice(index, 1);
+    this.capabilities = [...this.capabilities]; // Notify Angular CD
     // Mark the form as dirty to be able to submit it.
     this.userForm.markAsDirty();
   }
 
-  hasAllCapabilities() {
-    return !_.difference(RgwUserCapabilities.getAll(), _.map(this.capabilities, 'type')).length;
+  hasAllCapabilities(capabilities: RgwUserCapability[]) {
+    return !_.difference(RgwUserCapabilities.getAll(), _.map(capabilities, 'type')).length;
   }
 
   /**
@@ -452,9 +495,7 @@ export class RgwUserFormComponent implements OnInit {
   deleteS3Key(index: number) {
     const key = this.s3Keys[index];
     // Create an observable to delete the S3 key when the form is submitted.
-    this.submitObservables.push(
-      this.rgwUserService.deleteS3Key(this.userForm.getValue('uid'), key.access_key)
-    );
+    this.submitObservables.push(this.rgwUserService.deleteS3Key(this.getUID(), key.access_key));
     // Remove the S3 key to update the UI.
     this.s3Keys.splice(index, 1);
     // Mark the form as dirty to be able to submit it.
@@ -466,20 +507,20 @@ export class RgwUserFormComponent implements OnInit {
    * @param {number | undefined} index The subuser to show.
    */
   showSubuserModal(index?: number) {
-    const uid = this.userForm.getValue('uid');
-    const modalRef = this.bsModalService.show(RgwUserSubuserModalComponent);
+    const uid = this.getUID();
+    const modalRef = this.modalService.show(RgwUserSubuserModalComponent);
     if (_.isNumber(index)) {
       // Edit
       const subuser = this.subusers[index];
-      modalRef.content.setEditing();
-      modalRef.content.setValues(uid, subuser.id, subuser.permissions);
+      modalRef.componentInstance.setEditing();
+      modalRef.componentInstance.setValues(uid, subuser.id, subuser.permissions);
     } else {
       // Add
-      modalRef.content.setEditing(false);
-      modalRef.content.setValues(uid);
-      modalRef.content.setSubusers(this.subusers);
+      modalRef.componentInstance.setEditing(false);
+      modalRef.componentInstance.setValues(uid);
+      modalRef.componentInstance.setSubusers(this.subusers);
     }
-    modalRef.content.submitAction.subscribe((subuser: RgwUserSubuser) => {
+    modalRef.componentInstance.submitAction.subscribe((subuser: RgwUserSubuser) => {
       this.setSubuser(subuser, index);
     });
   }
@@ -489,18 +530,18 @@ export class RgwUserFormComponent implements OnInit {
    * @param {number | undefined} index The S3 key to show.
    */
   showS3KeyModal(index?: number) {
-    const modalRef = this.bsModalService.show(RgwUserS3KeyModalComponent);
+    const modalRef = this.modalService.show(RgwUserS3KeyModalComponent);
     if (_.isNumber(index)) {
       // View
       const key = this.s3Keys[index];
-      modalRef.content.setViewing();
-      modalRef.content.setValues(key.user, key.access_key, key.secret_key);
+      modalRef.componentInstance.setViewing();
+      modalRef.componentInstance.setValues(key.user, key.access_key, key.secret_key);
     } else {
       // Add
       const candidates = this._getS3KeyUserCandidates();
-      modalRef.content.setViewing(false);
-      modalRef.content.setUserCandidates(candidates);
-      modalRef.content.submitAction.subscribe((key: RgwUserS3Key) => {
+      modalRef.componentInstance.setViewing(false);
+      modalRef.componentInstance.setUserCandidates(candidates);
+      modalRef.componentInstance.submitAction.subscribe((key: RgwUserS3Key) => {
         this.setS3Key(key);
       });
     }
@@ -511,9 +552,9 @@ export class RgwUserFormComponent implements OnInit {
    * @param {number} index The Swift key to show.
    */
   showSwiftKeyModal(index: number) {
-    const modalRef = this.bsModalService.show(RgwUserSwiftKeyModalComponent);
+    const modalRef = this.modalService.show(RgwUserSwiftKeyModalComponent);
     const key = this.swiftKeys[index];
-    modalRef.content.setValues(key.user, key.secret_key);
+    modalRef.componentInstance.setValues(key.user, key.secret_key);
   }
 
   /**
@@ -521,18 +562,18 @@ export class RgwUserFormComponent implements OnInit {
    * @param {number | undefined} index The S3 key to show.
    */
   showCapabilityModal(index?: number) {
-    const modalRef = this.bsModalService.show(RgwUserCapabilityModalComponent);
+    const modalRef = this.modalService.show(RgwUserCapabilityModalComponent);
     if (_.isNumber(index)) {
       // Edit
       const cap = this.capabilities[index];
-      modalRef.content.setEditing();
-      modalRef.content.setValues(cap.type, cap.perm);
+      modalRef.componentInstance.setEditing();
+      modalRef.componentInstance.setValues(cap.type, cap.perm);
     } else {
       // Add
-      modalRef.content.setEditing(false);
-      modalRef.content.setCapabilities(this.capabilities);
+      modalRef.componentInstance.setEditing(false);
+      modalRef.componentInstance.setCapabilities(this.capabilities);
     }
-    modalRef.content.submitAction.subscribe((cap: RgwUserCapability) => {
+    modalRef.componentInstance.submitAction.subscribe((cap: RgwUserCapability) => {
       this.setCapability(cap, index);
     });
   }
@@ -587,7 +628,7 @@ export class RgwUserFormComponent implements OnInit {
    */
   private _getCreateArgs() {
     const result = {
-      uid: this.userForm.getValue('uid'),
+      uid: this.getUID(),
       display_name: this.userForm.getValue('display_name'),
       suspended: this.userForm.getValue('suspended'),
       email: '',
@@ -689,7 +730,7 @@ export class RgwUserFormComponent implements OnInit {
   private _getS3KeyUserCandidates() {
     let result = [];
     // Add the current user id.
-    const uid = this.userForm.getValue('uid');
+    const uid = this.getUID();
     if (_.isString(uid) && !_.isEmpty(uid)) {
       result.push(uid);
     }

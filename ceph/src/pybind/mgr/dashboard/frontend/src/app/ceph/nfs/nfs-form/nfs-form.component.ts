@@ -2,24 +2,24 @@ import { ChangeDetectorRef, Component, OnInit, ViewChild } from '@angular/core';
 import { FormControl, Validators } from '@angular/forms';
 import { ActivatedRoute, Router } from '@angular/router';
 
-import { I18n } from '@ngx-translate/i18n-polyfill';
-import * as _ from 'lodash';
+import _ from 'lodash';
 import { forkJoin, Observable, of } from 'rxjs';
-import { map, mergeMap } from 'rxjs/operators';
+import { debounceTime, distinctUntilChanged, map, mergeMap } from 'rxjs/operators';
 
-import { NfsService } from '../../../shared/api/nfs.service';
-import { RgwUserService } from '../../../shared/api/rgw-user.service';
-import { SelectMessages } from '../../../shared/components/select/select-messages.model';
-import { SelectOption } from '../../../shared/components/select/select-option.model';
-import { ActionLabelsI18n } from '../../../shared/constants/app.constants';
-import { Icons } from '../../../shared/enum/icons.enum';
-import { CdFormBuilder } from '../../../shared/forms/cd-form-builder';
-import { CdFormGroup } from '../../../shared/forms/cd-form-group';
-import { CdValidators } from '../../../shared/forms/cd-validators';
-import { FinishedTask } from '../../../shared/models/finished-task';
-import { Permission } from '../../../shared/models/permissions';
-import { AuthStorageService } from '../../../shared/services/auth-storage.service';
-import { TaskWrapperService } from '../../../shared/services/task-wrapper.service';
+import { NfsService } from '~/app/shared/api/nfs.service';
+import { RgwUserService } from '~/app/shared/api/rgw-user.service';
+import { SelectMessages } from '~/app/shared/components/select/select-messages.model';
+import { SelectOption } from '~/app/shared/components/select/select-option.model';
+import { ActionLabelsI18n } from '~/app/shared/constants/app.constants';
+import { Icons } from '~/app/shared/enum/icons.enum';
+import { CdForm } from '~/app/shared/forms/cd-form';
+import { CdFormBuilder } from '~/app/shared/forms/cd-form-builder';
+import { CdFormGroup } from '~/app/shared/forms/cd-form-group';
+import { CdValidators } from '~/app/shared/forms/cd-validators';
+import { FinishedTask } from '~/app/shared/models/finished-task';
+import { Permission } from '~/app/shared/models/permissions';
+import { AuthStorageService } from '~/app/shared/services/auth-storage.service';
+import { TaskWrapperService } from '~/app/shared/services/task-wrapper.service';
 import { NFSClusterType } from '../nfs-cluster-type.enum';
 import { NfsFormClientComponent } from '../nfs-form-client/nfs-form-client.component';
 
@@ -28,9 +28,11 @@ import { NfsFormClientComponent } from '../nfs-form-client/nfs-form-client.compo
   templateUrl: './nfs-form.component.html',
   styleUrls: ['./nfs-form.component.scss']
 })
-export class NfsFormComponent implements OnInit {
+export class NfsFormComponent extends CdForm implements OnInit {
   @ViewChild('nfsClients', { static: true })
   nfsClients: NfsFormClientComponent;
+
+  clients: any[] = [];
 
   permission: Permission;
   nfsForm: CdFormGroup;
@@ -61,21 +63,24 @@ export class NfsFormComponent implements OnInit {
   resource: string;
 
   daemonsSelections: SelectOption[] = [];
-  daemonsMessages = new SelectMessages(
-    { noOptions: this.i18n('There are no daemons available.') },
-    this.i18n
-  );
+  daemonsMessages = new SelectMessages({ noOptions: $localize`There are no daemons available.` });
 
-  pathDataSource: Observable<any> = Observable.create((observer: any) => {
-    observer.next(this.nfsForm.getValue('path'));
-  }).pipe(
-    mergeMap((token: string) => this.getPathTypeahead(token)),
-    map((val: any) => val.paths)
-  );
+  pathDataSource = (text$: Observable<string>) => {
+    return text$.pipe(
+      debounceTime(200),
+      distinctUntilChanged(),
+      mergeMap((token: string) => this.getPathTypeahead(token)),
+      map((val: any) => val.paths)
+    );
+  };
 
-  bucketDataSource: Observable<any> = Observable.create((observer: any) => {
-    observer.next(this.nfsForm.getValue('path'));
-  }).pipe(mergeMap((token: string) => this.getBucketTypeahead(token)));
+  bucketDataSource = (text$: Observable<string>) => {
+    return text$.pipe(
+      debounceTime(200),
+      distinctUntilChanged(),
+      mergeMap((token: string) => this.getBucketTypeahead(token))
+    );
+  };
 
   constructor(
     private authStorageService: AuthStorageService,
@@ -86,11 +91,11 @@ export class NfsFormComponent implements OnInit {
     private formBuilder: CdFormBuilder,
     private taskWrapper: TaskWrapperService,
     private cdRef: ChangeDetectorRef,
-    private i18n: I18n,
     public actionLabels: ActionLabelsI18n
   ) {
+    super();
     this.permission = this.authStorageService.getPermissions().pool;
-    this.resource = this.i18n('NFS export');
+    this.resource = $localize`NFS export`;
     this.createForm();
   }
 
@@ -125,12 +130,14 @@ export class NfsFormComponent implements OnInit {
   getData(promises: Observable<any>[]) {
     forkJoin(promises).subscribe((data: any[]) => {
       this.resolveDaemons(data[0]);
-      this.resolvefsals(data[1]);
+      this.resolveFsals(data[1]);
       this.resolveClients(data[2]);
       this.resolveFilesystems(data[3]);
       if (data[4]) {
         this.resolveModel(data[4]);
       }
+
+      this.loadingReady();
     });
   }
 
@@ -251,7 +258,7 @@ export class NfsFormComponent implements OnInit {
 
     this.nfsForm.patchValue(res);
     this.setPathValidation();
-    this.nfsClients.resolveModel(res.clients);
+    this.clients = res.clients;
   }
 
   resolveDaemons(daemons: Record<string, any>) {
@@ -269,8 +276,7 @@ export class NfsFormComponent implements OnInit {
     });
 
     if (this.isEdit) {
-      const cluster = _.find(this.allClusters, { cluster_id: this.cluster_id });
-      this.clusterType = cluster ? cluster.cluster_type : null;
+      this.clusterType = _.find(this.allClusters, { cluster_id: this.cluster_id })?.cluster_type;
     }
 
     const hasOneCluster = _.isArray(this.allClusters) && this.allClusters.length === 1;
@@ -283,7 +289,7 @@ export class NfsFormComponent implements OnInit {
     }
   }
 
-  resolvefsals(res: string[]) {
+  resolveFsals(res: string[]) {
     res.forEach((fsal) => {
       const fsalItem = this.nfsService.nfsFsal.find((currentFsalItem) => {
         return fsal === currentFsalItem.value;
@@ -467,8 +473,7 @@ export class NfsFormComponent implements OnInit {
 
   onClusterChange() {
     const cluster_id = this.nfsForm.getValue('cluster_id');
-    const cluster = _.find(this.allClusters, { cluster_id: cluster_id });
-    this.clusterType = cluster ? cluster.cluster_type : null;
+    this.clusterType = _.find(this.allClusters, { cluster_id: cluster_id })?.cluster_type;
     if (this.clusterType === NFSClusterType.user) {
       this.daemonsSelections = _.map(
         this.allDaemons[cluster_id],
@@ -530,11 +535,10 @@ export class NfsFormComponent implements OnInit {
       });
     }
 
-    action.subscribe(
-      undefined,
-      () => this.nfsForm.setErrors({ cdSubmitButton: true }),
-      () => this.router.navigate(['/nfs'])
-    );
+    action.subscribe({
+      error: () => this.nfsForm.setErrors({ cdSubmitButton: true }),
+      complete: () => this.router.navigate(['/nfs'])
+    });
   }
 
   _buildRequest() {

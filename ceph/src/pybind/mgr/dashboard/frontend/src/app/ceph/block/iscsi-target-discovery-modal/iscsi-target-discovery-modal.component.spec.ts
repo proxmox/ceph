@@ -8,17 +8,12 @@ import { ReactiveFormsModule } from '@angular/forms';
 import { By } from '@angular/platform-browser';
 import { RouterTestingModule } from '@angular/router/testing';
 
-import { BsModalRef } from 'ngx-bootstrap/modal';
+import { NgbActiveModal } from '@ng-bootstrap/ng-bootstrap';
 import { ToastrModule } from 'ngx-toastr';
 
-import {
-  configureTestBed,
-  FormHelper,
-  i18nProviders,
-  IscsiHelper
-} from '../../../../testing/unit-test-helper';
-import { Permission } from '../../../shared/models/permissions';
-import { SharedModule } from '../../../shared/shared.module';
+import { Permission } from '~/app/shared/models/permissions';
+import { SharedModule } from '~/app/shared/shared.module';
+import { configureTestBed, FormHelper, IscsiHelper } from '~/testing/unit-test-helper';
 import { IscsiTargetDiscoveryModalComponent } from './iscsi-target-discovery-modal.component';
 
 describe('IscsiTargetDiscoveryModalComponent', () => {
@@ -39,13 +34,13 @@ describe('IscsiTargetDiscoveryModalComponent', () => {
       ToastrModule.forRoot(),
       RouterTestingModule
     ],
-    providers: [i18nProviders, BsModalRef]
+    providers: [NgbActiveModal]
   });
 
   beforeEach(() => {
     fixture = TestBed.createComponent(IscsiTargetDiscoveryModalComponent);
     component = fixture.componentInstance;
-    httpTesting = TestBed.get(HttpTestingController);
+    httpTesting = TestBed.inject(HttpTestingController);
   });
 
   describe('with update permissions', () => {

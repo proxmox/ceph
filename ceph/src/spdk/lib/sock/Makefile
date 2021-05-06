@@ -34,11 +34,13 @@
 SPDK_ROOT_DIR := $(abspath $(CURDIR)/../..)
 include $(SPDK_ROOT_DIR)/mk/spdk.common.mk
 
-C_SRCS = sock.c net_framework.c
+SO_VER := 3
+SO_MINOR := 1
+
+C_SRCS = sock.c net_framework.c sock_rpc.c
 
 LIBNAME = sock
 
-DIRS-y += posix
-DIRS-$(CONFIG_VPP) += vpp
+SPDK_MAP_FILE = $(abspath $(CURDIR)/spdk_sock.map)
 
 include $(SPDK_ROOT_DIR)/mk/spdk.lib.mk

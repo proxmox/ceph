@@ -1,5 +1,5 @@
 //
-// Copyright 2019 Mateusz Loskot <mateusz at loskot dot net>
+// Copyright 2019-2020 Mateusz Loskot <mateusz at loskot dot net>
 //
 // Distributed under the Boost Software License, Version 1.0
 // See accompanying file LICENSE_1_0.txt or copy at
@@ -7,13 +7,12 @@
 //
 #include <boost/gil/channel.hpp>
 #include <boost/gil/typedefs.hpp>
+
+#include <boost/core/lightweight_test.hpp>
+
 #include <cstdint>
 #include <limits>
 #include <type_traits>
-
-
-#define BOOST_TEST_MODULE test_channel_traits
-#include "unit_test.hpp"
 
 namespace gil = boost::gil;
 
@@ -44,7 +43,7 @@ void test_packed_channel_value_members()
         "packed_channel_value should be convertible to underlying integer_t");
 }
 
-BOOST_AUTO_TEST_CASE(packed_channel_value_with_num_bits_1)
+void test_packed_channel_value_with_num_bits_1()
 {
     using bits1 = gil::packed_channel_value<1>;
 
@@ -53,14 +52,14 @@ BOOST_AUTO_TEST_CASE(packed_channel_value_with_num_bits_1)
     static_assert(std::is_same<bits1::integer_t, std::uint8_t>::value,
         "smallest integral type to store 1-bit value should be 8-bit unsigned");
 
-    BOOST_TEST(bits1::num_bits() == 1u);
-    BOOST_TEST(bits1::min_value() == 0u);
-    BOOST_TEST(bits1::max_value() == 1u);
-    BOOST_TEST(gil::channel_traits<bits1>::min_value() == 0u);
-    BOOST_TEST(gil::channel_traits<bits1>::max_value() == 1u);
+    BOOST_TEST_EQ(bits1::num_bits(), 1u);
+    BOOST_TEST_EQ(bits1::min_value(), 0u);
+    BOOST_TEST_EQ(bits1::max_value(), 1u);
+    BOOST_TEST_EQ(gil::channel_traits<bits1>::min_value(), 0u);
+    BOOST_TEST_EQ(gil::channel_traits<bits1>::max_value(), 1u);
 }
 
-BOOST_AUTO_TEST_CASE(packed_channel_value_with_num_bits_8)
+void test_packed_channel_value_with_num_bits_8()
 {
     using bits8 = gil::packed_channel_value<8>;
 
@@ -69,14 +68,14 @@ BOOST_AUTO_TEST_CASE(packed_channel_value_with_num_bits_8)
     static_assert(std::is_same<bits8::integer_t, std::uint8_t>::value,
         "smallest integral type to store 8-bit value should be 8-bit unsigned");
 
-    BOOST_TEST(bits8::num_bits() == 8u);
-    BOOST_TEST(bits8::min_value() == 0u);
-    BOOST_TEST(bits8::max_value() == 255u);
-    BOOST_TEST(gil::channel_traits<bits8>::min_value() == 0u);
-    BOOST_TEST(gil::channel_traits<bits8>::max_value() == 255u);
+    BOOST_TEST_EQ(bits8::num_bits(), 8u);
+    BOOST_TEST_EQ(bits8::min_value(), 0u);
+    BOOST_TEST_EQ(bits8::max_value(), 255u);
+    BOOST_TEST_EQ(gil::channel_traits<bits8>::min_value(), 0u);
+    BOOST_TEST_EQ(gil::channel_traits<bits8>::max_value(), 255u);
 }
 
-BOOST_AUTO_TEST_CASE(packed_channel_value_with_num_bits15)
+void test_packed_channel_value_with_num_bits15()
 {
     using bits15 = gil::packed_channel_value<15>;
 
@@ -85,41 +84,54 @@ BOOST_AUTO_TEST_CASE(packed_channel_value_with_num_bits15)
     static_assert(std::is_same<bits15::integer_t, std::uint16_t>::value,
         "smallest integral type to store 15-bit value should be 8-bit unsigned");
 
-    BOOST_TEST(bits15::num_bits() == 15u);
-    BOOST_TEST(bits15::min_value() == 0u);
-    BOOST_TEST(bits15::max_value() == 32767u);
-    BOOST_TEST(gil::channel_traits<bits15>::min_value() == 0u);
-    BOOST_TEST(gil::channel_traits<bits15>::max_value() == 32767u);
+    BOOST_TEST_EQ(bits15::num_bits(), 15u);
+    BOOST_TEST_EQ(bits15::min_value(), 0u);
+    BOOST_TEST_EQ(bits15::max_value(), 32767u);
+    BOOST_TEST_EQ(gil::channel_traits<bits15>::min_value(), 0u);
+    BOOST_TEST_EQ(gil::channel_traits<bits15>::max_value(), 32767u);
 }
 
 using fixture = gil::packed_channel_value<8>;
 
-BOOST_AUTO_TEST_CASE(packed_channel_value_default_constructor)
+void test_packed_channel_value_default_constructor()
 {
     fixture f;
     std::uint8_t v = f;
-    BOOST_TEST(v == std::uint8_t{0});
+    BOOST_TEST_EQ(v, std::uint8_t{0});
 }
 
-BOOST_AUTO_TEST_CASE(packed_channel_value_user_defined_constructors)
+void test_packed_channel_value_user_defined_constructors()
 {
     fixture f{1};
     std::uint8_t v = f;
-    BOOST_TEST(v == std::uint8_t{1});
+    BOOST_TEST_EQ(v, std::uint8_t{1});
 }
 
-BOOST_AUTO_TEST_CASE(packed_channel_value_copy_constructors)
+void test_packed_channel_value_copy_constructors()
 {
     fixture f1{128};
     fixture f2{f1};
 
-    BOOST_TEST(std::uint8_t{f1} == std::uint8_t{128});
-    BOOST_TEST(std::uint8_t{f1} == std::uint8_t{f2});
+    BOOST_TEST_EQ(std::uint8_t{f1}, std::uint8_t{128});
+    BOOST_TEST_EQ(std::uint8_t{f1}, std::uint8_t{f2});
 }
 
-BOOST_AUTO_TEST_CASE(packed_channel_value_assignment)
+void test_packed_channel_value_assignment()
 {
     fixture f;
     f = 64;
-    BOOST_TEST(f == std::uint8_t{64});
+    BOOST_TEST_EQ(f, std::uint8_t{64});
+}
+
+int main()
+{
+    test_packed_channel_value_with_num_bits_1();
+    test_packed_channel_value_with_num_bits_8();
+    test_packed_channel_value_with_num_bits15();
+    test_packed_channel_value_default_constructor();
+    test_packed_channel_value_user_defined_constructors();
+    test_packed_channel_value_copy_constructors();
+    test_packed_channel_value_assignment();
+
+    return ::boost::report_errors();
 }

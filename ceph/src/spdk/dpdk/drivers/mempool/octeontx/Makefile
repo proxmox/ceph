@@ -11,9 +11,8 @@ LIB = librte_mempool_octeontx.a
 
 CFLAGS += $(WERROR_FLAGS)
 CFLAGS += -I$(RTE_SDK)/drivers/common/octeontx/
-EXPORT_MAP := rte_mempool_octeontx_version.map
 
-LIBABIVER := 1
+EXPORT_MAP := rte_mempool_octeontx_version.map
 
 #
 # all source are stored in SRCS-y

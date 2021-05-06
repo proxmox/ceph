@@ -9,12 +9,11 @@
 #include "../metadata/metadata.h"
 #include "../utils/utils_cleaner.h"
 #include "../utils/utils_cache_line.h"
-#include "../utils/utils_req.h"
+#include "../ocf_request.h"
 #include "../cleaning/acp.h"
 #include "../engine/engine_common.h"
-#include "../concurrency/ocf_cache_concurrency.h"
+#include "../concurrency/ocf_cache_line_concurrency.h"
 #include "cleaning_priv.h"
-#include "../utils/utils_core.h"
 
 #define OCF_ACP_DEBUG 0
 
@@ -193,20 +192,23 @@ static struct acp_chunk_info *_acp_get_chunk(struct ocf_cache *cache,
 
 static void _acp_remove_cores(struct ocf_cache *cache)
 {
-	int i;
+	ocf_core_t core;
+	ocf_core_id_t core_id;
 
-	for_each_core(cache, i)
-		cleaning_policy_acp_remove_core(cache, i);
+	for_each_core(cache, core, core_id)
+		cleaning_policy_acp_remove_core(cache, core_id);
 }
 
 static int _acp_load_cores(struct ocf_cache *cache)
 {
-	int i;
+
+	ocf_core_t core;
+	ocf_core_id_t core_id;
 	int err = 0;
 
-	for_each_core(cache, i) {
-		OCF_DEBUG_PARAM(cache, "loading core %i\n", i);
-		err = cleaning_policy_acp_add_core(cache, i);
+	for_each_core(cache, core, core_id) {
+		OCF_DEBUG_PARAM(cache, "loading core %i\n", core_id);
+		err = cleaning_policy_acp_add_core(cache, core_id);
 		if (err)
 			break;
 	}
@@ -231,7 +233,12 @@ void cleaning_policy_acp_init_cache_block(struct ocf_cache *cache,
 
 void cleaning_policy_acp_deinitialize(struct ocf_cache *cache)
 {
+	struct acp_context *acp;
+
 	_acp_remove_cores(cache);
+
+	acp = cache->cleaner.cleaning_policy_context;
+	env_rwsem_destroy(&acp->chunks_lock);
 
 	env_vfree(cache->cleaner.cleaning_policy_context);
 	cache->cleaner.cleaning_policy_context = NULL;
@@ -295,10 +302,15 @@ int cleaning_policy_acp_initialize(struct ocf_cache *cache,
 		ocf_cache_log(cache, log_err, "acp context allocation error\n");
 		return -OCF_ERR_NO_MEM;
 	}
+
+	err = env_rwsem_init(&acp->chunks_lock);
+	if (err) {
+		env_vfree(acp);
+		return err;
+	}
+
 	cache->cleaner.cleaning_policy_context = acp;
 	acp->cache = cache;
-
-	env_rwsem_init(&acp->chunks_lock);
 
 	for (i = 0; i < ACP_MAX_BUCKETS; i++) {
 		INIT_LIST_HEAD(&acp->bucket_info[i].chunk_list);
@@ -385,7 +397,7 @@ static ocf_cache_line_t _acp_trylock_dirty(struct ocf_cache *cache,
 	struct ocf_map_info info;
 	bool locked = false;
 
-	OCF_METADATA_LOCK_RD();
+	ocf_metadata_hash_lock_rd(&cache->metadata.lock, core_id, core_line);
 
 	ocf_engine_lookup_map_entry(cache, &info, core_id,
 			core_line);
@@ -396,7 +408,7 @@ static ocf_cache_line_t _acp_trylock_dirty(struct ocf_cache *cache,
 		locked = true;
 	}
 
-	OCF_METADATA_UNLOCK_RD();
+	ocf_metadata_hash_unlock_rd(&cache->metadata.lock, core_id, core_line);
 
 	return locked ? info.coll_idx : cache->device->collision_table_entries;
 }
@@ -629,6 +641,8 @@ void cleaning_policy_acp_purge_block(struct ocf_cache *cache,
 	struct acp_cleaning_policy_meta *acp_meta;
 	struct acp_chunk_info *chunk;
 
+	ACP_LOCK_CHUNKS_WR();
+
 	acp_meta = _acp_meta_get(cache, cache_line, &policy_meta);
 	chunk = _acp_get_chunk(cache, cache_line);
 
@@ -639,6 +653,8 @@ void cleaning_policy_acp_purge_block(struct ocf_cache *cache,
 	}
 
 	_acp_update_bucket(acp, chunk);
+
+	ACP_UNLOCK_CHUNKS_WR();
 }
 
 int cleaning_policy_acp_purge_range(struct ocf_cache *cache,
@@ -680,7 +696,8 @@ void cleaning_policy_acp_remove_core(ocf_cache_t cache,
 int cleaning_policy_acp_add_core(ocf_cache_t cache,
 		ocf_core_id_t core_id)
 {
-	uint64_t core_size = cache->core_conf_meta[core_id].length;
+	ocf_core_t core = ocf_cache_get_core(cache, core_id);
+	uint64_t core_size = core->conf_meta->length;
 	uint64_t num_chunks = OCF_DIV_ROUND_UP(core_size, ACP_CHUNK_SIZE);
 	struct acp_context *acp = _acp_get_ctx_from_cache(cache);
 	int i;
@@ -698,7 +715,7 @@ int cleaning_policy_acp_add_core(ocf_cache_t cache,
 	if (!acp->chunk_info[core_id]) {
 		ACP_UNLOCK_CHUNKS_WR();
 		OCF_DEBUG_PARAM(cache, "failed to allocate acp tables\n");
-		return -ENOMEM;
+		return -OCF_ERR_NO_MEM;
 	}
 
 	OCF_DEBUG_PARAM(cache, "successfully allocated acp tables\n");

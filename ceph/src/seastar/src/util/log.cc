@@ -27,10 +27,12 @@
 #endif
 
 #include <seastar/util/log.hh>
+#include <seastar/core/smp.hh>
 #include <seastar/util/log-cli.hh>
 
 #include <seastar/core/array_map.hh>
 #include <seastar/core/reactor.hh>
+#include <seastar/core/future.hh>
 #include <seastar/core/print.hh>
 
 #include <boost/any.hpp>
@@ -49,6 +51,50 @@
 using namespace std::chrono_literals;
 
 namespace seastar {
+
+namespace internal {
+
+void log_buf::free_buffer() noexcept {
+    if (_own_buf) {
+        delete[] _begin;
+    }
+}
+
+void log_buf::realloc_buffer() {
+    const auto old_size = size();
+    const auto new_size = old_size * 2;
+
+    auto new_buf = new char[new_size];
+    std::memcpy(new_buf, _begin, old_size);
+    free_buffer();
+
+    _begin = new_buf;
+    _current = _begin + old_size;
+    _end = _begin + new_size;
+    _own_buf = true;
+}
+
+log_buf::log_buf()
+    : _begin(new char[512])
+    , _end(_begin + 512)
+    , _current(_begin)
+    , _own_buf(true)
+{
+}
+
+log_buf::log_buf(char* external_buf, size_t size) noexcept
+    : _begin(external_buf)
+    , _end(_begin + size)
+    , _current(_begin)
+    , _own_buf(false)
+{
+}
+
+log_buf::~log_buf() {
+    free_buffer();
+}
+
+} // namespace internal
 
 thread_local uint64_t logging_failures = 0;
 
@@ -110,17 +156,16 @@ std::ostream& operator<<(std::ostream& os, logger_ostream_type lot) {
     return os;
 }
 
-struct timestamp_tag {};
-
-static void print_no_timestamp(std::ostream& os) {
+static internal::log_buf::inserter_iterator print_no_timestamp(internal::log_buf::inserter_iterator it) {
+    return it;
 }
 
-static void print_space_and_boot_timestamp(std::ostream& os) {
+static internal::log_buf::inserter_iterator print_boot_timestamp(internal::log_buf::inserter_iterator it) {
     auto n = std::chrono::steady_clock::now().time_since_epoch() / 1us;
-    fmt::print(os, " {:10d}.{:06d}", n / 1000000, n % 1000000);
+    return fmt::format_to(it, "{:10d}.{:06d}", n / 1000000, n % 1000000);
 }
 
-static void print_space_and_real_timestamp(std::ostream& os) {
+static internal::log_buf::inserter_iterator print_real_timestamp(internal::log_buf::inserter_iterator it) {
     struct a_second {
         time_t t;
         std::string s;
@@ -134,19 +179,10 @@ static void print_space_and_real_timestamp(std::ostream& os) {
         this_second.t = t;
     }
     auto ms = (n - clock::from_time_t(t)) / 1ms;
-    fmt::print(os, " {},{:03d}", this_second.s, ms);
+    return fmt::format_to(it, "{},{:03d}", this_second.s, ms);
 }
 
-static void (*print_timestamp)(std::ostream&) = print_no_timestamp;
-
-static inline timestamp_tag space_and_current_timestamp() {
-    return timestamp_tag{};
-}
-
-std::ostream& operator<<(std::ostream& os, timestamp_tag) {
-    print_timestamp(os);
-    return os;
-}
+static internal::log_buf::inserter_iterator (*print_timestamp)(internal::log_buf::inserter_iterator) = print_no_timestamp;
 
 const std::map<log_level, sstring> log_level_names = {
         { log_level::trace, "trace" },
@@ -192,14 +228,29 @@ logger::~logger() {
     global_logger_registry().unregister_logger(this);
 }
 
+static thread_local std::array<char, 8192> static_log_buf;
+
+bool logger::rate_limit::check() {
+    const auto now = clock::now();
+    if (now < _next) {
+        ++_dropped_messages;
+        return false;
+    }
+    _next = now + _interval;
+    return true;
+}
+
+logger::rate_limit::rate_limit(std::chrono::milliseconds interval)
+    : _interval(interval), _next(clock::now())
+{ }
+
 void
-logger::really_do_log(log_level level, const char* fmt, const stringer* stringers, size_t stringers_size) {
+logger::do_log(log_level level, log_writer& writer) {
     bool is_ostream_enabled = _ostream.load(std::memory_order_relaxed);
     bool is_syslog_enabled = _syslog.load(std::memory_order_relaxed);
     if(!is_ostream_enabled && !is_syslog_enabled) {
       return;
     }
-    std::ostringstream out, log;
     static array_map<sstring, 20> level_map = {
             { int(log_level::debug), "DEBUG" },
             { int(log_level::info),  "INFO "  },
@@ -207,42 +258,27 @@ logger::really_do_log(log_level level, const char* fmt, const stringer* stringer
             { int(log_level::warn),  "WARN "  },
             { int(log_level::error), "ERROR" },
     };
-    auto print_once = [&] (std::ostream& out) {
+    auto print_once = [&] (internal::log_buf::inserter_iterator it) {
       if (local_engine) {
-        out << " [shard " << engine().cpu_id() << "] " << _name << " - ";
-      } else {
-        out << " " << _name << " - ";
+          it = fmt::format_to(it, " [shard {}]", this_shard_id());
       }
-      const char* p = fmt;
-      size_t n = stringers_size;
-      const stringer* s = stringers;
-      while (*p != '\0') {
-        if (*p == '{' && *(p+1) == '}') {
-            p += 2;
-            if (n > 0) {
-                try {
-                    s->append(out, s->object);
-                } catch (...) {
-                    out << '<' << std::current_exception() << '>';
-                }
-                ++s;
-                --n;
-            } else {
-                out << "???";
-            }
-        } else {
-            out << *p++;
-        }
-      }
-      out << "\n";
+      it = fmt::format_to(it, " {} - ", _name);
+      return writer(it);
     };
+
     if (is_ostream_enabled) {
-        out << level_map[int(level)] << space_and_current_timestamp();
-        print_once(out);
-        *_out << out.str();
+        internal::log_buf buf(static_log_buf.data(), static_log_buf.size());
+        auto it = buf.back_insert_begin();
+        it = fmt::format_to(it, "{} ", level_map[int(level)]);
+        it = print_timestamp(it);
+        it = print_once(it);
+        *_out << buf.view() << std::endl;
     }
     if (is_syslog_enabled) {
-        print_once(log);
+        internal::log_buf buf(static_log_buf.data(), static_log_buf.size());
+        auto it = buf.back_insert_begin();
+        it = print_once(it);
+        *it = '\0';
         static array_map<int, 20> level_map = {
                 { int(log_level::debug), LOG_DEBUG },
                 { int(log_level::info), LOG_INFO },
@@ -256,42 +292,44 @@ logger::really_do_log(log_level level, const char* fmt, const stringer* stringer
         //       we'll have to implement some internal buffering (which
         //       still means the problem can happen, just less frequently).
         // syslog() interprets % characters, so send msg as a parameter
-        auto msg = log.str();
-        syslog(level_map[int(level)], "%s", msg.c_str());
+        syslog(level_map[int(level)], "%s", buf.data());
     }
 }
 
-void logger::failed_to_log(std::exception_ptr ex)
+void logger::failed_to_log(std::exception_ptr ex) noexcept
 {
     try {
-        do_log(log_level::error, "failed to log message: {}", ex);
+        lambda_log_writer writer([ex = std::move(ex)] (internal::log_buf::inserter_iterator it) {
+            return fmt::format_to(it, "failed to log message: {}", ex);
+        });
+        do_log(log_level::error, writer);
     } catch (...) {
         ++logging_failures;
     }
 }
 
 void
-logger::set_ostream(std::ostream& out) {
+logger::set_ostream(std::ostream& out) noexcept {
     _out = &out;
 }
 
 void
-logger::set_ostream_enabled(bool enabled) {
+logger::set_ostream_enabled(bool enabled) noexcept {
     _ostream.store(enabled, std::memory_order_relaxed);
 }
 
 void
-logger::set_stdout_enabled(bool enabled) {
+logger::set_stdout_enabled(bool enabled) noexcept {
     _ostream.store(enabled, std::memory_order_relaxed);
 }
 
 void
-logger::set_syslog_enabled(bool enabled) {
+logger::set_syslog_enabled(bool enabled) noexcept {
     _syslog.store(enabled, std::memory_order_relaxed);
 }
 
-bool logger::is_shard_zero() {
-    return engine().cpu_id() == 0;
+bool logger::is_shard_zero() noexcept {
+    return this_shard_id() == 0;
 }
 
 void
@@ -376,10 +414,10 @@ void apply_logging_settings(const logging_settings& s) {
         print_timestamp = print_no_timestamp;
         break;
     case logger_timestamp_style::boot:
-        print_timestamp = print_space_and_boot_timestamp;
+        print_timestamp = print_boot_timestamp;
         break;
     case logger_timestamp_style::real:
-        print_timestamp = print_space_and_real_timestamp;
+        print_timestamp = print_real_timestamp;
         break;
     default:
         break;
@@ -425,7 +463,7 @@ bpo::options_description get_options_description() {
             ("logger-log-level",
              bpo::value<program_options::string_map>()->default_value({}),
              "Map of logger name to log level. The format is \"NAME0=LEVEL0[:NAME1=LEVEL1:...]\". "
-             "Valid logger names can be queried with --help-logging. "
+             "Valid logger names can be queried with --help-loggers. "
              "Valid values for levels are trace, debug, info, warn, error. "
              "This option can be specified multiple times."
             )
@@ -502,6 +540,8 @@ std::ostream& operator<<(std::ostream& out, const std::exception_ptr& eptr) {
         // Print more information on some familiar exception types
         try {
             throw;
+        } catch (const seastar::nested_exception& ne) {
+            out << fmt::format(": {} (while cleaning up after {})", ne.inner, ne.outer);
         } catch(const std::system_error &e) {
             out << " (error " << e.code() << ", " << e.what() << ")";
         } catch(const std::exception& e) {

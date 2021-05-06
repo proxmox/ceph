@@ -4,15 +4,16 @@
 //  (found in the LICENSE.Apache file in the root directory).
 
 #include "rocksdb/table_properties.h"
+
 #include "port/port.h"
 #include "rocksdb/env.h"
 #include "rocksdb/iterator.h"
-#include "table/block.h"
+#include "table/block_based/block.h"
 #include "table/internal_iterator.h"
 #include "table/table_properties_internal.h"
 #include "util/string_util.h"
 
-namespace rocksdb {
+namespace ROCKSDB_NAMESPACE {
 
 const uint32_t TablePropertiesCollectorFactory::Context::kUnknownColumnFamily =
     port::kMaxInt32;
@@ -124,10 +125,11 @@ std::string TableProperties::ToString(
                  prop_delim, kv_delim);
 
   AppendProperty(result, "column family ID",
-                 column_family_id == rocksdb::TablePropertiesCollectorFactory::
-                                         Context::kUnknownColumnFamily
+                 column_family_id ==
+                         ROCKSDB_NAMESPACE::TablePropertiesCollectorFactory::
+                             Context::kUnknownColumnFamily
                      ? std::string("N/A")
-                     : rocksdb::ToString(column_family_id),
+                     : ROCKSDB_NAMESPACE::ToString(column_family_id),
                  prop_delim, kv_delim);
   AppendProperty(
       result, "column family name",
@@ -162,6 +164,9 @@ std::string TableProperties::ToString(
 
   AppendProperty(result, "time stamp of earliest key", oldest_key_time,
                  prop_delim, kv_delim);
+
+  AppendProperty(result, "file creation time", file_creation_time, prop_delim,
+                 kv_delim);
 
   return result;
 }
@@ -233,6 +238,8 @@ const std::string TablePropertiesNames::kCompressionOptions =
 const std::string TablePropertiesNames::kCreationTime = "rocksdb.creation.time";
 const std::string TablePropertiesNames::kOldestKeyTime =
     "rocksdb.oldest.key.time";
+const std::string TablePropertiesNames::kFileCreationTime =
+    "rocksdb.file.creation.time";
 
 extern const std::string kPropertiesBlock = "rocksdb.properties";
 // Old property block name for backward compatibility
@@ -262,4 +269,4 @@ Status SeekToRangeDelBlock(InternalIterator* meta_iter, bool* is_found,
   return SeekToMetaBlock(meta_iter, kRangeDelBlock, is_found, block_handle);
 }
 
-}  // namespace rocksdb
+}  // namespace ROCKSDB_NAMESPACE

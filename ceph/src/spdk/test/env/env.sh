@@ -1,28 +1,15 @@
 #!/usr/bin/env bash
 
-set -e
-
 testdir=$(readlink -f $(dirname $0))
 rootdir=$(readlink -f $testdir/../..)
 source $rootdir/test/common/autotest_common.sh
 
-timing_enter env
+run_test "env_memory" $testdir/memory/memory_ut
+run_test "env_vtophys" $testdir/vtophys/vtophys
+run_test "env_pci" $testdir/pci/pci_ut
 
-timing_enter memory
-$testdir/memory/memory_ut
-timing_exit memory
-
-timing_enter vtophys
-$testdir/vtophys/vtophys
-timing_exit vtophys
-
-timing_enter pci
-$testdir/pci/pci_ut
-timing_exit pci
-
-timing_enter env_dpdk_post_init
 argv="-c 0x1 "
-if [ `uname` = Linux ]; then
+if [ $(uname) = Linux ]; then
 	# The default base virtaddr falls into a region reserved by ASAN.
 	# DPDK will try to find the nearest available address space by
 	# trying to do mmap over and over, which will take ages to finish.
@@ -31,16 +18,10 @@ if [ `uname` = Linux ]; then
 	# this implicitly.
 	argv+="--base-virtaddr=0x200000000000"
 fi
-$testdir/env_dpdk_post_init/env_dpdk_post_init $argv
-timing_exit env_dpdk_post_init
+run_test "env_dpdk_post_init" $testdir/env_dpdk_post_init/env_dpdk_post_init $argv
 
-if [ `uname` = Linux ]; then
+if [ $(uname) = Linux ]; then
 	# This tests the --match-allocations DPDK parameter which is only
 	# supported on Linux
-	timing_enter mem_callbacks
-	$testdir/mem_callbacks/mem_callbacks
-	timing_exit mem_callbacks
+	run_test "env_mem_callbacks" $testdir/mem_callbacks/mem_callbacks
 fi
-
-report_test_completion "env"
-timing_exit env

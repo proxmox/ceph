@@ -23,17 +23,18 @@ import {
   SortPropDir,
   TableColumnProp
 } from '@swimlane/ngx-datatable';
-import * as _ from 'lodash';
+import _ from 'lodash';
 import { Observable, Subject, Subscription, timer as observableTimer } from 'rxjs';
 
-import { Icons } from '../../../shared/enum/icons.enum';
-import { CellTemplate } from '../../enum/cell-template.enum';
-import { CdTableColumn } from '../../models/cd-table-column';
-import { CdTableColumnFilter } from '../../models/cd-table-column-filter';
-import { CdTableColumnFiltersChange } from '../../models/cd-table-column-filters-change';
-import { CdTableFetchDataContext } from '../../models/cd-table-fetch-data-context';
-import { CdTableSelection } from '../../models/cd-table-selection';
-import { CdUserConfig } from '../../models/cd-user-config';
+import { TableStatus } from '~/app/shared/classes/table-status';
+import { CellTemplate } from '~/app/shared/enum/cell-template.enum';
+import { Icons } from '~/app/shared/enum/icons.enum';
+import { CdTableColumn } from '~/app/shared/models/cd-table-column';
+import { CdTableColumnFilter } from '~/app/shared/models/cd-table-column-filter';
+import { CdTableColumnFiltersChange } from '~/app/shared/models/cd-table-column-filters-change';
+import { CdTableFetchDataContext } from '~/app/shared/models/cd-table-fetch-data-context';
+import { CdTableSelection } from '~/app/shared/models/cd-table-selection';
+import { CdUserConfig } from '~/app/shared/models/cd-user-config';
 
 @Component({
   selector: 'cd-table',
@@ -145,6 +146,9 @@ export class TableComponent implements AfterContentChecked, OnInit, OnChanges, O
   @Input()
   extraFilterableColumns: CdTableColumn[] = [];
 
+  @Input()
+  status = new TableStatus();
+
   /**
    * Should be a function to update the input data if undefined nothing will be triggered
    *
@@ -191,6 +195,12 @@ export class TableComponent implements AfterContentChecked, OnInit, OnChanges, O
    */
   expanded: any = undefined;
 
+  /**
+   * To prevent making changes to the original columns list, that might change
+   * how the table is renderer a second time, we now clone that list into a
+   * local variable and only use the clone.
+   */
+  localColumns: CdTableColumn[];
   tableColumns: CdTableColumn[];
   icons = Icons;
   cellTemplates: {
@@ -199,7 +209,6 @@ export class TableComponent implements AfterContentChecked, OnInit, OnChanges, O
   search = '';
   rows: any[] = [];
   loadingIndicator = true;
-  loadingError = false;
   paginationClasses = {
     pagerLeftArrow: Icons.leftArrowDouble,
     pagerRightArrow: Icons.rightArrowDouble,
@@ -238,27 +247,29 @@ export class TableComponent implements AfterContentChecked, OnInit, OnChanges, O
   }
 
   ngOnInit() {
+    this.localColumns = _.clone(this.columns);
+
     // ngx-datatable triggers calculations each time mouse enters a row,
     // this will prevent that.
-    this.table.element.addEventListener('mouseenter', (e) => e.stopPropagation(), true);
+    this.table.element.addEventListener('mouseenter', (e) => e.stopPropagation());
     this._addTemplates();
     if (!this.sorts) {
       // Check whether the specified identifier exists.
-      const exists = _.findIndex(this.columns, ['prop', this.identifier]) !== -1;
+      const exists = _.findIndex(this.localColumns, ['prop', this.identifier]) !== -1;
       // Auto-build the sorting configuration. If the specified identifier doesn't exist,
       // then use the property of the first column.
       this.sorts = this.createSortingDefinition(
-        exists ? this.identifier : this.columns[0].prop + ''
+        exists ? this.identifier : this.localColumns[0].prop + ''
       );
       // If the specified identifier doesn't exist and it is not forced to use it anyway,
       // then use the property of the first column.
       if (!exists && !this.forceIdentifier) {
-        this.identifier = this.columns[0].prop + '';
+        this.identifier = this.localColumns[0].prop + '';
       }
     }
 
     this.initUserConfig();
-    this.columns.forEach((c) => {
+    this.localColumns.forEach((c) => {
       if (c.cellTransformation) {
         c.cellTemplate = this.cellTemplates[c.cellTransformation];
       }
@@ -275,6 +286,8 @@ export class TableComponent implements AfterContentChecked, OnInit, OnChanges, O
     this.filterHiddenColumns();
     this.initColumnFilters();
     this.updateColumnFilterOptions();
+    // Notify all subscribers to reset their current selection.
+    this.updateSelection.emit(new CdTableSelection());
     // Load the data table content every N ms or at least once.
     // Force showing the loading indicator if there are subscribers to the fetchData
     // event. This is necessary because it has been set to False in useData() when
@@ -299,7 +312,7 @@ export class TableComponent implements AfterContentChecked, OnInit, OnChanges, O
 
   initUserConfig() {
     if (this.autoSave) {
-      this.tableName = this._calculateUniqueTableName(this.columns);
+      this.tableName = this._calculateUniqueTableName(this.localColumns);
       this._loadUserConfig();
       this._initUserConfigAutoSave();
     }
@@ -312,7 +325,7 @@ export class TableComponent implements AfterContentChecked, OnInit, OnChanges, O
     if (!this.userConfig.columns) {
       this.updateUserColumns();
     } else {
-      this.columns.forEach((c, i) => {
+      this.localColumns.forEach((c, i) => {
         c.isHidden = this.userConfig.columns[i].isHidden;
       });
     }
@@ -346,7 +359,7 @@ export class TableComponent implements AfterContentChecked, OnInit, OnChanges, O
   }
 
   _initUserConfigAutoSave() {
-    const source: Observable<any> = Observable.create(this._initUserConfigProxy.bind(this));
+    const source: Observable<any> = new Observable(this._initUserConfigProxy.bind(this));
     this.saveSubscriber = source.subscribe(this._saveUserConfig.bind(this));
   }
 
@@ -365,7 +378,7 @@ export class TableComponent implements AfterContentChecked, OnInit, OnChanges, O
   }
 
   updateUserColumns() {
-    this.userConfig.columns = this.columns.map((c) => ({
+    this.userConfig.columns = this.localColumns.map((c) => ({
       prop: c.prop,
       name: c.name,
       isHidden: !!c.isHidden
@@ -377,7 +390,7 @@ export class TableComponent implements AfterContentChecked, OnInit, OnChanges, O
    */
   initCheckboxColumn() {
     if (this.selectionType === 'multiClick') {
-      this.columns.unshift({
+      this.localColumns.unshift({
         prop: undefined,
         resizeable: false,
         sortable: false,
@@ -395,7 +408,7 @@ export class TableComponent implements AfterContentChecked, OnInit, OnChanges, O
    */
   initExpandCollapseColumn() {
     if (this.hasDetails) {
-      this.columns.unshift({
+      this.localColumns.unshift({
         prop: undefined,
         resizeable: false,
         sortable: false,
@@ -410,11 +423,11 @@ export class TableComponent implements AfterContentChecked, OnInit, OnChanges, O
   }
 
   filterHiddenColumns() {
-    this.tableColumns = this.columns.filter((c) => !c.isHidden);
+    this.tableColumns = this.localColumns.filter((c) => !c.isHidden);
   }
 
   initColumnFilters() {
-    let filterableColumns = _.filter(this.columns, { filterable: true });
+    let filterableColumns = _.filter(this.localColumns, { filterable: true });
     filterableColumns = [...filterableColumns, ...this.extraFilterableColumns];
     this.columnFilters = filterableColumns.map((col: CdTableColumn) => {
       return {
@@ -587,10 +600,12 @@ export class TableComponent implements AfterContentChecked, OnInit, OnChanges, O
 
   reloadData() {
     if (!this.updating) {
-      this.loadingError = false;
+      this.status = new TableStatus();
       const context = new CdTableFetchDataContext(() => {
         // Do we have to display the error panel?
-        this.loadingError = context.errorConfig.displayError;
+        if (!!context.errorConfig.displayError) {
+          this.status = new TableStatus('danger', $localize`Failed to load data.`);
+        }
         // Force data table to show no data?
         if (context.errorConfig.resetData) {
           this.data = [];
@@ -692,14 +707,14 @@ export class TableComponent implements AfterContentChecked, OnInit, OnChanges, O
     this.updateSelection.emit(_.clone(this.selection));
   }
 
-  toggleColumn($event: any) {
-    const prop: TableColumnProp = $event.target.name;
-    const hide = !$event.target.checked;
+  toggleColumn(column: CdTableColumn) {
+    const prop: TableColumnProp = column.prop;
+    const hide = !column.isHidden;
     if (hide && this.tableColumns.length === 1) {
-      $event.target.checked = true;
+      column.isHidden = true;
       return;
     }
-    _.find(this.columns, (c: CdTableColumn) => c.prop === prop).isHidden = hide;
+    _.find(this.localColumns, (c: CdTableColumn) => c.prop === prop).isHidden = hide;
     this.updateColumns();
   }
 
@@ -744,7 +759,9 @@ export class TableComponent implements AfterContentChecked, OnInit, OnChanges, O
     let rows = this.columnFilters.length !== 0 ? this.doColumnFiltering() : this.data;
 
     if (this.search.length > 0 && rows) {
-      const columns = this.columns.filter((c) => c.cellTransformation !== CellTemplate.sparkline);
+      const columns = this.localColumns.filter(
+        (c) => c.cellTransformation !== CellTemplate.sparkline
+      );
       // update the rows
       rows = this.subSearch(rows, TableComponent.prepareSearch(this.search), columns);
       // Whenever the filter changes, always go back to the first page

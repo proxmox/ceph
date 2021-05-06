@@ -144,6 +144,14 @@ static int ctx_cleaner_init(ocf_cleaner_t c)
 }
 
 /*
+ * Kick cleaner thread. Cleaner thread is left non-implemented,
+ * to keep this example as simple as possible.
+ */
+static void ctx_cleaner_kick(ocf_cleaner_t c)
+{
+}
+
+/*
  * Stop cleaner thread. Cleaner thread is left non-implemented, to keep
  * this example as simple as possible.
  */
@@ -166,6 +174,7 @@ static int ctx_metadata_updater_init(ocf_metadata_updater_t mu)
  */
 static void ctx_metadata_updater_kick(ocf_metadata_updater_t mu)
 {
+    ocf_metadata_updater_run(mu);
 }
 
 /*
@@ -244,6 +253,7 @@ static const struct ocf_ctx_config ctx_cfg = {
 
 		.cleaner = {
 			.init = ctx_cleaner_init,
+			.kick = ctx_cleaner_kick,
 			.stop = ctx_cleaner_stop,
 		},
 
@@ -269,13 +279,13 @@ int ctx_init(ocf_ctx_t *ctx)
 {
 	int ret;
 
-	ret = ocf_ctx_init(ctx, &ctx_cfg);
+	ret = ocf_ctx_create(ctx, &ctx_cfg);
 	if (ret)
 		return ret;
 
 	ret = volume_init(*ctx);
 	if (ret) {
-		ocf_ctx_exit(*ctx);
+		ocf_ctx_put(*ctx);
 		return ret;
 	}
 
@@ -289,5 +299,5 @@ int ctx_init(ocf_ctx_t *ctx)
 void ctx_cleanup(ocf_ctx_t ctx)
 {
 	volume_cleanup(ctx);
-	ocf_ctx_exit(ctx);
+	ocf_ctx_put(ctx);
 }

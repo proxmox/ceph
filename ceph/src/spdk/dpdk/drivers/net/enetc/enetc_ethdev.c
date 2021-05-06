@@ -1,9 +1,11 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright 2018-2019 NXP
+ * Copyright 2018-2020 NXP
  */
 
 #include <stdbool.h>
 #include <rte_ethdev_pci.h>
+#include <rte_random.h>
+#include <dpaax_iova_table.h>
 
 #include "enetc_logs.h"
 #include "enetc.h"
@@ -123,28 +125,69 @@ enetc_link_update(struct rte_eth_dev *dev, int wait_to_complete __rte_unused)
 	return rte_eth_linkstatus_set(dev, &link);
 }
 
+static void
+print_ethaddr(const char *name, const struct rte_ether_addr *eth_addr)
+{
+	char buf[RTE_ETHER_ADDR_FMT_SIZE];
+
+	rte_ether_format_addr(buf, RTE_ETHER_ADDR_FMT_SIZE, eth_addr);
+	ENETC_PMD_NOTICE("%s%s\n", name, buf);
+}
+
 static int
 enetc_hardware_init(struct enetc_eth_hw *hw)
 {
 	struct enetc_hw *enetc_hw = &hw->hw;
 	uint32_t *mac = (uint32_t *)hw->mac.addr;
+	uint32_t high_mac = 0;
+	uint16_t low_mac = 0;
 
 	PMD_INIT_FUNC_TRACE();
 	/* Calculating and storing the base HW addresses */
 	hw->hw.port = (void *)((size_t)hw->hw.reg + ENETC_PORT_BASE);
 	hw->hw.global = (void *)((size_t)hw->hw.reg + ENETC_GLOBAL_BASE);
 
+	/* WA for Rx lock-up HW erratum */
+	enetc_port_wr(enetc_hw, ENETC_PM0_RX_FIFO, 1);
+
+	/* set ENETC transaction flags to coherent, don't allocate.
+	 * BD writes merge with surrounding cache line data, frame data writes
+	 * overwrite cache line.
+	 */
+	enetc_wr(enetc_hw, ENETC_SICAR0, ENETC_SICAR0_COHERENT);
+
 	/* Enabling Station Interface */
 	enetc_wr(enetc_hw, ENETC_SIMR, ENETC_SIMR_EN);
 
 	*mac = (uint32_t)enetc_port_rd(enetc_hw, ENETC_PSIPMAR0(0));
+	high_mac = (uint32_t)*mac;
 	mac++;
 	*mac = (uint16_t)enetc_port_rd(enetc_hw, ENETC_PSIPMAR1(0));
+	low_mac = (uint16_t)*mac;
+
+	if ((high_mac | low_mac) == 0) {
+		char *first_byte;
+
+		ENETC_PMD_NOTICE("MAC is not available for this SI, "
+				"set random MAC\n");
+		mac = (uint32_t *)hw->mac.addr;
+		*mac = (uint32_t)rte_rand();
+		first_byte = (char *)mac;
+		*first_byte &= 0xfe;	/* clear multicast bit */
+		*first_byte |= 0x02;	/* set local assignment bit (IEEE802) */
+
+		enetc_port_wr(enetc_hw, ENETC_PSIPMAR0(0), *mac);
+		mac++;
+		*mac = (uint16_t)rte_rand();
+		enetc_port_wr(enetc_hw, ENETC_PSIPMAR1(0), *mac);
+		print_ethaddr("New address: ",
+			      (const struct rte_ether_addr *)hw->mac.addr);
+	}
 
 	return 0;
 }
 
-static void
+static int
 enetc_dev_infos_get(struct rte_eth_dev *dev __rte_unused,
 		    struct rte_eth_dev_info *dev_info)
 {
@@ -168,6 +211,8 @@ enetc_dev_infos_get(struct rte_eth_dev *dev __rte_unused,
 		 DEV_RX_OFFLOAD_TCP_CKSUM |
 		 DEV_RX_OFFLOAD_KEEP_CRC |
 		 DEV_RX_OFFLOAD_JUMBO_FRAME);
+
+	return 0;
 }
 
 static int
@@ -176,12 +221,12 @@ enetc_alloc_txbdr(struct enetc_bdr *txr, uint16_t nb_desc)
 	int size;
 
 	size = nb_desc * sizeof(struct enetc_swbd);
-	txr->q_swbd = rte_malloc(NULL, size, RTE_CACHE_LINE_SIZE);
+	txr->q_swbd = rte_malloc(NULL, size, ENETC_BD_RING_ALIGN);
 	if (txr->q_swbd == NULL)
 		return -ENOMEM;
 
 	size = nb_desc * sizeof(struct enetc_tx_bd);
-	txr->bd_base = rte_malloc(NULL, size, RTE_CACHE_LINE_SIZE);
+	txr->bd_base = rte_malloc(NULL, size, ENETC_BD_RING_ALIGN);
 	if (txr->bd_base == NULL) {
 		rte_free(txr->q_swbd);
 		txr->q_swbd = NULL;
@@ -323,12 +368,12 @@ enetc_alloc_rxbdr(struct enetc_bdr *rxr,
 	int size;
 
 	size = nb_rx_desc * sizeof(struct enetc_swbd);
-	rxr->q_swbd = rte_malloc(NULL, size, RTE_CACHE_LINE_SIZE);
+	rxr->q_swbd = rte_malloc(NULL, size, ENETC_BD_RING_ALIGN);
 	if (rxr->q_swbd == NULL)
 		return -ENOMEM;
 
 	size = nb_rx_desc * sizeof(union enetc_rx_bd);
-	rxr->bd_base = rte_malloc(NULL, size, RTE_CACHE_LINE_SIZE);
+	rxr->bd_base = rte_malloc(NULL, size, ENETC_BD_RING_ALIGN);
 	if (rxr->bd_base == NULL) {
 		rte_free(rxr->q_swbd);
 		rxr->q_swbd = NULL;
@@ -417,7 +462,7 @@ enetc_rx_queue_setup(struct rte_eth_dev *dev,
 	}
 
 	rx_ring->crc_len = (uint8_t)((rx_offloads & DEV_RX_OFFLOAD_KEEP_CRC) ?
-				     ETHER_CRC_LEN : 0);
+				     RTE_ETHER_CRC_LEN : 0);
 
 	return 0;
 fail:
@@ -490,7 +535,7 @@ int enetc_stats_get(struct rte_eth_dev *dev,
 	return 0;
 }
 
-static void
+static int
 enetc_stats_reset(struct rte_eth_dev *dev)
 {
 	struct enetc_eth_hw *hw =
@@ -498,6 +543,8 @@ enetc_stats_reset(struct rte_eth_dev *dev)
 	struct enetc_hw *enetc_hw = &hw->hw;
 
 	enetc_port_wr(enetc_hw, ENETC_PM0_STAT_CONFIG, ENETC_CLEAR_STATS);
+
+	return 0;
 }
 
 static void
@@ -521,7 +568,7 @@ enetc_dev_close(struct rte_eth_dev *dev)
 	dev->data->nb_tx_queues = 0;
 }
 
-static void
+static int
 enetc_promiscuous_enable(struct rte_eth_dev *dev)
 {
 	struct enetc_eth_hw *hw =
@@ -535,9 +582,11 @@ enetc_promiscuous_enable(struct rte_eth_dev *dev)
 	psipmr |= ENETC_PSIPMR_SET_UP(0) | ENETC_PSIPMR_SET_MP(0);
 
 	enetc_port_wr(enetc_hw, ENETC_PSIPMR, psipmr);
+
+	return 0;
 }
 
-static void
+static int
 enetc_promiscuous_disable(struct rte_eth_dev *dev)
 {
 	struct enetc_eth_hw *hw =
@@ -553,9 +602,11 @@ enetc_promiscuous_disable(struct rte_eth_dev *dev)
 		psipmr &= (~ENETC_PSIPMR_SET_MP(0));
 
 	enetc_port_wr(enetc_hw, ENETC_PSIPMR, psipmr);
+
+	return 0;
 }
 
-static void
+static int
 enetc_allmulticast_enable(struct rte_eth_dev *dev)
 {
 	struct enetc_eth_hw *hw =
@@ -569,9 +620,11 @@ enetc_allmulticast_enable(struct rte_eth_dev *dev)
 	psipmr |= ENETC_PSIPMR_SET_MP(0);
 
 	enetc_port_wr(enetc_hw, ENETC_PSIPMR, psipmr);
+
+	return 0;
 }
 
-static void
+static int
 enetc_allmulticast_disable(struct rte_eth_dev *dev)
 {
 	struct enetc_eth_hw *hw =
@@ -580,13 +633,15 @@ enetc_allmulticast_disable(struct rte_eth_dev *dev)
 	uint32_t psipmr = 0;
 
 	if (dev->data->promiscuous == 1)
-		return; /* must remain in all_multicast mode */
+		return 0; /* must remain in all_multicast mode */
 
 	/* Setting to disable all multicast mode for SI0*/
 	psipmr = enetc_port_rd(enetc_hw, ENETC_PSIPMR) &
 			       ~(ENETC_PSIPMR_SET_MP(0));
 
 	enetc_port_wr(enetc_hw, ENETC_PSIPMR, psipmr);
+
+	return 0;
 }
 
 static int
@@ -595,7 +650,7 @@ enetc_mtu_set(struct rte_eth_dev *dev, uint16_t mtu)
 	struct enetc_eth_hw *hw =
 		ENETC_DEV_PRIVATE_TO_HW(dev->data->dev_private);
 	struct enetc_hw *enetc_hw = &hw->hw;
-	uint32_t frame_size = mtu + ETHER_HDR_LEN + ETHER_CRC_LEN;
+	uint32_t frame_size = mtu + RTE_ETHER_HDR_LEN + RTE_ETHER_CRC_LEN;
 
 	/* check that mtu is within the allowed range */
 	if (mtu < ENETC_MAC_MINFRM_SIZE || frame_size > ENETC_MAC_MAXFRM_SIZE)
@@ -612,7 +667,7 @@ enetc_mtu_set(struct rte_eth_dev *dev, uint16_t mtu)
 		return -EINVAL;
 	}
 
-	if (frame_size > ETHER_MAX_LEN)
+	if (frame_size > RTE_ETHER_MAX_LEN)
 		dev->data->dev_conf.rxmode.offloads &=
 						DEV_RX_OFFLOAD_JUMBO_FRAME;
 	else
@@ -654,7 +709,8 @@ enetc_dev_configure(struct rte_eth_dev *dev)
 			      ENETC_MAC_MAXFRM_SIZE);
 		enetc_port_wr(enetc_hw, ENETC_PTXMBAR,
 			      2 * ENETC_MAC_MAXFRM_SIZE);
-		dev->data->mtu = ETHER_MAX_LEN - ETHER_HDR_LEN - ETHER_CRC_LEN;
+		dev->data->mtu = RTE_ETHER_MAX_LEN - RTE_ETHER_HDR_LEN -
+			RTE_ETHER_CRC_LEN;
 	}
 
 	if (rx_offloads & DEV_RX_OFFLOAD_KEEP_CRC) {
@@ -830,23 +886,28 @@ enetc_dev_init(struct rte_eth_dev *eth_dev)
 	}
 
 	/* Allocate memory for storing MAC addresses */
-	eth_dev->data->mac_addrs = rte_zmalloc("enetc_eth", ETHER_ADDR_LEN, 0);
+	eth_dev->data->mac_addrs = rte_zmalloc("enetc_eth",
+					RTE_ETHER_ADDR_LEN, 0);
 	if (!eth_dev->data->mac_addrs) {
 		ENETC_PMD_ERR("Failed to allocate %d bytes needed to "
 			      "store MAC addresses",
-			      ETHER_ADDR_LEN * 1);
+			      RTE_ETHER_ADDR_LEN * 1);
 		error = -ENOMEM;
 		return -1;
 	}
 
 	/* Copy the permanent MAC address */
-	ether_addr_copy((struct ether_addr *)hw->mac.addr,
+	rte_ether_addr_copy((struct rte_ether_addr *)hw->mac.addr,
 			&eth_dev->data->mac_addrs[0]);
 
 	/* Set MTU */
 	enetc_port_wr(&hw->hw, ENETC_PM0_MAXFRM,
-		      ENETC_SET_MAXFRM(ETHER_MAX_LEN));
-	eth_dev->data->mtu = ETHER_MAX_LEN - ETHER_HDR_LEN - ETHER_CRC_LEN;
+		      ENETC_SET_MAXFRM(RTE_ETHER_MAX_LEN));
+	eth_dev->data->mtu = RTE_ETHER_MAX_LEN - RTE_ETHER_HDR_LEN -
+		RTE_ETHER_CRC_LEN;
+
+	if (rte_eal_iova_mode() == RTE_IOVA_PA)
+		dpaax_iova_table_populate();
 
 	ENETC_PMD_DEBUG("port_id %d vendorID=0x%x deviceID=0x%x",
 			eth_dev->data->port_id, pci_dev->id.vendor_id,
@@ -858,6 +919,10 @@ static int
 enetc_dev_uninit(struct rte_eth_dev *eth_dev __rte_unused)
 {
 	PMD_INIT_FUNC_TRACE();
+
+	if (rte_eal_iova_mode() == RTE_IOVA_PA)
+		dpaax_iova_table_depopulate();
+
 	return 0;
 }
 

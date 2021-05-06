@@ -1,15 +1,13 @@
 import { Component } from '@angular/core';
 import { Router } from '@angular/router';
 
-import { I18n } from '@ngx-translate/i18n-polyfill';
-
-import { AuthService } from '../../../shared/api/auth.service';
-import { UserService } from '../../../shared/api/user.service';
-import { ActionLabelsI18n } from '../../../shared/constants/app.constants';
-import { CdFormBuilder } from '../../../shared/forms/cd-form-builder';
-import { AuthStorageService } from '../../../shared/services/auth-storage.service';
-import { NotificationService } from '../../../shared/services/notification.service';
-import { PasswordPolicyService } from '../../../shared/services/password-policy.service';
+import { AuthService } from '~/app/shared/api/auth.service';
+import { UserService } from '~/app/shared/api/user.service';
+import { ActionLabelsI18n } from '~/app/shared/constants/app.constants';
+import { CdFormBuilder } from '~/app/shared/forms/cd-form-builder';
+import { AuthStorageService } from '~/app/shared/services/auth-storage.service';
+import { NotificationService } from '~/app/shared/services/notification.service';
+import { PasswordPolicyService } from '~/app/shared/services/password-policy.service';
 import { UserPasswordFormComponent } from '../user-password-form/user-password-form.component';
 
 @Component({
@@ -19,7 +17,6 @@ import { UserPasswordFormComponent } from '../user-password-form/user-password-f
 })
 export class LoginPasswordFormComponent extends UserPasswordFormComponent {
   constructor(
-    public i18n: I18n,
     public actionLabels: ActionLabelsI18n,
     public notificationService: NotificationService,
     public userService: UserService,
@@ -30,7 +27,6 @@ export class LoginPasswordFormComponent extends UserPasswordFormComponent {
     public authService: AuthService
   ) {
     super(
-      i18n,
       actionLabels,
       notificationService,
       userService,
@@ -44,7 +40,7 @@ export class LoginPasswordFormComponent extends UserPasswordFormComponent {
   onPasswordChange() {
     // Logout here because changing the password will change the
     // session token which will finally lead to a 401 when calling
-    // the REST API the next time. The API HTTP inteceptor will
+    // the REST API the next time. The API HTTP interceptor will
     // then also redirect to the login page immediately.
     this.authService.logout();
   }

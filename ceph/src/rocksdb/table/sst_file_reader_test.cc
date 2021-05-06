@@ -5,17 +5,17 @@
 
 #ifndef ROCKSDB_LITE
 
-#include <inttypes.h>
+#include <cinttypes>
 
 #include "rocksdb/db.h"
 #include "rocksdb/sst_file_reader.h"
 #include "rocksdb/sst_file_writer.h"
 #include "table/sst_file_writer_collectors.h"
-#include "util/testharness.h"
-#include "util/testutil.h"
+#include "test_util/testharness.h"
+#include "test_util/testutil.h"
 #include "utilities/merge_operators.h"
 
-namespace rocksdb {
+namespace ROCKSDB_NAMESPACE {
 
 std::string EncodeAsString(uint64_t v) {
   char buf[16];
@@ -155,7 +155,7 @@ TEST_F(SstFileReaderTest, ReadFileWithGlobalSeqno) {
   ASSERT_OK(DestroyDB(db_name, options));
 }
 
-}  // namespace rocksdb
+}  // namespace ROCKSDB_NAMESPACE
 
 int main(int argc, char** argv) {
   ::testing::InitGoogleTest(&argc, argv);

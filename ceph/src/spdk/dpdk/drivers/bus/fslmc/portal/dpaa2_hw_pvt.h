@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  *
  *   Copyright (c) 2016 Freescale Semiconductor, Inc. All rights reserved.
- *   Copyright 2016-2018 NXP
+ *   Copyright 2016-2020 NXP
  *
  */
 
@@ -22,11 +22,6 @@
 #endif
 #define lower_32_bits(x) ((uint32_t)(x))
 #define upper_32_bits(x) ((uint32_t)(((x) >> 16) >> 16))
-
-#define SVR_LS1080A             0x87030000
-#define SVR_LS2080A             0x87010000
-#define SVR_LS2088A             0x87090000
-#define SVR_LX2160A             0x87360000
 
 #ifndef VLAN_TAG_SIZE
 #define VLAN_TAG_SIZE   4 /** < Vlan Header Length */
@@ -64,6 +59,8 @@
 #define DPAA2_SWP_CINH_REGION		1
 #define DPAA2_SWP_CENA_MEM_REGION	2
 
+#define DPAA2_MAX_TX_RETRY_COUNT	10000
+
 #define MC_PORTAL_INDEX		0
 #define NUM_DPIO_REGIONS	2
 #define NUM_DQS_PER_QUEUE       2
@@ -76,10 +73,6 @@
 #define MAX_BPID 256
 #define DPAA2_MBUF_HW_ANNOTATION	64
 #define DPAA2_FD_PTA_SIZE		0
-
-#if (DPAA2_MBUF_HW_ANNOTATION + DPAA2_FD_PTA_SIZE) > RTE_PKTMBUF_HEADROOM
-#error "Annotation requirement is more than RTE_PKTMBUF_HEADROOM"
-#endif
 
 /* we will re-use the HEADROOM for annotation in RX */
 #define DPAA2_HW_BUF_RESERVE	0
@@ -154,10 +147,10 @@ struct dpaa2_queue {
 		struct rte_eth_dev_data *eth_data;
 		struct rte_cryptodev_data *crypto_data;
 	};
-	int32_t eventfd;	/*!< Event Fd of this queue */
 	uint32_t fqid;		/*!< Unique ID of this queue */
-	uint8_t tc_index;	/*!< traffic class identifier */
 	uint16_t flow_id;	/*!< To be used by DPAA2 frmework */
+	uint8_t tc_index;	/*!< traffic class identifier */
+	uint8_t cgid;		/*! < Congestion Group id for this queue */
 	uint64_t rx_pkts;
 	uint64_t tx_pkts;
 	uint64_t err_pkts;
@@ -166,9 +159,12 @@ struct dpaa2_queue {
 		struct qbman_result *cscn;
 	};
 	struct rte_event ev;
+	int32_t eventfd;	/*!< Event Fd of this queue */
 	dpaa2_queue_cb_dqrr_t *cb;
 	dpaa2_queue_cb_eqresp_free_t *cb_eqresp_free;
 	struct dpaa2_bp_info *bp_array;
+	/*to store tx_conf_queue corresponding to tx_queue*/
+	struct dpaa2_queue *tx_conf_queue;
 };
 
 struct swp_active_dqs {
@@ -191,8 +187,16 @@ struct dpaa2_dpci_dev {
 	struct dpaa2_queue tx_queue[DPAA2_DPCI_MAX_QUEUES];
 };
 
-/*! Global MCP list */
-extern void *(*rte_mcp_ptr_list);
+struct dpaa2_dpcon_dev {
+	TAILQ_ENTRY(dpaa2_dpcon_dev) next;
+	struct fsl_mc_io dpcon;
+	uint16_t token;
+	rte_atomic16_t in_use;
+	uint32_t dpcon_id;
+	uint16_t qbman_ch_id;
+	uint8_t num_priorities;
+	uint8_t channel_index;
+};
 
 /* Refer to Table 7-3 in SEC BG */
 struct qbman_fle {
@@ -234,6 +238,7 @@ enum qbman_fd_format {
 	((fd)->simple.frc = (0x80000000 | (len)))
 #define DPAA2_GET_FD_FRC_PARSE_SUM(fd)	\
 			((uint16_t)(((fd)->simple.frc & 0xffff0000) >> 16))
+#define DPAA2_RESET_FD_FRC(fd)		((fd)->simple.frc = 0)
 #define DPAA2_SET_FD_FRC(fd, _frc)	((fd)->simple.frc = _frc)
 #define DPAA2_RESET_FD_CTRL(fd)	 ((fd)->simple.ctrl = 0)
 
@@ -320,12 +325,9 @@ struct dpaa2_memseg {
 	size_t len;
 };
 
-TAILQ_HEAD(dpaa2_memseg_list, dpaa2_memseg);
-extern struct dpaa2_memseg_list rte_dpaa2_memsegs;
-
 #ifdef RTE_LIBRTE_DPAA2_USE_PHYS_IOVA
 extern uint8_t dpaa2_virt_mode;
-static void *dpaa2_mem_ptov(phys_addr_t paddr) __attribute__((unused));
+static void *dpaa2_mem_ptov(phys_addr_t paddr) __rte_unused;
 
 static void *dpaa2_mem_ptov(phys_addr_t paddr)
 {
@@ -344,7 +346,7 @@ static void *dpaa2_mem_ptov(phys_addr_t paddr)
 	return va;
 }
 
-static phys_addr_t dpaa2_mem_vtop(uint64_t vaddr) __attribute__((unused));
+static phys_addr_t dpaa2_mem_vtop(uint64_t vaddr) __rte_unused;
 
 static phys_addr_t dpaa2_mem_vtop(uint64_t vaddr)
 {
@@ -387,8 +389,8 @@ static phys_addr_t dpaa2_mem_vtop(uint64_t vaddr)
 #else	/* RTE_LIBRTE_DPAA2_USE_PHYS_IOVA */
 
 #define DPAA2_MBUF_VADDR_TO_IOVA(mbuf) ((mbuf)->buf_addr)
-#define DPAA2_VADDR_TO_IOVA(_vaddr) (_vaddr)
-#define DPAA2_IOVA_TO_VADDR(_iova) (_iova)
+#define DPAA2_VADDR_TO_IOVA(_vaddr) (phys_addr_t)(_vaddr)
+#define DPAA2_IOVA_TO_VADDR(_iova) (void *)(_iova)
 #define DPAA2_MODIFY_IOVA_TO_VADDR(_mem, _type)
 
 #endif /* RTE_LIBRTE_DPAA2_USE_PHYS_IOVA */
@@ -418,11 +420,24 @@ void set_swp_active_dqs(uint16_t dpio_index, struct qbman_result *dqs)
 {
 	rte_global_active_dqs_list[dpio_index].global_active_dqs = dqs;
 }
+
+__rte_internal
 struct dpaa2_dpbp_dev *dpaa2_alloc_dpbp_dev(void);
+
+__rte_internal
 void dpaa2_free_dpbp_dev(struct dpaa2_dpbp_dev *dpbp);
+
+__rte_internal
 int dpaa2_dpbp_supported(void);
 
+__rte_internal
 struct dpaa2_dpci_dev *rte_dpaa2_alloc_dpci_dev(void);
+
+__rte_internal
 void rte_dpaa2_free_dpci_dev(struct dpaa2_dpci_dev *dpci);
+
+/* Global MCP pointer */
+__rte_internal
+void *dpaa2_get_mcp_ptr(int portal_idx);
 
 #endif

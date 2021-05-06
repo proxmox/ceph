@@ -14,6 +14,7 @@
 #include <getopt.h>
 #include <unistd.h>
 #include <signal.h>
+#include <math.h>
 
 #include <rte_common.h>
 #include <rte_byteorder.h>
@@ -44,6 +45,8 @@
 #include <rte_power.h>
 #include <rte_spinlock.h>
 #include <rte_power_empty_poll.h>
+#include <rte_metrics.h>
+#include <rte_telemetry.h>
 
 #include "perf_core.h"
 #include "main.h"
@@ -129,13 +132,13 @@
 #define EMPTY_POLL_MED_THRESHOLD 350000UL
 #define EMPTY_POLL_HGH_THRESHOLD 580000UL
 
-
+#define NUM_TELSTATS RTE_DIM(telstats_strings)
 
 static uint16_t nb_rxd = RTE_TEST_RX_DESC_DEFAULT;
 static uint16_t nb_txd = RTE_TEST_TX_DESC_DEFAULT;
 
 /* ethernet addresses of ports */
-static struct ether_addr ports_eth_addr[RTE_MAX_ETHPORTS];
+static struct rte_ether_addr ports_eth_addr[RTE_MAX_ETHPORTS];
 
 /* ethernet addresses of ports */
 static rte_spinlock_t locks[RTE_MAX_ETHPORTS];
@@ -146,16 +149,58 @@ static uint32_t enabled_port_mask = 0;
 static int promiscuous_on = 0;
 /* NUMA is enabled by default. */
 static int numa_on = 1;
-/* emptypoll is disabled by default. */
-static bool empty_poll_on;
+static bool empty_poll_stop;
 static bool empty_poll_train;
-volatile bool empty_poll_stop;
+volatile bool quit_signal;
 static struct  ep_params *ep_params;
 static struct  ep_policy policy;
 static long  ep_med_edpi, ep_hgh_edpi;
+/* timer to update telemetry every 500ms */
+static struct rte_timer telemetry_timer;
+
+/* stats index returned by metrics lib */
+int telstats_index;
+
+struct telstats_name {
+	char name[RTE_ETH_XSTATS_NAME_SIZE];
+};
+
+/* telemetry stats to be reported */
+const struct telstats_name telstats_strings[] = {
+	{"empty_poll"},
+	{"full_poll"},
+	{"busy_percent"}
+};
+
+/* core busyness in percentage */
+enum busy_rate {
+	ZERO = 0,
+	PARTIAL = 50,
+	FULL = 100
+};
+
+/* reference poll count to measure core busyness */
+#define DEFAULT_COUNT 10000
+/*
+ * reference CYCLES to be used to
+ * measure core busyness based on poll count
+ */
+#define MIN_CYCLES  1500000ULL
+#define MAX_CYCLES 22000000ULL
+
+/* (500ms) */
+#define TELEMETRY_INTERVALS_PER_SEC 2
 
 static int parse_ptype; /**< Parse packet type using rx callback, and */
 			/**< disabled by default */
+
+enum appmode {
+	APP_MODE_LEGACY = 0,
+	APP_MODE_EMPTY_POLL,
+	APP_MODE_TELEMETRY
+};
+
+enum appmode app_mode;
 
 enum freq_scale_hint_t
 {
@@ -194,13 +239,12 @@ static struct lcore_params lcore_params_array_default[] = {
 };
 
 struct lcore_params *lcore_params = lcore_params_array_default;
-uint16_t nb_lcore_params = sizeof(lcore_params_array_default) /
-				sizeof(lcore_params_array_default[0]);
+uint16_t nb_lcore_params = RTE_DIM(lcore_params_array_default);
 
 static struct rte_eth_conf port_conf = {
 	.rxmode = {
 		.mq_mode        = ETH_MQ_RX_RSS,
-		.max_rx_pkt_len = ETHER_MAX_LEN,
+		.max_rx_pkt_len = RTE_ETHER_MAX_LEN,
 		.split_hdr_size = 0,
 		.offloads = DEV_RX_OFFLOAD_CHECKSUM,
 	},
@@ -237,7 +281,7 @@ struct ipv4_5tuple {
 	uint16_t port_dst;
 	uint16_t port_src;
 	uint8_t  proto;
-} __attribute__((__packed__));
+} __rte_packed;
 
 struct ipv6_5tuple {
 	uint8_t  ip_dst[IPV6_ADDR_LEN];
@@ -245,7 +289,7 @@ struct ipv6_5tuple {
 	uint16_t port_dst;
 	uint16_t port_src;
 	uint8_t  proto;
-} __attribute__((__packed__));
+} __rte_packed;
 
 struct ipv4_l3fwd_route {
 	struct ipv4_5tuple key;
@@ -258,10 +302,10 @@ struct ipv6_l3fwd_route {
 };
 
 static struct ipv4_l3fwd_route ipv4_l3fwd_route_array[] = {
-	{{IPv4(100,10,0,1), IPv4(200,10,0,1), 101, 11, IPPROTO_TCP}, 0},
-	{{IPv4(100,20,0,2), IPv4(200,20,0,2), 102, 12, IPPROTO_TCP}, 1},
-	{{IPv4(100,30,0,3), IPv4(200,30,0,3), 103, 13, IPPROTO_TCP}, 2},
-	{{IPv4(100,40,0,4), IPv4(200,40,0,4), 104, 14, IPPROTO_TCP}, 3},
+	{{RTE_IPV4(100,10,0,1), RTE_IPV4(200,10,0,1), 101, 11, IPPROTO_TCP}, 0},
+	{{RTE_IPV4(100,20,0,2), RTE_IPV4(200,20,0,2), 102, 12, IPPROTO_TCP}, 1},
+	{{RTE_IPV4(100,30,0,3), RTE_IPV4(200,30,0,3), 103, 13, IPPROTO_TCP}, 2},
+	{{RTE_IPV4(100,40,0,4), RTE_IPV4(200,40,0,4), 104, 14, IPPROTO_TCP}, 3},
 };
 
 static struct ipv6_l3fwd_route ipv6_l3fwd_route_array[] = {
@@ -282,12 +326,6 @@ static lookup_struct_t *ipv6_l3fwd_lookup_struct[NB_SOCKETS];
 
 #define L3FWD_HASH_ENTRIES	1024
 
-#define IPV4_L3FWD_NUM_ROUTES \
-	(sizeof(ipv4_l3fwd_route_array) / sizeof(ipv4_l3fwd_route_array[0]))
-
-#define IPV6_L3FWD_NUM_ROUTES \
-	(sizeof(ipv6_l3fwd_route_array) / sizeof(ipv6_l3fwd_route_array[0]))
-
 static uint16_t ipv4_l3fwd_out_if[L3FWD_HASH_ENTRIES] __rte_cache_aligned;
 static uint16_t ipv6_l3fwd_out_if[L3FWD_HASH_ENTRIES] __rte_cache_aligned;
 #endif
@@ -300,18 +338,15 @@ struct ipv4_l3fwd_route {
 };
 
 static struct ipv4_l3fwd_route ipv4_l3fwd_route_array[] = {
-	{IPv4(1,1,1,0), 24, 0},
-	{IPv4(2,1,1,0), 24, 1},
-	{IPv4(3,1,1,0), 24, 2},
-	{IPv4(4,1,1,0), 24, 3},
-	{IPv4(5,1,1,0), 24, 4},
-	{IPv4(6,1,1,0), 24, 5},
-	{IPv4(7,1,1,0), 24, 6},
-	{IPv4(8,1,1,0), 24, 7},
+	{RTE_IPV4(1,1,1,0), 24, 0},
+	{RTE_IPV4(2,1,1,0), 24, 1},
+	{RTE_IPV4(3,1,1,0), 24, 2},
+	{RTE_IPV4(4,1,1,0), 24, 3},
+	{RTE_IPV4(5,1,1,0), 24, 4},
+	{RTE_IPV4(6,1,1,0), 24, 5},
+	{RTE_IPV4(7,1,1,0), 24, 6},
+	{RTE_IPV4(8,1,1,0), 24, 7},
 };
-
-#define IPV4_L3FWD_NUM_ROUTES \
-	(sizeof(ipv4_l3fwd_route_array) / sizeof(ipv4_l3fwd_route_array[0]))
 
 #define IPV4_L3FWD_LPM_MAX_RULES     1024
 
@@ -341,7 +376,26 @@ struct lcore_stats {
 	uint64_t nb_rx_processed;
 	/* total iterations looped recently */
 	uint64_t nb_iteration_looped;
-	uint32_t padding[9];
+	/*
+	 * Represents empty and non empty polls
+	 * of rte_eth_rx_burst();
+	 * ep_nep[0] holds non empty polls
+	 * i.e. 0 < nb_rx <= MAX_BURST
+	 * ep_nep[1] holds empty polls.
+	 * i.e. nb_rx == 0
+	 */
+	uint64_t ep_nep[2];
+	/*
+	 * Represents full and empty+partial
+	 * polls of rte_eth_rx_burst();
+	 * ep_nep[0] holds empty+partial polls.
+	 * i.e. 0 <= nb_rx < MAX_BURST
+	 * ep_nep[1] holds full polls
+	 * i.e. nb_rx == MAX_BURST
+	 */
+	uint64_t fp_nfp[2];
+	enum busy_rate br;
+	rte_spinlock_t telemetry_lock;
 } __rte_cache_aligned;
 
 static struct lcore_conf lcore_conf[RTE_MAX_LCORE] __rte_cache_aligned;
@@ -362,53 +416,23 @@ static uint8_t  freq_tlb[] = {14, 9, 1};
 
 static int is_done(void)
 {
-	return empty_poll_stop;
+	return quit_signal;
 }
 
 /* exit signal handler */
 static void
 signal_exit_now(int sigtype)
 {
-	unsigned lcore_id;
-	unsigned int portid;
-	int ret;
 
-	if (sigtype == SIGINT) {
-		if (empty_poll_on)
-			empty_poll_stop = true;
+	if (sigtype == SIGINT)
+		quit_signal = true;
 
-
-		for (lcore_id = 0; lcore_id < RTE_MAX_LCORE; lcore_id++) {
-			if (rte_lcore_is_enabled(lcore_id) == 0)
-				continue;
-
-			/* init power management library */
-			ret = rte_power_exit(lcore_id);
-			if (ret)
-				rte_exit(EXIT_FAILURE, "Power management "
-					"library de-initialization failed on "
-							"core%u\n", lcore_id);
-		}
-
-		if (!empty_poll_on) {
-			RTE_ETH_FOREACH_DEV(portid) {
-				if ((enabled_port_mask & (1 << portid)) == 0)
-					continue;
-
-				rte_eth_dev_stop(portid);
-				rte_eth_dev_close(portid);
-			}
-		}
-	}
-
-	if (!empty_poll_on)
-		rte_exit(EXIT_SUCCESS, "User forced exit\n");
 }
 
 /*  Freqency scale down timer callback */
 static void
-power_timer_cb(__attribute__((unused)) struct rte_timer *tim,
-			  __attribute__((unused)) void *arg)
+power_timer_cb(__rte_unused struct rte_timer *tim,
+			  __rte_unused void *arg)
 {
 	uint64_t hz;
 	float sleep_time_ratio;
@@ -466,14 +490,14 @@ send_single_packet(struct rte_mbuf *m, uint16_t port)
 
 #ifdef DO_RFC_1812_CHECKS
 static inline int
-is_valid_ipv4_pkt(struct ipv4_hdr *pkt, uint32_t link_len)
+is_valid_ipv4_pkt(struct rte_ipv4_hdr *pkt, uint32_t link_len)
 {
 	/* From http://www.rfc-editor.org/rfc/rfc1812.txt section 5.2.2 */
 	/*
 	 * 1. The packet length reported by the Link Layer must be large
 	 * enough to hold the minimum length legal IP datagram (20 bytes).
 	 */
-	if (link_len < sizeof(struct ipv4_hdr))
+	if (link_len < sizeof(struct rte_ipv4_hdr))
 		return -1;
 
 	/* 2. The IP checksum must be correct. */
@@ -498,7 +522,7 @@ is_valid_ipv4_pkt(struct ipv4_hdr *pkt, uint32_t link_len)
 	 * datagram header, whose length is specified in the IP header length
 	 * field.
 	 */
-	if (rte_cpu_to_be_16(pkt->total_length) < sizeof(struct ipv4_hdr))
+	if (rte_cpu_to_be_16(pkt->total_length) < sizeof(struct rte_ipv4_hdr))
 		return -5;
 
 	return 0;
@@ -523,12 +547,12 @@ print_ipv6_key(struct ipv6_5tuple key)
 }
 
 static inline uint16_t
-get_ipv4_dst_port(struct ipv4_hdr *ipv4_hdr, uint16_t portid,
+get_ipv4_dst_port(struct rte_ipv4_hdr *ipv4_hdr, uint16_t portid,
 		lookup_struct_t * ipv4_l3fwd_lookup_struct)
 {
 	struct ipv4_5tuple key;
-	struct tcp_hdr *tcp;
-	struct udp_hdr *udp;
+	struct rte_tcp_hdr *tcp;
+	struct rte_udp_hdr *udp;
 	int ret = 0;
 
 	key.ip_dst = rte_be_to_cpu_32(ipv4_hdr->dst_addr);
@@ -537,15 +561,15 @@ get_ipv4_dst_port(struct ipv4_hdr *ipv4_hdr, uint16_t portid,
 
 	switch (ipv4_hdr->next_proto_id) {
 	case IPPROTO_TCP:
-		tcp = (struct tcp_hdr *)((unsigned char *)ipv4_hdr +
-					sizeof(struct ipv4_hdr));
+		tcp = (struct rte_tcp_hdr *)((unsigned char *)ipv4_hdr +
+					sizeof(struct rte_ipv4_hdr));
 		key.port_dst = rte_be_to_cpu_16(tcp->dst_port);
 		key.port_src = rte_be_to_cpu_16(tcp->src_port);
 		break;
 
 	case IPPROTO_UDP:
-		udp = (struct udp_hdr *)((unsigned char *)ipv4_hdr +
-					sizeof(struct ipv4_hdr));
+		udp = (struct rte_udp_hdr *)((unsigned char *)ipv4_hdr +
+					sizeof(struct rte_ipv4_hdr));
 		key.port_dst = rte_be_to_cpu_16(udp->dst_port);
 		key.port_src = rte_be_to_cpu_16(udp->src_port);
 		break;
@@ -562,12 +586,12 @@ get_ipv4_dst_port(struct ipv4_hdr *ipv4_hdr, uint16_t portid,
 }
 
 static inline uint16_t
-get_ipv6_dst_port(struct ipv6_hdr *ipv6_hdr, uint16_t portid,
+get_ipv6_dst_port(struct rte_ipv6_hdr *ipv6_hdr, uint16_t portid,
 			lookup_struct_t *ipv6_l3fwd_lookup_struct)
 {
 	struct ipv6_5tuple key;
-	struct tcp_hdr *tcp;
-	struct udp_hdr *udp;
+	struct rte_tcp_hdr *tcp;
+	struct rte_udp_hdr *udp;
 	int ret = 0;
 
 	memcpy(key.ip_dst, ipv6_hdr->dst_addr, IPV6_ADDR_LEN);
@@ -577,15 +601,15 @@ get_ipv6_dst_port(struct ipv6_hdr *ipv6_hdr, uint16_t portid,
 
 	switch (ipv6_hdr->proto) {
 	case IPPROTO_TCP:
-		tcp = (struct tcp_hdr *)((unsigned char *) ipv6_hdr +
-					sizeof(struct ipv6_hdr));
+		tcp = (struct rte_tcp_hdr *)((unsigned char *) ipv6_hdr +
+					sizeof(struct rte_ipv6_hdr));
 		key.port_dst = rte_be_to_cpu_16(tcp->dst_port);
 		key.port_src = rte_be_to_cpu_16(tcp->src_port);
 		break;
 
 	case IPPROTO_UDP:
-		udp = (struct udp_hdr *)((unsigned char *) ipv6_hdr +
-					sizeof(struct ipv6_hdr));
+		udp = (struct rte_udp_hdr *)((unsigned char *) ipv6_hdr +
+					sizeof(struct rte_ipv6_hdr));
 		key.port_dst = rte_be_to_cpu_16(udp->dst_port);
 		key.port_src = rte_be_to_cpu_16(udp->src_port);
 		break;
@@ -604,7 +628,7 @@ get_ipv6_dst_port(struct ipv6_hdr *ipv6_hdr, uint16_t portid,
 
 #if (APP_LOOKUP_METHOD == APP_LOOKUP_LPM)
 static inline uint16_t
-get_ipv4_dst_port(struct ipv4_hdr *ipv4_hdr, uint16_t portid,
+get_ipv4_dst_port(struct rte_ipv4_hdr *ipv4_hdr, uint16_t portid,
 		lookup_struct_t *ipv4_l3fwd_lookup_struct)
 {
 	uint32_t next_hop;
@@ -618,15 +642,15 @@ get_ipv4_dst_port(struct ipv4_hdr *ipv4_hdr, uint16_t portid,
 static inline void
 parse_ptype_one(struct rte_mbuf *m)
 {
-	struct ether_hdr *eth_hdr;
+	struct rte_ether_hdr *eth_hdr;
 	uint32_t packet_type = RTE_PTYPE_UNKNOWN;
 	uint16_t ether_type;
 
-	eth_hdr = rte_pktmbuf_mtod(m, struct ether_hdr *);
+	eth_hdr = rte_pktmbuf_mtod(m, struct rte_ether_hdr *);
 	ether_type = eth_hdr->ether_type;
-	if (ether_type == rte_cpu_to_be_16(ETHER_TYPE_IPv4))
+	if (ether_type == rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4))
 		packet_type |= RTE_PTYPE_L3_IPV4_EXT_UNKNOWN;
-	else if (ether_type == rte_cpu_to_be_16(ETHER_TYPE_IPv6))
+	else if (ether_type == rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV6))
 		packet_type |= RTE_PTYPE_L3_IPV6_EXT_UNKNOWN;
 
 	m->packet_type = packet_type;
@@ -661,18 +685,18 @@ static inline void
 l3fwd_simple_forward(struct rte_mbuf *m, uint16_t portid,
 				struct lcore_conf *qconf)
 {
-	struct ether_hdr *eth_hdr;
-	struct ipv4_hdr *ipv4_hdr;
+	struct rte_ether_hdr *eth_hdr;
+	struct rte_ipv4_hdr *ipv4_hdr;
 	void *d_addr_bytes;
 	uint16_t dst_port;
 
-	eth_hdr = rte_pktmbuf_mtod(m, struct ether_hdr *);
+	eth_hdr = rte_pktmbuf_mtod(m, struct rte_ether_hdr *);
 
 	if (RTE_ETH_IS_IPV4_HDR(m->packet_type)) {
 		/* Handle IPv4 headers.*/
 		ipv4_hdr =
-			rte_pktmbuf_mtod_offset(m, struct ipv4_hdr *,
-						sizeof(struct ether_hdr));
+			rte_pktmbuf_mtod_offset(m, struct rte_ipv4_hdr *,
+						sizeof(struct rte_ether_hdr));
 
 #ifdef DO_RFC_1812_CHECKS
 		/* Check to make sure the packet is valid (RFC1812) */
@@ -700,17 +724,18 @@ l3fwd_simple_forward(struct rte_mbuf *m, uint16_t portid,
 #endif
 
 		/* src addr */
-		ether_addr_copy(&ports_eth_addr[dst_port], &eth_hdr->s_addr);
+		rte_ether_addr_copy(&ports_eth_addr[dst_port],
+				&eth_hdr->s_addr);
 
 		send_single_packet(m, dst_port);
 	} else if (RTE_ETH_IS_IPV6_HDR(m->packet_type)) {
 		/* Handle IPv6 headers.*/
 #if (APP_LOOKUP_METHOD == APP_LOOKUP_EXACT_MATCH)
-		struct ipv6_hdr *ipv6_hdr;
+		struct rte_ipv6_hdr *ipv6_hdr;
 
 		ipv6_hdr =
-			rte_pktmbuf_mtod_offset(m, struct ipv6_hdr *,
-						sizeof(struct ether_hdr));
+			rte_pktmbuf_mtod_offset(m, struct rte_ipv6_hdr *,
+						sizeof(struct rte_ether_hdr));
 
 		dst_port = get_ipv6_dst_port(ipv6_hdr, portid,
 					qconf->ipv6_lookup_struct);
@@ -725,7 +750,8 @@ l3fwd_simple_forward(struct rte_mbuf *m, uint16_t portid,
 			0x000000000002 + ((uint64_t)dst_port << 40);
 
 		/* src addr */
-		ether_addr_copy(&ports_eth_addr[dst_port], &eth_hdr->s_addr);
+		rte_ether_addr_copy(&ports_eth_addr[dst_port],
+				&eth_hdr->s_addr);
 
 		send_single_packet(m, dst_port);
 #else
@@ -798,33 +824,40 @@ power_freq_scaleup_heuristic(unsigned lcore_id,
 static int
 sleep_until_rx_interrupt(int num)
 {
+	/*
+	 * we want to track when we are woken up by traffic so that we can go
+	 * back to sleep again without log spamming.
+	 */
+	static bool timeout;
 	struct rte_epoll_event event[num];
 	int n, i;
 	uint16_t port_id;
 	uint8_t queue_id;
 	void *data;
 
-	RTE_LOG(INFO, L3FWD_POWER,
-		"lcore %u sleeps until interrupt triggers\n",
-		rte_lcore_id());
+	if (!timeout) {
+		RTE_LOG(INFO, L3FWD_POWER,
+				"lcore %u sleeps until interrupt triggers\n",
+				rte_lcore_id());
+	}
 
-	n = rte_epoll_wait(RTE_EPOLL_PER_THREAD, event, num, -1);
+	n = rte_epoll_wait(RTE_EPOLL_PER_THREAD, event, num, 10);
 	for (i = 0; i < n; i++) {
 		data = event[i].epdata.data;
 		port_id = ((uintptr_t)data) >> CHAR_BIT;
 		queue_id = ((uintptr_t)data) &
 			RTE_LEN2MASK(CHAR_BIT, uint8_t);
-		rte_eth_dev_rx_intr_disable(port_id, queue_id);
 		RTE_LOG(INFO, L3FWD_POWER,
 			"lcore %u is waked up from rx interrupt on"
 			" port %d queue %d\n",
 			rte_lcore_id(), port_id, queue_id);
 	}
+	timeout = n == 0;
 
 	return 0;
 }
 
-static void turn_on_intr(struct lcore_conf *qconf)
+static void turn_on_off_intr(struct lcore_conf *qconf, bool on)
 {
 	int i;
 	struct lcore_rx_queue *rx_queue;
@@ -837,7 +870,10 @@ static void turn_on_intr(struct lcore_conf *qconf)
 		queue_id = rx_queue->queue_id;
 
 		rte_spinlock_lock(&(locks[port_id]));
-		rte_eth_dev_rx_intr_enable(port_id, queue_id);
+		if (on)
+			rte_eth_dev_rx_intr_enable(port_id, queue_id);
+		else
+			rte_eth_dev_rx_intr_disable(port_id, queue_id);
 		rte_spinlock_unlock(&(locks[port_id]));
 	}
 }
@@ -869,7 +905,127 @@ static int event_register(struct lcore_conf *qconf)
 }
 /* main processing loop */
 static int
-main_empty_poll_loop(__attribute__((unused)) void *dummy)
+main_telemetry_loop(__rte_unused void *dummy)
+{
+	struct rte_mbuf *pkts_burst[MAX_PKT_BURST];
+	unsigned int lcore_id;
+	uint64_t prev_tsc, diff_tsc, cur_tsc, prev_tel_tsc;
+	int i, j, nb_rx;
+	uint8_t queueid;
+	uint16_t portid;
+	struct lcore_conf *qconf;
+	struct lcore_rx_queue *rx_queue;
+	uint64_t ep_nep[2] = {0}, fp_nfp[2] = {0};
+	uint64_t poll_count;
+	enum busy_rate br;
+
+	const uint64_t drain_tsc = (rte_get_tsc_hz() + US_PER_S - 1) /
+					US_PER_S * BURST_TX_DRAIN_US;
+
+	poll_count = 0;
+	prev_tsc = 0;
+	prev_tel_tsc = 0;
+
+	lcore_id = rte_lcore_id();
+	qconf = &lcore_conf[lcore_id];
+
+	if (qconf->n_rx_queue == 0) {
+		RTE_LOG(INFO, L3FWD_POWER, "lcore %u has nothing to do\n",
+			lcore_id);
+		return 0;
+	}
+
+	RTE_LOG(INFO, L3FWD_POWER, "entering main telemetry loop on lcore %u\n",
+		lcore_id);
+
+	for (i = 0; i < qconf->n_rx_queue; i++) {
+		portid = qconf->rx_queue_list[i].port_id;
+		queueid = qconf->rx_queue_list[i].queue_id;
+		RTE_LOG(INFO, L3FWD_POWER, " -- lcoreid=%u portid=%u "
+			"rxqueueid=%hhu\n", lcore_id, portid, queueid);
+	}
+
+	while (!is_done()) {
+
+		cur_tsc = rte_rdtsc();
+		/*
+		 * TX burst queue drain
+		 */
+		diff_tsc = cur_tsc - prev_tsc;
+		if (unlikely(diff_tsc > drain_tsc)) {
+			for (i = 0; i < qconf->n_tx_port; ++i) {
+				portid = qconf->tx_port_id[i];
+				rte_eth_tx_buffer_flush(portid,
+						qconf->tx_queue_id[portid],
+						qconf->tx_buffer[portid]);
+			}
+			prev_tsc = cur_tsc;
+		}
+
+		/*
+		 * Read packet from RX queues
+		 */
+		for (i = 0; i < qconf->n_rx_queue; ++i) {
+			rx_queue = &(qconf->rx_queue_list[i]);
+			portid = rx_queue->port_id;
+			queueid = rx_queue->queue_id;
+
+			nb_rx = rte_eth_rx_burst(portid, queueid, pkts_burst,
+								MAX_PKT_BURST);
+			ep_nep[nb_rx == 0]++;
+			fp_nfp[nb_rx == MAX_PKT_BURST]++;
+			poll_count++;
+			if (unlikely(nb_rx == 0))
+				continue;
+
+			/* Prefetch first packets */
+			for (j = 0; j < PREFETCH_OFFSET && j < nb_rx; j++) {
+				rte_prefetch0(rte_pktmbuf_mtod(
+						pkts_burst[j], void *));
+			}
+
+			/* Prefetch and forward already prefetched packets */
+			for (j = 0; j < (nb_rx - PREFETCH_OFFSET); j++) {
+				rte_prefetch0(rte_pktmbuf_mtod(pkts_burst[
+						j + PREFETCH_OFFSET], void *));
+				l3fwd_simple_forward(pkts_burst[j], portid,
+								qconf);
+			}
+
+			/* Forward remaining prefetched packets */
+			for (; j < nb_rx; j++) {
+				l3fwd_simple_forward(pkts_burst[j], portid,
+								qconf);
+			}
+		}
+		if (unlikely(poll_count >= DEFAULT_COUNT)) {
+			diff_tsc = cur_tsc - prev_tel_tsc;
+			if (diff_tsc >= MAX_CYCLES) {
+				br = FULL;
+			} else if (diff_tsc > MIN_CYCLES &&
+					diff_tsc < MAX_CYCLES) {
+				br = (diff_tsc * 100) / MAX_CYCLES;
+			} else {
+				br = ZERO;
+			}
+			poll_count = 0;
+			prev_tel_tsc = cur_tsc;
+			/* update stats for telemetry */
+			rte_spinlock_lock(&stats[lcore_id].telemetry_lock);
+			stats[lcore_id].ep_nep[0] = ep_nep[0];
+			stats[lcore_id].ep_nep[1] = ep_nep[1];
+			stats[lcore_id].fp_nfp[0] = fp_nfp[0];
+			stats[lcore_id].fp_nfp[1] = fp_nfp[1];
+			stats[lcore_id].br = br;
+			rte_spinlock_unlock(&stats[lcore_id].telemetry_lock);
+		}
+	}
+
+	return 0;
+}
+/* main processing loop */
+static int
+main_empty_poll_loop(__rte_unused void *dummy)
 {
 	struct rte_mbuf *pkts_burst[MAX_PKT_BURST];
 	unsigned int lcore_id;
@@ -973,7 +1129,7 @@ main_empty_poll_loop(__attribute__((unused)) void *dummy)
 }
 /* main processing loop */
 static int
-main_loop(__attribute__((unused)) void *dummy)
+main_loop(__rte_unused void *dummy)
 {
 	struct rte_mbuf *pkts_burst[MAX_PKT_BURST];
 	unsigned lcore_id;
@@ -1018,7 +1174,7 @@ main_loop(__attribute__((unused)) void *dummy)
 	else
 		RTE_LOG(INFO, L3FWD_POWER, "RX interrupt won't enable.\n");
 
-	while (1) {
+	while (!is_done()) {
 		stats[lcore_id].nb_iteration_looped++;
 
 		cur_tsc = rte_rdtsc();
@@ -1150,20 +1306,24 @@ start_rx:
 				 */
 				rte_delay_us(lcore_idle_hint);
 			else {
-				/* suspend until rx interrupt trigges */
+				/* suspend until rx interrupt triggers */
 				if (intr_en) {
-					turn_on_intr(qconf);
+					turn_on_off_intr(qconf, 1);
 					sleep_until_rx_interrupt(
 						qconf->n_rx_queue);
+					turn_on_off_intr(qconf, 0);
 					/**
 					 * start receiving packets immediately
 					 */
-					goto start_rx;
+					if (likely(!is_done()))
+						goto start_rx;
 				}
 			}
 			stats[lcore_id].sleep_time += lcore_idle_hint;
 		}
 	}
+
+	return 0;
 }
 
 static int
@@ -1189,6 +1349,11 @@ check_lcore_params(void)
 							(numa_on == 0)) {
 			printf("warning: lcore %hhu is on socket %d with numa "
 						"off\n", lcore, socketid);
+		}
+		if (app_mode == APP_MODE_TELEMETRY && lcore == rte_lcore_id()) {
+			printf("cannot enable master core %d in config for telemetry mode\n",
+				rte_lcore_id());
+			return -1;
 		}
 	}
 	return 0;
@@ -1274,7 +1439,9 @@ print_usage(const char *prgname)
 		" which max packet len is PKTLEN in decimal (64-9600)\n"
 		"  --parse-ptype: parse packet type by software\n"
 		"  --empty-poll: enable empty poll detection"
-		" follow (training_flag, high_threshold, med_threshold)\n",
+		" follow (training_flag, high_threshold, med_threshold)\n"
+		" --telemetry: enable telemetry mode, to update"
+		" empty polls, full polls, and core busyness to telemetry\n",
 		prgname);
 }
 
@@ -1417,6 +1584,7 @@ parse_ep_config(const char *q_arg)
 
 }
 #define CMD_LINE_OPT_PARSE_PTYPE "parse-ptype"
+#define CMD_LINE_OPT_TELEMETRY "telemetry"
 
 /* Parse the argument given in the command line of the application */
 static int
@@ -1435,6 +1603,7 @@ parse_args(int argc, char **argv)
 		{"enable-jumbo", 0, 0, 0},
 		{"empty-poll", 1, 0, 0},
 		{CMD_LINE_OPT_PARSE_PTYPE, 0, 0, 0},
+		{CMD_LINE_OPT_TELEMETRY, 0, 0, 0},
 		{NULL, 0, 0, 0}
 	};
 
@@ -1508,8 +1677,11 @@ parse_args(int argc, char **argv)
 
 			if (!strncmp(lgopts[option_index].name,
 						"empty-poll", 10)) {
-				printf("empty-poll is enabled\n");
-				empty_poll_on = true;
+				if (app_mode == APP_MODE_TELEMETRY) {
+					printf(" empty-poll cannot be enabled as telemetry mode is enabled\n");
+					return -1;
+				}
+				app_mode = APP_MODE_EMPTY_POLL;
 				ret = parse_ep_config(optarg);
 
 				if (ret) {
@@ -1517,7 +1689,18 @@ parse_args(int argc, char **argv)
 					print_usage(prgname);
 					return -1;
 				}
+				printf("empty-poll is enabled\n");
+			}
 
+			if (!strncmp(lgopts[option_index].name,
+					CMD_LINE_OPT_TELEMETRY,
+					sizeof(CMD_LINE_OPT_TELEMETRY))) {
+				if (app_mode == APP_MODE_EMPTY_POLL) {
+					printf("telemetry mode cannot be enabled as empty poll mode is enabled\n");
+					return -1;
+				}
+				app_mode = APP_MODE_TELEMETRY;
+				printf("telemetry mode is enabled\n");
 			}
 
 			if (!strncmp(lgopts[option_index].name,
@@ -1534,7 +1717,7 @@ parse_args(int argc, char **argv)
 
 				/**
 				 * if no max-pkt-len set, use the default value
-				 * ETHER_MAX_LEN
+				 * RTE_ETHER_MAX_LEN
 				 */
 				if (0 == getopt_long(argc, argvopt, "",
 						&lenopts, &option_index)) {
@@ -1577,10 +1760,10 @@ parse_args(int argc, char **argv)
 }
 
 static void
-print_ethaddr(const char *name, const struct ether_addr *eth_addr)
+print_ethaddr(const char *name, const struct rte_ether_addr *eth_addr)
 {
-	char buf[ETHER_ADDR_FMT_SIZE];
-	ether_format_addr(buf, ETHER_ADDR_FMT_SIZE, eth_addr);
+	char buf[RTE_ETHER_ADDR_FMT_SIZE];
+	rte_ether_format_addr(buf, RTE_ETHER_ADDR_FMT_SIZE, eth_addr);
 	printf("%s%s", name, buf);
 }
 
@@ -1630,7 +1813,7 @@ setup_hash(int socketid)
 
 
 	/* populate the ipv4 hash */
-	for (i = 0; i < IPV4_L3FWD_NUM_ROUTES; i++) {
+	for (i = 0; i < RTE_DIM(ipv4_l3fwd_route_array); i++) {
 		ret = rte_hash_add_key (ipv4_l3fwd_lookup_struct[socketid],
 				(void *) &ipv4_l3fwd_route_array[i].key);
 		if (ret < 0) {
@@ -1643,7 +1826,7 @@ setup_hash(int socketid)
 	}
 
 	/* populate the ipv6 hash */
-	for (i = 0; i < IPV6_L3FWD_NUM_ROUTES; i++) {
+	for (i = 0; i < RTE_DIM(ipv6_l3fwd_route_array); i++) {
 		ret = rte_hash_add_key (ipv6_l3fwd_lookup_struct[socketid],
 				(void *) &ipv6_l3fwd_route_array[i].key);
 		if (ret < 0) {
@@ -1680,7 +1863,7 @@ setup_lpm(int socketid)
 				" on socket %d\n", socketid);
 
 	/* populate the LPM table */
-	for (i = 0; i < IPV4_L3FWD_NUM_ROUTES; i++) {
+	for (i = 0; i < RTE_DIM(ipv4_l3fwd_route_array); i++) {
 		ret = rte_lpm_add(ipv4_l3fwd_lookup_struct[socketid],
 			ipv4_l3fwd_route_array[i].ip,
 			ipv4_l3fwd_route_array[i].depth,
@@ -1761,6 +1944,7 @@ check_all_ports_link_status(uint32_t port_mask)
 	uint8_t count, all_ports_up, print_flag = 0;
 	uint16_t portid;
 	struct rte_eth_link link;
+	int ret;
 
 	printf("\nChecking link status");
 	fflush(stdout);
@@ -1770,7 +1954,14 @@ check_all_ports_link_status(uint32_t port_mask)
 			if ((port_mask & (1 << portid)) == 0)
 				continue;
 			memset(&link, 0, sizeof(link));
-			rte_eth_link_get_nowait(portid, &link);
+			ret = rte_eth_link_get_nowait(portid, &link);
+			if (ret < 0) {
+				all_ports_up = 0;
+				if (print_flag == 1)
+					printf("Port %u link get failed: %s\n",
+						portid, rte_strerror(-ret));
+				continue;
+			}
 			/* print link status if flag set */
 			if (print_flag == 1) {
 				if (link.link_status)
@@ -1778,7 +1969,7 @@ check_all_ports_link_status(uint32_t port_mask)
 						"Mbps - %s\n", (uint8_t)portid,
 						(unsigned)link.link_speed,
 				(link.link_duplex == ETH_LINK_FULL_DUPLEX) ?
-					("full-duplex") : ("half-duplex\n"));
+					("full-duplex") : ("half-duplex"));
 				else
 					printf("Port %d Link Down\n",
 						(uint8_t)portid);
@@ -1855,18 +2046,114 @@ static int check_ptype(uint16_t portid)
 static int
 init_power_library(void)
 {
-	int ret = 0, lcore_id;
-	for (lcore_id = 0; lcore_id < RTE_MAX_LCORE; lcore_id++) {
-		if (rte_lcore_is_enabled(lcore_id)) {
-			/* init power management library */
-			ret = rte_power_init(lcore_id);
-			if (ret)
-				RTE_LOG(ERR, POWER,
+	unsigned int lcore_id;
+	int ret = 0;
+
+	RTE_LCORE_FOREACH(lcore_id) {
+		/* init power management library */
+		ret = rte_power_init(lcore_id);
+		if (ret) {
+			RTE_LOG(ERR, POWER,
 				"Library initialization failed on core %u\n",
 				lcore_id);
+			return ret;
 		}
 	}
 	return ret;
+}
+
+static int
+deinit_power_library(void)
+{
+	unsigned int lcore_id;
+	int ret = 0;
+
+	RTE_LCORE_FOREACH(lcore_id) {
+		/* deinit power management library */
+		ret = rte_power_exit(lcore_id);
+		if (ret) {
+			RTE_LOG(ERR, POWER,
+				"Library deinitialization failed on core %u\n",
+				lcore_id);
+			return ret;
+		}
+	}
+	return ret;
+}
+
+static void
+get_current_stat_values(uint64_t *values)
+{
+	unsigned int lcore_id = rte_lcore_id();
+	struct lcore_conf *qconf;
+	uint64_t app_eps = 0, app_fps = 0, app_br = 0;
+	uint64_t count = 0;
+
+	RTE_LCORE_FOREACH_SLAVE(lcore_id) {
+		qconf = &lcore_conf[lcore_id];
+		if (qconf->n_rx_queue == 0)
+			continue;
+		count++;
+		rte_spinlock_lock(&stats[lcore_id].telemetry_lock);
+		app_eps += stats[lcore_id].ep_nep[1];
+		app_fps += stats[lcore_id].fp_nfp[1];
+		app_br += stats[lcore_id].br;
+		rte_spinlock_unlock(&stats[lcore_id].telemetry_lock);
+	}
+
+	if (count > 0) {
+		values[0] = app_eps/count;
+		values[1] = app_fps/count;
+		values[2] = app_br/count;
+	} else
+		memset(values, 0, sizeof(uint64_t) * NUM_TELSTATS);
+
+}
+
+static void
+update_telemetry(__rte_unused struct rte_timer *tim,
+		__rte_unused void *arg)
+{
+	int ret;
+	uint64_t values[NUM_TELSTATS] = {0};
+
+	get_current_stat_values(values);
+	ret = rte_metrics_update_values(RTE_METRICS_GLOBAL, telstats_index,
+					values, RTE_DIM(values));
+	if (ret < 0)
+		RTE_LOG(WARNING, POWER, "failed to update metrcis\n");
+}
+
+static int
+handle_app_stats(const char *cmd __rte_unused,
+		const char *params __rte_unused,
+		struct rte_tel_data *d)
+{
+	uint64_t values[NUM_TELSTATS] = {0};
+	uint32_t i;
+
+	rte_tel_data_start_dict(d);
+	get_current_stat_values(values);
+	for (i = 0; i < NUM_TELSTATS; i++)
+		rte_tel_data_add_dict_u64(d, telstats_strings[i].name,
+				values[i]);
+	return 0;
+}
+
+static void
+telemetry_setup_timer(void)
+{
+	int lcore_id = rte_lcore_id();
+	uint64_t hz = rte_get_timer_hz();
+	uint64_t ticks;
+
+	ticks = hz / TELEMETRY_INTERVALS_PER_SEC;
+	rte_timer_reset_sync(&telemetry_timer,
+			ticks,
+			PERIODICAL,
+			lcore_id,
+			update_telemetry,
+			NULL);
 }
 static void
 empty_poll_setup_timer(void)
@@ -1902,7 +2189,10 @@ launch_timer(unsigned int lcore_id)
 
 	RTE_LOG(INFO, POWER, "Bring up the Timer\n");
 
-	empty_poll_setup_timer();
+	if (app_mode == APP_MODE_EMPTY_POLL)
+		empty_poll_setup_timer();
+	else
+		telemetry_setup_timer();
 
 	cycles_10ms = rte_get_timer_hz() / 100;
 
@@ -1937,6 +2227,7 @@ main(int argc, char **argv)
 	uint32_t dev_rxq_num, dev_txq_num;
 	uint8_t nb_rx_queue, queue, socketid;
 	uint16_t portid;
+	const char *ptr_strings[NUM_TELSTATS];
 
 	/* catch SIGINT and restore cpufreq governor to ondemand */
 	signal(SIGINT, signal_exit_now);
@@ -1956,8 +2247,8 @@ main(int argc, char **argv)
 	if (ret < 0)
 		rte_exit(EXIT_FAILURE, "Invalid L3FWD parameters\n");
 
-	if (init_power_library())
-		RTE_LOG(ERR, L3FWD_POWER, "init_power_library failed\n");
+	if (app_mode != APP_MODE_TELEMETRY && init_power_library())
+		rte_exit(EXIT_FAILURE, "init_power_library failed\n");
 
 	if (update_lcore_params() < 0)
 		rte_exit(EXIT_FAILURE, "update_lcore_params failed\n");
@@ -1990,7 +2281,12 @@ main(int argc, char **argv)
 		printf("Initializing port %d ... ", portid );
 		fflush(stdout);
 
-		rte_eth_dev_info_get(portid, &dev_info);
+		ret = rte_eth_dev_info_get(portid, &dev_info);
+		if (ret != 0)
+			rte_exit(EXIT_FAILURE,
+				"Error during getting device (port %u) info: %s\n",
+				portid, strerror(-ret));
+
 		dev_rxq_num = dev_info.max_rx_queues;
 		dev_txq_num = dev_info.max_tx_queues;
 
@@ -2008,7 +2304,13 @@ main(int argc, char **argv)
 		/* If number of Rx queue is 0, no need to enable Rx interrupt */
 		if (nb_rx_queue == 0)
 			local_port_conf.intr_conf.rxq = 0;
-		rte_eth_dev_info_get(portid, &dev_info);
+
+		ret = rte_eth_dev_info_get(portid, &dev_info);
+		if (ret != 0)
+			rte_exit(EXIT_FAILURE,
+				"Error during getting device (port %u) info: %s\n",
+				portid, strerror(-ret));
+
 		if (dev_info.tx_offload_capa & DEV_TX_OFFLOAD_MBUF_FAST_FREE)
 			local_port_conf.txmode.offloads |=
 				DEV_TX_OFFLOAD_MBUF_FAST_FREE;
@@ -2037,7 +2339,12 @@ main(int argc, char **argv)
 				 "Cannot adjust number of descriptors: err=%d, port=%d\n",
 				 ret, portid);
 
-		rte_eth_macaddr_get(portid, &ports_eth_addr[portid]);
+		ret = rte_eth_macaddr_get(portid, &ports_eth_addr[portid]);
+		if (ret < 0)
+			rte_exit(EXIT_FAILURE,
+				 "Cannot get MAC address: err=%d, port=%d\n",
+				 ret, portid);
+
 		print_ethaddr(" Address:", &ports_eth_addr[portid]);
 		printf(", ");
 
@@ -2103,7 +2410,7 @@ main(int argc, char **argv)
 		if (rte_lcore_is_enabled(lcore_id) == 0)
 			continue;
 
-		if (empty_poll_on == false) {
+		if (app_mode == APP_MODE_LEGACY) {
 			/* init timer structures for each enabled lcore */
 			rte_timer_init(&power_timers[lcore_id]);
 			hz = rte_get_timer_hz();
@@ -2118,13 +2425,9 @@ main(int argc, char **argv)
 		/* init RX queues */
 		for(queue = 0; queue < qconf->n_rx_queue; ++queue) {
 			struct rte_eth_rxconf rxq_conf;
-			struct rte_eth_dev *dev;
-			struct rte_eth_conf *conf;
 
 			portid = qconf->rx_queue_list[queue].port_id;
 			queueid = qconf->rx_queue_list[queue].queue_id;
-			dev = &rte_eth_devices[portid];
-			conf = &dev->data->dev_conf;
 
 			if (numa_on)
 				socketid = \
@@ -2135,9 +2438,14 @@ main(int argc, char **argv)
 			printf("rxq=%d,%d,%d ", portid, queueid, socketid);
 			fflush(stdout);
 
-			rte_eth_dev_info_get(portid, &dev_info);
+			ret = rte_eth_dev_info_get(portid, &dev_info);
+			if (ret != 0)
+				rte_exit(EXIT_FAILURE,
+					"Error during getting device (port %u) info: %s\n",
+					portid, strerror(-ret));
+
 			rxq_conf = dev_info.default_rxconf;
-			rxq_conf.offloads = conf->rxmode.offloads;
+			rxq_conf.offloads = port_conf.rxmode.offloads;
 			ret = rte_eth_rx_queue_setup(portid, queueid, nb_rxd,
 				socketid, &rxq_conf,
 				pktmbuf_pool[socketid]);
@@ -2174,15 +2482,20 @@ main(int argc, char **argv)
 		 * to itself through 2 cross-connected  ports of the
 		 * target machine.
 		 */
-		if (promiscuous_on)
-			rte_eth_promiscuous_enable(portid);
+		if (promiscuous_on) {
+			ret = rte_eth_promiscuous_enable(portid);
+			if (ret != 0)
+				rte_exit(EXIT_FAILURE,
+					"rte_eth_promiscuous_enable: err=%s, port=%u\n",
+					rte_strerror(-ret), portid);
+		}
 		/* initialize spinlock for each port */
 		rte_spinlock_init(&(locks[portid]));
 	}
 
 	check_all_ports_link_status(enabled_port_mask);
 
-	if (empty_poll_on == true) {
+	if (app_mode == APP_MODE_EMPTY_POLL) {
 
 		if (empty_poll_train) {
 			policy.state = TRAINING;
@@ -2201,15 +2514,39 @@ main(int argc, char **argv)
 
 
 	/* launch per-lcore init on every lcore */
-	if (empty_poll_on == false) {
+	if (app_mode == APP_MODE_LEGACY) {
 		rte_eal_mp_remote_launch(main_loop, NULL, CALL_MASTER);
-	} else {
+	} else if (app_mode == APP_MODE_EMPTY_POLL) {
 		empty_poll_stop = false;
 		rte_eal_mp_remote_launch(main_empty_poll_loop, NULL,
 				SKIP_MASTER);
+	} else {
+		unsigned int i;
+
+		/* Init metrics library */
+		rte_metrics_init(rte_socket_id());
+		/** Register stats with metrics library */
+		for (i = 0; i < NUM_TELSTATS; i++)
+			ptr_strings[i] = telstats_strings[i].name;
+
+		ret = rte_metrics_reg_names(ptr_strings, NUM_TELSTATS);
+		if (ret >= 0)
+			telstats_index = ret;
+		else
+			rte_exit(EXIT_FAILURE, "failed to register metrics names");
+
+		RTE_LCORE_FOREACH_SLAVE(lcore_id) {
+			rte_spinlock_init(&stats[lcore_id].telemetry_lock);
+		}
+		rte_timer_init(&telemetry_timer);
+		rte_telemetry_register_cmd("/l3fwd-power/stats",
+				handle_app_stats,
+				"Returns global power stats. Parameters: None");
+		rte_eal_mp_remote_launch(main_telemetry_loop, NULL,
+						SKIP_MASTER);
 	}
 
-	if (empty_poll_on == true)
+	if (app_mode == APP_MODE_EMPTY_POLL || app_mode == APP_MODE_TELEMETRY)
 		launch_timer(rte_lcore_id());
 
 	RTE_LCORE_FOREACH_SLAVE(lcore_id) {
@@ -2217,8 +2554,23 @@ main(int argc, char **argv)
 			return -1;
 	}
 
-	if (empty_poll_on)
+	RTE_ETH_FOREACH_DEV(portid)
+	{
+		if ((enabled_port_mask & (1 << portid)) == 0)
+			continue;
+
+		rte_eth_dev_stop(portid);
+		rte_eth_dev_close(portid);
+	}
+
+	if (app_mode == APP_MODE_EMPTY_POLL)
 		rte_power_empty_poll_stat_free();
+
+	if (app_mode != APP_MODE_TELEMETRY && deinit_power_library())
+		rte_exit(EXIT_FAILURE, "deinit_power_library failed\n");
+
+	if (rte_eal_cleanup() < 0)
+		RTE_LOG(ERR, L3FWD_POWER, "EAL cleanup failed\n");
 
 	return 0;
 }

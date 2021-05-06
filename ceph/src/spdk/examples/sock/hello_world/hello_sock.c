@@ -49,6 +49,7 @@
 static bool g_is_running;
 
 static char *g_host;
+static char *g_sock_impl_name;
 static int g_port;
 static bool g_is_server;
 static bool g_verbose;
@@ -60,6 +61,7 @@ static bool g_verbose;
 struct hello_context_t {
 	bool is_server;
 	char *host;
+	char *sock_impl_name;
 	int port;
 
 	bool verbose;
@@ -84,6 +86,7 @@ hello_sock_usage(void)
 {
 	printf(" -H host_addr  host address\n");
 	printf(" -P port       port number\n");
+	printf(" -N sock_impl  socket implementation, e.g., -N posix or -N vpp\n");
 	printf(" -S            start in server mode\n");
 	printf(" -V            print out additional informations");
 }
@@ -96,6 +99,9 @@ static int hello_sock_parse_arg(int ch, char *arg)
 	switch (ch) {
 	case 'H':
 		g_host = arg;
+		break;
+	case 'N':
+		g_sock_impl_name = arg;
 		break;
 	case 'P':
 		g_port = spdk_strtol(arg, 10);
@@ -116,13 +122,6 @@ static int hello_sock_parse_arg(int ch, char *arg)
 	return 0;
 }
 
-static void
-hello_sock_net_fini_cb(void *cb_arg)
-{
-	struct hello_context_t *ctx = cb_arg;
-	spdk_app_stop(ctx->rc);
-}
-
 static int
 hello_sock_close_timeout_poll(void *arg)
 {
@@ -134,7 +133,7 @@ hello_sock_close_timeout_poll(void *arg)
 	spdk_sock_close(&ctx->sock);
 	spdk_sock_group_close(&ctx->group);
 
-	spdk_net_framework_fini(hello_sock_net_fini_cb, arg);
+	spdk_app_stop(ctx->rc);
 	return 0;
 }
 
@@ -144,7 +143,7 @@ hello_sock_quit(struct hello_context_t *ctx, int rc)
 	ctx->rc = rc;
 	spdk_poller_unregister(&ctx->poller_out);
 	if (!ctx->time_out) {
-		ctx->time_out = spdk_poller_register(hello_sock_close_timeout_poll, ctx,
+		ctx->time_out = SPDK_POLLER_REGISTER(hello_sock_close_timeout_poll, ctx,
 						     CLOSE_TIMEOUT_US);
 	}
 	return 0;
@@ -218,9 +217,10 @@ hello_sock_connect(struct hello_context_t *ctx)
 	char saddr[ADDR_STR_LEN], caddr[ADDR_STR_LEN];
 	uint16_t cport, sport;
 
-	SPDK_NOTICELOG("Connecting to the server on %s:%d\n", ctx->host, ctx->port);
+	SPDK_NOTICELOG("Connecting to the server on %s:%d with sock_impl(%s)\n", ctx->host, ctx->port,
+		       ctx->sock_impl_name);
 
-	ctx->sock = spdk_sock_connect(ctx->host, ctx->port);
+	ctx->sock = spdk_sock_connect(ctx->host, ctx->port, ctx->sock_impl_name);
 	if (ctx->sock == NULL) {
 		SPDK_ERRLOG("connect error(%d): %s\n", errno, spdk_strerror(errno));
 		return -1;
@@ -238,8 +238,8 @@ hello_sock_connect(struct hello_context_t *ctx)
 	fcntl(STDIN_FILENO, F_SETFL, fcntl(STDIN_FILENO, F_GETFL) | O_NONBLOCK);
 
 	g_is_running = true;
-	ctx->poller_in = spdk_poller_register(hello_sock_recv_poll, ctx, 0);
-	ctx->poller_out = spdk_poller_register(hello_sock_writev_poll, ctx, 0);
+	ctx->poller_in = SPDK_POLLER_REGISTER(hello_sock_recv_poll, ctx, 0);
+	ctx->poller_out = SPDK_POLLER_REGISTER(hello_sock_writev_poll, ctx, 0);
 
 	return 0;
 }
@@ -347,27 +347,28 @@ hello_sock_group_poll(void *arg)
 static int
 hello_sock_listen(struct hello_context_t *ctx)
 {
-	ctx->sock = spdk_sock_listen(ctx->host, ctx->port);
+	ctx->sock = spdk_sock_listen(ctx->host, ctx->port, ctx->sock_impl_name);
 	if (ctx->sock == NULL) {
 		SPDK_ERRLOG("Cannot create server socket\n");
 		return -1;
 	}
 
-	SPDK_NOTICELOG("Listening connection on %s:%d\n", ctx->host, ctx->port);
+	SPDK_NOTICELOG("Listening connection on %s:%d with sock_impl(%s)\n", ctx->host, ctx->port,
+		       ctx->sock_impl_name);
 
 	/*
 	 * Create sock group for server socket
 	 */
-	ctx->group = spdk_sock_group_create();
+	ctx->group = spdk_sock_group_create(NULL);
 
 	g_is_running = true;
 
 	/*
 	 * Start acceptor and group poller
 	 */
-	ctx->poller_in = spdk_poller_register(hello_sock_accept_poll, ctx,
+	ctx->poller_in = SPDK_POLLER_REGISTER(hello_sock_accept_poll, ctx,
 					      ACCEPT_TIMEOUT_US);
-	ctx->poller_out = spdk_poller_register(hello_sock_group_poll, ctx, 0);
+	ctx->poller_out = SPDK_POLLER_REGISTER(hello_sock_group_poll, ctx, 0);
 
 	return 0;
 }
@@ -382,15 +383,10 @@ hello_sock_shutdown_cb(void)
  * Our initial event that kicks off everything from main().
  */
 static void
-hello_start(void *arg1, int rc)
+hello_start(void *arg1)
 {
 	struct hello_context_t *ctx = arg1;
-
-	if (rc) {
-		SPDK_ERRLOG("ERROR starting application\n");
-		spdk_app_stop(-1);
-		return;
-	}
+	int rc;
 
 	SPDK_NOTICELOG("Successfully started the application\n");
 
@@ -406,12 +402,6 @@ hello_start(void *arg1, int rc)
 	}
 }
 
-static void
-start_net_framework(void *arg1)
-{
-	spdk_net_framework_start(hello_start, arg1);
-}
-
 int
 main(int argc, char **argv)
 {
@@ -422,19 +412,19 @@ main(int argc, char **argv)
 	/* Set default values in opts structure. */
 	spdk_app_opts_init(&opts);
 	opts.name = "hello_sock";
-	opts.config_file = "sock.conf";
 	opts.shutdown_cb = hello_sock_shutdown_cb;
 
-	if ((rc = spdk_app_parse_args(argc, argv, &opts, "H:P:SV", NULL, hello_sock_parse_arg,
+	if ((rc = spdk_app_parse_args(argc, argv, &opts, "H:N:P:SV", NULL, hello_sock_parse_arg,
 				      hello_sock_usage)) != SPDK_APP_PARSE_ARGS_SUCCESS) {
 		exit(rc);
 	}
 	hello_context.is_server = g_is_server;
 	hello_context.host = g_host;
+	hello_context.sock_impl_name = g_sock_impl_name;
 	hello_context.port = g_port;
 	hello_context.verbose = g_verbose;
 
-	rc = spdk_app_start(&opts, start_net_framework, &hello_context);
+	rc = spdk_app_start(&opts, hello_start, &hello_context);
 	if (rc) {
 		SPDK_ERRLOG("ERROR starting application\n");
 	}

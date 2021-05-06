@@ -18,9 +18,9 @@
 #define BIT_NUM_PACKETS 10
 #define QUEUE_ID 0
 
-uint16_t portid;
-struct rte_stats_bitrates *bitrate_data;
-struct rte_ring *ring;
+static uint16_t portid;
+static struct rte_stats_bitrates *bitrate_data;
+static struct rte_ring *ring;
 
 /* To test whether rte_stats_bitrate_create is successful */
 static int
@@ -28,6 +28,18 @@ test_stats_bitrate_create(void)
 {
 	bitrate_data = rte_stats_bitrate_create();
 	TEST_ASSERT(bitrate_data != NULL, "rte_stats_bitrate_create failed");
+
+	return TEST_SUCCESS;
+}
+
+/* To test free the resources from bitrate_reg test */
+static int
+test_stats_bitrate_free(void)
+{
+	int ret = 0;
+
+	ret = rte_metrics_deinit();
+	TEST_ASSERT(ret >= 0, "Test Failed: rte_metrics_deinit failed");
 
 	return TEST_SUCCESS;
 }
@@ -214,6 +226,8 @@ unit_test_suite bitratestats_testsuite  = {
 		 */
 		TEST_CASE_ST(test_bit_packet_forward, NULL,
 				test_stats_bitrate_calc),
+		/* TEST CASE 9: Test to do the cleanup w.r.t create */
+		TEST_CASE(test_stats_bitrate_free),
 		TEST_CASES_END()
 	}
 };

@@ -40,8 +40,7 @@ def create_mds(mgr, fs_name, placement):
                                     service_id=fs_name,
                                     placement=PlacementSpec.from_string(placement))
     try:
-        completion = mgr.apply_mds(spec)
-        mgr._orchestrator_wait([completion])
+        completion = mgr.apply([spec], no_overwrite=True)
         orchestrator.raise_if_exception(completion)
     except (ImportError, orchestrator.OrchestratorError):
         return 0, "", "Volume created successfully (no MDS daemons created)"

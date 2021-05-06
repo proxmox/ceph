@@ -1,5 +1,5 @@
 /*****************************************************************************
- Copyright (c) 2012-2018, Intel Corporation
+ Copyright (c) 2012-2019, Intel Corporation
 
  Redistribution and use in source and binary forms, with or without
  modification, are permitted provided that the following conditions are met:
@@ -43,7 +43,15 @@ extern int hmac_sha256_sha512_test(const enum arch_type arch,
                                    struct MB_MGR *mb_mgr);
 extern int hmac_md5_test(const enum arch_type arch, struct MB_MGR *mb_mgr);
 extern int aes_test(const enum arch_type arch, struct MB_MGR *mb_mgr);
+extern int ecb_test(const enum arch_type arch, struct MB_MGR *mb_mgr);
 extern int sha_test(const enum arch_type arch, struct MB_MGR *mb_mgr);
+extern int chained_test(const enum arch_type arch, struct MB_MGR *mb_mgr);
+extern int api_test(const enum arch_type arch, struct MB_MGR *mb_mgr);
+extern int pon_test(const enum arch_type arch, struct MB_MGR *mb_mgr);
+extern int zuc_test(const enum arch_type arch, struct MB_MGR *mb_mgr);
+extern int kasumi_test(const enum arch_type arch, struct MB_MGR *mb_mgr);
+extern int snow3g_test(const enum arch_type arch, struct MB_MGR *mb_mgr);
+extern int direct_api_test(const enum arch_type arch, struct MB_MGR *mb_mgr);
 
 #include "do_test.h"
 
@@ -273,25 +281,34 @@ main(int argc, char **argv)
                 errors += known_answer_test(p_mgr);
                 errors += do_test(p_mgr);
                 errors += ctr_test(atype, p_mgr);
+                errors += pon_test(atype, p_mgr);
                 if (do_gcm)
                         errors += gcm_test(p_mgr);
                 errors += customop_test(p_mgr);
                 errors += des_test(atype, p_mgr);
                 errors += ccm_test(atype, p_mgr);
                 errors += cmac_test(atype, p_mgr);
+                errors += zuc_test(atype, p_mgr);
+                errors += kasumi_test(atype, p_mgr);
+                errors += snow3g_test(atype, p_mgr);
                 errors += hmac_sha1_test(atype, p_mgr);
                 errors += hmac_sha256_sha512_test(atype, p_mgr);
                 errors += hmac_md5_test(atype, p_mgr);
                 errors += aes_test(atype, p_mgr);
+                errors += ecb_test(atype, p_mgr);
                 errors += sha_test(atype, p_mgr);
-
+                errors += chained_test(atype, p_mgr);
+                errors += api_test(atype, p_mgr);
+                errors += direct_api_test(atype, p_mgr);
                 free_mb_mgr(p_mgr);
         }
 
-        if (errors)
+        if (errors) {
                 printf("Test completed: FAIL\n");
-        else
-                printf("Test completed: PASS\n");
+                return EXIT_FAILURE;
+        }
+
+        printf("Test completed: PASS\n");
 
         return EXIT_SUCCESS;
 }

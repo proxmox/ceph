@@ -77,6 +77,7 @@ ssovf_mbox_getwork_tmo_set(uint32_t timeout_ns)
 }
 
 struct ssovf_mbox_grp_pri {
+	uint8_t vhgrp_id;
 	uint8_t wgt_left; /* Read only */
 	uint8_t weight;
 	uint8_t affinity;
@@ -95,6 +96,7 @@ ssovf_mbox_priority_set(uint8_t queue, uint8_t prio)
 	hdr.msg = SSO_GRP_SET_PRIORITY;
 	hdr.vfid = queue;
 
+	grp.vhgrp_id = queue;
 	grp.weight = 0xff;
 	grp.affinity = 0xff;
 	grp.priority = prio / 32; /* Normalize to 0 to 7 */
@@ -133,25 +135,6 @@ ssovf_mbox_timeout_ticks(uint64_t ns, uint64_t *tmo_ticks)
 
 	*tmo_ticks = ns2iter.getwork_iter;
 	return 0;
-}
-
-static void
-ssovf_fastpath_fns_set(struct rte_eventdev *dev)
-{
-	struct ssovf_evdev *edev = ssovf_pmd_priv(dev);
-
-	dev->enqueue       = ssows_enq;
-	dev->enqueue_burst = ssows_enq_burst;
-	dev->enqueue_new_burst = ssows_enq_new_burst;
-	dev->enqueue_forward_burst = ssows_enq_fwd_burst;
-	dev->dequeue       = ssows_deq;
-	dev->dequeue_burst = ssows_deq_burst;
-	dev->txa_enqueue = sso_event_tx_adapter_enqueue;
-
-	if (edev->is_timeout_deq) {
-		dev->dequeue       = ssows_deq_timeout;
-		dev->dequeue_burst = ssows_deq_timeout_burst;
-	}
 }
 
 static void
@@ -289,6 +272,7 @@ ssovf_port_setup(struct rte_eventdev *dev, uint8_t port_id,
 	reg_off |= 1 << 16; /* Wait */
 	ws->getwork = ws->base + reg_off;
 	ws->port = port_id;
+	ws->lookup_mem = octeontx_fastpath_lookup_mem_get();
 
 	for (q = 0; q < edev->nb_event_queues; q++) {
 		ws->grps[q] = ssovf_bar(OCTEONTX_SSO_GROUP, q, 2);
@@ -408,6 +392,7 @@ ssovf_eth_rx_adapter_queue_add(const struct rte_eventdev *dev,
 {
 	int ret = 0;
 	const struct octeontx_nic *nic = eth_dev->data->dev_private;
+	struct ssovf_evdev *edev = ssovf_pmd_priv(dev);
 	pki_mod_qos_t pki_qos;
 	RTE_SET_USED(dev);
 
@@ -432,7 +417,7 @@ ssovf_eth_rx_adapter_queue_add(const struct rte_eventdev *dev,
 	pki_qos.mmask.f_grptag_ok = 1;
 	pki_qos.mmask.f_grptag_bad = 1;
 
-	pki_qos.tag_type = queue_conf->ev.sched_type;
+	pki_qos.qos_entry.tag_type = queue_conf->ev.sched_type;
 	pki_qos.qos_entry.port_add = 0;
 	pki_qos.qos_entry.ggrp_ok = queue_conf->ev.queue_id;
 	pki_qos.qos_entry.ggrp_bad = queue_conf->ev.queue_id;
@@ -444,6 +429,8 @@ ssovf_eth_rx_adapter_queue_add(const struct rte_eventdev *dev,
 		ssovf_log_err("failed to modify QOS, port=%d, q=%d",
 				nic->port_id, queue_conf->ev.queue_id);
 
+	edev->rx_offload_flags = nic->rx_offload_flags;
+	edev->tx_offload_flags = nic->tx_offload_flags;
 	return ret;
 }
 
@@ -779,6 +766,7 @@ ssovf_vdev_probe(struct rte_vdev_device *vdev)
 		return 0;
 	}
 
+	octeontx_mbox_init();
 	ret = ssovf_info(&oinfo);
 	if (ret) {
 		ssovf_log_err("Failed to probe and validate ssovfs %d", ret);

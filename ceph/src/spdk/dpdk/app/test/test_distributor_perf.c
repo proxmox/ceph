@@ -25,7 +25,7 @@ static volatile unsigned worker_idx;
 struct worker_stats {
 	volatile unsigned handled_packets;
 } __rte_cache_aligned;
-struct worker_stats worker_stats[RTE_MAX_LCORE];
+static struct worker_stats worker_stats[RTE_MAX_LCORE];
 
 /*
  * worker thread used for testing the time to do a round-trip of a cache
@@ -111,7 +111,7 @@ handle_work(void *arg)
 	unsigned int count = 0;
 	unsigned int num = 0;
 	int i;
-	unsigned int id = __sync_fetch_and_add(&worker_idx, 1);
+	unsigned int id = __atomic_fetch_add(&worker_idx, 1, __ATOMIC_RELAXED);
 	struct rte_mbuf *buf[8] __rte_cache_aligned;
 
 	for (i = 0; i < 8; i++)
@@ -208,8 +208,8 @@ test_distributor_perf(void)
 	static struct rte_mempool *p;
 
 	if (rte_lcore_count() < 2) {
-		printf("ERROR: not enough cores to test distributor\n");
-		return -1;
+		printf("Not enough cores for distributor_perf_autotest, expecting at least 2\n");
+		return TEST_SKIPPED;
 	}
 
 	/* first time how long it takes to round-trip a cache line */

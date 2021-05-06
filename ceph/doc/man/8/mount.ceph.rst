@@ -71,6 +71,20 @@ Basic
 :command:`mount_timeout`
     int (seconds), Default: 60
 
+:command:`ms_mode=<legacy|crc|secure|prefer-crc|prefer-secure>`
+    Set the connection mode that the client uses for transport. The available
+    modes are:
+
+    - ``legacy``: use messenger v1 protocol to talk to the cluster
+
+    - ``crc``: use messenger v2, without on-the-wire encryption
+
+    - ``secure``: use messenger v2, with on-the-wire encryption
+
+    - ``prefer-crc``: crc mode, if denied agree to secure mode
+
+    - ``prefer-secure``: secure mode, if denied agree to crc mode
+
 :command:`name`
     RADOS user to authenticate as when using CephX. Default: guest
 
@@ -82,15 +96,15 @@ Basic
     path to file containing the secret key to use with CephX
 
 :command:`recover_session=<no|clean>`
-    Set auto reconnect mode in the case where the client is blacklisted. The
+    Set auto reconnect mode in the case where the client is blocklisted. The
     available modes are ``no`` and ``clean``. The default is ``no``.
 
     - ``no``: never attempt to reconnect when client detects that it has been
-       blacklisted. Blacklisted clients will not attempt to reconnect and
+       blocklisted. Blocklisted clients will not attempt to reconnect and
        their operations will fail too.
 
     - ``clean``: client reconnects to the Ceph cluster automatically when it
-      detects that it has been blacklisted. During reconnect, client drops
+      detects that it has been blocklisted. During reconnect, client drops
       dirty data/metadata, invalidates page caches and writable file handles.
       After reconnect, file locks become stale because the MDS loses track of
       them. If an inode contains any stale file locks, read/write on the inode
@@ -129,9 +143,6 @@ Advanced
 :command:`osdkeepalive`
     int, Default: 5
 
-:command:`osdtimeout`
-    int (seconds), Default: 60
-
 :command:`osd_idle_ttl`
     int (seconds), Default: 60
 
@@ -166,6 +177,15 @@ Advanced
     int (bytes), max write size. Default: 16777216 (16*1024*1024) (writeback
     uses smaller of wsize and stripe unit)
 
+:command:`wsync`
+    Execute all namespace operations synchronously. This ensures that the
+    namespace operation will only complete after receiving a reply from
+    the MDS. This is the default.
+
+:command:`nowsync`
+    Allow the client to do namespace operations asynchronously. When this
+    option is enabled, a namespace operation may complete before the MDS
+    replies, if it has sufficient capabilities to do so.
 
 Examples
 ========
@@ -184,8 +204,11 @@ Mount only part of the namespace/file system::
     mount.ceph :/some/directory/in/cephfs /mnt/mycephfs
 
 Mount non-default FS, in case cluster has multiple FSs::
-
-    mount -t ceph :/ /mnt/mycephfs2 -o mds_namespace=mycephfs2
+    mount -t ceph :/ /mnt/mycephfs2 -o fs=mycephfs2
+    
+    or
+    
+    mount -t ceph :/ /mnt/mycephfs2 -o mds_namespace=mycephfs2 # This option name is deprecated.
 
 Pass the monitor host's IP address, optionally::
 
@@ -216,10 +239,15 @@ history::
 Availability
 ============
 
-**mount.ceph** is part of Ceph, a massively scalable, open-source, distributed storage system. Please
-refer to the Ceph documentation at http://ceph.com/docs for more
-information.
+**mount.ceph** is part of Ceph, a massively scalable, open-source, distributed
+storage system. Please refer to the Ceph documentation at http://ceph.com/docs
+for more information.
 
+Feature Availability
+====================
+
+The ``recover_session=`` option was added to mainline Linux kernels in v5.4.
+``wsync`` and ``nowsync`` were added in v5.7.
 
 See also
 ========

@@ -60,17 +60,6 @@ fuzzer = executable('fuzzer',
   dependencies: libzstd_dep,
   install: false)
 
-zbufftest_sources = [join_paths(zstd_rootdir, 'programs/datagen.c'),
-  join_paths(zstd_rootdir, 'programs/util.c'),
-  join_paths(zstd_rootdir, 'programs/timefn.c'),
-  join_paths(zstd_rootdir, 'tests/zbufftest.c')]
-zbufftest = executable('zbufftest',
-  zbufftest_sources,
-  c_args: ['-Wno-deprecated-declarations'],
-  include_directories: test_includes,
-  dependencies: libzstd_dep,
-  install: false)
-
 zstreamtest_sources = [join_paths(zstd_rootdir, 'programs/datagen.c'),
   join_paths(zstd_rootdir, 'programs/util.c'),
   join_paths(zstd_rootdir, 'programs/timefn.c'),
@@ -112,13 +101,15 @@ invalidDictionaries = executable('invalidDictionaries',
   dependencies: [ libzstd_dep ],
   install: false)
 
-legacy_sources = [join_paths(zstd_rootdir, 'tests/legacy.c')]
-legacy = executable('legacy',
-  legacy_sources,
-  # Use -Dlegacy_level build option to control it
-  #c_args: '-DZSTD_LEGACY_SUPPORT=4',
-  dependencies: [ libzstd_dep ],
-  install: false)
+if 0 < legacy_level and legacy_level <= 4
+  legacy_sources = [join_paths(zstd_rootdir, 'tests/legacy.c')]
+  legacy = executable('legacy',
+    legacy_sources,
+    # Use -Dlegacy_level build option to control it
+    #c_args: '-DZSTD_LEGACY_SUPPORT=4',
+    dependencies: [ libzstd_dep ],
+    install: false)
+endif
 
 decodecorpus_sources = [join_paths(zstd_rootdir, 'programs/util.c'),
   join_paths(zstd_rootdir, 'programs/timefn.c'),
@@ -127,14 +118,6 @@ decodecorpus = executable('decodecorpus',
   decodecorpus_sources,
   include_directories: test_includes,
   dependencies: [ libzstd_dep, libm_dep ],
-  install: false)
-
-symbols_sources = [join_paths(zstd_rootdir, 'tests/symbols.c')]
-symbols = executable('symbols',
-  symbols_sources,
-  include_directories: test_includes,
-  c_args: host_machine_os == os_windows ? '-DZSTD_DLL_IMPORT=1' : [],
-  dependencies: [ libzstd_dep ],
   install: false)
 
 poolTests_sources = [join_paths(zstd_rootdir, 'programs/util.c'),
@@ -175,9 +158,10 @@ if host_machine_os != os_windows
   test('test-zstd',
     playTests_sh,
     args: ZSTDRTTEST,
-    env: ['ZSTD=' + zstd.full_path()],
+    env: ['ZSTD_BIN=' + zstd.full_path(), 'DATAGEN_BIN=./datagen'],
     depends: [datagen],
-    timeout: 600) # Timeout should work on HDD drive
+    workdir: meson.current_build_dir(),
+    timeout: 2800) # Timeout should work on HDD drive
 endif
 
 test('test-fullbench-1',
@@ -195,17 +179,13 @@ if use_zlib
   test('test-fuzzer',
     fuzzer,
     args: ['-v', FUZZERTEST] + FUZZER_FLAGS,
-    timeout: 240)
+    timeout: 480)
 endif
 
-test('test-zbuff',
-  zbufftest,
-  args: [ZSTREAM_TESTTIME],
-  timeout: 120)
 test('test-zstream-1',
   zstreamtest,
   args: ['-v', ZSTREAM_TESTTIME] + FUZZER_FLAGS,
-  timeout: 120)
+  timeout: 240)
 test('test-zstream-2',
   zstreamtest,
   args: ['-mt', '-t1', ZSTREAM_TESTTIME] + FUZZER_FLAGS,
@@ -216,8 +196,9 @@ test('test-zstream-3',
   timeout: 120)
 test('test-longmatch', longmatch, timeout: 36)
 test('test-invalidDictionaries', invalidDictionaries) # should be fast
-test('test-symbols', symbols) # should be fast
-test('test-legacy', legacy) # should be fast
+if 0 < legacy_level and legacy_level <= 4
+  test('test-legacy', legacy) # should be fast
+endif
 test('test-decodecorpus',
   decodecorpus,
   args: ['-t', DECODECORPUS_TESTTIME],

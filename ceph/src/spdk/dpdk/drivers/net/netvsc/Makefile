@@ -5,11 +5,8 @@ include $(RTE_SDK)/mk/rte.vars.mk
 LIB = librte_pmd_netvsc.a
 
 CFLAGS += -O3 $(WERROR_FLAGS)
-CFLAGS += -DALLOW_EXPERIMENTAL_API
 
 EXPORT_MAP := rte_pmd_netvsc_version.map
-
-LIBABIVER := 1
 
 SRCS-$(CONFIG_RTE_LIBRTE_NETVSC_PMD) += hn_ethdev.c
 SRCS-$(CONFIG_RTE_LIBRTE_NETVSC_PMD) += hn_rxtx.c

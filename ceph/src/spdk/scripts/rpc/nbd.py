@@ -1,19 +1,25 @@
-def start_nbd_disk(client, bdev_name, nbd_device):
+from .helpers import deprecated_alias
+
+
+@deprecated_alias('start_nbd_disk')
+def nbd_start_disk(client, bdev_name, nbd_device):
     params = {
         'bdev_name': bdev_name
     }
     if nbd_device:
         params['nbd_device'] = nbd_device
-    return client.call('start_nbd_disk', params)
+    return client.call('nbd_start_disk', params)
 
 
-def stop_nbd_disk(client, nbd_device):
+@deprecated_alias('stop_nbd_disk')
+def nbd_stop_disk(client, nbd_device):
     params = {'nbd_device': nbd_device}
-    return client.call('stop_nbd_disk', params)
+    return client.call('nbd_stop_disk', params)
 
 
-def get_nbd_disks(client, nbd_device=None):
+@deprecated_alias('get_nbd_disks')
+def nbd_get_disks(client, nbd_device=None):
     params = {}
     if nbd_device:
         params['nbd_device'] = nbd_device
-    return client.call('get_nbd_disks', params)
+    return client.call('nbd_get_disks', params)

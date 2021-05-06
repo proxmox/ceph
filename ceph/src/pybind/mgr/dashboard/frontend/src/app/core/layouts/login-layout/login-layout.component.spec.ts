@@ -1,31 +1,20 @@
 import { HttpClientTestingModule } from '@angular/common/http/testing';
-import { async, ComponentFixture, TestBed } from '@angular/core/testing';
+import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { BrowserAnimationsModule } from '@angular/platform-browser/animations';
-
-import { BsDatepickerModule } from 'ngx-bootstrap/datepicker';
-import { BsDropdownModule } from 'ngx-bootstrap/dropdown';
-
 import { RouterTestingModule } from '@angular/router/testing';
-import { SharedModule } from '../../../shared/shared.module';
+
+import { SharedModule } from '~/app/shared/shared.module';
+import { configureTestBed } from '~/testing/unit-test-helper';
 import { LoginLayoutComponent } from './login-layout.component';
 
 describe('LoginLayoutComponent', () => {
   let component: LoginLayoutComponent;
   let fixture: ComponentFixture<LoginLayoutComponent>;
 
-  beforeEach(async(() => {
-    TestBed.configureTestingModule({
-      declarations: [LoginLayoutComponent],
-      imports: [
-        BrowserAnimationsModule,
-        BsDropdownModule.forRoot(),
-        BsDatepickerModule.forRoot(),
-        HttpClientTestingModule,
-        RouterTestingModule,
-        SharedModule
-      ]
-    }).compileComponents();
-  }));
+  configureTestBed({
+    declarations: [LoginLayoutComponent],
+    imports: [BrowserAnimationsModule, HttpClientTestingModule, RouterTestingModule, SharedModule]
+  });
 
   beforeEach(() => {
     fixture = TestBed.createComponent(LoginLayoutComponent);

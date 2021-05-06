@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright (c) 2018 Arm Limited
+ * Copyright (c) 2018-2020 Arm Limited
  */
 
 #ifndef _RTE_RCU_QSBR_H_
@@ -24,6 +24,7 @@
 extern "C" {
 #endif
 
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdint.h>
 #include <inttypes.h>
@@ -33,6 +34,7 @@ extern "C" {
 #include <rte_lcore.h>
 #include <rte_debug.h>
 #include <rte_atomic.h>
+#include <rte_ring.h>
 
 extern int rte_rcu_log_type;
 
@@ -82,6 +84,8 @@ struct rte_rcu_qsbr_cnt {
 
 #define __RTE_QSBR_CNT_THR_OFFLINE 0
 #define __RTE_QSBR_CNT_INIT 1
+#define __RTE_QSBR_CNT_MAX ((uint64_t)~0)
+#define __RTE_QSBR_TOKEN_SIZE sizeof(uint64_t)
 
 /* RTE Quiescent State variable structure.
  * This structure has two elements that vary in size based on the
@@ -92,6 +96,10 @@ struct rte_rcu_qsbr_cnt {
 struct rte_rcu_qsbr {
 	uint64_t token __rte_cache_aligned;
 	/**< Counter to allow for multiple concurrent quiescent state queries */
+	uint64_t acked_token;
+	/**< Least token acked by all the threads in the last call to
+	 *   rte_rcu_qsbr_check API.
+	 */
 
 	uint32_t num_elems __rte_cache_aligned;
 	/**< Number of elements in the thread ID array */
@@ -109,6 +117,86 @@ struct rte_rcu_qsbr {
 } __rte_cache_aligned;
 
 /**
+ * Call back function called to free the resources.
+ *
+ * @param p
+ *   Pointer provided while creating the defer queue
+ * @param e
+ *   Pointer to the resource data stored on the defer queue
+ * @param n
+ *   Number of resources to free. Currently, this is set to 1.
+ *
+ * @return
+ *   None
+ */
+typedef void (*rte_rcu_qsbr_free_resource_t)(void *p, void *e, unsigned int n);
+
+#define RTE_RCU_QSBR_DQ_NAMESIZE RTE_RING_NAMESIZE
+
+/**
+ * Various flags supported.
+ */
+/**< Enqueue and reclaim operations are multi-thread safe by default.
+ *   The call back functions registered to free the resources are
+ *   assumed to be multi-thread safe.
+ *   Set this flag if multi-thread safety is not required.
+ */
+#define RTE_RCU_QSBR_DQ_MT_UNSAFE 1
+
+/**
+ * Parameters used when creating the defer queue.
+ */
+struct rte_rcu_qsbr_dq_parameters {
+	const char *name;
+	/**< Name of the queue. */
+	uint32_t flags;
+	/**< Flags to control API behaviors */
+	uint32_t size;
+	/**< Number of entries in queue. Typically, this will be
+	 *   the same as the maximum number of entries supported in the
+	 *   lock free data structure.
+	 *   Data structures with unbounded number of entries is not
+	 *   supported currently.
+	 */
+	uint32_t esize;
+	/**< Size (in bytes) of each element in the defer queue.
+	 *   This has to be multiple of 4B.
+	 */
+	uint32_t trigger_reclaim_limit;
+	/**< Trigger automatic reclamation after the defer queue
+	 *   has at least these many resources waiting. This auto
+	 *   reclamation is triggered in rte_rcu_qsbr_dq_enqueue API
+	 *   call.
+	 *   If this is greater than 'size', auto reclamation is
+	 *   not triggered.
+	 *   If this is set to 0, auto reclamation is triggered
+	 *   in every call to rte_rcu_qsbr_dq_enqueue API.
+	 */
+	uint32_t max_reclaim_size;
+	/**< When automatic reclamation is enabled, reclaim at the max
+	 *   these many resources. This should contain a valid value, if
+	 *   auto reclamation is on. Setting this to 'size' or greater will
+	 *   reclaim all possible resources currently on the defer queue.
+	 */
+	rte_rcu_qsbr_free_resource_t free_fn;
+	/**< Function to call to free the resource. */
+	void *p;
+	/**< Pointer passed to the free function. Typically, this is the
+	 *   pointer to the data structure to which the resource to free
+	 *   belongs. This can be NULL.
+	 */
+	struct rte_rcu_qsbr *v;
+	/**< RCU QSBR variable to use for this defer queue */
+};
+
+/* RTE defer queue structure.
+ * This structure holds the defer queue. The defer queue is used to
+ * hold the deleted entries from the data structure that are not
+ * yet freed.
+ */
+struct rte_rcu_qsbr_dq;
+
+/**
  * @warning
  * @b EXPERIMENTAL: this API may change without prior notice
  *
@@ -122,7 +210,8 @@ struct rte_rcu_qsbr {
  *   Possible rte_errno codes are:
  *   - EINVAL - max_threads is 0
  */
-size_t __rte_experimental
+__rte_experimental
+size_t
 rte_rcu_qsbr_get_memsize(uint32_t max_threads);
 
 /**
@@ -143,7 +232,8 @@ rte_rcu_qsbr_get_memsize(uint32_t max_threads);
  *   - EINVAL - max_threads is 0 or 'v' is NULL.
  *
  */
-int __rte_experimental
+__rte_experimental
+int
 rte_rcu_qsbr_init(struct rte_rcu_qsbr *v, uint32_t max_threads);
 
 /**
@@ -169,7 +259,8 @@ rte_rcu_qsbr_init(struct rte_rcu_qsbr *v, uint32_t max_threads);
  *   the QS variable. thread_id is a value between 0 and (max_threads - 1).
  *   'max_threads' is the parameter passed in 'rte_rcu_qsbr_init' API.
  */
-int __rte_experimental
+__rte_experimental
+int
 rte_rcu_qsbr_thread_register(struct rte_rcu_qsbr *v, unsigned int thread_id);
 
 /**
@@ -190,7 +281,8 @@ rte_rcu_qsbr_thread_register(struct rte_rcu_qsbr *v, unsigned int thread_id);
  *   Reader thread with this thread ID will stop reporting its quiescent
  *   state on the QS variable.
  */
-int __rte_experimental
+__rte_experimental
+int
 rte_rcu_qsbr_thread_unregister(struct rte_rcu_qsbr *v, unsigned int thread_id);
 
 /**
@@ -207,7 +299,7 @@ rte_rcu_qsbr_thread_unregister(struct rte_rcu_qsbr *v, unsigned int thread_id);
  * call this API before calling rte_rcu_qsbr_quiescent. This can be called
  * during initialization or as part of the packet processing loop.
  *
- * The reader thread must call rte_rcu_thread_offline API, before
+ * The reader thread must call rte_rcu_qsbr_thread_offline API, before
  * calling any functions that block, to ensure that rte_rcu_qsbr_check
  * API does not wait indefinitely for the reader thread to update its QS.
  *
@@ -221,7 +313,8 @@ rte_rcu_qsbr_thread_unregister(struct rte_rcu_qsbr *v, unsigned int thread_id);
  *   Reader thread with this thread ID will report its quiescent state on
  *   the QS variable.
  */
-static __rte_always_inline void __rte_experimental
+__rte_experimental
+static __rte_always_inline void
 rte_rcu_qsbr_thread_online(struct rte_rcu_qsbr *v, unsigned int thread_id)
 {
 	uint64_t t;
@@ -272,7 +365,7 @@ rte_rcu_qsbr_thread_online(struct rte_rcu_qsbr *v, unsigned int thread_id)
  * This can be called during initialization or as part of the packet
  * processing loop.
  *
- * The reader thread must call rte_rcu_thread_offline API, before
+ * The reader thread must call rte_rcu_qsbr_thread_offline API, before
  * calling any functions that block, to ensure that rte_rcu_qsbr_check
  * API does not wait indefinitely for the reader thread to update its QS.
  *
@@ -282,7 +375,8 @@ rte_rcu_qsbr_thread_online(struct rte_rcu_qsbr *v, unsigned int thread_id)
  *   rte_rcu_qsbr_check API will not wait for the reader thread with
  *   this thread ID to report its quiescent state on the QS variable.
  */
-static __rte_always_inline void __rte_experimental
+__rte_experimental
+static __rte_always_inline void
 rte_rcu_qsbr_thread_offline(struct rte_rcu_qsbr *v, unsigned int thread_id)
 {
 	RTE_ASSERT(v != NULL && thread_id < v->max_threads);
@@ -322,7 +416,8 @@ rte_rcu_qsbr_thread_offline(struct rte_rcu_qsbr *v, unsigned int thread_id)
  * @param thread_id
  *   Reader thread id
  */
-static __rte_always_inline void __rte_experimental
+__rte_experimental
+static __rte_always_inline void
 rte_rcu_qsbr_lock(__rte_unused struct rte_rcu_qsbr *v,
 			__rte_unused unsigned int thread_id)
 {
@@ -358,7 +453,8 @@ rte_rcu_qsbr_lock(__rte_unused struct rte_rcu_qsbr *v,
  * @param thread_id
  *   Reader thread id
  */
-static __rte_always_inline void __rte_experimental
+__rte_experimental
+static __rte_always_inline void
 rte_rcu_qsbr_unlock(__rte_unused struct rte_rcu_qsbr *v,
 			__rte_unused unsigned int thread_id)
 {
@@ -391,7 +487,8 @@ rte_rcu_qsbr_unlock(__rte_unused struct rte_rcu_qsbr *v,
  *   - This is the token for this call of the API. This should be
  *     passed to rte_rcu_qsbr_check API.
  */
-static __rte_always_inline uint64_t __rte_experimental
+__rte_experimental
+static __rte_always_inline uint64_t
 rte_rcu_qsbr_start(struct rte_rcu_qsbr *v)
 {
 	uint64_t t;
@@ -423,7 +520,8 @@ rte_rcu_qsbr_start(struct rte_rcu_qsbr *v)
  * @param thread_id
  *   Update the quiescent state for the reader with this thread ID.
  */
-static __rte_always_inline void __rte_experimental
+__rte_experimental
+static __rte_always_inline void
 rte_rcu_qsbr_quiescent(struct rte_rcu_qsbr *v, unsigned int thread_id)
 {
 	uint64_t t;
@@ -440,12 +538,14 @@ rte_rcu_qsbr_quiescent(struct rte_rcu_qsbr *v, unsigned int thread_id)
 	 */
 	t = __atomic_load_n(&v->token, __ATOMIC_ACQUIRE);
 
-	/* Inform the writer that updates are visible to this reader.
+	/* Check if there are updates available from the writer.
+	 * Inform the writer that updates are visible to this reader.
 	 * Prior loads of the shared data structure should not move
 	 * beyond this store. Hence use store-release.
 	 */
-	__atomic_store_n(&v->qsbr_cnt[thread_id].cnt,
-			 t, __ATOMIC_RELEASE);
+	if (t != __atomic_load_n(&v->qsbr_cnt[thread_id].cnt, __ATOMIC_RELAXED))
+		__atomic_store_n(&v->qsbr_cnt[thread_id].cnt,
+					 t, __ATOMIC_RELEASE);
 
 	__RTE_RCU_DP_LOG(DEBUG, "%s: update: token = %"PRIu64", Thread ID = %d",
 		__func__, t, thread_id);
@@ -461,6 +561,7 @@ __rte_rcu_qsbr_check_selective(struct rte_rcu_qsbr *v, uint64_t t, bool wait)
 	uint64_t bmap;
 	uint64_t c;
 	uint64_t *reg_thread_id;
+	uint64_t acked_token = __RTE_QSBR_CNT_MAX;
 
 	for (i = 0, reg_thread_id = __RTE_QSBR_THRID_ARRAY_ELM(v, 0);
 		i < v->num_elems;
@@ -482,6 +583,7 @@ __rte_rcu_qsbr_check_selective(struct rte_rcu_qsbr *v, uint64_t t, bool wait)
 			__RTE_RCU_DP_LOG(DEBUG,
 				"%s: status: token = %"PRIu64", wait = %d, Thread QS cnt = %"PRIu64", Thread ID = %d",
 				__func__, t, wait, c, id+j);
+
 			/* Counter is not checked for wrap-around condition
 			 * as it is a 64b counter.
 			 */
@@ -501,9 +603,24 @@ __rte_rcu_qsbr_check_selective(struct rte_rcu_qsbr *v, uint64_t t, bool wait)
 				continue;
 			}
 
+			/* This thread is in quiescent state. Use the counter
+			 * to find the least acknowledged token among all the
+			 * readers.
+			 */
+			if (c != __RTE_QSBR_CNT_THR_OFFLINE && acked_token > c)
+				acked_token = c;
+
 			bmap &= ~(1UL << j);
 		}
 	}
+
+	/* All readers are checked, update least acknowledged token.
+	 * There might be multiple writers trying to update this. There is
+	 * no need to update this very accurately using compare-and-swap.
+	 */
+	if (acked_token != __RTE_QSBR_CNT_MAX)
+		__atomic_store_n(&v->acked_token, acked_token,
+			__ATOMIC_RELAXED);
 
 	return 1;
 }
@@ -517,6 +634,7 @@ __rte_rcu_qsbr_check_all(struct rte_rcu_qsbr *v, uint64_t t, bool wait)
 	uint32_t i;
 	struct rte_rcu_qsbr_cnt *cnt;
 	uint64_t c;
+	uint64_t acked_token = __RTE_QSBR_CNT_MAX;
 
 	for (i = 0, cnt = v->qsbr_cnt; i < v->max_threads; i++, cnt++) {
 		__RTE_RCU_DP_LOG(DEBUG,
@@ -527,6 +645,7 @@ __rte_rcu_qsbr_check_all(struct rte_rcu_qsbr *v, uint64_t t, bool wait)
 			__RTE_RCU_DP_LOG(DEBUG,
 				"%s: status: token = %"PRIu64", wait = %d, Thread QS cnt = %"PRIu64", Thread ID = %d",
 				__func__, t, wait, c, i);
+
 			/* Counter is not checked for wrap-around condition
 			 * as it is a 64b counter.
 			 */
@@ -539,7 +658,21 @@ __rte_rcu_qsbr_check_all(struct rte_rcu_qsbr *v, uint64_t t, bool wait)
 
 			rte_pause();
 		}
+
+		/* This thread is in quiescent state. Use the counter to find
+		 * the least acknowledged token among all the readers.
+		 */
+		if (likely(c != __RTE_QSBR_CNT_THR_OFFLINE && acked_token > c))
+			acked_token = c;
 	}
+
+	/* All readers are checked, update least acknowledged token.
+	 * There might be multiple writers trying to update this. There is
+	 * no need to update this very accurately using compare-and-swap.
+	 */
+	if (acked_token != __RTE_QSBR_CNT_MAX)
+		__atomic_store_n(&v->acked_token, acked_token,
+			__ATOMIC_RELAXED);
 
 	return 1;
 }
@@ -578,10 +711,22 @@ __rte_rcu_qsbr_check_all(struct rte_rcu_qsbr *v, uint64_t t, bool wait)
  *   - 1 if all reader threads have passed through specified number
  *     of quiescent states.
  */
-static __rte_always_inline int __rte_experimental
+__rte_experimental
+static __rte_always_inline int
 rte_rcu_qsbr_check(struct rte_rcu_qsbr *v, uint64_t t, bool wait)
 {
 	RTE_ASSERT(v != NULL);
+
+	/* Check if all the readers have already acknowledged this token */
+	if (likely(t <= v->acked_token)) {
+		__RTE_RCU_DP_LOG(DEBUG,
+			"%s: check: token = %"PRIu64", wait = %d",
+			__func__, t, wait);
+		__RTE_RCU_DP_LOG(DEBUG,
+			"%s: status: least acked token = %"PRIu64"",
+			__func__, v->acked_token);
+		return 1;
+	}
 
 	if (likely(v->num_threads == v->max_threads))
 		return __rte_rcu_qsbr_check_all(v, t, wait);
@@ -610,7 +755,8 @@ rte_rcu_qsbr_check(struct rte_rcu_qsbr *v, uint64_t t, bool wait)
  *   on this QS variable (i.e. the calling thread is also part of the
  *   readside critical section). If not, pass RTE_QSBR_THRID_INVALID.
  */
-void __rte_experimental
+__rte_experimental
+void
 rte_rcu_qsbr_synchronize(struct rte_rcu_qsbr *v, unsigned int thread_id);
 
 /**
@@ -631,8 +777,119 @@ rte_rcu_qsbr_synchronize(struct rte_rcu_qsbr *v, unsigned int thread_id);
  *   Possible rte_errno codes are:
  *   - EINVAL - NULL parameters are passed
  */
-int __rte_experimental
+__rte_experimental
+int
 rte_rcu_qsbr_dump(FILE *f, struct rte_rcu_qsbr *v);
+
+/**
+ * @warning
+ * @b EXPERIMENTAL: this API may change without prior notice
+ *
+ * Create a queue used to store the data structure elements that can
+ * be freed later. This queue is referred to as 'defer queue'.
+ *
+ * @param params
+ *   Parameters to create a defer queue.
+ * @return
+ *   On success - Valid pointer to defer queue
+ *   On error - NULL
+ *   Possible rte_errno codes are:
+ *   - EINVAL - NULL parameters are passed
+ *   - ENOMEM - Not enough memory
+ */
+__rte_experimental
+struct rte_rcu_qsbr_dq *
+rte_rcu_qsbr_dq_create(const struct rte_rcu_qsbr_dq_parameters *params);
+
+/**
+ * @warning
+ * @b EXPERIMENTAL: this API may change without prior notice
+ *
+ * Enqueue one resource to the defer queue and start the grace period.
+ * The resource will be freed later after at least one grace period
+ * is over.
+ *
+ * If the defer queue is full, it will attempt to reclaim resources.
+ * It will also reclaim resources at regular intervals to avoid
+ * the defer queue from growing too big.
+ *
+ * Multi-thread safety is provided as the defer queue configuration.
+ * When multi-thread safety is requested, it is possible that the
+ * resources are not stored in their order of deletion. This results
+ * in resources being held in the defer queue longer than they should.
+ *
+ * @param dq
+ *   Defer queue to allocate an entry from.
+ * @param e
+ *   Pointer to resource data to copy to the defer queue. The size of
+ *   the data to copy is equal to the element size provided when the
+ *   defer queue was created.
+ * @return
+ *   On success - 0
+ *   On error - 1 with rte_errno set to
+ *   - EINVAL - NULL parameters are passed
+ *   - ENOSPC - Defer queue is full. This condition can not happen
+ *		if the defer queue size is equal (or larger) than the
+ *		number of elements in the data structure.
+ */
+__rte_experimental
+int
+rte_rcu_qsbr_dq_enqueue(struct rte_rcu_qsbr_dq *dq, void *e);
+
+/**
+ * @warning
+ * @b EXPERIMENTAL: this API may change without prior notice
+ *
+ * Free resources from the defer queue.
+ *
+ * This API is multi-thread safe.
+ *
+ * @param dq
+ *   Defer queue to free an entry from.
+ * @param n
+ *   Maximum number of resources to free.
+ * @param freed
+ *   Number of resources that were freed.
+ * @param pending
+ *   Number of resources pending on the defer queue. This number might not
+ *   be accurate if multi-thread safety is configured.
+ * @param available
+ *   Number of resources that can be added to the defer queue.
+ *   This number might not be accurate if multi-thread safety is configured.
+ * @return
+ *   On successful reclamation of at least 1 resource - 0
+ *   On error - 1 with rte_errno set to
+ *   - EINVAL - NULL parameters are passed
+ */
+__rte_experimental
+int
+rte_rcu_qsbr_dq_reclaim(struct rte_rcu_qsbr_dq *dq, unsigned int n,
+	unsigned int *freed, unsigned int *pending, unsigned int *available);
+
+/**
+ * @warning
+ * @b EXPERIMENTAL: this API may change without prior notice
+ *
+ * Delete a defer queue.
+ *
+ * It tries to reclaim all the resources on the defer queue.
+ * If any of the resources have not completed the grace period
+ * the reclamation stops and returns immediately. The rest of
+ * the resources are not reclaimed and the defer queue is not
+ * freed.
+ *
+ * @param dq
+ *   Defer queue to delete.
+ * @return
+ *   On success - 0
+ *   On error - 1
+ *   Possible rte_errno codes are:
+ *   - EAGAIN - Some of the resources have not completed at least 1 grace
+ *		period, try again.
+ */
+__rte_experimental
+int
+rte_rcu_qsbr_dq_delete(struct rte_rcu_qsbr_dq *dq);
 
 #ifdef __cplusplus
 }

@@ -27,11 +27,11 @@ class BitmapFreelistManager : public FreelistManager {
   uint64_t block_mask;  ///< mask to convert byte offset to block offset
   uint64_t key_mask;    ///< mask to convert offset to key offset
 
-  bufferlist all_set_bl;
+  ceph::buffer::list all_set_bl;
 
   KeyValueDB::Iterator enumerate_p;
   uint64_t enumerate_offset; ///< logical offset; position
-  bufferlist enumerate_bl;   ///< current key at enumerate_offset
+  ceph::buffer::list enumerate_bl;   ///< current key at enumerate_offset
   int enumerate_bl_pos;      ///< bit position in enumerate_bl
 
   uint64_t _get_offset(uint64_t key_off, int bit) {
@@ -40,13 +40,12 @@ class BitmapFreelistManager : public FreelistManager {
 
   void _init_misc();
 
-  void _verify_range(KeyValueDB *kvdb,
-    uint64_t offset, uint64_t length, int val);
   void _xor(
     uint64_t offset, uint64_t length,
     KeyValueDB::Transaction txn);
 
-  int _init_from_label(const bluestore_bdev_label_t& label);
+  int _read_cfg(
+    std::function<int(const std::string&, std::string*)> cfg_reader);
 
   int _expand(uint64_t new_size, KeyValueDB* db);
 
@@ -58,17 +57,16 @@ class BitmapFreelistManager : public FreelistManager {
   void _load_from_db(KeyValueDB* kvdb);
 
 public:
-  BitmapFreelistManager(CephContext* cct, string meta_prefix,
-			string bitmap_prefix);
+  BitmapFreelistManager(CephContext* cct, std::string meta_prefix,
+			std::string bitmap_prefix);
 
-  static void setup_merge_operator(KeyValueDB *db, string prefix);
+  static void setup_merge_operator(KeyValueDB *db, std::string prefix);
 
   int create(uint64_t size, uint64_t granularity,
 	     KeyValueDB::Transaction txn) override;
 
-  int init(const bluestore_bdev_label_t& l,
-    KeyValueDB *kvdb,
-    bool db_in_read_only) override;
+  int init(KeyValueDB *kvdb, bool db_in_read_only,
+    std::function<int(const std::string&, std::string*)> cfg_reader) override;
 
   void shutdown() override;
   void sync(KeyValueDB* kvdb) override;

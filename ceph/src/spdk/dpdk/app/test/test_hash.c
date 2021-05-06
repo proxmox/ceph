@@ -67,7 +67,7 @@ struct flow_key {
 	uint16_t port_src;
 	uint16_t port_dst;
 	uint8_t proto;
-} __attribute__((packed));
+} __rte_packed;
 
 int hash_logtype_test;
 
@@ -75,9 +75,9 @@ int hash_logtype_test;
  * Hash function that always returns the same value, to easily test what
  * happens when a bucket is full.
  */
-static uint32_t pseudo_hash(__attribute__((unused)) const void *keys,
-			    __attribute__((unused)) uint32_t key_len,
-			    __attribute__((unused)) uint32_t init_val)
+static uint32_t pseudo_hash(__rte_unused const void *keys,
+			    __rte_unused uint32_t key_len,
+			    __rte_unused uint32_t init_val)
 {
 	return 3;
 }
@@ -104,32 +104,32 @@ static void print_key_info(const char *msg, const struct flow_key *key,
 
 /* Keys used by unit test functions */
 static struct flow_key keys[5] = { {
-	.ip_src = IPv4(0x03, 0x02, 0x01, 0x00),
-	.ip_dst = IPv4(0x07, 0x06, 0x05, 0x04),
+	.ip_src = RTE_IPV4(0x03, 0x02, 0x01, 0x00),
+	.ip_dst = RTE_IPV4(0x07, 0x06, 0x05, 0x04),
 	.port_src = 0x0908,
 	.port_dst = 0x0b0a,
 	.proto = 0x0c,
 }, {
-	.ip_src = IPv4(0x13, 0x12, 0x11, 0x10),
-	.ip_dst = IPv4(0x17, 0x16, 0x15, 0x14),
+	.ip_src = RTE_IPV4(0x13, 0x12, 0x11, 0x10),
+	.ip_dst = RTE_IPV4(0x17, 0x16, 0x15, 0x14),
 	.port_src = 0x1918,
 	.port_dst = 0x1b1a,
 	.proto = 0x1c,
 }, {
-	.ip_src = IPv4(0x23, 0x22, 0x21, 0x20),
-	.ip_dst = IPv4(0x27, 0x26, 0x25, 0x24),
+	.ip_src = RTE_IPV4(0x23, 0x22, 0x21, 0x20),
+	.ip_dst = RTE_IPV4(0x27, 0x26, 0x25, 0x24),
 	.port_src = 0x2928,
 	.port_dst = 0x2b2a,
 	.proto = 0x2c,
 }, {
-	.ip_src = IPv4(0x33, 0x32, 0x31, 0x30),
-	.ip_dst = IPv4(0x37, 0x36, 0x35, 0x34),
+	.ip_src = RTE_IPV4(0x33, 0x32, 0x31, 0x30),
+	.ip_dst = RTE_IPV4(0x37, 0x36, 0x35, 0x34),
 	.port_src = 0x3938,
 	.port_dst = 0x3b3a,
 	.proto = 0x3c,
 }, {
-	.ip_src = IPv4(0x43, 0x42, 0x41, 0x40),
-	.ip_dst = IPv4(0x47, 0x46, 0x45, 0x44),
+	.ip_src = RTE_IPV4(0x43, 0x42, 0x41, 0x40),
+	.ip_dst = RTE_IPV4(0x47, 0x46, 0x45, 0x44),
 	.port_src = 0x4948,
 	.port_dst = 0x4b4a,
 	.proto = 0x4c,
@@ -235,15 +235,9 @@ static void run_hash_func_tests(void)
 {
 	unsigned i, j, k;
 
-	for (i = 0;
-	     i < sizeof(hashtest_funcs) / sizeof(rte_hash_function);
-	     i++) {
-		for (j = 0;
-		     j < sizeof(hashtest_initvals) / sizeof(uint32_t);
-		     j++) {
-			for (k = 0;
-			     k < sizeof(hashtest_key_lens) / sizeof(uint32_t);
-			     k++) {
+	for (i = 0; i < RTE_DIM(hashtest_funcs); i++) {
+		for (j = 0; j < RTE_DIM(hashtest_initvals); j++) {
+			for (k = 0; k < RTE_DIM(hashtest_key_lens); k++) {
 				run_hash_func_test(hashtest_funcs[i],
 						hashtest_initvals[j],
 						hashtest_key_lens[k]);
@@ -1142,8 +1136,11 @@ fbk_hash_unit_test(void)
 	handle = rte_fbk_hash_create(&invalid_params_7);
 	RETURN_IF_ERROR_FBK(handle != NULL, "fbk hash creation should have failed");
 
-	handle = rte_fbk_hash_create(&invalid_params_8);
-	RETURN_IF_ERROR_FBK(handle != NULL, "fbk hash creation should have failed");
+	if (rte_eal_has_hugepages()) {
+		handle = rte_fbk_hash_create(&invalid_params_8);
+		RETURN_IF_ERROR_FBK(handle != NULL,
+					"fbk hash creation should have failed");
+	}
 
 	handle = rte_fbk_hash_create(&invalid_params_same_name_1);
 	RETURN_IF_ERROR_FBK(handle == NULL, "fbk hash creation should have succeeded");

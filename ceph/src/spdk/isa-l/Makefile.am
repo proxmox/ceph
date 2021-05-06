@@ -8,6 +8,11 @@ noinst_LTLIBRARIES =
 bin_PROGRAMS =
 INCLUDE = -I $(srcdir)/include/
 
+pkgconfigdir = $(libdir)/pkgconfig
+pkgconfig_DATA = libisal.pc
+EXTRA_DIST += libisal.pc.in
+CLEANFILES += libisal.pc
+
 lsrc=
 src_include=
 extern_hdrs=
@@ -19,8 +24,12 @@ unit_tests_extra=
 perf_tests_extra=
 examples=
 other_tests=
+other_tests_x86_64=
+other_tests_x86_32=
+other_tests_aarch64=
 lsrc_x86_64=
 lsrc_x86_32=
+lsrc_aarch64=
 lsrc_base_aliases=
 lsrc32=
 unit_tests32=
@@ -40,7 +49,7 @@ include mem/Makefile.am
 
 # LIB version info not necessarily the same as package version
 LIBISAL_CURRENT=2
-LIBISAL_REVISION=24
+LIBISAL_REVISION=28
 LIBISAL_AGE=0
 
 lib_LTLIBRARIES = libisal.la
@@ -49,10 +58,17 @@ libisal_la_SOURCES = ${lsrc}
 
 if CPU_X86_64
 libisal_la_SOURCES += ${lsrc_x86_64}
+other_tests += ${other_tests_x86_64}
 endif
 
 if CPU_X86_32
 libisal_la_SOURCES += ${lsrc_x86_32}
+other_tests += ${other_tests_x86_32}
+endif
+
+if CPU_AARCH64
+libisal_la_SOURCES += ${lsrc_aarch64}
+other_tests += ${other_tests_aarch64}
 endif
 
 if CPU_UNDEFINED
@@ -93,19 +109,26 @@ test: $(addsuffix .run,$(unit_tests))
 	$<
 	@echo Completed run: $<
 
-# Support for yasm/nasm
+# Support for yasm/nasm/gas
 if USE_YASM
   as_filter = ${srcdir}/tools/yasm-filter.sh
 endif
 if USE_NASM
   as_filter = ${srcdir}/tools/nasm-filter.sh
 endif
+if CPU_AARCH64
+  as_filter = gcc -D__ASSEMBLY__
+endif
 
 CCAS = $(as_filter)
 EXTRA_DIST += tools/yasm-filter.sh tools/nasm-filter.sh
 
 AM_CFLAGS = ${my_CFLAGS} ${INCLUDE} $(src_include) ${D}
+if CPU_AARCH64
+AM_CCASFLAGS = ${AM_CFLAGS}
+else
 AM_CCASFLAGS = ${yasm_args} ${INCLUDE} ${src_include} ${DEFS} ${D}
+endif
 
 .asm.s:
 	@echo "  MKTMP   " $@;

@@ -68,7 +68,8 @@ struct config {
 static struct config g_config;
 
 /* Namespaces index from 1. Return 0 to invoke an error */
-static unsigned get_nsid(const struct spdk_nvme_transport_id *trid)
+static unsigned
+get_nsid(const struct spdk_nvme_transport_id *trid)
 {
 	if (!strcmp(trid->traddr, g_config.read.trid.traddr)) {
 		return g_config.read.nsid;
@@ -79,7 +80,8 @@ static unsigned get_nsid(const struct spdk_nvme_transport_id *trid)
 	return 0;
 }
 
-static int get_rw(const struct spdk_nvme_transport_id *trid)
+static int
+get_rw(const struct spdk_nvme_transport_id *trid)
 {
 	if (!strcmp(trid->traddr, g_config.read.trid.traddr)) {
 		return CMB_COPY_READ;
@@ -107,6 +109,7 @@ cmb_copy(void)
 {
 	int rc = 0, rw;
 	void *buf;
+	size_t sz;
 
 	/* Allocate QPs for the read and write controllers */
 	g_config.read.qpair = spdk_nvme_ctrlr_alloc_io_qpair(g_config.read.ctrlr, NULL, 0);
@@ -117,8 +120,8 @@ cmb_copy(void)
 	}
 
 	/* Allocate a buffer from our CMB */
-	buf = spdk_nvme_ctrlr_alloc_cmb_io_buffer(g_config.cmb.ctrlr, g_config.copy_size);
-	if (buf == NULL) {
+	buf = spdk_nvme_ctrlr_map_cmb(g_config.cmb.ctrlr, &sz);
+	if (buf == NULL || sz < g_config.copy_size) {
 		printf("ERROR: buffer allocation failed\n");
 		printf("Are you sure %s has a valid CMB?\n",
 		       g_config.cmb.trid.traddr);
@@ -160,8 +163,7 @@ cmb_copy(void)
 	g_config.write.done = 0;
 
 	/* Free CMB buffer */
-	spdk_nvme_ctrlr_free_cmb_io_buffer(g_config.cmb.ctrlr, buf,
-					   g_config.copy_size);
+	spdk_nvme_ctrlr_unmap_cmb(g_config.cmb.ctrlr);
 
 	/* Free the queues */
 	spdk_nvme_ctrlr_free_io_qpair(g_config.read.qpair);
@@ -180,6 +182,8 @@ probe_cb(void *cb_ctx, const struct spdk_nvme_transport_id *trid,
 		printf("%s - not probed %s!\n", __func__, trid->traddr);
 		return 0;
 	}
+
+	opts->use_cmb_sqs = false;
 
 	printf("%s - probed %s!\n", __func__, trid->traddr);
 	return 1;

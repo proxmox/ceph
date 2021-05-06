@@ -13,32 +13,42 @@ from ..utils import Size as S
 
 class OcfErrorCode(IntEnum):
     OCF_ERR_INVAL = 1000000
+    OCF_ERR_AGAIN = auto()
     OCF_ERR_INTR = auto()
+    OCF_ERR_NOT_SUPP = auto()
     OCF_ERR_NO_MEM = auto()
     OCF_ERR_NO_LOCK = auto()
+    OCF_ERR_METADATA_VER = auto()
+    OCF_ERR_NO_METADATA = auto()
+    OCF_ERR_METADATA_FOUND = auto()
     OCF_ERR_INVAL_VOLUME_TYPE = auto()
     OCF_ERR_UNKNOWN = auto()
     OCF_ERR_TOO_MANY_CACHES = auto()
     OCF_ERR_NO_FREE_RAM = auto()
     OCF_ERR_START_CACHE_FAIL = auto()
-    OCF_ERR_CACHE_IN_USE = auto()
     OCF_ERR_CACHE_NOT_EXIST = auto()
+    OCF_ERR_CORE_NOT_EXIST = auto()
     OCF_ERR_CACHE_EXIST = auto()
+    OCF_ERR_CORE_EXIST = auto()
     OCF_ERR_TOO_MANY_CORES = auto()
     OCF_ERR_CORE_NOT_AVAIL = auto()
     OCF_ERR_NOT_OPEN_EXC = auto()
     OCF_ERR_CACHE_NOT_AVAIL = auto()
     OCF_ERR_IO_CLASS_NOT_EXIST = auto()
+    OCF_ERR_IO = auto()
     OCF_ERR_WRITE_CACHE = auto()
     OCF_ERR_WRITE_CORE = auto()
     OCF_ERR_DIRTY_SHUTDOWN = auto()
     OCF_ERR_DIRTY_EXISTS = auto()
     OCF_ERR_FLUSHING_INTERRUPTED = auto()
+    OCF_ERR_FLUSH_IN_PROGRESS = auto()
     OCF_ERR_CANNOT_ADD_CORE_TO_POOL = auto()
     OCF_ERR_CACHE_IN_INCOMPLETE_STATE = auto()
     OCF_ERR_CORE_IN_INACTIVE_STATE = auto()
     OCF_ERR_INVALID_CACHE_MODE = auto()
     OCF_ERR_INVALID_CACHE_LINE_SIZE = auto()
+    OCF_ERR_CACHE_NAME_MISMATCH = auto()
+    OCF_ERR_INVAL_CACHE_DEV = auto()
 
 
 class OcfCompletion:
@@ -46,6 +56,21 @@ class OcfCompletion:
     This class provides Completion mechanism for interacting with OCF async
     management API.
     """
+
+    class CompletionResult:
+        def __init__(self, completion_args):
+            self.completion_args = {
+                x[0]: i for i, x in enumerate(completion_args)
+            }
+            self.results = None
+            self.arg_types = [x[1] for x in completion_args]
+
+        def __getitem__(self, key):
+            try:
+                position = self.completion_args[key]
+                return self.results[position]
+            except KeyError:
+                raise KeyError(f"No completion argument {key} specified")
 
     def __init__(self, completion_args: list):
         """
@@ -56,19 +81,14 @@ class OcfCompletion:
             for OCF completion function
         """
         self.e = Event()
-        self.completion_args = completion_args
+        self.results = OcfCompletion.CompletionResult(completion_args)
         self._as_parameter_ = self.callback
-        self.results = None
 
     @property
     def callback(self):
-        arg_types = list(list(zip(*self.completion_args))[1])
-
-        @CFUNCTYPE(c_void_p, *arg_types)
+        @CFUNCTYPE(c_void_p, *self.results.arg_types)
         def complete(*args):
-            self.results = {}
-            for i, arg in enumerate(args):
-                self.results[self.completion_args[i][0]] = arg
+            self.results.results = args
             self.e.set()
 
         return complete
@@ -98,7 +118,7 @@ class SharedOcfObject(Structure):
     def get_instance(cls, ref: int):
         try:
             return cls._instances_[ref]
-        except:
+        except:  # noqa E722
             logging.getLogger("pyocf").error(
                 "OcfSharedObject corruption. wanted: {} instances: {}".format(
                     ref, cls._instances_

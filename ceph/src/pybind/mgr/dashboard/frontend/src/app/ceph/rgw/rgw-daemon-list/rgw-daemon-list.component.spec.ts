@@ -3,15 +3,15 @@ import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { BrowserAnimationsModule } from '@angular/platform-browser/animations';
 import { RouterTestingModule } from '@angular/router/testing';
 
-import { TabsModule } from 'ngx-bootstrap/tabs';
+import { NgbNavModule } from '@ng-bootstrap/ng-bootstrap';
 import { of } from 'rxjs';
 
-import { configureTestBed, i18nProviders } from '../../../../testing/unit-test-helper';
-import { RgwSiteService } from '../../../shared/api/rgw-site.service';
-import { Permissions } from '../../../shared/models/permissions';
-import { AuthStorageService } from '../../../shared/services/auth-storage.service';
-import { SharedModule } from '../../../shared/shared.module';
-import { PerformanceCounterModule } from '../../performance-counter/performance-counter.module';
+import { PerformanceCounterModule } from '~/app/ceph/performance-counter/performance-counter.module';
+import { RgwSiteService } from '~/app/shared/api/rgw-site.service';
+import { Permissions } from '~/app/shared/models/permissions';
+import { AuthStorageService } from '~/app/shared/services/auth-storage.service';
+import { SharedModule } from '~/app/shared/shared.module';
+import { configureTestBed, TabHelper } from '~/testing/unit-test-helper';
 import { RgwDaemonDetailsComponent } from '../rgw-daemon-details/rgw-daemon-details.component';
 import { RgwDaemonListComponent } from './rgw-daemon-list.component';
 
@@ -21,11 +21,11 @@ describe('RgwDaemonListComponent', () => {
   let getPermissionsSpy: jasmine.Spy;
   let getRealmsSpy: jasmine.Spy;
   const permissions = new Permissions({ grafana: ['read'] });
-  const expectTabsAndHeading = (length: number, heading: string) => {
-    const tabs = fixture.debugElement.nativeElement.querySelectorAll('tab');
 
+  const expectTabsAndHeading = (length: number, heading: string) => {
+    const tabs = TabHelper.getTextContents(fixture);
     expect(tabs.length).toEqual(length);
-    expect(tabs[length - 1].getAttribute('heading')).toEqual(heading);
+    expect(tabs[length - 1]).toEqual(heading);
   };
 
   configureTestBed({
@@ -33,18 +33,17 @@ describe('RgwDaemonListComponent', () => {
     imports: [
       BrowserAnimationsModule,
       HttpClientTestingModule,
-      TabsModule.forRoot(),
+      NgbNavModule,
       PerformanceCounterModule,
       SharedModule,
       RouterTestingModule
-    ],
-    providers: i18nProviders
+    ]
   });
 
   beforeEach(() => {
-    getPermissionsSpy = spyOn(TestBed.get(AuthStorageService), 'getPermissions');
+    getPermissionsSpy = spyOn(TestBed.inject(AuthStorageService), 'getPermissions');
     getPermissionsSpy.and.returnValue(new Permissions({}));
-    getRealmsSpy = spyOn(TestBed.get(RgwSiteService), 'get');
+    getRealmsSpy = spyOn(TestBed.inject(RgwSiteService), 'get');
     getRealmsSpy.and.returnValue(of([]));
     fixture = TestBed.createComponent(RgwDaemonListComponent);
     component = fixture.componentInstance;

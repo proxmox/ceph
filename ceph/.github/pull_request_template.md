@@ -41,13 +41,14 @@ https://raw.githubusercontent.com/ceph/ceph/master/SubmittingPatches.rst
 <summary>Show available Jenkins commands</summary>
 
 - `jenkins retest this please`
+- `jenkins test classic perf`
 - `jenkins test crimson perf`
 - `jenkins test signed`
 - `jenkins test make check`
 - `jenkins test make check arm64`
 - `jenkins test submodules`
 - `jenkins test dashboard`
-- `jenkins test dashboard backend`
+- `jenkins test api`
 - `jenkins test docs`
 - `jenkins render docs`
 - `jenkins test ceph-volume all`

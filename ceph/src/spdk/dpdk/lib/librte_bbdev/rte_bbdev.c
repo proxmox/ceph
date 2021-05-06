@@ -6,7 +6,6 @@
 #include <string.h>
 #include <stdbool.h>
 
-#include <rte_string_fns.h>
 #include <rte_compat.h>
 #include <rte_common.h>
 #include <rte_errno.h>
@@ -173,7 +172,7 @@ find_free_dev_id(void)
 	return RTE_BBDEV_MAX_DEVS;
 }
 
-struct rte_bbdev * __rte_experimental
+struct rte_bbdev *
 rte_bbdev_allocate(const char *name)
 {
 	int ret;
@@ -215,7 +214,7 @@ rte_bbdev_allocate(const char *name)
 	bbdev->data->dev_id = dev_id;
 	bbdev->state = RTE_BBDEV_INITIALIZED;
 
-	ret = strlcpy(bbdev->data->name, name, RTE_BBDEV_NAME_MAX_LEN);
+	ret = snprintf(bbdev->data->name, RTE_BBDEV_NAME_MAX_LEN, "%s", name);
 	if ((ret < 0) || (ret >= RTE_BBDEV_NAME_MAX_LEN)) {
 		rte_bbdev_log(ERR, "Copying device name \"%s\" failed", name);
 		return NULL;
@@ -232,7 +231,7 @@ rte_bbdev_allocate(const char *name)
 	return bbdev;
 }
 
-int __rte_experimental
+int
 rte_bbdev_release(struct rte_bbdev *bbdev)
 {
 	uint16_t dev_id;
@@ -266,7 +265,7 @@ rte_bbdev_release(struct rte_bbdev *bbdev)
 	return 0;
 }
 
-struct rte_bbdev * __rte_experimental
+struct rte_bbdev *
 rte_bbdev_get_named_dev(const char *name)
 {
 	unsigned int i;
@@ -286,13 +285,13 @@ rte_bbdev_get_named_dev(const char *name)
 	return NULL;
 }
 
-uint16_t __rte_experimental
+uint16_t
 rte_bbdev_count(void)
 {
 	return num_devs;
 }
 
-bool __rte_experimental
+bool
 rte_bbdev_is_valid(uint16_t dev_id)
 {
 	if ((dev_id < RTE_BBDEV_MAX_DEVS) &&
@@ -301,7 +300,7 @@ rte_bbdev_is_valid(uint16_t dev_id)
 	return false;
 }
 
-uint16_t __rte_experimental
+uint16_t
 rte_bbdev_find_next(uint16_t dev_id)
 {
 	dev_id++;
@@ -311,7 +310,7 @@ rte_bbdev_find_next(uint16_t dev_id)
 	return dev_id;
 }
 
-int __rte_experimental
+int
 rte_bbdev_setup_queues(uint16_t dev_id, uint16_t num_queues, int socket_id)
 {
 	unsigned int i;
@@ -401,7 +400,7 @@ error:
 	return ret;
 }
 
-int __rte_experimental
+int
 rte_bbdev_intr_enable(uint16_t dev_id)
 {
 	int ret;
@@ -433,7 +432,7 @@ rte_bbdev_intr_enable(uint16_t dev_id)
 	return -ENOTSUP;
 }
 
-int __rte_experimental
+int
 rte_bbdev_queue_configure(uint16_t dev_id, uint16_t queue_id,
 		const struct rte_bbdev_queue_conf *conf)
 {
@@ -499,7 +498,7 @@ rte_bbdev_queue_configure(uint16_t dev_id, uint16_t queue_id,
 		if (conf->op_type == RTE_BBDEV_OP_TURBO_DEC &&
 			conf->priority > dev_info.max_ul_queue_priority) {
 			rte_bbdev_log(ERR,
-					"Priority (%u) of queue %u of bdev %u must be <= %u",
+					"Priority (%u) of queue %u of bbdev %u must be <= %u",
 					conf->priority, queue_id, dev_id,
 					dev_info.max_ul_queue_priority);
 			return -EINVAL;
@@ -507,7 +506,7 @@ rte_bbdev_queue_configure(uint16_t dev_id, uint16_t queue_id,
 		if (conf->op_type == RTE_BBDEV_OP_TURBO_ENC &&
 			conf->priority > dev_info.max_dl_queue_priority) {
 			rte_bbdev_log(ERR,
-					"Priority (%u) of queue %u of bdev %u must be <= %u",
+					"Priority (%u) of queue %u of bbdev %u must be <= %u",
 					conf->priority, queue_id, dev_id,
 					dev_info.max_dl_queue_priority);
 			return -EINVAL;
@@ -551,7 +550,7 @@ rte_bbdev_queue_configure(uint16_t dev_id, uint16_t queue_id,
 	return 0;
 }
 
-int __rte_experimental
+int
 rte_bbdev_start(uint16_t dev_id)
 {
 	int i;
@@ -583,7 +582,7 @@ rte_bbdev_start(uint16_t dev_id)
 	return 0;
 }
 
-int __rte_experimental
+int
 rte_bbdev_stop(uint16_t dev_id)
 {
 	struct rte_bbdev *dev = get_dev(dev_id);
@@ -604,7 +603,7 @@ rte_bbdev_stop(uint16_t dev_id)
 	return 0;
 }
 
-int __rte_experimental
+int
 rte_bbdev_close(uint16_t dev_id)
 {
 	int ret;
@@ -649,7 +648,7 @@ rte_bbdev_close(uint16_t dev_id)
 	return 0;
 }
 
-int __rte_experimental
+int
 rte_bbdev_queue_start(uint16_t dev_id, uint16_t queue_id)
 {
 	struct rte_bbdev *dev = get_dev(dev_id);
@@ -679,7 +678,7 @@ rte_bbdev_queue_start(uint16_t dev_id, uint16_t queue_id)
 	return 0;
 }
 
-int __rte_experimental
+int
 rte_bbdev_queue_stop(uint16_t dev_id, uint16_t queue_id)
 {
 	struct rte_bbdev *dev = get_dev(dev_id);
@@ -739,7 +738,7 @@ reset_stats_in_queues(struct rte_bbdev *dev)
 	rte_bbdev_log_debug("Reset stats on %u", dev->data->dev_id);
 }
 
-int __rte_experimental
+int
 rte_bbdev_stats_get(uint16_t dev_id, struct rte_bbdev_stats *stats)
 {
 	struct rte_bbdev *dev = get_dev(dev_id);
@@ -762,7 +761,7 @@ rte_bbdev_stats_get(uint16_t dev_id, struct rte_bbdev_stats *stats)
 	return 0;
 }
 
-int __rte_experimental
+int
 rte_bbdev_stats_reset(uint16_t dev_id)
 {
 	struct rte_bbdev *dev = get_dev(dev_id);
@@ -779,7 +778,7 @@ rte_bbdev_stats_reset(uint16_t dev_id)
 	return 0;
 }
 
-int __rte_experimental
+int
 rte_bbdev_info_get(uint16_t dev_id, struct rte_bbdev_info *dev_info)
 {
 	struct rte_bbdev *dev = get_dev(dev_id);
@@ -796,7 +795,7 @@ rte_bbdev_info_get(uint16_t dev_id, struct rte_bbdev_info *dev_info)
 	memset(dev_info, 0, sizeof(*dev_info));
 	dev_info->dev_name = dev->data->name;
 	dev_info->num_queues = dev->data->num_queues;
-	dev_info->bus = rte_bus_find_by_device(dev->device);
+	dev_info->device = dev->device;
 	dev_info->socket_id = dev->data->socket_id;
 	dev_info->started = dev->data->started;
 
@@ -807,7 +806,7 @@ rte_bbdev_info_get(uint16_t dev_id, struct rte_bbdev_info *dev_info)
 	return 0;
 }
 
-int __rte_experimental
+int
 rte_bbdev_queue_info_get(uint16_t dev_id, uint16_t queue_id,
 		struct rte_bbdev_queue_info *queue_info)
 {
@@ -847,6 +846,12 @@ get_bbdev_op_size(enum rte_bbdev_op_type type)
 	case RTE_BBDEV_OP_TURBO_ENC:
 		result = sizeof(struct rte_bbdev_enc_op);
 		break;
+	case RTE_BBDEV_OP_LDPC_DEC:
+		result = sizeof(struct rte_bbdev_dec_op);
+		break;
+	case RTE_BBDEV_OP_LDPC_ENC:
+		result = sizeof(struct rte_bbdev_enc_op);
+		break;
 	default:
 		break;
 	}
@@ -861,18 +866,19 @@ bbdev_op_init(struct rte_mempool *mempool, void *arg, void *element,
 {
 	enum rte_bbdev_op_type type = *(enum rte_bbdev_op_type *)arg;
 
-	if (type == RTE_BBDEV_OP_TURBO_DEC) {
+	if (type == RTE_BBDEV_OP_TURBO_DEC || type == RTE_BBDEV_OP_LDPC_DEC) {
 		struct rte_bbdev_dec_op *op = element;
 		memset(op, 0, mempool->elt_size);
 		op->mempool = mempool;
-	} else if (type == RTE_BBDEV_OP_TURBO_ENC) {
+	} else if (type == RTE_BBDEV_OP_TURBO_ENC ||
+			type == RTE_BBDEV_OP_LDPC_ENC) {
 		struct rte_bbdev_enc_op *op = element;
 		memset(op, 0, mempool->elt_size);
 		op->mempool = mempool;
 	}
 }
 
-struct rte_mempool * __rte_experimental
+struct rte_mempool *
 rte_bbdev_op_pool_create(const char *name, enum rte_bbdev_op_type type,
 		unsigned int num_elements, unsigned int cache_size,
 		int socket_id)
@@ -919,7 +925,7 @@ rte_bbdev_op_pool_create(const char *name, enum rte_bbdev_op_type type,
 	return mp;
 }
 
-int __rte_experimental
+int
 rte_bbdev_callback_register(uint16_t dev_id, enum rte_bbdev_event_type event,
 		rte_bbdev_cb_fn cb_fn, void *cb_arg)
 {
@@ -964,7 +970,7 @@ rte_bbdev_callback_register(uint16_t dev_id, enum rte_bbdev_event_type event,
 	return (user_cb == NULL) ? -ENOMEM : 0;
 }
 
-int __rte_experimental
+int
 rte_bbdev_callback_unregister(uint16_t dev_id, enum rte_bbdev_event_type event,
 		rte_bbdev_cb_fn cb_fn, void *cb_arg)
 {
@@ -1009,7 +1015,7 @@ rte_bbdev_callback_unregister(uint16_t dev_id, enum rte_bbdev_event_type event,
 	return ret;
 }
 
-void __rte_experimental
+void
 rte_bbdev_pmd_callback_process(struct rte_bbdev *dev,
 	enum rte_bbdev_event_type event, void *ret_param)
 {
@@ -1051,7 +1057,7 @@ rte_bbdev_pmd_callback_process(struct rte_bbdev *dev,
 	rte_spinlock_unlock(&rte_bbdev_cb_lock);
 }
 
-int __rte_experimental
+int
 rte_bbdev_queue_intr_enable(uint16_t dev_id, uint16_t queue_id)
 {
 	struct rte_bbdev *dev = get_dev(dev_id);
@@ -1062,7 +1068,7 @@ rte_bbdev_queue_intr_enable(uint16_t dev_id, uint16_t queue_id)
 	return dev->dev_ops->queue_intr_enable(dev, queue_id);
 }
 
-int __rte_experimental
+int
 rte_bbdev_queue_intr_disable(uint16_t dev_id, uint16_t queue_id)
 {
 	struct rte_bbdev *dev = get_dev(dev_id);
@@ -1073,7 +1079,7 @@ rte_bbdev_queue_intr_disable(uint16_t dev_id, uint16_t queue_id)
 	return dev->dev_ops->queue_intr_disable(dev, queue_id);
 }
 
-int __rte_experimental
+int
 rte_bbdev_queue_intr_ctl(uint16_t dev_id, uint16_t queue_id, int epfd, int op,
 		void *data)
 {
@@ -1110,13 +1116,15 @@ rte_bbdev_queue_intr_ctl(uint16_t dev_id, uint16_t queue_id, int epfd, int op,
 }
 
 
-const char * __rte_experimental
+const char *
 rte_bbdev_op_type_str(enum rte_bbdev_op_type op_type)
 {
 	static const char * const op_types[] = {
 		"RTE_BBDEV_OP_NONE",
 		"RTE_BBDEV_OP_TURBO_DEC",
 		"RTE_BBDEV_OP_TURBO_ENC",
+		"RTE_BBDEV_OP_LDPC_DEC",
+		"RTE_BBDEV_OP_LDPC_ENC",
 	};
 
 	if (op_type < RTE_BBDEV_OP_TYPE_COUNT)

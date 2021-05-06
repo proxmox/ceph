@@ -13,28 +13,35 @@
 #include "engine/cache_engine.h"
 #include "ocf_def_priv.h"
 
-static void ocf_init_queue(ocf_queue_t q)
-{
-	env_atomic_set(&q->io_no, 0);
-	env_spinlock_init(&q->io_list_lock);
-	INIT_LIST_HEAD(&q->io_list);
-	env_atomic_set(&q->ref_count, 1);
-}
-
 int ocf_queue_create(ocf_cache_t cache, ocf_queue_t *queue,
 		const struct ocf_queue_ops *ops)
 {
 	ocf_queue_t tmp_queue;
+	int result;
 
 	OCF_CHECK_NULL(cache);
 
+	result = ocf_mngt_cache_get(cache);
+	if (result)
+		return result;
+
 	tmp_queue = env_zalloc(sizeof(*tmp_queue), ENV_MEM_NORMAL);
-	if (!tmp_queue)
-		return -ENOMEM;
+	if (!tmp_queue) {
+		ocf_mngt_cache_put(cache);
+		return -OCF_ERR_NO_MEM;
+	}
 
+	env_atomic_set(&tmp_queue->io_no, 0);
+	result = env_spinlock_init(&tmp_queue->io_list_lock);
+	if (result) {
+		ocf_mngt_cache_put(cache);
+		env_free(tmp_queue);
+		return result;
+	}
+
+	INIT_LIST_HEAD(&tmp_queue->io_list);
+	env_atomic_set(&tmp_queue->ref_count, 1);
 	tmp_queue->cache = cache;
-	ocf_init_queue(tmp_queue);
-
 	tmp_queue->ops = ops;
 
 	list_add(&tmp_queue->list, &cache->io_queues);
@@ -58,6 +65,8 @@ void ocf_queue_put(ocf_queue_t queue)
 	if (env_atomic_dec_return(&queue->ref_count) == 0) {
 		list_del(&queue->list);
 		queue->ops->stop(queue);
+		ocf_mngt_cache_put(queue->cache);
+		env_spinlock_destroy(&queue->io_list_lock);
 		env_free(queue);
 	}
 }
@@ -88,10 +97,10 @@ void ocf_queue_run_single(ocf_queue_t q)
 	if (!io_req)
 		return;
 
-	if (io_req->io && io_req->io->handle)
-		io_req->io->handle(io_req->io, io_req);
+	if (io_req->ioi.io.handle)
+		io_req->ioi.io.handle(&io_req->ioi.io, io_req);
 	else
-		ocf_io_handle(io_req->io, io_req);
+		ocf_io_handle(&io_req->ioi.io, io_req);
 }
 
 void ocf_queue_run(ocf_queue_t q)

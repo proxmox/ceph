@@ -34,7 +34,7 @@
 #include <stdint.h>
 #include <string.h>
 
-#ifndef __CYGWIN__
+#if !defined(__CYGWIN__) && !defined(_WIN32)
 # include <sys/mman.h>
 #endif
 
@@ -53,6 +53,7 @@
 #include "page.h"
 #include "crc32c.h"
 #include "buffer_fwd.h"
+
 
 #ifdef __CEPH__
 # include "include/ceph_assert.h"
@@ -101,32 +102,12 @@ struct unique_leakable_ptr : public std::unique_ptr<T, ceph::nop_delete<T>> {
 namespace buffer CEPH_BUFFER_API {
 inline namespace v15_2_0 {
 
-  /*
-   * exceptions
-   */
-
-  struct error : public std::exception{
-    const char *what() const throw () override;
-  };
-  struct bad_alloc : public error {
-    const char *what() const throw () override;
-  };
-  struct end_of_buffer : public error {
-    const char *what() const throw () override;
-  };
-  struct malformed_input : public error {
-    explicit malformed_input(const std::string& w) {
-      snprintf(buf, sizeof(buf), "buffer::malformed_input: %s", w.c_str());
-    }
-    const char *what() const throw () override;
-  private:
-    char buf[256];
-  };
-  struct error_code : public malformed_input {
-    explicit error_code(int error);
-    int code;
-  };
-
+/// Actual definitions in common/error_code.h
+struct error;
+struct bad_alloc;
+struct end_of_buffer;
+struct malformed_input;
+struct error_code;
 
   /// count of cached crc hits (matching input)
   int get_cached_crc();
@@ -157,6 +138,7 @@ inline namespace v15_2_0 {
    */
   ceph::unique_leakable_ptr<raw> copy(const char *c, unsigned len);
   ceph::unique_leakable_ptr<raw> create(unsigned len);
+  ceph::unique_leakable_ptr<raw> create(unsigned len, char c);
   ceph::unique_leakable_ptr<raw> create_in_mempool(unsigned len, int mempool);
   ceph::unique_leakable_ptr<raw> claim_char(unsigned len, char *buf);
   ceph::unique_leakable_ptr<raw> create_malloc(unsigned len);
@@ -226,12 +208,7 @@ inline namespace v15_2_0 {
 	}
       }
 
-      iterator_impl& operator+=(size_t len) {
-	pos += len;
-	if (pos > end_ptr)
-	  throw end_of_buffer();
-        return *this;
-      }
+      iterator_impl& operator+=(size_t len);
 
       const char *get_pos() {
 	return pos;
@@ -290,7 +267,7 @@ inline namespace v15_2_0 {
 
     // misc
     bool is_aligned(unsigned align) const {
-      return ((long)c_str() & (align-1)) == 0;
+      return ((uintptr_t)c_str() & (align-1)) == 0;
     }
     bool is_page_aligned() const { return is_aligned(CEPH_PAGE_SIZE); }
     bool is_n_align_sized(unsigned align) const
@@ -386,7 +363,7 @@ inline namespace v15_2_0 {
     };
     struct disposer {
       void operator()(ptr_node* const delete_this) {
-	if (!dispose_if_hypercombined(delete_this)) {
+	if (!__builtin_expect(dispose_if_hypercombined(delete_this), 0)) {
 	  delete delete_this;
 	}
       }
@@ -412,6 +389,8 @@ inline namespace v15_2_0 {
     static ptr_node* copy_hypercombined(const ptr_node& copy_this);
 
   private:
+    friend list;
+
     template <class... Args>
     ptr_node(Args&&... args) : ptr(std::forward<Args>(args)...) {
     }
@@ -655,7 +634,7 @@ inline namespace v15_2_0 {
     // track bufferptr we can modify (especially ::append() to). Not all bptrs
     // bufferlist holds have this trait -- if somebody ::push_back(const ptr&),
     // he expects it won't change.
-    ptr* _carriage;
+    ptr_node* _carriage;
     unsigned _len, _num;
 
     template <bool is_const>
@@ -867,55 +846,61 @@ inline namespace v15_2_0 {
 		  "contiguous_filler should be no costlier than pointer");
 
     class page_aligned_appender {
-      bufferlist *pbl;
+      bufferlist& bl;
       unsigned min_alloc;
-      ptr buffer;
-      char *pos, *end;
 
       page_aligned_appender(list *l, unsigned min_pages)
-	: pbl(l),
-	  min_alloc(min_pages * CEPH_PAGE_SIZE),
-	  pos(nullptr), end(nullptr) {}
+	: bl(*l),
+	  min_alloc(min_pages * CEPH_PAGE_SIZE) {
+      }
+
+      void _refill(size_t len);
+
+      template <class Func>
+      void _append_common(size_t len, Func&& impl_f) {
+	const auto free_in_last = bl.get_append_buffer_unused_tail_length();
+	const auto first_round = std::min(len, free_in_last);
+	if (first_round) {
+	  impl_f(first_round);
+	}
+	if (const auto second_round = len - first_round; second_round) {
+	  _refill(second_round);
+	  impl_f(second_round);
+	}
+      }
 
       friend class list;
 
     public:
-      ~page_aligned_appender() {
-	flush();
+      void append(const bufferlist& l) {
+	bl.append(l);
+	bl.obtain_contiguous_space(0);
       }
 
-      void flush() {
-	if (pos && pos != buffer.c_str()) {
-	  size_t len = pos - buffer.c_str();
-	  pbl->append(buffer, 0, len);
-	  buffer.set_length(buffer.length() - len);
-	  buffer.set_offset(buffer.offset() + len);
-	}
+      void append(const char* buf, size_t entire_len) {
+	 _append_common(entire_len,
+			[buf, this] (const size_t chunk_len) mutable {
+	  bl.append(buf, chunk_len);
+	  buf += chunk_len;
+	});
       }
 
-      void append(const char *buf, size_t len) {
-	while (len > 0) {
-	  if (!pos) {
-	    size_t alloc = (len + CEPH_PAGE_SIZE - 1) & CEPH_PAGE_MASK;
-	    if (alloc < min_alloc) {
-	      alloc = min_alloc;
-	    }
-	    buffer = create_page_aligned(alloc);
-	    pos = buffer.c_str();
-	    end = buffer.end_c_str();
+      void append_zero(size_t entire_len) {
+	_append_common(entire_len, [this] (const size_t chunk_len) {
+	  bl.append_zero(chunk_len);
+	});
+      }
+
+      void substr_of(const list& bl, unsigned off, unsigned len) {
+	for (const auto& bptr : bl.buffers()) {
+	  if (off >= bptr.length()) {
+	    off -= bptr.length();
+	    continue;
 	  }
-	  size_t l = len;
-	  if (l > (size_t)(end - pos)) {
-	    l = end - pos;
-	  }
-	  memcpy(pos, buf, l);
-	  pos += l;
-	  buf += l;
-	  len -= l;
-	  if (pos == end) {
-	    pbl->append(buffer, 0, buffer.length());
-	    pos = end = nullptr;
-	  }
+	  const auto round_size = std::min(bptr.length() - off, len);
+	  append(bptr.c_str() + off, round_size);
+	  len -= round_size;
+	  off = 0;
 	}
       }
     };
@@ -928,8 +913,14 @@ inline namespace v15_2_0 {
     // always_empty_bptr has no underlying raw but its _len is always 0.
     // This is useful for e.g. get_append_buffer_unused_tail_length() as
     // it allows to avoid conditionals on hot paths.
-    static ptr always_empty_bptr;
+    static ptr_node always_empty_bptr;
     ptr_node& refill_append_space(const unsigned len);
+
+    // for page_aligned_appender; never ever expose this publicly!
+    // carriage / append_buffer is just an implementation's detail.
+    ptr& get_append_buffer() {
+      return *_carriage;
+    }
 
   public:
     // cons/des
@@ -998,6 +989,7 @@ inline namespace v15_2_0 {
     }
 
     const buffers_t& buffers() const { return _buffers; }
+    buffers_t& mut_buffers() { return _buffers; }
     void swap(list& other) noexcept;
     unsigned length() const {
 #if 0
@@ -1056,8 +1048,6 @@ inline namespace v15_2_0 {
     void push_back(ptr_node&) = delete;
     void push_back(ptr_node&&) = delete;
     void push_back(std::unique_ptr<ptr_node, ptr_node::disposer> bp) {
-      if (bp->length() == 0)
-	return;
       _carriage = bp.get();
       _len += bp->length();
       _num += 1;
@@ -1087,10 +1077,13 @@ inline namespace v15_2_0 {
 
     void reserve(size_t prealloc);
 
-    void claim(list& bl);
+    [[deprecated("in favor of operator=(list&&)")]] void claim(list& bl) {
+      *this = std::move(bl);
+    }
     void claim_append(list& bl);
-    // only for bl is bufferlist::page_aligned_appender
-    void claim_append_piecewise(list& bl);
+    void claim_append(list&& bl) {
+      claim_append(bl);
+    }
 
     // copy with explicit volatile-sharing semantics
     void share(const list& bl)
@@ -1150,12 +1143,17 @@ inline namespace v15_2_0 {
     void append(ptr&& bp);
     void append(const ptr& bp, unsigned off, unsigned len);
     void append(const list& bl);
+    /// append each non-empty line from the stream and add '\n',
+    /// so a '\n' will be added even the stream does not end with EOL.
+    ///
+    /// For example, if the stream contains "ABC\n\nDEF", "ABC\nDEF\n" is
+    /// actually appended.
     void append(std::istream& in);
     contiguous_filler append_hole(unsigned len);
     void append_zero(unsigned len);
     void prepend_zero(unsigned len);
 
-    reserve_t obtain_contiguous_space(unsigned len);
+    reserve_t obtain_contiguous_space(const unsigned len);
 
     /*
      * get a char
@@ -1178,9 +1176,11 @@ inline namespace v15_2_0 {
     ssize_t pread_file(const char *fn, uint64_t off, uint64_t len, std::string *error);
     int read_file(const char *fn, std::string *error);
     ssize_t read_fd(int fd, size_t len);
+    ssize_t recv_fd(int fd, size_t len);
     int write_file(const char *fn, int mode=0644);
     int write_fd(int fd) const;
     int write_fd(int fd, uint64_t offset) const;
+    int send_fd(int fd) const;
     template<typename VectorT>
     void prepare_iov(VectorT *piov) const {
 #ifdef __CEPH__
@@ -1230,48 +1230,45 @@ inline namespace v15_2_0 {
     }
   };
 
-inline bool operator>(bufferlist& l, bufferlist& r) {
-  for (unsigned p = 0; ; p++) {
-    if (l.length() > p && r.length() == p) return true;
-    if (l.length() == p) return false;
-    if (l[p] > r[p]) return true;
-    if (l[p] < r[p]) return false;
-  }
-}
-inline bool operator>=(bufferlist& l, bufferlist& r) {
-  for (unsigned p = 0; ; p++) {
-    if (l.length() > p && r.length() == p) return true;
-    if (r.length() == p && l.length() == p) return true;
-    if (l.length() == p && r.length() > p) return false;
-    if (l[p] > r[p]) return true;
-    if (l[p] < r[p]) return false;
-  }
-}
-
-inline bool operator==(const bufferlist &l, const bufferlist &r) {
-  if (l.length() != r.length())
+inline bool operator==(const bufferlist &lhs, const bufferlist &rhs) {
+  if (lhs.length() != rhs.length())
     return false;
-  for (unsigned p = 0; p < l.length(); p++) {
-    if (l[p] != r[p])
-      return false;
-  }
-  return true;
-}
-inline bool operator<(bufferlist& l, bufferlist& r) {
-  return r > l;
-}
-inline bool operator<=(bufferlist& l, bufferlist& r) {
-  return r >= l;
+  return std::equal(lhs.begin(), lhs.end(), rhs.begin());
 }
 
+inline bool operator<(const bufferlist& lhs, const bufferlist& rhs) {
+  auto l = lhs.begin(), r = rhs.begin();
+  for (; l != lhs.end() && r != rhs.end(); ++l, ++r) {
+    if (*l < *r) return true;
+    if (*l > *r) return false;
+  }
+  return (l == lhs.end()) && (r != rhs.end()); // lhs.length() < rhs.length()
+}
+
+inline bool operator<=(const bufferlist& lhs, const bufferlist& rhs) {
+  auto l = lhs.begin(), r = rhs.begin();
+  for (; l != lhs.end() && r != rhs.end(); ++l, ++r) {
+    if (*l < *r) return true;
+    if (*l > *r) return false;
+  }
+  return l == lhs.end(); // lhs.length() <= rhs.length()
+}
+
+inline bool operator!=(const bufferlist &l, const bufferlist &r) {
+  return !(l == r);
+}
+inline bool operator>(const bufferlist& lhs, const bufferlist& rhs) {
+  return rhs < lhs;
+}
+inline bool operator>=(const bufferlist& lhs, const bufferlist& rhs) {
+  return rhs <= lhs;
+}
 
 std::ostream& operator<<(std::ostream& out, const buffer::ptr& bp);
 
 std::ostream& operator<<(std::ostream& out, const buffer::raw &r);
 
 std::ostream& operator<<(std::ostream& out, const buffer::list& bl);
-
-std::ostream& operator<<(std::ostream& out, const buffer::error& e);
 
 inline bufferhash& operator<<(bufferhash& l, const bufferlist &r) {
   l.update(r);
@@ -1281,5 +1278,6 @@ inline bufferhash& operator<<(bufferhash& l, const bufferlist &r) {
 } // namespace buffer
 
 } // namespace ceph
+
 
 #endif

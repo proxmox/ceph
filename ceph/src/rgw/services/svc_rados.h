@@ -31,7 +31,7 @@ class RGWSI_RADOS : public RGWServiceInstance
   librados::Rados rados;
   std::unique_ptr<RGWAsyncRadosProcessor> async_processor;
 
-  int do_start() override;
+  int do_start(optional_yield) override;
 
 public:
   struct OpenParams {
@@ -51,7 +51,6 @@ public:
   };
 
 private:
-  librados::Rados* get_rados_handle();
   int open_pool_ctx(const rgw_pool& pool, librados::IoCtx& io_ctx,
                     const OpenParams& params = {});
   int pool_iterate(librados::IoCtx& ioctx,
@@ -63,6 +62,7 @@ private:
 public:
   RGWSI_RADOS(CephContext *cct);
   ~RGWSI_RADOS();
+  librados::Rados* get_rados_handle();
 
   void init() {}
   void shutdown() override;

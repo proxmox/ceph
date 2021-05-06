@@ -7,14 +7,17 @@
 #include "../ocf_priv.h"
 #include "../ocf_cache_priv.h"
 #include "../ocf_queue_priv.h"
+#include "../ocf_freelist.h"
 #include "engine_common.h"
 #define OCF_ENGINE_DEBUG_IO_NAME "common"
 #include "engine_debug.h"
 #include "../utils/utils_cache_line.h"
-#include "../utils/utils_req.h"
+#include "../ocf_request.h"
 #include "../utils/utils_cleaner.h"
 #include "../metadata/metadata.h"
 #include "../eviction/eviction.h"
+#include "../promotion/promotion.h"
+#include "../concurrency/ocf_concurrency.h"
 
 void ocf_engine_error(struct ocf_request *req,
 		bool stop_cache, const char *msg)
@@ -24,9 +27,12 @@ void ocf_engine_error(struct ocf_request *req,
 	if (stop_cache)
 		env_bit_clear(ocf_cache_state_running, &cache->cache_state);
 
-	ocf_core_log(&cache->core[req->core_id], log_err,
-			"%s sector: %" ENV_PRIu64 ", bytes: %u\n", msg,
-			BYTES_TO_SECTORS(req->byte_position), req->byte_length);
+	if (ocf_cache_log_rl(cache)) {
+		ocf_core_log(req->core, log_err,
+				"%s sector: %" ENV_PRIu64 ", bytes: %u\n", msg,
+				BYTES_TO_SECTORS(req->byte_position),
+				req->byte_length);
+	}
 }
 
 void ocf_engine_lookup_map_entry(struct ocf_cache *cache,
@@ -34,19 +40,19 @@ void ocf_engine_lookup_map_entry(struct ocf_cache *cache,
 		uint64_t core_line)
 {
 	ocf_cache_line_t line;
-	ocf_cache_line_t hash_key;
+	ocf_cache_line_t hash;
 
-	hash_key = ocf_metadata_hash_func(cache, core_line, core_id);
+	hash = ocf_metadata_hash_func(cache, core_line, core_id);
 
 	/* Initially assume that we have cache miss.
 	 * Hash points to proper bucket.
 	 */
-	entry->hash_key = hash_key;
+	entry->hash = hash;
 	entry->status = LOOKUP_MISS;
 	entry->coll_idx = cache->device->collision_table_entries;
 	entry->core_line = core_line;
 
-	line = ocf_metadata_get_hash(cache, hash_key);
+	line = ocf_metadata_get_hash(cache, hash);
 
 	while (line != cache->device->collision_table_entries) {
 		ocf_core_id_t curr_core_id;
@@ -92,15 +98,8 @@ void ocf_engine_update_req_info(struct ocf_cache *cache,
 	uint8_t end_sector = ocf_line_end_sector(cache);
 	struct ocf_map_info *_entry = &(req->map[entry]);
 
-	if (entry == 0) {
-		start_sector = BYTES_TO_SECTORS(req->byte_position)
-				% ocf_line_sectors(cache);
-	}
-
-	if (entry == req->core_line_count - 1) {
-		end_sector = BYTES_TO_SECTORS(req->byte_position +
-				req->byte_length - 1)% ocf_line_sectors(cache);
-	}
+	start_sector = ocf_map_line_start_sector(req, entry);
+	end_sector = ocf_map_line_end_sector(req, entry);
 
 	/* Handle return value */
 	switch (_entry->status) {
@@ -117,7 +116,7 @@ void ocf_engine_update_req_info(struct ocf_cache *cache,
 			req->info.dirty_any++;
 
 			/* Check if cache line is fully dirty */
-			if (metadata_test_dirty_sec(cache, _entry->coll_idx,
+			if (metadata_test_dirty_all_sec(cache, _entry->coll_idx,
 				start_sector, end_sector))
 				req->info.dirty_all++;
 		}
@@ -158,7 +157,7 @@ void ocf_engine_traverse(struct ocf_request *req)
 	uint64_t core_line;
 
 	struct ocf_cache *cache = req->cache;
-	ocf_core_id_t core_id = req->core_id;
+	ocf_core_id_t core_id = ocf_core_get_id(req->core);
 
 	OCF_DEBUG_TRACE(req->cache);
 
@@ -175,6 +174,7 @@ void ocf_engine_traverse(struct ocf_request *req)
 
 		if (entry->status != LOOKUP_HIT) {
 			req->info.seq_req = false;
+
 			/* There is miss then lookup for next map entry */
 			OCF_DEBUG_PARAM(cache, "Miss, core line = %llu",
 					entry->core_line);
@@ -201,6 +201,7 @@ int ocf_engine_check(struct ocf_request *req)
 	uint64_t core_line;
 
 	struct ocf_cache *cache = req->cache;
+	ocf_core_id_t core_id = ocf_core_get_id(req->core);
 
 	OCF_DEBUG_TRACE(req->cache);
 
@@ -217,7 +218,7 @@ int ocf_engine_check(struct ocf_request *req)
 			continue;
 		}
 
-		if (_ocf_engine_check_map_entry(cache, entry, req->core_id)) {
+		if (_ocf_engine_check_map_entry(cache, entry, core_id)) {
 			/* Mapping is invalid */
 			entry->invalid = true;
 			req->info.seq_req = false;
@@ -247,27 +248,22 @@ static void ocf_engine_map_cache_line(struct ocf_request *req,
 		ocf_cache_line_t *cache_line)
 {
 	struct ocf_cache *cache = req->cache;
+	ocf_core_id_t core_id = ocf_core_get_id(req->core);
 	ocf_part_id_t part_id = req->part_id;
 	ocf_cleaning_t clean_policy_type;
 
-	if (cache->device->freelist_part->curr_size == 0) {
-		req->info.eviction_error = 1;
+	if (!ocf_freelist_get_cache_line(cache->freelist, cache_line)) {
+		req->info.mapping_error = 1;
 		return;
 	}
-
-	*cache_line = cache->device->freelist_part->head;
-
-	/* add_to_collision_list changes .next_col and other fields for entry
-	 * so updated last_cache_line_give must be updated before calling it.
-	 */
-
-	ocf_metadata_remove_from_free_list(cache, *cache_line);
 
 	ocf_metadata_add_to_partition(cache, part_id, *cache_line);
 
 	/* Add the block to the corresponding collision list */
-	ocf_metadata_add_to_collision(cache, req->core_id, core_line, hash_index,
+	ocf_metadata_start_collision_shared_access(cache, *cache_line);
+	ocf_metadata_add_to_collision(cache, core_id, core_line, hash_index,
 			*cache_line);
+	ocf_metadata_end_collision_shared_access(cache, *cache_line);
 
 	ocf_eviction_init_cache_line(cache, *cache_line, part_id);
 
@@ -301,9 +297,17 @@ static void ocf_engine_map_hndl_error(struct ocf_cache *cache,
 		case LOOKUP_MAPPED:
 			OCF_DEBUG_RQ(req, "Canceling cache line %u",
 					entry->coll_idx);
+
+			ocf_metadata_start_collision_shared_access(cache,
+					entry->coll_idx);
+
 			set_cache_line_invalid_no_flush(cache, 0,
 					ocf_line_end_sector(cache),
 					entry->coll_idx);
+
+			ocf_metadata_end_collision_shared_access(cache,
+					entry->coll_idx);
+
 			break;
 
 		default:
@@ -313,21 +317,23 @@ static void ocf_engine_map_hndl_error(struct ocf_cache *cache,
 	}
 }
 
-void ocf_engine_map(struct ocf_request *req)
+static void ocf_engine_map(struct ocf_request *req)
 {
 	struct ocf_cache *cache = req->cache;
 	uint32_t i;
 	struct ocf_map_info *entry;
 	uint64_t core_line;
 	int status = LOOKUP_MAPPED;
-	ocf_core_id_t core_id = req->core_id;
+	ocf_core_id_t core_id = ocf_core_get_id(req->core);
 
-	if (ocf_engine_unmapped_count(req))
-		status = space_managment_evict_do(cache, req,
-				ocf_engine_unmapped_count(req));
-
-	if (req->info.eviction_error)
+	if (!ocf_engine_unmapped_count(req))
 		return;
+
+	if (ocf_engine_unmapped_count(req) >
+			ocf_freelist_num_free(cache->freelist)) {
+		req->info.mapping_error = 1;
+		return;
+	}
 
 	ocf_req_clear_info(req);
 	req->info.seq_req = true;
@@ -342,9 +348,9 @@ void ocf_engine_map(struct ocf_request *req)
 
 		if (entry->status != LOOKUP_HIT) {
 			ocf_engine_map_cache_line(req, entry->core_line,
-					entry->hash_key, &entry->coll_idx);
+					entry->hash, &entry->coll_idx);
 
-			if (req->info.eviction_error) {
+			if (req->info.mapping_error) {
 				/*
 				 * Eviction error (mapping error), need to
 				 * clean, return and do pass through
@@ -364,6 +370,12 @@ void ocf_engine_map(struct ocf_request *req)
 
 		ocf_engine_update_req_info(cache, req, i);
 
+	}
+
+	if (!req->info.mapping_error) {
+		/* request has been inserted into cache - purge it from promotion
+		 * policy */
+		ocf_promotion_req_purge(cache->promotion_policy, req);
 	}
 
 	OCF_DEBUG_PARAM(req->cache, "Sequential - %s", req->info.seq_req ?
@@ -391,6 +403,96 @@ static void _ocf_engine_clean_end(void *private_data, int error)
 		req->info.dirty_all = 0;
 		ocf_engine_push_req_front(req, true);
 	}
+}
+
+static int ocf_engine_evict(struct ocf_request *req)
+{
+	if (!ocf_engine_unmapped_count(req))
+		return 0;
+
+	return space_managment_evict_do(req->cache, req,
+			ocf_engine_unmapped_count(req));
+}
+
+static int lock_clines(struct ocf_request *req,
+		const struct ocf_engine_callbacks *engine_cbs)
+{
+	enum ocf_engine_lock_type lock_type = engine_cbs->get_lock_type(req);
+
+	switch (lock_type) {
+	case ocf_engine_lock_write:
+		return ocf_req_async_lock_wr(req, engine_cbs->resume);
+	case ocf_engine_lock_read:
+		return ocf_req_async_lock_rd(req, engine_cbs->resume);
+	default:
+		return OCF_LOCK_ACQUIRED;
+	}
+}
+
+int ocf_engine_prepare_clines(struct ocf_request *req,
+		const struct ocf_engine_callbacks *engine_cbs)
+{
+	bool mapped;
+	bool promote = true;
+	int lock = -ENOENT;
+	struct ocf_metadata_lock *metadata_lock = &req->cache->metadata.lock;
+
+	/* Calculate hashes for hash-bucket locking */
+	ocf_req_hash(req);
+
+	/* Read-lock hash buckets associated with request target core & LBAs
+	 * (core lines) to assure that cache mapping for these core lines does
+	 * not change during traversation */
+	ocf_req_hash_lock_rd(req);
+
+	/* Traverse to check if request is mapped fully */
+	ocf_engine_traverse(req);
+
+	mapped = ocf_engine_is_mapped(req);
+	if (mapped) {
+		/* Request cachelines are already mapped, acquire cacheline
+		 * lock */
+		lock = lock_clines(req, engine_cbs);
+	} else {
+		/* check if request should promote cachelines */
+		promote = ocf_promotion_req_should_promote(
+				req->cache->promotion_policy, req);
+		if (!promote)
+			req->info.mapping_error = 1;
+	}
+
+	if (mapped || !promote) {
+		/* Will not attempt mapping - release hash bucket lock */
+		ocf_req_hash_unlock_rd(req);
+	} else {
+		/* Need to map (potentially evict) cachelines. Mapping must be
+		 * performed holding (at least) hash-bucket write lock */
+		ocf_req_hash_lock_upgrade(req);
+		ocf_engine_map(req);
+		if (!req->info.mapping_error)
+			lock = lock_clines(req, engine_cbs);
+		ocf_req_hash_unlock_wr(req);
+
+		if (req->info.mapping_error) {
+			/* Not mapped - evict cachelines under global exclusive
+			 * lock*/
+			ocf_metadata_start_exclusive_access(metadata_lock);
+
+			/* Now there is exclusive access for metadata. May
+			 * traverse once again and evict cachelines if needed.
+			 */
+			if (ocf_engine_evict(req) == LOOKUP_MAPPED)
+				ocf_engine_map(req);
+
+			if (!req->info.mapping_error)
+				lock = lock_clines(req, engine_cbs);
+
+			ocf_metadata_end_exclusive_access(metadata_lock);
+		}
+	}
+
+
+	return lock;
 }
 
 static int _ocf_engine_clean_getter(struct ocf_cache *cache,
@@ -442,48 +544,14 @@ void ocf_engine_clean(struct ocf_request *req)
 
 void ocf_engine_update_block_stats(struct ocf_request *req)
 {
-	struct ocf_cache *cache = req->cache;
-	ocf_core_id_t core_id = req->core_id;
-	ocf_part_id_t part_id = req->part_id;
-	struct ocf_counters_block *blocks;
-
-	blocks = &cache->core[core_id].counters->
-			part_counters[part_id].blocks;
-
-	if (req->rw == OCF_READ)
-		env_atomic64_add(req->byte_length, &blocks->read_bytes);
-	else if (req->rw == OCF_WRITE)
-		env_atomic64_add(req->byte_length, &blocks->write_bytes);
-	else
-		ENV_BUG();
+	ocf_core_stats_vol_block_update(req->core, req->part_id, req->rw,
+			req->byte_length);
 }
 
 void ocf_engine_update_request_stats(struct ocf_request *req)
 {
-	struct ocf_cache *cache = req->cache;
-	ocf_core_id_t core_id = req->core_id;
-	ocf_part_id_t part_id = req->part_id;
-	struct ocf_counters_req *reqs;
-
-	switch (req->rw) {
-	case OCF_READ:
-		reqs = &cache->core[core_id].counters->
-				part_counters[part_id].read_reqs;
-		break;
-	case OCF_WRITE:
-		reqs = &cache->core[core_id].counters->
-				part_counters[part_id].write_reqs;
-		break;
-	default:
-		ENV_BUG();
-	}
-
-	env_atomic64_inc(&reqs->total);
-
-	if (req->info.hit_no == 0)
-		env_atomic64_inc(&reqs->full_miss);
-	else if (req->info.hit_no < req->core_line_count)
-		env_atomic64_inc(&reqs->partial_miss);
+	ocf_core_stats_request_update(req->core, req->part_id, req->rw,
+			req->info.hit_no, req->core_line_count);
 }
 
 void ocf_engine_push_req_back(struct ocf_request *req, bool allow_sync)
@@ -497,6 +565,11 @@ void ocf_engine_push_req_back(struct ocf_request *req, bool allow_sync)
 	ENV_BUG_ON(!req->io_queue);
 	q = req->io_queue;
 
+	if (!req->info.internal) {
+		env_atomic_set(&cache->last_access_ms,
+				env_ticks_to_msecs(env_get_tick_count()));
+	}
+
 	env_spinlock_lock_irqsave(&q->io_list_lock, lock_flags);
 
 	list_add_tail(&req->list, &q->io_list);
@@ -504,10 +577,9 @@ void ocf_engine_push_req_back(struct ocf_request *req, bool allow_sync)
 
 	env_spinlock_unlock_irqrestore(&q->io_list_lock, lock_flags);
 
-	if (!req->info.internal) {
-		env_atomic_set(&cache->last_access_ms,
-				env_ticks_to_msecs(env_get_tick_count()));
-	}
+	/* NOTE: do not dereference @req past this line, it might
+	 * be picked up by concurrent io thread and deallocated
+	 * at this point */
 
 	ocf_queue_kick(q, allow_sync);
 }
@@ -523,6 +595,11 @@ void ocf_engine_push_req_front(struct ocf_request *req, bool allow_sync)
 
 	q = req->io_queue;
 
+	if (!req->info.internal) {
+		env_atomic_set(&cache->last_access_ms,
+				env_ticks_to_msecs(env_get_tick_count()));
+	}
+
 	env_spinlock_lock_irqsave(&q->io_list_lock, lock_flags);
 
 	list_add(&req->list, &q->io_list);
@@ -530,10 +607,9 @@ void ocf_engine_push_req_front(struct ocf_request *req, bool allow_sync)
 
 	env_spinlock_unlock_irqrestore(&q->io_list_lock, lock_flags);
 
-	if (!req->info.internal) {
-		env_atomic_set(&cache->last_access_ms,
-				env_ticks_to_msecs(env_get_tick_count()));
-	}
+	/* NOTE: do not dereference @req past this line, it might
+	 * be picked up by concurrent io thread and deallocated
+	 * at this point */
 
 	ocf_queue_kick(q, allow_sync);
 }
@@ -563,22 +639,20 @@ void inc_fallback_pt_error_counter(ocf_cache_t cache)
 
 static int _ocf_engine_refresh(struct ocf_request *req)
 {
-	struct ocf_cache *cache = req->cache;
 	int result;
 
-	OCF_METADATA_LOCK_RD();
 	/* Check under metadata RD lock */
+	ocf_req_hash_lock_rd(req);
 
 	result = ocf_engine_check(req);
 
-	OCF_METADATA_UNLOCK_RD();
+	ocf_req_hash_unlock_rd(req);
 
 	if (result == 0) {
 
 		/* Refresh successful, can process with original IO interface */
 		req->io_if = req->priv;
 
-		req->resume = NULL;
 		req->priv = NULL;
 
 		if (req->rw == OCF_READ)
@@ -589,7 +663,7 @@ static int _ocf_engine_refresh(struct ocf_request *req)
 			ENV_BUG();
 	} else {
 		ENV_WARN(true, "Inconsistent request");
-		req->error = -EINVAL;
+		req->error = -OCF_ERR_INVAL;
 
 		/* Complete request */
 		req->complete(req, req->error);
@@ -605,14 +679,13 @@ static int _ocf_engine_refresh(struct ocf_request *req)
 }
 
 static const struct ocf_io_if _io_if_refresh = {
-		.read = _ocf_engine_refresh,
-		.write = _ocf_engine_refresh,
+	.read = _ocf_engine_refresh,
+	.write = _ocf_engine_refresh,
 };
 
 void ocf_engine_on_resume(struct ocf_request *req)
 {
 	ENV_BUG_ON(req->priv);
-	ENV_BUG_ON(ocf_engine_on_resume != req->resume);
 	OCF_CHECK_NULL(req->io_if);
 
 	/* Exchange IO interface */

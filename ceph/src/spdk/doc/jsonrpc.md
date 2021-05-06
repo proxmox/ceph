@@ -29,7 +29,7 @@ for any kind of error.
 
 Code   | Description
 ------ | -----------
--1     | Invalid state - given method exists but it is not callable in [current runtime state](@ref rpc_start_subsystem_init)
+-1     | Invalid state - given method exists but it is not callable in [current runtime state](@ref rpc_framework_start_init)
 -32600 | Invalid request - not compliant with JSON-RPC 2.0 Specification
 -32601 | Method not found
 -32602 | @ref jsonrpc_invalid_params
@@ -54,9 +54,94 @@ This type of error is most common one. It mean that there is an error while proc
 - Parameter domain check failed.
 - Request is valid but some other error occurred during processing request. If possible message explains the error reason nature.
 
+## Adding external RPC methods
+
+SPDK includes both in-tree modules as well as the ability to use external modules.  The in-tree modules include some python
+scripts to ease the process of sending RPCs to in-tree modules.  External modules can utilize this same framework to add new RPC
+methods as follows:
+
+If PYTHONPATH doesn't include the location of the external RPC python script, it should be updated:
+
+~~~
+export PYTHONPATH=/home/user/plugin_example/
+~~~
+
+In provided location, create python module file (e.g. rpc_plugin.py) with new RPC methods.  The file should contain
+spdk_rpc_plugin_initialize() method that will be called when the plugin is loaded to define new parsers for provided subparsers
+argument that adds new RPC calls (subparsers.add_parser()).  The new parsers should use the client.call() method to call RPC
+functions registered within the external module using the SPDK_RPC_REGISTER() macro.  Example:
+
+~~~
+from rpc.client import print_json
+
+
+def example_create(client, num_blocks, block_size, name=None, uuid=None):
+    """Construct an example block device.
+
+    Args:
+        num_blocks: size of block device in blocks
+        block_size: block size of device; must be a power of 2 and at least 512
+        name: name of block device (optional)
+        uuid: UUID of block device (optional)
+
+    Returns:
+        Name of created block device.
+    """
+    params = {'num_blocks': num_blocks, 'block_size': block_size}
+    if name:
+        params['name'] = name
+    if uuid:
+        params['uuid'] = uuid
+    return client.call('bdev_example_create', params)
+
+
+def example_delete(client, name):
+    """Delete example block device.
+
+    Args:
+        bdev_name: name of bdev to delete
+    """
+    params = {'name': name}
+    return client.call('bdev_example_delete', params)
+
+
+def spdk_rpc_plugin_initialize(subparsers):
+    def bdev_example_create(args):
+        num_blocks = (args.total_size * 1024 * 1024) // args.block_size
+        print_json(example_create(args.client,
+                                  num_blocks=int(num_blocks),
+                                  block_size=args.block_size,
+                                  name=args.name,
+                                  uuid=args.uuid))
+
+    p = subparsers.add_parser('bdev_example_create',
+                              help='Create an example bdev')
+    p.add_argument('-b', '--name', help="Name of the bdev")
+    p.add_argument('-u', '--uuid', help="UUID of the bdev")
+    p.add_argument(
+        'total_size', help='Size of bdev in MB (float > 0)', type=float)
+    p.add_argument('block_size', help='Block size for this bdev', type=int)
+    p.set_defaults(func=bdev_example_create)
+
+    def bdev_example_delete(args):
+        example_delete(args.client,
+                      name=args.name)
+
+    p = subparsers.add_parser('bdev_example_delete',
+                              help='Delete an example disk')
+    p.add_argument('name', help='example bdev name')
+    p.set_defaults(func=bdev_example_delete)
+~~~
+
+Finally, call the rpc.py script with '--plugin' parameter to provide above python module name:
+
+~~~
+./scripts/rpc.py --plugin rpc_plugin bdev_example_create 10 4096
+~~~
+
 # App Framework {#jsonrpc_components_app}
 
-## kill_instance {#rpc_kill_instance}
+## spdk_kill_instance {#rpc_spdk_kill_instance}
 
 Send a signal to the application.
 
@@ -74,7 +159,7 @@ Example request:
 {
   "jsonrpc": "2.0",
   "id": 1,
-  "method": "kill_instance",
+  "method": "spdk_kill_instance",
   "params": {
     "sig_name": "SIGINT"
   }
@@ -91,7 +176,7 @@ Example response:
 }
 ~~~
 
-## context_switch_monitor {#rpc_context_switch_monitor}
+## framework_monitor_context_switch {#rpc_framework_monitor_context_switch}
 
 Query, enable, or disable the context switch monitoring functionality.
 
@@ -115,7 +200,7 @@ Example request:
 {
   "jsonrpc": "2.0",
   "id": 1,
-  "method": "context_switch_monitor",
+  "method": "framework_monitor_context_switch",
   "params": {
     "enabled": false
   }
@@ -134,7 +219,7 @@ Example response:
 }
 ~~~
 
-## start_subsystem_init {#rpc_start_subsystem_init}
+## framework_start_init {#rpc_framework_start_init}
 
 Start initialization of SPDK subsystems when it is deferred by starting SPDK application with option -w.
 During its deferral some RPCs can be used to set global parameters for SPDK subsystems.
@@ -156,7 +241,7 @@ Example request:
 {
   "jsonrpc": "2.0",
   "id": 1,
-  "method": "start_subsystem_init"
+  "method": "framework_start_init"
 }
 ~~~
 
@@ -170,7 +255,7 @@ Example response:
 }
 ~~~
 
-## wait_subsystem_init {#rpc_wait_subsystem_init}
+## framework_wait_init {#rpc_framework_wait_init}
 
 Do not return until all subsystems have been initialized and the RPC system state is running.
 If the application is already running, this call will return immediately. This RPC can be called at any time.
@@ -191,7 +276,7 @@ Example request:
 {
   "jsonrpc": "2.0",
   "id": 1,
-  "method": "wait_subsystem_init"
+  "method": "framework_wait_init"
 }
 ~~~
 
@@ -238,85 +323,87 @@ Example response:
   "jsonrpc": "2.0",
   "id": 1,
   "result": [
-    "start_subsystem_init",
-    "get_rpc_methods",
-    "get_scsi_devices",
-    "get_interfaces",
+    "framework_start_init",
+    "rpc_get_methods",
+    "scsi_get_devices",
+    "net_get_interfaces",
     "delete_ip_address",
-    "add_ip_address",
-    "get_nbd_disks",
-    "stop_nbd_disk",
-    "start_nbd_disk",
-    "get_log_flags",
-    "clear_log_flag",
-    "set_log_flag",
-    "get_log_level",
-    "set_log_level",
-    "get_log_print_level",
-    "set_log_print_level",
-    "get_iscsi_global_params",
-    "target_node_add_lun",
-    "get_iscsi_connections",
-    "delete_portal_group",
-    "add_portal_group",
-    "get_portal_groups",
-    "delete_target_node",
-    "delete_pg_ig_maps",
-    "add_pg_ig_maps",
-    "construct_target_node",
-    "get_target_nodes",
-    "delete_initiator_group",
-    "delete_initiators_from_initiator_group",
-    "add_initiators_to_initiator_group",
-    "add_initiator_group",
-    "get_initiator_groups",
-    "set_iscsi_options",
-    "set_bdev_options",
-    "set_bdev_qos_limit",
-    "get_bdevs",
-    "get_bdevs_iostat",
-    "get_subsystem_config",
-    "get_subsystems",
-    "context_switch_monitor",
-    "kill_instance",
-    "scan_ioat_copy_engine",
-    "construct_virtio_dev",
-    "get_virtio_scsi_devs",
-    "remove_virtio_bdev",
-    "delete_aio_bdev",
-    "construct_aio_bdev",
-    "destruct_split_vbdev",
-    "construct_split_vbdev",
-    "bdev_inject_error",
-    "delete_error_bdev",
-    "construct_error_bdev",
-    "construct_passthru_bdev",
-    "apply_nvme_firmware",
-    "delete_nvme_controller",
-    "construct_nvme_bdev",
-    "construct_null_bdev",
-    "delete_malloc_bdev",
-    "construct_malloc_bdev",
-    "delete_ftl_bdev",
-    "construct_ftl_bdev",
-    "get_lvol_stores",
-    "destroy_lvol_bdev",
-    "resize_lvol_bdev",
-    "set_read_only_lvol_bdev",
-    "decouple_parent_lvol_bdev",
-    "inflate_lvol_bdev",
-    "rename_lvol_bdev",
-    "clone_lvol_bdev",
-    "snapshot_lvol_bdev",
-    "construct_lvol_bdev",
-    "destroy_lvol_store",
-    "rename_lvol_store",
-    "construct_lvol_store"
+    "net_interface_add_ip_address",
+    "nbd_get_disks",
+    "nbd_stop_disk",
+    "nbd_start_disk",
+    "log_get_flags",
+    "log_clear_flag",
+    "log_set_flag",
+    "log_get_level",
+    "log_set_level",
+    "log_get_print_level",
+    "log_set_print_level",
+    "iscsi_get_options",
+    "iscsi_target_node_add_lun",
+    "iscsi_get_connections",
+    "iscsi_delete_portal_group",
+    "iscsi_create_portal_group",
+    "iscsi_get_portal_groups",
+    "iscsi_delete_target_node",
+    "iscsi_target_node_remove_pg_ig_maps",
+    "iscsi_target_node_add_pg_ig_maps",
+    "iscsi_create_target_node",
+    "iscsi_get_target_nodes",
+    "iscsi_delete_initiator_group",
+    "iscsi_initiator_group_remove_initiators",
+    "iscsi_initiator_group_add_initiators",
+    "iscsi_create_initiator_group",
+    "iscsi_get_initiator_groups",
+    "iscsi_set_options",
+    "bdev_set_options",
+    "bdev_set_qos_limit",
+    "bdev_get_bdevs",
+    "bdev_get_iostat",
+    "framework_get_config",
+    "framework_get_subsystems",
+    "framework_monitor_context_switch",
+    "spdk_kill_instance",
+    "ioat_scan_accel_engine",
+    "idxd_scan_accel_engine",
+    "bdev_virtio_attach_controller",
+    "bdev_virtio_scsi_get_devices",
+    "bdev_virtio_detach_controller",
+    "bdev_aio_delete",
+    "bdev_aio_create",
+    "bdev_split_delete",
+    "bdev_split_create",
+    "bdev_error_inject_error",
+    "bdev_error_delete",
+    "bdev_error_create",
+    "bdev_passthru_create",
+    "bdev_passthru_delete"
+    "bdev_nvme_apply_firmware",
+    "bdev_nvme_detach_controller",
+    "bdev_nvme_attach_controller",
+    "bdev_null_create",
+    "bdev_malloc_delete",
+    "bdev_malloc_create",
+    "bdev_ftl_delete",
+    "bdev_ftl_create",
+    "bdev_lvol_get_lvstores",
+    "bdev_lvol_delete",
+    "bdev_lvol_resize",
+    "bdev_lvol_set_read_only",
+    "bdev_lvol_decouple_parent",
+    "bdev_lvol_inflate",
+    "bdev_lvol_rename",
+    "bdev_lvol_clone",
+    "bdev_lvol_snapshot",
+    "bdev_lvol_create",
+    "bdev_lvol_delete_lvstore",
+    "bdev_lvol_rename_lvstore",
+    "bdev_lvol_create_lvstore"
   ]
 }
 ~~~
 
-## get_subsystems {#rpc_get_subsystems}
+## framework_get_subsystems {#rpc_framework_get_subsystems}
 
 Get an array of name and dependency relationship of SPDK subsystems in initialization order.
 
@@ -336,7 +423,7 @@ Example request:
 {
   "jsonrpc": "2.0",
   "id": 1,
-  "method": "get_subsystems"
+  "method": "framework_get_subsystems"
 }
 ~~~
 
@@ -348,7 +435,7 @@ Example response:
   "id": 1,
   "result": [
     {
-      "subsystem": "copy",
+      "subsystem": "accel",
       "depends_on": []
     },
     {
@@ -364,7 +451,7 @@ Example response:
     {
       "subsystem": "bdev",
       "depends_on": [
-        "copy"
+        "accel"
       ]
     },
     {
@@ -401,9 +488,9 @@ Example response:
 }
 ~~~
 
-## get_subsystem_config {#rpc_get_subsystem_config}
+## framework_get_config {#rpc_framework_get_config}
 
-Get current configuration of the specified SPDK subsystem
+Get current configuration of the specified SPDK framework
 
 ### Parameters
 
@@ -414,7 +501,7 @@ name                    | Required | string      | SPDK subsystem name
 ### Response
 
 The response is current configuration of the specified SPDK subsystem.
-Null is returned if it is not retrievable by the get_subsystem_config method and empty array is returned if it is empty.
+Null is returned if it is not retrievable by the framework_get_config method and empty array is returned if it is empty.
 
 ### Example
 
@@ -424,7 +511,7 @@ Example request:
 {
   "jsonrpc": "2.0",
   "id": 1,
-  "method": "get_subsystem_config",
+  "method": "framework_get_config",
   "params": {
     "name": "bdev"
   }
@@ -444,7 +531,7 @@ Example response:
         "split_size_mb": 0,
         "split_count": 2
       },
-      "method": "construct_split_vbdev"
+      "method": "bdev_split_create"
     },
     {
       "params": {
@@ -452,7 +539,7 @@ Example response:
         "name": "Nvme1",
         "traddr": "0000:01:00.0"
       },
-      "method": "construct_nvme_bdev"
+      "method": "bdev_nvme_attach_controller"
     },
     {
       "params": {
@@ -460,7 +547,7 @@ Example response:
         "name": "Nvme2",
         "traddr": "0000:03:00.0"
       },
-      "method": "construct_nvme_bdev"
+      "method": "bdev_nvme_attach_controller"
     },
     {
       "params": {
@@ -469,7 +556,7 @@ Example response:
         "name": "Malloc0",
         "uuid": "913fc008-79a7-447f-b2c4-c73543638c31"
       },
-      "method": "construct_malloc_bdev"
+      "method": "bdev_malloc_create"
     },
     {
       "params": {
@@ -478,15 +565,247 @@ Example response:
         "name": "Malloc1",
         "uuid": "dd5b8f6e-b67a-4506-b606-7fff5a859920"
       },
-      "method": "construct_malloc_bdev"
+      "method": "bdev_malloc_create"
     }
   ]
 }
 ~~~
 
+## framework_get_reactors {#rpc_framework_get_reactors}
+
+Retrieve an array of all reactors.
+
+### Parameters
+
+This method has no parameters.
+
+### Response
+
+The response is an array of all reactors.
+
+### Example
+
+Example request:
+~~~
+{
+  "jsonrpc": "2.0",
+  "method": "framework_get_reactors",
+  "id": 1
+}
+~~~
+
+Example response:
+~~~
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "tick_rate": 2400000000,
+    "reactors": [
+      {
+        "lcore": 0,
+        "busy": 41289723495,
+        "idle": 3624832946,
+        "lw_threads": [
+          {
+            "name": "app_thread",
+            "id", 1,
+            "cpumask": "1",
+            "elapsed": 44910853363
+          }
+        ]
+      }
+    ]
+  }
+}
+~~~
+
+## thread_get_stats {#rpc_thread_get_stats}
+
+Retrieve current statistics of all the threads.
+
+### Parameters
+
+This method has no parameters.
+
+### Response
+
+The response is an array of objects containing threads statistics.
+
+### Example
+
+Example request:
+~~~
+{
+  "jsonrpc": "2.0",
+  "method": "thread_get_stats",
+  "id": 1
+}
+~~~
+
+Example response:
+~~~
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "tick_rate": 2400000000,
+    "threads": [
+      {
+        "name": "app_thread",
+        "id": 1,
+	"cpumask": "1",
+        "busy": 139223208,
+        "idle": 8641080608,
+        "active_pollers_count": 1,
+        "timed_pollers_count": 2,
+        "paused_pollers_count": 0
+      }
+    ]
+  }
+}
+~~~
+
+## thread_set_cpumask {#rpc_thread_set_cpumask}
+
+Set the cpumask of the thread to the specified value. The thread may be migrated
+to one of the specified CPUs.
+
+### Parameters
+
+Name                    | Optional | Type        | Description
+----------------------- | -------- | ----------- | -----------
+id                      | Required | string      | Thread ID
+cpumask                 | Required | string      | Cpumask for this thread
+
+### Response
+
+Completion status of the operation is returned as a boolean.
+
+### Example
+
+Example request:
+
+~~~
+{
+  "jsonrpc": "2.0",
+  "method": "thread_set_cpumask",
+  "id": 1,
+  "params": {
+    "id": "1",
+    "cpumask": "1"
+  }
+}
+~~~
+
+Example response:
+
+~~~
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": true
+}
+~~~
+
+## thread_get_pollers {#rpc_thread_get_pollers}
+
+Retrieve current pollers of all the threads.
+
+### Parameters
+
+This method has no parameters.
+
+### Response
+
+The response is an array of objects containing pollers of all the threads.
+
+### Example
+
+Example request:
+~~~
+{
+  "jsonrpc": "2.0",
+  "method": "thread_get_pollers",
+  "id": 1
+}
+~~~
+
+Example response:
+~~~
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "tick_rate": 2500000000,
+    "threads": [
+      {
+        "name": "app_thread",
+        "id": 1,
+        "active_pollers": [],
+        "timed_pollers": [
+          {
+            "name": "spdk_rpc_subsystem_poll",
+            "state": "waiting",
+            "run_count": 12345,
+            "busy_count": 10000,
+            "period_ticks": 10000000
+          }
+        ],
+        "paused_pollers": []
+      }
+    ]
+  }
+}
+~~~
+
+## thread_get_io_channels {#rpc_thread_get_io_channels}
+
+Retrieve current IO channels of all the threads.
+
+### Parameters
+
+This method has no parameters.
+
+### Response
+
+The response is an array of objects containing IO channels of all the threads.
+
+### Example
+
+Example request:
+~~~
+{
+  "jsonrpc": "2.0",
+  "method": "thread_get_io_channels",
+  "id": 1
+}
+~~~
+
+Example response:
+~~~
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "tick_rate": 2500000000,
+    "threads": [
+      {
+        "name": "app_thread",
+        "io_channels": [
+          {
+            "name": "nvmf_tgt",
+            "ref": 1
+          }
+        ]
+      }
+    ]
+  }
+}
+~~~
 # Block Device Abstraction Layer {#jsonrpc_components_bdev}
 
-## set_bdev_options {#rpc_set_bdev_options}
+## bdev_set_options {#rpc_bdev_set_options}
 
 Set global parameters for the block device (bdev) subsystem.  This RPC may only be called
 before SPDK subsystems have been initialized.
@@ -497,6 +816,7 @@ Name                    | Optional | Type        | Description
 ----------------------- | -------- | ----------- | -----------
 bdev_io_pool_size       | Optional | number      | Number of spdk_bdev_io structures in shared buffer pool
 bdev_io_cache_size      | Optional | number      | Maximum number of spdk_bdev_io structures cached per thread
+bdev_auto_examine       | Optional | boolean     | If set to false, the bdev layer will not examine every disks automatically
 
 ### Example
 
@@ -506,7 +826,7 @@ Example request:
 {
   "jsonrpc": "2.0",
   "id": 1,
-  "method": "set_bdev_options",
+  "method": "bdev_set_options",
   "params": {
     "bdev_io_pool_size": 65536,
     "bdev_io_cache_size": 256
@@ -524,7 +844,7 @@ Example response:
 }
 ~~~
 
-## get_bdevs {#rpc_get_bdevs}
+## bdev_get_bdevs {#rpc_bdev_get_bdevs}
 
 Get information about block devices (bdevs).
 
@@ -549,7 +869,7 @@ Example request:
 {
   "jsonrpc": "2.0",
   "id": 1,
-  "method": "get_bdevs",
+  "method": "bdev_get_bdevs",
   "params": {
     "name": "Malloc0"
   }
@@ -569,6 +889,7 @@ Example response:
       "block_size": 512,
       "num_blocks": 20480,
       "claimed": false,
+      "zoned": false,
       "supported_io_types": {
         "read": true,
         "write": true,
@@ -585,7 +906,7 @@ Example response:
 }
 ~~~
 
-## get_bdevs_iostat {#rpc_get_bdevs_iostat}
+## bdev_get_iostat {#rpc_bdev_get_iostat}
 
 Get I/O statistics of block devices (bdevs).
 
@@ -610,7 +931,7 @@ Example request:
 {
   "jsonrpc": "2.0",
   "id": 1,
-  "method": "get_bdevs_iostat",
+  "method": "bdev_get_iostat",
   "params": {
     "name": "Nvme0n1"
   }
@@ -647,7 +968,7 @@ Example response:
 }
 ~~~
 
-## enable_bdev_histogram {#rpc_enable_bdev_histogram}
+## bdev_enable_histogram {#rpc_bdev_enable_histogram}
 
 Control whether collecting data for histogram is enabled for specified bdev.
 
@@ -666,7 +987,7 @@ Example request:
 {
   "jsonrpc": "2.0",
   "id": 1,
-  "method": "enable_bdev_histogram",
+  "method": "bdev_enable_histogram",
   "params": {
     "name": "Nvme0n1"
     "enable": true
@@ -684,7 +1005,7 @@ Example response:
 }
 ~~~
 
-## get_bdev_histogram {#rpc_get_bdev_histogram}
+## bdev_get_histogram {#rpc_bdev_get_histogram}
 
 Get latency histogram for specified bdev.
 
@@ -710,7 +1031,7 @@ Example request:
 {
   "jsonrpc": "2.0",
   "id": 1,
-  "method": "get_bdev_histogram",
+  "method": "bdev_get_histogram",
   "params": {
     "name": "Nvme0n1"
   }
@@ -732,7 +1053,7 @@ Note that histogram field is trimmed, actual encoded histogram length is ~80kb.
 }
 ~~~
 
-## set_bdev_qos_limit {#rpc_set_bdev_qos_limit}
+## bdev_set_qos_limit {#rpc_bdev_set_qos_limit}
 
 Set the quality of service rate limit on a bdev.
 
@@ -754,7 +1075,7 @@ Example request:
 {
   "jsonrpc": "2.0",
   "id": 1,
-  "method": "set_bdev_qos_limit",
+  "method": "bdev_set_qos_limit",
   "params": {
     "name": "Malloc0"
     "rw_ios_per_sec": 20000
@@ -775,7 +1096,7 @@ Example response:
 }
 ~~~
 
-## construct_ocf_bdev {#rpc_construct_ocf_bdev}
+## bdev_ocf_create {#rpc_bdev_ocf_create}
 
 Construct new OCF bdev.
 Command accepts cache mode that is going to be used.
@@ -807,7 +1128,7 @@ Example request:
     "core_bdev_name": "aio0"
   },
   "jsonrpc": "2.0",
-  "method": "construct_ocf_bdev",
+  "method": "bdev_ocf_create",
   "id": 1
 }
 ~~~
@@ -822,7 +1143,7 @@ Example response:
 }
 ~~~
 
-## delete_ocf_bdev {#rpc_delete_ocf_bdev}
+## bdev_ocf_delete {#rpc_bdev_ocf_delete}
 
 Delete the OCF bdev
 
@@ -842,7 +1163,7 @@ Example request:
     "name": "ocf0"
   },
   "jsonrpc": "2.0",
-  "method": "delete_ocf_bdev",
+  "method": "bdev_ocf_delete",
   "id": 1
 }
 ~~~
@@ -857,7 +1178,7 @@ Example response:
 }
 ~~~
 
-## get_ocf_stats {#rpc_get_ocf_stats}
+## bdev_ocf_get_stats {#rpc_bdev_ocf_get_stats}
 
 Get statistics of chosen OCF block device.
 
@@ -878,7 +1199,7 @@ Example request:
 ~~~
 {
   "jsonrpc": "2.0",
-  "method": "get_ocf_stats",
+  "method": "bdev_ocf_get_stats",
   "id": 1
 }
 ~~~
@@ -1061,7 +1382,7 @@ Example response:
 }
 ~~~
 
-## get_ocf_bdevs {#rpc_get_ocf_bdevs}
+## bdev_ocf_get_bdevs {#rpc_bdev_ocf_get_bdevs}
 
 Get list of OCF devices including unregistered ones.
 
@@ -1082,7 +1403,7 @@ Example request:
 ~~~
 {
   "jsonrpc": "2.0",
-  "method": "get_ocf_bdevs",
+  "method": "bdev_ocf_get_bdevs",
   "id": 1
 }
 ~~~
@@ -1110,7 +1431,7 @@ Example response:
 }
 ~~~
 
-## construct_malloc_bdev {#rpc_construct_malloc_bdev}
+## bdev_malloc_create {#rpc_bdev_malloc_create}
 
 Construct @ref bdev_config_malloc
 
@@ -1140,7 +1461,7 @@ Example request:
     "uuid": "2b6601ba-eada-44fb-9a83-a20eb9eb9e90"
   },
   "jsonrpc": "2.0",
-  "method": "construct_malloc_bdev",
+  "method": "bdev_malloc_create",
   "id": 1
 }
 ~~~
@@ -1155,7 +1476,7 @@ Example response:
 }
 ~~~
 
-## delete_malloc_bdev {#rpc_delete_malloc_bdev}
+## bdev_malloc_delete {#rpc_bdev_malloc_delete}
 
 Delete @ref bdev_config_malloc
 
@@ -1175,7 +1496,7 @@ Example request:
     "name": "Malloc0"
   },
   "jsonrpc": "2.0",
-  "method": "delete_malloc_bdev",
+  "method": "bdev_malloc_delete",
   "id": 1
 }
 ~~~
@@ -1190,7 +1511,7 @@ Example response:
 }
 ~~~
 
-## construct_null_bdev {#rpc_construct_null_bdev}
+## bdev_null_create {#rpc_bdev_null_create}
 
 Construct @ref bdev_config_null
 
@@ -1202,6 +1523,9 @@ name                    | Optional | string      | Bdev name to use
 block_size              | Required | number      | Block size in bytes
 num_blocks              | Required | number      | Number of blocks
 uuid                    | Optional | string      | UUID of new bdev
+md_size                 | Optional | number      | Metadata size in bytes
+dif_type                | Optional | number      | Protection information type (0, 1, 2 or 3). Default: 0 - no protection.
+dif_is_head_of_md       | Optional | boolean     | Protection information is in the first 8 bytes of MD. Default: in the last 8 bytes.
 
 ### Result
 
@@ -1214,13 +1538,16 @@ Example request:
 ~~~
 {
   "params": {
-    "block_size": 4096,
+    "block_size": 4104,
     "num_blocks": 16384,
     "name": "Null0",
-    "uuid": "2b6601ba-eada-44fb-9a83-a20eb9eb9e90"
+    "uuid": "2b6601ba-eada-44fb-9a83-a20eb9eb9e90",
+    "md_size": 8,
+    "dif_type": 1,
+    "dif_is_head_of_md": true
   },
   "jsonrpc": "2.0",
-  "method": "construct_null_bdev",
+  "method": "bdev_null_create",
   "id": 1
 }
 ~~~
@@ -1235,7 +1562,7 @@ Example response:
 }
 ~~~
 
-## delete_null_bdev {#rpc_delete_null_bdev}
+## bdev_null_delete {#rpc_bdev_null_delete}
 
 Delete @ref bdev_config_null.
 
@@ -1255,7 +1582,7 @@ Example request:
     "name": "Null0"
   },
   "jsonrpc": "2.0",
-  "method": "delete_null_bdev",
+  "method": "bdev_null_delete",
   "id": 1
 }
 ~~~
@@ -1270,7 +1597,7 @@ Example response:
 }
 ~~~
 
-## construct_aio_bdev {#rpc_construct_aio_bdev}
+## bdev_aio_create {#rpc_bdev_aio_create}
 
 Construct @ref bdev_config_aio.
 
@@ -1298,7 +1625,7 @@ Example request:
     "filename": "/tmp/aio_bdev_file"
   },
   "jsonrpc": "2.0",
-  "method": "construct_aio_bdev",
+  "method": "bdev_aio_create",
   "id": 1
 }
 ~~~
@@ -1313,7 +1640,7 @@ Example response:
 }
 ~~~
 
-## delete_aio_bdev {#rpc_delete_aio_bdev}
+## bdev_aio_delete {#rpc_bdev_aio_delete}
 
 Delete @ref bdev_config_aio.
 
@@ -1333,7 +1660,7 @@ Example request:
     "name": "Aio0"
   },
   "jsonrpc": "2.0",
-  "method": "delete_aio_bdev",
+  "method": "bdev_aio_delete",
   "id": 1
 }
 ~~~
@@ -1348,9 +1675,9 @@ Example response:
 }
 ~~~
 
-## set_bdev_nvme_options {#rpc_set_bdev_nvme_options}
+## bdev_nvme_set_options {#rpc_bdev_nvme_set_options}
 
-Set global parameters for all bdev NVMe. This RPC may only be called before SPDK subsystems have been initialized.
+Set global parameters for all bdev NVMe. This RPC may only be called before SPDK subsystems have been initialized or any bdev NVMe has been created.
 
 ### Parameters
 
@@ -1359,8 +1686,14 @@ Name                       | Optional | Type        | Description
 action_on_timeout          | Optional | string      | Action to take on command time out: none, reset or abort
 timeout_us                 | Optional | number      | Timeout for each command, in microseconds. If 0, don't track timeouts
 retry_count                | Optional | number      | The number of attempts per I/O before an I/O fails
+arbitration_burst          | Optional | number      | The value is expressed as a power of two, a value of 111b indicates no limit
+low_priority_weight        | Optional | number      | The maximum number of commands that the controller may launch at one time from a low priority queue
+medium_priority_weight     | Optional | number      | The maximum number of commands that the controller may launch at one time from a medium priority queue
+high_priority_weight       | Optional | number      | The maximum number of commands that the controller may launch at one time from a high priority queue
 nvme_adminq_poll_period_us | Optional | number      | How often the admin queue is polled for asynchronous events in microseconds
 nvme_ioq_poll_period_us    | Optional | number      | How often I/O queues are polled for completions, in microseconds. Default: 0 (as fast as possible).
+io_queue_requests          | Optional | number      | The number of requests allocated for each NVMe I/O queue. Default: 512.
+delay_cmd_submit           | Optional | boolean     | Enable delaying NVMe command submission to allow batching of multiple commands. Default: `true`.
 
 ### Example
 
@@ -1371,12 +1704,18 @@ request:
 {
   "params": {
     "retry_count": 5,
+    "arbitration_burst": 3,
+    "low_priority_weight": 8,
+    "medium_priority_weight":8,
+    "high_priority_weight": 8,
     "nvme_adminq_poll_period_us": 2000,
     "timeout_us": 10000000,
-    "action_on_timeout": "reset"
+    "action_on_timeout": "reset",
+    "io_queue_requests" : 2048,
+    "delay_cmd_submit": true
   },
   "jsonrpc": "2.0",
-  "method": "set_bdev_nvme_options",
+  "method": "bdev_nvme_set_options",
   "id": 1
 }
 ~~~
@@ -1391,7 +1730,7 @@ Example response:
 }
 ~~~
 
-## set_bdev_nvme_hotplug {#rpc_set_bdev_nvme_hotplug}
+## bdev_nvme_set_hotplug {#rpc_bdev_nvme_set_hotplug}
 
 Change settings of the NVMe hotplug feature. If enabled, PCIe NVMe bdevs will be automatically discovered on insertion
 and deleted on removal.
@@ -1415,7 +1754,7 @@ request:
     "period_us": 2000
   },
   "jsonrpc": "2.0",
-  "method": "set_bdev_nvme_hotplug",
+  "method": "bdev_nvme_set_hotplug",
   "id": 1
 }
 ~~~
@@ -1430,7 +1769,7 @@ Example response:
 }
 ~~~
 
-## construct_nvme_bdev {#rpc_construct_nvme_bdev}
+## bdev_nvme_attach_controller {#rpc_bdev_nvme_attach_controller}
 
 Construct @ref bdev_config_nvme
 
@@ -1466,7 +1805,7 @@ Example request:
     "traddr": "0000:0a:00.0"
   },
   "jsonrpc": "2.0",
-  "method": "construct_nvme_bdev",
+  "method": "bdev_nvme_attach_controller",
   "id": 1
 }
 ~~~
@@ -1483,7 +1822,7 @@ Example response:
 }
 ~~~
 
-## get_nvme_controllers {#rpc_get_nvme_controllers}
+## bdev_nvme_get_controllers {#rpc_bdev_nvme_get_controllers}
 
 Get information about NVMe controllers.
 
@@ -1508,7 +1847,7 @@ Example request:
 {
   "jsonrpc": "2.0",
   "id": 1,
-  "method": "get_nvme_controllers",
+  "method": "bdev_nvme_get_controllers",
   "params": {
     "name": "Nvme0"
   }
@@ -1533,9 +1872,9 @@ Example response:
 }
 ~~~
 
-## delete_nvme_controller {#rpc_delete_nvme_controller}
+## bdev_nvme_detach_controller {#rpc_bdev_nvme_detach_controller}
 
-Delete NVMe controller.
+Detach NVMe controller and delete any associated bdevs.
 
 ### Parameters
 
@@ -1553,7 +1892,7 @@ Example requests:
     "name": "Nvme0"
   },
   "jsonrpc": "2.0",
-  "method": "delete_nvme_controller",
+  "method": "bdev_nvme_detach_controller",
   "id": 1
 }
 ~~~
@@ -1568,9 +1907,83 @@ Example response:
 }
 ~~~
 
-## construct_rbd_bdev {#rpc_construct_rbd_bdev}
+## bdev_nvme_cuse_register {#rpc_bdev_nvme_cuse_register}
 
-Construct @ref bdev_config_rbd bdev
+Register CUSE device on NVMe controller.
+This feature is considered as experimental.
+
+### Parameters
+
+Name                    | Optional | Type        | Description
+----------------------- | -------- | ----------- | -----------
+name                    | Required | string      | Name of the NVMe controller
+dev_path                | Required | string      | Path to the CUSE controller device, e.g. spdk/nvme0
+
+### Example
+
+Example request:
+
+~~~
+{
+  "params": {
+    "dev_path": "spdk/nvme0",
+    "name": "Nvme0"
+  },
+  "jsonrpc": "2.0",
+  "method": "bdev_nvme_cuse_register",
+  "id": 1
+}
+~~~
+
+Example response:
+
+~~~
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": true
+}
+~~~
+
+## bdev_nvme_cuse_unregister {#rpc_bdev_nvme_cuse_unregister}
+
+Unregister CUSE device on NVMe controller.
+This feature is considered as experimental.
+
+### Parameters
+
+Name                    | Optional | Type        | Description
+----------------------- | -------- | ----------- | -----------
+name                    | Required | string      | Name of the NVMe controller
+
+### Example
+
+Example request:
+
+~~~
+{
+  "params": {
+    "name": "Nvme0"
+  },
+  "jsonrpc": "2.0",
+  "method": "bdev_nvme_cuse_unregister",
+  "id": 1
+}
+~~~
+
+Example response:
+
+~~~
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": true
+}
+~~~
+
+## bdev_rbd_create {#rpc_bdev_rbd_create}
+
+Create @ref bdev_config_rbd bdev
 
 This method is available only if SPDK was build with Ceph RBD support.
 
@@ -1615,7 +2028,7 @@ Example request with `key` from `/etc/ceph/ceph.client.admin.keyring`:
     "block_size": 4096
   },
   "jsonrpc": "2.0",
-  "method": "construct_rbd_bdev",
+  "method": "bdev_rbd_create",
   "id": 1
 }
 ~~~
@@ -1631,7 +2044,7 @@ response:
 }
 ~~~
 
-## delete_rbd_bdev {#rpc_delete_rbd_bdev}
+## bdev_rbd_delete {#rpc_bdev_rbd_delete}
 
 Delete @ref bdev_config_rbd bdev
 
@@ -1657,7 +2070,50 @@ Example request:
     "name": "Rbd0"
   },
   "jsonrpc": "2.0",
-  "method": "delete_rbd_bdev",
+  "method": "bdev_rbd_delete",
+  "id": 1
+}
+~~~
+
+Example response:
+
+~~~
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": true
+}
+~~~
+
+## bdev_rbd_resize {#rpc_bdev_rbd_resize}
+
+Resize @ref bdev_config_rbd bdev
+
+This method is available only if SPDK was build with Ceph RBD support.
+
+### Result
+
+`true` if bdev with provided name was resized or `false` otherwise.
+
+### Parameters
+
+Name                    | Optional | Type        | Description
+----------------------- | -------- | ----------- | -----------
+name                    | Required | string      | Bdev name
+new_size                | Required | int         | New bdev size for resize operation in MiB
+
+### Example
+
+Example request:
+
+~~~
+{
+  "params": {
+    "name": "Rbd0"
+    "new_size": "4096"
+  },
+  "jsonrpc": "2.0",
+  "method": "bdev_rbd_resize",
   "id": 1
 }
 ~~~
@@ -1675,7 +2131,7 @@ Example response:
 ## bdev_delay_create {#rpc_bdev_delay_create}
 
 Create delay bdev. This bdev type redirects all IO to it's base bdev and inserts a delay on the completion
-path to create an artificial drive latency.
+path to create an artificial drive latency. All latency values supplied to this bdev should be in microseconds.
 
 ### Parameters
 
@@ -1758,7 +2214,49 @@ Example response:
 }
 ~~~
 
-## construct_error_bdev {#rpc_construct_error_bdev}
+## bdev_delay_update_latency {#rpc_bdev_delay_update_latency}
+
+Update a target latency value associated with a given delay bdev. Any currently
+outstanding I/O will be completed with the old latency.
+
+### Parameters
+
+Name                    | Optional | Type        | Description
+----------------------- | -------- | ----------- | -----------
+delay_bdev_name         | Required | string      | Name of the delay bdev
+latency_type            | Required | string      | One of: avg_read, avg_write, p99_read, p99_write
+latency_us              | Required | number      | The new latency value in microseconds
+
+### Result
+
+Name of newly created bdev.
+
+### Example
+
+Example request:
+
+~~~
+{
+  "params": {
+    "delay_bdev_name": "Delay0",
+    "latency_type": "avg_read",
+    "latency_us": "100",
+  },
+  "jsonrpc": "2.0",
+  "method": "bdev_delay_update_latency",
+  "id": 1
+}
+~~~
+
+Example response:
+
+~~~
+{
+  "result": "true"
+}
+~~~
+
+## bdev_error_create {#rpc_bdev_error_create}
 
 Construct error bdev.
 
@@ -1778,7 +2276,7 @@ Example request:
     "base_name": "Malloc0"
   },
   "jsonrpc": "2.0",
-  "method": "construct_error_bdev",
+  "method": "bdev_error_create",
   "id": 1
 }
 ~~~
@@ -1793,7 +2291,7 @@ Example response:
 }
 ~~~
 
-## delete_error_bdev {#rpc_delete_error_bdev}
+## bdev_error_delete {#rpc_bdev_error_delete}
 
 Delete error bdev
 
@@ -1817,7 +2315,7 @@ Example request:
     "name": "EE_Malloc0"
   },
   "jsonrpc": "2.0",
-  "method": "delete_error_bdev",
+  "method": "bdev_error_delete",
   "id": 1
 }
 ~~~
@@ -1832,7 +2330,7 @@ Example response:
 }
 ~~~
 
-## construct_iscsi_bdev {#rpc_construct_iscsi_bdev}
+## bdev_iscsi_create {#rpc_bdev_iscsi_create}
 
 Connect to iSCSI target and create bdev backed by this connection.
 
@@ -1862,7 +2360,7 @@ Example request:
     "name": "iSCSI0"
   },
   "jsonrpc": "2.0",
-  "method": "construct_iscsi_bdev",
+  "method": "bdev_iscsi_create",
   "id": 1
 }
 ~~~
@@ -1877,7 +2375,7 @@ Example response:
 }
 ~~~
 
-## delete_iscsi_bdev {#rpc_delete_iscsi_bdev}
+## bdev_iscsi_delete {#rpc_bdev_iscsi_delete}
 
 Delete iSCSI bdev and terminate connection to target.
 
@@ -1899,7 +2397,7 @@ Example request:
     "name": "iSCSI0"
   },
   "jsonrpc": "2.0",
-  "method": "delete_iscsi_bdev",
+  "method": "bdev_iscsi_delete",
   "id": 1
 }
 ~~~
@@ -1914,7 +2412,7 @@ Example response:
 }
 ~~~
 
-## construct_ftl_bdev {#rpc_construct_ftl_bdev}
+## bdev_ftl_create {#rpc_bdev_ftl_create}
 
 Create FTL bdev.
 
@@ -1949,7 +2447,7 @@ Example request:
     "uuid": "4a7481ce-786f-41a0-9b86-8f7465c8f4d3"
   },
   "jsonrpc": "2.0",
-  "method": "construct_ftl_bdev",
+  "method": "bdev_ftl_create",
   "id": 1
 }
 ~~~
@@ -1967,7 +2465,7 @@ Example response:
 }
 ~~~
 
-## delete_ftl_bdev {#rpc_delete_ftl_bdev}
+## bdev_ftl_delete {#rpc_bdev_ftl_delete}
 
 Delete FTL bdev.
 
@@ -1989,7 +2487,7 @@ Example request:
     "name": "nvme0"
   },
   "jsonrpc": "2.0",
-  "method": "delete_ftl_bdev",
+  "method": "bdev_ftl_delete",
   "id": 1
 }
 ~~~
@@ -2004,8 +2502,7 @@ Example response:
 }
 ~~~
 
-
-## create_pmem_pool {#rpc_create_pmem_pool}
+## bdev_pmem_create_pool {#rpc_bdev_pmem_create_pool}
 
 Create a @ref bdev_config_pmem blk pool file. It is equivalent of following `pmempool create` command:
 
@@ -2035,7 +2532,7 @@ Example request:
     "pmem_file": "/tmp/pmem_file"
   },
   "jsonrpc": "2.0",
-  "method": "create_pmem_pool",
+  "method": "bdev_pmem_create_pool",
   "id": 1
 }
 ~~~
@@ -2050,7 +2547,7 @@ Example response:
 }
 ~~~
 
-## pmem_pool_info {#rpc_pmem_pool_info}
+## bdev_pmem_get_pool_info {#rpc_bdev_pmem_get_pool_info}
 
 Retrieve basic information about PMDK memory pool.
 
@@ -2082,7 +2579,7 @@ request:
     "pmem_file": "/tmp/pmem_file"
   },
   "jsonrpc": "2.0",
-  "method": "pmem_pool_info",
+  "method": "bdev_pmem_get_pool_info",
   "id": 1
 }
 ~~~
@@ -2102,7 +2599,7 @@ Example response:
 }
 ~~~
 
-## delete_pmem_pool {#rpc_delete_pmem_pool}
+## bdev_pmem_delete_pool {#rpc_bdev_pmem_delete_pool}
 
 Delete pmem pool by removing file `pmem_file`. This method will fail if `pmem_file` is not a
 valid pmem pool file.
@@ -2125,7 +2622,7 @@ Example request:
     "pmem_file": "/tmp/pmem_file"
   },
   "jsonrpc": "2.0",
-  "method": "delete_pmem_pool",
+  "method": "bdev_pmem_delete_pool",
   "id": 1
 }
 ~~~
@@ -2140,7 +2637,7 @@ Example response:
 }
 ~~~
 
-## construct_pmem_bdev {#rpc_construct_pmem_bdev}
+## bdev_pmem_create {#rpc_bdev_pmem_create}
 
 Construct @ref bdev_config_pmem bdev.
 
@@ -2168,7 +2665,7 @@ Example request:
     "name": "Pmem0"
   },
   "jsonrpc": "2.0",
-  "method": "construct_pmem_bdev",
+  "method": "bdev_pmem_create",
   "id": 1
 }
 ~~~
@@ -2183,7 +2680,7 @@ Example response:
 }
 ~~~
 
-## delete_pmem_bdev {#rpc_delete_pmem_bdev}
+## bdev_pmem_delete {#rpc_bdev_pmem_delete}
 
 Delete @ref bdev_config_pmem bdev. This call will not remove backing pool files.
 
@@ -2209,7 +2706,7 @@ Example request:
     "name": "Pmem0"
   },
   "jsonrpc": "2.0",
-  "method": "delete_pmem_bdev",
+  "method": "bdev_pmem_delete",
   "id": 1
 }
 ~~~
@@ -2224,7 +2721,7 @@ Example response:
 }
 ~~~
 
-## construct_passthru_bdev {#rpc_construct_passthru_bdev}
+## bdev_passthru_create {#rpc_bdev_passthru_create}
 
 Create passthru bdev. This bdev type redirects all IO to it's base bdev. It has no other purpose than being an example
 and a starting point in development of new bdev type.
@@ -2251,7 +2748,7 @@ Example request:
     "name": "Passsthru0"
   },
   "jsonrpc": "2.0",
-  "method": "construct_passthru_bdev",
+  "method": "bdev_passthru_create",
   "id": 1
 }
 ~~~
@@ -2266,7 +2763,7 @@ Example response:
 }
 ~~~
 
-## delete_passthru_bdev {#rpc_delete_passthru_bdev}
+## bdev_passthru_delete {#rpc_bdev_passthru_delete}
 
 Delete passthru bdev.
 
@@ -2286,7 +2783,7 @@ Example request:
     "name": "Passsthru0"
   },
   "jsonrpc": "2.0",
-  "method": "delete_passthru_bdev",
+  "method": "bdev_passthru_delete",
   "id": 1
 }
 
@@ -2302,7 +2799,7 @@ Example response:
 }
 ~~~
 
-## construct_virtio_dev {#rpc_construct_virtio_dev}
+## bdev_virtio_attach_controller {#rpc_bdev_virtio_attach_controller}
 
 Create new initiator @ref bdev_config_virtio_scsi or @ref bdev_config_virtio_blk and expose all found bdevs.
 
@@ -2341,7 +2838,7 @@ Example request:
     "vq_count": 4
   },
   "jsonrpc": "2.0",
-  "method": "construct_virtio_dev",
+  "method": "bdev_virtio_attach_controller",
   "id": 1
 }
 ~~~
@@ -2356,7 +2853,7 @@ Example response:
 }
 ~~~
 
-## get_virtio_scsi_devs {#rpc_get_virtio_scsi_devs}
+## bdev_virtio_scsi_get_devices {#rpc_bdev_virtio_scsi_get_devices}
 
 Show information about all available Virtio SCSI devices.
 
@@ -2375,7 +2872,7 @@ Example request:
 ~~~
 {
   "jsonrpc": "2.0",
-  "method": "get_virtio_scsi_devs",
+  "method": "bdev_virtio_scsi_get_devices",
   "id": 1
 }
 ~~~
@@ -2400,7 +2897,7 @@ Example response:
 }
 ~~~
 
-## remove_virtio_bdev {#rpc_remove_virtio_bdev}
+## bdev_virtio_detach_controller {#rpc_bdev_virtio_detach_controller}
 
 Remove a Virtio device. This command can be used to remove any type of virtio device.
 
@@ -2420,7 +2917,7 @@ Example request:
     "name": "VirtioUser0"
   },
   "jsonrpc": "2.0",
-  "method": "remove_virtio_bdev",
+  "method": "bdev_virtio_detach_controller",
   "id": 1
 }
 
@@ -2438,7 +2935,7 @@ Example response:
 
 # iSCSI Target {#jsonrpc_components_iscsi_tgt}
 
-## set_iscsi_options method {#rpc_set_iscsi_options}
+## iscsi_set_options method {#rpc_iscsi_set_options}
 
 Set global parameters for iSCSI targets.
 
@@ -2490,7 +2987,7 @@ Example request:
     "default_time2wait": 2
   },
   "jsonrpc": "2.0",
-  "method": "set_iscsi_options",
+  "method": "iscsi_set_options",
   "id": 1
 }
 ~~~
@@ -2505,7 +3002,7 @@ Example response:
 }
 ~~~
 
-## get_iscsi_global_params method {#rpc_get_iscsi_global_params}
+## iscsi_get_options method {#rpc_iscsi_get_options}
 
 Show global parameters of iSCSI targets.
 
@@ -2521,7 +3018,7 @@ Example request:
 request:
 {
   "jsonrpc": "2.0",
-  "method": "get_iscsi_global_params",
+  "method": "iscsi_get_options",
   "id": 1
 }
 ~~~
@@ -2553,7 +3050,7 @@ Example response:
   }
 }
 ~~~
-## set_iscsi_discovery_auth method {#rpc_set_iscsi_discovery_auth}
+## iscsi_set_discovery_auth method {#rpc_iscsi_set_discovery_auth}
 
 Set CHAP authentication for sessions dynamically.
 
@@ -2581,7 +3078,7 @@ request:
     "mutual_chap": true
   },
   "jsonrpc": "2.0",
-  "method": "set_iscsi_discovery_auth",
+  "method": "iscsi_set_discovery_auth",
   "id": 1
 }
 ~~~
@@ -2596,18 +3093,18 @@ Example response:
 }
 ~~~
 
-## add_iscsi_auth_group method {#rpc_add_iscsi_auth_group}
+## iscsi_create_auth_group method {#rpc_iscsi_create_auth_group}
 
-Add an authentication group for CHAP authentication.
+Create an authentication group for CHAP authentication.
 
 ### Parameters
 
 Name                        | Optional | Type    | Description
 --------------------------- | -------- | --------| -----------
 tag                         | Required | number  | Authentication group tag (unique, integer > 0)
-secrets                     | Optional | array   | Array of @ref rpc_add_iscsi_auth_group_secret objects
+secrets                     | Optional | array   | Array of @ref rpc_iscsi_create_auth_group_secret objects
 
-### secret {#rpc_add_iscsi_auth_group_secret}
+### secret {#rpc_iscsi_create_auth_group_secret}
 
 Name                        | Optional | Type    | Description
 --------------------------- | ---------| --------| -----------
@@ -2634,7 +3131,7 @@ Example request:
     "tag": 2
   },
   "jsonrpc": "2.0",
-  "method": "add_iscsi_auth_group",
+  "method": "iscsi_create_auth_group",
   "id": 1
 }
 ~~~
@@ -2649,7 +3146,7 @@ Example response:
 }
 ~~~
 
-## delete_iscsi_auth_group method {#rpc_delete_iscsi_auth_group}
+## iscsi_delete_auth_group method {#rpc_iscsi_delete_auth_group}
 
 Delete an existing authentication group for CHAP authentication.
 
@@ -2669,7 +3166,7 @@ Example request:
     "tag": 2
   },
   "jsonrpc": "2.0",
-  "method": "delete_iscsi_auth_group",
+  "method": "iscsi_delete_auth_group",
   "id": 1
 }
 ~~~
@@ -2684,7 +3181,7 @@ Example response:
 }
 ~~~
 
-## get_iscsi_auth_groups {#rpc_get_iscsi_auth_groups}
+## iscsi_get_auth_groups {#rpc_iscsi_get_auth_groups}
 
 Show information about all existing authentication group for CHAP authentication.
 
@@ -2699,7 +3196,7 @@ Array of objects describing authentication group.
 Name                        | Type    | Description
 --------------------------- | --------| -----------
 tag                         | number  | Authentication group tag
-secrets                     | array   | Array of @ref rpc_add_iscsi_auth_group_secret objects
+secrets                     | array   | Array of @ref rpc_iscsi_create_auth_group_secret objects
 
 ### Example
 
@@ -2708,7 +3205,7 @@ Example request:
 ~~~
 {
   "jsonrpc": "2.0",
-  "method": "get_iscsi_auth_groups",
+  "method": "iscsi_get_auth_groups",
   "id": 1
 }
 ~~~
@@ -2743,7 +3240,7 @@ Example response:
 }
 ~~~
 
-## add_secret_to_iscsi_auth_group {#rpc_add_secret_to_iscsi_auth_group}
+## iscsi_auth_group_add_secret {#rpc_iscsi_auth_group_add_secret}
 
 Add a secret to an existing authentication group for CHAP authentication.
 
@@ -2771,7 +3268,7 @@ Example request:
     "msecret": "ms3"
   },
   "jsonrpc": "2.0",
-  "method": "add_secret_to_iscsi_auth_group",
+  "method": "iscsi_auth_group_add_secret",
   "id": 1
 }
 ~~~
@@ -2786,9 +3283,9 @@ Example response:
 }
 ~~~
 
-## delete_secret_from_iscsi_auth_group {#rpc_delete_secret_from_iscsi_auth_group}
+## iscsi_auth_group_remove_secret {#rpc_iscsi_auth_group_remove_secret}
 
-Delete a secret from an existing authentication group for CHAP authentication.
+Remove a secret from an existing authentication group for CHAP authentication.
 
 ### Parameters
 
@@ -2808,7 +3305,7 @@ Example request:
     "user": "u3"
   },
   "jsonrpc": "2.0",
-  "method": "delete_secret_from_iscsi_auth_group",
+  "method": "iscsi_auth_group_remove_secret",
   "id": 1
 }
 ~~~
@@ -2823,7 +3320,7 @@ Example response:
 }
 ~~~
 
-## get_initiator_groups method {#rpc_get_initiator_groups}
+## iscsi_get_initiator_groups method {#rpc_iscsi_get_initiator_groups}
 
 Show information about all available initiator groups.
 
@@ -2848,7 +3345,7 @@ Example request:
 ~~~
 {
   "jsonrpc": "2.0",
-  "method": "get_initiator_groups",
+  "method": "iscsi_get_initiator_groups",
   "id": 1
 }
 ~~~
@@ -2874,7 +3371,7 @@ Example response:
 }
 ~~~
 
-## add_initiator_group method {#rpc_add_initiator_group}
+## iscsi_create_initiator_group method {#rpc_iscsi_create_initiator_group}
 
 Add an initiator group.
 
@@ -2903,7 +3400,7 @@ Example request:
     ]
   },
   "jsonrpc": "2.0",
-  "method": "add_initiator_group",
+  "method": "iscsi_create_initiator_group",
   "id": 1
 }
 ~~~
@@ -2919,7 +3416,7 @@ response:
 }
 ~~~
 
-## delete_initiator_group method {#rpc_delete_initiator_group}
+## iscsi_delete_initiator_group method {#rpc_iscsi_delete_initiator_group}
 
 Delete an existing initiator group.
 
@@ -2939,7 +3436,7 @@ Example request:
     "tag": 1
   },
   "jsonrpc": "2.0",
-  "method": "delete_initiator_group",
+  "method": "iscsi_delete_initiator_group",
   "id": 1
 }
 ~~~
@@ -2954,7 +3451,7 @@ Example response:
 }
 ~~~
 
-## add_initiators_to_initiator_group method {#rpc_add_initiators_to_initiator_group}
+## iscsi_initiator_group_add_initiators method {#rpc_iscsi_initiator_group_add_initiators}
 
 Add initiators to an existing initiator group.
 
@@ -2983,7 +3480,7 @@ request:
     ]
   },
   "jsonrpc": "2.0",
-  "method": "add_initiators_to_initiator_group",
+  "method": "iscsi_initiator_group_add_initiators",
   "id": 1
 }
 ~~~
@@ -2999,7 +3496,7 @@ response:
 }
 ~~~
 
-## get_target_nodes method {#rpc_get_target_nodes}
+## iscsi_get_target_nodes method {#rpc_iscsi_get_target_nodes}
 
 Show information about all available iSCSI target nodes.
 
@@ -3032,7 +3529,7 @@ Example request:
 ~~~
 {
   "jsonrpc": "2.0",
-  "method": "get_target_nodes",
+  "method": "iscsi_get_target_nodes",
   "id": 1
 }
 ~~~
@@ -3071,9 +3568,9 @@ Example response:
 }
 ~~~
 
-## construct_target_node method {#rpc_construct_target_node}
+## iscsi_create_target_node method {#rpc_iscsi_create_target_node}
 
-Add a iSCSI target node.
+Add an iSCSI target node.
 
 ### Parameters
 
@@ -3125,7 +3622,7 @@ Example request:
     "queue_depth": 24
   },
   "jsonrpc": "2.0",
-  "method": "construct_target_node",
+  "method": "iscsi_create_target_node",
   "id": 1
 }
 ~~~
@@ -3140,7 +3637,7 @@ Example response:
 }
 ~~~
 
-## set_iscsi_target_node_auth method {#rpc_set_iscsi_target_node_auth}
+## iscsi_target_node_set_auth method {#rpc_iscsi_target_node_set_auth}
 
 Set CHAP authentication to an existing iSCSI target node.
 
@@ -3169,7 +3666,7 @@ Example request:
     "mutual_chap": true
   },
   "jsonrpc": "2.0",
-  "method": "set_iscsi_target_node_auth",
+  "method": "iscsi_target_node_set_auth",
   "id": 1
 }
 ~~~
@@ -3184,7 +3681,7 @@ Example response:
 }
 ~~~
 
-## add_pg_ig_maps method {#rpc_add_pg_ig_maps}
+## iscsi_target_node_add_pg_ig_maps method {#rpc_iscsi_target_node_add_pg_ig_maps}
 
 Add initiator group to portal group mappings to an existing iSCSI target node.
 
@@ -3226,7 +3723,7 @@ Example request:
     "name": "iqn.2016-06.io.spdk:target3"
   },
   "jsonrpc": "2.0",
-  "method": "add_pg_ig_maps",
+  "method": "iscsi_target_node_add_pg_ig_maps",
   "id": 1
 }
 ~~~
@@ -3241,7 +3738,7 @@ Example response:
 }
 ~~~
 
-## delete_pg_ig_maps method {#rpc_delete_pg_ig_maps}
+## iscsi_target_node_remove_pg_ig_maps method {#rpc_iscsi_target_node_remove_pg_ig_maps}
 
 Delete initiator group to portal group mappings from an existing iSCSI target node.
 
@@ -3283,7 +3780,7 @@ Example request:
     "name": "iqn.2016-06.io.spdk:target3"
   },
   "jsonrpc": "2.0",
-  "method": "delete_pg_ig_maps",
+  "method": "iscsi_target_node_remove_pg_ig_maps",
   "id": 1
 }
 ~~~
@@ -3298,9 +3795,9 @@ Example response:
 }
 ~~~
 
-## delete_target_node method {#rpc_delete_target_node}
+## iscsi_delete_target_node method {#rpc_iscsi_delete_target_node}
 
-Delete a iSCSI target node.
+Delete an iSCSI target node.
 
 ### Parameters
 
@@ -3318,7 +3815,7 @@ Example request:
     "name": "iqn.2016-06.io.spdk:target1"
   },
   "jsonrpc": "2.0",
-  "method": "delete_target_node",
+  "method": "iscsi_delete_target_node",
   "id": 1
 }
 ~~~
@@ -3333,7 +3830,7 @@ Example response:
 }
 ~~~
 
-## get_portal_groups method {#rpc_get_portal_groups}
+## iscsi_get_portal_groups method {#rpc_iscsi_get_portal_groups}
 
 Show information about all available portal groups.
 
@@ -3349,7 +3846,7 @@ Example request:
 request:
 {
   "jsonrpc": "2.0",
-  "method": "get_portal_groups",
+  "method": "iscsi_get_portal_groups",
   "id": 1
 }
 ~~~
@@ -3364,7 +3861,6 @@ Example response:
     {
       "portals": [
         {
-          "cpumask": "0x2",
           "host": "127.0.0.1",
           "port": "3260"
         }
@@ -3375,7 +3871,7 @@ Example response:
 }
 ~~~
 
-## add_portal_group method {#rpc_add_portal_group}
+## iscsi_create_portal_group method {#rpc_iscsi_create_portal_group}
 
 Add a portal group.
 
@@ -3409,7 +3905,7 @@ Example request:
     "tag": 1
   },
   "jsonrpc": "2.0",
-  "method": "add_portal_group",
+  "method": "iscsi_create_portal_group",
   "id": 1
 }
 ~~~
@@ -3424,7 +3920,7 @@ Example response:
 }
 ~~~
 
-## delete_portal_group method {#rpc_delete_portal_group}
+## iscsi_delete_portal_group method {#rpc_iscsi_delete_portal_group}
 
 Delete an existing portal group.
 
@@ -3444,7 +3940,7 @@ Example request:
     "tag": 1
   },
   "jsonrpc": "2.0",
-  "method": "delete_portal_group",
+  "method": "iscsi_delete_portal_group",
   "id": 1
 }
 ~~~
@@ -3459,7 +3955,52 @@ Example response:
 }
 ~~~
 
-## get_iscsi_connections method {#rpc_get_iscsi_connections}
+### iscsi_portal_group_set_auth method {#rpc_iscsi_portal_group_set_auth}
+
+Set CHAP authentication for discovery sessions specific for the existing iSCSI portal group.
+This RPC overwrites the setting by the global parameters for the iSCSI portal group.
+
+### Parameters
+
+Name                        | Optional | Type    | Description
+--------------------------- | -------- | --------| -----------
+disable_chap                | Optional | boolean | CHAP for discovery session should be disabled (default: `false`)
+require_chap                | Optional | boolean | CHAP for discovery session should be required (default: `false`)
+mutual_chap                 | Optional | boolean | CHAP for discovery session should be unidirectional (`false`) or bidirectional (`true`) (default: `false`)
+chap_group                  | Optional | number  | CHAP group ID for discovery session (default: 0)
+
+Parameters `disable_chap` and `require_chap` are mutually exclusive.
+
+### Example
+
+Example request:
+
+~~~
+request:
+{
+  "params": {
+    "tag": 1,
+    "chap_group": 1,
+    "require_chap": true,
+    "mutual_chap": true
+  },
+  "jsonrpc": "2.0",
+  "method": "iscsi_portal_group_set_auth",
+  "id": 1
+}
+~~~
+
+Example response:
+
+~~~
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": true
+}
+~~~
+
+## iscsi_get_connections method {#rpc_iscsi_get_connections}
 
 Show information about all active connections.
 
@@ -3488,7 +4029,7 @@ Example request:
 ~~~
 {
   "jsonrpc": "2.0",
-  "method": "get_iscsi_connections",
+  "method": "iscsi_get_connections",
   "id": 1
 }
 ~~~
@@ -3513,7 +4054,7 @@ Example response:
 }
 ~~~
 
-## target_node_add_lun method {#rpc_target_node_add_lun}
+## iscsi_target_node_add_lun method {#rpc_iscsi_target_node_add_lun}
 
 Add an LUN to an existing iSCSI target node.
 
@@ -3537,7 +4078,7 @@ Example request:
     "bdev_name": "Malloc0"
   },
   "jsonrpc": "2.0",
-  "method": "target_node_add_lun",
+  "method": "iscsi_target_node_add_lun",
   "id": 1
 }
 ~~~
@@ -3563,8 +4104,10 @@ Initialize an NVMe-oF transport with the given options.
 Name                        | Optional | Type    | Description
 --------------------------- | -------- | --------| -----------
 trtype                      | Required | string  | Transport type (ex. RDMA)
+tgt_name                    | Optional | string  | Parent NVMe-oF target name.
 max_queue_depth             | Optional | number  | Max number of outstanding I/O per queue
-max_qpairs_per_ctrlr        | Optional | number  | Max number of SQ and CQ per controller
+max_qpairs_per_ctrlr        | Optional | number  | Max number of SQ and CQ per controller (deprecated, use max_io_qpairs_per_ctrlr)
+max_io_qpairs_per_ctrlr     | Optional | number  | Max number of IO qpairs per controller
 in_capsule_data_size        | Optional | number  | Max number of in-capsule data size
 max_io_size                 | Optional | number  | Max I/O size (bytes)
 io_unit_size                | Optional | number  | I/O unit size (bytes)
@@ -3573,8 +4116,13 @@ num_shared_buffers          | Optional | number  | The number of pooled data buf
 buf_cache_size              | Optional | number  | The number of shared buffers to reserve for each poll group
 max_srq_depth               | Optional | number  | The number of elements in a per-thread shared receive queue (RDMA only)
 no_srq                      | Optional | boolean | Disable shared receive queue even for devices that support it. (RDMA only)
+c2h_success                 | Optional | boolean | Disable C2H success optimization (TCP only)
+dif_insert_or_strip         | Optional | boolean | Enable DIF insert for write I/O and DIF strip for read I/O DIF
+sock_priority               | Optional | number  | The socket priority of the connection owned by this transport (TCP only)
+acceptor_backlog            | Optional | number  | The number of pending connections allowed in backlog before failing new connection attempts (RDMA only)
+abort_timeout_sec           | Optional | number  | Abort execution timeout value, in seconds
 
-### Example:
+### Example
 
 Example request:
 
@@ -3600,11 +4148,13 @@ Example response:
 }
 ~~~
 
-## get_nvmf_subsystems method {#rpc_get_nvmf_subsystems}
+## nvmf_get_subsystems method {#rpc_nvmf_get_subsystems}
 
 ### Parameters
 
-This method has no parameters.
+Name                        | Optional | Type        | Description
+--------------------------- | -------- | ------------| -----------
+tgt_name                    | Optional | string      | Parent NVMe-oF target name.
 
 ### Example
 
@@ -3614,7 +4164,7 @@ Example request:
 {
   "jsonrpc": "2.0",
   "id": 1,
-  "method": "get_nvmf_subsystems"
+  "method": "nvmf_get_subsystems"
 }
 ~~~
 
@@ -3658,7 +4208,7 @@ Example response:
 }
 ~~~
 
-## nvmf_subsystem_create method {#rpc_nvmf_subsystem_create}
+## nvmf_create_subsystem method {#rpc_nvmf_create_subsystem}
 
 Construct an NVMe over Fabrics target subsystem.
 
@@ -3667,6 +4217,7 @@ Construct an NVMe over Fabrics target subsystem.
 Name                    | Optional | Type        | Description
 ----------------------- | -------- | ----------- | -----------
 nqn                     | Required | string      | Subsystem NQN
+tgt_name                | Optional | string      | Parent NVMe-oF target name.
 serial_number           | Optional | string      | Serial number of virtual controller
 model_number            | Optional | string      | Model number of virtual controller
 max_namespaces          | Optional | number      | Maximum number of namespaces that can be attached to the subsystem. Default: 0 (Unlimited)
@@ -3680,7 +4231,7 @@ Example request:
 {
   "jsonrpc": "2.0",
   "id": 1,
-  "method": "nvmf_subsystem_create",
+  "method": "nvmf_create_subsystem",
   "params": {
     "nqn": "nqn.2016-06.io.spdk:cnode1",
     "allow_any_host": false,
@@ -3700,7 +4251,7 @@ Example response:
 }
 ~~~
 
-## delete_nvmf_subsystem method {#rpc_delete_nvmf_subsystem}
+## nvmf_delete_subsystem method {#rpc_nvmf_delete_subsystem}
 
 Delete an existing NVMe-oF subsystem.
 
@@ -3709,6 +4260,7 @@ Delete an existing NVMe-oF subsystem.
 Parameter              | Optional | Type        | Description
 ---------------------- | -------- | ----------- | -----------
 nqn                    | Required | string      | Subsystem NQN to delete.
+tgt_name               | Optional | string      | Parent NVMe-oF target name.
 
 ### Example
 
@@ -3718,7 +4270,7 @@ Example request:
 {
   "jsonrpc": "2.0",
   "id": 1,
-  "method": "delete_nvmf_subsystem",
+  "method": "nvmf_delete_subsystem",
   "params": {
     "nqn": "nqn.2016-06.io.spdk:cnode1"
   }
@@ -3744,6 +4296,7 @@ Add a new listen address to an NVMe-oF subsystem.
 Name                    | Optional | Type        | Description
 ----------------------- | -------- | ----------- | -----------
 nqn                     | Required | string      | Subsystem NQN
+tgt_name                | Optional | string      | Parent NVMe-oF target name.
 listen_address          | Required | object      | @ref rpc_nvmf_listen_address object
 
 ### listen_address {#rpc_nvmf_listen_address}
@@ -3770,7 +4323,7 @@ Example request:
       "trtype": "RDMA",
       "adrfam": "IPv4",
       "traddr": "192.168.0.123",
-      "trsvcid: "4420"
+      "trsvcid": "4420"
     }
   }
 }
@@ -3796,6 +4349,7 @@ Name                    | Optional | Type        | Description
 ----------------------- | -------- | ----------- | -----------
 nqn                     | Required | string      | Subsystem NQN
 namespace               | Required | object      | @ref rpc_nvmf_namespace object
+tgt_name                | Optional | string      | Parent NVMe-oF target name.
 
 ### namespace {#rpc_nvmf_namespace}
 
@@ -3806,6 +4360,7 @@ bdev_name               | Required | string      | Name of bdev to expose as a n
 nguid                   | Optional | string      | 16-byte namespace globally unique identifier in hexadecimal (e.g. "ABCDEF0123456789ABCDEF0123456789")
 eui64                   | Optional | string      | 8-byte namespace EUI-64 in hexadecimal (e.g. "ABCDEF0123456789")
 uuid                    | Optional | string      | RFC 4122 UUID (e.g. "ceccf520-691e-4b46-9546-34af789907c5")
+ptpl_file               | Optional | string      | File path to save/restore persistent reservation information
 
 ### Example
 
@@ -3820,7 +4375,8 @@ Example request:
     "nqn": "nqn.2016-06.io.spdk:cnode1",
     "namespace": {
       "nsid": 3,
-      "bdev_name": "Nvme0n1"
+      "bdev_name": "Nvme0n1",
+      "ptpl_file": "/opt/Nvme0n1PR.json"
     }
   }
 }
@@ -3846,6 +4402,7 @@ Name                    | Optional | Type        | Description
 ----------------------- | -------- | ----------- | -----------
 nqn                     | Required | string      | Subsystem NQN
 nsid                    | Required | number      | Namespace ID
+tgt_name                | Optional | string      | Parent NVMe-oF target name.
 
 ### Example
 
@@ -3883,6 +4440,7 @@ Name                    | Optional | Type        | Description
 ----------------------- | -------- | ----------- | -----------
 nqn                     | Required | string      | Subsystem NQN
 host                    | Required | string      | Host NQN to add to the list of allowed host NQNs
+tgt_name                | Optional | string      | Parent NVMe-oF target name.
 
 ### Example
 
@@ -3920,6 +4478,7 @@ Name                    | Optional | Type        | Description
 ----------------------- | -------- | ----------- | -----------
 nqn                     | Required | string      | Subsystem NQN
 host                    | Required | string      | Host NQN to remove from the list of allowed host NQNs
+tgt_name                | Optional | string      | Parent NVMe-oF target name.
 
 ### Example
 
@@ -3957,6 +4516,7 @@ Name                    | Optional | Type        | Description
 ----------------------- | -------- | ----------- | -----------
 nqn                     | Required | string      | Subsystem NQN
 allow_any_host          | Required | boolean     | Allow any host (`true`) or enforce allowed host whitelist (`false`).
+tgt_name                | Optional | string      | Parent NVMe-oF target name.
 
 ### Example
 
@@ -3984,7 +4544,7 @@ Example response:
 }
 ~~~
 
-## set_nvmf_target_max_subsystems {#rpc_set_nvmf_target_max_subsystems}
+## nvmf_set_max_subsystems {#rpc_nvmf_set_max_subsystems}
 
 Set the maximum allowed subsystems for the NVMe-oF target.  This RPC may only be called
 before SPDK subsystems have been initialized.
@@ -4003,7 +4563,7 @@ Example request:
 {
   "jsonrpc": "2.0",
   "id": 1,
-  "method": "set_nvmf_target_max_subsystems",
+  "method": "nvmf_set_max_subsystems",
   "params": {
     "max_subsystems": 1024
   }
@@ -4020,7 +4580,7 @@ Example response:
 }
 ~~~
 
-## set_nvmf_target_config {#rpc_set_nvmf_target_config}
+## nvmf_set_config {#rpc_nvmf_set_config}
 
 Set global configuration of NVMe-oF target.  This RPC may only be called before SPDK subsystems
 have been initialized.
@@ -4030,6 +4590,13 @@ have been initialized.
 Name                    | Optional | Type        | Description
 ----------------------- | -------- | ----------- | -----------
 acceptor_poll_rate      | Optional | number      | Polling interval of the acceptor for incoming connections (microseconds)
+admin_cmd_passthru      | Optional | object      | Admin command passthru configuration
+
+### admin_cmd_passthru {#spdk_nvmf_admin_passthru_conf}
+
+Name                    | Optional | Type        | Description
+----------------------- | -------- | ----------- | -----------
+identify_ctrlr          | Required | bool        | If true, enables custom identify handler that reports some identify attributes from the underlying NVMe drive
 
 ### Example
 
@@ -4039,7 +4606,7 @@ Example request:
 {
   "jsonrpc": "2.0",
   "id": 1,
-  "method": "set_nvmf_target_config",
+  "method": "nvmf_set_config",
   "params": {
     "acceptor_poll_rate": 10000
   }
@@ -4056,11 +4623,13 @@ Example response:
 }
 ~~~
 
-## get_nvmf_transports method {#rpc_get_nvmf_transports}
+## nvmf_get_transports method {#rpc_nvmf_get_transports}
 
 ### Parameters
 
-This method has no parameters.
+Name                        | Optional | Type        | Description
+--------------------------- | -------- | ------------| -----------
+tgt_name                    | Optional | string      | Parent NVMe-oF target name.
 
 ### Example
 
@@ -4070,7 +4639,7 @@ Example request:
 {
   "jsonrpc": "2.0",
   "id": 1,
-  "method": "get_nvmf_transports"
+  "method": "nvmf_get_transports"
 }
 ~~~
 
@@ -4084,12 +4653,85 @@ Example response:
     {
       "type": "RDMA".
       "max_queue_depth": 128,
-      "max_qpairs_per_ctrlr": 64,
+      "max_io_qpairs_per_ctrlr": 64,
       "in_capsule_data_size": 4096,
       "max_io_size": 131072,
-      "io_unit_size": 131072
+      "io_unit_size": 131072,
+      "abort_timeout_sec": 1
     }
   ]
+}
+~~~
+
+## nvmf_get_stats method {#rpc_nvmf_get_stats}
+
+Retrieve current statistics of the NVMf subsystem.
+
+### Parameters
+
+Name                        | Optional | Type        | Description
+--------------------------- | -------- | ------------| -----------
+tgt_name                    | Optional | string      | Parent NVMe-oF target name.
+
+### Response
+
+The response is an object containing NVMf subsystem statistics.
+
+### Example
+
+Example request:
+~~~
+{
+  "jsonrpc": "2.0",
+  "method": "nvmf_get_stats",
+  "id": 1
+}
+~~~
+
+Example response:
+~~~
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "tick_rate": 2400000000,
+    "poll_groups": [
+      {
+        "name": "app_thread",
+        "admin_qpairs": 1,
+        "io_qpairs": 4,
+        "pending_bdev_io": 1721,
+        "transports": [
+          {
+            "trtype": "RDMA",
+            "pending_data_buffer": 12131888,
+            "devices": [
+              {
+                "name": "mlx5_1",
+                "polls": 72284105,
+                "completions": 0,
+                "requests": 0,
+                "request_latency": 0,
+                "pending_free_request": 0,
+                "pending_rdma_read": 0,
+                "pending_rdma_write": 0
+              },
+              {
+                "name": "mlx5_0",
+                "polls": 72284105,
+                "completions": 15165875,
+                "requests": 7582935,
+                "request_latency": 1249323766184,
+                "pending_free_request": 0,
+                "pending_rdma_read": 337602,
+                "pending_rdma_write": 0
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  }
 }
 ~~~
 
@@ -4103,7 +4745,7 @@ directory path needs to be valid UNIX socket name.
 @ref cpu_mask parameter is used to choose CPU on which pollers will be launched when new initiator is connecting.
 It must be a subset of application CPU mask. Default value is CPU mask of the application.
 
-## set_vhost_controller_coalescing {#rpc_set_vhost_controller_coalescing}
+## vhost_controller_set_coalescing {#rpc_vhost_controller_set_coalescing}
 
 Controls interrupt coalescing for specific target. Because `delay_base_us` is used to calculate delay in CPU ticks
 there is no hardcoded limit for this parameter. Only limitation is that final delay in CPU ticks might not overflow
@@ -4130,7 +4772,7 @@ Example request:
     "delay_base_us": 80
   },
   "jsonrpc": "2.0",
-  "method": "set_vhost_controller_coalescing",
+  "method": "vhost_controller_set_coalescing",
   "id": 1
 }
 ~~~
@@ -4145,7 +4787,7 @@ Example response:
 }
 ~~~
 
-## construct_vhost_scsi_controller {#rpc_construct_vhost_scsi_controller}
+## vhost_create_scsi_controller {#rpc_vhost_create_scsi_controller}
 
 Construct vhost SCSI target.
 
@@ -4167,7 +4809,7 @@ Example request:
     "ctrlr": "VhostScsi0"
   },
   "jsonrpc": "2.0",
-  "method": "construct_vhost_scsi_controller",
+  "method": "vhost_create_scsi_controller",
   "id": 1
 }
 ~~~
@@ -4182,7 +4824,7 @@ Example response:
 }
 ~~~
 
-## add_vhost_scsi_lun {#rpc_add_vhost_scsi_lun}
+## vhost_scsi_controller_add_target {#rpc_vhost_scsi_controller_add_target}
 
 In vhost target `ctrlr` create SCSI target with ID `scsi_target_num` and add `bdev_name` as LUN 0.
 
@@ -4210,7 +4852,7 @@ Example request:
     "ctrlr": "VhostScsi0"
   },
   "jsonrpc": "2.0",
-  "method": "add_vhost_scsi_lun",
+  "method": "vhost_scsi_controller_add_target",
   "id": 1
 }
 ~~~
@@ -4226,7 +4868,7 @@ response:
 }
 ~~~
 
-## remove_vhost_scsi_target {#rpc_remove_vhost_scsi_target}
+## vhost_scsi_controller_remove_target {#rpc_vhost_scsi_controller_remove_target}
 
 Remove SCSI target ID `scsi_target_num` from vhost target `scsi_target_num`.
 
@@ -4251,7 +4893,7 @@ request:
     "ctrlr": "VhostScsi0"
   },
   "jsonrpc": "2.0",
-  "method": "remove_vhost_scsi_target",
+  "method": "vhost_scsi_controller_remove_target",
   "id": 1
 }
 ~~~
@@ -4266,7 +4908,7 @@ Example response:
 }
 ~~~
 
-## construct_vhost_nvme_controller {#rpc_construct_vhost_nvme_controller}
+## vhost_create_nvme_controller {#rpc_vhost_create_nvme_controller}
 
 Construct empty vhost NVMe controller.
 
@@ -4277,7 +4919,6 @@ Name                    | Optional | Type        | Description
 ctrlr                   | Required | string      | Controller name
 io_queues               | Required | number      | Number between 1 and 31 of IO queues for the controller
 cpumask                 | Optional | string      | @ref cpu_mask for this controller
-
 
 ### Example
 
@@ -4291,7 +4932,7 @@ Example request:
     "ctrlr": "VhostNvme0"
   },
   "jsonrpc": "2.0",
-  "method": "construct_vhost_nvme_controller",
+  "method": "vhost_create_nvme_controller",
   "id": 1
 }
 ~~~
@@ -4306,7 +4947,7 @@ Example response:
 }
 ~~~
 
-## add_vhost_nvme_ns {#rpc_add_vhost_nvme_ns}
+## vhost_nvme_controller_add_ns {#rpc_vhost_nvme_controller_add_ns}
 
 Add namespace backed by `bdev_name`
 
@@ -4329,7 +4970,7 @@ Example request:
     "ctrlr": "VhostNvme0"
   },
   "jsonrpc": "2.0",
-  "method": "add_vhost_nvme_ns",
+  "method": "vhost_nvme_controller_add_ns",
   "id": 1
 }
 ~~~
@@ -4344,9 +4985,9 @@ Example response:
 }
 ~~~
 
-## construct_vhost_blk_controller {#rpc_construct_vhost_blk_controller}
+## vhost_create_blk_controller {#rpc_vhost_create_blk_controller}
 
-Construct vhost block controller
+Create vhost block controller
 
 If `readonly` is `true` then vhost block target will be created as read only and fail any write requests.
 The `VIRTIO_BLK_F_RO` feature flag will be offered to the initiator.
@@ -4360,7 +5001,6 @@ bdev_name               | Required | string      | Name of bdev to expose block 
 readonly                | Optional | boolean     | If true, this target will be read only (default: false)
 cpumask                 | Optional | string      | @ref cpu_mask for this controller
 
-
 ### Example
 
 Example request:
@@ -4372,7 +5012,7 @@ Example request:
     "ctrlr": "VhostBlk0"
   },
   "jsonrpc": "2.0",
-  "method": "construct_vhost_blk_controller",
+  "method": "vhost_create_blk_controller",
   "id": 1
 }
 ~~~
@@ -4387,7 +5027,7 @@ Example response:
 }
 ~~~
 
-## get_vhost_controllers {#rpc_get_vhost_controllers}
+## vhost_get_controllers {#rpc_vhost_get_controllers}
 
 Display information about all or specific vhost controller(s).
 
@@ -4400,8 +5040,7 @@ Name                    | Optional | Type        | Description
 ----------------------- | -------- | ----------- | -----------
 name                    | Optional | string      | Vhost controller name
 
-
-### Response {#rpc_get_vhost_controllers_response}
+### Response {#rpc_vhost_get_controllers_response}
 
 Response is an array of objects describing requested controller(s). Common fields are:
 
@@ -4413,7 +5052,7 @@ delay_base_us           | number      | Base (minimum) coalescing time in micros
 iops_threshold          | number      | Coalescing activation level
 backend_specific        | object      | Backend specific informations
 
-### Vhost block {#rpc_get_vhost_controllers_blk}
+### Vhost block {#rpc_vhost_get_controllers_blk}
 
 `backend_specific` contains one `block` object  of type:
 
@@ -4422,7 +5061,7 @@ Name                    | Type        | Description
 bdev                    | string      | Backing bdev name or Null if bdev is hot-removed
 readonly                | boolean     | True if controllers is readonly, false otherwise
 
-### Vhost SCSI {#rpc_get_vhost_controllers_scsi}
+### Vhost SCSI {#rpc_vhost_get_controllers_scsi}
 
 `backend_specific` contains `scsi` array of following objects:
 
@@ -4431,9 +5070,9 @@ Name                    | Type        | Description
 target_name             | string      | Name of this SCSI target
 id                      | number      | Unique SPDK global SCSI target ID
 scsi_dev_num            | number      | SCSI target ID initiator will see when scanning this controller
-luns                    | array       | array of objects describing @ref rpc_get_vhost_controllers_scsi_luns
+luns                    | array       | array of objects describing @ref rpc_vhost_get_controllers_scsi_luns
 
-### Vhost SCSI LUN {#rpc_get_vhost_controllers_scsi_luns}
+### Vhost SCSI LUN {#rpc_vhost_get_controllers_scsi_luns}
 
 Object of type:
 
@@ -4442,7 +5081,7 @@ Name                    | Type        | Description
 id                      | number      | SCSI LUN ID
 bdev_name               | string      | Backing bdev name
 
-### Vhost NVMe {#rpc_get_vhost_controllers_nvme}
+### Vhost NVMe {#rpc_vhost_get_controllers_nvme}
 
 `backend_specific` contains `namespaces` array of following objects:
 
@@ -4458,7 +5097,7 @@ Example request:
 ~~~
 {
   "jsonrpc": "2.0",
-  "method": "get_vhost_controllers",
+  "method": "vhost_get_controllers",
   "id": 1
 }
 ~~~
@@ -4536,12 +5175,12 @@ Example response:
 }
 ~~~
 
-## remove_vhost_controller {#rpc_remove_vhost_controller}
+## vhost_delete_controller {#rpc_vhost_delete_controller}
 
 Remove vhost target.
 
 This call will fail if there is an initiator connected or there is at least one SCSI target configured in case of
-vhost SCSI target. In the later case please remove all SCSI targets first using @ref rpc_remove_vhost_scsi_target.
+vhost SCSI target. In the later case please remove all SCSI targets first using @ref rpc_vhost_scsi_controller_remove_target.
 
 ### Parameters
 
@@ -4559,7 +5198,7 @@ Example request:
     "ctrlr": "VhostNvme0"
   },
   "jsonrpc": "2.0",
-  "method": "remove_vhost_controller",
+  "method": "vhost_delete_controller",
   "id": 1
 }
 ~~~
@@ -4586,10 +5225,11 @@ Either UUID or name is used to access logical volume store in RPCs.
 A logical volume has a UUID and a name for its identification.
 The UUID of the logical volume is generated on creation and it can be unique identifier.
 The alias of the logical volume takes the format _lvs_name/lvol_name_ where:
+
 * _lvs_name_ is the name of the logical volume store.
 * _lvol_name_ is specified on creation and can be renamed.
 
-## construct_lvol_store {#rpc_construct_lvol_store}
+## bdev_lvol_create_lvstore {#rpc_bdev_lvol_create_lvstore}
 
 Construct a logical volume store.
 
@@ -4614,7 +5254,7 @@ Example request:
 {
   "jsonrpc": "2.0",
   "id": 1,
-  "method": "construct_lvol_store",
+  "method": "bdev_lvol_create_lvstore",
   "params": {
     "lvs_name": "LVS0",
     "bdev_name": "Malloc0"
@@ -4633,7 +5273,7 @@ Example response:
 }
 ~~~
 
-## destroy_lvol_store {#rpc_destroy_lvol_store}
+## bdev_lvol_delete_lvstore {#rpc_bdev_lvol_delete_lvstore}
 
 Destroy a logical volume store.
 
@@ -4653,7 +5293,7 @@ Example request:
 ~~~
 {
   "jsonrpc": "2.0",
-  "method": "destroy_lvol_store",
+  "method": "bdev_lvol_delete_lvstore",
   "id": 1
   "params": {
     "uuid": "a9959197-b5e2-4f2d-8095-251ffb6985a5"
@@ -4671,7 +5311,7 @@ Example response:
 }
 ~~~
 
-## get_lvol_stores {#rpc_get_lvol_stores}
+## bdev_lvol_get_lvstores {#rpc_bdev_lvol_get_lvstores}
 
 Get a list of logical volume stores.
 
@@ -4692,7 +5332,7 @@ Example request:
 ~~~
 {
   "jsonrpc": "2.0",
-  "method": "get_lvol_stores",
+  "method": "bdev_lvol_get_lvstores",
   "id": 1,
   "params": {
     "lvs_name": "LVS0"
@@ -4720,7 +5360,7 @@ Example response:
 }
 ~~~
 
-## rename_lvol_store {#rpc_rename_lvol_store}
+## bdev_lvol_rename_lvstore {#rpc_bdev_lvol_rename_lvstore}
 
 Rename a logical volume store.
 
@@ -4738,7 +5378,7 @@ Example request:
 ~~~
 {
   "jsonrpc": "2.0",
-  "method": "rename_lvol_store",
+  "method": "bdev_lvol_rename_lvstore",
   "id": 1,
   "params": {
     "old_name": "LVS0",
@@ -4757,7 +5397,7 @@ Example response:
 }
 ~~~
 
-## construct_lvol_bdev {#rpc_construct_lvol_bdev}
+## bdev_lvol_create {#rpc_bdev_lvol_create}
 
 Create a logical volume on a logical volume store.
 
@@ -4766,7 +5406,7 @@ Create a logical volume on a logical volume store.
 Name                    | Optional | Type        | Description
 ----------------------- | -------- | ----------- | -----------
 lvol_name               | Required | string      | Name of logical volume to create
-size                    | Required | number      | Desired size of logical volume in megabytes
+size                    | Required | number      | Desired size of logical volume in bytes
 thin_provision          | Optional | boolean     | True to enable thin provisioning
 uuid                    | Optional | string      | UUID of logical volume store to create logical volume on
 lvs_name                | Optional | string      | Name of logical volume store to create logical volume on
@@ -4786,7 +5426,7 @@ Example request:
 ~~~
 {
   "jsonrpc": "2.0",
-  "method": "construct_lvol_bdev",
+  "method": "bdev_lvol_create",
   "id": 1,
   "params": {
     "lvol_name": "LVOL0",
@@ -4808,7 +5448,7 @@ Example response:
 }
 ~~~
 
-## snapshot_lvol_bdev {#rpc_snapshot_lvol_bdev}
+## bdev_lvol_snapshot {#rpc_bdev_lvol_snapshot}
 
 Capture a snapshot of the current state of a logical volume.
 
@@ -4830,7 +5470,7 @@ Example request:
 ~~~
 {
   "jsonrpc": "2.0",
-  "method": "snapshot_lvol_bdev",
+  "method": "bdev_lvol_snapshot",
   "id": 1,
   "params": {
     "lvol_name": "1b38702c-7f0c-411e-a962-92c6a5a8a602",
@@ -4849,7 +5489,7 @@ Example response:
 }
 ~~~
 
-## clone_lvol_bdev {#rpc_clone_lvol_bdev}
+## bdev_lvol_clone {#rpc_bdev_lvol_clone}
 
 Create a logical volume based on a snapshot.
 
@@ -4871,7 +5511,7 @@ Example request:
 ~~~
 {
   "jsonrpc": "2.0"
-  "method": "clone_lvol_bdev",
+  "method": "bdev_lvol_clone",
   "id": 1,
   "params": {
     "snapshot_name": "cc8d7fdf-7865-4d1f-9fc6-35da8e368670",
@@ -4890,7 +5530,7 @@ Example response:
 }
 ~~~
 
-## rename_lvol_bdev {#rpc_rename_lvol_bdev}
+## bdev_lvol_rename {#rpc_bdev_lvol_rename}
 
 Rename a logical volume. New name will rename only the alias of the logical volume.
 
@@ -4908,7 +5548,7 @@ Example request:
 ~~~
 {
   "jsonrpc": "2.0",
-  "method": "rename_lvol_bdev",
+  "method": "bdev_lvol_rename",
   "id": 1,
   "params": {
     "old_name": "067df606-6dbc-4143-a499-0d05855cb3b8",
@@ -4927,7 +5567,7 @@ Example response:
 }
 ~~~
 
-## resize_lvol_bdev {#rpc_resize_lvol_bdev}
+## bdev_lvol_resize {#rpc_bdev_lvol_resize}
 
 Resize a logical volume.
 
@@ -4936,7 +5576,7 @@ Resize a logical volume.
 Name                    | Optional | Type        | Description
 ----------------------- | -------- | ----------- | -----------
 name                    | Required | string      | UUID or alias of the logical volume to resize
-size                    | Required | number      | Desired size of the logical volume in megabytes
+size                    | Required | number      | Desired size of the logical volume in bytes
 
 ### Example
 
@@ -4945,7 +5585,7 @@ Example request:
 ~~~
 {
   "jsonrpc": "2.0",
-  "method": "resize_lvol_bdev",
+  "method": "bdev_lvol_resize",
   "id": 1,
   "params": {
     "name": "51638754-ca16-43a7-9f8f-294a0805ab0a",
@@ -4964,7 +5604,7 @@ Example response:
 }
 ~~~
 
-## set_read_only_lvol_bdev{#rpc_set_read_only_lvol_bdev}
+## bdev_lvol_set_read_only{#rpc_bdev_lvol_set_read_only}
 
 Mark logical volume as read only.
 
@@ -4981,7 +5621,7 @@ Example request:
 ~~~
 {
   "jsonrpc": "2.0",
-  "method": "set_read_only_lvol_bdev",
+  "method": "bdev_lvol_set_read_only",
   "id": 1,
   "params": {
     "name": "51638754-ca16-43a7-9f8f-294a0805ab0a",
@@ -4999,7 +5639,7 @@ Example response:
 }
 ~~~
 
-## destroy_lvol_bdev {#rpc_destroy_lvol_bdev}
+## bdev_lvol_delete {#rpc_bdev_lvol_delete}
 
 Destroy a logical volume.
 
@@ -5016,7 +5656,7 @@ Example request:
 ~~~
 {
   "jsonrpc": "2.0",
-  "method": "destroy_lvol_bdev",
+  "method": "bdev_lvol_delete",
   "id": 1,
   "params": {
     "name": "51638754-ca16-43a7-9f8f-294a0805ab0a"
@@ -5034,7 +5674,7 @@ Example response:
 }
 ~~~
 
-## inflate_lvol_bdev {#rpc_inflate_lvol_bdev}
+## bdev_lvol_inflate {#rpc_bdev_lvol_inflate}
 
 Inflate a logical volume. All unallocated clusters are allocated and copied from the parent or zero filled if not allocated in the parent. Then all dependencies on the parent are removed.
 
@@ -5051,7 +5691,7 @@ Example request:
 ~~~
 {
   "jsonrpc": "2.0",
-  "method": "inflate_lvol_bdev",
+  "method": "bdev_lvol_inflate",
   "id": 1,
   "params": {
     "name": "8d87fccc-c278-49f0-9d4c-6237951aca09"
@@ -5069,7 +5709,7 @@ Example response:
 }
 ~~~
 
-## decouple_parent_lvol_bdev {#rpc_decouple_parent_lvol_bdev}
+## bdev_lvol_decouple_parent {#rpc_bdev_lvol_decouple_parent}
 
 Decouple the parent of a logical volume. For unallocated clusters which is allocated in the parent, they are allocated and copied from the parent, but for unallocated clusters which is thin provisioned in the parent, they are kept thin provisioned. Then all dependencies on the parent are removed.
 
@@ -5086,7 +5726,7 @@ Example request:
 ~~~
 {
   "jsonrpc": "2.0",
-  "method": "decouple_parent_lvol_bdev",
+  "method": "bdev_lvol_decouple_parent",
   "id": 1.
   "params": {
     "name": "8d87fccc-c278-49f0-9d4c-6237951aca09"
@@ -5106,7 +5746,7 @@ Example response:
 
 # RAID
 
-## get_raid_bdevs {#rpc_get_raid_bdevs}
+## bdev_raid_get_bdevs {#rpc_bdev_raid_get_bdevs}
 
 This is used to list all the raid bdev names based on the input category requested. Category should be one
 of 'all', 'online', 'configuring' or 'offline'. 'all' means all the raid bdevs whether they are online or
@@ -5128,7 +5768,7 @@ Example request:
 ~~~
 {
   "jsonrpc": "2.0",
-  "method": "get_raid_bdevs",
+  "method": "bdev_raid_get_bdevs",
   "id": 1,
   "params": {
     "category": "all"
@@ -5148,7 +5788,7 @@ Example response:
 }
 ~~~
 
-## construct_raid_bdev {#rpc_construct_raid_bdev}
+## bdev_raid_create {#rpc_bdev_raid_create}
 
 Constructs new RAID bdev.
 
@@ -5161,7 +5801,6 @@ strip_size_kb           | Required | number      | Strip size in KB
 raid_level              | Required | number      | RAID level
 base_bdevs              | Required | string      | Base bdevs name, whitespace separated list in quotes
 
-
 ### Example
 
 Example request:
@@ -5169,7 +5808,7 @@ Example request:
 ~~~
 {
   "jsonrpc": "2.0",
-  "method": "construct_raid_bdev",
+  "method": "bdev_raid_create",
   "id": 1,
   "params": {
     "name": "Raid0",
@@ -5195,7 +5834,7 @@ Example response:
 }
 ~~~
 
-## destroy_raid_bdev {#rpc_destroy_raid_bdev}
+## bdev_raid_delete {#rpc_bdev_raid_delete}
 
 Removes RAID bdev.
 
@@ -5212,7 +5851,7 @@ Example request:
 ~~~
 {
   "jsonrpc": "2.0",
-  "method": "destroy_raid_bdev",
+  "method": "bdev_raid_delete",
   "id": 1,
   "params": {
     "name": "Raid0"
@@ -5230,9 +5869,303 @@ Example response:
 }
 ~~~
 
+# OPAL
+
+## bdev_nvme_opal_init {#rpc_bdev_nvme_opal_init}
+
+This is used to initialize OPAL of a given NVMe ctrlr, including taking ownership and activating.
+
+### Parameters
+
+Name                    | Optional | Type        | Description
+----------------------- | -------- | ----------- | -----------
+nvme_ctrlr_name         | Required | string      | name of nvme ctrlr
+password                | Required | string      | admin password of OPAL
+
+### Example
+
+Example request:
+
+~~~
+{
+  "jsonrpc": "2.0",
+  "method": "bdev_nvme_opal_init",
+  "id": 1,
+  "params": {
+    "nvme_ctrlr_name": "nvme0",
+    "password": "*****"
+  }
+}
+~~~
+
+Example response:
+
+~~~
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": true
+}
+~~~
+
+## bdev_nvme_opal_revert {#rpc_bdev_nvme_opal_revert}
+
+This is used to revert OPAL to its factory settings. Erase all user configuration and data.
+
+### Parameters
+
+Name                    | Optional | Type        | Description
+----------------------- | -------- | ----------- | -----------
+nvme_ctrlr_name         | Required | string      | name of nvme ctrlr
+password                | Required | string      | admin password of OPAL
+
+### Example
+
+Example request:
+
+~~~
+{
+  "jsonrpc": "2.0",
+  "method": "bdev_nvme_opal_revert",
+  "id": 1,
+  "params": {
+    "nvme_ctrlr_name": "nvme0",
+    "password": "*****"
+  }
+}
+~~~
+
+Example response:
+
+~~~
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": true
+}
+~~~
+
+## bdev_opal_create {#rpc_bdev_opal_create}
+
+This is used to create an OPAL virtual bdev.
+
+### Parameters
+
+Name                    | Optional | Type        | Description
+----------------------- | -------- | ----------- | -----------
+nvme_ctrlr_name         | Required | string      | name of nvme ctrlr that supports OPAL
+nsid                    | Required | number      | namespace ID
+locking_range_id        | Required | number      | OPAL locking range ID
+range_start             | Required | number      | locking range start LBA
+range_length            | Required | number      | locking range length
+password                | Required | string      | admin password of OPAL
+
+### Response
+
+The response is the name of created OPAL virtual bdev.
+
+### Example
+
+Example request:
+
+~~~
+{
+  "jsonrpc": "2.0",
+  "method": "bdev_opal_create",
+  "id": 1,
+  "params": {
+    "nvme_ctrlr_name": "nvme0",
+    "nsid": 1,
+    "locking_range_id": 1,
+    "range_start": 0,
+    "range_length": 4096,
+    "password": "*****"
+  }
+}
+~~~
+
+Example response:
+
+~~~
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": "nvme0n1r1"
+}
+~~~
+
+## bdev_opal_get_info {#rpc_bdev_opal_get_info}
+
+This is used to get information of a given OPAL bdev.
+
+### Parameters
+
+Name                    | Optional | Type        | Description
+----------------------- | -------- | ----------- | -----------
+bdev_name               | Required | string      | name of OPAL vbdev
+password                | Required | string      | admin password
+
+### Response
+
+The response is the locking info of OPAL virtual bdev.
+
+### Example
+
+Example request:
+
+~~~
+{
+  "jsonrpc": "2.0",
+  "method": "bdev_opal_get_info",
+  "id": 1,
+  "params": {
+    "bdev_name": "nvme0n1r1",
+    "password": "*****"
+  }
+}
+~~~
+
+Example response:
+
+~~~
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+      "name": "nvme0n1r1",
+      "range_start": 0,
+      "range_length": 4096,
+      "read_lock_enabled": true,
+      "write_lock_enabled": true,
+      "read_locked": false,
+      "write_locked": false
+    }
+}
+~~~
+
+## bdev_opal_delete {#rpc_bdev_opal_delete}
+
+This is used to delete OPAL vbdev.
+
+### Parameters
+
+Name                    | Optional | Type        | Description
+----------------------- | -------- | ----------- | -----------
+bdev_name               | Required | string      | name of OPAL vbdev
+password                | Required | string      | admin password
+
+### Example
+
+Example request:
+
+~~~
+{
+  "jsonrpc": "2.0",
+  "method": "bdev_opal_delete",
+  "id": 1,
+  "params": {
+    "bdev_name": "nvme0n1r1",
+    "password": "*****"
+  }
+}
+~~~
+
+Example response:
+
+~~~
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": true
+}
+~~~
+
+## bdev_opal_new_user {#rpc_bdev_opal_new_user}
+
+This enables a new user to the specified opal bdev so that the user can lock/unlock the bdev.
+Recalling this for the same opal bdev, only the newest user will have the privilege.
+
+### Parameters
+
+Name                    | Optional | Type        | Description
+----------------------- | -------- | ----------- | -----------
+bdev_name               | Required | string      | name of OPAL vbdev
+admin_password          | Required | string      | admin password
+user_id                 | Required | number      | user ID
+user_password           | Required | string      | user password
+
+### Example
+
+Example request:
+
+~~~
+{
+  "jsonrpc": "2.0",
+  "method": "bdev_opal_new_user",
+  "id": 1,
+  "params": {
+    "bdev_name": "nvme0n1r1",
+    "admin_password": "*****",
+    "user_id": "1",
+    "user_password": "********"
+  }
+}
+~~~
+
+Example response:
+
+~~~
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": true
+}
+~~~
+
+## bdev_opal_set_lock_state {#rpc_bdev_opal_set_lock_state}
+
+This is used to lock/unlock specific opal bdev providing user ID and password.
+
+### Parameters
+
+Name                    | Optional | Type        | Description
+----------------------- | -------- | ----------- | -----------
+bdev_name               | Required | string      | name of OPAL vbdev
+user_id                 | Required | number      | user ID
+password                | Required | string      | user password
+lock_state              | Required | string      | lock state
+
+### Example
+
+Example request:
+
+~~~
+{
+  "jsonrpc": "2.0",
+  "method": "bdev_opal_set_lock_state",
+  "id": 1,
+  "params": {
+    "bdev_name": "nvme0n1r1",
+    "user_id": "1",
+    "user_password": "********",
+    "lock_state": "rwlock"
+  }
+}
+~~~
+
+Example response:
+
+~~~
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": true
+}
+~~~
+
 # Notifications
 
-## get_notification_types {#rpc_get_notification_types}
+## notify_get_types {#rpc_notify_get_types}
 
 Return list of all supported notification types.
 
@@ -5251,7 +6184,7 @@ Example request:
 ~~~
 {
   "jsonrpc": "2.0",
-  "method": "get_notification_types",
+  "method": "notify_get_types",
   "id": 1
 }
 ~~~
@@ -5269,7 +6202,7 @@ Example response:
 }
 ~~~
 
-## get_notifications {#get_notifications}
+## notify_get_notifications {#notify_get_notifications}
 
 Request notifications. Returns array of notifications that happend since the specified id (or first that is available).
 
@@ -5300,7 +6233,7 @@ Example request:
 {
   "id": 1,
   "jsonrpc": "2.0",
-  "method": "get_notifications",
+  "method": "notify_get_notifications",
   "params": {
     "id": 1,
     "max": 10
@@ -5336,7 +6269,7 @@ SPDK supports exporting bdevs through Linux nbd. These devices then appear as st
 
 In order to export a device over nbd, first make sure the Linux kernel nbd driver is loaded by running 'modprobe nbd'.
 
-## start_nbd_disk {#rpc_start_nbd_disk}
+## nbd_start_disk {#rpc_nbd_start_disk}
 
 Start to export one SPDK bdev as NBD disk
 
@@ -5362,7 +6295,7 @@ Example request:
     "bdev_name": "Malloc1"
   },
   "jsonrpc": "2.0",
-  "method": "start_nbd_disk",
+  "method": "nbd_start_disk",
   "id": 1
 }
 ~~~
@@ -5377,7 +6310,7 @@ Example response:
 }
 ~~~
 
-## stop_nbd_disk {#rpc_stop_nbd_disk}
+## nbd_stop_disk {#rpc_nbd_stop_disk}
 
 Stop one NBD disk which is based on SPDK bdev.
 
@@ -5397,7 +6330,7 @@ Example request:
     "nbd_device": "/dev/nbd1",
   },
   "jsonrpc": "2.0",
-  "method": "stop_nbd_disk",
+  "method": "nbd_stop_disk",
   "id": 1
 }
 ~~~
@@ -5412,7 +6345,7 @@ Example response:
 }
 ~~~
 
-## get_nbd_disks {#rpc_get_nbd_disks}
+## nbd_get_disks {#rpc_nbd_get_disks}
 
 Display all or specified NBD device list
 
@@ -5433,7 +6366,7 @@ Example request:
 ~~~
 {
   "jsonrpc": "2.0",
-  "method": "get_nbd_disks",
+  "method": "nbd_get_disks",
   "id": 1
 }
 ~~~
@@ -5457,13 +6390,262 @@ Example response:
 }
 ~~~
 
+# Blobfs {#jsonrpc_components_blobfs}
+
+## blobfs_detect {#rpc_blobfs_detect}
+
+Detect whether a blobfs exists on bdev.
+
+### Parameters
+
+Name                    | Optional | Type        | Description
+----------------------- | -------- | ----------- | -----------
+bdev_name               | Required | string      | Block device name to detect blobfs
+
+### Response
+
+True if a blobfs exists on the bdev; False otherwise.
+
+### Example
+
+Example request:
+
+~~~
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "blobfs_detect",
+  "params": {
+    "bdev_name": "Malloc0"
+  }
+}
+~~~
+
+Example response:
+
+~~~
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": "true"
+}
+~~~
+
+## blobfs_create {#rpc_blobfs_create}
+
+Build blobfs on bdev.
+
+### Parameters
+
+Name                    | Optional | Type        | Description
+----------------------- | -------- | ----------- | -----------
+bdev_name               | Required | string      | Block device name to create blobfs
+cluster_sz              | Optional | number      | Size of cluster in bytes. Must be multiple of 4KiB page size, default and minimal value is 1M.
+
+### Example
+
+Example request:
+
+~~~
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "blobfs_create",
+  "params": {
+    "bdev_name": "Malloc0",
+    "cluster_sz": 1M
+  }
+}
+~~~
+
+Example response:
+
+~~~
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": "true"
+}
+~~~
+
+## blobfs_mount {#rpc_blobfs_mount}
+
+Mount a blobfs on bdev to one host path through FUSE
+
+### Parameters
+
+Name                    | Optional | Type        | Description
+----------------------- | -------- | ----------- | -----------
+bdev_name               | Required | string      | Block device name where the blobfs is
+mountpoint              | Required | string      | Mountpoint path in host to mount blobfs
+
+### Example
+
+Example request:
+
+~~~
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": ""blobfs_mount"",
+  "params": {
+    "bdev_name": "Malloc0",
+    "mountpoint": "/mnt/"
+  }
+}
+~~~
+
+Example response:
+
+~~~
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": "true"
+}
+~~
+
+## blobfs_set_cache_size {#rpc_blobfs_set_cache_size}
+
+Set cache pool size for blobfs filesystems.  This RPC is only permitted when the cache pool is not already initialized.
+
+The cache pool is initialized when the first blobfs filesystem is initialized or loaded.  It is freed when the all initialized or loaded filesystems are unloaded.
+
+### Parameters
+
+Name                    | Optional | Type        | Description
+----------------------- | -------- | ----------- | -----------
+size_in_mb              | Required | number      | Cache size in megabytes
+
+### Response
+
+True if cache size is set successfully; False if failed to set.
+
+### Example
+
+Example request:
+
+~~~
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "blobfs_set_cache_size",
+  "params": {
+    "size_in_mb": 512,
+  }
+}
+~~~
+
+Example response:
+
+~~~
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": true
+}
+~~~
+
+# Socket layer {#jsonrpc_components_sock}
+
+## sock_impl_get_options {#rpc_sock_impl_get_options}
+
+Get parameters for the socket layer implementation.
+
+### Parameters
+
+Name                    | Optional | Type        | Description
+----------------------- | -------- | ----------- | -----------
+impl_name               | Required | string      | Name of socket implementation, e.g. posix
+
+### Response
+
+Response is an object with current socket layer options for requested implementation.
+
+### Example
+
+Example request:
+
+~~~
+{
+  "jsonrpc": "2.0",
+  "method": "sock_impl_get_options",
+  "id": 1,
+  "params": {
+    "impl_name": "posix"
+  }
+}
+~~~
+
+Example response:
+
+~~~
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "recv_buf_size": 2097152,
+    "send_buf_size": 2097152,
+    "enable_recv_pipe": true
+    "enable_zerocopy_send": true
+  }
+}
+~~~
+
+## sock_impl_set_options {#rpc_sock_impl_set_options}
+
+Set parameters for the socket layer implementation.
+
+### Parameters
+
+Name                    | Optional | Type        | Description
+----------------------- | -------- | ----------- | -----------
+impl_name               | Required | string      | Name of socket implementation, e.g. posix
+recv_buf_size           | Optional | number      | Size of socket receive buffer in bytes
+send_buf_size           | Optional | number      | Size of socket send buffer in bytes
+enable_recv_pipe        | Optional | boolean     | Enable or disable receive pipe
+enable_zerocopy_send    | Optional | boolean     | Enable or disable zero copy on send
+
+### Response
+
+True if socket layer options were set successfully.
+
+### Example
+
+Example request:
+
+~~~
+{
+  "jsonrpc": "2.0",
+  "method": "sock_impl_set_options",
+  "id": 1,
+  "params": {
+    "impl_name": "posix",
+    "recv_buf_size": 2097152,
+    "send_buf_size": 2097152,
+    "enable_recv_pipe": false
+    "enable_zerocopy_send": true
+  }
+}
+~~~
+
+Example response:
+
+~~~
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": true
+}
+~~~
+
 # Miscellaneous RPC commands
 
-## send_nvme_cmd {#rpc_send_nvme_cmd}
+## bdev_nvme_send_cmd {#rpc_bdev_nvme_send_cmd}
 
 Send NVMe command directly to NVMe controller or namespace. Parameters and responses encoded by base64 urlsafe need further processing.
 
-Notice: send_nvme_cmd requires user to guarentee the correctness of NVMe command itself, and also optional parameters. Illegal command contents or mismatching buffer size may result in unpredictable behavior.
+Notice: bdev_nvme_send_cmd requires user to guarentee the correctness of NVMe command itself, and also optional parameters. Illegal command contents or mismatching buffer size may result in unpredictable behavior.
 
 ### Parameters
 
@@ -5494,7 +6676,7 @@ Example request:
 ~~~
 {
   "jsonrpc": "2.0",
-  "method": "send_nvme_cmd",
+  "method": "bdev_nvme_send_cmd",
   "id": 1,
   "params": {
     "name": "Nvme0",
@@ -5520,7 +6702,7 @@ Example response:
 }
 ~~~
 
-## get_spdk_version {#rpc_get_spdk_version}
+## spdk_get_version {#rpc_spdk_get_version}
 
 Get the version info of the running SPDK application.
 
@@ -5539,7 +6721,7 @@ Example request:
 {
   "jsonrpc": "2.0",
   "id": 1,
-  "method": "get_spdk_version"
+  "method": "spdk_get_version"
 }
 ~~
 

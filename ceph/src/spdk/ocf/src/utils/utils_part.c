@@ -64,7 +64,7 @@ static int ocf_part_lst_cmp_valid(struct ocf_cache *cache,
 	if (!p2->config->flags.valid) {
 		if (p2_size) {
 			v2 = SHRT_MAX;
-			p1->config->flags.eviction = true;
+			p2->config->flags.eviction = true;
 		} else {
 			v2 = SHRT_MIN;
 			p2->config->flags.eviction = false;
@@ -79,12 +79,10 @@ static int ocf_part_lst_cmp_valid(struct ocf_cache *cache,
 	return v2 - v1;
 }
 
-int ocf_part_init(struct ocf_cache *cache)
+void ocf_part_init(struct ocf_cache *cache)
 {
 	ocf_lst_init(cache, &cache->lst_part, OCF_IO_CLASS_MAX,
 			ocf_part_lst_getter_valid, ocf_part_lst_cmp_valid);
-
-	return 0;
 }
 
 void ocf_part_move(struct ocf_request *req)
@@ -157,15 +155,15 @@ void ocf_part_move(struct ocf_request *req)
 				cleaning_policy_ops[type].
 					set_hot_cache_line(cache, line);
 
-			env_atomic_inc(&cache->core_runtime_meta[req->core_id].
+			env_atomic_inc(&req->core->runtime_meta->
 					part_counters[id_new].dirty_clines);
-			env_atomic_dec(&cache->core_runtime_meta[req->core_id].
+			env_atomic_dec(&req->core->runtime_meta->
 					part_counters[id_old].dirty_clines);
 		}
 
-		env_atomic_inc(&cache->core_runtime_meta[req->core_id].
+		env_atomic_inc(&req->core->runtime_meta->
 				part_counters[id_new].cached_clines);
-		env_atomic_dec(&cache->core_runtime_meta[req->core_id].
+		env_atomic_dec(&req->core->runtime_meta->
 				part_counters[id_old].cached_clines);
 
 		/* DONE */

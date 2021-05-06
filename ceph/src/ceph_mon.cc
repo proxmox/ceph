@@ -47,7 +47,21 @@
 
 #define dout_subsys ceph_subsys_mon
 
+using std::cerr;
+using std::cout;
+using std::list;
+using std::map;
+using std::ostringstream;
+using std::string;
+using std::vector;
+
+using ceph::bufferlist;
+using ceph::decode;
+using ceph::encode;
+using ceph::JSONFormatter;
+
 Monitor *mon = NULL;
+
 
 void handle_mon_signal(int signum)
 {
@@ -87,7 +101,7 @@ int obtain_monmap(MonitorDBStore &store, bufferlist &bl)
 	if (b.get_epoch() > latest_ver) {
 	  dout(10) << __func__ << " using stashed monmap " << b.get_epoch()
 		   << " instead" << dendl;
-	  bl.claim(bl2);
+	  bl = std::move(bl2);
 	} else {
 	  dout(10) << __func__ << " ignoring stashed monmap " << b.get_epoch()
 		   << dendl;
@@ -296,7 +310,7 @@ int main(int argc, const char **argv)
 
   auto cct = global_init(&defaults, args,
 			 CEPH_ENTITY_TYPE_MON, CODE_ENVIRONMENT_DAEMON,
-			 flags, "mon_data");
+			 flags);
   ceph_heap_profiler_init();
 
   std::string val;
@@ -396,7 +410,7 @@ int main(int argc, const char **argv)
 
 	// always mark seed/mkfs monmap as epoch 0
 	monmap.set_epoch(0);
-      } catch (const buffer::error& e) {
+      } catch (const ceph::buffer::error& e) {
 	derr << argv[0] << ": error decoding monmap " << monmap_fn << ": " << e.what() << dendl;
 	exit(1);
       }
@@ -692,7 +706,7 @@ int main(int argc, const char **argv)
     if (err >= 0) {
       try {
         monmap.decode(mapbl);
-      } catch (const buffer::error& e) {
+      } catch (const ceph::buffer::error& e) {
         derr << "can't decode monmap: " << e.what() << dendl;
       }
     } else {
@@ -724,8 +738,7 @@ int main(int argc, const char **argv)
     ipaddrs = monmap.get_addrs(g_conf()->name.get_id());
 
     // print helpful warning if the conf file doesn't match
-    std::vector <std::string> my_sections;
-    g_conf().get_my_sections(my_sections);
+    std::vector<std::string> my_sections = g_conf().get_my_sections();
     std::string mon_addr_str;
     if (g_conf().get_val_from_conf_file(my_sections, "mon addr",
 				       mon_addr_str, true) == 0) {
@@ -777,9 +790,7 @@ int main(int argc, const char **argv)
   int rank = monmap.get_rank(g_conf()->name.get_id());
   std::string public_msgr_type = g_conf()->ms_public_type.empty() ? g_conf().get_val<std::string>("ms_type") : g_conf()->ms_public_type;
   Messenger *msgr = Messenger::create(g_ceph_context, public_msgr_type,
-				      entity_name_t::MON(rank), "mon",
-				      0,  // zero nonce
-				      Messenger::HAS_MANY_CONNECTIONS);
+				      entity_name_t::MON(rank), "mon", 0);
   if (!msgr)
     exit(1);
   msgr->set_cluster_protocol(CEPH_MON_PROTOCOL);
@@ -830,8 +841,7 @@ int main(int argc, const char **argv)
 
   Messenger *mgr_msgr = Messenger::create(g_ceph_context, public_msgr_type,
 					  entity_name_t::MON(rank), "mon-mgrc",
-					  Messenger::get_pid_nonce(),
-					  0);
+					  Messenger::get_pid_nonce());
   if (!mgr_msgr) {
     derr << "unable to create mgr_msgr" << dendl;
     prefork.exit(1);

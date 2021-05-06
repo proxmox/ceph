@@ -4,13 +4,13 @@ from __future__ import absolute_import
 import base64
 import logging
 import time
+from urllib import parse
 
 from cryptography.hazmat.backends import default_backend
-from cryptography.hazmat.primitives.twofactor.totp import TOTP
 from cryptography.hazmat.primitives.hashes import SHA1
-from six.moves.urllib import parse
+from cryptography.hazmat.primitives.twofactor.totp import TOTP
 
-from .helper import DashboardTestCase, JObj, JList, JLeaf
+from .helper import DashboardTestCase, JLeaf, JList, JObj
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +31,6 @@ class RgwTestCase(DashboardTestCase):
             '--system', '--access-key', 'admin', '--secret', 'admin'
         ])
         # Update the dashboard configuration.
-        cls._ceph_cmd(['dashboard', 'set-rgw-api-user-id', 'admin'])
         cls._ceph_cmd_with_secret(['dashboard', 'set-rgw-api-secret-key'], 'admin')
         cls._ceph_cmd_with_secret(['dashboard', 'set-rgw-api-access-key'], 'admin')
         # Create a test user?
@@ -63,8 +62,8 @@ class RgwTestCase(DashboardTestCase):
             cls._radosgw_admin_cmd(['user', 'rm', '--uid=teuth-test-user', '--purge-data'])
         super(RgwTestCase, cls).tearDownClass()
 
-    def get_rgw_user(self, uid):
-        return self._get('/api/rgw/user/{}'.format(uid))
+    def get_rgw_user(self, uid, stats=True):
+        return self._get('/api/rgw/user/{}?stats={}'.format(uid, stats))
 
 
 class RgwApiCredentialsTest(RgwTestCase):
@@ -79,7 +78,6 @@ class RgwApiCredentialsTest(RgwTestCase):
         self._ceph_cmd(['mgr', 'module', 'disable', 'dashboard'])
         self._ceph_cmd(['mgr', 'module', 'enable', 'dashboard', '--force'])
         # Set the default credentials.
-        self._ceph_cmd(['dashboard', 'set-rgw-api-user-id', ''])
         self._ceph_cmd_with_secret(['dashboard', 'set-rgw-api-secret-key'], 'admin')
         self._ceph_cmd_with_secret(['dashboard', 'set-rgw-api-access-key'], 'admin')
         super(RgwApiCredentialsTest, self).setUp()
@@ -100,16 +98,6 @@ class RgwApiCredentialsTest(RgwTestCase):
         self.assertIn('available', data)
         self.assertIn('message', data)
         self.assertTrue(data['available'])
-
-    def test_invalid_user_id(self):
-        self._ceph_cmd(['dashboard', 'set-rgw-api-user-id', 'xyz'])
-        data = self._get('/api/rgw/status')
-        self.assertStatus(200)
-        self.assertIn('available', data)
-        self.assertIn('message', data)
-        self.assertFalse(data['available'])
-        self.assertIn('The user "xyz" is unknown to the Object Gateway.',
-                      data['message'])
 
 
 class RgwSiteTest(RgwTestCase):
@@ -424,7 +412,7 @@ class RgwBucketTest(RgwTestCase):
                 'lock_retention_period_days': JLeaf(int),
                 'lock_retention_period_years': JLeaf(int)
             },
-                 allow_unknown=True))
+                allow_unknown=True))
         self.assertTrue(data['lock_enabled'])
         self.assertEqual(data['lock_mode'], 'GOVERNANCE')
         self.assertEqual(data['lock_retention_period_days'], 0)
@@ -471,6 +459,8 @@ class RgwDaemonTest(RgwTestCase):
         self.assertIn('id', data)
         self.assertIn('version', data)
         self.assertIn('server_hostname', data)
+        self.assertIn('zonegroup_name', data)
+        self.assertIn('zone_name', data)
 
     def test_get(self):
         data = self._get('/api/rgw/daemon')
@@ -517,6 +507,13 @@ class RgwUserTest(RgwTestCase):
 
     def test_get(self):
         data = self.get_rgw_user('admin')
+        self.assertStatus(200)
+        self._assert_user_data(data)
+        self.assertEqual(data['user_id'], 'admin')
+        self.assertTrue(data['stats'])
+        self.assertIsInstance(data['stats'], dict)
+        # Test without stats.
+        data = self.get_rgw_user('admin', False)
         self.assertStatus(200)
         self._assert_user_data(data)
         self.assertEqual(data['user_id'], 'admin')

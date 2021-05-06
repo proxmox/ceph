@@ -42,24 +42,20 @@
 #define MAX_ACTIVE_RELOCS 5
 #define MAX_RELOC_QDEPTH  31
 
-static struct spdk_ocssd_geometry_data g_geo = {
-	.num_grp	= 4,
-	.num_pu		= 3,
-	.num_chk	= 500,
-	.clba		= 100,
-	.ws_opt		= 16,
-	.ws_min		= 4,
-};
-
-static struct spdk_ftl_punit_range g_range = {
-	.begin		= 2,
-	.end		= 9,
+struct base_bdev_geometry g_geo = {
+	.write_unit_size    = 16,
+	.optimal_open_zones = 12,
+	.zone_size	    = 100,
+	.blockcnt	    = 1500 * 100 * 12,
 };
 
 DEFINE_STUB(ftl_dev_tail_md_disk_size, size_t, (const struct spdk_ftl_dev *dev), 1);
+DEFINE_STUB(ftl_addr_is_written, bool, (struct ftl_band *band, struct ftl_addr addr), true);
 DEFINE_STUB_V(ftl_band_set_state, (struct ftl_band *band, enum ftl_band_state state));
-DEFINE_STUB_V(ftl_trace_lba_io_init, (struct spdk_ftl_dev *dev, const struct ftl_io *io));
 DEFINE_STUB_V(ftl_free_io, (struct ftl_io *io));
+#if defined(DEBUG)
+DEFINE_STUB_V(ftl_trace_lba_io_init, (struct spdk_ftl_dev *dev, const struct ftl_io *io));
+#endif
 
 int
 ftl_band_alloc_lba_map(struct ftl_band *band)
@@ -89,40 +85,32 @@ ftl_band_acquire_lba_map(struct ftl_band *band)
 }
 
 size_t
-ftl_lba_map_num_lbks(const struct spdk_ftl_dev *dev)
+ftl_lba_map_num_blocks(const struct spdk_ftl_dev *dev)
 {
-	return spdk_divide_round_up(ftl_num_band_lbks(dev) * sizeof(uint64_t), FTL_BLOCK_SIZE);
+	return spdk_divide_round_up(ftl_get_num_blocks_in_band(dev) * sizeof(uint64_t), FTL_BLOCK_SIZE);
 }
 
 int
 ftl_band_read_lba_map(struct ftl_band *band, size_t offset,
-		      size_t lbk_cnt, ftl_io_fn fn, void *ctx)
+		      size_t num_blocks, ftl_io_fn fn, void *ctx)
 {
 	fn(ctx, ctx, 0);
 	return 0;
 }
 
 uint64_t
-ftl_band_lbkoff_from_ppa(struct ftl_band *band, struct ftl_ppa ppa)
+ftl_band_block_offset_from_addr(struct ftl_band *band, struct ftl_addr addr)
 {
-	return test_offset_from_ppa(ppa, band);
+	return test_offset_from_addr(addr, band);
 }
 
-struct ftl_ppa
-ftl_band_ppa_from_lbkoff(struct ftl_band *band, uint64_t lbkoff)
+struct ftl_addr
+ftl_band_addr_from_block_offset(struct ftl_band *band, uint64_t block_off)
 {
-	struct ftl_ppa ppa = { .ppa = 0 };
-	struct spdk_ftl_dev *dev = band->dev;
-	uint64_t punit;
+	struct ftl_addr addr = {};
 
-	punit = lbkoff / ftl_dev_lbks_in_chunk(dev) + dev->range.begin;
-
-	ppa.lbk = lbkoff % ftl_dev_lbks_in_chunk(dev);
-	ppa.chk = band->id;
-	ppa.pu = punit / dev->geo.num_grp;
-	ppa.grp = punit % dev->geo.num_grp;
-
-	return ppa;
+	addr.offset = block_off + band->id * ftl_get_num_blocks_in_band(band->dev);
+	return addr;
 }
 
 void
@@ -156,11 +144,12 @@ ftl_io_init_internal(const struct ftl_io_init_opts *opts)
 	io->flags = opts->flags;
 	io->cb_fn = opts->cb_fn;
 	io->cb_ctx = io;
-	io->lbk_cnt = opts->lbk_cnt;
-	io->iov[0].iov_base = opts->data;
+	io->num_blocks = opts->num_blocks;
+	memcpy(&io->iov, &opts->iovs, sizeof(io->iov));
+	io->iov_cnt = opts->iovcnt;
 
 	if (opts->flags & FTL_IO_VECTOR_LBA) {
-		io->lba.vector = calloc(io->lbk_cnt, sizeof(uint64_t));
+		io->lba.vector = calloc(io->num_blocks, sizeof(uint64_t));
 		SPDK_CU_ASSERT_FATAL(io->lba.vector != NULL);
 	}
 
@@ -195,21 +184,30 @@ single_reloc_move(struct ftl_band_reloc *breloc)
 }
 
 static void
+add_to_active_queue(struct ftl_reloc *reloc, struct ftl_band_reloc *breloc)
+{
+	TAILQ_REMOVE(&reloc->pending_queue, breloc, entry);
+	breloc->state = FTL_BAND_RELOC_STATE_ACTIVE;
+	TAILQ_INSERT_HEAD(&reloc->active_queue, breloc, entry);
+}
+
+static void
 setup_reloc(struct spdk_ftl_dev **_dev, struct ftl_reloc **_reloc,
-	    const struct spdk_ocssd_geometry_data *geo, const struct spdk_ftl_punit_range *range)
+	    const struct base_bdev_geometry *geo)
 {
 	size_t i;
 	struct spdk_ftl_dev *dev;
 	struct ftl_reloc *reloc;
 
-	dev = test_init_ftl_dev(geo, range);
+	dev = test_init_ftl_dev(geo);
+
 	dev->conf.max_active_relocs = MAX_ACTIVE_RELOCS;
 	dev->conf.max_reloc_qdepth = MAX_RELOC_QDEPTH;
 
-	SPDK_CU_ASSERT_FATAL(ftl_dev_num_bands(dev) > 0);
+	SPDK_CU_ASSERT_FATAL(ftl_get_num_bands(dev) > 0);
 
-	for (i = 0; i < ftl_dev_num_bands(dev); ++i) {
-		test_init_ftl_band(dev, i);
+	for (i = 0; i < ftl_get_num_bands(dev); ++i) {
+		test_init_ftl_band(dev, i, geo->zone_size);
 	}
 
 	reloc = ftl_reloc_init(dev);
@@ -226,26 +224,26 @@ cleanup_reloc(struct spdk_ftl_dev *dev, struct ftl_reloc *reloc)
 {
 	size_t i;
 
-	for (i = 0; i < ftl_dev_num_bands(reloc->dev); ++i) {
-		SPDK_CU_ASSERT_FATAL(reloc->brelocs[i].active == false);
+	for (i = 0; i < ftl_get_num_bands(reloc->dev); ++i) {
+		SPDK_CU_ASSERT_FATAL(reloc->brelocs[i].state == FTL_BAND_RELOC_STATE_INACTIVE);
 	}
 
 	ftl_reloc_free(reloc);
 
-	for (i = 0; i < ftl_dev_num_bands(dev); ++i) {
+	for (i = 0; i < ftl_get_num_bands(dev); ++i) {
 		test_free_ftl_band(&dev->bands[i]);
 	}
 	test_free_ftl_dev(dev);
 }
 
 static void
-set_band_valid_map(struct ftl_band *band, size_t offset, size_t num_lbks)
+set_band_valid_map(struct ftl_band *band, size_t offset, size_t num_blocks)
 {
 	struct ftl_lba_map *lba_map = &band->lba_map;
 	size_t i;
 
 	SPDK_CU_ASSERT_FATAL(lba_map != NULL);
-	for (i = offset; i < offset + num_lbks; ++i) {
+	for (i = offset; i < offset + num_blocks; ++i) {
 		spdk_bit_array_set(lba_map->vld, i);
 		lba_map->num_vld++;
 	}
@@ -254,70 +252,68 @@ set_band_valid_map(struct ftl_band *band, size_t offset, size_t num_lbks)
 static void
 test_reloc_iter_full(void)
 {
-	size_t num_lbks, num_iters, reminder, i;
+	size_t num_blocks, num_iters, reminder, i;
 	struct spdk_ftl_dev *dev;
 	struct ftl_reloc *reloc;
 	struct ftl_band_reloc *breloc;
 	struct ftl_band *band;
-	struct ftl_ppa ppa;
+	struct ftl_addr addr;
 
-	setup_reloc(&dev, &reloc, &g_geo, &g_range);
+	setup_reloc(&dev, &reloc, &g_geo);
 
-	dev->geo.clba = 100;
+	g_geo.zone_size = 100;
 	breloc = &reloc->brelocs[0];
 	band = breloc->band;
 
-	set_band_valid_map(band, 0, ftl_num_band_lbks(dev));
+	set_band_valid_map(band, 0, ftl_get_num_blocks_in_band(dev));
 
-	ftl_reloc_add(reloc, band, 0, ftl_num_band_lbks(dev), 0);
+	ftl_reloc_add(reloc, band, 0, ftl_get_num_blocks_in_band(dev), 0, true);
 
-	CU_ASSERT_EQUAL(breloc->num_lbks, ftl_num_band_lbks(dev));
+	CU_ASSERT_EQUAL(breloc->num_blocks, ftl_get_num_blocks_in_band(dev));
 
-	num_iters = ftl_dev_num_punits(dev) *
-		    (ftl_dev_lbks_in_chunk(dev) / reloc->xfer_size);
+	num_iters = ftl_get_num_punits(dev) *
+		    (ftl_get_num_blocks_in_zone(dev) / reloc->xfer_size);
 
 	for (i = 0; i < num_iters; i++) {
-		num_lbks = ftl_reloc_next_lbks(breloc, &ppa);
-		CU_ASSERT_EQUAL(num_lbks, reloc->xfer_size);
+		num_blocks = ftl_reloc_next_blocks(breloc, &addr);
+		CU_ASSERT_EQUAL(num_blocks, reloc->xfer_size);
 	}
 
-	num_iters = ftl_dev_num_punits(dev);
+	num_iters = ftl_get_num_punits(dev);
 
-	/* ftl_reloc_next_lbks is searching for maximum xfer_size */
-	/* contiguous valid logic blocks in chunk, so we can end up */
-	/* with some reminder if number of logical blocks in chunk */
+	/* ftl_reloc_next_blocks is searching for maximum xfer_size */
+	/* contiguous valid logic blocks in zone, so we can end up */
+	/* with some reminder if number of logical blocks in zone */
 	/* is not divisible by xfer_size */
-	reminder = ftl_dev_lbks_in_chunk(dev) % reloc->xfer_size;
+	reminder = ftl_get_num_blocks_in_zone(dev) % reloc->xfer_size;
 	for (i = 0; i < num_iters; i++) {
-		num_lbks = ftl_reloc_next_lbks(breloc, &ppa);
-		CU_ASSERT_EQUAL(reminder, num_lbks);
+		num_blocks = ftl_reloc_next_blocks(breloc, &addr);
+		CU_ASSERT_EQUAL(reminder, num_blocks);
 	}
 
-	/* num_lbks should remain intact since all the blocks are valid */
-	CU_ASSERT_EQUAL(breloc->num_lbks, ftl_num_band_lbks(dev));
+	/* num_blocks should remain intact since all the blocks are valid */
+	CU_ASSERT_EQUAL(breloc->num_blocks, ftl_get_num_blocks_in_band(dev));
+	breloc->state = FTL_BAND_RELOC_STATE_INACTIVE;
 
 	cleanup_reloc(dev, reloc);
 }
 
 static void
-test_reloc_iter_empty(void)
+test_reloc_empty_band(void)
 {
 	struct spdk_ftl_dev *dev;
 	struct ftl_reloc *reloc;
 	struct ftl_band_reloc *breloc;
 	struct ftl_band *band;
-	struct ftl_ppa ppa;
 
-	setup_reloc(&dev, &reloc, &g_geo, &g_range);
+	setup_reloc(&dev, &reloc, &g_geo);
 
 	breloc = &reloc->brelocs[0];
 	band = breloc->band;
 
-	ftl_reloc_add(reloc, band, 0, ftl_num_band_lbks(dev), 0);
+	ftl_reloc_add(reloc, band, 0, ftl_get_num_blocks_in_band(dev), 0, true);
 
-	CU_ASSERT_EQUAL(breloc->num_lbks, ftl_num_band_lbks(dev));
-	CU_ASSERT_EQUAL(0, ftl_reloc_next_lbks(breloc, &ppa));
-	CU_ASSERT_EQUAL(breloc->num_lbks, 0);
+	CU_ASSERT_EQUAL(breloc->num_blocks, 0);
 
 	cleanup_reloc(dev, reloc);
 }
@@ -329,36 +325,37 @@ test_reloc_full_band(void)
 	struct ftl_reloc *reloc;
 	struct ftl_band_reloc *breloc;
 	struct ftl_band *band;
-	size_t num_moves, num_iters, num_lbk, i;
+	size_t num_moves, num_iters, num_block, i;
 
-	setup_reloc(&dev, &reloc, &g_geo, &g_range);
+	setup_reloc(&dev, &reloc, &g_geo);
 
 	breloc = &reloc->brelocs[0];
 	band = breloc->band;
 	num_moves = MAX_RELOC_QDEPTH * reloc->xfer_size;
-	num_iters = ftl_num_band_lbks(dev) / num_moves;
+	num_iters = ftl_get_num_blocks_in_band(dev) / num_moves;
 
-	set_band_valid_map(band, 0, ftl_num_band_lbks(dev));
+	set_band_valid_map(band, 0, ftl_get_num_blocks_in_band(dev));
 
-	ftl_reloc_add(reloc, band, 0, ftl_num_band_lbks(dev), 0);
+	ftl_reloc_add(reloc, band, 0, ftl_get_num_blocks_in_band(dev), 0, true);
 
-	CU_ASSERT_EQUAL(breloc->num_lbks, ftl_num_band_lbks(dev));
+	CU_ASSERT_EQUAL(breloc->num_blocks, ftl_get_num_blocks_in_band(dev));
 
-	ftl_reloc_add_active_queue(breloc);
+	ftl_reloc_prep(breloc);
+	add_to_active_queue(reloc, breloc);
 
 	for (i = 1; i <= num_iters; ++i) {
 		single_reloc_move(breloc);
-		num_lbk = ftl_num_band_lbks(dev) - (i * num_moves);
-		CU_ASSERT_EQUAL(breloc->num_lbks, num_lbk);
+		num_block = ftl_get_num_blocks_in_band(dev) - (i * num_moves);
+		CU_ASSERT_EQUAL(breloc->num_blocks, num_block);
 
 	}
 
-	/*  Process reminder lbks */
+	/*  Process reminder blocks */
 	single_reloc_move(breloc);
 	/*  Drain move queue */
 	ftl_reloc_process_moves(breloc);
 
-	CU_ASSERT_EQUAL(breloc->num_lbks, 0);
+	CU_ASSERT_EQUAL(breloc->num_blocks, 0);
 	CU_ASSERT_TRUE(ftl_reloc_done(breloc));
 	ftl_reloc_release(breloc);
 
@@ -374,71 +371,75 @@ test_reloc_scatter_band(void)
 	struct ftl_band *band;
 	size_t num_iters, i;
 
-	setup_reloc(&dev, &reloc, &g_geo, &g_range);
+	setup_reloc(&dev, &reloc, &g_geo);
 
 	breloc = &reloc->brelocs[0];
 	band = breloc->band;
-	num_iters = ftl_num_band_lbks(dev) / MAX_RELOC_QDEPTH;
+	num_iters = spdk_divide_round_up(ftl_get_num_blocks_in_band(dev), MAX_RELOC_QDEPTH * 2);
 
-	for (i = 0; i < ftl_num_band_lbks(dev); ++i) {
+	for (i = 0; i < ftl_get_num_blocks_in_band(dev); ++i) {
 		if (i % 2) {
 			set_band_valid_map(band, i, 1);
 		}
 	}
 
-	ftl_reloc_add(reloc, band, 0, ftl_num_band_lbks(dev), 0);
-	ftl_reloc_add_active_queue(breloc);
+	ftl_reloc_add(reloc, band, 0, ftl_get_num_blocks_in_band(dev), 0, true);
+	ftl_reloc_prep(breloc);
+	add_to_active_queue(reloc, breloc);
 
-	CU_ASSERT_EQUAL(breloc->num_lbks, ftl_num_band_lbks(dev));
+	CU_ASSERT_EQUAL(breloc->num_blocks, ftl_get_num_blocks_in_band(dev));
 
 	for (i = 0; i < num_iters ; ++i) {
 		single_reloc_move(breloc);
 	}
 
-	CU_ASSERT_EQUAL(breloc->num_lbks, 0);
+	ftl_process_reloc(breloc);
+	CU_ASSERT_EQUAL(breloc->num_blocks, 0);
 	CU_ASSERT_TRUE(ftl_reloc_done(breloc));
-	ftl_reloc_release(breloc);
 
 	cleanup_reloc(dev, reloc);
 }
 
 static void
-test_reloc_chunk(void)
+test_reloc_zone(void)
 {
 	struct spdk_ftl_dev *dev;
 	struct ftl_reloc *reloc;
 	struct ftl_band_reloc *breloc;
 	struct ftl_band *band;
-	size_t num_io, num_iters, num_lbk, i;
+	size_t num_io, num_iters, num_block, i;
 
-	setup_reloc(&dev, &reloc, &g_geo, &g_range);
+	setup_reloc(&dev, &reloc, &g_geo);
 
 	breloc = &reloc->brelocs[0];
 	band = breloc->band;
+	/* High priority band have allocated lba map */
+	band->high_prio = 1;
+	ftl_band_alloc_lba_map(band);
 	num_io = MAX_RELOC_QDEPTH * reloc->xfer_size;
-	num_iters = ftl_dev_lbks_in_chunk(dev) / num_io;
+	num_iters = ftl_get_num_blocks_in_zone(dev) / num_io;
 
-	set_band_valid_map(band, 0, ftl_num_band_lbks(dev));
+	set_band_valid_map(band, 0, ftl_get_num_blocks_in_band(dev));
 
-	ftl_reloc_add(reloc, band, ftl_dev_lbks_in_chunk(dev) * 3,
-		      ftl_dev_lbks_in_chunk(dev), 1);
-	ftl_reloc_add_active_queue(breloc);
+	ftl_reloc_add(reloc, band, ftl_get_num_blocks_in_zone(dev) * 3,
+		      ftl_get_num_blocks_in_zone(dev), 1, false);
+	add_to_active_queue(reloc, breloc);
 
-	CU_ASSERT_EQUAL(breloc->num_lbks, ftl_dev_lbks_in_chunk(dev));
+	CU_ASSERT_EQUAL(breloc->num_blocks, ftl_get_num_blocks_in_zone(dev));
 
 	for (i = 1; i <= num_iters ; ++i) {
 		single_reloc_move(breloc);
-		num_lbk = ftl_dev_lbks_in_chunk(dev) - (i * num_io);
+		num_block = ftl_get_num_blocks_in_zone(dev) - (i * num_io);
 
-		CU_ASSERT_EQUAL(breloc->num_lbks, num_lbk);
+		CU_ASSERT_EQUAL(breloc->num_blocks, num_block);
 	}
 
-	/* In case num_lbks_in_chunk % num_io != 0 one extra iteration is needed  */
+	/* In case num_blocks_in_zone % num_io != 0 one extra iteration is needed  */
 	single_reloc_move(breloc);
 	/*  Drain move queue */
 	ftl_reloc_process_moves(breloc);
 
-	CU_ASSERT_EQUAL(breloc->num_lbks, 0);
+	CU_ASSERT_EQUAL(breloc->num_blocks, 0);
 	CU_ASSERT_TRUE(ftl_reloc_done(breloc));
 	ftl_reloc_release(breloc);
 
@@ -446,7 +447,7 @@ test_reloc_chunk(void)
 }
 
 static void
-test_reloc_single_lbk(void)
+test_reloc_single_block(void)
 {
 	struct spdk_ftl_dev *dev;
 	struct ftl_reloc *reloc;
@@ -454,50 +455,27 @@ test_reloc_single_lbk(void)
 	struct ftl_band *band;
 #define TEST_RELOC_OFFSET 6
 
-	setup_reloc(&dev, &reloc, &g_geo, &g_range);
+	setup_reloc(&dev, &reloc, &g_geo);
 
 	breloc = &reloc->brelocs[0];
 	band = breloc->band;
 
 	set_band_valid_map(band, TEST_RELOC_OFFSET, 1);
 
-	ftl_reloc_add(reloc, band, TEST_RELOC_OFFSET, 1, 0);
-	ftl_reloc_add_active_queue(breloc);
+	ftl_reloc_add(reloc, band, TEST_RELOC_OFFSET, 1, 0, false);
+	SPDK_CU_ASSERT_FATAL(breloc == TAILQ_FIRST(&reloc->pending_queue));
+	ftl_reloc_prep(breloc);
+	add_to_active_queue(reloc, breloc);
 
-	CU_ASSERT_EQUAL(breloc->num_lbks, 1);
+	CU_ASSERT_EQUAL(breloc->num_blocks, 1);
 
 	single_reloc_move(breloc);
 	/*  Drain move queue */
 	ftl_reloc_process_moves(breloc);
 
-	CU_ASSERT_EQUAL(breloc->num_lbks, 0);
+	CU_ASSERT_EQUAL(breloc->num_blocks, 0);
 	CU_ASSERT_TRUE(ftl_reloc_done(breloc));
 	ftl_reloc_release(breloc);
-
-	cleanup_reloc(dev, reloc);
-}
-
-static void
-test_reloc_empty_band(void)
-{
-	struct spdk_ftl_dev *dev;
-	struct ftl_reloc *reloc;
-	struct ftl_band_reloc *breloc;
-	struct ftl_band *band;
-
-	setup_reloc(&dev, &reloc, &g_geo, &g_range);
-
-	breloc = &reloc->brelocs[0];
-	band = breloc->band;
-
-	ftl_reloc_add(reloc, band, 0, ftl_num_band_lbks(dev), 0);
-
-	CU_ASSERT_EQUAL(breloc->num_lbks, ftl_num_band_lbks(dev));
-
-	ftl_reloc(reloc);
-
-	CU_ASSERT_EQUAL(breloc->num_lbks, 0);
-	SPDK_CU_ASSERT_FATAL(breloc->moves != NULL);
 
 	cleanup_reloc(dev, reloc);
 }
@@ -508,35 +486,18 @@ main(int argc, char **argv)
 	CU_pSuite suite = NULL;
 	unsigned int num_failures;
 
-	if (CU_initialize_registry() != CUE_SUCCESS) {
-		return CU_get_error();
-	}
+	CU_set_error_action(CUEA_ABORT);
+	CU_initialize_registry();
 
 	suite = CU_add_suite("ftl_band_suite", NULL, NULL);
-	if (!suite) {
-		CU_cleanup_registry();
-		return CU_get_error();
-	}
 
-	if (
-		CU_add_test(suite, "test_reloc_iter_full",
-			    test_reloc_iter_full) == NULL
-		|| CU_add_test(suite, "test_reloc_iter_empty",
-			       test_reloc_iter_empty) == NULL
-		|| CU_add_test(suite, "test_reloc_empty_band",
-			       test_reloc_empty_band) == NULL
-		|| CU_add_test(suite, "test_reloc_full_band",
-			       test_reloc_full_band) == NULL
-		|| CU_add_test(suite, "test_reloc_scatter_band",
-			       test_reloc_scatter_band) == NULL
-		|| CU_add_test(suite, "test_reloc_chunk",
-			       test_reloc_chunk) == NULL
-		|| CU_add_test(suite, "test_reloc_single_lbk",
-			       test_reloc_single_lbk) == NULL
-	) {
-		CU_cleanup_registry();
-		return CU_get_error();
-	}
+
+	CU_ADD_TEST(suite, test_reloc_iter_full);
+	CU_ADD_TEST(suite, test_reloc_empty_band);
+	CU_ADD_TEST(suite, test_reloc_full_band);
+	CU_ADD_TEST(suite, test_reloc_scatter_band);
+	CU_ADD_TEST(suite, test_reloc_zone);
+	CU_ADD_TEST(suite, test_reloc_single_block);
 
 	CU_basic_set_mode(CU_BRM_VERBOSE);
 	CU_basic_run_tests();

@@ -38,12 +38,12 @@
 #include "spdk/nvme.h"
 #include "spdk/ftl.h"
 
-#include "ftl_ppa.h"
+#include "ftl_addr.h"
 #include "ftl_trace.h"
 
 struct spdk_ftl_dev;
-struct ftl_rwb_batch;
 struct ftl_band;
+struct ftl_batch;
 struct ftl_io;
 
 typedef int (*ftl_md_pack_fn)(struct ftl_band *);
@@ -62,17 +62,17 @@ enum ftl_io_flags {
 	FTL_IO_PAD		= (1 << 3),
 	/* The IO operates on metadata */
 	FTL_IO_MD		= (1 << 4),
-	/* Using PPA instead of LBA */
-	FTL_IO_PPA_MODE		= (1 << 5),
+	/* Using physical instead of logical address */
+	FTL_IO_PHYSICAL_MODE	= (1 << 5),
 	/* Indicates that IO contains noncontiguous LBAs */
 	FTL_IO_VECTOR_LBA	= (1 << 6),
-	/* Indicates that IO is being retried */
-	FTL_IO_RETRY		= (1 << 7),
 	/* The IO is directed to non-volatile cache */
-	FTL_IO_CACHE		= (1 << 8),
-	/* Indicates that PPA should be taken from IO struct, */
+	FTL_IO_CACHE		= (1 << 7),
+	/* Indicates that physical address should be taken from IO struct, */
 	/* not assigned by wptr, only works if wptr is also in direct mode */
-	FTL_IO_DIRECT_ACCESS	= (1 << 9),
+	FTL_IO_DIRECT_ACCESS	= (1 << 8),
+	/* Bypass the non-volatile cache */
+	FTL_IO_BYPASS_CACHE	= (1 << 9),
 };
 
 enum ftl_io_type {
@@ -80,6 +80,8 @@ enum ftl_io_type {
 	FTL_IO_WRITE,
 	FTL_IO_ERASE,
 };
+
+#define FTL_IO_MAX_IOVEC 64
 
 struct ftl_io_init_opts {
 	struct spdk_ftl_dev			*dev;
@@ -99,17 +101,18 @@ struct ftl_io_init_opts {
 	/* IO type */
 	enum ftl_io_type			type;
 
-	/* RWB entry */
-	struct ftl_rwb_batch			*rwb_batch;
+	/* Transfer batch, set for IO going through the write buffer */
+	struct ftl_batch			*batch;
 
 	/* Band to which the IO is directed */
 	struct ftl_band				*band;
 
 	/* Number of logical blocks */
-	size_t                                  lbk_cnt;
+	size_t                                  num_blocks;
 
 	/* Data */
-	void                                    *data;
+	struct iovec				iovs[FTL_IO_MAX_IOVEC];
+	int					iovcnt;
 
 	/* Metadata */
 	void                                    *md;
@@ -121,15 +124,76 @@ struct ftl_io_init_opts {
 	void					*cb_ctx;
 };
 
+struct ftl_io_channel;
+
+struct ftl_wbuf_entry {
+	/* IO channel that owns the write bufer entry */
+	struct ftl_io_channel			*ioch;
+	/* Data payload (single block) */
+	void					*payload;
+	/* Index within the IO channel's wbuf_entries array */
+	uint32_t				index;
+	uint32_t				io_flags;
+	/* Points at the band the data is copied from.  Only valid for internal
+	 * requests coming from reloc.
+	 */
+	struct ftl_band				*band;
+	/* Physical address of that particular block.  Valid once the data has
+	 * been written out.
+	 */
+	struct ftl_addr				addr;
+	/* Logical block address */
+	uint64_t				lba;
+
+	/* Trace ID of the requests the entry is part of */
+	uint64_t				trace;
+
+	/* Indicates that the entry was written out and is still present in the
+	 * L2P table.
+	 */
+	bool					valid;
+	/* Lock that protects the entry from being evicted from the L2P */
+	pthread_spinlock_t			lock;
+	TAILQ_ENTRY(ftl_wbuf_entry)		tailq;
+};
+
+#define FTL_IO_CHANNEL_INDEX_INVALID ((uint64_t)-1)
+
 struct ftl_io_channel {
 	/* Device */
 	struct spdk_ftl_dev			*dev;
 	/* IO pool element size */
 	size_t					elem_size;
+	/* Index within the IO channel array */
+	uint64_t				index;
 	/* IO pool */
 	struct spdk_mempool			*io_pool;
+	/* Underlying device IO channel */
+	struct spdk_io_channel			*base_ioch;
 	/* Persistent cache IO channel */
 	struct spdk_io_channel			*cache_ioch;
+	/* Poller used for completing write requests and retrying IO */
+	struct spdk_poller			*poller;
+	/* Write completion queue */
+	TAILQ_HEAD(, ftl_io)			write_cmpl_queue;
+	TAILQ_HEAD(, ftl_io)			retry_queue;
+	TAILQ_ENTRY(ftl_io_channel)		tailq;
+
+	/* Array of write buffer entries */
+	struct ftl_wbuf_entry			*wbuf_entries;
+	/* Write buffer data payload */
+	void					*wbuf_payload;
+	/* Number of write buffer entries */
+	uint32_t				num_entries;
+	/* Write buffer queues */
+	struct spdk_ring			*free_queue;
+	struct spdk_ring			*submit_queue;
+	/* Maximum number of concurrent user writes */
+	uint32_t				qdepth_limit;
+	/* Current number of concurrent user writes */
+	uint32_t				qdepth_current;
+	/* Means that the IO channel is being flushed */
+	bool					flush;
 };
 
 /* General IO descriptor */
@@ -148,17 +212,20 @@ struct ftl_io {
 		uint64_t			single;
 	} lba;
 
-	/* First PPA */
-	struct ftl_ppa				ppa;
+	/* First block address */
+	struct ftl_addr				addr;
 
-	/* Number of processed lbks */
+	/* Number of processed blocks */
 	size_t					pos;
 
-	/* Number of lbks */
-	size_t					lbk_cnt;
+	/* Number of blocks */
+	size_t					num_blocks;
 
-#define FTL_IO_MAX_IOVEC 64
-	struct iovec				iov[FTL_IO_MAX_IOVEC];
+	/* IO vector pointer */
+	struct iovec				*iov;
+
+	/* IO vector buffer for internal requests */
+	struct iovec				iov_buf[FTL_IO_MAX_IOVEC];
 
 	/* Metadata */
 	void					*md;
@@ -169,11 +236,11 @@ struct ftl_io {
 	/* Position within the iovec */
 	size_t					iov_pos;
 
-	/* Offset within the iovec (in lbks) */
+	/* Offset within the iovec (in blocks) */
 	size_t					iov_off;
 
-	/* RWB entry (valid only for RWB-based IO) */
-	struct ftl_rwb_batch			*rwb_batch;
+	/* Transfer batch (valid only for writes going through the write buffer) */
+	struct ftl_batch			*batch;
 
 	/* Band this IO is being written to */
 	struct ftl_band				*band;
@@ -214,7 +281,8 @@ struct ftl_io {
 	/* Trace group id */
 	uint64_t				trace;
 
-	TAILQ_ENTRY(ftl_io)			retry_entry;
+	/* Used by retry and write completion queues */
+	TAILQ_ENTRY(ftl_io)			ioch_entry;
 };
 
 /* Metadata IO */
@@ -233,23 +301,21 @@ struct ftl_md_io {
 };
 
 static inline bool
-ftl_io_mode_ppa(const struct ftl_io *io)
+ftl_io_mode_physical(const struct ftl_io *io)
 {
-	return io->flags & FTL_IO_PPA_MODE;
+	return io->flags & FTL_IO_PHYSICAL_MODE;
 }
 
 static inline bool
-ftl_io_mode_lba(const struct ftl_io *io)
+ftl_io_mode_logical(const struct ftl_io *io)
 {
-	return !ftl_io_mode_ppa(io);
+	return !ftl_io_mode_physical(io);
 }
 
 static inline bool
 ftl_io_done(const struct ftl_io *io)
 {
-	return io->req_cnt == 0 &&
-	       io->pos == io->lbk_cnt &&
-	       !(io->flags & FTL_IO_RETRY);
+	return io->req_cnt == 0 && io->pos == io->num_blocks;
 }
 
 struct ftl_io *ftl_io_alloc(struct spdk_io_channel *ch);
@@ -265,19 +331,19 @@ void ftl_io_dec_req(struct ftl_io *io);
 struct iovec *ftl_io_iovec(struct ftl_io *io);
 uint64_t ftl_io_current_lba(const struct ftl_io *io);
 uint64_t ftl_io_get_lba(const struct ftl_io *io, size_t offset);
-void ftl_io_advance(struct ftl_io *io, size_t lbk_cnt);
-size_t ftl_iovec_num_lbks(struct iovec *iov, size_t iov_cnt);
+void ftl_io_advance(struct ftl_io *io, size_t num_blocks);
+size_t ftl_iovec_num_blocks(struct iovec *iov, size_t iov_cnt);
 void *ftl_io_iovec_addr(struct ftl_io *io);
 size_t ftl_io_iovec_len_left(struct ftl_io *io);
-struct ftl_io *ftl_io_rwb_init(struct spdk_ftl_dev *dev, struct ftl_band *band,
-			       struct ftl_rwb_batch *entry, ftl_io_fn cb);
-struct ftl_io *ftl_io_erase_init(struct ftl_band *band, size_t lbk_cnt, ftl_io_fn cb);
-struct ftl_io *ftl_io_user_init(struct spdk_io_channel *ioch, uint64_t lba, size_t lbk_cnt,
+struct ftl_io *ftl_io_wbuf_init(struct spdk_ftl_dev *dev, struct ftl_addr addr,
+				struct ftl_band *band, struct ftl_batch *batch, ftl_io_fn cb);
+struct ftl_io *ftl_io_erase_init(struct ftl_band *band, size_t num_blocks, ftl_io_fn cb);
+struct ftl_io *ftl_io_user_init(struct spdk_io_channel *ioch, uint64_t lba, size_t num_blocks,
 				struct iovec *iov, size_t iov_cnt, spdk_ftl_fn cb_fn,
 				void *cb_arg, int type);
 void *ftl_io_get_md(const struct ftl_io *io);
 void ftl_io_complete(struct ftl_io *io);
-void ftl_io_shrink_iovec(struct ftl_io *io, size_t lbk_cnt);
+void ftl_io_shrink_iovec(struct ftl_io *io, size_t num_blocks);
 void ftl_io_process_error(struct ftl_io *io, const struct spdk_nvme_cpl *status);
 void ftl_io_reset(struct ftl_io *io);
 void ftl_io_call_foreach_child(struct ftl_io *io, int (*callback)(struct ftl_io *));

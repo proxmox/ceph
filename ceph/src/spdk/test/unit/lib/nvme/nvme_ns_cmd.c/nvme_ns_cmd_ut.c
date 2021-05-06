@@ -70,7 +70,7 @@ static int nvme_request_next_sge(void *cb_arg, void **address, uint32_t *length)
 }
 
 bool
-spdk_nvme_transport_available(enum spdk_nvme_transport_type trtype)
+spdk_nvme_transport_available_by_name(const char *transport_name)
 {
 	return true;
 }
@@ -565,6 +565,33 @@ test_nvme_ns_cmd_write_zeroes(void)
 }
 
 static void
+test_nvme_ns_cmd_write_uncorrectable(void)
+{
+	struct spdk_nvme_ns	ns = { 0 };
+	struct spdk_nvme_ctrlr	ctrlr = { 0 };
+	struct spdk_nvme_qpair	qpair;
+	spdk_nvme_cmd_cb	cb_fn = NULL;
+	void			*cb_arg = NULL;
+	uint64_t		cmd_lba;
+	uint32_t		cmd_lba_count;
+	int			rc;
+
+	prepare_for_test(&ns, &ctrlr, &qpair, 512, 0, 128 * 1024, 0, false);
+
+	rc = spdk_nvme_ns_cmd_write_uncorrectable(&ns, &qpair, 0, 2, cb_fn, cb_arg);
+	SPDK_CU_ASSERT_FATAL(rc == 0);
+	SPDK_CU_ASSERT_FATAL(g_request != NULL);
+	CU_ASSERT(g_request->cmd.opc == SPDK_NVME_OPC_WRITE_UNCORRECTABLE);
+	CU_ASSERT(g_request->cmd.nsid == ns.id);
+	nvme_cmd_interpret_rw(&g_request->cmd, &cmd_lba, &cmd_lba_count);
+	CU_ASSERT_EQUAL(cmd_lba, 0);
+	CU_ASSERT_EQUAL(cmd_lba_count, 2);
+
+	nvme_free_request(g_request);
+	cleanup_after_test(&qpair);
+}
+
+static void
 test_nvme_ns_cmd_dataset_management(void)
 {
 	struct spdk_nvme_ns	ns;
@@ -592,8 +619,8 @@ test_nvme_ns_cmd_dataset_management(void)
 	CU_ASSERT(g_request->cmd.opc == SPDK_NVME_OPC_DATASET_MANAGEMENT);
 	CU_ASSERT(g_request->cmd.nsid == ns.id);
 	CU_ASSERT(g_request->cmd.cdw10 == 0);
-	CU_ASSERT(g_request->cmd.cdw11 == SPDK_NVME_DSM_ATTR_DEALLOCATE);
-	spdk_dma_free(g_request->payload.contig_or_cb_arg);
+	CU_ASSERT(g_request->cmd.cdw11_bits.dsm.ad == 1);
+	spdk_free(g_request->payload.contig_or_cb_arg);
 	nvme_free_request(g_request);
 
 	/* TRIM 256 LBAs */
@@ -604,8 +631,8 @@ test_nvme_ns_cmd_dataset_management(void)
 	CU_ASSERT(g_request->cmd.opc == SPDK_NVME_OPC_DATASET_MANAGEMENT);
 	CU_ASSERT(g_request->cmd.nsid == ns.id);
 	CU_ASSERT(g_request->cmd.cdw10 == 255u);
-	CU_ASSERT(g_request->cmd.cdw11 == SPDK_NVME_DSM_ATTR_DEALLOCATE);
-	spdk_dma_free(g_request->payload.contig_or_cb_arg);
+	CU_ASSERT(g_request->cmd.cdw11_bits.dsm.ad == 1);
+	spdk_free(g_request->payload.contig_or_cb_arg);
 	nvme_free_request(g_request);
 
 	rc = spdk_nvme_ns_cmd_dataset_management(&ns, &qpair, SPDK_NVME_DSM_ATTR_DEALLOCATE,
@@ -720,6 +747,273 @@ test_nvme_ns_cmd_comparev(void)
 }
 
 static void
+test_nvme_ns_cmd_comparev_with_md(void)
+{
+	struct spdk_nvme_ns             ns;
+	struct spdk_nvme_ctrlr          ctrlr;
+	struct spdk_nvme_qpair          qpair;
+	int                             rc = 0;
+	char				*buffer = NULL;
+	char				*metadata = NULL;
+	uint32_t			block_size, md_size;
+	struct nvme_request		*child0, *child1;
+	uint32_t			lba_count = 256;
+	uint32_t			sector_size = 512;
+	uint64_t			sge_length = lba_count * sector_size;
+
+	block_size = 512;
+	md_size = 128;
+
+	buffer = malloc((block_size + md_size) * 384);
+	SPDK_CU_ASSERT_FATAL(buffer != NULL);
+	metadata = malloc(md_size * 384);
+	SPDK_CU_ASSERT_FATAL(metadata != NULL);
+
+	/*
+	 * 512 byte data + 128 byte metadata
+	 * Separate metadata buffer
+	 * Max data transfer size 128 KB
+	 * No stripe size
+	 *
+	 * 256 blocks * 512 bytes per block = single 128 KB I/O (no splitting required)
+	 */
+	prepare_for_test(&ns, &ctrlr, &qpair, 512, 128, 128 * 1024, 0, false);
+
+	rc = spdk_nvme_ns_cmd_comparev_with_md(&ns, &qpair, 0x1000, 256, NULL, &sge_length, 0,
+					       nvme_request_reset_sgl, nvme_request_next_sge, metadata, 0, 0);
+
+	SPDK_CU_ASSERT_FATAL(rc == 0);
+	SPDK_CU_ASSERT_FATAL(g_request != NULL);
+	SPDK_CU_ASSERT_FATAL(g_request->num_children == 0);
+
+	CU_ASSERT(g_request->payload.md == metadata);
+	CU_ASSERT(g_request->payload_size == 256 * 512);
+
+	nvme_free_request(g_request);
+	cleanup_after_test(&qpair);
+
+	/*
+	 * 512 byte data + 128 byte metadata
+	 * Extended LBA
+	 * Max data transfer size 128 KB
+	 * No stripe size
+	 *
+	 * 256 blocks * (512 + 128) bytes per block = two I/Os:
+	 *   child 0: 204 blocks - 204 * (512 + 128) = 127.5 KB
+	 *   child 1: 52 blocks
+	 */
+	prepare_for_test(&ns, &ctrlr, &qpair, 512, 128, 128 * 1024, 0, true);
+
+	rc = spdk_nvme_ns_cmd_comparev_with_md(&ns, &qpair, 0x1000, 256, NULL, &sge_length, 0,
+					       nvme_request_reset_sgl, nvme_request_next_sge, NULL, 0, 0);
+
+	SPDK_CU_ASSERT_FATAL(rc == 0);
+	SPDK_CU_ASSERT_FATAL(g_request != NULL);
+	SPDK_CU_ASSERT_FATAL(g_request->num_children == 2);
+	child0 = TAILQ_FIRST(&g_request->children);
+
+	SPDK_CU_ASSERT_FATAL(child0 != NULL);
+	CU_ASSERT(child0->payload.md == NULL);
+	CU_ASSERT(child0->payload_offset == 0);
+	CU_ASSERT(child0->payload_size == 204 * (512 + 128));
+	child1 = TAILQ_NEXT(child0, child_tailq);
+
+	SPDK_CU_ASSERT_FATAL(child1 != NULL);
+	CU_ASSERT(child1->payload.md == NULL);
+	CU_ASSERT(child1->payload_offset == 204 * (512 + 128));
+	CU_ASSERT(child1->payload_size == 52 * (512 + 128));
+
+	nvme_request_free_children(g_request);
+	nvme_free_request(g_request);
+	cleanup_after_test(&qpair);
+
+	/*
+	 * 512 byte data + 8 byte metadata
+	 * Extended LBA
+	 * Max data transfer size 128 KB
+	 * No stripe size
+	 * No protection information
+	 *
+	 * 256 blocks * (512 + 8) bytes per block = two I/Os:
+	 *   child 0: 252 blocks - 252 * (512 + 8) = 127.96875 KB
+	 *   child 1: 4 blocks
+	 */
+	prepare_for_test(&ns, &ctrlr, &qpair, 512, 8, 128 * 1024, 0, true);
+
+	rc = spdk_nvme_ns_cmd_comparev_with_md(&ns, &qpair, 0x1000, 256, NULL, &sge_length, 0,
+					       nvme_request_reset_sgl, nvme_request_next_sge, NULL, 0, 0);
+
+	SPDK_CU_ASSERT_FATAL(rc == 0);
+	SPDK_CU_ASSERT_FATAL(g_request != NULL);
+	SPDK_CU_ASSERT_FATAL(g_request->num_children == 2);
+	child0 = TAILQ_FIRST(&g_request->children);
+
+	SPDK_CU_ASSERT_FATAL(child0 != NULL);
+	CU_ASSERT(child0->payload.md == NULL);
+	CU_ASSERT(child0->payload_offset == 0);
+	CU_ASSERT(child0->payload_size == 252 * (512 + 8));
+	child1 = TAILQ_NEXT(child0, child_tailq);
+
+	SPDK_CU_ASSERT_FATAL(child1 != NULL);
+	CU_ASSERT(child1->payload.md == NULL);
+	CU_ASSERT(child1->payload_offset == 252 * (512 + 8));
+	CU_ASSERT(child1->payload_size == 4 * (512 + 8));
+
+	nvme_request_free_children(g_request);
+	nvme_free_request(g_request);
+	cleanup_after_test(&qpair);
+
+	/*
+	 * 512 byte data + 8 byte metadata
+	 * Extended LBA
+	 * Max data transfer size 128 KB
+	 * No stripe size
+	 * Protection information enabled + PRACT
+	 *
+	 * Special case for 8-byte metadata + PI + PRACT: no metadata transferred
+	 * In theory, 256 blocks * 512 bytes per block = one I/O (128 KB)
+	 * However, the splitting code does not account for PRACT when calculating
+	 * max sectors per transfer, so we actually get two I/Os:
+	 *   child 0: 252 blocks
+	 *   child 1: 4 blocks
+	 */
+	prepare_for_test(&ns, &ctrlr, &qpair, 512, 8, 128 * 1024, 0, true);
+	ns.flags |= SPDK_NVME_NS_DPS_PI_SUPPORTED;
+
+	rc = spdk_nvme_ns_cmd_comparev_with_md(&ns, &qpair, 0x1000, 256, NULL, &sge_length,
+					       SPDK_NVME_IO_FLAGS_PRACT, nvme_request_reset_sgl, nvme_request_next_sge, NULL, 0, 0);
+
+	SPDK_CU_ASSERT_FATAL(rc == 0);
+	SPDK_CU_ASSERT_FATAL(g_request != NULL);
+	SPDK_CU_ASSERT_FATAL(g_request->num_children == 2);
+	child0 = TAILQ_FIRST(&g_request->children);
+
+	SPDK_CU_ASSERT_FATAL(child0 != NULL);
+	CU_ASSERT(child0->payload_offset == 0);
+	CU_ASSERT(child0->payload_size == 252 * 512); /* NOTE: does not include metadata! */
+	child1 = TAILQ_NEXT(child0, child_tailq);
+
+	SPDK_CU_ASSERT_FATAL(child1 != NULL);
+	CU_ASSERT(child1->payload.md == NULL);
+	CU_ASSERT(child1->payload_offset == 252 * 512);
+	CU_ASSERT(child1->payload_size == 4 * 512);
+
+	nvme_request_free_children(g_request);
+	nvme_free_request(g_request);
+	cleanup_after_test(&qpair);
+
+	/*
+	 * 512 byte data + 8 byte metadata
+	 * Separate metadata buffer
+	 * Max data transfer size 128 KB
+	 * No stripe size
+	 * Protection information enabled + PRACT
+	 */
+	prepare_for_test(&ns, &ctrlr, &qpair, 512, 8, 128 * 1024, 0, false);
+	ns.flags |= SPDK_NVME_NS_DPS_PI_SUPPORTED;
+
+	rc = spdk_nvme_ns_cmd_comparev_with_md(&ns, &qpair, 0x1000, 256, NULL, &sge_length,
+					       SPDK_NVME_IO_FLAGS_PRACT, nvme_request_reset_sgl, nvme_request_next_sge, metadata, 0, 0);
+
+	SPDK_CU_ASSERT_FATAL(rc == 0);
+	SPDK_CU_ASSERT_FATAL(g_request != NULL);
+	SPDK_CU_ASSERT_FATAL(g_request->num_children == 0);
+
+	CU_ASSERT(g_request->payload.md == metadata);
+	CU_ASSERT(g_request->payload_size == 256 * 512);
+
+	nvme_free_request(g_request);
+	cleanup_after_test(&qpair);
+
+	/*
+	 * 512 byte data + 8 byte metadata
+	 * Separate metadata buffer
+	 * Max data transfer size 128 KB
+	 * No stripe size
+	 * Protection information enabled + PRACT
+	 *
+	 * 384 blocks * 512 bytes = two I/Os:
+	 *   child 0: 256 blocks
+	 *   child 1: 128 blocks
+	 */
+	prepare_for_test(&ns, &ctrlr, &qpair, 512, 8, 128 * 1024, 0, false);
+	ns.flags |= SPDK_NVME_NS_DPS_PI_SUPPORTED;
+
+	rc = spdk_nvme_ns_cmd_comparev_with_md(&ns, &qpair, 0x1000, 384, NULL, &sge_length,
+					       SPDK_NVME_IO_FLAGS_PRACT, nvme_request_reset_sgl, nvme_request_next_sge, metadata, 0, 0);
+
+	SPDK_CU_ASSERT_FATAL(rc == 0);
+	SPDK_CU_ASSERT_FATAL(g_request != NULL);
+	SPDK_CU_ASSERT_FATAL(g_request->num_children == 2);
+	child0 = TAILQ_FIRST(&g_request->children);
+
+	SPDK_CU_ASSERT_FATAL(child0 != NULL);
+	CU_ASSERT(child0->payload_offset == 0);
+	CU_ASSERT(child0->payload_size == 256 * 512);
+	CU_ASSERT(child0->md_offset == 0);
+	child1 = TAILQ_NEXT(child0, child_tailq);
+
+	SPDK_CU_ASSERT_FATAL(child1 != NULL);
+	CU_ASSERT(child1->payload_offset == 256 * 512);
+	CU_ASSERT(child1->payload_size == 128 * 512);
+	CU_ASSERT(child1->md_offset == 256 * 8);
+
+	nvme_request_free_children(g_request);
+	nvme_free_request(g_request);
+	cleanup_after_test(&qpair);
+
+	free(buffer);
+	free(metadata);
+}
+
+static void
+test_nvme_ns_cmd_compare_and_write(void)
+{
+	struct spdk_nvme_ns		ns;
+	struct spdk_nvme_ctrlr		ctrlr;
+	struct spdk_nvme_qpair		qpair;
+	int				rc = 0;
+	uint64_t			lba = 0x1000;
+	uint32_t			lba_count = 256;
+	uint64_t			cmd_lba;
+	uint32_t			cmd_lba_count;
+	uint32_t			sector_size = 512;
+
+	prepare_for_test(&ns, &ctrlr, &qpair, sector_size, 0, 128 * 1024, 0, false);
+
+	rc = spdk_nvme_ns_cmd_compare(&ns, &qpair, NULL, lba, lba_count, NULL, NULL,
+				      SPDK_NVME_IO_FLAGS_FUSE_FIRST);
+
+	SPDK_CU_ASSERT_FATAL(rc == 0);
+	SPDK_CU_ASSERT_FATAL(g_request != NULL);
+	CU_ASSERT(g_request->cmd.opc == SPDK_NVME_OPC_COMPARE);
+	CU_ASSERT(g_request->cmd.fuse == SPDK_NVME_CMD_FUSE_FIRST);
+	CU_ASSERT(g_request->cmd.nsid == ns.id);
+
+	nvme_cmd_interpret_rw(&g_request->cmd, &cmd_lba, &cmd_lba_count);
+	CU_ASSERT_EQUAL(cmd_lba, lba);
+	CU_ASSERT_EQUAL(cmd_lba_count, lba_count);
+
+	nvme_free_request(g_request);
+
+	rc = spdk_nvme_ns_cmd_write(&ns, &qpair, NULL, lba, lba_count, NULL, NULL,
+				    SPDK_NVME_IO_FLAGS_FUSE_SECOND);
+
+	SPDK_CU_ASSERT_FATAL(rc == 0);
+	SPDK_CU_ASSERT_FATAL(g_request != NULL);
+	CU_ASSERT(g_request->cmd.opc == SPDK_NVME_OPC_WRITE);
+	CU_ASSERT(g_request->cmd.fuse == SPDK_NVME_CMD_FUSE_SECOND);
+	CU_ASSERT(g_request->cmd.nsid == ns.id);
+	nvme_cmd_interpret_rw(&g_request->cmd, &cmd_lba, &cmd_lba_count);
+	CU_ASSERT_EQUAL(cmd_lba, lba);
+	CU_ASSERT_EQUAL(cmd_lba_count, lba_count);
+
+	nvme_free_request(g_request);
+
+	cleanup_after_test(&qpair);
+}
+
+static void
 test_io_flags(void)
 {
 	struct spdk_nvme_ns	ns;
@@ -728,6 +1022,8 @@ test_io_flags(void)
 	void			*payload;
 	uint64_t		lba;
 	uint32_t		lba_count;
+	uint64_t		cmd_lba;
+	uint32_t		cmd_lba_count;
 	int			rc;
 
 	prepare_for_test(&ns, &ctrlr, &qpair, 512, 0, 128 * 1024, 128 * 1024, false);
@@ -750,6 +1046,21 @@ test_io_flags(void)
 	CU_ASSERT((g_request->cmd.cdw12 & SPDK_NVME_IO_FLAGS_FORCE_UNIT_ACCESS) == 0);
 	CU_ASSERT((g_request->cmd.cdw12 & SPDK_NVME_IO_FLAGS_LIMITED_RETRY) != 0);
 	nvme_free_request(g_request);
+
+	rc = spdk_nvme_ns_cmd_write(&ns, &qpair, payload, lba, lba_count, NULL, NULL,
+				    SPDK_NVME_IO_FLAGS_VALID_MASK);
+	SPDK_CU_ASSERT_FATAL(rc == 0);
+	SPDK_CU_ASSERT_FATAL(g_request != NULL);
+	nvme_cmd_interpret_rw(&g_request->cmd, &cmd_lba, &cmd_lba_count);
+	CU_ASSERT_EQUAL(cmd_lba_count, lba_count);
+	CU_ASSERT_EQUAL(cmd_lba, lba);
+	CU_ASSERT_EQUAL(g_request->cmd.cdw12 & SPDK_NVME_IO_FLAGS_CDW12_MASK,
+			SPDK_NVME_IO_FLAGS_CDW12_MASK);
+	nvme_free_request(g_request);
+
+	rc = spdk_nvme_ns_cmd_write(&ns, &qpair, payload, lba, lba_count, NULL, NULL,
+				    ~SPDK_NVME_IO_FLAGS_VALID_MASK);
+	CU_ASSERT(rc == -EINVAL);
 
 	free(payload);
 	cleanup_after_test(&qpair);
@@ -787,7 +1098,7 @@ test_nvme_ns_cmd_reservation_register(void)
 
 	CU_ASSERT(g_request->cmd.cdw10 == tmp_cdw10);
 
-	spdk_dma_free(g_request->payload.contig_or_cb_arg);
+	spdk_free(g_request->payload.contig_or_cb_arg);
 	nvme_free_request(g_request);
 	free(payload);
 	cleanup_after_test(&qpair);
@@ -825,7 +1136,7 @@ test_nvme_ns_cmd_reservation_release(void)
 
 	CU_ASSERT(g_request->cmd.cdw10 == tmp_cdw10);
 
-	spdk_dma_free(g_request->payload.contig_or_cb_arg);
+	spdk_free(g_request->payload.contig_or_cb_arg);
 	nvme_free_request(g_request);
 	free(payload);
 	cleanup_after_test(&qpair);
@@ -863,7 +1174,7 @@ test_nvme_ns_cmd_reservation_acquire(void)
 
 	CU_ASSERT(g_request->cmd.cdw10 == tmp_cdw10);
 
-	spdk_dma_free(g_request->payload.contig_or_cb_arg);
+	spdk_free(g_request->payload.contig_or_cb_arg);
 	nvme_free_request(g_request);
 	free(payload);
 	cleanup_after_test(&qpair);
@@ -895,7 +1206,7 @@ test_nvme_ns_cmd_reservation_report(void)
 
 	CU_ASSERT(g_request->cmd.cdw10 == (size / 4));
 
-	spdk_dma_free(g_request->payload.contig_or_cb_arg);
+	spdk_free(g_request->payload.contig_or_cb_arg);
 	nvme_free_request(g_request);
 	free(payload);
 	cleanup_after_test(&qpair);
@@ -939,6 +1250,7 @@ test_nvme_ns_cmd_write_with_md(void)
 	SPDK_CU_ASSERT_FATAL(g_request->num_children == 0);
 
 	CU_ASSERT(g_request->payload.md == metadata);
+	CU_ASSERT(g_request->md_size == 256 * 128);
 	CU_ASSERT(g_request->payload_size == 256 * 512);
 
 	nvme_free_request(g_request);
@@ -1072,6 +1384,7 @@ test_nvme_ns_cmd_write_with_md(void)
 	SPDK_CU_ASSERT_FATAL(g_request->num_children == 0);
 
 	CU_ASSERT(g_request->payload.md == metadata);
+	CU_ASSERT(g_request->md_size == 256 * 8);
 	CU_ASSERT(g_request->payload_size == 256 * 512);
 
 	nvme_free_request(g_request);
@@ -1103,12 +1416,14 @@ test_nvme_ns_cmd_write_with_md(void)
 	CU_ASSERT(child0->payload_offset == 0);
 	CU_ASSERT(child0->payload_size == 256 * 512);
 	CU_ASSERT(child0->md_offset == 0);
+	CU_ASSERT(child0->md_size == 256 * 8);
 	child1 = TAILQ_NEXT(child0, child_tailq);
 
 	SPDK_CU_ASSERT_FATAL(child1 != NULL);
 	CU_ASSERT(child1->payload_offset == 256 * 512);
 	CU_ASSERT(child1->payload_size == 128 * 512);
 	CU_ASSERT(child1->md_offset == 256 * 8);
+	CU_ASSERT(child1->md_size == 128 * 8);
 
 	nvme_request_free_children(g_request);
 	nvme_free_request(g_request);
@@ -1155,6 +1470,7 @@ test_nvme_ns_cmd_read_with_md(void)
 	SPDK_CU_ASSERT_FATAL(g_request->num_children == 0);
 
 	CU_ASSERT(g_request->payload.md == metadata);
+	CU_ASSERT(g_request->md_size == 256 * md_size);
 	CU_ASSERT(g_request->payload_size == 256 * 512);
 
 	nvme_free_request(g_request);
@@ -1385,44 +1701,33 @@ int main(int argc, char **argv)
 	CU_pSuite	suite = NULL;
 	unsigned int	num_failures;
 
-	if (CU_initialize_registry() != CUE_SUCCESS) {
-		return CU_get_error();
-	}
+	CU_set_error_action(CUEA_ABORT);
+	CU_initialize_registry();
 
 	suite = CU_add_suite("nvme_ns_cmd", NULL, NULL);
-	if (suite == NULL) {
-		CU_cleanup_registry();
-		return CU_get_error();
-	}
 
-	if (
-		CU_add_test(suite, "split_test", split_test) == NULL
-		|| CU_add_test(suite, "split_test2", split_test2) == NULL
-		|| CU_add_test(suite, "split_test3", split_test3) == NULL
-		|| CU_add_test(suite, "split_test4", split_test4) == NULL
-		|| CU_add_test(suite, "nvme_ns_cmd_flush", test_nvme_ns_cmd_flush) == NULL
-		|| CU_add_test(suite, "nvme_ns_cmd_dataset_management",
-			       test_nvme_ns_cmd_dataset_management) == NULL
-		|| CU_add_test(suite, "io_flags", test_io_flags) == NULL
-		|| CU_add_test(suite, "nvme_ns_cmd_write_zeroes", test_nvme_ns_cmd_write_zeroes) == NULL
-		|| CU_add_test(suite, "nvme_ns_cmd_reservation_register",
-			       test_nvme_ns_cmd_reservation_register) == NULL
-		|| CU_add_test(suite, "nvme_ns_cmd_reservation_release",
-			       test_nvme_ns_cmd_reservation_release) == NULL
-		|| CU_add_test(suite, "nvme_ns_cmd_reservation_acquire",
-			       test_nvme_ns_cmd_reservation_acquire) == NULL
-		|| CU_add_test(suite, "nvme_ns_cmd_reservation_report", test_nvme_ns_cmd_reservation_report) == NULL
-		|| CU_add_test(suite, "test_cmd_child_request", test_cmd_child_request) == NULL
-		|| CU_add_test(suite, "nvme_ns_cmd_readv", test_nvme_ns_cmd_readv) == NULL
-		|| CU_add_test(suite, "nvme_ns_cmd_read_with_md", test_nvme_ns_cmd_read_with_md) == NULL
-		|| CU_add_test(suite, "nvme_ns_cmd_writev", test_nvme_ns_cmd_writev) == NULL
-		|| CU_add_test(suite, "nvme_ns_cmd_write_with_md", test_nvme_ns_cmd_write_with_md) == NULL
-		|| CU_add_test(suite, "nvme_ns_cmd_comparev", test_nvme_ns_cmd_comparev) == NULL
-		|| CU_add_test(suite, "nvme_ns_cmd_compare_with_md", test_nvme_ns_cmd_compare_with_md) == NULL
-	) {
-		CU_cleanup_registry();
-		return CU_get_error();
-	}
+	CU_ADD_TEST(suite, split_test);
+	CU_ADD_TEST(suite, split_test2);
+	CU_ADD_TEST(suite, split_test3);
+	CU_ADD_TEST(suite, split_test4);
+	CU_ADD_TEST(suite, test_nvme_ns_cmd_flush);
+	CU_ADD_TEST(suite, test_nvme_ns_cmd_dataset_management);
+	CU_ADD_TEST(suite, test_io_flags);
+	CU_ADD_TEST(suite, test_nvme_ns_cmd_write_zeroes);
+	CU_ADD_TEST(suite, test_nvme_ns_cmd_write_uncorrectable);
+	CU_ADD_TEST(suite, test_nvme_ns_cmd_reservation_register);
+	CU_ADD_TEST(suite, test_nvme_ns_cmd_reservation_release);
+	CU_ADD_TEST(suite, test_nvme_ns_cmd_reservation_acquire);
+	CU_ADD_TEST(suite, test_nvme_ns_cmd_reservation_report);
+	CU_ADD_TEST(suite, test_cmd_child_request);
+	CU_ADD_TEST(suite, test_nvme_ns_cmd_readv);
+	CU_ADD_TEST(suite, test_nvme_ns_cmd_read_with_md);
+	CU_ADD_TEST(suite, test_nvme_ns_cmd_writev);
+	CU_ADD_TEST(suite, test_nvme_ns_cmd_write_with_md);
+	CU_ADD_TEST(suite, test_nvme_ns_cmd_comparev);
+	CU_ADD_TEST(suite, test_nvme_ns_cmd_compare_and_write);
+	CU_ADD_TEST(suite, test_nvme_ns_cmd_compare_with_md);
+	CU_ADD_TEST(suite, test_nvme_ns_cmd_comparev_with_md);
 
 	g_spdk_nvme_driver = &_g_nvme_driver;
 

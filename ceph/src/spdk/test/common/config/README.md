@@ -8,19 +8,21 @@ for spinning up a VM capable of running the SPDK test suite.
 There is no need for external hardware to run these tests. The linux kernel comes with the drivers necessary
 to emulate an RDMA enabled NIC. NVMe controllers can also be virtualized in emulators such as QEMU.
 
+## VM Envronment Requirements (Host)
 
-## VM Envronment Requirements (Host):
 - 8 GiB of RAM (for DPDK)
 - Enable intel_kvm on the host machine from the bios.
 - Enable nesting for VMs in kernel command line (for vhost tests).
   - In `/etc/default/grub` append the following to the GRUB_CMDLINE_LINUX line: intel_iommu=on kvm-intel.nested=1.
 
 ## VM Specs
+
 When creating the user during the fedora installation, it is best to use the name sys_sgsw. Efforts are being made
 to remove all references to this user, or files specific to this user from the codebase, but there are still some
 trailing references to it.
 
 ## Autorun-spdk.conf
+
 Every machine that runs the autotest scripts should include a file titled autorun-spdk.conf in the home directory
 of the user that will run them. This file consists of several lines of the form 'variable_name=0/1'. autorun.sh sources
 this file each time it is run, and determines which tests to attempt based on which variables are defined in the
@@ -28,6 +30,7 @@ configuration file. For a full list of the variable declarations available for a
 `test/common/autotest_common.sh` starting at line 13.
 
 ## Steps for Configuring the VM
+
 1. Download a fresh Fedora 26 image.
 2. Perform the installation of Fedora 26 server.
 3. Create an admin user sys_sgsw (enabling passwordless sudo for this account will make life easier during the tests).
@@ -37,6 +40,7 @@ configuration file. For a full list of the variable declarations available for a
 7. Run autorun.sh for SPDK. Any output files will be placed in `~/spdk_repo/output/`.
 
 ## Additional Steps for Preparing the Vhost Tests
+
 The Vhost tests also require the creation of a second virtual machine nested inside of the test VM.
 Please follow the directions below to complete that installation. Note that host refers to the Fedora VM
 created above and guest or VM refer to the Ubuntu VM created in this section.
@@ -60,6 +64,7 @@ created above and guest or VM refer to the Ubuntu VM created in this section.
 		- move .qcow2 file and ssh keys to default locations used by vhost test scripts
 
 Alternatively it is possible to create the VM image manually using following steps:
+
 1. Create an image file for the VM. It does not have to be large, about 3.5G should suffice.
 2. Create an ssh keypair for host-guest communications (performed on the host):
     - Generate an ssh keypair with the name spdk_vhost_id_rsa and save it in `/root/.ssh`.

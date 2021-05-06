@@ -1,66 +1,88 @@
 #!/usr/bin/env bash
 
-curdir=$(dirname $(readlink -f "$BASH_SOURCE"))
+curdir=$(dirname $(readlink -f "${BASH_SOURCE[0]}"))
 rootdir=$(readlink -f $curdir/../../..)
+source $rootdir/test/ocf/common.sh
+
+source $rootdir/scripts/common.sh
 source $rootdir/test/common/autotest_common.sh
 
 rpc_py=$rootdir/scripts/rpc.py
 
-rm -f aio*
-truncate -s 128M aio0
-truncate -s 128M aio1
-truncate -s 128M aio2
-truncate -s 128M aio3
-truncate -s 128M aio4
-truncate -s 128M aio5
-truncate -s 128M aio6
+$rootdir/scripts/setup.sh
 
-echo "
-[AIO]
-  AIO ./aio0 aio0 512
-  AIO ./aio1 aio1 512
-  AIO ./aio2 aio2 512
-  AIO ./aio3 aio3 512
-  AIO ./aio4 aio4 512
-  AIO ./aio5 aio5 512
-  AIO ./aio6 aio6 512
-" > $curdir/config
+mapfile -t config < <("$rootdir/scripts/gen_nvme.sh" --json)
+# Drop anything from last closing ] so we can inject our own config pieces ...
+config=("${config[@]::${#config[@]}-2}")
+# ... and now convert entire array to a single string item
+config=("${config[*]}")
 
-$rootdir/app/iscsi_tgt/iscsi_tgt -c $curdir/config &
+config+=(
+	"$(
+		cat <<- JSON
+			{
+			  "method": "bdev_split_create",
+			  "params": {
+			    "base_bdev": "Nvme0n1",
+			    "split_count": 7,
+			    "split_size_mb": 128
+			  }
+			}
+		JSON
+	)"
+)
+
+# First ']}' closes our config and bdev subsystem blocks
+jq . <<- CONFIG > "$curdir/config"
+	{"subsystems":[
+	$(
+	IFS=","
+	printf '%s\n' "${config[*]}"
+	)
+	]}]}
+CONFIG
+
+# Clear nvme device which we will use in test
+clear_nvme
+
+"$SPDK_BIN_DIR/iscsi_tgt" --json "$curdir/config" &
 spdk_pid=$!
 
 waitforlisten $spdk_pid
 
 # Create ocf on persistent storage
 
-$rpc_py construct_ocf_bdev ocfWT  wt aio0 aio1
-$rpc_py construct_ocf_bdev ocfPT  pt aio2 aio3
-$rpc_py construct_ocf_bdev ocfWB0 wb aio4 aio5
-$rpc_py construct_ocf_bdev ocfWB1 wb aio4 aio6
+$rpc_py bdev_ocf_create ocfWT wt Nvme0n1p0 Nvme0n1p1
+$rpc_py bdev_ocf_create ocfPT pt Nvme0n1p2 Nvme0n1p3
+$rpc_py bdev_ocf_create ocfWB0 wb Nvme0n1p4 Nvme0n1p5
+$rpc_py bdev_ocf_create ocfWB1 wb Nvme0n1p4 Nvme0n1p6
 
 # Sorting bdevs because we dont guarantee that they are going to be
 # in the same order after shutdown
-($rpc_py get_ocf_bdevs | jq '(.. | arrays) |= sort') > ./ocf_bdevs
+($rpc_py bdev_ocf_get_bdevs | jq '(.. | arrays) |= sort') > ./ocf_bdevs
 
 trap - SIGINT SIGTERM EXIT
 
 killprocess $spdk_pid
 
 # Check for ocf persistency after restart
-$rootdir/app/iscsi_tgt/iscsi_tgt -c $curdir/config &
+"$SPDK_BIN_DIR/iscsi_tgt" --json "$curdir/config" &
 spdk_pid=$!
 
-trap "killprocess $spdk_pid; exit 1" SIGINT SIGTERM EXIT
+trap 'killprocess $spdk_pid; rm -f $curdir/config ocf_bdevs ocf_bdevs_verify; exit 1' SIGINT SIGTERM EXIT
 
 waitforlisten $spdk_pid
+sleep 5
 
 # OCF should be loaded now as well
 
-($rpc_py get_ocf_bdevs | jq '(.. | arrays) |= sort') > ./ocf_bdevs_verify
+($rpc_py bdev_ocf_get_bdevs | jq '(.. | arrays) |= sort') > ./ocf_bdevs_verify
 
 diff ocf_bdevs ocf_bdevs_verify
 
 trap - SIGINT SIGTERM EXIT
 
 killprocess $spdk_pid
-rm -f aio* $curdir/config ocf_bdevs ocf_bdevs_verify
+rm -f $curdir/config ocf_bdevs ocf_bdevs_verify
+
+clear_nvme $bdf

@@ -34,8 +34,13 @@
 SPDK_ROOT_DIR := $(abspath $(CURDIR)/../..)
 include $(SPDK_ROOT_DIR)/mk/spdk.common.mk
 
+SO_VER := 2
+SO_MINOR := 0
+
 C_SRCS = interface.c net_rpc.c
 
 LIBNAME = net
+
+SPDK_MAP_FILE = $(abspath $(CURDIR)/spdk_net.map)
 
 include $(SPDK_ROOT_DIR)/mk/spdk.lib.mk

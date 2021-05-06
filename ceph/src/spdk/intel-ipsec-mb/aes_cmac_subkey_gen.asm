@@ -25,9 +25,10 @@
 ;; OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ;;
 
-%include "os.asm"
+%include "include/os.asm"
 %define NO_AESNI_RENAME
-%include "aesni_emu.inc"
+%include "include/aesni_emu.inc"
+%include "include/clear_regs.asm"
 
 ;;; Routines to generate subkeys for AES-CMAC.
 ;;; See RFC 4493 for more details.
@@ -139,6 +140,16 @@ section .text
 MKGLOBAL(aes_cmac_subkey_gen_sse,function,)
 align 32
 aes_cmac_subkey_gen_sse:
+
+%ifdef SAFE_PARAM
+        cmp     KEY_EXP, 0
+        jz      aes_cmac_subkey_gen_sse_return
+        cmp     KEY1, 0
+        jz      aes_cmac_subkey_gen_sse_return
+        cmp     KEY2, 0
+        jz      aes_cmac_subkey_gen_sse_return
+%endif
+
         ;; Step 1.  L := AES-128(K, const_Zero) ;
         movdqa          XL, [KEY_EXP + 16*0]    ; 0. ARK xor const_Zero
 	aesenc		XL, [KEY_EXP + 16*1]	; 1. ENC
@@ -190,11 +201,28 @@ K2_msb_is_zero_sse:
         pshufb          XKEY2, [rel byteswap_const]
         movdqu          [KEY1], XKEY1
         movdqu          [KEY2], XKEY2
-	ret
+
+aes_cmac_subkey_gen_sse_return:
+
+%ifdef SAFE_DATA
+        clear_scratch_gps_asm
+        clear_scratch_xmms_sse_asm
+%endif
+        ret
 
 MKGLOBAL(aes_cmac_subkey_gen_sse_no_aesni,function,)
 align 32
 aes_cmac_subkey_gen_sse_no_aesni:
+
+%ifdef SAFE_PARAM
+        cmp     KEY_EXP, 0
+        jz      aes_cmac_subkey_gen_sse_no_aesni_return
+        cmp     KEY1, 0
+        jz      aes_cmac_subkey_gen_sse_no_aesni_return
+        cmp     KEY2, 0
+        jz      aes_cmac_subkey_gen_sse_no_aesni_return
+%endif
+
         ;; Step 1.  L := AES-128(K, const_Zero) ;
         movdqa          XL, [KEY_EXP + 16*0]    ; 0. ARK xor const_Zero
 	EMULATE_AESENC	XL, [KEY_EXP + 16*1]	; 1. ENC
@@ -246,7 +274,14 @@ K2_msb_is_zero_sse2:
         pshufb          XKEY2, [rel byteswap_const]
         movdqu          [KEY1], XKEY1
         movdqu          [KEY2], XKEY2
-	ret
+
+aes_cmac_subkey_gen_sse_no_aesni_return:
+
+%ifdef SAFE_DATA
+        clear_scratch_gps_asm
+        clear_scratch_xmms_sse_asm
+%endif
+        ret
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;;
@@ -265,6 +300,16 @@ align 32
 aes_cmac_subkey_gen_avx:
 aes_cmac_subkey_gen_avx2:
 aes_cmac_subkey_gen_avx512:
+
+%ifdef SAFE_PARAM
+        cmp     KEY_EXP, 0
+        jz      aes_cmac_subkey_gen_avx_return
+        cmp     KEY1, 0
+        jz      aes_cmac_subkey_gen_avx_return
+        cmp     KEY2, 0
+        jz      aes_cmac_subkey_gen_avx_return
+%endif
+
         ;; Step 1.  L := AES-128(K, const_Zero) ;
         vmovdqa         XL, [KEY_EXP + 16*0]        ; 0. ARK xor const_Zero
         vaesenc         XL, [KEY_EXP + 16*1]        ; 1. ENC
@@ -316,6 +361,13 @@ K2_msb_is_zero_avx:
         vpshufb         XKEY2, [rel byteswap_const]
         vmovdqu         [KEY1], XKEY1
         vmovdqu         [KEY2], XKEY2
+
+aes_cmac_subkey_gen_avx_return:
+
+%ifdef SAFE_DATA
+        clear_scratch_gps_asm
+        clear_scratch_xmms_avx_asm
+%endif
         ret
 
 %ifdef LINUX

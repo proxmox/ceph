@@ -37,48 +37,54 @@
 
 #include "spdk/conf.h"
 #include "spdk/cpuset.h"
+#include "iscsi/iscsi.h"
 
 struct spdk_json_write_ctx;
 
 struct spdk_iscsi_portal {
 	struct spdk_iscsi_portal_grp	*group;
-	char				*host;
-	char				*port;
+	char				host[MAX_PORTAL_ADDR + 1];
+	char				port[MAX_PORTAL_PORT + 1];
 	struct spdk_sock		*sock;
-	struct spdk_cpuset		*cpumask;
 	struct spdk_poller		*acceptor_poller;
 	TAILQ_ENTRY(spdk_iscsi_portal)	per_pg_tailq;
 	TAILQ_ENTRY(spdk_iscsi_portal)	g_tailq;
 };
 
 struct spdk_iscsi_portal_grp {
-	int ref;
-	int tag;
+	int					ref;
+	int					tag;
+	bool					disable_chap;
+	bool					require_chap;
+	bool					mutual_chap;
+	int32_t					chap_group;
 	TAILQ_ENTRY(spdk_iscsi_portal_grp)	tailq;
 	TAILQ_HEAD(, spdk_iscsi_portal)		head;
 };
 
 /* SPDK iSCSI Portal Group management API */
 
-struct spdk_iscsi_portal *spdk_iscsi_portal_create(const char *host, const char *port,
-		const char *cpumask);
-void spdk_iscsi_portal_destroy(struct spdk_iscsi_portal *p);
+struct spdk_iscsi_portal *iscsi_portal_create(const char *host, const char *port);
+void iscsi_portal_destroy(struct spdk_iscsi_portal *p);
 
-struct spdk_iscsi_portal_grp *spdk_iscsi_portal_grp_create(int tag);
-void spdk_iscsi_portal_grp_add_portal(struct spdk_iscsi_portal_grp *pg,
-				      struct spdk_iscsi_portal *p);
-void spdk_iscsi_portal_grp_destroy(struct spdk_iscsi_portal_grp *pg);
-void spdk_iscsi_portal_grp_release(struct spdk_iscsi_portal_grp *pg);
-int spdk_iscsi_parse_portal_grps(void);
-void spdk_iscsi_portal_grps_destroy(void);
-int spdk_iscsi_portal_grp_register(struct spdk_iscsi_portal_grp *pg);
-struct spdk_iscsi_portal_grp *spdk_iscsi_portal_grp_unregister(int tag);
-struct spdk_iscsi_portal_grp *spdk_iscsi_portal_grp_find_by_tag(int tag);
-int spdk_iscsi_portal_grp_open(struct spdk_iscsi_portal_grp *pg);
+struct spdk_iscsi_portal_grp *iscsi_portal_grp_create(int tag);
+void iscsi_portal_grp_add_portal(struct spdk_iscsi_portal_grp *pg,
+				 struct spdk_iscsi_portal *p);
+void iscsi_portal_grp_destroy(struct spdk_iscsi_portal_grp *pg);
+void iscsi_portal_grp_release(struct spdk_iscsi_portal_grp *pg);
+int iscsi_parse_portal_grps(void);
+void iscsi_portal_grps_destroy(void);
+int iscsi_portal_grp_register(struct spdk_iscsi_portal_grp *pg);
+struct spdk_iscsi_portal_grp *iscsi_portal_grp_unregister(int tag);
+struct spdk_iscsi_portal_grp *iscsi_portal_grp_find_by_tag(int tag);
+int iscsi_portal_grp_open(struct spdk_iscsi_portal_grp *pg);
+int iscsi_portal_grp_set_chap_params(struct spdk_iscsi_portal_grp *pg,
+				     bool disable_chap, bool require_chap,
+				     bool mutual_chap, int32_t chap_group);
 
-void spdk_iscsi_portal_grp_close_all(void);
-void spdk_iscsi_portal_grps_config_text(FILE *fp);
-void spdk_iscsi_portal_grps_info_json(struct spdk_json_write_ctx *w);
-void spdk_iscsi_portal_grps_config_json(struct spdk_json_write_ctx *w);
+void iscsi_portal_grp_close_all(void);
+void iscsi_portal_grps_config_text(FILE *fp);
+void iscsi_portal_grps_info_json(struct spdk_json_write_ctx *w);
+void iscsi_portal_grps_config_json(struct spdk_json_write_ctx *w);
 
 #endif /* SPDK_PORTAL_GRP_H */

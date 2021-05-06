@@ -1,5 +1,5 @@
 //
-// Copyright 2018 Mateusz Loskot <mateusz at loskot dot net>
+// Copyright 2018-2020 Mateusz Loskot <mateusz at loskot dot net>
 //
 // Distributed under the Boost Software License, Version 1.0
 // See accompanying file LICENSE_1_0.txt or copy at
@@ -9,6 +9,8 @@
 #include <boost/gil/image.hpp>
 
 #include <boost/core/lightweight_test.hpp>
+
+#include "test_utility_output_stream.hpp"
 
 namespace gil = boost::gil;
 
@@ -21,12 +23,12 @@ void test_lambda_expression()
     gil::for_each_pixel(gil::view(image), [&sum](gil::gray8_pixel_t& p) {
         sum += gil::at_c<0>(p);
     });
-    BOOST_TEST(sum == 2 * 2 * 128);
+    BOOST_TEST_EQ(sum, 2 * 2 * 128);
 }
 
 int main()
 {
     test_lambda_expression();
 
-    return boost::report_errors();
+    return ::boost::report_errors();
 }

@@ -64,6 +64,7 @@ main()
     using boost::spirit::x3::omit;
     using boost::spirit::x3::eps;
 
+    BOOST_SPIRIT_ASSERT_CONSTEXPR_CTORS(char_ | char_);
 
     {
         BOOST_TEST((test("a", char_ | char_)));
@@ -241,7 +242,7 @@ main()
         BOOST_TEST(boost::get<char>(&boost::fusion::front(attr_)) == nullptr);
     }
 
-    { // ensure no unneded synthesization, copying and moving occured
+    { // ensure no unneeded synthesization, copying and moving occurred
         auto p = '{' >> int_ >> '}';
 
         stationary st { 0 };

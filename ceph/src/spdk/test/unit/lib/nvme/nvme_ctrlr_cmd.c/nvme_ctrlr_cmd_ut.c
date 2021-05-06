@@ -54,7 +54,11 @@ uint32_t fw_img_offset = 0;
 uint16_t abort_cid = 1;
 uint16_t abort_sqid = 1;
 uint32_t namespace_management_nsid = 1;
+uint64_t PRP_ENTRY_1 = 4096;
+uint64_t PRP_ENTRY_2 = 4096;
 uint32_t format_nvme_nsid = 1;
+uint32_t sanitize_nvme_nsid = 1;
+uint32_t expected_host_id_size = 0xFF;
 
 uint32_t expected_feature_ns = 2;
 uint32_t expected_feature_cdw10 = SPDK_NVME_FEAT_LBA_RANGE_TYPE;
@@ -138,6 +142,15 @@ static void verify_abort_cmd(struct nvme_request *req)
 	CU_ASSERT(req->cmd.cdw10 == (((uint32_t)abort_cid << 16) | abort_sqid));
 }
 
+static void verify_io_cmd_raw_no_payload_build(struct nvme_request *req)
+{
+	struct spdk_nvme_cmd    command = {};
+	struct nvme_payload     payload = {};
+
+	CU_ASSERT(memcmp(&req->cmd, &command, sizeof(req->cmd)) == 0);
+	CU_ASSERT(memcmp(&req->payload, &payload, sizeof(req->payload)) == 0);
+}
+
 static void verify_io_raw_cmd(struct nvme_request *req)
 {
 	struct spdk_nvme_cmd	command = {};
@@ -150,6 +163,24 @@ static void verify_io_raw_cmd_with_md(struct nvme_request *req)
 	struct spdk_nvme_cmd	command = {};
 
 	CU_ASSERT(memcmp(&req->cmd, &command, sizeof(req->cmd)) == 0);
+}
+
+static void verify_set_host_id_cmd(struct nvme_request *req)
+{
+	switch (expected_host_id_size) {
+	case 8:
+		CU_ASSERT(req->cmd.cdw10 == SPDK_NVME_FEAT_HOST_IDENTIFIER);
+		CU_ASSERT(req->cmd.cdw11 == 0);
+		CU_ASSERT(req->cmd.cdw12 == 0);
+		break;
+	case 16:
+		CU_ASSERT(req->cmd.cdw10 == SPDK_NVME_FEAT_HOST_IDENTIFIER);
+		CU_ASSERT(req->cmd.cdw11 == 1);
+		CU_ASSERT(req->cmd.cdw12 == 0);
+		break;
+	default:
+		CU_ASSERT(0);
+	}
 }
 
 static void verify_intel_smart_log_page(struct nvme_request *req)
@@ -249,6 +280,13 @@ static void verify_namespace_delete(struct nvme_request *req)
 	CU_ASSERT(req->cmd.nsid == namespace_management_nsid);
 }
 
+static void verify_doorbell_buffer_config(struct nvme_request *req)
+{
+	CU_ASSERT(req->cmd.opc == SPDK_NVME_OPC_DOORBELL_BUFFER_CONFIG);
+	CU_ASSERT(req->cmd.dptr.prp.prp1 == PRP_ENTRY_1);
+	CU_ASSERT(req->cmd.dptr.prp.prp2 == PRP_ENTRY_2);
+}
+
 static void verify_format_nvme(struct nvme_request *req)
 {
 	CU_ASSERT(req->cmd.opc == SPDK_NVME_OPC_FORMAT_NVM);
@@ -267,6 +305,14 @@ static void verify_fw_image_download(struct nvme_request *req)
 	CU_ASSERT(req->cmd.opc == SPDK_NVME_OPC_FIRMWARE_IMAGE_DOWNLOAD);
 	CU_ASSERT(req->cmd.cdw10 == (fw_img_size >> 2) - 1);
 	CU_ASSERT(req->cmd.cdw11 == fw_img_offset >> 2);
+}
+
+static void verify_nvme_sanitize(struct nvme_request *req)
+{
+	CU_ASSERT(req->cmd.opc == SPDK_NVME_OPC_SANITIZE);
+	CU_ASSERT(req->cmd.cdw10 == 0x309);
+	CU_ASSERT(req->cmd.cdw11 == 0);
+	CU_ASSERT(req->cmd.nsid == sanitize_nvme_nsid);
 }
 
 struct nvme_request *
@@ -494,6 +540,18 @@ test_abort_cmd(void)
 }
 
 static void
+test_io_cmd_raw_no_payload_build(void)
+{
+	DECLARE_AND_CONSTRUCT_CTRLR();
+	struct spdk_nvme_qpair  qpair = {};
+	struct spdk_nvme_cmd    cmd = {};
+
+	verify_fn = verify_io_cmd_raw_no_payload_build;
+
+	spdk_nvme_ctrlr_io_cmd_raw_no_payload_build(&ctrlr, &qpair, &cmd, NULL, NULL);
+}
+
+static void
 test_io_raw_cmd(void)
 {
 	DECLARE_AND_CONSTRUCT_CTRLR();
@@ -515,6 +573,33 @@ test_io_raw_cmd_with_md(void)
 	verify_fn = verify_io_raw_cmd_with_md;
 
 	spdk_nvme_ctrlr_cmd_io_raw_with_md(&ctrlr, &qpair, &cmd, NULL, 1, NULL, NULL, NULL);
+}
+
+static int
+test_set_host_id_by_case(uint32_t host_id_size)
+{
+	DECLARE_AND_CONSTRUCT_CTRLR();
+	int rc = 0;
+
+	expected_host_id_size = host_id_size;
+	verify_fn = verify_set_host_id_cmd;
+
+	rc = nvme_ctrlr_cmd_set_host_id(&ctrlr, NULL, expected_host_id_size, NULL, NULL);
+
+	return rc;
+}
+
+static void
+test_set_host_id_cmds(void)
+{
+	int rc = 0;
+
+	rc = test_set_host_id_by_case(8);
+	CU_ASSERT(rc == 0);
+	rc = test_set_host_id_by_case(16);
+	CU_ASSERT(rc == 0);
+	rc = test_set_host_id_by_case(1024);
+	CU_ASSERT(rc == -EINVAL);
 }
 
 static void
@@ -566,6 +651,16 @@ test_namespace_delete(void)
 }
 
 static void
+test_doorbell_buffer_config(void)
+{
+	DECLARE_AND_CONSTRUCT_CTRLR();
+
+	verify_fn = verify_doorbell_buffer_config;
+
+	nvme_ctrlr_cmd_doorbell_buffer_config(&ctrlr, PRP_ENTRY_1, PRP_ENTRY_2, NULL, NULL);
+}
+
+static void
 test_format_nvme(void)
 {
 	DECLARE_AND_CONSTRUCT_CTRLR();
@@ -601,41 +696,52 @@ test_fw_image_download(void)
 					 NULL, NULL);
 }
 
+static void
+test_sanitize(void)
+{
+	DECLARE_AND_CONSTRUCT_CTRLR();
+	struct spdk_nvme_sanitize sanitize = {};
+
+	sanitize.sanact = 1;
+	sanitize.ause   = 1;
+	sanitize.oipbp  = 1;
+	sanitize.ndas   = 1;
+
+	verify_fn = verify_nvme_sanitize;
+
+	nvme_ctrlr_cmd_sanitize(&ctrlr, sanitize_nvme_nsid, &sanitize, 0, NULL, NULL);
+
+}
+
 int main(int argc, char **argv)
 {
 	CU_pSuite	suite = NULL;
 	unsigned int	num_failures;
 
-	if (CU_initialize_registry() != CUE_SUCCESS) {
-		return CU_get_error();
-	}
+	CU_set_error_action(CUEA_ABORT);
+	CU_initialize_registry();
 
 	suite = CU_add_suite("nvme_ctrlr_cmd", NULL, NULL);
-	if (suite == NULL) {
-		CU_cleanup_registry();
-		return CU_get_error();
-	}
 
-	if (
-		CU_add_test(suite, "test ctrlr cmd get_log_pages", test_get_log_pages) == NULL
-		|| CU_add_test(suite, "test ctrlr cmd set_feature", test_set_feature_cmd) == NULL
-		|| CU_add_test(suite, "test ctrlr cmd set_feature_ns", test_set_feature_ns_cmd) == NULL
-		|| CU_add_test(suite, "test ctrlr cmd get_feature", test_get_feature_cmd) == NULL
-		|| CU_add_test(suite, "test ctrlr cmd get_feature_ns", test_get_feature_ns_cmd) == NULL
-		|| CU_add_test(suite, "test ctrlr cmd abort_cmd", test_abort_cmd) == NULL
-		|| CU_add_test(suite, "test ctrlr cmd io_raw_cmd", test_io_raw_cmd) == NULL
-		|| CU_add_test(suite, "test ctrlr cmd io_raw_cmd_with_md", test_io_raw_cmd_with_md) == NULL
-		|| CU_add_test(suite, "test ctrlr cmd namespace_attach", test_namespace_attach) == NULL
-		|| CU_add_test(suite, "test ctrlr cmd namespace_detach", test_namespace_detach) == NULL
-		|| CU_add_test(suite, "test ctrlr cmd namespace_create", test_namespace_create) == NULL
-		|| CU_add_test(suite, "test ctrlr cmd namespace_delete", test_namespace_delete) == NULL
-		|| CU_add_test(suite, "test ctrlr cmd format_nvme", test_format_nvme) == NULL
-		|| CU_add_test(suite, "test ctrlr cmd fw_commit", test_fw_commit) == NULL
-		|| CU_add_test(suite, "test ctrlr cmd fw_image_download", test_fw_image_download) == NULL
-	) {
-		CU_cleanup_registry();
-		return CU_get_error();
-	}
+	CU_ADD_TEST(suite, test_get_log_pages);
+	CU_ADD_TEST(suite, test_set_feature_cmd);
+	CU_ADD_TEST(suite, test_set_feature_ns_cmd);
+	CU_ADD_TEST(suite, test_get_feature_cmd);
+	CU_ADD_TEST(suite, test_get_feature_ns_cmd);
+	CU_ADD_TEST(suite, test_abort_cmd);
+	CU_ADD_TEST(suite, test_set_host_id_cmds);
+	CU_ADD_TEST(suite, test_io_cmd_raw_no_payload_build);
+	CU_ADD_TEST(suite, test_io_raw_cmd);
+	CU_ADD_TEST(suite, test_io_raw_cmd_with_md);
+	CU_ADD_TEST(suite, test_namespace_attach);
+	CU_ADD_TEST(suite, test_namespace_detach);
+	CU_ADD_TEST(suite, test_namespace_create);
+	CU_ADD_TEST(suite, test_namespace_delete);
+	CU_ADD_TEST(suite, test_doorbell_buffer_config);
+	CU_ADD_TEST(suite, test_format_nvme);
+	CU_ADD_TEST(suite, test_fw_commit);
+	CU_ADD_TEST(suite, test_fw_image_download);
+	CU_ADD_TEST(suite, test_sanitize);
 
 	CU_basic_set_mode(CU_BRM_VERBOSE);
 	CU_basic_run_tests();

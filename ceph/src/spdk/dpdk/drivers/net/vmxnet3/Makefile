@@ -8,7 +8,6 @@ include $(RTE_SDK)/mk/rte.vars.mk
 #
 LIB = librte_pmd_vmxnet3_uio.a
 
-CFLAGS += -DALLOW_EXPERIMENTAL_API
 CFLAGS += -O3
 CFLAGS += $(WERROR_FLAGS)
 
@@ -44,8 +43,6 @@ LDLIBS += -lrte_bus_pci
 VPATH += $(SRCDIR)/base
 
 EXPORT_MAP := rte_pmd_vmxnet3_version.map
-
-LIBABIVER := 1
 
 #
 # all source are stored in SRCS-y

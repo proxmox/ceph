@@ -1,23 +1,22 @@
 import { Component, OnInit } from '@angular/core';
 
-import { I18n } from '@ngx-translate/i18n-polyfill';
-import { BsModalRef, BsModalService } from 'ngx-bootstrap/modal';
-
-import * as _ from 'lodash';
+import { NgbModalRef } from '@ng-bootstrap/ng-bootstrap';
 import { forkJoin, Observable } from 'rxjs';
-import { PoolService } from '../../../shared/api/pool.service';
-import { RbdService } from '../../../shared/api/rbd.service';
-import { CriticalConfirmationModalComponent } from '../../../shared/components/critical-confirmation-modal/critical-confirmation-modal.component';
-import { ActionLabelsI18n } from '../../../shared/constants/app.constants';
-import { Icons } from '../../../shared/enum/icons.enum';
-import { NotificationType } from '../../../shared/enum/notification-type.enum';
-import { CdTableAction } from '../../../shared/models/cd-table-action';
-import { CdTableColumn } from '../../../shared/models/cd-table-column';
-import { CdTableSelection } from '../../../shared/models/cd-table-selection';
-import { Permission } from '../../../shared/models/permissions';
-import { AuthStorageService } from '../../../shared/services/auth-storage.service';
-import { NotificationService } from '../../../shared/services/notification.service';
-import { TaskListService } from '../../../shared/services/task-list.service';
+
+import { PoolService } from '~/app/shared/api/pool.service';
+import { RbdService } from '~/app/shared/api/rbd.service';
+import { CriticalConfirmationModalComponent } from '~/app/shared/components/critical-confirmation-modal/critical-confirmation-modal.component';
+import { ActionLabelsI18n } from '~/app/shared/constants/app.constants';
+import { Icons } from '~/app/shared/enum/icons.enum';
+import { NotificationType } from '~/app/shared/enum/notification-type.enum';
+import { CdTableAction } from '~/app/shared/models/cd-table-action';
+import { CdTableColumn } from '~/app/shared/models/cd-table-column';
+import { CdTableSelection } from '~/app/shared/models/cd-table-selection';
+import { Permission } from '~/app/shared/models/permissions';
+import { AuthStorageService } from '~/app/shared/services/auth-storage.service';
+import { ModalService } from '~/app/shared/services/modal.service';
+import { NotificationService } from '~/app/shared/services/notification.service';
+import { TaskListService } from '~/app/shared/services/task-list.service';
 import { RbdNamespaceFormModalComponent } from '../rbd-namespace-form/rbd-namespace-form-modal.component';
 
 @Component({
@@ -29,7 +28,7 @@ import { RbdNamespaceFormModalComponent } from '../rbd-namespace-form/rbd-namesp
 export class RbdNamespaceListComponent implements OnInit {
   columns: CdTableColumn[];
   namespaces: any;
-  modalRef: BsModalRef;
+  modalRef: NgbModalRef;
   permission: Permission;
   selection = new CdTableSelection();
   tableActions: CdTableAction[];
@@ -38,9 +37,8 @@ export class RbdNamespaceListComponent implements OnInit {
     private authStorageService: AuthStorageService,
     private rbdService: RbdService,
     private poolService: PoolService,
-    private modalService: BsModalService,
+    private modalService: ModalService,
     private notificationService: NotificationService,
-    private i18n: I18n,
     public actionLabels: ActionLabelsI18n
   ) {
     this.permission = this.authStorageService.getPermissions().rbdImage;
@@ -63,17 +61,17 @@ export class RbdNamespaceListComponent implements OnInit {
   ngOnInit() {
     this.columns = [
       {
-        name: this.i18n('Namespace'),
+        name: $localize`Namespace`,
         prop: 'namespace',
         flexGrow: 1
       },
       {
-        name: this.i18n('Pool'),
+        name: $localize`Pool`,
         prop: 'pool',
         flexGrow: 1
       },
       {
-        name: this.i18n('Total images'),
+        name: $localize`Total images`,
         prop: 'num_images',
         flexGrow: 1
       }
@@ -119,7 +117,7 @@ export class RbdNamespaceListComponent implements OnInit {
 
   createModal() {
     this.modalRef = this.modalService.show(RbdNamespaceFormModalComponent);
-    this.modalRef.content.onSubmit.subscribe(() => {
+    this.modalRef.componentInstance.onSubmit.subscribe(() => {
       this.refresh();
     });
   }
@@ -128,38 +126,32 @@ export class RbdNamespaceListComponent implements OnInit {
     const pool = this.selection.first().pool;
     const namespace = this.selection.first().namespace;
     this.modalRef = this.modalService.show(CriticalConfirmationModalComponent, {
-      initialState: {
-        itemDescription: 'Namespace',
-        itemNames: [`${pool}/${namespace}`],
-        submitAction: () =>
-          this.rbdService.deleteNamespace(pool, namespace).subscribe(
-            () => {
-              this.notificationService.show(
-                NotificationType.success,
-                this.i18n(`Deleted namespace '{{pool}}/{{namespace}}'`, {
-                  pool: pool,
-                  namespace: namespace
-                })
-              );
-              this.modalRef.hide();
-              this.refresh();
-            },
-            () => {
-              this.modalRef.content.stopLoadingSpinner();
-            }
-          )
-      }
+      itemDescription: 'Namespace',
+      itemNames: [`${pool}/${namespace}`],
+      submitAction: () =>
+        this.rbdService.deleteNamespace(pool, namespace).subscribe(
+          () => {
+            this.notificationService.show(
+              NotificationType.success,
+              $localize`Deleted namespace '${pool}/${namespace}'`
+            );
+            this.modalRef.close();
+            this.refresh();
+          },
+          () => {
+            this.modalRef.componentInstance.stopLoadingSpinner();
+          }
+        )
     });
   }
 
   getDeleteDisableDesc(): string | boolean {
     const first = this.selection.first();
-    if (first) {
-      if (first.num_images > 0) {
-        return this.i18n('Namespace contains images');
-      }
-      return false;
+
+    if (first?.num_images > 0) {
+      return $localize`Namespace contains images`;
     }
-    return true;
+
+    return !this.selection?.first();
   }
 }

@@ -9,6 +9,7 @@
 #include "ocf_env.h"
 #include "ocf/ocf_ctx.h"
 #include "ocf_logger_priv.h"
+#include "ocf_volume_priv.h"
 
 #define OCF_VOLUME_TYPE_MAX 8
 
@@ -20,7 +21,8 @@ struct ocf_ctx {
 	const struct ocf_ctx_config *cfg;
 	struct ocf_logger logger;
 	struct ocf_volume_type *volume_type[OCF_VOLUME_TYPE_MAX];
-	env_mutex lock;
+	env_atomic ref_count;
+	env_rmutex lock;
 	struct list_head caches;
 	struct {
 		struct list_head core_pool_head;
@@ -29,7 +31,6 @@ struct ocf_ctx {
 
 	struct {
 		struct ocf_req_allocator *req;
-		env_allocator *core_io_allocator;
 	} resources;
 };
 
@@ -44,6 +45,10 @@ struct ocf_ctx {
 
 #define ocf_log_stack_trace(ctx) \
 	ocf_log_stack_trace_raw(&ctx->logger)
+
+int ocf_ctx_register_volume_type_extended(ocf_ctx_t ctx, uint8_t type_id,
+		const struct ocf_volume_properties *properties,
+		const struct ocf_volume_extended *extended);
 
 /**
  * @name Environment data buffer operations wrappers

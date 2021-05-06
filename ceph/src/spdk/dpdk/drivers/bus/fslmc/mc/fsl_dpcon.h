@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: (BSD-3-Clause OR GPL-2.0)
  *
  * Copyright 2013-2016 Freescale Semiconductor Inc.
+ * Copyright 2017-2019 NXP
  *
  */
 #ifndef __FSL_DPCON_H
@@ -19,6 +20,7 @@ struct fsl_mc_io;
  */
 #define DPCON_INVALID_DPIO_ID		(int)(-1)
 
+__rte_internal
 int dpcon_open(struct fsl_mc_io *mc_io,
 	       uint32_t cmd_flags,
 	       int dpcon_id,
@@ -76,6 +78,7 @@ struct dpcon_attr {
 	uint8_t num_priorities;
 };
 
+__rte_internal
 int dpcon_get_attributes(struct fsl_mc_io *mc_io,
 			 uint32_t cmd_flags,
 			 uint16_t token,

@@ -1,4 +1,4 @@
-<cd-modal [modalRef]="modalRef">
+<cd-modal [modalRef]="activeModal">
   <ng-container i18n
                 class="modal-title">Import Bootstrap Token</ng-container>
 
@@ -87,15 +87,9 @@
       </div>
 
       <div class="modal-footer">
-        <div class="button-group text-right">
-          <cd-submit-button i18n
-                            [form]="importBootstrapForm"
-                            (submitAction)="import()">Import</cd-submit-button>
-          <cd-back-button [back]="modalRef.hide"
-                          name="Close"
-                          i18n-name>
-          </cd-back-button>
-        </div>
+        <cd-form-button-panel (submitActionEvent)="import()"
+                              [form]="importBootstrapForm"
+                              [submitText]="actionLabels.SUBMIT"></cd-form-button-panel>
       </div>
     </form>
   </ng-container>

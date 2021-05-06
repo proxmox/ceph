@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2001-2019
+ * Copyright(c) 2001-2020 Intel Corporation
  */
 
 #ifndef _ICE_BITOPS_H_
@@ -7,7 +7,6 @@
 
 /* Define the size of the bitmap chunk */
 typedef u32 ice_bitmap_t;
-
 
 /* Number of bits per bitmap chunk */
 #define BITS_PER_CHUNK		(BITS_PER_BYTE * sizeof(ice_bitmap_t))
@@ -147,22 +146,15 @@ ice_test_and_set_bit(u16 nr, ice_bitmap_t *bitmap)
  * @bmp: bitmap to set zeros
  * @size: Size of the bitmaps in bits
  *
- * This function sets bits of a bitmap to zero.
+ * Set all of the bits in a bitmap to zero. Note that this function assumes it
+ * operates on an ice_bitmap_t which was declared using ice_declare_bitmap. It
+ * will zero every bit in the last chunk, even if those bits are beyond the
+ * size.
  */
 static inline void ice_zero_bitmap(ice_bitmap_t *bmp, u16 size)
 {
-	ice_bitmap_t mask;
-	u16 i;
-
-	/* Handle all but last chunk*/
-	for (i = 0; i < BITS_TO_CHUNKS(size) - 1; i++)
-		bmp[i] = 0;
-	/* For the last chunk, we want to take care of not to modify bits
-	 * outside the size boundary. ~mask take care of all the bits outside
-	 * the boundary.
-	 */
-	mask = LAST_CHUNK_MASK(size);
-	bmp[i] &= ~mask;
+	ice_memset(bmp, 0, BITS_TO_CHUNKS(size) * sizeof(ice_bitmap_t),
+		   ICE_NONDMA_MEM);
 }
 
 /**
@@ -198,8 +190,7 @@ ice_and_bitmap(ice_bitmap_t *dst, const ice_bitmap_t *bmp1,
 	 * size value alone.
 	 */
 	mask = LAST_CHUNK_MASK(size);
-	dst[i] &= ~mask;
-	dst[i] |= (bmp1[i] & bmp2[i]) & mask;
+	dst[i] = (dst[i] & ~mask) | ((bmp1[i] & bmp2[i]) & mask);
 	res |= dst[i] & mask;
 
 	return res != 0;
@@ -233,8 +224,69 @@ ice_or_bitmap(ice_bitmap_t *dst, const ice_bitmap_t *bmp1,
 	 * within the specified size.
 	 */
 	mask = LAST_CHUNK_MASK(size);
-	dst[i] &= ~mask;
-	dst[i] |= (bmp1[i] | bmp2[i]) & mask;
+	dst[i] = (dst[i] & ~mask) | ((bmp1[i] | bmp2[i]) & mask);
+}
+
+/**
+ * ice_xor_bitmap - bitwise XOR 2 bitmaps and store result in dst bitmap
+ * @dst: Destination bitmap that receive the result of the operation
+ * @bmp1: The first bitmap of XOR operation
+ * @bmp2: The second bitmap to XOR with the first
+ * @size: Size of the bitmaps in bits
+ *
+ * This function performs a bitwise XOR on two "source" bitmaps of the same size
+ * and stores the result to "dst" bitmap. The "dst" bitmap must be of the same
+ * size as the "source" bitmaps to avoid buffer overflows.
+ */
+static inline void
+ice_xor_bitmap(ice_bitmap_t *dst, const ice_bitmap_t *bmp1,
+	       const ice_bitmap_t *bmp2, u16 size)
+{
+	ice_bitmap_t mask;
+	u16 i;
+
+	/* Handle all but last chunk*/
+	for (i = 0; i < BITS_TO_CHUNKS(size) - 1; i++)
+		dst[i] = bmp1[i] ^ bmp2[i];
+
+	/* We want to only XOR bits within the size. Furthermore, we also do
+	 * not want to modify destination bits which are beyond the specified
+	 * size. Use a bitmask to ensure that we only modify the bits that are
+	 * within the specified size.
+	 */
+	mask = LAST_CHUNK_MASK(size);
+	dst[i] = (dst[i] & ~mask) | ((bmp1[i] ^ bmp2[i]) & mask);
+}
+
+/**
+ * ice_andnot_bitmap - bitwise ANDNOT 2 bitmaps and result in dst bitmap
+ * @dst: Destination bitmap that receive the result of the operation
+ * @bmp1: The first bitmap of ANDNOT operation
+ * @bmp2: The second bitmap to ANDNOT operation
+ * @size: Size of the bitmaps in bits
+ *
+ * This function performs a bitwise ANDNOT on two "source" bitmaps of the same
+ * size, and stores the result to "dst" bitmap. The "dst" bitmap must be of the
+ * same size as the "source" bitmaps to avoid buffer overflows.
+ */
+static inline void
+ice_andnot_bitmap(ice_bitmap_t *dst, const ice_bitmap_t *bmp1,
+		  const ice_bitmap_t *bmp2, u16 size)
+{
+	ice_bitmap_t mask;
+	u16 i;
+
+	/* Handle all but last chunk*/
+	for (i = 0; i < BITS_TO_CHUNKS(size) - 1; i++)
+		dst[i] = bmp1[i] & ~bmp2[i];
+
+	/* We want to only clear bits within the size. Furthermore, we also do
+	 * not want to modify destination bits which are beyond the specified
+	 * size. Use a bitmask to ensure that we only modify the bits that are
+	 * within the specified size.
+	 */
+	mask = LAST_CHUNK_MASK(size);
+	dst[i] = (dst[i] & ~mask) | ((bmp1[i] & ~bmp2[i]) & mask);
 }
 
 /**
@@ -313,21 +365,14 @@ static inline bool ice_is_any_bit_set(ice_bitmap_t *bitmap, u16 size)
  * @src: bitmap to copy from
  * @size: Size of the bitmaps in bits
  *
- * This function copy bitmap from src to dst.
+ * This function copy bitmap from src to dst. Note that this function assumes
+ * it is operating on a bitmap declared using ice_declare_bitmap. It will copy
+ * the entire last chunk even if this contains bits beyond the size.
  */
 static inline void ice_cp_bitmap(ice_bitmap_t *dst, ice_bitmap_t *src, u16 size)
 {
-	ice_bitmap_t mask;
-	u16 i;
-
-	/* Handle all but last chunk*/
-	for (i = 0; i < BITS_TO_CHUNKS(size) - 1; i++)
-		dst[i] = src[i];
-
-	/* We want to only copy bits within the size.*/
-	mask = LAST_CHUNK_MASK(size);
-	dst[i] &= ~mask;
-	dst[i] |= src[i] & mask;
+	ice_memcpy(dst, src, BITS_TO_CHUNKS(size) * sizeof(ice_bitmap_t),
+		   ICE_NONDMA_TO_NONDMA);
 }
 
 /**
@@ -356,6 +401,5 @@ ice_cmp_bitmap(ice_bitmap_t *bmp1, ice_bitmap_t *bmp2, u16 size)
 
 	return true;
 }
-
 
 #endif /* _ICE_BITOPS_H_ */

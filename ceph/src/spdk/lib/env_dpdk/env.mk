@@ -48,10 +48,10 @@ DPDK_INC_DIR := $(DPDK_ABS_DIR)/include/dpdk
 endif
 DPDK_INC := -I$(DPDK_INC_DIR)
 
-ifneq (, $(wildcard $(DPDK_ABS_DIR)/lib/librte_eal.a))
-DPDK_LIB_EXT = .a
-else
+ifeq ($(CONFIG_SHARED),y)
 DPDK_LIB_EXT = .so
+else
+DPDK_LIB_EXT = .a
 endif
 
 DPDK_LIB_LIST = rte_eal rte_mempool rte_ring rte_mbuf
@@ -78,6 +78,11 @@ ifneq (, $(wildcard $(DPDK_ABS_DIR)/lib/librte_bus_pci.*))
 DPDK_LIB_LIST += rte_bus_pci
 endif
 
+# DPDK 20.05 eal dependency
+ifneq (, $(wildcard $(DPDK_ABS_DIR)/lib/librte_telemetry.*))
+DPDK_LIB_LIST += rte_telemetry
+endif
+
 # There are some complex dependencies when using crypto, reduce or both so
 # here we add the feature specific ones and set a flag to add the common
 # ones after that.
@@ -89,7 +94,7 @@ endif
 
 ifeq ($(CONFIG_REDUCE),y)
 DPDK_FRAMEWORK=y
-DPDK_LIB_LIST += rte_pmd_isal_comp
+DPDK_LIB_LIST += rte_pmd_isal
 endif
 
 ifeq ($(DPDK_FRAMEWORK),y)
@@ -100,23 +105,47 @@ ifneq (, $(wildcard $(DPDK_ABS_DIR)/lib/librte_kvargs.*))
 DPDK_LIB_LIST += rte_kvargs
 endif
 
+LINK_HASH=n
+
+ifeq ($(CONFIG_VHOST),y)
 ifneq ($(CONFIG_VHOST_INTERNAL_LIB),y)
-ifneq (, $(wildcard $(DPDK_ABS_DIR)/lib/librte_vhost.*))
-DPDK_LIB_LIST += rte_vhost rte_net rte_hash
+DPDK_LIB_LIST += rte_vhost rte_net
+LINK_HASH=y
 ifneq ($(DPDK_FRAMEWORK),y)
 DPDK_LIB_LIST += rte_cryptodev
 endif
 endif
 endif
 
-DPDK_LIB = $(DPDK_LIB_LIST:%=$(DPDK_ABS_DIR)/lib/lib%$(DPDK_LIB_EXT))
+ifeq ($(CONFIG_RAID5),y)
+LINK_HASH=y
+endif
+
+ifeq ($(LINK_HASH),y)
+DPDK_LIB_LIST += rte_hash
+endif
+
+define dpdk_lib_list_to_libs
+$(1:%=$(DPDK_ABS_DIR)/lib/lib%$(DPDK_LIB_EXT))
+endef
+
+define dpdk_env_linker_args
+$(ENV_DPDK_FILE) -Wl,--whole-archive,--no-as-needed $(call dpdk_lib_list_to_libs,$1) -Wl,--no-whole-archive
+endef
+
+DPDK_LIB = $(call dpdk_lib_list_to_libs,$(DPDK_LIB_LIST))
 
 # SPDK memory registration requires experimental (deprecated) rte_memory API for DPDK 18.05
 ENV_CFLAGS = $(DPDK_INC) -Wno-deprecated-declarations
 ENV_CXXFLAGS = $(ENV_CFLAGS)
+ifeq ($(CONFIG_SHARED),y)
+ENV_DPDK_FILE = $(call spdk_lib_list_to_shared_libs,env_dpdk)
+else
 ENV_DPDK_FILE = $(call spdk_lib_list_to_static_libs,env_dpdk)
+endif
 ENV_LIBS = $(ENV_DPDK_FILE) $(DPDK_LIB)
-ENV_LINKER_ARGS = $(ENV_DPDK_FILE) -Wl,--whole-archive $(DPDK_LIB) -Wl,--no-whole-archive
+ENV_LINKER_ARGS = -Wl,-rpath-link $(DPDK_ABS_DIR)/lib
+ENV_LINKER_ARGS += $(call dpdk_env_linker_args,$(DPDK_LIB_LIST))
 
 ifeq ($(CONFIG_IPSEC_MB),y)
 ENV_LINKER_ARGS += -lIPSec_MB -L$(IPSEC_MB_DIR)
@@ -128,6 +157,13 @@ endif
 
 ifneq (,$(wildcard $(DPDK_INC_DIR)/rte_config.h))
 ifneq (,$(shell grep -e "define RTE_LIBRTE_VHOST_NUMA 1" -e "define RTE_EAL_NUMA_AWARE_HUGEPAGES 1" $(DPDK_INC_DIR)/rte_config.h))
+ENV_LINKER_ARGS += -lnuma
+endif
+endif
+
+# DPDK built with meson puts those defines elsewhere
+ifneq (,$(wildcard $(DPDK_INC_DIR)/rte_build_config.h))
+ifneq (,$(shell grep -e "define RTE_LIBRTE_VHOST_NUMA 1" -e "define RTE_EAL_NUMA_AWARE_HUGEPAGES 1" $(DPDK_INC_DIR)/rte_build_config.h))
 ENV_LINKER_ARGS += -lnuma
 endif
 endif

@@ -1,12 +1,10 @@
 #!/usr/bin/env bash
 
-set -e
-
 testdir=$(readlink -f $(dirname $0))
 rootdir=$(readlink -f $testdir/../..)
 rpc_server=/var/tmp/spdk-raid.sock
 rpc_py="$rootdir/scripts/rpc.py -s $rpc_server"
-tmp_file=/tmp/raidrandtest
+tmp_file=$SPDK_TEST_STORAGE/raidrandtest
 
 source $rootdir/test/common/autotest_common.sh
 source $testdir/nbd_common.sh
@@ -15,10 +13,11 @@ function raid_unmap_data_verify() {
 	if hash blkdiscard; then
 		local nbd=$1
 		local rpc_server=$2
-		local blksize=$(lsblk -o  LOG-SEC $nbd | grep -v LOG-SEC | cut -d ' ' -f 5)
+		local blksize
+		blksize=$(lsblk -o LOG-SEC $nbd | grep -v LOG-SEC | cut -d ' ' -f 5)
 		local rw_blk_num=4096
 		local rw_len=$((blksize * rw_blk_num))
-		local unmap_blk_offs=(0   1028 321)
+		local unmap_blk_offs=(0 1028 321)
 		local unmap_blk_nums=(128 2035 456)
 		local unmap_off
 		local unmap_len
@@ -31,7 +30,7 @@ function raid_unmap_data_verify() {
 		# confirm random data is written correctly in raid0 device
 		cmp -b -n $rw_len $tmp_file $nbd
 
-		for (( i=0; i<${#unmap_blk_offs[@]}; i++ )); do
+		for ((i = 0; i < ${#unmap_blk_offs[@]}; i++)); do
 			unmap_off=$((blksize * ${unmap_blk_offs[$i]}))
 			unmap_len=$((blksize * ${unmap_blk_nums[$i]}))
 
@@ -51,7 +50,7 @@ function raid_unmap_data_verify() {
 }
 
 function on_error_exit() {
-	if [ ! -z $raid_pid ]; then
+	if [ -n "$raid_pid" ]; then
 		killprocess $raid_pid
 	fi
 
@@ -63,9 +62,11 @@ function on_error_exit() {
 function configure_raid_bdev() {
 	rm -rf $testdir/rpcs.txt
 
-	echo construct_malloc_bdev 32 512 -b Base_1 >> $testdir/rpcs.txt
-	echo construct_malloc_bdev 32 512 -b Base_2 >> $testdir/rpcs.txt
-	echo construct_raid_bdev -z 64 -r 0 -b \"Base_1 Base_2\" -n raid0 >> $testdir/rpcs.txt
+	cat <<- EOL >> $testdir/rpcs.txt
+		bdev_malloc_create 32 512 -b Base_1
+		bdev_malloc_create 32 512 -b Base_2
+		bdev_raid_create -z 64 -r 0 -b "Base_1 Base_2" -n raid0
+	EOL
 	$rpc_py < $testdir/rpcs.txt
 
 	rm -rf $testdir/rpcs.txt
@@ -83,7 +84,7 @@ function raid_function_test() {
 		waitforlisten $raid_pid $rpc_server
 
 		configure_raid_bdev
-		raid_bdev=$($rpc_py get_raid_bdevs online | cut -d ' ' -f 1)
+		raid_bdev=$($rpc_py bdev_raid_get_bdevs online | cut -d ' ' -f 1)
 		if [ $raid_bdev = "" ]; then
 			echo "No raid0 device in SPDK app"
 			return 1
@@ -92,7 +93,7 @@ function raid_function_test() {
 		nbd_start_disks $rpc_server $raid_bdev $nbd
 		count=$(nbd_get_count $rpc_server)
 		if [ $count -ne 1 ]; then
-			return -1
+			return 1
 		fi
 
 		raid_unmap_data_verify $nbd $rpc_server
@@ -100,7 +101,7 @@ function raid_function_test() {
 		nbd_stop_disks $rpc_server $nbd
 		count=$(nbd_get_count $rpc_server)
 		if [ $count -ne 0 ]; then
-			return -1
+			return 1
 		fi
 
 		killprocess $raid_pid
@@ -111,11 +112,8 @@ function raid_function_test() {
 	return 0
 }
 
-timing_enter bdev_raid
 trap 'on_error_exit;' ERR
 
 raid_function_test
 
 rm -f $tmp_file
-report_test_completion "bdev_raid"
-timing_exit bdev_raid

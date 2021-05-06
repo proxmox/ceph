@@ -11,10 +11,49 @@
 #ifndef __OCF_CORE_H__
 #define __OCF_CORE_H__
 
-#include "ocf_types.h"
 #include "ocf_volume.h"
 #include "ocf_io.h"
 #include "ocf_mngt.h"
+
+struct ocf_core_info {
+	/** Core size in cache line size unit */
+	uint64_t core_size;
+
+	/** Core size in bytes unit */
+	uint64_t core_size_bytes;
+
+	/** Fields refers ongoing flush operation */
+	struct {
+		/** Number of blocks flushed in ongoing flush operation */
+		uint32_t flushed;
+
+		/** Number of blocks left to flush in ongoing flush operation */
+		uint32_t dirty;
+	};
+
+	/** How long core is dirty in seconds unit */
+	uint32_t dirty_for;
+
+	/** Sequential cutoff threshold (in bytes) */
+	uint32_t seq_cutoff_threshold;
+
+	/** Sequential cutoff policy */
+	ocf_seq_cutoff_policy seq_cutoff_policy;
+};
+
+/**
+ * @brief Get OCF core by name
+ *
+ * @param[in] cache OCF cache
+ * @param[in] name Core name
+ * @param[in] name_len Core name length
+ * @param[out] core OCF core handle
+ *
+ * @retval 0 Get cache successfully
+ * @retval -OCF_ERR_CORE_NOT_EXIST Core with given name doesn't exist
+ */
+int ocf_core_get_by_name(ocf_cache_t cache, const char *name, size_t name_len,
+		ocf_core_t *core);
 
 /**
  * @brief Obtain cache object from core
@@ -74,27 +113,6 @@ uint32_t ocf_core_get_seq_cutoff_threshold(ocf_core_t core);
 ocf_seq_cutoff_policy ocf_core_get_seq_cutoff_policy(ocf_core_t core);
 
 /**
- * @brief Get ID of given core object
- *
- * @param[in] core Core object
- *
- * @retval Core ID
- */
-ocf_core_id_t ocf_core_get_id(ocf_core_t core);
-
-/**
- * @brief Set name of given core object
- *
- * @param[in] core Core object
- * @param[in] src Source of Core name
- * @param[in] src_size Size of src
- *
- * @retval 0 Success
- * @retval Non-zero Fail
- */
-int ocf_core_set_name(ocf_core_t core, const char *src, size_t src_size);
-
-/**
  * @brief Get name of given core object
  *
  * @param[in] core Core object
@@ -113,38 +131,27 @@ const char *ocf_core_get_name(ocf_core_t core);
 ocf_core_state_t ocf_core_get_state(ocf_core_t core);
 
 /**
- * @brief Obtain core object of given ID from cache
- *
- * @param[in] cache Cache object
- * @param[in] id Core ID
- * @param[out] core Core object
- *
- * @retval 0 Success
- * @retval Non-zero Core getting failed
- */
-int ocf_core_get(ocf_cache_t cache, ocf_core_id_t id, ocf_core_t *core);
-
-/**
  * @brief Allocate new ocf_io
  *
  * @param[in] core Core object
+ * @param[in] queue IO queue handle
+ * @param[in] addr OCF IO destination address
+ * @param[in] bytes OCF IO size in bytes
+ * @param[in] dir OCF IO direction
+ * @param[in] io_class OCF IO destination class
+ * @param[in] flags OCF IO flags
  *
  * @retval ocf_io object
  */
-static inline struct ocf_io *ocf_core_new_io(ocf_core_t core)
+static inline struct ocf_io *ocf_core_new_io(ocf_core_t core, ocf_queue_t queue,
+		uint64_t addr, uint32_t bytes, uint32_t dir,
+		uint32_t io_class, uint64_t flags)
 {
 	ocf_volume_t volume = ocf_core_get_front_volume(core);
 
-	return ocf_volume_new_io(volume);
+	return ocf_volume_new_io(volume, queue, addr, bytes, dir,
+			io_class, flags);
 }
-
-/**
- * @brief Submit ocf_io
- *
- * @param[in] io IO to be submitted
- * @param[in] mode Cache mode to be enforced
- */
-void ocf_core_submit_io_mode(struct ocf_io *io, ocf_cache_mode_t cache_mode);
 
 /**
  * @brief Submit ocf_io
@@ -163,7 +170,7 @@ static inline void ocf_core_submit_io(struct ocf_io *io)
  * @param[in] io IO to be submitted
  *
  * @retval 0 IO has been submitted successfully
- * @retval Non-zero Fast submit failed. Try to submit IO with ocf_submit_io()
+ * @retval Non-zero Fast submit failed. Try to submit IO with ocf_core_submit_io()
  */
 int ocf_core_submit_io_fast(struct ocf_io *io);
 
@@ -212,5 +219,33 @@ typedef int (*ocf_core_visitor_t)(ocf_core_t core, void *cntx);
  */
 int ocf_core_visit(ocf_cache_t cache, ocf_core_visitor_t visitor, void *cntx,
 		bool only_opened);
+
+/**
+ * @brief Get info of given core object
+ *
+ * @param[in] core Core object
+ * @param[out] info Core info structure
+ *
+ * @retval 0 Success
+ * @retval Non-zero Fail
+ */
+int ocf_core_get_info(ocf_core_t core, struct ocf_core_info *info);
+
+/**
+ * @brief Set core private data
+ *
+ * @param[in] core Core object
+ * @param[in] priv Private data
+ */
+void ocf_core_set_priv(ocf_core_t core, void *priv);
+
+/**
+ * @brief Get core private data
+ *
+ * @param[in] core Core object
+ *
+ * @retval Private data
+ */
+void *ocf_core_get_priv(ocf_core_t core);
 
 #endif /* __OCF_CORE_H__ */

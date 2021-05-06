@@ -16,30 +16,35 @@
  */
 
 int ocf_volume_type_init(struct ocf_volume_type **type,
-		const struct ocf_volume_properties *properties)
+		const struct ocf_volume_properties *properties,
+		const struct ocf_volume_extended *extended)
 {
 	const struct ocf_volume_ops *ops = &properties->ops;
+	ocf_io_allocator_type_t allocator_type;
 	struct ocf_volume_type *new_type;
 	int ret;
 
 	if (!ops->submit_io || !ops->open || !ops->close ||
 			!ops->get_max_io_size || !ops->get_length) {
-		return -EINVAL;
+		return -OCF_ERR_INVAL;
 	}
 
 	if (properties->caps.atomic_writes && !ops->submit_metadata)
-		return -EINVAL;
+		return -OCF_ERR_INVAL;
 
 	new_type = env_zalloc(sizeof(**type), ENV_MEM_NORMAL);
 	if (!new_type)
 		return -OCF_ERR_NO_MEM;
 
-	new_type->allocator = ocf_io_allocator_create(
+	if (extended && extended->allocator_type)
+		allocator_type = extended->allocator_type;
+	else
+		allocator_type = ocf_io_allocator_get_type_default();
+
+	ret = ocf_io_allocator_init(&new_type->allocator, allocator_type,
 			properties->io_priv_size, properties->name);
-	if (!new_type->allocator) {
-		ret = -ENOMEM;
+	if (ret)
 		goto err;
-	}
 
 	new_type->properties = properties;
 
@@ -54,7 +59,10 @@ err:
 
 void ocf_volume_type_deinit(struct ocf_volume_type *type)
 {
-	ocf_io_allocator_destroy(type->allocator);
+	if (type->properties->deinit)
+		type->properties->deinit();
+
+	ocf_io_allocator_deinit(&type->allocator);
 	env_free(type);
 }
 
@@ -65,12 +73,14 @@ void ocf_volume_type_deinit(struct ocf_volume_type *type)
 int ocf_volume_init(ocf_volume_t volume, ocf_volume_type_t type,
 		struct ocf_volume_uuid *uuid, bool uuid_copy)
 {
-	uint32_t priv_size = type->properties->volume_priv_size;
+	uint32_t priv_size;
 	void *data;
 	int ret;
 
 	if (!volume || !type)
 		return -OCF_ERR_INVAL;
+
+	priv_size = type->properties->volume_priv_size;
 
 	volume->opened = false;
 	volume->type = type;
@@ -123,8 +133,11 @@ void ocf_volume_deinit(ocf_volume_t volume)
 
 	env_free(volume->priv);
 
-	if (volume->uuid_copy && volume->uuid.data)
+	if (volume->uuid_copy && volume->uuid.data) {
 		env_vfree(volume->uuid.data);
+		volume->uuid.data = NULL;
+		volume->uuid.size = 0;
+	}
 }
 
 void ocf_volume_move(ocf_volume_t volume, ocf_volume_t from)
@@ -224,47 +237,55 @@ int ocf_volume_is_atomic(ocf_volume_t volume)
 	return volume->type->properties->caps.atomic_writes;
 }
 
-struct ocf_io *ocf_volume_new_io(ocf_volume_t volume)
+struct ocf_io *ocf_volume_new_io(ocf_volume_t volume, ocf_queue_t queue,
+		uint64_t addr, uint32_t bytes, uint32_t dir,
+		uint32_t io_class, uint64_t flags)
 {
-	return ocf_io_new(volume);
+	return ocf_io_new(volume, queue, addr, bytes, dir, io_class, flags);
 }
 
 void ocf_volume_submit_io(struct ocf_io *io)
 {
-	ENV_BUG_ON(!io->volume->type->properties->ops.submit_io);
+	ocf_volume_t volume = ocf_io_get_volume(io);
 
-	if (!io->volume->opened)
-		io->end(io, -EIO);
+	ENV_BUG_ON(!volume->type->properties->ops.submit_io);
 
-	io->volume->type->properties->ops.submit_io(io);
+	if (!volume->opened)
+		io->end(io, -OCF_ERR_IO);
+
+	volume->type->properties->ops.submit_io(io);
 }
 
 void ocf_volume_submit_flush(struct ocf_io *io)
 {
-	ENV_BUG_ON(!io->volume->type->properties->ops.submit_flush);
+	ocf_volume_t volume = ocf_io_get_volume(io);
 
-	if (!io->volume->opened)
-		io->end(io, -EIO);
+	ENV_BUG_ON(!volume->type->properties->ops.submit_flush);
 
-	if (!io->volume->type->properties->ops.submit_flush) {
-		ocf_io_end(io, 0); 
+	if (!volume->opened)
+		io->end(io, -OCF_ERR_IO);
+
+	if (!volume->type->properties->ops.submit_flush) {
+		ocf_io_end(io, 0);
 		return;
 	}
 
-	io->volume->type->properties->ops.submit_flush(io);
+	volume->type->properties->ops.submit_flush(io);
 }
 
 void ocf_volume_submit_discard(struct ocf_io *io)
 {
-	if (!io->volume->opened)
-		io->end(io, -EIO);
+	ocf_volume_t volume = ocf_io_get_volume(io);
 
-	if (!io->volume->type->properties->ops.submit_discard) {
-		ocf_io_end(io, 0); 
+	if (!volume->opened)
+		io->end(io, -OCF_ERR_IO);
+
+	if (!volume->type->properties->ops.submit_discard) {
+		ocf_io_end(io, 0);
 		return;
 	}
 
-	io->volume->type->properties->ops.submit_discard(io);
+	volume->type->properties->ops.submit_discard(io);
 }
 
 int ocf_volume_open(ocf_volume_t volume, void *volume_params)
@@ -289,6 +310,7 @@ static void ocf_volume_close_end(void *ctx)
 	env_completion *cmpl = ctx;
 
 	env_completion_complete(cmpl);
+	env_completion_destroy(cmpl);
 }
 
 void ocf_volume_close(ocf_volume_t volume)

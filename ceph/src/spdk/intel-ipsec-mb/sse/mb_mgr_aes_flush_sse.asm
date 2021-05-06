@@ -25,18 +25,18 @@
 ;; OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ;;
 
-%include "os.asm"
+%include "include/os.asm"
 %include "job_aes_hmac.asm"
 %include "mb_mgr_datastruct.asm"
 
-%include "reg_sizes.asm"
+%include "include/reg_sizes.asm"
 
 %ifndef AES_CBC_ENC_X4
 %define AES_CBC_ENC_X4 aes_cbc_enc_128_x4
 %define FLUSH_JOB_AES_ENC flush_job_aes128_enc_sse
 %endif
 
-; void AES_CBC_ENC_X4(AES_ARGS_x8 *args, UINT64 len_in_bytes);
+; void AES_CBC_ENC_X4(AES_ARGS *args, UINT64 len_in_bytes);
 extern AES_CBC_ENC_X4
 
 section .data
@@ -173,17 +173,24 @@ APPEND(skip_,I):
 len_is_0:
 	; process completed job "idx"
 	mov	job_rax, [state + _aes_job_in_lane + idx*8]
-; Don't write back IV
-;	mov	iv, [job_rax + _iv]
 	mov	unused_lanes, [state + _aes_unused_lanes]
 	mov	qword [state + _aes_job_in_lane + idx*8], 0
 	or	dword [job_rax + _status], STS_COMPLETED_AES
 	shl	unused_lanes, 8
 	or	unused_lanes, idx
-;	shl	idx, 4 ; multiply by 16
 	mov	[state + _aes_unused_lanes], unused_lanes
-;	movdqa	xmm0, [state + _aes_args_IV + idx]
-;	movdqu	[iv], xmm0
+%ifdef SAFE_DATA
+        ;; Clear IVs of returned job and "NULL lanes"
+        pxor    xmm0, xmm0
+%assign I 0
+%rep 4
+	cmp	qword [state + _aes_job_in_lane + I*8], 0
+	jne	APPEND(skip_clear_,I)
+	movdqa	[state + _aes_args_IV + I*16], xmm0
+APPEND(skip_clear_,I):
+%assign I (I+1)
+%endrep
+%endif
 
 return:
 

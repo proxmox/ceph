@@ -183,7 +183,7 @@ register_ctrlr(struct spdk_nvme_ctrlr *ctrlr)
 	/* Only register the first namespace. */
 	if (num_ns < 1) {
 		fprintf(stderr, "controller found with no namespaces\n");
-		exit(1);
+		return;
 	}
 
 	register_ns(ctrlr, spdk_nvme_ctrlr_get_ns(ctrlr, 1));
@@ -325,9 +325,9 @@ submit_single_io(void)
 
 	if (rc != 0) {
 		fprintf(stderr, "starting I/O failed\n");
+	} else {
+		g_ns->current_queue_depth++;
 	}
-
-	g_ns->current_queue_depth++;
 }
 
 static void
@@ -684,15 +684,15 @@ int main(int argc, char **argv)
 		return 1;
 	}
 
-	g_task = spdk_dma_zmalloc(sizeof(struct perf_task), 0, NULL);
+	g_task = spdk_zmalloc(sizeof(struct perf_task), 0, NULL, SPDK_ENV_LCORE_ID_ANY, SPDK_MALLOC_DMA);
 	if (g_task == NULL) {
 		fprintf(stderr, "g_task alloc failed\n");
 		exit(1);
 	}
 
-	g_task->buf = spdk_dma_zmalloc(g_io_size_bytes, 0x1000, NULL);
+	g_task->buf = spdk_zmalloc(g_io_size_bytes, 0x1000, NULL, SPDK_ENV_LCORE_ID_ANY, SPDK_MALLOC_DMA);
 	if (g_task->buf == NULL) {
-		fprintf(stderr, "g_task->buf spdk_dma_zmalloc failed\n");
+		fprintf(stderr, "g_task->buf spdk_zmalloc failed\n");
 		exit(1);
 	}
 

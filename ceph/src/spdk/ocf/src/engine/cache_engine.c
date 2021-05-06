@@ -15,13 +15,14 @@
 #include "engine_wi.h"
 #include "engine_wa.h"
 #include "engine_wb.h"
+#include "engine_wo.h"
 #include "engine_fast.h"
 #include "engine_discard.h"
 #include "engine_d2c.h"
 #include "engine_ops.h"
 #include "../utils/utils_part.h"
 #include "../utils/utils_refcnt.h"
-#include "../utils/utils_req.h"
+#include "../ocf_request.h"
 #include "../metadata/metadata.h"
 #include "../eviction/eviction.h"
 
@@ -32,6 +33,7 @@ enum ocf_io_if_type {
 	OCF_IO_WA_IF,
 	OCF_IO_WI_IF,
 	OCF_IO_PT_IF,
+	OCF_IO_WO_IF,
 	OCF_IO_MAX_IF,
 
 	/* Private OCF interfaces */
@@ -68,6 +70,11 @@ static const struct ocf_io_if IO_IFS[OCF_IO_PRIV_MAX_IF] = {
 		.write = ocf_write_wi,
 		.name = "Pass Through",
 	},
+	[OCF_IO_WO_IF] = {
+		.read = ocf_read_wo,
+		.write = ocf_write_wb,
+		.name = "Write Only",
+	},
 	[OCF_IO_FAST_IF] = {
 		.read = ocf_read_fast,
 		.write = ocf_write_fast,
@@ -78,7 +85,7 @@ static const struct ocf_io_if IO_IFS[OCF_IO_PRIV_MAX_IF] = {
 		.write = ocf_discard,
 		.name = "Discard",
 	},
-	[OCF_IO_D2C_IF] =  {
+	[OCF_IO_D2C_IF] = {
 		.read = ocf_io_d2c,
 		.write = ocf_io_d2c,
 		.name = "Direct to core",
@@ -95,6 +102,7 @@ static const struct ocf_io_if *cache_mode_io_if_map[ocf_req_cache_mode_max] = {
 	[ocf_req_cache_mode_wb] = &IO_IFS[OCF_IO_WB_IF],
 	[ocf_req_cache_mode_wa] = &IO_IFS[OCF_IO_WA_IF],
 	[ocf_req_cache_mode_wi] = &IO_IFS[OCF_IO_WI_IF],
+	[ocf_req_cache_mode_wo] = &IO_IFS[OCF_IO_WO_IF],
 	[ocf_req_cache_mode_pt] = &IO_IFS[OCF_IO_PT_IF],
 	[ocf_req_cache_mode_fast] = &IO_IFS[OCF_IO_FAST_IF],
 	[ocf_req_cache_mode_d2c] = &IO_IFS[OCF_IO_D2C_IF],
@@ -158,10 +166,11 @@ bool ocf_fallback_pt_is_on(ocf_cache_t cache)
 
 static inline bool ocf_seq_cutoff_is_on(ocf_cache_t cache)
 {
-	if (!env_atomic_read(&cache->attached))
+	if (!ocf_cache_is_device_attached(cache))
 		return false;
 
-	return (cache->device->freelist_part->curr_size <= SEQ_CUTOFF_FULL_MARGIN);
+	return (ocf_freelist_num_free(cache->freelist) <=
+			SEQ_CUTOFF_FULL_MARGIN);
 }
 
 bool ocf_seq_cutoff_check(ocf_core_t core, uint32_t dir, uint64_t addr,
@@ -178,6 +187,7 @@ bool ocf_seq_cutoff_check(ocf_core_t core, uint32_t dir, uint64_t addr,
 	case ocf_seq_cutoff_policy_full:
 		if (ocf_seq_cutoff_is_on(cache))
 			break;
+		return false;
 
 	case ocf_seq_cutoff_policy_never:
 		return false;
@@ -213,38 +223,55 @@ void ocf_seq_cutoff_update(ocf_core_t core, struct ocf_request *req)
 	core->seq_cutoff.bytes += req->byte_length;
 }
 
-ocf_cache_mode_t ocf_get_effective_cache_mode(ocf_cache_t cache,
-		ocf_core_t core, struct ocf_io *io)
+void ocf_resolve_effective_cache_mode(ocf_cache_t cache,
+		ocf_core_t core, struct ocf_request *req)
 {
-	ocf_cache_mode_t mode;
+	if (req->d2c) {
+		req->cache_mode = ocf_req_cache_mode_d2c;
+		return;
+	}
 
-	if (cache->pt_unaligned_io && !ocf_req_is_4k(io->addr, io->bytes))
-		return ocf_cache_mode_pt;
+	if (ocf_fallback_pt_is_on(cache)){
+		req->cache_mode = ocf_req_cache_mode_pt;
+		return;
+	}
 
-	mode = ocf_part_get_cache_mode(cache,
-			ocf_part_class2id(cache, io->io_class));
-	if (!ocf_cache_mode_is_valid(mode))
-		mode = cache->conf_meta->cache_mode;
+	if (cache->pt_unaligned_io && !ocf_req_is_4k(req->byte_position,
+						     req->byte_length)) {
+		req->cache_mode = ocf_req_cache_mode_pt;
+		return;
+	}
 
-	if (ocf_seq_cutoff_check(core, io->dir, io->addr, io->bytes))
-		mode = ocf_cache_mode_pt;
+	if (ocf_seq_cutoff_check(core, req->rw, req->byte_position,
+				 req->byte_length)) {
+		req->cache_mode = ocf_req_cache_mode_pt;
+		req->seq_cutoff = 1;
+		return;
+	}
 
-	if (ocf_fallback_pt_is_on(cache))
-		mode = ocf_cache_mode_pt;
+	req->cache_mode = ocf_part_get_cache_mode(cache,
+				ocf_part_class2id(cache, req->part_id));
+	if (!ocf_cache_mode_is_valid(req->cache_mode))
+		req->cache_mode = cache->conf_meta->cache_mode;
 
-	return mode;
+	if (req->rw == OCF_WRITE &&
+	    ocf_req_cache_mode_has_lazy_write(req->cache_mode) &&
+	    ocf_req_set_dirty(req)) {
+		req->cache_mode = ocf_req_cache_mode_wt;
+	}
 }
 
-int ocf_engine_hndl_req(struct ocf_request *req,
-		ocf_req_cache_mode_t req_cache_mode)
+int ocf_engine_hndl_req(struct ocf_request *req)
 {
 	ocf_cache_t cache = req->cache;
 
 	OCF_CHECK_NULL(cache);
 
-	req->io_if = ocf_get_io_if(req_cache_mode);
+	req->io_if = ocf_get_io_if(req->cache_mode);
 	if (!req->io_if)
-		return -EINVAL;
+		return -OCF_ERR_INVAL;
+
+	ocf_req_get(req);
 
 	/* Till OCF engine is not synchronous fully need to push OCF request
 	 * to into OCF workers
@@ -255,15 +282,16 @@ int ocf_engine_hndl_req(struct ocf_request *req,
 	return 0;
 }
 
-int ocf_engine_hndl_fast_req(struct ocf_request *req,
-		ocf_req_cache_mode_t req_cache_mode)
+int ocf_engine_hndl_fast_req(struct ocf_request *req)
 {
 	const struct ocf_io_if *io_if;
 	int ret;
 
-	io_if = ocf_get_io_if(req_cache_mode);
+	io_if = ocf_get_io_if(req->cache_mode);
 	if (!io_if)
-		return -EINVAL;
+		return -OCF_ERR_INVAL;
+
+	ocf_req_get(req);
 
 	switch (req->rw) {
 	case OCF_READ:
@@ -273,8 +301,11 @@ int ocf_engine_hndl_fast_req(struct ocf_request *req,
 		ret = io_if->write(req);
 		break;
 	default:
-		return OCF_FAST_PATH_NO;
+		ret = OCF_FAST_PATH_NO;
 	}
+
+	if (ret == OCF_FAST_PATH_NO)
+		ocf_req_put(req);
 
 	return ret;
 }
@@ -291,6 +322,8 @@ static void ocf_engine_hndl_2dc_req(struct ocf_request *req)
 
 void ocf_engine_hndl_discard_req(struct ocf_request *req)
 {
+	ocf_req_get(req);
+
 	if (req->d2c) {
 		ocf_engine_hndl_2dc_req(req);
 		return;
@@ -306,6 +339,8 @@ void ocf_engine_hndl_discard_req(struct ocf_request *req)
 
 void ocf_engine_hndl_ops_req(struct ocf_request *req)
 {
+	ocf_req_get(req);
+
 	if (req->d2c)
 		req->io_if = &IO_IFS[OCF_IO_D2C_IF];
 	else

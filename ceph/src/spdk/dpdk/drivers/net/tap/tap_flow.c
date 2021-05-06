@@ -537,18 +537,20 @@ tap_flow_create_eth(const struct rte_flow_item *item, void *data)
 	if (!flow)
 		return 0;
 	msg = &flow->msg;
-	if (!is_zero_ether_addr(&mask->dst)) {
-		tap_nlattr_add(&msg->nh, TCA_FLOWER_KEY_ETH_DST, ETHER_ADDR_LEN,
+	if (!rte_is_zero_ether_addr(&mask->dst)) {
+		tap_nlattr_add(&msg->nh, TCA_FLOWER_KEY_ETH_DST,
+			RTE_ETHER_ADDR_LEN,
 			   &spec->dst.addr_bytes);
 		tap_nlattr_add(&msg->nh,
-			   TCA_FLOWER_KEY_ETH_DST_MASK, ETHER_ADDR_LEN,
+			   TCA_FLOWER_KEY_ETH_DST_MASK, RTE_ETHER_ADDR_LEN,
 			   &mask->dst.addr_bytes);
 	}
-	if (!is_zero_ether_addr(&mask->src)) {
-		tap_nlattr_add(&msg->nh, TCA_FLOWER_KEY_ETH_SRC, ETHER_ADDR_LEN,
-			   &spec->src.addr_bytes);
+	if (!rte_is_zero_ether_addr(&mask->src)) {
+		tap_nlattr_add(&msg->nh, TCA_FLOWER_KEY_ETH_SRC,
+			RTE_ETHER_ADDR_LEN,
+			&spec->src.addr_bytes);
 		tap_nlattr_add(&msg->nh,
-			   TCA_FLOWER_KEY_ETH_SRC_MASK, ETHER_ADDR_LEN,
+			   TCA_FLOWER_KEY_ETH_SRC_MASK, RTE_ETHER_ADDR_LEN,
 			   &mask->src.addr_bytes);
 	}
 	return 0;
@@ -1378,7 +1380,7 @@ tap_flow_create(struct rte_eth_dev *dev,
 			NULL, "priority value too big");
 		goto fail;
 	}
-	flow = rte_malloc(__func__, sizeof(struct rte_flow), 0);
+	flow = rte_zmalloc(__func__, sizeof(struct rte_flow), 0);
 	if (!flow) {
 		rte_flow_error_set(error, ENOMEM, RTE_FLOW_ERROR_TYPE_HANDLE,
 				   NULL, "cannot allocate memory for rte_flow");
@@ -1414,7 +1416,7 @@ tap_flow_create(struct rte_eth_dev *dev,
 	 * to the local pmd->if_index.
 	 */
 	if (pmd->remote_if_index) {
-		remote_flow = rte_malloc(__func__, sizeof(struct rte_flow), 0);
+		remote_flow = rte_zmalloc(__func__, sizeof(struct rte_flow), 0);
 		if (!remote_flow) {
 			rte_flow_error_set(
 				error, ENOMEM, RTE_FLOW_ERROR_TYPE_HANDLE, NULL,
@@ -1691,7 +1693,7 @@ int tap_flow_implicit_create(struct pmd_internals *pmd,
 		}
 	};
 
-	remote_flow = rte_malloc(__func__, sizeof(struct rte_flow), 0);
+	remote_flow = rte_zmalloc(__func__, sizeof(struct rte_flow), 0);
 	if (!remote_flow) {
 		TAP_LOG(ERR, "Cannot allocate memory for rte_flow");
 		goto fail;
@@ -1894,7 +1896,7 @@ static int rss_enable(struct pmd_internals *pmd,
 			return -ENOTSUP;
 		}
 
-		rss_flow = rte_malloc(__func__, sizeof(struct rte_flow), 0);
+		rss_flow = rte_zmalloc(__func__, sizeof(struct rte_flow), 0);
 		if (!rss_flow) {
 			TAP_LOG(ERR,
 				"Cannot allocate memory for rte_flow");

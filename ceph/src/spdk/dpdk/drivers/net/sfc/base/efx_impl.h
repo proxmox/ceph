@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  *
- * Copyright (c) 2007-2018 Solarflare Communications Inc.
- * All rights reserved.
+ * Copyright(c) 2019-2020 Xilinx, Inc.
+ * Copyright(c) 2007-2019 Solarflare Communications Inc.
  */
 
 #ifndef	_SYS_EFX_IMPL_H
@@ -58,6 +58,8 @@ extern "C" {
 #define	EFX_MOD_FILTER		0x00001000
 #define	EFX_MOD_LIC		0x00002000
 #define	EFX_MOD_TUNNEL		0x00004000
+#define	EFX_MOD_EVB		0x00008000
+#define	EFX_MOD_PROXY		0x00010000
 
 #define	EFX_RESET_PHY		0x00000001
 #define	EFX_RESET_RXQ_ERR	0x00000002
@@ -244,12 +246,31 @@ typedef struct efx_phy_ops_s {
 } efx_phy_ops_t;
 
 #if EFSYS_OPT_FILTER
+
+/*
+ * Policy for replacing existing filter when inserting a new one.
+ * Note that all policies allow for storing the new lower priority
+ * filters as overridden by existing higher priority ones. It is needed
+ * to restore the lower priority filters on higher priority ones removal.
+ */
+typedef enum efx_filter_replacement_policy_e {
+	/* Cannot replace existing filter */
+	EFX_FILTER_REPLACEMENT_NEVER,
+	/* Higher priority filters can replace lower priotiry ones */
+	EFX_FILTER_REPLACEMENT_HIGHER_PRIORITY,
+	/*
+	 * Higher priority filters can replace lower priority ones and
+	 * equal priority filters can replace each other.
+	 */
+	EFX_FILTER_REPLACEMENT_HIGHER_OR_EQUAL_PRIORITY,
+} efx_filter_replacement_policy_t;
+
 typedef struct efx_filter_ops_s {
 	efx_rc_t	(*efo_init)(efx_nic_t *);
 	void		(*efo_fini)(efx_nic_t *);
 	efx_rc_t	(*efo_restore)(efx_nic_t *);
 	efx_rc_t	(*efo_add)(efx_nic_t *, efx_filter_spec_t *,
-				   boolean_t may_replace);
+				   efx_filter_replacement_policy_t policy);
 	efx_rc_t	(*efo_delete)(efx_nic_t *, efx_filter_spec_t *);
 	efx_rc_t	(*efo_supported_filters)(efx_nic_t *, uint32_t *,
 				   size_t, size_t *);
@@ -286,8 +307,10 @@ typedef struct efx_port_s {
 	uint8_t			ep_mac_addr[6];
 	efx_link_mode_t		ep_link_mode;
 	boolean_t		ep_all_unicst;
+	boolean_t		ep_all_unicst_inserted;
 	boolean_t		ep_mulcst;
 	boolean_t		ep_all_mulcst;
+	boolean_t		ep_all_mulcst_inserted;
 	boolean_t		ep_brdcst;
 	unsigned int		ep_fcntl;
 	boolean_t		ep_fcntl_autoneg;
@@ -501,7 +524,8 @@ typedef struct efx_nvram_ops_s {
 #endif	/* EFSYS_OPT_DIAG */
 	efx_rc_t	(*envo_type_to_partn)(efx_nic_t *, efx_nvram_type_t,
 					    uint32_t *);
-	efx_rc_t	(*envo_partn_size)(efx_nic_t *, uint32_t, size_t *);
+	efx_rc_t	(*envo_partn_info)(efx_nic_t *, uint32_t,
+					    efx_nvram_info_t *);
 	efx_rc_t	(*envo_partn_rw_start)(efx_nic_t *, uint32_t, size_t *);
 	efx_rc_t	(*envo_partn_read)(efx_nic_t *, uint32_t,
 					    unsigned int, caddr_t, size_t);
@@ -562,10 +586,7 @@ efx_mcdi_nvram_metadata(
 efx_mcdi_nvram_info(
 	__in			efx_nic_t *enp,
 	__in			uint32_t partn,
-	__out_opt		size_t *sizep,
-	__out_opt		uint32_t *addressp,
-	__out_opt		uint32_t *erase_sizep,
-	__out_opt		uint32_t *write_sizep);
+	__out			efx_nvram_info_t *eni);
 
 	__checkReturn		efx_rc_t
 efx_mcdi_nvram_update_start(
@@ -596,11 +617,15 @@ efx_mcdi_nvram_write(
 	__in_bcount(size)	caddr_t data,
 	__in			size_t size);
 
+#define	EFX_NVRAM_UPDATE_FLAGS_BACKGROUND	0x00000001
+#define	EFX_NVRAM_UPDATE_FLAGS_POLL		0x00000002
+
 	__checkReturn		efx_rc_t
 efx_mcdi_nvram_update_finish(
 	__in			efx_nic_t *enp,
 	__in			uint32_t partn,
 	__in			boolean_t reboot,
+	__in			uint32_t flags,
 	__out_opt		uint32_t *verify_resultp);
 
 #if EFSYS_OPT_DIAG
@@ -647,6 +672,80 @@ typedef struct efx_lic_ops_s {
 
 #endif
 
+#if EFSYS_OPT_EVB
+
+struct efx_vswitch_s {
+	efx_nic_t		*ev_enp;
+	efx_vswitch_id_t	ev_vswitch_id;
+	uint32_t		ev_num_vports;
+	/*
+	 * Vport configuration array: index 0 to store PF configuration
+	 * and next ev_num_vports-1 entries hold VFs configuration.
+	 */
+	efx_vport_config_t	*ev_evcp;
+};
+
+typedef struct efx_evb_ops_s {
+	efx_rc_t	(*eeo_init)(efx_nic_t *);
+	void		(*eeo_fini)(efx_nic_t *);
+	efx_rc_t	(*eeo_vswitch_alloc)(efx_nic_t *, efx_vswitch_id_t *);
+	efx_rc_t	(*eeo_vswitch_free)(efx_nic_t *, efx_vswitch_id_t);
+	efx_rc_t	(*eeo_vport_alloc)(efx_nic_t *, efx_vswitch_id_t,
+						efx_vport_type_t, uint16_t,
+						boolean_t, efx_vport_id_t *);
+	efx_rc_t	(*eeo_vport_free)(efx_nic_t *, efx_vswitch_id_t,
+						efx_vport_id_t);
+	efx_rc_t	(*eeo_vport_mac_addr_add)(efx_nic_t *, efx_vswitch_id_t,
+						efx_vport_id_t, uint8_t *);
+	efx_rc_t	(*eeo_vport_mac_addr_del)(efx_nic_t *, efx_vswitch_id_t,
+						efx_vport_id_t, uint8_t *);
+	efx_rc_t	(*eeo_vadaptor_alloc)(efx_nic_t *, efx_vswitch_id_t,
+						efx_vport_id_t);
+	efx_rc_t	(*eeo_vadaptor_free)(efx_nic_t *, efx_vswitch_id_t,
+						efx_vport_id_t);
+	efx_rc_t	(*eeo_vport_assign)(efx_nic_t *, efx_vswitch_id_t,
+						efx_vport_id_t, uint32_t);
+	efx_rc_t	(*eeo_vport_reconfigure)(efx_nic_t *, efx_vswitch_id_t,
+							efx_vport_id_t,
+							uint16_t *, uint8_t *,
+							boolean_t *);
+	efx_rc_t	(*eeo_vport_stats)(efx_nic_t *, efx_vswitch_id_t,
+						efx_vport_id_t, efsys_mem_t *);
+} efx_evb_ops_t;
+
+extern __checkReturn	boolean_t
+efx_is_zero_eth_addr(
+	__in_bcount(EFX_MAC_ADDR_LEN)	const uint8_t *addrp);
+
+#endif /* EFSYS_OPT_EVB */
+
+#if EFSYS_OPT_MCDI_PROXY_AUTH_SERVER
+
+#define	EFX_PROXY_CONFIGURE_MAGIC	0xAB2015EF
+
+
+typedef struct efx_proxy_ops_s {
+	efx_rc_t	(*epo_init)(efx_nic_t *);
+	void		(*epo_fini)(efx_nic_t *);
+	efx_rc_t	(*epo_mc_config)(efx_nic_t *, efsys_mem_t *,
+					efsys_mem_t *, efsys_mem_t *,
+					uint32_t, uint32_t *, size_t);
+	efx_rc_t	(*epo_disable)(efx_nic_t *);
+	efx_rc_t	(*epo_privilege_modify)(efx_nic_t *, uint32_t, uint32_t,
+					uint32_t, uint32_t, uint32_t);
+	efx_rc_t	(*epo_set_privilege_mask)(efx_nic_t *, uint32_t,
+					uint32_t, uint32_t);
+	efx_rc_t	(*epo_complete_request)(efx_nic_t *, uint32_t,
+					uint32_t, uint32_t);
+	efx_rc_t	(*epo_exec_cmd)(efx_nic_t *, efx_proxy_cmd_params_t *);
+	efx_rc_t	(*epo_get_privilege_mask)(efx_nic_t *, uint32_t,
+					uint32_t, uint32_t *);
+} efx_proxy_ops_t;
+
+#endif /* EFSYS_OPT_MCDI_PROXY_AUTH_SERVER */
+
+#define	EFX_DRV_VER_MAX		20
+
 typedef struct efx_drv_cfg_s {
 	uint32_t		edc_min_vi_count;
 	uint32_t		edc_max_vi_count;
@@ -677,6 +776,7 @@ struct efx_nic_s {
 	const efx_tx_ops_t	*en_etxop;
 	const efx_rx_ops_t	*en_erxop;
 	efx_fw_variant_t	efv;
+	char			en_drv_version[EFX_DRV_VER_MAX];
 #if EFSYS_OPT_FILTER
 	efx_filter_t		en_filter;
 	const efx_filter_ops_t	*en_efop;
@@ -742,6 +842,13 @@ struct efx_nic_s {
 		} ef10;
 	} en_arch;
 #endif	/* EFX_OPTS_EF10() */
+#if EFSYS_OPT_EVB
+	const efx_evb_ops_t	*en_eeop;
+	struct efx_vswitch_s    *en_vswitchp;
+#endif	/* EFSYS_OPT_EVB */
+#if EFSYS_OPT_MCDI_PROXY_AUTH_SERVER
+	const efx_proxy_ops_t	*en_epop;
+#endif	/* EFSYS_OPT_MCDI_PROXY_AUTH_SERVER */
 };
 
 #define	EFX_FAMILY_IS_EF10(_enp) \
@@ -1276,12 +1383,28 @@ struct efx_mac_stats_range {
 	efx_mac_stat_t		last;
 };
 
+typedef enum efx_stats_action_e {
+	EFX_STATS_CLEAR,
+	EFX_STATS_UPLOAD,
+	EFX_STATS_ENABLE_NOEVENTS,
+	EFX_STATS_ENABLE_EVENTS,
+	EFX_STATS_DISABLE,
+} efx_stats_action_t;
+
 extern					efx_rc_t
 efx_mac_stats_mask_add_ranges(
 	__inout_bcount(mask_size)	uint32_t *maskp,
 	__in				size_t mask_size,
 	__in_ecount(rng_count)		const struct efx_mac_stats_range *rngp,
 	__in				unsigned int rng_count);
+
+extern	__checkReturn	efx_rc_t
+efx_mcdi_mac_stats(
+	__in		efx_nic_t *enp,
+	__in		uint32_t vport_id,
+	__in_opt	efsys_mem_t *esmp,
+	__in		efx_stats_action_t action,
+	__in		uint16_t period_ms);
 
 #endif	/* EFSYS_OPT_MAC_STATS */
 

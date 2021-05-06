@@ -47,12 +47,30 @@ export class PoolPageHelper extends PageHelper {
     }
   }
 
+  edit_pool_configuration(name: string, bpsLimit: string) {
+    this.navigateEdit(name);
+
+    cy.get('.collapsible').click();
+    cy.get('cd-rbd-configuration-form')
+      .get('input[name=rbd_qos_bps_limit]')
+      .clear()
+      .type(`${bpsLimit}`);
+    cy.get('cd-submit-button').click();
+
+    this.navigateEdit(name);
+
+    cy.get('.collapsible').click();
+    cy.get('cd-rbd-configuration-form')
+      .get('input[name=rbd_qos_bps_limit]')
+      .should('have.value', bpsLimit);
+  }
+
   private setApplications(apps: string[]) {
     if (!apps || apps.length === 0) {
       return;
     }
     cy.get('.float-left.mr-2.select-menu-edit').click();
-    cy.get('.popover-content.popover-body').should('be.visible');
+    cy.get('.popover-body').should('be.visible');
     apps.forEach((app) => cy.get('.select-menu-item-content').contains(app).click());
   }
 }

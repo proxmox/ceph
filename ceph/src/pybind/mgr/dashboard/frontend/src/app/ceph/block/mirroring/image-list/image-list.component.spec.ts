@@ -2,12 +2,10 @@ import { HttpClientTestingModule } from '@angular/common/http/testing';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { BrowserAnimationsModule } from '@angular/platform-browser/animations';
 
-import { BsDropdownModule } from 'ngx-bootstrap/dropdown';
-import { ProgressbarModule } from 'ngx-bootstrap/progressbar';
-import { TabsModule } from 'ngx-bootstrap/tabs';
+import { NgbNavModule, NgbProgressbarModule } from '@ng-bootstrap/ng-bootstrap';
 
-import { configureTestBed, i18nProviders } from '../../../../../testing/unit-test-helper';
-import { SharedModule } from '../../../../shared/shared.module';
+import { SharedModule } from '~/app/shared/shared.module';
+import { configureTestBed } from '~/testing/unit-test-helper';
 import { MirrorHealthColorPipe } from '../mirror-health-color.pipe';
 import { ImageListComponent } from './image-list.component';
 
@@ -20,12 +18,10 @@ describe('ImageListComponent', () => {
     imports: [
       BrowserAnimationsModule,
       SharedModule,
-      BsDropdownModule.forRoot(),
-      TabsModule.forRoot(),
-      ProgressbarModule.forRoot(),
+      NgbNavModule,
+      NgbProgressbarModule,
       HttpClientTestingModule
-    ],
-    providers: i18nProviders
+    ]
   });
 
   beforeEach(() => {

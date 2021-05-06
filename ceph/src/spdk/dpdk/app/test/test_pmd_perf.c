@@ -58,12 +58,12 @@
 
 static struct rte_mempool *mbufpool[NB_SOCKETS];
 /* ethernet addresses of ports */
-static struct ether_addr ports_eth_addr[RTE_MAX_ETHPORTS];
+static struct rte_ether_addr ports_eth_addr[RTE_MAX_ETHPORTS];
 
 static struct rte_eth_conf port_conf = {
 	.rxmode = {
 		.mq_mode = ETH_MQ_RX_NONE,
-		.max_rx_pkt_len = ETHER_MAX_LEN,
+		.max_rx_pkt_len = RTE_ETHER_MAX_LEN,
 		.split_hdr_size = 0,
 	},
 	.txmode = {
@@ -125,6 +125,7 @@ check_all_ports_link_status(uint16_t port_num, uint32_t port_mask)
 	uint16_t portid;
 	uint8_t count, all_ports_up, print_flag = 0;
 	struct rte_eth_link link;
+	int ret;
 
 	printf("Checking link statuses...\n");
 	fflush(stdout);
@@ -134,7 +135,15 @@ check_all_ports_link_status(uint16_t port_num, uint32_t port_mask)
 			if ((port_mask & (1 << portid)) == 0)
 				continue;
 			memset(&link, 0, sizeof(link));
-			rte_eth_link_get_nowait(portid, &link);
+			ret = rte_eth_link_get_nowait(portid, &link);
+			if (ret < 0) {
+				all_ports_up = 0;
+				if (print_flag == 1)
+					printf("Port %u link get failed: %s\n",
+						portid, rte_strerror(-ret));
+				continue;
+			}
+
 			/* print link status if flag set */
 			if (print_flag == 1) {
 				if (link.link_status) {
@@ -142,7 +151,7 @@ check_all_ports_link_status(uint16_t port_num, uint32_t port_mask)
 					"Port%d Link Up. Speed %u Mbps - %s\n",
 						portid, link.link_speed,
 				(link.link_duplex == ETH_LINK_FULL_DUPLEX) ?
-					("full-duplex") : ("half-duplex\n"));
+					("full-duplex") : ("half-duplex"));
 					if (link_mbps == 0)
 						link_mbps = link.link_speed;
 				} else
@@ -171,10 +180,10 @@ check_all_ports_link_status(uint16_t port_num, uint32_t port_mask)
 }
 
 static void
-print_ethaddr(const char *name, const struct ether_addr *eth_addr)
+print_ethaddr(const char *name, const struct rte_ether_addr *eth_addr)
 {
-	char buf[ETHER_ADDR_FMT_SIZE];
-	ether_format_addr(buf, ETHER_ADDR_FMT_SIZE, eth_addr);
+	char buf[RTE_ETHER_ADDR_FMT_SIZE];
+	rte_ether_format_addr(buf, RTE_ETHER_ADDR_FMT_SIZE, eth_addr);
 	printf("%s%s", name, buf);
 }
 
@@ -182,17 +191,17 @@ static int
 init_traffic(struct rte_mempool *mp,
 	     struct rte_mbuf **pkts_burst, uint32_t burst_size)
 {
-	struct ether_hdr pkt_eth_hdr;
-	struct ipv4_hdr pkt_ipv4_hdr;
-	struct udp_hdr pkt_udp_hdr;
+	struct rte_ether_hdr pkt_eth_hdr;
+	struct rte_ipv4_hdr pkt_ipv4_hdr;
+	struct rte_udp_hdr pkt_udp_hdr;
 	uint32_t pktlen;
 	static uint8_t src_mac[] = { 0x00, 0xFF, 0xAA, 0xFF, 0xAA, 0xFF };
 	static uint8_t dst_mac[] = { 0x00, 0xAA, 0xFF, 0xAA, 0xFF, 0xAA };
 
 
 	initialize_eth_header(&pkt_eth_hdr,
-		(struct ether_addr *)src_mac,
-		(struct ether_addr *)dst_mac, ETHER_TYPE_IPv4, 0, 0);
+		(struct rte_ether_addr *)src_mac,
+		(struct rte_ether_addr *)dst_mac, RTE_ETHER_TYPE_IPV4, 0, 0);
 
 	pktlen = initialize_ipv4_header(&pkt_ipv4_hdr,
 					IPV4_ADDR(10, 0, 0, 1),
@@ -715,7 +724,12 @@ test_pmd_perf(void)
 				"Cannot configure device: err=%d, port=%d\n",
 				 ret, portid);
 
-		rte_eth_macaddr_get(portid, &ports_eth_addr[portid]);
+		ret = rte_eth_macaddr_get(portid, &ports_eth_addr[portid]);
+		if (ret < 0)
+			rte_exit(EXIT_FAILURE,
+				"Cannot get mac address: err=%d, port=%d\n",
+				 ret, portid);
+
 		printf("Port %u ", portid);
 		print_ethaddr("Address:", &ports_eth_addr[portid]);
 		printf("\n");
@@ -745,7 +759,11 @@ test_pmd_perf(void)
 				ret, portid);
 
 		/* always eanble promiscuous */
-		rte_eth_promiscuous_enable(portid);
+		ret = rte_eth_promiscuous_enable(portid);
+		if (ret != 0)
+			rte_exit(EXIT_FAILURE,
+				 "rte_eth_promiscuous_enable: err=%s, port=%d\n",
+				 rte_strerror(-ret), portid);
 
 		lcore_conf[slave_id].portlist[num++] = portid;
 		lcore_conf[slave_id].nb_ports++;

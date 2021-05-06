@@ -25,7 +25,7 @@ class UIISCSIGlobalParams(UINode):
 
     def refresh(self):
         self._children = set([])
-        iscsi_global_params = self.get_root().get_iscsi_global_params()
+        iscsi_global_params = self.get_root().iscsi_get_options()
         if not iscsi_global_params:
             return
         for param, val in iscsi_global_params.items():
@@ -44,7 +44,7 @@ class UIISCSIGlobalParams(UINode):
         disable_chap = self.ui_eval_param(d, "bool", None)
         require_chap = self.ui_eval_param(r, "bool", None)
         mutual_chap = self.ui_eval_param(m, "bool", None)
-        self.get_root().set_iscsi_discovery_auth(
+        self.get_root().iscsi_set_discovery_auth(
             chap_group=chap_group, disable_chap=disable_chap,
             require_chap=require_chap, mutual_chap=mutual_chap)
 
@@ -62,8 +62,8 @@ class UIISCSIDevices(UINode):
 
     def refresh(self):
         self._children = set([])
-        self.target_nodes = list(self.get_root().get_target_nodes())
-        self.scsi_devices = list(self.get_root().get_scsi_devices())
+        self.target_nodes = list(self.get_root().iscsi_get_target_nodes())
+        self.scsi_devices = list(self.get_root().scsi_get_devices())
         for device in self.scsi_devices:
             for node in self.target_nodes:
                 if hasattr(device, "device_name") and node['name'] \
@@ -71,7 +71,7 @@ class UIISCSIDevices(UINode):
                     UIISCSIDevice(device, node, self)
 
     def delete(self, name):
-        self.get_root().delete_target_node(target_node_name=name)
+        self.get_root().iscsi_delete_target_node(target_node_name=name)
 
     def ui_command_create(self, name, alias_name, bdev_name_id_pairs,
                           pg_ig_mappings, queue_depth, g=None, d=None, r=None,
@@ -109,7 +109,7 @@ class UIISCSIDevices(UINode):
         mutual_chap = self.ui_eval_param(m, "bool", None)
         header_digest = self.ui_eval_param(h, "bool", None)
         data_digest = self.ui_eval_param(t, "bool", None)
-        self.get_root().construct_target_node(
+        self.get_root().iscsi_create_target_node(
             name=name, alias_name=alias_name, luns=luns,
             pg_ig_maps=pg_ig_maps, queue_depth=queue_depth,
             chap_group=chap_group, disable_chap=disable_chap,
@@ -146,7 +146,7 @@ class UIISCSIDevices(UINode):
         """
         if lun_id:
             lun_id = self.ui_eval_param(lun_id, "number", None)
-        self.get_root().target_node_add_lun(
+        self.get_root().iscsi_target_node_add_lun(
             name=name, bdev_name=bdev_name, lun_id=lun_id)
 
     def summary(self):
@@ -179,12 +179,12 @@ class UIISCSIDevice(UINode):
         disable_chap = self.ui_eval_param(d, "bool", None)
         require_chap = self.ui_eval_param(r, "bool", None)
         mutual_chap = self.ui_eval_param(m, "bool", None)
-        self.get_root().set_iscsi_target_node_auth(
+        self.get_root().iscsi_target_node_set_auth(
             name=self.device.device_name, chap_group=chap_group,
             disable_chap=disable_chap,
             require_chap=require_chap, mutual_chap=mutual_chap)
 
-    def ui_command_add_pg_ig_maps(self, pg_ig_mappings):
+    def ui_command_iscsi_target_node_add_pg_ig_maps(self, pg_ig_mappings):
         """Add PG-IG maps to the target node.
 
         Args:
@@ -194,11 +194,11 @@ class UIISCSIDevice(UINode):
         for u in pg_ig_mappings.strip().split(" "):
             pg, ig = u.split(":")
             pg_ig_maps.append({"pg_tag": int(pg), "ig_tag": int(ig)})
-        self.get_root().add_pg_ig_maps(
+        self.get_root().iscsi_target_node_add_pg_ig_maps(
             pg_ig_maps=pg_ig_maps, name=self.device.device_name)
 
-    def ui_command_delete_pg_ig_maps(self, pg_ig_mappings):
-        """Add PG-IG maps to the target node.
+    def ui_command_iscsi_target_node_remove_pg_ig_maps(self, pg_ig_mappings):
+        """Remove PG-IG maps from the target node.
 
         Args:
            pg_ig_maps: List of pg_ig_mappings, e.g. pg_tag:ig_tag pg_tag2:ig_tag2
@@ -207,7 +207,7 @@ class UIISCSIDevice(UINode):
         for u in pg_ig_mappings.strip().split(" "):
             pg, ig = u.split(":")
             pg_ig_maps.append({"pg_tag": int(pg), "ig_tag": int(ig)})
-        self.get_root().delete_pg_ig_maps(
+        self.get_root().iscsi_target_node_remove_pg_ig_maps(
             pg_ig_maps=pg_ig_maps, name=self.device.device_name)
 
     def refresh(self):
@@ -292,13 +292,13 @@ class UIPortalGroups(UINode):
         self.refresh()
 
     def delete(self, tag):
-        self.get_root().delete_portal_group(tag=tag)
+        self.get_root().iscsi_delete_portal_group(tag=tag)
 
     def ui_command_create(self, tag, portal_list):
         """Add a portal group.
 
         Args:
-           portals: List of portals e.g. ip:port@cpumask ip2:port2
+           portals: List of portals e.g. ip:port ip2:port2
            tag: Portal group tag (unique, integer > 0)
         """
         portals = []
@@ -313,7 +313,7 @@ class UIPortalGroups(UINode):
             host, port = host.rsplit(":", -1)
             portals.append({'host': host, 'port': port})
             if cpumask:
-                portals[-1]['cpumask'] = cpumask
+                print("WARNING: Specifying a CPU mask for portal groups is no longer supported. Ignoring.")
         tag = self.ui_eval_param(tag, "number", None)
         self.get_root().construct_portal_group(tag=tag, portals=portals)
 
@@ -335,7 +335,7 @@ class UIPortalGroups(UINode):
 
     def refresh(self):
         self._children = set([])
-        self.pgs = list(self.get_root().get_portal_groups())
+        self.pgs = list(self.get_root().iscsi_get_portal_groups())
         for pg in self.pgs:
             try:
                 UIPortalGroup(pg, self)
@@ -355,16 +355,16 @@ class UIPortalGroup(UINode):
     def refresh(self):
         self._children = set([])
         for portal in self.pg.portals:
-            UIPortal(portal['host'], portal['port'], portal['cpumask'], self)
+            UIPortal(portal['host'], portal['port'], self)
 
     def summary(self):
         return "Portals: %d" % len(self.pg.portals), None
 
 
 class UIPortal(UINode):
-    def __init__(self, host, port, cpumask, parent):
-        UINode.__init__(self, "host=%s, port=%s, cpumask=%s" % (
-            host, port, cpumask), parent)
+    def __init__(self, host, port, parent):
+        UINode.__init__(self, "host=%s, port=%s" % (
+            host, port), parent)
         self.refresh()
 
 
@@ -374,7 +374,7 @@ class UIInitiatorGroups(UINode):
         self.refresh()
 
     def delete(self, tag):
-        self.get_root().delete_initiator_group(tag=tag)
+        self.get_root().iscsi_delete_initiator_group(tag=tag)
 
     def ui_command_create(self, tag, initiator_list, netmask_list):
         """Add an initiator group.
@@ -422,7 +422,7 @@ class UIInitiatorGroups(UINode):
                      e.g. 255.255.0.0 255.248.0.0
         """
         tag = self.ui_eval_param(tag, "number", None)
-        self.get_root().add_initiators_to_initiator_group(
+        self.get_root().iscsi_initiator_group_add_initiators(
             tag=tag, initiators=initiators.split(" "),
             netmasks=netmasks.split(" "))
 
@@ -439,13 +439,13 @@ class UIInitiatorGroups(UINode):
             initiators = initiators.split(" ")
         if netmasks:
             netmasks = netmasks.split(" ")
-        self.get_root().delete_initiators_from_initiator_group(
+        self.get_root().iscsi_initiator_group_remove_initiators(
             tag=tag, initiators=initiators,
             netmasks=netmasks)
 
     def refresh(self):
         self._children = set([])
-        self.igs = list(self.get_root().get_initiator_groups())
+        self.igs = list(self.get_root().iscsi_get_initiator_groups())
         for ig in self.igs:
             UIInitiatorGroup(ig, self)
 
@@ -481,7 +481,7 @@ class UIISCSIConnections(UINode):
 
     def refresh(self):
         self._children = set([])
-        self.iscsicons = list(self.get_root().get_iscsi_connections())
+        self.iscsicons = list(self.get_root().iscsi_get_connections())
         for ic in self.iscsicons:
             UIISCSIConnection(ic, self)
 
@@ -516,17 +516,17 @@ class UIISCSIAuthGroups(UINode):
 
     def refresh(self):
         self._children = set([])
-        self.iscsi_auth_groups = list(self.get_root().get_iscsi_auth_groups())
+        self.iscsi_auth_groups = list(self.get_root().iscsi_get_auth_groups())
         if self.iscsi_auth_groups is None:
             self.iscsi_auth_groups = []
         for ag in self.iscsi_auth_groups:
             UIISCSIAuthGroup(ag, self)
 
     def delete(self, tag):
-        self.get_root().delete_iscsi_auth_group(tag=tag)
+        self.get_root().iscsi_delete_auth_group(tag=tag)
 
     def delete_secret(self, tag, user):
-        self.get_root().delete_secret_from_iscsi_auth_group(
+        self.get_root().iscsi_auth_group_remove_secret(
             tag=tag, user=user)
 
     def ui_command_create(self, tag, secrets=None):
@@ -542,7 +542,7 @@ class UIISCSIAuthGroups(UINode):
         if secrets:
             secrets = [dict(u.split(":") for u in a.split(" "))
                        for a in secrets.split(",")]
-        self.get_root().add_iscsi_auth_group(tag=tag, secrets=secrets)
+        self.get_root().iscsi_create_auth_group(tag=tag, secrets=secrets)
 
     def ui_command_delete(self, tag):
         """Delete an authentication group.
@@ -577,7 +577,7 @@ class UIISCSIAuthGroups(UINode):
            msecret: Secret for mutual CHAP authentication
         """
         tag = self.ui_eval_param(tag, "number", None)
-        self.get_root().add_secret_to_iscsi_auth_group(
+        self.get_root().iscsi_auth_group_add_secret(
             tag=tag, user=user, secret=secret,
             muser=muser, msecret=msecret)
 

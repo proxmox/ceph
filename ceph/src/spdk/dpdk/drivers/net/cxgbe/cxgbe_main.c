@@ -37,9 +37,82 @@
 #include "base/t4_regs.h"
 #include "base/t4_msg.h"
 #include "cxgbe.h"
+#include "cxgbe_pfvf.h"
 #include "clip_tbl.h"
 #include "l2t.h"
+#include "smt.h"
 #include "mps_tcam.h"
+
+static const u16 cxgbe_filter_mode_features[] = {
+	(F_FRAGMENTATION | F_MPSHITTYPE | F_MACMATCH | F_ETHERTYPE |
+	 F_PROTOCOL | F_PORT),
+	(F_FRAGMENTATION | F_MPSHITTYPE | F_MACMATCH | F_ETHERTYPE |
+	 F_PROTOCOL | F_FCOE),
+	(F_FRAGMENTATION | F_MPSHITTYPE | F_MACMATCH | F_ETHERTYPE | F_TOS |
+	 F_PORT),
+	(F_FRAGMENTATION | F_MPSHITTYPE | F_MACMATCH | F_ETHERTYPE | F_TOS |
+	 F_FCOE),
+	(F_FRAGMENTATION | F_MPSHITTYPE | F_MACMATCH | F_ETHERTYPE | F_PORT |
+	 F_FCOE),
+	(F_FRAGMENTATION | F_MPSHITTYPE | F_MACMATCH | F_PROTOCOL | F_TOS |
+	 F_PORT | F_FCOE),
+	(F_FRAGMENTATION | F_MPSHITTYPE | F_MACMATCH | F_PROTOCOL | F_VLAN |
+	 F_FCOE),
+	(F_FRAGMENTATION | F_MPSHITTYPE | F_MACMATCH | F_PROTOCOL | F_VNIC_ID |
+	 F_FCOE),
+	(F_FRAGMENTATION | F_MPSHITTYPE | F_MACMATCH | F_TOS | F_VLAN |
+	 F_FCOE),
+	(F_FRAGMENTATION | F_MPSHITTYPE | F_MACMATCH | F_TOS | F_VNIC_ID |
+	 F_FCOE),
+	(F_FRAGMENTATION | F_MPSHITTYPE | F_MACMATCH | F_VLAN | F_PORT |
+	 F_FCOE),
+	(F_FRAGMENTATION | F_MPSHITTYPE | F_MACMATCH | F_VNIC_ID | F_PORT |
+	 F_FCOE),
+	(F_FRAGMENTATION | F_MPSHITTYPE | F_ETHERTYPE | F_PROTOCOL | F_TOS |
+	 F_PORT | F_FCOE),
+	(F_FRAGMENTATION | F_MPSHITTYPE | F_ETHERTYPE | F_VLAN | F_PORT),
+	(F_FRAGMENTATION | F_MPSHITTYPE | F_ETHERTYPE | F_VLAN | F_FCOE),
+	(F_FRAGMENTATION | F_MPSHITTYPE | F_ETHERTYPE | F_VNIC_ID | F_PORT),
+	(F_FRAGMENTATION | F_MPSHITTYPE | F_ETHERTYPE | F_VNIC_ID | F_FCOE),
+	(F_FRAGMENTATION | F_MPSHITTYPE | F_PROTOCOL | F_TOS | F_VLAN | F_PORT),
+	(F_FRAGMENTATION | F_MPSHITTYPE | F_PROTOCOL | F_TOS | F_VLAN | F_FCOE),
+	(F_FRAGMENTATION | F_MPSHITTYPE | F_PROTOCOL | F_TOS | F_VNIC_ID |
+	 F_PORT),
+	(F_FRAGMENTATION | F_MPSHITTYPE | F_PROTOCOL | F_TOS | F_VNIC_ID |
+	 F_FCOE),
+	(F_FRAGMENTATION | F_MPSHITTYPE | F_PROTOCOL | F_VLAN | F_PORT |
+	 F_FCOE),
+	(F_FRAGMENTATION | F_MPSHITTYPE | F_PROTOCOL | F_VNIC_ID | F_PORT |
+	 F_FCOE),
+	(F_FRAGMENTATION | F_MPSHITTYPE | F_TOS | F_VLAN | F_PORT | F_FCOE),
+	(F_FRAGMENTATION | F_MPSHITTYPE | F_TOS | F_VNIC_ID | F_PORT | F_FCOE),
+	(F_FRAGMENTATION | F_MPSHITTYPE | F_VLAN | F_VNIC_ID | F_FCOE),
+	(F_FRAGMENTATION | F_MACMATCH | F_ETHERTYPE | F_PROTOCOL | F_PORT |
+	 F_FCOE),
+	(F_FRAGMENTATION | F_MACMATCH | F_ETHERTYPE | F_TOS | F_PORT | F_FCOE),
+	(F_FRAGMENTATION | F_MACMATCH | F_PROTOCOL | F_VLAN | F_PORT | F_FCOE),
+	(F_FRAGMENTATION | F_MACMATCH | F_PROTOCOL | F_VNIC_ID | F_PORT |
+	 F_FCOE),
+	(F_FRAGMENTATION | F_MACMATCH | F_TOS | F_VLAN | F_PORT | F_FCOE),
+	(F_FRAGMENTATION | F_MACMATCH | F_TOS | F_VNIC_ID | F_PORT | F_FCOE),
+	(F_FRAGMENTATION | F_ETHERTYPE | F_VLAN | F_PORT | F_FCOE),
+	(F_FRAGMENTATION | F_ETHERTYPE | F_VNIC_ID | F_PORT | F_FCOE),
+	(F_FRAGMENTATION | F_PROTOCOL | F_TOS | F_VLAN | F_FCOE),
+	(F_FRAGMENTATION | F_PROTOCOL | F_TOS | F_VNIC_ID | F_FCOE),
+	(F_FRAGMENTATION | F_VLAN | F_VNIC_ID | F_PORT | F_FCOE),
+	(F_MPSHITTYPE | F_MACMATCH | F_ETHERTYPE | F_PROTOCOL | F_PORT |
+	 F_FCOE),
+	(F_MPSHITTYPE | F_MACMATCH | F_ETHERTYPE | F_TOS | F_PORT | F_FCOE),
+	(F_MPSHITTYPE | F_MACMATCH | F_PROTOCOL | F_VLAN | F_PORT),
+	(F_MPSHITTYPE | F_MACMATCH | F_PROTOCOL | F_VNIC_ID | F_PORT),
+	(F_MPSHITTYPE | F_MACMATCH | F_TOS | F_VLAN | F_PORT),
+	(F_MPSHITTYPE | F_MACMATCH | F_TOS | F_VNIC_ID | F_PORT),
+	(F_MPSHITTYPE | F_ETHERTYPE | F_VLAN | F_PORT | F_FCOE),
+	(F_MPSHITTYPE | F_ETHERTYPE | F_VNIC_ID | F_PORT | F_FCOE),
+	(F_MPSHITTYPE | F_PROTOCOL | F_TOS | F_VLAN | F_PORT | F_FCOE),
+	(F_MPSHITTYPE | F_PROTOCOL | F_TOS | F_VNIC_ID | F_PORT | F_FCOE),
+	(F_MPSHITTYPE | F_VLAN | F_VNIC_ID | F_PORT),
+};
 
 /**
  * Allocate a chunk of memory. The allocated memory is cleared.
@@ -92,19 +165,23 @@ static int fwevtq_handler(struct sge_rspq *q, const __be64 *rsp,
 	} else if (opcode == CPL_ABORT_RPL_RSS) {
 		const struct cpl_abort_rpl_rss *p = (const void *)rsp;
 
-		hash_del_filter_rpl(q->adapter, p);
+		cxgbe_hash_del_filter_rpl(q->adapter, p);
 	} else if (opcode == CPL_SET_TCB_RPL) {
 		const struct cpl_set_tcb_rpl *p = (const void *)rsp;
 
-		filter_rpl(q->adapter, p);
+		cxgbe_filter_rpl(q->adapter, p);
 	} else if (opcode == CPL_ACT_OPEN_RPL) {
 		const struct cpl_act_open_rpl *p = (const void *)rsp;
 
-		hash_filter_rpl(q->adapter, p);
+		cxgbe_hash_filter_rpl(q->adapter, p);
 	} else if (opcode == CPL_L2T_WRITE_RPL) {
 		const struct cpl_l2t_write_rpl *p = (const void *)rsp;
 
-		do_l2t_write_rpl(q->adapter, p);
+		cxgbe_do_l2t_write_rpl(q->adapter, p);
+	} else if (opcode == CPL_SMT_WRITE_RPL) {
+		const struct cpl_smt_write_rpl *p = (const void *)rsp;
+
+		cxgbe_do_smt_write_rpl(q->adapter, p);
 	} else {
 		dev_err(adapter, "unexpected CPL %#x on FW event queue\n",
 			opcode);
@@ -477,7 +554,7 @@ static inline void init_rspq(struct adapter *adap, struct sge_rspq *q,
 
 int cxgbe_cfg_queue_count(struct rte_eth_dev *eth_dev)
 {
-	struct port_info *pi = (struct port_info *)(eth_dev->data->dev_private);
+	struct port_info *pi = eth_dev->data->dev_private;
 	struct adapter *adap = pi->adapter;
 	struct sge *s = &adap->sge;
 	unsigned int max_queues = s->max_ethqsets / adap->params.nports;
@@ -504,8 +581,7 @@ int cxgbe_cfg_queue_count(struct rte_eth_dev *eth_dev)
 
 void cxgbe_cfg_queues(struct rte_eth_dev *eth_dev)
 {
-	struct rte_config *config = rte_eal_get_configuration();
-	struct port_info *pi = (struct port_info *)(eth_dev->data->dev_private);
+	struct port_info *pi = eth_dev->data->dev_private;
 	struct adapter *adap = pi->adapter;
 	struct sge *s = &adap->sge;
 	unsigned int i, nb_ports = 0, qidx = 0;
@@ -527,8 +603,8 @@ void cxgbe_cfg_queues(struct rte_eth_dev *eth_dev)
 				     (adap->params.nports - nb_ports)) /
 				     nb_ports;
 
-		if (q_per_port > config->lcore_count)
-			q_per_port = config->lcore_count;
+		if (q_per_port > rte_lcore_count())
+			q_per_port = rte_lcore_count();
 
 		for_each_port(adap, i) {
 			struct port_info *pi = adap2pinfo(adap, i);
@@ -670,19 +746,39 @@ void cxgbe_print_port_info(struct adapter *adap)
 	}
 }
 
-static int
-check_devargs_handler(__rte_unused const char *key, const char *value,
-		      __rte_unused void *opaque)
+static int check_devargs_handler(const char *key, const char *value, void *p)
 {
-	if (strcmp(value, "1"))
-		return -1;
+	if (!strncmp(key, CXGBE_DEVARG_CMN_KEEP_OVLAN, strlen(key)) ||
+	    !strncmp(key, CXGBE_DEVARG_CMN_TX_MODE_LATENCY, strlen(key)) ||
+	    !strncmp(key, CXGBE_DEVARG_VF_FORCE_LINK_UP, strlen(key))) {
+		if (!strncmp(value, "1", 1)) {
+			bool *dst_val = (bool *)p;
+
+			*dst_val = true;
+		}
+	}
+
+	if (!strncmp(key, CXGBE_DEVARG_PF_FILTER_MODE, strlen(key)) ||
+	    !strncmp(key, CXGBE_DEVARG_PF_FILTER_MASK, strlen(key))) {
+		u32 *dst_val = (u32 *)p;
+		char *endptr = NULL;
+		u32 arg_val;
+
+		arg_val = strtoul(value, &endptr, 16);
+		if (errno || endptr == value)
+			return -EINVAL;
+
+		*dst_val = arg_val;
+	}
 
 	return 0;
 }
 
-int cxgbe_get_devargs(struct rte_devargs *devargs, const char *key)
+static int cxgbe_get_devargs(struct rte_devargs *devargs, const char *key,
+			     void *p)
 {
 	struct rte_kvargs *kvlist;
+	int ret = 0;
 
 	if (!devargs)
 		return 0;
@@ -691,24 +787,69 @@ int cxgbe_get_devargs(struct rte_devargs *devargs, const char *key)
 	if (!kvlist)
 		return 0;
 
-	if (!rte_kvargs_count(kvlist, key)) {
-		rte_kvargs_free(kvlist);
-		return 0;
-	}
+	if (!rte_kvargs_count(kvlist, key))
+		goto out;
 
-	if (rte_kvargs_process(kvlist, key,
-			       check_devargs_handler, NULL) < 0) {
-		rte_kvargs_free(kvlist);
-		return 0;
-	}
+	ret = rte_kvargs_process(kvlist, key, check_devargs_handler, p);
+
+out:
 	rte_kvargs_free(kvlist);
 
-	return 1;
+	return ret;
+}
+
+static void cxgbe_get_devargs_int(struct adapter *adap, bool *dst,
+				  const char *key, bool default_value)
+{
+	struct rte_pci_device *pdev = adap->pdev;
+	int ret;
+	bool devarg_value = default_value;
+
+	*dst = default_value;
+	if (!pdev)
+		return;
+
+	ret = cxgbe_get_devargs(pdev->device.devargs, key, &devarg_value);
+	if (ret)
+		return;
+
+	*dst = devarg_value;
+}
+
+static void cxgbe_get_devargs_u32(struct adapter *adap, u32 *dst,
+				  const char *key, u32 default_value)
+{
+	struct rte_pci_device *pdev = adap->pdev;
+	u32 devarg_value = default_value;
+	int ret;
+
+	*dst = default_value;
+	if (!pdev)
+		return;
+
+	ret = cxgbe_get_devargs(pdev->device.devargs, key, &devarg_value);
+	if (ret)
+		return;
+
+	*dst = devarg_value;
+}
+
+void cxgbe_process_devargs(struct adapter *adap)
+{
+	cxgbe_get_devargs_int(adap, &adap->devargs.keep_ovlan,
+			      CXGBE_DEVARG_CMN_KEEP_OVLAN, false);
+	cxgbe_get_devargs_int(adap, &adap->devargs.tx_mode_latency,
+			      CXGBE_DEVARG_CMN_TX_MODE_LATENCY, false);
+	cxgbe_get_devargs_int(adap, &adap->devargs.force_link_up,
+			      CXGBE_DEVARG_VF_FORCE_LINK_UP, false);
+	cxgbe_get_devargs_u32(adap, &adap->devargs.filtermode,
+			      CXGBE_DEVARG_PF_FILTER_MODE, 0);
+	cxgbe_get_devargs_u32(adap, &adap->devargs.filtermask,
+			      CXGBE_DEVARG_PF_FILTER_MASK, 0);
 }
 
 static void configure_vlan_types(struct adapter *adapter)
 {
-	struct rte_pci_device *pdev = adapter->pdev;
 	int i;
 
 	for_each_port(adapter, i) {
@@ -724,12 +865,6 @@ static void configure_vlan_types(struct adapter *adapter)
 				 V_OVLAN_ETYPE(M_OVLAN_ETYPE),
 				 V_OVLAN_MASK(M_OVLAN_MASK) |
 				 V_OVLAN_ETYPE(0x9100));
-		/* OVLAN Type 0x8100 */
-		t4_set_reg_field(adapter, MPS_PORT_RX_OVLAN_REG(i, A_RX_OVLAN2),
-				 V_OVLAN_MASK(M_OVLAN_MASK) |
-				 V_OVLAN_ETYPE(M_OVLAN_ETYPE),
-				 V_OVLAN_MASK(M_OVLAN_MASK) |
-				 V_OVLAN_ETYPE(0x8100));
 
 		/* IVLAN 0X8100 */
 		t4_set_reg_field(adapter, MPS_PORT_RX_IVLAN(i),
@@ -738,14 +873,141 @@ static void configure_vlan_types(struct adapter *adapter)
 
 		t4_set_reg_field(adapter, MPS_PORT_RX_CTL(i),
 				 F_OVLAN_EN0 | F_OVLAN_EN1 |
-				 F_OVLAN_EN2 | F_IVLAN_EN,
+				 F_IVLAN_EN,
 				 F_OVLAN_EN0 | F_OVLAN_EN1 |
-				 F_OVLAN_EN2 | F_IVLAN_EN);
+				 F_IVLAN_EN);
 	}
 
-	if (cxgbe_get_devargs(pdev->device.devargs, CXGBE_DEVARG_KEEP_OVLAN))
-		t4_tp_wr_bits_indirect(adapter, A_TP_INGRESS_CONFIG,
-				       V_RM_OVLAN(1), V_RM_OVLAN(0));
+	t4_tp_wr_bits_indirect(adapter, A_TP_INGRESS_CONFIG, V_RM_OVLAN(1),
+			       V_RM_OVLAN(!adapter->devargs.keep_ovlan));
+}
+
+static int cxgbe_get_filter_vnic_mode_from_devargs(u32 val)
+{
+	u32 vnic_mode;
+
+	vnic_mode = val & (CXGBE_DEVARGS_FILTER_MODE_PF_VF |
+			   CXGBE_DEVARGS_FILTER_MODE_VLAN_OUTER);
+	if (vnic_mode) {
+		switch (vnic_mode) {
+		case CXGBE_DEVARGS_FILTER_MODE_VLAN_OUTER:
+			return CXGBE_FILTER_VNIC_MODE_OVLAN;
+		case CXGBE_DEVARGS_FILTER_MODE_PF_VF:
+			return CXGBE_FILTER_VNIC_MODE_PFVF;
+		default:
+			return -EINVAL;
+		}
+	}
+
+	return CXGBE_FILTER_VNIC_MODE_NONE;
+}
+
+static int cxgbe_get_filter_mode_from_devargs(u32 val, bool closest_match)
+{
+	int vnic_mode, fmode = 0;
+	bool found = false;
+	u8 i;
+
+	if (val >= CXGBE_DEVARGS_FILTER_MODE_MAX) {
+		pr_err("Unsupported flags set in filter mode. Must be < 0x%x\n",
+		       CXGBE_DEVARGS_FILTER_MODE_MAX);
+		return -ERANGE;
+	}
+
+	vnic_mode = cxgbe_get_filter_vnic_mode_from_devargs(val);
+	if (vnic_mode < 0) {
+		pr_err("Unsupported Vnic-mode, more than 1 Vnic-mode selected\n");
+		return vnic_mode;
+	}
+
+	if (vnic_mode)
+		fmode |= F_VNIC_ID;
+	if (val & CXGBE_DEVARGS_FILTER_MODE_PHYSICAL_PORT)
+		fmode |= F_PORT;
+	if (val & CXGBE_DEVARGS_FILTER_MODE_ETHERNET_DSTMAC)
+		fmode |= F_MACMATCH;
+	if (val & CXGBE_DEVARGS_FILTER_MODE_ETHERNET_ETHTYPE)
+		fmode |= F_ETHERTYPE;
+	if (val & CXGBE_DEVARGS_FILTER_MODE_VLAN_INNER)
+		fmode |= F_VLAN;
+	if (val & CXGBE_DEVARGS_FILTER_MODE_IP_TOS)
+		fmode |= F_TOS;
+	if (val & CXGBE_DEVARGS_FILTER_MODE_IP_PROTOCOL)
+		fmode |= F_PROTOCOL;
+
+	for (i = 0; i < ARRAY_SIZE(cxgbe_filter_mode_features); i++) {
+		if ((cxgbe_filter_mode_features[i] & fmode) == fmode) {
+			found = true;
+			break;
+		}
+	}
+
+	if (!found)
+		return -EINVAL;
+
+	return closest_match ? cxgbe_filter_mode_features[i] : fmode;
+}
+
+static int configure_filter_mode_mask(struct adapter *adap)
+{
+	u32 params[2], val[2], nparams = 0;
+	int ret;
+
+	if (!adap->devargs.filtermode && !adap->devargs.filtermask)
+		return 0;
+
+	if (!adap->devargs.filtermode || !adap->devargs.filtermask) {
+		pr_err("Unsupported, Provide both filtermode and filtermask devargs\n");
+		return -EINVAL;
+	}
+
+	if (adap->devargs.filtermask & ~adap->devargs.filtermode) {
+		pr_err("Unsupported, filtermask (0x%x) must be subset of filtermode (0x%x)\n",
+		       adap->devargs.filtermask, adap->devargs.filtermode);
+
+		return -EINVAL;
+	}
+
+	params[0] = CXGBE_FW_PARAM_DEV(FILTER) |
+		    V_FW_PARAMS_PARAM_Y(FW_PARAM_DEV_FILTER_MODE_MASK);
+
+	ret = cxgbe_get_filter_mode_from_devargs(adap->devargs.filtermode,
+						 true);
+	if (ret < 0) {
+		pr_err("Unsupported filtermode devargs combination:0x%x\n",
+		       adap->devargs.filtermode);
+		return ret;
+	}
+
+	val[0] = V_FW_PARAMS_PARAM_FILTER_MODE(ret);
+
+	ret = cxgbe_get_filter_mode_from_devargs(adap->devargs.filtermask,
+						 false);
+	if (ret < 0) {
+		pr_err("Unsupported filtermask devargs combination:0x%x\n",
+		       adap->devargs.filtermask);
+		return ret;
+	}
+
+	val[0] |= V_FW_PARAMS_PARAM_FILTER_MASK(ret);
+
+	nparams++;
+
+	ret = cxgbe_get_filter_vnic_mode_from_devargs(adap->devargs.filtermode);
+	if (ret < 0)
+		return ret;
+
+	if (ret) {
+		params[1] = CXGBE_FW_PARAM_DEV(FILTER) |
+			    V_FW_PARAMS_PARAM_Y(FW_PARAM_DEV_FILTER_VNIC_MODE);
+
+		val[1] = ret - 1;
+
+		nparams++;
+	}
+
+	return t4_set_params(adap, adap->mbox, adap->pf, 0, nparams,
+			     params, val);
 }
 
 static void configure_pcie_ext_tag(struct adapter *adapter)
@@ -1135,20 +1397,10 @@ static int adap_init0(struct adapter *adap)
 	/*
 	 * Grab some of our basic fundamental operating parameters.
 	 */
-#define FW_PARAM_DEV(param) \
-	(V_FW_PARAMS_MNEM(FW_PARAMS_MNEM_DEV) | \
-	 V_FW_PARAMS_PARAM_X(FW_PARAMS_PARAM_DEV_##param))
-
-#define FW_PARAM_PFVF(param) \
-	(V_FW_PARAMS_MNEM(FW_PARAMS_MNEM_PFVF) | \
-	 V_FW_PARAMS_PARAM_X(FW_PARAMS_PARAM_PFVF_##param) |  \
-	 V_FW_PARAMS_PARAM_Y(0) | \
-	 V_FW_PARAMS_PARAM_Z(0))
-
-	params[0] = FW_PARAM_PFVF(L2T_START);
-	params[1] = FW_PARAM_PFVF(L2T_END);
-	params[2] = FW_PARAM_PFVF(FILTER_START);
-	params[3] = FW_PARAM_PFVF(FILTER_END);
+	params[0] = CXGBE_FW_PARAM_PFVF(L2T_START);
+	params[1] = CXGBE_FW_PARAM_PFVF(L2T_END);
+	params[2] = CXGBE_FW_PARAM_PFVF(FILTER_START);
+	params[3] = CXGBE_FW_PARAM_PFVF(FILTER_END);
 	ret = t4_query_params(adap, adap->mbox, adap->pf, 0, 4, params, val);
 	if (ret < 0)
 		goto bye;
@@ -1157,8 +1409,8 @@ static int adap_init0(struct adapter *adap)
 	adap->tids.ftid_base = val[2];
 	adap->tids.nftids = val[3] - val[2] + 1;
 
-	params[0] = FW_PARAM_PFVF(CLIP_START);
-	params[1] = FW_PARAM_PFVF(CLIP_END);
+	params[0] = CXGBE_FW_PARAM_PFVF(CLIP_START);
+	params[1] = CXGBE_FW_PARAM_PFVF(CLIP_END);
 	ret = t4_query_params(adap, adap->mbox, adap->pf, 0, 2, params, val);
 	if (ret < 0)
 		goto bye;
@@ -1180,7 +1432,7 @@ static int adap_init0(struct adapter *adap)
 
 	if ((caps_cmd.niccaps & cpu_to_be16(FW_CAPS_CONFIG_NIC_HASHFILTER)) &&
 	    is_t6(adap->params.chip)) {
-		if (init_hash_filter(adap) < 0)
+		if (cxgbe_init_hash_filter(adap) < 0)
 			goto bye;
 	}
 
@@ -1188,14 +1440,23 @@ static int adap_init0(struct adapter *adap)
 	if (is_t4(adap->params.chip)) {
 		adap->params.filter2_wr_support = 0;
 	} else {
-		params[0] = FW_PARAM_DEV(FILTER2_WR);
+		params[0] = CXGBE_FW_PARAM_DEV(FILTER2_WR);
 		ret = t4_query_params(adap, adap->mbox, adap->pf, 0,
 				      1, params, val);
 		adap->params.filter2_wr_support = (ret == 0 && val[0] != 0);
 	}
 
+	/* Check if FW supports returning vin.
+	 * If this is not supported, driver will interpret
+	 * these values from viid.
+	 */
+	params[0] = CXGBE_FW_PARAM_DEV(OPAQUE_VIID_SMT_EXTN);
+	ret = t4_query_params(adap, adap->mbox, adap->pf, 0,
+			      1, params, val);
+	adap->params.viid_smt_extn_support = (ret == 0 && val[0] != 0);
+
 	/* query tid-related parameters */
-	params[0] = FW_PARAM_DEV(NTID);
+	params[0] = CXGBE_FW_PARAM_DEV(NTID);
 	ret = t4_query_params(adap, adap->mbox, adap->pf, 0, 1,
 			      params, val);
 	if (ret < 0)
@@ -1208,7 +1469,7 @@ static int adap_init0(struct adapter *adap)
 	 * firmware won't understand this and we'll just get
 	 * unencapsulated messages ...
 	 */
-	params[0] = FW_PARAM_PFVF(CPLFW4MSG_ENCAP);
+	params[0] = CXGBE_FW_PARAM_PFVF(CPLFW4MSG_ENCAP);
 	val[0] = 1;
 	(void)t4_set_params(adap, adap->mbox, adap->pf, 0, 1, params, val);
 
@@ -1221,11 +1482,19 @@ static int adap_init0(struct adapter *adap)
 	if (is_t4(adap->params.chip)) {
 		adap->params.ulptx_memwrite_dsgl = false;
 	} else {
-		params[0] = FW_PARAM_DEV(ULPTX_MEMWRITE_DSGL);
+		params[0] = CXGBE_FW_PARAM_DEV(ULPTX_MEMWRITE_DSGL);
 		ret = t4_query_params(adap, adap->mbox, adap->pf, 0,
 				      1, params, val);
 		adap->params.ulptx_memwrite_dsgl = (ret == 0 && val[0] != 0);
 	}
+
+	/* Query for max number of packets that can be coalesced for Tx */
+	params[0] = CXGBE_FW_PARAM_PFVF(MAX_PKTS_PER_ETH_TX_PKTS_WR);
+	ret = t4_query_params(adap, adap->mbox, adap->pf, 0, 1, params, val);
+	if (!ret && val[0] > 0)
+		adap->params.max_tx_coalesce_num = val[0];
+	else
+		adap->params.max_tx_coalesce_num = ETH_COALESCE_PKT_NUM;
 
 	/*
 	 * The MTU/MSS Table is initialized by now, so load their values.  If
@@ -1265,6 +1534,9 @@ static int adap_init0(struct adapter *adap)
 			     adap->params.b_wnd);
 	}
 	t4_init_sge_params(adap);
+	ret = configure_filter_mode_mask(adap);
+	if (ret < 0)
+		goto bye;
 	t4_init_tp_params(adap);
 	configure_pcie_ext_tag(adap);
 	configure_vlan_types(adap);
@@ -1324,14 +1596,10 @@ void t4_os_portmod_changed(const struct adapter *adap, int port_id)
 
 bool cxgbe_force_linkup(struct adapter *adap)
 {
-	struct rte_pci_device *pdev = adap->pdev;
-
 	if (is_pf4(adap))
-		return false;	/* force_linkup not required for pf driver*/
-	if (!cxgbe_get_devargs(pdev->device.devargs,
-			       CXGBE_DEVARG_FORCE_LINK_UP))
-		return false;
-	return true;
+		return false;	/* force_linkup not required for pf driver */
+
+	return adap->devargs.force_link_up;
 }
 
 /**
@@ -1348,7 +1616,7 @@ int cxgbe_link_start(struct port_info *pi)
 	int ret;
 
 	mtu = pi->eth_dev->data->dev_conf.rxmode.max_rx_pkt_len -
-	      (ETHER_HDR_LEN + ETHER_CRC_LEN);
+	      (RTE_ETHER_HDR_LEN + RTE_ETHER_CRC_LEN);
 
 	conf_offloads = pi->eth_dev->data->dev_conf.rxmode.offloads;
 
@@ -1709,6 +1977,7 @@ void cxgbe_close(struct adapter *adapter)
 		t4_cleanup_mpstcam(adapter);
 		t4_cleanup_clip_tbl(adapter);
 		t4_cleanup_l2t(adapter);
+		t4_cleanup_smt(adapter);
 		if (is_pf4(adapter))
 			t4_intr_disable(adapter);
 		t4_sge_tx_monitor_stop(adapter);
@@ -1727,13 +1996,45 @@ void cxgbe_close(struct adapter *adapter)
 		t4_fw_bye(adapter, adapter->mbox);
 }
 
+static void adap_smt_index(struct adapter *adapter, u32 *smt_start_idx,
+			   u32 *smt_size)
+{
+	u32 params[2], smt_val[2];
+	int ret;
+
+	params[0] = CXGBE_FW_PARAM_PFVF(GET_SMT_START);
+	params[1] = CXGBE_FW_PARAM_PFVF(GET_SMT_SIZE);
+
+	ret = t4_query_params(adapter, adapter->mbox, adapter->pf, 0,
+			      2, params, smt_val);
+
+	/* if FW doesn't recognize this command then set it to default setting
+	 * which is start index as 0 and size as 256.
+	 */
+	if (ret < 0) {
+		*smt_start_idx = 0;
+		*smt_size = SMT_SIZE;
+	} else {
+		*smt_start_idx = smt_val[0];
+		/* smt size can be zero, if nsmt is not yet configured in
+		 * the config file or set as zero, then configure all the
+		 * remaining entries to this PF itself.
+		 */
+		if (!smt_val[1])
+			*smt_size = SMT_SIZE - *smt_start_idx;
+		else
+			*smt_size = smt_val[1];
+	}
+}
+
 int cxgbe_probe(struct adapter *adapter)
 {
+	u32 smt_start_idx, smt_size;
 	struct port_info *pi;
-	int chip;
 	int func, i;
 	int err = 0;
 	u32 whoami;
+	int chip;
 
 	whoami = t4_read_reg(adapter, A_PL_WHOAMI);
 	chip = t4_get_chip_type(adapter,
@@ -1825,7 +2126,7 @@ int cxgbe_probe(struct adapter *adapter)
 			goto out_free;
 
 allocate_mac:
-		pi = (struct port_info *)eth_dev->data->dev_private;
+		pi = eth_dev->data->dev_private;
 		adapter->port[i] = pi;
 		pi->eth_dev = eth_dev;
 		pi->adapter = adapter;
@@ -1841,7 +2142,7 @@ allocate_mac:
 		rte_eth_copy_pci_info(pi->eth_dev, adapter->pdev);
 
 		pi->eth_dev->data->mac_addrs = rte_zmalloc(name,
-							   ETHER_ADDR_LEN, 0);
+							RTE_ETHER_ADDR_LEN, 0);
 		if (!pi->eth_dev->data->mac_addrs) {
 			dev_err(adapter, "%s: Mem allocation failed for storing mac addr, aborting\n",
 				__func__);
@@ -1878,6 +2179,11 @@ allocate_mac:
 		dev_warn(adapter, "could not allocate CLIP. Continuing\n");
 	}
 
+	adap_smt_index(adapter, &smt_start_idx, &smt_size);
+	adapter->smt = t4_init_smt(smt_start_idx, smt_size);
+	if (!adapter->smt)
+		dev_warn(adapter, "could not allocate SMT, continuing\n");
+
 	adapter->l2t = t4_init_l2t(adapter->l2t_start, adapter->l2t_end);
 	if (!adapter->l2t) {
 		/* We tolerate a lack of L2T, giving up some functionality */
@@ -1889,6 +2195,8 @@ allocate_mac:
 		dev_warn(adapter, "could not allocate TID table, "
 			 "filter support disabled. Continuing\n");
 	}
+
+	t4_os_lock_init(&adapter->flow_lock);
 
 	adapter->mpstcam = t4_init_mpstcam(adapter);
 	if (!adapter->mpstcam)

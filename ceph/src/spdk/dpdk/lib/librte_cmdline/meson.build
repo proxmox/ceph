@@ -1,10 +1,6 @@
 # SPDX-License-Identifier: BSD-3-Clause
 # Copyright(c) 2017 Intel Corporation
 
-# This library is processed before EAL
-includes = [global_inc]
-
-version = 2
 sources = files('cmdline.c',
 	'cmdline_cirbuf.c',
 	'cmdline_parse.c',
@@ -28,3 +24,5 @@ headers = files('cmdline.h',
 	'cmdline_socket.h',
 	'cmdline_cirbuf.h',
 	'cmdline_parse_portlist.h')
+
+deps += ['net']

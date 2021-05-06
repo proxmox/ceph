@@ -1,0 +1,60 @@
+# Not configured to test vtune.
+lib/bdev/vtune
+
+# Not configured to test VPP
+module/sock/vpp/vpp
+
+# Not configured to test rocksdb env file
+lib/rocksdb/env_spdk.cc
+
+# Not configured to test FC
+lib/nvmf/fc
+lib/nvmf/fc_ls
+test/unit/lib/nvmf/fc.c/fc_ut
+test/unit/lib/nvmf/fc_ls.c/fc_ls_ut
+
+# Not configured for Neon testing
+lib/util/base64_neon
+
+# Not configured for mlx5 dv testing
+lib/rdma/rdma_mlx5_dv
+
+# Files related to testing our internal vhost implementation.
+lib/rte_vhost/fd_man
+lib/rte_vhost/socket
+lib/rte_vhost/vhost
+lib/rte_vhost/vhost_user
+lib/vhost/vhost_nvme
+lib/virtio/vhost_user
+
+# Cuse related files, enable when ready.
+lib/nvme/nvme_cuse
+module/bdev/nvme/bdev_nvme_cuse_rpc
+test/nvme/cuse/cuse
+
+# Currently we don't have this plumbed for testing, enable when ready.
+module/bdev/uring/bdev_uring
+module/bdev/uring/bdev_uring_rpc
+module/sock/uring/uring
+
+# Currently not testing blobfs_fuse, enable when ready.
+module/blobfs/bdev/blobfs_fuse
+test/blobfs/fuse/fuse
+
+
+# These files all represent c files that are only compiled by direct inclusion in other files.
+test/common/lib/test_env
+test/common/lib/test_sock
+test/common/lib/ut_multithread
+test/common/lib/test_rdma
+test/unit/lib/blob/bs_dev_common
+test/unit/lib/blob/bs_scheduler
+test/unit/lib/ftl/common/utils
+test/unit/lib/iscsi/common
+test/unit/lib/json_mock
+test/unit/lib/sock/uring.c/uring_ut
+
+# These files are in the external_code directory which doesn't get compiled with SPDK.
+test/external_code/hello_world/hello_bdev
+test/external_code/passthru/vbdev_passthru
+test/external_code/passthru/vbdev_passthru_rpc

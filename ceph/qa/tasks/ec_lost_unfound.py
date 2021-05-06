@@ -14,7 +14,7 @@ def task(ctx, config):
     """
     Test handling of lost objects on an ec pool.
 
-    A pretty rigid cluster is brought up andtested by this task
+    A pretty rigid cluster is brought up and tested by this task
     """
     if config is None:
         config = {}
@@ -156,3 +156,4 @@ def task(ctx, config):
     manager.wait_till_osd_is_up(1)
     manager.wait_for_clean()
     run.wait(procs)
+    manager.wait_for_clean()

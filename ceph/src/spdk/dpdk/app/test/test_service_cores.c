@@ -483,7 +483,7 @@ service_lcore_en_dis_able(void)
 	int ret = rte_eal_remote_launch(service_remote_launch_func, NULL,
 					slcore_id);
 	TEST_ASSERT_EQUAL(0, ret, "Ex-service core remote launch failed.");
-	rte_eal_mp_wait_lcore();
+	rte_eal_wait_lcore(slcore_id);
 	TEST_ASSERT_EQUAL(1, service_remote_launch_flag,
 			"Ex-service core function call had no effect.");
 
@@ -502,6 +502,10 @@ service_lcore_running_check(void)
 static int
 service_lcore_add_del(void)
 {
+	if (!rte_lcore_is_enabled(0) || !rte_lcore_is_enabled(1) ||
+	    !rte_lcore_is_enabled(2) || !rte_lcore_is_enabled(3))
+		return TEST_SKIPPED;
+
 	/* check initial count */
 	TEST_ASSERT_EQUAL(0, rte_service_lcore_count(),
 			"Service lcore count has value before adding a lcore");
@@ -669,6 +673,11 @@ static int
 service_mt_safe_poll(void)
 {
 	int mt_safe = 1;
+
+	if (!rte_lcore_is_enabled(0) || !rte_lcore_is_enabled(1) ||
+	    !rte_lcore_is_enabled(2))
+		return TEST_SKIPPED;
+
 	TEST_ASSERT_EQUAL(1, service_threaded_test(mt_safe),
 			"Error: MT Safe service not run by two cores concurrently");
 	return TEST_SUCCESS;
@@ -681,6 +690,11 @@ static int
 service_mt_unsafe_poll(void)
 {
 	int mt_safe = 0;
+
+	if (!rte_lcore_is_enabled(0) || !rte_lcore_is_enabled(1) ||
+	    !rte_lcore_is_enabled(2))
+		return TEST_SKIPPED;
+
 	TEST_ASSERT_EQUAL(1, service_threaded_test(mt_safe),
 			"Error: NON MT Safe service run by two cores concurrently");
 	return TEST_SUCCESS;
@@ -775,8 +789,19 @@ service_app_lcore_poll_impl(const int mt_safe)
 				"MT Unsafe: App core1 didn't return -EBUSY");
 	}
 
-	unregister_all();
+	/* Performance test: call in a loop, and measure tsc() */
+	const uint32_t perf_iters = (1 << 12);
+	uint64_t start = rte_rdtsc();
+	uint32_t i;
+	for (i = 0; i < perf_iters; i++) {
+		int err = service_run_on_app_core_func(&id);
+		TEST_ASSERT_EQUAL(0, err, "perf test: returned run failure");
+	}
+	uint64_t end = rte_rdtsc();
+	printf("perf test for %s: %0.1f cycles per call\n", mt_safe ?
+		"MT Safe" : "MT Unsafe", (end - start)/(float)perf_iters);
 
+	unregister_all();
 	return TEST_SUCCESS;
 }
 

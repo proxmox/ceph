@@ -25,13 +25,13 @@
 ;; OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ;;
 
-%include "os.asm"
-%include "const.inc"
+%include "include/os.asm"
+%include "include/const.inc"
 %include "job_aes_hmac.asm"
 %include "mb_mgr_datastruct.asm"
 
-%include "reg_sizes.asm"
-%include "memcpy.asm"
+%include "include/reg_sizes.asm"
+%include "include/memcpy.asm"
 %ifndef AES_XCBC_X4
 %define AES_XCBC_X4 aes_xcbc_mac_128_x4
 %define SUBMIT_JOB_AES_XCBC submit_job_aes_xcbc_sse
@@ -203,6 +203,16 @@ end_loop:
 	movdqa	xmm0, [state + _aes_xcbc_args_ICV + idx]
 	movq	[icv], xmm0
 	pextrd	[icv + 8], xmm0, 2
+
+%ifdef SAFE_DATA
+        ;; Clear ICV
+        pxor    xmm0, xmm0
+        movdqa  [state + _aes_xcbc_args_ICV + idx], xmm0
+
+        ;; Clear final block (32 bytes)
+        movdqa  [lane_data + _xcbc_final_block], xmm0
+        movdqa  [lane_data + _xcbc_final_block + 16], xmm0
+%endif
 
 return:
 

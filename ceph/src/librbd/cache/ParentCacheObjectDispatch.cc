@@ -1,15 +1,15 @@
 // -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
 // vim: ts=8 sw=2 smarttab
 
-#include "common/WorkQueue.h"
 #include "common/errno.h"
+#include "include/neorados/RADOS.hpp"
 #include "librbd/ImageCtx.h"
-#include "librbd/Journal.h"
 #include "librbd/Utils.h"
-#include "librbd/io/ObjectDispatchSpec.h"
-#include "librbd/io/ObjectDispatcher.h"
-#include "librbd/io/Utils.h"
+#include "librbd/asio/ContextWQ.h"
 #include "librbd/cache/ParentCacheObjectDispatch.h"
+#include "librbd/io/ObjectDispatchSpec.h"
+#include "librbd/io/ObjectDispatcherInterface.h"
+#include "librbd/plugin/Api.h"
 #include "osd/osd_types.h"
 #include "osdc/WritebackHandler.h"
 
@@ -28,8 +28,8 @@ namespace cache {
 
 template <typename I>
 ParentCacheObjectDispatch<I>::ParentCacheObjectDispatch(
-    I* image_ctx)
-  : m_image_ctx(image_ctx),
+    I* image_ctx, plugin::Api<I>& plugin_api)
+  : m_image_ctx(image_ctx), m_plugin_api(plugin_api),
     m_lock(ceph::make_mutex(
       "librbd::cache::ParentCacheObjectDispatch::lock", true, false)) {
   ceph_assert(m_image_ctx->data_ctx.is_valid());
@@ -57,7 +57,7 @@ void ParentCacheObjectDispatch<I>::init(Context* on_finish) {
     return;
   }
 
-  m_image_ctx->io_object_dispatcher->register_object_dispatch(this);
+  m_image_ctx->io_object_dispatcher->register_dispatch(this);
 
   std::unique_lock locker{m_lock};
   create_cache_session(on_finish, false);
@@ -65,15 +65,19 @@ void ParentCacheObjectDispatch<I>::init(Context* on_finish) {
 
 template <typename I>
 bool ParentCacheObjectDispatch<I>::read(
-    uint64_t object_no, uint64_t object_off,
-    uint64_t object_len, librados::snap_t snap_id, int op_flags,
-    const ZTracer::Trace &parent_trace, ceph::bufferlist* read_data,
-    io::ExtentMap* extent_map, int* object_dispatch_flags,
+    uint64_t object_no, io::ReadExtents* extents, IOContext io_context,
+    int op_flags, int read_flags, const ZTracer::Trace &parent_trace,
+    uint64_t* version, int* object_dispatch_flags,
     io::DispatchResult* dispatch_result, Context** on_finish,
     Context* on_dispatched) {
   auto cct = m_image_ctx->cct;
-  ldout(cct, 20) << "object_no=" << object_no << " " << object_off << "~"
-                 << object_len << dendl;
+  ldout(cct, 20) << "object_no=" << object_no << " " << *extents << dendl;
+
+  if (version != nullptr) {
+    // we currently don't cache read versions
+    return false;
+  }
+
   string oid = data_object_name(m_image_ctx, object_no);
 
   /* if RO daemon still don't startup, or RO daemon crash,
@@ -88,24 +92,25 @@ bool ParentCacheObjectDispatch<I>::read(
 
   CacheGenContextURef ctx = make_gen_lambda_context<ObjectCacheRequest*,
                                      std::function<void(ObjectCacheRequest*)>>
-   ([this, read_data, dispatch_result, on_dispatched, object_no, object_off,
-     object_len, snap_id, &parent_trace](ObjectCacheRequest* ack) {
-      handle_read_cache(ack, object_no, object_off, object_len, snap_id,
-                        parent_trace, read_data, dispatch_result,
-                        on_dispatched);
+   ([this, extents, dispatch_result, on_dispatched, object_no, io_context,
+     &parent_trace]
+   (ObjectCacheRequest* ack) {
+      handle_read_cache(ack, object_no, extents, io_context, parent_trace,
+                        dispatch_result, on_dispatched);
   });
 
   m_cache_client->lookup_object(m_image_ctx->data_ctx.get_namespace(),
                                 m_image_ctx->data_ctx.get_id(),
-                                (uint64_t)snap_id, oid, std::move(ctx));
+                                io_context->read_snap().value_or(CEPH_NOSNAP),
+                                m_image_ctx->layout.object_size,
+                                oid, std::move(ctx));
   return true;
 }
 
 template <typename I>
 void ParentCacheObjectDispatch<I>::handle_read_cache(
-     ObjectCacheRequest* ack, uint64_t object_no, uint64_t read_off,
-     uint64_t read_len, librados::snap_t snap_id,
-     const ZTracer::Trace &parent_trace, ceph::bufferlist* read_data,
+     ObjectCacheRequest* ack, uint64_t object_no, io::ReadExtents* extents,
+     IOContext io_context, const ZTracer::Trace &parent_trace,
      io::DispatchResult* dispatch_result, Context* on_dispatched) {
   auto cct = m_image_ctx->cct;
   ldout(cct, 20) << dendl;
@@ -129,22 +134,36 @@ void ParentCacheObjectDispatch<I>::handle_read_cache(
         *dispatch_result = io::DISPATCH_RESULT_COMPLETE;
         on_dispatched->complete(r);
       });
-    io::util::read_parent<I>(m_image_ctx, object_no, read_off, read_len,
-                             snap_id, parent_trace, read_data, ctx);
+    m_plugin_api.read_parent(m_image_ctx, object_no, extents,
+                             io_context->read_snap().value_or(CEPH_NOSNAP),
+                             parent_trace, ctx);
     return;
   }
 
-  // try to read from parent image cache
-  int r = read_object(file_path, read_data, read_off, read_len, on_dispatched);
-  if(r < 0) {
-    // cache read error, fall back to read rados
-    *dispatch_result = io::DISPATCH_RESULT_CONTINUE;
-    on_dispatched->complete(0);
-    return;
+  int read_len = 0;
+  for (auto& extent: *extents) {
+    // try to read from parent image cache
+    int r = read_object(file_path, &extent.bl, extent.offset, extent.length,
+                        on_dispatched);
+    if (r < 0) {
+      // cache read error, fall back to read rados
+      for (auto& read_extent: *extents) {
+        // clear read bufferlists
+        if (&read_extent == &extent) {
+          break;
+        }
+        read_extent.bl.clear();
+      }
+      *dispatch_result = io::DISPATCH_RESULT_CONTINUE;
+      on_dispatched->complete(0);
+      return;
+    }
+
+    read_len += r;
   }
 
   *dispatch_result = io::DISPATCH_RESULT_COMPLETE;
-  on_dispatched->complete(r);
+  on_dispatched->complete(read_len);
 }
 
 template <typename I>

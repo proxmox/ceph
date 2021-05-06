@@ -10,6 +10,7 @@
 #include <ostream>
 #include "kv/KeyValueDB.h"
 #include "bluestore_types.h"
+#include "zoned_types.h"
 
 class FreelistManager {
 public:
@@ -19,17 +20,16 @@ public:
 
   static FreelistManager *create(
     CephContext* cct,
-    string type,
-    string prefix);
+    std::string type,
+    std::string prefix);
 
-  static void setup_merge_operators(KeyValueDB *db);
+  static void setup_merge_operators(KeyValueDB *db, const std::string &type);
 
   virtual int create(uint64_t size, uint64_t granularity,
 		     KeyValueDB::Transaction txn) = 0;
 
-  virtual int init(const bluestore_bdev_label_t& l,
-    KeyValueDB *kvdb,
-    bool db_in_read_only) = 0;
+  virtual int init(KeyValueDB *kvdb, bool db_in_read_only,
+    std::function<int(const std::string&, std::string*)> cfg_reader) = 0;
   virtual void sync(KeyValueDB* kvdb) = 0;
   virtual void shutdown() = 0;
 
@@ -51,6 +51,10 @@ public:
 
   virtual void get_meta(uint64_t target_size,
     std::vector<std::pair<string, string>>*) const = 0;
+
+  virtual std::vector<zone_state_t> get_zone_states(KeyValueDB *kvdb) const {
+    return {};
+  }
 };
 
 

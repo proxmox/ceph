@@ -1,8 +1,8 @@
 /*-
  *   BSD LICENSE
  *
- *   Copyright (c) Intel Corporation.
- *   All rights reserved.
+ *   Copyright (c) Intel Corporation.  All rights reserved.
+ *   Copyright (c) 2019 Mellanox Technologies LTD. All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
  *   modification, are permitted provided that the following conditions
@@ -91,6 +91,7 @@ struct spdk_app_opts {
 	const char *name;
 	const char *config_file;
 	const char *json_config_file;
+	bool json_config_ignore_errors;
 	const char *rpc_addr; /* Can be UNIX domain socket path or IP address + TCP port */
 	const char *reactor_mask;
 	const char *tpoint_group_mask;
@@ -112,6 +113,7 @@ struct spdk_app_opts {
 	size_t			num_pci_addr;
 	struct spdk_pci_addr	*pci_blacklist;
 	struct spdk_pci_addr	*pci_whitelist;
+	const char		*iova_mode;
 
 	/* DEPRECATED. No longer has any effect.
 	 *
@@ -132,6 +134,13 @@ struct spdk_app_opts {
 
 	/** Opaque context for use of the env implementation. */
 	void			*env_context;
+
+	/**
+	 * for passing user-provided log call
+	 */
+	logfunc         *log;
+
+	uint64_t		base_virtaddr;
 };
 
 /**
@@ -147,10 +156,20 @@ void spdk_app_opts_init(struct spdk_app_opts *opts);
  * Before calling this function, opts must be initialized by
  * spdk_app_opts_init(). Once started, the framework will call start_fn on
  * an spdk_thread running on the current system thread with the
- * argument provided. This call will block until spdk_app_stop()
- * is called. If an error condition occurs during the intialization
- * code within spdk_app_start(), this function will immediately return
- * before invoking start_fn.
+ * argument provided.
+ *
+ * If opts->delay_subsystem_init is set
+ * (e.g. through --wait-for-rpc flag in spdk_app_parse_args())
+ * this function will only start a limited RPC server accepting
+ * only a few RPC commands - mostly related to pre-initialization.
+ * With this option, the framework won't be started and start_fn
+ * won't be called until the user sends an `rpc_framework_start_init`
+ * RPC command, which marks the pre-initialization complete and
+ * allows start_fn to be finally called.
+ *
+ * This call will block until spdk_app_stop() is called. If an error
+ * condition occurs during the intialization code within spdk_app_start(),
+ * this function will immediately return before invoking start_fn.
  *
  * \param opts Initialization options used for this application.
  * \param start_fn Entry point that will execute on an internally created thread
@@ -222,7 +241,7 @@ int spdk_app_parse_core_mask(const char *mask, struct spdk_cpuset *cpumask);
  */
 struct spdk_cpuset *spdk_app_get_core_mask(void);
 
-#define SPDK_APP_GETOPT_STRING "c:de:ghi:m:n:p:r:s:uB:L:RW:"
+#define SPDK_APP_GETOPT_STRING "c:de:ghi:m:n:p:r:s:uvB:L:RW:"
 
 enum spdk_app_parse_args_rvals {
 	SPDK_APP_PARSE_ARGS_HELP = 0,
@@ -283,14 +302,14 @@ void spdk_event_call(struct spdk_event *event);
  *
  * \param enabled True to enable, false to disable.
  */
-void spdk_reactor_enable_context_switch_monitor(bool enabled);
+void spdk_framework_enable_context_switch_monitor(bool enabled);
 
 /**
  * Return whether context switch monitoring is enabled.
  *
  * \return true if enabled or false otherwise.
  */
-bool spdk_reactor_context_switch_monitor_enabled(void);
+bool spdk_framework_context_switch_monitor_enabled(void);
 
 #ifdef __cplusplus
 }

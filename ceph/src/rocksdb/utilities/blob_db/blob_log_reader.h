@@ -10,14 +10,14 @@
 #include <memory>
 #include <string>
 
+#include "file/random_access_file_reader.h"
 #include "rocksdb/env.h"
 #include "rocksdb/slice.h"
 #include "rocksdb/statistics.h"
 #include "rocksdb/status.h"
-#include "util/file_reader_writer.h"
 #include "utilities/blob_db/blob_log_format.h"
 
-namespace rocksdb {
+namespace ROCKSDB_NAMESPACE {
 
 class SequentialFileReader;
 class Logger;
@@ -42,12 +42,11 @@ class Reader {
   // "*file" must remain live while this Reader is in use.
   Reader(std::unique_ptr<RandomAccessFileReader>&& file_reader, Env* env,
          Statistics* statistics);
-
-  ~Reader() = default;
-
   // No copying allowed
   Reader(const Reader&) = delete;
   Reader& operator=(const Reader&) = delete;
+
+  ~Reader() = default;
 
   Status ReadHeader(BlobLogHeader* header);
 
@@ -79,5 +78,5 @@ class Reader {
 };
 
 }  // namespace blob_db
-}  // namespace rocksdb
+}  // namespace ROCKSDB_NAMESPACE
 #endif  // ROCKSDB_LITE

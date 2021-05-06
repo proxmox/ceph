@@ -18,8 +18,8 @@
 #include <rte_string_fns.h>
 #include <rte_ethdev.h>
 #include <rte_errno.h>
+#include <rte_cycles.h>
 
-#include <assert.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <sys/socket.h>
@@ -71,8 +71,6 @@
 #define TAP_IOV_DEFAULT_MAX 1024
 
 static int tap_devices_count;
-static struct rte_vdev_driver pmd_tap_drv;
-static struct rte_vdev_driver pmd_tun_drv;
 
 static const char *valid_arguments[] = {
 	ETH_TAP_IFACE_ARG,
@@ -261,7 +259,7 @@ tap_verify_csum(struct rte_mbuf *mbuf)
 	uint32_t l2 = mbuf->packet_type & RTE_PTYPE_L2_MASK;
 	uint32_t l3 = mbuf->packet_type & RTE_PTYPE_L3_MASK;
 	uint32_t l4 = mbuf->packet_type & RTE_PTYPE_L4_MASK;
-	unsigned int l2_len = sizeof(struct ether_hdr);
+	unsigned int l2_len = sizeof(struct rte_ether_hdr);
 	unsigned int l3_len;
 	uint16_t cksum = 0;
 	void *l3_hdr;
@@ -272,12 +270,12 @@ tap_verify_csum(struct rte_mbuf *mbuf)
 	else if (l2 == RTE_PTYPE_L2_ETHER_QINQ)
 		l2_len += 8;
 	/* Don't verify checksum for packets with discontinuous L2 header */
-	if (unlikely(l2_len + sizeof(struct ipv4_hdr) >
+	if (unlikely(l2_len + sizeof(struct rte_ipv4_hdr) >
 		     rte_pktmbuf_data_len(mbuf)))
 		return;
 	l3_hdr = rte_pktmbuf_mtod_offset(mbuf, void *, l2_len);
 	if (l3 == RTE_PTYPE_L3_IPV4 || l3 == RTE_PTYPE_L3_IPV4_EXT) {
-		struct ipv4_hdr *iph = l3_hdr;
+		struct rte_ipv4_hdr *iph = l3_hdr;
 
 		/* ihl contains the number of 4-byte words in the header */
 		l3_len = 4 * (iph->version_ihl & 0xf);
@@ -295,9 +293,9 @@ tap_verify_csum(struct rte_mbuf *mbuf)
 			PKT_RX_IP_CKSUM_BAD :
 			PKT_RX_IP_CKSUM_GOOD;
 	} else if (l3 == RTE_PTYPE_L3_IPV6) {
-		struct ipv6_hdr *iph = l3_hdr;
+		struct rte_ipv6_hdr *iph = l3_hdr;
 
-		l3_len = sizeof(struct ipv6_hdr);
+		l3_len = sizeof(struct rte_ipv6_hdr);
 		/* check that the total length reported by header is not
 		 * greater than the total received size
 		 */
@@ -341,6 +339,23 @@ tap_rx_offload_get_queue_capa(void)
 	       DEV_RX_OFFLOAD_TCP_CKSUM;
 }
 
+static void
+tap_rxq_pool_free(struct rte_mbuf *pool)
+{
+	struct rte_mbuf *mbuf = pool;
+	uint16_t nb_segs = 1;
+
+	if (mbuf == NULL)
+		return;
+
+	while (mbuf->next) {
+		mbuf = mbuf->next;
+		nb_segs++;
+	}
+	pool->nb_segs = nb_segs;
+	rte_pktmbuf_free(pool);
+}
+
 /* Callback to handle the rx burst of packets to the correct interface and
  * file descriptor(s) in a multi-queue setup.
  */
@@ -355,10 +370,8 @@ pmd_rx_burst(void *queue, struct rte_mbuf **bufs, uint16_t nb_pkts)
 
 	if (trigger == rxq->trigger_seen)
 		return 0;
-	if (trigger)
-		rxq->trigger_seen = trigger;
+
 	process_private = rte_eth_devices[rxq->in_port].process_private;
-	rte_compiler_barrier();
 	for (num_rx = 0; num_rx < nb_pkts; ) {
 		struct rte_mbuf *mbuf = rxq->pool;
 		struct rte_mbuf *seg = NULL;
@@ -393,7 +406,7 @@ pmd_rx_burst(void *queue, struct rte_mbuf **bufs, uint16_t nb_pkts)
 					goto end;
 
 				seg->next = NULL;
-				rte_pktmbuf_free(mbuf);
+				tap_rxq_pool_free(mbuf);
 
 				goto end;
 			}
@@ -434,6 +447,9 @@ pmd_rx_burst(void *queue, struct rte_mbuf **bufs, uint16_t nb_pkts)
 end:
 	rxq->stats.ipackets += num_rx;
 	rxq->stats.ibytes += num_rx_bytes;
+
+	if (trigger && num_rx < nb_pkts)
+		rxq->trigger_seen = trigger;
 
 	return num_rx;
 }
@@ -496,7 +512,7 @@ tap_tx_l3_cksum(char *packet, uint64_t ol_flags, unsigned int l2_len,
 	void *l3_hdr = packet + l2_len;
 
 	if (ol_flags & (PKT_TX_IP_CKSUM | PKT_TX_IPV4)) {
-		struct ipv4_hdr *iph = l3_hdr;
+		struct rte_ipv4_hdr *iph = l3_hdr;
 		uint16_t cksum;
 
 		iph->hdr_checksum = 0;
@@ -508,9 +524,9 @@ tap_tx_l3_cksum(char *packet, uint64_t ol_flags, unsigned int l2_len,
 
 		l4_hdr = packet + l2_len + l3_len;
 		if ((ol_flags & PKT_TX_L4_MASK) == PKT_TX_UDP_CKSUM)
-			*l4_cksum = &((struct udp_hdr *)l4_hdr)->dgram_cksum;
+			*l4_cksum = &((struct rte_udp_hdr *)l4_hdr)->dgram_cksum;
 		else if ((ol_flags & PKT_TX_L4_MASK) == PKT_TX_TCP_CKSUM)
-			*l4_cksum = &((struct tcp_hdr *)l4_hdr)->cksum;
+			*l4_cksum = &((struct rte_tcp_hdr *)l4_hdr)->cksum;
 		else
 			return;
 		**l4_cksum = 0;
@@ -522,7 +538,7 @@ tap_tx_l3_cksum(char *packet, uint64_t ol_flags, unsigned int l2_len,
 	}
 }
 
-static inline void
+static inline int
 tap_write_mbufs(struct tx_queue *txq, uint16_t num_mbufs,
 			struct rte_mbuf **pmbufs,
 			uint16_t *num_packets, unsigned long *num_tx_bytes)
@@ -565,9 +581,9 @@ tap_write_mbufs(struct tx_queue *txq, uint16_t num_mbufs,
 			char *buff_data = rte_pktmbuf_mtod(seg, void *);
 			proto = (*buff_data & 0xf0);
 			pi.proto = (proto == 0x40) ?
-				rte_cpu_to_be_16(ETHER_TYPE_IPv4) :
+				rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4) :
 				((proto == 0x60) ?
-					rte_cpu_to_be_16(ETHER_TYPE_IPv6) :
+					rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV6) :
 					0x00);
 		}
 
@@ -589,7 +605,7 @@ tap_write_mbufs(struct tx_queue *txq, uint16_t num_mbufs,
 			seg_len = rte_pktmbuf_data_len(mbuf);
 			l234_hlen = mbuf->l2_len + mbuf->l3_len + mbuf->l4_len;
 			if (seg_len < l234_hlen)
-				break;
+				return -1;
 
 			/* To change checksums, work on a * copy of l2, l3
 			 * headers + l4 pseudo header
@@ -635,10 +651,12 @@ tap_write_mbufs(struct tx_queue *txq, uint16_t num_mbufs,
 		/* copy the tx frame data */
 		n = writev(process_private->txq_fds[txq->queue_id], iovecs, j);
 		if (n <= 0)
-			break;
+			return -1;
+
 		(*num_packets)++;
 		(*num_tx_bytes) += rte_pktmbuf_pkt_len(mbuf);
 	}
+	return 0;
 }
 
 /* Callback to handle sending packets from the tap interface
@@ -657,27 +675,25 @@ pmd_tx_burst(void *queue, struct rte_mbuf **bufs, uint16_t nb_pkts)
 		return 0;
 
 	struct rte_mbuf *gso_mbufs[MAX_GSO_MBUFS];
-	max_size = *txq->mtu + (ETHER_HDR_LEN + ETHER_CRC_LEN + 4);
+	max_size = *txq->mtu + (RTE_ETHER_HDR_LEN + RTE_ETHER_CRC_LEN + 4);
 	for (i = 0; i < nb_pkts; i++) {
 		struct rte_mbuf *mbuf_in = bufs[num_tx];
 		struct rte_mbuf **mbuf;
 		uint16_t num_mbufs = 0;
 		uint16_t tso_segsz = 0;
 		int ret;
+		int num_tso_mbufs;
 		uint16_t hdrs_len;
-		int j;
 		uint64_t tso;
 
 		tso = mbuf_in->ol_flags & PKT_TX_TCP_SEG;
 		if (tso) {
 			struct rte_gso_ctx *gso_ctx = &txq->gso_ctx;
 
-			assert(gso_ctx != NULL);
-
 			/* TCP segmentation implies TCP checksum offload */
 			mbuf_in->ol_flags |= PKT_TX_TCP_CKSUM;
 
-			/* gso size is calculated without ETHER_CRC_LEN */
+			/* gso size is calculated without RTE_ETHER_CRC_LEN */
 			hdrs_len = mbuf_in->l2_len + mbuf_in->l3_len +
 					mbuf_in->l4_len;
 			tso_segsz = mbuf_in->tso_segsz + hdrs_len;
@@ -687,43 +703,51 @@ pmd_tx_burst(void *queue, struct rte_mbuf **bufs, uint16_t nb_pkts)
 				break;
 			}
 			gso_ctx->gso_size = tso_segsz;
-			ret = rte_gso_segment(mbuf_in, /* packet to segment */
+			/* 'mbuf_in' packet to segment */
+			num_tso_mbufs = rte_gso_segment(mbuf_in,
 				gso_ctx, /* gso control block */
 				(struct rte_mbuf **)&gso_mbufs, /* out mbufs */
 				RTE_DIM(gso_mbufs)); /* max tso mbufs */
 
 			/* ret contains the number of new created mbufs */
-			if (ret < 0)
+			if (num_tso_mbufs < 0)
 				break;
 
 			mbuf = gso_mbufs;
-			num_mbufs = ret;
+			num_mbufs = num_tso_mbufs;
 		} else {
 			/* stats.errs will be incremented */
 			if (rte_pktmbuf_pkt_len(mbuf_in) > max_size)
 				break;
 
 			/* ret 0 indicates no new mbufs were created */
-			ret = 0;
+			num_tso_mbufs = 0;
 			mbuf = &mbuf_in;
 			num_mbufs = 1;
 		}
 
-		tap_write_mbufs(txq, num_mbufs, mbuf,
+		ret = tap_write_mbufs(txq, num_mbufs, mbuf,
 				&num_packets, &num_tx_bytes);
+		if (ret == -1) {
+			txq->stats.errs++;
+			/* free tso mbufs */
+			if (num_tso_mbufs > 0)
+				rte_pktmbuf_free_bulk(mbuf, num_tso_mbufs);
+			break;
+		}
 		num_tx++;
 		/* free original mbuf */
 		rte_pktmbuf_free(mbuf_in);
 		/* free tso mbufs */
-		for (j = 0; j < ret; j++)
-			rte_pktmbuf_free(mbuf[j]);
+		if (num_tso_mbufs > 0)
+			rte_pktmbuf_free_bulk(mbuf, num_tso_mbufs);
 	}
 
 	txq->stats.opackets += num_packets;
 	txq->stats.errs += nb_pkts - num_tx;
 	txq->stats.obytes += num_tx_bytes;
 
-	return num_packets;
+	return num_tx;
 }
 
 static const char *
@@ -779,7 +803,7 @@ apply:
 	case SIOCSIFMTU:
 		break;
 	default:
-		RTE_LOG(WARNING, PMD, "%s: ioctl() called with wrong arg\n",
+		TAP_LOG(WARNING, "%s: ioctl() called with wrong arg",
 			pmd->name);
 		return -EINVAL;
 	}
@@ -917,14 +941,14 @@ tap_dev_speed_capa(void)
 	return capa;
 }
 
-static void
+static int
 tap_dev_info(struct rte_eth_dev *dev, struct rte_eth_dev_info *dev_info)
 {
 	struct pmd_internals *internals = dev->data->dev_private;
 
 	dev_info->if_index = internals->if_index;
 	dev_info->max_mac_addrs = 1;
-	dev_info->max_rx_pktlen = (uint32_t)ETHER_MAX_VLAN_FRAME_LEN;
+	dev_info->max_rx_pktlen = (uint32_t)RTE_ETHER_MAX_VLAN_FRAME_LEN;
 	dev_info->max_rx_queues = RTE_PMD_TAP_MAX_QUEUES;
 	dev_info->max_tx_queues = RTE_PMD_TAP_MAX_QUEUES;
 	dev_info->min_rx_bufsize = 0;
@@ -941,6 +965,8 @@ tap_dev_info(struct rte_eth_dev *dev, struct rte_eth_dev_info *dev_info)
 	 * functions together and not in partial combinations
 	 */
 	dev_info->flow_type_rss_offloads = ~TAP_RSS_HF_MASK;
+
+	return 0;
 }
 
 static int
@@ -970,10 +996,9 @@ tap_stats_get(struct rte_eth_dev *dev, struct rte_eth_stats *tap_stats)
 
 	for (i = 0; i < imax; i++) {
 		tap_stats->q_opackets[i] = pmd->txq[i].stats.opackets;
-		tap_stats->q_errors[i] = pmd->txq[i].stats.errs;
 		tap_stats->q_obytes[i] = pmd->txq[i].stats.obytes;
 		tx_total += tap_stats->q_opackets[i];
-		tx_err_total += tap_stats->q_errors[i];
+		tx_err_total += pmd->txq[i].stats.errs;
 		tx_bytes_total += tap_stats->q_obytes[i];
 	}
 
@@ -987,7 +1012,7 @@ tap_stats_get(struct rte_eth_dev *dev, struct rte_eth_stats *tap_stats)
 	return 0;
 }
 
-static void
+static int
 tap_stats_reset(struct rte_eth_dev *dev)
 {
 	int i;
@@ -1003,6 +1028,8 @@ tap_stats_reset(struct rte_eth_dev *dev)
 		pmd->txq[i].stats.errs = 0;
 		pmd->txq[i].stats.obytes = 0;
 	}
+
+	return 0;
 }
 
 static void
@@ -1011,15 +1038,25 @@ tap_dev_close(struct rte_eth_dev *dev)
 	int i;
 	struct pmd_internals *internals = dev->data->dev_private;
 	struct pmd_process_private *process_private = dev->process_private;
+	struct rx_queue *rxq;
 
 	tap_link_set_down(dev);
-	tap_flow_flush(dev, NULL);
-	tap_flow_implicit_flush(internals, NULL);
+	if (internals->nlsk_fd != -1) {
+		tap_flow_flush(dev, NULL);
+		tap_flow_implicit_flush(internals, NULL);
+		tap_nl_final(internals->nlsk_fd);
+		internals->nlsk_fd = -1;
+	}
 
 	for (i = 0; i < RTE_PMD_TAP_MAX_QUEUES; i++) {
 		if (process_private->rxq_fds[i] != -1) {
+			rxq = &internals->rxq[i];
 			close(process_private->rxq_fds[i]);
 			process_private->rxq_fds[i] = -1;
+			tap_rxq_pool_free(rxq->pool);
+			rte_free(rxq->iovecs);
+			rxq->pool = NULL;
+			rxq->iovecs = NULL;
 		}
 		if (process_private->txq_fds[i] != -1) {
 			close(process_private->txq_fds[i]);
@@ -1052,10 +1089,10 @@ tap_rx_queue_release(void *queue)
 	if (!rxq)
 		return;
 	process_private = rte_eth_devices[rxq->in_port].process_private;
-	if (process_private->rxq_fds[rxq->queue_id] > 0) {
+	if (process_private->rxq_fds[rxq->queue_id] != -1) {
 		close(process_private->rxq_fds[rxq->queue_id]);
 		process_private->rxq_fds[rxq->queue_id] = -1;
-		rte_pktmbuf_free(rxq->pool);
+		tap_rxq_pool_free(rxq->pool);
 		rte_free(rxq->iovecs);
 		rxq->pool = NULL;
 		rxq->iovecs = NULL;
@@ -1072,7 +1109,7 @@ tap_tx_queue_release(void *queue)
 		return;
 	process_private = rte_eth_devices[txq->out_port].process_private;
 
-	if (process_private->txq_fds[txq->queue_id] > 0) {
+	if (process_private->txq_fds[txq->queue_id] != -1) {
 		close(process_private->txq_fds[txq->queue_id]);
 		process_private->txq_fds[txq->queue_id] = -1;
 	}
@@ -1101,56 +1138,120 @@ tap_link_update(struct rte_eth_dev *dev, int wait_to_complete __rte_unused)
 	return 0;
 }
 
-static void
+static int
 tap_promisc_enable(struct rte_eth_dev *dev)
 {
 	struct pmd_internals *pmd = dev->data->dev_private;
 	struct ifreq ifr = { .ifr_flags = IFF_PROMISC };
+	int ret;
 
-	dev->data->promiscuous = 1;
-	tap_ioctl(pmd, SIOCSIFFLAGS, &ifr, 1, LOCAL_AND_REMOTE);
-	if (pmd->remote_if_index && !pmd->flow_isolate)
-		tap_flow_implicit_create(pmd, TAP_REMOTE_PROMISC);
+	ret = tap_ioctl(pmd, SIOCSIFFLAGS, &ifr, 1, LOCAL_AND_REMOTE);
+	if (ret != 0)
+		return ret;
+
+	if (pmd->remote_if_index && !pmd->flow_isolate) {
+		dev->data->promiscuous = 1;
+		ret = tap_flow_implicit_create(pmd, TAP_REMOTE_PROMISC);
+		if (ret != 0) {
+			/* Rollback promisc flag */
+			tap_ioctl(pmd, SIOCSIFFLAGS, &ifr, 0, LOCAL_AND_REMOTE);
+			/*
+			 * rte_eth_dev_promiscuous_enable() rollback
+			 * dev->data->promiscuous in the case of failure.
+			 */
+			return ret;
+		}
+	}
+
+	return 0;
 }
 
-static void
+static int
 tap_promisc_disable(struct rte_eth_dev *dev)
 {
 	struct pmd_internals *pmd = dev->data->dev_private;
 	struct ifreq ifr = { .ifr_flags = IFF_PROMISC };
+	int ret;
 
-	dev->data->promiscuous = 0;
-	tap_ioctl(pmd, SIOCSIFFLAGS, &ifr, 0, LOCAL_AND_REMOTE);
-	if (pmd->remote_if_index && !pmd->flow_isolate)
-		tap_flow_implicit_destroy(pmd, TAP_REMOTE_PROMISC);
+	ret = tap_ioctl(pmd, SIOCSIFFLAGS, &ifr, 0, LOCAL_AND_REMOTE);
+	if (ret != 0)
+		return ret;
+
+	if (pmd->remote_if_index && !pmd->flow_isolate) {
+		dev->data->promiscuous = 0;
+		ret = tap_flow_implicit_destroy(pmd, TAP_REMOTE_PROMISC);
+		if (ret != 0) {
+			/* Rollback promisc flag */
+			tap_ioctl(pmd, SIOCSIFFLAGS, &ifr, 1, LOCAL_AND_REMOTE);
+			/*
+			 * rte_eth_dev_promiscuous_disable() rollback
+			 * dev->data->promiscuous in the case of failure.
+			 */
+			return ret;
+		}
+	}
+
+	return 0;
 }
 
-static void
+static int
 tap_allmulti_enable(struct rte_eth_dev *dev)
 {
 	struct pmd_internals *pmd = dev->data->dev_private;
 	struct ifreq ifr = { .ifr_flags = IFF_ALLMULTI };
+	int ret;
 
-	dev->data->all_multicast = 1;
-	tap_ioctl(pmd, SIOCSIFFLAGS, &ifr, 1, LOCAL_AND_REMOTE);
-	if (pmd->remote_if_index && !pmd->flow_isolate)
-		tap_flow_implicit_create(pmd, TAP_REMOTE_ALLMULTI);
+	ret = tap_ioctl(pmd, SIOCSIFFLAGS, &ifr, 1, LOCAL_AND_REMOTE);
+	if (ret != 0)
+		return ret;
+
+	if (pmd->remote_if_index && !pmd->flow_isolate) {
+		dev->data->all_multicast = 1;
+		ret = tap_flow_implicit_create(pmd, TAP_REMOTE_ALLMULTI);
+		if (ret != 0) {
+			/* Rollback allmulti flag */
+			tap_ioctl(pmd, SIOCSIFFLAGS, &ifr, 0, LOCAL_AND_REMOTE);
+			/*
+			 * rte_eth_dev_allmulticast_enable() rollback
+			 * dev->data->all_multicast in the case of failure.
+			 */
+			return ret;
+		}
+	}
+
+	return 0;
 }
 
-static void
+static int
 tap_allmulti_disable(struct rte_eth_dev *dev)
 {
 	struct pmd_internals *pmd = dev->data->dev_private;
 	struct ifreq ifr = { .ifr_flags = IFF_ALLMULTI };
+	int ret;
 
-	dev->data->all_multicast = 0;
-	tap_ioctl(pmd, SIOCSIFFLAGS, &ifr, 0, LOCAL_AND_REMOTE);
-	if (pmd->remote_if_index && !pmd->flow_isolate)
-		tap_flow_implicit_destroy(pmd, TAP_REMOTE_ALLMULTI);
+	ret = tap_ioctl(pmd, SIOCSIFFLAGS, &ifr, 0, LOCAL_AND_REMOTE);
+	if (ret != 0)
+		return ret;
+
+	if (pmd->remote_if_index && !pmd->flow_isolate) {
+		dev->data->all_multicast = 0;
+		ret = tap_flow_implicit_destroy(pmd, TAP_REMOTE_ALLMULTI);
+		if (ret != 0) {
+			/* Rollback allmulti flag */
+			tap_ioctl(pmd, SIOCSIFFLAGS, &ifr, 1, LOCAL_AND_REMOTE);
+			/*
+			 * rte_eth_dev_allmulticast_disable() rollback
+			 * dev->data->all_multicast in the case of failure.
+			 */
+			return ret;
+		}
+	}
+
+	return 0;
 }
 
 static int
-tap_mac_set(struct rte_eth_dev *dev, struct ether_addr *mac_addr)
+tap_mac_set(struct rte_eth_dev *dev, struct rte_ether_addr *mac_addr)
 {
 	struct pmd_internals *pmd = dev->data->dev_private;
 	enum ioctl_mode mode = LOCAL_ONLY;
@@ -1163,7 +1264,7 @@ tap_mac_set(struct rte_eth_dev *dev, struct ether_addr *mac_addr)
 		return -ENOTSUP;
 	}
 
-	if (is_zero_ether_addr(mac_addr)) {
+	if (rte_is_zero_ether_addr(mac_addr)) {
 		TAP_LOG(ERR, "%s: can't set an empty MAC address",
 			dev->device->name);
 		return -EINVAL;
@@ -1172,22 +1273,24 @@ tap_mac_set(struct rte_eth_dev *dev, struct ether_addr *mac_addr)
 	ret = tap_ioctl(pmd, SIOCGIFHWADDR, &ifr, 0, LOCAL_ONLY);
 	if (ret < 0)
 		return ret;
-	if (is_same_ether_addr((struct ether_addr *)&ifr.ifr_hwaddr.sa_data,
-			       mac_addr))
+	if (rte_is_same_ether_addr(
+			(struct rte_ether_addr *)&ifr.ifr_hwaddr.sa_data,
+			mac_addr))
 		return 0;
 	/* Check the current MAC address on the remote */
 	ret = tap_ioctl(pmd, SIOCGIFHWADDR, &ifr, 0, REMOTE_ONLY);
 	if (ret < 0)
 		return ret;
-	if (!is_same_ether_addr((struct ether_addr *)&ifr.ifr_hwaddr.sa_data,
-			       mac_addr))
+	if (!rte_is_same_ether_addr(
+			(struct rte_ether_addr *)&ifr.ifr_hwaddr.sa_data,
+			mac_addr))
 		mode = LOCAL_AND_REMOTE;
 	ifr.ifr_hwaddr.sa_family = AF_LOCAL;
-	rte_memcpy(ifr.ifr_hwaddr.sa_data, mac_addr, ETHER_ADDR_LEN);
+	rte_memcpy(ifr.ifr_hwaddr.sa_data, mac_addr, RTE_ETHER_ADDR_LEN);
 	ret = tap_ioctl(pmd, SIOCSIFHWADDR, &ifr, 1, mode);
 	if (ret < 0)
 		return ret;
-	rte_memcpy(&pmd->eth_addr, mac_addr, ETHER_ADDR_LEN);
+	rte_memcpy(&pmd->eth_addr, mac_addr, RTE_ETHER_ADDR_LEN);
 	if (pmd->remote_if_index && !pmd->flow_isolate) {
 		/* Replace MAC redirection rule after a MAC change */
 		ret = tap_flow_implicit_destroy(pmd, TAP_REMOTE_LOCAL_MAC);
@@ -1233,7 +1336,9 @@ tap_gso_ctx_setup(struct rte_gso_ctx *gso_ctx, struct rte_eth_dev *dev)
 			SOCKET_ID_ANY);
 		if (!mp) {
 			struct pmd_internals *pmd = dev->data->dev_private;
-			RTE_LOG(DEBUG, PMD, "%s: failed to create mbuf pool for device %s\n",
+
+			TAP_LOG(ERR,
+				"%s: failed to create mbuf pool for device %s\n",
 				pmd->name, dev->device->name);
 			return -1;
 		}
@@ -1397,7 +1502,7 @@ tap_rx_queue_setup(struct rte_eth_dev *dev,
 	return 0;
 
 error:
-	rte_pktmbuf_free(rxq->pool);
+	tap_rxq_pool_free(rxq->pool);
 	rxq->pool = NULL;
 	rte_free(rxq->iovecs);
 	rxq->iovecs = NULL;
@@ -1458,7 +1563,7 @@ tap_mtu_set(struct rte_eth_dev *dev, uint16_t mtu)
 
 static int
 tap_set_mc_addr_list(struct rte_eth_dev *dev __rte_unused,
-		     struct ether_addr *mc_addr_set __rte_unused,
+		     struct rte_ether_addr *mc_addr_set __rte_unused,
 		     uint32_t nb_mc_addr __rte_unused)
 {
 	/*
@@ -1495,13 +1600,12 @@ static int
 tap_lsc_intr_handle_set(struct rte_eth_dev *dev, int set)
 {
 	struct pmd_internals *pmd = dev->data->dev_private;
+	int ret;
 
 	/* In any case, disable interrupt if the conf is no longer there. */
 	if (!dev->data->dev_conf.intr_conf.lsc) {
 		if (pmd->intr_handle.fd != -1) {
-			tap_nl_final(pmd->intr_handle.fd);
-			rte_intr_callback_unregister(&pmd->intr_handle,
-				tap_dev_intr_handler, dev);
+			goto clean;
 		}
 		return 0;
 	}
@@ -1512,9 +1616,26 @@ tap_lsc_intr_handle_set(struct rte_eth_dev *dev, int set)
 		return rte_intr_callback_register(
 			&pmd->intr_handle, tap_dev_intr_handler, dev);
 	}
+
+clean:
+	do {
+		ret = rte_intr_callback_unregister(&pmd->intr_handle,
+			tap_dev_intr_handler, dev);
+		if (ret >= 0) {
+			break;
+		} else if (ret == -EAGAIN) {
+			rte_delay_ms(100);
+		} else {
+			TAP_LOG(ERR, "intr callback unregister failed: %d",
+				     ret);
+			break;
+		}
+	} while (true);
+
 	tap_nl_final(pmd->intr_handle.fd);
-	return rte_intr_callback_unregister(&pmd->intr_handle,
-					    tap_dev_intr_handler, dev);
+	pmd->intr_handle.fd = -1;
+
+	return 0;
 }
 
 static int
@@ -1523,8 +1644,11 @@ tap_intr_handle_set(struct rte_eth_dev *dev, int set)
 	int err;
 
 	err = tap_lsc_intr_handle_set(dev, set);
-	if (err)
+	if (err < 0) {
+		if (!set)
+			tap_rx_intr_vec_set(dev, 0);
 		return err;
+	}
 	err = tap_rx_intr_vec_set(dev, set);
 	if (err && set)
 		tap_lsc_intr_handle_set(dev, 0);
@@ -1682,7 +1806,7 @@ static const char *tuntap_types[ETH_TUNTAP_TYPE_MAX] = {
 
 static int
 eth_dev_tap_create(struct rte_vdev_device *vdev, const char *tap_name,
-		   char *remote_iface, struct ether_addr *mac_addr,
+		   char *remote_iface, struct rte_ether_addr *mac_addr,
 		   enum rte_tuntap_type type)
 {
 	int numa_node = rte_socket_id();
@@ -1716,6 +1840,8 @@ eth_dev_tap_create(struct rte_vdev_device *vdev, const char *tap_name,
 	pmd->dev = dev;
 	strlcpy(pmd->name, tap_name, sizeof(pmd->name));
 	pmd->type = type;
+	pmd->ka_fd = -1;
+	pmd->nlsk_fd = -1;
 
 	pmd->ioctl_sock = socket(AF_INET, SOCK_DGRAM, 0);
 	if (pmd->ioctl_sock == -1) {
@@ -1746,15 +1872,14 @@ eth_dev_tap_create(struct rte_vdev_device *vdev, const char *tap_name,
 	dev->intr_handle = &pmd->intr_handle;
 
 	/* Presetup the fds to -1 as being not valid */
-	pmd->ka_fd = -1;
 	for (i = 0; i < RTE_PMD_TAP_MAX_QUEUES; i++) {
 		process_private->rxq_fds[i] = -1;
 		process_private->txq_fds[i] = -1;
 	}
 
 	if (pmd->type == ETH_TUNTAP_TYPE_TAP) {
-		if (is_zero_ether_addr(mac_addr))
-			eth_random_addr((uint8_t *)&pmd->eth_addr);
+		if (rte_is_zero_ether_addr(mac_addr))
+			rte_eth_random_addr((uint8_t *)&pmd->eth_addr);
 		else
 			rte_memcpy(&pmd->eth_addr, mac_addr, sizeof(*mac_addr));
 	}
@@ -1780,7 +1905,7 @@ eth_dev_tap_create(struct rte_vdev_device *vdev, const char *tap_name,
 		memset(&ifr, 0, sizeof(struct ifreq));
 		ifr.ifr_hwaddr.sa_family = AF_LOCAL;
 		rte_memcpy(ifr.ifr_hwaddr.sa_data, &pmd->eth_addr,
-				ETHER_ADDR_LEN);
+				RTE_ETHER_ADDR_LEN);
 		if (tap_ioctl(pmd, SIOCSIFHWADDR, &ifr, 0, LOCAL_ONLY) < 0)
 			goto error_exit;
 	}
@@ -1835,7 +1960,7 @@ eth_dev_tap_create(struct rte_vdev_device *vdev, const char *tap_name,
 			goto error_remote;
 		}
 		rte_memcpy(&pmd->eth_addr, ifr.ifr_hwaddr.sa_data,
-			   ETHER_ADDR_LEN);
+			   RTE_ETHER_ADDR_LEN);
 		/* The desired MAC is already in ifreq after SIOCGIFHWADDR. */
 		if (tap_ioctl(pmd, SIOCSIFHWADDR, &ifr, 0, LOCAL_ONLY) < 0) {
 			TAP_LOG(ERR, "%s: failed to get %s MAC address.",
@@ -1886,7 +2011,11 @@ error_remote:
 	tap_flow_implicit_flush(pmd, NULL);
 
 error_exit:
-	if (pmd->ioctl_sock > 0)
+	if (pmd->nlsk_fd != -1)
+		close(pmd->nlsk_fd);
+	if (pmd->ka_fd != -1)
+		close(pmd->ka_fd);
+	if (pmd->ioctl_sock != -1)
 		close(pmd->ioctl_sock);
 	/* mac_addrs must not be freed alone because part of dev_private */
 	dev->data->mac_addrs = NULL;
@@ -1957,7 +2086,7 @@ set_remote_iface(const char *key __rte_unused,
 	return 0;
 }
 
-static int parse_user_mac(struct ether_addr *user_mac,
+static int parse_user_mac(struct rte_ether_addr *user_mac,
 		const char *value)
 {
 	unsigned int index = 0;
@@ -1985,7 +2114,7 @@ set_mac_type(const char *key __rte_unused,
 	     const char *value,
 	     void *extra_args)
 {
-	struct ether_addr *user_mac = extra_args;
+	struct rte_ether_addr *user_mac = extra_args;
 
 	if (!value)
 		return 0;
@@ -1994,8 +2123,10 @@ set_mac_type(const char *key __rte_unused,
 		static int iface_idx;
 
 		/* fixed mac = 00:64:74:61:70:<iface_idx> */
-		memcpy((char *)user_mac->addr_bytes, "\0dtap", ETHER_ADDR_LEN);
-		user_mac->addr_bytes[ETHER_ADDR_LEN - 1] = iface_idx++ + '0';
+		memcpy((char *)user_mac->addr_bytes, "\0dtap",
+			RTE_ETHER_ADDR_LEN);
+		user_mac->addr_bytes[RTE_ETHER_ADDR_LEN - 1] =
+			iface_idx++ + '0';
 		goto success;
 	}
 
@@ -2198,7 +2329,7 @@ rte_pmd_tap_probe(struct rte_vdev_device *dev)
 	int speed;
 	char tap_name[RTE_ETH_NAME_MAX_LEN];
 	char remote_iface[RTE_ETH_NAME_MAX_LEN];
-	struct ether_addr user_mac = { .addr_bytes = {0} };
+	struct rte_ether_addr user_mac = { .addr_bytes = {0} };
 	struct rte_eth_dev *eth_dev;
 	int tap_devices_count_increased = 0;
 
@@ -2283,7 +2414,7 @@ rte_pmd_tap_probe(struct rte_vdev_device *dev)
 	/* Register IPC feed callback */
 	if (!tap_devices_count) {
 		ret = rte_mp_action_register(TAP_MP_KEY, tap_mp_sync_queues);
-		if (ret < 0) {
+		if (ret < 0 && rte_errno != ENOTSUP) {
 			TAP_LOG(ERR, "tap: Failed to register IPC callback: %s",
 				strerror(rte_errno));
 			goto leave;
@@ -2316,8 +2447,6 @@ rte_pmd_tap_remove(struct rte_vdev_device *dev)
 {
 	struct rte_eth_dev *eth_dev = NULL;
 	struct pmd_internals *internals;
-	struct pmd_process_private *process_private;
-	int i;
 
 	/* find the ethdev entry */
 	eth_dev = rte_eth_dev_allocated(rte_vdev_device_name(dev));
@@ -2330,27 +2459,11 @@ rte_pmd_tap_remove(struct rte_vdev_device *dev)
 	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
 		return rte_eth_dev_release_port(eth_dev);
 
-	internals = eth_dev->data->dev_private;
-	process_private = eth_dev->process_private;
+	tap_dev_close(eth_dev);
 
+	internals = eth_dev->data->dev_private;
 	TAP_LOG(DEBUG, "Closing %s Ethernet device on numa %u",
 		tuntap_types[internals->type], rte_socket_id());
-
-	if (internals->nlsk_fd) {
-		tap_flow_flush(eth_dev, NULL);
-		tap_flow_implicit_flush(internals, NULL);
-		tap_nl_final(internals->nlsk_fd);
-	}
-	for (i = 0; i < RTE_PMD_TAP_MAX_QUEUES; i++) {
-		if (process_private->rxq_fds[i] != -1) {
-			close(process_private->rxq_fds[i]);
-			process_private->rxq_fds[i] = -1;
-		}
-		if (process_private->txq_fds[i] != -1) {
-			close(process_private->txq_fds[i]);
-			process_private->txq_fds[i] = -1;
-		}
-	}
 
 	close(internals->ioctl_sock);
 	rte_free(eth_dev->process_private);
@@ -2359,10 +2472,6 @@ rte_pmd_tap_remove(struct rte_vdev_device *dev)
 	tap_devices_count--;
 	rte_eth_dev_release_port(eth_dev);
 
-	if (internals->ka_fd != -1) {
-		close(internals->ka_fd);
-		internals->ka_fd = -1;
-	}
 	return 0;
 }
 

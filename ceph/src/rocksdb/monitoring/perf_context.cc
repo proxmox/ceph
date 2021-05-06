@@ -7,7 +7,7 @@
 #include <sstream>
 #include "monitoring/perf_context_imp.h"
 
-namespace rocksdb {
+namespace ROCKSDB_NAMESPACE {
 
 #if defined(NPERF_CONTEXT) || !defined(ROCKSDB_SUPPORT_THREAD_LOCAL)
 PerfContext perf_context;
@@ -529,7 +529,10 @@ std::string PerfContext::ToString(bool exclude_zero_counters) const {
   PERF_CONTEXT_BY_LEVEL_OUTPUT_ONE_COUNTER(bloom_filter_full_true_positive);
   PERF_CONTEXT_BY_LEVEL_OUTPUT_ONE_COUNTER(block_cache_hit_count);
   PERF_CONTEXT_BY_LEVEL_OUTPUT_ONE_COUNTER(block_cache_miss_count);
-  return ss.str();
+
+  std::string str = ss.str();
+  str.erase(str.find_last_not_of(", ") + 1);
+  return str;
 #endif
 }
 
@@ -553,4 +556,4 @@ void PerfContext::ClearPerLevelPerfContext(){
   per_level_perf_context_enabled = false;
 }
 
-}
+}  // namespace ROCKSDB_NAMESPACE

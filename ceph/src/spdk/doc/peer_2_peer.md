@@ -29,8 +29,8 @@ capabilities are given in the table below.
 
 Key Functions                               | Description
 ------------------------------------------- | -----------
-spdk_nvme_ctrlr_alloc_cmb_io_buffer()       | @copybrief spdk_nvme_ctrlr_alloc_cmb_io_buffer()
-spdk_nvme_ctrlr_free_cmb_io_buffer()        | @copybrief spdk_nvme_ctrlr_free_cmb_io_buffer()
+spdk_nvme_ctrlr_map_cmb()                   | @copybrief spdk_nvme_ctrlr_map_cmb()
+spdk_nvme_ctrlr_unmap_cmb()                 | @copybrief spdk_nvme_ctrlr_unmap_cmb()
 spdk_nvme_ctrlr_get_regs_cmbsz()            | @copybrief spdk_nvme_ctrlr_get_regs_cmbsz()
 
 # Determining device support {#p2p_support}
@@ -39,7 +39,7 @@ SPDK's identify example application displays whether a device has a controller
 memory buffer and which operations it supports. Run it as follows:
 
 ~~~{.sh}
-./examples/nvme/identify/identify -r traddr:<pci id of ssd>
+./build/examples/identify -r traddr:<pci id of ssd>
 ~~~
 
 # cmb_copy: An example P2P Application {#p2p_cmb_copy}
@@ -47,7 +47,7 @@ memory buffer and which operations it supports. Run it as follows:
 Run the cmb_copy example application.
 
 ~~~{.sh}
-./examples/nvme/cmb_copy/cmb_copy -r <pci id of write ssd>-1-0-1 -w <pci id of write ssd>-1-0-1 -c <pci id of the ssd with cmb>
+./build/examples/cmb_copy -r <pci id of write ssd>-1-0-1 -w <pci id of write ssd>-1-0-1 -c <pci id of the ssd with cmb>
 ~~~
 This should copy a single LBA (LBA 0) from namespace 1 on the read
 NVMe SSD to LBA 0 on namespace 1 on the write SSD using the CMB as the

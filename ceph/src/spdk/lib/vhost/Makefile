@@ -34,6 +34,9 @@
 SPDK_ROOT_DIR := $(abspath $(CURDIR)/../..)
 include $(SPDK_ROOT_DIR)/mk/spdk.common.mk
 
+SO_VER := 4
+SO_MINOR := 0
+
 CFLAGS += -I.
 CFLAGS += $(ENV_CFLAGS)
 
@@ -41,10 +44,11 @@ C_SRCS = vhost.c vhost_rpc.c vhost_scsi.c vhost_blk.c rte_vhost_compat.c
 
 ifeq ($(CONFIG_VHOST_INTERNAL_LIB),y)
 C_SRCS += vhost_nvme.c
-DIRS-y += rte_vhost
-CFLAGS := -Irte_vhost $(CFLAGS)
+CFLAGS := -I../rte_vhost $(CFLAGS)
 endif
 
 LIBNAME = vhost
+
+SPDK_MAP_FILE = $(abspath $(CURDIR)/spdk_vhost.map)
 
 include $(SPDK_ROOT_DIR)/mk/spdk.lib.mk

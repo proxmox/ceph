@@ -32,7 +32,7 @@ CFLAGS = -DLINUX -D_GNU_SOURCE $(INCLUDES) \
 	-Wformat -Wformat-security \
 	-Wunreachable-code -Wmissing-noreturn -Wsign-compare -Wno-endif-labels \
 	-Wstrict-prototypes -Wmissing-prototypes -Wold-style-definition \
-	-pthread
+	-pthread -fno-strict-overflow -fno-delete-null-pointer-checks -fwrapv
 
 LDFLAGS = -fPIE -z noexecstack -z relro -z now -pthread
 LDLIBS = -lIPSec_MB
@@ -51,6 +51,10 @@ CFLAGS += -g -DDEBUG -O0
 LDFLAGS += -g
 else
 CFLAGS += -O3 -fPIE -fstack-protector -D_FORTIFY_SOURCE=2
+endif
+
+ifeq ($(GCM_BIG_DATA),y)
+CFLAGS += -DGCM_BIG_DATA
 endif
 
 SOURCES := ipsec_perf.c msr.c

@@ -17,11 +17,14 @@
 
 /* PCI Vendor ID */
 #define PCI_VENDOR_ID_NETCOPE 0x1b26
+#define PCI_VENDOR_ID_SILICOM 0x1c2c
 
 /* PCI Device IDs */
 #define PCI_DEVICE_ID_NFB_40G2  0xcb80
 #define PCI_DEVICE_ID_NFB_100G2 0xc2c1
 #define PCI_DEVICE_ID_NFB_200G2QL 0xc250
+#define PCI_DEVICE_ID_FB2CGG3   0x00d0
+#define PCI_DEVICE_ID_FB2CGG3D  0xc240
 
 /* Max index of ndp rx/tx queues */
 #define RTE_ETH_NDP_MAX_RX_QUEUES 32
@@ -32,6 +35,10 @@
 #define RTE_MAX_NC_TXMAC 256
 
 #define RTE_NFB_DRIVER_NAME net_nfb
+
+/* Device arguments */
+#define TIMESTAMP_ARG  "timestamp"
+static const char * const VALID_KEYS[] = {TIMESTAMP_ARG, NULL};
 
 struct pmd_internals {
 	uint16_t         max_rxmac;

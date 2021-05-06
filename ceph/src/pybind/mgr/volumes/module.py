@@ -1,16 +1,17 @@
 import errno
-import json
 import logging
 import traceback
 import threading
 
-from mgr_module import MgrModule
+from mgr_module import MgrModule, Option
 import orchestrator
 
 from .fs.volume import VolumeClient
 from .fs.nfs import NFSCluster, FSExport
 
 log = logging.getLogger(__name__)
+
+goodchars = '[A-Za-z0-9-_.]'
 
 class VolumesInfoWrapper():
     def __init__(self, f, context):
@@ -43,7 +44,7 @@ class Module(orchestrator.OrchestratorClientMixin, MgrModule):
         },
         {
             'cmd': 'fs volume create '
-                   'name=name,type=CephString '
+                   f'name=name,type=CephString,goodchars={goodchars} '
                    'name=placement,type=CephString,req=false ',
             'desc': "Create a CephFS volume",
             'perm': 'rw'
@@ -64,7 +65,7 @@ class Module(orchestrator.OrchestratorClientMixin, MgrModule):
         {
             'cmd': 'fs subvolumegroup create '
                    'name=vol_name,type=CephString '
-                   'name=group_name,type=CephString '
+                   f'name=group_name,type=CephString,goodchars={goodchars} '
                    'name=pool_layout,type=CephString,req=false '
                    'name=uid,type=CephInt,req=false '
                    'name=gid,type=CephInt,req=false '
@@ -91,7 +92,7 @@ class Module(orchestrator.OrchestratorClientMixin, MgrModule):
         {
             'cmd': 'fs subvolume create '
                    'name=vol_name,type=CephString '
-                   'name=sub_name,type=CephString '
+                   f'name=sub_name,type=CephString,goodchars={goodchars} '
                    'name=size,type=CephInt,req=false '
                    'name=group_name,type=CephString,req=false '
                    'name=pool_layout,type=CephString,req=false '
@@ -352,9 +353,14 @@ class Module(orchestrator.OrchestratorClientMixin, MgrModule):
             'perm': 'r'
         },
         {
+            'cmd': 'nfs export update ',
+            'desc': "Update an export of a NFS cluster by `-i <json_file>`",
+            'perm': 'rw'
+        },
+        {
             'cmd': 'nfs cluster create '
                    'name=type,type=CephString '
-                   'name=clusterid,type=CephString,goodchars=[A-Za-z0-9-_.] '
+                   f'name=clusterid,type=CephString,goodchars={goodchars} '
                    'name=placement,type=CephString,req=false ',
             'desc': "Create an NFS Cluster",
             'perm': 'rw'
@@ -413,12 +419,12 @@ class Module(orchestrator.OrchestratorClientMixin, MgrModule):
     ]
 
     MODULE_OPTIONS = [
-        {
-            'name': 'max_concurrent_clones',
-            'type': 'int',
-            'default': 4,
-            'desc': 'Number of asynchronous cloner threads',
-        }
+        Option(
+            'max_concurrent_clones',
+            type='int',
+            default=4,
+            desc='Number of asynchronous cloner threads',
+        )
     ]
 
     def __init__(self, *args, **kwargs):
@@ -703,6 +709,11 @@ class Module(orchestrator.OrchestratorClientMixin, MgrModule):
     @mgr_cmd_wrap
     def _cmd_nfs_export_get(self, inbuf, cmd):
         return self.fs_export.get_export(cluster_id=cmd['clusterid'], pseudo_path=cmd['binding'])
+
+    @mgr_cmd_wrap
+    def _cmd_nfs_export_update(self, inbuf, cmd):
+        # The export <json_file> is passed to -i and it's processing is handled by the Ceph CLI.
+        return self.fs_export.update_export(export_config=inbuf)
 
     @mgr_cmd_wrap
     def _cmd_nfs_cluster_create(self, inbuf, cmd):

@@ -21,15 +21,13 @@
  */
 
 #include <seastar/core/thread.hh>
-#include <seastar/core/do_with.hh>
 #include <seastar/testing/test_case.hh>
 #include <seastar/testing/thread_test_case.hh>
 #include <seastar/testing/test_runner.hh>
 #include <seastar/core/sstring.hh>
-#include <seastar/core/reactor.hh>
 #include <seastar/core/fair_queue.hh>
 #include <seastar/core/do_with.hh>
-#include <seastar/core/future-util.hh>
+#include <seastar/util/later.hh>
 #include <seastar/core/sleep.hh>
 #include <seastar/core/print.hh>
 #include <boost/range/irange.hpp>
@@ -38,15 +36,8 @@
 using namespace seastar;
 using namespace std::chrono_literals;
 
-fair_queue::config make_config(unsigned capacity) {
-    fair_queue::config cfg;
-    cfg.capacity = capacity;
-    cfg.max_req_count = capacity;
-    return cfg;
-}
-
 struct request {
-    fair_queue_request_descriptor fqdesc;
+    fair_queue_ticket fqdesc;
     unsigned index;
 
     request(unsigned weight, unsigned index)
@@ -127,7 +118,7 @@ public:
 
     void update_shares(unsigned index, uint32_t shares) {
         auto cl = _classes[index];
-        _fq.update_shares(cl, shares);
+        cl->update_shares(shares);
     }
 
     void reset_results(unsigned index) {
@@ -257,7 +248,7 @@ SEASTAR_THREAD_TEST_CASE(test_fair_queue_different_shares_hi_capacity) {
 
 // Classes equally powerful. But Class1 issues twice as expensive requests. Expected Class2 to have 2 x more requests.
 SEASTAR_THREAD_TEST_CASE(test_fair_queue_different_weights) {
-    test_env env(1);
+    test_env env(2);
 
     auto a = env.register_priority_class(10);
     auto b = env.register_priority_class(10);

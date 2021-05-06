@@ -74,12 +74,15 @@ class aio_storage_context {
     boost::container::static_vector<internal::linux_abi::iocb*, max_aio> _submission_queue;
     iocb_pool _iocb_pool;
     size_t handle_aio_error(internal::linux_abi::iocb* iocb, int ec);
-    boost::container::static_vector<internal::linux_abi::iocb*, max_aio> _pending_aio_retry;
+    using pending_aio_retry_t = boost::container::static_vector<internal::linux_abi::iocb*, max_aio>;
+    pending_aio_retry_t _pending_aio_retry;
+    internal::linux_abi::io_event _ev_buffer[max_aio];
 public:
     explicit aio_storage_context(reactor* r);
     ~aio_storage_context();
 
     bool reap_completions();
+    void schedule_retry();
     bool submit_work();
     bool can_sleep() const;
 };
@@ -180,6 +183,7 @@ public:
     virtual void shutdown(pollable_fd_state& fd, int how) = 0;
     virtual future<size_t> read_some(pollable_fd_state& fd, void* buffer, size_t len) = 0;
     virtual future<size_t> read_some(pollable_fd_state& fd, const std::vector<iovec>& iov) = 0;
+    virtual future<temporary_buffer<char>> read_some(pollable_fd_state& fd, internal::buffer_allocator* ba) = 0;
     virtual future<size_t> write_some(pollable_fd_state& fd, net::packet& p) = 0;
     virtual future<size_t> write_some(pollable_fd_state& fd, const void* buffer, size_t len) = 0;
 
@@ -228,6 +232,7 @@ public:
     virtual void shutdown(pollable_fd_state& fd, int how) override;
     virtual future<size_t> read_some(pollable_fd_state& fd, void* buffer, size_t len) override;
     virtual future<size_t> read_some(pollable_fd_state& fd, const std::vector<iovec>& iov) override;
+    virtual future<temporary_buffer<char>> read_some(pollable_fd_state& fd, internal::buffer_allocator* ba) override;
     virtual future<size_t> write_some(pollable_fd_state& fd, net::packet& p) override;
     virtual future<size_t> write_some(pollable_fd_state& fd, const void* buffer, size_t len) override;
 
@@ -275,6 +280,7 @@ public:
     virtual void shutdown(pollable_fd_state& fd, int how) override;
     virtual future<size_t> read_some(pollable_fd_state& fd, void* buffer, size_t len) override;
     virtual future<size_t> read_some(pollable_fd_state& fd, const std::vector<iovec>& iov) override;
+    virtual future<temporary_buffer<char>> read_some(pollable_fd_state& fd, internal::buffer_allocator* ba) override;
     virtual future<size_t> write_some(pollable_fd_state& fd, net::packet& p) override;
     virtual future<size_t> write_some(pollable_fd_state& fd, const void* buffer, size_t len) override;
 
@@ -318,6 +324,7 @@ public:
     virtual void shutdown(pollable_fd_state& fd, int how) override;
     virtual future<size_t> read_some(pollable_fd_state& fd, void* buffer, size_t len) override;
     virtual future<size_t> read_some(pollable_fd_state& fd, const std::vector<iovec>& iov) override;
+    virtual future<temporary_buffer<char>> read_some(pollable_fd_state& fd, internal::buffer_allocator* ba) override;
     virtual future<size_t> write_some(net::packet& p) override;
     virtual future<size_t> write_some(pollable_fd_state& fd, const void* buffer, size_t len) override;
 

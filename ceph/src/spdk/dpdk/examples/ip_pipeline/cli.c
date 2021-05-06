@@ -245,15 +245,28 @@ static void
 print_link_info(struct link *link, char *out, size_t out_size)
 {
 	struct rte_eth_stats stats;
-	struct ether_addr mac_addr;
+	struct rte_ether_addr mac_addr;
 	struct rte_eth_link eth_link;
 	uint16_t mtu;
+	int ret;
 
 	memset(&stats, 0, sizeof(stats));
 	rte_eth_stats_get(link->port_id, &stats);
 
-	rte_eth_macaddr_get(link->port_id, &mac_addr);
-	rte_eth_link_get(link->port_id, &eth_link);
+	ret = rte_eth_macaddr_get(link->port_id, &mac_addr);
+	if (ret != 0) {
+		snprintf(out, out_size, "\n%s: MAC address get failed: %s",
+			 link->name, rte_strerror(-ret));
+		return;
+	}
+
+	ret = rte_eth_link_get(link->port_id, &eth_link);
+	if (ret < 0) {
+		snprintf(out, out_size, "\n%s: link get failed: %s",
+			 link->name, rte_strerror(-ret));
+		return;
+	}
+
 	rte_eth_dev_get_mtu(link->port_id, &mtu);
 
 	snprintf(out, out_size,
@@ -377,8 +390,15 @@ cmd_swq(char **tokens,
 static const char cmd_tmgr_subport_profile_help[] =
 "tmgr subport profile\n"
 "   <tb_rate> <tb_size>\n"
-"   <tc0_rate> <tc1_rate> <tc2_rate> <tc3_rate>\n"
-"   <tc_period>\n";
+"   <tc0_rate> <tc1_rate> <tc2_rate> <tc3_rate> <tc4_rate>"
+"        <tc5_rate> <tc6_rate> <tc7_rate> <tc8_rate>"
+"        <tc9_rate> <tc10_rate> <tc11_rate> <tc12_rate>\n"
+"   <tc_period>\n"
+"   pps <n_pipes_per_subport>\n"
+"   qsize <qsize_tc0> <qsize_tc1> <qsize_tc2>"
+"       <qsize_tc3> <qsize_tc4> <qsize_tc5> <qsize_tc6>"
+"       <qsize_tc7> <qsize_tc8> <qsize_tc9> <qsize_tc10>"
+"       <qsize_tc11> <qsize_tc12>";
 
 static void
 cmd_tmgr_subport_profile(char **tokens,
@@ -389,31 +409,52 @@ cmd_tmgr_subport_profile(char **tokens,
 	struct rte_sched_subport_params p;
 	int status, i;
 
-	if (n_tokens != 10) {
+	if (n_tokens != 35) {
 		snprintf(out, out_size, MSG_ARG_MISMATCH, tokens[0]);
 		return;
 	}
 
-	if (parser_read_uint32(&p.tb_rate, tokens[3]) != 0) {
+	if (parser_read_uint64(&p.tb_rate, tokens[3]) != 0) {
 		snprintf(out, out_size, MSG_ARG_INVALID, "tb_rate");
 		return;
 	}
 
-	if (parser_read_uint32(&p.tb_size, tokens[4]) != 0) {
+	if (parser_read_uint64(&p.tb_size, tokens[4]) != 0) {
 		snprintf(out, out_size, MSG_ARG_INVALID, "tb_size");
 		return;
 	}
 
 	for (i = 0; i < RTE_SCHED_TRAFFIC_CLASSES_PER_PIPE; i++)
-		if (parser_read_uint32(&p.tc_rate[i], tokens[5 + i]) != 0) {
+		if (parser_read_uint64(&p.tc_rate[i], tokens[5 + i]) != 0) {
 			snprintf(out, out_size, MSG_ARG_INVALID, "tc_rate");
 			return;
 		}
 
-	if (parser_read_uint32(&p.tc_period, tokens[9]) != 0) {
+	if (parser_read_uint64(&p.tc_period, tokens[18]) != 0) {
 		snprintf(out, out_size, MSG_ARG_INVALID, "tc_period");
 		return;
 	}
+
+	if (strcmp(tokens[19], "pps") != 0) {
+		snprintf(out, out_size, MSG_ARG_NOT_FOUND, "pps");
+		return;
+	}
+
+	if (parser_read_uint32(&p.n_pipes_per_subport_enabled, tokens[20]) != 0) {
+		snprintf(out, out_size, MSG_ARG_INVALID, "n_pipes_per_subport");
+		return;
+	}
+
+	if (strcmp(tokens[21], "qsize") != 0) {
+		snprintf(out, out_size, MSG_ARG_NOT_FOUND, "qsize");
+		return;
+	}
+
+	for (i = 0; i < RTE_SCHED_TRAFFIC_CLASSES_PER_PIPE; i++)
+		if (parser_read_uint16(&p.qsize[i], tokens[22 + i]) != 0) {
+			snprintf(out, out_size, MSG_ARG_INVALID, "qsize");
+			return;
+		}
 
 	status = tmgr_subport_profile_add(&p);
 	if (status != 0) {
@@ -425,10 +466,12 @@ cmd_tmgr_subport_profile(char **tokens,
 static const char cmd_tmgr_pipe_profile_help[] =
 "tmgr pipe profile\n"
 "   <tb_rate> <tb_size>\n"
-"   <tc0_rate> <tc1_rate> <tc2_rate> <tc3_rate>\n"
+"   <tc0_rate> <tc1_rate> <tc2_rate> <tc3_rate> <tc4_rate>"
+"     <tc5_rate> <tc6_rate> <tc7_rate> <tc8_rate>"
+"     <tc9_rate> <tc10_rate> <tc11_rate> <tc12_rate>\n"
 "   <tc_period>\n"
 "   <tc_ov_weight>\n"
-"   <wrr_weight0..15>\n";
+"   <wrr_weight0..3>\n";
 
 static void
 cmd_tmgr_pipe_profile(char **tokens,
@@ -439,41 +482,39 @@ cmd_tmgr_pipe_profile(char **tokens,
 	struct rte_sched_pipe_params p;
 	int status, i;
 
-	if (n_tokens != 27) {
+	if (n_tokens != 24) {
 		snprintf(out, out_size, MSG_ARG_MISMATCH, tokens[0]);
 		return;
 	}
 
-	if (parser_read_uint32(&p.tb_rate, tokens[3]) != 0) {
+	if (parser_read_uint64(&p.tb_rate, tokens[3]) != 0) {
 		snprintf(out, out_size, MSG_ARG_INVALID, "tb_rate");
 		return;
 	}
 
-	if (parser_read_uint32(&p.tb_size, tokens[4]) != 0) {
+	if (parser_read_uint64(&p.tb_size, tokens[4]) != 0) {
 		snprintf(out, out_size, MSG_ARG_INVALID, "tb_size");
 		return;
 	}
 
 	for (i = 0; i < RTE_SCHED_TRAFFIC_CLASSES_PER_PIPE; i++)
-		if (parser_read_uint32(&p.tc_rate[i], tokens[5 + i]) != 0) {
+		if (parser_read_uint64(&p.tc_rate[i], tokens[5 + i]) != 0) {
 			snprintf(out, out_size, MSG_ARG_INVALID, "tc_rate");
 			return;
 		}
 
-	if (parser_read_uint32(&p.tc_period, tokens[9]) != 0) {
+	if (parser_read_uint64(&p.tc_period, tokens[18]) != 0) {
 		snprintf(out, out_size, MSG_ARG_INVALID, "tc_period");
 		return;
 	}
 
-#ifdef RTE_SCHED_SUBPORT_TC_OV
-	if (parser_read_uint8(&p.tc_ov_weight, tokens[10]) != 0) {
+	if (parser_read_uint8(&p.tc_ov_weight, tokens[19]) != 0) {
 		snprintf(out, out_size, MSG_ARG_INVALID, "tc_ov_weight");
 		return;
 	}
-#endif
 
-	for (i = 0; i < RTE_SCHED_QUEUES_PER_PIPE; i++)
-		if (parser_read_uint8(&p.wrr_weights[i], tokens[11 + i]) != 0) {
+	for (i = 0; i < RTE_SCHED_BE_QUEUES_PER_PIPE; i++)
+		if (parser_read_uint8(&p.wrr_weights[i], tokens[20 + i]) != 0) {
 			snprintf(out, out_size, MSG_ARG_INVALID, "wrr_weights");
 			return;
 		}
@@ -489,8 +530,6 @@ static const char cmd_tmgr_help[] =
 "tmgr <tmgr_name>\n"
 "   rate <rate>\n"
 "   spp <n_subports_per_port>\n"
-"   pps <n_pipes_per_subport>\n"
-"   qsize <qsize_tc0> <qsize_tc1> <qsize_tc2> <qsize_tc3>\n"
 "   fo <frame_overhead>\n"
 "   mtu <mtu>\n"
 "   cpu <cpu_id>\n";
@@ -504,9 +543,8 @@ cmd_tmgr(char **tokens,
 	struct tmgr_port_params p;
 	char *name;
 	struct tmgr_port *tmgr_port;
-	int i;
 
-	if (n_tokens != 19) {
+	if (n_tokens != 12) {
 		snprintf(out, out_size, MSG_ARG_MISMATCH, tokens[0]);
 		return;
 	}
@@ -518,7 +556,7 @@ cmd_tmgr(char **tokens,
 		return;
 	}
 
-	if (parser_read_uint32(&p.rate, tokens[3]) != 0) {
+	if (parser_read_uint64(&p.rate, tokens[3]) != 0) {
 		snprintf(out, out_size, MSG_ARG_INVALID, "rate");
 		return;
 	}
@@ -533,53 +571,32 @@ cmd_tmgr(char **tokens,
 		return;
 	}
 
-	if (strcmp(tokens[6], "pps") != 0) {
-		snprintf(out, out_size, MSG_ARG_NOT_FOUND, "pps");
-		return;
-	}
-
-	if (parser_read_uint32(&p.n_pipes_per_subport, tokens[7]) != 0) {
-		snprintf(out, out_size, MSG_ARG_INVALID, "n_pipes_per_subport");
-		return;
-	}
-
-	if (strcmp(tokens[8], "qsize") != 0) {
-		snprintf(out, out_size, MSG_ARG_NOT_FOUND, "qsize");
-		return;
-	}
-
-	for (i = 0; i < RTE_SCHED_TRAFFIC_CLASSES_PER_PIPE; i++)
-		if (parser_read_uint16(&p.qsize[i], tokens[9 + i]) != 0) {
-			snprintf(out, out_size, MSG_ARG_INVALID, "qsize");
-			return;
-		}
-
-	if (strcmp(tokens[13], "fo") != 0) {
+	if (strcmp(tokens[6], "fo") != 0) {
 		snprintf(out, out_size, MSG_ARG_NOT_FOUND, "fo");
 		return;
 	}
 
-	if (parser_read_uint32(&p.frame_overhead, tokens[14]) != 0) {
+	if (parser_read_uint32(&p.frame_overhead, tokens[7]) != 0) {
 		snprintf(out, out_size, MSG_ARG_INVALID, "frame_overhead");
 		return;
 	}
 
-	if (strcmp(tokens[15], "mtu") != 0) {
+	if (strcmp(tokens[8], "mtu") != 0) {
 		snprintf(out, out_size, MSG_ARG_NOT_FOUND, "mtu");
 		return;
 	}
 
-	if (parser_read_uint32(&p.mtu, tokens[16]) != 0) {
+	if (parser_read_uint32(&p.mtu, tokens[9]) != 0) {
 		snprintf(out, out_size, MSG_ARG_INVALID, "mtu");
 		return;
 	}
 
-	if (strcmp(tokens[17], "cpu") != 0) {
+	if (strcmp(tokens[10], "cpu") != 0) {
 		snprintf(out, out_size, MSG_ARG_NOT_FOUND, "cpu");
 		return;
 	}
 
-	if (parser_read_uint32(&p.cpu_id, tokens[18]) != 0) {
+	if (parser_read_uint32(&p.cpu_id, tokens[11]) != 0) {
 		snprintf(out, out_size, MSG_ARG_INVALID, "cpu_id");
 		return;
 	}
@@ -2654,7 +2671,7 @@ struct pkt_key_qinq {
 	uint16_t svlan;
 	uint16_t ethertype_cvlan;
 	uint16_t cvlan;
-} __attribute__((__packed__));
+} __rte_packed;
 
 struct pkt_key_ipv4_5tuple {
 	uint8_t time_to_live;
@@ -2664,7 +2681,7 @@ struct pkt_key_ipv4_5tuple {
 	uint32_t da;
 	uint16_t sp;
 	uint16_t dp;
-} __attribute__((__packed__));
+} __rte_packed;
 
 struct pkt_key_ipv6_5tuple {
 	uint16_t payload_length;
@@ -2674,15 +2691,15 @@ struct pkt_key_ipv6_5tuple {
 	uint8_t da[16];
 	uint16_t sp;
 	uint16_t dp;
-} __attribute__((__packed__));
+} __rte_packed;
 
 struct pkt_key_ipv4_addr {
 	uint32_t addr;
-} __attribute__((__packed__));
+} __rte_packed;
 
 struct pkt_key_ipv6_addr {
 	uint8_t addr[16];
-} __attribute__((__packed__));
+} __rte_packed;
 
 static uint32_t
 parse_match(char **tokens,
@@ -3772,24 +3789,18 @@ parse_free_sym_crypto_param_data(struct rte_table_action_sym_crypto_params *p)
 
 		switch (xform[i]->type) {
 		case RTE_CRYPTO_SYM_XFORM_CIPHER:
-			if (xform[i]->cipher.key.data)
-				free(xform[i]->cipher.key.data);
 			if (p->cipher_auth.cipher_iv.val)
 				free(p->cipher_auth.cipher_iv.val);
 			if (p->cipher_auth.cipher_iv_update.val)
 				free(p->cipher_auth.cipher_iv_update.val);
 			break;
 		case RTE_CRYPTO_SYM_XFORM_AUTH:
-			if (xform[i]->auth.key.data)
-				free(xform[i]->cipher.key.data);
 			if (p->cipher_auth.auth_iv.val)
 				free(p->cipher_auth.cipher_iv.val);
 			if (p->cipher_auth.auth_iv_update.val)
 				free(p->cipher_auth.cipher_iv_update.val);
 			break;
 		case RTE_CRYPTO_SYM_XFORM_AEAD:
-			if (xform[i]->aead.key.data)
-				free(xform[i]->cipher.key.data);
 			if (p->aead.iv.val)
 				free(p->aead.iv.val);
 			if (p->aead.aad.val)
@@ -3804,8 +3815,8 @@ parse_free_sym_crypto_param_data(struct rte_table_action_sym_crypto_params *p)
 
 static struct rte_crypto_sym_xform *
 parse_table_action_cipher(struct rte_table_action_sym_crypto_params *p,
-		char **tokens, uint32_t n_tokens, uint32_t encrypt,
-		uint32_t *used_n_tokens)
+		uint8_t *key, uint32_t max_key_len, char **tokens,
+		uint32_t n_tokens, uint32_t encrypt, uint32_t *used_n_tokens)
 {
 	struct rte_crypto_sym_xform *xform_cipher;
 	int status;
@@ -3832,16 +3843,16 @@ parse_table_action_cipher(struct rte_table_action_sym_crypto_params *p,
 
 	/* cipher_key */
 	len = strlen(tokens[4]);
-	xform_cipher->cipher.key.data = calloc(1, len / 2 + 1);
-	if (xform_cipher->cipher.key.data == NULL)
+	if (len / 2 > max_key_len) {
+		status = -ENOMEM;
 		goto error_exit;
+	}
 
-	status = parse_hex_string(tokens[4],
-			xform_cipher->cipher.key.data,
-			(uint32_t *)&len);
+	status = parse_hex_string(tokens[4], key, (uint32_t *)&len);
 	if (status < 0)
 		goto error_exit;
 
+	xform_cipher->cipher.key.data = key;
 	xform_cipher->cipher.key.length = (uint16_t)len;
 
 	/* cipher_iv */
@@ -3865,9 +3876,6 @@ parse_table_action_cipher(struct rte_table_action_sym_crypto_params *p,
 	return xform_cipher;
 
 error_exit:
-	if (xform_cipher->cipher.key.data)
-		free(xform_cipher->cipher.key.data);
-
 	if (p->cipher_auth.cipher_iv.val) {
 		free(p->cipher_auth.cipher_iv.val);
 		p->cipher_auth.cipher_iv.val = NULL;
@@ -3880,8 +3888,8 @@ error_exit:
 
 static struct rte_crypto_sym_xform *
 parse_table_action_cipher_auth(struct rte_table_action_sym_crypto_params *p,
-		char **tokens, uint32_t n_tokens, uint32_t encrypt,
-		uint32_t *used_n_tokens)
+		uint8_t *key, uint32_t max_key_len, char **tokens,
+		uint32_t n_tokens, uint32_t encrypt, uint32_t *used_n_tokens)
 {
 	struct rte_crypto_sym_xform *xform_cipher;
 	struct rte_crypto_sym_xform *xform_auth;
@@ -3910,16 +3918,20 @@ parse_table_action_cipher_auth(struct rte_table_action_sym_crypto_params *p,
 
 	/* auth_key */
 	len = strlen(tokens[10]);
-	xform_auth->auth.key.data = calloc(1, len / 2 + 1);
-	if (xform_auth->auth.key.data == NULL)
+	if (len / 2 > max_key_len) {
+		status = -ENOMEM;
 		goto error_exit;
+	}
 
-	status = parse_hex_string(tokens[10],
-			xform_auth->auth.key.data, (uint32_t *)&len);
+	status = parse_hex_string(tokens[10], key, (uint32_t *)&len);
 	if (status < 0)
 		goto error_exit;
 
+	xform_auth->auth.key.data = key;
 	xform_auth->auth.key.length = (uint16_t)len;
+
+	key += xform_auth->auth.key.length;
+	max_key_len -= xform_auth->auth.key.length;
 
 	if (strcmp(tokens[11], "digest_size"))
 		goto error_exit;
@@ -3929,8 +3941,8 @@ parse_table_action_cipher_auth(struct rte_table_action_sym_crypto_params *p,
 	if (status < 0)
 		goto error_exit;
 
-	xform_cipher = parse_table_action_cipher(p, tokens, 7, encrypt,
-			used_n_tokens);
+	xform_cipher = parse_table_action_cipher(p, key, max_key_len, tokens,
+			7, encrypt, used_n_tokens);
 	if (xform_cipher == NULL)
 		goto error_exit;
 
@@ -3945,8 +3957,6 @@ parse_table_action_cipher_auth(struct rte_table_action_sym_crypto_params *p,
 	}
 
 error_exit:
-	if (xform_auth->auth.key.data)
-		free(xform_auth->auth.key.data);
 	if (p->cipher_auth.auth_iv.val) {
 		free(p->cipher_auth.auth_iv.val);
 		p->cipher_auth.auth_iv.val = 0;
@@ -3959,8 +3969,8 @@ error_exit:
 
 static struct rte_crypto_sym_xform *
 parse_table_action_aead(struct rte_table_action_sym_crypto_params *p,
-		char **tokens, uint32_t n_tokens, uint32_t encrypt,
-		uint32_t *used_n_tokens)
+		uint8_t *key, uint32_t max_key_len, char **tokens,
+		uint32_t n_tokens, uint32_t encrypt, uint32_t *used_n_tokens)
 {
 	struct rte_crypto_sym_xform *xform_aead;
 	int status;
@@ -3989,15 +3999,16 @@ parse_table_action_aead(struct rte_table_action_sym_crypto_params *p,
 
 	/* aead_key */
 	len = strlen(tokens[4]);
-	xform_aead->aead.key.data = calloc(1, len / 2 + 1);
-	if (xform_aead->aead.key.data == NULL)
+	if (len / 2 > max_key_len) {
+		status = -ENOMEM;
 		goto error_exit;
+	}
 
-	status = parse_hex_string(tokens[4], xform_aead->aead.key.data,
-			(uint32_t *)&len);
+	status = parse_hex_string(tokens[4], key, (uint32_t *)&len);
 	if (status < 0)
 		goto error_exit;
 
+	xform_aead->aead.key.data = key;
 	xform_aead->aead.key.length = (uint16_t)len;
 
 	/* aead_iv */
@@ -4039,8 +4050,6 @@ parse_table_action_aead(struct rte_table_action_sym_crypto_params *p,
 	return xform_aead;
 
 error_exit:
-	if (xform_aead->aead.key.data)
-		free(xform_aead->aead.key.data);
 	if (p->aead.iv.val) {
 		free(p->aead.iv.val);
 		p->aead.iv.val = NULL;
@@ -4063,6 +4072,8 @@ parse_table_action_sym_crypto(char **tokens,
 {
 	struct rte_table_action_sym_crypto_params *p = &a->sym_crypto;
 	struct rte_crypto_sym_xform *xform = NULL;
+	uint8_t *key = a->sym_crypto_key;
+	uint32_t max_key_len = SYM_CRYPTO_MAX_KEY_SIZE;
 	uint32_t used_n_tokens;
 	uint32_t encrypt;
 	int status;
@@ -4087,20 +4098,20 @@ parse_table_action_sym_crypto(char **tokens,
 		tokens += 3;
 		n_tokens -= 3;
 
-		xform = parse_table_action_cipher(p, tokens, n_tokens, encrypt,
-				&used_n_tokens);
+		xform = parse_table_action_cipher(p, key, max_key_len, tokens,
+				n_tokens, encrypt, &used_n_tokens);
 	} else if (strcmp(tokens[3], "cipher_auth") == 0) {
 		tokens += 3;
 		n_tokens -= 3;
 
-		xform = parse_table_action_cipher_auth(p, tokens, n_tokens,
-				encrypt, &used_n_tokens);
+		xform = parse_table_action_cipher_auth(p, key, max_key_len,
+				tokens, n_tokens, encrypt, &used_n_tokens);
 	} else if (strcmp(tokens[3], "aead") == 0) {
 		tokens += 3;
 		n_tokens -= 3;
 
-		xform = parse_table_action_aead(p, tokens, n_tokens, encrypt,
-				&used_n_tokens);
+		xform = parse_table_action_aead(p, key, max_key_len, tokens,
+				n_tokens, encrypt, &used_n_tokens);
 	}
 
 	if (xform == NULL)
@@ -4777,7 +4788,7 @@ cmd_pipeline_table_rule_delete_default(char **tokens,
 }
 
 static void
-ether_addr_show(FILE *f, struct ether_addr *addr)
+ether_addr_show(FILE *f, struct rte_ether_addr *addr)
 {
 	fprintf(f, "%02x:%02x:%02x:%02x:%02x:%02x",
 		(uint32_t)addr->addr_bytes[0], (uint32_t)addr->addr_bytes[1],

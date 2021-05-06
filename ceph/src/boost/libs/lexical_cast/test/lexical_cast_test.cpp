@@ -4,7 +4,7 @@
 //
 //  Copyright Terje Sletteb and Kevlin Henney, 2005.
 //  Copyright Alexander Nasonov, 2006.
-//  Copyright Antony Polukhin, 2011-2019.
+//  Copyright Antony Polukhin, 2011-2020.
 //
 //  Distributed under the Boost
 //  Software License, Version 1.0. (See accompanying file
@@ -31,7 +31,7 @@
 
 #include <boost/cstdint.hpp>
 #include <boost/test/unit_test.hpp>
-#include <boost/test/floating_point_comparison.hpp>
+#include <boost/test/tools/floating_point_comparison.hpp>
 
 #include <boost/type_traits/integral_promotion.hpp>
 #include <string>

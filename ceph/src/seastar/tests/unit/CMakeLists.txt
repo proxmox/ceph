@@ -70,7 +70,7 @@ function (seastar_add_test name)
   cmake_parse_arguments (parsed_args
     ""
     "WORKING_DIRECTORY;KIND"
-    "RUN_ARGS;SOURCES;LIBRARIES"
+    "RUN_ARGS;SOURCES;LIBRARIES;DEPENDS"
     ${ARGN})
 
   if (NOT parsed_args_KIND)
@@ -89,9 +89,8 @@ function (seastar_add_test name)
 
     set (libraries "${parsed_args_LIBRARIES}")
 
+    set (args "")
     if (parsed_args_KIND STREQUAL "SEASTAR")
-      set (args "")
-
       list (APPEND libraries
         seastar_testing
         seastar_private)
@@ -101,10 +100,7 @@ function (seastar_add_test name)
       endif ()
 
       list (APPEND args -- -c ${Seastar_UNIT_TEST_SMP})
-      list (APPEND args ${parsed_args_RUN_ARGS})
     elseif (parsed_args_KIND STREQUAL "BOOST")
-      set (args "")
-
       list (APPEND libraries
         Boost::unit_test_framework
         seastar_private)
@@ -112,11 +108,9 @@ function (seastar_add_test name)
       if (NOT (Seastar_JENKINS STREQUAL ""))
         list (APPEND args ${jenkins_args})
       endif ()
-
-      list (APPEND args ${parsed_args_RUN_ARGS})
-    else () # CUSTOM
-      set (args ${parsed_args_RUN_ARGS})
     endif ()
+
+    list (APPEND args ${parsed_args_RUN_ARGS})
 
     set (executable_target test_unit_${name})
     add_executable (${executable_target} ${parsed_args_SOURCES})
@@ -126,6 +120,14 @@ function (seastar_add_test name)
 
     target_compile_definitions (${executable_target}
       PRIVATE SEASTAR_TESTING_MAIN)
+
+    if ((Seastar_STACK_GUARDS STREQUAL "ON") OR
+        ((Seastar_STACK_GUARDS STREQUAL "DEFAULT") AND
+         (CMAKE_BUILD_TYPE IN_LIST Seastar_STACK_GUARD_MODES)))
+      target_compile_definitions (${executable_target}
+        PRIVATE
+          SEASTAR_THREAD_STACK_GUARDS)
+    endif ()
 
     target_include_directories (${executable_target}
       PRIVATE
@@ -155,6 +157,10 @@ function (seastar_add_test name)
   if (parsed_args_WORKING_DIRECTORY)
     list (APPEND forwarded_args WORKING_DIRECTORY ${parsed_args_WORKING_DIRECTORY})
   endif ()
+
+  if (parsed_args_DEPENDS)
+    add_dependencies(${executable_target} ${parsed_args_DEPENDS})
+  endif()
 
   add_custom_target (${target}
     ${forwarded_args}
@@ -253,10 +259,8 @@ seastar_add_test (circular_buffer_fixed_capacity
 seastar_add_test (connect
   SOURCES connect_test.cc)
 
-if (Seastar_EXPERIMENTAL_COROUTINES_TS)
-  seastar_add_test (coroutines
-    SOURCES coroutines_test.cc)
-endif ()
+seastar_add_test (coroutines
+  SOURCES coroutines_test.cc)
 
 seastar_add_test (defer
   SOURCES defer_test.cc)
@@ -267,7 +271,7 @@ seastar_add_test (deleter
 seastar_add_app_test (directory
   SOURCES directory_test.cc)
 
-seastar_add_app_test (distributed
+seastar_add_test (distributed
   SOURCES distributed_test.cc)
 
 seastar_add_test (dns
@@ -285,8 +289,14 @@ seastar_add_test (fair_queue
 seastar_add_test (file_io
   SOURCES file_io_test.cc)
 
+seastar_add_test (file_utils
+  SOURCES file_utils_test.cc)
+
 seastar_add_test (foreign_ptr
   SOURCES foreign_ptr_test.cc)
+
+seastar_add_test (fsnotifier
+  SOURCES fsnotifier_test.cc)
 
 seastar_add_test (fstream
   SOURCES
@@ -312,6 +322,9 @@ seastar_add_test (network_interface
 
 seastar_add_test (json_formatter
   SOURCES json_formatter_test.cc)
+
+seastar_add_test (locking
+  SOURCES locking_test.cc)
 
 seastar_add_test (lowres_clock
   SOURCES lowres_clock_test.cc)
@@ -340,6 +353,9 @@ seastar_add_test (program_options
 
 seastar_add_test (queue
   SOURCES queue_test.cc)
+
+seastar_add_test (request_parser
+  SOURCES request_parser_test.cc)
 
 seastar_add_test (rpc
   SOURCES
@@ -394,14 +410,111 @@ seastar_add_test (uname
   KIND BOOST
   SOURCES uname_test.cc)
 
+function(seastar_add_certgen name)
+  cmake_parse_arguments(CERT
+    ""
+    "SUBJECT;SERVER;NAME;DOMAIN;COMMON;LOCALITY;ORG;WIDTH;STATE;COUNTRY;UNIT;EMAIL;DAYS;ALG"
+    "ALG_OPTS"
+    ${ARGN}
+  )
+
+  if (NOT CERT_SERVER)
+    execute_process(COMMAND hostname
+      RESULT_VARIABLE CERT_SERVER
+    )
+  endif()
+  if (NOT CERT_DOMAIN)
+    execute_process(COMMAND dnsdomainname
+      RESULT_VARIABLE CERT_DOMAIN
+    )
+  endif()
+  if (NOT CERT_NAME)
+    set(CERT_NAME ${CERT_SERVER})
+  endif()
+  if (NOT CERT_COUNTRY)
+    set(CERT_COUNTRY SE)
+  endif()
+  if (NOT CERT_STATE)
+    set(CERT_STATE Stockholm)
+  endif()
+  if (NOT CERT_LOCALITY)
+    set(CERT_LOCALITY ${CERT_STATE})
+  endif()
+  if (NOT CERT_ORG)
+    set(CERT_ORG ${CERT_DOMAIN})
+  endif()
+  if (NOT CERT_UNIT)
+    set(CERT_UNIT ${CERT_DOMAIN})
+  endif()
+  if (NOT CERT_COMMON)
+    set(CERT_COMMON ${CERT_SERVER}.${CERT_DOMAIN})
+  endif()
+  if (NOT CERT_EMAIL)
+    set(CERT_EMAIL postmaster@${CERT_DOMAIN})
+  endif()
+  if (NOT CERT_WIDTH)
+    set(CERT_WIDTH 4096)
+  endif()
+  if (NOT CERT_DAYS)
+    set(CERT_DAYS 3650)
+  endif()
+  if ((NOT CERT_ALG) AND (NOT CERT_ALG_OPTS))
+    set(CERT_ALG_OPTS -pkeyopt rsa_keygen_bits:${CERT_WIDTH})
+  endif()
+  if (NOT CERT_ALG)
+    set(CERT_ALG RSA)
+  endif()
+
+  set(CERT_PRIVKEY ${CERT_NAME}.key)
+  set(CERT_REQ ${CERT_NAME}.csr)
+  set(CERT_CERT ${CERT_NAME}.crt)
+
+  set(CERT_CAPRIVKEY ca${CERT_NAME}.key)
+  set(CERT_CAROOT ca${CERT_NAME}.pem)
+
+  configure_file("${CMAKE_CURRENT_SOURCE_DIR}/cert.cfg.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/${CERT_NAME}.cfg"
+  )
+
+  find_program(OPENSSL openssl)
+
+  add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/${CERT_PRIVKEY}"
+    COMMAND ${OPENSSL} genpkey -out ${CERT_PRIVKEY} -algorithm ${CERT_ALG} ${CERT_ALG_OPTS}
+    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+  )
+  add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/${CERT_REQ}"
+    COMMAND ${OPENSSL} req -new -key ${CERT_PRIVKEY} -out ${CERT_REQ} -config ${CERT_NAME}.cfg
+    DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/${CERT_PRIVKEY}"
+    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+  )
+
+  add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/${CERT_CAPRIVKEY}"
+    COMMAND ${OPENSSL} genpkey -out ${CERT_CAPRIVKEY} -algorithm ${CERT_ALG} ${CERT_ALG_OPTS}
+    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+  )
+  add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/${CERT_CAROOT}"
+    COMMAND ${OPENSSL} req -x509 -new -nodes -key ${CERT_CAPRIVKEY} -days ${CERT_DAYS} -config ${CERT_NAME}.cfg -out ${CERT_CAROOT}
+    DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/${CERT_CAPRIVKEY}"
+    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+  )
+
+  add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/${CERT_CERT}"
+    COMMAND ${OPENSSL} x509 -req -in ${CERT_REQ} -CA ${CERT_CAROOT} -CAkey ${CERT_CAPRIVKEY} -CAcreateserial -out ${CERT_CERT} -days ${CERT_DAYS}
+    DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/${CERT_REQ}"  "${CMAKE_CURRENT_BINARY_DIR}/${CERT_CAROOT}"
+    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+  )
+
+  add_custom_target(${name}
+    DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/${CERT_CERT}"
+  )
+endfunction()
+
+seastar_add_certgen(testcrt DOMAIN scylladb.org SERVER test)
+seastar_add_certgen(othercrt DOMAIN apa.org SERVER other)
+
 set (tls_certificate_files
-  catest.key
-  catest.pem
   tls-ca-bundle.pem
-  test.crl
-  test.crt
-  test.csr
-  test.key)
+)
 
 prepend_each (
   in_tls_certificate_files
@@ -418,11 +531,15 @@ add_custom_command (
   OUTPUT ${out_tls_certificate_files}
   COMMAND ${CMAKE_COMMAND} -E copy ${in_tls_certificate_files} ${CMAKE_CURRENT_BINARY_DIR})
 
-# TODO: Disabled for now. See GH-514.
-# seastar_add_test (tls
-#   DEPENDS ${out_tls_certificate_files}
-#   SOURCES tls_test.cc
-#   WORKING_DIRECTORY ${Seastar_BINARY_DIR})
+add_custom_target(tls_files
+  DEPENDS ${out_tls_certificate_files}
+)
+
+seastar_add_test (tls
+  DEPENDS tls_files testcrt othercrt
+  SOURCES tls_test.cc
+  LIBRARIES boost_filesystem
+  WORKING_DIRECTORY ${Seastar_BINARY_DIR})
 
 seastar_add_test (tuple_utils
   KIND BOOST
@@ -438,3 +555,6 @@ seastar_add_test (unwind
 seastar_add_test (weak_ptr
   KIND BOOST
   SOURCES weak_ptr_test.cc)
+
+seastar_add_test (log_buf
+  SOURCES log_buf_test.cc)

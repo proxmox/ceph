@@ -27,7 +27,7 @@
 
 ; This code schedules 1 blocks at a time, with 4 lanes per block
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-%include "os.asm"
+%include "include/os.asm"
 
 %define	VMOVDQ vmovdqu ;; assume buffers not aligned
 
@@ -317,7 +317,7 @@ PSHUFFLE_BYTE_FLIP_MASK: ;ddq 0x08090a0b0c0d0e0f0001020304050607
 ;; arg 1 : pointer to input data
 ;; arg 2 : pointer to digest
 section .text
-MKGLOBAL(FUNC,function,)
+MKGLOBAL(FUNC,function,internal)
 align 32
 FUNC:
 	push	rbx
@@ -439,7 +439,19 @@ done_hash:
 	vmovdqa	xmm11,[rsp + _XMM_SAVE + 5*16]
 	vmovdqa	xmm12,[rsp + _XMM_SAVE + 6*16]
 	vmovdqa	xmm13,[rsp + _XMM_SAVE + 7*16]
+%ifdef SAFE_DATA
+        ;; Clear potential sensitive data stored in stack
+        vpxor   xmm0, xmm0
+        vmovdqa [rsp + _XMM_SAVE + 0 * 16], xmm0
+        vmovdqa [rsp + _XMM_SAVE + 1 * 16], xmm0
+        vmovdqa [rsp + _XMM_SAVE + 2 * 16], xmm0
+        vmovdqa [rsp + _XMM_SAVE + 3 * 16], xmm0
+        vmovdqa [rsp + _XMM_SAVE + 4 * 16], xmm0
+        vmovdqa [rsp + _XMM_SAVE + 5 * 16], xmm0
+        vmovdqa [rsp + _XMM_SAVE + 6 * 16], xmm0
+        vmovdqa [rsp + _XMM_SAVE + 7 * 16], xmm0
 %endif
+%endif ;; LINUX
 
 	add	rsp, STACK_size
 

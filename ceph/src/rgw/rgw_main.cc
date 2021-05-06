@@ -1,6 +1,7 @@
 // -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
 // vim: ts=8 sw=2 smarttab ft=cpp
 
+#include <boost/intrusive/list.hpp>
 #include "common/ceph_argparse.h"
 #include "global/global_init.h"
 #include "global/signal_handler.h"
@@ -9,12 +10,13 @@
 #include "common/Timer.h"
 #include "common/safe_io.h"
 #include "common/TracepointProvider.h"
+#include "common/openssl_opts_handler.h"
 #include "common/numa.h"
 #include "include/compat.h"
 #include "include/str_list.h"
 #include "include/stringify.h"
 #include "rgw_common.h"
-#include "rgw_rados.h"
+#include "rgw_sal.h"
 #include "rgw_period_pusher.h"
 #include "rgw_realm_reloader.h"
 #include "rgw_rest.h"
@@ -37,6 +39,8 @@
 #include "rgw_process.h"
 #include "rgw_frontend.h"
 #include "rgw_http_client_curl.h"
+#include "rgw_kmip_client.h"
+#include "rgw_kmip_client_impl.h"
 #include "rgw_perf_counters.h"
 #ifdef WITH_RADOSGW_AMQP_ENDPOINT
 #include "rgw_amqp.h"
@@ -48,6 +52,9 @@
 #include "rgw_asio_frontend.h"
 #endif /* WITH_RADOSGW_BEAST_FRONTEND */
 #include "rgw_dmclock_scheduler_ctx.h"
+#ifdef WITH_RADOSGW_LUA_PACKAGES
+#include "rgw_lua.h"
+#endif
 
 #include "services/svc_zone.h"
 
@@ -208,8 +215,7 @@ int radosgw_Main(int argc, const char **argv)
   flags |= CINIT_FLAG_DEFER_DROP_PRIVILEGES;
 
   auto cct = global_init(&defaults, args, CEPH_ENTITY_TYPE_CLIENT,
-			 CODE_ENVIRONMENT_DAEMON,
-			 flags, "rgw_data");
+			 CODE_ENVIRONMENT_DAEMON, flags);
 
   // First, let's determine which frontends are configured.
   list<string> frontends;
@@ -300,6 +306,8 @@ int radosgw_Main(int argc, const char **argv)
   init_timer.add_event_after(g_conf()->rgw_init_timeout, new C_InitTimeout);
   mutex.unlock();
 
+  ceph::crypto::init_openssl_engine_once();
+
   common_init_finish(g_ceph_context);
 
   init_async_signal_handler();
@@ -317,6 +325,7 @@ int radosgw_Main(int argc, const char **argv)
   rgw_init_resolver();
   rgw::curl::setup_curl(fe_map);
   rgw_http_client_init(g_ceph_context);
+  rgw_kmip_client_init(*new RGWKMIPManagerImpl(g_ceph_context));
   
 #if defined(WITH_RADOSGW_FCGI_FRONTEND)
   FCGX_Init();
@@ -375,7 +384,7 @@ int radosgw_Main(int argc, const char **argv)
   const bool s3website_enabled = apis_map.count("s3website") > 0;
   const bool sts_enabled = apis_map.count("sts") > 0;
   const bool iam_enabled = apis_map.count("iam") > 0;
-  const bool pubsub_enabled = apis_map.count("pubsub") > 0;
+  const bool pubsub_enabled = apis_map.count("pubsub") > 0 || apis_map.count("notifications") > 0;
   // Swift API entrypoint could placed in the root instead of S3
   const bool swift_at_root = g_conf()->rgw_swift_url_prefix == "/";
   if (apis_map.count("s3") > 0 || s3website_enabled) {
@@ -401,6 +410,27 @@ int radosgw_Main(int argc, const char **argv)
     }
 #endif
   }
+
+  const auto& luarocks_path = g_conf().get_val<std::string>("rgw_luarocks_location");
+  if (luarocks_path.empty()) {
+    store->set_luarocks_path("");
+  } else {
+    store->set_luarocks_path(luarocks_path+"/"+g_conf()->name.to_str());
+  }
+#ifdef WITH_RADOSGW_LUA_PACKAGES
+  rgw::lua::packages_t failed_packages;
+  std::string output;
+  r = rgw::lua::install_packages(store, null_yield, failed_packages, output);
+  if (r < 0) {
+    dout(1) << "ERROR: failed to install lua packages from allowlist" << dendl;
+  }
+  if (!output.empty()) {
+    dout(10) << "INFO: lua packages installation output: \n" << output << dendl; 
+  }
+  for (const auto& p : failed_packages) {
+    dout(5) << "WARNING: failed to install lua package: " << p << " from allowlist" << dendl;
+  }
+#endif
 
   if (apis_map.count("swift") > 0) {
     RGWRESTMgr_SWIFT* const swift_resource = new RGWRESTMgr_SWIFT;
@@ -598,7 +628,7 @@ int radosgw_Main(int argc, const char **argv)
 
 
   // add a watcher to respond to realm configuration changes
-  RGWPeriodPusher pusher(store);
+  RGWPeriodPusher pusher(store, null_yield);
   RGWFrontendPauser pauser(fes, implicit_tenant_context, &pusher);
   auto reloader = std::make_unique<RGWRealmReloader>(store,
 						     service_map_meta, &pauser);
@@ -653,6 +683,7 @@ int radosgw_Main(int argc, const char **argv)
   rgw_tools_cleanup();
   rgw_shutdown_resolver();
   rgw_http_client_cleanup();
+  rgw_kmip_client_cleanup();
   rgw::curl::cleanup_curl();
   g_conf().remove_observer(&implicit_tenant_context);
 #ifdef WITH_RADOSGW_AMQP_ENDPOINT

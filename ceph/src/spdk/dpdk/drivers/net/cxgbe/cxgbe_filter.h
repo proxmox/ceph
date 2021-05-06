@@ -18,8 +18,8 @@
 #define MATCHTYPE_BITWIDTH 3
 #define PROTO_BITWIDTH 8
 #define TOS_BITWIDTH 8
-#define PF_BITWIDTH 8
-#define VF_BITWIDTH 8
+#define PF_BITWIDTH 3
+#define VF_BITWIDTH 13
 #define IVLAN_BITWIDTH 16
 #define OVLAN_BITWIDTH 16
 
@@ -100,9 +100,12 @@ struct ch_filter_specification {
 	uint32_t iq:10;		/* ingress queue */
 
 	uint32_t eport:2;	/* egress port to switch packet out */
+	uint32_t newsmac:1;     /* rewrite source MAC address */
+	uint32_t newdmac:1;     /* rewrite destination MAC address */
 	uint32_t swapmac:1;     /* swap SMAC/DMAC for loopback packet */
 	uint32_t newvlan:2;     /* rewrite VLAN Tag */
-	uint8_t dmac[ETHER_ADDR_LEN];   /* new destination MAC address */
+	uint8_t smac[RTE_ETHER_ADDR_LEN];   /* new source MAC address */
+	uint8_t dmac[RTE_ETHER_ADDR_LEN];   /* new destination MAC address */
 	uint16_t vlan;          /* VLAN Tag to insert */
 
 	/*
@@ -180,6 +183,7 @@ struct filter_entry {
 	struct filter_ctx *ctx;     /* caller's completion hook */
 	struct clip_entry *clipt;   /* CLIP Table entry for IPv6 */
 	struct l2t_entry *l2t;      /* Layer Two Table entry for dmac */
+	struct smt_entry *smt;      /* Source Mac Table entry for smac */
 	struct rte_eth_dev *dev;    /* Port's rte eth device */
 	void *private;              /* For use by apps using filter_entry */
 
@@ -248,23 +252,23 @@ cxgbe_bitmap_find_free_region(struct rte_bitmap *bmap, unsigned int size,
 	return idx;
 }
 
-bool is_filter_set(struct tid_info *, int fidx, int family);
-void filter_rpl(struct adapter *adap, const struct cpl_set_tcb_rpl *rpl);
-void clear_filter(struct filter_entry *f);
-int set_filter_wr(struct rte_eth_dev *dev, unsigned int fidx);
-int writable_filter(struct filter_entry *f);
+u8 cxgbe_filter_slots(struct adapter *adap, u8 family);
+bool cxgbe_is_filter_set(struct tid_info *t, u32 fidx, u8 nentries);
+void cxgbe_filter_rpl(struct adapter *adap, const struct cpl_set_tcb_rpl *rpl);
 int cxgbe_set_filter(struct rte_eth_dev *dev, unsigned int filter_id,
 		     struct ch_filter_specification *fs,
 		     struct filter_ctx *ctx);
 int cxgbe_del_filter(struct rte_eth_dev *dev, unsigned int filter_id,
 		     struct ch_filter_specification *fs,
 		     struct filter_ctx *ctx);
-int cxgbe_alloc_ftid(struct adapter *adap, unsigned int family);
-int init_hash_filter(struct adapter *adap);
-void hash_filter_rpl(struct adapter *adap, const struct cpl_act_open_rpl *rpl);
-void hash_del_filter_rpl(struct adapter *adap,
-			 const struct cpl_abort_rpl_rss *rpl);
-int validate_filter(struct adapter *adap, struct ch_filter_specification *fs);
+int cxgbe_alloc_ftid(struct adapter *adap, u8 nentries);
+int cxgbe_init_hash_filter(struct adapter *adap);
+void cxgbe_hash_filter_rpl(struct adapter *adap,
+			   const struct cpl_act_open_rpl *rpl);
+void cxgbe_hash_del_filter_rpl(struct adapter *adap,
+			       const struct cpl_abort_rpl_rss *rpl);
+int cxgbe_validate_filter(struct adapter *adap,
+			  struct ch_filter_specification *fs);
 int cxgbe_get_filter_count(struct adapter *adapter, unsigned int fidx,
 			   u64 *c, int hash, bool get_byte);
 int cxgbe_clear_filter_count(struct adapter *adapter, unsigned int fidx,

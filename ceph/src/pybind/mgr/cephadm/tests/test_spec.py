@@ -6,6 +6,8 @@ import json
 
 import pytest
 
+import yaml
+
 from ceph.deployment.service_spec import ServiceSpec, NFSServiceSpec, RGWSpec, \
     IscsiServiceSpec, AlertManagerSpec, HostPlacementSpec, CustomContainerSpec
 
@@ -70,8 +72,7 @@ from orchestrator import DaemonDescription, OrchestratorError
   "service_type": "rgw",
   "service_id": "default-rgw-realm.eu-central-1.1",
   "rgw_realm": "default-rgw-realm",
-  "rgw_zone": "eu-central-1",
-  "subcluster": "1"
+  "rgw_zone": "eu-central-1"
 },
 {
   "service_type": "osd",
@@ -98,6 +99,7 @@ def test_spec_octopus(spec_json):
     # Please do not modify those JSON values.
 
     spec = ServiceSpec.from_json(spec_json)
+
     # just some verification that we can sill read old octopus specs
     def convert_to_old_style_json(j):
         j_c = dict(j.copy())
@@ -118,6 +120,7 @@ def test_spec_octopus(spec_json):
         j_c.pop('objectstore', None)
         j_c.pop('filter_logic', None)
         return j_c
+
     assert spec_json == convert_to_old_style_json(spec.to_json())
 
 
@@ -137,7 +140,7 @@ def test_spec_octopus(spec_json):
         "last_refresh": "2020-04-03T15:31:48.725856",
         "created": "2020-04-02T19:23:08.829543",
         "started": "2020-04-03T07:29:16.932838",
-        "is_active": false 
+        "is_active": false
     },
     {
         "hostname": "ceph-001",
@@ -152,7 +155,7 @@ def test_spec_octopus(spec_json):
         "last_refresh": "2020-04-03T15:31:48.725903",
         "created": "2020-04-02T19:23:11.390694",
         "started": "2020-04-03T07:29:16.910897",
-        "is_active": false 
+        "is_active": false
     },
     {
         "hostname": "ceph-001",
@@ -167,7 +170,7 @@ def test_spec_octopus(spec_json):
         "last_refresh": "2020-04-03T15:31:48.725950",
         "created": "2020-04-02T19:23:52.025088",
         "started": "2020-04-03T07:29:16.847972",
-        "is_active": false 
+        "is_active": false
     },
     {
         "hostname": "ceph-001",
@@ -182,7 +185,7 @@ def test_spec_octopus(spec_json):
         "last_refresh": "2020-04-03T15:31:48.725807",
         "created": "2020-04-02T19:22:18.648584",
         "started": "2020-04-03T07:29:16.856153",
-        "is_active": false 
+        "is_active": false
     },
     {
         "hostname": "ceph-001",
@@ -197,7 +200,7 @@ def test_spec_octopus(spec_json):
         "last_refresh": "2020-04-03T15:31:48.725715",
         "created": "2020-04-02T19:22:13.863300",
         "started": "2020-04-03T07:29:17.206024",
-        "is_active": false 
+        "is_active": false
     },
     {
         "hostname": "ceph-001",
@@ -212,7 +215,7 @@ def test_spec_octopus(spec_json):
         "last_refresh": "2020-04-03T15:31:48.725996",
         "created": "2020-04-02T19:23:53.880197",
         "started": "2020-04-03T07:29:16.880044",
-        "is_active": false 
+        "is_active": false
     },
     {
         "hostname": "ceph-001",
@@ -227,7 +230,7 @@ def test_spec_octopus(spec_json):
         "last_refresh": "2020-04-03T15:31:48.726088",
         "created": "2020-04-02T20:35:02.991435",
         "started": "2020-04-03T07:29:19.373956",
-        "is_active": false 
+        "is_active": false
     },
     {
         "hostname": "ceph-001",
@@ -242,7 +245,7 @@ def test_spec_octopus(spec_json):
         "last_refresh": "2020-04-03T15:31:48.726134",
         "created": "2020-04-02T20:35:17.142272",
         "started": "2020-04-03T07:29:19.374002",
-        "is_active": false 
+        "is_active": false
     },
     {
         "hostname": "ceph-001",
@@ -257,7 +260,7 @@ def test_spec_octopus(spec_json):
         "last_refresh": "2020-04-03T15:31:48.726042",
         "created": "2020-04-02T19:24:10.281163",
         "started": "2020-04-03T07:29:16.926292",
-        "is_active": false 
+        "is_active": false
     },
     {
         "hostname": "ceph-001",
@@ -265,7 +268,7 @@ def test_spec_octopus(spec_json):
         "daemon_type": "rgw",
         "status": 1,
         "status_desc": "starting",
-        "is_active": false 
+        "is_active": false
     }
 ]""")
 )
@@ -288,44 +291,42 @@ def test_dd_octopus(dd_json):
 
 
 @pytest.mark.parametrize("spec,dd,valid",
-[
+[   # noqa: E128
     # https://tracker.ceph.com/issues/44934
     (
         RGWSpec(
+            service_id="foo",
             rgw_realm="default-rgw-realm",
             rgw_zone="eu-central-1",
-            subcluster='1',
         ),
         DaemonDescription(
             daemon_type='rgw',
-            daemon_id="default-rgw-realm.eu-central-1.1.ceph-001.ytywjo",
+            daemon_id="foo.ceph-001.ytywjo",
             hostname="ceph-001",
         ),
         True
     ),
     (
-        # no subcluster
+        # no realm
         RGWSpec(
-            rgw_realm="default-rgw-realm",
+            service_id="foo.bar",
             rgw_zone="eu-central-1",
         ),
         DaemonDescription(
             daemon_type='rgw',
-            daemon_id="default-rgw-realm.eu-central-1.ceph-001.ytywjo",
+            daemon_id="foo.bar.ceph-001.ytywjo",
             hostname="ceph-001",
         ),
         True
     ),
     (
-        # with tld
+        # no realm or zone
         RGWSpec(
-            rgw_realm="default-rgw-realm",
-            rgw_zone="eu-central-1",
-            subcluster='1',
+            service_id="bar",
         ),
         DaemonDescription(
             daemon_type='rgw',
-            daemon_id="default-rgw-realm.eu-central-1.1.host.domain.tld.ytywjo",
+            daemon_id="bar.host.domain.tld.ytywjo",
             hostname="host.domain.tld",
         ),
         True
@@ -333,8 +334,7 @@ def test_dd_octopus(dd_json):
     (
         # explicit naming
         RGWSpec(
-            rgw_realm="realm",
-            rgw_zone="zone",
+            service_id="realm.zone",
         ),
         DaemonDescription(
             daemon_type='rgw',
@@ -347,9 +347,20 @@ def test_dd_octopus(dd_json):
         # without host
         RGWSpec(
             service_type='rgw',
-            rgw_realm="default-rgw-realm",
-            rgw_zone="eu-central-1",
-            subcluster='1',
+            service_id="foo",
+        ),
+        DaemonDescription(
+            daemon_type='rgw',
+            daemon_id="foo.hostname.ytywjo",
+            hostname=None,
+        ),
+        False
+    ),
+    (
+        # without host (2)
+        RGWSpec(
+            service_type='rgw',
+            service_id="default-rgw-realm.eu-central-1.1",
         ),
         DaemonDescription(
             daemon_type='rgw',
@@ -359,16 +370,14 @@ def test_dd_octopus(dd_json):
         False
     ),
     (
-        # zone contains hostname
-        # https://tracker.ceph.com/issues/45294
+        # service_id contains hostname
+        # (sort of) https://tracker.ceph.com/issues/45294
         RGWSpec(
-            rgw_realm="default.rgw.realm",
-            rgw_zone="ceph.001",
-            subcluster='1',
+            service_id="default.rgw.realm.ceph.001",
         ),
         DaemonDescription(
             daemon_type='rgw',
-            daemon_id="default.rgw.realm.ceph.001.1.ceph.001.ytywjo",
+            daemon_id="default.rgw.realm.ceph.001.ceph.001.ytywjo",
             hostname="ceph.001",
         ),
         True
@@ -569,6 +578,19 @@ def test_dd_octopus(dd_json):
         ),
         True
     ),
+
+    (
+        # daemon_id only contains hostname
+        ServiceSpec(
+            service_type='cephadm-exporter',
+        ),
+        DaemonDescription(
+            daemon_type='cephadm-exporter',
+            daemon_id="testhost",
+            hostname="testhost",
+        ),
+        True
+    ),
 ])
 def test_daemon_description_service_name(spec: ServiceSpec,
                                          dd: DaemonDescription,
@@ -644,3 +666,26 @@ def test_custom_container_spec_config_json():
     config_json = spec.config_json()
     for key in ['entrypoint', 'uid', 'gid', 'bind_mounts', 'dirs']:
         assert key not in config_json
+
+
+def test_ingress_spec():
+    yaml_str = """service_type: ingress
+service_id: rgw.foo
+placement:
+  hosts:
+    - host1
+    - host2
+    - host3
+spec:
+  virtual_ip: 192.168.20.1/24
+  backend_service: rgw.foo
+  frontend_port: 8080
+  monitor_port: 8081
+"""
+    yaml_file = yaml.safe_load(yaml_str)
+    spec = ServiceSpec.from_json(yaml_file)
+    assert spec.service_type == "ingress"
+    assert spec.service_id == "rgw.foo"
+    assert spec.virtual_ip == "192.168.20.1/24"
+    assert spec.frontend_port == 8080
+    assert spec.monitor_port == 8081

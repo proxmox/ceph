@@ -5,12 +5,12 @@ import http.cookies
 import logging
 import sys
 
-from . import ApiController, RESTController, \
-    allow_empty_body, set_cookies
 from .. import mgr
 from ..exceptions import InvalidCredentialsError, UserDoesNotExist
 from ..services.auth import AuthManager, JwtManager
 from ..settings import Settings
+from . import ApiController, ControllerAuthMixin, ControllerDoc, EndpointDoc, \
+    RESTController, allow_empty_body
 
 # Python 3.8 introduced `samesite` attribute:
 # https://docs.python.org/3/library/http.cookies.html#morsel-objects
@@ -19,12 +19,23 @@ if sys.version_info < (3, 8):
 
 logger = logging.getLogger('controllers.auth')
 
+AUTH_CHECK_SCHEMA = {
+    "username": (str, "Username"),
+    "permissions": ({
+        "cephfs": ([str], "")
+    }, "List of permissions acquired"),
+    "sso": (bool, "Uses single sign on?"),
+    "pwdUpdateRequired": (bool, "Is password update required?")
+}
+
 
 @ApiController('/auth', secure=False)
-class Auth(RESTController):
+@ControllerDoc("Initiate a session with Ceph", "Auth")
+class Auth(RESTController, ControllerAuthMixin):
     """
     Provide authenticates and returns JWT token.
     """
+
     def create(self, username, password):
         user_data = AuthManager.authenticate(username, password)
         user_perms, pwd_expiration_date, pwd_update_required = None, None, None
@@ -37,6 +48,7 @@ class Auth(RESTController):
 
             if user_perms is not None:
                 url_prefix = 'https' if mgr.get_localized_module_option('ssl') else 'http'
+
                 logger.info('Login successful: %s', username)
                 mgr.ACCESS_CTRL_DB.reset_attempt(username)
                 mgr.ACCESS_CTRL_DB.save()
@@ -45,7 +57,7 @@ class Auth(RESTController):
                 # For backward-compatibility: PyJWT versions < 2.0.0 return bytes.
                 token = token.decode('utf-8') if isinstance(token, bytes) else token
 
-                set_cookies(url_prefix, token)
+                self._set_token_cookie(url_prefix, token)
                 return {
                     'token': token,
                     'username': username,
@@ -77,7 +89,8 @@ class Auth(RESTController):
     def logout(self):
         logger.debug('Logout successful')
         token = JwtManager.get_token_from_header()
-        JwtManager.blacklist_token(token)
+        JwtManager.blocklist_token(token)
+        self._delete_token_cookie(token)
         redirect_url = '#/login'
         if mgr.SSO_DB.protocol == 'saml2':
             redirect_url = 'auth/saml2/slo'
@@ -90,7 +103,10 @@ class Auth(RESTController):
             return 'auth/saml2/login'
         return '#/login'
 
-    @RESTController.Collection('POST')
+    @RESTController.Collection('POST', query_params=['token'])
+    @EndpointDoc("Check token Authentication",
+                 parameters={'token': (str, 'Authentication Token')},
+                 responses={201: AUTH_CHECK_SCHEMA})
     def check(self, token):
         if token:
             user = JwtManager.get_user(token)

@@ -34,31 +34,102 @@
 #include "spdk/stdinc.h"
 
 #include "spdk_cunit.h"
-#include "common/lib/test_env.c"
+#include "common/lib/ut_multithread.c"
 
 #include "ftl/ftl_io.c"
+#include "ftl/ftl_init.c"
+#include "ftl/ftl_core.c"
+#include "ftl/ftl_band.c"
 
+DEFINE_STUB(spdk_bdev_io_get_append_location, uint64_t, (struct spdk_bdev_io *bdev_io), 0);
+DEFINE_STUB(spdk_bdev_desc_get_bdev, struct spdk_bdev *, (struct spdk_bdev_desc *desc), NULL);
+DEFINE_STUB(spdk_bdev_get_optimal_open_zones, uint32_t, (const struct spdk_bdev *b), 1);
+DEFINE_STUB(spdk_bdev_zone_appendv, int, (struct spdk_bdev_desc *desc, struct spdk_io_channel *ch,
+		struct iovec *iov, int iovcnt, uint64_t zone_id, uint64_t num_blocks,
+		spdk_bdev_io_completion_cb cb, void *cb_arg), 0);
+DEFINE_STUB(spdk_bdev_get_zone_size, uint64_t, (const struct spdk_bdev *b), 1024);
+DEFINE_STUB(spdk_bdev_zone_management, int, (struct spdk_bdev_desc *desc,
+		struct spdk_io_channel *ch, uint64_t zone_id, enum spdk_bdev_zone_action action,
+		spdk_bdev_io_completion_cb cb, void *cb_arg), 0);
+DEFINE_STUB_V(spdk_bdev_free_io, (struct spdk_bdev_io *bdev_io));
+DEFINE_STUB(spdk_bdev_read_blocks, int, (struct spdk_bdev_desc *desc, struct spdk_io_channel *ch,
+		void *buf, uint64_t offset_blocks, uint64_t num_blocks,
+		spdk_bdev_io_completion_cb cb, void *cb_arg), 0);
+DEFINE_STUB(spdk_bdev_write_blocks, int, (struct spdk_bdev_desc *desc, struct spdk_io_channel *ch,
+		void *buf, uint64_t offset_blocks, uint64_t num_blocks, spdk_bdev_io_completion_cb cb,
+		void *cb_arg), 0);
+DEFINE_STUB(spdk_bdev_write_blocks_with_md, int, (struct spdk_bdev_desc *desc,
+		struct spdk_io_channel *ch, void *buf, void *md, uint64_t offset_blocks,
+		uint64_t num_blocks, spdk_bdev_io_completion_cb cb, void *cb_arg), 0);
+DEFINE_STUB(spdk_bdev_writev_blocks, int, (struct spdk_bdev_desc *desc, struct spdk_io_channel *ch,
+		struct iovec *iov, int iovcnt, uint64_t offset_blocks, uint64_t num_blocks,
+		spdk_bdev_io_completion_cb cb, void *cb_arg), 0);
+DEFINE_STUB(spdk_bdev_get_num_blocks, uint64_t, (const struct spdk_bdev *bdev), 1024);
+DEFINE_STUB(spdk_bdev_get_md_size, uint32_t, (const struct spdk_bdev *bdev), 0);
+DEFINE_STUB(spdk_bdev_get_block_size, uint32_t, (const struct spdk_bdev *bdev), 4096);
+#if defined(FTL_META_DEBUG)
+DEFINE_STUB(ftl_band_validate_md, bool, (struct ftl_band *band), true);
+#endif
+#if defined(DEBUG)
+DEFINE_STUB_V(ftl_trace_submission, (struct spdk_ftl_dev *dev, const struct ftl_io *io,
+				     struct ftl_addr addr, size_t addr_cnt));
+DEFINE_STUB_V(ftl_trace_limits, (struct spdk_ftl_dev *dev, int limit, size_t num_free));
 DEFINE_STUB(ftl_trace_alloc_id, uint64_t, (struct spdk_ftl_dev *dev), 0);
-DEFINE_STUB_V(ftl_band_acquire_lba_map, (struct ftl_band *band));
-DEFINE_STUB_V(ftl_band_release_lba_map, (struct ftl_band *band));
+DEFINE_STUB_V(ftl_trace_completion, (struct spdk_ftl_dev *dev, const struct ftl_io *io,
+				     enum ftl_trace_completion type));
+DEFINE_STUB_V(ftl_trace_wbuf_fill, (struct spdk_ftl_dev *dev, const struct ftl_io *io));
+#endif
+
+struct spdk_io_channel *
+spdk_bdev_get_io_channel(struct spdk_bdev_desc *bdev_desc)
+{
+	return spdk_get_io_channel(bdev_desc);
+}
+
+static int
+channel_create_cb(void *io_device, void *ctx)
+{
+	return 0;
+}
+
+static void
+channel_destroy_cb(void *io_device, void *ctx)
+{}
 
 static struct spdk_ftl_dev *
-setup_device(void)
+setup_device(uint32_t num_threads, uint32_t xfer_size)
 {
 	struct spdk_ftl_dev *dev;
+	struct _ftl_io_channel *_ioch;
 	struct ftl_io_channel *ioch;
+	int rc;
+
+	allocate_threads(num_threads);
+	set_thread(0);
 
 	dev = calloc(1, sizeof(*dev));
 	SPDK_CU_ASSERT_FATAL(dev != NULL);
-	dev->ioch = calloc(1, sizeof(*ioch) + sizeof(struct spdk_io_channel));
+
+	dev->core_thread = spdk_get_thread();
+	dev->ioch = calloc(1, sizeof(*_ioch) + sizeof(struct spdk_io_channel));
 	SPDK_CU_ASSERT_FATAL(dev->ioch != NULL);
 
-	ioch = spdk_io_channel_get_ctx(dev->ioch);
+	_ioch = (struct _ftl_io_channel *)(dev->ioch + 1);
+	ioch = _ioch->ioch = calloc(1, sizeof(*ioch));
+	SPDK_CU_ASSERT_FATAL(ioch != NULL);
 
 	ioch->elem_size = sizeof(struct ftl_md_io);
 	ioch->io_pool = spdk_mempool_create("io-pool", 4096, ioch->elem_size, 0, 0);
 
 	SPDK_CU_ASSERT_FATAL(ioch->io_pool != NULL);
+
+	dev->conf = g_default_conf;
+	dev->xfer_size = xfer_size;
+	dev->base_bdev_desc = (struct spdk_bdev_desc *)0xdeadbeef;
+	spdk_io_device_register(dev->base_bdev_desc, channel_create_cb, channel_destroy_cb, 0, NULL);
+
+	rc = ftl_dev_init_io_channel(dev);
+	CU_ASSERT_EQUAL(rc, 0);
 
 	return dev;
 }
@@ -68,9 +139,16 @@ free_device(struct spdk_ftl_dev *dev)
 {
 	struct ftl_io_channel *ioch;
 
-	ioch = spdk_io_channel_get_ctx(dev->ioch);
+	ioch = ftl_io_channel_get_ctx(dev->ioch);
 	spdk_mempool_free(ioch->io_pool);
+	free(ioch);
 
+	spdk_io_device_unregister(dev, NULL);
+	spdk_io_device_unregister(dev->base_bdev_desc, NULL);
+	free_threads();
+
+	free(dev->ioch_array);
+	free(dev->iov_buf);
 	free(dev->ioch);
 	free(dev);
 }
@@ -110,8 +188,8 @@ test_completion(void)
 	int req, status = 0;
 	size_t pool_size;
 
-	dev = setup_device();
-	ioch = spdk_io_channel_get_ctx(dev->ioch);
+	dev = setup_device(1, 16);
+	ioch = ftl_io_channel_get_ctx(dev->ioch);
 	pool_size = spdk_mempool_count(ioch->io_pool);
 
 	io = alloc_io(dev, io_complete_cb, &status);
@@ -152,8 +230,8 @@ test_alloc_free(void)
 	int parent_status = -1;
 	size_t pool_size;
 
-	dev = setup_device();
-	ioch = spdk_io_channel_get_ctx(dev->ioch);
+	dev = setup_device(1, 16);
+	ioch = ftl_io_channel_get_ctx(dev->ioch);
 	pool_size = spdk_mempool_count(ioch->io_pool);
 
 	parent = alloc_io(dev, io_complete_cb, &parent_status);
@@ -198,8 +276,8 @@ test_child_requests(void)
 	int status[MAX_CHILDREN + 1], i;
 	size_t pool_size;
 
-	dev = setup_device();
-	ioch = spdk_io_channel_get_ctx(dev->ioch);
+	dev = setup_device(1, 16);
+	ioch = ftl_io_channel_get_ctx(dev->ioch);
 	pool_size = spdk_mempool_count(ioch->io_pool);
 
 	/* Verify correct behaviour when children finish first */
@@ -298,8 +376,8 @@ test_child_status(void)
 	int parent_status, child_status[2];
 	size_t pool_size, i;
 
-	dev = setup_device();
-	ioch = spdk_io_channel_get_ctx(dev->ioch);
+	dev = setup_device(1, 16);
+	ioch = ftl_io_channel_get_ctx(dev->ioch);
 	pool_size = spdk_mempool_count(ioch->io_pool);
 
 	/* Verify the first error is returned by the parent */
@@ -385,8 +463,8 @@ test_multi_generation(void)
 	size_t pool_size;
 	int i, j;
 
-	dev = setup_device();
-	ioch = spdk_io_channel_get_ctx(dev->ioch);
+	dev = setup_device(1, 16);
+	ioch = ftl_io_channel_get_ctx(dev->ioch);
 	pool_size = spdk_mempool_count(ioch->io_pool);
 
 	/* Verify correct behaviour when children finish first */
@@ -502,38 +580,484 @@ test_multi_generation(void)
 	free_device(dev);
 }
 
+static void
+test_io_channel_create(void)
+{
+	struct spdk_ftl_dev *dev;
+	struct spdk_io_channel *ioch, **ioch_array;
+	struct ftl_io_channel *ftl_ioch;
+	uint32_t ioch_idx;
+
+	dev = setup_device(g_default_conf.max_io_channels + 1, 16);
+
+	ioch = spdk_get_io_channel(dev);
+	CU_ASSERT(ioch != NULL);
+	CU_ASSERT_EQUAL(dev->num_io_channels, 1);
+	spdk_put_io_channel(ioch);
+	poll_threads();
+	CU_ASSERT_EQUAL(dev->num_io_channels, 0);
+
+	ioch_array = calloc(dev->conf.max_io_channels, sizeof(*ioch_array));
+	SPDK_CU_ASSERT_FATAL(ioch != NULL);
+
+	for (ioch_idx = 0; ioch_idx < dev->conf.max_io_channels; ++ioch_idx) {
+		set_thread(ioch_idx);
+		ioch = ioch_array[ioch_idx] = spdk_get_io_channel(dev);
+		SPDK_CU_ASSERT_FATAL(ioch != NULL);
+		poll_threads();
+
+		ftl_ioch = ftl_io_channel_get_ctx(ioch);
+		CU_ASSERT_EQUAL(ftl_ioch->index, ioch_idx);
+	}
+
+	CU_ASSERT_EQUAL(dev->num_io_channels, dev->conf.max_io_channels);
+	set_thread(dev->conf.max_io_channels);
+	ioch = spdk_get_io_channel(dev);
+	CU_ASSERT_EQUAL(dev->num_io_channels, dev->conf.max_io_channels);
+	CU_ASSERT_EQUAL(ioch, NULL);
+
+	for (ioch_idx = 0; ioch_idx < dev->conf.max_io_channels; ioch_idx += 2) {
+		set_thread(ioch_idx);
+		spdk_put_io_channel(ioch_array[ioch_idx]);
+		ioch_array[ioch_idx] = NULL;
+		poll_threads();
+	}
+
+	poll_threads();
+	CU_ASSERT_EQUAL(dev->num_io_channels, dev->conf.max_io_channels / 2);
+
+	for (ioch_idx = 0; ioch_idx < dev->conf.max_io_channels; ioch_idx++) {
+		set_thread(ioch_idx);
+
+		if (ioch_array[ioch_idx] == NULL) {
+			ioch = ioch_array[ioch_idx] = spdk_get_io_channel(dev);
+			SPDK_CU_ASSERT_FATAL(ioch != NULL);
+			poll_threads();
+
+			ftl_ioch = ftl_io_channel_get_ctx(ioch);
+			CU_ASSERT_EQUAL(ftl_ioch->index, ioch_idx);
+		}
+	}
+
+	for (ioch_idx = 0; ioch_idx < dev->conf.max_io_channels; ioch_idx++) {
+		set_thread(ioch_idx);
+		spdk_put_io_channel(ioch_array[ioch_idx]);
+	}
+
+	poll_threads();
+	CU_ASSERT_EQUAL(dev->num_io_channels, 0);
+
+	free(ioch_array);
+	free_device(dev);
+}
+
+static void
+test_acquire_entry(void)
+{
+	struct spdk_ftl_dev *dev;
+	struct spdk_io_channel *ioch, **ioch_array;
+	struct ftl_io_channel *ftl_ioch;
+	struct ftl_wbuf_entry *entry, **entries;
+	uint32_t num_entries, num_io_channels = 2;
+	uint32_t ioch_idx, entry_idx, tmp_idx;
+
+	dev = setup_device(num_io_channels, 16);
+
+	num_entries = dev->conf.write_buffer_size / FTL_BLOCK_SIZE;
+	entries = calloc(num_entries * num_io_channels, sizeof(*entries));
+	SPDK_CU_ASSERT_FATAL(entries != NULL);
+	ioch_array = calloc(num_io_channels, sizeof(*ioch_array));
+	SPDK_CU_ASSERT_FATAL(ioch_array != NULL);
+
+	/* Acquire whole buffer of internal entries */
+	entry_idx = 0;
+	for (ioch_idx = 0; ioch_idx < num_io_channels; ++ioch_idx) {
+		set_thread(ioch_idx);
+		ioch_array[ioch_idx] = spdk_get_io_channel(dev);
+		SPDK_CU_ASSERT_FATAL(ioch_array[ioch_idx] != NULL);
+		ftl_ioch = ftl_io_channel_get_ctx(ioch_array[ioch_idx]);
+		poll_threads();
+
+		for (tmp_idx = 0; tmp_idx < num_entries; ++tmp_idx) {
+			entries[entry_idx++] = ftl_acquire_wbuf_entry(ftl_ioch, FTL_IO_INTERNAL);
+			CU_ASSERT(entries[entry_idx - 1] != NULL);
+		}
+
+		entry = ftl_acquire_wbuf_entry(ftl_ioch, FTL_IO_INTERNAL);
+		CU_ASSERT(entry == NULL);
+	}
+
+	for (ioch_idx = 0; ioch_idx < num_io_channels; ++ioch_idx) {
+		set_thread(ioch_idx);
+
+		for (tmp_idx = 0; tmp_idx < num_entries; ++tmp_idx) {
+			ftl_release_wbuf_entry(entries[ioch_idx * num_entries + tmp_idx]);
+			entries[ioch_idx * num_entries + tmp_idx] = NULL;
+		}
+
+		spdk_put_io_channel(ioch_array[ioch_idx]);
+	}
+	poll_threads();
+
+	/* Do the same for user entries */
+	entry_idx = 0;
+	for (ioch_idx = 0; ioch_idx < num_io_channels; ++ioch_idx) {
+		set_thread(ioch_idx);
+		ioch_array[ioch_idx] = spdk_get_io_channel(dev);
+		SPDK_CU_ASSERT_FATAL(ioch_array[ioch_idx] != NULL);
+		ftl_ioch = ftl_io_channel_get_ctx(ioch_array[ioch_idx]);
+		poll_threads();
+
+		for (tmp_idx = 0; tmp_idx < num_entries; ++tmp_idx) {
+			entries[entry_idx++] = ftl_acquire_wbuf_entry(ftl_ioch, 0);
+			CU_ASSERT(entries[entry_idx - 1] != NULL);
+		}
+
+		entry = ftl_acquire_wbuf_entry(ftl_ioch, 0);
+		CU_ASSERT(entry == NULL);
+	}
+
+	for (ioch_idx = 0; ioch_idx < num_io_channels; ++ioch_idx) {
+		set_thread(ioch_idx);
+
+		for (tmp_idx = 0; tmp_idx < num_entries; ++tmp_idx) {
+			ftl_release_wbuf_entry(entries[ioch_idx * num_entries + tmp_idx]);
+			entries[ioch_idx * num_entries + tmp_idx] = NULL;
+		}
+
+		spdk_put_io_channel(ioch_array[ioch_idx]);
+	}
+	poll_threads();
+
+	/* Verify limits */
+	entry_idx = 0;
+	for (ioch_idx = 0; ioch_idx < num_io_channels; ++ioch_idx) {
+		set_thread(ioch_idx);
+		ioch_array[ioch_idx] = spdk_get_io_channel(dev);
+		SPDK_CU_ASSERT_FATAL(ioch_array[ioch_idx] != NULL);
+		ftl_ioch = ftl_io_channel_get_ctx(ioch_array[ioch_idx]);
+		poll_threads();
+
+		ftl_ioch->qdepth_limit = num_entries / 2;
+		for (tmp_idx = 0; tmp_idx < num_entries / 2; ++tmp_idx) {
+			entries[entry_idx++] = ftl_acquire_wbuf_entry(ftl_ioch, 0);
+			CU_ASSERT(entries[entry_idx - 1] != NULL);
+		}
+
+		entry = ftl_acquire_wbuf_entry(ftl_ioch, 0);
+		CU_ASSERT(entry == NULL);
+
+		for (; tmp_idx < num_entries; ++tmp_idx) {
+			entries[entry_idx++] = ftl_acquire_wbuf_entry(ftl_ioch, FTL_IO_INTERNAL);
+			CU_ASSERT(entries[entry_idx - 1] != NULL);
+		}
+	}
+
+	for (ioch_idx = 0; ioch_idx < num_io_channels; ++ioch_idx) {
+		set_thread(ioch_idx);
+
+		for (tmp_idx = 0; tmp_idx < num_entries; ++tmp_idx) {
+			ftl_release_wbuf_entry(entries[ioch_idx * num_entries + tmp_idx]);
+			entries[ioch_idx * num_entries + tmp_idx] = NULL;
+		}
+
+		spdk_put_io_channel(ioch_array[ioch_idx]);
+	}
+	poll_threads();
+
+	/* Verify acquire/release */
+	set_thread(0);
+	ioch = spdk_get_io_channel(dev);
+	SPDK_CU_ASSERT_FATAL(ioch != NULL);
+	ftl_ioch = ftl_io_channel_get_ctx(ioch);
+	poll_threads();
+
+	for (entry_idx = 0; entry_idx < num_entries; ++entry_idx) {
+		entries[entry_idx] = ftl_acquire_wbuf_entry(ftl_ioch, 0);
+		CU_ASSERT(entries[entry_idx] != NULL);
+	}
+
+	entry = ftl_acquire_wbuf_entry(ftl_ioch, 0);
+	CU_ASSERT(entry == NULL);
+
+	for (entry_idx = 0; entry_idx < num_entries / 2; ++entry_idx) {
+		ftl_release_wbuf_entry(entries[entry_idx]);
+		entries[entry_idx] = NULL;
+	}
+
+	for (; entry_idx < num_entries; ++entry_idx) {
+		entries[entry_idx - num_entries / 2] = ftl_acquire_wbuf_entry(ftl_ioch, 0);
+		CU_ASSERT(entries[entry_idx - num_entries / 2] != NULL);
+	}
+
+	for (entry_idx = 0; entry_idx < num_entries; ++entry_idx) {
+		ftl_release_wbuf_entry(entries[entry_idx]);
+		entries[entry_idx] = NULL;
+	}
+
+	spdk_put_io_channel(ioch);
+	poll_threads();
+
+	free(ioch_array);
+	free(entries);
+	free_device(dev);
+}
+
+static void
+test_submit_batch(void)
+{
+	struct spdk_ftl_dev *dev;
+	struct spdk_io_channel **_ioch_array;
+	struct ftl_io_channel **ioch_array;
+	struct ftl_wbuf_entry *entry;
+	struct ftl_batch *batch, *batch2;
+	uint32_t num_io_channels = 16;
+	uint32_t ioch_idx, tmp_idx, entry_idx;
+	uint64_t ioch_bitmap;
+	size_t num_entries;
+
+	dev = setup_device(num_io_channels, num_io_channels);
+
+	_ioch_array = calloc(num_io_channels, sizeof(*_ioch_array));
+	SPDK_CU_ASSERT_FATAL(_ioch_array != NULL);
+	ioch_array = calloc(num_io_channels, sizeof(*ioch_array));
+	SPDK_CU_ASSERT_FATAL(ioch_array != NULL);
+
+	for (ioch_idx = 0; ioch_idx < num_io_channels; ++ioch_idx) {
+		set_thread(ioch_idx);
+		_ioch_array[ioch_idx] = spdk_get_io_channel(dev);
+		SPDK_CU_ASSERT_FATAL(_ioch_array[ioch_idx] != NULL);
+		ioch_array[ioch_idx] = ftl_io_channel_get_ctx(_ioch_array[ioch_idx]);
+		poll_threads();
+	}
+
+	/* Make sure the IO channels are not starved and entries are popped in RR fashion */
+	for (ioch_idx = 0; ioch_idx < num_io_channels; ++ioch_idx) {
+		set_thread(ioch_idx);
+
+		for (entry_idx = 0; entry_idx < dev->xfer_size; ++entry_idx) {
+			entry = ftl_acquire_wbuf_entry(ioch_array[ioch_idx], 0);
+			SPDK_CU_ASSERT_FATAL(entry != NULL);
+
+			num_entries = spdk_ring_enqueue(ioch_array[ioch_idx]->submit_queue,
+							(void **)&entry, 1, NULL);
+			CU_ASSERT(num_entries == 1);
+		}
+	}
+
+	for (ioch_idx = 0; ioch_idx < num_io_channels; ++ioch_idx) {
+		for (tmp_idx = 0; tmp_idx < ioch_idx; ++tmp_idx) {
+			set_thread(tmp_idx);
+
+			while (spdk_ring_count(ioch_array[tmp_idx]->submit_queue) < dev->xfer_size) {
+				entry = ftl_acquire_wbuf_entry(ioch_array[tmp_idx], 0);
+				SPDK_CU_ASSERT_FATAL(entry != NULL);
+
+				num_entries = spdk_ring_enqueue(ioch_array[tmp_idx]->submit_queue,
+								(void **)&entry, 1, NULL);
+				CU_ASSERT(num_entries == 1);
+			}
+		}
+
+		set_thread(ioch_idx);
+
+		batch = ftl_get_next_batch(dev);
+		SPDK_CU_ASSERT_FATAL(batch != NULL);
+
+		TAILQ_FOREACH(entry, &batch->entries, tailq) {
+			CU_ASSERT(entry->ioch == ioch_array[ioch_idx]);
+		}
+
+		ftl_release_batch(dev, batch);
+
+		CU_ASSERT(spdk_ring_count(ioch_array[ioch_idx]->free_queue) ==
+			  ioch_array[ioch_idx]->num_entries);
+	}
+
+	for (ioch_idx = 0; ioch_idx < num_io_channels - 1; ++ioch_idx) {
+		batch = ftl_get_next_batch(dev);
+		SPDK_CU_ASSERT_FATAL(batch != NULL);
+		ftl_release_batch(dev, batch);
+	}
+
+	/* Make sure the batch can be built from entries from any IO channel */
+	for (ioch_idx = 0; ioch_idx < num_io_channels; ++ioch_idx) {
+		set_thread(ioch_idx);
+		entry = ftl_acquire_wbuf_entry(ioch_array[ioch_idx], 0);
+		SPDK_CU_ASSERT_FATAL(entry != NULL);
+
+		num_entries = spdk_ring_enqueue(ioch_array[ioch_idx]->submit_queue,
+						(void **)&entry, 1, NULL);
+		CU_ASSERT(num_entries == 1);
+	}
+
+	batch = ftl_get_next_batch(dev);
+	SPDK_CU_ASSERT_FATAL(batch != NULL);
+
+	ioch_bitmap = 0;
+	TAILQ_FOREACH(entry, &batch->entries, tailq) {
+		ioch_bitmap |= 1 << entry->ioch->index;
+	}
+
+	for (ioch_idx = 0; ioch_idx < num_io_channels; ++ioch_idx) {
+		CU_ASSERT((ioch_bitmap & (1 << ioch_array[ioch_idx]->index)) != 0);
+	}
+	ftl_release_batch(dev, batch);
+
+	for (ioch_idx = 0; ioch_idx < num_io_channels; ++ioch_idx) {
+		CU_ASSERT(spdk_ring_count(ioch_array[ioch_idx]->free_queue) ==
+			  ioch_array[ioch_idx]->num_entries);
+	}
+
+	/* Make sure pending batches are prioritized */
+	for (ioch_idx = 0; ioch_idx < num_io_channels; ++ioch_idx) {
+		set_thread(ioch_idx);
+
+		while (spdk_ring_count(ioch_array[ioch_idx]->submit_queue) < dev->xfer_size) {
+			entry = ftl_acquire_wbuf_entry(ioch_array[ioch_idx], 0);
+			SPDK_CU_ASSERT_FATAL(entry != NULL);
+			num_entries = spdk_ring_enqueue(ioch_array[ioch_idx]->submit_queue,
+							(void **)&entry, 1, NULL);
+			CU_ASSERT(num_entries == 1);
+		}
+	}
+
+	batch = ftl_get_next_batch(dev);
+	SPDK_CU_ASSERT_FATAL(batch != NULL);
+
+	TAILQ_INSERT_TAIL(&dev->pending_batches, batch, tailq);
+	batch2 = ftl_get_next_batch(dev);
+	SPDK_CU_ASSERT_FATAL(batch2 != NULL);
+
+	CU_ASSERT(TAILQ_EMPTY(&dev->pending_batches));
+	CU_ASSERT(batch == batch2);
+
+	batch = ftl_get_next_batch(dev);
+	SPDK_CU_ASSERT_FATAL(batch != NULL);
+
+	ftl_release_batch(dev, batch);
+	ftl_release_batch(dev, batch2);
+
+	for (ioch_idx = 2; ioch_idx < num_io_channels; ++ioch_idx) {
+		batch = ftl_get_next_batch(dev);
+		SPDK_CU_ASSERT_FATAL(batch != NULL);
+		ftl_release_batch(dev, batch);
+	}
+
+	for (ioch_idx = 0; ioch_idx < num_io_channels; ++ioch_idx) {
+		set_thread(ioch_idx);
+		spdk_put_io_channel(_ioch_array[ioch_idx]);
+	}
+	poll_threads();
+
+	free(_ioch_array);
+	free(ioch_array);
+	free_device(dev);
+}
+
+static void
+test_entry_address(void)
+{
+	struct spdk_ftl_dev *dev;
+	struct spdk_io_channel **ioch_array;
+	struct ftl_io_channel *ftl_ioch;
+	struct ftl_wbuf_entry **entry_array;
+	struct ftl_addr addr;
+	uint32_t num_entries, num_io_channels = 7;
+	uint32_t ioch_idx, entry_idx;
+
+	dev = setup_device(num_io_channels, num_io_channels);
+	ioch_array = calloc(num_io_channels, sizeof(*ioch_array));
+	SPDK_CU_ASSERT_FATAL(ioch_array != NULL);
+
+	num_entries = dev->conf.write_buffer_size / FTL_BLOCK_SIZE;
+	entry_array = calloc(num_entries, sizeof(*entry_array));
+	SPDK_CU_ASSERT_FATAL(entry_array != NULL);
+
+	for (ioch_idx = 0; ioch_idx < num_io_channels; ++ioch_idx) {
+		set_thread(ioch_idx);
+		ioch_array[ioch_idx] = spdk_get_io_channel(dev);
+		SPDK_CU_ASSERT_FATAL(ioch_array[ioch_idx] != NULL);
+		poll_threads();
+	}
+
+	for (ioch_idx = 0; ioch_idx < num_io_channels; ++ioch_idx) {
+		set_thread(ioch_idx);
+		ftl_ioch = ftl_io_channel_get_ctx(ioch_array[ioch_idx]);
+
+		for (entry_idx = 0; entry_idx < num_entries; ++entry_idx) {
+			entry_array[entry_idx] = ftl_acquire_wbuf_entry(ftl_ioch, 0);
+			SPDK_CU_ASSERT_FATAL(entry_array[entry_idx] != NULL);
+
+			addr = ftl_get_addr_from_entry(entry_array[entry_idx]);
+			CU_ASSERT(addr.cached == 1);
+			CU_ASSERT((addr.cache_offset >> dev->ioch_shift) == entry_idx);
+			CU_ASSERT((addr.cache_offset & ((1 << dev->ioch_shift) - 1)) == ioch_idx);
+			CU_ASSERT(entry_array[entry_idx] == ftl_get_entry_from_addr(dev, addr));
+		}
+
+		for (entry_idx = 0; entry_idx < num_entries; ++entry_idx) {
+			ftl_release_wbuf_entry(entry_array[entry_idx]);
+		}
+	}
+
+	for (ioch_idx = 0; ioch_idx < num_io_channels; ioch_idx += 2) {
+		set_thread(ioch_idx);
+		spdk_put_io_channel(ioch_array[ioch_idx]);
+		ioch_array[ioch_idx] = NULL;
+	}
+	poll_threads();
+
+	for (ioch_idx = 1; ioch_idx < num_io_channels; ioch_idx += 2) {
+		set_thread(ioch_idx);
+		ftl_ioch = ftl_io_channel_get_ctx(ioch_array[ioch_idx]);
+
+		for (entry_idx = 0; entry_idx < num_entries; ++entry_idx) {
+			entry_array[entry_idx] = ftl_acquire_wbuf_entry(ftl_ioch, 0);
+			SPDK_CU_ASSERT_FATAL(entry_array[entry_idx] != NULL);
+
+			addr = ftl_get_addr_from_entry(entry_array[entry_idx]);
+			CU_ASSERT(addr.cached == 1);
+			CU_ASSERT(entry_array[entry_idx] == ftl_get_entry_from_addr(dev, addr));
+		}
+
+		for (entry_idx = 0; entry_idx < num_entries; ++entry_idx) {
+			ftl_release_wbuf_entry(entry_array[entry_idx]);
+		}
+	}
+
+	for (ioch_idx = 1; ioch_idx < num_io_channels; ioch_idx += 2) {
+		set_thread(ioch_idx);
+		spdk_put_io_channel(ioch_array[ioch_idx]);
+	}
+	poll_threads();
+
+	free(entry_array);
+	free(ioch_array);
+	free_device(dev);
+}
+
 int
 main(int argc, char **argv)
 {
 	CU_pSuite suite;
 	unsigned int num_failures;
 
-	if (CU_initialize_registry() != CUE_SUCCESS) {
-		return CU_get_error();
-	}
+	CU_set_error_action(CUEA_ABORT);
+	CU_initialize_registry();
 
 	suite = CU_add_suite("ftl_io_suite", NULL, NULL);
-	if (!suite) {
-		CU_cleanup_registry();
-		return CU_get_error();
-	}
 
-	if (
-		CU_add_test(suite, "test_completion",
-			    test_completion) == NULL
-		|| CU_add_test(suite, "test_alloc_free",
-			       test_alloc_free) == NULL
-		|| CU_add_test(suite, "test_child_requests",
-			       test_child_requests) == NULL
-		|| CU_add_test(suite, "test_child_status",
-			       test_child_status) == NULL
-		|| CU_add_test(suite, "test_multi_generation",
-			       test_multi_generation) == NULL
 
-	) {
-		CU_cleanup_registry();
-		return CU_get_error();
-	}
+	CU_ADD_TEST(suite, test_completion);
+	CU_ADD_TEST(suite, test_alloc_free);
+	CU_ADD_TEST(suite, test_child_requests);
+	CU_ADD_TEST(suite, test_child_status);
+	CU_ADD_TEST(suite, test_multi_generation);
+	CU_ADD_TEST(suite, test_io_channel_create);
+	CU_ADD_TEST(suite, test_acquire_entry);
+	CU_ADD_TEST(suite, test_submit_batch);
+	CU_ADD_TEST(suite, test_entry_address);
 
 	CU_basic_set_mode(CU_BRM_VERBOSE);
 	CU_basic_run_tests();

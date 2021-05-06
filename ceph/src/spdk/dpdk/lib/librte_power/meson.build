@@ -3,6 +3,7 @@
 
 if not is_linux
 	build = false
+	reason = 'only supported on linux'
 endif
 sources = files('rte_power.c', 'power_acpi_cpufreq.c',
 		'power_kvm_vm.c', 'guest_channel.c',
@@ -10,3 +11,5 @@ sources = files('rte_power.c', 'power_acpi_cpufreq.c',
 		'power_pstate_cpufreq.c')
 headers = files('rte_power.h','rte_power_empty_poll.h')
 deps += ['timer']
+build = false
+reason = 'not needed by SPDK'

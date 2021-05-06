@@ -2,12 +2,12 @@
 %bcond_with doc
 
 Name: spdk
-Version: master
+Version: 20.07
 Release: 0%{?dist}
 Epoch: 0
 URL: http://spdk.io
 
-Source: https://github.com/spdk/spdk/archive/master.tar.gz
+Source: https://github.com/spdk/spdk/archive/v20.07.tar.gz
 Summary: Set of libraries and utilities for high performance user-mode storage
 
 %define package_version %{epoch}:%{version}-%{release}
@@ -15,13 +15,6 @@ Summary: Set of libraries and utilities for high performance user-mode storage
 %define install_datadir %{buildroot}/%{_datadir}/%{name}
 %define install_sbindir %{buildroot}/%{_sbindir}
 %define install_docdir %{buildroot}/%{_docdir}/%{name}
-
-# Distros that don't support python3 will use python2
-%if "%{dist}" == ".el7"
-%define use_python2 1
-%else
-%define use_python2 0
-%endif
 
 License: BSD
 
@@ -62,11 +55,7 @@ developing applications with the Storage Performance Development Kit.
 
 %package tools
 Summary: Storage Performance Development Kit tools files
-%if "%{use_python2}" == "0"
 Requires: %{name}%{?_isa} = %{package_version} python3 python3-configshell python3-pexpect
-%else
-Requires: %{name}%{?_isa} = %{package_version} python python-configshell pexpect
-%endif
 BuildArch: noarch
 
 %description tools
@@ -91,6 +80,7 @@ BuildArch: noarch
 %build
 ./configure --prefix=%{_usr} \
 	--disable-tests \
+	--disable-unit-tests \
 	--without-crypto \
 	--with-dpdk=/usr/share/dpdk/x86_64-default-linuxapp-gcc \
 	--without-fio \
@@ -121,12 +111,7 @@ find scripts -type f -regextype egrep -regex '.*(spdkcli|rpc).*[.]py' \
 find %{install_datadir}/scripts -type f -regextype egrep -regex '.*([.]py|[.]sh)' \
 	-exec sed -i -E '1s@#!/usr/bin/env (.*)@#!/usr/bin/\1@' {} +
 
-%if "%{use_python2}" == "1"
-find %{install_datadir}/scripts -type f -regextype egrep -regex '.*([.]py)' \
-	-exec sed -i -E '1s@#!/usr/bin/python3@#!/usr/bin/python2@' {} +
-%endif
-
-# synlinks to tools
+# symlinks to tools
 mkdir -p %{install_sbindir}
 ln -sf -r %{install_datadir}/scripts/rpc.py %{install_sbindir}/%{name}-rpc
 ln -sf -r %{install_datadir}/scripts/spdkcli.py %{install_sbindir}/%{name}-cli

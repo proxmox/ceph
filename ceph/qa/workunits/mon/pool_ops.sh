@@ -54,7 +54,7 @@ ceph osd pool create foooo 123
 
 ceph osd pool create foo 123 # idempotent
 
-ceph osd pool set foo size 1
+ceph osd pool set foo size 1 --yes-i-really-mean-it
 expect_config_value "foo" "min_size" 1
 ceph osd pool set foo size 4
 expect_config_value "foo" "min_size" 2

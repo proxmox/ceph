@@ -5,10 +5,7 @@ rootdir=$(readlink -f $testdir/../../..)
 source $rootdir/test/common/autotest_common.sh
 source $rootdir/test/nvmf/common.sh
 
-set -e
 nvmftestinit
-
-timing_enter identify_kernel_nvmf_tgt
 
 subsystemname=nqn.2016-06.io.spdk:testnqn
 
@@ -43,13 +40,13 @@ ln -s /sys/kernel/config/nvmet/subsystems/$subsystemname /sys/kernel/config/nvme
 
 sleep 4
 
-$rootdir/examples/nvme/identify/identify -r "\
+$SPDK_EXAMPLE_DIR/identify -r "\
 	trtype:$TEST_TRANSPORT \
 	adrfam:IPv4 \
 	traddr:$NVMF_FIRST_TARGET_IP \
 	trsvcid:$NVMF_PORT \
 	subnqn:nqn.2014-08.org.nvmexpress.discovery" -t all
-$rootdir/examples/nvme/identify/identify -r "\
+$SPDK_EXAMPLE_DIR/identify -r "\
 	trtype:$TEST_TRANSPORT \
 	adrfam:IPv4 \
 	traddr:$NVMF_FIRST_TARGET_IP \
@@ -72,4 +69,3 @@ rmmod null_blk
 rmmod nvmet
 
 nvmftestfini
-timing_exit identify_kernel_nvmf_tgt

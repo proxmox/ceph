@@ -1,5 +1,5 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;  Copyright(c) 2018, Intel Corporation All rights reserved.
+;  Copyright(c) 2018-2019, Intel Corporation All rights reserved.
 ;
 ;  Redistribution and use in source and binary forms, with or without
 ;  modification, are permitted provided that the following conditions
@@ -111,12 +111,15 @@
 ; throughout the code, one tab and two tab indentations are used. one tab is for GHASH part, two tabs is for AES part.
 ;
 
-%include "os.asm"
-%include "reg_sizes.asm"
-%include "gcm_defines.asm"
+%include "include/os.asm"
+%include "include/reg_sizes.asm"
+%include "include/clear_regs.asm"
+%include "include/gcm_defines.asm"
+%include "include/gcm_keys_avx2_avx512.asm"
+
 %include "mb_mgr_datastruct.asm"
 %include "job_aes_hmac.asm"
-%include "memcpy.asm"
+%include "include/memcpy.asm"
 
 %ifndef GCM128_MODE
 %ifndef GCM192_MODE
@@ -236,51 +239,26 @@ default rel
         ; Haskey_i_k holds XORed values of the low and high parts of the Haskey_i
         vmovdqa  %%T5, %%HK
 
-        vpshufd  %%T1, %%T5, 01001110b
-        vpxor    %%T1, %%T5
-        vmovdqu  [%%GDATA + HashKey_k], %%T1
-
         GHASH_MUL %%T5, %%HK, %%T1, %%T3, %%T4, %%T6, %%T2      ;  %%T5 = HashKey^2<<1 mod poly
         vmovdqu  [%%GDATA + HashKey_2], %%T5                    ;  [HashKey_2] = HashKey^2<<1 mod poly
-        vpshufd  %%T1, %%T5, 01001110b
-        vpxor    %%T1, %%T5
-        vmovdqu  [%%GDATA + HashKey_2_k], %%T1
 
         GHASH_MUL %%T5, %%HK, %%T1, %%T3, %%T4, %%T6, %%T2      ;  %%T5 = HashKey^3<<1 mod poly
         vmovdqu  [%%GDATA + HashKey_3], %%T5
-        vpshufd  %%T1, %%T5, 01001110b
-        vpxor    %%T1, %%T5
-        vmovdqu  [%%GDATA + HashKey_3_k], %%T1
 
         GHASH_MUL %%T5, %%HK, %%T1, %%T3, %%T4, %%T6, %%T2      ;  %%T5 = HashKey^4<<1 mod poly
         vmovdqu  [%%GDATA + HashKey_4], %%T5
-        vpshufd  %%T1, %%T5, 01001110b
-        vpxor    %%T1, %%T5
-        vmovdqu  [%%GDATA + HashKey_4_k], %%T1
 
         GHASH_MUL %%T5, %%HK, %%T1, %%T3, %%T4, %%T6, %%T2      ;  %%T5 = HashKey^5<<1 mod poly
         vmovdqu  [%%GDATA + HashKey_5], %%T5
-        vpshufd  %%T1, %%T5, 01001110b
-        vpxor    %%T1, %%T5
-        vmovdqu  [%%GDATA + HashKey_5_k], %%T1
 
         GHASH_MUL %%T5, %%HK, %%T1, %%T3, %%T4, %%T6, %%T2      ;  %%T5 = HashKey^6<<1 mod poly
         vmovdqu  [%%GDATA + HashKey_6], %%T5
-        vpshufd  %%T1, %%T5, 01001110b
-        vpxor    %%T1, %%T5
-        vmovdqu  [%%GDATA + HashKey_6_k], %%T1
 
         GHASH_MUL %%T5, %%HK, %%T1, %%T3, %%T4, %%T6, %%T2      ;  %%T5 = HashKey^7<<1 mod poly
         vmovdqu  [%%GDATA + HashKey_7], %%T5
-        vpshufd  %%T1, %%T5, 01001110b
-        vpxor    %%T1, %%T5
-        vmovdqu  [%%GDATA + HashKey_7_k], %%T1
 
         GHASH_MUL %%T5, %%HK, %%T1, %%T3, %%T4, %%T6, %%T2      ;  %%T5 = HashKey^8<<1 mod poly
         vmovdqu  [%%GDATA + HashKey_8], %%T5
-        vpshufd  %%T1, %%T5, 01001110b
-        vpxor    %%T1, %%T5
-        vmovdqu  [%%GDATA + HashKey_8_k], %%T1
 %endmacro
 
 
@@ -745,8 +723,9 @@ vmovdqu  %%T_key, [%%GDATA_KEY+16*j]
 %endif
 
                 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-                ;; Haskey_i_k holds XORed values of the low and high parts of
-                ;; the Haskey_i
+                ;; Prepare 8 counter blocks and perform rounds of AES cipher on
+                ;; them, load plain/cipher text and store cipher/plain text.
+                ;; Stitch GHASH computation in between AES rounds.
                 vpaddd   %%XMM1, %%CTR, [rel ONE]   ; INCR Y0
                 vpaddd   %%XMM2, %%CTR, [rel TWO]   ; INCR Y0
                 vpaddd   %%XMM3, %%XMM1, [rel TWO]  ; INCR Y0
@@ -1375,7 +1354,7 @@ vmovdqu  %%T_key, [%%GDATA_KEY+16*j]
         ;;      NOTE: could be replaced with %%LENGTH but at this point
         ;;      %%LENGTH is always less than 16.
         ;;      No PLAIN_CYPH_LEN argument available in this macro.
-        ENCRYPT_FINAL_PARTIAL_BLOCK reg(i), %%T1, %%T3, %%CYPH_PLAIN_OUT, %%PLAIN_CYPH_IN, LT16, %%ENC_DEC, %%DATA_OFFSET
+        ENCRYPT_FINAL_PARTIAL_BLOCK reg(i), %%T1, %%CYPH_PLAIN_OUT, %%PLAIN_CYPH_IN, LT16, %%ENC_DEC, %%DATA_OFFSET
         vpshufb  reg(i), [rel SHUF_MASK]
 
 %ifidn %%INSTANCE_TYPE, multi_call
@@ -2379,59 +2358,47 @@ vmovdqu  %%T_key, [%%GDATA_KEY+16*j]
 ;;;   r13  - Number of bytes to read
 ;;; MODIFIES:
 ;;;   KEY  - Key for encrypting the partial block
-;;;   HASH - Current hash value
 ;;; SMASHES:
-;;;   r10, r12, r15, rax
-;;;   T1, T2
+;;;   rax, T1
 ;;; Note:
-;;;   PLAIN_CYPH_LEN, %7, is passed only to determine
-;;;   if buffer is big enough to do a 16 byte read & shift.
+;;;   PLAIN_CYPH_LEN is unused at this stage. Previously:
+;;;     it was used  to determine if buffer is big enough to do
+;;;     a 16 byte read & shift.
 ;;;     'LT16' is passed here only if buffer is known to be smaller
 ;;;     than 16 bytes.
 ;;;     Any other value passed here will result in 16 byte read
 ;;;     code path.
-;;; TBD: Remove HASH from the instantiation
-%macro  ENCRYPT_FINAL_PARTIAL_BLOCK 8
+%macro  ENCRYPT_FINAL_PARTIAL_BLOCK 7
 %define %%KEY             %1
 %define %%T1              %2
-%define %%T2              %3
-%define %%CYPH_PLAIN_OUT  %4
-%define %%PLAIN_CYPH_IN   %5
-%define %%PLAIN_CYPH_LEN  %6
-%define %%ENC_DEC         %7
-%define %%DATA_OFFSET     %8
+%define %%CYPH_PLAIN_OUT  %3
+%define %%PLAIN_CYPH_IN   %4
+%define %%PLAIN_CYPH_LEN  %5
+%define %%ENC_DEC         %6
+%define %%DATA_OFFSET     %7
 
-        lea      r10, [%%PLAIN_CYPH_IN + %%DATA_OFFSET]
-
-        ;; T1            - packed output
-        ;; r10           - input data address
+        ;; %%PLAIN_CYPH_IN + %%DATA_OFFSET
+        ;;               - input data address
         ;; r13           - input data length
         ;; rax           - temp registers
         ;; out:
+        ;; T1            - packed output
         ;; k1            - valid byte mask
-        READ_SMALL_DATA_INPUT   %%T1, r10, r13, rax
+        READ_SMALL_DATA_INPUT   %%T1, %%PLAIN_CYPH_IN+%%DATA_OFFSET, r13, rax
 
         ;; At this point T1 contains the partial block data
-%ifidn  %%ENC_DEC, DEC
         ;; Plaintext XOR E(K, Yn)
-        ;; Set aside the ciphertext
-        ;; Get the appropriate mask to mask out top 16-r13 bytes of ciphertext
-        vmovdqu8 %%T2{k1}{z}, %%T1
-        vpxor    %%KEY, %%KEY, %%T1
-%else
-        ;; Plaintext XOR E(K, Yn)
-        ;; Get the appropriate mask to mask out top 16-r13 bytes of %%KEY
-        vpxor    %%KEY, %%KEY, %%T1
-%endif
-        vmovdqu8 %%KEY{k1}{z}, %%KEY
+        vpxorq          %%KEY, %%KEY, %%T1
 
         ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
         ;; Output r13 Bytes
-        vmovdqu8 [%%CYPH_PLAIN_OUT + %%DATA_OFFSET]{k1}, %%KEY
+        vmovdqu8        [%%CYPH_PLAIN_OUT + %%DATA_OFFSET]{k1}, %%KEY
 
 %ifidn  %%ENC_DEC, DEC
         ;; If decrypt, restore the ciphertext into %%KEY
-        vmovdqa %%KEY, %%T2
+        vmovdqa64       %%KEY, %%T1
+%else
+        vmovdqu8        %%KEY{k1}{z}, %%KEY
 %endif
 %endmacro                       ; ENCRYPT_FINAL_PARTIAL_BLOCK
 
@@ -2484,6 +2451,10 @@ vmovdqu  %%T_key, [%%GDATA_KEY+16*j]
 
 %macro FUNC_RESTORE 0
 
+%ifdef SAFE_DATA
+        clear_scratch_gps_asm
+        clear_scratch_zmms_asm
+%endif
 %ifidn __OUTPUT_FORMAT__, win64
         vmovdqu xmm15, [rsp + LOCAL_STORAGE + 9*16]
         vmovdqu xmm14, [rsp + LOCAL_STORAGE + 8*16]
@@ -2920,7 +2891,7 @@ vmovdqu  %%T_key, [%%GDATA_KEY+16*j]
 
         ;; xmm8  - Final encrypted counter - need to hash with partial or full block ciphertext
         ;;                            GDATA,  KEY,   T1,    T2
-        ENCRYPT_FINAL_PARTIAL_BLOCK xmm8, xmm0, xmm10, %%CYPH_PLAIN_OUT, %%PLAIN_CYPH_IN, %%PLAIN_CYPH_LEN, %%ENC_DEC, %%DATA_OFFSET
+        ENCRYPT_FINAL_PARTIAL_BLOCK xmm8, xmm0, %%CYPH_PLAIN_OUT, %%PLAIN_CYPH_IN, %%PLAIN_CYPH_LEN, %%ENC_DEC, %%DATA_OFFSET
 
         vpshufb  xmm8, [rel SHUF_MASK]
 
@@ -3043,6 +3014,13 @@ vmovdqu  %%T_key, [%%GDATA_KEY+16*j]
         vmovdqu  [r10], xmm9
 
 %%_return_T_done:
+
+%ifdef SAFE_DATA
+        ;; Clear sensitive data from context structure
+        vpxor   xmm0, xmm0
+        vmovdqu [%%GDATA_CTX + AadHash], xmm0
+        vmovdqu [%%GDATA_CTX + PBlockEncKey], xmm0
+%endif
 %endmacro ; GCM_COMPLETE
 
 
@@ -3054,6 +3032,13 @@ vmovdqu  %%T_key, [%%GDATA_KEY+16*j]
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 MKGLOBAL(FN_NAME(precomp,_),function,)
 FN_NAME(precomp,_):
+;; Parameter is passed through register
+%ifdef SAFE_PARAM
+        ;; Check key_data != NULL
+        cmp     arg1, 0
+        jz      exit_precomp
+%endif
+
         push    r12
         push    r13
         push    r14
@@ -3094,6 +3079,10 @@ FN_NAME(precomp,_):
 
         PRECOMPUTE arg1, xmm6, xmm0, xmm1, xmm2, xmm3, xmm4, xmm5
 
+%ifdef SAFE_DATA
+        clear_scratch_gps_asm
+        clear_scratch_zmms_asm
+%endif
 %ifidn __OUTPUT_FORMAT__, win64
         vmovdqu xmm6, [rsp + LOCAL_STORAGE + 0*16]
 %endif
@@ -3103,6 +3092,8 @@ FN_NAME(precomp,_):
         pop     r14
         pop     r13
         pop     r12
+
+exit_precomp:
         ret
 
 
@@ -3127,8 +3118,36 @@ FN_NAME(init,_):
 	movdqu	[rsp + 0*16], xmm6
 %endif
 
+%ifdef SAFE_PARAM
+        ;; Check key_data != NULL
+        cmp     arg1, 0
+        jz      exit_init
+
+        ;; Check context_data != NULL
+        cmp     arg2, 0
+        jz      exit_init
+
+        ;; Check IV != NULL
+        cmp     arg3, 0
+        jz      exit_init
+
+        ;; Check if aad_len == 0
+        cmp     arg5, 0
+        jz      skip_aad_check_init
+
+        ;; Check aad != NULL (aad_len != 0)
+        cmp     arg4, 0
+        jz      exit_init
+
+skip_aad_check_init:
+%endif
         GCM_INIT arg1, arg2, arg3, arg4, arg5, r10, r11, r12
 
+%ifdef SAFE_DATA
+        clear_scratch_gps_asm
+        clear_scratch_zmms_asm
+%endif
+exit_init:
 %ifidn __OUTPUT_FORMAT__, win64
 	movdqu	xmm6 , [rsp + 0*16]
         mov     rsp, r14
@@ -3154,8 +3173,32 @@ FN_NAME(enc,_update_):
 
         FUNC_SAVE
 
+%ifdef SAFE_PARAM
+        ;; Check key_data != NULL
+        cmp     arg1, 0
+        jz      exit_update_enc
+
+        ;; Check context_data != NULL
+        cmp     arg2, 0
+        jz      exit_update_enc
+
+        ;; Check if plaintext_len == 0
+        cmp     arg5, 0
+        jz      skip_in_out_check_update_enc
+
+        ;; Check out != NULL (plaintext_len != 0)
+        cmp     arg3, 0
+        jz      exit_update_enc
+
+        ;; Check in != NULL (plaintext_len != 0)
+        cmp     arg4, 0
+        jz      exit_update_enc
+
+skip_in_out_check_update_enc:
+%endif
         GCM_ENC_DEC arg1, arg2, arg3, arg4, arg5, ENC, multi_call
 
+exit_update_enc:
         FUNC_RESTORE
 
         ret
@@ -3175,8 +3218,33 @@ FN_NAME(dec,_update_):
 
         FUNC_SAVE
 
+%ifdef SAFE_PARAM
+        ;; Check key_data != NULL
+        cmp     arg1, 0
+        jz      exit_update_dec
+
+        ;; Check context_data != NULL
+        cmp     arg2, 0
+        jz      exit_update_dec
+
+        ;; Check if plaintext_len == 0
+        cmp     arg5, 0
+        jz      skip_in_out_check_update_dec
+
+        ;; Check out != NULL (plaintext_len != 0)
+        cmp     arg3, 0
+        jz      exit_update_dec
+
+        ;; Check in != NULL (plaintext_len != 0)
+        cmp     arg4, 0
+        jz      exit_update_dec
+
+skip_in_out_check_update_dec:
+%endif
+
         GCM_ENC_DEC arg1, arg2, arg3, arg4, arg5, DEC, multi_call
 
+exit_update_dec:
         FUNC_RESTORE
         ret
 
@@ -3191,6 +3259,28 @@ FN_NAME(dec,_update_):
 MKGLOBAL(FN_NAME(enc,_finalize_),function,)
 FN_NAME(enc,_finalize_):
 
+;; All parameters are passed through registers
+%ifdef SAFE_PARAM
+        ;; Check key_data != NULL
+        cmp     arg1, 0
+        jz      exit_enc_fin
+
+        ;; Check context_data != NULL
+        cmp     arg2, 0
+        jz      exit_enc_fin
+
+        ;; Check auth_tag != NULL
+        cmp     arg3, 0
+        jz      exit_enc_fin
+
+        ;; Check auth_tag_len == 0 or > 16
+        cmp     arg4, 0
+        jz      exit_enc_fin
+
+        cmp     arg4, 16
+        ja      exit_enc_fin
+%endif
+
         push r12
 
 %ifidn __OUTPUT_FORMAT__, win64
@@ -3204,6 +3294,10 @@ FN_NAME(enc,_finalize_):
 %endif
         GCM_COMPLETE    arg1, arg2, arg3, arg4, ENC, multi_call
 
+%ifdef SAFE_DATA
+        clear_scratch_gps_asm
+        clear_scratch_zmms_asm
+%endif
 %ifidn __OUTPUT_FORMAT__, win64
         vmovdqu xmm15, [rsp + 4*16]
         vmovdqu xmm14, [rsp + 3*16]
@@ -3214,7 +3308,9 @@ FN_NAME(enc,_finalize_):
 %endif
 
         pop r12
-ret
+
+exit_enc_fin:
+	ret
 
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -3227,6 +3323,28 @@ ret
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 MKGLOBAL(FN_NAME(dec,_finalize_),function,)
 FN_NAME(dec,_finalize_):
+
+;; All parameters are passed through registers
+%ifdef SAFE_PARAM
+        ;; Check key_data != NULL
+        cmp     arg1, 0
+        jz      exit_dec_fin
+
+        ;; Check context_data != NULL
+        cmp     arg2, 0
+        jz      exit_dec_fin
+
+        ;; Check auth_tag != NULL
+        cmp     arg3, 0
+        jz      exit_dec_fin
+
+        ;; Check auth_tag_len == 0 or > 16
+        cmp     arg4, 0
+        jz      exit_dec_fin
+
+        cmp     arg4, 16
+        ja      exit_dec_fin
+%endif
 
         push r12
 
@@ -3241,6 +3359,10 @@ FN_NAME(dec,_finalize_):
 %endif
         GCM_COMPLETE    arg1, arg2, arg3, arg4, DEC, multi_call
 
+%ifdef SAFE_DATA
+        clear_scratch_gps_asm
+        clear_scratch_zmms_asm
+%endif
 %ifidn __OUTPUT_FORMAT__, win64
         vmovdqu xmm15, [rsp + 4*16]
         vmovdqu xmm14, [rsp + 3*16]
@@ -3251,6 +3373,8 @@ FN_NAME(dec,_finalize_):
 %endif
 
         pop r12
+exit_dec_fin:
+
         ret
 
 
@@ -3272,12 +3396,60 @@ FN_NAME(enc,_):
 
         FUNC_SAVE
 
+%ifdef SAFE_PARAM
+        ;; Check key_data != NULL
+        cmp     arg1, 0
+        jz      exit_enc
+
+        ;; Check context_data != NULL
+        cmp     arg2, 0
+        jz      exit_enc
+
+        ;; Check IV != NULL
+        cmp     arg6, 0
+        jz      exit_enc
+
+        ;; Check auth_tag != NULL
+        cmp     arg9, 0
+        jz      exit_enc
+
+        ;; Check auth_tag_len == 0 or > 16
+        cmp     arg10, 0
+        jz      exit_enc
+
+        cmp     arg10, 16
+        ja      exit_enc
+
+        ;; Check if plaintext_len == 0
+        cmp     arg5, 0
+        jz      skip_in_out_check_enc
+
+        ;; Check out != NULL (plaintext_len != 0)
+        cmp     arg3, 0
+        jz      exit_enc
+
+        ;; Check in != NULL (plaintext_len != 0)
+        cmp     arg4, 0
+        jz      exit_enc
+
+skip_in_out_check_enc:
+        ;; Check if aad_len == 0
+        cmp     arg8, 0
+        jz      skip_aad_check_enc
+
+        ;; Check aad != NULL (aad_len != 0)
+        cmp     arg7, 0
+        jz      exit_enc
+
+skip_aad_check_enc:
+%endif
         GCM_INIT arg1, arg2, arg6, arg7, arg8, r10, r11, r12
 
         GCM_ENC_DEC  arg1, arg2, arg3, arg4, arg5, ENC, single_call
 
         GCM_COMPLETE arg1, arg2, arg9, arg10, ENC, single_call
 
+exit_enc:
         FUNC_RESTORE
 
         ret
@@ -3300,12 +3472,61 @@ FN_NAME(dec,_):
 
         FUNC_SAVE
 
+%ifdef SAFE_PARAM
+        ;; Check key_data != NULL
+        cmp     arg1, 0
+        jz      exit_dec
+
+        ;; Check context_data != NULL
+        cmp     arg2, 0
+        jz      exit_dec
+
+        ;; Check IV != NULL
+        cmp     arg6, 0
+        jz      exit_dec
+
+        ;; Check auth_tag != NULL
+        cmp     arg9, 0
+        jz      exit_dec
+
+        ;; Check auth_tag_len == 0 or > 16
+        cmp     arg10, 0
+        jz      exit_dec
+
+        cmp     arg10, 16
+        ja      exit_dec
+
+        ;; Check if plaintext_len == 0
+        cmp     arg5, 0
+        jz      skip_in_out_check_dec
+
+        ;; Check out != NULL (plaintext_len != 0)
+        cmp     arg3, 0
+        jz      exit_dec
+
+        ;; Check in != NULL (plaintext_len != 0)
+        cmp     arg4, 0
+        jz      exit_dec
+
+skip_in_out_check_dec:
+        ;; Check if aad_len == 0
+        cmp     arg8, 0
+        jz      skip_aad_check_dec
+
+        ;; Check aad != NULL (aad_len != 0)
+        cmp     arg7, 0
+        jz      exit_dec
+
+skip_aad_check_dec:
+%endif
+
         GCM_INIT arg1, arg2, arg6, arg7, arg8, r10, r11, r12
 
         GCM_ENC_DEC  arg1, arg2, arg3, arg4, arg5, DEC, single_call
 
         GCM_COMPLETE arg1, arg2, arg9, arg10, DEC, single_call
 
+exit_dec:
         FUNC_RESTORE
 
         ret

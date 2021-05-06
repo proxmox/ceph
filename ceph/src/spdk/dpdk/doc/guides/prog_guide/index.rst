@@ -12,6 +12,7 @@ Programmer's Guide
     overview
     env_abstraction_layer
     service_cores
+    trace_lib
     rcu_lib
     ring_lib
     stack_lib
@@ -55,15 +56,20 @@ Programmer's Guide
     packet_framework
     vhost_lib
     metrics_lib
+    telemetry_lib
     bpf_lib
     ipsec_lib
+    graph_lib
     source_org
     dev_kit_build_system
     dev_kit_root_make_help
+    build-sdk-meson
+    meson_ut
     extend_dpdk
     build_app
     ext_app_lib_make_help
     perf_opt_guidelines
     writing_efficient_code
+    lto
     profile_app
     glossary

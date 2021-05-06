@@ -6,19 +6,19 @@ import unittest
 
 from mgr_module import ERROR_MSG_EMPTY_INPUT_FILE
 
-from . import KVStoreMockMixin, ControllerTestCase
 from .. import settings
 from ..controllers.settings import Settings as SettingsController
 from ..settings import Settings, handle_option_command
+from . import ControllerTestCase, KVStoreMockMixin  # pylint: disable=no-name-in-module
 
 
 class SettingsTest(unittest.TestCase, KVStoreMockMixin):
     @classmethod
     def setUpClass(cls):
+        setattr(settings.Options, 'GRAFANA_API_HOST', settings.Setting('localhost', [str]))
+        setattr(settings.Options, 'GRAFANA_API_PORT', settings.Setting(3000, [int]))
+        setattr(settings.Options, 'GRAFANA_ENABLED', settings.Setting(False, [bool]))
         # pylint: disable=protected-access
-        settings.Options.GRAFANA_API_HOST = ('localhost', str)
-        settings.Options.GRAFANA_API_PORT = (3000, int)
-        settings.Options.GRAFANA_ENABLED = (False, bool)
         settings._OPTIONS_COMMAND_MAP = settings._options_command_map()
 
     def setUp(self):
@@ -135,7 +135,18 @@ class SettingsControllerTest(ControllerTestCase, KVStoreMockMixin):
         SettingsController._cp_config['tools.authenticate.on'] = False
         cls.setup_controllers([SettingsController])
 
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        setattr(settings.Options, 'GRAFANA_API_HOST', settings.Setting('localhost', [str]))
+        setattr(settings.Options, 'GRAFANA_ENABLED', settings.Setting(False, [bool]))
+
+    @classmethod
+    def tearDownClass(cls):
+        super().tearDownClass()
+
     def setUp(self):
+        super().setUp()
         self.mock_kv_store()
 
     def test_settings_list(self):
@@ -168,7 +179,7 @@ class SettingsControllerTest(ControllerTestCase, KVStoreMockMixin):
         })
 
     def test_set(self):
-        self._put('/api/settings/GRAFANA_API_USERNAME', {'value': 'foo'},)
+        self._put('/api/settings/GRAFANA_API_USERNAME', {'value': 'foo'})
         self.assertStatus(200)
 
         self._get('/api/settings/GRAFANA_API_USERNAME')

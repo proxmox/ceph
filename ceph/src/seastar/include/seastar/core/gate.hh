@@ -46,23 +46,33 @@ public:
 /// requests have completed.  The \c gate class provides a solution.
 class gate {
     size_t _count = 0;
-    compat::optional<promise<>> _stopped;
+    std::optional<promise<>> _stopped;
 public:
+    /// Tries to register an in-progress request.
+    ///
+    /// If the gate is not closed, the request is registered and the function returns `true`,
+    /// Otherwise the function just returns `false` and has no other effect.
+    bool try_enter() noexcept {
+        bool opened = !_stopped;
+        if (opened) {
+            ++_count;
+        }
+        return opened;
+    }
     /// Registers an in-progress request.
     ///
     /// If the gate is not closed, the request is registered.  Otherwise,
     /// a \ref gate_closed_exception is thrown.
     void enter() {
-        if (_stopped) {
+        if (!try_enter()) {
             throw gate_closed_exception();
         }
-        ++_count;
     }
     /// Unregisters an in-progress request.
     ///
     /// If the gate is closed, and there are no more in-progress requests,
-    /// the \ref closed() promise will be fulfilled.
-    void leave() {
+    /// the `_stopped` promise will be fulfilled.
+    void leave() noexcept {
         --_count;
         if (!_count && _stopped) {
             _stopped->set_value();
@@ -87,9 +97,9 @@ public:
     /// Future calls to \ref enter() will fail with an exception, and when
     /// all current requests call \ref leave(), the returned future will be
     /// made ready.
-    future<> close() {
+    future<> close() noexcept {
         assert(!_stopped && "seastar::gate::close() cannot be called more than once");
-        _stopped = compat::make_optional(promise<>());
+        _stopped = std::make_optional(promise<>());
         if (!_count) {
             _stopped->set_value();
         }
@@ -97,15 +107,26 @@ public:
     }
 
     /// Returns a current number of registered in-progress requests.
-    size_t get_count() const {
+    size_t get_count() const noexcept {
         return _count;
     }
 
     /// Returns whether the gate is closed.
-    bool is_closed() const {
+    bool is_closed() const noexcept {
         return bool(_stopped);
     }
 };
+
+namespace internal {
+
+template <typename Func>
+inline
+auto
+invoke_func_with_gate(gate& g, Func&& func) noexcept {
+    return futurize_invoke(std::forward<Func>(func)).finally([&g] { g.leave(); });
+}
+
+} // namespace intgernal
 
 /// Executes the function \c func making sure the gate \c g is properly entered
 /// and later on, properly left.
@@ -120,7 +141,29 @@ inline
 auto
 with_gate(gate& g, Func&& func) {
     g.enter();
-    return futurize_apply(std::forward<Func>(func)).finally([&g] { g.leave(); });
+    return internal::invoke_func_with_gate(g, std::forward<Func>(func));
+}
+
+/// Executes the function \c func if the gate \c g can be entered
+/// and later on, properly left.
+///
+/// \param func function to be executed
+/// \param g the gate. Caller must make sure that it outlives this function.
+///
+/// If the gate is already closed, an exception future holding
+/// \ref gate_closed_exception is returned, otherwise
+/// \returns whatever \c func returns.
+///
+/// \relates gate
+template <typename Func>
+inline
+auto
+try_with_gate(gate& g, Func&& func) noexcept {
+    if (!g.try_enter()) {
+        using futurator = futurize<std::result_of_t<Func()>>;
+        return futurator::make_exception_future(gate_closed_exception());
+    }
+    return internal::invoke_func_with_gate(g, std::forward<Func>(func));
 }
 /// @}
 

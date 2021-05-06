@@ -12,10 +12,10 @@
  * @brief OCF cache API
  */
 
-#include "ocf_types.h"
 #include "ocf_volume.h"
 #include "ocf_ctx.h"
 #include "ocf_def.h"
+#include "ocf_stats.h"
 
 /**
  * @brief Cache info: configuration, status
@@ -32,10 +32,13 @@ struct ocf_cache_info {
 
 	/* Statistics of inactive cores */
 	struct {
-		uint32_t occupancy;
+		struct ocf_stat occupancy;
 			/*!< Cache occupancy (in cache lines) */
 
-		uint32_t dirty;
+		struct ocf_stat clean;
+			/*!< Clean blocks within cache (in cache lines) */
+
+		struct ocf_stat dirty;
 			/*!< Dirty blocks within cache (in cache lines) */
 	} inactive;
 
@@ -73,7 +76,10 @@ struct ocf_cache_info {
 		/*!< Eviction policy selected */
 
 	ocf_cleaning_t cleaning_policy;
-		/*!< Cleaning policy selected (alru/nop) */
+		/*!< Cleaning policy selected */
+
+	ocf_promotion_t promotion_policy;
+		/*!< Promotion policy selected */
 
 	ocf_cache_line_size_t cache_line_size;
 		/*!< Cache line size in KiB */
@@ -99,27 +105,6 @@ struct ocf_cache_info {
  * @retval Volume, NULL if dettached.
  */
 ocf_volume_t ocf_cache_get_volume(ocf_cache_t cache);
-
-/**
- * @brief Get ID of given cache object
- *
- * @param[in] cache Cache object
- *
- * @retval Cache ID
- */
-ocf_cache_id_t ocf_cache_get_id(ocf_cache_t cache);
-
-/**
- * @brief Set name of given cache object
- *
- * @param[in] cache Cache object
- * @param[in] src Source of Cache name
- * @param[in] src_size Size of src
- *
- * @retval 0 Success
- * @retval Non-zero Fail
- */
-int ocf_cache_set_name(ocf_cache_t cache, const char *src, size_t src_size);
 
 /**
  * @brief Get name of given cache object
@@ -159,27 +144,6 @@ bool ocf_cache_is_device_attached(ocf_cache_t cache);
  * @retval 0 Caching device is being stopped
  */
 bool ocf_cache_is_running(ocf_cache_t cache);
-
-/**
- * @brief Wait for all IO to finish
- *
- * @param[in] cache Cache object
- */
-void ocf_cache_wait_for_io_finish(ocf_cache_t cache);
-
-/**
- * @brief Check if cache has any unfunished requests
- *
- * @param[in] cache Cache object
- */
-bool ocf_cache_has_pending_requests(ocf_cache_t cache);
-
-/**
- * @brief Check if cleaning triggered by eviction runs on the cache
- *
- * @param[in] cache Cache object
- */
-bool ocf_cache_has_pending_cleaning(ocf_cache_t cache);
 
 /**
  * @brief Get cache mode of given cache object

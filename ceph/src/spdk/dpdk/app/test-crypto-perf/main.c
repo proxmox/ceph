@@ -38,7 +38,8 @@ const char *cperf_op_type_strs[] = {
 	[CPERF_AUTH_ONLY] = "auth-only",
 	[CPERF_CIPHER_THEN_AUTH] = "cipher-then-auth",
 	[CPERF_AUTH_THEN_CIPHER] = "auth-then-cipher",
-	[CPERF_AEAD] = "aead"
+	[CPERF_AEAD] = "aead",
+	[CPERF_PDCP] = "pdcp"
 };
 
 const struct cperf_test cperf_testmap[] = {
@@ -200,7 +201,9 @@ cperf_initialize_cryptodev(struct cperf_options *opts, uint8_t *enabled_cdevs)
 		}
 		struct rte_cryptodev_config conf = {
 			.nb_queue_pairs = opts->nb_qps,
-			.socket_id = socket_id
+			.socket_id = socket_id,
+			.ff_disable = RTE_CRYPTODEV_FF_SECURITY |
+				      RTE_CRYPTODEV_FF_ASYMMETRIC_CRYPTO,
 		};
 
 		struct rte_cryptodev_qp_conf qp_conf = {
@@ -579,7 +582,8 @@ main(int argc, char **argv)
 		goto err;
 	}
 
-	if (!opts.silent)
+	if (!opts.silent && opts.test != CPERF_TEST_TYPE_THROUGHPUT &&
+			opts.test != CPERF_TEST_TYPE_LATENCY)
 		show_test_vector(t_vec);
 
 	total_nb_qps = nb_cryptodevs * opts.nb_qps;
@@ -664,9 +668,12 @@ main(int argc, char **argv)
 
 			if (i == total_nb_qps)
 				break;
-			rte_eal_wait_lcore(lcore_id);
+			ret |= rte_eal_wait_lcore(lcore_id);
 			i++;
 		}
+
+		if (ret != EXIT_SUCCESS)
+			goto err;
 	} else {
 
 		/* Get next size from range or list */
@@ -691,9 +698,12 @@ main(int argc, char **argv)
 
 				if (i == total_nb_qps)
 					break;
-				rte_eal_wait_lcore(lcore_id);
+				ret |= rte_eal_wait_lcore(lcore_id);
 				i++;
 			}
+
+			if (ret != EXIT_SUCCESS)
+				goto err;
 
 			/* Get next size from range or list */
 			if (opts.inc_buffer_size != 0)

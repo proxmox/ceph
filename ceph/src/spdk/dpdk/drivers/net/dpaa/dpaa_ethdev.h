@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  *
  *   Copyright (c) 2014-2016 Freescale Semiconductor, Inc. All rights reserved.
- *   Copyright 2017 NXP
+ *   Copyright 2017-2019 NXP
  *
  */
 #ifndef __DPAA_ETHDEV_H__
@@ -15,15 +15,12 @@
 #include <fsl_usd.h>
 #include <fsl_qman.h>
 #include <fsl_bman.h>
-#include <of.h>
+#include <dpaa_of.h>
 #include <netcfg.h>
 
+#define MAX_DPAA_CORES			4
 #define DPAA_MBUF_HW_ANNOTATION		64
 #define DPAA_FD_PTA_SIZE		64
-
-#if (DPAA_MBUF_HW_ANNOTATION + DPAA_FD_PTA_SIZE) > RTE_PKTMBUF_HEADROOM
-#error "Annotation requirement is more than RTE_PKTMBUF_HEADROOM"
-#endif
 
 /* mbuf->seqn will be used to store event entry index for
  * driver specific usage. For parallel mode queues, invalid
@@ -45,6 +42,7 @@
 
 /* RX queue tail drop threshold (CGR Based) in frame count */
 #define CGR_RX_PERFQ_THRESH 256
+#define CGR_TX_CGR_THRESH 512
 
 /*max mac filter for memac(8) including primary mac addr*/
 #define DPAA_MAX_MAC_FILTER (MEMAC_NUM_OF_PADDRS + 1)
@@ -79,14 +77,11 @@
 #define DPAA_DEBUG_FQ_TX_ERROR   1
 
 #define DPAA_RSS_OFFLOAD_ALL ( \
-	ETH_RSS_FRAG_IPV4 | \
-	ETH_RSS_NONFRAG_IPV4_TCP | \
-	ETH_RSS_NONFRAG_IPV4_UDP | \
-	ETH_RSS_NONFRAG_IPV4_SCTP | \
-	ETH_RSS_FRAG_IPV6 | \
-	ETH_RSS_NONFRAG_IPV6_TCP | \
-	ETH_RSS_NONFRAG_IPV6_UDP | \
-	ETH_RSS_NONFRAG_IPV6_SCTP)
+	ETH_RSS_L2_PAYLOAD | \
+	ETH_RSS_IP | \
+	ETH_RSS_UDP | \
+	ETH_RSS_TCP | \
+	ETH_RSS_SCTP)
 
 #define DPAA_TX_CKSUM_OFFLOAD_MASK (             \
 		PKT_TX_IP_CKSUM |                \
@@ -165,12 +160,14 @@ struct dpaa_if_stats {
 	uint64_t tund;		/**<Tx Undersized */
 };
 
+__rte_internal
 int
 dpaa_eth_eventq_attach(const struct rte_eth_dev *dev,
 		int eth_rx_queue_id,
 		u16 ch_id,
 		const struct rte_event_eth_rx_adapter_queue_conf *queue_conf);
 
+__rte_internal
 int
 dpaa_eth_eventq_detach(const struct rte_eth_dev *dev,
 			   int eth_rx_queue_id);
@@ -187,5 +184,27 @@ dpaa_rx_cb_atomic(void *event,
 		  struct qman_fq *fq,
 		  const struct qm_dqrr_entry *dqrr,
 		  void **bufs);
+
+/* PMD related logs */
+extern int dpaa_logtype_pmd;
+
+#define DPAA_PMD_LOG(level, fmt, args...) \
+	rte_log(RTE_LOG_ ## level, dpaa_logtype_pmd, "%s(): " fmt "\n", \
+		__func__, ##args)
+
+#define PMD_INIT_FUNC_TRACE() DPAA_PMD_LOG(DEBUG, " >>")
+
+#define DPAA_PMD_DEBUG(fmt, args...) \
+	DPAA_PMD_LOG(DEBUG, fmt, ## args)
+#define DPAA_PMD_ERR(fmt, args...) \
+	DPAA_PMD_LOG(ERR, fmt, ## args)
+#define DPAA_PMD_INFO(fmt, args...) \
+	DPAA_PMD_LOG(INFO, fmt, ## args)
+#define DPAA_PMD_WARN(fmt, args...) \
+	DPAA_PMD_LOG(WARNING, fmt, ## args)
+
+/* DP Logs, toggled out at compile time if level lower than current level */
+#define DPAA_DP_LOG(level, fmt, args...) \
+	RTE_LOG_DP(level, PMD, fmt, ## args)
 
 #endif

@@ -1,6 +1,7 @@
 // -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
 // vim: ts=8 sw=2 smarttab
 
+#include <boost/bind/bind.hpp>
 #include "CacheClient.h"
 #include "common/Cond.h"
 #include "common/version.h"
@@ -59,6 +60,7 @@ namespace immutable_obj_cache {
         thd->join();
         delete thd;
       }
+      delete m_worker_io_service_work;
       delete m_worker;
     }
     return 0;
@@ -111,12 +113,13 @@ namespace immutable_obj_cache {
   }
 
   void CacheClient::lookup_object(std::string pool_nspace, uint64_t pool_id,
-                                  uint64_t snap_id, std::string oid,
+                                  uint64_t snap_id, uint64_t object_size,
+                                  std::string oid,
                                   CacheGenContextURef&& on_finish) {
     ldout(m_cct, 20) << dendl;
     ObjectCacheRequest* req = new ObjectCacheReadData(RBDSC_READ,
-                                    ++m_sequence_id, 0, 0,
-                                    pool_id, snap_id, oid, pool_nspace);
+                                    ++m_sequence_id, 0, 0, pool_id,
+                                    snap_id, object_size, oid, pool_nspace);
     req->process_msg = std::move(on_finish);
     req->encode();
 

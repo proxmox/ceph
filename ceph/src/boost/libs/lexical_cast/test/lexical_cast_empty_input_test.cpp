@@ -2,7 +2,7 @@
 //
 //  See http://www.boost.org for most recent version, including documentation.
 //
-//  Copyright Antony Polukhin, 2011-2019.
+//  Copyright Antony Polukhin, 2011-2020.
 //
 //  Distributed under the Boost
 //  Software License, Version 1.0. (See accompanying file
@@ -126,7 +126,7 @@ inline std::ostream & operator<<(std::ostream & out, const std::vector<long> & v
 {
     std::ostream_iterator<long> it(out);
     std::copy(v.begin(), v.end(), it);
-    assert(out);
+    BOOST_CHECK(out);
     return out;
 }
 }

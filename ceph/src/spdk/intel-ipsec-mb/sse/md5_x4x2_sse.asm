@@ -36,7 +36,7 @@
 ;;
 ;; clobbers xmm0-15
 
-%include "os.asm"
+%include "include/os.asm"
 %include "mb_mgr_datastruct.asm"
 
 section .data align=64
@@ -766,6 +766,16 @@ lastblock:
         mov     [arg1 +_data_ptr_md5  + 5*PTR_SZ], inp5
         mov     [arg1 +_data_ptr_md5  + 6*PTR_SZ], inp6
         mov     [arg1 +_data_ptr_md5  + 7*PTR_SZ], inp7
+
+        ;; Clear stack frame (72*16 bytes)
+%ifdef SAFE_DATA
+        pxor    xmm0, xmm0
+%assign i 0
+%rep (2*2*16+8)
+        movdqa	[rsp + i*16], xmm0
+%assign i (i+1)
+%endrep
+%endif
 
         ;;;;;;;;;;;;;;;;
         ;; Postamble

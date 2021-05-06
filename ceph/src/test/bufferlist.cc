@@ -25,6 +25,7 @@
 
 #include "include/buffer.h"
 #include "include/buffer_raw.h"
+#include "include/compat.h"
 #include "include/utime.h"
 #include "include/coredumpctl.h"
 #include "include/encoding.h"
@@ -534,7 +535,7 @@ TEST(BufferPtr, copy_out_bench) {
     }
     utime_t end = ceph_clock_now();
     cout << count << " fills of buffer len " << buflen
-	 << " with " << s << " byte copy_out in"
+	 << " with " << s << " byte copy_out in "
 	 << (end - start) << std::endl;
   }
 }
@@ -794,7 +795,7 @@ TEST(BufferListIterator, end) {
 static void bench_bufferlistiter_deref(const size_t step,
 				       const size_t bufsize,
 				       const size_t bufnum) {
-  const std::string buf('a', bufsize);
+  const std::string buf(bufsize, 'a');
   ceph::bufferlist bl;
 
   for (size_t i = 0; i < bufnum; i++) {
@@ -1391,6 +1392,26 @@ TEST(BufferList, append_bench) {
   }
 }
 
+TEST(BufferList, operator_assign_rvalue) {
+  bufferlist from;
+  {
+    bufferptr ptr(2);
+    from.append(ptr);
+  }
+  bufferlist to;
+  {
+    bufferptr ptr(4);
+    to.append(ptr);
+  }
+  EXPECT_EQ((unsigned)4, to.length());
+  EXPECT_EQ((unsigned)1, to.get_num_buffers());
+  to = std::move(from);
+  EXPECT_EQ((unsigned)2, to.length());
+  EXPECT_EQ((unsigned)1, to.get_num_buffers());
+  EXPECT_EQ((unsigned)0, from.get_num_buffers());
+  EXPECT_EQ((unsigned)0, from.length());
+}
+
 TEST(BufferList, operator_equal) {
   //
   // list& operator= (const list& other)
@@ -1412,7 +1433,8 @@ TEST(BufferList, operator_equal) {
   //
   // list& operator= (list&& other)
   //
-  bufferlist move = std::move(bl);
+  bufferlist move;
+  move = std::move(bl);
   {
     std::string dest;
     move.begin(1).copy(1, dest);
@@ -1585,29 +1607,84 @@ TEST(BufferList, is_n_page_sized) {
 
 TEST(BufferList, page_aligned_appender) {
   bufferlist bl;
-  auto a = bl.get_page_aligned_appender(5);
-  a.append("asdf", 4);
-  a.flush();
-  cout << bl << std::endl;
-  ASSERT_EQ(1u, bl.get_num_buffers());
-  a.append("asdf", 4);
-  for (unsigned n = 0; n < 3 * CEPH_PAGE_SIZE; ++n) {
-    a.append("x", 1);
+  {
+    auto a = bl.get_page_aligned_appender(5);
+    a.append("asdf", 4);
+    cout << bl << std::endl;
+    ASSERT_EQ(1u, bl.get_num_buffers());
+    ASSERT_TRUE(bl.contents_equal("asdf", 4));
+    a.append("asdf", 4);
+    for (unsigned n = 0; n < 3 * CEPH_PAGE_SIZE; ++n) {
+      a.append("x", 1);
+    }
+    cout << bl << std::endl;
+    ASSERT_EQ(1u, bl.get_num_buffers());
+    // verify the beginning
+    {
+      bufferlist t;
+      t.substr_of(bl, 0, 10);
+      ASSERT_TRUE(t.contents_equal("asdfasdfxx", 10));
+    }
+    for (unsigned n = 0; n < 3 * CEPH_PAGE_SIZE; ++n) {
+      a.append("y", 1);
+    }
+    cout << bl << std::endl;
+    ASSERT_EQ(2u, bl.get_num_buffers());
+
+    a.append_zero(42);
+    // ensure append_zero didn't introduce a fragmentation
+    ASSERT_EQ(2u, bl.get_num_buffers());
+    // verify the end is actually zeroed
+    {
+      bufferlist t;
+      t.substr_of(bl, bl.length() - 42, 42);
+      ASSERT_TRUE(t.is_zero());
+    }
+
+    // let's check whether appending a bufferlist directly to `bl`
+    // doesn't fragment further C string appends via appender.
+    {
+      const auto& initial_back = bl.back();
+      {
+        bufferlist src;
+        src.append("abc", 3);
+        bl.claim_append(src);
+        // surely the extra `ptr_node` taken from `src` must get
+        // reflected in the `bl` instance
+        ASSERT_EQ(3u, bl.get_num_buffers());
+      }
+
+      // moreover, the next C string-taking `append()` had to
+      // create anoter `ptr_node` instance but...
+      a.append("xyz", 3);
+      ASSERT_EQ(4u, bl.get_num_buffers());
+
+      // ... it should point to the same `buffer::raw` instance
+      // (to the same same block of memory).
+      ASSERT_EQ(bl.back().raw_c_str(), initial_back.raw_c_str());
+    }
+
+    // check whether it'll take the first byte only and whether
+    // the auto-flushing works.
+    for (unsigned n = 0; n < 10 * CEPH_PAGE_SIZE - 3; ++n) {
+      a.append("zasdf", 1);
+    }
   }
-  a.flush();
-  cout << bl << std::endl;
-  ASSERT_EQ(1u, bl.get_num_buffers());
-  for (unsigned n = 0; n < 3 * CEPH_PAGE_SIZE; ++n) {
-    a.append("y", 1);
+
+  {
+    cout << bl << std::endl;
+    ASSERT_EQ(6u, bl.get_num_buffers());
   }
-  a.flush();
-  cout << bl << std::endl;
-  ASSERT_EQ(2u, bl.get_num_buffers());
-  for (unsigned n = 0; n < 10 * CEPH_PAGE_SIZE; ++n) {
-    a.append("asdfasdfasdf", 1);
+
+  // Verify that `page_aligned_appender` does respect the carrying
+  // `_carriage` over multiple allocations. Although `append_zero()`
+  // is used here, this affects other members of the append family.
+  // This part would be crucial for e.g. `encode()`.
+  {
+    bl.append_zero(42);
+    cout << bl << std::endl;
+    ASSERT_EQ(6u, bl.get_num_buffers());
   }
-  a.flush();
-  cout << bl << std::endl;
 }
 
 TEST(BufferList, rebuild_aligned_size_and_memory) {
@@ -1868,26 +1945,6 @@ TEST(BufferList, rebuild_page_aligned) {
   }
 }
 
-TEST(BufferList, claim) {
-  bufferlist from;
-  {
-    bufferptr ptr(2);
-    from.append(ptr);
-  }
-  bufferlist to;
-  {
-    bufferptr ptr(4);
-    to.append(ptr);
-  }
-  EXPECT_EQ((unsigned)4, to.length());
-  EXPECT_EQ((unsigned)1, to.get_num_buffers());
-  to.claim(from);
-  EXPECT_EQ((unsigned)2, to.length());
-  EXPECT_EQ((unsigned)1, to.get_num_buffers());
-  EXPECT_EQ((unsigned)0, from.get_num_buffers());
-  EXPECT_EQ((unsigned)0, from.length());
-}
-
 TEST(BufferList, claim_append) {
   bufferlist from;
   {
@@ -1908,27 +1965,6 @@ TEST(BufferList, claim_append) {
   EXPECT_EQ((unsigned)2, to.get_num_buffers());
   EXPECT_EQ((unsigned)0, from.get_num_buffers());
   EXPECT_EQ((unsigned)0, from.length());
-}
-
-TEST(BufferList, claim_append_piecewise) {
-  bufferlist bl, t, dst;
-  auto a = bl.get_page_aligned_appender(4);
-  for (uint32_t i = 0; i < (CEPH_PAGE_SIZE + CEPH_PAGE_SIZE - 1333); i++)
-    a.append("x", 1);
-  a.flush();
-  const char *p = bl.c_str();
-  t.claim_append(bl);
-
-  for (uint32_t i = 0; i < (CEPH_PAGE_SIZE + 1333); i++)
-    a.append("x", 1);
-  a.flush();
-  t.claim_append(bl);
-
-  EXPECT_FALSE(t.is_aligned_size_and_memory(CEPH_PAGE_SIZE, CEPH_PAGE_SIZE));
-  dst.claim_append_piecewise(t);
-  EXPECT_TRUE(dst.is_aligned_size_and_memory(CEPH_PAGE_SIZE, CEPH_PAGE_SIZE));
-  const char *p1 = dst.c_str();
-  EXPECT_TRUE(p == p1);
 }
 
 TEST(BufferList, begin) {
@@ -2263,13 +2299,17 @@ TEST(BufferList, read_file) {
   bufferlist bl;
   ::unlink(FILENAME);
   EXPECT_EQ(-ENOENT, bl.read_file("UNLIKELY", &error));
-  snprintf(cmd, sizeof(cmd), "echo ABC > %s ; chmod 0 %s", FILENAME, FILENAME);
+  snprintf(cmd, sizeof(cmd), "echo ABC> %s", FILENAME);
+  EXPECT_EQ(0, ::system(cmd));
+  #ifndef _WIN32
+  snprintf(cmd, sizeof(cmd), "chmod 0 %s", FILENAME);
   EXPECT_EQ(0, ::system(cmd));
   if (getuid() != 0) {
     EXPECT_EQ(-EACCES, bl.read_file(FILENAME, &error));
   }
   snprintf(cmd, sizeof(cmd), "chmod +r %s", FILENAME);
   EXPECT_EQ(0, ::system(cmd));
+  #endif /* _WIN32 */
   EXPECT_EQ(0, bl.read_file(FILENAME, &error));
   ::unlink(FILENAME);
   EXPECT_EQ((unsigned)4, bl.length());
@@ -2304,7 +2344,9 @@ TEST(BufferList, write_file) {
   struct stat st;
   memset(&st, 0, sizeof(st));
   ASSERT_EQ(0, ::stat(FILENAME, &st));
+  #ifndef _WIN32
   EXPECT_EQ((unsigned)(mode | S_IFREG), st.st_mode);
+  #endif
   ::unlink(FILENAME);
 }
 
@@ -2540,8 +2582,9 @@ TEST(BufferList, crc32c_append_perf) {
 TEST(BufferList, compare) {
   bufferlist a;
   a.append("A");
-  bufferlist ab;
-  ab.append("AB");
+  bufferlist ab; // AB in segments
+  ab.append(bufferptr("A", 1));
+  ab.append(bufferptr("B", 1));
   bufferlist ac;
   ac.append("AC");
   //

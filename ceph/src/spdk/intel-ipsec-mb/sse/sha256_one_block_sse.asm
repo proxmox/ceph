@@ -27,7 +27,7 @@
 
 ; This code schedules 1 blocks at a time, with 4 lanes per block
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-%include "os.asm"
+%include "include/os.asm"
 
 section .data
 default rel
@@ -365,7 +365,7 @@ rotate_Xs
 ;; arg 1 : pointer to input data
 ;; arg 2 : pointer to digest
 section .text
-MKGLOBAL(FUNC,function,)
+MKGLOBAL(FUNC,function,internal)
 align 32
 FUNC:
 	push	rbx
@@ -479,7 +479,18 @@ done_hash:
 	movdqa	xmm10,[rsp + _XMM_SAVE + 4*16]
 	movdqa	xmm11,[rsp + _XMM_SAVE + 5*16]
 	movdqa	xmm12,[rsp + _XMM_SAVE + 6*16]
+%ifdef SAFE_DATA
+        ;; Clear potential sensitive data stored in stack
+        pxor    xmm0, xmm0
+        movdqa  [rsp + _XMM_SAVE + 0 * 16], xmm0
+        movdqa  [rsp + _XMM_SAVE + 1 * 16], xmm0
+        movdqa  [rsp + _XMM_SAVE + 2 * 16], xmm0
+        movdqa  [rsp + _XMM_SAVE + 3 * 16], xmm0
+        movdqa  [rsp + _XMM_SAVE + 4 * 16], xmm0
+        movdqa  [rsp + _XMM_SAVE + 5 * 16], xmm0
+        movdqa  [rsp + _XMM_SAVE + 6 * 16], xmm0
 %endif
+%endif ;; LINUX
 
 	add	rsp, STACK_size
 

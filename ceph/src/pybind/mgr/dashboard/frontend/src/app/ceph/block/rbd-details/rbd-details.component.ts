@@ -1,5 +1,7 @@
 import { Component, Input, OnChanges, TemplateRef, ViewChild } from '@angular/core';
 
+import { NgbNav } from '@ng-bootstrap/ng-bootstrap';
+
 import { RbdFormModel } from '../rbd-form/rbd-form.model';
 
 @Component({
@@ -12,10 +14,12 @@ export class RbdDetailsComponent implements OnChanges {
   selection: RbdFormModel;
   @Input()
   images: any;
+
   @ViewChild('poolConfigurationSourceTpl', { static: true })
   poolConfigurationSourceTpl: TemplateRef<any>;
 
-  constructor() {}
+  @ViewChild(NgbNav, { static: true })
+  nav: NgbNav;
 
   rbdDashboardUrl: string;
 

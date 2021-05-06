@@ -1,3 +1,132 @@
+Version 290:
+
+* Travis build host now bionic
+* Update Release Notes
+
+Version 289:
+
+* Fix Host header in websocket examples
+
+--------------------------------------------------------------------------------
+
+Version 288:
+
+* Fix Content-Length parsing
+* Update credits
+
+--------------------------------------------------------------------------------
+
+Version 287:
+
+* Remove CODE_OF_CONDUCT.md
+* Refactor websocket read
+* Correct buffer_bytes documentation
+* Fix examples to dispatch to strand
+* Ensure basic_stream::close will not throw
+
+--------------------------------------------------------------------------------
+
+Version 286:
+
+* Refactor multi_buffer
+* Refactor buffers_adapter
+* Refactor static_buffer
+* Refactor flat_buffer
+* Refactor flat_static_buffer
+* Fix missing include in sha1.hpp
+* Fix ostream warning
+* Field digest is endian-independent
+* update broken links in README
+* Fix ostream flush
+
+API Changes:
+
+* Nested const and mutable buffer types for all
+  Beast dynamic buffers are refactored. Affected types:
+  - buffers_adapter
+  - flat_buffer
+  - flat_static_buffer
+  - multi_buffer
+  - static_buffer
+  
+* Nested mutable_data_type in Beast dynamic buffers is deprecated:
+
+Changes Required:
+
+* Use nested mutable_buffers_type instead of mutable_data_type,
+  or define BOOST_BEAST_ALLOW_DEPRECATED
+
+--------------------------------------------------------------------------------
+
+Version 285:
+
+* Translate some win32 errors to net error codes
+* enable circleci integration
+* flat_buffer shrink_to_fit is noexcept
+* moved-from dynamic buffers do not clear if different allocator
+* fix erase field
+
+--------------------------------------------------------------------------------
+
+Version 284:
+
+* fix compilation macro documentation
+* examples use strands correctly
+* update root certificates in examples
+* clarify end-of-file behaviour in File::read docs
+* file_body returns short_read on eof during read
+* fix bug in win32 file_body
+
+--------------------------------------------------------------------------------
+
+Version 283:
+
+* ostream_buffer satisfies preconditions of DynamicBuffer_v1::commit
+* Add accessor function to File member of basic_file_body
+
+Version 282:
+
+* Use superproject docca
+* Fix release build of docs
+* file_win32 supports UTF-8 paths
+* file_stdio supports unicode paths
+
+--------------------------------------------------------------------------------
+
+Version 281:
+
+* Travis builds docs
+* Fix echo-op test
+* file_win32 bodies respect http::serializer::split
+
+--------------------------------------------------------------------------------
+
+Version 280:
+
+* Fix non-msvc cmake
+* Use docca master branch
+
+--------------------------------------------------------------------------------
+
+Version 279:
+
+* Use regular throw in test
+* Fix pragma warning
+
+--------------------------------------------------------------------------------
+
+Version 278:
+
+* Use regular throw in test
+
+--------------------------------------------------------------------------------
+
+Version 277:
+
+* Update release notes
+
+--------------------------------------------------------------------------------
+
 Version 276:
 
 * https_get example sends the Host header

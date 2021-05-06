@@ -13,6 +13,8 @@ import time
 import uuid
 import rpc
 import rpc.client
+import pandas as pd
+from collections import OrderedDict
 from common import *
 
 
@@ -34,12 +36,25 @@ class Server:
 
 
 class Target(Server):
-    def __init__(self, name, username, password, mode, nic_ips, transport="rdma", use_null_block=False, sar_settings=None):
+    def __init__(self, name, username, password, mode, nic_ips, transport="rdma",
+                 use_null_block=False, sar_settings=None, pcm_settings=None,
+                 bandwidth_settings=None):
+
         super(Target, self).__init__(name, username, password, mode, nic_ips, transport)
         self.null_block = bool(use_null_block)
         self.enable_sar = False
+        self.enable_pcm_memory = False
+        self.enable_pcm = False
+        self.enable_bandwidth = False
+
         if sar_settings:
             self.enable_sar, self.sar_delay, self.sar_interval, self.sar_count = sar_settings
+
+        if pcm_settings:
+            self.pcm_dir, self.enable_pcm, self.enable_pcm_memory, self.pcm_delay, self.pcm_interval, self.pcm_count = pcm_settings
+
+        if bandwidth_settings:
+            self.enable_bandwidth, self.bandwidth_count = bandwidth_settings
 
         self.script_dir = os.path.dirname(os.path.abspath(sys.argv[0]))
         self.spdk_dir = os.path.abspath(os.path.join(self.script_dir, "../../../"))
@@ -47,7 +62,7 @@ class Target(Server):
     def zip_spdk_sources(self, spdk_dir, dest_file):
         self.log_print("Zipping SPDK source directory")
         fh = zipfile.ZipFile(dest_file, "w", zipfile.ZIP_DEFLATED)
-        for root, directories, files in os.walk(spdk_dir):
+        for root, directories, files in os.walk(spdk_dir, followlinks=True):
             for file in files:
                 fh.write(os.path.relpath(os.path.join(root, file)))
         fh.close()
@@ -75,11 +90,17 @@ class Target(Server):
             read_max_lat = float(data["jobs"][job_pos]["read"][lat_key]["max"])
             clat_key, clat_unit = get_lat_unit("clat", data["jobs"][job_pos]["read"])
             read_p99_lat = float(data["jobs"][job_pos]["read"][clat_key]["percentile"]["99.000000"])
+            read_p99_9_lat = float(data["jobs"][job_pos]["read"][clat_key]["percentile"]["99.900000"])
+            read_p99_99_lat = float(data["jobs"][job_pos]["read"][clat_key]["percentile"]["99.990000"])
+            read_p99_999_lat = float(data["jobs"][job_pos]["read"][clat_key]["percentile"]["99.999000"])
 
             if "ns" in lat_unit:
                 read_avg_lat, read_min_lat, read_max_lat = [x / 1000 for x in [read_avg_lat, read_min_lat, read_max_lat]]
             if "ns" in clat_unit:
                 read_p99_lat = read_p99_lat / 1000
+                read_p99_9_lat = read_p99_9_lat / 1000
+                read_p99_99_lat = read_p99_99_lat / 1000
+                read_p99_999_lat = read_p99_999_lat / 1000
 
             write_iops = float(data["jobs"][job_pos]["write"]["iops"])
             write_bw = float(data["jobs"][job_pos]["write"]["bw"])
@@ -89,34 +110,59 @@ class Target(Server):
             write_max_lat = float(data["jobs"][job_pos]["write"][lat_key]["max"])
             clat_key, clat_unit = get_lat_unit("clat", data["jobs"][job_pos]["write"])
             write_p99_lat = float(data["jobs"][job_pos]["write"][clat_key]["percentile"]["99.000000"])
+            write_p99_9_lat = float(data["jobs"][job_pos]["write"][clat_key]["percentile"]["99.900000"])
+            write_p99_99_lat = float(data["jobs"][job_pos]["write"][clat_key]["percentile"]["99.990000"])
+            write_p99_999_lat = float(data["jobs"][job_pos]["write"][clat_key]["percentile"]["99.999000"])
 
             if "ns" in lat_unit:
                 write_avg_lat, write_min_lat, write_max_lat = [x / 1000 for x in [write_avg_lat, write_min_lat, write_max_lat]]
             if "ns" in clat_unit:
                 write_p99_lat = write_p99_lat / 1000
+                write_p99_9_lat = write_p99_9_lat / 1000
+                write_p99_99_lat = write_p99_99_lat / 1000
+                write_p99_999_lat = write_p99_999_lat / 1000
 
-        return [read_iops, read_bw, read_avg_lat, read_min_lat, read_max_lat, read_p99_lat,
-                write_iops, write_bw, write_avg_lat, write_min_lat, write_max_lat, write_p99_lat]
+        return [read_iops, read_bw, read_avg_lat, read_min_lat, read_max_lat,
+                read_p99_lat, read_p99_9_lat, read_p99_99_lat, read_p99_999_lat,
+                write_iops, write_bw, write_avg_lat, write_min_lat, write_max_lat,
+                write_p99_lat, write_p99_9_lat, write_p99_99_lat, write_p99_999_lat]
 
     def parse_results(self, results_dir, initiator_count=None, run_num=None):
         files = os.listdir(results_dir)
         fio_files = filter(lambda x: ".fio" in x, files)
         json_files = [x for x in files if ".json" in x]
 
+        headers = ["read_iops", "read_bw", "read_avg_lat_us", "read_min_lat_us", "read_max_lat_us",
+                   "read_p99_lat_us", "read_p99.9_lat_us", "read_p99.99_lat_us", "read_p99.999_lat_us",
+                   "write_iops", "write_bw", "write_avg_lat_us", "write_min_lat_us", "write_max_lat_us",
+                   "write_p99_lat_us", "write_p99.9_lat_us", "write_p99.99_lat_us", "write_p99.999_lat_us"]
+
+        aggr_headers = ["iops", "bw", "avg_lat_us", "min_lat_us", "max_lat_us",
+                        "p99_lat_us", "p99.9_lat_us", "p99.99_lat_us", "p99.999_lat_us"]
+
+        header_line = ",".join(["Name", *headers])
+        aggr_header_line = ",".join(["Name", *aggr_headers])
+
         # Create empty results file
         csv_file = "nvmf_results.csv"
         with open(os.path.join(results_dir, csv_file), "w") as fh:
-            header_line = ",".join(["Name",
-                                    "read_iops", "read_bw", "read_avg_lat_us",
-                                    "read_min_lat_us", "read_max_lat_us", "read_p99_lat_us",
-                                    "write_iops", "write_bw", "write_avg_lat_us",
-                                    "write_min_lat_us", "write_max_lat_us", "write_p99_lat_us"])
-            fh.write(header_line + "\n")
+            fh.write(aggr_header_line + "\n")
         rows = set()
 
         for fio_config in fio_files:
             self.log_print("Getting FIO stats for %s" % fio_config)
             job_name, _ = os.path.splitext(fio_config)
+
+            # Look in the filename for rwmixread value. Function arguments do
+            # not have that information.
+            # TODO: Improve this function by directly using workload params instead
+            # of regexing through filenames.
+            if "read" in job_name:
+                rw_mixread = 1
+            elif "write" in job_name:
+                rw_mixread = 0
+            else:
+                rw_mixread = float(re.search(r"m_(\d+)", job_name).group(1)) / 100
 
             # If "_CPU" exists in name - ignore it
             # Initiators for the same job could have diffrent num_cores parameter
@@ -134,6 +180,7 @@ class Target(Server):
                 self.log_print("\tGetting stats for initiator %s" % i)
                 # There may have been more than 1 test run for this job, calculate average results for initiator
                 i_results = [x for x in job_result_files if i in x]
+                i_results_filename = re.sub(r"run_\d+_", "", i_results[0].replace("json", "csv"))
 
                 separate_stats = []
                 for r in i_results:
@@ -141,19 +188,36 @@ class Target(Server):
                     separate_stats.append(stats)
                     self.log_print(stats)
 
-                z = [sum(c) for c in zip(*separate_stats)]
-                z = [c/len(separate_stats) for c in z]
-                inits_avg_results.append(z)
+                init_results = [sum(x) for x in zip(*separate_stats)]
+                init_results = [x / len(separate_stats) for x in init_results]
+                inits_avg_results.append(init_results)
 
                 self.log_print("\tAverage results for initiator %s" % i)
-                self.log_print(z)
+                self.log_print(init_results)
+                with open(os.path.join(results_dir, i_results_filename), "w") as fh:
+                    fh.write(header_line + "\n")
+                    fh.write(",".join([job_name, *["{0:.3f}".format(x) for x in init_results]]) + "\n")
 
-            # Sum average results of all initiators running this FIO job
-            self.log_print("\tTotal results for %s from all initiators" % fio_config)
-            for a in inits_avg_results:
-                self.log_print(a)
-            total = ["{0:.3f}".format(sum(c)) for c in zip(*inits_avg_results)]
-            rows.add(",".join([job_name, *total]))
+            # Sum results of all initiators running this FIO job.
+            # Latency results are an average of latencies from accros all initiators.
+            inits_avg_results = [sum(x) for x in zip(*inits_avg_results)]
+            inits_avg_results = OrderedDict(zip(headers, inits_avg_results))
+            for key in inits_avg_results:
+                if "lat" in key:
+                    inits_avg_results[key] /= len(inits_names)
+
+            # Aggregate separate read/write values into common labels
+            # Take rw_mixread into consideration for mixed read/write workloads.
+            aggregate_results = OrderedDict()
+            for h in aggr_headers:
+                read_stat, write_stat = [float(value) for key, value in inits_avg_results.items() if h in key]
+                if "lat" in h:
+                    _ = rw_mixread * read_stat + (1 - rw_mixread) * write_stat
+                else:
+                    _ = read_stat + write_stat
+                aggregate_results[h] = "{0:.3f}".format(_)
+
+            rows.add(",".join([job_name, *aggregate_results.values()]))
 
         # Save results to file
         for row in rows:
@@ -174,23 +238,50 @@ class Target(Server):
                     self.log_print(line)
             fh.write(out)
 
+    def measure_pcm_memory(self, results_dir, pcm_file_name):
+        time.sleep(self.pcm_delay)
+        pcm_memory = subprocess.Popen("%s/pcm-memory.x %s -csv=%s/%s" % (self.pcm_dir, self.pcm_interval,
+                                      results_dir, pcm_file_name), shell=True)
+        time.sleep(self.pcm_count)
+        pcm_memory.kill()
+
+    def measure_pcm(self, results_dir, pcm_file_name):
+        time.sleep(self.pcm_delay)
+        subprocess.run("%s/pcm.x %s -i=%s -csv=%s/%s" % (self.pcm_dir, self.pcm_interval, self.pcm_count,
+                       results_dir, pcm_file_name), shell=True, check=True)
+        df = pd.read_csv(os.path.join(results_dir, pcm_file_name), header=[0, 1])
+        df = df.rename(columns=lambda x: re.sub(r'Unnamed:[\w\s]*$', '', x))
+        skt = df.loc[:, df.columns.get_level_values(1).isin({'UPI0', 'UPI1', 'UPI2'})]
+        skt_pcm_file_name = "_".join(["skt", pcm_file_name])
+        skt.to_csv(os.path.join(results_dir, skt_pcm_file_name), index=False)
+
+    def measure_bandwidth(self, results_dir, bandwidth_file_name):
+        bwm = subprocess.run("bwm-ng -o csv -F %s/%s -a 1 -t 1000 -c %s" % (results_dir, bandwidth_file_name,
+                             self.bandwidth_count), shell=True, check=True)
+
 
 class Initiator(Server):
-    def __init__(self, name, username, password, mode, nic_ips, ip, transport="rdma", nvmecli_dir=None, workspace="/tmp/spdk"):
+    def __init__(self, name, username, password, mode, nic_ips, ip, transport="rdma", cpu_frequency=None,
+                 nvmecli_bin="nvme", workspace="/tmp/spdk", cpus_allowed=None,
+                 cpus_allowed_policy="shared", fio_bin="/usr/src/fio/fio"):
+
         super(Initiator, self).__init__(name, username, password, mode, nic_ips, transport)
+
         self.ip = ip
         self.spdk_dir = workspace
-
-        if nvmecli_dir:
-            self.nvmecli_bin = os.path.join(nvmecli_dir, "nvme")
-        else:
-            self.nvmecli_bin = "nvme"  # Use system-wide nvme-cli
-
+        if os.getenv('SPDK_WORKSPACE'):
+            self.spdk_dir = os.getenv('SPDK_WORKSPACE')
+        self.fio_bin = fio_bin
+        self.cpus_allowed = cpus_allowed
+        self.cpus_allowed_policy = cpus_allowed_policy
+        self.cpu_frequency = cpu_frequency
+        self.nvmecli_bin = nvmecli_bin
         self.ssh_connection = paramiko.SSHClient()
         self.ssh_connection.set_missing_host_key_policy(paramiko.AutoAddPolicy())
         self.ssh_connection.connect(self.ip, username=self.username, password=self.password)
         self.remote_call("sudo rm -rf %s/nvmf_perf" % self.spdk_dir)
         self.remote_call("mkdir -p %s" % self.spdk_dir)
+        self.set_cpu_frequency()
 
     def __del__(self):
         self.ssh_connection.close()
@@ -263,12 +354,12 @@ ioengine={ioengine}
 thread=1
 group_reporting=1
 direct=1
+percentile_list=50:90:99:99.5:99.9:99.99:99.999
 
 norandommap=1
 rw={rw}
 rwmixread={rwmixread}
 bs={block_size}
-iodepth={io_depth}
 time_based=1
 ramp_time={ramp_time}
 runtime={run_time}
@@ -277,19 +368,46 @@ runtime={run_time}
             subsystems = self.discover_subsystems(self.nic_ips, subsys_no)
             bdev_conf = self.gen_spdk_bdev_conf(subsystems)
             self.remote_call("echo '%s' > %s/bdev.conf" % (bdev_conf, self.spdk_dir))
-            ioengine = "%s/examples/bdev/fio_plugin/fio_plugin" % self.spdk_dir
+            ioengine = "%s/build/fio/spdk_bdev" % self.spdk_dir
             spdk_conf = "spdk_conf=%s/bdev.conf" % self.spdk_dir
-            filename_section = self.gen_fio_filename_conf(subsystems)
         else:
             ioengine = "libaio"
             spdk_conf = ""
-            filename_section = self.gen_fio_filename_conf()
+            out, err = self.remote_call("sudo nvme list | grep -E 'SPDK|Linux' | awk '{print $1}'")
+            subsystems = [x for x in out.split("\n") if "nvme" in x]
+
+        if self.cpus_allowed is not None:
+            self.log_print("Limiting FIO workload execution on specific cores %s" % self.cpus_allowed)
+            cpus_num = 0
+            cpus = self.cpus_allowed.split(",")
+            for cpu in cpus:
+                if "-" in cpu:
+                    a, b = cpu.split("-")
+                    a = int(a)
+                    b = int(b)
+                    cpus_num += len(range(a, b))
+                else:
+                    cpus_num += 1
+            threads = range(0, cpus_num)
+        elif hasattr(self, 'num_cores'):
+            self.log_print("Limiting FIO workload execution to %s cores" % self.num_cores)
+            threads = range(0, int(self.num_cores))
+        else:
+            threads = range(0, len(subsystems))
+
+        if "spdk" in self.mode:
+            filename_section = self.gen_fio_filename_conf(subsystems, threads, io_depth, num_jobs)
+        else:
+            filename_section = self.gen_fio_filename_conf(threads, io_depth, num_jobs)
 
         fio_config = fio_conf_template.format(ioengine=ioengine, spdk_conf=spdk_conf,
                                               rw=rw, rwmixread=rwmixread, block_size=block_size,
-                                              io_depth=io_depth, ramp_time=ramp_time, run_time=run_time)
+                                              ramp_time=ramp_time, run_time=run_time)
         if num_jobs:
-            fio_config = fio_config + "numjobs=%s" % num_jobs
+            fio_config = fio_config + "numjobs=%s \n" % num_jobs
+        if self.cpus_allowed is not None:
+            fio_config = fio_config + "cpus_allowed=%s \n" % self.cpus_allowed
+            fio_config = fio_config + "cpus_allowed_policy=%s \n" % self.cpus_allowed_policy
         fio_config = fio_config + filename_section
 
         fio_config_filename = "%s_%s_%s_m_%s" % (block_size, io_depth, rw, rwmixread)
@@ -304,19 +422,36 @@ runtime={run_time}
 
         return os.path.join(self.spdk_dir, "nvmf_perf", fio_config_filename)
 
+    def set_cpu_frequency(self):
+        if self.cpu_frequency is not None:
+            try:
+                self.remote_call('sudo cpupower frequency-set -g userspace')
+                self.remote_call('sudo cpupower frequency-set -f %s' % self.cpu_frequency)
+                cmd = "sudo cpupower frequency-info"
+                output, error = self.remote_call(cmd)
+                self.log_print(output)
+                self.log_print(error)
+            except Exception:
+                self.log_print("ERROR: cpu_frequency will not work when intel_pstate is enabled!")
+                sys.exit()
+        else:
+            self.log_print("WARNING: you have disabled intel_pstate and using default cpu governance.")
+
     def run_fio(self, fio_config_file, run_num=None):
         job_name, _ = os.path.splitext(fio_config_file)
         self.log_print("Starting FIO run for job: %s" % job_name)
+        self.log_print("Using FIO: %s" % self.fio_bin)
+
         if run_num:
             for i in range(1, run_num + 1):
                 output_filename = job_name + "_run_" + str(i) + "_" + self.name + ".json"
-                cmd = "sudo /usr/src/fio/fio %s --output-format=json --output=%s" % (fio_config_file, output_filename)
+                cmd = "sudo %s %s --output-format=json --output=%s" % (self.fio_bin, fio_config_file, output_filename)
                 output, error = self.remote_call(cmd)
                 self.log_print(output)
                 self.log_print(error)
         else:
             output_filename = job_name + "_" + self.name + ".json"
-            cmd = "sudo /usr/src/fio/fio %s --output-format=json --output=%s" % (fio_config_file, output_filename)
+            cmd = "sudo %s %s --output-format=json --output=%s" % (self.fio_bin, fio_config_file, output_filename)
             output, error = self.remote_call(cmd)
             self.log_print(output)
             self.log_print(error)
@@ -324,15 +459,13 @@ runtime={run_time}
 
 
 class KernelTarget(Target):
-    def __init__(self, name, username, password, mode, nic_ips,
-                 use_null_block=False, sar_settings=None, transport="rdma", nvmet_dir=None, **kwargs):
-        super(KernelTarget, self).__init__(name, username, password, mode, nic_ips,
-                                           transport, use_null_block, sar_settings)
+    def __init__(self, name, username, password, mode, nic_ips, transport="rdma",
+                 use_null_block=False, sar_settings=None, pcm_settings=None,
+                 bandwidth_settings=None, nvmet_bin="nvmetcli", **kwargs):
 
-        if nvmet_dir:
-            self.nvmet_bin = os.path.join(nvmet_dir, "nvmetcli")
-        else:
-            self.nvmet_bin = "nvmetcli"
+        super(KernelTarget, self).__init__(name, username, password, mode, nic_ips, transport,
+                                           use_null_block, sar_settings, pcm_settings, bandwidth_settings)
+        self.nvmet_bin = nvmet_bin
 
     def __del__(self):
         nvmet_command(self.nvmet_bin, "clear")
@@ -348,6 +481,7 @@ class KernelTarget(Target):
             "allowed_hosts": [],
             "attr": {
                 "allow_any_host": "1",
+                "serial": "SPDK0001",
                 "version": "1.3"
             },
             "namespaces": [
@@ -397,6 +531,7 @@ class KernelTarget(Target):
                     "allowed_hosts": [],
                     "attr": {
                         "allow_any_host": "1",
+                        "serial": "SPDK00%s" % subsys_no,
                         "version": "1.3"
                     },
                     "namespaces": [
@@ -453,9 +588,13 @@ class KernelTarget(Target):
 
 
 class SPDKTarget(Target):
-    def __init__(self, name, username, password, mode, nic_ips, num_cores, num_shared_buffers=4096,
-                 use_null_block=False, sar_settings=None, transport="rdma", **kwargs):
-        super(SPDKTarget, self).__init__(name, username, password, mode, nic_ips, transport, use_null_block, sar_settings)
+
+    def __init__(self, name, username, password, mode, nic_ips, transport="rdma",
+                 use_null_block=False, sar_settings=None, pcm_settings=None,
+                 bandwidth_settings=None, num_shared_buffers=4096, num_cores=1, **kwargs):
+
+        super(SPDKTarget, self).__init__(name, username, password, mode, nic_ips, transport,
+                                         use_null_block, sar_settings, pcm_settings, bandwidth_settings)
         self.num_cores = num_cores
         self.num_shared_buffers = num_shared_buffers
 
@@ -466,7 +605,7 @@ class SPDKTarget(Target):
         # Create RDMA transport layer
         rpc.nvmf.nvmf_create_transport(self.client, trtype=self.transport, num_shared_buffers=self.num_shared_buffers)
         self.log_print("SPDK NVMeOF transport layer:")
-        rpc.client.print_dict(rpc.nvmf.get_nvmf_transports(self.client))
+        rpc.client.print_dict(rpc.nvmf.nvmf_get_transports(self.client))
 
         if self.null_block:
             nvme_section = self.spdk_tgt_add_nullblock()
@@ -478,9 +617,9 @@ class SPDKTarget(Target):
 
     def spdk_tgt_add_nullblock(self):
         self.log_print("Adding null block bdev to config via RPC")
-        rpc.bdev.construct_null_bdev(self.client, 102400, 4096, "Nvme0n1")
+        rpc.bdev.bdev_null_create(self.client, 102400, 4096, "Nvme0n1")
         self.log_print("SPDK Bdevs configuration:")
-        rpc.client.print_dict(rpc.bdev.get_bdevs(self.client))
+        rpc.client.print_dict(rpc.bdev.bdev_get_bdevs(self.client))
 
     def spdk_tgt_add_nvme_conf(self, req_num_disks=None):
         self.log_print("Adding NVMe bdevs to config via RPC")
@@ -496,10 +635,10 @@ class SPDKTarget(Target):
                 bdfs = bdfs[0:req_num_disks]
 
         for i, bdf in enumerate(bdfs):
-            rpc.bdev.construct_nvme_bdev(self.client, name="Nvme%s" % i, trtype="PCIe", traddr=bdf)
+            rpc.bdev.bdev_nvme_attach_controller(self.client, name="Nvme%s" % i, trtype="PCIe", traddr=bdf)
 
         self.log_print("SPDK Bdevs configuration:")
-        rpc.client.print_dict(rpc.bdev.get_bdevs(self.client))
+        rpc.client.print_dict(rpc.bdev.bdev_get_bdevs(self.client))
 
     def spdk_tgt_add_subsystem_conf(self, ips=None, req_num_disks=None):
         self.log_print("Adding subsystems to config")
@@ -507,8 +646,11 @@ class SPDKTarget(Target):
             req_num_disks = get_nvme_devices_count()
 
         # Distribute bdevs between provided NICs
-        num_disks = range(1, req_num_disks + 1)
-        disks_per_ip = int(len(num_disks) / len(ips))
+        num_disks = range(0, req_num_disks)
+        if len(num_disks) == 1:
+            disks_per_ip = 1
+        else:
+            disks_per_ip = int(len(num_disks) / len(ips))
         disk_chunks = [num_disks[i * disks_per_ip:disks_per_ip + disks_per_ip * i] for i in range(0, len(ips))]
 
         # Create subsystems, add bdevs to namespaces, add listeners
@@ -516,8 +658,8 @@ class SPDKTarget(Target):
             for c in chunk:
                 nqn = "nqn.2018-09.io.spdk:cnode%s" % c
                 serial = "SPDK00%s" % c
-                bdev_name = "Nvme%sn1" % (c - 1)
-                rpc.nvmf.nvmf_subsystem_create(self.client, nqn, serial,
+                bdev_name = "Nvme%sn1" % c
+                rpc.nvmf.nvmf_create_subsystem(self.client, nqn, serial,
                                                allow_any_host=True, max_namespaces=8)
                 rpc.nvmf.nvmf_subsystem_add_ns(self.client, nqn, bdev_name)
 
@@ -528,12 +670,15 @@ class SPDKTarget(Target):
                                                      adrfam="ipv4")
 
         self.log_print("SPDK NVMeOF subsystem configuration:")
-        rpc.client.print_dict(rpc.nvmf.get_nvmf_subsystems(self.client))
+        rpc.client.print_dict(rpc.nvmf.nvmf_get_subsystems(self.client))
 
     def tgt_start(self):
-        self.subsys_no = get_nvme_devices_count()
+        if self.null_block:
+            self.subsys_no = 1
+        else:
+            self.subsys_no = get_nvme_devices_count()
         self.log_print("Starting SPDK NVMeOF Target process")
-        nvmf_app_path = os.path.join(self.spdk_dir, "app/nvmf_tgt/nvmf_tgt")
+        nvmf_app_path = os.path.join(self.spdk_dir, "build/bin/nvmf_tgt")
         command = " ".join([nvmf_app_path, "-m", self.num_cores])
         proc = subprocess.Popen(command, shell=True)
         self.pid = os.path.join(self.spdk_dir, "nvmf.pid")
@@ -563,8 +708,17 @@ class SPDKTarget(Target):
 
 
 class KernelInitiator(Initiator):
-    def __init__(self, name, username, password, mode, nic_ips, ip, transport, **kwargs):
-        super(KernelInitiator, self).__init__(name, username, password, mode, nic_ips, ip, transport)
+    def __init__(self, name, username, password, mode, nic_ips, ip, transport,
+                 cpus_allowed=None, cpus_allowed_policy="shared",
+                 cpu_frequency=None, fio_bin="/usr/src/fio/fio", **kwargs):
+
+        super(KernelInitiator, self).__init__(name, username, password, mode, nic_ips, ip, transport,
+                                              cpus_allowed=cpus_allowed, cpus_allowed_policy=cpus_allowed_policy,
+                                              cpu_frequency=cpu_frequency, fio_bin=fio_bin)
+
+        self.extra_params = ""
+        if kwargs["extra_params"]:
+            self.extra_params = kwargs["extra_params"]
 
     def __del__(self):
         self.ssh_connection.close()
@@ -574,7 +728,10 @@ class KernelInitiator(Initiator):
         self.log_print("Below connection attempts may result in error messages, this is expected!")
         for subsystem in subsystems:
             self.log_print("Trying to connect %s %s %s" % subsystem)
-            self.remote_call("sudo %s connect -t %s -s %s -n %s -a %s -i 8" % (self.nvmecli_bin, self.transport, *subsystem))
+            self.remote_call("sudo %s connect -t %s -s %s -n %s -a %s %s" % (self.nvmecli_bin,
+                                                                             self.transport,
+                                                                             *subsystem,
+                                                                             self.extra_params))
             time.sleep(2)
 
     def kernel_init_disconnect(self, address_list, subsys_no):
@@ -583,24 +740,43 @@ class KernelInitiator(Initiator):
             self.remote_call("sudo %s disconnect -n %s" % (self.nvmecli_bin, subsystem[1]))
             time.sleep(1)
 
-    def gen_fio_filename_conf(self):
-        out, err = self.remote_call("lsblk -o NAME -nlp")
+    def gen_fio_filename_conf(self, threads, io_depth, num_jobs=1):
+        out, err = self.remote_call("sudo nvme list | grep -E 'SPDK|Linux' | awk '{print $1}'")
         nvme_list = [x for x in out.split("\n") if "nvme" in x]
 
         filename_section = ""
-        for i, nvme in enumerate(nvme_list):
-            filename_section = "\n".join([filename_section,
-                                          "[filename%s]" % i,
-                                          "filename=%s" % nvme])
+        nvme_per_split = int(len(nvme_list) / len(threads))
+        remainder = len(nvme_list) % len(threads)
+        iterator = iter(nvme_list)
+        result = []
+        for i in range(len(threads)):
+            result.append([])
+            for j in range(nvme_per_split):
+                result[i].append(next(iterator))
+                if remainder:
+                    result[i].append(next(iterator))
+                    remainder -= 1
+        for i, r in enumerate(result):
+            header = "[filename%s]" % i
+            disks = "\n".join(["filename=%s" % x for x in r])
+            job_section_qd = round((io_depth * len(r)) / num_jobs)
+            if job_section_qd == 0:
+                job_section_qd = 1
+            iodepth = "iodepth=%s" % job_section_qd
+            filename_section = "\n".join([filename_section, header, disks, iodepth])
 
         return filename_section
 
 
 class SPDKInitiator(Initiator):
-    def __init__(self, name, username, password, mode, nic_ips, ip, num_cores=None, transport="rdma", **kwargs):
-        super(SPDKInitiator, self).__init__(name, username, password, mode, nic_ips, ip, transport)
-        if num_cores:
-            self.num_cores = num_cores
+    def __init__(self, name, username, password, mode, nic_ips, ip, transport="rdma",
+                 num_cores=1, cpus_allowed=None, cpus_allowed_policy="shared",
+                 cpu_frequency=None, fio_bin="/usr/src/fio/fio", **kwargs):
+        super(SPDKInitiator, self).__init__(name, username, password, mode, nic_ips, ip, transport,
+                                            cpus_allowed=cpus_allowed, cpus_allowed_policy=cpus_allowed_policy,
+                                            cpu_frequency=cpu_frequency, fio_bin=fio_bin)
+
+        self.num_cores = num_cores
 
     def install_spdk(self, local_spdk_zip):
         self.put_file(local_spdk_zip, "/tmp/spdk_drop.zip")
@@ -608,8 +784,9 @@ class SPDKInitiator(Initiator):
         self.remote_call("unzip -qo /tmp/spdk_drop.zip -d %s" % self.spdk_dir)
 
         self.log_print("Sources unpacked")
-        self.remote_call("cd %s; git submodule update --init; ./configure --with-rdma --with-fio=/usr/src/fio;"
-                         "make clean; make -j$(($(nproc)*2))" % self.spdk_dir)
+        self.log_print("Using fio binary %s" % self.fio_bin)
+        self.remote_call("cd %s; git submodule update --init; make clean; ./configure --with-rdma --with-fio=%s;"
+                         "make -j$(($(nproc)*2))" % (self.spdk_dir, os.path.dirname(self.fio_bin)))
 
         self.log_print("SPDK built")
         self.remote_call("sudo %s/scripts/setup.sh" % self.spdk_dir)
@@ -627,24 +804,30 @@ class SPDKInitiator(Initiator):
         bdev_section = "\n".join([header, bdev_rows])
         return bdev_section
 
-    def gen_fio_filename_conf(self, remote_subsystem_list):
-        subsystems = [str(x) for x in range(0, len(remote_subsystem_list))]
-
-        # If num_cpus exists then limit FIO to this number of CPUs
-        # Otherwise - each connected subsystem gets its own CPU
-        if hasattr(self, 'num_cores'):
-            self.log_print("Limiting FIO workload execution to %s cores" % self.num_cores)
-            threads = range(0, int(self.num_cores))
-        else:
-            threads = range(0, len(subsystems))
-
-        n = int(len(subsystems) / len(threads))
-
+    def gen_fio_filename_conf(self, subsystems, threads, io_depth, num_jobs=1):
         filename_section = ""
-        for t in threads:
-            header = "[filename%s]" % t
-            disks = "\n".join(["filename=Nvme%sn1" % x for x in subsystems[n * t:n + n * t]])
-            filename_section = "\n".join([filename_section, header, disks])
+        if len(threads) >= len(subsystems):
+            threads = range(0, len(subsystems))
+        filenames = ["Nvme%sn1" % x for x in range(0, len(subsystems))]
+        nvme_per_split = int(len(subsystems) / len(threads))
+        remainder = len(subsystems) % len(threads)
+        iterator = iter(filenames)
+        result = []
+        for i in range(len(threads)):
+            result.append([])
+            for j in range(nvme_per_split):
+                result[i].append(next(iterator))
+            if remainder:
+                result[i].append(next(iterator))
+                remainder -= 1
+        for i, r in enumerate(result):
+            header = "[filename%s]" % i
+            disks = "\n".join(["filename=%s" % x for x in r])
+            job_section_qd = round((io_depth * len(r)) / num_jobs)
+            if job_section_qd == 0:
+                job_section_qd = 1
+            iodepth = "iodepth=%s" % job_section_qd
+            filename_section = "\n".join([filename_section, header, disks, iodepth])
 
         return filename_section
 
@@ -653,7 +836,14 @@ if __name__ == "__main__":
     spdk_zip_path = "/tmp/spdk.zip"
     target_results_dir = "/tmp/results"
 
-    with open("./scripts/perf/nvmf/config.json", "r") as config:
+    if (len(sys.argv) > 1):
+        config_file_path = sys.argv[1]
+    else:
+        script_full_dir = os.path.dirname(os.path.realpath(__file__))
+        config_file_path = os.path.join(script_full_dir, "config.json")
+
+    print("Using config file: %s" % config_file_path)
+    with open(config_file_path, "r") as config:
         data = json.load(config)
 
     initiators = []
@@ -685,15 +875,16 @@ if __name__ == "__main__":
             continue
 
     # Copy and install SPDK on remote initiators
-    target_obj.zip_spdk_sources(target_obj.spdk_dir, spdk_zip_path)
-    threads = []
-    for i in initiators:
-        if i.mode == "spdk":
-            t = threading.Thread(target=i.install_spdk, args=(spdk_zip_path,))
-            threads.append(t)
-            t.start()
-    for t in threads:
-        t.join()
+    if "skip_spdk_install" not in data["general"]:
+        target_obj.zip_spdk_sources(target_obj.spdk_dir, spdk_zip_path)
+        threads = []
+        for i in initiators:
+            if i.mode == "spdk":
+                t = threading.Thread(target=i.install_spdk, args=(spdk_zip_path,))
+                threads.append(t)
+                t.start()
+        for t in threads:
+            t.join()
 
     target_obj.tgt_start()
 
@@ -717,6 +908,24 @@ if __name__ == "__main__":
             sar_file_name = "_".join([str(block_size), str(rw), str(io_depth), "sar"])
             sar_file_name = ".".join([sar_file_name, "txt"])
             t = threading.Thread(target=target_obj.measure_sar, args=(target_results_dir, sar_file_name))
+            threads.append(t)
+
+        if target_obj.enable_pcm:
+            pcm_file_name = "_".join(["pcm_cpu", str(block_size), str(rw), str(io_depth)])
+            pcm_file_name = ".".join([pcm_file_name, "csv"])
+            t = threading.Thread(target=target_obj.measure_pcm, args=(target_results_dir, pcm_file_name,))
+            threads.append(t)
+
+        if target_obj.enable_pcm_memory:
+            pcm_file_name = "_".join(["pcm_memory", str(block_size), str(rw), str(io_depth)])
+            pcm_file_name = ".".join([pcm_file_name, "csv"])
+            t = threading.Thread(target=target_obj.measure_pcm_memory, args=(target_results_dir, pcm_file_name,))
+            threads.append(t)
+
+        if target_obj.enable_bandwidth:
+            bandwidth_file_name = "_".join(["bandwidth", str(block_size), str(rw), str(io_depth)])
+            bandwidth_file_name = ".".join([bandwidth_file_name, "csv"])
+            t = threading.Thread(target=target_obj.measure_bandwidth, args=(target_results_dir, bandwidth_file_name,))
             threads.append(t)
 
         for t in threads:

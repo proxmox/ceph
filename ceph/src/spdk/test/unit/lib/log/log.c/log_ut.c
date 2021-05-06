@@ -74,12 +74,14 @@ log_test(void)
 	CU_ASSERT(spdk_log_get_flag("log") == false);
 #endif
 
-	spdk_log_open();
+	spdk_log_open(NULL);
 	spdk_log_set_flag("log");
 	SPDK_WARNLOG("log warning unit test\n");
 	SPDK_DEBUGLOG(SPDK_LOG_LOG, "log test\n");
 	SPDK_LOGDUMP(SPDK_LOG_LOG, "log dump test:", "log dump", 8);
 	spdk_log_dump(stderr, "spdk dump test:", "spdk dump", 9);
+	/* Test spdk_log_dump with more than 16 chars and less than 32 chars */
+	spdk_log_dump(stderr, "spdk dump test:", "spdk dump 16 more chars", 23);
 
 	spdk_log_close();
 }
@@ -89,21 +91,12 @@ int main(int argc, char **argv)
 	CU_pSuite	suite = NULL;
 	unsigned int	num_failures;
 
-	if (CU_initialize_registry() != CUE_SUCCESS) {
-		return CU_get_error();
-	}
+	CU_set_error_action(CUEA_ABORT);
+	CU_initialize_registry();
 
 	suite = CU_add_suite("log", NULL, NULL);
-	if (suite == NULL) {
-		CU_cleanup_registry();
-		return CU_get_error();
-	}
 
-	if (
-		CU_add_test(suite, "log_ut", log_test) == NULL) {
-		CU_cleanup_registry();
-		return CU_get_error();
-	}
+	CU_ADD_TEST(suite, log_test);
 
 	CU_basic_set_mode(CU_BRM_VERBOSE);
 	CU_basic_run_tests();

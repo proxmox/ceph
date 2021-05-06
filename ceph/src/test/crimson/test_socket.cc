@@ -5,6 +5,8 @@
 #include <seastar/core/gate.hh>
 #include <seastar/core/sharded.hh>
 #include <seastar/core/sleep.hh>
+#include <seastar/core/when_all.hh>
+#include <seastar/util/later.hh>
 
 #include "crimson/common/log.h"
 #include "crimson/net/Errors.h"
@@ -24,15 +26,19 @@ using crimson::net::stop_t;
 using SocketFRef = seastar::foreign_ptr<SocketRef>;
 
 static seastar::logger logger{"crimsontest"};
-static entity_addr_t server_addr = [] {
+static entity_addr_t get_server_addr() {
+  static int port = 9020;
+  ++port;
+  ceph_assert(port < 9030 && "socket and messenger test ports should not overlap");
   entity_addr_t saddr;
-  saddr.parse("127.0.0.1:9020", nullptr);
+  saddr.parse("127.0.0.1", nullptr);
+  saddr.set_port(port);
   return saddr;
-} ();
+}
 
-future<SocketRef> socket_connect() {
-  logger.debug("socket_connect()...");
-  return Socket::connect(server_addr).then([] (auto socket) {
+future<SocketRef> socket_connect(const entity_addr_t& saddr) {
+  logger.debug("socket_connect() to {} ...", saddr);
+  return Socket::connect(saddr).then([] (auto socket) {
     logger.debug("socket_connect() connected");
     return socket;
   });
@@ -40,8 +46,10 @@ future<SocketRef> socket_connect() {
 
 future<> test_refused() {
   logger.info("test_refused()...");
-  return socket_connect().discard_result().then([] {
-    ceph_abort_msg("connection is not refused");
+  auto saddr = get_server_addr();
+  return socket_connect(saddr).discard_result().then([saddr] {
+    logger.error("test_refused(): connection to {} is not refused", saddr);
+    ceph_abort();
   }).handle_exception_type([] (const std::system_error& e) {
     if (e.code() != std::errc::connection_refused) {
       logger.error("test_refused() got unexpeted error {}", e);
@@ -58,26 +66,35 @@ future<> test_refused() {
 future<> test_bind_same() {
   logger.info("test_bind_same()...");
   return FixedCPUServerSocket::create().then([] (auto pss1) {
-    return pss1->listen(server_addr).then([] {
+    auto saddr = get_server_addr();
+    return pss1->listen(saddr).safe_then([saddr] {
       // try to bind the same address
-      return FixedCPUServerSocket::create().then([] (auto pss2) {
-        return pss2->listen(server_addr).then([] {
-          ceph_abort("Should raise address_in_use!");
-        }).handle_exception_type([] (const std::system_error& e) {
-          assert(e.code() == std::errc::address_in_use);
-          // successful!
-        }).finally([pss2] {
-          return pss2->destroy();
-        }).handle_exception_type([] (const std::system_error& e) {
-          if (e.code() != std::errc::address_in_use) {
-            logger.error("test_bind_same() got unexpeted error {}", e);
-            ceph_abort();
-          } else {
+      return FixedCPUServerSocket::create().then([saddr] (auto pss2) {
+        return pss2->listen(saddr).safe_then([] {
+          logger.error("test_bind_same() should raise address_in_use");
+          ceph_abort();
+        }, FixedCPUServerSocket::listen_ertr::all_same_way(
+            [] (const std::error_code& e) {
+          if (e == std::errc::address_in_use) {
+            // successful!
             logger.info("test_bind_same() ok\n");
+          } else {
+            logger.error("test_bind_same() got unexpected error {}", e);
+            ceph_abort();
           }
+          // Note: need to return a explicit ready future, or there will be a
+          // runtime error: member access within null pointer of type 'struct promise_base'
+          return seastar::now();
+        })).then([pss2] {
+          return pss2->destroy();
         });
       });
-    }).finally([pss1] {
+    }, FixedCPUServerSocket::listen_ertr::all_same_way(
+        [saddr] (const std::error_code& e) {
+      logger.error("test_bind_same(): there is another instance running at {}",
+                   saddr);
+      ceph_abort();
+    })).then([pss1] {
       return pss1->destroy();
     }).handle_exception([] (auto eptr) {
       logger.error("test_bind_same() got unexpeted exception {}", eptr);
@@ -89,20 +106,26 @@ future<> test_bind_same() {
 future<> test_accept() {
   logger.info("test_accept()");
   return FixedCPUServerSocket::create().then([] (auto pss) {
-    return pss->listen(server_addr).then([pss] {
+    auto saddr = get_server_addr();
+    return pss->listen(saddr).safe_then([pss] {
       return pss->accept([] (auto socket, auto paddr) {
         // simple accept
         return seastar::sleep(100ms).then([socket = std::move(socket)] () mutable {
           return socket->close().finally([cleanup = std::move(socket)] {});
         });
       });
-    }).then([] {
+    }, FixedCPUServerSocket::listen_ertr::all_same_way(
+        [saddr] (const std::error_code& e) {
+      logger.error("test_accept(): there is another instance running at {}",
+                   saddr);
+      ceph_abort();
+    })).then([saddr] {
       return seastar::when_all(
-        socket_connect().then([] (auto socket) {
+        socket_connect(saddr).then([] (auto socket) {
           return socket->close().finally([cleanup = std::move(socket)] {}); }),
-        socket_connect().then([] (auto socket) {
+        socket_connect(saddr).then([] (auto socket) {
           return socket->close().finally([cleanup = std::move(socket)] {}); }),
-        socket_connect().then([] (auto socket) {
+        socket_connect(saddr).then([] (auto socket) {
           return socket->close().finally([cleanup = std::move(socket)] {}); })
       ).discard_result();
     }).then([] {
@@ -110,7 +133,7 @@ future<> test_accept() {
       return seastar::sleep(50ms);
     }).then([] {
       logger.info("test_accept() ok\n");
-    }).finally([pss] {
+    }).then([pss] {
       return pss->destroy();
     }).handle_exception([] (auto eptr) {
       logger.error("test_accept() got unexpeted exception {}", eptr);
@@ -129,18 +152,25 @@ class SocketFactory {
   // cb_client() on CPU#0, cb_server() on CPU#1
   template <typename FuncC, typename FuncS>
   static future<> dispatch_sockets(FuncC&& cb_client, FuncS&& cb_server) {
-    assert(engine().cpu_id() == 0u);
+    assert(seastar::this_shard_id() == 0u);
     auto owner = std::make_unique<SocketFactory>();
     auto psf = owner.get();
-    return seastar::smp::submit_to(1u, [psf] {
-      return FixedCPUServerSocket::create().then([psf] (auto pss) {
+    auto saddr = get_server_addr();
+    return seastar::smp::submit_to(1u, [psf, saddr] {
+      return FixedCPUServerSocket::create().then([psf, saddr] (auto pss) {
         psf->pss = pss;
-        return pss->listen(server_addr);
+        return pss->listen(saddr
+        ).safe_then([]{}, FixedCPUServerSocket::listen_ertr::all_same_way(
+            [saddr] (const std::error_code& e) {
+          logger.error("dispatch_sockets(): there is another instance running at {}",
+                       saddr);
+          ceph_abort();
+        }));
       });
-    }).then([psf] {
+    }).then([psf, saddr] {
       return seastar::when_all_succeed(
-        seastar::smp::submit_to(0u, [psf] {
-          return socket_connect().then([psf] (auto socket) {
+        seastar::smp::submit_to(0u, [psf, saddr] {
+          return socket_connect(saddr).then([psf] (auto socket) {
             psf->client_socket = std::move(socket);
           });
         }),
@@ -153,9 +183,11 @@ class SocketFactory {
           });
         })
       );
+    }).then_unpack([] {
+      return seastar::now();
     }).then([psf] {
       return psf->server_connected.get_future();
-    }).finally([psf] {
+    }).then([psf] {
       if (psf->pss) {
         return seastar::smp::submit_to(1u, [psf] {
           return psf->pss->destroy();
@@ -169,7 +201,7 @@ class SocketFactory {
       return seastar::when_all_succeed(
         seastar::smp::submit_to(0u, [socket = psf->client_socket.get(),
                                      cb_client = std::move(cb_client)] {
-          return cb_client(socket).finally([socket] {
+          return cb_client(socket).then([socket] {
             logger.debug("closing client socket...");
             return socket->close();
           }).handle_exception([] (auto eptr) {
@@ -180,7 +212,7 @@ class SocketFactory {
         }),
         seastar::smp::submit_to(1u, [socket = psf->server_socket.get(),
                                      cb_server = std::move(cb_server)] {
-          return cb_server(socket).finally([socket] {
+          return cb_server(socket).then([socket] {
             logger.debug("closing server socket...");
             return socket->close();
           }).handle_exception([] (auto eptr) {
@@ -190,6 +222,8 @@ class SocketFactory {
           });
         })
       );
+    }).then_unpack([] {
+      return seastar::now();
     }).finally([cleanup = std::move(owner)] {});
   }
 };
@@ -217,7 +251,7 @@ class Connection {
     logger.debug("dispatch_write(round={}, force_shut={})...", round, force_shut);
     return seastar::repeat([this, round, force_shut] {
       if (round != 0 && round <= write_count) {
-        return seastar::futurize_apply([this, force_shut] {
+        return seastar::futurize_invoke([this, force_shut] {
           if (force_shut) {
             logger.debug("dispatch_write() done, force shutdown output");
             socket->force_shutdown_out();
@@ -263,7 +297,7 @@ class Connection {
     logger.debug("dispatch_read(round={}, force_shut={})...", round, force_shut);
     return seastar::repeat([this, round, force_shut] {
       if (round != 0 && round <= read_count) {
-        return seastar::futurize_apply([this, force_shut] {
+        return seastar::futurize_invoke([this, force_shut] {
           if (force_shut) {
             logger.debug("dispatch_read() done, force shutdown input");
             socket->force_shutdown_in();
@@ -274,7 +308,7 @@ class Connection {
           return seastar::make_ready_future<stop_t>(stop_t::yes);
         });
       } else {
-        return seastar::futurize_apply([this] {
+        return seastar::futurize_invoke([this] {
           // we want to test both Socket::read() and Socket::read_exactly()
           if (read_count % 2) {
             return socket->read(DATA_SIZE * sizeof(uint64_t)
@@ -332,7 +366,9 @@ class Connection {
       return seastar::when_all_succeed(
         conn.dispatch_write(round, force_shut),
         conn.dispatch_read(round, force_shut)
-      );
+      ).then_unpack([] {
+        return seastar::now();
+      });
     });
   }
 
@@ -342,7 +378,7 @@ class Connection {
       return seastar::when_all_succeed(
         conn.dispatch_write_unbounded(),
         conn.dispatch_read_unbounded(),
-        seastar::futurize_apply([&conn, preemptive_shut] {
+        seastar::futurize_invoke([&conn, preemptive_shut] {
           if (preemptive_shut) {
             return seastar::sleep(100ms).then([&conn] {
               logger.debug("dispatch_rw_unbounded() shutdown socket preemptively(100ms)");
@@ -352,7 +388,9 @@ class Connection {
             return seastar::now();
           }
         })
-      );
+      ).then_unpack([] {
+        return seastar::now();
+      });
     });
   }
 };
@@ -425,7 +463,7 @@ int main(int argc, char** argv)
 {
   seastar::app_template app;
   return app.run(argc, argv, [] {
-    return seastar::futurize_apply([] {
+    return seastar::futurize_invoke([] {
       return test_refused();
     }).then([] {
       return test_bind_same();

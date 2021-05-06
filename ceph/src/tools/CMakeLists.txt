@@ -16,6 +16,14 @@ else()
 endif()
 install(TARGETS rados DESTINATION bin)
 
+if(NOT WIN32)
+  set(neorados_srcs
+      neorados.cc)
+  add_executable(neorados ${neorados_srcs})
+  target_link_libraries(neorados libneorados spawn ${CMAKE_DL_LIBS})
+  #install(TARGETS neorados DESTINATION bin)
+endif()
+
 if(WITH_TESTS)
 add_executable(ceph_scratchtool scratchtool.c)
 target_link_libraries(ceph_scratchtool librados global)
@@ -110,12 +118,17 @@ install(TARGETS ceph-authtool DESTINATION bin)
 if(WITH_TESTS)
 set(ceph_dedup_tool_srcs ceph_dedup_tool.cc)
 add_executable(ceph-dedup-tool ${ceph_dedup_tool_srcs})
-target_link_libraries(ceph-dedup-tool librados global cls_cas_client)
+target_link_libraries(ceph-dedup-tool
+  librados
+  global
+  cls_cas_client
+  cls_cas_internal)
 install(TARGETS ceph-dedup-tool DESTINATION bin)
 endif(WITH_TESTS)
 
 if(WITH_CEPHFS)
   add_subdirectory(cephfs)
+  add_subdirectory(cephfs_mirror)
 endif(WITH_CEPHFS)
 
 if(WITH_RBD)
@@ -123,6 +136,9 @@ if(WITH_RBD)
   add_subdirectory(rbd_mirror)
   if(LINUX)
     add_subdirectory(rbd_nbd)
+  endif()
+  if(WIN32)
+    add_subdirectory(rbd_wnbd)
   endif()
   if(FREEBSD)
     add_subdirectory(rbd_ggate)
@@ -135,3 +151,4 @@ endif()
 
 add_subdirectory(immutable_object_cache)
 add_subdirectory(ceph-dencoder)
+add_subdirectory(erasure-code)

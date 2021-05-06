@@ -6,8 +6,8 @@
 // See accompanying file LICENSE_1_0.txt or copy at
 // http://www.boost.org/LICENSE_1_0.txt
 //
-#ifndef BOOST_GIL_TEST_TEST_FIXTURE_HPP
-#define BOOST_GIL_TEST_TEST_FIXTURE_HPP
+#ifndef BOOST_GIL_TEST_CORE_CHANNEL_TEST_FIXTURE_HPP
+#define BOOST_GIL_TEST_CORE_CHANNEL_TEST_FIXTURE_HPP
 
 #include <boost/gil/channel.hpp>
 #include <boost/gil/concepts.hpp>
@@ -16,6 +16,8 @@
 #include <cstdint>
 #include <tuple>
 #include <type_traits>
+
+#include "test_utility_output_stream.hpp"
 
 namespace boost { namespace gil { namespace test { namespace fixture {
 
@@ -93,8 +95,8 @@ struct channel : public ChannelFixtureBase
 
     channel()
     {
-        BOOST_TEST(this->min_v_ == gil::channel_traits<channel_t>::min_value());
-        BOOST_TEST(this->max_v_ == gil::channel_traits<channel_t>::max_value());
+        BOOST_TEST_EQ(this->min_v_, gil::channel_traits<channel_t>::min_value());
+        BOOST_TEST_EQ(this->max_v_, gil::channel_traits<channel_t>::max_value());
     }
 };
 
@@ -209,7 +211,9 @@ struct packed_channels565
         channel1_ = gil::channel_traits<channel_0_5_t>::max_value();
         channel2_ = gil::channel_traits<channel_5_6_t>::max_value();
         channel3_ = gil::channel_traits<channel_11_5_t>::max_value();
-        BOOST_TEST(data_ == 65535);
+#ifdef BOOST_TEST_EQ
+        BOOST_TEST_EQ(data_, 65535);
+#endif
     }
 };
 
@@ -237,7 +241,9 @@ struct packed_dynamic_channels565
         channel1_ = gil::channel_traits<channel_5_t>::max_value();
         channel2_ = gil::channel_traits<channel_6_t>::max_value();
         channel3_ = gil::channel_traits<channel_5_t>::max_value();
-        BOOST_TEST(data_ == 65535);
+#ifdef BOOST_TEST_EQ
+        BOOST_TEST_EQ(data_, 65535);
+#endif
     }
 };
 

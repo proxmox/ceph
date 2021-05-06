@@ -15,7 +15,7 @@ def task(ctx, config):
     """
     Test handling of lost objects.
 
-    A pretty rigid cluseter is brought up andtested by this task
+    A pretty rigid cluster is brought up and tested by this task
     """
     POOL = 'unfounddel_pool'
     if config is None:
@@ -175,4 +175,5 @@ def task(ctx, config):
     manager.wait_till_osd_is_up(1)
     manager.wait_for_clean()
     run.wait(procs)
+    manager.wait_for_clean()
 

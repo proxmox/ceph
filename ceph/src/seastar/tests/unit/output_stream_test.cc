@@ -21,9 +21,9 @@
 
 #include <seastar/core/app-template.hh>
 #include <seastar/core/shared_ptr.hh>
-#include <seastar/core/reactor.hh>
 #include <seastar/core/vector-data-sink.hh>
-#include <seastar/core/future-util.hh>
+#include <seastar/core/loop.hh>
+#include <seastar/util/later.hh>
 #include <seastar/core/sstring.hh>
 #include <seastar/net/packet.hh>
 #include <seastar/testing/test_case.hh>
@@ -34,7 +34,7 @@ using namespace seastar;
 using namespace net;
 
 static sstring to_sstring(const packet& p) {
-    sstring res(sstring::initialized_later(), p.len());
+    sstring res = uninitialized_string(p.len());
     auto i = res.begin();
     for (auto& frag : p.fragments()) {
         i = std::copy(frag.base, frag.base + frag.size, i);

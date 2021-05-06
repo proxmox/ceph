@@ -23,6 +23,7 @@
 
 #include <seastar/core/deleter.hh>
 #include <seastar/util/eclipse.hh>
+#include <seastar/util/std-compat.hh>
 #include <malloc.h>
 #include <algorithm>
 #include <cstddef>
@@ -77,7 +78,7 @@ public:
     }
     //explicit temporary_buffer(CharType* borrow, size_t size) : _buffer(borrow), _size(size) {}
     /// Creates an empty \c temporary_buffer that does not point at anything.
-    temporary_buffer()
+    temporary_buffer() noexcept
         : _buffer(nullptr)
         , _size(0) {}
     temporary_buffer(const temporary_buffer&) = delete;
@@ -213,11 +214,21 @@ public:
         return temporary_buffer(buf, size, make_free_deleter(buf));
     }
 
+    static temporary_buffer copy_of(std::string_view view) {
+        void* ptr = ::malloc(view.size());
+        if (!ptr) {
+            throw std::bad_alloc();
+        }
+        auto buf = static_cast<CharType*>(ptr);
+        memcpy(buf, view.data(), view.size());
+        return temporary_buffer(buf, view.size(), make_free_deleter(buf));
+    }
+
     /// Compare contents of this buffer with another buffer for equality
     ///
     /// \param o buffer to compare with
     /// \return true if and only if contents are the same
-    bool operator==(const temporary_buffer<char>& o) const {
+    bool operator==(const temporary_buffer& o) const {
         return size() == o.size() && std::equal(begin(), end(), o.begin());
     }
 
@@ -225,7 +236,7 @@ public:
     ///
     /// \param o buffer to compare with
     /// \return true if and only if contents are not the same
-    bool operator!=(const temporary_buffer<char>& o) const {
+    bool operator!=(const temporary_buffer& o) const {
         return !(*this == o);
     }
 };

@@ -1,11 +1,9 @@
 import errno
 import json
 import logging
-from time import sleep
 
-from teuthology.exceptions import CommandFailedError
 
-from tasks.mgr.mgr_test_case import MgrTestCase
+from .mgr_test_case import MgrTestCase
 
 
 log = logging.getLogger(__name__)

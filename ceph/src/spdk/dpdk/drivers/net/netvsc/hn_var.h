@@ -52,6 +52,8 @@ struct hn_tx_queue {
 	uint16_t	port_id;
 	uint16_t	queue_id;
 	uint32_t	free_thresh;
+	struct rte_mempool *txdesc_pool;
+	void		*tx_rndis;
 
 	/* Applied packet transmission aggregation limits. */
 	uint32_t	agg_szmax;
@@ -96,7 +98,7 @@ struct hn_rx_bufinfo {
 struct hn_data {
 	struct rte_vmbus_device *vmbus;
 	struct hn_rx_queue *primary;
-	rte_spinlock_t  vf_lock;
+	rte_rwlock_t    vf_lock;
 	uint16_t	port_id;
 	uint16_t	vf_port;
 
@@ -115,8 +117,10 @@ struct hn_data {
 	uint16_t	num_queues;
 	uint64_t	rss_offloads;
 
+	rte_spinlock_t	chim_lock;
 	struct rte_mem_resource *chim_res;	/* UIO resource for Tx */
-	struct rte_mempool *tx_pool;		/* Tx descriptors */
+	struct rte_bitmap *chim_bmap;		/* Send buffer map */
+	void		*chim_bmem;
 	uint32_t	chim_szmax;		/* Max size per buffer */
 	uint32_t	chim_cnt;		/* Max packets per buffer */
 
@@ -131,7 +135,9 @@ struct hn_data {
 	rte_atomic32_t	rndis_req_id;
 	uint8_t		rndis_resp[256];
 
-	struct ether_addr mac_addr;
+	uint32_t	rss_hash;
+	uint8_t		rss_key[40];
+	uint16_t	rss_ind[128];
 
 	struct rte_eth_dev_owner owner;
 	struct rte_intr_handle vf_intr;
@@ -153,8 +159,8 @@ uint16_t hn_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
 uint16_t hn_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts,
 		      uint16_t nb_pkts);
 
-int	hn_tx_pool_init(struct rte_eth_dev *dev);
-void	hn_tx_pool_uninit(struct rte_eth_dev *dev);
+int	hn_chim_init(struct rte_eth_dev *dev);
+void	hn_chim_uninit(struct rte_eth_dev *dev);
 int	hn_dev_link_update(struct rte_eth_dev *dev, int wait);
 int	hn_dev_tx_queue_setup(struct rte_eth_dev *dev, uint16_t queue_idx,
 			      uint16_t nb_desc, unsigned int socket_id,
@@ -182,14 +188,14 @@ hn_vf_attached(const struct hn_data *hv)
 	return hv->vf_port != HN_INVALID_PORT;
 }
 
-/* Get VF device for existing netvsc device */
+/*
+ * Get VF device for existing netvsc device
+ * Assumes vf_lock is held.
+ */
 static inline struct rte_eth_dev *
 hn_get_vf_dev(const struct hn_data *hv)
 {
 	uint16_t vf_port = hv->vf_port;
-
-	/* make sure vf_port is loaded */
-	rte_smp_rmb();
 
 	if (vf_port == HN_INVALID_PORT)
 		return NULL;
@@ -197,7 +203,7 @@ hn_get_vf_dev(const struct hn_data *hv)
 		return &rte_eth_devices[vf_port];
 }
 
-void	hn_vf_info_get(struct hn_data *hv,
+int	hn_vf_info_get(struct hn_data *hv,
 		       struct rte_eth_dev_info *info);
 int	hn_vf_add(struct rte_eth_dev *dev, struct hn_data *hv);
 int	hn_vf_configure(struct rte_eth_dev *dev,
@@ -208,12 +214,12 @@ void	hn_vf_reset(struct rte_eth_dev *dev);
 void	hn_vf_stop(struct rte_eth_dev *dev);
 void	hn_vf_close(struct rte_eth_dev *dev);
 
-void	hn_vf_allmulticast_enable(struct rte_eth_dev *dev);
-void	hn_vf_allmulticast_disable(struct rte_eth_dev *dev);
-void	hn_vf_promiscuous_enable(struct rte_eth_dev *dev);
-void	hn_vf_promiscuous_disable(struct rte_eth_dev *dev);
+int	hn_vf_allmulticast_enable(struct rte_eth_dev *dev);
+int	hn_vf_allmulticast_disable(struct rte_eth_dev *dev);
+int	hn_vf_promiscuous_enable(struct rte_eth_dev *dev);
+int	hn_vf_promiscuous_disable(struct rte_eth_dev *dev);
 int	hn_vf_mc_addr_list(struct rte_eth_dev *dev,
-			   struct ether_addr *mc_addr_set,
+			   struct rte_ether_addr *mc_addr_set,
 			   uint32_t nb_mc_addr);
 
 int	hn_vf_link_update(struct rte_eth_dev *dev,
@@ -231,11 +237,16 @@ int	hn_vf_rx_queue_setup(struct rte_eth_dev *dev,
 void	hn_vf_rx_queue_release(struct hn_data *hv, uint16_t queue_id);
 
 int	hn_vf_stats_get(struct rte_eth_dev *dev, struct rte_eth_stats *stats);
-void	hn_vf_stats_reset(struct rte_eth_dev *dev);
+int	hn_vf_stats_reset(struct rte_eth_dev *dev);
 int	hn_vf_xstats_get_names(struct rte_eth_dev *dev,
 			       struct rte_eth_xstat_name *xstats_names,
 			       unsigned int size);
 int	hn_vf_xstats_get(struct rte_eth_dev *dev,
 			 struct rte_eth_xstat *xstats,
-			 unsigned int n);
-void	hn_vf_xstats_reset(struct rte_eth_dev *dev);
+			 unsigned int offset, unsigned int n);
+int	hn_vf_xstats_reset(struct rte_eth_dev *dev);
+int	hn_vf_rss_hash_update(struct rte_eth_dev *dev,
+			      struct rte_eth_rss_conf *rss_conf);
+int	hn_vf_reta_hash_update(struct rte_eth_dev *dev,
+			       struct rte_eth_rss_reta_entry64 *reta_conf,
+			       uint16_t reta_size);

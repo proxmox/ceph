@@ -31,6 +31,7 @@
 #include <seastar/net/proxy.hh>
 #include <seastar/net/dhcp.hh>
 #include <seastar/net/config.hh>
+#include <seastar/core/reactor.hh>
 #include <memory>
 #include <queue>
 #include <fstream>
@@ -104,7 +105,7 @@ void create_native_net_device(boost::program_options::variables_map opts) {
     // FIXME: handle exceptions
     for (unsigned i = 0; i < smp::count; i++) {
         (void)smp::submit_to(i, [opts, sdev] {
-            uint16_t qid = engine().cpu_id();
+            uint16_t qid = this_shard_id();
             if (qid < sdev->hw_queues_count()) {
                 auto qp = sdev->init_local_queue(opts, qid);
                 std::map<unsigned, float> cpu_weights;
@@ -150,7 +151,7 @@ private:
     timer<> _timer;
 
     future<> run_dhcp(bool is_renew = false, const dhcp::lease & res = dhcp::lease());
-    void on_dhcp(compat::optional<dhcp::lease> lease, bool is_renew);
+    void on_dhcp(std::optional<dhcp::lease> lease, bool is_renew);
     void set_ipv4_packet_filter(ip_packet_filter* filter) {
         _inet.set_packet_filter(filter);
     }
@@ -162,7 +163,7 @@ public:
     virtual udp_channel make_udp_channel(const socket_address& addr) override;
     virtual future<> initialize() override;
     static future<std::unique_ptr<network_stack>> create(boost::program_options::variables_map opts) {
-        if (engine().cpu_id() == 0) {
+        if (this_shard_id() == 0) {
             create_native_net_device(opts);
         }
         return ready_promise.get_future();
@@ -227,9 +228,9 @@ future<> native_network_stack::run_dhcp(bool is_renew, const dhcp::lease& res) {
     return smp::invoke_on_all([f] {
         auto & ns = static_cast<native_network_stack&>(engine().net());
         ns.set_ipv4_packet_filter(f);
-    }).then([this, d = std::move(d), is_renew, res]() mutable {
+    }).then([this, d = std::move(d), is_renew, res = res]() mutable {
         net::dhcp::result_type fut = is_renew ? d.renew(res) : d.discover();
-        return fut.then([this, is_renew](compat::optional<dhcp::lease> lease) {
+        return fut.then([this, is_renew](std::optional<dhcp::lease> lease) {
             return smp::invoke_on_all([] {
                 auto & ns = static_cast<native_network_stack&>(engine().net());
                 ns.set_ipv4_packet_filter(nullptr);
@@ -238,7 +239,7 @@ future<> native_network_stack::run_dhcp(bool is_renew, const dhcp::lease& res) {
     });
 }
 
-void native_network_stack::on_dhcp(compat::optional<dhcp::lease> lease, bool is_renew) {
+void native_network_stack::on_dhcp(std::optional<dhcp::lease> lease, bool is_renew) {
     if (lease) {
         auto& res = *lease;
         _inet.set_host_address(res.ip);
@@ -250,7 +251,7 @@ void native_network_stack::on_dhcp(compat::optional<dhcp::lease> lease, bool is_
         _config.set_value();
     }
 
-    if (engine().cpu_id() == 0) {
+    if (this_shard_id() == 0) {
         // And the other cpus, which, in the case of initial discovery,
         // will be waiting for us.
         for (unsigned i = 1; i < smp::count; i++) {
@@ -283,7 +284,7 @@ future<> native_network_stack::initialize() {
 
         // Only run actual discover on main cpu.
         // All other cpus must simply for main thread to complete and signal them.
-        if (engine().cpu_id() == 0) {
+        if (this_shard_id() == 0) {
             // FIXME: future is discarded
             (void)run_dhcp();
         }

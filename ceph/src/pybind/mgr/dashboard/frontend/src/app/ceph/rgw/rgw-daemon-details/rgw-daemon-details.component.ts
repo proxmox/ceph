@@ -1,10 +1,10 @@
 import { Component, Input, OnChanges } from '@angular/core';
 
-import * as _ from 'lodash';
+import _ from 'lodash';
 
-import { RgwDaemonService } from '../../../shared/api/rgw-daemon.service';
-import { Permission } from '../../../shared/models/permissions';
-import { AuthStorageService } from '../../../shared/services/auth-storage.service';
+import { RgwDaemonService } from '~/app/shared/api/rgw-daemon.service';
+import { Permission } from '~/app/shared/models/permissions';
+import { AuthStorageService } from '~/app/shared/services/auth-storage.service';
 
 @Component({
   selector: 'cd-rgw-daemon-details',

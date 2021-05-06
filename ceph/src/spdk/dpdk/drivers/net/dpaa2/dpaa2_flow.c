@@ -214,27 +214,27 @@ dpaa2_configure_flow_eth(struct rte_flow *flow,
 	/* Key rule */
 	key_iova = flow->rule.key_iova + DPAA2_CLS_RULE_OFFSET_ETH;
 	memcpy((void *)key_iova, (const void *)(spec->src.addr_bytes),
-						sizeof(struct ether_addr));
-	key_iova += sizeof(struct ether_addr);
+						sizeof(struct rte_ether_addr));
+	key_iova += sizeof(struct rte_ether_addr);
 	memcpy((void *)key_iova, (const void *)(spec->dst.addr_bytes),
-						sizeof(struct ether_addr));
-	key_iova += sizeof(struct ether_addr);
+						sizeof(struct rte_ether_addr));
+	key_iova += sizeof(struct rte_ether_addr);
 	memcpy((void *)key_iova, (const void *)(&spec->type),
 						sizeof(rte_be16_t));
 
 	/* Key mask */
 	mask_iova = flow->rule.mask_iova + DPAA2_CLS_RULE_OFFSET_ETH;
 	memcpy((void *)mask_iova, (const void *)(mask->src.addr_bytes),
-						sizeof(struct ether_addr));
-	mask_iova += sizeof(struct ether_addr);
+						sizeof(struct rte_ether_addr));
+	mask_iova += sizeof(struct rte_ether_addr);
 	memcpy((void *)mask_iova, (const void *)(mask->dst.addr_bytes),
-						sizeof(struct ether_addr));
-	mask_iova += sizeof(struct ether_addr);
+						sizeof(struct rte_ether_addr));
+	mask_iova += sizeof(struct rte_ether_addr);
 	memcpy((void *)mask_iova, (const void *)(&mask->type),
 						sizeof(rte_be16_t));
 
 	flow->rule.key_size = (DPAA2_CLS_RULE_OFFSET_ETH +
-				((2  * sizeof(struct ether_addr)) +
+				((2  * sizeof(struct rte_ether_addr)) +
 				sizeof(rte_be16_t)));
 	return device_configured;
 }
@@ -1505,7 +1505,8 @@ dpaa2_generic_flow_set(struct rte_flow *flow,
 			index = flow->index + (flow->tc_id * nic_attr.fs_entries);
 			ret = dpni_add_qos_entry(dpni, CMD_PRI_LOW,
 						priv->token, &flow->rule,
-						flow->tc_id, index);
+						flow->tc_id, index,
+						0, 0);
 			if (ret < 0) {
 				DPAA2_PMD_ERR(
 				"Error in addnig entry to QoS table(%d)", ret);
@@ -1607,7 +1608,7 @@ dpaa2_generic_flow_set(struct rte_flow *flow,
 			index = flow->index + (flow->tc_id * nic_attr.fs_entries);
 			ret = dpni_add_qos_entry(dpni, CMD_PRI_LOW, priv->token,
 						&flow->rule, flow->tc_id,
-						index);
+						index, 0, 0);
 			if (ret < 0) {
 				DPAA2_PMD_ERR(
 				"Error in entry addition in QoS table(%d)",
@@ -1849,13 +1850,13 @@ struct rte_flow *dpaa2_flow_create(struct rte_eth_dev *dev,
 	key_iova = (size_t)rte_malloc(NULL, 256, 64);
 	if (!key_iova) {
 		DPAA2_PMD_ERR(
-			"Memory allocation failure for rule configration\n");
+			"Memory allocation failure for rule configuration\n");
 		goto mem_failure;
 	}
 	mask_iova = (size_t)rte_malloc(NULL, 256, 64);
 	if (!mask_iova) {
 		DPAA2_PMD_ERR(
-			"Memory allocation failure for rule configration\n");
+			"Memory allocation failure for rule configuration\n");
 		goto mem_failure;
 	}
 

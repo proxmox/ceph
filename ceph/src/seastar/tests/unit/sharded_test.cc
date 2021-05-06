@@ -37,7 +37,7 @@ public:
     }
 
     ~invoke_on_during_stop() {
-        if (engine().cpu_id() == 0) {
+        if (this_shard_id() == 0) {
             assert(flag);
         }
     }
@@ -97,4 +97,14 @@ SEASTAR_THREAD_TEST_CASE(invoke_map_returns_future_value_from_thread) {
         }
     }).get();
     s.stop().get();
+}
+
+SEASTAR_THREAD_TEST_CASE(failed_sharded_start_doesnt_hang) {
+    class fail_to_start {
+    public:
+        fail_to_start() { throw 0; }
+    };
+
+    seastar::sharded<fail_to_start> s;
+    s.start().then_wrapped([] (auto&& fut) { fut.ignore_ready_future(); }).get();
 }

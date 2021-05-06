@@ -92,6 +92,8 @@ run mp_fold_q.cpp ;
 run mp_reverse_fold.cpp ;
 run mp_reverse_fold_q.cpp ;
 run mp_unique.cpp ;
+run mp_unique_if.cpp ;
+run mp_unique_if_q.cpp ;
 run mp_all_of.cpp ;
 run mp_all_of_q.cpp ;
 run mp_any_of.cpp ;
@@ -114,6 +116,12 @@ run mp_nth_element.cpp ;
 run mp_nth_element_q.cpp ;
 run mp_back.cpp ;
 run mp_pop_back.cpp ;
+run mp_flatten.cpp ;
+run mp_rotate_left.cpp ;
+run mp_rotate_right.cpp ;
+run mp_power_set.cpp ;
+run mp_partial_sum.cpp ;
+run mp_iterate.cpp ;
 
 # integral
 run integral.cpp ;
@@ -136,6 +144,7 @@ run mp_cond_sf.cpp ;
 run mp_not_fn.cpp ;
 run mp_eval_if_not.cpp ;
 run mp_eval_or.cpp ;
+run mp_compose.cpp ;
 
 # integer_sequence
 run integer_sequence.cpp ;

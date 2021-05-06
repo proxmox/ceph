@@ -43,6 +43,18 @@ extern "C" {
 #endif
 
 /**
+ * Verify correctness of registered RPC methods and aliases.
+ *
+ * Incorrect registrations include:
+ * - multiple RPC methods registered with the same name
+ * - RPC alias registered with a method that does not exist
+ * - RPC alias registered that points to another alias
+ *
+ * \return true if registrations are all correct, false otherwise
+ */
+bool spdk_rpc_verify_methods(void);
+
+/**
  * Start listening for RPC connections.
  *
  * \param listen_addr Listening address.
@@ -103,14 +115,20 @@ int spdk_rpc_is_method_allowed(const char *method, uint32_t state_mask);
 #define SPDK_RPC_STARTUP	0x1
 #define SPDK_RPC_RUNTIME	0x2
 
+/* Give SPDK_RPC_REGISTER a higher execution priority than
+ * SPDK_RPC_REGISTER_ALIAS_DEPRECATED to ensure all of the RPCs are registered
+ * before we try registering any aliases.  Some older versions of clang may
+ * otherwise execute the constructors in a different order than
+ * defined in the source file (see issue #892).
+ */
 #define SPDK_RPC_REGISTER(method, func, state_mask) \
-static void __attribute__((constructor)) rpc_register_##func(void) \
+static void __attribute__((constructor(1000))) rpc_register_##func(void) \
 { \
 	spdk_rpc_register_method(method, func, state_mask); \
 }
 
 #define SPDK_RPC_REGISTER_ALIAS_DEPRECATED(method, alias) \
-static void __attribute__((constructor)) rpc_register_##alias(void) \
+static void __attribute__((constructor(1001))) rpc_register_##alias(void) \
 { \
 	spdk_rpc_register_alias_deprecated(#method, #alias); \
 }

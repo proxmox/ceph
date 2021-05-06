@@ -54,19 +54,19 @@
 #define INVALID_PORT_ID         (0xFF)
 #define INVALID_BONDING_MODE    (-1)
 
-static const struct ether_addr slave_mac_default = {
+static const struct rte_ether_addr slave_mac_default = {
 	{ 0x00, 0xFF, 0x00, 0xFF, 0x00, 0x00 }
 };
 
-static const struct ether_addr parnter_mac_default = {
+static const struct rte_ether_addr parnter_mac_default = {
 	{ 0x22, 0xBB, 0xFF, 0xBB, 0x00, 0x00 }
 };
 
-static const struct ether_addr parnter_system = {
+static const struct rte_ether_addr parnter_system = {
 	{ 0x33, 0xFF, 0xBB, 0xFF, 0x00, 0x00 }
 };
 
-static const struct ether_addr slow_protocol_mac_addr = {
+static const struct rte_ether_addr slow_protocol_mac_addr = {
 	{ 0x01, 0x80, 0xC2, 0x00, 0x00, 0x02 }
 };
 
@@ -80,8 +80,8 @@ struct slave_conf {
 };
 
 struct ether_vlan_hdr {
-	struct ether_hdr pkt_eth_hdr;
-	struct vlan_hdr vlan_hdr;
+	struct rte_ether_hdr pkt_eth_hdr;
+	struct rte_vlan_hdr vlan_hdr;
 };
 
 struct link_bonding_unittest_params {
@@ -108,7 +108,7 @@ static struct link_bonding_unittest_params test_params  = {
 static struct rte_eth_conf default_pmd_conf = {
 	.rxmode = {
 		.mq_mode = ETH_MQ_RX_NONE,
-		.max_rx_pkt_len = ETHER_MAX_LEN,
+		.max_rx_pkt_len = RTE_ETHER_MAX_LEN,
 		.split_hdr_size = 0,
 	},
 	.txmode = {
@@ -224,7 +224,8 @@ configure_ethdev(uint16_t port_id, uint8_t start)
 static int
 add_slave(struct slave_conf *slave, uint8_t start)
 {
-	struct ether_addr addr, addr_check;
+	struct rte_ether_addr addr, addr_check;
+	int retval;
 
 	/* Some sanity check */
 	RTE_VERIFY(test_params.slave_ports <= slave &&
@@ -232,8 +233,8 @@ add_slave(struct slave_conf *slave, uint8_t start)
 	RTE_VERIFY(slave->bonded == 0);
 	RTE_VERIFY(slave->port_id != INVALID_PORT_ID);
 
-	ether_addr_copy(&slave_mac_default, &addr);
-	addr.addr_bytes[ETHER_ADDR_LEN - 1] = slave->port_id;
+	rte_ether_addr_copy(&slave_mac_default, &addr);
+	addr.addr_bytes[RTE_ETHER_ADDR_LEN - 1] = slave->port_id;
 
 	rte_eth_dev_mac_addr_remove(slave->port_id, &addr);
 
@@ -252,8 +253,10 @@ add_slave(struct slave_conf *slave, uint8_t start)
 			"Failed to start slave %u", slave->port_id);
 	}
 
-	rte_eth_macaddr_get(slave->port_id, &addr_check);
-	TEST_ASSERT_EQUAL(is_same_ether_addr(&addr, &addr_check), 1,
+	retval = rte_eth_macaddr_get(slave->port_id, &addr_check);
+	TEST_ASSERT_SUCCESS(retval, "Failed to get slave mac address: %s",
+			    strerror(-retval));
+	TEST_ASSERT_EQUAL(rte_is_same_ether_addr(&addr, &addr_check), 1,
 			"Slave MAC address is not as expected");
 
 	RTE_VERIFY(slave->lacp_parnter_state == 0);
@@ -293,13 +296,13 @@ remove_slave(struct slave_conf *slave)
 static void
 lacp_recv_cb(uint16_t slave_id, struct rte_mbuf *lacp_pkt)
 {
-	struct ether_hdr *hdr;
+	struct rte_ether_hdr *hdr;
 	struct slow_protocol_frame *slow_hdr;
 
 	RTE_VERIFY(lacp_pkt != NULL);
 
-	hdr = rte_pktmbuf_mtod(lacp_pkt, struct ether_hdr *);
-	RTE_VERIFY(hdr->ether_type == rte_cpu_to_be_16(ETHER_TYPE_SLOW));
+	hdr = rte_pktmbuf_mtod(lacp_pkt, struct rte_ether_hdr *);
+	RTE_VERIFY(hdr->ether_type == rte_cpu_to_be_16(RTE_ETHER_TYPE_SLOW));
 
 	slow_hdr = rte_pktmbuf_mtod(lacp_pkt, struct slow_protocol_frame *);
 	RTE_VERIFY(slow_hdr->slow_protocol.subtype == SLOW_SUBTYPE_LACP);
@@ -312,6 +315,7 @@ static int
 initialize_bonded_device_with_slaves(uint16_t slave_count, uint8_t external_sm)
 {
 	uint8_t i;
+	int ret;
 
 	RTE_VERIFY(test_params.bonded_port_id != INVALID_PORT_ID);
 
@@ -323,7 +327,10 @@ initialize_bonded_device_with_slaves(uint16_t slave_count, uint8_t external_sm)
 
 	/* Reset mode 4 configuration */
 	rte_eth_bond_8023ad_setup(test_params.bonded_port_id, NULL);
-	rte_eth_promiscuous_disable(test_params.bonded_port_id);
+	ret = rte_eth_promiscuous_disable(test_params.bonded_port_id);
+	TEST_ASSERT_SUCCESS(ret,
+		"Failed disable promiscuous mode for port %d: %s",
+		test_params.bonded_port_id, rte_strerror(-ret));
 
 	if (external_sm) {
 		struct rte_eth_bond_8023ad_conf conf;
@@ -474,13 +481,13 @@ testsuite_teardown(void)
 static int
 make_lacp_reply(struct slave_conf *slave, struct rte_mbuf *pkt)
 {
-	struct ether_hdr *hdr;
+	struct rte_ether_hdr *hdr;
 	struct slow_protocol_frame *slow_hdr;
 	struct lacpdu *lacp;
 
 	/* look for LACP */
-	hdr = rte_pktmbuf_mtod(pkt, struct ether_hdr *);
-	if (hdr->ether_type != rte_cpu_to_be_16(ETHER_TYPE_SLOW))
+	hdr = rte_pktmbuf_mtod(pkt, struct rte_ether_hdr *);
+	if (hdr->ether_type != rte_cpu_to_be_16(RTE_ETHER_TYPE_SLOW))
 		return 1;
 
 	slow_hdr = rte_pktmbuf_mtod(pkt, struct slow_protocol_frame *);
@@ -491,8 +498,9 @@ make_lacp_reply(struct slave_conf *slave, struct rte_mbuf *pkt)
 	slow_hdr = rte_pktmbuf_mtod(pkt, struct slow_protocol_frame *);
 
 	/* Change source address to partner address */
-	ether_addr_copy(&parnter_mac_default, &slow_hdr->eth_hdr.s_addr);
-	slow_hdr->eth_hdr.s_addr.addr_bytes[ETHER_ADDR_LEN - 1] = slave->port_id;
+	rte_ether_addr_copy(&parnter_mac_default, &slow_hdr->eth_hdr.s_addr);
+	slow_hdr->eth_hdr.s_addr.addr_bytes[RTE_ETHER_ADDR_LEN - 1] =
+		slave->port_id;
 
 	lacp = (struct lacpdu *) &slow_hdr->slow_protocol;
 	/* Save last received state */
@@ -503,7 +511,7 @@ make_lacp_reply(struct slave_conf *slave, struct rte_mbuf *pkt)
 
 	lacp->partner.state = lacp->actor.state;
 
-	ether_addr_copy(&parnter_system, &lacp->actor.port_params.system);
+	rte_ether_addr_copy(&parnter_system, &lacp->actor.port_params.system);
 	lacp->actor.state = STATE_LACP_ACTIVE |
 						STATE_SYNCHRONIZATION |
 						STATE_AGGREGATION |
@@ -577,7 +585,13 @@ bond_get_update_timeout_ms(void)
 {
 	struct rte_eth_bond_8023ad_conf conf;
 
-	rte_eth_bond_8023ad_conf_get(test_params.bonded_port_id, &conf);
+	if (rte_eth_bond_8023ad_conf_get(test_params.bonded_port_id, &conf) < 0) {
+		RTE_LOG(DEBUG, EAL, "Failed to get bonding configuration: "
+				    "%s at %d\n", __func__, __LINE__);
+		RTE_TEST_TRACE_FAILURE(__FILE__, __LINE__, __func__);
+		return 0;
+	}
+
 	return conf.update_timeout_ms;
 }
 
@@ -718,8 +732,8 @@ test_mode4_agg_mode_selection(void)
 }
 
 static int
-generate_packets(struct ether_addr *src_mac,
-	struct ether_addr *dst_mac, uint16_t count, struct rte_mbuf **buf)
+generate_packets(struct rte_ether_addr *src_mac,
+	struct rte_ether_addr *dst_mac, uint16_t count, struct rte_mbuf **buf)
 {
 	uint16_t pktlen = PACKET_BURST_GEN_PKT_LEN;
 	uint8_t vlan_enable = 0;
@@ -728,14 +742,14 @@ generate_packets(struct ether_addr *src_mac,
 
 	uint16_t src_port = 10, dst_port = 20;
 
-	uint32_t ip_src[4] = { [0 ... 2] = 0xDEADBEEF, [3] = IPv4(192, 168, 0, 1) };
-	uint32_t ip_dst[4] = { [0 ... 2] = 0xFEEDFACE, [3] = IPv4(192, 168, 0, 2) };
+	uint32_t ip_src[4] = { [0 ... 2] = 0xDEADBEEF, [3] = RTE_IPV4(192, 168, 0, 1) };
+	uint32_t ip_dst[4] = { [0 ... 2] = 0xFEEDFACE, [3] = RTE_IPV4(192, 168, 0, 2) };
 
-	struct ether_hdr pkt_eth_hdr;
-	struct udp_hdr pkt_udp_hdr;
+	struct rte_ether_hdr pkt_eth_hdr;
+	struct rte_udp_hdr pkt_udp_hdr;
 	union {
-		struct ipv4_hdr v4;
-		struct ipv6_hdr v6;
+		struct rte_ipv4_hdr v4;
+		struct rte_ipv6_hdr v6;
 	} pkt_ip_hdr;
 
 	int retval;
@@ -765,8 +779,9 @@ generate_packets(struct ether_addr *src_mac,
 }
 
 static int
-generate_and_put_packets(struct slave_conf *slave, struct ether_addr *src_mac,
-		struct ether_addr *dst_mac, uint16_t count)
+generate_and_put_packets(struct slave_conf *slave,
+			struct rte_ether_addr *src_mac,
+			struct rte_ether_addr *dst_mac, uint16_t count)
 {
 	struct rte_mbuf *pkts[MAX_PKT_BURST];
 	int retval;
@@ -796,11 +811,12 @@ test_mode4_rx(void)
 	int retval;
 	unsigned delay;
 
-	struct ether_hdr *hdr;
+	struct rte_ether_hdr *hdr;
 
-	struct ether_addr src_mac = { { 0x00, 0xFF, 0x00, 0xFF, 0x00, 0x00 } };
-	struct ether_addr dst_mac;
-	struct ether_addr bonded_mac;
+	struct rte_ether_addr src_mac = {
+		{ 0x00, 0xFF, 0x00, 0xFF, 0x00, 0x00 } };
+	struct rte_ether_addr dst_mac;
+	struct rte_ether_addr bonded_mac;
 
 	retval = initialize_bonded_device_with_slaves(TEST_PROMISC_SLAVE_COUNT,
 						      0);
@@ -809,8 +825,10 @@ test_mode4_rx(void)
 	retval = bond_handshake();
 	TEST_ASSERT_SUCCESS(retval, "Initial handshake failed");
 
-	rte_eth_macaddr_get(test_params.bonded_port_id, &bonded_mac);
-	ether_addr_copy(&bonded_mac, &dst_mac);
+	retval = rte_eth_macaddr_get(test_params.bonded_port_id, &bonded_mac);
+	TEST_ASSERT_SUCCESS(retval, "Failed to get mac address: %s",
+			    strerror(-retval));
+	rte_ether_addr_copy(&bonded_mac, &dst_mac);
 
 	/* Assert that dst address is not bonding address.  Do not set the
 	 * least significant bit of the zero byte as this would create a
@@ -821,7 +839,10 @@ test_mode4_rx(void)
 	/* First try with promiscuous mode enabled.
 	 * Add 2 packets to each slave. First with bonding MAC address, second with
 	 * different. Check if we received all of them. */
-	rte_eth_promiscuous_enable(test_params.bonded_port_id);
+	retval = rte_eth_promiscuous_enable(test_params.bonded_port_id);
+	TEST_ASSERT_SUCCESS(retval,
+			"Failed to enable promiscuous mode for port %d: %s",
+			test_params.bonded_port_id, rte_strerror(-retval));
 
 	expected_pkts_cnt = 0;
 	FOR_EACH_SLAVE(i, slave) {
@@ -844,8 +865,9 @@ test_mode4_rx(void)
 		int cnt[2] = { 0, 0 };
 
 		for (i = 0; i < expected_pkts_cnt; i++) {
-			hdr = rte_pktmbuf_mtod(pkts[i], struct ether_hdr *);
-			cnt[is_same_ether_addr(&hdr->d_addr, &bonded_mac)]++;
+			hdr = rte_pktmbuf_mtod(pkts[i], struct rte_ether_hdr *);
+			cnt[rte_is_same_ether_addr(&hdr->d_addr,
+							&bonded_mac)]++;
 		}
 
 		free_pkts(pkts, expected_pkts_cnt);
@@ -865,7 +887,10 @@ test_mode4_rx(void)
 
 	/* Now, disable promiscuous mode. When promiscuous mode is disabled we
 	 * expect to receive only packets that are directed to bonding port. */
-	rte_eth_promiscuous_disable(test_params.bonded_port_id);
+	retval = rte_eth_promiscuous_disable(test_params.bonded_port_id);
+	TEST_ASSERT_SUCCESS(retval,
+		"Failed to disable promiscuous mode for port %d: %s",
+		test_params.bonded_port_id, rte_strerror(-retval));
 
 	expected_pkts_cnt = 0;
 	FOR_EACH_SLAVE(i, slave) {
@@ -888,8 +913,9 @@ test_mode4_rx(void)
 		int eq_cnt = 0;
 
 		for (i = 0; i < expected_pkts_cnt; i++) {
-			hdr = rte_pktmbuf_mtod(pkts[i], struct ether_hdr *);
-			eq_cnt += is_same_ether_addr(&hdr->d_addr, &bonded_mac);
+			hdr = rte_pktmbuf_mtod(pkts[i], struct rte_ether_hdr *);
+			eq_cnt += rte_is_same_ether_addr(&hdr->d_addr,
+							&bonded_mac);
 		}
 
 		free_pkts(pkts, expected_pkts_cnt);
@@ -926,11 +952,11 @@ test_mode4_rx(void)
 	FOR_EACH_SLAVE(i, slave) {
 		void *pkt = NULL;
 
-		dst_mac.addr_bytes[ETHER_ADDR_LEN - 1] = slave->port_id;
+		dst_mac.addr_bytes[RTE_ETHER_ADDR_LEN - 1] = slave->port_id;
 		retval = generate_and_put_packets(slave, &src_mac, &dst_mac, 1);
 		TEST_ASSERT_SUCCESS(retval, "Failed to generate test packet burst.");
 
-		src_mac.addr_bytes[ETHER_ADDR_LEN - 1] = slave->port_id;
+		src_mac.addr_bytes[RTE_ETHER_ADDR_LEN - 1] = slave->port_id;
 		retval = generate_and_put_packets(slave, &src_mac, &bonded_mac, 1);
 		TEST_ASSERT_SUCCESS(retval, "Failed to generate test packet burst.");
 
@@ -977,8 +1003,9 @@ test_mode4_tx_burst(void)
 	int retval;
 	unsigned delay;
 
-	struct ether_addr dst_mac = { { 0x00, 0xFF, 0x00, 0xFF, 0x00, 0x00 } };
-	struct ether_addr bonded_mac;
+	struct rte_ether_addr dst_mac = {
+		{ 0x00, 0xFF, 0x00, 0xFF, 0x00, 0x00 } };
+	struct rte_ether_addr bonded_mac;
 
 	retval = initialize_bonded_device_with_slaves(TEST_TX_SLAVE_COUNT, 0);
 	TEST_ASSERT_SUCCESS(retval, "Failed to initialize bonded device");
@@ -986,11 +1013,12 @@ test_mode4_tx_burst(void)
 	retval = bond_handshake();
 	TEST_ASSERT_SUCCESS(retval, "Initial handshake failed");
 
-	rte_eth_macaddr_get(test_params.bonded_port_id, &bonded_mac);
-
+	retval = rte_eth_macaddr_get(test_params.bonded_port_id, &bonded_mac);
+	TEST_ASSERT_SUCCESS(retval, "Failed to get mac address: %s",
+			    strerror(-retval));
 	/* Prepare burst */
 	for (pkts_cnt = 0; pkts_cnt < RTE_DIM(pkts); pkts_cnt++) {
-		dst_mac.addr_bytes[ETHER_ADDR_LEN - 1] = pkts_cnt;
+		dst_mac.addr_bytes[RTE_ETHER_ADDR_LEN - 1] = pkts_cnt;
 		retval = generate_packets(&bonded_mac, &dst_mac, 1, &pkts[pkts_cnt]);
 
 		if (retval != 1)
@@ -1063,7 +1091,7 @@ test_mode4_tx_burst(void)
 
 	/* Prepare burst. */
 	for (pkts_cnt = 0; pkts_cnt < RTE_DIM(pkts); pkts_cnt++) {
-		dst_mac.addr_bytes[ETHER_ADDR_LEN - 1] = pkts_cnt;
+		dst_mac.addr_bytes[RTE_ETHER_ADDR_LEN - 1] = pkts_cnt;
 		retval = generate_packets(&bonded_mac, &dst_mac, 1, &pkts[pkts_cnt]);
 
 		if (retval != 1)
@@ -1130,13 +1158,15 @@ init_marker(struct rte_mbuf *pkt, struct slave_conf *slave)
 			struct marker_header *);
 
 	/* Copy multicast destination address */
-	ether_addr_copy(&slow_protocol_mac_addr, &marker_hdr->eth_hdr.d_addr);
+	rte_ether_addr_copy(&slow_protocol_mac_addr,
+			&marker_hdr->eth_hdr.d_addr);
 
 	/* Init source address */
-	ether_addr_copy(&parnter_mac_default, &marker_hdr->eth_hdr.s_addr);
-	marker_hdr->eth_hdr.s_addr.addr_bytes[ETHER_ADDR_LEN-1] = slave->port_id;
+	rte_ether_addr_copy(&parnter_mac_default, &marker_hdr->eth_hdr.s_addr);
+	marker_hdr->eth_hdr.s_addr.addr_bytes[RTE_ETHER_ADDR_LEN - 1] =
+		slave->port_id;
 
-	marker_hdr->eth_hdr.ether_type = rte_cpu_to_be_16(ETHER_TYPE_SLOW);
+	marker_hdr->eth_hdr.ether_type = rte_cpu_to_be_16(RTE_ETHER_TYPE_SLOW);
 
 	marker_hdr->marker.subtype = SLOW_SUBTYPE_MARKER;
 	marker_hdr->marker.version_number = 1;
@@ -1162,7 +1192,7 @@ test_mode4_marker(void)
 	int retval;
 	uint16_t nb_pkts;
 	uint8_t i, j;
-	const uint16_t ethtype_slow_be = rte_be_to_cpu_16(ETHER_TYPE_SLOW);
+	const uint16_t ethtype_slow_be = rte_be_to_cpu_16(RTE_ETHER_TYPE_SLOW);
 
 	retval = initialize_bonded_device_with_slaves(TEST_MARKER_SLAVE_COUT,
 						      0);
@@ -1351,18 +1381,18 @@ test_mode4_ext_ctrl(void)
 	uint8_t i;
 
 	struct rte_mbuf *lacp_tx_buf[SLAVE_COUNT];
-	struct ether_addr src_mac, dst_mac;
+	struct rte_ether_addr src_mac, dst_mac;
 	struct lacpdu_header lacpdu = {
 		.lacpdu = {
 			.subtype = SLOW_SUBTYPE_LACP,
 		},
 	};
 
-	ether_addr_copy(&parnter_system, &src_mac);
-	ether_addr_copy(&slow_protocol_mac_addr, &dst_mac);
+	rte_ether_addr_copy(&parnter_system, &src_mac);
+	rte_ether_addr_copy(&slow_protocol_mac_addr, &dst_mac);
 
 	initialize_eth_header(&lacpdu.eth_hdr, &src_mac, &dst_mac,
-			      ETHER_TYPE_SLOW, 0, 0);
+			      RTE_ETHER_TYPE_SLOW, 0, 0);
 
 	for (i = 0; i < SLAVE_COUNT; i++) {
 		lacp_tx_buf[i] = rte_pktmbuf_alloc(test_params.mbuf_pool);
@@ -1405,18 +1435,18 @@ test_mode4_ext_lacp(void)
 
 	struct rte_mbuf *lacp_tx_buf[SLAVE_COUNT];
 	struct rte_mbuf *buf[SLAVE_COUNT];
-	struct ether_addr src_mac, dst_mac;
+	struct rte_ether_addr src_mac, dst_mac;
 	struct lacpdu_header lacpdu = {
 		.lacpdu = {
 			.subtype = SLOW_SUBTYPE_LACP,
 		},
 	};
 
-	ether_addr_copy(&parnter_system, &src_mac);
-	ether_addr_copy(&slow_protocol_mac_addr, &dst_mac);
+	rte_ether_addr_copy(&parnter_system, &src_mac);
+	rte_ether_addr_copy(&slow_protocol_mac_addr, &dst_mac);
 
 	initialize_eth_header(&lacpdu.eth_hdr, &src_mac, &dst_mac,
-			      ETHER_TYPE_SLOW, 0, 0);
+			      RTE_ETHER_TYPE_SLOW, 0, 0);
 
 	for (i = 0; i < SLAVE_COUNT; i++) {
 		lacp_tx_buf[i] = rte_pktmbuf_alloc(test_params.mbuf_pool);

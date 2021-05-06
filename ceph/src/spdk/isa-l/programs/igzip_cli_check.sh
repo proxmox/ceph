@@ -3,9 +3,9 @@ set -o pipefail
 
 CWD=$PWD
 SRC_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null && pwd )"
-IGZIP=$SRC_DIR/igzip
+IGZIP="$SRC_DIR/igzip $@"
 TEST_DIR="/tmp/igzip_cli_test_$$/"
-TEST_FILE=$IGZIP
+TEST_FILE=$SRC_DIR/igzip
 DIFF="diff -q"
 
 mkdir -p $TEST_DIR
@@ -173,6 +173,73 @@ $IGZIP -q $file1 &> /dev/null && ret=1
 $IGZIP -dq $file1 &> /dev/null && ret=1
 pass_check $ret "Quiet will not overwrite"
 clear_dir
+
+# Input file and output file cannot be the same
+ret=0
+cp $TEST_FILE $file1 && $IGZIP $file1 -o $file1 &> /dev/null && ret=1
+$DIFF $TEST_FILE $file1  &> /dev/null || ret=1
+pass_check $ret "No in place compression"
+clear_dir
+
+# Input file and output file cannot be the same
+ret=0
+cp $TEST_FILE $file1 && $IGZIP $file1 -o $file1$ds &> /dev/null || ret=1
+$IGZIP -do $file1 $file1 &> /dev/null && ret=1
+$DIFF $TEST_FILE $file1  &> /dev/null || ret=1
+pass_check $ret "No in place decompression"
+clear_dir
+
+ret=0
+$IGZIP -n $TEST_FILE -o $file1$ds && $IGZIP -Nd $file1$ds && $DIFF $file1 $TEST_FILE || ret=1
+pass_check $ret "Decompress name with no-name info"
+clear_dir
+
+ret=0
+cp -p $TEST_FILE $file1 && sleep 1 &&\
+$IGZIP -N $file1 -o $file1$ds &&  $IGZIP -Nfqd $file1$ds  || ret=1
+TIME_ORIG=$(stat --printf=\("%Y\n"\) $TEST_FILE)
+TIME_NEW=$(stat --printf=\("%Y\n"\) $file1)
+if [ "$TIME_ORIG" != "$TIME_NEW" ] ; then
+    ret=1
+fi
+pass_check $ret "Decompress with name info"
+clear_dir
+
+ret=0
+cp -p $TEST_FILE $file1 && touch $file2\\
+$IGZIP $file1 -o $file1$ds || ret=1
+$IGZIP -t $file1$ds || ret=1
+$IGZIP -t $file2 &> /dev/null && ret=1
+cp $file1$ds $file2 && $IGZIP -t $file1$ds || ret=1
+truncate -s -1 $file1$ds
+$IGZIP -t $file1$ds &> /dev/null && ret=1
+pass_check $ret "Test test"
+clear_dir
+
+# Large stream test with threading if enabled
+ret=0
+(for i in `seq 100`; do cat $TEST_FILE ; done) | $IGZIP -c -T 4 | $IGZIP -t || ret=1
+pass_check $ret "Large stream test"
+
+
+# Large stream tests with decompression and threading if enabled
+if command -V md5sum >/dev/null 2>&1 && command -V dd >/dev/null 2>&1; then
+    ret=0
+    dd if=<(for i in `seq 1000`; do cat $TEST_FILE; done) iflag=fullblock bs=1M count=201 2> out.stder | tee >(md5sum > out.sum1) \
+	| $IGZIP -c -T 4 | $IGZIP -d | md5sum > out.sum2 \
+	&& $DIFF out.sum1 out.sum2 || ret=1
+    pass_check $ret "Large stream compresss test"
+    clear_dir
+
+    if test -e /dev/urandom; then
+	ret=0
+	dd if=/dev/urandom iflag=fullblock bs=1M count=200 2> out.stder | tee >(md5sum > out.sum3) \
+	    | $IGZIP -c -T 2 | $IGZIP -d | md5sum > out.sum4 \
+	    && $DIFF out.sum3 out.sum4 || ret=1
+	pass_check $ret "Large stream random data test"
+	clear_dir
+    fi
+fi
 
 echo "Passed all cli checks"
 cleanup 0

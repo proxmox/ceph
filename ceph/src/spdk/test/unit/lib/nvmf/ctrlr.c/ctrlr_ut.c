@@ -1,8 +1,8 @@
 /*-
  *   BSD LICENSE
  *
- *   Copyright (c) Intel Corporation.
- *   All rights reserved.
+ *   Copyright (c) Intel Corporation. All rights reserved.
+ *   Copyright (c) 2019 Mellanox Technologies LTD. All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
  *   modification, are permitted provided that the following conditions
@@ -47,6 +47,9 @@ struct spdk_bdev {
 	uint64_t blockcnt;
 };
 
+const char subsystem_default_sn[SPDK_NVME_CTRLR_SN_LEN + 1] = "subsys_default_sn";
+const char subsystem_default_mn[SPDK_NVME_CTRLR_MN_LEN + 1] = "subsys_default_mn";
+
 DEFINE_STUB(spdk_nvmf_tgt_find_subsystem,
 	    struct spdk_nvmf_subsystem *,
 	    (struct spdk_nvmf_tgt *tgt, const char *subnqn),
@@ -60,12 +63,12 @@ DEFINE_STUB(spdk_nvmf_poll_group_create,
 DEFINE_STUB(spdk_nvmf_subsystem_get_sn,
 	    const char *,
 	    (const struct spdk_nvmf_subsystem *subsystem),
-	    NULL);
+	    subsystem_default_sn);
 
 DEFINE_STUB(spdk_nvmf_subsystem_get_mn,
 	    const char *,
 	    (const struct spdk_nvmf_subsystem *subsystem),
-	    NULL);
+	    subsystem_default_mn);
 
 DEFINE_STUB(spdk_nvmf_subsystem_get_first_ns,
 	    struct spdk_nvmf_ns *,
@@ -82,28 +85,29 @@ DEFINE_STUB(spdk_nvmf_subsystem_host_allowed,
 	    (struct spdk_nvmf_subsystem *subsystem, const char *hostnqn),
 	    true);
 
-DEFINE_STUB(spdk_nvmf_subsystem_add_ctrlr,
+DEFINE_STUB(nvmf_subsystem_add_ctrlr,
 	    int,
 	    (struct spdk_nvmf_subsystem *subsystem, struct spdk_nvmf_ctrlr *ctrlr),
 	    0);
 
-DEFINE_STUB(spdk_nvmf_subsystem_get_ctrlr,
+DEFINE_STUB(nvmf_subsystem_get_ctrlr,
 	    struct spdk_nvmf_ctrlr *,
 	    (struct spdk_nvmf_subsystem *subsystem, uint16_t cntlid),
 	    NULL);
 
-DEFINE_STUB(spdk_nvmf_ctrlr_dsm_supported,
+DEFINE_STUB(nvmf_ctrlr_dsm_supported,
 	    bool,
 	    (struct spdk_nvmf_ctrlr *ctrlr),
 	    false);
 
-DEFINE_STUB(spdk_nvmf_ctrlr_write_zeroes_supported,
+DEFINE_STUB(nvmf_ctrlr_write_zeroes_supported,
 	    bool,
 	    (struct spdk_nvmf_ctrlr *ctrlr),
 	    false);
 
-DEFINE_STUB_V(spdk_nvmf_get_discovery_log_page,
-	      (struct spdk_nvmf_tgt *tgt, struct iovec *iov, uint32_t iovcnt, uint64_t offset, uint32_t length));
+DEFINE_STUB_V(nvmf_get_discovery_log_page,
+	      (struct spdk_nvmf_tgt *tgt, const char *hostnqn, struct iovec *iov,
+	       uint32_t iovcnt, uint64_t offset, uint32_t length));
 
 DEFINE_STUB(spdk_nvmf_qpair_get_listen_trid,
 	    int,
@@ -112,56 +116,74 @@ DEFINE_STUB(spdk_nvmf_qpair_get_listen_trid,
 
 DEFINE_STUB(spdk_nvmf_subsystem_listener_allowed,
 	    bool,
-	    (struct spdk_nvmf_subsystem *subsystem, struct spdk_nvme_transport_id *trid),
+	    (struct spdk_nvmf_subsystem *subsystem, const struct spdk_nvme_transport_id *trid),
 	    true);
 
-DEFINE_STUB(spdk_nvmf_transport_qpair_set_sqsize,
-	    int,
-	    (struct spdk_nvmf_qpair *qpair),
-	    0);
-
-DEFINE_STUB(spdk_nvmf_bdev_ctrlr_read_cmd,
+DEFINE_STUB(nvmf_bdev_ctrlr_read_cmd,
 	    int,
 	    (struct spdk_bdev *bdev, struct spdk_bdev_desc *desc, struct spdk_io_channel *ch,
 	     struct spdk_nvmf_request *req),
 	    0);
 
-DEFINE_STUB(spdk_nvmf_bdev_ctrlr_write_cmd,
+DEFINE_STUB(nvmf_bdev_ctrlr_write_cmd,
 	    int,
 	    (struct spdk_bdev *bdev, struct spdk_bdev_desc *desc, struct spdk_io_channel *ch,
 	     struct spdk_nvmf_request *req),
 	    0);
 
-DEFINE_STUB(spdk_nvmf_bdev_ctrlr_write_zeroes_cmd,
+DEFINE_STUB(nvmf_bdev_ctrlr_compare_cmd,
 	    int,
 	    (struct spdk_bdev *bdev, struct spdk_bdev_desc *desc, struct spdk_io_channel *ch,
 	     struct spdk_nvmf_request *req),
 	    0);
 
-DEFINE_STUB(spdk_nvmf_bdev_ctrlr_flush_cmd,
+DEFINE_STUB(nvmf_bdev_ctrlr_compare_and_write_cmd,
+	    int,
+	    (struct spdk_bdev *bdev, struct spdk_bdev_desc *desc, struct spdk_io_channel *ch,
+	     struct spdk_nvmf_request *cmp_req, struct spdk_nvmf_request *write_req),
+	    0);
+
+DEFINE_STUB(nvmf_bdev_ctrlr_write_zeroes_cmd,
 	    int,
 	    (struct spdk_bdev *bdev, struct spdk_bdev_desc *desc, struct spdk_io_channel *ch,
 	     struct spdk_nvmf_request *req),
 	    0);
 
-DEFINE_STUB(spdk_nvmf_bdev_ctrlr_dsm_cmd,
+DEFINE_STUB(nvmf_bdev_ctrlr_flush_cmd,
 	    int,
 	    (struct spdk_bdev *bdev, struct spdk_bdev_desc *desc, struct spdk_io_channel *ch,
 	     struct spdk_nvmf_request *req),
 	    0);
 
-DEFINE_STUB(spdk_nvmf_bdev_ctrlr_nvme_passthru_io,
+DEFINE_STUB(nvmf_bdev_ctrlr_dsm_cmd,
 	    int,
 	    (struct spdk_bdev *bdev, struct spdk_bdev_desc *desc, struct spdk_io_channel *ch,
 	     struct spdk_nvmf_request *req),
 	    0);
 
-DEFINE_STUB(spdk_nvmf_transport_req_complete,
+DEFINE_STUB(nvmf_bdev_ctrlr_nvme_passthru_io,
+	    int,
+	    (struct spdk_bdev *bdev, struct spdk_bdev_desc *desc, struct spdk_io_channel *ch,
+	     struct spdk_nvmf_request *req),
+	    0);
+
+DEFINE_STUB(nvmf_transport_req_complete,
 	    int,
 	    (struct spdk_nvmf_request *req),
 	    0);
 
-DEFINE_STUB_V(spdk_nvmf_ns_reservation_request, (void *ctx));
+DEFINE_STUB_V(nvmf_ns_reservation_request, (void *ctx));
+
+DEFINE_STUB(nvmf_bdev_ctrlr_get_dif_ctx, bool,
+	    (struct spdk_bdev *bdev, struct spdk_nvme_cmd *cmd,
+	     struct spdk_dif_ctx *dif_ctx),
+	    true);
+
+DEFINE_STUB_V(nvmf_transport_qpair_abort_request,
+	      (struct spdk_nvmf_qpair *qpair, struct spdk_nvmf_request *req));
+
+DEFINE_STUB_V(spdk_nvme_print_command, (uint16_t qid, struct spdk_nvme_cmd *cmd));
+DEFINE_STUB_V(spdk_nvme_print_completion, (uint16_t qid, struct spdk_nvme_cpl *cpl));
 
 int
 spdk_nvmf_qpair_disconnect(struct spdk_nvmf_qpair *qpair, nvmf_qpair_disconnect_cb cb_fn, void *ctx)
@@ -170,7 +192,8 @@ spdk_nvmf_qpair_disconnect(struct spdk_nvmf_qpair *qpair, nvmf_qpair_disconnect_
 }
 
 void
-spdk_nvmf_bdev_ctrlr_identify_ns(struct spdk_nvmf_ns *ns, struct spdk_nvme_ns_data *nsdata)
+nvmf_bdev_ctrlr_identify_ns(struct spdk_nvmf_ns *ns, struct spdk_nvme_ns_data *nsdata,
+			    bool dif_insert_or_strip)
 {
 	uint64_t num_blocks;
 
@@ -211,8 +234,9 @@ test_get_log_page(void)
 	memset(&cmd, 0, sizeof(cmd));
 	memset(&rsp, 0, sizeof(rsp));
 	cmd.nvme_cmd.opc = SPDK_NVME_OPC_GET_LOG_PAGE;
-	cmd.nvme_cmd.cdw10 = SPDK_NVME_LOG_ERROR | (req.length / 4 - 1) << 16;
-	CU_ASSERT(spdk_nvmf_ctrlr_get_log_page(&req) == SPDK_NVMF_REQUEST_EXEC_STATUS_COMPLETE);
+	cmd.nvme_cmd.cdw10_bits.get_log_page.lid = SPDK_NVME_LOG_ERROR;
+	cmd.nvme_cmd.cdw10_bits.get_log_page.numdl = (req.length / 4 - 1);
+	CU_ASSERT(nvmf_ctrlr_get_log_page(&req) == SPDK_NVMF_REQUEST_EXEC_STATUS_COMPLETE);
 	CU_ASSERT(req.rsp->nvme_cpl.status.sct == SPDK_NVME_SCT_GENERIC);
 	CU_ASSERT(req.rsp->nvme_cpl.status.sc == SPDK_NVME_SC_SUCCESS);
 
@@ -221,7 +245,7 @@ test_get_log_page(void)
 	memset(&rsp, 0, sizeof(rsp));
 	cmd.nvme_cmd.opc = SPDK_NVME_OPC_GET_LOG_PAGE;
 	cmd.nvme_cmd.cdw10 = 0;
-	CU_ASSERT(spdk_nvmf_ctrlr_get_log_page(&req) == SPDK_NVMF_REQUEST_EXEC_STATUS_COMPLETE);
+	CU_ASSERT(nvmf_ctrlr_get_log_page(&req) == SPDK_NVMF_REQUEST_EXEC_STATUS_COMPLETE);
 	CU_ASSERT(req.rsp->nvme_cpl.status.sct == SPDK_NVME_SCT_GENERIC);
 	CU_ASSERT(req.rsp->nvme_cpl.status.sc == SPDK_NVME_SC_INVALID_FIELD);
 
@@ -229,9 +253,10 @@ test_get_log_page(void)
 	memset(&cmd, 0, sizeof(cmd));
 	memset(&rsp, 0, sizeof(rsp));
 	cmd.nvme_cmd.opc = SPDK_NVME_OPC_GET_LOG_PAGE;
-	cmd.nvme_cmd.cdw10 = SPDK_NVME_LOG_ERROR | (req.length / 4 - 1) << 16;
+	cmd.nvme_cmd.cdw10_bits.get_log_page.lid = SPDK_NVME_LOG_ERROR;
+	cmd.nvme_cmd.cdw10_bits.get_log_page.numdl = (req.length / 4 - 1);
 	cmd.nvme_cmd.cdw12 = 2;
-	CU_ASSERT(spdk_nvmf_ctrlr_get_log_page(&req) == SPDK_NVMF_REQUEST_EXEC_STATUS_COMPLETE);
+	CU_ASSERT(nvmf_ctrlr_get_log_page(&req) == SPDK_NVMF_REQUEST_EXEC_STATUS_COMPLETE);
 	CU_ASSERT(req.rsp->nvme_cpl.status.sct == SPDK_NVME_SCT_GENERIC);
 	CU_ASSERT(req.rsp->nvme_cpl.status.sc == SPDK_NVME_SC_INVALID_FIELD);
 
@@ -240,8 +265,9 @@ test_get_log_page(void)
 	memset(&rsp, 0, sizeof(rsp));
 	req.data = NULL;
 	cmd.nvme_cmd.opc = SPDK_NVME_OPC_GET_LOG_PAGE;
-	cmd.nvme_cmd.cdw10 = SPDK_NVME_LOG_ERROR | (req.length / 4 - 1) << 16;
-	CU_ASSERT(spdk_nvmf_ctrlr_get_log_page(&req) == SPDK_NVMF_REQUEST_EXEC_STATUS_COMPLETE);
+	cmd.nvme_cmd.cdw10_bits.get_log_page.lid = SPDK_NVME_LOG_ERROR;
+	cmd.nvme_cmd.cdw10_bits.get_log_page.numdl = (req.length / 4 - 1);
+	CU_ASSERT(nvmf_ctrlr_get_log_page(&req) == SPDK_NVMF_REQUEST_EXEC_STATUS_COMPLETE);
 	CU_ASSERT(req.rsp->nvme_cpl.status.sct == SPDK_NVME_SCT_GENERIC);
 	CU_ASSERT(req.rsp->nvme_cpl.status.sc == SPDK_NVME_SC_INVALID_FIELD);
 	req.data = data;
@@ -263,7 +289,7 @@ test_process_fabrics_cmd(void)
 
 	/* No ctrlr and invalid command check */
 	req.cmd->nvmf_cmd.fctype = SPDK_NVMF_FABRIC_COMMAND_PROPERTY_GET;
-	ret = spdk_nvmf_ctrlr_process_fabrics_cmd(&req);
+	ret = nvmf_ctrlr_process_fabrics_cmd(&req);
 	CU_ASSERT_EQUAL(req.rsp->nvme_cpl.status.sc, SPDK_NVME_SC_COMMAND_SEQUENCE_ERROR);
 	CU_ASSERT_EQUAL(ret, SPDK_NVMF_REQUEST_EXEC_STATUS_COMPLETE);
 }
@@ -281,6 +307,7 @@ test_connect(void)
 	struct spdk_nvmf_poll_group group;
 	struct spdk_nvmf_subsystem_poll_group *sgroups;
 	struct spdk_nvmf_transport transport;
+	struct spdk_nvmf_transport_ops tops = {};
 	struct spdk_nvmf_subsystem subsystem;
 	struct spdk_nvmf_request req;
 	struct spdk_nvmf_qpair admin_qpair;
@@ -314,6 +341,7 @@ test_connect(void)
 
 	memset(&tgt, 0, sizeof(tgt));
 	memset(&transport, 0, sizeof(transport));
+	transport.ops = &tops;
 	transport.opts.max_aq_depth = 32;
 	transport.opts.max_queue_depth = 64;
 	transport.opts.max_qpairs_per_ctrlr = 3;
@@ -341,7 +369,6 @@ test_connect(void)
 	snprintf(subsystem.subnqn, sizeof(subsystem.subnqn), "%s", subnqn);
 
 	sgroups = calloc(subsystem.id + 1, sizeof(struct spdk_nvmf_subsystem_poll_group));
-	sgroups[subsystem.id].io_outstanding = 5;
 	group.sgroups = sgroups;
 
 	memset(&cmd, 0, sizeof(cmd));
@@ -367,13 +394,15 @@ test_connect(void)
 
 	/* Valid admin connect command */
 	memset(&rsp, 0, sizeof(rsp));
+	sgroups[subsystem.id].io_outstanding++;
 	TAILQ_INSERT_TAIL(&qpair.outstanding, &req, link);
-	rc = spdk_nvmf_ctrlr_connect(&req);
+	rc = nvmf_ctrlr_cmd_connect(&req);
 	poll_threads();
 	CU_ASSERT(rc == SPDK_NVMF_REQUEST_EXEC_STATUS_ASYNCHRONOUS);
 	CU_ASSERT(nvme_status_success(&rsp.nvme_cpl.status));
 	CU_ASSERT(qpair.ctrlr != NULL);
-	spdk_nvmf_ctrlr_stop_keep_alive_timer(qpair.ctrlr);
+	CU_ASSERT(sgroups[subsystem.id].io_outstanding == 0);
+	nvmf_ctrlr_stop_keep_alive_timer(qpair.ctrlr);
 	spdk_bit_array_free(&qpair.ctrlr->qpair_mask);
 	free(qpair.ctrlr);
 	qpair.ctrlr = NULL;
@@ -381,12 +410,14 @@ test_connect(void)
 	/* Valid admin connect command with kato = 0 */
 	cmd.connect_cmd.kato = 0;
 	memset(&rsp, 0, sizeof(rsp));
+	sgroups[subsystem.id].io_outstanding++;
 	TAILQ_INSERT_TAIL(&qpair.outstanding, &req, link);
-	rc = spdk_nvmf_ctrlr_connect(&req);
+	rc = nvmf_ctrlr_cmd_connect(&req);
 	poll_threads();
 	CU_ASSERT(rc == SPDK_NVMF_REQUEST_EXEC_STATUS_ASYNCHRONOUS);
 	CU_ASSERT(nvme_status_success(&rsp.nvme_cpl.status));
 	CU_ASSERT(qpair.ctrlr != NULL && qpair.ctrlr->keep_alive_poller == NULL);
+	CU_ASSERT(sgroups[subsystem.id].io_outstanding == 0);
 	spdk_bit_array_free(&qpair.ctrlr->qpair_mask);
 	free(qpair.ctrlr);
 	qpair.ctrlr = NULL;
@@ -396,7 +427,7 @@ test_connect(void)
 	memset(&rsp, 0, sizeof(rsp));
 	req.length = sizeof(connect_data) - 1;
 	TAILQ_INSERT_TAIL(&qpair.outstanding, &req, link);
-	rc = spdk_nvmf_ctrlr_connect(&req);
+	rc = nvmf_ctrlr_cmd_connect(&req);
 	poll_threads();
 	CU_ASSERT(rc == SPDK_NVMF_REQUEST_EXEC_STATUS_COMPLETE);
 	CU_ASSERT(rsp.nvme_cpl.status.sct == SPDK_NVME_SCT_GENERIC);
@@ -408,7 +439,7 @@ test_connect(void)
 	memset(&rsp, 0, sizeof(rsp));
 	cmd.connect_cmd.recfmt = 1234;
 	TAILQ_INSERT_TAIL(&qpair.outstanding, &req, link);
-	rc = spdk_nvmf_ctrlr_connect(&req);
+	rc = nvmf_ctrlr_cmd_connect(&req);
 	poll_threads();
 	CU_ASSERT(rc == SPDK_NVMF_REQUEST_EXEC_STATUS_COMPLETE);
 	CU_ASSERT(rsp.nvme_cpl.status.sct == SPDK_NVME_SCT_COMMAND_SPECIFIC);
@@ -416,25 +447,11 @@ test_connect(void)
 	CU_ASSERT(qpair.ctrlr == NULL);
 	cmd.connect_cmd.recfmt = 0;
 
-	/* Unterminated subnqn */
-	memset(&rsp, 0, sizeof(rsp));
-	memset(connect_data.subnqn, 'a', sizeof(connect_data.subnqn));
-	TAILQ_INSERT_TAIL(&qpair.outstanding, &req, link);
-	rc = spdk_nvmf_ctrlr_connect(&req);
-	poll_threads();
-	CU_ASSERT(rc == SPDK_NVMF_REQUEST_EXEC_STATUS_COMPLETE);
-	CU_ASSERT(rsp.nvme_cpl.status.sct == SPDK_NVME_SCT_COMMAND_SPECIFIC);
-	CU_ASSERT(rsp.nvme_cpl.status.sc == SPDK_NVMF_FABRIC_SC_INVALID_PARAM);
-	CU_ASSERT(rsp.connect_rsp.status_code_specific.invalid.iattr == 1);
-	CU_ASSERT(rsp.connect_rsp.status_code_specific.invalid.ipo == 256);
-	CU_ASSERT(qpair.ctrlr == NULL);
-	snprintf(connect_data.subnqn, sizeof(connect_data.subnqn), "%s", subnqn);
-
 	/* Subsystem not found */
 	memset(&rsp, 0, sizeof(rsp));
 	MOCK_SET(spdk_nvmf_tgt_find_subsystem, NULL);
 	TAILQ_INSERT_TAIL(&qpair.outstanding, &req, link);
-	rc = spdk_nvmf_ctrlr_connect(&req);
+	rc = nvmf_ctrlr_cmd_connect(&req);
 	poll_threads();
 	CU_ASSERT(rc == SPDK_NVMF_REQUEST_EXEC_STATUS_COMPLETE);
 	CU_ASSERT(rsp.nvme_cpl.status.sct == SPDK_NVME_SCT_COMMAND_SPECIFIC);
@@ -448,7 +465,7 @@ test_connect(void)
 	memset(&rsp, 0, sizeof(rsp));
 	memset(connect_data.hostnqn, 'b', sizeof(connect_data.hostnqn));
 	TAILQ_INSERT_TAIL(&qpair.outstanding, &req, link);
-	rc = spdk_nvmf_ctrlr_connect(&req);
+	rc = nvmf_ctrlr_cmd_connect(&req);
 	poll_threads();
 	CU_ASSERT(rc == SPDK_NVMF_REQUEST_EXEC_STATUS_COMPLETE);
 	CU_ASSERT(rsp.nvme_cpl.status.sct == SPDK_NVME_SCT_COMMAND_SPECIFIC);
@@ -462,7 +479,7 @@ test_connect(void)
 	memset(&rsp, 0, sizeof(rsp));
 	MOCK_SET(spdk_nvmf_subsystem_host_allowed, false);
 	TAILQ_INSERT_TAIL(&qpair.outstanding, &req, link);
-	rc = spdk_nvmf_ctrlr_connect(&req);
+	rc = nvmf_ctrlr_cmd_connect(&req);
 	poll_threads();
 	CU_ASSERT(rc == SPDK_NVMF_REQUEST_EXEC_STATUS_COMPLETE);
 	CU_ASSERT(rsp.nvme_cpl.status.sct == SPDK_NVME_SCT_COMMAND_SPECIFIC);
@@ -474,7 +491,7 @@ test_connect(void)
 	memset(&rsp, 0, sizeof(rsp));
 	cmd.connect_cmd.sqsize = 0;
 	TAILQ_INSERT_TAIL(&qpair.outstanding, &req, link);
-	rc = spdk_nvmf_ctrlr_connect(&req);
+	rc = nvmf_ctrlr_cmd_connect(&req);
 	poll_threads();
 	CU_ASSERT(rc == SPDK_NVMF_REQUEST_EXEC_STATUS_COMPLETE);
 	CU_ASSERT(rsp.nvme_cpl.status.sct == SPDK_NVME_SCT_COMMAND_SPECIFIC);
@@ -484,11 +501,11 @@ test_connect(void)
 	CU_ASSERT(qpair.ctrlr == NULL);
 	cmd.connect_cmd.sqsize = 31;
 
-	/* Invalid sqsize > max_queue_depth */
+	/* Invalid admin sqsize > max_aq_depth */
 	memset(&rsp, 0, sizeof(rsp));
-	cmd.connect_cmd.sqsize = 64;
+	cmd.connect_cmd.sqsize = 32;
 	TAILQ_INSERT_TAIL(&qpair.outstanding, &req, link);
-	rc = spdk_nvmf_ctrlr_connect(&req);
+	rc = nvmf_ctrlr_cmd_connect(&req);
 	poll_threads();
 	CU_ASSERT(rc == SPDK_NVMF_REQUEST_EXEC_STATUS_COMPLETE);
 	CU_ASSERT(rsp.nvme_cpl.status.sct == SPDK_NVME_SCT_COMMAND_SPECIFIC);
@@ -496,13 +513,29 @@ test_connect(void)
 	CU_ASSERT(rsp.connect_rsp.status_code_specific.invalid.iattr == 0);
 	CU_ASSERT(rsp.connect_rsp.status_code_specific.invalid.ipo == 44);
 	CU_ASSERT(qpair.ctrlr == NULL);
+	cmd.connect_cmd.sqsize = 31;
+
+	/* Invalid I/O sqsize > max_queue_depth */
+	memset(&rsp, 0, sizeof(rsp));
+	cmd.connect_cmd.qid = 1;
+	cmd.connect_cmd.sqsize = 64;
+	TAILQ_INSERT_TAIL(&qpair.outstanding, &req, link);
+	rc = nvmf_ctrlr_cmd_connect(&req);
+	poll_threads();
+	CU_ASSERT(rc == SPDK_NVMF_REQUEST_EXEC_STATUS_COMPLETE);
+	CU_ASSERT(rsp.nvme_cpl.status.sct == SPDK_NVME_SCT_COMMAND_SPECIFIC);
+	CU_ASSERT(rsp.nvme_cpl.status.sc == SPDK_NVMF_FABRIC_SC_INVALID_PARAM);
+	CU_ASSERT(rsp.connect_rsp.status_code_specific.invalid.iattr == 0);
+	CU_ASSERT(rsp.connect_rsp.status_code_specific.invalid.ipo == 44);
+	CU_ASSERT(qpair.ctrlr == NULL);
+	cmd.connect_cmd.qid = 0;
 	cmd.connect_cmd.sqsize = 31;
 
 	/* Invalid cntlid for admin queue */
 	memset(&rsp, 0, sizeof(rsp));
 	connect_data.cntlid = 0x1234;
 	TAILQ_INSERT_TAIL(&qpair.outstanding, &req, link);
-	rc = spdk_nvmf_ctrlr_connect(&req);
+	rc = nvmf_ctrlr_cmd_connect(&req);
 	poll_threads();
 	CU_ASSERT(rc == SPDK_NVMF_REQUEST_EXEC_STATUS_COMPLETE);
 	CU_ASSERT(rsp.nvme_cpl.status.sct == SPDK_NVME_SCT_COMMAND_SPECIFIC);
@@ -517,21 +550,26 @@ test_connect(void)
 
 	/* Valid I/O queue connect command */
 	memset(&rsp, 0, sizeof(rsp));
-	MOCK_SET(spdk_nvmf_subsystem_get_ctrlr, &ctrlr);
+	MOCK_SET(nvmf_subsystem_get_ctrlr, &ctrlr);
 	cmd.connect_cmd.qid = 1;
+	cmd.connect_cmd.sqsize = 63;
+	sgroups[subsystem.id].io_outstanding++;
 	TAILQ_INSERT_TAIL(&qpair.outstanding, &req, link);
-	rc = spdk_nvmf_ctrlr_connect(&req);
+	rc = nvmf_ctrlr_cmd_connect(&req);
 	poll_threads();
 	CU_ASSERT(rc == SPDK_NVMF_REQUEST_EXEC_STATUS_ASYNCHRONOUS);
 	CU_ASSERT(nvme_status_success(&rsp.nvme_cpl.status));
 	CU_ASSERT(qpair.ctrlr == &ctrlr);
+	CU_ASSERT(sgroups[subsystem.id].io_outstanding == 0);
 	qpair.ctrlr = NULL;
+	cmd.connect_cmd.sqsize = 31;
 
 	/* Non-existent controller */
 	memset(&rsp, 0, sizeof(rsp));
-	MOCK_SET(spdk_nvmf_subsystem_get_ctrlr, NULL);
+	MOCK_SET(nvmf_subsystem_get_ctrlr, NULL);
+	sgroups[subsystem.id].io_outstanding++;
 	TAILQ_INSERT_TAIL(&qpair.outstanding, &req, link);
-	rc = spdk_nvmf_ctrlr_connect(&req);
+	rc = nvmf_ctrlr_cmd_connect(&req);
 	poll_threads();
 	CU_ASSERT(rc == SPDK_NVMF_REQUEST_EXEC_STATUS_ASYNCHRONOUS);
 	CU_ASSERT(rsp.nvme_cpl.status.sct == SPDK_NVME_SCT_COMMAND_SPECIFIC);
@@ -539,14 +577,16 @@ test_connect(void)
 	CU_ASSERT(rsp.connect_rsp.status_code_specific.invalid.iattr == 1);
 	CU_ASSERT(rsp.connect_rsp.status_code_specific.invalid.ipo == 16);
 	CU_ASSERT(qpair.ctrlr == NULL);
-	MOCK_SET(spdk_nvmf_subsystem_get_ctrlr, &ctrlr);
+	CU_ASSERT(sgroups[subsystem.id].io_outstanding == 0);
+	MOCK_SET(nvmf_subsystem_get_ctrlr, &ctrlr);
 
 	/* I/O connect to discovery controller */
 	memset(&rsp, 0, sizeof(rsp));
 	subsystem.subtype = SPDK_NVMF_SUBTYPE_DISCOVERY;
 	subsystem.state = SPDK_NVMF_SUBSYSTEM_ACTIVE;
+	sgroups[subsystem.id].io_outstanding++;
 	TAILQ_INSERT_TAIL(&qpair.outstanding, &req, link);
-	rc = spdk_nvmf_ctrlr_connect(&req);
+	rc = nvmf_ctrlr_cmd_connect(&req);
 	poll_threads();
 	CU_ASSERT(rc == SPDK_NVMF_REQUEST_EXEC_STATUS_ASYNCHRONOUS);
 	CU_ASSERT(rsp.nvme_cpl.status.sct == SPDK_NVME_SCT_COMMAND_SPECIFIC);
@@ -554,27 +594,58 @@ test_connect(void)
 	CU_ASSERT(rsp.connect_rsp.status_code_specific.invalid.iattr == 0);
 	CU_ASSERT(rsp.connect_rsp.status_code_specific.invalid.ipo == 42);
 	CU_ASSERT(qpair.ctrlr == NULL);
+	CU_ASSERT(sgroups[subsystem.id].io_outstanding == 0);
 
-	/* I/O connect to discovery controller keep-alive-timeout should be 0 */
+	/* I/O connect to discovery controller with keep-alive-timeout != 0 */
 	cmd.connect_cmd.qid = 0;
+	cmd.connect_cmd.kato = 120000;
 	memset(&rsp, 0, sizeof(rsp));
 	subsystem.subtype = SPDK_NVMF_SUBTYPE_DISCOVERY;
 	subsystem.state = SPDK_NVMF_SUBSYSTEM_ACTIVE;
+	sgroups[subsystem.id].io_outstanding++;
 	TAILQ_INSERT_TAIL(&qpair.outstanding, &req, link);
-	rc = spdk_nvmf_ctrlr_connect(&req);
+	rc = nvmf_ctrlr_cmd_connect(&req);
 	poll_threads();
-	CU_ASSERT(rc == SPDK_NVMF_REQUEST_EXEC_STATUS_COMPLETE);
-	CU_ASSERT(rsp.nvme_cpl.status.sct == SPDK_NVME_SCT_GENERIC);
-	CU_ASSERT(rsp.nvme_cpl.status.sc == SPDK_NVME_SC_INTERNAL_DEVICE_ERROR);
-	CU_ASSERT(qpair.ctrlr == NULL);
+	CU_ASSERT(rc == SPDK_NVMF_REQUEST_EXEC_STATUS_ASYNCHRONOUS);
+	CU_ASSERT(nvme_status_success(&rsp.nvme_cpl.status));
+	CU_ASSERT(qpair.ctrlr != NULL);
+	CU_ASSERT(qpair.ctrlr->keep_alive_poller != NULL);
+	CU_ASSERT(sgroups[subsystem.id].io_outstanding == 0);
+	nvmf_ctrlr_stop_keep_alive_timer(qpair.ctrlr);
+	spdk_bit_array_free(&qpair.ctrlr->qpair_mask);
+	free(qpair.ctrlr);
+	qpair.ctrlr = NULL;
+
+	/* I/O connect to discovery controller with keep-alive-timeout == 0.
+	 *  Then, a fixed timeout value is set to keep-alive-timeout.
+	 */
+	cmd.connect_cmd.kato = 0;
+	memset(&rsp, 0, sizeof(rsp));
+	subsystem.subtype = SPDK_NVMF_SUBTYPE_DISCOVERY;
+	subsystem.state = SPDK_NVMF_SUBSYSTEM_ACTIVE;
+	sgroups[subsystem.id].io_outstanding++;
+	TAILQ_INSERT_TAIL(&qpair.outstanding, &req, link);
+	rc = nvmf_ctrlr_cmd_connect(&req);
+	poll_threads();
+	CU_ASSERT(rc == SPDK_NVMF_REQUEST_EXEC_STATUS_ASYNCHRONOUS);
+	CU_ASSERT(nvme_status_success(&rsp.nvme_cpl.status));
+	CU_ASSERT(qpair.ctrlr != NULL);
+	CU_ASSERT(qpair.ctrlr->keep_alive_poller != NULL);
+	CU_ASSERT(sgroups[subsystem.id].io_outstanding == 0);
+	nvmf_ctrlr_stop_keep_alive_timer(qpair.ctrlr);
+	spdk_bit_array_free(&qpair.ctrlr->qpair_mask);
+	free(qpair.ctrlr);
+	qpair.ctrlr = NULL;
 	cmd.connect_cmd.qid = 1;
+	cmd.connect_cmd.kato = 120000;
 	subsystem.subtype = SPDK_NVMF_SUBTYPE_NVME;
 
 	/* I/O connect to disabled controller */
 	memset(&rsp, 0, sizeof(rsp));
 	ctrlr.vcprop.cc.bits.en = 0;
+	sgroups[subsystem.id].io_outstanding++;
 	TAILQ_INSERT_TAIL(&qpair.outstanding, &req, link);
-	rc = spdk_nvmf_ctrlr_connect(&req);
+	rc = nvmf_ctrlr_cmd_connect(&req);
 	poll_threads();
 	CU_ASSERT(rc == SPDK_NVMF_REQUEST_EXEC_STATUS_ASYNCHRONOUS);
 	CU_ASSERT(rsp.nvme_cpl.status.sct == SPDK_NVME_SCT_COMMAND_SPECIFIC);
@@ -582,13 +653,15 @@ test_connect(void)
 	CU_ASSERT(rsp.connect_rsp.status_code_specific.invalid.iattr == 0);
 	CU_ASSERT(rsp.connect_rsp.status_code_specific.invalid.ipo == 42);
 	CU_ASSERT(qpair.ctrlr == NULL);
+	CU_ASSERT(sgroups[subsystem.id].io_outstanding == 0);
 	ctrlr.vcprop.cc.bits.en = 1;
 
 	/* I/O connect with invalid IOSQES */
 	memset(&rsp, 0, sizeof(rsp));
 	ctrlr.vcprop.cc.bits.iosqes = 3;
+	sgroups[subsystem.id].io_outstanding++;
 	TAILQ_INSERT_TAIL(&qpair.outstanding, &req, link);
-	rc = spdk_nvmf_ctrlr_connect(&req);
+	rc = nvmf_ctrlr_cmd_connect(&req);
 	poll_threads();
 	CU_ASSERT(rc == SPDK_NVMF_REQUEST_EXEC_STATUS_ASYNCHRONOUS);
 	CU_ASSERT(rsp.nvme_cpl.status.sct == SPDK_NVME_SCT_COMMAND_SPECIFIC);
@@ -596,13 +669,15 @@ test_connect(void)
 	CU_ASSERT(rsp.connect_rsp.status_code_specific.invalid.iattr == 0);
 	CU_ASSERT(rsp.connect_rsp.status_code_specific.invalid.ipo == 42);
 	CU_ASSERT(qpair.ctrlr == NULL);
+	CU_ASSERT(sgroups[subsystem.id].io_outstanding == 0);
 	ctrlr.vcprop.cc.bits.iosqes = 6;
 
 	/* I/O connect with invalid IOCQES */
 	memset(&rsp, 0, sizeof(rsp));
 	ctrlr.vcprop.cc.bits.iocqes = 3;
+	sgroups[subsystem.id].io_outstanding++;
 	TAILQ_INSERT_TAIL(&qpair.outstanding, &req, link);
-	rc = spdk_nvmf_ctrlr_connect(&req);
+	rc = nvmf_ctrlr_cmd_connect(&req);
 	poll_threads();
 	CU_ASSERT(rc == SPDK_NVMF_REQUEST_EXEC_STATUS_ASYNCHRONOUS);
 	CU_ASSERT(rsp.nvme_cpl.status.sct == SPDK_NVME_SCT_COMMAND_SPECIFIC);
@@ -610,6 +685,7 @@ test_connect(void)
 	CU_ASSERT(rsp.connect_rsp.status_code_specific.invalid.iattr == 0);
 	CU_ASSERT(rsp.connect_rsp.status_code_specific.invalid.ipo == 42);
 	CU_ASSERT(qpair.ctrlr == NULL);
+	CU_ASSERT(sgroups[subsystem.id].io_outstanding == 0);
 	ctrlr.vcprop.cc.bits.iocqes = 4;
 
 	/* I/O connect with too many existing qpairs */
@@ -617,13 +693,15 @@ test_connect(void)
 	spdk_bit_array_set(ctrlr.qpair_mask, 0);
 	spdk_bit_array_set(ctrlr.qpair_mask, 1);
 	spdk_bit_array_set(ctrlr.qpair_mask, 2);
+	sgroups[subsystem.id].io_outstanding++;
 	TAILQ_INSERT_TAIL(&qpair.outstanding, &req, link);
-	rc = spdk_nvmf_ctrlr_connect(&req);
+	rc = nvmf_ctrlr_cmd_connect(&req);
 	poll_threads();
 	CU_ASSERT(rc == SPDK_NVMF_REQUEST_EXEC_STATUS_ASYNCHRONOUS);
 	CU_ASSERT(rsp.nvme_cpl.status.sct == SPDK_NVME_SCT_COMMAND_SPECIFIC);
 	CU_ASSERT(rsp.nvme_cpl.status.sc == SPDK_NVME_SC_INVALID_QUEUE_IDENTIFIER);
 	CU_ASSERT(qpair.ctrlr == NULL);
+	CU_ASSERT(sgroups[subsystem.id].io_outstanding == 0);
 	spdk_bit_array_clear(ctrlr.qpair_mask, 0);
 	spdk_bit_array_clear(ctrlr.qpair_mask, 1);
 	spdk_bit_array_clear(ctrlr.qpair_mask, 2);
@@ -635,13 +713,15 @@ test_connect(void)
 	qpair2.qid = 1;
 	spdk_bit_array_set(ctrlr.qpair_mask, 1);
 	cmd.connect_cmd.qid = 1;
+	sgroups[subsystem.id].io_outstanding++;
 	TAILQ_INSERT_TAIL(&qpair.outstanding, &req, link);
-	rc = spdk_nvmf_ctrlr_connect(&req);
+	rc = nvmf_ctrlr_cmd_connect(&req);
 	poll_threads();
 	CU_ASSERT(rc == SPDK_NVMF_REQUEST_EXEC_STATUS_ASYNCHRONOUS);
 	CU_ASSERT(rsp.nvme_cpl.status.sct == SPDK_NVME_SCT_COMMAND_SPECIFIC);
 	CU_ASSERT(rsp.nvme_cpl.status.sc == SPDK_NVME_SC_INVALID_QUEUE_IDENTIFIER);
 	CU_ASSERT(qpair.ctrlr == NULL);
+	CU_ASSERT(sgroups[subsystem.id].io_outstanding == 0);
 
 	/* Clean up globals */
 	MOCK_CLEAR(spdk_nvmf_tgt_find_subsystem);
@@ -692,19 +772,19 @@ test_get_ns_id_desc_list(void)
 
 	memset(&cmd, 0, sizeof(cmd));
 	cmd.nvme_cmd.opc = SPDK_NVME_OPC_IDENTIFY;
-	cmd.nvme_cmd.cdw10 = SPDK_NVME_IDENTIFY_NS_ID_DESCRIPTOR_LIST;
+	cmd.nvme_cmd.cdw10_bits.identify.cns = SPDK_NVME_IDENTIFY_NS_ID_DESCRIPTOR_LIST;
 
 	/* Invalid NSID */
 	cmd.nvme_cmd.nsid = 0;
 	memset(&rsp, 0, sizeof(rsp));
-	CU_ASSERT(spdk_nvmf_ctrlr_process_admin_cmd(&req) == SPDK_NVMF_REQUEST_EXEC_STATUS_COMPLETE);
+	CU_ASSERT(nvmf_ctrlr_process_admin_cmd(&req) == SPDK_NVMF_REQUEST_EXEC_STATUS_COMPLETE);
 	CU_ASSERT(rsp.nvme_cpl.status.sct == SPDK_NVME_SCT_GENERIC);
 	CU_ASSERT(rsp.nvme_cpl.status.sc == SPDK_NVME_SC_INVALID_NAMESPACE_OR_FORMAT);
 
 	/* Valid NSID, but ns has no IDs defined */
 	cmd.nvme_cmd.nsid = 1;
 	memset(&rsp, 0, sizeof(rsp));
-	CU_ASSERT(spdk_nvmf_ctrlr_process_admin_cmd(&req) == SPDK_NVMF_REQUEST_EXEC_STATUS_COMPLETE);
+	CU_ASSERT(nvmf_ctrlr_process_admin_cmd(&req) == SPDK_NVMF_REQUEST_EXEC_STATUS_COMPLETE);
 	CU_ASSERT(rsp.nvme_cpl.status.sct == SPDK_NVME_SCT_GENERIC);
 	CU_ASSERT(rsp.nvme_cpl.status.sc == SPDK_NVME_SC_SUCCESS);
 	CU_ASSERT(spdk_mem_all_zero(buf, sizeof(buf)));
@@ -713,7 +793,7 @@ test_get_ns_id_desc_list(void)
 	ns.opts.eui64[0] = 0x11;
 	ns.opts.eui64[7] = 0xFF;
 	memset(&rsp, 0, sizeof(rsp));
-	CU_ASSERT(spdk_nvmf_ctrlr_process_admin_cmd(&req) == SPDK_NVMF_REQUEST_EXEC_STATUS_COMPLETE);
+	CU_ASSERT(nvmf_ctrlr_process_admin_cmd(&req) == SPDK_NVMF_REQUEST_EXEC_STATUS_COMPLETE);
 	CU_ASSERT(rsp.nvme_cpl.status.sct == SPDK_NVME_SCT_GENERIC);
 	CU_ASSERT(rsp.nvme_cpl.status.sc == SPDK_NVME_SC_SUCCESS);
 	CU_ASSERT(buf[0] == SPDK_NVME_NIDT_EUI64);
@@ -727,7 +807,7 @@ test_get_ns_id_desc_list(void)
 	ns.opts.nguid[0] = 0x22;
 	ns.opts.nguid[15] = 0xEE;
 	memset(&rsp, 0, sizeof(rsp));
-	CU_ASSERT(spdk_nvmf_ctrlr_process_admin_cmd(&req) == SPDK_NVMF_REQUEST_EXEC_STATUS_COMPLETE);
+	CU_ASSERT(nvmf_ctrlr_process_admin_cmd(&req) == SPDK_NVMF_REQUEST_EXEC_STATUS_COMPLETE);
 	CU_ASSERT(rsp.nvme_cpl.status.sct == SPDK_NVME_SCT_GENERIC);
 	CU_ASSERT(rsp.nvme_cpl.status.sc == SPDK_NVME_SC_SUCCESS);
 	CU_ASSERT(buf[0] == SPDK_NVME_NIDT_NGUID);
@@ -742,7 +822,7 @@ test_get_ns_id_desc_list(void)
 	ns.opts.nguid[0] = 0x22;
 	ns.opts.nguid[15] = 0xEE;
 	memset(&rsp, 0, sizeof(rsp));
-	CU_ASSERT(spdk_nvmf_ctrlr_process_admin_cmd(&req) == SPDK_NVMF_REQUEST_EXEC_STATUS_COMPLETE);
+	CU_ASSERT(nvmf_ctrlr_process_admin_cmd(&req) == SPDK_NVMF_REQUEST_EXEC_STATUS_COMPLETE);
 	CU_ASSERT(rsp.nvme_cpl.status.sct == SPDK_NVME_SCT_GENERIC);
 	CU_ASSERT(rsp.nvme_cpl.status.sc == SPDK_NVME_SC_SUCCESS);
 	CU_ASSERT(buf[0] == SPDK_NVME_NIDT_EUI64);
@@ -763,7 +843,7 @@ test_get_ns_id_desc_list(void)
 	ns.opts.uuid.u.raw[0] = 0x33;
 	ns.opts.uuid.u.raw[15] = 0xDD;
 	memset(&rsp, 0, sizeof(rsp));
-	CU_ASSERT(spdk_nvmf_ctrlr_process_admin_cmd(&req) == SPDK_NVMF_REQUEST_EXEC_STATUS_COMPLETE);
+	CU_ASSERT(nvmf_ctrlr_process_admin_cmd(&req) == SPDK_NVMF_REQUEST_EXEC_STATUS_COMPLETE);
 	CU_ASSERT(rsp.nvme_cpl.status.sct == SPDK_NVME_SCT_GENERIC);
 	CU_ASSERT(rsp.nvme_cpl.status.sc == SPDK_NVME_SC_SUCCESS);
 	CU_ASSERT(buf[0] == SPDK_NVME_NIDT_EUI64);
@@ -857,6 +937,123 @@ test_identify_ns(void)
 	CU_ASSERT(rsp.status.sct == SPDK_NVME_SCT_GENERIC);
 	CU_ASSERT(rsp.status.sc == SPDK_NVME_SC_INVALID_NAMESPACE_OR_FORMAT);
 	CU_ASSERT(spdk_mem_all_zero(&nsdata, sizeof(nsdata)));
+}
+
+static void
+test_set_get_features(void)
+{
+	struct spdk_nvmf_subsystem subsystem = {};
+	struct spdk_nvmf_qpair admin_qpair = {};
+	struct spdk_nvmf_ctrlr ctrlr = { .subsys = &subsystem, .admin_qpair = &admin_qpair };
+	union nvmf_h2c_msg cmd = {};
+	union nvmf_c2h_msg rsp = {};
+	struct spdk_nvmf_ns ns[3];
+	struct spdk_nvmf_ns *ns_arr[3] = {&ns[0], NULL, &ns[2]};;
+	struct spdk_nvmf_request req;
+	int rc;
+
+	subsystem.ns = ns_arr;
+	subsystem.max_nsid = SPDK_COUNTOF(ns_arr);
+	admin_qpair.ctrlr = &ctrlr;
+	req.qpair = &admin_qpair;
+	cmd.nvme_cmd.nsid = 1;
+	req.cmd = &cmd;
+	req.rsp = &rsp;
+
+	/* Set SPDK_NVME_FEAT_HOST_RESERVE_PERSIST feature */
+	cmd.nvme_cmd.opc = SPDK_NVME_OPC_SET_FEATURES;
+	cmd.nvme_cmd.cdw11_bits.feat_rsv_persistence.bits.ptpl = 1;
+	ns[0].ptpl_file = "testcfg";
+	rc = nvmf_ctrlr_set_features_reservation_persistence(&req);
+	CU_ASSERT(rc == SPDK_NVMF_REQUEST_EXEC_STATUS_COMPLETE);
+	CU_ASSERT(rsp.nvme_cpl.status.sct == SPDK_NVME_SCT_COMMAND_SPECIFIC);
+	CU_ASSERT(rsp.nvme_cpl.status.sc == SPDK_NVME_SC_FEATURE_ID_NOT_SAVEABLE);
+	CU_ASSERT(ns[0].ptpl_activated == true);
+
+	/* Get SPDK_NVME_FEAT_HOST_RESERVE_PERSIST feature */
+	cmd.nvme_cmd.opc = SPDK_NVME_OPC_GET_FEATURES;
+	cmd.nvme_cmd.cdw10_bits.get_features.fid = SPDK_NVME_FEAT_HOST_RESERVE_PERSIST;
+	rc = nvmf_ctrlr_get_features_reservation_persistence(&req);
+	CU_ASSERT(rc == SPDK_NVMF_REQUEST_EXEC_STATUS_COMPLETE);
+	CU_ASSERT(rsp.nvme_cpl.status.sct == SPDK_NVME_SCT_GENERIC);
+	CU_ASSERT(rsp.nvme_cpl.status.sc == SPDK_NVME_SC_SUCCESS);
+	CU_ASSERT(rsp.nvme_cpl.cdw0 == 1);
+
+
+	/* Get SPDK_NVME_FEAT_TEMPERATURE_THRESHOLD - valid TMPSEL */
+	cmd.nvme_cmd.opc = SPDK_NVME_OPC_GET_FEATURES;
+	cmd.nvme_cmd.cdw11 = 0x42;
+	cmd.nvme_cmd.cdw10_bits.get_features.fid = SPDK_NVME_FEAT_TEMPERATURE_THRESHOLD;
+
+	rc = nvmf_ctrlr_get_features(&req);
+	CU_ASSERT(rc == SPDK_NVMF_REQUEST_EXEC_STATUS_COMPLETE);
+
+	/* Get SPDK_NVME_FEAT_TEMPERATURE_THRESHOLD - invalid TMPSEL */
+	cmd.nvme_cmd.opc = SPDK_NVME_OPC_GET_FEATURES;
+	cmd.nvme_cmd.cdw11 = 0x42 | 1 << 16 | 1 << 19; /* Set reserved value */
+	cmd.nvme_cmd.cdw10_bits.get_features.fid = SPDK_NVME_FEAT_TEMPERATURE_THRESHOLD;
+
+	rc = nvmf_ctrlr_get_features(&req);
+	CU_ASSERT(rc == SPDK_NVMF_REQUEST_EXEC_STATUS_COMPLETE);
+	CU_ASSERT(rsp.nvme_cpl.status.sct == SPDK_NVME_SCT_GENERIC);
+	CU_ASSERT(rsp.nvme_cpl.status.sc == SPDK_NVME_SC_INVALID_FIELD);
+
+	/* Set SPDK_NVME_FEAT_TEMPERATURE_THRESHOLD - valid TMPSEL */
+	cmd.nvme_cmd.opc = SPDK_NVME_OPC_SET_FEATURES;
+	cmd.nvme_cmd.cdw11 = 0x42;
+	cmd.nvme_cmd.cdw10_bits.set_features.fid = SPDK_NVME_FEAT_TEMPERATURE_THRESHOLD;
+
+	rc = nvmf_ctrlr_set_features(&req);
+	CU_ASSERT(rc == SPDK_NVMF_REQUEST_EXEC_STATUS_COMPLETE);
+
+	/* Set SPDK_NVME_FEAT_TEMPERATURE_THRESHOLD - invalid TMPSEL */
+	cmd.nvme_cmd.opc = SPDK_NVME_OPC_SET_FEATURES;
+	cmd.nvme_cmd.cdw11 = 0x42 | 1 << 16 | 1 << 19; /* Set reserved value */
+	cmd.nvme_cmd.cdw10_bits.set_features.fid = SPDK_NVME_FEAT_TEMPERATURE_THRESHOLD;
+
+	rc = nvmf_ctrlr_set_features(&req);
+	CU_ASSERT(rc == SPDK_NVMF_REQUEST_EXEC_STATUS_COMPLETE);
+	CU_ASSERT(rsp.nvme_cpl.status.sct == SPDK_NVME_SCT_GENERIC);
+	CU_ASSERT(rsp.nvme_cpl.status.sc == SPDK_NVME_SC_INVALID_FIELD);
+
+	/* Set SPDK_NVME_FEAT_TEMPERATURE_THRESHOLD - invalid THSEL */
+	cmd.nvme_cmd.opc = SPDK_NVME_OPC_SET_FEATURES;
+	cmd.nvme_cmd.cdw11 = 0x42;
+	cmd.nvme_cmd.cdw11_bits.feat_temp_threshold.bits.thsel = 0x3; /* Set reserved value */
+	cmd.nvme_cmd.cdw10_bits.set_features.fid = SPDK_NVME_FEAT_TEMPERATURE_THRESHOLD;
+
+	rc = nvmf_ctrlr_set_features(&req);
+	CU_ASSERT(rc == SPDK_NVMF_REQUEST_EXEC_STATUS_COMPLETE);
+	CU_ASSERT(rsp.nvme_cpl.status.sct == SPDK_NVME_SCT_GENERIC);
+	CU_ASSERT(rsp.nvme_cpl.status.sc == SPDK_NVME_SC_INVALID_FIELD);
+
+
+	/* get SPDK_NVME_FEAT_ERROR_RECOVERY - generic */
+	cmd.nvme_cmd.opc = SPDK_NVME_OPC_SET_FEATURES;
+	cmd.nvme_cmd.cdw10_bits.get_features.fid = SPDK_NVME_FEAT_ERROR_RECOVERY;
+
+	rc = nvmf_ctrlr_get_features(&req);
+	CU_ASSERT(rc == SPDK_NVMF_REQUEST_EXEC_STATUS_COMPLETE);
+
+	/* Set SPDK_NVME_FEAT_ERROR_RECOVERY - DULBE set */
+	cmd.nvme_cmd.opc = SPDK_NVME_OPC_SET_FEATURES;
+	cmd.nvme_cmd.cdw11 = 0x42;
+	cmd.nvme_cmd.cdw11_bits.feat_error_recovery.bits.dulbe = 0x1;
+	cmd.nvme_cmd.cdw10_bits.set_features.fid = SPDK_NVME_FEAT_ERROR_RECOVERY;
+
+	rc = nvmf_ctrlr_set_features(&req);
+	CU_ASSERT(rc == SPDK_NVMF_REQUEST_EXEC_STATUS_COMPLETE);
+	CU_ASSERT(rsp.nvme_cpl.status.sct == SPDK_NVME_SCT_GENERIC);
+	CU_ASSERT(rsp.nvme_cpl.status.sc == SPDK_NVME_SC_INVALID_FIELD);
+
+	/* Set SPDK_NVME_FEAT_ERROR_RECOVERY - DULBE cleared */
+	cmd.nvme_cmd.opc = SPDK_NVME_OPC_SET_FEATURES;
+	cmd.nvme_cmd.cdw11 = 0x42;
+	cmd.nvme_cmd.cdw11_bits.feat_error_recovery.bits.dulbe = 0x0;
+	cmd.nvme_cmd.cdw10_bits.set_features.fid = SPDK_NVME_FEAT_ERROR_RECOVERY;
+
+	rc = nvmf_ctrlr_set_features(&req);
+	CU_ASSERT(rc == SPDK_NVMF_REQUEST_EXEC_STATUS_COMPLETE);
 }
 
 /*
@@ -1081,9 +1278,9 @@ test_reservation_notification_log_page(void)
 	struct spdk_nvmf_qpair qpair;
 	struct spdk_nvmf_ns ns;
 	struct spdk_nvmf_request req;
-	union nvmf_h2c_msg cmd;
-	union nvmf_c2h_msg rsp;
-	union spdk_nvme_async_event_completion event = {0};
+	union nvmf_h2c_msg cmd = {};
+	union nvmf_c2h_msg rsp = {};
+	union spdk_nvme_async_event_completion event = {};
 	struct spdk_nvme_reservation_notification_log logs[3];
 
 	memset(&ctrlr, 0, sizeof(ctrlr));
@@ -1095,12 +1292,12 @@ test_reservation_notification_log_page(void)
 	ns.mask = SPDK_NVME_REGISTRATION_PREEMPTED_MASK |
 		  SPDK_NVME_RESERVATION_RELEASED_MASK |
 		  SPDK_NVME_RESERVATION_PREEMPTED_MASK;
-	spdk_nvmf_ctrlr_reservation_notice_log(&ctrlr, &ns,
-					       SPDK_NVME_REGISTRATION_PREEMPTED);
-	spdk_nvmf_ctrlr_reservation_notice_log(&ctrlr, &ns,
-					       SPDK_NVME_RESERVATION_RELEASED);
-	spdk_nvmf_ctrlr_reservation_notice_log(&ctrlr, &ns,
-					       SPDK_NVME_RESERVATION_PREEMPTED);
+	nvmf_ctrlr_reservation_notice_log(&ctrlr, &ns,
+					  SPDK_NVME_REGISTRATION_PREEMPTED);
+	nvmf_ctrlr_reservation_notice_log(&ctrlr, &ns,
+					  SPDK_NVME_RESERVATION_RELEASED);
+	nvmf_ctrlr_reservation_notice_log(&ctrlr, &ns,
+					  SPDK_NVME_RESERVATION_PREEMPTED);
 	poll_threads();
 	SPDK_CU_ASSERT_FATAL(TAILQ_EMPTY(&ctrlr.log_head));
 
@@ -1111,19 +1308,20 @@ test_reservation_notification_log_page(void)
 	ctrlr.num_avail_log_pages = 0;
 	req.cmd = &cmd;
 	req.rsp = &rsp;
-	ctrlr.aer_req = &req;
+	ctrlr.aer_req[0] = &req;
+	ctrlr.nr_aer_reqs = 1;
 	req.qpair = &qpair;
 	TAILQ_INIT(&qpair.outstanding);
 	qpair.ctrlr = NULL;
 	qpair.state = SPDK_NVMF_QPAIR_ACTIVE;
 	TAILQ_INSERT_TAIL(&qpair.outstanding, &req, link);
 
-	spdk_nvmf_ctrlr_reservation_notice_log(&ctrlr, &ns,
-					       SPDK_NVME_REGISTRATION_PREEMPTED);
-	spdk_nvmf_ctrlr_reservation_notice_log(&ctrlr, &ns,
-					       SPDK_NVME_RESERVATION_RELEASED);
-	spdk_nvmf_ctrlr_reservation_notice_log(&ctrlr, &ns,
-					       SPDK_NVME_RESERVATION_PREEMPTED);
+	nvmf_ctrlr_reservation_notice_log(&ctrlr, &ns,
+					  SPDK_NVME_REGISTRATION_PREEMPTED);
+	nvmf_ctrlr_reservation_notice_log(&ctrlr, &ns,
+					  SPDK_NVME_RESERVATION_RELEASED);
+	nvmf_ctrlr_reservation_notice_log(&ctrlr, &ns,
+					  SPDK_NVME_RESERVATION_PREEMPTED);
 	poll_threads();
 	event.raw = rsp.nvme_cpl.cdw0;
 	SPDK_CU_ASSERT_FATAL(event.bits.async_event_type == SPDK_NVME_ASYNC_EVENT_TYPE_IO);
@@ -1132,8 +1330,345 @@ test_reservation_notification_log_page(void)
 	SPDK_CU_ASSERT_FATAL(ctrlr.num_avail_log_pages == 3);
 
 	/* Test Case: Get Log Page to clear the log pages */
-	spdk_nvmf_get_reservation_notification_log_page(&ctrlr, (void *)logs, 0, sizeof(logs));
+	nvmf_get_reservation_notification_log_page(&ctrlr, (void *)logs, 0, sizeof(logs));
 	SPDK_CU_ASSERT_FATAL(ctrlr.num_avail_log_pages == 0);
+}
+
+static void
+test_get_dif_ctx(void)
+{
+	struct spdk_nvmf_subsystem subsystem = {};
+	struct spdk_nvmf_request req = {};
+	struct spdk_nvmf_qpair qpair = {};
+	struct spdk_nvmf_ctrlr ctrlr = {};
+	struct spdk_nvmf_ns ns = {};
+	struct spdk_nvmf_ns *_ns = NULL;
+	struct spdk_bdev bdev = {};
+	union nvmf_h2c_msg cmd = {};
+	struct spdk_dif_ctx dif_ctx = {};
+	bool ret;
+
+	ctrlr.subsys = &subsystem;
+
+	qpair.ctrlr = &ctrlr;
+
+	req.qpair = &qpair;
+	req.cmd = &cmd;
+
+	ns.bdev = &bdev;
+
+	ctrlr.dif_insert_or_strip = false;
+
+	ret = spdk_nvmf_request_get_dif_ctx(&req, &dif_ctx);
+	CU_ASSERT(ret == false);
+
+	ctrlr.dif_insert_or_strip = true;
+	qpair.state = SPDK_NVMF_QPAIR_UNINITIALIZED;
+
+	ret = spdk_nvmf_request_get_dif_ctx(&req, &dif_ctx);
+	CU_ASSERT(ret == false);
+
+	qpair.state = SPDK_NVMF_QPAIR_ACTIVE;
+	cmd.nvmf_cmd.opcode = SPDK_NVME_OPC_FABRIC;
+
+	ret = spdk_nvmf_request_get_dif_ctx(&req, &dif_ctx);
+	CU_ASSERT(ret == false);
+
+	cmd.nvmf_cmd.opcode = SPDK_NVME_OPC_FLUSH;
+
+	ret = spdk_nvmf_request_get_dif_ctx(&req, &dif_ctx);
+	CU_ASSERT(ret == false);
+
+	qpair.qid = 1;
+
+	ret = spdk_nvmf_request_get_dif_ctx(&req, &dif_ctx);
+	CU_ASSERT(ret == false);
+
+	cmd.nvme_cmd.nsid = 1;
+
+	ret = spdk_nvmf_request_get_dif_ctx(&req, &dif_ctx);
+	CU_ASSERT(ret == false);
+
+	subsystem.max_nsid = 1;
+	subsystem.ns = &_ns;
+	subsystem.ns[0] = &ns;
+
+	ret = spdk_nvmf_request_get_dif_ctx(&req, &dif_ctx);
+	CU_ASSERT(ret == false);
+
+	cmd.nvmf_cmd.opcode = SPDK_NVME_OPC_WRITE;
+
+	ret = spdk_nvmf_request_get_dif_ctx(&req, &dif_ctx);
+	CU_ASSERT(ret == true);
+}
+
+static void
+test_identify_ctrlr(void)
+{
+	struct spdk_nvmf_subsystem subsystem = {
+		.subtype = SPDK_NVMF_SUBTYPE_NVME
+	};
+	struct spdk_nvmf_transport_ops tops = {};
+	struct spdk_nvmf_transport transport = {
+		.ops = &tops,
+		.opts = {
+			.in_capsule_data_size = 4096,
+		},
+	};
+	struct spdk_nvmf_qpair admin_qpair = { .transport = &transport};
+	struct spdk_nvmf_ctrlr ctrlr = { .subsys = &subsystem, .admin_qpair = &admin_qpair };
+	struct spdk_nvme_ctrlr_data cdata = {};
+	uint32_t expected_ioccsz;
+
+	nvmf_ctrlr_cdata_init(&transport, &subsystem, &ctrlr.cdata);
+
+	/* Check ioccsz, TCP transport */
+	tops.type = SPDK_NVME_TRANSPORT_TCP;
+	expected_ioccsz = sizeof(struct spdk_nvme_cmd) / 16 + transport.opts.in_capsule_data_size / 16;
+	CU_ASSERT(spdk_nvmf_ctrlr_identify_ctrlr(&ctrlr, &cdata) == SPDK_NVMF_REQUEST_EXEC_STATUS_COMPLETE);
+	CU_ASSERT(cdata.nvmf_specific.ioccsz == expected_ioccsz);
+
+	/* Check ioccsz, RDMA transport */
+	tops.type = SPDK_NVME_TRANSPORT_RDMA;
+	expected_ioccsz = sizeof(struct spdk_nvme_cmd) / 16 + transport.opts.in_capsule_data_size / 16;
+	CU_ASSERT(spdk_nvmf_ctrlr_identify_ctrlr(&ctrlr, &cdata) == SPDK_NVMF_REQUEST_EXEC_STATUS_COMPLETE);
+	CU_ASSERT(cdata.nvmf_specific.ioccsz == expected_ioccsz);
+
+	/* Check ioccsz, TCP transport with dif_insert_or_strip */
+	tops.type = SPDK_NVME_TRANSPORT_TCP;
+	ctrlr.dif_insert_or_strip = true;
+	expected_ioccsz = sizeof(struct spdk_nvme_cmd) / 16 + transport.opts.in_capsule_data_size / 16;
+	CU_ASSERT(spdk_nvmf_ctrlr_identify_ctrlr(&ctrlr, &cdata) == SPDK_NVMF_REQUEST_EXEC_STATUS_COMPLETE);
+	CU_ASSERT(cdata.nvmf_specific.ioccsz == expected_ioccsz);
+}
+
+static int
+custom_admin_cmd_hdlr(struct spdk_nvmf_request *req)
+{
+	req->rsp->nvme_cpl.status.sc = SPDK_NVME_SC_SUCCESS;
+
+	return SPDK_NVMF_REQUEST_EXEC_STATUS_COMPLETE;
+};
+
+static void
+test_custom_admin_cmd(void)
+{
+	struct spdk_nvmf_subsystem subsystem;
+	struct spdk_nvmf_qpair qpair;
+	struct spdk_nvmf_ctrlr ctrlr;
+	struct spdk_nvmf_request req;
+	struct spdk_nvmf_ns *ns_ptrs[1];
+	struct spdk_nvmf_ns ns;
+	union nvmf_h2c_msg cmd;
+	union nvmf_c2h_msg rsp;
+	struct spdk_bdev bdev;
+	uint8_t buf[4096];
+	int rc;
+
+	memset(&subsystem, 0, sizeof(subsystem));
+	ns_ptrs[0] = &ns;
+	subsystem.ns = ns_ptrs;
+	subsystem.max_nsid = 1;
+	subsystem.subtype = SPDK_NVMF_SUBTYPE_NVME;
+
+	memset(&ns, 0, sizeof(ns));
+	ns.opts.nsid = 1;
+	ns.bdev = &bdev;
+
+	memset(&qpair, 0, sizeof(qpair));
+	qpair.ctrlr = &ctrlr;
+
+	memset(&ctrlr, 0, sizeof(ctrlr));
+	ctrlr.subsys = &subsystem;
+	ctrlr.vcprop.cc.bits.en = 1;
+
+	memset(&req, 0, sizeof(req));
+	req.qpair = &qpair;
+	req.cmd = &cmd;
+	req.rsp = &rsp;
+	req.xfer = SPDK_NVME_DATA_CONTROLLER_TO_HOST;
+	req.data = buf;
+	req.length = sizeof(buf);
+
+	memset(&cmd, 0, sizeof(cmd));
+	cmd.nvme_cmd.opc = 0xc1;
+	cmd.nvme_cmd.nsid = 0;
+	memset(&rsp, 0, sizeof(rsp));
+
+	spdk_nvmf_set_custom_admin_cmd_hdlr(cmd.nvme_cmd.opc, custom_admin_cmd_hdlr);
+
+	/* Ensure that our hdlr is being called */
+	rc = nvmf_ctrlr_process_admin_cmd(&req);
+	CU_ASSERT(rc == SPDK_NVMF_REQUEST_EXEC_STATUS_COMPLETE);
+	CU_ASSERT(rsp.nvme_cpl.status.sct == SPDK_NVME_SCT_GENERIC);
+	CU_ASSERT(rsp.nvme_cpl.status.sc == SPDK_NVME_SC_SUCCESS);
+}
+
+static void
+test_fused_compare_and_write(void)
+{
+	struct spdk_nvmf_request req = {};
+	struct spdk_nvmf_qpair qpair = {};
+	struct spdk_nvme_cmd cmd = {};
+	union nvmf_c2h_msg rsp = {};
+	struct spdk_nvmf_ctrlr ctrlr = {};
+	struct spdk_nvmf_subsystem subsystem = {};
+	struct spdk_nvmf_ns ns = {};
+	struct spdk_nvmf_ns *subsys_ns[1] = {};
+	struct spdk_bdev bdev = {};
+
+	struct spdk_nvmf_poll_group group = {};
+	struct spdk_nvmf_subsystem_poll_group sgroups = {};
+	struct spdk_nvmf_subsystem_pg_ns_info ns_info = {};
+
+	ns.bdev = &bdev;
+
+	subsystem.id = 0;
+	subsystem.max_nsid = 1;
+	subsys_ns[0] = &ns;
+	subsystem.ns = (struct spdk_nvmf_ns **)&subsys_ns;
+
+	/* Enable controller */
+	ctrlr.vcprop.cc.bits.en = 1;
+	ctrlr.subsys = (struct spdk_nvmf_subsystem *)&subsystem;
+
+	group.num_sgroups = 1;
+	sgroups.state = SPDK_NVMF_SUBSYSTEM_ACTIVE;
+	sgroups.num_ns = 1;
+	sgroups.ns_info = &ns_info;
+	TAILQ_INIT(&sgroups.queued);
+	group.sgroups = &sgroups;
+	TAILQ_INIT(&qpair.outstanding);
+
+	qpair.ctrlr = &ctrlr;
+	qpair.group = &group;
+	qpair.qid = 1;
+	qpair.state = SPDK_NVMF_QPAIR_ACTIVE;
+
+	cmd.nsid = 1;
+
+	req.qpair = &qpair;
+	req.cmd = (union nvmf_h2c_msg *)&cmd;
+	req.rsp = &rsp;
+
+	/* SUCCESS/SUCCESS */
+	cmd.fuse = SPDK_NVME_CMD_FUSE_FIRST;
+	cmd.opc = SPDK_NVME_OPC_COMPARE;
+
+	spdk_nvmf_request_exec(&req);
+	CU_ASSERT(qpair.first_fused_req != NULL);
+	CU_ASSERT(nvme_status_success(&rsp.nvme_cpl.status));
+
+	cmd.fuse = SPDK_NVME_CMD_FUSE_SECOND;
+	cmd.opc = SPDK_NVME_OPC_WRITE;
+
+	spdk_nvmf_request_exec(&req);
+	CU_ASSERT(qpair.first_fused_req == NULL);
+	CU_ASSERT(nvme_status_success(&rsp.nvme_cpl.status));
+
+	/* Wrong sequence */
+	cmd.fuse = SPDK_NVME_CMD_FUSE_SECOND;
+	cmd.opc = SPDK_NVME_OPC_WRITE;
+
+	spdk_nvmf_request_exec(&req);
+	CU_ASSERT(!nvme_status_success(&rsp.nvme_cpl.status));
+	CU_ASSERT(qpair.first_fused_req == NULL);
+
+	/* Write as FUSE_FIRST (Wrong op code) */
+	cmd.fuse = SPDK_NVME_CMD_FUSE_FIRST;
+	cmd.opc = SPDK_NVME_OPC_WRITE;
+
+	spdk_nvmf_request_exec(&req);
+	CU_ASSERT(rsp.nvme_cpl.status.sc == SPDK_NVME_SC_INVALID_OPCODE);
+	CU_ASSERT(qpair.first_fused_req == NULL);
+
+	/* Compare as FUSE_SECOND (Wrong op code) */
+	cmd.fuse = SPDK_NVME_CMD_FUSE_FIRST;
+	cmd.opc = SPDK_NVME_OPC_COMPARE;
+
+	spdk_nvmf_request_exec(&req);
+	CU_ASSERT(qpair.first_fused_req != NULL);
+	CU_ASSERT(nvme_status_success(&rsp.nvme_cpl.status));
+
+	cmd.fuse = SPDK_NVME_CMD_FUSE_SECOND;
+	cmd.opc = SPDK_NVME_OPC_COMPARE;
+
+	spdk_nvmf_request_exec(&req);
+	CU_ASSERT(rsp.nvme_cpl.status.sc == SPDK_NVME_SC_INVALID_OPCODE);
+	CU_ASSERT(qpair.first_fused_req == NULL);
+}
+
+static void
+test_multi_async_event_reqs(void)
+{
+	struct spdk_nvmf_subsystem subsystem = {};
+	struct spdk_nvmf_qpair qpair = {};
+	struct spdk_nvmf_ctrlr ctrlr = {};
+	struct spdk_nvmf_request req[5] = {};
+	struct spdk_nvmf_ns *ns_ptrs[1] = {};
+	struct spdk_nvmf_ns ns = {};
+	union nvmf_h2c_msg cmd[5] = {};
+	union nvmf_c2h_msg rsp[5] = {};
+
+	struct spdk_nvmf_poll_group group = {};
+	struct spdk_nvmf_subsystem_poll_group sgroups = {};
+
+	int i;
+
+	ns_ptrs[0] = &ns;
+	subsystem.ns = ns_ptrs;
+	subsystem.max_nsid = 1;
+	subsystem.subtype = SPDK_NVMF_SUBTYPE_NVME;
+
+	ns.opts.nsid = 1;
+	group.sgroups = &sgroups;
+
+	qpair.ctrlr = &ctrlr;
+	qpair.group = &group;
+	TAILQ_INIT(&qpair.outstanding);
+
+	ctrlr.subsys = &subsystem;
+	ctrlr.vcprop.cc.bits.en = 1;
+
+	for (i = 0; i < 5; i++) {
+		cmd[i].nvme_cmd.opc = SPDK_NVME_OPC_ASYNC_EVENT_REQUEST;
+		cmd[i].nvme_cmd.nsid = 1;
+		cmd[i].nvme_cmd.cid = i;
+
+		req[i].qpair = &qpair;
+		req[i].cmd = &cmd[i];
+		req[i].rsp = &rsp[i];
+		TAILQ_INSERT_TAIL(&qpair.outstanding, &req[i], link);
+	}
+
+	/* Target can store NVMF_MAX_ASYNC_EVENTS reqs */
+	sgroups.io_outstanding = NVMF_MAX_ASYNC_EVENTS;
+	for (i = 0; i < NVMF_MAX_ASYNC_EVENTS; i++) {
+		CU_ASSERT(nvmf_ctrlr_process_admin_cmd(&req[i]) == SPDK_NVMF_REQUEST_EXEC_STATUS_ASYNCHRONOUS);
+		CU_ASSERT(ctrlr.nr_aer_reqs == i + 1);
+	}
+	CU_ASSERT(sgroups.io_outstanding == 0);
+
+	/* Exceeding the NVMF_MAX_ASYNC_EVENTS reports error */
+	CU_ASSERT(nvmf_ctrlr_process_admin_cmd(&req[4]) == SPDK_NVMF_REQUEST_EXEC_STATUS_COMPLETE);
+	CU_ASSERT(ctrlr.nr_aer_reqs == NVMF_MAX_ASYNC_EVENTS);
+	CU_ASSERT(rsp[4].nvme_cpl.status.sct = SPDK_NVME_SCT_COMMAND_SPECIFIC);
+	CU_ASSERT(rsp[4].nvme_cpl.status.sc = SPDK_NVME_SC_ASYNC_EVENT_REQUEST_LIMIT_EXCEEDED);
+
+	/* Test if the aer_reqs keep continuous when abort a req in the middle */
+	CU_ASSERT(nvmf_qpair_abort_aer(&qpair, 2) == true);
+	CU_ASSERT(ctrlr.aer_req[0] == &req[0]);
+	CU_ASSERT(ctrlr.aer_req[1] == &req[1]);
+	CU_ASSERT(ctrlr.aer_req[2] == &req[3]);
+
+	CU_ASSERT(nvmf_qpair_abort_aer(&qpair, 3) == true);
+	CU_ASSERT(ctrlr.aer_req[0] == &req[0]);
+	CU_ASSERT(ctrlr.aer_req[1] == &req[1]);
+	CU_ASSERT(ctrlr.aer_req[2] == NULL);
+	CU_ASSERT(ctrlr.nr_aer_reqs == 2);
+
+	TAILQ_REMOVE(&qpair.outstanding, &req[0], link);
+	TAILQ_REMOVE(&qpair.outstanding, &req[1], link);
 }
 
 int main(int argc, char **argv)
@@ -1141,34 +1676,26 @@ int main(int argc, char **argv)
 	CU_pSuite	suite = NULL;
 	unsigned int	num_failures;
 
-	if (CU_initialize_registry() != CUE_SUCCESS) {
-		return CU_get_error();
-	}
+	CU_set_error_action(CUEA_ABORT);
+	CU_initialize_registry();
 
 	suite = CU_add_suite("nvmf", NULL, NULL);
-	if (suite == NULL) {
-		CU_cleanup_registry();
-		return CU_get_error();
-	}
-
-	if (
-		CU_add_test(suite, "get_log_page", test_get_log_page) == NULL ||
-		CU_add_test(suite, "process_fabrics_cmd", test_process_fabrics_cmd) == NULL ||
-		CU_add_test(suite, "connect", test_connect) == NULL ||
-		CU_add_test(suite, "get_ns_id_desc_list", test_get_ns_id_desc_list) == NULL ||
-		CU_add_test(suite, "identify_ns", test_identify_ns) == NULL ||
-		CU_add_test(suite, "reservation_write_exclusive", test_reservation_write_exclusive) == NULL ||
-		CU_add_test(suite, "reservation_exclusive_access", test_reservation_exclusive_access) == NULL ||
-		CU_add_test(suite, "reservation_write_exclusive_regs_only_and_all_regs",
-			    test_reservation_write_exclusive_regs_only_and_all_regs) == NULL ||
-		CU_add_test(suite, "reservation_exclusive_access_regs_only_and_all_regs",
-			    test_reservation_exclusive_access_regs_only_and_all_regs) == NULL ||
-		CU_add_test(suite, "reservation_notification_log_page",
-			    test_reservation_notification_log_page) == NULL
-	) {
-		CU_cleanup_registry();
-		return CU_get_error();
-	}
+	CU_ADD_TEST(suite, test_get_log_page);
+	CU_ADD_TEST(suite, test_process_fabrics_cmd);
+	CU_ADD_TEST(suite, test_connect);
+	CU_ADD_TEST(suite, test_get_ns_id_desc_list);
+	CU_ADD_TEST(suite, test_identify_ns);
+	CU_ADD_TEST(suite, test_reservation_write_exclusive);
+	CU_ADD_TEST(suite, test_reservation_exclusive_access);
+	CU_ADD_TEST(suite, test_reservation_write_exclusive_regs_only_and_all_regs);
+	CU_ADD_TEST(suite, test_reservation_exclusive_access_regs_only_and_all_regs);
+	CU_ADD_TEST(suite, test_reservation_notification_log_page);
+	CU_ADD_TEST(suite, test_get_dif_ctx);
+	CU_ADD_TEST(suite, test_set_get_features);
+	CU_ADD_TEST(suite, test_identify_ctrlr);
+	CU_ADD_TEST(suite, test_custom_admin_cmd);
+	CU_ADD_TEST(suite, test_fused_compare_and_write);
+	CU_ADD_TEST(suite, test_multi_async_event_reqs);
 
 	allocate_threads(1);
 	set_thread(0);

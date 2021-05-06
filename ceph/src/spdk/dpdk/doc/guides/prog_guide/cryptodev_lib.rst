@@ -1,5 +1,5 @@
 ..  SPDX-License-Identifier: BSD-3-Clause
-    Copyright(c) 2016-2017 Intel Corporation.
+    Copyright(c) 2016-2020 Intel Corporation.
 
 Cryptography Device Library
 ===========================
@@ -52,7 +52,7 @@ From the command line using the --vdev EAL option
 
    Example: ``--vdev  'crypto_aesni_mb0' --vdev  'crypto_aesni_mb1'``
 
-Our using the rte_vdev_init API within the application code.
+Or using the rte_vdev_init API within the application code.
 
 .. code-block:: c
 
@@ -304,7 +304,7 @@ Crypto operations is usually completed during the enqueue call to the Crypto
 device. The dequeue burst API will retrieve any processed operations available
 from the queue pair on the Crypto device, from physical devices this is usually
 directly from the devices processed queue, and for virtual device's from a
-``rte_ring`` where processed operations are place after being processed on the
+``rte_ring`` where processed operations are placed after being processed on the
 enqueue call.
 
 
@@ -497,7 +497,10 @@ Symmetric Crypto transforms (``rte_crypto_sym_xform``) are the mechanism used
 to specify the details of the Crypto operation. For chaining of symmetric
 operations such as cipher encrypt and authentication generate, the next pointer
 allows transform to be chained together. Crypto devices which support chaining
-must publish the chaining of symmetric Crypto operations feature flag.
+must publish the chaining of symmetric Crypto operations feature flag. Allocation of the
+xform structure is in the application domain. To allow future API extensions in a
+backwardly compatible manner, e.g. addition of a new parameter, the application should
+zero the full xform struct before populating it.
 
 Currently there are three transforms types cipher, authentication and AEAD.
 Also it is important to note that the order in which the
@@ -596,6 +599,37 @@ chain.
             };
         };
     };
+
+Synchronous mode
+----------------
+
+Some cryptodevs support synchronous mode alongside with a standard asynchronous
+mode. In that case operations are performed directly when calling
+``rte_cryptodev_sym_cpu_crypto_process`` method instead of enqueuing and
+dequeuing an operation before. This mode of operation allows cryptodevs which
+utilize CPU cryptographic acceleration to have significant performance boost
+comparing to standard asynchronous approach. Cryptodevs supporting synchronous
+mode have ``RTE_CRYPTODEV_FF_SYM_CPU_CRYPTO`` feature flag set.
+
+To perform a synchronous operation a call to
+``rte_cryptodev_sym_cpu_crypto_process`` has to be made with vectorized
+operation descriptor (``struct rte_crypto_sym_vec``) containing:
+
+- ``num`` - number of operations to perform,
+- pointer to an array of size ``num`` containing a scatter-gather list
+  descriptors of performed operations (``struct rte_crypto_sgl``). Each instance
+  of ``struct rte_crypto_sgl`` consists of a number of segments and a pointer to
+  an array of segment descriptors ``struct rte_crypto_vec``;
+- pointers to arrays of size ``num`` containing IV, AAD and digest information,
+- pointer to an array of size ``num`` where status information will be stored
+  for each operation.
+
+Function returns a number of successfully completed operations and sets
+appropriate status number for each operation in the status array provided as
+a call argument. Status different than zero must be treated as error.
+
+For more details, e.g. how to convert an mbuf to an SGL, please refer to an
+example usage in the IPsec library implementation.
 
 Sample code
 -----------
@@ -873,7 +907,15 @@ private asymmetric session data. Once this is done, session should be freed usin
 
 Asymmetric Sessionless Support
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-Currently asymmetric crypto framework does not support sessionless.
+
+Asymmetric crypto framework supports session-less operations as well.
+
+Fields that should be set by user are:
+
+Member xform of struct rte_crypto_asym_op should point to the user created rte_crypto_asym_xform.
+Note that rte_crypto_asym_xform should be immutable for the lifetime of associated crypto_op.
+
+Member sess_type of rte_crypto_op should also be set to RTE_CRYPTO_OP_SESSIONLESS.
 
 Transforms and Transform Chaining
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -881,7 +923,10 @@ Transforms and Transform Chaining
 Asymmetric Crypto transforms (``rte_crypto_asym_xform``) are the mechanism used
 to specify the details of the asymmetric Crypto operation. Next pointer within
 xform allows transform to be chained together. Also it is important to note that
-the order in which the transforms are passed indicates the order of the chaining.
+the order in which the transforms are passed indicates the order of the chaining. Allocation
+of the xform structure is in the application domain. To allow future API extensions in a
+backwardly compatible manner, e.g. addition of a new parameter, the application should
+zero the full xform struct before populating it.
 
 Not all asymmetric crypto xforms are supported for chaining. Currently supported
 asymmetric crypto chaining is Diffie-Hellman private key generation followed by
@@ -1083,4 +1128,4 @@ Asymmetric Crypto Device API
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 The cryptodev Library API is described in the
-`DPDK API Reference <http://doc.dpdk.org/api/>`_
+`DPDK API Reference <https://doc.dpdk.org/api/>`_

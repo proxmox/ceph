@@ -19,6 +19,8 @@ namespace libradosstriper
   class RadosStriper;
 }
 
+namespace neorados { class RADOS; }
+
 namespace librados {
 
 using ceph::bufferlist;
@@ -514,12 +516,8 @@ inline namespace v14_2_0 {
      */
     void set_redirect(const std::string& tgt_obj, const IoCtx& tgt_ioctx,
 		      uint64_t tgt_version, int flag = 0);
-    void set_chunk(uint64_t src_offset, uint64_t src_length, const IoCtx& tgt_ioctx,
-                   std::string tgt_oid, uint64_t tgt_offset, int flag = 0);
     void tier_promote();
     void unset_manifest();
-    void tier_flush();
-
 
     friend class IoCtx;
   };
@@ -733,6 +731,33 @@ inline namespace v14_2_0 {
      * triggering a promote on the OSD (that is then evicted).
      */
     void cache_evict();
+
+    /**
+     * Extensible tier
+     *
+     * set_chunk: make a chunk pointing a part of the source object at the target 
+     * 		  object
+     *
+     * @param src_offset [in] source offset to indicate the start position of 
+     * 				a chunk in the source object
+     * @param src_length [in] source length to set the length of the chunk
+     * @param tgt_oid    [in] target object's id to set a chunk
+     * @param tgt_offset [in] the start position of the target object
+     * @param flag       [in] flag for the source object
+     *
+     */
+    void set_chunk(uint64_t src_offset, uint64_t src_length, const IoCtx& tgt_ioctx,
+                   std::string tgt_oid, uint64_t tgt_offset, int flag = 0);
+    /**
+     * flush a manifest tier object to backing tier; will block racing
+     * updates.
+     */
+    void tier_flush();
+    /**
+     * evict a manifest tier object to backing tier; will block racing
+     * updates.
+     */
+    void tier_evict();
   };
 
   /* IoCtx : This is a context in which we can perform I/O.
@@ -1217,6 +1242,12 @@ inline namespace v14_2_0 {
                    bufferlist& bl,         ///< optional broadcast payload
                    uint64_t timeout_ms,    ///< timeout (in ms)
                    bufferlist *pbl);       ///< reply buffer
+   /*
+    * Decode a notify response into acks and timeout vectors.
+    */
+    void decode_notify_response(bufferlist &bl,
+                                std::vector<librados::notify_ack_t> *acks,
+                                std::vector<librados::notify_timeout_t> *timeouts);
 
     int list_watchers(const std::string& o, std::list<obj_watch_t> *out_watchers);
     int list_snaps(const std::string& o, snap_set_t *out_snaps);
@@ -1333,6 +1364,7 @@ inline namespace v14_2_0 {
     friend class Rados; // Only Rados can use our private constructor to create IoCtxes.
     friend class libradosstriper::RadosStriper; // Striper needs to see our IoCtxImpl
     friend class ObjectWriteOperation;  // copy_from needs to see our IoCtxImpl
+    friend class ObjectReadOperation;  // set_chunk needs to see our IoCtxImpl
 
     IoCtxImpl *io_ctx_impl;
   };
@@ -1418,7 +1450,7 @@ inline namespace v14_2_0 {
     int ioctx_create2(int64_t pool_id, IoCtx &pioctx);
 
     // Features useful for test cases
-    void test_blacklist_self(bool set);
+    void test_blocklist_self(bool set);
 
     /* pool info */
     int pool_list(std::list<std::string>& v);
@@ -1486,8 +1518,10 @@ inline namespace v14_2_0 {
     /// get/wait for the most recent osdmap
     int wait_for_latest_osdmap();
 
-    int blacklist_add(const std::string& client_address,
+    int blocklist_add(const std::string& client_address,
                       uint32_t expire_seconds);
+
+    std::string get_addrs() const;
 
     /*
      * pool aio
@@ -1503,9 +1537,11 @@ inline namespace v14_2_0 {
 						callback_t cb_safe)
       __attribute__ ((deprecated));
     static AioCompletion *aio_create_completion(void *cb_arg, callback_t cb_complete);
-    
+
     friend std::ostream& operator<<(std::ostream &oss, const Rados& r);
   private:
+    friend class neorados::RADOS;
+
     // We don't allow assignment or copying
     Rados(const Rados& rhs);
     const Rados& operator=(const Rados& rhs);

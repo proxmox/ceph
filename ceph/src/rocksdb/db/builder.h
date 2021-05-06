@@ -11,6 +11,7 @@
 #include <vector>
 #include "db/range_tombstone_fragmenter.h"
 #include "db/table_properties_collector.h"
+#include "logging/event_logger.h"
 #include "options/cf_options.h"
 #include "rocksdb/comparator.h"
 #include "rocksdb/env.h"
@@ -20,9 +21,8 @@
 #include "rocksdb/table_properties.h"
 #include "rocksdb/types.h"
 #include "table/scoped_arena_iterator.h"
-#include "util/event_logger.h"
 
-namespace rocksdb {
+namespace ROCKSDB_NAMESPACE {
 
 struct Options;
 struct FileMetaData;
@@ -50,7 +50,8 @@ TableBuilder* NewTableBuilder(
     const uint64_t sample_for_compression,
     const CompressionOptions& compression_opts, int level,
     const bool skip_filters = false, const uint64_t creation_time = 0,
-    const uint64_t oldest_key_time = 0, const uint64_t target_file_size = 0);
+    const uint64_t oldest_key_time = 0, const uint64_t target_file_size = 0,
+    const uint64_t file_creation_time = 0);
 
 // Build a Table file from the contents of *iter.  The generated file
 // will be named according to number specified in meta. On success, the rest of
@@ -61,8 +62,9 @@ TableBuilder* NewTableBuilder(
 // @param column_family_name Name of the column family that is also identified
 //    by column_family_id, or empty string if unknown.
 extern Status BuildTable(
-    const std::string& dbname, Env* env, const ImmutableCFOptions& options,
-    const MutableCFOptions& mutable_cf_options, const EnvOptions& env_options,
+    const std::string& dbname, Env* env, FileSystem* fs,
+    const ImmutableCFOptions& options,
+    const MutableCFOptions& mutable_cf_options, const FileOptions& file_options,
     TableCache* table_cache, InternalIterator* iter,
     std::vector<std::unique_ptr<FragmentedRangeTombstoneIterator>>
         range_del_iters,
@@ -80,6 +82,7 @@ extern Status BuildTable(
     const Env::IOPriority io_priority = Env::IO_HIGH,
     TableProperties* table_properties = nullptr, int level = -1,
     const uint64_t creation_time = 0, const uint64_t oldest_key_time = 0,
-    Env::WriteLifeTimeHint write_hint = Env::WLTH_NOT_SET);
+    Env::WriteLifeTimeHint write_hint = Env::WLTH_NOT_SET,
+    const uint64_t file_creation_time = 0);
 
-}  // namespace rocksdb
+}  // namespace ROCKSDB_NAMESPACE

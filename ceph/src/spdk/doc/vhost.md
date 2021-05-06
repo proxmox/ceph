@@ -91,13 +91,13 @@ be restricted to run on a subset of these CPU cores. See @ref vhost_vdev_create 
 details.
 
 ~~~{.sh}
-app/vhost/vhost -S /var/tmp -m 0x3
+build/bin/vhost -S /var/tmp -m 0x3
 ~~~
 
 To list all available vhost options use the following command.
 
 ~~~{.sh}
-app/vhost/vhost -h
+build/bin/vhost -h
 ~~~
 
 # SPDK Configuration {#vhost_config}
@@ -105,7 +105,7 @@ app/vhost/vhost -h
 ## Create bdev (block device) {#vhost_bdev_create}
 
 SPDK bdevs are block devices which will be exposed to the guest OS.
-For vhost-scsi, bdevs are exposed as as SCSI LUNs on SCSI devices attached to the
+For vhost-scsi, bdevs are exposed as SCSI LUNs on SCSI devices attached to the
 vhost-scsi controller in the guest OS.
 For vhost-blk, bdevs are exposed directly as block devices in the guest OS and are
 not associated at all with SCSI.
@@ -118,7 +118,7 @@ This guide will use a malloc bdev (ramdisk) named Malloc0. The following RPC
 will create a 64MB malloc bdev with 512-byte block size.
 
 ~~~{.sh}
-scripts/rpc.py construct_malloc_bdev 64 512 -b Malloc0
+scripts/rpc.py bdev_malloc_create 64 512 -b Malloc0
 ~~~
 
 ## Create a vhost device {#vhost_vdev_create}
@@ -134,7 +134,7 @@ on NUMA systems, the cpumask should specify cores on the same CPU socket as its
 associated VM.
 
 ~~~{.sh}
-scripts/rpc.py construct_vhost_scsi_controller --cpumask 0x1 vhost.0
+scripts/rpc.py vhost_create_scsi_controller --cpumask 0x1 vhost.0
 ~~~
 
 The following RPC will attach the Malloc0 bdev to the vhost.0 vhost-scsi
@@ -143,13 +143,13 @@ target ID 0. SPDK Vhost-SCSI device currently supports only one LUN per SCSI tar
 Additional LUNs can be added by specifying a different target ID.
 
 ~~~{.sh}
-scripts/rpc.py add_vhost_scsi_lun vhost.0 0 Malloc0
+scripts/rpc.py vhost_scsi_controller_add_target vhost.0 0 Malloc0
 ~~~
 
 To remove a bdev from a vhost-scsi controller use the following RPC:
 
 ~~~{.sh}
-scripts/rpc.py remove_vhost_scsi_target vhost.0 0
+scripts/rpc.py vhost_scsi_controller_remove_target vhost.0 0
 ~~~
 
 ### Vhost-BLK
@@ -161,14 +161,14 @@ always CPU 0. For NUMA systems, the cpumask should specify cores on the same CPU
 socket as its associated VM.
 
 ~~~{.sh}
-scripts/rpc.py construct_vhost_blk_controller --cpumask 0x1 vhost.1 Malloc0
+scripts/rpc.py vhost_create_blk_controller --cpumask 0x1 vhost.1 Malloc0
 ~~~
 
-It is also possible to construct a read-only vhost-blk device by specifying an
+It is also possible to create a read-only vhost-blk device by specifying an
 extra `-r` or `--readonly` parameter.
 
 ~~~{.sh}
-scripts/rpc.py construct_vhost_blk_controller --cpumask 0x1 -r vhost.1 Malloc0
+scripts/rpc.py vhost_create_blk_controller --cpumask 0x1 -r vhost.1 Malloc0
 ~~~
 
 ### Vhost-NVMe (experimental)
@@ -180,15 +180,15 @@ controller. Users must specify the maximum I/O queues supported for the
 controller, at least 1 Namespace is required for each controller.
 
 ~~~{.sh}
-$rpc_py construct_vhost_nvme_controller --cpumask 0x1 vhost.2 16
-$rpc_py add_vhost_nvme_ns vhost.2 Malloc0
+$rpc_py vhost_create_nvme_controller --cpumask 0x1 vhost.2 16
+$rpc_py vhost_nvme_controller_add_ns vhost.2 Malloc0
 ~~~
 
 Users can use the following command to remove the controller, all the block
 devices attached to controller's Namespace will be removed automatically.
 
 ~~~{.sh}
-$rpc_py remove_vhost_controller vhost.2
+$rpc_py vhost_delete_controller vhost.2
 ~~~
 
 ## QEMU {#vhost_qemu_config}
@@ -247,7 +247,7 @@ host:~# HUGEMEM=2048 ./scripts/setup.sh
 ~~~
 
 ~~~{.sh}
-host:~# ./app/vhost/vhost -S /var/tmp -s 1024 -m 0x3 &
+host:~# ./build/bin/vhost -S /var/tmp -s 1024 -m 0x3 &
 Starting DPDK 17.11.0 initialization...
 [ DPDK EAL parameters: vhost -c 3 -m 1024 --master-lcore=1 --file-prefix=spdk_pid156014 ]
 EAL: Detected 48 lcore(s)
@@ -260,42 +260,42 @@ reactor.c: 424:_spdk_reactor_run: *NOTICE*: Reactor started on core 0 on socket 
 ~~~
 
 ~~~{.sh}
-host:~# ./scripts/rpc.py construct_nvme_bdev -b Nvme0 -t pcie -a 0000:01:00.0
+host:~# ./scripts/rpc.py bdev_nvme_attach_controller -b Nvme0 -t pcie -a 0000:01:00.0
 EAL: PCI device 0000:01:00.0 on NUMA socket 0
 EAL:   probe driver: 8086:953 spdk_nvme
 EAL:   using IOMMU type 1 (Type 1)
 ~~~
 
 ~~~{.sh}
-host:~# ./scripts/rpc.py construct_malloc_bdev 128 4096 Malloc0
+host:~# ./scripts/rpc.py bdev_malloc_create 128 4096 Malloc0
 Malloc0
 ~~~
 
 ~~~{.sh}
-host:~# ./scripts/rpc.py construct_vhost_scsi_controller --cpumask 0x1 vhost.0
+host:~# ./scripts/rpc.py vhost_create_scsi_controller --cpumask 0x1 vhost.0
 VHOST_CONFIG: vhost-user server: socket created, fd: 21
 VHOST_CONFIG: bind to /var/tmp/vhost.0
 vhost.c: 596:spdk_vhost_dev_construct: *NOTICE*: Controller vhost.0: new controller added
 ~~~
 
 ~~~{.sh}
-host:~# ./scripts/rpc.py add_vhost_scsi_lun vhost.0 0 Nvme0n1
+host:~# ./scripts/rpc.py vhost_scsi_controller_add_target vhost.0 0 Nvme0n1
 vhost_scsi.c: 840:spdk_vhost_scsi_dev_add_tgt: *NOTICE*: Controller vhost.0: defined target 'Target 0' using lun 'Nvme0'
 
 ~~~
 
 ~~~{.sh}
-host:~# ./scripts/rpc.py add_vhost_scsi_lun vhost.0 1 Malloc0
+host:~# ./scripts/rpc.py vhost_scsi_controller_add_target vhost.0 1 Malloc0
 vhost_scsi.c: 840:spdk_vhost_scsi_dev_add_tgt: *NOTICE*: Controller vhost.0: defined target 'Target 1' using lun 'Malloc0'
 ~~~
 
 ~~~{.sh}
-host:~# ./scripts/rpc.py construct_malloc_bdev 64 512 -b Malloc1
+host:~# ./scripts/rpc.py bdev_malloc_create 64 512 -b Malloc1
 Malloc1
 ~~~
 
 ~~~{.sh}
-host:~# ./scripts/rpc.py construct_vhost_blk_controller --cpumask 0x2 vhost.1 Malloc1
+host:~# ./scripts/rpc.py vhost_create_blk_controller --cpumask 0x2 vhost.1 Malloc1
 vhost_blk.c: 719:spdk_vhost_blk_construct: *NOTICE*: Controller vhost.1: using bdev 'Malloc1'
 ~~~
 
@@ -337,7 +337,6 @@ vhost.c:1006:session_shutdown: *NOTICE*: Exiting
 We can see that `sdb` and `sdc` are SPDK vhost-scsi LUNs, and `vda` is SPDK a
 vhost-blk disk.
 
-
 # Advanced Topics {#vhost_advanced_topics}
 
 ## Multi-Queue Block Layer (blk-mq) {#vhost_multiqueue}
@@ -347,9 +346,9 @@ To enable it on Linux, it is required to modify kernel options inside the
 virtual machine.
 
 Instructions below for Ubuntu OS:
+
 1. `vi /etc/default/grub`
-2. Make sure mq is enabled:
-`GRUB_CMDLINE_LINUX="scsi_mod.use_blk_mq=1"`
+2. Make sure mq is enabled: `GRUB_CMDLINE_LINUX="scsi_mod.use_blk_mq=1"`
 3. `sudo update-grub`
 4. Reboot virtual machine
 
@@ -374,11 +373,11 @@ be aborted - possibly flooding a VM with syslog warnings and errors.
 
 ### Hot-attach
 
-Hot-attach is is done by simply attaching a bdev to a vhost controller with a QEMU VM
+Hot-attach is done by simply attaching a bdev to a vhost controller with a QEMU VM
 already started. No other extra action is necessary.
 
 ~~~{.sh}
-scripts/rpc.py add_vhost_scsi_lun vhost.0 0 Malloc0
+scripts/rpc.py vhost_scsi_controller_add_target vhost.0 0 Malloc0
 ~~~
 
 ### Hot-detach
@@ -387,13 +386,13 @@ Just like hot-attach, the hot-detach is done by simply removing bdev from a cont
 when QEMU VM is already started.
 
 ~~~{.sh}
-scripts/rpc.py remove_vhost_scsi_target vhost.0 0
+scripts/rpc.py vhost_scsi_controller_remove_target vhost.0 0
 ~~~
 
 Removing an entire bdev will hot-detach it from a controller as well.
 
 ~~~{.sh}
-scripts/rpc.py delete_malloc_bdev Malloc0
+scripts/rpc.py bdev_malloc_delete Malloc0
 ~~~
 
 # Known bugs and limitations {#vhost_bugs}
@@ -412,5 +411,6 @@ See the [bug report](https://bugzilla.redhat.com/show_bug.cgi?id=1411092) for
 more information.
 
 ## QEMU vhost-user-blk
+
 QEMU [vhost-user-blk](https://git.qemu.org/?p=qemu.git;a=commit;h=00343e4b54ba) is
 supported from version 2.12.

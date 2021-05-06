@@ -19,6 +19,7 @@
 #include "os/bluestore/BlueFS.h"
 #include "os/bluestore/BlueStore.h"
 #include "common/admin_socket.h"
+#include "kv/RocksDBStore.h"
 
 namespace po = boost::program_options;
 
@@ -160,7 +161,10 @@ void add_devices(
       cout << " -> " << target_path;
     }
     cout << std::endl;
-    int r = fs->add_block_device(e.second, e.first, false);
+
+    // We provide no shared allocator which prevents bluefs to operate in R/W mode.
+    // Read-only mode isn't strictly enforced though
+    int r = fs->add_block_device(e.second, e.first, false, 0); // 'reserved' is fake
     if (r < 0) {
       cerr << "unable to open " << e.first << ": " << cpp_strerror(r) << std::endl;
       exit(EXIT_FAILURE);
@@ -168,7 +172,7 @@ void add_devices(
   }
 }
 
-BlueFS *open_bluefs(
+BlueFS *open_bluefs_readonly(
   CephContext *cct,
   const string& path,
   const vector<string>& devs)
@@ -192,7 +196,10 @@ void log_dump(
   const string& path,
   const vector<string>& devs)
 {
-  BlueFS* fs = open_bluefs(cct, path, devs);
+  validate_path(cct, path, true);
+  BlueFS *fs = new BlueFS(cct);
+
+  add_devices(fs, cct, devs);
   int r = fs->log_dump();
   if (r < 0) {
     cerr << "log_dump failed" << ": "
@@ -226,6 +233,9 @@ int main(int argc, char **argv)
   string log_file;
   string key, value;
   vector<string> allocs_name;
+  string empty_sharding(1, '\0');
+  string new_sharding = empty_sharding;
+  string resharding_ctrl;
   int log_level = 30;
   bool fsck_deep = false;
   po::options_description po_options("Options");
@@ -242,6 +252,8 @@ int main(int argc, char **argv)
     ("key,k", po::value<string>(&key), "label metadata key name")
     ("value,v", po::value<string>(&value), "label metadata value")
     ("allocator", po::value<vector<string>>(&allocs_name), "allocator to inspect: 'block'/'bluefs-wal'/'bluefs-db'/'bluefs-slow'")
+    ("sharding", po::value<string>(&new_sharding), "new sharding to apply")
+    ("resharding-ctrl", po::value<string>(&resharding_ctrl), "gives control over resharding procedure details")
     ;
   po::options_description po_positional("Positional options");
   po_positional.add_options()
@@ -262,7 +274,9 @@ int main(int argc, char **argv)
         "bluefs-log-dump, "
         "free-dump, "
         "free-score, "
-        "bluefs-stats")
+        "bluefs-stats, "
+        "reshard, "
+        "show-sharding")
     ;
   po::options_description po_all("All options");
   po_all.add(po_options).add(po_positional);
@@ -395,6 +409,16 @@ int main(int argc, char **argv)
     if (allocs_name.empty())
       allocs_name = vector<string>{"block", "bluefs-db", "bluefs-wal", "bluefs-slow"};
   }
+  if (action == "reshard") {
+    if (path.empty()) {
+      cerr << "must specify bluestore path" << std::endl;
+      exit(EXIT_FAILURE);
+    }
+    if (new_sharding == empty_sharding) {
+      cerr << "must provide reshard specification" << std::endl;
+      exit(EXIT_FAILURE);
+    }
+  }
   vector<const char*> args;
   if (log_file.size()) {
     args.push_back("--log-file");
@@ -404,6 +428,8 @@ int main(int argc, char **argv)
     args.push_back("--debug-bluestore");
     args.push_back(ll);
     args.push_back("--debug-bluefs");
+    args.push_back(ll);
+    args.push_back("--debug-rocksdb");
     args.push_back(ll);
   }
   args.push_back("--no-log-to-stderr");
@@ -575,7 +601,7 @@ int main(int argc, char **argv)
     }
   }
   else if (action == "bluefs-export") {
-    BlueFS *fs = open_bluefs(cct.get(), path, devs);
+    BlueFS *fs = open_bluefs_readonly(cct.get(), path, devs);
 
     vector<string> dirs;
     int r = fs->readdir("", &dirs);
@@ -642,7 +668,7 @@ int main(int argc, char **argv)
 	  int left = size;
 	  while (left) {
 	    bufferlist bl;
-	    r = fs->read(h, &h->buf, pos, left, &bl, NULL);
+	    r = fs->read(h, pos, left, &bl, NULL);
 	    if (r <= 0) {
 	      cerr << "read " << dir << "/" << file << " from " << pos
 		   << " failed: " << cpp_strerror(r) << std::endl;
@@ -880,6 +906,72 @@ int main(int argc, char **argv)
     }
     cout << std::string(out.c_str(), out.length()) << std::endl;
      bluestore.cold_close();
+  } else if (action == "reshard") {
+    auto get_ctrl = [&](size_t& val) {
+      if (!resharding_ctrl.empty()) {
+	size_t pos;
+	std::string token;
+	pos = resharding_ctrl.find('/');
+	token = resharding_ctrl.substr(0, pos);
+	if (pos != std::string::npos)
+	  resharding_ctrl.erase(0, pos + 1);
+	else
+	  resharding_ctrl.erase();
+	char* endptr;
+	val = strtoll(token.c_str(), &endptr, 0);
+	if (*endptr != '\0') {
+	  cerr << "invalid --resharding-ctrl. '" << token << "' is not a number" << std::endl;
+	  exit(EXIT_FAILURE);
+	}
+      }
+    };
+    BlueStore bluestore(cct.get(), path);
+    KeyValueDB *db_ptr;
+    RocksDBStore::resharding_ctrl ctrl;
+    if (!resharding_ctrl.empty()) {
+      get_ctrl(ctrl.bytes_per_iterator);
+      get_ctrl(ctrl.keys_per_iterator);
+      get_ctrl(ctrl.bytes_per_batch);
+      get_ctrl(ctrl.keys_per_batch);
+      if (!resharding_ctrl.empty()) {
+	cerr << "extra chars in --resharding-ctrl" << std::endl;
+	exit(EXIT_FAILURE);
+      }
+    }
+    int r = bluestore.open_db_environment(&db_ptr, true);
+    if (r < 0) {
+      cerr << "error preparing db environment: " << cpp_strerror(r) << std::endl;
+      exit(EXIT_FAILURE);
+    }
+    ceph_assert(db_ptr);
+    RocksDBStore* rocks_db = dynamic_cast<RocksDBStore*>(db_ptr);
+    ceph_assert(rocks_db);
+    r = rocks_db->reshard(new_sharding, &ctrl);
+    if (r < 0) {
+      cerr << "error resharding: " << cpp_strerror(r) << std::endl;
+    } else {
+      cout << "reshard success" << std::endl;
+    }
+    bluestore.close_db_environment();
+  } else if (action == "show-sharding") {
+    BlueStore bluestore(cct.get(), path);
+    KeyValueDB *db_ptr;
+    int r = bluestore.open_db_environment(&db_ptr, false);
+    if (r < 0) {
+      cerr << "error preparing db environment: " << cpp_strerror(r) << std::endl;
+      exit(EXIT_FAILURE);
+    }
+    ceph_assert(db_ptr);
+    RocksDBStore* rocks_db = dynamic_cast<RocksDBStore*>(db_ptr);
+    ceph_assert(rocks_db);
+    std::string sharding;
+    bool res = rocks_db->get_sharding(sharding);
+    bluestore.close_db_environment();
+    if (!res) {
+      cerr << "failed to retrieve sharding def" << std::endl;
+      exit(EXIT_FAILURE);
+    }
+    cout << sharding << std::endl;
   } else {
     cerr << "unrecognized action " << action << std::endl;
     return 1;

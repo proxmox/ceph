@@ -16,8 +16,7 @@ from ..settings import Settings
 from .cephfs import CephFS
 from .cephx import CephX
 from .orchestrator import OrchClient
-from .rgw_client import RgwClient, RequestException, NoCredentialsException
-
+from .rgw_client import NoCredentialsException, NoRgwDaemonsException, RequestException, RgwClient
 
 logger = logging.getLogger('ganesha')
 
@@ -44,9 +43,6 @@ class Ganesha(object):
         location_list = [loc.strip() for loc in location_list_str.split(
             ",")] if location_list_str else []
         for location in location_list:
-            cluster = None
-            pool = None
-            namespace = None
             if not location:
                 raise NFSException("Invalid Ganesha cluster RADOS "
                                    "[cluster_id:]pool/namespace setting: {}"
@@ -69,6 +65,18 @@ class Ganesha(object):
                     pool, namespace = pool_nm, None
                 else:
                     pool, namespace = pool_nm.split('/', 1)
+
+            # Check pool/namespace collision.
+            for clusters in [orch_result, result]:
+                for cluster_name, cluster_data in clusters.items():
+                    if cluster_data['pool'] == pool and cluster_data['namespace'] == namespace:
+                        raise NFSException(
+                            f'Pool `{pool}` and namespace `{namespace}` are already in use by '
+                            f"""NFS-Ganesha cluster called `{cluster_name}`{" that is deployed by "
+                            "the Orchestrator" if cluster_data['type'] == ClusterType.ORCHESTRATOR
+                            else ''}. """
+                            'Please update GANESHA_RADOS_POOL_NAMESPACE setting.'
+                        )
 
             if cluster in orch_result:
                 # cephadm might have set same cluster settings, ask the user to remove it.
@@ -109,7 +117,7 @@ class Ganesha(object):
 
     @classmethod
     def get_ganesha_clusters(cls):
-        return [cluster_id for cluster_id in cls._get_clusters_locations()]
+        return list(cls._get_clusters_locations())
 
     @staticmethod
     def _get_orch_nfs_services() -> List[ServiceDescription]:
@@ -155,7 +163,8 @@ class Ganesha(object):
             if RgwClient.admin_instance().is_service_online() and \
                     RgwClient.admin_instance().is_system_user():
                 result.append("RGW")
-        except (NoCredentialsException, RequestException, LookupError):
+        except (DashboardException, NoCredentialsException, RequestException,
+                NoRgwDaemonsException):
             pass
         return result
 
@@ -213,9 +222,9 @@ class GaneshaConfParser(object):
         return block_name
 
     def parse_block_or_section(self):
-        if self.stream().startswith("%url "):
+        if self.stream().startswith("%url"):
             # section line
-            self.pos += 5
+            self.pos += self.stream().find('rados://')
             idx = self.stream().find('\n')
             if idx == -1:
                 value = self.stream()
@@ -322,7 +331,7 @@ class GaneshaConfParser(object):
         for key, val in block.items():
             if key == 'block_name':
                 continue
-            elif key == '_blocks_':
+            if key == '_blocks_':
                 for blo in val:
                     conf_str += GaneshaConfParser.write_block(blo, depth)
             elif val:
@@ -687,21 +696,21 @@ class Export(object):
             result['attr_expiration_time'] = self.attr_expiration_time
             result['security_label'] = self.security_label
         if 'protocols' not in defaults:
-            result['protocols'] = [p for p in self.protocols]
+            result['protocols'] = list(self.protocols)
         else:
             def_proto = defaults['protocols']
             if not isinstance(def_proto, list):
                 def_proto = set([def_proto])
             if self.protocols != def_proto:
-                result['protocols'] = [p for p in self.protocols]
+                result['protocols'] = list(self.protocols)
         if 'transports' not in defaults:
-            result['transports'] = [t for t in self.transports]
+            result['transports'] = list(self.transports)
         else:
             def_transp = defaults['transports']
             if not isinstance(def_transp, list):
                 def_transp = set([def_transp])
             if self.transports != def_transp:
-                result['transports'] = [t for t in self.transports]
+                result['transports'] = list(self.transports)
 
         result['_blocks_'] = [self.fsal.to_fsal_block()]
         result['_blocks_'].extend([client.to_client_block()
@@ -731,14 +740,14 @@ class Export(object):
             'path': self.path,
             'fsal': self.fsal.to_dict(),
             'cluster_id': self.cluster_id,
-            'daemons': sorted([d for d in self.daemons]),
+            'daemons': sorted(list(self.daemons)),
             'pseudo': self.pseudo,
             'tag': self.tag,
             'access_type': self.access_type,
             'squash': self.squash,
             'security_label': self.security_label,
-            'protocols': sorted([p for p in self.protocols]),
-            'transports': sorted([t for t in self.transports]),
+            'protocols': sorted(list(self.protocols)),
+            'transports': sorted(list(self.transports)),
             'clients': [client.to_dict() for client in self.clients]
         }
 

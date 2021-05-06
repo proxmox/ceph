@@ -3,18 +3,17 @@ import { NO_ERRORS_SCHEMA } from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { By } from '@angular/platform-browser';
 
-import * as _ from 'lodash';
-import { PopoverModule } from 'ngx-bootstrap/popover';
+import _ from 'lodash';
 import { of } from 'rxjs';
 
-import { configureTestBed, i18nProviders } from '../../../../testing/unit-test-helper';
-import { HealthService } from '../../../shared/api/health.service';
-import { Permissions } from '../../../shared/models/permissions';
-import { AuthStorageService } from '../../../shared/services/auth-storage.service';
-import { FeatureTogglesService } from '../../../shared/services/feature-toggles.service';
-import { RefreshIntervalService } from '../../../shared/services/refresh-interval.service';
-import { SharedModule } from '../../../shared/shared.module';
-import { PgCategoryService } from '../../shared/pg-category.service';
+import { PgCategoryService } from '~/app/ceph/shared/pg-category.service';
+import { HealthService } from '~/app/shared/api/health.service';
+import { Permissions } from '~/app/shared/models/permissions';
+import { AuthStorageService } from '~/app/shared/services/auth-storage.service';
+import { FeatureTogglesService } from '~/app/shared/services/feature-toggles.service';
+import { RefreshIntervalService } from '~/app/shared/services/refresh-interval.service';
+import { SharedModule } from '~/app/shared/shared.module';
+import { configureTestBed } from '~/testing/unit-test-helper';
 import { HealthPieComponent } from '../health-pie/health-pie.component';
 import { MdsSummaryPipe } from '../mds-summary.pipe';
 import { MgrSummaryPipe } from '../mgr-summary.pipe';
@@ -49,7 +48,7 @@ describe('HealthComponent', () => {
   let fakeFeatureTogglesService: jasmine.Spy;
 
   configureTestBed({
-    imports: [SharedModule, HttpClientTestingModule, PopoverModule.forRoot()],
+    imports: [SharedModule, HttpClientTestingModule],
     declarations: [
       HealthComponent,
       HealthPieComponent,
@@ -60,7 +59,6 @@ describe('HealthComponent', () => {
     ],
     schemas: [NO_ERRORS_SCHEMA],
     providers: [
-      i18nProviders,
       { provide: AuthStorageService, useValue: fakeAuthStorageService },
       PgCategoryService,
       RefreshIntervalService
@@ -68,7 +66,7 @@ describe('HealthComponent', () => {
   });
 
   beforeEach(() => {
-    fakeFeatureTogglesService = spyOn(TestBed.get(FeatureTogglesService), 'get').and.returnValue(
+    fakeFeatureTogglesService = spyOn(TestBed.inject(FeatureTogglesService), 'get').and.returnValue(
       of({
         rbd: true,
         mirroring: true,
@@ -79,7 +77,7 @@ describe('HealthComponent', () => {
     );
     fixture = TestBed.createComponent(HealthComponent);
     component = fixture.componentInstance;
-    getHealthSpy = spyOn(TestBed.get(HealthService), 'getMinimalHealth');
+    getHealthSpy = spyOn(TestBed.inject(HealthService), 'getMinimalHealth');
     getHealthSpy.and.returnValue(of(healthPayload));
   });
 

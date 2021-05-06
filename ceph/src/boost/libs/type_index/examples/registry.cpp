@@ -1,4 +1,4 @@
-// Copyright 2013-2019 Antony Polukhin
+// Copyright 2013-2020 Antony Polukhin
 
 // Distributed under the Boost Software License, Version 1.0.
 // (See the accompanying file LICENSE_1_0.txt
@@ -11,7 +11,7 @@
 */
 
 #include <boost/type_index.hpp>
-#include <boost/unordered_set.hpp>
+#include <boost/unordered/unordered_set.hpp>
 //<-
 // Making `#include <cassert>` visible in docs, while actually using `BOOST_TEST`
 // instead of `assert`. This is required to verify correct behavior even if NDEBUG

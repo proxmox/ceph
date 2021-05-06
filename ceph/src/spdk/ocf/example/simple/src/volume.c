@@ -14,7 +14,7 @@
  * In open() function we store uuid data as volume name (for debug messages)
  * and allocate 200 MiB of memory to simulate backend storage device.
  */
-static int volume_open(ocf_volume_t volume)
+static int volume_open(ocf_volume_t volume, void *volume_params)
 {
 	const struct ocf_volume_uuid *uuid = ocf_volume_get_uuid(volume);
 	struct myvolume *myvolume = ocf_volume_get_priv(volume);
@@ -48,7 +48,7 @@ static void volume_submit_io(struct ocf_io *io)
 	struct myvolume *myvolume;
 
 	data = ocf_io_get_data(io);
-	myvolume = ocf_volume_get_priv(io->volume);
+	myvolume = ocf_volume_get_priv(ocf_io_get_volume(io));
 
 	if (io->dir == OCF_WRITE) {
 		memcpy(myvolume->mem + io->addr,

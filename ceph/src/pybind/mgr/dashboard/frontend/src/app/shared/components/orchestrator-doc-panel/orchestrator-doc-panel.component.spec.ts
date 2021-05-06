@@ -2,9 +2,9 @@ import { HttpClientTestingModule } from '@angular/common/http/testing';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { RouterTestingModule } from '@angular/router/testing';
 
-import { configureTestBed, i18nProviders } from '../../../../testing/unit-test-helper';
-import { CephReleaseNamePipe } from '../../pipes/ceph-release-name.pipe';
-import { SummaryService } from '../../services/summary.service';
+import { CephReleaseNamePipe } from '~/app/shared/pipes/ceph-release-name.pipe';
+import { SummaryService } from '~/app/shared/services/summary.service';
+import { configureTestBed } from '~/testing/unit-test-helper';
 import { ComponentsModule } from '../components.module';
 import { OrchestratorDocPanelComponent } from './orchestrator-doc-panel.component';
 
@@ -14,7 +14,7 @@ describe('OrchestratorDocPanelComponent', () => {
 
   configureTestBed({
     imports: [ComponentsModule, HttpClientTestingModule, RouterTestingModule],
-    providers: [CephReleaseNamePipe, SummaryService, i18nProviders]
+    providers: [CephReleaseNamePipe, SummaryService]
   });
 
   beforeEach(() => {

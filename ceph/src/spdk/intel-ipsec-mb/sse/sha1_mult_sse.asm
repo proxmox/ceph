@@ -25,10 +25,10 @@
 ;; OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ;;
 
-%include "os.asm"
+%include "include/os.asm"
 
 ;%define DO_DBGPRINT
-%include "dbgprint.asm"
+%include "include/dbgprint.asm"
 
 %include "mb_mgr_datastruct.asm"
 
@@ -415,6 +415,16 @@ lloop:
         DBGPRINTL64 "Sha1-sse outgoing data ptrs", inp0, inp1, inp2, inp3
 	;;;;;;;;;;;;;;;;
 	;; Postamble
+
+        ;; Clear stack frame (16*16 bytes)
+%ifdef SAFE_DATA
+        pxor    xmm0, xmm0
+%assign i 0
+%rep 16
+        movdqa	[rsp + i*16], xmm0
+%assign i (i+1)
+%endrep
+%endif
 
 	add	rsp, FRAMESZ
 

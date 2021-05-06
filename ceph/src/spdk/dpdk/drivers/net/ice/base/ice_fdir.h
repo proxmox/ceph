@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2001-2019
+ * Copyright(c) 2001-2020 Intel Corporation
  */
 
 #ifndef _ICE_FDIR_H_
@@ -36,9 +36,6 @@ struct ice_fd_fltr_desc_ctx {
 
 enum ice_status ice_alloc_fd_res_cntr(struct ice_hw *hw, u16 *cntr_id);
 enum ice_status ice_free_fd_res_cntr(struct ice_hw *hw, u16 cntr_id);
-void
-ice_set_fd_desc_val(struct ice_fd_fltr_desc_ctx *fd_fltr_ctx,
-		    struct ice_fltr_desc *fdir_desc);
 void ice_set_dflt_val_fd_desc(struct ice_fd_fltr_desc_ctx *fd_fltr_ctx);
 enum ice_status
 ice_alloc_fd_guar_item(struct ice_hw *hw, u16 *cntr_id, u16 num_fltr);
@@ -58,7 +55,8 @@ enum ice_status ice_clear_pf_fd_table(struct ice_hw *hw);
 #define ICE_IP_PROTO_IP			0
 #define ICE_IP_PROTO_ESP		50
 
-#define ICE_FDIR_MAX_RAW_PKT_SIZE	512
+#define ICE_FDIR_TUN_PKT_OFF		50
+#define ICE_FDIR_MAX_RAW_PKT_SIZE	(512 + ICE_FDIR_TUN_PKT_OFF)
 #define ICE_FDIR_BUF_FULL_MARGIN	10
 #define ICE_FDIR_BUF_HEAD_ROOM		32
 
@@ -80,6 +78,14 @@ enum ice_status ice_clear_pf_fd_table(struct ice_hw *hw);
 #define ICE_IPV6_UDP_DST_PORT_OFFSET	56
 #define ICE_IPV6_SCTP_SRC_PORT_OFFSET	54
 #define ICE_IPV6_SCTP_DST_PORT_OFFSET	56
+
+#define ICE_IPV4_TOS_OFFSET		15
+#define ICE_IPV4_TTL_OFFSET		22
+#define ICE_IPV6_TC_OFFSET		14
+#define ICE_IPV6_HLIM_OFFSET		21
+#define ICE_IPV6_PROTO_OFFSET		20
+#define ICE_IPV4_GTPU_TEID_OFFSET	46
+#define ICE_IPV4_GTPU_QFI_OFFSET	56
 
 #define ICE_FDIR_MAX_FLTRS		16384
 
@@ -122,6 +128,7 @@ struct ice_fdir_v4 {
 	u8 tos;
 	u8 ip_ver;
 	u8 proto;
+	u8 ttl;
 };
 
 #define ICE_IPV6_ADDR_LEN_AS_U32		4
@@ -135,6 +142,25 @@ struct ice_fdir_v6 {
 	__be32 sec_parm_idx; /* security parameter index */
 	u8 tc;
 	u8 proto;
+	u8 hlim;
+};
+
+struct ice_fdir_udp_gtp {
+	u8 flags;
+	u8 msg_type;
+	__be16 rsrvd_len;
+	__be32 teid;
+	__be16 rsrvd_seq_nbr;
+	u8 rsrvd_n_pdu_nbr;
+	u8 rsrvd_next_ext_type;
+	u8 rsvrd_ext_len;
+	u8	pdu_type:4,
+		spare:4;
+	u8	ppp:1,
+		rqi:1,
+		qfi:6;
+	u32 rsvrd;
+	u8 next_ext;
 };
 
 struct ice_fdir_extra {
@@ -153,37 +179,47 @@ struct ice_fdir_fltr {
 		struct ice_fdir_v6 v6;
 	} ip, mask;
 
+	struct ice_fdir_udp_gtp gtpu_data;
+	struct ice_fdir_udp_gtp gtpu_mask;
+
 	struct ice_fdir_extra ext_data;
 	struct ice_fdir_extra ext_mask;
 
 	/* flex byte filter data */
 	__be16 flex_word;
+	/* queue region size (=2^q_region) */
+	u8 q_region;
 	u16 flex_offset;
 	u16 flex_fltr;
 
 	/* filter control */
 	u16 q_index;
-#ifdef ADQ_SUPPORT
-	u16 orig_q_index;
-#endif /* ADQ_SUPPORT */
 	u16 dest_vsi;
 	u8 dest_ctl;
+	u8 cnt_ena;
 	u8 fltr_status;
 	u16 cnt_index;
 	u32 fltr_id;
+	u8 fdid_prio;
+	/* Set to true for an ACL filter */
+	bool acl_fltr;
 };
-
 
 /* Dummy packet filter definition structure. */
 struct ice_fdir_base_pkt {
 	enum ice_fltr_ptype flow;
 	u16 pkt_len;
 	const u8 *pkt;
+	u16 tun_pkt_len;
+	const u8 *tun_pkt;
 };
 
 void
 ice_fdir_get_prgm_desc(struct ice_hw *hw, struct ice_fdir_fltr *input,
 		       struct ice_fltr_desc *fdesc, bool add);
+enum ice_status
+ice_fdir_get_gen_prgm_pkt(struct ice_hw *hw, struct ice_fdir_fltr *input,
+			  u8 *pkt, bool frag, bool tun);
 enum ice_status
 ice_fdir_get_prgm_pkt(struct ice_fdir_fltr *input, u8 *pkt, bool frag);
 enum ice_status
@@ -197,6 +233,7 @@ bool ice_fdir_has_frag(enum ice_fltr_ptype flow);
 struct ice_fdir_fltr *
 ice_fdir_find_fltr_by_idx(struct ice_hw *hw, u32 fltr_idx);
 void
-ice_fdir_update_cntrs(struct ice_hw *hw, enum ice_fltr_ptype flow, bool add);
+ice_fdir_update_cntrs(struct ice_hw *hw, enum ice_fltr_ptype flow,
+		      bool acl_fltr, bool add);
 void ice_fdir_list_add_fltr(struct ice_hw *hw, struct ice_fdir_fltr *input);
 #endif /* _ICE_FDIR_H_ */

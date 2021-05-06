@@ -107,7 +107,7 @@ union rte_thash_tuple {
 	struct rte_ipv4_tuple	v4;
 	struct rte_ipv6_tuple	v6;
 #ifdef RTE_ARCH_X86
-} __attribute__((aligned(XMM_SIZE)));
+} __rte_aligned(XMM_SIZE);
 #else
 };
 #endif
@@ -139,7 +139,8 @@ rte_convert_rss_key(const uint32_t *orig, uint32_t *targ, int len)
  *   Pointer to rte_ipv6_tuple structure
  */
 static inline void
-rte_thash_load_v6_addrs(const struct ipv6_hdr *orig, union rte_thash_tuple *targ)
+rte_thash_load_v6_addrs(const struct rte_ipv6_hdr *orig,
+			union rte_thash_tuple *targ)
 {
 #ifdef RTE_ARCH_X86
 	__m128i ipv6 = _mm_loadu_si128((const __m128i *)orig->src_addr);

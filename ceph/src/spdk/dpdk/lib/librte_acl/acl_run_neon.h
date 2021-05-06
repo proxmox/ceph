@@ -9,7 +9,7 @@ struct _neon_acl_const {
 	rte_xmm_t xmm_shuffle_input;
 	rte_xmm_t xmm_index_mask;
 	rte_xmm_t range_base;
-} neon_acl_const  __attribute__((aligned(RTE_CACHE_LINE_SIZE))) = {
+} neon_acl_const __rte_cache_aligned = {
 	{
 		.u32 = {0x00000000, 0x04040404, 0x08080808, 0x0c0c0c0c}
 	},
@@ -181,8 +181,8 @@ search_neon_8(const struct rte_acl_ctx *ctx, const uint8_t **data,
 
 	while (flows.started > 0) {
 		/* Gather 4 bytes of input data for each stream. */
-		input0 = vsetq_lane_s32(GET_NEXT_4BYTES(parms, 0), input0, 0);
-		input1 = vsetq_lane_s32(GET_NEXT_4BYTES(parms, 4), input1, 0);
+		input0 = vdupq_n_s32(GET_NEXT_4BYTES(parms, 0));
+		input1 = vdupq_n_s32(GET_NEXT_4BYTES(parms, 4));
 
 		input0 = vsetq_lane_s32(GET_NEXT_4BYTES(parms, 1), input0, 1);
 		input1 = vsetq_lane_s32(GET_NEXT_4BYTES(parms, 5), input1, 1);
@@ -242,7 +242,7 @@ search_neon_4(const struct rte_acl_ctx *ctx, const uint8_t **data,
 
 	while (flows.started > 0) {
 		/* Gather 4 bytes of input data for each stream. */
-		input = vsetq_lane_s32(GET_NEXT_4BYTES(parms, 0), input, 0);
+		input = vdupq_n_s32(GET_NEXT_4BYTES(parms, 0));
 		input = vsetq_lane_s32(GET_NEXT_4BYTES(parms, 1), input, 1);
 		input = vsetq_lane_s32(GET_NEXT_4BYTES(parms, 2), input, 2);
 		input = vsetq_lane_s32(GET_NEXT_4BYTES(parms, 3), input, 3);

@@ -9,8 +9,10 @@
 #include <boost/logic/tribool.hpp>
 #include <boost/optional.hpp>
 
+#include "rgw_service.h"
 #include "rgw_common.h"
 #include "rgw_auth.h"
+#include "rgw_user.h"
 
 namespace rgw {
 namespace auth {
@@ -103,6 +105,10 @@ public:
 
   void to_str(std::ostream& out) const override {
     get_decoratee().to_str(out);
+  }
+
+  string get_role_tenant() const override {     /* in/out */
+    return get_decoratee().get_role_tenant();
   }
 
   void load_acct_info(const DoutPrefixProvider* dpp, RGWUserInfo& user_info) const override {  /* out */

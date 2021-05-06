@@ -90,8 +90,7 @@ TEST(BlueFS, mkfs) {
   TempBdev bdev{size};
   uuid_d fsid;
   BlueFS fs(g_ceph_context);
-  ASSERT_EQ(0, fs.add_block_device(BlueFS::BDEV_DB, bdev.path, false));
-  fs.add_block_extent(BlueFS::BDEV_DB, 1048576, size - 1048576);
+  ASSERT_EQ(0, fs.add_block_device(BlueFS::BDEV_DB, bdev.path, false, 1048576));
   ASSERT_EQ(0, fs.mkfs(fsid, { BlueFS::BDEV_DB, false, false }));
 }
 
@@ -99,8 +98,7 @@ TEST(BlueFS, mkfs_mount) {
   uint64_t size = 1048576 * 128;
   TempBdev bdev{size};
   BlueFS fs(g_ceph_context);
-  ASSERT_EQ(0, fs.add_block_device(BlueFS::BDEV_DB, bdev.path, false));
-  fs.add_block_extent(BlueFS::BDEV_DB, 1048576, size - 1048576);
+  ASSERT_EQ(0, fs.add_block_device(BlueFS::BDEV_DB, bdev.path, false, 1048576));
   uuid_d fsid;
   ASSERT_EQ(0, fs.mkfs(fsid, { BlueFS::BDEV_DB, false, false }));
   ASSERT_EQ(0, fs.mount());
@@ -110,74 +108,11 @@ TEST(BlueFS, mkfs_mount) {
   fs.umount();
 }
 
-TEST(BlueFS, mkfs_mount_duplicate_gift) {
-  uint64_t size = 1048576 * 128;
-  TempBdev bdev{ size };
-  bluefs_extent_t dup_ext;
-  {
-    BlueFS fs(g_ceph_context);
-    ASSERT_EQ(0, fs.add_block_device(BlueFS::BDEV_DB, bdev.path, false));
-    fs.add_block_extent(BlueFS::BDEV_DB, 1048576, size - 1048576);
-    uuid_d fsid;
-    ASSERT_EQ(0, fs.mkfs(fsid, { BlueFS::BDEV_DB, false, false }));
-    ASSERT_EQ(0, fs.mount());
-
-    {
-      BlueFS::FileWriter *h;
-      ASSERT_EQ(0, fs.mkdir("dir"));
-      ASSERT_EQ(0, fs.open_for_write("dir", "file1", &h, false));
-      h->append("foo", 3);
-      h->append("bar", 3);
-      h->append("baz", 3);
-      fs.fsync(h);
-      ceph_assert(h->file->fnode.extents.size() > 0);
-      dup_ext = h->file->fnode.extents[0];
-      ceph_assert(dup_ext.bdev == BlueFS::BDEV_DB);
-      fs.close_writer(h);
-    }
-
-    fs.umount();
-  }
-
-  {
-    BlueFS fs(g_ceph_context);
-    ASSERT_EQ(0, fs.add_block_device(BlueFS::BDEV_DB, bdev.path, false));
-    ASSERT_EQ(0, fs.mount());
-    // free allocation presumably allocated for file1 
-    std::cout << "duplicate extent: " << std::hex
-      << dup_ext.offset << "~" << dup_ext.length
-      << std::dec << std::endl;
-    fs.debug_inject_duplicate_gift(BlueFS::BDEV_DB, dup_ext.offset, dup_ext.length);
-    {
-      // overwrite file1 with file2 
-      BlueFS::FileWriter *h;
-      ASSERT_EQ(0, fs.open_for_write("dir", "file2", &h, false));
-      h->append("foo", 3);
-      h->append("bar", 3);
-      h->append("baz", 3);
-      fs.fsync(h);
-      fs.close_writer(h);
-    }
-    fs.umount();
-  }
-
-  g_ceph_context->_conf.set_val_or_die("bluefs_log_replay_check_allocations", "true");
-  g_ceph_context->_conf.apply_changes(nullptr);
-
-  {
-    // this should fail
-    BlueFS fs(g_ceph_context);
-    ASSERT_EQ(0, fs.add_block_device(BlueFS::BDEV_DB, bdev.path, false));
-    ASSERT_NE(0, fs.mount());
-  }
-}
-
 TEST(BlueFS, write_read) {
   uint64_t size = 1048576 * 128;
   TempBdev bdev{size};
   BlueFS fs(g_ceph_context);
-  ASSERT_EQ(0, fs.add_block_device(BlueFS::BDEV_DB, bdev.path, false));
-  fs.add_block_extent(BlueFS::BDEV_DB, 1048576, size - 1048576);
+  ASSERT_EQ(0, fs.add_block_device(BlueFS::BDEV_DB, bdev.path, false, 1048576));
   uuid_d fsid;
   ASSERT_EQ(0, fs.mkfs(fsid, { BlueFS::BDEV_DB, false, false }));
   ASSERT_EQ(0, fs.mount());
@@ -196,8 +131,7 @@ TEST(BlueFS, write_read) {
     BlueFS::FileReader *h;
     ASSERT_EQ(0, fs.open_for_read("dir", "file", &h));
     bufferlist bl;
-    BlueFS::FileReaderBuffer buf(4096);
-    ASSERT_EQ(9, fs.read(h, &buf, 0, 1024, &bl, NULL));
+    ASSERT_EQ(9, fs.read(h, 0, 1024, &bl, NULL));
     ASSERT_EQ(0, strncmp("foobarbaz", bl.c_str(), 9));
     delete h;
   }
@@ -208,8 +142,7 @@ TEST(BlueFS, small_appends) {
   uint64_t size = 1048576 * 128;
   TempBdev bdev{size};
   BlueFS fs(g_ceph_context);
-  ASSERT_EQ(0, fs.add_block_device(BlueFS::BDEV_DB, bdev.path, false));
-  fs.add_block_extent(BlueFS::BDEV_DB, 1048576, size - 1048576);
+  ASSERT_EQ(0, fs.add_block_device(BlueFS::BDEV_DB, bdev.path, false, 1048576));
   uuid_d fsid;
   ASSERT_EQ(0, fs.mkfs(fsid, { BlueFS::BDEV_DB, false, false }));
   ASSERT_EQ(0, fs.mount());
@@ -246,8 +179,7 @@ TEST(BlueFS, very_large_write) {
   g_ceph_context->_conf.set_val("bluefs_buffered_io", "false");
   uint64_t total_written = 0;
 
-  ASSERT_EQ(0, fs.add_block_device(BlueFS::BDEV_DB, bdev.path, false));
-  fs.add_block_extent(BlueFS::BDEV_DB, 1048576, size - 1048576);
+  ASSERT_EQ(0, fs.add_block_device(BlueFS::BDEV_DB, bdev.path, false, 1048576));
   uuid_d fsid;
   ASSERT_EQ(0, fs.mkfs(fsid, { BlueFS::BDEV_DB, false, false }));
   ASSERT_EQ(0, fs.mount());
@@ -276,11 +208,10 @@ TEST(BlueFS, very_large_write) {
     BlueFS::FileReader *h;
     ASSERT_EQ(0, fs.open_for_read("dir", "bigfile", &h));
     bufferlist bl;
-    BlueFS::FileReaderBuffer readbuf(10485760);
     ASSERT_EQ(h->file->fnode.size, total_written);
     for (unsigned i = 0; i < 3*1024*1048576ull / sizeof(buf); ++i) {
       bl.clear();
-      fs.read(h, &readbuf, i * sizeof(buf), sizeof(buf), &bl, NULL);
+      fs.read(h, i * sizeof(buf), sizeof(buf), &bl, NULL);
       int r = memcmp(buf, bl.c_str(), sizeof(buf));
       if (r) {
 	cerr << "read got mismatch at offset " << i*sizeof(buf) << " r " << r
@@ -290,7 +221,7 @@ TEST(BlueFS, very_large_write) {
     }
     for (unsigned i = 0; i < 2*1024*1048576ull / sizeof(buf); ++i) {
       bl.clear();
-      fs.read(h, &readbuf, i * sizeof(buf), sizeof(buf), &bl, NULL);
+      fs.read(h, i * sizeof(buf), sizeof(buf), &bl, NULL);
       int r = memcmp(buf, bl.c_str(), sizeof(buf));
       if (r) {
 	cerr << "read got mismatch at offset " << i*sizeof(buf) << " r " << r
@@ -303,8 +234,8 @@ TEST(BlueFS, very_large_write) {
     ASSERT_EQ(h->file->fnode.size, total_written);
     unique_ptr<char> huge_buf(new char[h->file->fnode.size]);
     auto l = h->file->fnode.size;
-    int64_t r = fs.read(h, &readbuf, 0, l, NULL, huge_buf.get());
-    ASSERT_EQ(r, (int64_t)l);
+    int64_t r = fs.read(h, 0, l, NULL, huge_buf.get());
+    ASSERT_EQ(r, l);
     delete h;
   }
   fs.umount();
@@ -324,7 +255,6 @@ TEST(BlueFS, very_large_write2) {
   uint64_t total_written = 0;
 
   ASSERT_EQ(0, fs.add_block_device(BlueFS::BDEV_DB, bdev.path, false, 1048576));
-  fs.add_block_extent(BlueFS::BDEV_DB, 1048576, size_full - 1048576);
   uuid_d fsid;
   ASSERT_EQ(0, fs.mkfs(fsid, { BlueFS::BDEV_DB, false, false }));
   ASSERT_EQ(0, fs.mount());
@@ -354,9 +284,8 @@ TEST(BlueFS, very_large_write2) {
     ASSERT_EQ(0, fs.open_for_read("dir", "bigfile", &h));
     ASSERT_EQ(h->file->fnode.size, total_written);
     auto l = h->file->fnode.size;
-    BlueFS::FileReaderBuffer readbuf(10485760);
-    int64_t r = fs.read(h, &readbuf, 0, l, NULL, buf.get());
-    ASSERT_EQ(r, (int64_t)l);
+    int64_t r = fs.read(h, 0, l, NULL, buf.get());
+    ASSERT_EQ(r, l);
     for (size_t i = 0; i < size; i += sizeof(fill_arr)) {
       ceph_assert(memcmp(buf.get() + i, fill_arr, sizeof(fill_arr)) == 0);
     }
@@ -488,8 +417,7 @@ TEST(BlueFS, test_flush_1) {
   g_ceph_context->_conf.apply_changes(nullptr);
 
   BlueFS fs(g_ceph_context);
-  ASSERT_EQ(0, fs.add_block_device(BlueFS::BDEV_DB, bdev.path, false));
-  fs.add_block_extent(BlueFS::BDEV_DB, 1048576, size - 1048576);
+  ASSERT_EQ(0, fs.add_block_device(BlueFS::BDEV_DB, bdev.path, false, 1048576));
   uuid_d fsid;
   ASSERT_EQ(0, fs.mkfs(fsid, { BlueFS::BDEV_DB, false, false }));
   ASSERT_EQ(0, fs.mount());
@@ -523,8 +451,7 @@ TEST(BlueFS, test_flush_2) {
   g_ceph_context->_conf.apply_changes(nullptr);
 
   BlueFS fs(g_ceph_context);
-  ASSERT_EQ(0, fs.add_block_device(BlueFS::BDEV_DB, bdev.path, false));
-  fs.add_block_extent(BlueFS::BDEV_DB, 1048576, size - 1048576);
+  ASSERT_EQ(0, fs.add_block_device(BlueFS::BDEV_DB, bdev.path, false, 1048576));
   uuid_d fsid;
   ASSERT_EQ(0, fs.mkfs(fsid, { BlueFS::BDEV_DB, false, false }));
   ASSERT_EQ(0, fs.mount());
@@ -551,8 +478,7 @@ TEST(BlueFS, test_flush_3) {
   g_ceph_context->_conf.apply_changes(nullptr);
 
   BlueFS fs(g_ceph_context);
-  ASSERT_EQ(0, fs.add_block_device(BlueFS::BDEV_DB, bdev.path, false));
-  fs.add_block_extent(BlueFS::BDEV_DB, 1048576, size - 1048576);
+  ASSERT_EQ(0, fs.add_block_device(BlueFS::BDEV_DB, bdev.path, false, 1048576));
   uuid_d fsid;
   ASSERT_EQ(0, fs.mkfs(fsid, { BlueFS::BDEV_DB, false, false }));
   ASSERT_EQ(0, fs.mount());
@@ -585,8 +511,7 @@ TEST(BlueFS, test_simple_compaction_sync) {
   TempBdev bdev{size};
 
   BlueFS fs(g_ceph_context);
-  ASSERT_EQ(0, fs.add_block_device(BlueFS::BDEV_DB, bdev.path, false));
-  fs.add_block_extent(BlueFS::BDEV_DB, 1048576, size - 1048576);
+  ASSERT_EQ(0, fs.add_block_device(BlueFS::BDEV_DB, bdev.path, false, 1048576));
   uuid_d fsid;
   ASSERT_EQ(0, fs.mkfs(fsid, { BlueFS::BDEV_DB, false, false }));
   ASSERT_EQ(0, fs.mount());
@@ -638,8 +563,7 @@ TEST(BlueFS, test_simple_compaction_async) {
   TempBdev bdev{size};
 
   BlueFS fs(g_ceph_context);
-  ASSERT_EQ(0, fs.add_block_device(BlueFS::BDEV_DB, bdev.path, false));
-  fs.add_block_extent(BlueFS::BDEV_DB, 1048576, size - 1048576);
+  ASSERT_EQ(0, fs.add_block_device(BlueFS::BDEV_DB, bdev.path, false, 1048576));
   uuid_d fsid;
   ASSERT_EQ(0, fs.mkfs(fsid, { BlueFS::BDEV_DB, false, false }));
   ASSERT_EQ(0, fs.mount());
@@ -694,8 +618,7 @@ TEST(BlueFS, test_compaction_sync) {
     "true");
 
   BlueFS fs(g_ceph_context);
-  ASSERT_EQ(0, fs.add_block_device(BlueFS::BDEV_DB, bdev.path, false));
-  fs.add_block_extent(BlueFS::BDEV_DB, 1048576, size - 1048576);
+  ASSERT_EQ(0, fs.add_block_device(BlueFS::BDEV_DB, bdev.path, false, 1048576));
   uuid_d fsid;
   ASSERT_EQ(0, fs.mkfs(fsid, { BlueFS::BDEV_DB, false, false }));
   ASSERT_EQ(0, fs.mount());
@@ -732,8 +655,7 @@ TEST(BlueFS, test_compaction_async) {
     "false");
 
   BlueFS fs(g_ceph_context);
-  ASSERT_EQ(0, fs.add_block_device(BlueFS::BDEV_DB, bdev.path, false));
-  fs.add_block_extent(BlueFS::BDEV_DB, 1048576, size - 1048576);
+  ASSERT_EQ(0, fs.add_block_device(BlueFS::BDEV_DB, bdev.path, false, 1048576));
   uuid_d fsid;
   ASSERT_EQ(0, fs.mkfs(fsid, { BlueFS::BDEV_DB, false, false }));
   ASSERT_EQ(0, fs.mount());
@@ -770,8 +692,7 @@ TEST(BlueFS, test_replay) {
     "false");
 
   BlueFS fs(g_ceph_context);
-  ASSERT_EQ(0, fs.add_block_device(BlueFS::BDEV_DB, bdev.path, false));
-  fs.add_block_extent(BlueFS::BDEV_DB, 1048576, size - 1048576);
+  ASSERT_EQ(0, fs.add_block_device(BlueFS::BDEV_DB, bdev.path, false, 1048576));
   uuid_d fsid;
   ASSERT_EQ(0, fs.mkfs(fsid, { BlueFS::BDEV_DB, false, false }));
   ASSERT_EQ(0, fs.mount());
@@ -816,8 +737,7 @@ TEST(BlueFS, test_replay_growth) {
   conf.ApplyChanges();
 
   BlueFS fs(g_ceph_context);
-  ASSERT_EQ(0, fs.add_block_device(BlueFS::BDEV_DB, bdev.path, false));
-  fs.add_block_extent(BlueFS::BDEV_DB, 1048576, size - 1048576);
+  ASSERT_EQ(0, fs.add_block_device(BlueFS::BDEV_DB, bdev.path, false, 1048576));
   uuid_d fsid;
   ASSERT_EQ(0, fs.mkfs(fsid, { BlueFS::BDEV_DB, false, false }));
   ASSERT_EQ(0, fs.mount());

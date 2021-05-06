@@ -26,15 +26,15 @@
 ;;
 
 
-%include "os.asm"
+%include "include/os.asm"
 %include "job_aes_hmac.asm"
 %include "mb_mgr_datastruct.asm"
 
-%include "reg_sizes.asm"
-%include "memcpy.asm"
-%include "const.inc"
+%include "include/reg_sizes.asm"
+%include "include/memcpy.asm"
+%include "include/const.inc"
 ;%define DO_DBGPRINT
-%include "dbgprint.asm"
+%include "include/dbgprint.asm"
 
 %define AES128_CBC_MAC aes128_cbc_mac_x8
 %define SUBMIT_JOB_AES_CMAC_AUTH submit_job_aes_cmac_auth_avx
@@ -110,8 +110,8 @@ section .text
 %define tmp4             r13
 %define tmp2             r14
 
-%define flag             r15
 %define good_lane        r15
+%define rbits            r15
 
 ; STACK_SPACE needs to be an odd multiple of 8
 ; This routine and its callee clobbers all GPRs
@@ -153,7 +153,6 @@ endstruc
  	mov	unused_lanes, [state + _aes_cmac_unused_lanes]
 
 %ifidn %%SUBMIT_FLUSH, SUBMIT
-        mov     flag, 0
 
  	mov	lane, unused_lanes
         and	lane, 0xF
@@ -174,9 +173,15 @@ endstruc
 
         lea     m_last, [state + _aes_cmac_scratch + tmp]
 
-        ;; Check number of blocks and for partial block
-        mov     len, [job + _msg_len_to_hash_in_bytes]
+        ;; calculate len
+        ;; convert bits to bytes (message length in bits for CMAC)
+        mov     len, [job + _msg_len_to_hash_in_bits]
+        mov     rbits, len
+        add     len, 7      ; inc len if there are remainder bits
+        shr     len, 3
+        and     rbits, 7
 
+        ;; Check number of blocks and for partial block
         mov     r, len  ; set remainder
         and     r, 0xf
 
@@ -199,7 +204,11 @@ endstruc
         XVPINSRW xmm0, xmm1, tmp, lane, tmp2, scale_x16
         vmovdqa [state + _aes_cmac_lens], xmm0
 
-        ;; Set flag = (r == 0)
+        ;; check remainder bits
+        or      rbits, rbits
+        jnz     %%_not_complete_block_3gpp
+
+        ;; check if complete block
         or      r, r
         jz      %%_complete_block
 
@@ -293,6 +302,7 @@ APPEND(skip_,I):
         call    AES128_CBC_MAC
         ; state and idx are intact
 
+        vmovdqa xmm0, [state + _aes_cmac_lens]  ; preload lens
 %%_len_is_0:
         ; Check if job complete
         test    word [state + _aes_cmac_init_done + idx*2], 0xffff
@@ -301,7 +311,6 @@ APPEND(skip_,I):
         ; Finish step 6
         mov     word [state + _aes_cmac_init_done + idx*2], 1
 
-        vmovdqa xmm0, [state + _aes_cmac_lens]
         XVPINSRW xmm0, xmm1, tmp3, idx, 16, scale_x16
         vmovdqa [state + _aes_cmac_lens], xmm0
 
@@ -348,6 +357,30 @@ APPEND(skip_,I):
  	mov	qword [state + _aes_cmac_job_in_lane + idx*8], 0
  	or	dword [job_rax + _status], STS_COMPLETED_HMAC
 
+%ifdef SAFE_DATA
+        vpxor   xmm0, xmm0
+%ifidn %%SUBMIT_FLUSH, SUBMIT
+        ;; Clear digest (in memory for IV) and scratch memory of returned job
+        vmovdqa [tmp3], xmm0
+
+        shl     idx, 4
+        vmovdqa [state + _aes_cmac_scratch + idx], xmm0
+
+%else
+        ;; Clear digest and scratch memory of returned job and "NULL lanes"
+%assign I 0
+%rep 8
+        cmp     qword [state + _aes_cmac_job_in_lane + I*8], 0
+        jne     APPEND(skip_clear_,I)
+        vmovdqa [state + _aes_cmac_args_IV + I*16], xmm0
+        vmovdqa [state + _aes_cmac_scratch + I*16], xmm0
+APPEND(skip_clear_,I):
+%assign I (I+1)
+%endrep
+%endif ;; SUBMIT
+
+%endif ;; SAFE_DATA
+
 %%_return:
 	mov	rbx, [rsp + _gpr_save + 8*0]
 	mov	rbp, [rsp + _gpr_save + 8*1]
@@ -368,7 +401,6 @@ APPEND(skip_,I):
 
 %ifidn %%SUBMIT_FLUSH, SUBMIT
 %%_complete_block:
-        mov     flag, 1
 
         ;; Block size aligned
         mov     tmp2, [job + _src]
@@ -397,19 +429,84 @@ APPEND(skip_,I):
 
         mov     n, 1
         jmp     %%_not_complete_block
+
+%%_not_complete_block_3gpp:
+        ;; bit pad last block
+        ;; xor with skey2
+        ;; copy to m_last
+
+        ;; load pointer to src
+        mov     tmp, [job + _src]
+        add     tmp, [job + _hash_start_src_offset_in_bytes]
+        lea     tmp3, [n - 1]
+        shl     tmp3, 4
+        add     tmp, tmp3
+
+        ;; check if partial block
+        or      r, r
+        jz      %%_load_full_block_3gpp
+
+        simd_load_avx_15_1 xmm0, tmp, r
+        dec     r
+
+%%_update_mlast_3gpp:
+        ;; set last byte padding mask
+        ;; shift into correct xmm idx
+
+        ;; save and restore rcx on windows
+%ifndef LINUX
+	mov	tmp, rcx
+%endif
+        mov     rcx, rbits
+        mov     tmp3, 0xff
+        shr     tmp3, cl
+        movq    xmm2, tmp3
+        XVPSLLB xmm2, r, xmm1, tmp2
+
+        ;; pad final byte
+        vpandn  xmm2, xmm0
+%ifndef LINUX
+	mov	rcx, tmp
+%endif
+        ;; set OR mask to pad final bit
+        mov     tmp2, tmp3
+        shr     tmp2, 1
+        xor     tmp2, tmp3 ; XOR to get OR mask
+        movq    xmm3, tmp2
+        ;; xmm1 contains shift table from previous shift
+        vpshufb xmm3, xmm1
+
+        ;; load skey2 address
+        mov     tmp3, [job + _skey2]
+        vmovdqu xmm1, [tmp3]
+
+        ;; set final padding bit
+        vpor    xmm2, xmm3
+
+        ;; XOR last partial block with skey2
+        ;; update mlast
+        vpxor   xmm2, xmm1
+        vmovdqa [m_last], xmm2
+
+        jmp     %%_step_5
+
+%%_load_full_block_3gpp:
+        vmovdqu xmm0, [tmp]
+        mov     r, 0xf
+        jmp     %%_update_mlast_3gpp
 %endif
 %endmacro
 
 
 align 64
-; JOB_AES_HMAC * submit_job_aes_cmac_auth_avx(MB_MGR_CCM_OOO *state, JOB_AES_HMAC *job)
+; JOB_AES_HMAC * submit_job_aes_cmac_auth_avx(MB_MGR_CMAC_OOO *state, JOB_AES_HMAC *job)
 ; arg 1 : state
 ; arg 2 : job
 MKGLOBAL(SUBMIT_JOB_AES_CMAC_AUTH,function,internal)
 SUBMIT_JOB_AES_CMAC_AUTH:
         GENERIC_SUBMIT_FLUSH_JOB_AES_CMAC_AVX SUBMIT
 
-; JOB_AES_HMAC * flush_job_aes_cmac_auth_avx(MB_MGR_CCM_OOO *state)
+; JOB_AES_HMAC * flush_job_aes_cmac_auth_avx(MB_MGR_CMAC_OOO *state)
 ; arg 1 : state
 MKGLOBAL(FLUSH_JOB_AES_CMAC_AUTH,function,internal)
 FLUSH_JOB_AES_CMAC_AUTH:

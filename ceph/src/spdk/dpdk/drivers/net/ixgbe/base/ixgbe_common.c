@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2001-2018
+ * Copyright(c) 2001-2020 Intel Corporation
  */
 
 #include "ixgbe_common.h"
@@ -5040,7 +5040,7 @@ void ixgbe_get_oem_prod_version(struct ixgbe_hw *hw,
 	hw->eeprom.ops.read(hw, NVM_OEM_PROD_VER_PTR, &offset);
 
 	/* Return is offset to OEM Product Version block is invalid */
-	if (offset == 0x0 && offset == NVM_INVALID_PTR)
+	if (offset == 0x0 || offset == NVM_INVALID_PTR)
 		return;
 
 	/* Read product version block */

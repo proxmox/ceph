@@ -32,6 +32,8 @@
  */
 
 #include "spdk/stdinc.h"
+#include "spdk/util.h"
+#include "spdk/env_dpdk.h"
 
 #include "env_internal.h"
 
@@ -58,11 +60,14 @@ virt_to_phys(void *vaddr)
 void *
 spdk_malloc(size_t size, size_t align, uint64_t *phys_addr, int socket_id, uint32_t flags)
 {
+	void *buf;
+
 	if (flags == 0) {
 		return NULL;
 	}
 
-	void *buf = rte_malloc_socket(NULL, size, align, socket_id);
+	align = spdk_max(align, RTE_CACHE_LINE_SIZE);
+	buf = rte_malloc_socket(NULL, size, align, socket_id);
 	if (buf && phys_addr) {
 #ifdef DEBUG
 		fprintf(stderr, "phys_addr param in spdk_*malloc() is deprecated\n");
@@ -85,6 +90,7 @@ spdk_zmalloc(size_t size, size_t align, uint64_t *phys_addr, int socket_id, uint
 void *
 spdk_realloc(void *buf, size_t size, size_t align)
 {
+	align = spdk_max(align, RTE_CACHE_LINE_SIZE);
 	return rte_realloc(buf, size, align);
 }
 
@@ -121,7 +127,10 @@ spdk_dma_zmalloc(size_t size, size_t align, uint64_t *phys_addr)
 void *
 spdk_dma_realloc(void *buf, size_t size, size_t align, uint64_t *phys_addr)
 {
-	void *new_buf = rte_realloc(buf, size, align);
+	void *new_buf;
+
+	align = spdk_max(align, RTE_CACHE_LINE_SIZE);
+	new_buf = rte_realloc(buf, size, align);
 	if (new_buf && phys_addr) {
 		*phys_addr = virt_to_phys(new_buf);
 	}
@@ -141,14 +150,9 @@ spdk_memzone_reserve_aligned(const char *name, size_t len, int socket_id,
 	const struct rte_memzone *mz;
 	unsigned dpdk_flags = 0;
 
-#if RTE_VERSION >= RTE_VERSION_NUM(18, 05, 0, 0)
-	/* Older DPDKs do not offer such flag since their
-	 * memzones are iova-contiguous by default.
-	 */
 	if ((flags & SPDK_MEMZONE_NO_IOVA_CONTIG) == 0) {
 		dpdk_flags |= RTE_MEMZONE_IOVA_CONTIG;
 	}
-#endif
 
 	if (socket_id == SPDK_ENV_SOCKET_ID_ANY) {
 		socket_id = SOCKET_ID_ANY;
@@ -296,6 +300,12 @@ spdk_mempool_obj_iter(struct spdk_mempool *mp, spdk_mempool_obj_cb_t obj_cb,
 				    obj_cb_arg);
 }
 
+struct spdk_mempool *
+spdk_mempool_lookup(const char *name)
+{
+	return (struct spdk_mempool *)rte_mempool_lookup(name);
+}
+
 bool
 spdk_process_is_primary(void)
 {
@@ -325,8 +335,8 @@ void spdk_pause(void)
 void
 spdk_unaffinitize_thread(void)
 {
-	rte_cpuset_t new_cpuset;
-	long num_cores, i;
+	rte_cpuset_t new_cpuset, orig_cpuset;
+	long num_cores, i, orig_num_cores;
 
 	CPU_ZERO(&new_cpuset);
 
@@ -335,6 +345,16 @@ spdk_unaffinitize_thread(void)
 	/* Create a mask containing all CPUs */
 	for (i = 0; i < num_cores; i++) {
 		CPU_SET(i, &new_cpuset);
+	}
+
+	rte_thread_get_affinity(&orig_cpuset);
+	orig_num_cores = CPU_COUNT(&orig_cpuset);
+	if (orig_num_cores < num_cores) {
+		for (i = 0; i < orig_num_cores; i++) {
+			if (CPU_ISSET(i, &orig_cpuset)) {
+				CPU_CLR(i, &new_cpuset);
+			}
+		}
 	}
 
 	rte_thread_set_affinity(&new_cpuset);
@@ -383,7 +403,7 @@ spdk_ring_create(enum spdk_ring_type type, size_t count, int socket_id)
 	}
 
 	snprintf(ring_name, sizeof(ring_name), "ring_%u_%d",
-		 __sync_fetch_and_add(&ring_num, 1), getpid());
+		 __atomic_fetch_add(&ring_num, 1, __ATOMIC_RELAXED), getpid());
 
 	return (struct spdk_ring *)rte_ring_create(ring_name, count, socket_id, flags);
 }
@@ -412,4 +432,20 @@ size_t
 spdk_ring_dequeue(struct spdk_ring *ring, void **objs, size_t count)
 {
 	return rte_ring_dequeue_burst((struct rte_ring *)ring, objs, count, NULL);
+}
+
+void
+spdk_env_dpdk_dump_mem_stats(FILE *file)
+{
+	fprintf(file, "DPDK memory size %lu\n", rte_eal_get_physmem_size());
+	fprintf(file, "DPDK memory layout\n");
+	rte_dump_physmem_layout(file);
+	fprintf(file, "DPDK memzones.\n");
+	rte_memzone_dump(file);
+	fprintf(file, "DPDK mempools.\n");
+	rte_mempool_list_dump(file);
+	fprintf(file, "DPDK malloc stats.\n");
+	rte_malloc_dump_stats(file, NULL);
+	fprintf(file, "DPDK malloc heaps.\n");
+	rte_malloc_dump_heaps(file);
 }

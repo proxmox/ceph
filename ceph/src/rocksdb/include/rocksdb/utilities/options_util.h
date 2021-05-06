@@ -16,7 +16,7 @@
 #include "rocksdb/options.h"
 #include "rocksdb/status.h"
 
-namespace rocksdb {
+namespace ROCKSDB_NAMESPACE {
 // Constructs the DBOptions and ColumnFamilyDescriptors by loading the
 // latest RocksDB options file stored in the specified rocksdb database.
 //
@@ -33,9 +33,10 @@ namespace rocksdb {
 // * merge_operator
 // * compaction_filter
 //
-// User can also choose to load customized comparator and/or merge_operator
-// through object registry:
+// User can also choose to load customized comparator, env, and/or
+// merge_operator through object registry:
 // * comparator needs to be registered through Registrar<const Comparator>
+// * env needs to be registered through Registrar<Env>
 // * merge operator needs to be registered through
 //     Registrar<std::shared_ptr<MergeOperator>>.
 //
@@ -97,5 +98,5 @@ Status CheckOptionsCompatibility(
     const std::vector<ColumnFamilyDescriptor>& cf_descs,
     bool ignore_unknown_options = false);
 
-}  // namespace rocksdb
+}  // namespace ROCKSDB_NAMESPACE
 #endif  // !ROCKSDB_LITE

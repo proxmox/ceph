@@ -1,18 +1,17 @@
 import { HttpClientTestingModule, HttpTestingController } from '@angular/common/http/testing';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { ReactiveFormsModule } from '@angular/forms';
-import { RouterTestingModule } from '@angular/router/testing';
 
-import { BsModalRef, ModalModule } from 'ngx-bootstrap/modal';
+import { NgbActiveModal, NgbTooltipModule } from '@ng-bootstrap/ng-bootstrap';
 import { ToastrModule } from 'ngx-toastr';
 import { of as observableOf } from 'rxjs';
 
-import { configureTestBed, i18nProviders } from '../../../../../testing/unit-test-helper';
-import { OsdService } from '../../../../shared/api/osd.service';
-import { NotificationType } from '../../../../shared/enum/notification-type.enum';
-import { Flag } from '../../../../shared/models/flag';
-import { NotificationService } from '../../../../shared/services/notification.service';
-import { SharedModule } from '../../../../shared/shared.module';
+import { OsdService } from '~/app/shared/api/osd.service';
+import { NotificationType } from '~/app/shared/enum/notification-type.enum';
+import { Flag } from '~/app/shared/models/flag';
+import { NotificationService } from '~/app/shared/services/notification.service';
+import { SharedModule } from '~/app/shared/shared.module';
+import { configureTestBed } from '~/testing/unit-test-helper';
 import { OsdFlagsIndivModalComponent } from './osd-flags-indiv-modal.component';
 
 describe('OsdFlagsIndivModalComponent', () => {
@@ -27,18 +26,17 @@ describe('OsdFlagsIndivModalComponent', () => {
       ReactiveFormsModule,
       SharedModule,
       ToastrModule.forRoot(),
-      ModalModule.forRoot(),
-      RouterTestingModule
+      NgbTooltipModule
     ],
     declarations: [OsdFlagsIndivModalComponent],
-    providers: [BsModalRef, i18nProviders]
+    providers: [NgbActiveModal]
   });
 
   beforeEach(() => {
-    httpTesting = TestBed.get(HttpTestingController);
+    httpTesting = TestBed.inject(HttpTestingController);
     fixture = TestBed.createComponent(OsdFlagsIndivModalComponent);
     component = fixture.componentInstance;
-    osdService = TestBed.get(OsdService);
+    osdService = TestBed.inject(OsdService);
   });
 
   it('should create', () => {
@@ -137,16 +135,16 @@ describe('OsdFlagsIndivModalComponent', () => {
     describe('submitAction', () => {
       let notificationType: NotificationType;
       let notificationService: NotificationService;
-      let bsModalRef: BsModalRef;
+      let bsModalRef: NgbActiveModal;
       let flags: object;
 
       beforeEach(() => {
-        notificationService = TestBed.get(NotificationService);
+        notificationService = TestBed.inject(NotificationService);
         spyOn(notificationService, 'show').and.callFake((type) => {
           notificationType = type;
         });
-        bsModalRef = TestBed.get(BsModalRef);
-        spyOn(bsModalRef, 'hide').and.callThrough();
+        bsModalRef = TestBed.inject(NgbActiveModal);
+        spyOn(bsModalRef, 'close').and.callThrough();
         flags = {
           nodown: false,
           noin: false,
@@ -165,7 +163,7 @@ describe('OsdFlagsIndivModalComponent', () => {
         req.flush({ flags, ids: [0] });
         expect(req.request.body).toEqual({ flags, ids: [0] });
         expect(notificationType).toBe(NotificationType.success);
-        expect(component.activeModal.hide).toHaveBeenCalledTimes(1);
+        expect(component.activeModal.close).toHaveBeenCalledTimes(1);
       });
 
       it('should submit multiple flags', () => {
@@ -180,7 +178,7 @@ describe('OsdFlagsIndivModalComponent', () => {
         req.flush({ flags, ids: [0] });
         expect(req.request.body).toEqual({ flags, ids: [0] });
         expect(notificationType).toBe(NotificationType.success);
-        expect(component.activeModal.hide).toHaveBeenCalledTimes(1);
+        expect(component.activeModal.close).toHaveBeenCalledTimes(1);
       });
 
       it('should hide modal if request fails', () => {
@@ -189,7 +187,7 @@ describe('OsdFlagsIndivModalComponent', () => {
         const req = httpTesting.expectOne('api/osd/flags/individual');
         req.flush([], { status: 500, statusText: 'failure' });
         expect(notificationService.show).toHaveBeenCalledTimes(0);
-        expect(component.activeModal.hide).toHaveBeenCalledTimes(1);
+        expect(component.activeModal.close).toHaveBeenCalledTimes(1);
       });
     });
   });
@@ -269,16 +267,16 @@ describe('OsdFlagsIndivModalComponent', () => {
     describe('submitAction', () => {
       let notificationType: NotificationType;
       let notificationService: NotificationService;
-      let bsModalRef: BsModalRef;
+      let bsModalRef: NgbActiveModal;
       let flags: object;
 
       beforeEach(() => {
-        notificationService = TestBed.get(NotificationService);
+        notificationService = TestBed.inject(NotificationService);
         spyOn(notificationService, 'show').and.callFake((type) => {
           notificationType = type;
         });
-        bsModalRef = TestBed.get(BsModalRef);
-        spyOn(bsModalRef, 'hide').and.callThrough();
+        bsModalRef = TestBed.inject(NgbActiveModal);
+        spyOn(bsModalRef, 'close').and.callThrough();
         flags = {
           nodown: false,
           noin: false,
@@ -299,7 +297,7 @@ describe('OsdFlagsIndivModalComponent', () => {
         req.flush({ flags, ids: submittedIds });
         expect(req.request.body).toEqual({ flags, ids: submittedIds });
         expect(notificationType).toBe(NotificationType.success);
-        expect(component.activeModal.hide).toHaveBeenCalledTimes(1);
+        expect(component.activeModal.close).toHaveBeenCalledTimes(1);
       });
 
       it('should submit multiple flags for multiple OSDs', () => {
@@ -316,7 +314,7 @@ describe('OsdFlagsIndivModalComponent', () => {
         req.flush({ flags, ids: submittedIds });
         expect(req.request.body).toEqual({ flags, ids: submittedIds });
         expect(notificationType).toBe(NotificationType.success);
-        expect(component.activeModal.hide).toHaveBeenCalledTimes(1);
+        expect(component.activeModal.close).toHaveBeenCalledTimes(1);
       });
     });
   });

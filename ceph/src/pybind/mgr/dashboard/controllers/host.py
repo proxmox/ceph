@@ -2,22 +2,110 @@
 from __future__ import absolute_import
 
 import copy
-
-from typing import List, Dict
+import os
+import time
+from typing import Dict, List, Optional
 
 import cherrypy
-
 from mgr_util import merge_dicts
 from orchestrator import HostSpec
-from . import ApiController, RESTController, Task, Endpoint, ReadPermission, \
-    UiApiController, BaseController, allow_empty_body
-from .orchestrator import raise_if_no_orchestrator
+
 from .. import mgr
 from ..exceptions import DashboardException
 from ..security import Scope
-from ..services.orchestrator import OrchClient
 from ..services.ceph_service import CephService
 from ..services.exception import handle_orchestrator_error
+from ..services.orchestrator import OrchClient, OrchFeature
+from ..tools import TaskManager, str_to_bool
+from . import ApiController, BaseController, ControllerDoc, Endpoint, \
+    EndpointDoc, ReadPermission, RESTController, Task, UiApiController, \
+    UpdatePermission, allow_empty_body
+from .orchestrator import raise_if_no_orchestrator
+
+LIST_HOST_SCHEMA = {
+    "hostname": (str, "Hostname"),
+    "services": ([{
+        "type": (str, "type of service"),
+        "id": (str, "Service Id"),
+    }], "Services related to the host"),
+    "ceph_version": (str, "Ceph version"),
+    "addr": (str, "Host address"),
+    "labels": ([str], "Labels related to the host"),
+    "service_type": (str, ""),
+    "sources": ({
+        "ceph": (bool, ""),
+        "orchestrator": (bool, "")
+    }, "Host Sources"),
+    "status": (str, "")
+}
+
+INVENTORY_SCHEMA = {
+    "name": (str, "Hostname"),
+    "addr": (str, "Host address"),
+    "devices": ([{
+        "rejected_reasons": ([str], ""),
+        "available": (bool, "If the device can be provisioned to an OSD"),
+        "path": (str, "Device path"),
+        "sys_api": ({
+            "removable": (str, ""),
+            "ro": (str, ""),
+            "vendor": (str, ""),
+            "model": (str, ""),
+            "rev": (str, ""),
+            "sas_address": (str, ""),
+            "sas_device_handle": (str, ""),
+            "support_discard": (str, ""),
+            "rotational": (str, ""),
+            "nr_requests": (str, ""),
+            "scheduler_mode": (str, ""),
+            "partitions": ({
+                "partition_name": ({
+                    "start": (str, ""),
+                    "sectors": (str, ""),
+                    "sectorsize": (int, ""),
+                    "size": (int, ""),
+                    "human_readable_size": (str, ""),
+                    "holders": ([str], "")
+                }, "")
+            }, ""),
+            "sectors": (int, ""),
+            "sectorsize": (str, ""),
+            "size": (int, ""),
+            "human_readable_size": (str, ""),
+            "path": (str, ""),
+            "locked": (int, "")
+        }, ""),
+        "lvs": ([{
+            "name": (str, ""),
+            "osd_id": (str, ""),
+            "cluster_name": (str, ""),
+            "type": (str, ""),
+            "osd_fsid": (str, ""),
+            "cluster_fsid": (str, ""),
+            "osdspec_affinity": (str, ""),
+            "block_uuid": (str, ""),
+        }], ""),
+        "human_readable_type": (str, "Device type. ssd or hdd"),
+        "device_id": (str, "Device's udev ID"),
+        "lsm_data": ({
+            "serialNum": (str, ""),
+            "transport": (str, ""),
+            "mediaType": (str, ""),
+            "rpm": (str, ""),
+            "linkSpeed": (str, ""),
+            "health": (str, ""),
+            "ledSupport": ({
+                "IDENTsupport": (str, ""),
+                "IDENTstatus": (str, ""),
+                "FAILsupport": (str, ""),
+                "FAILstatus": (str, ""),
+            }, ""),
+            "errors": ([str], "")
+        }, ""),
+        "osd_ids": ([int], "Device OSD IDs")
+    }], "Host devices"),
+    "labels": ([str], "Host labels")
+}
 
 
 def host_task(name, metadata, wait_for=10.0):
@@ -104,8 +192,77 @@ def get_host(hostname: str) -> Dict:
     raise cherrypy.HTTPError(404)
 
 
+def get_device_osd_map():
+    """Get mappings from inventory devices to OSD IDs.
+
+    :return: Returns a dictionary containing mappings. Note one device might
+        shared between multiple OSDs.
+        e.g. {
+                 'node1': {
+                     'nvme0n1': [0, 1],
+                     'vdc': [0],
+                     'vdb': [1]
+                 },
+                 'node2': {
+                     'vdc': [2]
+                 }
+             }
+    :rtype: dict
+    """
+    result: dict = {}
+    for osd_id, osd_metadata in mgr.get('osd_metadata').items():
+        hostname = osd_metadata.get('hostname')
+        devices = osd_metadata.get('devices')
+        if not hostname or not devices:
+            continue
+        if hostname not in result:
+            result[hostname] = {}
+        # for OSD contains multiple devices, devices is in `sda,sdb`
+        for device in devices.split(','):
+            if device not in result[hostname]:
+                result[hostname][device] = [int(osd_id)]
+            else:
+                result[hostname][device].append(int(osd_id))
+    return result
+
+
+def get_inventories(hosts: Optional[List[str]] = None,
+                    refresh: Optional[bool] = None) -> List[dict]:
+    """Get inventories from the Orchestrator and link devices with OSD IDs.
+
+    :param hosts: Hostnames to query.
+    :param refresh: Ask the Orchestrator to refresh the inventories. Note the this is an
+                    asynchronous operation, the updated version of inventories need to
+                    be re-qeuried later.
+    :return: Returns list of inventory.
+    :rtype: list
+    """
+    do_refresh = False
+    if refresh is not None:
+        do_refresh = str_to_bool(refresh)
+    orch = OrchClient.instance()
+    inventory_hosts = [host.to_json()
+                       for host in orch.inventory.list(hosts=hosts, refresh=do_refresh)]
+    device_osd_map = get_device_osd_map()
+    for inventory_host in inventory_hosts:
+        host_osds = device_osd_map.get(inventory_host['name'])
+        for device in inventory_host['devices']:
+            if host_osds:  # pragma: no cover
+                dev_name = os.path.basename(device['path'])
+                device['osd_ids'] = sorted(host_osds.get(dev_name, []))
+            else:
+                device['osd_ids'] = []
+    return inventory_hosts
+
+
 @ApiController('/host', Scope.HOSTS)
+@ControllerDoc("Get Host Details", "Host")
 class Host(RESTController):
+    @EndpointDoc("List Host Specifications",
+                 parameters={
+                     'sources': (str, 'Host Sources'),
+                 },
+                 responses={200: LIST_HOST_SCHEMA})
     def list(self, sources=None):
         if sources is None:
             return get_hosts()
@@ -114,7 +271,7 @@ class Host(RESTController):
         from_orchestrator = 'orchestrator' in _sources
         return get_hosts(from_ceph, from_orchestrator)
 
-    @raise_if_no_orchestrator
+    @raise_if_no_orchestrator([OrchFeature.HOST_LIST, OrchFeature.HOST_CREATE])
     @handle_orchestrator_error('host')
     @host_task('create', {'hostname': '{hostname}'})
     def create(self, hostname):  # pragma: no cover - requires realtime env
@@ -123,7 +280,7 @@ class Host(RESTController):
         orch_client.hosts.add(hostname)
     create._cp_config = {'tools.json_in.force': False}  # pylint: disable=W0212
 
-    @raise_if_no_orchestrator
+    @raise_if_no_orchestrator([OrchFeature.HOST_LIST, OrchFeature.HOST_DELETE])
     @handle_orchestrator_error('host')
     @host_task('delete', {'hostname': '{hostname}'})
     @allow_empty_body
@@ -163,7 +320,46 @@ class Host(RESTController):
         return CephService.get_smart_data_by_host(hostname)
 
     @RESTController.Resource('GET')
-    @raise_if_no_orchestrator
+    @raise_if_no_orchestrator([OrchFeature.DEVICE_LIST])
+    @handle_orchestrator_error('host')
+    @EndpointDoc('Get inventory of a host',
+                 parameters={
+                     'hostname': (str, 'Hostname'),
+                     'refresh': (str, 'Trigger asynchronous refresh'),
+                 },
+                 responses={200: INVENTORY_SCHEMA})
+    def inventory(self, hostname, refresh=None):
+        inventory = get_inventories([hostname], refresh)
+        if inventory:
+            return inventory[0]
+        return {}
+
+    @RESTController.Resource('POST')
+    @UpdatePermission
+    @raise_if_no_orchestrator([OrchFeature.DEVICE_BLINK_LIGHT])
+    @handle_orchestrator_error('host')
+    @host_task('identify_device', ['{hostname}', '{device}'], wait_for=2.0)
+    def identify_device(self, hostname, device, duration):
+        # type: (str, str, int) -> None
+        """
+        Identify a device by switching on the device light for N seconds.
+        :param hostname: The hostname of the device to process.
+        :param device: The device identifier to process, e.g. ``/dev/dm-0`` or
+        ``ABC1234DEF567-1R1234_ABC8DE0Q``.
+        :param duration: The duration in seconds how long the LED should flash.
+        """
+        orch = OrchClient.instance()
+        TaskManager.current_task().set_progress(0)
+        orch.blink_device_light(hostname, device, 'ident', True)
+        for i in range(int(duration)):
+            percentage = int(round(i / float(duration) * 100))
+            TaskManager.current_task().set_progress(percentage)
+            time.sleep(1)
+        orch.blink_device_light(hostname, device, 'ident', False)
+        TaskManager.current_task().set_progress(100)
+
+    @RESTController.Resource('GET')
+    @raise_if_no_orchestrator([OrchFeature.DAEMON_LIST])
     def daemons(self, hostname: str) -> List[dict]:
         orch = OrchClient.instance()
         daemons = orch.services.list_daemons(hostname=hostname)
@@ -177,26 +373,59 @@ class Host(RESTController):
         """
         return get_host(hostname)
 
-    @raise_if_no_orchestrator
+    @raise_if_no_orchestrator([OrchFeature.HOST_LABEL_ADD,
+                               OrchFeature.HOST_LABEL_REMOVE,
+                               OrchFeature.HOST_MAINTENANCE_ENTER,
+                               OrchFeature.HOST_MAINTENANCE_EXIT])
     @handle_orchestrator_error('host')
-    def set(self, hostname: str, labels: List[str]):
+    @EndpointDoc('',
+                 parameters={
+                     'hostname': (str, 'Hostname'),
+                     'update_labels': (bool, 'Update Labels'),
+                     'labels': ([str], 'Host Labels'),
+                     'maintenance': (bool, 'Enter/Exit Maintenance'),
+                     'force': (bool, 'Force Enter Maintenance')
+                 },
+                 responses={200: None, 204: None})
+    def set(self, hostname: str, update_labels: bool = False,
+            labels: List[str] = None, maintenance: bool = False,
+            force: bool = False):
         """
         Update the specified host.
         Note, this is only supported when Ceph Orchestrator is enabled.
         :param hostname: The name of the host to be processed.
+        :param update_labels: To update the labels.
         :param labels: List of labels.
+        :param maintenance: Enter/Exit maintenance mode.
+        :param force: Force enter maintenance mode.
         """
         orch = OrchClient.instance()
         host = get_host(hostname)
-        current_labels = set(host['labels'])
-        # Remove labels.
-        remove_labels = list(current_labels.difference(set(labels)))
-        for label in remove_labels:
-            orch.hosts.remove_label(hostname, label)
-        # Add labels.
-        add_labels = list(set(labels).difference(current_labels))
-        for label in add_labels:
-            orch.hosts.add_label(hostname, label)
+
+        if maintenance:
+            status = host['status']
+            if status != 'maintenance':
+                orch.hosts.enter_maintenance(hostname, force)
+
+            if status == 'maintenance':
+                orch.hosts.exit_maintenance(hostname)
+
+        if update_labels:
+            # only allow List[str] type for labels
+            if not isinstance(labels, list):
+                raise DashboardException(
+                    msg='Expected list of labels. Please check API documentation.',
+                    http_status_code=400,
+                    component='orchestrator')
+            current_labels = set(host['labels'])
+            # Remove labels.
+            remove_labels = list(current_labels.difference(set(labels)))
+            for label in remove_labels:
+                orch.hosts.remove_label(hostname, label)
+            # Add labels.
+            add_labels = list(set(labels).difference(current_labels))
+            for label in add_labels:
+                orch.hosts.add_label(hostname, label)
 
 
 @UiApiController('/host', Scope.HOSTS)
@@ -218,3 +447,10 @@ class HostUi(BaseController):
                 labels.extend(host.labels)
         labels.sort()
         return list(set(labels))  # Filter duplicate labels.
+
+    @Endpoint('GET')
+    @ReadPermission
+    @raise_if_no_orchestrator([OrchFeature.DEVICE_LIST])
+    @handle_orchestrator_error('host')
+    def inventory(self, refresh=None):
+        return get_inventories(None, refresh)

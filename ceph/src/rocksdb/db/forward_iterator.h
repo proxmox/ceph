@@ -10,14 +10,14 @@
 #include <vector>
 #include <queue>
 
+#include "db/dbformat.h"
+#include "memory/arena.h"
 #include "rocksdb/db.h"
 #include "rocksdb/iterator.h"
 #include "rocksdb/options.h"
-#include "db/dbformat.h"
 #include "table/internal_iterator.h"
-#include "util/arena.h"
 
-namespace rocksdb {
+namespace ROCKSDB_NAMESPACE {
 
 class DBImpl;
 class Env;
@@ -156,5 +156,5 @@ class ForwardIterator : public InternalIterator {
   Arena arena_;
 };
 
-}  // namespace rocksdb
+}  // namespace ROCKSDB_NAMESPACE
 #endif  // ROCKSDB_LITE

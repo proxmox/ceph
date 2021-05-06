@@ -19,12 +19,12 @@ all: sync
 	$(MAKE) $(PROGRAM)
 
 $(PROGRAM): $(OBJS)
-	$(CC) $(LDFLAGS) -o $@ $^
+	$(CC) -o $@ $^ $(LDFLAGS)
 
 sync:
 	@$(MAKE) -C ${OCFDIR} inc O=$(PWD)
 	@$(MAKE) -C ${OCFDIR} src O=$(PWD)
-	@$(MAKE) -C ${OCFDIR} env O=$(PWD) ENV=posix
+	@$(MAKE) -C ${OCFDIR} env O=$(PWD) OCF_ENV=posix
 
 clean:
 	@rm -rf $(PROGRAM) $(OBJS)

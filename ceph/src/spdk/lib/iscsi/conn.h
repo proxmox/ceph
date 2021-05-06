@@ -67,7 +67,29 @@
 #define TRACE_ISCSI_TASK_EXECUTED		SPDK_TPOINT_ID(TRACE_GROUP_ISCSI, 0x6)
 #define TRACE_ISCSI_PDU_COMPLETED		SPDK_TPOINT_ID(TRACE_GROUP_ISCSI, 0x7)
 
+enum iscsi_pdu_recv_state {
+	/* Ready to wait for PDU */
+	ISCSI_PDU_RECV_STATE_AWAIT_PDU_READY,
+
+	/* Active connection waiting for any PDU header */
+	ISCSI_PDU_RECV_STATE_AWAIT_PDU_HDR,
+
+	/* Active connection waiting for payload */
+	ISCSI_PDU_RECV_STATE_AWAIT_PDU_PAYLOAD,
+
+	/* Active connection does not wait for payload */
+	ISCSI_PDU_RECV_STATE_ERROR,
+};
+
 struct spdk_poller;
+struct spdk_iscsi_conn;
+
+struct spdk_iscsi_lun {
+	struct spdk_iscsi_conn		*conn;
+	struct spdk_scsi_lun		*lun;
+	struct spdk_scsi_lun_desc	*desc;
+	struct spdk_poller		*remove_poller;
+};
 
 struct spdk_iscsi_conn {
 	int				id;
@@ -80,19 +102,25 @@ struct spdk_iscsi_conn {
 	 */
 	struct spdk_iscsi_portal	*portal;
 	int				pg_tag;
-	char				*portal_host;
-	char				*portal_port;
-	struct spdk_cpuset		*portal_cpumask;
-	uint32_t			lcore;
+	char				portal_host[MAX_PORTAL_ADDR + 1];
+	char				portal_port[MAX_PORTAL_ADDR + 1];
+	struct spdk_iscsi_poll_group	*pg;
 	struct spdk_sock		*sock;
 	struct spdk_iscsi_sess		*sess;
 
 	enum iscsi_connection_state	state;
 	int				login_phase;
+	bool				is_logged_out;
+	struct spdk_iscsi_pdu		*login_rsp_pdu;
 
 	uint64_t	last_flush;
 	uint64_t	last_fill;
 	uint64_t	last_nopin;
+
+	/* Timer used to destroy connection after requesting logout if
+	 *  initiator does not send logout request.
+	 */
+	struct spdk_poller *logout_request_timer;
 
 	/* Timer used to destroy connection after logout if initiator does
 	 *  not close the connection.
@@ -104,12 +132,12 @@ struct spdk_iscsi_conn {
 	struct spdk_poller *shutdown_timer;
 
 	struct spdk_iscsi_pdu *pdu_in_progress;
+	enum iscsi_pdu_recv_state pdu_recv_state;
 
 	TAILQ_HEAD(, spdk_iscsi_pdu) write_pdu_list;
 	TAILQ_HEAD(, spdk_iscsi_pdu) snack_pdu_list;
 
 	int pending_r2t;
-	struct spdk_iscsi_task *outstanding_r2t_tasks[DEFAULT_MAXR2T];
 
 	uint16_t cid;
 
@@ -135,13 +163,15 @@ struct spdk_iscsi_conn {
 	bool conn_param_state_negotiated[MAX_CONNECTION_PARAMS];
 	struct iscsi_chap_auth auth;
 	bool authenticated;
+	bool disable_chap;
 	bool require_chap;
 	bool mutual_chap;
+	int32_t chap_group;
 	uint32_t pending_task_cnt;
 	uint32_t data_out_cnt;
 	uint32_t data_in_cnt;
 
-	int timeout;
+	uint64_t timeout;
 	uint64_t nopininterval;
 	bool nop_outstanding;
 
@@ -158,36 +188,50 @@ struct spdk_iscsi_conn {
 	uint32_t ttt; /* target transfer tag */
 	char *partial_text_parameter;
 
-	STAILQ_ENTRY(spdk_iscsi_conn) link;
-	struct spdk_poller	*flush_poller;
+	STAILQ_ENTRY(spdk_iscsi_conn) pg_link;
 	bool			is_stopped;  /* Set true when connection is stopped for migration */
 	TAILQ_HEAD(queued_r2t_tasks, spdk_iscsi_task)	queued_r2t_tasks;
 	TAILQ_HEAD(active_r2t_tasks, spdk_iscsi_task)	active_r2t_tasks;
 	TAILQ_HEAD(queued_datain_tasks, spdk_iscsi_task)	queued_datain_tasks;
 
-	struct spdk_scsi_lun_desc	*open_lun_descs[SPDK_SCSI_DEV_MAX_LUN];
+	struct spdk_iscsi_lun	*luns[SPDK_SCSI_DEV_MAX_LUN];
+
+	TAILQ_ENTRY(spdk_iscsi_conn)	conn_link;
 };
 
 extern struct spdk_iscsi_conn *g_conns_array;
 
-int spdk_initialize_iscsi_conns(void);
-void spdk_shutdown_iscsi_conns(void);
-void spdk_iscsi_conns_start_exit(struct spdk_iscsi_tgt_node *target);
-int spdk_iscsi_get_active_conns(struct spdk_iscsi_tgt_node *target);
+void iscsi_task_cpl(struct spdk_scsi_task *scsi_task);
+void iscsi_task_mgmt_cpl(struct spdk_scsi_task *scsi_task);
 
-int spdk_iscsi_conn_construct(struct spdk_iscsi_portal *portal, struct spdk_sock *sock);
-void spdk_iscsi_conn_destruct(struct spdk_iscsi_conn *conn);
-void spdk_iscsi_conn_handle_nop(struct spdk_iscsi_conn *conn);
-void spdk_iscsi_conn_schedule(struct spdk_iscsi_conn *conn);
-void spdk_iscsi_conn_logout(struct spdk_iscsi_conn *conn);
-int spdk_iscsi_drop_conns(struct spdk_iscsi_conn *conn,
-			  const char *conn_match, int drop_all);
+int initialize_iscsi_conns(void);
+void shutdown_iscsi_conns(void);
+void iscsi_conns_request_logout(struct spdk_iscsi_tgt_node *target);
+int iscsi_get_active_conns(struct spdk_iscsi_tgt_node *target);
 
-int spdk_iscsi_conn_read_data(struct spdk_iscsi_conn *conn, int len, void *buf);
-int spdk_iscsi_conn_readv_data(struct spdk_iscsi_conn *conn,
-			       struct iovec *iov, int iovcnt);
-void spdk_iscsi_conn_write_pdu(struct spdk_iscsi_conn *conn, struct spdk_iscsi_pdu *pdu);
+int iscsi_conn_construct(struct spdk_iscsi_portal *portal, struct spdk_sock *sock);
+void iscsi_conn_destruct(struct spdk_iscsi_conn *conn);
+void iscsi_conn_handle_nop(struct spdk_iscsi_conn *conn);
+void iscsi_conn_schedule(struct spdk_iscsi_conn *conn);
+void iscsi_conn_logout(struct spdk_iscsi_conn *conn);
+int iscsi_drop_conns(struct spdk_iscsi_conn *conn,
+		     const char *conn_match, int drop_all);
+int iscsi_conn_handle_queued_datain_tasks(struct spdk_iscsi_conn *conn);
+int iscsi_conn_abort_queued_datain_task(struct spdk_iscsi_conn *conn,
+					uint32_t ref_task_tag);
+int iscsi_conn_abort_queued_datain_tasks(struct spdk_iscsi_conn *conn,
+		struct spdk_scsi_lun *lun,
+		struct spdk_iscsi_pdu *pdu);
 
-void spdk_iscsi_conn_free_pdu(struct spdk_iscsi_conn *conn, struct spdk_iscsi_pdu *pdu);
+int iscsi_conn_read_data(struct spdk_iscsi_conn *conn, int len, void *buf);
+int iscsi_conn_readv_data(struct spdk_iscsi_conn *conn,
+			  struct iovec *iov, int iovcnt);
+void iscsi_conn_write_pdu(struct spdk_iscsi_conn *conn, struct spdk_iscsi_pdu *pdu,
+			  iscsi_conn_xfer_complete_cb cb_fn,
+			  void *cb_arg);
 
+void iscsi_conn_free_pdu(struct spdk_iscsi_conn *conn, struct spdk_iscsi_pdu *pdu);
+
+void iscsi_conn_info_json(struct spdk_json_write_ctx *w, struct spdk_iscsi_conn *conn);
+void iscsi_conn_pdu_generic_complete(void *cb_arg);
 #endif /* SPDK_ISCSI_CONN_H */

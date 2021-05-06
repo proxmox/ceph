@@ -4,20 +4,20 @@
 //  (found in the LICENSE.Apache file in the root directory).
 
 #include <iostream>
+#include "db/db_impl/db_impl.h"
 #include "rocksdb/db.h"
-#include "db/db_impl.h"
 #include "rocksdb/merge_operator.h"
 #include "rocksdb/utilities/db_ttl.h"
-#include "util/testharness.h"
+#include "test_util/testharness.h"
 #include "util/random.h"
-#include "utilities/merge_operators.h"
 #include "utilities/cassandra/cassandra_compaction_filter.h"
 #include "utilities/cassandra/merge_operator.h"
 #include "utilities/cassandra/test_utils.h"
+#include "utilities/merge_operators.h"
 
-using namespace rocksdb;
+using namespace ROCKSDB_NAMESPACE;
 
-namespace rocksdb {
+namespace ROCKSDB_NAMESPACE {
 namespace cassandra {
 
 // Path to the database on file system
@@ -303,7 +303,7 @@ TEST_F(CassandraFunctionalTest, CompactionShouldRemoveTombstoneFromPut) {
 }
 
 } // namespace cassandra
-} // namespace rocksdb
+}  // namespace ROCKSDB_NAMESPACE
 
 int main(int argc, char** argv) {
   ::testing::InitGoogleTest(&argc, argv);

@@ -1,16 +1,16 @@
 import { Component, OnDestroy, OnInit } from '@angular/core';
 import { FormControl, FormGroup, ValidatorFn, Validators } from '@angular/forms';
 
-import * as _ from 'lodash';
-import { BsModalRef } from 'ngx-bootstrap/modal';
+import { NgbActiveModal } from '@ng-bootstrap/ng-bootstrap';
+import _ from 'lodash';
 import { concat, forkJoin, Subscription } from 'rxjs';
 import { last, tap } from 'rxjs/operators';
 
-import { RbdMirroringService } from '../../../../shared/api/rbd-mirroring.service';
-import { CdFormGroup } from '../../../../shared/forms/cd-form-group';
-import { FinishedTask } from '../../../../shared/models/finished-task';
-import { TaskWrapperService } from '../../../../shared/services/task-wrapper.service';
-import { Pool } from '../../../pool/pool';
+import { Pool } from '~/app/ceph/pool/pool';
+import { RbdMirroringService } from '~/app/shared/api/rbd-mirroring.service';
+import { CdFormGroup } from '~/app/shared/forms/cd-form-group';
+import { FinishedTask } from '~/app/shared/models/finished-task';
+import { TaskWrapperService } from '~/app/shared/services/task-wrapper.service';
 
 @Component({
   selector: 'cd-bootstrap-create-modal',
@@ -27,7 +27,7 @@ export class BootstrapCreateModalComponent implements OnDestroy, OnInit {
   createBootstrapForm: CdFormGroup;
 
   constructor(
-    public modalRef: BsModalRef,
+    public activeModal: NgbActiveModal,
     private rbdMirroringService: RbdMirroringService,
     private taskWrapper: TaskWrapperService
   ) {
@@ -148,6 +148,6 @@ export class BootstrapCreateModalComponent implements OnDestroy, OnInit {
       task: new FinishedTask('rbd/mirroring/bootstrap/create', {}),
       call: apiActionsObs
     });
-    taskObs.subscribe(undefined, finishHandler, finishHandler);
+    taskObs.subscribe({ error: finishHandler, complete: finishHandler });
   }
 }

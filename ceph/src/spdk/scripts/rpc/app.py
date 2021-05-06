@@ -1,14 +1,19 @@
-def kill_instance(client, sig_name):
+from .helpers import deprecated_alias
+
+
+@deprecated_alias('kill_instance')
+def spdk_kill_instance(client, sig_name):
     """Send a signal to the SPDK process.
 
     Args:
         sig_name: signal to send ("SIGINT", "SIGTERM", "SIGQUIT", "SIGHUP", or "SIGKILL")
     """
     params = {'sig_name': sig_name}
-    return client.call('kill_instance', params)
+    return client.call('spdk_kill_instance', params)
 
 
-def context_switch_monitor(client, enabled=None):
+@deprecated_alias('context_switch_monitor')
+def framework_monitor_context_switch(client, enabled=None):
     """Query or set state of context switch monitoring.
 
     Args:
@@ -20,4 +25,54 @@ def context_switch_monitor(client, enabled=None):
     params = {}
     if enabled is not None:
         params['enabled'] = enabled
-    return client.call('context_switch_monitor', params)
+    return client.call('framework_monitor_context_switch', params)
+
+
+def framework_get_reactors(client):
+    """Query list of all reactors.
+
+    Returns:
+        List of all reactors.
+    """
+    return client.call('framework_get_reactors')
+
+
+def thread_get_stats(client):
+    """Query threads statistics.
+
+    Returns:
+        Current threads statistics.
+    """
+    return client.call('thread_get_stats')
+
+
+def thread_set_cpumask(client, id, cpumask):
+    """Set the cpumask of the thread whose ID matches to the specified value.
+
+    Args:
+        id: thread ID
+        cpumask: cpumask for this thread
+
+    Returns:
+        True or False
+    """
+    params = {'id': id, 'cpumask': cpumask}
+    return client.call('thread_set_cpumask', params)
+
+
+def thread_get_pollers(client):
+    """Query current pollers.
+
+    Returns:
+        Current pollers.
+    """
+    return client.call('thread_get_pollers')
+
+
+def thread_get_io_channels(client):
+    """Query current IO channels.
+
+    Returns:
+        Current IO channels.
+    """
+    return client.call('thread_get_io_channels')

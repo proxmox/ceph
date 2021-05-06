@@ -12,12 +12,16 @@ except ImportError:
 
 from mgr_module import ERROR_MSG_NO_INPUT_FILE
 
-from . import CmdException, ControllerTestCase, CLICommandTestMixin, KVStoreMockMixin
 from .. import mgr
 from ..controllers.iscsi import Iscsi, IscsiTarget
+from ..rest_client import RequestException
 from ..services.iscsi_client import IscsiClient
 from ..services.orchestrator import OrchClient
-from ..rest_client import RequestException
+from ..tools import NotificationQueue, TaskManager
+from . import CLICommandTestMixin  # pylint: disable=no-name-in-module
+from . import CmdException  # pylint: disable=no-name-in-module
+from . import ControllerTestCase  # pylint: disable=no-name-in-module
+from . import KVStoreMockMixin  # pylint: disable=no-name-in-module
 
 
 class IscsiTestCli(unittest.TestCase, CLICommandTestMixin):
@@ -76,12 +80,18 @@ class IscsiTestController(ControllerTestCase, KVStoreMockMixin):
 
     @classmethod
     def setup_server(cls):
+        NotificationQueue.start_queue()
+        TaskManager.init()
         OrchClient.instance().available = lambda: False
         mgr.rados.side_effect = None
         # pylint: disable=protected-access
         Iscsi._cp_config['tools.authenticate.on'] = False
         IscsiTarget._cp_config['tools.authenticate.on'] = False
         cls.setup_controllers([Iscsi, IscsiTarget])
+
+    @classmethod
+    def tearDownClass(cls):
+        NotificationQueue.stop()
 
     def setUp(self):
         self.mock_kv_store()
@@ -599,10 +609,12 @@ class IscsiTestController(ControllerTestCase, KVStoreMockMixin):
                              update_response, response):
         self._task_post('/api/iscsi/target', create_request)
         self.assertStatus(201)
-        self._task_put('/api/iscsi/target/{}'.format(create_request['target_iqn']), update_request)
+        self._task_put(
+            '/api/iscsi/target/{}'.format(create_request['target_iqn']), update_request)
         self.assertStatus(update_response_code)
         self.assertJsonBody(update_response)
-        self._get('/api/iscsi/target/{}'.format(update_request['new_target_iqn']))
+        self._get(
+            '/api/iscsi/target/{}'.format(update_request['new_target_iqn']))
         self.assertStatus(200)
         self.assertJsonBody(response)
 

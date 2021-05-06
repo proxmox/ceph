@@ -118,7 +118,7 @@ alias variadic_macro_data
          <define>BOOST_VMD_ASSERT_DATA=1 ]
        [ run test_doc_empty.cpp ]
        [ compile-fail test_doc_empty_fail.cpp ]
-       [ compile-fail test_doc_empty_fail2.cpp ]
+#       [ compile-fail test_doc_empty_fail2.cpp ]
        [ compile-fail test_doc_empty_fail3.cpp ]
        [ compile-fail test_doc_empty_fail4.cpp ]
        [ compile-fail test_doc_empty_fail6.cpp ]

@@ -13,21 +13,21 @@
 #include <string>
 #include <vector>
 
-#include "db/compaction_iteration_stats.h"
+#include "db/compaction/compaction_iteration_stats.h"
 #include "db/dbformat.h"
 #include "db/pinned_iterators_manager.h"
 #include "db/range_del_aggregator.h"
 #include "db/range_tombstone_fragmenter.h"
 #include "db/version_edit.h"
-#include "include/rocksdb/comparator.h"
-#include "include/rocksdb/types.h"
+#include "rocksdb/comparator.h"
+#include "rocksdb/types.h"
 #include "table/internal_iterator.h"
 #include "table/scoped_arena_iterator.h"
 #include "table/table_builder.h"
 #include "util/heap.h"
 #include "util/kv_map.h"
 
-namespace rocksdb {
+namespace ROCKSDB_NAMESPACE {
 
 class TruncatedRangeDelIterator {
  public:
@@ -320,8 +320,10 @@ class RangeDelAggregator {
                       RangeDelPositioningMode mode);
 
     void Invalidate() {
-      InvalidateForwardIter();
-      InvalidateReverseIter();
+      if (!IsEmpty()) {
+        InvalidateForwardIter();
+        InvalidateReverseIter();
+      }
     }
 
     bool IsRangeOverlapped(const Slice& start, const Slice& end);
@@ -349,7 +351,7 @@ class RangeDelAggregator {
   std::set<uint64_t> files_seen_;
 };
 
-class ReadRangeDelAggregator : public RangeDelAggregator {
+class ReadRangeDelAggregator final : public RangeDelAggregator {
  public:
   ReadRangeDelAggregator(const InternalKeyComparator* icmp,
                          SequenceNumber upper_bound)
@@ -364,7 +366,12 @@ class ReadRangeDelAggregator : public RangeDelAggregator {
       const InternalKey* largest = nullptr) override;
 
   bool ShouldDelete(const ParsedInternalKey& parsed,
-                    RangeDelPositioningMode mode) override;
+                    RangeDelPositioningMode mode) final override {
+    if (rep_.IsEmpty()) {
+      return false;
+    }
+    return ShouldDeleteImpl(parsed, mode);
+  }
 
   bool IsRangeOverlapped(const Slice& start, const Slice& end);
 
@@ -374,6 +381,9 @@ class ReadRangeDelAggregator : public RangeDelAggregator {
 
  private:
   StripeRep rep_;
+
+  bool ShouldDeleteImpl(const ParsedInternalKey& parsed,
+                        RangeDelPositioningMode mode);
 };
 
 class CompactionRangeDelAggregator : public RangeDelAggregator {
@@ -428,4 +438,4 @@ class CompactionRangeDelAggregator : public RangeDelAggregator {
   const std::vector<SequenceNumber>* snapshots_;
 };
 
-}  // namespace rocksdb
+}  // namespace ROCKSDB_NAMESPACE

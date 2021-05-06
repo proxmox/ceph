@@ -1,7 +1,3 @@
-<cd-alert-panel *ngIf="isStale"
-                type="warning"
-                size="slim"
-                i18n>The user list data might be stale. If needed, you can manually reload it.</cd-alert-panel>
 <cd-table #table
           [autoReload]="false"
           [data]="users"
@@ -12,7 +8,8 @@
           (setExpandedRow)="setExpandedRow($event)"
           (updateSelection)="updateSelection($event)"
           identifier="uid"
-          (fetchData)="getUserList($event)">
+          (fetchData)="getUserList($event)"
+          [status]="tableStatus">
   <cd-table-actions class="table-actions"
                     [permission]="permission"
                     [selection]="selection"
@@ -22,3 +19,26 @@
                        [selection]="expandedRow">
   </cd-rgw-user-details>
 </cd-table>
+
+<ng-template #userSizeTpl
+             let-row="row">
+  <cd-usage-bar *ngIf="row.user_quota.max_size > 0 && row.user_quota.enabled; else noSizeQuota"
+                [total]="row.user_quota.max_size"
+                [used]="row.stats.size_actual">
+  </cd-usage-bar>
+
+  <ng-template #noSizeQuota
+               i18n>No Limit</ng-template>
+</ng-template>
+
+<ng-template #userObjectTpl
+             let-row="row">
+  <cd-usage-bar *ngIf="row.user_quota.max_objects > 0 && row.user_quota.enabled; else noObjectQuota"
+                [total]="row.user_quota.max_objects"
+                [used]="row.stats.num_objects"
+                [isBinary]="false">
+  </cd-usage-bar>
+
+  <ng-template #noObjectQuota
+               i18n>No Limit</ng-template>
+</ng-template>

@@ -47,7 +47,7 @@
 #include "iscsi/init_grp.h"
 #include "iscsi/task.h"
 
-#define MAX_TMPBUF 1024
+#define MAX_TMPBUF 4096
 #define MAX_MASKBUF 128
 
 static bool
@@ -230,8 +230,8 @@ iscsi_tgt_node_find_pg_map(struct spdk_iscsi_tgt_node *target,
 			   struct spdk_iscsi_portal_grp *pg);
 
 bool
-spdk_iscsi_tgt_node_access(struct spdk_iscsi_conn *conn,
-			   struct spdk_iscsi_tgt_node *target, const char *iqn, const char *addr)
+iscsi_tgt_node_access(struct spdk_iscsi_conn *conn,
+		      struct spdk_iscsi_tgt_node *target, const char *iqn, const char *addr)
 {
 	struct spdk_iscsi_portal_grp *pg;
 	struct spdk_iscsi_pg_map *pg_map;
@@ -267,8 +267,8 @@ spdk_iscsi_tgt_node_access(struct spdk_iscsi_conn *conn,
 
 denied:
 	SPDK_DEBUGLOG(SPDK_LOG_ISCSI, "access denied from %s (%s) to %s (%s:%s,%d)\n",
-		      iqn, addr, target->name, conn->portal->host,
-		      conn->portal->port, conn->portal->group->tag);
+		      iqn, addr, target->name, conn->portal_host,
+		      conn->portal_port, conn->pg_tag);
 	return false;
 }
 
@@ -297,9 +297,9 @@ iscsi_tgt_node_allow_iscsi_name(struct spdk_iscsi_tgt_node *target, const char *
 }
 
 int
-spdk_iscsi_send_tgts(struct spdk_iscsi_conn *conn, const char *iiqn,
-		     const char *iaddr, const char *tiqn, uint8_t *data, int alloc_len,
-		     int data_len)
+iscsi_send_tgts(struct spdk_iscsi_conn *conn, const char *iiqn,
+		const char *iaddr, const char *tiqn, uint8_t *data, int alloc_len,
+		int data_len)
 {
 	char buf[MAX_TMPBUF];
 	struct spdk_iscsi_portal_grp	*pg;
@@ -319,19 +319,14 @@ spdk_iscsi_send_tgts(struct spdk_iscsi_conn *conn, const char *iiqn,
 	if (alloc_len < 1) {
 		return 0;
 	}
-	if (total > alloc_len) {
+	if (total >= alloc_len) {
 		total = alloc_len;
 		data[total - 1] = '\0';
 		return total;
 	}
 
-	if (alloc_len - total < 1) {
-		SPDK_ERRLOG("data space small %d\n", alloc_len);
-		return total;
-	}
-
-	pthread_mutex_lock(&g_spdk_iscsi.mutex);
-	TAILQ_FOREACH(target, &g_spdk_iscsi.target_head, tailq) {
+	pthread_mutex_lock(&g_iscsi.mutex);
+	TAILQ_FOREACH(target, &g_iscsi.target_head, tailq) {
 		if (strcasecmp(tiqn, "ALL") != 0
 		    && strcasecmp(tiqn, target->name) != 0) {
 			continue;
@@ -351,9 +346,12 @@ spdk_iscsi_send_tgts(struct spdk_iscsi_conn *conn, const char *iiqn,
 			pg = pg_map->pg;
 			TAILQ_FOREACH(p, &pg->head, per_pg_tailq) {
 				if (alloc_len - total < 1) {
-					pthread_mutex_unlock(&g_spdk_iscsi.mutex);
-					SPDK_ERRLOG("data space small %d\n", alloc_len);
-					return total;
+					pthread_mutex_unlock(&g_iscsi.mutex);
+					/* TODO: long text responses support */
+					SPDK_ERRLOG("SPDK doesn't support long text responses now, "
+						    "you can use larger MaxRecvDataSegmentLength"
+						    "value in initiator\n");
+					return alloc_len;
 				}
 				host = p->host;
 				/* wildcard? */
@@ -383,20 +381,20 @@ spdk_iscsi_send_tgts(struct spdk_iscsi_conn *conn, const char *iiqn,
 			}
 		}
 	}
-	pthread_mutex_unlock(&g_spdk_iscsi.mutex);
+	pthread_mutex_unlock(&g_iscsi.mutex);
 
 	return total;
 }
 
 struct spdk_iscsi_tgt_node *
-spdk_iscsi_find_tgt_node(const char *target_name)
+iscsi_find_tgt_node(const char *target_name)
 {
 	struct spdk_iscsi_tgt_node *target;
 
 	if (target_name == NULL) {
 		return NULL;
 	}
-	TAILQ_FOREACH(target, &g_spdk_iscsi.target_head, tailq) {
+	TAILQ_FOREACH(target, &g_iscsi.target_head, tailq) {
 		if (strcasecmp(target_name, target->name) == 0) {
 			return target;
 		}
@@ -408,16 +406,16 @@ spdk_iscsi_find_tgt_node(const char *target_name)
 static int
 iscsi_tgt_node_register(struct spdk_iscsi_tgt_node *target)
 {
-	pthread_mutex_lock(&g_spdk_iscsi.mutex);
+	pthread_mutex_lock(&g_iscsi.mutex);
 
-	if (spdk_iscsi_find_tgt_node(target->name) != NULL) {
-		pthread_mutex_unlock(&g_spdk_iscsi.mutex);
+	if (iscsi_find_tgt_node(target->name) != NULL) {
+		pthread_mutex_unlock(&g_iscsi.mutex);
 		return -EEXIST;
 	}
 
-	TAILQ_INSERT_TAIL(&g_spdk_iscsi.target_head, target, tailq);
+	TAILQ_INSERT_TAIL(&g_iscsi.target_head, target, tailq);
 
-	pthread_mutex_unlock(&g_spdk_iscsi.mutex);
+	pthread_mutex_unlock(&g_iscsi.mutex);
 	return 0;
 }
 
@@ -426,9 +424,9 @@ iscsi_tgt_node_unregister(struct spdk_iscsi_tgt_node *target)
 {
 	struct spdk_iscsi_tgt_node *t;
 
-	TAILQ_FOREACH(t, &g_spdk_iscsi.target_head, tailq) {
+	TAILQ_FOREACH(t, &g_iscsi.target_head, tailq) {
 		if (t == target) {
-			TAILQ_REMOVE(&g_spdk_iscsi.target_head, t, tailq);
+			TAILQ_REMOVE(&g_iscsi.target_head, t, tailq);
 			return 0;
 		}
 	}
@@ -638,12 +636,9 @@ _iscsi_tgt_node_destruct(void *cb_arg, int rc)
 		return;
 	}
 
-	free(target->name);
-	free(target->alias);
-
-	pthread_mutex_lock(&g_spdk_iscsi.mutex);
+	pthread_mutex_lock(&g_iscsi.mutex);
 	iscsi_tgt_node_delete_all_pg_maps(target);
-	pthread_mutex_unlock(&g_spdk_iscsi.mutex);
+	pthread_mutex_unlock(&g_iscsi.mutex);
 
 	pthread_mutex_destroy(&target->mutex);
 	free(target);
@@ -658,15 +653,15 @@ iscsi_tgt_node_check_active_conns(void *arg)
 {
 	struct spdk_iscsi_tgt_node *target = arg;
 
-	if (spdk_iscsi_get_active_conns(target) != 0) {
-		return 1;
+	if (iscsi_get_active_conns(target) != 0) {
+		return SPDK_POLLER_BUSY;
 	}
 
 	spdk_poller_unregister(&target->destruct_poller);
 
 	spdk_scsi_dev_destruct(target->dev, _iscsi_tgt_node_destruct, target);
 
-	return 1;
+	return SPDK_POLLER_BUSY;
 }
 
 static void
@@ -692,10 +687,10 @@ iscsi_tgt_node_destruct(struct spdk_iscsi_tgt_node *target,
 	target->destruct_cb_fn = cb_fn;
 	target->destruct_cb_arg = cb_arg;
 
-	spdk_iscsi_conns_start_exit(target);
+	iscsi_conns_request_logout(target);
 
-	if (spdk_iscsi_get_active_conns(target) != 0) {
-		target->destruct_poller = spdk_poller_register(iscsi_tgt_node_check_active_conns,
+	if (iscsi_get_active_conns(target) != 0) {
+		target->destruct_poller = SPDK_POLLER_REGISTER(iscsi_tgt_node_check_active_conns,
 					  target, 10);
 	} else {
 		spdk_scsi_dev_destruct(target->dev, _iscsi_tgt_node_destruct, target);
@@ -712,12 +707,12 @@ iscsi_tgt_node_delete_pg_ig_map(struct spdk_iscsi_tgt_node *target,
 	struct spdk_iscsi_pg_map	*pg_map;
 	struct spdk_iscsi_ig_map	*ig_map;
 
-	pg = spdk_iscsi_portal_grp_find_by_tag(pg_tag);
+	pg = iscsi_portal_grp_find_by_tag(pg_tag);
 	if (pg == NULL) {
 		SPDK_ERRLOG("%s: PortalGroup%d not found\n", target->name, pg_tag);
 		return -ENOENT;
 	}
-	ig = spdk_iscsi_init_grp_find_by_tag(ig_tag);
+	ig = iscsi_init_grp_find_by_tag(ig_tag);
 	if (ig == NULL) {
 		SPDK_ERRLOG("%s: InitiatorGroup%d not found\n", target->name, ig_tag);
 		return -ENOENT;
@@ -752,12 +747,12 @@ iscsi_tgt_node_add_pg_ig_map(struct spdk_iscsi_tgt_node *target,
 	struct spdk_iscsi_ig_map	*ig_map;
 	bool				new_pg_map = false;
 
-	pg = spdk_iscsi_portal_grp_find_by_tag(pg_tag);
+	pg = iscsi_portal_grp_find_by_tag(pg_tag);
 	if (pg == NULL) {
 		SPDK_ERRLOG("%s: PortalGroup%d not found\n", target->name, pg_tag);
 		return -ENOENT;
 	}
-	ig = spdk_iscsi_init_grp_find_by_tag(ig_tag);
+	ig = iscsi_init_grp_find_by_tag(ig_tag);
 	if (ig == NULL) {
 		SPDK_ERRLOG("%s: InitiatorGroup%d not found\n", target->name, ig_tag);
 		return -ENOENT;
@@ -790,13 +785,13 @@ failed:
 }
 
 int
-spdk_iscsi_tgt_node_add_pg_ig_maps(struct spdk_iscsi_tgt_node *target,
-				   int *pg_tag_list, int *ig_tag_list, uint16_t num_maps)
+iscsi_target_node_add_pg_ig_maps(struct spdk_iscsi_tgt_node *target,
+				 int *pg_tag_list, int *ig_tag_list, uint16_t num_maps)
 {
 	uint16_t i;
 	int rc;
 
-	pthread_mutex_lock(&g_spdk_iscsi.mutex);
+	pthread_mutex_lock(&g_iscsi.mutex);
 	for (i = 0; i < num_maps; i++) {
 		rc = iscsi_tgt_node_add_pg_ig_map(target, pg_tag_list[i],
 						  ig_tag_list[i]);
@@ -805,7 +800,7 @@ spdk_iscsi_tgt_node_add_pg_ig_maps(struct spdk_iscsi_tgt_node *target,
 			goto invalid;
 		}
 	}
-	pthread_mutex_unlock(&g_spdk_iscsi.mutex);
+	pthread_mutex_unlock(&g_iscsi.mutex);
 	return 0;
 
 invalid:
@@ -813,18 +808,18 @@ invalid:
 		iscsi_tgt_node_delete_pg_ig_map(target, pg_tag_list[i - 1],
 						ig_tag_list[i - 1]);
 	}
-	pthread_mutex_unlock(&g_spdk_iscsi.mutex);
+	pthread_mutex_unlock(&g_iscsi.mutex);
 	return -1;
 }
 
 int
-spdk_iscsi_tgt_node_delete_pg_ig_maps(struct spdk_iscsi_tgt_node *target,
-				      int *pg_tag_list, int *ig_tag_list, uint16_t num_maps)
+iscsi_target_node_remove_pg_ig_maps(struct spdk_iscsi_tgt_node *target,
+				    int *pg_tag_list, int *ig_tag_list, uint16_t num_maps)
 {
 	uint16_t i;
 	int rc;
 
-	pthread_mutex_lock(&g_spdk_iscsi.mutex);
+	pthread_mutex_lock(&g_iscsi.mutex);
 	for (i = 0; i < num_maps; i++) {
 		rc = iscsi_tgt_node_delete_pg_ig_map(target, pg_tag_list[i],
 						     ig_tag_list[i]);
@@ -833,7 +828,7 @@ spdk_iscsi_tgt_node_delete_pg_ig_maps(struct spdk_iscsi_tgt_node *target,
 			goto invalid;
 		}
 	}
-	pthread_mutex_unlock(&g_spdk_iscsi.mutex);
+	pthread_mutex_unlock(&g_iscsi.mutex);
 	return 0;
 
 invalid:
@@ -845,7 +840,7 @@ invalid:
 			break;
 		}
 	}
-	pthread_mutex_unlock(&g_spdk_iscsi.mutex);
+	pthread_mutex_unlock(&g_iscsi.mutex);
 	return -1;
 }
 
@@ -903,7 +898,7 @@ check_iscsi_name(const char *name)
 }
 
 bool
-spdk_iscsi_check_chap_params(bool disable, bool require, bool mutual, int group)
+iscsi_check_chap_params(bool disable, bool require, bool mutual, int group)
 {
 	if (group < 0) {
 		SPDK_ERRLOG("Invalid auth group ID (%d)\n", group);
@@ -920,21 +915,20 @@ spdk_iscsi_check_chap_params(bool disable, bool require, bool mutual, int group)
 	return false;
 }
 
-_spdk_iscsi_tgt_node *
-spdk_iscsi_tgt_node_construct(int target_index,
-			      const char *name, const char *alias,
-			      int *pg_tag_list, int *ig_tag_list, uint16_t num_maps,
-			      const char *bdev_name_list[], int *lun_id_list, int num_luns,
-			      int queue_depth,
-			      bool disable_chap, bool require_chap, bool mutual_chap, int chap_group,
-			      bool header_digest, bool data_digest)
+struct spdk_iscsi_tgt_node *iscsi_tgt_node_construct(int target_index,
+		const char *name, const char *alias,
+		int *pg_tag_list, int *ig_tag_list, uint16_t num_maps,
+		const char *bdev_name_list[], int *lun_id_list, int num_luns,
+		int queue_depth,
+		bool disable_chap, bool require_chap, bool mutual_chap, int chap_group,
+		bool header_digest, bool data_digest)
 {
 	char				fullname[MAX_TMPBUF];
 	struct spdk_iscsi_tgt_node	*target;
 	int				rc;
 
-	if (!spdk_iscsi_check_chap_params(disable_chap, require_chap,
-					  mutual_chap, chap_group)) {
+	if (!iscsi_check_chap_params(disable_chap, require_chap,
+				     mutual_chap, chap_group)) {
 		return NULL;
 	}
 
@@ -951,7 +945,7 @@ spdk_iscsi_tgt_node_construct(int target_index,
 	if (strncasecmp(name, "iqn.", 4) != 0
 	    && strncasecmp(name, "eui.", 4) != 0
 	    && strncasecmp(name, "naa.", 4) != 0) {
-		snprintf(fullname, sizeof(fullname), "%s:%s", g_spdk_iscsi.nodebase, name);
+		snprintf(fullname, sizeof(fullname), "%s:%s", g_iscsi.nodebase, name);
 	} else {
 		snprintf(fullname, sizeof(fullname), "%s", name);
 	}
@@ -962,13 +956,11 @@ spdk_iscsi_tgt_node_construct(int target_index,
 		return NULL;
 	}
 
-	target = malloc(sizeof(*target));
+	target = calloc(1, sizeof(*target));
 	if (!target) {
 		SPDK_ERRLOG("could not allocate target\n");
 		return NULL;
 	}
-
-	memset(target, 0, sizeof(*target));
 
 	rc = pthread_mutex_init(&target->mutex, NULL);
 	if (rc != 0) {
@@ -979,22 +971,14 @@ spdk_iscsi_tgt_node_construct(int target_index,
 
 	target->num = target_index;
 
-	target->name = strdup(fullname);
-	if (!target->name) {
-		SPDK_ERRLOG("Could not allocate TargetName\n");
-		iscsi_tgt_node_destruct(target, NULL, NULL);
-		return NULL;
-	}
+	memcpy(target->name, fullname, strlen(fullname));
 
-	if (alias == NULL) {
-		target->alias = NULL;
-	} else {
-		target->alias = strdup(alias);
-		if (!target->alias) {
-			SPDK_ERRLOG("Could not allocate TargetAlias\n");
+	if (alias != NULL) {
+		if (strlen(alias) > MAX_TARGET_NAME) {
 			iscsi_tgt_node_destruct(target, NULL, NULL);
 			return NULL;
 		}
+		memcpy(target->alias, alias, strlen(alias));
 	}
 
 	target->dev = spdk_scsi_dev_construct(fullname, bdev_name_list, lun_id_list, num_luns,
@@ -1006,7 +990,8 @@ spdk_iscsi_tgt_node_construct(int target_index,
 	}
 
 	TAILQ_INIT(&target->pg_map_head);
-	rc = spdk_iscsi_tgt_node_add_pg_ig_maps(target, pg_tag_list, ig_tag_list, num_maps);
+	rc = iscsi_target_node_add_pg_ig_maps(target, pg_tag_list,
+					      ig_tag_list, num_maps);
 	if (rc != 0) {
 		SPDK_ERRLOG("could not add map to target\n");
 		iscsi_tgt_node_destruct(target, NULL, NULL);
@@ -1020,12 +1005,12 @@ spdk_iscsi_tgt_node_construct(int target_index,
 	target->header_digest = header_digest;
 	target->data_digest = data_digest;
 
-	if (queue_depth > 0 && ((uint32_t)queue_depth <= g_spdk_iscsi.MaxQueueDepth)) {
+	if (queue_depth > 0 && ((uint32_t)queue_depth <= g_iscsi.MaxQueueDepth)) {
 		target->queue_depth = queue_depth;
 	} else {
 		SPDK_DEBUGLOG(SPDK_LOG_ISCSI, "QueueDepth %d is invalid and %d is used instead.\n",
-			      queue_depth, g_spdk_iscsi.MaxQueueDepth);
-		target->queue_depth = g_spdk_iscsi.MaxQueueDepth;
+			      queue_depth, g_iscsi.MaxQueueDepth);
+		target->queue_depth = g_iscsi.MaxQueueDepth;
 	}
 
 	rc = iscsi_tgt_node_register(target);
@@ -1211,7 +1196,7 @@ iscsi_parse_tgt_node(struct spdk_conf_section *sp)
 
 	val = spdk_conf_section_get_val(sp, "QueueDepth");
 	if (val == NULL) {
-		queue_depth = g_spdk_iscsi.MaxQueueDepth;
+		queue_depth = g_iscsi.MaxQueueDepth;
 	} else {
 		queue_depth = (int) strtol(val, NULL, 10);
 	}
@@ -1235,11 +1220,11 @@ iscsi_parse_tgt_node(struct spdk_conf_section *sp)
 		return -1;
 	}
 
-	target = spdk_iscsi_tgt_node_construct(target_num, name, alias,
-					       pg_tag_list, ig_tag_list, num_target_maps,
-					       bdev_name_list, lun_id_list, num_luns, queue_depth,
-					       disable_chap, require_chap, mutual_chap, chap_group,
-					       header_digest, data_digest);
+	target = iscsi_tgt_node_construct(target_num, name, alias,
+					  pg_tag_list, ig_tag_list, num_target_maps,
+					  bdev_name_list, lun_id_list, num_luns, queue_depth,
+					  disable_chap, require_chap, mutual_chap, chap_group,
+					  header_digest, data_digest);
 
 	if (target == NULL) {
 		SPDK_ERRLOG("tgt_node%d: add_iscsi_target_node error\n", target_num);
@@ -1260,12 +1245,12 @@ iscsi_parse_tgt_node(struct spdk_conf_section *sp)
 	return 0;
 }
 
-int spdk_iscsi_parse_tgt_nodes(void)
+int iscsi_parse_tgt_nodes(void)
 {
 	struct spdk_conf_section *sp;
 	int rc;
 
-	SPDK_DEBUGLOG(SPDK_LOG_ISCSI, "spdk_iscsi_parse_tgt_nodes\n");
+	SPDK_DEBUGLOG(SPDK_LOG_ISCSI, "iscsi_parse_tgt_nodes\n");
 
 	sp = spdk_conf_first_section(NULL);
 	while (sp != NULL) {
@@ -1288,41 +1273,41 @@ int spdk_iscsi_parse_tgt_nodes(void)
 }
 
 void
-spdk_iscsi_shutdown_tgt_nodes(void)
+iscsi_shutdown_tgt_nodes(void)
 {
 	struct spdk_iscsi_tgt_node *target;
 
-	pthread_mutex_lock(&g_spdk_iscsi.mutex);
-	while (!TAILQ_EMPTY(&g_spdk_iscsi.target_head)) {
-		target = TAILQ_FIRST(&g_spdk_iscsi.target_head);
-		TAILQ_REMOVE(&g_spdk_iscsi.target_head, target, tailq);
+	pthread_mutex_lock(&g_iscsi.mutex);
+	while (!TAILQ_EMPTY(&g_iscsi.target_head)) {
+		target = TAILQ_FIRST(&g_iscsi.target_head);
+		TAILQ_REMOVE(&g_iscsi.target_head, target, tailq);
 
-		pthread_mutex_unlock(&g_spdk_iscsi.mutex);
+		pthread_mutex_unlock(&g_iscsi.mutex);
 
 		iscsi_tgt_node_destruct(target, NULL, NULL);
 
-		pthread_mutex_lock(&g_spdk_iscsi.mutex);
+		pthread_mutex_lock(&g_iscsi.mutex);
 	}
-	pthread_mutex_unlock(&g_spdk_iscsi.mutex);
+	pthread_mutex_unlock(&g_iscsi.mutex);
 }
 
 void
-spdk_iscsi_shutdown_tgt_node_by_name(const char *target_name,
-				     iscsi_tgt_node_destruct_cb cb_fn, void *cb_arg)
+iscsi_shutdown_tgt_node_by_name(const char *target_name,
+				iscsi_tgt_node_destruct_cb cb_fn, void *cb_arg)
 {
 	struct spdk_iscsi_tgt_node *target;
 
-	pthread_mutex_lock(&g_spdk_iscsi.mutex);
-	target = spdk_iscsi_find_tgt_node(target_name);
+	pthread_mutex_lock(&g_iscsi.mutex);
+	target = iscsi_find_tgt_node(target_name);
 	if (target != NULL) {
 		iscsi_tgt_node_unregister(target);
-		pthread_mutex_unlock(&g_spdk_iscsi.mutex);
+		pthread_mutex_unlock(&g_iscsi.mutex);
 
 		iscsi_tgt_node_destruct(target, cb_fn, cb_arg);
 
 		return;
 	}
-	pthread_mutex_unlock(&g_spdk_iscsi.mutex);
+	pthread_mutex_unlock(&g_iscsi.mutex);
 
 	if (cb_fn) {
 		cb_fn(cb_arg, -ENOENT);
@@ -1330,14 +1315,14 @@ spdk_iscsi_shutdown_tgt_node_by_name(const char *target_name,
 }
 
 bool
-spdk_iscsi_tgt_node_is_destructed(struct spdk_iscsi_tgt_node *target)
+iscsi_tgt_node_is_destructed(struct spdk_iscsi_tgt_node *target)
 {
 	return target->destructed;
 }
 
 int
-spdk_iscsi_tgt_node_cleanup_luns(struct spdk_iscsi_conn *conn,
-				 struct spdk_iscsi_tgt_node *target)
+iscsi_tgt_node_cleanup_luns(struct spdk_iscsi_conn *conn,
+			    struct spdk_iscsi_tgt_node *target)
 {
 	int i;
 	struct spdk_iscsi_task *task;
@@ -1350,7 +1335,7 @@ spdk_iscsi_tgt_node_cleanup_luns(struct spdk_iscsi_conn *conn,
 		}
 
 		/* we create a fake management task per LUN to cleanup */
-		task = spdk_iscsi_task_get(conn, NULL, spdk_iscsi_task_mgmt_cpl);
+		task = iscsi_task_get(conn, NULL, iscsi_task_mgmt_cpl);
 		if (!task) {
 			SPDK_ERRLOG("Unable to acquire task\n");
 			return -1;
@@ -1360,19 +1345,19 @@ spdk_iscsi_tgt_node_cleanup_luns(struct spdk_iscsi_conn *conn,
 		task->scsi.initiator_port = conn->initiator_port;
 		task->scsi.lun = lun;
 
-		spdk_iscsi_op_abort_task_set(task, SPDK_SCSI_TASK_FUNC_LUN_RESET);
+		iscsi_op_abort_task_set(task, SPDK_SCSI_TASK_FUNC_LUN_RESET);
 	}
 
 	return 0;
 }
 
-void spdk_iscsi_tgt_node_delete_map(struct spdk_iscsi_portal_grp *portal_group,
-				    struct spdk_iscsi_init_grp *initiator_group)
+void iscsi_tgt_node_delete_map(struct spdk_iscsi_portal_grp *portal_group,
+			       struct spdk_iscsi_init_grp *initiator_group)
 {
 	struct spdk_iscsi_tgt_node *target;
 
-	pthread_mutex_lock(&g_spdk_iscsi.mutex);
-	TAILQ_FOREACH(target, &g_spdk_iscsi.target_head, tailq) {
+	pthread_mutex_lock(&g_iscsi.mutex);
+	TAILQ_FOREACH(target, &g_iscsi.target_head, tailq) {
 		if (portal_group) {
 			iscsi_tgt_node_delete_pg_map(target, portal_group);
 		}
@@ -1380,12 +1365,12 @@ void spdk_iscsi_tgt_node_delete_map(struct spdk_iscsi_portal_grp *portal_group,
 			iscsi_tgt_node_delete_ig_maps(target, initiator_group);
 		}
 	}
-	pthread_mutex_unlock(&g_spdk_iscsi.mutex);
+	pthread_mutex_unlock(&g_iscsi.mutex);
 }
 
 int
-spdk_iscsi_tgt_node_add_lun(struct spdk_iscsi_tgt_node *target,
-			    const char *bdev_name, int lun_id)
+iscsi_tgt_node_add_lun(struct spdk_iscsi_tgt_node *target,
+		       const char *bdev_name, int lun_id)
 {
 	struct spdk_scsi_dev *dev;
 	int rc;
@@ -1417,12 +1402,12 @@ spdk_iscsi_tgt_node_add_lun(struct spdk_iscsi_tgt_node *target,
 }
 
 int
-spdk_iscsi_tgt_node_set_chap_params(struct spdk_iscsi_tgt_node *target,
-				    bool disable_chap, bool require_chap,
-				    bool mutual_chap, int32_t chap_group)
+iscsi_tgt_node_set_chap_params(struct spdk_iscsi_tgt_node *target,
+			       bool disable_chap, bool require_chap,
+			       bool mutual_chap, int32_t chap_group)
 {
-	if (!spdk_iscsi_check_chap_params(disable_chap, require_chap,
-					  mutual_chap, chap_group)) {
+	if (!iscsi_check_chap_params(disable_chap, require_chap,
+				     mutual_chap, chap_group)) {
 		return -EINVAL;
 	}
 
@@ -1463,7 +1448,7 @@ static const char *target_nodes_section = \
 "  LUN%d %s\n"
 
 void
-spdk_iscsi_tgt_nodes_config_text(FILE *fp)
+iscsi_tgt_nodes_config_text(FILE *fp)
 {
 	int l = 0;
 	struct spdk_scsi_dev *dev = NULL;
@@ -1474,7 +1459,7 @@ spdk_iscsi_tgt_nodes_config_text(FILE *fp)
 	/* Create target nodes section */
 	fprintf(fp, "%s", target_nodes_section);
 
-	TAILQ_FOREACH(target, &g_spdk_iscsi.target_head, tailq) {
+	TAILQ_FOREACH(target, &g_iscsi.target_head, tailq) {
 		int idx;
 		const char *authmethod = "None";
 		char authgroup[32] = "None";
@@ -1546,7 +1531,7 @@ iscsi_tgt_node_info_json(struct spdk_iscsi_tgt_node *target,
 
 	spdk_json_write_named_string(w, "name", target->name);
 
-	if (target->alias) {
+	if (target->alias[0] != '\0') {
 		spdk_json_write_named_string(w, "alias_name", target->alias);
 	}
 
@@ -1593,7 +1578,7 @@ iscsi_tgt_node_config_json(struct spdk_iscsi_tgt_node *target,
 {
 	spdk_json_write_object_begin(w);
 
-	spdk_json_write_named_string(w, "method", "construct_target_node");
+	spdk_json_write_named_string(w, "method", "iscsi_create_target_node");
 
 	spdk_json_write_name(w, "params");
 	iscsi_tgt_node_info_json(target, w);
@@ -1602,21 +1587,21 @@ iscsi_tgt_node_config_json(struct spdk_iscsi_tgt_node *target,
 }
 
 void
-spdk_iscsi_tgt_nodes_info_json(struct spdk_json_write_ctx *w)
+iscsi_tgt_nodes_info_json(struct spdk_json_write_ctx *w)
 {
 	struct spdk_iscsi_tgt_node *target;
 
-	TAILQ_FOREACH(target, &g_spdk_iscsi.target_head, tailq) {
+	TAILQ_FOREACH(target, &g_iscsi.target_head, tailq) {
 		iscsi_tgt_node_info_json(target, w);
 	}
 }
 
 void
-spdk_iscsi_tgt_nodes_config_json(struct spdk_json_write_ctx *w)
+iscsi_tgt_nodes_config_json(struct spdk_json_write_ctx *w)
 {
 	struct spdk_iscsi_tgt_node *target;
 
-	TAILQ_FOREACH(target, &g_spdk_iscsi.target_head, tailq) {
+	TAILQ_FOREACH(target, &g_iscsi.target_head, tailq) {
 		iscsi_tgt_node_config_json(target, w);
 	}
 }

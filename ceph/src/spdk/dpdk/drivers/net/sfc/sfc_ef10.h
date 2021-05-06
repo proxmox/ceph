@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  *
- * Copyright (c) 2017-2018 Solarflare Communications Inc.
- * All rights reserved.
+ * Copyright(c) 2019-2020 Xilinx, Inc.
+ * Copyright(c) 2017-2019 Solarflare Communications Inc.
  *
  * This software was jointly developed between OKTET Labs (under contract
  * for Solarflare) and Solarflare Communications, Inc.
@@ -107,6 +107,18 @@ sfc_ef10_rx_qpush(volatile void *doorbell, unsigned int added,
 	 * operations that follow it (i.e. doorbell write).
 	 */
 	rte_write32(dword.ed_u32[0], doorbell);
+}
+
+static inline void
+sfc_ef10_ev_qprime(volatile void *qprime, unsigned int read_ptr,
+		  unsigned int ptr_mask)
+{
+	efx_dword_t dword;
+
+	EFX_POPULATE_DWORD_1(dword, ERF_DZ_EVQ_RPTR, read_ptr & ptr_mask);
+
+	rte_write32_relaxed(dword.ed_u32[0], qprime);
+	rte_wmb();
 }
 
 

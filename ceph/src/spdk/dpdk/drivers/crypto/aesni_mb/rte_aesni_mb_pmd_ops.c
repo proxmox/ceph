@@ -9,7 +9,7 @@
 #include <rte_malloc.h>
 #include <rte_cryptodev_pmd.h>
 
-#include "rte_aesni_mb_pmd_private.h"
+#include "aesni_mb_pmd_private.h"
 
 
 static const struct rte_cryptodev_capabilities aesni_mb_pmd_capabilities[] = {
@@ -314,8 +314,13 @@ static const struct rte_cryptodev_capabilities aesni_mb_pmd_capabilities[] = {
 				.block_size = 16,
 				.key_size = {
 					.min = 16,
+#if IMB_VERSION_NUM >= IMB_VERSION(0, 53, 3)
+					.max = 32,
+					.increment = 16
+#else
 					.max = 16,
 					.increment = 0
+#endif
 				},
 				.iv_size = {
 					.min = 16,
@@ -721,13 +726,6 @@ qp_setup_cleanup:
 	return ret;
 }
 
-/** Return the number of allocated queue pairs */
-static uint32_t
-aesni_mb_pmd_qp_count(struct rte_cryptodev *dev)
-{
-	return dev->data->nb_queue_pairs;
-}
-
 /** Returns the size of the aesni multi-buffer session structure */
 static unsigned
 aesni_mb_pmd_sym_session_get_size(struct rte_cryptodev *dev __rte_unused)
@@ -803,7 +801,8 @@ struct rte_cryptodev_ops aesni_mb_pmd_ops = {
 
 		.queue_pair_setup	= aesni_mb_pmd_qp_setup,
 		.queue_pair_release	= aesni_mb_pmd_qp_release,
-		.queue_pair_count	= aesni_mb_pmd_qp_count,
+
+		.sym_cpu_process	= aesni_mb_cpu_crypto_process_bulk,
 
 		.sym_session_get_size	= aesni_mb_pmd_sym_session_get_size,
 		.sym_session_configure	= aesni_mb_pmd_sym_session_configure,

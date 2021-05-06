@@ -132,8 +132,12 @@ auto consume(std::string_view& sv, int base = 10)
 #endif // __has_include(<charconv>)
 } // namespace ceph
 
+bool strict_strtob(const char* str, std::string *err);
+
+long long strict_strtoll(std::string_view str, int base, std::string *err);
 long long strict_strtoll(const char *str, int base, std::string *err);
 
+int strict_strtol(std::string_view str, int base, std::string *err);
 int strict_strtol(const char *str, int base, std::string *err);
 
 double strict_strtod(const char *str, std::string *err);
@@ -159,7 +163,7 @@ template<typename T, const unsigned base = 10, const unsigned width = 1>
 static inline
 char* ritoa(T u, char *buf)
 {
-  static_assert(std::is_unsigned<T>::value, "signed types are not supported");
+  static_assert(std::is_unsigned_v<T>, "signed types are not supported");
   static_assert(base <= 16, "extend character map below to support higher bases");
   unsigned digits = 0;
   while (u) {

@@ -1,15 +1,13 @@
 import { HttpClient, HttpParams } from '@angular/common/http';
 import { Injectable } from '@angular/core';
 
-import * as _ from 'lodash';
 import { Observable } from 'rxjs';
 
 import { Daemon } from '../models/daemon.interface';
 import { CephServiceSpec } from '../models/service.interface';
-import { ApiModule } from './api.module';
 
 @Injectable({
-  providedIn: ApiModule
+  providedIn: 'root'
 })
 export class CephServiceService {
   private url = 'api/service';

@@ -1,14 +1,11 @@
 import { Pipe, PipeTransform } from '@angular/core';
 
-import { I18n } from '@ngx-translate/i18n-polyfill';
-import * as _ from 'lodash';
+import _ from 'lodash';
 
 @Pipe({
   name: 'placement'
 })
 export class PlacementPipe implements PipeTransform {
-  constructor(private i18n: I18n) {}
-
   /**
    * Convert the placement configuration into human readable form.
    * The output is equal to the column 'PLACEMENT' in 'ceph orch ls'.
@@ -17,10 +14,10 @@ export class PlacementPipe implements PipeTransform {
    */
   transform(serviceSpec: object | undefined): string {
     if (_.isUndefined(serviceSpec)) {
-      return this.i18n('no spec');
+      return $localize`no spec`;
     }
     if (_.get(serviceSpec, 'unmanaged', false)) {
-      return this.i18n('unmanaged');
+      return $localize`unmanaged`;
     }
     const kv: Array<any> = [];
     const hosts: Array<string> = _.get(serviceSpec, 'placement.hosts');
@@ -31,10 +28,10 @@ export class PlacementPipe implements PipeTransform {
       kv.push(...hosts);
     }
     if (_.isNumber(count)) {
-      kv.push(this.i18n('count:{{count}}', { count }));
+      kv.push($localize`count:${count}`);
     }
     if (_.isString(label)) {
-      kv.push(this.i18n('label:{{label}}', { label }));
+      kv.push($localize`label:${label}`);
     }
     if (_.isString(hostPattern)) {
       kv.push(...hostPattern);

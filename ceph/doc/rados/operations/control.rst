@@ -8,7 +8,7 @@
 Monitor Commands
 ================
 
-Monitor commands are issued using the ceph utility::
+Monitor commands are issued using the ``ceph`` utility::
 
 	ceph [-m monhost] {command}
 
@@ -20,12 +20,12 @@ The command is usually (though not always) of the form::
 System Commands
 ===============
 
-Execute the following to display the current status of the cluster.  ::
+Execute the following to display the current cluster status.  ::
 
 	ceph -s
 	ceph status
 
-Execute the following to display a running summary of the status of the cluster,
+Execute the following to display a running summary of cluster status
 and major events. ::
 
 	ceph -w
@@ -59,11 +59,15 @@ To list the cluster's keys and their capabilities, execute the following::
 Placement Group Subsystem
 =========================
 
-To display the statistics for all placement groups, execute the following:: 
+To display the statistics for all placement groups (PGs), execute the following:: 
 
 	ceph pg dump [--format {format}]
 
 The valid formats are ``plain`` (default), ``json`` ``json-pretty``, ``xml``, and ``xml-pretty``.
+When implementing monitoring and other tools, it is best to use ``json`` format.
+JSON parsing is more deterministic than the human-oriented ``plain``, and the layout is much
+less variable from release to release.  The ``jq`` utility can be invaluable when extracting
+data from JSON output.
 
 To display the statistics for all placement groups stuck in a specified state, 
 execute the following:: 
@@ -115,7 +119,7 @@ The foregoing is functionally equivalent to ::
 
 Dump the OSD map. Valid formats for ``-f`` are ``plain``, ``json``, ``json-pretty``,
 ``xml``, and ``xml-pretty``. If no ``--format`` option is given, the OSD map is 
-dumped as plain text. ::
+dumped as plain text.  As above, JSON format is best for tools, scripting, and other automation. ::
 
 	ceph osd dump [--format {format}]
 
@@ -149,7 +153,7 @@ Set the weight of the item given by ``{name}`` to ``{weight}``. ::
 
 	ceph osd crush reweight {name} {weight}
 
-Mark an OSD as lost. This may result in permanent data loss. Use with caution. ::
+Mark an OSD as ``lost``. This may result in permanent data loss. Use with caution. ::
 
 	ceph osd lost {id} [--yes-i-really-mean-it]
 
@@ -162,7 +166,7 @@ Remove the given OSD(s). ::
 
 	ceph osd rm [{id}...]
 
-Query the current max_osd parameter in the OSD map. ::
+Query the current ``max_osd`` parameter in the OSD map. ::
 
 	ceph osd getmaxosd
 
@@ -170,8 +174,8 @@ Import the given crush map. ::
 
 	ceph osd setcrushmap -i file
 
-Set the ``max_osd`` parameter in the OSD map. This is necessary when
-expanding the storage cluster. ::
+Set the ``max_osd`` parameter in the OSD map. This defaults to 10000 now so
+most admins will never need to adjust this. ::
 
 	ceph osd setmaxosd
 
@@ -237,18 +241,18 @@ Deployments utilizing Nautilus (or later revisions of Luminous and Mimic)
 that have no pre-Luminous cients may instead wish to instead enable the
 `balancer`` module for ``ceph-mgr``.
 
-Add/remove an IP address to/from the blacklist. When adding an address,
-you can specify how long it should be blacklisted in seconds; otherwise,
-it will default to 1 hour. A blacklisted address is prevented from
-connecting to any OSD. Blacklisting is most often used to prevent a
+Add/remove an IP address to/from the blocklist. When adding an address,
+you can specify how long it should be blocklisted in seconds; otherwise,
+it will default to 1 hour. A blocklisted address is prevented from
+connecting to any OSD. Blocklisting is most often used to prevent a
 lagging metadata server from making bad changes to data on the OSDs.
 
 These commands are mostly only useful for failure testing, as
-blacklists are normally maintained automatically and shouldn't need
+blocklists are normally maintained automatically and shouldn't need
 manual intervention. ::
 
-	ceph osd blacklist add ADDRESS[:source_port] [TIME]
-	ceph osd blacklist rm ADDRESS[:source_port]
+	ceph osd blocklist add ADDRESS[:source_port] [TIME]
+	ceph osd blocklist rm ADDRESS[:source_port]
 
 Creates/deletes a snapshot of a pool. ::
 

@@ -63,19 +63,21 @@ handle_work(void *arg)
 	struct worker_params *wp = arg;
 	struct rte_distributor *db = wp->dist;
 	unsigned int count = 0, num = 0;
-	unsigned int id = __sync_fetch_and_add(&worker_idx, 1);
+	unsigned int id = __atomic_fetch_add(&worker_idx, 1, __ATOMIC_RELAXED);
 	int i;
 
 	for (i = 0; i < 8; i++)
 		buf[i] = NULL;
 	num = rte_distributor_get_pkt(db, id, buf, buf, num);
 	while (!quit) {
-		worker_stats[id].handled_packets += num;
+		__atomic_fetch_add(&worker_stats[id].handled_packets, num,
+				__ATOMIC_RELAXED);
 		count += num;
 		num = rte_distributor_get_pkt(db, id,
 				buf, buf, num);
 	}
-	worker_stats[id].handled_packets += num;
+	__atomic_fetch_add(&worker_stats[id].handled_packets, num,
+			__ATOMIC_RELAXED);
 	count += num;
 	rte_distributor_return_pkt(db, id, buf, num);
 	return 0;
@@ -271,7 +273,7 @@ handle_work_with_free_mbufs(void *arg)
 	unsigned int count = 0;
 	unsigned int i;
 	unsigned int num = 0;
-	unsigned int id = __sync_fetch_and_add(&worker_idx, 1);
+	unsigned int id = __atomic_fetch_add(&worker_idx, 1, __ATOMIC_RELAXED);
 
 	for (i = 0; i < 8; i++)
 		buf[i] = NULL;
@@ -344,7 +346,8 @@ handle_work_for_shutdown_test(void *arg)
 	unsigned int total = 0;
 	unsigned int i;
 	unsigned int returned = 0;
-	const unsigned int id = __sync_fetch_and_add(&worker_idx, 1);
+	const unsigned int id = __atomic_fetch_add(&worker_idx, 1,
+			__ATOMIC_RELAXED);
 
 	num = rte_distributor_get_pkt(d, id, buf, buf, num);
 
@@ -374,7 +377,8 @@ handle_work_for_shutdown_test(void *arg)
 				id, buf, buf, num);
 
 		while (!quit) {
-			worker_stats[id].handled_packets++, count++;
+			worker_stats[id].handled_packets += num;
+			count += num;
 			rte_pktmbuf_free(pkt);
 			num = rte_distributor_get_pkt(d, id, buf, buf, num);
 		}
@@ -594,8 +598,8 @@ test_distributor(void)
 	int i;
 
 	if (rte_lcore_count() < 2) {
-		printf("ERROR: not enough cores to test distributor\n");
-		return -1;
+		printf("Not enough cores for distributor_autotest, expecting at least 2\n");
+		return TEST_SKIPPED;
 	}
 
 	if (db == NULL) {

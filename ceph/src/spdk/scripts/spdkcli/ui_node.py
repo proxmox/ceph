@@ -45,12 +45,12 @@ class UINode(ConfigNode):
         finally:
             if self.shell.interactive and\
                 command in ["create", "delete", "delete_all", "add_initiator",
-                            "allow_any_host", "split_bdev", "add_lun",
-                            "add_pg_ig_maps", "remove_target", "add_secret",
-                            "destruct_split_bdev", "delete_pmem_pool",
-                            "create_pmem_pool", "delete_secret_all",
+                            "allow_any_host", "bdev_split_create", "add_lun",
+                            "iscsi_target_node_add_pg_ig_maps", "remove_target", "add_secret",
+                            "bdev_split_delete", "bdev_pmem_delete_pool",
+                            "bdev_pmem_create_pool", "delete_secret_all",
                             "delete_initiator", "set_auth", "delete_secret",
-                            "delete_pg_ig_maps", "load_config",
+                            "iscsi_target_node_remove_pg_ig_maps", "load_config",
                             "load_subsystem_config"]:
                 self.get_root().refresh()
                 self.refresh_node()
@@ -85,14 +85,14 @@ class UILvolStores(UINode):
 
     def refresh(self):
         self._children = set([])
-        for lvs in self.get_root().get_lvol_stores():
+        for lvs in self.get_root().bdev_lvol_get_lvstores():
             UILvsObj(lvs, self)
 
     def delete(self, name, uuid):
         if name is None and uuid is None:
             self.shell.log.error("Please specify one of the identifiers: "
                                  "lvol store name or UUID")
-        self.get_root().delete_lvol_store(lvs_name=name, uuid=uuid)
+        self.get_root().bdev_lvol_delete_lvstore(lvs_name=name, uuid=uuid)
 
     def ui_command_create(self, name, bdev_name, cluster_size=None):
         """
@@ -105,7 +105,7 @@ class UILvolStores(UINode):
         """
 
         cluster_size = self.ui_eval_param(cluster_size, "number", None)
-        self.get_root().create_lvol_store(lvs_name=name, bdev_name=bdev_name, cluster_sz=cluster_size)
+        self.get_root().bdev_lvol_create_lvstore(lvs_name=name, bdev_name=bdev_name, cluster_sz=cluster_size)
 
     def ui_command_delete(self, name=None, uuid=None):
         """
@@ -139,11 +139,11 @@ class UIBdev(UINode):
 
     def refresh(self):
         self._children = set([])
-        for bdev in self.get_root().get_bdevs(self.name):
+        for bdev in self.get_root().bdev_get_bdevs(self.name):
             UIBdevObj(bdev, self)
 
     def ui_command_get_bdev_iostat(self, name=None):
-        ret = self.get_root().get_bdevs_iostat(name=name)
+        ret = self.get_root().bdev_get_iostat(name=name)
         self.shell.log.info(json.dumps(ret, indent=2))
 
     def ui_command_delete_all(self):
@@ -166,7 +166,7 @@ class UIMallocBdev(UIBdev):
         UIBdev.__init__(self, "malloc", parent)
 
     def delete(self, name):
-        self.get_root().delete_malloc_bdev(name=name)
+        self.get_root().bdev_malloc_delete(name=name)
 
     def ui_command_create(self, size, block_size, name=None, uuid=None):
         """
@@ -203,7 +203,7 @@ class UIAIOBdev(UIBdev):
         UIBdev.__init__(self, "aio", parent)
 
     def delete(self, name):
-        self.get_root().delete_aio_bdev(name=name)
+        self.get_root().bdev_aio_delete(name=name)
 
     def ui_command_create(self, name, filename, block_size):
         """
@@ -218,7 +218,7 @@ class UIAIOBdev(UIBdev):
         """
 
         block_size = self.ui_eval_param(block_size, "number", None)
-        ret_name = self.get_root().create_aio_bdev(name=name,
+        ret_name = self.get_root().bdev_aio_create(name=name,
                                                    block_size=int(block_size),
                                                    filename=filename)
         self.shell.log.info(ret_name)
@@ -238,7 +238,7 @@ class UILvolBdev(UIBdev):
         UIBdev.__init__(self, "logical_volume", parent)
 
     def delete(self, name):
-        self.get_root().destroy_lvol_bdev(name=name)
+        self.get_root().bdev_lvol_delete(name=name)
 
     def ui_command_create(self, name, size, lvs, thin_provision=None):
         """
@@ -284,7 +284,7 @@ class UINvmeBdev(UIBdev):
         UIBdev.__init__(self, "nvme", parent)
 
     def delete(self, name):
-        self.get_root().delete_nvme_controller(name=name)
+        self.get_root().bdev_nvme_detach_controller(name=name)
 
     def ui_command_create(self, name, trtype, traddr,
                           adrfam=None, trsvcid=None, subnqn=None):
@@ -324,7 +324,7 @@ class UINullBdev(UIBdev):
         UIBdev.__init__(self, "null", parent)
 
     def delete(self, name):
-        self.get_root().delete_null_bdev(name=name)
+        self.get_root().bdev_null_delete(name=name)
 
     def ui_command_create(self, name, size, block_size, uuid=None):
         """
@@ -341,7 +341,7 @@ class UINullBdev(UIBdev):
         size = self.ui_eval_param(size, "number", None)
         block_size = self.ui_eval_param(block_size, "number", None)
         num_blocks = size * 1024 * 1024 // block_size
-        ret_name = self.get_root().create_null_bdev(num_blocks=num_blocks,
+        ret_name = self.get_root().bdev_null_create(num_blocks=num_blocks,
                                                     block_size=block_size,
                                                     name=name, uuid=uuid)
         self.shell.log.info(ret_name)
@@ -361,7 +361,7 @@ class UIErrorBdev(UIBdev):
         UIBdev.__init__(self, "error", parent)
 
     def delete(self, name):
-        self.get_root().delete_error_bdev(name=name)
+        self.get_root().bdev_error_delete(name=name)
 
     def ui_command_create(self, base_name):
         """
@@ -390,9 +390,9 @@ class UISplitBdev(UIBdev):
     def delete(self, name):
         pass
 
-    def ui_command_split_bdev(self, base_bdev, split_count, split_size_mb=None):
+    def ui_command_bdev_split_create(self, base_bdev, split_count, split_size_mb=None):
         """
-        Construct split block devices from a base bdev.
+        Create split block devices from a base bdev.
 
         Arguments:
         base_bdev - Name of bdev to split
@@ -403,19 +403,19 @@ class UISplitBdev(UIBdev):
         split_count = self.ui_eval_param(split_count, "number", None)
         split_size_mb = self.ui_eval_param(split_size_mb, "number", None)
 
-        ret_name = self.get_root().split_bdev(base_bdev=base_bdev,
-                                              split_count=split_count,
-                                              split_size_mb=split_size_mb)
+        ret_name = self.get_root().bdev_split_create(base_bdev=base_bdev,
+                                                     split_count=split_count,
+                                                     split_size_mb=split_size_mb)
         self.shell.log.info(ret_name)
 
-    def ui_command_destruct_split_bdev(self, base_bdev):
-        """Destroy split block devices associated with base bdev.
+    def ui_command_bdev_split_delete(self, base_bdev):
+        """Delete split block devices associated with base bdev.
 
         Args:
             base_bdev: name of previously split bdev
         """
 
-        self.get_root().destruct_split_bdev(base_bdev=base_bdev)
+        self.get_root().bdev_split_delete(base_bdev=base_bdev)
 
 
 class UIPmemBdev(UIBdev):
@@ -423,26 +423,26 @@ class UIPmemBdev(UIBdev):
         UIBdev.__init__(self, "pmemblk", parent)
 
     def delete(self, name):
-        self.get_root().delete_pmem_bdev(name=name)
+        self.get_root().bdev_pmem_delete(name=name)
 
-    def ui_command_create_pmem_pool(self, pmem_file, total_size, block_size):
+    def ui_command_bdev_pmem_create_pool(self, pmem_file, total_size, block_size):
         total_size = self.ui_eval_param(total_size, "number", None)
         block_size = self.ui_eval_param(block_size, "number", None)
         num_blocks = int((total_size * 1024 * 1024) / block_size)
 
-        self.get_root().create_pmem_pool(pmem_file=pmem_file,
-                                         num_blocks=num_blocks,
-                                         block_size=block_size)
+        self.get_root().bdev_pmem_create_pool(pmem_file=pmem_file,
+                                              num_blocks=num_blocks,
+                                              block_size=block_size)
 
-    def ui_command_delete_pmem_pool(self, pmem_file):
-        self.get_root().delete_pmem_pool(pmem_file=pmem_file)
+    def ui_command_bdev_pmem_delete_pool(self, pmem_file):
+        self.get_root().bdev_pmem_delete_pool(pmem_file=pmem_file)
 
-    def ui_command_info_pmem_pool(self, pmem_file):
-        ret = self.get_root().delete_pmem_pool(pmem_file=pmem_file)
-        self.shell.log.info(ret)
+    def ui_command_bdev_pmem_get_pool_info(self, pmem_file):
+        ret = self.get_root().bdev_pmem_get_pool_info(pmem_file=pmem_file)
+        self.shell.log.info(json.dumps(ret, indent=2))
 
     def ui_command_create(self, pmem_file, name):
-        ret_name = self.get_root().create_pmem_bdev(pmem_file=pmem_file,
+        ret_name = self.get_root().bdev_pmem_create(pmem_file=pmem_file,
                                                     name=name)
         self.shell.log.info(ret_name)
 
@@ -461,7 +461,7 @@ class UIRbdBdev(UIBdev):
         UIBdev.__init__(self, "rbd", parent)
 
     def delete(self, name):
-        self.get_root().delete_rbd_bdev(name=name)
+        self.get_root().bdev_rbd_delete(name=name)
 
     def ui_command_create(self, pool_name, rbd_name, block_size, name=None):
         block_size = self.ui_eval_param(block_size, "number", None)
@@ -487,7 +487,7 @@ class UIiSCSIBdev(UIBdev):
         UIBdev.__init__(self, "iscsi", parent)
 
     def delete(self, name):
-        self.get_root().delete_iscsi_bdev(name=name)
+        self.get_root().bdev_iscsi_delete(name=name)
 
     def ui_command_create(self, name, url, initiator_iqn):
         """
@@ -541,7 +541,7 @@ class UIVirtioBlkBdev(UIBdev):
         Arguments:
         name - Is a unique identifier of the virtio scsi bdev to be deleted - UUID number or name alias.
         """
-        self.get_root().remove_virtio_bdev(name=name)
+        self.get_root().bdev_virtio_detach_controller(name=name)
 
 
 class UIVirtioScsiBdev(UIBdev):
@@ -550,7 +550,7 @@ class UIVirtioScsiBdev(UIBdev):
 
     def refresh(self):
         self._children = set([])
-        for bdev in self.get_root().get_virtio_scsi_devs():
+        for bdev in self.get_root().bdev_virtio_scsi_get_devices():
             UIVirtioScsiBdevObj(bdev, self)
 
     def ui_command_create(self, name, trtype, traddr,
@@ -569,7 +569,7 @@ class UIVirtioScsiBdev(UIBdev):
         self.shell.log.info(ret)
 
     def ui_command_delete(self, name):
-        self.get_root().remove_virtio_bdev(name=name)
+        self.get_root().bdev_virtio_detach_controller(name=name)
 
 
 class UIBdevObj(UINode):
@@ -613,7 +613,7 @@ class UIVirtioScsiBdevObj(UIBdevObj):
 
     def refresh(self):
         self._children = set([])
-        for bdev in self.get_root().get_bdevs("virtio_scsi_disk"):
+        for bdev in self.get_root().bdev_get_bdevs("virtio_scsi_disk"):
             if self.bdev.name in bdev.name:
                 UIBdevObj(bdev, self)
 
@@ -668,7 +668,7 @@ class UIVhost(UINode):
         Arguments:
         name - Controller name.
         """
-        self.get_root().remove_vhost_controller(ctrlr=name)
+        self.get_root().vhost_delete_controller(ctrlr=name)
 
 
 class UIVhostBlk(UIVhost):
@@ -678,12 +678,12 @@ class UIVhostBlk(UIVhost):
 
     def refresh(self):
         self._children = set([])
-        for ctrlr in self.get_root().get_vhost_controllers(ctrlr_type=self.name):
+        for ctrlr in self.get_root().vhost_get_controllers(ctrlr_type=self.name):
             UIVhostBlkCtrlObj(ctrlr, self)
 
     def ui_command_create(self, name, bdev, cpumask=None, readonly=False):
         """
-        Construct a Vhost BLK controller.
+        Create a Vhost BLK controller.
 
         Arguments:
         name - Controller name.
@@ -693,7 +693,7 @@ class UIVhostBlk(UIVhost):
         readonly - Whether controller should be read only or not.
                    Default: False.
         """
-        self.get_root().create_vhost_blk_controller(ctrlr=name,
+        self.get_root().vhost_create_blk_controller(ctrlr=name,
                                                     dev_name=bdev,
                                                     cpumask=cpumask,
                                                     readonly=bool(readonly))
@@ -706,19 +706,19 @@ class UIVhostScsi(UIVhost):
 
     def refresh(self):
         self._children = set([])
-        for ctrlr in self.get_root().get_vhost_controllers(ctrlr_type=self.name):
+        for ctrlr in self.get_root().vhost_get_controllers(ctrlr_type=self.name):
             UIVhostScsiCtrlObj(ctrlr, self)
 
     def ui_command_create(self, name, cpumask=None):
         """
-        Construct a Vhost SCSI controller.
+        Create a Vhost SCSI controller.
 
         Arguments:
         name - Controller name.
         cpumask - Optional. Integer to specify mask of CPUs to use.
                   Default: 1.
         """
-        self.get_root().create_vhost_scsi_controller(ctrlr=name,
+        self.get_root().vhost_create_scsi_controller(ctrlr=name,
                                                      cpumask=cpumask)
 
 
@@ -736,7 +736,7 @@ class UIVhostCtrl(UINode):
         delay_base_us = self.ui_eval_param(delay_base_us, "number", None)
         iops_threshold = self.ui_eval_param(iops_threshold, "number", None)
 
-        self.get_root().set_vhost_controller_coalescing(ctrlr=self.ctrlr.ctrlr,
+        self.get_root().vhost_controller_set_coalescing(ctrlr=self.ctrlr.ctrlr,
                                                         delay_base_us=delay_base_us,
                                                         iops_threshold=iops_threshold)
 
@@ -754,9 +754,9 @@ class UIVhostScsiCtrlObj(UIVhostCtrl):
         Arguments:
         target_num - Integer identifier of target node to delete.
         """
-        self.get_root().remove_vhost_scsi_target(ctrlr=self.ctrlr.ctrlr,
-                                                 scsi_target_num=int(target_num))
-        for ctrlr in self.get_root().get_vhost_controllers(ctrlr_type="scsi"):
+        self.get_root().vhost_scsi_controller_remove_target(ctrlr=self.ctrlr.ctrlr,
+                                                            scsi_target_num=int(target_num))
+        for ctrlr in self.get_root().vhost_get_controllers(ctrlr_type="scsi"):
             if ctrlr.ctrlr == self.ctrlr.ctrlr:
                 self.ctrlr = ctrlr
 
@@ -770,10 +770,10 @@ class UIVhostScsiCtrlObj(UIVhostCtrl):
         target_num - Integer identifier of target node to modify.
         bdev - Which bdev to add as LUN.
         """
-        self.get_root().add_vhost_scsi_lun(ctrlr=self.ctrlr.ctrlr,
-                                           scsi_target_num=int(target_num),
-                                           bdev_name=bdev_name)
-        for ctrlr in self.get_root().get_vhost_controllers(ctrlr_type="scsi"):
+        self.get_root().vhost_scsi_controller_add_target(ctrlr=self.ctrlr.ctrlr,
+                                                         scsi_target_num=int(target_num),
+                                                         bdev_name=bdev_name)
+        for ctrlr in self.get_root().vhost_get_controllers(ctrlr_type="scsi"):
             if ctrlr.ctrlr == self.ctrlr.ctrlr:
                 self.ctrlr = ctrlr
 
@@ -827,7 +827,7 @@ class UIRaidBdev(UIBdev):
         UIBdev.__init__(self, "raid_volume", parent)
 
     def delete(self, name):
-        self.get_root().destroy_raid_bdev(name=name)
+        self.get_root().bdev_raid_delete(name=name)
 
     def ui_command_create(self, name, raid_level, base_bdevs, strip_size_kb):
         """
@@ -843,13 +843,12 @@ class UIRaidBdev(UIBdev):
         for u in base_bdevs.strip().split(" "):
             base_bdevs_array.append(u)
 
-        raid_level = self.ui_eval_param(raid_level, "number", None)
         strip_size_kb = self.ui_eval_param(strip_size_kb, "number", None)
 
-        ret_name = self.get_root().construct_raid_bdev(name=name,
-                                                       raid_level=raid_level,
-                                                       base_bdevs=base_bdevs_array,
-                                                       strip_size_kb=strip_size_kb)
+        ret_name = self.get_root().bdev_raid_create(name=name,
+                                                    raid_level=raid_level,
+                                                    base_bdevs=base_bdevs_array,
+                                                    strip_size_kb=strip_size_kb)
         self.shell.log.info(ret_name)
 
     def ui_command_delete(self, name):

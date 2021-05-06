@@ -34,7 +34,7 @@
 #include "spdk/stdinc.h"
 
 #include "spdk/bdev.h"
-#include "spdk/copy_engine.h"
+#include "spdk/accel_engine.h"
 #include "spdk/conf.h"
 #include "spdk/env.h"
 #include "spdk/thread.h"
@@ -44,14 +44,22 @@
 #include "spdk/util.h"
 
 #include "spdk_internal/thread.h"
+#include "spdk_internal/event.h"
 
 #include "config-host.h"
 #include "fio.h"
 #include "optgroup.h"
 
+/* FreeBSD is missing CLOCK_MONOTONIC_RAW,
+ * so alternative is provided. */
+#ifndef CLOCK_MONOTONIC_RAW /* Defined in glibc bits/time.h */
+#define CLOCK_MONOTONIC_RAW CLOCK_MONOTONIC
+#endif
+
 struct spdk_fio_options {
 	void *pad;
 	char *conf;
+	char *json_conf;
 	unsigned mem_mb;
 	bool mem_single_seg;
 };
@@ -82,6 +90,7 @@ struct spdk_fio_thread {
 };
 
 static bool g_spdk_env_initialized = false;
+static const char *g_json_config_file = NULL;
 
 static int spdk_fio_init(struct thread_data *td);
 static void spdk_fio_cleanup(struct thread_data *td);
@@ -147,6 +156,9 @@ spdk_fio_cleanup_thread(struct spdk_fio_thread *fio_thread)
 	spdk_set_thread(fio_thread->thread);
 
 	spdk_thread_exit(fio_thread->thread);
+	while (!spdk_thread_is_exited(fio_thread->thread)) {
+		spdk_thread_poll(fio_thread->thread, 0, 0);
+	}
 	spdk_thread_destroy(fio_thread->thread);
 	free(fio_thread->iocq);
 	free(fio_thread);
@@ -183,7 +195,7 @@ static pthread_cond_t g_init_cond;
 static bool g_poll_loop = true;
 
 static void
-spdk_fio_bdev_init_done(void *cb_arg, int rc)
+spdk_fio_bdev_init_done(int rc, void *cb_arg)
 {
 	*(bool *)cb_arg = true;
 }
@@ -193,11 +205,12 @@ spdk_fio_bdev_init_start(void *arg)
 {
 	bool *done = arg;
 
-	/* Initialize the copy engine */
-	spdk_copy_engine_initialize();
-
-	/* Initialize the bdev layer */
-	spdk_bdev_initialize(spdk_fio_bdev_init_done, done);
+	if (g_json_config_file != NULL) {
+		spdk_app_json_config_load(g_json_config_file, SPDK_DEFAULT_RPC_ADDR,
+					  spdk_fio_bdev_init_done, done, true);
+	} else {
+		spdk_subsystem_init(spdk_fio_bdev_init_done, done);
+	}
 }
 
 static void
@@ -207,19 +220,11 @@ spdk_fio_bdev_fini_done(void *cb_arg)
 }
 
 static void
-spdk_fio_copy_fini_start(void *arg)
-{
-	bool *done = arg;
-
-	spdk_copy_engine_finish(spdk_fio_bdev_fini_done, done);
-}
-
-static void
 spdk_fio_bdev_fini_start(void *arg)
 {
 	bool *done = arg;
 
-	spdk_bdev_finish(spdk_fio_copy_fini_start, done);
+	spdk_subsystem_fini(spdk_fio_bdev_fini_done, done);
 }
 
 static void *
@@ -227,7 +232,7 @@ spdk_init_thread_poll(void *arg)
 {
 	struct spdk_fio_options		*eo = arg;
 	struct spdk_fio_thread		*fio_thread;
-	struct spdk_conf		*config;
+	struct spdk_conf		*config = NULL;
 	struct spdk_env_opts		opts;
 	bool				done;
 	int				rc;
@@ -240,32 +245,39 @@ spdk_init_thread_poll(void *arg)
 
 	/* Parse the SPDK configuration file */
 	eo = arg;
-	if (!eo->conf || !strlen(eo->conf)) {
+
+	if (eo->conf && eo->json_conf) {
+		SPDK_ERRLOG("Cannot provide two types of configuration files\n");
+		rc = EINVAL;
+		goto err_exit;
+	} else if (eo->conf && strlen(eo->conf)) {
+		config = spdk_conf_allocate();
+		if (!config) {
+			SPDK_ERRLOG("Unable to allocate configuration file\n");
+			rc = ENOMEM;
+			goto err_exit;
+		}
+
+		rc = spdk_conf_read(config, eo->conf);
+		if (rc != 0) {
+			SPDK_ERRLOG("Invalid configuration file format\n");
+			spdk_conf_free(config);
+			goto err_exit;
+		}
+		if (spdk_conf_first_section(config) == NULL) {
+			SPDK_ERRLOG("Invalid configuration file format\n");
+			spdk_conf_free(config);
+			rc = EINVAL;
+			goto err_exit;
+		}
+		spdk_conf_set_as_default(config);
+	} else if (eo->json_conf && strlen(eo->json_conf)) {
+		g_json_config_file = eo->json_conf;
+	} else {
 		SPDK_ERRLOG("No configuration file provided\n");
 		rc = EINVAL;
 		goto err_exit;
 	}
-
-	config = spdk_conf_allocate();
-	if (!config) {
-		SPDK_ERRLOG("Unable to allocate configuration file\n");
-		rc = ENOMEM;
-		goto err_exit;
-	}
-
-	rc = spdk_conf_read(config, eo->conf);
-	if (rc != 0) {
-		SPDK_ERRLOG("Invalid configuration file format\n");
-		spdk_conf_free(config);
-		goto err_exit;
-	}
-	if (spdk_conf_first_section(config) == NULL) {
-		SPDK_ERRLOG("Invalid configuration file format\n");
-		spdk_conf_free(config);
-		rc = EINVAL;
-		goto err_exit;
-	}
-	spdk_conf_set_as_default(config);
 
 	/* Initialize the environment library */
 	spdk_env_opts_init(&opts);
@@ -396,6 +408,20 @@ spdk_fio_setup(struct thread_data *td)
 	unsigned int i;
 	struct fio_file *f;
 
+	/* we might be running in a daemonized FIO instance where standard
+	 * input and output were closed and fds 0, 1, and 2 are reused
+	 * for something important by FIO. We can't ensure we won't print
+	 * anything (and so will our dependencies, e.g. DPDK), so abort early.
+	 * (is_backend is an fio global variable)
+	 */
+	if (is_backend) {
+		char buf[1024];
+		snprintf(buf, sizeof(buf),
+			 "SPDK FIO plugin won't work with daemonized FIO server.");
+		fio_server_text_output(FIO_LOG_ERR, buf, sizeof(buf));
+		return -1;
+	}
+
 	if (!td->o.use_thread) {
 		SPDK_ERRLOG("must set thread=1 when using spdk plugin\n");
 		return -1;
@@ -410,8 +436,21 @@ spdk_fio_setup(struct thread_data *td)
 		g_spdk_env_initialized = true;
 	}
 
+	if (td->o.nr_files == 1 && strcmp(td->files[0]->file_name, "*") == 0) {
+		struct spdk_bdev *bdev;
+
+		/* add all available bdevs as fio targets */
+		for (bdev = spdk_bdev_first_leaf(); bdev; bdev = spdk_bdev_next_leaf(bdev)) {
+			add_file(td, spdk_bdev_get_name(bdev), 0, 1);
+		}
+	}
+
 	for_each_file(td, f, i) {
 		struct spdk_bdev *bdev;
+
+		if (strcmp(f->file_name, "*") == 0) {
+			continue;
+		}
 
 		bdev = spdk_bdev_get_by_name(f->file_name);
 		if (!bdev) {
@@ -440,6 +479,10 @@ spdk_fio_bdev_open(void *arg)
 
 	for_each_file(td, f, i) {
 		struct spdk_fio_target *target;
+
+		if (strcmp(f->file_name, "*") == 0) {
+			continue;
+		}
 
 		target = calloc(1, sizeof(*target));
 		if (!target) {
@@ -542,6 +585,8 @@ static int
 spdk_fio_io_u_init(struct thread_data *td, struct io_u *io_u)
 {
 	struct spdk_fio_request	*fio_req;
+
+	io_u->engine_data = NULL;
 
 	fio_req = calloc(1, sizeof(*fio_req));
 	if (fio_req == NULL) {
@@ -704,6 +749,15 @@ static struct fio_option options[] = {
 		.help		= "A SPDK configuration file",
 		.category	= FIO_OPT_C_ENGINE,
 		.group		= FIO_OPT_G_INVALID,
+	},
+	{
+		.name           = "spdk_json_conf",
+		.lname          = "SPDK JSON configuration file",
+		.type           = FIO_OPT_STR_STORE,
+		.off1           = offsetof(struct spdk_fio_options, json_conf),
+		.help           = "A SPDK JSON configuration file",
+		.category       = FIO_OPT_C_ENGINE,
+		.group          = FIO_OPT_G_INVALID,
 	},
 	{
 		.name		= "spdk_mem",

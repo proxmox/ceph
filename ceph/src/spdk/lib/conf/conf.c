@@ -60,9 +60,11 @@ struct spdk_conf {
 	char *file;
 	struct spdk_conf_section *current_section;
 	struct spdk_conf_section *section;
+	bool merge_sections;
 };
 
 #define CF_DELIM " \t"
+#define CF_DELIM_KEY " \t="
 
 #define LIB_MAX_TMPBUF 1024
 
@@ -71,7 +73,13 @@ static struct spdk_conf *default_config = NULL;
 struct spdk_conf *
 spdk_conf_allocate(void)
 {
-	return calloc(1, sizeof(struct spdk_conf));
+	struct spdk_conf *ret = calloc(1, sizeof(struct spdk_conf));
+
+	if (ret) {
+		ret->merge_sections = true;
+	}
+
+	return ret;
 }
 
 static void
@@ -479,7 +487,12 @@ parse_line(struct spdk_conf *cp, char *lp)
 			num = 0;
 		}
 
-		sp = spdk_conf_find_section(cp, key);
+		if (cp->merge_sections) {
+			sp = spdk_conf_find_section(cp, key);
+		} else {
+			sp = NULL;
+		}
+
 		if (sp == NULL) {
 			sp = allocate_cf_section();
 			append_cf_section(cp, sp);
@@ -501,7 +514,7 @@ parse_line(struct spdk_conf *cp, char *lp)
 			SPDK_ERRLOG("unknown section\n");
 			return -1;
 		}
-		key = spdk_strsepq(&arg, CF_DELIM);
+		key = spdk_strsepq(&arg, CF_DELIM_KEY);
 		if (key == NULL) {
 			SPDK_ERRLOG("broken key\n");
 			return -1;
@@ -610,6 +623,7 @@ spdk_conf_read(struct spdk_conf *cp, const char *file)
 	if (file == NULL || file[0] == '\0') {
 		return -1;
 	}
+	SPDK_ERRLOG("INI configuration has been deprecated and will be removed in a future release. Please switch to JSON-RPC.\n");
 
 	fp = fopen(file, "r");
 	if (fp == NULL) {
@@ -681,4 +695,10 @@ void
 spdk_conf_set_as_default(struct spdk_conf *cp)
 {
 	default_config = cp;
+}
+
+void
+spdk_conf_disable_sections_merge(struct spdk_conf *cp)
+{
+	cp->merge_sections = false;
 }

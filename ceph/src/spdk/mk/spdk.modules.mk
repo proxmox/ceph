@@ -31,9 +31,10 @@
 #  OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-BLOCKDEV_MODULES_LIST = bdev_lvol blobfs blob blob_bdev lvol
-BLOCKDEV_MODULES_LIST += bdev_malloc bdev_null bdev_nvme nvme bdev_passthru bdev_error bdev_gpt bdev_split bdev_delay vmd
-BLOCKDEV_MODULES_LIST += bdev_raid
+BLOCKDEV_MODULES_LIST = bdev_malloc bdev_null bdev_nvme bdev_passthru bdev_lvol
+BLOCKDEV_MODULES_LIST += bdev_raid bdev_error bdev_gpt bdev_split bdev_delay
+BLOCKDEV_MODULES_LIST += bdev_zone_block
+BLOCKDEV_MODULES_LIST += blobfs blob_bdev blob lvol vmd nvme
 
 ifeq ($(CONFIG_CRYPTO),y)
 BLOCKDEV_MODULES_LIST += bdev_crypto
@@ -50,11 +51,15 @@ SYS_LIBS += -lpmem
 endif
 
 ifeq ($(CONFIG_RDMA),y)
+BLOCKDEV_MODULES_LIST += rdma
 SYS_LIBS += -libverbs -lrdmacm
+ifeq ($(CONFIG_RDMA_PROV),mlx5_dv)
+SYS_LIBS += -lmlx5
+endif
 endif
 
 ifeq ($(OS),Linux)
-BLOCKDEV_MODULES_LIST += ftl
+BLOCKDEV_MODULES_LIST += bdev_ftl ftl
 BLOCKDEV_MODULES_LIST += bdev_aio
 SYS_LIBS += -laio
 ifeq ($(CONFIG_VIRTIO),y)
@@ -83,23 +88,32 @@ endif
 
 ifeq ($(CONFIG_PMDK),y)
 BLOCKDEV_MODULES_LIST += bdev_pmem
-SYS_LIBS += -lpmemblk
+SYS_LIBS += -lpmemblk -lpmem
 endif
 
 SOCK_MODULES_LIST = sock_posix
 
+ifeq ($(OS), Linux)
+ifeq ($(CONFIG_URING),y)
+SOCK_MODULES_LIST += sock_uring
+endif
+endif
+
 ifeq ($(CONFIG_VPP),y)
 SYS_LIBS += -Wl,--whole-archive
 ifneq ($(CONFIG_VPP_DIR),)
-SYS_LIBS += -l:libvppinfra.a -l:libsvm.a -l:libvapiclient.a
-SYS_LIBS += -l:libvppcom.a -l:libvlibmemoryclient.a
-else
-SYS_LIBS += -lvppcom
+SYS_LIBS += -L$(CONFIG_VPP_DIR)/lib
 endif
+SYS_LIBS += -lvppinfra -lsvm -lvlibmemoryclient
 SYS_LIBS += -Wl,--no-whole-archive
 SOCK_MODULES_LIST += sock_vpp
 endif
 
-COPY_MODULES_LIST = copy_ioat ioat
+ACCEL_MODULES_LIST = accel_ioat ioat
+ifeq ($(CONFIG_IDXD),y)
+ACCEL_MODULES_LIST += accel_idxd idxd
+endif
 
-ALL_MODULES_LIST = $(BLOCKDEV_MODULES_LIST) $(COPY_MODULES_LIST) $(SOCK_MODULES_LIST)
+EVENT_BDEV_SUBSYSTEM = event_bdev event_accel event_vmd event_sock
+
+ALL_MODULES_LIST = $(BLOCKDEV_MODULES_LIST) $(ACCEL_MODULES_LIST) $(SOCK_MODULES_LIST)

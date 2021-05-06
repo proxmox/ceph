@@ -42,14 +42,15 @@ const char *rte_pci_get_sysfs_path(void)
 	return path;
 }
 
-static struct rte_devargs *pci_devargs_lookup(struct rte_pci_device *dev)
+static struct rte_devargs *
+pci_devargs_lookup(const struct rte_pci_addr *pci_addr)
 {
 	struct rte_devargs *devargs;
 	struct rte_pci_addr addr;
 
 	RTE_EAL_DEVARGS_FOREACH("pci", devargs) {
 		devargs->bus->parse(devargs->name, &addr);
-		if (!rte_pci_addr_cmp(&dev->addr, &addr))
+		if (!rte_pci_addr_cmp(pci_addr, &addr))
 			return devargs;
 	}
 	return NULL;
@@ -63,7 +64,7 @@ pci_name_set(struct rte_pci_device *dev)
 	/* Each device has its internal, canonical name set. */
 	rte_pci_device_name(&dev->addr,
 			dev->name, sizeof(dev->name));
-	devargs = pci_devargs_lookup(dev);
+	devargs = pci_devargs_lookup(&dev->addr);
 	dev->device.devargs = devargs;
 	/* In blacklist mode, if the device is not blacklisted, no
 	 * rte_devargs exists for it.
@@ -136,7 +137,7 @@ rte_pci_probe_one_driver(struct rte_pci_driver *dr,
 		/* Match of device and driver failed */
 		return 1;
 
-	RTE_LOG(INFO, EAL, "PCI device "PCI_PRI_FMT" on NUMA socket %i\n",
+	RTE_LOG(DEBUG, EAL, "PCI device "PCI_PRI_FMT" on NUMA socket %i\n",
 			loc->domain, loc->bus, loc->devid, loc->function,
 			dev->device.numa_node);
 
@@ -161,7 +162,7 @@ rte_pci_probe_one_driver(struct rte_pci_driver *dr,
 		return -EEXIST;
 	}
 
-	RTE_LOG(INFO, EAL, "  probe driver: %x:%x %s\n", dev->id.vendor_id,
+	RTE_LOG(DEBUG, EAL, "  probe driver: %x:%x %s\n", dev->id.vendor_id,
 		dev->id.device_id, dr->driver.name);
 
 	/*
@@ -169,8 +170,22 @@ rte_pci_probe_one_driver(struct rte_pci_driver *dr,
 	 * This needs to be before rte_pci_map_device(), as it enables to use
 	 * driver flags for adjusting configuration.
 	 */
-	if (!already_probed)
+	if (!already_probed) {
+		enum rte_iova_mode dev_iova_mode;
+		enum rte_iova_mode iova_mode;
+
+		dev_iova_mode = pci_device_iova_mode(dr, dev);
+		iova_mode = rte_eal_iova_mode();
+		if (dev_iova_mode != RTE_IOVA_DC &&
+		    dev_iova_mode != iova_mode) {
+			RTE_LOG(ERR, EAL, "  Expecting '%s' IOVA mode but current mode is '%s', not initializing\n",
+				dev_iova_mode == RTE_IOVA_PA ? "PA" : "VA",
+				iova_mode == RTE_IOVA_PA ? "PA" : "VA");
+			return -EINVAL;
+		}
+
 		dev->driver = dr;
+	}
 
 	if (!already_probed && (dr->drv_flags & RTE_PCI_DRV_NEED_MAPPING)) {
 		/* map resources for devices that use igb_uio */
@@ -181,6 +196,10 @@ rte_pci_probe_one_driver(struct rte_pci_driver *dr,
 		}
 	}
 
+	RTE_LOG(INFO, EAL, "Probe PCI driver: %s (%x:%x) device: "PCI_PRI_FMT" (socket %i)\n",
+			dr->driver.name, dev->id.vendor_id, dev->id.device_id,
+			loc->domain, loc->bus, loc->devid, loc->function,
+			dev->device.numa_node);
 	/* call the driver probe() function */
 	ret = dr->probe(dr, dev);
 	if (already_probed)
@@ -233,6 +252,7 @@ rte_pci_detach_dev(struct rte_pci_device *dev)
 
 	/* clear driver structure */
 	dev->driver = NULL;
+	dev->device.driver = NULL;
 
 	if (dr->drv_flags & RTE_PCI_DRV_NEED_MAPPING)
 		/* unmap resources for devices that use igb_uio */
@@ -273,28 +293,17 @@ pci_probe_all_drivers(struct rte_pci_device *dev)
  * all registered drivers that have a matching entry in its id_table
  * for discovered devices.
  */
-int
-rte_pci_probe(void)
+static int
+pci_probe(void)
 {
 	struct rte_pci_device *dev = NULL;
 	size_t probed = 0, failed = 0;
-	struct rte_devargs *devargs;
-	int probe_all = 0;
 	int ret = 0;
-
-	if (rte_pci_bus.bus.conf.scan_mode != RTE_BUS_SCAN_WHITELIST)
-		probe_all = 1;
 
 	FOREACH_DEVICE_ON_PCIBUS(dev) {
 		probed++;
 
-		devargs = dev->device.devargs;
-		/* probe all or only whitelisted devices */
-		if (probe_all)
-			ret = pci_probe_all_drivers(dev);
-		else if (devargs != NULL &&
-			devargs->policy == RTE_DEV_WHITELISTED)
-			ret = pci_probe_all_drivers(dev);
+		ret = pci_probe_all_drivers(dev);
 		if (ret < 0) {
 			if (ret != -EEXIST) {
 				RTE_LOG(ERR, EAL, "Requested device "
@@ -574,10 +583,92 @@ pci_dma_unmap(struct rte_device *dev, void *addr, uint64_t iova, size_t len)
 	return -1;
 }
 
+bool
+rte_pci_ignore_device(const struct rte_pci_addr *pci_addr)
+{
+	struct rte_devargs *devargs = pci_devargs_lookup(pci_addr);
+
+	switch (rte_pci_bus.bus.conf.scan_mode) {
+	case RTE_BUS_SCAN_WHITELIST:
+		if (devargs && devargs->policy == RTE_DEV_WHITELISTED)
+			return false;
+		break;
+	case RTE_BUS_SCAN_UNDEFINED:
+	case RTE_BUS_SCAN_BLACKLIST:
+		if (devargs == NULL ||
+		    devargs->policy != RTE_DEV_BLACKLISTED)
+			return false;
+		break;
+	}
+	return true;
+}
+
+enum rte_iova_mode
+rte_pci_get_iommu_class(void)
+{
+	enum rte_iova_mode iova_mode = RTE_IOVA_DC;
+	const struct rte_pci_device *dev;
+	const struct rte_pci_driver *drv;
+	bool devices_want_va = false;
+	bool devices_want_pa = false;
+	int iommu_no_va = -1;
+
+	FOREACH_DEVICE_ON_PCIBUS(dev) {
+		/*
+		 * We can check this only once, because the IOMMU hardware is
+		 * the same for all of them.
+		 */
+		if (iommu_no_va == -1)
+			iommu_no_va = pci_device_iommu_support_va(dev)
+					? 0 : 1;
+
+		if (dev->kdrv == RTE_KDRV_UNKNOWN ||
+		    dev->kdrv == RTE_KDRV_NONE)
+			continue;
+		FOREACH_DRIVER_ON_PCIBUS(drv) {
+			enum rte_iova_mode dev_iova_mode;
+
+			if (!rte_pci_match(drv, dev))
+				continue;
+
+			dev_iova_mode = pci_device_iova_mode(drv, dev);
+			RTE_LOG(DEBUG, EAL, "PCI driver %s for device "
+				PCI_PRI_FMT " wants IOVA as '%s'\n",
+				drv->driver.name,
+				dev->addr.domain, dev->addr.bus,
+				dev->addr.devid, dev->addr.function,
+				dev_iova_mode == RTE_IOVA_DC ? "DC" :
+				(dev_iova_mode == RTE_IOVA_PA ? "PA" : "VA"));
+			if (dev_iova_mode == RTE_IOVA_PA)
+				devices_want_pa = true;
+			else if (dev_iova_mode == RTE_IOVA_VA)
+				devices_want_va = true;
+		}
+	}
+	if (iommu_no_va == 1) {
+		iova_mode = RTE_IOVA_PA;
+		if (devices_want_va) {
+			RTE_LOG(WARNING, EAL, "Some devices want 'VA' but IOMMU does not support 'VA'.\n");
+			RTE_LOG(WARNING, EAL, "The devices that want 'VA' won't initialize.\n");
+		}
+	} else if (devices_want_va && !devices_want_pa) {
+		iova_mode = RTE_IOVA_VA;
+	} else if (devices_want_pa && !devices_want_va) {
+		iova_mode = RTE_IOVA_PA;
+	} else {
+		iova_mode = RTE_IOVA_DC;
+		if (devices_want_va) {
+			RTE_LOG(WARNING, EAL, "Some devices want 'VA' but forcing 'DC' because other devices want 'PA'.\n");
+			RTE_LOG(WARNING, EAL, "Depending on the final decision by the EAL, not all devices may be able to initialize.\n");
+		}
+	}
+	return iova_mode;
+}
+
 struct rte_pci_bus rte_pci_bus = {
 	.bus = {
 		.scan = rte_pci_scan,
-		.probe = rte_pci_probe,
+		.probe = pci_probe,
 		.find_device = pci_find_device,
 		.plug = pci_plug,
 		.unplug = pci_unplug,

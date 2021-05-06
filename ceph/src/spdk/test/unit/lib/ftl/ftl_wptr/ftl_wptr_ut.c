@@ -38,49 +38,48 @@
 
 #include "ftl/ftl_core.c"
 #include "ftl/ftl_band.c"
+#include "ftl/ftl_init.c"
 #include "../common/utils.c"
 
-static struct spdk_ocssd_geometry_data g_geo = {
-	.num_grp	= 4,
-	.num_pu		= 3,
-	.num_chk	= 20,
-	.clba		= 128,
-	.ws_opt		= 16,
-	.ws_min		= 4,
-};
-
-static struct spdk_ftl_punit_range g_range = {
-	.begin		= 2,
-	.end		= 9,
+struct base_bdev_geometry g_geo = {
+	.write_unit_size    = 16,
+	.optimal_open_zones = 12,
+	.zone_size	    = 128,
+	.blockcnt	    = 20 * 128 * 12,
 };
 
 #if defined(DEBUG)
 DEFINE_STUB(ftl_band_validate_md, bool, (struct ftl_band *band), true);
+DEFINE_STUB_V(ftl_trace_limits, (struct spdk_ftl_dev *dev, int limit, size_t num_free));
+
+DEFINE_STUB_V(ftl_trace_completion, (struct spdk_ftl_dev *dev, const struct ftl_io *io,
+				     enum ftl_trace_completion completion));
+DEFINE_STUB_V(ftl_trace_write_band, (struct spdk_ftl_dev *dev, const struct ftl_band *band));
+DEFINE_STUB_V(ftl_trace_submission, (struct spdk_ftl_dev *dev, const struct ftl_io *io,
+				     struct ftl_addr addr, size_t addr_cnt));
 #endif
+DEFINE_STUB_V(spdk_bdev_free_io, (struct spdk_bdev_io *bdev_io));
 DEFINE_STUB_V(ftl_io_dec_req, (struct ftl_io *io));
 DEFINE_STUB_V(ftl_io_inc_req, (struct ftl_io *io));
 DEFINE_STUB_V(ftl_io_fail, (struct ftl_io *io, int status));
-DEFINE_STUB_V(ftl_trace_completion, (struct spdk_ftl_dev *dev, const struct ftl_io *io,
-				     enum ftl_trace_completion completion));
 DEFINE_STUB_V(ftl_reloc_add, (struct ftl_reloc *reloc, struct ftl_band *band, size_t offset,
-			      size_t num_lbks, int prio));
-DEFINE_STUB_V(ftl_trace_write_band, (struct spdk_ftl_dev *dev, const struct ftl_band *band));
-DEFINE_STUB_V(ftl_trace_submission, (struct spdk_ftl_dev *dev, const struct ftl_io *io,
-				     struct ftl_ppa ppa, size_t ppa_cnt));
-DEFINE_STUB_V(ftl_rwb_get_limits, (struct ftl_rwb *rwb, size_t limit[FTL_RWB_TYPE_MAX]));
+			      size_t num_blocks, int prio, bool defrag));
 DEFINE_STUB_V(ftl_io_process_error, (struct ftl_io *io, const struct spdk_nvme_cpl *status));
-DEFINE_STUB_V(ftl_trace_limits, (struct spdk_ftl_dev *dev, const size_t *limits, size_t num_free));
-DEFINE_STUB(ftl_rwb_entry_cnt, size_t, (const struct ftl_rwb *rwb), 0);
-DEFINE_STUB_V(ftl_rwb_set_limits, (struct ftl_rwb *rwb, const size_t limit[FTL_RWB_TYPE_MAX]));
-DEFINE_STUB(spdk_nvme_ocssd_ns_cmd_vector_reset, int, (struct spdk_nvme_ns *ns,
-		struct spdk_nvme_qpair *qpair, uint64_t *lba_list, uint32_t num_lbas,
-		struct spdk_ocssd_chunk_information_entry *chunk_info,
-		spdk_nvme_cmd_cb cb_fn, void *cb_arg), 0);
-DEFINE_STUB(spdk_bdev_desc_get_bdev, struct spdk_bdev *, (struct spdk_bdev_desc *dsc), NULL);
 DEFINE_STUB(spdk_bdev_get_num_blocks, uint64_t, (const struct spdk_bdev *bdev), 0);
+DEFINE_STUB(spdk_bdev_zone_management, int, (struct spdk_bdev_desc *desc,
+		struct spdk_io_channel *ch,
+		uint64_t zone_id, enum spdk_bdev_zone_action action,
+		spdk_bdev_io_completion_cb cb, void *cb_arg), 0);
+DEFINE_STUB(spdk_bdev_io_get_append_location, uint64_t, (struct spdk_bdev_io *bdev_io), 0);
+
+struct spdk_io_channel *
+spdk_bdev_get_io_channel(struct spdk_bdev_desc *bdev_desc)
+{
+	return spdk_get_io_channel(bdev_desc);
+}
 
 struct ftl_io *
-ftl_io_erase_init(struct ftl_band *band, size_t lbk_cnt, ftl_io_fn cb)
+ftl_io_erase_init(struct ftl_band *band, size_t num_blocks, ftl_io_fn cb)
 {
 	struct ftl_io *io;
 
@@ -90,15 +89,15 @@ ftl_io_erase_init(struct ftl_band *band, size_t lbk_cnt, ftl_io_fn cb)
 	io->dev = band->dev;
 	io->band = band;
 	io->cb_fn = cb;
-	io->lbk_cnt = 1;
+	io->num_blocks = 1;
 
 	return io;
 }
 
 void
-ftl_io_advance(struct ftl_io *io, size_t lbk_cnt)
+ftl_io_advance(struct ftl_io *io, size_t num_blocks)
 {
-	io->pos += lbk_cnt;
+	io->pos += num_blocks;
 }
 
 void
@@ -109,19 +108,22 @@ ftl_io_complete(struct ftl_io *io)
 }
 
 static void
-setup_wptr_test(struct spdk_ftl_dev **dev, const struct spdk_ocssd_geometry_data *geo,
-		const struct spdk_ftl_punit_range *range)
+setup_wptr_test(struct spdk_ftl_dev **dev, const struct base_bdev_geometry *geo)
 {
-	size_t i;
 	struct spdk_ftl_dev *t_dev;
+	struct _ftl_io_channel *_ioch;
+	size_t i;
 
-	t_dev = test_init_ftl_dev(geo, range);
-
-	for (i = 0; i < ftl_dev_num_bands(t_dev); ++i) {
-		test_init_ftl_band(t_dev, i);
+	t_dev = test_init_ftl_dev(geo);
+	for (i = 0; i < ftl_get_num_bands(t_dev); ++i) {
+		test_init_ftl_band(t_dev, i, geo->zone_size);
 		t_dev->bands[i].state = FTL_BAND_STATE_CLOSED;
 		ftl_band_set_state(&t_dev->bands[i], FTL_BAND_STATE_FREE);
 	}
+
+	_ioch = (struct _ftl_io_channel *)(t_dev->ioch + 1);
+	_ioch->ioch = calloc(1, sizeof(*_ioch->ioch));
+	SPDK_CU_ASSERT_FATAL(_ioch->ioch != NULL);
 
 	*dev = t_dev;
 }
@@ -129,12 +131,16 @@ setup_wptr_test(struct spdk_ftl_dev **dev, const struct spdk_ocssd_geometry_data
 static void
 cleanup_wptr_test(struct spdk_ftl_dev *dev)
 {
+	struct _ftl_io_channel *_ioch;
 	size_t i;
 
-	for (i = 0; i < ftl_dev_num_bands(dev); ++i) {
+	for (i = 0; i < ftl_get_num_bands(dev); ++i) {
 		dev->bands[i].lba_map.segments = NULL;
 		test_free_ftl_band(&dev->bands[i]);
 	}
+
+	_ioch = (struct _ftl_io_channel *)(dev->ioch + 1);
+	free(_ioch->ioch);
 
 	test_free_ftl_dev(dev);
 }
@@ -147,14 +153,14 @@ test_wptr(void)
 	struct ftl_band *band;
 	struct ftl_io io = { 0 };
 	size_t xfer_size;
-	size_t chunk, lbk, offset, i;
+	size_t zone, block, offset, i;
 	int rc;
 
-	setup_wptr_test(&dev, &g_geo, &g_range);
+	setup_wptr_test(&dev, &g_geo);
 
 	xfer_size = dev->xfer_size;
 	ftl_add_wptr(dev);
-	for (i = 0; i < ftl_dev_num_bands(dev); ++i) {
+	for (i = 0; i < ftl_get_num_bands(dev); ++i) {
 		wptr = LIST_FIRST(&dev->wptr_list);
 		band = wptr->band;
 		ftl_band_set_state(band, FTL_BAND_STATE_OPENING);
@@ -162,9 +168,8 @@ test_wptr(void)
 		io.band = band;
 		io.dev = dev;
 
-		for (lbk = 0, offset = 0; lbk < ftl_dev_lbks_in_chunk(dev) / xfer_size; ++lbk) {
-			for (chunk = 0; chunk < band->num_chunks; ++chunk) {
-				CU_ASSERT_EQUAL(wptr->ppa.lbk, (lbk * xfer_size));
+		for (block = 0, offset = 0; block < ftl_get_num_blocks_in_zone(dev) / xfer_size; ++block) {
+			for (zone = 0; zone < band->num_zones; ++zone) {
 				CU_ASSERT_EQUAL(wptr->offset, offset);
 				ftl_wptr_advance(wptr, xfer_size);
 				offset += xfer_size;
@@ -172,7 +177,6 @@ test_wptr(void)
 		}
 
 		CU_ASSERT_EQUAL(band->state, FTL_BAND_STATE_FULL);
-		CU_ASSERT_EQUAL(wptr->ppa.lbk, ftl_dev_lbks_in_chunk(dev));
 
 		ftl_band_set_state(band, FTL_BAND_STATE_CLOSING);
 
@@ -186,7 +190,7 @@ test_wptr(void)
 
 		/* There are no free bands during the last iteration, so */
 		/* there'll be no new wptr allocation */
-		if (i == (ftl_dev_num_bands(dev) - 1)) {
+		if (i == (ftl_get_num_bands(dev) - 1)) {
 			CU_ASSERT_EQUAL(rc, -1);
 		} else {
 			CU_ASSERT_EQUAL(rc, 0);
@@ -202,23 +206,13 @@ main(int argc, char **argv)
 	CU_pSuite suite = NULL;
 	unsigned int num_failures;
 
-	if (CU_initialize_registry() != CUE_SUCCESS) {
-		return CU_get_error();
-	}
+	CU_set_error_action(CUEA_ABORT);
+	CU_initialize_registry();
 
 	suite = CU_add_suite("ftl_wptr_suite", NULL, NULL);
-	if (!suite) {
-		CU_cleanup_registry();
-		return CU_get_error();
-	}
 
-	if (
-		CU_add_test(suite, "test_wptr",
-			    test_wptr) == NULL
-	) {
-		CU_cleanup_registry();
-		return CU_get_error();
-	}
+
+	CU_ADD_TEST(suite, test_wptr);
 
 	CU_basic_set_mode(CU_BRM_VERBOSE);
 	CU_basic_run_tests();

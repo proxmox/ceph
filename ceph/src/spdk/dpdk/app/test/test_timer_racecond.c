@@ -1,8 +1,6 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2015 Akamai Technologies.
- *   All rights reserved.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2015 Akamai Technologies.
+ * All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
  *   modification, are permitted provided that the following conditions
@@ -108,7 +106,7 @@ reload_timer(struct rte_timer *tim)
 }
 
 static int
-slave_main_loop(__attribute__((unused)) void *arg)
+slave_main_loop(__rte_unused void *arg)
 {
 	unsigned lcore_id = rte_lcore_id();
 	unsigned i;

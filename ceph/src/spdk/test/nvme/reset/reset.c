@@ -170,10 +170,10 @@ submit_single_io(struct ns_worker_ctx *ns_ctx)
 		exit(1);
 	}
 
-	task->buf = spdk_dma_zmalloc(g_io_size_bytes, 0x200, NULL);
+	task->buf = spdk_zmalloc(g_io_size_bytes, 0x200, NULL, SPDK_ENV_LCORE_ID_ANY, SPDK_MALLOC_DMA);
 	if (!task->buf) {
-		spdk_dma_free(task->buf);
-		fprintf(stderr, "task->buf spdk_dma_zmalloc failed\n");
+		spdk_free(task->buf);
+		fprintf(stderr, "task->buf spdk_zmalloc failed\n");
 		exit(1);
 	}
 
@@ -202,9 +202,9 @@ submit_single_io(struct ns_worker_ctx *ns_ctx)
 
 	if (rc != 0) {
 		fprintf(stderr, "starting I/O failed\n");
+	} else {
+		ns_ctx->current_queue_depth++;
 	}
-
-	ns_ctx->current_queue_depth++;
 }
 
 static void
@@ -221,7 +221,7 @@ task_complete(struct reset_task *task, const struct spdk_nvme_cpl *completion)
 		ns_ctx->io_completed++;
 	}
 
-	spdk_dma_free(task->buf);
+	spdk_free(task->buf);
 	spdk_mempool_put(task_pool, task);
 
 	/*
@@ -287,17 +287,6 @@ work_fn(void *arg)
 	}
 
 	while (1) {
-		/*
-		 * Check for completed I/O for each controller. A new
-		 * I/O will be submitted in the io_complete callback
-		 * to replace each I/O that is completed.
-		 */
-		ns_ctx = worker->ns_ctx;
-		while (ns_ctx != NULL) {
-			check_io(ns_ctx);
-			ns_ctx = ns_ctx->next;
-		}
-
 		if (!did_reset && ((tsc_end - spdk_get_ticks()) / g_tsc_rate) > (uint64_t)g_time_in_sec / 2) {
 			ns_ctx = worker->ns_ctx;
 			while (ns_ctx != NULL) {
@@ -308,6 +297,17 @@ work_fn(void *arg)
 				ns_ctx = ns_ctx->next;
 			}
 			did_reset = true;
+		}
+
+		/*
+		 * Check for completed I/O for each controller. A new
+		 * I/O will be submitted in the io_complete callback
+		 * to replace each I/O that is completed.
+		 */
+		ns_ctx = worker->ns_ctx;
+		while (ns_ctx != NULL) {
+			check_io(ns_ctx);
+			ns_ctx = ns_ctx->next;
 		}
 
 		if (spdk_get_ticks() > tsc_end) {
@@ -610,12 +610,10 @@ associate_workers_with_ns(void)
 }
 
 static int
-run_nvme_reset_cycle(int retry_count)
+run_nvme_reset_cycle(void)
 {
 	struct worker_thread *worker;
 	struct ns_worker_ctx *ns_ctx;
-
-	spdk_nvme_retry_count = retry_count;
 
 	if (work_fn(g_workers) != 0) {
 		return -1;
@@ -700,7 +698,7 @@ int main(int argc, char **argv)
 	printf("Initialization complete. Launching workers.\n");
 
 	for (i = 2; i >= 0; i--) {
-		rc = run_nvme_reset_cycle(i);
+		rc = run_nvme_reset_cycle();
 		if (rc != 0) {
 			goto cleanup;
 		}

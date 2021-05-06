@@ -23,7 +23,7 @@
 
 #define FLOW_CLASSIFY_MAX_RULE_NUM 100
 #define MAX_PKT_BURST              32
-#define NB_SOCKETS                 1
+#define NB_SOCKETS                 4
 #define MEMPOOL_CACHE_SIZE         256
 #define MBUF_SIZE                  512
 #define NB_MBUF                    512
@@ -39,8 +39,8 @@ static struct rte_acl_field_def ipv4_defs[NUM_FIELDS_IPV4] = {
 		.size = sizeof(uint8_t),
 		.field_index = PROTO_FIELD_IPV4,
 		.input_index = PROTO_INPUT_IPV4,
-		.offset = sizeof(struct ether_hdr) +
-			offsetof(struct ipv4_hdr, next_proto_id),
+		.offset = sizeof(struct rte_ether_hdr) +
+			offsetof(struct rte_ipv4_hdr, next_proto_id),
 	},
 	/* next input field (IPv4 source address) - 4 consecutive bytes. */
 	{
@@ -49,8 +49,8 @@ static struct rte_acl_field_def ipv4_defs[NUM_FIELDS_IPV4] = {
 		.size = sizeof(uint32_t),
 		.field_index = SRC_FIELD_IPV4,
 		.input_index = SRC_INPUT_IPV4,
-		.offset = sizeof(struct ether_hdr) +
-			offsetof(struct ipv4_hdr, src_addr),
+		.offset = sizeof(struct rte_ether_hdr) +
+			offsetof(struct rte_ipv4_hdr, src_addr),
 	},
 	/* next input field (IPv4 destination address) - 4 consecutive bytes. */
 	{
@@ -59,8 +59,8 @@ static struct rte_acl_field_def ipv4_defs[NUM_FIELDS_IPV4] = {
 		.size = sizeof(uint32_t),
 		.field_index = DST_FIELD_IPV4,
 		.input_index = DST_INPUT_IPV4,
-		.offset = sizeof(struct ether_hdr) +
-			offsetof(struct ipv4_hdr, dst_addr),
+		.offset = sizeof(struct rte_ether_hdr) +
+			offsetof(struct rte_ipv4_hdr, dst_addr),
 	},
 	/*
 	 * Next 2 fields (src & dst ports) form 4 consecutive bytes.
@@ -72,9 +72,9 @@ static struct rte_acl_field_def ipv4_defs[NUM_FIELDS_IPV4] = {
 		.size = sizeof(uint16_t),
 		.field_index = SRCP_FIELD_IPV4,
 		.input_index = SRCP_DESTP_INPUT_IPV4,
-		.offset = sizeof(struct ether_hdr) +
-			sizeof(struct ipv4_hdr) +
-			offsetof(struct tcp_hdr, src_port),
+		.offset = sizeof(struct rte_ether_hdr) +
+			sizeof(struct rte_ipv4_hdr) +
+			offsetof(struct rte_tcp_hdr, src_port),
 	},
 	{
 		/* rte_flow uses a bit mask for protocol ports */
@@ -82,9 +82,9 @@ static struct rte_acl_field_def ipv4_defs[NUM_FIELDS_IPV4] = {
 		.size = sizeof(uint16_t),
 		.field_index = DSTP_FIELD_IPV4,
 		.input_index = SRCP_DESTP_INPUT_IPV4,
-		.offset = sizeof(struct ether_hdr) +
-			sizeof(struct ipv4_hdr) +
-			offsetof(struct tcp_hdr, dst_port),
+		.offset = sizeof(struct rte_ether_hdr) +
+			sizeof(struct rte_ipv4_hdr) +
+			offsetof(struct rte_tcp_hdr, dst_port),
 	},
 };
 
@@ -95,7 +95,8 @@ static struct rte_acl_field_def ipv4_defs[NUM_FIELDS_IPV4] = {
  *  dst mask 255.255.255.00 / udp src is 32 dst is 33 / end"
  */
 static struct rte_flow_item_ipv4 ipv4_udp_spec_1 = {
-	{ 0, 0, 0, 0, 0, 0, IPPROTO_UDP, 0, IPv4(2, 2, 2, 3), IPv4(2, 2, 2, 7)}
+	{ 0, 0, 0, 0, 0, 0, IPPROTO_UDP, 0,
+	  RTE_IPV4(2, 2, 2, 3), RTE_IPV4(2, 2, 2, 7)}
 };
 static const struct rte_flow_item_ipv4 ipv4_mask_24 = {
 	.hdr = {
@@ -124,14 +125,14 @@ static struct rte_flow_item  udp_item_bad = { RTE_FLOW_ITEM_TYPE_UDP,
 
 static struct rte_flow_item  end_item = { RTE_FLOW_ITEM_TYPE_END,
 	0, 0, 0 };
-static struct rte_flow_item  end_item_bad = { -1, 0, 0, 0 };
 
 /* test TCP pattern:
  * "eth / ipv4 src spec 1.2.3.4 src mask 255.255.255.00 dst spec 5.6.7.8
  *  dst mask 255.255.255.00 / tcp src is 16 dst is 17 / end"
  */
 static struct rte_flow_item_ipv4 ipv4_tcp_spec_1 = {
-	{ 0, 0, 0, 0, 0, 0, IPPROTO_TCP, 0, IPv4(1, 2, 3, 4), IPv4(5, 6, 7, 8)}
+	{ 0, 0, 0, 0, 0, 0, IPPROTO_TCP, 0,
+	  RTE_IPV4(1, 2, 3, 4), RTE_IPV4(5, 6, 7, 8)}
 };
 
 static struct rte_flow_item_tcp tcp_spec_1 = {
@@ -149,8 +150,8 @@ static struct rte_flow_item  tcp_item_1 = { RTE_FLOW_ITEM_TYPE_TCP,
  *  dst mask 255.255.255.00 / sctp src is 16 dst is 17/ end"
  */
 static struct rte_flow_item_ipv4 ipv4_sctp_spec_1 = {
-	{ 0, 0, 0, 0, 0, 0, IPPROTO_SCTP, 0, IPv4(11, 12, 13, 14),
-	IPv4(15, 16, 17, 18)}
+	{ 0, 0, 0, 0, 0, 0, IPPROTO_SCTP, 0, RTE_IPV4(11, 12, 13, 14),
+	RTE_IPV4(15, 16, 17, 18)}
 };
 
 static struct rte_flow_item_sctp sctp_spec_1 = {
@@ -179,7 +180,6 @@ static struct rte_flow_action count_action = { RTE_FLOW_ACTION_TYPE_COUNT,
 static struct rte_flow_action count_action_bad = { -1, 0};
 
 static struct rte_flow_action end_action = { RTE_FLOW_ACTION_TYPE_END, 0};
-static struct rte_flow_action end_action_bad =	{ -1, 0};
 
 static struct rte_flow_action actions[2];
 
@@ -382,7 +382,7 @@ test_invalid_patterns(void)
 
 	pattern[1] = ipv4_udp_item_1;
 	pattern[2] = udp_item_bad;
-	pattern[3] = end_item_bad;
+	pattern[3] = end_item;
 
 	ret = rte_flow_classify_validate(cls->cls, &attr, pattern,
 			actions, &error);
@@ -456,32 +456,6 @@ test_invalid_actions(void)
 		return -1;
 	}
 
-	actions[0] = count_action;
-	actions[1] = end_action_bad;
-
-	ret = rte_flow_classify_validate(cls->cls, &attr, pattern,
-			actions, &error);
-	if (!ret) {
-		printf("Line %i: rte_flow_classify_validate", __LINE__);
-		printf(" should have failed!\n");
-		return -1;
-	}
-
-	rule = rte_flow_classify_table_entry_add(cls->cls, &attr, pattern,
-			actions, &key_found, &error);
-	if (rule) {
-		printf("Line %i: flow_classify_table_entry_add", __LINE__);
-		printf(" should have failed!\n");
-		return -1;
-	}
-
-	ret = rte_flow_classify_table_entry_delete(cls->cls, rule);
-	if (!ret) {
-		printf("Line %i: rte_flow_classify_table_entry_delete",
-			__LINE__);
-		printf("should have failed!\n");
-		return -1;
-	}
 	return 0;
 }
 
@@ -489,9 +463,9 @@ static int
 init_ipv4_udp_traffic(struct rte_mempool *mp,
 	     struct rte_mbuf **pkts_burst, uint32_t burst_size)
 {
-	struct ether_hdr pkt_eth_hdr;
-	struct ipv4_hdr pkt_ipv4_hdr;
-	struct udp_hdr pkt_udp_hdr;
+	struct rte_ether_hdr pkt_eth_hdr;
+	struct rte_ipv4_hdr pkt_ipv4_hdr;
+	struct rte_udp_hdr pkt_udp_hdr;
 	uint32_t src_addr = IPV4_ADDR(2, 2, 2, 3);
 	uint32_t dst_addr = IPV4_ADDR(2, 2, 2, 7);
 	uint16_t src_port = 32;
@@ -503,9 +477,9 @@ init_ipv4_udp_traffic(struct rte_mempool *mp,
 
 	printf("Set up IPv4 UDP traffic\n");
 	initialize_eth_header(&pkt_eth_hdr,
-		(struct ether_addr *)src_mac,
-		(struct ether_addr *)dst_mac, ETHER_TYPE_IPv4, 0, 0);
-	pktlen = (uint16_t)(sizeof(struct ether_hdr));
+		(struct rte_ether_addr *)src_mac,
+		(struct rte_ether_addr *)dst_mac, RTE_ETHER_TYPE_IPV4, 0, 0);
+	pktlen = (uint16_t)(sizeof(struct rte_ether_hdr));
 	printf("ETH  pktlen %u\n", pktlen);
 
 	pktlen = initialize_ipv4_header(&pkt_ipv4_hdr, src_addr, dst_addr,
@@ -526,9 +500,9 @@ static int
 init_ipv4_tcp_traffic(struct rte_mempool *mp,
 	     struct rte_mbuf **pkts_burst, uint32_t burst_size)
 {
-	struct ether_hdr pkt_eth_hdr;
-	struct ipv4_hdr pkt_ipv4_hdr;
-	struct tcp_hdr pkt_tcp_hdr;
+	struct rte_ether_hdr pkt_eth_hdr;
+	struct rte_ipv4_hdr pkt_ipv4_hdr;
+	struct rte_tcp_hdr pkt_tcp_hdr;
 	uint32_t src_addr = IPV4_ADDR(1, 2, 3, 4);
 	uint32_t dst_addr = IPV4_ADDR(5, 6, 7, 8);
 	uint16_t src_port = 16;
@@ -540,9 +514,9 @@ init_ipv4_tcp_traffic(struct rte_mempool *mp,
 
 	printf("Set up IPv4 TCP traffic\n");
 	initialize_eth_header(&pkt_eth_hdr,
-		(struct ether_addr *)src_mac,
-		(struct ether_addr *)dst_mac, ETHER_TYPE_IPv4, 0, 0);
-	pktlen = (uint16_t)(sizeof(struct ether_hdr));
+		(struct rte_ether_addr *)src_mac,
+		(struct rte_ether_addr *)dst_mac, RTE_ETHER_TYPE_IPV4, 0, 0);
+	pktlen = (uint16_t)(sizeof(struct rte_ether_hdr));
 	printf("ETH  pktlen %u\n", pktlen);
 
 	pktlen = initialize_ipv4_header_proto(&pkt_ipv4_hdr, src_addr,
@@ -563,9 +537,9 @@ static int
 init_ipv4_sctp_traffic(struct rte_mempool *mp,
 	     struct rte_mbuf **pkts_burst, uint32_t burst_size)
 {
-	struct ether_hdr pkt_eth_hdr;
-	struct ipv4_hdr pkt_ipv4_hdr;
-	struct sctp_hdr pkt_sctp_hdr;
+	struct rte_ether_hdr pkt_eth_hdr;
+	struct rte_ipv4_hdr pkt_ipv4_hdr;
+	struct rte_sctp_hdr pkt_sctp_hdr;
 	uint32_t src_addr = IPV4_ADDR(11, 12, 13, 14);
 	uint32_t dst_addr = IPV4_ADDR(15, 16, 17, 18);
 	uint16_t src_port = 10;
@@ -577,9 +551,9 @@ init_ipv4_sctp_traffic(struct rte_mempool *mp,
 
 	printf("Set up IPv4 SCTP traffic\n");
 	initialize_eth_header(&pkt_eth_hdr,
-		(struct ether_addr *)src_mac,
-		(struct ether_addr *)dst_mac, ETHER_TYPE_IPv4, 0, 0);
-	pktlen = (uint16_t)(sizeof(struct ether_hdr));
+		(struct rte_ether_addr *)src_mac,
+		(struct rte_ether_addr *)dst_mac, RTE_ETHER_TYPE_IPV4, 0, 0);
+	pktlen = (uint16_t)(sizeof(struct rte_ether_hdr));
 	printf("ETH  pktlen %u\n", pktlen);
 
 	pktlen = initialize_ipv4_header_proto(&pkt_ipv4_hdr, src_addr,

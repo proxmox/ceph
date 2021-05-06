@@ -5,21 +5,10 @@ rootdir=$(readlink -f $testdir/../..)
 
 source $rootdir/test/common/autotest_common.sh
 
-function suite()
-{
-	timing_enter $(basename $@)
-	run_test suite "$@"
-	timing_exit $(basename $@)
-}
-
-timing_enter ocf
-
-suite "$testdir/integrity/fio-modes.sh"
-suite "$testdir/integrity/bdevperf-iotypes.sh"
-suite "$testdir/management/create-destruct.sh"
-suite "$testdir/management/multicore.sh"
-# disabled due to intermittent failures. See github isssue #815
-#suite "$testdir/management/persistent-metadata.sh"
-
-timing_exit ocf
-report_test_completion "ocf"
+run_test "ocf_fio_modes" "$testdir/integrity/fio-modes.sh"
+run_test "ocf_bdevperf_iotypes" "$testdir/integrity/bdevperf-iotypes.sh"
+run_test "ocf_stats" "$testdir/integrity/stats.sh"
+run_test "ocf_create_destruct" "$testdir/management/create-destruct.sh"
+run_test "ocf_multicore" "$testdir/management/multicore.sh"
+run_test "ocf_persistent_metadata" "$testdir/management/persistent-metadata.sh"
+run_test "ocf_remove" "$testdir/management/remove.sh"

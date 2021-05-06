@@ -103,26 +103,26 @@ ut_port_init(void)
 	int rc;
 
 	/* g_i_port_a */
-	rc = spdk_scsi_port_construct(&g_i_port_a, 0xa, 0,
-				      "iqn.2016-06.io.spdk:fe5aacf7420a,i,0x00023d00000a");
+	rc = scsi_port_construct(&g_i_port_a, 0xa, 0,
+				 "iqn.2016-06.io.spdk:fe5aacf7420a,i,0x00023d00000a");
 	SPDK_CU_ASSERT_FATAL(rc == 0);
 	spdk_scsi_port_set_iscsi_transport_id(&g_i_port_a,
 					      "iqn.2016-06.io.spdk:fe5aacf7420a", 0x00023d00000a);
 	/* g_i_port_b */
-	rc = spdk_scsi_port_construct(&g_i_port_b, 0xb, 0,
-				      "iqn.2016-06.io.spdk:fe5aacf7420b,i,0x00023d00000b");
+	rc = scsi_port_construct(&g_i_port_b, 0xb, 0,
+				 "iqn.2016-06.io.spdk:fe5aacf7420b,i,0x00023d00000b");
 	SPDK_CU_ASSERT_FATAL(rc == 0);
 	spdk_scsi_port_set_iscsi_transport_id(&g_i_port_b,
 					      "iqn.2016-06.io.spdk:fe5aacf7420b", 0x00023d00000b);
 	/* g_i_port_c */
-	rc = spdk_scsi_port_construct(&g_i_port_c, 0xc, 0,
-				      "iqn.2016-06.io.spdk:fe5aacf7420c,i,0x00023d00000c");
+	rc = scsi_port_construct(&g_i_port_c, 0xc, 0,
+				 "iqn.2016-06.io.spdk:fe5aacf7420c,i,0x00023d00000c");
 	SPDK_CU_ASSERT_FATAL(rc == 0);
 	spdk_scsi_port_set_iscsi_transport_id(&g_i_port_c,
 					      "iqn.2016-06.io.spdk:fe5aacf7420c", 0x00023d00000c);
 	/* g_t_port_0 */
-	rc = spdk_scsi_port_construct(&g_t_port_0, 0x0, 1,
-				      "iqn.2016-06.io.spdk:fe5aacf74200,t,0x00023d000000");
+	rc = scsi_port_construct(&g_t_port_0, 0x0, 1,
+				 "iqn.2016-06.io.spdk:fe5aacf74200,t,0x00023d000000");
 	SPDK_CU_ASSERT_FATAL(rc == 0);
 	spdk_scsi_port_set_iscsi_transport_id(&g_t_port_0,
 					      "iqn.2016-06.io.spdk:fe5aacf74200", 0x00023d000000);
@@ -169,30 +169,30 @@ test_build_registrants(void)
 	task.initiator_port = &g_i_port_a;
 	/* Test Case: Host A registers with a new key */
 	task.status = 0;
-	rc = spdk_scsi_pr_out_register(&task, SPDK_SCSI_PR_OUT_REGISTER,
-				       0x0, 0xa1, 0, 0, 0);
+	rc = scsi_pr_out_register(&task, SPDK_SCSI_PR_OUT_REGISTER,
+				  0x0, 0xa1, 0, 0, 0);
 	SPDK_CU_ASSERT_FATAL(rc == 0);
-	reg = spdk_scsi_pr_get_registrant(&g_lun, &g_i_port_a, &g_t_port_0);
+	reg = scsi_pr_get_registrant(&g_lun, &g_i_port_a, &g_t_port_0);
 	SPDK_CU_ASSERT_FATAL(reg != NULL);
 	SPDK_CU_ASSERT_FATAL(reg->rkey == 0xa1);
 	SPDK_CU_ASSERT_FATAL(g_lun.pr_generation == gen + 1);
 
 	/* Test Case: Host A replaces with a new key */
 	task.status = 0;
-	rc = spdk_scsi_pr_out_register(&task, SPDK_SCSI_PR_OUT_REGISTER,
-				       0xa1, 0xa, 0, 0, 0);
+	rc = scsi_pr_out_register(&task, SPDK_SCSI_PR_OUT_REGISTER,
+				  0xa1, 0xa, 0, 0, 0);
 	SPDK_CU_ASSERT_FATAL(rc == 0);
-	reg = spdk_scsi_pr_get_registrant(&g_lun, &g_i_port_a, &g_t_port_0);
+	reg = scsi_pr_get_registrant(&g_lun, &g_i_port_a, &g_t_port_0);
 	SPDK_CU_ASSERT_FATAL(reg != NULL);
 	SPDK_CU_ASSERT_FATAL(reg->rkey == 0xa);
 	SPDK_CU_ASSERT_FATAL(g_lun.pr_generation == gen + 2);
 
 	/* Test Case: Host A replaces with a new key, reservation conflict is expected */
 	task.status = 0;
-	rc = spdk_scsi_pr_out_register(&task, SPDK_SCSI_PR_OUT_REGISTER,
-				       0xa1, 0xdead, 0, 0, 0);
+	rc = scsi_pr_out_register(&task, SPDK_SCSI_PR_OUT_REGISTER,
+				  0xa1, 0xdead, 0, 0, 0);
 	SPDK_CU_ASSERT_FATAL(rc < 0);
-	reg = spdk_scsi_pr_get_registrant(&g_lun, &g_i_port_a, &g_t_port_0);
+	reg = scsi_pr_get_registrant(&g_lun, &g_i_port_a, &g_t_port_0);
 	SPDK_CU_ASSERT_FATAL(reg != NULL);
 	SPDK_CU_ASSERT_FATAL(reg->rkey == 0xa);
 	SPDK_CU_ASSERT_FATAL(g_lun.pr_generation == gen + 2);
@@ -202,10 +202,10 @@ test_build_registrants(void)
 	task.initiator_port = &g_i_port_b;
 	/* Test Case: Host B registers with a new key */
 	task.status = 0;
-	rc = spdk_scsi_pr_out_register(&task, SPDK_SCSI_PR_OUT_REGISTER,
-				       0x0, 0xb, 0, 0, 0);
+	rc = scsi_pr_out_register(&task, SPDK_SCSI_PR_OUT_REGISTER,
+				  0x0, 0xb, 0, 0, 0);
 	SPDK_CU_ASSERT_FATAL(rc == 0);
-	reg = spdk_scsi_pr_get_registrant(&g_lun, &g_i_port_b, &g_t_port_0);
+	reg = scsi_pr_get_registrant(&g_lun, &g_i_port_b, &g_t_port_0);
 	SPDK_CU_ASSERT_FATAL(reg != NULL);
 	SPDK_CU_ASSERT_FATAL(reg->rkey == 0xb);
 	SPDK_CU_ASSERT_FATAL(g_lun.pr_generation == gen + 3);
@@ -214,10 +214,10 @@ test_build_registrants(void)
 	task.initiator_port = &g_i_port_c;
 	/* Test Case: Host C registers with a new key */
 	task.status = 0;
-	rc = spdk_scsi_pr_out_register(&task, SPDK_SCSI_PR_OUT_REGISTER,
-				       0x0, 0xc, 0, 0, 0);
+	rc = scsi_pr_out_register(&task, SPDK_SCSI_PR_OUT_REGISTER,
+				  0x0, 0xc, 0, 0, 0);
 	SPDK_CU_ASSERT_FATAL(rc == 0);
-	reg = spdk_scsi_pr_get_registrant(&g_lun, &g_i_port_c, &g_t_port_0);
+	reg = scsi_pr_get_registrant(&g_lun, &g_i_port_c, &g_t_port_0);
 	SPDK_CU_ASSERT_FATAL(reg != NULL);
 	SPDK_CU_ASSERT_FATAL(reg->rkey == 0xc);
 	SPDK_CU_ASSERT_FATAL(g_lun.pr_generation == gen + 4);
@@ -252,8 +252,8 @@ test_reservation_reserve(void)
 	task.initiator_port = &g_i_port_a;
 	task.status = 0;
 	/* Test Case: Host A acquires the reservation */
-	rc = spdk_scsi_pr_out_reserve(&task, SPDK_SCSI_PR_WRITE_EXCLUSIVE,
-				      0xa, 0, 0, 0);
+	rc = scsi_pr_out_reserve(&task, SPDK_SCSI_PR_WRITE_EXCLUSIVE,
+				 0xa, 0, 0, 0);
 	SPDK_CU_ASSERT_FATAL(rc == 0);
 	SPDK_CU_ASSERT_FATAL(g_lun.reservation.rtype == SPDK_SCSI_PR_WRITE_EXCLUSIVE);
 	SPDK_CU_ASSERT_FATAL(g_lun.reservation.crkey == 0xa);
@@ -264,8 +264,8 @@ test_reservation_reserve(void)
 	 */
 	task.initiator_port = &g_i_port_b;
 	task.status = 0;
-	rc = spdk_scsi_pr_out_reserve(&task, SPDK_SCSI_PR_WRITE_EXCLUSIVE,
-				      0xb, 0, 0, 0);
+	rc = scsi_pr_out_reserve(&task, SPDK_SCSI_PR_WRITE_EXCLUSIVE,
+				 0xb, 0, 0, 0);
 	SPDK_CU_ASSERT_FATAL(rc < 0);
 	SPDK_CU_ASSERT_FATAL(task.status == SPDK_SCSI_STATUS_RESERVATION_CONFLICT);
 	SPDK_CU_ASSERT_FATAL(g_lun.reservation.rtype == SPDK_SCSI_PR_WRITE_EXCLUSIVE);
@@ -275,20 +275,20 @@ test_reservation_reserve(void)
 	/* Test Case: Host A unregister with reservation */
 	task.initiator_port = &g_i_port_a;
 	task.status = 0;
-	rc = spdk_scsi_pr_out_register(&task, SPDK_SCSI_PR_OUT_REGISTER,
-				       0xa, 0, 0, 0, 0);
+	rc = scsi_pr_out_register(&task, SPDK_SCSI_PR_OUT_REGISTER,
+				  0xa, 0, 0, 0, 0);
 	SPDK_CU_ASSERT_FATAL(rc == 0);
 	SPDK_CU_ASSERT_FATAL(g_lun.reservation.rtype == 0);
 	SPDK_CU_ASSERT_FATAL(g_lun.reservation.crkey == 0);
 	SPDK_CU_ASSERT_FATAL(g_lun.pr_generation == gen + 1);
-	reg = spdk_scsi_pr_get_registrant(&g_lun, &g_i_port_a, &g_t_port_0);
+	reg = scsi_pr_get_registrant(&g_lun, &g_i_port_a, &g_t_port_0);
 	SPDK_CU_ASSERT_FATAL(reg == NULL);
 
 	/* Test Case: Host B acquires the reservation */
 	task.initiator_port = &g_i_port_b;
 	task.status = 0;
-	rc = spdk_scsi_pr_out_reserve(&task, SPDK_SCSI_PR_WRITE_EXCLUSIVE_ALL_REGS,
-				      0xb, 0, 0, 0);
+	rc = scsi_pr_out_reserve(&task, SPDK_SCSI_PR_WRITE_EXCLUSIVE_ALL_REGS,
+				 0xb, 0, 0, 0);
 	SPDK_CU_ASSERT_FATAL(rc == 0);
 	SPDK_CU_ASSERT_FATAL(g_lun.reservation.rtype == SPDK_SCSI_PR_WRITE_EXCLUSIVE_ALL_REGS);
 	SPDK_CU_ASSERT_FATAL(g_lun.pr_generation == gen + 1);
@@ -296,8 +296,8 @@ test_reservation_reserve(void)
 	/* Test Case: Host C acquires the reservation with invalid type */
 	task.initiator_port = &g_i_port_c;
 	task.status = 0;
-	rc = spdk_scsi_pr_out_reserve(&task, SPDK_SCSI_PR_WRITE_EXCLUSIVE,
-				      0xc, 0, 0, 0);
+	rc = scsi_pr_out_reserve(&task, SPDK_SCSI_PR_WRITE_EXCLUSIVE,
+				 0xc, 0, 0, 0);
 	SPDK_CU_ASSERT_FATAL(rc < 0);
 	SPDK_CU_ASSERT_FATAL(task.status == SPDK_SCSI_STATUS_RESERVATION_CONFLICT);
 	SPDK_CU_ASSERT_FATAL(g_lun.reservation.rtype == SPDK_SCSI_PR_WRITE_EXCLUSIVE_ALL_REGS);
@@ -305,8 +305,8 @@ test_reservation_reserve(void)
 
 	/* Test Case: Host C acquires the reservation, all registrants type */
 	task.status = 0;
-	rc = spdk_scsi_pr_out_reserve(&task, SPDK_SCSI_PR_WRITE_EXCLUSIVE_ALL_REGS,
-				      0xc, 0, 0, 0);
+	rc = scsi_pr_out_reserve(&task, SPDK_SCSI_PR_WRITE_EXCLUSIVE_ALL_REGS,
+				 0xc, 0, 0, 0);
 	SPDK_CU_ASSERT_FATAL(rc == 0);
 	SPDK_CU_ASSERT_FATAL(g_lun.reservation.rtype == SPDK_SCSI_PR_WRITE_EXCLUSIVE_ALL_REGS);
 	SPDK_CU_ASSERT_FATAL(g_lun.pr_generation == gen + 1);
@@ -332,8 +332,8 @@ test_reservation_preempt_non_all_regs(void)
 	task.status = 0;
 	gen = g_lun.pr_generation;
 	/* Host A acquires the reservation */
-	rc = spdk_scsi_pr_out_reserve(&task, SPDK_SCSI_PR_WRITE_EXCLUSIVE_REGS_ONLY,
-				      0xa, 0, 0, 0);
+	rc = scsi_pr_out_reserve(&task, SPDK_SCSI_PR_WRITE_EXCLUSIVE_REGS_ONLY,
+				 0xa, 0, 0, 0);
 	SPDK_CU_ASSERT_FATAL(rc == 0);
 	SPDK_CU_ASSERT_FATAL(g_lun.reservation.rtype == SPDK_SCSI_PR_WRITE_EXCLUSIVE_REGS_ONLY);
 	SPDK_CU_ASSERT_FATAL(g_lun.reservation.crkey == 0xa);
@@ -343,31 +343,31 @@ test_reservation_preempt_non_all_regs(void)
 	 * for zeroed service action reservation key */
 	task.initiator_port = &g_i_port_b;
 	task.status = 0;
-	rc = spdk_scsi_pr_out_preempt(&task, SPDK_SCSI_PR_OUT_PREEMPT,
-				      SPDK_SCSI_PR_WRITE_EXCLUSIVE_REGS_ONLY,
-				      0xb, 0);
+	rc = scsi_pr_out_preempt(&task, SPDK_SCSI_PR_OUT_PREEMPT,
+				 SPDK_SCSI_PR_WRITE_EXCLUSIVE_REGS_ONLY,
+				 0xb, 0);
 	SPDK_CU_ASSERT_FATAL(rc < 0);
 	SPDK_CU_ASSERT_FATAL(task.status == SPDK_SCSI_STATUS_CHECK_CONDITION);
 
 	/* Test Case: Host B preempts Host A, Host A is unregisted */
 	task.status = 0;
 	gen = g_lun.pr_generation;
-	rc = spdk_scsi_pr_out_preempt(&task, SPDK_SCSI_PR_OUT_PREEMPT,
-				      SPDK_SCSI_PR_WRITE_EXCLUSIVE,
-				      0xb, 0xa);
+	rc = scsi_pr_out_preempt(&task, SPDK_SCSI_PR_OUT_PREEMPT,
+				 SPDK_SCSI_PR_WRITE_EXCLUSIVE,
+				 0xb, 0xa);
 	SPDK_CU_ASSERT_FATAL(rc == 0);
 	SPDK_CU_ASSERT_FATAL(g_lun.reservation.rtype == SPDK_SCSI_PR_WRITE_EXCLUSIVE);
 	SPDK_CU_ASSERT_FATAL(g_lun.reservation.crkey == 0xb);
 	SPDK_CU_ASSERT_FATAL(g_lun.pr_generation > gen);
-	reg = spdk_scsi_pr_get_registrant(&g_lun, &g_i_port_a, &g_t_port_0);
+	reg = scsi_pr_get_registrant(&g_lun, &g_i_port_a, &g_t_port_0);
 	SPDK_CU_ASSERT_FATAL(reg == NULL);
 
 	/* Test Case: Host B preempts itself */
 	task.status = 0;
 	gen = g_lun.pr_generation;
-	rc = spdk_scsi_pr_out_preempt(&task, SPDK_SCSI_PR_OUT_PREEMPT,
-				      SPDK_SCSI_PR_WRITE_EXCLUSIVE,
-				      0xb, 0xb);
+	rc = scsi_pr_out_preempt(&task, SPDK_SCSI_PR_OUT_PREEMPT,
+				 SPDK_SCSI_PR_WRITE_EXCLUSIVE,
+				 0xb, 0xb);
 	SPDK_CU_ASSERT_FATAL(rc == 0);
 	SPDK_CU_ASSERT_FATAL(g_lun.reservation.rtype == SPDK_SCSI_PR_WRITE_EXCLUSIVE);
 	SPDK_CU_ASSERT_FATAL(g_lun.reservation.crkey == 0xb);
@@ -376,13 +376,13 @@ test_reservation_preempt_non_all_regs(void)
 	/* Test Case: Host B preempts itself and remove registrants */
 	task.status = 0;
 	gen = g_lun.pr_generation;
-	rc = spdk_scsi_pr_out_preempt(&task, SPDK_SCSI_PR_OUT_PREEMPT,
-				      SPDK_SCSI_PR_WRITE_EXCLUSIVE,
-				      0xb, 0xc);
+	rc = scsi_pr_out_preempt(&task, SPDK_SCSI_PR_OUT_PREEMPT,
+				 SPDK_SCSI_PR_WRITE_EXCLUSIVE,
+				 0xb, 0xc);
 	SPDK_CU_ASSERT_FATAL(rc == 0);
 	SPDK_CU_ASSERT_FATAL(g_lun.reservation.rtype == SPDK_SCSI_PR_WRITE_EXCLUSIVE);
 	SPDK_CU_ASSERT_FATAL(g_lun.reservation.crkey == 0xb);
-	reg = spdk_scsi_pr_get_registrant(&g_lun, &g_i_port_c, &g_t_port_0);
+	reg = scsi_pr_get_registrant(&g_lun, &g_i_port_c, &g_t_port_0);
 	SPDK_CU_ASSERT_FATAL(reg == NULL);
 	SPDK_CU_ASSERT_FATAL(g_lun.pr_generation > gen);
 
@@ -407,11 +407,11 @@ test_reservation_preempt_all_regs(void)
 	task.initiator_port = &g_i_port_b;
 	task.status = 0;
 	gen = g_lun.pr_generation;
-	rc = spdk_scsi_pr_out_preempt(&task, SPDK_SCSI_PR_OUT_PREEMPT,
-				      SPDK_SCSI_PR_WRITE_EXCLUSIVE_REGS_ONLY,
-				      0xb, 0xc);
+	rc = scsi_pr_out_preempt(&task, SPDK_SCSI_PR_OUT_PREEMPT,
+				 SPDK_SCSI_PR_WRITE_EXCLUSIVE_REGS_ONLY,
+				 0xb, 0xc);
 	SPDK_CU_ASSERT_FATAL(rc == 0);
-	reg = spdk_scsi_pr_get_registrant(&g_lun, &g_i_port_c, &g_t_port_0);
+	reg = scsi_pr_get_registrant(&g_lun, &g_i_port_c, &g_t_port_0);
 	SPDK_CU_ASSERT_FATAL(reg == NULL);
 	SPDK_CU_ASSERT_FATAL(g_lun.pr_generation > gen);
 
@@ -419,8 +419,8 @@ test_reservation_preempt_all_regs(void)
 	task.status = 0;
 	gen = g_lun.pr_generation;
 	/* Host A acquires the reservation */
-	rc = spdk_scsi_pr_out_reserve(&task, SPDK_SCSI_PR_WRITE_EXCLUSIVE_ALL_REGS,
-				      0xa, 0, 0, 0);
+	rc = scsi_pr_out_reserve(&task, SPDK_SCSI_PR_WRITE_EXCLUSIVE_ALL_REGS,
+				 0xa, 0, 0, 0);
 	SPDK_CU_ASSERT_FATAL(rc == 0);
 	SPDK_CU_ASSERT_FATAL(g_lun.reservation.rtype == SPDK_SCSI_PR_WRITE_EXCLUSIVE_ALL_REGS);
 	SPDK_CU_ASSERT_FATAL(g_lun.pr_generation == gen);
@@ -429,11 +429,11 @@ test_reservation_preempt_all_regs(void)
 	task.initiator_port = &g_i_port_b;
 	task.status = 0;
 	gen = g_lun.pr_generation;
-	rc = spdk_scsi_pr_out_preempt(&task, SPDK_SCSI_PR_OUT_PREEMPT,
-				      SPDK_SCSI_PR_EXCLUSIVE_ACCESS_ALL_REGS,
-				      0xb, 0x0);
+	rc = scsi_pr_out_preempt(&task, SPDK_SCSI_PR_OUT_PREEMPT,
+				 SPDK_SCSI_PR_EXCLUSIVE_ACCESS_ALL_REGS,
+				 0xb, 0x0);
 	SPDK_CU_ASSERT_FATAL(rc == 0);
-	reg = spdk_scsi_pr_get_registrant(&g_lun, &g_i_port_a, &g_t_port_0);
+	reg = scsi_pr_get_registrant(&g_lun, &g_i_port_a, &g_t_port_0);
 	SPDK_CU_ASSERT_FATAL(reg == NULL);
 	SPDK_CU_ASSERT_FATAL(g_lun.reservation.rtype == SPDK_SCSI_PR_EXCLUSIVE_ACCESS_ALL_REGS);
 	SPDK_CU_ASSERT_FATAL(g_lun.pr_generation > gen);
@@ -458,8 +458,8 @@ test_reservation_cmds_conflict(void)
 
 	/* Host A acquires the reservation */
 	task.initiator_port = &g_i_port_a;
-	rc = spdk_scsi_pr_out_reserve(&task, SPDK_SCSI_PR_WRITE_EXCLUSIVE_REGS_ONLY,
-				      0xa, 0, 0, 0);
+	rc = scsi_pr_out_reserve(&task, SPDK_SCSI_PR_WRITE_EXCLUSIVE_REGS_ONLY,
+				 0xa, 0, 0, 0);
 	SPDK_CU_ASSERT_FATAL(rc == 0);
 	SPDK_CU_ASSERT_FATAL(g_lun.reservation.rtype == SPDK_SCSI_PR_WRITE_EXCLUSIVE_REGS_ONLY);
 	SPDK_CU_ASSERT_FATAL(g_lun.reservation.crkey == 0xa);
@@ -467,10 +467,10 @@ test_reservation_cmds_conflict(void)
 	/* Remove Host B registrant */
 	task.initiator_port = &g_i_port_b;
 	task.status = 0;
-	rc = spdk_scsi_pr_out_register(&task, SPDK_SCSI_PR_OUT_REGISTER,
-				       0xb, 0, 0, 0, 0);
+	rc = scsi_pr_out_register(&task, SPDK_SCSI_PR_OUT_REGISTER,
+				  0xb, 0, 0, 0, 0);
 	SPDK_CU_ASSERT_FATAL(rc == 0);
-	reg = spdk_scsi_pr_get_registrant(&g_lun, &g_i_port_b, &g_t_port_0);
+	reg = scsi_pr_get_registrant(&g_lun, &g_i_port_b, &g_t_port_0);
 	SPDK_CU_ASSERT_FATAL(reg == NULL);
 
 	/* Test Case: Host B sends Read/Write commands,
@@ -478,11 +478,11 @@ test_reservation_cmds_conflict(void)
 	 */
 	task.cdb[0] = SPDK_SBC_READ_10;
 	task.status = 0;
-	rc = spdk_scsi_pr_check(&task);
+	rc = scsi_pr_check(&task);
 	SPDK_CU_ASSERT_FATAL(rc == 0);
 	task.cdb[0] = SPDK_SBC_WRITE_10;
 	task.status = 0;
-	rc = spdk_scsi_pr_check(&task);
+	rc = scsi_pr_check(&task);
 	SPDK_CU_ASSERT_FATAL(rc < 0);
 	SPDK_CU_ASSERT_FATAL(task.status == SPDK_SCSI_STATUS_RESERVATION_CONFLICT);
 
@@ -490,18 +490,18 @@ test_reservation_cmds_conflict(void)
 	task.initiator_port = &g_i_port_c;
 	task.cdb[0] = SPDK_SBC_READ_10;
 	task.status = 0;
-	rc = spdk_scsi_pr_check(&task);
+	rc = scsi_pr_check(&task);
 	SPDK_CU_ASSERT_FATAL(rc == 0);
 	task.cdb[0] = SPDK_SBC_WRITE_10;
 	task.status = 0;
-	rc = spdk_scsi_pr_check(&task);
+	rc = scsi_pr_check(&task);
 	SPDK_CU_ASSERT_FATAL(rc == 0);
 
 	/* Host A preempts itself with SPDK_SCSI_PR_EXCLUSIVE_ACCESS */
 	task.initiator_port = &g_i_port_a;
-	rc = spdk_scsi_pr_out_preempt(&task, SPDK_SCSI_PR_OUT_PREEMPT,
-				      SPDK_SCSI_PR_EXCLUSIVE_ACCESS,
-				      0xa, 0xa);
+	rc = scsi_pr_out_preempt(&task, SPDK_SCSI_PR_OUT_PREEMPT,
+				 SPDK_SCSI_PR_EXCLUSIVE_ACCESS,
+				 0xa, 0xa);
 	SPDK_CU_ASSERT_FATAL(rc == 0);
 	SPDK_CU_ASSERT_FATAL(g_lun.reservation.rtype == SPDK_SCSI_PR_EXCLUSIVE_ACCESS);
 	SPDK_CU_ASSERT_FATAL(g_lun.reservation.crkey == 0xa);
@@ -510,12 +510,12 @@ test_reservation_cmds_conflict(void)
 	task.initiator_port = &g_i_port_c;
 	task.cdb[0] = SPDK_SBC_READ_10;
 	task.status = 0;
-	rc = spdk_scsi_pr_check(&task);
+	rc = scsi_pr_check(&task);
 	SPDK_CU_ASSERT_FATAL(rc < 0);
 	SPDK_CU_ASSERT_FATAL(task.status == SPDK_SCSI_STATUS_RESERVATION_CONFLICT);
 	task.cdb[0] = SPDK_SBC_WRITE_10;
 	task.status = 0;
-	rc = spdk_scsi_pr_check(&task);
+	rc = scsi_pr_check(&task);
 	SPDK_CU_ASSERT_FATAL(rc < 0);
 	SPDK_CU_ASSERT_FATAL(task.status == SPDK_SCSI_STATUS_RESERVATION_CONFLICT);
 
@@ -523,14 +523,125 @@ test_reservation_cmds_conflict(void)
 	task.initiator_port = &g_i_port_b;
 	task.cdb[0] = SPDK_SBC_READ_10;
 	task.status = 0;
-	rc = spdk_scsi_pr_check(&task);
+	rc = scsi_pr_check(&task);
 	SPDK_CU_ASSERT_FATAL(rc < 0);
 	SPDK_CU_ASSERT_FATAL(task.status == SPDK_SCSI_STATUS_RESERVATION_CONFLICT);
 	task.cdb[0] = SPDK_SBC_WRITE_10;
 	task.status = 0;
-	rc = spdk_scsi_pr_check(&task);
+	rc = scsi_pr_check(&task);
 	SPDK_CU_ASSERT_FATAL(rc < 0);
 	SPDK_CU_ASSERT_FATAL(task.status == SPDK_SCSI_STATUS_RESERVATION_CONFLICT);
+
+	ut_deinit_reservation_test();
+}
+
+static void
+test_scsi2_reserve_release(void)
+{
+	struct spdk_scsi_task task = {0};
+	uint8_t cdb[32] = {};
+	int rc;
+
+	task.lun = &g_lun;
+	task.target_port = &g_t_port_0;
+	task.cdb = cdb;
+
+	ut_init_reservation_test();
+
+	/* Test Case: SPC2 RESERVE from Host A */
+	task.initiator_port = &g_i_port_a;
+	task.cdb[0] = SPDK_SPC2_RESERVE_10;
+	rc = scsi2_reserve(&task, task.cdb);
+	SPDK_CU_ASSERT_FATAL(rc == 0);
+	SPDK_CU_ASSERT_FATAL(g_lun.reservation.holder != NULL);
+	SPDK_CU_ASSERT_FATAL(g_lun.reservation.flags == SCSI_SPC2_RESERVE);
+
+	/* Test Case: READ command from Host B */
+	task.initiator_port = &g_i_port_b;
+	task.cdb[0] = SPDK_SBC_READ_10;
+	task.status = 0;
+	rc = scsi2_reserve_check(&task);
+	SPDK_CU_ASSERT_FATAL(rc < 0);
+	SPDK_CU_ASSERT_FATAL(task.status == SPDK_SCSI_STATUS_RESERVATION_CONFLICT);
+
+	/* Test Case: SPDK_SPC2_RELEASE10 command from Host B */
+	task.initiator_port = &g_i_port_b;
+	task.cdb[0] = SPDK_SPC2_RELEASE_10;
+	task.status = 0;
+	rc = scsi2_reserve_check(&task);
+	SPDK_CU_ASSERT_FATAL(rc == 0);
+
+	rc = scsi2_release(&task);
+	SPDK_CU_ASSERT_FATAL(rc == 0);
+	SPDK_CU_ASSERT_FATAL(g_lun.reservation.holder == NULL);
+	SPDK_CU_ASSERT_FATAL(g_lun.reservation.flags == 0);
+
+	/* Test Case: SPC2 RESERVE from Host B */
+	task.initiator_port = &g_i_port_b;
+	task.cdb[0] = SPDK_SPC2_RESERVE_10;
+	rc = scsi2_reserve(&task, task.cdb);
+	SPDK_CU_ASSERT_FATAL(rc == 0);
+	SPDK_CU_ASSERT_FATAL(g_lun.reservation.holder != NULL);
+	SPDK_CU_ASSERT_FATAL(g_lun.reservation.flags == SCSI_SPC2_RESERVE);
+
+	/* Test Case: READ command from Host B */
+	task.initiator_port = &g_i_port_b;
+	task.cdb[0] = SPDK_SBC_READ_10;
+	rc = scsi2_reserve_check(&task);
+	SPDK_CU_ASSERT_FATAL(rc == 0);
+
+	/* Test Case: SPDK_SPC2_RELEASE10 command from Host A */
+	task.initiator_port = &g_i_port_a;
+	task.cdb[0] = SPDK_SPC2_RELEASE_10;
+
+	rc = scsi2_release(&task);
+	SPDK_CU_ASSERT_FATAL(rc == 0);
+	SPDK_CU_ASSERT_FATAL(g_lun.reservation.holder == NULL);
+	SPDK_CU_ASSERT_FATAL(g_lun.reservation.flags == 0);
+
+	ut_deinit_reservation_test();
+}
+
+static void
+test_pr_with_scsi2_reserve_release(void)
+{
+	struct spdk_scsi_task task = {0};
+	uint8_t cdb[32] = {};
+	int rc;
+
+	task.lun = &g_lun;
+	task.target_port = &g_t_port_0;
+	task.cdb = cdb;
+
+	ut_init_reservation_test();
+	test_build_registrants();
+
+	task.initiator_port = &g_i_port_a;
+	task.status = 0;
+	/* Test Case: Host A acquires the reservation */
+	rc = scsi_pr_out_reserve(&task, SPDK_SCSI_PR_WRITE_EXCLUSIVE_REGS_ONLY,
+				 0xa, 0, 0, 0);
+	SPDK_CU_ASSERT_FATAL(rc == 0);
+	SPDK_CU_ASSERT_FATAL(g_lun.reservation.rtype == SPDK_SCSI_PR_WRITE_EXCLUSIVE_REGS_ONLY);
+	SPDK_CU_ASSERT_FATAL(g_lun.reservation.crkey == 0xa);
+
+	/* Test Case: SPDK_SPC2_RESERVE_10 command from Host B */
+	task.initiator_port = &g_i_port_b;
+	task.cdb[0] = SPDK_SPC2_RESERVE_10;
+	/* SPC2 RESERVE/RELEASE will pass to scsi2_reserve/release */
+	rc = scsi_pr_check(&task);
+	SPDK_CU_ASSERT_FATAL(rc == 0);
+
+	/* do nothing with PR but have good status */
+	rc = scsi2_reserve(&task, task.cdb);
+	SPDK_CU_ASSERT_FATAL(rc == 0);
+	SPDK_CU_ASSERT_FATAL(g_lun.reservation.holder != NULL);
+	SPDK_CU_ASSERT_FATAL(g_lun.reservation.rtype == SPDK_SCSI_PR_WRITE_EXCLUSIVE_REGS_ONLY);
+
+	rc = scsi2_release(&task);
+	SPDK_CU_ASSERT_FATAL(rc == 0);
+	SPDK_CU_ASSERT_FATAL(g_lun.reservation.holder != NULL);
+	SPDK_CU_ASSERT_FATAL(g_lun.reservation.rtype == SPDK_SCSI_PR_WRITE_EXCLUSIVE_REGS_ONLY);
 
 	ut_deinit_reservation_test();
 }
@@ -541,24 +652,17 @@ main(int argc, char **argv)
 	CU_pSuite	suite = NULL;
 	unsigned int	num_failures;
 
-	if (CU_initialize_registry() != CUE_SUCCESS) {
-		return CU_get_error();
-	}
+	CU_set_error_action(CUEA_ABORT);
+	CU_initialize_registry();
 
 	suite = CU_add_suite("reservation_suite", NULL, NULL);
-	if (suite == NULL) {
-		CU_cleanup_registry();
-		return CU_get_error();
-	}
-
-	if (CU_add_test(suite, "register", test_reservation_register) == NULL ||
-	    CU_add_test(suite, "reserve", test_reservation_reserve) == NULL ||
-	    CU_add_test(suite, "preempt", test_reservation_preempt_non_all_regs) == NULL ||
-	    CU_add_test(suite, "preempt all regs", test_reservation_preempt_all_regs) == NULL ||
-	    CU_add_test(suite, "conflict", test_reservation_cmds_conflict) == NULL) {
-		CU_cleanup_registry();
-		return CU_get_error();
-	}
+	CU_ADD_TEST(suite, test_reservation_register);
+	CU_ADD_TEST(suite, test_reservation_reserve);
+	CU_ADD_TEST(suite, test_reservation_preempt_non_all_regs);
+	CU_ADD_TEST(suite, test_reservation_preempt_all_regs);
+	CU_ADD_TEST(suite, test_reservation_cmds_conflict);
+	CU_ADD_TEST(suite, test_scsi2_reserve_release);
+	CU_ADD_TEST(suite, test_pr_with_scsi2_reserve_release);
 
 	CU_basic_set_mode(CU_BRM_VERBOSE);
 	CU_basic_run_tests();

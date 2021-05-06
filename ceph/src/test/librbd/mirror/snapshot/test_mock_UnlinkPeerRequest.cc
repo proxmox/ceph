@@ -85,7 +85,7 @@ public:
     EXPECT_CALL(get_mock_io_ctx(mock_image_ctx.md_ctx),
                 exec(mock_image_ctx.header_oid, _, StrEq("rbd"),
                      StrEq("mirror_image_snapshot_unlink_peer"),
-                     ContentsEqual(bl), _, _))
+                     ContentsEqual(bl), _, _, _))
       .WillOnce(Invoke([&mock_image_ctx, snap_id, peer_uuid, r](auto&&... args) -> int {
                          if (r == 0) {
                            auto it = mock_image_ctx.snap_info.find(snap_id);
@@ -165,6 +165,35 @@ TEST_F(TestMockMirrorSnapshotUnlinkPeerRequest, RemoveSnapshot) {
     cls::rbd::MIRROR_SNAPSHOT_STATE_PRIMARY, {"peer_uuid"},
     "", CEPH_NOSNAP};
   auto snap_id = snap_create(mock_image_ctx, ns, "mirror_snap");
+  snap_create(mock_image_ctx, ns, "mirror_snap2");
+
+  expect_get_snap_info(mock_image_ctx, snap_id);
+
+  InSequence seq;
+
+  expect_is_refresh_required(mock_image_ctx, true);
+  expect_refresh_image(mock_image_ctx, 0);
+  expect_remove_snapshot(mock_image_ctx, snap_id, 0);
+
+  C_SaferCond ctx;
+  auto req = new MockUnlinkPeerRequest(&mock_image_ctx, snap_id, "peer_uuid",
+                                       &ctx);
+  req->send();
+  ASSERT_EQ(0, ctx.wait());
+}
+
+TEST_F(TestMockMirrorSnapshotUnlinkPeerRequest, SnapshotRemoveEmptyPeers) {
+  REQUIRE_FORMAT_V2();
+
+  librbd::ImageCtx *ictx;
+  ASSERT_EQ(0, open_image(m_image_name, &ictx));
+
+  MockTestImageCtx mock_image_ctx(*ictx);
+  cls::rbd::MirrorSnapshotNamespace ns{
+    cls::rbd::MIRROR_SNAPSHOT_STATE_PRIMARY, {},
+    "", CEPH_NOSNAP};
+  auto snap_id = snap_create(mock_image_ctx, ns, "mirror_snap");
+  ns.mirror_peer_uuids = {"peer_uuid"};
   snap_create(mock_image_ctx, ns, "mirror_snap2");
 
   expect_get_snap_info(mock_image_ctx, snap_id);

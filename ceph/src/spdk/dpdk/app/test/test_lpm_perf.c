@@ -34,7 +34,7 @@ struct route_rule {
 	uint8_t depth;
 };
 
-struct route_rule large_route_table[MAX_RULE_NUM];
+static struct route_rule large_route_table[MAX_RULE_NUM];
 
 static uint32_t num_route_entries;
 #define NUM_ROUTE_ENTRIES num_route_entries
@@ -285,11 +285,11 @@ static void generate_large_route_rule_table(void)
 	 * they are 4 rules with private local IP address and 1 all-zeros prefix
 	 * with depth = 8.
 	 */
-	insert_rule_in_random_pos(IPv4(0, 0, 0, 0), 8);
-	insert_rule_in_random_pos(IPv4(10, 2, 23, 147), 32);
-	insert_rule_in_random_pos(IPv4(192, 168, 100, 10), 24);
-	insert_rule_in_random_pos(IPv4(192, 168, 25, 100), 24);
-	insert_rule_in_random_pos(IPv4(192, 168, 129, 124), 32);
+	insert_rule_in_random_pos(RTE_IPV4(0, 0, 0, 0), 8);
+	insert_rule_in_random_pos(RTE_IPV4(10, 2, 23, 147), 32);
+	insert_rule_in_random_pos(RTE_IPV4(192, 168, 100, 10), 24);
+	insert_rule_in_random_pos(RTE_IPV4(192, 168, 25, 100), 24);
+	insert_rule_in_random_pos(RTE_IPV4(192, 168, 129, 124), 32);
 }
 
 static void
@@ -460,7 +460,7 @@ test_lpm_perf(void)
 			(double)total_time / ((double)ITERATIONS * BATCH_SIZE),
 			(count * 100.0) / (double)(ITERATIONS * BATCH_SIZE));
 
-	/* Delete */
+	/* Measure Delete */
 	status = 0;
 	begin = rte_rdtsc();
 
@@ -470,7 +470,7 @@ test_lpm_perf(void)
 				large_route_table[i].depth);
 	}
 
-	total_time += rte_rdtsc() - begin;
+	total_time = rte_rdtsc() - begin;
 
 	printf("Average LPM Delete: %g cycles\n",
 			(double)total_time / NUM_ROUTE_ENTRIES);

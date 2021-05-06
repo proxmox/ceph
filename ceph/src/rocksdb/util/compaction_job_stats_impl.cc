@@ -5,7 +5,7 @@
 
 #include "rocksdb/compaction_job_stats.h"
 
-namespace rocksdb {
+namespace ROCKSDB_NAMESPACE {
 
 #ifndef ROCKSDB_LITE
 
@@ -39,6 +39,9 @@ void CompactionJobStats::Reset() {
   file_range_sync_nanos = 0;
   file_fsync_nanos = 0;
   file_prepare_write_nanos = 0;
+
+  smallest_output_key_prefix.clear();
+  largest_output_key_prefix.clear();
 
   num_single_del_fallthru = 0;
   num_single_del_mismatch = 0;
@@ -85,4 +88,4 @@ void CompactionJobStats::Add(const CompactionJobStats& /*stats*/) {}
 
 #endif  // !ROCKSDB_LITE
 
-}  // namespace rocksdb
+}  // namespace ROCKSDB_NAMESPACE

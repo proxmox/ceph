@@ -29,6 +29,7 @@
     bucket chown               link bucket to specified user and update its object ACLs
     bucket reshard             reshard bucket
     bucket rewrite             rewrite all objects in the specified bucket
+    bucket sync checkpoint     poll a bucket's sync status until it catches up to its remote
     bucket sync disable        disable bucket sync
     bucket sync enable         enable bucket sync
     bucket radoslist           list rados objects backing bucket's objects
@@ -129,8 +130,7 @@
     metadata rm                remove metadata info
     metadata list              list metadata info
     mdlog list                 list metadata log
-    mdlog trim                 trim metadata log (use start-date, end-date or
-                               start-marker, end-marker)
+    mdlog trim                 trim metadata log (use marker)
     mdlog status               read metadata log status
     bilog list                 list bucket index log
     bilog trim                 trim bucket index log (use start-marker, end-marker)
@@ -138,6 +138,7 @@
     datalog list               list data log
     datalog trim               trim data log
     datalog status             read data log status
+    datalog type               change datalog type to --log_type={fifo,omap}
     orphans find               deprecated -- init and run search for leaked rados objects (use job-id, pool)
     orphans finish             deprecated -- clean up search for leaked rados objects
     orphans list-jobs          deprecated -- list the current job-ids for orphans search
@@ -166,8 +167,22 @@
     mfa remove                 delete MFA TOTP token
     mfa check                  check MFA TOTP token
     mfa resync                 re-sync MFA TOTP token
+    topic list                 list bucket notifications/pubsub topics
+    topic get                  get a bucket notifications/pubsub topic
+    topic rm                   remove a bucket notifications/pubsub topic
+    subscription get           get a pubsub subscription definition
+    subscription rm            remove a pubsub subscription
+    subscription pull          show events in a pubsub subscription
+    subscription ack           ack (remove) an events in a pubsub subscription
+    script put                 upload a lua script to a context
+    script get                 get the lua script of a context
+    script rm                  remove the lua scripts of a context
+    script-package add         add a lua package to the scripts allowlist
+    script-package rm          remove a lua package from the scripts allowlist
+    script-package list        get the lua packages allowlist
   options:
      --tenant=<tenant>         tenant name
+     --user_ns=<namespace>     namespace of user (oidc in case of users authenticated with oidc provider)
      --uid=<id>                user id
      --new-uid=<id>            new user id
      --subuser=<name>          subuser name
@@ -315,6 +330,22 @@
      --totp-seconds            the time resolution that is being used for TOTP generation
      --totp-window             the number of TOTP tokens that are checked before and after the current token when validating token
      --totp-pin                the valid value of a TOTP token at a certain time
+  
+  Bucket notifications/pubsub options:
+     --topic                   bucket notifications/pubsub topic name
+     --subscription            pubsub subscription name
+     --event-id                event id in a pubsub subscription
+  
+  Script options:
+     --context                 context in which the script runs. one of: preRequest, postRequest
+     --package                 name of the lua package that should be added/removed to/from the allowlist
+     --allow-compilation       package is allowed to compile C code as part of its installation
+  
+  radoslist options:
+     --rgw-obj-fs              the field separator that will separate the rados
+                               object name from the rgw object name;
+                               additionally rados objects for incomplete
+                               multipart uploads will not be output
   
     --conf/-c FILE    read configuration from the given configuration file
     --id ID           set ID portion of my name

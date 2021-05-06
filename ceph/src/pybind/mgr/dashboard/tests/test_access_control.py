@@ -6,18 +6,16 @@ import errno
 import json
 import time
 import unittest
-
 from datetime import datetime, timedelta
 
 from mgr_module import ERROR_MSG_EMPTY_INPUT_FILE
 
-from . import CmdException, CLICommandTestMixin
 from .. import mgr
-from ..security import Scope, Permission
-from ..services.access_control import load_access_control_db, \
-                                      password_hash, AccessControlDB, \
-                                      SYSTEM_ROLES, PasswordPolicy
+from ..security import Permission, Scope
+from ..services.access_control import SYSTEM_ROLES, AccessControlDB, \
+    PasswordPolicy, load_access_control_db, password_hash
 from ..settings import Settings
+from . import CLICommandTestMixin, CmdException  # pylint: disable=no-name-in-module
 
 
 class AccessControlTest(unittest.TestCase, CLICommandTestMixin):
@@ -156,7 +154,10 @@ class AccessControlTest(unittest.TestCase, CLICommandTestMixin):
     def test_show_system_role(self):
         role = self.exec_cmd('ac-role-show', rolename="read-only")
         self.assertEqual(role['name'], 'read-only')
-        self.assertEqual(role['description'], 'Read-Only')
+        self.assertEqual(
+            role['description'],
+            'allows read permission for all security scope except dashboard settings and config-opt'
+        )
 
     def test_delete_system_role(self):
         with self.assertRaises(CmdException) as ctx:
@@ -391,7 +392,7 @@ class AccessControlTest(unittest.TestCase, CLICommandTestMixin):
             uroles.sort()
             user = self.exec_cmd('ac-user-add-roles', username=username,
                                  roles=[role])
-            self.assertDictContainsSubset({'roles': uroles}, user)
+            self.assertLessEqual(uroles, user['roles'])
         self.validate_persistent_user(username, uroles)
         self.assertGreaterEqual(user['lastUpdate'], user_orig['lastUpdate'])
 
@@ -399,8 +400,8 @@ class AccessControlTest(unittest.TestCase, CLICommandTestMixin):
         user_orig = self.test_create_user()
         user = self.exec_cmd('ac-user-add-roles', username="admin",
                              roles=['pool-manager', 'block-manager'])
-        self.assertDictContainsSubset(
-            {'roles': ['block-manager', 'pool-manager']}, user)
+        self.assertLessEqual(['block-manager', 'pool-manager'],
+                             user['roles'])
         self.validate_persistent_user('admin', ['block-manager',
                                                 'pool-manager'])
         self.assertGreaterEqual(user['lastUpdate'], user_orig['lastUpdate'])
@@ -427,14 +428,13 @@ class AccessControlTest(unittest.TestCase, CLICommandTestMixin):
         user_orig = self.test_create_user()
         user = self.exec_cmd('ac-user-add-roles', username="admin",
                              roles=['pool-manager'])
-        self.assertDictContainsSubset(
-            {'roles': ['pool-manager']}, user)
+        self.assertLessEqual(['pool-manager'], user['roles'])
         self.validate_persistent_user('admin', ['pool-manager'])
         self.assertGreaterEqual(user['lastUpdate'], user_orig['lastUpdate'])
         user2 = self.exec_cmd('ac-user-set-roles', username="admin",
                               roles=['rgw-manager', 'block-manager'])
-        self.assertDictContainsSubset(
-            {'roles': ['block-manager', 'rgw-manager']}, user2)
+        self.assertLessEqual(['block-manager', 'rgw-manager'],
+                             user2['roles'])
         self.validate_persistent_user('admin', ['block-manager',
                                                 'rgw-manager'])
         self.assertGreaterEqual(user2['lastUpdate'], user['lastUpdate'])
@@ -461,8 +461,7 @@ class AccessControlTest(unittest.TestCase, CLICommandTestMixin):
         self.test_add_user_roles()
         user = self.exec_cmd('ac-user-del-roles', username="admin",
                              roles=['pool-manager'])
-        self.assertDictContainsSubset(
-            {'roles': ['block-manager']}, user)
+        self.assertLessEqual(['block-manager'], user['roles'])
         self.validate_persistent_user('admin', ['block-manager'])
 
     def test_del_user_roles_not_existent_user(self):
@@ -688,134 +687,6 @@ class AccessControlTest(unittest.TestCase, CLICommandTestMixin):
         })
         self.validate_persistent_user('admin', ['read-only'], pass_hash,
                                       'admin User', 'admin@user.com')
-
-    def test_load_v1(self):
-        self.CONFIG_KEY_DICT['accessdb_v1'] = '''
-            {{
-                "users": {{
-                    "admin": {{
-                        "username": "admin",
-                        "password":
-                "$2b$12$sd0Az7mm3FaJl8kN3b/xwOuztaN0sWUwC1SJqjM4wcDw/s5cmGbLK",
-                        "roles": ["block-manager", "test_role"],
-                        "name": "admin User",
-                        "email": "admin@user.com",
-                        "lastUpdate": {}
-                    }}
-                }},
-                "roles": {{
-                    "test_role": {{
-                        "name": "test_role",
-                        "description": "Test Role",
-                        "scopes_permissions": {{
-                            "{}": ["{}", "{}"],
-                            "{}": ["{}"]
-                        }}
-                    }}
-                }},
-                "version": 1
-            }}
-        '''.format(int(round(time.time())), Scope.ISCSI, Permission.READ,
-                   Permission.UPDATE, Scope.POOL, Permission.CREATE)
-
-        load_access_control_db()
-        role = self.exec_cmd('ac-role-show', rolename="test_role")
-        self.assertDictEqual(role, {
-            'name': 'test_role',
-            'description': "Test Role",
-            'scopes_permissions': {
-                Scope.ISCSI: [Permission.READ, Permission.UPDATE],
-                Scope.POOL: [Permission.CREATE]
-            }
-        })
-        user = self.exec_cmd('ac-user-show', username="admin")
-        self.assertDictEqual(user, {
-            'username': 'admin',
-            'lastUpdate': user['lastUpdate'],
-            'password':
-                "$2b$12$sd0Az7mm3FaJl8kN3b/xwOuztaN0sWUwC1SJqjM4wcDw/s5cmGbLK",
-            'pwdExpirationDate': None,
-            'pwdUpdateRequired': False,
-            'name': 'admin User',
-            'email': 'admin@user.com',
-            'roles': ['block-manager', 'test_role'],
-            'enabled': True
-        })
-
-    def test_load_v2(self):
-        self.CONFIG_KEY_DICT['accessdb_v2'] = '''
-            {{
-                "users": {{
-                    "admin": {{
-                        "username": "admin",
-                        "password":
-                "$2b$12$sd0Az7mm3FaJl8kN3b/xwOuztaN0sWUwC1SJqjM4wcDw/s5cmGbLK",
-                        "pwdExpirationDate": null,
-                        "pwdUpdateRequired": false,
-                        "roles": ["block-manager", "test_role"],
-                        "name": "admin User",
-                        "email": "admin@user.com",
-                        "lastUpdate": {},
-                        "enabled": true
-                    }}
-                }},
-                "roles": {{
-                    "test_role": {{
-                        "name": "test_role",
-                        "description": "Test Role",
-                        "scopes_permissions": {{
-                            "{}": ["{}", "{}"],
-                            "{}": ["{}"]
-                        }}
-                    }}
-                }},
-                "version": 2
-            }}
-        '''.format(int(round(time.time())), Scope.ISCSI, Permission.READ,
-                   Permission.UPDATE, Scope.POOL, Permission.CREATE)
-
-        load_access_control_db()
-        role = self.exec_cmd('ac-role-show', rolename="test_role")
-        self.assertDictEqual(role, {
-            'name': 'test_role',
-            'description': "Test Role",
-            'scopes_permissions': {
-                Scope.ISCSI: [Permission.READ, Permission.UPDATE],
-                Scope.POOL: [Permission.CREATE]
-            }
-        })
-        user = self.exec_cmd('ac-user-show', username="admin")
-        self.assertDictEqual(user, {
-            'username': 'admin',
-            'lastUpdate': user['lastUpdate'],
-            'password':
-                "$2b$12$sd0Az7mm3FaJl8kN3b/xwOuztaN0sWUwC1SJqjM4wcDw/s5cmGbLK",
-            'pwdExpirationDate': None,
-            'pwdUpdateRequired': False,
-            'name': 'admin User',
-            'email': 'admin@user.com',
-            'roles': ['block-manager', 'test_role'],
-            'enabled': True
-        })
-
-    def test_update_from_previous_version_v1(self):
-        self.CONFIG_KEY_DICT['username'] = 'admin'
-        self.CONFIG_KEY_DICT['password'] = \
-            '$2b$12$sd0Az7mm3FaJl8kN3b/xwOuztaN0sWUwC1SJqjM4wcDw/s5cmGbLK'
-        load_access_control_db()
-        user = self.exec_cmd('ac-user-show', username="admin")
-        self.assertDictEqual(user, {
-            'username': 'admin',
-            'lastUpdate': user['lastUpdate'],
-            'password':
-                "$2b$12$sd0Az7mm3FaJl8kN3b/xwOuztaN0sWUwC1SJqjM4wcDw/s5cmGbLK",
-            'pwdExpirationDate': None,
-            'pwdUpdateRequired': False,
-            'name': None,
-            'email': None,
-            'roles': ['administrator'],
-            'enabled': True
-        })
 
     def test_password_policy_pw_length(self):
         Settings.PWD_POLICY_CHECK_LENGTH_ENABLED = True

@@ -14,36 +14,49 @@ class cls_user_bucket;
 struct rgw_user {
   std::string tenant;
   std::string id;
+  std::string ns;
 
   rgw_user() {}
   explicit rgw_user(const std::string& s) {
     from_str(s);
   }
-  rgw_user(const std::string& tenant, const std::string& id)
+  rgw_user(const std::string& tenant, const std::string& id, const std::string& ns="")
     : tenant(tenant),
-      id(id) {
+      id(id),
+      ns(ns) {
   }
-  rgw_user(std::string&& tenant, std::string&& id)
+  rgw_user(std::string&& tenant, std::string&& id, std::string&& ns="")
     : tenant(std::move(tenant)),
-      id(std::move(id)) {
+      id(std::move(id)),
+      ns(std::move(ns)) {
   }
 
-  void encode(bufferlist& bl) const {
-    ENCODE_START(1, 1, bl);
+  void encode(ceph::buffer::list& bl) const {
+    ENCODE_START(2, 1, bl);
     encode(tenant, bl);
     encode(id, bl);
+    encode(ns, bl);
     ENCODE_FINISH(bl);
   }
-  void decode(bufferlist::const_iterator& bl) {
-    DECODE_START(1, bl);
+  void decode(ceph::buffer::list::const_iterator& bl) {
+    DECODE_START(2, bl);
     decode(tenant, bl);
     decode(id, bl);
+    if (struct_v >= 2) {
+      decode(ns, bl);
+    }
     DECODE_FINISH(bl);
   }
 
   void to_str(std::string& str) const {
     if (!tenant.empty()) {
-      str = tenant + '$' + id;
+      if (!ns.empty()) {
+        str = tenant + '$' + ns + '$' + id;
+      } else {
+        str = tenant + '$' + id;
+      }
+    } else if (!ns.empty()) {
+      str = '$' + ns + '$' + id;
     } else {
       str = id;
     }
@@ -52,14 +65,15 @@ struct rgw_user {
   void clear() {
     tenant.clear();
     id.clear();
+    ns.clear();
   }
 
   bool empty() const {
     return id.empty();
   }
 
-  string to_str() const {
-    string s;
+  std::string to_str() const {
+    std::string s;
     to_str(s);
     return s;
   }
@@ -68,14 +82,24 @@ struct rgw_user {
     size_t pos = str.find('$');
     if (pos != std::string::npos) {
       tenant = str.substr(0, pos);
-      id = str.substr(pos + 1);
+      string_view sv = str;
+      string_view ns_id = sv.substr(pos + 1);
+      size_t ns_pos = ns_id.find('$');
+      if (ns_pos != std::string::npos) {
+        ns = string(ns_id.substr(0, ns_pos));
+        id = string(ns_id.substr(ns_pos + 1));
+      } else {
+        ns.clear();
+        id = string(ns_id);
+      }
     } else {
       tenant.clear();
+      ns.clear();
       id = str;
     }
   }
 
-  rgw_user& operator=(const string& str) {
+  rgw_user& operator=(const std::string& str) {
     from_str(str);
     return *this;
   }
@@ -84,10 +108,13 @@ struct rgw_user {
     int r = tenant.compare(u.tenant);
     if (r != 0)
       return r;
-
+    r = ns.compare(u.ns);
+    if (r != 0) {
+      return r;
+    }
     return id.compare(u.id);
   }
-  int compare(const string& str) const {
+  int compare(const std::string& str) const {
     rgw_user u(str);
     return compare(u);
   }
@@ -104,10 +131,15 @@ struct rgw_user {
     } else if (tenant > rhs.tenant) {
       return false;
     }
+    if (ns < rhs.ns) {
+      return true;
+    } else if (ns > rhs.ns) {
+      return false;
+    }
     return (id < rhs.id);
   }
-  void dump(Formatter *f) const;
-  static void generate_test_instances(list<rgw_user*>& o);
+  void dump(ceph::Formatter *f) const;
+  static void generate_test_instances(std::list<rgw_user*>& o);
 };
 WRITE_CLASS_ENCODER(rgw_user)
 
@@ -118,15 +150,15 @@ struct rgw_pool {
   rgw_pool() = default;
   rgw_pool(const rgw_pool& _p) : name(_p.name), ns(_p.ns) {}
   rgw_pool(rgw_pool&&) = default;
-  rgw_pool(const string& _s) {
+  rgw_pool(const std::string& _s) {
     from_str(_s);
   }
-  rgw_pool(const string& _name, const string& _ns) : name(_name), ns(_ns) {}
+  rgw_pool(const std::string& _name, const std::string& _ns) : name(_name), ns(_ns) {}
 
-  string to_str() const;
-  void from_str(const string& s);
+  std::string to_str() const;
+  void from_str(const std::string& s);
 
-  void init(const string& _s) {
+  void init(const std::string& _s) {
     from_str(_s);
   }
 
@@ -142,16 +174,16 @@ struct rgw_pool {
     return ns.compare(p.ns);
   }
 
-  void encode(bufferlist& bl) const {
+  void encode(ceph::buffer::list& bl) const {
      ENCODE_START(10, 10, bl);
     encode(name, bl);
     encode(ns, bl);
     ENCODE_FINISH(bl);
   }
 
-  void decode_from_bucket(bufferlist::const_iterator& bl);
+  void decode_from_bucket(ceph::buffer::list::const_iterator& bl);
 
-  void decode(bufferlist::const_iterator& bl) {
+  void decode(ceph::buffer::list::const_iterator& bl) {
     DECODE_START_LEGACY_COMPAT_LEN(10, 3, 3, bl);
 
     decode(name, bl);
@@ -191,7 +223,7 @@ struct rgw_pool {
 };
 WRITE_CLASS_ENCODER(rgw_pool)
 
-inline ostream& operator<<(ostream& out, const rgw_pool& p) {
+inline std::ostream& operator<<(std::ostream& out, const rgw_pool& p) {
   out << p.to_str();
   return out;
 }
@@ -235,7 +267,7 @@ struct rgw_data_placement_target {
     return index_pool.compare(t.index_pool);
   };
 
-  void dump(Formatter *f) const;
+  void dump(ceph::Formatter *f) const;
   void decode_json(JSONObj *obj);
 };
 
@@ -281,7 +313,7 @@ struct rgw_bucket {
 
   void convert(cls_user_bucket *b) const;
 
-  void encode(bufferlist& bl) const {
+  void encode(ceph::buffer::list& bl) const {
      ENCODE_START(10, 10, bl);
     encode(name, bl);
     encode(marker, bl);
@@ -296,7 +328,7 @@ struct rgw_bucket {
     }
     ENCODE_FINISH(bl);
   }
-  void decode(bufferlist::const_iterator& bl) {
+  void decode(ceph::buffer::list::const_iterator& bl) {
     DECODE_START_LEGACY_COMPAT_LEN(10, 3, 3, bl);
     decode(name, bl);
     if (struct_v < 10) {
@@ -339,7 +371,7 @@ struct rgw_bucket {
     DECODE_FINISH(bl);
   }
 
-  void update_bucket_id(const string& new_bucket_id) {
+  void update_bucket_id(const std::string& new_bucket_id) {
     bucket_id = new_bucket_id;
   }
 
@@ -352,26 +384,26 @@ struct rgw_bucket {
     return explicit_placement.get_data_extra_pool();
   }
 
-  void dump(Formatter *f) const;
+  void dump(ceph::Formatter *f) const;
   void decode_json(JSONObj *obj);
-  static void generate_test_instances(list<rgw_bucket*>& o);
+  static void generate_test_instances(std::list<rgw_bucket*>& o);
 
   rgw_bucket& operator=(const rgw_bucket&) = default;
 
   bool operator<(const rgw_bucket& b) const {
+    if (tenant < b.tenant) {
+      return true;
+    } else if (tenant > b.tenant) {
+      return false;
+    }
+
     if (name < b.name) {
       return true;
     } else if (name > b.name) {
       return false;
     }
 
-    if (bucket_id < b.bucket_id) {
-      return true;
-    } else if (bucket_id > b.bucket_id) {
-      return false;
-    }
-
-    return (tenant < b.tenant);
+    return (bucket_id < b.bucket_id);
   }
 
   bool operator==(const rgw_bucket& b) const {
@@ -385,7 +417,7 @@ struct rgw_bucket {
 };
 WRITE_CLASS_ENCODER(rgw_bucket)
 
-inline ostream& operator<<(ostream& out, const rgw_bucket &b) {
+inline std::ostream& operator<<(std::ostream& out, const rgw_bucket &b) {
   out << b.tenant << ":" << b.name << "[" << b.bucket_id << "])";
   return out;
 }
@@ -416,7 +448,7 @@ struct rgw_bucket_shard {
   }
 };
 
-inline ostream& operator<<(ostream& out, const rgw_bucket_shard& bs) {
+inline std::ostream& operator<<(std::ostream& out, const rgw_bucket_shard& bs) {
   if (bs.shard_id <= 0) {
     return out << bs.bucket;
   }
@@ -426,18 +458,18 @@ inline ostream& operator<<(ostream& out, const rgw_bucket_shard& bs) {
 
 
 struct rgw_zone_id {
-  string id;
+  std::string id;
 
   rgw_zone_id() {}
-  rgw_zone_id(const string& _id) : id(_id) {}
-  rgw_zone_id(string&& _id) : id(std::move(_id)) {}
+  rgw_zone_id(const std::string& _id) : id(_id) {}
+  rgw_zone_id(std::string&& _id) : id(std::move(_id)) {}
 
-  void encode(bufferlist& bl) const {
+  void encode(ceph::buffer::list& bl) const {
     /* backward compatiblity, not using ENCODE_{START,END} macros */
     ceph::encode(id, bl);
   }
 
-  void decode(bufferlist::const_iterator& bl) {
+  void decode(ceph::buffer::list::const_iterator& bl) {
     /* backward compatiblity, not using DECODE_{START,END} macros */
     ceph::decode(id, bl);
   }
@@ -446,7 +478,7 @@ struct rgw_zone_id {
     id.clear();
   }
 
-  bool operator==(const string& _id) const {
+  bool operator==(const std::string& _id) const {
     return (id == _id);
   }
   bool operator==(const rgw_zone_id& zid) const {
@@ -468,12 +500,12 @@ struct rgw_zone_id {
 };
 WRITE_CLASS_ENCODER(rgw_zone_id)
 
-static inline ostream& operator<<(ostream& os, const rgw_zone_id& zid) {
+inline std::ostream& operator<<(std::ostream& os, const rgw_zone_id& zid) {
   os << zid.id;
   return os;
 }
 
-void encode_json_impl(const char *name, const rgw_zone_id& zid, Formatter *f);
+void encode_json_impl(const char *name, const rgw_zone_id& zid, ceph::Formatter *f);
 void decode_json_obj(rgw_zone_id& zid, JSONObj *obj);
 
 
@@ -489,7 +521,7 @@ class Principal {
   enum types { User, Role, Tenant, Wildcard, OidcProvider, AssumedRole };
   types t;
   rgw_user u;
-  string idp_url;
+  std::string idp_url;
 
   explicit Principal(types t)
     : t(t) {}
@@ -497,7 +529,7 @@ class Principal {
   Principal(types t, std::string&& n, std::string i)
     : t(t), u(std::move(n), std::move(i)) {}
 
-  Principal(string&& idp_url)
+  Principal(std::string&& idp_url)
     : t(OidcProvider), idp_url(std::move(idp_url)) {}
 
 public:
@@ -518,7 +550,7 @@ public:
     return Principal(Tenant, std::move(t), {});
   }
 
-  static Principal oidc_provider(string&& idp_url) {
+  static Principal oidc_provider(std::string&& idp_url) {
     return Principal(std::move(idp_url));
   }
 
@@ -558,7 +590,7 @@ public:
     return u.id;
   }
 
-  const string& get_idp_url() const {
+  const std::string& get_idp_url() const {
     return idp_url;
   }
 
@@ -586,11 +618,11 @@ std::ostream& operator <<(std::ostream& m, const Principal& p);
 class JSONObj;
 
 void decode_json_obj(rgw_user& val, JSONObj *obj);
-void encode_json(const char *name, const rgw_user& val, Formatter *f);
-void encode_xml(const char *name, const rgw_user& val, Formatter *f);
+void encode_json(const char *name, const rgw_user& val, ceph::Formatter *f);
+void encode_xml(const char *name, const rgw_user& val, ceph::Formatter *f);
 
-inline ostream& operator<<(ostream& out, const rgw_user &u) {
-  string s;
+inline std::ostream& operator<<(std::ostream& out, const rgw_user &u) {
+  std::string s;
   u.to_str(s);
   return out << s;
 }

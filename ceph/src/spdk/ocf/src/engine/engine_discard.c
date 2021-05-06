@@ -8,7 +8,7 @@
 #include "engine_common.h"
 #include "engine_discard.h"
 #include "../metadata/metadata.h"
-#include "../utils/utils_req.h"
+#include "../ocf_request.h"
 #include "../utils/utils_io.h"
 #include "../utils/utils_cache_line.h"
 #include "../concurrency/ocf_concurrency.h"
@@ -25,12 +25,12 @@ static int _ocf_discard_core(struct ocf_request *req);
 
 static const struct ocf_io_if _io_if_discard_step = {
 	.read = _ocf_discard_step,
-	.write = _ocf_discard_step
+	.write = _ocf_discard_step,
 };
 
 static const struct ocf_io_if _io_if_discard_step_resume = {
 	.read = _ocf_discard_step_do,
-	.write = _ocf_discard_step_do
+	.write = _ocf_discard_step_do,
 };
 
 static const struct ocf_io_if _io_if_discard_flush_cache = {
@@ -40,7 +40,7 @@ static const struct ocf_io_if _io_if_discard_flush_cache = {
 
 static const struct ocf_io_if _io_if_discard_core = {
 	.read = _ocf_discard_core,
-	.write = _ocf_discard_core
+	.write = _ocf_discard_core,
 };
 
 static void _ocf_discard_complete_req(struct ocf_request *req, int error)
@@ -62,22 +62,24 @@ static void _ocf_discard_core_complete(struct ocf_io *io, int error)
 
 static int _ocf_discard_core(struct ocf_request *req)
 {
-	struct ocf_cache *cache = req->cache;
 	struct ocf_io *io;
+	int err;
 
-	io = ocf_volume_new_io(&cache->core[req->core_id].volume);
-	if (!io) {
-		_ocf_discard_complete_req(req, -ENOMEM);
-		return -ENOMEM;
-	}
-
-	ocf_io_configure(io, SECTORS_TO_BYTES(req->discard.sector),
+	io = ocf_volume_new_io(&req->core->volume, req->io_queue,
+			SECTORS_TO_BYTES(req->discard.sector),
 			SECTORS_TO_BYTES(req->discard.nr_sects),
 			OCF_WRITE, 0, 0);
+	if (!io) {
+		_ocf_discard_complete_req(req, -OCF_ERR_NO_MEM);
+		return -OCF_ERR_NO_MEM;
+	}
 
 	ocf_io_set_cmpl(io, req, NULL, _ocf_discard_core_complete);
-	ocf_io_set_data(io, req->data, 0);
-	ocf_io_set_queue(io, req->io_queue);
+	err = ocf_io_set_data(io, req->data, 0);
+	if (err) {
+		_ocf_discard_core_complete(io, err);
+		return err;
+	}
 
 	ocf_volume_submit_discard(io);
 
@@ -105,16 +107,15 @@ static int _ocf_discard_flush_cache(struct ocf_request *req)
 {
 	struct ocf_io *io;
 
-	io = ocf_volume_new_io(&req->cache->device->volume);
+	io = ocf_volume_new_io(&req->cache->device->volume, req->io_queue,
+			0, 0, OCF_WRITE, 0, 0);
 	if (!io) {
 		ocf_metadata_error(req->cache);
-		_ocf_discard_complete_req(req, -ENOMEM);
-		return -ENOMEM;
+		_ocf_discard_complete_req(req, -OCF_ERR_NO_MEM);
+		return -OCF_ERR_NO_MEM;
 	}
 
-	ocf_io_configure(io, 0, 0, OCF_WRITE, 0, 0);
 	ocf_io_set_cmpl(io, req, NULL, _ocf_discard_cache_flush_complete);
-	ocf_io_set_queue(io, req->io_queue);
 
 	ocf_volume_submit_flush(io);
 
@@ -169,7 +170,7 @@ int _ocf_discard_step_do(struct ocf_request *req)
 	if (ocf_engine_mapped_count(req)) {
 		/* There are mapped cache line, need to remove them */
 
-		OCF_METADATA_LOCK_WR(); /*- Metadata WR access ---------------*/
+		ocf_req_hash_lock_wr(req);
 
 		/* Remove mapped cache lines from metadata */
 		ocf_purge_map_info(req);
@@ -180,8 +181,16 @@ int _ocf_discard_step_do(struct ocf_request *req)
 					_ocf_discard_step_complete);
 		}
 
-		OCF_METADATA_UNLOCK_WR(); /*- END Metadata WR access ---------*/
+		ocf_req_hash_unlock_wr(req);
 	}
+
+	ocf_req_hash_lock_rd(req);
+
+	/* Even if no cachelines are mapped they could be tracked in promotion
+	 * policy. RD lock suffices. */
+	ocf_promotion_req_purge(req->cache->promotion_policy, req);
+
+	ocf_req_hash_unlock_rd(req);
 
 	OCF_DEBUG_RQ(req, "Discard");
 	_ocf_discard_step_complete(req, 0);
@@ -215,22 +224,23 @@ static int _ocf_discard_step(struct ocf_request *req)
 	req->core_line_count = req->core_line_last - req->core_line_first + 1;
 	req->io_if = &_io_if_discard_step_resume;
 
-	OCF_METADATA_LOCK_RD(); /*- Metadata READ access, No eviction --------*/
-
 	ENV_BUG_ON(env_memset(req->map, sizeof(*req->map) * req->core_line_count,
 			0));
+
+	ocf_req_hash(req);
+	ocf_req_hash_lock_rd(req);
 
 	/* Travers to check if request is mapped fully */
 	ocf_engine_traverse(req);
 
 	if (ocf_engine_mapped_count(req)) {
 		/* Some cache line are mapped, lock request for WRITE access */
-		lock = ocf_req_trylock_wr(req);
+		lock = ocf_req_async_lock_wr(req, _ocf_discard_on_resume);
 	} else {
 		lock = OCF_LOCK_ACQUIRED;
 	}
 
-	OCF_METADATA_UNLOCK_RD(); /*- END Metadata READ access----------------*/
+	ocf_req_hash_unlock_rd(req);
 
 	if (lock >= 0) {
 		if (OCF_LOCK_ACQUIRED == lock) {
@@ -254,18 +264,16 @@ int ocf_discard(struct ocf_request *req)
 {
 	OCF_DEBUG_TRACE(req->cache);
 
-	ocf_io_start(req->io);
+	ocf_io_start(&req->ioi.io);
 
 	if (req->rw == OCF_READ) {
-		req->complete(req, -EINVAL);
+		req->complete(req, -OCF_ERR_INVAL);
+		ocf_req_put(req);
 		return 0;
 	}
 
 	/* Get OCF request - increase reference counter */
 	ocf_req_get(req);
-
-	/* Set resume call backs */
-	req->resume = _ocf_discard_on_resume;
 
 	_ocf_discard_step(req);
 

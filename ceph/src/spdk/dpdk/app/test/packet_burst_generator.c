@@ -4,6 +4,7 @@
 
 #include <rte_byteorder.h>
 #include <rte_mbuf.h>
+#include <rte_ip.h>
 
 #include "packet_burst_generator.h"
 
@@ -12,9 +13,6 @@
 
 
 #define IP_DEFTTL  64   /* from RFC 1340. */
-#define IP_VERSION 0x40
-#define IP_HDRLEN  0x05 /* default IP header length == five 32-bits words. */
-#define IP_VHL_DEF (IP_VERSION | IP_HDRLEN)
 
 static void
 copy_buf_to_pkt_segs(void *buf, unsigned len, struct rte_mbuf *pkt,
@@ -53,18 +51,19 @@ copy_buf_to_pkt(void *buf, unsigned len, struct rte_mbuf *pkt, unsigned offset)
 }
 
 void
-initialize_eth_header(struct ether_hdr *eth_hdr, struct ether_addr *src_mac,
-		struct ether_addr *dst_mac, uint16_t ether_type,
+initialize_eth_header(struct rte_ether_hdr *eth_hdr,
+		struct rte_ether_addr *src_mac,
+		struct rte_ether_addr *dst_mac, uint16_t ether_type,
 		uint8_t vlan_enabled, uint16_t van_id)
 {
-	ether_addr_copy(dst_mac, &eth_hdr->d_addr);
-	ether_addr_copy(src_mac, &eth_hdr->s_addr);
+	rte_ether_addr_copy(dst_mac, &eth_hdr->d_addr);
+	rte_ether_addr_copy(src_mac, &eth_hdr->s_addr);
 
 	if (vlan_enabled) {
-		struct vlan_hdr *vhdr = (struct vlan_hdr *)((uint8_t *)eth_hdr +
-				sizeof(struct ether_hdr));
+		struct rte_vlan_hdr *vhdr = (struct rte_vlan_hdr *)(
+			(uint8_t *)eth_hdr + sizeof(struct rte_ether_hdr));
 
-		eth_hdr->ether_type = rte_cpu_to_be_16(ETHER_TYPE_VLAN);
+		eth_hdr->ether_type = rte_cpu_to_be_16(RTE_ETHER_TYPE_VLAN);
 
 		vhdr->eth_proto =  rte_cpu_to_be_16(ether_type);
 		vhdr->vlan_tci = van_id;
@@ -74,28 +73,30 @@ initialize_eth_header(struct ether_hdr *eth_hdr, struct ether_addr *src_mac,
 }
 
 void
-initialize_arp_header(struct arp_hdr *arp_hdr, struct ether_addr *src_mac,
-		struct ether_addr *dst_mac, uint32_t src_ip, uint32_t dst_ip,
+initialize_arp_header(struct rte_arp_hdr *arp_hdr,
+		struct rte_ether_addr *src_mac,
+		struct rte_ether_addr *dst_mac,
+		uint32_t src_ip, uint32_t dst_ip,
 		uint32_t opcode)
 {
-	arp_hdr->arp_hrd = rte_cpu_to_be_16(ARP_HRD_ETHER);
-	arp_hdr->arp_pro = rte_cpu_to_be_16(ETHER_TYPE_IPv4);
-	arp_hdr->arp_hln = ETHER_ADDR_LEN;
-	arp_hdr->arp_pln = sizeof(uint32_t);
-	arp_hdr->arp_op = rte_cpu_to_be_16(opcode);
-	ether_addr_copy(src_mac, &arp_hdr->arp_data.arp_sha);
+	arp_hdr->arp_hardware = rte_cpu_to_be_16(RTE_ARP_HRD_ETHER);
+	arp_hdr->arp_protocol = rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4);
+	arp_hdr->arp_hlen = RTE_ETHER_ADDR_LEN;
+	arp_hdr->arp_plen = sizeof(uint32_t);
+	arp_hdr->arp_opcode = rte_cpu_to_be_16(opcode);
+	rte_ether_addr_copy(src_mac, &arp_hdr->arp_data.arp_sha);
 	arp_hdr->arp_data.arp_sip = src_ip;
-	ether_addr_copy(dst_mac, &arp_hdr->arp_data.arp_tha);
+	rte_ether_addr_copy(dst_mac, &arp_hdr->arp_data.arp_tha);
 	arp_hdr->arp_data.arp_tip = dst_ip;
 }
 
 uint16_t
-initialize_udp_header(struct udp_hdr *udp_hdr, uint16_t src_port,
+initialize_udp_header(struct rte_udp_hdr *udp_hdr, uint16_t src_port,
 		uint16_t dst_port, uint16_t pkt_data_len)
 {
 	uint16_t pkt_len;
 
-	pkt_len = (uint16_t) (pkt_data_len + sizeof(struct udp_hdr));
+	pkt_len = (uint16_t) (pkt_data_len + sizeof(struct rte_udp_hdr));
 
 	udp_hdr->src_port = rte_cpu_to_be_16(src_port);
 	udp_hdr->dst_port = rte_cpu_to_be_16(dst_port);
@@ -106,14 +107,14 @@ initialize_udp_header(struct udp_hdr *udp_hdr, uint16_t src_port,
 }
 
 uint16_t
-initialize_tcp_header(struct tcp_hdr *tcp_hdr, uint16_t src_port,
+initialize_tcp_header(struct rte_tcp_hdr *tcp_hdr, uint16_t src_port,
 		uint16_t dst_port, uint16_t pkt_data_len)
 {
 	uint16_t pkt_len;
 
-	pkt_len = (uint16_t) (pkt_data_len + sizeof(struct tcp_hdr));
+	pkt_len = (uint16_t) (pkt_data_len + sizeof(struct rte_tcp_hdr));
 
-	memset(tcp_hdr, 0, sizeof(struct tcp_hdr));
+	memset(tcp_hdr, 0, sizeof(struct rte_tcp_hdr));
 	tcp_hdr->src_port = rte_cpu_to_be_16(src_port);
 	tcp_hdr->dst_port = rte_cpu_to_be_16(dst_port);
 
@@ -121,12 +122,12 @@ initialize_tcp_header(struct tcp_hdr *tcp_hdr, uint16_t src_port,
 }
 
 uint16_t
-initialize_sctp_header(struct sctp_hdr *sctp_hdr, uint16_t src_port,
+initialize_sctp_header(struct rte_sctp_hdr *sctp_hdr, uint16_t src_port,
 		uint16_t dst_port, uint16_t pkt_data_len)
 {
 	uint16_t pkt_len;
 
-	pkt_len = (uint16_t) (pkt_data_len + sizeof(struct udp_hdr));
+	pkt_len = (uint16_t) (pkt_data_len + sizeof(struct rte_udp_hdr));
 
 	sctp_hdr->src_port = rte_cpu_to_be_16(src_port);
 	sctp_hdr->dst_port = rte_cpu_to_be_16(dst_port);
@@ -137,7 +138,7 @@ initialize_sctp_header(struct sctp_hdr *sctp_hdr, uint16_t src_port,
 }
 
 uint16_t
-initialize_ipv6_header(struct ipv6_hdr *ip_hdr, uint8_t *src_addr,
+initialize_ipv6_header(struct rte_ipv6_hdr *ip_hdr, uint8_t *src_addr,
 		uint8_t *dst_addr, uint16_t pkt_data_len)
 {
 	ip_hdr->vtc_flow = 0;
@@ -148,11 +149,11 @@ initialize_ipv6_header(struct ipv6_hdr *ip_hdr, uint8_t *src_addr,
 	rte_memcpy(ip_hdr->src_addr, src_addr, sizeof(ip_hdr->src_addr));
 	rte_memcpy(ip_hdr->dst_addr, dst_addr, sizeof(ip_hdr->dst_addr));
 
-	return (uint16_t) (pkt_data_len + sizeof(struct ipv6_hdr));
+	return (uint16_t) (pkt_data_len + sizeof(struct rte_ipv6_hdr));
 }
 
 uint16_t
-initialize_ipv4_header(struct ipv4_hdr *ip_hdr, uint32_t src_addr,
+initialize_ipv4_header(struct rte_ipv4_hdr *ip_hdr, uint32_t src_addr,
 		uint32_t dst_addr, uint16_t pkt_data_len)
 {
 	uint16_t pkt_len;
@@ -162,9 +163,9 @@ initialize_ipv4_header(struct ipv4_hdr *ip_hdr, uint32_t src_addr,
 	/*
 	 * Initialize IP header.
 	 */
-	pkt_len = (uint16_t) (pkt_data_len + sizeof(struct ipv4_hdr));
+	pkt_len = (uint16_t) (pkt_data_len + sizeof(struct rte_ipv4_hdr));
 
-	ip_hdr->version_ihl   = IP_VHL_DEF;
+	ip_hdr->version_ihl   = RTE_IPV4_VHL_DEF;
 	ip_hdr->type_of_service   = 0;
 	ip_hdr->fragment_offset = 0;
 	ip_hdr->time_to_live   = IP_DEFTTL;
@@ -200,7 +201,7 @@ initialize_ipv4_header(struct ipv4_hdr *ip_hdr, uint32_t src_addr,
 }
 
 uint16_t
-initialize_ipv4_header_proto(struct ipv4_hdr *ip_hdr, uint32_t src_addr,
+initialize_ipv4_header_proto(struct rte_ipv4_hdr *ip_hdr, uint32_t src_addr,
 		uint32_t dst_addr, uint16_t pkt_data_len, uint8_t proto)
 {
 	uint16_t pkt_len;
@@ -210,9 +211,9 @@ initialize_ipv4_header_proto(struct ipv4_hdr *ip_hdr, uint32_t src_addr,
 	/*
 	 * Initialize IP header.
 	 */
-	pkt_len = (uint16_t) (pkt_data_len + sizeof(struct ipv4_hdr));
+	pkt_len = (uint16_t) (pkt_data_len + sizeof(struct rte_ipv4_hdr));
 
-	ip_hdr->version_ihl   = IP_VHL_DEF;
+	ip_hdr->version_ihl   = RTE_IPV4_VHL_DEF;
 	ip_hdr->type_of_service   = 0;
 	ip_hdr->fragment_offset = 0;
 	ip_hdr->time_to_live   = IP_DEFTTL;
@@ -256,9 +257,9 @@ initialize_ipv4_header_proto(struct ipv4_hdr *ip_hdr, uint32_t src_addr,
 
 int
 generate_packet_burst(struct rte_mempool *mp, struct rte_mbuf **pkts_burst,
-		struct ether_hdr *eth_hdr, uint8_t vlan_enabled, void *ip_hdr,
-		uint8_t ipv4, struct udp_hdr *udp_hdr, int nb_pkt_per_burst,
-		uint8_t pkt_len, uint8_t nb_pkt_segs)
+		struct rte_ether_hdr *eth_hdr, uint8_t vlan_enabled,
+		void *ip_hdr, uint8_t ipv4, struct rte_udp_hdr *udp_hdr,
+		int nb_pkt_per_burst, uint8_t pkt_len, uint8_t nb_pkt_segs)
 {
 	int i, nb_pkt = 0;
 	size_t eth_hdr_size;
@@ -293,20 +294,23 @@ nomore_mbuf:
 		 * Copy headers in first packet segment(s).
 		 */
 		if (vlan_enabled)
-			eth_hdr_size = sizeof(struct ether_hdr) + sizeof(struct vlan_hdr);
+			eth_hdr_size = sizeof(struct rte_ether_hdr) +
+				sizeof(struct rte_vlan_hdr);
 		else
-			eth_hdr_size = sizeof(struct ether_hdr);
+			eth_hdr_size = sizeof(struct rte_ether_hdr);
 
 		copy_buf_to_pkt(eth_hdr, eth_hdr_size, pkt, 0);
 
 		if (ipv4) {
-			copy_buf_to_pkt(ip_hdr, sizeof(struct ipv4_hdr), pkt, eth_hdr_size);
-			copy_buf_to_pkt(udp_hdr, sizeof(*udp_hdr), pkt, eth_hdr_size +
-					sizeof(struct ipv4_hdr));
+			copy_buf_to_pkt(ip_hdr, sizeof(struct rte_ipv4_hdr),
+				pkt, eth_hdr_size);
+			copy_buf_to_pkt(udp_hdr, sizeof(*udp_hdr), pkt,
+				eth_hdr_size + sizeof(struct rte_ipv4_hdr));
 		} else {
-			copy_buf_to_pkt(ip_hdr, sizeof(struct ipv6_hdr), pkt, eth_hdr_size);
-			copy_buf_to_pkt(udp_hdr, sizeof(*udp_hdr), pkt, eth_hdr_size +
-					sizeof(struct ipv6_hdr));
+			copy_buf_to_pkt(ip_hdr, sizeof(struct rte_ipv6_hdr),
+				pkt, eth_hdr_size);
+			copy_buf_to_pkt(udp_hdr, sizeof(*udp_hdr), pkt,
+				eth_hdr_size + sizeof(struct rte_ipv6_hdr));
 		}
 
 		/*
@@ -318,11 +322,11 @@ nomore_mbuf:
 		pkt->l2_len = eth_hdr_size;
 
 		if (ipv4) {
-			pkt->vlan_tci  = ETHER_TYPE_IPv4;
-			pkt->l3_len = sizeof(struct ipv4_hdr);
+			pkt->vlan_tci  = RTE_ETHER_TYPE_IPV4;
+			pkt->l3_len = sizeof(struct rte_ipv4_hdr);
 		} else {
-			pkt->vlan_tci  = ETHER_TYPE_IPv6;
-			pkt->l3_len = sizeof(struct ipv6_hdr);
+			pkt->vlan_tci  = RTE_ETHER_TYPE_IPV6;
+			pkt->l3_len = sizeof(struct rte_ipv6_hdr);
 		}
 
 		pkts_burst[nb_pkt] = pkt;
@@ -333,8 +337,8 @@ nomore_mbuf:
 
 int
 generate_packet_burst_proto(struct rte_mempool *mp,
-		struct rte_mbuf **pkts_burst,
-		struct ether_hdr *eth_hdr, uint8_t vlan_enabled, void *ip_hdr,
+		struct rte_mbuf **pkts_burst, struct rte_ether_hdr *eth_hdr,
+		uint8_t vlan_enabled, void *ip_hdr,
 		uint8_t ipv4, uint8_t proto, void *proto_hdr,
 		int nb_pkt_per_burst, uint8_t pkt_len, uint8_t nb_pkt_segs)
 {
@@ -371,53 +375,59 @@ nomore_mbuf:
 		 * Copy headers in first packet segment(s).
 		 */
 		if (vlan_enabled)
-			eth_hdr_size = sizeof(struct ether_hdr) +
-				sizeof(struct vlan_hdr);
+			eth_hdr_size = sizeof(struct rte_ether_hdr) +
+				sizeof(struct rte_vlan_hdr);
 		else
-			eth_hdr_size = sizeof(struct ether_hdr);
+			eth_hdr_size = sizeof(struct rte_ether_hdr);
 
 		copy_buf_to_pkt(eth_hdr, eth_hdr_size, pkt, 0);
 
 		if (ipv4) {
-			copy_buf_to_pkt(ip_hdr, sizeof(struct ipv4_hdr), pkt,
-				eth_hdr_size);
+			copy_buf_to_pkt(ip_hdr, sizeof(struct rte_ipv4_hdr),
+					pkt, eth_hdr_size);
 			switch (proto) {
 			case IPPROTO_UDP:
 				copy_buf_to_pkt(proto_hdr,
-					sizeof(struct udp_hdr), pkt,
-					eth_hdr_size + sizeof(struct ipv4_hdr));
+					sizeof(struct rte_udp_hdr), pkt,
+					eth_hdr_size +
+						sizeof(struct rte_ipv4_hdr));
 				break;
 			case IPPROTO_TCP:
 				copy_buf_to_pkt(proto_hdr,
-					sizeof(struct tcp_hdr), pkt,
-					eth_hdr_size + sizeof(struct ipv4_hdr));
+					sizeof(struct rte_tcp_hdr), pkt,
+					eth_hdr_size +
+						sizeof(struct rte_ipv4_hdr));
 				break;
 			case IPPROTO_SCTP:
 				copy_buf_to_pkt(proto_hdr,
-					sizeof(struct sctp_hdr), pkt,
-					eth_hdr_size + sizeof(struct ipv4_hdr));
+					sizeof(struct rte_sctp_hdr), pkt,
+					eth_hdr_size +
+						sizeof(struct rte_ipv4_hdr));
 				break;
 			default:
 				break;
 			}
 		} else {
-			copy_buf_to_pkt(ip_hdr, sizeof(struct ipv6_hdr), pkt,
-				eth_hdr_size);
+			copy_buf_to_pkt(ip_hdr, sizeof(struct rte_ipv6_hdr),
+					pkt, eth_hdr_size);
 			switch (proto) {
 			case IPPROTO_UDP:
 				copy_buf_to_pkt(proto_hdr,
-					sizeof(struct udp_hdr), pkt,
-					eth_hdr_size + sizeof(struct ipv6_hdr));
+					sizeof(struct rte_udp_hdr), pkt,
+					eth_hdr_size +
+						sizeof(struct rte_ipv6_hdr));
 				break;
 			case IPPROTO_TCP:
 				copy_buf_to_pkt(proto_hdr,
-					sizeof(struct tcp_hdr), pkt,
-					eth_hdr_size + sizeof(struct ipv6_hdr));
+					sizeof(struct rte_tcp_hdr), pkt,
+					eth_hdr_size +
+						sizeof(struct rte_ipv6_hdr));
 				break;
 			case IPPROTO_SCTP:
 				copy_buf_to_pkt(proto_hdr,
-					sizeof(struct sctp_hdr), pkt,
-					eth_hdr_size + sizeof(struct ipv6_hdr));
+					sizeof(struct rte_sctp_hdr), pkt,
+					eth_hdr_size +
+						sizeof(struct rte_ipv6_hdr));
 				break;
 			default:
 				break;
@@ -433,11 +443,11 @@ nomore_mbuf:
 		pkt->l2_len = eth_hdr_size;
 
 		if (ipv4) {
-			pkt->vlan_tci  = ETHER_TYPE_IPv4;
-			pkt->l3_len = sizeof(struct ipv4_hdr);
+			pkt->vlan_tci  = RTE_ETHER_TYPE_IPV4;
+			pkt->l3_len = sizeof(struct rte_ipv4_hdr);
 		} else {
-			pkt->vlan_tci  = ETHER_TYPE_IPv6;
-			pkt->l3_len = sizeof(struct ipv6_hdr);
+			pkt->vlan_tci  = RTE_ETHER_TYPE_IPV6;
+			pkt->l3_len = sizeof(struct rte_ipv6_hdr);
 		}
 
 		pkts_burst[nb_pkt] = pkt;

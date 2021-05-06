@@ -51,6 +51,8 @@
 #include <rte_memcpy.h>
 #include <rte_common.h>
 
+#include "rte_mempool_trace_fp.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -116,6 +118,9 @@ struct rte_mempool_objsz {
 #define	MEMPOOL_PG_NUM_DEFAULT	1
 
 #ifndef RTE_MEMPOOL_ALIGN
+/**
+ * Alignment of elements inside mempool.
+ */
 #define RTE_MEMPOOL_ALIGN	RTE_CACHE_LINE_SIZE
 #endif
 
@@ -257,7 +262,8 @@ struct rte_mempool {
 #endif
 }  __rte_cache_aligned;
 
-#define MEMPOOL_F_NO_SPREAD      0x0001 /**< Do not spread among memory channels. */
+#define MEMPOOL_F_NO_SPREAD      0x0001
+		/**< Spreading among memory channels not required. */
 #define MEMPOOL_F_NO_CACHE_ALIGN 0x0002 /**< Do not align objs on cache lines.*/
 #define MEMPOOL_F_SP_PUT         0x0004 /**< Default put is "single-producer".*/
 #define MEMPOOL_F_SC_GET         0x0008 /**< Default get is "single-consumer".*/
@@ -458,15 +464,20 @@ typedef unsigned (*rte_mempool_get_count)(const struct rte_mempool *mp);
  * @param[out] align
  *   Location for required memory chunk alignment.
  * @return
- *   Required memory size aligned at page boundary.
+ *   Required memory size.
  */
 typedef ssize_t (*rte_mempool_calc_mem_size_t)(const struct rte_mempool *mp,
 		uint32_t obj_num,  uint32_t pg_shift,
 		size_t *min_chunk_size, size_t *align);
 
 /**
- * Default way to calculate memory size required to store given number of
- * objects.
+ * @warning
+ * @b EXPERIMENTAL: this API may change without prior notice.
+ *
+ * @internal Helper to calculate memory size required to store given
+ * number of objects.
+ *
+ * This function is internal to mempool library and mempool drivers.
  *
  * If page boundaries may be ignored, it is just a product of total
  * object size including header and trailer and number of objects.
@@ -477,11 +488,37 @@ typedef ssize_t (*rte_mempool_calc_mem_size_t)(const struct rte_mempool *mp,
  * that pages are grouped in subsets of physically continuous pages big
  * enough to store at least one object.
  *
- * Minimum size of memory chunk is a maximum of the page size and total
- * element size.
+ * Minimum size of memory chunk is the total element size.
+ * Required memory chunk alignment is the cache line size.
  *
- * Required memory chunk alignment is a maximum of page size and cache
- * line size.
+ * @param[in] mp
+ *   A pointer to the mempool structure.
+ * @param[in] obj_num
+ *   Number of objects to be added in mempool.
+ * @param[in] pg_shift
+ *   LOG2 of the physical pages size. If set to 0, ignore page boundaries.
+ * @param[in] chunk_reserve
+ *   Amount of memory that must be reserved at the beginning of each page,
+ *   or at the beginning of the memory area if pg_shift is 0.
+ * @param[out] min_chunk_size
+ *   Location for minimum size of the memory chunk which may be used to
+ *   store memory pool objects.
+ * @param[out] align
+ *   Location for required memory chunk alignment.
+ * @return
+ *   Required memory size.
+ */
+__rte_experimental
+ssize_t rte_mempool_op_calc_mem_size_helper(const struct rte_mempool *mp,
+		uint32_t obj_num, uint32_t pg_shift, size_t chunk_reserve,
+		size_t *min_chunk_size, size_t *align);
+
+/**
+ * Default way to calculate memory size required to store given number of
+ * objects.
+ *
+ * Equivalent to rte_mempool_op_calc_mem_size_helper(mp, obj_num, pg_shift,
+ * 0, min_chunk_size, align).
  */
 ssize_t rte_mempool_op_calc_mem_size_default(const struct rte_mempool *mp,
 		uint32_t obj_num, uint32_t pg_shift,
@@ -536,8 +573,56 @@ typedef int (*rte_mempool_populate_t)(struct rte_mempool *mp,
 		rte_mempool_populate_obj_cb_t *obj_cb, void *obj_cb_arg);
 
 /**
- * Default way to populate memory pool object using provided memory
- * chunk: just slice objects one by one.
+ * Align objects on addresses multiple of total_elt_sz.
+ */
+#define RTE_MEMPOOL_POPULATE_F_ALIGN_OBJ 0x0001
+
+/**
+ * @warning
+ * @b EXPERIMENTAL: this API may change without prior notice.
+ *
+ * @internal Helper to populate memory pool object using provided memory
+ * chunk: just slice objects one by one, taking care of not
+ * crossing page boundaries.
+ *
+ * If RTE_MEMPOOL_POPULATE_F_ALIGN_OBJ is set in flags, the addresses
+ * of object headers will be aligned on a multiple of total_elt_sz.
+ * This feature is used by octeontx hardware.
+ *
+ * This function is internal to mempool library and mempool drivers.
+ *
+ * @param[in] mp
+ *   A pointer to the mempool structure.
+ * @param[in] flags
+ *   Logical OR of following flags:
+ *   - RTE_MEMPOOL_POPULATE_F_ALIGN_OBJ: align objects on addresses
+ *     multiple of total_elt_sz.
+ * @param[in] max_objs
+ *   Maximum number of objects to be added in mempool.
+ * @param[in] vaddr
+ *   The virtual address of memory that should be used to store objects.
+ * @param[in] iova
+ *   The IO address corresponding to vaddr, or RTE_BAD_IOVA.
+ * @param[in] len
+ *   The length of memory in bytes.
+ * @param[in] obj_cb
+ *   Callback function to be executed for each populated object.
+ * @param[in] obj_cb_arg
+ *   An opaque pointer passed to the callback function.
+ * @return
+ *   The number of objects added in mempool.
+ */
+__rte_experimental
+int rte_mempool_op_populate_helper(struct rte_mempool *mp,
+		unsigned int flags, unsigned int max_objs,
+		void *vaddr, rte_iova_t iova, size_t len,
+		rte_mempool_populate_obj_cb_t *obj_cb, void *obj_cb_arg);
+
+/**
+ * Default way to populate memory pool object using provided memory chunk.
+ *
+ * Equivalent to rte_mempool_op_populate_helper(mp, 0, max_objs, vaddr, iova,
+ * len, obj_cb, obj_cb_arg).
  */
 int rte_mempool_op_populate_default(struct rte_mempool *mp,
 		unsigned int max_objs,
@@ -653,6 +738,7 @@ rte_mempool_ops_dequeue_bulk(struct rte_mempool *mp,
 {
 	struct rte_mempool_ops *ops;
 
+	rte_mempool_trace_ops_dequeue_bulk(mp, obj_table, n);
 	ops = rte_mempool_get_ops(mp->ops_index);
 	return ops->dequeue(mp, obj_table, n);
 }
@@ -678,6 +764,7 @@ rte_mempool_ops_dequeue_contig_blocks(struct rte_mempool *mp,
 
 	ops = rte_mempool_get_ops(mp->ops_index);
 	RTE_ASSERT(ops->dequeue_contig_blocks != NULL);
+	rte_mempool_trace_ops_dequeue_contig_blocks(mp, first_obj_table, n);
 	return ops->dequeue_contig_blocks(mp, first_obj_table, n);
 }
 
@@ -700,6 +787,7 @@ rte_mempool_ops_enqueue_bulk(struct rte_mempool *mp, void * const *obj_table,
 {
 	struct rte_mempool_ops *ops;
 
+	rte_mempool_trace_ops_enqueue_bulk(mp, obj_table, n);
 	ops = rte_mempool_get_ops(mp->ops_index);
 	return ops->enqueue(mp, obj_table, n);
 }
@@ -1024,9 +1112,12 @@ rte_mempool_free(struct rte_mempool *mp);
  * @param opaque
  *   An opaque argument passed to free_cb.
  * @return
- *   The number of objects added on success.
+ *   The number of objects added on success (strictly positive).
  *   On error, the chunk is not added in the memory list of the
- *   mempool and a negative errno is returned.
+ *   mempool the following code is returned:
+ *     (0): not enough room in chunk for one object.
+ *     (-ENOSPC): mempool is already populated.
+ *     (-ENOMEM): allocation failure.
  */
 int rte_mempool_populate_iova(struct rte_mempool *mp, char *vaddr,
 	rte_iova_t iova, size_t len, rte_mempool_memchunk_free_cb_t *free_cb,
@@ -1042,9 +1133,8 @@ int rte_mempool_populate_iova(struct rte_mempool *mp, char *vaddr,
  *   A pointer to the mempool structure.
  * @param addr
  *   The virtual address of memory that should be used to store objects.
- *   Must be page-aligned.
  * @param len
- *   The length of memory in bytes. Must be page-aligned.
+ *   The length of memory in bytes.
  * @param pg_sz
  *   The size of memory pages in this virtual area.
  * @param free_cb
@@ -1052,9 +1142,12 @@ int rte_mempool_populate_iova(struct rte_mempool *mp, char *vaddr,
  * @param opaque
  *   An opaque argument passed to free_cb.
  * @return
- *   The number of objects added on success.
+ *   The number of objects added on success (strictly positive).
  *   On error, the chunk is not added in the memory list of the
- *   mempool and a negative errno is returned.
+ *   mempool the following code is returned:
+ *     (0): not enough room in chunk for one object.
+ *     (-ENOSPC): mempool is already populated.
+ *     (-ENOMEM): allocation failure.
  */
 int
 rte_mempool_populate_virt(struct rte_mempool *mp, char *addr,
@@ -1086,8 +1179,8 @@ int rte_mempool_populate_default(struct rte_mempool *mp);
  *   A pointer to the mempool structure.
  * @return
  *   The number of objects added on success.
- *   On error, the chunk is not added in the memory list of the
- *   mempool and a negative errno is returned.
+ *   On error, 0 is returned, rte_errno is set, and the chunk is not added in
+ *   the memory list of the mempool.
  */
 int rte_mempool_populate_anon(struct rte_mempool *mp);
 
@@ -1182,6 +1275,8 @@ rte_mempool_default_cache(struct rte_mempool *mp, unsigned lcore_id)
 	if (lcore_id >= RTE_MAX_LCORE)
 		return NULL;
 
+	rte_mempool_trace_default_cache(mp, lcore_id,
+		&mp->local_cache[lcore_id]);
 	return &mp->local_cache[lcore_id];
 }
 
@@ -1201,6 +1296,7 @@ rte_mempool_cache_flush(struct rte_mempool_cache *cache,
 		cache = rte_mempool_default_cache(mp, rte_lcore_id());
 	if (cache == NULL || cache->len == 0)
 		return;
+	rte_mempool_trace_cache_flush(cache, mp);
 	rte_mempool_ops_enqueue_bulk(mp, cache->objs, cache->len);
 	cache->len = 0;
 }
@@ -1280,6 +1376,7 @@ static __rte_always_inline void
 rte_mempool_generic_put(struct rte_mempool *mp, void * const *obj_table,
 			unsigned int n, struct rte_mempool_cache *cache)
 {
+	rte_mempool_trace_generic_put(mp, obj_table, n, cache);
 	__mempool_check_cookies(mp, obj_table, n, 0);
 	__mempool_generic_put(mp, obj_table, n, cache);
 }
@@ -1304,6 +1401,7 @@ rte_mempool_put_bulk(struct rte_mempool *mp, void * const *obj_table,
 {
 	struct rte_mempool_cache *cache;
 	cache = rte_mempool_default_cache(mp, rte_lcore_id());
+	rte_mempool_trace_put_bulk(mp, obj_table, n, cache);
 	rte_mempool_generic_put(mp, obj_table, n, cache);
 }
 
@@ -1425,6 +1523,7 @@ rte_mempool_generic_get(struct rte_mempool *mp, void **obj_table,
 	ret = __mempool_generic_get(mp, obj_table, n, cache);
 	if (ret == 0)
 		__mempool_check_cookies(mp, obj_table, n, 1);
+	rte_mempool_trace_generic_get(mp, obj_table, n, cache);
 	return ret;
 }
 
@@ -1455,6 +1554,7 @@ rte_mempool_get_bulk(struct rte_mempool *mp, void **obj_table, unsigned int n)
 {
 	struct rte_mempool_cache *cache;
 	cache = rte_mempool_default_cache(mp, rte_lcore_id());
+	rte_mempool_trace_get_bulk(mp, obj_table, n, cache);
 	return rte_mempool_generic_get(mp, obj_table, n, cache);
 }
 
@@ -1524,6 +1624,7 @@ rte_mempool_get_contig_blocks(struct rte_mempool *mp,
 		__MEMPOOL_CONTIG_BLOCKS_STAT_ADD(mp, get_fail, n);
 	}
 
+	rte_mempool_trace_get_contig_blocks(mp, first_obj_table, n);
 	return ret;
 }
 
@@ -1572,7 +1673,7 @@ rte_mempool_in_use_count(const struct rte_mempool *mp);
 static inline int
 rte_mempool_full(const struct rte_mempool *mp)
 {
-	return !!(rte_mempool_avail_count(mp) == mp->size);
+	return rte_mempool_avail_count(mp) == mp->size;
 }
 
 /**
@@ -1591,7 +1692,7 @@ rte_mempool_full(const struct rte_mempool *mp)
 static inline int
 rte_mempool_empty(const struct rte_mempool *mp)
 {
-	return !!(rte_mempool_avail_count(mp) == 0);
+	return rte_mempool_avail_count(mp) == 0;
 }
 
 /**
@@ -1691,6 +1792,17 @@ uint32_t rte_mempool_calc_obj_size(uint32_t elt_size, uint32_t flags,
  */
 void rte_mempool_walk(void (*func)(struct rte_mempool *, void *arg),
 		      void *arg);
+
+/**
+ * @warning
+ * @b EXPERIMENTAL: this API may change without prior notice.
+ *
+ * @internal Get page size used for mempool object allocation.
+ * This function is internal to mempool library and mempool drivers.
+ */
+__rte_experimental
+int
+rte_mempool_get_page_size(struct rte_mempool *mp, size_t *pg_sz);
 
 #ifdef __cplusplus
 }

@@ -1,31 +1,32 @@
 import { Component, OnInit, TemplateRef, ViewChild } from '@angular/core';
 
-import { I18n } from '@ngx-translate/i18n-polyfill';
-import * as _ from 'lodash';
-import { BsModalRef, BsModalService } from 'ngx-bootstrap/modal';
+import { NgbModalRef } from '@ng-bootstrap/ng-bootstrap';
+import _ from 'lodash';
 
-import { RbdService } from '../../../shared/api/rbd.service';
-import { ListWithDetails } from '../../../shared/classes/list-with-details.class';
-import { ConfirmationModalComponent } from '../../../shared/components/confirmation-modal/confirmation-modal.component';
-import { CriticalConfirmationModalComponent } from '../../../shared/components/critical-confirmation-modal/critical-confirmation-modal.component';
-import { ActionLabelsI18n } from '../../../shared/constants/app.constants';
-import { TableComponent } from '../../../shared/datatable/table/table.component';
-import { CellTemplate } from '../../../shared/enum/cell-template.enum';
-import { Icons } from '../../../shared/enum/icons.enum';
-import { ViewCacheStatus } from '../../../shared/enum/view-cache-status.enum';
-import { CdTableAction } from '../../../shared/models/cd-table-action';
-import { CdTableColumn } from '../../../shared/models/cd-table-column';
-import { CdTableSelection } from '../../../shared/models/cd-table-selection';
-import { FinishedTask } from '../../../shared/models/finished-task';
-import { ImageSpec } from '../../../shared/models/image-spec';
-import { Permission } from '../../../shared/models/permissions';
-import { Task } from '../../../shared/models/task';
-import { DimlessBinaryPipe } from '../../../shared/pipes/dimless-binary.pipe';
-import { DimlessPipe } from '../../../shared/pipes/dimless.pipe';
-import { AuthStorageService } from '../../../shared/services/auth-storage.service';
-import { TaskListService } from '../../../shared/services/task-list.service';
-import { TaskWrapperService } from '../../../shared/services/task-wrapper.service';
-import { URLBuilderService } from '../../../shared/services/url-builder.service';
+import { RbdService } from '~/app/shared/api/rbd.service';
+import { ListWithDetails } from '~/app/shared/classes/list-with-details.class';
+import { TableStatusViewCache } from '~/app/shared/classes/table-status-view-cache';
+import { ConfirmationModalComponent } from '~/app/shared/components/confirmation-modal/confirmation-modal.component';
+import { CriticalConfirmationModalComponent } from '~/app/shared/components/critical-confirmation-modal/critical-confirmation-modal.component';
+import { ActionLabelsI18n } from '~/app/shared/constants/app.constants';
+import { TableComponent } from '~/app/shared/datatable/table/table.component';
+import { CellTemplate } from '~/app/shared/enum/cell-template.enum';
+import { Icons } from '~/app/shared/enum/icons.enum';
+import { ViewCacheStatus } from '~/app/shared/enum/view-cache-status.enum';
+import { CdTableAction } from '~/app/shared/models/cd-table-action';
+import { CdTableColumn } from '~/app/shared/models/cd-table-column';
+import { CdTableSelection } from '~/app/shared/models/cd-table-selection';
+import { FinishedTask } from '~/app/shared/models/finished-task';
+import { ImageSpec } from '~/app/shared/models/image-spec';
+import { Permission } from '~/app/shared/models/permissions';
+import { Task } from '~/app/shared/models/task';
+import { DimlessBinaryPipe } from '~/app/shared/pipes/dimless-binary.pipe';
+import { DimlessPipe } from '~/app/shared/pipes/dimless.pipe';
+import { AuthStorageService } from '~/app/shared/services/auth-storage.service';
+import { ModalService } from '~/app/shared/services/modal.service';
+import { TaskListService } from '~/app/shared/services/task-list.service';
+import { TaskWrapperService } from '~/app/shared/services/task-wrapper.service';
+import { URLBuilderService } from '~/app/shared/services/url-builder.service';
 import { RbdParentModel } from '../rbd-form/rbd-parent.model';
 import { RbdTrashMoveModalComponent } from '../rbd-trash-move-modal/rbd-trash-move-modal.component';
 import { RBDImageFormat, RbdModel } from './rbd-model';
@@ -44,11 +45,11 @@ const BASE_URL = 'block/rbd';
 export class RbdListComponent extends ListWithDetails implements OnInit {
   @ViewChild(TableComponent, { static: true })
   table: TableComponent;
-  @ViewChild('usageTpl', { static: false })
+  @ViewChild('usageTpl')
   usageTpl: TemplateRef<any>;
   @ViewChild('parentTpl', { static: true })
   parentTpl: TemplateRef<any>;
-  @ViewChild('nameTpl', { static: false })
+  @ViewChild('nameTpl')
   nameTpl: TemplateRef<any>;
   @ViewChild('flattenTpl', { static: true })
   flattenTpl: TemplateRef<any>;
@@ -60,10 +61,10 @@ export class RbdListComponent extends ListWithDetails implements OnInit {
   images: any;
   columns: CdTableColumn[];
   retries: number;
-  viewCacheStatusList: any[];
+  tableStatus = new TableStatusViewCache();
   selection = new CdTableSelection();
 
-  modalRef: BsModalRef;
+  modalRef: NgbModalRef;
 
   builders = {
     'rbd/create': (metadata: object) =>
@@ -104,10 +105,9 @@ export class RbdListComponent extends ListWithDetails implements OnInit {
     private rbdService: RbdService,
     private dimlessBinaryPipe: DimlessBinaryPipe,
     private dimlessPipe: DimlessPipe,
-    private modalService: BsModalService,
+    private modalService: ModalService,
     private taskWrapper: TaskWrapperService,
-    private taskListService: TaskListService,
-    private i18n: I18n,
+    public taskListService: TaskListService,
     private urlBuilder: URLBuilderService,
     public actionLabels: ActionLabelsI18n
   ) {
@@ -131,7 +131,8 @@ export class RbdListComponent extends ListWithDetails implements OnInit {
       permission: 'update',
       icon: Icons.edit,
       routerLink: () => this.urlBuilder.getEdit(getImageUri()),
-      name: this.actionLabels.EDIT
+      name: this.actionLabels.EDIT,
+      disable: this.getInvalidNameDisable
     };
     const deleteAction: CdTableAction = {
       permission: 'delete',
@@ -144,7 +145,7 @@ export class RbdListComponent extends ListWithDetails implements OnInit {
       permission: 'create',
       canBePrimary: (selection: CdTableSelection) => selection.hasSingleSelection,
       disable: (selection: CdTableSelection) =>
-        !selection.hasSingleSelection || selection.first().cdExecuting,
+        this.getInvalidNameDisable(selection) || !!selection.first().cdExecuting,
       icon: Icons.copy,
       routerLink: () => `/block/rbd/copy/${getImageUri()}`,
       name: this.actionLabels.COPY
@@ -152,7 +153,9 @@ export class RbdListComponent extends ListWithDetails implements OnInit {
     const flattenAction: CdTableAction = {
       permission: 'update',
       disable: (selection: CdTableSelection) =>
-        !selection.hasSingleSelection || selection.first().cdExecuting || !selection.first().parent,
+        this.getInvalidNameDisable(selection) ||
+        selection.first().cdExecuting ||
+        !selection.first().parent,
       icon: Icons.flatten,
       click: () => this.flattenRbdModal(),
       name: this.actionLabels.FLATTEN
@@ -163,8 +166,7 @@ export class RbdListComponent extends ListWithDetails implements OnInit {
       click: () => this.trashRbdModal(),
       name: this.actionLabels.TRASH,
       disable: (selection: CdTableSelection) =>
-        !selection.first() ||
-        !selection.hasSingleSelection ||
+        this.getInvalidNameDisable(selection) ||
         selection.first().image_format === RBDImageFormat.V1
     };
     this.tableActions = [
@@ -180,58 +182,58 @@ export class RbdListComponent extends ListWithDetails implements OnInit {
   ngOnInit() {
     this.columns = [
       {
-        name: this.i18n('Name'),
+        name: $localize`Name`,
         prop: 'name',
         flexGrow: 2,
         cellTransformation: CellTemplate.executing
       },
       {
-        name: this.i18n('Pool'),
+        name: $localize`Pool`,
         prop: 'pool_name',
         flexGrow: 2
       },
       {
-        name: this.i18n('Namespace'),
+        name: $localize`Namespace`,
         prop: 'namespace',
         flexGrow: 2
       },
       {
-        name: this.i18n('Size'),
+        name: $localize`Size`,
         prop: 'size',
         flexGrow: 1,
         cellClass: 'text-right',
         pipe: this.dimlessBinaryPipe
       },
       {
-        name: this.i18n('Objects'),
+        name: $localize`Objects`,
         prop: 'num_objs',
         flexGrow: 1,
         cellClass: 'text-right',
         pipe: this.dimlessPipe
       },
       {
-        name: this.i18n('Object size'),
+        name: $localize`Object size`,
         prop: 'obj_size',
         flexGrow: 1,
         cellClass: 'text-right',
         pipe: this.dimlessBinaryPipe
       },
       {
-        name: this.i18n('Provisioned'),
+        name: $localize`Provisioned`,
         prop: 'disk_usage',
         cellClass: 'text-center',
         flexGrow: 1,
         pipe: this.dimlessBinaryPipe
       },
       {
-        name: this.i18n('Total provisioned'),
+        name: $localize`Total provisioned`,
         prop: 'total_disk_usage',
         cellClass: 'text-center',
         flexGrow: 1,
         pipe: this.dimlessBinaryPipe
       },
       {
-        name: this.i18n('Parent'),
+        name: $localize`Parent`,
         prop: 'parent',
         flexGrow: 2,
         cellTemplate: this.parentTpl
@@ -296,12 +298,13 @@ export class RbdListComponent extends ListWithDetails implements OnInit {
 
   onFetchError() {
     this.table.reset(); // Disable loading indicator.
-    this.viewCacheStatusList = [{ status: ViewCacheStatus.ValueException }];
+    this.tableStatus = new TableStatusViewCache(ViewCacheStatus.ValueException);
   }
 
   prepareResponse(resp: any[]): any[] {
     let images: any[] = [];
     const viewCacheStatusMap = {};
+
     resp.forEach((pool) => {
       if (_.isUndefined(viewCacheStatusMap[pool.status])) {
         viewCacheStatusMap[pool.status] = [];
@@ -309,18 +312,26 @@ export class RbdListComponent extends ListWithDetails implements OnInit {
       viewCacheStatusMap[pool.status].push(pool.pool_name);
       images = images.concat(pool.value);
     });
-    const viewCacheStatusList: any[] = [];
-    _.forEach(viewCacheStatusMap, (value: any, key) => {
-      viewCacheStatusList.push({
-        status: parseInt(key, 10),
-        statusFor:
-          (value.length > 1 ? 'pools ' : 'pool ') +
-          '<strong>' +
-          value.join('</strong>, <strong>') +
-          '</strong>'
-      });
-    });
-    this.viewCacheStatusList = viewCacheStatusList;
+
+    let status: number;
+    if (viewCacheStatusMap[ViewCacheStatus.ValueException]) {
+      status = ViewCacheStatus.ValueException;
+    } else if (viewCacheStatusMap[ViewCacheStatus.ValueStale]) {
+      status = ViewCacheStatus.ValueStale;
+    } else if (viewCacheStatusMap[ViewCacheStatus.ValueNone]) {
+      status = ViewCacheStatus.ValueNone;
+    }
+
+    if (status) {
+      const statusFor =
+        (viewCacheStatusMap[status].length > 1 ? 'pools ' : 'pool ') +
+        viewCacheStatusMap[status].join();
+
+      this.tableStatus = new TableStatusViewCache(status, statusFor);
+    } else {
+      this.tableStatus = new TableStatusViewCache();
+    }
+
     return images;
   }
 
@@ -335,22 +346,20 @@ export class RbdListComponent extends ListWithDetails implements OnInit {
     const imageSpec = new ImageSpec(poolName, namespace, imageName);
 
     this.modalRef = this.modalService.show(CriticalConfirmationModalComponent, {
-      initialState: {
-        itemDescription: 'RBD',
-        itemNames: [imageSpec],
-        bodyTemplate: this.deleteTpl,
-        bodyContext: {
-          hasSnapshots: this.hasSnapshots(),
-          snapshots: this.listProtectedSnapshots()
-        },
-        submitActionObservable: () =>
-          this.taskWrapper.wrapTaskAroundCall({
-            task: new FinishedTask('rbd/delete', {
-              image_spec: imageSpec.toString()
-            }),
-            call: this.rbdService.delete(imageSpec)
-          })
-      }
+      itemDescription: 'RBD',
+      itemNames: [imageSpec],
+      bodyTemplate: this.deleteTpl,
+      bodyContext: {
+        hasSnapshots: this.hasSnapshots(),
+        snapshots: this.listProtectedSnapshots()
+      },
+      submitActionObservable: () =>
+        this.taskWrapper.wrapTaskAroundCall({
+          task: new FinishedTask('rbd/delete', {
+            image_spec: imageSpec.toString()
+          }),
+          call: this.rbdService.delete(imageSpec)
+        })
     });
   }
 
@@ -361,7 +370,7 @@ export class RbdListComponent extends ListWithDetails implements OnInit {
       imageName: this.selection.first().name,
       hasSnapshots: this.hasSnapshots()
     };
-    this.modalRef = this.modalService.show(RbdTrashMoveModalComponent, { initialState });
+    this.modalRef = this.modalService.show(RbdTrashMoveModalComponent, initialState);
   }
 
   flattenRbd(imageSpec: ImageSpec) {
@@ -372,8 +381,10 @@ export class RbdListComponent extends ListWithDetails implements OnInit {
         }),
         call: this.rbdService.flatten(imageSpec)
       })
-      .subscribe(undefined, undefined, () => {
-        this.modalRef.hide();
+      .subscribe({
+        complete: () => {
+          this.modalRef.close();
+        }
       });
   }
 
@@ -402,7 +413,7 @@ export class RbdListComponent extends ListWithDetails implements OnInit {
       }
     };
 
-    this.modalRef = this.modalService.show(ConfirmationModalComponent, { initialState });
+    this.modalRef = this.modalService.show(ConfirmationModalComponent, initialState);
   }
 
   hasSnapshots() {
@@ -430,15 +441,19 @@ export class RbdListComponent extends ListWithDetails implements OnInit {
     const first = selection.first();
 
     if (first && this.hasClonedSnapshots(first)) {
-      return this.i18n(
-        'This RBD has cloned snapshots. Please delete related RBDs before deleting this RBD.'
-      );
+      return $localize`This RBD has cloned snapshots. Please delete related RBDs before deleting this RBD.`;
     }
 
-    return (
-      !selection.first() ||
-      !selection.hasSingleSelection ||
-      this.hasClonedSnapshots(selection.first())
-    );
+    return this.getInvalidNameDisable(selection) || this.hasClonedSnapshots(selection.first());
+  }
+
+  getInvalidNameDisable(selection: CdTableSelection): string | boolean {
+    const first = selection.first();
+
+    if (first?.name?.match(/[@/]/)) {
+      return $localize`This RBD image has an invalid name and can't be managed by ceph.`;
+    }
+
+    return !selection.first() || !selection.hasSingleSelection;
   }
 }

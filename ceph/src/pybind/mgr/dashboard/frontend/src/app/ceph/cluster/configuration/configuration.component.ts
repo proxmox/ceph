@@ -1,18 +1,16 @@
 import { Component, OnInit, TemplateRef, ViewChild } from '@angular/core';
 
-import { I18n } from '@ngx-translate/i18n-polyfill';
-
-import { ConfigurationService } from '../../../shared/api/configuration.service';
-import { ListWithDetails } from '../../../shared/classes/list-with-details.class';
-import { ActionLabelsI18n } from '../../../shared/constants/app.constants';
-import { CellTemplate } from '../../../shared/enum/cell-template.enum';
-import { Icons } from '../../../shared/enum/icons.enum';
-import { CdTableAction } from '../../../shared/models/cd-table-action';
-import { CdTableColumn } from '../../../shared/models/cd-table-column';
-import { CdTableFetchDataContext } from '../../../shared/models/cd-table-fetch-data-context';
-import { CdTableSelection } from '../../../shared/models/cd-table-selection';
-import { Permission } from '../../../shared/models/permissions';
-import { AuthStorageService } from '../../../shared/services/auth-storage.service';
+import { ConfigurationService } from '~/app/shared/api/configuration.service';
+import { ListWithDetails } from '~/app/shared/classes/list-with-details.class';
+import { ActionLabelsI18n } from '~/app/shared/constants/app.constants';
+import { CellTemplate } from '~/app/shared/enum/cell-template.enum';
+import { Icons } from '~/app/shared/enum/icons.enum';
+import { CdTableAction } from '~/app/shared/models/cd-table-action';
+import { CdTableColumn } from '~/app/shared/models/cd-table-column';
+import { CdTableFetchDataContext } from '~/app/shared/models/cd-table-fetch-data-context';
+import { CdTableSelection } from '~/app/shared/models/cd-table-selection';
+import { Permission } from '~/app/shared/models/permissions';
+import { AuthStorageService } from '~/app/shared/services/auth-storage.service';
 
 @Component({
   selector: 'cd-configuration',
@@ -28,7 +26,7 @@ export class ConfigurationComponent extends ListWithDetails implements OnInit {
   selection = new CdTableSelection();
   filters: CdTableColumn[] = [
     {
-      name: this.i18n('Level'),
+      name: $localize`Level`,
       prop: 'level',
       filterOptions: ['basic', 'advanced', 'dev'],
       filterInitValue: 'basic',
@@ -45,7 +43,7 @@ export class ConfigurationComponent extends ListWithDetails implements OnInit {
       }
     },
     {
-      name: this.i18n('Service'),
+      name: $localize`Service`,
       prop: 'services',
       filterOptions: ['mon', 'mgr', 'osd', 'mds', 'common', 'mds_client', 'rgw'],
       filterPredicate: (row, value) => {
@@ -53,7 +51,7 @@ export class ConfigurationComponent extends ListWithDetails implements OnInit {
       }
     },
     {
-      name: this.i18n('Source'),
+      name: $localize`Source`,
       prop: 'source',
       filterOptions: ['mon'],
       filterPredicate: (row, value) => {
@@ -64,7 +62,7 @@ export class ConfigurationComponent extends ListWithDetails implements OnInit {
       }
     },
     {
-      name: this.i18n('Modified'),
+      name: $localize`Modified`,
       prop: 'modified',
       filterOptions: ['yes', 'no'],
       filterPredicate: (row, value) => {
@@ -83,13 +81,12 @@ export class ConfigurationComponent extends ListWithDetails implements OnInit {
 
   @ViewChild('confValTpl', { static: true })
   public confValTpl: TemplateRef<any>;
-  @ViewChild('confFlagTpl', { static: false })
+  @ViewChild('confFlagTpl')
   public confFlagTpl: TemplateRef<any>;
 
   constructor(
     private authStorageService: AuthStorageService,
     private configurationService: ConfigurationService,
-    private i18n: I18n,
     public actionLabels: ActionLabelsI18n
   ) {
     super();
@@ -108,18 +105,18 @@ export class ConfigurationComponent extends ListWithDetails implements OnInit {
 
   ngOnInit() {
     this.columns = [
-      { canAutoResize: true, prop: 'name', name: this.i18n('Name') },
-      { prop: 'desc', name: this.i18n('Description'), cellClass: 'wrap' },
+      { canAutoResize: true, prop: 'name', name: $localize`Name` },
+      { prop: 'desc', name: $localize`Description`, cellClass: 'wrap' },
       {
         prop: 'value',
-        name: this.i18n('Current value'),
+        name: $localize`Current value`,
         cellClass: 'wrap',
         cellTemplate: this.confValTpl
       },
-      { prop: 'default', name: this.i18n('Default'), cellClass: 'wrap' },
+      { prop: 'default', name: $localize`Default`, cellClass: 'wrap' },
       {
         prop: 'can_update_at_runtime',
-        name: this.i18n('Editable'),
+        name: $localize`Editable`,
         cellTransformation: CellTemplate.checkIcon,
         flexGrow: 0.4,
         cellClass: 'text-center'

@@ -1,7 +1,7 @@
 import { HttpClientTestingModule, HttpTestingController } from '@angular/common/http/testing';
 import { TestBed } from '@angular/core/testing';
 
-import { configureTestBed } from '../../../testing/unit-test-helper';
+import { configureTestBed } from '~/testing/unit-test-helper';
 import { CephfsService } from './cephfs.service';
 
 describe('CephfsService', () => {
@@ -14,8 +14,8 @@ describe('CephfsService', () => {
   });
 
   beforeEach(() => {
-    service = TestBed.get(CephfsService);
-    httpTesting = TestBed.get(HttpTestingController);
+    service = TestBed.inject(CephfsService);
+    httpTesting = TestBed.inject(HttpTestingController);
   });
 
   afterEach(() => {
@@ -66,33 +66,33 @@ describe('CephfsService', () => {
 
   it('should call mkSnapshot', () => {
     service.mkSnapshot(3, '/some/path').subscribe();
-    const req = httpTesting.expectOne('api/cephfs/3/mk_snapshot?path=%252Fsome%252Fpath');
+    const req = httpTesting.expectOne('api/cephfs/3/snapshot?path=%252Fsome%252Fpath');
     expect(req.request.method).toBe('POST');
 
     service.mkSnapshot(4, '/some/other/path', 'snap').subscribe();
-    httpTesting.expectOne('api/cephfs/4/mk_snapshot?path=%252Fsome%252Fother%252Fpath&name=snap');
+    httpTesting.expectOne('api/cephfs/4/snapshot?path=%252Fsome%252Fother%252Fpath&name=snap');
   });
 
   it('should call rmSnapshot', () => {
     service.rmSnapshot(1, '/some/path', 'snap').subscribe();
-    const req = httpTesting.expectOne('api/cephfs/1/rm_snapshot?path=%252Fsome%252Fpath&name=snap');
-    expect(req.request.method).toBe('POST');
+    const req = httpTesting.expectOne('api/cephfs/1/snapshot?path=%252Fsome%252Fpath&name=snap');
+    expect(req.request.method).toBe('DELETE');
   });
 
   it('should call updateQuota', () => {
-    service.updateQuota(1, '/some/path', { max_bytes: 1024 }).subscribe();
-    let req = httpTesting.expectOne('api/cephfs/1/set_quotas?path=%252Fsome%252Fpath');
-    expect(req.request.method).toBe('POST');
+    service.quota(1, '/some/path', { max_bytes: 1024 }).subscribe();
+    let req = httpTesting.expectOne('api/cephfs/1/quota?path=%252Fsome%252Fpath');
+    expect(req.request.method).toBe('PUT');
     expect(req.request.body).toEqual({ max_bytes: 1024 });
 
-    service.updateQuota(1, '/some/path', { max_files: 10 }).subscribe();
-    req = httpTesting.expectOne('api/cephfs/1/set_quotas?path=%252Fsome%252Fpath');
-    expect(req.request.method).toBe('POST');
+    service.quota(1, '/some/path', { max_files: 10 }).subscribe();
+    req = httpTesting.expectOne('api/cephfs/1/quota?path=%252Fsome%252Fpath');
+    expect(req.request.method).toBe('PUT');
     expect(req.request.body).toEqual({ max_files: 10 });
 
-    service.updateQuota(1, '/some/path', { max_bytes: 1024, max_files: 10 }).subscribe();
-    req = httpTesting.expectOne('api/cephfs/1/set_quotas?path=%252Fsome%252Fpath');
-    expect(req.request.method).toBe('POST');
+    service.quota(1, '/some/path', { max_bytes: 1024, max_files: 10 }).subscribe();
+    req = httpTesting.expectOne('api/cephfs/1/quota?path=%252Fsome%252Fpath');
+    expect(req.request.method).toBe('PUT');
     expect(req.request.body).toEqual({ max_bytes: 1024, max_files: 10 });
   });
 });

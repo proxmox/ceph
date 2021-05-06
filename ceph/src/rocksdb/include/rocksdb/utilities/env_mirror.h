@@ -1,3 +1,4 @@
+// Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved.
 // Copyright (c) 2015, Red Hat, Inc.  All rights reserved.
 //  This source code is licensed under both the GPLv2 (found in the
 //  COPYING file in the root directory) and Apache 2.0 License
@@ -24,7 +25,7 @@
 #include <vector>
 #include "rocksdb/env.h"
 
-namespace rocksdb {
+namespace ROCKSDB_NAMESPACE {
 
 class SequentialFileMirror;
 class RandomAccessFileMirror;
@@ -174,6 +175,6 @@ class EnvMirror : public EnvWrapper {
   }
 };
 
-}  // namespace rocksdb
+}  // namespace ROCKSDB_NAMESPACE
 
 #endif  // ROCKSDB_LITE

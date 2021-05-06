@@ -90,6 +90,14 @@ ASFLAGS += $(TARGET_ASFLAGS)
 CFLAGS += -I$(RTE_OUTPUT)/include
 LDFLAGS += -L$(RTE_OUTPUT)/lib
 
+# add in flag for supporting function versioning. The define is used in meson
+# builds to ensure that the user has properly flagged the unit in question as
+# using function versioning so it can be built twice - once for static lib and
+# then a second time for the shared lib. Since make only builds one library
+# type at a time, such precautions aren't necessary, so we can globally define
+# the flag
+CFLAGS += -DRTE_USE_FUNCTION_VERSIONING
+
 # always include rte_config.h: the one in $(RTE_OUTPUT)/include is
 # the configuration of SDK when $(BUILDING_RTE_SDK) is true, or the
 # configuration of the application if $(BUILDING_RTE_SDK) is not
@@ -97,6 +105,8 @@ LDFLAGS += -L$(RTE_OUTPUT)/lib
 ifeq ($(BUILDING_RTE_SDK),1)
 # building sdk
 CFLAGS += -include $(RTE_OUTPUT)/include/rte_config.h
+CFLAGS += -DALLOW_EXPERIMENTAL_API
+CFLAGS += -DALLOW_INTERNAL_API
 else
 # if we are building an external application, include SDK's lib and
 # includes too
@@ -110,6 +120,11 @@ endif
 
 # always define _GNU_SOURCE
 CFLAGS += -D_GNU_SOURCE
+
+# define __BSD_VISIBLE when building for FreeBSD
+ifeq ($(CONFIG_RTE_EXEC_ENV_FREEBSD),y)
+CFLAGS += -D__BSD_VISIBLE
+endif
 
 export CFLAGS
 export LDFLAGS

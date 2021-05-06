@@ -14,7 +14,7 @@ How to obtain ENIC PMD integrated DPDK
 --------------------------------------
 
 ENIC PMD support is integrated into the DPDK suite. dpdk-<version>.tar.gz
-should be downloaded from http://core.dpdk.org/download/
+should be downloaded from https://core.dpdk.org/download/
 
 
 Configuration information
@@ -106,24 +106,6 @@ Configuration information
     Receive Side Scaling:
     TCP, IPv4, TCP-IPv4, IPv6, TCP-IPv6, IPv6 Extension, TCP-IPv6 Extension.
 
-
-.. _enic-flow-director:
-
-Flow director support
----------------------
-
-Advanced filtering support was added to 1300 series VIC firmware starting
-with version 2.0.13 for C-series UCS servers and version 3.1.2 for UCSM
-managed blade servers. In order to enable advanced filtering the 'Advanced
-filter' radio button should be enabled via CIMC or UCSM followed by a reboot
-of the server.
-
-With advanced filters, perfect matching of all fields of IPv4, IPv6 headers
-as well as TCP, UDP and SCTP L4 headers is available through flow director.
-Masking of these fields for partial match is also supported.
-
-Without advanced filter support, the flow director is limited to IPv4
-perfect filtering of the 5-tuple with no masking of fields supported.
 
 SR-IOV mode utilization
 -----------------------
@@ -229,7 +211,13 @@ the use of SR-IOV.
 Generic Flow API support
 ------------------------
 
-Generic Flow API is supported. The baseline support is:
+Generic Flow API (also called "rte_flow" API) is supported. More advanced
+capabilities are available when "Advanced Filtering" is enabled on the adapter.
+Advanced filtering was added to 1300 series VIC firmware starting with version
+2.0.13 for C-series UCS servers and version 3.1.2 for UCSM managed blade
+servers. Advanced filtering is available on 1400 series adapters and beyond.
+To enable advanced filtering, the 'Advanced filter' radio button should be
+selected via CIMC or UCSM followed by a reboot of the server.
 
 - **1200 series VICs**
 
@@ -260,11 +248,14 @@ Generic Flow API is supported. The baseline support is:
   - Selectors: 'is', 'spec' and 'mask'. 'last' is not supported
   - In total, up to 64 bytes of mask is allowed across all headers
 
-- **1400 and later series VICS with advanced filters enabled**
+- **1400 and later series VICs with Flow Manager API enabled**
 
-  All the above plus:
-
-  - Action: count
+  - Attributes: ingress, egress
+  - Items: eth, vlan, ipv4, ipv6, sctp, udp, tcp, vxlan, raw, inner eth, vlan, ipv4, ipv6, sctp, udp, tcp
+  - Ingress Actions: count, drop, flag, jump, mark, port_id, passthru, queue, rss, vxlan_decap, vxlan_encap, and void
+  - Egress Actions: count, drop, jump, passthru, vxlan_encap, and void
+  - Selectors: 'is', 'spec' and 'mask'. 'last' is not supported
+  - In total, up to 64 bytes of mask is allowed across all headers
 
 The VIC performs packet matching after applying VLAN strip. If VLAN
 stripping is enabled, EtherType in the ETH item corresponds to the
@@ -327,6 +318,18 @@ By default, the NIC uses 4789 as the VXLAN port. The user may change
 it through ``rte_eth_dev_udp_tunnel_port_{add,delete}``. However, as
 the current NIC has a single VXLAN port number, the user cannot
 configure multiple port numbers.
+
+Geneve headers with non-zero options are not supported by default. To
+use Geneve with options, update the VIC firmware to the latest version
+and then set ``devargs`` parameter ``geneve-opt=1``. When Geneve with
+options is enabled, flow API cannot be used as the features are
+currently mutually exclusive. When this feature is successfully
+enabled, PMD prints the following message.
+
+.. code-block:: console
+
+    Geneve with options is enabled
+
 
 Ingress VLAN Rewrite
 --------------------
@@ -426,12 +429,6 @@ PKT_RX_VLAN_STRIPPED mbuf flags would not be set. This mode is enabled with the
 
     -w 12:00.0,ig-vlan-rewrite=untag
 
-- Limited flow director support on 1200 series and 1300 series Cisco VIC
-  adapters with old firmware. Please see :ref:`enic-flow-director`.
-
-- Flow director features are not supported on generation 1 Cisco VIC adapters
-  (M81KR and P81E)
-
 - **SR-IOV**
 
   - KVM hypervisor support only. VMware has not been tested.
@@ -462,6 +459,10 @@ PKT_RX_VLAN_STRIPPED mbuf flags would not be set. This mode is enabled with the
     packets and then receive them normally. These require 1400 series VIC adapters
     and latest firmware.
   - RAW items are limited to matching UDP tunnel headers like VXLAN.
+  - For 1400 VICs, all flows using the RSS action on a port use same hash
+    configuration. The RETA is ignored. The queues used in the RSS group must be
+    sequential. There is a performance hit if the number of queues is not a power of 2.
+    Only level 0 (outer header) RSS is allowed.
 
 - **Statistics**
 
@@ -518,7 +519,6 @@ Supported features
 - IP checksum offload
 - Receive side VLAN stripping
 - Multiple receive and transmit queues
-- Flow Director ADD, UPDATE, DELETE, STATS operation support IPv4 and IPv6
 - Promiscuous mode
 - Setting RX VLAN (supported via UCSM/CIMC only)
 - VLAN filtering (supported via UCSM/CIMC only)

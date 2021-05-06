@@ -19,6 +19,7 @@
 
 bool verboseflag = false;
 bool skip_mtab_flag = false;
+bool v2_addrs = false;
 static const char * const EMPTY_STRING = "";
 
 /* TODO duplicates logic from kernel */
@@ -155,7 +156,7 @@ static int fetch_config_info(struct ceph_mount_info *cmi)
 		ret = drop_capabilities();
 		if (ret)
 			exit(1);
-		mount_ceph_get_config_info(cmi->cmi_conf, cmi->cmi_name, cci);
+		mount_ceph_get_config_info(cmi->cmi_conf, cmi->cmi_name, v2_addrs, cci);
 		exit(0);
 	} else {
 		/* parent */
@@ -207,6 +208,9 @@ static int parse_options(const char *data, struct ceph_mount_info *cmi)
 	char *name = NULL;
 	int name_len = 0;
 	int name_pos = 0;
+
+	if (data == EMPTY_STRING)
+		goto out;
 
 	mount_ceph_debug("parsing options: %s\n", data);
 
@@ -315,10 +319,17 @@ static int parse_options(const char *data, struct ceph_mount_info *cmi)
 			/* keep pointer to value */
 			name = value;
 			skip = false;
-		} else {
+		} else if (strcmp(data, "ms_mode") == 0) {
+			if (!value || !*value) {
+				fprintf(stderr, "mount option ms_mode requires a value.\n");
+				return -EINVAL;
+			}
+			/* Only legacy ms_mode needs v1 addrs */
+			v2_addrs = strcmp(value, "legacy");
 			skip = false;
-			mount_ceph_debug("mount.ceph: unrecognized mount option \"%s\", passing to kernel.\n",
-					data);
+		} else {
+			/* unrecognized mount options, passing to kernel */
+			skip = false;
 		}
 
 		/* Copy (possibly modified) option to out */
@@ -337,9 +348,14 @@ static int parse_options(const char *data, struct ceph_mount_info *cmi)
 		data = next_keyword;
 	} while (data);
 
+out:
 	name_pos = safe_cat(&cmi->cmi_name, &name_len, name_pos, "client.");
 	name_pos = safe_cat(&cmi->cmi_name, &name_len, name_pos,
 			    name ? name : CEPH_AUTH_NAME_DEFAULT);
+
+	if (cmi->cmi_opts)
+		mount_ceph_debug("mount.ceph: options \"%s\" will pass to kernel.\n",
+						 cmi->cmi_opts);
 
 	if (!cmi->cmi_opts) {
 		cmi->cmi_opts = strdup(EMPTY_STRING);

@@ -17,6 +17,16 @@
 #include "common/Checksummer.h"
 #include "include/stringify.h"
 
+using std::list;
+using std::map;
+using std::make_pair;
+using std::ostream;
+using std::string;
+
+using ceph::bufferlist;
+using ceph::bufferptr;
+using ceph::Formatter;
+
 // bluestore_bdev_label_t
 
 void bluestore_bdev_label_t::encode(bufferlist& bl) const
@@ -681,7 +691,7 @@ void bluestore_blob_t::generate_test_instances(list<bluestore_blob_t*>& ls)
   ls.back()->allocated_test(bluestore_pextent_t(111, 222));
   ls.push_back(new bluestore_blob_t);
   ls.back()->init_csum(Checksummer::CSUM_XXHASH32, 16, 65536);
-  ls.back()->csum_data = buffer::claim_malloc(4, strdup("abcd"));
+  ls.back()->csum_data = ceph::buffer::claim_malloc(4, strdup("abcd"));
   ls.back()->add_unused(0, 3);
   ls.back()->add_unused(8, 8);
   ls.back()->allocated_test(bluestore_pextent_t(0x40100000, 0x10000));
@@ -1159,6 +1169,9 @@ void bluestore_compression_header_t::dump(Formatter *f) const
 {
   f->dump_unsigned("type", type);
   f->dump_unsigned("length", length);
+  if (compressor_message) {
+    f->dump_int("compressor_message", *compressor_message);
+  }
 }
 
 void bluestore_compression_header_t::generate_test_instances(

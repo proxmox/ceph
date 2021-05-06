@@ -16,21 +16,20 @@
 #include "test.h"
 
 /* Check condition and return an error if true. */
-#define TEST_RCU_MAX_LCORE 128
-static uint16_t enabled_core_ids[TEST_RCU_MAX_LCORE];
-static uint8_t num_cores;
+static uint16_t enabled_core_ids[RTE_MAX_LCORE];
+static unsigned int num_cores;
 
 static uint32_t *keys;
 #define TOTAL_ENTRY (1024 * 8)
 #define COUNTER_VALUE 4096
-static uint32_t *hash_data[TEST_RCU_MAX_LCORE][TOTAL_ENTRY];
+static uint32_t *hash_data[TOTAL_ENTRY];
 static volatile uint8_t writer_done;
 static volatile uint8_t all_registered;
 static volatile uint32_t thr_id;
 
-static struct rte_rcu_qsbr *t[TEST_RCU_MAX_LCORE];
-static struct rte_hash *h[TEST_RCU_MAX_LCORE];
-static char hash_name[TEST_RCU_MAX_LCORE][8];
+static struct rte_rcu_qsbr *t[RTE_MAX_LCORE];
+static struct rte_hash *h;
+static char hash_name[8];
 static rte_atomic64_t updates, checks;
 static rte_atomic64_t update_cycles, check_cycles;
 
@@ -39,38 +38,17 @@ static rte_atomic64_t update_cycles, check_cycles;
  */
 #define RCU_SCALE_DOWN 1000
 
-/* Simple way to allocate thread ids in 0 to TEST_RCU_MAX_LCORE space */
+/* Simple way to allocate thread ids in 0 to RTE_MAX_LCORE space */
 static inline uint32_t
 alloc_thread_id(void)
 {
 	uint32_t tmp_thr_id;
 
 	tmp_thr_id = __atomic_fetch_add(&thr_id, 1, __ATOMIC_RELAXED);
-	if (tmp_thr_id >= TEST_RCU_MAX_LCORE)
+	if (tmp_thr_id >= RTE_MAX_LCORE)
 		printf("Invalid thread id %u\n", tmp_thr_id);
 
 	return tmp_thr_id;
-}
-
-static inline int
-get_enabled_cores_mask(void)
-{
-	uint16_t core_id;
-	uint32_t max_cores = rte_lcore_count();
-
-	if (max_cores > TEST_RCU_MAX_LCORE) {
-		printf("Number of cores exceed %d\n", TEST_RCU_MAX_LCORE);
-		return -1;
-	}
-
-	core_id = 0;
-	num_cores = 0;
-	RTE_LCORE_FOREACH_SLAVE(core_id) {
-		enabled_core_ids[num_cores] = core_id;
-		num_cores++;
-	}
-
-	return 0;
 }
 
 static int
@@ -147,8 +125,8 @@ test_rcu_qsbr_writer_perf(void *arg)
 static int
 test_rcu_qsbr_perf(void)
 {
-	int i, sz;
-	int tmp_num_cores;
+	size_t sz;
+	unsigned int i, tmp_num_cores;
 
 	writer_done = 0;
 
@@ -165,7 +143,7 @@ test_rcu_qsbr_perf(void)
 	if (all_registered == 1)
 		tmp_num_cores = num_cores - 1;
 	else
-		tmp_num_cores = TEST_RCU_MAX_LCORE;
+		tmp_num_cores = RTE_MAX_LCORE;
 
 	sz = rte_rcu_qsbr_get_memsize(tmp_num_cores);
 	t[0] = (struct rte_rcu_qsbr *)rte_zmalloc("rcu0", sz,
@@ -189,8 +167,10 @@ test_rcu_qsbr_perf(void)
 	/* Wait until all readers have exited */
 	rte_eal_mp_wait_lcore();
 
-	printf("Total RCU updates = %"PRIi64"\n", rte_atomic64_read(&updates));
-	printf("Cycles per %d updates: %"PRIi64"\n", RCU_SCALE_DOWN,
+	printf("Total quiescent state updates = %"PRIi64"\n",
+		rte_atomic64_read(&updates));
+	printf("Cycles per %d quiescent state updates: %"PRIi64"\n",
+		RCU_SCALE_DOWN,
 		rte_atomic64_read(&update_cycles) /
 		(rte_atomic64_read(&updates) / RCU_SCALE_DOWN));
 	printf("Total RCU checks = %"PRIi64"\n", rte_atomic64_read(&checks));
@@ -210,8 +190,8 @@ test_rcu_qsbr_perf(void)
 static int
 test_rcu_qsbr_rperf(void)
 {
-	int i, sz;
-	int tmp_num_cores;
+	size_t sz;
+	unsigned int i, tmp_num_cores;
 
 	rte_atomic64_clear(&updates);
 	rte_atomic64_clear(&update_cycles);
@@ -223,7 +203,7 @@ test_rcu_qsbr_rperf(void)
 	if (all_registered == 1)
 		tmp_num_cores = num_cores;
 	else
-		tmp_num_cores = TEST_RCU_MAX_LCORE;
+		tmp_num_cores = RTE_MAX_LCORE;
 
 	sz = rte_rcu_qsbr_get_memsize(tmp_num_cores);
 	t[0] = (struct rte_rcu_qsbr *)rte_zmalloc("rcu0", sz,
@@ -239,8 +219,10 @@ test_rcu_qsbr_rperf(void)
 	/* Wait until all readers have exited */
 	rte_eal_mp_wait_lcore();
 
-	printf("Total RCU updates = %"PRIi64"\n", rte_atomic64_read(&updates));
-	printf("Cycles per %d updates: %"PRIi64"\n", RCU_SCALE_DOWN,
+	printf("Total quiescent state updates = %"PRIi64"\n",
+		rte_atomic64_read(&updates));
+	printf("Cycles per %d quiescent state updates: %"PRIi64"\n",
+		RCU_SCALE_DOWN,
 		rte_atomic64_read(&update_cycles) /
 		(rte_atomic64_read(&updates) / RCU_SCALE_DOWN));
 
@@ -256,7 +238,8 @@ test_rcu_qsbr_rperf(void)
 static int
 test_rcu_qsbr_wperf(void)
 {
-	int i, sz;
+	size_t sz;
+	unsigned int i;
 
 	rte_atomic64_clear(&checks);
 	rte_atomic64_clear(&check_cycles);
@@ -269,11 +252,11 @@ test_rcu_qsbr_wperf(void)
 	/* Number of readers does not matter for QS variable in this test
 	 * case as no reader will be registered.
 	 */
-	sz = rte_rcu_qsbr_get_memsize(TEST_RCU_MAX_LCORE);
+	sz = rte_rcu_qsbr_get_memsize(RTE_MAX_LCORE);
 	t[0] = (struct rte_rcu_qsbr *)rte_zmalloc("rcu0", sz,
 						RTE_CACHE_LINE_SIZE);
 	/* QS variable is initialized */
-	rte_rcu_qsbr_init(t[0], TEST_RCU_MAX_LCORE);
+	rte_rcu_qsbr_init(t[0], RTE_MAX_LCORE);
 
 	/* Writer threads are launched */
 	for (i = 0; i < num_cores; i++)
@@ -309,7 +292,7 @@ test_rcu_qsbr_hash_reader(void *arg)
 	uint32_t *pdata;
 
 	temp = t[read_type];
-	hash = h[read_type];
+	hash = h;
 
 	rte_rcu_qsbr_thread_register(temp, thread_id);
 
@@ -319,11 +302,11 @@ test_rcu_qsbr_hash_reader(void *arg)
 		rte_rcu_qsbr_thread_online(temp, thread_id);
 		for (i = 0; i < TOTAL_ENTRY; i++) {
 			rte_rcu_qsbr_lock(temp, thread_id);
-			if (rte_hash_lookup_data(hash, keys+i,
+			if (rte_hash_lookup_data(hash, keys + i,
 					(void **)&pdata) != -ENOENT) {
-				*pdata = 0;
-				while (*pdata < COUNTER_VALUE)
-					++*pdata;
+				pdata[thread_id] = 0;
+				while (pdata[thread_id] < COUNTER_VALUE)
+					pdata[thread_id]++;
 			}
 			rte_rcu_qsbr_unlock(temp, thread_id);
 		}
@@ -342,13 +325,12 @@ test_rcu_qsbr_hash_reader(void *arg)
 	return 0;
 }
 
-static struct rte_hash *
-init_hash(int hash_id)
+static struct rte_hash *init_hash(void)
 {
 	int i;
-	struct rte_hash *h = NULL;
+	struct rte_hash *hash = NULL;
 
-	sprintf(hash_name[hash_id], "hash%d", hash_id);
+	snprintf(hash_name, 8, "hash");
 	struct rte_hash_parameters hash_params = {
 		.entries = TOTAL_ENTRY,
 		.key_len = sizeof(uint32_t),
@@ -357,18 +339,19 @@ init_hash(int hash_id)
 		.hash_func = rte_hash_crc,
 		.extra_flag =
 			RTE_HASH_EXTRA_FLAGS_RW_CONCURRENCY_LF,
-		.name = hash_name[hash_id],
+		.name = hash_name,
 	};
 
-	h = rte_hash_create(&hash_params);
-	if (h == NULL) {
+	hash = rte_hash_create(&hash_params);
+	if (hash == NULL) {
 		printf("Hash create Failed\n");
 		return NULL;
 	}
 
 	for (i = 0; i < TOTAL_ENTRY; i++) {
-		hash_data[hash_id][i] = rte_zmalloc(NULL, sizeof(uint32_t), 0);
-		if (hash_data[hash_id][i] == NULL) {
+		hash_data[i] = rte_zmalloc(NULL,
+				sizeof(uint32_t) * RTE_MAX_LCORE, 0);
+		if (hash_data[i] == NULL) {
 			printf("No memory\n");
 			return NULL;
 		}
@@ -383,14 +366,13 @@ init_hash(int hash_id)
 		keys[i] = i;
 
 	for (i = 0; i < TOTAL_ENTRY; i++) {
-		if (rte_hash_add_key_data(h, keys + i,
-				(void *)((uintptr_t)hash_data[hash_id][i]))
-				< 0) {
+		if (rte_hash_add_key_data(hash, keys + i,
+				(void *)((uintptr_t)hash_data[i])) < 0) {
 			printf("Hash key add Failed #%d\n", i);
 			return NULL;
 		}
 	}
-	return h;
+	return hash;
 }
 
 /*
@@ -401,7 +383,8 @@ static int
 test_rcu_qsbr_sw_sv_1qs(void)
 {
 	uint64_t token, begin, cycles;
-	int i, tmp_num_cores, sz;
+	size_t sz;
+	unsigned int i, j, tmp_num_cores;
 	int32_t pos;
 
 	writer_done = 0;
@@ -418,7 +401,7 @@ test_rcu_qsbr_sw_sv_1qs(void)
 	if (all_registered == 1)
 		tmp_num_cores = num_cores;
 	else
-		tmp_num_cores = TEST_RCU_MAX_LCORE;
+		tmp_num_cores = RTE_MAX_LCORE;
 
 	sz = rte_rcu_qsbr_get_memsize(tmp_num_cores);
 	t[0] = (struct rte_rcu_qsbr *)rte_zmalloc("rcu0", sz,
@@ -427,8 +410,8 @@ test_rcu_qsbr_sw_sv_1qs(void)
 	rte_rcu_qsbr_init(t[0], tmp_num_cores);
 
 	/* Shared data structure created */
-	h[0] = init_hash(0);
-	if (h[0] == NULL) {
+	h = init_hash();
+	if (h == NULL) {
 		printf("Hash init failed\n");
 		goto error;
 	}
@@ -442,7 +425,7 @@ test_rcu_qsbr_sw_sv_1qs(void)
 
 	for (i = 0; i < TOTAL_ENTRY; i++) {
 		/* Delete elements from the shared data structure */
-		pos = rte_hash_del_key(h[0], keys + i);
+		pos = rte_hash_del_key(h, keys + i);
 		if (pos < 0) {
 			printf("Delete key failed #%d\n", keys[i]);
 			goto error;
@@ -452,19 +435,21 @@ test_rcu_qsbr_sw_sv_1qs(void)
 
 		/* Check the quiescent state status */
 		rte_rcu_qsbr_check(t[0], token, true);
-		if (*hash_data[0][i] != COUNTER_VALUE &&
-			*hash_data[0][i] != 0) {
-			printf("Reader did not complete #%d =  %d\n", i,
-							*hash_data[0][i]);
-			goto error;
+		for (j = 0; j < tmp_num_cores; j++) {
+			if (hash_data[i][j] != COUNTER_VALUE &&
+				hash_data[i][j] != 0) {
+				printf("Reader thread ID %u did not complete #%d =  %d\n",
+					j, i, hash_data[i][j]);
+				goto error;
+			}
 		}
 
-		if (rte_hash_free_key_with_position(h[0], pos) < 0) {
+		if (rte_hash_free_key_with_position(h, pos) < 0) {
 			printf("Failed to free the key #%d\n", keys[i]);
 			goto error;
 		}
-		rte_free(hash_data[0][i]);
-		hash_data[0][i] = NULL;
+		rte_free(hash_data[i]);
+		hash_data[i] = NULL;
 	}
 
 	cycles = rte_rdtsc_precise() - begin;
@@ -473,17 +458,15 @@ test_rcu_qsbr_sw_sv_1qs(void)
 
 	writer_done = 1;
 
-	/* Wait until all readers have exited */
-	rte_eal_mp_wait_lcore();
-	/* Check return value from threads */
+	/* Wait and check return value from reader threads */
 	for (i = 0; i < num_cores; i++)
-		if (lcore_config[enabled_core_ids[i]].ret < 0)
+		if (rte_eal_wait_lcore(enabled_core_ids[i]) < 0)
 			goto error;
-	rte_hash_free(h[0]);
+	rte_hash_free(h);
 	rte_free(keys);
 
 	printf("Following numbers include calls to rte_hash functions\n");
-	printf("Cycles per 1 update(online/update/offline): %"PRIi64"\n",
+	printf("Cycles per 1 quiescent state update(online/update/offline): %"PRIi64"\n",
 		rte_atomic64_read(&update_cycles) /
 		rte_atomic64_read(&updates));
 
@@ -500,10 +483,10 @@ error:
 	/* Wait until all readers have exited */
 	rte_eal_mp_wait_lcore();
 
-	rte_hash_free(h[0]);
+	rte_hash_free(h);
 	rte_free(keys);
 	for (i = 0; i < TOTAL_ENTRY; i++)
-		rte_free(hash_data[0][i]);
+		rte_free(hash_data[i]);
 
 	rte_free(t[0]);
 
@@ -519,7 +502,9 @@ static int
 test_rcu_qsbr_sw_sv_1qs_non_blocking(void)
 {
 	uint64_t token, begin, cycles;
-	int i, ret, tmp_num_cores, sz;
+	int ret;
+	size_t sz;
+	unsigned int i, j, tmp_num_cores;
 	int32_t pos;
 
 	writer_done = 0;
@@ -531,7 +516,7 @@ test_rcu_qsbr_sw_sv_1qs_non_blocking(void)
 	if (all_registered == 1)
 		tmp_num_cores = num_cores;
 	else
-		tmp_num_cores = TEST_RCU_MAX_LCORE;
+		tmp_num_cores = RTE_MAX_LCORE;
 
 	sz = rte_rcu_qsbr_get_memsize(tmp_num_cores);
 	t[0] = (struct rte_rcu_qsbr *)rte_zmalloc("rcu0", sz,
@@ -540,8 +525,8 @@ test_rcu_qsbr_sw_sv_1qs_non_blocking(void)
 	rte_rcu_qsbr_init(t[0], tmp_num_cores);
 
 	/* Shared data structure created */
-	h[0] = init_hash(0);
-	if (h[0] == NULL) {
+	h = init_hash();
+	if (h == NULL) {
 		printf("Hash init failed\n");
 		goto error;
 	}
@@ -555,7 +540,7 @@ test_rcu_qsbr_sw_sv_1qs_non_blocking(void)
 
 	for (i = 0; i < TOTAL_ENTRY; i++) {
 		/* Delete elements from the shared data structure */
-		pos = rte_hash_del_key(h[0], keys + i);
+		pos = rte_hash_del_key(h, keys + i);
 		if (pos < 0) {
 			printf("Delete key failed #%d\n", keys[i]);
 			goto error;
@@ -567,19 +552,21 @@ test_rcu_qsbr_sw_sv_1qs_non_blocking(void)
 		do {
 			ret = rte_rcu_qsbr_check(t[0], token, false);
 		} while (ret == 0);
-		if (*hash_data[0][i] != COUNTER_VALUE &&
-			*hash_data[0][i] != 0) {
-			printf("Reader did not complete  #%d = %d\n", i,
-							*hash_data[0][i]);
-			goto error;
+		for (j = 0; j < tmp_num_cores; j++) {
+			if (hash_data[i][j] != COUNTER_VALUE &&
+				hash_data[i][j] != 0) {
+				printf("Reader thread ID %u did not complete #%d =  %d\n",
+					j, i, hash_data[i][j]);
+				goto error;
+			}
 		}
 
-		if (rte_hash_free_key_with_position(h[0], pos) < 0) {
+		if (rte_hash_free_key_with_position(h, pos) < 0) {
 			printf("Failed to free the key #%d\n", keys[i]);
 			goto error;
 		}
-		rte_free(hash_data[0][i]);
-		hash_data[0][i] = NULL;
+		rte_free(hash_data[i]);
+		hash_data[i] = NULL;
 	}
 
 	cycles = rte_rdtsc_precise() - begin;
@@ -587,17 +574,15 @@ test_rcu_qsbr_sw_sv_1qs_non_blocking(void)
 	rte_atomic64_add(&checks, i);
 
 	writer_done = 1;
-	/* Wait until all readers have exited */
-	rte_eal_mp_wait_lcore();
-	/* Check return value from threads */
+	/* Wait and check return value from reader threads */
 	for (i = 0; i < num_cores; i++)
-		if (lcore_config[enabled_core_ids[i]].ret < 0)
+		if (rte_eal_wait_lcore(enabled_core_ids[i]) < 0)
 			goto error;
-	rte_hash_free(h[0]);
+	rte_hash_free(h);
 	rte_free(keys);
 
 	printf("Following numbers include calls to rte_hash functions\n");
-	printf("Cycles per 1 update(online/update/offline): %"PRIi64"\n",
+	printf("Cycles per 1 quiescent state update(online/update/offline): %"PRIi64"\n",
 		rte_atomic64_read(&update_cycles) /
 		rte_atomic64_read(&updates));
 
@@ -614,10 +599,10 @@ error:
 	/* Wait until all readers have exited */
 	rte_eal_mp_wait_lcore();
 
-	rte_hash_free(h[0]);
+	rte_hash_free(h);
 	rte_free(keys);
 	for (i = 0; i < TOTAL_ENTRY; i++)
-		rte_free(hash_data[0][i]);
+		rte_free(hash_data[i]);
 
 	rte_free(t[0]);
 
@@ -627,24 +612,25 @@ error:
 static int
 test_rcu_qsbr_main(void)
 {
+	uint16_t core_id;
+
+	if (rte_lcore_count() < 3) {
+		printf("Not enough cores for rcu_qsbr_perf_autotest, expecting at least 3\n");
+		return TEST_SKIPPED;
+	}
+
 	rte_atomic64_init(&updates);
 	rte_atomic64_init(&update_cycles);
 	rte_atomic64_init(&checks);
 	rte_atomic64_init(&check_cycles);
 
-	if (get_enabled_cores_mask() != 0)
-		return -1;
+	num_cores = 0;
+	RTE_LCORE_FOREACH_SLAVE(core_id) {
+		enabled_core_ids[num_cores] = core_id;
+		num_cores++;
+	}
 
 	printf("Number of cores provided = %d\n", num_cores);
-	if (num_cores < 2) {
-		printf("Test failed! Need 2 or more cores\n");
-		goto test_fail;
-	}
-	if (num_cores > TEST_RCU_MAX_LCORE) {
-		printf("Test failed! %d cores supported\n", TEST_RCU_MAX_LCORE);
-		goto test_fail;
-	}
-
 	printf("Perf test with all reader threads registered\n");
 	printf("--------------------------------------------\n");
 	all_registered = 1;
@@ -665,12 +651,12 @@ test_rcu_qsbr_main(void)
 		goto test_fail;
 
 	/* Make sure the actual number of cores provided is less than
-	 * TEST_RCU_MAX_LCORE. This will allow for some threads not
+	 * RTE_MAX_LCORE. This will allow for some threads not
 	 * to be registered on the QS variable.
 	 */
-	if (num_cores >= TEST_RCU_MAX_LCORE) {
+	if (num_cores >= RTE_MAX_LCORE) {
 		printf("Test failed! number of cores provided should be less than %d\n",
-			TEST_RCU_MAX_LCORE);
+			RTE_MAX_LCORE);
 		goto test_fail;
 	}
 

@@ -19,11 +19,20 @@
  * Copyright (C) 2019 ScyllaDB Ltd.
  */
 
-#include <seastar/core/coroutine.hh>
 #include <seastar/core/future-util.hh>
 #include <seastar/testing/test_case.hh>
 
 using namespace seastar;
+
+#ifndef SEASTAR_COROUTINES_ENABLED
+
+SEASTAR_TEST_CASE(test_coroutines_not_compiled_in) {
+    return make_ready_future<>();
+}
+
+#else
+
+#include <seastar/core/coroutine.hh>
 
 namespace {
 
@@ -42,7 +51,7 @@ future<int> ready_coroutine() {
     co_return 64;
 }
 
-future<int, double> tuple_coroutine() {
+future<std::tuple<int, double>> tuple_coroutine() {
     co_return std::tuple(1, 2.);
 }
 
@@ -61,8 +70,34 @@ SEASTAR_TEST_CASE(test_simple_coroutines) {
     BOOST_REQUIRE_EXCEPTION((void)co_await failing_coroutine(), int, [] (auto v) { return v == 42; });
 }
 
+
+future<> forwarding_return_coroutine_1(bool& x) {
+    co_return
+// Clang complains if both return_value and return_void are defined
+#if defined(__clang__)
+    co_await
+#endif
+      later().then([&x] {
+        x = true;
+    });
+}
+
+future<int> forwarding_return_coroutine_2() {
+    co_return later().then([] {
+        return 3;
+    });
+}
+
+SEASTAR_TEST_CASE(test_forwarding_return) {
+    bool x = false;
+    co_await forwarding_return_coroutine_1(x);
+    BOOST_REQUIRE(x);
+    auto y = co_await forwarding_return_coroutine_2();
+    BOOST_REQUIRE_EQUAL(y, 3);
+}
+
 SEASTAR_TEST_CASE(test_abandond_coroutine) {
-    compat::optional<future<int>> f;
+    std::optional<future<int>> f;
     {
         auto p1 = promise<>();
         auto p2 = promise<>();
@@ -91,7 +126,9 @@ SEASTAR_TEST_CASE(test_scheduling_group) {
 
     BOOST_REQUIRE(current_scheduling_group() == default_scheduling_group());
     auto f_ret = with_scheduling_group(other_sg,
-            [other_sg] (future<> f1, future<> f2, promise<> p1, promise<> p2) -> future<int> {
+            [other_sg_cap = other_sg] (future<> f1, future<> f2, promise<> p1, promise<> p2) -> future<int> {
+        // Make a copy in the coroutine before the lambda is destroyed.
+        auto other_sg = other_sg_cap;
         BOOST_REQUIRE(current_scheduling_group() == other_sg);
         BOOST_REQUIRE(other_sg == other_sg);
         p1.set_value();
@@ -112,3 +149,5 @@ SEASTAR_TEST_CASE(test_scheduling_group) {
     BOOST_REQUIRE_EQUAL(co_await std::move(f_ret), 42);
     BOOST_REQUIRE(current_scheduling_group() == default_scheduling_group());
 }
+
+#endif

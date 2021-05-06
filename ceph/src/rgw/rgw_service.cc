@@ -10,7 +10,6 @@
 #include "services/svc_bucket_sync_sobj.h"
 #include "services/svc_cls.h"
 #include "services/svc_config_key_rados.h"
-#include "services/svc_datalog_rados.h"
 #include "services/svc_mdlog.h"
 #include "services/svc_meta.h"
 #include "services/svc_meta_be.h"
@@ -30,13 +29,13 @@
 
 #include "common/errno.h"
 
-#include "rgw_metadata.h"
-#include "rgw_user.h"
 #include "rgw_bucket.h"
+#include "rgw_datalog.h"
+#include "rgw_metadata.h"
 #include "rgw_otp.h"
+#include "rgw_user.h"
 
 #define dout_subsys ceph_subsys_rgw
-
 
 RGWServices_Def::RGWServices_Def() = default;
 RGWServices_Def::~RGWServices_Def()
@@ -47,7 +46,8 @@ RGWServices_Def::~RGWServices_Def()
 int RGWServices_Def::init(CephContext *cct,
 			  bool have_cache,
                           bool raw,
-			  bool run_sync)
+			  bool run_sync,
+			  optional_yield y)
 {
   finisher = std::make_unique<RGWSI_Finisher>(cct);
   bucket_sobj = std::make_unique<RGWSI_Bucket_SObj>(cct);
@@ -56,7 +56,7 @@ int RGWServices_Def::init(CephContext *cct,
   bilog_rados = std::make_unique<RGWSI_BILog_RADOS>(cct);
   cls = std::make_unique<RGWSI_Cls>(cct);
   config_key_rados = std::make_unique<RGWSI_ConfigKey_RADOS>(cct);
-  datalog_rados = std::make_unique<RGWSI_DataLog_RADOS>(cct);
+  datalog_rados = std::make_unique<RGWDataChangesLog>(cct);
   mdlog = std::make_unique<RGWSI_MDLog>(cct, run_sync);
   meta = std::make_unique<RGWSI_Meta>(cct);
   meta_be_sobj = std::make_unique<RGWSI_MetaBackend_SObj>(cct);
@@ -90,7 +90,6 @@ int RGWServices_Def::init(CephContext *cct,
                          bucket_sobj.get());
   cls->init(zone.get(), rados.get());
   config_key_rados->init(rados.get());
-  datalog_rados->init(zone.get(), cls.get());
   mdlog->init(rados.get(), zone.get(), sysobj.get(), cls.get());
   meta->init(sysobj.get(), mdlog.get(), meta_bes);
   meta_be_sobj->init(sysobj.get(), mdlog.get());
@@ -114,128 +113,130 @@ int RGWServices_Def::init(CephContext *cct,
 
   can_shutdown = true;
 
-  int r = finisher->start();
+  int r = finisher->start(y);
   if (r < 0) {
     ldout(cct, 0) << "ERROR: failed to start finisher service (" << cpp_strerror(-r) << dendl;
     return r;
   }
 
   if (!raw) {
-    r = notify->start();
+    r = notify->start(y);
     if (r < 0) {
       ldout(cct, 0) << "ERROR: failed to start notify service (" << cpp_strerror(-r) << dendl;
       return r;
     }
   }
 
-  r = rados->start();
+  r = rados->start(y);
   if (r < 0) {
     ldout(cct, 0) << "ERROR: failed to start rados service (" << cpp_strerror(-r) << dendl;
     return r;
   }
 
   if (!raw) {
-    r = zone->start();
+    r = zone->start(y);
     if (r < 0) {
       ldout(cct, 0) << "ERROR: failed to start zone service (" << cpp_strerror(-r) << dendl;
       return r;
     }
 
-    r = mdlog->start();
+    r = datalog_rados->start(&zone->get_zone(),
+			     zone->get_zone_params(),
+			     rados->get_rados_handle());
+    if (r < 0) {
+      ldout(cct, 0) << "ERROR: failed to start datalog_rados service (" << cpp_strerror(-r) << dendl;
+      return r;
+    }
+
+    r = mdlog->start(y);
     if (r < 0) {
       ldout(cct, 0) << "ERROR: failed to start mdlog service (" << cpp_strerror(-r) << dendl;
       return r;
     }
 
-    r = sync_modules->start();
+    r = sync_modules->start(y);
     if (r < 0) {
       ldout(cct, 0) << "ERROR: failed to start sync modules service (" << cpp_strerror(-r) << dendl;
       return r;
     }
   }
 
-  r = cls->start();
+  r = cls->start(y);
   if (r < 0) {
     ldout(cct, 0) << "ERROR: failed to start cls service (" << cpp_strerror(-r) << dendl;
     return r;
   }
 
-  r = config_key_rados->start();
+  r = config_key_rados->start(y);
   if (r < 0) {
     ldout(cct, 0) << "ERROR: failed to start config_key service (" << cpp_strerror(-r) << dendl;
     return r;
   }
 
-  r = zone_utils->start();
+  r = zone_utils->start(y);
   if (r < 0) {
     ldout(cct, 0) << "ERROR: failed to start zone_utils service (" << cpp_strerror(-r) << dendl;
     return r;
   }
 
-  r = quota->start();
+  r = quota->start(y);
   if (r < 0) {
     ldout(cct, 0) << "ERROR: failed to start quota service (" << cpp_strerror(-r) << dendl;
     return r;
   }
 
-  r = sysobj_core->start();
+  r = sysobj_core->start(y);
   if (r < 0) {
     ldout(cct, 0) << "ERROR: failed to start sysobj_core service (" << cpp_strerror(-r) << dendl;
     return r;
   }
 
   if (have_cache) {
-    r = sysobj_cache->start();
+    r = sysobj_cache->start(y);
     if (r < 0) {
       ldout(cct, 0) << "ERROR: failed to start sysobj_cache service (" << cpp_strerror(-r) << dendl;
       return r;
     }
   }
 
-  r = sysobj->start();
+  r = sysobj->start(y);
   if (r < 0) {
     ldout(cct, 0) << "ERROR: failed to start sysobj service (" << cpp_strerror(-r) << dendl;
     return r;
   }
 
   if (!raw) {
-    r = datalog_rados->start();
-    if (r < 0) {
-      ldout(cct, 0) << "ERROR: failed to start datalog_rados service (" << cpp_strerror(-r) << dendl;
-      return r;
-    }
-
-    r = meta_be_sobj->start();
+    r = meta_be_sobj->start(y);
     if (r < 0) {
       ldout(cct, 0) << "ERROR: failed to start meta_be_sobj service (" << cpp_strerror(-r) << dendl;
       return r;
     }
 
-    r = meta->start();
+    r = meta->start(y);
     if (r < 0) {
       ldout(cct, 0) << "ERROR: failed to start meta service (" << cpp_strerror(-r) << dendl;
       return r;
     }
 
-    r = bucket_sobj->start();
+    r = bucket_sobj->start(y);
     if (r < 0) {
       ldout(cct, 0) << "ERROR: failed to start bucket service (" << cpp_strerror(-r) << dendl;
       return r;
     }
 
-    r = bucket_sync_sobj->start();
+    r = bucket_sync_sobj->start(y);
     if (r < 0) {
       ldout(cct, 0) << "ERROR: failed to start bucket_sync service (" << cpp_strerror(-r) << dendl;
       return r;
     }
 
-    r = user_rados->start();
+    r = user_rados->start(y);
     if (r < 0) {
       ldout(cct, 0) << "ERROR: failed to start user_rados service (" << cpp_strerror(-r) << dendl;
       return r;
     }
 
-    r = otp->start();
+    r = otp->start(y);
     if (r < 0) {
       ldout(cct, 0) << "ERROR: failed to start otp service (" << cpp_strerror(-r) << dendl;
       return r;
@@ -257,8 +258,6 @@ void RGWServices_Def::shutdown()
     return;
   }
 
-  datalog_rados->shutdown();
-
   sysobj->shutdown();
   sysobj_core->shutdown();
   notify->shutdown();
@@ -275,11 +274,11 @@ void RGWServices_Def::shutdown()
 }
 
 
-int RGWServices::do_init(CephContext *_cct, bool have_cache, bool raw, bool run_sync)
+int RGWServices::do_init(CephContext *_cct, bool have_cache, bool raw, bool run_sync, optional_yield y)
 {
   cct = _cct;
 
-  int r = _svc.init(cct, have_cache, raw, run_sync);
+  int r = _svc.init(cct, have_cache, raw, run_sync, y);
   if (r < 0) {
     return r;
   }
@@ -315,7 +314,7 @@ int RGWServices::do_init(CephContext *_cct, bool have_cache, bool raw, bool run_
   return 0;
 }
 
-int RGWServiceInstance::start()
+int RGWServiceInstance::start(optional_yield y)
 {
   if (start_state != StateInit) {
     return 0;
@@ -324,7 +323,7 @@ int RGWServiceInstance::start()
   start_state = StateStarting;; /* setting started prior to do_start() on purpose so that circular
                                    references can call start() on each other */
 
-  int r = do_start();
+  int r = do_start(y);
   if (r < 0) {
     return r;
   }
@@ -377,7 +376,7 @@ int RGWCtlDef::init(RGWServices& svc)
   bucket->init(user.get(),
                (RGWBucketMetadataHandler *)bucket_meta_handler,
                (RGWBucketInstanceMetadataHandler *)bi_meta_handler,
-	       svc.datalog_rados->get_log());
+	       svc.datalog_rados);
 
   otp->init((RGWOTPMetadataHandler *)meta.otp.get());
 

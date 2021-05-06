@@ -32,10 +32,9 @@ def test_simple_wt_write(pyocf_ctx):
     core_device.reset_stats()
 
     write_data = Data.from_string("This is test data")
-    io = core.new_io()
+    io = core.new_io(cache.get_default_queue(), S.from_sector(1).B,
+                     write_data.size, IoDir.WRITE, 0, 0)
     io.set_data(write_data)
-    io.configure(20, write_data.size, IoDir.WRITE, 0, 0)
-    io.set_queue(cache.get_default_queue())
 
     cmpl = OcfCompletion([("err", c_int)])
     io.callback = cmpl.callback
@@ -62,12 +61,10 @@ def test_start_corrupted_metadata_lba(pyocf_ctx):
 def test_load_cache_no_preexisting_data(pyocf_ctx):
     cache_device = Volume(S.from_MiB(30))
 
-    with pytest.raises(OcfError, match="OCF_ERR_START_CACHE_FAIL"):
+    with pytest.raises(OcfError, match="OCF_ERR_NO_METADATA"):
         cache = Cache.load_from_device(cache_device)
 
 
-# TODO: Find out why this fails and fix
-@pytest.mark.xfail
 def test_load_cache(pyocf_ctx):
     cache_device = Volume(S.from_MiB(30))
 
@@ -75,3 +72,15 @@ def test_load_cache(pyocf_ctx):
     cache.stop()
 
     cache = Cache.load_from_device(cache_device)
+
+
+def test_load_cache_recovery(pyocf_ctx):
+    cache_device = Volume(S.from_MiB(30))
+
+    cache = Cache.start_on_device(cache_device)
+
+    device_copy = cache_device.get_copy()
+
+    cache.stop()
+
+    cache = Cache.load_from_device(device_copy)

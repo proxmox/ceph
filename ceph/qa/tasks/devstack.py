@@ -1,12 +1,10 @@
 #!/usr/bin/env python
 import contextlib
 import logging
-from io import BytesIO
 import textwrap
-from configparser import ConfigParser
-
-import six
 import time
+from configparser import ConfigParser
+from io import BytesIO, StringIO
 
 from teuthology.orchestra import run
 from teuthology import misc
@@ -53,7 +51,7 @@ def install(ctx, config):
 
     This was created using documentation found here:
         https://github.com/openstack-dev/devstack/blob/master/README.md
-        http://docs.ceph.com/docs/master/rbd/rbd-openstack/
+        http://docs.ceph.com/en/latest/rbd/rbd-openstack/
     """
     if config is None:
         config = {}
@@ -119,8 +117,8 @@ def distribute_ceph_conf(devstack_node, ceph_node):
     log.info("Copying ceph.conf to DevStack node...")
 
     ceph_conf_path = '/etc/ceph/ceph.conf'
-    ceph_conf = misc.get_file(ceph_node, ceph_conf_path, sudo=True)
-    misc.sudo_write_file(devstack_node, ceph_conf_path, ceph_conf)
+    ceph_conf = ceph_node.read_file(ceph_conf_path, sudo=True)
+    devstack_node.write_file(ceph_conf_path, ceph_conf, sudo=True)
 
 
 def generate_ceph_keys(ceph_node):
@@ -147,8 +145,7 @@ def distribute_ceph_keys(devstack_node, ceph_node):
             args=['sudo', 'ceph', 'auth', 'get-or-create', key_name],
             stdout=key_stringio)
         key_stringio.seek(0)
-        misc.sudo_write_file(to_remote, dest_path,
-                             key_stringio, owner=owner)
+        to_remote.write_file(dest_path, key_stringio, owner=owner, sudo=True)
     keys = [
         dict(name='client.glance',
              path='/etc/ceph/ceph.client.glance.keyring',
@@ -185,8 +182,8 @@ def set_libvirt_secret(devstack_node, ceph_node):
             <name>client.cinder secret</name>
         </usage>
     </secret>""")
-    misc.sudo_write_file(devstack_node, secret_path,
-                         secret_template.format(uuid=uuid))
+    secret_data = secret_template.format(uuid=uuid)
+    devstack_node.write_file(secret_path, secret_data)
     devstack_node.run(args=['sudo', 'virsh', 'secret-define', '--file',
                             secret_path])
     devstack_node.run(args=['sudo', 'virsh', 'secret-set-value', '--secret',
@@ -206,7 +203,7 @@ def update_devstack_config_files(devstack_node, secret_uuid):
         parser.read_file(config_stream)
         for (key, value) in update_dict.items():
             parser.set(section, key, value)
-        out_stream = six.StringIO()
+        out_stream = StringIO()
         parser.write(out_stream)
         out_stream.seek(0)
         return out_stream
@@ -250,11 +247,11 @@ def update_devstack_config_files(devstack_node, secret_uuid):
     for update in updates:
         file_name = update['name']
         options = update['options']
-        config_data = misc.get_file(devstack_node, file_name, sudo=True)
-        config_stream = six.StringIO(config_data)
+        config_data = devstack_node.read_file(file_name, sudo=True)
+        config_stream = StringIO(config_data)
         backup_config(devstack_node, file_name)
         new_config_stream = update_config(file_name, config_stream, options)
-        misc.sudo_write_file(devstack_node, file_name, new_config_stream)
+        devstack_node.write_file(file_name, new_config_stream, sudo=True)
 
 
 def set_apache_servername(node):
@@ -265,8 +262,8 @@ def set_apache_servername(node):
 
     hostname = node.hostname
     config_file = '/etc/apache2/conf.d/servername'
-    misc.sudo_write_file(node, config_file,
-                         "ServerName {name}".format(name=hostname))
+    config_data = "ServerName {name}".format(name=hostname)
+    node.write_file(config_file, config_data, sudo=True)
 
 
 def start_devstack(devstack_node):

@@ -6,6 +6,7 @@ import functools
 import json
 import socket
 import os
+import platform
 import time
 import sys
 
@@ -38,7 +39,11 @@ from rbd import (RBD, Group, Image, ImageNotFound, InvalidArgument, ImageExists,
                  RBD_MIRROR_PEER_ATTRIBUTE_NAME_KEY,
                  RBD_MIRROR_PEER_DIRECTION_RX, RBD_MIRROR_PEER_DIRECTION_RX_TX,
                  RBD_SNAP_REMOVE_UNPROTECT, RBD_SNAP_MIRROR_STATE_PRIMARY,
-                 RBD_SNAP_MIRROR_STATE_PRIMARY_DEMOTED)
+                 RBD_SNAP_MIRROR_STATE_PRIMARY_DEMOTED,
+                 RBD_SNAP_CREATE_SKIP_QUIESCE,
+                 RBD_SNAP_CREATE_IGNORE_QUIESCE_ERROR,
+                 RBD_WRITE_ZEROES_FLAG_THICK_PROVISION,
+                 RBD_ENCRYPTION_FORMAT_LUKS1, RBD_ENCRYPTION_FORMAT_LUKS2)
 
 rados = None
 ioctx = None
@@ -148,15 +153,24 @@ def require_features(required_features):
         return functools.wraps(fn)(_require_features)
     return wrapper
 
-def blacklist_features(blacklisted_features):
+def require_linux():
     def wrapper(fn):
-        def _blacklist_features(*args, **kwargs):
+        def _require_linux(*args, **kwargs):
+            if platform.system() != "Linux":
+                raise SkipTest
+            return fn(*args, **kwargs)
+        return functools.wraps(fn)(_require_linux)
+    return wrapper
+
+def blocklist_features(blocklisted_features):
+    def wrapper(fn):
+        def _blocklist_features(*args, **kwargs):
             global features
-            for feature in blacklisted_features:
+            for feature in blocklisted_features:
                 if features is not None and feature & features == feature:
                     raise SkipTest
             return fn(*args, **kwargs)
-        return functools.wraps(fn)(_blacklist_features)
+        return functools.wraps(fn)(_blocklist_features)
     return wrapper
 
 def test_version():
@@ -559,7 +573,7 @@ class TestImage(object):
         self.image = None
 
     @require_new_format()
-    @blacklist_features([RBD_FEATURE_EXCLUSIVE_LOCK])
+    @blocklist_features([RBD_FEATURE_EXCLUSIVE_LOCK])
     def test_update_features(self):
         features = self.image.features()
         self.image.update_features(RBD_FEATURE_EXCLUSIVE_LOCK, True)
@@ -640,6 +654,14 @@ class TestImage(object):
         self.image.write(data, 0)
         self.image.write_zeroes(0, 256)
         eq(self.image.read(256, 256), b'\0' * 256)
+        check_diff(self.image, 0, IMG_SIZE, None, [])
+
+    def test_write_zeroes_thick_provision(self):
+        data = rand_data(256)
+        self.image.write(data, 0)
+        self.image.write_zeroes(0, 256, RBD_WRITE_ZEROES_FLAG_THICK_PROVISION)
+        eq(self.image.read(256, 256), b'\0' * 256)
+        check_diff(self.image, 0, IMG_SIZE, None, [(0, 256, True)])
 
     def test_read(self):
         data = self.image.read(0, 20)
@@ -825,6 +847,14 @@ class TestImage(object):
         assert_raises(ImageExists, self.image.create_snap, 'snap1')
         self.image.remove_snap('snap1')
 
+    def test_create_snap_flags(self):
+        self.image.create_snap('snap1', 0)
+        self.image.remove_snap('snap1')
+        self.image.create_snap('snap1', RBD_SNAP_CREATE_SKIP_QUIESCE)
+        self.image.remove_snap('snap1')
+        self.image.create_snap('snap1', RBD_SNAP_CREATE_IGNORE_QUIESCE_ERROR)
+        self.image.remove_snap('snap1')
+
     def test_list_snaps(self):
         eq([], list(self.image.list_snaps()))
         self.image.create_snap('snap1')
@@ -922,13 +952,13 @@ class TestImage(object):
     def test_remove_with_exclusive_lock(self):
         assert_raises(ImageBusy, remove_image)
 
-    @blacklist_features([RBD_FEATURE_EXCLUSIVE_LOCK])
+    @blocklist_features([RBD_FEATURE_EXCLUSIVE_LOCK])
     def test_remove_with_snap(self):
         self.image.create_snap('snap1')
         assert_raises(ImageHasSnapshots, remove_image)
         self.image.remove_snap('snap1')
 
-    @blacklist_features([RBD_FEATURE_EXCLUSIVE_LOCK])
+    @blocklist_features([RBD_FEATURE_EXCLUSIVE_LOCK])
     def test_remove_with_watcher(self):
         data = rand_data(256)
         self.image.write(data, 0)
@@ -1329,6 +1359,47 @@ class TestImage(object):
         assert_raises(InvalidArgument, self.image.sparsify, 16)
         self.image.sparsify(4096)
 
+    @require_linux()
+    @blocklist_features([RBD_FEATURE_JOURNALING])
+    def test_encryption_luks1(self):
+        data = b'hello world'
+        offset = 16<<20
+        image_size = 32<<20
+
+        with Image(ioctx, image_name) as image:
+            image.resize(image_size)
+            image.write(data, offset)
+            image.encryption_format(RBD_ENCRYPTION_FORMAT_LUKS1, "password")
+            assert_not_equal(data, image.read(offset, len(data)))
+        with Image(ioctx, image_name) as image:
+            image.encryption_load(RBD_ENCRYPTION_FORMAT_LUKS1, "password")
+            assert_not_equal(data, image.read(offset, len(data)))
+            image.write(data, offset)
+        with Image(ioctx, image_name) as image:
+            image.encryption_load(RBD_ENCRYPTION_FORMAT_LUKS1, "password")
+            eq(data, image.read(offset, len(data)))
+
+    @require_linux()
+    @blocklist_features([RBD_FEATURE_JOURNALING])
+    def test_encryption_luks2(self):
+        data = b'hello world'
+        offset = 16<<20
+        image_size = 256<<20
+
+        with Image(ioctx, image_name) as image:
+            image.resize(image_size)
+            image.write(data, offset)
+            image.encryption_format(RBD_ENCRYPTION_FORMAT_LUKS2, "password")
+            assert_not_equal(data, image.read(offset, len(data)))
+        with Image(ioctx, image_name) as image:
+            image.encryption_load(RBD_ENCRYPTION_FORMAT_LUKS2, "password")
+            assert_not_equal(data, image.read(offset, len(data)))
+            image.write(data, offset)
+        with Image(ioctx, image_name) as image:
+            image.encryption_load(RBD_ENCRYPTION_FORMAT_LUKS2, "password")
+            eq(data, image.read(offset, len(data)))
+
+
 class TestImageId(object):
 
     def setUp(self):
@@ -1429,6 +1500,30 @@ class TestClone(object):
         self._test_with_params(features, self.image.stat()['order'],
                                self.image.stripe_unit(),
                                self.image.stripe_count())
+
+    def test_stripe_unit_and_count(self):
+        global features
+        global ioctx
+        image_name = get_temp_image_name()
+        RBD().create(ioctx, image_name, IMG_SIZE, IMG_ORDER, old_format=False,
+                     features=int(features), stripe_unit=1048576, stripe_count=8)
+        image = Image(ioctx, image_name)
+        image.create_snap('snap1')
+        image.protect_snap('snap1')
+        clone_name = get_temp_image_name()
+        RBD().clone(ioctx, image_name, 'snap1', ioctx, clone_name)
+        clone = Image(ioctx, clone_name)
+
+        eq(1048576, clone.stripe_unit())
+        eq(8, clone.stripe_count())
+
+        clone.close()
+        RBD().remove(ioctx, clone_name)
+        image.unprotect_snap('snap1')
+        image.remove_snap('snap1')
+        image.close()
+        RBD().remove(ioctx, image_name)
+
 
     def test_unprotected(self):
         self.image.create_snap('snap2')
@@ -1651,12 +1746,13 @@ class TestClone(object):
         assert_raises(ReadOnlyImage, self.clone.flatten)
         self.clone.remove_snap('snap2')
 
-    def check_flatten_with_order(self, new_order):
+    def check_flatten_with_order(self, new_order, stripe_unit=None,
+                                 stripe_count=None):
         global ioctx
         global features
         clone_name2 = get_temp_image_name()
         self.rbd.clone(ioctx, image_name, 'snap1', ioctx, clone_name2,
-                       features, new_order)
+                       features, new_order, stripe_unit, stripe_count)
         #with Image(ioctx, 'clone2') as clone:
         clone2 = Image(ioctx, clone_name2)
         clone2.flatten()
@@ -1666,7 +1762,7 @@ class TestClone(object):
 
         # flatten after resizing to non-block size
         self.rbd.clone(ioctx, image_name, 'snap1', ioctx, clone_name2,
-                       features, new_order)
+                       features, new_order, stripe_unit, stripe_count)
         with Image(ioctx, clone_name2) as clone:
             clone.resize(IMG_SIZE // 2 - 1)
             clone.flatten()
@@ -1675,7 +1771,7 @@ class TestClone(object):
 
         # flatten after resizing to non-block size
         self.rbd.clone(ioctx, image_name, 'snap1', ioctx, clone_name2,
-                       features, new_order)
+                       features, new_order, stripe_unit, stripe_count)
         with Image(ioctx, clone_name2) as clone:
             clone.resize(IMG_SIZE // 2 + 1)
             clone.flatten()
@@ -1686,7 +1782,7 @@ class TestClone(object):
         self.check_flatten_with_order(IMG_ORDER)
 
     def test_flatten_smaller_order(self):
-        self.check_flatten_with_order(IMG_ORDER - 2)
+        self.check_flatten_with_order(IMG_ORDER - 2, 1048576, 1)
 
     def test_flatten_larger_order(self):
         self.check_flatten_with_order(IMG_ORDER + 2)
@@ -1905,19 +2001,19 @@ class TestExclusiveLock(object):
             image.lock_release()
 
     def test_break_lock(self):
-        blacklist_rados = Rados(conffile='')
-        blacklist_rados.connect()
+        blocklist_rados = Rados(conffile='')
+        blocklist_rados.connect()
         try:
-            blacklist_ioctx = blacklist_rados.open_ioctx(pool_name)
+            blocklist_ioctx = blocklist_rados.open_ioctx(pool_name)
             try:
-                rados2.conf_set('rbd_blacklist_on_break_lock', 'true')
+                rados2.conf_set('rbd_blocklist_on_break_lock', 'true')
                 with Image(ioctx2, image_name) as image, \
-                     Image(blacklist_ioctx, image_name) as blacklist_image:
+                     Image(blocklist_ioctx, image_name) as blocklist_image:
 
                     lock_owners = list(image.lock_get_owners())
                     eq(0, len(lock_owners))
 
-                    blacklist_image.lock_acquire(RBD_LOCK_MODE_EXCLUSIVE)
+                    blocklist_image.lock_acquire(RBD_LOCK_MODE_EXCLUSIVE)
                     assert_raises(ReadOnlyImage, image.lock_acquire,
                                   RBD_LOCK_MODE_EXCLUSIVE)
                     lock_owners = list(image.lock_get_owners())
@@ -1927,23 +2023,23 @@ class TestExclusiveLock(object):
                                      lock_owners[0]['owner'])
 
                     assert_raises(ConnectionShutdown,
-                                  blacklist_image.is_exclusive_lock_owner)
+                                  blocklist_image.is_exclusive_lock_owner)
 
-                    blacklist_rados.wait_for_latest_osdmap()
+                    blocklist_rados.wait_for_latest_osdmap()
                     data = rand_data(256)
                     assert_raises(ConnectionShutdown,
-                                  blacklist_image.write, data, 0)
+                                  blocklist_image.write, data, 0)
 
                     image.lock_acquire(RBD_LOCK_MODE_EXCLUSIVE)
 
                     try:
-                        blacklist_image.close()
+                        blocklist_image.close()
                     except ConnectionShutdown:
                         pass
             finally:
-                blacklist_ioctx.close()
+                blocklist_ioctx.close()
         finally:
-            blacklist_rados.shutdown()
+            blocklist_rados.shutdown()
 
 class TestMirroring(object):
 
@@ -2155,7 +2251,8 @@ class TestMirroring(object):
         info['mode'] = RBD_MIRROR_IMAGE_MODE_SNAPSHOT;
         eq(info, entries[self.image.id()])
 
-        snap_id = self.image.mirror_image_create_snapshot()
+        snap_id = self.image.mirror_image_create_snapshot(
+            RBD_SNAP_CREATE_SKIP_QUIESCE)
 
         snaps = list(self.image.list_snaps())
         eq(2, len(snaps))
@@ -2483,6 +2580,27 @@ class TestGroups(object):
         self.group.remove_snap(snap_name)
         eq([], list(self.group.list_snaps()))
 
+    def test_group_snap_flags(self):
+        global snap_name
+        eq([], list(self.group.list_snaps()))
+
+        self.group.create_snap(snap_name, 0)
+        eq([snap_name], [snap['name'] for snap in self.group.list_snaps()])
+        self.group.remove_snap(snap_name)
+
+        self.group.create_snap(snap_name, RBD_SNAP_CREATE_SKIP_QUIESCE)
+        eq([snap_name], [snap['name'] for snap in self.group.list_snaps()])
+        self.group.remove_snap(snap_name)
+
+        self.group.create_snap(snap_name, RBD_SNAP_CREATE_IGNORE_QUIESCE_ERROR)
+        eq([snap_name], [snap['name'] for snap in self.group.list_snaps()])
+        self.group.remove_snap(snap_name)
+
+        assert_raises(InvalidArgument, self.group.create_snap, snap_name,
+                      RBD_SNAP_CREATE_SKIP_QUIESCE |
+                      RBD_SNAP_CREATE_IGNORE_QUIESCE_ERROR)
+        eq([], list(self.group.list_snaps()))
+
     def test_group_snap_list_many(self):
         global snap_name
         eq([], list(self.group.list_snaps()))
@@ -2566,9 +2684,51 @@ class TestMigration(object):
         eq(image_name, status['dest_image_name'])
         eq(RBD_IMAGE_MIGRATION_STATE_PREPARED, status['state'])
 
+        with Image(ioctx, image_name) as image:
+            source_spec = image.migration_source_spec()
+            eq("native", source_spec["type"])
+
         RBD().migration_execute(ioctx, image_name)
         RBD().migration_commit(ioctx, image_name)
         remove_image()
+
+    def test_migration_import(self):
+        create_image()
+        with Image(ioctx, image_name) as image:
+            image_id = image.id()
+            image.create_snap('snap')
+
+        source_spec = json.dumps(
+            {'type': 'native',
+             'pool_id': ioctx.get_pool_id(),
+             'pool_namespace': '',
+             'image_name': image_name,
+             'image_id': image_id,
+             'snap_name': 'snap'})
+        dst_image_name = get_temp_image_name()
+        RBD().migration_prepare_import(source_spec, ioctx, dst_image_name,
+                                       features=63, order=23, stripe_unit=1<<23,
+                                       stripe_count=1, data_pool=None)
+
+        status = RBD().migration_status(ioctx, dst_image_name)
+        eq('', status['source_image_name'])
+        eq(dst_image_name, status['dest_image_name'])
+        eq(RBD_IMAGE_MIGRATION_STATE_PREPARED, status['state'])
+
+        with Image(ioctx, dst_image_name) as image:
+            source_spec = image.migration_source_spec()
+            eq("native", source_spec["type"])
+
+        RBD().migration_execute(ioctx, dst_image_name)
+        RBD().migration_commit(ioctx, dst_image_name)
+
+        with Image(ioctx, image_name) as image:
+            image.remove_snap('snap')
+        with Image(ioctx, dst_image_name) as image:
+            image.remove_snap('snap')
+
+        RBD().remove(ioctx, dst_image_name)
+        RBD().remove(ioctx, image_name)
 
     def test_migration_with_progress(self):
         d = {'received_callback': False}

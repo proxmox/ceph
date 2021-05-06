@@ -42,14 +42,14 @@
 DEFINE_STUB_V(spdk_event_call, (struct spdk_event *event));
 DEFINE_STUB(spdk_event_allocate, struct spdk_event *, (uint32_t core, spdk_event_fn fn, void *arg1,
 		void *arg2), NULL);
-DEFINE_STUB(spdk_env_get_current_core, uint32_t, (void), 0);
-DEFINE_STUB_V(spdk_subsystem_init, (spdk_msg_fn cb_fn, void *cb_arg));
+DEFINE_STUB_V(spdk_subsystem_init, (spdk_subsystem_init_fn cb_fn, void *cb_arg));
 DEFINE_STUB_V(spdk_rpc_register_method, (const char *method, spdk_rpc_method_handler func,
 		uint32_t state_mask));
+DEFINE_STUB_V(spdk_rpc_register_alias_deprecated, (const char *method, const char *alias));
 DEFINE_STUB_V(spdk_rpc_set_state, (uint32_t state));
 DEFINE_STUB(spdk_rpc_get_state, uint32_t, (void), SPDK_RPC_RUNTIME);
 DEFINE_STUB_V(spdk_app_json_config_load, (const char *json_config_file, const char *rpc_addr,
-		spdk_msg_fn cb_fn, void *cb_arg));
+		spdk_subsystem_init_fn cb_fn, void *cb_arg, bool stop_on_error));
 
 static void
 unittest_usage(void)
@@ -177,23 +177,12 @@ main(int argc, char **argv)
 	CU_pSuite suite = NULL;
 	unsigned int num_failures;
 
-	if (CU_initialize_registry() != CUE_SUCCESS) {
-		return CU_get_error();
-	}
+	CU_set_error_action(CUEA_ABORT);
+	CU_initialize_registry();
 
 	suite = CU_add_suite("app_suite", NULL, NULL);
-	if (suite == NULL) {
-		CU_cleanup_registry();
-		return CU_get_error();
-	}
 
-	if (
-		CU_add_test(suite, "test_spdk_app_parse_args",
-			    test_spdk_app_parse_args) == NULL
-	) {
-		CU_cleanup_registry();
-		return CU_get_error();
-	}
+	CU_ADD_TEST(suite, test_spdk_app_parse_args);
 
 	CU_basic_set_mode(CU_BRM_VERBOSE);
 	CU_basic_run_tests();

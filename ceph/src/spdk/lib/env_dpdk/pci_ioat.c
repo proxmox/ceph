@@ -35,8 +35,8 @@
 
 #include "spdk/pci_ids.h"
 
-#define SPDK_IOAT_PCI_DEVICE(DEVICE_ID) RTE_PCI_DEVICE(SPDK_PCI_VID_INTEL, DEVICE_ID)
-static struct rte_pci_id ioat_driver_id[] = {
+#define SPDK_IOAT_PCI_DEVICE(DEVICE_ID) SPDK_PCI_DEVICE(SPDK_PCI_VID_INTEL, DEVICE_ID)
+static struct spdk_pci_id ioat_driver_id[] = {
 	{SPDK_IOAT_PCI_DEVICE(PCI_DEVICE_ID_INTEL_IOAT_SNB0)},
 	{SPDK_IOAT_PCI_DEVICE(PCI_DEVICE_ID_INTEL_IOAT_SNB1)},
 	{SPDK_IOAT_PCI_DEVICE(PCI_DEVICE_ID_INTEL_IOAT_SNB2)},
@@ -89,24 +89,10 @@ static struct rte_pci_id ioat_driver_id[] = {
 	{ .vendor_id = 0, /* sentinel */ },
 };
 
-static struct spdk_pci_driver g_ioat_pci_drv = {
-	.driver = {
-		.drv_flags	= RTE_PCI_DRV_NEED_MAPPING,
-		.id_table	= ioat_driver_id,
-		.probe		= spdk_pci_device_init,
-		.remove		= spdk_pci_device_fini,
-		.driver.name	= "spdk_ioat",
-	},
-
-	.cb_fn = NULL,
-	.cb_arg = NULL,
-	.is_registered = false,
-};
-
 struct spdk_pci_driver *
 spdk_pci_ioat_get_driver(void)
 {
-	return &g_ioat_pci_drv;
+	return spdk_pci_get_driver("ioat");
 }
 
-SPDK_PMD_REGISTER_PCI(g_ioat_pci_drv);
+SPDK_PCI_DRIVER_REGISTER("ioat", ioat_driver_id, SPDK_PCI_DRIVER_NEED_MAPPING);

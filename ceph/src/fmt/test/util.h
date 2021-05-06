@@ -9,7 +9,7 @@
 #include <cstdio>
 #include <string>
 
-#include "fmt/posix.h"
+#include "fmt/os.h"
 
 enum { BUFFER_SIZE = 256 };
 
@@ -19,7 +19,7 @@ enum { BUFFER_SIZE = 256 };
 #  define FMT_VSNPRINTF vsnprintf
 #endif
 
-template <std::size_t SIZE>
+template <size_t SIZE>
 void safe_sprintf(char (&buffer)[SIZE], const char* format, ...) {
   std::va_list args;
   va_start(args, format);
@@ -35,7 +35,7 @@ std::string get_system_error(int error_code);
 extern const char* const FILE_CONTENT;
 
 // Opens a buffered file for reading.
-fmt::buffered_file open_buffered_file(FILE** fp = FMT_NULL);
+fmt::buffered_file open_buffered_file(FILE** fp = nullptr);
 
 inline FILE* safe_fopen(const char* filename, const char* mode) {
 #if defined(_WIN32) && !defined(__MINGW32__)

@@ -31,23 +31,18 @@
  *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+#include "util_internal.h"
 #include "spdk/crc32.h"
 
-#if defined(__aarch64__) || defined(__AARCH64__)
-#ifdef __ARM_FEATURE_CRC32
-#define SPDK_HAVE_ARM_CRC
-#include <arm_acle.h>
-#endif
-#endif
-
-#if defined(__x86_64__) && defined(__SSE4_2__)
 #ifdef SPDK_CONFIG_ISAL
 #define SPDK_HAVE_ISAL
 #include <isa-l/include/crc.h>
-#else
+#elif defined(__aarch64__) && defined(__ARM_FEATURE_CRC32)
+#define SPDK_HAVE_ARM_CRC
+#include <arm_acle.h>
+#elif defined(__x86_64__) && defined(__SSE4_2__)
 #define SPDK_HAVE_SSE4_2
 #include <x86intrin.h>
-#endif
 #endif
 
 #ifdef SPDK_HAVE_ISAL
@@ -124,15 +119,15 @@ spdk_crc32c_update(const void *buf, size_t len, uint32_t crc)
 static struct spdk_crc32_table g_crc32c_table;
 
 __attribute__((constructor)) static void
-spdk_crc32c_init(void)
+crc32c_init(void)
 {
-	spdk_crc32_table_init(&g_crc32c_table, SPDK_CRC32C_POLYNOMIAL_REFLECT);
+	crc32_table_init(&g_crc32c_table, SPDK_CRC32C_POLYNOMIAL_REFLECT);
 }
 
 uint32_t
 spdk_crc32c_update(const void *buf, size_t len, uint32_t crc)
 {
-	return spdk_crc32_update(&g_crc32c_table, buf, len, crc);
+	return crc32_update(&g_crc32c_table, buf, len, crc);
 }
 
 #endif

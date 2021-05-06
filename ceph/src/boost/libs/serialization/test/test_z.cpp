@@ -91,7 +91,7 @@ int main()
 #include <boost/config.hpp>
 
 #if defined(BOOST_NO_STDC_NAMESPACE)
-namespace std{ 
+namespace std{
     using ::remove;
 }
 #endif
@@ -247,7 +247,7 @@ int main(int argc, char **argv) {
 
 #include <boost/archive/iterators/base64_from_binary.hpp>
 #include <boost/archive/iterators/transform_width.hpp>
- 
+
 namespace bai = boost::archive::iterators;
 int main()
 {
@@ -548,7 +548,7 @@ int main()
         "FuZCB0aGUgZXhlY3V0aW9uZXIgcmFuIHdpbGRseSB1cCBhbmQgZG93biBsb29raW5nIGZvciBpdCwgd2hpbGUgdGhlIHJlc3Qgb2YgdGhlIHBh"
         "cnR5IHdlbnQgYmFjayB0byB0aGUgZ2FtZS4=";
     using it_base64_t = bai::base64_from_binary<bai::transform_width<std::string::const_iterator, 6, 8>>;
- 
+
     auto writePaddChars = (3 - input.length() % 3) % 3;
     std::string base64(it_base64_t(input.begin()), it_base64_t(input.end()));
     base64.append(writePaddChars, '=');
@@ -636,7 +636,7 @@ protected:
     friend class boost::archive::detail::common_iarchive<xml_iarchive_nan>;
     friend class boost::archive::basic_xml_iarchive<xml_iarchive_nan>;
     friend class boost::archive::load_access;
-    
+
     using boost::archive::xml_iarchive_impl<xml_iarchive_nan>::load;
     void load(double & t)
     {
@@ -664,7 +664,7 @@ protected:
             boost::serialization::throw_exception(
                                                   boost::archive::archive_exception(boost::archive::archive_exception::input_stream_error));
     }
-    
+
 public:
     xml_iarchive_nan(std::istream & is, unsigned int flags = 0) :
     boost::archive::xml_iarchive_impl<xml_iarchive_nan>(is, flags)
@@ -683,7 +683,7 @@ namespace boost
         template class detail::common_iarchive<xml_iarchive_nan>;
         template class basic_xml_iarchive<xml_iarchive_nan>;
         template class xml_iarchive_impl<xml_iarchive_nan>;
-        
+
     }
 }
 
@@ -695,10 +695,85 @@ int main(int argc, char** argv)
     ia>>BOOST_SERIALIZATION_NVP(value);
 }
 
-#endif
+#elif 1
+// submitted as https://github.com/boostorg/serialization/issues/154
+#include <boost/version.hpp>
 
+#include <boost/archive/text_iarchive.hpp>
+#include <boost/archive/text_oarchive.hpp>
+
+#include <boost/serialization/vector.hpp>
+#include <boost/serialization/string.hpp>
+
+#include <iostream>
+#include <sstream>
+#include <cassert>
+
+struct Tracked {
+    std::string x;
+    Tracked(std::string s) : x(s) {}
+    Tracked() : x("tracked"){}
+    template <class A> void serialize(A& ar, unsigned int ) {
+        ar & x;
+    }
+};
+
+struct Main {
+    Tracked t_before;
+    Tracked* t_pointer;
+    Tracked t_after;
+    Main() : t_before("before"), t_pointer(0), t_after("after") {}
+    template <class A> void serialize(A& ar, unsigned int ) {
+        ar
+            & t_before
+            & t_pointer
+            & t_after
+        ;
+    }
+};
+
+#define CHECK_EQUAL(X,Y) assert(X==Y)
+#define REQUIRE_EQUAL(X,Y) CHECK_EQUAL(X,Y)
+int main(int argc, char *argv[])
+{
+    typedef std::vector<Main> Mains;
+
+    std::stringstream ss;
+
+    {
+        Mains ms;
+        ms.push_back( Main());
+        ms.push_back( Main());
+        ms.back().t_pointer = ms.front().t_pointer = new Tracked;
+
+        REQUIRE_EQUAL( ms.size(), 2);
+        CHECK_EQUAL( ms[0].t_pointer, ms[1].t_pointer );
+        CHECK_EQUAL( ms[0].t_pointer->x, "tracked" );
+
+        boost::archive::text_oarchive oa(ss);
+        oa << ms;
+
+        delete ms.back().t_pointer;
+    }
+
+    std::cout << ss.str() << std::endl;
+
+    {
+        Mains ms;
+        boost::archive::text_iarchive ia(ss);
+        ia >> ms;
+
+        REQUIRE_EQUAL( ms.size(), 2);
+        CHECK_EQUAL( ms[0].t_pointer, ms[1].t_pointer );
+        CHECK_EQUAL( ms[0].t_pointer->x, "tracked" );
+    }
+
+    return 0;
+}
+
+#else
 int main(int argc, char* argv[])
 {
     return 0;
 }
-
+#endif

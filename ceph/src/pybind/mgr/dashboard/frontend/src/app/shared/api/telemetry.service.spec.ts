@@ -1,7 +1,7 @@
 import { HttpClientTestingModule, HttpTestingController } from '@angular/common/http/testing';
 import { TestBed } from '@angular/core/testing';
 
-import { configureTestBed } from '../../../testing/unit-test-helper';
+import { configureTestBed } from '~/testing/unit-test-helper';
 import { TelemetryService } from './telemetry.service';
 
 describe('TelemetryService', () => {
@@ -14,8 +14,8 @@ describe('TelemetryService', () => {
   });
 
   beforeEach(() => {
-    service = TestBed.get(TelemetryService);
-    httpTesting = TestBed.get(HttpTestingController);
+    service = TestBed.inject(TelemetryService);
+    httpTesting = TestBed.inject(HttpTestingController);
   });
 
   afterEach(() => {

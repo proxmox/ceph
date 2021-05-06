@@ -13,4 +13,8 @@ application through rawdev API.
 
     dpaa2_cmdif
     dpaa2_qdma
-    ifpga_rawdev
+    ifpga
+    ioat
+    ntb
+    octeontx2_dma
+    octeontx2_ep

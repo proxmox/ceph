@@ -44,6 +44,14 @@
 static struct spdk_bit_array *g_page_array;
 static void *g_vaddr_to_fail = (void *)UINT64_MAX;
 
+DEFINE_STUB(rte_memseg_contig_walk, int, (rte_memseg_contig_walk_t func, void *arg), 0);
+DEFINE_STUB(rte_mem_virt2memseg, struct rte_memseg *,
+	    (const void *virt, const struct rte_memseg_list *msl), NULL);
+DEFINE_STUB(spdk_env_dpdk_external_init, bool, (void), true);
+DEFINE_STUB(rte_mem_event_callback_register, int,
+	    (const char *name, rte_mem_event_callback_t clb, void *arg), 0);
+DEFINE_STUB(rte_mem_virt2iova, rte_iova_t, (const void *virtaddr), 0);
+
 static int
 test_mem_map_notify(void *cb_ctx, struct spdk_mem_map *map,
 		    enum spdk_mem_map_notify_action action,
@@ -237,7 +245,7 @@ test_mem_map_translation(void)
 	mapping_length = VALUE_2MB * 3;
 	addr = spdk_mem_map_translate(map, 0, &mapping_length);
 	CU_ASSERT(addr == 0);
-	CU_ASSERT(mapping_length == VALUE_2MB * 3)
+	CU_ASSERT(mapping_length == VALUE_2MB * 3);
 
 	/* Translate an unaligned address */
 	mapping_length = VALUE_2MB * 3;
@@ -257,13 +265,13 @@ test_mem_map_translation(void)
 	mapping_length = VALUE_2MB * 3;
 	addr = spdk_mem_map_translate(map, 0, &mapping_length);
 	CU_ASSERT(addr == 0);
-	CU_ASSERT(mapping_length == VALUE_2MB)
+	CU_ASSERT(mapping_length == VALUE_2MB);
 
 	/* Get translation for an unallocated block. Make sure size is 0 */
 	mapping_length = VALUE_2MB * 3;
 	addr = spdk_mem_map_translate(map, VALUE_2MB, &mapping_length);
 	CU_ASSERT(addr == default_translation);
-	CU_ASSERT(mapping_length == VALUE_2MB)
+	CU_ASSERT(mapping_length == VALUE_2MB);
 
 	/* Verify translation for 2nd page is the default */
 	addr = spdk_mem_map_translate(map, VALUE_2MB, NULL);
@@ -343,7 +351,7 @@ test_mem_map_translation(void)
 	mapping_length = VALUE_2MB * 3;
 	addr = spdk_mem_map_translate(map, 0, &mapping_length);
 	CU_ASSERT(addr == 0);
-	CU_ASSERT(mapping_length == VALUE_2MB)
+	CU_ASSERT(mapping_length == VALUE_2MB);
 
 	/* Translate only a subset of a 2MB page */
 	mapping_length = 543;
@@ -481,7 +489,7 @@ main(int argc, char **argv)
 	g_page_array = spdk_bit_array_create(PAGE_ARRAY_SIZE);
 
 	/* Initialize the memory map */
-	if (spdk_mem_map_init() < 0) {
+	if (mem_map_init(false) < 0) {
 		return CUE_NOMEMORY;
 	}
 

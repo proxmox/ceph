@@ -8,7 +8,7 @@
 #include <rte_malloc.h>
 #include <rte_cryptodev_pmd.h>
 
-#include "rte_openssl_pmd_private.h"
+#include "openssl_pmd_private.h"
 #include "compat.h"
 
 
@@ -754,13 +754,6 @@ qp_setup_cleanup:
 	return -1;
 }
 
-/** Return the number of allocated queue pairs */
-static uint32_t
-openssl_pmd_qp_count(struct rte_cryptodev *dev)
-{
-	return dev->data->nb_queue_pairs;
-}
-
 /** Returns the size of the symmetric session structure */
 static unsigned
 openssl_pmd_sym_session_get_size(struct rte_cryptodev *dev __rte_unused)
@@ -912,14 +905,14 @@ static int openssl_set_asym_session_parameters(
 		asym_session->xfrm_type = RTE_CRYPTO_ASYM_XFORM_RSA;
 		break;
 err_rsa:
-		BN_free(n);
-		BN_free(e);
-		BN_free(d);
-		BN_free(p);
-		BN_free(q);
-		BN_free(dmp1);
-		BN_free(dmq1);
-		BN_free(iqmp);
+		BN_clear_free(n);
+		BN_clear_free(e);
+		BN_clear_free(d);
+		BN_clear_free(p);
+		BN_clear_free(q);
+		BN_clear_free(dmp1);
+		BN_clear_free(dmq1);
+		BN_clear_free(iqmp);
 
 		return -1;
 	}
@@ -1242,7 +1235,6 @@ struct rte_cryptodev_ops openssl_pmd_ops = {
 
 		.queue_pair_setup	= openssl_pmd_qp_setup,
 		.queue_pair_release	= openssl_pmd_qp_release,
-		.queue_pair_count	= openssl_pmd_qp_count,
 
 		.sym_session_get_size	= openssl_pmd_sym_session_get_size,
 		.asym_session_get_size	= openssl_pmd_asym_session_get_size,

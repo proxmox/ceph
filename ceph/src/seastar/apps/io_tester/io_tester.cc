@@ -29,6 +29,8 @@
 #include <seastar/core/timer.hh>
 #include <seastar/core/thread.hh>
 #include <seastar/core/print.hh>
+#include <seastar/core/loop.hh>
+#include <seastar/core/with_scheduling_group.hh>
 #include <chrono>
 #include <vector>
 #include <boost/range/irange.hpp>
@@ -100,6 +102,10 @@ struct shard_info {
     seastar::scheduling_group scheduling_group = seastar::default_scheduling_group();
 };
 
+struct options {
+    bool dsync = false;
+};
+
 class class_data;
 
 struct job_config {
@@ -107,6 +113,7 @@ struct job_config {
     request_type type;
     shard_config shard_placement;
     ::shard_info shard_info;
+    ::options options;
     std::unique_ptr<class_data> gen_class_data();
 };
 
@@ -291,8 +298,12 @@ public:
     io_class_data(job_config cfg) : class_data(std::move(cfg)) {}
 
     future<> do_start(sstring dir) override {
-        auto fname = format("{}/test-{}-{:d}", dir, name(), engine().cpu_id());
-        return open_file_dma(fname, open_flags::rw | open_flags::create | open_flags::truncate).then([this, fname] (auto f) {
+        auto fname = format("{}/test-{}-{:d}", dir, name(), this_shard_id());
+        auto flags = open_flags::rw | open_flags::create | open_flags::truncate;
+        if (_config.options.dsync) {
+            flags |= open_flags::dsync;
+        }
+        return open_file_dma(fname, flags).then([this, fname] (auto f) {
             _file = f;
             return remove_file(fname);
         }).then([this, fname] {
@@ -500,6 +511,16 @@ struct convert<shard_info> {
 };
 
 template<>
+struct convert<options> {
+    static bool decode(const Node& node, options& op) {
+        if (node["dsync"]) {
+            op.dsync = node["dsync"].as<bool>();
+        }
+        return true;
+    }
+};
+
+template<>
 struct convert<job_config> {
     static bool decode(const Node& node, job_config& cl) {
         cl.name = node["name"].as<std::string>();
@@ -507,6 +528,9 @@ struct convert<job_config> {
         cl.shard_placement = node["shards"].as<shard_config>();
         if (node["shard_info"]) {
             cl.shard_info = node["shard_info"].as<shard_info>();
+        }
+        if (node["options"]) {
+            cl.options = node["options"].as<options>();
         }
         return true;
     }
@@ -525,7 +549,7 @@ class context {
 public:
     context(sstring dir, std::vector<job_config> req_config, unsigned duration)
             : _cl(boost::copy_range<std::vector<std::unique_ptr<class_data>>>(req_config
-                | boost::adaptors::filtered([] (auto& cfg) { return cfg.shard_placement.is_set(engine().cpu_id()); })
+                | boost::adaptors::filtered([] (auto& cfg) { return cfg.shard_placement.is_set(this_shard_id()); })
                 | boost::adaptors::transformed([] (auto& cfg) { return cfg.gen_class_data(); })
             ))
             , _dir(dir)
@@ -555,7 +579,7 @@ public:
 
     future<> print_stats() {
         return _finished.wait(_cl.size()).then([this] {
-            fmt::print("Shard {:>2}\n", engine().cpu_id());
+            fmt::print("Shard {:>2}\n", this_shard_id());
             auto idx = 0;
             for (auto& cl: _cl) {
                 fmt::print("Class {:>2} ({})\n", idx++, cl->describe_class());

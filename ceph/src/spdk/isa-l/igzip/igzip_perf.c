@@ -29,6 +29,7 @@
 
 #define _FILE_OFFSET_BITS 64
 #include <stdio.h>
+#include <stdlib.h>
 #include <assert.h>
 #include <getopt.h>
 #include "huff_codes.h"
@@ -38,14 +39,19 @@
 #include <zlib.h>
 
 #define BUF_SIZE 1024
-#define MIN_TEST_LOOPS   1
-#ifndef RUN_MEM_SIZE
-# define RUN_MEM_SIZE 200000000
-#endif
 
-#define OPTARGS "hl:f:z:i:d:stub:"
+#define OPTARGS "hl:f:z:i:d:stub:y:w:o:"
 
 #define COMPRESSION_QUEUE_LIMIT 32
+#define UNSET -1
+
+#define xstr(a) str(a)
+#define str(a) #a
+
+/* Limit output buffer size to 2 Gigabytes. Since stream->avail_out is a
+ * uint32_t and there is no logic for handling an overflowed output buffer in
+ * the perf test, this define must be less then 4 Gigabytes */
+#define MAX_COMPRESS_BUF_SIZE (1 << 31)
 
 int level_size_buf[10] = {
 #ifdef ISAL_DEF_LVL0_DEFAULT
@@ -121,40 +127,51 @@ struct perf_info {
 	char *file_name;
 	size_t file_size;
 	size_t deflate_size;
-	uint32_t deflate_iter;
-	uint32_t inflate_iter;
 	uint32_t inblock_size;
+	uint32_t flush_type;
+	int32_t hist_bits;
+	int32_t deflate_time;
+	int32_t inflate_time;
 	struct compress_strategy strategy;
 	uint32_t inflate_mode;
 	struct perf start;
-	struct perf stop;
 };
+
+void init_perf_info(struct perf_info *info)
+{
+	memset(info, 0, sizeof(*info));
+	info->deflate_time = BENCHMARK_TIME;
+	info->inflate_time = BENCHMARK_TIME;
+}
 
 int usage(void)
 {
 	fprintf(stderr,
-		"Usage: igzip_inflate_perf [options] <infile>\n"
+		"Usage: igzip_perf [options] <infile>\n"
 		"  -h          help, print this message\n"
-		"  The options -l, -f, -z may be used up to %d times\n"
-		"  -l <level>  isa-l stateless deflate level to test\n"
-		"  -f <level>  isa-l stateful deflate level to test\n"
+		"  The options -l, -f, -z may be used up to "
+		xstr(COMPRESSION_QUEUE_LIMIT) " times\n"
+		"  -l <level>  isa-l stateless deflate level to test ("
+		xstr(ISAL_DEF_MIN_LEVEL) "-" xstr(ISAL_DEF_MAX_LEVEL) ")\n"
+		"  -f <level>  isa-l stateful deflate level to test ("
+		xstr(ISAL_DEF_MIN_LEVEL) "-" xstr(ISAL_DEF_MAX_LEVEL) ")\n"
 		"  -z <level>  zlib  deflate level to test\n"
-		"  -d <iter>   number of iterations for deflate (at least 1)\n"
-		"  -i <iter>   number of iterations for inflate (at least 1)\n"
+		"  -d <time>   approx time in seconds for deflate (at least 0)\n"
+		"  -i <time>   approx time in seconds for inflate (at least 0)\n"
 		"  -s          performance test isa-l stateful inflate\n"
 		"  -t          performance test isa-l stateless inflate\n"
 		"  -u          performance test zlib inflate\n"
-		"  -b <size>   input buffer size, applies to stateful options (-f,-s)\n",
-		COMPRESSION_QUEUE_LIMIT);
+		"  -o <file>   output file to store compressed data (last one if multiple)\n"
+		"  -b <size>   input buffer size, applies to stateful options (-f,-z,-s)\n"
+		"  -y <type>   flush type: 0 (default: no flush), 1 (sync flush), 2 (full flush)\n"
+		"  -w <size>   log base 2 size of history window, between 9 and 15\n");
 	exit(0);
 }
 
 void print_perf_info_line(struct perf_info *info)
 {
-	printf("igzip_perf-> compress level: %d compress_iterations: %d "
-	       "decompress_iterations: %d block_size: %d\n",
-	       info->strategy.level, info->deflate_iter, info->inflate_iter,
-	       info->inblock_size);
+	printf("igzip_perf-> compress level: %d flush_type: %d block_size: %d\n",
+	       info->strategy.level, info->flush_type, info->inblock_size);
 }
 
 void print_file_line(struct perf_info *info)
@@ -173,7 +190,7 @@ void print_deflate_perf_line(struct perf_info *info)
 	else if (info->strategy.mode == ZLIB)
 		printf("    zlib_deflate->           ");
 
-	perf_print(info->stop, info->start, info->file_size * info->deflate_iter);
+	perf_print(info->start, info->file_size);
 }
 
 void print_inflate_perf_line(struct perf_info *info)
@@ -185,16 +202,203 @@ void print_inflate_perf_line(struct perf_info *info)
 	else if (info->inflate_mode == ZLIB)
 		printf("    zlib_inflate->           ");
 
-	perf_print(info->stop, info->start, info->file_size * info->inflate_iter);
+	perf_print(info->start, info->file_size);
+}
+
+int isal_deflate_round(struct isal_zstream *stream, uint8_t * outbuf, uint32_t outbuf_size,
+		       uint8_t * inbuf, uint32_t inbuf_size,
+		       uint32_t level, uint8_t * level_buf, uint32_t level_buf_size,
+		       int flush_type, int hist_bits)
+{
+	int check;
+
+	/* Setup stream for stateless compression */
+	isal_deflate_init(stream);
+	stream->end_of_stream = 1;	/* Do the entire file at once */
+	stream->flush = flush_type;
+	stream->next_in = inbuf;
+	stream->avail_in = inbuf_size;
+	stream->next_out = outbuf;
+	stream->avail_out = outbuf_size;
+	stream->level = level;
+	stream->level_buf = level_buf;
+	stream->level_buf_size = level_buf_size;
+	stream->hist_bits = hist_bits;
+
+	/* Compress stream */
+	check = isal_deflate_stateless(stream);
+
+	/* Verify compression success */
+	if (check || stream->avail_in)
+		return 1;
+
+	return 0;
+}
+
+int isal_inflate_round(struct inflate_state *state, uint8_t * inbuf, uint32_t inbuf_size,
+		       uint8_t * outbuf, uint32_t outbuf_size, int hist_bits)
+{
+	int check = 0;
+
+	/* Setup for stateless inflate */
+	state->next_in = inbuf;
+	state->avail_in = inbuf_size;
+	state->next_out = outbuf;
+	state->avail_out = outbuf_size;
+	state->crc_flag = ISAL_DEFLATE;
+	state->hist_bits = hist_bits;
+
+	/* Inflate data */
+	check = isal_inflate_stateless(state);
+
+	/* Verify inflate was successful */
+	if (check)
+		return 1;
+
+	return 0;
+}
+
+int isal_deflate_stateful_round(struct isal_zstream *stream, uint8_t * outbuf,
+				uint32_t outbuf_size, uint8_t * inbuf,
+				uint32_t inbuf_size, uint32_t in_block_size, uint32_t level,
+				uint8_t * level_buf, uint32_t level_buf_size, int flush_type,
+				int hist_bits)
+{
+	uint64_t inbuf_remaining;
+	int check = COMP_OK;
+
+	/* Setup stream for stateful compression */
+	inbuf_remaining = inbuf_size;
+	isal_deflate_init(stream);
+	stream->flush = flush_type;
+	stream->next_in = inbuf;
+	stream->next_out = outbuf;
+	stream->avail_out = outbuf_size;
+	stream->level = level;
+	stream->level_buf = level_buf;
+	stream->level_buf_size = level_buf_size;
+	stream->hist_bits = hist_bits;
+
+	/* Keep compressing so long as more data is available and no error has
+	 * been hit */
+	while (COMP_OK == check && inbuf_remaining > in_block_size) {
+		/* Setup next in buffer, assumes out buffer is sufficiently
+		 * large */
+		stream->avail_in = in_block_size;
+		inbuf_remaining -= in_block_size;
+
+		/* Compress stream */
+		check = isal_deflate(stream);
+	}
+
+	/* Finish compressing all remaining input */
+	if (COMP_OK == check) {
+		stream->avail_in = inbuf_remaining;
+		stream->end_of_stream = 1;
+		check = isal_deflate(stream);
+	}
+
+	/* Verify Compression Success */
+	if (COMP_OK != check || stream->avail_in > 0)
+		return 1;
+
+	return 0;
+}
+
+int isal_inflate_stateful_round(struct inflate_state *state, uint8_t * inbuf,
+				uint32_t inbuf_size, uint32_t in_block_size, uint8_t * outbuf,
+				uint32_t outbuf_size, int hist_bits)
+{
+	int check = ISAL_DECOMP_OK;
+	uint64_t inbuf_remaining;
+
+	isal_inflate_init(state);
+	state->next_in = inbuf;
+	state->next_out = outbuf;
+	state->avail_out = outbuf_size;
+	state->hist_bits = hist_bits;
+	inbuf_remaining = inbuf_size;
+
+	while (ISAL_DECOMP_OK == check && inbuf_remaining >= in_block_size) {
+		state->avail_in = in_block_size;
+		inbuf_remaining -= in_block_size;
+		check = isal_inflate(state);
+	}
+	if (ISAL_DECOMP_OK == check && inbuf_remaining > 0) {
+		state->avail_in = inbuf_remaining;
+		check = isal_inflate(state);
+	}
+
+	if (ISAL_DECOMP_OK != check || state->avail_in > 0)
+		return 1;
+
+	return 0;
+}
+
+int zlib_deflate_round(z_stream * gstream, uint8_t * outbuf, uInt outbuf_size,
+		       uint8_t * inbuf, uLong inbuf_size,
+		       uLong in_block_size, int level, int flush_type)
+{
+	uLong inbuf_remaining;
+	int check = Z_OK;
+
+	inbuf_remaining = inbuf_size;
+
+	/* Setup stream for stateful compression */
+	if (0 != deflateReset(gstream))
+		return 1;
+
+	gstream->next_in = inbuf;
+	gstream->next_out = outbuf;
+	gstream->avail_out = outbuf_size;
+
+	/* Keep compressing so long as more data is available and no error has
+	 * been hit */
+	while (Z_OK == check && inbuf_remaining > in_block_size) {
+		gstream->avail_in = in_block_size;
+		inbuf_remaining -= in_block_size;
+		check = deflate(gstream, flush_type);
+	}
+
+	/* Finish compressing all remaining input */
+	if (Z_OK == check) {
+		gstream->avail_in = inbuf_remaining;
+		check = deflate(gstream, Z_FINISH);
+	}
+
+	/* Verify Compression Success */
+	if (Z_STREAM_END != check)
+		return 1;
+
+	return 0;
+}
+
+int zlib_inflate_round(z_stream * gstream, uint8_t * inbuf,
+		       uLong inbuf_size, uint8_t * outbuf, uInt outbuf_size)
+{
+	int check = 0;
+
+	if (0 != inflateReset(gstream))
+		return 1;
+
+	gstream->next_in = inbuf;
+	gstream->avail_in = inbuf_size;
+	gstream->next_out = outbuf;
+	gstream->avail_out = outbuf_size;
+	check = inflate(gstream, Z_FINISH);
+	if (check != Z_STREAM_END)
+		return 1;
+
+	return 0;
 }
 
 int isal_deflate_perf(uint8_t * outbuf, uint64_t * outbuf_size, uint8_t * inbuf,
-		      uint64_t inbuf_size, int level, int iterations, struct perf *start,
-		      struct perf *stop)
+		      uint64_t inbuf_size, int level, int flush_type, int hist_bits, int time,
+		      struct perf *start)
 {
 	struct isal_zstream stream;
 	uint8_t *level_buf = NULL;
-	int i, check;
+	int check;
 
 	if (level_size_buf[level] > 0) {
 		level_buf = malloc(level_size_buf[level]);
@@ -202,49 +406,22 @@ int isal_deflate_perf(uint8_t * outbuf, uint64_t * outbuf_size, uint8_t * inbuf,
 			return 1;
 	}
 
-	isal_deflate_init(&stream);
-	stream.end_of_stream = 1;	/* Do the entire file at once */
-	stream.flush = NO_FLUSH;
-	stream.next_in = inbuf;
-	stream.avail_in = inbuf_size;
-	stream.next_out = outbuf;
-	stream.avail_out = *outbuf_size;
-	stream.level = level;
-	stream.level_buf = level_buf;
-	stream.level_buf_size = level_size_buf[level];
-	check = isal_deflate_stateless(&stream);
-
-	if (check || stream.avail_in)
-		return 1;
-
-	perf_start(start);
-	for (i = 0; i < iterations; i++) {
-		isal_deflate_init(&stream);
-		stream.end_of_stream = 1;	/* Do the entire file at once */
-		stream.flush = NO_FLUSH;
-		stream.next_in = inbuf;
-		stream.avail_in = inbuf_size;
-		stream.next_out = outbuf;
-		stream.avail_out = *outbuf_size;
-		stream.level = level;
-		stream.level_buf = level_buf;
-		stream.level_buf_size = level_size_buf[level];
-		isal_deflate_stateless(&stream);
-	}
-	perf_stop(stop);
-
+	BENCHMARK(start, time, check =
+		  isal_deflate_round(&stream, outbuf, *outbuf_size, inbuf,
+				     inbuf_size, level, level_buf,
+				     level_size_buf[level], flush_type, hist_bits));
 	*outbuf_size = stream.total_out;
-	return 0;
+	return check;
 }
 
 int isal_deflate_stateful_perf(uint8_t * outbuf, uint64_t * outbuf_size, uint8_t * inbuf,
-			       uint64_t inbuf_size, int level, uint64_t in_block_size,
-			       int iterations, struct perf *start, struct perf *stop)
+			       uint64_t inbuf_size, int level, int flush_type,
+			       uint64_t in_block_size, int hist_bits, int time,
+			       struct perf *start)
 {
 	struct isal_zstream stream;
 	uint8_t *level_buf = NULL;
-	int i, check;
-	uint64_t inbuf_remaining;
+	int check;
 
 	if (in_block_size == 0)
 		in_block_size = inbuf_size;
@@ -255,174 +432,89 @@ int isal_deflate_stateful_perf(uint8_t * outbuf, uint64_t * outbuf_size, uint8_t
 			return 1;
 	}
 
-	isal_deflate_init(&stream);
-	stream.end_of_stream = 1;	/* Do the entire file at once */
-	stream.flush = NO_FLUSH;
-	stream.next_in = inbuf;
-	stream.avail_in = inbuf_size;
-	stream.next_out = outbuf;
-	stream.avail_out = *outbuf_size;
-	stream.level = level;
-	stream.level_buf = level_buf;
-	stream.level_buf_size = level_size_buf[level];
-	check = isal_deflate(&stream);
-
-	if (check || stream.avail_in)
-		return 1;
-
-	perf_start(start);
-
-	for (i = 0; i < iterations; i++) {
-		inbuf_remaining = inbuf_size;
-		isal_deflate_init(&stream);
-		stream.flush = NO_FLUSH;
-		stream.next_in = inbuf;
-		stream.next_out = outbuf;
-		stream.avail_out = *outbuf_size;
-		stream.level = level;
-		stream.level_buf = level_buf;
-		stream.level_buf_size = level_size_buf[level];
-
-		while (ISAL_DECOMP_OK == check && inbuf_remaining > in_block_size) {
-			stream.avail_in = in_block_size;
-			inbuf_remaining -= in_block_size;
-			check = isal_deflate(&stream);
-		}
-		if (ISAL_DECOMP_OK == check) {
-			stream.avail_in = inbuf_remaining;
-			stream.end_of_stream = 1;
-			check = isal_deflate(&stream);
-		}
-
-		if (ISAL_DECOMP_OK != check || stream.avail_in > 0)
-			return 1;
-	}
-
-	perf_stop(stop);
-
+	BENCHMARK(start, time, check =
+		  isal_deflate_stateful_round(&stream, outbuf, *outbuf_size, inbuf, inbuf_size,
+					      in_block_size, level, level_buf,
+					      level_size_buf[level], flush_type, hist_bits));
 	*outbuf_size = stream.total_out;
-	return 0;
+	return check;
 
 }
 
 int zlib_deflate_perf(uint8_t * outbuf, uint64_t * outbuf_size, uint8_t * inbuf,
-		      uint64_t inbuf_size, int level, int iterations, struct perf *start,
-		      struct perf *stop)
+		      uint64_t inbuf_size, int level, int flush_type,
+		      uint64_t in_block_size, int hist_bits, int time, struct perf *start)
 {
-	int i, check;
+	int check;
 	z_stream gstream;
+	int flush_translator[] = { Z_NO_FLUSH, Z_SYNC_FLUSH, Z_FULL_FLUSH };
 
+	if (in_block_size == 0)
+		in_block_size = inbuf_size;
+
+	flush_type = flush_translator[flush_type];
+
+	/* Initialize the gstream buffer */
 	gstream.next_in = inbuf;
 	gstream.avail_in = inbuf_size;
 	gstream.zalloc = Z_NULL;
 	gstream.zfree = Z_NULL;
 	gstream.opaque = Z_NULL;
-	if (0 != deflateInit2(&gstream, level, Z_DEFLATED, -15, 9, Z_DEFAULT_STRATEGY))
+
+	if (hist_bits == 0)
+		hist_bits = -15;
+	else
+		hist_bits = -hist_bits;
+
+	if (0 != deflateInit2(&gstream, level, Z_DEFLATED, hist_bits, 9, Z_DEFAULT_STRATEGY))
 		return 1;
 
-	gstream.next_out = outbuf;
-	gstream.avail_out = *outbuf_size;
-	check = deflate(&gstream, Z_FINISH);
-	if (check != 1)
-		return 1;
-
-	perf_start(start);
-	for (i = 0; i < iterations; i++) {
-		if (0 != deflateReset(&gstream))
-			return 1;
-
-		gstream.next_in = inbuf;
-		gstream.avail_in = inbuf_size;
-		gstream.next_out = outbuf;
-		gstream.avail_out = *outbuf_size;
-		deflate(&gstream, Z_FINISH);
-	}
-	perf_stop(stop);
-	deflateEnd(&gstream);
+	BENCHMARK(start, time, check =
+		  zlib_deflate_round(&gstream, outbuf, *outbuf_size, inbuf, inbuf_size,
+				     in_block_size, level, flush_type));
 
 	*outbuf_size = gstream.total_out;
-	return 0;
+	deflateEnd(&gstream);
+
+	return check;
 }
 
 int isal_inflate_perf(uint8_t * inbuf, uint64_t inbuf_size, uint8_t * outbuf,
 		      uint64_t outbuf_size, uint8_t * filebuf, uint64_t file_size,
-		      int iterations, struct perf *start, struct perf *stop)
+		      int hist_bits, int time, struct perf *start)
 {
 	struct inflate_state state;
-	int i, check;
+	int check;
 
 	/* Check that data decompresses */
-	state.next_in = inbuf;
-	state.avail_in = inbuf_size;
-	state.next_out = outbuf;
-	state.avail_out = outbuf_size;
-	state.crc_flag = ISAL_DEFLATE;
-
-	check = isal_inflate_stateless(&state);
+	check = isal_inflate_round(&state, inbuf, inbuf_size, outbuf, outbuf_size, hist_bits);
 	if (check || state.total_out != file_size || memcmp(outbuf, filebuf, file_size))
 		return 1;
 
-	perf_start(start);
+	BENCHMARK(start, time, isal_inflate_round(&state, inbuf, inbuf_size,
+						  outbuf, outbuf_size, hist_bits));
 
-	for (i = 0; i < iterations; i++) {
-		state.next_in = inbuf;
-		state.avail_in = inbuf_size;
-		state.next_out = outbuf;
-		state.avail_out = outbuf_size;
-		state.crc_flag = ISAL_DEFLATE;
-
-		isal_inflate_stateless(&state);
-	}
-	perf_stop(stop);
-
-	return 0;
+	return check;
 }
 
 int isal_inflate_stateful_perf(uint8_t * inbuf, uint64_t inbuf_size, uint8_t * outbuf,
 			       uint64_t outbuf_size, uint8_t * filebuf, uint64_t file_size,
-			       uint64_t in_block_size, int iterations, struct perf *start,
-			       struct perf *stop)
+			       uint64_t in_block_size, int hist_bits, int time,
+			       struct perf *start)
 {
 	struct inflate_state state;
-	int i, check;
-	uint64_t inbuf_remaining;
+	int check;
 
 	if (in_block_size == 0)
 		in_block_size = inbuf_size;
-	/* Check that data decompresses */
-	isal_inflate_init(&state);
-	state.next_in = inbuf;
-	state.avail_in = inbuf_size;
-	state.next_out = outbuf;
-	state.avail_out = outbuf_size;
 
-	check = isal_inflate(&state);
+	check = isal_inflate_round(&state, inbuf, inbuf_size, outbuf, outbuf_size, hist_bits);
 	if (check || state.total_out != file_size || memcmp(outbuf, filebuf, file_size))
 		return 1;
 
-	perf_start(start);
-
-	for (i = 0; i < iterations; i++) {
-		isal_inflate_init(&state);
-		state.next_in = inbuf;
-		state.next_out = outbuf;
-		state.avail_out = outbuf_size;
-		inbuf_remaining = inbuf_size;
-
-		while (ISAL_DECOMP_OK == check && inbuf_remaining >= in_block_size) {
-			state.avail_in = in_block_size;
-			inbuf_remaining -= in_block_size;
-			check = isal_inflate(&state);
-		}
-		if (ISAL_DECOMP_OK == check && inbuf_remaining > 0) {
-			state.avail_in = inbuf_remaining;
-			check = isal_inflate(&state);
-		}
-
-		if (ISAL_DECOMP_OK != check || state.avail_in > 0)
-			return 1;
-	}
-	perf_stop(stop);
+	BENCHMARK(start, time,
+		  isal_inflate_stateful_round(&state, inbuf, inbuf_size, in_block_size, outbuf,
+					      outbuf_size, hist_bits));
 
 	return 0;
 
@@ -430,9 +522,9 @@ int isal_inflate_stateful_perf(uint8_t * inbuf, uint64_t inbuf_size, uint8_t * o
 
 int zlib_inflate_perf(uint8_t * inbuf, uint64_t inbuf_size, uint8_t * outbuf,
 		      uint64_t outbuf_size, uint8_t * filebuf, uint64_t file_size,
-		      int iterations, struct perf *start, struct perf *stop)
+		      int hist_bits, int time, struct perf *start)
 {
-	int i, check;
+	int check;
 	z_stream gstream;
 
 	gstream.next_in = inbuf;
@@ -440,27 +532,22 @@ int zlib_inflate_perf(uint8_t * inbuf, uint64_t inbuf_size, uint8_t * outbuf,
 	gstream.zalloc = Z_NULL;
 	gstream.zfree = Z_NULL;
 	gstream.opaque = Z_NULL;
-	if (0 != inflateInit2(&gstream, -15))
+
+	if (hist_bits == 0)
+		hist_bits = -15;
+	else
+		hist_bits = -hist_bits;
+
+	if (0 != inflateInit2(&gstream, hist_bits))
 		return 1;
 
-	gstream.next_out = outbuf;
-	gstream.avail_out = outbuf_size;
-	check = inflate(&gstream, Z_FINISH);
-	if (check != 1 || gstream.total_out != file_size || memcmp(outbuf, filebuf, file_size))
+	check = zlib_inflate_round(&gstream, inbuf, inbuf_size, outbuf, outbuf_size);
+	if (check || gstream.total_out != file_size || memcmp(outbuf, filebuf, file_size))
 		return 1;
 
-	perf_start(start);
-	for (i = 0; i < iterations; i++) {
-		if (0 != inflateReset(&gstream))
-			return 1;
+	BENCHMARK(start, time,
+		  zlib_inflate_round(&gstream, inbuf, inbuf_size, outbuf, outbuf_size));
 
-		gstream.next_in = inbuf;
-		gstream.avail_in = inbuf_size;
-		gstream.next_out = outbuf;
-		gstream.avail_out = outbuf_size;
-		inflate(&gstream, Z_FINISH);
-	}
-	perf_stop(stop);
 	inflateEnd(&gstream);
 	return 0;
 }
@@ -469,8 +556,10 @@ int main(int argc, char *argv[])
 {
 	FILE *in = NULL;
 	unsigned char *compressbuf, *decompbuf, *filebuf;
+	char *outfile = NULL;
 	int i, c, ret = 0;
 	uint64_t decompbuf_size, compressbuf_size;
+	uint64_t block_count;
 
 	struct compress_strategy compression_queue[COMPRESSION_QUEUE_LIMIT];
 
@@ -478,7 +567,7 @@ int main(int argc, char *argv[])
 	struct compress_strategy compress_strat;
 	struct inflate_modes inflate_strat = { 0 };
 	struct perf_info info;
-	memset(&info, 0, sizeof(info));
+	init_perf_info(&info);
 
 	while ((c = getopt(argc, argv, OPTARGS)) != -1) {
 		switch (c) {
@@ -530,13 +619,13 @@ int main(int argc, char *argv[])
 			compression_queue_size++;
 			break;
 		case 'i':
-			info.inflate_iter = atoi(optarg);
-			if (info.inflate_iter < 1)
+			info.inflate_time = atoi(optarg);
+			if (info.inflate_time < 0)
 				usage();
 			break;
 		case 'd':
-			info.deflate_iter = atoi(optarg);
-			if (info.deflate_iter < 1)
+			info.deflate_time = atoi(optarg);
+			if (info.deflate_time < 0)
 				usage();
 			break;
 		case 's':
@@ -551,6 +640,23 @@ int main(int argc, char *argv[])
 		case 'b':
 			inflate_strat.stateful = 1;
 			info.inblock_size = atoi(optarg);
+			break;
+		case 'y':
+			info.flush_type = atoi(optarg);
+			if (info.flush_type != NO_FLUSH && info.flush_type != SYNC_FLUSH
+			    && info.flush_type != FULL_FLUSH) {
+				printf("Unsupported flush type\n");
+				exit(0);
+			}
+			break;
+
+		case 'w':
+			info.hist_bits = atoi(optarg);
+			if (info.hist_bits > 15 || info.hist_bits < 9)
+				usage();
+			break;
+		case 'o':
+			outfile = optarg;
 			break;
 		case 'h':
 		default:
@@ -586,20 +692,6 @@ int main(int argc, char *argv[])
 	}
 
 	decompbuf_size = info.file_size;
-	if (info.inflate_iter == 0) {
-		info.inflate_iter =
-		    info.file_size ? RUN_MEM_SIZE / info.file_size : MIN_TEST_LOOPS;
-		if (info.inflate_iter < MIN_TEST_LOOPS)
-			info.inflate_iter = MIN_TEST_LOOPS;
-	}
-
-	decompbuf_size = info.file_size;
-	if (info.deflate_iter == 0) {
-		info.deflate_iter =
-		    info.file_size ? RUN_MEM_SIZE / info.file_size : MIN_TEST_LOOPS;
-		if (info.deflate_iter < MIN_TEST_LOOPS)
-			info.deflate_iter = MIN_TEST_LOOPS;
-	}
 
 	if (compression_queue_size == 0) {
 		if (info.inblock_size == 0)
@@ -616,12 +708,22 @@ int main(int argc, char *argv[])
 		exit(0);
 	}
 
-	compressbuf_size = 2 * info.file_size;
+	block_count = 1;
+	if (info.flush_type > 0)
+		block_count = (info.file_size + info.inblock_size - 1) / info.inblock_size;
+
+	/* Way overestimate likely compressed size to handle bad type 0 and
+	 * small block_size case */
+	compressbuf_size = block_count * ISAL_DEF_MAX_HDR_SIZE + 2 * info.file_size;
+	if (compressbuf_size >= MAX_COMPRESS_BUF_SIZE)
+		compressbuf_size = MAX_COMPRESS_BUF_SIZE;
+
 	compressbuf = malloc(compressbuf_size);
 	if (compressbuf == NULL) {
 		fprintf(stderr, "Can't allocate input buffer memory\n");
 		exit(0);
 	}
+
 	decompbuf = malloc(decompbuf_size);
 	if (decompbuf == NULL) {
 		fprintf(stderr, "Can't allocate output buffer memory\n");
@@ -646,18 +748,22 @@ int main(int argc, char *argv[])
 		if (info.strategy.mode == ISAL_STATELESS)
 			ret = isal_deflate_perf(compressbuf, &info.deflate_size, filebuf,
 						info.file_size, compression_queue[i].level,
-						info.deflate_iter, &info.start, &info.stop);
+						info.flush_type, info.hist_bits,
+						info.deflate_time, &info.start);
 		else if (info.strategy.mode == ISAL_STATEFUL)
 			ret =
 			    isal_deflate_stateful_perf(compressbuf, &info.deflate_size,
 						       filebuf, info.file_size,
 						       compression_queue[i].level,
-						       info.inblock_size, info.deflate_iter,
-						       &info.start, &info.stop);
+						       info.flush_type, info.inblock_size,
+						       info.hist_bits, info.deflate_time,
+						       &info.start);
 		else if (info.strategy.mode == ZLIB)
 			ret = zlib_deflate_perf(compressbuf, &info.deflate_size, filebuf,
 						info.file_size, compression_queue[i].level,
-						info.deflate_iter, &info.start, &info.stop);
+						info.flush_type, info.inblock_size,
+						info.hist_bits, info.deflate_time,
+						&info.start);
 
 		if (ret) {
 			printf("  Error in compression\n");
@@ -669,11 +775,22 @@ int main(int argc, char *argv[])
 		print_deflate_perf_line(&info);
 		printf("\n");
 
+		if (outfile != NULL && i + 1 == compression_queue_size) {
+			FILE *out;
+			out = fopen(outfile, "wb");
+			fwrite(compressbuf, 1, info.deflate_size, out);
+			fclose(out);
+		}
+
+		if (info.inflate_time == 0)
+			continue;
+
 		if (inflate_strat.stateless) {
 			info.inflate_mode = ISAL_STATELESS;
 			ret = isal_inflate_perf(compressbuf, info.deflate_size, decompbuf,
 						decompbuf_size, filebuf, info.file_size,
-						info.inflate_iter, &info.start, &info.stop);
+						info.hist_bits, info.inflate_time,
+						&info.start);
 			if (ret)
 				printf("    Error in isal stateless inflate\n");
 			else
@@ -686,8 +803,8 @@ int main(int argc, char *argv[])
 			    isal_inflate_stateful_perf(compressbuf, info.deflate_size,
 						       decompbuf, decompbuf_size, filebuf,
 						       info.file_size, info.inblock_size,
-						       info.inflate_iter, &info.start,
-						       &info.stop);
+						       info.hist_bits, info.inflate_time,
+						       &info.start);
 
 			if (ret)
 				printf("    Error in isal stateful inflate\n");
@@ -699,7 +816,8 @@ int main(int argc, char *argv[])
 			info.inflate_mode = ZLIB;
 			ret = zlib_inflate_perf(compressbuf, info.deflate_size, decompbuf,
 						decompbuf_size, filebuf, info.file_size,
-						info.inflate_iter, &info.start, &info.stop);
+						info.hist_bits, info.inflate_time,
+						&info.start);
 			if (ret)
 				printf("    Error in zlib inflate\n");
 			else

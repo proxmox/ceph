@@ -4,12 +4,13 @@ import { ReactiveFormsModule } from '@angular/forms';
 import { ActivatedRoute } from '@angular/router';
 import { RouterTestingModule } from '@angular/router/testing';
 
-import { TypeaheadModule } from 'ngx-bootstrap/typeahead';
+import { NgbTypeaheadModule } from '@ng-bootstrap/ng-bootstrap';
 import { ToastrModule } from 'ngx-toastr';
 
-import { ActivatedRouteStub } from '../../../../testing/activated-route-stub';
-import { configureTestBed, i18nProviders } from '../../../../testing/unit-test-helper';
-import { SharedModule } from '../../../shared/shared.module';
+import { LoadingPanelComponent } from '~/app/shared/components/loading-panel/loading-panel.component';
+import { SharedModule } from '~/app/shared/shared.module';
+import { ActivatedRouteStub } from '~/testing/activated-route-stub';
+import { configureTestBed, RgwHelper } from '~/testing/unit-test-helper';
 import { NFSClusterType } from '../nfs-cluster-type.enum';
 import { NfsFormClientComponent } from '../nfs-form-client/nfs-form-client.component';
 import { NfsFormComponent } from './nfs-form.component';
@@ -20,30 +21,33 @@ describe('NfsFormComponent', () => {
   let httpTesting: HttpTestingController;
   let activatedRoute: ActivatedRouteStub;
 
-  configureTestBed({
-    declarations: [NfsFormComponent, NfsFormClientComponent],
-    imports: [
-      HttpClientTestingModule,
-      ReactiveFormsModule,
-      RouterTestingModule,
-      SharedModule,
-      ToastrModule.forRoot(),
-      TypeaheadModule.forRoot()
-    ],
-    providers: [
-      {
-        provide: ActivatedRoute,
-        useValue: new ActivatedRouteStub({ cluster_id: undefined, export_id: undefined })
-      },
-      i18nProviders
-    ]
-  });
+  configureTestBed(
+    {
+      declarations: [NfsFormComponent, NfsFormClientComponent],
+      imports: [
+        HttpClientTestingModule,
+        ReactiveFormsModule,
+        RouterTestingModule,
+        SharedModule,
+        ToastrModule.forRoot(),
+        NgbTypeaheadModule
+      ],
+      providers: [
+        {
+          provide: ActivatedRoute,
+          useValue: new ActivatedRouteStub({ cluster_id: undefined, export_id: undefined })
+        }
+      ]
+    },
+    [LoadingPanelComponent]
+  );
 
   beforeEach(() => {
     fixture = TestBed.createComponent(NfsFormComponent);
     component = fixture.componentInstance;
-    httpTesting = TestBed.get(HttpTestingController);
-    activatedRoute = TestBed.get(ActivatedRoute);
+    httpTesting = TestBed.inject(HttpTestingController);
+    activatedRoute = <ActivatedRouteStub>TestBed.inject(ActivatedRoute);
+    RgwHelper.selectDaemon();
     fixture.detectChanges();
 
     httpTesting.expectOne('api/nfs-ganesha/daemon').flush([
@@ -54,19 +58,19 @@ describe('NfsFormComponent', () => {
     httpTesting.expectOne('ui-api/nfs-ganesha/fsals').flush(['CEPH', 'RGW']);
     httpTesting.expectOne('ui-api/nfs-ganesha/cephx/clients').flush(['admin', 'fs', 'rgw']);
     httpTesting.expectOne('ui-api/nfs-ganesha/cephfs/filesystems').flush([{ id: 1, name: 'a' }]);
-    httpTesting.expectOne('api/rgw/user').flush(['test', 'dev']);
+    httpTesting.expectOne(`api/rgw/user?${RgwHelper.DAEMON_QUERY_PARAM}`).flush(['test', 'dev']);
     const user_dev = {
       suspended: 0,
       user_id: 'dev',
       keys: ['a']
     };
-    httpTesting.expectOne('api/rgw/user/dev').flush(user_dev);
+    httpTesting.expectOne(`api/rgw/user/dev?${RgwHelper.DAEMON_QUERY_PARAM}`).flush(user_dev);
     const user_test = {
       suspended: 1,
       user_id: 'test',
       keys: ['a']
     };
-    httpTesting.expectOne('api/rgw/user/test').flush(user_test);
+    httpTesting.expectOne(`api/rgw/user/test?${RgwHelper.DAEMON_QUERY_PARAM}`).flush(user_test);
     httpTesting.verify();
   });
 

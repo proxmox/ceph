@@ -680,7 +680,7 @@ void isal_update_histogram_base(uint8_t * start_stream, int length,
 	end_stream = start_stream + length;
 	memset(last_seen, 0, sizeof(histogram->hash_table));	/* Initialize last_seen to be 0. */
 	for (current = start_stream; current < end_stream - 3; current++) {
-		literal = *(uint32_t *) current;
+		literal = load_u32(current);
 		hash = compute_hash(literal) & LVL0_HASH_MASK;
 		seen = last_seen[hash];
 		last_seen[hash] = (current - start_stream) & 0xFFFF;
@@ -700,7 +700,7 @@ void isal_update_histogram_base(uint8_t * start_stream, int length,
 					end = end_stream - 3;
 				next_hash++;
 				for (; next_hash < end; next_hash++) {
-					literal = *(uint32_t *) next_hash;
+					literal = load_u32(next_hash);
 					hash = compute_hash(literal) & LVL0_HASH_MASK;
 					last_seen[hash] = (next_hash - start_stream) & 0xFFFF;
 				}
@@ -728,39 +728,12 @@ void isal_update_histogram_base(uint8_t * start_stream, int length,
 static uint32_t convert_dist_to_dist_sym(uint32_t dist)
 {
 	assert(dist <= 32768 && dist > 0);
-	if (dist <= 2)
-		return dist - 1;
-	else if (dist <= 4)
-		return 0 + (dist - 1) / 1;
-	else if (dist <= 8)
-		return 2 + (dist - 1) / 2;
-	else if (dist <= 16)
-		return 4 + (dist - 1) / 4;
-	else if (dist <= 32)
-		return 6 + (dist - 1) / 8;
-	else if (dist <= 64)
-		return 8 + (dist - 1) / 16;
-	else if (dist <= 128)
-		return 10 + (dist - 1) / 32;
-	else if (dist <= 256)
-		return 12 + (dist - 1) / 64;
-	else if (dist <= 512)
-		return 14 + (dist - 1) / 128;
-	else if (dist <= 1024)
-		return 16 + (dist - 1) / 256;
-	else if (dist <= 2048)
-		return 18 + (dist - 1) / 512;
-	else if (dist <= 4096)
-		return 20 + (dist - 1) / 1024;
-	else if (dist <= 8192)
-		return 22 + (dist - 1) / 2048;
-	else if (dist <= 16384)
-		return 24 + (dist - 1) / 4096;
-	else if (dist <= 32768)
-		return 26 + (dist - 1) / 8192;
-	else
-		return ~0;	/* ~0 is an invalid distance code */
-
+	if (dist <= 32768) {
+		uint32_t msb = dist > 4 ? bsr(dist - 1) - 2 : 0;
+		return (msb * 2) + ((dist - 1) >> msb);
+	} else {
+		return ~0;
+	}
 }
 
 /**

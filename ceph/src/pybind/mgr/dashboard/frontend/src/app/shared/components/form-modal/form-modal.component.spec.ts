@@ -2,17 +2,11 @@ import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { ReactiveFormsModule, Validators } from '@angular/forms';
 import { RouterTestingModule } from '@angular/router/testing';
 
-import { NgBootstrapFormValidationModule } from 'ng-bootstrap-form-validation';
-import { BsModalRef, ModalModule } from 'ngx-bootstrap/modal';
+import { NgbActiveModal } from '@ng-bootstrap/ng-bootstrap';
 
-import {
-  configureTestBed,
-  FixtureHelper,
-  FormHelper,
-  i18nProviders
-} from '../../../../testing/unit-test-helper';
-import { CdValidators } from '../../forms/cd-validators';
-import { SharedModule } from '../../shared.module';
+import { CdValidators } from '~/app/shared/forms/cd-validators';
+import { SharedModule } from '~/app/shared/shared.module';
+import { configureTestBed, FixtureHelper, FormHelper } from '~/testing/unit-test-helper';
 import { FormModalComponent } from './form-modal.component';
 
 describe('InputModalComponent', () => {
@@ -52,14 +46,8 @@ describe('InputModalComponent', () => {
   };
 
   configureTestBed({
-    imports: [
-      ModalModule.forRoot(),
-      NgBootstrapFormValidationModule.forRoot(),
-      RouterTestingModule,
-      ReactiveFormsModule,
-      SharedModule
-    ],
-    providers: [i18nProviders, BsModalRef]
+    imports: [RouterTestingModule, ReactiveFormsModule, SharedModule],
+    providers: [NgbActiveModal]
   });
 
   beforeEach(() => {

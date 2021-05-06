@@ -3,19 +3,19 @@ import { NgModule } from '@angular/core';
 import { FormsModule, ReactiveFormsModule } from '@angular/forms';
 import { RouterModule } from '@angular/router';
 
-import { TreeModule } from 'angular-tree-component';
-import { NgBootstrapFormValidationModule } from 'ng-bootstrap-form-validation';
-import { AlertModule } from 'ngx-bootstrap/alert';
-import { BsDatepickerModule } from 'ngx-bootstrap/datepicker';
-import { BsDropdownModule } from 'ngx-bootstrap/dropdown';
-import { ModalModule } from 'ngx-bootstrap/modal';
-import { TabsModule } from 'ngx-bootstrap/tabs';
-import { TimepickerModule } from 'ngx-bootstrap/timepicker';
-import { TooltipModule } from 'ngx-bootstrap/tooltip';
-import { TypeaheadModule } from 'ngx-bootstrap/typeahead';
+import { TreeModule } from '@circlon/angular-tree-component';
+import {
+  NgbDatepickerModule,
+  NgbDropdownModule,
+  NgbNavModule,
+  NgbPopoverModule,
+  NgbTimepickerModule,
+  NgbTooltipModule,
+  NgbTypeaheadModule
+} from '@ng-bootstrap/ng-bootstrap';
+import { NgxPipeFunctionModule } from 'ngx-pipe-function';
 
-import { OrchestratorDocModalComponent } from '../../shared/components/orchestrator-doc-modal/orchestrator-doc-modal.component';
-import { SharedModule } from '../../shared/shared.module';
+import { SharedModule } from '~/app/shared/shared.module';
 import { PerformanceCounterModule } from '../performance-counter/performance-counter.module';
 import { CephSharedModule } from '../shared/ceph-shared.module';
 import { ConfigurationDetailsComponent } from './configuration/configuration-details/configuration-details.component';
@@ -38,13 +38,12 @@ import { OsdFlagsIndivModalComponent } from './osd/osd-flags-indiv-modal/osd-fla
 import { OsdFlagsModalComponent } from './osd/osd-flags-modal/osd-flags-modal.component';
 import { OsdFormComponent } from './osd/osd-form/osd-form.component';
 import { OsdListComponent } from './osd/osd-list/osd-list.component';
-import { OsdPerformanceHistogramComponent } from './osd/osd-performance-histogram/osd-performance-histogram.component';
 import { OsdPgScrubModalComponent } from './osd/osd-pg-scrub-modal/osd-pg-scrub-modal.component';
 import { OsdRecvSpeedModalComponent } from './osd/osd-recv-speed-modal/osd-recv-speed-modal.component';
 import { OsdReweightModalComponent } from './osd/osd-reweight-modal/osd-reweight-modal.component';
 import { OsdScrubModalComponent } from './osd/osd-scrub-modal/osd-scrub-modal.component';
 import { ActiveAlertListComponent } from './prometheus/active-alert-list/active-alert-list.component';
-import { MonitoringListComponent } from './prometheus/monitoring-list/monitoring-list.component';
+import { PrometheusTabsComponent } from './prometheus/prometheus-tabs/prometheus-tabs.component';
 import { RulesListComponent } from './prometheus/rules-list/rules-list.component';
 import { SilenceFormComponent } from './prometheus/silence-form/silence-form.component';
 import { SilenceListComponent } from './prometheus/silence-list/silence-list.component';
@@ -57,40 +56,24 @@ import { ServicesComponent } from './services/services.component';
 import { TelemetryComponent } from './telemetry/telemetry.component';
 
 @NgModule({
-  entryComponents: [
-    OsdDetailsComponent,
-    OsdScrubModalComponent,
-    OsdFlagsModalComponent,
-    OsdFlagsIndivModalComponent,
-    OsdRecvSpeedModalComponent,
-    OsdReweightModalComponent,
-    OsdPgScrubModalComponent,
-    OsdReweightModalComponent,
-    SilenceMatcherModalComponent,
-    OsdDevicesSelectionModalComponent,
-    OsdCreationPreviewModalComponent,
-    OrchestratorDocModalComponent
-  ],
   imports: [
     CommonModule,
     PerformanceCounterModule,
-    TabsModule.forRoot(),
+    NgbNavModule,
     SharedModule,
     RouterModule,
     FormsModule,
     ReactiveFormsModule,
-    BsDropdownModule.forRoot(),
-    BsDatepickerModule.forRoot(),
-    ModalModule.forRoot(),
-    AlertModule.forRoot(),
-    TooltipModule.forRoot(),
+    NgbTooltipModule,
     MgrModulesModule,
-    TypeaheadModule.forRoot(),
-    TimepickerModule.forRoot(),
-    TreeModule.forRoot(),
-    BsDatepickerModule.forRoot(),
-    NgBootstrapFormValidationModule,
-    CephSharedModule
+    NgbTypeaheadModule,
+    NgbTimepickerModule,
+    TreeModule,
+    CephSharedModule,
+    NgbDatepickerModule,
+    NgbPopoverModule,
+    NgbDropdownModule,
+    NgxPipeFunctionModule
   ],
   declarations: [
     HostsComponent,
@@ -98,7 +81,6 @@ import { TelemetryComponent } from './telemetry/telemetry.component';
     ConfigurationComponent,
     OsdListComponent,
     OsdDetailsComponent,
-    OsdPerformanceHistogramComponent,
     OsdScrubModalComponent,
     OsdFlagsModalComponent,
     HostDetailsComponent,
@@ -109,7 +91,6 @@ import { TelemetryComponent } from './telemetry/telemetry.component';
     LogsComponent,
     OsdRecvSpeedModalComponent,
     OsdPgScrubModalComponent,
-    ActiveAlertListComponent,
     OsdRecvSpeedModalComponent,
     SilenceFormComponent,
     SilenceListComponent,
@@ -124,13 +105,13 @@ import { TelemetryComponent } from './telemetry/telemetry.component';
     OsdCreationPreviewModalComponent,
     RulesListComponent,
     ActiveAlertListComponent,
-    MonitoringListComponent,
     HostFormComponent,
     ServiceDetailsComponent,
     ServiceDaemonListComponent,
     TelemetryComponent,
-    OsdFlagsIndivModalComponent,
+    PrometheusTabsComponent,
     ServiceFormComponent,
+    OsdFlagsIndivModalComponent,
     PlacementPipe
   ]
 })

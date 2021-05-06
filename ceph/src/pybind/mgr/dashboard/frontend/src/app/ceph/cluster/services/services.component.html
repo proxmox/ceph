@@ -1,5 +1,5 @@
 <cd-orchestrator-doc-panel *ngIf="showDocPanel"></cd-orchestrator-doc-panel>
-<ng-container *ngIf="hasOrchestrator">
+<ng-container *ngIf="orchStatus?.available">
   <cd-table [data]="services"
             [columns]="columns"
             identifier="service_name"

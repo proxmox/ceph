@@ -14,6 +14,8 @@
 #include "qat_sym_session.h"
 #include "qat_sym_pmd.h"
 
+#define MIXED_CRYPTO_MIN_FW_VER 0x04090000
+
 uint8_t cryptodev_qat_driver_id;
 
 static const struct rte_cryptodev_capabilities qat_gen1_sym_capabilities[] = {
@@ -169,6 +171,7 @@ static int qat_sym_qp_setup(struct rte_cryptodev *dev, uint16_t qp_id,
 							= *qp_addr;
 
 	qp = (struct qat_qp *)*qp_addr;
+	qp->min_enq_burst_threshold = qat_private->min_enq_burst_threshold;
 
 	for (i = 0; i < qp->nb_descriptors; i++) {
 
@@ -184,6 +187,31 @@ static int qat_sym_qp_setup(struct rte_cryptodev *dev, uint16_t qp_id,
 				rte_mempool_virt2iova(cookie) +
 				offsetof(struct qat_sym_op_cookie,
 				qat_sgl_dst);
+	}
+
+	/* Get fw version from QAT (GEN2), skip if we've got it already */
+	if (qp->qat_dev_gen == QAT_GEN2 && !(qat_private->internal_capabilities
+			& QAT_SYM_CAP_VALID)) {
+		ret = qat_cq_get_fw_version(qp);
+
+		if (ret < 0) {
+			qat_sym_qp_release(dev, qp_id);
+			return ret;
+		}
+
+		if (ret != 0)
+			QAT_LOG(DEBUG, "QAT firmware version: %d.%d.%d",
+					(ret >> 24) & 0xff,
+					(ret >> 16) & 0xff,
+					(ret >> 8) & 0xff);
+		else
+			QAT_LOG(DEBUG, "unknown QAT firmware version");
+
+		/* set capabilities based on the fw version */
+		qat_private->internal_capabilities = QAT_SYM_CAP_VALID |
+				((ret >= MIXED_CRYPTO_MIN_FW_VER) ?
+						QAT_SYM_CAP_MIXED_CRYPTO : 0);
+		ret = 0;
 	}
 
 	return ret;
@@ -202,7 +230,6 @@ static struct rte_cryptodev_ops crypto_qat_ops = {
 		.stats_reset		= qat_sym_stats_reset,
 		.queue_pair_setup	= qat_sym_qp_setup,
 		.queue_pair_release	= qat_sym_qp_release,
-		.queue_pair_count	= NULL,
 
 		/* Crypto related operations */
 		.sym_session_get_size	= qat_sym_session_get_private_size,
@@ -237,8 +264,10 @@ static const struct rte_driver cryptodev_qat_sym_driver = {
 };
 
 int
-qat_sym_dev_create(struct qat_pci_device *qat_pci_dev)
+qat_sym_dev_create(struct qat_pci_device *qat_pci_dev,
+		struct qat_dev_cmd_param *qat_dev_cmd_param __rte_unused)
 {
+	int i = 0;
 	struct rte_cryptodev_pmd_init_params init_params = {
 			.name = "",
 			.socket_id = qat_pci_dev->pci_dev->device.numa_node,
@@ -278,7 +307,8 @@ qat_sym_dev_create(struct qat_pci_device *qat_pci_dev)
 			RTE_CRYPTODEV_FF_OOP_SGL_IN_SGL_OUT |
 			RTE_CRYPTODEV_FF_OOP_SGL_IN_LB_OUT |
 			RTE_CRYPTODEV_FF_OOP_LB_IN_SGL_OUT |
-			RTE_CRYPTODEV_FF_OOP_LB_IN_LB_OUT;
+			RTE_CRYPTODEV_FF_OOP_LB_IN_LB_OUT |
+			RTE_CRYPTODEV_FF_DIGEST_ENCRYPTED;
 
 	internals = cryptodev->data->dev_private;
 	internals->qat_dev = qat_pci_dev;
@@ -299,6 +329,15 @@ qat_sym_dev_create(struct qat_pci_device *qat_pci_dev)
 			"QAT gen %d capabilities unknown, default to GEN2",
 					qat_pci_dev->qat_dev_gen);
 		break;
+	}
+
+	while (1) {
+		if (qat_dev_cmd_param[i].name == NULL)
+			break;
+		if (!strcmp(qat_dev_cmd_param[i].name, SYM_ENQ_THRESHOLD_NAME))
+			internals->min_enq_burst_threshold =
+					qat_dev_cmd_param[i].val;
+		i++;
 	}
 
 	QAT_LOG(DEBUG, "Created QAT SYM device %s as cryptodev instance %d",

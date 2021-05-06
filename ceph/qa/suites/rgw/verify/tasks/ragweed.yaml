@@ -1,6 +1,6 @@
 tasks:
 - ragweed:
     client.0:
-      default-branch: ceph-octopus
+      default-branch: ceph-pacific
       rgw_server: client.0
       stages: prepare,check

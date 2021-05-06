@@ -24,13 +24,17 @@
 #define _RTE_METRICS_H_
 
 #include <stdint.h>
+#include <rte_compat.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
+extern int metrics_initialized;
+
 /** Maximum length of metric name (including null-terminator) */
 #define RTE_METRICS_MAX_NAME_LEN 64
+#define RTE_METRICS_MAX_METRICS 256
 
 /**
  * Global metric special id.
@@ -41,7 +45,6 @@ extern "C" {
  * port (i.e. device), are updated.
  */
 #define RTE_METRICS_GLOBAL -1
-
 
 /**
  * A name-key lookup for metrics.
@@ -70,7 +73,6 @@ struct rte_metric_value {
 	uint64_t value;
 };
 
-
 /**
  * Initializes metric module. This function must be called from
  * a primary process before metrics are used.
@@ -79,6 +81,23 @@ struct rte_metric_value {
  *   Socket to use for shared memory allocation.
  */
 void rte_metrics_init(int socket_id);
+
+/**
+ * @warning
+ * @b EXPERIMENTAL: this API may change without prior notice
+ *
+ * Deinitialize metric module. This function must be called from
+ * a primary process after all the metrics usage is over, to
+ *  release the shared memory.
+ *
+ * @return
+ *  -EINVAL - invalid parameter.
+ *  -EIO: Error, unable to access metrics shared memory
+ *    (rte_metrics_init() not called)
+ *  0 - success
+ */
+__rte_experimental
+int rte_metrics_deinit(void);
 
 /**
  * Register a metric, making it available as a reporting parameter.

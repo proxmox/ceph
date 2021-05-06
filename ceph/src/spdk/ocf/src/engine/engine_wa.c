@@ -7,7 +7,7 @@
 #include "engine_wa.h"
 #include "engine_common.h"
 #include "cache_engine.h"
-#include "../utils/utils_req.h"
+#include "../ocf_request.h"
 #include "../utils/utils_io.h"
 #include "../metadata/metadata.h"
 
@@ -24,8 +24,7 @@ static void _ocf_read_wa_complete(struct ocf_request *req, int error)
 
 	if (req->error) {
 		req->info.core_error = 1;
-		env_atomic_inc(&req->cache->core[req->core_id].counters->
-				core_errors.write);
+		ocf_core_stats_core_error_update(req->core, OCF_WRITE);
 	}
 
 	/* Complete request */
@@ -39,19 +38,19 @@ static void _ocf_read_wa_complete(struct ocf_request *req, int error)
 
 int ocf_write_wa(struct ocf_request *req)
 {
-	struct ocf_cache *cache = req->cache;
-
-	ocf_io_start(req->io);
+	ocf_io_start(&req->ioi.io);
 
 	/* Get OCF request - increase reference counter */
 	ocf_req_get(req);
 
-	OCF_METADATA_LOCK_RD(); /*- Metadata RD access -----------------------*/
+	ocf_req_hash(req);
+
+	ocf_req_hash_lock_rd(req); /*- Metadata RD access -----------------------*/
 
 	/* Traverse request to check if there are mapped cache lines */
 	ocf_engine_traverse(req);
 
-	OCF_METADATA_UNLOCK_RD(); /*- END Metadata RD access -----------------*/
+	ocf_req_hash_unlock_rd(req); /*- END Metadata RD access -----------------*/
 
 	if (ocf_engine_is_hit(req)) {
 		ocf_req_clear(req);
@@ -72,13 +71,13 @@ int ocf_write_wa(struct ocf_request *req)
 
 		/* Submit write IO to the core */
 		env_atomic_set(&req->req_remaining, 1);
-		ocf_submit_volume_req(&cache->core[req->core_id].volume, req,
+		ocf_submit_volume_req(&req->core->volume, req,
 				_ocf_read_wa_complete);
 
 		/* Update statistics */
 		ocf_engine_update_block_stats(req);
-		env_atomic64_inc(&cache->core[req->core_id].counters->
-			part_counters[req->part_id].write_reqs.pass_through);
+		ocf_core_stats_request_pt_update(req->core, req->part_id, req->rw,
+				req->info.hit_no, req->core_line_count);
 	}
 
 	/* Put OCF request - decrease reference counter */

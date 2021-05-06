@@ -1,11 +1,8 @@
-<cd-loading-panel *ngIf="!pwdExpirationSettings"
-                  i18n>Loading...</cd-loading-panel>
-
-<div class="cd-col-form">
+<div class="cd-col-form"
+     *cdFormLoading="loading">
   <form name="userForm"
         #formDir="ngForm"
         [formGroup]="userForm"
-        *ngIf="pwdExpirationSettings"
         novalidate>
     <div class="card">
       <div i18n="form title|Example: Create Pool@@formTitle"
@@ -134,16 +131,17 @@
           </label>
           <div class="cd-col-form-input">
             <div class="input-group">
-              <input type="text"
-                     class="form-control"
+              <input class="form-control"
                      i18n-placeholder
                      placeholder="Password expiration date..."
-                     [bsConfig]="bsConfig"
-                     [minDate]="minDate"
-                     bsDatepicker
                      id="pwdExpirationDate"
                      name="pwdExpirationDate"
-                     formControlName="pwdExpirationDate">
+                     formControlName="pwdExpirationDate"
+                     [ngbPopover]="popContent"
+                     triggers="manual"
+                     #p="ngbPopover"
+                     (click)="p.open()"
+                     (keypress)="p.close()">
               <span class="input-group-append">
                 <button type="button"
                         class="btn btn-light"
@@ -242,12 +240,10 @@
 
       </div>
       <div class="card-footer">
-        <div class="button-group text-right">
-          <cd-submit-button (submitAction)="submit()"
-                            i18n="form action button|Example: Create Pool@@formActionButton"
-                            [form]="formDir">{{ action | titlecase }} {{ resource | upperFirst }}</cd-submit-button>
-          <cd-back-button></cd-back-button>
-        </div>
+        <cd-form-button-panel (submitActionEvent)="submit()"
+                              [form]="userForm"
+                              [submitText]="(action | titlecase) + ' ' + (resource | upperFirst)"
+                              wrappingClass="text-right"></cd-form-button-panel>
       </div>
     </div>
   </form>
@@ -259,4 +255,9 @@
   <p i18n>If you continue, you will no longer be able to add or remove roles from any user.</p>
 
   <ng-container i18n>Are you sure you want to continue?</ng-container>
+</ng-template>
+
+<ng-template #popContent>
+  <cd-date-time-picker [control]="userForm.get('pwdExpirationDate')"
+                       [hasTime]="false"></cd-date-time-picker>
 </ng-template>

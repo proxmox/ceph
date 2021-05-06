@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  *
  *   Copyright (c) 2016 Freescale Semiconductor, Inc. All rights reserved.
- *   Copyright 2016 NXP
+ *   Copyright 2016-2019 NXP
  *
  */
 
@@ -61,6 +61,7 @@ struct dpaa2_bp_info {
 
 extern struct dpaa2_bp_info *rte_dpaa2_bpid_info;
 
+__rte_internal
 int rte_dpaa2_mbuf_alloc_bulk(struct rte_mempool *pool,
 		       void **obj_table, unsigned int count);
 

@@ -18,7 +18,11 @@ if(USE_STAGED_BOOST)
   set(BOOST_HINTS HINTS ../../../../stage)
 endif()
 
-if(USE_BOOST_PACKAGE)
+if(USE_ALL_COMPONENTS)
+
+  find_package(Boost ${BOOST_VERSION} EXACT REQUIRED ALL ${BOOST_HINTS})
+
+elseif(USE_BOOST_PACKAGE)
 
   find_package(Boost ${BOOST_VERSION} EXACT REQUIRED COMPONENTS filesystem ${BOOST_HINTS})
 

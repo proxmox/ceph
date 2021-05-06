@@ -27,9 +27,9 @@
 #   error Configuration not supported: Boost.Filesystem V3 and later requires std::wstring support
 # endif
 
-#include <boost/detail/lightweight_test.hpp>
+#include <boost/core/lightweight_test.hpp>
 #include <boost/detail/lightweight_main.hpp>
-#include <boost/bind.hpp>
+#include <boost/bind/bind.hpp>
 #include <fstream>
 #include <iostream>
 

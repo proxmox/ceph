@@ -1,7 +1,7 @@
 {
   "subsystems": [
     {
-      "subsystem": "copy",
+      "subsystem": "accel",
       "config": null
     },
     {
@@ -20,7 +20,7 @@
             "bdev_io_pool_size": 65536,
             "bdev_io_cache_size": 256
           },
-          "method": "set_bdev_options"
+          "method": "bdev_set_options"
         },
         {
           "params": {
@@ -30,14 +30,14 @@
             "nvme_ioq_poll_period_us": 0,
             "action_on_timeout": "none"
           },
-          "method": "set_bdev_nvme_options"
+          "method": "bdev_nvme_set_options"
         },
         {
           "params": {
             "enable": false,
             "period_us": 100000
           },
-          "method": "set_bdev_nvme_hotplug"
+          "method": "bdev_nvme_set_hotplug"
         },
         {
           "params": {
@@ -48,7 +48,7 @@
             "traddr": "naa.vhost.0",
             "vq_count": 8
           },
-          "method": "construct_virtio_dev"
+          "method": "bdev_virtio_attach_controller"
         },
         {
           "params": {
@@ -59,7 +59,7 @@
             "traddr": "naa.vhost.1",
             "vq_count": 8
           },
-          "method": "construct_virtio_dev"
+          "method": "bdev_virtio_attach_controller"
         },
         {
           "params": {
@@ -70,7 +70,7 @@
             "traddr": "vhost.1",
             "vq_count": 1
           },
-          "method": "construct_virtio_dev"
+          "method": "bdev_virtio_attach_controller"
         }
       ]
     },
@@ -85,13 +85,13 @@
           "params": {
             "acceptor_poll_rate": 10000
           },
-          "method": "set_nvmf_target_config"
+          "method": "nvmf_set_config"
         },
         {
           "params": {
             "max_subsystems": 1024
           },
-          "method": "set_nvmf_target_max_subsystems"
+          "method": "nvmf_set_max_subsystems"
         }
       ]
     },
@@ -125,7 +125,7 @@
             "disable_chap": false,
             "default_time2wait": 2
           },
-          "method": "set_iscsi_options"
+          "method": "iscsi_set_options"
         }
       ]
     }

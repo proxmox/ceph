@@ -1,9 +1,11 @@
+from .helpers import deprecated_alias
 
 
-def send_nvme_cmd(client, name, cmd_type, data_direction, cmdbuf,
-                  data=None, metadata=None,
-                  data_len=None, metadata_len=None,
-                  timeout_ms=None):
+@deprecated_alias('send_nvme_cmd')
+def bdev_nvme_send_cmd(client, name, cmd_type, data_direction, cmdbuf,
+                       data=None, metadata=None,
+                       data_len=None, metadata_len=None,
+                       timeout_ms=None):
     """Send one NVMe command
 
     Args:
@@ -36,10 +38,11 @@ def send_nvme_cmd(client, name, cmd_type, data_direction, cmdbuf,
     if timeout_ms:
         params['timeout_ms'] = timeout_ms
 
-    return client.call('send_nvme_cmd', params)
+    return client.call('bdev_nvme_send_cmd', params)
 
 
-def get_nvme_controllers(client, name=None):
+@deprecated_alias('get_nvme_controllers')
+def bdev_nvme_get_controllers(client, name=None):
     """Get information about NVMe controllers.
 
     Args:
@@ -51,4 +54,34 @@ def get_nvme_controllers(client, name=None):
     params = {}
     if name:
         params['name'] = name
-    return client.call('get_nvme_controllers', params)
+    return client.call('bdev_nvme_get_controllers', params)
+
+
+def bdev_nvme_opal_init(client, nvme_ctrlr_name, password):
+    """Init nvme opal. Take ownership and activate
+
+    Args:
+        nvme_ctrlr_name: name of nvme ctrlr
+        password: password to init opal
+    """
+    params = {
+        'nvme_ctrlr_name': nvme_ctrlr_name,
+        'password': password,
+    }
+
+    return client.call('bdev_nvme_opal_init', params)
+
+
+def bdev_nvme_opal_revert(client, nvme_ctrlr_name, password):
+    """Revert opal to default factory settings. Erase all data.
+
+    Args:
+        nvme_ctrlr_name: name of nvme ctrlr
+        password: password
+    """
+    params = {
+        'nvme_ctrlr_name': nvme_ctrlr_name,
+        'password': password,
+    }
+
+    return client.call('bdev_nvme_opal_revert', params)

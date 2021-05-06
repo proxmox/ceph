@@ -24,7 +24,6 @@
 #include <seastar/core/sstring.hh>
 #include <seastar/core/fair_queue.hh>
 #include <seastar/core/metrics_registration.hh>
-#include <seastar/core/shared_ptr.hh>
 #include <seastar/core/future.hh>
 #include <seastar/core/internal/io_request.hh>
 #include <mutex>
@@ -32,9 +31,11 @@
 
 namespace seastar {
 
+class io_priority_class;
+
 /// Renames an io priority class
 ///
-/// Renames an \ref io_priority_class previously created with register_one_priority_class().
+/// Renames an `io_priority_class` previously created with register_one_priority_class().
 ///
 /// The operation is global and affects all shards.
 /// The operation affects the exported statistics labels.
@@ -73,7 +74,7 @@ private:
         void register_stats(sstring name, sstring mountpoint, shard_id owner);
     };
 
-    std::vector<std::vector<lw_shared_ptr<priority_class_data>>> _priority_classes;
+    std::vector<std::vector<std::unique_ptr<priority_class_data>>> _priority_classes;
     fair_queue _fq;
 
     static constexpr unsigned _max_classes = 2048;
@@ -81,10 +82,21 @@ private:
     static std::array<uint32_t, _max_classes> _registered_shares;
     static std::array<sstring, _max_classes> _registered_names;
 
+public:
     static io_priority_class register_one_priority_class(sstring name, uint32_t shares);
+    static bool rename_one_priority_class(io_priority_class pc, sstring name);
 
+private:
     priority_class_data& find_or_create_class(const io_priority_class& pc, shard_id owner);
-    friend class smp;
+
+    fair_queue_ticket request_fq_ticket(const internal::io_request& req, size_t len) const;
+
+    // The fields below are going away, they are just here so we can implement deprecated
+    // functions that used to be provided by the fair_queue and are going away (from both
+    // the fair_queue and the io_queue). Double-accounting for now will allow for easier
+    // decoupling and is temporary
+    size_t _queued_requests = 0;
+    size_t _requests_executing = 0;
 public:
     // We want to represent the fact that write requests are (maybe) more expensive
     // than read requests. To avoid dealing with floating point math we will scale one
@@ -97,8 +109,8 @@ public:
     static constexpr unsigned read_request_base_count = 128;
 
     struct config {
+        dev_t devid;
         shard_id coordinator;
-        std::vector<shard_id> io_topology;
         unsigned capacity = std::numeric_limits<unsigned>::max();
         unsigned max_req_count = std::numeric_limits<unsigned>::max();
         unsigned max_bytes_count = std::numeric_limits<unsigned>::max();
@@ -111,25 +123,24 @@ public:
     ~io_queue();
 
     future<size_t>
-    queue_request(const io_priority_class& pc, size_t len, internal::io_request req);
+    queue_request(const io_priority_class& pc, size_t len, internal::io_request req) noexcept;
 
-    size_t capacity() const {
+    [[deprecated("modern I/O queues should use a property file")]] size_t capacity() const {
         return _config.capacity;
     }
 
+    [[deprecated("I/O queue users should not track individual requests, but resources (weight, size) passing through the queue")]]
     size_t queued_requests() const {
-        return _fq.waiters();
+        return _queued_requests;
     }
 
     // How many requests are sent to disk but not yet returned.
+    [[deprecated("I/O queue users should not track individual requests, but resources (weight, size) passing through the queue")]]
     size_t requests_currently_executing() const {
-        return _fq.requests_currently_executing();
+        return _requests_executing;
     }
 
-    // Inform the underlying queue about the fact that some of our requests finished
-    void notify_requests_finished(fair_queue_request_descriptor& desc) {
-        _fq.notify_requests_finished(desc);
-    }
+    void notify_requests_finished(fair_queue_ticket& desc) noexcept;
 
     // Dispatch requests that are pending in the I/O queue
     void poll_io_queue() {
@@ -143,14 +154,14 @@ public:
     shard_id coordinator() const {
         return _config.coordinator;
     }
-    shard_id coordinator_of_shard(shard_id shard) const {
-        return _config.io_topology[shard];
+
+    dev_t dev_id() const noexcept {
+        return _config.devid;
     }
 
     future<> update_shares_for_class(io_priority_class pc, size_t new_shares);
     void rename_priority_class(io_priority_class pc, sstring new_name);
 
-    friend class reactor;
 private:
     config _config;
     static fair_queue::config make_fair_queue_config(config cfg);

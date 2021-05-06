@@ -28,10 +28,13 @@
 #pragma warning(disable : 4127) //  Conditional expression is constant
 #endif
 
-#if !defined(TEST1) && !defined(TEST2) && !defined(TEST3)
+#if !defined(TEST1) && !defined(TEST2) && !defined(TEST3) && !defined(TEST4) && !defined(TEST5) && !defined(TEST6)
 #define TEST1
 #define TEST2
 #define TEST3
+#define TEST4
+#define TEST5
+#define TEST6
 #endif
 
 template <class T>
@@ -504,7 +507,7 @@ struct tester
       a = 1;
       a = 0 % test_type(25);
       BOOST_CHECK_EQUAL(a, 0);
-#ifndef TEST2
+#if !defined(TEST2) && !defined(TEST6)
       // https://svn.boost.org/trac/boost/ticket/11364
       a           = 0xfffffffeu;
       b           = -2;
@@ -512,7 +515,7 @@ struct tester
       test_type d = ~(a ^ ~b);
       BOOST_CHECK_EQUAL(c, d);
 #endif
-#if defined(TEST2) || defined(TEST3)
+#if defined(TEST2) || defined(TEST3) || defined(TEST6)
       // https://svn.boost.org/trac/boost/ticket/11648
       a = (std::numeric_limits<test_type>::max)() - 69;
       b = a / 139;
@@ -540,14 +543,14 @@ struct tester
 
       {
          typedef boost::multiprecision::number<boost::multiprecision::cpp_int_backend<> >                                                                                            bigint;
-         typedef boost::multiprecision::number<boost::multiprecision::cpp_int_backend<64, 64, boost::multiprecision::unsigned_magnitude, boost::multiprecision::unchecked, void> >   u64;
-         typedef boost::multiprecision::number<boost::multiprecision::cpp_int_backend<128, 128, boost::multiprecision::unsigned_magnitude, boost::multiprecision::unchecked, void> > u128;
+         //typedef boost::multiprecision::number<boost::multiprecision::cpp_int_backend<64, 64, boost::multiprecision::unsigned_magnitude, boost::multiprecision::unchecked, void> >   u64;
+         //typedef boost::multiprecision::number<boost::multiprecision::cpp_int_backend<128, 128, boost::multiprecision::unsigned_magnitude, boost::multiprecision::unchecked, void> > u128;
          typedef boost::multiprecision::number<boost::multiprecision::cpp_int_backend<256, 256, boost::multiprecision::unsigned_magnitude, boost::multiprecision::unchecked, void> > u256;
          typedef boost::multiprecision::number<boost::multiprecision::cpp_int_backend<256, 256, boost::multiprecision::signed_magnitude, boost::multiprecision::unchecked, void> >   s256;
-         typedef boost::multiprecision::number<boost::multiprecision::cpp_int_backend<160, 160, boost::multiprecision::unsigned_magnitude, boost::multiprecision::unchecked, void> > u160;
-         typedef boost::multiprecision::number<boost::multiprecision::cpp_int_backend<160, 160, boost::multiprecision::signed_magnitude, boost::multiprecision::unchecked, void> >   s160;
-         typedef boost::multiprecision::number<boost::multiprecision::cpp_int_backend<512, 512, boost::multiprecision::unsigned_magnitude, boost::multiprecision::unchecked, void> > u512;
-         typedef boost::multiprecision::number<boost::multiprecision::cpp_int_backend<512, 512, boost::multiprecision::signed_magnitude, boost::multiprecision::unchecked, void> >   s512;
+         //typedef boost::multiprecision::number<boost::multiprecision::cpp_int_backend<160, 160, boost::multiprecision::unsigned_magnitude, boost::multiprecision::unchecked, void> > u160;
+         //typedef boost::multiprecision::number<boost::multiprecision::cpp_int_backend<160, 160, boost::multiprecision::signed_magnitude, boost::multiprecision::unchecked, void> >   s160;
+         //typedef boost::multiprecision::number<boost::multiprecision::cpp_int_backend<512, 512, boost::multiprecision::unsigned_magnitude, boost::multiprecision::unchecked, void> > u512;
+         //typedef boost::multiprecision::number<boost::multiprecision::cpp_int_backend<512, 512, boost::multiprecision::signed_magnitude, boost::multiprecision::unchecked, void> >   s512;
 
          {
             u256   a = 14;
@@ -794,6 +797,10 @@ int main()
 #ifdef TEST5
    tester<number<cpp_int_backend<0, 2048, signed_magnitude, unchecked> > > t5;
    t5.test();
+#endif
+#ifdef TEST6
+   tester<number<cpp_int_backend<2048, 2048, signed_magnitude, checked, void> > > t6;
+   t6.test();
 #endif
    return boost::report_errors();
 }

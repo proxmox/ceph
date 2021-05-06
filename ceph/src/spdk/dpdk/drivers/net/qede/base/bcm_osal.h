@@ -7,6 +7,7 @@
 #ifndef __BCM_OSAL_H
 #define __BCM_OSAL_H
 
+#include <stdbool.h>
 #include <rte_byteorder.h>
 #include <rte_spinlock.h>
 #include <rte_malloc.h>
@@ -70,10 +71,6 @@ typedef void *osal_dpc_t;
 typedef size_t osal_size_t;
 
 typedef intptr_t osal_int_ptr_t;
-
-typedef int bool;
-#define true 1
-#define false 0
 
 #define nothing do {} while (0)
 
@@ -148,8 +145,8 @@ void osal_dma_free_mem(struct ecore_dev *edev, dma_addr_t phys);
 			      ((u8 *)(uintptr_t)(_p_hwfn->doorbells) +	\
 			      (_db_addr)), (u32)_val)
 
-#define DIRECT_REG_WR64(hwfn, addr, value) nothing
-#define DIRECT_REG_RD64(hwfn, addr) 0
+#define DIRECT_REG_RD64(hwfn, addr) rte_read64(addr)
+#define DIRECT_REG_WR64(hwfn, addr, value) rte_write64((value), (addr))
 
 /* Mutexes */
 
@@ -332,7 +329,9 @@ u32 qede_find_first_zero_bit(unsigned long *, u32);
 	qede_find_first_zero_bit(bitmap, length)
 
 #define OSAL_BUILD_BUG_ON(cond)		nothing
-#define ETH_ALEN			ETHER_ADDR_LEN
+#define ETH_ALEN			RTE_ETHER_ADDR_LEN
+#define ETHER_TYPE_VLAN			RTE_ETHER_TYPE_VLAN
+#define ETHER_TYPE_QINQ			RTE_ETHER_TYPE_QINQ
 
 #define OSAL_BITMAP_WEIGHT(bitmap, count) 0
 
@@ -427,7 +426,7 @@ u32 qede_osal_log2(u32);
 #define OSAL_PAGE_SIZE 4096
 #define OSAL_CACHE_LINE_SIZE RTE_CACHE_LINE_SIZE
 #define OSAL_IOMEM volatile
-#define OSAL_UNUSED    __attribute__((unused))
+#define OSAL_UNUSED    __rte_unused
 #define OSAL_UNLIKELY(x)  __builtin_expect(!!(x), 0)
 #define OSAL_MIN_T(type, __min1, __min2)	\
 	((type)(__min1) < (type)(__min2) ? (type)(__min1) : (type)(__min2))
@@ -453,6 +452,7 @@ u32 qede_crc32(u32 crc, u8 *ptr, u32 length);
 
 #define OSAL_DIV_S64(a, b)	((a) / (b))
 #define OSAL_LLDP_RX_TLVS(p_hwfn, tlv_buf, tlv_size) nothing
+#define OSAL_GET_EPOCH(p_hwfn)	0
 #define OSAL_DBG_ALLOC_USER_DATA(p_hwfn, user_data_ptr) (0)
 #define OSAL_DB_REC_OCCURRED(p_hwfn) nothing
 

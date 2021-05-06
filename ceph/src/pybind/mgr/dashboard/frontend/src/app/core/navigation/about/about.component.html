@@ -3,12 +3,12 @@
     <button type="button"
             class="close float-right"
             aria-label="Close"
-            (click)="modalRef.hide()">
+            (click)="activeModal.close()">
       <span aria-hidden="true">&times;</span>
     </button>
   </div>
   <div class="modal-body">
-    <img src="assets/Ceph_Logo_Standard_RGB_Reversed_120411_fa.png"
+    <img src="assets/Ceph_Ceph_Logo_with_text_red_white.svg"
          class="ceph-logo"
          alt="{{ projectConstants.organization }}">
     <h3>
@@ -40,7 +40,7 @@
   </div>
   <div class="modal-footer">
     <div class="text-left">
-      {{ copyright }}
+      {{ projectConstants.copyright }}
       {{ projectConstants.license }}
     </div>
   </div>

@@ -5,10 +5,10 @@ import { By } from '@angular/platform-browser';
 import { BrowserAnimationsModule } from '@angular/platform-browser/animations';
 import { RouterTestingModule } from '@angular/router/testing';
 
-import { TabsModule } from 'ngx-bootstrap/tabs';
+import { NgbNavModule } from '@ng-bootstrap/ng-bootstrap';
 
-import { configureTestBed, i18nProviders } from '../../../../testing/unit-test-helper';
-import { SharedModule } from '../../../shared/shared.module';
+import { SharedModule } from '~/app/shared/shared.module';
+import { configureTestBed } from '~/testing/unit-test-helper';
 import { ConfigurationDetailsComponent } from './configuration-details/configuration-details.component';
 import { ConfigurationComponent } from './configuration.component';
 
@@ -22,11 +22,10 @@ describe('ConfigurationComponent', () => {
       BrowserAnimationsModule,
       SharedModule,
       FormsModule,
-      TabsModule.forRoot(),
+      NgbNavModule,
       HttpClientTestingModule,
       RouterTestingModule
-    ],
-    providers: i18nProviders
+    ]
   });
 
   beforeEach(() => {

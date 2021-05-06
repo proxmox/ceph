@@ -7,9 +7,9 @@
 #define UTILS_CACHE_LINE_H_
 
 #include "../metadata/metadata.h"
+#include "../concurrency/ocf_cache_line_concurrency.h"
 #include "../eviction/eviction.h"
 #include "../eviction/ops.h"
-#include "../concurrency/ocf_cache_concurrency.h"
 #include "../engine/cache_engine.h"
 #include "../ocf_request.h"
 #include "../ocf_def_priv.h"
@@ -72,6 +72,10 @@ static inline uint64_t ocf_lines_2_bytes(struct ocf_cache *cache,
 /**
  * @brief Set cache line invalid
  *
+ * @note Collision page must be locked by the caller (either exclusive access
+ * to collision table page OR write lock on metadata hash bucket combined with
+ * shared access to the collision page)
+ *
  * @param cache Cache instance
  * @param start_bit Start bit of cache line for which state will be set
  * @param end_bit End bit of cache line for which state will be set
@@ -85,6 +89,10 @@ void set_cache_line_invalid(struct ocf_cache *cache, uint8_t start_bit,
 /**
  * @brief Set cache line invalid without flush
  *
+ * @note Collision page must be locked by the caller (either exclusive access
+ * to collision table page OR write lock on metadata hash bucket combined with
+ * shared access to the collision page)
+ *
  * @param cache Cache instance
  * @param start_bit Start bit of cache line for which state will be set
  * @param end_bit End bit of cache line for which state will be set
@@ -95,6 +103,10 @@ void set_cache_line_invalid_no_flush(struct ocf_cache *cache, uint8_t start_bit,
 
 /**
  * @brief Set cache line valid
+ *
+ * @note Collision page must be locked by the caller (either exclusive access
+ * to collision table page OR write lock on metadata hash bucket combined with
+ * shared access to the collision page)
  *
  * @param cache Cache instance
  * @param start_bit Start bit of cache line for which state will be set
@@ -108,6 +120,10 @@ void set_cache_line_valid(struct ocf_cache *cache, uint8_t start_bit,
 /**
  * @brief Set cache line clean
  *
+ * @note Collision page must be locked by the caller (either exclusive access
+ * to collision table page OR write lock on metadata hash bucket combined with
+ * shared access to the collision page)
+ *
  * @param cache Cache instance
  * @param start_bit Start bit of cache line for which state will be set
  * @param end_bit End bit of cache line for which state will be set
@@ -119,6 +135,10 @@ void set_cache_line_clean(struct ocf_cache *cache, uint8_t start_bit,
 
 /**
  * @brief Set cache line dirty
+ *
+ * @note Collision page must be locked by the caller (either exclusive access
+ * to collision table page OR write lock on metadata hash bucket combined with
+ * shared access to the collision page)
  *
  * @param cache Cache instance
  * @param start_bit Start bit of cache line for which state will be set
@@ -162,6 +182,10 @@ static inline void ocf_purge_eviction_policy(struct ocf_cache *cache,
 
 /**
  * @brief Set cache line clean and invalid and remove form lists
+ *
+ * @note Collision page must be locked by the caller (either exclusive access
+ * to collision table page OR write lock on metadata hash bucket combined with
+ * shared access to the collision page)
  *
  * @param cache Cache instance
  * @param start Start bit of range in cache line to purge
@@ -224,9 +248,36 @@ static inline void ocf_purge_map_info(struct ocf_request *req)
 					ocf_line_sectors(cache);
 		}
 
+		ocf_metadata_start_collision_shared_access(cache, map[map_idx].
+				coll_idx);
 		_ocf_purge_cache_line_sec(cache, start_bit, end_bit, req,
 				map_idx);
+		ocf_metadata_end_collision_shared_access(cache, map[map_idx].
+				coll_idx);
 	}
+}
+
+static inline
+uint8_t ocf_map_line_start_sector(struct ocf_request *req, uint32_t line)
+{
+	if (line == 0) {
+		return BYTES_TO_SECTORS(req->byte_position)
+					% ocf_line_sectors(req->cache);
+	}
+
+	return 0;
+}
+
+static inline
+uint8_t ocf_map_line_end_sector(struct ocf_request *req, uint32_t line)
+{
+	if (line == req->core_line_count - 1) {
+		return BYTES_TO_SECTORS(req->byte_position +
+					req->byte_length - 1) %
+					ocf_line_sectors(req->cache);
+	}
+
+	return ocf_line_end_sector(req->cache);
 }
 
 static inline void ocf_set_valid_map_info(struct ocf_request *req)
@@ -244,29 +295,17 @@ static inline void ocf_set_valid_map_info(struct ocf_request *req)
 	 * | -----+++ | ++++++++ | +++ | ++++++++ | +++++--- |
 	 * |   first  |          Middle           |   last   |
 	 */
-
 	for (map_idx = 0; map_idx < count; map_idx++) {
 		ENV_BUG_ON(map[map_idx].status == LOOKUP_MISS);
 
-		start_bit = 0;
-		end_bit = ocf_line_end_sector(cache);
+		start_bit = ocf_map_line_start_sector(req, map_idx);
+		end_bit = ocf_map_line_end_sector(req, map_idx);
 
-		if (map_idx == 0) {
-			/* First */
-
-			start_bit = BYTES_TO_SECTORS(req->byte_position)
-					% ocf_line_sectors(cache);
-		}
-
-		if (map_idx == (count - 1)) {
-			/* Last */
-
-			end_bit = BYTES_TO_SECTORS(req->byte_position +
-					req->byte_length - 1)
-					% ocf_line_sectors(cache);
-		}
-
+		ocf_metadata_start_collision_shared_access(cache, map[map_idx].
+				coll_idx);
 		set_cache_line_valid(cache, start_bit, end_bit, req, map_idx);
+		ocf_metadata_end_collision_shared_access(cache, map[map_idx].
+				coll_idx);
 	}
 }
 
@@ -277,6 +316,7 @@ static inline void ocf_set_dirty_map_info(struct ocf_request *req)
 	uint8_t end_bit;
 	struct ocf_cache *cache = req->cache;
 	uint32_t count = req->core_line_count;
+	struct ocf_map_info *map = req->map;
 
 	/* Set valid bits for sectors on the basis of map info
 	 *
@@ -286,25 +326,14 @@ static inline void ocf_set_dirty_map_info(struct ocf_request *req)
 	 */
 
 	for (map_idx = 0; map_idx < count; map_idx++) {
-		start_bit = 0;
-		end_bit = ocf_line_end_sector(cache);
+		start_bit = ocf_map_line_start_sector(req, map_idx);
+		end_bit = ocf_map_line_end_sector(req, map_idx);
 
-		if (map_idx == 0) {
-			/* First */
-
-			start_bit = BYTES_TO_SECTORS(req->byte_position)
-					% ocf_line_sectors(cache);
-		}
-
-		if (map_idx == (count - 1)) {
-			/* Last */
-
-			end_bit = BYTES_TO_SECTORS(req->byte_position +
-					req->byte_length - 1) %
-					ocf_line_sectors(cache);
-		}
-
+		ocf_metadata_start_collision_shared_access(cache, map[map_idx].
+				coll_idx);
 		set_cache_line_dirty(cache, start_bit, end_bit, req, map_idx);
+		ocf_metadata_end_collision_shared_access(cache, map[map_idx].
+				coll_idx);
 	}
 }
 
@@ -315,6 +344,7 @@ static inline void ocf_set_clean_map_info(struct ocf_request *req)
 	uint8_t end_bit;
 	struct ocf_cache *cache = req->cache;
 	uint32_t count = req->core_line_count;
+	struct ocf_map_info *map = req->map;
 
 	/* Set valid bits for sectors on the basis of map info
 	 *
@@ -324,26 +354,14 @@ static inline void ocf_set_clean_map_info(struct ocf_request *req)
 	 */
 
 	for (map_idx = 0; map_idx < count; map_idx++) {
-		start_bit = 0;
-		end_bit = ocf_line_end_sector(cache);
+		start_bit = ocf_map_line_start_sector(req, map_idx);
+		end_bit = ocf_map_line_end_sector(req, map_idx);
 
-		if (map_idx == 0) {
-			/* First */
-
-			start_bit = BYTES_TO_SECTORS(req->byte_position)
-					% ocf_line_sectors(cache);
-		}
-
-		if (map_idx == (count - 1)) {
-			/* Last */
-
-			end_bit = BYTES_TO_SECTORS(req->byte_position +
-					req->byte_length - 1) %
-					ocf_line_sectors(cache);
-
-		}
-
+		ocf_metadata_start_collision_shared_access(cache, map[map_idx].
+				coll_idx);
 		set_cache_line_clean(cache, start_bit, end_bit, req, map_idx);
+		ocf_metadata_end_collision_shared_access(cache, map[map_idx].
+				coll_idx);
 	}
 }
 
@@ -358,11 +376,11 @@ static inline void ocf_set_clean_map_info(struct ocf_request *req)
 static inline bool ocf_cache_line_size_is_valid(uint64_t size)
 {
 	switch (size) {
-	case 4 * KiB:
-	case 8 * KiB:
-	case 16 * KiB:
-	case 32 * KiB:
-	case 64 * KiB:
+	case ocf_cache_line_size_4:
+	case ocf_cache_line_size_8:
+	case ocf_cache_line_size_16:
+	case ocf_cache_line_size_32:
+	case ocf_cache_line_size_64:
 		return true;
 	default:
 		return false;

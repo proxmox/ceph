@@ -73,7 +73,7 @@ icl                   Joachim Faulhaber <afojgo -at- gmail.com>
 integer               Daryle Walker <darylew -at- hotmail.com>, Andrey Semashev <andrey.semashev -at- gmail.com>
 interprocess          Ion Gaztanaga <igaztanaga -at- gmail.com>
 intrusive             Ion Gaztanaga <igaztanaga -at- gmail.com>
-io                    Daryle Walker <darylew -at- hotmail.com>
+io                    Glen Fernandes <glenjofe -at- gmail.com>
 iostreams             Jonathan Turkanis <turkanis -at- coderage.com>
 iterator              David Abrahams <dave -at- boost-consulting.com>, Thomas Witt <witt - at - acm.org>, Jeffrey Lee Hellrung Jr. <jeffrey.hellrung -at- gmail.com>
 lambda                Jaakko Jarvi <jarvi -at- cs.tamu.edu>
@@ -127,7 +127,7 @@ serialization         Robert Ramey <ramey -at- rrsd.com>
 signals               Douglas Gregor <dgregor -at- cs.indiana.edu>
 signals2              Frank Mori Hess <fmhess -at- users.sourceforge.net>
 smart_ptr             Peter Dimov <pdimov -at- pdimov.com>
-smart_ptr/make_shared Glen Fernandes <glenfe -at- live.com>
+smart_ptr/make_shared Glen Fernandes <glenjofe -at- gmail.com>
 sort                  Steven Ross <spreadsort -at- gmail.com>
 spirit                Joel de Guzman <joel -at- boost-consulting.com>, Hartmut Kaiser <hartmut.kaiser -at- gmail.com>
 spirit/classic        Joel de Guzman <joel -at- boost-consulting.com>, Hartmut Kaiser <hartmut.kaiser -at- gmail.com>
@@ -135,9 +135,10 @@ spirit/repository     Joel de Guzman <joel -at- boost-consulting.com>, Hartmut K
 stacktrace            Antony Polukhin <antoshkka -at- gmail.com>
 statechart            Andreas Huber <ahd6974-boostorg -at- yahoo.com>
 static_assert         John Maddock <john -at- johnmaddock.co.uk>
+static_string         Krystian Stasiowski <sdkrystian@gmail.com>
 test                  Gennadiy Rozental <rogeeff -at- gmail.com>, Raffi Enficiaud <raffi.enficiaud -at- free.fr>
 thread                Vicente J. Botet Escriba <vicente.botet -at- wanadoo.fr>
-throw_exception       Emil Dotchevski <emil -at- revergestudios.com>
+throw_exception       Emil Dotchevski <emil -at- revergestudios.com>, Peter Dimov <pdimov -at- pdimov.com>
 timer                 Beman Dawes <bdawes -at- acm.org>
 tokenizer             John R. Bandela <jbandela -at- ufl.edu>
 tr1                   John Maddock <john -at- johnmaddock.co.uk>

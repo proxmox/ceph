@@ -90,7 +90,7 @@ int my_cache_init(void)
 {
 	int result;
 
-	result ocf_ctx_init(&ctx, &ctx_ops)
+	result = ocf_ctx_create(&ctx, &ctx_ops)
 	if (result) {
 		/* Cannot initialze context of OCF library */
 		return result;
@@ -116,7 +116,7 @@ int my_cache_init(void)
 
 err:
 	/* In case of failure we destroy context and propagate error code */
-	ocf_ctx_exit(ctx);
+	ocf_ctx_put(ctx);
 	return result;
 }
 
@@ -263,18 +263,16 @@ void read_end(struct ocf_io *io, int error)
 	ocf_io_put(io);
 }
 
-int read(ocf_core_t core, void *data, addr, uint32_t length)
+int read(ocf_core_t core, ocf_queue_t queue, void *data, addr, uint32_t length)
 {
 	/* Allocate IO */
-	struct ocf_io *io = ocf_new_io(core);
+	struct ocf_io *io;
 
+	io = ocf_core_new_io(core, queue, addr, length, OCF_READ, 0, 0);
 	if (!io) {
 		/* Cannot allocate IO */
 		return -ENOMEM;
 	}
-
-	/* Configure IO, set address, flags, IO class, and etc... */
-	ocf_io_configure(io, addr, length, OCF_READ, 0, 0);
 
 	/* Set completion context and function */
 	ocf_io_set_cmpl(io, NULL, NULL, read_end);
@@ -286,7 +284,7 @@ int read(ocf_core_t core, void *data, addr, uint32_t length)
 	}
 
 	/* Send IO requests to the cache */
-	ocf_submit_io(io);
+	ocf_core_submit_io(io);
 
 	/* Just it */
 	return 0;

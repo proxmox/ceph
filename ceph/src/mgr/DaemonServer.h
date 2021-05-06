@@ -32,6 +32,7 @@
 #include "DaemonState.h"
 #include "MetricCollector.h"
 #include "OSDPerfMetricCollector.h"
+#include "MDSPerfMetricCollector.h"
 
 class MMgrReport;
 class MMgrOpen;
@@ -42,6 +43,78 @@ class MMgrCommand;
 struct MonCommand;
 class CommandContext;
 struct OSDPerfMetricQuery;
+struct MDSPerfMetricQuery;
+
+
+struct offline_pg_report {
+  set<int> osds;
+  set<pg_t> ok, not_ok, unknown;
+  set<pg_t> ok_become_degraded, ok_become_more_degraded;             // ok
+  set<pg_t> bad_no_pool, bad_already_inactive, bad_become_inactive;  // not ok
+
+  bool ok_to_stop() const {
+    return not_ok.empty() && unknown.empty();
+  }
+
+  void dump(Formatter *f) const {
+    f->dump_bool("ok_to_stop", ok_to_stop());
+    f->open_array_section("osds");
+    for (auto o : osds) {
+      f->dump_int("osd", o);
+    }
+    f->close_section();
+    f->dump_unsigned("num_ok_pgs", ok.size());
+    f->dump_unsigned("num_not_ok_pgs", not_ok.size());
+
+    // ambiguous
+    if (!unknown.empty()) {
+      f->open_array_section("unknown_pgs");
+      for (auto pg : unknown) {
+	f->dump_stream("pg") << pg;
+      }
+      f->close_section();
+    }
+
+    // bad news
+    if (!bad_no_pool.empty()) {
+      f->open_array_section("bad_no_pool_pgs");
+      for (auto pg : bad_no_pool) {
+	f->dump_stream("pg") << pg;
+      }
+      f->close_section();
+    }
+    if (!bad_already_inactive.empty()) {
+      f->open_array_section("bad_already_inactive");
+      for (auto pg : bad_already_inactive) {
+	f->dump_stream("pg") << pg;
+      }
+      f->close_section();
+    }
+    if (!bad_become_inactive.empty()) {
+      f->open_array_section("bad_become_inactive");
+      for (auto pg : bad_become_inactive) {
+	f->dump_stream("pg") << pg;
+      }
+      f->close_section();
+    }
+
+    // informative
+    if (!ok_become_degraded.empty()) {
+      f->open_array_section("ok_become_degraded");
+      for (auto pg : ok_become_degraded) {
+	f->dump_stream("pg") << pg;
+      }
+      f->close_section();
+    }
+    if (!ok_become_more_degraded.empty()) {
+      f->open_array_section("ok_become_more_degraded");
+      for (auto pg : ok_become_more_degraded) {
+	f->dump_stream("pg") << pg;
+      }
+      f->close_section();
+    }
+  }
+};
 
 
 /**
@@ -98,6 +171,18 @@ private:
 
   void _prune_pending_service_map();
 
+  void _check_offlines_pgs(
+    const set<int>& osds,
+    const OSDMap& osdmap,
+    const PGMap& pgmap,
+    offline_pg_report *report);
+  void _maximize_ok_to_stop_set(
+    const set<int>& orig_osds,
+    unsigned max,
+    const OSDMap& osdmap,
+    const PGMap& pgmap,
+    offline_pg_report *report);
+
   utime_t started_at;
   std::atomic<bool> pgmap_ready;
   std::set<int32_t> reported_osds;
@@ -124,8 +209,27 @@ private:
   OSDPerfMetricCollector osd_perf_metric_collector;
   void handle_osd_perf_metric_query_updated();
 
+  class MDSPerfMetricCollectorListener : public MetricListener {
+  public:
+    MDSPerfMetricCollectorListener(DaemonServer *server)
+      : server(server) {
+    }
+    void handle_query_updated() override {
+      server->handle_mds_perf_metric_query_updated();
+    }
+  private:
+    DaemonServer *server;
+  };
+  MDSPerfMetricCollectorListener mds_perf_metric_collector_listener;
+  MDSPerfMetricCollector mds_perf_metric_collector;
+  void handle_mds_perf_metric_query_updated();
+
   void handle_metric_payload(const OSDMetricPayload &payload) {
     osd_perf_metric_collector.process_reports(payload);
+  }
+
+  void handle_metric_payload(const MDSMetricPayload &payload) {
+    mds_perf_metric_collector.process_reports(payload);
   }
 
   void handle_metric_payload(const UnknownMetricPayload &payload) {
@@ -187,8 +291,12 @@ public:
       const OSDPerfMetricQuery &query,
       const std::optional<OSDPerfMetricLimit> &limit);
   int remove_osd_perf_query(MetricQueryID query_id);
-  int get_osd_perf_counters(MetricQueryID query_id,
-                            std::map<OSDPerfMetricKey, PerformanceCounters> *c);
+  int get_osd_perf_counters(OSDPerfCollector *collector);
+
+  MetricQueryID add_mds_perf_query(const MDSPerfMetricQuery &query,
+                                   const std::optional<MDSPerfMetricLimit> &limit);
+  int remove_mds_perf_query(MetricQueryID query_id);
+  int get_mds_perf_counters(MDSPerfCollector *collector);
 
   virtual const char** get_tracked_conf_keys() const override;
   virtual void handle_conf_change(const ConfigProxy& conf,

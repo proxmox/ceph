@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  *
- *   Copyright 2017 NXP
+ *   Copyright 2017-2019 NXP
  *
  */
 /* System headers */
@@ -32,6 +32,7 @@
 #include <rte_bus.h>
 #include <rte_mbuf_pool_ops.h>
 
+#include <dpaa_of.h>
 #include <rte_dpaa_bus.h>
 #include <rte_dpaa_logs.h>
 #include <dpaax_iova_table.h>
@@ -39,13 +40,9 @@
 #include <fsl_usd.h>
 #include <fsl_qman.h>
 #include <fsl_bman.h>
-#include <of.h>
 #include <netcfg.h>
 
 int dpaa_logtype_bus;
-int dpaa_logtype_mempool;
-int dpaa_logtype_pmd;
-int dpaa_logtype_eventdev;
 
 static struct rte_dpaa_bus rte_dpaa_bus;
 struct netcfg_info *dpaa_netcfg;
@@ -59,6 +56,12 @@ unsigned int dpaa_svr_family;
 
 RTE_DEFINE_PER_LCORE(bool, dpaa_io);
 RTE_DEFINE_PER_LCORE(struct dpaa_portal_dqrr, held_bufs);
+
+struct fm_eth_port_cfg *
+dpaa_get_eth_port_cfg(int dev_id)
+{
+	return &dpaa_netcfg->port_cfg[dev_id];
+}
 
 static int
 compare_dpaa_devices(struct rte_dpaa_device *dev1,
@@ -218,7 +221,7 @@ dpaa_create_device_list(void)
 		 * allocated for dev->name/
 		 */
 		memset(dev->name, 0, RTE_ETH_NAME_MAX_LEN);
-		sprintf(dev->name, "dpaa-sec%d", i);
+		sprintf(dev->name, "dpaa_sec-%d", i+1);
 		DPAA_BUS_LOG(INFO, "%s cryptodev added", dev->name);
 		dev->device.name = dev->name;
 		dev->device.devargs = dpaa_devargs_lookup(dev);
@@ -250,7 +253,6 @@ dpaa_clean_device_list(void)
 
 int rte_dpaa_portal_init(void *arg)
 {
-	pthread_t id;
 	unsigned int cpu, lcore = rte_lcore_id();
 	int ret;
 	struct dpaa_portal *dpaa_io_portal;
@@ -263,17 +265,7 @@ int rte_dpaa_portal_init(void *arg)
 		if (lcore >= RTE_MAX_LCORE)
 			return -1;
 
-	cpu = lcore_config[lcore].core_id;
-
-	/* Set CPU affinity for this thread.*/
-	id = pthread_self();
-	ret = pthread_setaffinity_np(id, sizeof(cpu_set_t),
-			&lcore_config[lcore].cpuset);
-	if (ret) {
-		DPAA_BUS_LOG(ERR, "pthread_setaffinity_np failed on core :%u"
-			     " (lcore=%u) with ret: %d", cpu, lcore, ret);
-		return ret;
-	}
+	cpu = rte_lcore_to_cpu_id(lcore);
 
 	/* Initialise bman thread portals */
 	ret = bman_thread_init();
@@ -332,7 +324,6 @@ rte_dpaa_portal_fq_init(void *arg, struct qman_fq *fq)
 {
 	/* Affine above created portal with channel*/
 	u32 sdqcr;
-	struct qman_portal *qp;
 	int ret;
 
 	if (unlikely(!RTE_PER_LCORE(dpaa_io))) {
@@ -344,21 +335,21 @@ rte_dpaa_portal_fq_init(void *arg, struct qman_fq *fq)
 	}
 
 	/* Initialise qman specific portals */
-	qp = fsl_qman_portal_create();
-	if (!qp) {
-		DPAA_BUS_LOG(ERR, "Unable to alloc fq portal");
+	ret = fsl_qman_fq_portal_init(fq->qp);
+	if (ret) {
+		DPAA_BUS_LOG(ERR, "Unable to init fq portal");
 		return -1;
 	}
-	fq->qp = qp;
+
 	sdqcr = QM_SDQCR_CHANNELS_POOL_CONV(fq->ch_id);
-	qman_static_dequeue_add(sdqcr, qp);
+	qman_static_dequeue_add(sdqcr, fq->qp);
 
 	return 0;
 }
 
 int rte_dpaa_portal_fq_close(struct qman_fq *fq)
 {
-	return fsl_qman_portal_destroy(fq->qp);
+	return fsl_qman_fq_portal_destroy(fq->qp);
 }
 
 void
@@ -387,19 +378,28 @@ rte_dpaa_bus_parse(const char *name, void *out_name)
 {
 	int i, j;
 	int max_fman = 2, max_macs = 16;
-	char *sep = strchr(name, ':');
+	char *dup_name;
+	char *sep = NULL;
 
-	if (strncmp(name, RTE_STR(FSL_DPAA_BUS_NAME),
-		strlen(RTE_STR(FSL_DPAA_BUS_NAME)))) {
-		return -EINVAL;
-	}
+	/* There are two ways of passing device name, with and without
+	 * separator. "dpaa_bus:fm1-mac3" with separator, and "fm1-mac3"
+	 * without separator. Both need to be handled.
+	 * It is also possible that "name=fm1-mac3" is passed along.
+	 */
+	DPAA_BUS_DEBUG("Parse device name (%s)", name);
 
-	if (!sep) {
-		DPAA_BUS_ERR("Incorrect device name observed");
-		return -EINVAL;
-	}
+	/* Check for dpaa_bus:fm1-mac3 style */
+	dup_name = strdup(name);
+	sep = strchr(dup_name, ':');
+	if (!sep)
+		/* If not, check for name=fm1-mac3 style */
+		sep = strchr(dup_name, '=');
 
-	sep = (char *) (sep + 1);
+	if (sep)
+		/* jump over the seprator */
+		sep = (char *) (sep + 1);
+	else
+		sep = dup_name;
 
 	for (i = 0; i < max_fman; i++) {
 		for (j = 0; j < max_macs; j++) {
@@ -408,6 +408,7 @@ rte_dpaa_bus_parse(const char *name, void *out_name)
 			if (strcmp(fm_name, sep) == 0) {
 				if (out_name)
 					strcpy(out_name, sep);
+				free(dup_name);
 				return 0;
 			}
 		}
@@ -416,14 +417,16 @@ rte_dpaa_bus_parse(const char *name, void *out_name)
 	for (i = 0; i < RTE_LIBRTE_DPAA_MAX_CRYPTODEV; i++) {
 		char sec_name[16];
 
-		snprintf(sec_name, 16, "dpaa-sec%d", i);
+		snprintf(sec_name, 16, "dpaa_sec-%d", i+1);
 		if (strcmp(sec_name, sep) == 0) {
 			if (out_name)
 				strcpy(out_name, sep);
+			free(dup_name);
 			return 0;
 		}
 	}
 
+	free(dup_name);
 	return -EINVAL;
 }
 
@@ -442,7 +445,10 @@ rte_dpaa_bus_scan(void)
 		RTE_LOG(DEBUG, EAL, "DPAA Bus not present. Skipping.\n");
 		return 0;
 	}
-	/* detected DPAA devices */
+
+	if (rte_dpaa_bus.detected)
+		return 0;
+
 	rte_dpaa_bus.detected = 1;
 
 	/* create the key, supplying a function that'll be invoked
@@ -551,12 +557,32 @@ rte_dpaa_bus_probe(void)
 	FILE *svr_file = NULL;
 	unsigned int svr_ver;
 	int probe_all = rte_dpaa_bus.bus.conf.scan_mode != RTE_BUS_SCAN_WHITELIST;
+	static int process_once;
 
 	/* If DPAA bus is not present nothing needs to be done */
 	if (!rte_dpaa_bus.detected)
 		return 0;
 
-	rte_dpaa_bus_dev_build();
+	/* Device list creation is only done once */
+	if (!process_once) {
+		rte_dpaa_bus_dev_build();
+		if (rte_eal_process_type() == RTE_PROC_PRIMARY) {
+			/* One time load of Qman/Bman drivers */
+			ret = qman_global_init();
+			if (ret) {
+				DPAA_BUS_ERR("QMAN initialization failed: %d",
+					     ret);
+				return ret;
+			}
+			ret = bman_global_init();
+			if (ret) {
+				DPAA_BUS_ERR("BMAN initialization failed: %d",
+					     ret);
+				return ret;
+			}
+		}
+	}
+	process_once = 1;
 
 	/* If no device present on DPAA bus nothing needs to be done */
 	if (TAILQ_EMPTY(&rte_dpaa_bus.device_list))
@@ -593,7 +619,8 @@ rte_dpaa_bus_probe(void)
 			    RTE_DEV_WHITELISTED)) {
 				ret = drv->probe(drv, dev);
 				if (ret) {
-					DPAA_BUS_ERR("Unable to probe.\n");
+					DPAA_BUS_ERR("unable to probe:%s",
+						     dev->name);
 				} else {
 					dev->driver = drv;
 					dev->device.driver = &drv->driver;
@@ -616,17 +643,28 @@ rte_dpaa_find_device(const struct rte_device *start, rte_dev_cmp_t cmp,
 		     const void *data)
 {
 	struct rte_dpaa_device *dev;
+	const struct rte_dpaa_device *dstart;
 
-	TAILQ_FOREACH(dev, &rte_dpaa_bus.device_list, next) {
-		if (start && &dev->device == start) {
-			start = NULL;  /* starting point found */
-			continue;
-		}
+	/* find_device is called with 'data' as an opaque object - just call
+	 * cmp with this and each device object on bus.
+	 */
 
-		if (cmp(&dev->device, data) == 0)
-			return &dev->device;
+	if (start != NULL) {
+		dstart = RTE_DEV_TO_DPAA_CONST(start);
+		dev = TAILQ_NEXT(dstart, next);
+	} else {
+		dev = TAILQ_FIRST(&rte_dpaa_bus.device_list);
 	}
 
+	while (dev != NULL) {
+		if (cmp(&dev->device, data) == 0) {
+			DPAA_BUS_DEBUG("Found dev=(%s)\n", dev->device.name);
+			return &dev->device;
+		}
+		dev = TAILQ_NEXT(dev, next);
+	}
+
+	DPAA_BUS_DEBUG("Unable to find any device\n");
 	return NULL;
 }
 
@@ -643,6 +681,57 @@ rte_dpaa_get_iommu_class(void)
 	return RTE_IOVA_PA;
 }
 
+static int
+dpaa_bus_plug(struct rte_device *dev __rte_unused)
+{
+	/* No operation is performed while plugging the device */
+	return 0;
+}
+
+static int
+dpaa_bus_unplug(struct rte_device *dev __rte_unused)
+{
+	/* No operation is performed while unplugging the device */
+	return 0;
+}
+
+static void *
+dpaa_bus_dev_iterate(const void *start, const char *str,
+		     const struct rte_dev_iterator *it __rte_unused)
+{
+	const struct rte_dpaa_device *dstart;
+	struct rte_dpaa_device *dev;
+	char *dup, *dev_name = NULL;
+
+	/* Expectation is that device would be name=device_name */
+	if (strncmp(str, "name=", 5) != 0) {
+		DPAA_BUS_DEBUG("Invalid device string (%s)\n", str);
+		return NULL;
+	}
+
+	/* Now that name=device_name format is available, split */
+	dup = strdup(str);
+	dev_name = dup + strlen("name=");
+
+	if (start != NULL) {
+		dstart = RTE_DEV_TO_DPAA_CONST(start);
+		dev = TAILQ_NEXT(dstart, next);
+	} else {
+		dev = TAILQ_FIRST(&rte_dpaa_bus.device_list);
+	}
+
+	while (dev != NULL) {
+		if (strcmp(dev->device.name, dev_name) == 0) {
+			free(dup);
+			return &dev->device;
+		}
+		dev = TAILQ_NEXT(dev, next);
+	}
+
+	free(dup);
+	return NULL;
+}
+
 static struct rte_dpaa_bus rte_dpaa_bus = {
 	.bus = {
 		.scan = rte_dpaa_bus_scan,
@@ -650,6 +739,9 @@ static struct rte_dpaa_bus rte_dpaa_bus = {
 		.parse = rte_dpaa_bus_parse,
 		.find_device = rte_dpaa_find_device,
 		.get_iommu_class = rte_dpaa_get_iommu_class,
+		.plug = dpaa_bus_plug,
+		.unplug = dpaa_bus_unplug,
+		.dev_iterate = dpaa_bus_dev_iterate,
 	},
 	.device_list = TAILQ_HEAD_INITIALIZER(rte_dpaa_bus.device_list),
 	.driver_list = TAILQ_HEAD_INITIALIZER(rte_dpaa_bus.driver_list),
@@ -663,16 +755,4 @@ RTE_INIT(dpaa_init_log)
 	dpaa_logtype_bus = rte_log_register("bus.dpaa");
 	if (dpaa_logtype_bus >= 0)
 		rte_log_set_level(dpaa_logtype_bus, RTE_LOG_NOTICE);
-
-	dpaa_logtype_mempool = rte_log_register("mempool.dpaa");
-	if (dpaa_logtype_mempool >= 0)
-		rte_log_set_level(dpaa_logtype_mempool, RTE_LOG_NOTICE);
-
-	dpaa_logtype_pmd = rte_log_register("pmd.net.dpaa");
-	if (dpaa_logtype_pmd >= 0)
-		rte_log_set_level(dpaa_logtype_pmd, RTE_LOG_NOTICE);
-
-	dpaa_logtype_eventdev = rte_log_register("pmd.event.dpaa");
-	if (dpaa_logtype_eventdev >= 0)
-		rte_log_set_level(dpaa_logtype_eventdev, RTE_LOG_NOTICE);
 }

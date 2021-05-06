@@ -82,6 +82,7 @@ SAFE_OPTION(plugin_dir, OPT_STR)
 
 OPTION(compressor_zlib_isal, OPT_BOOL)
 OPTION(compressor_zlib_level, OPT_INT) //regular zlib compression level, not applicable to isa-l optimized version
+OPTION(compressor_zlib_winsize, OPT_INT) //regular zlib compression winsize, not applicable to isa-l optimized version
 OPTION(compressor_zstd_level, OPT_INT) //regular zstd compression level
 
 OPTION(qat_compressor_enabled, OPT_BOOL)
@@ -90,7 +91,7 @@ OPTION(plugin_crypto_accelerator, OPT_STR)
 
 OPTION(mempool_debug, OPT_BOOL)
 
-
+OPTION(openssl_engine_opts, OPT_STR)
 
 OPTION(key, OPT_STR)
 OPTION(keyfile, OPT_STR)
@@ -130,7 +131,6 @@ OPTION(ms_pq_max_tokens_per_priority, OPT_U64)
 OPTION(ms_pq_min_cost, OPT_U64)
 OPTION(ms_inject_socket_failures, OPT_U64)
 SAFE_OPTION(ms_inject_delay_type, OPT_STR)          // "osd mds mon client" allowed
-OPTION(ms_inject_delay_msg_type, OPT_STR)      // the type of message to delay). This is an additional restriction on the general type filter ms_inject_delay_type.
 OPTION(ms_inject_delay_max, OPT_DOUBLE)         // seconds
 OPTION(ms_inject_delay_probability, OPT_DOUBLE) // range [0, 1]
 OPTION(ms_inject_internal_delays, OPT_DOUBLE)   // seconds
@@ -268,7 +268,6 @@ OPTION(mon_data_avail_warn, OPT_INT)
 OPTION(mon_data_size_warn, OPT_U64) // issue a warning when the monitor's data store goes over 15GB (in bytes)
 OPTION(mon_warn_pg_not_scrubbed_ratio, OPT_FLOAT)
 OPTION(mon_warn_pg_not_deep_scrubbed_ratio, OPT_FLOAT)
-OPTION(mon_scrub_interval, OPT_INT) // once a day
 OPTION(mon_scrub_timeout, OPT_INT) // let's give it 5 minutes; why not.
 OPTION(mon_scrub_max_keys, OPT_INT) // max number of keys to scrub each time
 OPTION(mon_scrub_inject_crc_mismatch, OPT_DOUBLE) // probability of injected crc mismatch [0.0, 1.0]
@@ -303,7 +302,7 @@ OPTION(mon_keyvaluedb, OPT_STR)   // type of keyvaluedb backend
 
 // UNSAFE -- TESTING ONLY! Allows addition of a cache tier with preexisting snaps
 OPTION(mon_debug_unsafe_allow_tier_with_nonempty_snaps, OPT_BOOL)
-OPTION(mon_osd_blacklist_default_expire, OPT_DOUBLE) // default one hour
+OPTION(mon_osd_blocklist_default_expire, OPT_DOUBLE) // default one hour
 OPTION(mon_osd_crush_smoke_test, OPT_BOOL)
 
 OPTION(paxos_stash_full_interval, OPT_INT)   // how often (in commits) to stash a full copy of the PaxosService state
@@ -346,7 +345,6 @@ OPTION(client_cache_size, OPT_INT)
 OPTION(client_cache_mid, OPT_FLOAT)
 OPTION(client_use_random_mds, OPT_BOOL)
 OPTION(client_mount_timeout, OPT_DOUBLE)
-OPTION(client_tick_interval, OPT_DOUBLE)
 OPTION(client_trace, OPT_STR)
 OPTION(client_readahead_min, OPT_LONGLONG)  // readahead at _least_ this much.
 OPTION(client_readahead_max_bytes, OPT_LONGLONG)  // default unlimited
@@ -366,7 +364,6 @@ OPTION(client_oc_max_dirty_age, OPT_DOUBLE)      // max age in cache before writ
 OPTION(client_oc_max_objects, OPT_INT)      // max objects in cache
 OPTION(client_debug_getattr_caps, OPT_BOOL) // check if MDS reply contains wanted caps
 OPTION(client_debug_force_sync_read, OPT_BOOL)     // always read synchronously (go to osds)
-OPTION(client_debug_inject_tick_delay, OPT_INT) // delay the client tick for a number of seconds
 OPTION(client_max_inline_size, OPT_U64)
 OPTION(client_inject_release_failure, OPT_BOOL)  // synthetic client bug for testing
 OPTION(client_inject_fixed_oldest_tid, OPT_BOOL)  // synthetic client bug for testing
@@ -408,8 +405,8 @@ OPTION(mds_beacon_interval, OPT_FLOAT)
 OPTION(mds_beacon_grace, OPT_FLOAT)
 OPTION(mds_enforce_unique_name, OPT_BOOL)
 
-OPTION(mds_session_blacklist_on_timeout, OPT_BOOL)    // whether to blacklist clients whose sessions are dropped due to timeout
-OPTION(mds_session_blacklist_on_evict, OPT_BOOL)  // whether to blacklist clients whose sessions are dropped via admin commands
+OPTION(mds_session_blocklist_on_timeout, OPT_BOOL)    // whether to blocklist clients whose sessions are dropped due to timeout
+OPTION(mds_session_blocklist_on_evict, OPT_BOOL)  // whether to blocklist clients whose sessions are dropped via admin commands
 
 OPTION(mds_sessionmap_keys_per_op, OPT_U32)    // how many sessions should I try to load/store in a single OMAP operation?
 OPTION(mds_freeze_tree_timeout, OPT_FLOAT)    // detecting freeze tree deadlock
@@ -598,7 +595,7 @@ OPTION(osd_objecter_finishers, OPT_INT)
 OPTION(osd_map_dedup, OPT_BOOL)
 OPTION(osd_map_cache_size, OPT_INT)
 OPTION(osd_map_message_max, OPT_INT)  // max maps per MOSDMap message
-OPTION(osd_map_message_max_bytes, OPT_SIZE)  // max maps per MOSDMap message
+OPTION(osd_map_message_max_bytes, OPT_SIZE)  // max bytes of maps per MOSDMap message
 OPTION(osd_map_share_max_epochs, OPT_INT)  // cap on # of inc maps we send to peers, clients
 OPTION(osd_inject_bad_map_crc_probability, OPT_FLOAT)
 OPTION(osd_inject_failure_on_pg_removal, OPT_BOOL)
@@ -670,9 +667,6 @@ OPTION(osd_mon_report_interval, OPT_INT)  // failures, up_thru, boot.
 OPTION(osd_mon_report_max_in_flight, OPT_INT)  // max updates in flight
 OPTION(osd_beacon_report_interval, OPT_INT)       // (second) how often to send beacon message to monitor
 OPTION(osd_pg_stat_report_interval_max, OPT_INT)  // report pg stats for any given pg at least this often
-OPTION(osd_mon_ack_timeout, OPT_DOUBLE) // time out a mon if it doesn't ack stats
-OPTION(osd_stats_ack_timeout_factor, OPT_DOUBLE) // multiples of mon_ack_timeout
-OPTION(osd_stats_ack_timeout_decay, OPT_DOUBLE)
 OPTION(osd_default_data_pool_replay_window, OPT_INT)
 OPTION(osd_auto_mark_unfound_lost, OPT_BOOL)
 OPTION(osd_recovery_delay_start, OPT_FLOAT)
@@ -768,6 +762,7 @@ OPTION(osd_op_history_slow_op_threshold, OPT_DOUBLE) // track the op if over thi
 OPTION(osd_target_transaction_size, OPT_INT)     // to adjust various transactions that batch smaller items
 OPTION(osd_failsafe_full_ratio, OPT_FLOAT) // what % full makes an OSD "full" (failsafe)
 OPTION(osd_fast_shutdown, OPT_BOOL)
+OPTION(osd_fast_shutdown_notify_mon, OPT_BOOL) // tell mon the OSD is shutting down on osd_fast_shutdown
 OPTION(osd_fast_fail_on_connection_refused, OPT_BOOL) // immediately mark OSDs as down once they refuse to accept connections
 
 OPTION(osd_pg_object_context_cache_count, OPT_INT)
@@ -897,11 +892,8 @@ OPTION(bdev_debug_aio_log_age, OPT_DOUBLE)
 // to the uio_pci_generic driver. The purpose is to prevent the case where
 // NVMe driver is loaded while osd is running.
 OPTION(bdev_nvme_unbind_from_kernel, OPT_BOOL)
-OPTION(bdev_nvme_retry_count, OPT_INT) // -1 means by default which is 4
 OPTION(bdev_enable_discard, OPT_BOOL)
 OPTION(bdev_async_discard, OPT_BOOL)
-OPTION(bdev_flock_retry_interval, OPT_FLOAT)
-OPTION(bdev_flock_retry, OPT_INT)
 
 OPTION(objectstore_blackhole, OPT_BOOL)
 
@@ -924,18 +916,8 @@ OPTION(bluefs_check_for_zeros, OPT_BOOL)
 
 OPTION(bluestore_bluefs, OPT_BOOL)
 OPTION(bluestore_bluefs_env_mirror, OPT_BOOL) // mirror to normal Env for debug
-OPTION(bluestore_bluefs_min, OPT_U64) // 1gb
-OPTION(bluestore_bluefs_min_ratio, OPT_FLOAT)  // min fs free / total free
-OPTION(bluestore_bluefs_max_ratio, OPT_FLOAT)  // max fs free / total free
-OPTION(bluestore_bluefs_gift_ratio, OPT_FLOAT) // how much to add at a time
-OPTION(bluestore_bluefs_reclaim_ratio, OPT_FLOAT) // how much to reclaim at a time
-OPTION(bluestore_bluefs_balance_interval, OPT_FLOAT) // how often (sec) to balance free space between bluefs and bluestore
 // how often (sec) to dump allocator on allocation failure
 OPTION(bluestore_bluefs_alloc_failure_dump_interval, OPT_FLOAT)
-
-// Enforces db sync with legacy bluefs extents information on close.
-// Enables downgrades to pre-nautilus releases
-OPTION(bluestore_bluefs_db_compatibility, OPT_BOOL)
 
 // If you want to use spdk driver, you need to specify NVMe serial number here
 // with "spdk:" prefix.
@@ -1041,7 +1023,6 @@ OPTION(bluestore_blobid_prealloc, OPT_U64)
 OPTION(bluestore_clone_cow, OPT_BOOL)  // do copy-on-write for clones
 OPTION(bluestore_default_buffered_read, OPT_BOOL)
 OPTION(bluestore_default_buffered_write, OPT_BOOL)
-OPTION(bluestore_debug_misc, OPT_BOOL)
 OPTION(bluestore_debug_no_reuse_blocks, OPT_BOOL)
 OPTION(bluestore_debug_small_allocations, OPT_INT)
 OPTION(bluestore_debug_too_many_blobs_threshold, OPT_INT)
@@ -1060,8 +1041,11 @@ OPTION(bluestore_debug_inject_csum_err_probability, OPT_FLOAT)
 OPTION(bluestore_fsck_error_on_no_per_pool_stats, OPT_BOOL)
 OPTION(bluestore_warn_on_bluefs_spillover, OPT_BOOL)
 OPTION(bluestore_warn_on_legacy_statfs, OPT_BOOL)
+OPTION(bluestore_warn_on_spurious_read_errors, OPT_BOOL)
 OPTION(bluestore_fsck_error_on_no_per_pool_omap, OPT_BOOL)
+OPTION(bluestore_fsck_error_on_no_per_pg_omap, OPT_BOOL)
 OPTION(bluestore_warn_on_no_per_pool_omap, OPT_BOOL)
+OPTION(bluestore_warn_on_no_per_pg_omap, OPT_BOOL)
 OPTION(bluestore_log_op_age, OPT_DOUBLE)
 OPTION(bluestore_log_omap_iterator_age, OPT_DOUBLE)
 OPTION(bluestore_log_collection_list_age, OPT_DOUBLE)
@@ -1445,6 +1429,7 @@ OPTION(rgw_relaxed_s3_bucket_names, OPT_BOOL) // enable relaxed bucket name rule
 OPTION(rgw_defer_to_bucket_acls, OPT_STR) // if the user has bucket perms)
 OPTION(rgw_list_buckets_max_chunk, OPT_INT) // max buckets to retrieve in a single op when listing user buckets
 OPTION(rgw_md_log_max_shards, OPT_INT) // max shards for metadata log
+OPTION(rgw_curl_buffersize, OPT_INT) // set preferred receive buffer size for curl calls
 OPTION(rgw_curl_wait_timeout_ms, OPT_INT) // timeout for certain curl calls
 OPTION(rgw_curl_low_speed_limit, OPT_INT) // low speed limit for certain curl calls
 OPTION(rgw_curl_low_speed_time, OPT_INT) // low speed time for certain curl calls
@@ -1525,6 +1510,15 @@ OPTION(rgw_crypt_vault_prefix, OPT_STR) // Optional URL prefix to Vault secret p
 OPTION(rgw_crypt_vault_secret_engine, OPT_STR) // kv, transit or other supported secret engines
 OPTION(rgw_crypt_vault_namespace, OPT_STR) // Vault Namespace (only availabe in Vault Enterprise Version)
 
+OPTION(rgw_crypt_kmip_addr, OPT_STR) // kmip server address
+OPTION(rgw_crypt_kmip_ca_path, OPT_STR) // ca for kmip servers
+OPTION(rgw_crypt_kmip_username, OPT_STR) // when authenticating via username
+OPTION(rgw_crypt_kmip_password, OPT_STR) // optional w/ username
+OPTION(rgw_crypt_kmip_client_cert, OPT_STR) // connect using client certificate
+OPTION(rgw_crypt_kmip_client_key, OPT_STR) // connect using client certificate
+OPTION(rgw_crypt_kmip_kms_key_template, OPT_STR) // sse-kms; kmip key names
+OPTION(rgw_crypt_kmip_s3_key_template, OPT_STR) // sse-s3; kmip key names
+
 OPTION(rgw_crypt_s3_kms_encryption_keys, OPT_STR) // extra keys that may be used for aws:kms
                                                       // defined as map "key1=YmluCmJvb3N0CmJvb3N0LQ== key2=b3V0CnNyYwpUZXN0aW5nCg=="
 OPTION(rgw_crypt_suppress_logs, OPT_BOOL)   // suppress logs that might print customer key
@@ -1560,6 +1554,7 @@ OPTION(rgw_sts_entry, OPT_STR)
 OPTION(rgw_sts_key, OPT_STR)
 OPTION(rgw_s3_auth_use_sts, OPT_BOOL)  // should we try to use sts for s3?
 OPTION(rgw_sts_max_session_duration, OPT_U64) // Max duration in seconds for which the session token is valid.
+OPTION(rgw_sts_min_session_duration, OPT_U64) // Min duration in seconds for which the session token is valid.
 OPTION(fake_statfs_for_testing, OPT_INT) // Set a value for kb and compute kb_used from total of num_bytes
 OPTION(rgw_sts_token_introspection_url, OPT_STR)  // url for introspecting web tokens
 OPTION(rgw_sts_client_id, OPT_STR) // Client Id

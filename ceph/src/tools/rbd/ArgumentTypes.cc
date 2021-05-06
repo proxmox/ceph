@@ -201,7 +201,7 @@ void add_snap_spec_options(po::options_description *pos,
   pos->add_options()
     ((get_name_prefix(modifier) + SNAPSHOT_SPEC).c_str(),
      (get_description_prefix(modifier) + "snapshot specification\n" +
-      "(example: [<pool-name>/[<namespace>/]]<image-name>@<snapshot-name>)").c_str());
+      "(example: [<pool-name>/[<namespace>/]]<image-name>@<snap-name>)").c_str());
   add_pool_option(opt, modifier);
   add_namespace_option(opt, modifier);
   add_image_option(opt, modifier);
@@ -227,15 +227,15 @@ void add_create_image_options(po::options_description *opt,
   if (include_format) {
     opt->add_options()
       (IMAGE_FORMAT.c_str(), po::value<ImageFormat>(),
-       "image format [1 (deprecated) or 2]")
+       "image format [default: 2]")
       (IMAGE_NEW_FORMAT.c_str(),
        po::value<ImageNewFormat>()->zero_tokens(),
-       "use image format 2\n(deprecated)");
+       "deprecated[:image-format 2]");
   }
 
   opt->add_options()
     (IMAGE_ORDER.c_str(), po::value<ImageOrder>(),
-     "object order [12 <= order <= 25]")
+     "deprecated[:object-size]")
     (IMAGE_OBJECT_SIZE.c_str(), po::value<ImageObjectSize>(),
      "object size in B/K/M [4K <= object size <= 32M]")
     (IMAGE_FEATURES.c_str(), po::value<ImageFeatures>()->composing(),
@@ -307,7 +307,7 @@ void add_verbose_option(boost::program_options::options_description *opt) {
 
 void add_no_error_option(boost::program_options::options_description *opt) {
   opt->add_options()
-    (NO_ERROR.c_str(), po::bool_switch(), "continue after error");
+    (NO_ERR.c_str(), po::bool_switch(), "continue after error");
 }
 
 void add_export_format_option(boost::program_options::options_description *opt) {
@@ -319,6 +319,13 @@ void add_flatten_option(boost::program_options::options_description *opt) {
   opt->add_options()
     (IMAGE_FLATTEN.c_str(), po::bool_switch(),
      "fill clone with parent data (make it independent)");
+}
+
+void add_snap_create_options(po::options_description *opt) {
+  opt->add_options()
+    (SKIP_QUIESCE.c_str(), po::bool_switch(), "do not run quiesce hooks")
+    (IGNORE_QUIESCE_ERROR.c_str(), po::bool_switch(),
+     "ignore quiesce hook error");
 }
 
 std::string get_short_features_help(bool append_suffix) {
@@ -433,8 +440,6 @@ void validate(boost::any& v, const std::vector<std::string>& values,
 
 void validate(boost::any& v, const std::vector<std::string>& values,
               ImageNewFormat *target_type, int dummy) {
-  std::cout << "rbd: --new-format is deprecated, use --image-format"
-            << std::endl;
   v = boost::any(true);
 }
 
@@ -504,6 +509,19 @@ void validate(boost::any& v, const std::vector<std::string>& values,
 }
 
 void validate(boost::any& v, const std::vector<std::string>& values,
+              EncryptionAlgorithm *target_type, int) {
+  po::validators::check_first_occurrence(v);
+  const std::string &s = po::validators::get_single_string(values);
+  if (s == "aes-128") {
+    v = boost::any(RBD_ENCRYPTION_ALGORITHM_AES128);
+  } else if (s == "aes-256") {
+    v = boost::any(RBD_ENCRYPTION_ALGORITHM_AES256);
+  } else {
+    throw po::validation_error(po::validation_error::invalid_option_value);
+  }
+}
+
+void validate(boost::any& v, const std::vector<std::string>& values,
               ExportFormat *target_type, int) {
   po::validators::check_first_occurrence(v);
   const std::string &s = po::validators::get_single_string(values);
@@ -519,7 +537,6 @@ void validate(boost::any& v, const std::vector<std::string>& values,
 
 void validate(boost::any& v, const std::vector<std::string>& values,
               Secret *target_type, int) {
-  std::cerr << "rbd: --secret is deprecated, use --keyfile" << std::endl;
 
   po::validators::check_first_occurrence(v);
   const std::string &s = po::validators::get_single_string(values);

@@ -51,7 +51,7 @@ public:
 class ETagVerifier_MPU : public ETagVerifier
 {
   std::vector<uint64_t> part_ofs;
-  int cur_part_index{0}, next_part_index{1};
+  uint64_t cur_part_index{0}, next_part_index{1};
   MD5 mpu_etag_hash;
  
   void process_end_of_MPU_part();

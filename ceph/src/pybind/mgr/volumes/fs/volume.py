@@ -1,14 +1,16 @@
 import json
 import errno
 import logging
-from threading import Event
+from typing import TYPE_CHECKING
 
 import cephfs
 
+from mgr_util import CephfsClient
+
 from .fs_util import listdir
 
-from .operations.volume import ConnectionPool, open_volume, create_volume, \
-    delete_volume, list_volumes, get_pool_names
+from .operations.volume import create_volume, \
+    delete_volume, list_volumes, open_volume, get_pool_names
 from .operations.group import open_group, create_group, remove_group, open_group_unique
 from .operations.subvolume import open_subvol, create_subvol, remove_subvol, \
     create_clone
@@ -18,6 +20,9 @@ from .exception import VolumeException, ClusterError, ClusterTimeout, EvictionEr
 from .async_cloner import Cloner
 from .purge_queue import ThreadPoolPurgeQueueMixin
 from .operations.template import SubvolumeOpType
+
+if TYPE_CHECKING:
+    from volumes import Module
 
 log = logging.getLogger(__name__)
 
@@ -30,6 +35,7 @@ def octal_str_to_decimal_int(mode):
     except ValueError:
         raise VolumeException(-errno.EINVAL, "Invalid mode '{0}'".format(mode))
 
+
 def name_to_json(names):
     """
     convert the list of names to json
@@ -39,13 +45,12 @@ def name_to_json(names):
         namedict.append({'name': names[i].decode('utf-8')})
     return json.dumps(namedict, indent=4, sort_keys=True)
 
-class VolumeClient(object):
+
+class VolumeClient(CephfsClient["Module"]):
     def __init__(self, mgr):
-        self.mgr = mgr
-        self.stopping = Event()
+        super().__init__(mgr)
         # volume specification
         self.volspec = VolSpec(mgr.rados.conf_get('client_snapdir'))
-        self.connection_pool = ConnectionPool(self.mgr)
         self.cloner = Cloner(self, self.mgr.max_concurrent_clones)
         self.purge_queue = ThreadPoolPurgeQueueMixin(self, 4)
         # on startup, queue purge job for available volumes to kickstart
@@ -58,16 +63,16 @@ class VolumeClient(object):
             self.cloner.queue_job(fs['mdsmap']['fs_name'])
             self.purge_queue.queue_job(fs['mdsmap']['fs_name'])
 
-    def is_stopping(self):
-        return self.stopping.is_set()
-
     def shutdown(self):
+        # Overrides CephfsClient.shutdown()
         log.info("shutting down")
         # first, note that we're shutting down
         self.stopping.set()
-        # second, ask purge threads to quit
-        self.purge_queue.cancel_all_jobs()
-        # third, delete all libcephfs handles from connection pool
+        # stop clones
+        self.cloner.shutdown()
+        # stop purge threads
+        self.purge_queue.shutdown()
+        # last, delete all libcephfs handles from connection pool
         self.connection_pool.del_all_handles()
 
     def cluster_log(self, msg, lvl=None):
@@ -75,7 +80,7 @@ class VolumeClient(object):
         log to cluster log with default log level as WARN.
         """
         if not lvl:
-            lvl = self.mgr.CLUSTER_LOG_PRIO_WARN
+            lvl = self.mgr.ClusterLogPrio.WARN
         self.mgr.cluster_log("cluster", lvl, msg)
 
     def volume_exception_to_retval(self, ve):
@@ -617,12 +622,14 @@ class VolumeClient(object):
     def list_subvolume_groups(self, **kwargs):
         volname = kwargs['vol_name']
         ret     = 0, '[]', ""
+        volume_exists = False
         try:
             with open_volume(self, volname) as fs_handle:
+                volume_exists = True
                 groups = listdir(fs_handle, self.volspec.base_dir)
                 ret = 0, name_to_json(groups), ""
         except VolumeException as ve:
-            if not ve.errno == -errno.ENOENT:
+            if not ve.errno == -errno.ENOENT or not volume_exists:
                 ret = self.volume_exception_to_retval(ve)
         return ret
 

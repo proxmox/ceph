@@ -13,7 +13,7 @@ from gevent.event import Event
 from teuthology import misc as teuthology
 
 from tasks import ceph_manager
-from tasks.cephfs.filesystem import MDSCluster, Filesystem
+from tasks.cephfs.filesystem import MDSCluster, Filesystem, FSMissing
 from tasks.thrasher import Thrasher
 
 log = logging.getLogger(__name__)
@@ -122,6 +122,8 @@ class MDSThrasher(Thrasher, Greenlet):
     def _run(self):
         try:
             self.do_thrash()
+        except FSMissing:
+            pass
         except Exception as e:
             # Log exceptions here so we get the full backtrace (gevent loses them).
             # Also allow successful completion as gevent exception handling is a broken mess:
@@ -246,10 +248,9 @@ class MDSThrasher(Thrasher, Greenlet):
 
             if random.random() <= self.thrash_max_mds:
                 max_mds = status.get_fsmap(self.fs.id)['mdsmap']['max_mds']
-                options = list(range(1, max_mds))+list(range(max_mds+1, self.max_mds+1))
+                options = [i for i in range(1, self.max_mds + 1) if i != max_mds]
                 if len(options) > 0:
-                    sample = random.sample(options, 1)
-                    new_max_mds = sample[0]
+                    new_max_mds = random.choice(options)
                     self.log('thrashing max_mds: %d -> %d' % (max_mds, new_max_mds))
                     self.fs.set_max_mds(new_max_mds)
                     stats['max_mds'] += 1
@@ -417,7 +418,7 @@ def task(ctx, config):
         config['cluster'] = 'ceph'
 
     for fs in status.get_filesystems():
-        thrasher = MDSThrasher(ctx, manager, config, Filesystem(ctx, fs['id']), fs['mdsmap']['max_mds'])
+        thrasher = MDSThrasher(ctx, manager, config, Filesystem(ctx, fscid=fs['id']), fs['mdsmap']['max_mds'])
         thrasher.start()
         ctx.ceph[config['cluster']].thrashers.append(thrasher)
 

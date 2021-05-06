@@ -24,10 +24,28 @@
 #include <seastar/core/circular_buffer.hh>
 #include <seastar/core/semaphore.hh>
 #include <seastar/core/reactor.hh>
+#include <seastar/core/when_all.hh>
+#include <fmt/format.h>
+#include <fmt/ostream.h>
 #include <malloc.h>
 #include <string.h>
 
 namespace seastar {
+
+static_assert(std::is_nothrow_constructible_v<data_source>);
+static_assert(std::is_nothrow_move_constructible_v<data_source>);
+
+static_assert(std::is_nothrow_constructible_v<data_sink>);
+static_assert(std::is_nothrow_move_constructible_v<data_sink>);
+
+static_assert(std::is_nothrow_constructible_v<temporary_buffer<char>>);
+static_assert(std::is_nothrow_move_constructible_v<temporary_buffer<char>>);
+
+static_assert(std::is_nothrow_constructible_v<input_stream<char>>);
+static_assert(std::is_nothrow_move_constructible_v<input_stream<char>>);
+
+static_assert(std::is_nothrow_constructible_v<output_stream<char>>);
+static_assert(std::is_nothrow_move_constructible_v<output_stream<char>>);
 
 class file_data_source_impl : public data_source_impl {
     struct issued_read {
@@ -48,7 +66,7 @@ class file_data_source_impl : public data_source_impl {
     unsigned _reads_in_progress = 0;
     unsigned _current_read_ahead;
     future<> _dropped_reads = make_ready_future<>();
-    compat::optional<promise<>> _done;
+    std::optional<promise<>> _done;
     size_t _current_buffer_size;
     bool _in_slow_start = false;
     using unused_ratio_target = std::ratio<25, 100>;
@@ -166,6 +184,11 @@ public:
         set_new_buffer_size(after_skip::no);
         _remain = std::min(std::numeric_limits<uint64_t>::max() - _pos, _remain);
     }
+    virtual ~file_data_source_impl() override {
+        // If the data source hasn't been closed, we risk having reads in progress
+        // that will try to access freed memory.
+        assert(_reads_in_progress == 0);
+    }
     virtual future<temporary_buffer<char>> get() override {
         if (!_read_buffers.empty() && !_read_buffers.front()._ready.available()) {
             try_increase_read_ahead();
@@ -252,7 +275,7 @@ private:
             auto end = std::min(align_up(start + _current_buffer_size, align), _pos + _remain);
             auto len = end - start;
             auto actual_size = std::min(end - _pos, _remain);
-            _read_buffers.emplace_back(_pos, actual_size, futurize<future<temporary_buffer<char>>>::apply([&] {
+            _read_buffers.emplace_back(_pos, actual_size, futurize_invoke([&] {
                     return _file.dma_read_bulk<char>(start, len, _options.io_priority_class);
             }).then_wrapped(
                     [this, start, pos = _pos, remain = _remain] (future<temporary_buffer<char>> ret) {
@@ -381,6 +404,7 @@ public:
             // This should only happen when the user calls output_stream::flush().
             auto tmp = allocate_buffer(align_up(buf.size(), _file.disk_write_dma_alignment()));
             ::memcpy(tmp.get_write(), buf.get(), buf.size());
+            ::memset(tmp.get_write() + buf.size(), 0, tmp.size() - buf.size());
             buf = std::move(tmp);
             p = buf.get();
             buf_size = buf.size();
@@ -430,6 +454,8 @@ public:
     }
 };
 
+SEASTAR_INCLUDE_API_V2 namespace api_v2 {
+
 data_sink make_file_data_sink(file f, file_output_stream_options options) {
     return data_sink(std::make_unique<file_data_sink_impl>(std::move(f), options));
 }
@@ -437,11 +463,57 @@ data_sink make_file_data_sink(file f, file_output_stream_options options) {
 output_stream<char> make_file_output_stream(file f, size_t buffer_size) {
     file_output_stream_options options;
     options.buffer_size = buffer_size;
-    return make_file_output_stream(std::move(f), options);
+// Don't generate a deprecation warning for the unsafe functions calling each other.
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+    return api_v2::make_file_output_stream(std::move(f), options);
+#pragma GCC diagnostic pop
 }
 
 output_stream<char> make_file_output_stream(file f, file_output_stream_options options) {
-    return output_stream<char>(make_file_data_sink(std::move(f), options), options.buffer_size, true);
+// Don't generate a deprecation warning for the unsafe functions calling each other.
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+    return output_stream<char>(api_v2::make_file_data_sink(std::move(f), options), options.buffer_size, true);
+#pragma GCC diagnostic pop
+}
+
+}
+
+SEASTAR_INCLUDE_API_V3 namespace api_v3 {
+inline namespace and_newer {
+
+future<data_sink> make_file_data_sink(file f, file_output_stream_options options) noexcept {
+    try {
+        return make_ready_future<data_sink>(std::make_unique<file_data_sink_impl>(f, options));
+    } catch (...) {
+        return f.close().then_wrapped([ex = std::current_exception(), f] (future<> fut) mutable {
+            if (fut.failed()) {
+                try {
+                    std::rethrow_exception(std::move(ex));
+                } catch (...) {
+                    std::throw_with_nested(std::runtime_error(fmt::format("While handling failed construction of data_sink, caught exception: {}",
+                                fut.get_exception())));
+                }
+            }
+            return make_exception_future<data_sink>(std::move(ex));
+        });
+    }
+}
+
+future<output_stream<char>> make_file_output_stream(file f, size_t buffer_size) noexcept {
+    file_output_stream_options options;
+    options.buffer_size = buffer_size;
+    return api_v3::and_newer::make_file_output_stream(std::move(f), options);
+}
+
+future<output_stream<char>> make_file_output_stream(file f, file_output_stream_options options) noexcept {
+    return api_v3::and_newer::make_file_data_sink(std::move(f), options).then([buffer_size = options.buffer_size] (data_sink&& ds) {
+        return output_stream<char>(std::move(ds), buffer_size, true);
+    });
+}
+
+}
 }
 
 /*

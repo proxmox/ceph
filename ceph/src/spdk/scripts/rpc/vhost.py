@@ -1,4 +1,8 @@
-def set_vhost_controller_coalescing(client, ctrlr, delay_base_us, iops_threshold):
+from .helpers import deprecated_alias
+
+
+@deprecated_alias('set_vhost_controller_coalescing')
+def vhost_controller_set_coalescing(client, ctrlr, delay_base_us, iops_threshold):
     """Set coalescing for vhost controller.
     Args:
         ctrlr: controller name
@@ -10,11 +14,12 @@ def set_vhost_controller_coalescing(client, ctrlr, delay_base_us, iops_threshold
         'delay_base_us': delay_base_us,
         'iops_threshold': iops_threshold,
     }
-    return client.call('set_vhost_controller_coalescing', params)
+    return client.call('vhost_controller_set_coalescing', params)
 
 
-def construct_vhost_scsi_controller(client, ctrlr, cpumask=None):
-    """Construct a vhost scsi controller.
+@deprecated_alias('construct_vhost_scsi_controller')
+def vhost_create_scsi_controller(client, ctrlr, cpumask=None):
+    """Create a vhost scsi controller.
     Args:
         ctrlr: controller name
         cpumask: cpu mask for this controller
@@ -24,10 +29,11 @@ def construct_vhost_scsi_controller(client, ctrlr, cpumask=None):
     if cpumask:
         params['cpumask'] = cpumask
 
-    return client.call('construct_vhost_scsi_controller', params)
+    return client.call('vhost_create_scsi_controller', params)
 
 
-def add_vhost_scsi_lun(client, ctrlr, scsi_target_num, bdev_name):
+@deprecated_alias('add_vhost_scsi_lun')
+def vhost_scsi_controller_add_target(client, ctrlr, scsi_target_num, bdev_name):
     """Add LUN to vhost scsi controller target.
     Args:
         ctrlr: controller name
@@ -39,10 +45,11 @@ def add_vhost_scsi_lun(client, ctrlr, scsi_target_num, bdev_name):
         'scsi_target_num': scsi_target_num,
         'bdev_name': bdev_name,
     }
-    return client.call('add_vhost_scsi_lun', params)
+    return client.call('vhost_scsi_controller_add_target', params)
 
 
-def remove_vhost_scsi_target(client, ctrlr, scsi_target_num):
+@deprecated_alias('remove_vhost_scsi_target')
+def vhost_scsi_controller_remove_target(client, ctrlr, scsi_target_num):
     """Remove target from vhost scsi controller.
     Args:
         ctrlr: controller name to remove target from
@@ -52,10 +59,11 @@ def remove_vhost_scsi_target(client, ctrlr, scsi_target_num):
         'ctrlr': ctrlr,
         'scsi_target_num': scsi_target_num
     }
-    return client.call('remove_vhost_scsi_target', params)
+    return client.call('vhost_scsi_controller_remove_target', params)
 
 
-def construct_vhost_nvme_controller(client, ctrlr, io_queues, cpumask=None):
+@deprecated_alias('construct_vhost_nvme_controller')
+def vhost_create_nvme_controller(client, ctrlr, io_queues, cpumask=None):
     """Construct vhost NVMe controller.
     Args:
         ctrlr: controller name
@@ -70,10 +78,11 @@ def construct_vhost_nvme_controller(client, ctrlr, io_queues, cpumask=None):
     if cpumask:
         params['cpumask'] = cpumask
 
-    return client.call('construct_vhost_nvme_controller', params)
+    return client.call('vhost_create_nvme_controller', params)
 
 
-def add_vhost_nvme_ns(client, ctrlr, bdev_name):
+@deprecated_alias('add_vhost_nvme_ns')
+def vhost_nvme_controller_add_ns(client, ctrlr, bdev_name):
     """Add namespace to vhost nvme controller.
     Args:
         ctrlr: controller name where to add a namespace
@@ -84,16 +93,18 @@ def add_vhost_nvme_ns(client, ctrlr, bdev_name):
         'bdev_name': bdev_name,
     }
 
-    return client.call('add_vhost_nvme_ns', params)
+    return client.call('vhost_nvme_controller_add_ns', params)
 
 
-def construct_vhost_blk_controller(client, ctrlr, dev_name, cpumask=None, readonly=None):
-    """Construct vhost BLK controller.
+@deprecated_alias('construct_vhost_blk_controller')
+def vhost_create_blk_controller(client, ctrlr, dev_name, cpumask=None, readonly=None, packed_ring=None):
+    """Create vhost BLK controller.
     Args:
         ctrlr: controller name
         dev_name: device name to add to controller
         cpumask: cpu mask for this controller
         readonly: set controller as read-only
+        packed_ring: support controller packed_ring
     """
     params = {
         'ctrlr': ctrlr,
@@ -103,10 +114,13 @@ def construct_vhost_blk_controller(client, ctrlr, dev_name, cpumask=None, readon
         params['cpumask'] = cpumask
     if readonly:
         params['readonly'] = readonly
-    return client.call('construct_vhost_blk_controller', params)
+    if packed_ring:
+        params['packed_ring'] = packed_ring
+    return client.call('vhost_create_blk_controller', params)
 
 
-def get_vhost_controllers(client, name=None):
+@deprecated_alias('get_vhost_controllers')
+def vhost_get_controllers(client, name=None):
     """Get information about configured vhost controllers.
 
     Args:
@@ -118,21 +132,25 @@ def get_vhost_controllers(client, name=None):
     params = {}
     if name:
         params['name'] = name
-    return client.call('get_vhost_controllers', params)
+    return client.call('vhost_get_controllers', params)
 
 
-def remove_vhost_controller(client, ctrlr):
-    """Remove vhost controller from configuration.
+@deprecated_alias('remove_vhost_controller')
+def vhost_delete_controller(client, ctrlr):
+    """Delete vhost controller from configuration.
     Args:
         ctrlr: controller name to remove
     """
     params = {'ctrlr': ctrlr}
-    return client.call('remove_vhost_controller', params)
+    return client.call('vhost_delete_controller', params)
 
 
-def construct_virtio_dev(client, name, trtype, traddr, dev_type, vq_count=None, vq_size=None):
-    """Construct new virtio device using provided
-    transport type and device type.
+@deprecated_alias('construct_virtio_dev')
+def bdev_virtio_attach_controller(client, name, trtype, traddr, dev_type, vq_count=None, vq_size=None):
+    """Attaches virtio controller using
+    provided transport type and device type.
+    This will also create bdevs for any block
+    devices connected to that controller.
     Args:
         name: name base for new created bdevs
         trtype: virtio target transport type: pci or user
@@ -152,19 +170,21 @@ def construct_virtio_dev(client, name, trtype, traddr, dev_type, vq_count=None, 
         params['vq_count'] = vq_count
     if vq_size:
         params['vq_size'] = vq_size
-    return client.call('construct_virtio_dev', params)
+    return client.call('bdev_virtio_attach_controller', params)
 
 
-def remove_virtio_bdev(client, name):
+@deprecated_alias('remove_virtio_bdev ')
+def bdev_virtio_detach_controller(client, name):
     """Remove a Virtio device
     This will delete all bdevs exposed by this device.
     Args:
         name: virtio device name
     """
     params = {'name': name}
-    return client.call('remove_virtio_bdev', params)
+    return client.call('bdev_virtio_detach_controller', params)
 
 
-def get_virtio_scsi_devs(client):
+@deprecated_alias('get_virtio_scsi_devs')
+def bdev_virtio_scsi_get_devices(client):
     """Get list of virtio scsi devices."""
-    return client.call('get_virtio_scsi_devs')
+    return client.call('bdev_virtio_scsi_get_devices')

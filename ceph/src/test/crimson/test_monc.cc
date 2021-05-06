@@ -38,7 +38,7 @@ static seastar::future<> test_monc()
     return conf.parse_config_files(conf_file_list);
   }).then([] {
     return crimson::common::sharded_perf_coll().start();
-  }).then([] {
+  }).then([]() mutable {
     auto msgr = crimson::net::Messenger::create(entity_name_t::OSD(0), "monc", 0);
     auto& conf = crimson::common::local_conf();
     if (conf->ms_crc_data) {
@@ -49,8 +49,8 @@ static seastar::future<> test_monc()
     }
     msgr->set_require_authorizer(false);
     return seastar::do_with(MonClient{*msgr, dummy_handler},
-                            [msgr](auto& monc) {
-      return msgr->start(&monc).then([&monc] {
+                            [msgr](auto& monc) mutable {
+      return msgr->start({&monc}).then([&monc] {
         return seastar::with_timeout(
           seastar::lowres_clock::now() + std::chrono::seconds{10},
           monc.start());

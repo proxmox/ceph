@@ -1,73 +1,31 @@
-ceph (15.2.11-1bionic) bionic; urgency=medium
+ceph (16.2.2-1focal) focal; urgency=medium
 
 
- -- Jenkins Build Slave User <jenkins-build@braggi11.front.sepia.ceph.com>  Mon, 19 Apr 2021 13:59:34 +0000
+ -- Jenkins Build Slave User <jenkins-build@braggi16.front.sepia.ceph.com>  Tue, 04 May 2021 18:50:27 +0000
 
-ceph (15.2.11-1) stable; urgency=medium
-
-  * New upstream release
-
- -- Ceph Release Team <ceph-maintainers@ceph.com>  Mon, 19 Apr 2021 13:47:28 +0000
-
-ceph (15.2.10-1) stable; urgency=medium
+ceph (16.2.2-1) stable; urgency=medium
 
   * New upstream release
 
- -- Ceph Release Team <ceph-maintainers@ceph.com>  Wed, 17 Mar 2021 17:02:38 +0000
+ -- Ceph Release Team <ceph-maintainers@ceph.com>  Tue, 04 May 2021 18:38:20 +0000
 
-ceph (15.2.9-1) stable; urgency=medium
-
-  * New upstream release
-
- -- Ceph Release Team <ceph-maintainers@ceph.com>  Tue, 23 Feb 2021 14:10:13 +0000
-
-ceph (15.2.8-1) stable; urgency=medium
+ceph (16.2.1-1) stable; urgency=medium
 
   * New upstream release
 
- -- Ceph Release Team <ceph-maintainers@ceph.com>  Wed, 16 Dec 2020 17:29:47 +0000
+ -- Ceph Release Team <ceph-maintainers@ceph.com>  Mon, 19 Apr 2021 13:50:04 +0000
 
-ceph (15.2.7-1) stable; urgency=medium
-
-  * New upstream release
-
- -- Ceph Release Team <ceph-maintainers@ceph.com>  Mon, 30 Nov 2020 19:58:28 +0000
-
-ceph (15.2.6-1) stable; urgency=medium
+ceph (16.2.0-1) stable; urgency=medium
 
   * New upstream release
 
- -- Ceph Release Team <ceph-maintainers@ceph.com>  Tue, 17 Nov 2020 18:12:51 +0000
+ -- Ceph Release Team <ceph-maintainers@ceph.com>  Tue, 30 Mar 2021 21:13:26 +0000
 
-ceph (15.2.5-1) stable; urgency=medium
-
-  * New upstream release
-
- -- Ceph Release Team <ceph-maintainers@ceph.com>  Tue, 15 Sep 2020 18:57:01 +0000
-
-ceph (15.2.4-1) stable; urgency=medium
+ceph (16.1.0-1) stable; urgency=medium
 
   * New upstream release
 
- -- Ceph Release Team <ceph-maintainers@ceph.com>  Tue, 30 Jun 2020 15:40:49 +0000
-
-ceph (15.2.3-1) stable; urgency=medium
-
-  * New upstream release
-
- -- Ceph Release Team <ceph-maintainers@ceph.com>  Fri, 29 May 2020 16:24:48 +0000
-
-ceph (15.2.2-1) stable; urgency=medium
-
-  * New upstream release
-
- -- Ceph Release Team <ceph-maintainers@ceph.com>  Mon, 18 May 2020 16:25:10 +0000
-
-ceph (15.2.1-1) stable; urgency=medium
-
-  * New upstream release
-
- -- Ceph Release Team <ceph-maintainers@ceph.com>  Wed, 08 Apr 2020 17:51:47 +0000
+ -- Ceph Release Team <ceph-maintainers@ceph.com>  Fri, 19 Mar 2021 16:54:19 +0000
 
 ceph (15.2.0-1) stable; urgency=medium
 

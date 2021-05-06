@@ -78,7 +78,7 @@ virtual_ethdev_configure_fail(struct rte_eth_dev *dev __rte_unused)
 	return -1;
 }
 
-static void
+static int
 virtual_ethdev_info_get(struct rte_eth_dev *dev __rte_unused,
 		struct rte_eth_dev_info *dev_info)
 {
@@ -91,6 +91,8 @@ virtual_ethdev_info_get(struct rte_eth_dev *dev __rte_unused,
 	dev_info->max_tx_queues = (uint16_t)512;
 
 	dev_info->min_rx_bufsize = 0;
+
+	return 0;
 }
 
 static int
@@ -195,7 +197,7 @@ virtual_ethdev_stats_get(struct rte_eth_dev *dev, struct rte_eth_stats *stats)
 	return 0;
 }
 
-static void
+static int
 virtual_ethdev_stats_reset(struct rte_eth_dev *dev)
 {
 	struct virtual_ethdev_private *dev_private = dev->data->dev_private;
@@ -206,19 +208,25 @@ virtual_ethdev_stats_reset(struct rte_eth_dev *dev)
 
 	/* Reset internal statistics */
 	memset(&dev_private->eth_stats, 0, sizeof(dev_private->eth_stats));
+
+	return 0;
 }
 
-static void
+static int
 virtual_ethdev_promiscuous_mode_enable(struct rte_eth_dev *dev __rte_unused)
-{}
+{
+	return 0;
+}
 
-static void
+static int
 virtual_ethdev_promiscuous_mode_disable(struct rte_eth_dev *dev __rte_unused)
-{}
+{
+	return 0;
+}
 
 static int
 virtual_ethdev_mac_address_set(__rte_unused struct rte_eth_dev *dev,
-			       __rte_unused struct ether_addr *addr)
+			       __rte_unused struct rte_ether_addr *addr)
 {
 	return 0;
 }
@@ -496,7 +504,7 @@ virtual_ethdev_get_mbufs_from_tx_queue(uint16_t port_id,
 
 
 int
-virtual_ethdev_create(const char *name, struct ether_addr *mac_addr,
+virtual_ethdev_create(const char *name, struct rte_ether_addr *mac_addr,
 		uint8_t socket_id, uint8_t isr_support)
 {
 	struct rte_pci_device *pci_dev = NULL;
@@ -566,7 +574,7 @@ virtual_ethdev_create(const char *name, struct ether_addr *mac_addr,
 	eth_dev->data->dev_link.link_speed = ETH_SPEED_NUM_10G;
 	eth_dev->data->dev_link.link_duplex = ETH_LINK_FULL_DUPLEX;
 
-	eth_dev->data->mac_addrs = rte_zmalloc(name, ETHER_ADDR_LEN, 0);
+	eth_dev->data->mac_addrs = rte_zmalloc(name, RTE_ETHER_ADDR_LEN, 0);
 	if (eth_dev->data->mac_addrs == NULL)
 		goto err;
 

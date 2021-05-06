@@ -11,7 +11,7 @@ arm_force_default_march = (machine == 'default')
 flags_common_default = [
 	# Accelarate rte_memcpy. Be sure to run unit test (memcpy_perf_autotest)
 	# to determine the best threshold in code. Refer to notes in source file
-	# (lib/librte_eal/common/include/arch/arm/rte_memcpy_64.h) for more info.
+	# (lib/librte_eal/arm/include/rte_memcpy_64.h) for more info.
 	['RTE_ARCH_ARM64_MEMCPY', false],
 	#	['RTE_ARM64_MEMCPY_ALIGNED_THRESHOLD', 2048],
 	#	['RTE_ARM64_MEMCPY_UNALIGNED_THRESHOLD', 512],
@@ -26,6 +26,7 @@ flags_common_default = [
 	['RTE_LIBRTE_AVP_PMD', false],
 
 	['RTE_SCHED_VECTOR', false],
+	['RTE_ARM_USE_WFE', false],
 ]
 
 flags_generic = [
@@ -48,15 +49,26 @@ flags_dpaa = [
 	['RTE_USE_C11_MEM_MODEL', true],
 	['RTE_CACHE_LINE_SIZE', 64],
 	['RTE_MAX_NUMA_NODES', 1],
-	['RTE_MAX_LCORE', 16]]
-flags_dpaa2 = [
-	['RTE_MACHINE', '"dpaa2"'],
-	['RTE_USE_C11_MEM_MODEL', true],
-	['RTE_CACHE_LINE_SIZE', 64],
-	['RTE_MAX_NUMA_NODES', 1],
 	['RTE_MAX_LCORE', 16],
 	['RTE_LIBRTE_DPAA2_USE_PHYS_IOVA', false]]
+flags_emag = [
+	['RTE_MACHINE', '"emag"'],
+	['RTE_CACHE_LINE_SIZE', 64],
+	['RTE_MAX_NUMA_NODES', 1],
+	['RTE_MAX_LCORE', 32]]
+flags_armada = [
+	['RTE_MACHINE', '"armv8a"'],
+	['RTE_CACHE_LINE_SIZE', 64],
+	['RTE_MAX_NUMA_NODES', 1],
+	['RTE_MAX_LCORE', 16]]
+
 flags_default_extra = []
+flags_n1sdp_extra = [
+	['RTE_MACHINE', '"n1sdp"'],
+	['RTE_MAX_NUMA_NODES', 1],
+	['RTE_MAX_LCORE', 4],
+	['RTE_EAL_NUMA_AWARE_HUGEPAGES', false],
+	['RTE_LIBRTE_VHOST_NUMA', false]]
 flags_thunderx_extra = [
 	['RTE_MACHINE', '"thunderx"'],
 	['RTE_USE_C11_MEM_MODEL', false]]
@@ -65,23 +77,27 @@ flags_thunderx2_extra = [
 	['RTE_CACHE_LINE_SIZE', 64],
 	['RTE_MAX_NUMA_NODES', 2],
 	['RTE_MAX_LCORE', 256],
+	['RTE_ARM_FEATURE_ATOMICS', true],
 	['RTE_USE_C11_MEM_MODEL', true]]
 flags_octeontx2_extra = [
 	['RTE_MACHINE', '"octeontx2"'],
 	['RTE_MAX_NUMA_NODES', 1],
 	['RTE_MAX_LCORE', 24],
+	['RTE_ARM_FEATURE_ATOMICS', true],
 	['RTE_EAL_IGB_UIO', false],
 	['RTE_USE_C11_MEM_MODEL', true]]
 
 machine_args_generic = [
-	['default', ['-march=armv8-a+crc+crypto']],
+	['default', ['-march=armv8-a+crc']],
 	['native', ['-march=native']],
 	['0xd03', ['-mcpu=cortex-a53']],
 	['0xd04', ['-mcpu=cortex-a35']],
 	['0xd07', ['-mcpu=cortex-a57']],
 	['0xd08', ['-mcpu=cortex-a72']],
 	['0xd09', ['-mcpu=cortex-a73']],
-	['0xd0a', ['-mcpu=cortex-a75']]]
+	['0xd0a', ['-mcpu=cortex-a75']],
+	['0xd0b', ['-mcpu=cortex-a76']],
+	['0xd0c', ['-march=armv8.2-a+crc+crypto', '-mcpu=neoverse-n1'], flags_n1sdp_extra]]
 
 machine_args_cavium = [
 	['default', ['-march=armv8-a+crc+crypto','-mcpu=thunderx']],
@@ -89,8 +105,12 @@ machine_args_cavium = [
 	['0xa1', ['-mcpu=thunderxt88'], flags_thunderx_extra],
 	['0xa2', ['-mcpu=thunderxt81'], flags_thunderx_extra],
 	['0xa3', ['-mcpu=thunderxt83'], flags_thunderx_extra],
-	['0xaf', ['-mcpu=thunderx2t99'], flags_thunderx2_extra],
-	['0xb2', ['-mcpu=octeontx2'], flags_octeontx2_extra]]
+	['0xaf', ['-march=armv8.1-a+crc+crypto','-mcpu=thunderx2t99'], flags_thunderx2_extra],
+	['0xb2', ['-march=armv8.2-a+crc+crypto+lse','-mcpu=octeontx2'], flags_octeontx2_extra]]
+
+machine_args_emag = [
+	['default', ['-march=armv8-a+crc+crypto', '-mtune=emag']],
+	['native', ['-march=native']]]
 
 ## Arm implementer ID (ARM DDI 0487C.a, Section G7.2.106, Page G7-5321)
 impl_generic = ['Generic armv8', flags_generic, machine_args_generic]
@@ -101,13 +121,12 @@ impl_0x44 = ['DEC', flags_generic, machine_args_generic]
 impl_0x49 = ['Infineon', flags_generic, machine_args_generic]
 impl_0x4d = ['Motorola', flags_generic, machine_args_generic]
 impl_0x4e = ['NVIDIA', flags_generic, machine_args_generic]
-impl_0x50 = ['AppliedMicro', flags_generic, machine_args_generic]
+impl_0x50 = ['Ampere Computing', flags_emag, machine_args_emag]
 impl_0x51 = ['Qualcomm', flags_generic, machine_args_generic]
 impl_0x53 = ['Samsung', flags_generic, machine_args_generic]
-impl_0x56 = ['Marvell', flags_generic, machine_args_generic]
+impl_0x56 = ['Marvell ARMADA', flags_armada, machine_args_generic]
 impl_0x69 = ['Intel', flags_generic, machine_args_generic]
 impl_dpaa = ['NXP DPAA', flags_dpaa, machine_args_generic]
-impl_dpaa2 = ['NXP DPAA2', flags_dpaa2, machine_args_generic]
 
 dpdk_conf.set('RTE_FORCE_INTRINSICS', 1)
 

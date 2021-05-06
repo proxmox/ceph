@@ -1,20 +1,17 @@
-import { EventEmitter } from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { ReactiveFormsModule } from '@angular/forms';
 import { By } from '@angular/platform-browser';
 
-import { ComponentLoaderFactory } from 'ngx-bootstrap/component-loader';
-import { PositioningService } from 'ngx-bootstrap/positioning';
-import { TooltipConfig, TooltipModule } from 'ngx-bootstrap/tooltip';
+import { ReplaySubject } from 'rxjs';
 
-import { configureTestBed, FormHelper, i18nProviders } from '../../../../testing/unit-test-helper';
-import { DirectivesModule } from '../../../shared/directives/directives.module';
-import { CdFormGroup } from '../../../shared/forms/cd-form-group';
-import { RbdConfigurationSourceField } from '../../../shared/models/configuration';
-import { DimlessBinaryPerSecondPipe } from '../../../shared/pipes/dimless-binary-per-second.pipe';
-import { FormatterService } from '../../../shared/services/formatter.service';
-import { RbdConfigurationService } from '../../../shared/services/rbd-configuration.service';
-import { SharedModule } from '../../../shared/shared.module';
+import { DirectivesModule } from '~/app/shared/directives/directives.module';
+import { CdFormGroup } from '~/app/shared/forms/cd-form-group';
+import { RbdConfigurationSourceField } from '~/app/shared/models/configuration';
+import { DimlessBinaryPerSecondPipe } from '~/app/shared/pipes/dimless-binary-per-second.pipe';
+import { FormatterService } from '~/app/shared/services/formatter.service';
+import { RbdConfigurationService } from '~/app/shared/services/rbd-configuration.service';
+import { SharedModule } from '~/app/shared/shared.module';
+import { configureTestBed, FormHelper } from '~/testing/unit-test-helper';
 import { RbdConfigurationFormComponent } from './rbd-configuration-form.component';
 
 describe('RbdConfigurationFormComponent', () => {
@@ -24,17 +21,9 @@ describe('RbdConfigurationFormComponent', () => {
   let fh: FormHelper;
 
   configureTestBed({
-    imports: [ReactiveFormsModule, TooltipModule, DirectivesModule, SharedModule],
+    imports: [ReactiveFormsModule, DirectivesModule, SharedModule],
     declarations: [RbdConfigurationFormComponent],
-    providers: [
-      ComponentLoaderFactory,
-      PositioningService,
-      TooltipConfig,
-      RbdConfigurationService,
-      FormatterService,
-      DimlessBinaryPerSecondPipe,
-      i18nProviders
-    ]
+    providers: [RbdConfigurationService, FormatterService, DimlessBinaryPerSecondPipe]
   });
 
   beforeEach(() => {
@@ -43,7 +32,7 @@ describe('RbdConfigurationFormComponent', () => {
     component.form = new CdFormGroup({}, null);
     fh = new FormHelper(component.form);
     fixture.detectChanges();
-    sections = TestBed.get(RbdConfigurationService).sections;
+    sections = TestBed.inject(RbdConfigurationService).sections;
   });
 
   it('should create', () => {
@@ -78,7 +67,7 @@ describe('RbdConfigurationFormComponent', () => {
 
   describe('test loading of initial data for editing', () => {
     beforeEach(() => {
-      component.initializeData = new EventEmitter<any>();
+      component.initializeData = new ReplaySubject<any>(1);
       fixture.detectChanges();
       component.ngOnInit();
     });
@@ -97,7 +86,7 @@ describe('RbdConfigurationFormComponent', () => {
     });
 
     it('should load initial data into forms', () => {
-      component.initializeData.emit({
+      component.initializeData.next({
         initialData: [
           {
             name: 'rbd_qos_bps_limit',
@@ -112,7 +101,7 @@ describe('RbdConfigurationFormComponent', () => {
     });
 
     it('should not load initial data if the source is not the pool itself', () => {
-      component.initializeData.emit({
+      component.initializeData.next({
         initialData: [
           {
             name: 'rbd_qos_bps_limit',
@@ -133,7 +122,7 @@ describe('RbdConfigurationFormComponent', () => {
     });
 
     it('should not load initial data if the source is not the image itself', () => {
-      component.initializeData.emit({
+      component.initializeData.next({
         initialData: [
           {
             name: 'rbd_qos_bps_limit',
@@ -154,7 +143,7 @@ describe('RbdConfigurationFormComponent', () => {
     });
 
     it('should always have formatted results', () => {
-      component.initializeData.emit({
+      component.initializeData.next({
         initialData: [
           {
             name: 'rbd_qos_bps_limit',
@@ -216,7 +205,7 @@ describe('RbdConfigurationFormComponent', () => {
     let data: any;
 
     beforeEach(() => {
-      component.initializeData = new EventEmitter<any>();
+      component.initializeData = new ReplaySubject<any>(1);
       fixture.detectChanges();
       component.ngOnInit();
       data = {
@@ -259,7 +248,7 @@ describe('RbdConfigurationFormComponent', () => {
         ],
         sourceType: RbdConfigurationSourceField.image
       };
-      component.initializeData.emit(data);
+      component.initializeData.next(data);
     });
 
     it('should return an empty object', () => {

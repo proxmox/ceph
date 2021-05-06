@@ -40,8 +40,13 @@ APP = mkfs
 C_SRCS := mkfs.c
 
 SPDK_LIB_LIST = $(ALL_MODULES_LIST)
-SPDK_LIB_LIST += event_bdev event_copy
-SPDK_LIB_LIST += bdev copy event thread util conf trace \
-		log jsonrpc json rpc sock notify
+SPDK_LIB_LIST += $(EVENT_BDEV_SUBSYSTEM)
+SPDK_LIB_LIST += bdev accel event thread util conf trace \
+		log jsonrpc json rpc sock notify blobfs_bdev
+
+# libfuse3 is required internally by blobfs_bdev
+ifeq ($(CONFIG_FUSE),y)
+LIBS+= -L/usr/local/lib -lfuse3
+endif
 
 include $(SPDK_ROOT_DIR)/mk/spdk.app.mk

@@ -33,10 +33,8 @@
 #  OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-ifneq ($(MAKECMDGOALS),clean)
 ifeq ($(wildcard $(SPDK_ROOT_DIR)/mk/config.mk),)
-$(error mk/config.mk: file not found. Please run configure before 'make $(filter-out clean,$(MAKECMDGOALS))')
-endif
+$(error mk/config.mk: file not found. Please run configure before make)
 endif
 
 include $(SPDK_ROOT_DIR)/mk/config.mk
@@ -72,19 +70,22 @@ ifneq ($(filter freebsd%,$(TARGET_TRIPLET_WORDS)),)
 OS = FreeBSD
 endif
 
+TARGET_ARCHITECTURE ?= $(CONFIG_ARCH)
 TARGET_MACHINE := $(firstword $(TARGET_TRIPLET_WORDS))
 
 COMMON_CFLAGS = -g $(C_OPT) -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers -Wmissing-declarations -fno-strict-aliasing -I$(SPDK_ROOT_DIR)/include
 
 ifneq ($(filter powerpc%,$(TARGET_MACHINE)),)
-COMMON_CFLAGS += -mcpu=native
-endif
-ifeq ($(TARGET_MACHINE),x86_64)
-COMMON_CFLAGS += -march=core2
-endif
-ifeq ($(TARGET_MACHINE),aarch64)
+COMMON_CFLAGS += -mcpu=$(TARGET_ARCHITECTURE)
+else ifeq ($(TARGET_MACHINE),aarch64)
+ifeq ($(TARGET_ARCHITECTURE),native)
 COMMON_CFLAGS += -march=armv8-a+crc
+else
+COMMON_CFLAGS += -march=$(TARGET_ARCHITECTURE)
+endif
 COMMON_CFLAGS += -DPAGE_SIZE=$(shell getconf PAGESIZE)
+else
+COMMON_CFLAGS += -march=$(TARGET_ARCHITECTURE)
 endif
 
 ifeq ($(CONFIG_WERROR), y)
@@ -135,10 +136,6 @@ endif
 ifeq ($(OS),FreeBSD)
 SYS_LIBS += -L/usr/local/lib
 COMMON_CFLAGS += -I/usr/local/include
-# Default to lld on FreeBSD
-ifeq ($(origin LD),default)
-LD = ld.lld
-endif
 endif
 
 # Attach only if PMDK lib specified with configure
@@ -154,6 +151,14 @@ endif
 
 ifeq ($(CONFIG_RDMA),y)
 SYS_LIBS += -libverbs -lrdmacm
+endif
+
+ifeq ($(CONFIG_URING),y)
+SYS_LIBS += -luring
+ifneq ($(strip $(CONFIG_URING_PATH)),)
+CFLAGS += -I$(CONFIG_URING_PATH)
+LDFLAGS += -L$(CONFIG_URING_PATH)
+endif
 endif
 
 IPSEC_MB_DIR=$(SPDK_ROOT_DIR)/intel-ipsec-mb
@@ -215,17 +220,23 @@ COMMON_CFLAGS += -fsanitize=thread
 LDFLAGS += -fsanitize=thread
 endif
 
+SPDK_GIT_COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null)
+ifneq (, $(SPDK_GIT_COMMIT))
+COMMON_CFLAGS += -DSPDK_GIT_COMMIT=$(SPDK_GIT_COMMIT)
+endif
+
 COMMON_CFLAGS += -pthread
 LDFLAGS += -pthread
 
 CFLAGS   += $(COMMON_CFLAGS) -Wno-pointer-sign -Wstrict-prototypes -Wold-style-definition -std=gnu99
-CXXFLAGS += $(COMMON_CFLAGS) -std=c++0x
+CXXFLAGS += $(COMMON_CFLAGS)
 
 SYS_LIBS += -lrt
 SYS_LIBS += -luuid
 SYS_LIBS += -lcrypto
-ifeq ($(CONFIG_LOG_BACKTRACE),y)
-SYS_LIBS += -lunwind
+
+ifneq ($(CONFIG_NVME_CUSE)$(CONFIG_FUSE),nn)
+SYS_LIBS += -lfuse3
 endif
 
 MAKEFLAGS += --no-print-directory
@@ -250,24 +261,17 @@ COMPILE_CXX=\
 
 # Link $(OBJS) and $(LIBS) into $@ (app)
 LINK_C=\
-	$(Q)echo "  LINK $S/$@"; \
+	$(Q)echo "  LINK $(notdir $@)"; \
 	$(CC) -o $@ $(CPPFLAGS) $(LDFLAGS) $(OBJS) $(LIBS) $(ENV_LINKER_ARGS) $(SYS_LIBS)
 
 LINK_CXX=\
-	$(Q)echo "  LINK $S/$@"; \
+	$(Q)echo "  LINK $(notdir $@)"; \
 	$(CXX) -o $@ $(CPPFLAGS) $(LDFLAGS) $(OBJS) $(LIBS) $(ENV_LINKER_ARGS) $(SYS_LIBS)
-
-#
-# Variables to use for versioning shared libs
-#
-SO_VER := 1
-SO_MINOR := 0
-SO_SUFFIX_ALL := $(SO_VER).$(SO_MINOR)
 
 # Provide function to ease build of a shared lib
 define spdk_build_realname_shared_lib
 	$(CC) -o $@ -shared $(CPPFLAGS) $(LDFLAGS) \
-	    -Wl,--soname,$(patsubst %.so.$(SO_SUFFIX_ALL),%.so.$(SO_SUFFIX_ALL),$(notdir $@)) \
+	    -Wl,--soname,$(notdir $@) \
 	    -Wl,--whole-archive $(1) -Wl,--no-whole-archive \
 	    -Wl,--version-script=$(2) \
 	    $(3)
@@ -329,9 +333,9 @@ UNINSTALL_SHARED_LIB=\
 
 # Install an app binary
 INSTALL_APP=\
-	$(Q)echo "  INSTALL $(DESTDIR)$(bindir)/$(APP)"; \
+	$(Q)echo "  INSTALL $(DESTDIR)$(bindir)/$(notdir $<)"; \
 	install -d -m 755 "$(DESTDIR)$(bindir)"; \
-	install -m 755 "$(APP)" "$(DESTDIR)$(bindir)/"
+	install -m 755 "$<" "$(DESTDIR)$(bindir)/"
 
 # Uninstall an app binary
 UNINSTALL_APP=\
@@ -342,7 +346,7 @@ UNINSTALL_APP=\
 INSTALL_EXAMPLE=\
 	$(Q)echo "  INSTALL $(DESTDIR)$(bindir)/spdk_$(strip $(subst /,_,$(subst $(SPDK_ROOT_DIR)/examples/, ,$(CURDIR))))"; \
 	install -d -m 755 "$(DESTDIR)$(bindir)"; \
-	install -m 755 "$(APP)" "$(DESTDIR)$(bindir)/spdk_$(strip $(subst /,_,$(subst $(SPDK_ROOT_DIR)/examples/, ,$(CURDIR))))"
+	install -m 755 "$<" "$(DESTDIR)$(bindir)/spdk_$(strip $(subst /,_,$(subst $(SPDK_ROOT_DIR)/examples/, ,$(CURDIR))))"
 
 # Uninstall an example binary
 UNINSTALL_EXAMPLE=\

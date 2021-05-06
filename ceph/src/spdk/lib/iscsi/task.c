@@ -40,31 +40,37 @@
 static void
 iscsi_task_free(struct spdk_scsi_task *scsi_task)
 {
-	struct spdk_iscsi_task *task = spdk_iscsi_task_from_scsi_task(scsi_task);
+	struct spdk_iscsi_task *task = iscsi_task_from_scsi_task(scsi_task);
 
 	if (task->parent) {
+		if (task->scsi.dxfer_dir == SPDK_SCSI_DIR_FROM_DEV) {
+			assert(task->conn->data_in_cnt > 0);
+			task->conn->data_in_cnt--;
+		}
+
 		spdk_scsi_task_put(&task->parent->scsi);
 		task->parent = NULL;
 	}
 
-	spdk_iscsi_task_disassociate_pdu(task);
+	iscsi_task_disassociate_pdu(task);
 	assert(task->conn->pending_task_cnt > 0);
 	task->conn->pending_task_cnt--;
-	spdk_mempool_put(g_spdk_iscsi.task_pool, (void *)task);
+	spdk_mempool_put(g_iscsi.task_pool, (void *)task);
 }
 
 struct spdk_iscsi_task *
-spdk_iscsi_task_get(struct spdk_iscsi_conn *conn, struct spdk_iscsi_task *parent,
-		    spdk_scsi_task_cpl cpl_fn)
+iscsi_task_get(struct spdk_iscsi_conn *conn, struct spdk_iscsi_task *parent,
+	       spdk_scsi_task_cpl cpl_fn)
 {
 	struct spdk_iscsi_task *task;
 
-	task = spdk_mempool_get(g_spdk_iscsi.task_pool);
+	task = spdk_mempool_get(g_iscsi.task_pool);
 	if (!task) {
 		SPDK_ERRLOG("Unable to get task\n");
 		abort();
 	}
 
+	assert(conn != NULL);
 	memset(task, 0, sizeof(*task));
 	task->conn = conn;
 	assert(conn->pending_task_cnt < UINT32_MAX);
@@ -83,6 +89,9 @@ spdk_iscsi_task_get(struct spdk_iscsi_conn *conn, struct spdk_iscsi_task *parent
 		task->scsi.cdb = parent->scsi.cdb;
 		task->scsi.target_port = parent->scsi.target_port;
 		task->scsi.initiator_port = parent->scsi.initiator_port;
+		if (task->scsi.dxfer_dir == SPDK_SCSI_DIR_FROM_DEV) {
+			conn->data_in_cnt++;
+		}
 	}
 
 	return task;

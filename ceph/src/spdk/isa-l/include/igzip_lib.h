@@ -53,8 +53,8 @@
  * Igzip also supports compression levels from ISAL_DEF_MIN_LEVEL to
  * ISAL_DEF_MAX_LEVEL.
  *
- * Igzip contains some behaviour configurable at compile time. These
- * configureable options are:
+ * Igzip contains some behavior configurable at compile time. These
+ * configurable options are:
  *
  * - IGZIP_HIST_SIZE - Defines the window size. The default value is 32K (note K
  *   represents 1024), but 8K is also supported. Powers of 2 which are at most
@@ -62,7 +62,7 @@
  *
  * - LONGER_HUFFTABLES - Defines whether to use a larger hufftables structure
  *   which may increase performance with smaller IGZIP_HIST_SIZE values. By
- *   default this optoin is not defined. This define sets IGZIP_HIST_SIZE to be
+ *   default this option is not defined. This define sets IGZIP_HIST_SIZE to be
  *   8 if IGZIP_HIST_SIZE > 8K.
  *
  *   As an example, to compile gzip with an 8K window size, in a terminal run
@@ -84,16 +84,20 @@ extern "C" {
 #define ISAL_DEF_MAX_HDR_SIZE 328
 #define ISAL_DEF_MAX_CODE_LEN 15
 #define ISAL_DEF_HIST_SIZE (32*IGZIP_K)
+#define ISAL_DEF_MAX_HIST_BITS 15
+#define ISAL_DEF_MAX_MATCH 258
+#define ISAL_DEF_MIN_MATCH 3
 
 #define ISAL_DEF_LIT_SYMBOLS 257
 #define ISAL_DEF_LEN_SYMBOLS 29
 #define ISAL_DEF_DIST_SYMBOLS 30
 #define ISAL_DEF_LIT_LEN_SYMBOLS (ISAL_DEF_LIT_SYMBOLS + ISAL_DEF_LEN_SYMBOLS)
 
-#define ISAL_LOOK_AHEAD (18 * 16)	/* Max repeat length, rounded up to 32 byte boundary */
+/* Max repeat length, rounded up to 32 byte boundary */
+#define ISAL_LOOK_AHEAD ((ISAL_DEF_MAX_MATCH + 31) & ~31)
 
 /******************************************************************************/
-/* Deflate Implemenation Specific Defines */
+/* Deflate Implementation Specific Defines */
 /******************************************************************************/
 /* Note IGZIP_HIST_SIZE must be a power of two */
 #ifndef IGZIP_HIST_SIZE
@@ -357,7 +361,7 @@ struct isal_zstate {
 	uint32_t hash_mask;
 	enum isal_zstate_state state;	//!< Current state in processing the data stream
 	struct BitBuf2 bitbuf;	//!< Bit Buffer
-	uint32_t crc;		//!< Current crc
+	uint32_t crc;		//!< Current checksum without finalize step if any (adler)
 	uint8_t has_wrap_hdr;	//!< keeps track of wrapper header
 	uint8_t has_eob_hdr;	//!< keeps track of eob hdr (with BFINAL set)
 	uint8_t has_eob;	//!< keeps track of eob on the last deflate block
@@ -448,7 +452,7 @@ struct isal_zstream {
  * Since small_code_lookup is a lookup on DECODE_LOOKUP_SIZE bits, it must have
  * size 2^DECODE_LOOKUP_SIZE.
  *
- * To determine the amoutn of memory required for long_code_lookup, note that
+ * To determine the amount of memory required for long_code_lookup, note that
  * any element of long_code_lookup corresponds to a code, a duplicate of an
  * existing code, or a invalid code. Since deflate Huffman are stored such that
  * the code size and the code value form an increasing function, the number of
@@ -457,10 +461,10 @@ struct isal_zstream {
  * (DECODE_LOOKUP_SIZE + 1) duplicate elements. Similarly the number of invalid
  * elements is maximized at 2^(15 - DECODE_LOOKUP_SIZE) - 2^(floor((15 -
  * DECODE_LOOKUP_SIZE)/2) - 2^(ceil((15 - DECODE_LOOKUP_SIZE)/2) + 1. Thus the
- * amount of memory requried is: NUM_CODES + 2^(16 - DECODE_LOOKUP_SIZE) -
+ * amount of memory required is: NUM_CODES + 2^(16 - DECODE_LOOKUP_SIZE) -
  * (DECODE_LOOKUP_SIZE + 1) - 2^(floor((15 - DECODE_LOOKUP_SIZE)/2) -
  * 2^(ceil((15 - DECODE_LOOKUP_SIZE)/2) + 1. The values used below are those
- * valuse rounded up to the nearest 16 byte boundary
+ * values rounded up to the nearest 16 byte boundary
  *
  * Note that DECODE_LOOKUP_SIZE can be any length even though the offset in
  * small_lookup_code is 9 bits long because the increasing relationship between
@@ -510,17 +514,17 @@ struct inflate_state {
 	uint32_t dict_length;	//!< Length of dictionary used
 	uint32_t bfinal;	//!< Flag identifying final block
 	uint32_t crc_flag;	//!< Flag identifying whether to track of crc
-	uint32_t crc;		//!< Contains crc of output if crc_flag is set
+	uint32_t crc;		//!< Contains crc or adler32 of output if crc_flag is set
 	uint32_t hist_bits; //!< Log base 2 of maximum lookback distance
 	union {
-		int32_t type0_block_len;	//!< Length left to read of type 0 block when outbuffer overflow occured
+		int32_t type0_block_len;	//!< Length left to read of type 0 block when outbuffer overflow occurred
 		int32_t count; //!< Count of bytes remaining to be parsed
 		uint32_t dict_id;
 	};
 	int32_t write_overflow_lits;
 	int32_t write_overflow_len;
-	int32_t copy_overflow_length; 	//!< Length left to copy when outbuffer overflow occured
-	int32_t copy_overflow_distance;	//!< Lookback distance when outbuffer overlow occured
+	int32_t copy_overflow_length; 	//!< Length left to copy when outbuffer overflow occurred
+	int32_t copy_overflow_distance;	//!< Lookback distance when outbuffer overflow occurred
 	int16_t wrapper_flag;
 	int16_t tmp_in_size;	//!< Number of bytes in tmp_in_buffer
 	int32_t tmp_out_valid;	//!< Number of bytes in tmp_out_buffer
@@ -610,8 +614,8 @@ void isal_gzip_header_init(struct isal_gzip_header *gz_hdr);
  * @param stream: Structure holding state information on the compression stream.
  * @param gz_hdr: Structure holding the gzip header information to encode.
  *
- * @returns Returns 0 if the header is sucessfully written, otherwise returns
- * the minimum size required to sucessfully write the gzip header to the output
+ * @returns Returns 0 if the header is successfully written, otherwise returns
+ * the minimum size required to successfully write the gzip header to the output
  * buffer.
  */
 uint32_t isal_write_gzip_header(struct isal_zstream * stream, struct isal_gzip_header *gz_hdr);
@@ -627,8 +631,8 @@ uint32_t isal_write_gzip_header(struct isal_zstream * stream, struct isal_gzip_h
  * @param stream: Structure holding state information on the compression stream.
  * @param z_hdr: Structure holding the zlib header information to encode.
  *
- * @returns Returns 0 if the header is sucessfully written, otherwise returns
- * the minimum size required to sucessfully write the zlib header to the output
+ * @returns Returns 0 if the header is successfully written, otherwise returns
+ * the minimum size required to successfully write the zlib header to the output
  * buffer.
  */
 uint32_t isal_write_zlib_header(struct isal_zstream * stream, struct isal_zlib_header *z_hdr);
@@ -637,7 +641,7 @@ uint32_t isal_write_zlib_header(struct isal_zstream * stream, struct isal_zlib_h
  * @brief Set stream to use a new Huffman code
  *
  * Sets the Huffman code to be used in compression before compression start or
- * after the sucessful completion of a SYNC_FLUSH or FULL_FLUSH. If type has
+ * after the successful completion of a SYNC_FLUSH or FULL_FLUSH. If type has
  * value IGZIP_HUFFTABLE_DEFAULT, the stream is set to use the default Huffman
  * code. If type has value IGZIP_HUFFTABLE_STATIC, the stream is set to use the
  * deflate standard static Huffman code, or if type has value
@@ -675,7 +679,7 @@ void isal_deflate_stateless_init(struct isal_zstream *stream);
  *
  * @param stream Structure holding state information on the compression streams.
  * @param dict: Array containing dictionary to use.
- * @param dict_len: Lenth of dict.
+ * @param dict_len: Length of dict.
  * @returns COMP_OK,
  *          ISAL_INVALID_STATE (dictionary could not be set)
  */
@@ -726,7 +730,8 @@ int isal_deflate_set_dict(struct isal_zstream *stream, uint8_t *dict, uint32_t d
  *
  * If the gzip_flag is set to IGZIP_GZIP, a generic gzip header and the gzip
  * trailer are written around the deflate compressed data. If gzip_flag is set
- * to IGZIP_GZIP_NO_HDR, then only the gzip trailer is written.
+ * to IGZIP_GZIP_NO_HDR, then only the gzip trailer is written. A full-featured
+ * header is supported by the isal_write_{gzip,zlib}_header() functions.
  *
  * @param  stream Structure holding state information on the compression streams.
  * @return COMP_OK (if everything is ok),
@@ -747,7 +752,7 @@ int isal_deflate(struct isal_zstream *stream);
  * block.
  *
  * When the compression level is set to 1, unlike in isal_deflate(), level_buf
- * may be optionally set depending on what what permormance is desired.
+ * may be optionally set depending on what what performance is desired.
  *
  * For stateless the flush types NO_FLUSH and FULL_FLUSH are supported.
  * FULL_FLUSH will byte align the output deflate block so additional blocks can
@@ -795,7 +800,7 @@ void isal_inflate_reset(struct inflate_state *state);
  *
  * @param state: Structure holding state information on the decompression stream.
  * @param dict: Array containing dictionary to use.
- * @param dict_len: Lenth of dict.
+ * @param dict_len: Length of dict.
  * @returns COMP_OK,
  *          ISAL_INVALID_STATE (dictionary could not be set)
  */
@@ -854,19 +859,22 @@ int isal_read_zlib_header (struct inflate_state *state, struct isal_zlib_header 
  * (updating next_out and avail_out). The function returns when the input buffer
  * is empty, the output buffer is full, invalid data is found, or in the case of
  * zlib formatted data if a dictionary is specified. The current state of the
- * decompression on exit can be read from state->block-state. If the crc_flag is
- * set to ISAL_GZIP_NO_HDR the gzip crc of the output is stored in
- * state->crc. Alternatively, if the crc_flag is set to ISAL_ZLIB_NO_HDR the
- * adler32 of the output is stored in state->crc. When the crc_flag is set to
- * ISAL_GZIP_NO_HDR_VER or ISAL_ZLIB_NO_HDR_VER, the behaviour is the same,
- * except the checksum is verified with the checksum after immediately followin
+ * decompression on exit can be read from state->block-state.
+ *
+ * If the crc_flag is set to ISAL_GZIP_NO_HDR the gzip crc of the output is
+ * stored in state->crc. Alternatively, if the crc_flag is set to
+ * ISAL_ZLIB_NO_HDR the adler32 of the output is stored in state->crc (checksum
+ * may not be updated until decompression is complete). When the crc_flag is set
+ * to ISAL_GZIP_NO_HDR_VER or ISAL_ZLIB_NO_HDR_VER, the behavior is the same,
+ * except the checksum is verified with the checksum after immediately following
  * the deflate data. If the crc_flag is set to ISAL_GZIP or ISAL_ZLIB, the
  * gzip/zlib header is parsed, state->crc is set to the appropriate checksum,
- * and the checksum is verfied. If the crc_flag is set to ISAL_DEFLATE
- * (default), then the data is treated as a raw deflate block. The element
- * state->hist_bits has values from 0 to 15, where values of 1 to 15 are the log
- * base 2 size of the matching window and 0 is the default with maximum history
- * size.
+ * and the checksum is verified. If the crc_flag is set to ISAL_DEFLATE
+ * (default), then the data is treated as a raw deflate block.
+ *
+ * The element state->hist_bits has values from 0 to 15, where values of 1 to 15
+ * are the log base 2 size of the matching window and 0 is the default with
+ * maximum history size.
  *
  * If a dictionary is required, a call to isal_inflate_set_dict will set the
  * dictionary.
@@ -905,6 +913,23 @@ int isal_inflate(struct inflate_state *state);
  *         ISAL_INCORRECT_CHECKSUM.
  */
 int isal_inflate_stateless(struct inflate_state *state);
+
+/******************************************************************************/
+/* Other functions */
+/******************************************************************************/
+/**
+ * @brief Calculate Adler-32 checksum, runs appropriate version.
+ *
+ * This function determines what instruction sets are enabled and selects the
+ * appropriate version at runtime.
+ *
+ * @param init: initial Adler-32 value
+ * @param buf: buffer to calculate checksum on
+ * @param len: buffer length in bytes
+ *
+ * @returns 32-bit Adler-32 checksum
+ */
+uint32_t isal_adler32(uint32_t init, const unsigned char *buf, uint64_t len);
 
 #ifdef __cplusplus
 }

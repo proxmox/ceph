@@ -4,14 +4,11 @@ import { BrowserAnimationsModule } from '@angular/platform-browser/animations';
 
 import { ToastrModule } from 'ngx-toastr';
 
-import {
-  configureTestBed,
-  i18nProviders,
-  PermissionHelper
-} from '../../../../testing/unit-test-helper';
-import { TableActionsComponent } from '../../../shared/datatable/table-actions/table-actions.component';
-import { ViewCacheStatus } from '../../../shared/enum/view-cache-status.enum';
-import { SharedModule } from '../../../shared/shared.module';
+import { TableStatusViewCache } from '~/app/shared/classes/table-status-view-cache';
+import { TableActionsComponent } from '~/app/shared/datatable/table-actions/table-actions.component';
+import { ViewCacheStatus } from '~/app/shared/enum/view-cache-status.enum';
+import { SharedModule } from '~/app/shared/shared.module';
+import { configureTestBed, PermissionHelper } from '~/testing/unit-test-helper';
 import { CephfsClientsComponent } from './cephfs-clients.component';
 
 describe('CephfsClientsComponent', () => {
@@ -25,15 +22,14 @@ describe('CephfsClientsComponent', () => {
       SharedModule,
       HttpClientTestingModule
     ],
-    declarations: [CephfsClientsComponent],
-    providers: i18nProviders
+    declarations: [CephfsClientsComponent]
   });
 
   beforeEach(() => {
     fixture = TestBed.createComponent(CephfsClientsComponent);
     component = fixture.componentInstance;
     component.clients = {
-      status: ViewCacheStatus.ValueOk,
+      status: new TableStatusViewCache(ViewCacheStatus.ValueOk),
       data: [{}, {}, {}, {}]
     };
   });

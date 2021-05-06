@@ -48,4 +48,5 @@ public:
     return SettingsBookmark(*this, saved_settings.size());
   }
   void PopSettings(size_t);
+  void CloseAndReopen();
 };

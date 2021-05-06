@@ -42,6 +42,14 @@ enum ocf_metadata_raw_type {
 	metadata_raw_type_min = metadata_raw_type_ram /*!<  MAX */
 };
 
+struct ocf_metadata_raw;
+
+/**
+ * @brief Container page lock/unlock callback
+ */
+typedef void (*ocf_flush_page_synch_t)(ocf_cache_t cache,
+		struct ocf_metadata_raw *raw, uint32_t page);
+
 /**
  * @brief RAW instance descriptor
  */
@@ -75,6 +83,9 @@ struct ocf_metadata_raw {
 	size_t mem_pool_limit; /*! Current memory pool size (limit) */
 
 	void *priv; /*!< Private data - context */
+
+	ocf_flush_page_synch_t lock_page; /*!< Page lock callback */
+	ocf_flush_page_synch_t unlock_page; /*!< Page unlock callback */
 };
 
 /**
@@ -82,6 +93,8 @@ struct ocf_metadata_raw {
  */
 struct raw_iface {
 	int (*init)(ocf_cache_t cache,
+			ocf_flush_page_synch_t lock_page_pfn,
+			ocf_flush_page_synch_t unlock_page_pfn,
 			struct ocf_metadata_raw *raw);
 
 	int (*deinit)(ocf_cache_t cache,
@@ -102,22 +115,16 @@ struct raw_iface {
 	uint32_t (*checksum)(ocf_cache_t cache,
 			struct ocf_metadata_raw *raw);
 
+	uint32_t (*page)(struct ocf_metadata_raw *raw, uint32_t entry);
 
-	int (*get)(ocf_cache_t cache,
-			struct ocf_metadata_raw *raw, ocf_cache_line_t line,
-			void *data, uint32_t size);
+	int (*get)(ocf_cache_t cache, struct ocf_metadata_raw *raw,
+			uint32_t entry, void *data);
 
-	int (*set)(ocf_cache_t cache,
-			struct ocf_metadata_raw *raw, ocf_cache_line_t line,
-			void *data, uint32_t size);
+	int (*set)(ocf_cache_t cache, struct ocf_metadata_raw *raw,
+			uint32_t entry, void *data);
 
-	const void* (*rd_access)(ocf_cache_t cache,
-			struct ocf_metadata_raw *raw, ocf_cache_line_t line,
-			uint32_t size);
-
-	void* (*wr_access)(ocf_cache_t cache,
-			struct ocf_metadata_raw *raw,
-			ocf_cache_line_t line, uint32_t size);
+	void* (*access)(ocf_cache_t cache, struct ocf_metadata_raw *raw,
+			uint32_t entry);
 
 	void (*load_all)(ocf_cache_t cache, struct ocf_metadata_raw *raw,
 			ocf_metadata_end_t cmpl, void *priv);
@@ -130,18 +137,21 @@ struct raw_iface {
 			uint8_t stop);
 
 	int (*flush_do_asynch)(ocf_cache_t cache, struct ocf_request *req,
-			struct ocf_metadata_raw *raw,
-			ocf_req_end_t complete);
+			struct ocf_metadata_raw *raw, ocf_req_end_t complete);
 };
 
 /**
  * @brief Initialize RAW instance
  *
  * @param cache - Cache instance
+ * @param lock_page_pfn - Optional page lock callback
+ * @param lock_page_pfn - Optional page unlock callback
  * @param raw - RAW descriptor
  * @return 0 - Operation success, otherwise error
  */
 int ocf_metadata_raw_init(ocf_cache_t cache,
+		ocf_flush_page_synch_t lock_page_pfn,
+		ocf_flush_page_synch_t unlock_page_pfn,
 		struct ocf_metadata_raw *raw);
 
 /**
@@ -192,20 +202,31 @@ static inline uint32_t ocf_metadata_raw_checksum(struct ocf_cache* cache,
 }
 
 /**
+ * @brief Calculate entry page index
+ *
+ * @param raw - RAW descriptor
+ * @param entry - Entry number
+ * @return Page index
+ */
+static inline uint32_t ocf_metadata_raw_page(struct ocf_metadata_raw* raw,
+		uint32_t entry)
+{
+	return raw->iface->page(raw, entry);
+}
+
+/**
  * @brief Get specified element of metadata
  *
  * @param cache - Cache instance
  * @param raw - RAW descriptor
- * @param line - Cache line to be get
+ * @param entry - Entry to be get
  * @param data - Data where metadata entry will be copied into
- * @param size - Size of data
  * @return 0 - Operation success, otherwise error
  */
 static inline int ocf_metadata_raw_get(ocf_cache_t cache,
-		struct ocf_metadata_raw *raw, ocf_cache_line_t line, void *data,
-		uint32_t size)
+		struct ocf_metadata_raw *raw, uint32_t entry, void *data)
 {
-	return raw->iface->get(cache, raw, line, data, size);
+	return raw->iface->get(cache, raw, entry, data);
 }
 
 /**
@@ -213,16 +234,14 @@ static inline int ocf_metadata_raw_get(ocf_cache_t cache,
  *
  * @param cache - Cache instance
  * @param raw - RAW descriptor
- * @param line - Cache line to be get
+ * @param entry - Entry to be get
  * @param data - Data where metadata entry will be copied into
- * @param size - Size of data
  * @return 0 - Point to accessed data, in case of error NULL
  */
 static inline void *ocf_metadata_raw_wr_access(ocf_cache_t cache,
-		struct ocf_metadata_raw *raw, ocf_cache_line_t line,
-		uint32_t size)
+		struct ocf_metadata_raw *raw, uint32_t entry)
 {
-	return raw->iface->wr_access(cache, raw, line, size);
+	return raw->iface->access(cache, raw, entry);
 }
 
 /**
@@ -230,16 +249,14 @@ static inline void *ocf_metadata_raw_wr_access(ocf_cache_t cache,
  *
  * @param cache - Cache instance
  * @param raw - RAW descriptor
- * @param line - Cache line to be get
+ * @param entry - Entry to be get
  * @param data - Data where metadata entry will be copied into
- * @param size - Size of data
  * @return 0 - Point to accessed data, in case of error NULL
  */
-static inline const void *ocf_metadata_raw_rd_access(
-		ocf_cache_t cache, struct ocf_metadata_raw *raw,
-		ocf_cache_line_t line, uint32_t size)
+static inline const void *ocf_metadata_raw_rd_access( ocf_cache_t cache,
+		struct ocf_metadata_raw *raw, uint32_t entry)
 {
-	return raw->iface->rd_access(cache, raw, line, size);
+	return raw->iface->access(cache, raw, entry);
 }
 
 /**
@@ -247,16 +264,14 @@ static inline const void *ocf_metadata_raw_rd_access(
  *
  * @param cache - Cache instance
  * @param raw - RAW descriptor
- * @param line - Cache line to be set
+ * @param entry - Entry to be set
  * @param data - Data taht will be copied into metadata entry
- * @param size - Size of data
  * @return 0 - Operation success, otherwise error
  */
 static inline int ocf_metadata_raw_set(ocf_cache_t cache,
-		struct ocf_metadata_raw *raw, ocf_cache_line_t line, void *data,
-		uint32_t size)
+		struct ocf_metadata_raw *raw, uint32_t entry, void *data)
 {
-	return raw->iface->set(cache, raw, line, data, size);
+	return raw->iface->set(cache, raw, entry, data);
 }
 
 /**
@@ -307,25 +322,20 @@ static inline int ocf_metadata_raw_flush_do_asynch(ocf_cache_t cache,
 /*
  * Check if line is valid for specified RAW descriptor
  */
-static inline bool _raw_is_valid(struct ocf_metadata_raw *raw,
-		ocf_cache_line_t line, uint32_t size)
+static inline bool _raw_is_valid(struct ocf_metadata_raw *raw, uint32_t entry)
 {
 	if (!raw)
 		return false;
 
-	if (size != raw->entry_size)
-		return false;
-
-	if (line >= raw->entries)
+	if (entry >= raw->entries)
 		return false;
 
 	return true;
 }
 
-static inline void _raw_bug_on(struct ocf_metadata_raw *raw,
-		ocf_cache_line_t line, uint32_t size)
+static inline void _raw_bug_on(struct ocf_metadata_raw *raw, uint32_t entry)
 {
-	ENV_BUG_ON(!_raw_is_valid(raw, line, size));
+	ENV_BUG_ON(!_raw_is_valid(raw, entry));
 }
 
 #define MAX_STACK_TAB_SIZE 32

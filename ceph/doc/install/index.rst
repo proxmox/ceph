@@ -5,7 +5,7 @@ Installing Ceph
 ===============
 
 There are several different ways to install Ceph.  Choose the
-method that best suites your needs.
+method that best suits your needs.
 
 Recommended methods
 ~~~~~~~~~~~~~~~~~~~
@@ -44,7 +44,7 @@ Ceph clusters using Ansible.
   management features and dashboard integration are not available.
 
 
-:ref:`ceph-deploy <ceph-deploy-index>` is a tool for quickly deploying clusters.
+`ceph-deploy <https://docs.ceph.com/projects/ceph-deploy/en/latest/>`_ is a tool for quickly deploying clusters.
 
   .. IMPORTANT::
 
@@ -63,7 +63,11 @@ Ceph can also be :ref:`installed manually <install-manual>`.
    :hidden:
 
    index_manual
-   ceph-deploy/index
 
+Windows
+~~~~~~~
 
+For Windows installations, please consult this document:
+`Windows installation guide`_.
 
+.. _Windows installation guide: ./windows-install

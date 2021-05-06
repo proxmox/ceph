@@ -1,7 +1,3 @@
-<cd-alert-panel *ngIf="isStale"
-                type="warning"
-                size="slim"
-                i18n>The bucket list data might be stale. If needed, you can manually reload it.</cd-alert-panel>
 <cd-table #table
           [autoReload]="false"
           [data]="buckets"
@@ -12,7 +8,8 @@
           (setExpandedRow)="setExpandedRow($event)"
           (updateSelection)="updateSelection($event)"
           identifier="bid"
-          (fetchData)="getBucketList($event)">
+          (fetchData)="getBucketList($event)"
+          [status]="tableStatus">
   <cd-table-actions class="table-actions"
                     [permission]="permission"
                     [selection]="selection"
@@ -30,7 +27,8 @@
                 [used]="row.bucket_size">
   </cd-usage-bar>
 
-  <ng-template #noSizeQuota>No Limit</ng-template>
+  <ng-template #noSizeQuota
+               i18n>No Limit</ng-template>
 </ng-template>
 
 <ng-template #bucketObjectTpl
@@ -41,5 +39,6 @@
                 [isBinary]="false">
   </cd-usage-bar>
 
-  <ng-template #noObjectQuota>No Limit</ng-template>
+  <ng-template #noObjectQuota
+               i18n>No Limit</ng-template>
 </ng-template>

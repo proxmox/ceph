@@ -23,11 +23,13 @@
 #include <seastar/core/metrics_registration.hh>
 #include <seastar/core/metrics.hh>
 #include <seastar/core/metrics_api.hh>
+#include <seastar/core/reactor.hh>
 #include <seastar/core/scheduling.hh>
 #include <seastar/core/sleep.hh>
 #include <seastar/core/sharded.hh>
 #include <seastar/core/do_with.hh>
 #include <seastar/core/io_queue.hh>
+#include <seastar/core/loop.hh>
 #include <seastar/testing/test_case.hh>
 #include <seastar/testing/thread_test_case.hh>
 #include <seastar/testing/test_runner.hh>

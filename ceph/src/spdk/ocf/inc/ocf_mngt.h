@@ -6,7 +6,6 @@
 #ifndef __OCF_MNGT_H__
 #define __OCF_MNGT_H__
 
-#include "ocf_types.h"
 #include "ocf_cache.h"
 #include "ocf_core.h"
 
@@ -20,6 +19,11 @@
  */
 struct ocf_mngt_core_config {
 	/**
+	 * @brief OCF core name
+	 */
+	char name[OCF_CORE_NAME_SIZE];
+
+	/**
 	 * @brief OCF core volume UUID
 	 */
 	struct ocf_volume_uuid uuid;
@@ -28,22 +32,6 @@ struct ocf_mngt_core_config {
 	 * @brief OCF core volume type
 	 */
 	uint8_t volume_type;
-
-	/**
-	 * @brief OCF core ID number
-	 */
-	ocf_core_id_t core_id;
-
-	/**
-	 * @brief OCF core name. In case of being NULL, core id is stringified
-	 *	to core name
-	 */
-	const char *name;
-
-	/**
-	 * @brief OCF cache ID number
-	 */
-	ocf_cache_id_t cache_id;
 
 	/**
 	 * @brief Add core to pool if cache isn't present or add core to
@@ -61,6 +49,23 @@ struct ocf_mngt_core_config {
 };
 
 /**
+ * @brief Initialize core config to default values
+ *
+ * @note This function doesn't initialize name, uuid and volume_type fields
+ *       which have no default values and are required to be set by user.
+ *
+ * @param[in] cfg Core config stucture
+ */
+static inline void ocf_mngt_core_config_set_default(
+		struct ocf_mngt_core_config *cfg)
+{
+	cfg->try_add = false;
+	cfg->seq_cutoff_threshold = 1024;
+	cfg->user_metadata.data = NULL;
+	cfg->user_metadata.size = 0;
+}
+
+/**
  * @brief Get number of OCF caches
  *
  * @param[in] ctx OCF context
@@ -72,20 +77,21 @@ uint32_t ocf_mngt_cache_get_count(ocf_ctx_t ctx);
 /* Cache instances getters */
 
 /**
- * @brief Get OCF cache
+ * @brief Get OCF cache by name
  *
- * @note This function on success also increasing reference counter in given
- *		cache
+ * @note This function on success also increases reference counter
+ *       in given cache
  *
  * @param[in] ctx OCF context
- * @param[in] id OCF cache ID
+ * @param[in] name OCF cache name
+ * @param[in] name_len Cache name length
  * @param[out] cache OCF cache handle
  *
  * @retval 0 Get cache successfully
- * @retval -OCF_ERR_INV_CACHE_ID Cache ID out of range
- * @retval -OCF_ERR_CACHE_NOT_EXIST Cache with given ID is not exist
+ * @retval -OCF_ERR_CACHE_NOT_EXIST Cache with given name doesn't exist
  */
-int ocf_mngt_cache_get_by_id(ocf_ctx_t ctx, ocf_cache_id_t id, ocf_cache_t *cache);
+int ocf_mngt_cache_get_by_name(ocf_ctx_t ctx, const char* name, size_t name_len,
+		ocf_cache_t *cache);
 
 /**
  * @brief Increment reference counter of cache
@@ -108,16 +114,26 @@ void ocf_mngt_cache_put(ocf_cache_t cache);
 
 /**
  * @brief Lock cache for management oparations (write lock, exclusive)
+
+ * @param[in] cache Handle to cache
+ * @param[in] error Status error code. Can be one of the following:
+ *	0 Cache successfully locked
+ *	-OCF_ERR_CACHE_NOT_EXIST Can not lock cache - cache is already stopping
+ *	-OCF_ERR_NO_MEM Cannot allocate needed memory
+ *	-OCF_ERR_INTR Wait operation interrupted
+ */
+typedef void (*ocf_mngt_cache_lock_end_t)(ocf_cache_t cache,
+		void *priv, int error);
+
+/**
+ * @brief Lock cache for management oparations (write lock, exclusive)
  *
  * @param[in] cache Handle to cache
- *
- * @retval 0 Cache successfully locked
- * @retval -OCF_ERR_CACHE_NOT_EXIST Can not lock cache - cache is already
- *					stopping
- * @retval -OCF_ERR_CACHE_IN_USE Can not lock cache - cache is in use
- * @retval -OCF_ERR_INTR Wait operation interrupted
+ * @param[in] cmpl Completion callback
+ * @param[in] priv Private context of completion callback
  */
-int ocf_mngt_cache_lock(ocf_cache_t cache);
+void ocf_mngt_cache_lock(ocf_cache_t cache,
+		ocf_mngt_cache_lock_end_t cmpl, void *priv);
 
 /**
  * @brief Lock cache for read - assures cache config does not change while
@@ -125,14 +141,11 @@ int ocf_mngt_cache_lock(ocf_cache_t cache);
  *		read lock in parallel.
  *
  * @param[in] cache Handle to cache
- *
- * @retval 0 Cache successfully locked
- * @retval -OCF_ERR_CACHE_NOT_EXIST Can not lock cache - cache is already
- *					stopping
- * @retval -OCF_ERR_CACHE_IN_USE Can not lock cache - cache is in use
- * @retval -OCF_ERR_INTR Wait operation interrupted
+ * @param[in] cmpl Completion callback
+ * @param[in] priv Private context of completion callback
  */
-int ocf_mngt_cache_read_lock(ocf_cache_t cache);
+void ocf_mngt_cache_read_lock(ocf_cache_t cache,
+		ocf_mngt_cache_lock_end_t cmpl, void *priv);
 
 /**
  * @brief Lock cache for management oparations (write lock, exclusive)
@@ -142,7 +155,6 @@ int ocf_mngt_cache_read_lock(ocf_cache_t cache);
  * @retval 0 Cache successfully locked
  * @retval -OCF_ERR_CACHE_NOT_EXIST Can not lock cache - cache is already
  *					stopping
- * @retval -OCF_ERR_CACHE_IN_USE Can not lock cache - cache is in use
  * @retval -OCF_ERR_NO_LOCK Lock not acquired
  */
 int ocf_mngt_cache_trylock(ocf_cache_t cache);
@@ -157,7 +169,6 @@ int ocf_mngt_cache_trylock(ocf_cache_t cache);
  * @retval 0 Cache successfully locked
  * @retval -OCF_ERR_CACHE_NOT_EXIST Can not lock cache - cache is already
  *					stopping
- * @retval -OCF_ERR_CACHE_IN_USE Can not lock cache - cache is in use
  * @retval -OCF_ERR_NO_LOCK Lock not acquired
  */
 int ocf_mngt_cache_read_trylock(ocf_cache_t cache);
@@ -222,16 +233,9 @@ int ocf_mngt_cache_visit_reverse(ocf_ctx_t ctx, ocf_mngt_cache_visitor_t visitor
  */
 struct ocf_mngt_cache_config {
 	/**
-	 * @brief Cache ID. In case of setting this field to invalid cache
-	 *		id first available cache ID will be set
+	 * @brief Cache name
 	 */
-	ocf_cache_id_t id;
-
-	/**
-	 * @brief Cache name. In case of being NULL, cache id is stringified to
-	 *		cache name
-	 */
-	const char *name;
+	char name[OCF_CACHE_NAME_SIZE];
 
 	/**
 	 * @brief Cache mode
@@ -242,6 +246,11 @@ struct ocf_mngt_cache_config {
 	 * @brief Eviction policy type
 	 */
 	ocf_eviction_t eviction_policy;
+
+	/**
+	 * @brief Promotion policy type
+	 */
+	ocf_promotion_t promotion_policy;
 
 	/**
 	 * @brief Cache line size
@@ -283,69 +292,28 @@ struct ocf_mngt_cache_config {
 };
 
 /**
- * @brief Cache attach configuration
+ * @brief Initialize core config to default values
+ *
+ * @note This function doesn't initialize name field which has no default
+ *       value and is required to be set by user.
+ *
+ * @param[in] cfg Cache config stucture
  */
-struct ocf_mngt_cache_device_config {
-	/**
-	 * @brief Cache volume UUID
-	 */
-	struct ocf_volume_uuid uuid;
-
-	/**
-	 * @brief Cache volume type
-	 */
-	uint8_t volume_type;
-
-	/**
-	 * @brief Cache line size
-	 */
-	ocf_cache_line_size_t cache_line_size;
-
-	/**
-	 * @brief Automatically open core volumes when loading cache
-	 *
-	 * If set to false, cache load will not attempt to open core volumes,
-	 * and so cores will be marked "inactive" unless their volumes were
-	 * earlier added to the core pool. In such case user will be expected
-	 * to add cores later using function ocf_mngt_cache_add_core().
-	 *
-	 * @note This option is meaningful only with ocf_mngt_cache_load().
-	 *       When used with ocf_mngt_cache_attach() it's ignored.
-	 */
-	bool open_cores;
-
-	/**
-	 * @brief Ignore warnings and start cache
-	 *
-	 * @note It will force starting cache despite the:
-	 *	- overwrite dirty shutdown of previous cache
-	 *	- ignore cache with dirty shutdown and reinitialize cache
-	 */
-	bool force;
-
-	/**
-	 * @brief Minimum free RAM required to start cache. Set during
-	 *		cache start procedure
-	 */
-	uint64_t min_free_ram;
-
-	/**
-	 * @brief If set, cache features (like discard) are tested
-	 *		before starting cache
-	 */
-	bool perform_test;
-
-	/**
-	 * @brief If set, cache device will be discarded on cache start
-	 */
-	bool discard_on_start;
-
-	/**
-	 * @brief Optional opaque volume parameters, passed down to cache volume
-	 * open callback
-	 */
-	void *volume_params;
-};
+static inline void ocf_mngt_cache_config_set_default(
+		struct ocf_mngt_cache_config *cfg)
+{
+	cfg->cache_mode = ocf_cache_mode_default;
+	cfg->eviction_policy = ocf_eviction_default;
+	cfg->promotion_policy = ocf_promotion_default;
+	cfg->cache_line_size = ocf_cache_line_size_4;
+	cfg->metadata_layout = ocf_metadata_layout_default;
+	cfg->metadata_volatile = false;
+	cfg->backfill.max_queue_size = 65536;
+	cfg->backfill.queue_unblock_size = 60000;
+	cfg->locked = false;
+	cfg->pt_unaligned_io = false;
+	cfg->use_submit_io_fast = false;
+}
 
 /**
  * @brief Start cache instance
@@ -390,6 +358,84 @@ typedef void (*ocf_mngt_cache_stop_end_t)(ocf_cache_t cache,
  */
 void ocf_mngt_cache_stop(ocf_cache_t cache,
 		ocf_mngt_cache_stop_end_t cmpl, void *priv);
+
+/**
+ * @brief Cache attach configuration
+ */
+struct ocf_mngt_cache_device_config {
+	/**
+	 * @brief Cache volume UUID
+	 */
+	struct ocf_volume_uuid uuid;
+
+	/**
+	 * @brief Cache volume type
+	 */
+	uint8_t volume_type;
+
+	/**
+	 * @brief Cache line size
+	 */
+	ocf_cache_line_size_t cache_line_size;
+
+	/**
+	 * @brief Automatically open core volumes when loading cache
+	 *
+	 * If set to false, cache load will not attempt to open core volumes,
+	 * and so cores will be marked "inactive" unless their volumes were
+	 * earlier added to the core pool. In such case user will be expected
+	 * to add cores later using function ocf_mngt_cache_add_core().
+	 *
+	 * @note This option is meaningful only with ocf_mngt_cache_load().
+	 *       When used with ocf_mngt_cache_attach() it's ignored.
+	 */
+	bool open_cores;
+
+	/**
+	 * @brief Ignore warnings and start cache
+	 *
+	 * @note It will force starting cache despite the:
+	 *	- overwrite dirty shutdown of previous cache
+	 *	- ignore cache with dirty shutdown and reinitialize cache
+	 */
+	bool force;
+
+	/**
+	 * @brief If set, cache features (like discard) are tested
+	 *		before starting cache
+	 */
+	bool perform_test;
+
+	/**
+	 * @brief If set, cache device will be discarded on cache start
+	 */
+	bool discard_on_start;
+
+	/**
+	 * @brief Optional opaque volume parameters, passed down to cache volume
+	 * open callback
+	 */
+	void *volume_params;
+};
+
+/**
+ * @brief Initialize core config to default values
+ *
+ * @note This function doesn't initiialize uuid and volume_type fields
+ *       which have no default values and are required to be set by user.
+ *
+ * @param[in] cfg Cache device config stucture
+ */
+static inline void ocf_mngt_cache_device_config_set_default(
+		struct ocf_mngt_cache_device_config *cfg)
+{
+	cfg->cache_line_size = ocf_cache_line_size_none;
+	cfg->open_cores = true;
+	cfg->force = false;
+	cfg->perform_test = true;
+	cfg->discard_on_start = true;
+	cfg->volume_params = NULL;
+}
 
 /**
  * @brief Get amount of free RAM needed to attach cache volume
@@ -545,12 +591,29 @@ typedef void (*ocf_mngt_cache_flush_end_t)(ocf_cache_t cache,
  * @brief Flush data from given cache
  *
  * @param[in] cache Cache handle
- * @param[in] interruption Allow for interruption
  * @param[in] cmpl Completion callback
  * @param[in] priv Completion callback context
  */
-void ocf_mngt_cache_flush(ocf_cache_t cache, bool interruption,
+void ocf_mngt_cache_flush(ocf_cache_t cache,
 		ocf_mngt_cache_flush_end_t cmpl, void *priv);
+
+/**
+ * @brief Check if core is dirty
+ *
+ * @param[in] core Core handle
+ *
+ * @retval true if core is dirty, false otherwise
+ */
+bool ocf_mngt_core_is_dirty(ocf_core_t core);
+
+/**
+ * @brief Check if cache is dirty
+ *
+ * @param[in] cache Cache handle
+ *
+ * @retval true if cache is dirty, false otherwise
+ */
+bool ocf_mngt_cache_is_dirty(ocf_cache_t cache);
 
 /**
  * @brief Completion callback of core flush operation
@@ -566,11 +629,10 @@ typedef void (*ocf_mngt_core_flush_end_t)(ocf_core_t core,
  * @brief Flush data to given core
  *
  * @param[in] core Core handle
- * @param[in] interruption Allow for interruption
  * @param[in] cmpl Completion callback
  * @param[in] priv Completion callback context
  */
-void ocf_mngt_core_flush(ocf_core_t core, bool interruption,
+void ocf_mngt_core_flush(ocf_core_t core,
 		ocf_mngt_core_flush_end_t cmpl, void *priv);
 
 /**
@@ -644,6 +706,17 @@ void ocf_mngt_cache_save(ocf_cache_t cache,
 		ocf_mngt_cache_save_end_t cmpl, void *priv);
 
 /**
+ * @brief Determines whether given cache mode has write-back semantics, i.e. it
+ * allows for writes to be serviced in cache and lazily propagated to core.
+ *
+ * @param[in] mode input cache mode
+ */
+static inline bool ocf_mngt_cache_mode_has_lazy_write(ocf_cache_mode_t mode)
+{
+	return mode == ocf_cache_mode_wb || mode == ocf_cache_mode_wo;
+}
+
+/**
  * @brief Set cache mode in given cache
  *
  * @attention This changes only runtime state. To make changes persistent
@@ -705,13 +778,64 @@ int ocf_mngt_cache_cleaning_set_param(ocf_cache_t cache, ocf_cleaning_t type,
  * @param[in] cache Cache handle
  * @param[in] type Cleaning policy type
  * @param[in] param_id Cleaning policy parameter id
- * @param[in] param_value Variable to store parameter value
+ * @param[out] param_value Variable to store parameter value
  *
  * @retval 0 Parameter has been get successfully
  * @retval Non-zero Error occurred and parameter has not been get
  */
 int ocf_mngt_cache_cleaning_get_param(ocf_cache_t cache,ocf_cleaning_t type,
 		uint32_t param_id, uint32_t *param_value);
+
+/**
+ * @brief Set promotion policy in given cache
+ *
+ * @attention This changes only runtime state. To make changes persistent
+ *            use function ocf_mngt_cache_save().
+ *
+ * @param[in] cache Cache handle
+ * @param[in] type Promotion policy type
+ *
+ * @retval 0 Policy has been set successfully
+ * @retval Non-zero Error occurred and policy has not been set
+ */
+int ocf_mngt_cache_promotion_set_policy(ocf_cache_t cache, ocf_promotion_t type);
+
+/**
+ * @brief Get promotion policy in given cache
+ *
+ * @param[in] cache Cache handle
+ *
+ * @retval Currently set promotion policy type
+ */
+ocf_promotion_t ocf_mngt_cache_promotion_get_policy(ocf_cache_t cache);
+
+/**
+ * @brief Set promotion policy parameter for given cache
+ *
+ * @param[in] cache Cache handle
+ * @param[in] type Promotion policy type
+ * @param[in] param_id Promotion policy parameter id
+ * @param[in] param_value Promotion policy parameter value
+ *
+ * @retval 0 Parameter has been set successfully
+ * @retval Non-zero Error occurred and parameter has not been set
+ */
+int ocf_mngt_cache_promotion_set_param(ocf_cache_t cache, ocf_promotion_t type,
+		uint8_t param_id, uint32_t param_value);
+
+/**
+ * @brief Get promotion policy parameter for given cache
+ *
+ * @param[in] cache Cache handle
+ * @param[in] type Promotion policy type
+ * @param[in] param_id Promotion policy parameter id
+ * @param[out] param_value Variable to store parameter value
+ *
+ * @retval 0 Parameter has been retrieved successfully
+ * @retval Non-zero Error occurred and parameter has not been retrieved
+ */
+int ocf_mngt_cache_promotion_get_param(ocf_cache_t cache, ocf_promotion_t type,
+		uint8_t param_id, uint32_t *param_value);
 
 /**
  * @brief IO class configuration

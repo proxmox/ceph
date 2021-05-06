@@ -15,12 +15,9 @@
 
 #include <linux/limits.h>
 #include <linux/stddef.h>
-#include <stdint.h>
 #include <stdlib.h>
-#include <stdbool.h>
 #include <stdio.h>
 #include <stdarg.h>
-#include <stddef.h>
 #include <string.h>
 #include <pthread.h>
 #include <assert.h>
@@ -41,6 +38,15 @@
 /* linux sector 512-bytes */
 #define ENV_SECTOR_SHIFT	9
 
+#define OCF_ALLOCATOR_NAME_MAX 128
+
+#define PAGE_SIZE 4096
+
+#define DIV_ROUND_UP(n, d) (((n) + (d) - 1) / (d))
+#define min(a,b) MIN(a,b)
+
+#define ENV_PRIu64 "lu"
+
 typedef uint8_t u8;
 typedef uint16_t u16;
 typedef uint32_t u32;
@@ -49,31 +55,55 @@ typedef uint64_t u64;
 typedef uint64_t sector_t;
 
 #define __packed	__attribute__((packed))
-#define __aligned(x)	__attribute__((aligned(x)))
 
 #define likely(cond)       __builtin_expect(!!(cond), 1)
 #define unlikely(cond)     __builtin_expect(!!(cond), 0)
 
-#define min(a,b) MIN(a,b)
+/* MEMORY MANAGEMENT */
+#define ENV_MEM_NORMAL	0
+#define ENV_MEM_NOIO	0
+#define ENV_MEM_ATOMIC	0
 
-#define OCF_ALLOCATOR_NAME_MAX 128
-
-#define PAGE_SIZE 4096
-
-/* *** DEBUGING *** */
-
+/* DEBUGING */
 #define ENV_WARN(cond, fmt...)		printf(fmt)
 #define ENV_WARN_ON(cond)		;
 #define ENV_WARN_ONCE(cond, fmt...)	ENV_WARN(cond, fmt)
 
 #define ENV_BUG()			assert(0)
 #define ENV_BUG_ON(cond)		do { if (cond) ENV_BUG(); } while (0)
+#define ENV_BUILD_BUG_ON(cond)		_Static_assert(!(cond), "static "\
+					"assertion failure")
 
-/* *** MEMORY MANAGEMENT *** */
-#define ENV_MEM_NORMAL	0
-#define ENV_MEM_NOIO	0
-#define ENV_MEM_ATOMIC	0
+/* MISC UTILITIES */
+#define container_of(ptr, type, member) ({          \
+	const typeof(((type *)0)->member)*__mptr = (ptr);    \
+	(type *)((char *)__mptr - offsetof(type, member)); })
 
+#define ARRAY_SIZE(x) (sizeof(x) / sizeof(*(x)))
+
+/* STRING OPERATIONS */
+#define env_memcpy(dest, dmax, src, slen) ({ \
+		memcpy(dest, src, min(dmax, slen)); \
+		0; \
+	})
+#define env_memset(dest, dmax, val) ({ \
+		memset(dest, val, dmax); \
+		0; \
+	})
+#define env_memcmp(s1, s1max, s2, s2max, diff) ({ \
+		*diff = memcmp(s1, s2, min(s1max, s2max)); \
+		0; \
+	})
+#define env_strdup strndup
+#define env_strnlen(s, smax) strnlen(s, smax)
+#define env_strncmp(s1, slen1, s2, slen2) strncmp(s1, s2, min(slen1, slen2))
+#define env_strncpy(dest, dmax, src, slen) ({ \
+		strncpy(dest, src, min(dmax - 1, slen)); \
+		dest[dmax - 1] = '\0'; \
+		0; \
+	})
+
+/* MEMORY MANAGEMENT */
 static inline void *env_malloc(size_t size, int flags)
 {
 	return malloc(size);
@@ -94,6 +124,16 @@ static inline void env_free(const void *ptr)
 	free((void *)ptr);
 }
 
+static inline void *env_vmalloc_flags(size_t size, int flags)
+{
+	return malloc(size);
+}
+
+static inline void *env_vzalloc_flags(size_t size, int flags)
+{
+	return env_zalloc(size, 0);
+}
+
 static inline void *env_vmalloc(size_t size)
 {
 	return malloc(size);
@@ -109,9 +149,7 @@ static inline void env_vfree(const void *ptr)
 	free((void *)ptr);
 }
 
-
-/* *** SECURE MEMORY MANAGEMENT *** */
-
+/* SECURE MEMORY MANAGEMENT */
 /*
  * OCF adapter can opt to take additional steps to securely allocate and free
  * memory used by OCF to store cache metadata. This is to prevent other
@@ -154,11 +192,10 @@ static inline void env_secure_free(const void *ptr, size_t size)
 
 static inline uint64_t env_get_free_memory(void)
 {
-	return sysconf(_SC_PAGESIZE) * sysconf(_SC_AVPHYS_PAGES);
+	return (uint64_t)(-1);
 }
 
-/* *** ALLOCATOR *** */
-
+/* ALLOCATOR */
 typedef struct _env_allocator env_allocator;
 
 env_allocator *env_allocator_create(uint32_t size, const char *fmt_name, ...);
@@ -169,10 +206,7 @@ void *env_allocator_new(env_allocator *allocator);
 
 void env_allocator_del(env_allocator *allocator, void *item);
 
-uint32_t env_allocator_item_count(env_allocator *allocator);
-
-/* *** MUTEX *** */
-
+/* MUTEX */
 typedef struct {
 	pthread_mutex_t m;
 } env_mutex;
@@ -189,7 +223,12 @@ static inline int env_mutex_init(env_mutex *mutex)
 
 static inline void env_mutex_lock(env_mutex *mutex)
 {
-	pthread_mutex_lock(&mutex->m);
+	ENV_BUG_ON(pthread_mutex_lock(&mutex->m));
+}
+
+static inline int env_mutex_trylock(env_mutex *mutex)
+{
+	return pthread_mutex_trylock(&mutex->m);
 }
 
 static inline int env_mutex_lock_interruptible(env_mutex *mutex)
@@ -198,33 +237,30 @@ static inline int env_mutex_lock_interruptible(env_mutex *mutex)
 	return 0;
 }
 
-static inline int env_mutex_trylock(env_mutex *mutex)
-{
-	return pthread_mutex_trylock(&mutex->m) ? -OCF_ERR_NO_LOCK : 0;
-}
-
 static inline void env_mutex_unlock(env_mutex *mutex)
 {
-	pthread_mutex_unlock(&mutex->m);
+	ENV_BUG_ON(pthread_mutex_unlock(&mutex->m));
 }
 
-static inline int env_mutex_is_locked(env_mutex *mutex)
+static inline int env_mutex_destroy(env_mutex *mutex)
 {
-	if (env_mutex_trylock(mutex) == 0) {
-		env_mutex_unlock(mutex);
+	if(pthread_mutex_destroy(&mutex->m))
 		return 1;
-	}
 
 	return 0;
 }
 
-/* *** RECURSIVE MUTEX *** */
-
+/* RECURSIVE MUTEX */
 typedef env_mutex env_rmutex;
 
 static inline int env_rmutex_init(env_rmutex *rmutex)
 {
-	env_mutex_init(rmutex);
+	pthread_mutexattr_t attr;
+
+	pthread_mutexattr_init(&attr);
+	pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE);
+	pthread_mutex_init(&rmutex->m, &attr);
+
 	return 0;
 }
 
@@ -238,22 +274,20 @@ static inline int env_rmutex_lock_interruptible(env_rmutex *rmutex)
 	return env_mutex_lock_interruptible(rmutex);
 }
 
-static inline int env_rmutex_trylock(env_rmutex *rmutex)
-{
-	return env_mutex_trylock(rmutex);
-}
-
 static inline void env_rmutex_unlock(env_rmutex *rmutex)
 {
 	env_mutex_unlock(rmutex);
 }
 
-static inline int env_rmutex_is_locked(env_rmutex *rmutex)
+static inline int env_rmutex_destroy(env_rmutex *rmutex)
 {
-	return env_mutex_is_locked(rmutex);
+	if(pthread_mutex_destroy(&rmutex->m))
+		return 1;
+
+	return 0;
 }
 
-/* *** RW SEMAPHORE *** */
+/* RW SEMAPHORE */
 typedef struct {
 	 pthread_rwlock_t lock;
 } env_rwsem;
@@ -270,7 +304,7 @@ static inline void env_rwsem_up_read(env_rwsem *s)
 
 static inline void env_rwsem_down_read(env_rwsem *s)
 {
-	pthread_rwlock_rdlock(&s->lock);
+	ENV_BUG_ON(pthread_rwlock_rdlock(&s->lock));
 }
 
 static inline int env_rwsem_down_read_trylock(env_rwsem *s)
@@ -280,12 +314,12 @@ static inline int env_rwsem_down_read_trylock(env_rwsem *s)
 
 static inline void env_rwsem_up_write(env_rwsem *s)
 {
-	pthread_rwlock_unlock(&s->lock);
+	ENV_BUG_ON(pthread_rwlock_unlock(&s->lock));
 }
 
 static inline void env_rwsem_down_write(env_rwsem *s)
 {
-	pthread_rwlock_wrlock(&s->lock);
+	ENV_BUG_ON(pthread_rwlock_wrlock(&s->lock));
 }
 
 static inline int env_rwsem_down_write_trylock(env_rwsem *s)
@@ -293,29 +327,12 @@ static inline int env_rwsem_down_write_trylock(env_rwsem *s)
 	return pthread_rwlock_trywrlock(&s->lock) ? -OCF_ERR_NO_LOCK : 0;
 }
 
-static inline int env_rwsem_is_locked(env_rwsem *s)
+static inline int env_rwsem_destroy(env_rwsem *s)
 {
-	if (env_rwsem_down_read_trylock(s) == 0) {
-		env_rwsem_up_read(s);
-		return 0;
-	}
-
-	return 1;
+	return pthread_rwlock_destroy(&s->lock);
 }
 
-static inline int env_rwsem_down_write_interruptible(env_rwsem *s)
-{
-	env_rwsem_down_write(s);
-	return 0;
-}
-
-static inline int env_rwsem_down_read_interruptible(env_rwsem *s)
-{
-	env_rwsem_down_read(s);
-	return 0;
-}
-
-/* *** COMPLETION *** */
+/* COMPLETION */
 struct completion {
 	sem_t sem;
 };
@@ -337,14 +354,12 @@ static inline void env_completion_complete(env_completion *completion)
 	sem_post(&completion->sem);
 }
 
-static inline void env_completion_complete_and_exit(
-		env_completion *completion, int ret)
+static inline void env_completion_destroy(env_completion *completion)
 {
-	env_completion_complete(completion); /* TODO */
+	sem_destroy(&completion->sem);
 }
 
-/* *** ATOMIC VARIABLES *** */
-
+/* ATOMIC VARIABLES */
 typedef struct {
 	volatile int counter;
 } env_atomic;
@@ -373,11 +388,6 @@ static inline void env_atomic_sub(int i, env_atomic *a)
 	__sync_sub_and_fetch(&a->counter, i);
 }
 
-static inline bool env_atomic_sub_and_test(int i, env_atomic *a)
-{
-	return __sync_sub_and_fetch(&a->counter, i) == 0;
-}
-
 static inline void env_atomic_inc(env_atomic *a)
 {
 	env_atomic_add(1, a);
@@ -391,11 +401,6 @@ static inline void env_atomic_dec(env_atomic *a)
 static inline bool env_atomic_dec_and_test(env_atomic *a)
 {
 	return __sync_sub_and_fetch(&a->counter, 1) == 0;
-}
-
-static inline bool env_atomic_inc_and_test(env_atomic *a)
-{
-	return __sync_add_and_fetch(&a->counter, 1) == 0;
 }
 
 static inline int env_atomic_add_return(int i, env_atomic *a)
@@ -473,40 +478,34 @@ static inline long env_atomic64_inc_return(env_atomic64 *a)
 	return __sync_add_and_fetch(&a->counter, 1);
 }
 
-static inline long env_atomic64_cmpxchg(env_atomic64 *a, long old, long new)
+static inline long env_atomic64_cmpxchg(env_atomic64 *a, long old_v, long new_v)
 {
-	return __sync_val_compare_and_swap(&a->counter, old, new);
+	return __sync_val_compare_and_swap(&a->counter, old_v, new_v);
 }
 
-/* *** SPIN LOCKS *** */
-
+/* SPIN LOCKS */
 typedef struct {
 	pthread_spinlock_t lock;
 } env_spinlock;
 
-static inline void env_spinlock_init(env_spinlock *l)
+static inline int env_spinlock_init(env_spinlock *l)
 {
-	pthread_spin_init(&l->lock, 0);
+	return pthread_spin_init(&l->lock, 0);
+}
+
+static inline int env_spinlock_trylock(env_spinlock *l)
+{
+	return pthread_spin_trylock(&l->lock) ? -OCF_ERR_NO_LOCK : 0;
 }
 
 static inline void env_spinlock_lock(env_spinlock *l)
 {
-	pthread_spin_lock(&l->lock);
+	ENV_BUG_ON(pthread_spin_lock(&l->lock));
 }
 
 static inline void env_spinlock_unlock(env_spinlock *l)
 {
-	pthread_spin_unlock(&l->lock);
-}
-
-static inline void env_spinlock_lock_irq(env_spinlock *l)
-{
-	env_spinlock_lock(l);
-}
-
-static inline void env_spinlock_unlock_irq(env_spinlock *l)
-{
-	env_spinlock_unlock(l);
+	ENV_BUG_ON(pthread_spin_unlock(&l->lock));
 }
 
 #define env_spinlock_lock_irqsave(l, flags) \
@@ -517,63 +516,47 @@ static inline void env_spinlock_unlock_irq(env_spinlock *l)
 		(void)flags; \
 		env_spinlock_unlock(l)
 
-/* *** RW LOCKS *** */
+static inline void env_spinlock_destroy(env_spinlock *l)
+{
+	ENV_BUG_ON(pthread_spin_destroy(&l->lock));
+}
 
+/* RW LOCKS */
 typedef struct {
 	pthread_rwlock_t lock;
 } env_rwlock;
 
 static inline void env_rwlock_init(env_rwlock *l)
 {
-	pthread_rwlock_init(&l->lock, NULL);
+	ENV_BUG_ON(pthread_rwlock_init(&l->lock, NULL));
 }
 
 static inline void env_rwlock_read_lock(env_rwlock *l)
 {
-	pthread_rwlock_rdlock(&l->lock);
+	ENV_BUG_ON(pthread_rwlock_rdlock(&l->lock));
 }
 
 static inline void env_rwlock_read_unlock(env_rwlock *l)
 {
-	pthread_rwlock_unlock(&l->lock);
+	ENV_BUG_ON(pthread_rwlock_unlock(&l->lock));
 }
 
 static inline void env_rwlock_write_lock(env_rwlock *l)
 {
-	pthread_rwlock_wrlock(&l->lock);
+	ENV_BUG_ON(pthread_rwlock_wrlock(&l->lock));
 }
 
 static inline void env_rwlock_write_unlock(env_rwlock *l)
 {
-	pthread_rwlock_unlock(&l->lock);
+	ENV_BUG_ON(pthread_rwlock_unlock(&l->lock));
 }
 
-/* *** WAITQUEUE *** */
-
-typedef struct {
-	sem_t sem;
-} env_waitqueue;
-
-static inline void env_waitqueue_init(env_waitqueue *w)
+static inline void env_rwlock_destroy(env_rwlock *l)
 {
-	sem_init(&w->sem, 0, 0);
+	ENV_BUG_ON(pthread_rwlock_destroy(&l->lock));
 }
 
-static inline void env_waitqueue_wake_up(env_waitqueue *w)
-{
-	sem_post(&w->sem);
-}
-
-#define env_waitqueue_wait(w, condition)	\
-({						\
-	int __ret = 0;				\
-	if (!(condition))			\
-		sem_wait(&w.sem);		\
-	__ret = __ret;				\
-})
-
-/* *** BIT OPERATIONS *** */
-
+/* BIT OPERATIONS */
 static inline void env_bit_set(int nr, volatile void *addr)
 {
 	char *byte = (char *)addr + (nr >> 3);
@@ -599,12 +582,7 @@ static inline bool env_bit_test(int nr, const volatile unsigned long *addr)
 	return !!(*byte & mask);
 }
 
-/* *** SCHEDULING *** */
-static inline void env_schedule(void)
-{
-	sched_yield();
-}
-
+/* SCHEDULING */
 static inline int env_in_interrupt(void)
 {
 	return 0;
@@ -637,8 +615,7 @@ static inline uint64_t env_secs_to_ticks(uint64_t j)
 	return j * 1000000;
 }
 
-/* *** SORTING *** */
-
+/* SORTING */
 static inline void env_sort(void *base, size_t num, size_t size,
 		int (*cmp_fn)(const void *, const void *),
 		void (*swap_fn)(void *, void *, int size))
@@ -646,35 +623,7 @@ static inline void env_sort(void *base, size_t num, size_t size,
 	qsort(base, num, size, cmp_fn);
 }
 
-/* *** STRING OPERATIONS *** */
-#define env_memset(dest, dmax, val) ({ \
-		memset(dest, val, dmax); \
-		0; \
-	})
-#define env_memcpy(dest, dmax, src, slen) ({ \
-		memcpy(dest, src, min(dmax, slen)); \
-		0; \
-	})
-#define env_memcmp(s1, s1max, s2, s2max, diff) ({ \
-		*diff = memcmp(s1, s2, min(s1max, s2max)); \
-		0; \
-	})
-#define env_strdup strndup
-#define env_strnlen(s, smax) strnlen(s, smax)
-#define env_strncmp strncmp
-#define env_strncpy(dest, dmax, src, slen) ({ \
-		strncpy(dest, src, min(dmax, slen)); \
-		0; \
-	})
-
-/* *** MISC UTILITIES *** */
-#define container_of(ptr, type, member) ({          \
-	const typeof(((type *)0)->member)*__mptr = (ptr);    \
-	(type *)((char *)__mptr - offsetof(type, member)); })
-
-#define ARRAY_SIZE(x) (sizeof(x) / sizeof(*(x)))
-
-/* *** TIME *** */
+/* TIME */
 static inline void env_msleep(uint64_t n)
 {
 	usleep(n * 1000);
@@ -684,16 +633,10 @@ struct env_timeval {
 	uint64_t sec, usec;
 };
 
-static inline void env_gettimeofday(struct env_timeval *tv)
-{
-	struct timeval t;
-	gettimeofday(&t, NULL);
-	tv->sec = t.tv_sec;
-	tv->usec = t.tv_usec;
-}
-
 uint32_t env_crc32(uint32_t crc, uint8_t const *data, size_t len);
 
-#define ENV_PRIu64 "lu"
+unsigned env_get_execution_context(void);
+void env_put_execution_context(unsigned ctx);
+unsigned env_get_execution_context_count(void);
 
 #endif /* __OCF_ENV_H__ */

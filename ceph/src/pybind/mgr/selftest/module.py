@@ -4,7 +4,6 @@ import threading
 import random
 import json
 import errno
-import six
 
 
 class Module(MgrModule):
@@ -153,10 +152,10 @@ class Module(MgrModule):
             return self._insights_set_now_offset(inbuf, command)
         elif command['prefix'] == 'mgr self-test cluster-log':
             priority_map = {
-                'info': self.CLUSTER_LOG_PRIO_INFO,
-                'security': self.CLUSTER_LOG_PRIO_SEC,
-                'warning': self.CLUSTER_LOG_PRIO_WARN,
-                'error': self.CLUSTER_LOG_PRIO_ERROR
+                'info': self.ClusterLogPrio.INFO,
+                'security': self.ClusterLogPrio.SEC,
+                'warning': self.ClusterLogPrio.WARN,
+                'error': self.ClusterLogPrio.ERROR
             }
             self.cluster_log(command['channel'],
                              priority_map[command['priority']],
@@ -173,7 +172,7 @@ class Module(MgrModule):
             return -1, "", "Failed to decode JSON input: {}".format(e)
 
         try:
-            for check, info in six.iteritems(checks):
+            for check, info in checks.items():
                 self._health[check] = {
                     "severity": str(info["severity"]),
                     "summary": str(info["summary"]),
@@ -431,12 +430,10 @@ class Module(MgrModule):
     def remote_from_orchestrator_cli_self_test(self, what):
         import orchestrator
         if what == 'OrchestratorError':
-            c = orchestrator.TrivialReadCompletion(result=None)
-            c.fail(orchestrator.OrchestratorError('hello, world'))
+            c = orchestrator.OrchResult(result=None, exception=orchestrator.OrchestratorError('hello, world'))
             return c
         elif what == "ZeroDivisionError":
-            c = orchestrator.TrivialReadCompletion(result=None)
-            c.fail(ZeroDivisionError('hello, world'))
+            c = orchestrator.OrchResult(result=None, exception=ZeroDivisionError('hello, world'))
             return c
         assert False, repr(what)
 

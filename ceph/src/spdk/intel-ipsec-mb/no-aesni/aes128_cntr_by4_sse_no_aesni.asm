@@ -25,6 +25,7 @@
 ;; OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ;;
 
-%include "aesni_emu.inc"
+%include "include/aesni_emu.inc"
 %define AES_CNTR_128 aes_cntr_128_sse_no_aesni
-%include "aes128_cntr_by4_sse.asm"
+%define AES_CNTR_BIT_128 aes_cntr_bit_128_sse_no_aesni
+%include "sse/aes128_cntr_by4_sse.asm"

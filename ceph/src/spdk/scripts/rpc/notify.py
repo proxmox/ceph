@@ -1,10 +1,15 @@
-def get_notification_types(client):
-    return client.call("get_notification_types")
+from .helpers import deprecated_alias
 
 
-def get_notifications(client,
-                      id=None,
-                      max=None):
+@deprecated_alias('get_notification_types')
+def notify_get_types(client):
+    return client.call("notify_get_types")
+
+
+@deprecated_alias('get_notifications')
+def notify_get_notifications(client,
+                             id=None,
+                             max=None):
     """
 
     Args:
@@ -22,4 +27,4 @@ def get_notifications(client,
     if max:
         params['max'] = max
 
-    return client.call("get_notifications", params)
+    return client.call("notify_get_notifications", params)

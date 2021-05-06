@@ -11,13 +11,14 @@ for the next SPDK release.
 
 All dependencies should be handled by scripts/pkgdep.sh script.
 Package dependencies at the moment include:
+
  - configshell
 
 ### Run SPDK application instance
 
 ~~~{.sh}
 ./scripts/setup.sh
-./app/vhost/vhost -c vhost.conf
+./build/bin/vhost -c vhost.conf
 ~~~
 
 ### Run SPDK CLI

@@ -39,8 +39,9 @@
 #define ROCKSDB_PRINTF_FORMAT_ATTR(format_param, dots_param)
 #endif
 
-namespace rocksdb {
+namespace ROCKSDB_NAMESPACE {
 
+class DynamicLibrary;
 class FileLock;
 class Logger;
 class RandomAccessFile;
@@ -91,6 +92,23 @@ struct EnvOptions {
   // Default: 0
   uint64_t bytes_per_sync = 0;
 
+  // When true, guarantees the file has at most `bytes_per_sync` bytes submitted
+  // for writeback at any given time.
+  //
+  //  - If `sync_file_range` is supported it achieves this by waiting for any
+  //    prior `sync_file_range`s to finish before proceeding. In this way,
+  //    processing (compression, etc.) can proceed uninhibited in the gap
+  //    between `sync_file_range`s, and we block only when I/O falls behind.
+  //  - Otherwise the `WritableFile::Sync` method is used. Note this mechanism
+  //    always blocks, thus preventing the interleaving of I/O and processing.
+  //
+  // Note: Enabling this option does not provide any additional persistence
+  // guarantees, as it may use `sync_file_range`, which does not write out
+  // metadata.
+  //
+  // Default: false
+  bool strict_bytes_per_sync = false;
+
   // If true, we will preallocate the file with FALLOC_FL_KEEP_SIZE flag, which
   // means that file size won't change as part of preallocation.
   // If false, preallocation will also change the file size. This option will
@@ -100,10 +118,10 @@ struct EnvOptions {
   bool fallocate_with_keep_size = true;
 
   // See DBOptions doc
-  size_t compaction_readahead_size;
+  size_t compaction_readahead_size = 0;
 
   // See DBOptions doc
-  size_t random_access_max_buffer_size;
+  size_t random_access_max_buffer_size = 0;
 
   // See DBOptions doc
   size_t writable_file_max_buffer_size = 1024 * 1024;
@@ -123,8 +141,20 @@ class Env {
   };
 
   Env() : thread_status_updater_(nullptr) {}
+  // No copying allowed
+  Env(const Env&) = delete;
+  void operator=(const Env&) = delete;
 
   virtual ~Env();
+
+  static const char* Type() { return "Environment"; }
+
+  // Loads the environment specified by the input value into the result
+  static Status LoadEnv(const std::string& value, Env** result);
+
+  // Loads the environment specified by the input value into the result
+  static Status LoadEnv(const std::string& value, Env** result,
+                        std::shared_ptr<Env>* guard);
 
   // Return a default environment suitable for the current operating
   // system.  Sophisticated users may wish to provide their own Env
@@ -321,6 +351,18 @@ class Env {
   // REQUIRES: lock has not already been unlocked.
   virtual Status UnlockFile(FileLock* lock) = 0;
 
+  // Opens `lib_name` as a dynamic library.
+  // If the 'search_path' is specified, breaks the path into its components
+  // based on the appropriate platform separator (";" or ";") and looks for the
+  // library in those directories.  If 'search path is not specified, uses the
+  // default library path search mechanism (such as LD_LIBRARY_PATH). On
+  // success, stores a dynamic library in `*result`.
+  virtual Status LoadLibrary(const std::string& /*lib_name*/,
+                             const std::string& /*search_path */,
+                             std::shared_ptr<DynamicLibrary>* /*result*/) {
+    return Status::NotSupported("LoadLibrary is not implemented in this Env");
+  }
+
   // Priority for scheduling job in thread pool
   enum Priority { BOTTOM, LOW, HIGH, USER, TOTAL };
 
@@ -365,9 +407,11 @@ class Env {
   // same directory.
   virtual Status GetTestDirectory(std::string* path) = 0;
 
-  // Create and return a log file for storing informational messages.
+  // Create and returns a default logger (an instance of EnvLogger) for storing
+  // informational messages. Derived classes can overide to provide custom
+  // logger.
   virtual Status NewLogger(const std::string& fname,
-                           std::shared_ptr<Logger>* result) = 0;
+                           std::shared_ptr<Logger>* result);
 
   // Returns the number of micro-seconds since some fixed point in time.
   // It is often used as system time such as in GenericRateLimiter
@@ -484,17 +528,14 @@ class Env {
     return Status::NotSupported();
   }
 
+  virtual void SanitizeEnvOptions(EnvOptions* /*env_opts*/) const {}
+
   // If you're adding methods here, remember to add them to EnvWrapper too.
 
  protected:
   // The pointer to an internal structure that will update the
   // status of each thread.
   ThreadStatusUpdater* thread_status_updater_;
-
- private:
-  // No copying allowed
-  Env(const Env&);
-  void operator=(const Env&);
 };
 
 // The factory function to construct a ThreadStatusUpdater.  Any Env
@@ -553,6 +594,26 @@ class SequentialFile {
   // SequentialFileWrapper too.
 };
 
+// A read IO request structure for use in MultiRead
+struct ReadRequest {
+  // File offset in bytes
+  uint64_t offset;
+
+  // Length to read in bytes
+  size_t len;
+
+  // A buffer that MultiRead()  can optionally place data in. It can
+  // ignore this and allocate its own buffer
+  char* scratch;
+
+  // Output parameter set by MultiRead() to point to the data buffer, and
+  // the number of valid bytes
+  Slice result;
+
+  // Status of read
+  Status status;
+};
+
 // A file abstraction for randomly reading the contents of a file.
 class RandomAccessFile {
  public:
@@ -577,6 +638,22 @@ class RandomAccessFile {
     return Status::OK();
   }
 
+  // Read a bunch of blocks as described by reqs. The blocks can
+  // optionally be read in parallel. This is a synchronous call, i.e it
+  // should return after all reads have completed. The reads will be
+  // non-overlapping. If the function return Status is not ok, status of
+  // individual requests will be ignored and return status will be assumed
+  // for all read requests. The function return status is only meant for any
+  // any errors that occur before even processing specific read requests
+  virtual Status MultiRead(ReadRequest* reqs, size_t num_reqs) {
+    assert(reqs != nullptr);
+    for (size_t i = 0; i < num_reqs; ++i) {
+      ReadRequest& req = reqs[i];
+      req.status = Read(req.offset, req.len, &req.result, req.scratch);
+    }
+    return Status::OK();
+  }
+
   // Tries to get an unique ID for this file that will be the same each time
   // the file is opened (and will stay the same while the file is open).
   // Furthermore, it tries to make this ID at most "max_size" bytes. If such an
@@ -595,7 +672,7 @@ class RandomAccessFile {
   virtual size_t GetUniqueId(char* /*id*/, size_t /*max_size*/) const {
     return 0;  // Default implementation to prevent issues with backwards
                // compatibility.
-  };
+  }
 
   enum AccessPattern { NORMAL, RANDOM, SEQUENTIAL, WILLNEED, DONTNEED };
 
@@ -629,7 +706,19 @@ class WritableFile {
       : last_preallocated_block_(0),
         preallocation_block_size_(0),
         io_priority_(Env::IO_TOTAL),
-        write_hint_(Env::WLTH_NOT_SET) {}
+        write_hint_(Env::WLTH_NOT_SET),
+        strict_bytes_per_sync_(false) {}
+
+  explicit WritableFile(const EnvOptions& options)
+      : last_preallocated_block_(0),
+        preallocation_block_size_(0),
+        io_priority_(Env::IO_TOTAL),
+        write_hint_(Env::WLTH_NOT_SET),
+        strict_bytes_per_sync_(options.strict_bytes_per_sync) {}
+  // No copying allowed
+  WritableFile(const WritableFile&) = delete;
+  void operator=(const WritableFile&) = delete;
+
   virtual ~WritableFile();
 
   // Append data to the end of the file
@@ -744,6 +833,9 @@ class WritableFile {
   // without waiting for completion.
   // Default implementation does nothing.
   virtual Status RangeSync(uint64_t /*offset*/, uint64_t /*nbytes*/) {
+    if (strict_bytes_per_sync_) {
+      return Sync();
+    }
     return Status::OK();
   }
 
@@ -785,19 +877,21 @@ class WritableFile {
  private:
   size_t last_preallocated_block_;
   size_t preallocation_block_size_;
-  // No copying allowed
-  WritableFile(const WritableFile&);
-  void operator=(const WritableFile&);
 
  protected:
   Env::IOPriority io_priority_;
   Env::WriteLifeTimeHint write_hint_;
+  const bool strict_bytes_per_sync_;
 };
 
 // A file abstraction for random reading and writing.
 class RandomRWFile {
  public:
   RandomRWFile() {}
+  // No copying allowed
+  RandomRWFile(const RandomRWFile&) = delete;
+  RandomRWFile& operator=(const RandomRWFile&) = delete;
+
   virtual ~RandomRWFile() {}
 
   // Indicates if the class makes use of direct I/O
@@ -828,10 +922,6 @@ class RandomRWFile {
 
   // If you're adding methods here, remember to add them to
   // RandomRWFileWrapper too.
-
-  // No copying allowed
-  RandomRWFile(const RandomRWFile&) = delete;
-  RandomRWFile& operator=(const RandomRWFile&) = delete;
 };
 
 // MemoryMappedFileBuffer object represents a memory-mapped file's raw buffer.
@@ -889,6 +979,10 @@ class Logger {
 
   explicit Logger(const InfoLogLevel log_level = InfoLogLevel::INFO_LEVEL)
       : closed_(false), log_level_(log_level) {}
+  // No copying allowed
+  Logger(const Logger&) = delete;
+  void operator=(const Logger&) = delete;
+
   virtual ~Logger();
 
   // Close the log file. Must be called before destructor. If the return
@@ -930,9 +1024,6 @@ class Logger {
   bool closed_;
 
  private:
-  // No copying allowed
-  Logger(const Logger&);
-  void operator=(const Logger&);
   InfoLogLevel log_level_;
 };
 
@@ -944,8 +1035,29 @@ class FileLock {
 
  private:
   // No copying allowed
-  FileLock(const FileLock&);
-  void operator=(const FileLock&);
+  FileLock(const FileLock&) = delete;
+  void operator=(const FileLock&) = delete;
+};
+
+class DynamicLibrary {
+ public:
+  virtual ~DynamicLibrary() {}
+
+  // Returns the name of the dynamic library.
+  virtual const char* Name() const = 0;
+
+  // Loads the symbol for sym_name from the library and updates the input
+  // function. Returns the loaded symbol.
+  template <typename T>
+  Status LoadFunction(const std::string& sym_name, std::function<T>* function) {
+    assert(nullptr != function);
+    void* ptr = nullptr;
+    Status s = LoadSymbol(sym_name, &ptr);
+    *function = reinterpret_cast<T*>(ptr);
+    return s;
+  }
+  // Loads and returns the symbol for sym_name from the library.
+  virtual Status LoadSymbol(const std::string& sym_name, void** func) = 0;
 };
 
 extern void LogFlush(const std::shared_ptr<Logger>& info_log);
@@ -1010,13 +1122,15 @@ extern Status ReadFileToString(Env* env, const std::string& fname,
 // Useful when wrapping the default implementations.
 // Typical usage is to inherit your wrapper from *Wrapper, e.g.:
 //
-// class MySequentialFileWrapper : public rocksdb::SequentialFileWrapper {
+// class MySequentialFileWrapper : public
+// ROCKSDB_NAMESPACE::SequentialFileWrapper {
 //  public:
-//   MySequentialFileWrapper(rocksdb::SequentialFile* target):
-//     rocksdb::SequentialFileWrapper(target) {}
+//   MySequentialFileWrapper(ROCKSDB_NAMESPACE::SequentialFile* target):
+//     ROCKSDB_NAMESPACE::SequentialFileWrapper(target) {}
 //   Status Read(size_t n, Slice* result, char* scratch) override {
 //     cout << "Doing a read of size " << n << "!" << endl;
-//     return rocksdb::SequentialFileWrapper::Read(n, result, scratch);
+//     return ROCKSDB_NAMESPACE::SequentialFileWrapper::Read(n, result,
+//     scratch);
 //   }
 //   // All other methods are forwarded to target_ automatically.
 // };
@@ -1138,6 +1252,12 @@ class EnvWrapper : public Env {
 
   Status UnlockFile(FileLock* l) override { return target_->UnlockFile(l); }
 
+  Status LoadLibrary(const std::string& lib_name,
+                     const std::string& search_path,
+                     std::shared_ptr<DynamicLibrary>* result) override {
+    return target_->LoadLibrary(lib_name, search_path, result);
+  }
+
   void Schedule(void (*f)(void* arg), void* a, Priority pri,
                 void* tag = nullptr, void (*u)(void* arg) = nullptr) override {
     return target_->Schedule(f, a, pri, tag, u);
@@ -1247,6 +1367,9 @@ class EnvWrapper : public Env {
   Status GetFreeSpace(const std::string& path, uint64_t* diskfree) override {
     return target_->GetFreeSpace(path, diskfree);
   }
+  void SanitizeEnvOptions(EnvOptions* env_opts) const override {
+    target_->SanitizeEnvOptions(env_opts);
+  }
 
  private:
   Env* target_;
@@ -1285,12 +1408,15 @@ class RandomAccessFileWrapper : public RandomAccessFile {
               char* scratch) const override {
     return target_->Read(offset, n, result, scratch);
   }
+  Status MultiRead(ReadRequest* reqs, size_t num_reqs) override {
+    return target_->MultiRead(reqs, num_reqs);
+  }
   Status Prefetch(uint64_t offset, size_t n) override {
     return target_->Prefetch(offset, n);
   }
   size_t GetUniqueId(char* id, size_t max_size) const override {
     return target_->GetUniqueId(id, max_size);
-  };
+  }
   void Hint(AccessPattern pattern) override { target_->Hint(pattern); }
   bool use_direct_io() const override { return target_->use_direct_io(); }
   size_t GetRequiredBufferAlignment() const override {
@@ -1454,4 +1580,10 @@ Status NewHdfsEnv(Env** hdfs_env, const std::string& fsname);
 // This is a factory method for TimedEnv defined in utilities/env_timed.cc.
 Env* NewTimedEnv(Env* base_env);
 
-}  // namespace rocksdb
+// Returns an instance of logger that can be used for storing informational
+// messages.
+// This is a factory method for EnvLogger declared in logging/env_logging.h
+Status NewEnvLogger(const std::string& fname, Env* env,
+                    std::shared_ptr<Logger>* result);
+
+}  // namespace ROCKSDB_NAMESPACE

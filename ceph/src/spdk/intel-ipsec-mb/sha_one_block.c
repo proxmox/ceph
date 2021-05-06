@@ -31,6 +31,7 @@
 
 #include "intel-ipsec-mb.h"
 #include "constants.h"
+#include "include/clear_regs_mem.h"
 
 extern void sha1_block_sse(const void *, void *);
 extern void sha1_block_avx(const void *, void *);
@@ -73,6 +74,17 @@ __forceinline
 void store8_be(void *outp, const uint64_t val)
 {
         *((uint64_t *)outp) = bswap8(val);
+}
+
+__forceinline
+void var_memcpy(void *dst, const void *src, const uint64_t len)
+{
+        uint64_t i;
+        const uint8_t *src8 = (const uint8_t *)src;
+        uint8_t *dst8 = (uint8_t *)dst;
+
+        for (i = 0; i < len; i++)
+                dst8[i] = src8[i];
 }
 
 __forceinline
@@ -239,6 +251,11 @@ sha_generic(const void *data, const uint64_t length, void *digest,
             const int is_avx, const int sha_type, const uint64_t blk_size,
             const uint64_t pad_size)
 {
+#ifdef SAFE_PARAM
+        if (data == NULL || digest == NULL)
+                return;
+#endif
+
         uint8_t cb[SHA_512_BLOCK_SIZE]; /* biggest possible */
         union {
                 uint32_t digest1[NUM_SHA_256_DIGEST_WORDS];
@@ -248,9 +265,6 @@ sha_generic(const void *data, const uint64_t length, void *digest,
         const uint8_t *inp = (const uint8_t *) data;
         uint64_t idx, r;
 
-        if (data == NULL || digest == NULL)
-                return;
-
         sha_generic_init(ld, sha_type);
 
         for (idx = 0; (idx + blk_size) <= length; idx += blk_size)
@@ -259,7 +273,7 @@ sha_generic(const void *data, const uint64_t length, void *digest,
         r = length % blk_size;
 
         memset(cb, 0, sizeof(cb));
-        memcpy(cb, &inp[idx], r);
+        var_memcpy(cb, &inp[idx], r);
         cb[r] = 0x80;
 
         if (r >= (blk_size - pad_size)) {
@@ -272,17 +286,34 @@ sha_generic(const void *data, const uint64_t length, void *digest,
         sha_generic_one_block(cb, ld, is_avx, sha_type);
 
         sha_generic_write_digest(digest, ld, sha_type);
+#ifdef SAFE_DATA
+        clear_mem(cb, sizeof(cb));
+        clear_mem(&local_digest, sizeof(local_digest));
+        clear_scratch_gps();
+        if (is_avx)
+                clear_scratch_xmms_avx();
+        else
+                clear_scratch_xmms_sse();
+#endif
 }
 
 __forceinline
 void sha_generic_1block(const void *data, void *digest,
                         const int is_avx, const int sha_type)
 {
+#ifdef SAFE_PARAM
         if (data == NULL || digest == NULL)
                 return;
-
+#endif
         sha_generic_init(digest, sha_type);
         sha_generic_one_block(data, digest, is_avx, sha_type);
+#ifdef SAFE_DATA
+        clear_scratch_gps();
+        if (is_avx)
+                clear_scratch_xmms_avx();
+        else
+                clear_scratch_xmms_sse();
+#endif
 }
 
 

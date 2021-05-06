@@ -29,9 +29,9 @@ class RGWSI_RADOS;
 class RGWSI_ConfigKey_RADOS : public RGWSI_ConfigKey
 {
   bool maybe_insecure_mon_conn{false};
-  std::atomic_flag warned_insecure{ATOMIC_FLAG_INIT};
+  std::atomic_flag warned_insecure = ATOMIC_FLAG_INIT;
 
-  int do_start() override;
+  int do_start(optional_yield) override;
 
   void warn_if_insecure();
 

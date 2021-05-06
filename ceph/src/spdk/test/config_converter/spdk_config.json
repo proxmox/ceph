@@ -1,7 +1,7 @@
 {
   "subsystems": [
     {
-      "subsystem": "copy",
+      "subsystem": "accel",
       "config": null
     },
     {
@@ -20,7 +20,7 @@
             "bdev_io_pool_size": 65536,
             "bdev_io_cache_size": 256
           },
-          "method": "set_bdev_options"
+          "method": "bdev_set_options"
         },
         {
           "params": {
@@ -28,7 +28,7 @@
             "split_size_mb": 0,
             "split_count": 8
           },
-          "method": "construct_split_vbdev"
+          "method": "bdev_split_create"
         },
         {
           "params": {
@@ -38,7 +38,7 @@
             "nvme_ioq_poll_period_us": 0,
             "action_on_timeout": "none"
           },
-          "method": "set_bdev_nvme_options"
+          "method": "bdev_nvme_set_options"
         },
         {
           "params": {
@@ -46,14 +46,14 @@
             "name": "Nvme0",
             "traddr": "0000:00:04.0"
           },
-          "method": "construct_nvme_bdev"
+          "method": "bdev_nvme_attach_controller"
         },
         {
           "params": {
             "enable": true,
             "period_us": 10000000
           },
-          "method": "set_bdev_nvme_hotplug"
+          "method": "bdev_nvme_set_hotplug"
         },
         {
           "params": {
@@ -61,7 +61,7 @@
             "num_blocks": 32768,
             "name": "Malloc0"
           },
-          "method": "construct_malloc_bdev"
+          "method": "bdev_malloc_create"
         },
         {
           "params": {
@@ -69,7 +69,7 @@
             "num_blocks": 32768,
             "name": "Malloc1"
           },
-          "method": "construct_malloc_bdev"
+          "method": "bdev_malloc_create"
         },
         {
           "params": {
@@ -77,7 +77,7 @@
             "num_blocks": 32768,
             "name": "Malloc2"
           },
-          "method": "construct_malloc_bdev"
+          "method": "bdev_malloc_create"
         },
         {
           "params": {
@@ -85,7 +85,7 @@
             "num_blocks": 32768,
             "name": "Malloc3"
           },
-          "method": "construct_malloc_bdev"
+          "method": "bdev_malloc_create"
         },
         {
           "params": {
@@ -93,7 +93,7 @@
             "num_blocks": 32768,
             "name": "Malloc4"
           },
-          "method": "construct_malloc_bdev"
+          "method": "bdev_malloc_create"
         },
         {
           "params": {
@@ -101,7 +101,7 @@
             "num_blocks": 32768,
             "name": "Malloc5"
           },
-          "method": "construct_malloc_bdev"
+          "method": "bdev_malloc_create"
         },
         {
           "params": {
@@ -109,7 +109,7 @@
             "num_blocks": 32768,
             "name": "Malloc6"
           },
-          "method": "construct_malloc_bdev"
+          "method": "bdev_malloc_create"
         },
         {
           "params": {
@@ -117,7 +117,7 @@
             "num_blocks": 32768,
             "name": "Malloc7"
           },
-          "method": "construct_malloc_bdev"
+          "method": "bdev_malloc_create"
         },
         {
           "params": {
@@ -125,7 +125,7 @@
             "name": "AIO0",
             "filename": "/tmp/sample_aio0"
           },
-          "method": "construct_aio_bdev"
+          "method": "bdev_aio_create"
         },
         {
           "params": {
@@ -133,7 +133,7 @@
             "name": "AIO1",
             "filename": "/tmp/sample_aio1"
           },
-          "method": "construct_aio_bdev"
+          "method": "bdev_aio_create"
         },
         {
           "params": {
@@ -141,7 +141,7 @@
             "name": "AIO2",
             "filename": "/tmp/sample_aio2"
           },
-          "method": "construct_aio_bdev"
+          "method": "bdev_aio_create"
         },
         {
           "params": {
@@ -149,7 +149,7 @@
             "name": "AIO3",
             "filename": "/tmp/sample_aio1"
           },
-          "method": "construct_aio_bdev"
+          "method": "bdev_aio_create"
         },
         {
           "params": {
@@ -157,14 +157,14 @@
             "name": "AIO4",
             "filename": "/tmp/sample_aio2"
           },
-          "method": "construct_aio_bdev"
+          "method": "bdev_aio_create"
         },
         {
           "params": {
             "name": "Pmem0",
             "pmem_file": "/tmp/sample_pmem"
           },
-          "method": "construct_pmem_bdev"
+          "method": "bdev_pmem_create"
         }
       ]
     },
@@ -179,13 +179,13 @@
           "params": {
             "acceptor_poll_rate": 10000
           },
-          "method": "set_nvmf_target_config"
+          "method": "nvmf_set_config"
         },
         {
           "params": {
             "max_subsystems": 1024
           },
-          "method": "set_nvmf_target_max_subsystems"
+          "method": "nvmf_set_max_subsystems"
         },
         {
           "params": {
@@ -195,7 +195,7 @@
             "model_number": "SPDK_Controller1",
             "nqn": "nqn.2016-06.io.spdk:cnode1"
           },
-          "method": "nvmf_subsystem_create"
+          "method": "nvmf_create_subsystem"
         },
         {
           "params": {
@@ -243,7 +243,7 @@
             "model_number": "SPDK_Controller2",
             "nqn": "nqn.2016-06.io.spdk:cnode2"
           },
-          "method": "nvmf_subsystem_create"
+          "method": "nvmf_create_subsystem"
         },
         {
           "method": "nvmf_subsystem_add_listener",
@@ -318,7 +318,7 @@
             "cpumask": "1",
             "ctrlr": "naa.vhost.0"
           },
-          "method": "construct_vhost_scsi_controller"
+          "method": "vhost_create_scsi_controller"
         },
         {
           "params": {
@@ -326,7 +326,7 @@
             "bdev_name": "Malloc4",
             "ctrlr": "naa.vhost.0"
           },
-          "method": "add_vhost_scsi_lun"
+          "method": "vhost_scsi_controller_add_target"
         },
         {
           "params": {
@@ -334,7 +334,7 @@
             "bdev_name": "AIO3",
             "ctrlr": "naa.vhost.0"
           },
-          "method": "add_vhost_scsi_lun"
+          "method": "vhost_scsi_controller_add_target"
         },
         {
           "params": {
@@ -342,14 +342,14 @@
             "bdev_name": "Nvme0n1p2",
             "ctrlr": "naa.vhost.0"
           },
-          "method": "add_vhost_scsi_lun"
+          "method": "vhost_scsi_controller_add_target"
         },
         {
           "params": {
             "cpumask": "1",
             "ctrlr": "naa.vhost.1"
           },
-          "method": "construct_vhost_scsi_controller"
+          "method": "vhost_create_scsi_controller"
         },
         {
           "params": {
@@ -357,7 +357,7 @@
             "bdev_name": "AIO4",
             "ctrlr": "naa.vhost.1"
           },
-          "method": "add_vhost_scsi_lun"
+          "method": "vhost_scsi_controller_add_target"
         },
         {
           "params": {
@@ -366,7 +366,7 @@
             "ctrlr": "vhost.1",
             "cpumask": "1"
           },
-          "method": "construct_vhost_blk_controller"
+          "method": "vhost_create_blk_controller"
         },
         {
           "params": {
@@ -375,7 +375,7 @@
             "ctrlr": "naa.vhost.2",
             "cpumask": "1"
           },
-          "method": "construct_vhost_blk_controller"
+          "method": "vhost_create_blk_controller"
         },
         {
           "params": {
@@ -383,21 +383,21 @@
             "io_queues": 2,
             "ctrlr": "naa.vhost.3"
           },
-          "method": "construct_vhost_nvme_controller"
+          "method": "vhost_create_nvme_controller"
         },
         {
           "params": {
             "bdev_name": "Nvme0n1p0",
             "ctrlr": "naa.vhost.3"
           },
-          "method": "add_vhost_nvme_ns"
+          "method": "vhost_nvme_controller_add_ns"
         },
         {
           "params": {
             "bdev_name": "Nvme0n1p1",
             "ctrlr": "naa.vhost.3"
           },
-          "method": "add_vhost_nvme_ns"
+          "method": "vhost_nvme_controller_add_ns"
         }
       ]
     },
@@ -424,7 +424,7 @@
             "auth_file": "/usr/local/etc/spdk/auth.conf",
             "default_time2wait": 2
           },
-          "method": "set_iscsi_options"
+          "method": "iscsi_set_options"
         },
         {
           "params": {
@@ -442,7 +442,7 @@
             ],
             "tag": 1
           },
-          "method": "add_portal_group"
+          "method": "iscsi_create_portal_group"
         },
         {
           "params": {
@@ -454,7 +454,7 @@
               "127.0.0.1/32"
             ]
           },
-          "method": "add_initiator_group"
+          "method": "iscsi_create_initiator_group"
         },
         {
           "params": {
@@ -492,7 +492,7 @@
             "header_digest": false,
             "queue_depth": 64
           },
-          "method": "construct_target_node"
+          "method": "iscsi_create_target_node"
         },
         {
           "params": {
@@ -518,7 +518,7 @@
             "header_digest": false,
             "queue_depth": 32
           },
-          "method": "construct_target_node"
+          "method": "iscsi_create_target_node"
         }
       ]
     }

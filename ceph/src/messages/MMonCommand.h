@@ -23,7 +23,7 @@
 using TOPNSPC::common::cmdmap_from_json;
 using TOPNSPC::common::cmd_getval;
 
-class MMonCommand : public PaxosServiceMessage {
+class MMonCommand final : public PaxosServiceMessage {
 public:
   // weird note: prior to octopus, MgrClient would leave fsid blank when
   // sending commands to the mgr.  Starting with octopus, this is either
@@ -39,13 +39,13 @@ public:
   { }
 
 private:
-  ~MMonCommand() override {}
+  ~MMonCommand() final {}
 
 public:
   std::string_view get_type_name() const override { return "mon_command"; }
   void print(std::ostream& o) const override {
     cmdmap_t cmdmap;
-    stringstream ss;
+    std::ostringstream ss;
     string prefix;
     cmdmap_from_json(cmd, &cmdmap, ss);
     cmd_getval(cmdmap, "prefix", prefix);

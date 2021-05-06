@@ -1,4 +1,8 @@
-def create_pmem_pool(client, pmem_file, num_blocks, block_size):
+from .helpers import deprecated_alias
+
+
+@deprecated_alias('create_pmem_pool')
+def bdev_pmem_create_pool(client, pmem_file, num_blocks, block_size):
     """Create pmem pool at specified path.
     Args:
         pmem_file: path at which to create pmem pool
@@ -8,22 +12,24 @@ def create_pmem_pool(client, pmem_file, num_blocks, block_size):
     params = {'pmem_file': pmem_file,
               'num_blocks': num_blocks,
               'block_size': block_size}
-    return client.call('create_pmem_pool', params)
+    return client.call('bdev_pmem_create_pool', params)
 
 
-def pmem_pool_info(client, pmem_file):
+@deprecated_alias('pmem_pool_info')
+def bdev_pmem_get_pool_info(client, pmem_file):
     """Get details about pmem pool.
     Args:
         pmem_file: path to pmem pool
     """
     params = {'pmem_file': pmem_file}
-    return client.call('pmem_pool_info', params)
+    return client.call('bdev_pmem_get_pool_info', params)
 
 
-def delete_pmem_pool(client, pmem_file):
+@deprecated_alias('delete_pmem_pool')
+def bdev_pmem_delete_pool(client, pmem_file):
     """Delete pmem pool.
     Args:
         pmem_file: path to pmem pool
     """
     params = {'pmem_file': pmem_file}
-    return client.call('delete_pmem_pool', params)
+    return client.call('bdev_pmem_delete_pool', params)

@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
-set -xe
+
+testdir=$(readlink -f $(dirname $0))
+rootdir=$(readlink -f $testdir/../..)
+source $rootdir/test/common/autotest_common.sh
+source $rootdir/test/spdkcli/common.sh
+source $rootdir/test/nvmf/common.sh
 
 MATCH_FILE="spdkcli_nvmf.test"
 SPDKCLI_BRANCH="/nvmf"
-testdir=$(readlink -f $(dirname $0))
-. $testdir/common.sh
-. $testdir/../nvmf/common.sh
 
-timing_enter spdkcli_nvmf
 trap 'on_error_exit; revert_soft_roce' ERR
 rdma_device_init
 
@@ -25,7 +26,7 @@ $spdkcli_job "'/bdevs/malloc create 32 512 Malloc1' 'Malloc1' True
 '/bdevs/malloc create 32 512 Malloc4' 'Malloc4' True
 '/bdevs/malloc create 32 512 Malloc5' 'Malloc5' True
 '/bdevs/malloc create 32 512 Malloc6' 'Malloc6' True
-'nvmf/transport create RDMA max_qpairs_per_ctrlr=4 io_unit_size=8192' '' True
+'nvmf/transport create RDMA max_io_qpairs_per_ctrlr=4 io_unit_size=8192' '' True
 '/nvmf/subsystem create nqn.2014-08.org.spdk:cnode1 N37SXV509SRW\
   max_namespaces=4 allow_any_host=True' 'nqn.2014-08.org.spdk:cnode1' True
 '/nvmf/subsystem/nqn.2014-08.org.spdk:cnode1/namespaces create Malloc3 1' 'Malloc3' True
@@ -82,5 +83,3 @@ timing_exit spdkcli_clear_nvmf_config
 
 killprocess $nvmf_tgt_pid
 #revert_soft_roce
-timing_exit spdkcli_nvmf
-report_test_completion spdk_cli_nvmf

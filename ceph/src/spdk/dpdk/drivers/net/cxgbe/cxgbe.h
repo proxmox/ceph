@@ -15,8 +15,9 @@
 #define CXGBE_DEFAULT_TX_DESC_SIZE    1024 /* Default TX ring size */
 #define CXGBE_DEFAULT_RX_DESC_SIZE    1024 /* Default RX ring size */
 
-#define CXGBE_MIN_RX_BUFSIZE ETHER_MIN_MTU /* min buf size */
-#define CXGBE_MAX_RX_PKTLEN (9000 + ETHER_HDR_LEN + ETHER_CRC_LEN) /* max pkt */
+#define CXGBE_MIN_RX_BUFSIZE RTE_ETHER_MIN_MTU /* min buf size */
+#define CXGBE_MAX_RX_PKTLEN (9000 + RTE_ETHER_HDR_LEN + \
+				RTE_ETHER_CRC_LEN) /* max pkt */
 
 /* Max poll time is 100 * 100msec = 10 sec */
 #define CXGBE_LINK_STATUS_POLL_MS 100 /* 100ms */
@@ -39,18 +40,47 @@
 			   DEV_TX_OFFLOAD_IPV4_CKSUM | \
 			   DEV_TX_OFFLOAD_UDP_CKSUM | \
 			   DEV_TX_OFFLOAD_TCP_CKSUM | \
-			   DEV_TX_OFFLOAD_TCP_TSO)
+			   DEV_TX_OFFLOAD_TCP_TSO | \
+			   DEV_TX_OFFLOAD_MULTI_SEGS)
 
 #define CXGBE_RX_OFFLOADS (DEV_RX_OFFLOAD_VLAN_STRIP | \
 			   DEV_RX_OFFLOAD_IPV4_CKSUM | \
 			   DEV_RX_OFFLOAD_UDP_CKSUM | \
 			   DEV_RX_OFFLOAD_TCP_CKSUM | \
 			   DEV_RX_OFFLOAD_JUMBO_FRAME | \
-			   DEV_RX_OFFLOAD_SCATTER)
+			   DEV_RX_OFFLOAD_SCATTER | \
+			   DEV_RX_OFFLOAD_RSS_HASH)
 
+/* Devargs filtermode and filtermask representation */
+enum cxgbe_devargs_filter_mode_flags {
+	CXGBE_DEVARGS_FILTER_MODE_PHYSICAL_PORT = (1 << 0),
+	CXGBE_DEVARGS_FILTER_MODE_PF_VF = (1 << 1),
 
-#define CXGBE_DEVARG_KEEP_OVLAN "keep_ovlan"
-#define CXGBE_DEVARG_FORCE_LINK_UP "force_link_up"
+	CXGBE_DEVARGS_FILTER_MODE_ETHERNET_DSTMAC = (1 << 2),
+	CXGBE_DEVARGS_FILTER_MODE_ETHERNET_ETHTYPE = (1 << 3),
+	CXGBE_DEVARGS_FILTER_MODE_VLAN_INNER = (1 << 4),
+	CXGBE_DEVARGS_FILTER_MODE_VLAN_OUTER = (1 << 5),
+	CXGBE_DEVARGS_FILTER_MODE_IP_TOS = (1 << 6),
+	CXGBE_DEVARGS_FILTER_MODE_IP_PROTOCOL = (1 << 7),
+	CXGBE_DEVARGS_FILTER_MODE_MAX = (1 << 8),
+};
+
+enum cxgbe_filter_vnic_mode {
+	CXGBE_FILTER_VNIC_MODE_NONE,
+	CXGBE_FILTER_VNIC_MODE_PFVF,
+	CXGBE_FILTER_VNIC_MODE_OVLAN,
+};
+
+/* Common PF and VF devargs */
+#define CXGBE_DEVARG_CMN_KEEP_OVLAN "keep_ovlan"
+#define CXGBE_DEVARG_CMN_TX_MODE_LATENCY "tx_mode_latency"
+
+/* VF only devargs */
+#define CXGBE_DEVARG_VF_FORCE_LINK_UP "force_link_up"
+
+/* Filter Mode/Mask devargs */
+#define CXGBE_DEVARG_PF_FILTER_MODE "filtermode"
+#define CXGBE_DEVARG_PF_FILTER_MASK "filtermask"
 
 bool cxgbe_force_linkup(struct adapter *adap);
 int cxgbe_probe(struct adapter *adapter);
@@ -75,7 +105,7 @@ int cxgbe_setup_rss(struct port_info *pi);
 void cxgbe_enable_rx_queues(struct port_info *pi);
 void cxgbe_print_port_info(struct adapter *adap);
 void cxgbe_print_adapter_info(struct adapter *adap);
-int cxgbe_get_devargs(struct rte_devargs *devargs, const char *key);
+void cxgbe_process_devargs(struct adapter *adap);
 void cxgbe_configure_max_ethqsets(struct adapter *adapter);
 
 #endif /* _CXGBE_H_ */

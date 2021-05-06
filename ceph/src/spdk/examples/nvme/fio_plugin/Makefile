@@ -32,11 +32,20 @@
 #  OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-SPDK_ROOT_DIR := $(CURDIR)/../../..
+SPDK_ROOT_DIR := $(abspath $(CURDIR)/../../..)
+include $(SPDK_ROOT_DIR)/mk/spdk.common.mk
+include $(SPDK_ROOT_DIR)/mk/spdk.modules.mk
 
-APP := fio_plugin
+FIO_PLUGIN := spdk_nvme
 
-CFLAGS += -I$(CONFIG_FIO_SOURCE_DIR)
-LDFLAGS += -shared -rdynamic
+C_SRCS = fio_plugin.c
 
-include $(SPDK_ROOT_DIR)/mk/nvme.libtest.mk
+# Unable to combine the FIO plugin and the VPP socket abstraction (license incompatibility)
+SPDK_LIB_LIST = $(filter-out sock_vpp,$(SOCK_MODULES_LIST))
+SPDK_LIB_LIST += nvme thread util log sock vmd jsonrpc json rpc
+
+ifeq ($(CONFIG_RDMA),y)
+SPDK_LIB_LIST += rdma
+endif
+
+include $(SPDK_ROOT_DIR)/mk/spdk.fio.mk

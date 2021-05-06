@@ -26,6 +26,7 @@ tasks:
       - Monitor daemon marked osd
       - Behind on trimming
       - Manager daemon
+      - Not found or unloadable
       - evicting unresponsive client
     conf:
       global:

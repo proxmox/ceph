@@ -15,7 +15,11 @@
 
 #include "eal_thread.h"
 
+#if defined(RTE_ARCH_ARM) || defined(RTE_ARCH_ARM64)
+#define MAX_HUGEPAGE_SIZES 4  /**< support up to 4 page sizes */
+#else
 #define MAX_HUGEPAGE_SIZES 3  /**< support up to 3 page sizes */
+#endif
 
 /*
  * internal configuration structure for the number, size and
@@ -78,6 +82,7 @@ struct internal_config {
 	rte_cpuset_t ctrl_cpuset;         /**< cpuset for ctrl threads */
 	volatile unsigned int init_complete;
 	/**< indicates whether EAL has completed initialization */
+	unsigned int no_telemetry; /**< true to disable Telemetry */
 };
 extern struct internal_config internal_config; /**< Global EAL configuration. */
 

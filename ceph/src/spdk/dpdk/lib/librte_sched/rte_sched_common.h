@@ -12,13 +12,7 @@ extern "C" {
 #include <stdint.h>
 #include <sys/types.h>
 
-#define __rte_aligned_16 __attribute__((__aligned__(16)))
-
-static inline uint32_t
-rte_sched_min_val_2_u32(uint32_t x, uint32_t y)
-{
-	return (x < y)? x : y;
-}
+#define __rte_aligned_16 __rte_aligned(16)
 
 #if 0
 static inline uint32_t

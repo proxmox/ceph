@@ -9,6 +9,7 @@
 #include "metadata_io.h"
 #include "metadata_raw_atomic.h"
 #include "../ocf_def_priv.h"
+#include "../ocf_priv.h"
 
 #define OCF_METADATA_RAW_DEBUG 0
 
@@ -89,7 +90,9 @@ static int _raw_ram_deinit(ocf_cache_t cache,
  * RAM Implementation - Initialize
  */
 static int _raw_ram_init(ocf_cache_t cache,
-		struct ocf_metadata_raw *raw)
+	ocf_flush_page_synch_t lock_page_pfn,
+	ocf_flush_page_synch_t unlock_page_pfn,
+	struct ocf_metadata_raw *raw)
 {
 	size_t mem_pool_size;
 
@@ -101,8 +104,11 @@ static int _raw_ram_init(ocf_cache_t cache,
 	raw->mem_pool_limit = mem_pool_size;
 	raw->mem_pool = env_secure_alloc(mem_pool_size);
 	if (!raw->mem_pool)
-		return -ENOMEM;
+		return -OCF_ERR_NO_MEM;
 	ENV_BUG_ON(env_memset(raw->mem_pool, mem_pool_size, 0));
+
+	raw->lock_page = lock_page_pfn;
+	raw->unlock_page = unlock_page_pfn;
 
 	return 0;
 }
@@ -149,51 +155,46 @@ static uint32_t _raw_ram_checksum(ocf_cache_t cache,
 }
 
 /*
+ * RAM Implementation - Entry page number
+ */
+uint32_t _raw_ram_page(struct ocf_metadata_raw *raw, uint32_t entry)
+{
+	ENV_BUG_ON(entry >= raw->entries);
+
+	return _RAW_RAM_PAGE(raw, entry);
+}
+
+/*
  * RAM Implementation - Get entry
  */
-static int _raw_ram_get(ocf_cache_t cache,
-		struct ocf_metadata_raw *raw, ocf_cache_line_t line,
-		void *data, uint32_t size)
+static int _raw_ram_get(ocf_cache_t cache, struct ocf_metadata_raw *raw,
+		uint32_t entry, void *data)
 {
-	ENV_BUG_ON(!_raw_is_valid(raw, line, size));
+	ENV_BUG_ON(!_raw_is_valid(raw, entry));
 
-	return _RAW_RAM_GET(raw, line, data);
+	return _RAW_RAM_GET(raw, entry, data);
 }
 
 /*
  * RAM Implementation - Read only entry access
  */
-static const void *_raw_ram_rd_access(ocf_cache_t cache,
-		struct ocf_metadata_raw *raw, ocf_cache_line_t line,
-		uint32_t size)
+static void *_raw_ram_access(ocf_cache_t cache,
+		struct ocf_metadata_raw *raw, uint32_t entry)
 {
-	ENV_BUG_ON(!_raw_is_valid(raw, line, size));
+	ENV_BUG_ON(!_raw_is_valid(raw, entry));
 
-	return _RAW_RAM_ADDR(raw, line);
-}
-
-/*
- * RAM Implementation - Read only entry access
- */
-static void *_raw_ram_wr_access(ocf_cache_t cache,
-		struct ocf_metadata_raw *raw, ocf_cache_line_t line,
-		uint32_t size)
-{
-	ENV_BUG_ON(!_raw_is_valid(raw, line, size));
-
-	return _RAW_RAM_ADDR(raw, line);
+	return _RAW_RAM_ADDR(raw, entry);
 }
 
 /*
  * RAM Implementation - Set Entry
  */
-static int _raw_ram_set(ocf_cache_t cache,
-		struct ocf_metadata_raw *raw, ocf_cache_line_t line,
-		void *data, uint32_t size)
+static int _raw_ram_set(ocf_cache_t cache, struct ocf_metadata_raw *raw,
+		uint32_t entry, void *data)
 {
-	ENV_BUG_ON(!_raw_is_valid(raw, line, size));
+	ENV_BUG_ON(!_raw_is_valid(raw, entry));
 
-	return _RAW_RAM_SET(raw, line, data);
+	return _RAW_RAM_SET(raw, entry, data);
 }
 
 struct _raw_ram_load_all_context {
@@ -250,10 +251,8 @@ static void _raw_ram_load_all(ocf_cache_t cache, struct ocf_metadata_raw *raw,
 	OCF_DEBUG_TRACE(cache);
 
 	context = env_vmalloc(sizeof(*context));
-	if (!context) {
-		cmpl(priv, -OCF_ERR_NO_MEM);
-		return;
-	}
+	if (!context)
+		OCF_CMPL_RET(priv, -OCF_ERR_NO_MEM);
 
 	context->raw = raw;
 	context->cmpl = cmpl;
@@ -292,7 +291,12 @@ static int _raw_ram_flush_all_fill(ocf_cache_t cache,
 
 	OCF_DEBUG_PARAM(cache, "Line = %u, Page = %u", line, raw_page);
 
+	if (raw->lock_page)
+		raw->lock_page(cache, raw, raw_page);
 	ctx_data_wr_check(cache->owner, data, _RAW_RAM_ADDR(raw, line), size);
+	if (raw->unlock_page)
+		raw->unlock_page(cache, raw, raw_page);
+
 	ctx_data_zero_check(cache->owner, data, PAGE_SIZE - size);
 
 	return 0;
@@ -319,10 +323,8 @@ static void _raw_ram_flush_all(ocf_cache_t cache, struct ocf_metadata_raw *raw,
 	OCF_DEBUG_TRACE(cache);
 
 	context = env_vmalloc(sizeof(*context));
-	if (!context) {
-		cmpl(priv, -OCF_ERR_NO_MEM);
-		return;
-	}
+	if (!context)
+		OCF_CMPL_RET(priv, -OCF_ERR_NO_MEM);
 
 	context->raw = raw;
 	context->cmpl = cmpl;
@@ -391,7 +393,7 @@ static int _raw_ram_flush_do_asynch_fill(ocf_cache_t cache,
 	uint32_t raw_page;
 	struct _raw_ram_flush_ctx *ctx = context;
 	struct ocf_metadata_raw *raw = NULL;
-	uint64_t size;
+	uint32_t size;
 
 	ENV_BUG_ON(!ctx);
 
@@ -406,7 +408,12 @@ static int _raw_ram_flush_do_asynch_fill(ocf_cache_t cache,
 
 	OCF_DEBUG_PARAM(cache, "Line = %u, Page = %u", line, raw_page);
 
+	if (raw->lock_page)
+		raw->lock_page(cache, raw, raw_page);
 	ctx_data_wr_check(cache->owner, data, _RAW_RAM_ADDR(raw, line), size);
+	if (raw->unlock_page)
+		raw->unlock_page(cache, raw, raw_page);
+
 	ctx_data_zero_check(cache->owner, data, PAGE_SIZE - size);
 
 	return 0;
@@ -473,8 +480,8 @@ static int _raw_ram_flush_do_asynch(ocf_cache_t cache,
 
 	ctx = env_zalloc(sizeof(*ctx), ENV_MEM_NOIO);
 	if (!ctx) {
-		complete(req, -ENOMEM);
-		return -ENOMEM;
+		complete(req, -OCF_ERR_NO_MEM);
+		return -OCF_ERR_NO_MEM;
 	}
 
 	ctx->req = req;
@@ -488,8 +495,8 @@ static int _raw_ram_flush_do_asynch(ocf_cache_t cache,
 		pages_tab = env_zalloc(sizeof(*pages_tab) * line_no, ENV_MEM_NOIO);
 		if (!pages_tab) {
 			env_free(ctx);
-			complete(req, -ENOMEM);
-			return -ENOMEM;
+			complete(req, -OCF_ERR_NO_MEM);
+			return -OCF_ERR_NO_MEM;
 		}
 	}
 
@@ -559,10 +566,10 @@ static const struct raw_iface IRAW[metadata_raw_type_max] = {
 		.size_of		= _raw_ram_size_of,
 		.size_on_ssd		= _raw_ram_size_on_ssd,
 		.checksum		= _raw_ram_checksum,
+		.page			= _raw_ram_page,
 		.get			= _raw_ram_get,
 		.set			= _raw_ram_set,
-		.rd_access		= _raw_ram_rd_access,
-		.wr_access		= _raw_ram_wr_access,
+		.access			= _raw_ram_access,
 		.load_all		= _raw_ram_load_all,
 		.flush_all		= _raw_ram_flush_all,
 		.flush_mark		= _raw_ram_flush_mark,
@@ -574,10 +581,10 @@ static const struct raw_iface IRAW[metadata_raw_type_max] = {
 		.size_of		= raw_dynamic_size_of,
 		.size_on_ssd		= raw_dynamic_size_on_ssd,
 		.checksum		= raw_dynamic_checksum,
+		.page			= raw_dynamic_page,
 		.get			= raw_dynamic_get,
 		.set			= raw_dynamic_set,
-		.rd_access		= raw_dynamic_rd_access,
-		.wr_access		= raw_dynamic_wr_access,
+		.access			= raw_dynamic_access,
 		.load_all		= raw_dynamic_load_all,
 		.flush_all		= raw_dynamic_flush_all,
 		.flush_mark		= raw_dynamic_flush_mark,
@@ -589,10 +596,10 @@ static const struct raw_iface IRAW[metadata_raw_type_max] = {
 		.size_of		= _raw_ram_size_of,
 		.size_on_ssd		= raw_volatile_size_on_ssd,
 		.checksum		= raw_volatile_checksum,
+		.page			= _raw_ram_page,
 		.get			= _raw_ram_get,
 		.set			= _raw_ram_set,
-		.rd_access		= _raw_ram_rd_access,
-		.wr_access		= _raw_ram_wr_access,
+		.access			= _raw_ram_access,
 		.load_all		= raw_volatile_load_all,
 		.flush_all		= raw_volatile_flush_all,
 		.flush_mark		= raw_volatile_flush_mark,
@@ -604,10 +611,10 @@ static const struct raw_iface IRAW[metadata_raw_type_max] = {
 		.size_of		= _raw_ram_size_of,
 		.size_on_ssd		= _raw_ram_size_on_ssd,
 		.checksum		= _raw_ram_checksum,
+		.page			= _raw_ram_page,
 		.get			= _raw_ram_get,
 		.set			= _raw_ram_set,
-		.rd_access		= _raw_ram_rd_access,
-		.wr_access		= _raw_ram_wr_access,
+		.access			= _raw_ram_access,
 		.load_all		= _raw_ram_load_all,
 		.flush_all		= _raw_ram_flush_all,
 		.flush_mark		= raw_atomic_flush_mark,
@@ -620,13 +627,15 @@ static const struct raw_iface IRAW[metadata_raw_type_max] = {
  ******************************************************************************/
 
 int ocf_metadata_raw_init(ocf_cache_t cache,
+		ocf_flush_page_synch_t lock_page_pfn,
+		ocf_flush_page_synch_t unlock_page_pfn,
 		struct ocf_metadata_raw *raw)
 {
 	ENV_BUG_ON(raw->raw_type < metadata_raw_type_min);
 	ENV_BUG_ON(raw->raw_type >= metadata_raw_type_max);
 
 	raw->iface = &(IRAW[raw->raw_type]);
-	return raw->iface->init(cache, raw);
+	return raw->iface->init(cache, lock_page_pfn, unlock_page_pfn, raw);
 }
 
 int ocf_metadata_raw_deinit(ocf_cache_t cache,

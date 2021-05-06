@@ -10,7 +10,6 @@ LIB = librte_pmd_nfp.a
 
 CFLAGS += -O3
 CFLAGS += $(WERROR_FLAGS)
-CFLAGS += -DALLOW_EXPERIMENTAL_API
 
 LDLIBS += -lm
 LDLIBS += -lrte_eal -lrte_mbuf -lrte_mempool -lrte_ring
@@ -18,8 +17,6 @@ LDLIBS += -lrte_ethdev -lrte_net -lrte_kvargs
 LDLIBS += -lrte_bus_pci
 
 EXPORT_MAP := rte_pmd_nfp_version.map
-
-LIBABIVER := 1
 
 VPATH += $(SRCDIR)/nfpcore
 

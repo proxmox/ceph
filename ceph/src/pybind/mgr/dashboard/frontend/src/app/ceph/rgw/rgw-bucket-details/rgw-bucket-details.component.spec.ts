@@ -1,13 +1,12 @@
 import { HttpClientTestingModule } from '@angular/common/http/testing';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 
-import { TabsModule } from 'ngx-bootstrap/tabs';
 import { of } from 'rxjs';
 
-import { configureTestBed, i18nProviders } from '../../../../testing/unit-test-helper';
-import { RgwBucketService } from '../../../shared/api/rgw-bucket.service';
-import { CdTableSelection } from '../../../shared/models/cd-table-selection';
-import { SharedModule } from '../../../shared/shared.module';
+import { RgwBucketService } from '~/app/shared/api/rgw-bucket.service';
+import { CdTableSelection } from '~/app/shared/models/cd-table-selection';
+import { SharedModule } from '~/app/shared/shared.module';
+import { configureTestBed } from '~/testing/unit-test-helper';
 import { RgwBucketDetailsComponent } from './rgw-bucket-details.component';
 
 describe('RgwBucketDetailsComponent', () => {
@@ -18,12 +17,11 @@ describe('RgwBucketDetailsComponent', () => {
 
   configureTestBed({
     declarations: [RgwBucketDetailsComponent],
-    imports: [SharedModule, TabsModule.forRoot(), HttpClientTestingModule],
-    providers: [i18nProviders]
+    imports: [SharedModule, HttpClientTestingModule]
   });
 
   beforeEach(() => {
-    rgwBucketService = TestBed.get(RgwBucketService);
+    rgwBucketService = TestBed.inject(RgwBucketService);
     rgwBucketServiceGetSpy = spyOn(rgwBucketService, 'get');
     rgwBucketServiceGetSpy.and.returnValue(of(null));
     fixture = TestBed.createComponent(RgwBucketDetailsComponent);

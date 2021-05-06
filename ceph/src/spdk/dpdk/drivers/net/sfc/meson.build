@@ -1,16 +1,15 @@
 # SPDX-License-Identifier: BSD-3-Clause
 #
-# Copyright (c) 2016-2018 Solarflare Communications Inc.
-# All rights reserved.
+# Copyright(c) 2019-2020 Xilinx, Inc.
+# Copyright(c) 2016-2019 Solarflare Communications Inc.
 #
 # This software was jointly developed between OKTET Labs (under contract
 # for Solarflare) and Solarflare Communications, Inc.
 
 if arch_subdir != 'x86' or not dpdk_conf.get('RTE_ARCH_64')
 	build = false
+	reason = 'only supported on x86_64'
 endif
-
-allow_experimental_apis = true
 
 extra_flags = []
 
@@ -19,14 +18,12 @@ extra_flags += '-Wno-strict-aliasing'
 
 # Enable more warnings
 extra_flags += [
-	'-Wextra',
 	'-Wdisabled-optimization'
 ]
 
 # Compiler and version dependent flags
 extra_flags += [
 	'-Waggregate-return',
-	'-Wnested-externs',
 	'-Wbad-function-cast'
 ]
 

@@ -9,11 +9,13 @@
 #include <boost/core/lightweight_test_trait.hpp>
 #include <boost/histogram/axis.hpp>
 #include <boost/histogram/axis/ostream.hpp>
+#include <boost/histogram/detail/detect.hpp>
 #include <boost/histogram/histogram.hpp>
 #include <boost/histogram/ostream.hpp>
 #include <boost/throw_exception.hpp>
 #include <string>
 #include <vector>
+#include "dummy_storage.hpp"
 #include "std_ostream.hpp"
 #include "throw_exception.hpp"
 #include "utility_histogram.hpp"
@@ -153,6 +155,16 @@ void run_tests() {
     BOOST_TEST_EQ(d.at(0).variance(), 1);
     BOOST_TEST_EQ(d.at(1).value(), 3);
     BOOST_TEST_EQ(d.at(1).variance(), 9);
+
+    // add unweighted histogram
+    auto e = make_s(Tag(), std::vector<int>(), ia);
+    std::fill(e.begin(), e.end(), 2);
+
+    d += e;
+    BOOST_TEST_EQ(d.at(0).value(), 3);
+    BOOST_TEST_EQ(d.at(0).variance(), 3);
+    BOOST_TEST_EQ(d.at(1).value(), 5);
+    BOOST_TEST_EQ(d.at(1).variance(), 11);
   }
 
   // bad operations
@@ -163,6 +175,29 @@ void run_tests() {
     BOOST_TEST_THROWS(a -= b, std::invalid_argument);
     BOOST_TEST_THROWS(a *= b, std::invalid_argument);
     BOOST_TEST_THROWS(a /= b, std::invalid_argument);
+  }
+
+  // scaling
+  {
+    auto b = make_s(Tag{}, dummy_storage<double, true>{}, axis::integer<>(0, 1));
+    b(0);
+    BOOST_TEST_EQ(b[0], 1);
+    b *= 2; // intentionally does not do anything
+    BOOST_TEST_EQ(b[0], 1);
+
+    auto c = make_s(Tag{}, dummy_storage<double, false>{}, axis::integer<>(0, 1));
+    c(0);
+    BOOST_TEST_EQ(c[0], 1);
+    c *= 2; // this calls *= on each element
+    BOOST_TEST_EQ(c[0], 2);
+
+    using h1_t = decltype(
+        make_s(Tag{}, dummy_storage<unscaleable, false>{}, axis::integer<>(0, 1)));
+    BOOST_TEST_NOT((detail::has_operator_rmul<h1_t, double>::value));
+
+    using h2_t = decltype(
+        make_s(Tag{}, dummy_storage<unscaleable, true>{}, axis::integer<>(0, 1)));
+    BOOST_TEST_NOT((detail::has_operator_rmul<h2_t, double>::value));
   }
 }
 

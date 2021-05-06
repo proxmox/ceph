@@ -3,7 +3,7 @@ import json
 import socket
 from enum import Enum
 from functools import wraps
-from typing import Callable, TypeVar, List, NewType, TYPE_CHECKING, Any
+from typing import Optional, Callable, TypeVar, List, NewType, TYPE_CHECKING, Any, NamedTuple
 from orchestrator import OrchestratorError
 
 if TYPE_CHECKING:
@@ -19,8 +19,22 @@ class CephadmNoImage(Enum):
     token = 1
 
 
+# ceph daemon types that use the ceph container image.
+# NOTE: order important here as these are used for upgrade order
+CEPH_TYPES = ['mgr', 'mon', 'crash', 'osd', 'mds', 'rgw', 'rbd-mirror', 'cephfs-mirror']
+GATEWAY_TYPES = ['iscsi', 'nfs']
+MONITORING_STACK_TYPES = ['node-exporter', 'prometheus', 'alertmanager', 'grafana']
+CEPH_UPGRADE_ORDER = CEPH_TYPES + GATEWAY_TYPES + MONITORING_STACK_TYPES
+
+
 # Used for _run_cephadm used for check-host etc that don't require an --image parameter
 cephadmNoImage = CephadmNoImage.token
+
+
+class ContainerInspectInfo(NamedTuple):
+    image_id: str
+    ceph_version: Optional[str]
+    repo_digests: Optional[List[str]]
 
 
 def name_to_config_section(name: str) -> ConfEntity:
@@ -57,7 +71,7 @@ def forall_hosts(f: Callable[..., T]) -> Callable[..., List[T]]:
                 if self:
                     return f(self, *arg)
                 return f(*arg)
-            except Exception as e:
+            except Exception:
                 logger.exception(f'executing {f.__name__}({args}) failed.')
                 raise
 
@@ -92,6 +106,16 @@ def is_repo_digest(image_name: str) -> bool:
 
 def resolve_ip(hostname: str) -> str:
     try:
-        return socket.getaddrinfo(hostname, None, flags=socket.AI_CANONNAME, type=socket.SOCK_STREAM)[0][4][0]
+        r = socket.getaddrinfo(hostname, None, flags=socket.AI_CANONNAME,
+                               type=socket.SOCK_STREAM)
+        # pick first v4 IP, if present
+        for a in r:
+            if a[0] == socket.AF_INET:
+                return a[4][0]
+        return r[0][4][0]
     except socket.gaierror as e:
         raise OrchestratorError(f"Cannot resolve ip for host {hostname}: {e}")
+
+
+def ceph_release_to_major(release: str) -> int:
+    return ord(release[0]) - ord('a') + 1

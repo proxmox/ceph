@@ -1,4 +1,4 @@
-import { Component, OnInit, ViewChild } from '@angular/core';
+import { Component, OnDestroy, OnInit, ViewChild } from '@angular/core';
 
 import {
   ITreeOptions,
@@ -6,18 +6,22 @@ import {
   TreeModel,
   TreeNode,
   TREE_ACTIONS
-} from 'angular-tree-component';
+} from '@circlon/angular-tree-component';
+import { Subscription } from 'rxjs';
 
-import { HealthService } from '../../../shared/api/health.service';
-import { Icons } from '../../../shared/enum/icons.enum';
+import { HealthService } from '~/app/shared/api/health.service';
+import { Icons } from '~/app/shared/enum/icons.enum';
+import { TimerService } from '~/app/shared/services/timer.service';
 
 @Component({
   selector: 'cd-crushmap',
   templateUrl: './crushmap.component.html',
   styleUrls: ['./crushmap.component.scss']
 })
-export class CrushmapComponent implements OnInit {
-  @ViewChild('tree', { static: false }) tree: TreeComponent;
+export class CrushmapComponent implements OnInit, OnDestroy {
+  private sub = new Subscription();
+
+  @ViewChild('tree') tree: TreeComponent;
 
   icons = Icons;
   loadingIndicator = true;
@@ -36,13 +40,22 @@ export class CrushmapComponent implements OnInit {
   metadataTitle: string;
   metadataKeyMap: { [key: number]: any } = {};
 
-  constructor(private healthService: HealthService) {}
+  constructor(private healthService: HealthService, private timerService: TimerService) {}
 
   ngOnInit() {
     this.healthService.getFullHealth().subscribe((data: any) => {
       this.loadingIndicator = false;
       this.nodes = this.abstractTreeData(data);
     });
+    this.sub = this.timerService
+      .get(() => this.healthService.getFullHealth(), 5000)
+      .subscribe((data: any) => {
+        this.nodes = this.abstractTreeData(data);
+      });
+  }
+
+  ngOnDestroy() {
+    this.sub.unsubscribe();
   }
 
   private abstractTreeData(data: any): any[] {

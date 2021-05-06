@@ -108,6 +108,15 @@ int spdk_ioat_probe(void *cb_ctx, spdk_ioat_probe_cb probe_cb, spdk_ioat_attach_
 void spdk_ioat_detach(struct spdk_ioat_chan *ioat);
 
 /**
+ * Get the maximum number of descriptors supported by the library.
+ *
+ * \param chan I/OAT channel
+ *
+ * \return maximum number of descriptors.
+ */
+uint32_t spdk_ioat_get_max_descriptors(struct spdk_ioat_chan *chan);
+
+/**
  * Build a DMA engine memory copy request.
  *
  * This function will build the descriptor in the channel's ring.  The
@@ -207,7 +216,7 @@ void spdk_ioat_flush(struct spdk_ioat_chan *chan);
  *
  * \param chan I/OAT channel to check for completions.
  *
- * \return 0 on success, negative errno on failure.
+ * \return number of events handled on success, negative errno on failure.
  */
 int spdk_ioat_process_events(struct spdk_ioat_chan *chan);
 

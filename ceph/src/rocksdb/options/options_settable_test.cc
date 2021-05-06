@@ -7,15 +7,11 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file. See the AUTHORS file for names of contributors.
 
-#ifndef __STDC_FORMAT_MACROS
-#define __STDC_FORMAT_MACROS
-#endif
-
 #include <cstring>
 
 #include "options/options_helper.h"
 #include "rocksdb/convenience.h"
-#include "util/testharness.h"
+#include "test_util/testharness.h"
 
 #ifndef GFLAGS
 bool FLAGS_enable_print = false;
@@ -25,7 +21,7 @@ using GFLAGS_NAMESPACE::ParseCommandLineFlags;
 DEFINE_bool(enable_print, false, "Print options generated to console.");
 #endif  // GFLAGS
 
-namespace rocksdb {
+namespace ROCKSDB_NAMESPACE {
 
 // Verify options are settable from options strings.
 // We take the approach that depends on compiler behavior that copy constructor
@@ -143,6 +139,7 @@ TEST_F(OptionsSettableTest, BlockBasedTableOptionsAllFieldsSettable) {
       "pin_top_level_index_and_filter=1;"
       "index_type=kHashSearch;"
       "data_block_index_type=kDataBlockBinaryAndHash;"
+      "index_shortening=kNoShortening;"
       "data_block_hash_table_util_ratio=0.75;"
       "checksum=kxxHash;hash_index_allow_collision=1;no_block_cache=1;"
       "block_cache=1M;block_cache_compressed=1k;block_size=1024;"
@@ -184,6 +181,8 @@ TEST_F(OptionsSettableTest, BlockBasedTableOptionsAllFieldsSettable) {
 TEST_F(OptionsSettableTest, DBOptionsAllFieldsSettable) {
   const OffsetGap kDBOptionsBlacklist = {
       {offsetof(struct DBOptions, env), sizeof(Env*)},
+      {offsetof(struct DBOptions, file_system),
+       sizeof(std::shared_ptr<FileSystem>)},
       {offsetof(struct DBOptions, rate_limiter),
        sizeof(std::shared_ptr<RateLimiter>)},
       {offsetof(struct DBOptions, sst_file_manager),
@@ -200,6 +199,8 @@ TEST_F(OptionsSettableTest, DBOptionsAllFieldsSettable) {
        sizeof(std::vector<std::shared_ptr<EventListener>>)},
       {offsetof(struct DBOptions, row_cache), sizeof(std::shared_ptr<Cache>)},
       {offsetof(struct DBOptions, wal_filter), sizeof(const WalFilter*)},
+      {offsetof(struct DBOptions, sst_file_checksum_func),
+       sizeof(std::shared_ptr<FileChecksumFunc>)},
   };
 
   char* options_ptr = new char[sizeof(DBOptions)];
@@ -232,6 +233,7 @@ TEST_F(OptionsSettableTest, DBOptionsAllFieldsSettable) {
                              "delete_obsolete_files_period_micros=4294967758;"
                              "WAL_ttl_seconds=4295008036;"
                              "WAL_size_limit_MB=4295036161;"
+                             "max_write_batch_group_size_bytes=1048576;"
                              "wal_dir=path/to/wal_dir;"
                              "db_write_buffer_size=2587;"
                              "max_subcompactions=64330;"
@@ -248,6 +250,7 @@ TEST_F(OptionsSettableTest, DBOptionsAllFieldsSettable) {
                              "new_table_reader_for_compaction_inputs=false;"
                              "keep_log_file_num=4890;"
                              "skip_stats_update_on_db_open=false;"
+                             "skip_checking_sst_file_sizes_on_db_open=false;"
                              "max_manifest_file_size=4295009941;"
                              "db_log_dir=path/to/db_log_dir;"
                              "skip_log_error_on_recovery=true;"
@@ -255,6 +258,7 @@ TEST_F(OptionsSettableTest, DBOptionsAllFieldsSettable) {
                              "paranoid_checks=true;"
                              "is_fd_close_on_exec=false;"
                              "bytes_per_sync=4295013613;"
+                             "strict_bytes_per_sync=true;"
                              "enable_thread_tracking=false;"
                              "recycle_log_file_num=0;"
                              "create_missing_column_families=true;"
@@ -267,6 +271,7 @@ TEST_F(OptionsSettableTest, DBOptionsAllFieldsSettable) {
                              "allow_mmap_writes=false;"
                              "stats_dump_period_sec=70127;"
                              "stats_persist_period_sec=54321;"
+                             "persist_stats_to_disk=true;"
                              "stats_history_buffer_size=14159;"
                              "allow_fallocate=true;"
                              "allow_mmap_reads=false;"
@@ -277,6 +282,7 @@ TEST_F(OptionsSettableTest, DBOptionsAllFieldsSettable) {
                              "advise_random_on_open=true;"
                              "fail_if_options_file_error=false;"
                              "enable_pipelined_write=false;"
+                             "unordered_write=false;"
                              "allow_concurrent_memtable_write=true;"
                              "wal_recovery_mode=kPointInTimeRecovery;"
                              "enable_write_thread_adaptive_yield=true;"
@@ -295,7 +301,9 @@ TEST_F(OptionsSettableTest, DBOptionsAllFieldsSettable) {
                              "manual_wal_flush=false;"
                              "seq_per_batch=false;"
                              "atomic_flush=false;"
-                             "avoid_unnecessary_blocking_io=false",
+                             "avoid_unnecessary_blocking_io=false;"
+                             "log_readahead_size=0;"
+                             "write_dbid_to_manifest=false",
                              new_options));
 
   ASSERT_EQ(unset_bytes_base, NumUnsetBytes(new_options_ptr, sizeof(DBOptions),
@@ -350,10 +358,10 @@ TEST_F(OptionsSettableTest, ColumnFamilyOptionsAllFieldsSettable) {
        sizeof(std::shared_ptr<CompactionFilterFactory>)},
       {offset_of(&ColumnFamilyOptions::prefix_extractor),
        sizeof(std::shared_ptr<const SliceTransform>)},
+      {offset_of(&ColumnFamilyOptions::snap_refresh_nanos), sizeof(uint64_t)},
       {offset_of(&ColumnFamilyOptions::table_factory),
        sizeof(std::shared_ptr<TableFactory>)},
-      {offset_of(&ColumnFamilyOptions::cf_paths),
-       sizeof(std::vector<DbPath>)},
+      {offset_of(&ColumnFamilyOptions::cf_paths), sizeof(std::vector<DbPath>)},
       {offset_of(&ColumnFamilyOptions::compaction_thread_limiter),
        sizeof(std::shared_ptr<ConcurrentTaskLimiter>)},
   };
@@ -436,6 +444,7 @@ TEST_F(OptionsSettableTest, ColumnFamilyOptionsAllFieldsSettable) {
       "soft_rate_limit=530.615385;"
       "soft_pending_compaction_bytes_limit=0;"
       "max_write_buffer_number_to_maintain=84;"
+      "max_write_buffer_size_to_maintain=2147483648;"
       "merge_operator=aabcxehazrMergeOperator;"
       "memtable_prefix_bloom_size_ratio=0.4642;"
       "memtable_whole_key_filtering=true;"
@@ -452,6 +461,7 @@ TEST_F(OptionsSettableTest, ColumnFamilyOptionsAllFieldsSettable) {
       "disable_auto_compactions=false;"
       "report_bg_io_stats=true;"
       "ttl=60;"
+      "periodic_compaction_seconds=3600;"
       "sample_for_compression=0;"
       "compaction_options_fifo={max_table_files_size=3;allow_"
       "compaction=false;};",
@@ -471,7 +481,7 @@ TEST_F(OptionsSettableTest, ColumnFamilyOptionsAllFieldsSettable) {
 #endif  // OS_LINUX || OS_WIN
 #endif  // !ROCKSDB_LITE
 
-}  // namespace rocksdb
+}  // namespace ROCKSDB_NAMESPACE
 
 int main(int argc, char** argv) {
   ::testing::InitGoogleTest(&argc, argv);

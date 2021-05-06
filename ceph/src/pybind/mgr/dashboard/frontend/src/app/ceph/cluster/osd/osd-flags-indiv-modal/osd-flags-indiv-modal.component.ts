@@ -1,16 +1,16 @@
 import { Component, OnInit } from '@angular/core';
 import { FormGroup } from '@angular/forms';
 
-import { I18n } from '@ngx-translate/i18n-polyfill';
-import * as _ from 'lodash';
-import { BsModalRef } from 'ngx-bootstrap/modal';
+import { NgbActiveModal } from '@ng-bootstrap/ng-bootstrap';
+import _ from 'lodash';
 
-import { OsdService } from '../../../../shared/api/osd.service';
-import { NotificationType } from '../../../../shared/enum/notification-type.enum';
-import { Flag } from '../../../../shared/models/flag';
-import { Permissions } from '../../../../shared/models/permissions';
-import { AuthStorageService } from '../../../../shared/services/auth-storage.service';
-import { NotificationService } from '../../../../shared/services/notification.service';
+import { OsdService } from '~/app/shared/api/osd.service';
+import { ActionLabelsI18n } from '~/app/shared/constants/app.constants';
+import { NotificationType } from '~/app/shared/enum/notification-type.enum';
+import { Flag } from '~/app/shared/models/flag';
+import { Permissions } from '~/app/shared/models/permissions';
+import { AuthStorageService } from '~/app/shared/services/auth-storage.service';
+import { NotificationService } from '~/app/shared/services/notification.service';
 
 @Component({
   selector: 'cd-osd-flags-indiv-modal',
@@ -25,51 +25,45 @@ export class OsdFlagsIndivModalComponent implements OnInit {
   flags: Flag[] = [
     {
       code: 'noup',
-      name: this.i18n('No Up'),
-      description: this.i18n('OSDs are not allowed to start'),
+      name: $localize`No Up`,
+      description: $localize`OSDs are not allowed to start`,
       value: false,
       clusterWide: false,
       indeterminate: false
     },
     {
       code: 'nodown',
-      name: this.i18n('No Down'),
-      description: this.i18n(
-        'OSD failure reports are being ignored, such that the monitors will not mark OSDs down'
-      ),
+      name: $localize`No Down`,
+      description: $localize`OSD failure reports are being ignored, such that the monitors will not mark OSDs down`,
       value: false,
       clusterWide: false,
       indeterminate: false
     },
     {
       code: 'noin',
-      name: this.i18n('No In'),
-      description: this.i18n(
-        'OSDs that were previously marked out will not be marked back in when they start'
-      ),
+      name: $localize`No In`,
+      description: $localize`OSDs that were previously marked out will not be marked back in when they start`,
       value: false,
       clusterWide: false,
       indeterminate: false
     },
     {
       code: 'noout',
-      name: this.i18n('No Out'),
-      description: this.i18n(
-        'OSDs will not automatically be marked out after the configured interval'
-      ),
+      name: $localize`No Out`,
+      description: $localize`OSDs will not automatically be marked out after the configured interval`,
       value: false,
       clusterWide: false,
       indeterminate: false
     }
   ];
-  clusterWideTooltip: string = this.i18n('The flag has been enabled for the entire cluster.');
+  clusterWideTooltip: string = $localize`The flag has been enabled for the entire cluster.`;
 
   constructor(
-    public activeModal: BsModalRef,
+    public activeModal: NgbActiveModal,
+    public actionLabels: ActionLabelsI18n,
     private authStorageService: AuthStorageService,
     private osdService: OsdService,
-    private notificationService: NotificationService,
-    private i18n: I18n
+    private notificationService: NotificationService
   ) {
     this.permissions = this.authStorageService.getPermissions();
   }
@@ -129,11 +123,11 @@ export class OsdFlagsIndivModalComponent implements OnInit {
     const selectedIds = this.selected.map((selection) => selection['osd']);
     this.osdService.updateIndividualFlags(activeFlags, selectedIds).subscribe(
       () => {
-        this.notificationService.show(NotificationType.success, this.i18n('Updated OSD Flags'));
-        this.activeModal.hide();
+        this.notificationService.show(NotificationType.success, $localize`Updated OSD Flags`);
+        this.activeModal.close();
       },
       () => {
-        this.activeModal.hide();
+        this.activeModal.close();
       }
     );
   }

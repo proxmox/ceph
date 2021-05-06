@@ -43,11 +43,12 @@ virtio_recv_pkts_vec(void *rx_queue, struct rte_mbuf **rx_pkts,
 	struct virtnet_rx *rxvq = rx_queue;
 	struct virtqueue *vq = rxvq->vq;
 	struct virtio_hw *hw = vq->hw;
-	uint16_t nb_used;
+	uint16_t nb_used, nb_total;
 	uint16_t desc_idx;
 	struct vring_used_elem *rused;
 	struct rte_mbuf **sw_ring;
 	struct rte_mbuf **sw_ring_end;
+	struct rte_mbuf **ref_rx_pkts;
 	uint16_t nb_pkts_received = 0;
 	__m128i shuf_msk1, shuf_msk2, len_adjust;
 
@@ -84,9 +85,7 @@ virtio_recv_pkts_vec(void *rx_queue, struct rte_mbuf **rx_pkts,
 	if (unlikely(nb_pkts < RTE_VIRTIO_DESC_PER_LOOP))
 		return 0;
 
-	nb_used = VIRTQUEUE_NUSED(vq);
-
-	rte_compiler_barrier();
+	nb_used = virtqueue_nused(vq);
 
 	if (unlikely(nb_used == 0))
 		return 0;
@@ -107,8 +106,10 @@ virtio_recv_pkts_vec(void *rx_queue, struct rte_mbuf **rx_pkts,
 			virtqueue_notify(vq);
 	}
 
+	nb_total = nb_used;
+	ref_rx_pkts = rx_pkts;
 	for (nb_pkts_received = 0;
-		nb_pkts_received < nb_used;) {
+		nb_pkts_received < nb_total;) {
 		__m128i desc[RTE_VIRTIO_DESC_PER_LOOP / 2];
 		__m128i mbp[RTE_VIRTIO_DESC_PER_LOOP / 2];
 		__m128i pkt_mb[RTE_VIRTIO_DESC_PER_LOOP];
@@ -190,5 +191,8 @@ virtio_recv_pkts_vec(void *rx_queue, struct rte_mbuf **rx_pkts,
 	vq->vq_used_cons_idx += nb_pkts_received;
 	vq->vq_free_cnt += nb_pkts_received;
 	rxvq->stats.packets += nb_pkts_received;
+	for (nb_used = 0; nb_used < nb_pkts_received; nb_used++)
+		virtio_update_packet_stats(&rxvq->stats, ref_rx_pkts[nb_used]);
+
 	return nb_pkts_received;
 }

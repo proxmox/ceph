@@ -18,15 +18,29 @@
 # header-only libraries. An alias, Boost::boost, for Boost::headers is
 # provided for compatibility.
 #
+# Requesting the special component "ALL" will make all installed components
+# available, as in the following example:
+#
+# find_package(Boost 1.73 REQUIRED COMPONENTS ALL)
+#
+# Since COMPONENTS is optional when REQUIRED is specified, the above can be
+# shortened to
+#
+# find_package(Boost 1.73 REQUIRED ALL)
+#
+# When ALL is used, a variable Boost_ALL_TARGETS will be set and will contain
+# the names of all created targets.
+#
+# The ALL component cannot be combined with named components.
+#
 # Since Boost libraries can coexist in many variants - 32/64 bit,
 # static/dynamic runtime, debug/release, the following variables can be used
 # to control which variant is chosen:
 #
 # Boost_USE_DEBUG_LIBS:     When OFF, disables debug libraries.
 # Boost_USE_RELEASE_LIBS:   When OFF, disables release libraries.
-# Boost_USE_MULTITHREADED:  When ON, uses multithreaded Boost libraries.
-#                           When OFF, uses single-threaded libraries.
-#                           The default is to use either.
+# Boost_USE_MULTITHREADED:  When OFF, uses single-threaded libraries.
+#                           The default is multithreaded.
 # Boost_USE_STATIC_LIBS:    When ON, uses static Boost libraries; when OFF,
 #                           uses shared Boost libraries; when not set, uses
 #                           static on Windows, shared otherwise.
@@ -106,6 +120,13 @@ macro(boost_find_component comp req)
     set(Boost_PYTHON_VERSION "${CMAKE_MATCH_2}.${CMAKE_MATCH_3}")
     set(__boost_comp_nv "${CMAKE_MATCH_1}")
 
+  elseif("${comp}" MATCHES "^(python|numpy|mpi_python)([1-9])$")
+
+    # handle python2/python3 for compatibility
+
+    set(Boost_PYTHON_VERSION_MAJOR "${CMAKE_MATCH_2}")
+    set(__boost_comp_nv "${CMAKE_MATCH_1}")
+
   else()
 
     set(__boost_comp_nv "${comp}")
@@ -153,6 +174,42 @@ macro(boost_find_component comp req)
 
 endmacro()
 
+macro(boost_find_all_components)
+
+  # Search for all available component-configuration directories...
+  file(GLOB __boost_all_components
+       LIST_DIRECTORIES true RELATIVE "${CMAKE_CURRENT_LIST_DIR}/.."
+       "${CMAKE_CURRENT_LIST_DIR}/../boost_*-${Boost_VERSION}")
+  # ...and extract component names from it.
+  string(REGEX REPLACE "boost_([_a-z0-9]+)-${Boost_VERSION}" "\\1"
+         __boost_all_components "${__boost_all_components}")
+
+  if(Boost_DEBUG)
+    message(STATUS "BoostConfig: discovered components: ${__boost_all_components}")
+  endif()
+
+  list(REMOVE_ITEM __boost_all_components "headers")
+
+  # Try to find each component.
+  foreach(__boost_comp IN LISTS __boost_all_components)
+
+    boost_find_component(${__boost_comp} 0)
+
+    # Append to list of all targets (if found).
+    if(Boost_${__boost_comp}_FOUND)
+      list(APPEND Boost_ALL_TARGETS Boost::${__boost_comp})
+    endif()
+
+  endforeach()
+
+  unset(__boost_all_components)
+
+  if(Boost_DEBUG)
+    message(STATUS "BoostConfig: Boost_ALL_TARGETS: ${Boost_ALL_TARGETS}")
+  endif()
+
+endmacro()
+
 # Find boost_headers
 
 boost_find_component(headers 1)
@@ -180,11 +237,29 @@ set(Boost_LIBRARIES "")
 
 # Find components
 
-foreach(__boost_comp IN LISTS Boost_FIND_COMPONENTS)
+if("ALL" IN_LIST Boost_FIND_COMPONENTS)
 
-  boost_find_component(${__boost_comp} ${Boost_FIND_REQUIRED_${__boost_comp}})
+  # Make sure "ALL" is the only requested component.
+  list(LENGTH Boost_FIND_COMPONENTS __boost_find_components_count)
+  if(NOT ${__boost_find_components_count} EQUAL 1)
+    message(AUTHOR_WARNING "ALL cannot be combined with named components; the named components will be ignored.")
+  endif()
 
-endforeach()
+  unset(__boost_find_components_count)
+
+  set(Boost_ALL_TARGETS Boost::headers)
+
+  boost_find_all_components()
+
+else()
+
+  foreach(__boost_comp IN LISTS Boost_FIND_COMPONENTS)
+
+    boost_find_component(${__boost_comp} ${Boost_FIND_REQUIRED_${__boost_comp}})
+
+  endforeach()
+
+endif()
 
 # Compatibility targets
 
@@ -198,4 +273,10 @@ if(NOT TARGET Boost::boost)
   add_library(Boost::disable_autolinking INTERFACE IMPORTED)
   add_library(Boost::dynamic_linking INTERFACE IMPORTED)
 
+endif()
+
+# Compatibility variable when using meta-component "ALL"
+
+if("ALL" IN_LIST Boost_FIND_COMPONENTS)
+  set(Boost_ALL_FOUND ${boost_headers_FOUND})
 endif()

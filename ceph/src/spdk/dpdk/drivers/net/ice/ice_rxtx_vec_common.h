@@ -29,6 +29,7 @@ ice_rx_reassemble_packets(struct ice_rx_queue *rxq, struct rte_mbuf **rx_bufs,
 			if (!split_flags[buf_idx]) {
 				/* it's the last packet of the set */
 				start->hash = end->hash;
+				start->vlan_tci = end->vlan_tci;
 				start->ol_flags = end->ol_flags;
 				/* we need to strip crc for the whole packet */
 				start->pkt_len -= rxq->crc_len;
@@ -234,6 +235,9 @@ ice_rx_vec_queue_default(struct ice_rx_queue *rxq)
 	if (rxq->nb_rx_desc % rxq->rx_free_thresh)
 		return -1;
 
+	if (rxq->proto_xtr != PROTO_XTR_NONE)
+		return -1;
+
 	return 0;
 }
 
@@ -242,6 +246,7 @@ ice_rx_vec_queue_default(struct ice_rx_queue *rxq)
 		DEV_TX_OFFLOAD_VLAN_INSERT |		 \
 		DEV_TX_OFFLOAD_SCTP_CKSUM |		 \
 		DEV_TX_OFFLOAD_UDP_CKSUM |		 \
+		DEV_TX_OFFLOAD_TCP_TSO |		 \
 		DEV_TX_OFFLOAD_TCP_CKSUM)
 
 static inline int
@@ -265,6 +270,12 @@ ice_rx_vec_dev_check_default(struct rte_eth_dev *dev)
 {
 	int i;
 	struct ice_rx_queue *rxq;
+	struct ice_adapter *ad =
+		ICE_DEV_PRIVATE_TO_ADAPTER(dev->data->dev_private);
+
+	/* vPMD does not support flow mark. */
+	if (ad->devargs.flow_mark_support)
+		return -1;
 
 	for (i = 0; i < dev->data->nb_rx_queues; i++) {
 		rxq = dev->data->rx_queues[i];

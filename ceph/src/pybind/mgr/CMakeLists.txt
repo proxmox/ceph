@@ -1,12 +1,12 @@
 if(WITH_MGR_DASHBOARD_FRONTEND)
   add_subdirectory(dashboard)
 endif()
-add_subdirectory(insights)
-add_subdirectory(rook)
-
+if(WITH_MGR_ROOK_CLIENT)
+  add_subdirectory(rook)
+endif()
 if(WITH_TESTS)
   include(AddCephTest)
-  add_tox_test(mgr ${CMAKE_CURRENT_SOURCE_DIR} TOX_ENVS mypy)
+  add_tox_test(mgr ${CMAKE_CURRENT_SOURCE_DIR} TOX_ENVS py3 mypy flake8)
 endif()
 
 # Location needs to match default setting for mgr_module_path, currently:

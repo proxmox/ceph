@@ -27,6 +27,8 @@
 #  OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ########################################################################
 
+include mem/aarch64/Makefile.am
+
 lsrc        += 	mem/mem_zero_detect_base.c
 
 lsrc_base_aliases += mem/mem_zero_detect_base_aliases.c

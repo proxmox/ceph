@@ -70,7 +70,7 @@ in :ref:`t5-nics` and :ref:`t6-nics`.
 Prerequisites
 -------------
 
-- Requires firmware version **1.17.14.0** and higher. Visit
+- Requires firmware version **1.24.11.0** and higher. Visit
   `Chelsio Download Center <http://service.chelsio.com>`_ to get latest firmware
   bundled with the latest Chelsio Unified Wire package.
 
@@ -104,30 +104,6 @@ enabling debugging options may affect system performance.
 
      This controls compilation of both CXGBE and CXGBEVF PMD.
 
-- ``CONFIG_RTE_LIBRTE_CXGBE_DEBUG`` (default **n**)
-
-  Toggle display of generic debugging messages.
-
-- ``CONFIG_RTE_LIBRTE_CXGBE_DEBUG_REG`` (default **n**)
-
-  Toggle display of registers related run-time check messages.
-
-- ``CONFIG_RTE_LIBRTE_CXGBE_DEBUG_MBOX`` (default **n**)
-
-  Toggle display of firmware mailbox related run-time check messages.
-
-- ``CONFIG_RTE_LIBRTE_CXGBE_DEBUG_TX`` (default **n**)
-
-  Toggle display of transmission data path run-time check messages.
-
-- ``CONFIG_RTE_LIBRTE_CXGBE_DEBUG_RX`` (default **n**)
-
-  Toggle display of receiving data path run-time check messages.
-
-- ``CONFIG_RTE_LIBRTE_CXGBE_TPUT`` (default **y**)
-
-  Toggle behavior to prefer Throughput or Latency.
-
 Runtime Options
 ~~~~~~~~~~~~~~~
 
@@ -138,17 +114,237 @@ be passed as part of EAL arguments. For example,
 
    testpmd -w 02:00.4,keep_ovlan=1 -- -i
 
+Common Runtime Options
+^^^^^^^^^^^^^^^^^^^^^^
+
 - ``keep_ovlan`` (default **0**)
 
   Toggle behavior to keep/strip outer VLAN in Q-in-Q packets. If
   enabled, the outer VLAN tag is preserved in Q-in-Q packets. Otherwise,
   the outer VLAN tag is stripped in Q-in-Q packets.
 
+- ``tx_mode_latency`` (default **0**)
+
+  When set to 1, Tx doesn't wait for max number of packets to get
+  coalesced and sends the packets immediately at the end of the
+  current Tx burst. When set to 0, Tx waits across multiple Tx bursts
+  until the max number of packets have been coalesced. In this case,
+  Tx only sends the coalesced packets to hardware once the max
+  coalesce limit has been reached.
+
+CXGBE VF Only Runtime Options
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
 - ``force_link_up`` (default **0**)
 
   When set to 1, CXGBEVF PMD always forces link as up for all VFs on
   underlying Chelsio NICs. This enables multiple VFs on the same NIC
   to send traffic to each other even when the physical link is down.
+
+CXGBE PF Only Runtime Options
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+- ``filtermode`` (default **0**)
+
+  Apart from the 4-tuple (IP src/dst addresses and TCP/UDP src/dst port
+  addresses), there are only 40-bits available to match other fields in
+  packet headers. So, ``filtermode`` devarg allows user to dynamically
+  select a 40-bit supported match field combination for LETCAM (wildcard)
+  filters.
+
+  Default value of **0** makes driver pick the combination configured in
+  the firmware configuration file on the adapter.
+
+  The supported flags and their corresponding values are shown in table below.
+  These flags can be OR'd to create 1 of the multiple supported combinations
+  for LETCAM filters.
+
+        ==================      ======
+        FLAG                    VALUE
+        ==================      ======
+        Physical Port           0x1
+        PFVF                    0x2
+        Destination MAC         0x4
+        Ethertype               0x8
+        Inner VLAN              0x10
+        Outer VLAN              0x20
+        IP TOS                  0x40
+        IP Protocol             0x80
+        ==================      ======
+
+  The supported ``filtermode`` combinations and their corresponding OR'd
+  values are shown in table below.
+
+        +-----------------------------------+-----------+
+        | FILTERMODE COMBINATIONS           |   VALUE   |
+        +===================================+===========+
+        | Protocol, TOS, Outer VLAN, Port   |     0xE1  |
+        +-----------------------------------+-----------+
+        | Protocol, TOS, Outer VLAN         |     0xE0  |
+        +-----------------------------------+-----------+
+        | Protocol, TOS, Inner VLAN, Port   |     0xD1  |
+        +-----------------------------------+-----------+
+        | Protocol, TOS, Inner VLAN         |     0xD0  |
+        +-----------------------------------+-----------+
+        | Protocol, TOS, PFVF, Port         |     0xC3  |
+        +-----------------------------------+-----------+
+        | Protocol, TOS, PFVF               |     0xC2  |
+        +-----------------------------------+-----------+
+        | Protocol, TOS, Port               |     0xC1  |
+        +-----------------------------------+-----------+
+        | Protocol, TOS                     |     0xC0  |
+        +-----------------------------------+-----------+
+        | Protocol, Outer VLAN, Port        |     0xA1  |
+        +-----------------------------------+-----------+
+        | Protocol, Outer VLAN              |     0xA0  |
+        +-----------------------------------+-----------+
+        | Protocol, Inner VLAN, Port        |     0x91  |
+        +-----------------------------------+-----------+
+        | Protocol, Inner VLAN              |     0x90  |
+        +-----------------------------------+-----------+
+        | Protocol, Ethertype, DstMAC, Port |     0x8D  |
+        +-----------------------------------+-----------+
+        | Protocol, Ethertype, DstMAC       |     0x8C  |
+        +-----------------------------------+-----------+
+        | Protocol, Ethertype, Port         |     0x89  |
+        +-----------------------------------+-----------+
+        | Protocol, Ethertype               |     0x88  |
+        +-----------------------------------+-----------+
+        | Protocol, DstMAC, PFVF, Port      |     0x87  |
+        +-----------------------------------+-----------+
+        | Protocol, DstMAC, PFVF            |     0x86  |
+        +-----------------------------------+-----------+
+        | Protocol, DstMAC, Port            |     0x85  |
+        +-----------------------------------+-----------+
+        | Protocol, DstMAC                  |     0x84  |
+        +-----------------------------------+-----------+
+        | Protocol, PFVF, Port              |     0x83  |
+        +-----------------------------------+-----------+
+        | Protocol, PFVF                    |     0x82  |
+        +-----------------------------------+-----------+
+        | Protocol, Port                    |     0x81  |
+        +-----------------------------------+-----------+
+        | Protocol                          |     0x80  |
+        +-----------------------------------+-----------+
+        | TOS, Outer VLAN, Port             |     0x61  |
+        +-----------------------------------+-----------+
+        | TOS, Outer VLAN                   |     0x60  |
+        +-----------------------------------+-----------+
+        | TOS, Inner VLAN, Port             |     0x51  |
+        +-----------------------------------+-----------+
+        | TOS, Inner VLAN                   |     0x50  |
+        +-----------------------------------+-----------+
+        | TOS, Ethertype, DstMAC, Port      |     0x4D  |
+        +-----------------------------------+-----------+
+        | TOS, Ethertype, DstMAC            |     0x4C  |
+        +-----------------------------------+-----------+
+        | TOS, Ethertype, Port              |     0x49  |
+        +-----------------------------------+-----------+
+        | TOS, Ethertype                    |     0x48  |
+        +-----------------------------------+-----------+
+        | TOS, DstMAC, PFVF, Port           |     0x47  |
+        +-----------------------------------+-----------+
+        | TOS, DstMAC, PFVF                 |     0x46  |
+        +-----------------------------------+-----------+
+        | TOS, DstMAC, Port                 |     0x45  |
+        +-----------------------------------+-----------+
+        | TOS, DstMAC                       |     0x44  |
+        +-----------------------------------+-----------+
+        | TOS, PFVF, Port                   |     0x43  |
+        +-----------------------------------+-----------+
+        | TOS, PFVF                         |     0x42  |
+        +-----------------------------------+-----------+
+        | TOS, Port                         |     0x41  |
+        +-----------------------------------+-----------+
+        | TOS                               |     0x40  |
+        +-----------------------------------+-----------+
+        | Outer VLAN, Inner VLAN, Port      |     0x31  |
+        +-----------------------------------+-----------+
+        | Outer VLAN, Ethertype, Port       |     0x29  |
+        +-----------------------------------+-----------+
+        | Outer VLAN, Ethertype             |     0x28  |
+        +-----------------------------------+-----------+
+        | Outer VLAN, DstMAC, Port          |     0x25  |
+        +-----------------------------------+-----------+
+        | Outer VLAN, DstMAC                |     0x24  |
+        +-----------------------------------+-----------+
+        | Outer VLAN, Port                  |     0x21  |
+        +-----------------------------------+-----------+
+        | Outer VLAN                        |     0x20  |
+        +-----------------------------------+-----------+
+        | Inner VLAN, Ethertype, Port       |     0x19  |
+        +-----------------------------------+-----------+
+        | Inner VLAN, Ethertype             |     0x18  |
+        +-----------------------------------+-----------+
+        | Inner VLAN, DstMAC, Port          |     0x15  |
+        +-----------------------------------+-----------+
+        | Inner VLAN, DstMAC                |     0x14  |
+        +-----------------------------------+-----------+
+        | Inner VLAN, Port                  |     0x11  |
+        +-----------------------------------+-----------+
+        | Inner VLAN                        |     0x10  |
+        +-----------------------------------+-----------+
+        | Ethertype, DstMAC, Port           |     0xD   |
+        +-----------------------------------+-----------+
+        | Ethertype, DstMAC                 |     0xC   |
+        +-----------------------------------+-----------+
+        | Ethertype, PFVF, Port             |     0xB   |
+        +-----------------------------------+-----------+
+        | Ethertype, PFVF                   |     0xA   |
+        +-----------------------------------+-----------+
+        | Ethertype, Port                   |     0x9   |
+        +-----------------------------------+-----------+
+        | Ethertype                         |     0x8   |
+        +-----------------------------------+-----------+
+        | DstMAC, PFVF, Port                |     0x7   |
+        +-----------------------------------+-----------+
+        | DstMAC, PFVF                      |     0x6   |
+        +-----------------------------------+-----------+
+        | DstMAC, Port                      |     0x5   |
+        +-----------------------------------+-----------+
+        | Destination MAC                   |     0x4   |
+        +-----------------------------------+-----------+
+        | PFVF, Port                        |     0x3   |
+        +-----------------------------------+-----------+
+        | PFVF                              |     0x2   |
+        +-----------------------------------+-----------+
+        | Physical Port                     |     0x1   +
+        +-----------------------------------+-----------+
+
+  For example, to enable matching ``ethertype`` field in Ethernet
+  header, and ``protocol`` field in IPv4 header, the ``filtermode``
+  combination must be given as:
+
+  .. code-block:: console
+
+     testpmd -w 02:00.4,filtermode=0x88 -- -i
+
+- ``filtermask`` (default **0**)
+
+  ``filtermask`` devarg works similar to ``filtermode``, but is used
+  to configure a filter mode combination for HASH (exact-match) filters.
+
+  .. note::
+
+     The combination chosen for ``filtermask`` devarg **must be a subset** of
+     the combination chosen for ``filtermode`` devarg.
+
+  Default value of **0** makes driver pick the combination configured in
+  the firmware configuration file on the adapter.
+
+  Note that the filter rule will only be inserted in HASH region, if the
+  rule contains **all** the fields specified in the ``filtermask`` combination.
+  Otherwise, the filter rule will get inserted in LETCAM region.
+
+  The same combination list explained in the tables in ``filtermode`` devarg
+  section earlier applies for ``filtermask`` devarg, as well.
+
+  For example, to enable matching only protocol field in IPv4 header, the
+  ``filtermask`` combination must be given as:
+
+  .. code-block:: console
+
+     testpmd -w 02:00.4,filtermode=0x88,filtermask=0x80 -- -i
 
 .. _driver-compilation:
 
@@ -224,7 +420,7 @@ Unified Wire package for Linux operating system are as follows:
 
    .. code-block:: console
 
-      firmware-version: 1.17.14.0, TP 0.1.4.9
+      firmware-version: 1.24.11.0, TP 0.1.23.2
 
 Running testpmd
 ~~~~~~~~~~~~~~~
@@ -282,7 +478,7 @@ devices managed by librte_pmd_cxgbe in Linux operating system.
       EAL:   PCI memory mapped at 0x7fd7c0200000
       EAL:   PCI memory mapped at 0x7fd77cdfd000
       EAL:   PCI memory mapped at 0x7fd7c10b7000
-      PMD: rte_cxgbe_pmd: fw: 1.17.14.0, TP: 0.1.4.9
+      PMD: rte_cxgbe_pmd: fw: 1.24.11.0, TP: 0.1.23.2
       PMD: rte_cxgbe_pmd: Coming up as MASTER: Initializing adapter
       Interactive-mode selected
       Configuring Port 0 (socket 0)
@@ -388,16 +584,16 @@ virtual functions.
       [...]
       EAL: PCI device 0000:02:01.0 on NUMA socket 0
       EAL:   probe driver: 1425:5803 net_cxgbevf
-      PMD: rte_cxgbe_pmd: Firmware version: 1.17.14.0
-      PMD: rte_cxgbe_pmd: TP Microcode version: 0.1.4.9
+      PMD: rte_cxgbe_pmd: Firmware version: 1.24.11.0
+      PMD: rte_cxgbe_pmd: TP Microcode version: 0.1.23.2
       PMD: rte_cxgbe_pmd: Chelsio rev 0
       PMD: rte_cxgbe_pmd: No bootstrap loaded
       PMD: rte_cxgbe_pmd: No Expansion ROM loaded
       PMD: rte_cxgbe_pmd:  0000:02:01.0 Chelsio rev 0 1G/10GBASE-SFP
       EAL: PCI device 0000:02:01.1 on NUMA socket 0
       EAL:   probe driver: 1425:5803 net_cxgbevf
-      PMD: rte_cxgbe_pmd: Firmware version: 1.17.14.0
-      PMD: rte_cxgbe_pmd: TP Microcode version: 0.1.4.9
+      PMD: rte_cxgbe_pmd: Firmware version: 1.24.11.0
+      PMD: rte_cxgbe_pmd: TP Microcode version: 0.1.23.2
       PMD: rte_cxgbe_pmd: Chelsio rev 0
       PMD: rte_cxgbe_pmd: No bootstrap loaded
       PMD: rte_cxgbe_pmd: No Expansion ROM loaded
@@ -474,7 +670,7 @@ Unified Wire package for FreeBSD operating system are as follows:
 
    .. code-block:: console
 
-      dev.t5nex.0.firmware_version: 1.17.14.0
+      dev.t5nex.0.firmware_version: 1.24.11.0
 
 Running testpmd
 ~~~~~~~~~~~~~~~
@@ -592,7 +788,7 @@ devices managed by librte_pmd_cxgbe in FreeBSD operating system.
       EAL:   PCI memory mapped at 0x8007ec000
       EAL:   PCI memory mapped at 0x842800000
       EAL:   PCI memory mapped at 0x80086c000
-      PMD: rte_cxgbe_pmd: fw: 1.17.14.0, TP: 0.1.4.9
+      PMD: rte_cxgbe_pmd: fw: 1.24.11.0, TP: 0.1.23.2
       PMD: rte_cxgbe_pmd: Coming up as MASTER: Initializing adapter
       Interactive-mode selected
       Configuring Port 0 (socket 0)

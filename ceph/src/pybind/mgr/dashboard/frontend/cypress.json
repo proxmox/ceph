@@ -1,14 +1,21 @@
 {
   "baseUrl": "http://localhost:4200/",
   "ignoreTestFiles": [
-    "*.po.ts"
+    "*.po.ts",
+    "**/orchestrator/**"
   ],
   "supportFile": "cypress/support/index.ts",
   "video": false,
-  "defaultCommandTimeout": 20000,
+  "defaultCommandTimeout": 120000,
   "viewportHeight": 1080,
   "viewportWidth": 1920,
-  "pluginsFile": false,
-  "fixturesFolder": false,
-  "projectId": "k7ab29"
+  "projectId": "k7ab29",
+  "reporter": "cypress-multi-reporters",
+  "reporterOptions": {
+    "reporterEnabled": "spec, mocha-junit-reporter",
+    "mochaJunitReporterReporterOptions": {
+      "mochaFile": "cypress/reports/results-[hash].xml"
+    }
+  },
+  "retries": 1
 }

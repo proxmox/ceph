@@ -1,24 +1,27 @@
 # -*- coding: utf-8 -*-
-from __future__ import absolute_import
-
+import os
 from collections import defaultdict
 
-import os
-
-import cherrypy
 import cephfs
+import cherrypy
 
-from . import ApiController, ControllerDoc, RESTController, UiApiController, \
-    allow_empty_body
 from .. import mgr
 from ..exceptions import DashboardException
 from ..security import Scope
-from ..services.cephfs import CephFS as CephFS_
 from ..services.ceph_service import CephService
+from ..services.cephfs import CephFS as CephFS_
 from ..tools import ViewCache
+from . import ApiController, ControllerDoc, EndpointDoc, RESTController, \
+    UiApiController, allow_empty_body
+
+GET_QUOTAS_SCHEMA = {
+    'max_bytes': (int, ''),
+    'max_files': (int, '')
+}
 
 
 @ApiController('/cephfs', Scope.CEPHFS)
+@ControllerDoc("Cephfs Management API", "Cephfs")
 class CephFS(RESTController):
     def __init__(self):  # pragma: no cover
         super(CephFS, self).__init__()
@@ -75,7 +78,7 @@ class CephFS(RESTController):
                 "mds_mem.ino"
             ]
 
-        result = {}  # type: dict
+        result: dict = {}
         mds_names = self._get_mds_names(fs_id)
 
         for mds_name in mds_names:
@@ -130,7 +133,7 @@ class CephFS(RESTController):
 
     # pylint: disable=too-many-statements,too-many-branches
     def fs_status(self, fs_id):
-        mds_versions = defaultdict(list)  # type: dict
+        mds_versions: dict = defaultdict(list)
 
         fsmap = mgr.get("fs_map")
         filesystem = None
@@ -156,6 +159,8 @@ class CephFS(RESTController):
                 info = mdsmap['info']['gid_{0}'.format(gid)]
                 dns = mgr.get_latest("mds", info['name'], "mds_mem.dn")
                 inos = mgr.get_latest("mds", info['name'], "mds_mem.ino")
+                dirs = mgr.get_latest("mds", info['name'], "mds_mem.dir")
+                caps = mgr.get_latest("mds", info['name'], "mds_mem.cap")
 
                 if rank == 0:
                     client_count = mgr.get_latest("mds", info['name'],
@@ -190,7 +195,9 @@ class CephFS(RESTController):
                         "mds": info['name'],
                         "activity": activity,
                         "dns": dns,
-                        "inos": inos
+                        "inos": inos,
+                        "dirs": dirs,
+                        "caps": caps
                     }
                 )
 
@@ -202,7 +209,9 @@ class CephFS(RESTController):
                         "mds": "",
                         "activity": 0.0,
                         "dns": 0,
-                        "inos": 0
+                        "inos": 0,
+                        "dirs": 0,
+                        "caps": 0
                     }
                 )
 
@@ -214,6 +223,8 @@ class CephFS(RESTController):
 
             inos = mgr.get_latest("mds", daemon_info['name'], "mds_mem.ino")
             dns = mgr.get_latest("mds", daemon_info['name'], "mds_mem.dn")
+            dirs = mgr.get_latest("mds", daemon_info['name'], "mds_mem.dir")
+            caps = mgr.get_latest("mds", daemon_info['name'], "mds_mem.cap")
 
             activity = CephService.get_rate(
                 "mds", daemon_info['name'], "mds_log.replay")
@@ -225,7 +236,9 @@ class CephFS(RESTController):
                     "mds": daemon_info['name'],
                     "activity": activity,
                     "dns": dns,
-                    "inos": inos
+                    "inos": inos,
+                    "dirs": dirs,
+                    "caps": caps
                 }
             )
 
@@ -243,7 +256,7 @@ class CephFS(RESTController):
             pools_table.append({
                 "pool": pools[pool_id]['pool_name'],
                 "type": pool_type,
-                "used": stats['bytes_used'],
+                "used": stats['stored'],
                 "avail": stats['max_avail']
             })
 
@@ -357,7 +370,7 @@ class CephFS(RESTController):
         List directories of specified path.
         :param fs_id: The filesystem identifier.
         :param path: The path where to start listing the directory content.
-          Defaults to '/' if not set.
+        Defaults to '/' if not set.
         :type path: str | bytes
         :param depth: The number of steps to go down the directory tree.
         :type depth: int | str
@@ -376,7 +389,7 @@ class CephFS(RESTController):
         """
         Transforms input path parameter of ls_dir methods (api and ui-api).
         :param path: The path where to start listing the directory content.
-          Defaults to '/' if not set.
+        Defaults to '/' if not set.
         :type path: str | bytes
         :return: Normalized path or root path
         :return: str
@@ -387,9 +400,9 @@ class CephFS(RESTController):
             path = os.path.normpath(path)
         return path
 
-    @RESTController.Resource('POST')
+    @RESTController.Resource('POST', path='/tree')
     @allow_empty_body
-    def mk_dirs(self, fs_id, path):
+    def mk_tree(self, fs_id, path):
         """
         Create a directory.
         :param fs_id: The filesystem identifier.
@@ -398,9 +411,8 @@ class CephFS(RESTController):
         cfs = self._cephfs_instance(fs_id)
         cfs.mk_dirs(path)
 
-    @RESTController.Resource('POST')
-    @allow_empty_body
-    def rm_dir(self, fs_id, path):
+    @RESTController.Resource('DELETE', path='/tree')
+    def rm_tree(self, fs_id, path):
         """
         Remove a directory.
         :param fs_id: The filesystem identifier.
@@ -409,50 +421,9 @@ class CephFS(RESTController):
         cfs = self._cephfs_instance(fs_id)
         cfs.rm_dir(path)
 
-    @RESTController.Resource('POST')
+    @RESTController.Resource('PUT', path='/quota')
     @allow_empty_body
-    def mk_snapshot(self, fs_id, path, name=None):
-        """
-        Create a snapshot.
-        :param fs_id: The filesystem identifier.
-        :param path: The path of the directory.
-        :param name: The name of the snapshot. If not specified,
-            a name using the current time in RFC3339 UTC format
-            will be generated.
-        :return: The name of the snapshot.
-        :rtype: str
-        """
-        cfs = self._cephfs_instance(fs_id)
-        return cfs.mk_snapshot(path, name)
-
-    @RESTController.Resource('POST')
-    @allow_empty_body
-    def rm_snapshot(self, fs_id, path, name):
-        """
-        Remove a snapshot.
-        :param fs_id: The filesystem identifier.
-        :param path: The path of the directory.
-        :param name: The name of the snapshot.
-        """
-        cfs = self._cephfs_instance(fs_id)
-        cfs.rm_snapshot(path, name)
-
-    @RESTController.Resource('GET')
-    def get_quotas(self, fs_id, path):
-        """
-        Get the quotas of the specified path.
-        :param fs_id: The filesystem identifier.
-        :param path: The path of the directory/file.
-        :return: Returns a dictionary containing 'max_bytes'
-            and 'max_files'.
-        :rtype: dict
-        """
-        cfs = self._cephfs_instance(fs_id)
-        return cfs.get_quotas(path)
-
-    @RESTController.Resource('POST')
-    @allow_empty_body
-    def set_quotas(self, fs_id, path, max_bytes=None, max_files=None):
+    def quota(self, fs_id, path, max_bytes=None, max_files=None):
         """
         Set the quotas of the specified path.
         :param fs_id: The filesystem identifier.
@@ -462,6 +433,51 @@ class CephFS(RESTController):
         """
         cfs = self._cephfs_instance(fs_id)
         return cfs.set_quotas(path, max_bytes, max_files)
+
+    @RESTController.Resource('GET', path='/quota')
+    @EndpointDoc("Get Cephfs Quotas of the specified path",
+                 parameters={
+                     'fs_id': (str, 'File System Identifier'),
+                     'path': (str, 'File System Path'),
+                 },
+                 responses={200: GET_QUOTAS_SCHEMA})
+    def get_quota(self, fs_id, path):
+        """
+        Get the quotas of the specified path.
+        :param fs_id: The filesystem identifier.
+        :param path: The path of the directory/file.
+        :return: Returns a dictionary containing 'max_bytes'
+        and 'max_files'.
+        :rtype: dict
+        """
+        cfs = self._cephfs_instance(fs_id)
+        return cfs.get_quotas(path)
+
+    @RESTController.Resource('POST', path='/snapshot')
+    @allow_empty_body
+    def snapshot(self, fs_id, path, name=None):
+        """
+        Create a snapshot.
+        :param fs_id: The filesystem identifier.
+        :param path: The path of the directory.
+        :param name: The name of the snapshot. If not specified, a name using the
+        current time in RFC3339 UTC format will be generated.
+        :return: The name of the snapshot.
+        :rtype: str
+        """
+        cfs = self._cephfs_instance(fs_id)
+        return cfs.mk_snapshot(path, name)
+
+    @RESTController.Resource('DELETE', path='/snapshot')
+    def rm_snapshot(self, fs_id, path, name):
+        """
+        Remove a snapshot.
+        :param fs_id: The filesystem identifier.
+        :param path: The path of the directory.
+        :param name: The name of the snapshot.
+        """
+        cfs = self._cephfs_instance(fs_id)
+        cfs.rm_snapshot(path, name)
 
 
 class CephFSClients(object):
@@ -511,7 +527,7 @@ class CephFsUi(CephFS):
         :param fs_id: The filesystem identifier.
         :type fs_id: int | str
         :param path: The path where to start listing the directory content.
-          Defaults to '/' if not set.
+        Defaults to '/' if not set.
         :type path: str | bytes
         :param depth: The number of steps to go down the directory tree.
         :type depth: int | str

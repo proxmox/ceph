@@ -30,6 +30,22 @@
 #include "messages/MOSDPGRecoveryDelete.h"
 #include "messages/MOSDPGRecoveryDeleteReply.h"
 
+using std::list;
+using std::make_pair;
+using std::map;
+using std::ostream;
+using std::ostringstream;
+using std::pair;
+using std::set;
+using std::string;
+using std::stringstream;
+using std::vector;
+
+using ceph::bufferlist;
+using ceph::bufferptr;
+using ceph::ErasureCodeProfile;
+using ceph::ErasureCodeInterfaceRef;
+
 #define dout_context cct
 #define dout_subsys ceph_subsys_osd
 #define DOUT_PREFIX_ARGS this
@@ -127,7 +143,7 @@ void PGBackend::handle_recovery_delete(OpRequestRef op)
     get_parent()->remove_missing_object(p.first, p.second, gather.new_sub());
   }
 
-  MOSDPGRecoveryDeleteReply *reply = new MOSDPGRecoveryDeleteReply;
+  auto reply = make_message<MOSDPGRecoveryDeleteReply>();
   reply->from = get_parent()->whoami_shard();
   reply->set_priority(m->get_priority());
   reply->pgid = spg_t(get_parent()->get_info().pgid.pgid, m->from.shard);

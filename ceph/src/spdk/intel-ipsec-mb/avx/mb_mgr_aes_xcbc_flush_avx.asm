@@ -25,11 +25,11 @@
 ;; OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ;;
 
-%include "os.asm"
+%include "include/os.asm"
 %include "job_aes_hmac.asm"
 %include "mb_mgr_datastruct.asm"
 
-%include "reg_sizes.asm"
+%include "include/reg_sizes.asm"
 
 %ifndef AES_XCBC_X8
 %define AES_XCBC_X8 aes_xcbc_mac_128_x8
@@ -222,6 +222,22 @@ end_loop:
 	vmovdqa	xmm0, [state + _aes_xcbc_args_ICV + idx]
 	vmovq	[icv], xmm0
 	vpextrd	[icv + 8], xmm0, 2
+
+%ifdef SAFE_DATA
+        vpxor   xmm0, xmm0
+        ;; Clear ICV's and final blocks in returned job and NULL lanes
+%assign I 0
+%rep 8
+        cmp	qword [state + _aes_xcbc_ldata + I * _XCBC_LANE_DATA_size + _xcbc_job_in_lane], 0
+        jne	APPEND(skip_clear_,I)
+        vmovdqa	[state + _aes_xcbc_args_ICV + I*16], xmm0
+        lea     lane_data, [state + _aes_xcbc_ldata + (I * _XCBC_LANE_DATA_size)]
+        vmovdqa [lane_data + _xcbc_final_block], xmm0
+        vmovdqa [lane_data + _xcbc_final_block + 16], xmm0
+APPEND(skip_clear_,I):
+%assign I (I+1)
+%endrep
+%endif
 
 return:
 

@@ -73,8 +73,11 @@ struct spdk_scsi_pr_registrant {
 	TAILQ_ENTRY(spdk_scsi_pr_registrant)	link;
 };
 
+#define SCSI_SPC2_RESERVE			0x00000001U
+
 /* Reservation with LU_SCOPE */
 struct spdk_scsi_pr_reservation {
+	uint32_t				flags;
 	struct spdk_scsi_pr_registrant		*holder;
 	enum spdk_scsi_pr_type_code		rtype;
 	uint64_t				crkey;
@@ -117,6 +120,9 @@ struct spdk_scsi_lun {
 	/** Descriptor for opened block device. */
 	struct spdk_bdev_desc *bdev_desc;
 
+	/** The thread which opens this LUN. */
+	struct spdk_thread *thread;
+
 	/** I/O channel for the bdev associated with this LUN. */
 	struct spdk_io_channel *io_channel;
 
@@ -141,6 +147,8 @@ struct spdk_scsi_lun {
 	uint32_t pr_generation;
 	/** Reservation for the LUN */
 	struct spdk_scsi_pr_reservation reservation;
+	/** Reservation holder for SPC2 RESERVE(6) and RESERVE(10) */
+	struct spdk_scsi_pr_registrant scsi2_holder;
 
 	/** List of open descriptors for this LUN. */
 	TAILQ_HEAD(, spdk_scsi_lun_desc) open_descs;
@@ -161,54 +169,46 @@ struct spdk_scsi_lun {
 	struct spdk_poller *reset_poller;
 };
 
-struct spdk_lun_db_entry {
-	struct spdk_scsi_lun *lun;
-	struct spdk_lun_db_entry *next;
-};
+struct spdk_scsi_lun *scsi_lun_construct(struct spdk_bdev *bdev,
+		void (*hotremove_cb)(const struct spdk_scsi_lun *, void *),
+		void *hotremove_ctx);
+void scsi_lun_destruct(struct spdk_scsi_lun *lun);
 
-extern struct spdk_lun_db_entry *spdk_scsi_lun_list_head;
+void scsi_lun_execute_task(struct spdk_scsi_lun *lun, struct spdk_scsi_task *task);
+void scsi_lun_execute_mgmt_task(struct spdk_scsi_lun *lun, struct spdk_scsi_task *task);
+bool scsi_lun_has_pending_mgmt_tasks(const struct spdk_scsi_lun *lun,
+				     const struct spdk_scsi_port *initiator_port);
+void scsi_lun_complete_task(struct spdk_scsi_lun *lun, struct spdk_scsi_task *task);
+void scsi_lun_complete_reset_task(struct spdk_scsi_lun *lun, struct spdk_scsi_task *task);
+bool scsi_lun_has_pending_tasks(const struct spdk_scsi_lun *lun,
+				const struct spdk_scsi_port *initiator_port);
+int scsi_lun_allocate_io_channel(struct spdk_scsi_lun *lun);
+void scsi_lun_free_io_channel(struct spdk_scsi_lun *lun);
 
-/* This typedef exists to work around an astyle 2.05 bug.
- * Remove it when astyle is fixed.
- */
-typedef struct spdk_scsi_lun _spdk_scsi_lun;
+struct spdk_scsi_dev *scsi_dev_get_list(void);
 
-_spdk_scsi_lun *spdk_scsi_lun_construct(struct spdk_bdev *bdev,
-					void (*hotremove_cb)(const struct spdk_scsi_lun *, void *),
-					void *hotremove_ctx);
-void spdk_scsi_lun_destruct(struct spdk_scsi_lun *lun);
+int scsi_port_construct(struct spdk_scsi_port *port, uint64_t id,
+			uint16_t index, const char *name);
+void scsi_port_destruct(struct spdk_scsi_port *port);
 
-void spdk_scsi_lun_append_task(struct spdk_scsi_lun *lun, struct spdk_scsi_task *task);
-void spdk_scsi_lun_execute_tasks(struct spdk_scsi_lun *lun);
-void spdk_scsi_lun_append_mgmt_task(struct spdk_scsi_lun *lun, struct spdk_scsi_task *task);
-void spdk_scsi_lun_execute_mgmt_task(struct spdk_scsi_lun *lun);
-bool spdk_scsi_lun_has_pending_mgmt_tasks(const struct spdk_scsi_lun *lun);
-void spdk_scsi_lun_complete_task(struct spdk_scsi_lun *lun, struct spdk_scsi_task *task);
-void spdk_scsi_lun_complete_reset_task(struct spdk_scsi_lun *lun, struct spdk_scsi_task *task);
-bool spdk_scsi_lun_has_pending_tasks(const struct spdk_scsi_lun *lun);
-int _spdk_scsi_lun_allocate_io_channel(struct spdk_scsi_lun *lun);
-void _spdk_scsi_lun_free_io_channel(struct spdk_scsi_lun *lun);
+int bdev_scsi_execute(struct spdk_scsi_task *task);
+void bdev_scsi_reset(struct spdk_scsi_task *task);
 
-struct spdk_scsi_dev *spdk_scsi_dev_get_list(void);
+bool bdev_scsi_get_dif_ctx(struct spdk_bdev *bdev, struct spdk_scsi_task *task,
+			   struct spdk_dif_ctx *dif_ctx);
 
-int spdk_scsi_port_construct(struct spdk_scsi_port *port, uint64_t id,
-			     uint16_t index, const char *name);
-void spdk_scsi_port_destruct(struct spdk_scsi_port *port);
+int scsi_pr_out(struct spdk_scsi_task *task, uint8_t *cdb, uint8_t *data, uint16_t data_len);
+int scsi_pr_in(struct spdk_scsi_task *task, uint8_t *cdb, uint8_t *data, uint16_t data_len);
+int scsi_pr_check(struct spdk_scsi_task *task);
 
-int spdk_bdev_scsi_execute(struct spdk_scsi_task *task);
-void spdk_bdev_scsi_reset(struct spdk_scsi_task *task);
-
-bool spdk_scsi_bdev_get_dif_ctx(struct spdk_bdev *bdev, uint8_t *cdb, uint32_t data_offset,
-				struct spdk_dif_ctx *dif_ctx);
-
-int spdk_scsi_pr_out(struct spdk_scsi_task *task, uint8_t *cdb, uint8_t *data, uint16_t data_len);
-int spdk_scsi_pr_in(struct spdk_scsi_task *task, uint8_t *cdb, uint8_t *data, uint16_t data_len);
-int spdk_scsi_pr_check(struct spdk_scsi_task *task);
+int scsi2_reserve(struct spdk_scsi_task *task, uint8_t *cdb);
+int scsi2_release(struct spdk_scsi_task *task);
+int scsi2_reserve_check(struct spdk_scsi_task *task);
 
 struct spdk_scsi_globals {
 	pthread_mutex_t mutex;
 };
 
-extern struct spdk_scsi_globals g_spdk_scsi;
+extern struct spdk_scsi_globals g_scsi;
 
 #endif /* SPDK_SCSI_INTERNAL_H */

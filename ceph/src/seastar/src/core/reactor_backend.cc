@@ -23,6 +23,7 @@
 #include "core/syscall_result.hh"
 #include <seastar/core/print.hh>
 #include <seastar/core/reactor.hh>
+#include <seastar/core/internal/buffer_allocator.hh>
 #include <seastar/util/defer.hh>
 #include <seastar/util/read_first_line.hh>
 #include <chrono>
@@ -38,7 +39,7 @@ namespace seastar {
 using namespace std::chrono_literals;
 using namespace internal;
 using namespace internal::linux_abi;
-namespace fs = seastar::compat::filesystem;
+namespace fs = std::filesystem;
 
 class pollable_fd_state_completion : public kernel_completion {
     promise<> _pr;
@@ -58,15 +59,19 @@ void prepare_iocb(io_request& req, iocb& iocb) {
         break;
     case io_request::operation::write:
         iocb = make_write_iocb(req.fd(), req.pos(), req.address(), req.size());
+        set_nowait(iocb, true);
         break;
     case io_request::operation::writev:
         iocb = make_writev_iocb(req.fd(), req.pos(), req.iov(), req.size());
+        set_nowait(iocb, true);
         break;
     case io_request::operation::read:
         iocb = make_read_iocb(req.fd(), req.pos(), req.address(), req.size());
+        set_nowait(iocb, true);
         break;
     case io_request::operation::readv:
         iocb = make_readv_iocb(req.fd(), req.pos(), req.iov(), req.size());
+        set_nowait(iocb, true);
         break;
     default:
         seastar_logger.error("Invalid operation for iocb: {}", req.opname());
@@ -157,9 +162,6 @@ aio_storage_context::submit_work() {
         if (_r->_aio_eventfd) {
             set_eventfd_notification(io, _r->_aio_eventfd->get_fd());
         }
-        if (aio_nowait_supported) {
-            set_nowait(io, true);
-        }
         _submission_queue.push_back(&io);
     }
 
@@ -174,17 +176,26 @@ aio_storage_context::submit_work() {
         } else {
             nr_consumed = size_t(r);
         }
+        did_work = true;
         submitted += nr_consumed;
     }
     _r->_pending_io.erase(_r->_pending_io.begin(), _r->_pending_io.begin() + submitted);
 
     if (!_pending_aio_retry.empty()) {
-        auto retries = std::exchange(_pending_aio_retry, {});
-        // FIXME: future is discarded
-        (void)_r->_thread_pool->submit<syscall_result<int>>([this, retries] () mutable {
+        schedule_retry();
+        did_work = true;
+    }
+
+    return did_work;
+}
+
+void aio_storage_context::schedule_retry() {
+    // FIXME: future is discarded
+    (void)do_with(std::exchange(_pending_aio_retry, {}), [this](pending_aio_retry_t& retries){
+        return _r->_thread_pool->submit<syscall_result<int>>([this, &retries] () mutable {
             auto r = io_submit(_io_context, retries.size(), retries.data());
             return wrap_syscall<int>(r);
-        }).then([this, retries] (syscall_result<int> result) {
+        }).then([this, &retries] (syscall_result<int> result) {
             auto iocbs = retries.data();
             size_t nr_consumed = 0;
             if (result.result == -1) {
@@ -194,32 +205,27 @@ aio_storage_context::submit_work() {
             }
             std::copy(retries.begin() + nr_consumed, retries.end(), std::back_inserter(_pending_aio_retry));
         });
-        did_work = true;
-    }
-    return did_work;
+    });
 }
 
 bool aio_storage_context::reap_completions()
 {
-    io_event ev[max_aio];
     struct timespec timeout = {0, 0};
-    auto n = io_getevents(_io_context, 1, max_aio, ev, &timeout, _r->_force_io_getevents_syscall);
+    auto n = io_getevents(_io_context, 1, max_aio, _ev_buffer, &timeout, _r->_force_io_getevents_syscall);
     if (n == -1 && errno == EINTR) {
         n = 0;
     }
     assert(n >= 0);
-    unsigned nr_retry = 0;
     for (size_t i = 0; i < size_t(n); ++i) {
-        auto iocb = get_iocb(ev[i]);
-        if (ev[i].res == -EAGAIN) {
-            ++nr_retry;
+        auto iocb = get_iocb(_ev_buffer[i]);
+        if (_ev_buffer[i].res == -EAGAIN) {
             set_nowait(*iocb, false);
             _pending_aio_retry.push_back(iocb);
             continue;
         }
         _iocb_pool.put_one(iocb);
-        auto desc = reinterpret_cast<kernel_completion*>(ev[i].data);
-        desc->complete_with(ev[i].res);
+        auto desc = reinterpret_cast<kernel_completion*>(_ev_buffer[i].data);
+        desc->complete_with(_ev_buffer[i].res);
     }
     return n;
 }
@@ -539,6 +545,11 @@ reactor_backend_aio::read_some(pollable_fd_state& fd, const std::vector<iovec>& 
     return engine().do_read_some(fd, iov);
 }
 
+future<temporary_buffer<char>>
+reactor_backend_aio::read_some(pollable_fd_state& fd, internal::buffer_allocator* ba) {
+    return engine().do_read_some(fd, ba);
+}
+
 future<size_t>
 reactor_backend_aio::write_some(pollable_fd_state& fd, const void* buffer, size_t len) {
     return engine().do_write_some(fd, buffer, len);
@@ -589,7 +600,7 @@ reactor_backend_epoll::reactor_backend_epoll(reactor* r)
     auto ret = ::epoll_ctl(_epollfd.get(), EPOLL_CTL_ADD, _r->_notify_eventfd.get(), &event);
     throw_system_error_on(ret == -1);
 
-    struct sigevent sev;
+    struct sigevent sev{};
     sev.sigev_notify = SIGEV_THREAD_ID;
     sev._sigev_un._tid = syscall(SYS_gettid);
     sev.sigev_signo = hrtimer_signal();
@@ -808,6 +819,11 @@ reactor_backend_epoll::read_some(pollable_fd_state& fd, const std::vector<iovec>
     return engine().do_read_some(fd, iov);
 }
 
+future<temporary_buffer<char>>
+reactor_backend_epoll::read_some(pollable_fd_state& fd, internal::buffer_allocator* ba) {
+    return engine().do_read_some(fd, ba);
+}
+
 future<size_t>
 reactor_backend_epoll::write_some(pollable_fd_state& fd, const void* buffer, size_t len) {
     return engine().do_write_some(fd, buffer, len);
@@ -902,6 +918,11 @@ reactor_backend_osv::read_some(pollable_fd_state& fd, void* buffer, size_t len) 
 future<size_t>
 reactor_backend_osv::read_some(pollable_fd_state& fd, const std::vector<iovec>& iov) {
     return engine().do_read_some(fd, iov);
+}
+
+future<temporary_buffer<char>>
+reactor_backend_osv::read_some(pollable_fd_state& fd, internal::buffer_allocator* ba) {
+    return engine().do_read_some(fd, ba);
 }
 
 future<size_t>

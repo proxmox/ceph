@@ -478,6 +478,8 @@ class Device(object):
             rejected.append("Used by ceph-disk")
         if self.has_bluestore_label:
             rejected.append('Has BlueStore device label')
+        if self.has_gpt_headers:
+            rejected.append('Has GPT headers')
         return rejected
 
     def _check_lvm_reject_reasons(self):
@@ -490,6 +492,7 @@ class Device(object):
             # only check generic if no vgs are present. Vgs might hold lvs and
             # that might cause 'locked' to trigger
             rejected.extend(self._check_generic_reject_reasons())
+
         return len(rejected) == 0, rejected
 
     def _check_raw_reject_reasons(self):

@@ -1,10 +1,10 @@
 import { Component, OnInit, TemplateRef, ViewChild } from '@angular/core';
 import { FormControl, Validators } from '@angular/forms';
 
-import { BsModalRef } from 'ngx-bootstrap/modal';
+import { NgbActiveModal } from '@ng-bootstrap/ng-bootstrap';
 import { Observable } from 'rxjs';
 
-import { CdFormGroup } from '../../forms/cd-form-group';
+import { CdFormGroup } from '~/app/shared/forms/cd-form-group';
 import { SubmitButtonComponent } from '../submit-button/submit-button.component';
 
 @Component({
@@ -27,7 +27,7 @@ export class CriticalConfirmationModalComponent implements OnInit {
   childFormGroup: CdFormGroup;
   childFormGroupTemplate: TemplateRef<any>;
 
-  constructor(public modalRef: BsModalRef) {}
+  constructor(public activeModal: NgbActiveModal) {}
 
   ngOnInit() {
     const controls = {
@@ -44,18 +44,17 @@ export class CriticalConfirmationModalComponent implements OnInit {
 
   callSubmitAction() {
     if (this.submitActionObservable) {
-      this.submitActionObservable().subscribe(
-        null,
-        this.stopLoadingSpinner.bind(this),
-        this.hideModal.bind(this)
-      );
+      this.submitActionObservable().subscribe({
+        error: this.stopLoadingSpinner.bind(this),
+        complete: this.hideModal.bind(this)
+      });
     } else {
       this.submitAction();
     }
   }
 
   hideModal() {
-    this.modalRef.hide();
+    this.activeModal.close();
   }
 
   stopLoadingSpinner() {

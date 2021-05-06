@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  *
- * Copyright (c) 2016-2018 Solarflare Communications Inc.
- * All rights reserved.
+ * Copyright(c) 2019-2020 Xilinx, Inc.
+ * Copyright(c) 2016-2019 Solarflare Communications Inc.
  *
  * This software was jointly developed between OKTET Labs (under contract
  * for Solarflare) and Solarflare Communications, Inc.
@@ -30,7 +30,7 @@ sfc_dma_alloc(const struct sfc_adapter *sa, const char *name, uint16_t id,
 {
 	const struct rte_memzone *mz;
 
-	sfc_log_init(sa, "name=%s id=%u len=%lu socket_id=%d",
+	sfc_log_init(sa, "name=%s id=%u len=%zu socket_id=%d",
 		     name, id, len, socket_id);
 
 	mz = rte_eth_dma_zone_reserve(sa->eth_dev, name, id, len,
@@ -148,7 +148,8 @@ sfc_check_conf(struct sfc_adapter *sa)
 		rc = EINVAL;
 	}
 
-	if (conf->intr_conf.rxq != 0) {
+	if (conf->intr_conf.rxq != 0 &&
+	    (sa->priv.dp_rx->features & SFC_DP_RX_FEAT_INTR) == 0) {
 		sfc_err(sa, "Receive queue interrupt not supported");
 		rc = EINVAL;
 	}
@@ -240,8 +241,8 @@ sfc_estimate_resource_limits(struct sfc_adapter *sa)
 	return 0;
 
 fail_get_vi_pool:
-fail_nic_init:
 	efx_nic_fini(sa->nic);
+fail_nic_init:
 	return rc;
 }
 
@@ -744,13 +745,16 @@ sfc_attach(struct sfc_adapter *sa)
 	sa->priv.shared->tunnel_encaps =
 		encp->enc_tunnel_encapsulations_supported;
 
-	if (sa->priv.dp_tx->features & SFC_DP_TX_FEAT_TSO) {
+	if (sfc_dp_tx_offload_capa(sa->priv.dp_tx) & DEV_TX_OFFLOAD_TCP_TSO) {
 		sa->tso = encp->enc_fw_assisted_tso_v2_enabled;
 		if (!sa->tso)
 			sfc_info(sa, "TSO support isn't available on this adapter");
 	}
 
-	if (sa->tso && sa->priv.dp_tx->features & SFC_DP_TX_FEAT_TSO_ENCAP) {
+	if (sa->tso &&
+	    (sfc_dp_tx_offload_capa(sa->priv.dp_tx) &
+	     (DEV_TX_OFFLOAD_VXLAN_TNL_TSO |
+	      DEV_TX_OFFLOAD_GENEVE_TNL_TSO)) != 0) {
 		sa->tso_encap = encp->enc_fw_assisted_tso_v2_encap_enabled;
 		if (!sa->tso_encap)
 			sfc_info(sa, "Encapsulated TSO support isn't available on this adapter");

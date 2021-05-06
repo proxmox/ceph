@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  *
- *   Copyright 2017 NXP
+ *   Copyright 2017-2019 NXP
  *
  */
 #ifndef __RTE_DPAA_BUS_H__
@@ -10,10 +10,10 @@
 #include <rte_mempool.h>
 #include <dpaax_iova_table.h>
 
+#include <dpaa_of.h>
 #include <fsl_usd.h>
 #include <fsl_qman.h>
 #include <fsl_bman.h>
-#include <of.h>
 #include <netcfg.h>
 
 #define DPAA_MEMPOOL_OPS_NAME	"dpaa"
@@ -30,6 +30,9 @@
 #define SVR_LS1046A_FAMILY	0x87070000
 #define SVR_MASK		0xffff0000
 
+#define RTE_DEV_TO_DPAA_CONST(ptr) \
+	container_of(ptr, const struct rte_dpaa_device, device)
+
 extern unsigned int dpaa_svr_family;
 
 extern RTE_DEFINE_PER_LCORE(bool, dpaa_io);
@@ -40,9 +43,6 @@ struct rte_dpaa_driver;
 /* DPAA Device and Driver lists for DPAA bus */
 TAILQ_HEAD(rte_dpaa_device_list, rte_dpaa_device);
 TAILQ_HEAD(rte_dpaa_driver_list, rte_dpaa_driver);
-
-/* Configuration variables exported from DPAA bus */
-extern struct netcfg_info *dpaa_netcfg;
 
 enum rte_dpaa_type {
 	FSL_DPAA_ETH = 1,
@@ -72,6 +72,7 @@ struct rte_dpaa_device {
 	};
 	struct rte_dpaa_driver *driver;
 	struct dpaa_device_id id;
+	struct rte_intr_handle intr_handle;
 	enum rte_dpaa_type device_type; /**< Ethernet or crypto type device */
 	char name[RTE_ETH_NAME_MAX_LEN];
 };
@@ -128,7 +129,23 @@ static inline void *rte_dpaa_mem_ptov(phys_addr_t paddr)
 	}
 
 	/* If not, Fallback to full memseg list searching */
-	return rte_mem_iova2virt(paddr);
+	va = rte_mem_iova2virt(paddr);
+
+	dpaax_iova_table_update(paddr, va, RTE_CACHE_LINE_SIZE);
+
+	return va;
+}
+
+static inline rte_iova_t
+rte_dpaa_mem_vtop(void *vaddr)
+{
+	const struct rte_memseg *ms;
+
+	ms = rte_mem_virt2memseg(vaddr, NULL);
+	if (ms)
+		return ms->iova + RTE_PTR_DIFF(vaddr, ms->addr);
+
+	return (size_t)NULL;
 }
 
 /**
@@ -138,6 +155,7 @@ static inline void *rte_dpaa_mem_ptov(phys_addr_t paddr)
  *   A pointer to a rte_dpaa_driver structure describing the driver
  *   to be registered.
  */
+__rte_internal
 void rte_dpaa_driver_register(struct rte_dpaa_driver *driver);
 
 /**
@@ -147,6 +165,7 @@ void rte_dpaa_driver_register(struct rte_dpaa_driver *driver);
  *	A pointer to a rte_dpaa_driver structure describing the driver
  *	to be unregistered.
  */
+__rte_internal
 void rte_dpaa_driver_unregister(struct rte_dpaa_driver *driver);
 
 /**
@@ -158,10 +177,13 @@ void rte_dpaa_driver_unregister(struct rte_dpaa_driver *driver);
  * @return
  *	0 in case of success, error otherwise
  */
+__rte_internal
 int rte_dpaa_portal_init(void *arg);
 
+__rte_internal
 int rte_dpaa_portal_fq_init(void *arg, struct qman_fq *fq);
 
+__rte_internal
 int rte_dpaa_portal_fq_close(struct qman_fq *fq);
 
 /**
@@ -191,6 +213,9 @@ RTE_DECLARE_PER_LCORE(struct dpaa_portal_dqrr, held_bufs);
 #define DPAA_PER_LCORE_DQRR_SIZE       RTE_PER_LCORE(held_bufs).dqrr_size
 #define DPAA_PER_LCORE_DQRR_HELD       RTE_PER_LCORE(held_bufs).dqrr_held
 #define DPAA_PER_LCORE_DQRR_MBUF(i)    RTE_PER_LCORE(held_bufs).mbuf[i]
+
+__rte_internal
+struct fm_eth_port_cfg *dpaa_get_eth_port_cfg(int dev_id);
 
 #ifdef __cplusplus
 }

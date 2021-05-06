@@ -3,9 +3,6 @@
 //  COPYING file in the root directory) and Apache 2.0 License
 //  (found in the LICENSE.Apache file in the root directory).
 
-#ifndef __STDC_FORMAT_MACROS
-#define __STDC_FORMAT_MACROS
-#endif
 #ifndef GFLAGS
 #include <cstdio>
 int main() {
@@ -14,9 +11,9 @@ int main() {
 }
 #else
 
-#include <inttypes.h>
-#include <sys/types.h>
 #include <stdio.h>
+#include <sys/types.h>
+#include <cinttypes>
 
 #include "port/port.h"
 #include "rocksdb/cache.h"
@@ -48,7 +45,7 @@ DEFINE_int32(erase_percent, 10,
 
 DEFINE_bool(use_clock_cache, false, "");
 
-namespace rocksdb {
+namespace ROCKSDB_NAMESPACE {
 
 class CacheBench;
 namespace {
@@ -157,7 +154,7 @@ class CacheBench {
   }
 
   bool Run() {
-    rocksdb::Env* env = rocksdb::Env::Default();
+    ROCKSDB_NAMESPACE::Env* env = ROCKSDB_NAMESPACE::Env::Default();
 
     PrintEnv();
     SharedState shared(this);
@@ -260,7 +257,7 @@ class CacheBench {
     printf("----------------------------\n");
   }
 };
-}  // namespace rocksdb
+}  // namespace ROCKSDB_NAMESPACE
 
 int main(int argc, char** argv) {
   ParseCommandLineFlags(&argc, &argv, true);
@@ -270,7 +267,7 @@ int main(int argc, char** argv) {
     exit(1);
   }
 
-  rocksdb::CacheBench bench;
+  ROCKSDB_NAMESPACE::CacheBench bench;
   if (FLAGS_populate_cache) {
     bench.PopulateCache();
   }

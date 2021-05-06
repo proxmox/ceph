@@ -43,12 +43,14 @@
 #include "iscsi/portal_grp.h"
 #include "iscsi/conn.h"
 #include "iscsi/task.h"
+#include "iscsi/tgt_node.h"
 
 #include "spdk_internal/event.h"
 #include "spdk_internal/log.h"
 
 struct spdk_iscsi_opts *g_spdk_iscsi_opts = NULL;
 
+static struct spdk_thread *g_init_thread = NULL;
 static spdk_iscsi_init_cb g_init_cb_fn = NULL;
 static void *g_init_cb_arg = NULL;
 
@@ -96,30 +98,30 @@ iscsi_globals_config_text(FILE *fp)
 		return;
 	}
 
-	if (g_spdk_iscsi.require_chap) {
+	if (g_iscsi.require_chap) {
 		authmethod = "CHAP";
-	} else if (g_spdk_iscsi.mutual_chap) {
+	} else if (g_iscsi.mutual_chap) {
 		authmethod = "CHAP Mutual";
-	} else if (!g_spdk_iscsi.disable_chap) {
+	} else if (!g_iscsi.disable_chap) {
 		authmethod = "Auto";
 	}
 
-	if (g_spdk_iscsi.chap_group) {
-		snprintf(authgroup, sizeof(authgroup), "AuthGroup%d", g_spdk_iscsi.chap_group);
+	if (g_iscsi.chap_group) {
+		snprintf(authgroup, sizeof(authgroup), "AuthGroup%d", g_iscsi.chap_group);
 	}
 
 	fprintf(fp, ISCSI_CONFIG_TMPL,
-		g_spdk_iscsi.nodebase,
-		g_spdk_iscsi.authfile ? "AuthFile" : "",
-		g_spdk_iscsi.authfile ? g_spdk_iscsi.authfile : "",
-		g_spdk_iscsi.timeout, authmethod, authgroup,
-		g_spdk_iscsi.MaxSessions, g_spdk_iscsi.MaxConnectionsPerSession,
-		g_spdk_iscsi.MaxConnections,
-		g_spdk_iscsi.MaxQueueDepth,
-		g_spdk_iscsi.DefaultTime2Wait, g_spdk_iscsi.DefaultTime2Retain,
-		g_spdk_iscsi.FirstBurstLength,
-		(g_spdk_iscsi.ImmediateData) ? "Yes" : "No",
-		g_spdk_iscsi.ErrorRecoveryLevel);
+		g_iscsi.nodebase,
+		g_iscsi.authfile ? "AuthFile" : "",
+		g_iscsi.authfile ? g_iscsi.authfile : "",
+		g_iscsi.timeout, authmethod, authgroup,
+		g_iscsi.MaxSessions, g_iscsi.MaxConnectionsPerSession,
+		g_iscsi.MaxConnections,
+		g_iscsi.MaxQueueDepth,
+		g_iscsi.DefaultTime2Wait, g_iscsi.DefaultTime2Retain,
+		g_iscsi.FirstBurstLength,
+		(g_iscsi.ImmediateData) ? "Yes" : "No",
+		g_iscsi.ErrorRecoveryLevel);
 }
 
 #define ISCSI_DATA_BUFFER_ALIGNMENT	(0x1000)
@@ -145,8 +147,8 @@ mobj_ctor(struct spdk_mempool *mp, __attribute__((unused)) void *arg,
 static int
 iscsi_initialize_pdu_pool(void)
 {
-	struct spdk_iscsi_globals *iscsi = &g_spdk_iscsi;
-	int imm_mobj_size = SPDK_BDEV_BUF_SIZE_WITH_MD(spdk_get_max_immediate_data_size()) +
+	struct spdk_iscsi_globals *iscsi = &g_iscsi;
+	int imm_mobj_size = SPDK_BDEV_BUF_SIZE_WITH_MD(iscsi_get_max_immediate_data_size()) +
 			    sizeof(struct spdk_mobj) + ISCSI_DATA_BUFFER_ALIGNMENT;
 	int dout_mobj_size = SPDK_BDEV_BUF_SIZE_WITH_MD(SPDK_ISCSI_MAX_RECV_DATA_SEGMENT_LENGTH) +
 			     sizeof(struct spdk_mobj) + ISCSI_DATA_BUFFER_ALIGNMENT;
@@ -202,7 +204,7 @@ iscsi_sess_ctor(struct spdk_mempool *pool, void *arg, void *session_buf,
 static int
 iscsi_initialize_task_pool(void)
 {
-	struct spdk_iscsi_globals *iscsi = &g_spdk_iscsi;
+	struct spdk_iscsi_globals *iscsi = &g_iscsi;
 
 	/* create scsi_task pool */
 	iscsi->task_pool = spdk_mempool_create("SCSI_TASK_Pool",
@@ -221,7 +223,7 @@ iscsi_initialize_task_pool(void)
 static int
 iscsi_initialize_session_pool(void)
 {
-	struct spdk_iscsi_globals *iscsi = &g_spdk_iscsi;
+	struct spdk_iscsi_globals *iscsi = &g_iscsi;
 
 	iscsi->session_pool = spdk_mempool_create_ctor("Session_Pool",
 			      SESSION_POOL_SIZE(iscsi),
@@ -266,7 +268,7 @@ iscsi_check_pool(struct spdk_mempool *pool, size_t count)
 static void
 iscsi_check_pools(void)
 {
-	struct spdk_iscsi_globals *iscsi = &g_spdk_iscsi;
+	struct spdk_iscsi_globals *iscsi = &g_iscsi;
 
 	iscsi_check_pool(iscsi->pdu_pool, PDU_POOL_SIZE(iscsi));
 	iscsi_check_pool(iscsi->session_pool, SESSION_POOL_SIZE(iscsi));
@@ -278,7 +280,7 @@ iscsi_check_pools(void)
 static void
 iscsi_free_pools(void)
 {
-	struct spdk_iscsi_globals *iscsi = &g_spdk_iscsi;
+	struct spdk_iscsi_globals *iscsi = &g_iscsi;
 
 	spdk_mempool_free(iscsi->pdu_pool);
 	spdk_mempool_free(iscsi->session_pool);
@@ -287,18 +289,14 @@ iscsi_free_pools(void)
 	spdk_mempool_free(iscsi->task_pool);
 }
 
-void spdk_put_pdu(struct spdk_iscsi_pdu *pdu)
+void iscsi_put_pdu(struct spdk_iscsi_pdu *pdu)
 {
 	if (!pdu) {
 		return;
 	}
 
+	assert(pdu->ref > 0);
 	pdu->ref--;
-
-	if (pdu->ref < 0) {
-		SPDK_ERRLOG("Negative PDU refcount: %p\n", pdu);
-		pdu->ref = 0;
-	}
 
 	if (pdu->ref == 0) {
 		if (pdu->mobj) {
@@ -309,15 +307,16 @@ void spdk_put_pdu(struct spdk_iscsi_pdu *pdu)
 			free(pdu->data);
 		}
 
-		spdk_mempool_put(g_spdk_iscsi.pdu_pool, (void *)pdu);
+		spdk_mempool_put(g_iscsi.pdu_pool, (void *)pdu);
 	}
 }
 
-struct spdk_iscsi_pdu *spdk_get_pdu(void)
+struct spdk_iscsi_pdu *iscsi_get_pdu(struct spdk_iscsi_conn *conn)
 {
 	struct spdk_iscsi_pdu *pdu;
 
-	pdu = spdk_mempool_get(g_spdk_iscsi.pdu_pool);
+	assert(conn != NULL);
+	pdu = spdk_mempool_get(g_iscsi.pdu_pool);
 	if (!pdu) {
 		SPDK_ERRLOG("Unable to get PDU\n");
 		abort();
@@ -326,6 +325,7 @@ struct spdk_iscsi_pdu *spdk_get_pdu(void)
 	/* we do not want to zero out the last part of the structure reserved for AHS and sense data */
 	memset(pdu, 0, offsetof(struct spdk_iscsi_pdu, ahs));
 	pdu->ref = 1;
+	pdu->conn = conn;
 
 	return pdu;
 }
@@ -334,47 +334,47 @@ static void
 iscsi_log_globals(void)
 {
 	SPDK_DEBUGLOG(SPDK_LOG_ISCSI, "AuthFile %s\n",
-		      g_spdk_iscsi.authfile ? g_spdk_iscsi.authfile : "(none)");
-	SPDK_DEBUGLOG(SPDK_LOG_ISCSI, "NodeBase %s\n", g_spdk_iscsi.nodebase);
-	SPDK_DEBUGLOG(SPDK_LOG_ISCSI, "MaxSessions %d\n", g_spdk_iscsi.MaxSessions);
+		      g_iscsi.authfile ? g_iscsi.authfile : "(none)");
+	SPDK_DEBUGLOG(SPDK_LOG_ISCSI, "NodeBase %s\n", g_iscsi.nodebase);
+	SPDK_DEBUGLOG(SPDK_LOG_ISCSI, "MaxSessions %d\n", g_iscsi.MaxSessions);
 	SPDK_DEBUGLOG(SPDK_LOG_ISCSI, "MaxConnectionsPerSession %d\n",
-		      g_spdk_iscsi.MaxConnectionsPerSession);
-	SPDK_DEBUGLOG(SPDK_LOG_ISCSI, "MaxQueueDepth %d\n", g_spdk_iscsi.MaxQueueDepth);
+		      g_iscsi.MaxConnectionsPerSession);
+	SPDK_DEBUGLOG(SPDK_LOG_ISCSI, "MaxQueueDepth %d\n", g_iscsi.MaxQueueDepth);
 	SPDK_DEBUGLOG(SPDK_LOG_ISCSI, "DefaultTime2Wait %d\n",
-		      g_spdk_iscsi.DefaultTime2Wait);
+		      g_iscsi.DefaultTime2Wait);
 	SPDK_DEBUGLOG(SPDK_LOG_ISCSI, "DefaultTime2Retain %d\n",
-		      g_spdk_iscsi.DefaultTime2Retain);
+		      g_iscsi.DefaultTime2Retain);
 	SPDK_DEBUGLOG(SPDK_LOG_ISCSI, "FirstBurstLength %d\n",
-		      g_spdk_iscsi.FirstBurstLength);
+		      g_iscsi.FirstBurstLength);
 	SPDK_DEBUGLOG(SPDK_LOG_ISCSI, "ImmediateData %s\n",
-		      g_spdk_iscsi.ImmediateData ? "Yes" : "No");
+		      g_iscsi.ImmediateData ? "Yes" : "No");
 	SPDK_DEBUGLOG(SPDK_LOG_ISCSI, "AllowDuplicateIsid %s\n",
-		      g_spdk_iscsi.AllowDuplicateIsid ? "Yes" : "No");
+		      g_iscsi.AllowDuplicateIsid ? "Yes" : "No");
 	SPDK_DEBUGLOG(SPDK_LOG_ISCSI, "ErrorRecoveryLevel %d\n",
-		      g_spdk_iscsi.ErrorRecoveryLevel);
-	SPDK_DEBUGLOG(SPDK_LOG_ISCSI, "Timeout %d\n", g_spdk_iscsi.timeout);
+		      g_iscsi.ErrorRecoveryLevel);
+	SPDK_DEBUGLOG(SPDK_LOG_ISCSI, "Timeout %d\n", g_iscsi.timeout);
 	SPDK_DEBUGLOG(SPDK_LOG_ISCSI, "NopInInterval %d\n",
-		      g_spdk_iscsi.nopininterval);
-	if (g_spdk_iscsi.disable_chap) {
+		      g_iscsi.nopininterval);
+	if (g_iscsi.disable_chap) {
 		SPDK_DEBUGLOG(SPDK_LOG_ISCSI,
 			      "DiscoveryAuthMethod None\n");
-	} else if (!g_spdk_iscsi.require_chap) {
+	} else if (!g_iscsi.require_chap) {
 		SPDK_DEBUGLOG(SPDK_LOG_ISCSI,
 			      "DiscoveryAuthMethod Auto\n");
 	} else {
 		SPDK_DEBUGLOG(SPDK_LOG_ISCSI,
 			      "DiscoveryAuthMethod %s %s\n",
-			      g_spdk_iscsi.require_chap ? "CHAP" : "",
-			      g_spdk_iscsi.mutual_chap ? "Mutual" : "");
+			      g_iscsi.require_chap ? "CHAP" : "",
+			      g_iscsi.mutual_chap ? "Mutual" : "");
 	}
 
-	if (g_spdk_iscsi.chap_group == 0) {
+	if (g_iscsi.chap_group == 0) {
 		SPDK_DEBUGLOG(SPDK_LOG_ISCSI,
 			      "DiscoveryAuthGroup None\n");
 	} else {
 		SPDK_DEBUGLOG(SPDK_LOG_ISCSI,
 			      "DiscoveryAuthGroup AuthGroup%d\n",
-			      g_spdk_iscsi.chap_group);
+			      g_iscsi.chap_group);
 	}
 }
 
@@ -398,11 +398,10 @@ iscsi_opts_init(struct spdk_iscsi_opts *opts)
 	opts->chap_group = 0;
 	opts->authfile = NULL;
 	opts->nodebase = NULL;
-	opts->min_connections_per_core = 0;
 }
 
 struct spdk_iscsi_opts *
-spdk_iscsi_opts_alloc(void)
+iscsi_opts_alloc(void)
 {
 	struct spdk_iscsi_opts *opts;
 
@@ -418,7 +417,7 @@ spdk_iscsi_opts_alloc(void)
 }
 
 void
-spdk_iscsi_opts_free(struct spdk_iscsi_opts *opts)
+iscsi_opts_free(struct spdk_iscsi_opts *opts)
 {
 	free(opts->authfile);
 	free(opts->nodebase);
@@ -427,7 +426,7 @@ spdk_iscsi_opts_free(struct spdk_iscsi_opts *opts)
 
 /* Deep copy of spdk_iscsi_opts */
 struct spdk_iscsi_opts *
-spdk_iscsi_opts_copy(struct spdk_iscsi_opts *src)
+iscsi_opts_copy(struct spdk_iscsi_opts *src)
 {
 	struct spdk_iscsi_opts *dst;
 
@@ -471,7 +470,6 @@ spdk_iscsi_opts_copy(struct spdk_iscsi_opts *src)
 	dst->require_chap = src->require_chap;
 	dst->mutual_chap = src->mutual_chap;
 	dst->chap_group = src->chap_group;
-	dst->min_connections_per_core = 0;
 
 	return dst;
 }
@@ -490,7 +488,6 @@ iscsi_read_config_file_params(struct spdk_conf_section *sp,
 	int ErrorRecoveryLevel;
 	int timeout;
 	int nopininterval;
-	int min_conn_per_core = 0;
 	const char *ag_tag;
 	int ag_tag_i;
 	int i;
@@ -618,10 +615,6 @@ iscsi_read_config_file_params(struct spdk_conf_section *sp,
 			}
 		}
 	}
-	min_conn_per_core = spdk_conf_section_get_intval(sp, "MinConnectionsPerCore");
-	if (min_conn_per_core >= 0) {
-		SPDK_WARNLOG("MinConnectionsPerCore is deprecated and will be ignored.\n");
-	}
 
 	return 0;
 }
@@ -695,8 +688,8 @@ iscsi_opts_verify(struct spdk_iscsi_opts *opts)
 		return -EINVAL;
 	}
 
-	if (!spdk_iscsi_check_chap_params(opts->disable_chap, opts->require_chap,
-					  opts->mutual_chap, opts->chap_group)) {
+	if (!iscsi_check_chap_params(opts->disable_chap, opts->require_chap,
+				     opts->mutual_chap, opts->chap_group)) {
 		SPDK_ERRLOG("CHAP params in opts are illegal combination\n");
 		return -EINVAL;
 	}
@@ -711,9 +704,9 @@ iscsi_parse_options(struct spdk_iscsi_opts **popts)
 	struct spdk_conf_section *sp;
 	int rc;
 
-	opts = spdk_iscsi_opts_alloc();
+	opts = iscsi_opts_alloc();
 	if (!opts) {
-		SPDK_ERRLOG("spdk_iscsi_opts_alloc_failed() failed\n");
+		SPDK_ERRLOG("iscsi_opts_alloc_failed() failed\n");
 		return -ENOMEM;
 	}
 
@@ -746,38 +739,34 @@ iscsi_set_global_params(struct spdk_iscsi_opts *opts)
 	}
 
 	if (opts->authfile != NULL) {
-		g_spdk_iscsi.authfile = strdup(opts->authfile);
-		if (!g_spdk_iscsi.authfile) {
+		g_iscsi.authfile = strdup(opts->authfile);
+		if (!g_iscsi.authfile) {
 			SPDK_ERRLOG("failed to strdup for auth file %s\n", opts->authfile);
 			return -ENOMEM;
 		}
 	}
 
-	g_spdk_iscsi.nodebase = strdup(opts->nodebase);
-	if (!g_spdk_iscsi.nodebase) {
+	g_iscsi.nodebase = strdup(opts->nodebase);
+	if (!g_iscsi.nodebase) {
 		SPDK_ERRLOG("failed to strdup for nodebase %s\n", opts->nodebase);
 		return -ENOMEM;
 	}
 
-	g_spdk_iscsi.MaxSessions = opts->MaxSessions;
-	g_spdk_iscsi.MaxConnectionsPerSession = opts->MaxConnectionsPerSession;
-	g_spdk_iscsi.MaxQueueDepth = opts->MaxQueueDepth;
-	g_spdk_iscsi.DefaultTime2Wait = opts->DefaultTime2Wait;
-	g_spdk_iscsi.DefaultTime2Retain = opts->DefaultTime2Retain;
-	g_spdk_iscsi.FirstBurstLength = opts->FirstBurstLength;
-	g_spdk_iscsi.ImmediateData = opts->ImmediateData;
-	g_spdk_iscsi.AllowDuplicateIsid = opts->AllowDuplicateIsid;
-	g_spdk_iscsi.ErrorRecoveryLevel = opts->ErrorRecoveryLevel;
-	g_spdk_iscsi.timeout = opts->timeout;
-	g_spdk_iscsi.nopininterval = opts->nopininterval;
-	g_spdk_iscsi.disable_chap = opts->disable_chap;
-	g_spdk_iscsi.require_chap = opts->require_chap;
-	g_spdk_iscsi.mutual_chap = opts->mutual_chap;
-	g_spdk_iscsi.chap_group = opts->chap_group;
-
-	if (opts->min_connections_per_core) {
-		SPDK_WARNLOG("iSCSI option 'min_connections_per_core' has been deprecated and will be ignored.\n");
-	}
+	g_iscsi.MaxSessions = opts->MaxSessions;
+	g_iscsi.MaxConnectionsPerSession = opts->MaxConnectionsPerSession;
+	g_iscsi.MaxQueueDepth = opts->MaxQueueDepth;
+	g_iscsi.DefaultTime2Wait = opts->DefaultTime2Wait;
+	g_iscsi.DefaultTime2Retain = opts->DefaultTime2Retain;
+	g_iscsi.FirstBurstLength = opts->FirstBurstLength;
+	g_iscsi.ImmediateData = opts->ImmediateData;
+	g_iscsi.AllowDuplicateIsid = opts->AllowDuplicateIsid;
+	g_iscsi.ErrorRecoveryLevel = opts->ErrorRecoveryLevel;
+	g_iscsi.timeout = opts->timeout;
+	g_iscsi.nopininterval = opts->nopininterval;
+	g_iscsi.disable_chap = opts->disable_chap;
+	g_iscsi.require_chap = opts->require_chap;
+	g_iscsi.mutual_chap = opts->mutual_chap;
+	g_iscsi.chap_group = opts->chap_group;
 
 	iscsi_log_globals();
 
@@ -785,29 +774,29 @@ iscsi_set_global_params(struct spdk_iscsi_opts *opts)
 }
 
 int
-spdk_iscsi_set_discovery_auth(bool disable_chap, bool require_chap, bool mutual_chap,
-			      int32_t chap_group)
+iscsi_set_discovery_auth(bool disable_chap, bool require_chap, bool mutual_chap,
+			 int32_t chap_group)
 {
-	if (!spdk_iscsi_check_chap_params(disable_chap, require_chap, mutual_chap,
-					  chap_group)) {
+	if (!iscsi_check_chap_params(disable_chap, require_chap, mutual_chap,
+				     chap_group)) {
 		SPDK_ERRLOG("CHAP params are illegal combination\n");
 		return -EINVAL;
 	}
 
-	pthread_mutex_lock(&g_spdk_iscsi.mutex);
-	g_spdk_iscsi.disable_chap = disable_chap;
-	g_spdk_iscsi.require_chap = require_chap;
-	g_spdk_iscsi.mutual_chap = mutual_chap;
-	g_spdk_iscsi.chap_group = chap_group;
-	pthread_mutex_unlock(&g_spdk_iscsi.mutex);
+	pthread_mutex_lock(&g_iscsi.mutex);
+	g_iscsi.disable_chap = disable_chap;
+	g_iscsi.require_chap = require_chap;
+	g_iscsi.mutual_chap = mutual_chap;
+	g_iscsi.chap_group = chap_group;
+	pthread_mutex_unlock(&g_iscsi.mutex);
 
 	return 0;
 }
 
 int
-spdk_iscsi_auth_group_add_secret(struct spdk_iscsi_auth_group *group,
-				 const char *user, const char *secret,
-				 const char *muser, const char *msecret)
+iscsi_auth_group_add_secret(struct spdk_iscsi_auth_group *group,
+			    const char *user, const char *secret,
+			    const char *muser, const char *msecret)
 {
 	struct spdk_iscsi_auth_secret *_secret;
 	size_t len;
@@ -878,8 +867,8 @@ spdk_iscsi_auth_group_add_secret(struct spdk_iscsi_auth_group *group,
 }
 
 int
-spdk_iscsi_auth_group_delete_secret(struct spdk_iscsi_auth_group *group,
-				    const char *user)
+iscsi_auth_group_delete_secret(struct spdk_iscsi_auth_group *group,
+			       const char *user)
 {
 	struct spdk_iscsi_auth_secret *_secret;
 
@@ -906,11 +895,11 @@ spdk_iscsi_auth_group_delete_secret(struct spdk_iscsi_auth_group *group,
 }
 
 int
-spdk_iscsi_add_auth_group(int32_t tag, struct spdk_iscsi_auth_group **_group)
+iscsi_add_auth_group(int32_t tag, struct spdk_iscsi_auth_group **_group)
 {
 	struct spdk_iscsi_auth_group *group;
 
-	TAILQ_FOREACH(group, &g_spdk_iscsi.auth_group_head, tailq) {
+	TAILQ_FOREACH(group, &g_iscsi.auth_group_head, tailq) {
 		if (group->tag == tag) {
 			SPDK_ERRLOG("Auth group (%d) already exists\n", tag);
 			return -EEXIST;
@@ -926,18 +915,18 @@ spdk_iscsi_add_auth_group(int32_t tag, struct spdk_iscsi_auth_group **_group)
 	TAILQ_INIT(&group->secret_head);
 	group->tag = tag;
 
-	TAILQ_INSERT_TAIL(&g_spdk_iscsi.auth_group_head, group, tailq);
+	TAILQ_INSERT_TAIL(&g_iscsi.auth_group_head, group, tailq);
 
 	*_group = group;
 	return 0;
 }
 
 void
-spdk_iscsi_delete_auth_group(struct spdk_iscsi_auth_group *group)
+iscsi_delete_auth_group(struct spdk_iscsi_auth_group *group)
 {
 	struct spdk_iscsi_auth_secret *_secret, *tmp;
 
-	TAILQ_REMOVE(&g_spdk_iscsi.auth_group_head, group, tailq);
+	TAILQ_REMOVE(&g_iscsi.auth_group_head, group, tailq);
 
 	TAILQ_FOREACH_SAFE(_secret, &group->secret_head, tailq, tmp) {
 		TAILQ_REMOVE(&group->secret_head, _secret, tailq);
@@ -947,11 +936,11 @@ spdk_iscsi_delete_auth_group(struct spdk_iscsi_auth_group *group)
 }
 
 struct spdk_iscsi_auth_group *
-spdk_iscsi_find_auth_group_by_tag(int32_t tag)
+iscsi_find_auth_group_by_tag(int32_t tag)
 {
 	struct spdk_iscsi_auth_group *group;
 
-	TAILQ_FOREACH(group, &g_spdk_iscsi.auth_group_head, tailq) {
+	TAILQ_FOREACH(group, &g_iscsi.auth_group_head, tailq) {
 		if (group->tag == tag) {
 			return group;
 		}
@@ -965,8 +954,8 @@ iscsi_auth_groups_destroy(void)
 {
 	struct spdk_iscsi_auth_group *group, *tmp;
 
-	TAILQ_FOREACH_SAFE(group, &g_spdk_iscsi.auth_group_head, tailq, tmp) {
-		spdk_iscsi_delete_auth_group(group);
+	TAILQ_FOREACH_SAFE(group, &g_iscsi.auth_group_head, tailq, tmp) {
+		iscsi_delete_auth_group(group);
 	}
 }
 
@@ -986,7 +975,7 @@ iscsi_parse_auth_group(struct spdk_conf_section *sp)
 
 	tag = spdk_conf_section_get_num(sp);
 
-	rc = spdk_iscsi_add_auth_group(tag, &group);
+	rc = iscsi_add_auth_group(tag, &group);
 	if (rc != 0) {
 		SPDK_ERRLOG("Failed to add auth group\n");
 		return rc;
@@ -1003,10 +992,10 @@ iscsi_parse_auth_group(struct spdk_conf_section *sp)
 		muser = spdk_conf_section_get_nmval(sp, "Auth", i, 2);
 		msecret = spdk_conf_section_get_nmval(sp, "Auth", i, 3);
 
-		rc = spdk_iscsi_auth_group_add_secret(group, user, secret, muser, msecret);
+		rc = iscsi_auth_group_add_secret(group, user, secret, muser, msecret);
 		if (rc != 0) {
 			SPDK_ERRLOG("Failed to add secret to auth group\n");
-			spdk_iscsi_delete_auth_group(group);
+			iscsi_delete_auth_group(group);
 			return rc;
 		}
 	}
@@ -1027,7 +1016,7 @@ iscsi_parse_auth_info(void)
 		return -ENOMEM;
 	}
 
-	rc = spdk_conf_read(config, g_spdk_iscsi.authfile);
+	rc = spdk_conf_read(config, g_iscsi.authfile);
 	if (rc != 0) {
 		SPDK_INFOLOG(SPDK_LOG_ISCSI, "Failed to load auth file\n");
 		spdk_conf_free(config);
@@ -1065,7 +1054,7 @@ iscsi_find_auth_secret(const char *authuser, int ag_tag)
 	struct spdk_iscsi_auth_group *group;
 	struct spdk_iscsi_auth_secret *_secret;
 
-	TAILQ_FOREACH(group, &g_spdk_iscsi.auth_group_head, tailq) {
+	TAILQ_FOREACH(group, &g_iscsi.auth_group_head, tailq) {
 		if (group->tag == ag_tag) {
 			TAILQ_FOREACH(_secret, &group->secret_head, tailq) {
 				if (strcmp(_secret->user, authuser) == 0) {
@@ -1079,8 +1068,8 @@ iscsi_find_auth_secret(const char *authuser, int ag_tag)
 }
 
 int
-spdk_iscsi_chap_get_authinfo(struct iscsi_chap_auth *auth, const char *authuser,
-			     int ag_tag)
+iscsi_chap_get_authinfo(struct iscsi_chap_auth *auth, const char *authuser,
+			int ag_tag)
 {
 	struct spdk_iscsi_auth_secret *_secret;
 
@@ -1095,11 +1084,11 @@ spdk_iscsi_chap_get_authinfo(struct iscsi_chap_auth *auth, const char *authuser,
 		memset(auth->msecret, 0, sizeof(auth->msecret));
 	}
 
-	pthread_mutex_lock(&g_spdk_iscsi.mutex);
+	pthread_mutex_lock(&g_iscsi.mutex);
 
 	_secret = iscsi_find_auth_secret(authuser, ag_tag);
 	if (_secret == NULL) {
-		pthread_mutex_unlock(&g_spdk_iscsi.mutex);
+		pthread_mutex_unlock(&g_iscsi.mutex);
 
 		SPDK_ERRLOG("CHAP secret is not found: user:%s, tag:%d\n",
 			    authuser, ag_tag);
@@ -1114,7 +1103,7 @@ spdk_iscsi_chap_get_authinfo(struct iscsi_chap_auth *auth, const char *authuser,
 		memcpy(auth->msecret, _secret->msecret, sizeof(auth->msecret));
 	}
 
-	pthread_mutex_unlock(&g_spdk_iscsi.mutex);
+	pthread_mutex_unlock(&g_iscsi.mutex);
 	return 0;
 }
 
@@ -1126,17 +1115,17 @@ iscsi_initialize_global_params(void)
 	if (!g_spdk_iscsi_opts) {
 		rc = iscsi_parse_options(&g_spdk_iscsi_opts);
 		if (rc != 0) {
-			SPDK_ERRLOG("spdk_iscsi_parse_options() failed\n");
+			SPDK_ERRLOG("iscsi_parse_options() failed\n");
 			return rc;
 		}
 	}
 
 	rc = iscsi_set_global_params(g_spdk_iscsi_opts);
 	if (rc != 0) {
-		SPDK_ERRLOG("spdk_iscsi_set_global_params() failed\n");
+		SPDK_ERRLOG("iscsi_set_global_params() failed\n");
 	}
 
-	spdk_iscsi_opts_free(g_spdk_iscsi_opts);
+	iscsi_opts_free(g_spdk_iscsi_opts);
 	g_spdk_iscsi_opts = NULL;
 
 	return rc;
@@ -1154,6 +1143,44 @@ iscsi_init_complete(int rc)
 	cb_fn(cb_arg, rc);
 }
 
+static void
+iscsi_parse_configuration(void)
+{
+	int rc;
+
+	rc = iscsi_parse_portal_grps();
+	if (rc < 0) {
+		SPDK_ERRLOG("iscsi_parse_portal_grps() failed\n");
+		goto end;
+	}
+
+	rc = iscsi_parse_init_grps();
+	if (rc < 0) {
+		SPDK_ERRLOG("iscsi_parse_init_grps() failed\n");
+		goto end;
+	}
+
+	rc = iscsi_parse_tgt_nodes();
+	if (rc < 0) {
+		SPDK_ERRLOG("iscsi_parse_tgt_nodes() failed\n");
+	}
+
+	if (g_iscsi.authfile != NULL) {
+		if (access(g_iscsi.authfile, R_OK) == 0) {
+			rc = iscsi_parse_auth_info();
+			if (rc < 0) {
+				SPDK_ERRLOG("iscsi_parse_auth_info() failed\n");
+			}
+		} else {
+			SPDK_INFOLOG(SPDK_LOG_ISCSI, "CHAP secret file is not found in the path %s\n",
+				     g_iscsi.authfile);
+		}
+	}
+
+end:
+	iscsi_init_complete(rc);
+}
+
 static int
 iscsi_poll_group_poll(void *ctx)
 {
@@ -1162,7 +1189,7 @@ iscsi_poll_group_poll(void *ctx)
 	int rc;
 
 	if (spdk_unlikely(STAILQ_EMPTY(&group->connections))) {
-		return 0;
+		return SPDK_POLLER_IDLE;
 	}
 
 	rc = spdk_sock_group_poll(group->sock_group);
@@ -1170,13 +1197,13 @@ iscsi_poll_group_poll(void *ctx)
 		SPDK_ERRLOG("Failed to poll sock_group=%p\n", group->sock_group);
 	}
 
-	STAILQ_FOREACH_SAFE(conn, &group->connections, link, tmp) {
+	STAILQ_FOREACH_SAFE(conn, &group->connections, pg_link, tmp) {
 		if (conn->state == ISCSI_CONN_STATE_EXITING) {
-			spdk_iscsi_conn_destruct(conn);
+			iscsi_conn_destruct(conn);
 		}
 	}
 
-	return -1;
+	return rc != 0 ? SPDK_POLLER_BUSY : SPDK_POLLER_IDLE;
 }
 
 static int
@@ -1185,98 +1212,103 @@ iscsi_poll_group_handle_nop(void *ctx)
 	struct spdk_iscsi_poll_group *group = ctx;
 	struct spdk_iscsi_conn *conn, *tmp;
 
-	STAILQ_FOREACH_SAFE(conn, &group->connections, link, tmp) {
-		spdk_iscsi_conn_handle_nop(conn);
+	STAILQ_FOREACH_SAFE(conn, &group->connections, pg_link, tmp) {
+		iscsi_conn_handle_nop(conn);
 	}
 
-	return -1;
+	return SPDK_POLLER_BUSY;
 }
 
-static void
-iscsi_poll_group_create(void *ctx)
+static int
+iscsi_poll_group_create(void *io_device, void *ctx_buf)
 {
-	struct spdk_iscsi_poll_group *pg;
-
-	assert(g_spdk_iscsi.poll_group != NULL);
-	pg = &g_spdk_iscsi.poll_group[spdk_env_get_current_core()];
-	pg->core = spdk_env_get_current_core();
+	struct spdk_iscsi_poll_group *pg = ctx_buf;
 
 	STAILQ_INIT(&pg->connections);
-	pg->sock_group = spdk_sock_group_create();
+	pg->sock_group = spdk_sock_group_create(NULL);
 	assert(pg->sock_group != NULL);
 
-	pg->poller = spdk_poller_register(iscsi_poll_group_poll, pg, 0);
+	pg->poller = SPDK_POLLER_REGISTER(iscsi_poll_group_poll, pg, 0);
 	/* set the period to 1 sec */
-	pg->nop_poller = spdk_poller_register(iscsi_poll_group_handle_nop, pg, 1000000);
+	pg->nop_poller = SPDK_POLLER_REGISTER(iscsi_poll_group_handle_nop, pg, 1000000);
+
+	return 0;
 }
 
 static void
-iscsi_poll_group_destroy(void *ctx)
+iscsi_poll_group_destroy(void *io_device, void *ctx_buf)
 {
-	struct spdk_iscsi_poll_group *pg;
+	struct spdk_iscsi_poll_group *pg = ctx_buf;
+	struct spdk_io_channel *ch;
+	struct spdk_thread *thread;
 
-	assert(g_spdk_iscsi.poll_group != NULL);
-	pg = &g_spdk_iscsi.poll_group[spdk_env_get_current_core()];
 	assert(pg->poller != NULL);
 	assert(pg->sock_group != NULL);
 
 	spdk_sock_group_close(&pg->sock_group);
 	spdk_poller_unregister(&pg->poller);
 	spdk_poller_unregister(&pg->nop_poller);
+
+	ch = spdk_io_channel_from_ctx(pg);
+	thread = spdk_io_channel_get_thread(ch);
+
+	assert(thread == spdk_get_thread());
+
+	spdk_thread_exit(thread);
 }
 
 static void
-initialize_iscsi_poll_group(spdk_msg_fn cpl)
+_iscsi_init_thread_done(void *ctx)
 {
-	size_t g_num_poll_groups = spdk_env_get_last_core() + 1;
+	struct spdk_iscsi_poll_group *pg = ctx;
 
-	g_spdk_iscsi.poll_group = calloc(g_num_poll_groups, sizeof(struct spdk_iscsi_poll_group));
-	if (!g_spdk_iscsi.poll_group) {
-		SPDK_ERRLOG("Failed to allocated iscsi poll group\n");
-		iscsi_init_complete(-1);
-		return;
+	TAILQ_INSERT_TAIL(&g_iscsi.poll_group_head, pg, link);
+	if (--g_iscsi.refcnt == 0) {
+		iscsi_parse_configuration();
 	}
-
-	/* Send a message to each thread and create a poll group */
-	spdk_for_each_thread(iscsi_poll_group_create, NULL, cpl);
 }
 
 static void
-iscsi_parse_configuration(void *ctx)
+_iscsi_init_thread(void *ctx)
 {
-	int rc;
+	struct spdk_io_channel *ch;
+	struct spdk_iscsi_poll_group *pg;
 
-	rc = spdk_iscsi_parse_portal_grps();
-	if (rc < 0) {
-		SPDK_ERRLOG("spdk_iscsi_parse_portal_grps() failed\n");
-		goto end;
+	ch = spdk_get_io_channel(&g_iscsi);
+	pg = spdk_io_channel_get_ctx(ch);
+
+	spdk_thread_send_msg(g_init_thread, _iscsi_init_thread_done, pg);
+}
+
+static void
+initialize_iscsi_poll_group(void)
+{
+	struct spdk_cpuset tmp_cpumask = {};
+	uint32_t i;
+	char thread_name[32];
+	struct spdk_thread *thread;
+
+	spdk_io_device_register(&g_iscsi, iscsi_poll_group_create, iscsi_poll_group_destroy,
+				sizeof(struct spdk_iscsi_poll_group), "iscsi_tgt");
+
+	/* Create threads for CPU cores active for this application, and send a
+	 * message to each thread to create a poll group on it.
+	 */
+	g_init_thread = spdk_get_thread();
+	assert(g_init_thread != NULL);
+	assert(g_iscsi.refcnt == 0);
+
+	SPDK_ENV_FOREACH_CORE(i) {
+		spdk_cpuset_zero(&tmp_cpumask);
+		spdk_cpuset_set_cpu(&tmp_cpumask, i, true);
+		snprintf(thread_name, sizeof(thread_name), "iscsi_poll_group_%u", i);
+
+		thread = spdk_thread_create(thread_name, &tmp_cpumask);
+		assert(thread != NULL);
+
+		g_iscsi.refcnt++;
+		spdk_thread_send_msg(thread, _iscsi_init_thread, NULL);
 	}
-
-	rc = spdk_iscsi_parse_init_grps();
-	if (rc < 0) {
-		SPDK_ERRLOG("spdk_iscsi_parse_init_grps() failed\n");
-		goto end;
-	}
-
-	rc = spdk_iscsi_parse_tgt_nodes();
-	if (rc < 0) {
-		SPDK_ERRLOG("spdk_iscsi_parse_tgt_nodes() failed\n");
-	}
-
-	if (g_spdk_iscsi.authfile != NULL) {
-		if (access(g_spdk_iscsi.authfile, R_OK) == 0) {
-			rc = iscsi_parse_auth_info();
-			if (rc < 0) {
-				SPDK_ERRLOG("spdk_iscsi_parse_auth_info() failed\n");
-			}
-		} else {
-			SPDK_INFOLOG(SPDK_LOG_ISCSI, "CHAP secret file is not found in the path %s\n",
-				     g_spdk_iscsi.authfile);
-		}
-	}
-
-end:
-	iscsi_init_complete(rc);
 }
 
 static int
@@ -1286,12 +1318,12 @@ iscsi_parse_globals(void)
 
 	rc = iscsi_initialize_global_params();
 	if (rc != 0) {
-		SPDK_ERRLOG("spdk_iscsi_initialize_iscsi_global_params() failed\n");
+		SPDK_ERRLOG("iscsi_initialize_iscsi_global_params() failed\n");
 		return rc;
 	}
 
-	g_spdk_iscsi.session = calloc(1, sizeof(void *) * g_spdk_iscsi.MaxSessions);
-	if (!g_spdk_iscsi.session) {
+	g_iscsi.session = calloc(1, sizeof(struct spdk_iscsi_sess *) * g_iscsi.MaxSessions);
+	if (!g_iscsi.session) {
 		SPDK_ERRLOG("calloc() failed for session array\n");
 		return -1;
 	}
@@ -1302,25 +1334,25 @@ iscsi_parse_globals(void)
 	 *  handling for low resource conditions from our various buffer
 	 *  pools, we can bump this up to support more connections.
 	 */
-	g_spdk_iscsi.MaxConnections = g_spdk_iscsi.MaxSessions;
+	g_iscsi.MaxConnections = g_iscsi.MaxSessions;
 
 	rc = iscsi_initialize_all_pools();
 	if (rc != 0) {
-		SPDK_ERRLOG("spdk_initialize_all_pools() failed\n");
-		free(g_spdk_iscsi.session);
-		g_spdk_iscsi.session = NULL;
+		SPDK_ERRLOG("initialize_all_pools() failed\n");
+		free(g_iscsi.session);
+		g_iscsi.session = NULL;
 		return -1;
 	}
 
-	rc = spdk_initialize_iscsi_conns();
+	rc = initialize_iscsi_conns();
 	if (rc < 0) {
-		SPDK_ERRLOG("spdk_initialize_iscsi_conns() failed\n");
-		free(g_spdk_iscsi.session);
-		g_spdk_iscsi.session = NULL;
+		SPDK_ERRLOG("initialize_iscsi_conns() failed\n");
+		free(g_iscsi.session);
+		g_iscsi.session = NULL;
 		return rc;
 	}
 
-	initialize_iscsi_poll_group(iscsi_parse_configuration);
+	initialize_iscsi_poll_group();
 	return 0;
 }
 
@@ -1335,12 +1367,12 @@ spdk_iscsi_init(spdk_iscsi_init_cb cb_fn, void *cb_arg)
 
 	rc = iscsi_parse_globals();
 	if (rc < 0) {
-		SPDK_ERRLOG("spdk_iscsi_parse_globals() failed\n");
+		SPDK_ERRLOG("iscsi_parse_globals() failed\n");
 		iscsi_init_complete(-1);
 	}
 
 	/*
-	 * spdk_iscsi_parse_configuration() will be called as the callback to
+	 * iscsi_parse_configuration() will be called as the callback to
 	 * spdk_initialize_iscsi_poll_group() and will complete iSCSI
 	 * subsystem initialization.
 	 */
@@ -1352,82 +1384,104 @@ spdk_iscsi_fini(spdk_iscsi_fini_cb cb_fn, void *cb_arg)
 	g_fini_cb_fn = cb_fn;
 	g_fini_cb_arg = cb_arg;
 
-	spdk_iscsi_portal_grp_close_all();
-	spdk_shutdown_iscsi_conns();
-	free(g_spdk_iscsi.session);
+	iscsi_portal_grp_close_all();
+	shutdown_iscsi_conns();
 }
 
 static void
-iscsi_fini_done(void *arg)
+iscsi_fini_done(void *io_device)
 {
-	iscsi_check_pools();
-	iscsi_free_pools();
+	free(g_iscsi.authfile);
+	free(g_iscsi.nodebase);
 
-	spdk_iscsi_shutdown_tgt_nodes();
-	spdk_iscsi_init_grps_destroy();
-	spdk_iscsi_portal_grps_destroy();
-	iscsi_auth_groups_destroy();
-	free(g_spdk_iscsi.authfile);
-	free(g_spdk_iscsi.nodebase);
-	free(g_spdk_iscsi.poll_group);
-
-	pthread_mutex_destroy(&g_spdk_iscsi.mutex);
+	pthread_mutex_destroy(&g_iscsi.mutex);
 	g_fini_cb_fn(g_fini_cb_arg);
 }
 
-void
-spdk_shutdown_iscsi_conns_done(void)
+static void
+_iscsi_fini_dev_unreg(struct spdk_io_channel_iter *i, int status)
 {
-	if (g_spdk_iscsi.poll_group) {
-		spdk_for_each_thread(iscsi_poll_group_destroy, NULL, iscsi_fini_done);
-	} else {
-		iscsi_fini_done(NULL);
-	}
+	iscsi_check_pools();
+	iscsi_free_pools();
+	free(g_iscsi.session);
+
+	assert(TAILQ_EMPTY(&g_iscsi.poll_group_head));
+
+	iscsi_shutdown_tgt_nodes();
+	iscsi_init_grps_destroy();
+	iscsi_portal_grps_destroy();
+	iscsi_auth_groups_destroy();
+
+	spdk_io_device_unregister(&g_iscsi, iscsi_fini_done);
+}
+
+static void
+_iscsi_fini_thread(struct spdk_io_channel_iter *i)
+{
+	struct spdk_io_channel *ch;
+	struct spdk_iscsi_poll_group *pg;
+
+	ch = spdk_io_channel_iter_get_channel(i);
+	pg = spdk_io_channel_get_ctx(ch);
+
+	pthread_mutex_lock(&g_iscsi.mutex);
+	TAILQ_REMOVE(&g_iscsi.poll_group_head, pg, link);
+	pthread_mutex_unlock(&g_iscsi.mutex);
+
+	spdk_put_io_channel(ch);
+
+	spdk_for_each_channel_continue(i, 0);
+}
+
+void
+shutdown_iscsi_conns_done(void)
+{
+	spdk_for_each_channel(&g_iscsi, _iscsi_fini_thread, NULL, _iscsi_fini_dev_unreg);
 }
 
 void
 spdk_iscsi_config_text(FILE *fp)
 {
 	iscsi_globals_config_text(fp);
-	spdk_iscsi_portal_grps_config_text(fp);
-	spdk_iscsi_init_grps_config_text(fp);
-	spdk_iscsi_tgt_nodes_config_text(fp);
+	iscsi_portal_grps_config_text(fp);
+	iscsi_init_grps_config_text(fp);
+	iscsi_tgt_nodes_config_text(fp);
 }
 
 void
-spdk_iscsi_opts_info_json(struct spdk_json_write_ctx *w)
+iscsi_opts_info_json(struct spdk_json_write_ctx *w)
 {
 	spdk_json_write_object_begin(w);
 
-	if (g_spdk_iscsi.authfile != NULL) {
-		spdk_json_write_named_string(w, "auth_file", g_spdk_iscsi.authfile);
+	if (g_iscsi.authfile != NULL) {
+		spdk_json_write_named_string(w, "auth_file", g_iscsi.authfile);
 	}
-	spdk_json_write_named_string(w, "node_base", g_spdk_iscsi.nodebase);
+	spdk_json_write_named_string(w, "node_base", g_iscsi.nodebase);
 
-	spdk_json_write_named_uint32(w, "max_sessions", g_spdk_iscsi.MaxSessions);
+	spdk_json_write_named_uint32(w, "max_sessions", g_iscsi.MaxSessions);
 	spdk_json_write_named_uint32(w, "max_connections_per_session",
-				     g_spdk_iscsi.MaxConnectionsPerSession);
+				     g_iscsi.MaxConnectionsPerSession);
 
-	spdk_json_write_named_uint32(w, "max_queue_depth", g_spdk_iscsi.MaxQueueDepth);
+	spdk_json_write_named_uint32(w, "max_queue_depth", g_iscsi.MaxQueueDepth);
 
-	spdk_json_write_named_uint32(w, "default_time2wait", g_spdk_iscsi.DefaultTime2Wait);
-	spdk_json_write_named_uint32(w, "default_time2retain", g_spdk_iscsi.DefaultTime2Retain);
+	spdk_json_write_named_uint32(w, "default_time2wait", g_iscsi.DefaultTime2Wait);
+	spdk_json_write_named_uint32(w, "default_time2retain", g_iscsi.DefaultTime2Retain);
 
-	spdk_json_write_named_uint32(w, "first_burst_length", g_spdk_iscsi.FirstBurstLength);
+	spdk_json_write_named_uint32(w, "first_burst_length", g_iscsi.FirstBurstLength);
 
-	spdk_json_write_named_bool(w, "immediate_data", g_spdk_iscsi.ImmediateData);
+	spdk_json_write_named_bool(w, "immediate_data", g_iscsi.ImmediateData);
 
-	spdk_json_write_named_bool(w, "allow_duplicated_isid", g_spdk_iscsi.AllowDuplicateIsid);
+	spdk_json_write_named_bool(w, "allow_duplicated_isid", g_iscsi.AllowDuplicateIsid);
 
-	spdk_json_write_named_uint32(w, "error_recovery_level", g_spdk_iscsi.ErrorRecoveryLevel);
+	spdk_json_write_named_uint32(w, "error_recovery_level", g_iscsi.ErrorRecoveryLevel);
 
-	spdk_json_write_named_int32(w, "nop_timeout", g_spdk_iscsi.timeout);
-	spdk_json_write_named_int32(w, "nop_in_interval", g_spdk_iscsi.nopininterval);
+	spdk_json_write_named_int32(w, "nop_timeout", g_iscsi.timeout);
+	spdk_json_write_named_int32(w, "nop_in_interval", g_iscsi.nopininterval);
 
-	spdk_json_write_named_bool(w, "disable_chap", g_spdk_iscsi.disable_chap);
-	spdk_json_write_named_bool(w, "require_chap", g_spdk_iscsi.require_chap);
-	spdk_json_write_named_bool(w, "mutual_chap", g_spdk_iscsi.mutual_chap);
-	spdk_json_write_named_int32(w, "chap_group", g_spdk_iscsi.chap_group);
+	spdk_json_write_named_bool(w, "disable_chap", g_iscsi.disable_chap);
+	spdk_json_write_named_bool(w, "require_chap", g_iscsi.require_chap);
+	spdk_json_write_named_bool(w, "mutual_chap", g_iscsi.mutual_chap);
+	spdk_json_write_named_int32(w, "chap_group", g_iscsi.chap_group);
 
 	spdk_json_write_object_end(w);
 }
@@ -1467,7 +1521,7 @@ iscsi_auth_group_config_json(struct spdk_iscsi_auth_group *group,
 {
 	spdk_json_write_object_begin(w);
 
-	spdk_json_write_named_string(w, "method", "add_iscsi_auth_group");
+	spdk_json_write_named_string(w, "method", "iscsi_create_auth_group");
 
 	spdk_json_write_name(w, "params");
 	iscsi_auth_group_info_json(group, w);
@@ -1476,11 +1530,11 @@ iscsi_auth_group_config_json(struct spdk_iscsi_auth_group *group,
 }
 
 void
-spdk_iscsi_auth_groups_info_json(struct spdk_json_write_ctx *w)
+iscsi_auth_groups_info_json(struct spdk_json_write_ctx *w)
 {
 	struct spdk_iscsi_auth_group *group;
 
-	TAILQ_FOREACH(group, &g_spdk_iscsi.auth_group_head, tailq) {
+	TAILQ_FOREACH(group, &g_iscsi.auth_group_head, tailq) {
 		iscsi_auth_group_info_json(group, w);
 	}
 }
@@ -1490,7 +1544,7 @@ iscsi_auth_groups_config_json(struct spdk_json_write_ctx *w)
 {
 	struct spdk_iscsi_auth_group *group;
 
-	TAILQ_FOREACH(group, &g_spdk_iscsi.auth_group_head, tailq) {
+	TAILQ_FOREACH(group, &g_iscsi.auth_group_head, tailq) {
 		iscsi_auth_group_config_json(group, w);
 	}
 }
@@ -1500,10 +1554,10 @@ iscsi_opts_config_json(struct spdk_json_write_ctx *w)
 {
 	spdk_json_write_object_begin(w);
 
-	spdk_json_write_named_string(w, "method", "set_iscsi_options");
+	spdk_json_write_named_string(w, "method", "iscsi_set_options");
 
 	spdk_json_write_name(w, "params");
-	spdk_iscsi_opts_info_json(w);
+	iscsi_opts_info_json(w);
 
 	spdk_json_write_object_end(w);
 }
@@ -1513,9 +1567,9 @@ spdk_iscsi_config_json(struct spdk_json_write_ctx *w)
 {
 	spdk_json_write_array_begin(w);
 	iscsi_opts_config_json(w);
-	spdk_iscsi_portal_grps_config_json(w);
-	spdk_iscsi_init_grps_config_json(w);
-	spdk_iscsi_tgt_nodes_config_json(w);
+	iscsi_portal_grps_config_json(w);
+	iscsi_init_grps_config_json(w);
+	iscsi_tgt_nodes_config_json(w);
 	iscsi_auth_groups_config_json(w);
 	spdk_json_write_array_end(w);
 }

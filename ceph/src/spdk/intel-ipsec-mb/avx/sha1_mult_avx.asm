@@ -25,7 +25,7 @@
 ;; OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ;;
 
-%include "os.asm"
+%include "include/os.asm"
 %include "mb_mgr_datastruct.asm"
 
 section .data
@@ -414,6 +414,16 @@ lloop:
 
 	;;;;;;;;;;;;;;;;
 	;; Postamble
+
+        ;; Clear all stack containing part of message
+%ifdef SAFE_DATA
+        vpxor   xmm0, xmm0
+%assign i 0
+%rep 16
+        vmovdqa	[rsp + i*16], xmm0
+%assign i (i+1)
+%endrep
+%endif
 
 	add	rsp, FRAMESZ
 

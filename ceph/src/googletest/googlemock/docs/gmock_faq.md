@@ -2,10 +2,12 @@
 
 <!-- GOOGLETEST_CM0021 DO NOT DELETE -->
 
+<!-- GOOGLETEST_CM0035 DO NOT DELETE -->
+
 ### When I call a method on my mock object, the method for the real object is invoked instead. What's the problem?
 
 In order for a method to be mocked, it must be *virtual*, unless you use the
-[high-perf dependency injection technique](#MockingNonVirtualMethods).
+[high-perf dependency injection technique](cook_book.md#MockingNonVirtualMethods).
 
 ### Can I mock a variadic function?
 

@@ -48,37 +48,30 @@ struct nvme_driver _g_nvme_driver = {
 	.lock = PTHREAD_MUTEX_INITIALIZER,
 };
 
-void
-nvme_request_remove_child(struct nvme_request *parent,
-			  struct nvme_request *child)
-{
-	parent->num_children--;
-	TAILQ_REMOVE(&parent->children, child, child_tailq);
-}
+DEFINE_STUB_V(nvme_transport_qpair_abort_reqs, (struct spdk_nvme_qpair *qpair, uint32_t dnr));
+DEFINE_STUB(nvme_transport_qpair_submit_request, int,
+	    (struct spdk_nvme_qpair *qpair, struct nvme_request *req), 0);
+DEFINE_STUB(spdk_nvme_ctrlr_free_io_qpair, int, (struct spdk_nvme_qpair *qpair), 0);
+DEFINE_STUB_V(nvme_transport_ctrlr_disconnect_qpair, (struct spdk_nvme_ctrlr *ctrlr,
+		struct spdk_nvme_qpair *qpair));
+DEFINE_STUB_V(nvme_ctrlr_disconnect_qpair, (struct spdk_nvme_qpair *qpair));
 
 void
-nvme_transport_qpair_abort_reqs(struct spdk_nvme_qpair *qpair, uint32_t dnr)
+nvme_ctrlr_fail(struct spdk_nvme_ctrlr *ctrlr, bool hot_remove)
 {
+	if (hot_remove) {
+		ctrlr->is_removed = true;
+	}
+	ctrlr->is_failed = true;
 }
 
-int
-nvme_transport_qpair_submit_request(struct spdk_nvme_qpair *qpair, struct nvme_request *req)
-{
-	/* TODO */
-	return 0;
-}
-
+static bool g_called_transport_process_completions = false;
+static int32_t g_transport_process_completions_rc = 0;
 int32_t
 nvme_transport_qpair_process_completions(struct spdk_nvme_qpair *qpair, uint32_t max_completions)
 {
-	/* TODO */
-	return 0;
-}
-
-int
-spdk_nvme_ctrlr_free_io_qpair(struct spdk_nvme_qpair *qpair)
-{
-	return 0;
+	g_called_transport_process_completions = true;
+	return g_transport_process_completions_rc;
 }
 
 static void
@@ -89,6 +82,7 @@ prepare_submit_request_test(struct spdk_nvme_qpair *qpair,
 	ctrlr->free_io_qids = NULL;
 	TAILQ_INIT(&ctrlr->active_io_qpairs);
 	TAILQ_INIT(&ctrlr->active_procs);
+	MOCK_CLEAR(spdk_zmalloc);
 	nvme_qpair_init(qpair, 1, ctrlr, 0, 32);
 }
 
@@ -163,16 +157,140 @@ static void struct_packing(void)
 	CU_ASSERT(offsetof(struct spdk_nvme_qpair, ctrlr) <= 128);
 }
 
+static int g_num_cb_failed = 0;
+static int g_num_cb_passed = 0;
+
+static void
+dummy_cb_fn(void *cb_arg, const struct spdk_nvme_cpl *cpl)
+{
+	if (cpl->status.sc == SPDK_NVME_SC_SUCCESS) {
+		g_num_cb_passed++;
+	} else {
+		g_num_cb_failed++;
+	}
+}
+
 static void test_nvme_qpair_process_completions(void)
 {
-	struct spdk_nvme_qpair		qpair = {};
-	struct spdk_nvme_ctrlr		ctrlr = {};
+	struct spdk_nvme_qpair		admin_qp = {0};
+	struct spdk_nvme_qpair		qpair = {0};
+	struct spdk_nvme_ctrlr		ctrlr = {0};
+	struct nvme_request		dummy_1 = {{0}};
+	struct nvme_request		dummy_2 = {{0}};
+	int				rc;
 
-	prepare_submit_request_test(&qpair, &ctrlr);
-	qpair.ctrlr->is_resetting = true;
+	dummy_1.cb_fn = dummy_cb_fn;
+	dummy_2.cb_fn = dummy_cb_fn;
+	dummy_1.qpair = &qpair;
+	dummy_2.qpair = &qpair;
 
-	spdk_nvme_qpair_process_completions(&qpair, 0);
-	cleanup_submit_request_test(&qpair);
+	TAILQ_INIT(&ctrlr.active_io_qpairs);
+	TAILQ_INIT(&ctrlr.active_procs);
+	nvme_qpair_init(&qpair, 1, &ctrlr, 0, 32);
+	nvme_qpair_init(&admin_qp, 0, &ctrlr, 0, 32);
+
+	ctrlr.adminq = &admin_qp;
+
+	STAILQ_INIT(&qpair.queued_req);
+	STAILQ_INSERT_TAIL(&qpair.queued_req, &dummy_1, stailq);
+	STAILQ_INSERT_TAIL(&qpair.queued_req, &dummy_2, stailq);
+
+	/* If the controller is failed, return -ENXIO */
+	ctrlr.is_failed = true;
+	ctrlr.is_removed = false;
+	rc = spdk_nvme_qpair_process_completions(&qpair, 0);
+	CU_ASSERT(rc == -ENXIO);
+	CU_ASSERT(!STAILQ_EMPTY(&qpair.queued_req));
+	CU_ASSERT(g_num_cb_passed == 0);
+	CU_ASSERT(g_num_cb_failed == 0);
+
+	/* Same if the qpair is failed at the transport layer. */
+	ctrlr.is_failed = false;
+	ctrlr.is_removed = false;
+	qpair.state = NVME_QPAIR_DISCONNECTED;
+	rc = spdk_nvme_qpair_process_completions(&qpair, 0);
+	CU_ASSERT(rc == -ENXIO);
+	CU_ASSERT(!STAILQ_EMPTY(&qpair.queued_req));
+	CU_ASSERT(g_num_cb_passed == 0);
+	CU_ASSERT(g_num_cb_failed == 0);
+
+	/* If the controller is removed, make sure we abort the requests. */
+	ctrlr.is_failed = true;
+	ctrlr.is_removed = true;
+	qpair.state = NVME_QPAIR_CONNECTED;
+	rc = spdk_nvme_qpair_process_completions(&qpair, 0);
+	CU_ASSERT(rc == -ENXIO);
+	CU_ASSERT(STAILQ_EMPTY(&qpair.queued_req));
+	CU_ASSERT(g_num_cb_passed == 0);
+	CU_ASSERT(g_num_cb_failed == 2);
+
+	/* If we are resetting, make sure that we don't call into the transport. */
+	STAILQ_INSERT_TAIL(&qpair.queued_req, &dummy_1, stailq);
+	dummy_1.queued = true;
+	STAILQ_INSERT_TAIL(&qpair.queued_req, &dummy_2, stailq);
+	dummy_2.queued = true;
+	g_num_cb_failed = 0;
+	ctrlr.is_failed = false;
+	ctrlr.is_removed = false;
+	ctrlr.is_resetting = true;
+	rc = spdk_nvme_qpair_process_completions(&qpair, 0);
+	CU_ASSERT(rc == -ENXIO);
+	CU_ASSERT(g_called_transport_process_completions == false);
+	/* We also need to make sure we didn't abort the requests. */
+	CU_ASSERT(!STAILQ_EMPTY(&qpair.queued_req));
+	CU_ASSERT(g_num_cb_passed == 0);
+	CU_ASSERT(g_num_cb_failed == 0);
+
+	/* The case where we aren't resetting, but are enabling the qpair is the same as above. */
+	ctrlr.is_resetting = false;
+	qpair.state = NVME_QPAIR_ENABLING;
+	rc = spdk_nvme_qpair_process_completions(&qpair, 0);
+	CU_ASSERT(rc == -ENXIO);
+	CU_ASSERT(g_called_transport_process_completions == false);
+	CU_ASSERT(!STAILQ_EMPTY(&qpair.queued_req));
+	CU_ASSERT(g_num_cb_passed == 0);
+	CU_ASSERT(g_num_cb_failed == 0);
+
+	/* For other qpair states, we want to enable the qpair. */
+	qpair.state = NVME_QPAIR_CONNECTED;
+	rc = spdk_nvme_qpair_process_completions(&qpair, 1);
+	CU_ASSERT(rc == 0);
+	CU_ASSERT(g_called_transport_process_completions == true);
+	/* These should have been submitted to the lower layer. */
+	CU_ASSERT(STAILQ_EMPTY(&qpair.queued_req));
+	CU_ASSERT(g_num_cb_passed == 0);
+	CU_ASSERT(g_num_cb_failed == 0);
+	CU_ASSERT(nvme_qpair_get_state(&qpair) == NVME_QPAIR_ENABLED);
+
+	g_called_transport_process_completions = false;
+	g_transport_process_completions_rc = -ENXIO;
+
+	/* Fail the controller if we get an error from the transport on admin qpair. */
+	admin_qp.state = NVME_QPAIR_ENABLED;
+	rc = spdk_nvme_qpair_process_completions(&admin_qp, 0);
+	CU_ASSERT(rc == -ENXIO);
+	CU_ASSERT(g_called_transport_process_completions == true);
+	CU_ASSERT(ctrlr.is_failed == true);
+
+	/* Don't fail the controller for regular qpairs. */
+	ctrlr.is_failed = false;
+	g_called_transport_process_completions = false;
+	rc = spdk_nvme_qpair_process_completions(&qpair, 0);
+	CU_ASSERT(rc == -ENXIO);
+	CU_ASSERT(g_called_transport_process_completions == true);
+	CU_ASSERT(ctrlr.is_failed == false);
+
+	/* Make sure we don't modify the return value from the transport. */
+	ctrlr.is_failed = false;
+	g_called_transport_process_completions = false;
+	g_transport_process_completions_rc = 23;
+	rc = spdk_nvme_qpair_process_completions(&qpair, 0);
+	CU_ASSERT(rc == 23);
+	CU_ASSERT(g_called_transport_process_completions == true);
+	CU_ASSERT(ctrlr.is_failed == false);
+
+	free(qpair.req_buf);
+	free(admin_qp.req_buf);
 }
 
 static void test_nvme_completion_is_retry(void)
@@ -327,6 +445,7 @@ test_nvme_qpair_add_cmd_error_injection(void)
 	ctrlr.adminq = &qpair;
 
 	/* Admin error injection at submission path */
+	MOCK_CLEAR(spdk_zmalloc);
 	rc = spdk_nvme_qpair_add_cmd_error_injection(&ctrlr, NULL,
 			SPDK_NVME_OPC_GET_FEATURES, true, 5000, 1,
 			SPDK_NVME_SCT_GENERIC, SPDK_NVME_SC_INVALID_FIELD);
@@ -376,36 +495,127 @@ test_nvme_qpair_add_cmd_error_injection(void)
 	cleanup_submit_request_test(&qpair);
 }
 
+static void
+test_nvme_qpair_submit_request(void)
+{
+	int				rc;
+	struct spdk_nvme_qpair		qpair = {};
+	struct spdk_nvme_ctrlr		ctrlr = {};
+	struct nvme_request		*req, *req1, *req2, *req3, *req2_1, *req2_2, *req2_3;
+
+	prepare_submit_request_test(&qpair, &ctrlr);
+
+	/*
+	 *  Build a request chain like the following:
+	 *            req
+	 *             |
+	 *      ---------------
+	 *     |       |       |
+	 *    req1    req2    req3
+	 *             |
+	 *      ---------------
+	 *     |       |       |
+	 *   req2_1  req2_2  req2_3
+	 */
+	req = nvme_allocate_request_null(&qpair, NULL, NULL);
+	CU_ASSERT(req != NULL);
+	TAILQ_INIT(&req->children);
+
+	req1 = nvme_allocate_request_null(&qpair, NULL, NULL);
+	CU_ASSERT(req1 != NULL);
+	req->num_children++;
+	TAILQ_INSERT_TAIL(&req->children, req1, child_tailq);
+	req1->parent = req;
+
+	req2 = nvme_allocate_request_null(&qpair, NULL, NULL);
+	CU_ASSERT(req2 != NULL);
+	TAILQ_INIT(&req2->children);
+	req->num_children++;
+	TAILQ_INSERT_TAIL(&req->children, req2, child_tailq);
+	req2->parent = req;
+
+	req3 = nvme_allocate_request_null(&qpair, NULL, NULL);
+	CU_ASSERT(req3 != NULL);
+	req->num_children++;
+	TAILQ_INSERT_TAIL(&req->children, req3, child_tailq);
+	req3->parent = req;
+
+	req2_1 = nvme_allocate_request_null(&qpair, NULL, NULL);
+	CU_ASSERT(req2_1 != NULL);
+	req2->num_children++;
+	TAILQ_INSERT_TAIL(&req2->children, req2_1, child_tailq);
+	req2_1->parent = req2;
+
+	req2_2 = nvme_allocate_request_null(&qpair, NULL, NULL);
+	CU_ASSERT(req2_2 != NULL);
+	req2->num_children++;
+	TAILQ_INSERT_TAIL(&req2->children, req2_2, child_tailq);
+	req2_2->parent = req2;
+
+	req2_3 = nvme_allocate_request_null(&qpair, NULL, NULL);
+	CU_ASSERT(req2_3 != NULL);
+	req2->num_children++;
+	TAILQ_INSERT_TAIL(&req2->children, req2_3, child_tailq);
+	req2_3->parent = req2;
+
+	ctrlr.is_failed = true;
+	rc = nvme_qpair_submit_request(&qpair, req);
+	SPDK_CU_ASSERT_FATAL(rc == -ENXIO);
+
+	cleanup_submit_request_test(&qpair);
+}
+
+static void
+test_nvme_qpair_resubmit_request_with_transport_failed(void)
+{
+	int				rc;
+	struct spdk_nvme_qpair		qpair = {};
+	struct spdk_nvme_ctrlr		ctrlr = {};
+	struct nvme_request		*req;
+
+	prepare_submit_request_test(&qpair, &ctrlr);
+
+	req = nvme_allocate_request_null(&qpair, dummy_cb_fn, NULL);
+	CU_ASSERT(req != NULL);
+	TAILQ_INIT(&req->children);
+
+	STAILQ_INSERT_TAIL(&qpair.queued_req, req, stailq);
+	req->queued = true;
+
+	g_transport_process_completions_rc = 1;
+	qpair.state = NVME_QPAIR_ENABLED;
+	g_num_cb_failed = 0;
+	MOCK_SET(nvme_transport_qpair_submit_request, -EINVAL);
+	rc = spdk_nvme_qpair_process_completions(&qpair, g_transport_process_completions_rc);
+	MOCK_CLEAR(nvme_transport_qpair_submit_request);
+	CU_ASSERT(rc == g_transport_process_completions_rc);
+	CU_ASSERT(STAILQ_EMPTY(&qpair.queued_req));
+	CU_ASSERT(g_num_cb_failed == 1);
+
+	cleanup_submit_request_test(&qpair);
+}
+
 int main(int argc, char **argv)
 {
 	CU_pSuite	suite = NULL;
 	unsigned int	num_failures;
 
-	if (CU_initialize_registry() != CUE_SUCCESS) {
-		return CU_get_error();
-	}
+	CU_set_error_action(CUEA_ABORT);
+	CU_initialize_registry();
 
 	suite = CU_add_suite("nvme_qpair", NULL, NULL);
-	if (suite == NULL) {
-		CU_cleanup_registry();
-		return CU_get_error();
-	}
 
-	if (CU_add_test(suite, "test3", test3) == NULL
-	    || CU_add_test(suite, "ctrlr_failed", test_ctrlr_failed) == NULL
-	    || CU_add_test(suite, "struct_packing", struct_packing) == NULL
-	    || CU_add_test(suite, "spdk_nvme_qpair_process_completions",
-			   test_nvme_qpair_process_completions) == NULL
-	    || CU_add_test(suite, "nvme_completion_is_retry", test_nvme_completion_is_retry) == NULL
+	CU_ADD_TEST(suite, test3);
+	CU_ADD_TEST(suite, test_ctrlr_failed);
+	CU_ADD_TEST(suite, struct_packing);
+	CU_ADD_TEST(suite, test_nvme_qpair_process_completions);
+	CU_ADD_TEST(suite, test_nvme_completion_is_retry);
 #ifdef DEBUG
-	    || CU_add_test(suite, "get_status_string", test_get_status_string) == NULL
+	CU_ADD_TEST(suite, test_get_status_string);
 #endif
-	    || CU_add_test(suite, "spdk_nvme_qpair_add_cmd_error_injection",
-			   test_nvme_qpair_add_cmd_error_injection) == NULL
-	   ) {
-		CU_cleanup_registry();
-		return CU_get_error();
-	}
+	CU_ADD_TEST(suite, test_nvme_qpair_add_cmd_error_injection);
+	CU_ADD_TEST(suite, test_nvme_qpair_submit_request);
+	CU_ADD_TEST(suite, test_nvme_qpair_resubmit_request_with_transport_failed);
 
 	CU_basic_set_mode(CU_BRM_VERBOSE);
 	CU_basic_run_tests();

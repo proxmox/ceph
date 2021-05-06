@@ -46,7 +46,7 @@ class KrbServiceHandler : public AuthServiceHandler {
 
   private:
     int do_start_session(bool is_new_global_id,
-			 bufferlist *buff_list,
+			 ceph::buffer::list *buff_list,
 			 AuthCapsInfo *caps) override;
 
     gss_buffer_desc m_gss_buffer_out;

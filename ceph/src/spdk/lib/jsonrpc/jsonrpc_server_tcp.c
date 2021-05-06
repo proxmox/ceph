@@ -66,9 +66,6 @@ spdk_jsonrpc_server_listen(int domain, int protocol,
 
 	val = 1;
 	setsockopt(server->sockfd, SOL_SOCKET, SO_REUSEADDR, &val, sizeof(val));
-	if (protocol == IPPROTO_TCP) {
-		setsockopt(server->sockfd, IPPROTO_TCP, TCP_NODELAY, &val, sizeof(val));
-	}
 
 	flag = fcntl(server->sockfd, F_GETFL);
 	if (fcntl(server->sockfd, F_SETFL, flag | O_NONBLOCK) < 0) {
@@ -98,12 +95,39 @@ spdk_jsonrpc_server_listen(int domain, int protocol,
 	return server;
 }
 
+static struct spdk_jsonrpc_request *
+jsonrpc_server_dequeue_request(struct spdk_jsonrpc_server_conn *conn)
+{
+	struct spdk_jsonrpc_request *request = NULL;
+
+	pthread_spin_lock(&conn->queue_lock);
+	request = STAILQ_FIRST(&conn->send_queue);
+	if (request) {
+		STAILQ_REMOVE_HEAD(&conn->send_queue, link);
+	}
+	pthread_spin_unlock(&conn->queue_lock);
+	return request;
+}
+
 static void
-spdk_jsonrpc_server_conn_close(struct spdk_jsonrpc_server_conn *conn)
+jsonrpc_server_free_conn_request(struct spdk_jsonrpc_server_conn *conn)
+{
+	struct spdk_jsonrpc_request *request;
+
+	jsonrpc_free_request(conn->send_request);
+	conn->send_request = NULL ;
+	while ((request = jsonrpc_server_dequeue_request(conn)) != NULL) {
+		jsonrpc_free_request(request);
+	}
+}
+
+static void
+jsonrpc_server_conn_close(struct spdk_jsonrpc_server_conn *conn)
 {
 	conn->closed = true;
 
 	if (conn->sockfd >= 0) {
+		jsonrpc_server_free_conn_request(conn);
 		close(conn->sockfd);
 		conn->sockfd = -1;
 
@@ -121,18 +145,18 @@ spdk_jsonrpc_server_shutdown(struct spdk_jsonrpc_server *server)
 	close(server->sockfd);
 
 	TAILQ_FOREACH(conn, &server->conns, link) {
-		spdk_jsonrpc_server_conn_close(conn);
+		jsonrpc_server_conn_close(conn);
 	}
 
 	free(server);
 }
 
 static void
-spdk_jsonrpc_server_conn_remove(struct spdk_jsonrpc_server_conn *conn)
+jsonrpc_server_conn_remove(struct spdk_jsonrpc_server_conn *conn)
 {
 	struct spdk_jsonrpc_server *server = conn->server;
 
-	spdk_jsonrpc_server_conn_close(conn);
+	jsonrpc_server_conn_close(conn);
 
 	pthread_spin_destroy(&conn->queue_lock);
 	assert(STAILQ_EMPTY(&conn->send_queue));
@@ -177,7 +201,7 @@ spdk_jsonrpc_conn_del_close_cb(struct spdk_jsonrpc_server_conn *conn,
 }
 
 static int
-spdk_jsonrpc_server_accept(struct spdk_jsonrpc_server *server)
+jsonrpc_server_accept(struct spdk_jsonrpc_server *server)
 {
 	struct spdk_jsonrpc_server_conn *conn;
 	int rc, flag;
@@ -192,15 +216,21 @@ spdk_jsonrpc_server_accept(struct spdk_jsonrpc_server *server)
 		conn->closed = false;
 		conn->recv_len = 0;
 		conn->outstanding_requests = 0;
-		pthread_spin_init(&conn->queue_lock, PTHREAD_PROCESS_PRIVATE);
 		STAILQ_INIT(&conn->send_queue);
 		conn->send_request = NULL;
+
+		if (pthread_spin_init(&conn->queue_lock, PTHREAD_PROCESS_PRIVATE)) {
+			SPDK_ERRLOG("Unable to create queue lock for socket: %d", conn->sockfd);
+			close(conn->sockfd);
+			return -1;
+		}
 
 		flag = fcntl(conn->sockfd, F_GETFL);
 		if (fcntl(conn->sockfd, F_SETFL, flag | O_NONBLOCK) < 0) {
 			SPDK_ERRLOG("fcntl can't set nonblocking mode for socket, fd: %d (%s)\n",
 				    conn->sockfd, spdk_strerror(errno));
 			close(conn->sockfd);
+			pthread_spin_destroy(&conn->queue_lock);
 			return -1;
 		}
 
@@ -217,14 +247,14 @@ spdk_jsonrpc_server_accept(struct spdk_jsonrpc_server *server)
 }
 
 void
-spdk_jsonrpc_server_handle_request(struct spdk_jsonrpc_request *request,
-				   const struct spdk_json_val *method, const struct spdk_json_val *params)
+jsonrpc_server_handle_request(struct spdk_jsonrpc_request *request,
+			      const struct spdk_json_val *method, const struct spdk_json_val *params)
 {
 	request->conn->server->handle_request(request, method, params);
 }
 
 void
-spdk_jsonrpc_server_handle_error(struct spdk_jsonrpc_request *request, int error)
+jsonrpc_server_handle_error(struct spdk_jsonrpc_request *request, int error)
 {
 	const char *msg;
 
@@ -258,7 +288,7 @@ spdk_jsonrpc_server_handle_error(struct spdk_jsonrpc_request *request, int error
 }
 
 static int
-spdk_jsonrpc_server_conn_recv(struct spdk_jsonrpc_server_conn *conn)
+jsonrpc_server_conn_recv(struct spdk_jsonrpc_server_conn *conn)
 {
 	ssize_t rc, offset;
 	size_t recv_avail = SPDK_JSONRPC_RECV_BUF_SIZE - conn->recv_len;
@@ -282,7 +312,7 @@ spdk_jsonrpc_server_conn_recv(struct spdk_jsonrpc_server_conn *conn)
 
 	offset = 0;
 	do {
-		rc = spdk_jsonrpc_parse_request(conn, conn->recv_buf + offset, conn->recv_len - offset);
+		rc = jsonrpc_parse_request(conn, conn->recv_buf + offset, conn->recv_len - offset);
 		if (rc < 0) {
 			SPDK_ERRLOG("jsonrpc parse request failed\n");
 			return -1;
@@ -305,7 +335,7 @@ spdk_jsonrpc_server_conn_recv(struct spdk_jsonrpc_server_conn *conn)
 }
 
 void
-spdk_jsonrpc_server_send_response(struct spdk_jsonrpc_request *request)
+jsonrpc_server_send_response(struct spdk_jsonrpc_request *request)
 {
 	struct spdk_jsonrpc_server_conn *conn = request->conn;
 
@@ -315,23 +345,9 @@ spdk_jsonrpc_server_send_response(struct spdk_jsonrpc_request *request)
 	pthread_spin_unlock(&conn->queue_lock);
 }
 
-static struct spdk_jsonrpc_request *
-spdk_jsonrpc_server_dequeue_request(struct spdk_jsonrpc_server_conn *conn)
-{
-	struct spdk_jsonrpc_request *request = NULL;
-
-	pthread_spin_lock(&conn->queue_lock);
-	request = STAILQ_FIRST(&conn->send_queue);
-	if (request) {
-		STAILQ_REMOVE_HEAD(&conn->send_queue, link);
-	}
-	pthread_spin_unlock(&conn->queue_lock);
-	return request;
-}
-
 
 static int
-spdk_jsonrpc_server_conn_send(struct spdk_jsonrpc_server_conn *conn)
+jsonrpc_server_conn_send(struct spdk_jsonrpc_server_conn *conn)
 {
 	struct spdk_jsonrpc_request *request;
 	ssize_t rc;
@@ -342,7 +358,7 @@ more:
 	}
 
 	if (conn->send_request == NULL) {
-		conn->send_request = spdk_jsonrpc_server_dequeue_request(conn);
+		conn->send_request = jsonrpc_server_dequeue_request(conn);
 	}
 
 	request = conn->send_request;
@@ -373,7 +389,7 @@ more:
 		 * Free it and set send_request to NULL to move on to the next queued response.
 		 */
 		conn->send_request = NULL;
-		spdk_jsonrpc_free_request(request);
+		jsonrpc_free_request(request);
 		goto more;
 	}
 
@@ -389,36 +405,17 @@ spdk_jsonrpc_server_poll(struct spdk_jsonrpc_server *server)
 	TAILQ_FOREACH_SAFE(conn, &server->conns, link, conn_tmp) {
 		/* If we can't receive and there are no outstanding requests close the connection. */
 		if (conn->closed == true && conn->outstanding_requests == 0) {
-			spdk_jsonrpc_server_conn_close(conn);
+			jsonrpc_server_conn_close(conn);
 		}
 
-		if (conn->sockfd == -1) {
-			struct spdk_jsonrpc_request *request;
-
-			/*
-			 * The client closed the connection, but there may still be requests
-			 * outstanding; we have no way to cancel outstanding requests, so wait until
-			 * each outstanding request sends a response (which will be discarded, since
-			 * the connection is closed).
-			 */
-
-			spdk_jsonrpc_free_request(conn->send_request);
-			conn->send_request = NULL;
-
-			while ((request = spdk_jsonrpc_server_dequeue_request(conn)) != NULL) {
-				spdk_jsonrpc_free_request(request);
-			}
-
-			if (conn->outstanding_requests == 0) {
-				SPDK_DEBUGLOG(SPDK_LOG_RPC, "all outstanding requests completed\n");
-				spdk_jsonrpc_server_conn_remove(conn);
-			}
+		if (conn->sockfd == -1 && conn->outstanding_requests == 0) {
+			jsonrpc_server_conn_remove(conn);
 		}
 	}
 
 	/* Check listen socket */
 	if (!TAILQ_EMPTY(&server->free_conns)) {
-		spdk_jsonrpc_server_accept(server);
+		jsonrpc_server_accept(server);
 	}
 
 	TAILQ_FOREACH(conn, &server->conns, link) {
@@ -426,16 +423,16 @@ spdk_jsonrpc_server_poll(struct spdk_jsonrpc_server *server)
 			continue;
 		}
 
-		rc = spdk_jsonrpc_server_conn_send(conn);
+		rc = jsonrpc_server_conn_send(conn);
 		if (rc != 0) {
-			spdk_jsonrpc_server_conn_close(conn);
+			jsonrpc_server_conn_close(conn);
 			continue;
 		}
 
 		if (!conn->closed) {
-			rc = spdk_jsonrpc_server_conn_recv(conn);
+			rc = jsonrpc_server_conn_recv(conn);
 			if (rc != 0) {
-				spdk_jsonrpc_server_conn_close(conn);
+				jsonrpc_server_conn_close(conn);
 			}
 		}
 	}

@@ -27,8 +27,16 @@
 
 using namespace seastar;
 
+BOOST_AUTO_TEST_CASE(test_make_sstring) {
+    std::string_view foo = "foo";
+    std::string bar = "bar";
+    sstring zed = "zed";
+    const char* baz = "baz";
+    BOOST_REQUIRE_EQUAL(make_sstring(foo, bar, zed, baz, "bah"), sstring("foobarzedbazbah"));
+}
+
 BOOST_AUTO_TEST_CASE(test_construction) {
-    BOOST_REQUIRE_EQUAL(sstring(compat::string_view("abc")), sstring("abc"));
+    BOOST_REQUIRE_EQUAL(sstring(std::string_view("abc")), sstring("abc"));
 }
 
 BOOST_AUTO_TEST_CASE(test_equality) {
@@ -125,7 +133,6 @@ BOOST_AUTO_TEST_CASE(test_erase) {
     auto i = str.erase(str.begin() + 1, str.begin() + 3);
     BOOST_REQUIRE_EQUAL(*i, 'd');
     BOOST_REQUIRE_EQUAL(str, "adef");
-    BOOST_REQUIRE_THROW(str.erase(str.begin() + 5, str.begin() + 6), std::out_of_range);
 }
 
 BOOST_AUTO_TEST_CASE(test_ctor_iterator) {
@@ -138,9 +145,9 @@ BOOST_AUTO_TEST_CASE(test_nul_termination) {
     using stype = basic_sstring<char, uint32_t, 15, true>;
 
     for (int size = 1; size <= 32; size *= 2) {
-        auto s1 = stype(stype::initialized_later{}, size - 1);
+        auto s1 = uninitialized_string<stype>(size - 1);
         BOOST_REQUIRE_EQUAL(s1.c_str()[size - 1], '\0');
-        auto s2 = stype(stype::initialized_later{}, size);
+        auto s2 = uninitialized_string<stype>(size);
         BOOST_REQUIRE_EQUAL(s2.c_str()[size], '\0');
 
         s1 = stype("01234567890123456789012345678901", size - 1);

@@ -42,17 +42,17 @@
 
 #include "spdk_internal/mock.h"
 
-struct spdk_iscsi_globals g_spdk_iscsi;
+struct spdk_iscsi_globals g_iscsi;
 
-DEFINE_STUB(spdk_iscsi_find_tgt_node, struct spdk_iscsi_tgt_node *,
+DEFINE_STUB(iscsi_find_tgt_node, struct spdk_iscsi_tgt_node *,
 	    (const char *target_name), NULL);
 
-DEFINE_STUB(spdk_iscsi_tgt_node_access, bool,
+DEFINE_STUB(iscsi_tgt_node_access, bool,
 	    (struct spdk_iscsi_conn *conn, struct spdk_iscsi_tgt_node *target,
 	     const char *iqn, const char *addr),
 	    false);
 
-DEFINE_STUB(spdk_iscsi_send_tgts, int,
+DEFINE_STUB(iscsi_send_tgts, int,
 	    (struct spdk_iscsi_conn *conn, const char *iiqn, const char *iaddr,
 	     const char *tiqn, uint8_t *data, int alloc_len, int data_len),
 	    0);
@@ -87,26 +87,26 @@ burst_length_param_negotation(int FirstBurstLength, int MaxBurstLength,
 	sess.MaxOutstandingR2T = 1;
 
 	/* set default params */
-	rc = spdk_iscsi_sess_params_init(&sess.params);
+	rc = iscsi_sess_params_init(&sess.params);
 	CU_ASSERT(rc == 0);
 
-	rc = spdk_iscsi_param_set_int(sess.params, "FirstBurstLength",
-				      sess.FirstBurstLength);
+	rc = iscsi_param_set_int(sess.params, "FirstBurstLength",
+				 sess.FirstBurstLength);
 	CU_ASSERT(rc == 0);
 
-	rc = spdk_iscsi_param_set_int(sess.params, "MaxBurstLength",
-				      sess.MaxBurstLength);
+	rc = iscsi_param_set_int(sess.params, "MaxBurstLength",
+				 sess.MaxBurstLength);
 	CU_ASSERT(rc == 0);
 
-	rc = spdk_iscsi_param_set(sess.params, "InitialR2T",
-				  sess.InitialR2T ? "Yes" : "No");
+	rc = iscsi_param_set(sess.params, "InitialR2T",
+			     sess.InitialR2T ? "Yes" : "No");
 	CU_ASSERT(rc == 0);
 
 	conn.full_feature = 1;
 	conn.sess = &sess;
 	conn.MaxRecvDataSegmentLength = 65536;
 
-	rc = spdk_iscsi_conn_params_init(&conn.params);
+	rc = iscsi_conn_params_init(&conn.params);
 	CU_ASSERT(rc == 0);
 
 	/* construct the data */
@@ -126,24 +126,24 @@ burst_length_param_negotation(int FirstBurstLength, int MaxBurstLength,
 	total++;
 
 	/* store incoming parameters */
-	rc = spdk_iscsi_parse_params(params_p, data, total, false, NULL);
+	rc = iscsi_parse_params(params_p, data, total, false, NULL);
 	CU_ASSERT(rc == 0);
 
 	/* negotiate parameters */
-	rc = spdk_iscsi_negotiate_params(&conn, params_p,
-					 data, 8192, rc);
+	rc = iscsi_negotiate_params(&conn, params_p,
+				    data, 8192, rc);
 	CU_ASSERT(rc > 0);
 
-	rc = spdk_iscsi_copy_param2var(&conn);
+	rc = iscsi_copy_param2var(&conn);
 	CU_ASSERT(rc == 0);
 	CU_ASSERT(conn.sess->FirstBurstLength <= SPDK_ISCSI_FIRST_BURST_LENGTH);
 	CU_ASSERT(conn.sess->FirstBurstLength <= conn.sess->MaxBurstLength);
 	CU_ASSERT(conn.sess->MaxBurstLength <= SPDK_ISCSI_MAX_BURST_LENGTH);
 	CU_ASSERT(conn.sess->MaxOutstandingR2T == 1);
 
-	spdk_iscsi_param_free(sess.params);
-	spdk_iscsi_param_free(conn.params);
-	spdk_iscsi_param_free(*params_p);
+	iscsi_param_free(sess.params);
+	iscsi_param_free(conn.params);
+	iscsi_param_free(*params_p);
 }
 
 static void
@@ -189,11 +189,11 @@ list_negotiation_test(void)
 #define PARSE(strconst, partial_enabled, partial_text) \
 	data = strconst; \
 	len = sizeof(strconst) - 1; \
-	rc = spdk_iscsi_parse_params(&params, data, len, partial_enabled, partial_text)
+	rc = iscsi_parse_params(&params, data, len, partial_enabled, partial_text)
 
 #define EXPECT_VAL(key, expected_value) \
 	{ \
-		const char *val = spdk_iscsi_param_get_val(params, key); \
+		const char *val = iscsi_param_get_val(params, key); \
 		CU_ASSERT(val != NULL); \
 		if (val != NULL) { \
 			CU_ASSERT(strcmp(val, expected_value) == 0); \
@@ -201,7 +201,7 @@ list_negotiation_test(void)
 	}
 
 #define EXPECT_NULL(key) \
-	CU_ASSERT(spdk_iscsi_param_get_val(params, key) == NULL)
+	CU_ASSERT(iscsi_param_get_val(params, key) == NULL)
 
 static void
 parse_valid_test(void)
@@ -236,7 +236,7 @@ parse_valid_test(void)
 	memcpy(data, "CHAP_C", 6);
 	data[6] = '=';
 	data[len - 1] = '\0';
-	rc = spdk_iscsi_parse_params(&params, data, len, false, NULL);
+	rc = iscsi_parse_params(&params, data, len, false, NULL);
 	CU_ASSERT(rc == 0);
 	free(data);
 
@@ -277,7 +277,7 @@ parse_valid_test(void)
 	partial_parameter = NULL;
 	data = "PartialKey=";
 	len = 7;
-	rc = spdk_iscsi_parse_params(&params, data, len, true, &partial_parameter);
+	rc = iscsi_parse_params(&params, data, len, true, &partial_parameter);
 	CU_ASSERT(rc == 0);
 	CU_ASSERT_STRING_EQUAL(partial_parameter, "Partial");
 	EXPECT_NULL("PartialKey");
@@ -286,7 +286,7 @@ parse_valid_test(void)
 	EXPECT_VAL("PartialKey", "Value");
 	CU_ASSERT_PTR_NULL(partial_parameter);
 
-	spdk_iscsi_param_free(params);
+	iscsi_param_free(params);
 }
 
 static void
@@ -323,7 +323,7 @@ parse_invalid_test(void)
 	memcpy(data, "CHAP_C", 6);
 	data[6] = '=';
 	data[len - 1] = '\0';
-	rc = spdk_iscsi_parse_params(&params, data, len, false, NULL);
+	rc = iscsi_parse_params(&params, data, len, false, NULL);
 	free(data);
 	CU_ASSERT(rc != 0);
 	EXPECT_NULL("CHAP_C");
@@ -336,7 +336,7 @@ parse_invalid_test(void)
 	memset(data, 'A', len);
 	data[1] = '=';
 	data[len - 1] = '\0';
-	rc = spdk_iscsi_parse_params(&params, data, len, false, NULL);
+	rc = iscsi_parse_params(&params, data, len, false, NULL);
 	free(data);
 	CU_ASSERT(rc != 0);
 	EXPECT_NULL("A");
@@ -349,7 +349,7 @@ parse_invalid_test(void)
 	memset(data, 'A', len);
 	data[64] = '=';
 	data[len - 1] = '\0';
-	rc = spdk_iscsi_parse_params(&params, data, len, false, NULL);
+	rc = iscsi_parse_params(&params, data, len, false, NULL);
 	free(data);
 	CU_ASSERT(rc != 0);
 	EXPECT_NULL("A");
@@ -370,10 +370,10 @@ parse_invalid_test(void)
 	 */
 	data = "MaxRecvDataSegmentLength=81928";
 	len = strlen(data) - 1;
-	rc = spdk_iscsi_parse_params(&params, data, len, false, NULL);
+	rc = iscsi_parse_params(&params, data, len, false, NULL);
 	EXPECT_VAL("MaxRecvDataSegmentLength", "8192");
 	CU_ASSERT(rc == 0);
-	spdk_iscsi_param_free(params);
+	iscsi_param_free(params);
 }
 
 int
@@ -382,29 +382,15 @@ main(int argc, char **argv)
 	CU_pSuite	suite = NULL;
 	unsigned int	num_failures;
 
-	if (CU_initialize_registry() != CUE_SUCCESS) {
-		return CU_get_error();
-	}
+	CU_set_error_action(CUEA_ABORT);
+	CU_initialize_registry();
 
 	suite = CU_add_suite("iscsi_suite", NULL, NULL);
-	if (suite == NULL) {
-		CU_cleanup_registry();
-		return CU_get_error();
-	}
 
-	if (
-		CU_add_test(suite, "param negotiation test",
-			    param_negotiation_test) == NULL ||
-		CU_add_test(suite, "list negotiation test",
-			    list_negotiation_test) == NULL ||
-		CU_add_test(suite, "parse valid test",
-			    parse_valid_test) == NULL ||
-		CU_add_test(suite, "parse invalid test",
-			    parse_invalid_test) == NULL
-	) {
-		CU_cleanup_registry();
-		return CU_get_error();
-	}
+	CU_ADD_TEST(suite, param_negotiation_test);
+	CU_ADD_TEST(suite, list_negotiation_test);
+	CU_ADD_TEST(suite, parse_valid_test);
+	CU_ADD_TEST(suite, parse_invalid_test);
 
 	CU_basic_set_mode(CU_BRM_VERBOSE);
 	CU_basic_run_tests();

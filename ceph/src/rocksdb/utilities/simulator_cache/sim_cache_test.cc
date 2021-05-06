@@ -8,7 +8,7 @@
 #include "db/db_test_util.h"
 #include "port/stack_trace.h"
 
-namespace rocksdb {
+namespace ROCKSDB_NAMESPACE {
 
 class SimCacheTest : public DBTestBase {
  private:
@@ -34,7 +34,7 @@ class SimCacheTest : public DBTestBase {
     Options options = CurrentOptions();
     options.create_if_missing = true;
     // options.compression = kNoCompression;
-    options.statistics = rocksdb::CreateDBStatistics();
+    options.statistics = ROCKSDB_NAMESPACE::CreateDBStatistics();
     options.table_factory.reset(new BlockBasedTableFactory(table_options));
     return options;
   }
@@ -77,8 +77,12 @@ TEST_F(SimCacheTest, SimCache) {
   auto table_options = GetTableOptions();
   auto options = GetOptions(table_options);
   InitTable(options);
-  std::shared_ptr<SimCache> simCache =
-      NewSimCache(NewLRUCache(0, 0, false), 20000, 0);
+  LRUCacheOptions co;
+  co.capacity = 0;
+  co.num_shard_bits = 0;
+  co.strict_capacity_limit = false;
+  co.metadata_charge_policy = kDontChargeCacheMetadata;
+  std::shared_ptr<SimCache> simCache = NewSimCache(NewLRUCache(co), 20000, 0);
   table_options.block_cache = simCache;
   options.table_factory.reset(new BlockBasedTableFactory(table_options));
   Reopen(options);
@@ -142,8 +146,10 @@ TEST_F(SimCacheTest, SimCacheLogging) {
   auto table_options = GetTableOptions();
   auto options = GetOptions(table_options);
   options.disable_auto_compactions = true;
-  std::shared_ptr<SimCache> sim_cache =
-      NewSimCache(NewLRUCache(1024 * 1024), 20000, 0);
+  LRUCacheOptions co;
+  co.capacity = 1024 * 1024;
+  co.metadata_charge_policy = kDontChargeCacheMetadata;
+  std::shared_ptr<SimCache> sim_cache = NewSimCache(NewLRUCache(co), 20000, 0);
   table_options.block_cache = sim_cache;
   options.table_factory.reset(new BlockBasedTableFactory(table_options));
   Reopen(options);
@@ -210,10 +216,10 @@ TEST_F(SimCacheTest, SimCacheLogging) {
 	ASSERT_GT(fsize, max_size - 100);
 }
 
-}  // namespace rocksdb
+}  // namespace ROCKSDB_NAMESPACE
 
 int main(int argc, char** argv) {
-  rocksdb::port::InstallStackTraceHandler();
+  ROCKSDB_NAMESPACE::port::InstallStackTraceHandler();
   ::testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();
 }

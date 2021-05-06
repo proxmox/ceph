@@ -39,10 +39,6 @@
 #include <rte_ether.h>
 #include <rte_ethdev.h>
 #include <rte_string_fns.h>
-#ifdef RTE_LIBRTE_CMDLINE
-#include <cmdline_parse.h>
-#include <cmdline_parse_etheraddr.h>
-#endif
 #ifdef RTE_LIBRTE_PMD_BOND
 #include <rte_eth_bond.h>
 #endif
@@ -53,7 +49,7 @@
 static void
 usage(char* progname)
 {
-	printf("usage: %s "
+	printf("usage: %s [EAL options] -- "
 #ifdef RTE_LIBRTE_CMDLINE
 	       "[--interactive|-i] "
 	       "[--cmdline-file=FILENAME] "
@@ -61,6 +57,7 @@ usage(char* progname)
 	       "[--help|-h] | [--auto-start|-a] | ["
 	       "--tx-first | --stats-period=PERIOD | "
 	       "--coremask=COREMASK --portmask=PORTMASK --numa "
+	       "--portlist=PORTLIST "
 	       "--mbuf-size= | --total-num-mbufs= | "
 	       "--nb-cores= | --nb-ports= | "
 #ifdef RTE_LIBRTE_CMDLINE
@@ -72,7 +69,8 @@ usage(char* progname)
 	       "--rss-ip | --rss-udp | "
 	       "--rxpt= | --rxht= | --rxwt= | --rxfreet= | "
 	       "--txpt= | --txht= | --txwt= | --txfreet= | "
-	       "--txrst= | --tx-offloads= | --vxlan-gpe-port= ]\n",
+	       "--txrst= | --tx-offloads= | | --rx-offloads= | "
+	       "--vxlan-gpe-port= ]\n",
 	       progname);
 #ifdef RTE_LIBRTE_CMDLINE
 	printf("  --interactive: run in interactive mode.\n");
@@ -95,6 +93,7 @@ usage(char* progname)
 	       "packet forwarding.\n");
 	printf("  --portmask=PORTMASK: hexadecimal bitmask of ports used "
 	       "by the packet forwarding test.\n");
+	printf("  --portlist=PORTLIST: list of forwarding ports\n");
 	printf("  --numa: enable NUMA-aware allocation of RX/TX rings and of "
 	       "RX memory buffers (mbufs).\n");
 	printf("  --port-numa-config=(port,socket)[,(port,socket)]: "
@@ -110,6 +109,8 @@ usage(char* progname)
 	printf("  --total-num-mbufs=N: set the number of mbufs to be allocated "
 	       "in mbuf pools.\n");
 	printf("  --max-pkt-len=N: set the maximum size of packet to N bytes.\n");
+	printf("  --max-lro-pkt-size=N: set the maximum LRO aggregated packet "
+	       "size to N bytes.\n");
 #ifdef RTE_LIBRTE_CMDLINE
 	printf("  --eth-peers-configfile=name: config file with ethernet addresses "
 	       "of peer ports.\n");
@@ -139,10 +140,11 @@ usage(char* progname)
 	printf("  --enable-hw-vlan-filter: enable hardware vlan filter.\n");
 	printf("  --enable-hw-vlan-strip: enable hardware vlan strip.\n");
 	printf("  --enable-hw-vlan-extend: enable hardware vlan extend.\n");
+	printf("  --enable-hw-qinq-strip: enable hardware qinq strip.\n");
 	printf("  --enable-drop-en: enable per queue packet drop.\n");
 	printf("  --disable-rss: disable rss.\n");
-	printf("  --port-topology=N: set port topology (N: paired (default) or "
-	       "chained).\n");
+	printf("  --port-topology=<paired|chained|loop>: set port topology (paired "
+	       "is default).\n");
 	printf("  --forward-mode=N: set forwarding mode (N: %s).\n",
 	       list_pkt_forwarding_modes());
 	printf("  --rss-ip: set RSS functions to IPv4/IPv6 only .\n");
@@ -151,6 +153,8 @@ usage(char* progname)
 	printf("  --rxd=N: set the number of descriptors in RX rings to N.\n");
 	printf("  --txq=N: set the number of TX queues per port to N.\n");
 	printf("  --txd=N: set the number of descriptors in TX rings to N.\n");
+	printf("  --hairpinq=N: set the number of hairpin queues per port to "
+	       "N.\n");
 	printf("  --burst=N: set the number of packets per burst to N.\n");
 	printf("  --mbcache=N: set the cache of mbuf memory pool to N.\n");
 	printf("  --rxpt=N: set prefetch threshold register of RX rings to N.\n");
@@ -178,17 +182,19 @@ usage(char* progname)
 	printf("  --txonly-multi-flow: generate multiple flows in txonly mode\n");
 	printf("  --disable-link-check: disable check on link status when "
 	       "starting/stopping ports.\n");
+	printf("  --disable-device-start: do not automatically start port\n");
 	printf("  --no-lsc-interrupt: disable link status change interrupt.\n");
 	printf("  --no-rmv-interrupt: disable device removal interrupt.\n");
 	printf("  --bitrate-stats=N: set the logical core N to perform "
 		"bit-rate calculation.\n");
-	printf("  --print-event <unknown|intr_lsc|queue_state|intr_reset|vf_mbox|macsec|intr_rmv|all>: "
+	printf("  --print-event <unknown|intr_lsc|queue_state|intr_reset|vf_mbox|macsec|intr_rmv|flow_aged|all>: "
 	       "enable print of designated event or all of them.\n");
-	printf("  --mask-event <unknown|intr_lsc|queue_state|intr_reset|vf_mbox|macsec|intr_rmv|all>: "
+	printf("  --mask-event <unknown|intr_lsc|queue_state|intr_reset|vf_mbox|macsec|intr_rmv|flow_aged|all>: "
 	       "disable print of designated event or all of them.\n");
 	printf("  --flow-isolate-all: "
 	       "requests flow API isolated mode on all ports at initialization time.\n");
 	printf("  --tx-offloads=0xXXXXXXXX: hexadecimal bitmask of TX queue offloads\n");
+	printf("  --rx-offloads=0xXXXXXXXX: hexadecimal bitmask of RX queue offloads\n");
 	printf("  --hot-plug: enable hot plug for device.\n");
 	printf("  --vxlan-gpe-port=N: UPD port of tunnel VXLAN-GPE\n");
 	printf("  --mlockall: lock all memory\n");
@@ -206,6 +212,8 @@ usage(char* progname)
 	printf("  --noisy-lkup-num-writes=N: do N random reads and writes per packet\n");
 	printf("  --no-iova-contig: mempool memory can be IOVA non contiguous. "
 	       "valid only with --mp-alloc=anon\n");
+	printf("  --rx-mq-mode=0xX: hexadecimal bitmask of RX mq mode can be "
+	       "enabled\n");
 }
 
 #ifdef RTE_LIBRTE_CMDLINE
@@ -227,8 +235,7 @@ init_peer_eth_addrs(char *config_filename)
 		if (fgets(buf, sizeof(buf), config_file) == NULL)
 			break;
 
-		if (cmdline_parse_etheraddr(NULL, buf, &peer_eth_addrs[i],
-				sizeof(peer_eth_addrs[i])) < 0) {
+		if (rte_ether_unformat_addr(buf, &peer_eth_addrs[i]) < 0) {
 			printf("Bad MAC address format on line %d\n", i+1);
 			fclose(config_file);
 			return -1;
@@ -540,6 +547,8 @@ parse_event_printing_config(const char *optarg, int enable)
 		mask = UINT32_C(1) << RTE_ETH_EVENT_NEW;
 	else if (!strcmp(optarg, "dev_released"))
 		mask = UINT32_C(1) << RTE_ETH_EVENT_DESTROY;
+	else if (!strcmp(optarg, "flow_aged"))
+		mask = UINT32_C(1) << RTE_ETH_EVENT_FLOW_AGED;
 	else if (!strcmp(optarg, "all"))
 		mask = ~UINT32_C(0);
 	else {
@@ -566,6 +575,7 @@ launch_args_parse(int argc, char** argv)
 	uint64_t tx_offloads = tx_mode.offloads;
 	struct rte_eth_dev_info dev_info;
 	uint16_t rec_nb_pkts;
+	int ret;
 
 	static struct option lgopts[] = {
 		{ "help",			0, 0, 0 },
@@ -583,6 +593,7 @@ launch_args_parse(int argc, char** argv)
 		{ "nb-ports",			1, 0, 0 },
 		{ "coremask",			1, 0, 0 },
 		{ "portmask",			1, 0, 0 },
+		{ "portlist",			1, 0, 0 },
 		{ "numa",			0, 0, 0 },
 		{ "no-numa",			0, 0, 0 },
 		{ "mp-anon",			0, 0, 0 },
@@ -592,6 +603,7 @@ launch_args_parse(int argc, char** argv)
 		{ "mbuf-size",			1, 0, 0 },
 		{ "total-num-mbufs",		1, 0, 0 },
 		{ "max-pkt-len",		1, 0, 0 },
+		{ "max-lro-pkt-size",		1, 0, 0 },
 		{ "pkt-filter-mode",            1, 0, 0 },
 		{ "pkt-filter-report-hash",     1, 0, 0 },
 		{ "pkt-filter-size",            1, 0, 0 },
@@ -611,6 +623,7 @@ launch_args_parse(int argc, char** argv)
 		{ "enable-hw-vlan-filter",      0, 0, 0 },
 		{ "enable-hw-vlan-strip",       0, 0, 0 },
 		{ "enable-hw-vlan-extend",      0, 0, 0 },
+		{ "enable-hw-qinq-strip",       0, 0, 0 },
 		{ "enable-drop-en",            0, 0, 0 },
 		{ "disable-rss",                0, 0, 0 },
 		{ "port-topology",              1, 0, 0 },
@@ -621,6 +634,7 @@ launch_args_parse(int argc, char** argv)
 		{ "txq",			1, 0, 0 },
 		{ "rxd",			1, 0, 0 },
 		{ "txd",			1, 0, 0 },
+		{ "hairpinq",			1, 0, 0 },
 		{ "burst",			1, 0, 0 },
 		{ "mbcache",			1, 0, 0 },
 		{ "txpt",			1, 0, 0 },
@@ -639,11 +653,13 @@ launch_args_parse(int argc, char** argv)
 		{ "txpkts",			1, 0, 0 },
 		{ "txonly-multi-flow",		0, 0, 0 },
 		{ "disable-link-check",		0, 0, 0 },
+		{ "disable-device-start",	0, 0, 0 },
 		{ "no-lsc-interrupt",		0, 0, 0 },
 		{ "no-rmv-interrupt",		0, 0, 0 },
 		{ "print-event",		1, 0, 0 },
 		{ "mask-event",			1, 0, 0 },
 		{ "tx-offloads",		1, 0, 0 },
+		{ "rx-offloads",		1, 0, 0 },
 		{ "hot-plug",			0, 0, 0 },
 		{ "vxlan-gpe-port",		1, 0, 0 },
 		{ "mlockall",			0, 0, 0 },
@@ -658,6 +674,7 @@ launch_args_parse(int argc, char** argv)
 		{ "noisy-lkup-num-reads",	1, 0, 0 },
 		{ "noisy-lkup-num-reads-writes", 1, 0, 0 },
 		{ "no-iova-contig",             0, 0, 0 },
+		{ "rx-mq-mode",                 1, 0, 0 },
 		{ 0, 0, 0, 0 },
 	};
 
@@ -727,7 +744,6 @@ launch_args_parse(int argc, char** argv)
 			}
 			if (!strcmp(lgopts[opt_idx].name, "eth-peer")) {
 				char *port_end;
-				uint8_t c, peer_addr[6];
 
 				errno = 0;
 				n = strtoul(optarg, &port_end, 10);
@@ -739,14 +755,11 @@ launch_args_parse(int argc, char** argv)
 						 "eth-peer: port %d >= RTE_MAX_ETHPORTS(%d)\n",
 						 n, RTE_MAX_ETHPORTS);
 
-				if (cmdline_parse_etheraddr(NULL, port_end,
-						&peer_addr, sizeof(peer_addr)) < 0)
+				if (rte_ether_unformat_addr(port_end,
+						&peer_eth_addrs[n]) < 0)
 					rte_exit(EXIT_FAILURE,
 						 "Invalid ethernet address: %s\n",
 						 port_end);
-				for (c = 0; c < 6; c++)
-					peer_eth_addrs[n].addr_bytes[c] =
-						peer_addr[c];
 				nb_peer_eth_addrs++;
 			}
 #endif
@@ -820,6 +833,8 @@ launch_args_parse(int argc, char** argv)
 				parse_fwd_coremask(optarg);
 			if (!strcmp(lgopts[opt_idx].name, "portmask"))
 				parse_fwd_portmask(optarg);
+			if (!strcmp(lgopts[opt_idx].name, "portlist"))
+				parse_fwd_portlist(optarg);
 			if (!strcmp(lgopts[opt_idx].name, "no-numa"))
 				numa_support = 0;
 			if (!strcmp(lgopts[opt_idx].name, "numa"))
@@ -836,6 +851,8 @@ launch_args_parse(int argc, char** argv)
 					mp_alloc_type = MP_ALLOC_XMEM;
 				else if (!strcmp(optarg, "xmemhuge"))
 					mp_alloc_type = MP_ALLOC_XMEM_HUGE;
+				else if (!strcmp(optarg, "xbuf"))
+					mp_alloc_type = MP_ALLOC_XBUF;
 				else
 					rte_exit(EXIT_FAILURE,
 						"mp-alloc %s invalid - must be: "
@@ -879,15 +896,19 @@ launch_args_parse(int argc, char** argv)
 			}
 			if (!strcmp(lgopts[opt_idx].name, "max-pkt-len")) {
 				n = atoi(optarg);
-				if (n >= ETHER_MIN_LEN) {
+				if (n >= RTE_ETHER_MIN_LEN) {
 					rx_mode.max_rx_pkt_len = (uint32_t) n;
-					if (n > ETHER_MAX_LEN)
+					if (n > RTE_ETHER_MAX_LEN)
 						rx_offloads |=
 							DEV_RX_OFFLOAD_JUMBO_FRAME;
 				} else
 					rte_exit(EXIT_FAILURE,
 						 "Invalid max-pkt-len=%d - should be > %d\n",
-						 n, ETHER_MIN_LEN);
+						 n, RTE_ETHER_MIN_LEN);
+			}
+			if (!strcmp(lgopts[opt_idx].name, "max-lro-pkt-size")) {
+				n = atoi(optarg);
+				rx_mode.max_lro_pkt_size = (uint32_t) n;
 			}
 			if (!strcmp(lgopts[opt_idx].name, "pkt-filter-mode")) {
 				if (!strcmp(optarg, "signature"))
@@ -1001,6 +1022,10 @@ launch_args_parse(int argc, char** argv)
 					"enable-hw-vlan-extend"))
 				rx_offloads |= DEV_RX_OFFLOAD_VLAN_EXTEND;
 
+			if (!strcmp(lgopts[opt_idx].name,
+					"enable-hw-qinq-strip"))
+				rx_offloads |= DEV_RX_OFFLOAD_QINQ_STRIP;
+
 			if (!strcmp(lgopts[opt_idx].name, "enable-drop-en"))
 				rx_drop_en = 1;
 
@@ -1042,6 +1067,31 @@ launch_args_parse(int argc, char** argv)
 						  " >= 0 && <= %u\n", n,
 						  get_allowed_max_nb_txq(&pid));
 			}
+			if (!strcmp(lgopts[opt_idx].name, "hairpinq")) {
+				n = atoi(optarg);
+				if (n >= 0 &&
+				    check_nb_hairpinq((queueid_t)n) == 0)
+					nb_hairpinq = (queueid_t) n;
+				else
+					rte_exit(EXIT_FAILURE, "txq %d invalid - must be"
+						  " >= 0 && <= %u\n", n,
+						  get_allowed_max_nb_hairpinq
+						  (&pid));
+				if ((n + nb_txq) < 0 ||
+				    check_nb_txq((queueid_t)(n + nb_txq)) != 0)
+					rte_exit(EXIT_FAILURE, "txq + hairpinq "
+						 "%d invalid - must be"
+						  " >= 0 && <= %u\n",
+						  n + nb_txq,
+						  get_allowed_max_nb_txq(&pid));
+				if ((n + nb_rxq) < 0 ||
+				    check_nb_rxq((queueid_t)(n + nb_rxq)) != 0)
+					rte_exit(EXIT_FAILURE, "rxq + hairpinq "
+						 "%d invalid - must be"
+						  " >= 0 && <= %u\n",
+						  n + nb_rxq,
+						  get_allowed_max_nb_rxq(&pid));
+			}
 			if (!nb_rxq && !nb_txq) {
 				rte_exit(EXIT_FAILURE, "Either rx or tx queues should "
 						"be non-zero\n");
@@ -1057,7 +1107,12 @@ launch_args_parse(int argc, char** argv)
 					 * value, on the assumption that all
 					 * ports are of the same NIC model.
 					 */
-					rte_eth_dev_info_get(0, &dev_info);
+					ret = eth_dev_info_get_print_err(
+								0,
+								&dev_info);
+					if (ret != 0)
+						return;
+
 					rec_nb_pkts = dev_info
 						.default_rxportconf.burst_size;
 
@@ -1205,6 +1260,8 @@ launch_args_parse(int argc, char** argv)
 				no_flush_rx = 1;
 			if (!strcmp(lgopts[opt_idx].name, "disable-link-check"))
 				no_link_check = 1;
+			if (!strcmp(lgopts[opt_idx].name, "disable-device-start"))
+				no_device_start = 1;
 			if (!strcmp(lgopts[opt_idx].name, "no-lsc-interrupt"))
 				lsc_interrupt = 0;
 			if (!strcmp(lgopts[opt_idx].name, "no-rmv-interrupt"))
@@ -1220,6 +1277,17 @@ launch_args_parse(int argc, char** argv)
 					rte_exit(EXIT_FAILURE,
 						 "tx-offloads must be >= 0\n");
 			}
+
+			if (!strcmp(lgopts[opt_idx].name, "rx-offloads")) {
+				char *end = NULL;
+				n = strtoull(optarg, &end, 16);
+				if (n >= 0)
+					rx_offloads = (uint64_t)n;
+				else
+					rte_exit(EXIT_FAILURE,
+						 "rx-offloads must be >= 0\n");
+			}
+
 			if (!strcmp(lgopts[opt_idx].name, "vxlan-gpe-port")) {
 				n = atoi(optarg);
 				if (n >= 0)
@@ -1300,6 +1368,17 @@ launch_args_parse(int argc, char** argv)
 			}
 			if (!strcmp(lgopts[opt_idx].name, "no-iova-contig"))
 				mempool_flags = MEMPOOL_F_NO_IOVA_CONTIG;
+
+			if (!strcmp(lgopts[opt_idx].name, "rx-mq-mode")) {
+				char *end = NULL;
+				n = strtoul(optarg, &end, 16);
+				if (n >= 0 && n <= ETH_MQ_RX_VMDQ_DCB_RSS)
+					rx_mq_mode = (enum rte_eth_rx_mq_mode)n;
+				else
+					rte_exit(EXIT_FAILURE,
+						 "rx-mq-mode must be >= 0 and <= %d\n",
+						 ETH_MQ_RX_VMDQ_DCB_RSS);
+			}
 			break;
 		case 'h':
 			usage(argv[0]);
@@ -1307,10 +1386,17 @@ launch_args_parse(int argc, char** argv)
 			break;
 		default:
 			usage(argv[0]);
+			printf("Invalid option: %s\n", argv[optind]);
 			rte_exit(EXIT_FAILURE,
 				 "Command line is incomplete or incorrect\n");
 			break;
 		}
+	}
+
+	if (optind != argc) {
+		usage(argv[0]);
+		printf("Invalid parameter: %s\n", argv[optind]);
+		rte_exit(EXIT_FAILURE, "Command line is incorrect\n");
 	}
 
 	/* Set offload configuration from command line parameters. */

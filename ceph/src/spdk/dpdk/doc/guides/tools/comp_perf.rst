@@ -6,14 +6,24 @@ dpdk-test-compress-perf Tool
 
 The ``dpdk-test-compress-perf`` tool is a Data Plane Development Kit (DPDK)
 utility that allows measuring performance parameters of PMDs available in the
-compress tree. The tool reads the data from a file (--input-file),
+compress tree. User can use multiple cores to run tests on but only
+one type of compression PMD can be measured during single application
+execution. The tool reads the data from a file (--input-file),
 dumps all the file into a buffer and fills out the data of input mbufs,
 which are passed to compress device with compression operations.
 Then, the output buffers are fed into the decompression stage, and the resulting
 data is compared against the original data (verification phase). After that,
 a number of iterations are performed, compressing first and decompressing later,
-to check the throughput rate
-(showing cycles/iteration, cycles/Byte and Gbps, for compression and decompression).
+to check the throughput rate (showing cycles/iteration, cycles/Byte and Gbps,
+for compression and decompression).
+Another option: ``pmd-cyclecount``, gives the user the opportunity to measure
+the number of cycles per operation for the 3 phases: setup, enqueue_burst and
+dequeue_burst, for both compression and decompression. An optional delay can be
+inserted between enqueue and dequeue so no cycles are wasted in retries while
+waiting for a hardware device to finish. Although artificial, this allows
+to measure the minimum offload cost which could be achieved in a perfectly
+tuned system. Comparing the results of the two tests gives information about
+the trade-off between throughput and cycle-count.
 
 .. Note::
 
@@ -26,9 +36,35 @@ Limitations
 
 * Stateful operation is not supported in this version.
 
+EAL Options
+~~~~~~~~~~~
 
-Command line options
---------------------
+The following are the EAL command-line options that can be used in conjunction
+with the ``dpdk-test-compress-perf`` application.
+See the DPDK Getting Started Guides for more information on these options.
+
+*   ``-c <COREMASK>`` or ``-l <CORELIST>``
+
+	Set the hexadecimal bitmask of the cores to run on. The corelist is a
+	list cores to use.
+
+.. Note::
+
+	One lcore is needed for process admin, tests are run on all other cores.
+	To run tests on two lcores, three lcores must be passed to the tool.
+
+*   ``-w <PCI>``
+
+	Add a PCI device in white list.
+
+*   ``--vdev <driver><id>``
+
+	Add a virtual device.
+
+Application Options
+~~~~~~~~~~~~~~~~~~~
+
+ ``--ptest [throughput/verify/pmd-cyclecount]``: set test type (default: throughput)
 
  ``--driver-name NAME``: compress driver to use
 
@@ -53,6 +89,10 @@ Command line options
  ``--compress-level N``: compression level, which could be a single value, list or range (default: range between 1 and 9)
 
  ``--window-sz N``: base two log value of compression window size (default: max supported by PMD)
+
+ ``--external-mbufs``: allocate and use memzones as external buffers instead of keeping the data directly in mbuf areas
+
+ ``--cc-delay-us N``: delay between enqueue and dequeue operations in microseconds, valid only for the cyclecount test (default: 500 us)
 
  ``-h``: prints this help
 

@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  *
- * Copyright (c) 2009-2018 Solarflare Communications Inc.
- * All rights reserved.
+ * Copyright(c) 2019-2020 Xilinx, Inc.
+ * Copyright(c) 2009-2019 Solarflare Communications Inc.
  */
 
 #include "efx.h"
@@ -79,6 +79,7 @@ ef10_vpd_size(
 	__out			size_t *sizep)
 {
 	efx_rc_t rc;
+	efx_nvram_info_t eni = { 0 };
 
 	EFSYS_ASSERT(EFX_FAMILY_IS_EF10(enp));
 
@@ -88,9 +89,11 @@ ef10_vpd_size(
 	 * so we just need to return an upper bound on the dynamic vpd,
 	 * which is the size of the DYNAMIC_CONFIG partition.
 	 */
-	if ((rc = efx_mcdi_nvram_info(enp, NVRAM_PARTITION_TYPE_DYNAMIC_CONFIG,
-		    sizep, NULL, NULL, NULL)) != 0)
+	if ((rc = efx_mcdi_nvram_info(enp,
+		    NVRAM_PARTITION_TYPE_DYNAMIC_CONFIG, &eni)) != 0)
 		goto fail1;
+
+	*sizep = eni.eni_partn_size;
 
 	return (0);
 

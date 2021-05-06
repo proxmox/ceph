@@ -95,8 +95,8 @@ set_temp_threshold(struct dev *dev, uint32_t temp)
 	int rc;
 
 	cmd.opc = SPDK_NVME_OPC_SET_FEATURES;
-	cmd.cdw10 = SPDK_NVME_FEAT_TEMPERATURE_THRESHOLD;
-	cmd.cdw11 = temp;
+	cmd.cdw10_bits.set_features.fid = SPDK_NVME_FEAT_TEMPERATURE_THRESHOLD;
+	cmd.cdw11_bits.feat_temp_threshold.bits.tmpth = temp;
 
 	rc = spdk_nvme_ctrlr_cmd_admin_raw(dev->ctrlr, &cmd, NULL, 0, set_temp_completion, dev);
 	if (rc == 0) {
@@ -133,7 +133,7 @@ get_temp_threshold(struct dev *dev)
 	int rc;
 
 	cmd.opc = SPDK_NVME_OPC_GET_FEATURES;
-	cmd.cdw10 = SPDK_NVME_FEAT_TEMPERATURE_THRESHOLD;
+	cmd.cdw10_bits.get_features.fid = SPDK_NVME_FEAT_TEMPERATURE_THRESHOLD;
 
 	rc = spdk_nvme_ctrlr_cmd_admin_raw(dev->ctrlr, &cmd, NULL, 0, get_temp_completion, dev);
 	if (rc == 0) {
@@ -244,10 +244,10 @@ cleanup(void)
 
 	foreach_dev(dev) {
 		if (dev->health_page) {
-			spdk_dma_free(dev->health_page);
+			spdk_free(dev->health_page);
 		}
 		if (dev->changed_ns_list) {
-			spdk_dma_free(dev->changed_ns_list);
+			spdk_free(dev->changed_ns_list);
 		}
 	}
 }
@@ -308,7 +308,7 @@ parse_args(int argc, char **argv)
 	int op, rc;
 	long int val;
 
-	g_trid.trtype = SPDK_NVME_TRANSPORT_PCIE;
+	spdk_nvme_trid_populate_transport(&g_trid, SPDK_NVME_TRANSPORT_PCIE);
 	snprintf(g_trid.subnqn, sizeof(g_trid.subnqn), "%s", SPDK_NVMF_DISCOVERY_NQN);
 
 	while ((op = getopt(argc, argv, "n:r:t:HL:T")) != -1) {
@@ -383,12 +383,14 @@ attach_cb(void *cb_ctx, const struct spdk_nvme_transport_id *trid,
 
 	printf("Attached to %s\n", dev->name);
 
-	dev->health_page = spdk_dma_zmalloc(sizeof(*dev->health_page), 4096, NULL);
+	dev->health_page = spdk_zmalloc(sizeof(*dev->health_page), 4096, NULL, SPDK_ENV_LCORE_ID_ANY,
+					SPDK_MALLOC_DMA);
 	if (dev->health_page == NULL) {
 		printf("Allocation error (health page)\n");
 		g_failed = 1;
 	}
-	dev->changed_ns_list = spdk_dma_zmalloc(sizeof(*dev->changed_ns_list), 4096, NULL);
+	dev->changed_ns_list = spdk_zmalloc(sizeof(*dev->changed_ns_list), 4096, NULL,
+					    SPDK_ENV_LCORE_ID_ANY, SPDK_MALLOC_DMA);
 	if (dev->changed_ns_list == NULL) {
 		printf("Allocation error (changed namespace list page)\n");
 		g_failed = 1;
@@ -424,7 +426,7 @@ get_feature_test(struct dev *dev)
 
 	memset(&cmd, 0, sizeof(cmd));
 	cmd.opc = SPDK_NVME_OPC_GET_FEATURES;
-	cmd.cdw10 = SPDK_NVME_FEAT_NUMBER_OF_QUEUES;
+	cmd.cdw10_bits.get_features.fid = SPDK_NVME_FEAT_NUMBER_OF_QUEUES;
 	if (spdk_nvme_ctrlr_cmd_admin_raw(dev->ctrlr, &cmd, NULL, 0,
 					  get_feature_test_cb, dev) != 0) {
 		printf("Failed to send Get Features command for dev=%p\n", dev);

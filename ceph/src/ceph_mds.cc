@@ -20,6 +20,7 @@
 #include <iostream>
 #include <string>
 
+#include "common/async/context_pool.h"
 #include "include/ceph_features.h"
 #include "include/compat.h"
 #include "include/random.h"
@@ -90,8 +91,7 @@ int main(int argc, const char **argv)
   }
 
   auto cct = global_init(NULL, args,
-			 CEPH_ENTITY_TYPE_MDS, CODE_ENVIRONMENT_DAEMON,
-			 0, "mds_data");
+			 CEPH_ENTITY_TYPE_MDS, CODE_ENVIRONMENT_DAEMON, 0);
   ceph_heap_profiler_init();
 
   int numa_node = g_conf().get_val<int64_t>("mds_numa_node");
@@ -166,8 +166,7 @@ int main(int argc, const char **argv)
   std::string public_msgr_type = g_conf()->ms_public_type.empty() ? g_conf().get_val<std::string>("ms_type") : g_conf()->ms_public_type;
   Messenger *msgr = Messenger::create(g_ceph_context, public_msgr_type,
 				      entity_name_t::MDS(-1), "mds",
-				      Messenger::get_random_nonce(),
-				      Messenger::HAS_MANY_CONNECTIONS);
+				      Messenger::get_random_nonce());
   if (!msgr)
     forker.exit(1);
   msgr->set_cluster_protocol(CEPH_MDS_PROTOCOL);
@@ -195,7 +194,8 @@ int main(int argc, const char **argv)
   register_async_signal_handler(SIGHUP, sighup_handler);
   
   // get monmap
-  MonClient mc(g_ceph_context);
+  ceph::async::io_context_pool ctxpool(2);
+  MonClient mc(g_ceph_context, ctxpool);
   if (mc.build_initial_monmap() < 0)
     forker.exit(1);
   global_init_chdir(g_ceph_context);
@@ -203,7 +203,7 @@ int main(int argc, const char **argv)
   msgr->start();
 
   // start mds
-  mds = new MDSDaemon(g_conf()->name.get_id().c_str(), msgr, &mc);
+  mds = new MDSDaemon(g_conf()->name.get_id().c_str(), msgr, &mc, ctxpool);
 
   // in case we have to respawn...
   mds->orig_argc = argc;
@@ -234,6 +234,7 @@ int main(int argc, const char **argv)
   shutdown_async_signal_handler();
 
  shutdown:
+  ctxpool.stop();
   // yuck: grab the mds lock, so we can be sure that whoever in *mds
   // called shutdown finishes what they were doing.
   mds->mds_lock.lock();
@@ -257,4 +258,3 @@ int main(int argc, const char **argv)
 
   return 0;
 }
-

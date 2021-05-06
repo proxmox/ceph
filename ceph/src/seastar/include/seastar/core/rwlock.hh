@@ -31,7 +31,8 @@ template<typename Clock>
 class basic_rwlock;
 
 template<typename Clock = typename timer<>::clock>
-struct rwlock_for_read {
+class rwlock_for_read {
+public:
     future<> lock() {
         return static_cast<basic_rwlock<Clock>*>(this)->read_lock();
     }
@@ -42,7 +43,8 @@ struct rwlock_for_read {
 };
 
 template<typename Clock = typename timer<>::clock>
-struct rwlock_for_write {
+class rwlock_for_write {
+public:
     future<> lock() {
         return static_cast<basic_rwlock<Clock>*>(this)->write_lock();
     }
@@ -100,9 +102,7 @@ public:
     /// is called, one of the fibers waiting on \ref write_lock will be allowed
     /// to proceed.
     void read_unlock() {
-#ifdef SEASTAR_DEBUG_LOCKING
         assert(_sem.current() < max_ops);
-#endif
         _sem.signal();
     }
 
@@ -118,9 +118,7 @@ public:
     /// is called, one of the other fibers waiting on \ref write_lock or the fibers
     /// waiting on \ref read_lock will be allowed to proceed.
     void write_unlock() {
-#ifdef SEASTAR_DEBUG_LOCKING
         assert(_sem.current() == 0);
-#endif
         _sem.signal(max_ops);
     }
 

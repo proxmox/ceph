@@ -18,7 +18,7 @@
 char qede_fw_file[PATH_MAX];
 
 static const char * const QEDE_DEFAULT_FIRMWARE =
-	"/lib/firmware/qed/qed_init_values-8.37.7.0.bin";
+	"/lib/firmware/qed/qed_init_values-8.40.33.0.bin";
 
 static void
 qed_update_pf_params(struct ecore_dev *edev, struct ecore_pf_params *params)
@@ -56,6 +56,10 @@ qed_probe(struct ecore_dev *edev, struct rte_pci_device *pci_dev,
 	qed_init_pci(edev, pci_dev);
 
 	memset(&hw_prepare_params, 0, sizeof(hw_prepare_params));
+
+	if (is_vf)
+		hw_prepare_params.acquire_retry_cnt = ECORE_VF_ACQUIRE_THRESH;
+
 	hw_prepare_params.personality = ECORE_PCI_ETH;
 	hw_prepare_params.drv_resc_alloc = false;
 	hw_prepare_params.chk_reg_fifo = false;
@@ -369,7 +373,7 @@ qed_fill_dev_info(struct ecore_dev *edev, struct qed_dev_info *dev_info)
 	dev_info->dev_type = edev->type;
 
 	rte_memcpy(&dev_info->hw_mac, &edev->hwfns[0].hw_info.hw_mac_addr,
-	       ETHER_ADDR_LEN);
+	       RTE_ETHER_ADDR_LEN);
 
 	dev_info->fw_major = FW_MAJOR_VERSION;
 	dev_info->fw_minor = FW_MINOR_VERSION;
@@ -389,6 +393,9 @@ qed_fill_dev_info(struct ecore_dev *edev, struct qed_dev_info *dev_info)
 		if (ptt) {
 			ecore_mcp_get_mfw_ver(ECORE_LEADING_HWFN(edev), ptt,
 					      &dev_info->mfw_rev, NULL);
+
+			ecore_mcp_get_mbi_ver(ECORE_LEADING_HWFN(edev), ptt,
+					      &dev_info->mbi_version);
 
 			ecore_mcp_get_flash_size(ECORE_LEADING_HWFN(edev), ptt,
 						 &dev_info->flash_size);
@@ -434,7 +441,7 @@ qed_fill_eth_dev_info(struct ecore_dev *edev, struct qed_dev_eth_info *info)
 					 max_vf_vlan_filters;
 
 		rte_memcpy(&info->port_mac, &edev->hwfns[0].hw_info.hw_mac_addr,
-			   ETHER_ADDR_LEN);
+			   RTE_ETHER_ADDR_LEN);
 	} else {
 		ecore_vf_get_num_rxqs(ECORE_LEADING_HWFN(edev),
 				      &info->num_queues);
@@ -455,7 +462,7 @@ qed_fill_eth_dev_info(struct ecore_dev *edev, struct qed_dev_eth_info *info)
 	qed_fill_dev_info(edev, &info->common);
 
 	if (IS_VF(edev))
-		memset(&info->common.hw_mac, 0, ETHER_ADDR_LEN);
+		memset(&info->common.hw_mac, 0, RTE_ETHER_ADDR_LEN);
 
 	return 0;
 }

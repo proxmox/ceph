@@ -51,8 +51,6 @@ extern "C" {
 
 /** Flag to support lock free reader writer concurrency. Both single writer
  * and multi writer use cases are supported.
- * Currently, extendable bucket table feature is not supported with
- * this feature.
  */
 #define RTE_HASH_EXTRA_FLAGS_RW_CONCURRENCY_LF 0x20
 
@@ -165,6 +163,23 @@ int32_t
 rte_hash_count(const struct rte_hash *h);
 
 /**
+ * @warning
+ * @b EXPERIMENTAL: this API may change without prior notice
+ *
+ * Return the maximum key value ID that could possibly be returned by
+ * rte_hash_add_key function.
+ *
+ * @param h
+ *  Hash table to query from
+ * @return
+ *   - -EINVAL if parameters are invalid
+ *   - A value indicating the max key ID of key slots present in the table.
+ */
+__rte_experimental
+int32_t
+rte_hash_max_key_id(const struct rte_hash *h);
+
+/**
  * Add a key-value pair to an existing hash table.
  * This operation is not multi-thread safe
  * and should only be called from one thread by default.
@@ -234,7 +249,9 @@ rte_hash_add_key_with_hash_data(const struct rte_hash *h, const void *key,
  *   - -EINVAL if the parameters are invalid.
  *   - -ENOSPC if there is no space in the hash for this key.
  *   - A positive value that can be used by the caller as an offset into an
- *     array of user data. This value is unique for this key.
+ *     array of user data. This value is unique for this key. This
+ *     unique key id may be larger than the user specified entry count
+ *     when RTE_HASH_EXTRA_FLAGS_MULTI_WRITER_ADD flag is set.
  */
 int32_t
 rte_hash_add_key(const struct rte_hash *h, const void *key);
@@ -256,7 +273,9 @@ rte_hash_add_key(const struct rte_hash *h, const void *key);
  *   - -EINVAL if the parameters are invalid.
  *   - -ENOSPC if there is no space in the hash for this key.
  *   - A positive value that can be used by the caller as an offset into an
- *     array of user data. This value is unique for this key.
+ *     array of user data. This value is unique for this key. This
+ *     unique key ID may be larger than the user specified entry count
+ *     when RTE_HASH_EXTRA_FLAGS_MULTI_WRITER_ADD flag is set.
  */
 int32_t
 rte_hash_add_key_with_hash(const struct rte_hash *h, const void *key, hash_sig_t sig);
@@ -366,7 +385,8 @@ rte_hash_get_key_with_position(const struct rte_hash *h, const int32_t position,
  *   - 0 if freed successfully
  *   - -EINVAL if the parameters are invalid.
  */
-int __rte_experimental
+__rte_experimental
+int
 rte_hash_free_key_with_position(const struct rte_hash *h,
 				const int32_t position);
 
@@ -497,6 +517,67 @@ rte_hash_hash(const struct rte_hash *h, const void *key);
 int
 rte_hash_lookup_bulk_data(const struct rte_hash *h, const void **keys,
 		      uint32_t num_keys, uint64_t *hit_mask, void *data[]);
+
+/**
+ * @warning
+ * @b EXPERIMENTAL: this API may change without prior notice
+ *
+ * Find multiple keys in the hash table with precomputed hash value array.
+ * This operation is multi-thread safe with regarding to other lookup threads.
+ * Read-write concurrency can be enabled by setting flag during
+ * table creation.
+ *
+ * @param h
+ *   Hash table to look in.
+ * @param keys
+ *   A pointer to a list of keys to look for.
+ * @param sig
+ *   A pointer to a list of precomputed hash values for keys.
+ * @param num_keys
+ *   How many keys are in the keys list (less than RTE_HASH_LOOKUP_BULK_MAX).
+ * @param positions
+ *   Output containing a list of values, corresponding to the list of keys that
+ *   can be used by the caller as an offset into an array of user data. These
+ *   values are unique for each key, and are the same values that were returned
+ *   when each key was added. If a key in the list was not found, then -ENOENT
+ *   will be the value.
+ * @return
+ *   -EINVAL if there's an error, otherwise 0.
+ */
+__rte_experimental
+int
+rte_hash_lookup_with_hash_bulk(const struct rte_hash *h, const void **keys,
+		hash_sig_t *sig, uint32_t num_keys, int32_t *positions);
+
+/**
+ * @warning
+ * @b EXPERIMENTAL: this API may change without prior notice
+ *
+ * Find multiple keys in the hash table with precomputed hash value array.
+ * This operation is multi-thread safe with regarding to other lookup threads.
+ * Read-write concurrency can be enabled by setting flag during
+ * table creation.
+ *
+ * @param h
+ *   Hash table to look in.
+ * @param keys
+ *   A pointer to a list of keys to look for.
+ * @param sig
+ *   A pointer to a list of precomputed hash values for keys.
+ * @param num_keys
+ *   How many keys are in the keys list (less than RTE_HASH_LOOKUP_BULK_MAX).
+ * @param hit_mask
+ *   Output containing a bitmask with all successful lookups.
+ * @param data
+ *   Output containing array of data returned from all the successful lookups.
+ * @return
+ *   -EINVAL if there's an error, otherwise number of successful lookups.
+ */
+__rte_experimental
+int
+rte_hash_lookup_with_hash_bulk_data(const struct rte_hash *h,
+		const void **keys, hash_sig_t *sig,
+		uint32_t num_keys, uint64_t *hit_mask, void *data[]);
 
 /**
  * Find multiple keys in the hash table.

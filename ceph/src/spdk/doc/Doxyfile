@@ -795,14 +795,15 @@ INPUT                  += \
                          misc.md \
                          driver_modules.md \
                          tools.md \
-                         experimental_tools.md \
                          performance_reports.md \
 
 # All remaining pages are listed here in alphabetical order by filename.
 INPUT                  += \
                          about.md \
+                         accel_fw.md \
                          applications.md \
                          bdev.md \
+                         bdevperf.md \
                          bdev_module.md \
                          bdev_pg.md \
                          blob.md \
@@ -810,14 +811,17 @@ INPUT                  += \
                          changelog.md \
                          compression.md \
                          concurrency.md \
+                         containers.md \
                          event.md \
                          ftl.md \
                          gdb_macros.md \
                          getting_started.md \
+                         idxd.md \
                          ioat.md \
                          iscsi.md \
                          jsonrpc.md \
                          jsonrpc_proxy.md \
+                         libraries.md \
                          lvol.md \
                          memory.md \
                          notify.md \
@@ -838,6 +842,7 @@ INPUT                  += \
                          vhost.md \
                          vhost_processing.md \
                          virtio.md \
+                         vmd.md \
                          vpp_integration.md
 
 # This tag can be used to specify the character encoding of the source files

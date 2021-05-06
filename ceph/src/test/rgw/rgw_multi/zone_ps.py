@@ -5,8 +5,8 @@ import hmac
 import hashlib
 import base64
 import xmltodict
-from six.moves import http_client
-from six.moves.urllib import parse as urlparse
+from http import client as http_client
+from urllib import parse as urlparse
 from time import gmtime, strftime
 from .multisite import Zone
 import boto3
@@ -187,6 +187,7 @@ class PSTopicS3:
     POST ?Action=CreateTopic&Name=<topic name>[&OpaqueData=<data>[&push-endpoint=<endpoint>&[<arg1>=<value1>...]]]
     POST ?Action=ListTopics
     POST ?Action=GetTopic&TopicArn=<topic-arn>
+    POST ?Action=GetTopicAttributes&TopicArn=<topic-arn>
     POST ?Action=DeleteTopic&TopicArn=<topic-arn>
     """
     def __init__(self, conn, topic_name, region, endpoint_args=None, opaque_data=None):
@@ -238,6 +239,10 @@ class PSTopicS3:
         http_conn.close()
         dict_response = xmltodict.parse(data)
         return dict_response, status
+
+    def get_attributes(self):
+        """get topic attributes"""
+        return self.client.get_topic_attributes(TopicArn=self.topic_arn)
 
     def set_config(self):
         """set topic"""

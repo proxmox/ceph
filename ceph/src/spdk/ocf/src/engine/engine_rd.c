@@ -13,7 +13,7 @@
 #include "cache_engine.h"
 #include "../concurrency/ocf_concurrency.h"
 #include "../utils/utils_io.h"
-#include "../utils/utils_req.h"
+#include "../ocf_request.h"
 #include "../utils/utils_cache_line.h"
 #include "../utils/utils_part.h"
 #include "../metadata/metadata.h"
@@ -38,8 +38,7 @@ static void _ocf_read_generic_hit_complete(struct ocf_request *req, int error)
 		OCF_DEBUG_RQ(req, "HIT completion");
 
 		if (req->error) {
-			env_atomic_inc(&req->cache->core[req->core_id].
-				counters->cache_errors.read);
+			ocf_core_stats_cache_error_update(req->core, OCF_READ);
 			ocf_engine_push_req_front_pt(req);
 		} else {
 
@@ -78,8 +77,7 @@ static void _ocf_read_generic_miss_complete(struct ocf_request *req, int error)
 			req->complete(req, req->error);
 
 			req->info.core_error = 1;
-			env_atomic_inc(&cache->core[req->core_id].
-					counters->core_errors.read);
+			ocf_core_stats_core_error_update(req->core, OCF_READ);
 
 			ctx_data_free(cache->owner, req->cp_data);
 			req->cp_data = NULL;
@@ -103,11 +101,11 @@ static void _ocf_read_generic_miss_complete(struct ocf_request *req, int error)
 	}
 }
 
-static inline void _ocf_read_generic_submit_hit(struct ocf_request *req)
+void ocf_read_generic_submit_hit(struct ocf_request *req)
 {
 	env_atomic_set(&req->req_remaining, ocf_engine_io_count(req));
 
-	ocf_submit_cache_reqs(req->cache, req->map, req, OCF_READ,
+	ocf_submit_cache_reqs(req->cache, req, OCF_READ, 0, req->byte_length,
 		ocf_engine_io_count(req), _ocf_read_generic_hit_complete);
 }
 
@@ -128,19 +126,17 @@ static inline void _ocf_read_generic_submit_miss(struct ocf_request *req)
 		goto err_alloc;
 
 	/* Submit read request to core device. */
-	ocf_submit_volume_req(&cache->core[req->core_id].volume, req,
+	ocf_submit_volume_req(&req->core->volume, req,
 			_ocf_read_generic_miss_complete);
 
 	return;
 
 err_alloc:
-	_ocf_read_generic_miss_complete(req, -ENOMEM);
+	_ocf_read_generic_miss_complete(req, -OCF_ERR_NO_MEM);
 }
 
 static int _ocf_read_generic_do(struct ocf_request *req)
 {
-	struct ocf_cache *cache = req->cache;
-
 	if (ocf_engine_is_miss(req) && req->map->rd_locked) {
 		/* Miss can be handled only on write locks.
 		 * Need to switch to PT
@@ -155,12 +151,12 @@ static int _ocf_read_generic_do(struct ocf_request *req)
 
 	if (ocf_engine_is_miss(req)) {
 		if (req->info.dirty_any) {
-			OCF_METADATA_LOCK_RD();
+			ocf_req_hash_lock_rd(req);
 
 			/* Request is dirty need to clean request */
 			ocf_engine_clean(req);
 
-			OCF_METADATA_UNLOCK_RD();
+			ocf_req_hash_unlock_rd(req);
 
 			/* We need to clean request before processing, return */
 			ocf_req_put(req);
@@ -168,36 +164,36 @@ static int _ocf_read_generic_do(struct ocf_request *req)
 			return 0;
 		}
 
-		OCF_METADATA_LOCK_RD();
+		ocf_req_hash_lock_rd(req);
 
 		/* Set valid status bits map */
 		ocf_set_valid_map_info(req);
 
-		OCF_METADATA_UNLOCK_RD();
+		ocf_req_hash_unlock_rd(req);
 	}
 
 	if (req->info.re_part) {
 		OCF_DEBUG_RQ(req, "Re-Part");
 
-		OCF_METADATA_LOCK_WR();
+		ocf_req_hash_lock_wr(req);
 
 		/* Probably some cache lines are assigned into wrong
 		 * partition. Need to move it to new one
 		 */
 		ocf_part_move(req);
 
-		OCF_METADATA_UNLOCK_WR();
+		ocf_req_hash_unlock_wr(req);
 	}
 
 	OCF_DEBUG_RQ(req, "Submit");
 
 	/* Submit IO */
 	if (ocf_engine_is_hit(req))
-		_ocf_read_generic_submit_hit(req);
+		ocf_read_generic_submit_hit(req);
 	else
 		_ocf_read_generic_submit_miss(req);
 
-	/* Updata statistics */
+	/* Update statistics */
 	ocf_engine_update_request_stats(req);
 	ocf_engine_update_block_stats(req);
 
@@ -208,17 +204,30 @@ static int _ocf_read_generic_do(struct ocf_request *req)
 }
 
 static const struct ocf_io_if _io_if_read_generic_resume = {
-		.read = _ocf_read_generic_do,
-		.write = _ocf_read_generic_do,
+	.read = _ocf_read_generic_do,
+	.write = _ocf_read_generic_do,
+};
+
+static enum ocf_engine_lock_type ocf_rd_get_lock_type(struct ocf_request *req)
+{
+	if (ocf_engine_is_hit(req))
+		return ocf_engine_lock_read;
+	else
+		return ocf_engine_lock_write;
+}
+
+static const struct ocf_engine_callbacks _rd_engine_callbacks =
+{
+	.get_lock_type = ocf_rd_get_lock_type,
+	.resume = ocf_engine_on_resume,
 };
 
 int ocf_read_generic(struct ocf_request *req)
 {
-	bool mapped;
 	int lock = OCF_LOCK_NOT_ACQUIRED;
 	struct ocf_cache *cache = req->cache;
 
-	ocf_io_start(req->io);
+	ocf_io_start(&req->ioi.io);
 
 	if (env_atomic_read(&cache->pending_read_misses_list_blocked)) {
 		/* There are conditions to bypass IO */
@@ -230,66 +239,11 @@ int ocf_read_generic(struct ocf_request *req)
 	ocf_req_get(req);
 
 	/* Set resume call backs */
-	req->resume = ocf_engine_on_resume;
 	req->io_if = &_io_if_read_generic_resume;
 
-	/*- Metadata RD access -----------------------------------------------*/
+	lock = ocf_engine_prepare_clines(req, &_rd_engine_callbacks);
 
-	OCF_METADATA_LOCK_RD();
-
-	/* Traverse request to cache if there is hit */
-	ocf_engine_traverse(req);
-
-	mapped = ocf_engine_is_mapped(req);
-	if (mapped) {
-		/* Request is fully mapped, no need to call eviction */
-		if (ocf_engine_is_hit(req)) {
-			/* There is a hit, lock request for READ access */
-			lock = ocf_req_trylock_rd(req);
-		} else {
-			/* All cache line mapped, but some sectors are not valid
-			 * and cache insert will be performed - lock for
-			 * WRITE is required
-			 */
-			lock = ocf_req_trylock_wr(req);
-		}
-	}
-
-	OCF_METADATA_UNLOCK_RD();
-
-	/*- END Metadata RD access -------------------------------------------*/
-
-	if (!mapped) {
-
-		/*- Metadata WR access ---------------------------------------*/
-
-		OCF_METADATA_LOCK_WR();
-
-		/* Now there is exclusive access for metadata. May traverse once
-		 * again. If there are misses need to call eviction. This
-		 * process is called 'mapping'.
-		 */
-		ocf_engine_map(req);
-
-		if (!req->info.eviction_error) {
-			if (ocf_engine_is_hit(req)) {
-				/* After mapping turns out there is hit,
-				 * so lock OCF request for read access
-				 */
-				lock = ocf_req_trylock_rd(req);
-			} else {
-				/* Miss, new cache lines were mapped,
-				 * need to lock OCF request for write access
-				 */
-				lock = ocf_req_trylock_wr(req);
-			}
-		}
-		OCF_METADATA_UNLOCK_WR();
-
-		/*- END Metadata WR access -----------------------------------*/
-	}
-
-	if (!req->info.eviction_error) {
+	if (!req->info.mapping_error) {
 		if (lock >= 0) {
 			if (lock != OCF_LOCK_ACQUIRED) {
 				/* Lock was not acquired, need to wait for resume */

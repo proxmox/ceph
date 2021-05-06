@@ -39,31 +39,24 @@
 #include "ftl/ftl_band.c"
 #include "../common/utils.c"
 
-static struct spdk_ocssd_geometry_data g_geo = {
-	.num_grp	= 4,
-	.num_pu		= 3,
-	.num_chk	= 1500,
-	.clba		= 100,
-	.ws_opt		= 16,
-	.ws_min		= 4,
-};
-
-static struct spdk_ftl_punit_range g_range = {
-	.begin		= 2,
-	.end		= 9,
+struct base_bdev_geometry g_geo = {
+	.write_unit_size    = 16,
+	.optimal_open_zones = 12,
+	.zone_size	    = 100,
+	.blockcnt	    = 1500 * 100 * 12,
 };
 
 static void
-setup_band(struct ftl_band **band, const struct spdk_ocssd_geometry_data *geo,
-	   const struct spdk_ftl_punit_range *range)
+setup_band(struct ftl_band **band, const struct base_bdev_geometry *geo)
 {
 	int rc;
 	struct spdk_ftl_dev *dev;
 
-	dev = test_init_ftl_dev(geo, range);
-	*band = test_init_ftl_band(dev, 0);
+	dev = test_init_ftl_dev(&g_geo);
+	*band = test_init_ftl_band(dev, 0, geo->zone_size);
 	rc = ftl_band_alloc_lba_map(*band);
 	SPDK_CU_ASSERT_FATAL(rc == 0);
+	(*band)->state = FTL_BAND_STATE_PREP;
 	ftl_band_clear_lba_map(*band);
 }
 
@@ -82,7 +75,7 @@ test_md_unpack(void)
 	struct ftl_band *band;
 	struct ftl_lba_map *lba_map;
 
-	setup_band(&band, &g_geo, &g_range);
+	setup_band(&band, &g_geo);
 
 	lba_map = &band->lba_map;
 	SPDK_CU_ASSERT_FATAL(lba_map->dma_buf);
@@ -103,7 +96,7 @@ test_md_unpack_fail(void)
 	struct ftl_lba_map *lba_map;
 	struct ftl_md_hdr *hdr;
 
-	setup_band(&band, &g_geo, &g_range);
+	setup_band(&band, &g_geo);
 
 	lba_map = &band->lba_map;
 	SPDK_CU_ASSERT_FATAL(lba_map->dma_buf);
@@ -111,7 +104,7 @@ test_md_unpack_fail(void)
 	/* check crc */
 	ftl_pack_tail_md(band);
 	/* flip last bit of lba_map */
-	*((char *)lba_map->dma_buf + ftl_tail_md_num_lbks(band->dev) * FTL_BLOCK_SIZE - 1) ^= 0x1;
+	*((char *)lba_map->dma_buf + ftl_tail_md_num_blocks(band->dev) * FTL_BLOCK_SIZE - 1) ^= 0x1;
 	CU_ASSERT_EQUAL(ftl_unpack_tail_md(band), FTL_MD_INVALID_CRC);
 
 	/* check invalid version */
@@ -127,7 +120,7 @@ test_md_unpack_fail(void)
 
 	/* check invalid size */
 	ftl_pack_tail_md(band);
-	band->dev->geo.clba--;
+	g_geo.zone_size--;
 	CU_ASSERT_EQUAL(ftl_unpack_tail_md(band), FTL_MD_INVALID_SIZE);
 
 	cleanup_band(band);
@@ -139,25 +132,14 @@ main(int argc, char **argv)
 	CU_pSuite suite = NULL;
 	unsigned int num_failures;
 
-	if (CU_initialize_registry() != CUE_SUCCESS) {
-		return CU_get_error();
-	}
+	CU_set_error_action(CUEA_ABORT);
+	CU_initialize_registry();
 
 	suite = CU_add_suite("ftl_meta_suite", NULL, NULL);
-	if (!suite) {
-		CU_cleanup_registry();
-		return CU_get_error();
-	}
 
-	if (
-		CU_add_test(suite, "test_md_unpack",
-			    test_md_unpack) == NULL
-		|| CU_add_test(suite, "test_md_unpack_fail",
-			       test_md_unpack_fail) == NULL
-	) {
-		CU_cleanup_registry();
-		return CU_get_error();
-	}
+
+	CU_ADD_TEST(suite, test_md_unpack);
+	CU_ADD_TEST(suite, test_md_unpack_fail);
 
 	CU_basic_set_mode(CU_BRM_VERBOSE);
 	CU_basic_run_tests();

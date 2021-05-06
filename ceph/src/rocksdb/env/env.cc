@@ -10,16 +10,68 @@
 #include "rocksdb/env.h"
 
 #include <thread>
+#include "env/composite_env_wrapper.h"
+#include "logging/env_logger.h"
+#include "memory/arena.h"
 #include "options/db_options.h"
 #include "port/port.h"
 #include "port/sys_time.h"
 #include "rocksdb/options.h"
-#include "util/arena.h"
+#include "rocksdb/utilities/object_registry.h"
 #include "util/autovector.h"
 
-namespace rocksdb {
+namespace ROCKSDB_NAMESPACE {
 
 Env::~Env() {
+}
+
+Status Env::NewLogger(const std::string& fname,
+                      std::shared_ptr<Logger>* result) {
+  return NewEnvLogger(fname, this, result);
+}
+
+Status Env::LoadEnv(const std::string& value, Env** result) {
+  Env* env = *result;
+  Status s;
+#ifndef ROCKSDB_LITE
+  s = ObjectRegistry::NewInstance()->NewStaticObject<Env>(value, &env);
+#else
+  s = Status::NotSupported("Cannot load environment in LITE mode: ", value);
+#endif
+  if (s.ok()) {
+    *result = env;
+  }
+  return s;
+}
+
+Status Env::LoadEnv(const std::string& value, Env** result,
+                    std::shared_ptr<Env>* guard) {
+  assert(result);
+  Status s;
+#ifndef ROCKSDB_LITE
+  Env* env = nullptr;
+  std::unique_ptr<Env> uniq_guard;
+  std::string err_msg;
+  assert(guard != nullptr);
+  env = ObjectRegistry::NewInstance()->NewObject<Env>(value, &uniq_guard,
+                                                      &err_msg);
+  if (!env) {
+    s = Status::NotFound(std::string("Cannot load ") + Env::Type() + ": " +
+                         value);
+    env = Env::Default();
+  }
+  if (s.ok() && uniq_guard) {
+    guard->reset(uniq_guard.release());
+    *result = guard->get();
+  } else {
+    *result = env;
+  }
+#else
+  (void)result;
+  (void)guard;
+  s = Status::NotSupported("Cannot load environment in LITE mode: ", value);
+#endif
+  return s;
 }
 
 std::string Env::PriorityToString(Env::Priority priority) {
@@ -326,28 +378,8 @@ Status WriteStringToFile(Env* env, const Slice& data, const std::string& fname,
 }
 
 Status ReadFileToString(Env* env, const std::string& fname, std::string* data) {
-  EnvOptions soptions;
-  data->clear();
-  std::unique_ptr<SequentialFile> file;
-  Status s = env->NewSequentialFile(fname, &file, soptions);
-  if (!s.ok()) {
-    return s;
-  }
-  static const int kBufferSize = 8192;
-  char* space = new char[kBufferSize];
-  while (true) {
-    Slice fragment;
-    s = file->Read(kBufferSize, &fragment, space);
-    if (!s.ok()) {
-      break;
-    }
-    data->append(fragment.data(), fragment.size());
-    if (fragment.empty()) {
-      break;
-    }
-  }
-  delete[] space;
-  return s;
+  LegacyFileSystemWrapper lfsw(env);
+  return ReadFileToString(&lfsw, fname, data);
 }
 
 EnvWrapper::~EnvWrapper() {
@@ -368,6 +400,8 @@ void AssignEnvOptions(EnvOptions* env_options, const DBOptions& options) {
   env_options->writable_file_max_buffer_size =
       options.writable_file_max_buffer_size;
   env_options->allow_fallocate = options.allow_fallocate;
+  env_options->strict_bytes_per_sync = options.strict_bytes_per_sync;
+  options.env->SanitizeEnvOptions(env_options);
 }
 
 }
@@ -421,5 +455,21 @@ EnvOptions::EnvOptions() {
   AssignEnvOptions(this, options);
 }
 
+Status NewEnvLogger(const std::string& fname, Env* env,
+                    std::shared_ptr<Logger>* result) {
+  EnvOptions options;
+  // TODO: Tune the buffer size.
+  options.writable_file_max_buffer_size = 1024 * 1024;
+  std::unique_ptr<WritableFile> writable_file;
+  const auto status = env->NewWritableFile(fname, &writable_file, options);
+  if (!status.ok()) {
+    return status;
+  }
 
-}  // namespace rocksdb
+  *result = std::make_shared<EnvLogger>(
+      NewLegacyWritableFileWrapper(std::move(writable_file)), fname, options,
+      env);
+  return Status::OK();
+}
+
+}  // namespace ROCKSDB_NAMESPACE

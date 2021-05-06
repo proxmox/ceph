@@ -34,22 +34,14 @@
 #include "spdk/stdinc.h"
 
 #include "spdk/util.h"
+#include "spdk/queue.h"
 #include "spdk_cunit.h"
 
 #include <rte_config.h>
 #include <rte_version.h>
 #include <rte_malloc.h>
 #include <rte_eal_memconfig.h>
-
-#if RTE_VERSION < RTE_VERSION_NUM(18, 05, 0, 0)
-
-static void
-test(void)
-{
-	printf("DPDK version %s does not support memory callbacks\n", rte_version());
-}
-
-#else
+#include <rte_eal.h>
 
 struct mem_allocation {
 	uintptr_t			vaddr;
@@ -180,8 +172,6 @@ test(void)
 	printf("free %p %ju\n", buf4, len4);
 	rte_free(buf4);
 }
-
-#endif
 
 int
 main(int argc, char **argv)

@@ -101,6 +101,8 @@ struct path_description {
      * @param path the url path
      * @param method the http method
      * @param nickname the nickname
+     * @param path_parameters path parameters and url parts of the path
+     * @param mandatory_params the names of the mandatory query parameters
      */
     path_description(const sstring& path, operation_type method,
             const sstring& nickname,
@@ -113,8 +115,8 @@ struct path_description {
      * @param path the url path
      * @param method the http method
      * @param nickname the method nickname
-     * @param path_parameters path parametes and url parts of the path
-     * @param mandatory_params the name of the mandatory query parameters
+     * @param path_parameters path parameters and url parts of the path
+     * @param mandatory_params the names of the mandatory query parameters
      */
     path_description(const sstring& path, operation_type method,
             const sstring& nickname,
@@ -170,6 +172,7 @@ struct path_description {
     std::vector<path_part> params;
     sstring path;
     json_operation operations;
+    mutable routes::rule_cookie _cookie;
 
     std::vector<sstring> mandatory_queryparams;
 
@@ -178,6 +181,8 @@ struct path_description {
     void set(routes& _routes, const json_request_function& f) const;
 
     void set(routes& _routes, const future_json_function& f) const;
+
+    void unset(routes& _routes) const;
 };
 
 }

@@ -44,7 +44,7 @@
 
 #define RTE_LOGTYPE_L2FWD RTE_LOGTYPE_USER1
 
-#define NB_MBUF   8192
+#define NB_MBUF_PER_PORT 3000
 
 #define MAX_PKT_BURST 32
 #define BURST_TX_DRAIN_US 100 /* TX drain every ~100us */
@@ -58,7 +58,7 @@ static uint16_t nb_rxd = RTE_TEST_RX_DESC_DEFAULT;
 static uint16_t nb_txd = RTE_TEST_TX_DESC_DEFAULT;
 
 /* ethernet addresses of ports */
-static struct ether_addr l2fwd_ports_eth_addr[RTE_MAX_ETHPORTS];
+static struct rte_ether_addr l2fwd_ports_eth_addr[RTE_MAX_ETHPORTS];
 
 /* mask of enabled ports */
 static uint32_t l2fwd_enabled_port_mask;
@@ -117,8 +117,8 @@ static void handle_sigterm(__rte_unused int value)
 
 /* Print out statistics on packets dropped */
 static void
-print_stats(__attribute__((unused)) struct rte_timer *ptr_timer,
-	__attribute__((unused)) void *ptr_data)
+print_stats(__rte_unused struct rte_timer *ptr_timer,
+	__rte_unused void *ptr_data)
 {
 	uint64_t total_packets_dropped, total_packets_tx, total_packets_rx;
 	uint16_t portid;
@@ -165,21 +165,21 @@ print_stats(__attribute__((unused)) struct rte_timer *ptr_timer,
 static void
 l2fwd_simple_forward(struct rte_mbuf *m, unsigned portid)
 {
-	struct ether_hdr *eth;
+	struct rte_ether_hdr *eth;
 	void *tmp;
 	int sent;
 	unsigned dst_port;
 	struct rte_eth_dev_tx_buffer *buffer;
 
 	dst_port = l2fwd_dst_ports[portid];
-	eth = rte_pktmbuf_mtod(m, struct ether_hdr *);
+	eth = rte_pktmbuf_mtod(m, struct rte_ether_hdr *);
 
 	/* 02:00:00:00:00:xx */
 	tmp = &eth->d_addr.addr_bytes[0];
 	*((uint64_t *)tmp) = 0x000000000002 + ((uint64_t)dst_port << 40);
 
 	/* src addr */
-	ether_addr_copy(&l2fwd_ports_eth_addr[dst_port], &eth->s_addr);
+	rte_ether_addr_copy(&l2fwd_ports_eth_addr[dst_port], &eth->s_addr);
 
 	buffer = tx_buffer[dst_port];
 	sent = rte_eth_tx_buffer(dst_port, 0, buffer, m);
@@ -278,7 +278,7 @@ l2fwd_main_loop(void)
 }
 
 static int
-l2fwd_launch_one_lcore(__attribute__((unused)) void *dummy)
+l2fwd_launch_one_lcore(__rte_unused void *dummy)
 {
 	l2fwd_main_loop();
 	return 0;
@@ -450,6 +450,7 @@ check_all_ports_link_status(uint32_t port_mask)
 	uint16_t portid;
 	uint8_t count, all_ports_up, print_flag = 0;
 	struct rte_eth_link link;
+	int ret;
 
 	printf("\nChecking link status");
 	fflush(stdout);
@@ -459,7 +460,14 @@ check_all_ports_link_status(uint32_t port_mask)
 			if ((port_mask & (1 << portid)) == 0)
 				continue;
 			memset(&link, 0, sizeof(link));
-			rte_eth_link_get_nowait(portid, &link);
+			ret = rte_eth_link_get_nowait(portid, &link);
+			if (ret < 0) {
+				all_ports_up = 0;
+				if (print_flag == 1)
+					printf("Port %u link get failed: %s\n",
+						portid, rte_strerror(-ret));
+				continue;
+			}
 			/* print link status if flag set */
 			if (print_flag == 1) {
 				if (link.link_status)
@@ -467,7 +475,7 @@ check_all_ports_link_status(uint32_t port_mask)
 					"Port%d Link Up. Speed %u Mbps - %s\n",
 						portid, link.link_speed,
 				(link.link_duplex == ETH_LINK_FULL_DUPLEX) ?
-					("full-duplex") : ("half-duplex\n"));
+					("full-duplex") : ("half-duplex"));
 				else
 					printf("Port %d Link Down\n", portid);
 				continue;
@@ -528,6 +536,7 @@ main(int argc, char **argv)
 	uint16_t portid, last_port;
 	unsigned lcore_id, rx_lcore_id;
 	unsigned nb_ports_in_mask = 0;
+	unsigned int total_nb_mbufs;
 	struct sigaction signal_handler;
 	struct rte_keepalive_shm *ka_shm;
 
@@ -553,15 +562,18 @@ main(int argc, char **argv)
 	if (ret < 0)
 		rte_exit(EXIT_FAILURE, "Invalid L2FWD arguments\n");
 
-	/* create the mbuf pool */
-	l2fwd_pktmbuf_pool = rte_pktmbuf_pool_create("mbuf_pool", NB_MBUF, 32,
-		0, RTE_MBUF_DEFAULT_BUF_SIZE, rte_socket_id());
-	if (l2fwd_pktmbuf_pool == NULL)
-		rte_exit(EXIT_FAILURE, "Cannot init mbuf pool\n");
-
 	nb_ports = rte_eth_dev_count_avail();
 	if (nb_ports == 0)
 		rte_exit(EXIT_FAILURE, "No Ethernet ports - bye\n");
+
+	/* create the mbuf pool */
+	total_nb_mbufs = NB_MBUF_PER_PORT * nb_ports;
+
+	l2fwd_pktmbuf_pool = rte_pktmbuf_pool_create("mbuf_pool",
+		total_nb_mbufs,	32, 0, RTE_MBUF_DEFAULT_BUF_SIZE,
+		rte_socket_id());
+	if (l2fwd_pktmbuf_pool == NULL)
+		rte_exit(EXIT_FAILURE, "Cannot init mbuf pool\n");
 
 	/* reset l2fwd_dst_ports */
 	for (portid = 0; portid < RTE_MAX_ETHPORTS; portid++)
@@ -634,7 +646,13 @@ main(int argc, char **argv)
 		/* init port */
 		printf("Initializing port %u... ", portid);
 		fflush(stdout);
-		rte_eth_dev_info_get(portid, &dev_info);
+
+		ret = rte_eth_dev_info_get(portid, &dev_info);
+		if (ret != 0)
+			rte_exit(EXIT_FAILURE,
+				"Error during getting device (port %u) info: %s\n",
+				portid, strerror(-ret));
+
 		if (dev_info.tx_offload_capa & DEV_TX_OFFLOAD_MBUF_FAST_FREE)
 			local_port_conf.txmode.offloads |=
 				DEV_TX_OFFLOAD_MBUF_FAST_FREE;
@@ -651,7 +669,12 @@ main(int argc, char **argv)
 				"Cannot adjust number of descriptors: err=%d, port=%u\n",
 				ret, portid);
 
-		rte_eth_macaddr_get(portid, &l2fwd_ports_eth_addr[portid]);
+		ret = rte_eth_macaddr_get(portid,
+					  &l2fwd_ports_eth_addr[portid]);
+		if (ret < 0)
+			rte_exit(EXIT_FAILURE,
+				"Cannot mac address: err=%d, port=%u\n",
+				ret, portid);
 
 		/* init one RX queue */
 		fflush(stdout);
@@ -703,7 +726,11 @@ main(int argc, char **argv)
 				"rte_eth_dev_start:err=%d, port=%u\n",
 				  ret, portid);
 
-		rte_eth_promiscuous_enable(portid);
+		ret = rte_eth_promiscuous_enable(portid);
+		if (ret != 0)
+			rte_exit(EXIT_FAILURE,
+				 "rte_eth_promiscuous_enable:err=%s, port=%u\n",
+				 rte_strerror(-ret), portid);
 
 		printf("Port %u, MAC address: "
 			"%02X:%02X:%02X:%02X:%02X:%02X\n\n",

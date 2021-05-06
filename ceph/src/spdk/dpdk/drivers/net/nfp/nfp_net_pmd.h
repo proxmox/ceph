@@ -1,32 +1,6 @@
-/*
+/* SPDX-License-Identifier: BSD-3-Clause
  * Copyright (c) 2014-2018 Netronome Systems, Inc.
  * All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice,
- *  this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright
- *  notice, this list of conditions and the following disclaimer in the
- *  documentation and/or other materials provided with the distribution
- *
- * 3. Neither the name of the copyright holder nor the names of its
- *  contributors may be used to endorse or promote products derived from this
- *  software without specific prior written permission.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
- * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
- * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
- * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
- * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
- * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
- * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
- * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
- * POSSIBILITY OF SUCH DAMAGE.
  */
 
 /*
@@ -208,7 +182,7 @@ struct nfp_net_tx_desc {
 				__le16 vlan; /* VLAN tag to add if indicated */
 			};
 			__le16 data_len;    /* Length of frame + meta data */
-		} __attribute__((__packed__));
+		} __rte_packed;
 		__le32 vals[4];
 	};
 };
@@ -269,7 +243,7 @@ struct nfp_net_txq {
 	int qidx;
 	int tx_qcidx;
 	__le64 dma;
-} __attribute__ ((__aligned__(64)));
+} __rte_aligned(64);
 
 /* RX and freelist descriptor format */
 #define PCIE_DESC_RX_DD                 (1 << 7)
@@ -304,7 +278,7 @@ struct nfp_net_rx_desc {
 			uint8_t dd;
 
 			__le32 dma_addr_lo;
-		} __attribute__((__packed__)) fld;
+		} __rte_packed fld;
 
 		/* RX descriptor */
 		struct {
@@ -314,7 +288,7 @@ struct nfp_net_rx_desc {
 
 			__le16 flags;
 			__le16 vlan;
-		} __attribute__((__packed__)) rxd;
+		} __rte_packed rxd;
 
 		__le32 vals[2];
 	};
@@ -400,7 +374,7 @@ struct nfp_net_rxq {
 	int qidx;
 	int fl_qcidx;
 	int rx_qcidx;
-} __attribute__ ((__aligned__(64)));
+} __rte_aligned(64);
 
 struct nfp_net_hw {
 	/* Info from the firmware */
@@ -436,7 +410,7 @@ struct nfp_net_hw {
 #endif
 #endif
 
-	uint8_t mac_addr[ETHER_ADDR_LEN];
+	uint8_t mac_addr[RTE_ETHER_ADDR_LEN];
 
 	/* Records starting point for counters */
 	struct rte_eth_stats eth_stats_base;

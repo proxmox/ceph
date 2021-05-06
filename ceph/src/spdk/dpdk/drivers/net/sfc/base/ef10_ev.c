@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  *
- * Copyright (c) 2012-2018 Solarflare Communications Inc.
- * All rights reserved.
+ * Copyright(c) 2019-2020 Xilinx, Inc.
+ * Copyright(c) 2012-2019 Solarflare Communications Inc.
  */
 
 #include "efx.h"
@@ -1226,6 +1226,13 @@ ef10_ev_mcdi(
 		    MCDI_EV_FIELD(eqp, PROXY_RESPONSE_RC));
 		break;
 #endif /* EFSYS_OPT_MCDI_PROXY_AUTH */
+
+#if EFSYS_OPT_MCDI_PROXY_AUTH_SERVER
+	case MCDI_EVENT_CODE_PROXY_REQUEST:
+		efx_mcdi_ev_proxy_request(enp,
+			MCDI_EV_FIELD(eqp, PROXY_REQUEST_BUFF_INDEX));
+		break;
+#endif /* EFSYS_OPT_MCDI_PROXY_AUTH_SERVER */
 
 	case MCDI_EVENT_CODE_LINKCHANGE: {
 		efx_link_mode_t link_mode;

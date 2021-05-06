@@ -1,13 +1,13 @@
-import { HttpClient, HttpParams } from '@angular/common/http';
+import { HttpClient } from '@angular/common/http';
 import { Injectable } from '@angular/core';
+
 import { Observable, of as observableOf } from 'rxjs';
 import { catchError, mapTo } from 'rxjs/operators';
 
-import { UserFormModel } from '../../core/auth/user-form/user-form.model';
-import { ApiModule } from './api.module';
+import { UserFormModel } from '~/app/core/auth/user-form/user-form.model';
 
 @Injectable({
-  providedIn: ApiModule
+  providedIn: 'root'
 })
 export class UserService {
   constructor(private http: HttpClient) {}
@@ -53,14 +53,10 @@ export class UserService {
   }
 
   validatePassword(password: string, username: string = null, oldPassword: string = null) {
-    let params = new HttpParams();
-    params = params.append('password', password);
-    if (username) {
-      params = params.append('username', username);
-    }
-    if (oldPassword) {
-      params = params.append('old_password', oldPassword);
-    }
-    return this.http.post('api/user/validate_password', null, { params });
+    return this.http.post('api/user/validate_password', {
+      password: password,
+      username: username,
+      old_password: oldPassword
+    });
   }
 }

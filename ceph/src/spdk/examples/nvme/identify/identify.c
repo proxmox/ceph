@@ -36,6 +36,7 @@
 #include "spdk/endian.h"
 #include "spdk/log.h"
 #include "spdk/nvme.h"
+#include "spdk/vmd.h"
 #include "spdk/nvme_ocssd.h"
 #include "spdk/env.h"
 #include "spdk/nvme_intel.h"
@@ -56,7 +57,7 @@ struct feature {
 	bool valid;
 };
 
-static struct feature features[256];
+static struct feature features[256] = {};
 
 static struct spdk_nvme_error_information_entry error_page[256];
 
@@ -93,6 +94,8 @@ static char g_core_mask[16] = "0x1";
 static struct spdk_nvme_transport_id g_trid;
 
 static int g_controllers_found = 0;
+
+static bool g_vmd = false;
 
 static void
 hex_dump(const void *data, size_t size)
@@ -177,11 +180,14 @@ static int
 get_feature(struct spdk_nvme_ctrlr *ctrlr, uint8_t fid)
 {
 	struct spdk_nvme_cmd cmd = {};
+	struct feature *feature = &features[fid];
+
+	feature->valid = false;
 
 	cmd.opc = SPDK_NVME_OPC_GET_FEATURES;
-	cmd.cdw10 = fid;
+	cmd.cdw10_bits.get_features.fid = fid;
 
-	return spdk_nvme_ctrlr_cmd_admin_raw(ctrlr, &cmd, NULL, 0, get_feature_completion, &features[fid]);
+	return spdk_nvme_ctrlr_cmd_admin_raw(ctrlr, &cmd, NULL, 0, get_feature_completion, feature);
 }
 
 static void
@@ -663,6 +669,7 @@ print_namespace(struct spdk_nvme_ns *ns)
 	uint32_t				i;
 	uint32_t				flags;
 	char					uuid_str[SPDK_UUID_STRING_LEN];
+	uint32_t				blocksize;
 
 	nsdata = spdk_nvme_ns_get_data(ns);
 	flags  = spdk_nvme_ns_get_flags(ns);
@@ -674,90 +681,91 @@ print_namespace(struct spdk_nvme_ns *ns)
 		printf("\n");
 	}
 
-	if (!spdk_nvme_ns_is_active(ns)) {
-		printf("Inactive namespace ID\n\n");
-		return;
-	}
+	/* This function is only called for active namespaces. */
+	assert(spdk_nvme_ns_is_active(ns));
 
-	printf("Deallocate:                  %s\n",
+	printf("Deallocate:                            %s\n",
 	       (flags & SPDK_NVME_NS_DEALLOCATE_SUPPORTED) ? "Supported" : "Not Supported");
-	printf("Deallocated/Unwritten Error: %s\n",
+	printf("Deallocated/Unwritten Error:           %s\n",
 	       nsdata->nsfeat.dealloc_or_unwritten_error ? "Supported" : "Not Supported");
-	printf("Deallocated Read Value:      %s\n",
+	printf("Deallocated Read Value:                %s\n",
 	       nsdata->dlfeat.bits.read_value == SPDK_NVME_DEALLOC_READ_00 ? "All 0x00" :
 	       nsdata->dlfeat.bits.read_value == SPDK_NVME_DEALLOC_READ_FF ? "All 0xFF" :
 	       "Unknown");
-	printf("Deallocate in Write Zeroes:  %s\n",
+	printf("Deallocate in Write Zeroes:            %s\n",
 	       nsdata->dlfeat.bits.write_zero_deallocate ? "Supported" : "Not Supported");
-	printf("Deallocated Guard Field:     %s\n",
+	printf("Deallocated Guard Field:               %s\n",
 	       nsdata->dlfeat.bits.guard_value ? "CRC for Read Value" : "0xFFFF");
-	printf("Flush:                       %s\n",
+	printf("Flush:                                 %s\n",
 	       (flags & SPDK_NVME_NS_FLUSH_SUPPORTED) ? "Supported" : "Not Supported");
-	printf("Reservation:                 %s\n",
+	printf("Reservation:                           %s\n",
 	       (flags & SPDK_NVME_NS_RESERVATION_SUPPORTED) ? "Supported" : "Not Supported");
 	if (flags & SPDK_NVME_NS_DPS_PI_SUPPORTED) {
-		printf("End-to-End Data Protection:  Supported\n");
-		printf("Protection Type:             Type%d\n", nsdata->dps.pit);
-		printf("Metadata Transfered as:      %s\n",
-		       nsdata->flbas.extended ? "Extended Data LBA" : "Separate Metadata Buffer");
-		printf("Metadata Location:           %s\n",
+		printf("End-to-End Data Protection:            Supported\n");
+		printf("Protection Type:                       Type%d\n", nsdata->dps.pit);
+		printf("Protection Information Transferred as: %s\n",
 		       nsdata->dps.md_start ? "First 8 Bytes" : "Last 8 Bytes");
 	}
-	printf("Namespace Sharing Capabilities: %s\n",
+	if (nsdata->lbaf[nsdata->flbas.format].ms > 0) {
+		printf("Metadata Transferred as:               %s\n",
+		       nsdata->flbas.extended ? "Extended Data LBA" : "Separate Metadata Buffer");
+	}
+	printf("Namespace Sharing Capabilities:        %s\n",
 	       nsdata->nmic.can_share ? "Multiple Controllers" : "Private");
-	printf("Size (in LBAs):              %lld (%lldM)\n",
+	blocksize = 1 << nsdata->lbaf[nsdata->flbas.format].lbads;
+	printf("Size (in LBAs):                        %lld (%lldGiB)\n",
 	       (long long)nsdata->nsze,
-	       (long long)nsdata->nsze / 1024 / 1024);
-	printf("Capacity (in LBAs):          %lld (%lldM)\n",
+	       (long long)nsdata->nsze * blocksize / 1024 / 1024 / 1024);
+	printf("Capacity (in LBAs):                    %lld (%lldGiB)\n",
 	       (long long)nsdata->ncap,
-	       (long long)nsdata->ncap / 1024 / 1024);
-	printf("Utilization (in LBAs):       %lld (%lldM)\n",
+	       (long long)nsdata->ncap * blocksize / 1024 / 1024 / 1024);
+	printf("Utilization (in LBAs):                 %lld (%lldGiB)\n",
 	       (long long)nsdata->nuse,
-	       (long long)nsdata->nuse / 1024 / 1024);
+	       (long long)nsdata->nuse * blocksize / 1024 / 1024 / 1024);
 	if (nsdata->noiob) {
-		printf("Optimal I/O Boundary:        %u blocks\n", nsdata->noiob);
+		printf("Optimal I/O Boundary:                  %u blocks\n", nsdata->noiob);
 	}
 	if (!spdk_mem_all_zero(nsdata->nguid, sizeof(nsdata->nguid))) {
-		printf("NGUID:                       ");
+		printf("NGUID:                                 ");
 		print_hex_be(nsdata->nguid, sizeof(nsdata->nguid));
 		printf("\n");
 	}
 	if (!spdk_mem_all_zero(&nsdata->eui64, sizeof(nsdata->eui64))) {
-		printf("EUI64:                       ");
+		printf("EUI64:                                 ");
 		print_hex_be(&nsdata->eui64, sizeof(nsdata->eui64));
 		printf("\n");
 	}
 	uuid = spdk_nvme_ns_get_uuid(ns);
 	if (uuid) {
 		spdk_uuid_fmt_lower(uuid_str, sizeof(uuid_str), uuid);
-		printf("UUID:                        %s\n", uuid_str);
+		printf("UUID:                                  %s\n", uuid_str);
 	}
-	printf("Thin Provisioning:           %s\n",
+	printf("Thin Provisioning:                     %s\n",
 	       nsdata->nsfeat.thin_prov ? "Supported" : "Not Supported");
-	printf("Per-NS Atomic Units:         %s\n",
+	printf("Per-NS Atomic Units:                   %s\n",
 	       nsdata->nsfeat.ns_atomic_write_unit ? "Yes" : "No");
 	if (nsdata->nsfeat.ns_atomic_write_unit) {
 		if (nsdata->nawun) {
-			printf("  Atomic Write Unit (Normal):    %d\n", nsdata->nawun + 1);
+			printf("  Atomic Write Unit (Normal):          %d\n", nsdata->nawun + 1);
 		}
 
 		if (nsdata->nawupf) {
-			printf("  Atomic Write Unit (PFail):     %d\n", nsdata->nawupf + 1);
+			printf("  Atomic Write Unit (PFail):           %d\n", nsdata->nawupf + 1);
 		}
 
 		if (nsdata->nacwu) {
-			printf("  Atomic Compare & Write Unit:   %d\n", nsdata->nacwu + 1);
+			printf("  Atomic Compare & Write Unit:         %d\n", nsdata->nacwu + 1);
 		}
 
-		printf("  Atomic Boundary Size (Normal): %d\n", nsdata->nabsn);
-		printf("  Atomic Boundary Size (PFail):  %d\n", nsdata->nabspf);
-		printf("  Atomic Boundary Offset:        %d\n", nsdata->nabo);
+		printf("  Atomic Boundary Size (Normal):       %d\n", nsdata->nabsn);
+		printf("  Atomic Boundary Size (PFail):        %d\n", nsdata->nabspf);
+		printf("  Atomic Boundary Offset:              %d\n", nsdata->nabo);
 	}
 
-	printf("NGUID/EUI64 Never Reused:    %s\n",
+	printf("NGUID/EUI64 Never Reused:              %s\n",
 	       nsdata->nsfeat.guid_never_reused ? "Yes" : "No");
-	printf("Number of LBA Formats:       %d\n", nsdata->nlbaf + 1);
-	printf("Current LBA Format:          LBA Format #%02d\n",
+	printf("Number of LBA Formats:                 %d\n", nsdata->nlbaf + 1);
+	printf("Current LBA Format:                    LBA Format #%02d\n",
 	       nsdata->flbas.format);
 	for (i = 0; i <= nsdata->nlbaf; i++)
 		printf("LBA Format #%02d: Data Size: %5d  Metadata Size: %5d\n",
@@ -956,6 +964,7 @@ print_controller(struct spdk_nvme_ctrlr *ctrlr, const struct spdk_nvme_transport
 	} else {
 		printf("%" PRIu64 "\n", (uint64_t)1 << (12 + cap.bits.mpsmin + cdata->mdts));
 	}
+	printf("Max Number of Namespaces:              %d\n", cdata->nn);
 	if (features[SPDK_NVME_FEAT_ERROR_RECOVERY].valid) {
 		unsigned tler = features[SPDK_NVME_FEAT_ERROR_RECOVERY].result & 0xFFFF;
 		printf("Error Recovery Timeout:                ");
@@ -1122,6 +1131,8 @@ print_controller(struct spdk_nvme_ctrlr *ctrlr, const struct spdk_nvme_transport
 	printf("Atomic Write Unit (Normal):  %d\n", cdata->awun + 1);
 	printf("Atomic Write Unit (PFail):   %d\n", cdata->awupf + 1);
 	printf("Atomic Compare & Write Unit: %d\n", cdata->acwu + 1);
+	printf("Fused Compare & Write:       %s\n",
+	       cdata->fuses.compare_and_write ? "Supported" : "Not Supported");
 	printf("Scatter-Gather List\n");
 	printf("  SGL Command Set:           %s\n",
 	       cdata->sgls.supported == SPDK_NVME_SGLS_SUPPORTED ? "Supported" :
@@ -1257,9 +1268,12 @@ print_controller(struct spdk_nvme_ctrlr *ctrlr, const struct spdk_nvme_transport
 		} else {
 			printf("%u\n", 1u << ab);
 		}
-		printf("Low Priority Weight:         %u\n", lpw);
-		printf("Medium Priority Weight:      %u\n", mpw);
-		printf("High Priority Weight:        %u\n", hpw);
+
+		if (cap.bits.ams & SPDK_NVME_CAP_AMS_WRR) {
+			printf("Low Priority Weight:         %u\n", lpw);
+			printf("Medium Priority Weight:      %u\n", mpw);
+			printf("High Priority Weight:        %u\n", hpw);
+		}
 		printf("\n");
 	}
 
@@ -1553,6 +1567,8 @@ print_controller(struct spdk_nvme_ctrlr *ctrlr, const struct spdk_nvme_transport
 		printf("\n");
 	}
 
+	printf("Active Namespaces\n");
+	printf("=================\n");
 	for (nsid = spdk_nvme_ctrlr_get_first_active_ns(ctrlr);
 	     nsid != 0; nsid = spdk_nvme_ctrlr_get_next_active_ns(ctrlr, nsid)) {
 		print_namespace(spdk_nvme_ctrlr_get_ns(ctrlr, nsid));
@@ -1661,6 +1677,7 @@ usage(const char *program_name)
 	printf(" -d         DPDK huge memory size in MB\n");
 	printf(" -x         print hex dump of raw data\n");
 	printf(" -v         verbose (enable warnings)\n");
+	printf(" -V         enumerate VMD\n");
 	printf(" -H         show this usage\n");
 }
 
@@ -1669,10 +1686,10 @@ parse_args(int argc, char **argv)
 {
 	int op, rc;
 
-	g_trid.trtype = SPDK_NVME_TRANSPORT_PCIE;
+	spdk_nvme_trid_populate_transport(&g_trid, SPDK_NVME_TRANSPORT_PCIE);
 	snprintf(g_trid.subnqn, sizeof(g_trid.subnqn), "%s", SPDK_NVMF_DISCOVERY_NQN);
 
-	while ((op = getopt(argc, argv, "d:i:p:r:xHL:")) != -1) {
+	while ((op = getopt(argc, argv, "d:i:p:r:xHL:V")) != -1) {
 		switch (op) {
 		case 'd':
 			g_dpdk_mem = spdk_strtol(optarg, 10);
@@ -1720,8 +1737,12 @@ parse_args(int argc, char **argv)
 			return 0;
 #endif
 			break;
-
 		case 'H':
+			usage(argv[0]);
+			break;
+		case 'V':
+			g_vmd = true;
+			break;
 		default:
 			usage(argv[0]);
 			return 1;
@@ -1773,6 +1794,11 @@ int main(int argc, char **argv)
 		return 1;
 	}
 
+	if (g_vmd && spdk_vmd_init()) {
+		fprintf(stderr, "Failed to initialize VMD."
+			" Some NVMe devices can be unavailable.\n");
+	}
+
 	/* A specific trid is required. */
 	if (strlen(g_trid.traddr) != 0) {
 		ctrlr = spdk_nvme_connect(&g_trid, NULL, 0);
@@ -1791,6 +1817,10 @@ int main(int argc, char **argv)
 
 	if (g_controllers_found == 0) {
 		fprintf(stderr, "No NVMe controllers found.\n");
+	}
+
+	if (g_vmd) {
+		spdk_vmd_fini();
 	}
 
 	return 0;

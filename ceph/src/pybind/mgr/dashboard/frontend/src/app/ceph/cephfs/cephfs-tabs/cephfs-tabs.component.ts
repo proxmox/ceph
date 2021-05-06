@@ -1,12 +1,13 @@
 import { Component, Input, NgZone, OnChanges, OnDestroy } from '@angular/core';
 
-import * as _ from 'lodash';
+import _ from 'lodash';
 import { Subscription, timer } from 'rxjs';
 
-import { CephfsService } from '../../../shared/api/cephfs.service';
-import { ViewCacheStatus } from '../../../shared/enum/view-cache-status.enum';
-import { Permission } from '../../../shared/models/permissions';
-import { AuthStorageService } from '../../../shared/services/auth-storage.service';
+import { CephfsService } from '~/app/shared/api/cephfs.service';
+import { TableStatusViewCache } from '~/app/shared/classes/table-status-view-cache';
+import { ViewCacheStatus } from '~/app/shared/enum/view-cache-status.enum';
+import { Permission } from '~/app/shared/models/permissions';
+import { AuthStorageService } from '~/app/shared/services/auth-storage.service';
 
 @Component({
   selector: 'cd-cephfs-tabs',
@@ -25,7 +26,7 @@ export class CephfsTabsComponent implements OnChanges, OnDestroy {
   id: number;
   clients: Record<string, any> = {
     data: [],
-    status: ViewCacheStatus.ValueNone
+    status: new TableStatusViewCache(ViewCacheStatus.ValueNone)
   };
 
   // Details tab
@@ -36,9 +37,6 @@ export class CephfsTabsComponent implements OnChanges, OnDestroy {
     mdsCounters: {},
     name: ''
   };
-
-  // Directories
-  directoriesSelected = false;
 
   private data: any;
   private reloadSubscriber: Subscription;
@@ -74,7 +72,7 @@ export class CephfsTabsComponent implements OnChanges, OnDestroy {
     };
     this.clients = {
       data: [],
-      status: ViewCacheStatus.ValueNone
+      status: new TableStatusViewCache(ViewCacheStatus.ValueNone)
     };
     this.updateInterval();
   }
@@ -106,7 +104,7 @@ export class CephfsTabsComponent implements OnChanges, OnDestroy {
         this.softRefresh();
       },
       () => {
-        this.clients.status = ViewCacheStatus.ValueException;
+        this.clients.status = new TableStatusViewCache(ViewCacheStatus.ValueException);
       }
     );
   }
@@ -115,6 +113,7 @@ export class CephfsTabsComponent implements OnChanges, OnDestroy {
     const data = _.cloneDeep(this.data); // Forces update of tab tables on tab switch
     // Clients tab
     this.clients = data.clients;
+    this.clients.status = new TableStatusViewCache(this.clients.status);
     // Details tab
     this.details = {
       standbys: data.standbys,

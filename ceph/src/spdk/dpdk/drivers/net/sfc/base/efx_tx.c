@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  *
- * Copyright (c) 2007-2018 Solarflare Communications Inc.
- * All rights reserved.
+ * Copyright(c) 2019-2020 Xilinx, Inc.
+ * Copyright(c) 2007-2019 Solarflare Communications Inc.
  */
 
 #include "efx.h"
@@ -799,7 +799,7 @@ siena_tx_qpost(
 		 * Fragments must not span 4k boundaries.
 		 * Here it is a stricter requirement than the maximum length.
 		 */
-		EFSYS_ASSERT(P2ROUNDUP(start + 1,
+		EFSYS_ASSERT(EFX_P2ROUNDUP(efsys_dma_addr_t, start + 1,
 		    etp->et_enp->en_nic_cfg.enc_tx_dma_desc_boundary) >= end);
 
 		EFX_TX_DESC(etp, start, size, ebp->eb_eop, added);
@@ -1058,7 +1058,7 @@ siena_tx_qdesc_dma_create(
 	 * Fragments must not span 4k boundaries.
 	 * Here it is a stricter requirement than the maximum length.
 	 */
-	EFSYS_ASSERT(P2ROUNDUP(addr + 1,
+	EFSYS_ASSERT(EFX_P2ROUNDUP(efsys_dma_addr_t, addr + 1,
 	    etp->et_enp->en_nic_cfg.enc_tx_dma_desc_boundary) >= addr + size);
 
 	EFSYS_PROBE4(tx_desc_dma_create, unsigned int, etp->et_index,

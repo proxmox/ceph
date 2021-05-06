@@ -17,7 +17,7 @@ class TestPgRecoveryEvent(object):
         # Creating the class and Mocking 
         # a bunch of attributes for testing
         module._module = mock.Mock() # just so Event._refresh() works
-        self.test_event = module.PgRecoveryEvent(None, None, [module.PgId(1,i) for i in range(3)], [0], 30)
+        self.test_event = module.PgRecoveryEvent(None, None, [module.PgId(1,i) for i in range(3)], [0], 30, False)
 
     def test_pg_update(self):
         # Test for a completed event when the pg states show active+clear
@@ -126,8 +126,9 @@ class TestModule(object):
         # bunch of attributes for testing
 
         module.PgRecoveryEvent.pg_update = mock.Mock()
-        self.test_module = module.Module() # so we can see if an event gets created
-        self.test_module.log = mock.Mock() # we don't need to log anything
+        module.Module._ceph_get_option = mock.Mock()  # .__init__
+        module.Module._configure_logging = lambda *args: ...  # .__init__
+        self.test_module = module.Module('module_name', 0, 0)  # so we can see if an event gets created
         self.test_module.get = mock.Mock() # so we can call pg_update
         self.test_module._complete = mock.Mock() # we want just to see if this event gets called
         self.test_module.get_osdmap = mock.Mock() # so that self.get_osdmap().get_epoch() works

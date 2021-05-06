@@ -35,6 +35,12 @@ class pollable_fd;
 class pollable_fd_state;
 class socket_address;
 
+namespace internal {
+
+class buffer_allocator;
+
+}
+
 namespace net {
 
 class packet;
@@ -70,6 +76,7 @@ public:
     future<size_t> read_some(char* buffer, size_t size);
     future<size_t> read_some(uint8_t* buffer, size_t size);
     future<size_t> read_some(const std::vector<iovec>& iov);
+    future<temporary_buffer<char>> read_some(internal::buffer_allocator* ba);
     future<> write_all(const char* buffer, size_t size);
     future<> write_all(const uint8_t* buffer, size_t size);
     future<size_t> write_some(net::packet& p);
@@ -102,6 +109,7 @@ private:
 class pollable_fd {
 public:
     using speculation = pollable_fd_state::speculation;
+    pollable_fd() = default;
     pollable_fd(file_desc fd, speculation speculate = speculation());
 public:
     future<size_t> read_some(char* buffer, size_t size) {
@@ -112,6 +120,9 @@ public:
     }
     future<size_t> read_some(const std::vector<iovec>& iov) {
         return _s->read_some(iov);
+    }
+    future<temporary_buffer<char>> read_some(internal::buffer_allocator* ba) {
+        return _s->read_some(ba);
     }
     future<> write_all(const char* buffer, size_t size) {
         return _s->write_all(buffer, size);
@@ -158,6 +169,9 @@ public:
     file_desc& get_file_desc() const { return _s->fd; }
     void shutdown(int how);
     void close() { _s.reset(); }
+    explicit operator bool() const noexcept {
+        return bool(_s);
+    }
 protected:
     int get_fd() const { return _s->fd.get(); }
     void maybe_no_more_recv() { return _s->maybe_no_more_recv(); }

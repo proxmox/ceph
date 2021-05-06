@@ -8,7 +8,7 @@
 #include "engine_inv.h"
 #include "engine_common.h"
 #include "cache_engine.h"
-#include "../utils/utils_req.h"
+#include "../ocf_request.h"
 #include "../utils/utils_cache_line.h"
 #include "../metadata/metadata.h"
 #include "../concurrency/ocf_concurrency.h"
@@ -20,8 +20,7 @@ static void _ocf_invalidate_req(struct ocf_request *req, int error)
 {
 	if (error) {
 		req->error = error;
-		env_atomic_inc(&req->cache->core[req->core_id].counters->
-				cache_errors.write);
+		ocf_core_stats_cache_error_update(req->core, OCF_WRITE);
 	}
 
 	if (env_atomic_dec_return(&req->req_remaining))
@@ -44,9 +43,9 @@ static int _ocf_invalidate_do(struct ocf_request *req)
 
 	ENV_BUG_ON(env_atomic_read(&req->req_remaining));
 
-	OCF_METADATA_LOCK_WR();
+	ocf_req_hash_lock_wr(req);
 	ocf_purge_map_info(req);
-	OCF_METADATA_UNLOCK_WR();
+	ocf_req_hash_unlock_wr(req);
 
 	env_atomic_inc(&req->req_remaining);
 

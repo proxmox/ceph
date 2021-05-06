@@ -74,6 +74,9 @@ struct spdk_dif_ctx {
 	/** Metadata size */
 	uint32_t		md_size;
 
+	/** Metadata location */
+	bool			md_interleave;
+
 	/** Interval for guard computation for DIF */
 	uint32_t		guard_interval;
 
@@ -98,8 +101,18 @@ struct spdk_dif_ctx {
 	/* Offset to initial reference tag */
 	uint32_t		ref_tag_offset;
 
+	/** Guard value of the last data block.
+	 *
+	 * Interim guard value is set if the last data block is partial, or
+	 * seed value is set otherwise.
+	 */
+	uint16_t		last_guard;
+
 	/* Seed value for guard computation */
 	uint16_t		guard_seed;
+
+	/* Remapped initial reference tag. */
+	uint32_t		remapped_init_ref_tag;
 };
 
 /** DIF error information */
@@ -142,6 +155,24 @@ int spdk_dif_ctx_init(struct spdk_dif_ctx *ctx, uint32_t block_size, uint32_t md
 		      bool md_interleave, bool dif_loc, enum spdk_dif_type dif_type, uint32_t dif_flags,
 		      uint32_t init_ref_tag, uint16_t apptag_mask, uint16_t app_tag,
 		      uint32_t data_offset, uint16_t guard_seed);
+
+/**
+ * Update date offset of DIF context.
+ *
+ * \param ctx DIF context.
+ * \param data_offset Byte offset from the start of the whole data buffer.
+ */
+void spdk_dif_ctx_set_data_offset(struct spdk_dif_ctx *ctx, uint32_t data_offset);
+
+/**
+ * Set remapped initial reference tag of DIF context.
+ *
+ * \param ctx DIF context.
+ * \param remapped_init_ref_tag Remapped initial reference tag. For type 1, this is the
+ * starting block address.
+ */
+void spdk_dif_ctx_set_remapped_init_ref_tag(struct spdk_dif_ctx *ctx,
+		uint32_t remapped_init_ref_tag);
 
 /**
  * Generate DIF for extended LBA payload.
@@ -288,12 +319,17 @@ int spdk_dix_inject_error(struct iovec *iovs, int iovcnt, struct iovec *md_iov,
  * This function removes the necessity of data copy in the SPDK application
  * during DIF insertion and strip.
  *
+ * When the extended LBA payload is splitted into multiple data segments,
+ * start of each data segment is passed through the DIF context. data_offset
+ * and data_len is within a data segment.
+ *
  * \param iovs iovec array set by this function.
  * \param iovcnt Number of elements in the iovec array.
  * \param buf_iovs SGL for the buffer to create extended LBA payload.
  * \param buf_iovcnt Size of the SGL for the buffer to create extended LBA payload.
- * \param data_offset Offset to store the next incoming data.
- * \param data_len Expected data length of the payload.
+ * \param data_offset Offset to store the next incoming data in the current data segment.
+ * \param data_len Expected length of the newly read data in the current data segment of
+ * the extended LBA payload.
  * \param mapped_len Output parameter that will contain data length mapped by
  * the iovec array.
  * \param ctx DIF context.
@@ -310,15 +346,112 @@ int spdk_dif_set_md_interleave_iovs(struct iovec *iovs, int iovcnt,
 /**
  * Generate and insert DIF into metadata space for newly read data block.
  *
+ * When the extended LBA payload is splitted into multiple data segments,
+ * start of each data segment is passed through the DIF context. data_offset
+ * and data_len is within a data segment.
+ *
  * \param iovs iovec array describing the extended LBA payload.
  * \param iovcnt Number of elements in the iovec array.
- * \param data_offset Offset to the newly read data in the extended LBA payload.
- * \param data_len Length of the newly read data in the extended LBA payload.
+ * \param data_offset Offset to the newly read data in the current data segment of
+ * the extended LBA payload.
+ * \param data_len Length of the newly read data in the current data segment of
+ * the extended LBA payload.
  * \param ctx DIF context.
  *
  * \return 0 on success and negated errno otherwise.
  */
 int spdk_dif_generate_stream(struct iovec *iovs, int iovcnt,
 			     uint32_t data_offset, uint32_t data_len,
-			     const struct spdk_dif_ctx *ctx);
+			     struct spdk_dif_ctx *ctx);
+
+/**
+ * Verify DIF for the to-be-written block of the extended LBA payload.
+ *
+ * \param iovs iovec array describing the extended LBA payload.
+ * \param iovcnt Number of elements in the iovec array.
+ * \param data_offset Offset to the to-be-written data in the extended LBA payload.
+ * \param data_len Length of the to-be-written data in the extended LBA payload.
+ * \param ctx DIF context.
+ *
+ * \return 0 on success and negated errno otherwise.
+ */
+int spdk_dif_verify_stream(struct iovec *iovs, int iovcnt,
+			   uint32_t data_offset, uint32_t data_len,
+			   struct spdk_dif_ctx *ctx,
+			   struct spdk_dif_error *err_blk);
+
+/**
+ * Calculate CRC-32C checksum of the specified range in the extended LBA payload.
+ *
+ * \param iovs iovec array describing the extended LBA payload.
+ * \param iovcnt Number of elements in the iovec array.
+ * \param data_offset Offset to the range
+ * \param data_len Length of the range
+ * \param crc32c Initial and updated CRC-32C value.
+ * \param ctx DIF context.
+ *
+ * \return 0 on success and negated errno otherwise.
+ */
+int spdk_dif_update_crc32c_stream(struct iovec *iovs, int iovcnt,
+				  uint32_t data_offset, uint32_t data_len,
+				  uint32_t *crc32c, const struct spdk_dif_ctx *ctx);
+/**
+ * Convert offset and size from LBA based to extended LBA based.
+ *
+ * \param data_offset Data offset
+ * \param data_len Data length
+ * \param buf_offset Buffer offset converted from data offset.
+ * \param buf_len Buffer length converted from data length
+ * \param ctx DIF context.
+ */
+void spdk_dif_get_range_with_md(uint32_t data_offset, uint32_t data_len,
+				uint32_t *buf_offset, uint32_t *buf_len,
+				const struct spdk_dif_ctx *ctx);
+
+/**
+ * Convert length from LBA based to extended LBA based.
+ *
+ * \param data_len Data length
+ * \param ctx DIF context.
+ *
+ * \return Extended LBA based data length.
+ */
+uint32_t spdk_dif_get_length_with_md(uint32_t data_len, const struct spdk_dif_ctx *ctx);
+
+/**
+ * Remap reference tag for extended LBA payload.
+ *
+ * When using stacked virtual bdev (e.g. split virtual bdev), block address space for I/O
+ * will be remapped during I/O processing and so reference tag will have to be remapped
+ * accordingly. This patch is for that case.
+ *
+ * \param iovs iovec array describing the extended LBA payload.
+ * \param iovcnt Number of elements in the iovec array.
+ * \param num_blocks Number of blocks of the payload.
+ * \param ctx DIF context.
+ * \param err_blk Error information of the block in which DIF error is found.
+ *
+ * \return 0 on success and negated errno otherwise.
+ */
+int spdk_dif_remap_ref_tag(struct iovec *iovs, int iovcnt, uint32_t num_blocks,
+			   const struct spdk_dif_ctx *dif_ctx,
+			   struct spdk_dif_error *err_blk);
+
+/**
+ * Remap reference tag for separate metadata payload.
+ *
+ * When using stacked virtual bdev (e.g. split virtual bdev), block address space for I/O
+ * will be remapped during I/O processing and so reference tag will have to be remapped
+ * accordingly. This patch is for that case.
+ *
+ * \param md_iov A contiguous buffer for metadata.
+ * \param num_blocks Number of blocks of the payload.
+ * \param ctx DIF context.
+ * \param err_blk Error information of the block in which DIF error is found.
+ *
+ * \return 0 on success and negated errno otherwise.
+ */
+int spdk_dix_remap_ref_tag(struct iovec *md_iov, uint32_t num_blocks,
+			   const struct spdk_dif_ctx *dif_ctx,
+			   struct spdk_dif_error *err_blk);
 #endif /* SPDK_DIF_H */

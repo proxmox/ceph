@@ -66,14 +66,17 @@ class VolumeProperties(Structure):
         ("_caps", VolumeCaps),
         ("_ops", VolumeOps),
         ("_io_ops", IoOps),
+        ("_deinit", c_char_p),
     ]
 
 
 class VolumeIoPriv(Structure):
-    _fields_ = [("_data", c_void_p)]
+    _fields_ = [("_data", c_void_p), ("_offset", c_uint64)]
 
 
 class Volume(Structure):
+    VOLUME_POISON = 0x13
+
     _fields_ = [("_storage", c_void_p)]
     _instances_ = {}
     _uuid_ = {}
@@ -95,10 +98,16 @@ class Volume(Structure):
         type(self)._uuid_[self.uuid] = weakref.ref(self)
 
         self.data = create_string_buffer(int(self.size))
+        memset(self.data, self.VOLUME_POISON, self.size)
         self._storage = cast(self.data, c_void_p)
 
         self.reset_stats()
         self.opened = False
+
+    def get_copy(self):
+        new_volume = Volume(self.size)
+        memmove(new_volume.data, self.data, self.size)
+        return new_volume
 
     @classmethod
     def get_props(cls):
@@ -122,6 +131,7 @@ class Volume(Structure):
                 _io_ops=IoOps(
                     _set_data=cls._io_set_data, _get_data=cls._io_get_data
                 ),
+                _deinit=0,
             )
 
         return cls.props
@@ -142,7 +152,9 @@ class Volume(Structure):
     @VolumeOps.SUBMIT_IO
     def _submit_io(io):
         io_structure = cast(io, POINTER(Io))
-        volume = Volume.get_instance(io_structure.contents._volume)
+        volume = Volume.get_instance(
+            OcfLib.getInstance().ocf_io_get_volume(io_structure)
+        )
 
         volume.submit_io(io_structure)
 
@@ -150,7 +162,9 @@ class Volume(Structure):
     @VolumeOps.SUBMIT_FLUSH
     def _submit_flush(flush):
         io_structure = cast(flush, POINTER(Io))
-        volume = Volume.get_instance(io_structure.contents._volume)
+        volume = Volume.get_instance(
+            OcfLib.getInstance().ocf_io_get_volume(io_structure)
+        )
 
         volume.submit_flush(io_structure)
 
@@ -163,7 +177,9 @@ class Volume(Structure):
     @VolumeOps.SUBMIT_DISCARD
     def _submit_discard(discard):
         io_structure = cast(discard, POINTER(Io))
-        volume = Volume.get_instance(io_structure.contents._volume)
+        volume = Volume.get_instance(
+            OcfLib.getInstance().ocf_io_get_volume(io_structure)
+        )
 
         volume.submit_discard(io_structure)
 
@@ -181,7 +197,7 @@ class Volume(Structure):
         uuid = str(uuid_ptr.contents._data, encoding="ascii")
         try:
             volume = Volume.get_by_uuid(uuid)
-        except:
+        except:  # noqa E722 TODO:Investigate whether this really should be so broad
             print("Tried to access unallocated volume {}".format(uuid))
             print("{}".format(Volume._uuid_))
             return -1
@@ -217,7 +233,7 @@ class Volume(Structure):
             OcfLib.getInstance().ocf_io_get_priv(io), POINTER(VolumeIoPriv)
         )
         data = Data.get_instance(data)
-        data.position = offset
+        io_priv.contents._offset = offset
         io_priv.contents._data = data.handle
 
         return 0
@@ -249,10 +265,10 @@ class Volume(Structure):
     def submit_discard(self, discard):
         try:
             dst = self._storage + discard.contents._addr
-            memset(dst, discard.contents._bytes)
+            memset(dst, 0, discard.contents._bytes)
 
             discard.contents._end(discard, 0)
-        except:
+        except:  # noqa E722
             discard.contents._end(discard, -5)
 
     def get_stats(self):
@@ -265,29 +281,35 @@ class Volume(Structure):
         try:
             self.stats[IoDir(io.contents._dir)] += 1
 
+            io_priv = cast(
+                OcfLib.getInstance().ocf_io_get_priv(io), POINTER(VolumeIoPriv))
+            offset = io_priv.contents._offset
+
             if io.contents._dir == IoDir.WRITE:
-                src_ptr = cast(io.contents._ops.contents._get_data(io), c_void_p)
-                src = Data.get_instance(src_ptr.value)
+                src_ptr = cast(OcfLib.getInstance().ocf_io_get_data(io), c_void_p)
+                src = Data.get_instance(src_ptr.value).handle.value + offset
                 dst = self._storage + io.contents._addr
             elif io.contents._dir == IoDir.READ:
-                dst_ptr = cast(io.contents._ops.contents._get_data(io), c_void_p)
-                dst = Data.get_instance(dst_ptr.value)
+                dst_ptr = cast(OcfLib.getInstance().ocf_io_get_data(io), c_void_p)
+                dst = Data.get_instance(dst_ptr.value).handle.value + offset
                 src = self._storage + io.contents._addr
 
             memmove(dst, src, io.contents._bytes)
+            io_priv.contents._offset += io.contents._bytes
 
             io.contents._end(io, 0)
-        except:
+        except:  # noqa E722
             io.contents._end(io, -5)
 
-    def dump_contents(self, stop_after_zeros=0, offset=0, size=0):
+    def dump(self, offset=0, size=0, ignore=VOLUME_POISON, **kwargs):
         if size == 0:
             size = int(self.size) - int(offset)
+
         print_buffer(
             self._storage,
-            int(size),
-            offset=int(offset),
-            stop_after_zeros=int(stop_after_zeros),
+            size,
+            ignore=ignore,
+            **kwargs
         )
 
     def md5(self):
@@ -316,5 +338,24 @@ class ErrorDevice(Volume):
         self.stats["errors"] = {IoDir.WRITE: 0, IoDir.READ: 0}
 
 
+class TraceDevice(Volume):
+    def __init__(self, size, trace_fcn=None, uuid=None):
+        super().__init__(size, uuid)
+        self.trace_fcn = trace_fcn
+
+    def submit_io(self, io):
+        submit = True
+
+        if self.trace_fcn:
+            submit = self.trace_fcn(self, io)
+
+        if submit:
+            super().submit_io(io)
+
+
 lib = OcfLib.getInstance()
 lib.ocf_io_get_priv.restype = POINTER(VolumeIoPriv)
+lib.ocf_io_get_volume.argtypes = [c_void_p]
+lib.ocf_io_get_volume.restype = c_void_p
+lib.ocf_io_get_data.argtypes = [c_void_p]
+lib.ocf_io_get_data.restype = c_void_p

@@ -31,6 +31,7 @@
 #include "intel-ipsec-mb.h"
 #include "des.h"
 #include "des_utils.h"
+#include "include/clear_regs_mem.h"
 
 /**
  * @brief Rotates 28-bit word
@@ -104,12 +105,14 @@ static const uint8_t shift_tab_fips46_3[16] = {
 
 int des_key_schedule(uint64_t *ks, const void *key)
 {
+#ifdef SAFE_PARAM
+        if (key == NULL || ks == NULL)
+                return -1;
+#endif
+
         uint64_t c, d;
         uint64_t t = 0;
         int n;
-
-        if (key == NULL || ks == NULL)
-                return -1;
 
         /* KEY: 56 bits but spread across 64 bits
          * - MSB per byte used for parity
@@ -139,5 +142,10 @@ int des_key_schedule(uint64_t *ks, const void *key)
                 ks[n] = expand_8x6_to_8x8(t);
         }
 
+#ifdef SAFE_DATA
+        clear_var(&c, sizeof(c));
+        clear_var(&d, sizeof(d));
+        clear_var(&t, sizeof(t));
+#endif
         return 0;
 }

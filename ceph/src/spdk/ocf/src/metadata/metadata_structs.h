@@ -30,15 +30,6 @@ enum ocf_metadata_shutdown_status {
  * Metadata cache line location on pages interface
  */
 struct ocf_metadata_layout_iface {
-
-	/**
-	 * @brief Initialize freelist partition
-	 *
-	 * @param cache - Cache instance
-	 */
-
-	void (*init_freelist)(struct ocf_cache *cache);
-
 	/**
 	 * This function is mapping collision index to appropriate cache line
 	 * (logical cache line to physical one mapping).
@@ -133,6 +124,7 @@ struct ocf_metadata_iface {
 		struct ocf_volume_uuid *uuid, uint32_t count,
 		ocf_metadata_query_cores_end_t cmpl, void *priv);
 
+
 	/**
 	 * @brief Metadata cache line location on pages interface
 	 */
@@ -144,6 +136,13 @@ struct ocf_metadata_iface {
 	 * @param cache - Cache instance
 	 */
 	void (*init_hash_table)(struct ocf_cache *cache);
+
+	/**
+	 * @brief Initialize collision table
+	 *
+	 * @param cache - Cache instance
+	 */
+	void (*init_collision)(struct ocf_cache *cache);
 
 	/**
 	 * @brief De-Initialize metadata
@@ -340,9 +339,6 @@ struct ocf_metadata_iface {
 	ocf_core_id_t (*get_core_id)(struct ocf_cache *cache,
 			ocf_cache_line_t line);
 
-	uint64_t (*get_core_sector)(struct ocf_cache *cache,
-			ocf_cache_line_t line);
-
 	void (*get_core_and_part_id)(struct ocf_cache *cache,
 			ocf_cache_line_t line, ocf_core_id_t *core_id,
 			ocf_part_id_t *part_id);
@@ -364,19 +360,10 @@ struct ocf_metadata_iface {
 	void (*set_collision_prev)(struct ocf_cache *cache,
 				ocf_cache_line_t line, ocf_cache_line_t prev);
 
-	ocf_cache_line_t (*get_collision_next)(struct ocf_cache *cache,
-				ocf_cache_line_t line);
-
-	ocf_cache_line_t (*get_collision_prev)(struct ocf_cache *cache,
-					ocf_cache_line_t line);
-
-	ocf_part_id_t (*get_partition_id)(struct ocf_cache *cache,
+	void (*start_collision_shared_access)(struct ocf_cache *cache,
 			ocf_cache_line_t line);
 
-	ocf_cache_line_t (*get_partition_next)(struct ocf_cache *cache,
-			ocf_cache_line_t line);
-
-	ocf_cache_line_t (*get_partition_prev)(struct ocf_cache *cache,
+	void (*end_collision_shared_access)(struct ocf_cache *cache,
 			ocf_cache_line_t line);
 
 	void (*get_partition_info)(struct ocf_cache *cache,
@@ -447,6 +434,19 @@ struct ocf_cache_line_settings {
 	uint64_t sector_end;
 };
 
+struct ocf_metadata_lock
+{
+	env_rwsem global; /*!< global metadata lock (GML) */
+	env_rwlock status; /*!< Fast lock for status bits */
+	env_spinlock eviction; /*!< Fast lock for eviction policy */
+	env_rwsem *hash; /*!< Hash bucket locks */
+	env_rwsem *collision_pages; /*!< Collision table page locks */
+	env_spinlock partition[OCF_IO_CLASS_MAX]; /* partition lock */
+	uint32_t num_hash_entries;  /*!< Hash bucket count */
+	uint32_t num_collision_pages; /*!< Collision table page count */
+	ocf_cache_t cache;  /*!< Parent cache object */
+};
+
 /**
  * @brief Metadata control structure
  */
@@ -463,15 +463,7 @@ struct ocf_metadata {
 	bool is_volatile;
 		/*!< true if metadata used in volatile mode (RAM only) */
 
-	struct {
-		env_rwsem collision; /*!< lock for collision table */
-		env_rwlock status; /*!< Fast lock for status bits */
-		env_spinlock eviction; /*!< Fast lock for eviction policy */
-	} lock;
+	struct ocf_metadata_lock lock;
 };
-
-
-#define OCF_METADATA_RD 0
-#define OCF_METADATA_WR 1
 
 #endif /* __METADATA_STRUCTS_H__ */

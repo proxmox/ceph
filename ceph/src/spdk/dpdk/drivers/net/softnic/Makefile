@@ -8,7 +8,6 @@ include $(RTE_SDK)/mk/rte.vars.mk
 #
 LIB = librte_pmd_softnic.a
 
-CFLAGS += -DALLOW_EXPERIMENTAL_API
 CFLAGS += -O3
 CFLAGS += $(WERROR_FLAGS)
 LDLIBS += -lrte_pipeline -lrte_port -lrte_table
@@ -18,8 +17,6 @@ LDLIBS += -lrte_cryptodev
 LDLIBS += -lrte_bus_vdev
 
 EXPORT_MAP := rte_pmd_softnic_version.map
-
-LIBABIVER := 1
 
 #
 # all source are stored in SRCS-y
@@ -45,7 +42,7 @@ SRCS-$(CONFIG_RTE_LIBRTE_PMD_SOFTNIC) += conn.c
 #
 SYMLINK-y-include += rte_eth_softnic.h
 
-ifneq ($(CONFIG_RTE_EXEC_ENV),"linuxapp")
+ifneq ($(CONFIG_RTE_EXEC_ENV_LINUX),y)
 $(info Softnic PMD can only operate in a linux environment, \
 please change the definition of the RTE_TARGET environment variable)
 all:

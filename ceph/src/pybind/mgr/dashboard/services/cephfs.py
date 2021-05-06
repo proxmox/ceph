@@ -1,16 +1,14 @@
 # -*- coding: utf-8 -*-
 from __future__ import absolute_import
 
-from contextlib import contextmanager
-import logging
-
 import datetime
+import logging
 import os
-import six
+from contextlib import contextmanager
+
 import cephfs
 
 from .. import mgr
-
 
 logger = logging.getLogger('cephfs')
 
@@ -92,7 +90,7 @@ class CephFS(object):
             ]
         :rtype: list
         """
-        if isinstance(path, six.string_types):
+        if isinstance(path, str):
             path = path.encode()
         logger.debug("get_dir_list dirpath=%s depth=%s", path,
                      depth)

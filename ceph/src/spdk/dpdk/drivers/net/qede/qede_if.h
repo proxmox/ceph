@@ -17,7 +17,7 @@ enum ecore_int_mode;
 
 struct qed_dev_info {
 	uint8_t num_hwfns;
-	uint8_t hw_mac[ETHER_ADDR_LEN];
+	uint8_t hw_mac[RTE_ETHER_ADDR_LEN];
 	bool is_mf_default;
 
 	/* FW version */
@@ -45,6 +45,15 @@ struct qed_dev_info {
 
 	bool smart_an;
 
+	/* MBI version */
+	uint32_t mbi_version;
+#define QED_MBI_VERSION_0_MASK          0x000000FF
+#define QED_MBI_VERSION_0_OFFSET        0
+#define QED_MBI_VERSION_1_MASK          0x0000FF00
+#define QED_MBI_VERSION_1_OFFSET        8
+#define QED_MBI_VERSION_2_MASK          0x00FF0000
+#define QED_MBI_VERSION_2_OFFSET        16
+
 	/* Out param for qede */
 	bool vxlan_enable;
 	bool gre_enable;
@@ -59,7 +68,7 @@ struct qed_dev_eth_info {
 	uint8_t num_queues;
 	uint8_t num_tc;
 
-	struct ether_addr port_mac;
+	struct rte_ether_addr port_mac;
 	uint16_t num_vlan_filters;
 	uint32_t num_mac_filters;
 

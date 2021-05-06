@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  *
- * Copyright (c) 2016-2018 Solarflare Communications Inc.
- * All rights reserved.
+ * Copyright(c) 2019-2020 Xilinx, Inc.
+ * Copyright(c) 2016-2019 Solarflare Communications Inc.
  *
  * This software was jointly developed between OKTET Labs (under contract
  * for Solarflare) and Solarflare Communications, Inc.
@@ -46,6 +46,7 @@ struct sfc_evq {
 	efx_evq_t			*common;
 	const efx_ev_callbacks_t	*callbacks;
 	unsigned int			read_ptr;
+	unsigned int			read_ptr_primed;
 	boolean_t			exception;
 	efsys_mem_t			mem;
 	struct sfc_dp_rxq		*dp_rxq;

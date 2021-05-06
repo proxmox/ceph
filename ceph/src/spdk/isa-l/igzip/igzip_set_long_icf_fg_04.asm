@@ -39,38 +39,42 @@ default rel
 %define arg1 rcx
 %define arg2 rdx
 %define arg3 r8
-%define dist_code rsi
+%define arg4 r9
 %define len rdi
 %define tmp2 rdi
+%define dist rsi
 %else
 %define arg1 rdi
 %define arg2 rsi
 %define arg3 rdx
-%define dist_code rcx
+%define arg4 rcx
 %define len r8
 %define tmp2 r8
+%define dist r9
 %endif
 
 %define next_in arg1
-%define end_in arg2
-%define match_lookup arg3
+%define end_processed arg2
+%define end_in arg3
+%define match_lookup arg4
 %define match_in rax
-%define dist r9
 %define match_offset r10
 %define tmp1 r11
-%define end_in_orig r12
+%define end_processed_orig r12
+%define dist_code r13
+%define tmp3 r13
 
 %define ymatch_lookup ymm0
 %define ymatch_lookup2 ymm1
 %define ylens ymm2
-%define ydists ymm3
+%define ycmp2 ymm3
 %define ylens1 ymm4
 %define ylens2 ymm5
 %define ycmp ymm6
 %define ytmp1 ymm7
 %define ytmp2 ymm8
 %define yvect_size ymm9
-%define ytwofiftyfour ymm10
+%define ymax_len ymm10
 %define ytwofiftysix ymm11
 %define ynlen_mask ymm12
 %define ydists_mask ymm13
@@ -95,6 +99,7 @@ default rel
 	save_reg	rsi, 10*16 + 0*8
 	save_reg	rdi, 10*16 + 1*8
 	save_reg	r12, 10*16 + 2*8
+	save_reg	r13, 10*16 + 3*8
 	end_prolog
 %endm
 
@@ -113,15 +118,18 @@ default rel
 	mov	rsi, [rsp + 10*16 + 0*8]
 	mov	rdi, [rsp + 10*16 + 1*8]
 	mov	r12, [rsp + 10*16 + 2*8]
+	mov	r13, [rsp + 10*16 + 3*8]
 	add	rsp, stack_size
 %endm
 %else
 %define func(x) x:
 %macro FUNC_SAVE 0
 	push r12
+	push r13
 %endm
 
 %macro FUNC_RESTORE 0
+	pop r13
 	pop r12
 %endm
 %endif
@@ -131,14 +139,19 @@ global set_long_icf_fg_04
 func(set_long_icf_fg_04)
 	FUNC_SAVE
 
-	mov	end_in_orig, end_in
-	sub	end_in, VECT_SIZE - 1
+	lea	end_in, [next_in + arg3]
+	add	end_processed, next_in
+	mov	end_processed_orig, end_processed
+	lea	tmp1, [end_processed + LA_STATELESS]
+	cmp	end_in, tmp1
+	cmovg	end_in, tmp1
+	sub	end_processed, VECT_SIZE - 1
 	vmovdqu ylong_lens, [long_len]
 	vmovdqu ylens_mask, [len_mask]
 	vmovdqu ydists_mask, [dists_mask]
 	vmovdqu ynlen_mask, [nlen_mask]
 	vmovdqu yvect_size, [vect_size]
-	vmovdqu ytwofiftyfour, [twofiftyfour]
+	vmovdqu ymax_len, [max_len]
 	vmovdqu ytwofiftysix, [twofiftysix]
 	vmovdqu ymatch_lookup, [match_lookup]
 
@@ -146,7 +159,7 @@ func(set_long_icf_fg_04)
 	vmovdqu ymatch_lookup2, ymatch_lookup
 	vmovdqu ymatch_lookup, [match_lookup + ICF_CODE_BYTES * VECT_SIZE]
 
-	cmp	next_in, end_in
+	cmp	next_in, end_processed
 	jae	.end_fill
 
 .finish_entry:
@@ -180,27 +193,22 @@ func(set_long_icf_fg_04)
 	mov	match_in, next_in
 	sub	match_in, dist
 
-	mov	len, 2
-%rep 7
-	vmovdqu ytmp1, [next_in + len]
-	vmovdqu ytmp2, [match_in + len]
-	vpcmpeqb ycmp, ytmp1, [match_in + len]
-	vpmovmskb tmp1, ycmp
-	cmp	tmp1 %+ d, 0xffffffff
-	jne	.miscompare
+	mov	len, 8
+	mov	tmp3, end_in
+	sub	tmp3, next_in
 
-	add	len, 32
-%endrep
+	compare_y next_in, match_in, len, tmp3, tmp1, ytmp1, ytmp2
 
-	vmovdqu ytmp1, [next_in + len]
-	vmovdqu ytmp2, [match_in + len]
-	vpcmpeqb ycmp, ytmp1, [match_in + len]
-	vpmovmskb tmp1, ycmp
+	vmovd	ylens1 %+ x, len %+ d
+	vpbroadcastd ylens1, ylens1 %+ x
+	vpsubd	ylens1, ylens1, [increment]
+	vpaddd	ylens1, ylens1, [twofiftyfour]
 
-.miscompare:
-	not	tmp1 %+ d
-	tzcnt	tmp1 %+ d, tmp1 %+ d
-	add	len, tmp1
+	mov	tmp3, end_processed
+	sub	tmp3, next_in
+	cmp	len, tmp3
+	cmovg	len, tmp3
+
 	add	next_in, len
 	lea	match_lookup, [match_lookup + ICF_CODE_BYTES * len]
 	vmovdqu ymatch_lookup, [match_lookup]
@@ -208,10 +216,6 @@ func(set_long_icf_fg_04)
 	vpbroadcastd ymatch_lookup2, ymatch_lookup2 %+ x
 	vpand	ymatch_lookup2, ymatch_lookup2, ynlen_mask
 
-	vmovd	ylens1 %+ x, len %+ d
-	vpbroadcastd ylens1, ylens1 %+ x
-	vpsubd	ylens1, ylens1, [increment]
-	vpaddd	ylens1, ylens1, ytwofiftyfour
 	neg	len
 
 .update_match_lookup:
@@ -222,7 +226,12 @@ func(set_long_icf_fg_04)
 	vpand	ycmp, ycmp, ytmp1
 	vpmovmskb tmp1, ycmp
 
-	vpaddd	ylens2, ylens1, ymatch_lookup2
+	vpcmpgtd ycmp2, ylens1, ymax_len
+	vpandn ylens, ycmp2, ylens1
+	vpand ycmp2, ymax_len, ycmp2
+	vpor ylens, ycmp2
+
+	vpaddd	ylens2, ylens, ymatch_lookup2
 	vpand	ylens2, ylens2, ycmp
 
 	vpmaskmovd [match_lookup + ICF_CODE_BYTES * len], ycmp, ylens2
@@ -236,11 +245,11 @@ func(set_long_icf_fg_04)
 	jmp	.update_match_lookup
 
 .end_fill:
-	mov	end_in, end_in_orig
-	cmp	next_in, end_in
+	mov	end_processed, end_processed_orig
+	cmp	next_in, end_processed
 	jge	.finish
 
-	mov	tmp1, end_in
+	mov	tmp1, end_processed
 	sub	tmp1, next_in
 	vmovd	ytmp1 %+ x, tmp1 %+ d
 	vpbroadcastd ytmp1, ytmp1 %+ x
@@ -281,3 +290,6 @@ twofiftysix:
 nlen_mask:
 	dd 0xfffffc00, 0xfffffc00, 0xfffffc00, 0xfffffc00
 	dd 0xfffffc00, 0xfffffc00, 0xfffffc00, 0xfffffc00
+max_len:
+	dd 0xfe + 0x102, 0xfe + 0x102, 0xfe + 0x102, 0xfe + 0x102
+	dd 0xfe + 0x102, 0xfe + 0x102, 0xfe + 0x102, 0xfe + 0x102

@@ -48,6 +48,7 @@ test_nvme_quirks_striping(void)
 	CU_ASSERT((quirks & NVME_INTEL_QUIRK_STRIPING) == 0);
 
 	/* Set the vendor id to Intel, but no device id. No striping. */
+	pci_id.class_id = SPDK_PCI_CLASS_NVME;
 	pci_id.vendor_id = SPDK_PCI_VID_INTEL;
 	quirks = nvme_get_quirks(&pci_id);
 	CU_ASSERT((quirks & NVME_INTEL_QUIRK_STRIPING) == 0);
@@ -76,23 +77,12 @@ int main(int argc, char **argv)
 	CU_pSuite	suite = NULL;
 	unsigned int	num_failures;
 
-	if (CU_initialize_registry() != CUE_SUCCESS) {
-		return CU_get_error();
-	}
+	CU_set_error_action(CUEA_ABORT);
+	CU_initialize_registry();
 
 	suite = CU_add_suite("nvme_quirks", NULL, NULL);
-	if (suite == NULL) {
-		CU_cleanup_registry();
-		return CU_get_error();
-	}
 
-	if (
-		CU_add_test(suite, "test nvme_quirks striping",
-			    test_nvme_quirks_striping) == NULL
-	) {
-		CU_cleanup_registry();
-		return CU_get_error();
-	}
+	CU_ADD_TEST(suite, test_nvme_quirks_striping);
 
 	CU_basic_set_mode(CU_BRM_VERBOSE);
 	CU_basic_run_tests();

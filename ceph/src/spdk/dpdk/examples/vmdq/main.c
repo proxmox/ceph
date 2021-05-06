@@ -59,6 +59,7 @@ static uint32_t enabled_port_mask;
 /* number of pools (if user does not specify any, 8 by default */
 static uint32_t num_queues = 8;
 static uint32_t num_pools = 8;
+static uint8_t rss_enable;
 
 /* empty vmdq configuration structure. Filled in programatically */
 static const struct rte_eth_conf vmdq_conf_default = {
@@ -106,12 +107,12 @@ const uint16_t num_vlans = RTE_DIM(vlan_tags);
 static uint16_t num_pf_queues,  num_vmdq_queues;
 static uint16_t vmdq_pool_base, vmdq_queue_base;
 /* pool mac addr template, pool mac addr is like: 52 54 00 12 port# pool# */
-static struct ether_addr pool_addr_template = {
+static struct rte_ether_addr pool_addr_template = {
 	.addr_bytes = {0x52, 0x54, 0x00, 0x12, 0x00, 0x00}
 };
 
 /* ethernet addresses of ports */
-static struct ether_addr vmdq_ports_eth_addr[RTE_MAX_ETHPORTS];
+static struct rte_ether_addr vmdq_ports_eth_addr[RTE_MAX_ETHPORTS];
 
 #define MAX_QUEUE_NUM_10G 128
 #define MAX_QUEUE_NUM_1G 8
@@ -143,6 +144,13 @@ get_eth_conf(struct rte_eth_conf *eth_conf, uint32_t num_pools)
 	(void)(rte_memcpy(eth_conf, &vmdq_conf_default, sizeof(*eth_conf)));
 	(void)(rte_memcpy(&eth_conf->rx_adv_conf.vmdq_rx_conf, &conf,
 		   sizeof(eth_conf->rx_adv_conf.vmdq_rx_conf)));
+	if (rss_enable) {
+		eth_conf->rxmode.mq_mode = ETH_MQ_RX_VMDQ_RSS;
+		eth_conf->rx_adv_conf.rss_conf.rss_hf = ETH_RSS_IP |
+							ETH_RSS_UDP |
+							ETH_RSS_TCP |
+							ETH_RSS_SCTP;
+	}
 	return 0;
 }
 
@@ -164,12 +172,19 @@ port_init(uint16_t port, struct rte_mempool *mbuf_pool)
 	uint16_t q;
 	uint16_t queues_per_pool;
 	uint32_t max_nb_pools;
+	uint64_t rss_hf_tmp;
 
 	/*
 	 * The max pool number from dev_info will be used to validate the pool
 	 * number specified in cmd line
 	 */
-	rte_eth_dev_info_get(port, &dev_info);
+	retval = rte_eth_dev_info_get(port, &dev_info);
+	if (retval != 0) {
+		printf("Error during getting device (port %u) info: %s\n",
+				port, strerror(-retval));
+		return retval;
+	}
+
 	max_nb_pools = (uint32_t)dev_info.max_vmdq_pools;
 	/*
 	 * We allow to process part of VMDQ pools specified by num_pools in
@@ -203,6 +218,17 @@ port_init(uint16_t port, struct rte_mempool *mbuf_pool)
 	if (!rte_eth_dev_is_valid_port(port))
 		return -1;
 
+	rss_hf_tmp = port_conf.rx_adv_conf.rss_conf.rss_hf;
+	port_conf.rx_adv_conf.rss_conf.rss_hf &=
+		dev_info.flow_type_rss_offloads;
+	if (port_conf.rx_adv_conf.rss_conf.rss_hf != rss_hf_tmp) {
+		printf("Port %u modified RSS hash function based on hardware support,"
+			"requested:%#"PRIx64" configured:%#"PRIx64"\n",
+			port,
+			rss_hf_tmp,
+			port_conf.rx_adv_conf.rss_conf.rss_hf);
+	}
+
 	/*
 	 * Though in this example, we only receive packets from the first queue
 	 * of each pool and send packets through first rte_lcore_count() tx
@@ -214,7 +240,13 @@ port_init(uint16_t port, struct rte_mempool *mbuf_pool)
 	rxRings = (uint16_t)dev_info.max_rx_queues;
 	txRings = (uint16_t)dev_info.max_tx_queues;
 
-	rte_eth_dev_info_get(port, &dev_info);
+	retval = rte_eth_dev_info_get(port, &dev_info);
+	if (retval != 0) {
+		printf("Error during getting device (port %u) info: %s\n",
+				port, strerror(-retval));
+		return retval;
+	}
+
 	if (dev_info.tx_offload_capa & DEV_TX_OFFLOAD_MBUF_FAST_FREE)
 		port_conf.txmode.offloads |=
 			DEV_TX_OFFLOAD_MBUF_FAST_FREE;
@@ -264,7 +296,12 @@ port_init(uint16_t port, struct rte_mempool *mbuf_pool)
 		return retval;
 	}
 
-	rte_eth_macaddr_get(port, &vmdq_ports_eth_addr[port]);
+	retval = rte_eth_macaddr_get(port, &vmdq_ports_eth_addr[port]);
+	if (retval < 0) {
+		printf("port %d MAC address get failed: %s\n", port,
+		       rte_strerror(-retval));
+		return retval;
+	}
 	printf("Port %u MAC: %02"PRIx8" %02"PRIx8" %02"PRIx8
 			" %02"PRIx8" %02"PRIx8" %02"PRIx8"\n",
 			(unsigned)port,
@@ -281,7 +318,7 @@ port_init(uint16_t port, struct rte_mempool *mbuf_pool)
 	 * Removes this after i40e fixes this issue.
 	 */
 	for (q = 0; q < num_pools; q++) {
-		struct ether_addr mac;
+		struct rte_ether_addr mac;
 		mac = pool_addr_template;
 		mac.addr_bytes[4] = port;
 		mac.addr_bytes[5] = q;
@@ -346,7 +383,8 @@ static void
 vmdq_usage(const char *prgname)
 {
 	printf("%s [EAL options] -- -p PORTMASK]\n"
-	"  --nb-pools NP: number of pools\n",
+	"  --nb-pools NP: number of pools\n"
+	"  --enable-rss: enable RSS (disabled by default)\n",
 	       prgname);
 }
 
@@ -360,6 +398,7 @@ vmdq_parse_args(int argc, char **argv)
 	const char *prgname = argv[0];
 	static struct option long_option[] = {
 		{"nb-pools", required_argument, NULL, 0},
+		{"enable-rss", 0, NULL, 0},
 		{NULL, 0, 0, 0}
 	};
 
@@ -377,11 +416,18 @@ vmdq_parse_args(int argc, char **argv)
 			}
 			break;
 		case 0:
-			if (vmdq_parse_num_pools(optarg) == -1) {
-				printf("invalid number of pools\n");
-				vmdq_usage(prgname);
-				return -1;
+			if (!strcmp(long_option[option_index].name,
+			    "nb-pools")) {
+				if (vmdq_parse_num_pools(optarg) == -1) {
+					printf("invalid number of pools\n");
+					vmdq_usage(prgname);
+					return -1;
+				}
 			}
+
+			if (!strcmp(long_option[option_index].name,
+			    "enable-rss"))
+				rss_enable = 1;
 			break;
 
 		default:
@@ -407,27 +453,28 @@ vmdq_parse_args(int argc, char **argv)
 static void
 update_mac_address(struct rte_mbuf *m, unsigned dst_port)
 {
-	struct ether_hdr *eth;
+	struct rte_ether_hdr *eth;
 	void *tmp;
 
-	eth = rte_pktmbuf_mtod(m, struct ether_hdr *);
+	eth = rte_pktmbuf_mtod(m, struct rte_ether_hdr *);
 
 	/* 02:00:00:00:00:xx */
 	tmp = &eth->d_addr.addr_bytes[0];
 	*((uint64_t *)tmp) = 0x000000000002 + ((uint64_t)dst_port << 40);
 
 	/* src addr */
-	ether_addr_copy(&vmdq_ports_eth_addr[dst_port], &eth->s_addr);
+	rte_ether_addr_copy(&vmdq_ports_eth_addr[dst_port], &eth->s_addr);
 }
 
 /* When we receive a HUP signal, print out our stats */
 static void
 sighup_handler(int signum)
 {
-	unsigned q;
-	for (q = 0; q < num_queues; q++) {
-		if (q % (num_queues/num_pools) == 0)
-			printf("\nPool %u: ", q/(num_queues/num_pools));
+	unsigned int q = vmdq_queue_base;
+	for (; q < num_queues; q++) {
+		if ((q - vmdq_queue_base) % (num_vmdq_queues / num_pools) == 0)
+			printf("\nPool %u: ", (q - vmdq_queue_base) /
+			       (num_vmdq_queues / num_pools));
 		printf("%lu ", rxPackets[q]);
 	}
 	printf("\nFinished handling signal %d\n", signum);
@@ -438,7 +485,7 @@ sighup_handler(int signum)
  * and writing to OUTPUT_PORT
  */
 static int
-lcore_main(__attribute__((__unused__)) void *dummy)
+lcore_main(__rte_unused void *dummy)
 {
 	const uint16_t lcore_id = (uint16_t)rte_lcore_id();
 	const uint16_t num_cores = (uint16_t)rte_lcore_count();
@@ -486,7 +533,7 @@ lcore_main(__attribute__((__unused__)) void *dummy)
 
 	for (;;) {
 		struct rte_mbuf *buf[MAX_PKT_BURST];
-		const uint16_t buf_size = sizeof(buf) / sizeof(buf[0]);
+		const uint16_t buf_size = RTE_DIM(buf);
 
 		for (p = 0; p < num_ports; p++) {
 			const uint8_t sport = ports[p];

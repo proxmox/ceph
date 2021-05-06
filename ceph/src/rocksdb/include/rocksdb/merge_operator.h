@@ -12,7 +12,7 @@
 
 #include "rocksdb/slice.h"
 
-namespace rocksdb {
+namespace ROCKSDB_NAMESPACE {
 
 class Slice;
 class Logger;
@@ -46,6 +46,7 @@ class Logger;
 class MergeOperator {
  public:
   virtual ~MergeOperator() {}
+  static const char* Type() { return "MergeOperator"; }
 
   // Gives the client a way to express the read -> modify -> write semantics
   // key:      (IN)    The key that's associated with this merge operation.
@@ -253,4 +254,4 @@ class AssociativeMergeOperator : public MergeOperator {
                     Logger* logger) const override;
 };
 
-}  // namespace rocksdb
+}  // namespace ROCKSDB_NAMESPACE

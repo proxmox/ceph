@@ -112,6 +112,11 @@ extern int cls_cxx_map_get_vals(cls_method_context_t hctx,
                                 uint64_t max_to_get,
                                 std::map<std::string, ceph::buffer::list> *vals,
                                 bool *more);
+extern int cls_cxx_map_get_val(cls_method_context_t hctx, const std::string &key,
+                               bufferlist *outbl);
+extern int cls_cxx_map_get_vals_by_keys(cls_method_context_t hctx,
+                                        const std::set<std::string> &keys,
+                                        std::map<std::string, bufferlist> *map);
 extern int cls_cxx_map_read_header(cls_method_context_t hctx, ceph::buffer::list *outbl);
 extern int cls_cxx_map_set_vals(cls_method_context_t hctx,
                                 const std::map<std::string, ceph::buffer::list> *map);
@@ -152,9 +157,10 @@ extern int cls_get_snapset_seq(cls_method_context_t hctx, uint64_t *snap_seq);
 int cls_cxx_chunk_write_and_set(cls_method_context_t hctx, int ofs, int len,
                    ceph::buffer::list *write_inbl, uint32_t op_flags, ceph::buffer::list *set_inbl,
 		   int set_len);
-bool cls_has_chunk(cls_method_context_t hctx, std::string fp_oid);
+int cls_get_manifest_ref_count(cls_method_context_t hctx, std::string fp_oid);
 
 extern uint64_t cls_get_osd_min_alloc_size(cls_method_context_t hctx);
+extern uint64_t cls_get_pool_stripe_width(cls_method_context_t hctx);
 
 #endif
 

@@ -9,7 +9,6 @@
 #include <rte_bus.h>
 #include <rte_pci.h>
 #include <rte_bus_pci.h>
-#include <rte_eal_memconfig.h>
 #include <rte_malloc.h>
 #include <rte_devargs.h>
 #include <rte_memcpy.h>
@@ -352,6 +351,7 @@ pci_scan_one(const char *dirname, const struct rte_pci_addr *addr)
 				if (!rte_dev_is_probed(&dev2->device)) {
 					dev2->kdrv = dev->kdrv;
 					dev2->max_vfs = dev->max_vfs;
+					memcpy(&dev2->id, &dev->id, sizeof(dev2->id));
 					pci_name_set(dev2);
 					memmove(dev2->mem_resource,
 						dev->mem_resource,
@@ -365,7 +365,8 @@ pci_scan_one(const char *dirname, const struct rte_pci_addr *addr)
 					 * need to do anything here unless...
 					 **/
 					if (dev2->kdrv != dev->kdrv ||
-						dev2->max_vfs != dev->max_vfs)
+						dev2->max_vfs != dev->max_vfs ||
+						memcmp(&dev2->id, &dev->id, sizeof(dev2->id)))
 						/*
 						 * This should not happens.
 						 * But it is still possible if
@@ -378,6 +379,11 @@ pci_scan_one(const char *dirname, const struct rte_pci_addr *addr)
 						 */
 						RTE_LOG(ERR, EAL, "Unexpected device scan at %s!\n",
 							filename);
+					else if (dev2->device.devargs !=
+						 dev->device.devargs) {
+						rte_devargs_remove(dev2->device.devargs);
+						pci_name_set(dev2);
+					}
 				}
 				free(dev);
 			}
@@ -483,6 +489,9 @@ rte_pci_scan(void)
 		if (parse_pci_addr_format(e->d_name, sizeof(e->d_name), &addr) != 0)
 			continue;
 
+		if (rte_pci_ignore_device(&addr))
+			continue;
+
 		snprintf(dirname, sizeof(dirname), "%s/%s",
 				rte_pci_get_sysfs_path(), e->d_name);
 
@@ -497,94 +506,13 @@ error:
 	return -1;
 }
 
-/*
- * Is pci device bound to any kdrv
- */
-static inline int
-pci_one_device_is_bound(void)
-{
-	struct rte_pci_device *dev = NULL;
-	int ret = 0;
-
-	FOREACH_DEVICE_ON_PCIBUS(dev) {
-		if (dev->kdrv == RTE_KDRV_UNKNOWN ||
-		    dev->kdrv == RTE_KDRV_NONE) {
-			continue;
-		} else {
-			ret = 1;
-			break;
-		}
-	}
-	return ret;
-}
-
-/*
- * Any one of the device bound to uio
- */
-static inline int
-pci_one_device_bound_uio(void)
-{
-	struct rte_pci_device *dev = NULL;
-	struct rte_devargs *devargs;
-	int need_check;
-
-	FOREACH_DEVICE_ON_PCIBUS(dev) {
-		devargs = dev->device.devargs;
-
-		need_check = 0;
-		switch (rte_pci_bus.bus.conf.scan_mode) {
-		case RTE_BUS_SCAN_WHITELIST:
-			if (devargs && devargs->policy == RTE_DEV_WHITELISTED)
-				need_check = 1;
-			break;
-		case RTE_BUS_SCAN_UNDEFINED:
-		case RTE_BUS_SCAN_BLACKLIST:
-			if (devargs == NULL ||
-			    devargs->policy != RTE_DEV_BLACKLISTED)
-				need_check = 1;
-			break;
-		}
-
-		if (!need_check)
-			continue;
-
-		if (dev->kdrv == RTE_KDRV_IGB_UIO ||
-		   dev->kdrv == RTE_KDRV_UIO_GENERIC) {
-			return 1;
-		}
-	}
-	return 0;
-}
-
-/*
- * Any one of the device has iova as va
- */
-static inline int
-pci_one_device_has_iova_va(void)
-{
-	struct rte_pci_device *dev = NULL;
-	struct rte_pci_driver *drv = NULL;
-
-	FOREACH_DRIVER_ON_PCIBUS(drv) {
-		if (drv && drv->drv_flags & RTE_PCI_DRV_IOVA_AS_VA) {
-			FOREACH_DEVICE_ON_PCIBUS(dev) {
-				if (dev->kdrv == RTE_KDRV_VFIO &&
-				    rte_pci_match(drv, dev))
-					return 1;
-			}
-		}
-	}
-	return 0;
-}
-
 #if defined(RTE_ARCH_X86)
-static bool
-pci_one_device_iommu_support_va(struct rte_pci_device *dev)
+bool
+pci_device_iommu_support_va(const struct rte_pci_device *dev)
 {
 #define VTD_CAP_MGAW_SHIFT	16
 #define VTD_CAP_MGAW_MASK	(0x3fULL << VTD_CAP_MGAW_SHIFT)
-#define X86_VA_WIDTH 47 /* From Documentation/x86/x86_64/mm.txt */
-	struct rte_pci_addr *addr = &dev->addr;
+	const struct rte_pci_addr *addr = &dev->addr;
 	char filename[PATH_MAX];
 	FILE *fp;
 	uint64_t mgaw, vtd_cap_reg = 0;
@@ -593,18 +521,19 @@ pci_one_device_iommu_support_va(struct rte_pci_device *dev)
 		 "%s/" PCI_PRI_FMT "/iommu/intel-iommu/cap",
 		 rte_pci_get_sysfs_path(), addr->domain, addr->bus, addr->devid,
 		 addr->function);
-	if (access(filename, F_OK) == -1) {
-		/* We don't have an Intel IOMMU, assume VA supported*/
-		return true;
-	}
 
-	/* We have an intel IOMMU */
 	fp = fopen(filename, "r");
 	if (fp == NULL) {
-		RTE_LOG(ERR, EAL, "%s(): can't open %s\n", __func__, filename);
+		/* We don't have an Intel IOMMU, assume VA supported */
+		if (errno == ENOENT)
+			return true;
+
+		RTE_LOG(ERR, EAL, "%s(): can't open %s: %s\n",
+			__func__, filename, strerror(errno));
 		return false;
 	}
 
+	/* We have an Intel IOMMU */
 	if (fscanf(fp, "%" PRIx64, &vtd_cap_reg) != 1) {
 		RTE_LOG(ERR, EAL, "%s(): can't read %s\n", __func__, filename);
 		fclose(fp);
@@ -627,81 +556,88 @@ pci_one_device_iommu_support_va(struct rte_pci_device *dev)
 	return true;
 }
 #elif defined(RTE_ARCH_PPC_64)
-static bool
-pci_one_device_iommu_support_va(__rte_unused struct rte_pci_device *dev)
+bool
+pci_device_iommu_support_va(__rte_unused const struct rte_pci_device *dev)
 {
-	return false;
-}
-#else
-static bool
-pci_one_device_iommu_support_va(__rte_unused struct rte_pci_device *dev)
-{
-	return true;
-}
-#endif
+	/*
+	 * IOMMU is always present on a PowerNV host (IOMMUv2).
+	 * IOMMU is also present in a KVM/QEMU VM (IOMMUv1) but is not
+	 * currently supported by DPDK. Test for our current environment
+	 * and report VA support as appropriate.
+	 */
 
-/*
- * All devices IOMMUs support VA as IOVA
- */
-static bool
-pci_devices_iommu_support_va(void)
-{
-	struct rte_pci_device *dev = NULL;
-	struct rte_pci_driver *drv = NULL;
+	char *line = NULL;
+	size_t len = 0;
+	char filename[PATH_MAX] = "/proc/cpuinfo";
+	FILE *fp = fopen(filename, "r");
+	bool ret = false;
 
-	FOREACH_DRIVER_ON_PCIBUS(drv) {
-		FOREACH_DEVICE_ON_PCIBUS(dev) {
-			if (!rte_pci_match(drv, dev))
-				continue;
-			/*
-			 * just one PCI device needs to be checked out because
-			 * the IOMMU hardware is the same for all of them.
-			 */
-			return pci_one_device_iommu_support_va(dev);
+	if (fp == NULL) {
+		RTE_LOG(ERR, EAL, "%s(): can't open %s: %s\n",
+			__func__, filename, strerror(errno));
+		return ret;
+	}
+
+	/* Check for a PowerNV platform */
+	while (getline(&line, &len, fp) != -1) {
+		if (strstr(line, "platform") != NULL)
+			continue;
+
+		if (strstr(line, "PowerNV") != NULL) {
+			RTE_LOG(DEBUG, EAL, "Running on a PowerNV system\n");
+			ret = true;
+			break;
 		}
 	}
+
+	free(line);
+	fclose(fp);
+	return ret;
+}
+#else
+bool
+pci_device_iommu_support_va(__rte_unused const struct rte_pci_device *dev)
+{
 	return true;
 }
-
-/*
- * Get iommu class of PCI devices on the bus.
- */
-enum rte_iova_mode
-rte_pci_get_iommu_class(void)
-{
-	bool is_bound;
-	bool is_vfio_noiommu_enabled = true;
-	bool has_iova_va;
-	bool is_bound_uio;
-	bool iommu_no_va;
-
-	is_bound = pci_one_device_is_bound();
-	if (!is_bound)
-		return RTE_IOVA_DC;
-
-	has_iova_va = pci_one_device_has_iova_va();
-	is_bound_uio = pci_one_device_bound_uio();
-	iommu_no_va = !pci_devices_iommu_support_va();
-#ifdef VFIO_PRESENT
-	is_vfio_noiommu_enabled = rte_vfio_noiommu_is_enabled() == true ?
-					true : false;
 #endif
 
-	if (has_iova_va && !is_bound_uio && !is_vfio_noiommu_enabled &&
-			!iommu_no_va)
-		return RTE_IOVA_VA;
+enum rte_iova_mode
+pci_device_iova_mode(const struct rte_pci_driver *pdrv,
+		     const struct rte_pci_device *pdev)
+{
+	enum rte_iova_mode iova_mode = RTE_IOVA_DC;
 
-	if (has_iova_va) {
-		RTE_LOG(WARNING, EAL, "Some devices want iova as va but pa will be used because.. ");
-		if (is_vfio_noiommu_enabled)
-			RTE_LOG(WARNING, EAL, "vfio-noiommu mode configured\n");
-		if (is_bound_uio)
-			RTE_LOG(WARNING, EAL, "few device bound to UIO\n");
-		if (iommu_no_va)
-			RTE_LOG(WARNING, EAL, "IOMMU does not support IOVA as VA\n");
+	switch (pdev->kdrv) {
+	case RTE_KDRV_VFIO: {
+#ifdef VFIO_PRESENT
+		static int is_vfio_noiommu_enabled = -1;
+
+		if (is_vfio_noiommu_enabled == -1) {
+			if (rte_vfio_noiommu_is_enabled() == 1)
+				is_vfio_noiommu_enabled = 1;
+			else
+				is_vfio_noiommu_enabled = 0;
+		}
+		if (is_vfio_noiommu_enabled != 0)
+			iova_mode = RTE_IOVA_PA;
+		else if ((pdrv->drv_flags & RTE_PCI_DRV_NEED_IOVA_AS_VA) != 0)
+			iova_mode = RTE_IOVA_VA;
+#endif
+		break;
 	}
 
-	return RTE_IOVA_PA;
+	case RTE_KDRV_IGB_UIO:
+	case RTE_KDRV_UIO_GENERIC:
+		iova_mode = RTE_IOVA_PA;
+		break;
+
+	default:
+		if ((pdrv->drv_flags & RTE_PCI_DRV_NEED_IOVA_AS_VA) != 0)
+			iova_mode = RTE_IOVA_VA;
+		break;
+	}
+	return iova_mode;
 }
 
 /* Read PCI config space. */
@@ -763,6 +699,12 @@ pci_ioport_map(struct rte_pci_device *dev, int bar __rte_unused,
 	char pci_id[16];
 	int found = 0;
 	size_t linesz;
+
+	if (rte_eal_iopl_init() != 0) {
+		RTE_LOG(ERR, EAL, "%s(): insufficient ioport permissions for PCI device %s\n",
+			__func__, dev->name);
+		return -1;
+	}
 
 	snprintf(pci_id, sizeof(pci_id), PCI_PRI_FMT,
 		 dev->addr.domain, dev->addr.bus,

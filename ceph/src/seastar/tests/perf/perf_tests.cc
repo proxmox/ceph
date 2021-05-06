@@ -33,6 +33,9 @@
 #include <seastar/core/app-template.hh>
 #include <seastar/core/thread.hh>
 #include <seastar/json/formatter.hh>
+#include <seastar/util/later.hh>
+
+#include <signal.h>
 
 namespace perf_tests {
 namespace internal {

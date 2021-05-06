@@ -5,30 +5,32 @@ import { By } from '@angular/platform-browser';
 import { BrowserAnimationsModule } from '@angular/platform-browser/animations';
 import { RouterTestingModule } from '@angular/router/testing';
 
-import * as _ from 'lodash';
-import { BsModalService } from 'ngx-bootstrap/modal';
-import { TabsModule } from 'ngx-bootstrap/tabs';
+import { NgbDropdownModule } from '@ng-bootstrap/ng-bootstrap';
+import _ from 'lodash';
 import { ToastrModule } from 'ngx-toastr';
 import { EMPTY, of } from 'rxjs';
 
+import { CephModule } from '~/app/ceph/ceph.module';
+import { PerformanceCounterModule } from '~/app/ceph/performance-counter/performance-counter.module';
+import { CoreModule } from '~/app/core/core.module';
+import { OrchestratorService } from '~/app/shared/api/orchestrator.service';
+import { OsdService } from '~/app/shared/api/osd.service';
+import { ConfirmationModalComponent } from '~/app/shared/components/confirmation-modal/confirmation-modal.component';
+import { CriticalConfirmationModalComponent } from '~/app/shared/components/critical-confirmation-modal/critical-confirmation-modal.component';
+import { FormModalComponent } from '~/app/shared/components/form-modal/form-modal.component';
+import { TableActionsComponent } from '~/app/shared/datatable/table-actions/table-actions.component';
+import { CdTableAction } from '~/app/shared/models/cd-table-action';
+import { CdTableSelection } from '~/app/shared/models/cd-table-selection';
+import { OrchestratorFeature } from '~/app/shared/models/orchestrator.enum';
+import { Permissions } from '~/app/shared/models/permissions';
+import { AuthStorageService } from '~/app/shared/services/auth-storage.service';
+import { ModalService } from '~/app/shared/services/modal.service';
 import {
   configureTestBed,
-  i18nProviders,
-  PermissionHelper
-} from '../../../../../testing/unit-test-helper';
-import { CoreModule } from '../../../../core/core.module';
-import { OrchestratorService } from '../../../../shared/api/orchestrator.service';
-import { OsdService } from '../../../../shared/api/osd.service';
-import { ConfirmationModalComponent } from '../../../../shared/components/confirmation-modal/confirmation-modal.component';
-import { CriticalConfirmationModalComponent } from '../../../../shared/components/critical-confirmation-modal/critical-confirmation-modal.component';
-import { FormModalComponent } from '../../../../shared/components/form-modal/form-modal.component';
-import { TableActionsComponent } from '../../../../shared/datatable/table-actions/table-actions.component';
-import { CdTableAction } from '../../../../shared/models/cd-table-action';
-import { CdTableSelection } from '../../../../shared/models/cd-table-selection';
-import { Permissions } from '../../../../shared/models/permissions';
-import { AuthStorageService } from '../../../../shared/services/auth-storage.service';
-import { CephModule } from '../../../ceph.module';
-import { PerformanceCounterModule } from '../../../performance-counter/performance-counter.module';
+  OrchestratorHelper,
+  PermissionHelper,
+  TableActionHelper
+} from '~/testing/unit-test-helper';
 import { OsdReweightModalComponent } from '../osd-reweight-modal/osd-reweight-modal.component';
 import { OsdListComponent } from './osd-list.component';
 
@@ -37,6 +39,7 @@ describe('OsdListComponent', () => {
   let fixture: ComponentFixture<OsdListComponent>;
   let modalServiceShowSpy: jasmine.Spy;
   let osdService: OsdService;
+  let orchService: OrchestratorService;
 
   const fakeAuthStorageService = {
     getPermissions: () => {
@@ -73,19 +76,20 @@ describe('OsdListComponent', () => {
    * we will have to fake its request to be able to open those modals.
    */
   const mockSafeToDestroy = () => {
-    spyOn(TestBed.get(OsdService), 'safeToDestroy').and.callFake(() =>
+    spyOn(TestBed.inject(OsdService), 'safeToDestroy').and.callFake(() =>
       of({ is_safe_to_destroy: true })
     );
   };
 
   const mockSafeToDelete = () => {
-    spyOn(TestBed.get(OsdService), 'safeToDelete').and.callFake(() =>
+    spyOn(TestBed.inject(OsdService), 'safeToDelete').and.callFake(() =>
       of({ is_safe_to_delete: true })
     );
   };
 
-  const mockOrchestratorStatus = () => {
-    spyOn(TestBed.get(OrchestratorService), 'status').and.callFake(() => of({ available: true }));
+  const mockOrch = () => {
+    const features = [OrchestratorFeature.OSD_CREATE, OrchestratorFeature.OSD_DELETE];
+    OrchestratorHelper.mockStatus(true, features);
   };
 
   configureTestBed({
@@ -93,28 +97,30 @@ describe('OsdListComponent', () => {
       BrowserAnimationsModule,
       HttpClientTestingModule,
       PerformanceCounterModule,
-      TabsModule.forRoot(),
       ToastrModule.forRoot(),
       CephModule,
       ReactiveFormsModule,
+      NgbDropdownModule,
       RouterTestingModule,
       CoreModule,
       RouterTestingModule
     ],
-    declarations: [],
     providers: [
       { provide: AuthStorageService, useValue: fakeAuthStorageService },
       TableActionsComponent,
-      BsModalService,
-      i18nProviders
+      ModalService
     ]
   });
 
   beforeEach(() => {
     fixture = TestBed.createComponent(OsdListComponent);
     component = fixture.componentInstance;
-    osdService = TestBed.get(OsdService);
-    modalServiceShowSpy = spyOn(TestBed.get(BsModalService), 'show').and.stub();
+    osdService = TestBed.inject(OsdService);
+    modalServiceShowSpy = spyOn(TestBed.inject(ModalService), 'show').and.returnValue({
+      // mock the close function, it might be called if there are async tests.
+      close: jest.fn()
+    });
+    orchService = TestBed.inject(OrchestratorService);
   });
 
   it('should create', () => {
@@ -249,6 +255,15 @@ describe('OsdListComponent', () => {
       flagsSpy.and.callFake(() => of([]));
       component.getOsdList();
       expect(component.osds[0].cdClusterFlags).toStrictEqual([]);
+    });
+
+    it('should have custom attribute "cdExecuting"', () => {
+      osds[1].operational_status = 'unmanaged';
+      osds[2].operational_status = 'deleting';
+      component.getOsdList();
+      expect(component.osds[0].cdExecuting).toBeUndefined();
+      expect(component.osds[1].cdExecuting).toBeUndefined();
+      expect(component.osds[2].cdExecuting).toBe('deleting');
     });
   });
 
@@ -408,9 +423,9 @@ describe('OsdListComponent', () => {
 
     it('has all menu entries disabled except create', () => {
       const tableActionElement = fixture.debugElement.query(By.directive(TableActionsComponent));
-      const toClassName = TestBed.get(TableActionsComponent).toClassName;
+      const toClassName = TestBed.inject(TableActionsComponent).toClassName;
       const getActionClasses = (action: CdTableAction) =>
-        tableActionElement.query(By.css(`.${toClassName(action.name)} .dropdown-item`)).classes;
+        tableActionElement.query(By.css(`[ngbDropdownItem].${toClassName(action)}`)).classes;
 
       component.tableActions.forEach((action) => {
         if (action.name === 'Create') {
@@ -458,7 +473,7 @@ describe('OsdListComponent', () => {
       expectOpensModal('Mark Lost', modalClass);
       expectOpensModal('Purge', modalClass);
       expectOpensModal('Destroy', modalClass);
-      mockOrchestratorStatus();
+      mockOrch();
       mockSafeToDelete();
       expectOpensModal('Delete', modalClass);
     });
@@ -478,7 +493,7 @@ describe('OsdListComponent', () => {
     ): void => {
       const osdServiceSpy = spyOn(osdService, osdServiceMethodName).and.callFake(() => EMPTY);
       openActionModal(actionName);
-      const initialState = modalServiceShowSpy.calls.first().args[1].initialState;
+      const initialState = modalServiceShowSpy.calls.first().args[1];
       const submit = initialState.onSubmit || initialState.submitAction;
       submit.call(component);
 
@@ -501,9 +516,126 @@ describe('OsdListComponent', () => {
       expectOsdServiceMethodCalled('Mark Lost', 'markLost');
       expectOsdServiceMethodCalled('Purge', 'purge');
       expectOsdServiceMethodCalled('Destroy', 'destroy');
-      mockOrchestratorStatus();
+      mockOrch();
       mockSafeToDelete();
       expectOsdServiceMethodCalled('Delete', 'delete');
+    });
+  });
+
+  describe('table actions', () => {
+    const fakeOsds = require('./fixtures/osd_list_response.json');
+
+    beforeEach(() => {
+      component.permissions = fakeAuthStorageService.getPermissions();
+      spyOn(osdService, 'getList').and.callFake(() => of(fakeOsds));
+      spyOn(osdService, 'getFlags').and.callFake(() => of([]));
+    });
+
+    const testTableActions = async (
+      orch: boolean,
+      features: OrchestratorFeature[],
+      tests: { selectRow?: number; expectResults: any }[]
+    ) => {
+      OrchestratorHelper.mockStatus(orch, features);
+      fixture.detectChanges();
+      await fixture.whenStable();
+
+      for (const test of tests) {
+        if (test.selectRow) {
+          component.selection = new CdTableSelection();
+          component.selection.selected = [test.selectRow];
+        }
+        await TableActionHelper.verifyTableActions(
+          fixture,
+          component.tableActions,
+          test.expectResults
+        );
+      }
+    };
+
+    it('should have correct states when Orchestrator is enabled', async () => {
+      const tests = [
+        {
+          expectResults: {
+            Create: { disabled: false, disableDesc: '' },
+            Delete: { disabled: true, disableDesc: '' }
+          }
+        },
+        {
+          selectRow: fakeOsds[0],
+          expectResults: {
+            Create: { disabled: false, disableDesc: '' },
+            Delete: { disabled: false, disableDesc: '' }
+          }
+        },
+        {
+          selectRow: fakeOsds[1], // Select a row that is not managed.
+          expectResults: {
+            Create: { disabled: false, disableDesc: '' },
+            Delete: { disabled: true, disableDesc: '' }
+          }
+        },
+        {
+          selectRow: fakeOsds[2], // Select a row that is being deleted.
+          expectResults: {
+            Create: { disabled: false, disableDesc: '' },
+            Delete: { disabled: true, disableDesc: '' }
+          }
+        }
+      ];
+
+      const features = [
+        OrchestratorFeature.OSD_CREATE,
+        OrchestratorFeature.OSD_DELETE,
+        OrchestratorFeature.OSD_GET_REMOVE_STATUS
+      ];
+      await testTableActions(true, features, tests);
+    });
+
+    it('should have correct states when Orchestrator is disabled', async () => {
+      const resultNoOrchestrator = {
+        disabled: true,
+        disableDesc: orchService.disableMessages.noOrchestrator
+      };
+      const tests = [
+        {
+          expectResults: {
+            Create: resultNoOrchestrator,
+            Delete: { disabled: true, disableDesc: '' }
+          }
+        },
+        {
+          selectRow: fakeOsds[0],
+          expectResults: {
+            Create: resultNoOrchestrator,
+            Delete: resultNoOrchestrator
+          }
+        }
+      ];
+      await testTableActions(false, [], tests);
+    });
+
+    it('should have correct states when Orchestrator features are missing', async () => {
+      const resultMissingFeatures = {
+        disabled: true,
+        disableDesc: orchService.disableMessages.missingFeature
+      };
+      const tests = [
+        {
+          expectResults: {
+            Create: resultMissingFeatures,
+            Delete: { disabled: true, disableDesc: '' }
+          }
+        },
+        {
+          selectRow: fakeOsds[0],
+          expectResults: {
+            Create: resultMissingFeatures,
+            Delete: resultMissingFeatures
+          }
+        }
+      ];
+      await testTableActions(true, [], tests);
     });
   });
 });

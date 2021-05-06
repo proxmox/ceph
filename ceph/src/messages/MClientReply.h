@@ -18,11 +18,13 @@
 
 #include "include/types.h"
 #include "include/fs_types.h"
+#include "include/mempool.h"
 #include "MClientRequest.h"
 
 #include "msg/Message.h"
 #include "include/ceph_features.h"
 #include "common/errno.h"
+#include "common/strescape.h"
 
 /***
  *
@@ -47,20 +49,23 @@
 
 struct LeaseStat {
   // this matches ceph_mds_reply_lease
-  __u16 mask;
-  __u32 duration_ms;  
-  __u32 seq;
+  __u16 mask = 0;
+  __u32 duration_ms = 0;
+  __u32 seq = 0;
+  std::string alternate_name;
 
-  LeaseStat() : mask(0), duration_ms(0), seq(0) {}
+  LeaseStat() = default;
   LeaseStat(__u16 msk, __u32 dur, __u32 sq) : mask{msk}, duration_ms{dur}, seq{sq} {}
 
-  void decode(bufferlist::const_iterator &bl, const uint64_t features) {
+  void decode(ceph::buffer::list::const_iterator &bl, const uint64_t features) {
     using ceph::decode;
     if (features == (uint64_t)-1) {
-      DECODE_START(1, bl);
+      DECODE_START(2, bl);
       decode(mask, bl);
       decode(duration_ms, bl);
       decode(seq, bl);
+      if (struct_v >= 2)
+        decode(alternate_name, bl);
       DECODE_FINISH(bl);
     }
     else {
@@ -71,22 +76,26 @@ struct LeaseStat {
   }
 };
 
-inline ostream& operator<<(ostream& out, const LeaseStat& l) {
-  return out << "lease(mask " << l.mask << " dur " << l.duration_ms << ")";
+inline std::ostream& operator<<(std::ostream& out, const LeaseStat& l) {
+  out << "lease(mask " << l.mask << " dur " << l.duration_ms;
+  if (l.alternate_name.size()) {
+    out << " altn " << binstrprint(l.alternate_name, 128) << ")";
+  }
+  return out << ")";
 }
 
 struct DirStat {
   // mds distribution hints
   frag_t frag;
   __s32 auth;
-  set<__s32> dist;
+  std::set<__s32> dist;
   
   DirStat() : auth(CDIR_AUTH_PARENT) {}
-  DirStat(bufferlist::const_iterator& p, const uint64_t features) {
+  DirStat(ceph::buffer::list::const_iterator& p, const uint64_t features) {
     decode(p, features);
   }
 
-  void decode(bufferlist::const_iterator& p, const uint64_t features) {
+  void decode(ceph::buffer::list::const_iterator& p, const uint64_t features) {
     using ceph::decode;
     if (features == (uint64_t)-1) {
       DECODE_START(1, p);
@@ -123,29 +132,32 @@ struct InodeStat {
   nest_info_t rstat;
 
   fragtree_t dirfragtree;
-  string  symlink;   // symlink content (if symlink)
+  std::string  symlink;   // symlink content (if symlink)
 
   ceph_dir_layout dir_layout;
 
-  bufferlist xattrbl;
+  ceph::buffer::list xattrbl;
 
-  bufferlist inline_data;
+  ceph::buffer::list inline_data;
   version_t inline_version;
 
   quota_info_t quota;
 
   mds_rank_t dir_pin;
+  std::map<std::string,std::string> snap_metadata;
+
+  bool fscrypt = false; // fscrypt enabled ?
 
  public:
   InodeStat() {}
-  InodeStat(bufferlist::const_iterator& p, const uint64_t features) {
+  InodeStat(ceph::buffer::list::const_iterator& p, const uint64_t features) {
     decode(p, features);
   }
 
-  void decode(bufferlist::const_iterator &p, const uint64_t features) {
+  void decode(ceph::buffer::list::const_iterator &p, const uint64_t features) {
     using ceph::decode;
     if (features == (uint64_t)-1) {
-      DECODE_START(2, p);
+      DECODE_START(6, p);
       decode(vino.ino, p);
       decode(vino.snapid, p);
       decode(rdev, p);
@@ -193,6 +205,15 @@ struct InodeStat {
       if (struct_v >= 3) {
         decode(snap_btime, p);
       } // else remains zero
+      if (struct_v >= 4) {
+        decode(rstat.rsnaps, p);
+      } // else remains zero
+      if (struct_v >= 5) {
+        decode(snap_metadata, p);
+      }
+      if (struct_v >= 6) {
+        decode(fscrypt, p);
+      }
       DECODE_FINISH(p);
     }
     else {
@@ -274,7 +295,7 @@ public:
     encode(delegated_inos, bl);
     ENCODE_FINISH(bl);
   }
-  void decode(bufferlist::const_iterator &p) {
+  void decode(ceph::buffer::list::const_iterator &p) {
     using ceph::decode;
     DECODE_START(1, p);
     decode(created_ino, p);
@@ -284,13 +305,13 @@ public:
 } __attribute__ ((__may_alias__));
 WRITE_CLASS_ENCODER(openc_response_t)
 
-class MClientReply : public SafeMessage {
+class MClientReply final : public SafeMessage {
 public:
   // reply data
   struct ceph_mds_reply_head head {};
-  bufferlist trace_bl;
-  bufferlist extra_bl;
-  bufferlist snapbl;
+  ceph::buffer::list trace_bl;
+  ceph::buffer::list extra_bl;
+  ceph::buffer::list snapbl;
 
   int get_op() const { return head.op; }
 
@@ -317,11 +338,11 @@ protected:
     head.result = result;
     head.safe = 1;
   }
-  ~MClientReply() override {}
+  ~MClientReply() final {}
 
 public:
   std::string_view get_type_name() const override { return "creply"; }
-  void print(ostream& o) const override {
+  void print(std::ostream& o) const override {
     o << "client_reply(???:" << get_tid();
     o << " = " << get_result();
     if (get_result() <= 0) {
@@ -338,6 +359,7 @@ public:
 
   // serialization
   void decode_payload() override {
+    using ceph::decode;
     auto p = payload.cbegin();
     decode(head, p);
     decode(trace_bl, p);
@@ -355,24 +377,24 @@ public:
 
 
   // dir contents
-  void set_extra_bl(bufferlist& bl) {
-    extra_bl.claim(bl);
+  void set_extra_bl(ceph::buffer::list& bl) {
+    extra_bl = std::move(bl);
   }
-  bufferlist& get_extra_bl() {
+  ceph::buffer::list& get_extra_bl() {
     return extra_bl;
   }
-  const bufferlist& get_extra_bl() const {
+  const ceph::buffer::list& get_extra_bl() const {
     return extra_bl;
   }
 
   // trace
-  void set_trace(bufferlist& bl) {
-    trace_bl.claim(bl);
+  void set_trace(ceph::buffer::list& bl) {
+    trace_bl = std::move(bl);
   }
-  bufferlist& get_trace_bl() {
+  ceph::buffer::list& get_trace_bl() {
     return trace_bl;
   }
-  const bufferlist& get_trace_bl() const {
+  const ceph::buffer::list& get_trace_bl() const {
     return trace_bl;
   }
 private:

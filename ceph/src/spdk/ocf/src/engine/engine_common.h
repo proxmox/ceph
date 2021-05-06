@@ -7,6 +7,7 @@
 #define ENGINE_COMMON_H_
 
 #include "../ocf_request.h"
+#include "../utils/utils_cache_line.h"
 
 /**
  * @file engine_common.h
@@ -109,6 +110,37 @@ static inline uint32_t ocf_engine_io_count(struct ocf_request *req)
 	return req->info.seq_req ? 1 : req->core_line_count;
 }
 
+static inline
+bool ocf_engine_map_all_sec_dirty(struct ocf_request *req, uint32_t line)
+{
+	uint8_t start = ocf_map_line_start_sector(req, line);
+	uint8_t end = ocf_map_line_end_sector(req, line);
+
+	if (req->map[line].status != LOOKUP_HIT)
+		return false;
+
+	return metadata_test_dirty_all_sec(req->cache, req->map[line].coll_idx,
+		start, end);
+}
+
+static inline
+bool ocf_engine_map_all_sec_clean(struct ocf_request *req, uint32_t line)
+{
+	uint8_t start = ocf_map_line_start_sector(req, line);
+	uint8_t end = ocf_map_line_end_sector(req, line);
+
+	if (req->map[line].status != LOOKUP_HIT)
+		return false;
+
+	if (!metadata_test_valid_sec(req->cache, req->map[line].coll_idx,
+			start, end)) {
+		return false;
+	}
+
+	return !metadata_test_dirty_sec(req->cache, req->map[line].coll_idx,
+			start, end);
+}
+
 /**
  * @brief Clean request (flush dirty data to the core device)
  *
@@ -130,19 +162,48 @@ void ocf_engine_lookup_map_entry(struct ocf_cache *cache,
 		uint64_t core_line);
 
 /**
- * @brief Traverse request in order to lookup cache lines If there are misses
- * need to call eviction. This process is called 'mapping'.
+ * @brief Request cacheline lock type
+ */
+enum ocf_engine_lock_type
+{
+	/** No lock */
+	ocf_engine_lock_none = 0,
+	/** Write lock */
+	ocf_engine_lock_write,
+	/** Read lock */
+	ocf_engine_lock_read,
+};
+
+/**
+ * @brief Engine-specific callbacks for common request handling rountine
  *
- * @note This function CALL EVICTION
+ * TODO(arutk): expand this structure to fit all engines and all steps
+ */
+struct ocf_engine_callbacks
+{
+	/** Specify locking requirements after request is mapped */
+	enum ocf_engine_lock_type (*get_lock_type)(struct ocf_request *req);
+
+	/** Resume handling after acquiring asynchronous lock */
+	ocf_req_async_lock_cb resume;
+};
+
+/**
+ * @brief Map and lock cachelines
  *
  * @param req OCF request
+ *
+ * @returns eviction status
+ * @retval LOOKUP_MAPPED successfully evicted required number of cachelines
+ * @retval LOOKUP_MISS eviction failure
  */
-void ocf_engine_map(struct ocf_request *req);
+int ocf_engine_prepare_clines(struct ocf_request *req,
+		const struct ocf_engine_callbacks *engine_cbs);
 
 /**
  * @brief Traverse OCF request (lookup cache)
  *
- * @note This function DO NOT CALL EVICTION. Only lookup in metadata is
+ * @note This function does not evict cachelines. Only lookup in metadata is
  * performed. Main purpose of this function is to check if there is a HIT.
  *
  * @param req OCF request

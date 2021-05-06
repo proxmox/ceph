@@ -11,13 +11,6 @@
 #include <sys/ioctl.h>
 #endif
 
-#ifdef ROCKSDB_MALLOC_USABLE_SIZE
-#ifdef OS_FREEBSD
-#include <malloc_np.h>
-#else
-#include <malloc.h>
-#endif
-#endif
 #include <sys/types.h>
 
 #include <iostream>
@@ -38,23 +31,20 @@
 #endif
 
 #include "env/env_chroot.h"
+#include "logging/log_buffer.h"
+#include "port/malloc.h"
 #include "port/port.h"
 #include "rocksdb/env.h"
+#include "test_util/sync_point.h"
+#include "test_util/testharness.h"
+#include "test_util/testutil.h"
 #include "util/coding.h"
-#include "util/log_buffer.h"
 #include "util/mutexlock.h"
 #include "util/string_util.h"
-#include "util/sync_point.h"
-#include "util/testharness.h"
-#include "util/testutil.h"
 
-#ifdef OS_LINUX
-static const size_t kPageSize = sysconf(_SC_PAGESIZE);
-#else
-static const size_t kPageSize = 4 * 1024;
-#endif
+namespace ROCKSDB_NAMESPACE {
 
-namespace rocksdb {
+using port::kPageSize;
 
 static const int kDelayMicros = 100000;
 
@@ -246,6 +236,52 @@ TEST_F(EnvPosixTest, MemoryMappedFileBuffer) {
                           mmap_buffer->GetLen());
   ASSERT_EQ(expected_data, actual_data);
 }
+
+#ifndef ROCKSDB_NO_DYNAMIC_EXTENSION
+TEST_F(EnvPosixTest, LoadRocksDBLibrary) {
+  std::shared_ptr<DynamicLibrary> library;
+  std::function<void*(void*, const char*)> function;
+  Status status = env_->LoadLibrary("no-such-library", "", &library);
+  ASSERT_NOK(status);
+  ASSERT_EQ(nullptr, library.get());
+  status = env_->LoadLibrary("rocksdb", "", &library);
+  if (status.ok()) {  // If we have can find a rocksdb shared library
+    ASSERT_NE(nullptr, library.get());
+    ASSERT_OK(library->LoadFunction("rocksdb_create_default_env",
+                                    &function));  // from C definition
+    ASSERT_NE(nullptr, function);
+    ASSERT_NOK(library->LoadFunction("no-such-method", &function));
+    ASSERT_EQ(nullptr, function);
+    ASSERT_OK(env_->LoadLibrary(library->Name(), "", &library));
+  } else {
+    ASSERT_EQ(nullptr, library.get());
+  }
+}
+#endif  // !ROCKSDB_NO_DYNAMIC_EXTENSION
+
+#if !defined(OS_WIN) && !defined(ROCKSDB_NO_DYNAMIC_EXTENSION)
+TEST_F(EnvPosixTest, LoadRocksDBLibraryWithSearchPath) {
+  std::shared_ptr<DynamicLibrary> library;
+  std::function<void*(void*, const char*)> function;
+  ASSERT_NOK(env_->LoadLibrary("no-such-library", "/tmp", &library));
+  ASSERT_EQ(nullptr, library.get());
+  ASSERT_NOK(env_->LoadLibrary("dl", "/tmp", &library));
+  ASSERT_EQ(nullptr, library.get());
+  Status status = env_->LoadLibrary("rocksdb", "/tmp:./", &library);
+  if (status.ok()) {
+    ASSERT_NE(nullptr, library.get());
+    ASSERT_OK(env_->LoadLibrary(library->Name(), "", &library));
+  }
+  char buff[1024];
+  std::string cwd = getcwd(buff, sizeof(buff));
+
+  status = env_->LoadLibrary("rocksdb", "/tmp:" + cwd, &library);
+  if (status.ok()) {
+    ASSERT_NE(nullptr, library.get());
+    ASSERT_OK(env_->LoadLibrary(library->Name(), "", &library));
+  }
+}
+#endif  // !OS_WIN && !ROCKSDB_NO_DYNAMIC_EXTENSION
 
 TEST_P(EnvPosixTestWithParam, UnSchedule) {
   std::atomic<bool> called(false);
@@ -527,18 +563,19 @@ TEST_P(EnvPosixTestWithParam, TwoPools) {
 }
 
 TEST_P(EnvPosixTestWithParam, DecreaseNumBgThreads) {
+  constexpr int kWaitMicros = 60000000; // 1min
+
   std::vector<test::SleepingBackgroundTask> tasks(10);
 
   // Set number of thread to 1 first.
   env_->SetBackgroundThreads(1, Env::Priority::HIGH);
-  Env::Default()->SleepForMicroseconds(kDelayMicros);
 
   // Schedule 3 tasks. 0 running; Task 1, 2 waiting.
   for (size_t i = 0; i < 3; i++) {
     env_->Schedule(&test::SleepingBackgroundTask::DoSleepTask, &tasks[i],
                    Env::Priority::HIGH);
-    Env::Default()->SleepForMicroseconds(kDelayMicros);
   }
+  ASSERT_FALSE(tasks[0].TimedWaitUntilSleeping(kWaitMicros));
   ASSERT_EQ(2U, env_->GetThreadPoolQueueLen(Env::Priority::HIGH));
   ASSERT_TRUE(tasks[0].IsSleeping());
   ASSERT_TRUE(!tasks[1].IsSleeping());
@@ -546,7 +583,7 @@ TEST_P(EnvPosixTestWithParam, DecreaseNumBgThreads) {
 
   // Increase to 2 threads. Task 0, 1 running; 2 waiting
   env_->SetBackgroundThreads(2, Env::Priority::HIGH);
-  Env::Default()->SleepForMicroseconds(kDelayMicros);
+  ASSERT_FALSE(tasks[1].TimedWaitUntilSleeping(kWaitMicros));
   ASSERT_EQ(1U, env_->GetThreadPoolQueueLen(Env::Priority::HIGH));
   ASSERT_TRUE(tasks[0].IsSleeping());
   ASSERT_TRUE(tasks[1].IsSleeping());
@@ -562,7 +599,7 @@ TEST_P(EnvPosixTestWithParam, DecreaseNumBgThreads) {
 
   // The last task finishes. Task 0 running, 2 waiting.
   tasks[1].WakeUp();
-  Env::Default()->SleepForMicroseconds(kDelayMicros);
+  ASSERT_FALSE(tasks[1].TimedWaitUntilDone(kWaitMicros));
   ASSERT_EQ(1U, env_->GetThreadPoolQueueLen(Env::Priority::HIGH));
   ASSERT_TRUE(tasks[0].IsSleeping());
   ASSERT_TRUE(!tasks[1].IsSleeping());
@@ -570,16 +607,17 @@ TEST_P(EnvPosixTestWithParam, DecreaseNumBgThreads) {
 
   // Increase to 5 threads. Task 0 and 2 running.
   env_->SetBackgroundThreads(5, Env::Priority::HIGH);
-  Env::Default()->SleepForMicroseconds(kDelayMicros);
-  ASSERT_EQ((unsigned int)0, env_->GetThreadPoolQueueLen(Env::Priority::HIGH));
+  ASSERT_FALSE(tasks[2].TimedWaitUntilSleeping(kWaitMicros));
+  ASSERT_EQ(0U, env_->GetThreadPoolQueueLen(Env::Priority::HIGH));
   ASSERT_TRUE(tasks[0].IsSleeping());
+  ASSERT_TRUE(!tasks[1].IsSleeping());
   ASSERT_TRUE(tasks[2].IsSleeping());
 
   // Change number of threads a couple of times while there is no sufficient
   // tasks.
   env_->SetBackgroundThreads(7, Env::Priority::HIGH);
-  Env::Default()->SleepForMicroseconds(kDelayMicros);
   tasks[2].WakeUp();
+  ASSERT_FALSE(tasks[2].TimedWaitUntilDone(kWaitMicros));
   ASSERT_EQ(0U, env_->GetThreadPoolQueueLen(Env::Priority::HIGH));
   env_->SetBackgroundThreads(3, Env::Priority::HIGH);
   Env::Default()->SleepForMicroseconds(kDelayMicros);
@@ -602,8 +640,13 @@ TEST_P(EnvPosixTestWithParam, DecreaseNumBgThreads) {
     env_->Schedule(&test::SleepingBackgroundTask::DoSleepTask, &tasks[i],
                    Env::Priority::HIGH);
   }
-  Env::Default()->SleepForMicroseconds(kDelayMicros);
+  for (size_t i = 3; i <= 5; i++) {
+    ASSERT_FALSE(tasks[i].TimedWaitUntilSleeping(kWaitMicros));
+  }
   ASSERT_EQ(2U, env_->GetThreadPoolQueueLen(Env::Priority::HIGH));
+  ASSERT_TRUE(tasks[0].IsSleeping());
+  ASSERT_TRUE(!tasks[1].IsSleeping());
+  ASSERT_TRUE(!tasks[2].IsSleeping());
   ASSERT_TRUE(tasks[3].IsSleeping());
   ASSERT_TRUE(tasks[4].IsSleeping());
   ASSERT_TRUE(tasks[5].IsSleeping());
@@ -615,8 +658,10 @@ TEST_P(EnvPosixTestWithParam, DecreaseNumBgThreads) {
   tasks[3].WakeUp();
   tasks[4].WakeUp();
 
-  Env::Default()->SleepForMicroseconds(kDelayMicros);
-  ASSERT_EQ((unsigned int)0, env_->GetThreadPoolQueueLen(Env::Priority::HIGH));
+  for (size_t i = 5; i < 8; i++) {
+    ASSERT_FALSE(tasks[i].TimedWaitUntilSleeping(kWaitMicros));
+  }
+  ASSERT_EQ(0U, env_->GetThreadPoolQueueLen(Env::Priority::HIGH));
   for (size_t i = 5; i < 8; i++) {
     ASSERT_TRUE(tasks[i].IsSleeping());
   }
@@ -630,14 +675,14 @@ TEST_P(EnvPosixTestWithParam, DecreaseNumBgThreads) {
 
   // Wake up task  6. Task 5, 7 running
   tasks[6].WakeUp();
-  Env::Default()->SleepForMicroseconds(kDelayMicros);
+  ASSERT_FALSE(tasks[6].TimedWaitUntilDone(kWaitMicros));
   ASSERT_TRUE(tasks[5].IsSleeping());
   ASSERT_TRUE(!tasks[6].IsSleeping());
   ASSERT_TRUE(tasks[7].IsSleeping());
 
   // Wake up threads 7. Task 5 running
   tasks[7].WakeUp();
-  Env::Default()->SleepForMicroseconds(kDelayMicros);
+  ASSERT_FALSE(tasks[7].TimedWaitUntilDone(kWaitMicros));
   ASSERT_TRUE(!tasks[7].IsSleeping());
 
   // Enqueue thread 8 and 9. Task 5 running; one of 8, 9 might be running.
@@ -661,20 +706,18 @@ TEST_P(EnvPosixTestWithParam, DecreaseNumBgThreads) {
 
   // Wake up thread 9.
   tasks[9].WakeUp();
-  Env::Default()->SleepForMicroseconds(kDelayMicros);
+  ASSERT_FALSE(tasks[9].TimedWaitUntilDone(kWaitMicros));
   ASSERT_TRUE(!tasks[9].IsSleeping());
   ASSERT_TRUE(tasks[8].IsSleeping());
 
   // Wake up thread 8
   tasks[8].WakeUp();
-  Env::Default()->SleepForMicroseconds(kDelayMicros);
+  ASSERT_FALSE(tasks[8].TimedWaitUntilDone(kWaitMicros));
   ASSERT_TRUE(!tasks[8].IsSleeping());
 
   // Wake up the last thread
   tasks[5].WakeUp();
-
-  Env::Default()->SleepForMicroseconds(kDelayMicros);
-  ASSERT_TRUE(!tasks[5].IsSleeping());
+  ASSERT_FALSE(tasks[5].TimedWaitUntilDone(kWaitMicros));
   WaitThreadPoolsEmpty();
 }
 
@@ -834,16 +877,19 @@ TEST_F(EnvPosixTest, PositionedAppend) {
   // Verify the above
   std::unique_ptr<SequentialFile> seq_file;
   ASSERT_OK(env_->NewSequentialFile(ift.name() + "/f", &seq_file, options));
-  char scratch[kPageSize * 2];
+  size_t scratch_len = kPageSize * 2;
+  std::unique_ptr<char[]> scratch(new char[scratch_len]);
   Slice result;
-  ASSERT_OK(seq_file->Read(sizeof(scratch), &result, scratch));
+  ASSERT_OK(seq_file->Read(scratch_len, &result, scratch.get()));
   ASSERT_EQ(kPageSize + kBlockSize, result.size());
   ASSERT_EQ('a', result[kBlockSize - 1]);
   ASSERT_EQ('b', result[kBlockSize]);
 }
 #endif  // !ROCKSDB_LITE
 
-// Only works in linux platforms
+// `GetUniqueId()` temporarily returns zero on Windows. `BlockBasedTable` can
+// handle a return value of zero but this test case cannot.
+#ifndef OS_WIN
 TEST_P(EnvPosixTestWithParam, RandomAccessUniqueID) {
   // Create file.
   if (env_ == Env::Default()) {
@@ -886,6 +932,7 @@ TEST_P(EnvPosixTestWithParam, RandomAccessUniqueID) {
     env_->DeleteFile(fname);
   }
 }
+#endif  // !defined(OS_WIN)
 
 // only works in linux platforms
 #ifdef ROCKSDB_FALLOCATE_PRESENT
@@ -927,7 +974,6 @@ TEST_P(EnvPosixTestWithParam, AllocateTest) {
     // allocate 100 MB
     size_t kPreallocateSize = 100 * 1024 * 1024;
     size_t kBlockSize = 512;
-    size_t kPageSize = 4096;
     size_t kDataSize = 1024 * 1024;
     auto data_ptr = NewAligned(kDataSize, 'A');
     Slice data(data_ptr.get(), kDataSize);
@@ -976,7 +1022,9 @@ bool HasPrefix(const std::unordered_set<std::string>& ss) {
   return false;
 }
 
-// Only works in linux and WIN platforms
+// `GetUniqueId()` temporarily returns zero on Windows. `BlockBasedTable` can
+// handle a return value of zero but this test case cannot.
+#ifndef OS_WIN
 TEST_P(EnvPosixTestWithParam, RandomAccessUniqueIDConcurrent) {
   if (env_ == Env::Default()) {
     // Check whether a bunch of concurrently existing files have unique IDs.
@@ -1018,7 +1066,6 @@ TEST_P(EnvPosixTestWithParam, RandomAccessUniqueIDConcurrent) {
   }
 }
 
-// Only works in linux and WIN platforms
 TEST_P(EnvPosixTestWithParam, RandomAccessUniqueIDDeletes) {
   if (env_ == Env::Default()) {
     EnvOptions soptions;
@@ -1058,6 +1105,80 @@ TEST_P(EnvPosixTestWithParam, RandomAccessUniqueIDDeletes) {
     ASSERT_TRUE(!HasPrefix(ids));
   }
 }
+#endif  // !defined(OS_WIN)
+
+TEST_P(EnvPosixTestWithParam, MultiRead) {
+  EnvOptions soptions;
+  soptions.use_direct_reads = soptions.use_direct_writes = direct_io_;
+  std::string fname = test::PerThreadDBPath(env_, "testfile");
+
+  const size_t kSectorSize = 4096;
+  const size_t kNumSectors = 8;
+
+  // Create file.
+  {
+    std::unique_ptr<WritableFile> wfile;
+#if !defined(OS_MACOSX) && !defined(OS_WIN) && !defined(OS_SOLARIS) && \
+    !defined(OS_AIX)
+    if (soptions.use_direct_writes) {
+      soptions.use_direct_writes = false;
+    }
+#endif
+    ASSERT_OK(env_->NewWritableFile(fname, &wfile, soptions));
+    for (size_t i = 0; i < kNumSectors; ++i) {
+      auto data = NewAligned(kSectorSize * 8, static_cast<char>(i + 1));
+      Slice slice(data.get(), kSectorSize);
+      ASSERT_OK(wfile->Append(slice));
+    }
+    ASSERT_OK(wfile->Close());
+  }
+
+  // More attempts to simulate more partial result sequences.
+  for (uint32_t attempt = 0; attempt < 20; attempt++) {
+    // Random Read
+    Random rnd(301 + attempt);
+    ROCKSDB_NAMESPACE::SyncPoint::GetInstance()->SetCallBack(
+        "PosixRandomAccessFile::MultiRead:io_uring_result", [&](void* arg) {
+          if (attempt > 0) {
+            // No failure in the first attempt.
+            size_t& bytes_read = *static_cast<size_t*>(arg);
+            if (rnd.OneIn(4)) {
+              bytes_read = 0;
+            } else if (rnd.OneIn(3)) {
+              bytes_read = static_cast<size_t>(
+                  rnd.Uniform(static_cast<int>(bytes_read)));
+            }
+          }
+        });
+    ROCKSDB_NAMESPACE::SyncPoint::GetInstance()->EnableProcessing();
+
+    std::unique_ptr<RandomAccessFile> file;
+    std::vector<ReadRequest> reqs(3);
+    std::vector<std::unique_ptr<char, Deleter>> data;
+    uint64_t offset = 0;
+    for (size_t i = 0; i < reqs.size(); ++i) {
+      reqs[i].offset = offset;
+      offset += 2 * kSectorSize;
+      reqs[i].len = kSectorSize;
+      data.emplace_back(NewAligned(kSectorSize, 0));
+      reqs[i].scratch = data.back().get();
+    }
+#if !defined(OS_MACOSX) && !defined(OS_WIN) && !defined(OS_SOLARIS) && \
+    !defined(OS_AIX)
+    if (soptions.use_direct_reads) {
+      soptions.use_direct_reads = false;
+    }
+#endif
+    ASSERT_OK(env_->NewRandomAccessFile(fname, &file, soptions));
+    ASSERT_OK(file->MultiRead(reqs.data(), reqs.size()));
+    for (size_t i = 0; i < reqs.size(); ++i) {
+      auto buf = NewAligned(kSectorSize * 8, static_cast<char>(i * 2 + 1));
+      ASSERT_OK(reqs[i].status);
+      ASSERT_EQ(memcmp(reqs[i].scratch, buf.get(), kSectorSize), 0);
+    }
+    ROCKSDB_NAMESPACE::SyncPoint::GetInstance()->DisableProcessing();
+  }
+}
 
 // Only works in linux platforms
 #ifdef OS_WIN
@@ -1065,18 +1186,18 @@ TEST_P(EnvPosixTestWithParam, DISABLED_InvalidateCache) {
 #else
 TEST_P(EnvPosixTestWithParam, InvalidateCache) {
 #endif
-  rocksdb::SyncPoint::GetInstance()->EnableProcessing();
-    EnvOptions soptions;
-    soptions.use_direct_reads = soptions.use_direct_writes = direct_io_;
-    std::string fname = test::PerThreadDBPath(env_, "testfile");
+  ROCKSDB_NAMESPACE::SyncPoint::GetInstance()->EnableProcessing();
+  EnvOptions soptions;
+  soptions.use_direct_reads = soptions.use_direct_writes = direct_io_;
+  std::string fname = test::PerThreadDBPath(env_, "testfile");
 
-    const size_t kSectorSize = 512;
-    auto data = NewAligned(kSectorSize, 0);
-    Slice slice(data.get(), kSectorSize);
+  const size_t kSectorSize = 512;
+  auto data = NewAligned(kSectorSize, 0);
+  Slice slice(data.get(), kSectorSize);
 
-    // Create file.
-    {
-      std::unique_ptr<WritableFile> wfile;
+  // Create file.
+  {
+    std::unique_ptr<WritableFile> wfile;
 #if !defined(OS_MACOSX) && !defined(OS_WIN) && !defined(OS_SOLARIS) && !defined(OS_AIX)
       if (soptions.use_direct_writes) {
         soptions.use_direct_writes = false;
@@ -1086,7 +1207,7 @@ TEST_P(EnvPosixTestWithParam, InvalidateCache) {
       ASSERT_OK(wfile->Append(slice));
       ASSERT_OK(wfile->InvalidateCache(0, 0));
       ASSERT_OK(wfile->Close());
-    }
+  }
 
     // Random Read
     {
@@ -1127,7 +1248,7 @@ TEST_P(EnvPosixTestWithParam, InvalidateCache) {
     }
     // Delete the file
     ASSERT_OK(env_->DeleteFile(fname));
-  rocksdb::SyncPoint::GetInstance()->ClearTrace();
+    ROCKSDB_NAMESPACE::SyncPoint::GetInstance()->ClearTrace();
 }
 #endif  // not TRAVIS
 #endif  // OS_LINUX || OS_WIN
@@ -1250,14 +1371,14 @@ TEST_P(EnvPosixTestWithParam, LogBufferMaxSizeTest) {
 }
 
 TEST_P(EnvPosixTestWithParam, Preallocation) {
-  rocksdb::SyncPoint::GetInstance()->EnableProcessing();
+  ROCKSDB_NAMESPACE::SyncPoint::GetInstance()->EnableProcessing();
   const std::string src = test::PerThreadDBPath(env_, "testfile");
   std::unique_ptr<WritableFile> srcfile;
   EnvOptions soptions;
   soptions.use_direct_reads = soptions.use_direct_writes = direct_io_;
 #if !defined(OS_MACOSX) && !defined(OS_WIN) && !defined(OS_SOLARIS) && !defined(OS_AIX) && !defined(OS_OPENBSD) && !defined(OS_FREEBSD)
     if (soptions.use_direct_writes) {
-      rocksdb::SyncPoint::GetInstance()->SetCallBack(
+      ROCKSDB_NAMESPACE::SyncPoint::GetInstance()->SetCallBack(
           "NewWritableFile:O_DIRECT", [&](void* arg) {
             int* val = static_cast<int*>(arg);
             *val &= ~O_DIRECT;
@@ -1300,25 +1421,25 @@ TEST_P(EnvPosixTestWithParam, Preallocation) {
       srcfile->GetPreallocationStatus(&block_size, &last_allocated_block);
       ASSERT_EQ(last_allocated_block, 7UL);
     }
-  rocksdb::SyncPoint::GetInstance()->ClearTrace();
+    ROCKSDB_NAMESPACE::SyncPoint::GetInstance()->ClearTrace();
 }
 
 // Test that the two ways to get children file attributes (in bulk or
 // individually) behave consistently.
 TEST_P(EnvPosixTestWithParam, ConsistentChildrenAttributes) {
-  rocksdb::SyncPoint::GetInstance()->EnableProcessing();
-    EnvOptions soptions;
-    soptions.use_direct_reads = soptions.use_direct_writes = direct_io_;
-    const int kNumChildren = 10;
+  ROCKSDB_NAMESPACE::SyncPoint::GetInstance()->EnableProcessing();
+  EnvOptions soptions;
+  soptions.use_direct_reads = soptions.use_direct_writes = direct_io_;
+  const int kNumChildren = 10;
 
-    std::string data;
-    for (int i = 0; i < kNumChildren; ++i) {
-      const std::string path =
-          test::TmpDir(env_) + "/" + "testfile_" + std::to_string(i);
-      std::unique_ptr<WritableFile> file;
+  std::string data;
+  for (int i = 0; i < kNumChildren; ++i) {
+    const std::string path =
+        test::TmpDir(env_) + "/" + "testfile_" + std::to_string(i);
+    std::unique_ptr<WritableFile> file;
 #if !defined(OS_MACOSX) && !defined(OS_WIN) && !defined(OS_SOLARIS) && !defined(OS_AIX) && !defined(OS_OPENBSD) && !defined(OS_FREEBSD)
       if (soptions.use_direct_writes) {
-        rocksdb::SyncPoint::GetInstance()->SetCallBack(
+        ROCKSDB_NAMESPACE::SyncPoint::GetInstance()->SetCallBack(
             "NewWritableFile:O_DIRECT", [&](void* arg) {
               int* val = static_cast<int*>(arg);
               *val &= ~O_DIRECT;
@@ -1330,7 +1451,7 @@ TEST_P(EnvPosixTestWithParam, ConsistentChildrenAttributes) {
       Slice buf(buf_ptr.get(), data.size());
       file->Append(buf);
       data.append(std::string(4096, 'T'));
-    }
+  }
 
     std::vector<Env::FileAttributes> file_attrs;
     ASSERT_OK(env_->GetChildrenFileAttributes(test::TmpDir(env_), &file_attrs));
@@ -1347,7 +1468,7 @@ TEST_P(EnvPosixTestWithParam, ConsistentChildrenAttributes) {
       ASSERT_EQ(size, 4096 * i);
       ASSERT_EQ(size, file_attrs_iter->size_bytes);
     }
-    rocksdb::SyncPoint::GetInstance()->ClearTrace();
+    ROCKSDB_NAMESPACE::SyncPoint::GetInstance()->ClearTrace();
 }
 
 // Test that all WritableFileWrapper forwards all calls to WritableFile.
@@ -1766,7 +1887,7 @@ INSTANTIATE_TEST_CASE_P(
     ::testing::Values(std::pair<Env*, bool>(chroot_env.get(), true)));
 #endif  // !defined(ROCKSDB_LITE) && !defined(OS_WIN)
 
-}  // namespace rocksdb
+}  // namespace ROCKSDB_NAMESPACE
 
 int main(int argc, char** argv) {
   ::testing::InitGoogleTest(&argc, argv);

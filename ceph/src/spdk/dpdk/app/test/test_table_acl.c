@@ -2,15 +2,11 @@
  * Copyright(c) 2010-2014 Intel Corporation
  */
 
+#include <rte_ip.h>
 #include <rte_string_fns.h>
 #include <rte_hexdump.h>
 #include "test_table.h"
 #include "test_table_acl.h"
-
-#define IPv4(a, b, c, d) ((uint32_t)(((a) & 0xff) << 24) |		\
-	(((b) & 0xff) << 16) |						\
-	(((c) & 0xff) << 8) |						\
-	((d) & 0xff))
 
 /*
  * Rule and trace formats definitions.
@@ -116,7 +112,7 @@ parse_ipv4_net(const char *in, uint32_t *addr, uint32_t *mask_len)
 	GET_CB_FIELD(in, d, 0, UINT8_MAX, '/');
 	GET_CB_FIELD(in, m, 0, sizeof(uint32_t) * CHAR_BIT, 0);
 
-	addr[0] = IPv4(a, b, c, d);
+	addr[0] = RTE_IPV4(a, b, c, d);
 	mask_len[0] = m;
 
 	return 0;
@@ -662,8 +658,8 @@ test_pipeline_single_filter(int expected_count)
 				sizeof(struct ipv4_5tuple));
 
 			five_tuple.proto = j;
-			five_tuple.ip_src = rte_bswap32(IPv4(192, 168, j, 1));
-			five_tuple.ip_dst = rte_bswap32(IPv4(10, 4, j, 1));
+			five_tuple.ip_src = rte_bswap32(RTE_IPV4(192, 168, j, 1));
+			five_tuple.ip_dst = rte_bswap32(RTE_IPV4(10, 4, j, 1));
 			five_tuple.port_src = rte_bswap16(100 + j);
 			five_tuple.port_dst = rte_bswap16(200 + j);
 

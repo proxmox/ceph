@@ -989,7 +989,7 @@ mrvl_parse_eth(const struct rte_flow_item *item, struct rte_flow *flow,
 	       struct rte_flow_error *error)
 {
 	const struct rte_flow_item_eth *spec = NULL, *mask = NULL;
-	struct ether_addr zero;
+	struct rte_ether_addr zero;
 	int ret;
 
 	ret = mrvl_parse_init(item, (const void **)&spec, (const void **)&mask,
@@ -1170,7 +1170,7 @@ mrvl_parse_ip6(const struct rte_flow_item *item,
 	       struct rte_flow_error *error)
 {
 	const struct rte_flow_item_ipv6 *spec = NULL, *mask = NULL;
-	struct ipv6_hdr zero;
+	struct rte_ipv6_hdr zero;
 	uint32_t flow_mask;
 	int ret;
 
@@ -2511,14 +2511,14 @@ mrvl_create_cls_table(struct rte_eth_dev *dev, struct rte_flow *first_flow)
 
 	if (first_flow->pattern & F_UDP_SPORT) {
 		key->proto_field[key->num_fields].proto = MV_NET_PROTO_UDP;
-		key->proto_field[key->num_fields].field.tcp = MV_NET_TCP_F_SP;
+		key->proto_field[key->num_fields].field.udp = MV_NET_UDP_F_SP;
 		key->key_size += 2;
 		key->num_fields += 1;
 	}
 
 	if (first_flow->pattern & F_UDP_DPORT) {
 		key->proto_field[key->num_fields].proto = MV_NET_PROTO_UDP;
-		key->proto_field[key->num_fields].field.udp = MV_NET_TCP_F_DP;
+		key->proto_field[key->num_fields].field.udp = MV_NET_UDP_F_DP;
 		key->key_size += 2;
 		key->num_fields += 1;
 	}

@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: (BSD-3-Clause OR GPL-2.0)
  *
  * Copyright 2013-2016 Freescale Semiconductor Inc.
+ * Copyright 2017-2019 NXP
  *
  */
 #ifndef __FSL_DPCI_H
@@ -180,6 +181,7 @@ struct dpci_rx_queue_cfg {
 	int order_preservation_en;
 };
 
+__rte_internal
 int dpci_set_rx_queue(struct fsl_mc_io *mc_io,
 		      uint32_t cmd_flags,
 		      uint16_t token,
@@ -227,6 +229,7 @@ int dpci_get_api_version(struct fsl_mc_io *mc_io,
 			 uint16_t *major_ver,
 			 uint16_t *minor_ver);
 
+__rte_internal
 int dpci_set_opr(struct fsl_mc_io *mc_io,
 		 uint32_t cmd_flags,
 		 uint16_t token,
@@ -234,6 +237,7 @@ int dpci_set_opr(struct fsl_mc_io *mc_io,
 		 uint8_t options,
 		 struct opr_cfg *cfg);
 
+__rte_internal
 int dpci_get_opr(struct fsl_mc_io *mc_io,
 		 uint32_t cmd_flags,
 		 uint16_t token,

@@ -1,14 +1,15 @@
 # -*- coding: utf-8 -*-
 from __future__ import absolute_import
 
-from datetime import datetime
 import json
+from datetime import datetime
+
 import requests
 
-from . import Controller, ApiController, BaseController, RESTController, Endpoint
+from ..exceptions import DashboardException
 from ..security import Scope
 from ..settings import Settings
-from ..exceptions import DashboardException
+from . import ApiController, BaseController, Controller, ControllerDoc, Endpoint, RESTController
 
 
 @Controller('/api/prometheus_receiver', secure=False)
@@ -60,6 +61,7 @@ class PrometheusRESTController(RESTController):
 
 
 @ApiController('/prometheus', Scope.PROMETHEUS)
+@ControllerDoc("Prometheus Management API", "Prometheus")
 class Prometheus(PrometheusRESTController):
     def list(self, **params):
         return self.alert_proxy('GET', '/alerts', params)
@@ -82,6 +84,7 @@ class Prometheus(PrometheusRESTController):
 
 
 @ApiController('/prometheus/notifications', Scope.PROMETHEUS)
+@ControllerDoc("Prometheus Notifications Management API", "PrometheusNotifications")
 class PrometheusNotifications(RESTController):
 
     def list(self, **params):

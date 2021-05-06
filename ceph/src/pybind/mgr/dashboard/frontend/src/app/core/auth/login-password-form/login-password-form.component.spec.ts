@@ -6,12 +6,12 @@ import { RouterTestingModule } from '@angular/router/testing';
 
 import { ToastrModule } from 'ngx-toastr';
 
-import { configureTestBed, FormHelper, i18nProviders } from '../../../../testing/unit-test-helper';
-import { AuthService } from '../../../shared/api/auth.service';
-import { ComponentsModule } from '../../../shared/components/components.module';
-import { CdFormGroup } from '../../../shared/forms/cd-form-group';
-import { AuthStorageService } from '../../../shared/services/auth-storage.service';
-import { SharedModule } from '../../../shared/shared.module';
+import { AuthService } from '~/app/shared/api/auth.service';
+import { ComponentsModule } from '~/app/shared/components/components.module';
+import { CdFormGroup } from '~/app/shared/forms/cd-form-group';
+import { AuthStorageService } from '~/app/shared/services/auth-storage.service';
+import { SharedModule } from '~/app/shared/shared.module';
+import { configureTestBed, FormHelper } from '~/testing/unit-test-helper';
 import { LoginPasswordFormComponent } from './login-password-form.component';
 
 describe('LoginPasswordFormComponent', () => {
@@ -33,17 +33,16 @@ describe('LoginPasswordFormComponent', () => {
       ToastrModule.forRoot(),
       SharedModule
     ],
-    declarations: [LoginPasswordFormComponent],
-    providers: i18nProviders
+    declarations: [LoginPasswordFormComponent]
   });
 
   beforeEach(() => {
     fixture = TestBed.createComponent(LoginPasswordFormComponent);
     component = fixture.componentInstance;
-    httpTesting = TestBed.get(HttpTestingController);
-    router = TestBed.get(Router);
-    authStorageService = TestBed.get(AuthStorageService);
-    authService = TestBed.get(AuthService);
+    httpTesting = TestBed.inject(HttpTestingController);
+    router = TestBed.inject(Router);
+    authStorageService = TestBed.inject(AuthStorageService);
+    authService = TestBed.inject(AuthService);
     spyOn(router, 'navigate');
     fixture.detectChanges();
     form = component.userForm;

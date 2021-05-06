@@ -46,9 +46,13 @@ ifeq ($(CONFIG_VHOST_INTERNAL_LIB),y)
 SPDK_LIB_LIST += rte_vhost
 endif
 
-SPDK_LIB_LIST += event_bdev event_copy event_net event_scsi event
-SPDK_LIB_LIST += jsonrpc json rpc bdev_rpc bdev scsi copy trace conf
-SPDK_LIB_LIST += thread util log log_rpc trace_rpc app_rpc
+SPDK_LIB_LIST += $(EVENT_BDEV_SUBSYSTEM) event_net event_scsi event
+SPDK_LIB_LIST += jsonrpc json rpc bdev_rpc bdev scsi accel trace conf
+SPDK_LIB_LIST += thread util log log_rpc app_rpc
 SPDK_LIB_LIST += event_nbd nbd net sock notify
+
+ifeq ($(SPDK_ROOT_DIR)/lib/env_dpdk,$(CONFIG_ENV))
+SPDK_LIB_LIST += env_dpdk_rpc
+endif
 
 include $(SPDK_ROOT_DIR)/mk/spdk.app.mk

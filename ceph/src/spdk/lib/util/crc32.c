@@ -31,10 +31,11 @@
  *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+#include "util_internal.h"
 #include "spdk/crc32.h"
 
 void
-spdk_crc32_table_init(struct spdk_crc32_table *table, uint32_t polynomial_reflect)
+crc32_table_init(struct spdk_crc32_table *table, uint32_t polynomial_reflect)
 {
 	int i, j;
 	uint32_t val;
@@ -55,7 +56,7 @@ spdk_crc32_table_init(struct spdk_crc32_table *table, uint32_t polynomial_reflec
 #ifdef SPDK_HAVE_ARM_CRC
 
 uint32_t
-spdk_crc32_update(const struct spdk_crc32_table *table, const void *buf, size_t len, uint32_t crc)
+crc32_update(const struct spdk_crc32_table *table, const void *buf, size_t len, uint32_t crc)
 {
 	size_t count;
 	const uint64_t *dword_buf;
@@ -79,7 +80,7 @@ spdk_crc32_update(const struct spdk_crc32_table *table, const void *buf, size_t 
 #else
 
 uint32_t
-spdk_crc32_update(const struct spdk_crc32_table *table, const void *buf, size_t len, uint32_t crc)
+crc32_update(const struct spdk_crc32_table *table, const void *buf, size_t len, uint32_t crc)
 {
 	const uint8_t *buf_u8 = buf;
 	size_t i;

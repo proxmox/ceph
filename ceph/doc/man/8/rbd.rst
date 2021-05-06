@@ -284,6 +284,13 @@ Commands
 
   The --merge-snapshots will merge snapshots used space into their parent images.
 
+:command:`encryption format` *image-spec* *format* *passphrase-file* [--cipher-alg *alg*]
+  Formats image to an encrypted format.
+  All data previously written to the image will become unreadable.
+  A cloned image cannot be formatted, although encrypted images can be cloned.
+  Supported formats: *luks1*, *luks2*.
+  Supported cipher algorithms: *aes-128*, *aes-256* (default).
+
 :command:`export` [--export-format *format (1 or 2)*] (*image-spec* | *snap-spec*) [*dest-path*]
   Export image to dest path (use - for stdout).
   The --export-format accepts '1' or '2' currently. Format 2 allow us to export not only the content
@@ -452,7 +459,7 @@ Commands
   Execute image migration. This step is run after a successful migration
   prepare step and copies image data to the destination.
 
-:command:`migration prepare` [--order *order*] [--object-size *object-size*] [--image-feature *image-feature*] [--image-shared] [--stripe-unit *stripe-unit*] [--stripe-count *stripe-count*] [--data-pool *data-pool*] *src-image-spec* [*dest-image-spec*]
+:command:`migration prepare` [--order *order*] [--object-size *object-size*] [--image-feature *image-feature*] [--image-shared] [--stripe-unit *stripe-unit*] [--stripe-count *stripe-count*] [--data-pool *data-pool*] [--import-only] [--source-spec *json*] [--source-spec-path *path*] *src-image-spec* [*dest-image-spec*]
   Prepare image migration. This is the first step when migrating an
   image, i.e. changing the image location, format or other
   parameters that can't be changed dynamically. The destination can
@@ -460,6 +467,11 @@ Commands
   After this step the source image is set as a parent of the
   destination image, and the image is accessible in copy-on-write mode
   by its destination spec.
+
+  An image can also be migrated from a read-only import source by adding the
+  *--import-only* optional and providing a JSON-encoded *--source-spec* or a
+  path to a JSON-encoded source-spec file using the *--source-spec-path*
+  optionals.
 
 :command:`mirror image demote` *image-spec*
   Demote a primary image to non-primary for RBD mirroring.
