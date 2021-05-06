@@ -27,7 +27,7 @@ index e47738a27..eeab101b5 100644
 +Wants=network-online.target local-fs.target time-sync.target ceph-mds.target
  
  [Service]
- LimitNOFILE=1048576
+ Environment=CLUSTER=ceph
 diff --git a/systemd/ceph-mgr@.service.in b/systemd/ceph-mgr@.service.in
 index 0ff9db237..aea3af40a 100644
 --- a/systemd/ceph-mgr@.service.in
@@ -42,7 +42,7 @@ index 0ff9db237..aea3af40a 100644
 +Wants=network-online.target local-fs.target time-sync.target ceph-mgr.target
  
  [Service]
- LimitNOFILE=1048576
+ Environment=CLUSTER=ceph
 diff --git a/systemd/ceph-mon@.service.in b/systemd/ceph-mon@.service.in
 index d3121d59d..7992d502a 100644
 --- a/systemd/ceph-mon@.service.in
@@ -57,7 +57,7 @@ index d3121d59d..7992d502a 100644
 +Wants=network-online.target local-fs.target time-sync.target ceph-mon.target
  
  [Service]
- LimitNOFILE=1048576
+ Environment=CLUSTER=ceph
 diff --git a/systemd/ceph-osd@.service.in b/systemd/ceph-osd@.service.in
 index 2e5ea6ae4..987656da7 100644
 --- a/systemd/ceph-osd@.service.in
@@ -72,7 +72,7 @@ index 2e5ea6ae4..987656da7 100644
 +Wants=network-online.target local-fs.target time-sync.target ceph-osd.target
  
  [Service]
- LimitNOFILE=1048576
+ Environment=CLUSTER=ceph
 diff --git a/systemd/ceph-radosgw@.service.in b/systemd/ceph-radosgw@.service.in
 index dee501b47..d1bcf5bb7 100644
 --- a/systemd/ceph-radosgw@.service.in
@@ -87,7 +87,7 @@ index dee501b47..d1bcf5bb7 100644
 +Wants=network-online.target local-fs.target time-sync.target ceph-radosgw.target
  
  [Service]
- LimitNOFILE=1048576
+ Environment=CLUSTER=ceph
 diff --git a/systemd/rbdmap.service.in b/systemd/rbdmap.service.in
 index 6644508cf..96f7d54e7 100644
 --- a/systemd/rbdmap.service.in

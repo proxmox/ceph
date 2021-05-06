@@ -11,15 +11,15 @@ diff --git a/debian/control b/debian/control
 index 83dc414788..1cfa2250de 100644
 --- a/debian/control
 +++ b/debian/control
-@@ -113,6 +113,7 @@ Replaces: ceph (<< 10),
+@@ -153,6 +153,7 @@ Replaces: ceph (<< 10),
  Breaks: ceph (<< 10),
-         ceph-test (<< 12.2.3),
+         ceph-test (<< 12.2.2-14),
          python-ceph (<< 0.92-1223),
 +        libpve-storage-perl (<= 5.0-25),
  Description: common ceph daemon libraries and management tools
   Ceph is a massively scalable, open-source, distributed
   storage system that runs on commodity hardware and delivers object,
-@@ -409,6 +410,7 @@ Breaks: ceph (<< 10),
+@@ -634,6 +634,7 @@ Breaks: ceph (<< 10),
          ceph-test (<< 9.0.3-1646),
          librbd1 (<< 0.92-1238),
          python-ceph (<< 0.92-1223),
