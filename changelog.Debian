@@ -1,3 +1,9 @@
+ceph (16.2.2-pve1) stable; urgency=medium
+
+  * update to Ceph Pacific 16.2.2 release
+
+ -- Proxmox Support Team <support@proxmox.com>  Thu, 06 May 2021 16:04:15 +0200
+
 ceph (15.2.11-pve1) stable; urgency=medium
 
   * new upstream octopus 15.2.11 stable release
