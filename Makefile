@@ -102,7 +102,7 @@ ${DSC}: ${BUILDSRC}
 .PHONY: download
 download:
 	rm -rf ${SRCDIR}.tmp ${SRCDIR}
-	dgit -cdgit-distro.ceph.archive-query=aptget: -cdgit-distro.ceph.mirror=http://download.ceph.com/debian-octopus -cdgit-distro.ceph.git-check=false --apt-get:--option=Dir::Etc::Trusted=${CURDIR}/upstream-key.asc -d ceph clone ceph bionic ./${SRCDIR}.tmp
+	dgit -cdgit-distro.ceph.archive-query=aptget: -cdgit-distro.ceph.mirror=http://download.ceph.com/debian-pacific -cdgit-distro.ceph.git-check=false --apt-get:--option=Dir::Etc::Trusted=${CURDIR}/upstream-key.asc -d ceph clone ceph focal ./${SRCDIR}.tmp
 	@echo "WARNING"
 	@echo "Check output above for verification errors!"
 	@echo "WARNING"
@@ -113,7 +113,7 @@ download:
 
 .PHONY: upload
 upload: ${DEBS}
-	tar cf - ${DEBS} | ssh repoman@repo.proxmox.com upload --product ceph-octopus --dist stretch --arch ${ARCH}
+	tar cf - ${DEBS} | ssh repoman@repo.proxmox.com upload --product ceph-pacific --dist bullseye --arch ${ARCH}
 
 distclean: clean
 
