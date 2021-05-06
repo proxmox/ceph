@@ -15,12 +15,14 @@ diff --git a/debian/rules b/debian/rules
 index b5ce42c6f3..00e9ac6b16 100755
 --- a/debian/rules
 +++ b/debian/rules
-@@ -133,6 +133,9 @@ override_dh_installinit:
+@@ -82,6 +82,11 @@ override_dh_installinit:
  
  	dh_installinit -p ceph-base --name ceph --no-start
  	dh_installinit -p radosgw --no-start
 +	dh_systemd_enable -p ceph-common ceph.target
 +	dh_systemd_enable -p ceph-mon ceph-mon.target
++	dh_systemd_enable -p ceph-mgr ceph-mgr.target
++	dh_systemd_enable -p ceph-mds ceph-mds.target
 +	dh_systemd_enable -p ceph-osd ceph-osd.target
  
  	# NOTE: execute systemd helpers so they pickup dh_install'ed units and targets
