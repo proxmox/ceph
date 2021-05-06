@@ -1,0 +1,41 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Thomas Lamprecht <t.lamprecht@proxmox.com>
+Date: Thu, 6 May 2021 18:04:45 +0200
+Subject: [PATCH] d/control: drop outdated build dependencies and bump compat
+ to 10
+
+Signed-off-by: Thomas Lamprecht <t.lamprecht@proxmox.com>
+---
+ debian/compat  | 2 +-
+ debian/control | 4 +---
+ 2 files changed, 2 insertions(+), 4 deletions(-)
+
+diff --git a/debian/compat b/debian/compat
+index ec635144f60..f599e28b8ab 100644
+--- a/debian/compat
++++ b/debian/compat
+@@ -1 +1 @@
+-9
++10
+diff --git a/debian/control b/debian/control
+index 4ca0caa76de..360e8d3ace9 100644
+--- a/debian/control
++++ b/debian/control
+@@ -12,13 +12,11 @@ Build-Depends: automake,
+                cmake (>= 3.10.2),
+                cpio,
+                cryptsetup-bin | cryptsetup,
+-               cython,
+                cython3,
+-               debhelper (>= 9),
++               debhelper (>= 10),
+                default-jdk,
+                dh-exec,
+                dh-python,
+-               dh-systemd,
+ # Jaeger       flex,
+                git,
+                gperf,
+-- 
+2.29.2
+
