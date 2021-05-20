@@ -1,3 +1,9 @@
+ceph (15.2.12-pve1+bullseye) bullseye; urgency=medium
+
+  * rebuild for Debian 11 Bullseye / Proxmox VE 7
+
+ -- Proxmox Support Team <support@proxmox.com>  Thu, 20 May 2021 09:02:09 +0200
+
 ceph (15.2.12-pve1) buster; urgency=medium
 
   * new upstream octopus 15.2.12 stable release
