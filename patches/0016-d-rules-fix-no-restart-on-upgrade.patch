@@ -25,13 +25,13 @@ diff --git a/debian/rules b/debian/rules
 index b5ce42c6f3..00e9ac6b16 100755
 --- a/debian/rules
 +++ b/debian/rules
-@@ -92,7 +92,7 @@ override_dh_installinit:
-
-        # NOTE: execute systemd helpers so they pickup dh_install'ed units and targets
-        dh_systemd_enable
--       dh_systemd_start --no-restart-on-upgrade
-+       dh_systemd_start --no-restart-on-upgrade --no-restart-after-upgrade
-
+@@ -88,7 +88,7 @@ override_dh_installinit:
+ 
+ 	# NOTE: execute systemd helpers so they pickup dh_install'ed units and targets
+ 	dh_systemd_enable
+-	dh_systemd_start --no-restart-on-upgrade
++	dh_systemd_start --no-restart-on-upgrade --no-restart-after-upgrade
+ 
  override_dh_systemd_enable:
-        # systemd enable done as part of dh_installinit
+ 	# systemd enable done as part of dh_installinit
 
