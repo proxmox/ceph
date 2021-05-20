@@ -21,7 +21,7 @@ diff --git a/debian/control b/debian/control
 index 4ca0caa76de..360e8d3ace9 100644
 --- a/debian/control
 +++ b/debian/control
-@@ -10,9 +10,8 @@ Uploaders: Ken Dreyer <kdreyer@redhat.com>,
+@@ -10,13 +10,11 @@ Uploaders: Ken Dreyer <kdreyer@redhat.com>,
  Build-Depends: cmake (>= 3.5),
                 cpio,
                 cryptsetup-bin | cryptsetup,
@@ -32,6 +32,10 @@ index 4ca0caa76de..360e8d3ace9 100644
                 default-jdk,
                 dh-exec,
                 dh-python,
+-               dh-systemd,
+                git,
+                gperf,
+                g++ (>= 7),
 -- 
 2.29.2
 
