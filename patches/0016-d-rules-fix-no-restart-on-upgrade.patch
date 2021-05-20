@@ -1,0 +1,37 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Fabian=20Gr=C3=BCnbichler?= <f.gruenbichler@proxmox.com>
+Date: Wed, 20 May 2021 15:36:34 +0200
+Subject: [PATCH] d/rules: also add --no-restart-after-upgrade parameter
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+is only a problem with dh compat >= 10 as that enables the
+restart-after-upgrade by default.
+
+Keep the old --no-restart-on-upgrade one as else debian may just
+think we want the restart but as full stop in prerm and start only in
+postinst.
+
+For ceph we actually want to let the user fully control the restart
+explicit.
+
+Signed-off-by: Thomas Lamprecht <t.lamprecht@proxmox.com>
+---
+ debian/rules | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/debian/rules b/debian/rules
+index b5ce42c6f3..00e9ac6b16 100755
+--- a/debian/rules
++++ b/debian/rules
+@@ -92,7 +92,7 @@ override_dh_installinit:
+
+        # NOTE: execute systemd helpers so they pickup dh_install'ed units and targets
+        dh_systemd_enable
+-       dh_systemd_start --no-restart-on-upgrade
++       dh_systemd_start --no-restart-on-upgrade --no-restart-after-upgrade
+
+ override_dh_systemd_enable:
+        # systemd enable done as part of dh_installinit
+
