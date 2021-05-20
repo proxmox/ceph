@@ -1,3 +1,9 @@
+ceph (16.2.4-pve1) bullseye; urgency=medium
+
+  * update to Ceph Pacific 16.2.4 release
+
+ -- Proxmox Support Team <support@proxmox.com>  Thu, 20 May 2021 15:56:33 +0200
+
 ceph (16.2.2-pve1) stable; urgency=medium
 
   * update to Ceph Pacific 16.2.2 release
