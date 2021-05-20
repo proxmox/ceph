@@ -9,3 +9,4 @@
 0013-d-control-move-python-dependencies-over-to-python3.patch
 0014-fix-service-ordering-avoid-Before-remote-fs-pre.targ.patch
 0015-d-control-drop-outdated-build-dependencies-and-bump-.patch
+0016-d-rules-fix-no-restart-on-upgrade.patch
