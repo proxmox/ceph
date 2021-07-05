@@ -1,3 +1,12 @@
+ceph (14.2.22-pve1) stable; urgency=medium
+
+  * new upstream nautilus 14.2.22 stable release
+
+  * NOTE: this is the preliminary final update of the Ceph Nautilus stable
+    release. Please consider upgrading to Ceph Octopus.
+
+ -- Proxmox Support Team <support@proxmox.com>  Mon, 05 Jul 2021 19:43:18 +0200
+
 ceph (14.2.20-pve1) stable; urgency=medium
 
   * new upstream nautilus 14.2.20 stable release
