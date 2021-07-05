@@ -23,7 +23,7 @@
 #################################################################################
 %bcond_with make_check
 %bcond_without ceph_test_package
-%ifarch s390 s390x
+%ifarch s390
 %bcond_with tcmalloc
 %else
 %bcond_without tcmalloc
@@ -109,7 +109,7 @@
 # main package definition
 #################################################################################
 Name:		ceph
-Version:	14.2.20
+Version:	14.2.22
 Release:	0%{?dist}
 %if 0%{?fedora} || 0%{?rhel}
 Epoch:		2
@@ -125,7 +125,7 @@ License:	LGPL-2.1 and CC-BY-SA-3.0 and GPL-2.0 and BSL-1.0 and BSD-3-Clause and 
 Group:		System/Filesystems
 %endif
 URL:		http://ceph.com/
-Source0:	%{?_remote_tarball_prefix}ceph-14.2.20.tar.bz2
+Source0:	%{?_remote_tarball_prefix}ceph-14.2.22.tar.bz2
 %if 0%{?suse_version}
 # _insert_obs_source_lines_here
 ExclusiveArch:  x86_64 aarch64 ppc64le s390x
@@ -293,6 +293,7 @@ BuildRequires:  pyOpenSSL%{_python_buildid}
 %else
 BuildRequires:  python%{_python_buildid}-pyOpenSSL
 %endif
+BuildRequires:	golang-github-prometheus
 BuildRequires:	libtool-ltdl-devel
 BuildRequires:	python%{_python_buildid}-cherrypy
 BuildRequires:	python%{_python_buildid}-jwt
@@ -306,6 +307,7 @@ BuildRequires:	xmlsec1-openssl
 BuildRequires:	xmlsec1-openssl-devel
 %endif
 %if 0%{?suse_version}
+BuildRequires:	golang-github-prometheus-prometheus
 BuildRequires:	libxmlsec1-1
 BuildRequires:	libxmlsec1-nss1
 BuildRequires:	libxmlsec1-openssl1
@@ -658,6 +660,9 @@ Requires:	librados2 = %{_epoch_prefix}%{version}-%{release}
 Requires:	librgw2 = %{_epoch_prefix}%{version}-%{release}
 %if 0%{?rhel} || 0%{?fedora}
 Requires:	mailcap
+%endif
+%if 0%{?weak_deps}
+Recommends:	gawk
 %endif
 %description radosgw
 RADOS is a distributed object store used by the Ceph distributed
@@ -1142,7 +1147,7 @@ This package provides Ceph’s default alerts for Prometheus.
 # common
 #################################################################################
 %prep
-%autosetup -p1 -n ceph-14.2.20
+%autosetup -p1 -n ceph-14.2.22
 
 %build
 # LTO can be enabled as soon as the following GCC bug is fixed:
@@ -1870,6 +1875,8 @@ fi
 %{_bindir}/radosgw-token
 %{_bindir}/radosgw-es
 %{_bindir}/radosgw-object-expirer
+%{_bindir}/rgw-gap-list
+%{_bindir}/rgw-gap-list-comparator
 %{_bindir}/rgw-orphan-list
 %{_mandir}/man8/radosgw.8*
 %dir %{_localstatedir}/lib/ceph/radosgw

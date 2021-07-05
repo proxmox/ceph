@@ -298,6 +298,7 @@ class LocalRemote(object):
                                        stderr=subprocess.PIPE,
                                        stdin=subprocess.PIPE,
                                        cwd=cwd,
+                                       env=env,
                                        shell=True)
         else:
             # Sanity check that we've got a list of strings
@@ -917,7 +918,9 @@ class LocalContext(object):
                     self.daemons.daemons[prefixed_type][svc_id] = LocalDaemon(svc_type, svc_id)
 
     def __del__(self):
-        shutil.rmtree(self.teuthology_config['test_path'])
+        path = self.teuthology_config['test_path']
+        if path is not None:
+            shutil.rmtree(path)
 
 def exec_test():
     # Parse arguments

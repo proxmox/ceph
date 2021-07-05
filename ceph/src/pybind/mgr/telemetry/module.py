@@ -366,6 +366,8 @@ class Module(MgrModule):
             r.append('crash')
         if self.channel_device:
             r.append('device')
+        if self.channel_ident:
+            r.append('ident')
         return r
 
     def gather_device_report(self):
@@ -438,7 +440,7 @@ class Module(MgrModule):
         if not channels:
             channels = self.get_active_channels()
         report = {
-            'leaderboard': False,
+            'leaderboard': self.leaderboard,
             'report_version': 1,
             'report_timestamp': datetime.utcnow().isoformat(),
             'report_id': self.report_id,
@@ -448,8 +450,6 @@ class Module(MgrModule):
         }
 
         if 'ident' in channels:
-            if self.leaderboard:
-                report['leaderboard'] = True
             for option in ['description', 'contact', 'organization']:
                 report[option] = getattr(self, option)
 

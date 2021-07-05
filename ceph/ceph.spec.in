@@ -23,7 +23,7 @@
 #################################################################################
 %bcond_with make_check
 %bcond_without ceph_test_package
-%ifarch s390 s390x
+%ifarch s390
 %bcond_with tcmalloc
 %else
 %bcond_without tcmalloc
@@ -293,6 +293,7 @@ BuildRequires:  pyOpenSSL%{_python_buildid}
 %else
 BuildRequires:  python%{_python_buildid}-pyOpenSSL
 %endif
+BuildRequires:	golang-github-prometheus
 BuildRequires:	libtool-ltdl-devel
 BuildRequires:	python%{_python_buildid}-cherrypy
 BuildRequires:	python%{_python_buildid}-jwt
@@ -306,6 +307,7 @@ BuildRequires:	xmlsec1-openssl
 BuildRequires:	xmlsec1-openssl-devel
 %endif
 %if 0%{?suse_version}
+BuildRequires:	golang-github-prometheus-prometheus
 BuildRequires:	libxmlsec1-1
 BuildRequires:	libxmlsec1-nss1
 BuildRequires:	libxmlsec1-openssl1
@@ -658,6 +660,9 @@ Requires:	librados2 = %{_epoch_prefix}%{version}-%{release}
 Requires:	librgw2 = %{_epoch_prefix}%{version}-%{release}
 %if 0%{?rhel} || 0%{?fedora}
 Requires:	mailcap
+%endif
+%if 0%{?weak_deps}
+Recommends:	gawk
 %endif
 %description radosgw
 RADOS is a distributed object store used by the Ceph distributed
@@ -1870,6 +1875,8 @@ fi
 %{_bindir}/radosgw-token
 %{_bindir}/radosgw-es
 %{_bindir}/radosgw-object-expirer
+%{_bindir}/rgw-gap-list
+%{_bindir}/rgw-gap-list-comparator
 %{_bindir}/rgw-orphan-list
 %{_mandir}/man8/radosgw.8*
 %dir %{_localstatedir}/lib/ceph/radosgw

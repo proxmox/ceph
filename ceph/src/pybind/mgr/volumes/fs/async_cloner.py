@@ -117,6 +117,7 @@ def sync_attrs(fs_handle, target_path, source_statx):
         fs_handle.lchown(target_path, int(source_statx["uid"]), int(source_statx["gid"]))
         fs_handle.lutimes(target_path, (time.mktime(source_statx["atime"].timetuple()),
                                         time.mktime(source_statx["mtime"].timetuple())))
+        fs_handle.lchmod(target_path, source_statx["mode"])
     except cephfs.Error as e:
         log.warn("error synchronizing attrs for {0} ({1})".format(target_path, e))
         raise e
@@ -275,7 +276,7 @@ class Cloner(AsyncJobs):
         super(Cloner, self).__init__(volume_client, "cloner", tp_size)
 
     def reconfigure_max_concurrent_clones(self, tp_size):
-        super(Cloner, self).reconfigure_max_concurrent_clones("cloner", tp_size)
+        return super(Cloner, self).reconfigure_max_async_threads(tp_size)
 
     def is_clone_cancelable(self, clone_state):
         return not (SubvolumeOpSm.is_complete_state(clone_state) or SubvolumeOpSm.is_failed_state(clone_state))

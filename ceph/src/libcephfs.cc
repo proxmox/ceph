@@ -79,8 +79,7 @@ public:
   {
     int ret;
 
-    if (cct->_conf->log_early &&
-	!cct->_log->is_started()) {
+    if (!cct->_log->is_started()) {
       cct->_log->start();
     }
 
@@ -884,6 +883,12 @@ extern "C" int ceph_chmod(struct ceph_mount_info *cmount, const char *path, mode
     return -ENOTCONN;
   return cmount->get_client()->chmod(path, mode, cmount->default_perms);
 }
+extern "C" int ceph_lchmod(struct ceph_mount_info *cmount, const char *path, mode_t mode)
+{
+  if (!cmount->is_mounted())
+    return -ENOTCONN;
+  return cmount->get_client()->lchmod(path, mode, cmount->default_perms);
+}
 extern "C" int ceph_fchmod(struct ceph_mount_info *cmount, int fd, mode_t mode)
 {
   if (!cmount->is_mounted())
@@ -1566,6 +1571,14 @@ extern "C" struct Inode *ceph_ll_get_inode(class ceph_mount_info *cmount,
   return (cmount->get_client())->ll_get_inode(vino);
 }
 
+
+extern "C" int ceph_ll_lookup_vino(
+    struct ceph_mount_info *cmount,
+    vinodeno_t vino,
+    Inode **inode)
+{
+  return (cmount->get_client())->ll_lookup_vino(vino, cmount->default_perms, inode);
+}
 
 /**
  * Populates the client cache with the requested inode, and its

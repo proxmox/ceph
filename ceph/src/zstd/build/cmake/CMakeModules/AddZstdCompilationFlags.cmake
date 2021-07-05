@@ -20,7 +20,7 @@ function(EnableCompilerFlag _flag _C _CXX)
     endif ()
 endfunction()
 
-MACRO(ADD_ZSTD_COMPILATION_FLAGS)
+macro(ADD_ZSTD_COMPILATION_FLAGS)
     if (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang" OR MINGW) #Not only UNIX but also WIN32 for MinGW
         #Set c++11 by default
         EnableCompilerFlag("-std=c++11" false true)
@@ -33,6 +33,10 @@ MACRO(ADD_ZSTD_COMPILATION_FLAGS)
         EnableCompilerFlag("-Wcast-align" true true)
         EnableCompilerFlag("-Wcast-qual" true true)
         EnableCompilerFlag("-Wstrict-prototypes" true false)
+        # Enable asserts in Debug mode
+        if (CMAKE_BUILD_TYPE MATCHES "Debug")
+            EnableCompilerFlag("-DDEBUGLEVEL=1" true true)
+        endif ()
     elseif (MSVC) # Add specific compilation flags for Windows Visual
 
         set(ACTIVATE_MULTITHREADED_COMPILATION "ON" CACHE BOOL "activate multi-threaded compilation (/MP flag)")
@@ -43,25 +47,33 @@ MACRO(ADD_ZSTD_COMPILATION_FLAGS)
         # UNICODE SUPPORT
         EnableCompilerFlag("/D_UNICODE" true true)
         EnableCompilerFlag("/DUNICODE" true true)
+        # Enable asserts in Debug mode
+        if (CMAKE_BUILD_TYPE MATCHES "Debug")
+            EnableCompilerFlag("/DDEBUGLEVEL=1" true true)
+        endif ()
     endif ()
 
     # Remove duplicates compilation flags
-    FOREACH (flag_var CMAKE_C_FLAGS CMAKE_C_FLAGS_DEBUG CMAKE_C_FLAGS_RELEASE
+    foreach (flag_var CMAKE_C_FLAGS CMAKE_C_FLAGS_DEBUG CMAKE_C_FLAGS_RELEASE
              CMAKE_C_FLAGS_MINSIZEREL CMAKE_C_FLAGS_RELWITHDEBINFO
              CMAKE_CXX_FLAGS CMAKE_CXX_FLAGS_DEBUG CMAKE_CXX_FLAGS_RELEASE
              CMAKE_CXX_FLAGS_MINSIZEREL CMAKE_CXX_FLAGS_RELWITHDEBINFO)
-        separate_arguments(${flag_var})
-        list(REMOVE_DUPLICATES ${flag_var})
-        string(REPLACE ";" " " ${flag_var} "${${flag_var}}")
-    ENDFOREACH (flag_var)
+        if( ${flag_var} )
+            separate_arguments(${flag_var})
+            list(REMOVE_DUPLICATES ${flag_var})
+            string(REPLACE ";" " " ${flag_var} "${${flag_var}}")
+        endif()
+    endforeach ()
 
     if (MSVC AND ZSTD_USE_STATIC_RUNTIME)
-        FOREACH (flag_var CMAKE_C_FLAGS CMAKE_C_FLAGS_DEBUG CMAKE_C_FLAGS_RELEASE
+        foreach (flag_var CMAKE_C_FLAGS CMAKE_C_FLAGS_DEBUG CMAKE_C_FLAGS_RELEASE
                  CMAKE_C_FLAGS_MINSIZEREL CMAKE_C_FLAGS_RELWITHDEBINFO
                  CMAKE_CXX_FLAGS CMAKE_CXX_FLAGS_DEBUG CMAKE_CXX_FLAGS_RELEASE
                  CMAKE_CXX_FLAGS_MINSIZEREL CMAKE_CXX_FLAGS_RELWITHDEBINFO)
-            STRING(REGEX REPLACE "/MD" "/MT" ${flag_var} "${${flag_var}}")
-        ENDFOREACH (flag_var)
+            if ( ${flag_var} )
+                string(REGEX REPLACE "/MD" "/MT" ${flag_var} "${${flag_var}}")
+            endif()
+        endforeach ()
     endif ()
 
-ENDMACRO(ADD_ZSTD_COMPILATION_FLAGS)
+endmacro()

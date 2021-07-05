@@ -340,7 +340,7 @@ public:
   void execute() override;
   int parse_range();
   int read_user_manifest_part(
-    rgw_bucket& bucket,
+    RGWBucketInfo& bucket_info,
     const rgw_bucket_dir_entry& ent,
     RGWAccessControlPolicy * const bucket_acl,
     const boost::optional<rgw::IAM::Policy>& bucket_policy,
@@ -1849,11 +1849,16 @@ protected:
   bool quiet;
   bool status_dumped;
   bool acl_allowed = false;
+  bool bypass_perm;
+  bool bypass_governance_mode;
+
 
 public:
   RGWDeleteMultiObj() {
     quiet = false;
     status_dumped = false;
+    bypass_perm = true;
+    bypass_governance_mode = false;
   }
   int verify_permission() override;
   void pre_exec() override;

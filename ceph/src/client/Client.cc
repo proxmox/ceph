@@ -125,10 +125,22 @@
 
 #define DEBUG_GETATTR_CAPS (CEPH_CAP_XATTR_SHARED)
 
+#ifndef S_IXUGO
+#define S_IXUGO	(S_IXUSR|S_IXGRP|S_IXOTH)
+#endif
+
 void client_flush_set_callback(void *p, ObjectCacher::ObjectSet *oset)
 {
   Client *client = static_cast<Client*>(p);
   client->flush_set_callback(oset);
+}
+
+bool Client::is_reserved_vino(vinodeno_t &vino) {
+  if (MDS_IS_PRIVATE_INO(vino.ino)) {
+    ldout(cct, -1) << __func__ << " attempt to access reserved inode number " << vino << dendl;
+    return true;
+  }
+  return false;
 }
 
 
@@ -3192,7 +3204,7 @@ void Client::put_cap_ref(Inode *in, int cap)
     int put_nref = 0;
     int drop = last & ~in->caps_issued();
     if (in->snapid == CEPH_NOSNAP) {
-      if ((last & CEPH_CAP_FILE_WR) &&
+      if ((last & (CEPH_CAP_FILE_WR | CEPH_CAP_FILE_BUFFER)) &&
 	  !in->cap_snaps.empty() &&
 	  in->cap_snaps.rbegin()->second.writing) {
 	ldout(cct, 10) << __func__ << " finishing pending cap_snap on " << *in << dendl;
@@ -3661,9 +3673,9 @@ void Client::queue_cap_snap(Inode *in, SnapContext& old_snapc)
     capsnap.context = old_snapc;
     capsnap.issued = in->caps_issued();
     capsnap.dirty = in->caps_dirty();
-    
+
     capsnap.dirty_data = (used & CEPH_CAP_FILE_BUFFER);
-    
+
     capsnap.uid = in->uid;
     capsnap.gid = in->gid;
     capsnap.mode = in->mode;
@@ -3672,7 +3684,7 @@ void Client::queue_cap_snap(Inode *in, SnapContext& old_snapc)
     capsnap.xattr_version = in->xattr_version;
     capsnap.cap_dirtier_uid = in->cap_dirtier_uid;
     capsnap.cap_dirtier_gid = in->cap_dirtier_gid;
- 
+
     if (used & CEPH_CAP_FILE_WR) {
       ldout(cct, 10) << __func__ << " WR used on " << *in << dendl;
       capsnap.writing = 1;
@@ -3707,19 +3719,13 @@ void Client::finish_cap_snap(Inode *in, CapSnap &capsnap, int used)
   }
 
   if (used & CEPH_CAP_FILE_BUFFER) {
+    capsnap.writing = 1;
     ldout(cct, 10) << __func__ << " " << *in << " cap_snap " << &capsnap << " used " << used
 	     << " WRBUFFER, delaying" << dendl;
   } else {
     capsnap.dirty_data = 0;
     flush_snaps(in);
   }
-}
-
-void Client::_flushed_cap_snap(Inode *in, snapid_t seq)
-{
-  ldout(cct, 10) << __func__ << " seq " << seq << " on " << *in << dendl;
-  in->cap_snaps.at(seq).dirty_data = 0;
-  flush_snaps(in);
 }
 
 void Client::send_flush_snap(Inode *in, MetaSession *session,
@@ -3789,7 +3795,7 @@ void Client::flush_snaps(Inode *in)
 	     << " on " << *in << dendl;
     if (capsnap.dirty_data || capsnap.writing)
       break;
-    
+
     capsnap.flush_tid = ++last_flush_tid;
     session->flushing_caps_tids.insert(capsnap.flush_tid);
     in->flushing_cap_tids[capsnap.flush_tid] = 0;
@@ -4336,7 +4342,7 @@ void Client::trim_caps(MetaSession *s, uint64_t max)
         ++q;
 	if (dn->lru_is_expireable()) {
 	  if (can_invalidate_dentries &&
-	      dn->dir->parent_inode->ino == MDS_INO_ROOT) {
+	      dn->dir->parent_inode->ino == CEPH_INO_ROOT) {
 	    // Only issue one of these per DN for inodes in root: handle
 	    // others more efficiently by calling for root-child DNs at
 	    // the end of this function.
@@ -4349,10 +4355,10 @@ void Client::trim_caps(MetaSession *s, uint64_t max)
 	  all = false;
         }
       }
-      if (in->ll_ref == 1 && in->ino != MDS_INO_ROOT) {
+      if (in->ll_ref == 1 && in->ino != CEPH_INO_ROOT) {
          _schedule_ino_release_callback(in.get());
       }
-      if (all && in->ino != MDS_INO_ROOT) {
+      if (all && in->ino != CEPH_INO_ROOT) {
         ldout(cct, 20) << __func__ << " counting as trimmed: " << *in << dendl;
 	trimmed++;
       }
@@ -4738,25 +4744,19 @@ void Client::update_snap_trace(const bufferlist& bl, SnapRealm **realm_ret, bool
       ldout(cct, 10) << __func__ << " " << *realm << " seq " << info.seq()
 	       << " <= " << realm->seq << " and same parent, SKIPPING" << dendl;
     }
-        
+
     if (!first_realm)
       first_realm = realm;
     else
       put_snap_realm(realm);
   }
 
-  for (map<SnapRealm*, SnapContext>::iterator q = dirty_realms.begin();
-       q != dirty_realms.end();
-       ++q) {
-    SnapRealm *realm = q->first;
+  for (auto &[realm, snapc] : dirty_realms) {
     // if there are new snaps ?
-    if (has_new_snaps(q->second, realm->get_snap_context())) { 
+    if (has_new_snaps(snapc, realm->get_snap_context())) {
       ldout(cct, 10) << " flushing caps on " << *realm << dendl;
-      xlist<Inode*>::iterator r = realm->inodes_with_caps.begin();
-      while (!r.end()) {
-	Inode *in = *r;
-	++r;
-	queue_cap_snap(in, q->second);
+      for (auto&& in : realm->inodes_with_caps) {
+	queue_cap_snap(in, snapc);
       }
     } else {
       ldout(cct, 10) << " no new snap on " << *realm << dendl;
@@ -5383,8 +5383,12 @@ void Client::handle_cap_grant(MetaSession *session, Inode *in, Cap *cap, const M
 
 int Client::inode_permission(Inode *in, const UserPerm& perms, unsigned want)
 {
-  if (perms.uid() == 0)
+  if (perms.uid() == 0) {
+    // Executable are overridable when there is at least one exec bit set
+    if((want & MAY_EXEC) && !(in->mode & S_IXUGO))
+      return -EACCES;
     return 0;
+  }
   
   if (perms.uid() != in->uid && (in->mode & S_IRWXG)) {
     int ret = _posix_acl_permission(in, perms, want);
@@ -8659,33 +8663,44 @@ int Client::lookup_hash(inodeno_t ino, inodeno_t dirino, const char *name,
  * the resulting Inode object in one operation, so that caller
  * can safely assume inode will still be there after return.
  */
-int Client::_lookup_ino(inodeno_t ino, const UserPerm& perms, Inode **inode)
+int Client::_lookup_vino(vinodeno_t vino, const UserPerm& perms, Inode **inode)
 {
-  ldout(cct, 8) << __func__ << " enter(" << ino << ")" << dendl;
+  ldout(cct, 8) << __func__ << " enter(" << vino << ")" << dendl;
 
   if (unmounting)
     return -ENOTCONN;
 
+  if (is_reserved_vino(vino))
+    return -ESTALE;
+
   MetaRequest *req = new MetaRequest(CEPH_MDS_OP_LOOKUPINO);
-  filepath path(ino);
+  filepath path(vino.ino);
   req->set_filepath(path);
+
+  /*
+   * The MDS expects either a "real" snapid here or 0. The special value
+   * carveouts for the snapid are all at the end of the range so we can
+   * just look for any snapid below this value.
+   */
+  if (vino.snapid < CEPH_NOSNAP)
+    req->head.args.lookupino.snapid = vino.snapid;
 
   int r = make_request(req, perms, NULL, NULL, rand() % mdsmap->get_num_in_mds());
   if (r == 0 && inode != NULL) {
-    vinodeno_t vino(ino, CEPH_NOSNAP);
     unordered_map<vinodeno_t,Inode*>::iterator p = inode_map.find(vino);
     ceph_assert(p != inode_map.end());
     *inode = p->second;
     _ll_get(*inode);
   }
-  ldout(cct, 8) << __func__ << " exit(" << ino << ") = " << r << dendl;
+  ldout(cct, 8) << __func__ << " exit(" << vino << ") = " << r << dendl;
   return r;
 }
 
 int Client::lookup_ino(inodeno_t ino, const UserPerm& perms, Inode **inode)
 {
+  vinodeno_t vino(ino, CEPH_NOSNAP);
   std::lock_guard lock(client_lock);
-  return _lookup_ino(ino, perms, inode);
+  return _lookup_vino(vino, perms, inode);
 }
 
 /**
@@ -9055,8 +9070,15 @@ void Client::lock_fh_pos(Fh *f)
 
 void Client::unlock_fh_pos(Fh *f)
 {
+  ceph_assert(client_lock.is_locked_by_me());
+
   ldout(cct, 10) << __func__ << " " << f << dendl;
   f->pos_locked = false;
+  if (!f->pos_waiters.empty()) {
+    // only wake up the oldest waiter
+    auto cond = f->pos_waiters.front();
+    cond->SignalOne();
+  }
 }
 
 int Client::uninline_data(Inode *in, Context *onfinish)
@@ -10805,56 +10827,59 @@ int Client::ll_lookup(Inode *parent, const char *name, struct stat *attr,
   return r;
 }
 
+int Client::ll_lookup_vino(
+    vinodeno_t vino,
+    const UserPerm& perms,
+    Inode **inode)
+{
+  ceph_assert(inode != NULL);
+
+  if (unmounting)
+    return -ENOTCONN;
+
+  if (is_reserved_vino(vino))
+    return -ESTALE;
+
+  std::lock_guard lock(client_lock);
+  ldout(cct, 3) << __func__ << vino << dendl;
+   
+  // Check the cache first
+  unordered_map<vinodeno_t,Inode*>::iterator p = inode_map.find(vino);
+  if (p != inode_map.end()) {
+    *inode = p->second;
+    _ll_get(*inode);
+    return 0;
+  }
+
+  uint64_t snapid = vino.snapid;
+
+  // for snapdir, find the non-snapped dir inode
+  if (snapid == CEPH_SNAPDIR)
+    vino.snapid = CEPH_NOSNAP;
+
+  int r = _lookup_vino(vino, perms, inode);
+  if (r)
+    return r;
+  ceph_assert(*inode != NULL);
+
+  if (snapid == CEPH_SNAPDIR) {
+    Inode *tmp = *inode;
+
+    // open the snapdir and put the inode ref
+    *inode = open_snapdir(tmp);
+    _ll_forget(tmp, 1);
+    _ll_get(*inode);
+  }
+  return 0;
+}
+
 int Client::ll_lookup_inode(
     struct inodeno_t ino,
     const UserPerm& perms,
     Inode **inode)
 {
-  ceph_assert(inode != NULL);
-  std::lock_guard lock(client_lock);
-  ldout(cct, 3) << "ll_lookup_inode " << ino  << dendl;
-   
-  if (unmounting)
-    return -ENOTCONN;
-
-  // Num1: get inode and *inode
-  int r = _lookup_ino(ino, perms, inode);
-  if (r)
-    return r;
-
-  ceph_assert(*inode != NULL);
-
-  if (!(*inode)->dentries.empty()) {
-    ldout(cct, 8) << __func__ << " dentry already present" << dendl;
-    return 0;
-  }
-
-  if ((*inode)->is_root()) {
-    ldout(cct, 8) << "ino is root, no parent" << dendl;
-    return 0;
-  }
-
-  // Num2: Request the parent inode, so that we can look up the name
-  Inode *parent;
-  r = _lookup_parent(*inode, perms, &parent);
-  if (r) {
-    _ll_forget(*inode, 1);  
-    return r;
-  }
-
-  ceph_assert(parent != NULL);
-
-  // Num3: Finally, get the name (dentry) of the requested inode
-  r = _lookup_name(*inode, parent, perms);
-  if (r) {
-    // Unexpected error
-    _ll_forget(parent, 1);
-    _ll_forget(*inode, 1);
-    return r;
-  }
-
-  _ll_forget(parent, 1);
-  return 0;
+  vinodeno_t vino(ino, CEPH_NOSNAP);
+  return ll_lookup_vino(vino, perms, inode);
 }
 
 int Client::ll_lookupx(Inode *parent, const char *name, Inode **out,
@@ -11064,6 +11089,9 @@ Inode *Client::ll_get_inode(vinodeno_t vino)
   std::lock_guard lock(client_lock);
 
   if (unmounting)
+    return NULL;
+
+  if (is_reserved_vino(vino))
     return NULL;
 
   unordered_map<vinodeno_t,Inode*>::iterator p = inode_map.find(vino);
@@ -14260,6 +14288,10 @@ enum {
 int Client::check_pool_perm(Inode *in, int need)
 {
   if (!cct->_conf->client_check_pool_perm)
+    return 0;
+
+  /* Only need to do this for regular files */
+  if (!in->is_file())
     return 0;
 
   int64_t pool_id = in->layout.pool_id;

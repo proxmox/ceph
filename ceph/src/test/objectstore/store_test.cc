@@ -7522,6 +7522,76 @@ TEST_P(StoreTestSpecificAUSize, BluestoreRepairTest) {
 
 }
 
+TEST_P(StoreTestSpecificAUSize, BluestoreBrokenZombieRepairTest) {
+  if (string(GetParam()) != "bluestore")
+    return;
+
+  SetVal(g_conf(), "bluestore_fsck_on_mount", "false");
+  SetVal(g_conf(), "bluestore_fsck_on_umount", "false");
+
+  StartDeferred(0x10000);
+
+  BlueStore* bstore = dynamic_cast<BlueStore*> (store.get());
+
+  int r;
+
+  cerr << "initializing" << std::endl;
+  {
+    const size_t col_count = 16;
+    const size_t obj_count = 1024;
+    ObjectStore::CollectionHandle ch[col_count];
+    ghobject_t hoid[col_count][obj_count];
+
+    unique_ptr<coll_t> cid[col_count];
+
+    for (size_t i = 0; i < col_count; i++) {
+      cid[i].reset(new coll_t(spg_t(pg_t(0, i), shard_id_t::NO_SHARD)));
+      ch[i] = store->create_new_collection(*cid[i]);
+      for (size_t j = 0; j < obj_count; j++) {
+	hoid[i][j] = make_object(stringify(j).c_str(), i);
+      }
+    }
+
+    for (size_t i = 0; i < col_count; i++) {
+      ObjectStore::Transaction t;
+      t.create_collection(*cid[i], 0);
+      r = queue_transaction(store, ch[i], std::move(t));
+      ASSERT_EQ(r, 0);
+    }
+    cerr << "onode preparing" << std::endl;
+    bufferlist bl;
+    string s(0x1000, 'a');
+    bl.append(s);
+
+    for (size_t i = 0; i < col_count; i++) {
+      for (size_t j = 0; j < obj_count; j++) {
+	ObjectStore::Transaction t;
+	t.write(*cid[i], hoid[i][j], bl.length(), bl.length(), bl);
+	r = queue_transaction(store, ch[i], std::move(t));
+	ASSERT_EQ(r, 0);
+      }
+    }
+    cerr << "Zombie spanning blob injection" << std::endl;
+
+    sleep(5);
+
+    for (size_t i = 0; i < col_count; i++) {
+      for (size_t j = 0; j < obj_count; j++) {
+	bstore->inject_zombie_spanning_blob(*cid[i], hoid[i][j], 12345);
+      }
+    }
+
+    cerr << "fscking/fixing" << std::endl;
+    bstore->umount();
+    ASSERT_EQ(bstore->fsck(false), col_count * obj_count);
+    ASSERT_LE(bstore->quick_fix(), 0);
+    ASSERT_EQ(bstore->fsck(false), 0);
+  }
+
+  cerr << "Completing" << std::endl;
+  bstore->mount();
+}
+
 TEST_P(StoreTest, BluestoreRepairGlobalStats) {
   if (string(GetParam()) != "bluestore")
     return;
@@ -8108,6 +8178,7 @@ void StoreTest::doOnodeCacheTrimTest() {
   const size_t max_pinned_onodes = 200;
   const size_t max_cached_onodes = max_pinned_onodes / 2;
   const PerfCounters* logger = store->get_perf_counters();
+
   size_t onodes;
   {
     ObjectStore::Transaction t;
@@ -8132,7 +8203,7 @@ void StoreTest::doOnodeCacheTrimTest() {
       break;
     sleep(1);
   }
-  ceph_assert(onodes == max_onodes);
+  ASSERT_EQ(onodes, max_onodes);
 
   SetVal(g_conf(), "bluestore_debug_max_cached_onodes",
     stringify(max_cached_onodes).c_str());
@@ -8144,7 +8215,7 @@ void StoreTest::doOnodeCacheTrimTest() {
     sleep(1);
   }
   onodes = logger->get(l_bluestore_onodes);
-  ceph_assert(onodes == max_cached_onodes);
+  ASSERT_EQ(onodes, max_cached_onodes);
 
 
   // revert cache size cap
@@ -8171,7 +8242,7 @@ void StoreTest::doOnodeCacheTrimTest() {
       break;
     sleep(1);
   }
-  ceph_assert(onodes == max_onodes);
+  ASSERT_EQ(onodes, max_onodes);
 
   SetVal(g_conf(), "bluestore_debug_max_cached_onodes",
     stringify(max_cached_onodes).c_str());
@@ -8183,7 +8254,7 @@ void StoreTest::doOnodeCacheTrimTest() {
     sleep(1);
   }
   onodes = logger->get(l_bluestore_onodes);
-  ceph_assert(onodes == max_pinned_onodes);
+  ASSERT_EQ(onodes, max_pinned_onodes);
 
   // unpin onodes
   omap_iterators.resize(0);
@@ -8195,7 +8266,7 @@ void StoreTest::doOnodeCacheTrimTest() {
     sleep(1);
   }
   onodes = logger->get(l_bluestore_onodes);
-  ceph_assert(onodes == max_cached_onodes);
+  ASSERT_LE(onodes, max_cached_onodes);
 
   {
     ObjectStore::Transaction t;

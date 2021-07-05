@@ -1,7 +1,19 @@
-ceph (14.2.20-1xenial) xenial; urgency=medium
+ceph (14.2.22-1xenial) xenial; urgency=medium
 
 
- -- Jenkins Build Slave User <jenkins-build@confusa08.front.sepia.ceph.com>  Mon, 19 Apr 2021 10:22:46 -0400
+ -- Jenkins Build Slave User <jenkins-build@braggi10.front.sepia.ceph.com>  Tue, 29 Jun 2021 22:18:42 +0000
+
+ceph (14.2.22-1) stable; urgency=medium
+
+  * New upstream release
+
+ -- Ceph Release Team <ceph-maintainers@ceph.com>  Tue, 29 Jun 2021 22:09:07 +0000
+
+ceph (14.2.21-1) stable; urgency=medium
+
+  * New upstream release
+
+ -- Ceph Release Team <ceph-maintainers@ceph.com>  Thu, 13 May 2021 17:23:05 +0000
 
 ceph (14.2.20-1) stable; urgency=medium
 

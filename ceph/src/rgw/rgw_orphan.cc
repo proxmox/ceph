@@ -925,6 +925,8 @@ int RGWOrphanSearch::finish()
 
 
 int RGWRadosList::handle_stat_result(RGWRados::Object::Stat::Result& result,
+				     std::string& bucket_name,
+				     rgw_obj_key& obj_key,
                                      std::set<string>& obj_oids)
 {
   obj_oids.clear();
@@ -947,6 +949,9 @@ int RGWRadosList::handle_stat_result(RGWRados::Object::Stat::Result& result,
       oid << "\"" << dendl;
     return 0;
   }
+
+  bucket_name = bucket.name;
+  obj_key = result.obj.key;
 
   if (!result.has_manifest) {
     /* a very very old object, or part of a multipart upload during upload */
@@ -1047,7 +1052,9 @@ int RGWRadosList::pop_and_handle_stat_op(
   RGWObjectCtx& obj_ctx,
   std::deque<RGWRados::Object::Stat>& ops)
 {
-  std::set<string> obj_oids;
+  std::string bucket_name;
+  rgw_obj_key obj_key;
+  std::set<std::string> obj_oids;
   RGWRados::Object::Stat& front_op = ops.front();
 
   int ret = front_op.wait();
@@ -1059,7 +1066,7 @@ int RGWRadosList::pop_and_handle_stat_op(
     goto done;
   }
 
-  ret = handle_stat_result(front_op.result, obj_oids);
+  ret = handle_stat_result(front_op.result, bucket_name, obj_key, obj_oids);
   if (ret < 0) {
     lderr(store->ctx()) << "ERROR: handle_stat_result() returned error: " <<
       cpp_strerror(-ret) << dendl;
@@ -1067,7 +1074,14 @@ int RGWRadosList::pop_and_handle_stat_op(
 
   // output results
   for (const auto& o : obj_oids) {
-    std::cout << o << std::endl;
+    if (include_rgw_obj_name) {
+      std::cout << o <<
+	field_separator << bucket_name <<
+	field_separator << obj_key <<
+	std::endl;
+    } else {
+      std::cout << o << std::endl;
+    }
   }
 
 done:
@@ -1333,6 +1347,7 @@ int RGWRadosList::run(const std::string& start_bucket_name)
 {
   RGWSysObjectCtx sys_obj_ctx = store->svc.sysobj->init_obj_ctx();
   RGWObjectCtx obj_ctx(store);
+  RGWBucketInfo bucket_info;
   int ret;
 
   add_bucket_entire(start_bucket_name);
@@ -1405,10 +1420,13 @@ int RGWRadosList::run(const std::string& start_bucket_name)
     }
   } // while (! bucket_process_map.empty())
 
+  if (include_rgw_obj_name) {
+    goto done;
+  }
+
   // now handle incomplete multipart uploads by going back to the
   // initial bucket
 
-  RGWBucketInfo bucket_info;
   ret = store->get_bucket_info(sys_obj_ctx,
 			       tenant_name, start_bucket_name, bucket_info,
 			       nullptr, nullptr);
@@ -1427,6 +1445,8 @@ int RGWRadosList::run(const std::string& start_bucket_name)
       ": ERROR: do_incomplete_multipart returned ret=" << ret << dendl;
     return ret;
   }
+
+done:
 
   return 0;
 } // RGWRadosList::run(string)
@@ -1459,7 +1479,7 @@ int RGWRadosList::do_incomplete_multipart(
 			       &is_listing_truncated);
     if (ret == -ENOENT) {
       // could bucket have been removed while this is running?
-      ldout(store->ctx(), 20) << "RGWRadosList::" << __func__ <<
+      ldout(store->ctx(), 5) << "RGWRadosList::" << __func__ <<
 	": WARNING: call to list_objects of multipart namespace got ENOENT; "
 	"assuming bucket removal race" << dendl;
       break;
@@ -1486,22 +1506,27 @@ int RGWRadosList::do_incomplete_multipart(
       }
 
       // now process the uploads vector
-      int parts_marker = 0;
-      bool is_parts_truncated = false;
-      do {
-	map<uint32_t, RGWUploadPartInfo> parts;
+      for (const auto& upload : uploads) {
+	const RGWMPObj& mp = upload.mp;
+	int parts_marker = 0;
+	bool is_parts_truncated = false;
 
-	for (const auto& upload : uploads) {
-	  const RGWMPObj& mp = upload.mp;
+	do { // while (is_parts_truncated);
+	  std::map<uint32_t, RGWUploadPartInfo> parts;
 	  ret = list_multipart_parts(store, bucket_info, store->ctx(),
 				     mp.get_upload_id(), mp.get_meta(),
-				     max_parts,
-				     parts_marker, parts, NULL, &is_parts_truncated);
+				     max_parts, parts_marker,
+				     parts, &parts_marker,
+				     &is_parts_truncated);
 	  if (ret == -ENOENT) {
-	    continue;
+	    ldout(store->ctx(), 5) << "RGWRadosList::" << __func__ <<
+	      ": WARNING: list_multipart_parts returned ret=-ENOENT "
+	      "for " << mp.get_upload_id() << ", moving on" << dendl;
+	    break;
 	  } else if (ret < 0) {
 	    lderr(store->ctx()) << "RGWRadosList::" << __func__ <<
-	      ": ERROR: list_multipart_parts returned ret=" << ret << dendl;
+	      ": ERROR: list_multipart_parts returned ret=" << ret <<
+	      dendl;
 	    return ret;
 	  }
 
@@ -1512,10 +1537,10 @@ int RGWRadosList::do_incomplete_multipart(
 		 ++obj_it) {
 	      const rgw_raw_obj& loc = obj_it.get_location().get_raw_obj(store);
 	      std::cout << loc.oid << std::endl;
-	    }
-	  }
-	}
-      } while (is_parts_truncated);
+	    } // for (auto obj_it
+	  } // for (auto& p
+	} while (is_parts_truncated);
+      } // for (const auto& upload
     } // if objs not empty
   } while (is_listing_truncated);
 

@@ -159,48 +159,7 @@ MDCache::MDCache(MDSRank *m, PurgeQueue &purge_queue_) :
 
   decayrate.set_halflife(g_conf()->mds_decay_halflife);
 
-  upkeeper = std::thread([this]() {
-    std::unique_lock lock(upkeep_mutex);
-    while (!upkeep_trim_shutdown.load()) {
-      auto now = clock::now();
-      auto since = now-upkeep_last_trim;
-      auto trim_interval = clock::duration(g_conf().get_val<std::chrono::seconds>("mds_cache_trim_interval"));
-      if (since >= trim_interval*.90) {
-        lock.unlock(); /* mds_lock -> upkeep_mutex */
-        std::scoped_lock mds_lock(mds->mds_lock);
-        lock.lock();
-        if (upkeep_trim_shutdown.load())
-          return;
-        if (mds->is_cache_trimmable()) {
-          dout(20) << "upkeep thread trimming cache; last trim " << since << " ago" << dendl;
-          trim_client_leases();
-          trim();
-          check_memory_usage();
-          auto flags = Server::RecallFlags::ENFORCE_MAX|Server::RecallFlags::ENFORCE_LIVENESS;
-          mds->server->recall_client_state(nullptr, flags);
-          upkeep_last_trim = clock::now();
-          upkeep_last_trim = now = clock::now();
-        } else {
-          dout(10) << "cache not ready for trimming" << dendl;
-        }
-      } else {
-        trim_interval -= since;
-      }
-      since = now-upkeep_last_release;
-      auto release_interval = clock::duration(g_conf().get_val<std::chrono::seconds>("mds_cache_release_free_interval"));
-      if (since >= release_interval*.90) {
-        /* XXX not necessary once MDCache uses PriorityCache */
-        dout(10) << "releasing free memory" << dendl;
-        ceph_heap_release_free_memory();
-        upkeep_last_release = clock::now();
-      } else {
-        release_interval -= since;
-      }
-      auto interval = std::min(release_interval, trim_interval);
-      dout(20) << "upkeep thread waiting interval " << interval << dendl;
-      upkeep_cvar.wait_for(lock, interval);
-    }
-  });
+  upkeeper = std::thread(&MDCache::upkeep_main, this);
 }
 
 MDCache::~MDCache() 
@@ -289,7 +248,7 @@ void MDCache::add_inode(CInode *in)
   }
 
   if (in->ino() < MDS_INO_SYSTEM_BASE) {
-    if (in->ino() == MDS_INO_ROOT)
+    if (in->ino() == CEPH_INO_ROOT)
       root = in;
     else if (in->ino() == MDS_INO_MDSDIR(mds->get_nodeid()))
       myin = in;
@@ -300,10 +259,6 @@ void MDCache::add_inode(CInode *in)
     }
     if (in->is_base())
       base_inodes.insert(in);
-  }
-
-  if (cache_toofull()) {
-    exceeded_size_limit = true;
   }
 }
 
@@ -432,7 +387,7 @@ CInode *MDCache::create_system_inode(inodeno_t ino, int mode)
 
 CInode *MDCache::create_root_inode()
 {
-  CInode *i = create_system_inode(MDS_INO_ROOT, S_IFDIR|0755);
+  CInode *i = create_system_inode(CEPH_INO_ROOT, S_IFDIR|0755);
   i->inode.uid = g_conf()->mds_root_ino_uid;
   i->inode.gid = g_conf()->mds_root_ino_gid;
   i->inode.layout = default_file_layout;
@@ -625,10 +580,10 @@ void MDCache::open_root_inode(MDSContext *c)
 {
   if (mds->get_nodeid() == mds->mdsmap->get_root()) {
     CInode *in;
-    in = create_system_inode(MDS_INO_ROOT, S_IFDIR|0755);  // initially inaccurate!
+    in = create_system_inode(CEPH_INO_ROOT, S_IFDIR|0755);  // initially inaccurate!
     in->fetch(c);
   } else {
-    discover_base_ino(MDS_INO_ROOT, c, mds->mdsmap->get_root());
+    discover_base_ino(CEPH_INO_ROOT, c, mds->mdsmap->get_root());
   }
 }
 
@@ -1025,7 +980,7 @@ void MDCache::adjust_bounded_subtree_auth(CDir *dir, const set<CDir*>& bounds, m
   show_subtrees();
 
   CDir *root;
-  if (dir->ino() == MDS_INO_ROOT) {
+  if (dir->ino() == CEPH_INO_ROOT) {
     root = dir;  // bootstrap hack.
     if (subtrees.count(root) == 0) {
       subtrees[root];
@@ -6631,7 +6586,7 @@ std::pair<bool, uint64_t> MDCache::trim_lru(uint64_t count, expiremap& expiremap
   unexpirables.clear();
 
   // trim dentries from the LRU until count is reached
-  // if mds is in standbyreplay and will trim all inodes which aren't in segments
+  // if mds is in standby_replay and skip trimming the inodes
   while (!throttled && (cache_toofull() || count > 0 || is_standby_replay)) {
     throttled |= trim_counter_start+trimmed >= trim_threshold;
     if (throttled) break;
@@ -6639,8 +6594,7 @@ std::pair<bool, uint64_t> MDCache::trim_lru(uint64_t count, expiremap& expiremap
     if (!dn) {
       break;
     }
-    if ((is_standby_replay && dn->get_linkage()->inode &&
-        dn->get_linkage()->inode->item_open_file.is_on_list())) {
+    if (is_standby_replay && dn->get_linkage()->inode) {
       // we move the inodes that need to be trimmed to the end of the lru queue.
       // refer to MDCache::standby_trim_segment
       lru.lru_insert_bot(dn);
@@ -7636,7 +7590,6 @@ void MDCache::trim_client_leases()
   }
 }
 
-
 void MDCache::check_memory_usage()
 {
   static MemoryModel mm(g_ceph_context);
@@ -7662,24 +7615,6 @@ void MDCache::check_memory_usage()
   mds->update_mlogger();
   mds->mlogger->set(l_mdm_rss, last.get_rss());
   mds->mlogger->set(l_mdm_heap, last.get_heap());
-
-  if (cache_toofull()) {
-    mds->server->recall_client_state(nullptr, Server::RecallFlags::TRIM);
-  }
-
-  // If the cache size had exceeded its limit, but we're back in bounds
-  // now, free any unused pool memory so that our memory usage isn't
-  // permanently bloated.
-  if (exceeded_size_limit && !cache_toofull()) {
-    // Only do this once we are back in bounds: otherwise the releases would
-    // slow down whatever process caused us to exceed bounds to begin with
-    if (ceph_using_tcmalloc()) {
-      dout(5) << "check_memory_usage: releasing unused space from tcmalloc"
-	      << dendl;
-      ceph_heap_release_free_memory();
-    }
-    exceeded_size_limit = false;
-  }
 }
 
 
@@ -9613,7 +9548,7 @@ void MDCache::request_kill(MDRequestRef& mdr)
 void MDCache::create_global_snaprealm()
 {
   CInode *in = new CInode(this); // dummy inode
-  create_unlinked_system_inode(in, MDS_INO_GLOBAL_SNAPREALM, S_IFDIR|0755);
+  create_unlinked_system_inode(in, CEPH_INO_GLOBAL_SNAPREALM, S_IFDIR|0755);
   add_inode(in);
   global_snaprealm = in->snaprealm;
 }
@@ -10596,7 +10531,7 @@ CInode *MDCache::add_replica_inode(bufferlist::const_iterator& p, CDentry *dn, M
     in = new CInode(this, false, 1, last);
     in->decode_replica(p, true);
     add_inode(in);
-    if (in->ino() == MDS_INO_ROOT)
+    if (in->ino() == CEPH_INO_ROOT)
       in->inode_auth.first = 0;
     else if (in->is_mdsdir())
       in->inode_auth.first = in->ino() - MDS_INO_MDSDIR_OFFSET;
@@ -11152,7 +11087,7 @@ bool MDCache::can_fragment(CInode *diri, list<CDir*>& dirs)
     dout(7) << "can_fragment: i won't merge|split anything in stray" << dendl;
     return false;
   }
-  if (diri->is_mdsdir() || diri->is_stray() || diri->ino() == MDS_INO_CEPH) {
+  if (diri->is_mdsdir() || diri->is_stray() || diri->ino() == CEPH_INO_CEPH) {
     dout(7) << "can_fragment: i won't fragment the mdsdir or straydir or .ceph" << dendl;
     return false;
   }
@@ -12234,7 +12169,7 @@ void MDCache::show_subtrees(int dbl, bool force_print)
     dout(ceph::dout::need_dynamic(dbl)) << indent << "|_" << pad << s
 					<< " " << auth << *dir << dendl;
 
-    if (dir->ino() == MDS_INO_ROOT)
+    if (dir->ino() == CEPH_INO_ROOT)
       ceph_assert(dir->inode == root);
     if (dir->ino() == MDS_INO_MDSDIR(mds->get_nodeid()))
       ceph_assert(dir->inode == myin);
@@ -13082,3 +13017,53 @@ void MDCache::handle_mdsmap(const MDSMap &mdsmap) {
   }
 }
 
+void MDCache::upkeep_main(void)
+{
+  std::unique_lock lock(upkeep_mutex);
+  while (!upkeep_trim_shutdown.load()) {
+    auto now = clock::now();
+    auto since = now-upkeep_last_trim;
+    auto trim_interval = clock::duration(g_conf().get_val<std::chrono::seconds>("mds_cache_trim_interval"));
+    if (since >= trim_interval*.90) {
+      lock.unlock(); /* mds_lock -> upkeep_mutex */
+      std::scoped_lock mds_lock(mds->mds_lock);
+      lock.lock();
+      if (upkeep_trim_shutdown.load())
+        return;
+      check_memory_usage();
+      if (mds->is_cache_trimmable()) {
+        dout(20) << "upkeep thread trimming cache; last trim " << since << " ago" << dendl;
+        bool active_with_clients = mds->is_active() || mds->is_clientreplay() || mds->is_stopping();
+        if (active_with_clients) {
+          trim_client_leases();
+        }
+        trim();
+        if (active_with_clients) {
+          auto recall_flags = Server::RecallFlags::ENFORCE_MAX|Server::RecallFlags::ENFORCE_LIVENESS;
+          if (cache_toofull()) {
+            recall_flags = recall_flags|Server::RecallFlags::TRIM;
+          }
+          mds->server->recall_client_state(nullptr, recall_flags);
+        }
+        upkeep_last_trim = now = clock::now();
+      } else {
+        dout(10) << "cache not ready for trimming" << dendl;
+      }
+    } else {
+      trim_interval -= since;
+    }
+    since = now-upkeep_last_release;
+    auto release_interval = clock::duration(g_conf().get_val<std::chrono::seconds>("mds_cache_release_free_interval"));
+    if (since >= release_interval*.90) {
+      /* XXX not necessary once MDCache uses PriorityCache */
+      dout(10) << "releasing free memory" << dendl;
+      ceph_heap_release_free_memory();
+      upkeep_last_release = clock::now();
+    } else {
+      release_interval -= since;
+    }
+    auto interval = std::min(release_interval, trim_interval);
+    dout(20) << "upkeep thread waiting interval " << interval << dendl;
+    upkeep_cvar.wait_for(lock, interval);
+  }
+}

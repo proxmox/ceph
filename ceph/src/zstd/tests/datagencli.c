@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015-present, Yann Collet, Facebook, Inc.
+ * Copyright (c) 2015-2020, Yann Collet, Facebook, Inc.
  * All rights reserved.
  *
  * This source code is licensed under both the BSD-style license (found in the
@@ -121,7 +121,7 @@ int main(int argc, const char** argv)
     DISPLAYLEVEL(4, "Compressible data Generator \n");
     if (probaU32!=COMPRESSIBILITY_DEFAULT)
         DISPLAYLEVEL(3, "Compressibility : %i%%\n", probaU32);
-    DISPLAYLEVEL(3, "Seed = %u \n", seed);
+    DISPLAYLEVEL(3, "Seed = %u \n", (unsigned)seed);
 
     RDG_genStdout(size, (double)probaU32/100, litProba, seed);
     DISPLAYLEVEL(1, "\n");

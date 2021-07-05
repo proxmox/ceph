@@ -2,12 +2,13 @@
 """Test zstd interoperability between versions"""
 
 # ################################################################
-# Copyright (c) 2016-present, Yann Collet, Facebook, Inc.
+# Copyright (c) 2016-2020, Yann Collet, Facebook, Inc.
 # All rights reserved.
 #
 # This source code is licensed under both the BSD-style license (found in the
 # LICENSE file in the root directory of this source tree) and the GPLv2 (found
 # in the COPYING file in the root directory of this source tree).
+# You may select, at your option, one of the above-listed licenses.
 # ################################################################
 
 import filecmp
@@ -213,7 +214,7 @@ if __name__ == '__main__':
     print('Retrieve all release tags :')
     os.chdir(clone_dir)
     alltags = get_git_tags() + [head]
-    tags = [t for t in alltags if t >= 'v0.4.0']
+    tags = [t for t in alltags if t >= 'v0.5.0']
     print(tags)
 
     # Build all release zstd

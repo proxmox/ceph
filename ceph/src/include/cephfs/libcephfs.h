@@ -790,6 +790,17 @@ int ceph_fsetattrx(struct ceph_mount_info *cmount, int fd, struct ceph_statx *st
 int ceph_chmod(struct ceph_mount_info *cmount, const char *path, mode_t mode);
 
 /**
+ * Change the mode bits (permissions) of a file/directory. If the path is a
+ * symbolic link, it's not de-referenced.
+ *
+ * @param cmount the ceph mount handle to use for performing the chmod.
+ * @param path the path of file/directory to change the mode bits on.
+ * @param mode the new permissions to set.
+ * @returns 0 on success or a negative error code on failure.
+ */
+int ceph_lchmod(struct ceph_mount_info *cmount, const char *path, mode_t mode);
+
+/**
  * Change the mode bits (permissions) of an open file.
  *
  * @param cmount the ceph mount handle to use for performing the chmod.
@@ -1590,6 +1601,10 @@ int ceph_debug_get_file_caps(struct ceph_mount_info *cmount, const char *path);
 /* Low Level */
 struct Inode *ceph_ll_get_inode(struct ceph_mount_info *cmount,
 				vinodeno_t vino);
+
+int ceph_ll_lookup_vino(struct ceph_mount_info *cmount, vinodeno_t vino,
+			Inode **inode);
+
 int ceph_ll_lookup_inode(
     struct ceph_mount_info *cmount,
     struct inodeno_t ino,
