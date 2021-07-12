@@ -6559,6 +6559,7 @@ int PrimaryLogPG::do_osd_ops(OpContext *ctx, vector<OSDOp>& ops)
 	        oi.size - op.extent.truncate_size);
 	      ctx->modified_ranges.union_of(trim);
 	      ctx->clean_regions.mark_data_region_dirty(op.extent.truncate_size, oi.size - op.extent.truncate_size);
+	      oi.clear_data_digest();
 	    }
 	    if (op.extent.truncate_size != oi.size) {
               truncate_update_size_and_usage(ctx->delta_stats,
@@ -12765,7 +12766,6 @@ void PrimaryLogPG::_clear_recovery_state()
   last_backfill_started = hobject_t();
   set<hobject_t>::iterator i = backfills_in_flight.begin();
   while (i != backfills_in_flight.end()) {
-    ceph_assert(recovering.count(*i));
     backfills_in_flight.erase(i++);
   }
 

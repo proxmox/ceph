@@ -18,7 +18,9 @@
 void usage() {
   std::cout << "usage: cephfs-mirror [options...]" << std::endl;
   std::cout << "options:\n";
-  std::cout << "  --log-file=<logfile>  file to log debug output\n";
+  std::cout << "  --mon-host monaddress[:port]  connect to specified monitor\n";
+  std::cout << "  --keyring=<path>              path to keyring for local cluster\n";
+  std::cout << "  --log-file=<logfile>          file to log debug output\n";
   std::cout << "  --debug-cephfs-mirror=<log-level>/<memory-level>  set cephfs-mirror debug level\n";
   generic_server_usage();
 }
@@ -75,6 +77,7 @@ int main(int argc, const char **argv) {
   }
 
   init_async_signal_handler();
+  register_async_signal_handler(SIGHUP, handle_signal);
   register_async_signal_handler_oneshot(SIGINT, handle_signal);
   register_async_signal_handler_oneshot(SIGTERM, handle_signal);
 
@@ -112,6 +115,7 @@ cleanup_messenger:
   msgr->wait();
   delete msgr;
 
+  unregister_async_signal_handler(SIGHUP, handle_signal);
   unregister_async_signal_handler(SIGINT, handle_signal);
   unregister_async_signal_handler(SIGTERM, handle_signal);
   shutdown_async_signal_handler();

@@ -423,6 +423,26 @@ Note:
   When using docker, as your device, you might need to run the script with sudo
   permissions.
 
+run-cephadm-e2e-tests.sh
+.........................
+
+``run-cephadm-e2e-tests.sh`` runs a subset of E2E tests to verify that the Dashboard and cephadm as
+Orchestrator backend behave correctly.
+
+Prerequisites: you need to install `KCLI
+<https://kcli.readthedocs.io/en/latest/>`_ in your local machine.
+
+Note:
+  This script is aimed to be run as jenkins job so the cleanup is triggered only in a jenkins
+  environment. In local, the user will shutdown the cluster when desired (i.e. after debugging).
+
+Start E2E tests by running::
+
+  $ cd <your/ceph/repo/dir>
+  $ sudo chown -R $(id -un) src/pybind/mgr/dashboard/frontend/dist src/pybind/mgr/dashboard/frontend/node_modules
+  $ ./src/pybind/mgr/dashboard/ci/cephadm/run-cephadm-e2e-tests.sh
+  $ kcli delete plan -y ceph  # After tests finish.
+
 Other running options
 .....................
 
@@ -1466,6 +1486,25 @@ same applies to other request types:
 | DELETE       | Yes        | delete         | 204         |
 +--------------+------------+----------------+-------------+
 
+To use a custom endpoint for the above listed methods, you can
+use ``@RESTController.MethodMap``
+
+.. code-block:: python
+
+  import cherrypy
+  from ..tools import ApiController, RESTController
+
+    @RESTController.MethodMap(version='0.1')
+    def create(self):
+      return {"msg": "Hello"}
+
+This decorator supports three parameters to customize the
+endpoint:
+
+* ``resource"``: resource id.
+* ``status=200``: set the HTTP status response code
+* ``version``: version
+
 How to use a custom API endpoint in a RESTController?
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -1494,7 +1533,7 @@ used. To use a custom endpoint inside a restricted ``RESTController`` use
     def some_post_endpoint(self, **data):
       return {"msg": data}
 
-Both decorators also support four parameters to customize the
+Both decorators also support five parameters to customize the
 endpoint:
 
 * ``method="GET"``: the HTTP method allowed to access this endpoint.
@@ -1503,6 +1542,7 @@ endpoint:
 * ``status=200``: set the HTTP status response code
 * ``query_params=[]``: list of method parameter names that correspond to URL
   query parameters.
+* ``version``: version
 
 How to restrict access to a controller?
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

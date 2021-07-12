@@ -50,9 +50,12 @@ export class HostsPageHelper extends PageHelper {
   }
 
   @PageHelper.restrictTo(pages.create.url)
-  add(hostname: string, exist?: boolean) {
+  add(hostname: string, exist?: boolean, maintenance?: boolean) {
     cy.get(`${this.pages.create.id}`).within(() => {
       cy.get('#hostname').type(hostname);
+      if (maintenance) {
+        cy.get('label[for=maintenance]').click();
+      }
       cy.get('cd-submit-button').click();
     });
     if (exist) {
@@ -120,41 +123,51 @@ export class HostsPageHelper extends PageHelper {
   }
 
   @PageHelper.restrictTo(pages.index.url)
-  maintenance(hostname: string, exit = false) {
-    let services: string[];
-    let runTest = false;
-    this.getTableCell(this.columnIndex.hostname, hostname)
-      .parent()
-      .find(`datatable-body-cell:nth-child(${this.columnIndex.services}) a`)
-      .should(($el) => {
-        services = $el.text().split(', ');
-        if (services.length < 2 && services[0].includes('osd')) {
-          runTest = true;
-        }
-      });
-    if (runTest) {
+  maintenance(hostname: string, exit = false, force = false) {
+    if (force) {
       this.getTableCell(this.columnIndex.hostname, hostname).click();
-      if (exit) {
-        this.clickActionButton('exit-maintenance');
+      this.clickActionButton('enter-maintenance');
 
-        this.getTableCell(this.columnIndex.hostname, hostname)
-          .parent()
-          .find(`datatable-body-cell:nth-child(${this.columnIndex.status}) .badge`)
-          .should(($ele) => {
-            const status = $ele.toArray().map((v) => v.innerText);
-            expect(status).to.not.include('maintenance');
-          });
-      } else {
-        this.clickActionButton('enter-maintenance');
+      cy.contains('cd-modal button', 'Continue').click();
 
-        this.getTableCell(this.columnIndex.hostname, hostname)
-          .parent()
-          .find(`datatable-body-cell:nth-child(${this.columnIndex.status}) .badge`)
-          .should(($ele) => {
-            const status = $ele.toArray().map((v) => v.innerText);
-            expect(status).to.include('maintenance');
-          });
-      }
+      this.getTableCell(this.columnIndex.hostname, hostname)
+        .parent()
+        .find(`datatable-body-cell:nth-child(${this.columnIndex.status}) .badge`)
+        .should(($ele) => {
+          const status = $ele.toArray().map((v) => v.innerText);
+          expect(status).to.include('maintenance');
+        });
+    }
+    if (exit) {
+      this.getTableCell(this.columnIndex.hostname, hostname)
+        .click()
+        .parent()
+        .find(`datatable-body-cell:nth-child(${this.columnIndex.status})`)
+        .then(($ele) => {
+          const status = $ele.toArray().map((v) => v.innerText);
+          if (status[0].includes('maintenance')) {
+            this.clickActionButton('exit-maintenance');
+          }
+        });
+
+      this.getTableCell(this.columnIndex.hostname, hostname)
+        .parent()
+        .find(`datatable-body-cell:nth-child(${this.columnIndex.status})`)
+        .should(($ele) => {
+          const status = $ele.toArray().map((v) => v.innerText);
+          expect(status).to.not.include('maintenance');
+        });
+    } else {
+      this.getTableCell(this.columnIndex.hostname, hostname).click();
+      this.clickActionButton('enter-maintenance');
+
+      this.getTableCell(this.columnIndex.hostname, hostname)
+        .parent()
+        .find(`datatable-body-cell:nth-child(${this.columnIndex.status}) .badge`)
+        .should(($ele) => {
+          const status = $ele.toArray().map((v) => v.innerText);
+          expect(status).to.include('maintenance');
+        });
     }
   }
 }

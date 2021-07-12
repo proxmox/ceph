@@ -19,6 +19,7 @@ from collections import defaultdict
 from enum import IntEnum
 import rados
 import re
+import socket
 import sys
 import time
 from ceph_argparse import CephArgtype
@@ -220,6 +221,9 @@ class CRUSHMap(ceph_module.BasePyCRUSH):
 
     def find_takes(self) -> List[int]:
         return self._find_takes().get('takes', [])
+
+    def find_roots(self) -> List[int]:
+        return self._find_roots().get('roots', [])
 
     def get_take_weight_osd_map(self, root: int) -> Dict[int, float]:
         uglymap = self._get_take_weight_osd_map(root)
@@ -790,6 +794,15 @@ class MgrStandbyModule(ceph_module.BaseMgrStandbyModule, MgrModuleLoggingMixin):
 
     def get_active_uri(self) -> str:
         return self._ceph_get_active_uri()
+
+    def get(self, data_name: str):
+        return self._ceph_get(data_name)
+
+    def get_mgr_ip(self) -> str:
+        ips = self.get("mgr_ips").get('ips', [])
+        if not ips:
+            return socket.gethostname()
+        return ips[0]
 
     def get_localized_module_option(self, key: str, default: OptionValue = None) -> OptionValue:
         r = self._ceph_get_module_option(key, self.get_mgr_id())
@@ -1368,6 +1381,15 @@ class MgrModule(ceph_module.BaseMgrModule, MgrModuleLoggingMixin):
         :return: str
         """
         return self._ceph_get_mgr_id()
+
+    def get_ceph_conf_path(self) -> str:
+        return self._ceph_get_ceph_conf_path()
+
+    def get_mgr_ip(self) -> str:
+        ips = self.get("mgr_ips").get('ips', [])
+        if not ips:
+            return socket.gethostname()
+        return ips[0]
 
     def get_ceph_option(self, key: str) -> OptionValue:
         return self._ceph_get_option(key)

@@ -226,7 +226,6 @@ Package: ceph-mgr
 Architecture: linux-any
 Depends: ceph-base (= ${binary:Version}),
          ceph-mgr-modules-core (= ${binary:Version}),
-         libsqlite3-mod-ceph,
          python3-bcrypt,
          python3-cherrypy3,
          python3-distutils,
@@ -302,7 +301,6 @@ Depends: ${misc:Depends},
          python3-openssl,
 Replaces: ceph-mgr (<< 15.1.0)
 Breaks: ceph-mgr (<< 15.1.0)
-Recommends: ceph-mgr-rook
 Description: ceph manager modules which are always enabled
  Ceph is a massively scalable, open-source, distributed
  storage system that runs on commodity hardware and delivers object,

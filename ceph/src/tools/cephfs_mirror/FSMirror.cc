@@ -136,12 +136,23 @@ void FSMirror::cleanup() {
   m_cluster.reset();
 }
 
+void FSMirror::reopen_logs() {
+  std::scoped_lock locker(m_lock);
+
+  if (m_cluster) {
+    reinterpret_cast<CephContext *>(m_cluster->cct())->reopen_logs();
+  }
+  for (auto &[peer, replayer] : m_peer_replayers) {
+    replayer->reopen_logs();
+  }
+}
+
 void FSMirror::init(Context *on_finish) {
   dout(20) << dendl;
 
   std::scoped_lock locker(m_lock);
   int r = connect(g_ceph_context->_conf->name.to_str(),
-                  g_ceph_context->_conf->cluster, &m_cluster);
+                  g_ceph_context->_conf->cluster, &m_cluster, "", "", m_args);
   if (r < 0) {
     m_init_failed = true;
     on_finish->complete(r);

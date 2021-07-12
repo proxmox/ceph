@@ -8,7 +8,7 @@ import orchestrator
 from cephadm.serve import CephadmServe
 from cephadm.services.cephadmservice import CephadmDaemonDeploySpec
 from cephadm.utils import ceph_release_to_major, name_to_config_section, CEPH_UPGRADE_ORDER, MONITORING_STACK_TYPES
-from orchestrator import OrchestratorError, DaemonDescription, daemon_type_to_service
+from orchestrator import OrchestratorError, DaemonDescription, DaemonDescriptionStatus, daemon_type_to_service
 
 if TYPE_CHECKING:
     from .module import CephadmOrchestrator
@@ -199,6 +199,13 @@ class CephadmUpgrade:
                 self._save_upgrade_state()
                 return 'Resumed upgrade to %s' % self.target_image
             return 'Upgrade to %s in progress' % self.target_image
+
+        running_mgr_count = len([daemon for daemon in self.mgr.cache.get_daemons_by_type(
+            'mgr') if daemon.status == DaemonDescriptionStatus.running])
+
+        if running_mgr_count < 2:
+            raise OrchestratorError('Need at least 2 running mgr daemons for upgrade')
+
         self.mgr.log.info('Upgrade: Started with target %s' % target_name)
         self.upgrade_state = UpgradeState(
             target_name=target_name,
@@ -413,6 +420,44 @@ class CephadmUpgrade:
 
         return continue_upgrade
 
+    def _enough_mons_for_ok_to_stop(self) -> bool:
+        # type () -> bool
+        ret, out, err = self.mgr.check_mon_command({
+            'prefix': 'quorum_status',
+        })
+        try:
+            j = json.loads(out)
+        except Exception:
+            raise OrchestratorError('failed to parse quorum status')
+
+        mons = [m['name'] for m in j['monmap']['mons']]
+        return len(mons) > 2
+
+    def _enough_mds_for_ok_to_stop(self, mds_daemon: DaemonDescription) -> bool:
+        # type (DaemonDescription) -> bool
+
+        # find fs this mds daemon belongs to
+        fsmap = self.mgr.get("fs_map")
+        for i in fsmap.get('filesystems', []):
+            fs = i["mdsmap"]
+            fs_name = fs["fs_name"]
+
+            assert mds_daemon.daemon_id
+            if fs_name != mds_daemon.service_name().split('.', 1)[1]:
+                # wrong fs for this mds daemon
+                continue
+
+            # get number of mds daemons for this fs
+            mds_count = len(
+                [daemon for daemon in self.mgr.cache.get_daemons_by_service(mds_daemon.service_name())])
+
+            # standby mds daemons for this fs?
+            if fs["max_mds"] < mds_count:
+                return True
+            return False
+
+        return True  # if mds has no fs it should pass ok-to-stop
+
     def _do_upgrade(self):
         # type: () -> None
         if not self.upgrade_state:
@@ -560,9 +605,17 @@ class CephadmUpgrade:
                         to_upgrade.append(d_entry)
                     continue
 
-                if d.daemon_type in ['mon', 'osd', 'mds']:
+                if d.daemon_type == 'osd':
                     # NOTE: known_ok_to_stop is an output argument for
                     # _wait_for_ok_to_stop
+                    if not self._wait_for_ok_to_stop(d, known_ok_to_stop):
+                        return
+
+                if d.daemon_type == 'mon' and self._enough_mons_for_ok_to_stop():
+                    if not self._wait_for_ok_to_stop(d, known_ok_to_stop):
+                        return
+
+                if d.daemon_type == 'mds' and self._enough_mds_for_ok_to_stop(d):
                     if not self._wait_for_ok_to_stop(d, known_ok_to_stop):
                         return
 

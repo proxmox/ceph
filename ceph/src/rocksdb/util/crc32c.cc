@@ -25,7 +25,9 @@
 #include "util/crc32c_ppc_constants.h"
 
 #if __linux__
+#ifdef ROCKSDB_AUXV_GETAUXVAL_PRESENT
 #include <sys/auxv.h>
+#endif
 
 #ifndef PPC_FEATURE2_VEC_CRYPTO
 #define PPC_FEATURE2_VEC_CRYPTO 0x02000000
@@ -37,6 +39,10 @@
 
 #endif /* __linux__ */
 
+#endif
+
+#if defined(__linux__) && defined(HAVE_ARM64_CRC)
+bool pmull_runtime_flag = false;
 #endif
 
 namespace ROCKSDB_NAMESPACE {
@@ -451,7 +457,7 @@ uint32_t ExtendPPCImpl(uint32_t crc, const char *buf, size_t size) {
 static int arch_ppc_probe(void) {
   arch_ppc_crc32 = 0;
 
-#if defined(__powerpc64__)
+#if defined(__powerpc64__) && defined(ROCKSDB_AUXV_GETAUXVAL_PRESENT)
   if (getauxval(AT_HWCAP2) & PPC_FEATURE2_VEC_CRYPTO) arch_ppc_crc32 = 1;
 #endif /* __powerpc64__ */
 
@@ -492,6 +498,7 @@ std::string IsFastCrc32Supported() {
   if (crc32c_runtime_check()) {
     has_fast_crc = true;
     arch = "Arm64";
+    pmull_runtime_flag = crc32c_pmull_runtime_check();
   } else {
     has_fast_crc = false;
     arch = "Arm64";
@@ -1222,6 +1229,7 @@ static inline Function Choose_Extend() {
   return isAltiVec() ? ExtendPPCImpl : ExtendImpl<Slow_CRC32>;
 #elif defined(__linux__) && defined(HAVE_ARM64_CRC)
   if(crc32c_runtime_check()) {
+    pmull_runtime_flag = crc32c_pmull_runtime_check();
     return ExtendARMImpl;
   } else {
     return ExtendImpl<Slow_CRC32>;
