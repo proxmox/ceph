@@ -50,6 +50,7 @@ import platform
 import pwd
 import random
 import select
+import shlex
 import shutil
 import socket
 import string
@@ -712,6 +713,9 @@ def get_supported_daemons():
 
 ##################################
 
+class PortOccupiedError(Error):
+    pass
+
 
 def attempt_bind(s, address, port):
     # type: (socket.socket, str, int) -> None
@@ -719,12 +723,12 @@ def attempt_bind(s, address, port):
         s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         s.bind((address, port))
     except (socket.error, OSError) as e:  # py2 and py3
-        msg = 'Cannot bind to IP %s port %d: %s' % (address, port, e)
-        logger.warning(msg)
         if e.errno == errno.EADDRINUSE:
-            raise OSError(msg)
-        elif e.errno == errno.EADDRNOTAVAIL:
-            pass
+            msg = 'Cannot bind to IP %s port %d: %s' % (address, port, e)
+            logger.warning(msg)
+            raise PortOccupiedError(msg)
+        else:
+            raise e
     finally:
         s.close()
 
@@ -733,16 +737,26 @@ def port_in_use(port_num):
     # type: (int) -> bool
     """Detect whether a port is in use on the local machine - IPv4 and IPv6"""
     logger.info('Verifying port %d ...' % port_num)
-    try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        attempt_bind(s, '0.0.0.0', port_num)
-
-        s = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
-        attempt_bind(s, '::', port_num)
-    except OSError:
-        return True
-    else:
+    def _port_in_use(af, address):
+        # type: (socket.AddressFamily, str) -> bool
+        try:
+            s = socket.socket(af, socket.SOCK_STREAM)
+            attempt_bind(s, address, port_num)
+        except PortOccupiedError:
+            return True
+        except OSError as e:
+            if e.errno in (errno.EAFNOSUPPORT, errno.EADDRNOTAVAIL):
+                # Ignore EAFNOSUPPORT and EADDRNOTAVAIL as two interfaces are
+                # being tested here and one might be intentionally be disabled.
+                # In that case no error should be raised.
+                return False
+            else:
+                raise e
         return False
+    return any(_port_in_use(af, address) for af, address in (
+        (socket.AF_INET, '0.0.0.0'),
+        (socket.AF_INET6, '::')
+    ))
 
 
 def check_ip_port(ip, port):
@@ -754,10 +768,7 @@ def check_ip_port(ip, port):
             ip = unwrap_ipv6(ip)
         else:
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        try:
-            attempt_bind(s, ip, port)
-        except OSError as e:
-            raise Error(e)
+        attempt_bind(s, ip, port)
 
 ##################################
 
@@ -1765,7 +1776,7 @@ def get_daemon_args(fsid, daemon_type, daemon_id):
             '--setgroup', 'ceph',
             '--default-log-to-file=false',
             '--default-log-to-stderr=true',
-            '--default-log-stderr-prefix="debug "',
+            '--default-log-stderr-prefix=debug ',
         ]
         if daemon_type == 'mon':
             r += [
@@ -1814,7 +1825,6 @@ def create_daemon_dirs(fsid, daemon_type, daemon_id, uid, gid,
 
     if daemon_type in Monitoring.components.keys():
         config_json: Dict[str, Any] = get_parm(args.config_json)
-        required_files = Monitoring.components[daemon_type].get('config-json-files', list())
 
         # Set up directories specific to the monitoring component
         config_dir = ''
@@ -1838,10 +1848,14 @@ def create_daemon_dirs(fsid, daemon_type, daemon_id, uid, gid,
             makedirs(os.path.join(data_dir_root, config_dir, 'data'), uid, gid, 0o755)
 
         # populate the config directory for the component from the config-json
-        for fname in required_files:
-            if 'files' in config_json:  # type: ignore
+        if 'files' in config_json:
+            for fname in config_json['files']:
                 content = dict_get_join(config_json['files'], fname)
-                with open(os.path.join(data_dir_root, config_dir, fname), 'w') as f:
+                if os.path.isabs(fname):
+                    fpath = os.path.join(data_dir_root, fname.lstrip(os.path.sep))
+                else:
+                    fpath = os.path.join(data_dir_root, config_dir, fname)
+                with open(fpath, 'w', encoding='utf-8') as f:
                     os.fchown(f.fileno(), uid, gid)
                     os.fchmod(f.fileno(), 0o600)
                     f.write(content)
@@ -2230,10 +2244,15 @@ def _write_container_cmd_to_bash(file_obj, container, comment=None, background=F
     file_obj.write('! '+ ' '.join(container.rm_cmd()) + ' 2> /dev/null\n')
     # Sometimes, `podman rm` doesn't find the container. Then you'll have to add `--storage`
     if 'podman' in container_path:
-        file_obj.write('! '+ ' '.join(container.rm_cmd(storage=True)) + ' 2> /dev/null\n')
+        file_obj.write(
+            '! '
+            + ' '.join([shlex.quote(a) for a in container.rm_cmd(storage=True)])
+            + ' 2> /dev/null\n')
 
     # container run command
-    file_obj.write(' '.join(container.run_cmd()) + (' &' if background else '') + '\n')
+    file_obj.write(
+        ' '.join([shlex.quote(a) for a in container.run_cmd()])
+        + (' &' if background else '') + '\n')
 
 
 def deploy_daemon_units(fsid, uid, gid, daemon_type, daemon_id, c,

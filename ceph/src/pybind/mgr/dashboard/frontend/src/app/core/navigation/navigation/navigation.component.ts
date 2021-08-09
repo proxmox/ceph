@@ -1,5 +1,6 @@
 import { Component, HostBinding, OnDestroy, OnInit } from '@angular/core';
 
+import * as _ from 'lodash';
 import { Subscription } from 'rxjs';
 
 import { Icons } from '../../../shared/enum/icons.enum';
@@ -9,6 +10,7 @@ import {
   FeatureTogglesMap$,
   FeatureTogglesService
 } from '../../../shared/services/feature-toggles.service';
+import { MotdNotificationService } from '../../../shared/services/motd-notification.service';
 import { PrometheusAlertService } from '../../../shared/services/prometheus-alert.service';
 import { SummaryService } from '../../../shared/services/summary.service';
 import { TelemetryNotificationService } from '../../../shared/services/telemetry-notification.service';
@@ -29,7 +31,7 @@ export class NavigationComponent implements OnInit, OnDestroy {
   summaryData: any;
   icons = Icons;
 
-  isCollapsed = true;
+  rightSidebarOpen = false; // rightSidebar only opens when width is less than 768px
   showMenuSidebar = true;
   displayedSubMenu = '';
 
@@ -43,7 +45,8 @@ export class NavigationComponent implements OnInit, OnDestroy {
     private summaryService: SummaryService,
     private featureToggles: FeatureTogglesService,
     private telemetryNotificationService: TelemetryNotificationService,
-    public prometheusAlertService: PrometheusAlertService
+    public prometheusAlertService: PrometheusAlertService,
+    private motdNotificationService: MotdNotificationService
   ) {
     this.permissions = this.authStorageService.getPermissions();
     this.enabledFeature$ = this.featureToggles.get();
@@ -70,6 +73,11 @@ export class NavigationComponent implements OnInit, OnDestroy {
         this.showTopNotification('telemetryNotificationEnabled', visible);
       })
     );
+    this.subs.add(
+      this.motdNotificationService.motd$.subscribe((motd: any) => {
+        this.showTopNotification('motdNotificationEnabled', _.isPlainObject(motd));
+      })
+    );
   }
 
   ngOnDestroy(): void {
@@ -94,6 +102,10 @@ export class NavigationComponent implements OnInit, OnDestroy {
     } else {
       this.displayedSubMenu = menu;
     }
+  }
+
+  toggleRightSidebar() {
+    this.rightSidebarOpen = !this.rightSidebarOpen;
   }
 
   showTopNotification(name: string, isDisplayed: boolean) {

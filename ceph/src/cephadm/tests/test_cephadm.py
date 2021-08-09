@@ -1,9 +1,9 @@
 # type: ignore
 import mock
-from mock import patch
-import os
-import sys
+from mock import patch, call
 import unittest
+import errno
+import socket
 
 import pytest
 
@@ -21,6 +21,97 @@ class TestCephAdm(object):
         cd.container_path = '/usr/sbin/podman'
         r = cd.get_unit_file('9b9d7609-f4d5-4aba-94c8-effa764d96c9')
         assert 'Requires=docker.service' not in r
+
+    def test_attempt_bind(self):
+        cd.logger = mock.Mock()
+        address = None
+        port = 0
+
+        def os_error(errno):
+            _os_error = OSError()
+            _os_error.errno = errno
+            return _os_error
+
+        for side_effect, expected_exception in (
+            (os_error(errno.EADDRINUSE), cd.PortOccupiedError),
+            (os_error(errno.EAFNOSUPPORT), OSError),
+            (os_error(errno.EADDRNOTAVAIL), OSError),
+            (None, None),
+        ):
+            _socket = mock.Mock()
+            _socket.bind.side_effect = side_effect
+            try:
+                cd.attempt_bind(_socket, address, port)
+            except Exception as e:
+                assert isinstance(e, expected_exception)
+            else:
+                if expected_exception is not None:
+                    assert False, '{} should not be None'.format(expected_exception)
+
+    @mock.patch('cephadm.attempt_bind')
+    def test_port_in_use(self, attempt_bind):
+
+        assert cd.port_in_use(9100) == False
+
+        attempt_bind.side_effect = cd.PortOccupiedError('msg')
+        assert cd.port_in_use(9100) == True
+
+        os_error = OSError()
+        os_error.errno = errno.EADDRNOTAVAIL
+        attempt_bind.side_effect = os_error
+        assert cd.port_in_use(9100) == False
+
+        os_error = OSError()
+        os_error.errno = errno.EAFNOSUPPORT
+        attempt_bind.side_effect = os_error
+        assert cd.port_in_use(9100) == False
+
+    @mock.patch('socket.socket')
+    @mock.patch('cephadm.args')
+    def test_check_ip_port_success(self, args, _socket):
+        args.skip_ping_check = False
+
+        for address, address_family in (
+            ('0.0.0.0', socket.AF_INET),
+            ('::', socket.AF_INET6),
+        ):
+            try:
+                cd.check_ip_port(address, 9100)
+            except:
+                assert False
+            else:
+                assert _socket.call_args == call(address_family, socket.SOCK_STREAM)
+
+    @mock.patch('socket.socket')
+    @mock.patch('cephadm.args')
+    def test_check_ip_port_failure(self, args, _socket):
+        args.skip_ping_check = False
+
+        def os_error(errno):
+            _os_error = OSError()
+            _os_error.errno = errno
+            return _os_error
+
+        for address, address_family in (
+            ('0.0.0.0', socket.AF_INET),
+            ('::', socket.AF_INET6),
+        ):
+            for side_effect, expected_exception in (
+                (os_error(errno.EADDRINUSE), cd.PortOccupiedError),
+                (os_error(errno.EADDRNOTAVAIL), OSError),
+                (os_error(errno.EAFNOSUPPORT), OSError),
+                (None, None),
+            ):
+                mock_socket_obj = mock.Mock()
+                mock_socket_obj.bind.side_effect = side_effect
+                _socket.return_value = mock_socket_obj
+                try:
+                    cd.check_ip_port(address, 9100)
+                except Exception as e:
+                    assert isinstance(e, expected_exception)
+                else:
+                    assert side_effect is None
+
 
     def test_is_not_fsid(self):
         assert not cd.is_fsid('no-uuid')
@@ -416,3 +507,53 @@ class TestMonitoring(object):
         _call.return_value = '', '{}, version 0.16.1'.format(daemon_type.replace('-', '_')), 0
         version = cd.Monitoring.get_version(ctx, 'container_id', daemon_type)
         assert version == '0.16.1'
+
+    @mock.patch('cephadm.os.fchown')
+    @mock.patch('cephadm.get_parm')
+    @mock.patch('cephadm.makedirs')
+    @mock.patch('cephadm.open')
+    @mock.patch('cephadm.make_log_dir')
+    @mock.patch('cephadm.make_data_dir')
+    @mock.patch('cephadm.args')
+    def test_create_daemon_dirs_prometheus(self, args, make_data_dir, make_log_dir, _open, makedirs,
+                                           get_parm, fchown):
+        """
+        Ensures the required and optional files given in the configuration are
+        created and mapped correctly inside the container. Tests absolute and
+        relative file paths given in the configuration.
+        """
+        args.data_dir = '/somedir'
+        fsid = 'aaf5a720-13fe-4a3b-82b9-2d99b7fd9704'
+        daemon_type = 'prometheus'
+        uid, gid = 50, 50
+        daemon_id = 'home'
+        files = {
+            'files': {
+                'prometheus.yml': 'foo',
+                '/etc/prometheus/alerting/ceph_alerts.yml': 'bar'
+            }
+        }
+        get_parm.return_value = files
+
+        cd.create_daemon_dirs(fsid,
+                              daemon_type,
+                              daemon_id,
+                              uid,
+                              gid,
+                              config=None,
+                              keyring=None)
+
+        prefix = '{data_dir}/{fsid}/{daemon_type}.{daemon_id}'.format(
+            data_dir=args.data_dir,
+            fsid=fsid,
+            daemon_type=daemon_type,
+            daemon_id=daemon_id
+        )
+        assert _open.call_args_list == [
+            call('{}/etc/prometheus/prometheus.yml'.format(prefix), 'w',
+                 encoding='utf-8'),
+            call('{}/etc/prometheus/alerting/ceph_alerts.yml'.format(prefix), 'w',
+                 encoding='utf-8'),
+        ]
+        assert call().__enter__().write('foo') in _open.mock_calls
+        assert call().__enter__().write('bar') in _open.mock_calls
