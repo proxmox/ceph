@@ -34,12 +34,3 @@ index e7a01c6ff8..692705c4c4 100644
  Replaces: ceph (<< 0.93-417),
  Breaks: ceph (<< 0.93-417),
  Description: manager for the ceph distributed storage system
-@@ -304,7 +304,7 @@ Depends: ${misc:Depends},
-          python3-openssl,
- Replaces: ceph-mgr (<< 15.1.0)
- Breaks: ceph-mgr (<< 15.1.0)
--Recommends: ceph-mgr-rook
-+Suggests: ceph-mgr-rook
- Description: ceph manager modules which are always enabled
-  Ceph is a massively scalable, open-source, distributed
-  storage system that runs on commodity hardware and delivers object,
