@@ -3379,6 +3379,8 @@ static inline void intrusive_ptr_release(BlueStore::OpSequencer *o) {
 
 class BlueStoreRepairer
 {
+  ceph::mutex lock = ceph::make_mutex("BlueStore::BlueStoreRepairer::lock");
+
 public:
   // to simplify future potential migration to mempools
   using fsck_interval = interval_set<uint64_t>;
@@ -3521,37 +3523,63 @@ public:
 		      FreelistManager* fm,
 		      uint64_t offset, uint64_t len);
   bool fix_bluefs_extents(std::atomic<uint64_t>& out_of_sync_flag);
-  KeyValueDB::Transaction fix_spanning_blobs(KeyValueDB* db);
-
-  void init(uint64_t total_space, uint64_t lres_tracking_unit_size);
+  bool fix_spanning_blobs(
+    KeyValueDB* db,
+    std::function<void(KeyValueDB::Transaction)> f);
 
   bool preprocess_misreference(KeyValueDB *db);
 
   unsigned apply(KeyValueDB* db);
 
   void note_misreference(uint64_t offs, uint64_t len, bool inc_error) {
+    std::lock_guard l(lock);
     misreferenced_extents.union_insert(offs, len);
     if (inc_error) {
       ++to_repair_cnt;
     }
   }
-  // In fact this is the only repairer's method which is thread-safe!!
+  //////////////////////
+  //In fact two methods below are the only ones in this class which are thread-safe!!
   void inc_repaired() {
     ++to_repair_cnt;
   }
-
-  StoreSpaceTracker& get_space_usage_tracker() {
-    return space_usage_tracker;
+  void request_compaction() {
+    need_compact = true;
   }
+  //////////////////////
+
+  void init_space_usage_tracker(
+    uint64_t total_space, uint64_t lres_tracking_unit_size)
+  {
+    //NB: not for use in multithreading mode!!!
+    space_usage_tracker.init(total_space, lres_tracking_unit_size);
+  }
+  void set_space_used(uint64_t offset, uint64_t len,
+    const coll_t& cid, const ghobject_t& oid) {
+    std::lock_guard l(lock);
+    space_usage_tracker.set_used(offset, len, cid, oid);
+  }
+  inline bool is_used(const coll_t& cid) const {
+    //NB: not for use in multithreading mode!!!
+    return space_usage_tracker.is_used(cid);
+  }
+  inline bool is_used(const ghobject_t& oid) const {
+    //NB: not for use in multithreading mode!!!
+    return space_usage_tracker.is_used(oid);
+  }
+
   const fsck_interval& get_misreferences() const {
+    //NB: not for use in multithreading mode!!!
     return misreferenced_extents;
   }
   KeyValueDB::Transaction get_fix_misreferences_txn() {
+    //NB: not for use in multithreading mode!!!
     return fix_misreferences_txn;
   }
 
 private:
   std::atomic<unsigned> to_repair_cnt = { 0 };
+  std::atomic<bool> need_compact = { false };
   KeyValueDB::Transaction fix_per_pool_omap_txn;
   KeyValueDB::Transaction fix_fm_leaked_txn;
   KeyValueDB::Transaction fix_fm_false_free_txn;
@@ -3674,7 +3702,7 @@ public:
   void* get_hint_for_log() const override {
     return  reinterpret_cast<void*>(LEVEL_LOG);
   }
-  void* get_hint_by_dir(const string& dirname) const override;
+  void* get_hint_by_dir(std::string_view dirname) const override;
 
   void add_usage(void* hint, const bluefs_fnode_t& fnode) override {
     if (hint == nullptr)

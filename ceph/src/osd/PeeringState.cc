@@ -347,11 +347,21 @@ void PeeringState::remove_down_peer_info(const OSDMapRef &osdmap)
       peer_missing.erase(p->first);
       peer_log_requested.erase(p->first);
       peer_missing_requested.erase(p->first);
-      peer_purged.erase(p->first);
       peer_info.erase(p++);
       removed = true;
     } else
       ++p;
+  }
+
+  // Remove any downed osds from peer_purged so we can re-purge if necessary
+  auto it = peer_purged.begin();
+  while (it != peer_purged.end()) {
+    if (!osdmap->is_up(it->osd)) {
+      psdout(10) << " dropping down osd." << *it << " from peer_purged" << dendl;
+      peer_purged.erase(it++);
+    } else {
+      ++it;
+    }
   }
 
   // if we removed anyone, update peers (which include peer_info)
@@ -1008,10 +1018,10 @@ unsigned PeeringState::get_backfill_priority()
   if (state & PG_STATE_FORCED_BACKFILL) {
     ret = OSD_BACKFILL_PRIORITY_FORCED;
   } else {
-    if (acting.size() < pool.info.min_size) {
+    if (actingset.size() < pool.info.min_size) {
       base = OSD_BACKFILL_INACTIVE_PRIORITY_BASE;
       // inactive: no. of replicas < min_size, highest priority since it blocks IO
-      ret = base + (pool.info.min_size - acting.size());
+      ret = base + (pool.info.min_size - actingset.size());
 
     } else if (is_undersized()) {
       // undersized: OSD_BACKFILL_DEGRADED_PRIORITY_BASE + num missing replicas
@@ -2328,7 +2338,7 @@ void PeeringState::activate(
 
   if (is_primary()) {
     // only update primary last_epoch_started if we will go active
-    if (acting.size() >= pool.info.min_size) {
+    if (actingset.size() >= pool.info.min_size) {
       ceph_assert(cct->_conf->osd_find_best_info_ignore_history_les ||
 	     info.last_epoch_started <= activation_epoch);
       info.last_epoch_started = activation_epoch;
@@ -2634,7 +2644,7 @@ void PeeringState::activate(
     state_set(PG_STATE_ACTIVATING);
     pl->on_activate(std::move(to_trim));
   }
-  if (acting.size() >= pool.info.min_size) {
+  if (actingset.size() >= pool.info.min_size) {
     PGLog::LogEntryHandlerRef rollbacker{pl->get_log_handler(t)};
     pg_log.roll_forward(rollbacker.get());
   }
@@ -5864,7 +5874,7 @@ boost::statechart::result PeeringState::Active::react(const AllReplicasActivated
 	pl->set_not_ready_to_merge_source(pgid);
       }
     }
-  } else if (ps->acting.size() < ps->pool.info.min_size) {
+  } else if (ps->actingset.size() < ps->pool.info.min_size) {
     ps->state_set(PG_STATE_PEERED);
   } else {
     ps->state_set(PG_STATE_ACTIVE);
@@ -6023,7 +6033,7 @@ boost::statechart::result PeeringState::ReplicaActive::react(
     {}, /* lease */
     ps->get_lease_ack());
 
-  if (ps->acting.size() >= ps->pool.info.min_size) {
+  if (ps->actingset.size() >= ps->pool.info.min_size) {
     ps->state_set(PG_STATE_ACTIVE);
   } else {
     ps->state_set(PG_STATE_PEERED);

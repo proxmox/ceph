@@ -3863,6 +3863,19 @@ void Server::handle_client_lookup_ino(MDRequestRef& mdr,
     return _lookup_snap_ino(mdr);
 
   inodeno_t ino = req->get_filepath().get_ino();
+  auto _ino = ino.val;
+
+  /* It's been observed [1] that a client may lookup a private ~mdsdir inode.
+   * I do not have an explanation for how that happened organically but this
+   * check will ensure that the client can no longer do that.
+   *
+   * [1] https://tracker.ceph.com/issues/49922
+   */
+  if (MDS_IS_PRIVATE_INO(_ino)) {
+    respond_to_request(mdr, -ESTALE);
+    return;
+  }
+
   CInode *in = mdcache->get_inode(ino);
   if (in && in->state_test(CInode::STATE_PURGING)) {
     respond_to_request(mdr, -ESTALE);
@@ -5637,9 +5650,36 @@ void Server::handle_set_vxattr(MDRequestRef& mdr, CInode *cur)
       return;
     }
 
-    if (!xlock_policylock(mdr, cur, false, true))
-      return;
+    /* Verify it's not already a subvolume with lighter weight
+     * rdlock.
+     */
+    if (!mdr->more()->rdonly_checks) {
+      if (!(mdr->locking_state & MutationImpl::ALL_LOCKED)) {
+        MutationImpl::LockOpVec lov;
+        lov.add_rdlock(&cur->snaplock);
+        if (!mds->locker->acquire_locks(mdr, lov))
+          return;
+        mdr->locking_state |= MutationImpl::ALL_LOCKED;
+      }
+      SnapRealm *realm = cur->find_snaprealm();
+      const auto srnode = cur->get_projected_srnode();
+      if (val == (srnode && srnode->is_subvolume())) {
+        dout(20) << "already marked subvolume" << dendl;
+        respond_to_request(mdr, 0);
+        return;
+      }
+      mdr->more()->rdonly_checks = true;
+    }
 
+    if ((mdr->locking_state & MutationImpl::ALL_LOCKED) && !mdr->is_xlocked(&cur->snaplock)) {
+      /* drop the rdlock and acquire xlocks */
+      dout(20) << "dropping rdlocks" << dendl;
+      mds->locker->drop_locks(mdr.get());
+      if (!xlock_policylock(mdr, cur, false, true))
+        return;
+    }
+
+    /* repeat rdonly checks in case changed between rdlock -> xlock */
     SnapRealm *realm = cur->find_snaprealm();
     if (val) {
       inodeno_t subvol_ino = realm->get_subvolume_ino();
