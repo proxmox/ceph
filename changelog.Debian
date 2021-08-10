@@ -1,3 +1,9 @@
+ceph (15.2.14-pve1~bpo10) buster; urgency=medium
+
+  * new upstream octopus 15.2.14 stable release
+
+ -- Proxmox Support Team <support@proxmox.com>  Tue, 10 Aug 2021 08:27:57 +0200
+
 ceph (15.2.13-pve1~bpo10) buster; urgency=medium
 
   * new upstream octopus 15.2.13 stable release
