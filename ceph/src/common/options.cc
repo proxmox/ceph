@@ -1153,6 +1153,11 @@ std::vector<Option> get_global_options() {
     .set_description("Maximum threadpool size of AsyncMessenger")
     .add_see_also("ms_async_op_threads"),
 
+    Option("ms_async_reap_threshold", Option::TYPE_UINT, Option::LEVEL_DEV)
+    .set_default(5)
+    .set_min(1)
+    .set_description("number of deleted connections before we reap"),
+
     Option("ms_async_rdma_device_name", Option::TYPE_STR, Option::LEVEL_ADVANCED)
     .set_default("")
     .set_description(""),
@@ -2678,7 +2683,7 @@ std::vector<Option> get_global_options() {
     .set_long_description("If this value is exceeded, the OSD will not read any new client data off of the network until memory is freed."),
 
     Option("osd_client_message_cap", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
-    .set_default(0)
+    .set_default(256)
     .set_description("maximum number of in-flight client requests"),
 
     Option("osd_crush_update_weight_set", Option::TYPE_BOOL, Option::LEVEL_ADVANCED)
@@ -6777,16 +6782,6 @@ std::vector<Option> get_rgw_options() {
     .set_long_description(
         "Length of time for bucket stats to be cached within RGW instance."),
 
-    Option("rgw_bucket_quota_soft_threshold", Option::TYPE_FLOAT, Option::LEVEL_BASIC)
-    .set_default(0.95)
-    .set_description("RGW quota soft threshold")
-    .set_long_description(
-        "Threshold from which RGW doesn't rely on cached info for quota "
-        "decisions. This is done for higher accuracy of the quota mechanism at "
-        "cost of performance, when getting close to the quota limit. The value "
-        "configured here is the ratio between the data usage to the max usage "
-        "as specified by the quota."),
-
     Option("rgw_bucket_quota_cache_size", Option::TYPE_INT, Option::LEVEL_ADVANCED)
     .set_default(10000)
     .set_description("RGW quota stats cache size")
@@ -7174,6 +7169,22 @@ std::vector<Option> get_rgw_options() {
       "rgw_crypt_s3_kms_backend",
       "rgw_crypt_vault_auth",
       "rgw_crypt_vault_addr"}),
+
+    Option("rgw_crypt_vault_verify_ssl", Option::TYPE_BOOL, Option::LEVEL_ADVANCED)
+    .set_default(true)
+    .set_description("Should RGW verify the vault server SSL certificate."),
+
+    Option("rgw_crypt_vault_ssl_cacert", Option::TYPE_STR, Option::LEVEL_ADVANCED)
+    .set_default("")
+    .set_description("Path for custom ca certificate for accessing vault server"),
+
+    Option("rgw_crypt_vault_ssl_clientcert", Option::TYPE_STR, Option::LEVEL_ADVANCED)
+    .set_default("")
+    .set_description("Path for customed client certificate for accessing vault server"),
+
+    Option("rgw_crypt_vault_ssl_clientkey", Option::TYPE_STR, Option::LEVEL_ADVANCED)
+    .set_default("")
+    .set_description("Path for private key required for client cert"),
 
     Option("rgw_crypt_kmip_addr", Option::TYPE_STR, Option::LEVEL_ADVANCED)
     .set_default("")

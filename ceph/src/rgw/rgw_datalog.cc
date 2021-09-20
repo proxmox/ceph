@@ -704,10 +704,11 @@ int RGWDataChangesLog::add_entry(const DoutPrefixProvider *dpp, const RGWBucketI
 
 int DataLogBackends::list(const DoutPrefixProvider *dpp, int shard, int max_entries,
 			  std::vector<rgw_data_change_log_entry>& entries,
-			  std::optional<std::string_view> marker,
-			  std::string* out_marker, bool* truncated)
+			  std::string_view marker,
+			  std::string* out_marker,
+			  bool* truncated)
 {
-  const auto [start_id, start_cursor] = cursorgeno(marker);
+  const auto [start_id, start_cursor] = cursorgen(marker);
   auto gen_id = start_id;
   std::string out_cursor;
   while (max_entries > 0) {
@@ -730,7 +731,7 @@ int DataLogBackends::list(const DoutPrefixProvider *dpp, int shard, int max_entr
     for (auto& g : gentries) {
       g.log_id = gencursor(gen_id, g.log_id);
     }
-    if (gentries.size() > max_entries)
+    if (int s = gentries.size(); s < 0 || s > max_entries)
       max_entries = 0;
     else
       max_entries -= gentries.size();
@@ -744,7 +745,7 @@ int DataLogBackends::list(const DoutPrefixProvider *dpp, int shard, int max_entr
 
 int RGWDataChangesLog::list_entries(const DoutPrefixProvider *dpp, int shard, int max_entries,
 				    std::vector<rgw_data_change_log_entry>& entries,
-				    std::optional<std::string_view> marker,
+				    std::string_view marker,
 				    std::string* out_marker, bool* truncated)
 {
   assert(shard < num_shards);
@@ -758,7 +759,7 @@ int RGWDataChangesLog::list_entries(const DoutPrefixProvider *dpp, int max_entri
   bool truncated;
   entries.clear();
   for (; marker.shard < num_shards && int(entries.size()) < max_entries;
-       marker.shard++, marker.marker.reset()) {
+       marker.shard++, marker.marker.clear()) {
     int ret = list_entries(dpp, marker.shard, max_entries - entries.size(),
 			   entries, marker.marker, NULL, &truncated);
     if (ret == -ENOENT) {
@@ -805,6 +806,8 @@ int DataLogBackends::trim_entries(const DoutPrefixProvider *dpp, int shard_id, s
       r = -ENODATA;
     if (r == -ENODATA && be->gen_id < target_gen)
       r = 0;
+    if (be->gen_id == target_gen)
+      break;
     l.lock();
   };
   return r;

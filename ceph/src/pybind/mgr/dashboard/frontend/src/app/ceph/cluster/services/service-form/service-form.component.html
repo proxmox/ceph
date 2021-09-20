@@ -77,7 +77,7 @@
                   i18n>This field is required.</span>
             <span class="invalid-feedback"
                   *ngIf="serviceForm.showError('service_id', frm, 'rgwPattern')"
-                  i18n>The value does not match the pattern <strong>&lt;realm_name&gt;.&lt;zone_name&gt;[.&lt;subcluster&gt;]</strong>.</span>
+                  i18n>The value does not match the pattern <strong>&lt;service_id&gt;[.&lt;realm_name&gt;.&lt;zone_name&gt;]</strong>.</span>
           </div>
         </div>
 
@@ -508,7 +508,7 @@
           </div>
 
           <!-- ssl_key -->
-          <div *ngIf="serviceForm.controls.ssl.value"
+          <div *ngIf="serviceForm.controls.ssl.value && serviceForm.controls.service_type.value !== 'rgw'"
                class="form-group row">
             <label class="cd-col-form-label"
                    for="ssl_key">

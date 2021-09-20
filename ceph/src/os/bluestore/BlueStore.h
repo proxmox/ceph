@@ -126,6 +126,7 @@ enum {
   l_bluestore_write_small_bytes,
   l_bluestore_write_small_unused,
   l_bluestore_write_deferred,
+  l_bluestore_write_deferred_bytes,
   l_bluestore_write_small_pre_read,
   l_bluestore_write_new,
   l_bluestore_txc,
@@ -1146,11 +1147,28 @@ public:
       return !pinned;
     }
 
-    const std::string& get_omap_prefix();
-    void get_omap_header(std::string *out);
-    void get_omap_key(const std::string& key, std::string *out);
+    static const std::string& calc_omap_prefix(uint8_t flags);
+    static void calc_omap_header(uint8_t flags, const Onode* o,
+      std::string* out);
+    static void calc_omap_key(uint8_t flags, const Onode* o,
+      const std::string& key, std::string* out);
+    static void calc_omap_tail(uint8_t flags, const Onode* o,
+      std::string* out);
+
+    const std::string& get_omap_prefix() {
+      return calc_omap_prefix(onode.flags);
+    }
+    void get_omap_header(std::string* out) {
+      calc_omap_header(onode.flags, this, out);
+    }
+    void get_omap_key(const std::string& key, std::string* out) {
+      calc_omap_key(onode.flags, this, key, out);
+    }
+    void get_omap_tail(std::string* out) {
+      calc_omap_tail(onode.flags, this, out);
+    }
+
     void rewrite_omap_key(const std::string& old, std::string *out);
-    void get_omap_tail(std::string *out);
     void decode_omap_key(const std::string& key, std::string *user_key);
 
     // Return the offset of an object on disk.  This function is intended *only*
@@ -2486,7 +2504,7 @@ private:
   void _zoned_cleaner_thread();
   void _zoned_clean_zone(uint64_t zone_num);
 
-  bluestore_deferred_op_t *_get_deferred_op(TransContext *txc);
+  bluestore_deferred_op_t *_get_deferred_op(TransContext *txc, uint64_t len);
   void _deferred_queue(TransContext *txc);
 public:
   void deferred_try_submit();
@@ -3650,10 +3668,15 @@ public:
       ++to_repair_cnt;
     }
   }
-  // In fact this is the only repairer's method which is thread-safe!!
+  //////////////////////
+  //In fact two methods below are the only ones in this class which are thread-safe!!
   void inc_repaired() {
     ++to_repair_cnt;
   }
+  void request_compaction() {
+    need_compact = true;
+  }
+  //////////////////////
 
   void init_space_usage_tracker(
     uint64_t total_space, uint64_t lres_tracking_unit_size)
@@ -3686,6 +3709,7 @@ public:
 
 private:
   std::atomic<unsigned> to_repair_cnt = { 0 };
+  std::atomic<bool> need_compact = { false };
   KeyValueDB::Transaction fix_per_pool_omap_txn;
   KeyValueDB::Transaction fix_fm_leaked_txn;
   KeyValueDB::Transaction fix_fm_false_free_txn;

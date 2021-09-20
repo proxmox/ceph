@@ -430,7 +430,14 @@ run-cephadm-e2e-tests.sh
 Orchestrator backend behave correctly.
 
 Prerequisites: you need to install `KCLI
-<https://kcli.readthedocs.io/en/latest/>`_ in your local machine.
+<https://kcli.readthedocs.io/en/latest/>`_ and Node.js in your local machine.
+
+Configure KCLI plan requirements::
+
+  $ sudo chown -R $(id -un) /var/lib/libvirt/images
+  $ mkdir -p /var/lib/libvirt/images/ceph-dashboard dashboard
+  $ kcli create pool -p /var/lib/libvirt/images/ceph-dashboard dashboard
+  $ kcli create network -c 192.168.100.0/24 dashboard
 
 Note:
   This script is aimed to be run as jenkins job so the cleanup is triggered only in a jenkins
@@ -439,9 +446,26 @@ Note:
 Start E2E tests by running::
 
   $ cd <your/ceph/repo/dir>
-  $ sudo chown -R $(id -un) src/pybind/mgr/dashboard/frontend/dist src/pybind/mgr/dashboard/frontend/node_modules
+  $ sudo chown -R $(id -un) src/pybind/mgr/dashboard/frontend/{dist,node_modules,src/environments}
   $ ./src/pybind/mgr/dashboard/ci/cephadm/run-cephadm-e2e-tests.sh
-  $ kcli delete plan -y ceph  # After tests finish.
+
+You can also start a cluster in development mode (so the frontend build starts in watch mode and you
+only have to reload the page for the changes to be reflected) by running::
+
+  $ ./src/pybind/mgr/dashboard/ci/cephadm/start-cluster.sh --dev-mode
+
+Note:
+  Add ``--expanded`` if you need a cluster ready to deploy services (one with enough monitor
+  daemons spread across different hosts and enough OSDs).
+
+Test your changes by running:
+
+  $ ./src/pybind/mgr/dashboard/ci/cephadm/run-cephadm-e2e-tests.sh
+
+Shutdown the cluster by running:
+
+  $ kcli delete plan -y ceph
+  $ # In development mode, also kill the npm build watch process (e.g., pkill -f "ng build")
 
 Other running options
 .....................
@@ -1652,6 +1676,58 @@ load the controllers that we want to test. In the above example we are only
 loading the ``Ping`` controller. We can also disable authentication of a
 controller at this stage, as depicted in the example.
 
+How to update or create new dashboards in grafana?
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+We are using ``jsonnet`` and ``grafonnet-lib`` to write code for the grafana dashboards.
+All the dashboards are written inside ``grafana_dashboards.jsonnet`` file in the
+monitoring/grafana/dashboards/jsonnet directory.
+
+We generate the dashboard json files directly from this jsonnet file by running this
+command in the grafana/dashboards directory:
+``jsonnet -m . jsonnet/grafana_dashboards.jsonnet``.
+(For the above command to succeed we need ``jsonnet`` package installed and ``grafonnet-lib``
+directory cloned in our machine. Please refer - 
+``https://grafana.github.io/grafonnet-lib/getting-started/`` in case you have some trouble.)
+
+To update an existing grafana dashboard or to create a new one, we need to update
+the ``grafana_dashboards.jsonnet`` file and generate the new/updated json files using the
+above mentioned command. For people who are not familiar with grafonnet or jsonnet implementation
+can follow this doc - ``https://grafana.github.io/grafonnet-lib/``.
+
+Example grafana dashboard in jsonnet format:
+
+To specify the grafana dashboard properties such as title, uid etc we can create a local function -
+
+::
+
+    local dashboardSchema(title, uid, time_from, refresh, schemaVersion, tags,timezone, timepicker)
+
+To add a graph panel we can spcify the graph schema in a local function such as -
+
+::
+
+    local graphPanelSchema(title, nullPointMode, stack, formatY1, formatY2, labelY1, labelY2, min, fill, datasource)
+
+and then use these functions inside the dashboard definition like -
+
+::
+
+    {
+        radosgw-sync-overview.json: //json file name to be generated
+
+        dashboardSchema(
+          'RGW Sync Overview', 'rgw-sync-overview', 'now-1h', '15s', .., .., ..
+        )
+
+        .addPanels([
+          graphPanelSchema(
+            'Replication (throughput) from Source Zone', 'Bps', null, .., .., ..)
+        ])
+    }
+
+The valid grafonnet-lib attributes can be found here - ``https://grafana.github.io/grafonnet-lib/api-docs/``.
+  
 
 How to listen for manager notifications in a controller?
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

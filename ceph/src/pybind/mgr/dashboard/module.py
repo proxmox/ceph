@@ -23,14 +23,15 @@ if TYPE_CHECKING:
 
 from mgr_module import CLIWriteCommand, HandleCommandResult, MgrModule, \
     MgrStandbyModule, Option, _get_localized_key
-from mgr_util import ServerConfigException, create_self_signed_cert, \
-    get_default_addr, verify_tls_files
+from mgr_util import ServerConfigException, build_url, \
+    create_self_signed_cert, get_default_addr, verify_tls_files
 
 from . import mgr
 from .controllers import generate_routes, json_error_page
 from .grafana import push_local_dashboards
 from .services.auth import AuthManager, AuthManagerTool, JwtManager
 from .services.exception import dashboard_exception_handler
+from .services.rgw_client import configure_rgw_credentials
 from .services.sso import SSO_COMMANDS, handle_sso_command
 from .settings import handle_option_command, options_command_list, options_schema_list
 from .tools import NotificationQueue, RequestLoggingTool, TaskManager, \
@@ -50,7 +51,7 @@ if cherrypy is not None:
     patch_cherrypy(cherrypy.__version__)
 
 # pylint: disable=wrong-import-position
-from .plugins import PLUGIN_MANAGER, debug, feature_toggles  # noqa # pylint: disable=unused-import
+from .plugins import PLUGIN_MANAGER, debug, feature_toggles, motd  # isort:skip # noqa E501 # pylint: disable=unused-import
 
 PLUGIN_MANAGER.hook.init()
 
@@ -192,13 +193,12 @@ class CherryPyConfig(object):
         self._url_prefix = prepare_url_prefix(self.get_module_option(  # type: ignore
             'url_prefix', default=''))
 
-        uri = "{0}://{1}:{2}{3}/".format(
-            'https' if use_ssl else 'http',
-            server_addr,
-            server_port,
-            self.url_prefix
+        base_url = build_url(
+            scheme='https' if use_ssl else 'http',
+            host=server_addr,
+            port=server_port,
         )
-
+        uri = f'{base_url}{self.url_prefix}/'
         return uri
 
     def await_configuration(self):
@@ -399,6 +399,15 @@ class Module(MgrModule, CherryPyConfig):
         if result.retval != 0:
             return result
         return 0, 'Self-signed certificate created', ''
+
+    @CLIWriteCommand("dashboard set-rgw-credentials")
+    def set_rgw_credentials(self):
+        try:
+            configure_rgw_credentials()
+        except Exception as error:
+            return -errno.EINVAL, '', str(error)
+
+        return 0, 'RGW credentials configured', ''
 
     def handle_command(self, inbuf, cmd):
         # pylint: disable=too-many-return-statements

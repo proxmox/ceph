@@ -374,6 +374,7 @@ int RGWRadosBucket::list(const DoutPrefixProvider *dpp, ListParams& params, int 
   int ret = list_op.list_objects(dpp, max, &results.objs, &results.common_prefixes, &results.is_truncated, y);
   if (ret >= 0) {
     results.next_marker = list_op.get_next_marker();
+    params.marker = results.next_marker;
   }
 
   return ret;
@@ -1292,7 +1293,7 @@ LCSerializer* RadosLifecycle::get_serializer(const std::string& lock_name, const
 
 } // namespace rgw::sal
 
-rgw::sal::RGWRadosStore *RGWStoreManager::init_storage_provider(const DoutPrefixProvider *dpp, CephContext *cct, bool use_gc_thread, bool use_lc_thread, bool quota_threads, bool run_sync_thread, bool run_reshard_thread, bool use_cache)
+rgw::sal::RGWRadosStore *RGWStoreManager::init_storage_provider(const DoutPrefixProvider *dpp, CephContext *cct, bool use_gc_thread, bool use_lc_thread, bool quota_threads, bool run_sync_thread, bool run_reshard_thread, bool use_cache, bool use_gc)
 {
   RGWRados *rados = new RGWRados;
   rgw::sal::RGWRadosStore *store = new rgw::sal::RGWRadosStore();
@@ -1301,6 +1302,7 @@ rgw::sal::RGWRadosStore *RGWStoreManager::init_storage_provider(const DoutPrefix
   rados->set_store(store);
 
   if ((*rados).set_use_cache(use_cache)
+              .set_use_gc(use_gc)
               .set_run_gc_thread(use_gc_thread)
               .set_run_lc_thread(use_lc_thread)
               .set_run_quota_threads(quota_threads)

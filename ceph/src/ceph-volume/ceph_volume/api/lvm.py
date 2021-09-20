@@ -463,7 +463,7 @@ def get_pvs(fields=PV_FIELDS, filters='', tags=None):
     :returns: list of class PVolume object representing pvs on the system
     """
     filters = make_filters_lvmcmd_ready(filters, tags)
-    args = ['pvs', '--no-heading', '--readonly', '--separator=";"', '-S',
+    args = ['pvs', '--noheadings', '--readonly', '--separator=";"', '-S',
             filters, '-o', fields]
 
     stdout, stderr, returncode = process.call(args, verbose_on_failure=False)
@@ -1134,3 +1134,15 @@ def get_device_lvs(device, name_prefix=''):
     lvs = _output_parser(stdout, LV_FIELDS)
     return [Volume(**lv) for lv in lvs if lv['lv_name'] and
             lv['lv_name'].startswith(name_prefix)]
+
+def get_lv_by_fullname(full_name):
+    """
+    returns LV by the specified LV's full name (formatted as vg_name/lv_name)
+    """
+    try:
+        vg_name, lv_name = full_name.split('/')
+        res_lv = get_first_lv(filters={'lv_name': lv_name,
+                                        'vg_name': vg_name})
+    except ValueError:
+        res_lv = None
+    return res_lv

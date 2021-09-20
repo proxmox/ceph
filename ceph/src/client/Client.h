@@ -776,7 +776,7 @@ public:
   void unlock_fh_pos(Fh *f);
 
   // metadata cache
-  void update_dir_dist(Inode *in, DirStat *st);
+  void update_dir_dist(Inode *in, DirStat *st, mds_rank_t from);
 
   void clear_dir_complete_and_ordered(Inode *diri, bool complete);
   void insert_readdir_results(MetaRequest *request, MetaSession *session, Inode *diri);
@@ -797,6 +797,7 @@ public:
   vinodeno_t map_faked_ino(ino_t ino);
 
   //notify the mds to flush the mdlog
+  void flush_mdlog_sync(Inode *in);
   void flush_mdlog_sync();
   void flush_mdlog(MetaSession *session);
 

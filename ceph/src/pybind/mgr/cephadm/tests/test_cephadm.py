@@ -234,15 +234,26 @@ class TestCephadm(object):
                 container_id='container_id',
                 version='version',
                 state='running',
-            )
+            ),
+            dict(
+                name='something.foo.bar',
+                style='cephadm',
+                fsid='fsid',
+            ),
+            dict(
+                name='haproxy.test.bar',
+                style='cephadm',
+                fsid='fsid',
+            ),
+
         ])
     ))
     def test_list_daemons(self, cephadm_module: CephadmOrchestrator):
         cephadm_module.service_cache_timeout = 10
         with with_host(cephadm_module, 'test'):
             CephadmServe(cephadm_module)._refresh_host_daemons('test')
-            c = cephadm_module.list_daemons()
-            assert wait(cephadm_module, c)[0].name() == 'rgw.myrgw.foobar'
+            dds = wait(cephadm_module, cephadm_module.list_daemons())
+            assert {d.name() for d in dds} == {'rgw.myrgw.foobar', 'haproxy.test.bar'}
 
     @mock.patch("cephadm.serve.CephadmServe._run_cephadm", _run_cephadm('[]'))
     def test_daemon_action(self, cephadm_module: CephadmOrchestrator):
@@ -1101,7 +1112,7 @@ spec:
                         assert len(cephadm_module.cache.get_daemons_by_type('mgr')) == 3
 
                         # put one host in offline state and one host in maintenance state
-                        cephadm_module.inventory._inventory['test2']['status'] = 'offline'
+                        cephadm_module.offline_hosts = {'test2'}
                         cephadm_module.inventory._inventory['test3']['status'] = 'maintenance'
                         cephadm_module.inventory.save()
 
@@ -1109,8 +1120,12 @@ spec:
                         # candidates for scheduling
                         candidates = [
                             h.hostname for h in cephadm_module._schedulable_hosts()]
-                        assert 'test2' not in candidates
-                        assert 'test3' not in candidates
+                        assert 'test2' in candidates
+                        assert 'test3' in candidates
+
+                        unreachable = [h.hostname for h in cephadm_module._unreachable_hosts()]
+                        assert 'test2' in unreachable
+                        assert 'test3' in unreachable
 
                         with with_service(cephadm_module, ServiceSpec('crash', placement=PlacementSpec(host_pattern='*'))):
                             # re-apply services. No mgr should be removed from maint/offline hosts

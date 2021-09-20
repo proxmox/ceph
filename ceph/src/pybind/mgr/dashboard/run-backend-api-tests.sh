@@ -43,7 +43,7 @@ setup_teuthology() {
 
     virtualenv --python=${TEUTHOLOGY_PYTHON_BIN:-/usr/bin/python3} venv
     source venv/bin/activate
-    pip install 'setuptools >= 12'
+    pip install -U pip 'setuptools >= 12'
     pip install git+https://github.com/ceph/teuthology#egg=teuthology[test]
     pushd $CURR_DIR
     pip install -r requirements.txt -c constraints.txt
@@ -162,6 +162,8 @@ cleanup_teuthology() {
     unset run_teuthology_tests
     unset cleanup_teuthology
 }
+
+export LC_ALL=en_US.UTF-8
 
 setup_teuthology
 setup_coverage

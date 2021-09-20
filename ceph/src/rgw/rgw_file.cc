@@ -324,7 +324,7 @@ namespace rgw {
 
     int rc = rgwlib.get_fe()->execute_req(&req);
     if ((rc == 0) &&
-	(req.get_ret() == 0)) {
+        ((rc = req.get_ret()) == 0)) {
       lock_guard guard(rgw_fh->mtx);
       rgw_fh->set_atime(real_clock::to_timespec(real_clock::now()));
       *bytes_read = req.nread;
@@ -347,7 +347,7 @@ namespace rgw {
 
     int rc = rgwlib.get_fe()->execute_req(&req);
     if ((rc == 0) &&
-        (req.get_ret() == 0)) {
+        ((rc = req.get_ret()) == 0)) {
       lock_guard(rgw_fh->mtx);
       rgw_fh->set_atime(real_clock::to_timespec(real_clock::now()));
       *bytes_read = req.nread;
@@ -961,7 +961,7 @@ namespace rgw {
   static inline std::string prefix_xattr_keystr(const rgw_xattrstr& key) {
     std::string keystr;
     keystr.reserve(sizeof(RGW_ATTR_META_PREFIX) + key.len);
-    keystr += {RGW_ATTR_META_PREFIX};
+    keystr += string{RGW_ATTR_META_PREFIX};
     keystr += string{key.val, key.len};
     return keystr;
   }
@@ -1845,7 +1845,7 @@ namespace rgw {
                       &state->dest_placement,
                       state->bucket_owner.get_id(),
                       *static_cast<RGWObjectCtx *>(state->obj_ctx),
-                      std::move(state->object->clone()), olh_epoch, state->req_id,
+                      state->object->clone(), olh_epoch, state->req_id,
 		      this, state->yield);
 
     op_ret = processor->prepare(state->yield);

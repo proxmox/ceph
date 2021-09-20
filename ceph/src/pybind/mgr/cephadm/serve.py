@@ -38,6 +38,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+REQUIRES_POST_ACTIONS = ['grafana', 'iscsi', 'prometheus', 'alertmanager', 'rgw']
+
 
 class CephadmServe:
     """
@@ -78,6 +80,12 @@ class CephadmServe:
                 self._check_for_strays()
 
                 self._update_paused_health()
+
+                if self.mgr.need_connect_dashboard_rgw and self.mgr.config_dashboard:
+                    self.mgr.need_connect_dashboard_rgw = False
+                    if 'dashboard' in self.mgr.get('mgr_map')['modules']:
+                        self.log.info('Checking dashboard <-> RGW credentials')
+                        self.mgr.remote('dashboard', 'set_rgw_credentials')
 
                 if not self.mgr.paused:
                     self.mgr.to_remove_osds.process_removal_queue()
@@ -194,6 +202,7 @@ class CephadmServe:
                 ha = HostAssignment(
                     spec=ServiceSpec('mon', placement=pspec),
                     hosts=self.mgr._schedulable_hosts(),
+                    unreachable_hosts=self.mgr._unreachable_hosts(),
                     daemons=[],
                     networks=self.mgr.cache.networks,
                 )
@@ -225,6 +234,7 @@ class CephadmServe:
                 ha = HostAssignment(
                     spec=ServiceSpec('mon', placement=ks.placement),
                     hosts=self.mgr._schedulable_hosts(),
+                    unreachable_hosts=self.mgr._unreachable_hosts(),
                     daemons=[],
                     networks=self.mgr.cache.networks,
                 )
@@ -368,20 +378,21 @@ class CephadmServe:
             return None
         self.log.debug(' checking %s' % host)
         try:
+            addr = self.mgr.inventory.get_addr(host) if host in self.mgr.inventory else host
             out, err, code = self._run_cephadm(
                 host, cephadmNoImage, 'check-host', [],
                 error_ok=True, no_fsid=True)
             self.mgr.cache.update_last_host_check(host)
             self.mgr.cache.save_host(host)
             if code:
-                self.log.debug(' host %s failed check' % host)
+                self.log.debug(' host %s (%s) failed check' % (host, addr))
                 if self.mgr.warn_on_failed_host_check:
-                    return 'host %s failed check: %s' % (host, err)
+                    return 'host %s (%s) failed check: %s' % (host, addr, err)
             else:
-                self.log.debug(' host %s ok' % host)
+                self.log.debug(' host %s (%s) ok' % (host, addr))
         except Exception as e:
-            self.log.debug(' host %s failed check' % host)
-            return 'host %s failed check: %s' % (host, e)
+            self.log.debug(' host %s (%s) failed check' % (host, addr))
+            return 'host %s (%s) failed check: %s' % (host, addr, e)
         return None
 
     def _refresh_host_daemons(self, host: str) -> Optional[str]:
@@ -404,6 +415,10 @@ class CephadmServe:
                 if v:
                     setattr(sd, k, str_to_datetime(d[k]))
             sd.daemon_type = d['name'].split('.')[0]
+            if sd.daemon_type not in orchestrator.KNOWN_DAEMON_TYPES:
+                logger.warning(f"Found unknown daemon type {sd.daemon_type} on host {host}")
+                continue
+
             sd.daemon_id = '.'.join(d['name'].split('.')[1:])
             sd.hostname = host
             sd.container_id = d.get('container_id')
@@ -422,7 +437,8 @@ class CephadmServe:
             sd.ports = d.get('ports')
             sd.ip = d.get('ip')
             sd.rank = int(d['rank']) if d.get('rank') is not None else None
-            sd.rank_generation = int(d['rank_generation']) if d.get('rank_generation') is not None else None
+            sd.rank_generation = int(d['rank_generation']) if d.get(
+                'rank_generation') is not None else None
             if sd.daemon_type == 'osd':
                 sd.osdspec_affinity = self.mgr.osd_service.get_osdspec_affinity(sd.daemon_id)
             if 'state' in d:
@@ -671,6 +687,7 @@ class CephadmServe:
         ha = HostAssignment(
             spec=spec,
             hosts=self.mgr._schedulable_hosts(),
+            unreachable_hosts=self.mgr._unreachable_hosts(),
             daemons=daemons,
             networks=self.mgr.cache.networks,
             filter_new_host=(
@@ -686,7 +703,7 @@ class CephadmServe:
         try:
             all_slots, slots_to_add, daemons_to_remove = ha.place()
             daemons_to_remove = [d for d in daemons_to_remove if (d.hostname and self.mgr.inventory._inventory[d.hostname].get(
-                'status', '').lower() not in ['maintenance', 'offline'])]
+                'status', '').lower() not in ['maintenance', 'offline'] and d.hostname not in self.mgr.offline_hosts)]
             self.log.debug('Add %s, remove %s' % (slots_to_add, daemons_to_remove))
         except OrchestratorError as e:
             self.log.error('Failed to apply %s spec %s: %s' % (
@@ -730,124 +747,128 @@ class CephadmServe:
         self.log.debug('Hosts that will receive new daemons: %s' % slots_to_add)
         self.log.debug('Daemons that will be removed: %s' % daemons_to_remove)
 
-        # assign names
-        for i in range(len(slots_to_add)):
-            slot = slots_to_add[i]
-            slot = slot.assign_name(self.mgr.get_unique_name(
-                slot.daemon_type,
-                slot.hostname,
-                daemons,
-                prefix=spec.service_id,
-                forcename=slot.name,
-                rank=slot.rank,
-                rank_generation=slot.rank_generation,
-            ))
-            slots_to_add[i] = slot
-            if rank_map is not None:
-                assert slot.rank is not None
-                assert slot.rank_generation is not None
-                assert rank_map[slot.rank][slot.rank_generation] is None
-                rank_map[slot.rank][slot.rank_generation] = slot.name
+        try:
+            # assign names
+            for i in range(len(slots_to_add)):
+                slot = slots_to_add[i]
+                slot = slot.assign_name(self.mgr.get_unique_name(
+                    slot.daemon_type,
+                    slot.hostname,
+                    daemons,
+                    prefix=spec.service_id,
+                    forcename=slot.name,
+                    rank=slot.rank,
+                    rank_generation=slot.rank_generation,
+                ))
+                slots_to_add[i] = slot
+                if rank_map is not None:
+                    assert slot.rank is not None
+                    assert slot.rank_generation is not None
+                    assert rank_map[slot.rank][slot.rank_generation] is None
+                    rank_map[slot.rank][slot.rank_generation] = slot.name
 
-        if rank_map:
-            # record the rank_map before we make changes so that if we fail the
-            # next mgr will clean up.
-            self.mgr.spec_store.save_rank_map(spec.service_name(), rank_map)
+            if rank_map:
+                # record the rank_map before we make changes so that if we fail the
+                # next mgr will clean up.
+                self.mgr.spec_store.save_rank_map(spec.service_name(), rank_map)
 
-            # remove daemons now, since we are going to fence them anyway
+                # remove daemons now, since we are going to fence them anyway
+                for d in daemons_to_remove:
+                    assert d.hostname is not None
+                    self._remove_daemon(d.name(), d.hostname)
+                daemons_to_remove = []
+
+                # fence them
+                svc.fence_old_ranks(spec, rank_map, len(all_slots))
+
+            # create daemons
+            for slot in slots_to_add:
+                # first remove daemon on conflicting port?
+                if slot.ports:
+                    for d in daemons_to_remove:
+                        if d.hostname != slot.hostname:
+                            continue
+                        if not (set(d.ports or []) & set(slot.ports)):
+                            continue
+                        if d.ip and slot.ip and d.ip != slot.ip:
+                            continue
+                        self.log.info(
+                            f'Removing {d.name()} before deploying to {slot} to avoid a port conflict'
+                        )
+                        # NOTE: we don't check ok-to-stop here to avoid starvation if
+                        # there is only 1 gateway.
+                        self._remove_daemon(d.name(), d.hostname)
+                        daemons_to_remove.remove(d)
+                        progress_done += 1
+                        break
+
+                # deploy new daemon
+                daemon_id = slot.name
+                if not did_config:
+                    svc.config(spec)
+                    did_config = True
+
+                daemon_spec = svc.make_daemon_spec(
+                    slot.hostname, daemon_id, slot.network, spec,
+                    daemon_type=slot.daemon_type,
+                    ports=slot.ports,
+                    ip=slot.ip,
+                    rank=slot.rank,
+                    rank_generation=slot.rank_generation,
+                )
+                self.log.debug('Placing %s.%s on host %s' % (
+                    slot.daemon_type, daemon_id, slot.hostname))
+
+                try:
+                    daemon_spec = svc.prepare_create(daemon_spec)
+                    self._create_daemon(daemon_spec)
+                    r = True
+                    progress_done += 1
+                    update_progress()
+                except (RuntimeError, OrchestratorError) as e:
+                    msg = (f"Failed while placing {slot.daemon_type}.{daemon_id} "
+                           f"on {slot.hostname}: {e}")
+                    self.mgr.events.for_service(spec, 'ERROR', msg)
+                    self.mgr.log.error(msg)
+                    # only return "no change" if no one else has already succeeded.
+                    # later successes will also change to True
+                    if r is None:
+                        r = False
+                    progress_done += 1
+                    update_progress()
+                    continue
+
+                # add to daemon list so next name(s) will also be unique
+                sd = orchestrator.DaemonDescription(
+                    hostname=slot.hostname,
+                    daemon_type=slot.daemon_type,
+                    daemon_id=daemon_id,
+                )
+                daemons.append(sd)
+
+            # remove any?
+            def _ok_to_stop(remove_daemons: List[orchestrator.DaemonDescription]) -> bool:
+                daemon_ids = [d.daemon_id for d in remove_daemons]
+                assert None not in daemon_ids
+                # setting force flag retains previous behavior
+                r = svc.ok_to_stop(cast(List[str], daemon_ids), force=True)
+                return not r.retval
+
+            while daemons_to_remove and not _ok_to_stop(daemons_to_remove):
+                # let's find a subset that is ok-to-stop
+                daemons_to_remove.pop()
             for d in daemons_to_remove:
+                r = True
                 assert d.hostname is not None
                 self._remove_daemon(d.name(), d.hostname)
-            daemons_to_remove = []
 
-            # fence them
-            svc.fence_old_ranks(spec, rank_map, len(all_slots))
-
-        # create daemons
-        for slot in slots_to_add:
-            # first remove daemon on conflicting port?
-            if slot.ports:
-                for d in daemons_to_remove:
-                    if d.hostname != slot.hostname:
-                        continue
-                    if not (set(d.ports or []) & set(slot.ports)):
-                        continue
-                    if d.ip and slot.ip and d.ip != slot.ip:
-                        continue
-                    self.log.info(
-                        f'Removing {d.name()} before deploying to {slot} to avoid a port conflict'
-                    )
-                    # NOTE: we don't check ok-to-stop here to avoid starvation if
-                    # there is only 1 gateway.
-                    self._remove_daemon(d.name(), d.hostname)
-                    daemons_to_remove.remove(d)
-                    progress_done += 1
-                    break
-
-            # deploy new daemon
-            daemon_id = slot.name
-            if not did_config:
-                svc.config(spec, daemon_id)
-                did_config = True
-
-            daemon_spec = svc.make_daemon_spec(
-                slot.hostname, daemon_id, slot.network, spec,
-                daemon_type=slot.daemon_type,
-                ports=slot.ports,
-                ip=slot.ip,
-                rank=slot.rank,
-                rank_generation=slot.rank_generation,
-            )
-            self.log.debug('Placing %s.%s on host %s' % (
-                slot.daemon_type, daemon_id, slot.hostname))
-
-            try:
-                daemon_spec = svc.prepare_create(daemon_spec)
-                self._create_daemon(daemon_spec)
-                r = True
                 progress_done += 1
                 update_progress()
-            except (RuntimeError, OrchestratorError) as e:
-                msg = (f"Failed while placing {slot.daemon_type}.{daemon_id} "
-                       f"on {slot.hostname}: {e}")
-                self.mgr.events.for_service(spec, 'ERROR', msg)
-                self.mgr.log.error(msg)
-                # only return "no change" if no one else has already succeeded.
-                # later successes will also change to True
-                if r is None:
-                    r = False
-                progress_done += 1
-                update_progress()
-                continue
 
-            # add to daemon list so next name(s) will also be unique
-            sd = orchestrator.DaemonDescription(
-                hostname=slot.hostname,
-                daemon_type=slot.daemon_type,
-                daemon_id=daemon_id,
-            )
-            daemons.append(sd)
-
-        # remove any?
-        def _ok_to_stop(remove_daemons: List[orchestrator.DaemonDescription]) -> bool:
-            daemon_ids = [d.daemon_id for d in remove_daemons]
-            assert None not in daemon_ids
-            # setting force flag retains previous behavior
-            r = svc.ok_to_stop(cast(List[str], daemon_ids), force=True)
-            return not r.retval
-
-        while daemons_to_remove and not _ok_to_stop(daemons_to_remove):
-            # let's find a subset that is ok-to-stop
-            daemons_to_remove.pop()
-        for d in daemons_to_remove:
-            r = True
-            assert d.hostname is not None
-            self._remove_daemon(d.name(), d.hostname)
-
-            progress_done += 1
-            update_progress()
-
-        self.mgr.remote('progress', 'complete', progress_id)
+            self.mgr.remote('progress', 'complete', progress_id)
+        except Exception as e:
+            self.mgr.remote('progress', 'fail', progress_id, str(e))
+            raise
 
         if r is None:
             r = False
@@ -878,7 +899,7 @@ class CephadmServe:
                 continue
 
             # These daemon types require additional configs after creation
-            if dd.daemon_type in ['grafana', 'iscsi', 'prometheus', 'alertmanager', 'nfs']:
+            if dd.daemon_type in REQUIRES_POST_ACTIONS:
                 daemons_post[dd.daemon_type].append(dd)
 
             if self.mgr.cephadm_services[daemon_type_to_service(dd.daemon_type)].get_active_daemon(
@@ -1055,9 +1076,7 @@ class CephadmServe:
                         sd = daemon_spec.to_daemon_description(
                             DaemonDescriptionStatus.running, 'starting')
                         self.mgr.cache.add_daemon(daemon_spec.host, sd)
-                        if daemon_spec.daemon_type in [
-                            'grafana', 'iscsi', 'prometheus', 'alertmanager'
-                        ]:
+                        if daemon_spec.daemon_type in REQUIRES_POST_ACTIONS:
                             self.mgr.requires_post_actions.add(daemon_spec.daemon_type)
                     self.mgr.cache.invalidate_host_daemons(daemon_spec.host)
 

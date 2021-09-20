@@ -2753,8 +2753,6 @@ static int scan_totp(CephContext *cct, ceph::real_time& now, rados::cls::otp::ot
                      time_t *pofs)
 {
 #define MAX_TOTP_SKEW_HOURS (24 * 7)
-  ceph_assert(pins.size() == 2);
-
   time_t start_time = ceph::real_clock::to_time_t(now);
   time_t time_ofs = 0, time_ofs_abs = 0;
   time_t step_size = totp.step_size;
@@ -3896,23 +3894,34 @@ int main(int argc, const char **argv)
 			 OPT::ROLE_POLICY_GET,
 			 OPT::RESHARD_LIST,
 			 OPT::RESHARD_STATUS,
-       OPT::PUBSUB_TOPICS_LIST,
-       OPT::PUBSUB_TOPIC_GET,
-       OPT::PUBSUB_SUB_GET,
-       OPT::PUBSUB_SUB_PULL,
-       OPT::SCRIPT_GET,
-  };
+			 OPT::PUBSUB_TOPICS_LIST,
+			 OPT::PUBSUB_TOPIC_GET,
+			 OPT::PUBSUB_SUB_GET,
+			 OPT::PUBSUB_SUB_PULL,
+			 OPT::SCRIPT_GET,
+    };
 
+    std::set<OPT> gc_ops_list = {
+			 OPT::GC_LIST,
+			 OPT::GC_PROCESS,
+			 OPT::OBJECT_RM,
+			 OPT::BUCKET_RM,  // --purge-objects
+			 OPT::USER_RM,    // --purge-data
+			 OPT::OBJECTS_EXPIRE,
+			 OPT::OBJECTS_EXPIRE_STALE_RM,
+			 OPT::LC_PROCESS
+    };
 
   bool raw_storage_op = (raw_storage_ops_list.find(opt_cmd) != raw_storage_ops_list.end() ||
                          raw_period_update || raw_period_pull);
   bool need_cache = readonly_ops_list.find(opt_cmd) == readonly_ops_list.end();
+  bool need_gc = (gc_ops_list.find(opt_cmd) != gc_ops_list.end()) && !bypass_gc;
 
-  if (raw_storage_op) {
+    if (raw_storage_op) {
     store = RGWStoreManager::get_raw_storage(dpp(), g_ceph_context);
   } else {
     store = RGWStoreManager::get_storage(dpp(), g_ceph_context, false, false, false, false, false,
-      need_cache && g_conf()->rgw_cache_enabled);
+      need_cache && g_conf()->rgw_cache_enabled, need_gc);
   }
   if (!store) {
     cerr << "couldn't init storage provider" << std::endl;
@@ -6196,6 +6205,10 @@ int main(int argc, const char **argv)
   }
 
   if (opt_cmd == OPT::BUCKET_CHOWN) {
+    if (bucket_name.empty()) {
+      cerr << "ERROR: bucket name not specified" << std::endl;
+      return EINVAL;
+    }
 
     bucket_op.set_bucket_name(bucket_name);
     bucket_op.set_new_bucket_name(new_bucket_name);
@@ -7777,6 +7790,11 @@ next:
       return EINVAL;
     }
 
+    if (marker.empty()) {
+      cerr << "ERROR: marker must be specified for trim operation" << std::endl;
+      return EINVAL;
+    }
+
     if (period_id.empty()) {
       std::cerr << "missing --period argument" << std::endl;
       return EINVAL;
@@ -8766,10 +8784,7 @@ next:
       std::vector<rgw_data_change_log_entry> entries;
       if (specified_shard_id) {
         ret = datalog_svc->list_entries(dpp(), shard_id, max_entries - count,
-					entries,
-					marker.empty() ?
-					std::nullopt :
-					std::make_optional(marker),
+					entries, marker,
 					&marker, &truncated);
       } else {
         ret = datalog_svc->list_entries(dpp(), max_entries - count, entries,
@@ -8861,11 +8876,13 @@ next:
       return EINVAL;
     }
 
-    // loop until -ENODATA
-    do {
-      auto datalog = store->svc()->datalog_rados;
-      ret = datalog->trim_entries(dpp(), shard_id, marker);
-    } while (ret == 0);
+    if (marker.empty()) {
+      cerr << "ERROR: requires a --marker" << std::endl;
+      return EINVAL;
+    }
+
+    auto datalog = store->svc()->datalog_rados;
+    ret = datalog->trim_entries(dpp(), shard_id, marker);
 
     if (ret < 0 && ret != -ENODATA) {
       cerr << "ERROR: trim_entries(): " << cpp_strerror(-ret) << std::endl;
@@ -9117,6 +9134,7 @@ next:
 
     if (totp_pin.size() != 2) {
       cerr << "ERROR: missing two --totp-pin params (--totp-pin=<first> --totp-pin=<second>)" << std::endl;
+      return EINVAL;
     }
 
     rados::cls::otp::otp_info_t config;

@@ -14,6 +14,7 @@ import logging
 import errno
 import functools
 import json
+import subprocess
 import threading
 from collections import defaultdict
 from enum import IntEnum
@@ -38,8 +39,8 @@ else:
         return getattr(tp, '__origin__', None)
 
 
-ERROR_MSG_EMPTY_INPUT_FILE = 'Empty content: please add a password/secret to the file.'
-ERROR_MSG_NO_INPUT_FILE = 'Please specify the file containing the password/secret with "-i" option.'
+ERROR_MSG_EMPTY_INPUT_FILE = 'Empty input file'
+ERROR_MSG_NO_INPUT_FILE = 'Input file not specified'
 # Full list of strings in "osd_types.cc:pg_state_string()"
 PG_STATES = [
     "active",
@@ -413,19 +414,23 @@ def CLIWriteCommand(prefix: str, poll: bool = False) -> CLICommand:
     return CLICommand(prefix, "w", poll)
 
 
-def CLICheckNonemptyFileInput(func: HandlerFuncType) -> HandlerFuncType:
-    @functools.wraps(func)
-    def check(*args: Any, **kwargs: Any) -> Tuple[int, str, str]:
-        if 'inbuf' not in kwargs:
-            return -errno.EINVAL, '', ERROR_MSG_NO_INPUT_FILE
-        if isinstance(kwargs['inbuf'], str):
-            # Delete new line separator at EOF (it may have been added by a text editor).
-            kwargs['inbuf'] = kwargs['inbuf'].rstrip('\r\n').rstrip('\n')
-        if not kwargs['inbuf']:
-            return -errno.EINVAL, '', ERROR_MSG_EMPTY_INPUT_FILE
-        return func(*args, **kwargs)
-    check.__signature__ = inspect.signature(func)  # type: ignore[attr-defined]
-    return check
+def CLICheckNonemptyFileInput(desc: str) -> Callable[[HandlerFuncType], HandlerFuncType]:
+    def CheckFileInput(func: HandlerFuncType) -> HandlerFuncType:
+        @functools.wraps(func)
+        def check(*args: Any, **kwargs: Any) -> Tuple[int, str, str]:
+            if 'inbuf' not in kwargs:
+                return -errno.EINVAL, '', f'{ERROR_MSG_NO_INPUT_FILE}: Please specify the file '\
+                                          f'containing {desc} with "-i" option'
+            if isinstance(kwargs['inbuf'], str):
+                # Delete new line separator at EOF (it may have been added by a text editor).
+                kwargs['inbuf'] = kwargs['inbuf'].rstrip('\r\n').rstrip('\n')
+            if not kwargs['inbuf'] or not kwargs['inbuf'].strip():
+                return -errno.EINVAL, '', f'{ERROR_MSG_EMPTY_INPUT_FILE}: Please add {desc} to '\
+                                           'the file'
+            return func(*args, **kwargs)
+        check.__signature__ = inspect.signature(func)  # type: ignore[attr-defined]
+        return check
+    return CheckFileInput
 
 
 def _get_localized_key(prefix: str, key: str) -> str:
@@ -1834,3 +1839,33 @@ class MgrModule(ceph_module.BaseMgrModule, MgrModuleLoggingMixin):
         :param arguments: dict of key/value arguments to test
         """
         return self._ceph_is_authorized(arguments)
+
+    def send_rgwadmin_command(self, args: List[str],
+                              stdout_as_json: bool = True) -> Tuple[int, Union[str, dict], str]:
+        try:
+            cmd = [
+                    'radosgw-admin',
+                    '-c', str(self.get_ceph_conf_path()),
+                    '-k', str(self.get_ceph_option('keyring')),
+                    '-n', f'mgr.{self.get_mgr_id()}',
+                ] + args
+            self.log.debug('Executing %s', str(cmd))
+            result = subprocess.run(  # pylint: disable=subprocess-run-check
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=10,
+            )
+            stdout = result.stdout.decode('utf-8')
+            stderr = result.stderr.decode('utf-8')
+            if stdout and stdout_as_json:
+                stdout = json.loads(stdout)
+            if result.returncode:
+                self.log.debug('Error %s executing %s: %s', result.returncode, str(cmd), stderr)
+            return result.returncode, stdout, stderr
+        except subprocess.CalledProcessError as ex:
+            self.log.exception('Error executing radosgw-admin %s: %s', str(ex.cmd), str(ex.output))
+            raise
+        except subprocess.TimeoutExpired as ex:
+            self.log.error('Timeout (10s) executing radosgw-admin %s', str(ex.cmd))
+            raise

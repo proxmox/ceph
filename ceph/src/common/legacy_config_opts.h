@@ -1445,7 +1445,6 @@ OPTION(rgw_data_log_num_shards, OPT_INT) // number of objects to keep data chang
 OPTION(rgw_data_log_obj_prefix, OPT_STR) //
 
 OPTION(rgw_bucket_quota_ttl, OPT_INT) // time for cached bucket stats to be cached within rgw instance
-OPTION(rgw_bucket_quota_soft_threshold, OPT_DOUBLE) // threshold from which we don't rely on cached info for quota decisions
 OPTION(rgw_bucket_quota_cache_size, OPT_INT) // number of entries in bucket quota cache
 OPTION(rgw_bucket_default_quota_max_objects, OPT_INT) // number of objects allowed
 OPTION(rgw_bucket_default_quota_max_size, OPT_LONGLONG) // Max size of object in bytes
@@ -1509,6 +1508,10 @@ OPTION(rgw_crypt_vault_addr, OPT_STR) // Vault server base address
 OPTION(rgw_crypt_vault_prefix, OPT_STR) // Optional URL prefix to Vault secret path
 OPTION(rgw_crypt_vault_secret_engine, OPT_STR) // kv, transit or other supported secret engines
 OPTION(rgw_crypt_vault_namespace, OPT_STR) // Vault Namespace (only availabe in Vault Enterprise Version)
+OPTION(rgw_crypt_vault_verify_ssl, OPT_BOOL) // should we try to verify vault's ssl
+OPTION(rgw_crypt_vault_ssl_cacert, OPT_STR) // optional ca certificate for accessing vault
+OPTION(rgw_crypt_vault_ssl_clientcert, OPT_STR) // client certificate for accessing vault
+OPTION(rgw_crypt_vault_ssl_clientkey, OPT_STR) // private key for client certificate
 
 OPTION(rgw_crypt_kmip_addr, OPT_STR) // kmip server address
 OPTION(rgw_crypt_kmip_ca_path, OPT_STR) // ca for kmip servers

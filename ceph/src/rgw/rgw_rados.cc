@@ -1136,6 +1136,8 @@ int RGWRados::register_to_service_map(const string& daemon_type, const map<strin
   metadata["zonegroup_name"] = svc.zone->get_zonegroup().get_name();
   metadata["zone_name"] = svc.zone->zone_name();
   metadata["zone_id"] = svc.zone->zone_id().id;
+  metadata["realm_name"] = svc.zone->get_realm().get_name();
+  metadata["realm_id"] = svc.zone->get_realm().get_id();
   metadata["id"] = name;
   int ret = rados.service_daemon_register(
     daemon_type,
@@ -1199,12 +1201,16 @@ int RGWRados::init_complete(const DoutPrefixProvider *dpp)
 
   pools_initialized = true;
 
-  gc = new RGWGC();
-  gc->initialize(cct, this);
+  if (use_gc) {
+    gc = new RGWGC();
+    gc->initialize(cct, this);
+  } else {
+    ldpp_dout(dpp, 5) << "note: GC not initialized" << dendl;
+  }
 
   obj_expirer = new RGWObjectExpirer(this->store);
 
-  if (use_gc_thread) {
+  if (use_gc_thread && use_gc) {
     gc->start_processor();
     obj_expirer->start_processor();
   }
@@ -7074,9 +7080,15 @@ static int decode_olh_info(CephContext* cct, const bufferlist& bl, RGWOLHInfo *o
   }
 }
 
-int RGWRados::apply_olh_log(const DoutPrefixProvider *dpp, RGWObjectCtx& obj_ctx, RGWObjState& state, const RGWBucketInfo& bucket_info, const rgw_obj& obj,
-                            bufferlist& olh_tag, map<uint64_t, vector<rgw_bucket_olh_log_entry> >& log,
-                            uint64_t *plast_ver, rgw_zone_set* zones_trace)
+int RGWRados::apply_olh_log(const DoutPrefixProvider *dpp,
+			    RGWObjectCtx& obj_ctx,
+			    RGWObjState& state,
+			    const RGWBucketInfo& bucket_info,
+			    const rgw_obj& obj,
+			    bufferlist& olh_tag,
+			    std::map<uint64_t, std::vector<rgw_bucket_olh_log_entry> >& log,
+			    uint64_t *plast_ver,
+			    rgw_zone_set* zones_trace)
 {
   if (log.empty()) {
     return 0;
@@ -8593,6 +8605,22 @@ int RGWRados::cls_bucket_list_ordered(const DoutPrefixProvider *dpp,
 }
 
 
+// A helper function to retrieve the hash source from an incomplete multipart entry
+// by removing everything from the second last dot to the end.
+static int parse_index_hash_source(const std::string& oid_wo_ns, std::string *index_hash_source) {
+  std::size_t found = oid_wo_ns.rfind('.');
+  if (found == std::string::npos || found < 1) {
+    return -EINVAL;
+  }
+  found = oid_wo_ns.rfind('.', found - 1);
+  if (found == std::string::npos || found < 1) {
+    return -EINVAL;
+  }
+  *index_hash_source = oid_wo_ns.substr(0, found);
+  return 0;
+}
+
+
 int RGWRados::cls_bucket_list_unordered(const DoutPrefixProvider *dpp, 
                                         RGWBucketInfo& bucket_info,
 					int shard_id,
@@ -8635,18 +8663,11 @@ int RGWRados::cls_bucket_list_unordered(const DoutPrefixProvider *dpp,
     // in it, so we need to get to the bucket shard index, so we can
     // start reading from there
 
-    std::string key;
-    // test whether object name is a multipart meta name
-    if(! multipart_meta_filter.filter(start_after.name, key)) {
-      // if multipart_meta_filter fails, must be "regular" (i.e.,
-      // unadorned) and the name is the key
-      key = start_after.name;
-    }
 
     // now convert the key (oid) to an rgw_obj_key since that will
     // separate out the namespace, name, and instance
     rgw_obj_key obj_key;
-    bool parsed = rgw_obj_key::parse_raw_oid(key, &obj_key);
+    bool parsed = rgw_obj_key::parse_raw_oid(start_after.name, &obj_key);
     if (!parsed) {
       ldpp_dout(dpp, 0) <<
 	"ERROR: RGWRados::cls_bucket_list_unordered received an invalid "
@@ -8660,7 +8681,21 @@ int RGWRados::cls_bucket_list_unordered(const DoutPrefixProvider *dpp,
     } else {
       // so now we have the key used to compute the bucket index shard
       // and can extract the specific shard from it
-      current_shard = svc.bi_rados->bucket_shard_index(obj_key.name, num_shards);
+      if (obj_key.ns == RGW_OBJ_NS_MULTIPART) {
+        // Use obj_key.ns == RGW_OBJ_NS_MULTIPART instead of
+        // the implementation relying on MultipartMetaFilter
+        // because MultipartMetaFilter only checks .meta suffix, which may
+        // exclude data multiparts but include some regular objects with .meta suffix
+        // by mistake.
+        string index_hash_source;
+        r = parse_index_hash_source(obj_key.name, &index_hash_source);
+        if (r < 0) {
+          return r;
+        }
+        current_shard = svc.bi_rados->bucket_shard_index(index_hash_source, num_shards);
+      } else {
+        current_shard = svc.bi_rados->bucket_shard_index(obj_key.name, num_shards);
+      }
     }
   }
 

@@ -98,6 +98,7 @@ class RgwDaemon(RESTController):
                 # extract per-daemon service data and health
                 daemon = {
                     'id': metadata['id'],
+                    'service_map_id': service['id'],
                     'version': metadata['ceph_version'],
                     'server_hostname': hostname,
                     'zonegroup_name': metadata['zonegroup_name'],
@@ -233,7 +234,7 @@ class RgwBucket(RgwRESTController):
 
     def list(self, stats=False, daemon_name=None):
         # type: (bool, Optional[str]) -> List[Any]
-        query_params = '?stats' if stats else ''
+        query_params = '?stats' if str_to_bool(stats) else ''
         result = self.proxy(daemon_name, 'GET', 'bucket{}'.format(query_params))
 
         if stats:
