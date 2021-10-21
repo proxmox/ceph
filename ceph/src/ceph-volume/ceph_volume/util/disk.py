@@ -24,7 +24,7 @@ def get_partuuid(device):
     device
     """
     out, err, rc = process.call(
-        ['blkid', '-s', 'PARTUUID', '-o', 'value', device]
+        ['blkid', '-c', '/dev/null', '-s', 'PARTUUID', '-o', 'value', device]
     )
     return ' '.join(out).strip()
 
@@ -98,7 +98,7 @@ def blkid(device):
     PART_ENTRY_UUID                 PARTUUID
     """
     out, err, rc = process.call(
-        ['blkid', '-p', device]
+        ['blkid', '-c', '/dev/null', '-p', device]
     )
     return _blkid_parser(' '.join(out))
 
@@ -110,7 +110,7 @@ def get_part_entry_type(device):
     used for udev rules, but it is useful in this case as it is the only
     consistent way to retrieve the GUID used by ceph-disk to identify devices.
     """
-    out, err, rc = process.call(['blkid', '-p', '-o', 'udev', device])
+    out, err, rc = process.call(['blkid', '-c', '/dev/null', '-p', '-o', 'udev', device])
     for line in out:
         if 'ID_PART_ENTRY_TYPE=' in line:
             return line.split('=')[-1].strip()
@@ -123,7 +123,7 @@ def get_device_from_partuuid(partuuid):
     device is
     """
     out, err, rc = process.call(
-        ['blkid', '-t', 'PARTUUID="%s"' % partuuid, '-o', 'device']
+        ['blkid', '-c', '/dev/null', '-t', 'PARTUUID="%s"' % partuuid, '-o', 'device']
     )
     return ' '.join(out).strip()
 
@@ -134,14 +134,13 @@ def remove_partition(device):
 
     :param device: A ``Device()`` object
     """
-    parent_device = '/dev/%s' % device.disk_api['PKNAME']
     udev_info = udevadm_property(device.abspath)
     partition_number = udev_info.get('ID_PART_ENTRY_NUMBER')
     if not partition_number:
         raise RuntimeError('Unable to detect the partition number for device: %s' % device.abspath)
 
     process.run(
-        ['parted', parent_device, '--script', '--', 'rm', partition_number]
+        ['parted', device.parent_device, '--script', '--', 'rm', partition_number]
     )
 
 
@@ -802,3 +801,17 @@ def get_devices(_sys_block_path='/sys/block'):
 
         device_facts[diskname] = metadata
     return device_facts
+
+def has_bluestore_label(device_path):
+    isBluestore = False
+    bluestoreDiskSignature = 'bluestore block device' # 22 bytes long
+
+    # throws OSError on failure
+    logger.info("opening device {} to check for BlueStore label".format(device_path))
+    with open(device_path, "rb") as fd:
+        # read first 22 bytes looking for bluestore disk signature
+        signature = fd.read(22)
+        if signature.decode('ascii', 'replace') == bluestoreDiskSignature:
+            isBluestore = True
+
+    return isBluestore
