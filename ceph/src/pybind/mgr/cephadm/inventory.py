@@ -14,6 +14,7 @@ from ceph.utils import str_to_datetime, datetime_to_str, datetime_now
 from orchestrator import OrchestratorError, HostSpec, OrchestratorEvent, service_to_daemon_types
 
 from .utils import resolve_ip
+from .migrations import queue_migrate_nfs_spec
 
 if TYPE_CHECKING:
     from .module import CephadmOrchestrator
@@ -92,8 +93,16 @@ class Inventory:
             raise OrchestratorError('host %s does not exist' % host)
 
     def add_host(self, spec: HostSpec) -> None:
-        self._inventory[spec.hostname] = spec.to_json()
-        self.save()
+        if spec.hostname in self._inventory:
+            # addr
+            if self.get_addr(spec.hostname) != spec.addr:
+                self.set_addr(spec.hostname, spec.addr)
+            # labels
+            for label in spec.labels:
+                self.add_label(spec.hostname, label)
+        else:
+            self._inventory[spec.hostname] = spec.to_json()
+            self.save()
 
     def rm_host(self, host: str) -> None:
         self.assert_host(host)
@@ -207,6 +216,12 @@ class SpecStore():
             service_name = k[len(SPEC_STORE_PREFIX):]
             try:
                 j = cast(Dict[str, dict], json.loads(v))
+                if (
+                        (self.mgr.migration_current or 0) < 3
+                        and j['spec'].get('service_type') == 'nfs'
+                ):
+                    self.mgr.log.debug(f'found legacy nfs spec {j}')
+                    queue_migrate_nfs_spec(self.mgr, j)
                 spec = ServiceSpec.from_json(j['spec'])
                 created = str_to_datetime(cast(str, j['created']))
                 self._specs[service_name] = spec
@@ -595,6 +610,17 @@ class HostCache():
         self.registry_login_queue.add(host)
         self.last_client_files[host] = {}
 
+    def refresh_all_host_info(self, host):
+        # type: (str) -> None
+
+        self.last_host_check.pop(host, None)
+        self.daemon_refresh_queue.append(host)
+        self.registry_login_queue.add(host)
+        self.device_refresh_queue.append(host)
+        self.last_facts_update.pop(host, None)
+        self.osdspec_previews_refresh_queue.append(host)
+        self.last_autotune.pop(host, None)
+
     def invalidate_host_daemons(self, host):
         # type: (str) -> None
         self.daemon_refresh_queue.append(host)
@@ -718,6 +744,13 @@ class HostCache():
                 if dd.name() == daemon_name:
                     return dd
         raise orchestrator.OrchestratorError(f'Unable to find {daemon_name} daemon(s)')
+
+    def has_daemon(self, daemon_name: str) -> bool:
+        try:
+            self.get_daemon(daemon_name)
+        except orchestrator.OrchestratorError:
+            return False
+        return True
 
     def get_daemons_with_volatile_status(self) -> Iterator[Tuple[str, Dict[str, orchestrator.DaemonDescription]]]:
         def alter(host: str, dd_orig: orchestrator.DaemonDescription) -> orchestrator.DaemonDescription:

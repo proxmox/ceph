@@ -14,7 +14,7 @@ import orchestrator
 from cephadm.serve import CephadmServe
 from cephadm.utils import forall_hosts
 from ceph.utils import datetime_now
-from orchestrator import OrchestratorError
+from orchestrator import OrchestratorError, DaemonDescription
 from mgr_module import MonCommandFailed
 
 from cephadm.services.cephadmservice import CephadmDaemonDeploySpec, CephService
@@ -204,12 +204,14 @@ class OSDService(CephService):
         [
           {'data': {<metadata>},
            'osdspec': <name of osdspec>,
-           'host': <name of host>
+           'host': <name of host>,
+           'notes': <notes>
            },
 
            {'data': ...,
             'osdspec': ..,
-            'host': ..
+            'host': ...,
+            'notes': ...
            }
         ]
 
@@ -246,10 +248,16 @@ class OSDService(CephService):
                     except ValueError:
                         logger.exception('Cannot decode JSON: \'%s\'' % ' '.join(out))
                         concat_out = {}
-
+                    notes = []
+                    if osdspec.data_devices is not None and osdspec.data_devices.limit and len(concat_out) < osdspec.data_devices.limit:
+                        found = len(concat_out)
+                        limit = osdspec.data_devices.limit
+                        notes.append(
+                            f'NOTE: Did not find enough disks matching filter on host {host} to reach data device limit (Found: {found} | Limit: {limit})')
                     ret_all.append({'data': concat_out,
                                     'osdspec': osdspec.service_id,
-                                    'host': host})
+                                    'host': host,
+                                    'notes': notes})
         return ret_all
 
     def resolve_hosts_for_osdspecs(self,
@@ -305,6 +313,13 @@ class OSDService(CephService):
 
     def get_osdspec_affinity(self, osd_id: str) -> str:
         return self.mgr.get('osd_metadata').get(osd_id, {}).get('osdspec_affinity', '')
+
+    def post_remove(self, daemon: DaemonDescription, is_failed_deploy: bool) -> None:
+        # Do not remove the osd.N keyring, if we failed to deploy the OSD, because
+        # we cannot recover from it. The OSD keys are created by ceph-volume and not by
+        # us.
+        if not is_failed_deploy:
+            super().post_remove(daemon, is_failed_deploy=is_failed_deploy)
 
 
 class OsdIdClaims(object):
@@ -397,7 +412,7 @@ class RemoveUtil(object):
         while not self.ok_to_stop(osds):
             if len(osds) <= 1:
                 # can't even stop one OSD, aborting
-                self.mgr.log.info(
+                self.mgr.log.debug(
                     "Can't even stop one OSD. Cluster is probably busy. Retrying later..")
                 return []
 
@@ -417,7 +432,7 @@ class RemoveUtil(object):
             'prefix': "osd ok-to-stop",
             'ids': [str(osd.osd_id) for osd in osds]
         }
-        return self._run_mon_cmd(cmd_args)
+        return self._run_mon_cmd(cmd_args, error_ok=True)
 
     def set_osd_flag(self, osds: List["OSD"], flag: str) -> bool:
         base_cmd = f"osd {flag}"
@@ -460,11 +475,24 @@ class RemoveUtil(object):
         self.mgr.log.info(f"{osd} weight is now {weight}")
         return True
 
+    def zap_osd(self, osd: "OSD") -> str:
+        "Zaps all devices that are associated with an OSD"
+        if osd.hostname is not None:
+            out, err, code = CephadmServe(self.mgr)._run_cephadm(
+                osd.hostname, 'osd', 'ceph-volume',
+                ['--', 'lvm', 'zap', '--destroy', '--osd-id', str(osd.osd_id)],
+                error_ok=True)
+            self.mgr.cache.invalidate_host_devices(osd.hostname)
+            if code:
+                raise OrchestratorError('Zap failed: %s' % '\n'.join(out + err))
+            return '\n'.join(out + err)
+        raise OrchestratorError(f"Failed to zap OSD {osd.osd_id} because host was unknown")
+
     def safe_to_destroy(self, osd_ids: List[int]) -> bool:
         """ Queries the safe-to-destroy flag for OSDs """
         cmd_args = {'prefix': 'osd safe-to-destroy',
                     'ids': [str(x) for x in osd_ids]}
-        return self._run_mon_cmd(cmd_args)
+        return self._run_mon_cmd(cmd_args, error_ok=True)
 
     def destroy_osd(self, osd_id: int) -> bool:
         """ Destroys an OSD (forcefully) """
@@ -482,14 +510,15 @@ class RemoveUtil(object):
         }
         return self._run_mon_cmd(cmd_args)
 
-    def _run_mon_cmd(self, cmd_args: dict) -> bool:
+    def _run_mon_cmd(self, cmd_args: dict, error_ok: bool = False) -> bool:
         """
         Generic command to run mon_command and evaluate/log the results
         """
         ret, out, err = self.mgr.mon_command(cmd_args)
         if ret != 0:
             self.mgr.log.debug(f"ran {cmd_args} with mon_command")
-            self.mgr.log.error(f"cmd: {cmd_args.get('prefix')} failed with: {err}. (errno:{ret})")
+            if not error_ok:
+                self.mgr.log.error(f"cmd: {cmd_args.get('prefix')} failed with: {err}. (errno:{ret})")
             return False
         self.mgr.log.debug(f"cmd: {cmd_args.get('prefix')} returns: {out}")
         return True
@@ -514,7 +543,7 @@ class OSD:
                  replace: bool = False,
                  force: bool = False,
                  hostname: Optional[str] = None,
-                 ):
+                 zap: bool = False):
         # the ID of the OSD
         self.osd_id = osd_id
 
@@ -550,6 +579,9 @@ class OSD:
         self.rm_util: RemoveUtil = remove_util
 
         self.original_weight: Optional[float] = None
+
+        # Whether devices associated with the OSD should be zapped (DATA ERASED)
+        self.zap = zap
 
     def start(self) -> None:
         if self.started:
@@ -621,6 +653,9 @@ class OSD:
     def destroy(self) -> bool:
         return self.rm_util.destroy_osd(self.osd_id)
 
+    def do_zap(self) -> str:
+        return self.rm_util.zap_osd(self)
+
     def purge(self) -> bool:
         return self.rm_util.purge_osd(self.osd_id)
 
@@ -649,6 +684,7 @@ class OSD:
         out['stopped'] = self.stopped
         out['replace'] = self.replace
         out['force'] = self.force
+        out['zap'] = self.zap
         out['hostname'] = self.hostname  # type: ignore
 
         for k in ['drain_started_at', 'drain_stopped_at', 'drain_done_at', 'process_started_at']:
@@ -706,10 +742,10 @@ class OSDRemovalQueue(object):
         self.cleanup()
 
         # find osds that are ok-to-stop and not yet draining
-        ok_to_stop_osds = self.rm_util.find_osd_stop_threshold(self.idling_osds())
-        if ok_to_stop_osds:
+        ready_to_drain_osds = self._ready_to_drain_osds()
+        if ready_to_drain_osds:
             # start draining those
-            _ = [osd.start_draining() for osd in ok_to_stop_osds]
+            _ = [osd.start_draining() for osd in ready_to_drain_osds]
 
         all_osds = self.all_osds()
 
@@ -741,8 +777,12 @@ class OSDRemovalQueue(object):
 
             # stop and remove daemon
             assert osd.hostname is not None
-            CephadmServe(self.mgr)._remove_daemon(f'osd.{osd.osd_id}', osd.hostname)
-            logger.info(f"Successfully removed {osd} on {osd.hostname}")
+
+            if self.mgr.cache.has_daemon(f'osd.{osd.osd_id}'):
+                CephadmServe(self.mgr)._remove_daemon(f'osd.{osd.osd_id}', osd.hostname)
+                logger.info(f"Successfully removed {osd} on {osd.hostname}")
+            else:
+                logger.info(f"Daemon {osd} on {osd.hostname} was already removed")
 
             if osd.replace:
                 # mark destroyed in osdmap
@@ -756,6 +796,12 @@ class OSDRemovalQueue(object):
                 if not osd.purge():
                     raise orchestrator.OrchestratorError(f"Could not purge {osd}")
                 logger.info(f"Successfully purged {osd} on {osd.hostname}")
+
+            if osd.zap:
+                # throws an exception if the zap fails
+                logger.info(f"Zapping devices for {osd} on {osd.hostname}")
+                osd.do_zap()
+                logger.info(f"Successfully zapped devices for {osd} on {osd.hostname}")
 
             logger.debug(f"Removing {osd} from the queue.")
 
@@ -771,6 +817,18 @@ class OSDRemovalQueue(object):
         with self.lock:
             for osd in self._not_in_cluster():
                 self.osds.remove(osd)
+
+    def _ready_to_drain_osds(self) -> List["OSD"]:
+        """
+        Returns OSDs that are ok to stop and not yet draining. Only returns as many OSDs as can
+        be accomodated by the 'max_osd_draining_count' config value, considering the number of OSDs
+        that are already draining.
+        """
+        draining_limit = max(1, self.mgr.max_osd_draining_count)
+        num_already_draining = len(self.draining_osds())
+        num_to_start_draining = max(0, draining_limit - num_already_draining)
+        stoppable_osds = self.rm_util.find_osd_stop_threshold(self.idling_osds())
+        return [] if stoppable_osds is None else stoppable_osds[:num_to_start_draining]
 
     def _save_to_store(self) -> None:
         osd_queue = [osd.to_json() for osd in self.osds]

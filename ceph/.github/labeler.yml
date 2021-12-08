@@ -225,3 +225,28 @@ tests:
   - qa/tasks/**
   - qa/workunits/**
   - src/test/**
+
+nfs:
+  - src/pybind/mgr/nfs/**
+  - src/pybind/mgr/cephadm/services/nfs.py
+  - src/pybind/mgr/cephadm/templates/services/nfs/ganesha.conf.j2
+  - src/pybind/mgr/dashboard/services/ganesha.py
+  - src/pybind/mgr/dashboard/tests/test_ganesha.py
+  - qa/tasks/cephfs/test_nfs.py
+  - qa/tasks/mgr/dashboard/test_ganesha.py
+  - doc/mgr/nfs.rst
+  - doc/cephfs/nfs.rst
+  - doc/cephadm/nfs.rst
+  - doc/radosgw/nfs.rst
+  - doc/dev/vstart-ganesha.rst
+
+monitoring:
+  - doc/cephadm/monitoring.rst
+  - src/pybind/mgr/cephadm/services/monitoring.py
+  - src/pybind/mgr/cephadm/templates/services/alertmanager/**
+  - src/pybind/mgr/cephadm/templates/services/grafana/**
+  - src/pybind/mgr/cephadm/templates/services/prometheus/**
+  - src/pybind/mgr/dashboard/ci/check_grafana_dashboards.py
+  - src/pybind/mgr/prometheus/**
+  - monitoring/**  
+  

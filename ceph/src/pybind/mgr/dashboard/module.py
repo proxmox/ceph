@@ -27,7 +27,7 @@ from mgr_util import ServerConfigException, build_url, \
     create_self_signed_cert, get_default_addr, verify_tls_files
 
 from . import mgr
-from .controllers import generate_routes, json_error_page
+from .controllers import Router, json_error_page
 from .grafana import push_local_dashboards
 from .services.auth import AuthManager, AuthManagerTool, JwtManager
 from .services.exception import dashboard_exception_handler
@@ -109,8 +109,6 @@ class CherryPyConfig(object):
         else:
             server_port = self.get_localized_module_option('ssl_server_port', 8443)  # type: ignore
 
-        if server_addr == '::':
-            server_addr = self.get_mgr_ip()  # type: ignore
         if server_addr is None:
             raise ServerConfigException(
                 'no server_addr configured; '
@@ -193,6 +191,8 @@ class CherryPyConfig(object):
         self._url_prefix = prepare_url_prefix(self.get_module_option(  # type: ignore
             'url_prefix', default=''))
 
+        if server_addr in ['::', '0.0.0.0']:
+            server_addr = self.get_mgr_ip()  # type: ignore
         base_url = build_url(
             scheme='https' if use_ssl else 'http',
             host=server_addr,
@@ -330,7 +330,7 @@ class Module(MgrModule, CherryPyConfig):
         # about to start serving
         self.set_uri(uri)
 
-        mapper, parent_urls = generate_routes(self.url_prefix)
+        mapper, parent_urls = Router.generate_routes(self.url_prefix)
 
         config = {}
         for purl in parent_urls:

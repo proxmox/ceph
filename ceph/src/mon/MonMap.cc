@@ -42,10 +42,10 @@ void mon_info_t::encode(ceph::buffer::list& bl, uint64_t features) const
   uint8_t min_v = 1;
   if (!crush_loc.empty()) {
     // we added crush_loc in version 5, but need to let old clients decode it
-    // so just leave the min_v at version 4. Monitors are protected
+    // so just leave the min_v at version 1. Monitors are protected
     // from misunderstandings about location because setting it is blocked
     // on FEATURE_PINGING
-    min_v = 4;
+    min_v = 1;
   }
   if (!HAVE_FEATURE(features, SERVER_NAUTILUS)) {
     v = 2;
@@ -369,7 +369,12 @@ void MonMap::print(ostream& out) const
   out << "min_mon_release " << to_integer<unsigned>(min_mon_release)
       << " (" << min_mon_release << ")\n";
   out << "election_strategy: " << strategy << "\n";
-  if (disallowed_leaders.size()) {
+  if (stretch_mode_enabled) {
+    out << "stretch_mode_enabled " << stretch_mode_enabled << "\n";
+    out << "tiebreaker_mon " << tiebreaker_mon << "\n";
+  }
+  if (stretch_mode_enabled ||
+      !disallowed_leaders.empty()) {
     out << "disallowed_leaders " << disallowed_leaders << "\n";
   }
   unsigned i = 0;
@@ -395,6 +400,7 @@ void MonMap::dump(Formatter *f) const
   f->dump_int ("election_strategy", strategy);
   f->dump_stream("disallowed_leaders: ") << disallowed_leaders;
   f->dump_bool("stretch_mode", stretch_mode_enabled);
+  f->dump_string("tiebreaker_mon", tiebreaker_mon);
   f->open_object_section("features");
   persistent_features.dump(f, "persistent");
   optional_features.dump(f, "optional");

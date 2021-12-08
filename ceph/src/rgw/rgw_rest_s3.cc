@@ -4699,7 +4699,13 @@ int RGWHandler_REST_S3::postauth_init(optional_yield y)
   }
 
   if (!t->src_bucket.empty()) {
-    rgw_parse_url_bucket(t->src_bucket, s->user->get_tenant(),
+    string auth_tenant;
+    if (s->auth.identity->get_identity_type() == TYPE_ROLE) {
+      auth_tenant = s->auth.identity->get_role_tenant();
+    } else {
+      auth_tenant = s->user->get_tenant();
+    }
+    rgw_parse_url_bucket(t->src_bucket, auth_tenant,
 			s->src_tenant_name, s->src_bucket_name);
     ret = rgw_validate_tenant_name(s->src_tenant_name);
     if (ret)
@@ -4943,14 +4949,6 @@ int RGWHandler_REST_S3Website::retarget(RGWOp* op, RGWOp** new_op, optional_yiel
 
   if (!(s->prot_flags & RGW_REST_WEBSITE))
     return 0;
-
-  int ret = store->get_bucket(s, nullptr, s->bucket_tenant, s->bucket_name, &s->bucket, y);
-  if (ret < 0) {
-      // TODO-FUTURE: if the bucket does not exist, maybe expose it here?
-      return -ERR_NO_SUCH_BUCKET;
-  }
-
-  s->bucket_attrs = s->bucket->get_attrs();
 
   if (!s->bucket->get_info().has_website) {
       // TODO-FUTURE: if the bucket has no WebsiteConfig, expose it here
@@ -5263,7 +5261,11 @@ AWSGeneralAbstractor::get_auth_data_v4(const req_state* const s,
       s->op_type == RGW_OP_CREATE_OIDC_PROVIDER ||
       s->op_type == RGW_OP_DELETE_OIDC_PROVIDER ||
       s->op_type == RGW_OP_GET_OIDC_PROVIDER ||
-      s->op_type == RGW_OP_LIST_OIDC_PROVIDERS) {
+      s->op_type == RGW_OP_LIST_OIDC_PROVIDERS ||
+      s->op_type == RGW_OP_PUBSUB_TOPIC_CREATE ||
+      s->op_type == RGW_OP_PUBSUB_TOPICS_LIST ||
+      s->op_type == RGW_OP_PUBSUB_TOPIC_GET ||
+      s->op_type == RGW_OP_PUBSUB_TOPIC_DELETE) {
     is_non_s3_op = true;
   }
 
@@ -5361,6 +5363,8 @@ AWSGeneralAbstractor::get_auth_data_v4(const req_state* const s,
         case RGW_OP_PUT_LC:
         case RGW_OP_SET_REQUEST_PAYMENT:
         case RGW_OP_PUBSUB_NOTIF_CREATE:
+        case RGW_OP_PUBSUB_NOTIF_DELETE:
+        case RGW_OP_PUBSUB_NOTIF_LIST:
         case RGW_OP_PUT_BUCKET_OBJ_LOCK:
         case RGW_OP_PUT_OBJ_RETENTION:
         case RGW_OP_PUT_OBJ_LEGAL_HOLD:
@@ -5814,7 +5818,7 @@ rgw::auth::s3::STSEngine::get_session_token(const DoutPrefixProvider* dpp, const
     return -EINVAL;
   }
   string error;
-  auto* keyhandler = cryptohandler->get_key_handler(secret, error);
+  std::unique_ptr<CryptoKeyHandler> keyhandler(cryptohandler->get_key_handler(secret, error));
   if (! keyhandler) {
     return -EINVAL;
   }

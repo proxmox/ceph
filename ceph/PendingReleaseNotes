@@ -20,6 +20,9 @@
 * MDS upgrades no longer require stopping all standby MDS daemons before
   upgrading the sole active MDS for a file system.
 
+* CephFS: Failure to replay the journal by a standby-replay daemon will now
+  cause the rank to be marked damaged.
+
 * RGW: It is possible to specify ssl options and ciphers for beast frontend now.
   The default ssl options setting is "no_sslv2:no_sslv3:no_tlsv1:no_tlsv1_1".
   If you want to return back the old behavior add 'ssl_options=' (empty) to
@@ -28,6 +31,22 @@
 * fs: A file system can be created with a specific ID ("fscid"). This is useful
   in certain recovery scenarios, e.g., monitor database lost and rebuilt, and
   the restored file system is expected to have the same ID as before.
+
+>=16.2.7
+--------
+
+* Critical bug in OMAP format upgrade is fixed. This could cause data corruption
+  (improperly formatted OMAP keys) after pre-Pacific cluster upgrade if
+  bluestore-quick-fix-on-mount parameter is set to true or ceph-bluestore-tool's
+  quick-fix/repair commands are invoked.
+  Relevant tracker: https://tracker.ceph.com/issues/53062
+
+* MGR: The pg_autoscaler will use the 'scale-up' profile as the default profile.
+  16.2.6 changed the default profile to 'scale-down' but we ran into issues
+  with the device_health_metrics pool consuming too many PGs, which is not ideal
+  for performance. So we will continue to use the 'scale-up' profile by default,
+  until we implement a limit on the number of PGs default pools should consume,
+  in combination with the 'scale-down' profile.
 
 >=16.2.6
 --------
@@ -42,6 +61,9 @@
 >=16.0.0
 --------
 
+* RGW: S3 bucket notification events now contain an `eTag` key instead of `etag`,
+  and eventName values no longer carry the `s3:` prefix, fixing deviations from
+  the message format observed on AWS.
 * `ceph-mgr-modules-core` debian package does not recommend `ceph-mgr-rook`
   anymore. As the latter depends on `python3-numpy` which cannot be imported in
   different Python sub-interpreters multi-times if the version of
@@ -71,6 +93,21 @@
 * The ``nfs cluster delete`` and ``nfs export delete`` commands are
   deprecated and will be removed in a future release.  Please use
   ``nfs cluster rm`` and ``nfs export rm`` instead.
+
+* The ``nfs export create`` CLI arguments have changed, with the
+  *fsname* or *bucket-name* argument position moving to the right of
+  *the *cluster-id* and *pseudo-path*.  Consider transitioning to
+  *using named arguments instead of positional arguments (e.g., ``ceph
+  *nfs export create cephfs --cluster-id mycluster --pseudo-path /foo
+  *--fsname myfs`` instead of ``ceph nfs export create cephfs
+  *mycluster /foo myfs`` to ensure correct behavior with any
+  *version.
+
+* mgr-pg_autoscaler: Autoscaler will now start out by scaling each
+  pool to have a full complements of pgs from the start and will only
+  decrease it when other pools need more pgs due to increased usage.
+  This improves out of the box performance of Ceph by allowing more PGs 
+  to be created for a given pool.
 
 * CephFS: Disabling allow_standby_replay on a file system will also stop all
   standby-replay daemons for that file system.
@@ -374,3 +411,13 @@
   zone are provided, the user is now responsible for setting up the
   multisite configuration beforehand--cephadm no longer attempts to
   create missing realms or zones.
+
+* The cephadm NFS support has been simplified to no longer allow the
+  pool and namespace where configuration is stored to be customized.
+  As a result, the ``ceph orch apply nfs`` command no longer has
+  ``--pool`` or ``--namespace`` arguments.
+
+  Existing cephadm NFS deployments (from earlier version of Pacific or
+  from Octopus) will be automatically migrated when the cluster is
+  upgraded.  Note that the NFS ganesha daemons will be redeployed and
+  it is possible that their IPs will change.

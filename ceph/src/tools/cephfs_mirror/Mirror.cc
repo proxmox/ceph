@@ -27,7 +27,7 @@ namespace {
 
 const std::string SERVICE_DAEMON_MIRROR_ENABLE_FAILED_KEY("mirroring_failed");
 
-class SafeTimerSingleton : public SafeTimer {
+class SafeTimerSingleton : public CommonSafeTimer<ceph::mutex> {
 public:
   ceph::mutex timer_lock = ceph::make_mutex("cephfs::mirror::timer_lock");
 
@@ -222,7 +222,6 @@ Mirror::~Mirror() {
   {
     std::scoped_lock locker(m_lock);
     m_thread_pool->stop();
-    m_cluster_watcher.reset();
   }
 }
 
@@ -285,6 +284,7 @@ int Mirror::init(std::string &reason) {
 void Mirror::shutdown() {
   dout(20) << dendl;
   m_stopping = true;
+  m_cluster_watcher->shutdown();
   m_cond.notify_all();
 }
 

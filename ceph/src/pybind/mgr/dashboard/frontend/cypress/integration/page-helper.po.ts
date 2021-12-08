@@ -52,14 +52,16 @@ export abstract class PageHelper {
   /**
    * Navigates to the edit page
    */
-  navigateEdit(name: string, select = true) {
+  navigateEdit(name: string, select = true, breadcrumb = true) {
     if (select) {
       this.navigateTo();
       this.getFirstTableCell(name).click();
     }
     cy.contains('Creating...').should('not.exist');
     cy.contains('button', 'Edit').click();
-    this.expectBreadcrumbText('Edit');
+    if (breadcrumb) {
+      this.expectBreadcrumbText('Edit');
+    }
   }
 
   /**
@@ -74,7 +76,7 @@ export abstract class PageHelper {
   }
 
   getTab(tabName: string) {
-    return cy.contains('.nav.nav-tabs li', new RegExp(`^${tabName}$`));
+    return cy.contains('.nav.nav-tabs li', tabName);
   }
 
   getTabText(index: number) {
@@ -83,6 +85,19 @@ export abstract class PageHelper {
 
   getTabsCount(): any {
     return this.getTabs().its('length');
+  }
+
+  /**
+   * Helper method to navigate/click a tab inside the expanded table row.
+   * @param selector The selector of the expanded table row.
+   * @param name The name of the row which should expand.
+   * @param tabName Name of the tab to be navigated/clicked.
+   */
+  clickTab(selector: string, name: string, tabName: string) {
+    this.getExpandCollapseElement(name).click();
+    cy.get(selector).within(() => {
+      this.getTab(tabName).click();
+    });
   }
 
   /**
@@ -190,6 +205,11 @@ export abstract class PageHelper {
     );
   }
 
+  existTableCell(name: string, oughtToBePresent = true) {
+    const waitRule = oughtToBePresent ? 'be.visible' : 'not.exist';
+    this.getFirstTableCell(name).should(waitRule);
+  }
+
   getExpandCollapseElement(content?: string) {
     this.waitDataTableToLoad();
 
@@ -206,7 +226,7 @@ export abstract class PageHelper {
   getDataTableHeaders(index = 0) {
     this.waitDataTableToLoad();
 
-    return cy.get('.datatable-header').its(index).find('.datatable-header-cell-label');
+    return cy.get('.datatable-header').its(index).find('.datatable-header-cell');
   }
 
   /**
@@ -256,19 +276,22 @@ export abstract class PageHelper {
    * @param name The string to search in table cells.
    * @param columnIndex If provided, search string in columnIndex column.
    */
-  delete(name: string, columnIndex?: number) {
+  delete(name: string, columnIndex?: number, section?: string) {
     // Selects row
     const getRow = columnIndex
       ? this.getTableCell.bind(this, columnIndex)
       : this.getFirstTableCell.bind(this);
     getRow(name).click();
+    let action: string;
+    section === 'hosts' ? (action = 'remove') : (action = 'delete');
 
-    // Clicks on table Delete button
-    this.clickActionButton('delete');
+    // Clicks on table Delete/Remove button
+    this.clickActionButton(action);
 
-    // Confirms deletion
+    // Convert action to SentenceCase and Confirms deletion
+    const actionUpperCase = action.charAt(0).toUpperCase() + action.slice(1);
     cy.get('cd-modal .custom-control-label').click();
-    cy.contains('cd-modal button', 'Delete').click();
+    cy.contains('cd-modal button', actionUpperCase).click();
 
     // Wait for modal to close
     cy.get('cd-modal').should('not.exist');

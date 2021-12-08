@@ -1036,6 +1036,7 @@ OPTION(bluestore_debug_fsck_abort, OPT_BOOL)
 OPTION(bluestore_debug_omit_kv_commit, OPT_BOOL)
 OPTION(bluestore_debug_permit_any_bdev_label, OPT_BOOL)
 OPTION(bluestore_debug_random_read_err, OPT_DOUBLE)
+OPTION(bluestore_debug_legacy_omap, OPT_BOOL)
 OPTION(bluestore_debug_inject_bug21040, OPT_BOOL)
 OPTION(bluestore_debug_inject_csum_err_probability, OPT_FLOAT)
 OPTION(bluestore_fsck_error_on_no_per_pool_stats, OPT_BOOL)
@@ -1405,6 +1406,7 @@ OPTION(rgw_usage_max_user_shards, OPT_INT)
 OPTION(rgw_enable_ops_log, OPT_BOOL) // enable logging every rgw operation
 OPTION(rgw_enable_usage_log, OPT_BOOL) // enable logging bandwidth usage
 OPTION(rgw_ops_log_rados, OPT_BOOL) // whether ops log should go to rados
+OPTION(rgw_ops_log_file_path, OPT_STR) // path to file where ops log can go
 OPTION(rgw_ops_log_socket_path, OPT_STR) // path to unix domain socket where ops log can go
 OPTION(rgw_ops_log_data_backlog, OPT_INT) // max data backlog for ops log
 OPTION(rgw_fcgi_socket_backlog, OPT_INT) // socket  backlog for fcgi

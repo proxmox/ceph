@@ -159,6 +159,7 @@ def preview_table_osd(data: List) -> str:
     table.align = 'l'
     table.left_padding_width = 0
     table.right_padding_width = 2
+    notes = ''
     for osd_data in data:
         if osd_data.get('service_type') != 'osd':
             continue
@@ -167,6 +168,8 @@ def preview_table_osd(data: List) -> str:
                 if spec.get('error'):
                     return spec.get('message')
                 dg_name = spec.get('osdspec')
+                if spec.get('notes', []):
+                    notes += '\n'.join(spec.get('notes')) + '\n'
                 for osd in spec.get('data', []):
                     db_path = osd.get('block_db', '-')
                     wal_path = osd.get('block_wal', '-')
@@ -174,7 +177,7 @@ def preview_table_osd(data: List) -> str:
                     if not block_data:
                         continue
                     table.add_row(('osd', dg_name, host, block_data, db_path, wal_path))
-    return table.get_string()
+    return notes + table.get_string()
 
 
 def preview_table_services(data: List) -> str:
@@ -462,27 +465,27 @@ class OrchestratorCli(OrchestratorClientMixin, MgrModule,
                 "On": "On",
                 "Off": "Off",
                 True: "Yes",
-                False: "No",
+                False: "",
             }
 
             out = []
             if wide:
                 table = PrettyTable(
-                    ['Hostname', 'Path', 'Type', 'Transport', 'RPM', 'Vendor', 'Model',
-                     'Serial', 'Size', 'Health', 'Ident', 'Fault', 'Available',
-                     'Reject Reasons'],
+                    ['HOST', 'PATH', 'TYPE', 'TRANSPORT', 'RPM', 'DEVICE ID', 'SIZE',
+                     'HEALTH', 'IDENT', 'FAULT',
+                     'AVAILABLE', 'REJECT REASONS'],
                     border=False)
             else:
                 table = PrettyTable(
-                    ['Hostname', 'Path', 'Type', 'Serial', 'Size',
-                     'Health', 'Ident', 'Fault', 'Available'],
+                    ['HOST', 'PATH', 'TYPE', 'DEVICE ID', 'SIZE',
+                     'AVAILABLE', 'REJECT REASONS'],
                     border=False)
             table.align = 'l'
             table._align['SIZE'] = 'r'
             table.left_padding_width = 0
             table.right_padding_width = 2
             for host_ in sorted(inv_hosts, key=lambda h: h.name):  # type: InventoryHost
-                for d in host_.devices.devices:  # type: Device
+                for d in sorted(host_.devices.devices, key=lambda d: d.path):  # type: Device
 
                     led_ident = 'N/A'
                     led_fail = 'N/A'
@@ -490,24 +493,17 @@ class OrchestratorCli(OrchestratorClientMixin, MgrModule,
                         led_ident = d.lsm_data['ledSupport']['IDENTstatus']
                         led_fail = d.lsm_data['ledSupport']['FAILstatus']
 
-                    if d.device_id is not None:
-                        fallback_serial = d.device_id.split('_')[-1]
-                    else:
-                        fallback_serial = ""
-
                     if wide:
                         table.add_row(
                             (
                                 host_.name,
                                 d.path,
                                 d.human_readable_type,
-                                d.lsm_data.get('transport', 'Unknown'),
-                                d.lsm_data.get('rpm', 'Unknown'),
-                                d.sys_api.get('vendor') or 'N/A',
-                                d.sys_api.get('model') or 'N/A',
-                                d.lsm_data.get('serialNum', fallback_serial),
+                                d.lsm_data.get('transport', ''),
+                                d.lsm_data.get('rpm', ''),
+                                d.device_id,
                                 format_dimless(d.sys_api.get('size', 0), 5),
-                                d.lsm_data.get('health', 'Unknown'),
+                                d.lsm_data.get('health', ''),
                                 display_map[led_ident],
                                 display_map[led_fail],
                                 display_map[d.available],
@@ -520,12 +516,10 @@ class OrchestratorCli(OrchestratorClientMixin, MgrModule,
                                 host_.name,
                                 d.path,
                                 d.human_readable_type,
-                                d.lsm_data.get('serialNum', fallback_serial),
+                                d.device_id,
                                 format_dimless(d.sys_api.get('size', 0), 5),
-                                d.lsm_data.get('health', 'Unknown'),
-                                display_map[led_ident],
-                                display_map[led_fail],
-                                display_map[d.available]
+                                display_map[d.available],
+                                ', '.join(d.rejected_reasons)
                             )
                         )
             out.append(table.get_string())
@@ -604,10 +598,15 @@ class OrchestratorCli(OrchestratorClientMixin, MgrModule,
                 else:
                     refreshed = nice_delta(now, s.last_refresh, ' ago')
 
+                if s.spec.service_type == 'osd':
+                    running = str(s.running)
+                else:
+                    running = '{}/{}'.format(s.running, s.size)
+
                 table.add_row((
                     s.spec.service_name(),
                     s.get_port_summary(),
-                    '%d/%d' % (s.running, s.size),
+                    running,
                     refreshed,
                     nice_delta(now, s.created),
                     pl,
@@ -823,9 +822,10 @@ Usage:
     def _osd_rm_start(self,
                       osd_id: List[str],
                       replace: bool = False,
-                      force: bool = False) -> HandleCommandResult:
+                      force: bool = False,
+                      zap: bool = False) -> HandleCommandResult:
         """Remove OSD daemons"""
-        completion = self.remove_osds(osd_id, replace=replace, force=force)
+        completion = self.remove_osds(osd_id, replace=replace, force=force, zap=zap)
         raise_if_exception(completion)
         return HandleCommandResult(stdout=completion.result_str())
 
@@ -850,14 +850,17 @@ Usage:
             out = to_format(report, format, many=True, cls=None)
         else:
             table = PrettyTable(
-                ['OSD_ID', 'HOST', 'STATE', 'PG_COUNT', 'REPLACE', 'FORCE', 'DRAIN_STARTED_AT'],
+                ['OSD', 'HOST', 'STATE', 'PGS', 'REPLACE', 'FORCE', 'ZAP',
+                 'DRAIN STARTED AT'],
                 border=False)
             table.align = 'l'
+            table._align['PGS'] = 'r'
             table.left_padding_width = 0
             table.right_padding_width = 2
             for osd in sorted(report, key=lambda o: o.osd_id):
                 table.add_row([osd.osd_id, osd.hostname, osd.drain_status_human(),
-                               osd.get_pg_count(), osd.replace, osd.replace, osd.drain_started_at])
+                               osd.get_pg_count(), osd.replace, osd.force, osd.zap,
+                               osd.drain_started_at or ''])
             out = table.get_string()
 
         return HandleCommandResult(stdout=out)
@@ -907,9 +910,9 @@ Usage:
     @_cli_write_command('orch daemon add rgw')
     def _rgw_add(self,
                  svc_id: str,
+                 placement: Optional[str] = None,
                  port: Optional[int] = None,
                  ssl: bool = False,
-                 placement: Optional[str] = None,
                  inbuf: Optional[str] = None) -> HandleCommandResult:
         """Start RGW daemon(s)"""
         if inbuf:
@@ -926,8 +929,6 @@ Usage:
     @_cli_write_command('orch daemon add nfs')
     def _nfs_add(self,
                  svc_id: str,
-                 pool: str,
-                 namespace: Optional[str] = None,
                  placement: Optional[str] = None,
                  inbuf: Optional[str] = None) -> HandleCommandResult:
         """Start NFS daemon(s)"""
@@ -936,8 +937,6 @@ Usage:
 
         spec = NFSServiceSpec(
             service_id=svc_id,
-            pool=pool,
-            namespace=namespace,
             placement=PlacementSpec.from_string(placement),
         )
         return self._daemon_add_misc(spec)
@@ -981,7 +980,9 @@ Usage:
         return HandleCommandResult(stdout=completion.result_str())
 
     @_cli_write_command('orch daemon redeploy')
-    def _daemon_action_redeploy(self, name: str, image: Optional[str] = None) -> HandleCommandResult:
+    def _daemon_action_redeploy(self,
+                                name: str,
+                                image: Optional[str] = None) -> HandleCommandResult:
         """Redeploy a daemon (with a specifc image)"""
         if '.' not in name:
             raise OrchestratorError('%s is not a valid daemon name' % name)
@@ -1012,7 +1013,7 @@ Usage:
         """Remove a service"""
         if service_name in ['mon', 'mgr'] and not force:
             raise OrchestratorError('The mon and mgr services cannot be removed')
-        completion = self.remove_service(service_name)
+        completion = self.remove_service(service_name, force=force)
         raise_if_exception(completion)
         return HandleCommandResult(stdout=completion.result_str())
 
@@ -1095,11 +1096,11 @@ Usage:
     @_cli_write_command('orch apply rgw')
     def _apply_rgw(self,
                    svc_id: str,
+                   placement: Optional[str] = None,
                    realm: Optional[str] = None,
                    zone: Optional[str] = None,
                    port: Optional[int] = None,
                    ssl: bool = False,
-                   placement: Optional[str] = None,
                    dry_run: bool = False,
                    format: Format = Format.plain,
                    unmanaged: bool = False,
@@ -1134,8 +1135,6 @@ Usage:
                    svc_id: str,
                    placement: Optional[str] = None,
                    format: Format = Format.plain,
-                   pool: Optional[str] = None,
-                   namespace: Optional[str] = None,
                    port: Optional[int] = None,
                    dry_run: bool = False,
                    unmanaged: bool = False,
@@ -1147,8 +1146,6 @@ Usage:
 
         spec = NFSServiceSpec(
             service_id=svc_id,
-            pool=pool,
-            namespace=namespace,
             port=port,
             placement=PlacementSpec.from_string(placement),
             unmanaged=unmanaged,
@@ -1330,6 +1327,16 @@ Usage:
         completion = self.upgrade_check(image=image, version=ceph_version)
         raise_if_exception(completion)
         return HandleCommandResult(stdout=completion.result_str())
+
+    @_cli_read_command('orch upgrade ls')
+    def _upgrade_ls(self,
+                    image: Optional[str] = None,
+                    tags: bool = False) -> HandleCommandResult:
+        """Check for available versions (or tags) we can upgrade to"""
+        completion = self.upgrade_ls(image, tags)
+        r = raise_if_exception(completion)
+        out = json.dumps(r, indent=4)
+        return HandleCommandResult(stdout=out)
 
     @_cli_write_command('orch upgrade status')
     def _upgrade_status(self) -> HandleCommandResult:

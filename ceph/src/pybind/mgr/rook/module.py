@@ -321,8 +321,6 @@ class RookOrchestrator(MgrModule, orchestrator.Orchestrator):
                 spec[svc] = orchestrator.ServiceDescription(
                     spec=NFSServiceSpec(
                         service_id=nfs_name,
-                        pool=nfs['spec']['rados']['pool'],
-                        namespace=nfs['spec']['rados'].get('namespace', None),
                         placement=PlacementSpec(count=active),
                     ),
                     size=active,
@@ -403,7 +401,7 @@ class RookOrchestrator(MgrModule, orchestrator.Orchestrator):
         return result
 
     @handle_orch_error
-    def remove_service(self, service_name: str) -> str:
+    def remove_service(self, service_name: str, force: bool = False) -> str:
         service_type, service_name = service_name.split('.', 1)
         if service_type == 'mds':
             return self.rook_cluster.rm_service('cephfilesystems', service_name)

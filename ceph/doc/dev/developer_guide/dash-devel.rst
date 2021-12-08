@@ -1148,7 +1148,7 @@ Unit tests based on tox
 ~~~~~~~~~~~~~~~~~~~~~~~~
 
 We included a ``tox`` configuration file that will run the unit tests under
-Python 2 or 3, as well as linting tools to guarantee the uniformity of code.
+Python 3, as well as linting tools to guarantee the uniformity of code.
 
 You need to install ``tox`` and ``coverage`` before running it. To install the
 packages in your system, either install it via your operating system's package
@@ -1162,9 +1162,6 @@ Alternatively, you can use Python's native package installation method::
 
 To run the tests, run ``src/script/run_tox.sh`` in the dashboard directory (where
 ``tox.ini`` is located)::
-
-  ## Run Python 2+3 tests+lint commands:
-  $ ../../../script/run_tox.sh --tox-env py27,py3,lint,check
 
   ## Run Python 3 tests+lint commands:
   $ ../../../script/run_tox.sh --tox-env py3,lint,check
@@ -1662,8 +1659,8 @@ If we want to write a unit test for the above ``Ping`` controller, create a
   class PingTest(ControllerTestCase):
       @classmethod
       def setup_test(cls):
-          Ping._cp_config['tools.authenticate.on'] = False
-          cls.setup_controllers([Ping])
+          cp_config = {'tools.authenticate.on': True}
+          cls.setup_controllers([Ping], cp_config=cp_config)
 
       def test_ping(self):
           self._get("/api/ping")
@@ -1673,8 +1670,8 @@ If we want to write a unit test for the above ``Ping`` controller, create a
 The ``ControllerTestCase`` class starts by initializing a CherryPy webserver.
 Then it will call the ``setup_test()`` class method where we can explicitly
 load the controllers that we want to test. In the above example we are only
-loading the ``Ping`` controller. We can also disable authentication of a
-controller at this stage, as depicted in the example.
+loading the ``Ping`` controller. We can also provide ``cp_config`` in order to
+update the controller's cherrypy config (e.g. enable authentication as shown in the example).
 
 How to update or create new dashboards in grafana?
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
