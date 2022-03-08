@@ -10,6 +10,7 @@ from ceph_volume.api import lvm as api
 from ceph_volume.util import system, encryption, disk, arg_validators, str_to_int, merge_dict
 from ceph_volume.util.device import Device
 from ceph_volume.systemd import systemctl
+from ceph_volume.devices.lvm.common import valid_osd_id
 
 logger = logging.getLogger(__name__)
 mlogger = terminal.MultiLogger(__name__)
@@ -166,8 +167,8 @@ class Zap(object):
         Device examples: vg-name/lv-name, /dev/vg-name/lv-name
         Requirements: Must be a logical volume (LV)
         """
-        lv = api.get_first_lv(filters={'lv_name': device.lv_name, 'vg_name':
-                                       device.vg_name})
+        lv = api.get_single_lv(filters={'lv_name': device.lv_name, 'vg_name':
+                                        device.vg_name})
         self.unmount_lv(lv)
 
         wipefs(device.abspath)
@@ -231,7 +232,7 @@ class Zap(object):
                 mlogger.info('Zapping lvm member {}. lv_path is {}'.format(device.abspath, lv.lv_path))
                 self.zap_lv(Device(lv.lv_path))
             else:
-                vg = api.get_first_vg(filters={'vg_name': lv.vg_name})
+                vg = api.get_single_vg(filters={'vg_name': lv.vg_name})
                 if vg:
                     mlogger.info('Found empty VG {}, removing'.format(vg.vg_name))
                     api.remove_vg(vg.vg_name)
@@ -266,7 +267,7 @@ class Zap(object):
 
         for device in devices:
             mlogger.info("Zapping: %s", device.abspath)
-            if device.is_mapper:
+            if device.is_mapper and not device.is_mpath:
                 terminal.error("Refusing to zap the mapper device: {}".format(device))
                 raise SystemExit(1)
             if device.is_lvm_member:
@@ -376,6 +377,7 @@ class Zap(object):
 
         parser.add_argument(
             '--osd-id',
+            type=valid_osd_id,
             help='Specify an OSD ID to detect associated devices for zapping',
         )
 

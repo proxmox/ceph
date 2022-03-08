@@ -162,11 +162,11 @@ class Device(object):
         # if the path is not absolute, we have 'vg/lv', let's use LV name
         # to get the LV.
         if self.path[0] == '/':
-            lv = lvm.get_first_lv(filters={'lv_path': self.path})
+            lv = lvm.get_single_lv(filters={'lv_path': self.path})
         else:
             vgname, lvname = self.path.split('/')
-            lv = lvm.get_first_lv(filters={'lv_name': lvname,
-                                           'vg_name': vgname})
+            lv = lvm.get_single_lv(filters={'lv_name': lvname,
+                                            'vg_name': vgname})
         if lv:
             self.lv_api = lv
             self.lvs = [lv]
@@ -366,6 +366,17 @@ class Device(object):
         return self.path.startswith(('/dev/mapper', '/dev/dm-'))
 
     @property
+    def device_type(self):
+        if self.disk_api:
+            return self.disk_api['TYPE']
+        elif self.blkid_api:
+            return self.blkid_api['TYPE']
+
+    @property
+    def is_mpath(self):
+        return self.device_type == 'mpath'
+
+    @property
     def is_lv(self):
         return self.lv_api is not None
 
@@ -385,10 +396,7 @@ class Device(object):
         elif self.blkid_api:
             api = self.blkid_api
         if api:
-            is_device = api['TYPE'] == 'device'
-            is_disk = api['TYPE'] == 'disk'
-            if is_device or is_disk:
-                return True
+            return self.device_type in ['disk', 'device', 'mpath']
         return False
 
     @property

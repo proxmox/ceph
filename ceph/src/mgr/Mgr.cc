@@ -103,19 +103,21 @@ void MetadataUpdate::finish(int r)
       DaemonStatePtr state;
       if (daemon_state.exists(key)) {
         state = daemon_state.get(key);
-        state->hostname = daemon_meta.at("hostname").get_str();
-
-        if (key.type == "mds" || key.type == "mgr" || key.type == "mon") {
-          daemon_meta.erase("name");
-        } else if (key.type == "osd") {
-          daemon_meta.erase("id");
-        }
-        daemon_meta.erase("hostname");
 	map<string,string> m;
-        for (const auto &i : daemon_meta) {
-          m[i.first] = i.second.get_str();
-	}
+	{
+	  std::lock_guard l(state->lock);
+	  state->hostname = daemon_meta.at("hostname").get_str();
 
+	  if (key.type == "mds" || key.type == "mgr" || key.type == "mon") {
+	    daemon_meta.erase("name");
+	  } else if (key.type == "osd") {
+	    daemon_meta.erase("id");
+	  }
+	  daemon_meta.erase("hostname");
+	  for (const auto &[key, val] : daemon_meta) {
+	    m.emplace(key, val.get_str());
+	  }
+	}
 	daemon_state.update_metadata(state, m);
       } else {
         state = std::make_shared<DaemonState>(daemon_state.types);
@@ -515,6 +517,7 @@ void Mgr::handle_log(ref_t<MLog> m)
 void Mgr::handle_service_map(ref_t<MServiceMap> m)
 {
   dout(10) << "e" << m->service_map.epoch << dendl;
+  monc->sub_got("servicemap", m->service_map.epoch);
   cluster_state.set_service_map(m->service_map);
   server.got_service_map();
 }
@@ -589,8 +592,9 @@ void Mgr::handle_fs_map(ref_t<MFSMap> m)
   ceph_assert(ceph_mutex_is_locked_by_me(lock));
 
   std::set<std::string> names_exist;
-  
   const FSMap &new_fsmap = m->get_fsmap();
+
+  monc->sub_got("fsmap", m->epoch);
 
   fs_map_cond.notify_all();
 
