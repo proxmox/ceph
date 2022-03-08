@@ -1135,6 +1135,11 @@ std::vector<Option> get_global_options() {
     .set_description("Maximum threadpool size of AsyncMessenger")
     .add_see_also("ms_async_op_threads"),
 
+    Option("ms_async_reap_threshold", Option::TYPE_UINT, Option::LEVEL_DEV)
+    .set_default(5)
+    .set_min(1)
+    .set_description("number of deleted connections before we reap"),
+
     Option("ms_async_rdma_device_name", Option::TYPE_STR, Option::LEVEL_ADVANCED)
     .set_default("")
     .set_description(""),
@@ -4533,14 +4538,20 @@ std::vector<Option> get_global_options() {
     .set_default(false)
     .set_description("Try to submit metadata transaction to rocksdb in queuing thread context"),
 
+    Option("bluestore_fsck_quick_fix_threads", Option::TYPE_INT, Option::LEVEL_ADVANCED)
+      .set_default(2)
+      .set_description("Number of additional threads to perform quick-fix (shallow fsck) command"),
+
     Option("bluestore_fsck_read_bytes_cap", Option::TYPE_SIZE, Option::LEVEL_ADVANCED)
     .set_default(64_M)
     .set_flag(Option::FLAG_RUNTIME)
     .set_description("Maximum bytes read at once by deep fsck"),
 
-    Option("bluestore_fsck_quick_fix_threads", Option::TYPE_INT, Option::LEVEL_ADVANCED)
-      .set_default(2)
-      .set_description("Number of additional threads to perform quick-fix (shallow fsck) command"),
+    Option("bluestore_fsck_shared_blob_tracker_size", Option::TYPE_FLOAT, Option::LEVEL_DEV)
+    .set_default(0.03125)
+    .set_flag(Option::FLAG_RUNTIME)
+    .set_description("Size(a fraction of osd_memory_target, defaults to 128MB) of a hash table to track shared blobs ref counts. Higher the size, more precise is the tracker -> less overhead during the repair.")
+    .add_see_also("osd_memory_target"),
 
     Option("bluestore_throttle_bytes", Option::TYPE_SIZE, Option::LEVEL_ADVANCED)
     .set_default(64_M)
@@ -4710,6 +4721,14 @@ std::vector<Option> get_global_options() {
     .set_enum_allowed({"default", "hdd", "ssd"})
     .set_description("Enforces specific hw profile settings")
     .set_long_description("'hdd' enforces settings intended for BlueStore above a rotational drive. 'ssd' enforces settings intended for BlueStore above a solid drive. 'default' - using settings for the actual hardware."),
+
+    Option("bluestore_avl_alloc_ff_max_search_count", Option::TYPE_UINT, Option::LEVEL_DEV)
+    .set_default(100)
+    .set_description("Search for this many ranges in first-fit mode before switching over to to best-fit mode. 0 to iterate through all ranges for required chunk."),
+
+    Option("bluestore_avl_alloc_ff_max_search_bytes", Option::TYPE_SIZE, Option::LEVEL_DEV)
+    .set_default(16_M)
+    .set_description("Maximum distance to search in first-fit mode before switching over to to best-fit mode. 0 to iterate through all ranges for required chunk."),
 
     Option("bluestore_avl_alloc_bf_threshold", Option::TYPE_UINT, Option::LEVEL_DEV)
     .set_default(131072)
