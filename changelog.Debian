@@ -1,3 +1,9 @@
+ceph (15.2.16-pve1) bullseye; urgency=medium
+
+  * new upstream octopus 15.2.16 stable release
+
+ -- Proxmox Support Team <support@proxmox.com>  Tue, 08 Mar 2022 13:51:55 +0100
+
 ceph (15.2.15-pve1) bullseye; urgency=medium
 
   * new upstream octopus 15.2.15 stable release
