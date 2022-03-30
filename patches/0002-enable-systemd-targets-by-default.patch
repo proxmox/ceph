@@ -15,7 +15,7 @@ diff --git a/debian/rules b/debian/rules
 index b5ce42c6f3..00e9ac6b16 100755
 --- a/debian/rules
 +++ b/debian/rules
-@@ -82,6 +82,11 @@ override_dh_installinit:
+@@ -97,6 +97,11 @@ override_dh_installinit:
  
  	dh_installinit -p ceph-base --name ceph --no-start
  	dh_installinit -p radosgw --no-start

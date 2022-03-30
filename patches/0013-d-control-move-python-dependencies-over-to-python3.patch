@@ -13,9 +13,9 @@ diff --git a/debian/control b/debian/control
 index c93aa3c21..aa8edb3d2 100644
 --- a/debian/control
 +++ b/debian/control
-@@ -138,7 +138,7 @@ Depends: binutils,
+@@ -136,7 +136,7 @@ Depends: binutils,
+          parted,
           psmisc,
-          xfsprogs,
           ${misc:Depends},
 -         ${python:Depends},
 +         ${python3:Depends},
@@ -31,7 +31,7 @@ index c93aa3c21..aa8edb3d2 100644
  Description: cephadm utility to bootstrap ceph daemons with systemd and containers
   Ceph is a massively scalable, open-source, distributed
   storage system that runs on commodity hardware and delivers object,
-@@ -237,7 +237,8 @@ Depends: ceph-base (= ${binary:Version}),
+@@ -236,7 +236,8 @@ Depends: ceph-base (= ${binary:Version}),
           python3-requests,
           python3-werkzeug,
 +         python3-yaml,
@@ -41,7 +41,7 @@ index c93aa3c21..aa8edb3d2 100644
           ${shlibs:Depends},
  Suggests: ceph-mgr-dashboard,
            ceph-mgr-diskprediction-local,
-@@ -263,7 +263,7 @@ Depends: ceph-mgr (= ${binary:Version}),
+@@ -262,7 +262,7 @@ Depends: ceph-mgr (= ${binary:Version}),
           python3-werkzeug,
           python3-routes,
           ${misc:Depends},
@@ -50,7 +50,7 @@ index c93aa3c21..aa8edb3d2 100644
           ${shlibs:Depends},
  Description: dashboard module for ceph-mgr
   Ceph is a massively scalable, open-source, distributed
-@@ -284,7 +284,7 @@ Depends: ceph-mgr (= ${binary:Version}),
+@@ -283,7 +283,7 @@ Depends: ceph-mgr (= ${binary:Version}),
           python3-scipy,
           python3-sklearn,
           ${misc:Depends},
@@ -59,7 +59,7 @@ index c93aa3c21..aa8edb3d2 100644
           ${shlibs:Depends},
  Description: diskprediction-local module for ceph-mgr
   Ceph is a massively scalable, open-source, distributed
-@@ -297,7 +297,7 @@ Description: diskprediction-local module for ceph-mgr
+@@ -296,7 +296,7 @@ Description: diskprediction-local module for ceph-mgr
  Package: ceph-mgr-modules-core
  Architecture: all
  Depends: ${misc:Depends},
@@ -68,7 +68,7 @@ index c93aa3c21..aa8edb3d2 100644
           ${shlibs:Depends},
           python3-dateutil,
           python3-openssl,
-@@ -317,7 +317,7 @@ Depends: ceph-mgr (= ${binary:Version}),
+@@ -315,7 +315,7 @@ Depends: ceph-mgr (= ${binary:Version}),
  Depends: ceph-mgr (= ${binary:Version}),
           python3-jsonpatch
           ${misc:Depends},
@@ -77,7 +77,7 @@ index c93aa3c21..aa8edb3d2 100644
           ${shlibs:Depends},
  Description: rook module for ceph-mgr
   Ceph is a massively scalable, open-source, distributed
-@@ -333,7 +333,7 @@ Architecture: all
+@@ -331,7 +331,7 @@ Architecture: all
  Depends: ceph-mgr (= ${binary:Version}),
           python3-kubernetes,
           ${misc:Depends},
@@ -86,25 +86,25 @@ index c93aa3c21..aa8edb3d2 100644
  Description: kubernetes events module for ceph-mgr
   Ceph is a massively scalable, open-source, distributed
   storage system that runs on commodity hardware and delivers object,
-@@ -348,7 +348,7 @@ Depends: ceph-mgr (= ${binary:Version}),
+@@ -346,7 +346,7 @@ Depends: ceph-mgr (= ${binary:Version}),
  Depends: ceph-mgr (= ${binary:Version}),
  	 cephadm,
           ${misc:Depends},
 -         ${python:Depends},
 +         ${python3:Depends},
           openssh-client,
-          python3-jinja2
- Description: cephadm orchestrator module for ceph-mgr
-@@ -412,7 +412,7 @@ Depends: ceph-base (= ${binary:Version}),
-          lvm2,
- 	 sudo,
+          python3-jinja2,
+          python3-cherrypy3
+@@ -407,7 +407,7 @@ Depends: ceph-base (= ${binary:Version}),
+ Depends: ceph-base (= ${binary:Version}),
+          sudo,
           ${misc:Depends},
 -         ${python:Depends},
 +         ${python3:Depends},
           ${shlibs:Depends},
- Replaces: ceph (<< 10), ceph-test (<< 12.2.2-14)
- Breaks: ceph (<< 10), ceph-test (<< 12.2.2-14)
-@@ -620,7 +620,7 @@ Depends: librbd1 (= ${binary:Version}),
+ Replaces: ceph (<< 10),
+           ceph-test (<< 12.2.2-14),
+@@ -640,7 +640,7 @@ Depends: librbd1 (= ${binary:Version}),
           python3-rbd (= ${binary:Version}),
           python3-rgw (= ${binary:Version}),
           ${misc:Depends},
@@ -117,9 +117,9 @@ diff --git a/debian/rules b/debian/rules
 index c93aa3c21..aa8edb3d2 100755
 --- a/debian/rules
 +++ b/debian/rules
-@@ -125,16 +125,6 @@
+@@ -140,16 +140,6 @@
  override_dh_shlibdeps:
- 	dh_shlibdeps -a --exclude=erasure-code --exclude=rados-classes --exclude=compressor
+ 	dh_shlibdeps -a --exclude=erasure-code --exclude=rados-classes --exclude=compressor --exclude=ceph_crypto
  
 -override_dh_python3:
 -	for binding in rados cephfs rbd rgw; do \

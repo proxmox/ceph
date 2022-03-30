@@ -14,10 +14,10 @@ diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
 index bb4a7812d..ea4789522 100644
 --- a/src/CMakeLists.txt
 +++ b/src/CMakeLists.txt
-@@ -221,17 +221,10 @@ set(GCOV_PREFIX_STRIP 4)
+@@ -35,17 +35,10 @@ configure_file(ceph-crash.in
  # we pull the git version from .git
  option(ENABLE_GIT_VERSION "build Ceph with git version string" ON)
- if(${ENABLE_GIT_VERSION})
+ if(ENABLE_GIT_VERSION)
 -  get_git_head_revision(GIT_REFSPEC CEPH_GIT_VER)
 -  git_describe(CEPH_GIT_NICE_VER_WITH_V --always)
 -  # remove leading 'v'
@@ -29,6 +29,6 @@ index bb4a7812d..ea4789522 100644
      list(GET CEPH_GIT_SHA_AND_TAG 0 CEPH_GIT_VER)
      list(GET CEPH_GIT_SHA_AND_TAG 1 CEPH_GIT_NICE_VER)
 -  endif(${CEPH_GIT_VER} STREQUAL "GITDIR-NOTFOUND")
- else(${ENABLE_GIT_VERSION})
+ else(ENABLE_GIT_VERSION)
    set(CEPH_GIT_VER "no_version")
    set(CEPH_GIT_NICE_VER "Development")
