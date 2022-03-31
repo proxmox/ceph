@@ -197,14 +197,14 @@ public:
     auto r = ioctx.aio_operate(oids[index], c, &op, 0);
     if (r == -ENOENT) r = -ENODATA;
     if (r < 0) {
-      lderr(cct) << __PRETTY_FUNCTION__
+      ldpp_dout(dpp, -1) << __PRETTY_FUNCTION__
 		 << ": failed to get info from " << oids[index]
 		 << cpp_strerror(-r) << dendl;
     }
     return r;
   }
   std::string_view max_marker() const override {
-    return "99999999"sv;
+    return "99999999";
   }
   int is_empty(const DoutPrefixProvider *dpp) override {
     for (auto shard = 0u; shard < oids.size(); ++shard) {
@@ -321,7 +321,7 @@ public:
     fifo.meta(dpp, m, null_yield);
     auto p = m.head_part_num;
     if (p < 0) {
-      info->marker = ""s;
+      info->marker = "";
       info->last_update = ceph::real_clock::zero();
       return 0;
     }
@@ -446,8 +446,7 @@ bs::error_code DataLogBackends::handle_empty_to(uint64_t new_tail) noexcept {
 }
 
 
-int RGWDataChangesLog::start(const DoutPrefixProvider *dpp,
-                             const RGWZone* _zone,
+int RGWDataChangesLog::start(const DoutPrefixProvider *dpp, const RGWZone* _zone,
 			     const RGWZoneParams& zoneparams,
 			     librados::Rados* lr)
 {
@@ -474,7 +473,7 @@ int RGWDataChangesLog::start(const DoutPrefixProvider *dpp,
 
 
   if (!besr) {
-    ldpp_dout(dpp, -1) << __PRETTY_FUNCTION__
+    lderr(cct) << __PRETTY_FUNCTION__
 	       << ": Error initializing backends: "
 	       << besr.error().message() << dendl;
     return ceph::from_error_code(besr.error());
@@ -944,7 +943,7 @@ RGWDataChangesLog::~RGWDataChangesLog() {
   }
 }
 
-void RGWDataChangesLog::renew_run() {
+void RGWDataChangesLog::renew_run() noexcept {
   static constexpr auto runs_per_prune = 150;
   auto run = 0;
   for (;;) {
@@ -991,6 +990,10 @@ void RGWDataChangesLog::renew_stop()
 
 void RGWDataChangesLog::mark_modified(int shard_id, const rgw_bucket_shard& bs)
 {
+  if (!cct->_conf->rgw_data_notify_interval_msec) {
+    return;
+  }
+
   auto key = bs.get_key();
   {
     std::shared_lock rl{modified_lock}; // read lock to check for existence
@@ -1016,3 +1019,20 @@ int RGWDataChangesLog::change_format(const DoutPrefixProvider *dpp, log_type typ
 int RGWDataChangesLog::trim_generations(const DoutPrefixProvider *dpp, std::optional<uint64_t>& through) {
   return bes->trim_generations(dpp, through);
 }
+
+void RGWDataChangesLogInfo::dump(Formatter *f) const
+{
+  encode_json("marker", marker, f);
+  utime_t ut(last_update);
+  encode_json("last_update", ut, f);
+}
+
+void RGWDataChangesLogInfo::decode_json(JSONObj *obj)
+{
+  JSONDecoder::decode_json("marker", marker, obj);
+  utime_t ut;
+  JSONDecoder::decode_json("last_update", ut, obj);
+  last_update = ut.to_real_time();
+}
+
+

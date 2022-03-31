@@ -110,3 +110,9 @@ run variant_hash.cpp ;
 
 run variant_trivial.cpp ;
 run variant_special.cpp ;
+
+run variant_visit_derived.cpp ;
+
+run variant_many_types.cpp ;
+
+run variant_visit_r.cpp ;

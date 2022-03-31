@@ -45,6 +45,8 @@
 #undef dout_prefix
 #define dout_prefix *_dout << "mds." << mdcache->mds->get_nodeid() << ".cache.dir(" << this->dirfrag() << ") "
 
+using namespace std;
+
 int CDir::num_frozen_trees = 0;
 int CDir::num_freezing_trees = 0;
 
@@ -2340,7 +2342,6 @@ void CDir::_omap_commit_ops(int r, int op_prio, int64_t metapool, version_t vers
     _rm.emplace(std::move(key));
   }
 
-  uint64_t off = 0;
   bufferlist bl;
   using ceph::encode;
   for (auto &item : to_set) {
@@ -2357,7 +2358,6 @@ void CDir::_omap_commit_ops(int r, int op_prio, int64_t metapool, version_t vers
       _encode_primary_inode_base(item, dfts, bl);
       ENCODE_FINISH(bl);
     }
-    off += item.dft_len;
 
     unsigned size = item.key.length() + bl.length() + 2 * sizeof(__u32);
     if (write_size + size > max_write_size)
@@ -2444,7 +2444,7 @@ void CDir::_omap_commit(int op_prio)
   };
 
   if (state_test(CDir::STATE_FRAGMENTING) && is_new()) {
-    assert(committed_version == 0);
+    ceph_assert(committed_version == 0);
     for (auto p = items.begin(); p != items.end(); ) {
       CDentry *dn = p->second;
       ++p;

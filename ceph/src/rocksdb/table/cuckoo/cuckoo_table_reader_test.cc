@@ -31,7 +31,6 @@ int main() {
 #include "util/string_util.h"
 
 using GFLAGS_NAMESPACE::ParseCommandLineFlags;
-using GFLAGS_NAMESPACE::SetUsageMessage;
 
 DEFINE_string(file_dir, "", "Directory where the files will be created"
     " for benchmark. Added for using tmpfs.");
@@ -214,6 +213,14 @@ class CuckooReaderTest : public testing::Test {
   Env* env;
   EnvOptions env_options;
 };
+
+TEST_F(CuckooReaderTest, FileNotMmaped) {
+  options.allow_mmap_reads = false;
+  ImmutableCFOptions ioptions(options);
+  CuckooTableReader reader(ioptions, nullptr, 0, nullptr, nullptr);
+  ASSERT_TRUE(reader.status().IsInvalidArgument());
+  ASSERT_STREQ("File is not mmaped", reader.status().getState());
+}
 
 TEST_F(CuckooReaderTest, WhenKeyExists) {
   SetUp(kNumHashFunc);
@@ -492,7 +499,7 @@ void ReadKeys(uint64_t num, uint32_t batch_size) {
   for (uint64_t i = 0; i < num; ++i) {
     keys.push_back(2 * i);
   }
-  std::random_shuffle(keys.begin(), keys.end());
+  RandomShuffle(keys.begin(), keys.end());
 
   PinnableSlice value;
   // Assume only the fast path is triggered

@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <string>
 #include <boost/container/flat_map.hpp>
 #include "common/ceph_time.h"
 #include "common/Formatter.h"
@@ -96,6 +97,13 @@ enum RGWModifyOp {
   CLS_RGW_OP_RESYNC          = 8,
 };
 
+std::string_view to_string(RGWModifyOp op);
+RGWModifyOp parse_modify_op(std::string_view name);
+
+inline std::ostream& operator<<(std::ostream& out, RGWModifyOp op) {
+  return out << to_string(op);
+}
+
 enum RGWBILogFlags {
   RGW_BILOG_FLAG_VERSIONED_OP = 0x1,
 };
@@ -172,8 +180,15 @@ enum class RGWObjCategory : uint8_t {
                   // uploads; not currently used in the codebase
 
   MultiMeta = 3,  // b-i entries for multipart upload metadata objs
+
+  CloudTiered = 4, // b-i entries which are tiered to external cloud
 };
 
+std::string_view to_string(RGWObjCategory c);
+
+inline std::ostream& operator<<(std::ostream& out, RGWObjCategory c) {
+  return out << to_string(c);
+}
 
 struct rgw_bucket_dir_entry_meta {
   RGWObjCategory category;
@@ -335,6 +350,7 @@ struct rgw_bucket_entry_ver {
 };
 WRITE_CLASS_ENCODER(rgw_bucket_entry_ver)
 
+
 struct cls_rgw_obj_key {
   std::string name;
   std::string instance;
@@ -353,11 +369,17 @@ struct cls_rgw_obj_key {
 
   void set(const std::string& _name) {
     name = _name;
+    instance.clear();
   }
 
   bool operator==(const cls_rgw_obj_key& k) const {
     return (name.compare(k.name) == 0) &&
            (instance.compare(k.instance) == 0);
+  }
+
+  bool operator!=(const cls_rgw_obj_key& k) const {
+    return (name.compare(k.name) != 0) ||
+           (instance.compare(k.instance) != 0);
   }
 
   bool operator<(const cls_rgw_obj_key& k) const {
@@ -370,11 +392,6 @@ struct cls_rgw_obj_key {
 
   bool operator<=(const cls_rgw_obj_key& k) const {
     return !(k < *this);
-  }
-
-  std::ostream& operator<<(std::ostream& out) const {
-    out << to_string();
-    return out;
   }
 
   void encode(ceph::buffer::list &bl) const {
@@ -403,6 +420,13 @@ struct cls_rgw_obj_key {
 };
 WRITE_CLASS_ENCODER(cls_rgw_obj_key)
 
+inline std::ostream& operator<<(std::ostream& out, const cls_rgw_obj_key& o) {
+  out << o.name;
+  if (!o.instance.empty()) {
+    out << '[' << o.instance << ']';
+  }
+  return out;
+}
 
 struct rgw_bucket_dir_entry {
   /* a versioned object instance */
@@ -734,6 +758,18 @@ struct rgw_bucket_category_stats {
 };
 WRITE_CLASS_ENCODER(rgw_bucket_category_stats)
 
+inline bool operator==(const rgw_bucket_category_stats& lhs,
+                       const rgw_bucket_category_stats& rhs) {
+  return lhs.total_size == rhs.total_size
+      && lhs.total_size_rounded == rhs.total_size_rounded
+      && lhs.num_entries == rhs.num_entries
+      && lhs.actual_size == rhs.actual_size;
+}
+inline bool operator!=(const rgw_bucket_category_stats& lhs,
+                       const rgw_bucket_category_stats& rhs) {
+  return !(lhs == rhs);
+}
+
 enum class cls_rgw_reshard_status : uint8_t {
   NOT_RESHARDING  = 0,
   IN_PROGRESS     = 1,
@@ -803,8 +839,10 @@ struct cls_rgw_bucket_instance_entry {
 };
 WRITE_CLASS_ENCODER(cls_rgw_bucket_instance_entry)
 
+using rgw_bucket_dir_stats = std::map<RGWObjCategory, rgw_bucket_category_stats>;
+
 struct rgw_bucket_dir_header {
-  std::map<RGWObjCategory, rgw_bucket_category_stats> stats;
+  rgw_bucket_dir_stats stats;
   uint64_t tag_timeout;
   uint64_t ver;
   uint64_t master_ver;
@@ -1190,7 +1228,7 @@ struct cls_rgw_gc_obj_info
     ls.push_back(new cls_rgw_gc_obj_info);
     ls.push_back(new cls_rgw_gc_obj_info);
     ls.back()->tag = "footag";
-    ceph_timespec ts{init_le32(21), init_le32(32)};
+    ceph_timespec ts{ceph_le32(21), ceph_le32(32)};
     ls.back()->time = ceph::real_clock::from_ceph_timespec(ts);
   }
 };

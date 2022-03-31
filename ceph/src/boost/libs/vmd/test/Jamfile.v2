@@ -15,9 +15,7 @@ project variadic_macro_data_tests : requirements <warnings>on
                                                  <test-info>always_show_run_output
                                                  <toolset>msvc:<warnings>all
                                                  <toolset>msvc:<cxxflags>-wd4003
-                                                 <toolset>clang:<cxxflags>-pedantic-errors
                                                  <toolset>gcc:<warnings>all
-                                                 <toolset>gcc:<cxxflags>-pedantic-errors
                                                  [ predef-check "BOOST_COMP_GNUC >= 4.7.4" : : <cxxflags>-ftrack-macro-expansion=0 ]
                                                  [ predef-check "BOOST_COMP_GNUC >= 4.3.0" : : <cxxflags>-Wno-variadic-macros ]
                                                  <toolset>gcc-4.3.0:<cxxflags>-U__STRICT_ANSI__
@@ -158,6 +156,7 @@ alias variadic_macro_data
        [ run-fail test_is_array_fail3.cpp ]
        [ run-fail test_is_array_fail4.cpp ]
        [ run test_is_empty.cpp ]
+       [ run test_is_general_identifier.cpp ]
        [ compile-fail test_is_empty_fail.cpp ]
        [ run test_is_identifier.cpp ]
        [ run test_is_list.cpp ]
@@ -165,7 +164,7 @@ alias variadic_macro_data
        [ run-fail test_is_list_fail2.cpp ]
        [ run-fail test_is_list_fail3.cpp ]
        [ run-fail test_is_list_fail4.cpp ]
-       [ run test_is_number.cpp ]
+       [ run test_is_number.cpp : : : <define>BOOST_PP_LIMIT_MAG=1024 ]
        [ run test_is_parens_empty.cpp ]
        [ run test_is_seq.cpp ]
        [ run-fail test_is_seq_fail.cpp ]

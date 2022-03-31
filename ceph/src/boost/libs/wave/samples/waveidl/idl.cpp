@@ -32,6 +32,8 @@
 #include "idllexer/idl_re2c_lexer.hpp"
 #endif 
 
+#include <iostream>
+
 ///////////////////////////////////////////////////////////////////////////////
 //  include the grammar definitions, if these shouldn't be compiled separately
 //  (ATTENTION: _very_ large compilation times!)
@@ -43,6 +45,7 @@
 #include <boost/wave/grammars/cpp_expression_grammar.hpp>
 #include <boost/wave/grammars/cpp_predef_macros_grammar.hpp>
 #include <boost/wave/grammars/cpp_defined_grammar.hpp>
+#include <boost/wave/grammars/cpp_has_include_grammar.hpp>
 #endif 
 
 ///////////////////////////////////////////////////////////////////////////////

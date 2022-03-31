@@ -212,7 +212,7 @@ class WriteUnpreparedTxn : public WritePreparedTxn {
   friend class WriteUnpreparedTxnDB;
 
   const std::map<SequenceNumber, size_t>& GetUnpreparedSequenceNumbers();
-  Status WriteRollbackKeys(const TransactionKeyMap& tracked_keys,
+  Status WriteRollbackKeys(const LockTracker& tracked_keys,
                            WriteBatchWithIndex* rollback_batch,
                            ReadCallback* callback, const ReadOptions& roptions);
 
@@ -262,7 +262,6 @@ class WriteUnpreparedTxn : public WritePreparedTxn {
   // value when calling RollbackToSavepoint.
   SequenceNumber largest_validated_seq_;
 
-  using KeySet = std::unordered_map<uint32_t, std::vector<std::string>>;
   struct SavePoint {
     // Record of unprep_seqs_ at this savepoint. The set of unprep_seq is
     // used during RollbackToSavepoint to determine visibility when restoring
@@ -333,6 +332,7 @@ class WriteUnpreparedTxn : public WritePreparedTxn {
   // last savepoint. Also, it may make sense to merge this into tracked_keys_
   // and differentiate between tracked but not locked keys to avoid having two
   // very similar data structures.
+  using KeySet = std::unordered_map<uint32_t, std::vector<std::string>>;
   KeySet untracked_keys_;
 };
 

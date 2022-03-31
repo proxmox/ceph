@@ -7,7 +7,6 @@
 #ifndef BOOST_HISTOGRAM_AXIS_TRAITS_HPP
 #define BOOST_HISTOGRAM_AXIS_TRAITS_HPP
 
-#include <boost/core/ignore_unused.hpp>
 #include <boost/histogram/axis/option.hpp>
 #include <boost/histogram/detail/args_type.hpp>
 #include <boost/histogram/detail/detect.hpp>
@@ -15,12 +14,12 @@
 #include <boost/histogram/detail/static_if.hpp>
 #include <boost/histogram/detail/try_cast.hpp>
 #include <boost/histogram/detail/type_name.hpp>
-#include <boost/variant2/variant.hpp>
 #include <boost/histogram/fwd.hpp>
 #include <boost/mp11/algorithm.hpp>
 #include <boost/mp11/list.hpp>
 #include <boost/mp11/utility.hpp>
 #include <boost/throw_exception.hpp>
+#include <boost/variant2/variant.hpp>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -74,8 +73,6 @@ double value_method_switch(I&&, D&&, const A&, priority<0>) {
          double{};
 }
 
-static axis::null_type null_value;
-
 struct variant_access {
   template <class T, class Variant>
   static auto get_if(Variant* v) noexcept {
@@ -108,6 +105,17 @@ struct variant_access {
                       std::forward<Variant>(v));
   }
 };
+
+template <class A>
+decltype(auto) metadata_impl(A&& a, decltype(a.metadata(), 0)) {
+  return std::forward<A>(a).metadata();
+}
+
+template <class A>
+axis::null_type& metadata_impl(A&&, float) {
+  static axis::null_type null_value;
+  return null_value;
+}
 
 } // namespace detail
 
@@ -254,7 +262,7 @@ struct is_ordered;
 */
 template <class Axis>
 constexpr unsigned options(const Axis& axis) noexcept {
-  boost::ignore_unused(axis);
+  (void)axis;
   return get_options<Axis>::value;
 }
 
@@ -272,7 +280,7 @@ unsigned options(const variant<Ts...>& axis) noexcept {
 */
 template <class Axis>
 constexpr bool inclusive(const Axis& axis) noexcept {
-  boost::ignore_unused(axis);
+  (void)axis;
   return is_inclusive<Axis>::value;
 }
 
@@ -290,7 +298,7 @@ bool inclusive(const variant<Ts...>& axis) noexcept {
 */
 template <class Axis>
 constexpr bool ordered(const Axis& axis) noexcept {
-  boost::ignore_unused(axis);
+  (void)axis;
   return is_ordered<Axis>::value;
 }
 
@@ -298,6 +306,24 @@ constexpr bool ordered(const Axis& axis) noexcept {
 template <class... Ts>
 bool ordered(const variant<Ts...>& axis) noexcept {
   return axis.ordered();
+}
+
+/** Returns true if axis is continuous or false.
+
+  See is_continuous for details.
+
+  @param axis any axis instance
+*/
+template <class Axis>
+constexpr bool continuous(const Axis& axis) noexcept {
+  (void)axis;
+  return is_continuous<Axis>::value;
+}
+
+// specialization for variant
+template <class... Ts>
+bool continuous(const variant<Ts...>& axis) noexcept {
+  return axis.continuous();
 }
 
 /** Returns axis size plus any extra bins for under- and overflow.
@@ -321,13 +347,7 @@ index_type extent(const Axis& axis) noexcept {
 */
 template <class Axis>
 decltype(auto) metadata(Axis&& axis) noexcept {
-  return detail::static_if<detail::has_method_metadata<std::decay_t<Axis>>>(
-      [](auto&& a) -> decltype(auto) { return a.metadata(); },
-      [](auto &&) -> mp11::mp_if<std::is_const<std::remove_reference_t<Axis>>,
-                                 axis::null_type const&, axis::null_type&> {
-        return detail::null_value;
-      },
-      std::forward<Axis>(axis));
+  return detail::metadata_impl(std::forward<Axis>(axis), 0);
 }
 
 /** Returns axis value for index.
@@ -360,7 +380,7 @@ decltype(auto) value(const Axis& axis, real_index_type index) {
 template <class Result, class Axis>
 Result value_as(const Axis& axis, real_index_type index) {
   return detail::try_cast<Result, std::runtime_error>(
-      value(axis, index)); // avoid conversion warning
+      axis::traits::value(axis, index)); // avoid conversion warning
 }
 
 /** Returns axis index for value.
@@ -386,9 +406,10 @@ axis::index_type index(const variant<Ts...>& axis, const U& value) {
 
   @param axis any axis instance
 */
+// gcc workaround: must use unsigned int not unsigned as return type
 template <class Axis>
-constexpr unsigned rank(const Axis& axis) {
-  boost::ignore_unused(axis);
+constexpr unsigned int rank(const Axis& axis) {
+  (void)axis;
   using T = value_type<Axis>;
   // cannot use mp_eval_or since T could be a fixed-sized sequence
   return mp11::mp_eval_if_not<detail::is_tuple<T>, mp11::mp_size_t<1>, mp11::mp_size,
@@ -396,9 +417,11 @@ constexpr unsigned rank(const Axis& axis) {
 }
 
 // specialization for variant
+// gcc workaround: must use unsigned int not unsigned as return type
 template <class... Ts>
-unsigned rank(const axis::variant<Ts...>& axis) {
-  return detail::variant_access::visit([](const auto& a) { return rank(a); }, axis);
+unsigned int rank(const axis::variant<Ts...>& axis) {
+  return detail::variant_access::visit(
+      [](const auto& a) { return axis::traits::rank(a); }, axis);
 }
 
 /** Returns pair of axis index and shift for the value argument.
@@ -420,7 +443,7 @@ std::pair<index_type, index_type> update(Axis& axis, const U& value) noexcept(
         return a.update(detail::try_cast<value_type<Axis>, std::invalid_argument>(value));
       },
       [&value](auto& a) -> std::pair<index_type, index_type> {
-        return {index(a, value), 0};
+        return {axis::traits::index(a, value), 0};
       },
       axis);
 }

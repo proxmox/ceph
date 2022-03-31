@@ -7,21 +7,20 @@
 
 #include "include/rados/librados.hpp"
 #include "common/async/yield_context.h"
-#include "common/RWLock.h"
 
 class RGWAsyncRadosProcessor;
 
 class RGWAccessListFilter {
 public:
   virtual ~RGWAccessListFilter() {}
-  virtual bool filter(const string& name, string& key) = 0;
+  virtual bool filter(const std::string& name, std::string& key) = 0;
 };
 
 struct RGWAccessListFilterPrefix : public RGWAccessListFilter {
-  string prefix;
+  std::string prefix;
 
-  explicit RGWAccessListFilterPrefix(const string& _prefix) : prefix(_prefix) {}
-  bool filter(const string& name, string& key) override {
+  explicit RGWAccessListFilterPrefix(const std::string& _prefix) : prefix(_prefix) {}
+  bool filter(const std::string& name, std::string& key) override {
     return (prefix.compare(key.substr(0, prefix.size())) == 0);
   }
 };
@@ -53,9 +52,10 @@ public:
 private:
   int open_pool_ctx(const DoutPrefixProvider *dpp, const rgw_pool& pool, librados::IoCtx& io_ctx,
                     const OpenParams& params = {});
-  int pool_iterate(librados::IoCtx& ioctx,
+  int pool_iterate(const DoutPrefixProvider *dpp,
+                   librados::IoCtx& ioctx,
                    librados::NObjectIterator& iter,
-                   uint32_t num, vector<rgw_bucket_dir_entry>& objs,
+                   uint32_t num, std::vector<rgw_bucket_dir_entry>& objs,
                    RGWAccessListFilter *filter,
                    bool *is_truncated);
 
@@ -67,14 +67,15 @@ public:
   void init() {}
   void shutdown() override;
 
+  std::string cluster_fsid();
   uint64_t instance_id();
-  bool check_secure_mon_conn() const;
+  bool check_secure_mon_conn(const DoutPrefixProvider *dpp) const;
 
   RGWAsyncRadosProcessor *get_async_processor() {
     return async_processor.get();
   }
 
-  int clog_warn(const string& msg);
+  int clog_warn(const std::string& msg);
 
   class Handle;
 
@@ -98,8 +99,8 @@ public:
   public:
     Pool() {}
 
-    int create();
-    int create(const std::vector<rgw_pool>& pools, std::vector<int> *retcodes);
+    int create(const DoutPrefixProvider *dpp);
+    int create(const DoutPrefixProvider *dpp, const std::vector<rgw_pool>& pools, std::vector<int> *retcodes);
     int lookup();
     int open(const DoutPrefixProvider *dpp, const OpenParams& params = {});
 
@@ -124,12 +125,12 @@ public:
       List() {}
       List(Pool *_pool) : pool(_pool) {}
 
-      int init(const DoutPrefixProvider *dpp, const string& marker, RGWAccessListFilter *filter = nullptr);
-      int get_next(int max,
-                   std::vector<string> *oids,
+      int init(const DoutPrefixProvider *dpp, const std::string& marker, RGWAccessListFilter *filter = nullptr);
+      int get_next(const DoutPrefixProvider *dpp, int max,
+                   std::vector<std::string> *oids,
                    bool *is_truncated);
 
-      int get_marker(string *marker);
+      int get_marker(std::string *marker);
     };
 
     List op() {
@@ -159,7 +160,7 @@ public:
       init(_obj);
     }
 
-    Obj(Pool& pool, const string& oid);
+    Obj(Pool& pool, const std::string& oid);
 
   public:
     Obj() {}
@@ -222,7 +223,7 @@ public:
     return Obj(this, o);
   }
 
-  Obj obj(Pool& pool, const string& oid) {
+  Obj obj(Pool& pool, const std::string& oid) {
     return Obj(pool, oid);
   }
 
@@ -241,6 +242,6 @@ public:
 
 using rgw_rados_ref = RGWSI_RADOS::rados_ref;
 
-inline ostream& operator<<(ostream& out, const RGWSI_RADOS::Obj& obj) {
+inline std::ostream& operator<<(std::ostream& out, const RGWSI_RADOS::Obj& obj) {
   return out << obj.get_raw_obj();
 }

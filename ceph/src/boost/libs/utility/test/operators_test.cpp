@@ -50,9 +50,9 @@ namespace
         void operator!() const;
 
     public:
-        convertible_to_bool( const bool value ) : _value( value ) {}
+         convertible_to_bool( const bool value ) : _value( value ) {}
 
-        operator unspecified_bool_type() const
+         operator unspecified_bool_type() const
           { return _value ? &convertible_to_bool::_value : 0; }
     };
 
@@ -64,12 +64,12 @@ namespace
         , boost::shiftable<Wrapped1<T> >
     {
     public:
-        explicit Wrapped1( T v = T() ) : _value(v) {}
-        T value() const { return _value; }
+         explicit Wrapped1( T v = T() ) : _value(v) {}
+         T value() const { return _value; }
 
-        convertible_to_bool operator<(const Wrapped1& x) const
+         convertible_to_bool operator<(const Wrapped1& x) const
           { return _value < x._value; }
-        convertible_to_bool operator==(const Wrapped1& x) const
+         convertible_to_bool operator==(const Wrapped1& x) const
           { return _value == x._value; }
         
         Wrapped1& operator+=(const Wrapped1& x)
@@ -92,8 +92,8 @@ namespace
           { _value <<= x._value; return *this; }
         Wrapped1& operator>>=(const Wrapped1& x)
           { _value >>= x._value; return *this; }
-        Wrapped1& operator++()               { ++_value; return *this; }
-        Wrapped1& operator--()               { --_value; return *this; }
+        Wrapped1& operator++() { ++_value; return *this; }
+        Wrapped1& operator--() { --_value; return *this; }
         
     private:
         T _value;

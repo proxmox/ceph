@@ -38,6 +38,8 @@
 
 #define PLACEHOLDER ""
 
+using std::list;
+using std::string;
 
 typedef struct {
   PyObject_HEAD
@@ -357,12 +359,10 @@ ceph_set_health_checks(BaseMgrModule *self, PyObject *args)
   out_checks.dump(&jf);
   jf.flush(*_dout);
   *_dout << dendl;
-
-  PyThreadState *tstate = PyEval_SaveThread();
-  self->py_modules->set_health_checks(self->this_module->get_name(),
-                                      std::move(out_checks));
-  PyEval_RestoreThread(tstate);
-
+  without_gil([&] {
+    self->py_modules->set_health_checks(self->this_module->get_name(),
+					std::move(out_checks));
+  });
   Py_RETURN_NONE;
 }
 
@@ -375,7 +375,7 @@ ceph_state_get(BaseMgrModule *self, PyObject *args)
     return NULL;
   }
 
-  return self->py_modules->get_python(what);
+  return self->py_modules->cacheable_get_python(what);
 }
 
 
@@ -488,14 +488,17 @@ ceph_set_module_option(BaseMgrModule *self, PyObject *args)
     derr << "Invalid args!" << dendl;
     return nullptr;
   }
-  boost::optional<string> val;
+  std::optional<string> val;
   if (value) {
     val = value;
   }
-  PyThreadState *tstate = PyEval_SaveThread();
-  self->py_modules->set_config(module, key, val);
-  PyEval_RestoreThread(tstate);
-
+  auto [ret, msg] = without_gil([&] {
+    return self->py_modules->set_config(module, key, val);
+  });
+  if (ret) {
+    PyErr_SetString(PyExc_ValueError, msg.c_str());
+    return nullptr;
+  }
   Py_RETURN_NONE;
 }
 
@@ -528,14 +531,13 @@ ceph_store_set(BaseMgrModule *self, PyObject *args)
   if (!PyArg_ParseTuple(args, "sz:ceph_store_set", &key, &value)) {
     return nullptr;
   }
-  boost::optional<string> val;
+  std::optional<string> val;
   if (value) {
     val = value;
   }
-  PyThreadState *tstate = PyEval_SaveThread();
-  self->py_modules->set_store(self->this_module->get_name(), key, val);
-  PyEval_RestoreThread(tstate);
-
+  without_gil([&] {
+    self->py_modules->set_store(self->this_module->get_name(), key, val);
+  });
   Py_RETURN_NONE;
 }
 
@@ -587,11 +589,9 @@ ceph_cluster_log(BaseMgrModule *self, PyObject *args)
   if (!PyArg_ParseTuple(args, "sis:ceph_cluster_log", &channel, &prio, &message)) {
     return nullptr;
   }
-
-  PyThreadState *tstate = PyEval_SaveThread();
-  self->py_modules->cluster_log(channel, (clog_type)prio, message);
-  PyEval_RestoreThread(tstate);
-
+  without_gil([&] {
+    self->py_modules->cluster_log(channel, (clog_type)prio, message);
+  });
   Py_RETURN_NONE;
 }
 
@@ -670,6 +670,13 @@ get_perf_schema(BaseMgrModule *self, PyObject *args)
   return self->py_modules->get_perf_schema_python(type_str, svc_id);
 }
 
+static PyObject*
+ceph_get_rocksdb_version(BaseMgrModule *self)
+{
+  return self->py_modules->get_rocksdb_version();
+}
+
+
 static PyObject *
 ceph_get_osdmap(BaseMgrModule *self, PyObject *args)
 {
@@ -684,14 +691,12 @@ ceph_set_uri(BaseMgrModule *self, PyObject *args)
         &svc_str)) {
     return nullptr;
   }
-
   // We call down into PyModules even though we have a MgrPyModule
   // reference here, because MgrPyModule's fields are protected
   // by PyModules' lock.
-  PyThreadState *tstate = PyEval_SaveThread();
-  self->py_modules->set_uri(self->this_module->get_name(), svc_str);
-  PyEval_RestoreThread(tstate);
-
+  without_gil([&] {
+    self->py_modules->set_uri(self->this_module->get_name(), svc_str);
+  });
   Py_RETURN_NONE;
 }
 
@@ -704,11 +709,9 @@ ceph_set_wear_level(BaseMgrModule *self, PyObject *args)
 			&devid, &wear_level)) {
     return nullptr;
   }
-
-  PyThreadState *tstate = PyEval_SaveThread();
-  self->py_modules->set_device_wear_level(devid, wear_level);
-  PyEval_RestoreThread(tstate);
-
+  without_gil([&] {
+    self->py_modules->set_device_wear_level(devid, wear_level);
+  });
   Py_RETURN_NONE;
 }
 
@@ -733,11 +736,9 @@ ceph_update_progress_event(BaseMgrModule *self, PyObject *args)
 			&evid, &desc, &progress, &add_to_ceph_s)) {
     return nullptr;
   }
-
-  PyThreadState *tstate = PyEval_SaveThread();
-  self->py_modules->update_progress_event(evid, desc, progress, add_to_ceph_s);
-  PyEval_RestoreThread(tstate);
-
+  without_gil([&] {
+    self->py_modules->update_progress_event(evid, desc, progress, add_to_ceph_s);
+  });
   Py_RETURN_NONE;
 }
 
@@ -749,21 +750,18 @@ ceph_complete_progress_event(BaseMgrModule *self, PyObject *args)
 			&evid)) {
     return nullptr;
   }
-
-  PyThreadState *tstate = PyEval_SaveThread();
-  self->py_modules->complete_progress_event(evid);
-  PyEval_RestoreThread(tstate);
-
+  without_gil([&] {
+    self->py_modules->complete_progress_event(evid);
+  });
   Py_RETURN_NONE;
 }
 
 static PyObject*
 ceph_clear_all_progress_events(BaseMgrModule *self, PyObject *args)
 {
-  PyThreadState *tstate = PyEval_SaveThread();
-  self->py_modules->clear_all_progress_events();
-  PyEval_RestoreThread(tstate);
-
+  without_gil([&] {
+    self->py_modules->clear_all_progress_events();
+  });
   Py_RETURN_NONE;
 }
 
@@ -1274,11 +1272,7 @@ ceph_add_mds_perf_query(BaseMgrModule *self, PyObject *args)
           }
           limit->order_by = it->second;
         } else if (limit_param_name == NAME_LIMIT_MAX_COUNT) {
-#if PY_MAJOR_VERSION <= 2
-          if (!PyInt_Check(limit_param_val) && !PyLong_Check(limit_param_val)) {
-#else
           if (!PyLong_Check(limit_param_val)) {
-#endif
             derr << __func__ << " " << limit_param_name << " not an int"
                  << dendl;
             Py_RETURN_NONE;
@@ -1368,9 +1362,9 @@ ceph_is_authorized(BaseMgrModule *self, PyObject *args)
     arguments[arg_key] = arg_value;
   }
 
-  PyThreadState *tstate = PyEval_SaveThread();
-  bool r = self->this_module->is_authorized(arguments);
-  PyEval_RestoreThread(tstate);
+  bool r = without_gil([&] {
+    return self->this_module->is_authorized(arguments);
+  });
 
   if (r) {
     Py_RETURN_TRUE;
@@ -1385,9 +1379,9 @@ ceph_register_client(BaseMgrModule *self, PyObject *args)
   if (!PyArg_ParseTuple(args, "s:ceph_register_client", &addrs)) {
     return nullptr;
   }
-  PyThreadState *tstate = PyEval_SaveThread();
-  self->py_modules->register_client(self->this_module->get_name(), addrs);
-  PyEval_RestoreThread(tstate);
+  without_gil([&] {
+    self->py_modules->register_client(self->this_module->get_name(), addrs);
+  });
   Py_RETURN_NONE;
 }
 
@@ -1398,9 +1392,9 @@ ceph_unregister_client(BaseMgrModule *self, PyObject *args)
   if (!PyArg_ParseTuple(args, "s:ceph_unregister_client", &addrs)) {
     return nullptr;
   }
-  PyThreadState *tstate = PyEval_SaveThread();
-  self->py_modules->unregister_client(self->this_module->get_name(), addrs);
-  PyEval_RestoreThread(tstate);
+  without_gil([&] {
+    self->py_modules->unregister_client(self->this_module->get_name(), addrs);
+  });
   Py_RETURN_NONE;
 }
 
@@ -1459,6 +1453,9 @@ PyMethodDef BaseMgrModule_methods[] = {
   {"_ceph_get_perf_schema", (PyCFunction)get_perf_schema, METH_VARARGS,
     "Get the performance counter schema"},
 
+  {"_ceph_get_rocksdb_version", (PyCFunction)ceph_get_rocksdb_version, METH_NOARGS,
+    "Get the current RocksDB version number"},
+
   {"_ceph_log", (PyCFunction)ceph_log, METH_VARARGS,
    "Emit a (local) log message"},
 
@@ -1510,13 +1507,13 @@ PyMethodDef BaseMgrModule_methods[] = {
     METH_VARARGS, "Get osd perf counters"},
 
   {"_ceph_add_mds_perf_query", (PyCFunction)ceph_add_mds_perf_query,
-    METH_VARARGS, "Add an osd perf query"},
+    METH_VARARGS, "Add an mds perf query"},
 
   {"_ceph_remove_mds_perf_query", (PyCFunction)ceph_remove_mds_perf_query,
-    METH_VARARGS, "Remove an osd perf query"},
+    METH_VARARGS, "Remove an mds perf query"},
 
   {"_ceph_get_mds_perf_counters", (PyCFunction)ceph_get_mds_perf_counters,
-    METH_VARARGS, "Get osd perf counters"},
+    METH_VARARGS, "Get mds perf counters"},
 
   {"_ceph_is_authorized", (PyCFunction)ceph_is_authorized,
     METH_VARARGS, "Verify the current session caps are valid"},
@@ -1605,4 +1602,3 @@ PyTypeObject BaseMgrModuleType = {
   0,                         /* tp_alloc */
   BaseMgrModule_new,     /* tp_new */
 };
-

@@ -43,6 +43,8 @@
 #undef dout_prefix
 #define dout_prefix (*_dout << "trim: ")
 
+using namespace std;
+
 using rgw::BucketTrimConfig;
 using BucketChangeCounter = BoundedKeyCounter<std::string, int>;
 
@@ -238,7 +240,7 @@ void TrimComplete::Handler::handle(bufferlist::const_iterator& input,
 
 /// rados watcher for bucket trim notifications
 class BucketTrimWatcher : public librados::WatchCtx2 {
-  rgw::sal::RGWRadosStore *const store;
+  rgw::sal::RadosStore* const store;
   const rgw_raw_obj& obj;
   rgw_rados_ref ref;
   uint64_t handle{0};
@@ -247,7 +249,7 @@ class BucketTrimWatcher : public librados::WatchCtx2 {
   boost::container::flat_map<TrimNotifyType, HandlerPtr> handlers;
 
  public:
-  BucketTrimWatcher(rgw::sal::RGWRadosStore *store, const rgw_raw_obj& obj,
+  BucketTrimWatcher(rgw::sal::RadosStore* store, const rgw_raw_obj& obj,
                     TrimCounters::Server *counters)
     : store(store), obj(obj) {
     handlers.emplace(NotifyTrimCounters, new TrimCounters::Handler(counters));
@@ -382,13 +384,13 @@ int take_min_status(CephContext *cct, Iter first, Iter last,
 class BucketTrimShardCollectCR : public RGWShardCollectCR {
   static constexpr int MAX_CONCURRENT_SHARDS = 16;
   const DoutPrefixProvider *dpp;
-  rgw::sal::RGWRadosStore *const store;
+  rgw::sal::RadosStore* const store;
   const RGWBucketInfo& bucket_info;
   const std::vector<std::string>& markers; //< shard markers to trim
   size_t i{0}; //< index of current shard marker
  public:
   BucketTrimShardCollectCR(const DoutPrefixProvider *dpp,
-                           rgw::sal::RGWRadosStore *store, const RGWBucketInfo& bucket_info,
+                           rgw::sal::RadosStore* store, const RGWBucketInfo& bucket_info,
                            const std::vector<std::string>& markers)
     : RGWShardCollectCR(store->ctx(), MAX_CONCURRENT_SHARDS),
       dpp(dpp), store(store), bucket_info(bucket_info), markers(markers)
@@ -417,7 +419,7 @@ bool BucketTrimShardCollectCR::spawn_next()
 
 /// trim the bilog of all of the given bucket instance's shards
 class BucketTrimInstanceCR : public RGWCoroutine {
-  rgw::sal::RGWRadosStore *const store;
+  rgw::sal::RadosStore* const store;
   RGWHTTPManager *const http;
   BucketTrimObserver *const observer;
   std::string bucket_instance;
@@ -435,7 +437,7 @@ class BucketTrimInstanceCR : public RGWCoroutine {
   std::vector<std::string> min_markers; //< min marker per shard
 
  public:
-  BucketTrimInstanceCR(rgw::sal::RGWRadosStore *store, RGWHTTPManager *http,
+  BucketTrimInstanceCR(rgw::sal::RadosStore* store, RGWHTTPManager *http,
                        BucketTrimObserver *observer,
                        const std::string& bucket_instance,
                        const DoutPrefixProvider *dpp)
@@ -569,14 +571,14 @@ int BucketTrimInstanceCR::operate(const DoutPrefixProvider *dpp)
 
 /// trim each bucket instance while limiting the number of concurrent operations
 class BucketTrimInstanceCollectCR : public RGWShardCollectCR {
-  rgw::sal::RGWRadosStore *const store;
+  rgw::sal::RadosStore* const store;
   RGWHTTPManager *const http;
   BucketTrimObserver *const observer;
   std::vector<std::string>::const_iterator bucket;
   std::vector<std::string>::const_iterator end;
   const DoutPrefixProvider *dpp;
  public:
-  BucketTrimInstanceCollectCR(rgw::sal::RGWRadosStore *store, RGWHTTPManager *http,
+  BucketTrimInstanceCollectCR(rgw::sal::RadosStore* store, RGWHTTPManager *http,
                               BucketTrimObserver *observer,
                               const std::vector<std::string>& buckets,
                               int max_concurrent,
@@ -673,7 +675,7 @@ int AsyncMetadataList::_send_request(const DoutPrefixProvider *dpp)
 
     do {
       // get the next key and marker
-      r = mgr->list_keys_next(handle, 1, keys, &truncated);
+      r = mgr->list_keys_next(dpp, handle, 1, keys, &truncated);
       if (r < 0) {
         ldpp_dout(dpp, 10) << "failed to list metadata: "
             << cpp_strerror(r) << dendl;
@@ -711,7 +713,7 @@ int AsyncMetadataList::_send_request(const DoutPrefixProvider *dpp)
   auto g = make_scope_guard([=] { mgr->list_keys_complete(handle); });
   do {
     // get the next key and marker
-    r = mgr->list_keys_next(handle, 1, keys, &truncated);
+    r = mgr->list_keys_next(dpp, handle, 1, keys, &truncated);
     if (r < 0) {
       ldpp_dout(dpp, 10) << "failed to list metadata: "
           << cpp_strerror(r) << dendl;
@@ -773,7 +775,7 @@ class MetadataListCR : public RGWSimpleCoroutine {
 };
 
 class BucketTrimCR : public RGWCoroutine {
-  rgw::sal::RGWRadosStore *const store;
+  rgw::sal::RadosStore* const store;
   RGWHTTPManager *const http;
   const BucketTrimConfig& config;
   BucketTrimObserver *const observer;
@@ -789,7 +791,7 @@ class BucketTrimCR : public RGWCoroutine {
 
   static const std::string section; //< metadata section for bucket instances
  public:
-  BucketTrimCR(rgw::sal::RGWRadosStore *store, RGWHTTPManager *http,
+  BucketTrimCR(rgw::sal::RadosStore* store, RGWHTTPManager *http,
                const BucketTrimConfig& config, BucketTrimObserver *observer,
                const rgw_raw_obj& obj, const DoutPrefixProvider *dpp)
     : RGWCoroutine(store->ctx()), store(store), http(http), config(config),
@@ -937,7 +939,7 @@ int BucketTrimCR::operate(const DoutPrefixProvider *dpp)
 }
 
 class BucketTrimPollCR : public RGWCoroutine {
-  rgw::sal::RGWRadosStore *const store;
+  rgw::sal::RadosStore* const store;
   RGWHTTPManager *const http;
   const BucketTrimConfig& config;
   BucketTrimObserver *const observer;
@@ -947,7 +949,7 @@ class BucketTrimPollCR : public RGWCoroutine {
   const DoutPrefixProvider *dpp;
 
  public:
-  BucketTrimPollCR(rgw::sal::RGWRadosStore *store, RGWHTTPManager *http,
+  BucketTrimPollCR(rgw::sal::RadosStore* store, RGWHTTPManager *http,
                    const BucketTrimConfig& config,
                    BucketTrimObserver *observer, const rgw_raw_obj& obj,
                    const DoutPrefixProvider *dpp)
@@ -1062,7 +1064,7 @@ void configure_bucket_trim(CephContext *cct, BucketTrimConfig& config)
 class BucketTrimManager::Impl : public TrimCounters::Server,
                                 public BucketTrimObserver {
  public:
-   rgw::sal::RGWRadosStore *const store;
+   rgw::sal::RadosStore* const store;
   const BucketTrimConfig config;
 
   const rgw_raw_obj status_obj;
@@ -1081,9 +1083,9 @@ class BucketTrimManager::Impl : public TrimCounters::Server,
   /// protect data shared between data sync, trim, and watch/notify threads
   std::mutex mutex;
 
-  Impl(rgw::sal::RGWRadosStore *store, const BucketTrimConfig& config)
+  Impl(rgw::sal::RadosStore* store, const BucketTrimConfig& config)
     : store(store), config(config),
-      status_obj(store->svc()->zone->get_zone_params().log_pool, BucketTrimStatus::oid),
+      status_obj(store->get_zone()->get_params().log_pool, BucketTrimStatus::oid),
       counter(config.counter_size),
       trimmed(config.recent_size, config.recent_duration),
       watcher(store, status_obj, this)
@@ -1119,7 +1121,7 @@ class BucketTrimManager::Impl : public TrimCounters::Server,
   }
 };
 
-BucketTrimManager::BucketTrimManager(rgw::sal::RGWRadosStore *store,
+BucketTrimManager::BucketTrimManager(rgw::sal::RadosStore* store,
                                      const BucketTrimConfig& config)
   : impl(new Impl(store, config))
 {

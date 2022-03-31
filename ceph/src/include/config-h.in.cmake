@@ -3,6 +3,9 @@
 #ifndef CONFIG_H
 #define CONFIG_H
 
+/* Define to 1 if you have the `memset_s()` function. */
+#cmakedefine HAVE_MEMSET_S
+
 /* fallocate(2) is supported */
 #cmakedefine CEPH_HAVE_FALLOCATE
 
@@ -66,6 +69,9 @@
 /* Define if the system has the type `in_addr_t' */
 #cmakedefine HAVE_IN_ADDR_T
 
+/* Define if you have suseconds_t */
+#cmakedefine HAVE_SUSECONDS_T
+
 /* Define if you have res_nquery */
 #cmakedefine HAVE_RES_NQUERY
 
@@ -111,9 +117,6 @@
 /* PMEM_DEVICE (OSD) conditional compilation */
 #cmakedefine HAVE_BLUESTORE_PMEM
 
-/* Defined if LevelDB supports bloom filters */
-#cmakedefine HAVE_LEVELDB_FILTER_POLICY
-
 /* Define if you have tcmalloc */
 #cmakedefine HAVE_LIBTCMALLOC
 #cmakedefine LIBTCMALLOC_MISSING_ALIGNED_ALLOC
@@ -133,6 +136,9 @@
 /* define if cephfs enabled */
 #cmakedefine WITH_CEPHFS
 
+/* define if systemed is enabled */
+#cmakedefine WITH_SYSTEMD
+
 /*define if GSSAPI/KRB5 enabled */
 #cmakedefine HAVE_GSSAPI
 
@@ -147,15 +153,6 @@
 
 /* define if radosgw enabled */
 #cmakedefine WITH_RADOSGW
-
-/* define if radosgw enabled */
-#cmakedefine WITH_RADOSGW_FCGI_FRONTEND
-
-/* define if leveldb is enabled */
-#cmakedefine WITH_LEVELDB
-
-/* define if radosgw's beast frontend enabled */
-#cmakedefine WITH_RADOSGW_BEAST_FRONTEND
 
 /* define if radosgw has openssl support */
 #cmakedefine WITH_CURL_OPENSSL
@@ -250,14 +247,11 @@
 /* we have a recent nasm and are x86_64 */
 #cmakedefine HAVE_NASM_X64
 
-/* nasm can also build the isa-l:avx2 */
-#cmakedefine HAVE_NASM_X64_AVX2
-
 /* nasm can also build the isa-l:avx512 */
 #cmakedefine HAVE_NASM_X64_AVX512
 
-/* Define if isa-l is compiled for arm64 */
-#cmakedefine HAVE_ARMV8_SIMD
+/* Define if the erasure code isa-l plugin is compiled */
+#cmakedefine WITH_EC_ISA_PLUGIN
 
 /* Define to 1 if strerror_r returns char *. */
 #cmakedefine STRERROR_R_CHAR_P 1
@@ -270,6 +264,12 @@
 
 /* Define if the C compiler supports __PRETTY_FUNCTION__ */
 #cmakedefine HAVE_PRETTY_FUNC
+
+/* Define if the C compiler supports __attribute__((__symver__ (".."))) */
+#cmakedefine HAVE_ATTR_SYMVER
+
+/* Define if the C compiler supports __asm__(".symver ..") */
+#cmakedefine HAVE_ASM_SYMVER
 
 /* Have eventfd extension. */
 #cmakedefine HAVE_EVENTFD
@@ -327,9 +327,6 @@
 
 #cmakedefine MGR_PYTHON_EXECUTABLE "@MGR_PYTHON_EXECUTABLE@"
 
-/* the default value of "mgr_disabled_module" option */
-#cmakedefine MGR_DISABLED_MODULES "@MGR_DISABLED_MODULES@"
-
 /* Define to 1 if you have the `getprogname' function. */
 #cmakedefine HAVE_GETPROGNAME 1
 
@@ -351,6 +348,9 @@
 /* Defined if lua packages can be installed by radosgw */
 #cmakedefine WITH_RADOSGW_LUA_PACKAGES
 
+/* Backend dbstore for Rados Gateway */
+#cmakedefine WITH_RADOSGW_DBSTORE
+
 /* Defined if std::map::merge() is supported */
 #cmakedefine HAVE_STDLIB_MAP_SPLICING
 
@@ -366,14 +366,14 @@
 /* Define if RBD QCOW migration format is enabled */
 #cmakedefine WITH_RBD_MIGRATION_FORMAT_QCOW_V1
 
+/* Define if libcephsqlite is enabled */
+#cmakedefine WITH_LIBCEPHSQLITE
+
 /* Define if RWL is enabled */
 #cmakedefine WITH_RBD_RWL
 
 /* Define if PWL-SSD is enabled */
 #cmakedefine WITH_RBD_SSD_CACHE
-
-/* Define if libcryptsetup version < 2.0.5 */
-#cmakedefine LIBCRYPTSETUP_LEGACY_DATA_ALIGNMENT
 
 /* Define if libcryptsetup can be used (linux only) */
 #cmakedefine HAVE_LIBCRYPTSETUP

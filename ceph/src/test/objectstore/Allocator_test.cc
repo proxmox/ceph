@@ -14,6 +14,8 @@
 #include "include/Context.h"
 #include "os/bluestore/Allocator.h"
 
+using namespace std;
+
 typedef boost::mt11213b gen_type;
 
 class AllocTest : public ::testing::TestWithParam<const char*> {
@@ -23,8 +25,9 @@ public:
   AllocTest(): alloc(0) { }
   void init_alloc(int64_t size, uint64_t min_alloc_size) {
     std::cout << "Creating alloc type " << string(GetParam()) << " \n";
-    alloc.reset(Allocator::create(g_ceph_context, string(GetParam()), size,
-				  min_alloc_size));
+    alloc.reset(Allocator::create(g_ceph_context, GetParam(), size,
+				  min_alloc_size,
+				  256*1048576, 100*256*1048576ull));
   }
 
   void init_close() {

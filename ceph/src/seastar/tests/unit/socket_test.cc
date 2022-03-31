@@ -25,6 +25,10 @@
 #include <seastar/core/print.hh>
 #include <seastar/core/memory.hh>
 #include <seastar/util/std-compat.hh>
+#include <seastar/testing/test_case.hh>
+#include <seastar/core/abort_source.hh>
+#include <seastar/core/sleep.hh>
+#include <seastar/core/thread.hh>
 
 #include <seastar/net/posix-stack.hh>
 
@@ -70,13 +74,34 @@ public:
 my_malloc_allocator malloc_allocator;
 std::pmr::polymorphic_allocator<char> allocator{&malloc_allocator};
 
-int main(int ac, char** av) {
-    register_network_stack("posix", boost::program_options::options_description(),
-        [](boost::program_options::variables_map ops) {
-            return smp::main_thread() ? net::posix_network_stack::create(ops, &allocator)
-                : net::posix_ap_network_stack::create(ops);
-        }, true);
-    return app_template().run_deprecated(ac, av, [] {
-       return echo_server_loop().finally([](){ engine().exit((malloc_allocator.allocs == malloc_allocator.frees) ? 0 : 1); });
+SEASTAR_TEST_CASE(socket_allocation_test) {
+    return echo_server_loop().finally([](){ engine().exit((malloc_allocator.allocs == malloc_allocator.frees) ? 0 : 1); });
+}
+
+SEASTAR_TEST_CASE(socket_skip_test) {
+    return seastar::async([&] {
+        listen_options lo;
+        lo.reuse_address = true;
+        server_socket ss = seastar::listen(ipv4_addr("127.0.0.1", 1234), lo);
+
+        abort_source as;
+        auto client = async([&as] {
+            connected_socket socket = connect(ipv4_addr("127.0.0.1", 1234)).get();
+            socket.output().write("abc").get();
+            socket.shutdown_output();
+            try {
+                sleep_abortable(std::chrono::seconds(10), as).get();
+            } catch (const sleep_aborted&) {
+                // expected
+                return;
+            }
+            assert(!"Skipping data from socket is likely stuck");
+        });
+
+        accept_result accepted = ss.accept().get();
+        input_stream<char> input = accepted.connection.input();
+        input.skip(16).get();
+        as.request_abort();
+        client.get();
     });
 }

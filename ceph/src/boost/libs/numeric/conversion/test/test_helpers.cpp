@@ -118,7 +118,7 @@ class numeric_limits<MyUDT::MyFloat> : public numeric_limits<double>
 // should be found by koenig loopkup, but some compilers don't do it right
 // so we inyect them into namespace std so ordinary overload resolution
 // can found them.
-#if defined(BOOST_NO_ARGUMENT_DEPENDENT_LOOKUP) || defined(__BORLANDC__) || defined(__GNUC__)
+#if defined(BOOST_NO_ARGUMENT_DEPENDENT_LOOKUP) || defined(BOOST_BORLANDC) || defined(__GNUC__)
 namespace std {
 using MyUDT::floor ;
 using MyUDT::ceil  ;

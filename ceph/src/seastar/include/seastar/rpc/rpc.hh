@@ -138,11 +138,18 @@ public:
 /// \addtogroup rpc
 /// @{
 
+class server;
+
 struct server_options {
     compressor::factory* compressor_factory = nullptr;
     bool tcp_nodelay = true;
     std::optional<streaming_domain_type> streaming_domain;
     server_socket::load_balancing_algorithm load_balancing_algorithm = server_socket::load_balancing_algorithm::default_;
+    // optional filter function. If set, will be called with remote 
+    // (connecting) address.    
+    // Returning false will refuse the incoming connection. 
+    // Returning true will allow the mechanism to proceed.
+    std::function<bool(const socket_address&)> filter_connection = {};
 };
 
 /// @}
@@ -306,7 +313,7 @@ public:
     future<> send(snd_buf buf, std::optional<rpc_clock_type::time_point> timeout = {}, cancellable* cancel = nullptr);
     bool error() { return _error; }
     void abort();
-    future<> stop();
+    future<> stop() noexcept;
     future<> stream_receive(circular_buffer<foreign_ptr<std::unique_ptr<rcv_buf>>>& bufs);
     future<> close_sink() {
         _sink_closed = true;
@@ -353,9 +360,22 @@ public:
     friend class source_impl;
 };
 
+struct deferred_snd_buf {
+    promise<> pr;
+    snd_buf data;
+};
+
 // send data Out...
 template<typename Serializer, typename... Out>
 class sink_impl : public sink<Out...>::impl {
+    // Used on the shard *this lives on.
+    alignas (cache_line_size) uint64_t _next_seq_num = 1;
+
+    // Used on the shard the _conn lives on.
+    struct alignas (cache_line_size) {
+        uint64_t last_seq_num = 0;
+        std::map<uint64_t, deferred_snd_buf> out_of_order_bufs;
+    } _remote_state;
 public:
     sink_impl(xshard_connection_ptr con) : sink<Out...>::impl(std::move(con)) { this->_con->get()->_sink_closed = false; }
     future<> operator()(const Out&... args) override;
@@ -409,7 +429,7 @@ public:
     };
 private:
     std::unordered_map<id_type, std::unique_ptr<reply_handler_base>> _outstanding;
-    socket_address _server_addr;
+    socket_address _server_addr, _local_addr;
     client_options _options;
     std::optional<shared_promise<>> _client_negotiated = shared_promise<>();
     weak_ptr<client> _parent; // for stream clients
@@ -460,7 +480,7 @@ public:
     auto next_message_id() { return _message_id++; }
     void wait_for_reply(id_type id, std::unique_ptr<reply_handler_base>&& h, std::optional<rpc_clock_type::time_point> timeout, cancellable* cancel);
     void wait_timed_out(id_type id);
-    future<> stop();
+    future<> stop() noexcept;
     void abort_all_streams();
     void deregister_this_stream();
     socket_address peer_address() const override {
@@ -482,7 +502,7 @@ public:
             client_options o = _options;
             o.stream_parent = this->get_connection_id();
             o.send_timeout_data = false;
-            auto c = make_shared<client>(_logger, _serializer, o, std::move(socket), _server_addr);
+            auto c = make_shared<client>(_logger, _serializer, o, std::move(socket), _server_addr, _local_addr);
             c->_parent = this->weak_from_this();
             c->_is_stream = true;
             return c->await_connection().then([c, this] {
@@ -704,7 +724,7 @@ protected:
 /// \tparam Serializer the serializer for the protocol.
 /// \tparam MsgType the type to be used as the message id or verb id.
 template<typename Serializer, typename MsgType = uint32_t>
-class protocol : public protocol_base {
+class protocol final : public protocol_base {
 public:
     /// Represents the listening port and all accepted connections.
     class server : public rpc::server {

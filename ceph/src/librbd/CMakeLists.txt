@@ -116,6 +116,7 @@ set(librbd_internal_srcs
   io/Types.cc
   io/Utils.cc
   io/WriteBlockImageDispatch.cc
+  io/IoOperations.cc
   journal/CreateRequest.cc
   journal/DemoteRequest.cc
   journal/ObjectDispatch.cc
@@ -343,7 +344,7 @@ endif()
 if(ENABLE_SHARED)
   set_target_properties(librbd PROPERTIES
     OUTPUT_NAME rbd
-    VERSION 1.16.0
+    VERSION 1.17.0
     SOVERSION 1
     CXX_VISIBILITY_PRESET hidden
     VISIBILITY_INLINES_HIDDEN ON)

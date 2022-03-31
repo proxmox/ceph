@@ -41,6 +41,7 @@ class ArenaWrappedDBIter : public Iterator {
   virtual ReadRangeDelAggregator* GetRangeDelAggregator() {
     return db_iter_->GetRangeDelAggregator();
   }
+  const ReadOptions& GetReadOptions() { return read_options_; }
 
   // Set the internal iterator wrapped inside the DB Iterator. Usually it is
   // a merging iterator.
@@ -51,6 +52,8 @@ class ArenaWrappedDBIter : public Iterator {
   bool Valid() const override { return db_iter_->Valid(); }
   void SeekToFirst() override { db_iter_->SeekToFirst(); }
   void SeekToLast() override { db_iter_->SeekToLast(); }
+  // 'target' does not contain timestamp, even if user timestamp feature is
+  // enabled.
   void Seek(const Slice& target) override { db_iter_->Seek(target); }
   void SeekForPrev(const Slice& target) override {
     db_iter_->SeekForPrev(target);
@@ -60,6 +63,7 @@ class ArenaWrappedDBIter : public Iterator {
   Slice key() const override { return db_iter_->key(); }
   Slice value() const override { return db_iter_->value(); }
   Status status() const override { return db_iter_->status(); }
+  Slice timestamp() const override { return db_iter_->timestamp(); }
   bool IsBlob() const { return db_iter_->IsBlob(); }
 
   Status GetProperty(std::string prop_name, std::string* prop) override;
@@ -76,10 +80,8 @@ class ArenaWrappedDBIter : public Iterator {
 
   // Store some parameters so we can refresh the iterator at a later point
   // with these same params
-  void StoreRefreshInfo(const ReadOptions& read_options, DBImpl* db_impl,
-                        ColumnFamilyData* cfd, ReadCallback* read_callback,
-                        bool allow_blob) {
-    read_options_ = read_options;
+  void StoreRefreshInfo(DBImpl* db_impl, ColumnFamilyData* cfd,
+                        ReadCallback* read_callback, bool allow_blob) {
     db_impl_ = db_impl;
     cfd_ = cfd;
     read_callback_ = read_callback;

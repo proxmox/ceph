@@ -147,7 +147,7 @@
 %define stack_size  16
 %define local_storage_offset 0
 
-%define func(x) x:
+%define func(x) x: endbranch
 %macro FUNC_SAVE 0
 	push	rbp
 	push	r12
@@ -169,8 +169,13 @@
 %define VECT_SIZE 8
 %define HASH_BYTES 2
 
+[bits 64]
+default rel
+section .text
+
 global gen_icf_map_lh1_04
 func(gen_icf_map_lh1_04)
+	endbranch
 	FUNC_SAVE
 
 	mov	file_start, [stream + _next_in]

@@ -111,7 +111,7 @@ template<typename AsyncAction>
 SEASTAR_CONCEPT( requires seastar::InvokeReturns<AsyncAction, stop_iteration> || seastar::InvokeReturns<AsyncAction, future<stop_iteration>> )
 inline
 future<> repeat(AsyncAction&& action) noexcept {
-    using futurator = futurize<std::result_of_t<AsyncAction()>>;
+    using futurator = futurize<std::invoke_result_t<AsyncAction>>;
     static_assert(std::is_same<future<stop_iteration>, typename futurator::type>::value, "bad AsyncAction signature");
     for (;;) {
         // Do not type-erase here in case this is a short repeat()
@@ -152,7 +152,7 @@ struct repeat_until_value_type_helper<future<std::optional<T>>> {
 /// Return value of repeat_until_value()
 template <typename AsyncAction>
 using repeat_until_value_return_type
-        = typename repeat_until_value_type_helper<typename futurize<std::result_of_t<AsyncAction()>>::type>::future_type;
+        = typename repeat_until_value_type_helper<typename futurize<std::invoke_result_t<AsyncAction>>::type>::future_type;
 
 /// \endcond
 
@@ -227,7 +227,7 @@ SEASTAR_CONCEPT( requires requires (AsyncAction aa) {
 } )
 repeat_until_value_return_type<AsyncAction>
 repeat_until_value(AsyncAction action) noexcept {
-    using futurator = futurize<std::result_of_t<AsyncAction()>>;
+    using futurator = futurize<std::invoke_result_t<AsyncAction>>;
     using type_helper = repeat_until_value_type_helper<typename futurator::type>;
     // the "T" in the documentation
     using value_type = typename type_helper::value_type;
@@ -314,25 +314,30 @@ public:
 
 } // namespace internal
 
-/// Invokes given action until it fails or given condition evaluates to true.
+/// Invokes given action until it fails or given condition evaluates to true or fails.
 ///
 /// \param stop_cond a callable taking no arguments, returning a boolean that
 ///                  evalutes to true when you don't want to call \c action
-///                  any longer
+///                  any longer. If \c stop_cond fails, the exception is propagated
+//                   in the returned future.
 /// \param action a callable taking no arguments, returning a future<>.  Will
 ///               be called again as soon as the future resolves, unless the
-///               future fails, or \c stop_cond returns \c true.
+///               future fails, or \c stop_cond returns \c true or fails.
 /// \return a ready future if we stopped successfully, or a failed future if
-///         a call to to \c action failed.
+///         a call to to \c action or a call to \c stop_cond failed.
 template<typename AsyncAction, typename StopCondition>
 SEASTAR_CONCEPT( requires seastar::InvokeReturns<StopCondition, bool> && seastar::InvokeReturns<AsyncAction, future<>> )
 inline
 future<> do_until(StopCondition stop_cond, AsyncAction action) noexcept {
     using namespace internal;
     for (;;) {
+      try {
         if (stop_cond()) {
             return make_ready_future<>();
         }
+      } catch (...) {
+        return current_exception_as_future();
+      }
         auto f = futurize_invoke(action);
         if (f.failed()) {
             return f;
@@ -547,9 +552,9 @@ parallel_for_each(Iterator begin, Iterator end, Func&& func) noexcept {
     //   - not available: collect in s (allocating it if needed)
     while (begin != end) {
         auto f = futurize_invoke(std::forward<Func>(func), *begin++);
+        memory::scoped_critical_alloc_section _;
         if (!f.available() || f.failed()) {
             if (!s) {
-                memory::scoped_critical_alloc_section _;
                 using itraits = std::iterator_traits<Iterator>;
                 auto n = (internal::iterator_range_estimate_vector_capacity(begin, end, typename itraits::iterator_category()) + 1);
                 s = new parallel_for_each_state(n);
@@ -682,7 +687,7 @@ max_concurrent_for_each(Iterator begin, Iterator end, size_t max_concurrent, Fun
 
 /// Run a maximum of \c max_concurrent tasks in parallel (range version).
 ///
-/// Given a range [\c begin, \c end) of objects, run \c func on each \c *i in
+/// Given a range of objects, run \c func on each \c *i in
 /// the range, and return a future<> that resolves when all the functions
 /// complete.  \c func should return a future<> that indicates when it is
 /// complete.  Up to \c max_concurrent invocations are performed in parallel.
@@ -690,8 +695,7 @@ max_concurrent_for_each(Iterator begin, Iterator end, size_t max_concurrent, Fun
 /// must ensure that the range outlives the call to max_concurrent_for_each
 /// so it can be iterated in the background.
 ///
-/// \param begin an \c InputIterator designating the beginning of the range
-/// \param end an \c InputIterator designating the end of the range
+/// \param range a \c Range to be processed
 /// \param max_concurrent maximum number of concurrent invocations of \c func, must be greater than zero.
 /// \param func Function to invoke with each element in the range (returning
 ///             a \c future<>)

@@ -45,7 +45,7 @@
  %define tmp    r11
  %define tmp2   r10
  %define return rax
- %define func(x) x:
+ %define func(x) x: endbranch
  %define FUNC_SAVE
  %define FUNC_RESTORE
 %endif
@@ -167,7 +167,7 @@ section .text
 %define xtmph5    zmm27
 
 align 16
-global gf_5vect_mad_avx512:ISAL_SYM_TYPE_FUNCTION
+mk_global gf_5vect_mad_avx512, function
 func(gf_5vect_mad_avx512)
 	FUNC_SAVE
 	sub	len, 64

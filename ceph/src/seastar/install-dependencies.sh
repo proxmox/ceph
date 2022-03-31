@@ -42,8 +42,6 @@ debian_packages=(
     libsctp-dev
     gcc
     make
-    libprotobuf-dev
-    protobuf-compiler
     python3
     systemtap-sdt-dev
     libtool
@@ -57,6 +55,7 @@ debian_packages=(
     valgrind
     doxygen
     openssl
+    pkg-config
 )
 
 # seastar doesn't directly depend on these packages. They are
@@ -78,8 +77,6 @@ redhat_packages=(
     lz4-devel
     gcc
     make
-    protobuf-devel
-    protobuf-compiler
     python3
     systemtap-sdt-devel
     libtool
@@ -90,6 +87,9 @@ redhat_packages=(
     diffutils
     doxygen
     openssl
+    fmt-devel
+    boost-devel
+    valgrind-devel
     "${transitive[@]}"
 )
 
@@ -152,7 +152,6 @@ arch_packages=(
     lksctp-tools
     lz4
     make
-    protobuf
     libtool
     cmake
     yaml-cpp
@@ -193,7 +192,7 @@ opensuse_packages=(
     liblz4-devel
     libnuma-devel
     lksctp-tools-devel
-    ninja protobuf-devel
+    ninja
     ragel
     xfsprogs-devel
     yaml-cpp-devel
@@ -203,17 +202,17 @@ opensuse_packages=(
 )
 
 case "$ID" in
-    ubuntu|debian)
+    ubuntu|debian|pop)
         apt-get install -y "${debian_packages[@]}"
     ;;
     fedora)
         dnf install -y "${fedora_packages[@]}"
     ;;
-    centos)
+    rhel|centos)
         if [ "$VERSION_ID" = "7" ]; then
             yum install -y epel-release centos-release-scl scl-utils
             yum install -y "${centos7_packages[@]}"
-        elif [ "$VERSION_ID" = "8" ]; then
+        elif [ "${VERSION_ID%%.*}" = "8" ]; then
             dnf install -y epel-release
             dnf install -y "${centos8_packages[@]}"
         fi
@@ -221,7 +220,7 @@ case "$ID" in
     opensuse-leap)
         zypper install -y "${opensuse_packages[@]}"
     ;;
-    arch)
+    arch|manjaro)
         if [ "$EUID" -eq "0" ]; then
             pacman -Sy --needed --noconfirm "${arch_packages[@]}"
         else

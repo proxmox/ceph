@@ -81,6 +81,7 @@
 #include <seastar/core/scheduling_specific.hh>
 #include <seastar/core/smp.hh>
 #include <seastar/core/internal/io_request.hh>
+#include <seastar/core/internal/io_sink.hh>
 #include <seastar/core/make_task.hh>
 #include "internal/pollable_fd.hh"
 #include "internal/poll.hh"
@@ -100,6 +101,7 @@ using shard_id = unsigned;
 
 namespace alien {
 class message_queue;
+class instance;
 }
 class reactor;
 inline
@@ -128,10 +130,6 @@ struct hash<::sockaddr_in> {
 bool operator==(const ::sockaddr_in a, const ::sockaddr_in b);
 
 namespace seastar {
-
-void register_network_stack(sstring name, boost::program_options::options_description opts,
-    noncopyable_function<future<std::unique_ptr<network_stack>>(boost::program_options::variables_map opts)> create,
-    bool make_default = false);
 
 class thread_pool;
 class smp;
@@ -170,10 +168,13 @@ public:
     friend class reactor;
 };
 
+size_t scheduling_group_count();
+
 }
 
 class kernel_completion;
 class io_queue;
+class io_intent;
 class disk_config_params;
 
 class io_completion : public kernel_completion {
@@ -185,10 +186,9 @@ public:
 };
 
 class reactor {
-    using sched_clock = std::chrono::steady_clock;
 private:
     struct task_queue;
-    using task_queue_list = circular_buffer_fixed_capacity<task_queue*, max_scheduling_groups()>;
+    using task_queue_list = circular_buffer_fixed_capacity<task_queue*, 1 << log2ceil(max_scheduling_groups())>;
     using pollfn = seastar::pollfn;
 
     class signal_pollfn;
@@ -212,7 +212,9 @@ private:
     friend class reactor_backend_epoll;
     friend class reactor_backend_aio;
     friend class reactor_backend_selector;
+    friend struct reactor_options;
     friend class aio_storage_context;
+    friend size_t scheduling_group_count();
 public:
     using poller = internal::poller;
     using idle_cpu_handler_result = seastar::idle_cpu_handler_result;
@@ -232,9 +234,22 @@ public:
         uint64_t fstream_read_aheads_discarded = 0;
         uint64_t fstream_read_ahead_discarded_bytes = 0;
     };
+    /// Scheduling statistics.
+    struct sched_stats {
+        /// Total number of tasks processed by this shard's reactor until this point.
+        /// Note that tasks can be tiny, running for a few nanoseconds, or can take an
+        /// entire task quota.
+        uint64_t tasks_processed = 0;
+    };
     friend void io_completion::complete_with(ssize_t);
 
+    /// Obtains an alien::instance object that can be used to send messages
+    /// to Seastar shards from non-Seastar threads.
+    alien::instance& alien() { return _alien; }
+
 private:
+    std::shared_ptr<smp> _smp;
+    alien::instance& _alien;
     reactor_config _cfg;
     file_desc _notify_eventfd;
     file_desc _task_quota_timer;
@@ -256,11 +271,10 @@ private:
     static constexpr unsigned max_aio = max_aio_per_queue * max_queues;
     friend disk_config_params;
 
-    // Not all reactors have IO queues. If the number of IO queues is less than the number of shards,
-    // some reactors will talk to foreign io_queues. If this reactor holds a valid IO queue, it will
-    // be stored here.
-    std::vector<std::unique_ptr<io_queue>> my_io_queues;
-    std::unordered_map<dev_t, io_queue*> _io_queues;
+    // Each mountpouint is controlled by its own io_queue, but ...
+    std::unordered_map<dev_t, std::unique_ptr<io_queue>> _io_queues;
+    // ... when dispatched all requests get into this single sink
+    internal::io_sink _io_sink;
 
     std::vector<noncopyable_function<future<> ()>> _exit_funcs;
     unsigned _id = 0;
@@ -314,7 +328,6 @@ private:
         void register_stats();
     };
 
-    circular_buffer<internal::io_request> _pending_io;
     boost::container::static_vector<std::unique_ptr<task_queue>, max_scheduling_groups()> _task_queues;
     internal::scheduling_group_specific_thread_local_data _scheduling_group_specific_data;
     int64_t _last_vruntime = 0;
@@ -336,14 +349,13 @@ private:
     // _lowres_clock_impl will only be created on cpu 0
     std::unique_ptr<lowres_clock_impl> _lowres_clock_impl;
     lowres_clock::time_point _lowres_next_timeout;
-    std::optional<poller> _epoll_poller;
     std::optional<pollable_fd> _aio_eventfd;
     const bool _reuseport;
     circular_buffer<double> _loads;
     double _load = 0;
     sched_clock::duration _total_idle{0};
     sched_clock::duration _total_sleep;
-    sched_clock::time_point _start_time = sched_clock::now();
+    sched_clock::time_point _start_time = now();
     std::chrono::nanoseconds _max_poll_time = calculate_poll_time();
     circular_buffer<output_stream<char>* > _flush_batching;
     std::atomic<bool> _sleeping alignas(seastar::cache_line_size){0};
@@ -352,13 +364,14 @@ private:
     bool _force_io_getevents_syscall = false;
     bool _bypass_fsync = false;
     bool _have_aio_fsync = false;
+    bool _kernel_page_cache = false;
     std::atomic<bool> _dying{false};
 private:
     static std::chrono::nanoseconds calculate_poll_time();
     static void block_notifier(int);
-    void wakeup();
     size_t handle_aio_error(internal::linux_abi::iocb* iocb, int ec);
     bool flush_pending_aio();
+    steady_clock_type::time_point next_pending_aio() const noexcept;
     bool reap_kernel_completions();
     bool flush_tcp_batches();
     bool do_expire_lowres_timers() noexcept;
@@ -380,6 +393,7 @@ private:
 public:
     /// Register a user-defined signal handler
     void handle_signal(int signo, noncopyable_function<void ()>&& handler);
+    void wakeup();
 
 private:
     class signals {
@@ -414,7 +428,6 @@ private:
     void run_tasks(task_queue& tq);
     bool have_more_tasks() const;
     bool posix_reuseport_detect();
-    void task_quota_timer_thread_fn();
     void run_some_tasks();
     void activate(task_queue& tq);
     void insert_active_task_queue(task_queue* tq);
@@ -448,40 +461,43 @@ private:
     do_write_some(pollable_fd_state& fd, const void* buffer, size_t size);
     future<size_t>
     do_write_some(pollable_fd_state& fd, net::packet& p);
+    int do_run();
 public:
-    static boost::program_options::options_description get_options_description(reactor_config cfg);
-    explicit reactor(unsigned id, reactor_backend_selector rbs, reactor_config cfg);
+    explicit reactor(std::shared_ptr<smp> smp, alien::instance& alien, unsigned id, reactor_backend_selector rbs, reactor_config cfg);
     reactor(const reactor&) = delete;
     ~reactor();
     void operator=(const reactor&) = delete;
 
+    static sched_clock::time_point now() noexcept {
+        return sched_clock::now();
+    }
     sched_clock::duration uptime() {
-        return sched_clock::now() - _start_time;
+        return now() - _start_time;
     }
 
     io_queue& get_io_queue(dev_t devid = 0) {
         auto queue = _io_queues.find(devid);
         if (queue == _io_queues.end()) {
-            return *_io_queues[0];
+            return *_io_queues.at(0);
         } else {
             return *(queue->second);
         }
     }
 
+    [[deprecated("Use io_priority_class::register_one")]]
     io_priority_class register_one_priority_class(sstring name, uint32_t shares);
 
-    /// \brief Updates the current amount of shares for a given priority class
-    ///
-    /// This can involve a cross-shard call if the I/O Queue that is responsible for
-    /// this class lives in a foreign shard.
-    ///
-    /// \param pc the priority class handle
-    /// \param shares the new shares value
-    /// \return a future that is ready when the share update is applied
+    [[deprecated("Use io_priority_class.update_shares")]]
     future<> update_shares_for_class(io_priority_class pc, uint32_t shares);
-    static future<> rename_priority_class(io_priority_class pc, sstring new_name) noexcept;
+    /// @private
+    future<> update_shares_for_queues(io_priority_class pc, uint32_t shares);
 
-    void configure(boost::program_options::variables_map config);
+    [[deprecated("Use io_priority_class.rename")]]
+    static future<> rename_priority_class(io_priority_class pc, sstring new_name) noexcept;
+    /// @private
+    future<> rename_queues(io_priority_class pc, sstring new_name) noexcept;
+
+    void configure(const reactor_options& opts);
 
     server_socket listen(socket_address sa, listen_options opts = {});
 
@@ -521,17 +537,18 @@ public:
     // In the following three methods, prepare_io is not guaranteed to execute in the same processor
     // in which it was generated. Therefore, care must be taken to avoid the use of objects that could
     // be destroyed within or at exit of prepare_io.
-    void submit_io(io_completion* desc, internal::io_request req) noexcept;
     future<size_t> submit_io_read(io_queue* ioq,
             const io_priority_class& priority_class,
             size_t len,
-            internal::io_request req) noexcept;
+            internal::io_request req,
+            io_intent* intent) noexcept;
     future<size_t> submit_io_write(io_queue* ioq,
             const io_priority_class& priority_class,
             size_t len,
-            internal::io_request req) noexcept;
+            internal::io_request req,
+            io_intent* intent) noexcept;
 
-    int run();
+    int run() noexcept;
     void exit(int ret);
     future<> when_started() { return _start_promise.get_future(); }
     // The function waits for timeout period for reactor stop notification
@@ -606,6 +623,12 @@ public:
     std::chrono::nanoseconds total_steal_time();
 
     const io_stats& get_io_stats() const { return _io_stats; }
+    /// Returns statistics related to scheduling. The statistics are
+    /// local to this shard.
+    ///
+    /// See \ref sched_stats for a description of individual statistics.
+    /// \return An object containing a snapshot of the statistics at this point in time.
+    sched_stats get_sched_stats() const;
     uint64_t abandoned_failed_futures() const { return _abandoned_failed_futures; }
 #ifdef HAVE_OSV
     void timer_thread_func();

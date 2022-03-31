@@ -27,14 +27,14 @@ namespace {
 
 class DatalogTrimImplCR : public RGWSimpleCoroutine {
   const DoutPrefixProvider *dpp;
-  rgw::sal::RGWRadosStore *store;
+  rgw::sal::RadosStore* store;
   boost::intrusive_ptr<RGWAioCompletionNotifier> cn;
   int shard;
   std::string marker;
   std::string* last_trim_marker;
 
  public:
-  DatalogTrimImplCR(const DoutPrefixProvider *dpp, rgw::sal::RGWRadosStore* store, int shard,
+  DatalogTrimImplCR(const DoutPrefixProvider *dpp, rgw::sal::RadosStore* store, int shard,
 		    const std::string& marker, std::string* last_trim_marker)
   : RGWSimpleCoroutine(store->ctx()), dpp(dpp), store(store), shard(shard),
     marker(marker), last_trim_marker(last_trim_marker) {
@@ -97,7 +97,7 @@ void take_min_markers(IterIn first, IterIn last, IterOut dest)
 class DataLogTrimCR : public RGWCoroutine {
   using TrimCR = DatalogTrimImplCR;
   const DoutPrefixProvider *dpp;
-  rgw::sal::RGWRadosStore *store;
+  rgw::sal::RadosStore* store;
   RGWHTTPManager *http;
   const int num_shards;
   const std::string& zone_id; //< my zone id
@@ -107,7 +107,7 @@ class DataLogTrimCR : public RGWCoroutine {
   int ret{0};
 
  public:
-  DataLogTrimCR(const DoutPrefixProvider *dpp, rgw::sal::RGWRadosStore *store, RGWHTTPManager *http,
+  DataLogTrimCR(const DoutPrefixProvider *dpp, rgw::sal::RadosStore* store, RGWHTTPManager *http,
                    int num_shards, std::vector<std::string>& last_trim)
     : RGWCoroutine(store->ctx()), dpp(dpp), store(store), http(http),
       num_shards(num_shards),
@@ -182,7 +182,7 @@ int DataLogTrimCR::operate(const DoutPrefixProvider *dpp)
   return 0;
 }
 
-RGWCoroutine* create_admin_data_log_trim_cr(const DoutPrefixProvider *dpp, rgw::sal::RGWRadosStore *store,
+RGWCoroutine* create_admin_data_log_trim_cr(const DoutPrefixProvider *dpp, rgw::sal::RadosStore* store,
                                             RGWHTTPManager *http,
                                             int num_shards,
                                             std::vector<std::string>& markers)
@@ -192,7 +192,7 @@ RGWCoroutine* create_admin_data_log_trim_cr(const DoutPrefixProvider *dpp, rgw::
 
 class DataLogTrimPollCR : public RGWCoroutine {
   const DoutPrefixProvider *dpp;
-  rgw::sal::RGWRadosStore *store;
+  rgw::sal::RadosStore* store;
   RGWHTTPManager *http;
   const int num_shards;
   const utime_t interval; //< polling interval
@@ -201,7 +201,7 @@ class DataLogTrimPollCR : public RGWCoroutine {
   std::vector<std::string> last_trim; //< last trimmed marker per shard
 
  public:
-  DataLogTrimPollCR(const DoutPrefixProvider *dpp, rgw::sal::RGWRadosStore *store, RGWHTTPManager *http,
+  DataLogTrimPollCR(const DoutPrefixProvider *dpp, rgw::sal::RadosStore* store, RGWHTTPManager *http,
                     int num_shards, utime_t interval)
     : RGWCoroutine(store->ctx()), dpp(dpp), store(store), http(http),
       num_shards(num_shards), interval(interval),
@@ -244,7 +244,7 @@ int DataLogTrimPollCR::operate(const DoutPrefixProvider *dpp)
   return 0;
 }
 
-RGWCoroutine* create_data_log_trim_cr(const DoutPrefixProvider *dpp, rgw::sal::RGWRadosStore *store,
+RGWCoroutine* create_data_log_trim_cr(const DoutPrefixProvider *dpp, rgw::sal::RadosStore* store,
                                       RGWHTTPManager *http,
                                       int num_shards, utime_t interval)
 {

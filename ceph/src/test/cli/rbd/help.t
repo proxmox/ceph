@@ -26,7 +26,10 @@
       config pool set                   Set a pool-level configuration override.
       copy (cp)                         Copy src image to dest.
       create                            Create an empty image.
-      deep copy (deep cp)               Deep copy src image to dest.
+      deep copy (deep cp)               Deep copy (including snapshots) src image
+                                        to dest.
+      device attach                     Attach image to device.
+      device detach                     Detach image from device.
       device list (showmapped)          List mapped rbd images.
       device map (map)                  Map an image to a block device.
       device unmap (unmap)              Unmap a rbd device.
@@ -180,7 +183,7 @@
     -p [ --pool ] arg    pool name
     --namespace arg      namespace name
     --image arg          image name
-    --io-size arg        IO size (in B/K/M/G/T) [default: 4K]
+    --io-size arg        IO size (in B/K/M/G) (< 4G) [default: 4K]
     --io-threads arg     ios in flight [default: 16]
     --io-total arg       total size for IO (in B/K/M/G/T) [default: 1G]
     --io-pattern arg     IO pattern (rand, seq, or full-seq) [default: seq]
@@ -531,7 +534,7 @@
                        [--no-progress] 
                        <source-image-or-snap-spec> <dest-image-spec> 
   
-  Deep copy src image to dest.
+  Deep copy (including snapshots) src image to dest.
   
   Positional arguments
     <source-image-or-snap-spec>  source image or snapshot specification
@@ -570,6 +573,59 @@
     (-) supports disabling-only on existing images
     (+) enabled by default for new images if features not specified
   
+  rbd help device attach
+  usage: rbd device attach [--device-type <device-type>] [--pool <pool>] 
+                           [--namespace <namespace>] [--image <image>] 
+                           [--snap <snap>] --device <device> [--show-cookie] 
+                           [--cookie <cookie>] [--read-only] [--force] 
+                           [--exclusive] [--quiesce] 
+                           [--quiesce-hook <quiesce-hook>] [--options <options>] 
+                           <image-or-snap-spec> 
+  
+  Attach image to device.
+  
+  Positional arguments
+    <image-or-snap-spec>     image or snapshot specification
+                             (example:
+                             [<pool-name>/[<namespace>/]]<image-name>[@<snap-name>
+                             ])
+  
+  Optional arguments
+    -t [ --device-type ] arg device type [ggate, krbd (default), nbd]
+    -p [ --pool ] arg        pool name
+    --namespace arg          namespace name
+    --image arg              image name
+    --snap arg               snapshot name
+    --device arg             specify device path
+    --show-cookie            show device cookie
+    --cookie arg             specify device cookie
+    --read-only              attach read-only
+    --force                  force attach
+    --exclusive              disable automatic exclusive lock transitions
+    --quiesce                use quiesce hooks
+    --quiesce-hook arg       quiesce hook path
+    -o [ --options ] arg     device specific options
+  
+  rbd help device detach
+  usage: rbd device detach [--device-type <device-type>] [--pool <pool>] 
+                           [--image <image>] [--snap <snap>] 
+                           [--options <options>] 
+                           <image-or-snap-or-device-spec> 
+  
+  Detach image from device.
+  
+  Positional arguments
+    <image-or-snap-or-device-spec>  image, snapshot, or device specification
+                                    [<pool-name>/]<image-name>[@<snap-name>] or
+                                    <device-path>
+  
+  Optional arguments
+    -t [ --device-type ] arg        device type [ggate, krbd (default), nbd]
+    -p [ --pool ] arg               pool name
+    --image arg                     image name
+    --snap arg                      snapshot name
+    -o [ --options ] arg            device specific options
+  
   rbd help device list
   usage: rbd device list [--device-type <device-type>] [--format <format>] 
                          [--pretty-format] 
@@ -584,7 +640,8 @@
   rbd help device map
   usage: rbd device map [--device-type <device-type>] [--pool <pool>] 
                         [--namespace <namespace>] [--image <image>] 
-                        [--snap <snap>] [--read-only] [--exclusive] [--quiesce] 
+                        [--snap <snap>] [--show-cookie] [--cookie <cookie>] 
+                        [--read-only] [--exclusive] [--quiesce] 
                         [--quiesce-hook <quiesce-hook>] [--options <options>] 
                         <image-or-snap-spec> 
   
@@ -602,6 +659,8 @@
     --namespace arg          namespace name
     --image arg              image name
     --snap arg               snapshot name
+    --show-cookie            show device cookie
+    --cookie arg             specify device cookie
     --read-only              map read-only
     --exclusive              disable automatic exclusive lock transitions
     --quiesce                use quiesce hooks
@@ -1606,7 +1665,7 @@
   rbd help mirror image enable
   usage: rbd mirror image enable [--pool <pool>] [--namespace <namespace>] 
                                  [--image <image>] 
-                                 <image-spec> <mode> 
+                                 <image-spec> [<mode>] 
   
   Enable RBD mirroring for an image.
   
@@ -1884,7 +1943,7 @@
                                         [--pool <pool>] 
                                         [--namespace <namespace>] 
                                         [--image <image>] 
-                                        <interval> <start-time> 
+                                        <interval> [<start-time>] 
   
   Add mirror snapshot schedule.
   
@@ -1919,7 +1978,7 @@
                                         [--pool <pool>] 
                                         [--namespace <namespace>] 
                                         [--image <image>] 
-                                        <interval> <start-time> 
+                                        [<interval>] [<start-time>] 
   
   Remove mirror snapshot schedule.
   
@@ -2455,7 +2514,7 @@
   
   rbd help trash purge schedule add
   usage: rbd trash purge schedule add [--pool <pool>] [--namespace <namespace>] 
-                                      <interval> <start-time> 
+                                      <interval> [<start-time>] 
   
   Add trash purge schedule.
   
@@ -2484,7 +2543,7 @@
   rbd help trash purge schedule remove
   usage: rbd trash purge schedule remove
                                         [--pool <pool>] [--namespace <namespace>] 
-                                        <interval> <start-time> 
+                                        [<interval>] [<start-time>] 
   
   Remove trash purge schedule.
   

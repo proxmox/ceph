@@ -12,14 +12,17 @@ from .._helper import _omit, CrdObject, CrdObjectList, CrdClass
 
 class Spec(CrdObject):
     _properties = [
-        ('caps', 'caps', object, False, False)
+        ('caps', 'caps', object, True, False),
+        ('name', 'name', str, False, False)
     ]        
 
     def __init__(self,
-                 caps=_omit,  # type: Optional[Any]
+                 caps,  # type: Any
+                 name=_omit,  # type: Optional[str]
                  ):
         super(Spec, self).__init__(
             caps=caps,
+            name=name,
         )
 
     @property
@@ -29,28 +32,77 @@ class Spec(CrdObject):
     
     @caps.setter
     def caps(self, new_val):
-        # type: (Optional[Any]) -> None
+        # type: (Any) -> None
         self._caps = new_val
+    
+    @property
+    def name(self):
+        # type: () -> str
+        return self._property_impl('name')
+    
+    @name.setter
+    def name(self, new_val):
+        # type: (Optional[str]) -> None
+        self._name = new_val
+
+
+class Status(CrdObject):
+    _properties = [
+        ('info', 'info', object, False, True),
+        ('phase', 'phase', str, False, False)
+    ]        
+
+    def __init__(self,
+                 info=_omit,  # type: Optional[Any]
+                 phase=_omit,  # type: Optional[str]
+                 ):
+        super(Status, self).__init__(
+            info=info,
+            phase=phase,
+        )
+
+    @property
+    def info(self):
+        # type: () -> Optional[Any]
+        return self._property_impl('info')
+    
+    @info.setter
+    def info(self, new_val):
+        # type: (Optional[Any]) -> None
+        self._info = new_val
+    
+    @property
+    def phase(self):
+        # type: () -> str
+        return self._property_impl('phase')
+    
+    @phase.setter
+    def phase(self, new_val):
+        # type: (Optional[str]) -> None
+        self._phase = new_val
 
 
 class CephClient(CrdClass):
     _properties = [
-        ('apiVersion', 'apiVersion', str, True, False),
-        ('metadata', 'metadata', object, True, False),
-        ('status', 'status', object, False, False),
-        ('spec', 'spec', Spec, True, False)
+        ('apiVersion', 'apiVersion', str, False, False),
+        ('kind', 'kind', str, False, False),
+        ('metadata', 'metadata', object, False, False),
+        ('spec', 'spec', 'Spec', True, False),
+        ('status', 'status', 'Status', False, False)
     ]        
 
     def __init__(self,
-                 apiVersion,  # type: str
-                 metadata,  # type: Any
                  spec,  # type: Spec
-                 status=_omit,  # type: Optional[Any]
+                 apiVersion=_omit,  # type: Optional[str]
+                 kind=_omit,  # type: Optional[str]
+                 metadata=_omit,  # type: Optional[Any]
+                 status=_omit,  # type: Optional[Status]
                  ):
         super(CephClient, self).__init__(
-            apiVersion=apiVersion,
-            metadata=metadata,
             spec=spec,
+            apiVersion=apiVersion,
+            kind=kind,
+            metadata=metadata,
             status=status,
         )
 
@@ -61,8 +113,18 @@ class CephClient(CrdClass):
     
     @apiVersion.setter
     def apiVersion(self, new_val):
-        # type: (str) -> None
+        # type: (Optional[str]) -> None
         self._apiVersion = new_val
+    
+    @property
+    def kind(self):
+        # type: () -> str
+        return self._property_impl('kind')
+    
+    @kind.setter
+    def kind(self, new_val):
+        # type: (Optional[str]) -> None
+        self._kind = new_val
     
     @property
     def metadata(self):
@@ -71,18 +133,8 @@ class CephClient(CrdClass):
     
     @metadata.setter
     def metadata(self, new_val):
-        # type: (Any) -> None
-        self._metadata = new_val
-    
-    @property
-    def status(self):
-        # type: () -> Any
-        return self._property_impl('status')
-    
-    @status.setter
-    def status(self, new_val):
         # type: (Optional[Any]) -> None
-        self._status = new_val
+        self._metadata = new_val
     
     @property
     def spec(self):
@@ -93,3 +145,13 @@ class CephClient(CrdClass):
     def spec(self, new_val):
         # type: (Spec) -> None
         self._spec = new_val
+    
+    @property
+    def status(self):
+        # type: () -> Status
+        return self._property_impl('status')
+    
+    @status.setter
+    def status(self, new_val):
+        # type: (Optional[Status]) -> None
+        self._status = new_val

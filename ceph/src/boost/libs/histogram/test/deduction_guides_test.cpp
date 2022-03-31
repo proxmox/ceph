@@ -24,8 +24,6 @@ namespace tr = axis::transform;
 
 // tests requires a C++17 compatible compiler
 
-#define TEST BOOST_TEST_TRAIT_SAME
-
 int main() {
   using axis::null_type;
 
@@ -82,6 +80,12 @@ int main() {
     BOOST_TEST_TRAIT_SAME(decltype(category{"x", "y"}), category<std::string, null_type>);
     BOOST_TEST_TRAIT_SAME(decltype(category({1, 2}, "foo")), category<int, std::string>);
     BOOST_TEST_TRAIT_SAME(decltype(category({1, 2}, 0)), category<int, int>);
+  }
+
+  {
+    using axis::boolean;
+    BOOST_TEST_TRAIT_SAME(decltype(boolean{}), boolean<null_type>);
+    BOOST_TEST_TRAIT_SAME(decltype(boolean{"foo"}), boolean<std::string>);
   }
 
   {

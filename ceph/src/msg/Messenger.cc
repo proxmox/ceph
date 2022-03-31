@@ -37,12 +37,7 @@ Messenger *Messenger::create(CephContext *cct, const std::string &type,
 			     entity_name_t name, std::string lname,
 			     uint64_t nonce)
 {
-  int r = -1;
-  if (type == "random") {
-    r = 0;
-    //r = ceph::util::generate_random_number(0, 1);
-  }
-  if (r == 0 || type.find("async") != std::string::npos)
+  if (type == "random" || type.find("async") != std::string::npos)
     return new AsyncMessenger(cct, name, type, std::move(lname), nonce);
   lderr(cct) << "unrecognized ms_type '" << type << "'" << dendl;
   return nullptr;
@@ -63,9 +58,11 @@ Messenger::Messenger(CephContext *cct_, entity_name_t w)
     socket_priority(-1),
     cct(cct_),
     crcflags(get_default_crc_flags(cct->_conf)),
-    auth_registry(cct)
+    auth_registry(cct),
+    comp_registry(cct)
 {
   auth_registry.refresh_config();
+  comp_registry.refresh_config();
 }
 
 void Messenger::set_endpoint_addr(const entity_addr_t& a,

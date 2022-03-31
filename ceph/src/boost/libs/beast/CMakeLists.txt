@@ -40,11 +40,13 @@ endfunction()
 #
 #-------------------------------------------------------------------------------
 
-project (Beast VERSION 290)
+project (Beast VERSION 306)
 
 set_property (GLOBAL PROPERTY USE_FOLDERS ON)
 option (Beast_BUILD_EXAMPLES "Build examples" ON)
 option (Beast_BUILD_TESTS "Build tests" ON)
+option (Beast_ENABLE_HANDLER_TRACKING "Define BOOST_ASIO_ENABLE_HANDLER_TRACKING when building libraries" OFF)
+option (Boost_USE_STATIC_LIBS "Use Static Boost libraries" ON)
 
 if (MSVC)
     set (CMAKE_VERBOSE_MAKEFILE FALSE)
@@ -65,7 +67,6 @@ if (MSVC)
         /MP           # Multi-processor compilation
         )
 
-    set (Boost_USE_STATIC_LIBS ON)
     set (Boost_USE_STATIC_RUNTIME ON)
 
     set (CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} /MTd")
@@ -140,7 +141,8 @@ add_definitions (-DBOOST_ASIO_DISABLE_BOOST_REGEX=1)
 add_definitions (-DBOOST_COROUTINES_NO_DEPRECATION_WARNING=1)
 
 if (MSVC)
-include_directories (${BOOST_ROOT})
+    include_directories (${BOOST_ROOT})
+    link_libraries( bcrypt.lib )
 else()
     set(BOOST_INCLUDEDIR ${BOOST_ROOT})
     set(BOOST_LIBRARYDIR ${BOOST_ROOT}/stage/lib)
@@ -196,6 +198,10 @@ add_library (
     lib-asio STATIC
     test/lib_asio.cpp
 )
+if(Beast_ENABLE_HANDLER_TRACKING)
+    target_compile_definitions(lib-asio
+        PUBLIC BOOST_ASIO_ENABLE_HANDLER_TRACKING=1)
+endif()
 
 set_property(TARGET lib-asio PROPERTY FOLDER "static-libs")
 

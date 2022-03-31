@@ -1,5 +1,4 @@
 # -*- coding: utf-8 -*-
-from __future__ import absolute_import
 
 import copy
 import os
@@ -315,7 +314,7 @@ class Host(RESTController):
                      'hostname': (str, 'Hostname'),
                      'addr': (str, 'Network Address'),
                      'labels': ([str], 'Host Labels'),
-                     'status': (str, 'Host Status'),
+                     'status': (str, 'Host Status')
                  },
                  responses={200: None, 204: None})
     @RESTController.MethodMap(version=APIVersion.EXPERIMENTAL)
@@ -420,7 +419,8 @@ class Host(RESTController):
     @raise_if_no_orchestrator([OrchFeature.HOST_LABEL_ADD,
                                OrchFeature.HOST_LABEL_REMOVE,
                                OrchFeature.HOST_MAINTENANCE_ENTER,
-                               OrchFeature.HOST_MAINTENANCE_EXIT])
+                               OrchFeature.HOST_MAINTENANCE_EXIT,
+                               OrchFeature.HOST_DRAIN])
     @handle_orchestrator_error('host')
     @EndpointDoc('',
                  parameters={
@@ -428,13 +428,14 @@ class Host(RESTController):
                      'update_labels': (bool, 'Update Labels'),
                      'labels': ([str], 'Host Labels'),
                      'maintenance': (bool, 'Enter/Exit Maintenance'),
-                     'force': (bool, 'Force Enter Maintenance')
+                     'force': (bool, 'Force Enter Maintenance'),
+                     'drain': (bool, 'Drain Host')
                  },
                  responses={200: None, 204: None})
     @RESTController.MethodMap(version=APIVersion.EXPERIMENTAL)
     def set(self, hostname: str, update_labels: bool = False,
             labels: List[str] = None, maintenance: bool = False,
-            force: bool = False):
+            force: bool = False, drain: bool = False):
         """
         Update the specified host.
         Note, this is only supported when Ceph Orchestrator is enabled.
@@ -443,6 +444,7 @@ class Host(RESTController):
         :param labels: List of labels.
         :param maintenance: Enter/Exit maintenance mode.
         :param force: Force enter maintenance mode.
+        :param drain: Drain host
         """
         orch = OrchClient.instance()
         host = get_host(hostname)
@@ -454,6 +456,9 @@ class Host(RESTController):
 
             if status == 'maintenance':
                 orch.hosts.exit_maintenance(hostname)
+
+        if drain:
+            orch.hosts.drain(hostname)
 
         if update_labels:
             # only allow List[str] type for labels

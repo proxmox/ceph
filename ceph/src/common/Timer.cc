@@ -162,10 +162,23 @@ Context* CommonSafeTimer<Mutex>::add_event_at(CommonSafeTimer<Mutex>::clock_t::t
 }
 
 template <class Mutex>
+Context* CommonSafeTimer<Mutex>::add_event_at(ceph::real_clock::time_point when, Context *callback)
+{
+  ceph_assert(ceph_mutex_is_locked(lock));
+  // convert from real_clock to mono_clock
+  auto mono_now = ceph::mono_clock::now();
+  auto real_now = ceph::real_clock::now();
+  const auto delta = when - real_now;
+  const auto mono_atime = (mono_now +
+			   std::chrono::ceil<clock_t::duration>(delta));
+  return add_event_at(mono_atime, callback);
+}
+
+template <class Mutex>
 bool CommonSafeTimer<Mutex>::cancel_event(Context *callback)
 {
   ceph_assert(ceph_mutex_is_locked(lock));
-
+  
   auto p = events.find(callback);
   if (p == events.end()) {
     ldout(cct,10) << "cancel_event " << callback << " not found" << dendl;

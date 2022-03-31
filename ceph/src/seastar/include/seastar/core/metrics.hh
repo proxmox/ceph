@@ -22,6 +22,7 @@
 #pragma once
 
 #include <functional>
+#include <limits>
 #include <seastar/core/sstring.hh>
 #include <seastar/core/shared_ptr.hh>
 #include <seastar/core/metrics_registration.hh>
@@ -263,7 +264,8 @@ enum class data_type : uint8_t {
  *
  * Do not use directly @see metrics_creation
  */
-struct metric_value {
+class metric_value {
+public:
     std::variant<double, histogram> u;
     data_type _type;
     data_type type() const {
@@ -275,11 +277,25 @@ struct metric_value {
     }
 
     uint64_t ui() const {
-        return std::get<double>(u);
+        auto d = std::get<double>(u);
+        if (d >= 0 && d <= double(std::numeric_limits<long>::max())) {
+            return lround(d);
+        } else {
+            // double value is out of range or NaN or Inf
+            ulong_conversion_error(d);
+            return 0;
+        }
     }
 
     int64_t i() const {
-        return std::get<double>(u);
+        auto d = std::get<double>(u);
+        if (d >= double(std::numeric_limits<long>::min()) && d <= double(std::numeric_limits<long>::max())) {
+            return lround(d);
+        } else {
+            // double value is out of range or NaN or Inf
+            ulong_conversion_error(d);
+            return 0;
+        }
     }
 
     metric_value()
@@ -308,6 +324,9 @@ struct metric_value {
     const histogram& get_histogram() const {
         return std::get<histogram>(u);
     }
+
+private:
+    static void ulong_conversion_error(double d);
 };
 
 using metric_function = std::function<metric_value()>;
@@ -352,7 +371,7 @@ template<typename T, typename En = std::true_type>
 struct is_callable;
 
 template<typename T>
-struct is_callable<T, typename std::integral_constant<bool, !std::is_void<typename std::result_of<T()>::type>::value>::type> : public std::true_type {
+struct is_callable<T, typename std::integral_constant<bool, !std::is_void<std::invoke_result_t<T>>::value>::type> : public std::true_type {
 };
 
 template<typename T>
@@ -551,7 +570,7 @@ template<typename T>
 impl::metric_definition_impl make_current_bytes(metric_name_type name,
         T&& val, description d=description(), std::vector<label_instance> labels = {},
         instance_id_type instance = impl::shard()) {
-    return make_derive(name, std::forward<T>(val), d, labels).set_type("bytes");
+    return make_gauge(name, std::forward<T>(val), d, labels).set_type("bytes");
 }
 
 

@@ -9,7 +9,7 @@
 
 #include "db/version_edit.h"
 
-#include "db/blob_index.h"
+#include "db/blob/blob_index.h"
 #include "db/version_set.h"
 #include "logging/event_logger.h"
 #include "rocksdb/slice.h"
@@ -18,61 +18,10 @@
 #include "util/string_util.h"
 
 namespace ROCKSDB_NAMESPACE {
-// The unknown file checksum.
-const std::string kUnknownFileChecksum("");
-// The unknown sst file checksum function name.
-const std::string kUnknownFileChecksumFuncName("Unknown");
-// Mask for an identified tag from the future which can be safely ignored.
-const uint32_t kTagSafeIgnoreMask = 1 << 13;
 
-// Tag numbers for serialized VersionEdit.  These numbers are written to
-// disk and should not be changed. The number should be forward compatible so
-// users can down-grade RocksDB safely. A future Tag is ignored by doing '&'
-// between Tag and kTagSafeIgnoreMask field.
-enum Tag : uint32_t {
-  kComparator = 1,
-  kLogNumber = 2,
-  kNextFileNumber = 3,
-  kLastSequence = 4,
-  kCompactPointer = 5,
-  kDeletedFile = 6,
-  kNewFile = 7,
-  // 8 was used for large value refs
-  kPrevLogNumber = 9,
-  kMinLogNumberToKeep = 10,
-  // Ignore-able field
-  kDbId = kTagSafeIgnoreMask + 1,
+namespace {
 
-  // these are new formats divergent from open source leveldb
-  kNewFile2 = 100,
-  kNewFile3 = 102,
-  kNewFile4 = 103,      // 4th (the latest) format version of adding files
-  kColumnFamily = 200,  // specify column family for version edit
-  kColumnFamilyAdd = 201,
-  kColumnFamilyDrop = 202,
-  kMaxColumnFamily = 203,
-
-  kInAtomicGroup = 300,
-};
-
-enum CustomTag : uint32_t {
-  kTerminate = 1,  // The end of customized fields
-  kNeedCompaction = 2,
-  // Since Manifest is not entirely currently forward-compatible, and the only
-  // forward-compatible part is the CutsomtTag of kNewFile, we currently encode
-  // kMinLogNumberToKeep as part of a CustomTag as a hack. This should be
-  // removed when manifest becomes forward-comptabile.
-  kMinLogNumberToKeepHack = 3,
-  kOldestBlobFileNumber = 4,
-  kOldestAncesterTime = 5,
-  kFileCreationTime = 6,
-  kFileChecksum = 7,
-  kFileChecksumFuncName = 8,
-  kPathId = 65,
-};
-// If this bit for the custom tag is set, opening DB should fail if
-// we don't know this field.
-uint32_t kCustomTagNonSafeIgnoreMask = 1 << 6;
+}  // anonymous namespace
 
 uint64_t PackFileNumberAndPathId(uint64_t number, uint64_t path_id) {
   assert(number <= kFileNumberMask);
@@ -89,7 +38,6 @@ void FileMetaData::UpdateBoundaries(const Slice& key, const Slice& value,
   fd.smallest_seqno = std::min(fd.smallest_seqno, seqno);
   fd.largest_seqno = std::max(fd.largest_seqno, seqno);
 
-#ifndef ROCKSDB_LITE
   if (value_type == kTypeBlobIndex) {
     BlobIndex blob_index;
     const Status s = blob_index.DecodeFrom(value);
@@ -116,10 +64,6 @@ void FileMetaData::UpdateBoundaries(const Slice& key, const Slice& value,
       oldest_blob_file_number = blob_index.file_number();
     }
   }
-#else
-  (void)value;
-  (void)value_type;
-#endif
 }
 
 void VersionEdit::Clear() {
@@ -142,6 +86,10 @@ void VersionEdit::Clear() {
   has_last_sequence_ = false;
   deleted_files_.clear();
   new_files_.clear();
+  blob_file_additions_.clear();
+  blob_file_garbages_.clear();
+  wal_additions_.clear();
+  wal_deletion_.Reset();
   column_family_ = 0;
   is_column_family_add_ = false;
   is_column_family_drop_ = false;
@@ -217,45 +165,45 @@ bool VersionEdit::EncodeTo(std::string* dst) const {
     //   tag kNeedCompaction:
     //        now only can take one char value 1 indicating need-compaction
     //
-    PutVarint32(dst, CustomTag::kOldestAncesterTime);
+    PutVarint32(dst, NewFileCustomTag::kOldestAncesterTime);
     std::string varint_oldest_ancester_time;
     PutVarint64(&varint_oldest_ancester_time, f.oldest_ancester_time);
     TEST_SYNC_POINT_CALLBACK("VersionEdit::EncodeTo:VarintOldestAncesterTime",
                              &varint_oldest_ancester_time);
     PutLengthPrefixedSlice(dst, Slice(varint_oldest_ancester_time));
 
-    PutVarint32(dst, CustomTag::kFileCreationTime);
+    PutVarint32(dst, NewFileCustomTag::kFileCreationTime);
     std::string varint_file_creation_time;
     PutVarint64(&varint_file_creation_time, f.file_creation_time);
     TEST_SYNC_POINT_CALLBACK("VersionEdit::EncodeTo:VarintFileCreationTime",
                              &varint_file_creation_time);
     PutLengthPrefixedSlice(dst, Slice(varint_file_creation_time));
 
-    PutVarint32(dst, CustomTag::kFileChecksum);
+    PutVarint32(dst, NewFileCustomTag::kFileChecksum);
     PutLengthPrefixedSlice(dst, Slice(f.file_checksum));
 
-    PutVarint32(dst, CustomTag::kFileChecksumFuncName);
+    PutVarint32(dst, NewFileCustomTag::kFileChecksumFuncName);
     PutLengthPrefixedSlice(dst, Slice(f.file_checksum_func_name));
 
     if (f.fd.GetPathId() != 0) {
-      PutVarint32(dst, CustomTag::kPathId);
+      PutVarint32(dst, NewFileCustomTag::kPathId);
       char p = static_cast<char>(f.fd.GetPathId());
       PutLengthPrefixedSlice(dst, Slice(&p, 1));
     }
     if (f.marked_for_compaction) {
-      PutVarint32(dst, CustomTag::kNeedCompaction);
+      PutVarint32(dst, NewFileCustomTag::kNeedCompaction);
       char p = static_cast<char>(1);
       PutLengthPrefixedSlice(dst, Slice(&p, 1));
     }
     if (has_min_log_number_to_keep_ && !min_log_num_written) {
-      PutVarint32(dst, CustomTag::kMinLogNumberToKeepHack);
+      PutVarint32(dst, NewFileCustomTag::kMinLogNumberToKeepHack);
       std::string varint_log_number;
       PutFixed64(&varint_log_number, min_log_number_to_keep_);
       PutLengthPrefixedSlice(dst, Slice(varint_log_number));
       min_log_num_written = true;
     }
     if (f.oldest_blob_file_number != kInvalidBlobFileNumber) {
-      PutVarint32(dst, CustomTag::kOldestBlobFileNumber);
+      PutVarint32(dst, NewFileCustomTag::kOldestBlobFileNumber);
       std::string oldest_blob_file_number;
       PutVarint64(&oldest_blob_file_number, f.oldest_blob_file_number);
       PutLengthPrefixedSlice(dst, Slice(oldest_blob_file_number));
@@ -263,7 +211,27 @@ bool VersionEdit::EncodeTo(std::string* dst) const {
     TEST_SYNC_POINT_CALLBACK("VersionEdit::EncodeTo:NewFile4:CustomizeFields",
                              dst);
 
-    PutVarint32(dst, CustomTag::kTerminate);
+    PutVarint32(dst, NewFileCustomTag::kTerminate);
+  }
+
+  for (const auto& blob_file_addition : blob_file_additions_) {
+    PutVarint32(dst, kBlobFileAddition);
+    blob_file_addition.EncodeTo(dst);
+  }
+
+  for (const auto& blob_file_garbage : blob_file_garbages_) {
+    PutVarint32(dst, kBlobFileGarbage);
+    blob_file_garbage.EncodeTo(dst);
+  }
+
+  for (const auto& wal_addition : wal_additions_) {
+    PutVarint32(dst, kWalAddition);
+    wal_addition.EncodeTo(dst);
+  }
+
+  if (!wal_deletion_.IsEmpty()) {
+    PutVarint32(dst, kWalDeletion);
+    wal_deletion_.EncodeTo(dst);
   }
 
   // 0 is default and does not need to be explicitly written
@@ -337,9 +305,6 @@ const char* VersionEdit::DecodeNewFile4From(Slice* input) {
   uint64_t file_size = 0;
   SequenceNumber smallest_seqno = 0;
   SequenceNumber largest_seqno = kMaxSequenceNumber;
-  // Since this is the only forward-compatible part of the code, we hack new
-  // extension into this record. When we do, we set this boolean to distinguish
-  // the record from the normal NewFile records.
   if (GetLevel(input, &level, &msg) && GetVarint64(input, &number) &&
       GetVarint64(input, &file_size) && GetInternalKey(input, &f.smallest) &&
       GetInternalKey(input, &f.largest) &&
@@ -595,6 +560,50 @@ Status VersionEdit::DecodeFrom(const Slice& src) {
         break;
       }
 
+      case kBlobFileAddition: {
+        BlobFileAddition blob_file_addition;
+        const Status s = blob_file_addition.DecodeFrom(&input);
+        if (!s.ok()) {
+          return s;
+        }
+
+        AddBlobFile(std::move(blob_file_addition));
+        break;
+      }
+
+      case kBlobFileGarbage: {
+        BlobFileGarbage blob_file_garbage;
+        const Status s = blob_file_garbage.DecodeFrom(&input);
+        if (!s.ok()) {
+          return s;
+        }
+
+        AddBlobFileGarbage(std::move(blob_file_garbage));
+        break;
+      }
+
+      case kWalAddition: {
+        WalAddition wal_addition;
+        const Status s = wal_addition.DecodeFrom(&input);
+        if (!s.ok()) {
+          return s;
+        }
+
+        wal_additions_.emplace_back(std::move(wal_addition));
+        break;
+      }
+
+      case kWalDeletion: {
+        WalDeletion wal_deletion;
+        const Status s = wal_deletion.DecodeFrom(&input);
+        if (!s.ok()) {
+          return s;
+        }
+
+        wal_deletion_ = std::move(wal_deletion);
+        break;
+      }
+
       case kColumnFamily:
         if (!GetVarint32(&input, &column_family_)) {
           if (!msg) {
@@ -724,6 +733,27 @@ std::string VersionEdit::DebugString(bool hex_key) const {
     r.append(" file_checksum_func_name: ");
     r.append(f.file_checksum_func_name);
   }
+
+  for (const auto& blob_file_addition : blob_file_additions_) {
+    r.append("\n  BlobFileAddition: ");
+    r.append(blob_file_addition.DebugString());
+  }
+
+  for (const auto& blob_file_garbage : blob_file_garbages_) {
+    r.append("\n  BlobFileGarbage: ");
+    r.append(blob_file_garbage.DebugString());
+  }
+
+  for (const auto& wal_addition : wal_additions_) {
+    r.append("\n  WalAddition: ");
+    r.append(wal_addition.DebugString());
+  }
+
+  if (!wal_deletion_.IsEmpty()) {
+    r.append("\n  WalDeletion: ");
+    r.append(wal_deletion_.DebugString());
+  }
+
   r.append("\n  ColumnFamily: ");
   AppendNumberTo(&r, column_family_);
   if (is_column_family_add_) {
@@ -804,6 +834,55 @@ std::string VersionEdit::DebugJSON(int edit_num, bool hex_key) const {
     }
 
     jw.EndArray();
+  }
+
+  if (!blob_file_additions_.empty()) {
+    jw << "BlobFileAdditions";
+
+    jw.StartArray();
+
+    for (const auto& blob_file_addition : blob_file_additions_) {
+      jw.StartArrayedObject();
+      jw << blob_file_addition;
+      jw.EndArrayedObject();
+    }
+
+    jw.EndArray();
+  }
+
+  if (!blob_file_garbages_.empty()) {
+    jw << "BlobFileGarbages";
+
+    jw.StartArray();
+
+    for (const auto& blob_file_garbage : blob_file_garbages_) {
+      jw.StartArrayedObject();
+      jw << blob_file_garbage;
+      jw.EndArrayedObject();
+    }
+
+    jw.EndArray();
+  }
+
+  if (!wal_additions_.empty()) {
+    jw << "WalAdditions";
+
+    jw.StartArray();
+
+    for (const auto& wal_addition : wal_additions_) {
+      jw.StartArrayedObject();
+      jw << wal_addition;
+      jw.EndArrayedObject();
+    }
+
+    jw.EndArray();
+  }
+
+  if (!wal_deletion_.IsEmpty()) {
+    jw << "WalDeletion";
+    jw.StartObject();
+    jw << wal_deletion_;
+    jw.EndObject();
   }
 
   jw << "ColumnFamily" << column_family_;

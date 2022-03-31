@@ -251,6 +251,9 @@ def create_users(ctx, config):
         s3tests_conf.setdefault('webidentity', {})
         s3tests_conf['webidentity'].setdefault('token',os.environ['TOKEN'])
         s3tests_conf['webidentity'].setdefault('aud',os.environ['AUD'])
+        s3tests_conf['webidentity'].setdefault('sub',os.environ['SUB'])
+        s3tests_conf['webidentity'].setdefault('azp',os.environ['AZP'])
+        s3tests_conf['webidentity'].setdefault('user_token',os.environ['USER_TOKEN'])
         s3tests_conf['webidentity'].setdefault('thumbprint',os.environ['THUMBPRINT'])
         s3tests_conf['webidentity'].setdefault('KC_REALM',os.environ['KC_REALM'])
 
@@ -418,7 +421,7 @@ def run_tests(ctx, config):
         else:
             args += ['REQUESTS_CA_BUNDLE=/etc/pki/tls/certs/ca-bundle.crt']
         # civetweb > 1.8 && beast parsers are strict on rfc2616
-        attrs = ["!fails_on_rgw", "!lifecycle_expiration", "!fails_strict_rfc2616","!s3select","!test_of_sts","!webidentity_test"]
+        attrs = ["!fails_on_rgw", "!lifecycle_expiration", "!fails_strict_rfc2616","!test_of_sts","!webidentity_test"]
         if client_config.get('calling-format') != 'ordinary':
             attrs += ['!fails_with_subdomain']
        

@@ -172,6 +172,10 @@ struct TransactionOptions {
   // Default: false
   bool skip_concurrency_control = false;
 
+  // In pessimistic transaction, if this is true, then you can skip Prepare
+  // before Commit, otherwise, you must Prepare before Commit.
+  bool skip_prepare = true;
+
   // See TransactionDBOptions::default_write_batch_flush_threshold for
   // description. If a negative value is specified, then the default value from
   // TransactionDBOptions is used.
@@ -194,6 +198,13 @@ struct TransactionDBWriteOptimizations {
 
 struct KeyLockInfo {
   std::string key;
+  std::vector<TransactionID> ids;
+  bool exclusive;
+};
+
+struct RangeLockInfo {
+  Endpoint start;
+  Endpoint end;
   std::vector<TransactionID> ids;
   bool exclusive;
 };
@@ -232,6 +243,17 @@ class TransactionDB : public StackableDB {
     // The default implementation ignores TransactionDBWriteOptimizations and
     // falls back to the un-optimized version of ::Write
     return Write(opts, updates);
+  }
+  // Transactional `DeleteRange()` is not yet supported.
+  // However, users who know their deleted range does not conflict with
+  // anything can still use it via the `Write()` API. In all cases, the
+  // `Write()` overload specifying `TransactionDBWriteOptimizations` must be
+  // used and `skip_concurrency_control` must be set. When using either
+  // WRITE_PREPARED or WRITE_UNPREPARED , `skip_duplicate_key_check` must
+  // additionally be set.
+  virtual Status DeleteRange(const WriteOptions&, ColumnFamilyHandle*,
+                             const Slice&, const Slice&) override {
+    return Status::NotSupported();
   }
   // Open a TransactionDB similar to DB::Open().
   // Internally call PrepareWrap() and WrapDB()
@@ -292,6 +314,7 @@ class TransactionDB : public StackableDB {
   // The mapping is column family id -> KeyLockInfo
   virtual std::unordered_multimap<uint32_t, KeyLockInfo>
   GetLockStatusData() = 0;
+
   virtual std::vector<DeadlockPath> GetDeadlockInfoBuffer() = 0;
   virtual void SetDeadlockInfoBufferSize(uint32_t target_size) = 0;
 

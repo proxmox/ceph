@@ -2,6 +2,6 @@ pytest
 requests
 pyyaml
 markdown
--e git+https://github.com/ryneeverett/mkcodes.git#egg=mkcodes
+-e git+https://github.com/ryneeverett/mkcodes.git@8b073b6ca0773008ca2a06ffd1c22b2c1fc1cce4#egg=mkcodes
 docopt
 tox

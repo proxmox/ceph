@@ -155,7 +155,7 @@ seastar::net::inet_address::operator ::in_addr() const {
 seastar::net::inet_address::operator ::in6_addr() const noexcept {
     if (_in_family == family::INET) {
         in6_addr in6 = IN6ADDR_ANY_INIT;
-        in6.s6_addr32[2] = ::htonl(0xffff);
+        in6.s6_addr32[2] = htonl(0xffff);
         in6.s6_addr32[3] = _in.s_addr;
         return in6;
     }
@@ -232,11 +232,12 @@ bool seastar::net::ipv6_address::is_unspecified() const noexcept {
 
 std::ostream& seastar::net::operator<<(std::ostream& os, const ipv4_address& a) {
     auto ip = a.ip;
-    return fmt_print(os, "{:d}.{:d}.{:d}.{:d}",
+    fmt::print(os, "{:d}.{:d}.{:d}.{:d}",
             (ip >> 24) & 0xff,
             (ip >> 16) & 0xff,
             (ip >> 8) & 0xff,
             (ip >> 0) & 0xff);
+    return os;
 }
 
 std::ostream& seastar::net::operator<<(std::ostream& os, const ipv6_address& a) {

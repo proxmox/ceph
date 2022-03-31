@@ -10,7 +10,9 @@ MSI installer
 The MSI source code can be consulted here:
 https://github.com/cloudbase/ceph-windows-installer
 
-The following command can be used to generate MSI logs::
+The following command can be used to generate MSI logs
+
+.. code:: PowerShell
 
     msiexec.exe /i $msi_full_path /l*v! $log_file
 
@@ -41,14 +43,14 @@ Windows Event Log, having Event ID 1000. The entry will also include the process
 the faulting module name and path as well as the exception code.
 
 Please note that in order to analyze crash dumps, the debug symbols are required.
-We're currently buidling Ceph using ``MinGW``, so by default ``DWARF`` symbols will
+We're currently building Ceph using ``MinGW``, so by default ``DWARF`` symbols will
 be embedded in the binaries. ``windbg`` does not support such symbols but ``gdb``
 can be used.
 
 ``gdb`` can debug running Windows processes but it cannot open Windows minidumps.
 The following ``gdb`` fork may be used until this functionality is merged upstream:
 https://github.com/ssbssa/gdb/releases. As an alternative, ``DWARF`` symbols
-can be converted using ``cv2pdb`` but be aware that this tool has limitted C++
+can be converted using ``cv2pdb`` but be aware that this tool has limited C++
 support.
 
 ceph tool

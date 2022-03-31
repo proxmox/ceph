@@ -24,10 +24,13 @@
 #define dout_context g_ceph_context
 #define dout_subsys ceph_subsys_rgw
 
+using namespace std;
+
 static const auto signed_subresources = {
   "acl",
   "cors",
   "delete",
+  "encryption",
   "lifecycle",
   "location",
   "logging",
@@ -448,6 +451,40 @@ static inline int parse_v4_auth_header(const req_info& info,               /* in
   return 0;
 }
 
+bool is_non_s3_op(RGWOpType op_type)
+{
+  if (op_type == RGW_STS_GET_SESSION_TOKEN ||
+      op_type == RGW_STS_ASSUME_ROLE ||
+      op_type == RGW_STS_ASSUME_ROLE_WEB_IDENTITY ||
+      op_type == RGW_OP_CREATE_ROLE ||
+      op_type == RGW_OP_DELETE_ROLE ||
+      op_type == RGW_OP_GET_ROLE ||
+      op_type == RGW_OP_MODIFY_ROLE ||
+      op_type == RGW_OP_LIST_ROLES ||
+      op_type == RGW_OP_PUT_ROLE_POLICY ||
+      op_type == RGW_OP_GET_ROLE_POLICY ||
+      op_type == RGW_OP_LIST_ROLE_POLICIES ||
+      op_type == RGW_OP_DELETE_ROLE_POLICY ||
+      op_type == RGW_OP_PUT_USER_POLICY ||
+      op_type == RGW_OP_GET_USER_POLICY ||
+      op_type == RGW_OP_LIST_USER_POLICIES ||
+      op_type == RGW_OP_DELETE_USER_POLICY ||
+      op_type == RGW_OP_CREATE_OIDC_PROVIDER ||
+      op_type == RGW_OP_DELETE_OIDC_PROVIDER ||
+      op_type == RGW_OP_GET_OIDC_PROVIDER ||
+      op_type == RGW_OP_LIST_OIDC_PROVIDERS ||
+      op_type == RGW_OP_PUBSUB_TOPIC_CREATE ||
+      op_type == RGW_OP_PUBSUB_TOPICS_LIST ||
+      op_type == RGW_OP_PUBSUB_TOPIC_GET ||
+      op_type == RGW_OP_PUBSUB_TOPIC_DELETE ||
+      op_type == RGW_OP_TAG_ROLE ||
+      op_type == RGW_OP_LIST_ROLE_TAGS ||
+      op_type == RGW_OP_UNTAG_ROLE) {
+    return true;
+  }
+  return false;
+}
+
 int parse_v4_credentials(const req_info& info,                     /* in */
 			 std::string_view& access_key_id,        /* out */
 			 std::string_view& credential_scope,     /* out */
@@ -494,6 +531,24 @@ int parse_v4_credentials(const req_info& info,                     /* in */
   ldpp_dout(dpp, 10) << "credential scope = " << credential_scope << dendl;
 
   return 0;
+}
+
+string gen_v4_scope(const ceph::real_time& timestamp,
+                    const string& region,
+                    const string& service)
+{
+
+  auto sec = real_clock::to_time_t(timestamp);
+
+  struct tm bt;
+  gmtime_r(&sec, &bt);
+
+  auto year = 1900 + bt.tm_year;
+  auto mon = bt.tm_mon + 1;
+  auto day = bt.tm_mday;
+
+  return fmt::format(FMT_STRING("{:d}{:02d}{:02d}/{:s}/{:s}/aws4_request"),
+                     year, mon, day, region, service);
 }
 
 std::string get_v4_canonical_qs(const req_info& info, const bool using_qs)
@@ -554,6 +609,48 @@ std::string get_v4_canonical_qs(const req_info& info, const bool using_qs)
   return canonical_qs;
 }
 
+static void add_v4_canonical_params_from_map(const map<string, string>& m,
+                                        std::map<string, string> *result)
+{
+  for (auto& entry : m) {
+    const auto& key = entry.first;
+    if (key.empty()) {
+      continue;
+    }
+
+    (*result)[aws4_uri_recode(key, true)] = aws4_uri_recode(entry.second, true);
+  }
+}
+
+std::string gen_v4_canonical_qs(const req_info& info)
+{
+  std::map<std::string, std::string> canonical_qs_map;
+
+  add_v4_canonical_params_from_map(info.args.get_params(), &canonical_qs_map);
+  add_v4_canonical_params_from_map(info.args.get_sys_params(), &canonical_qs_map);
+
+  if (canonical_qs_map.empty()) {
+    return string();
+  }
+
+  /* Thanks to the early exit we have the guarantee that canonical_qs_map has
+   * at least one element. */
+  auto iter = std::begin(canonical_qs_map);
+  std::string canonical_qs;
+  canonical_qs.append(iter->first)
+              .append("=", ::strlen("="))
+              .append(iter->second);
+
+  for (iter++; iter != std::end(canonical_qs_map); iter++) {
+    canonical_qs.append("&", ::strlen("&"))
+                .append(iter->first)
+                .append("=", ::strlen("="))
+                .append(iter->second);
+  }
+
+  return canonical_qs;
+}
+
 boost::optional<std::string>
 get_v4_canonical_headers(const req_info& info,
                          const std::string_view& signedheaders,
@@ -569,7 +666,7 @@ get_v4_canonical_headers(const req_info& info,
 
     std::transform(std::begin(token), std::end(token),
                    std::back_inserter(token_env), [](const int c) {
-                     return c == '-' ? '_' : std::toupper(c);
+                     return c == '-' ? '_' : c == '_' ? '-' : std::toupper(c);
                    });
 
     if (token_env == "HTTP_CONTENT_LENGTH") {
@@ -615,6 +712,66 @@ get_v4_canonical_headers(const req_info& info,
     const std::string_view& name = header.first;
     std::string value = header.second;
     boost::trim_all<std::string>(value);
+
+    canonical_hdrs.append(name.data(), name.length())
+                  .append(":", std::strlen(":"))
+                  .append(value)
+                  .append("\n", std::strlen("\n"));
+  }
+  return canonical_hdrs;
+}
+
+static void handle_header(const string& header, const string& val,
+                          std::map<std::string, std::string> *canonical_hdrs_map)
+{
+  /* TODO(rzarzynski): we'd like to switch to sstring here but it should
+   * get push_back() and reserve() first. */
+
+  std::string token;
+  token.reserve(header.length());
+
+  if (header == "HTTP_CONTENT_LENGTH") {
+    token = "content-length";
+  } else if (header == "HTTP_CONTENT_TYPE") {
+    token = "content-type";
+  } else {
+    auto start = std::begin(header);
+    if (boost::algorithm::starts_with(header, "HTTP_")) {
+      start += 5; /* len("HTTP_") */
+    }
+
+    std::transform(start, std::end(header),
+                   std::back_inserter(token), [](const int c) {
+                   return c == '_' ? '-' : std::tolower(c);
+                   });
+  }
+
+  (*canonical_hdrs_map)[token] = rgw_trim_whitespace(val);
+}
+
+std::string gen_v4_canonical_headers(const req_info& info,
+                                     const map<string, string>& extra_headers,
+                                     string *signed_hdrs)
+{
+  std::map<std::string, std::string> canonical_hdrs_map;
+  for (auto& entry : info.env->get_map()) {
+    handle_header(entry.first, entry.second, &canonical_hdrs_map);
+  }
+  for (auto& entry : extra_headers) {
+    handle_header(entry.first, entry.second, &canonical_hdrs_map);
+  }
+
+  std::string canonical_hdrs;
+  signed_hdrs->clear();
+  for (const auto& header : canonical_hdrs_map) {
+    const auto& name = header.first;
+    std::string value = header.second;
+    boost::trim_all<std::string>(value);
+
+    if (!signed_hdrs->empty()) {
+      signed_hdrs->append(";");
+    }
+    signed_hdrs->append(name);
 
     canonical_hdrs.append(name.data(), name.length())
                   .append(":", std::strlen(":"))

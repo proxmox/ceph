@@ -16,6 +16,8 @@
 
 #define dout_context g_ceph_context
 
+using namespace std;
+
 RGWSyncTraceNode::RGWSyncTraceNode(CephContext *_cct, uint64_t _handle,
                                    const RGWSyncTraceNodeRef& _parent,
                                    const string& _type, const string& _id) : cct(_cct),
@@ -71,7 +73,7 @@ int RGWSyncTraceServiceMapThread::process(const DoutPrefixProvider *dpp)
 {
   map<string, string> status;
   status["current_sync"] = manager->get_active_names();
-  int ret = store->update_service_map(std::move(status));
+  int ret = store->update_service_map(dpp, std::move(status));
   if (ret < 0) {
     ldout(store->ctx(), 0) << "ERROR: update_service_map() returned ret=" << ret << dendl;
   }

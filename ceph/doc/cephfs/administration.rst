@@ -31,6 +31,12 @@ List all file systems by name.
 
 ::
 
+    fs lsflags <file system name>
+
+List all the flags set on a file system.
+
+::
+
     fs dump [epoch]
 
 This dumps the FSMap at the given epoch (default: current) which includes all
@@ -75,6 +81,16 @@ This command removes the specified pool from the list of data pools for the
 file system.  If any files have layouts for the removed data pool, the file
 data will become unavailable. The default data pool (when creating the file
 system) cannot be removed.
+
+::
+
+    fs rename <file system name> <new file system name> [--yes-i-really-mean-it]
+
+Rename a Ceph file system. This also changes the application tags on the data
+pools and metadata pool of the file system to the new file system name.
+The CephX IDs authorized to the old file system name need to be reauthorized
+to the new name. Any on-going operations of the clients using these IDs may be
+disrupted. Mirroring is expected to be disabled on the file system.
 
 
 Settings
@@ -340,6 +356,7 @@ Some flags require you to confirm your intentions with "--yes-i-really-mean-it"
 or a similar string they will prompt you with. Consider these actions carefully
 before proceeding; they are placed on especially dangerous activities.
 
+.. _advanced-cephfs-admin-settings:
 
 Advanced
 --------

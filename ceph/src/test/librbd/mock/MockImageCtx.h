@@ -16,7 +16,6 @@
 #include "test/librbd/mock/MockReadahead.h"
 #include "test/librbd/mock/io/MockImageDispatcher.h"
 #include "test/librbd/mock/io/MockObjectDispatcher.h"
-#include "common/RWLock.h"
 #include "common/WorkQueue.h"
 #include "common/zipkin_trace.h"
 #include "librbd/ImageCtx.h"
@@ -171,7 +170,7 @@ struct MockImageCtx {
   MOCK_CONST_METHOD1(get_parent_info, const ParentImageInfo*(librados::snap_t));
   MOCK_CONST_METHOD2(get_parent_overlap, int(librados::snap_t in_snap_id,
                                              uint64_t *overlap));
-  MOCK_CONST_METHOD2(prune_parent_extents, uint64_t(vector<pair<uint64_t,uint64_t> >& ,
+  MOCK_CONST_METHOD2(prune_parent_extents, uint64_t(std::vector<std::pair<uint64_t,uint64_t> >& ,
                                                     uint64_t));
 
   MOCK_CONST_METHOD2(is_snap_protected, int(librados::snap_t in_snap_id,

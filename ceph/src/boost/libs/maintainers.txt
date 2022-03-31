@@ -44,7 +44,7 @@ detail                Beman Dawes <bdawes -at- acm.org>, Robert Ramey <ramey -at
 disjoint_sets         Jeremy Siek <jeremy.siek -at- gmail.com>
 dll                   Antony Polukhin <antoshkka -at- gmail.com>
 dynamic_bitset        Jeremy Siek <jeremy.siek -at- gmail.com>
-endian                Beman Dawes <bdawes -at- acm.org>
+endian                Peter Dimov <pdimov -at- pdimov.com>
 exception             Emil Dotchevski <emil -at- revergestudios.com>
 fiber                 Oliver Kowalke <oliver.kowalke -at- gmail.com>
 filesystem            Beman Dawes <bdawes -at- acm.org>, Andrey Semashev <andrey.semashev -at- gmail.com>
@@ -62,7 +62,7 @@ fusion                Joel de Guzman <joel -at- boost-consulting.com>, Dan Marsd
 geometry              Barend Gehrels <barend -at- xs4all.nl>, Bruno Lalande <bruno.lalande -at- gmail.com>, Mateusz Loskot <mateusz -at- loskot.net>, Adam Wulkiewicz <adam.wulkiewicz -at- gmail.com>
 geometry/extensions   Barend Gehrels <barend -at- xs4all.nl>, Bruno Lalande <bruno.lalande -at- gmail.com>, Mateusz Loskot <mateusz -at- loskot.net>, Adam Wulkiewicz <adam.wulkiewicz -at- gmail.com>
 geometry/index        Barend Gehrels <barend -at- xs4all.nl>, Bruno Lalande <bruno.lalande -at- gmail.com>, Mateusz Loskot <mateusz -at- loskot.net>, Adam Wulkiewicz <adam.wulkiewicz -at- gmail.com>
-gil                   Stefan Seefeld <stefan -at- seefeld.name>, Mateusz Loskot <mateusz -at- loskot.net>
+gil                   Stefan Seefeld <stefan -at- seefeld.name>, Mateusz Loskot <mateusz -at- loskot.net>, Pranam Lashkari <plashkari628 -at- gmail.com>
 graph                 K. Noel Belcourt <kbelco -at- sandia.gov>
 graph_parallel        K. Noel Belcourt <kbelco -at- sandia.gov>
 hana                  Louis Dionne <ldionne.2 -at- gmail.com>
@@ -76,7 +76,10 @@ intrusive             Ion Gaztanaga <igaztanaga -at- gmail.com>
 io                    Glen Fernandes <glenjofe -at- gmail.com>
 iostreams             Jonathan Turkanis <turkanis -at- coderage.com>
 iterator              David Abrahams <dave -at- boost-consulting.com>, Thomas Witt <witt - at - acm.org>, Jeffrey Lee Hellrung Jr. <jeffrey.hellrung -at- gmail.com>
+iterator_facade       Zach Laine <whatwasthataddress -at- gmail.com>
+json                  Vinnie Falco <vinnie.falco@gmail.com>
 lambda                Jaakko Jarvi <jarvi -at- cs.tamu.edu>
+leaf                  Emil Dotchevski
 lexical_cast          Antony Polukhin <antoshkka -at- gmail.com>
 local_function        Lorenzo Caminiti <lorcaminiti -at- gmail.com>
 locale                Artyom Beilis <artyomtnk -at- yahoo.com>
@@ -93,6 +96,7 @@ msm                   Christophe Henry <christophe.j.henry -at-  googlemail.com>
 multi_array           Ronald Garcia <garcia -at- osl.iu.edu>
 multi_index           Joaquin M Lopez Munoz <joaquin.lopezmunoz -at- gmail.com>
 multiprecision        John Maddock <john -at- johnmaddock.co.uk>, christopher Kormanyos <e_float -at- yahoo.com>
+nowide                Alexander Grund <alex -at- grundis.de>
 numeric/conversion    Fernando Cacciola <fernando_cacciola -at- ciudad.com.ar>, Brandon Kohn <blkohn -at- hotmail.com>
 numeric/interval      Sylvain Pion <Sylvain.Pion -at- sophia.inria.fr>, Herve Bronnimann <hbr -at- poly.edu>, Guillaume Melquiond <guillaume.melquiond -at- ens-lyon.fr>
 numeric/odeint        Karsten Ahnert <karsten.ahnert -at- gmx.de>, Mario Mulansky <mario.mulansky -at- gmx.net>
@@ -102,6 +106,7 @@ optional              Fernando Cacciola <fernando_cacciola -at- ciudad.com.ar>, 
 outcome               Niall Douglas
 parameter             David Abrahams <dave -at- boost-consulting.com>, Daniel Wallin <daniel -at- boostpro.com>
 parameter_python      David Abrahams <dave -at- boost-consulting.com>, Daniel Wallin <daniel -at- boostpro.com>
+pfr                   Antony Polukhin <antoshkka -at- gmail.com>
 phoenix               Joel de Guzman <djowel -at- gmail.com>, Thomas Heller <thom.heller -at- gmail.com>, John Fletcher <J.P.Fletcher -at- aston.ac.uk>
 poly_collection       Joaquin M Lopez Munoz <joaquin.lopezmunoz -at- gmail.com>
 polygon               Lucanus Simonson <lucanus.j.simonson -at- intel.com>, Andrii Sydorchuk <sydorchuk.andriy -at- gmail.com>
@@ -135,7 +140,8 @@ spirit/repository     Joel de Guzman <joel -at- boost-consulting.com>, Hartmut K
 stacktrace            Antony Polukhin <antoshkka -at- gmail.com>
 statechart            Andreas Huber <ahd6974-boostorg -at- yahoo.com>
 static_assert         John Maddock <john -at- johnmaddock.co.uk>
-static_string         Krystian Stasiowski <sdkrystian@gmail.com>
+static_string         Krystian Stasiowski <sdkrystian@gmail.com>, Vinnie Falco <vinnie.falco@gmail.com>
+stl_interfaces        Zach Laine <whatwasthataddress -at- gmail.com>
 test                  Gennadiy Rozental <rogeeff -at- gmail.com>, Raffi Enficiaud <raffi.enficiaud -at- free.fr>
 thread                Vicente J. Botet Escriba <vicente.botet -at- wanadoo.fr>
 throw_exception       Emil Dotchevski <emil -at- revergestudios.com>, Peter Dimov <pdimov -at- pdimov.com>

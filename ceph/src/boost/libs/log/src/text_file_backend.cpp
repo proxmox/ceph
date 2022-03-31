@@ -659,14 +659,14 @@ BOOST_LOG_ANONYMOUS_NAMESPACE {
             uintmax_t max_files);
 
         //! Destructor
-        ~file_collector();
+        ~file_collector() BOOST_OVERRIDE;
 
         //! The function stores the specified file in the storage
-        void store_file(filesystem::path const& file_name);
+        void store_file(filesystem::path const& file_name) BOOST_OVERRIDE;
 
         //! Scans the target directory for the files that have already been stored
         uintmax_t scan_for_files(
-            file::scan_method method, filesystem::path const& pattern, unsigned int* counter);
+            file::scan_method method, filesystem::path const& pattern, unsigned int* counter) BOOST_OVERRIDE;
 
         //! The function updates storage restrictions
         void update(uintmax_t max_size, uintmax_t min_free_space, uintmax_t max_files);
@@ -773,8 +773,8 @@ BOOST_LOG_ANONYMOUS_NAMESPACE {
         info.m_TimeStamp = filesystem::last_write_time(src_path);
         info.m_Size = filesystem::file_size(src_path);
 
-        filesystem::path file_name_path = src_path.filename();
-        path_string_type file_name = file_name_path.native();
+        const filesystem::path file_name_path = src_path.filename();
+        path_string_type const& file_name = file_name_path.native();
         info.m_Path = m_StorageDir / file_name_path;
 
         // Check if the file is already in the target directory
@@ -862,7 +862,7 @@ BOOST_LOG_ANONYMOUS_NAMESPACE {
                     if (m_MinFreeSpace)
                         free_space = filesystem::space(m_StorageDir).available;
                     m_TotalSize -= old_info.m_Size;
-                    m_Files.erase(it++);
+                    it = m_Files.erase(it);
                 }
                 catch (system::system_error&)
                 {
@@ -874,7 +874,7 @@ BOOST_LOG_ANONYMOUS_NAMESPACE {
             {
                 // If it's not a file or is absent, just remove it from the list
                 m_TotalSize -= old_info.m_Size;
-                m_Files.erase(it++);
+                it = m_Files.erase(it);
             }
         }
 
@@ -1345,7 +1345,7 @@ BOOST_LOG_API void text_file_backend::consume(record_view const& rec, string_typ
     {
         // The file stream is not operational. One possible reason is that there is no more free space
         // on the file system. In this case it is possible that this log record will fail to be written as well,
-        // leaving the newly creted file empty. Eventually this results in lots of empty log files.
+        // leaving the newly created file empty. Eventually this results in lots of empty log files.
         // We should take precautions to avoid this. https://svn.boost.org/trac/boost/ticket/11016
         prev_file_name = m_pImpl->m_FileName;
         close_file();
@@ -1491,7 +1491,8 @@ BOOST_LOG_API void text_file_backend::rotate_file()
     {
         if (!!m_pImpl->m_TargetFileNameGenerator)
         {
-            filesystem::path new_file_name = m_pImpl->m_TargetStorageDir / m_pImpl->m_TargetFileNameGenerator(m_pImpl->m_FileCounter);
+            // File counter was incremented when the file was opened, we have to use the same counter value we used to generate the original filename
+            filesystem::path new_file_name = m_pImpl->m_TargetStorageDir / m_pImpl->m_TargetFileNameGenerator(m_pImpl->m_FileCounter - 1u);
 
             if (new_file_name != prev_file_name)
             {

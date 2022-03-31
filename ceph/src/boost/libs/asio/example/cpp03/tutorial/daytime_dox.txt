@@ -23,8 +23,8 @@ so we need the user to specify the server.
 
 \until }
 
-All programs that use asio need to have at least one boost::asio::io_context
-object.
+All programs that use asio need to have at least one I/O execution context,
+such as an boost::asio::io_context object.
 
 \until boost::asio::io_context
 
@@ -276,8 +276,6 @@ IPv4 endpoints by the boost::asio::ip::udp::v4() argument.
 The boost::asio::ip::udp::resolver::resolve() function is guaranteed to return at
 least one endpoint in the list if it does not fail. This means it is safe to
 dereference the return value directly.
-
-\until udp::endpoint
 
 Since UDP is datagram-oriented, we will not be using a stream socket. Create an
 boost::asio::ip::udp::socket and initiate contact with the remote endpoint.

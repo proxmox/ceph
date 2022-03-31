@@ -28,8 +28,14 @@ struct invoke_case {
 // when available, test parity with std implementation (c++2a breaks our expectations but we still match std impl)
 #if defined(__cpp_lib_is_invocable) || __cplusplus >= 201707L
        CT_ASSERT((std::is_invocable<Callable, Args...>() == boost::callable_traits::is_invocable<Callable, Args...>()));
+#  ifndef BOOST_CLBL_TRTS_DISABLE_VARIABLE_TEMPLATES
+       CT_ASSERT((std::is_invocable_v<Callable, Args...> == boost::callable_traits::is_invocable_v<Callable, Args...>));
+#  endif
 #else
        CT_ASSERT((Expect == boost::callable_traits::is_invocable<Callable, Args...>()));
+#  ifndef BOOST_CLBL_TRTS_DISABLE_VARIABLE_TEMPLATES
+       CT_ASSERT((Expect == boost::callable_traits::is_invocable_v<Callable, Args...>));
+#  endif
 #endif
 
    }

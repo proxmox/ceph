@@ -1,6 +1,6 @@
 // Copyright 2011-2012 Renato Tegon Forti
 // Copyright 2014 Renato Tegon Forti, Antony Polukhin.
-// Copyright 2015-2019 Antony Polukhin.
+// Copyright 2015-2020 Antony Polukhin.
 //
 // Distributed under the Boost Software License, Version 1.0.
 // (See accompanying file LICENSE_1_0.txt
@@ -108,7 +108,7 @@ int internal_integer_i = 0xFF0000;
 extern "C" LIBRARY_API int& reference_to_internal_integer;
 int& reference_to_internal_integer = internal_integer_i;
 
-#ifndef BOOST_NO_RVALUE_REFERENCES
+#ifndef BOOST_NO_CXX11_RVALUE_REFERENCES
 extern "C" LIBRARY_API int&& rvalue_reference_to_internal_integer;
 int&& rvalue_reference_to_internal_integer = static_cast<int&&>(internal_integer_i);
 #endif

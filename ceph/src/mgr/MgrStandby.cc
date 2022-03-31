@@ -12,6 +12,7 @@
  */
 
 #include <Python.h>
+#include <boost/algorithm/string/replace.hpp>
 
 #include "common/errno.h"
 #include "common/signal.h"
@@ -23,6 +24,7 @@
 
 #include "mgr/MgrContext.h"
 #include "mgr/mgr_commands.h"
+#include "mgr/mgr_perf_counters.h"
 
 #include "messages/MMgrBeacon.h"
 #include "messages/MMgrMap.h"
@@ -35,13 +37,17 @@
 #undef dout_prefix
 #define dout_prefix *_dout << "mgr " << __func__ << " "
 
+using std::map;
+using std::string;
+using std::vector;
 
 MgrStandby::MgrStandby(int argc, const char **argv) :
   Dispatcher(g_ceph_context),
   monc{g_ceph_context, poolctx},
   client_messenger(Messenger::create(
 		     g_ceph_context,
-		     cct->_conf.get_val<std::string>("ms_type"),
+		     cct->_conf.get_val<std::string>("ms_public_type").empty() ?
+			cct->_conf.get_val<std::string>("ms_type") : cct->_conf.get_val<std::string>("ms_public_type"),
 		     entity_name_t::MGR(),
 		     "mgr",
 		     Messenger::get_pid_nonce())),
@@ -196,6 +202,8 @@ int MgrStandby::init()
   timer.init();
 
   py_module_registry.init();
+  mgr_perf_start(g_ceph_context);
+
 
   tick();
 
@@ -257,6 +265,12 @@ void MgrStandby::send_beacon()
       std::vector<MonCommand> commands = mgr_commands;
       std::vector<MonCommand> py_commands = py_module_registry.get_commands();
       commands.insert(commands.end(), py_commands.begin(), py_commands.end());
+      if (monc.monmap.min_mon_release < ceph_release_t::quincy) {
+	dout(10) << " stripping out positional=false quincy-ism" << dendl;
+	for (auto& i : commands) {
+	  boost::replace_all(i.cmdstring, ",positional=false", "");
+	}
+      }
       m->set_command_descs(commands);
       dout(4) << "going active, including " << m->get_command_descs().size()
               << " commands in beacon" << dendl;
@@ -264,7 +278,7 @@ void MgrStandby::send_beacon()
 
     m->set_services(active_mgr->get_services());
   }
-                                 
+
   monc.send_mon_message(std::move(m));
 }
 
@@ -278,7 +292,7 @@ void MgrStandby::tick()
       new LambdaContext([this](int r){
           tick();
       }
-  )); 
+  ));
 }
 
 void MgrStandby::shutdown()
@@ -313,6 +327,7 @@ void MgrStandby::shutdown()
   // to touch references to the things we're about to tear down
   finisher.wait_for_empty();
   finisher.stop();
+  mgr_perf_stop(g_ceph_context);
 }
 
 void MgrStandby::respawn()
@@ -364,29 +379,8 @@ void MgrStandby::respawn()
 
 void MgrStandby::_update_log_config()
 {
-  map<string,string> log_to_monitors;
-  map<string,string> log_to_syslog;
-  map<string,string> log_channel;
-  map<string,string> log_prio;
-  map<string,string> log_to_graylog;
-  map<string,string> log_to_graylog_host;
-  map<string,string> log_to_graylog_port;
-  uuid_d fsid;
-  string host;
-
-  if (parse_log_client_options(cct, log_to_monitors, log_to_syslog,
-			       log_channel, log_prio, log_to_graylog,
-			       log_to_graylog_host, log_to_graylog_port,
-			       fsid, host) == 0) {
-    clog->update_config(log_to_monitors, log_to_syslog,
-			log_channel, log_prio, log_to_graylog,
-			log_to_graylog_host, log_to_graylog_port,
-			fsid, host);
-    audit_clog->update_config(log_to_monitors, log_to_syslog,
-			      log_channel, log_prio, log_to_graylog,
-			      log_to_graylog_host, log_to_graylog_port,
-			      fsid, host);
-  }
+  clog->parse_client_options(cct);
+  audit_clog->parse_client_options(cct);
 }
 
 void MgrStandby::handle_mgr_map(ref_t<MMgrMap> mmap)
@@ -497,4 +491,3 @@ std::string MgrStandby::state_str()
     return "active (starting)";
   }
 }
-

@@ -69,12 +69,14 @@
 		mbin_def_ptr	%1_mbinit
 
 	section .text
-	global %1:ISAL_SYM_TYPE_FUNCTION
+	mk_global %1, function
 	%1_mbinit:
+		endbranch
 		;;; only called the first time to setup hardware match
 		call	%1_dispatch_init
 		;;; falls thru to execute the hw optimized code
 	%1:
+		endbranch
 		jmp	mbin_ptr_sz [%1_dispatched]
 %endmacro
 

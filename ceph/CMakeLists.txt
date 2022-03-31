@@ -1,25 +1,22 @@
-cmake_minimum_required(VERSION 3.10.2)
-# remove cmake/modules/FindPython* once 3.12 is required
+cmake_minimum_required(VERSION 3.16)
 
 project(ceph
-  VERSION 16.2.7
+  VERSION 17.1.0
   LANGUAGES CXX C ASM)
 
-foreach(policy
-    CMP0028
-    CMP0046
-    CMP0048
-    CMP0051
-    CMP0054
-    CMP0056
-    CMP0065
-    CMP0074
-    CMP0075
-    CMP0093)
-  if(POLICY ${policy})
-    cmake_policy(SET ${policy} NEW)
-  endif()
-endforeach()
+cmake_policy(SET CMP0028 NEW)
+cmake_policy(SET CMP0046 NEW)
+cmake_policy(SET CMP0048 NEW)
+cmake_policy(SET CMP0051 NEW)
+cmake_policy(SET CMP0054 NEW)
+cmake_policy(SET CMP0056 NEW)
+cmake_policy(SET CMP0065 NEW)
+cmake_policy(SET CMP0074 NEW)
+cmake_policy(SET CMP0075 NEW)
+cmake_policy(SET CMP0093 NEW)
+if(POLICY CMP0127)
+  cmake_policy(SET CMP0127 NEW)
+endif()
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake/modules/")
 
@@ -40,8 +37,8 @@ if(WIN32)
 endif()
 
 if(MINGW)
-  set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,-allow-multiple-definition")
-  set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,-allow-multiple-definition")
+  string(APPEND CMAKE_SHARED_LINKER_FLAGS " -Wl,-allow-multiple-definition")
+  string(APPEND CMAKE_EXE_LINKER_FLAGS " -Wl,-allow-multiple-definition")
 
   # By default, cmake generates import libs for executables. The issue is that
   # for rados and rbd, the executable import lib overrides the library import lib.
@@ -57,16 +54,16 @@ endif()
 
 option(WITH_CCACHE "Build with ccache.")
 if(WITH_CCACHE)
-  find_program(CCACHE_FOUND ccache)
-  if(NOT CCACHE_FOUND)
+  find_program(CCACHE_EXECUTABLE ccache)
+  if(NOT CCACHE_EXECUTABLE)
     message(FATAL_ERROR "Can't find ccache. Is it installed?")
   endif()
-  message(STATUS "Building with ccache: ${CCACHE_FOUND}, CCACHE_DIR=$ENV{CCACHE_DIR}")
-  set_property(GLOBAL PROPERTY RULE_LAUNCH_COMPILE ccache)
+  message(STATUS "Building with ccache: ${CCACHE_EXECUTABLE}, CCACHE_DIR=$ENV{CCACHE_DIR}")
+  set_property(GLOBAL PROPERTY RULE_LAUNCH_COMPILE "${CCACHE_EXECUTABLE}")
   # ccache does not accelerate link (ld), but let it handle it. by passing it
   # along with cc to python's distutils, we are able to workaround
   # https://bugs.python.org/issue8027.
-  set_property(GLOBAL PROPERTY RULE_LAUNCH_LINK ccache)
+  set_property(GLOBAL PROPERTY RULE_LAUNCH_LINK "${CCACHE_EXECUTABLE}")
 endif(WITH_CCACHE)
 
 option(WITH_MANPAGE "Build man pages." ON)
@@ -86,10 +83,10 @@ if(WIN32)
   include_directories(
     ${PROJECT_SOURCE_DIR}/src/include/win32)
   # Boost complains if winsock2.h (or windows.h) is included before asio.hpp.
-  add_definitions(-include winsock_wrapper.h)
+  add_compile_options("SHELL:-include winsock_wrapper.h")
   # Boost is also defining some of the errno values, we'll have
   # to avoid mismatches.
-  add_definitions(-include win32_errno.h)
+  add_compile_options("SHELL:-include win32_errno.h")
 endif()
 
 if(FREEBSD)
@@ -106,6 +103,9 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
 include(GNUInstallDirs)
 include(CephChecks)
+if(CMAKE_GENERATOR MATCHES Ninja)
+  include(LimitJobs)
+endif()
 
 set(CEPH_MAN_DIR "share/man" CACHE STRING "Install location for man pages (relative to prefix).")
 
@@ -123,15 +123,15 @@ if(WITH_STATIC_LIBSTDCXX)
     message(FATAL_ERROR "Please use GCC to enable WITH_STATIC_LIBSTDCXX")
   endif()
   set(static_linker_flags "-static-libstdc++ -static-libgcc")
-  set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} ${static_linker_flags}")
-  set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} ${static_linker_flags}")
+  string(APPEND CMAKE_SHARED_LINKER_FLAGS " ${static_linker_flags}")
+  string(APPEND CMAKE_EXE_LINKER_FLAGS " ${static_linker_flags}")
   unset(static_linker_flags)
   set(GPERFTOOLS_USE_STATIC_LIBS TRUE)
 endif()
 include(CheckCxxAtomic)
 if(NOT HAVE_CXX11_ATOMIC)
-  set(CMAKE_CXX_STANDARD_LIBRARIES
-    "${CMAKE_CXX_STANDARD_LIBRARIES} ${LIBATOMIC_LINK_FLAGS}")
+  string(APPEND CMAKE_CXX_STANDARD_LIBRARIES
+    " ${LIBATOMIC_LINK_FLAGS}")
 endif()
 
 option(WITH_RDMA "Enable RDMA in async messenger" ON)
@@ -166,8 +166,8 @@ endif(LINUX)
 
 option(WITH_OPENLDAP "OPENLDAP is here" ON)
 if(WITH_OPENLDAP)
-  find_package(OpenLdap REQUIRED)
-  set(HAVE_OPENLDAP ${OPENLDAP_FOUND})
+  find_package(OpenLDAP REQUIRED)
+  set(HAVE_OPENLDAP ${OpenLDAP_FOUND})
 endif()
 
 option(WITH_GSSAPI "GSSAPI/KRB5 is here" OFF)
@@ -209,11 +209,8 @@ endif()
 
 # libcryptsetup is only available on linux
 if(WITH_RBD AND LINUX)
-  find_package(libcryptsetup REQUIRED)
+  find_package(libcryptsetup 2.0.5 REQUIRED)
   set(HAVE_LIBCRYPTSETUP ${LIBCRYPTSETUP_FOUND})
-  if(${LIBCRYPTSETUP_VERSION} VERSION_LESS 2.0.5)
-    set(LIBCRYPTSETUP_LEGACY_DATA_ALIGNMENT TRUE)
-  endif()
 endif()
 
 include(CMakeDependentOption)
@@ -288,7 +285,7 @@ if(WITH_LIBCEPHSQLITE)
 endif()
 
 # key-value store
-option(WITH_KVS "Key value store is here" ON)
+option(WITH_KVS "Key value store is here" OFF)
 
 option(WITH_KRBD "Enable Linux krbd support of 'rbd' utility" ON)
 
@@ -303,16 +300,6 @@ if(LINUX)
   endif()
 endif()
 
-option(WITH_LEVELDB "LevelDB is here" ON)
-if(WITH_LEVELDB)
-  if(LEVELDB_PREFIX)
-    include_directories(SYSTEM ${LEVELDB_PREFIX}/include)
-    link_directories(${LEVELDB_PREFIX}/lib)
-  endif()
-  find_package(leveldb REQUIRED)
-  find_file(HAVE_LEVELDB_FILTER_POLICY leveldb/filter_policy.h PATHS ${LEVELDB_INCLUDE_DIR})
-endif(WITH_LEVELDB)
-
 find_package(snappy REQUIRED)
 
 option(WITH_BROTLI "Brotli compression support" OFF)
@@ -326,7 +313,8 @@ if(WITH_LZ4)
   set(HAVE_LZ4 ${LZ4_FOUND})
 endif(WITH_LZ4)
 
-option(WITH_CEPH_DEBUG_MUTEX "Use debug ceph::mutex with lockdep" OFF)
+CMAKE_DEPENDENT_OPTION(WITH_CEPH_DEBUG_MUTEX "Use debug ceph::mutex with lockdep" ON
+  "CMAKE_BUILD_TYPE STREQUAL Debug" OFF)
 
 #if allocator is set on command line make sure it matches below strings
 set(ALLOCATOR "" CACHE STRING
@@ -335,7 +323,7 @@ jemalloc, and libc is supported. if not specified, will try to find tcmalloc, \
 and then jemalloc. If neither of then is found. use the one in libc.")
 if(ALLOCATOR)
   if(${ALLOCATOR} MATCHES "tcmalloc(_minimal)?")
-    find_package(gperftools REQUIRED)
+    find_package(gperftools 2.6.2 REQUIRED)
     set(HAVE_LIBTCMALLOC ON)
   elseif(${ALLOCATOR} STREQUAL "jemalloc")
     find_package(JeMalloc REQUIRED)
@@ -344,7 +332,7 @@ if(ALLOCATOR)
     message(FATAL_ERROR "Unsupported allocator selected: ${ALLOCATOR}")
   endif()
 else(ALLOCATOR)
-  find_package(gperftools)
+  find_package(gperftools 2.6.2)
   set(HAVE_LIBTCMALLOC ${gperftools_FOUND})
   if(NOT gperftools_FOUND)
     find_package(JeMalloc)
@@ -367,10 +355,6 @@ if(WIN32 OR (HAVE_LIBTCMALLOC AND WITH_STATIC_LIBSTDCXX))
   set(EXE_LINKER_USE_PIE FALSE)
 else()
   set(EXE_LINKER_USE_PIE ${ENABLE_SHARED})
-endif()
-
-if (HAVE_LIBTCMALLOC AND TCMALLOC_VERSION_STRING VERSION_LESS 2.6.2)
-  set(LIBTCMALLOC_MISSING_ALIGNED_ALLOC ON)
 endif()
 
 find_package(CURL REQUIRED)
@@ -405,18 +389,15 @@ endif()
 
 #option for RGW
 option(WITH_RADOSGW "Rados Gateway is enabled" ON)
-option(WITH_RADOSGW_FCGI_FRONTEND "Rados Gateway's FCGI frontend is enabled" OFF)
-option(WITH_RADOSGW_BEAST_FRONTEND "Rados Gateway's Beast frontend is enabled" ON)
 option(WITH_RADOSGW_BEAST_OPENSSL "Rados Gateway's Beast frontend uses OpenSSL" ON)
 option(WITH_RADOSGW_AMQP_ENDPOINT "Rados Gateway's pubsub support for AMQP push endpoint" ON)
 option(WITH_RADOSGW_KAFKA_ENDPOINT "Rados Gateway's pubsub support for Kafka push endpoint" ON)
 option(WITH_RADOSGW_LUA_PACKAGES "Rados Gateway's support for dynamically adding lua packagess" ON)
+option(WITH_RADOSGW_DBSTORE "DBStore backend for Rados Gateway" ON)
+option(WITH_RADOSGW_SELECT_PARQUET "Support for s3 select on parquet objects" OFF)
 
 if(WITH_RADOSGW)
   find_package(EXPAT REQUIRED)
-  if(WITH_RADOSGW_FCGI_FRONTEND)
-    find_package(fcgi REQUIRED)
-  endif()
   find_package(OATH REQUIRED)
 
 # https://curl.haxx.se/docs/install.html mentions the
@@ -487,11 +468,6 @@ if(WITH_MGR)
   set(MGR_PYTHON_LIBRARIES ${Python3_LIBRARIES})
   set(MGR_PYTHON_VERSION_MAJOR ${Python3_VERSION_MAJOR})
   set(MGR_PYTHON_VERSION_MINOR ${Python3_VERSION_MINOR})
-  # https://tracker.ceph.com/issues/45147
-  if(Python3_VERSION VERSION_GREATER_EQUAL 3.8)
-    set(MGR_DISABLED_MODULES "diskprediction_local")
-    message(STATUS "mgr module disabled for ${Python3_VERSION}: ${MGR_DISABLED_MODULES}")
-  endif()
   # Boost dependency check deferred to Boost section
 endif(WITH_MGR)
 endif(NOT WIN32)
@@ -582,8 +558,8 @@ if(sanitizers)
   find_package(Sanitizers REQUIRED ${sanitizers})
   add_compile_options(${Sanitizers_COMPILE_OPTIONS})
   string(REPLACE ";" " " sanitiers_compile_flags "${Sanitizers_COMPILE_OPTIONS}")
-  set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} ${sanitiers_compile_flags}")
-  set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} ${sanitiers_compile_flags}")
+  string(APPEND CMAKE_EXE_LINKER_FLAGS " ${sanitiers_compile_flags}")
+  string(APPEND CMAKE_SHARED_LINKER_FLAGS " ${sanitiers_compile_flags}")
 endif()
 
 # Rocksdb
@@ -601,7 +577,7 @@ option(WITH_SYSTEM_BOOST "require and build with system Boost" OFF)
 # Boost::thread depends on Boost::atomic, so list it explicitly.
 set(BOOST_COMPONENTS
   atomic chrono thread system regex random program_options date_time
-  iostreams context coroutine filesystem)
+  iostreams context coroutine)
 set(BOOST_HEADER_COMPONENTS container)
 
 if(WITH_MGR)
@@ -627,7 +603,7 @@ if(WITH_SYSTEM_BOOST)
   if(BOOST_ROOT AND CMAKE_LIBRARY_ARCHITECTURE)
     set(BOOST_LIBRARYDIR "${BOOST_ROOT}/lib/${CMAKE_LIBRARY_ARCHITECTURE}")
   endif()
-  find_package(Boost 1.72 COMPONENTS ${BOOST_COMPONENTS} REQUIRED)
+  find_package(Boost 1.73 COMPONENTS ${BOOST_COMPONENTS} REQUIRED)
   if(NOT ENABLE_SHARED)
     set_property(TARGET Boost::iostreams APPEND PROPERTY
       INTERFACE_LINK_LIBRARIES ZLIB::ZLIB)
@@ -637,7 +613,7 @@ else()
     "max jobs for Boost build") # override w/-DBOOST_J=<n>
   set(Boost_USE_STATIC_LIBS ON)
   include(BuildBoost)
-  build_boost(1.72
+  build_boost(1.75
     COMPONENTS ${BOOST_COMPONENTS} ${BOOST_HEADER_COMPONENTS})
 endif()
 include_directories(BEFORE SYSTEM ${Boost_INCLUDE_DIRS})
@@ -646,17 +622,16 @@ include_directories(BEFORE SYSTEM ${Boost_INCLUDE_DIRS})
 option(WITH_MGR_DASHBOARD_FRONTEND "Build the mgr/dashboard frontend using `npm`" ON)
 option(WITH_SYSTEM_NPM "Assume that dashboard build tools already installed through packages" OFF)
 if(WITH_SYSTEM_NPM)
-  find_program(NPM npm)
-  if(NOT NPM)
+  find_program(NPM_EXECUTABLE npm)
+  if(NOT NPM_EXECUTABLE)
     message(FATAL_ERROR "Can't find npm.")
   endif()
 endif()
 set(DASHBOARD_FRONTEND_LANGS "" CACHE STRING
   "List of comma separated ceph-dashboard frontend languages to build. \
   Use value `ALL` to build all languages")
-
-# TODO: make this an option and set it to the same value as WITH_MGR_DASHBOARD_FRONTEND
-set(WITH_MGR_ROOK_CLIENT WITH_MGR_DASHBOARD_FRONTEND)
+CMAKE_DEPENDENT_OPTION(WITH_MGR_ROOK_CLIENT "Enable the mgr's Rook support" ON
+  "WITH_MGR" OFF)
 
 include_directories(SYSTEM ${PROJECT_BINARY_DIR}/include)
 
@@ -682,16 +657,16 @@ add_custom_target(check
   COMMAND ${CMAKE_CTEST_COMMAND}
   DEPENDS tests)
 
+option(WITH_SYSTEMD "build with systemd support" ON)
+
 add_subdirectory(src)
 
 add_subdirectory(qa)
-
 add_subdirectory(doc)
 if(WITH_MANPAGE)
   add_subdirectory(man)
 endif(WITH_MANPAGE)
 
-option(WITH_SYSTEMD "install systemd target and service files" ON)
 if(WITH_SYSTEMD)
   add_subdirectory(systemd)
 endif()
@@ -701,9 +676,7 @@ if(LINUX)
 endif()
 
 option(WITH_GRAFANA "install grafana dashboards" OFF)
-if(WITH_GRAFANA)
-  add_subdirectory(monitoring/grafana/dashboards)
-endif()
+add_subdirectory(monitoring/ceph-mixin)
 
 CMAKE_DEPENDENT_OPTION(WITH_BOOST_VALGRIND "Boost support for valgrind" OFF
   "NOT WITH_SYSTEM_BOOST" OFF)
@@ -716,5 +689,3 @@ add_tags(ctags
   EXCLUDE_OPTS ${CTAG_EXCLUDES}
   EXCLUDES "*.js" "*.css" ".tox" "python-common/build")
 add_custom_target(tags DEPENDS ctags)
-
-set(VERSION 16.2.5)

@@ -254,7 +254,9 @@ template<class L, class N> using mp_repeat = typename detail::mp_repeat_c_impl<L
 namespace detail
 {
 
-template<template<class...> class F, class P, class... L> struct mp_product_impl_2;
+template<template<class...> class F, class P, class... L> struct mp_product_impl_2
+{
+};
 
 template<template<class...> class F, class P> struct mp_product_impl_2<F, P>
 {
@@ -266,7 +268,14 @@ template<template<class...> class F, class P, template<class...> class L1, class
     using type = mp_append<typename mp_product_impl_2<F, mp_push_back<P, T1>, L...>::type...>;
 };
 
-template<template<class...> class F, class... L> struct mp_product_impl;
+template<template<class...> class F, class... L> struct mp_product_impl
+{
+};
+
+template<template<class...> class F> struct mp_product_impl<F>
+{
+    using type = mp_list< F<> >;
+};
 
 template<template<class...> class F, class L1, class... L> struct mp_product_impl<F, L1, L...>
 {
@@ -1219,6 +1228,17 @@ template<class V, template<class...> class F, template<class...> class R> struct
 } // namespace detail
 
 template<class V, class Qf, class Qr> using mp_iterate_q = mp_iterate<V, Qf::template fn, Qr::template fn>;
+
+// mp_pairwise_fold<L, F>
+namespace detail
+{
+
+template<class L, class Q> using mp_pairwise_fold_impl = mp_transform_q<Q, mp_pop_back<L>, mp_pop_front<L>>;
+
+} // namespace detail
+
+template<class L, class Q> using mp_pairwise_fold_q = mp_eval_if<mp_empty<L>, mp_clear<L>, detail::mp_pairwise_fold_impl, L, Q>;
+template<class L, template<class...> class F> using mp_pairwise_fold = mp_pairwise_fold_q<L, mp_quote<F>>;
 
 } // namespace mp11
 } // namespace boost

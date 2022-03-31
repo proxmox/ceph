@@ -22,12 +22,12 @@ debug() {
 
 prunb() {
     debug quoted_print "$@" '&'
-    "$@" &
+    PATH=$CEPH_BIN:$PATH "$@" &
 }
 
 prun() {
     debug quoted_print "$@"
-    "$@"
+    PATH=$CEPH_BIN:$PATH "$@"
 }
 
 
@@ -141,6 +141,7 @@ extra_conf=""
 new=0
 standby=0
 debug=0
+trace=0
 ip=""
 nodaemon=0
 redirect=0
@@ -174,10 +175,12 @@ if [[ "$(get_cmake_variable WITH_MGR_DASHBOARD_FRONTEND)" != "ON" ]] ||
     debug echo "ceph-mgr dashboard not built - disabling."
     with_mgr_dashboard=false
 fi
+with_mgr_restful=false
 
 filestore_path=
 kstore_path=
-bluestore_dev=
+declare -a block_devs
+declare -a secondary_block_devs
 
 VSTART_SEC="client.vstart.sh"
 
@@ -187,67 +190,108 @@ RESTFUL_URLS=""
 
 conf_fn="$CEPH_CONF_PATH/ceph.conf"
 keyring_fn="$CEPH_CONF_PATH/keyring"
-osdmap_fn="/tmp/ceph_osdmap.$$"
 monmap_fn="/tmp/ceph_monmap.$$"
 inc_osd_num=0
 
 msgr="21"
 
-usage="usage: $0 [option]... \nex: MON=3 OSD=1 MDS=1 MGR=1 RGW=1 NFS=1 $0 -n -d\n"
-usage=$usage"options:\n"
-usage=$usage"\t-d, --debug\n"
-usage=$usage"\t-s, --standby_mds: Generate standby-replay MDS for each active\n"
-usage=$usage"\t-l, --localhost: use localhost instead of hostname\n"
-usage=$usage"\t-i <ip>: bind to specific ip\n"
-usage=$usage"\t-n, --new\n"
-usage=$usage"\t--valgrind[_{osd,mds,mon,rgw}] 'toolname args...'\n"
-usage=$usage"\t--nodaemon: use ceph-run as wrapper for mon/osd/mds\n"
-usage=$usage"\t--redirect-output: only useful with nodaemon, directs output to log file\n"
-usage=$usage"\t--smallmds: limit mds cache memory limit\n"
-usage=$usage"\t-m ip:port\t\tspecify monitor address\n"
-usage=$usage"\t-k keep old configuration files (default)\n"
-usage=$usage"\t-x enable cephx (on by default)\n"
-usage=$usage"\t-X disable cephx\n"
-usage=$usage"\t-g --gssapi enable Kerberos/GSSApi authentication\n"
-usage=$usage"\t-G disable Kerberos/GSSApi authentication\n"
-usage=$usage"\t--hitset <pool> <hit_set_type>: enable hitset tracking\n"
-usage=$usage"\t-e : create an erasure pool\n";
-usage=$usage"\t-o config\t\t add extra config parameters to all sections\n"
-usage=$usage"\t--rgw_port specify ceph rgw http listen port\n"
-usage=$usage"\t--rgw_frontend specify the rgw frontend configuration\n"
-usage=$usage"\t--rgw_compression specify the rgw compression plugin\n"
-usage=$usage"\t-b, --bluestore use bluestore as the osd objectstore backend (default)\n"
-usage=$usage"\t-f, --filestore use filestore as the osd objectstore backend\n"
-usage=$usage"\t-K, --kstore use kstore as the osd objectstore backend\n"
-usage=$usage"\t--memstore use memstore as the osd objectstore backend\n"
-usage=$usage"\t--cache <pool>: enable cache tiering on pool\n"
-usage=$usage"\t--short: short object names only; necessary for ext4 dev\n"
-usage=$usage"\t--nolockdep disable lockdep\n"
-usage=$usage"\t--multimds <count> allow multimds with maximum active count\n"
-usage=$usage"\t--without-dashboard: do not run using mgr dashboard\n"
-usage=$usage"\t--bluestore-spdk: enable SPDK and with a comma-delimited list of PCI-IDs of NVME device (e.g, 0000:81:00.0)\n"
-usage=$usage"\t--msgr1: use msgr1 only\n"
-usage=$usage"\t--msgr2: use msgr2 only\n"
-usage=$usage"\t--msgr21: use msgr2 and msgr1\n"
-usage=$usage"\t--crimson: use crimson-osd instead of ceph-osd\n"
-usage=$usage"\t--osd-args: specify any extra osd specific options\n"
-usage=$usage"\t--bluestore-devs: comma-separated list of blockdevs to use for bluestore\n"
-usage=$usage"\t--bluestore-zoned: blockdevs listed by --bluestore-devs are zoned devices (HM-SMR HDD or ZNS SSD)\n"
-usage=$usage"\t--bluestore-io-uring: enable io_uring backend\n"
-usage=$usage"\t--inc-osd: append some more osds into existing vcluster\n"
-usage=$usage"\t--cephadm: enable cephadm orchestrator with ~/.ssh/id_rsa[.pub]\n"
-usage=$usage"\t--no-parallel: dont start all OSDs in parallel\n"
-usage=$usage"\t--jaeger: use jaegertracing for tracing\n"
+read -r -d '' usage <<EOF || true
+usage: $0 [option]... \nex: MON=3 OSD=1 MDS=1 MGR=1 RGW=1 NFS=1 $0 -n -d
+options:
+	-d, --debug
+	-t, --trace
+	-s, --standby_mds: Generate standby-replay MDS for each active
+	-l, --localhost: use localhost instead of hostname
+	-i <ip>: bind to specific ip
+	-n, --new
+	--valgrind[_{osd,mds,mon,rgw}] 'toolname args...'
+	--nodaemon: use ceph-run as wrapper for mon/osd/mds
+	--redirect-output: only useful with nodaemon, directs output to log file
+	--smallmds: limit mds cache memory limit
+	-m ip:port		specify monitor address
+	-k keep old configuration files (default)
+	-x enable cephx (on by default)
+	-X disable cephx
+	-g --gssapi enable Kerberos/GSSApi authentication
+	-G disable Kerberos/GSSApi authentication
+	--hitset <pool> <hit_set_type>: enable hitset tracking
+	-e : create an erasure pool\
+	-o config		 add extra config parameters to all sections
+	--rgw_port specify ceph rgw http listen port
+	--rgw_frontend specify the rgw frontend configuration
+	--rgw_compression specify the rgw compression plugin
+	--seastore use seastore as crimson osd backend
+	-b, --bluestore use bluestore as the osd objectstore backend (default)
+	-f, --filestore use filestore as the osd objectstore backend
+	-K, --kstore use kstore as the osd objectstore backend
+	--cyanstore use cyanstore as the osd objectstore backend
+	--memstore use memstore as the osd objectstore backend
+	--cache <pool>: enable cache tiering on pool
+	--short: short object names only; necessary for ext4 dev
+	--nolockdep disable lockdep
+	--multimds <count> allow multimds with maximum active count
+	--without-dashboard: do not run using mgr dashboard
+	--bluestore-spdk: enable SPDK and with a comma-delimited list of PCI-IDs of NVME device (e.g, 0000:81:00.0)
+	--msgr1: use msgr1 only
+	--msgr2: use msgr2 only
+	--msgr21: use msgr2 and msgr1
+	--crimson: use crimson-osd instead of ceph-osd
+	--crimson-foreground: use crimson-osd, but run it in the foreground
+	--osd-args: specify any extra osd specific options
+	--bluestore-devs: comma-separated list of blockdevs to use for bluestore
+	--bluestore-zoned: blockdevs listed by --bluestore-devs are zoned devices (HM-SMR HDD or ZNS SSD)
+	--bluestore-io-uring: enable io_uring backend
+	--inc-osd: append some more osds into existing vcluster
+	--cephadm: enable cephadm orchestrator with ~/.ssh/id_rsa[.pub]
+	--no-parallel: dont start all OSDs in parallel
+	--jaeger: use jaegertracing for tracing
+	--seastore-devs: comma-separated list of blockdevs to use for seastore
+	--seastore-secondary-des: comma-separated list of secondary blockdevs to use for seastore
+\n
+EOF
 
 usage_exit() {
     printf "$usage"
     exit
 }
 
+parse_block_devs() {
+    local opt_name=$1
+    shift
+    local devs=$1
+    shift
+    local dev
+    IFS=',' read -r -a block_devs <<< "$devs"
+    for dev in "${block_devs[@]}"; do
+        if [ ! -b $dev ] || [ ! -w $dev ]; then
+            echo "All $opt_name must refer to writable block devices"
+            exit 1
+        fi
+    done
+}
+
+parse_secondary_devs() {
+    local opt_name=$1
+    shift
+    local devs=$1
+    shift
+    local dev
+    IFS=',' read -r -a secondary_block_devs <<< "$devs"
+    for dev in "${secondary_block_devs[@]}"; do
+        if [ ! -b $dev ] || [ ! -w $dev ]; then
+            echo "All $opt_name must refer to writable block devices"
+            exit 1
+        fi
+    done
+}
+
 while [ $# -ge 1 ]; do
 case $1 in
     -d | --debug)
         debug=1
+        ;;
+    -t | --trace)
+        trace=1
         ;;
     -s | --standby_mds)
         standby=1
@@ -281,6 +325,13 @@ case $1 in
         ;;
     --crimson)
         ceph_osd=crimson-osd
+        nodaemon=1
+        msgr=2
+        ;;
+    --crimson-foreground)
+        ceph_osd=crimson-osd
+        nodaemon=0
+        msgr=2
         ;;
     --osd-args)
         extra_osd_args="$2"
@@ -393,6 +444,12 @@ case $1 in
     --memstore)
         objectstore="memstore"
         ;;
+    --cyanstore)
+        objectstore="cyanstore"
+        ;;
+    --seastore)
+        objectstore="seastore"
+        ;;
     -b | --bluestore)
         objectstore="bluestore"
         ;;
@@ -429,6 +486,17 @@ case $1 in
     --without-dashboard)
         with_mgr_dashboard=false
         ;;
+    --with-restful)
+        with_mgr_restful=true
+        ;;
+    --seastore-devs)
+        parse_block_devs --seastore-devs "$2"
+        shift
+        ;;
+    --seastore-secondary-devs)
+        parse_secondary_devs --seastore-devs "$2"
+        shift
+        ;;
     --bluestore-spdk)
         [ -z "$2" ] && usage_exit
         IFS=',' read -r -a bluestore_spdk_dev <<< "$2"
@@ -436,13 +504,7 @@ case $1 in
         shift
         ;;
     --bluestore-devs)
-        IFS=',' read -r -a bluestore_dev <<< "$2"
-        for dev in "${bluestore_dev[@]}"; do
-            if [ ! -b $dev -o ! -w $dev ]; then
-                echo "All --bluestore-devs must refer to writable block devices"
-                exit 1
-            fi
-        done
+        parse_block_devs --bluestore-devs "$2"
         shift
         ;;
     --bluestore-zoned)
@@ -572,9 +634,12 @@ prepare_conf() {
         heartbeat file = $CEPH_OUT_DIR/\$name.heartbeat
 "
 
-    local mgr_modules="restful iostat nfs"
+    local mgr_modules="iostat nfs"
     if $with_mgr_dashboard; then
-        mgr_modules="dashboard $mgr_modules"
+        mgr_modules+=" dashboard"
+    fi
+    if $with_mgr_restful; then
+        mgr_modules+=" restful"
     fi
 
     local msgr_conf=''
@@ -642,6 +707,7 @@ EOF
         auth cluster required = none
         auth service required = none
         auth client required = none
+        ms mon client mode = crc
 EOF
     fi
     if [ "$short" -eq 1 ]; then
@@ -702,6 +768,7 @@ $DAEMONOPTS
         mds root ino gid = `id -g`
         $(format_conf "${extra_conf}")
 [mgr]
+        mgr disabled modules = rook
         mgr data = $CEPH_DEV_DIR/mgr.\$id
         mgr module path = $MGR_PYTHON_PATH
         cephadm path = $CEPH_ROOT/src/cephadm/cephadm
@@ -735,6 +802,7 @@ $BLUESTORE_OPTS
 $COSDSHORT
         $(format_conf "${extra_conf}")
 [mon]
+        mon_data_avail_crit = 1
         mgr initial modules = $mgr_modules
 $DAEMONOPTS
 $CMONDEBUG
@@ -877,6 +945,9 @@ start_osd() {
 	    if [ "$debug" -ne 0 ]; then
 		extra_seastar_args+=" --debug"
 	    fi
+            if [ "$trace" -ne 0 ]; then
+                extra_seastar_args+=" --trace"
+            fi
 	fi
 	if [ "$new" -eq 1 -o $inc_osd_num -gt 0 ]; then
             wconf <<EOF
@@ -899,13 +970,19 @@ EOF
                 ln -s $kstore_path $CEPH_DEV_DIR/osd$osd
             else
                 mkdir -p $CEPH_DEV_DIR/osd$osd
-                if [ -n "${bluestore_dev[$osd]}" ]; then
-                    dd if=/dev/zero of=${bluestore_dev[$osd]} bs=1M count=1
-                    ln -s ${bluestore_dev[$osd]} $CEPH_DEV_DIR/osd$osd/block
-                    wconf <<EOF
+                if [ -n "${block_devs[$osd]}" ]; then
+                    dd if=/dev/zero of=${block_devs[$osd]} bs=1M count=1
+                    ln -s ${block_devs[$osd]} $CEPH_DEV_DIR/osd$osd/block
+                fi
+                if [ -n "${secondary_block_devs[$osd]}" ]; then
+                    dd if=/dev/zero of=${secondary_block_devs[$osd]} bs=1M count=1
+                    ln -s ${secondary_block_devs[$osd]} $CEPH_DEV_DIR/osd$osd/block.segmented.1
+                fi
+            fi
+            if [ "$objectstore" == "bluestore" ]; then
+                wconf <<EOF
         bluestore fsck on mount = false
 EOF
-                fi
             fi
 
             local uuid=`uuidgen`
@@ -914,7 +991,7 @@ EOF
             echo "{\"cephx_secret\": \"$OSD_SECRET\"}" > $CEPH_DEV_DIR/osd$osd/new.json
             ceph_adm osd new $uuid -i $CEPH_DEV_DIR/osd$osd/new.json
             rm $CEPH_DEV_DIR/osd$osd/new.json
-            $SUDO $CEPH_BIN/$ceph_osd $extra_osd_args -i $osd $ARGS --mkfs --key $OSD_SECRET --osd-uuid $uuid $extra_seastar_args
+            prun $SUDO $CEPH_BIN/$ceph_osd $extra_osd_args -i $osd $ARGS --mkfs --key $OSD_SECRET --osd-uuid $uuid $extra_seastar_args
 
             local key_fn=$CEPH_DEV_DIR/osd$osd/keyring
             cat > $key_fn<<EOF
@@ -944,6 +1021,22 @@ EOF
         # update num osd
         new_maxosd=$($CEPH_BIN/ceph osd getmaxosd | sed -e 's/max_osd = //' -e 's/ in epoch.*//')
         sed -i "s/num osd = .*/num osd = $new_maxosd/g" $conf_fn
+    fi
+}
+
+create_mgr_restful_secret() {
+    while ! ceph_adm -h | grep -c -q ^restful ; do
+        debug echo 'waiting for mgr restful module to start'
+        sleep 1
+    done
+    local secret_file
+    if ceph_adm restful create-self-signed-cert > /dev/null; then
+        secret_file=`mktemp`
+        ceph_adm restful create-key admin -o $secret_file
+        RESTFUL_SECRET=`cat $secret_file`
+        rm $secret_file
+    else
+        debug echo MGR Restful is not working, perhaps the package is not installed?
     fi
 }
 
@@ -1017,18 +1110,8 @@ EOF
                 fi
             fi
         fi
-
-        while ! ceph_adm -h | grep -c -q ^restful ; do
-            debug echo 'waiting for mgr restful module to start'
-            sleep 1
-        done
-        if ceph_adm restful create-self-signed-cert; then
-            SF=`mktemp`
-            ceph_adm restful create-key admin -o $SF
-            RESTFUL_SECRET=`cat $SF`
-            rm $SF
-        else
-            debug echo MGR Restful is not working, perhaps the package is not installed?
+        if $with_mgr_restful; then
+            create_mgr_restful_secret
         fi
     fi
 
@@ -1036,7 +1119,7 @@ EOF
         debug echo Enabling cephadm orchestrator
 	if [ "$new" -eq 1 ]; then
 		digest=$(curl -s \
-		https://registry.hub.docker.com/v2/repositories/ceph/daemon-base/tags/latest-master-devel \
+		https://hub.docker.com/v2/repositories/ceph/daemon-base/tags/latest-master-devel \
 		| jq -r '.images[0].digest')
 		ceph_adm config set global container_image "docker.io/ceph/daemon-base@$digest"
 	fi
@@ -1600,7 +1683,7 @@ fi
 docker_service(){
      local service=''
      #prefer podman
-     if pgrep -f podman > /dev/null; then
+     if command -v podman > /dev/null; then
 	 service="podman"
      elif pgrep -f docker > /dev/null; then
 	 service="docker"
@@ -1630,22 +1713,27 @@ if [ $with_jaeger -eq 1 ]; then
   -p 16686:16686 \
   -p 14268:14268 \
   -p 14250:14250 \
-  jaegertracing/all-in-one:1.20
+  quay.io/jaegertracing/all-in-one
 fi
-
 
 debug echo "vstart cluster complete. Use stop.sh to stop. See out/* (e.g. 'tail -f out/????') for debug output."
 
 echo ""
 if [ "$new" -eq 1 ]; then
     if $with_mgr_dashboard; then
-        echo "dashboard urls: $DASH_URLS"
-        echo "  w/ user/pass: admin / admin"
+        cat <<EOF
+dashboard urls: $DASH_URLS
+  w/ user/pass: admin / admin
+EOF
     fi
-    echo "restful urls: $RESTFUL_URLS"
-    echo "  w/ user/pass: admin / $RESTFUL_SECRET"
-    echo ""
+    if $with_mgr_restful; then
+        cat <<EOF
+restful urls: $RESTFUL_URLS
+  w/ user/pass: admin / $RESTFUL_SECRET
+EOF
+    fi
 fi
+
 echo ""
 # add header to the environment file
 {
@@ -1659,11 +1747,8 @@ echo ""
     echo "export PYTHONPATH=$PYBIND:$CYTHON_PYTHONPATH:$CEPH_PYTHON_COMMON\$PYTHONPATH"
     echo "export LD_LIBRARY_PATH=$CEPH_LIB:\$LD_LIBRARY_PATH"
     echo "export PATH=$CEPH_DIR/bin:\$PATH"
-
-    if [ "$CEPH_DIR" != "$PWD" ]; then
-        echo "export CEPH_CONF=$conf_fn"
-        echo "export CEPH_KEYRING=$keyring_fn"
-    fi
+    echo "export CEPH_CONF=$conf_fn"
+    echo "export CEPH_KEYRING=$keyring_fn"
 
     if [ -n "$CEPHFS_SHELL" ]; then
         echo "alias cephfs-shell=$CEPHFS_SHELL"

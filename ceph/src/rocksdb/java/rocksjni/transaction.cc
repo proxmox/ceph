@@ -689,6 +689,7 @@ void txn_write_kv_parts_helper(JNIEnv* env,
       // out of memory
       env->DeleteLocalRef(jobj_value_part);
       env->DeleteLocalRef(jobj_key_part);
+      env->ReleaseByteArrayElements(jba_key_part, jkey_part, JNI_ABORT);
       free_parts(env, jparts_to_free);
       return;
     }
@@ -698,6 +699,7 @@ void txn_write_kv_parts_helper(JNIEnv* env,
       env->ReleaseByteArrayElements(jba_value_part, jvalue_part, JNI_ABORT);
       env->DeleteLocalRef(jobj_value_part);
       env->DeleteLocalRef(jobj_key_part);
+      env->ReleaseByteArrayElements(jba_key_part, jkey_part, JNI_ABORT);
       free_parts(env, jparts_to_free);
       return;
     }
@@ -1605,7 +1607,7 @@ jbyte Java_org_rocksdb_Transaction_getState(JNIEnv* /*env*/, jobject /*jobj*/,
     case ROCKSDB_NAMESPACE::Transaction::TransactionState::AWAITING_COMMIT:
       return 0x3;
 
-    case ROCKSDB_NAMESPACE::Transaction::TransactionState::COMMITED:
+    case ROCKSDB_NAMESPACE::Transaction::TransactionState::COMMITTED:
       return 0x4;
 
     case ROCKSDB_NAMESPACE::Transaction::TransactionState::AWAITING_ROLLBACK:

@@ -27,6 +27,8 @@
 #include <seastar/core/metrics.hh>
 #include <seastar/core/posix.hh>
 #include <seastar/core/reactor_config.hh>
+#include <seastar/core/resource.hh>
+#include <seastar/util/program-options.hh>
 #include <boost/lockfree/spsc_queue.hpp>
 #include <boost/thread/barrier.hpp>
 #include <boost/range/irange.hpp>
@@ -42,6 +44,12 @@ using shard_id = unsigned;
 
 class smp_service_group;
 class reactor_backend_selector;
+
+namespace alien {
+
+class instance;
+
+}
 
 namespace internal {
 
@@ -205,7 +213,7 @@ class smp_message_queue {
     struct async_work_item : work_item {
         smp_message_queue& _queue;
         Func _func;
-        using futurator = futurize<std::result_of_t<Func()>>;
+        using futurator = futurize<std::invoke_result_t<Func>>;
         using future_type = typename futurator::type;
         using value_type = typename future_type::value_type;
         std::optional<value_type> _result;
@@ -256,7 +264,7 @@ public:
     smp_message_queue(reactor* from, reactor* to);
     ~smp_message_queue();
     template <typename Func>
-    futurize_t<std::result_of_t<Func()>> submit(shard_id t, smp_submit_to_options options, Func&& func) noexcept {
+    futurize_t<std::invoke_result_t<Func>> submit(shard_id t, smp_submit_to_options options, Func&& func) noexcept {
         memory::scoped_critical_alloc_section _;
         auto wi = std::make_unique<async_work_item<Func>>(*this, options.service_group, std::forward<Func>(func));
         auto fut = wi->get_future();
@@ -283,30 +291,88 @@ private:
     friend class smp;
 };
 
-class smp {
-    static std::vector<posix_thread> _threads;
-    static std::vector<std::function<void ()>> _thread_loops; // for dpdk
-    static std::optional<boost::barrier> _all_event_loops_done;
-    static std::vector<reactor*> _reactors;
+/// Configuration for the multicore aspect of seastar.
+struct smp_options : public program_options::option_group {
+    /// Number of threads (default: one per CPU).
+    program_options::value<unsigned> smp;
+    /// CPUs to use (in cpuset(7) format; default: all)).
+    program_options::value<resource::cpuset> cpuset;
+    /// Memory to use, in bytes (ex: 4G) (default: all).
+    program_options::value<std::string> memory;
+    /// Memory reserved to OS (if \ref memory not specified).
+    program_options::value<std::string> reserve_memory;
+    /// Path to accessible hugetlbfs mount (typically /dev/hugepages/something).
+    program_options::value<std::string> hugepages;
+    /// Lock all memory (prevents swapping).
+    program_options::value<bool> lock_memory;
+    /// Pin threads to their cpus (disable for overprovisioning).
+    ///
+    /// Default: \p true.
+    program_options::value<bool> thread_affinity;
+    /// \brief Number of IO queues.
+    ///
+    /// Each IO unit will be responsible for a fraction of the IO requests.
+    /// Defaults to the number of threads
+    /// \note Unused when seastar is compiled without \p HWLOC support.
+    program_options::value<unsigned> num_io_queues;
+    /// \brief Number of IO groups.
+    ///
+    /// Each IO group will be responsible for a fraction of the IO requests.
+    /// Defaults to the number of NUMA nodes
+    /// \note Unused when seastar is compiled without \p HWLOC support.
+    program_options::value<unsigned> num_io_groups;
+    /// \brief Maximum amount of concurrent requests to be sent to the disk.
+    ///
+    /// Defaults to 128 times the number of IO queues
+    program_options::value<unsigned> max_io_requests;
+    /// Path to a YAML file describing the characteristics of the I/O Subsystem.
+    program_options::value<std::string> io_properties_file;
+    /// A YAML string describing the characteristics of the I/O Subsystem.
+    program_options::value<std::string> io_properties;
+    /// Enable mbind.
+    ///
+    /// Default: \p true.
+    program_options::value<bool> mbind;
+    /// Enable workaround for glibc/gcc c++ exception scalablity problem.
+    ///
+    /// Default: \p true.
+    /// \note Unused when seastar is compiled without the exception scaling support.
+    program_options::value<bool> enable_glibc_exception_scaling_workaround;
+    /// If some CPUs are found not to have any local NUMA nodes, allow assigning
+    /// them to remote ones.
+    /// \note Unused when seastar is compiled without \p HWLOC support.
+    program_options::value<bool> allow_cpus_in_remote_numa_nodes;
+
+public:
+    smp_options(program_options::option_group* parent_group);
+};
+
+struct reactor_options;
+
+class smp : public std::enable_shared_from_this<smp> {
+    alien::instance& _alien;
+    std::vector<posix_thread> _threads;
+    std::vector<std::function<void ()>> _thread_loops; // for dpdk
+    std::optional<boost::barrier> _all_event_loops_done;
     struct qs_deleter {
       void operator()(smp_message_queue** qs) const;
     };
-    static std::unique_ptr<smp_message_queue*[], qs_deleter> _qs;
-    static std::thread::id _tmain;
-    static bool _using_dpdk;
+    std::unique_ptr<smp_message_queue*[], qs_deleter> _qs_owner;
+    static thread_local smp_message_queue**_qs;
+    static thread_local std::thread::id _tmain;
+    bool _using_dpdk = false;
 
     template <typename Func>
-    using returns_future = is_future<std::result_of_t<Func()>>;
+    using returns_future = is_future<std::invoke_result_t<Func>>;
     template <typename Func>
-    using returns_void = std::is_same<std::result_of_t<Func()>, void>;
+    using returns_void = std::is_same<std::invoke_result_t<Func>, void>;
 public:
-    static boost::program_options::options_description get_options_description();
-    static void register_network_stacks();
-    static void configure(boost::program_options::variables_map vm, reactor_config cfg = {});
-    static void cleanup();
-    static void cleanup_cpu();
-    static void arrive_at_event_loop_end();
-    static void join_all();
+    explicit smp(alien::instance& alien) : _alien(alien) {}
+    void configure(const smp_options& smp_opts, const reactor_options& reactor_opts);
+    void cleanup() noexcept;
+    void cleanup_cpu();
+    void arrive_at_event_loop_end();
+    void join_all();
     static bool main_thread() { return std::this_thread::get_id() == _tmain; }
 
     /// Runs a function on a remote core.
@@ -323,8 +389,8 @@ public:
     /// \return whatever \c func returns, as a future<> (if \c func does not return a future,
     ///         submit_to() will wrap it in a future<>).
     template <typename Func>
-    static futurize_t<std::result_of_t<Func()>> submit_to(unsigned t, smp_submit_to_options options, Func&& func) noexcept {
-        using ret_type = std::result_of_t<Func()>;
+    static futurize_t<std::invoke_result_t<Func>> submit_to(unsigned t, smp_submit_to_options options, Func&& func) noexcept {
+        using ret_type = std::invoke_result_t<Func>;
         if (t == this_shard_id()) {
             try {
                 if (!is_future<ret_type>::value) {
@@ -341,7 +407,7 @@ public:
                 }
             } catch (...) {
                 // Consistently return a failed future rather than throwing, to simplify callers
-                return futurize<std::result_of_t<Func()>>::make_exception_future(std::current_exception());
+                return futurize<std::invoke_result_t<Func>>::make_exception_future(std::current_exception());
             }
         } else {
             return _qs[t][this_shard_id()].submit(t, options, std::forward<Func>(func));
@@ -362,7 +428,7 @@ public:
     /// \return whatever \c func returns, as a future<> (if \c func does not return a future,
     ///         submit_to() will wrap it in a future<>).
     template <typename Func>
-    static futurize_t<std::result_of_t<Func()>> submit_to(unsigned t, Func&& func) noexcept {
+    static futurize_t<std::invoke_result_t<Func>> submit_to(unsigned t, Func&& func) noexcept {
         return submit_to(t, default_smp_service_group(), std::forward<Func>(func));
     }
     static bool poll_queues();
@@ -381,7 +447,7 @@ public:
     template<typename Func>
     SEASTAR_CONCEPT( requires std::is_nothrow_move_constructible_v<Func> )
     static future<> invoke_on_all(smp_submit_to_options options, Func&& func) noexcept {
-        static_assert(std::is_same<future<>, typename futurize<std::result_of_t<Func()>>::type>::value, "bad Func signature");
+        static_assert(std::is_same<future<>, typename futurize<std::invoke_result_t<Func>>::type>::value, "bad Func signature");
         static_assert(std::is_nothrow_move_constructible_v<Func>);
         return parallel_for_each(all_cpus(), [options, &func] (unsigned id) {
             return smp::submit_to(id, options, Func(func));
@@ -410,12 +476,13 @@ public:
     ///         of \c func.
     /// \returns a future that resolves when all async invocations finish.
     template<typename Func>
-    SEASTAR_CONCEPT( requires std::is_nothrow_move_constructible_v<Func> )
+    SEASTAR_CONCEPT( requires std::is_nothrow_move_constructible_v<Func> &&
+            std::is_nothrow_copy_constructible_v<Func> )
     static future<> invoke_on_others(unsigned cpu_id, smp_submit_to_options options, Func func) noexcept {
-        static_assert(std::is_same<future<>, typename futurize<std::result_of_t<Func()>>::type>::value, "bad Func signature");
+        static_assert(std::is_same<future<>, typename futurize<std::invoke_result_t<Func>>::type>::value, "bad Func signature");
         static_assert(std::is_nothrow_move_constructible_v<Func>);
         return parallel_for_each(all_cpus(), [cpu_id, options, func = std::move(func)] (unsigned id) {
-            return id != cpu_id ? smp::submit_to(id, options, func) : make_ready_future<>();
+            return id != cpu_id ? smp::submit_to(id, options, Func(func)) : make_ready_future<>();
         });
     }
     /// Invokes func on all other shards.
@@ -429,14 +496,27 @@ public:
     /// Passes the default \ref smp_submit_to_options to the
     /// \ref smp::submit_to() called behind the scenes.
     template<typename Func>
+    SEASTAR_CONCEPT( requires std::is_nothrow_move_constructible_v<Func> )
     static future<> invoke_on_others(unsigned cpu_id, Func func) noexcept {
         return invoke_on_others(cpu_id, smp_submit_to_options{}, std::move(func));
     }
+    /// Invokes func on all shards but the current one
+    ///
+    /// \param func the function to be invoked on each shard. May return void or
+    ///         future<>. Each async invocation will work with a separate copy
+    ///         of \c func.
+    /// \returns a future that resolves when all async invocations finish.
+    template<typename Func>
+    SEASTAR_CONCEPT( requires std::is_nothrow_move_constructible_v<Func> )
+    static future<> invoke_on_others(Func func) noexcept {
+        return invoke_on_others(this_shard_id(), std::move(func));
+    }
 private:
-    static void start_all_queues();
-    static void pin(unsigned cpu_id);
-    static void allocate_reactor(unsigned id, reactor_backend_selector rbs, reactor_config cfg);
-    static void create_thread(std::function<void ()> thread_loop);
+    void start_all_queues();
+    void pin(unsigned cpu_id);
+    void allocate_reactor(unsigned id, reactor_backend_selector rbs, reactor_config cfg);
+    void create_thread(std::function<void ()> thread_loop);
+    unsigned adjust_max_networking_aio_io_control_blocks(unsigned network_iocbs);
 public:
     static unsigned count;
 };

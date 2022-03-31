@@ -33,6 +33,8 @@
 
 #define READ_CHUNK_LEN (512 * 1024)
 
+using namespace std;
+
 static std::map<std::string, std::string>* ext_mime_map;
 
 int rgw_init_ioctx(const DoutPrefixProvider *dpp,
@@ -181,7 +183,7 @@ int rgw_put_system_obj(const DoutPrefixProvider *dpp,
 int rgw_get_system_obj(RGWSysObjectCtx& obj_ctx, const rgw_pool& pool, const string& key, bufferlist& bl,
                        RGWObjVersionTracker *objv_tracker, real_time *pmtime, optional_yield y, const DoutPrefixProvider *dpp, map<string, bufferlist> *pattrs,
                        rgw_cache_entry_info *cache_info,
-		       boost::optional<obj_version> refresh_version)
+		       boost::optional<obj_version> refresh_version, bool raw_attrs)
 {
   bufferlist::iterator iter;
   int request_len = READ_CHUNK_LEN;
@@ -199,6 +201,7 @@ int rgw_get_system_obj(RGWSysObjectCtx& obj_ctx, const rgw_pool& pool, const str
     int ret = rop.set_attrs(pattrs)
                  .set_last_mod(pmtime)
                  .set_objv_tracker(objv_tracker)
+                 .set_raw_attrs(raw_attrs)
                  .stat(y, dpp);
     if (ret < 0)
       return ret;
@@ -344,14 +347,14 @@ void parse_mime_map(const char *buf)
   }
 }
 
-static int ext_mime_map_init(CephContext *cct, const char *ext_map)
+static int ext_mime_map_init(const DoutPrefixProvider *dpp, CephContext *cct, const char *ext_map)
 {
   int fd = open(ext_map, O_RDONLY);
   char *buf = NULL;
   int ret;
   if (fd < 0) {
     ret = -errno;
-    ldout(cct, 0) << __func__ << " failed to open file=" << ext_map
+    ldpp_dout(dpp, 0) << __func__ << " failed to open file=" << ext_map
                   << " : " << cpp_strerror(-ret) << dendl;
     return ret;
   }
@@ -360,7 +363,7 @@ static int ext_mime_map_init(CephContext *cct, const char *ext_map)
   ret = fstat(fd, &st);
   if (ret < 0) {
     ret = -errno;
-    ldout(cct, 0) << __func__ << " failed to stat file=" << ext_map
+    ldpp_dout(dpp, 0) << __func__ << " failed to stat file=" << ext_map
                   << " : " << cpp_strerror(-ret) << dendl;
     goto done;
   }
@@ -368,17 +371,17 @@ static int ext_mime_map_init(CephContext *cct, const char *ext_map)
   buf = (char *)malloc(st.st_size + 1);
   if (!buf) {
     ret = -ENOMEM;
-    ldout(cct, 0) << __func__ << " failed to allocate buf" << dendl;
+    ldpp_dout(dpp, 0) << __func__ << " failed to allocate buf" << dendl;
     goto done;
   }
 
   ret = safe_read(fd, buf, st.st_size + 1);
   if (ret != st.st_size) {
     // huh? file size has changed?
-    ldout(cct, 0) << __func__ << " raced! will retry.." << dendl;
+    ldpp_dout(dpp, 0) << __func__ << " raced! will retry.." << dendl;
     free(buf);
     close(fd);
-    return ext_mime_map_init(cct, ext_map);
+    return ext_mime_map_init(dpp, cct, ext_map);
   }
   buf[st.st_size] = '\0';
 
@@ -412,9 +415,8 @@ void rgw_filter_attrset(map<string, bufferlist>& unfiltered_attrset, const strin
   }
 }
 
-RGWDataAccess::RGWDataAccess(rgw::sal::RGWRadosStore *_store) : store(_store)
+RGWDataAccess::RGWDataAccess(rgw::sal::Store* _store) : store(_store)
 {
-  sysobj_ctx = std::make_unique<RGWSysObjectCtx>(store->svc()->sysobj->init_obj_ctx());
 }
 
 
@@ -437,16 +439,15 @@ int RGWDataAccess::Bucket::finish_init()
 
 int RGWDataAccess::Bucket::init(const DoutPrefixProvider *dpp, optional_yield y)
 {
-  int ret = sd->store->getRados()->get_bucket_info(sd->store->svc(),
-				       tenant, name,
-				       bucket_info,
-				       &mtime,
-                                       y,
-                                       dpp,
-				       &attrs);
+  std::unique_ptr<rgw::sal::Bucket> bucket;
+  int ret = sd->store->get_bucket(dpp, nullptr, tenant, name, &bucket, y);
   if (ret < 0) {
     return ret;
   }
+
+  bucket_info = bucket->get_info();
+  mtime = bucket->get_modification_time();
+  attrs = bucket->get_attrs();
 
   return finish_init();
 }
@@ -471,7 +472,7 @@ int RGWDataAccess::Object::put(bufferlist& data,
                                const DoutPrefixProvider *dpp,
                                optional_yield y)
 {
-  rgw::sal::RGWRadosStore *store = sd->store;
+  rgw::sal::Store* store = sd->store;
   CephContext *cct = store->ctx();
 
   string tag;
@@ -482,33 +483,33 @@ int RGWDataAccess::Object::put(bufferlist& data,
   rgw::BlockingAioThrottle aio(store->ctx()->_conf->rgw_put_obj_min_window_size);
 
   RGWObjectCtx obj_ctx(store);
-  std::unique_ptr<rgw::sal::RGWBucket> b;
+  std::unique_ptr<rgw::sal::Bucket> b;
   store->get_bucket(NULL, bucket_info, &b);
-  std::unique_ptr<rgw::sal::RGWObject> obj = b->get_object(key);
+  std::unique_ptr<rgw::sal::Object> obj = b->get_object(key);
 
   auto& owner = bucket->policy.get_owner();
 
-  string req_id = store->svc()->zone_utils->unique_id(store->getRados()->get_new_req_id());
+  string req_id = store->zone_unique_id(store->get_new_req_id());
 
-  using namespace rgw::putobj;
-  AtomicObjectProcessor processor(&aio, store, b.get(), nullptr,
-                                  owner.get_id(), obj_ctx, std::move(obj), olh_epoch,
-                                  req_id, dpp, y);
+  std::unique_ptr<rgw::sal::Writer> processor;
+  processor = store->get_atomic_writer(dpp, y, std::move(obj),
+				       owner.get_id(), obj_ctx,
+				       nullptr, olh_epoch, req_id);
 
-  int ret = processor.prepare(y);
+  int ret = processor->prepare(y);
   if (ret < 0)
     return ret;
 
-  DataProcessor *filter = &processor;
+  rgw::sal::DataProcessor *filter = processor.get();
 
   CompressorRef plugin;
   boost::optional<RGWPutObj_Compress> compressor;
 
-  const auto& compression_type = store->svc()->zone->get_zone_params().get_compression_type(bucket_info.placement_rule);
+  const auto& compression_type = store->get_zone()->get_params().get_compression_type(bucket_info.placement_rule);
   if (compression_type != "none") {
     plugin = Compressor::create(store->ctx(), compression_type);
     if (!plugin) {
-      ldout(store->ctx(), 1) << "Cannot load plugin for compression type "
+      ldpp_dout(dpp, 1) << "Cannot load plugin for compression type "
         << compression_type << dendl;
     } else {
       compressor.emplace(store->ctx(), plugin, filter);
@@ -572,7 +573,7 @@ int RGWDataAccess::Object::put(bufferlist& data,
     puser_data = &(*user_data);
   }
 
-  return processor.complete(obj_size, etag,
+  return processor->complete(obj_size, etag,
 			    &mtime, mtime,
 			    attrs, delete_at,
                             nullptr, nullptr,
@@ -585,10 +586,10 @@ void RGWDataAccess::Object::set_policy(const RGWAccessControlPolicy& policy)
   policy.encode(aclbl.emplace());
 }
 
-int rgw_tools_init(CephContext *cct)
+int rgw_tools_init(const DoutPrefixProvider *dpp, CephContext *cct)
 {
   ext_mime_map = new std::map<std::string, std::string>;
-  ext_mime_map_init(cct, cct->_conf->rgw_mime_types_file.c_str());
+  ext_mime_map_init(dpp, cct, cct->_conf->rgw_mime_types_file.c_str());
   // ignore errors; missing mime.types is not fatal
   return 0;
 }

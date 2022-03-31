@@ -83,7 +83,7 @@ The Ceph Dashboard offers the following monitoring and management capabilities:
   their descriptions, types, default and currently set values.  These may be edited as well.
 * **Pools**: List Ceph pools and their details (e.g. applications,
   pg-autoscaling, placement groups, replication size, EC profile, CRUSH
-  rulesets, quotas etc.)
+  rules, quotas etc.)
 * **OSDs**: List OSDs, their status and usage statistics as well as
   detailed information like attributes (OSD map), metadata, performance
   counters and usage histograms for read/write operations. Mark OSDs
@@ -534,14 +534,14 @@ on appropriate hosts, proceed with the following steps.
     Dashboards can be added to Grafana by importing dashboard JSON files.
     Use the following command to download the JSON files::
 
-      wget https://raw.githubusercontent.com/ceph/ceph/master/monitoring/grafana/dashboards/<Dashboard-name>.json
+      wget https://raw.githubusercontent.com/ceph/ceph/master/monitoring/ceph-mixin/dashboards_out/<Dashboard-name>.json
 
     You can find various dashboard JSON files `here <https://github.com/ceph/ceph/tree/
-    master/monitoring/grafana/dashboards>`_ .
+    master/monitoring/ceph-mixin/dashboards_out>`_ .
 
     For Example, for ceph-cluster overview you can use::
 
-      wget https://raw.githubusercontent.com/ceph/ceph/master/monitoring/grafana/dashboards/ceph-cluster.json
+      wget https://raw.githubusercontent.com/ceph/ceph/master/monitoring/ceph-mixin/dashboards_out/ceph-cluster.json
 
     You may also author your own dashboards.
 
@@ -669,7 +669,7 @@ Parameters:
 * **<idp_metadata>**: URL to remote (`http://`, `https://`) or local (`file://`) path or content of the IdP metadata XML (e.g., `https://myidp/metadata`, `file:///home/myuser/metadata.xml`).
 * **<idp_username_attribute>** *(optional)*: Attribute that should be used to get the username from the authentication response. Defaults to `uid`.
 * **<idp_entity_id>** *(optional)*: Use this when more than one entity id exists on the IdP metadata.
-* **<sp_x_509_cert> / <sp_private_key>** *(optional)*: File path of the certificate that should be used by Ceph Dashboard (Service Provider) for signing and encryption.
+* **<sp_x_509_cert> / <sp_private_key>** *(optional)*: File path of the certificate that should be used by Ceph Dashboard (Service Provider) for signing and encryption (these file paths should be accessible from the active ceph-mgr instance).
 
 .. note::
 
@@ -1212,7 +1212,7 @@ The command returns the URL where the Ceph Dashboard is located: ``https://<host
 
     Many Ceph tools return results in JSON format. We suggest that
     you install the `jq <https://stedolan.github.io/jq>`_ command-line
-    utility to faciliate working with JSON data.
+    utility to facilitate working with JSON data.
 
 
 Accessing the Dashboard
@@ -1369,3 +1369,43 @@ something like this::
     ...
     $ ceph config reset 11
 
+
+Reporting issues from Dashboard
+"""""""""""""""""""""""""""""""
+
+Ceph-Dashboard provides two ways to create an issue in the Ceph Issue Tracker,
+either using the Ceph command line interface or by using the Ceph Dashboard
+user interface.
+
+To create an issue in the Ceph Issue Tracker, a user needs to have an account
+on the issue tracker. Under the ``my account`` tab in the Ceph Issue Tracker,
+the user can see their API access key. This key is used for authentication
+when creating a new issue. To store the Ceph API access key, in the CLI run:
+
+``ceph dashboard set-issue-tracker-api-key -i <file-containing-key>``
+
+Then on successful update, you can create an issue using:
+
+``ceph dashboard create issue <project> <tracker_type> <subject> <description>``
+
+The available projects to create an issue on are:
+#. dashboard
+#. block
+#. object
+#. file_system
+#. ceph_manager
+#. orchestrator
+#. ceph_volume
+#. core_ceph
+
+The available tracker types are:
+#. bug
+#. feature
+
+The subject and description are then set by the user.
+
+The user can also create an issue using the Dashboard user interface. The settings
+icon drop down menu on the top right of the navigation bar has the option to
+``Raise an issue``. On clicking it, a modal dialog opens that has the option to
+select the project and tracker from their respective drop down menus. The subject
+and multiline description are added by the user. The user can then submit the issue.

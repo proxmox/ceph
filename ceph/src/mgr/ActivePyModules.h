@@ -27,6 +27,7 @@
 #include "mon/MonCommand.h"
 #include "mon/mon_types.h"
 #include "mon/ConfigMap.h"
+#include "mgr/TTLCache.h"
 
 #include "DaemonState.h"
 #include "ClusterState.h"
@@ -55,6 +56,7 @@ class ActivePyModules
   Objecter &objecter;
   Client   &client;
   Finisher &finisher;
+  TTLCache<string, PyObject*> ttl_cache;
 public:
   Finisher cmd_finisher;
 private:
@@ -80,6 +82,7 @@ public:
   MonClient &get_monc() {return monc;}
   Objecter  &get_objecter() {return objecter;}
   Client    &get_client() {return client;}
+  PyObject *cacheable_get_python(const std::string &what);
   PyObject *get_python(const std::string &what);
   PyObject *get_server_python(const std::string &hostname);
   PyObject *list_servers_python();
@@ -98,6 +101,7 @@ public:
   PyObject *get_perf_schema_python(
      const std::string &svc_type,
      const std::string &svc_id);
+  PyObject *get_rocksdb_version();
   PyObject *get_context();
   PyObject *get_osdmap();
   /// @note @c fct is not allowed to acquire locks when holding GIL
@@ -127,12 +131,12 @@ public:
   PyObject *get_store_prefix(const std::string &module_name,
 			      const std::string &prefix) const;
   void set_store(const std::string &module_name,
-      const std::string &key, const boost::optional<std::string> &val);
+      const std::string &key, const std::optional<std::string> &val);
 
   bool get_config(const std::string &module_name,
       const std::string &key, std::string *val) const;
-  void set_config(const std::string &module_name,
-      const std::string &key, const boost::optional<std::string> &val);
+  std::pair<int, std::string> set_config(const std::string &module_name,
+      const std::string &key, const std::optional<std::string> &val);
 
   PyObject *get_typed_config(const std::string &module_name,
 			     const std::string &key,
@@ -174,7 +178,7 @@ public:
   void update_kv_data(
     const std::string prefix,
     bool incremental,
-    const map<std::string, boost::optional<bufferlist>, std::less<>>& data);
+    const map<std::string, std::optional<bufferlist>, std::less<>>& data);
   void _refresh_config_map();
 
   // Public so that MonCommandCompletion can use it
@@ -217,4 +221,8 @@ public:
 
   void cluster_log(const std::string &channel, clog_type prio,
     const std::string &message);
+
+  bool inject_python_on() const;
+  void update_cache_metrics();
 };
+

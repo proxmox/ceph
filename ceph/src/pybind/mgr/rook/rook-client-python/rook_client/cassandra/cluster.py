@@ -35,13 +35,13 @@ class Storage(CrdObject):
 
 class Resources(CrdObject):
     _properties = [
-        ('cassandra', 'cassandra', object, False, False),
-        ('sidecar', 'sidecar', object, False, False)
+        ('cassandra', 'cassandra', object, True, False),
+        ('sidecar', 'sidecar', object, True, False)
     ]        
 
     def __init__(self,
-                 cassandra=_omit,  # type: Optional[Any]
-                 sidecar=_omit,  # type: Optional[Any]
+                 cassandra,  # type: Any
+                 sidecar,  # type: Any
                  ):
         super(Resources, self).__init__(
             cassandra=cassandra,
@@ -55,7 +55,7 @@ class Resources(CrdObject):
     
     @cassandra.setter
     def cassandra(self, new_val):
-        # type: (Optional[Any]) -> None
+        # type: (Any) -> None
         self._cassandra = new_val
     
     @property
@@ -65,15 +65,16 @@ class Resources(CrdObject):
     
     @sidecar.setter
     def sidecar(self, new_val):
-        # type: (Optional[Any]) -> None
+        # type: (Any) -> None
         self._sidecar = new_val
 
 
-class RacksItem(CrdObject):
+class Racks(CrdObject):
     _properties = [
         ('name', 'name', str, True, False),
         ('members', 'members', int, True, False),
         ('configMapName', 'configMapName', str, False, False),
+        ('jmxExporterConfigMapName', 'jmxExporterConfigMapName', str, False, False),
         ('storage', 'storage', Storage, True, False),
         ('placement', 'placement', object, False, False),
         ('resources', 'resources', Resources, True, False),
@@ -86,15 +87,17 @@ class RacksItem(CrdObject):
                  storage,  # type: Storage
                  resources,  # type: Resources
                  configMapName=_omit,  # type: Optional[str]
+                 jmxExporterConfigMapName=_omit,  # type: Optional[str]
                  placement=_omit,  # type: Optional[Any]
                  sidecarImage=_omit,  # type: Optional[Any]
                  ):
-        super(RacksItem, self).__init__(
+        super(Racks, self).__init__(
             name=name,
             members=members,
             storage=storage,
             resources=resources,
             configMapName=configMapName,
+            jmxExporterConfigMapName=jmxExporterConfigMapName,
             placement=placement,
             sidecarImage=sidecarImage,
         )
@@ -128,6 +131,16 @@ class RacksItem(CrdObject):
     def configMapName(self, new_val):
         # type: (Optional[str]) -> None
         self._configMapName = new_val
+    
+    @property
+    def jmxExporterConfigMapName(self):
+        # type: () -> str
+        return self._property_impl('jmxExporterConfigMapName')
+    
+    @jmxExporterConfigMapName.setter
+    def jmxExporterConfigMapName(self, new_val):
+        # type: (Optional[str]) -> None
+        self._jmxExporterConfigMapName = new_val
     
     @property
     def storage(self):
@@ -170,19 +183,15 @@ class RacksItem(CrdObject):
         self._sidecarImage = new_val
 
 
-class RacksList(CrdObjectList):
-    _items_type = RacksItem
-
-
 class Datacenter(CrdObject):
     _properties = [
         ('name', 'name', str, True, False),
-        ('racks', 'racks', RacksList, False, False)
+        ('racks', 'racks', Racks, False, False)
     ]        
 
     def __init__(self,
                  name,  # type: str
-                 racks=_omit,  # type: Optional[Union[List[RacksItem], CrdObjectList]]
+                 racks=_omit,  # type: Optional[Racks]
                  ):
         super(Datacenter, self).__init__(
             name=name,
@@ -201,12 +210,12 @@ class Datacenter(CrdObject):
     
     @property
     def racks(self):
-        # type: () -> Union[List[RacksItem], CrdObjectList]
+        # type: () -> Racks
         return self._property_impl('racks')
     
     @racks.setter
     def racks(self, new_val):
-        # type: (Optional[Union[List[RacksItem], CrdObjectList]]) -> None
+        # type: (Optional[Racks]) -> None
         self._racks = new_val
 
 

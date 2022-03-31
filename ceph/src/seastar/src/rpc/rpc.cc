@@ -3,7 +3,6 @@
 #include <seastar/core/seastar.hh>
 #include <seastar/core/print.hh>
 #include <seastar/core/future-util.hh>
-#include <seastar/util/defer.hh>
 #include <boost/range/adaptor/map.hpp>
 
 namespace seastar {
@@ -92,6 +91,19 @@ namespace rpc {
 
   template snd_buf make_shard_local_buffer_copy(foreign_ptr<std::unique_ptr<snd_buf>>);
   template rcv_buf make_shard_local_buffer_copy(foreign_ptr<std::unique_ptr<rcv_buf>>);
+
+  static void log_exception(connection& c, log_level level, const char* log, std::exception_ptr eptr) {
+      const char* s;
+      try {
+          std::rethrow_exception(eptr);
+      } catch (std::exception& ex) {
+          s = ex.what();
+      } catch (...) {
+          s = "unknown exception";
+      }
+      auto formatted = format("{}: {}", log, s);
+      c.get_logger()(c.peer_address(), level, std::string_view(formatted.data(), formatted.size()));
+  }
 
   snd_buf connection::compress(snd_buf buf) {
       if (_compressor) {
@@ -241,8 +253,12 @@ namespace rpc {
       }
   }
 
-  future<> connection::stop() {
-      abort();
+  future<> connection::stop() noexcept {
+      try {
+          abort();
+      } catch (...) {
+          log_exception(*this, log_level::error, "fail to shutdown connection while stopping", std::current_exception());
+      }
       return _stopped.get_future();
   }
 
@@ -269,7 +285,8 @@ namespace rpc {
           std::copy_n(neg.get_write(), sizeof(frame.magic), frame.magic);
           frame.len = read_le<uint32_t>(neg.get_write() + 8);
           if (std::memcmp(frame.magic, rpc_magic, sizeof(frame.magic)) != 0) {
-              c.get_logger()(c.peer_address(), "wrong protocol magic");
+              c.get_logger()(c.peer_address(), format("wrong protocol magic: {:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+                    frame.magic[0], frame.magic[1], frame.magic[2], frame.magic[3], frame.magic[4], frame.magic[5], frame.magic[6], frame.magic[7]));
               return make_exception_future<feature_map>(closed_error());
           }
           auto len = frame.len;
@@ -505,20 +522,6 @@ namespace rpc {
       return it->second;
   }
 
-  static void log_exception(connection& c, log_level level, const char* log, std::exception_ptr eptr) {
-      const char* s;
-      try {
-          std::rethrow_exception(eptr);
-      } catch (std::exception& ex) {
-          s = ex.what();
-      } catch (...) {
-          s = "unknown exception";
-      }
-      auto formatted = format("{}: {}", log, s);
-      c.get_logger()(c.peer_address(), level, std::string_view(formatted.data(), formatted.size()));
-  }
-
-
   void
   client::negotiate(feature_map provided) {
       // record features returned here
@@ -621,7 +624,7 @@ namespace rpc {
       _outstanding.erase(id);
   }
 
-  future<> client::stop() {
+  future<> client::stop() noexcept {
       _error = true;
       try {
           _socket.shutdown();
@@ -647,7 +650,7 @@ namespace rpc {
   }
 
   client::client(const logger& l, void* s, client_options ops, socket socket, const socket_address& addr, const socket_address& local)
-  : rpc::connection(l, s), _socket(std::move(socket)), _server_addr(addr), _options(ops) {
+  : rpc::connection(l, s), _socket(std::move(socket)), _server_addr(addr), _local_addr(local), _options(ops) {
        _socket.set_reuseaddr(ops.reuseaddr);
       // Run client in the background.
       // Communicate result via _stopped.
@@ -1024,6 +1027,9 @@ future<> server::connection::send_unknown_verb_reply(std::optional<rpc_clock_typ
       // The caller has to call server::stop() to synchronize.
       (void)keep_doing([this] () mutable {
           return _ss.accept().then([this] (accept_result ar) mutable {
+              if (_options.filter_connection && !_options.filter_connection(ar.remote_address)) {
+                  return;
+              }
               auto fd = std::move(ar.connection);
               auto addr = std::move(ar.remote_address);
               fd.set_nodelay(_options.tcp_nodelay);
@@ -1061,11 +1067,13 @@ future<> server::connection::send_unknown_verb_reply(std::optional<rpc_clock_typ
   }
 
   std::ostream& operator<<(std::ostream& os, const connection_id& id) {
-      return fmt_print(os, "{:x}", id.id);
+      fmt::print(os, "{:x}", id.id);
+      return os;
   }
 
   std::ostream& operator<<(std::ostream& os, const streaming_domain_type& domain) {
-      return fmt_print(os, "{:d}", domain._id);
+      fmt::print(os, "{:d}", domain._id);
+      return os;
   }
 
   isolation_config default_isolate_connection(sstring isolation_cookie) {

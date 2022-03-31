@@ -313,7 +313,7 @@ struct async_result_has_initiate_memfn
     typename ::boost::asio::decay<ct>::type, sig>::completion_handler_type
 #endif
 
-#if defined(GENERATION_DOCUMENTATION)
+#if defined(GENERATING_DOCUMENTATION)
 # define BOOST_ASIO_INITFN_AUTO_RESULT_TYPE(ct, sig) \
   auto
 #elif defined(BOOST_ASIO_HAS_RETURN_TYPE_DEDUCTION)
@@ -324,7 +324,7 @@ struct async_result_has_initiate_memfn
   BOOST_ASIO_INITFN_RESULT_TYPE(ct, sig)
 #endif
 
-#if defined(GENERATION_DOCUMENTATION)
+#if defined(GENERATING_DOCUMENTATION)
 # define BOOST_ASIO_INITFN_DEDUCED_RESULT_TYPE(ct, sig, expr) \
   void_or_deduced
 #elif defined(BOOST_ASIO_HAS_DECLTYPE)
@@ -513,12 +513,6 @@ BOOST_ASIO_CONCEPT completion_token_for =
 
 namespace detail {
 
-template <typename>
-struct default_completion_token_check
-{
-  typedef void type;
-};
-
 template <typename T, typename = void>
 struct default_completion_token_impl
 {
@@ -527,8 +521,7 @@ struct default_completion_token_impl
 
 template <typename T>
 struct default_completion_token_impl<T,
-  typename default_completion_token_check<
-    typename T::default_completion_token_type>::type>
+  typename void_type<typename T::default_completion_token_type>::type>
 {
   typedef typename T::default_completion_token_type type;
 };

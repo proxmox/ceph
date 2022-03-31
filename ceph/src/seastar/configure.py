@@ -26,9 +26,9 @@ import tempfile
 
 tempfile.tempdir = "./build/tmp"
 
-def add_tristate(arg_parser, name, dest, help):
-    arg_parser.add_argument('--enable-' + name, dest = dest, action = 'store_true', default = None,
-                            help = 'Enable ' + help)
+def add_tristate(arg_parser, name, dest, help, default=None):
+    arg_parser.add_argument('--enable-' + name, dest = dest, action = 'store_true', default = default,
+                            help = 'Enable ' + help + ' [default]' if default else '')
     arg_parser.add_argument('--disable-' + name, dest = dest, action = 'store_false', default = None,
                             help = 'Disable ' + help)
 
@@ -76,6 +76,9 @@ arg_parser.add_argument('--c++-dialect', action='store', dest='cpp_dialect', def
 arg_parser.add_argument('--cook', action='append', dest='cook', default=[],
                         help='Supply this dependency locally for development via `cmake-cooking` (can be repeated)')
 arg_parser.add_argument('--verbose', dest='verbose', action='store_true', help='Make configure output more verbose.')
+arg_parser.add_argument('--scheduling-groups-count', action='store', dest='scheduling_groups_count', default='16',
+                        help='Number of available scheduling groups in the reactor')
+
 add_tristate(
     arg_parser,
     name = 'dpdk',
@@ -113,6 +116,7 @@ arg_parser.add_argument('--without-demos', dest='exclude_demos', action='store_t
 arg_parser.add_argument('--split-dwarf', dest='split_dwarf', action='store_true', default=False,
                         help='use of split dwarf (https://gcc.gnu.org/wiki/DebugFission) to speed up linking')
 arg_parser.add_argument('--heap-profiling', dest='heap_profiling', action='store_true', default=False, help='Enable heap profiling')
+add_tristate(arg_parser, name='deferred-action-require-noexcept', dest='deferred_action_require_noexcept', help='noexcept requirement for deferred actions', default=True)
 arg_parser.add_argument('--prefix', dest='install_prefix', default='/usr/local', help='Root installation path of Seastar files')
 args = arg_parser.parse_args()
 
@@ -120,19 +124,18 @@ def identify_best_dialect(dialects, compiler):
     """Returns the first C++ dialect accepted by the compiler in the sequence,
     assuming the "best" dialects appear first.
 
-    If no dialects are accepted, the result is the last dialect in the sequence
-    (we assume that this error will be displayed to the user - during compile
-    time - in an informative way).
-
+    If no dialects are accepted, we fail configure.py. There is not point
+    of letting the user attempt to build with a dialect that is known not
+    to be supported. However, the user may still choose a dialect by
+    explicitly passing the --c++-dialect option.
     """
     for d in dialects:
         if dialect_supported(d, compiler):
             return d
-
-    return d
+    raise Exception(f"{compiler} does not seem to support any of Seastar's preferred C++ dialects - {dialects}. Please upgrade your compiler, or choose a valid dialect with '--c++-dialect'")
 
 if args.cpp_dialect == '':
-    cpp_dialects = ['gnu++17', 'gnu++1z', 'gnu++14', 'gnu++1y']
+    cpp_dialects = ['gnu++20', 'c++20', 'gnu++2a', 'gnu++17', 'c++17', 'gnu++1z']
     args.cpp_dialect = identify_best_dialect(cpp_dialects, compiler=args.cxx)
 
 def infer_dpdk_machine(user_cflags):
@@ -182,6 +185,7 @@ def configure_mode(mode):
         '-DCMAKE_CXX_COMPILER={}'.format(args.cxx),
         '-DCMAKE_INSTALL_PREFIX={}'.format(args.install_prefix),
         '-DSeastar_API_LEVEL={}'.format(args.api_level),
+        '-DSeastar_SCHEDULING_GROUPS_COUNT={}'.format(args.scheduling_groups_count),
         tr(args.exclude_tests, 'EXCLUDE_TESTS_FROM_ALL'),
         tr(args.exclude_apps, 'EXCLUDE_APPS_FROM_ALL'),
         tr(args.exclude_demos, 'EXCLUDE_DEMOS_FROM_ALL'),
@@ -196,6 +200,7 @@ def configure_mode(mode):
         tr(args.alloc_page_size, 'ALLOC_PAGE_SIZE'),
         tr(args.split_dwarf, 'SPLIT_DWARF'),
         tr(args.heap_profiling, 'HEAP_PROFILING'),
+        tr(args.deferred_action_require_noexcept, 'DEFERRED_ACTION_REQUIRE_NOEXCEPT'),
         tr(args.unused_result_error, 'UNUSED_RESULT_ERROR'),
         tr(args.debug_shared_ptr, 'DEBUG_SHARED_PTR', value_when_none='default'),
     ]

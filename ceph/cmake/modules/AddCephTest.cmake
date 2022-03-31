@@ -2,7 +2,8 @@
 
 #adds makes target/script into a test, test to check target, sets necessary environment variables
 function(add_ceph_test test_name test_path)
-  add_test(NAME ${test_name} COMMAND ${test_path} ${ARGN})
+  add_test(NAME ${test_name} COMMAND ${test_path} ${ARGN}
+    COMMAND_EXPAND_LISTS)
   if(TARGET ${test_name})
     add_dependencies(tests ${test_name})
     set_property(TARGET ${test_name}
@@ -70,14 +71,17 @@ function(add_tox_test name)
   endif()
   string(REPLACE ";" "," tox_envs "${tox_envs}")
   find_package(Python3 QUIET REQUIRED)
-  add_custom_command(
-    OUTPUT ${venv_path}/bin/activate
-    COMMAND ${CMAKE_SOURCE_DIR}/src/tools/setup-virtualenv.sh --python="${Python3_EXECUTABLE}" ${venv_path}
-    WORKING_DIRECTORY ${tox_path}
-    COMMENT "preparing venv for ${name}")
-  add_custom_target(${name}-venv
-    DEPENDS ${venv_path}/bin/activate)
-  add_dependencies(tests ${name}-venv)
+  add_test(
+    NAME setup-venv-for-${name}
+    COMMAND ${CMAKE_SOURCE_DIR}/src/tools/setup-virtualenv.sh --python=${Python3_EXECUTABLE} ${venv_path}
+    WORKING_DIRECTORY ${tox_path})
+  set_tests_properties(setup-venv-for-${name} PROPERTIES
+    FIXTURES_SETUP venv-for-${name})
+  add_test(
+    NAME teardown-venv-for-${name}
+    COMMAND ${CMAKE_COMMAND} -E remove_directory ${venv_path})
+  set_tests_properties(teardown-venv-for-${name} PROPERTIES
+    FIXTURES_CLEANUP venv-for-${name})
   add_test(
     NAME ${test_name}
     COMMAND ${CMAKE_SOURCE_DIR}/src/script/run_tox.sh
@@ -86,6 +90,8 @@ function(add_tox_test name)
               --tox-path ${tox_path}
               --tox-envs ${tox_envs}
               --venv-path ${venv_path})
+  set_tests_properties(${test_name} PROPERTIES
+    FIXTURES_REQUIRED venv-for-${name})
   set_property(
     TEST ${test_name}
     PROPERTY ENVIRONMENT

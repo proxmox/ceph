@@ -860,5 +860,41 @@
 </namespace>
 </header>
 <header name="boost/date_time/posix_time/time_serialize.hpp">
+<namespace name="boost">
+<namespace name="serialization">
+<struct name="version"><template>
+      <template-type-parameter name="T"/>
+    </template></struct><struct-specialization name="version"><template>
+    </template><specialization><template-arg>boost::posix_time::time_duration</template-arg></specialization><inherit access="public">integral_constant&lt; int, BOOST_DATE_TIME_POSIX_TIME_DURATION_VERSION &gt;</inherit></struct-specialization><function name="BOOST_DATE_TIME_SPLIT_FREE"><type/><parameter name=""><paramtype><classname>boost::posix_time::ptime</classname></paramtype></parameter><description><para>time_duration objects are broken down into 4 parts for serialization: types are hour_type, min_type, sec_type, and fractional_seconds_type as defined in the time_duration class </para></description></function>
+<function name="save"><type>void</type><template>
+          <template-type-parameter name="Archive"/>
+        </template><parameter name="ar"><paramtype>Archive &amp;</paramtype></parameter><parameter name="td"><paramtype>const <classname>posix_time::time_duration</classname> &amp;</paramtype></parameter><parameter name="version"><paramtype>unsigned int</paramtype></parameter></function>
+<function name="load_td"><type>void</type><template>
+          <template-type-parameter name="TimeResTraitsSize"/>
+          <template-type-parameter name="Archive"/>
+        </template><parameter name="ar"><paramtype>Archive &amp;</paramtype></parameter><parameter name="td"><paramtype><classname>posix_time::time_duration</classname> &amp;</paramtype></parameter><purpose>Function to load <classname alt="boost::posix_time::time_duration">posix_time::time_duration</classname> objects using serialization lib. </purpose><description><para>time_duration objects are broken down into 4 parts for serialization: types are hour_type, min_type, sec_type, and fractional_seconds_type as defined in the time_duration class </para></description></function>
+<function name="load"><type>void</type><template>
+          <template-type-parameter name="Archive"/>
+        </template><parameter name="ar"><paramtype>Archive &amp;</paramtype></parameter><parameter name="td"><paramtype><classname>posix_time::time_duration</classname> &amp;</paramtype></parameter><parameter name="version"><paramtype>unsigned int</paramtype></parameter></function>
+<function name="save"><type>void</type><template>
+          <template-type-parameter name="Archive"/>
+        </template><parameter name="ar"><paramtype>Archive &amp;</paramtype></parameter><parameter name="pt"><paramtype>const <classname>posix_time::ptime</classname> &amp;</paramtype></parameter><parameter name=""><paramtype>unsigned int</paramtype></parameter><purpose>Function to save <classname alt="boost::posix_time::ptime">posix_time::ptime</classname> objects using serialization lib. </purpose><description><para>ptime objects are broken down into 2 parts for serialization: a date object and a time_duration onject </para></description></function>
+<function name="load"><type>void</type><template>
+          <template-type-parameter name="Archive"/>
+        </template><parameter name="ar"><paramtype>Archive &amp;</paramtype></parameter><parameter name="pt"><paramtype><classname>posix_time::ptime</classname> &amp;</paramtype></parameter><parameter name=""><paramtype>unsigned int</paramtype></parameter><purpose>Function to load <classname alt="boost::posix_time::ptime">posix_time::ptime</classname> objects using serialization lib. </purpose><description><para>ptime objects are broken down into 2 parts for serialization: a date object and a time_duration onject </para></description></function>
+<function name="load_construct_data"><type>void</type><template>
+          <template-type-parameter name="Archive"/>
+        </template><parameter name=""><paramtype>Archive &amp;</paramtype></parameter><parameter name="pt"><paramtype><classname>posix_time::ptime</classname> *</paramtype></parameter><parameter name=""><paramtype>const unsigned int</paramtype></parameter><purpose>override needed b/c no default constructor </purpose></function>
+<function name="save"><type>void</type><template>
+          <template-type-parameter name="Archive"/>
+        </template><parameter name="ar"><paramtype>Archive &amp;</paramtype></parameter><parameter name="tp"><paramtype>const posix_time::time_period &amp;</paramtype></parameter><parameter name=""><paramtype>unsigned int</paramtype></parameter><purpose>Function to save posix_time::time_period objects using serialization lib. </purpose><description><para>time_period objects are broken down into 2 parts for serialization: a begining ptime object and an ending ptime object </para></description></function>
+<function name="load"><type>void</type><template>
+          <template-type-parameter name="Archive"/>
+        </template><parameter name="ar"><paramtype>Archive &amp;</paramtype></parameter><parameter name="tp"><paramtype>boost::posix_time::time_period &amp;</paramtype></parameter><parameter name=""><paramtype>unsigned int</paramtype></parameter><purpose>Function to load posix_time::time_period objects using serialization lib. </purpose><description><para>time_period objects are broken down into 2 parts for serialization: a begining ptime object and an ending ptime object </para></description></function>
+<function name="load_construct_data"><type>void</type><template>
+          <template-type-parameter name="Archive"/>
+        </template><parameter name=""><paramtype>Archive &amp;</paramtype></parameter><parameter name="tp"><paramtype>boost::posix_time::time_period *</paramtype></parameter><parameter name=""><paramtype>const unsigned int</paramtype></parameter><purpose>override needed b/c no default constructor </purpose></function>
+</namespace>
+</namespace>
 </header>
 </library-reference>

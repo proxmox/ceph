@@ -8,6 +8,7 @@ from .. import mgr
 from ..security import Scope
 from ..services.ceph_service import CephService
 from . import APIDoc, APIRouter, Endpoint, EndpointDoc, ReadPermission, RESTController, UIRouter
+from ._version import APIVersion
 
 LIST_SCHEMA = {
     "rule_id": (int, 'Rule ID'),
@@ -25,9 +26,11 @@ LIST_SCHEMA = {
 class CrushRule(RESTController):
     @EndpointDoc("List Crush Rule Configuration",
                  responses={200: LIST_SCHEMA})
+    @RESTController.MethodMap(version=APIVersion(2, 0))
     def list(self):
         return mgr.get('osd_map_crush')['rules']
 
+    @RESTController.MethodMap(version=APIVersion(2, 0))
     def get(self, name):
         rules = mgr.get('osd_map_crush')['rules']
         for r in rules:

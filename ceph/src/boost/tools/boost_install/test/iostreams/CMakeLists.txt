@@ -34,16 +34,6 @@ target_link_libraries(test_gzip Boost::iostreams)
 add_executable(test_bzip2 test_bzip2.cpp)
 target_link_libraries(test_bzip2 Boost::iostreams)
 
-if(NOT WIN32)
-
-  find_package(ZLIB)
-  target_link_libraries(test_gzip ZLIB::ZLIB)
-
-  find_package(BZip2)
-  target_link_libraries(test_bzip2 BZip2::BZip2)
-
-endif()
-
 enable_testing()
 add_custom_target(check COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure -C $<CONFIG>)
 

@@ -23,7 +23,7 @@
 #ifndef BOOST_NO_EXCEPTION_STD_NAMESPACE
     #include <exception>
 #endif
-#include <boost/detail/no_exceptions_support.hpp>
+#include <boost/core/no_exceptions_support.hpp>
 
 #if defined(UNDER_CE)
 
@@ -63,10 +63,12 @@ namespace std{
 #include <boost/archive/tmpdir.hpp>
 
 //#if defined(__COMO__)
+#if !defined(BOOST_EMBTC)
     #define chdir _chdir
+#endif
 //#endif  // defined win32
 
-#if defined(NDEBUG) && defined(__BORLANDC__)
+#if defined(NDEBUG) && defined(BOOST_BORLANDC)
     #define STRCPY strcpy
 #else
     #define STRCPY std::strcpy

@@ -825,13 +825,13 @@ EXCLUDE_PATTERNS       = test.py
 # Note that the wildcards are matched against the file with absolute path, so to
 # exclude all test directories use the pattern */test/*
 
-EXCLUDE_SYMBOLS        = seastar::internal
+EXCLUDE_SYMBOLS        = seastar::internal seastar::coroutine::internal
 
 # The EXAMPLE_PATH tag can be used to specify one or more files or directories
 # that contain example code fragments that are included (see the \include
 # command).
 
-EXAMPLE_PATH           = @Seastar_SOURCE_DIR@/demos
+EXAMPLE_PATH           = @Seastar_SOURCE_DIR@/demos @Seastar_SOURCE_DIR@/tests/unit
 
 # If the value of the EXAMPLE_PATH tag contains directories, you can use the
 # EXAMPLE_PATTERNS tag to specify one or more wildcard pattern (like *.cpp and

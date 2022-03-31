@@ -332,7 +332,7 @@ Alternatively, you can use your OSDSpec file:
 
 .. prompt:: bash #
 
-  ceph orch apply osd -i <osd_spec_file> --dry-run
+  ceph orch apply -i <osd_spec_file> --dry-run
 
 Expected output::
 
@@ -380,9 +380,7 @@ memory with other services, cephadm can automatically adjust the per-OSD
 memory consumption based on the total amount of RAM and the number of deployed
 OSDs.
 
-This option is enabled globally with::
-
-  ceph config set osd osd_memory_target_autotune true
+.. warning:: Cephadm sets ``osd_memory_target_autotune`` to ``true`` by default which is unsuitable for hyperconverged infrastructures.
 
 Cephadm will start with a fraction
 (``mgr/cephadm/autotune_memory_target_ratio``, which defaults to
@@ -459,7 +457,7 @@ This means :
 
    .. prompt:: bash [monitor.1]#
 
-     ceph orch apply osd -i /path/to/osd_spec.yml
+     ceph orch apply -i /path/to/osd_spec.yml
 
    This instruction will be issued to all the matching hosts, and will deploy
    these OSDs.
@@ -474,7 +472,7 @@ Example
 
 .. prompt:: bash [monitor.1]#
 
-   ceph orch apply osd -i /path/to/osd_spec.yml --dry-run
+   ceph orch apply -i /path/to/osd_spec.yml --dry-run
 
 
 
@@ -768,8 +766,8 @@ layout, it is recommended to apply different OSD specs matching only one
 set of hosts. Typically you will have a spec for multiple hosts with the 
 same layout. 
 
-The sevice id as the unique key: In case a new OSD spec with an already
-applied service id is applied, the existing OSD spec will be superseeded.
+The service id as the unique key: In case a new OSD spec with an already
+applied service id is applied, the existing OSD spec will be superseded.
 cephadm will now create new OSD daemons based on the new spec
 definition. Existing OSD daemons will not be affected. See :ref:`cephadm-osd-declarative`.
 
@@ -912,8 +910,8 @@ activates all existing OSDs on a host.
 
 This will scan all existing disks for OSDs and deploy corresponding daemons.
 
-Futher Reading
-==============
+Further Reading
+===============
 
 * :ref:`ceph-volume`
 * :ref:`rados-index`

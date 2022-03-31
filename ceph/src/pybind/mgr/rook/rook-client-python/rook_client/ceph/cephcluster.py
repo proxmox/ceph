@@ -46,25 +46,159 @@ class CephVersion(CrdObject):
         self._image = new_val
 
 
+class SanitizeDisks(CrdObject):
+    _properties = [
+        ('dataSource', 'dataSource', str, False, False),
+        ('iteration', 'iteration', int, False, False),
+        ('method', 'method', str, False, False)
+    ]        
+
+    def __init__(self,
+                 dataSource=_omit,  # type: Optional[str]
+                 iteration=_omit,  # type: Optional[int]
+                 method=_omit,  # type: Optional[str]
+                 ):
+        super(SanitizeDisks, self).__init__(
+            dataSource=dataSource,
+            iteration=iteration,
+            method=method,
+        )
+
+    @property
+    def dataSource(self):
+        # type: () -> str
+        return self._property_impl('dataSource')
+    
+    @dataSource.setter
+    def dataSource(self, new_val):
+        # type: (Optional[str]) -> None
+        self._dataSource = new_val
+    
+    @property
+    def iteration(self):
+        # type: () -> int
+        return self._property_impl('iteration')
+    
+    @iteration.setter
+    def iteration(self, new_val):
+        # type: (Optional[int]) -> None
+        self._iteration = new_val
+    
+    @property
+    def method(self):
+        # type: () -> str
+        return self._property_impl('method')
+    
+    @method.setter
+    def method(self, new_val):
+        # type: (Optional[str]) -> None
+        self._method = new_val
+
+
+class CleanupPolicy(CrdObject):
+    _properties = [
+        ('allowUninstallWithVolumes', 'allowUninstallWithVolumes', bool, False, False),
+        ('confirmation', 'confirmation', str, False, True),
+        ('sanitizeDisks', 'sanitizeDisks', 'SanitizeDisks', False, True)
+    ]        
+
+    def __init__(self,
+                 allowUninstallWithVolumes=_omit,  # type: Optional[bool]
+                 confirmation=_omit,  # type: Optional[str]
+                 sanitizeDisks=_omit,  # type: Optional[SanitizeDisks]
+                 ):
+        super(CleanupPolicy, self).__init__(
+            allowUninstallWithVolumes=allowUninstallWithVolumes,
+            confirmation=confirmation,
+            sanitizeDisks=sanitizeDisks,
+        )
+
+    @property
+    def allowUninstallWithVolumes(self):
+        # type: () -> bool
+        return self._property_impl('allowUninstallWithVolumes')
+    
+    @allowUninstallWithVolumes.setter
+    def allowUninstallWithVolumes(self, new_val):
+        # type: (Optional[bool]) -> None
+        self._allowUninstallWithVolumes = new_val
+    
+    @property
+    def confirmation(self):
+        # type: () -> Optional[str]
+        return self._property_impl('confirmation')
+    
+    @confirmation.setter
+    def confirmation(self, new_val):
+        # type: (Optional[str]) -> None
+        self._confirmation = new_val
+    
+    @property
+    def sanitizeDisks(self):
+        # type: () -> Optional[SanitizeDisks]
+        return self._property_impl('sanitizeDisks')
+    
+    @sanitizeDisks.setter
+    def sanitizeDisks(self, new_val):
+        # type: (Optional[SanitizeDisks]) -> None
+        self._sanitizeDisks = new_val
+
+
+class CrashCollector(CrdObject):
+    _properties = [
+        ('daysToRetain', 'daysToRetain', int, False, False),
+        ('disable', 'disable', bool, False, False)
+    ]        
+
+    def __init__(self,
+                 daysToRetain=_omit,  # type: Optional[int]
+                 disable=_omit,  # type: Optional[bool]
+                 ):
+        super(CrashCollector, self).__init__(
+            daysToRetain=daysToRetain,
+            disable=disable,
+        )
+
+    @property
+    def daysToRetain(self):
+        # type: () -> int
+        return self._property_impl('daysToRetain')
+    
+    @daysToRetain.setter
+    def daysToRetain(self, new_val):
+        # type: (Optional[int]) -> None
+        self._daysToRetain = new_val
+    
+    @property
+    def disable(self):
+        # type: () -> bool
+        return self._property_impl('disable')
+    
+    @disable.setter
+    def disable(self, new_val):
+        # type: (Optional[bool]) -> None
+        self._disable = new_val
+
+
 class Dashboard(CrdObject):
     _properties = [
         ('enabled', 'enabled', bool, False, False),
-        ('urlPrefix', 'urlPrefix', str, False, False),
         ('port', 'port', int, False, False),
-        ('ssl', 'ssl', bool, False, False)
+        ('ssl', 'ssl', bool, False, False),
+        ('urlPrefix', 'urlPrefix', str, False, False)
     ]        
 
     def __init__(self,
                  enabled=_omit,  # type: Optional[bool]
-                 urlPrefix=_omit,  # type: Optional[str]
                  port=_omit,  # type: Optional[int]
                  ssl=_omit,  # type: Optional[bool]
+                 urlPrefix=_omit,  # type: Optional[str]
                  ):
         super(Dashboard, self).__init__(
             enabled=enabled,
-            urlPrefix=urlPrefix,
             port=port,
             ssl=ssl,
+            urlPrefix=urlPrefix,
         )
 
     @property
@@ -76,16 +210,6 @@ class Dashboard(CrdObject):
     def enabled(self, new_val):
         # type: (Optional[bool]) -> None
         self._enabled = new_val
-    
-    @property
-    def urlPrefix(self):
-        # type: () -> str
-        return self._property_impl('urlPrefix')
-    
-    @urlPrefix.setter
-    def urlPrefix(self, new_val):
-        # type: (Optional[str]) -> None
-        self._urlPrefix = new_val
     
     @property
     def port(self):
@@ -106,27 +230,40 @@ class Dashboard(CrdObject):
     def ssl(self, new_val):
         # type: (Optional[bool]) -> None
         self._ssl = new_val
+    
+    @property
+    def urlPrefix(self):
+        # type: () -> str
+        return self._property_impl('urlPrefix')
+    
+    @urlPrefix.setter
+    def urlPrefix(self, new_val):
+        # type: (Optional[str]) -> None
+        self._urlPrefix = new_val
 
 
 class DisruptionManagement(CrdObject):
     _properties = [
         ('machineDisruptionBudgetNamespace', 'machineDisruptionBudgetNamespace', str, False, False),
+        ('manageMachineDisruptionBudgets', 'manageMachineDisruptionBudgets', bool, False, False),
         ('managePodBudgets', 'managePodBudgets', bool, False, False),
         ('osdMaintenanceTimeout', 'osdMaintenanceTimeout', int, False, False),
-        ('manageMachineDisruptionBudgets', 'manageMachineDisruptionBudgets', bool, False, False)
+        ('pgHealthCheckTimeout', 'pgHealthCheckTimeout', int, False, False)
     ]        
 
     def __init__(self,
                  machineDisruptionBudgetNamespace=_omit,  # type: Optional[str]
+                 manageMachineDisruptionBudgets=_omit,  # type: Optional[bool]
                  managePodBudgets=_omit,  # type: Optional[bool]
                  osdMaintenanceTimeout=_omit,  # type: Optional[int]
-                 manageMachineDisruptionBudgets=_omit,  # type: Optional[bool]
+                 pgHealthCheckTimeout=_omit,  # type: Optional[int]
                  ):
         super(DisruptionManagement, self).__init__(
             machineDisruptionBudgetNamespace=machineDisruptionBudgetNamespace,
+            manageMachineDisruptionBudgets=manageMachineDisruptionBudgets,
             managePodBudgets=managePodBudgets,
             osdMaintenanceTimeout=osdMaintenanceTimeout,
-            manageMachineDisruptionBudgets=manageMachineDisruptionBudgets,
+            pgHealthCheckTimeout=pgHealthCheckTimeout,
         )
 
     @property
@@ -138,6 +275,16 @@ class DisruptionManagement(CrdObject):
     def machineDisruptionBudgetNamespace(self, new_val):
         # type: (Optional[str]) -> None
         self._machineDisruptionBudgetNamespace = new_val
+    
+    @property
+    def manageMachineDisruptionBudgets(self):
+        # type: () -> bool
+        return self._property_impl('manageMachineDisruptionBudgets')
+    
+    @manageMachineDisruptionBudgets.setter
+    def manageMachineDisruptionBudgets(self, new_val):
+        # type: (Optional[bool]) -> None
+        self._manageMachineDisruptionBudgets = new_val
     
     @property
     def managePodBudgets(self):
@@ -160,647 +307,14 @@ class DisruptionManagement(CrdObject):
         self._osdMaintenanceTimeout = new_val
     
     @property
-    def manageMachineDisruptionBudgets(self):
-        # type: () -> bool
-        return self._property_impl('manageMachineDisruptionBudgets')
-    
-    @manageMachineDisruptionBudgets.setter
-    def manageMachineDisruptionBudgets(self, new_val):
-        # type: (Optional[bool]) -> None
-        self._manageMachineDisruptionBudgets = new_val
-
-
-class Mon(CrdObject):
-    _properties = [
-        ('allowMultiplePerNode', 'allowMultiplePerNode', bool, False, False),
-        ('count', 'count', int, False, False),
-        ('volumeClaimTemplate', 'volumeClaimTemplate', object, False, False)
-    ]        
-
-    def __init__(self,
-                 allowMultiplePerNode=_omit,  # type: Optional[bool]
-                 count=_omit,  # type: Optional[int]
-                 volumeClaimTemplate=_omit,  # type: Optional[Any]
-                 ):
-        super(Mon, self).__init__(
-            allowMultiplePerNode=allowMultiplePerNode,
-            count=count,
-            volumeClaimTemplate=volumeClaimTemplate,
-        )
-
-    @property
-    def allowMultiplePerNode(self):
-        # type: () -> bool
-        return self._property_impl('allowMultiplePerNode')
-    
-    @allowMultiplePerNode.setter
-    def allowMultiplePerNode(self, new_val):
-        # type: (Optional[bool]) -> None
-        self._allowMultiplePerNode = new_val
-    
-    @property
-    def count(self):
+    def pgHealthCheckTimeout(self):
         # type: () -> int
-        return self._property_impl('count')
+        return self._property_impl('pgHealthCheckTimeout')
     
-    @count.setter
-    def count(self, new_val):
+    @pgHealthCheckTimeout.setter
+    def pgHealthCheckTimeout(self, new_val):
         # type: (Optional[int]) -> None
-        self._count = new_val
-    
-    @property
-    def volumeClaimTemplate(self):
-        # type: () -> Any
-        return self._property_impl('volumeClaimTemplate')
-    
-    @volumeClaimTemplate.setter
-    def volumeClaimTemplate(self, new_val):
-        # type: (Optional[Any]) -> None
-        self._volumeClaimTemplate = new_val
-
-
-class ModulesItem(CrdObject):
-    _properties = [
-        ('name', 'name', str, False, False),
-        ('enabled', 'enabled', bool, False, False)
-    ]        
-
-    def __init__(self,
-                 name=_omit,  # type: Optional[str]
-                 enabled=_omit,  # type: Optional[bool]
-                 ):
-        super(ModulesItem, self).__init__(
-            name=name,
-            enabled=enabled,
-        )
-
-    @property
-    def name(self):
-        # type: () -> str
-        return self._property_impl('name')
-    
-    @name.setter
-    def name(self, new_val):
-        # type: (Optional[str]) -> None
-        self._name = new_val
-    
-    @property
-    def enabled(self):
-        # type: () -> bool
-        return self._property_impl('enabled')
-    
-    @enabled.setter
-    def enabled(self, new_val):
-        # type: (Optional[bool]) -> None
-        self._enabled = new_val
-
-
-class ModulesList(CrdObjectList):
-    _items_type = ModulesItem
-
-
-class Mgr(CrdObject):
-    _properties = [
-        ('modules', 'modules', ModulesList, False, False)
-    ]        
-
-    def __init__(self,
-                 modules=_omit,  # type: Optional[Union[List[ModulesItem], CrdObjectList]]
-                 ):
-        super(Mgr, self).__init__(
-            modules=modules,
-        )
-
-    @property
-    def modules(self):
-        # type: () -> Union[List[ModulesItem], CrdObjectList]
-        return self._property_impl('modules')
-    
-    @modules.setter
-    def modules(self, new_val):
-        # type: (Optional[Union[List[ModulesItem], CrdObjectList]]) -> None
-        self._modules = new_val
-
-
-class Network(CrdObject):
-    _properties = [
-        ('hostNetwork', 'hostNetwork', bool, False, False),
-        ('provider', 'provider', str, False, False),
-        ('selectors', 'selectors', object, False, False)
-    ]        
-
-    def __init__(self,
-                 hostNetwork=_omit,  # type: Optional[bool]
-                 provider=_omit,  # type: Optional[str]
-                 selectors=_omit,  # type: Optional[Any]
-                 ):
-        super(Network, self).__init__(
-            hostNetwork=hostNetwork,
-            provider=provider,
-            selectors=selectors,
-        )
-
-    @property
-    def hostNetwork(self):
-        # type: () -> bool
-        return self._property_impl('hostNetwork')
-    
-    @hostNetwork.setter
-    def hostNetwork(self, new_val):
-        # type: (Optional[bool]) -> None
-        self._hostNetwork = new_val
-    
-    @property
-    def provider(self):
-        # type: () -> str
-        return self._property_impl('provider')
-    
-    @provider.setter
-    def provider(self, new_val):
-        # type: (Optional[str]) -> None
-        self._provider = new_val
-    
-    @property
-    def selectors(self):
-        # type: () -> Any
-        return self._property_impl('selectors')
-    
-    @selectors.setter
-    def selectors(self, new_val):
-        # type: (Optional[Any]) -> None
-        self._selectors = new_val
-
-
-class Config(CrdObject):
-    _properties = [
-        ('metadataDevice', 'metadataDevice', str, False, False),
-        ('storeType', 'storeType', str, False, False),
-        ('databaseSizeMB', 'databaseSizeMB', str, False, False),
-        ('walSizeMB', 'walSizeMB', str, False, False),
-        ('journalSizeMB', 'journalSizeMB', str, False, False),
-        ('osdsPerDevice', 'osdsPerDevice', str, False, False),
-        ('encryptedDevice', 'encryptedDevice', str, False, False)
-    ]        
-
-    def __init__(self,
-                 metadataDevice=_omit,  # type: Optional[str]
-                 storeType=_omit,  # type: Optional[str]
-                 databaseSizeMB=_omit,  # type: Optional[str]
-                 walSizeMB=_omit,  # type: Optional[str]
-                 journalSizeMB=_omit,  # type: Optional[str]
-                 osdsPerDevice=_omit,  # type: Optional[str]
-                 encryptedDevice=_omit,  # type: Optional[str]
-                 ):
-        super(Config, self).__init__(
-            metadataDevice=metadataDevice,
-            storeType=storeType,
-            databaseSizeMB=databaseSizeMB,
-            walSizeMB=walSizeMB,
-            journalSizeMB=journalSizeMB,
-            osdsPerDevice=osdsPerDevice,
-            encryptedDevice=encryptedDevice,
-        )
-
-    @property
-    def metadataDevice(self):
-        # type: () -> str
-        return self._property_impl('metadataDevice')
-    
-    @metadataDevice.setter
-    def metadataDevice(self, new_val):
-        # type: (Optional[str]) -> None
-        self._metadataDevice = new_val
-    
-    @property
-    def storeType(self):
-        # type: () -> str
-        return self._property_impl('storeType')
-    
-    @storeType.setter
-    def storeType(self, new_val):
-        # type: (Optional[str]) -> None
-        self._storeType = new_val
-    
-    @property
-    def databaseSizeMB(self):
-        # type: () -> str
-        return self._property_impl('databaseSizeMB')
-    
-    @databaseSizeMB.setter
-    def databaseSizeMB(self, new_val):
-        # type: (Optional[str]) -> None
-        self._databaseSizeMB = new_val
-    
-    @property
-    def walSizeMB(self):
-        # type: () -> str
-        return self._property_impl('walSizeMB')
-    
-    @walSizeMB.setter
-    def walSizeMB(self, new_val):
-        # type: (Optional[str]) -> None
-        self._walSizeMB = new_val
-    
-    @property
-    def journalSizeMB(self):
-        # type: () -> str
-        return self._property_impl('journalSizeMB')
-    
-    @journalSizeMB.setter
-    def journalSizeMB(self, new_val):
-        # type: (Optional[str]) -> None
-        self._journalSizeMB = new_val
-    
-    @property
-    def osdsPerDevice(self):
-        # type: () -> str
-        return self._property_impl('osdsPerDevice')
-    
-    @osdsPerDevice.setter
-    def osdsPerDevice(self, new_val):
-        # type: (Optional[str]) -> None
-        self._osdsPerDevice = new_val
-    
-    @property
-    def encryptedDevice(self):
-        # type: () -> str
-        return self._property_impl('encryptedDevice')
-    
-    @encryptedDevice.setter
-    def encryptedDevice(self, new_val):
-        # type: (Optional[str]) -> None
-        self._encryptedDevice = new_val
-
-
-class DirectoriesItem(CrdObject):
-    _properties = [
-        ('path', 'path', str, False, False)
-    ]        
-
-    def __init__(self,
-                 path=_omit,  # type: Optional[str]
-                 ):
-        super(DirectoriesItem, self).__init__(
-            path=path,
-        )
-
-    @property
-    def path(self):
-        # type: () -> str
-        return self._property_impl('path')
-    
-    @path.setter
-    def path(self, new_val):
-        # type: (Optional[str]) -> None
-        self._path = new_val
-
-
-class DirectoriesList(CrdObjectList):
-    _items_type = DirectoriesItem
-
-
-class DevicesItem(CrdObject):
-    _properties = [
-        ('name', 'name', str, False, False),
-        ('config', 'config', object, False, False)
-    ]        
-
-    def __init__(self,
-                 name=_omit,  # type: Optional[str]
-                 config=_omit,  # type: Optional[Any]
-                 ):
-        super(DevicesItem, self).__init__(
-            name=name,
-            config=config,
-        )
-
-    @property
-    def name(self):
-        # type: () -> str
-        return self._property_impl('name')
-    
-    @name.setter
-    def name(self, new_val):
-        # type: (Optional[str]) -> None
-        self._name = new_val
-    
-    @property
-    def config(self):
-        # type: () -> Any
-        return self._property_impl('config')
-    
-    @config.setter
-    def config(self, new_val):
-        # type: (Optional[Any]) -> None
-        self._config = new_val
-
-
-class DevicesList(CrdObjectList):
-    _items_type = DevicesItem
-
-
-class NodesItem(CrdObject):
-    _properties = [
-        ('name', 'name', str, False, False),
-        ('config', 'config', Config, False, False),
-        ('useAllDevices', 'useAllDevices', bool, False, False),
-        ('deviceFilter', 'deviceFilter', str, False, False),
-        ('devicePathFilter', 'devicePathFilter', str, False, False),
-        ('directories', 'directories', DirectoriesList, False, False),
-        ('devices', 'devices', DevicesList, False, False),
-        ('resources', 'resources', object, False, False)
-    ]        
-
-    def __init__(self,
-                 name=_omit,  # type: Optional[str]
-                 config=_omit,  # type: Optional[Config]
-                 useAllDevices=_omit,  # type: Optional[bool]
-                 deviceFilter=_omit,  # type: Optional[str]
-                 devicePathFilter=_omit,  # type: Optional[str]
-                 directories=_omit,  # type: Optional[Union[List[DirectoriesItem], CrdObjectList]]
-                 devices=_omit,  # type: Optional[Union[List[DevicesItem], CrdObjectList]]
-                 resources=_omit,  # type: Optional[Any]
-                 ):
-        super(NodesItem, self).__init__(
-            name=name,
-            config=config,
-            useAllDevices=useAllDevices,
-            deviceFilter=deviceFilter,
-            devicePathFilter=devicePathFilter,
-            directories=directories,
-            devices=devices,
-            resources=resources,
-        )
-
-    @property
-    def name(self):
-        # type: () -> str
-        return self._property_impl('name')
-    
-    @name.setter
-    def name(self, new_val):
-        # type: (Optional[str]) -> None
-        self._name = new_val
-    
-    @property
-    def config(self):
-        # type: () -> Config
-        return self._property_impl('config')
-    
-    @config.setter
-    def config(self, new_val):
-        # type: (Optional[Config]) -> None
-        self._config = new_val
-    
-    @property
-    def useAllDevices(self):
-        # type: () -> bool
-        return self._property_impl('useAllDevices')
-    
-    @useAllDevices.setter
-    def useAllDevices(self, new_val):
-        # type: (Optional[bool]) -> None
-        self._useAllDevices = new_val
-    
-    @property
-    def deviceFilter(self):
-        # type: () -> str
-        return self._property_impl('deviceFilter')
-    
-    @deviceFilter.setter
-    def deviceFilter(self, new_val):
-        # type: (Optional[str]) -> None
-        self._deviceFilter = new_val
-    
-    @property
-    def devicePathFilter(self):
-        # type: () -> str
-        return self._property_impl('devicePathFilter')
-    
-    @devicePathFilter.setter
-    def devicePathFilter(self, new_val):
-        # type: (Optional[str]) -> None
-        self._devicePathFilter = new_val
-    
-    @property
-    def directories(self):
-        # type: () -> Union[List[DirectoriesItem], CrdObjectList]
-        return self._property_impl('directories')
-    
-    @directories.setter
-    def directories(self, new_val):
-        # type: (Optional[Union[List[DirectoriesItem], CrdObjectList]]) -> None
-        self._directories = new_val
-    
-    @property
-    def devices(self):
-        # type: () -> Union[List[DevicesItem], CrdObjectList]
-        return self._property_impl('devices')
-    
-    @devices.setter
-    def devices(self, new_val):
-        # type: (Optional[Union[List[DevicesItem], CrdObjectList]]) -> None
-        self._devices = new_val
-    
-    @property
-    def resources(self):
-        # type: () -> Any
-        return self._property_impl('resources')
-    
-    @resources.setter
-    def resources(self, new_val):
-        # type: (Optional[Any]) -> None
-        self._resources = new_val
-
-
-class NodesList(CrdObjectList):
-    _items_type = NodesItem
-
-
-class Storage(CrdObject):
-    _properties = [
-        ('disruptionManagement', 'disruptionManagement', DisruptionManagement, False, False),
-        ('useAllNodes', 'useAllNodes', bool, False, False),
-        ('nodes', 'nodes', NodesList, False, False),
-        ('useAllDevices', 'useAllDevices', bool, False, False),
-        ('deviceFilter', 'deviceFilter', str, False, False),
-        ('devicePathFilter', 'devicePathFilter', str, False, False),
-        ('directories', 'directories', DirectoriesList, False, False),
-        ('config', 'config', object, False, False),
-        ('storageClassDeviceSets', 'storageClassDeviceSets', object, False, False)
-    ]        
-
-    def __init__(self,
-                 disruptionManagement=_omit,  # type: Optional[DisruptionManagement]
-                 useAllNodes=_omit,  # type: Optional[bool]
-                 nodes=_omit,  # type: Optional[Union[List[NodesItem], CrdObjectList]]
-                 useAllDevices=_omit,  # type: Optional[bool]
-                 deviceFilter=_omit,  # type: Optional[str]
-                 devicePathFilter=_omit,  # type: Optional[str]
-                 directories=_omit,  # type: Optional[Union[List[DirectoriesItem], CrdObjectList]]
-                 config=_omit,  # type: Optional[Any]
-                 storageClassDeviceSets=_omit,  # type: Optional[Any]
-                 ):
-        super(Storage, self).__init__(
-            disruptionManagement=disruptionManagement,
-            useAllNodes=useAllNodes,
-            nodes=nodes,
-            useAllDevices=useAllDevices,
-            deviceFilter=deviceFilter,
-            devicePathFilter=devicePathFilter,
-            directories=directories,
-            config=config,
-            storageClassDeviceSets=storageClassDeviceSets,
-        )
-
-    @property
-    def disruptionManagement(self):
-        # type: () -> DisruptionManagement
-        return self._property_impl('disruptionManagement')
-    
-    @disruptionManagement.setter
-    def disruptionManagement(self, new_val):
-        # type: (Optional[DisruptionManagement]) -> None
-        self._disruptionManagement = new_val
-    
-    @property
-    def useAllNodes(self):
-        # type: () -> bool
-        return self._property_impl('useAllNodes')
-    
-    @useAllNodes.setter
-    def useAllNodes(self, new_val):
-        # type: (Optional[bool]) -> None
-        self._useAllNodes = new_val
-    
-    @property
-    def nodes(self):
-        # type: () -> Union[List[NodesItem], CrdObjectList]
-        return self._property_impl('nodes')
-    
-    @nodes.setter
-    def nodes(self, new_val):
-        # type: (Optional[Union[List[NodesItem], CrdObjectList]]) -> None
-        self._nodes = new_val
-    
-    @property
-    def useAllDevices(self):
-        # type: () -> bool
-        return self._property_impl('useAllDevices')
-    
-    @useAllDevices.setter
-    def useAllDevices(self, new_val):
-        # type: (Optional[bool]) -> None
-        self._useAllDevices = new_val
-    
-    @property
-    def deviceFilter(self):
-        # type: () -> str
-        return self._property_impl('deviceFilter')
-    
-    @deviceFilter.setter
-    def deviceFilter(self, new_val):
-        # type: (Optional[str]) -> None
-        self._deviceFilter = new_val
-    
-    @property
-    def devicePathFilter(self):
-        # type: () -> str
-        return self._property_impl('devicePathFilter')
-    
-    @devicePathFilter.setter
-    def devicePathFilter(self, new_val):
-        # type: (Optional[str]) -> None
-        self._devicePathFilter = new_val
-    
-    @property
-    def directories(self):
-        # type: () -> Union[List[DirectoriesItem], CrdObjectList]
-        return self._property_impl('directories')
-    
-    @directories.setter
-    def directories(self, new_val):
-        # type: (Optional[Union[List[DirectoriesItem], CrdObjectList]]) -> None
-        self._directories = new_val
-    
-    @property
-    def config(self):
-        # type: () -> Any
-        return self._property_impl('config')
-    
-    @config.setter
-    def config(self, new_val):
-        # type: (Optional[Any]) -> None
-        self._config = new_val
-    
-    @property
-    def storageClassDeviceSets(self):
-        # type: () -> Any
-        return self._property_impl('storageClassDeviceSets')
-    
-    @storageClassDeviceSets.setter
-    def storageClassDeviceSets(self, new_val):
-        # type: (Optional[Any]) -> None
-        self._storageClassDeviceSets = new_val
-
-
-class Monitoring(CrdObject):
-    _properties = [
-        ('enabled', 'enabled', bool, False, False),
-        ('rulesNamespace', 'rulesNamespace', str, False, False)
-    ]        
-
-    def __init__(self,
-                 enabled=_omit,  # type: Optional[bool]
-                 rulesNamespace=_omit,  # type: Optional[str]
-                 ):
-        super(Monitoring, self).__init__(
-            enabled=enabled,
-            rulesNamespace=rulesNamespace,
-        )
-
-    @property
-    def enabled(self):
-        # type: () -> bool
-        return self._property_impl('enabled')
-    
-    @enabled.setter
-    def enabled(self, new_val):
-        # type: (Optional[bool]) -> None
-        self._enabled = new_val
-    
-    @property
-    def rulesNamespace(self):
-        # type: () -> str
-        return self._property_impl('rulesNamespace')
-    
-    @rulesNamespace.setter
-    def rulesNamespace(self, new_val):
-        # type: (Optional[str]) -> None
-        self._rulesNamespace = new_val
-
-
-class RbdMirroring(CrdObject):
-    _properties = [
-        ('workers', 'workers', int, False, False)
-    ]        
-
-    def __init__(self,
-                 workers=_omit,  # type: Optional[int]
-                 ):
-        super(RbdMirroring, self).__init__(
-            workers=workers,
-        )
-
-    @property
-    def workers(self):
-        # type: () -> int
-        return self._property_impl('workers')
-    
-    @workers.setter
-    def workers(self, new_val):
-        # type: (Optional[int]) -> None
-        self._workers = new_val
+        self._pgHealthCheckTimeout = new_val
 
 
 class External(CrdObject):
@@ -826,64 +340,558 @@ class External(CrdObject):
         self._enable = new_val
 
 
-class Spec(CrdObject):
+class Mon(CrdObject):
+    _properties = [
+        ('allowMultiplePerNode', 'allowMultiplePerNode', bool, False, False),
+        ('count', 'count', int, False, False),
+        ('stretchCluster', 'stretchCluster', 'StretchCluster', False, False),
+        ('volumeClaimTemplate', 'volumeClaimTemplate', 'VolumeClaimTemplate', False, False),
+        ('disabled', 'disabled', bool, False, False),
+        ('interval', 'interval', str, False, False),
+        ('timeout', 'timeout', str, False, False)
+    ]        
+
+    def __init__(self,
+                 allowMultiplePerNode=_omit,  # type: Optional[bool]
+                 count=_omit,  # type: Optional[int]
+                 stretchCluster=_omit,  # type: Optional[StretchCluster]
+                 volumeClaimTemplate=_omit,  # type: Optional[VolumeClaimTemplate]
+                 disabled=_omit,  # type: Optional[bool]
+                 interval=_omit,  # type: Optional[str]
+                 timeout=_omit,  # type: Optional[str]
+                 ):
+        super(Mon, self).__init__(
+            allowMultiplePerNode=allowMultiplePerNode,
+            count=count,
+            stretchCluster=stretchCluster,
+            volumeClaimTemplate=volumeClaimTemplate,
+            disabled=disabled,
+            interval=interval,
+            timeout=timeout,
+        )
+
+    @property
+    def allowMultiplePerNode(self):
+        # type: () -> bool
+        return self._property_impl('allowMultiplePerNode')
+    
+    @allowMultiplePerNode.setter
+    def allowMultiplePerNode(self, new_val):
+        # type: (Optional[bool]) -> None
+        self._allowMultiplePerNode = new_val
+    
+    @property
+    def count(self):
+        # type: () -> int
+        return self._property_impl('count')
+    
+    @count.setter
+    def count(self, new_val):
+        # type: (Optional[int]) -> None
+        self._count = new_val
+    
+    @property
+    def stretchCluster(self):
+        # type: () -> StretchCluster
+        return self._property_impl('stretchCluster')
+    
+    @stretchCluster.setter
+    def stretchCluster(self, new_val):
+        # type: (Optional[StretchCluster]) -> None
+        self._stretchCluster = new_val
+    
+    @property
+    def volumeClaimTemplate(self):
+        # type: () -> VolumeClaimTemplate
+        return self._property_impl('volumeClaimTemplate')
+    
+    @volumeClaimTemplate.setter
+    def volumeClaimTemplate(self, new_val):
+        # type: (Optional[VolumeClaimTemplate]) -> None
+        self._volumeClaimTemplate = new_val
+    
+    @property
+    def disabled(self):
+        # type: () -> bool
+        return self._property_impl('disabled')
+    
+    @disabled.setter
+    def disabled(self, new_val):
+        # type: (Optional[bool]) -> None
+        self._disabled = new_val
+    
+    @property
+    def interval(self):
+        # type: () -> str
+        return self._property_impl('interval')
+    
+    @interval.setter
+    def interval(self, new_val):
+        # type: (Optional[str]) -> None
+        self._interval = new_val
+    
+    @property
+    def timeout(self):
+        # type: () -> str
+        return self._property_impl('timeout')
+    
+    @timeout.setter
+    def timeout(self, new_val):
+        # type: (Optional[str]) -> None
+        self._timeout = new_val
+
+
+class Osd(CrdObject):
+    _properties = [
+        ('disabled', 'disabled', bool, False, False),
+        ('interval', 'interval', str, False, False),
+        ('timeout', 'timeout', str, False, False)
+    ]        
+
+    def __init__(self,
+                 disabled=_omit,  # type: Optional[bool]
+                 interval=_omit,  # type: Optional[str]
+                 timeout=_omit,  # type: Optional[str]
+                 ):
+        super(Osd, self).__init__(
+            disabled=disabled,
+            interval=interval,
+            timeout=timeout,
+        )
+
+    @property
+    def disabled(self):
+        # type: () -> bool
+        return self._property_impl('disabled')
+    
+    @disabled.setter
+    def disabled(self, new_val):
+        # type: (Optional[bool]) -> None
+        self._disabled = new_val
+    
+    @property
+    def interval(self):
+        # type: () -> str
+        return self._property_impl('interval')
+    
+    @interval.setter
+    def interval(self, new_val):
+        # type: (Optional[str]) -> None
+        self._interval = new_val
+    
+    @property
+    def timeout(self):
+        # type: () -> str
+        return self._property_impl('timeout')
+    
+    @timeout.setter
+    def timeout(self, new_val):
+        # type: (Optional[str]) -> None
+        self._timeout = new_val
+
+
+class Status(CrdObject):
+    _properties = [
+        ('ceph', 'ceph', 'Ceph', False, False),
+        ('conditions', 'conditions', 'ConditionsList', False, False),
+        ('message', 'message', str, False, False),
+        ('phase', 'phase', str, False, False),
+        ('state', 'state', str, False, False),
+        ('storage', 'storage', 'Storage', False, False),
+        ('version', 'version', 'Version', False, False),
+        ('accessModes', 'accessModes', 'AccessModesList', False, False),
+        ('capacity', 'capacity', object, False, False),
+        ('disabled', 'disabled', bool, False, False),
+        ('interval', 'interval', str, False, False),
+        ('timeout', 'timeout', str, False, False)
+    ]        
+
+    def __init__(self,
+                 ceph=_omit,  # type: Optional[Ceph]
+                 conditions=_omit,  # type: Optional[Union[List[ConditionsItem], CrdObjectList]]
+                 message=_omit,  # type: Optional[str]
+                 phase=_omit,  # type: Optional[str]
+                 state=_omit,  # type: Optional[str]
+                 storage=_omit,  # type: Optional[Storage]
+                 version=_omit,  # type: Optional[Version]
+                 accessModes=_omit,  # type: Optional[Union[List[str], CrdObjectList]]
+                 capacity=_omit,  # type: Optional[Any]
+                 disabled=_omit,  # type: Optional[bool]
+                 interval=_omit,  # type: Optional[str]
+                 timeout=_omit,  # type: Optional[str]
+                 ):
+        super(Status, self).__init__(
+            ceph=ceph,
+            conditions=conditions,
+            message=message,
+            phase=phase,
+            state=state,
+            storage=storage,
+            version=version,
+            accessModes=accessModes,
+            capacity=capacity,
+            disabled=disabled,
+            interval=interval,
+            timeout=timeout,
+        )
+
+    @property
+    def ceph(self):
+        # type: () -> Ceph
+        return self._property_impl('ceph')
+    
+    @ceph.setter
+    def ceph(self, new_val):
+        # type: (Optional[Ceph]) -> None
+        self._ceph = new_val
+    
+    @property
+    def conditions(self):
+        # type: () -> Union[List[ConditionsItem], CrdObjectList]
+        return self._property_impl('conditions')
+    
+    @conditions.setter
+    def conditions(self, new_val):
+        # type: (Optional[Union[List[ConditionsItem], CrdObjectList]]) -> None
+        self._conditions = new_val
+    
+    @property
+    def message(self):
+        # type: () -> str
+        return self._property_impl('message')
+    
+    @message.setter
+    def message(self, new_val):
+        # type: (Optional[str]) -> None
+        self._message = new_val
+    
+    @property
+    def phase(self):
+        # type: () -> str
+        return self._property_impl('phase')
+    
+    @phase.setter
+    def phase(self, new_val):
+        # type: (Optional[str]) -> None
+        self._phase = new_val
+    
+    @property
+    def state(self):
+        # type: () -> str
+        return self._property_impl('state')
+    
+    @state.setter
+    def state(self, new_val):
+        # type: (Optional[str]) -> None
+        self._state = new_val
+    
+    @property
+    def storage(self):
+        # type: () -> Storage
+        return self._property_impl('storage')
+    
+    @storage.setter
+    def storage(self, new_val):
+        # type: (Optional[Storage]) -> None
+        self._storage = new_val
+    
+    @property
+    def version(self):
+        # type: () -> Version
+        return self._property_impl('version')
+    
+    @version.setter
+    def version(self, new_val):
+        # type: (Optional[Version]) -> None
+        self._version = new_val
+    
+    @property
+    def accessModes(self):
+        # type: () -> Union[List[str], CrdObjectList]
+        return self._property_impl('accessModes')
+    
+    @accessModes.setter
+    def accessModes(self, new_val):
+        # type: (Optional[Union[List[str], CrdObjectList]]) -> None
+        self._accessModes = new_val
+    
+    @property
+    def capacity(self):
+        # type: () -> Any
+        return self._property_impl('capacity')
+    
+    @capacity.setter
+    def capacity(self, new_val):
+        # type: (Optional[Any]) -> None
+        self._capacity = new_val
+    
+    @property
+    def disabled(self):
+        # type: () -> bool
+        return self._property_impl('disabled')
+    
+    @disabled.setter
+    def disabled(self, new_val):
+        # type: (Optional[bool]) -> None
+        self._disabled = new_val
+    
+    @property
+    def interval(self):
+        # type: () -> str
+        return self._property_impl('interval')
+    
+    @interval.setter
+    def interval(self, new_val):
+        # type: (Optional[str]) -> None
+        self._interval = new_val
+    
+    @property
+    def timeout(self):
+        # type: () -> str
+        return self._property_impl('timeout')
+    
+    @timeout.setter
+    def timeout(self, new_val):
+        # type: (Optional[str]) -> None
+        self._timeout = new_val
+
+
+class DaemonHealth(CrdObject):
+    _properties = [
+        ('mon', 'mon', 'Mon', False, True),
+        ('osd', 'osd', 'Osd', False, True),
+        ('status', 'status', 'Status', False, True)
+    ]        
+
+    def __init__(self,
+                 mon=_omit,  # type: Optional[Mon]
+                 osd=_omit,  # type: Optional[Osd]
+                 status=_omit,  # type: Optional[Status]
+                 ):
+        super(DaemonHealth, self).__init__(
+            mon=mon,
+            osd=osd,
+            status=status,
+        )
+
+    @property
+    def mon(self):
+        # type: () -> Optional[Mon]
+        return self._property_impl('mon')
+    
+    @mon.setter
+    def mon(self, new_val):
+        # type: (Optional[Mon]) -> None
+        self._mon = new_val
+    
+    @property
+    def osd(self):
+        # type: () -> Optional[Osd]
+        return self._property_impl('osd')
+    
+    @osd.setter
+    def osd(self, new_val):
+        # type: (Optional[Osd]) -> None
+        self._osd = new_val
+    
+    @property
+    def status(self):
+        # type: () -> Optional[Status]
+        return self._property_impl('status')
+    
+    @status.setter
+    def status(self, new_val):
+        # type: (Optional[Status]) -> None
+        self._status = new_val
+
+
+class HealthCheck(CrdObject):
+    _properties = [
+        ('daemonHealth', 'daemonHealth', 'DaemonHealth', False, True),
+        ('livenessProbe', 'livenessProbe', object, False, False)
+    ]        
+
+    def __init__(self,
+                 daemonHealth=_omit,  # type: Optional[DaemonHealth]
+                 livenessProbe=_omit,  # type: Optional[Any]
+                 ):
+        super(HealthCheck, self).__init__(
+            daemonHealth=daemonHealth,
+            livenessProbe=livenessProbe,
+        )
+
+    @property
+    def daemonHealth(self):
+        # type: () -> Optional[DaemonHealth]
+        return self._property_impl('daemonHealth')
+    
+    @daemonHealth.setter
+    def daemonHealth(self, new_val):
+        # type: (Optional[DaemonHealth]) -> None
+        self._daemonHealth = new_val
+    
+    @property
+    def livenessProbe(self):
+        # type: () -> Any
+        return self._property_impl('livenessProbe')
+    
+    @livenessProbe.setter
+    def livenessProbe(self, new_val):
+        # type: (Optional[Any]) -> None
+        self._livenessProbe = new_val
+
+
+class LogCollector(CrdObject):
+    _properties = [
+        ('enabled', 'enabled', bool, False, False),
+        ('periodicity', 'periodicity', str, False, False)
+    ]        
+
+    def __init__(self,
+                 enabled=_omit,  # type: Optional[bool]
+                 periodicity=_omit,  # type: Optional[str]
+                 ):
+        super(LogCollector, self).__init__(
+            enabled=enabled,
+            periodicity=periodicity,
+        )
+
+    @property
+    def enabled(self):
+        # type: () -> bool
+        return self._property_impl('enabled')
+    
+    @enabled.setter
+    def enabled(self, new_val):
+        # type: (Optional[bool]) -> None
+        self._enabled = new_val
+    
+    @property
+    def periodicity(self):
+        # type: () -> str
+        return self._property_impl('periodicity')
+    
+    @periodicity.setter
+    def periodicity(self, new_val):
+        # type: (Optional[str]) -> None
+        self._periodicity = new_val
+
+
+class ModulesItem(CrdObject):
+    _properties = [
+        ('enabled', 'enabled', bool, False, False),
+        ('name', 'name', str, False, False)
+    ]        
+
+    def __init__(self,
+                 enabled=_omit,  # type: Optional[bool]
+                 name=_omit,  # type: Optional[str]
+                 ):
+        super(ModulesItem, self).__init__(
+            enabled=enabled,
+            name=name,
+        )
+
+    @property
+    def enabled(self):
+        # type: () -> bool
+        return self._property_impl('enabled')
+    
+    @enabled.setter
+    def enabled(self, new_val):
+        # type: (Optional[bool]) -> None
+        self._enabled = new_val
+    
+    @property
+    def name(self):
+        # type: () -> str
+        return self._property_impl('name')
+    
+    @name.setter
+    def name(self, new_val):
+        # type: (Optional[str]) -> None
+        self._name = new_val
+
+
+class ModulesList(CrdObjectList):
+    _items_type = ModulesItem
+
+
+class Mgr(CrdObject):
+    _properties = [
+        ('allowMultiplePerNode', 'allowMultiplePerNode', bool, False, False),
+        ('count', 'count', int, False, False),
+        ('modules', 'modules', 'ModulesList', False, True)
+    ]        
+
+    def __init__(self,
+                 allowMultiplePerNode=_omit,  # type: Optional[bool]
+                 count=_omit,  # type: Optional[int]
+                 modules=_omit,  # type: Optional[Union[List[ModulesItem], CrdObjectList]]
+                 ):
+        super(Mgr, self).__init__(
+            allowMultiplePerNode=allowMultiplePerNode,
+            count=count,
+            modules=modules,
+        )
+
+    @property
+    def allowMultiplePerNode(self):
+        # type: () -> bool
+        return self._property_impl('allowMultiplePerNode')
+    
+    @allowMultiplePerNode.setter
+    def allowMultiplePerNode(self, new_val):
+        # type: (Optional[bool]) -> None
+        self._allowMultiplePerNode = new_val
+    
+    @property
+    def count(self):
+        # type: () -> int
+        return self._property_impl('count')
+    
+    @count.setter
+    def count(self, new_val):
+        # type: (Optional[int]) -> None
+        self._count = new_val
+    
+    @property
+    def modules(self):
+        # type: () -> Optional[Union[List[ModulesItem], CrdObjectList]]
+        return self._property_impl('modules')
+    
+    @modules.setter
+    def modules(self, new_val):
+        # type: (Optional[Union[List[ModulesItem], CrdObjectList]]) -> None
+        self._modules = new_val
+
+
+class FinalizersList(CrdObjectList):
+    _items_type = str
+
+
+class Metadata(CrdObject):
     _properties = [
         ('annotations', 'annotations', object, False, False),
-        ('cephVersion', 'cephVersion', CephVersion, False, False),
-        ('dashboard', 'dashboard', Dashboard, False, False),
-        ('dataDirHostPath', 'dataDirHostPath', str, False, False),
-        ('disruptionManagement', 'disruptionManagement', DisruptionManagement, False, False),
-        ('skipUpgradeChecks', 'skipUpgradeChecks', bool, False, False),
-        ('continueUpgradeAfterChecksEvenIfNotHealthy', 'continueUpgradeAfterChecksEvenIfNotHealthy', bool, False, False),
-        ('mon', 'mon', Mon, False, False),
-        ('mgr', 'mgr', Mgr, False, False),
-        ('network', 'network', Network, False, False),
-        ('storage', 'storage', Storage, False, False),
-        ('monitoring', 'monitoring', Monitoring, False, False),
-        ('rbdMirroring', 'rbdMirroring', RbdMirroring, False, False),
-        ('removeOSDsIfOutAndSafeToRemove', 'removeOSDsIfOutAndSafeToRemove', bool, False, False),
-        ('external', 'external', External, False, False),
-        ('placement', 'placement', object, False, False),
-        ('resources', 'resources', object, False, False)
+        ('finalizers', 'finalizers', 'FinalizersList', False, False),
+        ('labels', 'labels', object, False, False),
+        ('name', 'name', str, False, False),
+        ('namespace', 'namespace', str, False, False)
     ]        
 
     def __init__(self,
                  annotations=_omit,  # type: Optional[Any]
-                 cephVersion=_omit,  # type: Optional[CephVersion]
-                 dashboard=_omit,  # type: Optional[Dashboard]
-                 dataDirHostPath=_omit,  # type: Optional[str]
-                 disruptionManagement=_omit,  # type: Optional[DisruptionManagement]
-                 skipUpgradeChecks=_omit,  # type: Optional[bool]
-                 continueUpgradeAfterChecksEvenIfNotHealthy=_omit,  # type: Optional[bool]
-                 mon=_omit,  # type: Optional[Mon]
-                 mgr=_omit,  # type: Optional[Mgr]
-                 network=_omit,  # type: Optional[Network]
-                 storage=_omit,  # type: Optional[Storage]
-                 monitoring=_omit,  # type: Optional[Monitoring]
-                 rbdMirroring=_omit,  # type: Optional[RbdMirroring]
-                 removeOSDsIfOutAndSafeToRemove=_omit,  # type: Optional[bool]
-                 external=_omit,  # type: Optional[External]
-                 placement=_omit,  # type: Optional[Any]
-                 resources=_omit,  # type: Optional[Any]
+                 finalizers=_omit,  # type: Optional[Union[List[str], CrdObjectList]]
+                 labels=_omit,  # type: Optional[Any]
+                 name=_omit,  # type: Optional[str]
+                 namespace=_omit,  # type: Optional[str]
                  ):
-        super(Spec, self).__init__(
+        super(Metadata, self).__init__(
             annotations=annotations,
-            cephVersion=cephVersion,
-            dashboard=dashboard,
-            dataDirHostPath=dataDirHostPath,
-            disruptionManagement=disruptionManagement,
-            skipUpgradeChecks=skipUpgradeChecks,
-            continueUpgradeAfterChecksEvenIfNotHealthy=continueUpgradeAfterChecksEvenIfNotHealthy,
-            mon=mon,
-            mgr=mgr,
-            network=network,
-            storage=storage,
-            monitoring=monitoring,
-            rbdMirroring=rbdMirroring,
-            removeOSDsIfOutAndSafeToRemove=removeOSDsIfOutAndSafeToRemove,
-            external=external,
-            placement=placement,
-            resources=resources,
+            finalizers=finalizers,
+            labels=labels,
+            name=name,
+            namespace=namespace,
         )
 
     @property
@@ -897,8 +905,340 @@ class Spec(CrdObject):
         self._annotations = new_val
     
     @property
+    def finalizers(self):
+        # type: () -> Union[List[str], CrdObjectList]
+        return self._property_impl('finalizers')
+    
+    @finalizers.setter
+    def finalizers(self, new_val):
+        # type: (Optional[Union[List[str], CrdObjectList]]) -> None
+        self._finalizers = new_val
+    
+    @property
+    def labels(self):
+        # type: () -> Any
+        return self._property_impl('labels')
+    
+    @labels.setter
+    def labels(self, new_val):
+        # type: (Optional[Any]) -> None
+        self._labels = new_val
+    
+    @property
+    def name(self):
+        # type: () -> str
+        return self._property_impl('name')
+    
+    @name.setter
+    def name(self, new_val):
+        # type: (Optional[str]) -> None
+        self._name = new_val
+    
+    @property
+    def namespace(self):
+        # type: () -> str
+        return self._property_impl('namespace')
+    
+    @namespace.setter
+    def namespace(self, new_val):
+        # type: (Optional[str]) -> None
+        self._namespace = new_val
+
+
+class AccessModesList(CrdObjectList):
+    _items_type = str
+
+
+class DataSource(CrdObject):
+    _properties = [
+        ('apiGroup', 'apiGroup', str, False, False),
+        ('kind', 'kind', str, True, False),
+        ('name', 'name', str, True, False)
+    ]        
+
+    def __init__(self,
+                 kind,  # type: str
+                 name,  # type: str
+                 apiGroup=_omit,  # type: Optional[str]
+                 ):
+        super(DataSource, self).__init__(
+            kind=kind,
+            name=name,
+            apiGroup=apiGroup,
+        )
+
+    @property
+    def apiGroup(self):
+        # type: () -> str
+        return self._property_impl('apiGroup')
+    
+    @apiGroup.setter
+    def apiGroup(self, new_val):
+        # type: (Optional[str]) -> None
+        self._apiGroup = new_val
+    
+    @property
+    def kind(self):
+        # type: () -> str
+        return self._property_impl('kind')
+    
+    @kind.setter
+    def kind(self, new_val):
+        # type: (str) -> None
+        self._kind = new_val
+    
+    @property
+    def name(self):
+        # type: () -> str
+        return self._property_impl('name')
+    
+    @name.setter
+    def name(self, new_val):
+        # type: (str) -> None
+        self._name = new_val
+
+
+class Resources(CrdObject):
+    _properties = [
+        ('limits', 'limits', object, False, False),
+        ('requests', 'requests', object, False, False)
+    ]        
+
+    def __init__(self,
+                 limits=_omit,  # type: Optional[Any]
+                 requests=_omit,  # type: Optional[Any]
+                 ):
+        super(Resources, self).__init__(
+            limits=limits,
+            requests=requests,
+        )
+
+    @property
+    def limits(self):
+        # type: () -> Any
+        return self._property_impl('limits')
+    
+    @limits.setter
+    def limits(self, new_val):
+        # type: (Optional[Any]) -> None
+        self._limits = new_val
+    
+    @property
+    def requests(self):
+        # type: () -> Any
+        return self._property_impl('requests')
+    
+    @requests.setter
+    def requests(self, new_val):
+        # type: (Optional[Any]) -> None
+        self._requests = new_val
+
+
+class ValuesList(CrdObjectList):
+    _items_type = str
+
+
+class MatchExpressionsItem(CrdObject):
+    _properties = [
+        ('key', 'key', str, True, False),
+        ('operator', 'operator', str, True, False),
+        ('values', 'values', 'ValuesList', False, False)
+    ]        
+
+    def __init__(self,
+                 key,  # type: str
+                 operator,  # type: str
+                 values=_omit,  # type: Optional[Union[List[str], CrdObjectList]]
+                 ):
+        super(MatchExpressionsItem, self).__init__(
+            key=key,
+            operator=operator,
+            values=values,
+        )
+
+    @property
+    def key(self):
+        # type: () -> str
+        return self._property_impl('key')
+    
+    @key.setter
+    def key(self, new_val):
+        # type: (str) -> None
+        self._key = new_val
+    
+    @property
+    def operator(self):
+        # type: () -> str
+        return self._property_impl('operator')
+    
+    @operator.setter
+    def operator(self, new_val):
+        # type: (str) -> None
+        self._operator = new_val
+    
+    @property
+    def values(self):
+        # type: () -> Union[List[str], CrdObjectList]
+        return self._property_impl('values')
+    
+    @values.setter
+    def values(self, new_val):
+        # type: (Optional[Union[List[str], CrdObjectList]]) -> None
+        self._values = new_val
+
+
+class MatchExpressionsList(CrdObjectList):
+    _items_type = MatchExpressionsItem
+
+
+class Selector(CrdObject):
+    _properties = [
+        ('matchExpressions', 'matchExpressions', 'MatchExpressionsList', False, False),
+        ('matchLabels', 'matchLabels', object, False, False)
+    ]        
+
+    def __init__(self,
+                 matchExpressions=_omit,  # type: Optional[Union[List[MatchExpressionsItem], CrdObjectList]]
+                 matchLabels=_omit,  # type: Optional[Any]
+                 ):
+        super(Selector, self).__init__(
+            matchExpressions=matchExpressions,
+            matchLabels=matchLabels,
+        )
+
+    @property
+    def matchExpressions(self):
+        # type: () -> Union[List[MatchExpressionsItem], CrdObjectList]
+        return self._property_impl('matchExpressions')
+    
+    @matchExpressions.setter
+    def matchExpressions(self, new_val):
+        # type: (Optional[Union[List[MatchExpressionsItem], CrdObjectList]]) -> None
+        self._matchExpressions = new_val
+    
+    @property
+    def matchLabels(self):
+        # type: () -> Any
+        return self._property_impl('matchLabels')
+    
+    @matchLabels.setter
+    def matchLabels(self, new_val):
+        # type: (Optional[Any]) -> None
+        self._matchLabels = new_val
+
+
+class Spec(CrdObject):
+    _properties = [
+        ('annotations', 'annotations', object, False, True),
+        ('cephVersion', 'cephVersion', 'CephVersion', False, True),
+        ('cleanupPolicy', 'cleanupPolicy', 'CleanupPolicy', False, True),
+        ('continueUpgradeAfterChecksEvenIfNotHealthy', 'continueUpgradeAfterChecksEvenIfNotHealthy', bool, False, False),
+        ('crashCollector', 'crashCollector', 'CrashCollector', False, True),
+        ('dashboard', 'dashboard', 'Dashboard', False, True),
+        ('dataDirHostPath', 'dataDirHostPath', str, False, False),
+        ('disruptionManagement', 'disruptionManagement', 'DisruptionManagement', False, True),
+        ('external', 'external', 'External', False, True),
+        ('healthCheck', 'healthCheck', 'HealthCheck', False, True),
+        ('labels', 'labels', object, False, True),
+        ('logCollector', 'logCollector', 'LogCollector', False, True),
+        ('mgr', 'mgr', 'Mgr', False, True),
+        ('mon', 'mon', 'Mon', False, True),
+        ('monitoring', 'monitoring', 'Monitoring', False, True),
+        ('network', 'network', 'Network', False, True),
+        ('placement', 'placement', object, False, True),
+        ('priorityClassNames', 'priorityClassNames', object, False, True),
+        ('removeOSDsIfOutAndSafeToRemove', 'removeOSDsIfOutAndSafeToRemove', bool, False, False),
+        ('resources', 'resources', object, False, True),
+        ('security', 'security', 'Security', False, True),
+        ('skipUpgradeChecks', 'skipUpgradeChecks', bool, False, False),
+        ('storage', 'storage', 'Storage', False, True),
+        ('waitTimeoutForHealthyOSDInMinutes', 'waitTimeoutForHealthyOSDInMinutes', int, False, False),
+        ('accessModes', 'accessModes', 'AccessModesList', False, False),
+        ('dataSource', 'dataSource', 'DataSource', False, False),
+        ('selector', 'selector', 'Selector', False, False),
+        ('storageClassName', 'storageClassName', str, False, False),
+        ('volumeMode', 'volumeMode', str, False, False),
+        ('volumeName', 'volumeName', str, False, False)
+    ]        
+
+    def __init__(self,
+                 annotations=_omit,  # type: Optional[Any]
+                 cephVersion=_omit,  # type: Optional[CephVersion]
+                 cleanupPolicy=_omit,  # type: Optional[CleanupPolicy]
+                 continueUpgradeAfterChecksEvenIfNotHealthy=_omit,  # type: Optional[bool]
+                 crashCollector=_omit,  # type: Optional[CrashCollector]
+                 dashboard=_omit,  # type: Optional[Dashboard]
+                 dataDirHostPath=_omit,  # type: Optional[str]
+                 disruptionManagement=_omit,  # type: Optional[DisruptionManagement]
+                 external=_omit,  # type: Optional[External]
+                 healthCheck=_omit,  # type: Optional[HealthCheck]
+                 labels=_omit,  # type: Optional[Any]
+                 logCollector=_omit,  # type: Optional[LogCollector]
+                 mgr=_omit,  # type: Optional[Mgr]
+                 mon=_omit,  # type: Optional[Mon]
+                 monitoring=_omit,  # type: Optional[Monitoring]
+                 network=_omit,  # type: Optional[Network]
+                 placement=_omit,  # type: Optional[Any]
+                 priorityClassNames=_omit,  # type: Optional[Any]
+                 removeOSDsIfOutAndSafeToRemove=_omit,  # type: Optional[bool]
+                 resources=_omit,  # type: Optional[Any]
+                 security=_omit,  # type: Optional[Security]
+                 skipUpgradeChecks=_omit,  # type: Optional[bool]
+                 storage=_omit,  # type: Optional[Storage]
+                 waitTimeoutForHealthyOSDInMinutes=_omit,  # type: Optional[int]
+                 accessModes=_omit,  # type: Optional[Union[List[str], CrdObjectList]]
+                 dataSource=_omit,  # type: Optional[DataSource]
+                 selector=_omit,  # type: Optional[Selector]
+                 storageClassName=_omit,  # type: Optional[str]
+                 volumeMode=_omit,  # type: Optional[str]
+                 volumeName=_omit,  # type: Optional[str]
+                 ):
+        super(Spec, self).__init__(
+            annotations=annotations,
+            cephVersion=cephVersion,
+            cleanupPolicy=cleanupPolicy,
+            continueUpgradeAfterChecksEvenIfNotHealthy=continueUpgradeAfterChecksEvenIfNotHealthy,
+            crashCollector=crashCollector,
+            dashboard=dashboard,
+            dataDirHostPath=dataDirHostPath,
+            disruptionManagement=disruptionManagement,
+            external=external,
+            healthCheck=healthCheck,
+            labels=labels,
+            logCollector=logCollector,
+            mgr=mgr,
+            mon=mon,
+            monitoring=monitoring,
+            network=network,
+            placement=placement,
+            priorityClassNames=priorityClassNames,
+            removeOSDsIfOutAndSafeToRemove=removeOSDsIfOutAndSafeToRemove,
+            resources=resources,
+            security=security,
+            skipUpgradeChecks=skipUpgradeChecks,
+            storage=storage,
+            waitTimeoutForHealthyOSDInMinutes=waitTimeoutForHealthyOSDInMinutes,
+            accessModes=accessModes,
+            dataSource=dataSource,
+            selector=selector,
+            storageClassName=storageClassName,
+            volumeMode=volumeMode,
+            volumeName=volumeName,
+        )
+
+    @property
+    def annotations(self):
+        # type: () -> Optional[Any]
+        return self._property_impl('annotations')
+    
+    @annotations.setter
+    def annotations(self, new_val):
+        # type: (Optional[Any]) -> None
+        self._annotations = new_val
+    
+    @property
     def cephVersion(self):
-        # type: () -> CephVersion
+        # type: () -> Optional[CephVersion]
         return self._property_impl('cephVersion')
     
     @cephVersion.setter
@@ -907,8 +1247,38 @@ class Spec(CrdObject):
         self._cephVersion = new_val
     
     @property
+    def cleanupPolicy(self):
+        # type: () -> Optional[CleanupPolicy]
+        return self._property_impl('cleanupPolicy')
+    
+    @cleanupPolicy.setter
+    def cleanupPolicy(self, new_val):
+        # type: (Optional[CleanupPolicy]) -> None
+        self._cleanupPolicy = new_val
+    
+    @property
+    def continueUpgradeAfterChecksEvenIfNotHealthy(self):
+        # type: () -> bool
+        return self._property_impl('continueUpgradeAfterChecksEvenIfNotHealthy')
+    
+    @continueUpgradeAfterChecksEvenIfNotHealthy.setter
+    def continueUpgradeAfterChecksEvenIfNotHealthy(self, new_val):
+        # type: (Optional[bool]) -> None
+        self._continueUpgradeAfterChecksEvenIfNotHealthy = new_val
+    
+    @property
+    def crashCollector(self):
+        # type: () -> Optional[CrashCollector]
+        return self._property_impl('crashCollector')
+    
+    @crashCollector.setter
+    def crashCollector(self, new_val):
+        # type: (Optional[CrashCollector]) -> None
+        self._crashCollector = new_val
+    
+    @property
     def dashboard(self):
-        # type: () -> Dashboard
+        # type: () -> Optional[Dashboard]
         return self._property_impl('dashboard')
     
     @dashboard.setter
@@ -928,7 +1298,7 @@ class Spec(CrdObject):
     
     @property
     def disruptionManagement(self):
-        # type: () -> DisruptionManagement
+        # type: () -> Optional[DisruptionManagement]
         return self._property_impl('disruptionManagement')
     
     @disruptionManagement.setter
@@ -937,38 +1307,48 @@ class Spec(CrdObject):
         self._disruptionManagement = new_val
     
     @property
-    def skipUpgradeChecks(self):
-        # type: () -> bool
-        return self._property_impl('skipUpgradeChecks')
+    def external(self):
+        # type: () -> Optional[External]
+        return self._property_impl('external')
     
-    @skipUpgradeChecks.setter
-    def skipUpgradeChecks(self, new_val):
-        # type: (Optional[bool]) -> None
-        self._skipUpgradeChecks = new_val
-    
-    @property
-    def continueUpgradeAfterChecksEvenIfNotHealthy(self):
-        # type: () -> bool
-        return self._property_impl('continueUpgradeAfterChecksEvenIfNotHealthy')
-    
-    @continueUpgradeAfterChecksEvenIfNotHealthy.setter
-    def continueUpgradeAfterChecksEvenIfNotHealthy(self, new_val):
-        # type: (Optional[bool]) -> None
-        self._continueUpgradeAfterChecksEvenIfNotHealthy = new_val
+    @external.setter
+    def external(self, new_val):
+        # type: (Optional[External]) -> None
+        self._external = new_val
     
     @property
-    def mon(self):
-        # type: () -> Mon
-        return self._property_impl('mon')
+    def healthCheck(self):
+        # type: () -> Optional[HealthCheck]
+        return self._property_impl('healthCheck')
     
-    @mon.setter
-    def mon(self, new_val):
-        # type: (Optional[Mon]) -> None
-        self._mon = new_val
+    @healthCheck.setter
+    def healthCheck(self, new_val):
+        # type: (Optional[HealthCheck]) -> None
+        self._healthCheck = new_val
+    
+    @property
+    def labels(self):
+        # type: () -> Optional[Any]
+        return self._property_impl('labels')
+    
+    @labels.setter
+    def labels(self, new_val):
+        # type: (Optional[Any]) -> None
+        self._labels = new_val
+    
+    @property
+    def logCollector(self):
+        # type: () -> Optional[LogCollector]
+        return self._property_impl('logCollector')
+    
+    @logCollector.setter
+    def logCollector(self, new_val):
+        # type: (Optional[LogCollector]) -> None
+        self._logCollector = new_val
     
     @property
     def mgr(self):
-        # type: () -> Mgr
+        # type: () -> Optional[Mgr]
         return self._property_impl('mgr')
     
     @mgr.setter
@@ -977,28 +1357,18 @@ class Spec(CrdObject):
         self._mgr = new_val
     
     @property
-    def network(self):
-        # type: () -> Network
-        return self._property_impl('network')
+    def mon(self):
+        # type: () -> Optional[Mon]
+        return self._property_impl('mon')
     
-    @network.setter
-    def network(self, new_val):
-        # type: (Optional[Network]) -> None
-        self._network = new_val
-    
-    @property
-    def storage(self):
-        # type: () -> Storage
-        return self._property_impl('storage')
-    
-    @storage.setter
-    def storage(self, new_val):
-        # type: (Optional[Storage]) -> None
-        self._storage = new_val
+    @mon.setter
+    def mon(self, new_val):
+        # type: (Optional[Mon]) -> None
+        self._mon = new_val
     
     @property
     def monitoring(self):
-        # type: () -> Monitoring
+        # type: () -> Optional[Monitoring]
         return self._property_impl('monitoring')
     
     @monitoring.setter
@@ -1007,14 +1377,34 @@ class Spec(CrdObject):
         self._monitoring = new_val
     
     @property
-    def rbdMirroring(self):
-        # type: () -> RbdMirroring
-        return self._property_impl('rbdMirroring')
+    def network(self):
+        # type: () -> Optional[Network]
+        return self._property_impl('network')
     
-    @rbdMirroring.setter
-    def rbdMirroring(self, new_val):
-        # type: (Optional[RbdMirroring]) -> None
-        self._rbdMirroring = new_val
+    @network.setter
+    def network(self, new_val):
+        # type: (Optional[Network]) -> None
+        self._network = new_val
+    
+    @property
+    def placement(self):
+        # type: () -> Optional[Any]
+        return self._property_impl('placement')
+    
+    @placement.setter
+    def placement(self, new_val):
+        # type: (Optional[Any]) -> None
+        self._placement = new_val
+    
+    @property
+    def priorityClassNames(self):
+        # type: () -> Optional[Any]
+        return self._property_impl('priorityClassNames')
+    
+    @priorityClassNames.setter
+    def priorityClassNames(self, new_val):
+        # type: (Optional[Any]) -> None
+        self._priorityClassNames = new_val
     
     @property
     def removeOSDsIfOutAndSafeToRemove(self):
@@ -1027,52 +1417,240 @@ class Spec(CrdObject):
         self._removeOSDsIfOutAndSafeToRemove = new_val
     
     @property
-    def external(self):
-        # type: () -> External
-        return self._property_impl('external')
-    
-    @external.setter
-    def external(self, new_val):
-        # type: (Optional[External]) -> None
-        self._external = new_val
-    
-    @property
-    def placement(self):
-        # type: () -> Any
-        return self._property_impl('placement')
-    
-    @placement.setter
-    def placement(self, new_val):
-        # type: (Optional[Any]) -> None
-        self._placement = new_val
-    
-    @property
     def resources(self):
-        # type: () -> Any
+        # type: () -> Optional[Any]
         return self._property_impl('resources')
     
     @resources.setter
     def resources(self, new_val):
         # type: (Optional[Any]) -> None
         self._resources = new_val
+    
+    @property
+    def security(self):
+        # type: () -> Optional[Security]
+        return self._property_impl('security')
+    
+    @security.setter
+    def security(self, new_val):
+        # type: (Optional[Security]) -> None
+        self._security = new_val
+    
+    @property
+    def skipUpgradeChecks(self):
+        # type: () -> bool
+        return self._property_impl('skipUpgradeChecks')
+    
+    @skipUpgradeChecks.setter
+    def skipUpgradeChecks(self, new_val):
+        # type: (Optional[bool]) -> None
+        self._skipUpgradeChecks = new_val
+    
+    @property
+    def storage(self):
+        # type: () -> Optional[Storage]
+        return self._property_impl('storage')
+    
+    @storage.setter
+    def storage(self, new_val):
+        # type: (Optional[Storage]) -> None
+        self._storage = new_val
+    
+    @property
+    def waitTimeoutForHealthyOSDInMinutes(self):
+        # type: () -> int
+        return self._property_impl('waitTimeoutForHealthyOSDInMinutes')
+    
+    @waitTimeoutForHealthyOSDInMinutes.setter
+    def waitTimeoutForHealthyOSDInMinutes(self, new_val):
+        # type: (Optional[int]) -> None
+        self._waitTimeoutForHealthyOSDInMinutes = new_val
+    
+    @property
+    def accessModes(self):
+        # type: () -> Union[List[str], CrdObjectList]
+        return self._property_impl('accessModes')
+    
+    @accessModes.setter
+    def accessModes(self, new_val):
+        # type: (Optional[Union[List[str], CrdObjectList]]) -> None
+        self._accessModes = new_val
+    
+    @property
+    def dataSource(self):
+        # type: () -> DataSource
+        return self._property_impl('dataSource')
+    
+    @dataSource.setter
+    def dataSource(self, new_val):
+        # type: (Optional[DataSource]) -> None
+        self._dataSource = new_val
+    
+    @property
+    def selector(self):
+        # type: () -> Selector
+        return self._property_impl('selector')
+    
+    @selector.setter
+    def selector(self, new_val):
+        # type: (Optional[Selector]) -> None
+        self._selector = new_val
+    
+    @property
+    def storageClassName(self):
+        # type: () -> str
+        return self._property_impl('storageClassName')
+    
+    @storageClassName.setter
+    def storageClassName(self, new_val):
+        # type: (Optional[str]) -> None
+        self._storageClassName = new_val
+    
+    @property
+    def volumeMode(self):
+        # type: () -> str
+        return self._property_impl('volumeMode')
+    
+    @volumeMode.setter
+    def volumeMode(self, new_val):
+        # type: (Optional[str]) -> None
+        self._volumeMode = new_val
+    
+    @property
+    def volumeName(self):
+        # type: () -> str
+        return self._property_impl('volumeName')
+    
+    @volumeName.setter
+    def volumeName(self, new_val):
+        # type: (Optional[str]) -> None
+        self._volumeName = new_val
 
 
-class CephCluster(CrdClass):
+class ConditionsItem(CrdObject):
     _properties = [
-        ('apiVersion', 'apiVersion', str, True, False),
-        ('metadata', 'metadata', object, True, False),
-        ('status', 'status', object, False, False),
-        ('spec', 'spec', Spec, True, False)
+        ('lastHeartbeatTime', 'lastHeartbeatTime', str, False, False),
+        ('lastTransitionTime', 'lastTransitionTime', str, False, False),
+        ('message', 'message', str, False, False),
+        ('reason', 'reason', str, False, False),
+        ('status', 'status', str, False, False),
+        ('type', 'type', str, False, False),
+        ('lastProbeTime', 'lastProbeTime', str, False, False)
     ]        
 
     def __init__(self,
-                 apiVersion,  # type: str
-                 metadata,  # type: Any
-                 spec,  # type: Spec
-                 status=_omit,  # type: Optional[Any]
+                 lastHeartbeatTime=_omit,  # type: Optional[str]
+                 lastTransitionTime=_omit,  # type: Optional[str]
+                 message=_omit,  # type: Optional[str]
+                 reason=_omit,  # type: Optional[str]
+                 status=_omit,  # type: Optional[str]
+                 type=_omit,  # type: Optional[str]
+                 lastProbeTime=_omit,  # type: Optional[str]
                  ):
-        super(CephCluster, self).__init__(
+        super(ConditionsItem, self).__init__(
+            lastHeartbeatTime=lastHeartbeatTime,
+            lastTransitionTime=lastTransitionTime,
+            message=message,
+            reason=reason,
+            status=status,
+            type=type,
+            lastProbeTime=lastProbeTime,
+        )
+
+    @property
+    def lastHeartbeatTime(self):
+        # type: () -> str
+        return self._property_impl('lastHeartbeatTime')
+    
+    @lastHeartbeatTime.setter
+    def lastHeartbeatTime(self, new_val):
+        # type: (Optional[str]) -> None
+        self._lastHeartbeatTime = new_val
+    
+    @property
+    def lastTransitionTime(self):
+        # type: () -> str
+        return self._property_impl('lastTransitionTime')
+    
+    @lastTransitionTime.setter
+    def lastTransitionTime(self, new_val):
+        # type: (Optional[str]) -> None
+        self._lastTransitionTime = new_val
+    
+    @property
+    def message(self):
+        # type: () -> str
+        return self._property_impl('message')
+    
+    @message.setter
+    def message(self, new_val):
+        # type: (Optional[str]) -> None
+        self._message = new_val
+    
+    @property
+    def reason(self):
+        # type: () -> str
+        return self._property_impl('reason')
+    
+    @reason.setter
+    def reason(self, new_val):
+        # type: (Optional[str]) -> None
+        self._reason = new_val
+    
+    @property
+    def status(self):
+        # type: () -> str
+        return self._property_impl('status')
+    
+    @status.setter
+    def status(self, new_val):
+        # type: (Optional[str]) -> None
+        self._status = new_val
+    
+    @property
+    def type(self):
+        # type: () -> str
+        return self._property_impl('type')
+    
+    @type.setter
+    def type(self, new_val):
+        # type: (Optional[str]) -> None
+        self._type = new_val
+    
+    @property
+    def lastProbeTime(self):
+        # type: () -> str
+        return self._property_impl('lastProbeTime')
+    
+    @lastProbeTime.setter
+    def lastProbeTime(self, new_val):
+        # type: (Optional[str]) -> None
+        self._lastProbeTime = new_val
+
+
+class ConditionsList(CrdObjectList):
+    _items_type = ConditionsItem
+
+
+class VolumeClaimTemplate(CrdObject):
+    _properties = [
+        ('apiVersion', 'apiVersion', str, False, False),
+        ('kind', 'kind', str, False, False),
+        ('metadata', 'metadata', 'Metadata', False, False),
+        ('spec', 'spec', 'Spec', False, False),
+        ('status', 'status', 'Status', False, False)
+    ]        
+
+    def __init__(self,
+                 apiVersion=_omit,  # type: Optional[str]
+                 kind=_omit,  # type: Optional[str]
+                 metadata=_omit,  # type: Optional[Metadata]
+                 spec=_omit,  # type: Optional[Spec]
+                 status=_omit,  # type: Optional[Status]
+                 ):
+        super(VolumeClaimTemplate, self).__init__(
             apiVersion=apiVersion,
+            kind=kind,
             metadata=metadata,
             spec=spec,
             status=status,
@@ -1085,8 +1663,2270 @@ class CephCluster(CrdClass):
     
     @apiVersion.setter
     def apiVersion(self, new_val):
-        # type: (str) -> None
+        # type: (Optional[str]) -> None
         self._apiVersion = new_val
+    
+    @property
+    def kind(self):
+        # type: () -> str
+        return self._property_impl('kind')
+    
+    @kind.setter
+    def kind(self, new_val):
+        # type: (Optional[str]) -> None
+        self._kind = new_val
+    
+    @property
+    def metadata(self):
+        # type: () -> Metadata
+        return self._property_impl('metadata')
+    
+    @metadata.setter
+    def metadata(self, new_val):
+        # type: (Optional[Metadata]) -> None
+        self._metadata = new_val
+    
+    @property
+    def spec(self):
+        # type: () -> Spec
+        return self._property_impl('spec')
+    
+    @spec.setter
+    def spec(self, new_val):
+        # type: (Optional[Spec]) -> None
+        self._spec = new_val
+    
+    @property
+    def status(self):
+        # type: () -> Status
+        return self._property_impl('status')
+    
+    @status.setter
+    def status(self, new_val):
+        # type: (Optional[Status]) -> None
+        self._status = new_val
+
+
+class ZonesItem(CrdObject):
+    _properties = [
+        ('arbiter', 'arbiter', bool, False, False),
+        ('name', 'name', str, False, False),
+        ('volumeClaimTemplate', 'volumeClaimTemplate', 'VolumeClaimTemplate', False, False)
+    ]        
+
+    def __init__(self,
+                 arbiter=_omit,  # type: Optional[bool]
+                 name=_omit,  # type: Optional[str]
+                 volumeClaimTemplate=_omit,  # type: Optional[VolumeClaimTemplate]
+                 ):
+        super(ZonesItem, self).__init__(
+            arbiter=arbiter,
+            name=name,
+            volumeClaimTemplate=volumeClaimTemplate,
+        )
+
+    @property
+    def arbiter(self):
+        # type: () -> bool
+        return self._property_impl('arbiter')
+    
+    @arbiter.setter
+    def arbiter(self, new_val):
+        # type: (Optional[bool]) -> None
+        self._arbiter = new_val
+    
+    @property
+    def name(self):
+        # type: () -> str
+        return self._property_impl('name')
+    
+    @name.setter
+    def name(self, new_val):
+        # type: (Optional[str]) -> None
+        self._name = new_val
+    
+    @property
+    def volumeClaimTemplate(self):
+        # type: () -> VolumeClaimTemplate
+        return self._property_impl('volumeClaimTemplate')
+    
+    @volumeClaimTemplate.setter
+    def volumeClaimTemplate(self, new_val):
+        # type: (Optional[VolumeClaimTemplate]) -> None
+        self._volumeClaimTemplate = new_val
+
+
+class ZonesList(CrdObjectList):
+    _items_type = ZonesItem
+
+
+class StretchCluster(CrdObject):
+    _properties = [
+        ('failureDomainLabel', 'failureDomainLabel', str, False, False),
+        ('subFailureDomain', 'subFailureDomain', str, False, False),
+        ('zones', 'zones', 'ZonesList', False, True)
+    ]        
+
+    def __init__(self,
+                 failureDomainLabel=_omit,  # type: Optional[str]
+                 subFailureDomain=_omit,  # type: Optional[str]
+                 zones=_omit,  # type: Optional[Union[List[ZonesItem], CrdObjectList]]
+                 ):
+        super(StretchCluster, self).__init__(
+            failureDomainLabel=failureDomainLabel,
+            subFailureDomain=subFailureDomain,
+            zones=zones,
+        )
+
+    @property
+    def failureDomainLabel(self):
+        # type: () -> str
+        return self._property_impl('failureDomainLabel')
+    
+    @failureDomainLabel.setter
+    def failureDomainLabel(self, new_val):
+        # type: (Optional[str]) -> None
+        self._failureDomainLabel = new_val
+    
+    @property
+    def subFailureDomain(self):
+        # type: () -> str
+        return self._property_impl('subFailureDomain')
+    
+    @subFailureDomain.setter
+    def subFailureDomain(self, new_val):
+        # type: (Optional[str]) -> None
+        self._subFailureDomain = new_val
+    
+    @property
+    def zones(self):
+        # type: () -> Optional[Union[List[ZonesItem], CrdObjectList]]
+        return self._property_impl('zones')
+    
+    @zones.setter
+    def zones(self, new_val):
+        # type: (Optional[Union[List[ZonesItem], CrdObjectList]]) -> None
+        self._zones = new_val
+
+
+class TargetRef(CrdObject):
+    _properties = [
+        ('apiVersion', 'apiVersion', str, False, False),
+        ('fieldPath', 'fieldPath', str, False, False),
+        ('kind', 'kind', str, False, False),
+        ('name', 'name', str, False, False),
+        ('namespace', 'namespace', str, False, False),
+        ('resourceVersion', 'resourceVersion', str, False, False),
+        ('uid', 'uid', str, False, False)
+    ]        
+
+    def __init__(self,
+                 apiVersion=_omit,  # type: Optional[str]
+                 fieldPath=_omit,  # type: Optional[str]
+                 kind=_omit,  # type: Optional[str]
+                 name=_omit,  # type: Optional[str]
+                 namespace=_omit,  # type: Optional[str]
+                 resourceVersion=_omit,  # type: Optional[str]
+                 uid=_omit,  # type: Optional[str]
+                 ):
+        super(TargetRef, self).__init__(
+            apiVersion=apiVersion,
+            fieldPath=fieldPath,
+            kind=kind,
+            name=name,
+            namespace=namespace,
+            resourceVersion=resourceVersion,
+            uid=uid,
+        )
+
+    @property
+    def apiVersion(self):
+        # type: () -> str
+        return self._property_impl('apiVersion')
+    
+    @apiVersion.setter
+    def apiVersion(self, new_val):
+        # type: (Optional[str]) -> None
+        self._apiVersion = new_val
+    
+    @property
+    def fieldPath(self):
+        # type: () -> str
+        return self._property_impl('fieldPath')
+    
+    @fieldPath.setter
+    def fieldPath(self, new_val):
+        # type: (Optional[str]) -> None
+        self._fieldPath = new_val
+    
+    @property
+    def kind(self):
+        # type: () -> str
+        return self._property_impl('kind')
+    
+    @kind.setter
+    def kind(self, new_val):
+        # type: (Optional[str]) -> None
+        self._kind = new_val
+    
+    @property
+    def name(self):
+        # type: () -> str
+        return self._property_impl('name')
+    
+    @name.setter
+    def name(self, new_val):
+        # type: (Optional[str]) -> None
+        self._name = new_val
+    
+    @property
+    def namespace(self):
+        # type: () -> str
+        return self._property_impl('namespace')
+    
+    @namespace.setter
+    def namespace(self, new_val):
+        # type: (Optional[str]) -> None
+        self._namespace = new_val
+    
+    @property
+    def resourceVersion(self):
+        # type: () -> str
+        return self._property_impl('resourceVersion')
+    
+    @resourceVersion.setter
+    def resourceVersion(self, new_val):
+        # type: (Optional[str]) -> None
+        self._resourceVersion = new_val
+    
+    @property
+    def uid(self):
+        # type: () -> str
+        return self._property_impl('uid')
+    
+    @uid.setter
+    def uid(self, new_val):
+        # type: (Optional[str]) -> None
+        self._uid = new_val
+
+
+class ExternalMgrEndpointsItem(CrdObject):
+    _properties = [
+        ('hostname', 'hostname', str, False, False),
+        ('ip', 'ip', str, True, False),
+        ('nodeName', 'nodeName', str, False, False),
+        ('targetRef', 'targetRef', 'TargetRef', False, False)
+    ]        
+
+    def __init__(self,
+                 ip,  # type: str
+                 hostname=_omit,  # type: Optional[str]
+                 nodeName=_omit,  # type: Optional[str]
+                 targetRef=_omit,  # type: Optional[TargetRef]
+                 ):
+        super(ExternalMgrEndpointsItem, self).__init__(
+            ip=ip,
+            hostname=hostname,
+            nodeName=nodeName,
+            targetRef=targetRef,
+        )
+
+    @property
+    def hostname(self):
+        # type: () -> str
+        return self._property_impl('hostname')
+    
+    @hostname.setter
+    def hostname(self, new_val):
+        # type: (Optional[str]) -> None
+        self._hostname = new_val
+    
+    @property
+    def ip(self):
+        # type: () -> str
+        return self._property_impl('ip')
+    
+    @ip.setter
+    def ip(self, new_val):
+        # type: (str) -> None
+        self._ip = new_val
+    
+    @property
+    def nodeName(self):
+        # type: () -> str
+        return self._property_impl('nodeName')
+    
+    @nodeName.setter
+    def nodeName(self, new_val):
+        # type: (Optional[str]) -> None
+        self._nodeName = new_val
+    
+    @property
+    def targetRef(self):
+        # type: () -> TargetRef
+        return self._property_impl('targetRef')
+    
+    @targetRef.setter
+    def targetRef(self, new_val):
+        # type: (Optional[TargetRef]) -> None
+        self._targetRef = new_val
+
+
+class ExternalMgrEndpointsList(CrdObjectList):
+    _items_type = ExternalMgrEndpointsItem
+
+
+class Monitoring(CrdObject):
+    _properties = [
+        ('enabled', 'enabled', bool, False, False),
+        ('externalMgrEndpoints', 'externalMgrEndpoints', 'ExternalMgrEndpointsList', False, True),
+        ('externalMgrPrometheusPort', 'externalMgrPrometheusPort', int, False, False),
+        ('rulesNamespace', 'rulesNamespace', str, False, False)
+    ]        
+
+    def __init__(self,
+                 enabled=_omit,  # type: Optional[bool]
+                 externalMgrEndpoints=_omit,  # type: Optional[Union[List[ExternalMgrEndpointsItem], CrdObjectList]]
+                 externalMgrPrometheusPort=_omit,  # type: Optional[int]
+                 rulesNamespace=_omit,  # type: Optional[str]
+                 ):
+        super(Monitoring, self).__init__(
+            enabled=enabled,
+            externalMgrEndpoints=externalMgrEndpoints,
+            externalMgrPrometheusPort=externalMgrPrometheusPort,
+            rulesNamespace=rulesNamespace,
+        )
+
+    @property
+    def enabled(self):
+        # type: () -> bool
+        return self._property_impl('enabled')
+    
+    @enabled.setter
+    def enabled(self, new_val):
+        # type: (Optional[bool]) -> None
+        self._enabled = new_val
+    
+    @property
+    def externalMgrEndpoints(self):
+        # type: () -> Optional[Union[List[ExternalMgrEndpointsItem], CrdObjectList]]
+        return self._property_impl('externalMgrEndpoints')
+    
+    @externalMgrEndpoints.setter
+    def externalMgrEndpoints(self, new_val):
+        # type: (Optional[Union[List[ExternalMgrEndpointsItem], CrdObjectList]]) -> None
+        self._externalMgrEndpoints = new_val
+    
+    @property
+    def externalMgrPrometheusPort(self):
+        # type: () -> int
+        return self._property_impl('externalMgrPrometheusPort')
+    
+    @externalMgrPrometheusPort.setter
+    def externalMgrPrometheusPort(self, new_val):
+        # type: (Optional[int]) -> None
+        self._externalMgrPrometheusPort = new_val
+    
+    @property
+    def rulesNamespace(self):
+        # type: () -> str
+        return self._property_impl('rulesNamespace')
+    
+    @rulesNamespace.setter
+    def rulesNamespace(self, new_val):
+        # type: (Optional[str]) -> None
+        self._rulesNamespace = new_val
+
+
+class Network(CrdObject):
+    _properties = [
+        ('dualStack', 'dualStack', bool, False, False),
+        ('hostNetwork', 'hostNetwork', bool, False, False),
+        ('ipFamily', 'ipFamily', str, False, True),
+        ('provider', 'provider', str, False, True),
+        ('selectors', 'selectors', object, False, True)
+    ]        
+
+    def __init__(self,
+                 dualStack=_omit,  # type: Optional[bool]
+                 hostNetwork=_omit,  # type: Optional[bool]
+                 ipFamily=_omit,  # type: Optional[str]
+                 provider=_omit,  # type: Optional[str]
+                 selectors=_omit,  # type: Optional[Any]
+                 ):
+        super(Network, self).__init__(
+            dualStack=dualStack,
+            hostNetwork=hostNetwork,
+            ipFamily=ipFamily,
+            provider=provider,
+            selectors=selectors,
+        )
+
+    @property
+    def dualStack(self):
+        # type: () -> bool
+        return self._property_impl('dualStack')
+    
+    @dualStack.setter
+    def dualStack(self, new_val):
+        # type: (Optional[bool]) -> None
+        self._dualStack = new_val
+    
+    @property
+    def hostNetwork(self):
+        # type: () -> bool
+        return self._property_impl('hostNetwork')
+    
+    @hostNetwork.setter
+    def hostNetwork(self, new_val):
+        # type: (Optional[bool]) -> None
+        self._hostNetwork = new_val
+    
+    @property
+    def ipFamily(self):
+        # type: () -> Optional[str]
+        return self._property_impl('ipFamily')
+    
+    @ipFamily.setter
+    def ipFamily(self, new_val):
+        # type: (Optional[str]) -> None
+        self._ipFamily = new_val
+    
+    @property
+    def provider(self):
+        # type: () -> Optional[str]
+        return self._property_impl('provider')
+    
+    @provider.setter
+    def provider(self, new_val):
+        # type: (Optional[str]) -> None
+        self._provider = new_val
+    
+    @property
+    def selectors(self):
+        # type: () -> Optional[Any]
+        return self._property_impl('selectors')
+    
+    @selectors.setter
+    def selectors(self, new_val):
+        # type: (Optional[Any]) -> None
+        self._selectors = new_val
+
+
+class Kms(CrdObject):
+    _properties = [
+        ('connectionDetails', 'connectionDetails', object, False, True),
+        ('tokenSecretName', 'tokenSecretName', str, False, False)
+    ]        
+
+    def __init__(self,
+                 connectionDetails=_omit,  # type: Optional[Any]
+                 tokenSecretName=_omit,  # type: Optional[str]
+                 ):
+        super(Kms, self).__init__(
+            connectionDetails=connectionDetails,
+            tokenSecretName=tokenSecretName,
+        )
+
+    @property
+    def connectionDetails(self):
+        # type: () -> Optional[Any]
+        return self._property_impl('connectionDetails')
+    
+    @connectionDetails.setter
+    def connectionDetails(self, new_val):
+        # type: (Optional[Any]) -> None
+        self._connectionDetails = new_val
+    
+    @property
+    def tokenSecretName(self):
+        # type: () -> str
+        return self._property_impl('tokenSecretName')
+    
+    @tokenSecretName.setter
+    def tokenSecretName(self, new_val):
+        # type: (Optional[str]) -> None
+        self._tokenSecretName = new_val
+
+
+class Security(CrdObject):
+    _properties = [
+        ('kms', 'kms', 'Kms', False, True)
+    ]        
+
+    def __init__(self,
+                 kms=_omit,  # type: Optional[Kms]
+                 ):
+        super(Security, self).__init__(
+            kms=kms,
+        )
+
+    @property
+    def kms(self):
+        # type: () -> Optional[Kms]
+        return self._property_impl('kms')
+    
+    @kms.setter
+    def kms(self, new_val):
+        # type: (Optional[Kms]) -> None
+        self._kms = new_val
+
+
+class DevicesItem(CrdObject):
+    _properties = [
+        ('config', 'config', object, False, False),
+        ('fullpath', 'fullpath', str, False, False),
+        ('name', 'name', str, False, False)
+    ]        
+
+    def __init__(self,
+                 config=_omit,  # type: Optional[Any]
+                 fullpath=_omit,  # type: Optional[str]
+                 name=_omit,  # type: Optional[str]
+                 ):
+        super(DevicesItem, self).__init__(
+            config=config,
+            fullpath=fullpath,
+            name=name,
+        )
+
+    @property
+    def config(self):
+        # type: () -> Any
+        return self._property_impl('config')
+    
+    @config.setter
+    def config(self, new_val):
+        # type: (Optional[Any]) -> None
+        self._config = new_val
+    
+    @property
+    def fullpath(self):
+        # type: () -> str
+        return self._property_impl('fullpath')
+    
+    @fullpath.setter
+    def fullpath(self, new_val):
+        # type: (Optional[str]) -> None
+        self._fullpath = new_val
+    
+    @property
+    def name(self):
+        # type: () -> str
+        return self._property_impl('name')
+    
+    @name.setter
+    def name(self, new_val):
+        # type: (Optional[str]) -> None
+        self._name = new_val
+
+
+class DevicesList(CrdObjectList):
+    _items_type = DevicesItem
+
+
+class VolumeClaimTemplatesItem(CrdObject):
+    _properties = [
+        ('apiVersion', 'apiVersion', str, False, False),
+        ('kind', 'kind', str, False, False),
+        ('metadata', 'metadata', 'Metadata', False, False),
+        ('spec', 'spec', 'Spec', False, False),
+        ('status', 'status', 'Status', False, False)
+    ]        
+
+    def __init__(self,
+                 apiVersion=_omit,  # type: Optional[str]
+                 kind=_omit,  # type: Optional[str]
+                 metadata=_omit,  # type: Optional[Metadata]
+                 spec=_omit,  # type: Optional[Spec]
+                 status=_omit,  # type: Optional[Status]
+                 ):
+        super(VolumeClaimTemplatesItem, self).__init__(
+            apiVersion=apiVersion,
+            kind=kind,
+            metadata=metadata,
+            spec=spec,
+            status=status,
+        )
+
+    @property
+    def apiVersion(self):
+        # type: () -> str
+        return self._property_impl('apiVersion')
+    
+    @apiVersion.setter
+    def apiVersion(self, new_val):
+        # type: (Optional[str]) -> None
+        self._apiVersion = new_val
+    
+    @property
+    def kind(self):
+        # type: () -> str
+        return self._property_impl('kind')
+    
+    @kind.setter
+    def kind(self, new_val):
+        # type: (Optional[str]) -> None
+        self._kind = new_val
+    
+    @property
+    def metadata(self):
+        # type: () -> Metadata
+        return self._property_impl('metadata')
+    
+    @metadata.setter
+    def metadata(self, new_val):
+        # type: (Optional[Metadata]) -> None
+        self._metadata = new_val
+    
+    @property
+    def spec(self):
+        # type: () -> Spec
+        return self._property_impl('spec')
+    
+    @spec.setter
+    def spec(self, new_val):
+        # type: (Optional[Spec]) -> None
+        self._spec = new_val
+    
+    @property
+    def status(self):
+        # type: () -> Status
+        return self._property_impl('status')
+    
+    @status.setter
+    def status(self, new_val):
+        # type: (Optional[Status]) -> None
+        self._status = new_val
+
+
+class VolumeClaimTemplatesList(CrdObjectList):
+    _items_type = VolumeClaimTemplatesItem
+
+
+class NodesItem(CrdObject):
+    _properties = [
+        ('config', 'config', object, False, True),
+        ('deviceFilter', 'deviceFilter', str, False, False),
+        ('devicePathFilter', 'devicePathFilter', str, False, False),
+        ('devices', 'devices', 'DevicesList', False, True),
+        ('name', 'name', str, False, False),
+        ('resources', 'resources', 'Resources', False, True),
+        ('useAllDevices', 'useAllDevices', bool, False, False),
+        ('volumeClaimTemplates', 'volumeClaimTemplates', 'VolumeClaimTemplatesList', False, False)
+    ]        
+
+    def __init__(self,
+                 config=_omit,  # type: Optional[Any]
+                 deviceFilter=_omit,  # type: Optional[str]
+                 devicePathFilter=_omit,  # type: Optional[str]
+                 devices=_omit,  # type: Optional[Union[List[DevicesItem], CrdObjectList]]
+                 name=_omit,  # type: Optional[str]
+                 resources=_omit,  # type: Optional[Resources]
+                 useAllDevices=_omit,  # type: Optional[bool]
+                 volumeClaimTemplates=_omit,  # type: Optional[Union[List[VolumeClaimTemplatesItem], CrdObjectList]]
+                 ):
+        super(NodesItem, self).__init__(
+            config=config,
+            deviceFilter=deviceFilter,
+            devicePathFilter=devicePathFilter,
+            devices=devices,
+            name=name,
+            resources=resources,
+            useAllDevices=useAllDevices,
+            volumeClaimTemplates=volumeClaimTemplates,
+        )
+
+    @property
+    def config(self):
+        # type: () -> Optional[Any]
+        return self._property_impl('config')
+    
+    @config.setter
+    def config(self, new_val):
+        # type: (Optional[Any]) -> None
+        self._config = new_val
+    
+    @property
+    def deviceFilter(self):
+        # type: () -> str
+        return self._property_impl('deviceFilter')
+    
+    @deviceFilter.setter
+    def deviceFilter(self, new_val):
+        # type: (Optional[str]) -> None
+        self._deviceFilter = new_val
+    
+    @property
+    def devicePathFilter(self):
+        # type: () -> str
+        return self._property_impl('devicePathFilter')
+    
+    @devicePathFilter.setter
+    def devicePathFilter(self, new_val):
+        # type: (Optional[str]) -> None
+        self._devicePathFilter = new_val
+    
+    @property
+    def devices(self):
+        # type: () -> Optional[Union[List[DevicesItem], CrdObjectList]]
+        return self._property_impl('devices')
+    
+    @devices.setter
+    def devices(self, new_val):
+        # type: (Optional[Union[List[DevicesItem], CrdObjectList]]) -> None
+        self._devices = new_val
+    
+    @property
+    def name(self):
+        # type: () -> str
+        return self._property_impl('name')
+    
+    @name.setter
+    def name(self, new_val):
+        # type: (Optional[str]) -> None
+        self._name = new_val
+    
+    @property
+    def resources(self):
+        # type: () -> Optional[Resources]
+        return self._property_impl('resources')
+    
+    @resources.setter
+    def resources(self, new_val):
+        # type: (Optional[Resources]) -> None
+        self._resources = new_val
+    
+    @property
+    def useAllDevices(self):
+        # type: () -> bool
+        return self._property_impl('useAllDevices')
+    
+    @useAllDevices.setter
+    def useAllDevices(self, new_val):
+        # type: (Optional[bool]) -> None
+        self._useAllDevices = new_val
+    
+    @property
+    def volumeClaimTemplates(self):
+        # type: () -> Union[List[VolumeClaimTemplatesItem], CrdObjectList]
+        return self._property_impl('volumeClaimTemplates')
+    
+    @volumeClaimTemplates.setter
+    def volumeClaimTemplates(self, new_val):
+        # type: (Optional[Union[List[VolumeClaimTemplatesItem], CrdObjectList]]) -> None
+        self._volumeClaimTemplates = new_val
+
+
+class NodesList(CrdObjectList):
+    _items_type = NodesItem
+
+
+class MatchFieldsItem(CrdObject):
+    _properties = [
+        ('key', 'key', str, True, False),
+        ('operator', 'operator', str, True, False),
+        ('values', 'values', 'ValuesList', False, False)
+    ]        
+
+    def __init__(self,
+                 key,  # type: str
+                 operator,  # type: str
+                 values=_omit,  # type: Optional[Union[List[str], CrdObjectList]]
+                 ):
+        super(MatchFieldsItem, self).__init__(
+            key=key,
+            operator=operator,
+            values=values,
+        )
+
+    @property
+    def key(self):
+        # type: () -> str
+        return self._property_impl('key')
+    
+    @key.setter
+    def key(self, new_val):
+        # type: (str) -> None
+        self._key = new_val
+    
+    @property
+    def operator(self):
+        # type: () -> str
+        return self._property_impl('operator')
+    
+    @operator.setter
+    def operator(self, new_val):
+        # type: (str) -> None
+        self._operator = new_val
+    
+    @property
+    def values(self):
+        # type: () -> Union[List[str], CrdObjectList]
+        return self._property_impl('values')
+    
+    @values.setter
+    def values(self, new_val):
+        # type: (Optional[Union[List[str], CrdObjectList]]) -> None
+        self._values = new_val
+
+
+class MatchFieldsList(CrdObjectList):
+    _items_type = MatchFieldsItem
+
+
+class Preference(CrdObject):
+    _properties = [
+        ('matchExpressions', 'matchExpressions', 'MatchExpressionsList', False, False),
+        ('matchFields', 'matchFields', 'MatchFieldsList', False, False)
+    ]        
+
+    def __init__(self,
+                 matchExpressions=_omit,  # type: Optional[Union[List[MatchExpressionsItem], CrdObjectList]]
+                 matchFields=_omit,  # type: Optional[Union[List[MatchFieldsItem], CrdObjectList]]
+                 ):
+        super(Preference, self).__init__(
+            matchExpressions=matchExpressions,
+            matchFields=matchFields,
+        )
+
+    @property
+    def matchExpressions(self):
+        # type: () -> Union[List[MatchExpressionsItem], CrdObjectList]
+        return self._property_impl('matchExpressions')
+    
+    @matchExpressions.setter
+    def matchExpressions(self, new_val):
+        # type: (Optional[Union[List[MatchExpressionsItem], CrdObjectList]]) -> None
+        self._matchExpressions = new_val
+    
+    @property
+    def matchFields(self):
+        # type: () -> Union[List[MatchFieldsItem], CrdObjectList]
+        return self._property_impl('matchFields')
+    
+    @matchFields.setter
+    def matchFields(self, new_val):
+        # type: (Optional[Union[List[MatchFieldsItem], CrdObjectList]]) -> None
+        self._matchFields = new_val
+
+
+class PreferredDuringSchedulingIgnoredDuringExecutionItem(CrdObject):
+    _properties = [
+        ('podAffinityTerm', 'podAffinityTerm', 'PodAffinityTerm', False, False),
+        ('weight', 'weight', int, False, False),
+        ('preference', 'preference', 'Preference', False, False)
+    ]        
+
+    def __init__(self,
+                 podAffinityTerm=_omit,  # type: Optional[PodAffinityTerm]
+                 weight=_omit,  # type: Optional[int]
+                 preference=_omit,  # type: Optional[Preference]
+                 ):
+        super(PreferredDuringSchedulingIgnoredDuringExecutionItem, self).__init__(
+            podAffinityTerm=podAffinityTerm,
+            weight=weight,
+            preference=preference,
+        )
+
+    @property
+    def podAffinityTerm(self):
+        # type: () -> PodAffinityTerm
+        return self._property_impl('podAffinityTerm')
+    
+    @podAffinityTerm.setter
+    def podAffinityTerm(self, new_val):
+        # type: (Optional[PodAffinityTerm]) -> None
+        self._podAffinityTerm = new_val
+    
+    @property
+    def weight(self):
+        # type: () -> int
+        return self._property_impl('weight')
+    
+    @weight.setter
+    def weight(self, new_val):
+        # type: (Optional[int]) -> None
+        self._weight = new_val
+    
+    @property
+    def preference(self):
+        # type: () -> Preference
+        return self._property_impl('preference')
+    
+    @preference.setter
+    def preference(self, new_val):
+        # type: (Optional[Preference]) -> None
+        self._preference = new_val
+
+
+class PreferredDuringSchedulingIgnoredDuringExecutionList(CrdObjectList):
+    _items_type = PreferredDuringSchedulingIgnoredDuringExecutionItem
+
+
+class NodeSelectorTermsItem(CrdObject):
+    _properties = [
+        ('matchExpressions', 'matchExpressions', 'MatchExpressionsList', False, False),
+        ('matchFields', 'matchFields', 'MatchFieldsList', False, False)
+    ]        
+
+    def __init__(self,
+                 matchExpressions=_omit,  # type: Optional[Union[List[MatchExpressionsItem], CrdObjectList]]
+                 matchFields=_omit,  # type: Optional[Union[List[MatchFieldsItem], CrdObjectList]]
+                 ):
+        super(NodeSelectorTermsItem, self).__init__(
+            matchExpressions=matchExpressions,
+            matchFields=matchFields,
+        )
+
+    @property
+    def matchExpressions(self):
+        # type: () -> Union[List[MatchExpressionsItem], CrdObjectList]
+        return self._property_impl('matchExpressions')
+    
+    @matchExpressions.setter
+    def matchExpressions(self, new_val):
+        # type: (Optional[Union[List[MatchExpressionsItem], CrdObjectList]]) -> None
+        self._matchExpressions = new_val
+    
+    @property
+    def matchFields(self):
+        # type: () -> Union[List[MatchFieldsItem], CrdObjectList]
+        return self._property_impl('matchFields')
+    
+    @matchFields.setter
+    def matchFields(self, new_val):
+        # type: (Optional[Union[List[MatchFieldsItem], CrdObjectList]]) -> None
+        self._matchFields = new_val
+
+
+class NodeSelectorTermsList(CrdObjectList):
+    _items_type = NodeSelectorTermsItem
+
+
+class RequiredDuringSchedulingIgnoredDuringExecution(CrdObject):
+    _properties = [
+        ('nodeSelectorTerms', 'nodeSelectorTerms', 'NodeSelectorTermsList', True, False)
+    ]        
+
+    def __init__(self,
+                 nodeSelectorTerms,  # type: Union[List[NodeSelectorTermsItem], CrdObjectList]
+                 ):
+        super(RequiredDuringSchedulingIgnoredDuringExecution, self).__init__(
+            nodeSelectorTerms=nodeSelectorTerms,
+        )
+
+    @property
+    def nodeSelectorTerms(self):
+        # type: () -> Union[List[NodeSelectorTermsItem], CrdObjectList]
+        return self._property_impl('nodeSelectorTerms')
+    
+    @nodeSelectorTerms.setter
+    def nodeSelectorTerms(self, new_val):
+        # type: (Union[List[NodeSelectorTermsItem], CrdObjectList]) -> None
+        self._nodeSelectorTerms = new_val
+
+
+class NodeAffinity(CrdObject):
+    _properties = [
+        ('preferredDuringSchedulingIgnoredDuringExecution', 'preferredDuringSchedulingIgnoredDuringExecution', 'PreferredDuringSchedulingIgnoredDuringExecutionList', False, False),
+        ('requiredDuringSchedulingIgnoredDuringExecution', 'requiredDuringSchedulingIgnoredDuringExecution', 'RequiredDuringSchedulingIgnoredDuringExecution', False, False)
+    ]        
+
+    def __init__(self,
+                 preferredDuringSchedulingIgnoredDuringExecution=_omit,  # type: Optional[Union[List[PreferredDuringSchedulingIgnoredDuringExecutionItem], CrdObjectList]]
+                 requiredDuringSchedulingIgnoredDuringExecution=_omit,  # type: Optional[RequiredDuringSchedulingIgnoredDuringExecution]
+                 ):
+        super(NodeAffinity, self).__init__(
+            preferredDuringSchedulingIgnoredDuringExecution=preferredDuringSchedulingIgnoredDuringExecution,
+            requiredDuringSchedulingIgnoredDuringExecution=requiredDuringSchedulingIgnoredDuringExecution,
+        )
+
+    @property
+    def preferredDuringSchedulingIgnoredDuringExecution(self):
+        # type: () -> Union[List[PreferredDuringSchedulingIgnoredDuringExecutionItem], CrdObjectList]
+        return self._property_impl('preferredDuringSchedulingIgnoredDuringExecution')
+    
+    @preferredDuringSchedulingIgnoredDuringExecution.setter
+    def preferredDuringSchedulingIgnoredDuringExecution(self, new_val):
+        # type: (Optional[Union[List[PreferredDuringSchedulingIgnoredDuringExecutionItem], CrdObjectList]]) -> None
+        self._preferredDuringSchedulingIgnoredDuringExecution = new_val
+    
+    @property
+    def requiredDuringSchedulingIgnoredDuringExecution(self):
+        # type: () -> RequiredDuringSchedulingIgnoredDuringExecution
+        return self._property_impl('requiredDuringSchedulingIgnoredDuringExecution')
+    
+    @requiredDuringSchedulingIgnoredDuringExecution.setter
+    def requiredDuringSchedulingIgnoredDuringExecution(self, new_val):
+        # type: (Optional[RequiredDuringSchedulingIgnoredDuringExecution]) -> None
+        self._requiredDuringSchedulingIgnoredDuringExecution = new_val
+
+
+class LabelSelector(CrdObject):
+    _properties = [
+        ('matchExpressions', 'matchExpressions', 'MatchExpressionsList', False, False),
+        ('matchLabels', 'matchLabels', object, False, False)
+    ]        
+
+    def __init__(self,
+                 matchExpressions=_omit,  # type: Optional[Union[List[MatchExpressionsItem], CrdObjectList]]
+                 matchLabels=_omit,  # type: Optional[Any]
+                 ):
+        super(LabelSelector, self).__init__(
+            matchExpressions=matchExpressions,
+            matchLabels=matchLabels,
+        )
+
+    @property
+    def matchExpressions(self):
+        # type: () -> Union[List[MatchExpressionsItem], CrdObjectList]
+        return self._property_impl('matchExpressions')
+    
+    @matchExpressions.setter
+    def matchExpressions(self, new_val):
+        # type: (Optional[Union[List[MatchExpressionsItem], CrdObjectList]]) -> None
+        self._matchExpressions = new_val
+    
+    @property
+    def matchLabels(self):
+        # type: () -> Any
+        return self._property_impl('matchLabels')
+    
+    @matchLabels.setter
+    def matchLabels(self, new_val):
+        # type: (Optional[Any]) -> None
+        self._matchLabels = new_val
+
+
+class NamespaceSelector(CrdObject):
+    _properties = [
+        ('matchExpressions', 'matchExpressions', 'MatchExpressionsList', False, False),
+        ('matchLabels', 'matchLabels', object, False, False)
+    ]        
+
+    def __init__(self,
+                 matchExpressions=_omit,  # type: Optional[Union[List[MatchExpressionsItem], CrdObjectList]]
+                 matchLabels=_omit,  # type: Optional[Any]
+                 ):
+        super(NamespaceSelector, self).__init__(
+            matchExpressions=matchExpressions,
+            matchLabels=matchLabels,
+        )
+
+    @property
+    def matchExpressions(self):
+        # type: () -> Union[List[MatchExpressionsItem], CrdObjectList]
+        return self._property_impl('matchExpressions')
+    
+    @matchExpressions.setter
+    def matchExpressions(self, new_val):
+        # type: (Optional[Union[List[MatchExpressionsItem], CrdObjectList]]) -> None
+        self._matchExpressions = new_val
+    
+    @property
+    def matchLabels(self):
+        # type: () -> Any
+        return self._property_impl('matchLabels')
+    
+    @matchLabels.setter
+    def matchLabels(self, new_val):
+        # type: (Optional[Any]) -> None
+        self._matchLabels = new_val
+
+
+class NamespacesList(CrdObjectList):
+    _items_type = str
+
+
+class PodAffinityTerm(CrdObject):
+    _properties = [
+        ('labelSelector', 'labelSelector', 'LabelSelector', False, False),
+        ('namespaceSelector', 'namespaceSelector', 'NamespaceSelector', False, False),
+        ('namespaces', 'namespaces', 'NamespacesList', False, False),
+        ('topologyKey', 'topologyKey', str, True, False)
+    ]        
+
+    def __init__(self,
+                 topologyKey,  # type: str
+                 labelSelector=_omit,  # type: Optional[LabelSelector]
+                 namespaceSelector=_omit,  # type: Optional[NamespaceSelector]
+                 namespaces=_omit,  # type: Optional[Union[List[str], CrdObjectList]]
+                 ):
+        super(PodAffinityTerm, self).__init__(
+            topologyKey=topologyKey,
+            labelSelector=labelSelector,
+            namespaceSelector=namespaceSelector,
+            namespaces=namespaces,
+        )
+
+    @property
+    def labelSelector(self):
+        # type: () -> LabelSelector
+        return self._property_impl('labelSelector')
+    
+    @labelSelector.setter
+    def labelSelector(self, new_val):
+        # type: (Optional[LabelSelector]) -> None
+        self._labelSelector = new_val
+    
+    @property
+    def namespaceSelector(self):
+        # type: () -> NamespaceSelector
+        return self._property_impl('namespaceSelector')
+    
+    @namespaceSelector.setter
+    def namespaceSelector(self, new_val):
+        # type: (Optional[NamespaceSelector]) -> None
+        self._namespaceSelector = new_val
+    
+    @property
+    def namespaces(self):
+        # type: () -> Union[List[str], CrdObjectList]
+        return self._property_impl('namespaces')
+    
+    @namespaces.setter
+    def namespaces(self, new_val):
+        # type: (Optional[Union[List[str], CrdObjectList]]) -> None
+        self._namespaces = new_val
+    
+    @property
+    def topologyKey(self):
+        # type: () -> str
+        return self._property_impl('topologyKey')
+    
+    @topologyKey.setter
+    def topologyKey(self, new_val):
+        # type: (str) -> None
+        self._topologyKey = new_val
+
+
+class RequiredDuringSchedulingIgnoredDuringExecutionItem(CrdObject):
+    _properties = [
+        ('labelSelector', 'labelSelector', 'LabelSelector', False, False),
+        ('namespaceSelector', 'namespaceSelector', 'NamespaceSelector', False, False),
+        ('namespaces', 'namespaces', 'NamespacesList', False, False),
+        ('topologyKey', 'topologyKey', str, True, False)
+    ]        
+
+    def __init__(self,
+                 topologyKey,  # type: str
+                 labelSelector=_omit,  # type: Optional[LabelSelector]
+                 namespaceSelector=_omit,  # type: Optional[NamespaceSelector]
+                 namespaces=_omit,  # type: Optional[Union[List[str], CrdObjectList]]
+                 ):
+        super(RequiredDuringSchedulingIgnoredDuringExecutionItem, self).__init__(
+            topologyKey=topologyKey,
+            labelSelector=labelSelector,
+            namespaceSelector=namespaceSelector,
+            namespaces=namespaces,
+        )
+
+    @property
+    def labelSelector(self):
+        # type: () -> LabelSelector
+        return self._property_impl('labelSelector')
+    
+    @labelSelector.setter
+    def labelSelector(self, new_val):
+        # type: (Optional[LabelSelector]) -> None
+        self._labelSelector = new_val
+    
+    @property
+    def namespaceSelector(self):
+        # type: () -> NamespaceSelector
+        return self._property_impl('namespaceSelector')
+    
+    @namespaceSelector.setter
+    def namespaceSelector(self, new_val):
+        # type: (Optional[NamespaceSelector]) -> None
+        self._namespaceSelector = new_val
+    
+    @property
+    def namespaces(self):
+        # type: () -> Union[List[str], CrdObjectList]
+        return self._property_impl('namespaces')
+    
+    @namespaces.setter
+    def namespaces(self, new_val):
+        # type: (Optional[Union[List[str], CrdObjectList]]) -> None
+        self._namespaces = new_val
+    
+    @property
+    def topologyKey(self):
+        # type: () -> str
+        return self._property_impl('topologyKey')
+    
+    @topologyKey.setter
+    def topologyKey(self, new_val):
+        # type: (str) -> None
+        self._topologyKey = new_val
+
+
+class RequiredDuringSchedulingIgnoredDuringExecutionList(CrdObjectList):
+    _items_type = RequiredDuringSchedulingIgnoredDuringExecutionItem
+
+
+class PodAffinity(CrdObject):
+    _properties = [
+        ('preferredDuringSchedulingIgnoredDuringExecution', 'preferredDuringSchedulingIgnoredDuringExecution', 'PreferredDuringSchedulingIgnoredDuringExecutionList', False, False),
+        ('requiredDuringSchedulingIgnoredDuringExecution', 'requiredDuringSchedulingIgnoredDuringExecution', 'RequiredDuringSchedulingIgnoredDuringExecutionList', False, False)
+    ]        
+
+    def __init__(self,
+                 preferredDuringSchedulingIgnoredDuringExecution=_omit,  # type: Optional[Union[List[PreferredDuringSchedulingIgnoredDuringExecutionItem], CrdObjectList]]
+                 requiredDuringSchedulingIgnoredDuringExecution=_omit,  # type: Optional[Union[List[RequiredDuringSchedulingIgnoredDuringExecutionItem], CrdObjectList]]
+                 ):
+        super(PodAffinity, self).__init__(
+            preferredDuringSchedulingIgnoredDuringExecution=preferredDuringSchedulingIgnoredDuringExecution,
+            requiredDuringSchedulingIgnoredDuringExecution=requiredDuringSchedulingIgnoredDuringExecution,
+        )
+
+    @property
+    def preferredDuringSchedulingIgnoredDuringExecution(self):
+        # type: () -> Union[List[PreferredDuringSchedulingIgnoredDuringExecutionItem], CrdObjectList]
+        return self._property_impl('preferredDuringSchedulingIgnoredDuringExecution')
+    
+    @preferredDuringSchedulingIgnoredDuringExecution.setter
+    def preferredDuringSchedulingIgnoredDuringExecution(self, new_val):
+        # type: (Optional[Union[List[PreferredDuringSchedulingIgnoredDuringExecutionItem], CrdObjectList]]) -> None
+        self._preferredDuringSchedulingIgnoredDuringExecution = new_val
+    
+    @property
+    def requiredDuringSchedulingIgnoredDuringExecution(self):
+        # type: () -> Union[List[RequiredDuringSchedulingIgnoredDuringExecutionItem], CrdObjectList]
+        return self._property_impl('requiredDuringSchedulingIgnoredDuringExecution')
+    
+    @requiredDuringSchedulingIgnoredDuringExecution.setter
+    def requiredDuringSchedulingIgnoredDuringExecution(self, new_val):
+        # type: (Optional[Union[List[RequiredDuringSchedulingIgnoredDuringExecutionItem], CrdObjectList]]) -> None
+        self._requiredDuringSchedulingIgnoredDuringExecution = new_val
+
+
+class PodAntiAffinity(CrdObject):
+    _properties = [
+        ('preferredDuringSchedulingIgnoredDuringExecution', 'preferredDuringSchedulingIgnoredDuringExecution', 'PreferredDuringSchedulingIgnoredDuringExecutionList', False, False),
+        ('requiredDuringSchedulingIgnoredDuringExecution', 'requiredDuringSchedulingIgnoredDuringExecution', 'RequiredDuringSchedulingIgnoredDuringExecutionList', False, False)
+    ]        
+
+    def __init__(self,
+                 preferredDuringSchedulingIgnoredDuringExecution=_omit,  # type: Optional[Union[List[PreferredDuringSchedulingIgnoredDuringExecutionItem], CrdObjectList]]
+                 requiredDuringSchedulingIgnoredDuringExecution=_omit,  # type: Optional[Union[List[RequiredDuringSchedulingIgnoredDuringExecutionItem], CrdObjectList]]
+                 ):
+        super(PodAntiAffinity, self).__init__(
+            preferredDuringSchedulingIgnoredDuringExecution=preferredDuringSchedulingIgnoredDuringExecution,
+            requiredDuringSchedulingIgnoredDuringExecution=requiredDuringSchedulingIgnoredDuringExecution,
+        )
+
+    @property
+    def preferredDuringSchedulingIgnoredDuringExecution(self):
+        # type: () -> Union[List[PreferredDuringSchedulingIgnoredDuringExecutionItem], CrdObjectList]
+        return self._property_impl('preferredDuringSchedulingIgnoredDuringExecution')
+    
+    @preferredDuringSchedulingIgnoredDuringExecution.setter
+    def preferredDuringSchedulingIgnoredDuringExecution(self, new_val):
+        # type: (Optional[Union[List[PreferredDuringSchedulingIgnoredDuringExecutionItem], CrdObjectList]]) -> None
+        self._preferredDuringSchedulingIgnoredDuringExecution = new_val
+    
+    @property
+    def requiredDuringSchedulingIgnoredDuringExecution(self):
+        # type: () -> Union[List[RequiredDuringSchedulingIgnoredDuringExecutionItem], CrdObjectList]
+        return self._property_impl('requiredDuringSchedulingIgnoredDuringExecution')
+    
+    @requiredDuringSchedulingIgnoredDuringExecution.setter
+    def requiredDuringSchedulingIgnoredDuringExecution(self, new_val):
+        # type: (Optional[Union[List[RequiredDuringSchedulingIgnoredDuringExecutionItem], CrdObjectList]]) -> None
+        self._requiredDuringSchedulingIgnoredDuringExecution = new_val
+
+
+class TolerationsItem(CrdObject):
+    _properties = [
+        ('effect', 'effect', str, False, False),
+        ('key', 'key', str, False, False),
+        ('operator', 'operator', str, False, False),
+        ('tolerationSeconds', 'tolerationSeconds', int, False, False),
+        ('value', 'value', str, False, False)
+    ]        
+
+    def __init__(self,
+                 effect=_omit,  # type: Optional[str]
+                 key=_omit,  # type: Optional[str]
+                 operator=_omit,  # type: Optional[str]
+                 tolerationSeconds=_omit,  # type: Optional[int]
+                 value=_omit,  # type: Optional[str]
+                 ):
+        super(TolerationsItem, self).__init__(
+            effect=effect,
+            key=key,
+            operator=operator,
+            tolerationSeconds=tolerationSeconds,
+            value=value,
+        )
+
+    @property
+    def effect(self):
+        # type: () -> str
+        return self._property_impl('effect')
+    
+    @effect.setter
+    def effect(self, new_val):
+        # type: (Optional[str]) -> None
+        self._effect = new_val
+    
+    @property
+    def key(self):
+        # type: () -> str
+        return self._property_impl('key')
+    
+    @key.setter
+    def key(self, new_val):
+        # type: (Optional[str]) -> None
+        self._key = new_val
+    
+    @property
+    def operator(self):
+        # type: () -> str
+        return self._property_impl('operator')
+    
+    @operator.setter
+    def operator(self, new_val):
+        # type: (Optional[str]) -> None
+        self._operator = new_val
+    
+    @property
+    def tolerationSeconds(self):
+        # type: () -> int
+        return self._property_impl('tolerationSeconds')
+    
+    @tolerationSeconds.setter
+    def tolerationSeconds(self, new_val):
+        # type: (Optional[int]) -> None
+        self._tolerationSeconds = new_val
+    
+    @property
+    def value(self):
+        # type: () -> str
+        return self._property_impl('value')
+    
+    @value.setter
+    def value(self, new_val):
+        # type: (Optional[str]) -> None
+        self._value = new_val
+
+
+class TolerationsList(CrdObjectList):
+    _items_type = TolerationsItem
+
+
+class TopologySpreadConstraintsItem(CrdObject):
+    _properties = [
+        ('labelSelector', 'labelSelector', 'LabelSelector', False, False),
+        ('maxSkew', 'maxSkew', int, True, False),
+        ('topologyKey', 'topologyKey', str, True, False),
+        ('whenUnsatisfiable', 'whenUnsatisfiable', str, True, False)
+    ]        
+
+    def __init__(self,
+                 maxSkew,  # type: int
+                 topologyKey,  # type: str
+                 whenUnsatisfiable,  # type: str
+                 labelSelector=_omit,  # type: Optional[LabelSelector]
+                 ):
+        super(TopologySpreadConstraintsItem, self).__init__(
+            maxSkew=maxSkew,
+            topologyKey=topologyKey,
+            whenUnsatisfiable=whenUnsatisfiable,
+            labelSelector=labelSelector,
+        )
+
+    @property
+    def labelSelector(self):
+        # type: () -> LabelSelector
+        return self._property_impl('labelSelector')
+    
+    @labelSelector.setter
+    def labelSelector(self, new_val):
+        # type: (Optional[LabelSelector]) -> None
+        self._labelSelector = new_val
+    
+    @property
+    def maxSkew(self):
+        # type: () -> int
+        return self._property_impl('maxSkew')
+    
+    @maxSkew.setter
+    def maxSkew(self, new_val):
+        # type: (int) -> None
+        self._maxSkew = new_val
+    
+    @property
+    def topologyKey(self):
+        # type: () -> str
+        return self._property_impl('topologyKey')
+    
+    @topologyKey.setter
+    def topologyKey(self, new_val):
+        # type: (str) -> None
+        self._topologyKey = new_val
+    
+    @property
+    def whenUnsatisfiable(self):
+        # type: () -> str
+        return self._property_impl('whenUnsatisfiable')
+    
+    @whenUnsatisfiable.setter
+    def whenUnsatisfiable(self, new_val):
+        # type: (str) -> None
+        self._whenUnsatisfiable = new_val
+
+
+class TopologySpreadConstraintsList(CrdObjectList):
+    _items_type = TopologySpreadConstraintsItem
+
+
+class Placement(CrdObject):
+    _properties = [
+        ('nodeAffinity', 'nodeAffinity', 'NodeAffinity', False, False),
+        ('podAffinity', 'podAffinity', 'PodAffinity', False, False),
+        ('podAntiAffinity', 'podAntiAffinity', 'PodAntiAffinity', False, False),
+        ('tolerations', 'tolerations', 'TolerationsList', False, False),
+        ('topologySpreadConstraints', 'topologySpreadConstraints', 'TopologySpreadConstraintsList', False, False)
+    ]        
+
+    def __init__(self,
+                 nodeAffinity=_omit,  # type: Optional[NodeAffinity]
+                 podAffinity=_omit,  # type: Optional[PodAffinity]
+                 podAntiAffinity=_omit,  # type: Optional[PodAntiAffinity]
+                 tolerations=_omit,  # type: Optional[Union[List[TolerationsItem], CrdObjectList]]
+                 topologySpreadConstraints=_omit,  # type: Optional[Union[List[TopologySpreadConstraintsItem], CrdObjectList]]
+                 ):
+        super(Placement, self).__init__(
+            nodeAffinity=nodeAffinity,
+            podAffinity=podAffinity,
+            podAntiAffinity=podAntiAffinity,
+            tolerations=tolerations,
+            topologySpreadConstraints=topologySpreadConstraints,
+        )
+
+    @property
+    def nodeAffinity(self):
+        # type: () -> NodeAffinity
+        return self._property_impl('nodeAffinity')
+    
+    @nodeAffinity.setter
+    def nodeAffinity(self, new_val):
+        # type: (Optional[NodeAffinity]) -> None
+        self._nodeAffinity = new_val
+    
+    @property
+    def podAffinity(self):
+        # type: () -> PodAffinity
+        return self._property_impl('podAffinity')
+    
+    @podAffinity.setter
+    def podAffinity(self, new_val):
+        # type: (Optional[PodAffinity]) -> None
+        self._podAffinity = new_val
+    
+    @property
+    def podAntiAffinity(self):
+        # type: () -> PodAntiAffinity
+        return self._property_impl('podAntiAffinity')
+    
+    @podAntiAffinity.setter
+    def podAntiAffinity(self, new_val):
+        # type: (Optional[PodAntiAffinity]) -> None
+        self._podAntiAffinity = new_val
+    
+    @property
+    def tolerations(self):
+        # type: () -> Union[List[TolerationsItem], CrdObjectList]
+        return self._property_impl('tolerations')
+    
+    @tolerations.setter
+    def tolerations(self, new_val):
+        # type: (Optional[Union[List[TolerationsItem], CrdObjectList]]) -> None
+        self._tolerations = new_val
+    
+    @property
+    def topologySpreadConstraints(self):
+        # type: () -> Union[List[TopologySpreadConstraintsItem], CrdObjectList]
+        return self._property_impl('topologySpreadConstraints')
+    
+    @topologySpreadConstraints.setter
+    def topologySpreadConstraints(self, new_val):
+        # type: (Optional[Union[List[TopologySpreadConstraintsItem], CrdObjectList]]) -> None
+        self._topologySpreadConstraints = new_val
+
+
+class PreparePlacement(CrdObject):
+    _properties = [
+        ('nodeAffinity', 'nodeAffinity', 'NodeAffinity', False, False),
+        ('podAffinity', 'podAffinity', 'PodAffinity', False, False),
+        ('podAntiAffinity', 'podAntiAffinity', 'PodAntiAffinity', False, False),
+        ('tolerations', 'tolerations', 'TolerationsList', False, False),
+        ('topologySpreadConstraints', 'topologySpreadConstraints', 'TopologySpreadConstraintsList', False, False)
+    ]        
+
+    def __init__(self,
+                 nodeAffinity=_omit,  # type: Optional[NodeAffinity]
+                 podAffinity=_omit,  # type: Optional[PodAffinity]
+                 podAntiAffinity=_omit,  # type: Optional[PodAntiAffinity]
+                 tolerations=_omit,  # type: Optional[Union[List[TolerationsItem], CrdObjectList]]
+                 topologySpreadConstraints=_omit,  # type: Optional[Union[List[TopologySpreadConstraintsItem], CrdObjectList]]
+                 ):
+        super(PreparePlacement, self).__init__(
+            nodeAffinity=nodeAffinity,
+            podAffinity=podAffinity,
+            podAntiAffinity=podAntiAffinity,
+            tolerations=tolerations,
+            topologySpreadConstraints=topologySpreadConstraints,
+        )
+
+    @property
+    def nodeAffinity(self):
+        # type: () -> NodeAffinity
+        return self._property_impl('nodeAffinity')
+    
+    @nodeAffinity.setter
+    def nodeAffinity(self, new_val):
+        # type: (Optional[NodeAffinity]) -> None
+        self._nodeAffinity = new_val
+    
+    @property
+    def podAffinity(self):
+        # type: () -> PodAffinity
+        return self._property_impl('podAffinity')
+    
+    @podAffinity.setter
+    def podAffinity(self, new_val):
+        # type: (Optional[PodAffinity]) -> None
+        self._podAffinity = new_val
+    
+    @property
+    def podAntiAffinity(self):
+        # type: () -> PodAntiAffinity
+        return self._property_impl('podAntiAffinity')
+    
+    @podAntiAffinity.setter
+    def podAntiAffinity(self, new_val):
+        # type: (Optional[PodAntiAffinity]) -> None
+        self._podAntiAffinity = new_val
+    
+    @property
+    def tolerations(self):
+        # type: () -> Union[List[TolerationsItem], CrdObjectList]
+        return self._property_impl('tolerations')
+    
+    @tolerations.setter
+    def tolerations(self, new_val):
+        # type: (Optional[Union[List[TolerationsItem], CrdObjectList]]) -> None
+        self._tolerations = new_val
+    
+    @property
+    def topologySpreadConstraints(self):
+        # type: () -> Union[List[TopologySpreadConstraintsItem], CrdObjectList]
+        return self._property_impl('topologySpreadConstraints')
+    
+    @topologySpreadConstraints.setter
+    def topologySpreadConstraints(self, new_val):
+        # type: (Optional[Union[List[TopologySpreadConstraintsItem], CrdObjectList]]) -> None
+        self._topologySpreadConstraints = new_val
+
+
+class StorageClassDeviceSetsItem(CrdObject):
+    _properties = [
+        ('config', 'config', object, False, True),
+        ('count', 'count', int, True, False),
+        ('encrypted', 'encrypted', bool, False, False),
+        ('name', 'name', str, True, False),
+        ('placement', 'placement', 'Placement', False, True),
+        ('portable', 'portable', bool, False, False),
+        ('preparePlacement', 'preparePlacement', 'PreparePlacement', False, True),
+        ('resources', 'resources', 'Resources', False, True),
+        ('schedulerName', 'schedulerName', str, False, False),
+        ('tuneDeviceClass', 'tuneDeviceClass', bool, False, False),
+        ('tuneFastDeviceClass', 'tuneFastDeviceClass', bool, False, False),
+        ('volumeClaimTemplates', 'volumeClaimTemplates', 'VolumeClaimTemplatesList', True, False)
+    ]        
+
+    def __init__(self,
+                 count,  # type: int
+                 name,  # type: str
+                 volumeClaimTemplates,  # type: Union[List[VolumeClaimTemplatesItem], CrdObjectList]
+                 config=_omit,  # type: Optional[Any]
+                 encrypted=_omit,  # type: Optional[bool]
+                 placement=_omit,  # type: Optional[Placement]
+                 portable=_omit,  # type: Optional[bool]
+                 preparePlacement=_omit,  # type: Optional[PreparePlacement]
+                 resources=_omit,  # type: Optional[Resources]
+                 schedulerName=_omit,  # type: Optional[str]
+                 tuneDeviceClass=_omit,  # type: Optional[bool]
+                 tuneFastDeviceClass=_omit,  # type: Optional[bool]
+                 ):
+        super(StorageClassDeviceSetsItem, self).__init__(
+            count=count,
+            name=name,
+            volumeClaimTemplates=volumeClaimTemplates,
+            config=config,
+            encrypted=encrypted,
+            placement=placement,
+            portable=portable,
+            preparePlacement=preparePlacement,
+            resources=resources,
+            schedulerName=schedulerName,
+            tuneDeviceClass=tuneDeviceClass,
+            tuneFastDeviceClass=tuneFastDeviceClass,
+        )
+
+    @property
+    def config(self):
+        # type: () -> Optional[Any]
+        return self._property_impl('config')
+    
+    @config.setter
+    def config(self, new_val):
+        # type: (Optional[Any]) -> None
+        self._config = new_val
+    
+    @property
+    def count(self):
+        # type: () -> int
+        return self._property_impl('count')
+    
+    @count.setter
+    def count(self, new_val):
+        # type: (int) -> None
+        self._count = new_val
+    
+    @property
+    def encrypted(self):
+        # type: () -> bool
+        return self._property_impl('encrypted')
+    
+    @encrypted.setter
+    def encrypted(self, new_val):
+        # type: (Optional[bool]) -> None
+        self._encrypted = new_val
+    
+    @property
+    def name(self):
+        # type: () -> str
+        return self._property_impl('name')
+    
+    @name.setter
+    def name(self, new_val):
+        # type: (str) -> None
+        self._name = new_val
+    
+    @property
+    def placement(self):
+        # type: () -> Optional[Placement]
+        return self._property_impl('placement')
+    
+    @placement.setter
+    def placement(self, new_val):
+        # type: (Optional[Placement]) -> None
+        self._placement = new_val
+    
+    @property
+    def portable(self):
+        # type: () -> bool
+        return self._property_impl('portable')
+    
+    @portable.setter
+    def portable(self, new_val):
+        # type: (Optional[bool]) -> None
+        self._portable = new_val
+    
+    @property
+    def preparePlacement(self):
+        # type: () -> Optional[PreparePlacement]
+        return self._property_impl('preparePlacement')
+    
+    @preparePlacement.setter
+    def preparePlacement(self, new_val):
+        # type: (Optional[PreparePlacement]) -> None
+        self._preparePlacement = new_val
+    
+    @property
+    def resources(self):
+        # type: () -> Optional[Resources]
+        return self._property_impl('resources')
+    
+    @resources.setter
+    def resources(self, new_val):
+        # type: (Optional[Resources]) -> None
+        self._resources = new_val
+    
+    @property
+    def schedulerName(self):
+        # type: () -> str
+        return self._property_impl('schedulerName')
+    
+    @schedulerName.setter
+    def schedulerName(self, new_val):
+        # type: (Optional[str]) -> None
+        self._schedulerName = new_val
+    
+    @property
+    def tuneDeviceClass(self):
+        # type: () -> bool
+        return self._property_impl('tuneDeviceClass')
+    
+    @tuneDeviceClass.setter
+    def tuneDeviceClass(self, new_val):
+        # type: (Optional[bool]) -> None
+        self._tuneDeviceClass = new_val
+    
+    @property
+    def tuneFastDeviceClass(self):
+        # type: () -> bool
+        return self._property_impl('tuneFastDeviceClass')
+    
+    @tuneFastDeviceClass.setter
+    def tuneFastDeviceClass(self, new_val):
+        # type: (Optional[bool]) -> None
+        self._tuneFastDeviceClass = new_val
+    
+    @property
+    def volumeClaimTemplates(self):
+        # type: () -> Union[List[VolumeClaimTemplatesItem], CrdObjectList]
+        return self._property_impl('volumeClaimTemplates')
+    
+    @volumeClaimTemplates.setter
+    def volumeClaimTemplates(self, new_val):
+        # type: (Union[List[VolumeClaimTemplatesItem], CrdObjectList]) -> None
+        self._volumeClaimTemplates = new_val
+
+
+class StorageClassDeviceSetsList(CrdObjectList):
+    _items_type = StorageClassDeviceSetsItem
+
+
+class Storage(CrdObject):
+    _properties = [
+        ('deviceClasses', 'deviceClasses', 'DeviceClassesList', False, False),
+        ('config', 'config', object, False, True),
+        ('deviceFilter', 'deviceFilter', str, False, False),
+        ('devicePathFilter', 'devicePathFilter', str, False, False),
+        ('devices', 'devices', 'DevicesList', False, True),
+        ('nodes', 'nodes', 'NodesList', False, True),
+        ('storageClassDeviceSets', 'storageClassDeviceSets', 'StorageClassDeviceSetsList', False, True),
+        ('useAllDevices', 'useAllDevices', bool, False, False),
+        ('useAllNodes', 'useAllNodes', bool, False, False),
+        ('volumeClaimTemplates', 'volumeClaimTemplates', 'VolumeClaimTemplatesList', False, False)
+    ]        
+
+    def __init__(self,
+                 deviceClasses=_omit,  # type: Optional[Union[List[DeviceClassesItem], CrdObjectList]]
+                 config=_omit,  # type: Optional[Any]
+                 deviceFilter=_omit,  # type: Optional[str]
+                 devicePathFilter=_omit,  # type: Optional[str]
+                 devices=_omit,  # type: Optional[Union[List[DevicesItem], CrdObjectList]]
+                 nodes=_omit,  # type: Optional[Union[List[NodesItem], CrdObjectList]]
+                 storageClassDeviceSets=_omit,  # type: Optional[Union[List[StorageClassDeviceSetsItem], CrdObjectList]]
+                 useAllDevices=_omit,  # type: Optional[bool]
+                 useAllNodes=_omit,  # type: Optional[bool]
+                 volumeClaimTemplates=_omit,  # type: Optional[Union[List[VolumeClaimTemplatesItem], CrdObjectList]]
+                 ):
+        super(Storage, self).__init__(
+            deviceClasses=deviceClasses,
+            config=config,
+            deviceFilter=deviceFilter,
+            devicePathFilter=devicePathFilter,
+            devices=devices,
+            nodes=nodes,
+            storageClassDeviceSets=storageClassDeviceSets,
+            useAllDevices=useAllDevices,
+            useAllNodes=useAllNodes,
+            volumeClaimTemplates=volumeClaimTemplates,
+        )
+
+    @property
+    def deviceClasses(self):
+        # type: () -> Union[List[DeviceClassesItem], CrdObjectList]
+        return self._property_impl('deviceClasses')
+    
+    @deviceClasses.setter
+    def deviceClasses(self, new_val):
+        # type: (Optional[Union[List[DeviceClassesItem], CrdObjectList]]) -> None
+        self._deviceClasses = new_val
+    
+    @property
+    def config(self):
+        # type: () -> Optional[Any]
+        return self._property_impl('config')
+    
+    @config.setter
+    def config(self, new_val):
+        # type: (Optional[Any]) -> None
+        self._config = new_val
+    
+    @property
+    def deviceFilter(self):
+        # type: () -> str
+        return self._property_impl('deviceFilter')
+    
+    @deviceFilter.setter
+    def deviceFilter(self, new_val):
+        # type: (Optional[str]) -> None
+        self._deviceFilter = new_val
+    
+    @property
+    def devicePathFilter(self):
+        # type: () -> str
+        return self._property_impl('devicePathFilter')
+    
+    @devicePathFilter.setter
+    def devicePathFilter(self, new_val):
+        # type: (Optional[str]) -> None
+        self._devicePathFilter = new_val
+    
+    @property
+    def devices(self):
+        # type: () -> Optional[Union[List[DevicesItem], CrdObjectList]]
+        return self._property_impl('devices')
+    
+    @devices.setter
+    def devices(self, new_val):
+        # type: (Optional[Union[List[DevicesItem], CrdObjectList]]) -> None
+        self._devices = new_val
+    
+    @property
+    def nodes(self):
+        # type: () -> Optional[Union[List[NodesItem], CrdObjectList]]
+        return self._property_impl('nodes')
+    
+    @nodes.setter
+    def nodes(self, new_val):
+        # type: (Optional[Union[List[NodesItem], CrdObjectList]]) -> None
+        self._nodes = new_val
+    
+    @property
+    def storageClassDeviceSets(self):
+        # type: () -> Optional[Union[List[StorageClassDeviceSetsItem], CrdObjectList]]
+        return self._property_impl('storageClassDeviceSets')
+    
+    @storageClassDeviceSets.setter
+    def storageClassDeviceSets(self, new_val):
+        # type: (Optional[Union[List[StorageClassDeviceSetsItem], CrdObjectList]]) -> None
+        self._storageClassDeviceSets = new_val
+    
+    @property
+    def useAllDevices(self):
+        # type: () -> bool
+        return self._property_impl('useAllDevices')
+    
+    @useAllDevices.setter
+    def useAllDevices(self, new_val):
+        # type: (Optional[bool]) -> None
+        self._useAllDevices = new_val
+    
+    @property
+    def useAllNodes(self):
+        # type: () -> bool
+        return self._property_impl('useAllNodes')
+    
+    @useAllNodes.setter
+    def useAllNodes(self, new_val):
+        # type: (Optional[bool]) -> None
+        self._useAllNodes = new_val
+    
+    @property
+    def volumeClaimTemplates(self):
+        # type: () -> Union[List[VolumeClaimTemplatesItem], CrdObjectList]
+        return self._property_impl('volumeClaimTemplates')
+    
+    @volumeClaimTemplates.setter
+    def volumeClaimTemplates(self, new_val):
+        # type: (Optional[Union[List[VolumeClaimTemplatesItem], CrdObjectList]]) -> None
+        self._volumeClaimTemplates = new_val
+
+
+class Capacity(CrdObject):
+    _properties = [
+        ('bytesAvailable', 'bytesAvailable', int, False, False),
+        ('bytesTotal', 'bytesTotal', int, False, False),
+        ('bytesUsed', 'bytesUsed', int, False, False),
+        ('lastUpdated', 'lastUpdated', str, False, False)
+    ]        
+
+    def __init__(self,
+                 bytesAvailable=_omit,  # type: Optional[int]
+                 bytesTotal=_omit,  # type: Optional[int]
+                 bytesUsed=_omit,  # type: Optional[int]
+                 lastUpdated=_omit,  # type: Optional[str]
+                 ):
+        super(Capacity, self).__init__(
+            bytesAvailable=bytesAvailable,
+            bytesTotal=bytesTotal,
+            bytesUsed=bytesUsed,
+            lastUpdated=lastUpdated,
+        )
+
+    @property
+    def bytesAvailable(self):
+        # type: () -> int
+        return self._property_impl('bytesAvailable')
+    
+    @bytesAvailable.setter
+    def bytesAvailable(self, new_val):
+        # type: (Optional[int]) -> None
+        self._bytesAvailable = new_val
+    
+    @property
+    def bytesTotal(self):
+        # type: () -> int
+        return self._property_impl('bytesTotal')
+    
+    @bytesTotal.setter
+    def bytesTotal(self, new_val):
+        # type: (Optional[int]) -> None
+        self._bytesTotal = new_val
+    
+    @property
+    def bytesUsed(self):
+        # type: () -> int
+        return self._property_impl('bytesUsed')
+    
+    @bytesUsed.setter
+    def bytesUsed(self, new_val):
+        # type: (Optional[int]) -> None
+        self._bytesUsed = new_val
+    
+    @property
+    def lastUpdated(self):
+        # type: () -> str
+        return self._property_impl('lastUpdated')
+    
+    @lastUpdated.setter
+    def lastUpdated(self, new_val):
+        # type: (Optional[str]) -> None
+        self._lastUpdated = new_val
+
+
+class Versions(CrdObject):
+    _properties = [
+        ('cephfs-mirror', 'cephfs_mirror', object, False, False),
+        ('mds', 'mds', object, False, False),
+        ('mgr', 'mgr', object, False, False),
+        ('mon', 'mon', object, False, False),
+        ('osd', 'osd', object, False, False),
+        ('overall', 'overall', object, False, False),
+        ('rbd-mirror', 'rbd_mirror', object, False, False),
+        ('rgw', 'rgw', object, False, False)
+    ]        
+
+    def __init__(self,
+                 cephfs_mirror=_omit,  # type: Optional[Any]
+                 mds=_omit,  # type: Optional[Any]
+                 mgr=_omit,  # type: Optional[Any]
+                 mon=_omit,  # type: Optional[Any]
+                 osd=_omit,  # type: Optional[Any]
+                 overall=_omit,  # type: Optional[Any]
+                 rbd_mirror=_omit,  # type: Optional[Any]
+                 rgw=_omit,  # type: Optional[Any]
+                 ):
+        super(Versions, self).__init__(
+            cephfs_mirror=cephfs_mirror,
+            mds=mds,
+            mgr=mgr,
+            mon=mon,
+            osd=osd,
+            overall=overall,
+            rbd_mirror=rbd_mirror,
+            rgw=rgw,
+        )
+
+    @property
+    def cephfs_mirror(self):
+        # type: () -> Any
+        return self._property_impl('cephfs_mirror')
+    
+    @cephfs_mirror.setter
+    def cephfs_mirror(self, new_val):
+        # type: (Optional[Any]) -> None
+        self._cephfs_mirror = new_val
+    
+    @property
+    def mds(self):
+        # type: () -> Any
+        return self._property_impl('mds')
+    
+    @mds.setter
+    def mds(self, new_val):
+        # type: (Optional[Any]) -> None
+        self._mds = new_val
+    
+    @property
+    def mgr(self):
+        # type: () -> Any
+        return self._property_impl('mgr')
+    
+    @mgr.setter
+    def mgr(self, new_val):
+        # type: (Optional[Any]) -> None
+        self._mgr = new_val
+    
+    @property
+    def mon(self):
+        # type: () -> Any
+        return self._property_impl('mon')
+    
+    @mon.setter
+    def mon(self, new_val):
+        # type: (Optional[Any]) -> None
+        self._mon = new_val
+    
+    @property
+    def osd(self):
+        # type: () -> Any
+        return self._property_impl('osd')
+    
+    @osd.setter
+    def osd(self, new_val):
+        # type: (Optional[Any]) -> None
+        self._osd = new_val
+    
+    @property
+    def overall(self):
+        # type: () -> Any
+        return self._property_impl('overall')
+    
+    @overall.setter
+    def overall(self, new_val):
+        # type: (Optional[Any]) -> None
+        self._overall = new_val
+    
+    @property
+    def rbd_mirror(self):
+        # type: () -> Any
+        return self._property_impl('rbd_mirror')
+    
+    @rbd_mirror.setter
+    def rbd_mirror(self, new_val):
+        # type: (Optional[Any]) -> None
+        self._rbd_mirror = new_val
+    
+    @property
+    def rgw(self):
+        # type: () -> Any
+        return self._property_impl('rgw')
+    
+    @rgw.setter
+    def rgw(self, new_val):
+        # type: (Optional[Any]) -> None
+        self._rgw = new_val
+
+
+class Ceph(CrdObject):
+    _properties = [
+        ('capacity', 'capacity', 'Capacity', False, False),
+        ('details', 'details', object, False, False),
+        ('health', 'health', str, False, False),
+        ('lastChanged', 'lastChanged', str, False, False),
+        ('lastChecked', 'lastChecked', str, False, False),
+        ('previousHealth', 'previousHealth', str, False, False),
+        ('versions', 'versions', 'Versions', False, False)
+    ]        
+
+    def __init__(self,
+                 capacity=_omit,  # type: Optional[Capacity]
+                 details=_omit,  # type: Optional[Any]
+                 health=_omit,  # type: Optional[str]
+                 lastChanged=_omit,  # type: Optional[str]
+                 lastChecked=_omit,  # type: Optional[str]
+                 previousHealth=_omit,  # type: Optional[str]
+                 versions=_omit,  # type: Optional[Versions]
+                 ):
+        super(Ceph, self).__init__(
+            capacity=capacity,
+            details=details,
+            health=health,
+            lastChanged=lastChanged,
+            lastChecked=lastChecked,
+            previousHealth=previousHealth,
+            versions=versions,
+        )
+
+    @property
+    def capacity(self):
+        # type: () -> Capacity
+        return self._property_impl('capacity')
+    
+    @capacity.setter
+    def capacity(self, new_val):
+        # type: (Optional[Capacity]) -> None
+        self._capacity = new_val
+    
+    @property
+    def details(self):
+        # type: () -> Any
+        return self._property_impl('details')
+    
+    @details.setter
+    def details(self, new_val):
+        # type: (Optional[Any]) -> None
+        self._details = new_val
+    
+    @property
+    def health(self):
+        # type: () -> str
+        return self._property_impl('health')
+    
+    @health.setter
+    def health(self, new_val):
+        # type: (Optional[str]) -> None
+        self._health = new_val
+    
+    @property
+    def lastChanged(self):
+        # type: () -> str
+        return self._property_impl('lastChanged')
+    
+    @lastChanged.setter
+    def lastChanged(self, new_val):
+        # type: (Optional[str]) -> None
+        self._lastChanged = new_val
+    
+    @property
+    def lastChecked(self):
+        # type: () -> str
+        return self._property_impl('lastChecked')
+    
+    @lastChecked.setter
+    def lastChecked(self, new_val):
+        # type: (Optional[str]) -> None
+        self._lastChecked = new_val
+    
+    @property
+    def previousHealth(self):
+        # type: () -> str
+        return self._property_impl('previousHealth')
+    
+    @previousHealth.setter
+    def previousHealth(self, new_val):
+        # type: (Optional[str]) -> None
+        self._previousHealth = new_val
+    
+    @property
+    def versions(self):
+        # type: () -> Versions
+        return self._property_impl('versions')
+    
+    @versions.setter
+    def versions(self, new_val):
+        # type: (Optional[Versions]) -> None
+        self._versions = new_val
+
+
+class DeviceClassesItem(CrdObject):
+    _properties = [
+        ('name', 'name', str, False, False)
+    ]        
+
+    def __init__(self,
+                 name=_omit,  # type: Optional[str]
+                 ):
+        super(DeviceClassesItem, self).__init__(
+            name=name,
+        )
+
+    @property
+    def name(self):
+        # type: () -> str
+        return self._property_impl('name')
+    
+    @name.setter
+    def name(self, new_val):
+        # type: (Optional[str]) -> None
+        self._name = new_val
+
+
+class DeviceClassesList(CrdObjectList):
+    _items_type = DeviceClassesItem
+
+
+class Version(CrdObject):
+    _properties = [
+        ('image', 'image', str, False, False),
+        ('version', 'version', str, False, False)
+    ]        
+
+    def __init__(self,
+                 image=_omit,  # type: Optional[str]
+                 version=_omit,  # type: Optional[str]
+                 ):
+        super(Version, self).__init__(
+            image=image,
+            version=version,
+        )
+
+    @property
+    def image(self):
+        # type: () -> str
+        return self._property_impl('image')
+    
+    @image.setter
+    def image(self, new_val):
+        # type: (Optional[str]) -> None
+        self._image = new_val
+    
+    @property
+    def version(self):
+        # type: () -> str
+        return self._property_impl('version')
+    
+    @version.setter
+    def version(self, new_val):
+        # type: (Optional[str]) -> None
+        self._version = new_val
+
+
+class CephCluster(CrdClass):
+    _properties = [
+        ('apiVersion', 'apiVersion', str, False, False),
+        ('kind', 'kind', str, False, False),
+        ('metadata', 'metadata', object, False, False),
+        ('spec', 'spec', 'Spec', True, False),
+        ('status', 'status', 'Status', False, True)
+    ]        
+
+    def __init__(self,
+                 spec,  # type: Spec
+                 apiVersion=_omit,  # type: Optional[str]
+                 kind=_omit,  # type: Optional[str]
+                 metadata=_omit,  # type: Optional[Any]
+                 status=_omit,  # type: Optional[Status]
+                 ):
+        super(CephCluster, self).__init__(
+            spec=spec,
+            apiVersion=apiVersion,
+            kind=kind,
+            metadata=metadata,
+            status=status,
+        )
+
+    @property
+    def apiVersion(self):
+        # type: () -> str
+        return self._property_impl('apiVersion')
+    
+    @apiVersion.setter
+    def apiVersion(self, new_val):
+        # type: (Optional[str]) -> None
+        self._apiVersion = new_val
+    
+    @property
+    def kind(self):
+        # type: () -> str
+        return self._property_impl('kind')
+    
+    @kind.setter
+    def kind(self, new_val):
+        # type: (Optional[str]) -> None
+        self._kind = new_val
     
     @property
     def metadata(self):
@@ -1095,18 +3935,8 @@ class CephCluster(CrdClass):
     
     @metadata.setter
     def metadata(self, new_val):
-        # type: (Any) -> None
-        self._metadata = new_val
-    
-    @property
-    def status(self):
-        # type: () -> Any
-        return self._property_impl('status')
-    
-    @status.setter
-    def status(self, new_val):
         # type: (Optional[Any]) -> None
-        self._status = new_val
+        self._metadata = new_val
     
     @property
     def spec(self):
@@ -1117,3 +3947,13 @@ class CephCluster(CrdClass):
     def spec(self, new_val):
         # type: (Spec) -> None
         self._spec = new_val
+    
+    @property
+    def status(self):
+        # type: () -> Optional[Status]
+        return self._property_impl('status')
+    
+    @status.setter
+    def status(self, new_val):
+        # type: (Optional[Status]) -> None
+        self._status = new_val

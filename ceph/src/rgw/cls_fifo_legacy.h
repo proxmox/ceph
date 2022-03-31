@@ -129,7 +129,8 @@ class FIFO {
 
   std::string generate_tag() const;
 
-  int apply_update(fifo::info* info,
+  int apply_update(const DoutPrefixProvider *dpp,
+                   fifo::info* info,
 		   const fifo::objv& objv,
 		   const fifo::update& update,
 		   std::uint64_t tid);
@@ -156,7 +157,7 @@ class FIFO {
   int trim_part(const DoutPrefixProvider *dpp, int64_t part_num, uint64_t ofs,
 		std::optional<std::string_view> tag, bool exclusive,
 		std::uint64_t tid, optional_yield y);
-  void trim_part(int64_t part_num, uint64_t ofs,
+  void trim_part(const DoutPrefixProvider *dpp, int64_t part_num, uint64_t ofs,
 		 std::optional<std::string_view> tag, bool exclusive,
 		 std::uint64_t tid, lr::AioCompletion* c);
 
@@ -215,7 +216,8 @@ public:
 	    lr::AioCompletion* c //< Async Completion
     );
   /// Push entries to the FIFO
-  int push(const DoutPrefixProvider *dpp, const std::vector<cb::list>& data_bufs, //< Entries to push
+  int push(const DoutPrefixProvider *dpp, 
+           const std::vector<cb::list>& data_bufs, //< Entries to push
 	   optional_yield y //< Optional yield
     );
   /// Push entries to the FIFO

@@ -15,9 +15,10 @@
 #include "global/global_init.h"
 #include "os/bluestore/Allocator.h"
 
+using namespace std;
 
 void usage(const string &name) {
-  cerr << "Usage: " << name << " <log_to_replay> <raw_duplicate|free_dump>"
+  cerr << "Usage: " << name << " <log_to_replay> <raw_duplicate|free_dump|try_alloc count want alloc_unit>"
        << std::endl;
 }
 
@@ -251,11 +252,11 @@ int replay_free_dump_and_apply(char* fname,
   JSONObj::data_val v;
   ceph_assert(p.is_object());
 
-  auto *o = p.find_obj("allocator_type");
+  auto *o = p.find_obj("alloc_type");
   ceph_assert(o);
   alloc_type = o->get_data_val().str;
 
-  o = p.find_obj("allocator_name");
+  o = p.find_obj("alloc_name");
   ceph_assert(o);
   alloc_name = o->get_data_val().str;
 
@@ -273,7 +274,7 @@ int replay_free_dump_and_apply(char* fname,
 
   unique_ptr<Allocator> alloc;
   alloc.reset(Allocator::create(g_ceph_context, alloc_type,
-    capacity, alloc_unit, alloc_name));
+				capacity, alloc_unit, 0, 0, alloc_name));
 
   auto it = o->find_first();
   while (!it.end()) {
@@ -350,6 +351,42 @@ int main(int argc, char **argv)
         // stub to implement various testing stuff on properly initialized allocator
         // e.g. one can dump allocator back via dump_alloc(a, aname);
         }
+        return 0;
+      });
+  } else if (strcmp(argv[2], "try_alloc") == 0) {
+    if (argc < 6) {
+      std::cerr << "Error: insufficient arguments for \"try_alloc\" operation."
+                << std::endl;
+      usage(argv[0]);
+      return 1;
+    }
+    auto count = strtoul(argv[3], nullptr, 10);
+    auto want = strtoul(argv[4], nullptr, 10);
+    auto alloc_unit = strtoul(argv[5], nullptr, 10);
+
+    return replay_free_dump_and_apply(argv[1],
+      [&](Allocator* a, const string& aname) {
+        ceph_assert(a);
+        std::cout << "Fragmentation:" << a->get_fragmentation()
+                  << std::endl;
+        std::cout << "Fragmentation score:" << a->get_fragmentation_score()
+                  << std::endl;
+        std::cout << "Free:" << std::hex << a->get_free() << std::dec
+                  << std::endl;
+        {
+          PExtentVector extents;
+          for(size_t i = 0; i < count; i++) {
+              extents.clear();
+              auto r = a->allocate(want, alloc_unit, 0, &extents);
+              if (r < 0) {
+                  std::cerr << "Error: allocation failure at step:" << i + 1
+                            << ", ret = " << r << std::endl;
+              return -1;
+            }
+	  }
+        }
+        std::cout << "Successfully allocated: " << count << " * " << want
+                  << ", unit:" << alloc_unit << std::endl;
         return 0;
       });
   }

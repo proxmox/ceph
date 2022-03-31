@@ -1,5 +1,4 @@
-## These are the Release notes for the next release of Hana
-- Official support for Xcode 6, 7 and 8, and LLVM Clang 3.5, 3.6, 3.7, and 3.8
-  has has been dropped. The library should still work with these compilers,
-  however they are not being tested regularly anymore, so they are not
-  officially supported.
+Release notes for Hana 1.7.0
+============================
+- Disable the definition of traits::is_pod in C++20 and later, due to its
+  deprecation.

@@ -9,7 +9,7 @@ from tasks.ceph_test_case import CephTestCase
 
 from teuthology import contextutil
 from teuthology.orchestra import run
-from teuthology.orchestra.run import CommandFailedError
+from teuthology.exceptions import CommandFailedError
 
 log = logging.getLogger(__name__)
 
@@ -66,7 +66,6 @@ class CephFSTestCase(CephTestCase):
     # their special needs.  If not met, tests will be skipped.
     CLIENTS_REQUIRED = 1
     MDSS_REQUIRED = 1
-    REQUIRE_KCLIENT_REMOTE = False
     REQUIRE_ONE_CLIENT_REMOTE = False
 
     # Whether to create the default filesystem during setUp
@@ -132,7 +131,7 @@ class CephFSTestCase(CephTestCase):
         # In case anything is in the OSD blocklist list, clear it out.  This is to avoid
         # the OSD map changing in the background (due to blocklist expiry) while tests run.
         try:
-            self.mds_cluster.mon_manager.raw_cluster_cmd("osd", "blocklist", "clear")
+            self.mds_cluster.mon_manager.run_cluster_cmd(args="osd blocklist clear")
         except CommandFailedError:
             # Fallback for older Ceph cluster
             blocklist = json.loads(self.mds_cluster.mon_manager.raw_cluster_cmd("osd",
@@ -441,11 +440,3 @@ class CephFSTestCase(CephTestCase):
 
         self.run_cluster_cmd(cmd)
         return self.run_cluster_cmd(f'auth get {self.client_name}')
-
-    def create_keyring_file(self, remote, keyring):
-        keyring_path = remote.mktemp(data=keyring)
-
-        # required when triggered using vstart_runner.py.
-        remote.run(args=['chmod', '644', keyring_path])
-
-        return keyring_path

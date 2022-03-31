@@ -15,6 +15,8 @@
 #define dout_context g_ceph_context
 #define dout_subsys ceph_subsys_rgw
 
+using namespace std;
+
 template<>
 int RGWUserCreateCR::Request::_send_request(const DoutPrefixProvider *dpp)
 {
@@ -23,7 +25,7 @@ int RGWUserCreateCR::Request::_send_request(const DoutPrefixProvider *dpp)
   const int32_t default_max_buckets =
     cct->_conf.get_val<int64_t>("rgw_user_max_buckets");
 
-  RGWUserAdminOpState op_state;
+  RGWUserAdminOpState op_state(store);
 
   auto& user = params.user;
 
@@ -99,8 +101,7 @@ int RGWGetUserInfoCR::Request::_send_request(const DoutPrefixProvider *dpp)
 template<>
 int RGWGetBucketInfoCR::Request::_send_request(const DoutPrefixProvider *dpp)
 {
-  return store->getRados()->get_bucket_info(store->svc(), params.tenant, params.bucket_name,
-                                result->bucket_info, &result->mtime, null_yield, dpp, &result->attrs);
+  return store->get_bucket(dpp, nullptr, params.tenant, params.bucket_name, &result->bucket, null_yield);
 }
 
 template<>
@@ -264,7 +265,7 @@ int RGWBucketLifecycleConfigCR::Request::_send_request(const DoutPrefixProvider 
     return -EIO;
   }
 
-  int ret = lc->set_bucket_config(params.bucket_info,
+  int ret = lc->set_bucket_config(params.bucket,
                                   params.bucket_attrs,
                                   &params.config);
   if (ret < 0) {

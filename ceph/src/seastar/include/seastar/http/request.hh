@@ -30,11 +30,13 @@
 //
 #pragma once
 
+#include <seastar/core/iostream.hh>
 #include <seastar/core/sstring.hh>
 #include <string>
 #include <vector>
 #include <strings.h>
 #include <seastar/http/common.hh>
+#include <seastar/core/iostream.hh>
 
 namespace seastar {
 
@@ -75,7 +77,15 @@ struct request {
     std::unordered_map<sstring, sstring> query_parameters;
     connection* connection_ptr;
     parameters param;
-    sstring content;
+    sstring content; // deprecated: use content_stream instead
+    /*
+     * The handler should read the contents of this stream till reaching eof (i.e., the end of this request's content). Failing to do so
+     * will force the server to close this connection, and the client will not be able to reuse this connection for the next request.
+     * The stream should not be closed by the handler, the server will close it for the handler.
+     * */
+    input_stream<char>* content_stream;
+    std::unordered_map<sstring, sstring> trailing_headers;
+    std::unordered_map<sstring, sstring> chunk_extensions;
     sstring protocol_name = "http";
 
     /**

@@ -4,7 +4,7 @@ import re
 import threading
 
 from mgr_module import CLICommand, CLIReadCommand, HandleCommandResult
-from mgr_module import MgrModule, CommandResult
+from mgr_module import MgrModule, CommandResult, NotifyType
 from . import health as health_util
 
 # hours of crash history to report
@@ -20,6 +20,9 @@ ON_DISK_VERSION = 1
 
 
 class Module(MgrModule):
+
+    NOTIFY_TYPES = [NotifyType.health]
+
     def __init__(self, *args, **kwargs):
         super(Module, self).__init__(*args, **kwargs)
 
@@ -50,9 +53,9 @@ class Module(MgrModule):
         return { k: v for k, v in self._store.items() if k.startswith(prefix) }
 
 
-    def notify(self, ttype, ident):
+    def notify(self, ttype: NotifyType, ident):
         """Queue updates for processing"""
-        if ttype == "health":
+        if ttype == NotifyType.health:
             self.log.info("Received health check update {} pending".format(
                 len(self._pending_health)))
             health = json.loads(self.get("health")["json"])
@@ -115,7 +118,7 @@ class Module(MgrModule):
             # build store data entry
             slot = self._health_slot.health()
             assert "version" not in slot
-            slot.update(dict(version = ON_DISK_VERSION))
+            slot.update(dict(version=ON_DISK_VERSION))
             data = json.dumps(slot, cls=health_util.HealthEncoder)
 
             self.log.debug("Storing health key {} data {}".format(
@@ -133,7 +136,7 @@ class Module(MgrModule):
 
     def _health_prune_history(self, hours):
         """Prune old health entries"""
-        cutoff = datetime.datetime.utcnow() - datetime.timedelta(hours = hours)
+        cutoff = datetime.datetime.utcnow() - datetime.timedelta(hours=hours)
         for key in self._health_filter(lambda ts: ts <= cutoff):
             self.log.info("Removing old health slot key {}".format(key))
             self.set_store(key, None)
@@ -159,8 +162,8 @@ class Module(MgrModule):
         collector.merge(self._health_slot)
 
         return dict(
-           current = json.loads(self.get("health")["json"]),
-           history = collector.health()
+            current=json.loads(self.get("health")["json"]),
+            history=collector.health()
         )
 
     def _version_parse(self, version):
@@ -184,20 +187,15 @@ class Module(MgrModule):
         """
         Load crash history for the past N hours from the crash module.
         """
-        params = dict(
-            prefix="crash json_report",
-            hours=hours
-        )
-
         result = dict(
             summary={},
-            hours=params["hours"],
+            hours=hours,
         )
 
         health_check_details = []
 
         try:
-            _, _, crashes = self.remote("crash", "handle_command", "", params)
+            _, _, crashes = self.remote("crash", "do_json_report", hours)
             result["summary"] = json.loads(crashes)
         except Exception as e:
             errmsg = "failed to invoke crash module"
@@ -229,7 +227,6 @@ class Module(MgrModule):
             for s in ['osd.numpg', 'osd.stat_bytes', 'osd.stat_bytes_used']:
                 osd['stats'][s.split('.')[1]] = self.get_latest('osd', str(osd["osd"]), s)
 
-
     def _config_dump(self):
         """Report cluster configuration
 
@@ -237,7 +234,7 @@ class Module(MgrModule):
         configuration defaults; these can be inferred from the version number.
         """
         result = CommandResult("")
-        args = dict(prefix = "config dump", format = "json")
+        args = dict(prefix="config dump", format="json")
         self.send_command(result, "mon", "", json.dumps(args), "")
         ret, outb, outs = result.wait()
         if ret == 0:
@@ -256,8 +253,8 @@ class Module(MgrModule):
         report = {}
 
         report.update({
-            "version": dict(full = self.version,
-                **self._version_parse(self.version))
+            "version": dict(full=self.version,
+                            **self._version_parse(self.version))
         })
 
         # crash history

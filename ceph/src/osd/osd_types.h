@@ -656,7 +656,7 @@ std::ostream& operator<<(std::ostream& out, const spg_t &pg);
 // ----------------------
 
 class coll_t {
-  enum type_t {
+  enum type_t : uint8_t {
     TYPE_META = 0,
     TYPE_LEGACY_TEMP = 1,  /* no longer used */
     TYPE_PG = 2,
@@ -676,6 +676,7 @@ class coll_t {
     calc_str();
   }
 
+  friend class denc_coll_t;
 public:
   coll_t() : type(TYPE_META), removal_seq(0)
   {
@@ -842,6 +843,40 @@ inline std::ostream& operator<<(std::ostream& out, const ceph_object_layout &ol)
   return out;
 }
 
+struct denc_coll_t {
+  coll_t coll;
+
+  auto &get_type() const { return coll.type; }
+  auto &get_type() { return coll.type; }
+  auto &get_pgid() const { return coll.pgid; }
+  auto &get_pgid() { return coll.pgid; }
+
+  denc_coll_t() = default;
+  denc_coll_t(const denc_coll_t &) = default;
+  denc_coll_t(denc_coll_t &&) = default;
+
+  denc_coll_t &operator=(const denc_coll_t &) = default;
+  denc_coll_t &operator=(denc_coll_t &&) = default;
+
+  explicit denc_coll_t(const coll_t &coll) : coll(coll) {}
+  operator coll_t() const {
+    return coll;
+  }
+
+  bool operator<(const denc_coll_t &rhs) const {
+    return coll < rhs.coll;
+  }
+
+  DENC(denc_coll_t, v, p) {
+    DENC_START(1, 1, p);
+    denc(v.get_type(), p);
+    denc(v.get_pgid().pgid.m_pool, p);
+    denc(v.get_pgid().pgid.m_seed, p);
+    denc(v.get_pgid().shard.id, p);
+    DENC_FINISH(p);
+  }
+};
+WRITE_CLASS_DENC(denc_coll_t)
 
 
 // compound rados version type
@@ -1058,6 +1093,7 @@ public:
     CSUM_MIN_BLOCK,
     FINGERPRINT_ALGORITHM,
     PG_NUM_MIN,         // min pg_num
+    PG_NUM_MAX,         // max pg_num
     TARGET_SIZE_BYTES,  // total bytes in pool
     TARGET_SIZE_RATIO,  // fraction of total cluster
     PG_AUTOSCALE_BIAS,
@@ -1220,9 +1256,11 @@ struct pg_pool_t {
     FLAG_SELFMANAGED_SNAPS = 1<<13, // pool uses selfmanaged snaps
     FLAG_POOL_SNAPS = 1<<14,        // pool has pool snaps
     FLAG_CREATING = 1<<15,          // initial pool PGs are being created
+    FLAG_EIO = 1<<16,               // return EIO for all client ops
+    FLAG_BULK = 1<<17, //pool is large
   };
 
-  static const char *get_flag_name(int f) {
+  static const char *get_flag_name(uint64_t f) {
     switch (f) {
     case FLAG_HASHPSPOOL: return "hashpspool";
     case FLAG_FULL: return "full";
@@ -1240,6 +1278,8 @@ struct pg_pool_t {
     case FLAG_SELFMANAGED_SNAPS: return "selfmanaged_snaps";
     case FLAG_POOL_SNAPS: return "pool_snaps";
     case FLAG_CREATING: return "creating";
+    case FLAG_EIO: return "eio";
+    case FLAG_BULK: return "bulk";
     default: return "???";
     }
   }
@@ -1290,6 +1330,10 @@ struct pg_pool_t {
       return FLAG_POOL_SNAPS;
     if (name == "creating")
       return FLAG_CREATING;
+    if (name == "eio")
+      return FLAG_EIO;
+    if (name == "bulk")
+      return FLAG_BULK;
     return 0;
   }
 
@@ -1482,12 +1526,12 @@ public:
     return peering_crush_bucket_count != 0;
   }
 
-  bool stretch_set_can_peer(const set<int>& want, const OSDMap& osdmap,
+  bool stretch_set_can_peer(const std::set<int>& want, const OSDMap& osdmap,
 			    std::ostream *out) const;
-  bool stretch_set_can_peer(const vector<int>& want, const OSDMap& osdmap,
+  bool stretch_set_can_peer(const std::vector<int>& want, const OSDMap& osdmap,
 			    std::ostream *out) const {
     if (!is_stretch_pool()) return true;
-    set<int> swant;
+    std::set<int> swant;
     for (auto i : want) swant.insert(i);
     return stretch_set_can_peer(swant, osdmap, out);
   }
@@ -2140,6 +2184,28 @@ inline bool operator==(const object_stat_collection_t& l,
   return l.sum == r.sum;
 }
 
+enum class scrub_level_t : bool { shallow = false, deep = true };
+enum class scrub_type_t : bool { not_repair = false, do_repair = true };
+
+/// is there a scrub in our future?
+enum class pg_scrub_sched_status_t : uint16_t {
+  unknown,         ///< status not reported yet
+  not_queued,	   ///< not in the OSD's scrub queue. Probably not active.
+  active,          ///< scrubbing
+  scheduled,	   ///< scheduled for a scrub at an already determined time
+  queued	   ///< queued to be scrubbed
+};
+
+struct pg_scrubbing_status_t {
+  utime_t m_scheduled_at{};
+  int32_t m_duration_seconds{0}; // relevant when scrubbing
+  pg_scrub_sched_status_t m_sched_status{pg_scrub_sched_status_t::unknown};
+  bool m_is_active{false};
+  scrub_level_t m_is_deep{scrub_level_t::shallow};
+  bool m_is_periodic{true};
+};
+
+bool operator==(const pg_scrubbing_status_t& l, const pg_scrubbing_status_t& r);
 
 /** pg_stat
  * aggregate stats for a single PG.
@@ -2174,11 +2240,13 @@ struct pg_stat_t {
   utime_t last_scrub_stamp;
   utime_t last_deep_scrub_stamp;
   utime_t last_clean_scrub_stamp;
+  int32_t last_scrub_duration{0};
 
   object_stat_collection_t stats;
 
   int64_t log_size;
   int64_t ondisk_log_size;    // >= active_log_size
+  int64_t objects_scrubbed;
 
   std::vector<int32_t> up, acting;
   std::vector<pg_shard_t> avail_no_missing;
@@ -2197,8 +2265,10 @@ struct pg_stat_t {
   int32_t acting_primary;
 
   // snaptrimq.size() is 64bit, but let's be serious - anything over 50k is
-  // absurd already, so cap it to 2^32 and save 4 bytes at  the same time
+  // absurd already, so cap it to 2^32 and save 4 bytes at the same time
   uint32_t snaptrimq_len;
+
+  pg_scrubbing_status_t scrub_sched_status;
 
   bool stats_invalid:1;
   /// true if num_objects_dirty is not accurate (because it was not
@@ -2217,6 +2287,7 @@ struct pg_stat_t {
       created(0), last_epoch_clean(0),
       parent_split_bits(0),
       log_size(0), ondisk_log_size(0),
+      objects_scrubbed(0),
       mapping_epoch(0),
       up_primary(-1),
       acting_primary(-1),
@@ -2287,6 +2358,7 @@ struct pg_stat_t {
   bool is_acting_osd(int32_t osd, bool primary) const;
   void dump(ceph::Formatter *f) const;
   void dump_brief(ceph::Formatter *f) const;
+  std::string dump_scrub_schedule() const;
   void encode(ceph::buffer::list &bl) const;
   void decode(ceph::buffer::list::const_iterator &bl);
   static void generate_test_instances(std::list<pg_stat_t*>& o);
@@ -5275,7 +5347,7 @@ struct object_copy_data_t {
   utime_t mtime;
   uint32_t data_digest, omap_digest;
   uint32_t flags;
-  std::map<std::string, ceph::buffer::list> attrs;
+  std::map<std::string, ceph::buffer::list, std::less<>> attrs;
   ceph::buffer::list data;
   ceph::buffer::list omap_header;
   ceph::buffer::list omap_data;
@@ -5877,6 +5949,28 @@ struct object_info_t {
     auto p = std::cbegin(bl);
     decode(p);
   }
+
+  void encode_no_oid(ceph::buffer::list& bl, uint64_t features) {
+    // TODO: drop soid field and remove the denc no_oid methods
+    auto tmp_oid = hobject_t(hobject_t::get_max());
+    tmp_oid.swap(soid);
+    encode(bl, features);
+    soid = tmp_oid;
+  }
+  void decode_no_oid(ceph::buffer::list::const_iterator& bl) {
+    decode(bl);
+    ceph_assert(soid.is_max());
+  }
+  void decode_no_oid(const ceph::buffer::list& bl) {
+    auto p = std::cbegin(bl);
+    decode_no_oid(p);
+  }
+  void decode_no_oid(const ceph::buffer::list& bl, const hobject_t& _soid) {
+    auto p = std::cbegin(bl);
+    decode_no_oid(p);
+    soid = _soid;
+  }
+
   void dump(ceph::Formatter *f) const;
   static void generate_test_instances(std::list<object_info_t*>& o);
 
@@ -5897,8 +5991,13 @@ struct object_info_t {
       alloc_hint_flags(0)
   {}
 
-  explicit object_info_t(ceph::buffer::list& bl) {
+  explicit object_info_t(const ceph::buffer::list& bl) {
     decode(bl);
+  }
+
+  explicit object_info_t(const ceph::buffer::list& bl, const hobject_t& _soid) {
+    decode_no_oid(bl);
+    soid = _soid;
   }
 };
 WRITE_CLASS_ENCODER_FEATURES(object_info_t)
@@ -5996,7 +6095,7 @@ struct PushOp {
   interval_set<uint64_t> data_included;
   ceph::buffer::list omap_header;
   std::map<std::string, ceph::buffer::list> omap_entries;
-  std::map<std::string, ceph::buffer::list> attrset;
+  std::map<std::string, ceph::buffer::list, std::less<>> attrset;
 
   ObjectRecoveryInfo recovery_info;
   ObjectRecoveryProgress before_progress;
@@ -6013,15 +6112,12 @@ struct PushOp {
 WRITE_CLASS_ENCODER_FEATURES(PushOp)
 std::ostream& operator<<(std::ostream& out, const PushOp &op);
 
-enum class scrub_level_t : bool { shallow = false, deep = true };
-enum class scrub_type_t : bool { not_repair = false, do_repair = true };
-
 /*
  * summarize pg contents for purposes of a scrub
  */
 struct ScrubMap {
   struct object {
-    std::map<std::string, ceph::buffer::ptr> attrs;
+    std::map<std::string, ceph::buffer::ptr, std::less<>> attrs;
     uint64_t size;
     __u32 omap_digest;         ///< omap crc32c
     __u32 digest;              ///< data crc32c

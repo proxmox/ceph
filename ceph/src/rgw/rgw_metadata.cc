@@ -27,7 +27,25 @@
 
 #define dout_subsys ceph_subsys_rgw
 
+using namespace std;
+
 const std::string RGWMetadataLogHistory::oid = "meta.history";
+
+struct obj_version;
+
+void encode_json(const char *name, const obj_version& v, Formatter *f)
+{
+  f->open_object_section(name);
+  f->dump_string("tag", v.tag);
+  f->dump_unsigned("ver", v.ver);
+  f->close_section();
+}
+
+void decode_json_obj(obj_version& v, JSONObj *obj)
+{
+  JSONDecoder::decode_json("tag", v.tag, obj);
+  JSONDecoder::decode_json("ver", v.ver, obj);
+}
 
 void LogStatusDump::dump(Formatter *f) const {
   string s;
@@ -342,7 +360,7 @@ public:
 
     return 0;
   }
-  int list_keys_next(void *handle, int max, list<string>& keys, bool *truncated) override  {
+  int list_keys_next(const DoutPrefixProvider *dpp, void *handle, int max, list<string>& keys, bool *truncated) override  {
     iter_data *data = static_cast<iter_data *>(handle);
     for (int i = 0; i < max && data->iter != data->sections.end(); ++i, ++(data->iter)) {
       keys.push_back(*data->iter);
@@ -539,11 +557,11 @@ int RGWMetadataHandler_GenericMetaBE::list_keys_init(const DoutPrefixProvider *d
   return 0;
 }
 
-int RGWMetadataHandler_GenericMetaBE::list_keys_next(void *handle, int max, list<string>& keys, bool *truncated)
+int RGWMetadataHandler_GenericMetaBE::list_keys_next(const DoutPrefixProvider *dpp, void *handle, int max, list<string>& keys, bool *truncated)
 {
   auto op = static_cast<RGWSI_MetaBackend_Handler::Op_ManagedCtx *>(handle);
 
-  int ret = op->list_next(max, &keys, truncated);
+  int ret = op->list_next(dpp, max, &keys, truncated);
   if (ret < 0 && ret != -ENOENT) {
     return ret;
   }
@@ -802,13 +820,13 @@ int RGWMetadataManager::list_keys_init(const DoutPrefixProvider *dpp, const stri
   return 0;
 }
 
-int RGWMetadataManager::list_keys_next(void *handle, int max, list<string>& keys, bool *truncated)
+int RGWMetadataManager::list_keys_next(const DoutPrefixProvider *dpp, void *handle, int max, list<string>& keys, bool *truncated)
 {
   list_keys_handle *h = static_cast<list_keys_handle *>(handle);
 
   RGWMetadataHandler *handler = h->handler;
 
-  return handler->list_keys_next(h->handle, max, keys, truncated);
+  return handler->list_keys_next(dpp, h->handle, max, keys, truncated);
 }
 
 void RGWMetadataManager::list_keys_complete(void *handle)
@@ -853,5 +871,20 @@ void RGWMetadataManager::get_sections(list<string>& sections)
   for (map<string, RGWMetadataHandler *>::iterator iter = handlers.begin(); iter != handlers.end(); ++iter) {
     sections.push_back(iter->first);
   }
+}
+
+void RGWMetadataLogInfo::dump(Formatter *f) const
+{
+  encode_json("marker", marker, f);
+  utime_t ut(last_update);
+  encode_json("last_update", ut, f);
+}
+
+void RGWMetadataLogInfo::decode_json(JSONObj *obj)
+{
+  JSONDecoder::decode_json("marker", marker, obj);
+  utime_t ut;
+  JSONDecoder::decode_json("last_update", ut, obj);
+  last_update = ut.to_real_time();
 }
 

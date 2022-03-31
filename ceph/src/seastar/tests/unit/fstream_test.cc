@@ -39,6 +39,8 @@
 #include <boost/algorithm/cxx11/any_of.hpp>
 #include "mock_file.hh"
 #include <boost/range/irange.hpp>
+#include <seastar/util/closeable.hh>
+#include <seastar/util/alloc_failure_injector.hh>
 
 using namespace seastar;
 namespace fs = std::filesystem;
@@ -133,6 +135,7 @@ SEASTAR_TEST_CASE(test_consume_skip_bytes) {
          */
         f = open_file_dma(filename, open_flags::ro).get0();
         auto r = make_lw_shared<reader>(std::move(f), file_input_stream_options{512});
+        auto close_r_in = deferred_close(r->in);
         struct consumer {
             uint64_t _count = 0;
             using consumption_result_type = typename input_stream<char>::consumption_result_type;
@@ -176,7 +179,6 @@ SEASTAR_TEST_CASE(test_consume_skip_bytes) {
             }
         };
         r->in.consume(consumer{}).get();
-        r->in.close().get();
     });
 }
 
@@ -290,6 +292,7 @@ SEASTAR_TEST_CASE(test_input_stream_esp_around_eof) {
         auto filename = (t.get_path() / "testfile.tmp").native();
         auto f = open_file_dma(filename,
                 open_flags::rw | open_flags::create | open_flags::truncate).get0();
+        auto close_f = deferred_close(f);
         auto out = api_v3::and_newer::make_file_output_stream(f).get0();
         out.write(reinterpret_cast<const char*>(data.data()), data.size()).get();
         out.flush().get();
@@ -338,7 +341,6 @@ SEASTAR_TEST_CASE(test_input_stream_esp_around_eof) {
             }
             BOOST_REQUIRE(std::equal(readback.begin(), readback.end(), data.begin() + std::min(start, flen)));
         }
-        f.close().get();
     });
 }
 
@@ -358,8 +360,9 @@ SEASTAR_TEST_CASE(file_handle_test) {
     return tmp_dir::do_with_thread([] (tmp_dir& t) {
         auto filename = (t.get_path() / "testfile.tmp").native();
         auto f = open_file_dma(filename, open_flags::create | open_flags::truncate | open_flags::rw).get0();
+        auto close_f = deferred_close(f);
         auto buf = static_cast<char*>(aligned_alloc(4096, 4096));
-        auto del = defer([&] { ::free(buf); });
+        auto del = defer([&] () noexcept { ::free(buf); });
         for (unsigned i = 0; i < 4096; ++i) {
             buf[i] = i;
         }
@@ -369,7 +372,7 @@ SEASTAR_TEST_CASE(file_handle_test) {
             return seastar::async([fh, &bad] {
                 auto f = fh.to_file();
                 auto buf = static_cast<char*>(aligned_alloc(4096, 4096));
-                auto del = defer([&] { ::free(buf); });
+                auto del = defer([&] () noexcept { ::free(buf); });
                 f.dma_read(0, buf, 4096).get();
                 for (unsigned i = 0; i < 4096; ++i) {
                     bad[this_shard_id()] |= buf[i] != char(i);
@@ -377,7 +380,6 @@ SEASTAR_TEST_CASE(file_handle_test) {
             });
         }).get();
         BOOST_REQUIRE(!boost::algorithm::any_of_equal(bad, 1u));
-        f.close().get();
     });
 }
 
@@ -536,3 +538,43 @@ SEASTAR_TEST_CASE(test_fstream_slow_start) {
         read_while_file_at_full_speed(make_fstream());
     });
 }
+
+#ifdef SEASTAR_ENABLE_ALLOC_FAILURE_INJECTION
+
+SEASTAR_TEST_CASE(test_close_error) {
+    using namespace seastar::memory;
+
+    return tmp_dir::do_with_thread([] (tmp_dir& t) {
+        bool done = false;
+        for (size_t i = 0; !done; i++) {
+            bool got_close_error = false;
+            sstring filename = (t.get_path() / format("testfile-{}.tmp", i).c_str()).native();
+            file f = open_file_dma(filename, open_flags::rw | open_flags::create | open_flags::truncate).get0();
+            auto opts = file_output_stream_options{};
+            opts.write_behind = 16;
+            std::unique_ptr<output_stream<char>> out = std::make_unique<output_stream<char>>(make_file_output_stream(std::move(f), opts).get0());
+            size_t size = 4096;
+            std::vector<char> buf(size);
+            std::iota(buf.begin(), buf.end(), 0);
+            size_t file_length = 1 * 1024 * 1024;
+            auto fut = make_ready_future<>();
+            for (size_t len = 0; len < file_length; len += size) {
+                fut = fut.finally([&] { return out->write(buf.data(), size); });
+            }
+            fut.get();
+            try {
+                local_failure_injector().fail_after(i);
+                out->close().get();
+                done = true;
+                local_failure_injector().cancel();
+            } catch (const std::bad_alloc&) {
+                got_close_error = true;
+            }
+            BOOST_REQUIRE(got_close_error || done);
+            out.reset();
+            remove_file(filename).get();
+        }
+    });
+}
+
+#endif // SEASTAR_ENABLE_ALLOC_FAILURE_INJECTION

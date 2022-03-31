@@ -82,7 +82,7 @@ std::ostream& operator<<(std::ostream& out, const BucketIndexShardsManager& rhs)
 }
 
 int bucket_source_sync_checkpoint(const DoutPrefixProvider* dpp,
-                                  rgw::sal::RGWRadosStore *store,
+                                  rgw::sal::RadosStore* store,
                                   const RGWBucketInfo& bucket_info,
                                   const RGWBucketInfo& source_bucket_info,
                                   const rgw_sync_bucket_pipe& pipe,
@@ -147,7 +147,7 @@ int source_bilog_markers(const DoutPrefixProvider *dpp,
 } // anonymous namespace
 
 int rgw_bucket_sync_checkpoint(const DoutPrefixProvider* dpp,
-                               rgw::sal::RGWRadosStore *store,
+                               rgw::sal::RadosStore* store,
                                const RGWBucketSyncPolicyHandler& policy,
                                const RGWBucketInfo& info,
                                std::optional<rgw_zone_id> opt_source_zone,
@@ -177,7 +177,7 @@ int rgw_bucket_sync_checkpoint(const DoutPrefixProvider* dpp,
     entry.pipe = pipe;
 
     // fetch remote markers
-    spawn::spawn(ioctx, [&] (spawn::yield_context yield) {
+    spawn::spawn(ioctx, [&] (yield_context yield) {
       auto y = optional_yield{ioctx, yield};
       int r = source_bilog_markers(dpp, store->svc()->zone, entry.pipe,
                                    entry.remote_markers, y);
@@ -188,7 +188,7 @@ int rgw_bucket_sync_checkpoint(const DoutPrefixProvider* dpp,
       }
     });
     // fetch source bucket info
-    spawn::spawn(ioctx, [&] (spawn::yield_context yield) {
+    spawn::spawn(ioctx, [&] (yield_context yield) {
       auto y = optional_yield{ioctx, yield};
       auto obj_ctx = store->svc()->sysobj->init_obj_ctx();
       int r = store->getRados()->get_bucket_instance_info(

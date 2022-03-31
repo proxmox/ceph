@@ -16,6 +16,8 @@
 #define dout_context g_ceph_context
 #define dout_subsys ceph_subsys_rgw
 
+using namespace std;
+
 void RGWHandler_REST_IAM::rgw_iam_parse_input()
 {
   if (post_body.size() > 0) {
@@ -77,12 +79,18 @@ RGWOp *RGWHandler_REST_IAM::op_post()
       return new RGWGetOIDCProvider;
     if (action.compare("DeleteOpenIDConnectProvider") == 0)
       return new RGWDeleteOIDCProvider;
+    if (action.compare("TagRole") == 0)
+      return new RGWTagRole;
+    if (action.compare("ListRoleTags") == 0)
+      return new RGWListRoleTags;
+    if (action.compare("UntagRole") == 0)
+      return new RGWUntagRole;
   }
 
   return nullptr;
 }
 
-int RGWHandler_REST_IAM::init(rgw::sal::RGWRadosStore *store,
+int RGWHandler_REST_IAM::init(rgw::sal::Store* store,
                               struct req_state *s,
                               rgw::io::BasicClient *cio)
 {
@@ -144,7 +152,7 @@ int RGWHandler_REST_IAM::init_from_header(struct req_state* s,
 }
 
 RGWHandler_REST*
-RGWRESTMgr_IAM::get_handler(rgw::sal::RGWRadosStore *store,
+RGWRESTMgr_IAM::get_handler(rgw::sal::Store* store,
 			    struct req_state* const s,
 			    const rgw::auth::StrategyRegistry& auth_registry,
 			    const std::string& frontend_prefix)

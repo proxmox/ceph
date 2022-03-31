@@ -1,5 +1,4 @@
 # -*- coding: utf-8 -*-
-from __future__ import absolute_import
 
 import time
 from typing import Any, Dict, Iterable, List, Optional, Union, cast
@@ -74,7 +73,8 @@ POOL_SCHEMA = ([{
     "expected_num_objects": (int, ""),
     "fast_read": (bool, ""),
     "options": ({
-        "pg_num_min": (int, "")
+        "pg_num_min": (int, ""),
+        "pg_num_max": (int, "")
     }, ""),
     "application_metadata": ([str], ""),
     "create_time": (str, ""),

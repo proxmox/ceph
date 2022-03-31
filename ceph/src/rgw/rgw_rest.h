@@ -24,10 +24,6 @@ extern void rgw_flush_formatter_and_reset(struct req_state *s,
 extern void rgw_flush_formatter(struct req_state *s,
 				ceph::Formatter *formatter);
 
-std::tuple<int, bufferlist > rgw_rest_read_all_input(struct req_state *s,
-                                        const uint64_t max_len,
-                                        const bool allow_chunked=true);
-
 inline std::string_view rgw_sanitized_hdrval(ceph::buffer::list& raw)
 {
   /* std::string and thus std::string_view ARE OBLIGED to carry multiple
@@ -46,43 +42,6 @@ inline std::string_view rgw_sanitized_hdrval(ceph::buffer::list& raw)
   }
 
   return std::string_view(data, len);
-}
-
-template <class T>
-int rgw_rest_get_json_input(CephContext *cct, req_state *s, T& out,
-			    uint64_t max_len, bool *empty)
-{
-  if (empty)
-    *empty = false;
-
-  int rv = 0;
-  bufferlist data;
-  std::tie(rv, data) = rgw_rest_read_all_input(s, max_len);
-  if (rv < 0) {
-    return rv;
-  }
-
-  if (!data.length()) {
-    if (empty) {
-      *empty = true;
-    }
-
-    return -EINVAL;
-  }
-
-  JSONParser parser;
-
-  if (!parser.parse(data.c_str(), data.length())) {
-    return -EINVAL;
-  }
-
-  try {
-      decode_json_obj(out, &parser);
-  } catch (JSONDecoder::err& e) {
-      return -EINVAL;
-  }
-
-  return 0;
 }
 
 template <class T>
@@ -116,24 +75,24 @@ std::tuple<int, bufferlist > rgw_rest_get_json_input_keep_data(CephContext *cct,
 
 class RESTArgs {
 public:
-  static int get_string(struct req_state *s, const string& name,
-			const string& def_val, string *val,
+  static int get_string(struct req_state *s, const std::string& name,
+			const std::string& def_val, std::string *val,
 			bool *existed = NULL);
-  static int get_uint64(struct req_state *s, const string& name,
+  static int get_uint64(struct req_state *s, const std::string& name,
 			uint64_t def_val, uint64_t *val, bool *existed = NULL);
-  static int get_int64(struct req_state *s, const string& name,
+  static int get_int64(struct req_state *s, const std::string& name,
 		       int64_t def_val, int64_t *val, bool *existed = NULL);
-  static int get_uint32(struct req_state *s, const string& name,
+  static int get_uint32(struct req_state *s, const std::string& name,
 			uint32_t def_val, uint32_t *val, bool *existed = NULL);
-  static int get_int32(struct req_state *s, const string& name,
+  static int get_int32(struct req_state *s, const std::string& name,
 		       int32_t def_val, int32_t *val, bool *existed = NULL);
-  static int get_time(struct req_state *s, const string& name,
+  static int get_time(struct req_state *s, const std::string& name,
 		      const utime_t& def_val, utime_t *val,
 		      bool *existed = NULL);
-  static int get_epoch(struct req_state *s, const string& name,
+  static int get_epoch(struct req_state *s, const std::string& name,
 		       uint64_t def_val, uint64_t *epoch,
 		       bool *existed = NULL);
-  static int get_bool(struct req_state *s, const string& name, bool def_val,
+  static int get_bool(struct req_state *s, const std::string& name, bool def_val,
 		      bool *val, bool *existed = NULL);
 };
 
@@ -162,7 +121,7 @@ protected:
 public:
   RGWGetObj_ObjStore() : sent_header(false) {}
 
-  void init(rgw::sal::RGWRadosStore *store, struct req_state *s, RGWHandler *h) override {
+  void init(rgw::sal::Store* store, struct req_state *s, RGWHandler *h) override {
     RGWGetObj::init(store, s, h);
     sent_header = false;
   }
@@ -440,6 +399,24 @@ public:
   ~RGWOptionsCORS_ObjStore() override {}
 };
 
+class RGWGetBucketEncryption_ObjStore : public RGWGetBucketEncryption {
+public:
+  RGWGetBucketEncryption_ObjStore() {}
+  ~RGWGetBucketEncryption_ObjStore() override {}
+};
+
+class RGWPutBucketEncryption_ObjStore : public RGWPutBucketEncryption {
+public:
+  RGWPutBucketEncryption_ObjStore() {}
+  ~RGWPutBucketEncryption_ObjStore() override {}
+};
+
+class RGWDeleteBucketEncryption_ObjStore : public RGWDeleteBucketEncryption {
+public:
+  RGWDeleteBucketEncryption_ObjStore() {}
+  ~RGWDeleteBucketEncryption_ObjStore() override {}
+};
+
 class RGWInitMultipart_ObjStore : public RGWInitMultipart {
 public:
   RGWInitMultipart_ObjStore() {}
@@ -543,8 +520,9 @@ public:
 class RGWRESTOp : public RGWOp {
 protected:
   RGWRESTFlusher flusher;
+
 public:
-  void init(rgw::sal::RGWRadosStore *store, struct req_state *s,
+  void init(rgw::sal::Store* store, struct req_state *s,
             RGWHandler *dialect_handler) override {
     RGWOp::init(store, s, dialect_handler);
     flusher.init(s, this);
@@ -578,8 +556,8 @@ public:
   RGWHandler_REST() {}
   ~RGWHandler_REST() override {}
 
-  static int validate_bucket_name(const string& bucket);
-  static int validate_object_name(const string& object);
+  static int validate_bucket_name(const std::string& bucket);
+  static int validate_object_name(const std::string& object);
   static int reallocate_formatter(struct req_state *s, int type);
 
   int init_permissions(RGWOp* op, optional_yield y) override;
@@ -637,7 +615,7 @@ public:
   }
 
   virtual RGWHandler_REST* get_handler(
-    rgw::sal::RGWRadosStore *store,
+    rgw::sal::Store* store,
     struct req_state* const s,
     const rgw::auth::StrategyRegistry& auth_registry,
     const std::string& frontend_prefix
@@ -669,7 +647,7 @@ class RGWREST {
   static int preprocess(struct req_state *s, rgw::io::BasicClient* rio);
 public:
   RGWREST() {}
-  RGWHandler_REST *get_handler(rgw::sal::RGWRadosStore *store,
+  RGWHandler_REST *get_handler(rgw::sal::Store* store,
                                struct req_state *s,
                                const rgw::auth::StrategyRegistry& auth_registry,
                                const std::string& frontend_prefix,
@@ -686,7 +664,7 @@ public:
     mgr.put_handler(handler);
   }
 
-  void register_resource(string resource, RGWRESTMgr *m,
+  void register_resource(std::string resource, RGWRESTMgr *m,
 			 bool register_empty = false) {
     if (!register_empty && resource.empty())
       return;
@@ -712,8 +690,8 @@ public:
 static constexpr int64_t NO_CONTENT_LENGTH = -1;
 static constexpr int64_t CHUNKED_TRANSFER_ENCODING = -2;
 
-extern void dump_errno(int http_ret, string& out);
-extern void dump_errno(const struct rgw_err &err, string& out);
+extern void dump_errno(int http_ret, std::string& out);
+extern void dump_errno(const struct rgw_err &err, std::string& out);
 extern void dump_errno(struct req_state *s);
 extern void dump_errno(struct req_state *s, int http_ret);
 extern void end_header(struct req_state *s,
@@ -725,8 +703,8 @@ extern void end_header(struct req_state *s,
 		       bool force_no_error = false);
 extern void dump_start(struct req_state *s);
 extern void list_all_buckets_start(struct req_state *s);
-extern void dump_owner(struct req_state *s, const rgw_user& id, string& name,
-		       const char *section = NULL);
+extern void dump_owner(struct req_state *s, const rgw_user& id,
+                       const std::string& name, const char *section = NULL);
 extern void dump_header(struct req_state* s,
                         const std::string_view& name,
                         const std::string_view& val);
@@ -823,10 +801,10 @@ extern void dump_range(struct req_state* s, uint64_t ofs, uint64_t end,
 		       uint64_t total_size);
 extern void dump_continue(struct req_state *s);
 extern void list_all_buckets_end(struct req_state *s);
-extern void dump_time(struct req_state *s, const char *name, real_time *t);
+extern void dump_time(struct req_state *s, const char *name, real_time t);
 extern std::string dump_time_to_str(const real_time& t);
 extern void dump_bucket_from_state(struct req_state *s);
-extern void dump_redirect(struct req_state *s, const string& redirect);
+extern void dump_redirect(struct req_state *s, const std::string& redirect);
 extern bool is_valid_url(const char *url);
 extern void dump_access_control(struct req_state *s, const char *origin,
 				const char *meth,

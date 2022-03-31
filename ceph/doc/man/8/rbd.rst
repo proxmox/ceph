@@ -81,6 +81,9 @@ Parameters
    nearest power of two; if no suffix is given, unit B is assumed.  The default
    object size is 4M, smallest is 4K and maximum is 32M.
 
+   The default value can be changed with the configuration option ``rbd_default_order``,
+   which takes a power of two (default object size is ``2 ^ rbd_default_order``).
+
 .. option:: --stripe-unit size-in-B/K/M
 
    Specifies the stripe unit size in B/K/M.  If no suffix is given, unit B is
@@ -237,6 +240,8 @@ Commands
 :command:`cp` (*src-image-spec* | *src-snap-spec*) *dest-image-spec*
   Copy the content of a src-image into the newly created dest-image.
   dest-image will have the same size, object size, and image format as src-image.
+  Note: snapshots are not copied, use `deep cp` command to include
+  snapshots.
 
 :command:`create` (-s | --size *size-in-M/G/T*) [--image-format *format-id*] [--object-size *size-in-B/K/M*] [--stripe-unit *size-in-B/K/M* --stripe-count *num*] [--thick-provision] [--no-progress] [--image-feature *feature-name*]... [--image-shared] *image-spec*
   Will create a new rbd image. You must also specify the size via --size.  The
@@ -253,7 +258,7 @@ Commands
   Show the rbd images that are mapped via the rbd kernel module
   (default) or other supported device.
 
-:command:`device map` [-t | --device-type *device-type*] [--read-only] [--exclusive] [-o | --options *device-options*] *image-spec* | *snap-spec*
+:command:`device map` [-t | --device-type *device-type*] [--cookie *device-cookie*] [--show-cookie] [--read-only] [--exclusive] [-o | --options *device-options*] *image-spec* | *snap-spec*
   Map the specified image to a block device via the rbd kernel module
   (default) or other supported device (*nbd* on Linux or *ggate* on
   FreeBSD).
@@ -264,6 +269,22 @@ Commands
 :command:`device unmap` [-t | --device-type *device-type*] [-o | --options *device-options*] *image-spec* | *snap-spec* | *device-path*
   Unmap the block device that was mapped via the rbd kernel module
   (default) or other supported device.
+
+  The --options argument is a comma separated list of device type
+  specific options (opt1,opt2=val,...).
+
+:command:`device attach` [-t | --device-type *device-type*] --device *device-path* [--cookie *device-cookie*] [--show-cookie] [--read-only] [--exclusive] [--force] [-o | --options *device-options*] *image-spec* | *snap-spec*
+  Attach the specified image to the specified block device (currently only
+  `nbd` on Linux). This operation is unsafe and should not be normally used.
+  In particular, specifying the wrong image or the wrong block device may
+  lead to data corruption as no validation is performed by `nbd` kernel driver.
+
+  The --options argument is a comma separated list of device type
+  specific options (opt1,opt2=val,...).
+
+:command:`device detach` [-t | --device-type *device-type*] [-o | --options *device-options*] *image-spec* | *snap-spec* | *device-path*
+  Detach the block device that was mapped or attached (currently only `nbd`
+  on Linux). This operation is unsafe and should not be normally used.
 
   The --options argument is a comma separated list of device type
   specific options (opt1,opt2=val,...).
@@ -883,6 +904,15 @@ Per mapping (block device) `rbd device map` options:
   mode (since 5.11).  If the daemon denies 'secure' mode in favor of 'crc'
   mode, agree to 'crc' mode.
 
+* rxbounce - Use a bounce buffer when receiving data (since 5.17).  The default
+  behaviour is to read directly into the destination buffer.  A bounce buffer
+  is needed if the destination buffer isn't guaranteed to be stable (i.e. remain
+  unchanged while it is being read to).  In particular this is the case for
+  Windows where a system-wide "dummy" (throwaway) page may be mapped into the
+  destination buffer in order to generate a single large I/O.  Otherwise,
+  "libceph: ... bad crc/signature" or "libceph: ... integrity error, bad crc"
+  errors and associated performance degradation are expected.
+
 * udev - Wait for udev device manager to finish executing all matching
   "add" rules and release the device before exiting (default).  This option
   is not passed to the kernel.
@@ -1000,7 +1030,7 @@ Availability
 ============
 
 **rbd** is part of Ceph, a massively scalable, open-source, distributed storage system. Please refer to
-the Ceph documentation at http://ceph.com/docs for more information.
+the Ceph documentation at https://docs.ceph.com for more information.
 
 
 See also

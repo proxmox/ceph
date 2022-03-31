@@ -29,6 +29,7 @@
 #include <seastar/core/thread.hh>
 #include <seastar/core/print.hh>
 #include <seastar/util/defer.hh>
+#include <seastar/util/closeable.hh>
 #include <mutex>
 
 using namespace seastar;
@@ -170,6 +171,30 @@ SEASTAR_TEST_CASE(test_invoke_on_others) {
     });
 }
 
+SEASTAR_TEST_CASE(test_smp_invoke_on_others) {
+    return seastar::async([] {
+        std::vector<std::vector<int>> calls;
+        calls.reserve(smp::count);
+        for (unsigned i = 0; i < smp::count; i++) {
+            auto& sv = calls.emplace_back();
+            sv.reserve(smp::count);
+        }
+
+        smp::invoke_on_all([&calls] {
+            return smp::invoke_on_others([&calls, from = this_shard_id()] {
+                calls[this_shard_id()].emplace_back(from);
+            });
+        }).get();
+
+        for (unsigned i = 0; i < smp::count; i++) {
+            BOOST_REQUIRE_EQUAL(calls[i].size(), smp::count - 1);
+            for (unsigned f = 0; f < smp::count; f++) {
+                auto r = std::find(calls[i].begin(), calls[i].end(), f);
+                BOOST_REQUIRE_EQUAL(r == calls[i].end(), i == f);
+            }
+        }
+    });
+}
 
 struct remote_worker {
     unsigned current = 0;
@@ -243,7 +268,7 @@ SEASTAR_TEST_CASE(test_smp_timeout) {
         ssgc1.max_nonlocal_requests = 1;
         auto ssg1 = create_smp_service_group(ssgc1).get0();
 
-        auto _ = defer([ssg1] {
+        auto _ = defer([ssg1] () noexcept {
             destroy_smp_service_group(ssg1).get();
         });
 
@@ -269,7 +294,7 @@ SEASTAR_TEST_CASE(test_smp_timeout) {
         });
 
         {
-            auto notify = defer([lk = std::move(lk)] { });
+            auto notify = defer([lk = std::move(lk)] () noexcept { });
 
             try {
                 fut_timedout.get();
@@ -302,7 +327,7 @@ SEASTAR_THREAD_TEST_CASE(test_sharded_parameter) {
     };
     sharded<dependency> s_dep;
     s_dep.start().get();
-    auto undo1 = defer([&] { s_dep.stop().get(); });
+    auto undo1 = deferred_stop(s_dep);
 
     sharded<some_service> s_service;
     s_service.start(
@@ -311,7 +336,7 @@ SEASTAR_THREAD_TEST_CASE(test_sharded_parameter) {
             std::ref(s_dep),
             sharded_parameter([] (dependency& d) { return -d.val; }, std::ref(s_dep))
             ).get();
-    auto undo2 = defer([&] { s_service.stop().get(); });
+    auto undo2 = deferred_stop(s_service);
 
     auto all_ok = s_service.map_reduce0(std::mem_fn(&some_service::ok), true, std::multiplies<>()).get0();
     BOOST_REQUIRE(all_ok);

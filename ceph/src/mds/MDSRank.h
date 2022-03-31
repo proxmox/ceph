@@ -166,7 +166,6 @@ class MDSRank {
 
     MDSRank(
         mds_rank_t whoami_,
-	std::string fs_name_,
         ceph::fair_mutex &mds_lock_,
         LogChannelRef &clog_,
         CommonSafeTimer<ceph::fair_mutex> &timer_,
@@ -180,7 +179,6 @@ class MDSRank {
 	boost::asio::io_context& ioc);
 
     mds_rank_t get_nodeid() const { return whoami; }
-    std::string_view get_fs_name() const { return fs_name; }
     int64_t get_metadata_pool() const
     {
         return metadata_pool;
@@ -189,9 +187,9 @@ class MDSRank {
     mono_time get_starttime() const {
       return starttime;
     }
-    chrono::duration<double> get_uptime() const {
+    std::chrono::duration<double> get_uptime() const {
       mono_time now = mono_clock::now();
-      return chrono::duration<double>(now-starttime);
+      return std::chrono::duration<double>(now-starttime);
     }
 
     bool is_daemon_stopping() const;
@@ -303,6 +301,9 @@ class MDSRank {
     void send_message_client(const ref_t<Message>& m, Session* session);
     void send_message(const ref_t<Message>& m, const ConnectionRef& c);
 
+    void wait_for_bootstrapped_peer(mds_rank_t who, MDSContext *c) {
+      waiting_for_bootstrapping_peer[who].push_back(c);
+    }
     void wait_for_active_peer(mds_rank_t who, MDSContext *c) { 
       waiting_for_active_peer[who].push_back(c);
     }
@@ -358,7 +359,7 @@ class MDSRank {
 
     void hit_export_target(mds_rank_t rank, double amount=-1.0);
     bool is_export_target(mds_rank_t rank) {
-      const set<mds_rank_t>& map_targets = mdsmap->get_mds_info(get_nodeid()).export_targets;
+      const std::set<mds_rank_t>& map_targets = mdsmap->get_mds_info(get_nodeid()).export_targets;
       return map_targets.count(rank);
     }
 
@@ -445,7 +446,6 @@ class MDSRank {
     friend class C_MDS_MonCommand;
 
     const mds_rank_t whoami;
-    std::string fs_name;
 
     ~MDSRank();
 
@@ -471,7 +471,7 @@ class MDSRank {
     void dump_clientreplay_status(Formatter *f) const;
     void command_scrub_start(Formatter *f,
                              std::string_view path, std::string_view tag,
-                             const vector<string>& scrubop_vec, Context *on_finish);
+                             const std::vector<std::string>& scrubop_vec, Context *on_finish);
     void command_tag_path(Formatter *f, std::string_view path,
                           std::string_view tag);
     // scrub control commands
@@ -568,7 +568,7 @@ class MDSRank {
     MetricsHandler metrics_handler;
     std::unique_ptr<MetricAggregator> metric_aggregator;
 
-    list<cref_t<Message>> waiting_for_nolaggy;
+    std::list<cref_t<Message>> waiting_for_nolaggy;
     MDSContext::que finished_queue;
     // Dispatch, retry, queues
     int dispatch_depth = 0;
@@ -576,7 +576,7 @@ class MDSRank {
     ceph::heartbeat_handle_d *hb = nullptr;  // Heartbeat for threads using mds_lock
     double heartbeat_grace;
 
-    map<mds_rank_t, version_t> peer_mdsmap_epoch;
+    std::map<mds_rank_t, version_t> peer_mdsmap_epoch;
 
     ceph_tid_t last_tid = 0;    // for mds-initiated requests (e.g. stray rename)
 
@@ -586,8 +586,9 @@ class MDSRank {
     MDSContext::que replay_queue;
     bool replaying_requests_done = false;
 
-    map<mds_rank_t, MDSContext::vec > waiting_for_active_peer;
-    map<epoch_t, MDSContext::vec > waiting_for_mdsmap;
+    std::map<mds_rank_t, MDSContext::vec> waiting_for_active_peer;
+    std::map<mds_rank_t, MDSContext::vec> waiting_for_bootstrapping_peer;
+    std::map<epoch_t, MDSContext::vec> waiting_for_mdsmap;
 
     epoch_t osd_epoch_barrier = 0;
 
@@ -597,7 +598,7 @@ class MDSRank {
 
     int mds_slow_req_count = 0;
 
-    map<mds_rank_t,DecayCounter> export_targets; /* targets this MDS is exporting to or wants/tries to */
+    std::map<mds_rank_t,DecayCounter> export_targets; /* targets this MDS is exporting to or wants/tries to */
 
     Messenger *messenger;
     MonClient *monc;
@@ -666,7 +667,6 @@ class MDSRankDispatcher : public MDSRank, public md_config_obs_t
 public:
   MDSRankDispatcher(
       mds_rank_t whoami_,
-      std::string fs_name,
       ceph::fair_mutex &mds_lock_,
       LogChannelRef &clog_,
       CommonSafeTimer<ceph::fair_mutex> &timer_,

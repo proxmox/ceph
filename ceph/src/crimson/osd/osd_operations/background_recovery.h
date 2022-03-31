@@ -23,7 +23,7 @@ public:
     Ref<PG> pg,
     ShardServices &ss,
     epoch_t epoch_started,
-    crimson::osd::scheduler::scheduler_class_t scheduler_class);
+    crimson::osd::scheduler::scheduler_class_t scheduler_class, float delay = 0);
 
   virtual void print(std::ostream &) const;
   seastar::future<> start();
@@ -31,6 +31,7 @@ public:
 protected:
   Ref<PG> pg;
   const epoch_t epoch_started;
+  float delay = 0;
 
 private:
   virtual void dump_detail(Formatter *f) const;
@@ -41,7 +42,7 @@ private:
       scheduler_class
     };
   }
-  virtual seastar::future<bool> do_recovery() = 0;
+  virtual interruptible_future<bool> do_recovery() = 0;
   ShardServices &ss;
   const crimson::osd::scheduler::scheduler_class_t scheduler_class;
 };
@@ -67,7 +68,7 @@ public:
 
 private:
   void dump_detail(Formatter* f) const final;
-  seastar::future<bool> do_recovery() override;
+  interruptible_future<bool> do_recovery() override;
   const hobject_t soid;
   const eversion_t need;
 };
@@ -77,16 +78,17 @@ public:
   PglogBasedRecovery(
     Ref<PG> pg,
     ShardServices &ss,
-    epoch_t epoch_started);
+    epoch_t epoch_started,
+    float delay = 0);
 
 private:
-  seastar::future<bool> do_recovery() override;
+  interruptible_future<bool> do_recovery() override;
 };
 
 class BackfillRecovery final : public BackgroundRecovery {
 public:
   class BackfillRecoveryPipeline {
-    OrderedPipelinePhase process = {
+    OrderedExclusivePhase process = {
       "BackfillRecovery::PGPipeline::process"
     };
     friend class BackfillRecovery;
@@ -104,8 +106,8 @@ public:
 
 private:
   boost::intrusive_ptr<const boost::statechart::event_base> evt;
-  OrderedPipelinePhase::Handle handle;
-  seastar::future<bool> do_recovery() override;
+  PipelineHandle handle;
+  interruptible_future<bool> do_recovery() override;
 };
 
 template <class EventT>

@@ -21,6 +21,11 @@
 #include "global/global_context.h"
 #include "global/signal_handler.h"
 
+#ifdef WITH_LIBCEPHSQLITE
+#  include <sqlite3.h>
+#  include "include/libcephsqlite.h"
+#endif
+
 #include "mgr/MgrContext.h"
 
 #include "DaemonServer.h"
@@ -38,6 +43,11 @@
 #undef dout_prefix
 #define dout_prefix *_dout << "mgr " << __func__ << " "
 
+using namespace std::literals;
+
+using std::map;
+using std::ostringstream;
+using std::string;
 
 Mgr::Mgr(MonClient *monc_, const MgrMap& mgrmap,
          PyModuleRegistry *py_module_registry_,
@@ -103,17 +113,20 @@ void MetadataUpdate::finish(int r)
 
       if (daemon_state.exists(key)) {
         DaemonStatePtr state = daemon_state.get(key);
-        state->hostname = daemon_meta.at("hostname").get_str();
-
-        if (key.type == "mds" || key.type == "mgr" || key.type == "mon") {
-          daemon_meta.erase("name");
-        } else if (key.type == "osd") {
-          daemon_meta.erase("id");
-        }
-        daemon_meta.erase("hostname");
 	map<string,string> m;
-        for (const auto &[key, val] : daemon_meta) {
-          m.emplace(key, val.get_str());
+	{
+	  std::lock_guard l(state->lock);
+	  state->hostname = daemon_meta.at("hostname").get_str();
+
+	  if (key.type == "mds" || key.type == "mgr" || key.type == "mon") {
+	    daemon_meta.erase("name");
+	  } else if (key.type == "osd") {
+	    daemon_meta.erase("id");
+	  }
+	  daemon_meta.erase("hostname");
+	  for (const auto &[key, val] : daemon_meta) {
+	    m.emplace(key, val.get_str());
+	  }
 	}
 	daemon_state.update_metadata(state, m);
       } else {
@@ -352,6 +365,32 @@ void Mgr::init()
     "mgr_status", this,
     "Dump mgr status");
   ceph_assert(r == 0);
+
+#ifdef WITH_LIBCEPHSQLITE
+  dout(4) << "Using sqlite3 version: " << sqlite3_libversion() << dendl;
+  /* See libcephsqlite.h for rationale of this code. */
+  sqlite3_auto_extension((void (*)())sqlite3_cephsqlite_init);
+  {
+    sqlite3* db = nullptr;
+    if (int rc = sqlite3_open_v2(":memory:", &db, SQLITE_OPEN_READWRITE, nullptr); rc == SQLITE_OK) {
+      sqlite3_close(db);
+    } else {
+      derr << "could not open sqlite3: " << rc << dendl;
+      ceph_abort();
+    }
+  }
+  {
+    char *ident = nullptr;
+    if (int rc = cephsqlite_setcct(g_ceph_context, &ident); rc < 0) {
+      derr << "could not set libcephsqlite cct: " << rc << dendl;
+      ceph_abort();
+    }
+    entity_addrvec_t addrv;
+    addrv.parse(ident);
+    ident = (char*)realloc(ident, 0);
+    py_module_registry->register_client("libcephsqlite", addrv);
+  }
+#endif
 
   dout(4) << "Complete." << dendl;
   initializing = false;
@@ -594,7 +633,7 @@ bool Mgr::ms_dispatch2(const ref_t<Message>& m)
       break;
     case MSG_SERVICE_MAP:
       handle_service_map(ref_cast<MServiceMap>(m));
-      py_module_registry->notify_all("service_map", "");
+      //no users: py_module_registry->notify_all("service_map", "");
       break;
     case MSG_LOG:
       handle_log(ref_cast<MLog>(m));
@@ -742,7 +781,7 @@ void Mgr::handle_mgr_digest(ref_t<MMgrDigest> m)
   dout(10) << m->mon_status_json.length() << dendl;
   dout(10) << m->health_json.length() << dendl;
   cluster_state.load_digest(m.get());
-  py_module_registry->notify_all("mon_status", "");
+  //no users: py_module_registry->notify_all("mon_status", "");
   py_module_registry->notify_all("health", "");
 
   // Hack: use this as a tick/opportunity to prompt python-land that

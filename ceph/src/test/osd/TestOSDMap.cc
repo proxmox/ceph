@@ -67,7 +67,7 @@ public:
     if (no_default_pools) // do not create any default pool(s)
       return;
 
-    // Create an EC ruleset and a pool using it
+    // Create an EC rule and a pool using it
     int r = osdmap.crush->add_simple_rule(
       "erasure", "default", "osd", "",
       "indep", pg_pool_t::TYPE_ERASURE,
@@ -825,15 +825,13 @@ TEST_F(OSDMapTest, CleanPGUpmaps) {
     ASSERT_TRUE(!crush.rule_exists(rule_name));
     int rno;
     for (rno = 0; rno < crush.get_max_rules(); rno++) {
-      if (!crush.rule_exists(rno) && !crush.ruleset_exists(rno))
+      if (!crush.rule_exists(rno))
         break;
     }
     string root_name = "default";
     int root = crush.get_item_id(root_name);
-    int min_size = 3;
-    int max_size = 4;
     int steps = 6;
-    crush_rule *rule = crush_make_rule(steps, rno, rule_type, min_size, max_size);
+    crush_rule *rule = crush_make_rule(steps, rule_type);
     int step = 0;
     crush_rule_set_step(rule, step++, CRUSH_RULE_SET_CHOOSELEAF_TRIES, 5, 0);
     crush_rule_set_step(rule, step++, CRUSH_RULE_SET_CHOOSE_TRIES, 100, 0);
@@ -1152,13 +1150,11 @@ TEST_F(OSDMapTest, BUG_38897) {
     ASSERT_TRUE(!crush.rule_exists(rule_name));
     int rno;
     for (rno = 0; rno < crush.get_max_rules(); rno++) {
-      if (!crush.rule_exists(rno) && !crush.ruleset_exists(rno))
+      if (!crush.rule_exists(rno))
         break;
     }
-    int min_size = 3;
-    int max_size = 3;
     int steps = 7;
-    crush_rule *rule = crush_make_rule(steps, rno, rule_type, min_size, max_size);
+    crush_rule *rule = crush_make_rule(steps, rule_type);
     int step = 0;
     crush_rule_set_step(rule, step++, CRUSH_RULE_SET_CHOOSELEAF_TRIES, 5, 0);
     crush_rule_set_step(rule, step++, CRUSH_RULE_SET_CHOOSE_TRIES, 100, 0);
@@ -1251,13 +1247,11 @@ TEST_F(OSDMapTest, BUG_38897) {
     ASSERT_TRUE(!crush.rule_exists(rule_name));
     int rno;
     for (rno = 0; rno < crush.get_max_rules(); rno++) {
-      if (!crush.rule_exists(rno) && !crush.ruleset_exists(rno))
+      if (!crush.rule_exists(rno))
         break;
     }
-    int min_size = 3;
-    int max_size = 3;
     int steps = 7;
-    crush_rule *rule = crush_make_rule(steps, rno, rule_type, min_size, max_size);
+    crush_rule *rule = crush_make_rule(steps, rule_type);
     int step = 0;
     crush_rule_set_step(rule, step++, CRUSH_RULE_SET_CHOOSELEAF_TRIES, 5, 0);
     crush_rule_set_step(rule, step++, CRUSH_RULE_SET_CHOOSE_TRIES, 100, 0);
@@ -1408,13 +1402,11 @@ TEST_F(OSDMapTest, BUG_42052) {
   ASSERT_TRUE(!crush.rule_exists(rule_name));
   int rno;
   for (rno = 0; rno < crush.get_max_rules(); rno++) {
-    if (!crush.rule_exists(rno) && !crush.ruleset_exists(rno))
+    if (!crush.rule_exists(rno))
       break;
   }
-  int min_size = 3;
-  int max_size = 3;
   int steps = 8;
-  crush_rule *rule = crush_make_rule(steps, rno, rule_type, min_size, max_size);
+  crush_rule *rule = crush_make_rule(steps, rule_type);
   int step = 0;
   crush_rule_set_step(rule, step++, CRUSH_RULE_SET_CHOOSELEAF_TRIES, 5, 0);
   crush_rule_set_step(rule, step++, CRUSH_RULE_SET_CHOOSE_TRIES, 100, 0);
@@ -1530,7 +1522,7 @@ TEST_F(OSDMapTest, BUG_42485) {
     ASSERT_TRUE(!crush.rule_exists(rule_name));
     int rno;
     for (rno = 0; rno < crush.get_max_rules(); rno++) {
-      if (!crush.rule_exists(rno) && !crush.ruleset_exists(rno))
+      if (!crush.rule_exists(rno))
         break;
     }
     string root_name = "default";
@@ -1538,10 +1530,8 @@ TEST_F(OSDMapTest, BUG_42485) {
     int dc1 = crush.get_item_id(dc_1);
     string dc_2 = "dc-1";
     int dc2 = crush.get_item_id(dc_2);
-    int min_size = 1;
-    int max_size = 20;
     int steps = 8;
-    crush_rule *rule = crush_make_rule(steps, rno, rule_type, min_size, max_size);
+    crush_rule *rule = crush_make_rule(steps, rule_type);
     int step = 0;
     crush_rule_set_step(rule, step++, CRUSH_RULE_SET_CHOOSELEAF_TRIES, 5, 0);
     crush_rule_set_step(rule, step++, CRUSH_RULE_SET_CHOOSE_TRIES, 100, 0);
@@ -1762,15 +1752,13 @@ TEST_F(OSDMapTest, BUG_43124) {
     ASSERT_TRUE(!crush.rule_exists(rule_name));
     int rno;
     for (rno = 0; rno < crush.get_max_rules(); rno++) {
-      if (!crush.rule_exists(rno) && !crush.ruleset_exists(rno))
+      if (!crush.rule_exists(rno))
         break;
     }
-    int min_size = 1;
-    int max_size = 20;
     int steps = 6;
     string root_name = "default";
     int root = crush.get_item_id(root_name);
-    crush_rule *rule = crush_make_rule(steps, rno, rule_type, min_size, max_size);
+    crush_rule *rule = crush_make_rule(steps, rule_type);
     int step = 0;
     crush_rule_set_step(rule, step++, CRUSH_RULE_SET_CHOOSELEAF_TRIES, 5, 0);
     crush_rule_set_step(rule, step++, CRUSH_RULE_SET_CHOOSE_TRIES, 100, 0);
@@ -1930,17 +1918,17 @@ TEST_F(OSDMapTest, BUG_48884)
     JSONParser parser2;
     parser2.parse(bucket.c_str(), static_cast<int>(bucket.size()));
     auto* obj = parser2.find_obj("name");
-    if (obj->get_data_val().str.compare("localrack") == 0) {
+    if (obj->get_data().compare("localrack") == 0) {
       obj = parser2.find_obj("kb");
-      ASSERT_EQ(obj->get_data_val().str, "3904");
+      ASSERT_EQ(obj->get_data(), "3904");
       obj = parser2.find_obj("kb_used");
-      ASSERT_EQ(obj->get_data_val().str, "3512");
+      ASSERT_EQ(obj->get_data(), "3512");
       obj = parser2.find_obj("kb_used_omap");
-      ASSERT_EQ(obj->get_data_val().str, "384");
+      ASSERT_EQ(obj->get_data(), "384");
       obj = parser2.find_obj("kb_used_meta");
-      ASSERT_EQ(obj->get_data_val().str, "384");
+      ASSERT_EQ(obj->get_data(), "384");
       obj = parser2.find_obj("kb_avail");
-      ASSERT_EQ(obj->get_data_val().str, "384");
+      ASSERT_EQ(obj->get_data(), "384");
     }
   }
 }
@@ -1974,10 +1962,8 @@ TEST_P(OSDMapTest, BUG_51842) {
     }
     string root_bucket = "infra-1706";
     int root = crush.get_item_id(root_bucket);
-    int min_size = 1;
-    int max_size = 20;
     int steps = 5;
-    crush_rule *rule = crush_make_rule(steps, rno, rule_type, min_size, max_size);
+    crush_rule *rule = crush_make_rule(steps, rule_type);
     int step = 0;
     crush_rule_set_step(rule, step++, CRUSH_RULE_SET_CHOOSELEAF_TRIES, 5, 0);
     crush_rule_set_step(rule, step++, CRUSH_RULE_SET_CHOOSE_TRIES, 100, 0);
@@ -2087,7 +2073,7 @@ TEST_P(OSDMapTest, BUG_51842) {
     }
 }
 
-INSTANTIATE_TEST_CASE_P(
+INSTANTIATE_TEST_SUITE_P(
   OSDMap,
   OSDMapTest,
   ::testing::Values(

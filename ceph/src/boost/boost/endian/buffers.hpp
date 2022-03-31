@@ -38,7 +38,7 @@
 #include <climits>
 #include <cstring>
 
-#if defined(__BORLANDC__) || defined( __CODEGEARC__)
+#if defined(BOOST_BORLANDC) || defined(BOOST_CODEGEARC)
 # pragma pack(push, 1)
 #endif
 
@@ -218,7 +218,9 @@ namespace endian
 template< BOOST_SCOPED_ENUM(order) Order, class T, std::size_t n_bits >
 class endian_buffer<Order, T, n_bits, align::no>
 {
-private:
+#ifdef BOOST_ENDIAN_NO_CTORS
+public:
+#endif
 
     BOOST_STATIC_ASSERT( (n_bits/8)*8 == n_bits );
 
@@ -367,7 +369,7 @@ public:
 } // namespace endian
 } // namespace boost
 
-#if defined(__BORLANDC__) || defined( __CODEGEARC__)
+#if defined(BOOST_BORLANDC) || defined(BOOST_CODEGEARC)
 # pragma pack(pop)
 #endif
 

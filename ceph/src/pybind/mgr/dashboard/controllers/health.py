@@ -1,5 +1,4 @@
 # -*- coding: utf-8 -*-
-from __future__ import absolute_import
 
 import json
 
@@ -249,7 +248,7 @@ class HealthData(object):
         if self._minimal:
             osd_map = partial_dict(osd_map, ['osds'])
             osd_map['osds'] = [
-                partial_dict(item, ['in', 'up'])
+                partial_dict(item, ['in', 'up', 'state'])
                 for item in osd_map['osds']
             ]
         else:

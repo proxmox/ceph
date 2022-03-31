@@ -10,18 +10,20 @@
 
 class RGWRestRole : public RGWRESTOp {
 protected:
-  string role_name;
-  string role_path;
-  string trust_policy;
-  string policy_name;
-  string perm_policy;
-  string path_prefix;
-  string max_session_duration;
-  RGWRole _role;
-public:
+  std::string role_name;
+  std::string role_path;
+  std::string trust_policy;
+  std::string policy_name;
+  std::string perm_policy;
+  std::string path_prefix;
+  std::string max_session_duration;
+  std::multimap<std::string,std::string> tags;
+  std::vector<std::string> tagKeys;
+  std::unique_ptr<rgw::sal::RGWRole> _role;
   int verify_permission(optional_yield y) override;
   void send_response() override;
   virtual uint64_t get_op() = 0;
+  int parse_tags();
 };
 
 class RGWRoleRead : public RGWRestRole {
@@ -58,7 +60,7 @@ public:
 };
 
 class RGWGetRole : public RGWRoleRead {
-  int _verify_permission(const RGWRole& role);
+  int _verify_permission(const rgw::sal::RGWRole* role);
 public:
   RGWGetRole() = default;
   int verify_permission(optional_yield y) override;
@@ -128,4 +130,34 @@ public:
   const char* name() const override { return "delete_role_policy"; }
   RGWOpType get_type() override { return RGW_OP_DELETE_ROLE_POLICY; }
   uint64_t get_op() override { return rgw::IAM::iamDeleteRolePolicy; }
+};
+
+class RGWTagRole : public RGWRoleWrite {
+public:
+  RGWTagRole() = default;
+  void execute(optional_yield y) override;
+  int get_params();
+  const char* name() const override { return "tag_role"; }
+  RGWOpType get_type() override { return RGW_OP_TAG_ROLE; }
+  uint64_t get_op() override { return rgw::IAM::iamTagRole; }
+};
+
+class RGWListRoleTags : public RGWRoleRead {
+public:
+  RGWListRoleTags() = default;
+  void execute(optional_yield y) override;
+  int get_params();
+  const char* name() const override { return "list_role_tags"; }
+  RGWOpType get_type() override { return RGW_OP_LIST_ROLE_TAGS; }
+  uint64_t get_op() override { return rgw::IAM::iamListRoleTags; }
+};
+
+class RGWUntagRole : public RGWRoleWrite {
+public:
+  RGWUntagRole() = default;
+  void execute(optional_yield y) override;
+  int get_params();
+  const char* name() const override { return "untag_role"; }
+  RGWOpType get_type() override { return RGW_OP_UNTAG_ROLE; }
+  uint64_t get_op() override { return rgw::IAM::iamUntagRole; }
 };

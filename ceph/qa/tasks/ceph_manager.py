@@ -25,6 +25,7 @@ from tasks.util import get_remote
 from teuthology.contextutil import safe_while
 from teuthology.orchestra.remote import Remote
 from teuthology.orchestra import run
+from teuthology.parallel import parallel
 from teuthology.exceptions import CommandFailedError
 from tasks.thrasher import Thrasher
 
@@ -299,7 +300,7 @@ class OSDThrasher(Thrasher):
         if self.ceph_manager.cephadm:
             return shell(
                 self.ceph_manager.ctx, self.ceph_manager.cluster, remote,
-                args=['ceph-objectstore-tool'] + cmd,
+                args=['ceph-objectstore-tool', '--err-to-stderr'] + cmd,
                 name=osd,
                 wait=True, check_status=False,
                 stdout=StringIO(),
@@ -308,7 +309,7 @@ class OSDThrasher(Thrasher):
             assert False, 'not implemented'
         else:
             return remote.run(
-                args=['sudo', 'adjust-ulimits', 'ceph-objectstore-tool'] + cmd,
+                args=['sudo', 'adjust-ulimits', 'ceph-objectstore-tool', '--err-to-stderr'] + cmd,
                 wait=True, check_status=False,
                 stdout=StringIO(),
                 stderr=StringIO())
@@ -1515,8 +1516,7 @@ class CephManager:
         self.controller = controller
         self.next_pool_id = 0
         self.cluster = cluster
-        self.cephadm = cephadm
-        self.rook = rook
+
         if (logger):
             self.log = lambda x: logger.info(x)
         else:
@@ -1526,8 +1526,21 @@ class CephManager:
                 """
                 print(x)
             self.log = tmp
+
         if self.config is None:
             self.config = dict()
+
+        # NOTE: These variables are meant to be overriden by vstart_runner.py.
+        self.rook = rook
+        self.cephadm = cephadm
+        self.testdir = teuthology.get_testdir(self.ctx)
+        self.run_cluster_cmd_prefix = [
+            'sudo', 'adjust-ulimits', 'ceph-coverage',
+            f'{self.testdir}/archive/coverage', 'timeout', '120', 'ceph',
+            '--cluster', self.cluster]
+        self.run_ceph_w_prefix = ['sudo', 'daemon-helper', 'kill', 'ceph',
+                                  '--cluster', self.cluster]
+
         pools = self.list_pools()
         self.pools = {}
         for pool in pools:
@@ -1555,6 +1568,11 @@ class CephManager:
 
         Accepts arguments same as that of teuthology.orchestra.run.run()
         """
+        if isinstance(kwargs['args'], str):
+            kwargs['args'] = shlex.split(kwargs['args'])
+        elif isinstance(kwargs['args'], tuple):
+            kwargs['args'] = list(kwargs['args'])
+
         if self.cephadm:
             return shell(self.ctx, self.cluster, self.controller,
                          args=['ceph'] + list(kwargs['args']),
@@ -1566,26 +1584,25 @@ class CephManager:
                            stdout=StringIO(),
                            check_status=kwargs.get('check_status', True))
 
-        testdir = teuthology.get_testdir(self.ctx)
-        prefix = ['sudo', 'adjust-ulimits', 'ceph-coverage',
-                  f'{testdir}/archive/coverage', 'timeout', '120', 'ceph',
-                  '--cluster', self.cluster]
-        kwargs['args'] = prefix + list(kwargs['args'])
+        kwargs['args'] = self.run_cluster_cmd_prefix + kwargs['args']
         return self.controller.run(**kwargs)
 
     def raw_cluster_cmd(self, *args, **kwargs) -> str:
         """
         Start ceph on a raw cluster.  Return count
         """
-        stdout = kwargs.pop('stdout', StringIO())
-        p = self.run_cluster_cmd(args=args, stdout=stdout, **kwargs)
-        return p.stdout.getvalue()
+        if kwargs.get('args') is None and args:
+            kwargs['args'] = args
+        kwargs['stdout'] = kwargs.pop('stdout', StringIO())
+        return self.run_cluster_cmd(**kwargs).stdout.getvalue()
 
     def raw_cluster_cmd_result(self, *args, **kwargs):
         """
         Start ceph on a cluster.  Return success or failure information.
         """
-        kwargs['args'], kwargs['check_status'] = args, False
+        if kwargs.get('args') is None and args:
+           kwargs['args'] = args
+        kwargs['check_status'] = False
         return self.run_cluster_cmd(**kwargs).exitstatus
 
     def run_ceph_w(self, watch_channel=None):
@@ -1597,13 +1614,7 @@ class CephManager:
                               'cluster', 'audit', ...
         :type watch_channel: str
         """
-        args = ["sudo",
-                "daemon-helper",
-                "kill",
-                "ceph",
-                '--cluster',
-                self.cluster,
-                "-w"]
+        args = self.run_ceph_w_prefix + ['-w']
         if watch_channel is not None:
             args.append("--watch-channel")
             args.append(watch_channel)
@@ -1670,15 +1681,15 @@ class CephManager:
         :param wait_for_mon: wait for mon to be synced with mgr. 0 to disable
                              it. (5 min by default)
         """
-        seq = {osd: int(self.raw_cluster_cmd('tell', 'osd.%d' % osd, 'flush_pg_stats'))
-               for osd in osds}
-        if not wait_for_mon:
-            return
         if no_wait is None:
             no_wait = []
-        for osd, need in seq.items():
+
+        def flush_one_osd(osd: int, wait_for_mon: int):
+            need = int(self.raw_cluster_cmd('tell', 'osd.%d' % osd, 'flush_pg_stats'))
+            if not wait_for_mon:
+                return
             if osd in no_wait:
-                continue
+                return
             got = 0
             while wait_for_mon > 0:
                 got = int(self.raw_cluster_cmd('osd', 'last-stat-seq', 'osd.%d' % osd))
@@ -1694,6 +1705,10 @@ class CephManager:
                                 'osd.{osd}: {got} < {need}'.
                                 format(osd=osd, got=got, need=need))
 
+        with parallel() as p:
+            for osd in osds:
+                p.spawn(flush_one_osd, osd, wait_for_mon)
+
     def flush_all_pg_stats(self):
         self.flush_pg_stats(range(len(self.get_osd_dump())))
 
@@ -1704,11 +1719,10 @@ class CephManager:
         if remote is None:
             remote = self.controller
 
-        testdir = teuthology.get_testdir(self.ctx)
         pre = [
             'adjust-ulimits',
             'ceph-coverage',
-            '{tdir}/archive/coverage'.format(tdir=testdir),
+           f'{self.testdir}/archive/coverage',
             'rados',
             '--cluster',
             self.cluster,
@@ -1820,12 +1834,11 @@ class CephManager:
         if self.rook:
             assert False, 'not implemented'
 
-        testdir = teuthology.get_testdir(self.ctx)
         args = [
             'sudo',
             'adjust-ulimits',
             'ceph-coverage',
-            '{tdir}/archive/coverage'.format(tdir=testdir),
+           f'{self.testdir}/archive/coverage',
             'timeout',
             str(timeout),
             'ceph',

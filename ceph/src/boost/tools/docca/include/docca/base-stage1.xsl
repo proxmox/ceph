@@ -121,7 +121,7 @@
                             | innerclass[@prot eq 'public'][not(d:should-ignore-inner-class(.))]"
                       tunnel="yes"/>
       <xsl:with-param name="friends"
-                      select="sectiondef[@kind eq 'friend']/memberdef[not(type eq 'friend class')]
+                      select="sectiondef[@kind eq 'friend']/memberdef[not(type = ('friend class','friend struct'))]
                                                                      [not(d:should-ignore-friend(.))]"
                       tunnel="yes"/>
     </xsl:next-match>
@@ -167,11 +167,13 @@
   </xsl:template>
 
   <xsl:template match="memberdef[/doxygen/@d:page-type eq 'overload-list']">
-    <xsl:apply-templates mode="overload-list" select="../../sectiondef/memberdef"/>
+    <xsl:for-each-group select="../../sectiondef/memberdef" group-by="briefdescription">
+      <xsl:apply-templates select="briefdescription"/>
+      <xsl:apply-templates mode="overload-list" select="current-group()"/>
+    </xsl:for-each-group>
   </xsl:template>
 
           <xsl:template mode="overload-list" match="memberdef">
-            <xsl:apply-templates select="briefdescription[not(. = ../preceding-sibling::*/briefdescription)]"/>
             <overloaded-member>
               <xsl:apply-templates mode="normalize-params" select="templateparamlist"/>
               <xsl:apply-templates mode="modifier" select="(@explicit, @friend, @static)[. eq 'yes'],
@@ -252,6 +254,8 @@
           <xsl:template mode="access-level" match="@kind[starts-with(.,'protected')]">Protected </xsl:template>
           <xsl:template mode="access-level" match="@kind[starts-with(.,'private'  )]">Private </xsl:template>
 
+          <xsl:template mode="member-kind" match="@kind[contains(.,'-static-')]" priority="1"
+                                                                               >Static Members</xsl:template>
           <xsl:template mode="member-kind" match="@kind[ends-with(.,'func'  )]">Member Functions</xsl:template>
           <xsl:template mode="member-kind" match="@kind[ends-with(.,'attrib')]">Data Members</xsl:template>
 
@@ -315,13 +319,14 @@
     <xsl:variable name="member-nodes" as="element()*">
       <xsl:apply-templates mode="member-nodes" select="."/>
     </xsl:variable>
-    <xsl:apply-templates mode="member-row" select="$member-nodes">
-      <xsl:sort select="d:member-name(.)"/>
-    </xsl:apply-templates>
+    <xsl:for-each-group select="$member-nodes" group-by="d:member-name(.)">
+      <xsl:sort select="current-grouping-key()"/>
+      <xsl:apply-templates mode="member-row" select="."/>
+    </xsl:for-each-group>
   </xsl:template>
 
           <xsl:template mode="member-nodes" match="innerclass | sectiondef[@kind eq 'public-type']">
-            <xsl:param name="public-types" tunnel="yes"/>
+            <xsl:param name="public-types" tunnel="yes" select="()"/>
             <xsl:sequence select="$public-types"/>
           </xsl:template>
 
@@ -331,7 +336,14 @@
           </xsl:template>
 
           <xsl:template mode="member-nodes" match="sectiondef">
-            <xsl:sequence select="memberdef"/>
+            <!--
+              ASSUMPTION (for now): At least one member per section (table) must not be in a user-defined group.
+              Also, we may need a more robust mapping between a user-defined group's members and the sections
+              in which they belong. For now, we are using this partial test.
+            -->
+            <xsl:sequence select="memberdef,
+                                  ../sectiondef[@kind eq 'user-defined']/memberdef[(@kind||@prot||@static) =
+                                                               current()/memberdef/(@kind||@prot||@static)]"/>
           </xsl:template>
 
 
@@ -348,13 +360,11 @@
                   </xsl:template>
 
 
-          <!-- Only output a table row for the first instance of each name (ignore overloads) -->
-          <xsl:template mode="member-row" match="memberdef[name = preceding-sibling::memberdef/name]"/>
           <xsl:template mode="member-row" match="*">
             <tr>
               <td>
                 <bold>
-                  <ref d:refid="{@d:page-refid}">{d:member-name(.)}</ref>
+                  <ref d:refid="{@d:page-refid}">{current-grouping-key()}</ref>
                 </bold>
               </td>
               <td>
@@ -367,7 +377,7 @@
                     <xsl:apply-templates select="d:referenced-inner-class/compounddef/briefdescription"/>
                   </xsl:template>
                   <xsl:template mode="member-description" match="memberdef">
-                    <xsl:variable name="descriptions" select="../memberdef[name eq current()/name]/briefdescription"/>
+                    <xsl:variable name="descriptions" select="current-group()/briefdescription"/>
                     <!-- Pull in any overload descriptions but only if they vary -->
                     <xsl:for-each select="distinct-values($descriptions)">
                       <xsl:apply-templates select="$descriptions[. eq current()][1]"/>

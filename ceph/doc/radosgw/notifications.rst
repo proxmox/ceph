@@ -122,6 +122,7 @@ To update a topic, use the same command used for topic creation, with the topic 
    [&Attributes.entry.7.key=OpaqueData&Attributes.entry.7.value=<opaque data>]
    [&Attributes.entry.8.key=push-endpoint&Attributes.entry.8.value=<endpoint>]
    [&Attributes.entry.9.key=persistent&Attributes.entry.9.value=true|false]
+   [&Attributes.entry.10.key=cloudevents&Attributes.entry.10.value=true|false]
 
 Request parameters:
 
@@ -134,6 +135,7 @@ Request parameters:
  - URI: ``http[s]://<fqdn>[:<port]``
  - port defaults to: 80/443 for HTTP/S accordingly
  - verify-ssl: indicate whether the server certificate is validated by the client or not ("true" by default)
+ - cloudevents: indicate whether the HTTP header should contain attributes according to the `S3 CloudEvents Spec`_ ("false" by default)
 
 - AMQP0.9.1 endpoint
 
@@ -208,7 +210,7 @@ Response will have the following format:
 ::
 
     <GetTopicAttributesResponse>
-        <GetTopicAttributesRersult>
+        <GetTopicAttributesResult>
             <Attributes>
                 <entry>
                     <key>User</key>
@@ -266,7 +268,7 @@ Response will have the following format:
 ::
 
     <GetTopicResponse>
-        <GetTopicRersult>
+        <GetTopicResult>
             <Topic>
                 <User></User>
                 <Name></Name>
@@ -338,8 +340,8 @@ Response will have the following format:
 
 ::
 
-    <ListTopicdResponse xmlns="https://sns.amazonaws.com/doc/2010-03-31/">
-        <ListTopicsRersult>
+    <ListTopicsResponse xmlns="https://sns.amazonaws.com/doc/2010-03-31/">
+        <ListTopicsResult>
             <Topics>
                 <member>
                     <User></User>
@@ -437,7 +439,9 @@ pushed or pulled using the pubsub sync module. For example:
 - s3.object.key: object key
 - s3.object.size: object size
 - s3.object.eTag: object etag
-- s3.object.version: object version in case of versioned bucket
+- s3.object.versionId: object version in case of versioned bucket. 
+  When doing a copy, it would include the version of the target object. 
+  When creating a delete marker, it would include the version of the delete marker.
 - s3.object.sequencer: monotonically increasing identifier of the change per object (hexadecimal format)
 - s3.object.metadata: any metadata set on the object sent as: ``x-amz-meta-`` (an extension to the S3 notification API)
 - s3.object.tags: any tags set on the object (an extension to the S3 notification API)
@@ -448,3 +452,4 @@ pushed or pulled using the pubsub sync module. For example:
 .. _S3 Notification Compatibility: ../s3-notification-compatibility
 .. _AWS Create Topic: https://docs.aws.amazon.com/sns/latest/api/API_CreateTopic.html
 .. _Bucket Operations: ../s3/bucketops
+.. _S3 CloudEvents Spec: https://github.com/cloudevents/spec/blob/main/cloudevents/adapters/aws-s3.md

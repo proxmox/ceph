@@ -98,8 +98,13 @@
 %endif
 %endm
 
+[bits 64]
+default rel
+section .text
+
 global isal_deflate_hash_crc_01
 isal_deflate_hash_crc_01:
+	endbranch
 	FUNC_SAVE
 
 	neg	f_i

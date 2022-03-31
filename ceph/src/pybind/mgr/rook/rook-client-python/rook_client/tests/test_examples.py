@@ -9,7 +9,7 @@ from rook_client.ceph.cephcluster import CephCluster
 from rook_client.ceph.cephfilesystem import CephFilesystem
 from rook_client.ceph.cephnfs import CephNFS
 from rook_client.ceph.cephobjectstore import CephObjectStore
-from rook_client.edgefs.cluster import Cluster as EdgefsCluster
+from rook_client.ceph.cephblockpool import CephBlockPool
 
 
 def _load_example(crd_base, what):
@@ -21,7 +21,6 @@ def _load_example(crd_base, what):
     "strict,cls,filename",
     [
         (True, CephCluster, "ceph/cluster-external.yaml"),
-        (True, CephCluster, "ceph/cluster-minimal.yaml"),
         (True, CephCluster, "ceph/cluster-on-pvc.yaml"),
         (True, CephCluster, "ceph/cluster.yaml"),
         (True, CephFilesystem, "ceph/filesystem-ec.yaml"),
@@ -32,10 +31,12 @@ def _load_example(crd_base, what):
         (True, CephObjectStore, "ceph/object-test.yaml"),
         (True, CephObjectStore, "ceph/object.yaml"),
         (True, CephNFS, "ceph/nfs.yaml"),
+        (True, CephBlockPool, "ceph/pool.yaml"),
+        (True, CephBlockPool, "ceph/pool-ec.yaml"),
+        (True, CephBlockPool, "ceph/pool-test.yaml"),
 
         # schema invalid:
         # (False, CassandraCluster, "cassandra/cluster.yaml"),
-        (False, EdgefsCluster, "edgefs/cluster.yaml"),
     ],
 )
 def test_exact_match(strict, cls, filename, crd_base):

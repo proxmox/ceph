@@ -30,6 +30,7 @@
 #undef dout_prefix
 #define dout_prefix *_dout << "mds." << dir->mdcache->mds->get_nodeid() << ".cache.den(" << dir->dirfrag() << " " << name << ") "
 
+using namespace std;
 
 ostream& CDentry::print_db_line_prefix(ostream& out)
 {
@@ -63,7 +64,10 @@ ostream& operator<<(ostream& out, const CDentry& dn)
     if (dn.is_replicated()) 
       out << dn.get_replicas();
   } else {
-    out << " rep@" << dn.authority();
+    mds_authority_t a = dn.authority();
+    out << " rep@" << a.first;
+    if (a.second != CDIR_AUTH_UNKNOWN)
+      out << "," << a.second;
     out << "." << dn.get_replica_nonce();
   }
 
@@ -252,6 +256,9 @@ void CDentry::link_remote(CDentry::linkage_t *dnl, CInode *in)
 
   if (dnl == &linkage)
     in->add_remote_parent(this);
+
+  // check for reintegration
+  dir->mdcache->eval_remote(this);
 }
 
 void CDentry::unlink_remote(CDentry::linkage_t *dnl)

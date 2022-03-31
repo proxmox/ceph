@@ -32,6 +32,7 @@
 #include <seastar/core/gate.hh>
 #include <seastar/core/temporary_buffer.hh>
 #include <seastar/core/iostream.hh>
+#include <seastar/core/with_timeout.hh>
 #include <seastar/util/std-compat.hh>
 #include <seastar/net/tls.hh>
 #include <seastar/net/dns.hh>
@@ -834,12 +835,271 @@ SEASTAR_THREAD_TEST_CASE(test_reload_broken_certificates) {
     fs::remove(cert);
     fs::remove(key);
 
+    std::ofstream(cert.c_str()) << "lala land" << std::endl;
+    std::ofstream(key.c_str()) << "lala land" << std::endl;
+
     // should get one or two exceptions
     q.pop_eventually().get();
+
+    fs::remove(cert);
+    fs::remove(key);
 
     fs::copy_file(certfile("test.crt"), cert);
     fs::copy_file(certfile("test.key"), key);
 
     // now it should reload
     p.get_future().get();
+}
+
+using namespace std::chrono_literals;
+
+// the same as previous test, but we set a big tolerance for 
+// reload errors, and verify that either our scheduling/fs is 
+// super slow, or we got through the changes without failures.
+SEASTAR_THREAD_TEST_CASE(test_reload_tolerance) {
+    tmpdir tmp;
+
+    namespace fs = std::filesystem;
+
+    fs::copy_file(certfile("test.crt"), tmp.path() / "test.crt");
+    fs::copy_file(certfile("test.key"), tmp.path() / "test.key");
+
+    auto cert = (tmp.path() / "test.crt").native();
+    auto key = (tmp.path() / "test.key").native();
+    std::unordered_set<sstring> changed;
+    promise<> p;
+
+    tls::credentials_builder b;
+    b.set_x509_key_file(cert, key, tls::x509_crt_format::PEM).get();
+    b.set_dh_level();
+
+    int nfails = 0;
+
+    // use 5s tolerance - this should ensure we don't generate any errors.
+    auto certs = b.build_reloadable_server_credentials([&](const std::unordered_set<sstring>& files, std::exception_ptr ep) {
+        if (ep) {
+            ++nfails;
+            return;
+        }
+        changed.insert(files.begin(), files.end());
+        if (changed.count(cert) && changed.count(key)) {
+            p.set_value();
+        }
+    }, std::chrono::milliseconds(5000)).get0();
+
+    // very intentionally use blocking calls. We want all our modifications to happen
+    // before any other continuation is allowed to process.
+
+    auto start = std::chrono::system_clock::now();
+
+    fs::remove(cert);
+    fs::remove(key);
+
+    std::ofstream(cert.c_str()) << "lala land" << std::endl;
+    std::ofstream(key.c_str()) << "lala land" << std::endl;
+
+    fs::remove(cert);
+    fs::remove(key);
+
+    fs::copy_file(certfile("test.crt"), cert);
+    fs::copy_file(certfile("test.key"), key);
+
+    // now it should reload
+    p.get_future().get();
+
+    auto end = std::chrono::system_clock::now();
+
+    BOOST_ASSERT(nfails == 0 || (end - start) > 4s);
+}
+
+SEASTAR_THREAD_TEST_CASE(test_reload_by_move) {
+    tmpdir tmp;
+    tmpdir tmp2;
+
+    namespace fs = std::filesystem;
+
+    fs::copy_file(certfile("test.crt"), tmp.path() / "test.crt");
+    fs::copy_file(certfile("test.key"), tmp.path() / "test.key");
+    fs::copy_file(certfile("test.crt"), tmp2.path() / "test.crt");
+    fs::copy_file(certfile("test.key"), tmp2.path() / "test.key");
+
+    auto cert = (tmp.path() / "test.crt").native();
+    auto key = (tmp.path() / "test.key").native();
+    auto cert2 = (tmp2.path() / "test.crt").native();
+    auto key2 = (tmp2.path() / "test.key").native();
+
+    std::unordered_set<sstring> changed;
+    promise<> p;
+
+    tls::credentials_builder b;
+    b.set_x509_key_file(cert, key, tls::x509_crt_format::PEM).get();
+    b.set_dh_level();
+
+    int nfails = 0;
+
+    // use 5s tolerance - this should ensure we don't generate any errors.
+    auto certs = b.build_reloadable_server_credentials([&](const std::unordered_set<sstring>& files, std::exception_ptr ep) {
+        if (ep) {
+            ++nfails;
+            return;
+        }
+        changed.insert(files.begin(), files.end());
+        if (changed.count(cert) && changed.count(key)) {
+            p.set_value();
+        }
+    }, std::chrono::milliseconds(5000)).get0();
+
+    // very intentionally use blocking calls. We want all our modifications to happen
+    // before any other continuation is allowed to process.
+
+    fs::remove(cert);
+    fs::remove(key);
+
+    // deletes should _not_ cause errors/reloads
+    try {
+        with_timeout(std::chrono::steady_clock::now() + 3s, p.get_future()).get();
+        BOOST_FAIL("should not reach");
+    } catch (timed_out_error&) {
+        // ok
+    }
+
+    BOOST_REQUIRE_EQUAL(changed.size(), 0);
+
+    p = promise();
+
+    fs::rename(cert2, cert);
+    fs::rename(key2, key);
+
+    // now it should reload
+    p.get_future().get();
+
+    BOOST_REQUIRE_EQUAL(changed.size(), 2);
+    changed.clear();
+
+    // again, without delete
+
+    fs::copy_file(certfile("test.crt"), tmp2.path() / "test.crt");
+    fs::copy_file(certfile("test.key"), tmp2.path() / "test.key");
+
+    p = promise();
+
+    fs::rename(cert2, cert);
+    fs::rename(key2, key);
+
+    // it should reload here as well.
+    p.get_future().get();
+
+    // could get two notifications. but not more. 
+    for (int i = 0;; ++i) {
+        p = promise();
+        try {
+            with_timeout(std::chrono::steady_clock::now() + 3s, p.get_future()).get();
+            BOOST_ASSERT(i == 0);
+        } catch (timed_out_error&) {
+            // ok
+            break;
+        }
+    }
+}
+
+SEASTAR_THREAD_TEST_CASE(test_closed_write) {
+    tls::credentials_builder b;
+
+    b.set_x509_key_file(certfile("test.crt"), certfile("test.key"), tls::x509_crt_format::PEM).get();
+    b.set_x509_trust_file(certfile("catest.pem"), tls::x509_crt_format::PEM).get();
+    b.set_dh_level();
+    b.set_system_trust().get();
+
+    auto creds = b.build_certificate_credentials();
+    auto serv = b.build_server_credentials();
+
+    ::listen_options opts;
+    opts.reuse_address = true;
+    opts.set_fixed_cpu(this_shard_id());
+
+    auto addr = ::make_ipv4_address( {0x7f000001, 4712});
+    auto server = tls::listen(serv, addr, opts);
+
+    auto check_same_message_two_writes = [](output_stream<char>& out) {
+        std::exception_ptr ep1, ep2;
+
+        try {
+            out.write("apa").get();
+            out.flush().get();
+            BOOST_FAIL("should not reach");
+        } catch (...) {
+            // ok
+            ep1 = std::current_exception();
+        }
+
+        try {
+            out.write("apa").get();
+            out.flush().get();
+            BOOST_FAIL("should not reach");
+        } catch (...) {
+            // ok
+            ep2 = std::current_exception();
+        }
+
+        try {
+            std::rethrow_exception(ep1);
+        } catch (std::exception& e1) {
+            try {
+                std::rethrow_exception(ep2);
+            } catch (std::exception& e2) {
+                BOOST_REQUIRE_EQUAL(std::string(e1.what()), std::string(e2.what()));
+                return;
+            }
+        }
+
+        BOOST_FAIL("should not reach");
+    };
+
+
+    {
+        auto sa = server.accept();
+        auto c = tls::connect(creds, addr).get0();
+        auto s = sa.get0();
+        auto in = s.connection.input();
+
+        output_stream<char> out(c.output().detach(), 4096);
+        // close on client end before writing
+        out.close().get();
+
+        check_same_message_two_writes(out);
+    }
+
+    {
+        auto sa = server.accept();
+        auto c = tls::connect(creds, addr).get0();
+        auto s = sa.get0();
+        auto in = s.connection.input();
+
+        output_stream<char> out(c.output().detach(), 4096);
+
+        out.write("apa").get();
+        auto f = out.flush();
+        in.read().get();
+        f.get();
+
+        // close on server end before writing
+        in.close().get();
+        s.connection.shutdown_input();
+        s.connection.shutdown_output();
+
+        // we won't get broken pipe until
+        // after a while (tm)
+        for (;;) {
+            try {
+                out.write("apa").get();
+                out.flush().get();
+            } catch (...) {
+                break;
+            }
+        }
+
+        // now check we get the same message.
+        check_same_message_two_writes(out);
+    }
+
 }

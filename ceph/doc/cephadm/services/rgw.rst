@@ -36,6 +36,8 @@ under the arbitrary service id *foo*:
 
    ceph orch apply rgw foo
 
+.. _cephadm-rgw-designated_gateways:
+
 Designated gateways
 -------------------
 
@@ -48,6 +50,8 @@ ports 8000 and 8001:
    ceph orch host label add gwhost1 rgw  # the 'rgw' label can be anything
    ceph orch host label add gwhost2 rgw
    ceph orch apply rgw foo '--placement=label:rgw count-per-host:2' --port=8000
+
+See also: :ref:`cephadm_co_location`.
 
 .. _cephadm-rgw-networks:
 
@@ -156,7 +160,7 @@ High availability service for RGW
 =================================
 
 The *ingress* service allows you to create a high availability endpoint
-for RGW with a minumum set of configuration options.  The orchestrator will
+for RGW with a minimum set of configuration options.  The orchestrator will
 deploy and manage a combination of haproxy and keepalived to provide load
 balancing on a floating virtual IP.
 
@@ -287,3 +291,4 @@ Further Reading
 ===============
 
 * :ref:`object-gateway`
+* :ref:`mgr-rgw-module`

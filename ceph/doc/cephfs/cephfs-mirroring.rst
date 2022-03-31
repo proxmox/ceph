@@ -115,7 +115,7 @@ To stop a mirroring directory snapshots use::
   $ ceph fs snapshot mirror remove <fs_name> <path>
 
 Only absolute directory paths are allowed. Also, paths are normalized by the mirroring
-module, therfore, `/a/b/../b` is equivalent to `/a/b`.
+module, therefore, `/a/b/../b` is equivalent to `/a/b`.
 
   $ mkdir -p /d0/d1/d2
   $ ceph fs snapshot mirror add cephfs /d0/d1/d2
@@ -124,7 +124,7 @@ module, therfore, `/a/b/../b` is equivalent to `/a/b`.
   Error EEXIST: directory /d0/d1/d2 is already tracked
 
 Once a directory is added for mirroring, its subdirectory or ancestor directories are
-disallowed to be added for mirorring::
+disallowed to be added for mirroring::
 
   $ ceph fs snapshot mirror add cephfs /d0/d1
   Error EINVAL: /d0/d1 is a ancestor of tracked path /d0/d1/d2
@@ -301,7 +301,7 @@ E.g., adding a regular file for synchronization would result in failed status::
 
 This allows a user to add a non-existent directory for synchronization. The mirror daemon
 would mark the directory as failed and retry (less frequently). When the directory comes
-to existence, the mirror daemons would unmark the failed state upon successfull snapshot
+to existence, the mirror daemons would unmark the failed state upon successful snapshot
 synchronization.
 
 When mirroring is disabled, the respective `fs mirror status` command for the file system
@@ -310,68 +310,15 @@ will not show up in command help.
 Configuration Options
 ---------------------
 
-``cephfs_mirror_max_concurrent_directory_syncs``
-
-:Description: Maximum number of directory snapshots that can be synchronized concurrently by
-              cephfs-mirror daemon. Controls the number of synchronization threads.
-:Type:  64-bit Integer Unsigned
-:Default: ``3``
-
-``cephfs_mirror_action_update_interval``
-
-:Description: Interval in seconds to process pending mirror update actions.
-:Type:  Float
-:Default: ``2``
-
-``cephfs_mirror_restart_mirror_on_blocklist_interval``
-
-:Description: Interval in seconds to restart blocklisted mirror instances. Setting to zero (0)
-              disables restarting blocklisted instances.
-:Type:  Float
-:Default: ``30``
-
-``cephfs_mirror_max_snapshot_sync_per_cycle``
-
-:Description: Maximum number of snapshots to mirror when a directory is picked up for mirroring
-              by worker threads.
-:Type:  64-bit Integer Unsigned
-:Default: ``3``
-
-``cephfs_mirror_directory_scan_interval``
-
-:Description: Interval in seconds to scan configured directories for snapshot mirroring.
-:Type:  64-bit Integer Unsigned
-:Default: ``10``
-
-``cephfs_mirror_max_consecutive_failures_per_directory``
-
-:Description: Number of consecutive snapshot synchronization failues to mark a directory as
-              "failed". Failed directories are retried for synchronization less frequently.
-:Type:  64-bit Integer Unsigned
-:Default: ``10``
-
-``cephfs_mirror_retry_failed_directories_interval``
-
-:Description: Interval in seconds to retry synchronization for failed directories.
-:Type:  64-bit Integer Unsigned
-:Default: ``60``
-
-``cephfs_mirror_restart_mirror_on_failure_interval``
-
-:Description: Interval in seconds to restart failed mirror instances. Setting to zero (0)
-              disables restarting failed mirror instances.
-:Type:  Float
-:Default: ``20``
-
-``cephfs_mirror_mount_timeout``
-
-:Description: Timeout in seconds for mounting primary or secondary (remote) ceph file system
-              by the cephfs-mirror daemon. Setting this to a higher value could result in the
-              mirror daemon getting stalled when mounting a file system if the cluster is not
-              reachable. This option is used to override the usual client_mount_timeout.
-:Type:  Float
-:Default: ``10``
-
+.. confval:: cephfs_mirror_max_concurrent_directory_syncs
+.. confval:: cephfs_mirror_action_update_interval
+.. confval:: cephfs_mirror_restart_mirror_on_blocklist_interval
+.. confval:: cephfs_mirror_max_snapshot_sync_per_cycle
+.. confval:: cephfs_mirror_directory_scan_interval
+.. confval:: cephfs_mirror_max_consecutive_failures_per_directory
+.. confval:: cephfs_mirror_retry_failed_directories_interval
+.. confval:: cephfs_mirror_restart_mirror_on_failure_interval
+.. confval:: cephfs_mirror_mount_timeout
 
 Re-adding Peers
 ---------------

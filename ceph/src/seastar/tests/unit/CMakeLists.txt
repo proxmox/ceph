@@ -250,6 +250,9 @@ seastar_add_test (checked_ptr
 seastar_add_test (chunked_fifo
   SOURCES chunked_fifo_test.cc)
 
+seastar_add_test (chunk_parsers
+  SOURCES chunk_parsers_test.cc)
+
 seastar_add_test (circular_buffer
   SOURCES circular_buffer_test.cc)
 
@@ -258,6 +261,9 @@ seastar_add_test (circular_buffer_fixed_capacity
 
 seastar_add_test (connect
   SOURCES connect_test.cc)
+
+seastar_add_test (content_source
+  SOURCES content_source_test.cc)
 
 seastar_add_test (coroutines
   SOURCES coroutines_test.cc)
@@ -282,6 +288,9 @@ seastar_add_test (execution_stage
 
 seastar_add_test (expiring_fifo
   SOURCES expiring_fifo_test.cc)
+
+seastar_add_test (io_queue
+  SOURCES io_queue_test.cc)
 
 seastar_add_test (fair_queue
   SOURCES fair_queue_test.cc)
@@ -313,6 +322,9 @@ seastar_add_test (httpd
   SOURCES
     httpd_test.cc
     loopback_socket.hh)
+
+seastar_add_test (websocket
+  SOURCES websocket_test.cc)
 
 seastar_add_test (ipv6
   SOURCES ipv6_test.cc)
@@ -384,7 +396,7 @@ seastar_add_test (simple_stream
 seastar_add_app_test (smp
   SOURCES smp_test.cc)
 
-seastar_add_app_test (socket
+seastar_add_test (socket
   SOURCES socket_test.cc)
 
 seastar_add_test (sstring
@@ -393,6 +405,9 @@ seastar_add_test (sstring
 
 seastar_add_test (stall_detector
   SOURCES stall_detector_test.cc)
+
+seastar_add_test (stream_reader
+  SOURCES stream_reader_test.cc)
 
 seastar_add_test (thread
   SOURCES thread_test.cc)
@@ -409,6 +424,10 @@ seastar_add_app_test (timer
 seastar_add_test (uname
   KIND BOOST
   SOURCES uname_test.cc)
+
+seastar_add_test (source_location
+  KIND BOOST
+  SOURCES source_location_test.cc)
 
 function(seastar_add_certgen name)
   cmake_parse_arguments(CERT
@@ -538,7 +557,7 @@ add_custom_target(tls_files
 seastar_add_test (tls
   DEPENDS tls_files testcrt othercrt
   SOURCES tls_test.cc
-  LIBRARIES boost_filesystem
+  LIBRARIES Boost::filesystem
   WORKING_DIRECTORY ${Seastar_BINARY_DIR})
 
 seastar_add_test (tuple_utils
@@ -558,3 +577,13 @@ seastar_add_test (weak_ptr
 
 seastar_add_test (log_buf
   SOURCES log_buf_test.cc)
+
+seastar_add_test (exception_logging
+  KIND BOOST
+  SOURCES exception_logging_test.cc)
+
+seastar_add_test (closeable
+  SOURCES closeable_test.cc)
+
+seastar_add_test (pipe
+  SOURCES pipe_test.cc)

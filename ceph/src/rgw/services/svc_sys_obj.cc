@@ -10,6 +10,8 @@
 
 #define dout_subsys ceph_subsys_rgw
 
+using namespace std;
+
 RGWSysObjectCtx RGWSI_SysObj::init_obj_ctx()
 {
   return RGWSysObjectCtx(this);
@@ -123,9 +125,9 @@ int RGWSI_SysObj::Pool::Op::init(const DoutPrefixProvider *dpp, const string& ma
   return source.core_svc->pool_list_objects_init(dpp, source.pool, marker, prefix, &ctx);
 }
 
-int RGWSI_SysObj::Pool::Op::get_next(int max, vector<string> *oids, bool *is_truncated)
+int RGWSI_SysObj::Pool::Op::get_next(const DoutPrefixProvider *dpp, int max, vector<string> *oids, bool *is_truncated)
 {
-  return source.core_svc->pool_list_objects_next(ctx, max, oids, is_truncated);
+  return source.core_svc->pool_list_objects_next(dpp, ctx, max, oids, is_truncated);
 }
 
 int RGWSI_SysObj::Pool::Op::get_marker(string *marker)

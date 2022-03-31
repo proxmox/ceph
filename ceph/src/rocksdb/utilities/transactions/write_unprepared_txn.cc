@@ -72,10 +72,10 @@ WriteUnpreparedTxn::~WriteUnpreparedTxn() {
     }
   }
 
-  // Call tracked_keys_.clear() so that ~PessimisticTransaction does not
+  // Clear the tracked locks so that ~PessimisticTransaction does not
   // try to unlock keys for recovered transactions.
   if (recovered_txn_) {
-    tracked_keys_.clear();
+    tracked_locks_->Clear();
   }
 }
 
@@ -279,7 +279,9 @@ Status WriteUnpreparedTxn::FlushWriteBatchToDBInternal(bool prepared) {
     static std::atomic_ullong autogen_id{0};
     // To avoid changing all tests to call SetName, just autogenerate one.
     if (wupt_db_->txn_db_options_.autogenerate_name) {
-      SetName(std::string("autoxid") + ToString(autogen_id.fetch_add(1)));
+      auto s =
+          SetName(std::string("autoxid") + ToString(autogen_id.fetch_add(1)));
+      assert(s.ok());
     } else
 #endif
     {
@@ -296,7 +298,9 @@ Status WriteUnpreparedTxn::FlushWriteBatchToDBInternal(bool prepared) {
 
     Status AddUntrackedKey(uint32_t cf, const Slice& key) {
       auto str = key.ToString();
-      if (txn_->tracked_keys_[cf].count(str) == 0) {
+      PointLockStatus lock_status =
+          txn_->tracked_locks_->GetPointLockStatus(cf, str);
+      if (!lock_status.locked) {
         txn_->untracked_keys_[cf].push_back(str);
       }
       return Status::OK();
@@ -352,8 +356,9 @@ Status WriteUnpreparedTxn::FlushWriteBatchToDBInternal(bool prepared) {
   const bool WRITE_AFTER_COMMIT = true;
   const bool first_prepare_batch = log_number_ == 0;
   // MarkEndPrepare will change Noop marker to the appropriate marker.
-  WriteBatchInternal::MarkEndPrepare(GetWriteBatch()->GetWriteBatch(), name_,
-                                     !WRITE_AFTER_COMMIT, !prepared);
+  s = WriteBatchInternal::MarkEndPrepare(GetWriteBatch()->GetWriteBatch(),
+                                         name_, !WRITE_AFTER_COMMIT, !prepared);
+  assert(s.ok());
   // For each duplicate key we account for a new sub-batch
   prepare_batch_cnt_ = GetWriteBatch()->SubBatchCnt();
   // AddPrepared better to be called in the pre-release callback otherwise there
@@ -539,7 +544,8 @@ Status WriteUnpreparedTxn::CommitInternal() {
   // will ignore the Commit marker in non-recovery mode
   WriteBatch* working_batch = GetCommitTimeWriteBatch();
   const bool empty = working_batch->Count() == 0;
-  WriteBatchInternal::MarkCommit(working_batch, name_);
+  auto s = WriteBatchInternal::MarkCommit(working_batch, name_);
+  assert(s.ok());
 
   const bool for_recovery = use_only_the_last_commit_time_batch_for_recovery_;
   if (!empty && for_recovery) {
@@ -555,7 +561,7 @@ Status WriteUnpreparedTxn::CommitInternal() {
     ROCKS_LOG_WARN(db_impl_->immutable_db_options().info_log,
                    "Duplicate key overhead");
     SubBatchCounter counter(*wpt_db_->GetCFComparatorMap());
-    auto s = working_batch->Iterate(&counter);
+    s = working_batch->Iterate(&counter);
     assert(s.ok());
     commit_batch_cnt = counter.BatchCount();
   }
@@ -581,9 +587,9 @@ Status WriteUnpreparedTxn::CommitInternal() {
   // need to redundantly reference the log that contains the prepared data.
   const uint64_t zero_log_number = 0ull;
   size_t batch_cnt = UNLIKELY(commit_batch_cnt) ? commit_batch_cnt : 1;
-  auto s = db_impl_->WriteImpl(write_options_, working_batch, nullptr, nullptr,
-                               zero_log_number, disable_memtable, &seq_used,
-                               batch_cnt, pre_release_callback);
+  s = db_impl_->WriteImpl(write_options_, working_batch, nullptr, nullptr,
+                          zero_log_number, disable_memtable, &seq_used,
+                          batch_cnt, pre_release_callback);
   assert(!s.ok() || seq_used != kMaxSequenceNumber);
   const SequenceNumber commit_batch_seq = seq_used;
   if (LIKELY(do_one_write || !s.ok())) {
@@ -607,6 +613,8 @@ Status WriteUnpreparedTxn::CommitInternal() {
   // commit write batch as just another "unprepared" batch. This will also
   // update the unprep_seqs_ in the update_commit_map callback.
   unprep_seqs_[commit_batch_seq] = commit_batch_cnt;
+  WriteUnpreparedCommitEntryPreReleaseCallback
+      update_commit_map_with_commit_batch(wpt_db_, db_impl_, unprep_seqs_, 0);
 
   // Note: the 2nd write comes with a performance penality. So if we have too
   // many of commits accompanied with ComitTimeWriteBatch and yet we cannot
@@ -615,15 +623,17 @@ Status WriteUnpreparedTxn::CommitInternal() {
 
   // Update commit map only from the 2nd queue
   WriteBatch empty_batch;
-  empty_batch.PutLogData(Slice());
+  s = empty_batch.PutLogData(Slice());
+  assert(s.ok());
   // In the absence of Prepare markers, use Noop as a batch separator
-  WriteBatchInternal::InsertNoop(&empty_batch);
+  s = WriteBatchInternal::InsertNoop(&empty_batch);
+  assert(s.ok());
   const bool DISABLE_MEMTABLE = true;
   const size_t ONE_BATCH = 1;
   const uint64_t NO_REF_LOG = 0;
   s = db_impl_->WriteImpl(write_options_, &empty_batch, nullptr, nullptr,
                           NO_REF_LOG, DISABLE_MEMTABLE, &seq_used, ONE_BATCH,
-                          &update_commit_map);
+                          &update_commit_map_with_commit_batch);
   assert(!s.ok() || seq_used != kMaxSequenceNumber);
   // Note RemovePrepared should be called after WriteImpl that publishsed the
   // seq. Otherwise SmallestUnCommittedSeq optimization breaks.
@@ -637,8 +647,10 @@ Status WriteUnpreparedTxn::CommitInternal() {
 }
 
 Status WriteUnpreparedTxn::WriteRollbackKeys(
-    const TransactionKeyMap& tracked_keys, WriteBatchWithIndex* rollback_batch,
+    const LockTracker& lock_tracker, WriteBatchWithIndex* rollback_batch,
     ReadCallback* callback, const ReadOptions& roptions) {
+  // This assertion can be removed when range lock is supported.
+  assert(lock_tracker.IsPointLockSupported());
   const auto& cf_map = *wupt_db_->GetCFHandleMap();
   auto WriteRollbackKey = [&](const std::string& key, uint32_t cfid) {
     const auto& cf_handle = cf_map.at(cfid);
@@ -664,11 +676,17 @@ Status WriteUnpreparedTxn::WriteRollbackKeys(
     return Status::OK();
   };
 
-  for (const auto& cfkey : tracked_keys) {
-    const auto cfid = cfkey.first;
-    const auto& keys = cfkey.second;
-    for (const auto& pair : keys) {
-      auto s = WriteRollbackKey(pair.first, cfid);
+  std::unique_ptr<LockTracker::ColumnFamilyIterator> cf_it(
+      lock_tracker.GetColumnFamilyIterator());
+  assert(cf_it != nullptr);
+  while (cf_it->HasNext()) {
+    ColumnFamilyId cf = cf_it->Next();
+    std::unique_ptr<LockTracker::KeyIterator> key_it(
+        lock_tracker.GetKeyIterator(cf));
+    assert(key_it != nullptr);
+    while (key_it->HasNext()) {
+      const std::string& key = key_it->Next();
+      auto s = WriteRollbackKey(key, cf);
       if (!s.ok()) {
         return s;
       }
@@ -704,34 +722,44 @@ Status WriteUnpreparedTxn::RollbackInternal() {
   // need to read our own writes when reading prior versions of the key for
   // rollback.
   WritePreparedTxnReadCallback callback(wpt_db_, read_at_seq);
-  WriteRollbackKeys(GetTrackedKeys(), &rollback_batch, &callback, roptions);
+  // TODO(lth): We write rollback batch all in a single batch here, but this
+  // should be subdivded into multiple batches as well. In phase 2, when key
+  // sets are read from WAL, this will happen naturally.
+  s = WriteRollbackKeys(*tracked_locks_, &rollback_batch, &callback, roptions);
+  if (!s.ok()) {
+    return s;
+  }
 
   // The Rollback marker will be used as a batch separator
-  WriteBatchInternal::MarkRollback(rollback_batch.GetWriteBatch(), name_);
+  s = WriteBatchInternal::MarkRollback(rollback_batch.GetWriteBatch(), name_);
+  assert(s.ok());
   bool do_one_write = !db_impl_->immutable_db_options().two_write_queues;
   const bool DISABLE_MEMTABLE = true;
   const uint64_t NO_REF_LOG = 0;
   uint64_t seq_used = kMaxSequenceNumber;
-  // TODO(lth): We write rollback batch all in a single batch here, but this
-  // should be subdivded into multiple batches as well. In phase 2, when key
-  // sets are read from WAL, this will happen naturally.
-  const size_t ONE_BATCH = 1;
-  // We commit the rolled back prepared batches. ALthough this is
+  // Rollback batch may contain duplicate keys, because tracked_keys_ is not
+  // comparator aware.
+  auto rollback_batch_cnt = rollback_batch.SubBatchCnt();
+  // We commit the rolled back prepared batches. Although this is
   // counter-intuitive, i) it is safe to do so, since the prepared batches are
   // already canceled out by the rollback batch, ii) adding the commit entry to
   // CommitCache will allow us to benefit from the existing mechanism in
   // CommitCache that keeps an entry evicted due to max advance and yet overlaps
   // with a live snapshot around so that the live snapshot properly skips the
   // entry even if its prepare seq is lower than max_evicted_seq_.
+  //
+  // TODO(lth): RollbackInternal is conceptually very similar to
+  // CommitInternal, with the rollback batch simply taking on the role of
+  // CommitTimeWriteBatch. We should be able to merge the two code paths.
   WriteUnpreparedCommitEntryPreReleaseCallback update_commit_map(
-      wpt_db_, db_impl_, unprep_seqs_, ONE_BATCH);
+      wpt_db_, db_impl_, unprep_seqs_, rollback_batch_cnt);
   // Note: the rollback batch does not need AddPrepared since it is written to
   // DB in one shot. min_uncommitted still works since it requires capturing
-  // data that is written to DB but not yet committed, while the roolback
+  // data that is written to DB but not yet committed, while the rollback
   // batch commits with PreReleaseCallback.
   s = db_impl_->WriteImpl(write_options_, rollback_batch.GetWriteBatch(),
                           nullptr, nullptr, NO_REF_LOG, !DISABLE_MEMTABLE,
-                          &seq_used, rollback_batch.SubBatchCnt(),
+                          &seq_used, rollback_batch_cnt,
                           do_one_write ? &update_commit_map : nullptr);
   assert(!s.ok() || seq_used != kMaxSequenceNumber);
   if (!s.ok()) {
@@ -746,21 +774,28 @@ Status WriteUnpreparedTxn::RollbackInternal() {
     unflushed_save_points_.reset(nullptr);
     return s;
   }  // else do the 2nd write for commit
+
   uint64_t& prepare_seq = seq_used;
+  // Populate unprep_seqs_ with rollback_batch_cnt, since we treat data in the
+  // rollback write batch as just another "unprepared" batch. This will also
+  // update the unprep_seqs_ in the update_commit_map callback.
+  unprep_seqs_[prepare_seq] = rollback_batch_cnt;
+  WriteUnpreparedCommitEntryPreReleaseCallback
+      update_commit_map_with_rollback_batch(wpt_db_, db_impl_, unprep_seqs_, 0);
+
   ROCKS_LOG_DETAILS(db_impl_->immutable_db_options().info_log,
                     "RollbackInternal 2nd write prepare_seq: %" PRIu64,
                     prepare_seq);
-  // Commit the batch by writing an empty batch to the queue that will release
-  // the commit sequence number to readers.
-  WriteUnpreparedRollbackPreReleaseCallback update_commit_map_with_prepare(
-      wpt_db_, db_impl_, unprep_seqs_, prepare_seq);
   WriteBatch empty_batch;
-  empty_batch.PutLogData(Slice());
+  const size_t ONE_BATCH = 1;
+  s = empty_batch.PutLogData(Slice());
+  assert(s.ok());
   // In the absence of Prepare markers, use Noop as a batch separator
-  WriteBatchInternal::InsertNoop(&empty_batch);
+  s = WriteBatchInternal::InsertNoop(&empty_batch);
+  assert(s.ok());
   s = db_impl_->WriteImpl(write_options_, &empty_batch, nullptr, nullptr,
                           NO_REF_LOG, DISABLE_MEMTABLE, &seq_used, ONE_BATCH,
-                          &update_commit_map_with_prepare);
+                          &update_commit_map_with_rollback_batch);
   assert(!s.ok() || seq_used != kMaxSequenceNumber);
   // Mark the txn as rolled back
   if (s.ok()) {
@@ -777,7 +812,7 @@ Status WriteUnpreparedTxn::RollbackInternal() {
 
 void WriteUnpreparedTxn::Clear() {
   if (!recovered_txn_) {
-    txn_db_impl_->UnLock(this, &GetTrackedKeys());
+    txn_db_impl_->UnLock(this, *tracked_locks_);
   }
   unprep_seqs_.clear();
   flushed_save_points_.reset(nullptr);
@@ -829,23 +864,24 @@ Status WriteUnpreparedTxn::RollbackToSavePointInternal() {
   WriteUnpreparedTxn::SavePoint& top = flushed_save_points_->back();
 
   assert(save_points_ != nullptr && save_points_->size() > 0);
-  const TransactionKeyMap& tracked_keys = save_points_->top().new_keys_;
+  const LockTracker& tracked_keys = *save_points_->top().new_locks_;
 
   ReadOptions roptions;
   roptions.snapshot = top.snapshot_->snapshot();
   SequenceNumber min_uncommitted =
-      static_cast_with_check<const SnapshotImpl, const Snapshot>(
-          roptions.snapshot)
+      static_cast_with_check<const SnapshotImpl>(roptions.snapshot)
           ->min_uncommitted_;
   SequenceNumber snap_seq = roptions.snapshot->GetSequenceNumber();
   WriteUnpreparedTxnReadCallback callback(wupt_db_, snap_seq, min_uncommitted,
                                           top.unprep_seqs_,
                                           kBackedByDBSnapshot);
-  WriteRollbackKeys(tracked_keys, &write_batch_, &callback, roptions);
+  s = WriteRollbackKeys(tracked_keys, &write_batch_, &callback, roptions);
+  if (!s.ok()) {
+    return s;
+  }
 
   const bool kPrepared = true;
   s = FlushWriteBatchToDBInternal(!kPrepared);
-  assert(s.ok());
   if (!s.ok()) {
     return s;
   }
@@ -963,8 +999,7 @@ Status WriteUnpreparedTxn::ValidateSnapshot(ColumnFamilyHandle* column_family,
   assert(snapshot_);
 
   SequenceNumber min_uncommitted =
-      static_cast_with_check<const SnapshotImpl, const Snapshot>(
-          snapshot_.get())
+      static_cast_with_check<const SnapshotImpl>(snapshot_.get())
           ->min_uncommitted_;
   SequenceNumber snap_seq = snapshot_->GetSequenceNumber();
   // tracked_at_seq is either max or the last snapshot with which this key was

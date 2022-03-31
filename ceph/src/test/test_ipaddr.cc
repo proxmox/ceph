@@ -19,6 +19,8 @@
 #include <net/if.h>
 #endif
 
+using namespace std;
+
 static void ipv4(struct sockaddr_in *addr, const char *s) {
   int err;
 
@@ -191,6 +193,7 @@ TEST(CommonIPAddr, TestV4_SkipLoopback)
   struct sockaddr_in a_three;
 
   one.ifa_next = &two;
+  one.ifa_flags &= ~IFF_UP;
   one.ifa_addr = (struct sockaddr*)&a_one;
   one.ifa_name = lo;
 
@@ -214,13 +217,13 @@ TEST(CommonIPAddr, TestV4_SkipLoopback)
     find_ip_in_subnet_list(nullptr, (struct ifaddrs*)&one,
                            CEPH_PICK_ADDRESS_IPV4 | CEPH_PICK_ADDRESS_IPV6,
                            "", "");
-  ASSERT_EQ((struct sockaddr*)&a_three, result);
+  ASSERT_EQ(three.ifa_addr, result);
   // the subnet criteria leaves us no choice but the UP loopback address
   result =
     find_ip_in_subnet_list(nullptr, (struct ifaddrs*)&one,
                            CEPH_PICK_ADDRESS_IPV4 | CEPH_PICK_ADDRESS_IPV6,
                            "127.0.0.0/8", "");
-  ASSERT_EQ((struct sockaddr*)&a_two, result);
+  ASSERT_EQ(two.ifa_addr, result);
 }
 
 TEST(CommonIPAddr, TestV6_Simple)
@@ -322,6 +325,7 @@ TEST(CommonIPAddr, TestV6_SkipLoopback)
   struct sockaddr_in6 a_three;
 
   one.ifa_next = &two;
+  one.ifa_flags &= ~IFF_UP;
   ipv6(&a_one, "::1");
   one.ifa_addr = (struct sockaddr*)&a_one;
   one.ifa_name = lo;
@@ -344,13 +348,13 @@ TEST(CommonIPAddr, TestV6_SkipLoopback)
     find_ip_in_subnet_list(nullptr, (struct ifaddrs*)&one,
                            CEPH_PICK_ADDRESS_IPV4 | CEPH_PICK_ADDRESS_IPV6,
                            "", "");
-  ASSERT_EQ((struct sockaddr*)&a_three, result);
+  ASSERT_EQ(three.ifa_addr, result);
   // the subnet criteria leaves us no choice but the UP loopback address
   result =
     find_ip_in_subnet_list(nullptr, (struct ifaddrs*)&one,
                            CEPH_PICK_ADDRESS_IPV4 | CEPH_PICK_ADDRESS_IPV6,
                            "::1/128", "");
-  ASSERT_EQ((struct sockaddr*)&a_two, result);
+  ASSERT_EQ(two.ifa_addr, result);
 }
 
 TEST(CommonIPAddr, ParseNetwork_Empty)
@@ -708,7 +712,7 @@ TEST(pick_address, find_ip_in_subnet_list)
     CEPH_PICK_ADDRESS_IPV4,
     "10.1.0.0/16",
     "eth0");
-  ASSERT_EQ((struct sockaddr*)&a_one, result);
+  ASSERT_EQ(one.ifa_addr, result);
 
   result = find_ip_in_subnet_list(
     cct.get(),
@@ -716,7 +720,7 @@ TEST(pick_address, find_ip_in_subnet_list)
     CEPH_PICK_ADDRESS_IPV4,
     "10.2.0.0/16",
     "eth1");
-  ASSERT_EQ((struct sockaddr*)&a_two, result);
+  ASSERT_EQ(two.ifa_addr, result);
 
   // match by eth name
   result = find_ip_in_subnet_list(
@@ -725,7 +729,7 @@ TEST(pick_address, find_ip_in_subnet_list)
     CEPH_PICK_ADDRESS_IPV4,
     "10.0.0.0/8",
     "eth0");
-  ASSERT_EQ((struct sockaddr*)&a_one, result);
+  ASSERT_EQ(one.ifa_addr, result);
 
   result = find_ip_in_subnet_list(
     cct.get(),
@@ -733,7 +737,7 @@ TEST(pick_address, find_ip_in_subnet_list)
     CEPH_PICK_ADDRESS_IPV4,
     "10.0.0.0/8",
     "eth1");
-  ASSERT_EQ((struct sockaddr*)&a_two, result);
+  ASSERT_EQ(two.ifa_addr, result);
 
   result = find_ip_in_subnet_list(
     cct.get(),
@@ -741,7 +745,7 @@ TEST(pick_address, find_ip_in_subnet_list)
     CEPH_PICK_ADDRESS_IPV6,
     "2001::/16",
     "eth1");
-  ASSERT_EQ((struct sockaddr*)&a_three, result);
+  ASSERT_EQ(three.ifa_addr, result);
 }
 
 TEST(pick_address, filtering)
@@ -784,7 +788,6 @@ TEST(pick_address, filtering)
 			   CEPH_PICK_ADDRESS_IPV4 |
 			   CEPH_PICK_ADDRESS_MSGR1,
 			   &one, &av);
-    cout << av << std::endl;
     ASSERT_EQ(0, r);
     ASSERT_EQ(1u, av.v.size());
     ASSERT_EQ(string("v1:0.0.0.0:0/0"), stringify(av.v[0]));
@@ -795,7 +798,6 @@ TEST(pick_address, filtering)
 			   CEPH_PICK_ADDRESS_IPV6 |
 			   CEPH_PICK_ADDRESS_MSGR1,
 			   &one, &av);
-    cout << av << std::endl;
     ASSERT_EQ(0, r);
     ASSERT_EQ(1u, av.v.size());
     ASSERT_EQ(string("v1:[::]:0/0"), stringify(av.v[0]));
@@ -807,7 +809,6 @@ TEST(pick_address, filtering)
 			   CEPH_PICK_ADDRESS_IPV4 |
 			   CEPH_PICK_ADDRESS_MSGR1,
 			   &one, &av);
-    cout << av << std::endl;
     ASSERT_EQ(0, r);
     ASSERT_EQ(1u, av.v.size());
     ASSERT_EQ(string("v1:10.2.1.123:0/0"), stringify(av.v[0]));
@@ -821,7 +822,6 @@ TEST(pick_address, filtering)
 			   CEPH_PICK_ADDRESS_IPV4 |
 			   CEPH_PICK_ADDRESS_MSGR2,
 			   &one, &av);
-    cout << av << std::endl;
     ASSERT_EQ(0, r);
     ASSERT_EQ(1u, av.v.size());
     ASSERT_EQ(string("v2:10.2.1.123:0/0"), stringify(av.v[0]));
@@ -836,7 +836,6 @@ TEST(pick_address, filtering)
 			   CEPH_PICK_ADDRESS_IPV4 |
 			   CEPH_PICK_ADDRESS_MSGR2,
 			   &one, &av);
-    cout << av << std::endl;
     ASSERT_EQ(0, r);
     ASSERT_EQ(1u, av.v.size());
     ASSERT_EQ(string("v2:10.2.1.123:0/0"), stringify(av.v[0]));
@@ -851,7 +850,6 @@ TEST(pick_address, filtering)
 			   CEPH_PICK_ADDRESS_IPV4 |
 			   CEPH_PICK_ADDRESS_MSGR1,
 			   &one, &av);
-    cout << av << std::endl;
     ASSERT_EQ(0, r);
     ASSERT_EQ(1u, av.v.size());
     ASSERT_EQ(string("v1:10.1.1.2:0/0"), stringify(av.v[0]));
@@ -866,7 +864,6 @@ TEST(pick_address, filtering)
 			   CEPH_PICK_ADDRESS_IPV6 |
 			   CEPH_PICK_ADDRESS_MSGR2,
 			   &one, &av);
-    cout << av << std::endl;
     ASSERT_EQ(0, r);
     ASSERT_EQ(1u, av.v.size());
     ASSERT_EQ(string("v2:[2001:1234:5678:90ab::cdef]:0/0"), stringify(av.v[0]));
@@ -881,7 +878,6 @@ TEST(pick_address, filtering)
 			   CEPH_PICK_ADDRESS_IPV6 |
 			   CEPH_PICK_ADDRESS_MSGR2,
 			   &one, &av);
-    cout << av << std::endl;
     ASSERT_EQ(0, r);
     ASSERT_EQ(2u, av.v.size());
     ASSERT_EQ(string("v2:[2001:1234:5678:90ab::cdef]:0/0"), stringify(av.v[0]));
@@ -899,7 +895,6 @@ TEST(pick_address, filtering)
 			   CEPH_PICK_ADDRESS_MSGR1 |
 			   CEPH_PICK_ADDRESS_PREFER_IPV4,
 			   &one, &av);
-    cout << av << std::endl;
     ASSERT_EQ(0, r);
     ASSERT_EQ(2u, av.v.size());
     ASSERT_EQ(string("v1:10.2.1.123:0/0"), stringify(av.v[0]));
@@ -916,7 +911,6 @@ TEST(pick_address, filtering)
 			   CEPH_PICK_ADDRESS_MSGR1 |
 			   CEPH_PICK_ADDRESS_MSGR2,
 			   &one, &av);
-    cout << av << std::endl;
     ASSERT_EQ(0, r);
     ASSERT_EQ(2u, av.v.size());
     ASSERT_EQ(string("v2:[2001:1234:5678:90ab::cdef]:0/0"), stringify(av.v[0]));
@@ -931,7 +925,6 @@ TEST(pick_address, filtering)
 			   CEPH_PICK_ADDRESS_MSGR1 |
 			   CEPH_PICK_ADDRESS_MSGR2,
 			   &one, &av);
-    cout << av << std::endl;
     ASSERT_EQ(0, r);
     ASSERT_EQ(2u, av.v.size());
     ASSERT_EQ(string("v2:0.0.0.0:0/0"), stringify(av.v[0]));
@@ -967,7 +960,6 @@ TEST(pick_address, ipv4_ipv6_enabled)
 			   CEPH_PICK_ADDRESS_PUBLIC |
 			   CEPH_PICK_ADDRESS_MSGR1,
 			   &one, &av);
-    cout << av << std::endl;
     ASSERT_EQ(-1, r);
   }
 }
@@ -1000,7 +992,6 @@ TEST(pick_address, ipv4_ipv6_enabled2)
 			   CEPH_PICK_ADDRESS_PUBLIC |
 			   CEPH_PICK_ADDRESS_MSGR1,
 			   &one, &av);
-    cout << av << std::endl;
     ASSERT_EQ(-1, r);
   }
 }

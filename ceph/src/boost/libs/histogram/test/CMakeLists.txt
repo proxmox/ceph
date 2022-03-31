@@ -51,11 +51,11 @@ boost_test(TYPE run SOURCES algorithm_project_test.cpp)
 boost_test(TYPE run SOURCES algorithm_reduce_test.cpp)
 boost_test(TYPE run SOURCES algorithm_sum_test.cpp)
 boost_test(TYPE run SOURCES algorithm_empty_test.cpp)
+boost_test(TYPE run SOURCES axis_boolean_test.cpp)
 boost_test(TYPE run SOURCES axis_category_test.cpp)
 boost_test(TYPE run SOURCES axis_integer_test.cpp)
 boost_test(TYPE run SOURCES axis_option_test.cpp)
 boost_test(TYPE run SOURCES axis_regular_test.cpp)
-boost_test(TYPE run SOURCES axis_size.cpp)
 boost_test(TYPE run SOURCES axis_traits_test.cpp)
 boost_test(TYPE run SOURCES axis_variable_test.cpp)
 boost_test(TYPE run SOURCES axis_variant_test.cpp)
@@ -82,7 +82,8 @@ boost_test(TYPE run SOURCES histogram_fill_test.cpp
   COMPILE_OPTIONS $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
 boost_test(TYPE run SOURCES histogram_growing_test.cpp)
 boost_test(TYPE run SOURCES histogram_mixed_test.cpp)
-boost_test(TYPE run SOURCES histogram_operators_test.cpp)
+boost_test(TYPE run SOURCES histogram_operators_test.cpp
+  COMPILE_OPTIONS $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
 boost_test(TYPE run SOURCES histogram_ostream_test.cpp)
 boost_test(TYPE run SOURCES histogram_test.cpp)
 boost_test(TYPE run SOURCES indexed_test.cpp)
@@ -118,4 +119,14 @@ endif()
 # boost_test(TYPE run SOURCES accumulators_serialization_test.cpp
 #     LINK_LIBRARIES Boost::serialization)
 
-boost_test(TYPE run SOURCES deduction_guides_test.cpp COMPILE_FEATURES cxx_std_17)
+# Workaround for gcc-5
+if (NOT(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 6))
+
+  boost_test(TYPE run SOURCES deduction_guides_test.cpp
+    COMPILE_FEATURES cxx_std_17
+  )
+  boost_test(TYPE run SOURCES issue_290_test.cpp
+    COMPILE_FEATURES cxx_std_17
+  )
+
+endif()

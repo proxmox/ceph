@@ -23,6 +23,7 @@
 #include "auth/KeyRing.h"
 #include "auth/cephx/CephxKeyServer.h"
 #include "global/global_init.h"
+#include "include/scope_guard.h"
 #include "include/stringify.h"
 #include "mgr/mgr_commands.h"
 #include "mon/AuthMonitor.h"
@@ -36,6 +37,8 @@
 #include "mon/CreatingPGs.h"
 
 namespace po = boost::program_options;
+
+using namespace std;
 
 class TraceIter {
   int fd;
@@ -850,6 +853,10 @@ int main(int argc, char **argv) {
     }
   }
 
+  auto close_store = make_scope_guard([&] {
+    st.close();
+  });
+
   if (cmd == "dump-keys") {
     KeyValueDB::WholeSpaceIterator iter = st.get_iterator();
     while (iter->valid()) {
@@ -888,14 +895,12 @@ int main(int argc, char **argv) {
     int r = parse_cmd_args(&op_desc, &hidden_op_desc, &op_positional,
                            subcmds, &op_vm);
     if (r < 0) {
-      err = -r;
-      goto done;
+      return -r;
     }
 
     if (op_vm.count("help") || map_type.empty()) {
       usage(argv[0], op_desc);
-      err = 0;
-      goto done;
+      return 0;
     }
 
     if (v == 0) {
@@ -912,17 +917,16 @@ int main(int argc, char **argv) {
       if (fd < 0) {
         std::cerr << "error opening output file: "
           << cpp_strerror(errno) << std::endl;
-        err = EINVAL;
-        goto done;
+        return EINVAL;
       }
     }
 
-    BOOST_SCOPE_EXIT((&r) (&fd) (&outpath)) {
+    auto close_fd = make_scope_guard([&] {
       ::close(fd);
       if (r < 0 && fd != STDOUT_FILENO) {
         ::remove(outpath.c_str());
       }
-    } BOOST_SCOPE_EXIT_END
+    });
 
     bufferlist bl;
     r = 0;
@@ -941,8 +945,7 @@ int main(int argc, char **argv) {
     }
     if (r < 0) {
       std::cerr << "Error getting map: " << cpp_strerror(r) << std::endl;
-      err = EINVAL;
-      goto done;
+      return EINVAL;
     }
 
     if (op_vm.count("readable")) {
@@ -1010,14 +1013,12 @@ int main(int argc, char **argv) {
     int r = parse_cmd_args(&op_desc, NULL, &op_positional,
                            subcmds, &op_vm);
     if (r < 0) {
-      err = -r;
-      goto done;
+      return -r;
     }
 
     if (op_vm.count("help") || map_type.empty()) {
       usage(argv[0], op_desc);
-      err = 0;
-      goto done;
+      return  0;
     }
 
     unsigned int v_first = 0;
@@ -1043,22 +1044,19 @@ int main(int argc, char **argv) {
     int r = parse_cmd_args(&op_desc, NULL, NULL,
                            subcmds, &op_vm);
     if (r < 0) {
-      err = -r;
-      goto done;
+      return -r;
     }
 
     if (op_vm.count("help")) {
       usage(argv[0], op_desc);
-      err = 0;
-      goto done;
+      return 0;
     }
 
     if (dstart > dstop) {
       std::cerr << "error: 'start' version (value: " << dstart << ") "
                 << " is greater than 'end' version (value: " << dstop << ")"
                 << std::endl;
-      err = EINVAL;
-      goto done;
+      return EINVAL;
     }
 
     version_t v = dstart;
@@ -1106,28 +1104,24 @@ int main(int argc, char **argv) {
     int r = parse_cmd_args(&op_desc, &hidden_op_desc, &op_positional,
                            subcmds, &op_vm);
     if (r < 0) {
-      err = -r;
-      goto done;
+      return -r;
     }
 
     if (op_vm.count("help")) {
       usage(argv[0], op_desc);
-      err = 0;
-      goto done;
+      return 0;
     }
 
     if (outpath.empty()) {
       usage(argv[0], op_desc);
-      err = EINVAL;
-      goto done;
+      return EINVAL;
     }
 
     if (dstart > dstop) {
       std::cerr << "error: 'start' version (value: " << dstart << ") "
                 << " is greater than 'stop' version (value: " << dstop << ")"
                 << std::endl;
-      err = EINVAL;
-      goto done;
+      return EINVAL;
     }
 
     TraceIter iter(outpath.c_str());
@@ -1182,20 +1176,17 @@ int main(int argc, char **argv) {
       po::notify(op_vm);
     } catch (po::error &e) {
       std::cerr << "error: " << e.what() << std::endl;
-      err = EINVAL;
-      goto done;
+      return EINVAL;
     }
 
     if (op_vm.count("help")) {
       usage(argv[0], op_desc);
-      err = 0;
-      goto done;
+      return 0;
     }
 
     if (inpath.empty()) {
       usage(argv[0], op_desc);
-      err = EINVAL;
-      goto done;
+      return EINVAL;
     }
 
     unsigned num = 0;
@@ -1235,14 +1226,12 @@ int main(int argc, char **argv) {
       po::notify(op_vm);
     } catch (po::error &e) {
       std::cerr << "error: " << e.what() << std::endl;
-      err = EINVAL;
-      goto done;
+      return EINVAL;
     }
 
     if (op_vm.count("help")) {
       usage(argv[0], op_desc);
-      err = 0;
-      goto done;
+      return 0;
     }
 
     unsigned num = 0;
@@ -1265,8 +1254,7 @@ int main(int argc, char **argv) {
   } else if (cmd == "store-copy") {
     if (subcmds.size() < 1 || subcmds[0].empty()) {
       usage(argv[0], desc);
-      err = EINVAL;
-      goto done;
+      return EINVAL;
     }
 
     string out_path = subcmds[0];
@@ -1277,7 +1265,7 @@ int main(int argc, char **argv) {
       int r = out_store.create_and_open(ss);
       if (r < 0) {
         std::cerr << ss.str() << std::endl;
-        goto done;
+        return err;
       }
     }
 
@@ -1326,10 +1314,6 @@ int main(int argc, char **argv) {
   } else {
     std::cerr << "Unrecognized command: " << cmd << std::endl;
     usage(argv[0], desc);
-    goto done;
+    return err;
   }
-
-  done:
-  st.close();
-  return err;
 }

@@ -15,11 +15,14 @@
        target="_blank"
        i18n>documentation</a>
     <a ngbDropdownItem
-       href="/docs"
+       routerLink="/api-docs"
        target="_blank"
        i18n>API</a>
     <button ngbDropdownItem
             (click)="openAboutModal()"
             i18n>About</button>
+    <button ngbDropdownItem
+            (click)="openFeedbackModal()"
+            i18n>Report an issue...</button>
   </div>
 </div>

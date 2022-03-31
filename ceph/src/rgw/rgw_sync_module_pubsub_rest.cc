@@ -19,6 +19,8 @@
 #define dout_context g_ceph_context
 #define dout_subsys ceph_subsys_rgw
 
+using namespace std;
+
 // command: PUT /topics/<topic-name>[&push-endpoint=<endpoint>[&<arg1>=<value1>]]
 class RGWPSCreateTopic_ObjStore : public RGWPSCreateTopicOp {
 public:
@@ -40,7 +42,7 @@ public:
     dest.arn_topic = topic_name;
     // the topic ARN will be sent in the reply
     const rgw::ARN arn(rgw::Partition::aws, rgw::Service::sns, 
-        store->svc()->zone->get_zonegroup().get_name(),
+        store->get_zone()->get_zonegroup().get_name(),
         s->user->get_tenant(), topic_name);
     topic_arn = arn.to_string();
     return 0;
@@ -136,7 +138,7 @@ protected:
     if (s->init_state.url_bucket.empty()) {
       return nullptr;
     }
-    if (s->object->empty()) {
+    if (s->object == nullptr || s->object->empty()) {
       return new RGWPSListTopics_ObjStore();
     }
     return new RGWPSGetTopic_ObjStore();
@@ -171,7 +173,7 @@ public:
       return -EINVAL;
     }
 
-    const auto psmodule = static_cast<RGWPSSyncModuleInstance*>(store->getRados()->get_sync_module().get());
+    const auto psmodule = static_cast<RGWPSSyncModuleInstance*>(store->get_sync_module().get());
     const auto& conf = psmodule->get_effective_conf();
 
     dest.push_endpoint = s->info.args.get("push-endpoint");
@@ -357,7 +359,8 @@ private:
     std::string events_str = s->info.args.get("events", &exists);
     if (!exists) {
       // if no events are provided, we notify on all of them
-      events_str = "OBJECT_CREATE,OBJECT_DELETE,DELETE_MARKER_CREATE";
+      events_str =
+	"OBJECT_CREATE,OBJECT_DELETE,DELETE_MARKER_CREATE,OBJECT_EXPIRATION";
     }
     rgw::notify::from_string_list(events_str, events);
     if (std::find(events.begin(), events.end(), rgw::notify::UnknownEvent) != events.end()) {
@@ -374,7 +377,7 @@ public:
 
 void RGWPSCreateNotif_ObjStore::execute(optional_yield y)
 {
-  ps.emplace(store, s->owner.get_id().tenant);
+  ps.emplace(static_cast<rgw::sal::RadosStore*>(store), s->owner.get_id().tenant);
 
   auto b = ps->get_bucket(bucket_info.bucket);
   op_ret = b->create_notification(this, topic_name, events, y);
@@ -411,7 +414,7 @@ void RGWPSDeleteNotif_ObjStore::execute(optional_yield y) {
     return;
   }
 
-  ps.emplace(store, s->owner.get_id().tenant);
+  ps.emplace(static_cast<rgw::sal::RadosStore*>(store), s->owner.get_id().tenant);
   auto b = ps->get_bucket(bucket_info.bucket);
   op_ret = b->remove_notification(this, topic_name, y);
   if (op_ret < 0) {
@@ -450,7 +453,7 @@ public:
 
 void RGWPSListNotifs_ObjStore::execute(optional_yield y)
 {
-  ps.emplace(store, s->owner.get_id().tenant);
+  ps.emplace(static_cast<rgw::sal::RadosStore*>(store), s->owner.get_id().tenant);
   auto b = ps->get_bucket(bucket_info.bucket);
   op_ret = b->get_topics(&result);
   if (op_ret < 0) {
@@ -496,7 +499,7 @@ public:
 };
 
 // factory for ceph specific PubSub REST handlers 
-RGWHandler_REST* RGWRESTMgr_PubSub::get_handler(rgw::sal::RGWRadosStore *store,
+RGWHandler_REST* RGWRESTMgr_PubSub::get_handler(rgw::sal::Store* store,
 						struct req_state* const s,
 						const rgw::auth::StrategyRegistry& auth_registry,
 						const std::string& frontend_prefix)

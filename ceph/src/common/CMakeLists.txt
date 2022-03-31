@@ -6,10 +6,13 @@ add_library(common_texttable_obj OBJECT
 
 add_library(common_prioritycache_obj OBJECT
   PriorityCache.cc)
+add_dependencies(common_prioritycache_obj legacy-option-headers)
 
 if(WIN32)
   add_library(dlfcn_win32 STATIC win32/dlfcn.cc win32/errno.cc)
 endif()
+
+add_subdirectory(options)
 
 set(common_srcs
   AsyncOpTracker.cc
@@ -58,7 +61,6 @@ set(common_srcs
   code_environment.cc
   common_init.cc
   compat.cc
-  condition_variable_debug.cc
   config.cc
   config_values.cc
   dout.cc
@@ -74,10 +76,8 @@ set(common_srcs
   hostname.cc
   ipaddr.cc
   iso_8601.cc
-  lockdep.cc
   mempool.cc
   mime.c
-  mutex_debug.cc
   numa.cc
   openssl_opts_handler.cc
   options.cc
@@ -90,7 +90,6 @@ set(common_srcs
   reverse.c
   run_cmd.cc
   scrub_types.cc
-  shared_mutex_debug.cc
   signal.cc
   snap_types.cc
   str_list.cc
@@ -102,6 +101,19 @@ set(common_srcs
   utf8.c
   util.cc
   version.cc)
+
+if(WITH_SYSTEMD)
+  list(APPEND common_srcs
+    Journald.cc)
+endif()
+
+if(WITH_CEPH_DEBUG_MUTEX)
+  list(APPEND common_srcs
+    lockdep.cc
+    mutex_debug.cc
+    condition_variable_debug.cc
+    shared_mutex_debug.cc)
+endif()
 
 if(WIN32)
   if(MINGW)
@@ -174,10 +186,11 @@ add_library(common-common-objs OBJECT
 target_include_directories(common-common-objs PRIVATE ${OPENSSL_INCLUDE_DIR})
 # for options.cc
 target_compile_definitions(common-common-objs PRIVATE
-  "CEPH_LIBDIR=\"${CMAKE_INSTALL_FULL_LIBDIR}\""
-  "CEPH_PKGLIBDIR=\"${CEPH_INSTALL_FULL_PKGLIBDIR}\""
-  "CEPH_DATADIR=\"${CEPH_INSTALL_DATADIR}\"")
-compile_with_fmt(common-common-objs)
+  "CMAKE_INSTALL_LIBDIR=\"${CMAKE_INSTALL_LIBDIR}\""
+  "CEPH_INSTALL_FULL_PKGLIBDIR=\"${CEPH_INSTALL_FULL_PKGLIBDIR}\""
+  "CEPH_INSTALL_DATADIR=\"${CEPH_INSTALL_DATADIR}\""
+  $<TARGET_PROPERTY:fmt::fmt,INTERFACE_COMPILE_DEFINITIONS>)
+add_dependencies(common-common-objs legacy-option-headers)
 
 set(common_mountcephfs_srcs
   armor.c

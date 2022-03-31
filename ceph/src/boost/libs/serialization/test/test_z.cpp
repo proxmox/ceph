@@ -200,7 +200,6 @@ int main() {
 #include <vector>
 #include <iostream>
 
-//#include <boost/shared_ptr.hpp>
 #include <boost/archive/binary_iarchive.hpp>
 #include <boost/serialization/nvp.hpp>
 #include <boost/serialization/shared_ptr.hpp>
@@ -695,9 +694,8 @@ int main(int argc, char** argv)
     ia>>BOOST_SERIALIZATION_NVP(value);
 }
 
-#elif 1
+#elif 0
 // submitted as https://github.com/boostorg/serialization/issues/154
-#include <boost/version.hpp>
 
 #include <boost/archive/text_iarchive.hpp>
 #include <boost/archive/text_oarchive.hpp>
@@ -771,7 +769,39 @@ int main(int argc, char *argv[])
     return 0;
 }
 
+#elif 0
+
+// boost::variant not correctly serialized when reusing the memory location #203
+#include <boost/archive/text_iarchive.hpp>
+#include <boost/archive/text_oarchive.hpp>
+#include <boost/serialization/serialization.hpp>
+#include <boost/serialization/variant.hpp>
+
+int main() {
+  boost::variant<int> variant = 1;
+
+  // write it two times
+  std::stringstream ss;
+  boost::archive::text_oarchive oa(ss);
+  oa << make_nvp("var1", variant);
+  oa << make_nvp("var2", variant);
+  ss.flush();
+
+  // read it two times
+  boost::variant<int> v1;
+  boost::variant<int> v2;
+  boost::archive::text_iarchive ia(ss);
+  ia >> boost::serialization::make_nvp("var1", v1);
+  ia >> boost::serialization::make_nvp("var2", v2);
+
+  assert(boost::get<int>(v1) == 1);
+  assert(boost::get<int>(v2) == 1);  // Fails: v2 is actually zero
+}
+
 #else
+
+#include <boost/serialization/set.hpp>
+
 int main(int argc, char* argv[])
 {
     return 0;

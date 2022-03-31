@@ -22,7 +22,7 @@
 //
 // Borland 5.5 lacks the following math overloads
 //
-#if BOOST_WORKAROUND(__BORLANDC__, <= 0x551)
+#if BOOST_WORKAROUND(BOOST_BORLANDC, <= 0x551)
 namespace std
 {
 
@@ -37,7 +37,7 @@ inline long double floor (long double x) { return std::floorl(x); }
 #include "boost/numeric/conversion/converter.hpp"
 #include "boost/numeric/conversion/cast.hpp"
 
-#ifdef __BORLANDC__
+#ifdef BOOST_BORLANDC
 #pragma hdrstop
 #endif
 

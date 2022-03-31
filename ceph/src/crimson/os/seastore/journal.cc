@@ -5,28 +5,19 @@
 
 #include <boost/iterator/counting_iterator.hpp>
 
+#include "crimson/common/config_proxy.h"
 #include "crimson/os/seastore/journal.h"
 
 #include "include/intarith.h"
-#include "crimson/os/seastore/segment_manager.h"
+#include "crimson/os/seastore/segment_cleaner.h"
 
 namespace {
   seastar::logger& logger() {
-    return crimson::get_logger(ceph_subsys_filestore);
+    return crimson::get_logger(ceph_subsys_seastore_journal);
   }
 }
 
 namespace crimson::os::seastore {
-
-std::ostream &operator<<(std::ostream &out, const segment_header_t &header)
-{
-  return out << "segment_header_t("
-	     << "segment_seq=" << header.journal_segment_seq
-	     << ", physical_segment_id=" << header.physical_segment_id
-	     << ", journal_tail=" << header.journal_tail
-	     << ", segment_nonce=" << header.segment_nonce
-	     << ")";
-}
 
 segment_nonce_t generate_nonce(
   segment_seq_t seq,
@@ -38,23 +29,375 @@ segment_nonce_t generate_nonce(
     sizeof(meta.seastore_id.uuid));
 }
 
-Journal::Journal(SegmentManager &segment_manager)
-  : block_size(segment_manager.get_block_size()),
-    max_record_length(
-      segment_manager.get_segment_size() -
-      p2align(ceph::encoded_sizeof_bounded<segment_header_t>(),
-	      size_t(block_size))),
-    segment_manager(segment_manager) {}
+Journal::Journal(
+  SegmentManager& segment_manager,
+  ExtentReader& scanner)
+  : journal_segment_manager(segment_manager),
+    record_submitter(crimson::common::get_conf<uint64_t>(
+                       "seastore_journal_iodepth_limit"),
+                     crimson::common::get_conf<uint64_t>(
+                       "seastore_journal_batch_capacity"),
+                     crimson::common::get_conf<Option::size_t>(
+                       "seastore_journal_batch_flush_size"),
+                     crimson::common::get_conf<double>(
+                       "seastore_journal_batch_preferred_fullness"),
+                     journal_segment_manager),
+    scanner(scanner)
+{
+  register_metrics();
+}
 
+Journal::prep_replay_segments_fut
+Journal::prep_replay_segments(
+  std::vector<std::pair<segment_id_t, segment_header_t>> segments)
+{
+  logger().debug(
+    "Journal::prep_replay_segments: have {} segments",
+    segments.size());
+  if (segments.empty()) {
+    return crimson::ct_error::input_output_error::make();
+  }
+  std::sort(
+    segments.begin(),
+    segments.end(),
+    [](const auto &lt, const auto &rt) {
+      return lt.second.journal_segment_seq <
+	rt.second.journal_segment_seq;
+    });
 
-Journal::initialize_segment_ertr::future<segment_seq_t>
-Journal::initialize_segment(Segment &segment)
+  journal_segment_manager.set_segment_seq(
+    segments.rbegin()->second.journal_segment_seq);
+  std::for_each(
+    segments.begin(),
+    segments.end(),
+    [this](auto &seg) {
+      segment_provider->init_mark_segment_closed(
+	seg.first,
+	seg.second.journal_segment_seq,
+	false);
+    });
+
+  auto journal_tail = segments.rbegin()->second.journal_tail;
+  segment_provider->update_journal_tail_committed(journal_tail);
+  auto replay_from = journal_tail.offset;
+  logger().debug(
+    "Journal::prep_replay_segments: journal_tail={}",
+    journal_tail);
+  auto from = segments.begin();
+  if (replay_from != P_ADDR_NULL) {
+    from = std::find_if(
+      segments.begin(),
+      segments.end(),
+      [&replay_from](const auto &seg) -> bool {
+	auto& seg_addr = replay_from.as_seg_paddr();
+	return seg.first == seg_addr.get_segment_id();
+      });
+    if (from->second.journal_segment_seq != journal_tail.segment_seq) {
+      logger().error(
+	"Journal::prep_replay_segments: journal_tail {} does not match {}",
+	journal_tail,
+	from->second);
+      assert(0 == "invalid");
+    }
+  } else {
+    replay_from = paddr_t::make_seg_paddr(
+      from->first,
+      journal_segment_manager.get_block_size());
+  }
+  auto ret = replay_segments_t(segments.end() - from);
+  std::transform(
+    from, segments.end(), ret.begin(),
+    [this](const auto &p) {
+      auto ret = journal_seq_t{
+	p.second.journal_segment_seq,
+	paddr_t::make_seg_paddr(
+	  p.first,
+	  journal_segment_manager.get_block_size())
+      };
+      logger().debug(
+	"Journal::prep_replay_segments: replaying from  {}",
+	ret);
+      return std::make_pair(ret, p.second);
+    });
+  ret[0].first.offset = replay_from;
+  return prep_replay_segments_fut(
+    prep_replay_segments_ertr::ready_future_marker{},
+    std::move(ret));
+}
+
+Journal::replay_ertr::future<>
+Journal::replay_segment(
+  journal_seq_t seq,
+  segment_header_t header,
+  delta_handler_t &handler)
+{
+  logger().debug("Journal::replay_segment: starting at {}", seq);
+  return seastar::do_with(
+    scan_valid_records_cursor(seq),
+    ExtentReader::found_record_handler_t([=, &handler](
+      record_locator_t locator,
+      const record_group_header_t& header,
+      const bufferlist& mdbuf)
+      -> ExtentReader::scan_valid_records_ertr::future<>
+    {
+      logger().debug("Journal::replay_segment: decoding {} records",
+                     header.records);
+      auto maybe_record_deltas_list = try_decode_deltas(
+          header, mdbuf, locator.record_block_base);
+      if (!maybe_record_deltas_list) {
+        // This should be impossible, we did check the crc on the mdbuf
+        logger().error(
+          "Journal::replay_segment: unable to decode deltas for record {}",
+          locator.record_block_base);
+        return crimson::ct_error::input_output_error::make();
+      }
+
+      return seastar::do_with(
+        std::move(*maybe_record_deltas_list),
+        [write_result=locator.write_result,
+         this,
+         &handler](auto& record_deltas_list)
+      {
+        return crimson::do_for_each(
+          record_deltas_list,
+          [write_result,
+           this,
+           &handler](record_deltas_t& record_deltas)
+        {
+          logger().debug("Journal::replay_segment: decoded {} deltas at block_base {}",
+                         record_deltas.deltas.size(),
+                         record_deltas.record_block_base);
+          auto locator = record_locator_t{
+            record_deltas.record_block_base,
+            write_result
+          };
+          return crimson::do_for_each(
+            record_deltas.deltas,
+            [locator,
+             this,
+             &handler](delta_info_t& delta)
+          {
+            /* The journal may validly contain deltas for extents in
+             * since released segments.  We can detect those cases by
+             * checking whether the segment in question currently has a
+             * sequence number > the current journal segment seq. We can
+             * safetly skip these deltas because the extent must already
+             * have been rewritten.
+             *
+             * Note, this comparison exploits the fact that
+             * SEGMENT_SEQ_NULL is a large number.
+             */
+            auto& seg_addr = delta.paddr.as_seg_paddr();
+            if (delta.paddr != P_ADDR_NULL &&
+                (segment_provider->get_seq(seg_addr.get_segment_id()) >
+                 locator.write_result.start_seq.segment_seq)) {
+              return replay_ertr::now();
+            } else {
+              return handler(locator, delta);
+            }
+          });
+        });
+      });
+    }),
+    [=](auto &cursor, auto &dhandler) {
+      return scanner.scan_valid_records(
+	cursor,
+	header.segment_nonce,
+	std::numeric_limits<size_t>::max(),
+	dhandler).safe_then([](auto){}
+      ).handle_error(
+	replay_ertr::pass_further{},
+	crimson::ct_error::assert_all{
+	  "shouldn't meet with any other error other replay_ertr"
+	}
+      );
+    }
+  );
+}
+
+Journal::replay_ret Journal::replay(
+  std::vector<std::pair<segment_id_t, segment_header_t>>&& segment_headers,
+  delta_handler_t &&delta_handler)
+{
+  return seastar::do_with(
+    std::move(delta_handler), replay_segments_t(),
+    [this, segment_headers=std::move(segment_headers)]
+    (auto &handler, auto &segments) mutable -> replay_ret {
+      return prep_replay_segments(std::move(segment_headers)).safe_then(
+        [this, &handler, &segments](auto replay_segs) mutable {
+          logger().debug("Journal::replay: found {} segments", replay_segs.size());
+          segments = std::move(replay_segs);
+          return crimson::do_for_each(segments, [this, &handler](auto i) mutable {
+            return replay_segment(i.first, i.second, handler);
+          });
+        });
+    });
+}
+
+void Journal::register_metrics()
+{
+  record_submitter.reset_stats();
+  namespace sm = seastar::metrics;
+  metrics.add_group(
+    "journal",
+    {
+      sm::make_counter(
+        "record_num",
+        [this] {
+          return record_submitter.get_record_batch_stats().num_io;
+        },
+        sm::description("total number of records submitted")
+      ),
+      sm::make_counter(
+        "record_batch_num",
+        [this] {
+          return record_submitter.get_record_batch_stats().num_io_grouped;
+        },
+        sm::description("total number of records batched")
+      ),
+      sm::make_counter(
+        "io_num",
+        [this] {
+          return record_submitter.get_io_depth_stats().num_io;
+        },
+        sm::description("total number of io submitted")
+      ),
+      sm::make_counter(
+        "io_depth_num",
+        [this] {
+          return record_submitter.get_io_depth_stats().num_io_grouped;
+        },
+        sm::description("total number of io depth")
+      ),
+      sm::make_counter(
+        "record_group_padding_bytes",
+        [this] {
+          return record_submitter.get_record_group_padding_bytes();
+        },
+        sm::description("bytes of metadata padding when write record groups")
+      ),
+      sm::make_counter(
+        "record_group_metadata_bytes",
+        [this] {
+          return record_submitter.get_record_group_metadata_bytes();
+        },
+        sm::description("bytes of raw metadata when write record groups")
+      ),
+      sm::make_counter(
+        "record_group_data_bytes",
+        [this] {
+          return record_submitter.get_record_group_data_bytes();
+        },
+        sm::description("bytes of data when write record groups")
+      ),
+    }
+  );
+}
+
+Journal::JournalSegmentManager::JournalSegmentManager(
+  SegmentManager& segment_manager)
+  : segment_manager{segment_manager}
+{
+  reset();
+}
+
+Journal::JournalSegmentManager::close_ertr::future<>
+Journal::JournalSegmentManager::close()
+{
+  return (
+    current_journal_segment ?
+    current_journal_segment->close() :
+    Segment::close_ertr::now()
+  ).handle_error(
+    close_ertr::pass_further{},
+    crimson::ct_error::assert_all{
+      "Invalid error in JournalSegmentManager::close()"
+    }
+  ).finally([this] {
+    reset();
+  });
+}
+
+Journal::JournalSegmentManager::roll_ertr::future<>
+Journal::JournalSegmentManager::roll()
+{
+  auto old_segment_id = current_journal_segment ?
+    current_journal_segment->get_segment_id() :
+    NULL_SEG_ID;
+
+  return (
+    current_journal_segment ?
+    current_journal_segment->close() :
+    Segment::close_ertr::now()
+  ).safe_then([this] {
+    return segment_provider->get_segment(segment_manager.get_device_id());
+  }).safe_then([this](auto segment) {
+    return segment_manager.open(segment);
+  }).safe_then([this](auto sref) {
+    current_journal_segment = sref;
+    return initialize_segment(*current_journal_segment);
+  }).safe_then([this, old_segment_id] {
+    if (old_segment_id != NULL_SEG_ID) {
+      segment_provider->close_segment(old_segment_id);
+    }
+    segment_provider->set_journal_segment(
+      current_journal_segment->get_segment_id(),
+      get_segment_seq());
+  }).handle_error(
+    roll_ertr::pass_further{},
+    crimson::ct_error::assert_all{
+      "Invalid error in JournalSegmentManager::roll"
+    }
+  );
+}
+
+Journal::JournalSegmentManager::write_ret
+Journal::JournalSegmentManager::write(ceph::bufferlist to_write)
+{
+  auto write_length = to_write.length();
+  auto write_start_seq = get_current_write_seq();
+  logger().debug(
+    "JournalSegmentManager::write: write_start {} => {}, length={}",
+    write_start_seq,
+    write_start_seq.offset.as_seg_paddr().get_segment_off() + write_length,
+    write_length);
+  assert(write_length > 0);
+  assert((write_length % segment_manager.get_block_size()) == 0);
+  assert(!needs_roll(write_length));
+
+  auto write_start_offset = written_to;
+  written_to += write_length;
+  auto write_result = write_result_t{
+    write_start_seq,
+    static_cast<segment_off_t>(write_length)
+  };
+  return current_journal_segment->write(
+    write_start_offset, to_write
+  ).handle_error(
+    write_ertr::pass_further{},
+    crimson::ct_error::assert_all{
+      "Invalid error in JournalSegmentManager::write"
+    }
+  ).safe_then([write_result] {
+    return write_result;
+  });
+}
+
+void Journal::JournalSegmentManager::mark_committed(
+  const journal_seq_t& new_committed_to)
+{
+  logger().debug(
+    "JournalSegmentManager::mark_committed: committed_to {} => {}",
+    committed_to, new_committed_to);
+  assert(committed_to == journal_seq_t() ||
+         committed_to <= new_committed_to);
+  committed_to = new_committed_to;
+}
+
+Journal::JournalSegmentManager::initialize_segment_ertr::future<>
+Journal::JournalSegmentManager::initialize_segment(Segment& segment)
 {
   auto new_tail = segment_provider->get_journal_tail_target();
-  logger().debug(
-    "initialize_segment {} journal_tail_target {}",
-    segment.get_segment_id(),
-    new_tail);
   // write out header
   ceph_assert(segment.get_write_ptr() == 0);
   bufferlist bl;
@@ -65,8 +408,14 @@ Journal::initialize_segment(Segment &segment)
   auto header = segment_header_t{
     seq,
     segment.get_segment_id(),
-    segment_provider->get_journal_tail_target(),
-    current_segment_nonce};
+    new_tail,
+    current_segment_nonce,
+    false};
+  logger().debug(
+    "JournalSegmentManager::initialize_segment: segment_id {} journal_tail_target {}, header {}",
+    segment.get_segment_id(),
+    new_tail,
+    header);
   encode(header, bl);
 
   bufferptr bp(
@@ -78,679 +427,359 @@ Journal::initialize_segment(Segment &segment)
   bl.clear();
   bl.append(bp);
 
-  written_to = segment_manager.get_block_size();
-  committed_to = 0;
-  return segment.write(0, bl).safe_then(
-    [=] {
-      segment_provider->update_journal_tail_committed(new_tail);
-      return seq;
-    },
-    initialize_segment_ertr::pass_further{},
-    crimson::ct_error::assert_all{ "TODO" });
-}
-
-ceph::bufferlist Journal::encode_record(
-  record_size_t rsize,
-  record_t &&record)
-{
-  bufferlist data_bl;
-  for (auto &i: record.extents) {
-    data_bl.append(i.bl);
-  }
-
-  bufferlist bl;
-  record_header_t header{
-    rsize.mdlength,
-    rsize.dlength,
-    (uint32_t)record.deltas.size(),
-    (uint32_t)record.extents.size(),
-    current_segment_nonce,
-    committed_to,
-    data_bl.crc32c(-1)
-  };
-  encode(header, bl);
-
-  auto metadata_crc_filler = bl.append_hole(sizeof(uint32_t));
-
-  for (const auto &i: record.extents) {
-    encode(extent_info_t(i), bl);
-  }
-  for (const auto &i: record.deltas) {
-    encode(i, bl);
-  }
-  if (bl.length() % block_size != 0) {
-    bl.append_zero(
-      block_size - (bl.length() % block_size));
-  }
-  ceph_assert(bl.length() == rsize.mdlength);
-
-
-  auto bliter = bl.cbegin();
-  auto metadata_crc = bliter.crc32c(
-    ceph::encoded_sizeof_bounded<record_header_t>(),
-    -1);
-  bliter += sizeof(checksum_t); /* crc hole again */
-  metadata_crc = bliter.crc32c(
-    bliter.get_remaining(),
-    metadata_crc);
-  ceph_le32 metadata_crc_le;
-  metadata_crc_le = metadata_crc;
-  metadata_crc_filler.copy_in(
-    sizeof(checksum_t),
-    reinterpret_cast<const char *>(&metadata_crc_le));
-
-  bl.claim_append(data_bl);
-  ceph_assert(bl.length() == (rsize.dlength + rsize.mdlength));
-
-  return bl;
-}
-
-bool Journal::validate_metadata(const bufferlist &bl)
-{
-  auto bliter = bl.cbegin();
-  auto test_crc = bliter.crc32c(
-    ceph::encoded_sizeof_bounded<record_header_t>(),
-    -1);
-  ceph_le32 recorded_crc_le;
-  ::decode(recorded_crc_le, bliter);
-  uint32_t recorded_crc = recorded_crc_le;
-  test_crc = bliter.crc32c(
-    bliter.get_remaining(),
-    test_crc);
-  return test_crc == recorded_crc;
-}
-
-Journal::read_validate_data_ret Journal::read_validate_data(
-  paddr_t record_base,
-  const record_header_t &header)
-{
-  return segment_manager.read(
-    record_base.add_offset(header.mdlength),
-    header.dlength
-  ).safe_then([=, &header](auto bptr) {
-    bufferlist bl;
-    bl.append(bptr);
-    return bl.crc32c(-1) == header.data_crc;
+  written_to = 0;
+  return write(bl
+  ).safe_then([this, new_tail](auto) {
+    segment_provider->update_journal_tail_committed(new_tail);
   });
 }
 
-Journal::write_record_ret Journal::write_record(
-  record_size_t rsize,
-  record_t &&record)
+Journal::RecordBatch::add_pending_ret
+Journal::RecordBatch::add_pending(
+  record_t&& record,
+  extent_len_t block_size)
 {
-  ceph::bufferlist to_write = encode_record(
-    rsize, std::move(record));
-  auto target = written_to;
-  assert((to_write.length() % block_size) == 0);
-  written_to += to_write.length();
+  auto new_size = get_encoded_length_after(record, block_size);
   logger().debug(
-    "write_record, mdlength {}, dlength {}, target {}",
-    rsize.mdlength,
-    rsize.dlength,
-    target);
-  return current_journal_segment->write(target, to_write).handle_error(
-    write_record_ertr::pass_further{},
-    crimson::ct_error::assert_all{ "TODO" }).safe_then([this, target] {
-      committed_to = target;
-      return write_record_ret(
-	write_record_ertr::ready_future_marker{},
-	paddr_t{
-	  current_journal_segment->get_segment_id(),
-	  target});
-    });
-}
+    "Journal::RecordBatch::add_pending: batches={}, write_size={}",
+    pending.get_size() + 1,
+    new_size.get_encoded_length());
+  assert(state != state_t::SUBMITTING);
+  assert(can_batch(record, block_size).value() == new_size);
 
-Journal::record_size_t Journal::get_encoded_record_length(
-  const record_t &record) const {
-  extent_len_t metadata =
-    (extent_len_t)ceph::encoded_sizeof_bounded<record_header_t>();
-  metadata += sizeof(checksum_t) /* crc */;
-  metadata += record.extents.size() *
-    ceph::encoded_sizeof_bounded<extent_info_t>();
-  extent_len_t data = 0;
-  for (const auto &i: record.deltas) {
-    metadata += ceph::encoded_sizeof(i);
+  auto dlength_offset = pending.current_dlength;
+  pending.push_back(
+      std::move(record), block_size);
+  assert(pending.size == new_size);
+  if (state == state_t::EMPTY) {
+    assert(!io_promise.has_value());
+    io_promise = seastar::shared_promise<maybe_promise_result_t>();
+  } else {
+    assert(io_promise.has_value());
   }
-  for (const auto &i: record.extents) {
-    data += i.bl.length();
+  state = state_t::PENDING;
+
+  return io_promise->get_shared_future(
+  ).then([dlength_offset
+         ](auto maybe_promise_result) -> add_pending_ret {
+    if (!maybe_promise_result.has_value()) {
+      return crimson::ct_error::input_output_error::make();
+    }
+    auto write_result = maybe_promise_result->write_result;
+    auto submit_result = record_locator_t{
+      write_result.start_seq.offset.add_offset(
+          maybe_promise_result->mdlength + dlength_offset),
+      write_result
+    };
+    return add_pending_ret(
+      add_pending_ertr::ready_future_marker{},
+      submit_result);
+  });
+}
+
+std::pair<ceph::bufferlist, record_group_size_t>
+Journal::RecordBatch::encode_batch(
+  const journal_seq_t& committed_to,
+  segment_nonce_t segment_nonce)
+{
+  logger().debug(
+    "Journal::RecordBatch::encode_batch: batches={}, committed_to={}",
+    pending.get_size(),
+    committed_to);
+  assert(state == state_t::PENDING);
+  assert(pending.get_size() > 0);
+  assert(io_promise.has_value());
+
+  state = state_t::SUBMITTING;
+  submitting_size = pending.get_size();
+  auto gsize = pending.size;
+  submitting_length = gsize.get_encoded_length();
+  submitting_mdlength = gsize.get_mdlength();
+  auto bl = encode_records(pending, committed_to, segment_nonce);
+  // Note: pending is cleared here
+  assert(bl.length() == (std::size_t)submitting_length);
+  return std::make_pair(bl, gsize);
+}
+
+void Journal::RecordBatch::set_result(
+  maybe_result_t maybe_write_result)
+{
+  maybe_promise_result_t result;
+  if (maybe_write_result.has_value()) {
+    logger().debug(
+      "Journal::RecordBatch::set_result: batches={}, write_start {} + {}",
+      submitting_size,
+      maybe_write_result->start_seq,
+      maybe_write_result->length);
+    assert(maybe_write_result->length == submitting_length);
+    result = promise_result_t{
+      *maybe_write_result,
+      submitting_mdlength
+    };
+  } else {
+    logger().error(
+      "Journal::RecordBatch::set_result: batches={}, write is failed!",
+      submitting_size);
   }
-  metadata = p2roundup(metadata, block_size);
-  return record_size_t{metadata, data};
+  assert(state == state_t::SUBMITTING);
+  assert(io_promise.has_value());
+
+  state = state_t::EMPTY;
+  submitting_size = 0;
+  submitting_length = 0;
+  submitting_mdlength = 0;
+  io_promise->set_value(result);
+  io_promise.reset();
 }
 
-bool Journal::needs_roll(segment_off_t length) const
+std::pair<ceph::bufferlist, record_group_size_t>
+Journal::RecordBatch::submit_pending_fast(
+  record_t&& record,
+  extent_len_t block_size,
+  const journal_seq_t& committed_to,
+  segment_nonce_t segment_nonce)
 {
-  return length + written_to >
-    current_journal_segment->get_write_capacity();
+  auto new_size = get_encoded_length_after(record, block_size);
+  logger().debug(
+    "Journal::RecordBatch::submit_pending_fast: write_size={}",
+    new_size.get_encoded_length());
+  assert(state == state_t::EMPTY);
+  assert(can_batch(record, block_size).value() == new_size);
+
+  auto group = record_group_t(std::move(record), block_size);
+  auto size = group.size;
+  assert(size == new_size);
+  auto bl = encode_records(group, committed_to, segment_nonce);
+  assert(bl.length() == size.get_encoded_length());
+  return std::make_pair(bl, size);
 }
 
-Journal::roll_journal_segment_ertr::future<segment_seq_t>
-Journal::roll_journal_segment()
+Journal::RecordSubmitter::RecordSubmitter(
+  std::size_t io_depth,
+  std::size_t batch_capacity,
+  std::size_t batch_flush_size,
+  double preferred_fullness,
+  JournalSegmentManager& jsm)
+  : io_depth_limit{io_depth},
+    preferred_fullness{preferred_fullness},
+    journal_segment_manager{jsm},
+    batches(new RecordBatch[io_depth + 1])
 {
-  auto old_segment_id = current_journal_segment ?
-    current_journal_segment->get_segment_id() :
-    NULL_SEG_ID;
+  logger().info("Journal::RecordSubmitter: io_depth_limit={}, "
+                "batch_capacity={}, batch_flush_size={}, "
+                "preferred_fullness={}",
+                io_depth, batch_capacity,
+                batch_flush_size, preferred_fullness);
+  ceph_assert(io_depth > 0);
+  ceph_assert(batch_capacity > 0);
+  ceph_assert(preferred_fullness >= 0 &&
+              preferred_fullness <= 1);
+  free_batch_ptrs.reserve(io_depth + 1);
+  for (std::size_t i = 0; i <= io_depth; ++i) {
+    batches[i].initialize(i, batch_capacity, batch_flush_size);
+    free_batch_ptrs.push_back(&batches[i]);
+  }
+  pop_free_batch();
+}
 
-  return (current_journal_segment ?
-	  current_journal_segment->close() :
-	  Segment::close_ertr::now()).safe_then([this] {
-      return segment_provider->get_segment();
-    }).safe_then([this](auto segment) {
-      return segment_manager.open(segment);
-    }).safe_then([this](auto sref) {
-      current_journal_segment = sref;
-      written_to = 0;
-      return initialize_segment(*current_journal_segment);
-    }).safe_then([=](auto seq) {
-      if (old_segment_id != NULL_SEG_ID) {
-	segment_provider->close_segment(old_segment_id);
-      }
-      segment_provider->set_journal_segment(
-	current_journal_segment->get_segment_id(),
-	seq);
-      return seq;
-    }).handle_error(
-      roll_journal_segment_ertr::pass_further{},
-      crimson::ct_error::all_same_way([] { ceph_assert(0 == "TODO"); })
+Journal::RecordSubmitter::submit_ret
+Journal::RecordSubmitter::submit(
+  record_t&& record,
+  OrderingHandle& handle)
+{
+  assert(write_pipeline);
+  auto expected_size = record_group_size_t(
+      record.size,
+      journal_segment_manager.get_block_size()
+  ).get_encoded_length();
+  auto max_record_length = journal_segment_manager.get_max_write_length();
+  if (expected_size > max_record_length) {
+    logger().error(
+      "Journal::RecordSubmitter::submit: record size {} exceeds max {}",
+      expected_size,
+      max_record_length
     );
+    return crimson::ct_error::erange::make();
+  }
+
+  return do_submit(std::move(record), handle);
 }
 
-Journal::read_segment_header_ret
-Journal::read_segment_header(segment_id_t segment)
+void Journal::RecordSubmitter::update_state()
 {
-  return segment_manager.read(paddr_t{segment, 0}, block_size
-  ).handle_error(
-    read_segment_header_ertr::pass_further{},
-    crimson::ct_error::assert_all{}
-  ).safe_then([=](bufferptr bptr) -> read_segment_header_ret {
-    logger().debug("segment {} bptr size {}", segment, bptr.length());
+  if (num_outstanding_io == 0) {
+    state = state_t::IDLE;
+  } else if (num_outstanding_io < io_depth_limit) {
+    state = state_t::PENDING;
+  } else if (num_outstanding_io == io_depth_limit) {
+    state = state_t::FULL;
+  } else {
+    ceph_abort("fatal error: io-depth overflow");
+  }
+}
 
-    segment_header_t header;
-    bufferlist bl;
-    bl.push_back(bptr);
+void Journal::RecordSubmitter::account_submission(
+  std::size_t num,
+  const record_group_size_t& size)
+{
+  logger().debug("Journal::RecordSubmitter: submitting {} records, "
+                 "mdsize={}, dsize={}, fillness={}",
+                 num,
+                 size.get_raw_mdlength(),
+                 size.dlength,
+                 ((double)(size.get_raw_mdlength() + size.dlength) /
+                  (size.get_mdlength() + size.dlength)));
+  stats.record_group_padding_bytes +=
+    (size.get_mdlength() - size.get_raw_mdlength());
+  stats.record_group_metadata_bytes += size.get_raw_mdlength();
+  stats.record_group_data_bytes += size.dlength;
+}
 
-    logger().debug(
-      "Journal::read_segment_header: segment {} block crc {}",
-      segment,
-      bl.begin().crc32c(block_size, 0));
+void Journal::RecordSubmitter::finish_submit_batch(
+  RecordBatch* p_batch,
+  maybe_result_t maybe_result)
+{
+  assert(p_batch->is_submitting());
+  p_batch->set_result(maybe_result);
+  free_batch_ptrs.push_back(p_batch);
+  decrement_io_with_flush();
+}
 
-    auto bp = bl.cbegin();
-    try {
-      decode(header, bp);
-    } catch (ceph::buffer::error &e) {
-      logger().debug(
-	"Journal::read_segment_header: segment {} unable to decode "
-	"header, skipping",
-	segment);
-      return crimson::ct_error::enodata::make();
-    }
-    logger().debug(
-      "Journal::read_segment_header: segment {} header {}",
-      segment,
-      header);
-    return read_segment_header_ret(
-      read_segment_header_ertr::ready_future_marker{},
-      header);
+void Journal::RecordSubmitter::flush_current_batch()
+{
+  RecordBatch* p_batch = p_current_batch;
+  assert(p_batch->is_pending());
+  p_current_batch = nullptr;
+  pop_free_batch();
+
+  increment_io();
+  auto num = p_batch->get_num_records();
+  auto [to_write, sizes] = p_batch->encode_batch(
+    journal_segment_manager.get_committed_to(),
+    journal_segment_manager.get_nonce());
+  account_submission(num, sizes);
+  std::ignore = journal_segment_manager.write(to_write
+  ).safe_then([this, p_batch](auto write_result) {
+    finish_submit_batch(p_batch, write_result);
+  }).handle_error(
+    crimson::ct_error::all_same_way([this, p_batch](auto e) {
+      logger().error(
+        "Journal::RecordSubmitter::flush_current_batch: got error {}",
+        e);
+      finish_submit_batch(p_batch, std::nullopt);
+    })
+  ).handle_exception([this, p_batch](auto e) {
+    logger().error(
+      "Journal::RecordSubmitter::flush_current_batch: got exception {}",
+      e);
+    finish_submit_batch(p_batch, std::nullopt);
   });
 }
 
-Journal::open_for_write_ret Journal::open_for_write()
+Journal::RecordSubmitter::submit_pending_ret
+Journal::RecordSubmitter::submit_pending(
+  record_t&& record,
+  OrderingHandle& handle,
+  bool flush)
 {
-  return roll_journal_segment().safe_then([this](auto seq) {
-    return open_for_write_ret(
-      open_for_write_ertr::ready_future_marker{},
-      journal_seq_t{
-	seq,
-	paddr_t{
-	  current_journal_segment->get_segment_id(),
-	  static_cast<segment_off_t>(block_size)}
+  assert(!p_current_batch->is_submitting());
+  stats.record_batch_stats.increment(
+      p_current_batch->get_num_records() + 1);
+  bool do_flush = (flush || state == state_t::IDLE);
+  auto write_fut = [this, do_flush, record=std::move(record)]() mutable {
+    if (do_flush && p_current_batch->is_empty()) {
+      // fast path with direct write
+      increment_io();
+      auto [to_write, sizes] = p_current_batch->submit_pending_fast(
+        std::move(record),
+        journal_segment_manager.get_block_size(),
+        journal_segment_manager.get_committed_to(),
+        journal_segment_manager.get_nonce());
+      account_submission(1, sizes);
+      return journal_segment_manager.write(to_write
+      ).safe_then([mdlength = sizes.get_mdlength()](auto write_result) {
+        return record_locator_t{
+          write_result.start_seq.offset.add_offset(mdlength),
+          write_result
+        };
+      }).finally([this] {
+        decrement_io_with_flush();
       });
+    } else {
+      // indirect write with or without the existing pending records
+      auto write_fut = p_current_batch->add_pending(
+        std::move(record), journal_segment_manager.get_block_size());
+      if (do_flush) {
+        flush_current_batch();
+      }
+      return write_fut;
+    }
+  }();
+  return handle.enter(write_pipeline->device_submission
+  ).then([write_fut=std::move(write_fut)]() mutable {
+    return std::move(write_fut);
+  }).safe_then([this, &handle](auto submit_result) {
+    return handle.enter(write_pipeline->finalize
+    ).then([this, submit_result] {
+      journal_segment_manager.mark_committed(
+          submit_result.write_result.get_end_seq());
+      return submit_result;
+    });
   });
 }
 
-Journal::find_replay_segments_fut Journal::find_replay_segments()
+Journal::RecordSubmitter::do_submit_ret
+Journal::RecordSubmitter::do_submit(
+  record_t&& record,
+  OrderingHandle& handle)
 {
-  return seastar::do_with(
-    std::vector<std::pair<segment_id_t, segment_header_t>>(),
-    [this](auto &&segments) mutable {
-      return crimson::do_for_each(
-	boost::make_counting_iterator(segment_id_t{0}),
-	boost::make_counting_iterator(segment_manager.get_num_segments()),
-	[this, &segments](auto i) {
-	  return read_segment_header(i
-	  ).safe_then([this, &segments, i](auto header) mutable {
-	    if (generate_nonce(
-		  header.journal_segment_seq,
-		  segment_manager.get_meta()) != header.segment_nonce) {
-	      logger().debug(
-		"find_replay_segments: nonce mismatch segment {} header {}",
-		i,
-		header);
-	      assert(0 == "impossible");
-	      return find_replay_segments_ertr::now();
-	    }
-
-	    segments.emplace_back(i, std::move(header));
-	    return find_replay_segments_ertr::now();
-	  }).handle_error(
-	    crimson::ct_error::enoent::handle([i](auto) {
-	      logger().debug(
-		"find_replay_segments: segment {} not available for read",
-		i);
-	      return find_replay_segments_ertr::now();
-	    }),
-	    crimson::ct_error::enodata::handle([i](auto) {
-	      logger().debug(
-		"find_replay_segments: segment {} header undecodable",
-		i);
-	      return find_replay_segments_ertr::now();
-	    }),
-	    find_replay_segments_ertr::pass_further{},
-	    crimson::ct_error::assert_all{}
-	  );
-	}).safe_then([this, &segments]() mutable -> find_replay_segments_fut {
-	  logger().debug(
-	    "find_replay_segments: have {} segments",
-	    segments.size());
-	  if (segments.empty()) {
-	    return crimson::ct_error::input_output_error::make();
-	  }
-	  std::sort(
-	    segments.begin(),
-	    segments.end(),
-	    [](const auto &lt, const auto &rt) {
-	      return lt.second.journal_segment_seq <
-		rt.second.journal_segment_seq;
-	    });
-
-	  next_journal_segment_seq =
-	    segments.rbegin()->second.journal_segment_seq + 1;
-	  std::for_each(
-	    segments.begin(),
-	    segments.end(),
-	    [this](auto &seg) {
-	      segment_provider->init_mark_segment_closed(
-		seg.first,
-		seg.second.journal_segment_seq);
-	    });
-
-	  auto journal_tail = segments.rbegin()->second.journal_tail;
-	  segment_provider->update_journal_tail_committed(journal_tail);
-	  auto replay_from = journal_tail.offset;
-	  logger().debug(
-	    "Journal::find_replay_segments: journal_tail={}",
-	    journal_tail);
-	  auto from = segments.begin();
-	  if (replay_from != P_ADDR_NULL) {
-	    from = std::find_if(
-	      segments.begin(),
-	      segments.end(),
-	      [&replay_from](const auto &seg) -> bool {
-		return seg.first == replay_from.segment;
-	      });
-	    if (from->second.journal_segment_seq != journal_tail.segment_seq) {
-	      logger().error(
-		"find_replay_segments: journal_tail {} does not match {}",
-		journal_tail,
-		from->second);
-	      assert(0 == "invalid");
-	    }
-	  } else {
-	    replay_from = paddr_t{from->first, (segment_off_t)block_size};
-	  }
-	  auto ret = replay_segments_t(segments.end() - from);
-	  std::transform(
-	    from, segments.end(), ret.begin(),
-	    [this](const auto &p) {
-	      auto ret = journal_seq_t{
-		p.second.journal_segment_seq,
-		paddr_t{p.first, (segment_off_t)block_size}};
-	      logger().debug(
-		"Journal::find_replay_segments: replaying from  {}",
-		ret);
-	      return std::make_pair(ret, p.second);
-	    });
-	  ret[0].first.offset = replay_from;
-	  return find_replay_segments_fut(
-	    find_replay_segments_ertr::ready_future_marker{},
-	    std::move(ret));
-	});
-    });
-}
-
-Journal::read_validate_record_metadata_ret Journal::read_validate_record_metadata(
-  paddr_t start,
-  segment_nonce_t nonce)
-{
-  if (start.offset + block_size > (int64_t)segment_manager.get_segment_size()) {
-    return read_validate_record_metadata_ret(
-      read_validate_record_metadata_ertr::ready_future_marker{},
-      std::nullopt);
-  }
-  return segment_manager.read(start, block_size
-  ).safe_then(
-    [=](bufferptr bptr) mutable
-    -> read_validate_record_metadata_ret {
-      logger().debug("read_validate_record_metadata: reading {}", start);
-      bufferlist bl;
-      bl.append(bptr);
-      auto bp = bl.cbegin();
-      record_header_t header;
-      try {
-	decode(header, bp);
-      } catch (ceph::buffer::error &e) {
-	return read_validate_record_metadata_ret(
-	  read_validate_record_metadata_ertr::ready_future_marker{},
-	  std::nullopt);
+  assert(!p_current_batch->is_submitting());
+  if (state <= state_t::PENDING) {
+    // can increment io depth
+    assert(!wait_submit_promise.has_value());
+    auto maybe_new_size = p_current_batch->can_batch(
+        record, journal_segment_manager.get_block_size());
+    if (!maybe_new_size.has_value() ||
+        (maybe_new_size->get_encoded_length() >
+         journal_segment_manager.get_max_write_length())) {
+      assert(p_current_batch->is_pending());
+      flush_current_batch();
+      return do_submit(std::move(record), handle);
+    } else if (journal_segment_manager.needs_roll(
+          maybe_new_size->get_encoded_length())) {
+      if (p_current_batch->is_pending()) {
+        flush_current_batch();
       }
-      if (header.segment_nonce != nonce) {
-	return read_validate_record_metadata_ret(
-	  read_validate_record_metadata_ertr::ready_future_marker{},
-	  std::nullopt);
-      }
-      if (header.mdlength > block_size) {
-	if (start.offset + header.mdlength >
-	    (int64_t)segment_manager.get_segment_size()) {
-	  return crimson::ct_error::input_output_error::make();
-	}
-	return segment_manager.read(
-	  {start.segment, start.offset + (segment_off_t)block_size},
-	  header.mdlength - block_size).safe_then(
-	    [header=std::move(header), bl=std::move(bl)](
-	      auto &&bptail) mutable {
-	      bl.push_back(bptail);
-	      return read_validate_record_metadata_ret(
-		read_validate_record_metadata_ertr::ready_future_marker{},
-		std::make_pair(std::move(header), std::move(bl)));
-	    });
-      } else {
-	return read_validate_record_metadata_ret(
-	  read_validate_record_metadata_ertr::ready_future_marker{},
-	  std::make_pair(std::move(header), std::move(bl))
-	);
-      }
-    }).safe_then([=](auto p) {
-      if (p && validate_metadata(p->second)) {
-	return read_validate_record_metadata_ret(
-	  read_validate_record_metadata_ertr::ready_future_marker{},
-	  std::move(*p)
-	);
-      } else {
-	return read_validate_record_metadata_ret(
-	  read_validate_record_metadata_ertr::ready_future_marker{},
-	  std::nullopt);
-      }
-    });
-}
-
-std::optional<std::vector<delta_info_t>> Journal::try_decode_deltas(
-  record_header_t header,
-  const bufferlist &bl)
-{
-  auto bliter = bl.cbegin();
-  bliter += ceph::encoded_sizeof_bounded<record_header_t>();
-  bliter += sizeof(checksum_t) /* crc */;
-  bliter += header.extents  * ceph::encoded_sizeof_bounded<extent_info_t>();
-  logger().debug("{}: decoding {} deltas", __func__, header.deltas);
-  std::vector<delta_info_t> deltas(header.deltas);
-  for (auto &&i : deltas) {
-    try {
-      decode(i, bliter);
-    } catch (ceph::buffer::error &e) {
-      return std::nullopt;
+      return journal_segment_manager.roll(
+      ).safe_then([this, record=std::move(record), &handle]() mutable {
+        return do_submit(std::move(record), handle);
+      });
+    } else {
+      bool flush = (maybe_new_size->get_fullness() > preferred_fullness ?
+                    true : false);
+      return submit_pending(std::move(record), handle, flush);
     }
   }
-  return deltas;
-}
 
-std::optional<std::vector<extent_info_t>> Journal::try_decode_extent_infos(
-  record_header_t header,
-  const bufferlist &bl)
-{
-  auto bliter = bl.cbegin();
-  bliter += ceph::encoded_sizeof_bounded<record_header_t>();
-  bliter += sizeof(checksum_t) /* crc */;
-  logger().debug("{}: decoding {} extents", __func__, header.extents);
-  std::vector<extent_info_t> extent_infos(header.extents);
-  for (auto &&i : extent_infos) {
-    try {
-      decode(i, bliter);
-    } catch (ceph::buffer::error &e) {
-      return std::nullopt;
+  assert(state == state_t::FULL);
+  // cannot increment io depth
+  auto maybe_new_size = p_current_batch->can_batch(
+      record, journal_segment_manager.get_block_size());
+  if (!maybe_new_size.has_value() ||
+      (maybe_new_size->get_encoded_length() >
+       journal_segment_manager.get_max_write_length()) ||
+      journal_segment_manager.needs_roll(
+        maybe_new_size->get_encoded_length())) {
+    if (!wait_submit_promise.has_value()) {
+      wait_submit_promise = seastar::promise<>();
     }
+    return wait_submit_promise->get_future(
+    ).then([this, record=std::move(record), &handle]() mutable {
+      return do_submit(std::move(record), handle);
+    });
+  } else {
+    return submit_pending(std::move(record), handle, false);
   }
-  return extent_infos;
 }
-
-Journal::replay_ertr::future<>
-Journal::replay_segment(
-  journal_seq_t seq,
-  segment_header_t header,
-  delta_handler_t &handler)
-{
-  logger().debug("replay_segment: starting at {}", seq);
-  return seastar::do_with(
-    scan_valid_records_cursor(seq.offset),
-    found_record_handler_t(
-      [=, &handler](paddr_t base,
-		    const record_header_t &header,
-		    const bufferlist &mdbuf) {
-	auto deltas = try_decode_deltas(
-	  header,
-	  mdbuf);
-	if (!deltas) {
-	  // This should be impossible, we did check the crc on the mdbuf
-	  logger().error(
-	    "Journal::replay_segment unable to decode deltas for record {}",
-	    base);
-	  assert(deltas);
-	}
-
-	return seastar::do_with(
-	  std::move(*deltas),
-	  [=](auto &deltas) {
-	    return crimson::do_for_each(
-	      deltas,
-	      [=](auto &delta) {
-		/* The journal may validly contain deltas for extents in
-		 * since released segments.  We can detect those cases by
-		 * checking whether the segment in question currently has a
-		 * sequence number > the current journal segment seq. We can
-		 * safetly skip these deltas because the extent must already
-		 * have been rewritten.
-		 *
-		 * Note, this comparison exploits the fact that
-		 * SEGMENT_SEQ_NULL is a large number.
-		 */
-		if (delta.paddr != P_ADDR_NULL &&
-		    (segment_provider->get_seq(delta.paddr.segment) >
-		     seq.segment_seq)) {
-		  return replay_ertr::now();
-		} else {
-		  return handler(
-		    journal_seq_t{seq.segment_seq, base},
-		    base.add_offset(header.mdlength),
-		    delta);
-		}
-	      });
-	  });
-      }),
-    [=](auto &cursor, auto &dhandler) {
-      return scan_valid_records(
-	cursor,
-	header.segment_nonce,
-	std::numeric_limits<size_t>::max(),
-	dhandler).safe_then([](auto){});
-    });
-}
-
-Journal::replay_ret Journal::replay(delta_handler_t &&delta_handler)
-{
-  return seastar::do_with(
-    std::move(delta_handler), replay_segments_t(),
-    [this](auto &handler, auto &segments) mutable -> replay_ret {
-      return find_replay_segments().safe_then(
-        [this, &handler, &segments](auto replay_segs) mutable {
-          logger().debug("replay: found {} segments", replay_segs.size());
-          segments = std::move(replay_segs);
-          return crimson::do_for_each(segments, [this, &handler](auto i) mutable {
-            return replay_segment(i.first, i.second, handler);
-          });
-        });
-    });
-}
-
-Journal::scan_extents_ret Journal::scan_extents(
-  scan_extents_cursor &cursor,
-  extent_len_t bytes_to_read)
-{
-  auto ret = std::make_unique<scan_extents_ret_bare>();
-  auto &retref = *ret;
-  return read_segment_header(cursor.get_offset().segment
-  ).handle_error(
-    scan_extents_ertr::pass_further{},
-    crimson::ct_error::assert_all{}
-  ).safe_then([&](auto segment_header) {
-    auto segment_nonce = segment_header.segment_nonce;
-    return seastar::do_with(
-      found_record_handler_t(
-	[&](
-	  paddr_t base,
-	  const record_header_t &header,
-	  const bufferlist &mdbuf) mutable {
-
-	  auto infos = try_decode_extent_infos(
-	    header,
-	    mdbuf);
-	  if (!infos) {
-	    // This should be impossible, we did check the crc on the mdbuf
-	    logger().error(
-	      "Journal::scan_extents unable to decode extents for record {}",
-	      base);
-	    assert(infos);
-	  }
-
-	  paddr_t extent_offset = base.add_offset(header.mdlength);
-	  for (const auto &i : *infos) {
-	    retref.emplace_back(extent_offset, i);
-	    extent_offset.offset += i.len;
-	  }
-	  return scan_extents_ertr::now();
-	}),
-      [=, &cursor](auto &dhandler) {
-	return scan_valid_records(
-	  cursor,
-	  segment_nonce,
-	  std::numeric_limits<size_t>::max(),
-	  dhandler).safe_then([](auto){});
-      });
-  }).safe_then([ret=std::move(ret)] {
-    return std::move(*ret);
-  });
-}
-
-Journal::scan_valid_records_ret Journal::scan_valid_records(
-    scan_valid_records_cursor &cursor,
-    segment_nonce_t nonce,
-    size_t budget,
-    found_record_handler_t &handler)
-{
-  if (cursor.offset.offset == 0) {
-    cursor.offset.offset = block_size;
-  }
-  auto retref = std::make_unique<size_t>(0);
-  auto budget_used = *retref;
-  return crimson::do_until(
-    [=, &cursor, &budget_used, &handler]() mutable
-    -> scan_valid_records_ertr::future<bool> {
-      return [=, &handler, &cursor, &budget_used] {
-	if (!cursor.last_valid_header_found) {
-	  return read_validate_record_metadata(cursor.offset, nonce
-	  ).safe_then([=, &cursor](auto md) {
-	    logger().debug(
-	      "Journal::scan_valid_records: read complete {}",
-	      cursor.offset);
-	    if (!md) {
-	      logger().debug(
-		"Journal::scan_valid_records: found invalid header at {}, presumably at end",
-		cursor.offset);
-	      cursor.last_valid_header_found = true;
-	      return scan_valid_records_ertr::now();
-	    } else {
-	      logger().debug(
-		"Journal::scan_valid_records: valid record read at {}",
-		cursor.offset);
-	      cursor.last_committed = paddr_t{
-		cursor.offset.segment,
-		md->first.committed_to};
-	      cursor.pending_records.emplace_back(
-		cursor.offset,
-		md->first,
-		md->second);
-	      cursor.offset.offset +=
-		md->first.dlength + md->first.mdlength;
-	      return scan_valid_records_ertr::now();
-	    }
-	  }).safe_then([=, &cursor, &budget_used, &handler] {
-	    return crimson::do_until(
-	      [=, &budget_used, &cursor, &handler] {
-		logger().debug(
-		  "Journal::scan_valid_records: valid record read, processing queue");
-		if (cursor.pending_records.empty()) {
-		  /* This is only possible if the segment is empty.
-		   * A record's last_commited must be prior to its own
-		   * location since it itself cannot yet have been committed
-		   * at its own time of submission.  Thus, the most recently
-		   * read record must always fall after cursor.last_committed */
-		  return scan_valid_records_ertr::make_ready_future<bool>(true);
-		}
-		auto &next = cursor.pending_records.front();
-		if (next.offset > cursor.last_committed) {
-		  return scan_valid_records_ertr::make_ready_future<bool>(true);
-		}
-		budget_used +=
-		  next.header.dlength + next.header.mdlength;
-		return handler(
-		  next.offset,
-		  next.header,
-		  next.mdbuffer
-		).safe_then([&cursor] {
-		  cursor.pending_records.pop_front();
-		  return scan_valid_records_ertr::make_ready_future<bool>(false);
-		});
-	      });
-	  });
-	} else {
-	  assert(!cursor.pending_records.empty());
-	  auto &next = cursor.pending_records.front();
-	  return read_validate_data(next.offset, next.header
-	  ).safe_then([=, &budget_used, &next, &cursor, &handler](auto valid) {
-	    if (!valid) {
-	      cursor.pending_records.clear();
-	      return scan_valid_records_ertr::now();
-	    }
-	    budget_used +=
-	      next.header.dlength + next.header.mdlength;
-	    return handler(
-	      next.offset,
-	      next.header,
-	      next.mdbuffer
-	    ).safe_then([&cursor] {
-	      cursor.pending_records.pop_front();
-	      return scan_valid_records_ertr::now();
-	    });
-	  });
-	}
-      }().safe_then([=, &budget_used, &cursor] {
-	return scan_valid_records_ertr::make_ready_future<bool>(
-	  cursor.is_complete() || budget_used >= budget);
-      });
-    }).safe_then([retref=std::move(retref)]() mutable -> scan_valid_records_ret {
-      return scan_valid_records_ret(
-	scan_valid_records_ertr::ready_future_marker{},
-	std::move(*retref));
-    });
-}
-
 
 }

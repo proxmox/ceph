@@ -388,12 +388,15 @@ function TEST_auto_repair_bluestore_tag() {
     local poolname=testpool
 
     # Launch a cluster with 3 seconds scrub interval
-    setup $dir || return 1
     run_mon $dir a || return 1
     run_mgr $dir x || return 1
+    # Set scheduler to "wpq" until there's a reliable way to query scrub states
+    # with "--osd-scrub-sleep" set to 0. The "mclock_scheduler" overrides the
+    # scrub sleep to 0 and as a result the checks in the test fail.
     local ceph_osd_args="--osd-scrub-auto-repair=true \
             --osd_deep_scrub_randomize_ratio=0 \
-            --osd-scrub-interval-randomize-ratio=0"
+            --osd-scrub-interval-randomize-ratio=0 \
+            --osd-op-queue=wpq"
     for id in $(seq 0 2) ; do
         run_osd $dir $id $ceph_osd_args || return 1
     done
@@ -432,9 +435,6 @@ function TEST_auto_repair_bluestore_tag() {
     objectstore_tool $dir $(get_not_primary $poolname SOMETHING) SOMETHING get-bytes $dir/COPY || return 1
     diff $dir/ORIGINAL $dir/COPY || return 1
     grep scrub_finish $dir/osd.${primary}.log
-
-    # Tear down
-    teardown $dir || return 1
 }
 
 
@@ -5926,10 +5926,15 @@ function TEST_scrub_warning() {
 
     ceph health
     ceph health detail
-    ceph health | grep -q "$deep_scrubs pgs not deep-scrubbed in time" || return 1
-    ceph health | grep -q "$scrubs pgs not scrubbed in time" || return 1
+    ceph health | grep -q " pgs not deep-scrubbed in time" || return 1
+    ceph health | grep -q " pgs not scrubbed in time" || return 1
+
+    # note that the 'ceph tell pg deep_scrub' command now also sets the regular scrub
+    # time-stamp. I.e. - all 'late for deep scrubbing' pgs are also late for
+    # regular scrubbing. For now, we'll allow both responses.
     COUNT=$(ceph health detail | grep "not scrubbed since" | wc -l)
-    if [ "$COUNT" != $scrubs ]; then
+
+    if (( $COUNT != $scrubs && $COUNT != $(expr $scrubs+$deep_scrubs) )); then
       ceph health detail | grep "not scrubbed since"
       return 1
     fi

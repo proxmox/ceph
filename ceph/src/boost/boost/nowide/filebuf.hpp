@@ -3,7 +3,7 @@
 //  Copyright (c) 2019-2020 Alexander Grund
 //
 //  Distributed under the Boost Software License, Version 1.0. (See
-//  accompanying file LICENSE_1_0.txt or copy at
+//  accompanying file LICENSE or copy at
 //  http://www.boost.org/LICENSE_1_0.txt)
 //
 #ifndef BOOST_NOWIDE_FILEBUF_HPP_INCLUDED
@@ -15,7 +15,7 @@
 #include <boost/nowide/stackstring.hpp>
 #include <cassert>
 #include <cstdio>
-#include <iosfwd>
+#include <ios>
 #include <limits>
 #include <locale>
 #include <stdexcept>
@@ -26,6 +26,13 @@
 
 namespace boost {
 namespace nowide {
+    namespace detail {
+        /// Same as std::ftell but potentially with Large File Support
+        BOOST_NOWIDE_DECL std::streampos ftell(FILE* file);
+        /// Same as std::fseek but potentially with Large File Support
+        BOOST_NOWIDE_DECL int fseek(FILE* file, std::streamoff offset, int origin);
+    } // namespace detail
+
 #if !BOOST_NOWIDE_USE_FILEBUF_REPLACEMENT && !defined(BOOST_NOWIDE_DOXYGEN)
     using std::basic_filebuf;
     using std::filebuf;
@@ -36,7 +43,7 @@ namespace nowide {
     /// it is implemented and specialized for CharType = char, it
     /// implements std::filebuf over standard C I/O
     ///
-    template<typename CharType, typename Traits = std::char_traits<CharType> >
+    template<typename CharType, typename Traits = std::char_traits<CharType>>
     class basic_filebuf;
 
     ///
@@ -48,7 +55,7 @@ namespace nowide {
     template<>
     class basic_filebuf<char> : public std::basic_streambuf<char>
     {
-        typedef std::char_traits<char> Traits;
+        using Traits = std::char_traits<char>;
 
     public:
 #ifdef BOOST_MSVC
@@ -68,14 +75,6 @@ namespace nowide {
 #ifdef BOOST_MSVC
 #pragma warning(pop)
 #endif
-#if !BOOST_NOWIDE_CXX11
-    private:
-        // Non-copyable
-        basic_filebuf(const basic_filebuf&);
-        basic_filebuf& operator=(const basic_filebuf&);
-
-    public:
-#else
         basic_filebuf(const basic_filebuf&) = delete;
         basic_filebuf& operator=(const basic_filebuf&) = delete;
         basic_filebuf(basic_filebuf&& other) noexcept : basic_filebuf()
@@ -111,7 +110,7 @@ namespace nowide {
                          rhs.last_char_ + 1);
             }
         }
-#endif
+
         virtual ~basic_filebuf()
         {
             close();
@@ -147,7 +146,7 @@ namespace nowide {
             file_ = detail::wfopen(s, smode);
             if(!file_)
                 return 0;
-            if(ate && std::fseek(file_, 0, SEEK_END) != 0)
+            if(ate && detail::fseek(file_, 0, SEEK_END) != 0)
             {
                 close();
                 return 0;
@@ -196,12 +195,12 @@ namespace nowide {
         }
         void validate_cvt(const std::locale& loc)
         {
-            if(!std::use_facet<std::codecvt<char, char, std::mbstate_t> >(loc).always_noconv())
+            if(!std::use_facet<std::codecvt<char, char, std::mbstate_t>>(loc).always_noconv())
                 throw std::runtime_error("Converting codecvts are not supported");
         }
 
     protected:
-        virtual std::streambuf* setbuf(char* s, std::streamsize n)
+        std::streambuf* setbuf(char* s, std::streamsize n) override
         {
             assert(n >= 0);
             // Maximum compatibility: Discard all local buffers and use user-provided values
@@ -215,7 +214,7 @@ namespace nowide {
             return this;
         }
 
-        virtual int overflow(int c = EOF)
+        int overflow(int c = EOF) override
         {
             if(!(mode_ & std::ios_base::out))
                 return EOF;
@@ -254,7 +253,7 @@ namespace nowide {
             return Traits::not_eof(c);
         }
 
-        virtual int sync()
+        int sync() override
         {
             if(!file_)
                 return 0;
@@ -270,7 +269,7 @@ namespace nowide {
             return result ? 0 : -1;
         }
 
-        virtual int underflow()
+        int underflow() override
         {
             if(!(mode_ & std::ios_base::in))
                 return EOF;
@@ -294,7 +293,7 @@ namespace nowide {
             return Traits::to_int_type(*gptr());
         }
 
-        virtual int pbackfail(int c = EOF)
+        int pbackfail(int c = EOF) override
         {
             if(!(mode_ & std::ios_base::in))
                 return EOF;
@@ -319,9 +318,9 @@ namespace nowide {
             return Traits::not_eof(c);
         }
 
-        virtual std::streampos seekoff(std::streamoff off,
-                                       std::ios_base::seekdir seekdir,
-                                       std::ios_base::openmode = std::ios_base::in | std::ios_base::out)
+        std::streampos seekoff(std::streamoff off,
+                               std::ios_base::seekdir seekdir,
+                               std::ios_base::openmode = std::ios_base::in | std::ios_base::out) override
         {
             if(!file_)
                 return EOF;
@@ -339,18 +338,17 @@ namespace nowide {
             case std::ios_base::end: whence = SEEK_END; break;
             default: assert(false); return EOF;
             }
-            assert(off <= std::numeric_limits<long>::max());
-            if(std::fseek(file_, static_cast<long>(off), whence) != 0)
+            if(detail::fseek(file_, off, whence) != 0)
                 return EOF;
-            return std::ftell(file_);
+            return detail::ftell(file_);
         }
-        virtual std::streampos seekpos(std::streampos pos,
-                                       std::ios_base::openmode m = std::ios_base::in | std::ios_base::out)
+        std::streampos seekpos(std::streampos pos,
+                               std::ios_base::openmode m = std::ios_base::in | std::ios_base::out) override
         {
             // Standard mandates "as-if fsetpos", but assume the effect is the same as fseek
             return seekoff(pos, std::ios_base::beg, m);
         }
-        virtual void imbue(const std::locale& loc)
+        void imbue(const std::locale& loc) override
         {
             validate_cvt(loc);
         }
@@ -360,15 +358,23 @@ namespace nowide {
         /// Postcondition: gptr() == NULL
         bool stop_reading()
         {
-            if(gptr())
-            {
-                const std::streamsize off = gptr() - egptr();
-                setg(0, 0, 0);
-                assert(off <= std::numeric_limits<long>::max());
-                if(off && std::fseek(file_, static_cast<long>(off), SEEK_CUR) != 0)
-                    return false;
-            }
-            return true;
+            if(!gptr())
+                return true;
+            const auto off = gptr() - egptr();
+            setg(0, 0, 0);
+            if(!off)
+                return true;
+#if defined(__clang__)
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wtautological-constant-out-of-range-compare"
+#endif
+            // coverity[result_independent_of_operands]
+            if(off > std::numeric_limits<std::streamoff>::max())
+                return false;
+#if defined(__clang__)
+#pragma clang diagnostic pop
+#endif
+            return detail::fseek(file_, static_cast<std::streamoff>(off), SEEK_CUR) == 0;
         }
 
         /// Stop writing. If any bytes are to be written, writes them to file
@@ -455,7 +461,7 @@ namespace nowide {
     ///
     /// \brief Convenience typedef
     ///
-    typedef basic_filebuf<char> filebuf;
+    using filebuf = basic_filebuf<char>;
 
 #endif // windows
 

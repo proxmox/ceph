@@ -1,5 +1,4 @@
 # -*- coding: utf-8 -*-
-from __future__ import absolute_import
 
 import logging
 from functools import wraps
@@ -83,6 +82,10 @@ class HostManger(ResourceManager):
     def remove_label(self, host: str, label: str) -> OrchResult[str]:
         return self.api.remove_host_label(host, label)
 
+    @wait_api_result
+    def drain(self, hostname: str):
+        return self.api.drain_host(hostname)
+
 
 class InventoryManager(ResourceManager):
     @wait_api_result
@@ -148,6 +151,12 @@ class OsdManager(ResourceManager):
         return self.api.remove_osds_status()
 
 
+class DaemonManager(ResourceManager):
+    @wait_api_result
+    def action(self, daemon_name='', action='', image=None):
+        return self.api.daemon_action(daemon_name=daemon_name, action=action, image=image)
+
+
 class OrchClient(object):
 
     _instance = None
@@ -166,6 +175,7 @@ class OrchClient(object):
         self.inventory = InventoryManager(self.api)
         self.services = ServiceManager(self.api)
         self.osds = OsdManager(self.api)
+        self.daemons = DaemonManager(self.api)
 
     def available(self, features: Optional[List[str]] = None) -> bool:
         available = self.status()['available']
@@ -199,6 +209,7 @@ class OrchFeature(object):
     HOST_LABEL_REMOVE = 'remove_host_label'
     HOST_MAINTENANCE_ENTER = 'enter_host_maintenance'
     HOST_MAINTENANCE_EXIT = 'exit_host_maintenance'
+    HOST_DRAIN = 'drain_host'
 
     SERVICE_LIST = 'describe_service'
     SERVICE_CREATE = 'apply'
@@ -214,3 +225,5 @@ class OrchFeature(object):
 
     DEVICE_LIST = 'get_inventory'
     DEVICE_BLINK_LIGHT = 'blink_device_light'
+
+    DAEMON_ACTION = 'daemon_action'

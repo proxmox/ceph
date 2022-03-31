@@ -26,7 +26,7 @@
 static constexpr bool USE_SAFE_TIMER_CALLBACKS = false;
 
 
-RGWRealmReloader::RGWRealmReloader(rgw::sal::RGWRadosStore*& store, std::map<std::string, std::string>& service_map_meta,
+RGWRealmReloader::RGWRealmReloader(rgw::sal::Store*& store, std::map<std::string, std::string>& service_map_meta,
                                    Pauser* frontends)
   : store(store),
     service_map_meta(service_map_meta),
@@ -91,7 +91,7 @@ void RGWRealmReloader::reload()
   rgw_log_usage_finalize();
 
   // destroy the existing store
-  RGWStoreManager::close_storage(store);
+  StoreManager::close_storage(store);
   store = nullptr;
 
   ldpp_dout(&dp, 1) << "Store closed" << dendl;
@@ -106,7 +106,8 @@ void RGWRealmReloader::reload()
   while (!store) {
     // recreate and initialize a new store
     store =
-      RGWStoreManager::get_storage(&dp, cct,
+      StoreManager::get_storage(&dp, cct,
+				   "rados",
 				   cct->_conf->rgw_enable_gc_threads,
 				   cct->_conf->rgw_enable_lc_threads,
 				   cct->_conf->rgw_enable_quota_threads,
@@ -116,7 +117,7 @@ void RGWRealmReloader::reload()
 
     ldpp_dout(&dp, 1) << "Creating new store" << dendl;
 
-    rgw::sal::RGWRadosStore* store_cleanup = nullptr;
+    rgw::sal::Store* store_cleanup = nullptr;
     {
       std::unique_lock lock{mutex};
 
@@ -149,11 +150,11 @@ void RGWRealmReloader::reload()
       ldpp_dout(&dp, 4) << "Got another notification, restarting RGWRados "
           "initialization." << dendl;
 
-      RGWStoreManager::close_storage(store_cleanup);
+      StoreManager::close_storage(store_cleanup);
     }
   }
 
-  int r = store->getRados()->register_to_service_map("rgw", service_map_meta);
+  int r = store->register_to_service_map(&dp, "rgw", service_map_meta);
   if (r < 0) {
     ldpp_dout(&dp, -1) << "ERROR: failed to register to service map: " << cpp_strerror(-r) << dendl;
 
@@ -163,9 +164,9 @@ void RGWRealmReloader::reload()
   ldpp_dout(&dp, 1) << "Finishing initialization of new store" << dendl;
   // finish initializing the new store
   ldpp_dout(&dp, 1) << " - REST subsystem init" << dendl;
-  rgw_rest_init(cct, store->svc()->zone->get_zonegroup());
+  rgw_rest_init(cct, store->get_zone()->get_zonegroup());
   ldpp_dout(&dp, 1) << " - usage subsystem init" << dendl;
-  rgw_log_usage_init(cct, store->getRados());
+  rgw_log_usage_init(cct, store);
 
   ldpp_dout(&dp, 1) << "Resuming frontends with new realm configuration." << dendl;
 

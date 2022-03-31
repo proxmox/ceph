@@ -143,9 +143,17 @@ public:
         advance();
     }
 
-    void operator++() noexcept
+    set_iterator& operator++() noexcept
     {
         advance();
+        return *this;
+    }
+
+    set_iterator operator++(int) noexcept
+    {
+        auto ret = *this;
+        advance();
+        return ret;
     }
 
     int operator*() const noexcept
@@ -174,7 +182,7 @@ public:
     using iterator = set_iterator<N>;
     using value_type = int;
 
-    set_range(std::bitset<N> bitset, int offset = 0) noexcept
+    constexpr set_range(std::bitset<N> bitset, int offset = 0) noexcept
         : _bitset(bitset)
         , _offset(offset)
     {

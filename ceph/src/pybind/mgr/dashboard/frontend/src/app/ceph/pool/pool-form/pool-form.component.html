@@ -184,9 +184,13 @@
                               [selectionLimit]="4"
                               (selection)="appSelection()">
             </cd-select-badges>
+            <i *ngIf="data.applications.selected <= 0"
+               i18n-title
+               title="Pools should be associated with an application tag"
+               class="{{icons.warning}} icon-warning-color">
+            </i>
           </div>
         </div>
-
         <!-- CRUSH -->
         <div *ngIf="isErasure || isReplicated">
 
@@ -365,7 +369,7 @@
                          i18n>Crush rule</a>
                       <ng-template ngbNavContent>
                         <cd-table-key-value [renderObjects]="false"
-                                            [hideKeys]="['steps', 'ruleset', 'type', 'rule_name']"
+                                            [hideKeys]="['steps', 'type', 'rule_name']"
                                             [data]="form.getValue('crushRule')"
                                             [autoReload]="false">
                         </cd-table-key-value>

@@ -1,9 +1,9 @@
 //
 //  Copyright (c) 2012 Artyom Beilis (Tonkikh)
-//  Copyright (c) 2019 Alexander Grund
+//  Copyright (c) 2019 - 2020 Alexander Grund
 //
 //  Distributed under the Boost Software License, Version 1.0. (See
-//  accompanying file LICENSE_1_0.txt or copy at
+//  accompanying file LICENSE or copy at
 //  http://www.boost.org/LICENSE_1_0.txt)
 //
 
@@ -12,9 +12,8 @@
 #include <boost/nowide/convert.hpp>
 #include <boost/nowide/cstdio.hpp>
 #include <boost/nowide/fstream.hpp>
-#define BOOST_CHRONO_HEADER_ONLY
-#include <boost/chrono.hpp>
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <fstream>
 #include <iomanip>
@@ -144,9 +143,9 @@ static const int MAX_BLOCK_SIZE = 8192;
 template<typename FStream>
 perf_data test_io(const char* file)
 {
-    namespace chrono = boost::chrono;
-    typedef chrono::high_resolution_clock clock;
-    typedef chrono::duration<double, boost::milli> milliseconds;
+    namespace chrono = std::chrono;
+    using clock = chrono::high_resolution_clock;
+    using milliseconds = chrono::duration<double, std::milli>;
     perf_data results;
     // Use vector to force write to memory and avoid possible reordering
     std::vector<clock::time_point> start_and_end(2);
@@ -242,8 +241,8 @@ void print_perf_data(const std::map<size_t, double>& stdio_data,
 void test_perf(const char* file)
 {
     perf_data stdio_data = test_io_driver<io_stdio>(file, "stdio");
-    perf_data std_data = test_io_driver<io_fstream<std::fstream> >(file, "std::fstream");
-    perf_data nowide_data = test_io_driver<io_fstream<nw::fstream> >(file, "nowide::fstream");
+    perf_data std_data = test_io_driver<io_fstream<std::fstream>>(file, "std::fstream");
+    perf_data nowide_data = test_io_driver<io_fstream<nw::fstream>>(file, "nowide::fstream");
     std::cout << "================== Read performance ==================" << std::endl;
     print_perf_data(stdio_data.read, std_data.read, nowide_data.read);
     std::cout << "================== Write performance =================" << std::endl;

@@ -40,7 +40,7 @@
  %define tmpb  r11b
  %define tmp3  arg4
  %define return rax
- %define func(x) x:
+ %define func(x) x: endbranch
  %define FUNC_SAVE
  %define FUNC_RESTORE
 %endif
@@ -73,7 +73,7 @@ default rel
 section .text
 
 align 16
-global mem_zero_detect_avx:ISAL_SYM_TYPE_FUNCTION
+mk_global  mem_zero_detect_avx, function
 func(mem_zero_detect_avx)
 	FUNC_SAVE
 	mov	pos, 0

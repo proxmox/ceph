@@ -308,8 +308,7 @@ bool MonmapMonitor::preprocess_command(MonOpRequestRef op)
     return true;
   }
 
-  string format;
-  cmd_getval(cmdmap, "format", format, string("plain"));
+  string format = cmd_getval_or<string>(cmdmap, "format", "plain");
   boost::scoped_ptr<Formatter> f(Formatter::create(format));
 
   if (prefix == "mon stat") {
@@ -344,8 +343,7 @@ bool MonmapMonitor::preprocess_command(MonOpRequestRef op)
              prefix == "mon dump") {
 
     epoch_t epoch;
-    int64_t epochnum;
-    cmd_getval(cmdmap, "epoch", epochnum, (int64_t)0);
+    int64_t epochnum = cmd_getval_or<int64_t>(cmdmap, "epoch", 0);
     epoch = epochnum;
 
     MonMap *p = mon.monmap;
@@ -397,11 +395,7 @@ bool MonmapMonitor::preprocess_command(MonOpRequestRef op)
   } else if (prefix == "mon feature ls") {
    
     bool list_with_value = false;
-    string with_value;
-    if (cmd_getval(cmdmap, "with_value", with_value) &&
-        with_value == "--with-value") {
-      list_with_value = true;
-    }
+    cmd_getval_compat_cephbool(cmdmap, "with_value", list_with_value);
 
     MonMap *p = mon.monmap;
 
@@ -584,7 +578,7 @@ bool MonmapMonitor::prepare_command(MonOpRequestRef op)
     entity_addr_t addr;
     bufferlist rdata;
 
-    if (!addr.parse(addrstr.c_str())) {
+    if (!addr.parse(addrstr)) {
       err = -EINVAL;
       ss << "addr " << addrstr << "does not parse";
       goto reply;

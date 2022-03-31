@@ -2,12 +2,12 @@ from copy import deepcopy
 
 import pytest
 
-from rook_client.ceph import cephfilesystem as cfs
+from rook_client.ceph import cephcluster as cc
 
 
 def test_omit():
-    ec = cfs.ErasureCoded()
+    cv = cc.CephVersion()
     with pytest.raises(AttributeError):
-        ec.codingChunks
+        cv.allowUnsupported
 
-    assert not hasattr(ec, 'codingChunks')
+    assert not hasattr(cv, 'allowUnsupported')

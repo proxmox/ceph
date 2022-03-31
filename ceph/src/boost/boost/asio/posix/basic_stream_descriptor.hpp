@@ -21,6 +21,8 @@
 #if defined(BOOST_ASIO_HAS_POSIX_STREAM_DESCRIPTOR) \
   || defined(GENERATING_DOCUMENTATION)
 
+#include <boost/asio/detail/push_options.hpp>
+
 namespace boost {
 namespace asio {
 namespace posix {
@@ -37,7 +39,7 @@ namespace posix {
  * @par Concepts:
  * AsyncReadStream, AsyncWriteStream, Stream, SyncReadStream, SyncWriteStream.
  */
-template <typename Executor = executor>
+template <typename Executor = any_io_executor>
 class basic_stream_descriptor
   : public basic_descriptor<Executor>
 {
@@ -420,8 +422,8 @@ private:
 
       detail::non_const_lvalue<WriteHandler> handler2(handler);
       self_->impl_.get_service().async_write_some(
-          self_->impl_.get_implementation(), buffers, handler2.value,
-          self_->impl_.get_implementation_executor());
+          self_->impl_.get_implementation(), buffers,
+          handler2.value, self_->impl_.get_executor());
     }
 
   private:
@@ -453,8 +455,8 @@ private:
 
       detail::non_const_lvalue<ReadHandler> handler2(handler);
       self_->impl_.get_service().async_read_some(
-          self_->impl_.get_implementation(), buffers, handler2.value,
-          self_->impl_.get_implementation_executor());
+          self_->impl_.get_implementation(), buffers,
+          handler2.value, self_->impl_.get_executor());
     }
 
   private:
@@ -465,6 +467,8 @@ private:
 } // namespace posix
 } // namespace asio
 } // namespace boost
+
+#include <boost/asio/detail/pop_options.hpp>
 
 #endif // defined(BOOST_ASIO_HAS_POSIX_STREAM_DESCRIPTOR)
        //   || defined(GENERATING_DOCUMENTATION)

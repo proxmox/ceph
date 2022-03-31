@@ -13,7 +13,7 @@
 
 #include "boost/numeric/conversion/bounds.hpp"
 
-#ifdef __BORLANDC__
+#ifdef BOOST_BORLANDC
 #pragma hdrstop
 #endif
 

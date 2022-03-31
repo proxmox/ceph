@@ -52,12 +52,16 @@ struct csvStateMch_ : public msm::front::state_machine_def<csvStateMch_>
     return *input_cur_location;
   }
 
-  char get_next_char(const char * end_stream)
-  {
-    if (input_cur_location >= end_stream)
-      return 0;
 
+  char get_next_char(const char* end_stream)
+  {
     input_cur_location++;
+
+    if(input_cur_location >= end_stream)
+    {
+      return 0;
+    }
+
     return *input_cur_location;
   }
 
@@ -344,6 +348,11 @@ public:
     //TODO for better performance to use template specialization (\n  \ , ")
     do
     {
+      if (p.currentLoc() >= end_stream)
+      {
+        break;
+      }
+
       if (p.get_char() == m_row_delimeter)
       {
         p.process_event(event_eol());
@@ -374,11 +383,8 @@ public:
         return -1;
       }
 
-      if (p.currentLoc() >= end_stream)
-      {
-        break;
-      }
       p.get_next_char(end_stream);
+
     }
     while (p.current_state()[0] != 6);
 

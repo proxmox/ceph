@@ -10,7 +10,6 @@
 #include <thread>
 
 #include "db/db_impl/db_impl.h"
-#include "logging/logging.h"
 #include "port/port.h"
 #include "rocksdb/db.h"
 #include "rocksdb/perf_context.h"
@@ -1097,6 +1096,17 @@ TEST_P(OptimisticTransactionTest, IteratorTest) {
 
   delete iter;
   delete txn;
+}
+
+TEST_P(OptimisticTransactionTest, DeleteRangeSupportTest) {
+  // `OptimisticTransactionDB` does not allow range deletion in any API.
+  ASSERT_TRUE(
+      txn_db
+          ->DeleteRange(WriteOptions(), txn_db->DefaultColumnFamily(), "a", "b")
+          .IsNotSupported());
+  WriteBatch wb;
+  ASSERT_OK(wb.DeleteRange("a", "b"));
+  ASSERT_NOK(txn_db->Write(WriteOptions(), &wb));
 }
 
 TEST_P(OptimisticTransactionTest, SavepointTest) {

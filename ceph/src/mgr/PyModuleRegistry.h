@@ -58,7 +58,7 @@ private:
   /**
    * Discover python modules from local disk
    */
-  std::set<std::string> probe_modules(const std::string &path) const;
+  std::vector<std::string> probe_modules(const std::string &path) const;
 
   PyModuleConfig module_config;
 
@@ -69,7 +69,7 @@ public:
   void update_kv_data(
     const std::string prefix,
     bool incremental,
-    const map<std::string, boost::optional<bufferlist>, std::less<>>& data) {
+    const map<std::string, std::optional<bufferlist>, std::less<>>& data) {
     ceph_assert(active_modules);
     active_modules->update_kv_data(prefix, incremental, data);
   }
@@ -189,6 +189,11 @@ public:
     if (active_modules) {
       active_modules->notify_all(log_entry);
     }
+  }
+
+  bool should_notify(const std::string& name,
+		     const std::string& notify_type) {
+    return modules.at(name)->should_notify(notify_type);
   }
 
   std::map<std::string, std::string> get_services() const

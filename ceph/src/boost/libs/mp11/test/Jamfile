@@ -122,6 +122,8 @@ run mp_rotate_right.cpp ;
 run mp_power_set.cpp ;
 run mp_partial_sum.cpp ;
 run mp_iterate.cpp ;
+run mp_pairwise_fold.cpp ;
+run mp_pairwise_fold_q.cpp ;
 
 # integral
 run integral.cpp ;
@@ -156,6 +158,9 @@ run tuple_apply.cpp ;
 compile tuple_apply_cx.cpp ;
 run construct_from_tuple.cpp ;
 compile construct_from_tuple_cx.cpp ;
+run tuple_transform.cpp ;
+run tuple_transform_2.cpp ;
+compile tuple_transform_cx.cpp ;
 
 # set
 run mp_set_contains.cpp ;
@@ -183,6 +188,8 @@ run mp_similar.cpp ;
 
 # map
 run mp_map_find.cpp ;
+run mp_map_find_2.cpp ;
+run mp_map_find_3.cpp ;
 run mp_map_contains.cpp ;
 run mp_map_insert.cpp ;
 run mp_map_replace.cpp ;

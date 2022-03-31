@@ -13,6 +13,8 @@
 
 #define dout_subsys ceph_subsys_rgw
 
+using namespace std;
+
 class RGWSI_SysObj_Cache_CB : public RGWSI_Notify::CB
 {
   RGWSI_SysObj_Cache *svc;
@@ -94,10 +96,10 @@ int RGWSI_SysObj_Cache::remove(const DoutPrefixProvider *dpp,
   normalize_pool_and_obj(obj.pool, obj.oid, pool, oid);
 
   string name = normal_name(pool, oid);
-  cache.remove(dpp, name);
+  cache.invalidate_remove(dpp, name);
 
   ObjectCacheInfo info;
-  int r = distribute_cache(dpp, name, obj, info, REMOVE_OBJ, y);
+  int r = distribute_cache(dpp, name, obj, info, INVALIDATE_OBJ, y);
   if (r < 0) {
     ldpp_dout(dpp, 0) << "ERROR: " << __func__ << "(): failed to distribute cache: r=" << r << dendl;
   }
@@ -270,7 +272,7 @@ int RGWSI_SysObj_Cache::set_attrs(const DoutPrefixProvider *dpp,
     if (r < 0)
       ldpp_dout(dpp, 0) << "ERROR: failed to distribute cache for " << obj << dendl;
   } else {
-    cache.remove(dpp, name);
+    cache.invalidate_remove(dpp, name);
   }
 
   return ret;
@@ -314,7 +316,7 @@ int RGWSI_SysObj_Cache::write(const DoutPrefixProvider *dpp,
     if (r < 0)
       ldpp_dout(dpp, 0) << "ERROR: failed to distribute cache for " << obj << dendl;
   } else {
-    cache.remove(dpp, name);
+    cache.invalidate_remove(dpp, name);
   }
 
   return ret;
@@ -349,7 +351,7 @@ int RGWSI_SysObj_Cache::write_data(const DoutPrefixProvider *dpp,
     if (r < 0)
       ldpp_dout(dpp, 0) << "ERROR: failed to distribute cache for " << obj << dendl;
   } else {
-    cache.remove(dpp, name);
+    cache.invalidate_remove(dpp, name);
   }
 
   return ret;
@@ -445,10 +447,10 @@ int RGWSI_SysObj_Cache::watch_cb(const DoutPrefixProvider *dpp,
     auto iter = bl.cbegin();
     decode(info, iter);
   } catch (buffer::end_of_buffer& err) {
-    ldout(cct, 0) << "ERROR: got bad notification" << dendl;
+    ldpp_dout(dpp, 0) << "ERROR: got bad notification" << dendl;
     return -EIO;
   } catch (buffer::error& err) {
-    ldout(cct, 0) << "ERROR: buffer::error" << dendl;
+    ldpp_dout(dpp, 0) << "ERROR: buffer::error" << dendl;
     return -EIO;
   }
 
@@ -461,11 +463,11 @@ int RGWSI_SysObj_Cache::watch_cb(const DoutPrefixProvider *dpp,
   case UPDATE_OBJ:
     cache.put(dpp, name, info.obj_info, NULL);
     break;
-  case REMOVE_OBJ:
-    cache.remove(dpp, name);
+  case INVALIDATE_OBJ:
+    cache.invalidate_remove(dpp, name);
     break;
   default:
-    ldout(cct, 0) << "WARNING: got unknown notification op: " << info.op << dendl;
+    ldpp_dout(dpp, 0) << "WARNING: got unknown notification op: " << info.op << dendl;
     return -EINVAL;
   }
 
@@ -633,7 +635,7 @@ int RGWSI_SysObj_Cache::ASocketHandler::call_inspect(const std::string& target, 
 
 int RGWSI_SysObj_Cache::ASocketHandler::call_erase(const std::string& target)
 {
-  return svc->cache.remove(dpp, target);
+  return svc->cache.invalidate_remove(dpp, target);
 }
 
 int RGWSI_SysObj_Cache::ASocketHandler::call_zap()

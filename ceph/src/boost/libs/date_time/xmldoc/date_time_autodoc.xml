@@ -188,7 +188,7 @@
 <method name="BOOST_PREVENT_MACRO_SUBSTITUTION" specifiers="static"><type>BOOST_CONSTEXPR value_type min</type><purpose>Return the min allowed value (traits method) </purpose></method>
 </method-group>
 <method-group name="private member functions">
-<method name="assign"><type>void</type><parameter name="value"><paramtype>value_type</paramtype></parameter></method>
+<method name="assign"><type>BOOST_CXX14_CONSTEXPR void</type><parameter name="value"><paramtype>value_type</paramtype></parameter></method>
 </method-group>
 </class><class name="simple_exception_policy"><template>
       <template-type-parameter name="rep_type"/>
@@ -404,7 +404,6 @@
 </method-group>
 <constructor specifiers="explicit"><parameter name="day_count"><paramtype>duration_rep</paramtype></parameter><purpose>Construct from a day count. </purpose></constructor>
 <constructor><parameter name="sv"><paramtype>special_values</paramtype></parameter><description><para>construct from special_values - only works when instantiated with <classname alt="boost::date_time::duration_traits_adapted">duration_traits_adapted</classname> </para></description></constructor>
-<constructor><parameter name="other"><paramtype>const <classname>date_duration</classname>&lt; duration_rep_traits &gt; &amp;</paramtype></parameter><purpose>Construct from another <classname alt="boost::date_time::date_duration">date_duration</classname> (Copy Constructor) </purpose></constructor>
 <method-group name="public static functions">
 <method name="unit" specifiers="static"><type>BOOST_CXX14_CONSTEXPR <classname>date_duration</classname></type><purpose>Returns the smallest duration – used by to calculate 'end'. </purpose></method>
 </method-group>
@@ -1237,7 +1236,7 @@ fkbf.get_date(date(2002,Feb,1));
 </para></description></constructor>
 </class><class name="nth_kday_of_month"><template>
       <template-type-parameter name="date_type"/>
-    </template><inherit access="public">boost::date_time::year_based_generator&lt; date_type &gt;</inherit><purpose>Useful generator functor for finding holidays. </purpose><description><para>Based on the idea in Cal. Calc. for finding holidays that are the 'first Monday of September'. When instantiated with 'fifth' kday of month, the result will be the last kday of month which can be the fourth or fifth depending on the structure of the month.</para><para>The algorithm here basically guesses for the first day of the month. Then finds the first day of the correct type. That is, if the first of the month is a Tuesday and it needs Wenesday then we simply increment by a day and then we can add the length of a week until we get to the 'nth kday'. There are probably more efficient algorithms based on using a mod 7, but this one works reasonably well for basic applications. </para></description><enum name="week_num"><enumvalue name="first"><default>=1</default></enumvalue><enumvalue name="second"/><enumvalue name="third"/><enumvalue name="fourth"/><enumvalue name="fifth"/></enum>
+    </template><inherit access="public">boost::date_time::year_based_generator&lt; date_type &gt;</inherit><purpose>Useful generator functor for finding holidays. </purpose><description><para>Based on the idea in Cal. Calc. for finding holidays that are the 'first Monday of September'. When instantiated with 'fifth' kday of month, the result will be the last kday of month which can be the fourth or fifth depending on the structure of the month.</para><para>The algorithm here basically guesses for the first day of the month. Then finds the first day of the correct type. That is, if the first of the month is a Tuesday and it needs Wednesday then we simply increment by a day and then we can add the length of a week until we get to the 'nth kday'. There are probably more efficient algorithms based on using a mod 7, but this one works reasonably well for basic applications. </para></description><enum name="week_num"><enumvalue name="first"><default>=1</default></enumvalue><enumvalue name="second"/><enumvalue name="third"/><enumvalue name="fourth"/><enumvalue name="fifth"/></enum>
 <typedef name="calendar_type"><type>date_type::calendar_type</type></typedef>
 <typedef name="day_of_week_type"><type>calendar_type::day_of_week_type</type></typedef>
 <typedef name="month_type"><type>calendar_type::month_type</type></typedef>
@@ -2720,7 +2719,6 @@ result:
 </programlisting> </para></description></method>
 </method-group>
 <constructor><parameter name="range_opt"><paramtype>period_range_option</paramtype><default>AS_CLOSED_RANGE</default></parameter><parameter name="period_separator"><paramtype>const char_type *const</paramtype><default>default_period_separator</default></parameter><parameter name="period_start_delimeter"><paramtype>const char_type *const</paramtype><default>default_period_start_delimeter</default></parameter><parameter name="period_open_range_end_delimeter"><paramtype>const char_type *const</paramtype><default>default_period_open_range_end_delimeter</default></parameter><parameter name="period_closed_range_end_delimeter"><paramtype>const char_type *const</paramtype><default>default_period_closed_range_end_delimeter</default></parameter><purpose>Constructor that sets up period parser options. </purpose></constructor>
-<constructor><parameter name="p_parser"><paramtype>const <classname>period_parser</classname>&lt; date_type, CharT &gt; &amp;</paramtype></parameter></constructor>
 <method-group name="private member functions">
 <method name="consume_delim" cv="const"><type>void</type><parameter name="sitr"><paramtype>stream_itr_type &amp;</paramtype></parameter><parameter name="stream_end"><paramtype>stream_itr_type &amp;</paramtype></parameter><parameter name="delim"><paramtype>const string_type &amp;</paramtype></parameter><purpose>throws ios_base::failure if delimiter and parsed data do not match </purpose></method>
 </method-group>
@@ -2891,7 +2889,6 @@ special_value_formatter svf(&amp;special_value_names[0], &amp;special_value_name
 <constructor><purpose>Creates a <classname alt="boost::date_time::special_values_parser">special_values_parser</classname> with the default set of "sv_strings". </purpose></constructor>
 <constructor><parameter name="nadt_str"><paramtype>const string_type &amp;</paramtype></parameter><parameter name="neg_inf_str"><paramtype>const string_type &amp;</paramtype></parameter><parameter name="pos_inf_str"><paramtype>const string_type &amp;</paramtype></parameter><parameter name="min_dt_str"><paramtype>const string_type &amp;</paramtype></parameter><parameter name="max_dt_str"><paramtype>const string_type &amp;</paramtype></parameter><purpose>Creates a <classname alt="boost::date_time::special_values_parser">special_values_parser</classname> using a user defined set of element strings. </purpose></constructor>
 <constructor><parameter name="beg"><paramtype>typename collection_type::iterator</paramtype></parameter><parameter name="end"><paramtype>typename collection_type::iterator</paramtype></parameter></constructor>
-<constructor><parameter name="svp"><paramtype>const <classname>special_values_parser</classname>&lt; date_type, charT &gt; &amp;</paramtype></parameter></constructor>
 <method-group name="public static functions">
 <method name="likely" specifiers="static"><type>bool</type><parameter name="str"><paramtype>const string_type &amp;</paramtype><description><para>the string to check </para></description></parameter><description><para>The parser is expensive to create, and not thread-safe so it cannot be static therefore given a string, determine if it is likely to be a special value. A negative response is a definite no, whereas a positive is only likely and match() should be called and return value checked. 
 
@@ -3334,7 +3331,6 @@ special_value_formatter svf(&amp;special_value_names[0], &amp;special_value_name
 </method-group>
 <constructor/>
 <constructor><parameter name="hours_in"><paramtype>hour_type</paramtype></parameter><parameter name="minutes_in"><paramtype>min_type</paramtype></parameter><parameter name="seconds_in"><paramtype>sec_type</paramtype><default>0</default></parameter><parameter name="frac_sec_in"><paramtype>fractional_seconds_type</paramtype><default>0</default></parameter></constructor>
-<constructor><parameter name="other"><paramtype>const <classname>time_duration</classname>&lt; T, rep_type &gt; &amp;</paramtype></parameter><purpose>Construct from another <classname alt="boost::date_time::time_duration">time_duration</classname> (Copy constructor) </purpose></constructor>
 <constructor><parameter name="sv"><paramtype>special_values</paramtype></parameter><purpose>Construct from special_values. </purpose></constructor>
 <method-group name="public static functions">
 <method name="unit" specifiers="static"><type>BOOST_CXX14_CONSTEXPR duration_type</type><purpose>Returns smallest representable duration. </purpose></method>

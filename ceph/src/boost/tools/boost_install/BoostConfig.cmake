@@ -101,15 +101,15 @@ if(Boost_VERBOSE OR Boost_DEBUG)
 
 endif()
 
-macro(boost_find_component comp req)
+macro(boost_find_component comp required quiet)
 
   set(_BOOST_QUIET)
-  if(Boost_FIND_QUIETLY)
+  if(Boost_FIND_QUIETLY OR ${quiet})
     set(_BOOST_QUIET QUIET)
   endif()
 
   set(_BOOST_REQUIRED)
-  if(${req} AND Boost_FIND_REQUIRED)
+  if(${required} AND Boost_FIND_REQUIRED)
     set(_BOOST_REQUIRED REQUIRED)
   endif()
 
@@ -193,7 +193,7 @@ macro(boost_find_all_components)
   # Try to find each component.
   foreach(__boost_comp IN LISTS __boost_all_components)
 
-    boost_find_component(${__boost_comp} 0)
+    boost_find_component(${__boost_comp} 0 1)
 
     # Append to list of all targets (if found).
     if(Boost_${__boost_comp}_FOUND)
@@ -212,7 +212,7 @@ endmacro()
 
 # Find boost_headers
 
-boost_find_component(headers 1)
+boost_find_component(headers 1 0)
 
 if(NOT boost_headers_FOUND)
 
@@ -255,7 +255,7 @@ else()
 
   foreach(__boost_comp IN LISTS Boost_FIND_COMPONENTS)
 
-    boost_find_component(${__boost_comp} ${Boost_FIND_REQUIRED_${__boost_comp}})
+    boost_find_component(${__boost_comp} ${Boost_FIND_REQUIRED_${__boost_comp}} 0)
 
   endforeach()
 

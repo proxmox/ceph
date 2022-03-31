@@ -11,16 +11,12 @@ import time
 import threading
 import unittest
 
-from http.server import HTTPServer
 from textwrap import dedent
-from urllib.request import Request, urlopen
-from urllib.error import HTTPError
 
 from typing import List, Optional
 
 from .fixtures import (
     cephadm_fs,
-    exporter,
     mock_docker,
     mock_podman,
     with_cephadm_ctx,
@@ -333,6 +329,26 @@ docker.io/ceph/daemon-base:octopus
         image = cd._filter_last_local_ceph_image(out)
         assert image == 'docker.io/ceph/ceph:v15.2.5'
 
+    def test_should_log_to_journald(self):
+        ctx = cd.CephadmContext()
+        # explicit
+        ctx.log_to_journald = True
+        assert cd.should_log_to_journald(ctx)
+
+        ctx.log_to_journald = None
+        # enable if podman support --cgroup=split
+        ctx.container_engine = mock_podman()
+        ctx.container_engine.version = (2, 1, 0)
+        assert cd.should_log_to_journald(ctx)
+
+        # disable on old podman
+        ctx.container_engine.version = (2, 0, 0)
+        assert not cd.should_log_to_journald(ctx)
+
+        # disable on docker
+        ctx.container_engine = mock_docker()
+        assert not cd.should_log_to_journald(ctx)
+
     def test_normalize_image_digest(self):
         s = 'myhostname:5000/ceph/ceph@sha256:753886ad9049004395ae990fbb9b096923b5a518b819283141ee8716ddf55ad1'
         assert cd.normalize_image_digest(s) == s
@@ -457,8 +473,15 @@ docker.io/ceph/daemon-base:octopus
                 '00000000-0000-0000-0000-0000deadbeef',
                 None,
                 None,
-                [{'name': 'mon.a'}],
+                [{'name': 'mon.a', 'fsid': '00000000-0000-0000-0000-0000deadbeef'}],
                 '/var/lib/ceph/00000000-0000-0000-0000-0000deadbeef/mon.a/config',
+            ),
+            (
+                '00000000-0000-0000-0000-0000deadbeef',
+                None,
+                None,
+                [{'name': 'mon.a', 'fsid': 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'}],
+                cd.SHELL_DEFAULT_CONF,
             ),
             (
                 '00000000-0000-0000-0000-0000deadbeef',
@@ -516,6 +539,16 @@ docker.io/ceph/daemon-base:octopus
         with mock.patch('cephadm.list_daemons', return_value=list_daemons):
             infer_config(ctx)
             assert ctx.config == result
+
+    @mock.patch('cephadm.call')
+    def test_extract_uid_gid_fail(self, _call):
+        err = """Error: container_linux.go:370: starting container process caused: process_linux.go:459: container init caused: process_linux.go:422: setting cgroup config for procHooks process caused: Unit libpod-056038e1126191fba41d8a037275136f2d7aeec9710b9ee
+ff792c06d8544b983.scope not found.: OCI runtime error"""
+        _call.return_value = ('', err, 127)
+        ctx = cd.CephadmContext()
+        ctx.container_engine = mock_podman()
+        with pytest.raises(cd.Error, match='OCI'):
+            cd.extract_uid_gid(ctx)
 
 
 class TestCustomContainer(unittest.TestCase):
@@ -602,301 +635,12 @@ class TestCustomContainer(unittest.TestCase):
         ])
 
 
-class TestCephadmExporter(object):
-    exporter: cd.CephadmDaemon
-    files_created: List[str] = []
-    crt = """-----BEGIN CERTIFICATE-----
-MIIC1zCCAb8CEFHoZE2MfUVzo53fzzBKAT0wDQYJKoZIhvcNAQENBQAwKjENMAsG
-A1UECgwEQ2VwaDEZMBcGA1UECwwQY2VwaGFkbS1leHBvcnRlcjAeFw0yMDExMjUy
-MzEwNTVaFw0zMDExMjMyMzEwNTVaMCoxDTALBgNVBAoMBENlcGgxGTAXBgNVBAsM
-EGNlcGhhZG0tZXhwb3J0ZXIwggEiMA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIB
-AQCsTfcJcXbREqfx1zTUuEmK+lJn9WWjk0URRF1Z+QgPkascNdkX16PnvhbGwXmF
-BTdAcNl7V0U+z4EsGJ7hJsB7qTq6Rb6wNl7r0OxjeWOmB9xbF4Q/KR5yrbM1DA9A
-B5fNswrUXViku5Y2jlOAz+ZMBhYxMx0edqhxSn297j04Z6RF4Mvkc43v0FH7Ju7k
-O5+0VbdzcOdu37DFpoE4Ll2MZ/GuAHcJ8SD06sEdzFEjRCraav976743XcUlhZGX
-ZTTG/Zf/a+wuCjtMG3od7vRFfuRrM5oTE133DuQ5deR7ybcZNDyopDjHF8xB1bAk
-IOz4SbP6Q25K99Czm1K+3kMLAgMBAAEwDQYJKoZIhvcNAQENBQADggEBACmtvZb8
-dJGHx/WC0/JHxnEJCJM2qnn87ELzbbIQL1w1Yb/I6JQYPgq+WiQPaHaLL9eYsm0l
-dFwvrh+WC0JpXDfADnUnkTSB/WpZ2nC+2JxBptrQEuIcqNXpcJd0bKDiHunv04JI
-uEVpTAK05dBV38qNmIlu4HyB4OEnuQpyOr9xpIhdxuJ95O9K0j5BIw98ZaEwYNUP
-Rm3YlQwfS6R5xaBvL9kyfxyAD2joNj44q6w/5zj4egXVIA5VpkQm8DmMtu0Pd2NG
-dzfYRmqrDolh+rty8HiyIxzeDJQ5bj6LKbUkmABvX50nDySVyMfHmt461/n7W65R
-CHFLoOmfJJik+Uc=\n-----END CERTIFICATE-----
-"""
-    key = """-----BEGIN PRIVATE KEY-----
-MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQCsTfcJcXbREqfx
-1zTUuEmK+lJn9WWjk0URRF1Z+QgPkascNdkX16PnvhbGwXmFBTdAcNl7V0U+z4Es
-GJ7hJsB7qTq6Rb6wNl7r0OxjeWOmB9xbF4Q/KR5yrbM1DA9AB5fNswrUXViku5Y2
-jlOAz+ZMBhYxMx0edqhxSn297j04Z6RF4Mvkc43v0FH7Ju7kO5+0VbdzcOdu37DF
-poE4Ll2MZ/GuAHcJ8SD06sEdzFEjRCraav976743XcUlhZGXZTTG/Zf/a+wuCjtM
-G3od7vRFfuRrM5oTE133DuQ5deR7ybcZNDyopDjHF8xB1bAkIOz4SbP6Q25K99Cz
-m1K+3kMLAgMBAAECggEASnAwToMXWsGdjqxzpYasNv9oBIOO0nk4OHp5ffpJUjiT
-XM+ip1tA80g7HMjPD/mt4gge3NtaDgWlf4Bve0O7mnEE7x5cgFIs9eG/jkYOF9eD
-ilMBjivcfJywNDWujPH60iIMhqyBNEHaZl1ck+S9UJC8m6rCZLvMj40n/5riFfBy
-1sjf2uOwcfWrjSj9Ju4wlMI6khSSz2aYC7glQQ/fo2+YArbEUcy60iloPQ6wEgZK
-okoVWZA9AehwLcnRjkwd9EVmMMtRGPE/AcP4s/kKA0tRDRicPLN727Ke/yxv+Ppo
-hbIZIcOn7soOFAENcodJ4YRSCd++QfCNaVAi7vwWWQKBgQDeBY4vvr+H0brbSjQg
-O7Fpqub/fxZY3UoHWDqWs2X4o3qhDqaTQODpuYtCm8YQE//55JoLWKAD0evq5dLS
-YLrtC1Vyxf+TA7opCUjWBe+liyndbJdB5q0zF7qdWUtQKGVSWyUWhK8gHa6M64fP
-oi83DD7F0OGusTWGtfbceErk/wKBgQDGrJLRo/5xnAH5VmPfNu+S6h0M2qM6CYwe
-Y5wHFG2uQQct73adf53SkhvZVmOzJsWQbVnlDOKMhqazcs+7VWRgO5X3naWVcctE
-Hggw9MgpbXAWFOI5sNYsCYE58E+fTHjE6O4A3MhMCsze+CIC3sKuPQBBiL9bWSOX
-8POswqfl9QKBgDe/nVxPwTgRaaH2l/AgDQRDbY1qE+psZlJBzTRaB5jPM9ONIjaH
-a/JELLuk8a7H1tagmC2RK1zKMTriSnWY5FbxKZuQLAR2QyBavHdBNlOTBggbZD+f
-9I2Hv8wSx95wxkBPsphc6Lxft5ya55czWjewU3LIaGK9DHuu5TWm3udxAoGBAJGP
-PsJ59KIoOwoDUYjpJv3sqPwR9CVBeXeKY3aMcQ+KdUgiejVKmsb8ZYsG0GUhsv3u
-ID7BAfsTbG9tXuVR2wjmnymcRwUHKnXtyvKTZVN06vpCsryx4zjAff2FI9ECpjke
-r8HSAK41+4QhKEoSC3C9IMLi/dBfrsRTtTSOKZVBAoGBAI2dl5HEIFpufaI4toWM
-LO5HFrlXgRDGoc/+Byr5/8ZZpYpU115Ol/q6M+l0koV2ygJ9jeJJEllFWykIDS6F
-XxazFI74swAqobHb2ZS/SLhoVxE82DdSeXrjkTvUjNtrW5zs1gIMKBR4nD6H8AqL
-iMN28C2bKGao5UHvdER1rGy7
------END PRIVATE KEY-----
-"""
-    token = "MyAccessToken"
-
-    @classmethod
-    def setup_class(cls):
-        # create the ssl files
-        fname = os.path.join(os.getcwd(), 'crt')
-        with open(fname, 'w') as crt:
-            crt.write(cls.crt)
-            cls.files_created.append(fname)
-        fname = os.path.join(os.getcwd(), 'key')
-        with open(fname, 'w') as crt:
-            crt.write(cls.key)
-            cls.files_created.append(fname)
-        fname = os.path.join(os.getcwd(), 'token')
-        with open(fname, 'w') as crt:
-            crt.write(cls.token)
-            cls.files_created.append(fname)
-         # start a simple http instance to test the requesthandler
-        cls.server = HTTPServer(('0.0.0.0', 9443), cd.CephadmDaemonHandler)
-        cls.server.cephadm_cache = cd.CephadmCache()
-        cls.server.token = cls.token
-        t = threading.Thread(target=cls.server.serve_forever)
-        t.daemon = True
-        t.start() 
-
-    @classmethod
-    def teardown_class(cls):
-        cls.server.shutdown()
-        assert len(cls.files_created) > 0
-        for f in cls.files_created:
-            os.remove(f)      
-    
-    def setup_method(self):
-        # re-init the cache for every test
-        TestCephadmExporter.server.cephadm_cache = cd.CephadmCache()
-    
-    def teardown_method(self):
-        pass
-
-    def test_files_ready(self):
-        assert os.path.exists(os.path.join(os.getcwd(), 'crt'))
-        assert os.path.exists(os.path.join(os.getcwd(), 'key'))
-        assert os.path.exists(os.path.join(os.getcwd(), 'token'))
-
-    def test_can_run(self, exporter):
-        assert exporter.can_run
-    
-    def test_token_valid(self, exporter):
-        assert exporter.token == self.token
-
-    def test_unit_name(self,exporter):
-        assert exporter.unit_name
-        assert exporter.unit_name == "ceph-foobar-cephadm-exporter.test.service"
-
-    def test_unit_run(self,exporter):
-        assert exporter.unit_run
-        lines = exporter.unit_run.split('\n')
-        assert len(lines) == 2
-        assert "cephadm exporter --fsid foobar --id test --port 9443 &" in lines[1]
-
-    def test_binary_path(self, exporter):
-        assert os.path.isfile(exporter.binary_path)
-
-    def test_systemd_unit(self, exporter):
-        assert exporter.unit_file
-
-    def test_validate_passes(self, exporter):
-        config = {
-            "crt": self.crt,
-            "key": self.key,
-            "token": self.token,
-        }
-        cd.CephadmDaemon.validate_config(config)
-
-    def test_validate_fails(self, exporter):
-        config = {
-            "key": self.key,
-            "token": self.token,
-        }
-        with pytest.raises(cd.Error):
-            cd.CephadmDaemon.validate_config(config)
-
-    def test_port_active(self, exporter):
-        assert exporter.port_active == True
-
-    def test_rqst_health_200(self):
-        hdrs={"Authorization":f"Bearer {TestCephadmExporter.token}"}
-        req=Request("http://localhost:9443/v1/metadata/health",headers=hdrs)
-        r = urlopen(req)
-        assert r.status == 200
-
-    def test_rqst_all_inactive_500(self):
-        hdrs={"Authorization":f"Bearer {TestCephadmExporter.token}"}
-        req=Request("http://localhost:9443/v1/metadata",headers=hdrs)
-        try:
-            r = urlopen(req)
-        except HTTPError as e:
-            assert e.code == 500
-
-    def test_rqst_no_auth_401(self):
-        req=Request("http://localhost:9443/v1/metadata")
-        try:
-            urlopen(req)
-        except HTTPError as e:
-            assert e.code == 401
- 
-    def test_rqst_bad_auth_401(self):
-        hdrs={"Authorization":f"Bearer BogusAuthToken"}
-        req=Request("http://localhost:9443/v1/metadata",headers=hdrs)
-        try:
-            urlopen(req)
-        except HTTPError as e:
-            assert e.code == 401
-
-    def test_rqst_badURL_404(self):
-        hdrs={"Authorization":f"Bearer {TestCephadmExporter.token}"}
-        req=Request("http://localhost:9443/v1/metazoic",headers=hdrs)
-        try:
-            urlopen(req)
-        except HTTPError as e:
-            assert e.code == 404
-
-    def test_rqst_inactive_task_204(self):
-        # all tasks initialise as inactive, and then 'go' active as their thread starts
-        # so we can pick any task to check for an inactive response (no content)
-        hdrs={"Authorization":f"Bearer {TestCephadmExporter.token}"}
-        req=Request("http://localhost:9443/v1/metadata/disks",headers=hdrs)
-        r = urlopen(req)
-        assert r.status == 204
-
-    def test_rqst_active_task_200(self):
-        TestCephadmExporter.server.cephadm_cache.tasks['host'] = 'active'
-        hdrs={"Authorization":f"Bearer {TestCephadmExporter.token}"}
-        req=Request("http://localhost:9443/v1/metadata/host",headers=hdrs)
-        r = urlopen(req)
-        assert r.status == 200
-
-    def test_rqst_all_206(self):
-        TestCephadmExporter.server.cephadm_cache.tasks['disks'] = 'active'
-        hdrs={"Authorization":f"Bearer {TestCephadmExporter.token}"}
-        req=Request("http://localhost:9443/v1/metadata",headers=hdrs)
-        r = urlopen(req)
-        assert r.status == 206
-
-    def test_rqst_disks_200(self):
-        TestCephadmExporter.server.cephadm_cache.tasks['disks'] = 'active'
-        hdrs={"Authorization":f"Bearer {TestCephadmExporter.token}"}
-        req=Request("http://localhost:9443/v1/metadata/disks",headers=hdrs)
-        r = urlopen(req)
-        assert r.status == 200
-
-    def test_thread_exception(self, exporter):
-        # run is patched to invoke a mocked scrape_host thread that will raise so 
-        # we check here that the exception handler updates the cache object as we'd
-        # expect with the error
-        exporter.run()
-        assert exporter.cephadm_cache.host['scrape_errors']
-        assert exporter.cephadm_cache.host['scrape_errors'] == ['ValueError exception: wah']
-        assert exporter.cephadm_cache.errors == ['host thread stopped']
-
-    # Test the requesthandler does the right thing with invalid methods...
-    # ie. return a "501" - Not Implemented / Unsupported Method
-    def test_invalid_method_HEAD(self):
-        hdrs={"Authorization":f"Bearer {TestCephadmExporter.token}"}
-        req=Request("http://localhost:9443/v1/metadata/health",headers=hdrs, method="HEAD")
-        with pytest.raises(HTTPError, match=r"HTTP Error 501: .*") as e:
-            urlopen(req)
-
-    def test_invalid_method_DELETE(self):
-        hdrs={"Authorization":f"Bearer {TestCephadmExporter.token}"}
-        req=Request("http://localhost:9443/v1/metadata/health",headers=hdrs, method="DELETE")
-        with pytest.raises(HTTPError, match=r"HTTP Error 501: .*") as e:
-            urlopen(req)
-
-    def test_invalid_method_POST(self):
-        hdrs={"Authorization":f"Bearer {TestCephadmExporter.token}"}
-        req=Request("http://localhost:9443/v1/metadata/health",headers=hdrs, method="POST")
-        with pytest.raises(HTTPError, match=r"HTTP Error 501: .*") as e:
-            urlopen(req)
-
-    def test_invalid_method_PUT(self):
-        hdrs={"Authorization":f"Bearer {TestCephadmExporter.token}"}
-        req=Request("http://localhost:9443/v1/metadata/health",headers=hdrs, method="PUT")
-        with pytest.raises(HTTPError, match=r"HTTP Error 501: .*") as e:
-            urlopen(req)
-
-    def test_invalid_method_CONNECT(self):
-        hdrs={"Authorization":f"Bearer {TestCephadmExporter.token}"}
-        req=Request("http://localhost:9443/v1/metadata/health",headers=hdrs, method="CONNECT")
-        with pytest.raises(HTTPError, match=r"HTTP Error 501: .*") as e:
-            urlopen(req)
-
-    def test_invalid_method_TRACE(self):
-        hdrs={"Authorization":f"Bearer {TestCephadmExporter.token}"}
-        req=Request("http://localhost:9443/v1/metadata/health",headers=hdrs, method="TRACE")
-        with pytest.raises(HTTPError, match=r"HTTP Error 501: .*") as e:
-            urlopen(req)
-
-    def test_invalid_method_OPTIONS(self):
-        hdrs={"Authorization":f"Bearer {TestCephadmExporter.token}"}
-        req=Request("http://localhost:9443/v1/metadata/health",headers=hdrs, method="OPTIONS")
-        with pytest.raises(HTTPError, match=r"HTTP Error 501: .*") as e:
-            urlopen(req)
-
-    def test_invalid_method_PATCH(self):
-        hdrs={"Authorization":f"Bearer {TestCephadmExporter.token}"}
-        req=Request("http://localhost:9443/v1/metadata/health",headers=hdrs, method="PATCH")
-        with pytest.raises(HTTPError, match=r"HTTP Error 501: .*") as e:
-            urlopen(req)
-
-    def test_ipv4_subnet(self):
-        rc, v, msg = cd.check_subnet('192.168.1.0/24')
-        assert rc == 0 and v[0] == 4
-    
-    def test_ipv4_subnet_list(self):
-        rc, v, msg = cd.check_subnet('192.168.1.0/24,10.90.90.0/24')
-        assert rc == 0 and not msg
-    
-    def test_ipv4_subnet_badlist(self):
-        rc, v, msg = cd.check_subnet('192.168.1.0/24,192.168.1.1')
-        assert rc == 1 and msg
-
-    def test_ipv4_subnet_mixed(self):
-        rc, v, msg = cd.check_subnet('192.168.100.0/24,fe80::/64')
-        assert rc == 0 and v == [4,6]
-
-    def test_ipv6_subnet(self):
-        rc, v, msg = cd.check_subnet('fe80::/64')
-        assert rc == 0 and v[0] == 6
-    
-    def test_subnet_mask_missing(self):
-        rc, v, msg = cd.check_subnet('192.168.1.58')
-        assert rc == 1 and msg
-    
-    def test_subnet_mask_junk(self):
-        rc, v, msg = cd.check_subnet('wah')
-        assert rc == 1 and msg
-
-
 class TestMaintenance:
     systemd_target = "ceph.00000000-0000-0000-0000-000000c0ffee.target"
     fsid = '0ea8cdd0-1bbf-11ec-a9c7-5254002763fa'
 
     def test_systemd_target_OK(self, tmp_path):
-        base = tmp_path 
+        base = tmp_path
         wants = base / "ceph.target.wants"
         wants.mkdir()
         target = wants / TestMaintenance.systemd_target
@@ -907,7 +651,7 @@ class TestMaintenance:
         assert cd.systemd_target_state(ctx, target.name)
 
     def test_systemd_target_NOTOK(self, tmp_path):
-        base = tmp_path 
+        base = tmp_path
         ctx = cd.CephadmContext()
         ctx.unit_dir = str(base)
         assert not cd.systemd_target_state(ctx, TestMaintenance.systemd_target)
@@ -1630,6 +1374,240 @@ class TestRmRepo:
         cd.command_rm_repo(ctx)
 
 
+class TestValidateRepo:
+
+    @pytest.mark.parametrize('values',
+        [
+            # Apt - no checks
+            dict(
+            version="",
+            release="pacific",
+            err_text="",
+            os_release=dedent("""
+            NAME="Ubuntu"
+            VERSION="20.04 LTS (Focal Fossa)"
+            ID=ubuntu
+            ID_LIKE=debian
+            PRETTY_NAME="Ubuntu 20.04 LTS"
+            VERSION_ID="20.04"
+            HOME_URL="https://www.ubuntu.com/"
+            SUPPORT_URL="https://help.ubuntu.com/"
+            BUG_REPORT_URL="https://bugs.launchpad.net/ubuntu/"
+            PRIVACY_POLICY_URL="https://www.ubuntu.com/legal/terms-and-policies/privacy-policy"
+            VERSION_CODENAME=focal
+            UBUNTU_CODENAME=focal
+            """)),
+
+            # YumDnf on Centos8 - OK
+            dict(
+            version="",
+            release="pacific",
+            err_text="",
+            os_release=dedent("""
+            NAME="CentOS Linux"
+            VERSION="8 (Core)"
+            ID="centos"
+            ID_LIKE="rhel fedora"
+            VERSION_ID="8"
+            PLATFORM_ID="platform:el8"
+            PRETTY_NAME="CentOS Linux 8 (Core)"
+            ANSI_COLOR="0;31"
+            CPE_NAME="cpe:/o:centos:centos:8"
+            HOME_URL="https://www.centos.org/"
+            BUG_REPORT_URL="https://bugs.centos.org/"
+
+            CENTOS_MANTISBT_PROJECT="CentOS-8"
+            CENTOS_MANTISBT_PROJECT_VERSION="8"
+            REDHAT_SUPPORT_PRODUCT="centos"
+            REDHAT_SUPPORT_PRODUCT_VERSION="8"
+            """)),
+
+            # YumDnf on Fedora - Fedora not supported
+            dict(
+            version="",
+            release="pacific",
+            err_text="does not build Fedora",
+            os_release=dedent("""
+            NAME="Fedora Linux"
+            VERSION="35 (Cloud Edition)"
+            ID=fedora
+            VERSION_ID=35
+            VERSION_CODENAME=""
+            PLATFORM_ID="platform:f35"
+            PRETTY_NAME="Fedora Linux 35 (Cloud Edition)"
+            ANSI_COLOR="0;38;2;60;110;180"
+            LOGO=fedora-logo-icon
+            CPE_NAME="cpe:/o:fedoraproject:fedora:35"
+            HOME_URL="https://fedoraproject.org/"
+            DOCUMENTATION_URL="https://docs.fedoraproject.org/en-US/fedora/f35/system-administrators-guide/"
+            SUPPORT_URL="https://ask.fedoraproject.org/"
+            BUG_REPORT_URL="https://bugzilla.redhat.com/"
+            REDHAT_BUGZILLA_PRODUCT="Fedora"
+            REDHAT_BUGZILLA_PRODUCT_VERSION=35
+            REDHAT_SUPPORT_PRODUCT="Fedora"
+            REDHAT_SUPPORT_PRODUCT_VERSION=35
+            PRIVACY_POLICY_URL="https://fedoraproject.org/wiki/Legal:PrivacyPolicy"
+            VARIANT="Cloud Edition"
+            VARIANT_ID=cloud
+            """)),
+
+            # YumDnf on Centos 7 - no pacific
+            dict(
+            version="",
+            release="pacific",
+            err_text="does not support pacific",
+            os_release=dedent("""
+            NAME="CentOS Linux"
+            VERSION="7 (Core)"
+            ID="centos"
+            ID_LIKE="rhel fedora"
+            VERSION_ID="7"
+            PRETTY_NAME="CentOS Linux 7 (Core)"
+            ANSI_COLOR="0;31"
+            CPE_NAME="cpe:/o:centos:centos:7"
+            HOME_URL="https://www.centos.org/"
+            BUG_REPORT_URL="https://bugs.centos.org/"
+
+            CENTOS_MANTISBT_PROJECT="CentOS-7"
+            CENTOS_MANTISBT_PROJECT_VERSION="7"
+            REDHAT_SUPPORT_PRODUCT="centos"
+            REDHAT_SUPPORT_PRODUCT_VERSION="7"
+            """)),
+
+            # YumDnf on Centos 7 - nothing after pacific
+            dict(
+            version="",
+            release="zillions",
+            err_text="does not support pacific",
+            os_release=dedent("""
+            NAME="CentOS Linux"
+            VERSION="7 (Core)"
+            ID="centos"
+            ID_LIKE="rhel fedora"
+            VERSION_ID="7"
+            PRETTY_NAME="CentOS Linux 7 (Core)"
+            ANSI_COLOR="0;31"
+            CPE_NAME="cpe:/o:centos:centos:7"
+            HOME_URL="https://www.centos.org/"
+            BUG_REPORT_URL="https://bugs.centos.org/"
+
+            CENTOS_MANTISBT_PROJECT="CentOS-7"
+            CENTOS_MANTISBT_PROJECT_VERSION="7"
+            REDHAT_SUPPORT_PRODUCT="centos"
+            REDHAT_SUPPORT_PRODUCT_VERSION="7"
+            """)),
+
+            # YumDnf on Centos 7 - nothing v16 or higher
+            dict(
+            version="v16.1.3",
+            release="",
+            err_text="does not support",
+            os_release=dedent("""
+            NAME="CentOS Linux"
+            VERSION="7 (Core)"
+            ID="centos"
+            ID_LIKE="rhel fedora"
+            VERSION_ID="7"
+            PRETTY_NAME="CentOS Linux 7 (Core)"
+            ANSI_COLOR="0;31"
+            CPE_NAME="cpe:/o:centos:centos:7"
+            HOME_URL="https://www.centos.org/"
+            BUG_REPORT_URL="https://bugs.centos.org/"
+
+            CENTOS_MANTISBT_PROJECT="CentOS-7"
+            CENTOS_MANTISBT_PROJECT_VERSION="7"
+            REDHAT_SUPPORT_PRODUCT="centos"
+            REDHAT_SUPPORT_PRODUCT_VERSION="7"
+            """)),
+        ])
+    @mock.patch('cephadm.find_executable', return_value='foo')
+    def test_distro_validation(self, find_executable, values, cephadm_fs):
+        os_release = values['os_release']
+        release = values['release']
+        version = values['version']
+        err_text = values['err_text']
+
+        cephadm_fs.create_file('/etc/os-release', contents=os_release)
+        ctx = cd.CephadmContext()
+        ctx.repo_url = 'http://localhost'
+        pkg = cd.create_packager(ctx, stable=release, version=version)
+
+        if err_text:
+            with pytest.raises(cd.Error, match=err_text):
+                pkg.validate()
+        else:
+            with mock.patch('cephadm.urlopen', return_value=None):
+                pkg.validate()
+
+    @pytest.mark.parametrize('values',
+        [
+            # Apt - not checked
+            dict(
+            version="",
+            release="pacific",
+            err_text="",
+            os_release=dedent("""
+            NAME="Ubuntu"
+            VERSION="20.04 LTS (Focal Fossa)"
+            ID=ubuntu
+            ID_LIKE=debian
+            PRETTY_NAME="Ubuntu 20.04 LTS"
+            VERSION_ID="20.04"
+            HOME_URL="https://www.ubuntu.com/"
+            SUPPORT_URL="https://help.ubuntu.com/"
+            BUG_REPORT_URL="https://bugs.launchpad.net/ubuntu/"
+            PRIVACY_POLICY_URL="https://www.ubuntu.com/legal/terms-and-policies/privacy-policy"
+            VERSION_CODENAME=focal
+            UBUNTU_CODENAME=focal
+            """)),
+
+            # YumDnf on Centos8 - force failure
+            dict(
+            version="",
+            release="foobar",
+            err_text="failed to fetch repository metadata",
+            os_release=dedent("""
+            NAME="CentOS Linux"
+            VERSION="8 (Core)"
+            ID="centos"
+            ID_LIKE="rhel fedora"
+            VERSION_ID="8"
+            PLATFORM_ID="platform:el8"
+            PRETTY_NAME="CentOS Linux 8 (Core)"
+            ANSI_COLOR="0;31"
+            CPE_NAME="cpe:/o:centos:centos:8"
+            HOME_URL="https://www.centos.org/"
+            BUG_REPORT_URL="https://bugs.centos.org/"
+
+            CENTOS_MANTISBT_PROJECT="CentOS-8"
+            CENTOS_MANTISBT_PROJECT_VERSION="8"
+            REDHAT_SUPPORT_PRODUCT="centos"
+            REDHAT_SUPPORT_PRODUCT_VERSION="8"
+            """)),
+        ])
+    @mock.patch('cephadm.find_executable', return_value='foo')
+    def test_http_validation(self, find_executable, values, cephadm_fs):
+        from urllib.error import HTTPError
+
+        os_release = values['os_release']
+        release = values['release']
+        version = values['version']
+        err_text = values['err_text']
+
+        cephadm_fs.create_file('/etc/os-release', contents=os_release)
+        ctx = cd.CephadmContext()
+        ctx.repo_url = 'http://localhost'
+        pkg = cd.create_packager(ctx, stable=release, version=version)
+
+        with mock.patch('cephadm.urlopen') as _urlopen:
+            _urlopen.side_effect = HTTPError(ctx.repo_url, 404, "not found", None, fp=None)
+            if err_text:
+                with pytest.raises(cd.Error, match=err_text):
+                    pkg.validate()
+            else:
+                pkg.validate()
+
+
 class TestPull:
 
     @mock.patch('time.sleep')
@@ -1658,7 +1636,7 @@ class TestPull:
 
 
 class TestApplySpec:
- 
+
     def test_parse_yaml(self, cephadm_fs):
         yaml = '''service_type: host
 hostname: vm-00
@@ -1682,7 +1660,7 @@ addr: 192.168.122.165'''
         retdic = [{'service_type': 'host', 'hostname': 'vm-00', 'addr': '192.168.122.44', 'labels': '- example1- example2'},
                   {'service_type': 'host', 'hostname': 'vm-01', 'addr': '192.168.122.247', 'labels': '- grafana'},
                   {'service_type': 'host', 'hostname': 'vm-02', 'addr': '192.168.122.165'}]
-      
+
         with open('spec.yml') as f:
             dic = cd.parse_yaml_objs(f)
             assert dic == retdic
@@ -1706,11 +1684,157 @@ addr: 192.168.122.165'''
         assert retval == 1
 
 
+class TestSNMPGateway:
+    V2c_config = {
+        'snmp_community': 'public',
+        'destination': '192.168.1.10:162',
+        'snmp_version': 'V2c',
+    }
+    V3_no_priv_config = {
+        'destination': '192.168.1.10:162',
+        'snmp_version': 'V3',
+        'snmp_v3_auth_username': 'myuser',
+        'snmp_v3_auth_password': 'mypassword',
+        'snmp_v3_auth_protocol': 'SHA',
+        'snmp_v3_engine_id': '8000C53F00000000',
+    }
+    V3_priv_config = {
+        'destination': '192.168.1.10:162',
+        'snmp_version': 'V3',
+        'snmp_v3_auth_username': 'myuser',
+        'snmp_v3_auth_password': 'mypassword',
+        'snmp_v3_auth_protocol': 'SHA',
+        'snmp_v3_priv_protocol': 'DES',
+        'snmp_v3_priv_password': 'mysecret',
+        'snmp_v3_engine_id': '8000C53F00000000',
+    }
+    no_destination_config = {
+        'snmp_version': 'V3',
+        'snmp_v3_auth_username': 'myuser',
+        'snmp_v3_auth_password': 'mypassword',
+        'snmp_v3_auth_protocol': 'SHA',
+        'snmp_v3_priv_protocol': 'DES',
+        'snmp_v3_priv_password': 'mysecret',
+        'snmp_v3_engine_id': '8000C53F00000000',
+    }
+    bad_version_config = {
+        'snmp_community': 'public',
+        'destination': '192.168.1.10:162',
+        'snmp_version': 'V1',
+    }
 
+    def test_unit_run_V2c(self, cephadm_fs):
+        fsid = 'ca734440-3dc6-11ec-9b98-5254002537a6'
+        with with_cephadm_ctx(['--image=docker.io/maxwo/snmp-notifier:v1.2.1'], list_networks={}) as ctx:
+            import json
+            ctx.config_json = json.dumps(self.V2c_config)
+            ctx.fsid = fsid
+            ctx.tcp_ports = '9464'
+            cd.get_parm.return_value = self.V2c_config
+            c = cd.get_container(ctx, fsid, 'snmp-gateway', 'daemon_id')
 
+            cd.make_data_dir(ctx, fsid, 'snmp-gateway', 'daemon_id')
 
+            cd.create_daemon_dirs(ctx, fsid, 'snmp-gateway', 'daemon_id', 0, 0)
+            with open(f'/var/lib/ceph/{fsid}/snmp-gateway.daemon_id/snmp-gateway.conf', 'r') as f:
+                conf = f.read().rstrip()
+                assert conf == 'SNMP_NOTIFIER_COMMUNITY=public'
 
+            cd.deploy_daemon_units(
+                ctx,
+                fsid,
+                0, 0,
+                'snmp-gateway',
+                'daemon_id',
+                c,
+                True, True
+            )
+            with open(f'/var/lib/ceph/{fsid}/snmp-gateway.daemon_id/unit.run', 'r') as f:
+                run_cmd = f.readlines()[-1].rstrip()
+                assert run_cmd.endswith('docker.io/maxwo/snmp-notifier:v1.2.1 --web.listen-address=:9464 --snmp.destination=192.168.1.10:162 --snmp.version=V2c --log.level=info --snmp.trap-description-template=/etc/snmp_notifier/description-template.tpl')
 
+    def test_unit_run_V3_noPriv(self, cephadm_fs):
+        fsid = 'ca734440-3dc6-11ec-9b98-5254002537a6'
+        with with_cephadm_ctx(['--image=docker.io/maxwo/snmp-notifier:v1.2.1'], list_networks={}) as ctx:
+            import json
+            ctx.config_json = json.dumps(self.V3_no_priv_config)
+            ctx.fsid = fsid
+            ctx.tcp_ports = '9465'
+            cd.get_parm.return_value = self.V3_no_priv_config
+            c = cd.get_container(ctx, fsid, 'snmp-gateway', 'daemon_id')
 
+            cd.make_data_dir(ctx, fsid, 'snmp-gateway', 'daemon_id')
 
-  
+            cd.create_daemon_dirs(ctx, fsid, 'snmp-gateway', 'daemon_id', 0, 0)
+            with open(f'/var/lib/ceph/{fsid}/snmp-gateway.daemon_id/snmp-gateway.conf', 'r') as f:
+                conf = f.read()
+                assert conf == 'SNMP_NOTIFIER_AUTH_USERNAME=myuser\nSNMP_NOTIFIER_AUTH_PASSWORD=mypassword\n'
+
+            cd.deploy_daemon_units(
+                ctx,
+                fsid,
+                0, 0,
+                'snmp-gateway',
+                'daemon_id',
+                c,
+                True, True
+            )
+            with open(f'/var/lib/ceph/{fsid}/snmp-gateway.daemon_id/unit.run', 'r') as f:
+                run_cmd = f.readlines()[-1].rstrip()
+                assert run_cmd.endswith('docker.io/maxwo/snmp-notifier:v1.2.1 --web.listen-address=:9465 --snmp.destination=192.168.1.10:162 --snmp.version=V3 --log.level=info --snmp.trap-description-template=/etc/snmp_notifier/description-template.tpl --snmp.authentication-enabled --snmp.authentication-protocol=SHA --snmp.security-engine-id=8000C53F00000000')
+
+    def test_unit_run_V3_Priv(self, cephadm_fs):
+        fsid = 'ca734440-3dc6-11ec-9b98-5254002537a6'
+        with with_cephadm_ctx(['--image=docker.io/maxwo/snmp-notifier:v1.2.1'], list_networks={}) as ctx:
+            import json
+            ctx.config_json = json.dumps(self.V3_priv_config)
+            ctx.fsid = fsid
+            ctx.tcp_ports = '9464'
+            cd.get_parm.return_value = self.V3_priv_config
+            c = cd.get_container(ctx, fsid, 'snmp-gateway', 'daemon_id')
+
+            cd.make_data_dir(ctx, fsid, 'snmp-gateway', 'daemon_id')
+
+            cd.create_daemon_dirs(ctx, fsid, 'snmp-gateway', 'daemon_id', 0, 0)
+            with open(f'/var/lib/ceph/{fsid}/snmp-gateway.daemon_id/snmp-gateway.conf', 'r') as f:
+                conf = f.read()
+                assert conf == 'SNMP_NOTIFIER_AUTH_USERNAME=myuser\nSNMP_NOTIFIER_AUTH_PASSWORD=mypassword\nSNMP_NOTIFIER_PRIV_PASSWORD=mysecret\n'
+
+            cd.deploy_daemon_units(
+                ctx,
+                fsid,
+                0, 0,
+                'snmp-gateway',
+                'daemon_id',
+                c,
+                True, True
+            )
+            with open(f'/var/lib/ceph/{fsid}/snmp-gateway.daemon_id/unit.run', 'r') as f:
+                run_cmd = f.readlines()[-1].rstrip()
+                assert run_cmd.endswith('docker.io/maxwo/snmp-notifier:v1.2.1 --web.listen-address=:9464 --snmp.destination=192.168.1.10:162 --snmp.version=V3 --log.level=info --snmp.trap-description-template=/etc/snmp_notifier/description-template.tpl --snmp.authentication-enabled --snmp.authentication-protocol=SHA --snmp.security-engine-id=8000C53F00000000 --snmp.private-enabled --snmp.private-protocol=DES')
+
+    def test_unit_run_no_dest(self, cephadm_fs):
+        fsid = 'ca734440-3dc6-11ec-9b98-5254002537a6'
+        with with_cephadm_ctx(['--image=docker.io/maxwo/snmp-notifier:v1.2.1'], list_networks={}) as ctx:
+            import json
+            ctx.config_json = json.dumps(self.no_destination_config)
+            ctx.fsid = fsid
+            ctx.tcp_ports = '9464'
+            cd.get_parm.return_value = self.no_destination_config
+
+            with pytest.raises(Exception) as e:
+                c = cd.get_container(ctx, fsid, 'snmp-gateway', 'daemon_id')
+            assert str(e.value) == "config is missing destination attribute(<ip>:<port>) of the target SNMP listener"
+
+    def test_unit_run_bad_version(self, cephadm_fs):
+        fsid = 'ca734440-3dc6-11ec-9b98-5254002537a6'
+        with with_cephadm_ctx(['--image=docker.io/maxwo/snmp-notifier:v1.2.1'], list_networks={}) as ctx:
+            import json
+            ctx.config_json = json.dumps(self.bad_version_config)
+            ctx.fsid = fsid
+            ctx.tcp_ports = '9464'
+            cd.get_parm.return_value = self.bad_version_config
+
+            with pytest.raises(Exception) as e:
+                c = cd.get_container(ctx, fsid, 'snmp-gateway', 'daemon_id')
+            assert str(e.value) == 'not a valid snmp version: V1'

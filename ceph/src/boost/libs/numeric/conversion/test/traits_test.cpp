@@ -22,7 +22,7 @@
 #include <boost/numeric/conversion/udt_builtin_mixture.hpp>
 #include <boost/numeric/conversion/is_subranged.hpp>
 
-#ifdef __BORLANDC__
+#ifdef BOOST_BORLANDC
 #pragma hdrstop
 #endif
 

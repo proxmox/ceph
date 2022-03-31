@@ -19,7 +19,7 @@ template <typename P, bool ClockWise, bool Closed>
 void test_spikes_in_ticket_8364()
 {
     ut_settings ignore_validity;
-    ignore_validity.test_validity = false;
+    ignore_validity.set_test_validity(false);
 
     // See: https://svn.boost.org/trac/boost/ticket/8364
     //_TPolygon<T> polygon( "MULTIPOLYGON(((1031 1056,3232 1056,3232 2856,1031 2856)))" );
@@ -34,7 +34,7 @@ void test_spikes_in_ticket_8364()
     typedef bg::model::polygon<P, ClockWise, Closed> polygon;
     typedef bg::model::multi_polygon<polygon> multi_polygon;
 
-    // The difference of polygons below result in a spike. The spike should be there, it is also generated in ttmath,
+    // The difference of polygons below result in a spike. The spike should be there, it was also generated in ttmath,
     // and (e.g.) in SQL Server. However, using int-coordinates, the spike makes the polygon invalid. Therefore it is now (since August 2013) checked and removed.
 
 #ifdef BOOST_GEOMETRY_TEST_FAILURES
@@ -109,13 +109,6 @@ int test_main(int, char* [])
     test_spikes_in_ticket_8364<bg::model::d2::point_xy<int>, false, false>();
     test_spikes_in_ticket_8365<bg::model::d2::point_xy<int>, true, true >();
     test_spikes_in_ticket_8365<bg::model::d2::point_xy<int>, false, false >();
-
-#ifdef HAVE_TTMATH
-    std::cout << "Testing TTMATH" << std::endl;
-    test_spikes_in_ticket_8364<bg::model::d2::point_xy<ttmath_big>, true, true>();
-    test_spikes_in_ticket_8365<bg::model::d2::point_xy<ttmath_big>, true, true>();
-#endif
-
     return 0;
 }
 

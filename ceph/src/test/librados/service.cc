@@ -14,6 +14,7 @@
 #include "gtest/gtest.h"
 #include "test/unit.cc"
 
+using namespace std;
 using namespace librados;
 
 TEST(LibRadosService, RegisterEarly) {
@@ -120,7 +121,7 @@ TEST(LibRadosService, StatusFormat) {
     });
   }
 
-  int retry = 15;
+  int retry = 60; // mon thrashing may make this take a long time
   while (retry) {
     rados_t cluster;
 

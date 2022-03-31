@@ -2,7 +2,7 @@
 //  Copyright (c) 2012 Artyom Beilis (Tonkikh)
 //
 //  Distributed under the Boost Software License, Version 1.0. (See
-//  accompanying file LICENSE_1_0.txt or copy at
+//  accompanying file LICENSE or copy at
 //  http://www.boost.org/LICENSE_1_0.txt)
 //
 #ifdef _MSC_VER
@@ -12,7 +12,8 @@
 #include <boost/nowide/cstdlib.hpp>
 
 #include <boost/nowide/args.hpp>
-#include <boost/nowide/detail/convert.hpp>
+#include <boost/nowide/utf/convert.hpp>
+#include <boost/nowide/utf/utf.hpp>
 #include <algorithm>
 #include <cstdlib>
 #include <cstring>
@@ -35,8 +36,8 @@ bool is_ascii(const std::string& s)
 std::string replace_non_ascii(const std::string& s)
 {
     std::string::const_iterator it = s.begin();
-    namespace utf = boost::nowide::detail::utf;
-    typedef utf::utf_traits<char> utf8;
+    namespace utf = boost::nowide::utf;
+    using utf8 = utf::utf_traits<char>;
     std::string result;
     result.reserve(s.size());
     while(it != s.end())

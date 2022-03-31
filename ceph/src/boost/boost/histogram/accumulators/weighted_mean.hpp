@@ -7,10 +7,10 @@
 #ifndef BOOST_HISTOGRAM_ACCUMULATORS_WEIGHTED_MEAN_HPP
 #define BOOST_HISTOGRAM_ACCUMULATORS_WEIGHTED_MEAN_HPP
 
-#include <boost/assert.hpp>
 #include <boost/core/nvp.hpp>
 #include <boost/histogram/fwd.hpp> // for weighted_mean<>
 #include <boost/histogram/weight.hpp>
+#include <cassert>
 #include <type_traits>
 
 namespace boost {
@@ -100,10 +100,17 @@ public:
     return sum_of_weights_squared_;
   }
 
-  /// Return mean of accumulated weighted samples
+  /** Return mean value of accumulated weighted samples.
+
+    The result is undefined, if `sum_of_weights() == 0`.
+  */
   const_reference value() const noexcept { return weighted_mean_; }
 
-  /// Return variance of accumulated weighted samples
+  /** Return variance of accumulated weighted samples
+
+    The result is undefined, if `sum_of_weights() == 0` or
+    `sum_of_weights() == sum_of_weights_squared()`.
+  */
   value_type variance() const {
     return sum_of_weighted_deltas_squared_ /
            (sum_of_weights_ - sum_of_weights_squared_ / sum_of_weights_);

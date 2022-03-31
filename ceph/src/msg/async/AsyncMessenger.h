@@ -401,7 +401,7 @@ public:
     deleted_conns.emplace(std::move(conn));
     conn->unregister();
 
-    if (deleted_conns.size() >= cct->_conf.get_val<uint64_t>("ms_async_reap_threshold")) {
+    if (deleted_conns.size() >= cct->_conf->ms_async_reap_threshold) {
       local_worker->center.dispatch_event_external(reap_handler);
     }
   }

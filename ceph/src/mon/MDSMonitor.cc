@@ -86,19 +86,19 @@ static const string MDS_HEALTH_PREFIX("mds_health");
  */
 namespace TOPNSPC::common {
 template<> bool cmd_getval(const cmdmap_t& cmdmap,
-			   const std::string& k, mds_gid_t &val)
+			   std::string_view k, mds_gid_t &val)
 {
   return cmd_getval(cmdmap, k, (int64_t&)val);
 }
 
 template<> bool cmd_getval(const cmdmap_t& cmdmap,
-			   const std::string& k, mds_rank_t &val)
+			   std::string_view k, mds_rank_t &val)
 {
   return cmd_getval(cmdmap, k, (int64_t&)val);
 }
 
 template<> bool cmd_getval(const cmdmap_t& cmdmap,
-			   const std::string& k, MDSMap::DaemonState &val)
+			   std::string_view k, MDSMap::DaemonState &val)
 {
   return cmd_getval(cmdmap, k, (int64_t&)val);
 }
@@ -950,8 +950,7 @@ bool MDSMonitor::preprocess_command(MonOpRequestRef op)
 
   string prefix;
   cmd_getval(cmdmap, "prefix", prefix);
-  string format;
-  cmd_getval(cmdmap, "format", format, string("plain"));
+  string format = cmd_getval_or<string>(cmdmap, "format", "plain");
   std::unique_ptr<Formatter> f(Formatter::create(format));
 
   MonSession *session = op->get_session();
@@ -1233,6 +1232,24 @@ bool MDSMonitor::preprocess_command(MonOpRequestRef op)
       }
     }
     r = 0;
+  } else if (prefix == "fs lsflags") {
+    string fs_name;
+    cmd_getval(cmdmap, "fs_name", fs_name);
+    const auto &fs = fsmap.get_filesystem(fs_name);
+    if (!fs) {
+      ss << "filesystem '" << fs_name << "' not found";
+      r = -ENOENT;
+    } else {
+      const MDSMap &mds_map = fs->mds_map;
+      if (f) {
+        mds_map.dump_flags_state(f.get());
+        f->flush(ds);
+      }
+      else {
+        mds_map.print_flags(ds);
+      }
+      r = 0;
+    }
   }
 
 out:
@@ -1774,7 +1791,7 @@ void MDSMonitor::check_sub(Subscription *sub)
         return;
       }
     }
-    dout(10) << __func__ << ": is_mds=" << is_mds << ", fscid= " << fscid << dendl;
+    dout(10) << __func__ << ": is_mds=" << is_mds << ", fscid=" << fscid << dendl;
 
     // Work out the effective latest epoch
     const MDSMap *mds_map = nullptr;
@@ -1805,8 +1822,7 @@ void MDSMonitor::check_sub(Subscription *sub)
     if (sub->next > mds_map->epoch) {
       return;
     }
-    auto msg = make_message<MMDSMap>(mon.monmap->fsid, *mds_map,
-			             mds_map->fs_name);
+    auto msg = make_message<MMDSMap>(mon.monmap->fsid, *mds_map);
 
     sub->session->con->send_message(msg.detach());
     if (sub->onetime) {
@@ -2125,6 +2141,11 @@ bool MDSMonitor::check_health(FSMap& fsmap, bool* propose_osdmap)
 
   // check beacon timestamps
   std::vector<mds_gid_t> to_remove;
+  const bool mon_down = mon.is_mon_down();
+  const auto mds_beacon_mon_down_grace =
+      g_conf().get_val<std::chrono::seconds>("mds_beacon_mon_down_grace");
+  const auto quorum_age = std::chrono::seconds(mon.quorum_age());
+  const bool new_quorum = quorum_age < mds_beacon_mon_down_grace;
   for (auto it = last_beacon.begin(); it != last_beacon.end(); ) {
     auto& [gid, beacon_info] = *it;
     auto since_last = std::chrono::duration<double>(now-beacon_info.stamp);
@@ -2141,6 +2162,14 @@ bool MDSMonitor::check_health(FSMap& fsmap, bool* propose_osdmap)
               << " (gid: " << gid << " addr: " << info.addrs
               << " state: " << ceph_mds_state_name(info.state) << ")"
               << " since " << since_last.count() << dendl;
+      if ((mon_down || new_quorum) && since_last < mds_beacon_mon_down_grace) {
+        /* The MDS may be sending beacons to a monitor not yet in quorum or
+         * temporarily partitioned. Hold off on removal for a little longer...
+         */
+        dout(10) << "deferring removal for mds_beacon_mon_down_grace during MON_DOWN" << dendl;
+        ++it;
+        continue;
+      }
       // If the OSDMap is writeable, we can blocklist things, so we can
       // try failing any laggy MDS daemons.  Consider each one for failure.
       if (!info.laggy()) {

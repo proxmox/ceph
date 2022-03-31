@@ -16,7 +16,7 @@
 
 #define dout_subsys ceph_subsys_rgw
 
-using ceph::crypto::MD5;
+using namespace std;
 using namespace librados;
 using namespace boost;
 using ceph::crypto::SHA1;
@@ -37,13 +37,13 @@ seed::~seed()
   store = NULL;
 }
 
-void seed::init(struct req_state *p_req, rgw::sal::RGWRadosStore *p_store)
+void seed::init(struct req_state *p_req, rgw::sal::Store* p_store)
 {
   s = p_req;
   store = p_store;
 }
 
-int seed::get_torrent_file(rgw::sal::RGWObject* object,
+int seed::get_torrent_file(rgw::sal::Object* object,
                            uint64_t &total_len,
                            ceph::bufferlist &bl_data,
                            rgw_obj &obj)
@@ -249,15 +249,8 @@ int seed::save_torrent_file(optional_yield y)
 {
   int op_ret = 0;
   string key = RGW_OBJ_TORRENT;
-  rgw_obj obj(s->bucket->get_key(), s->object->get_name());
 
-  rgw_raw_obj raw_obj;
-  store->getRados()->obj_to_raw(s->bucket->get_info().placement_rule, obj, &raw_obj);
-
-  auto obj_ctx = store->svc()->sysobj->init_obj_ctx();
-  auto sysobj = obj_ctx.get_obj(raw_obj);
-
-  op_ret = sysobj.omap().set(s, key, bl, y);
+  op_ret = s->object->omap_set_val_by_key(s, key, bl, false, y);
   if (op_ret < 0)
   {
     ldpp_dout(s, 0) << "ERROR: failed to omap_set() op_ret = " << op_ret << dendl;

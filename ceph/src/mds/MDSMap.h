@@ -37,16 +37,16 @@
 #include "mds/mdstypes.h"
 #include "mds/cephfs_features.h"
 
-#define MDS_FEATURE_INCOMPAT_BASE CompatSet::Feature(1, "base v0.20")
-#define MDS_FEATURE_INCOMPAT_CLIENTRANGES CompatSet::Feature(2, "client writeable ranges")
-#define MDS_FEATURE_INCOMPAT_FILELAYOUT CompatSet::Feature(3, "default file layouts on dirs")
-#define MDS_FEATURE_INCOMPAT_DIRINODE CompatSet::Feature(4, "dir inode in separate object")
-#define MDS_FEATURE_INCOMPAT_ENCODING CompatSet::Feature(5, "mds uses versioned encoding")
-#define MDS_FEATURE_INCOMPAT_OMAPDIRFRAG CompatSet::Feature(6, "dirfrag is stored in omap")
-#define MDS_FEATURE_INCOMPAT_INLINE CompatSet::Feature(7, "mds uses inline data")
-#define MDS_FEATURE_INCOMPAT_NOANCHOR CompatSet::Feature(8, "no anchor table")
-#define MDS_FEATURE_INCOMPAT_FILE_LAYOUT_V2 CompatSet::Feature(9, "file layout v2")
-#define MDS_FEATURE_INCOMPAT_SNAPREALM_V2 CompatSet::Feature(10, "snaprealm v2")
+static inline const auto MDS_FEATURE_INCOMPAT_BASE = CompatSet::Feature(1, "base v0.20");
+static inline const auto MDS_FEATURE_INCOMPAT_CLIENTRANGES = CompatSet::Feature(2, "client writeable ranges");
+static inline const auto MDS_FEATURE_INCOMPAT_FILELAYOUT = CompatSet::Feature(3, "default file layouts on dirs");
+static inline const auto MDS_FEATURE_INCOMPAT_DIRINODE = CompatSet::Feature(4, "dir inode in separate object");
+static inline const auto MDS_FEATURE_INCOMPAT_ENCODING = CompatSet::Feature(5, "mds uses versioned encoding");
+static inline const auto MDS_FEATURE_INCOMPAT_OMAPDIRFRAG = CompatSet::Feature(6, "dirfrag is stored in omap");
+static inline const auto MDS_FEATURE_INCOMPAT_INLINE = CompatSet::Feature(7, "mds uses inline data");
+static inline const auto MDS_FEATURE_INCOMPAT_NOANCHOR = CompatSet::Feature(8, "no anchor table");
+static inline const auto MDS_FEATURE_INCOMPAT_FILE_LAYOUT_V2 = CompatSet::Feature(9, "file layout v2");
+static inline const auto MDS_FEATURE_INCOMPAT_SNAPREALM_V2 = CompatSet::Feature(10, "snaprealm v2");
 
 #define MDS_FS_NAME_DEFAULT "cephfs"
 
@@ -215,6 +215,7 @@ public:
   void clear_flag(int f) { flags &= ~f; }
 
   std::string_view get_fs_name() const {return fs_name;}
+  void set_fs_name(std::string new_fs_name) { fs_name = std::move(new_fs_name); }
 
   void set_snaps_allowed() {
     set_flag(CEPH_MDSMAP_ALLOW_SNAPS);
@@ -241,6 +242,7 @@ public:
   }
   void clear_multimds_snaps_allowed() { clear_flag(CEPH_MDSMAP_ALLOW_MULTIMDS_SNAPS); }
   bool allows_multimds_snaps() const { return test_flag(CEPH_MDSMAP_ALLOW_MULTIMDS_SNAPS); }
+  bool joinable() const { return !test_flag(CEPH_MDSMAP_NOT_JOINABLE); }
 
   epoch_t get_epoch() const { return epoch; }
   void inc_epoch() { epoch++; }
@@ -456,6 +458,9 @@ public:
   }
 
   bool is_boot(mds_rank_t m) const { return get_state(m) == STATE_BOOT; }
+  bool is_bootstrapping(mds_rank_t m) const {
+    return is_creating(m) || is_starting(m) || is_replay(m);
+  }
   bool is_creating(mds_rank_t m) const { return get_state(m) == STATE_CREATING; }
   bool is_starting(mds_rank_t m) const { return get_state(m) == STATE_STARTING; }
   bool is_replay(mds_rank_t m) const   { return get_state(m) == STATE_REPLAY; }
@@ -573,8 +578,10 @@ public:
 
   void print(std::ostream& out) const;
   void print_summary(ceph::Formatter *f, std::ostream *out) const;
+  void print_flags(std::ostream& out) const;
 
   void dump(ceph::Formatter *f) const;
+  void dump_flags_state(Formatter *f) const;
   static void generate_test_instances(std::list<MDSMap*>& ls);
 
   static bool state_transition_valid(DaemonState prev, DaemonState next);
@@ -633,7 +640,13 @@ protected:
   bool inline_data_enabled = false;
 
   uint64_t cached_up_features = 0;
-
+private:
+  inline static const std::map<int, std::string> flag_display = {
+    {CEPH_MDSMAP_NOT_JOINABLE, "joinable"}, //inverse for user display
+    {CEPH_MDSMAP_ALLOW_SNAPS, "allow_snaps"},
+    {CEPH_MDSMAP_ALLOW_MULTIMDS_SNAPS, "allow_multimds_snaps"},
+    {CEPH_MDSMAP_ALLOW_STANDBY_REPLAY, "allow_standby_replay"}
+  };
 };
 WRITE_CLASS_ENCODER_FEATURES(MDSMap::mds_info_t)
 WRITE_CLASS_ENCODER_FEATURES(MDSMap)

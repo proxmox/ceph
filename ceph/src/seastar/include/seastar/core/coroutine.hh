@@ -28,6 +28,7 @@
 #endif
 
 #include <seastar/core/std-coroutine.hh>
+#include <seastar/coroutine/exception.hh>
 
 namespace seastar {
 
@@ -48,6 +49,11 @@ public:
             _promise.set_value(std::forward<U>(value)...);
         }
 
+        void return_value(coroutine::exception ce) noexcept {
+            _promise.set_exception(std::move(ce.eptr));
+        }
+
+        [[deprecated("Forwarding coroutine returns are deprecated as too dangerous. Use 'co_return co_await ...' until explicit syntax is available.")]]
         void return_value(future<T>&& fut) noexcept {
             fut.forward_to(std::move(_promise));
         }
@@ -86,13 +92,6 @@ public:
             _promise.set_value();
         }
 
-// Clang complains if both return_value and return_void are defined
-#if !defined(__clang__)
-        void return_value(future<>&& fut) noexcept {
-            fut.forward_to(std::move(_promise));
-        }
-#endif
-
         void unhandled_exception() noexcept {
             _promise.set_exception(std::current_exception());
         }
@@ -123,12 +122,16 @@ public:
     awaiter(awaiter&&) = delete;
 
     bool await_ready() const noexcept {
-        return _future.available();
+        return _future.available() && !need_preempt();
     }
 
     template<typename U>
     void await_suspend(SEASTAR_INTERNAL_COROUTINE_NAMESPACE::coroutine_handle<U> hndl) noexcept {
-        _future.set_coroutine(hndl.promise());
+        if (!_future.available()) {
+            _future.set_coroutine(hndl.promise());
+        } else {
+            schedule(&hndl.promise());
+        }
     }
 
     std::tuple<T...> await_resume() { return _future.get(); }
@@ -144,12 +147,16 @@ public:
     awaiter(awaiter&&) = delete;
 
     bool await_ready() const noexcept {
-        return _future.available();
+        return _future.available() && !need_preempt();
     }
 
     template<typename U>
     void await_suspend(SEASTAR_INTERNAL_COROUTINE_NAMESPACE::coroutine_handle<U> hndl) noexcept {
-        _future.set_coroutine(hndl.promise());
+        if (!_future.available()) {
+            _future.set_coroutine(hndl.promise());
+        } else {
+            schedule(&hndl.promise());
+        }
     }
 
     T await_resume() { return _future.get0(); }
@@ -165,12 +172,16 @@ public:
     awaiter(awaiter&&) = delete;
 
     bool await_ready() const noexcept {
-        return _future.available();
+        return _future.available() && !need_preempt();
     }
 
     template<typename U>
     void await_suspend(SEASTAR_INTERNAL_COROUTINE_NAMESPACE::coroutine_handle<U> hndl) noexcept {
-        _future.set_coroutine(hndl.promise());
+        if (!_future.available()) {
+            _future.set_coroutine(hndl.promise());
+        } else {
+            schedule(&hndl.promise());
+        }
     }
 
     void await_resume() { _future.get(); }

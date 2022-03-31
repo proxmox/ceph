@@ -1,3 +1,250 @@
+Version 306:
+
+* Revert removal of lowest_layer_type from test stream.
+
+--------------------------------------------------------------------------------
+
+Version 305:
+
+* Fix documentation build.
+
+--------------------------------------------------------------------------------
+
+Version 304:
+
+* Fix C++20 coroutine tests.
+* Fix links to Bishop Fox Security Assessment.
+
+--------------------------------------------------------------------------------
+
+Version 303:
+
+* Add Bishop Fox Security Assessment.
+
+--------------------------------------------------------------------------------
+
+Version 302:
+
+* Fix assert when basic_stream used as underlying of ssl::stream with zero-length write.
+* Add Sec-* HTTP headers.
+* Fix nullptr implicit cast on `fields::set()`.
+
+--------------------------------------------------------------------------------
+
+Version 301:
+
+* Fix Travis CI bug.
+* Fix erroneous error when HTTP `body_limit` is `none`.
+* Fix unreachable code warning with MSVC.
+* Fix logic error in advance_server_flex.
+* Fix file open with append_existing flag on posix.
+* Websocket SSL `teardown` also tears down underlying TCP.
+* Update WebSocket examples to set TLS SNI.
+* Add handler tracking locations to websocket.
+* Add handler tracking locations to tcp teardown.
+* Eliminate spurious uninitialised variable warning in detect_ssl.
+* Add handler tracking locations to flat_stream.
+* Add handler tracking locations to detect_ssl.
+* Add handler tracking locations to icy_stream.
+* Add handler tracking locations to basic_stream.
+* Add handler tracking locations to http operations.
+
+API Changes:
+
+* Previously, `teardown` and `async_teardown` of a websocket connection over SSL
+  would only shut down the SSL layer, leaving the TCP layer connected. Now the 
+  SSL teardown will tear down both the SSL and TCP layers, cleanly shutting down 
+  the TCP connection and closing the socket.
+  Should the client expect the TCP socket to remain connected, users will need to 
+  re-engineer their code.
+
+--------------------------------------------------------------------------------
+
+Version 300:
+
+* Fix compile errors under Clang 3.4
+* Fix portability bug in websocket server sync example.
+
+--------------------------------------------------------------------------------
+
+Version 299:
+
+* Fix race in http-crawl example.
+
+--------------------------------------------------------------------------------
+
+Version 298:
+
+* Support BOOST_ASIO_NO_TS_EXECUTORS.
+* Use strand<> rather than legacy executor io_context::strand.
+* Use dispatch/post free functions to be independent of executor concept.
+* New name for polymorphic executor. Trait for detecting new executors.
+* Handler invoke and allocation hooks are deprecated.
+
+--------------------------------------------------------------------------------
+
+Version 297:
+
+* iless and iequal take part in Heterogeneous Lookup
+* Fix `max` compile error
+* Deprecate `string_param` (API Change)
+
+API Changes:
+
+* `string_param`, which was previously the argument type when setting field values 
+   has been replaced by `string_view`. Because of this, it is no longer possible to 
+   set message field values directly as integrals. 
+
+   Users are required to convert numeric arguments to a string type prior to calling 
+   `fields::set` et. al.
+   
+   Beast provides the non-allocating `to_static_string()` function for this purpose.
+   
+   To set Content-Length field manually, call `message::content_length`.
+
+--------------------------------------------------------------------------------
+
+Version 296:
+
+* Remove buffers_adapter.hpp (API Change)
+* Remove zlib error `invalid_code_lenths`(sic) (API Change)
+* Remove `core/type_traits.hpp` (API Change)
+* Remove `reset` function from `flat_static_buffer` (API Change)
+* Remove `mutable_data_type` from Dyanmic Buffers (API Change)
+* Remove deprecated lowest_layer from test::stream
+* Remove handler_pointer (API Change)
+* Remove websocket::role_type (API Change)
+* Remove accept_ex and handshake_ex variants (API Change)
+* Rename to BOOST_BEAST_ALLOW_DEPRECATED (API Change)
+
+API Changes:
+
+* The file `core/buffers_adapter.hpp` has been removed along with the deprecated
+  alias typename `buffers_adapter`. Affected programs should use 
+  `core/buffers_adapator.hpp` and the type `buffers_adaptor`.
+
+* The error code enum `invalid_code_lenths` was a synonym of `invalid_code_lengths`.
+  Affected programs should be modified to use `invalid_code_lengths`.
+
+* The `core/type_traits.hpp` public header has been removed and along with it
+  the type trait `is_completion_handler`. Beast uses the CompletionHandler correctness
+  checks provided by Asio. In a c++20 environment, these convert to concept checks.
+
+* The `reset` function has been removed from `flat_static_buffer`. Use the 
+  `clear` function instead.
+
+* Code that depends on `mutable_data_type` should be refactored to use
+  `mutable_buffers_type`. Classes affected are:
+  - `buffers_adaptor`
+  - `flat_buffer`
+  - `flat_static_buffer`
+  - `multi_buffer`
+  - `static_buffer`
+
+* handler_ptr has been removed. Users should use net::bind_handler and/or 
+bind_front_handler instead.
+
+* websocket::role_type has been removed. Users should use beast::role_type instead.
+
+* The following deprecated functions have been removed:
+  - websocket::async_accept_ex
+  - websocket::async_handshake_ex
+  - websocket::accept_ex
+  - websocket::handshake_ex
+
+Programs still using these names should be refactored to use the `decorator` feature and
+the remaining handshake and accept functions.
+
+* The macro BOOST_BEAST_NO_DEPRECATED will no longer be noticed by Beast. The only way to
+enable deprecated functionality is now the macro BOOST_BEAST_ALLOW_DEPRECATED which is 
+undefined by default. That is, all deprecated behaviour is disabled by default.
+
+--------------------------------------------------------------------------------
+
+Version 295:
+
+* Parser body_limit is optional (API Change)
+* Fix basic_stream expires_after (API Change)
+* Fix FILE namespace qualification
+
+API Changes:
+
+* The signature of basic_parser<>::body_limit(n) has changed. It now accepts an
+optional std::uint64_t. The caller may indicate that no body limit is required
+by calling body_limit(boost::none). The default limits remain in place in order
+to maintain 'safe by default' behaviour.
+
+* basic_stream::expires_after used to take a nanosecond duration type argument. This
+required users on systems where the steady_clock::duration_type was less accurate
+to explicity duration_cast when calling this function, making code non-portable.
+The duration type is now that of the embedded steady_clock.
+
+--------------------------------------------------------------------------------
+
+Version 294:
+
+* Fix FILE namespace qualification
+* Fix http read bytes_transferred (API Change)
+
+API Changes:
+
+The following functions did not previously report the number of bytes consumed
+by the HTTP parser:
+
+- http::read
+- http::read_header
+- http::read_some
+- http::async_read
+- http::async_read_header
+- http::async_read_some
+
+As of now, the `bytes_transferred` return value will indicate the number of bytes 
+consumed by the parser when parsing an http message.
+
+Actions Required:
+
+- Modify calling code which depends on the value returned from these functions.
+
+--------------------------------------------------------------------------------
+
+Version 293:
+
+* Fix async_connect documentation
+* Fix assert in websocket
+* No automatic User-Agent in WebSocket
+
+Behaviour Changes:
+
+* No automatic User-Agent in WebSocket
+  Beast websocket streams will no longer automatically set the
+  User-Agent HTTP header during client handshake. This header is not required
+  by the WebSocket standard. If this field is required, user code may set it
+  in the decorator
+
+--------------------------------------------------------------------------------
+
+Version 292:
+
+* Fix compile errors on Visual Studio with /std:c++latest
+* Fix standalone compilation error with std::string_view 
+* OpenSSL 1.0.2 or later is required
+* Fix c++20 deprecation warning in span_body
+
+--------------------------------------------------------------------------------
+
+Version 291:
+
+* Test websocket with use_awaitable
+* Test http write with use_awaitable
+* Test http read with use_awaitable
+* Fix use buffered_read_stream with use_awaitable
+* Implement is_completion_token_for trait
+* Test use_awaitable with basic_stream
+* Fix async_detect_ssl with use_awaitable
+* Add clang coroutines-ts to circleci config
+
+--------------------------------------------------------------------------------
+
 Version 290:
 
 * Travis build host now bionic

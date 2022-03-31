@@ -10,7 +10,7 @@
 #include "rgw_user.h"
 #include "rgw_op.h"
 #include "rgw_rest.h"
-
+#include "rgw_ratelimit.h"
 #include "include/ceph_assert.h"
 
 #include "common/WorkQueue.h"
@@ -32,22 +32,24 @@ namespace rgw::dmclock {
 }
 
 struct RGWProcessEnv {
-  rgw::sal::RGWRadosStore *store;
+  rgw::sal::Store* store;
   RGWREST *rest;
   OpsLogSink *olog;
   int port;
   std::string uri_prefix;
   std::shared_ptr<rgw::auth::StrategyRegistry> auth_registry;
+  //maybe there is a better place to store the rate limit data structure
+  ActiveRateLimiter* ratelimiting;
 };
 
 class RGWFrontendConfig;
 class RGWRequest;
 
 class RGWProcess {
-  deque<RGWRequest*> m_req_queue;
+  std::deque<RGWRequest*> m_req_queue;
 protected:
   CephContext *cct;
-  rgw::sal::RGWRadosStore* store;
+  rgw::sal::Store* store;
   rgw_auth_registry_ptr_t auth_registry;
   OpsLogSink* olog;
   ThreadPool m_tp;
@@ -122,7 +124,7 @@ public:
     m_tp.pause();
   }
 
-  void unpause_with_new_config(rgw::sal::RGWRadosStore* const store,
+  void unpause_with_new_config(rgw::sal::Store* const store,
                                rgw_auth_registry_ptr_t auth_registry) {
     this->store = store;
     this->auth_registry = std::move(auth_registry);
@@ -136,24 +138,6 @@ public:
     }
   }
 }; /* RGWProcess */
-
-class RGWFCGXProcess : public RGWProcess {
-  int max_connections;
-public:
-
-  /* have a bit more connections than threads so that requests are
-   * still accepted even if we're still processing older requests */
-  RGWFCGXProcess(CephContext* const cct,
-                 RGWProcessEnv* const pe,
-                 const int num_threads,
-                 RGWFrontendConfig* const conf)
-    : RGWProcess(cct, pe, num_threads, conf),
-      max_connections(num_threads + (num_threads >> 3)) {
-  }
-
-  void run() override;
-  void handle_request(const DoutPrefixProvider *dpp, RGWRequest* req) override;
-};
 
 class RGWProcessControlThread : public Thread {
   RGWProcess *pprocess;
@@ -175,13 +159,13 @@ public:
   void run() override;
   void checkpoint();
   void handle_request(const DoutPrefixProvider *dpp, RGWRequest* req) override;
-  void gen_request(const string& method, const string& resource,
+  void gen_request(const std::string& method, const std::string& resource,
 		  int content_length, std::atomic<bool>* fail_flag);
 
   void set_access_key(RGWAccessKey& key) { access_key = key; }
 };
 /* process stream request */
-extern int process_request(rgw::sal::RGWRadosStore* store,
+extern int process_request(rgw::sal::Store* store,
                            RGWREST* rest,
                            RGWRequest* req,
                            const std::string& frontend_prefix,
@@ -192,13 +176,15 @@ extern int process_request(rgw::sal::RGWRadosStore* store,
                            rgw::dmclock::Scheduler *scheduler,
                            std::string* user,
                            ceph::coarse_real_clock::duration* latency,
+                           std::shared_ptr<RateLimiter> ratelimit,
                            int* http_ret = nullptr);
 
 extern int rgw_process_authenticated(RGWHandler_REST* handler,
                                      RGWOp*& op,
                                      RGWRequest* req,
                                      req_state* s,
-				     optional_yield y,
+				                             optional_yield y,
+                                     rgw::sal::Store* store,
                                      bool skip_retarget = false);
 
 #if defined(def_dout_subsys)

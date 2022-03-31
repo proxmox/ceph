@@ -17,6 +17,7 @@ target_link_libraries( boost_conversion
     INTERFACE
         Boost::assert
         Boost::config
+        Boost::core
         Boost::smart_ptr
         Boost::throw_exception
         Boost::type_traits

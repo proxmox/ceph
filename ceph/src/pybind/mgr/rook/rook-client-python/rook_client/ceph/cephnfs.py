@@ -12,29 +12,19 @@ from .._helper import _omit, CrdObject, CrdObjectList, CrdClass
 
 class Rados(CrdObject):
     _properties = [
-        ('pool', 'pool', str, False, False),
-        ('namespace', 'namespace', str, False, False)
+        ('namespace', 'namespace', str, True, False),
+        ('pool', 'pool', str, True, False)
     ]        
 
     def __init__(self,
-                 pool=_omit,  # type: Optional[str]
-                 namespace=_omit,  # type: Optional[str]
+                 namespace,  # type: str
+                 pool,  # type: str
                  ):
         super(Rados, self).__init__(
-            pool=pool,
             namespace=namespace,
+            pool=pool,
         )
 
-    @property
-    def pool(self):
-        # type: () -> str
-        return self._property_impl('pool')
-    
-    @pool.setter
-    def pool(self, new_val):
-        # type: (Optional[str]) -> None
-        self._pool = new_val
-    
     @property
     def namespace(self):
         # type: () -> str
@@ -42,28 +32,877 @@ class Rados(CrdObject):
     
     @namespace.setter
     def namespace(self, new_val):
-        # type: (Optional[str]) -> None
+        # type: (str) -> None
         self._namespace = new_val
+    
+    @property
+    def pool(self):
+        # type: () -> str
+        return self._property_impl('pool')
+    
+    @pool.setter
+    def pool(self, new_val):
+        # type: (str) -> None
+        self._pool = new_val
+
+
+class ValuesList(CrdObjectList):
+    _items_type = str
+
+
+class MatchExpressionsItem(CrdObject):
+    _properties = [
+        ('key', 'key', str, True, False),
+        ('operator', 'operator', str, True, False),
+        ('values', 'values', 'ValuesList', False, False)
+    ]        
+
+    def __init__(self,
+                 key,  # type: str
+                 operator,  # type: str
+                 values=_omit,  # type: Optional[Union[List[str], CrdObjectList]]
+                 ):
+        super(MatchExpressionsItem, self).__init__(
+            key=key,
+            operator=operator,
+            values=values,
+        )
+
+    @property
+    def key(self):
+        # type: () -> str
+        return self._property_impl('key')
+    
+    @key.setter
+    def key(self, new_val):
+        # type: (str) -> None
+        self._key = new_val
+    
+    @property
+    def operator(self):
+        # type: () -> str
+        return self._property_impl('operator')
+    
+    @operator.setter
+    def operator(self, new_val):
+        # type: (str) -> None
+        self._operator = new_val
+    
+    @property
+    def values(self):
+        # type: () -> Union[List[str], CrdObjectList]
+        return self._property_impl('values')
+    
+    @values.setter
+    def values(self, new_val):
+        # type: (Optional[Union[List[str], CrdObjectList]]) -> None
+        self._values = new_val
+
+
+class MatchExpressionsList(CrdObjectList):
+    _items_type = MatchExpressionsItem
+
+
+class MatchFieldsItem(CrdObject):
+    _properties = [
+        ('key', 'key', str, True, False),
+        ('operator', 'operator', str, True, False),
+        ('values', 'values', 'ValuesList', False, False)
+    ]        
+
+    def __init__(self,
+                 key,  # type: str
+                 operator,  # type: str
+                 values=_omit,  # type: Optional[Union[List[str], CrdObjectList]]
+                 ):
+        super(MatchFieldsItem, self).__init__(
+            key=key,
+            operator=operator,
+            values=values,
+        )
+
+    @property
+    def key(self):
+        # type: () -> str
+        return self._property_impl('key')
+    
+    @key.setter
+    def key(self, new_val):
+        # type: (str) -> None
+        self._key = new_val
+    
+    @property
+    def operator(self):
+        # type: () -> str
+        return self._property_impl('operator')
+    
+    @operator.setter
+    def operator(self, new_val):
+        # type: (str) -> None
+        self._operator = new_val
+    
+    @property
+    def values(self):
+        # type: () -> Union[List[str], CrdObjectList]
+        return self._property_impl('values')
+    
+    @values.setter
+    def values(self, new_val):
+        # type: (Optional[Union[List[str], CrdObjectList]]) -> None
+        self._values = new_val
+
+
+class MatchFieldsList(CrdObjectList):
+    _items_type = MatchFieldsItem
+
+
+class Preference(CrdObject):
+    _properties = [
+        ('matchExpressions', 'matchExpressions', 'MatchExpressionsList', False, False),
+        ('matchFields', 'matchFields', 'MatchFieldsList', False, False)
+    ]        
+
+    def __init__(self,
+                 matchExpressions=_omit,  # type: Optional[Union[List[MatchExpressionsItem], CrdObjectList]]
+                 matchFields=_omit,  # type: Optional[Union[List[MatchFieldsItem], CrdObjectList]]
+                 ):
+        super(Preference, self).__init__(
+            matchExpressions=matchExpressions,
+            matchFields=matchFields,
+        )
+
+    @property
+    def matchExpressions(self):
+        # type: () -> Union[List[MatchExpressionsItem], CrdObjectList]
+        return self._property_impl('matchExpressions')
+    
+    @matchExpressions.setter
+    def matchExpressions(self, new_val):
+        # type: (Optional[Union[List[MatchExpressionsItem], CrdObjectList]]) -> None
+        self._matchExpressions = new_val
+    
+    @property
+    def matchFields(self):
+        # type: () -> Union[List[MatchFieldsItem], CrdObjectList]
+        return self._property_impl('matchFields')
+    
+    @matchFields.setter
+    def matchFields(self, new_val):
+        # type: (Optional[Union[List[MatchFieldsItem], CrdObjectList]]) -> None
+        self._matchFields = new_val
+
+
+class PreferredDuringSchedulingIgnoredDuringExecutionItem(CrdObject):
+    _properties = [
+        ('podAffinityTerm', 'podAffinityTerm', 'PodAffinityTerm', False, False),
+        ('weight', 'weight', int, False, False),
+        ('preference', 'preference', 'Preference', False, False)
+    ]        
+
+    def __init__(self,
+                 podAffinityTerm=_omit,  # type: Optional[PodAffinityTerm]
+                 weight=_omit,  # type: Optional[int]
+                 preference=_omit,  # type: Optional[Preference]
+                 ):
+        super(PreferredDuringSchedulingIgnoredDuringExecutionItem, self).__init__(
+            podAffinityTerm=podAffinityTerm,
+            weight=weight,
+            preference=preference,
+        )
+
+    @property
+    def podAffinityTerm(self):
+        # type: () -> PodAffinityTerm
+        return self._property_impl('podAffinityTerm')
+    
+    @podAffinityTerm.setter
+    def podAffinityTerm(self, new_val):
+        # type: (Optional[PodAffinityTerm]) -> None
+        self._podAffinityTerm = new_val
+    
+    @property
+    def weight(self):
+        # type: () -> int
+        return self._property_impl('weight')
+    
+    @weight.setter
+    def weight(self, new_val):
+        # type: (Optional[int]) -> None
+        self._weight = new_val
+    
+    @property
+    def preference(self):
+        # type: () -> Preference
+        return self._property_impl('preference')
+    
+    @preference.setter
+    def preference(self, new_val):
+        # type: (Optional[Preference]) -> None
+        self._preference = new_val
+
+
+class PreferredDuringSchedulingIgnoredDuringExecutionList(CrdObjectList):
+    _items_type = PreferredDuringSchedulingIgnoredDuringExecutionItem
+
+
+class NodeSelectorTermsItem(CrdObject):
+    _properties = [
+        ('matchExpressions', 'matchExpressions', 'MatchExpressionsList', False, False),
+        ('matchFields', 'matchFields', 'MatchFieldsList', False, False)
+    ]        
+
+    def __init__(self,
+                 matchExpressions=_omit,  # type: Optional[Union[List[MatchExpressionsItem], CrdObjectList]]
+                 matchFields=_omit,  # type: Optional[Union[List[MatchFieldsItem], CrdObjectList]]
+                 ):
+        super(NodeSelectorTermsItem, self).__init__(
+            matchExpressions=matchExpressions,
+            matchFields=matchFields,
+        )
+
+    @property
+    def matchExpressions(self):
+        # type: () -> Union[List[MatchExpressionsItem], CrdObjectList]
+        return self._property_impl('matchExpressions')
+    
+    @matchExpressions.setter
+    def matchExpressions(self, new_val):
+        # type: (Optional[Union[List[MatchExpressionsItem], CrdObjectList]]) -> None
+        self._matchExpressions = new_val
+    
+    @property
+    def matchFields(self):
+        # type: () -> Union[List[MatchFieldsItem], CrdObjectList]
+        return self._property_impl('matchFields')
+    
+    @matchFields.setter
+    def matchFields(self, new_val):
+        # type: (Optional[Union[List[MatchFieldsItem], CrdObjectList]]) -> None
+        self._matchFields = new_val
+
+
+class NodeSelectorTermsList(CrdObjectList):
+    _items_type = NodeSelectorTermsItem
+
+
+class RequiredDuringSchedulingIgnoredDuringExecution(CrdObject):
+    _properties = [
+        ('nodeSelectorTerms', 'nodeSelectorTerms', 'NodeSelectorTermsList', True, False)
+    ]        
+
+    def __init__(self,
+                 nodeSelectorTerms,  # type: Union[List[NodeSelectorTermsItem], CrdObjectList]
+                 ):
+        super(RequiredDuringSchedulingIgnoredDuringExecution, self).__init__(
+            nodeSelectorTerms=nodeSelectorTerms,
+        )
+
+    @property
+    def nodeSelectorTerms(self):
+        # type: () -> Union[List[NodeSelectorTermsItem], CrdObjectList]
+        return self._property_impl('nodeSelectorTerms')
+    
+    @nodeSelectorTerms.setter
+    def nodeSelectorTerms(self, new_val):
+        # type: (Union[List[NodeSelectorTermsItem], CrdObjectList]) -> None
+        self._nodeSelectorTerms = new_val
+
+
+class NodeAffinity(CrdObject):
+    _properties = [
+        ('preferredDuringSchedulingIgnoredDuringExecution', 'preferredDuringSchedulingIgnoredDuringExecution', 'PreferredDuringSchedulingIgnoredDuringExecutionList', False, False),
+        ('requiredDuringSchedulingIgnoredDuringExecution', 'requiredDuringSchedulingIgnoredDuringExecution', 'RequiredDuringSchedulingIgnoredDuringExecution', False, False)
+    ]        
+
+    def __init__(self,
+                 preferredDuringSchedulingIgnoredDuringExecution=_omit,  # type: Optional[Union[List[PreferredDuringSchedulingIgnoredDuringExecutionItem], CrdObjectList]]
+                 requiredDuringSchedulingIgnoredDuringExecution=_omit,  # type: Optional[RequiredDuringSchedulingIgnoredDuringExecution]
+                 ):
+        super(NodeAffinity, self).__init__(
+            preferredDuringSchedulingIgnoredDuringExecution=preferredDuringSchedulingIgnoredDuringExecution,
+            requiredDuringSchedulingIgnoredDuringExecution=requiredDuringSchedulingIgnoredDuringExecution,
+        )
+
+    @property
+    def preferredDuringSchedulingIgnoredDuringExecution(self):
+        # type: () -> Union[List[PreferredDuringSchedulingIgnoredDuringExecutionItem], CrdObjectList]
+        return self._property_impl('preferredDuringSchedulingIgnoredDuringExecution')
+    
+    @preferredDuringSchedulingIgnoredDuringExecution.setter
+    def preferredDuringSchedulingIgnoredDuringExecution(self, new_val):
+        # type: (Optional[Union[List[PreferredDuringSchedulingIgnoredDuringExecutionItem], CrdObjectList]]) -> None
+        self._preferredDuringSchedulingIgnoredDuringExecution = new_val
+    
+    @property
+    def requiredDuringSchedulingIgnoredDuringExecution(self):
+        # type: () -> RequiredDuringSchedulingIgnoredDuringExecution
+        return self._property_impl('requiredDuringSchedulingIgnoredDuringExecution')
+    
+    @requiredDuringSchedulingIgnoredDuringExecution.setter
+    def requiredDuringSchedulingIgnoredDuringExecution(self, new_val):
+        # type: (Optional[RequiredDuringSchedulingIgnoredDuringExecution]) -> None
+        self._requiredDuringSchedulingIgnoredDuringExecution = new_val
+
+
+class LabelSelector(CrdObject):
+    _properties = [
+        ('matchExpressions', 'matchExpressions', 'MatchExpressionsList', False, False),
+        ('matchLabels', 'matchLabels', object, False, False)
+    ]        
+
+    def __init__(self,
+                 matchExpressions=_omit,  # type: Optional[Union[List[MatchExpressionsItem], CrdObjectList]]
+                 matchLabels=_omit,  # type: Optional[Any]
+                 ):
+        super(LabelSelector, self).__init__(
+            matchExpressions=matchExpressions,
+            matchLabels=matchLabels,
+        )
+
+    @property
+    def matchExpressions(self):
+        # type: () -> Union[List[MatchExpressionsItem], CrdObjectList]
+        return self._property_impl('matchExpressions')
+    
+    @matchExpressions.setter
+    def matchExpressions(self, new_val):
+        # type: (Optional[Union[List[MatchExpressionsItem], CrdObjectList]]) -> None
+        self._matchExpressions = new_val
+    
+    @property
+    def matchLabels(self):
+        # type: () -> Any
+        return self._property_impl('matchLabels')
+    
+    @matchLabels.setter
+    def matchLabels(self, new_val):
+        # type: (Optional[Any]) -> None
+        self._matchLabels = new_val
+
+
+class NamespaceSelector(CrdObject):
+    _properties = [
+        ('matchExpressions', 'matchExpressions', 'MatchExpressionsList', False, False),
+        ('matchLabels', 'matchLabels', object, False, False)
+    ]        
+
+    def __init__(self,
+                 matchExpressions=_omit,  # type: Optional[Union[List[MatchExpressionsItem], CrdObjectList]]
+                 matchLabels=_omit,  # type: Optional[Any]
+                 ):
+        super(NamespaceSelector, self).__init__(
+            matchExpressions=matchExpressions,
+            matchLabels=matchLabels,
+        )
+
+    @property
+    def matchExpressions(self):
+        # type: () -> Union[List[MatchExpressionsItem], CrdObjectList]
+        return self._property_impl('matchExpressions')
+    
+    @matchExpressions.setter
+    def matchExpressions(self, new_val):
+        # type: (Optional[Union[List[MatchExpressionsItem], CrdObjectList]]) -> None
+        self._matchExpressions = new_val
+    
+    @property
+    def matchLabels(self):
+        # type: () -> Any
+        return self._property_impl('matchLabels')
+    
+    @matchLabels.setter
+    def matchLabels(self, new_val):
+        # type: (Optional[Any]) -> None
+        self._matchLabels = new_val
+
+
+class NamespacesList(CrdObjectList):
+    _items_type = str
+
+
+class PodAffinityTerm(CrdObject):
+    _properties = [
+        ('labelSelector', 'labelSelector', 'LabelSelector', False, False),
+        ('namespaceSelector', 'namespaceSelector', 'NamespaceSelector', False, False),
+        ('namespaces', 'namespaces', 'NamespacesList', False, False),
+        ('topologyKey', 'topologyKey', str, True, False)
+    ]        
+
+    def __init__(self,
+                 topologyKey,  # type: str
+                 labelSelector=_omit,  # type: Optional[LabelSelector]
+                 namespaceSelector=_omit,  # type: Optional[NamespaceSelector]
+                 namespaces=_omit,  # type: Optional[Union[List[str], CrdObjectList]]
+                 ):
+        super(PodAffinityTerm, self).__init__(
+            topologyKey=topologyKey,
+            labelSelector=labelSelector,
+            namespaceSelector=namespaceSelector,
+            namespaces=namespaces,
+        )
+
+    @property
+    def labelSelector(self):
+        # type: () -> LabelSelector
+        return self._property_impl('labelSelector')
+    
+    @labelSelector.setter
+    def labelSelector(self, new_val):
+        # type: (Optional[LabelSelector]) -> None
+        self._labelSelector = new_val
+    
+    @property
+    def namespaceSelector(self):
+        # type: () -> NamespaceSelector
+        return self._property_impl('namespaceSelector')
+    
+    @namespaceSelector.setter
+    def namespaceSelector(self, new_val):
+        # type: (Optional[NamespaceSelector]) -> None
+        self._namespaceSelector = new_val
+    
+    @property
+    def namespaces(self):
+        # type: () -> Union[List[str], CrdObjectList]
+        return self._property_impl('namespaces')
+    
+    @namespaces.setter
+    def namespaces(self, new_val):
+        # type: (Optional[Union[List[str], CrdObjectList]]) -> None
+        self._namespaces = new_val
+    
+    @property
+    def topologyKey(self):
+        # type: () -> str
+        return self._property_impl('topologyKey')
+    
+    @topologyKey.setter
+    def topologyKey(self, new_val):
+        # type: (str) -> None
+        self._topologyKey = new_val
+
+
+class RequiredDuringSchedulingIgnoredDuringExecutionItem(CrdObject):
+    _properties = [
+        ('labelSelector', 'labelSelector', 'LabelSelector', False, False),
+        ('namespaceSelector', 'namespaceSelector', 'NamespaceSelector', False, False),
+        ('namespaces', 'namespaces', 'NamespacesList', False, False),
+        ('topologyKey', 'topologyKey', str, True, False)
+    ]        
+
+    def __init__(self,
+                 topologyKey,  # type: str
+                 labelSelector=_omit,  # type: Optional[LabelSelector]
+                 namespaceSelector=_omit,  # type: Optional[NamespaceSelector]
+                 namespaces=_omit,  # type: Optional[Union[List[str], CrdObjectList]]
+                 ):
+        super(RequiredDuringSchedulingIgnoredDuringExecutionItem, self).__init__(
+            topologyKey=topologyKey,
+            labelSelector=labelSelector,
+            namespaceSelector=namespaceSelector,
+            namespaces=namespaces,
+        )
+
+    @property
+    def labelSelector(self):
+        # type: () -> LabelSelector
+        return self._property_impl('labelSelector')
+    
+    @labelSelector.setter
+    def labelSelector(self, new_val):
+        # type: (Optional[LabelSelector]) -> None
+        self._labelSelector = new_val
+    
+    @property
+    def namespaceSelector(self):
+        # type: () -> NamespaceSelector
+        return self._property_impl('namespaceSelector')
+    
+    @namespaceSelector.setter
+    def namespaceSelector(self, new_val):
+        # type: (Optional[NamespaceSelector]) -> None
+        self._namespaceSelector = new_val
+    
+    @property
+    def namespaces(self):
+        # type: () -> Union[List[str], CrdObjectList]
+        return self._property_impl('namespaces')
+    
+    @namespaces.setter
+    def namespaces(self, new_val):
+        # type: (Optional[Union[List[str], CrdObjectList]]) -> None
+        self._namespaces = new_val
+    
+    @property
+    def topologyKey(self):
+        # type: () -> str
+        return self._property_impl('topologyKey')
+    
+    @topologyKey.setter
+    def topologyKey(self, new_val):
+        # type: (str) -> None
+        self._topologyKey = new_val
+
+
+class RequiredDuringSchedulingIgnoredDuringExecutionList(CrdObjectList):
+    _items_type = RequiredDuringSchedulingIgnoredDuringExecutionItem
+
+
+class PodAffinity(CrdObject):
+    _properties = [
+        ('preferredDuringSchedulingIgnoredDuringExecution', 'preferredDuringSchedulingIgnoredDuringExecution', 'PreferredDuringSchedulingIgnoredDuringExecutionList', False, False),
+        ('requiredDuringSchedulingIgnoredDuringExecution', 'requiredDuringSchedulingIgnoredDuringExecution', 'RequiredDuringSchedulingIgnoredDuringExecutionList', False, False)
+    ]        
+
+    def __init__(self,
+                 preferredDuringSchedulingIgnoredDuringExecution=_omit,  # type: Optional[Union[List[PreferredDuringSchedulingIgnoredDuringExecutionItem], CrdObjectList]]
+                 requiredDuringSchedulingIgnoredDuringExecution=_omit,  # type: Optional[Union[List[RequiredDuringSchedulingIgnoredDuringExecutionItem], CrdObjectList]]
+                 ):
+        super(PodAffinity, self).__init__(
+            preferredDuringSchedulingIgnoredDuringExecution=preferredDuringSchedulingIgnoredDuringExecution,
+            requiredDuringSchedulingIgnoredDuringExecution=requiredDuringSchedulingIgnoredDuringExecution,
+        )
+
+    @property
+    def preferredDuringSchedulingIgnoredDuringExecution(self):
+        # type: () -> Union[List[PreferredDuringSchedulingIgnoredDuringExecutionItem], CrdObjectList]
+        return self._property_impl('preferredDuringSchedulingIgnoredDuringExecution')
+    
+    @preferredDuringSchedulingIgnoredDuringExecution.setter
+    def preferredDuringSchedulingIgnoredDuringExecution(self, new_val):
+        # type: (Optional[Union[List[PreferredDuringSchedulingIgnoredDuringExecutionItem], CrdObjectList]]) -> None
+        self._preferredDuringSchedulingIgnoredDuringExecution = new_val
+    
+    @property
+    def requiredDuringSchedulingIgnoredDuringExecution(self):
+        # type: () -> Union[List[RequiredDuringSchedulingIgnoredDuringExecutionItem], CrdObjectList]
+        return self._property_impl('requiredDuringSchedulingIgnoredDuringExecution')
+    
+    @requiredDuringSchedulingIgnoredDuringExecution.setter
+    def requiredDuringSchedulingIgnoredDuringExecution(self, new_val):
+        # type: (Optional[Union[List[RequiredDuringSchedulingIgnoredDuringExecutionItem], CrdObjectList]]) -> None
+        self._requiredDuringSchedulingIgnoredDuringExecution = new_val
+
+
+class PodAntiAffinity(CrdObject):
+    _properties = [
+        ('preferredDuringSchedulingIgnoredDuringExecution', 'preferredDuringSchedulingIgnoredDuringExecution', 'PreferredDuringSchedulingIgnoredDuringExecutionList', False, False),
+        ('requiredDuringSchedulingIgnoredDuringExecution', 'requiredDuringSchedulingIgnoredDuringExecution', 'RequiredDuringSchedulingIgnoredDuringExecutionList', False, False)
+    ]        
+
+    def __init__(self,
+                 preferredDuringSchedulingIgnoredDuringExecution=_omit,  # type: Optional[Union[List[PreferredDuringSchedulingIgnoredDuringExecutionItem], CrdObjectList]]
+                 requiredDuringSchedulingIgnoredDuringExecution=_omit,  # type: Optional[Union[List[RequiredDuringSchedulingIgnoredDuringExecutionItem], CrdObjectList]]
+                 ):
+        super(PodAntiAffinity, self).__init__(
+            preferredDuringSchedulingIgnoredDuringExecution=preferredDuringSchedulingIgnoredDuringExecution,
+            requiredDuringSchedulingIgnoredDuringExecution=requiredDuringSchedulingIgnoredDuringExecution,
+        )
+
+    @property
+    def preferredDuringSchedulingIgnoredDuringExecution(self):
+        # type: () -> Union[List[PreferredDuringSchedulingIgnoredDuringExecutionItem], CrdObjectList]
+        return self._property_impl('preferredDuringSchedulingIgnoredDuringExecution')
+    
+    @preferredDuringSchedulingIgnoredDuringExecution.setter
+    def preferredDuringSchedulingIgnoredDuringExecution(self, new_val):
+        # type: (Optional[Union[List[PreferredDuringSchedulingIgnoredDuringExecutionItem], CrdObjectList]]) -> None
+        self._preferredDuringSchedulingIgnoredDuringExecution = new_val
+    
+    @property
+    def requiredDuringSchedulingIgnoredDuringExecution(self):
+        # type: () -> Union[List[RequiredDuringSchedulingIgnoredDuringExecutionItem], CrdObjectList]
+        return self._property_impl('requiredDuringSchedulingIgnoredDuringExecution')
+    
+    @requiredDuringSchedulingIgnoredDuringExecution.setter
+    def requiredDuringSchedulingIgnoredDuringExecution(self, new_val):
+        # type: (Optional[Union[List[RequiredDuringSchedulingIgnoredDuringExecutionItem], CrdObjectList]]) -> None
+        self._requiredDuringSchedulingIgnoredDuringExecution = new_val
+
+
+class TolerationsItem(CrdObject):
+    _properties = [
+        ('effect', 'effect', str, False, False),
+        ('key', 'key', str, False, False),
+        ('operator', 'operator', str, False, False),
+        ('tolerationSeconds', 'tolerationSeconds', int, False, False),
+        ('value', 'value', str, False, False)
+    ]        
+
+    def __init__(self,
+                 effect=_omit,  # type: Optional[str]
+                 key=_omit,  # type: Optional[str]
+                 operator=_omit,  # type: Optional[str]
+                 tolerationSeconds=_omit,  # type: Optional[int]
+                 value=_omit,  # type: Optional[str]
+                 ):
+        super(TolerationsItem, self).__init__(
+            effect=effect,
+            key=key,
+            operator=operator,
+            tolerationSeconds=tolerationSeconds,
+            value=value,
+        )
+
+    @property
+    def effect(self):
+        # type: () -> str
+        return self._property_impl('effect')
+    
+    @effect.setter
+    def effect(self, new_val):
+        # type: (Optional[str]) -> None
+        self._effect = new_val
+    
+    @property
+    def key(self):
+        # type: () -> str
+        return self._property_impl('key')
+    
+    @key.setter
+    def key(self, new_val):
+        # type: (Optional[str]) -> None
+        self._key = new_val
+    
+    @property
+    def operator(self):
+        # type: () -> str
+        return self._property_impl('operator')
+    
+    @operator.setter
+    def operator(self, new_val):
+        # type: (Optional[str]) -> None
+        self._operator = new_val
+    
+    @property
+    def tolerationSeconds(self):
+        # type: () -> int
+        return self._property_impl('tolerationSeconds')
+    
+    @tolerationSeconds.setter
+    def tolerationSeconds(self, new_val):
+        # type: (Optional[int]) -> None
+        self._tolerationSeconds = new_val
+    
+    @property
+    def value(self):
+        # type: () -> str
+        return self._property_impl('value')
+    
+    @value.setter
+    def value(self, new_val):
+        # type: (Optional[str]) -> None
+        self._value = new_val
+
+
+class TolerationsList(CrdObjectList):
+    _items_type = TolerationsItem
+
+
+class TopologySpreadConstraintsItem(CrdObject):
+    _properties = [
+        ('labelSelector', 'labelSelector', 'LabelSelector', False, False),
+        ('maxSkew', 'maxSkew', int, True, False),
+        ('topologyKey', 'topologyKey', str, True, False),
+        ('whenUnsatisfiable', 'whenUnsatisfiable', str, True, False)
+    ]        
+
+    def __init__(self,
+                 maxSkew,  # type: int
+                 topologyKey,  # type: str
+                 whenUnsatisfiable,  # type: str
+                 labelSelector=_omit,  # type: Optional[LabelSelector]
+                 ):
+        super(TopologySpreadConstraintsItem, self).__init__(
+            maxSkew=maxSkew,
+            topologyKey=topologyKey,
+            whenUnsatisfiable=whenUnsatisfiable,
+            labelSelector=labelSelector,
+        )
+
+    @property
+    def labelSelector(self):
+        # type: () -> LabelSelector
+        return self._property_impl('labelSelector')
+    
+    @labelSelector.setter
+    def labelSelector(self, new_val):
+        # type: (Optional[LabelSelector]) -> None
+        self._labelSelector = new_val
+    
+    @property
+    def maxSkew(self):
+        # type: () -> int
+        return self._property_impl('maxSkew')
+    
+    @maxSkew.setter
+    def maxSkew(self, new_val):
+        # type: (int) -> None
+        self._maxSkew = new_val
+    
+    @property
+    def topologyKey(self):
+        # type: () -> str
+        return self._property_impl('topologyKey')
+    
+    @topologyKey.setter
+    def topologyKey(self, new_val):
+        # type: (str) -> None
+        self._topologyKey = new_val
+    
+    @property
+    def whenUnsatisfiable(self):
+        # type: () -> str
+        return self._property_impl('whenUnsatisfiable')
+    
+    @whenUnsatisfiable.setter
+    def whenUnsatisfiable(self, new_val):
+        # type: (str) -> None
+        self._whenUnsatisfiable = new_val
+
+
+class TopologySpreadConstraintsList(CrdObjectList):
+    _items_type = TopologySpreadConstraintsItem
+
+
+class Placement(CrdObject):
+    _properties = [
+        ('nodeAffinity', 'nodeAffinity', 'NodeAffinity', False, False),
+        ('podAffinity', 'podAffinity', 'PodAffinity', False, False),
+        ('podAntiAffinity', 'podAntiAffinity', 'PodAntiAffinity', False, False),
+        ('tolerations', 'tolerations', 'TolerationsList', False, False),
+        ('topologySpreadConstraints', 'topologySpreadConstraints', 'TopologySpreadConstraintsList', False, False)
+    ]        
+
+    def __init__(self,
+                 nodeAffinity=_omit,  # type: Optional[NodeAffinity]
+                 podAffinity=_omit,  # type: Optional[PodAffinity]
+                 podAntiAffinity=_omit,  # type: Optional[PodAntiAffinity]
+                 tolerations=_omit,  # type: Optional[Union[List[TolerationsItem], CrdObjectList]]
+                 topologySpreadConstraints=_omit,  # type: Optional[Union[List[TopologySpreadConstraintsItem], CrdObjectList]]
+                 ):
+        super(Placement, self).__init__(
+            nodeAffinity=nodeAffinity,
+            podAffinity=podAffinity,
+            podAntiAffinity=podAntiAffinity,
+            tolerations=tolerations,
+            topologySpreadConstraints=topologySpreadConstraints,
+        )
+
+    @property
+    def nodeAffinity(self):
+        # type: () -> NodeAffinity
+        return self._property_impl('nodeAffinity')
+    
+    @nodeAffinity.setter
+    def nodeAffinity(self, new_val):
+        # type: (Optional[NodeAffinity]) -> None
+        self._nodeAffinity = new_val
+    
+    @property
+    def podAffinity(self):
+        # type: () -> PodAffinity
+        return self._property_impl('podAffinity')
+    
+    @podAffinity.setter
+    def podAffinity(self, new_val):
+        # type: (Optional[PodAffinity]) -> None
+        self._podAffinity = new_val
+    
+    @property
+    def podAntiAffinity(self):
+        # type: () -> PodAntiAffinity
+        return self._property_impl('podAntiAffinity')
+    
+    @podAntiAffinity.setter
+    def podAntiAffinity(self, new_val):
+        # type: (Optional[PodAntiAffinity]) -> None
+        self._podAntiAffinity = new_val
+    
+    @property
+    def tolerations(self):
+        # type: () -> Union[List[TolerationsItem], CrdObjectList]
+        return self._property_impl('tolerations')
+    
+    @tolerations.setter
+    def tolerations(self, new_val):
+        # type: (Optional[Union[List[TolerationsItem], CrdObjectList]]) -> None
+        self._tolerations = new_val
+    
+    @property
+    def topologySpreadConstraints(self):
+        # type: () -> Union[List[TopologySpreadConstraintsItem], CrdObjectList]
+        return self._property_impl('topologySpreadConstraints')
+    
+    @topologySpreadConstraints.setter
+    def topologySpreadConstraints(self, new_val):
+        # type: (Optional[Union[List[TopologySpreadConstraintsItem], CrdObjectList]]) -> None
+        self._topologySpreadConstraints = new_val
+
+
+class Resources(CrdObject):
+    _properties = [
+        ('limits', 'limits', object, False, False),
+        ('requests', 'requests', object, False, False)
+    ]        
+
+    def __init__(self,
+                 limits=_omit,  # type: Optional[Any]
+                 requests=_omit,  # type: Optional[Any]
+                 ):
+        super(Resources, self).__init__(
+            limits=limits,
+            requests=requests,
+        )
+
+    @property
+    def limits(self):
+        # type: () -> Any
+        return self._property_impl('limits')
+    
+    @limits.setter
+    def limits(self, new_val):
+        # type: (Optional[Any]) -> None
+        self._limits = new_val
+    
+    @property
+    def requests(self):
+        # type: () -> Any
+        return self._property_impl('requests')
+    
+    @requests.setter
+    def requests(self, new_val):
+        # type: (Optional[Any]) -> None
+        self._requests = new_val
 
 
 class Server(CrdObject):
     _properties = [
-        ('active', 'active', int, False, False),
-        ('annotations', 'annotations', object, False, False),
-        ('placement', 'placement', object, False, False),
-        ('resources', 'resources', object, False, False)
+        ('active', 'active', int, True, False),
+        ('annotations', 'annotations', object, False, True),
+        ('labels', 'labels', object, False, True),
+        ('logLevel', 'logLevel', str, False, False),
+        ('placement', 'placement', 'Placement', False, True),
+        ('priorityClassName', 'priorityClassName', str, False, False),
+        ('resources', 'resources', 'Resources', False, True)
     ]        
 
     def __init__(self,
-                 active=_omit,  # type: Optional[int]
+                 active,  # type: int
                  annotations=_omit,  # type: Optional[Any]
-                 placement=_omit,  # type: Optional[Any]
-                 resources=_omit,  # type: Optional[Any]
+                 labels=_omit,  # type: Optional[Any]
+                 logLevel=_omit,  # type: Optional[str]
+                 placement=_omit,  # type: Optional[Placement]
+                 priorityClassName=_omit,  # type: Optional[str]
+                 resources=_omit,  # type: Optional[Resources]
                  ):
         super(Server, self).__init__(
             active=active,
             annotations=annotations,
+            labels=labels,
+            logLevel=logLevel,
             placement=placement,
+            priorityClassName=priorityClassName,
             resources=resources,
         )
 
@@ -74,12 +913,12 @@ class Server(CrdObject):
     
     @active.setter
     def active(self, new_val):
-        # type: (Optional[int]) -> None
+        # type: (int) -> None
         self._active = new_val
     
     @property
     def annotations(self):
-        # type: () -> Any
+        # type: () -> Optional[Any]
         return self._property_impl('annotations')
     
     @annotations.setter
@@ -88,35 +927,65 @@ class Server(CrdObject):
         self._annotations = new_val
     
     @property
+    def labels(self):
+        # type: () -> Optional[Any]
+        return self._property_impl('labels')
+    
+    @labels.setter
+    def labels(self, new_val):
+        # type: (Optional[Any]) -> None
+        self._labels = new_val
+    
+    @property
+    def logLevel(self):
+        # type: () -> str
+        return self._property_impl('logLevel')
+    
+    @logLevel.setter
+    def logLevel(self, new_val):
+        # type: (Optional[str]) -> None
+        self._logLevel = new_val
+    
+    @property
     def placement(self):
-        # type: () -> Any
+        # type: () -> Optional[Placement]
         return self._property_impl('placement')
     
     @placement.setter
     def placement(self, new_val):
-        # type: (Optional[Any]) -> None
+        # type: (Optional[Placement]) -> None
         self._placement = new_val
     
     @property
+    def priorityClassName(self):
+        # type: () -> str
+        return self._property_impl('priorityClassName')
+    
+    @priorityClassName.setter
+    def priorityClassName(self, new_val):
+        # type: (Optional[str]) -> None
+        self._priorityClassName = new_val
+    
+    @property
     def resources(self):
-        # type: () -> Any
+        # type: () -> Optional[Resources]
         return self._property_impl('resources')
     
     @resources.setter
     def resources(self, new_val):
-        # type: (Optional[Any]) -> None
+        # type: (Optional[Resources]) -> None
         self._resources = new_val
 
 
 class Spec(CrdObject):
     _properties = [
-        ('rados', 'rados', Rados, False, False),
-        ('server', 'server', Server, False, False)
+        ('rados', 'rados', 'Rados', True, False),
+        ('server', 'server', 'Server', True, False)
     ]        
 
     def __init__(self,
-                 rados=_omit,  # type: Optional[Rados]
-                 server=_omit,  # type: Optional[Server]
+                 rados,  # type: Rados
+                 server,  # type: Server
                  ):
         super(Spec, self).__init__(
             rados=rados,
@@ -130,7 +999,7 @@ class Spec(CrdObject):
     
     @rados.setter
     def rados(self, new_val):
-        # type: (Optional[Rados]) -> None
+        # type: (Rados) -> None
         self._rados = new_val
     
     @property
@@ -140,28 +1009,54 @@ class Spec(CrdObject):
     
     @server.setter
     def server(self, new_val):
-        # type: (Optional[Server]) -> None
+        # type: (Server) -> None
         self._server = new_val
+
+
+class Status(CrdObject):
+    _properties = [
+        ('phase', 'phase', str, False, False)
+    ]        
+
+    def __init__(self,
+                 phase=_omit,  # type: Optional[str]
+                 ):
+        super(Status, self).__init__(
+            phase=phase,
+        )
+
+    @property
+    def phase(self):
+        # type: () -> str
+        return self._property_impl('phase')
+    
+    @phase.setter
+    def phase(self, new_val):
+        # type: (Optional[str]) -> None
+        self._phase = new_val
 
 
 class CephNFS(CrdClass):
     _properties = [
-        ('apiVersion', 'apiVersion', str, True, False),
-        ('metadata', 'metadata', object, True, False),
-        ('status', 'status', object, False, False),
-        ('spec', 'spec', Spec, True, False)
+        ('apiVersion', 'apiVersion', str, False, False),
+        ('kind', 'kind', str, False, False),
+        ('metadata', 'metadata', object, False, False),
+        ('spec', 'spec', 'Spec', True, False),
+        ('status', 'status', 'Status', False, False)
     ]        
 
     def __init__(self,
-                 apiVersion,  # type: str
-                 metadata,  # type: Any
                  spec,  # type: Spec
-                 status=_omit,  # type: Optional[Any]
+                 apiVersion=_omit,  # type: Optional[str]
+                 kind=_omit,  # type: Optional[str]
+                 metadata=_omit,  # type: Optional[Any]
+                 status=_omit,  # type: Optional[Status]
                  ):
         super(CephNFS, self).__init__(
-            apiVersion=apiVersion,
-            metadata=metadata,
             spec=spec,
+            apiVersion=apiVersion,
+            kind=kind,
+            metadata=metadata,
             status=status,
         )
 
@@ -172,8 +1067,18 @@ class CephNFS(CrdClass):
     
     @apiVersion.setter
     def apiVersion(self, new_val):
-        # type: (str) -> None
+        # type: (Optional[str]) -> None
         self._apiVersion = new_val
+    
+    @property
+    def kind(self):
+        # type: () -> str
+        return self._property_impl('kind')
+    
+    @kind.setter
+    def kind(self, new_val):
+        # type: (Optional[str]) -> None
+        self._kind = new_val
     
     @property
     def metadata(self):
@@ -182,18 +1087,8 @@ class CephNFS(CrdClass):
     
     @metadata.setter
     def metadata(self, new_val):
-        # type: (Any) -> None
-        self._metadata = new_val
-    
-    @property
-    def status(self):
-        # type: () -> Any
-        return self._property_impl('status')
-    
-    @status.setter
-    def status(self, new_val):
         # type: (Optional[Any]) -> None
-        self._status = new_val
+        self._metadata = new_val
     
     @property
     def spec(self):
@@ -204,3 +1099,13 @@ class CephNFS(CrdClass):
     def spec(self, new_val):
         # type: (Spec) -> None
         self._spec = new_val
+    
+    @property
+    def status(self):
+        # type: () -> Status
+        return self._property_impl('status')
+    
+    @status.setter
+    def status(self, new_val):
+        # type: (Optional[Status]) -> None
+        self._status = new_val

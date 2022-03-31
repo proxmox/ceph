@@ -53,7 +53,7 @@ Throttle::Throttle(CephContext *cct, const std::string& n, int64_t m,
 
   if (cct->_conf->throttler_perf_counter) {
     PerfCountersBuilder b(cct, string("throttle-") + name, l_throttle_first, l_throttle_last);
-    b.add_u64(l_throttle_val, "val", "Currently available throttle");
+    b.add_u64(l_throttle_val, "val", "Currently taken slots");
     b.add_u64(l_throttle_max, "max", "Max value for throttle");
     b.add_u64_counter(l_throttle_get_started, "get_started", "Number of get calls, increased before wait");
     b.add_u64_counter(l_throttle_get, "get", "Gets");
@@ -276,7 +276,7 @@ enum {
 
 BackoffThrottle::BackoffThrottle(CephContext *cct, const std::string& n,
 				 unsigned expected_concurrency, bool _use_perf)
-  : cct(cct), name(n),
+  : name(n),
     conds(expected_concurrency),///< [in] determines size of conds
     use_perf(_use_perf)
 {

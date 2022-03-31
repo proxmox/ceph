@@ -12,7 +12,9 @@
 
 #define dout_subsys ceph_subsys_rgw
 
-class RGWRados;
+namespace rgw { namespace sal {
+  class Store;
+} }
 
 struct rgw_log_entry {
 
@@ -21,28 +23,29 @@ struct rgw_log_entry {
 
   rgw_user object_owner;
   rgw_user bucket_owner;
-  string bucket;
+  std::string bucket;
   Clock::time_point time;
-  string remote_addr;
-  string user;
+  std::string remote_addr;
+  std::string user;
   rgw_obj_key obj;
-  string op;
-  string uri;
-  string http_status;
-  string error_code;
+  std::string op;
+  std::string uri;
+  std::string http_status;
+  std::string error_code;
   uint64_t bytes_sent = 0;
   uint64_t bytes_received = 0;
   uint64_t obj_size = 0;
   Clock::duration total_time{};
-  string user_agent;
-  string referrer;
-  string bucket_id;
+  std::string user_agent;
+  std::string referrer;
+  std::string bucket_id;
   headers_map x_headers;
-  string trans_id;
-  std::vector<string> token_claims;
+  std::string trans_id;
+  std::vector<std::string> token_claims;
+  uint32_t identity_type;
 
   void encode(bufferlist &bl) const {
-    ENCODE_START(11, 5, bl);
+    ENCODE_START(12, 5, bl);
     encode(object_owner.id, bl);
     encode(bucket_owner.id, bl);
     encode(bucket, bl);
@@ -67,10 +70,11 @@ struct rgw_log_entry {
     encode(x_headers, bl);
     encode(trans_id, bl);
     encode(token_claims, bl);
+    encode(identity_type,bl);
     ENCODE_FINISH(bl);
   }
   void decode(bufferlist::const_iterator &p) {
-    DECODE_START_LEGACY_COMPAT_LEN(11, 5, 5, p);
+    DECODE_START_LEGACY_COMPAT_LEN(12, 5, 5, p);
     decode(object_owner.id, p);
     if (struct_v > 3)
       decode(bucket_owner.id, p);
@@ -122,10 +126,13 @@ struct rgw_log_entry {
     if (struct_v >= 11) {
       decode(token_claims, p);
     }
+    if (struct_v >= 12) {
+      decode(identity_type, p);
+    }
     DECODE_FINISH(p);
   }
   void dump(ceph::Formatter *f) const;
-  static void generate_test_instances(list<rgw_log_entry*>& o);
+  static void generate_test_instances(std::list<rgw_log_entry*>& o);
 };
 WRITE_CLASS_ENCODER(rgw_log_entry)
 
@@ -192,9 +199,11 @@ public:
 };
 
 class OpsLogRados : public OpsLogSink {
-  RGWRados* store;
+  // main()'s Store pointer as a reference, possibly modified by RGWRealmReloader
+  rgw::sal::Store* const& store;
+
 public:
-  OpsLogRados(RGWRados* store);
+  OpsLogRados(rgw::sal::Store* const& store);
   int log(struct req_state* s, struct rgw_log_entry& entry) override;
 };
 
@@ -202,7 +211,7 @@ class RGWREST;
 
 int rgw_log_op(RGWREST* const rest, struct req_state* s,
 	       const std::string& op_name, OpsLogSink* olog);
-void rgw_log_usage_init(CephContext *cct, RGWRados *store);
+void rgw_log_usage_init(CephContext* cct, rgw::sal::Store* store);
 void rgw_log_usage_finalize();
 void rgw_format_ops_log_entry(struct rgw_log_entry& entry,
 			      ceph::Formatter *formatter);

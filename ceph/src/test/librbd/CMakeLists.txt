@@ -11,7 +11,6 @@ set(librbd_test
   test_ImageWatcher.cc
   test_internal.cc
   test_mirroring.cc
-  test_BlockGuard.cc
   test_DeepCopy.cc
   test_Groups.cc
   test_Migration.cc
@@ -41,6 +40,7 @@ target_link_libraries(rbd_test_mock PUBLIC
 # unittest_librbd
 # doesn't use add_ceph_test because it is called by run-rbd-unit-tests.sh
 set(unittest_librbd_srcs
+  test_BlockGuard.cc
   test_main.cc
   test_mock_fixture.cc
   test_mock_ConfigWatcher.cc
@@ -155,6 +155,9 @@ add_executable(unittest_librbd
   ${unittest_librbd_srcs}
   $<TARGET_OBJECTS:common_texttable_obj>)
 target_compile_definitions(unittest_librbd PRIVATE "TEST_LIBRBD_INTERNALS")
+set_target_properties(unittest_librbd PROPERTIES
+  JOB_POOL_COMPILE heavy_compile_job_pool
+  JOB_POOL_LINK heavy_link_job_pool)
 add_dependencies(unittest_librbd
   cls_journal
   cls_lock

@@ -1,6 +1,7 @@
 # `rook-client` Python API Classes  
 
-Automatically generated models for Rook's custom resource definitions.
+The Rook CRDs are evolving over time and to verify that clients make use of the correct definitions, 
+this project provides generated API classes to let users write correct clients easily.
 
 Right now, it supports three operators:
 
@@ -8,22 +9,33 @@ Right now, it supports three operators:
 * Edgefs
 * Cassandra
 
-It is used to type check client code against the Rook API
+It is used to type check client code against the Rook API using [mypy](mypy-lang.org).
 
-Inspired by https://github.com/kubernetes-client/python/tree/master/kubernetes/client/models
+Inspired by [kubernetes-client/python](https://github.com/kubernetes-client/python/tree/master/kubernetes/client/models)
 
 Main uses case is the mgr/rook orchestrator module of the Ceph MGR
 
+## Code Generation
+
+This project contains a `generate_model_classes.py` which can generate 
+model classes from Kubernetes CRDs and is **independent** of Rook. 
+
+Usage:
+
+```
+python generate_model_classes.py <crds.yaml> <output-folder>
+```
+
 ## Installing `rook-client`
 
-To install the package, run:
+To install `rook-client`, run:
 
 ```bash
-pip install -e 'git+https://github.com/rook/rook#egg=rook-client&subdirectory=build/codegen/python'
+pip install -e 'git+https://github.com/ceph/rook-client-python#egg=rook-client'
 ```
 
 
-## Example
+## Usage
 
 ```python
 def objectstore(api_name, name, namespace, instances):
@@ -48,7 +60,6 @@ def objectstore(api_name, name, namespace, instances):
                 )
             ),
             gateway=cos.Gateway(
-                type='s3',
                 port=80,
                 instances=instances
             )
@@ -68,8 +79,3 @@ To re-generate the python files, run
 ```bash
 ./generate.sh
 ```
-
-## Rational
-
-The Rook CRDs are evolving over time and to verify that clients make use of the correct definitions, 
-this project provides generated API classes to let users write correct clients easily.

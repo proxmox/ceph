@@ -69,6 +69,8 @@
 
 #define dout_subsys ceph_subsys_rgw
 
+using namespace std;
+
 bool global_stop = false;
 
 static void handle_sigterm(int signum)
@@ -240,9 +242,6 @@ namespace rgw {
     s->cio = io;
 
     RGWObjectCtx rados_ctx(store, s); // XXX holds std::map
-
-    auto sysobj_ctx = store->svc()->sysobj->init_obj_ctx();
-    s->sysobj_ctx = &sysobj_ctx;
 
     /* XXX and -then- stash req_state pointers everywhere they are needed */
     ret = req->init(rgw_env, &rados_ctx, io, s);
@@ -520,7 +519,7 @@ namespace rgw {
 
     common_init_finish(g_ceph_context);
 
-    rgw_tools_init(g_ceph_context);
+    rgw_tools_init(this, g_ceph_context);
 
     rgw_init_resolver();
     rgw::curl::setup_curl(boost::none);
@@ -542,7 +541,8 @@ namespace rgw {
       g_conf()->rgw_run_sync_thread &&
       g_conf()->rgw_nfs_run_sync_thread;
 
-    store = RGWStoreManager::get_storage(this, g_ceph_context,
+    store = StoreManager::get_storage(this, g_ceph_context,
+					 "rados",
 					 run_gc,
 					 run_lc,
 					 run_quota,
@@ -561,7 +561,7 @@ namespace rgw {
 
     r = rgw_perf_start(g_ceph_context);
 
-    rgw_rest_init(g_ceph_context, store->svc()->zone->get_zonegroup());
+    rgw_rest_init(g_ceph_context, store->get_zone()->get_zonegroup());
 
     mutex.lock();
     init_timer.cancel_all_events();
@@ -584,7 +584,7 @@ namespace rgw {
     ldh->init();
     ldh->bind();
 
-    rgw_log_usage_init(g_ceph_context, store->getRados());
+    rgw_log_usage_init(g_ceph_context, store);
 
     // XXX ex-RGWRESTMgr_lib, mgr->set_logging(true)
 
@@ -600,7 +600,7 @@ namespace rgw {
       ops_log_file->start();
       olog_manifold->add_sink(ops_log_file);
     }
-    olog_manifold->add_sink(new OpsLogRados(store->getRados()));
+    olog_manifold->add_sink(new OpsLogRados(store));
     olog = olog_manifold;
 
     int port = 80;
@@ -626,7 +626,7 @@ namespace rgw {
 
     fe->run();
 
-    r = store->getRados()->register_to_service_map("rgw-nfs", service_map_meta);
+    r = store->register_to_service_map(this, "rgw-nfs", service_map_meta);
     if (r < 0) {
       derr << "ERROR: failed to register to service map: " << cpp_strerror(-r) << dendl;
       /* ignore error */
@@ -665,7 +665,7 @@ namespace rgw {
     
     delete olog;
 
-    RGWStoreManager::close_storage(store);
+    StoreManager::close_storage(store);
 
     rgw_tools_cleanup();
     rgw_shutdown_resolver();
@@ -686,14 +686,17 @@ namespace rgw {
     return 0;
   } /* RGWLib::stop() */
 
-  int RGWLibIO::set_uid(rgw::sal::RGWRadosStore *store, const rgw_user& uid)
+  int RGWLibIO::set_uid(rgw::sal::Store* store, const rgw_user& uid)
   {
     const DoutPrefix dp(store->ctx(), dout_subsys, "librgw: ");
-    int ret = store->ctl()->user->get_info_by_uid(&dp, uid, &user_info, null_yield);
+    std::unique_ptr<rgw::sal::User> user = store->get_user(uid);
+    /* object exists, but policy is broken */
+    int ret = user->load_user(&dp, null_yield);
     if (ret < 0) {
       derr << "ERROR: failed reading user info: uid=" << uid << " ret="
 	   << ret << dendl;
     }
+    user_info = user->get_info();
     return ret;
   }
 
@@ -758,14 +761,13 @@ int librgw_create(librgw_t* rgw, int argc, char **argv)
   if (! g_ceph_context) {
     std::lock_guard<std::mutex> lg(librgw_mtx);
     if (! g_ceph_context) {
-      vector<const char*> args;
       std::vector<std::string> spl_args;
       // last non-0 argument will be split and consumed
       if (argc > 1) {
 	const std::string spl_arg{argv[(--argc)]};
 	get_str_vec(spl_arg, " \t", spl_args);
       }
-      argv_to_vec(argc, const_cast<const char**>(argv), args);
+      auto args = argv_to_vec(argc, argv);
       // append split args, if any
       for (const auto& elt : spl_args) {
 	args.push_back(elt.c_str());

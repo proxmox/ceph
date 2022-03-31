@@ -215,8 +215,8 @@ The build process is based on `Node.js <https://nodejs.org/>`_ and requires the
 Prerequisites
 ~~~~~~~~~~~~~
 
- * Node 10.0.0 or higher
- * NPM 5.7.0 or higher
+ * Node 12.18.2 or higher
+ * NPM 6.13.4 or higher
 
 nodeenv:
   During Ceph's build we create a virtualenv with ``node`` and ``npm``
@@ -246,11 +246,7 @@ Adding or updating packages
 Run the following commands to add/update a package::
 
   npm install <PACKAGE_NAME>
-  npm run fix:audit
   npm ci
-
-``fix:audit`` is required because we have some packages that need to be fixed
-to a specific version and npm install tends to overwrite this.
 
 Setting up a Development Server
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -396,8 +392,9 @@ do a full scale e2e run.
 It will verify if everything needed is installed, start a new vstart cluster
 and run the full test suite.
 
-Start all frontend E2E tests by running::
+Start all frontend E2E tests with::
 
+  $ cd src/pybind/mgr/dashboard
   $ ./run-frontend-e2e-tests.sh
 
 Report:
@@ -435,9 +432,9 @@ Prerequisites: you need to install `KCLI
 Configure KCLI plan requirements::
 
   $ sudo chown -R $(id -un) /var/lib/libvirt/images
-  $ mkdir -p /var/lib/libvirt/images/ceph-dashboard dashboard
-  $ kcli create pool -p /var/lib/libvirt/images/ceph-dashboard dashboard
-  $ kcli create network -c 192.168.100.0/24 dashboard
+  $ mkdir -p /var/lib/libvirt/images/ceph-dashboard
+  $ kcli create pool -p /var/lib/libvirt/images/ceph-dashboard ceph-dashboard
+  $ kcli create network -c 192.168.100.0/24 ceph-dashboard
 
 Note:
   This script is aimed to be run as jenkins job so the cleanup is triggered only in a jenkins
@@ -448,6 +445,14 @@ Start E2E tests by running::
   $ cd <your/ceph/repo/dir>
   $ sudo chown -R $(id -un) src/pybind/mgr/dashboard/frontend/{dist,node_modules,src/environments}
   $ ./src/pybind/mgr/dashboard/ci/cephadm/run-cephadm-e2e-tests.sh
+
+Note:
+  In fedora 35, there can occur a permission error when trying to mount the shared_folders. This can be
+  fixed by running::
+
+    $ sudo setfacl -R -m u:qemu:rwx <abs-path-to-your-user-home>
+
+  or also by setting the appropriate permission to your $HOME directory
 
 You can also start a cluster in development mode (so the frontend build starts in watch mode and you
 only have to reload the page for the changes to be reflected) by running::
@@ -646,6 +651,57 @@ the message. For example, ``it('edits the test image' () => ...)`` vs.
 grammatical sense with ``it()`` as the prefix whereas the second message does
 not. ``it()`` should describe what the individual test is doing and what it
 expects to happen.
+
+
+Visual Regression Testing
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+For visual regression testing, we use `Applitools Eyes <https://applitools.com/products-eyes/>`_
+an AI powered automated  visual regression testing tool.
+Applitools integrates with our existing Cypress E2E tests.
+The tests currently are located at: ``ceph/src/pybind/mgr/dashboard/frontend/cypress/integration/visualTests`` and
+follow the naming convention: ``<component-name>.vrt-spec.ts``.
+
+Running Visual Regression Tests Locally
+.......................................
+
+To run the tests locally, you'll need an Applitools API key, if you don't have one, you can sign up
+for a free account. After obtaining the API key, export it as an environment variable: ``APPLITOOLS_API_KEY``.
+
+Now you can run the tests like normal cypress E2E tests, using either ``npx cypress open`` or in headless mode by running ``npx cypress run``.
+
+Capturing Screenshots
+.....................
+
+Baseline screenshots are the screenshots against which checkpoint screenshots
+(or the screenshots from your feature branch) will be tested.
+
+To capture baseline screenshots, you can run the tests against the master branch,
+and then switch to your feature branch and run the tests again to capture checkpoint screenshots.
+
+Now to see your screenshots, login to applitools.com and on the landing page you'll be greeted with
+applitools eyes test runner, where you can see all your screenshots. And if there's any visual regression or difference (diff) between your baseline and checkpoint screenshots, they'll be highlighted with a mask over the diff.
+
+Writing More Visual Regression Tests
+....................................
+
+Please refer to `Applitools's official cypress sdk documentation <https://github.com/applitools/eyes.sdk.javascript1/tree/master/packages/eyes-cypress>`_ to write more tests.
+
+Visual Regression Tests In Jenkins
+..................................
+
+Currently, all visual regression tests are being run under `ceph dashboard tests <https://jenkins.ceph.com/job/ceph-dashboard-pull-requests>`_ GitHub check in the Jenkins job.
+
+Accepting or Rejecting Differences
+..................................
+
+Currently, only the ceph dashboard team has read and write access to the applitools test runner. If any differences are reported by the tests, and you want to accept them and update the baseline screenshots, or if the differences are due to a genuine regression you can fail them. To perform the above actions, please follow `this <https://applitools.com/docs/topics/test-manager/pages/page-test-results/tm-accepting-and-rejecting-steps.html>`_ guide.
+
+Debugging Regressions
+.....................
+
+If you're running the tests locally and regressions are reported, you can take advantage of `Applitools's Root Cause Analysis feature <https://applitools.com/docs/topics/test-manager/viewers/root-cause-analysis.html>`_ to find the cause of the regression.
+
 
 Differences between Frontend Unit Tests and End-to-End (E2E) Tests / FAQ
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -1056,6 +1112,31 @@ To create a transifex api token visit `<https://www.transifex.com/user/settings/
 
 After the command ran successfully, build the UI and check if everything is
 working as expected. You also might want to run the frontend tests.
+
+Add a new release resource to transifex
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+In order to organize the translations, we create a
+`transifex resource <https://www.transifex.com/ceph/ceph-dashboard/content/>`_
+for every Ceph release. This means, once a new version has been released, the
+``src/pybind/mgr/dashboard/frontend/i18n.config.json`` needs to be updated on
+the release branch.
+
+Please replace::
+
+"resource": "Master:master"
+
+by::
+
+"resource": "<Release-name>:<release-name>"
+
+E.g. the resource definition for the pacific release::
+
+"resource": "Pacific:pacific"
+
+Note:
+  The first part of the resource definition (before the colon) needs to be
+  written with a capital letter.
 
 Suggestions
 ~~~~~~~~~~~
@@ -1684,7 +1765,7 @@ We generate the dashboard json files directly from this jsonnet file by running 
 command in the grafana/dashboards directory:
 ``jsonnet -m . jsonnet/grafana_dashboards.jsonnet``.
 (For the above command to succeed we need ``jsonnet`` package installed and ``grafonnet-lib``
-directory cloned in our machine. Please refer - 
+directory cloned in our machine. Please refer -
 ``https://grafana.github.io/grafonnet-lib/getting-started/`` in case you have some trouble.)
 
 To update an existing grafana dashboard or to create a new one, we need to update
@@ -1724,7 +1805,7 @@ and then use these functions inside the dashboard definition like -
     }
 
 The valid grafonnet-lib attributes can be found here - ``https://grafana.github.io/grafonnet-lib/api-docs/``.
-  
+
 
 How to listen for manager notifications in a controller?
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -1742,8 +1823,6 @@ The example below represents a controller that implements a very simple live
 log viewer page:
 
 .. code-block:: python
-
-  from __future__ import absolute_import
 
   import collections
 
@@ -2135,7 +2214,6 @@ updates its progress:
 
 .. code-block:: python
 
-  from __future__ import absolute_import
   import random
   import time
   import cherrypy
@@ -2249,7 +2327,7 @@ REST API documentation
 ~~~~~~~~~~~~~~~~~~~~~~
 Ceph-Dashboard provides two types of documentation for the **Ceph RESTful API**:
 
-* **Static documentation**: available at :ref:`mgr-ceph-api`. This comes from a versioned specification located at ``src/pybind/mgr/dashboard/openapi.yaml``.
+* **Static documentation**: available at :ref:`mgr ceph api`. This comes from a versioned specification located at ``src/pybind/mgr/dashboard/openapi.yaml``.
 * **Interactive documentation**: available from a running Ceph-Dashboard instance (top-right ``?`` icon > API Docs).
 
 If changes are made to the ``controllers/`` directory, it's very likely that

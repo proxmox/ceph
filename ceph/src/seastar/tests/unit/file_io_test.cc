@@ -31,12 +31,15 @@
 #include <seastar/core/thread.hh>
 #include <seastar/core/stall_sampler.hh>
 #include <seastar/core/aligned_buffer.hh>
+#include <seastar/core/io_intent.hh>
 #include <seastar/util/tmp_file.hh>
 #include <seastar/util/alloc_failure_injector.hh>
+#include <seastar/util/closeable.hh>
 
 #include <boost/range/adaptor/transformed.hpp>
 #include <iostream>
 #include <sys/statfs.h>
+#include <fcntl.h>
 
 #include "core/file-impl.hh"
 
@@ -160,6 +163,7 @@ SEASTAR_TEST_CASE(parallel_write_fsync) {
             auto fsynced_at = uint64_t(0);
 
             file f = open_file_dma(fname, open_flags::rw | open_flags::create | open_flags::truncate).get0();
+            auto close_f = deferred_close(f);
             // Avoid filesystem problems with size-extending operations
             f.truncate(sz).get();
 
@@ -196,7 +200,7 @@ SEASTAR_TEST_CASE(parallel_write_fsync) {
             write_semaphore.wait(write_concurrency).get();
 
             fsync_thread.join().get();
-            f.close().get();
+            close_f.close_now();
             remove_file(fname).get();
         });
     }).then([] (internal::stall_report sr) {
@@ -219,6 +223,7 @@ SEASTAR_TEST_CASE(test_iov_max) {
 
     auto filename = (t.get_path() / "testfile.tmp").native();
     auto f = open_file_dma(filename, open_flags::rw | open_flags::create).get0();
+    auto close_f = deferred_close(f);
     size_t left = buffer_size * buffer_count;
     size_t position = 0;
     while (left) {
@@ -252,8 +257,6 @@ SEASTAR_TEST_CASE(test_iov_max) {
         BOOST_CHECK(std::equal(original_buffers[i].get(), original_buffers[i].get() + original_buffers[i].size(),
                                read_buffers[i].get(), read_buffers[i].get() + read_buffers[i].size()));
     }
-
-    f.close().get();
   });
 }
 
@@ -487,14 +490,126 @@ SEASTAR_TEST_CASE(test_file_stat_method) {
     auto orig_umask = umask(0);
 
     auto f = open_file_dma(filename, oflags).get0();
+    auto close_f = deferred_close(f);
     auto st = f.stat().get0();
-    f.close().get();
     BOOST_CHECK_EQUAL(st.st_mode & static_cast<mode_t>(file_permissions::all_permissions), static_cast<mode_t>(file_permissions::default_file_permissions));
 
     umask(orig_umask);
   });
 }
 
+SEASTAR_TEST_CASE(test_file_write_lifetime_method) {
+    return tmp_dir::do_with_thread([] (tmp_dir& t) {
+        auto oflags = open_flags::rw | open_flags::create;
+        sstring filename = (t.get_path() / "testfile.tmp").native();
+
+        auto f1 = open_file_dma(filename, oflags).get0();
+        auto close_f1 = deferred_close(f1);
+        auto f2 = open_file_dma(filename, oflags).get0();
+        auto close_f2 = deferred_close(f2);
+
+        // Write life time hint values
+        std::vector<uint64_t> hint_set = {RWF_WRITE_LIFE_NOT_SET,
+                                                RWH_WRITE_LIFE_NONE,
+                                                RWH_WRITE_LIFE_SHORT,
+                                                RWH_WRITE_LIFE_MEDIUM,
+                                                RWH_WRITE_LIFE_LONG,
+                                                RWH_WRITE_LIFE_EXTREME};
+
+        for (auto i = 0ul; i < hint_set.size(); ++i) {
+            auto hint = hint_set[i];
+
+            // Set and verify the lifetime hint of the inode
+            f1.set_inode_lifetime_hint(hint).get();
+            auto o_hint1 = f1.get_inode_lifetime_hint().get0();
+            BOOST_CHECK_EQUAL(hint, o_hint1);
+
+            // Verfiy the lifetime_hint set previously on the inode using open fds
+            auto o_hint2 = f2.get_file_lifetime_hint().get0();
+            BOOST_CHECK_EQUAL(hint, o_hint2);
+
+            // Set and verify on the open fd (different from the inode method)
+            f1.set_file_lifetime_hint(hint).get();
+            o_hint1 = f1.get_file_lifetime_hint().get0();
+            BOOST_CHECK_EQUAL(hint, o_hint1);
+        }
+
+        // Perform invalid ops
+        uint64_t hint = RWH_WRITE_LIFE_EXTREME + 1;
+        BOOST_REQUIRE_THROW(f1.set_inode_lifetime_hint(hint).get(), std::system_error);
+        BOOST_REQUIRE_THROW(f1.set_file_lifetime_hint(hint).get(), std::system_error);
+    });
+}
+
+SEASTAR_TEST_CASE(test_file_fcntl) {
+    return tmp_dir::do_with_thread([] (tmp_dir& t) {
+        auto oflags = open_flags::rw | open_flags::create;
+        sstring filename = (t.get_path() / "testfile.tmp").native();
+
+        auto f = open_file_dma(filename, oflags).get0();
+        auto close_f = deferred_close(f);
+
+        // Set and verify a lease value
+        auto lease = F_WRLCK;
+        BOOST_REQUIRE(!f.fcntl(F_SETLEASE, lease).get0());
+        auto o_lease = f.fcntl(F_GETLEASE).get0();
+        BOOST_CHECK_EQUAL(lease, o_lease);
+
+        // Use _short version and test the same
+        o_lease = f.fcntl_short(F_GETLEASE).get0();
+        BOOST_CHECK_EQUAL(lease, o_lease);
+
+        // Perform invalid ops
+        BOOST_REQUIRE_THROW(f.fcntl(F_SETLEASE, (uintptr_t)~0ul).get(), std::system_error);
+        BOOST_REQUIRE_THROW(f.fcntl_short(F_SETLEASE, (uintptr_t)~0ul).get(), std::system_error);
+
+        // Set and verify a life time hint value using fcntl
+        uint64_t hint = RWH_WRITE_LIFE_SHORT;
+        uint64_t o_hint1 = RWF_WRITE_LIFE_NOT_SET;
+        BOOST_REQUIRE(!f.fcntl(F_SET_FILE_RW_HINT, (uintptr_t)&hint).get0());
+        BOOST_REQUIRE(!f.fcntl(F_GET_FILE_RW_HINT, (uintptr_t)&o_hint1).get0());
+        BOOST_CHECK_EQUAL(hint, o_hint1);
+
+        // Do the same with _short version of fcntl
+        uint64_t o_hint2 = RWF_WRITE_LIFE_NOT_SET;
+        BOOST_REQUIRE(!f.fcntl_short(F_GET_FILE_RW_HINT, (uintptr_t)&o_hint2).get0());
+        BOOST_CHECK_EQUAL(hint, o_hint2);
+
+        // perform an invalid op
+        hint = RWH_WRITE_LIFE_EXTREME + 1;
+        BOOST_REQUIRE_THROW(f.fcntl(F_SET_FILE_RW_HINT, (uintptr_t)&hint).get(), std::system_error);
+        BOOST_REQUIRE_THROW(f.fcntl_short(F_SET_FILE_RW_HINT, (uintptr_t)&hint).get(), std::system_error);
+    });
+}
+
+SEASTAR_TEST_CASE(test_file_ioctl) {
+    return tmp_dir::do_with_thread([] (tmp_dir& t) {
+        auto oflags = open_flags::rw | open_flags::create;
+        sstring filename = (t.get_path() / "testfile.tmp").native();
+        uint64_t block_size = 0;
+
+        auto f = open_file_dma(filename, oflags).get0();
+        auto close_f = deferred_close(f);
+
+        // Issueing an FS ioctl which is applicable on regular files
+        // and can be executed as normal user
+        try {
+            BOOST_REQUIRE(!f.ioctl(FIGETBSZ, &block_size).get0());
+            BOOST_REQUIRE(block_size != 0);
+
+            // Use _short version and test the same
+            BOOST_REQUIRE(!f.ioctl_short(FIGETBSZ, &block_size).get0());
+            BOOST_REQUIRE(block_size != 0);
+        } catch (std::system_error& e) {
+            // anon_bdev filesystems do not support FIGETBSZ, and return EINVAL
+            BOOST_REQUIRE_EQUAL(e.code().value(), EINVAL);
+        }
+
+        // Perform invalid ops
+        BOOST_REQUIRE_THROW(f.ioctl(FIGETBSZ, 0ul).get(), std::system_error);
+        BOOST_REQUIRE_THROW(f.ioctl_short(FIGETBSZ, 0ul).get(), std::system_error);
+    });
+}
 
 class test_layered_file : public layered_file_impl {
 public:
@@ -548,11 +663,11 @@ SEASTAR_TEST_CASE(test_underlying_file) {
         auto oflags = open_flags::rw | open_flags::create;
         sstring filename = (t.get_path() / "testfile.tmp").native();
         auto f = open_file_dma(filename, oflags).get0();
+        auto close_f = deferred_close(f);
         auto lf = file(make_shared<test_layered_file>(f));
         BOOST_CHECK_EQUAL(f.memory_dma_alignment(), lf.memory_dma_alignment());
         BOOST_CHECK_EQUAL(f.disk_read_dma_alignment(), lf.disk_read_dma_alignment());
         BOOST_CHECK_EQUAL(f.disk_write_dma_alignment(), lf.disk_write_dma_alignment());
-        f.close().get();
     });
 }
 
@@ -662,7 +777,7 @@ SEASTAR_TEST_CASE(test_nowait_flag_correctness) {
         }
 
         auto f = open_file_dma(filename, oflags).get0();
-        auto close_f = defer([&] { f.close().get(); });
+        auto close_f = deferred_close(f);
 
         if (is_tmpfs(filename)) {
             BOOST_TEST_WARN(0, "Skipping this test because TMPFS was detected, and RWF_NOWAIT is only supported by disk-based FSes");
@@ -684,6 +799,16 @@ SEASTAR_TEST_CASE(test_destruct_just_constructed_append_challenged_file) {
         sstring filename = (t.get_path() / "testfile.tmp").native();
         auto oflags = open_flags::rw | open_flags::create;
         auto f = open_file_dma(filename, oflags).get0();
+    });
+}
+
+SEASTAR_TEST_CASE(test_destruct_just_constructed_append_challenged_file_with_sloppy_size) {
+    return tmp_dir::do_with_thread([] (tmp_dir& t) {
+        sstring filename = (t.get_path() / "testfile.tmp").native();
+        auto oflags = open_flags::rw | open_flags::create;
+        file_open_options opt;
+        opt.sloppy_size = true;
+        auto f = open_file_dma(filename, oflags, opt).get0();
     });
 }
 
@@ -752,5 +877,99 @@ SEASTAR_TEST_CASE(test_dma_iovec) {
         BOOST_REQUIRE_EQUAL(count, size);
 
         BOOST_REQUIRE(std::equal(wbuf.get(), wbuf.get() + alignment, rbuf.get(), rbuf.get() + alignment));
+    });
+}
+
+SEASTAR_TEST_CASE(test_intent) {
+    return tmp_dir::do_with_thread([] (tmp_dir& t) {
+        sstring filename = (t.get_path() / "testfile.tmp").native();
+        auto f = open_file_dma(filename, open_flags::rw | open_flags::create).get0();
+        auto buf = allocate_aligned_buffer<unsigned char>(1024, 1024);
+        std::fill(buf.get(), buf.get() + 1024, 'a');
+        f.dma_write(0, buf.get(), 1024).get();
+        std::fill(buf.get(), buf.get() + 1024, 'b');
+        io_intent intent;
+        auto f1 = f.dma_write(0, buf.get(), 512);
+        auto f2 = f.dma_write(512, buf.get(), 512, default_priority_class(), &intent);
+        intent.cancel();
+
+        bool cancelled = false;
+        f1.get();
+        try {
+            f2.get();
+        } catch (cancelled_error& ex) {
+            cancelled = true;
+        }
+        auto rbuf = allocate_aligned_buffer<unsigned char>(1024, 1024);
+        f.dma_read(0, rbuf.get(), 1024).get();
+        BOOST_REQUIRE(rbuf.get()[0] == 'b');
+        if (cancelled) {
+            BOOST_REQUIRE(rbuf.get()[512] == 'a');
+        } else {
+            // The file::dma_write doesn't preemt, but if it
+            // suddenly will, the 2nd write will pass before
+            // the intent would be cancelled
+            BOOST_TEST_WARN(0, "Write won the race with cancellation");
+            BOOST_REQUIRE(rbuf.get()[512] == 'b');
+        }
+    });
+}
+
+SEASTAR_TEST_CASE(parallel_overwrite) {
+    // Avoid /tmp for tmp_dir, since it can be tmpfs
+    return tmp_dir::do_with("XXXXXXXX.tmp", [] (tmp_dir& t) {
+        return async([&] {
+            // Check that overwrites at disk_overwrite_dma_alignment() do not cause stalls. First,
+            // create a file.
+            auto fname = (t.get_path() / "testfile.tmp").native();
+            auto sz = uint64_t(1*1024*1024);
+            auto buffer_size = 128*1024;
+
+            file f = open_file_dma(fname, open_flags::rw | open_flags::create | open_flags::truncate).get0();
+            // Avoid filesystem problems with size-extending operations
+            f.truncate(sz).get();
+            auto buf = allocate_aligned_buffer<unsigned char>(buffer_size, f.memory_dma_alignment());
+            for (uint64_t offset = 0; offset < sz; offset += buffer_size) {
+                f.dma_write(offset, buf.get(), buffer_size).get();
+            }
+
+            auto random_engine = testing::local_random_engine;
+            auto dist = std::uniform_int_distribution(uint64_t(0), sz-1);
+            auto offsets  = std::vector<uint64_t>();
+            std::generate_n(std::back_insert_iterator(offsets), 5000, [&] { return align_down(dist(random_engine), f.disk_overwrite_dma_alignment()); });
+            auto stall_report = internal::report_reactor_stalls([&] {
+                return max_concurrent_for_each(offsets, 10, [&] (uint64_t offset) {
+                    return f.dma_write(offset, buf.get(), f.disk_overwrite_dma_alignment()).discard_result();
+                });
+            }).get0();
+            std::cout << "parallel_overwrite: " << stall_report << " (overwrite dma alignment " << f.disk_overwrite_dma_alignment() << ")\n";
+
+            f.close().get();
+            remove_file(fname).get();
+        });
+    });
+}
+
+SEASTAR_TEST_CASE(test_oversized_io_works) {
+    return tmp_dir::do_with_thread([] (tmp_dir& t) {
+        sstring filename = (t.get_path() / "testfile.tmp").native();
+        auto f = open_file_dma(filename, open_flags::rw | open_flags::create).get0();
+
+        size_t max_write = f.disk_write_max_length();
+        size_t max_read = f.disk_read_max_length();
+        size_t buf_size = std::max(max_write, max_read) + 4096;
+
+        auto buf = allocate_aligned_buffer<unsigned char>(buf_size, 4096);
+        std::fill(buf.get(), buf.get() + buf_size, 'a');
+
+        f.dma_write(0, buf.get(), buf_size).get();
+        f.flush().get0();
+        f.close().get();
+
+        std::fill(buf.get(), buf.get() + buf_size, 'b');
+        f = open_file_dma(filename, open_flags::rw).get0();
+        f.dma_read(0, buf.get(), buf_size).get();
+
+        BOOST_REQUIRE((size_t)std::count_if(buf.get(), buf.get() + buf_size, [](auto x) { return x == 'a'; }) == buf_size);
     });
 }

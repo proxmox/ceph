@@ -359,3 +359,52 @@ run wp_guides_test.cpp ;
 
 compile-fail shared_from_fail.cpp ;
 compile-fail weak_from_fail.cpp ;
+
+compile sp_override_test.cpp ;
+compile sp_pedantic_test.cpp
+  : <warnings>pedantic
+    <toolset>msvc:<warnings-as-errors>on
+    <toolset>gcc:<warnings-as-errors>on
+    <toolset>clang:<warnings-as-errors>on ;
+
+run sp_owner_before_test.cpp ;
+run sp_owner_equals_test.cpp ;
+run lsp_owner_before_test.cpp ;
+run lsp_owner_equals_test.cpp ;
+
+run owner_equal_to_test.cpp ;
+run owner_equal_to_test2.cpp ;
+
+run owner_less_test2.cpp ;
+
+run ip_hash_test2.cpp ;
+run sp_hash_test4.cpp ;
+run lsp_hash_test.cpp ;
+run lsp_hash_test2.cpp ;
+
+run atomic_count_mt_test.cpp
+  : : : <threading>multi ;
+
+run spinlock_mt_test.cpp
+  : : : <threading>multi ;
+
+run spinlock_pool_mt_test.cpp
+  : : : <threading>multi ;
+
+run shared_ptr_mt_test.cpp
+  : : : <threading>multi ;
+
+run weak_ptr_mt_test.cpp
+  : : : <threading>multi ;
+
+compile sp_report_implementation.cpp ;
+
+run sp_owner_hash_value_test.cpp ;
+
+run wp_hash_test.cpp ;
+run wp_hash_test2.cpp ;
+
+run wp_unordered_test.cpp ;
+
+run owner_hash_test.cpp ;
+run sp_unordered_test.cpp ;

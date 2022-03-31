@@ -13,6 +13,8 @@
 #endif
 
 #include <boost/container/detail/dlmalloc.hpp>
+#include <boost/core/no_exceptions_support.hpp>
+#include <boost/container/throw_exception.hpp>
 
 #define BOOST_INTERPROCESS_VECTOR_ALLOC_STATS
 
@@ -20,10 +22,10 @@
 #include <typeinfo>  //typeid
 #include <cassert>   //assert
 
-#include <boost/timer/timer.hpp>
-using boost::timer::cpu_timer;
-using boost::timer::cpu_times;
-using boost::timer::nanosecond_type;
+#include <boost/move/detail/nsec_clock.hpp>
+using boost::move_detail::cpu_timer;
+using boost::move_detail::cpu_times;
+using boost::move_detail::nanosecond_type;
 
 using namespace boost::container;
 
@@ -61,7 +63,7 @@ void allocation_timing_test(unsigned int num_iterations, unsigned int num_elemen
          dlmalloc_free(first_mem);
          ++numalloc;
 
-         try{
+         BOOST_TRY{
             dlmalloc_command_ret_t ret;
             for(size_t e = capacity + 1; e < num_elements; ++e){
                size_t received_size;
@@ -73,8 +75,7 @@ void allocation_timing_test(unsigned int num_iterations, unsigned int num_elemen
                   ( m_mode, sizeof(POD)
                   , min, max, &received_size, addr);
                if(!ret.first){
-                  std::cout << "(!ret.first)!" << std::endl;
-                  throw int(0);
+                  throw_runtime_error("!ret.first)");
                }
                if(!ret.second){
                   assert(m_mode == BOOST_CONTAINER_ALLOCATE_NEW);
@@ -100,10 +101,11 @@ void allocation_timing_test(unsigned int num_iterations, unsigned int num_elemen
             }
             dlmalloc_free(addr);
          }
-         catch(...){
+         BOOST_CATCH(...){
             dlmalloc_free(addr);
-            throw;
+            BOOST_RETHROW;
          }
+         BOOST_CATCH_END
       }
 
       assert( dlmalloc_allocated_memory() == 0);

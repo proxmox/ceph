@@ -1,4 +1,4 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*- 
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
 // vim: ts=8 sw=2 smarttab
 /*
  * Ceph - scalable distributed file system
@@ -7,9 +7,9 @@
  *
  * This is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
- * License version 2.1, as published by the Free Software 
+ * License version 2.1, as published by the Free Software
  * Foundation.  See file COPYING.
- * 
+ *
  */
 
 #include <atomic>
@@ -33,8 +33,8 @@
 #include "common/likely.h"
 #include "common/valgrind.h"
 #include "common/deleter.h"
-#include "common/RWLock.h"
 #include "common/error_code.h"
+#include "include/intarith.h"
 #include "include/spinlock.h"
 #include "include/scope_guard.h"
 
@@ -47,6 +47,10 @@ using namespace ceph;
 
 #define CEPH_BUFFER_ALLOC_UNIT  4096u
 #define CEPH_BUFFER_APPEND_SIZE (CEPH_BUFFER_ALLOC_UNIT - sizeof(raw_combined))
+
+// 256K is the maximum "small" object size in tcmalloc above which allocations come from
+// the central heap.  For now let's keep this below that threshold.
+#define CEPH_BUFFER_ALLOC_UNIT_MAX std::size_t { 256*1024 }
 
 #ifdef BUFFER_DEBUG
 static ceph::spinlock debug_lock;
@@ -1319,8 +1323,14 @@ static ceph::spinlock debug_lock;
     // make a new buffer.  fill out a complete page, factoring in the
     // raw_combined overhead.
     size_t need = round_up_to(len, sizeof(size_t)) + sizeof(raw_combined);
-    size_t alen = round_up_to(need, CEPH_BUFFER_ALLOC_UNIT) -
-      sizeof(raw_combined);
+    size_t alen = round_up_to(need, CEPH_BUFFER_ALLOC_UNIT);
+    if (_carriage == &_buffers.back()) {
+      size_t nlen = round_up_to(_carriage->raw_length(), CEPH_BUFFER_ALLOC_UNIT) * 2;
+      nlen = std::min(nlen, CEPH_BUFFER_ALLOC_UNIT_MAX);
+      alen = std::max(alen, nlen);
+    }
+    alen -= sizeof(raw_combined);
+
     auto new_back = \
       ptr_node::create(raw_combined::create(alen, 0, get_mempool()));
     new_back->set_length(0);   // unused, so far.
@@ -1513,16 +1523,19 @@ static ceph::spinlock debug_lock;
    */
   char *buffer::list::c_str()
   {
-    if (_buffers.empty())
-      return 0;                         // no buffers
-
-    auto iter = std::cbegin(_buffers);
-    ++iter;
-
-    if (iter != std::cend(_buffers)) {
+    if (const auto len = length(); len == 0) {
+      return nullptr;                         // no non-empty buffers
+    } else if (len != _buffers.front().length()) {
       rebuild();
+    } else {
+      // there are two *main* scenarios that hit this branch:
+      //   1. bufferlist with single, non-empty buffer;
+      //   2. bufferlist with single, non-empty buffer followed by
+      //      empty buffer. splice() tries to not waste our appendable
+      //      space; to carry it an empty bptr is added at the end.
+      // we account for these and don't rebuild unnecessarily
     }
-    return _buffers.front().c_str();  // good, we're already contiguous.
+    return _buffers.front().c_str();
   }
 
   string buffer::list::to_str() const {
@@ -2017,6 +2030,33 @@ int buffer::list::write_fd(int fd, uint64_t offset) const
 }
 #endif
 
+buffer::list::iov_vec_t buffer::list::prepare_iovs() const
+{
+  size_t index = 0;
+  uint64_t off = 0;
+  iov_vec_t iovs{_num / IOV_MAX + 1};
+  auto it = iovs.begin();
+  for (auto& bp : _buffers) {
+    if (index == 0) {
+      it->offset = off;
+      it->length = 0;
+      size_t nr_iov_created = std::distance(iovs.begin(), it);
+      it->iov.resize(
+	std::min(_num - IOV_MAX * nr_iov_created, (size_t)IOV_MAX));
+    }
+    it->iov[index].iov_base = (void*)bp.c_str();
+    it->iov[index].iov_len = bp.length();
+    off += bp.length();
+    it->length += bp.length();
+    if (++index == IOV_MAX) {
+      // continue with a new vector<iov> if we have more buf
+      ++it;
+      index = 0;
+    }
+  }
+  return iovs;
+}
+
 __u32 buffer::list::crc32c(__u32 crc) const
 {
   int cache_misses = 0;
@@ -2271,8 +2311,10 @@ MEMPOOL_DEFINE_OBJECT_FACTORY(buffer::raw_static, buffer_raw_static,
 
 
 void ceph::buffer::list::page_aligned_appender::_refill(size_t len) {
-  const size_t alloc = \
-    std::max((size_t)min_alloc, (len + CEPH_PAGE_SIZE - 1) & CEPH_PAGE_MASK);
+  const unsigned alloc =
+    std::max(min_alloc,
+	     shift_round_up(static_cast<unsigned>(len),
+			    static_cast<unsigned>(CEPH_PAGE_SHIFT)));
   auto new_back = \
     ptr_node::create(buffer::create_page_aligned(alloc));
   new_back->set_length(0);   // unused, so far.

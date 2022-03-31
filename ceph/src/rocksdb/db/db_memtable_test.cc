@@ -17,7 +17,7 @@ namespace ROCKSDB_NAMESPACE {
 
 class DBMemTableTest : public DBTestBase {
  public:
-  DBMemTableTest() : DBTestBase("/db_memtable_test") {}
+  DBMemTableTest() : DBTestBase("/db_memtable_test", /*env_do_fsync=*/true) {}
 };
 
 class MockMemTableRep : public MemTableRep {
@@ -261,7 +261,7 @@ TEST_F(DBMemTableTest, ConcurrentMergeWrite) {
   ReadOptions roptions;
   SequenceNumber max_covering_tombstone_seq = 0;
   LookupKey lkey("key", kMaxSequenceNumber);
-  res = mem->Get(lkey, &value, &status, &merge_context,
+  res = mem->Get(lkey, &value, /*timestamp=*/nullptr, &status, &merge_context,
                  &max_covering_tombstone_seq, roptions);
   ASSERT_TRUE(res);
   uint64_t ivalue = DecodeFixed64(Slice(value).data());
@@ -303,19 +303,20 @@ TEST_F(DBMemTableTest, InsertWithHint) {
   ASSERT_EQ(hint_bar, rep->last_hint_in());
   ASSERT_EQ(hint_bar, rep->last_hint_out());
   ASSERT_EQ(5, rep->num_insert_with_hint());
-  ASSERT_OK(Put("whitelisted", "vvv"));
+  ASSERT_OK(Put("NotInPrefixDomain", "vvv"));
   ASSERT_EQ(5, rep->num_insert_with_hint());
   ASSERT_EQ("foo_v1", Get("foo_k1"));
   ASSERT_EQ("foo_v2", Get("foo_k2"));
   ASSERT_EQ("foo_v3", Get("foo_k3"));
   ASSERT_EQ("bar_v1", Get("bar_k1"));
   ASSERT_EQ("bar_v2", Get("bar_k2"));
-  ASSERT_EQ("vvv", Get("whitelisted"));
+  ASSERT_EQ("vvv", Get("NotInPrefixDomain"));
 }
 
 TEST_F(DBMemTableTest, ColumnFamilyId) {
   // Verifies MemTableRepFactory is told the right column family id.
   Options options;
+  options.env = CurrentOptions().env;
   options.allow_concurrent_memtable_write = false;
   options.create_if_missing = true;
   options.memtable_factory.reset(new MockMemTableRepFactory());

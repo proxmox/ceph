@@ -2,6 +2,7 @@ NATIVE_JAVA_CLASSES = \
 	org.rocksdb.AbstractCompactionFilter\
 	org.rocksdb.AbstractCompactionFilterFactory\
 	org.rocksdb.AbstractComparator\
+	org.rocksdb.AbstractEventListener\
 	org.rocksdb.AbstractSlice\
 	org.rocksdb.AbstractTableFilter\
 	org.rocksdb.AbstractTraceWriter\
@@ -25,6 +26,7 @@ NATIVE_JAVA_CLASSES = \
 	org.rocksdb.CompactRangeOptions\
 	org.rocksdb.ComparatorOptions\
 	org.rocksdb.CompressionOptions\
+	org.rocksdb.ConfigOptions\
 	org.rocksdb.DBOptions\
 	org.rocksdb.DirectSlice\
 	org.rocksdb.Env\
@@ -35,6 +37,8 @@ NATIVE_JAVA_CLASSES = \
 	org.rocksdb.HashLinkedListMemTableConfig\
 	org.rocksdb.HashSkipListMemTableConfig\
 	org.rocksdb.HdfsEnv\
+	org.rocksdb.ConcurrentTaskLimiter\
+	org.rocksdb.ConcurrentTaskLimiterImpl\
 	org.rocksdb.Logger\
 	org.rocksdb.LRUCache\
 	org.rocksdb.MemoryUsageType\
@@ -62,6 +66,8 @@ NATIVE_JAVA_CLASSES = \
 	org.rocksdb.SstFileWriter\
 	org.rocksdb.SstFileReader\
 	org.rocksdb.SstFileReaderIterator\
+	org.rocksdb.SstPartitionerFactory\
+	org.rocksdb.SstPartitionerFixedPrefixFactory\
 	org.rocksdb.Statistics\
 	org.rocksdb.ThreadStatus\
 	org.rocksdb.TimedEnv\
@@ -82,7 +88,9 @@ NATIVE_JAVA_CLASSES = \
 	org.rocksdb.WriteBufferManager\
 	org.rocksdb.WBWIRocksIterator
 
-NATIVE_JAVA_TEST_CLASSES = org.rocksdb.RocksDBExceptionTest\
+NATIVE_JAVA_TEST_CLASSES = \
+    org.rocksdb.RocksDBExceptionTest\
+    org.rocksdb.test.TestableEventListener\
     org.rocksdb.NativeComparatorWrapperTest.NativeStringComparatorWrapper\
     org.rocksdb.WriteBatchTest\
     org.rocksdb.WriteBatchTestInternalHelper
@@ -124,6 +132,7 @@ JAVA_TESTS = \
 	org.rocksdb.DirectSliceTest\
 	org.rocksdb.util.EnvironmentTest\
 	org.rocksdb.EnvOptionsTest\
+	org.rocksdb.EventListenerTest\
 	org.rocksdb.HdfsEnvTest\
 	org.rocksdb.IngestExternalFileOptionsTest\
 	org.rocksdb.util.IntComparatorTest\
@@ -132,6 +141,7 @@ JAVA_TESTS = \
 	org.rocksdb.FlushTest\
 	org.rocksdb.InfoLogLevelTest\
 	org.rocksdb.KeyMayExistTest\
+	org.rocksdb.ConcurrentTaskLimiterTest\
 	org.rocksdb.LoggerTest\
 	org.rocksdb.LRUCacheTest\
 	org.rocksdb.MemoryUtilTest\
@@ -158,11 +168,13 @@ JAVA_TESTS = \
 	org.rocksdb.RocksIteratorTest\
 	org.rocksdb.RocksMemEnvTest\
 	org.rocksdb.util.SizeUnitTest\
+	org.rocksdb.SecondaryDBTest\
 	org.rocksdb.SliceTest\
 	org.rocksdb.SnapshotTest\
 	org.rocksdb.SstFileManagerTest\
 	org.rocksdb.SstFileWriterTest\
 	org.rocksdb.SstFileReaderTest\
+	org.rocksdb.SstPartitionerTest\
 	org.rocksdb.TableFilterTest\
 	org.rocksdb.TimedEnvTest\
 	org.rocksdb.TransactionTest\
@@ -197,24 +209,34 @@ SAMPLES_OUTPUT = samples/target
 SAMPLES_MAIN_CLASSES = $(SAMPLES_OUTPUT)/classes
 
 JAVA_TEST_LIBDIR = test-libs
-JAVA_JUNIT_JAR = $(JAVA_TEST_LIBDIR)/junit-4.12.jar
-JAVA_HAMCR_JAR = $(JAVA_TEST_LIBDIR)/hamcrest-core-1.3.jar
-JAVA_MOCKITO_JAR = $(JAVA_TEST_LIBDIR)/mockito-all-1.10.19.jar
-JAVA_CGLIB_JAR = $(JAVA_TEST_LIBDIR)/cglib-2.2.2.jar
-JAVA_ASSERTJ_JAR = $(JAVA_TEST_LIBDIR)/assertj-core-1.7.1.jar
-JAVA_TESTCLASSPATH = $(JAVA_JUNIT_JAR):$(JAVA_HAMCR_JAR):$(JAVA_MOCKITO_JAR):$(JAVA_CGLIB_JAR):$(JAVA_ASSERTJ_JAR)
+JAVA_JUNIT_VER = 4.12
+JAVA_JUNIT_JAR = junit-$(JAVA_JUNIT_VER).jar
+JAVA_JUNIT_JAR_PATH = $(JAVA_TEST_LIBDIR)/$(JAVA_JUNIT_JAR)
+JAVA_HAMCREST_VER = 1.3
+JAVA_HAMCREST_JAR = hamcrest-core-$(JAVA_HAMCREST_VER).jar
+JAVA_HAMCREST_JAR_PATH = $(JAVA_TEST_LIBDIR)/$(JAVA_HAMCREST_JAR)
+JAVA_MOCKITO_VER = 1.10.19
+JAVA_MOCKITO_JAR = mockito-all-$(JAVA_MOCKITO_VER).jar
+JAVA_MOCKITO_JAR_PATH = $(JAVA_TEST_LIBDIR)/$(JAVA_MOCKITO_JAR)
+JAVA_CGLIB_VER = 2.2.2
+JAVA_CGLIB_JAR = cglib-$(JAVA_CGLIB_VER).jar
+JAVA_CGLIB_JAR_PATH = $(JAVA_TEST_LIBDIR)/$(JAVA_CGLIB_JAR)
+JAVA_ASSERTJ_VER = 1.7.1
+JAVA_ASSERTJ_JAR = assertj-core-$(JAVA_ASSERTJ_VER).jar
+JAVA_ASSERTJ_JAR_PATH = $(JAVA_TEST_LIBDIR)/$(JAVA_ASSERTJ_JAR)
+JAVA_TESTCLASSPATH = $(JAVA_JUNIT_JAR_PATH):$(JAVA_HAMCREST_JAR_PATH):$(JAVA_MOCKITO_JAR_PATH):$(JAVA_CGLIB_JAR_PATH):$(JAVA_ASSERTJ_JAR_PATH)
 
 MVN_LOCAL = ~/.m2/repository
 
 # Set the default JAVA_ARGS to "" for DEBUG_LEVEL=0
-JAVA_ARGS? =
+JAVA_ARGS ?=
 
-JAVAC_ARGS? =
+JAVAC_ARGS ?=
 
 # When debugging add -Xcheck:jni to the java args
 ifneq ($(DEBUG_LEVEL),0)
-	JAVA_ARGS = -ea -Xcheck:jni
-	JAVAC_ARGS = -Xlint:deprecation -Xlint:unchecked
+	JAVA_ARGS += -ea -Xcheck:jni
+	JAVAC_ARGS += -Xlint:deprecation -Xlint:unchecked
 endif
 
 # Using a Facebook AWS account for S3 storage. (maven.org has a history
@@ -286,13 +308,45 @@ optimistic_transaction_sample: java
 	java -ea -Xcheck:jni -Djava.library.path=target -cp $(MAIN_CLASSES):$(SAMPLES_MAIN_CLASSES) OptimisticTransactionSample /tmp/rocksdbjni
 	$(AM_V_at)@rm -rf /tmp/rocksdbjni
 
-resolve_test_deps:
-	test -d "$(JAVA_TEST_LIBDIR)" || mkdir -p "$(JAVA_TEST_LIBDIR)"
-	test -s "$(JAVA_JUNIT_JAR)" || cp $(MVN_LOCAL)/junit/junit/4.12/junit-4.12.jar $(JAVA_TEST_LIBDIR) || curl --fail --insecure --output $(JAVA_JUNIT_JAR) --location $(DEPS_URL)/junit-4.12.jar
-	test -s "$(JAVA_HAMCR_JAR)" || cp $(MVN_LOCAL)/org/hamcrest/hamcrest-core/1.3/hamcrest-core-1.3.jar $(JAVA_TEST_LIBDIR) || curl --fail --insecure --output $(JAVA_HAMCR_JAR) --location $(DEPS_URL)/hamcrest-core-1.3.jar
-	test -s "$(JAVA_MOCKITO_JAR)" || cp $(MVN_LOCAL)/org/mockito/mockito-all/1.10.19/mockito-all-1.10.19.jar $(JAVA_TEST_LIBDIR) || curl --fail --insecure --output "$(JAVA_MOCKITO_JAR)" --location $(DEPS_URL)/mockito-all-1.10.19.jar
-	test -s "$(JAVA_CGLIB_JAR)" || cp $(MVN_LOCAL)/cglib/cglib/2.2.2/cglib-2.2.2.jar $(JAVA_TEST_LIBDIR) || curl --fail --insecure --output "$(JAVA_CGLIB_JAR)" --location $(DEPS_URL)/cglib-2.2.2.jar
-	test -s "$(JAVA_ASSERTJ_JAR)" || cp $(MVN_LOCAL)/org/assertj/assertj-core/1.7.1/assertj-core-1.7.1.jar $(JAVA_TEST_LIBDIR) || curl --fail --insecure --output "$(JAVA_ASSERTJ_JAR)" --location $(DEPS_URL)/assertj-core-1.7.1.jar
+$(JAVA_TEST_LIBDIR):
+	mkdir -p "$(JAVA_TEST_LIBDIR)"
+
+$(JAVA_JUNIT_JAR_PATH): $(JAVA_TEST_LIBDIR)
+ifneq (,$(wildcard $(MVN_LOCAL)/junit/junit/$(JAVA_JUNIT_VER)/$(JAVA_JUNIT_JAR)))
+	cp -v $(MVN_LOCAL)/junit/junit/$(JAVA_JUNIT_VER)/$(JAVA_JUNIT_JAR) $(JAVA_TEST_LIBDIR)
+else
+	curl --fail --insecure --output $(JAVA_JUNIT_JAR_PATH) --location $(DEPS_URL)/$(JAVA_JUNIT_JAR)
+endif
+
+$(JAVA_HAMCREST_JAR_PATH): $(JAVA_TEST_LIBDIR)
+ifneq (,$(wildcard $(MVN_LOCAL)/org/hamcrest/hamcrest-core/$(JAVA_HAMCREST_VER)/$(JAVA_HAMCREST_JAR)))
+	cp -v $(MVN_LOCAL)/org/hamcrest/hamcrest-core/$(JAVA_HAMCREST_VER)/$(JAVA_HAMCREST_JAR) $(JAVA_TEST_LIBDIR)
+else
+	curl --fail --insecure --output $(JAVA_HAMCREST_JAR_PATH) --location $(DEPS_URL)/$(JAVA_HAMCREST_JAR)
+endif
+
+$(JAVA_MOCKITO_JAR_PATH): $(JAVA_TEST_LIBDIR)
+ifneq (,$(wildcard $(MVN_LOCAL)/org/mockito/mockito-all/$(JAVA_MOCKITO_VER)/$(JAVA_MOCKITO_JAR)))
+	cp -v $(MVN_LOCAL)/org/mockito/mockito-all/$(JAVA_MOCKITO_VER)/$(JAVA_MOCKITO_JAR) $(JAVA_TEST_LIBDIR)
+else
+	curl --fail --insecure --output "$(JAVA_MOCKITO_JAR_PATH)" --location $(DEPS_URL)/$(JAVA_MOCKITO_JAR)
+endif
+
+$(JAVA_CGLIB_JAR_PATH): $(JAVA_TEST_LIBDIR)
+ifneq (,$(wildcard $(MVN_LOCAL)/cglib/cglib/$(JAVA_CGLIB_VER)/$(JAVA_CGLIB_JAR)))
+	cp -v $(MVN_LOCAL)/cglib/cglib/$(JAVA_CGLIB_VER)/$(JAVA_CGLIB_JAR) $(JAVA_TEST_LIBDIR)
+else
+	curl --fail --insecure --output "$(JAVA_CGLIB_JAR_PATH)" --location $(DEPS_URL)/$(JAVA_CGLIB_JAR)
+endif
+
+$(JAVA_ASSERTJ_JAR_PATH): $(JAVA_TEST_LIBDIR)
+ifneq (,$(wildcard $(MVN_LOCAL)/org/assertj/assertj-core/$(JAVA_ASSERTJ_VER)/$(JAVA_ASSERTJ_JAR)))
+	cp -v $(MVN_LOCAL)/org/assertj/assertj-core/$(JAVA_ASSERTJ_VER)/$(JAVA_ASSERTJ_JAR) $(JAVA_TEST_LIBDIR)
+else
+	curl --fail --insecure --output "$(JAVA_ASSERTJ_JAR_PATH)" --location $(DEPS_URL)/$(JAVA_ASSERTJ_JAR)
+endif
+
+resolve_test_deps: $(JAVA_JUNIT_JAR_PATH) $(JAVA_HAMCREST_JAR_PATH) $(JAVA_MOCKITO_JAR_PATH) $(JAVA_CGLIB_JAR_PATH) $(JAVA_ASSERTJ_JAR_PATH)
 
 java_test: java resolve_test_deps
 	$(AM_V_GEN)mkdir -p $(TEST_CLASSES)

@@ -58,8 +58,6 @@
 #include "messages/MCommand.h"
 #include "messages/MCommandReply.h"
 
-#include "messages/MAuthReply.h"
-
 #include "messages/MTimeCheck2.h"
 #include "messages/MPing.h"
 
@@ -339,9 +337,15 @@ int Monitor::do_admin_command(
   } else if (command == "quorum_status") {
     _quorum_status(f, out);
   } else if (command == "sync_force") {
-    string validate;
-    if ((!cmd_getval(cmdmap, "validate", validate)) ||
-	(validate != "--yes-i-really-mean-it")) {
+    bool validate = false;
+    if (!cmd_getval(cmdmap, "yes_i_really_mean_it", validate)) {
+      std::string v;
+      if (cmd_getval(cmdmap, "validate", v) &&
+	  v == "--yes-i-really-mean-it") {
+	validate = true;
+      }
+    }
+    if (!validate) {
       err << "are you SURE? this will mean the monitor store will be erased "
 	"the next time the monitor is restarted.  pass "
 	"'--yes-i-really-mean-it' if you really do.";
@@ -417,6 +421,11 @@ int Monitor::do_admin_command(
     cmd_getval(cmdmap, "devid", want_devid);
 
     string devname = store->get_devname();
+    if (devname.empty()) {
+      err << "could not determine device name for " << store->get_path();
+      r = -ENOENT;
+      goto abort;
+    }
     set<string> devnames;
     get_raw_devices(devname, &devnames);
     json_spirit::mObject json_map;
@@ -489,9 +498,13 @@ abort:
 
 void Monitor::handle_signal(int signum)
 {
-  ceph_assert(signum == SIGINT || signum == SIGTERM);
   derr << "*** Got Signal " << sig_str(signum) << " ***" << dendl;
-  shutdown();
+  if (signum == SIGHUP) {
+    sighup_handler(signum);
+  } else {
+    ceph_assert(signum == SIGINT || signum == SIGTERM);
+    shutdown();
+  }
 }
 
 CompatSet Monitor::get_initial_supported_features()
@@ -518,6 +531,7 @@ CompatSet Monitor::get_supported_features()
   compat.incompat.insert(CEPH_MON_FEATURE_INCOMPAT_NAUTILUS);
   compat.incompat.insert(CEPH_MON_FEATURE_INCOMPAT_OCTOPUS);
   compat.incompat.insert(CEPH_MON_FEATURE_INCOMPAT_PACIFIC);
+  compat.incompat.insert(CEPH_MON_FEATURE_INCOMPAT_QUINCY);
   return compat;
 }
 
@@ -602,6 +616,7 @@ const char** Monitor::get_tracked_conf_keys() const
     "clog_to_graylog",
     "clog_to_graylog_host",
     "clog_to_graylog_port",
+    "mon_cluster_log_to_file",
     "host",
     "fsid",
     // periodic health to clog
@@ -664,31 +679,8 @@ void Monitor::handle_conf_change(const ConfigProxy& conf,
 
 void Monitor::update_log_clients()
 {
-  map<string,string> log_to_monitors;
-  map<string,string> log_to_syslog;
-  map<string,string> log_channel;
-  map<string,string> log_prio;
-  map<string,string> log_to_graylog;
-  map<string,string> log_to_graylog_host;
-  map<string,string> log_to_graylog_port;
-  uuid_d fsid;
-  string host;
-
-  if (parse_log_client_options(g_ceph_context, log_to_monitors, log_to_syslog,
-			       log_channel, log_prio, log_to_graylog,
-			       log_to_graylog_host, log_to_graylog_port,
-			       fsid, host))
-    return;
-
-  clog->update_config(log_to_monitors, log_to_syslog,
-		      log_channel, log_prio, log_to_graylog,
-		      log_to_graylog_host, log_to_graylog_port,
-		      fsid, host);
-
-  audit_clog->update_config(log_to_monitors, log_to_syslog,
-			    log_channel, log_prio, log_to_graylog,
-			    log_to_graylog_host, log_to_graylog_port,
-			    fsid, host);
+  clog->parse_client_options(g_ceph_context);
+  audit_clog->parse_client_options(g_ceph_context);
 }
 
 int Monitor::sanitize_options()
@@ -943,6 +935,9 @@ int Monitor::init()
   mgr_messenger->add_dispatcher_tail(&mgr_client);
   mgr_messenger->add_dispatcher_tail(this);  // for auth ms_* calls
   mgrmon()->prime_mgr_client();
+
+  // generate list of filestore OSDs
+  osdmon()->get_filestore_osd_list();
 
   state = STATE_PROBING;
   bootstrap();
@@ -1281,8 +1276,7 @@ bool Monitor::_add_bootstrap_peer_hint(std::string_view cmd,
 	     << addrstr << "'" << dendl;
 
     entity_addr_t addr;
-    const char *end = 0;
-    if (!addr.parse(addrstr.c_str(), &end, entity_addr_t::TYPE_ANY)) {
+    if (!addr.parse(addrstr, entity_addr_t::TYPE_ANY)) {
       ss << "failed to parse addrs '" << addrstr
 	 << "'; syntax is 'add_bootstrap_peer_hint ip[:port]'";
       return false;
@@ -1918,7 +1912,7 @@ void Monitor::handle_probe_probe(MonOpRequestRef op)
 {
   auto m = op->get_req<MMonProbe>();
 
-  dout(10) << "handle_probe_probe " << m->get_source_inst() << *m
+  dout(10) << "handle_probe_probe " << m->get_source_inst() << " " << *m
 	   << " features " << m->get_connection()->get_features() << dendl;
   uint64_t missing = required_features & ~m->get_connection()->get_features();
   if ((m->mon_release != ceph_release_t::unknown &&
@@ -2490,6 +2484,13 @@ void Monitor::apply_monmap_to_compatset_features()
     ceph_assert(HAVE_FEATURE(quorum_con_features, SERVER_PACIFIC));
     new_features.incompat.insert(CEPH_MON_FEATURE_INCOMPAT_PACIFIC);
   }
+  if (monmap_features.contains_all(ceph::features::mon::FEATURE_QUINCY)) {
+    ceph_assert(ceph::features::mon::get_persistent().contains_all(
+           ceph::features::mon::FEATURE_QUINCY));
+    // this feature should only ever be set if the quorum supports it.
+    ceph_assert(HAVE_FEATURE(quorum_con_features, SERVER_QUINCY));
+    new_features.incompat.insert(CEPH_MON_FEATURE_INCOMPAT_QUINCY);
+  }
 
   dout(5) << __func__ << dendl;
   _apply_compatset_features(new_features);
@@ -2521,6 +2522,9 @@ void Monitor::calc_quorum_requirements()
   }
   if (features.incompat.contains(CEPH_MON_FEATURE_INCOMPAT_PACIFIC)) {
     required_features |= CEPH_FEATUREMASK_SERVER_PACIFIC;
+  }
+  if (features.incompat.contains(CEPH_MON_FEATURE_INCOMPAT_QUINCY)) {
+    required_features |= CEPH_FEATUREMASK_SERVER_QUINCY;
   }
 
   // monmap
@@ -2595,8 +2599,7 @@ void Monitor::_quorum_status(Formatter *f, ostream& ss)
   if (!quorum.empty()) {
     f->dump_int(
       "quorum_age",
-      std::chrono::duration_cast<std::chrono::seconds>(
-	mono_clock::now() - quorum_since).count());
+      quorum_age());
   }
 
   f->open_object_section("features");
@@ -2631,8 +2634,7 @@ void Monitor::get_mon_status(Formatter *f)
   if (!quorum.empty()) {
     f->dump_int(
       "quorum_age",
-      std::chrono::duration_cast<std::chrono::seconds>(
-	mono_clock::now() - quorum_since).count());
+      quorum_age());
   }
 
   f->open_object_section("features");
@@ -2971,7 +2973,6 @@ void Monitor::get_cluster_status(stringstream &ss, Formatter *f,
 
   const auto&& fs_names = session->get_allowed_fs_names();
 
-  mono_clock::time_point now = mono_clock::now();
   if (f) {
     f->dump_stream("fsid") << monmap->get_fsid();
     healthmon()->get_health_status(false, f, nullptr);
@@ -2987,8 +2988,7 @@ void Monitor::get_cluster_status(stringstream &ss, Formatter *f,
       f->close_section();
       f->dump_int(
 	"quorum_age",
-	std::chrono::duration_cast<std::chrono::seconds>(
-	  mono_clock::now() - quorum_since).count());
+        quorum_age());
     }
     f->open_object_section("monmap");
     monmap->dump_summary(f);
@@ -3041,8 +3041,9 @@ void Monitor::get_cluster_status(stringstream &ss, Formatter *f,
       string spacing(maxlen - 3, ' ');
       const auto quorum_names = get_quorum_names();
       const auto mon_count = monmap->mon_info.size();
+      auto mnow = ceph::mono_clock::now();
       ss << "    mon: " << spacing << mon_count << " daemons, quorum "
-	 << quorum_names << " (age " << timespan_str(now - quorum_since) << ")";
+	 << quorum_names << " (age " << timespan_str(mnow - quorum_since) << ")";
       if (quorum_names.size() != mon_count) {
 	std::list<std::string> out_of_q;
 	for (size_t i = 0; i < monmap->ranks.size(); ++i) {
@@ -3332,8 +3333,7 @@ void Monitor::handle_command(MonOpRequestRef op)
 
   dout(0) << "handle_command " << *m << dendl;
 
-  string format;
-  cmd_getval(cmdmap, "format", format, string("plain"));
+  string format = cmd_getval_or<string>(cmdmap, "format", "plain");
   boost::scoped_ptr<Formatter> f(Formatter::create(format));
 
   get_str_vec(prefix, fullcmd);
@@ -3627,7 +3627,8 @@ void Monitor::handle_command(MonOpRequestRef op)
       string plain;
       healthmon()->get_health_status(detail == "detail", f.get(), f ? nullptr : &plain);
       if (f) {
-	f->flush(rdata);
+	f->flush(ds);
+	rdata.append(ds);
       } else {
 	rdata.append(plain);
       }
@@ -6011,8 +6012,6 @@ int Monitor::mkfs(bufferlist& osdmapbl)
 
     r = ceph_resolve_file_search(g_conf()->keyring, keyring_filename);
     if (r) {
-      derr << "unable to find a keyring file on " << g_conf()->keyring
-	   << ": " << cpp_strerror(r) << dendl;
       if (g_conf()->key != "") {
 	string keyring_plaintext = "[mon.]\n\tkey = " + g_conf()->key +
 	  "\n\tcaps mon = \"allow *\"\n";
@@ -6020,7 +6019,7 @@ int Monitor::mkfs(bufferlist& osdmapbl)
 	bl.append(keyring_plaintext);
 	try {
 	  auto i = bl.cbegin();
-	  keyring.decode_plaintext(i);
+	  keyring.decode(i);
 	}
 	catch (const ceph::buffer::error& e) {
 	  derr << "error decoding keyring " << keyring_plaintext
@@ -6028,7 +6027,9 @@ int Monitor::mkfs(bufferlist& osdmapbl)
 	  return -EINVAL;
 	}
       } else {
-	return -ENOENT;
+	derr << "unable to find a keyring on " << g_conf()->keyring
+	     << ": " << cpp_strerror(r) << dendl;
+	return r;
       }
     } else {
       r = keyring.load(g_ceph_context, keyring_filename);
@@ -6450,12 +6451,17 @@ void Monitor::ms_handle_accept(Connection *con)
     dout(10) << __func__ << " con " << con << " session " << s
 	     << " already on list" << dendl;
   } else {
+    std::lock_guard l(session_map_lock);
+    if (state == STATE_SHUTDOWN) {
+      dout(10) << __func__ << " ignoring new con " << con << " (shutdown)" << dendl;
+      con->mark_down();
+      return;
+    }
     dout(10) << __func__ << " con " << con << " session " << s
 	     << " registering session for "
 	     << con->get_peer_addrs() << dendl;
     s->_ident(entity_name_t(con->get_peer_type(), con->get_peer_id()),
 	      con->get_peer_addrs());
-    std::lock_guard l(session_map_lock);
     session_map.add_session(s);
   }
 }
@@ -6628,7 +6634,7 @@ void Monitor::do_stretch_mode_election_work()
   dout(20) << "prior dead_mon_buckets: " << old_dead_buckets
 	   << "; down_mon_buckets: " << down_mon_buckets
 	   << "; up_mon_buckets: " << up_mon_buckets << dendl;
-  for (auto di : down_mon_buckets) {
+  for (const auto& di : down_mon_buckets) {
     if (!up_mon_buckets.count(di.first)) {
       dead_mon_buckets[di.first] = di.second;
     }
@@ -6790,10 +6796,12 @@ bool Monitor::session_stretch_allowed(MonSession *s, MonOpRequestRef& op)
   if (s->con->peer_is_osd()) {
     dout(20) << __func__ << "checking OSD session" << s << dendl;
     // okay, check the crush location
-    int barrier_id;
-    int retval = osdmon()->osdmap.crush->get_validated_type_id(stretch_bucket_divider,
-							       &barrier_id);
-    ceph_assert(retval >= 0);
+    int barrier_id = [&] {
+      auto type_id = osdmon()->osdmap.crush->get_validated_type_id(
+	stretch_bucket_divider);
+      ceph_assert(type_id.has_value());
+      return *type_id;
+    }();
     int osd_bucket_id = osdmon()->osdmap.crush->get_parent_of_type(s->con->peer_id,
 								   barrier_id);
     const auto &mi = monmap->mon_info.find(name);

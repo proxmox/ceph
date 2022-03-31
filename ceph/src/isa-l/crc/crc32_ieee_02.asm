@@ -72,8 +72,9 @@ section .text
         %define VARIABLE_OFFSET 16*2+8
 %endif
 align 16
-global	crc32_ieee_02:ISAL_SYM_TYPE_FUNCTION
+mk_global 	crc32_ieee_02, function
 crc32_ieee_02:
+	endbranch
 
 	not	arg1_low32      ;~init_crc
 

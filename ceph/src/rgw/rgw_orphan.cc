@@ -22,6 +22,8 @@
 
 #define DEFAULT_NUM_SHARDS 64
 
+using namespace std;
+
 static string obj_fingerprint(const string& oid, const char *force_ns = NULL)
 {
   ssize_t pos = oid.find('_');
@@ -148,8 +150,8 @@ int RGWOrphanStore::list_jobs(map <string,RGWOrphanSearchState>& job_list)
 
 int RGWOrphanStore::init(const DoutPrefixProvider *dpp)
 {
-  const rgw_pool& log_pool = store->svc()->zone->get_zone_params().log_pool;
-  int r = rgw_init_ioctx(dpp, store->getRados()->get_rados_handle(), log_pool, ioctx);
+  const rgw_pool& log_pool = store->get_zone()->get_params().log_pool;
+  int r = rgw_init_ioctx(dpp, static_cast<rgw::sal::RadosStore*>(store)->getRados()->get_rados_handle(), log_pool, ioctx);
   if (r < 0) {
     cerr << "ERROR: failed to open log pool (" << log_pool << " ret=" << r << std::endl;
     return r;
@@ -295,7 +297,7 @@ int RGWOrphanSearch::build_all_oids_index(const DoutPrefixProvider *dpp)
 {
   librados::IoCtx ioctx;
 
-  int ret = rgw_init_ioctx(dpp, store->getRados()->get_rados_handle(), search_info.pool, ioctx);
+  int ret = rgw_init_ioctx(dpp, static_cast<rgw::sal::RadosStore*>(store)->getRados()->get_rados_handle(), search_info.pool, ioctx);
   if (ret < 0) {
     ldpp_dout(dpp, -1) << __func__ << ": rgw_init_ioctx() returned ret=" << ret << dendl;
     return ret;
@@ -374,7 +376,7 @@ int RGWOrphanSearch::build_buckets_instance_index(const DoutPrefixProvider *dpp)
   void *handle;
   int max = 1000;
   string section = "bucket.instance";
-  int ret = store->ctl()->meta.mgr->list_keys_init(dpp, section, &handle);
+  int ret = store->meta_list_keys_init(dpp, section, string(), &handle);
   if (ret < 0) {
     ldpp_dout(dpp, -1) << "ERROR: can't get key: " << cpp_strerror(-ret) << dendl;
     return ret;
@@ -391,7 +393,7 @@ int RGWOrphanSearch::build_buckets_instance_index(const DoutPrefixProvider *dpp)
 
   do {
     list<string> keys;
-    ret = store->ctl()->meta.mgr->list_keys_next(handle, max, keys, &truncated);
+    ret = store->meta_list_keys_next(dpp, handle, max, keys, &truncated);
     if (ret < 0) {
       ldpp_dout(dpp, -1) << "ERROR: lists_keys_next(): " << cpp_strerror(-ret) << dendl;
       return ret;
@@ -416,12 +418,13 @@ int RGWOrphanSearch::build_buckets_instance_index(const DoutPrefixProvider *dpp)
 
   } while (truncated);
 
+  store->meta_list_keys_complete(handle);
+
   ret = log_oids(dpp, buckets_instance_index, instances);
   if (ret < 0) {
     ldpp_dout(dpp, -1) << __func__ << ": ERROR: log_oids() returned ret=" << ret << dendl;
     return ret;
   }
-  store->ctl()->meta.mgr->list_keys_complete(handle);
 
   return 0;
 }
@@ -450,7 +453,7 @@ int RGWOrphanSearch::handle_stat_result(const DoutPrefixProvider *dpp, map<int, 
 
     RGWObjManifest::obj_iterator miter;
     for (miter = manifest.obj_begin(dpp); miter != manifest.obj_end(dpp); ++miter) {
-      const rgw_raw_obj& loc = miter.get_location().get_raw_obj(store);
+      const rgw_raw_obj& loc = miter.get_location().get_raw_obj(static_cast<rgw::sal::RadosStore*>(store));
       string s = loc.oid;
       obj_oids.insert(obj_fingerprint(s));
     }
@@ -470,7 +473,7 @@ int RGWOrphanSearch::pop_and_handle_stat_op(const DoutPrefixProvider *dpp, map<i
 {
   RGWRados::Object::Stat& front_op = ops.front();
 
-  int ret = front_op.wait();
+  int ret = front_op.wait(dpp);
   if (ret < 0) {
     if (ret != -ENOENT) {
       ldpp_dout(dpp, -1) << "ERROR: stat_async() returned error: " << cpp_strerror(-ret) << dendl;
@@ -489,8 +492,6 @@ done:
 int RGWOrphanSearch::build_linked_oids_for_bucket(const DoutPrefixProvider *dpp, const string& bucket_instance_id, map<int, list<string> >& oids)
 {
   RGWObjectCtx obj_ctx(store);
-  auto sysobj_ctx = store->svc()->sysobj->init_obj_ctx();
-
   rgw_bucket orphan_bucket;
   int shard_id;
   int ret = rgw_bucket_parse_bucket_key(store->ctx(), bucket_instance_id,
@@ -501,9 +502,8 @@ int RGWOrphanSearch::build_linked_oids_for_bucket(const DoutPrefixProvider *dpp,
     return ret;
   }
 
-  RGWBucketInfo cur_bucket_info;
-  ret = store->getRados()->get_bucket_info(store->svc(), orphan_bucket.tenant,
-			       orphan_bucket.name, cur_bucket_info, nullptr, null_yield, dpp);
+  std::unique_ptr<rgw::sal::Bucket> cur_bucket;
+  ret = store->get_bucket(dpp, nullptr, orphan_bucket, &cur_bucket, null_yield);
   if (ret < 0) {
     if (ret == -ENOENT) {
       /* probably raced with bucket removal */
@@ -513,22 +513,24 @@ int RGWOrphanSearch::build_linked_oids_for_bucket(const DoutPrefixProvider *dpp,
     return ret;
   }
 
-  if (cur_bucket_info.bucket.bucket_id != orphan_bucket.bucket_id) {
+  if (cur_bucket->get_bucket_id() != orphan_bucket.bucket_id) {
     ldpp_dout(dpp, 0) << __func__ << ": Skipping stale bucket instance: "
                            << orphan_bucket.name << ": "
                            << orphan_bucket.bucket_id << dendl;
     return 0;
   }
 
-  if (cur_bucket_info.reshard_status == cls_rgw_reshard_status::IN_PROGRESS) {
+  if (cur_bucket->get_info().reshard_status == cls_rgw_reshard_status::IN_PROGRESS) {
     ldpp_dout(dpp, 0) << __func__ << ": reshard in progress. Skipping "
                            << orphan_bucket.name << ": "
                            << orphan_bucket.bucket_id << dendl;
     return 0;
   }
 
-  RGWBucketInfo bucket_info;
-  ret = store->getRados()->get_bucket_instance_info(sysobj_ctx, bucket_instance_id, bucket_info, nullptr, nullptr, null_yield, dpp);
+  rgw_bucket b;
+  rgw_bucket_parse_bucket_key(store->ctx(), bucket_instance_id, &b, nullptr);
+  std::unique_ptr<rgw::sal::Bucket> bucket;
+  ret = store->get_bucket(dpp, nullptr, b, &bucket, null_yield);
   if (ret < 0) {
     if (ret == -ENOENT) {
       /* probably raced with bucket removal */
@@ -539,7 +541,7 @@ int RGWOrphanSearch::build_linked_oids_for_bucket(const DoutPrefixProvider *dpp,
   }
 
   ldpp_dout(dpp, 10) << "building linked oids for bucket instance: " << bucket_instance_id << dendl;
-  RGWRados::Bucket target(store->getRados(), bucket_info);
+  RGWRados::Bucket target(store->getRados(), cur_bucket->get_info());
   RGWRados::Bucket::List list_op(&target);
 
   string marker;
@@ -578,13 +580,12 @@ int RGWOrphanSearch::build_linked_oids_for_bucket(const DoutPrefixProvider *dpp,
         continue;
       }
 
-      rgw_obj obj(bucket_info.bucket, entry.key);
+      rgw_obj obj(cur_bucket->get_key(), entry.key);
 
-      RGWRados::Object op_target(store->getRados(), bucket_info, obj_ctx, obj);
+      RGWRados::Object op_target(store->getRados(), cur_bucket->get_info(), obj_ctx, obj);
 
       stat_ops.push_back(RGWRados::Object::Stat(&op_target));
       RGWRados::Object::Stat& op = stat_ops.back();
-
 
       ret = op.stat_async(dpp);
       if (ret < 0) {
@@ -739,7 +740,7 @@ int RGWOrphanSearch::compare_oid_indexes(const DoutPrefixProvider *dpp)
 
   librados::IoCtx data_ioctx;
 
-  int ret = rgw_init_ioctx(dpp, store->getRados()->get_rados_handle(), search_info.pool, data_ioctx);
+  int ret = rgw_init_ioctx(dpp, static_cast<rgw::sal::RadosStore*>(store)->getRados()->get_rados_handle(), search_info.pool, data_ioctx);
   if (ret < 0) {
     ldpp_dout(dpp, -1) << __func__ << ": rgw_init_ioctx() returned ret=" << ret << dendl;
     return ret;
@@ -925,7 +926,7 @@ int RGWOrphanSearch::finish()
 
 
 int RGWRadosList::handle_stat_result(const DoutPrefixProvider *dpp,
-                                     RGWRados::Object::Stat::Result& result,
+				     RGWRados::Object::Stat::Result& result,
 				     std::string& bucket_name,
 				     rgw_obj_key& obj_key,
                                      std::set<string>& obj_oids)
@@ -988,7 +989,7 @@ int RGWRadosList::handle_stat_result(const DoutPrefixProvider *dpp,
     ldpp_dout(dpp, 25) << "radoslist DLO oid=\"" << oid <<
       "\" added bucket=\"" << bucket_name << "\" prefix=\"" <<
       prefix << "\" to process list" << dendl;
-  } else if ((attr_it = result.attrs.find(RGW_ATTR_SLO_MANIFEST)) !=
+  } else if ((attr_it = result.attrs.find(RGW_ATTR_USER_MANIFEST)) !=
 	     result.attrs.end()) {
     // *** handle SLO object ***
 
@@ -1042,7 +1043,7 @@ int RGWRadosList::handle_stat_result(const DoutPrefixProvider *dpp,
     RGWObjManifest::obj_iterator miter;
     for (miter = manifest.obj_begin(dpp); miter != manifest.obj_end(dpp); ++miter) {
       const rgw_raw_obj& loc =
-	miter.get_location().get_raw_obj(store);
+	miter.get_location().get_raw_obj(static_cast<rgw::sal::RadosStore*>(store));
       string s = loc.oid;
       obj_oids.insert(s);
     }
@@ -1061,7 +1062,7 @@ int RGWRadosList::pop_and_handle_stat_op(
   std::set<std::string> obj_oids;
   RGWRados::Object::Stat& front_op = ops.front();
 
-  int ret = front_op.wait();
+  int ret = front_op.wait(dpp);
   if (ret < 0) {
     if (ret != -ENOENT) {
       ldpp_dout(dpp, -1) << "ERROR: stat_async() returned error: " <<
@@ -1208,7 +1209,6 @@ int RGWRadosList::process_bucket(
 
   do {
     std::vector<rgw_bucket_dir_entry> result;
-
     constexpr int64_t LIST_OBJS_MAX_ENTRIES = 100;
     ret = list_op.list_objects(dpp, LIST_OBJS_MAX_ENTRIES, &result,
 			       NULL, &truncated, null_yield);
@@ -1250,7 +1250,6 @@ int RGWRadosList::process_bucket(
 	  int ret;
 
 	  rgw_obj obj(bucket_info.bucket, key);
-
 	  RGWRados::Object op_target(store->getRados(), bucket_info,
 				     obj_ctx, obj);
 
@@ -1325,7 +1324,7 @@ int RGWRadosList::run(const DoutPrefixProvider *dpp)
   int ret;
   void* handle = nullptr;
 
-  ret = store->ctl()->meta.mgr->list_keys_init(dpp, "bucket", &handle);
+  ret = store->meta_list_keys_init(dpp, "bucket", string(), &handle);
   if (ret < 0) {
     ldpp_dout(dpp, -1) << "RGWRadosList::" << __func__ <<
       " ERROR: list_keys_init returned " <<
@@ -1338,8 +1337,7 @@ int RGWRadosList::run(const DoutPrefixProvider *dpp)
 
   do {
     std::list<std::string> buckets;
-    ret = store->ctl()->meta.mgr->list_keys_next(handle, max_keys,
-						 buckets, &truncated);
+    ret = store->meta_list_keys_next(dpp, handle, max_keys, buckets, &truncated);
 
     for (std::string& bucket_id : buckets) {
       ret = run(dpp, bucket_id);
@@ -1357,9 +1355,8 @@ int RGWRadosList::run(const DoutPrefixProvider *dpp)
 
 int RGWRadosList::run(const DoutPrefixProvider *dpp, const std::string& start_bucket_name)
 {
-  RGWSysObjectCtx sys_obj_ctx = store->svc()->sysobj->init_obj_ctx();
   RGWObjectCtx obj_ctx(store);
-  RGWBucketInfo bucket_info;
+  std::unique_ptr<rgw::sal::Bucket> bucket;
   int ret;
 
   add_bucket_entire(start_bucket_name);
@@ -1372,14 +1369,8 @@ int RGWRadosList::run(const DoutPrefixProvider *dpp, const std::string& start_bu
     std::swap(process, front->second);
     bucket_process_map.erase(front);
 
-    RGWBucketInfo bucket_info;
-    ret = store->getRados()->get_bucket_info(store->svc(),
-					     tenant_name,
-					     bucket_name,
-					     bucket_info,
-					     nullptr,
-					     null_yield,
-                                             dpp);
+    std::unique_ptr<rgw::sal::Bucket> bucket;
+    ret = store->get_bucket(dpp, nullptr, tenant_name, bucket_name, &bucket, null_yield);
     if (ret == -ENOENT) {
       std::cerr << "WARNING: bucket " << bucket_name <<
 	" does not exist; could it have been deleted very recently?" <<
@@ -1391,7 +1382,7 @@ int RGWRadosList::run(const DoutPrefixProvider *dpp, const std::string& start_bu
       return ret;
     }
 
-    const std::string bucket_id = bucket_info.bucket.get_key();
+    const std::string bucket_id = bucket->get_key().get_key();
 
     static const std::set<rgw_obj_key> empty_filter;
     static const std::string empty_prefix;
@@ -1443,13 +1434,7 @@ int RGWRadosList::run(const DoutPrefixProvider *dpp, const std::string& start_bu
   // now handle incomplete multipart uploads by going back to the
   // initial bucket
 
-  ret = store->getRados()->get_bucket_info(store->svc(),
-					   tenant_name,
-					   start_bucket_name,
-					   bucket_info,
-					   nullptr,
-					   null_yield,
-                                           dpp);
+  ret = store->get_bucket(dpp, nullptr, tenant_name, start_bucket_name, &bucket, null_yield);
   if (ret == -ENOENT) {
     // bucket deletion race?
     return 0;
@@ -1459,7 +1444,7 @@ int RGWRadosList::run(const DoutPrefixProvider *dpp, const std::string& start_bu
     return ret;
   }
 
-  ret = do_incomplete_multipart(dpp, store, bucket_info);
+  ret = do_incomplete_multipart(dpp, bucket.get());
   if (ret < 0) {
     ldpp_dout(dpp, -1) << "RGWRadosList::" << __func__ <<
       ": ERROR: do_incomplete_multipart returned ret=" << ret << dendl;
@@ -1472,32 +1457,20 @@ done:
 } // RGWRadosList::run(string)
 
 
-int RGWRadosList::do_incomplete_multipart(
-  const DoutPrefixProvider *dpp,
-  rgw::sal::RGWRadosStore* store,
-  RGWBucketInfo& bucket_info)
+int RGWRadosList::do_incomplete_multipart(const DoutPrefixProvider *dpp,
+					  rgw::sal::Bucket* bucket)
 {
   constexpr int max_uploads = 1000;
   constexpr int max_parts = 1000;
-  static const std::string mp_ns = RGW_OBJ_NS_MULTIPART;
-  static MultipartMetaFilter mp_filter;
-
+  std::string marker;
+  vector<std::unique_ptr<rgw::sal::MultipartUpload>> uploads;
+  bool is_truncated;
   int ret;
 
-  RGWRados::Bucket target(store->getRados(), bucket_info);
-  RGWRados::Bucket::List list_op(&target);
-  list_op.params.ns = mp_ns;
-  list_op.params.filter = &mp_filter;
-  // use empty string for initial list_op.params.marker
-  // use empty strings for list_op.params.{prefix,delim}
-
-  bool is_listing_truncated;
+  // use empty strings for params.{prefix,delim}
 
   do {
-    std::vector<rgw_bucket_dir_entry> objs;
-    std::map<string, bool> common_prefixes;
-    ret = list_op.list_objects(dpp, max_uploads, &objs, &common_prefixes,
-			       &is_listing_truncated, null_yield);
+    ret = bucket->list_multiparts(dpp, string(), marker, string(), max_uploads, uploads, nullptr, &is_truncated);
     if (ret == -ENOENT) {
       // could bucket have been removed while this is running?
       ldpp_dout(dpp, 5) << "RGWRadosList::" << __func__ <<
@@ -1510,40 +1483,19 @@ int RGWRadosList::do_incomplete_multipart(
       return ret;
     }
 
-    if (!objs.empty()) {
-      std::vector<RGWMultipartUploadEntry> uploads;
-      RGWMultipartUploadEntry entry;
-      for (const rgw_bucket_dir_entry& obj : objs) {
-	const rgw_obj_key& key = obj.key;
-	if (!entry.mp.from_meta(key.name)) {
-	  // we only want the meta objects, so skip all the components
-	  continue;
-	}
-	entry.obj = obj;
-	uploads.push_back(entry);
-	ldpp_dout(dpp, 20) << "RGWRadosList::" << __func__ <<
-	  " processing incomplete multipart entry " <<
-	  entry << dendl;
-      }
-
+    if (!uploads.empty()) {
       // now process the uploads vector
       for (const auto& upload : uploads) {
-	const RGWMPObj& mp = upload.mp;
 	int parts_marker = 0;
 	bool is_parts_truncated = false;
 
-
 	do { // while (is_parts_truncated);
-	  std::map<uint32_t, RGWUploadPartInfo> parts;
-	  ret = list_multipart_parts(dpp, store, bucket_info, store->ctx(),
-				     mp.get_upload_id(), mp.get_meta(),
-				     max_parts, parts_marker,
-				     parts, &parts_marker,
-				     &is_parts_truncated);
+	  ret = upload->list_parts(dpp, store->ctx(), max_parts, parts_marker,
+				   &parts_marker, &is_parts_truncated);
 	  if (ret == -ENOENT) {
-	    ldpp_dout(dpp, 5) << "RGWRadosList::" << __func__ <<
+	    ldpp_dout(dpp, 5) <<  "RGWRadosList::" << __func__ <<
 	      ": WARNING: list_multipart_parts returned ret=-ENOENT "
-	      "for " << mp.get_upload_id() << ", moving on" << dendl;
+	      "for " << upload->get_upload_id() << ", moving on" << dendl;
 	    break;
 	  } else if (ret < 0) {
 	    ldpp_dout(dpp, -1) << "RGWRadosList::" << __func__ <<
@@ -1552,20 +1504,71 @@ int RGWRadosList::do_incomplete_multipart(
 	    return ret;
 	  }
 
-	  for (auto& p : parts) {
-	    RGWObjManifest& manifest = p.second.manifest;
+	  for (auto& p : upload->get_parts()) {
+	    rgw::sal::RadosMultipartPart* part =
+	      dynamic_cast<rgw::sal::RadosMultipartPart*>(p.second.get());
+	    RGWObjManifest& manifest = part->get_manifest();
 	    for (auto obj_it = manifest.obj_begin(dpp);
 		 obj_it != manifest.obj_end(dpp);
 		 ++obj_it) {
 	      const rgw_raw_obj& loc =
-		obj_it.get_location().get_raw_obj(store);
+		obj_it.get_location().get_raw_obj(static_cast<rgw::sal::RadosStore*>(store));
 	      std::cout << loc.oid << std::endl;
 	    } // for (auto obj_it
 	  } // for (auto& p
 	} while (is_parts_truncated);
       } // for (const auto& upload
     } // if objs not empty
-  } while (is_listing_truncated);
+  } while (is_truncated);
 
   return 0;
 } // RGWRadosList::do_incomplete_multipart
+
+void RGWOrphanSearchStage::dump(Formatter *f) const
+{
+  f->open_object_section("orphan_search_stage");
+  string s;
+  switch(stage){
+  case ORPHAN_SEARCH_STAGE_INIT:
+    s = "init";
+    break;
+  case ORPHAN_SEARCH_STAGE_LSPOOL:
+    s = "lspool";
+    break;
+  case ORPHAN_SEARCH_STAGE_LSBUCKETS:
+    s =  "lsbuckets";
+    break;
+  case ORPHAN_SEARCH_STAGE_ITERATE_BI:
+    s = "iterate_bucket_index";
+    break;
+  case ORPHAN_SEARCH_STAGE_COMPARE:
+    s = "comparing";
+    break;
+  default:
+    s = "unknown";
+  }
+  f->dump_string("search_stage", s);
+  f->dump_int("shard",shard);
+  f->dump_string("marker",marker);
+  f->close_section();
+}
+
+void RGWOrphanSearchInfo::dump(Formatter *f) const
+{
+  f->open_object_section("orphan_search_info");
+  f->dump_string("job_name", job_name);
+  encode_json("pool", pool, f);
+  f->dump_int("num_shards", num_shards);
+  encode_json("start_time", start_time, f);
+  f->close_section();
+}
+
+void RGWOrphanSearchState::dump(Formatter *f) const
+{
+  f->open_object_section("orphan_search_state");
+  encode_json("info", info, f);
+  encode_json("stage", stage, f);
+  f->close_section();
+}
+
+

@@ -1,3 +1,0 @@
-#pragma once
-
-#cmakedefine OPENTRACING_BUILD_DYNAMIC_LOADING

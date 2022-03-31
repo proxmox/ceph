@@ -28,9 +28,12 @@
 #include "rgw_resolve.h"
 #include "rgw_sal_rados.h"
 
+#include "rgw_ratelimit.h"
 #include <numeric>
 
 #define dout_subsys ceph_subsys_rgw
+
+using namespace std;
 
 struct rgw_http_status_code {
   int code;
@@ -477,15 +480,15 @@ void dump_epoch_header(struct req_state *s, const char *name, real_time t)
   return dump_header(s, name, std::string_view(buf, len));
 }
 
-void dump_time(struct req_state *s, const char *name, real_time *t)
+void dump_time(struct req_state *s, const char *name, real_time t)
 {
   char buf[TIME_BUF_SIZE];
-  rgw_to_iso8601(*t, buf, sizeof(buf));
+  rgw_to_iso8601(t, buf, sizeof(buf));
 
   s->formatter->dump_string(name, buf);
 }
 
-void dump_owner(struct req_state *s, const rgw_user& id, string& name,
+void dump_owner(struct req_state *s, const rgw_user& id, const string& name,
 		const char *section)
 {
   if (!section)
@@ -757,6 +760,16 @@ int dump_body(struct req_state* const s,
               const char* const buf,
               const size_t len)
 {
+  bool healthchk = false;
+  // we dont want to limit health checks
+  if(s->op_type == RGW_OP_GET_HEALTH_CHECK)
+    healthchk = true;
+  if(len > 0 && !healthchk) {
+    const char *method = s->info.method;
+    s->ratelimit_data->decrease_bytes(method, s->ratelimit_user_name, len, &s->user_ratelimit);
+    if(!rgw::sal::Bucket::empty(s->bucket.get()))
+      s->ratelimit_data->decrease_bytes(method, s->ratelimit_bucket_marker, len, &s->bucket_ratelimit);
+  }
   try {
     return RESTFUL_IO(s)->send_body(buf, len);
   } catch (rgw::io::Exception& e) {
@@ -778,11 +791,24 @@ int recv_body(struct req_state* const s,
               char* const buf,
               const size_t max)
 {
+  int len;
   try {
-    return RESTFUL_IO(s)->recv_body(buf, max);
+    len = RESTFUL_IO(s)->recv_body(buf, max);
   } catch (rgw::io::Exception& e) {
     return -e.code().value();
   }
+  bool healthchk = false;
+  // we dont want to limit health checks
+  if(s->op_type ==  RGW_OP_GET_HEALTH_CHECK)
+    healthchk = true;
+  if(len > 0 && !healthchk) {
+    const char *method = s->info.method;
+    s->ratelimit_data->decrease_bytes(method, s->ratelimit_user_name, len, &s->user_ratelimit);
+    if(!rgw::sal::Bucket::empty(s->bucket.get()))
+      s->ratelimit_data->decrease_bytes(method, s->ratelimit_bucket_marker, len, &s->bucket_ratelimit);
+  }
+  return len;
+
 }
 
 int RGWGetObj_ObjStore::get_params(optional_yield y)
@@ -1437,7 +1463,7 @@ int RGWPostObj_ObjStore::get_params(optional_yield y)
 int RGWPutACLs_ObjStore::get_params(optional_yield y)
 {
   const auto max_size = s->cct->_conf->rgw_max_put_param_size;
-  std::tie(op_ret, data) = rgw_rest_read_all_input(s, max_size, false);
+  std::tie(op_ret, data) = read_all_input(s, max_size, false);
   ldpp_dout(s, 0) << "RGWPutACLs_ObjStore::get_params read data is: " << data.c_str() << dendl;
   return op_ret;
 }
@@ -1445,21 +1471,21 @@ int RGWPutACLs_ObjStore::get_params(optional_yield y)
 int RGWPutLC_ObjStore::get_params(optional_yield y)
 {
   const auto max_size = s->cct->_conf->rgw_max_put_param_size;
-  std::tie(op_ret, data) = rgw_rest_read_all_input(s, max_size, false);
+  std::tie(op_ret, data) = read_all_input(s, max_size, false);
   return op_ret;
 }
 
 int RGWPutBucketObjectLock_ObjStore::get_params(optional_yield y)
 {
   const auto max_size = s->cct->_conf->rgw_max_put_param_size;
-  std::tie(op_ret, data) = rgw_rest_read_all_input(s, max_size, false);
+  std::tie(op_ret, data) = read_all_input(s, max_size, false);
   return op_ret;
 }
 
 int RGWPutObjLegalHold_ObjStore::get_params(optional_yield y)
 {
   const auto max_size = s->cct->_conf->rgw_max_put_param_size;
-  std::tie(op_ret, data) = rgw_rest_read_all_input(s, max_size, false);
+  std::tie(op_ret, data) = read_all_input(s, max_size, false);
   return op_ret;
 }
 
@@ -1472,7 +1498,7 @@ static std::tuple<int, bufferlist> read_all_chunked_input(req_state *s, const ui
   int total = need_to_read;
   bufferlist bl;
 
-  int read_len = 0, len = 0;
+  int read_len = 0;
   do {
     bufferptr bp(need_to_read + 1);
     read_len = recv_body(s, bp.c_str(), need_to_read);
@@ -1483,7 +1509,6 @@ static std::tuple<int, bufferlist> read_all_chunked_input(req_state *s, const ui
     bp.c_str()[read_len] = '\0';
     bp.set_length(read_len);
     bl.append(bp);
-    len += read_len;
 
     if (read_len == need_to_read) {
       if (need_to_read < MAX_READ_CHUNK)
@@ -1554,7 +1579,7 @@ int RGWCompleteMultipart_ObjStore::get_params(optional_yield y)
   }
 
   const auto max_size = s->cct->_conf->rgw_max_put_param_size;
-  std::tie(op_ret, data) = rgw_rest_read_all_input(s, max_size);
+  std::tie(op_ret, data) = read_all_input(s, max_size);
   if (op_ret < 0)
     return op_ret;
 
@@ -1612,8 +1637,14 @@ int RGWListBucketMultiparts_ObjStore::get_params(optional_yield y)
 
   string key_marker = s->info.args.get("key-marker");
   string upload_id_marker = s->info.args.get("upload-id-marker");
-  if (!key_marker.empty())
-    marker.init(key_marker, upload_id_marker);
+  if (!key_marker.empty()) {
+    std::unique_ptr<rgw::sal::MultipartUpload> upload;
+    upload = s->bucket->get_multipart_upload(key_marker,
+					 upload_id_marker);
+    marker_meta = upload->get_meta();
+    marker_key = upload->get_key();
+    marker_upload_id = upload->get_upload_id();
+  }
 
   return 0;
 }
@@ -1630,7 +1661,7 @@ int RGWDeleteMultiObj_ObjStore::get_params(optional_yield y)
   bucket = s->bucket.get();
 
   const auto max_size = s->cct->_conf->rgw_max_put_param_size;
-  std::tie(op_ret, data) = rgw_rest_read_all_input(s, max_size, false);
+  std::tie(op_ret, data) = read_all_input(s, max_size, false);
   return op_ret;
 }
 
@@ -1849,9 +1880,8 @@ int RGWHandler_REST::init_permissions(RGWOp* op, optional_yield y)
     // We don't need user policies in case of STS token returned by AssumeRole, hence the check for user type
     if (! s->user->get_id().empty() && s->auth.identity->get_identity_type() != TYPE_ROLE) {
       try {
-        map<string, bufferlist> uattrs;
-        if (auto ret = store->ctl()->user->get_attrs_by_uid(s, s->user->get_id(), &uattrs, y); ! ret) {
-          auto user_policies = get_iam_user_policy_from_attr(s->cct, store, uattrs, s->user->get_tenant());
+        if (auto ret = s->user->read_attrs(s, y); ! ret) {
+          auto user_policies = get_iam_user_policy_from_attr(s->cct, s->user->get_attrs(), s->user->get_tenant());
           s->iam_user_policies.insert(s->iam_user_policies.end(),
                                       std::make_move_iterator(user_policies.begin()),
                                       std::make_move_iterator(user_policies.end()));
@@ -2271,7 +2301,7 @@ int RGWREST::preprocess(struct req_state *s, rgw::io::BasicClient* cio)
 }
 
 RGWHandler_REST* RGWREST::get_handler(
-  rgw::sal::RGWRadosStore * const store,
+  rgw::sal::Store*  const store,
   struct req_state* const s,
   const rgw::auth::StrategyRegistry& auth_registry,
   const std::string& frontend_prefix,

@@ -54,6 +54,36 @@ local rule .debug ( messages * )
 
 # generate-cmake-variant-
 
+local rule remap-library ( lib )
+{
+    switch $(lib)
+    {
+    case "python.lib" :
+
+        return ;
+
+    case "zlib" :
+
+        return "z" ;
+
+    case "bzip2" :
+
+        return "bz2" ;
+
+    case "icudt" :
+
+        return "icudata" ;
+
+    case "icuin" :
+
+        return "icui18n" ;
+
+    case * :
+
+        return $(lib) ;
+    }
+}
+
 rule generate-cmake-variant- ( target : sources * : properties * )
 {
     .info generate-cmake-variant- $(target) ":" $(sources) ;
@@ -437,6 +467,33 @@ rule generate-cmake-variant- ( target : sources * : properties * )
         print.text
 
             "list(APPEND _BOOST_$(lname:U)_DEPS $(deps:S=:J= ))"
+            ""
+            : true ;
+    }
+
+    local deps2 = [ set.difference [ $(ps).get <boost-install.dependency> ] : boost_$(deps) ] ;
+    .info "  deps2=" $(deps2) ;
+
+    local deps3 ;
+
+    for local dep in $(deps2)
+    {
+        deps3 += [ remap-library $(dep) ] ;
+    }
+
+    .info "  deps3=" $(deps3) ;
+
+    if $(deps3)
+    {
+        print.text
+
+            "if(CMAKE_CONFIGURATION_TYPES)"
+            "  set_property(TARGET $(target) APPEND PROPERTY INTERFACE_LINK_LIBRARIES"
+            "    \"$<$<CONFIG:$(variant)>:$(deps3:J=;)>\")"
+            "else()"
+            "  set_property(TARGET $(target) APPEND PROPERTY INTERFACE_LINK_LIBRARIES"
+            "    $(deps3:J= ))"
+            "endif()"
             ""
             : true ;
     }
@@ -1189,19 +1246,26 @@ rule boost-install ( libraries * )
 
     local p = [ project.current ] ;
 
-    package.install install-libraries Boost
-        : # No requirements
-        : # No binaries
-        : $(libraries)
-        : # No headers
-    ;
+    local libdir = [ boost-install-dirs.libdir ] ;
+    local bindir = [ boost-install-dirs.bindir ] ;
 
-    $(p).mark-target-as-explicit install-libraries ;
+    install install-libraries-static : $(libraries) : <location>$(libdir) <install-dependencies>on <install-type>STATIC_LIB ;
+    $(p).mark-target-as-explicit install-libraries-static ;
+
+    alias install-libraries-shared : install-libraries-shared- ;
+    alias install-libraries-shared : install-libraries-shared-cygwin : <target-os>cygwin ;
+    $(p).mark-target-as-explicit install-libraries-shared ;
+
+    install install-libraries-shared- : $(libraries) : <location>$(libdir) <install-type>SHARED_LIB <install-type>PDB <install-dependencies>on <install-no-version-symlinks>on ;
+    $(p).mark-target-as-explicit install-libraries-shared- ;
+
+    install install-libraries-shared-cygwin : $(libraries) : <location>$(bindir) <install-type>SHARED_LIB <install-type>PDB <install-dependencies>on <install-no-version-symlinks>on ;
+    $(p).mark-target-as-explicit install-libraries-shared-cygwin ;
 
     install install-unprefixed-static : $(unprefixed) : <install-type>STATIC_LIB <conditional>@boost-install%install-subdir ;
     $(p).mark-target-as-explicit install-unprefixed-static ;
 
-    install install-unprefixed-shared : $(unprefixed) : <install-type>SHARED_LIB <conditional>@boost-install%install-subdir ;
+    install install-unprefixed-shared : $(unprefixed) : <install-type>SHARED_LIB <install-no-version-symlinks>on <conditional>@boost-install%install-subdir ;
     $(p).mark-target-as-explicit install-unprefixed-shared ;
 
     install-cmake-config $(libraries) ;
@@ -1209,7 +1273,7 @@ rule boost-install ( libraries * )
     generate install-dependencies : $(libraries) : <generating-rule>@boost-install%generate-dependencies <name>install ;
     $(p).mark-target-as-explicit install-dependencies ;
 
-    alias install : install-libraries install-unprefixed-static install-unprefixed-shared install-cmake-config install-dependencies ;
+    alias install : install-libraries-static install-libraries-shared install-unprefixed-static install-unprefixed-shared install-cmake-config install-dependencies ;
     $(p).mark-target-as-explicit install ;
 
     # Target stage
@@ -1221,13 +1285,13 @@ rule boost-install ( libraries * )
     install stage-libraries-static : $(libraries) : <location>$(stage-libdir) <install-dependencies>on <install-type>STATIC_LIB ;
     $(p).mark-target-as-explicit stage-libraries-static ;
 
-    install stage-libraries-shared : $(libraries) : <location>$(stage-libdir) <install-dependencies>on <install-type>SHARED_LIB ;
+    install stage-libraries-shared : $(libraries) : <location>$(stage-libdir) <install-dependencies>on <install-type>SHARED_LIB <install-type>PDB <install-no-version-symlinks>on ;
     $(p).mark-target-as-explicit stage-libraries-shared ;
 
     install stage-unprefixed-static : $(unprefixed) : <install-type>STATIC_LIB <conditional>@boost-install%stage-subdir ;
     $(p).mark-target-as-explicit stage-unprefixed-static ;
 
-    install stage-unprefixed-shared : $(unprefixed) : <install-type>SHARED_LIB <conditional>@boost-install%stage-subdir ;
+    install stage-unprefixed-shared : $(unprefixed) : <install-type>SHARED_LIB <install-type>PDB <install-no-version-symlinks>on <conditional>@boost-install%stage-subdir ;
     $(p).mark-target-as-explicit stage-unprefixed-shared ;
 
     generate stage-dependencies : $(libraries) : <generating-rule>@boost-install%generate-dependencies <name>stage ;

@@ -155,11 +155,16 @@ stack_size          equ 11*8 + 8*8 + 4*16
 %define USE_HSWNI
 %endif
 
+[bits 64]
+default rel
+section .text
+
 ; void isal_deflate_icf_body <hashsize> <arch> ( isal_zstream *stream )
 ; we make 6 different versions of this function
 ; arg 1: rcx: addr of stream
 global isal_deflate_icf_body_ %+ METHOD %+ _ %+ ARCH
 isal_deflate_icf_body_ %+ METHOD %+ _ %+ ARCH %+ :
+	endbranch
 %ifidn __OUTPUT_FORMAT__, elf64
 	mov	rcx, rdi
 %endif

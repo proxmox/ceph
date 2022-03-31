@@ -48,6 +48,8 @@
 #include <system_error>
 #include <chrono>
 
+#include "core/program_options.hh"
+
 using namespace std::chrono_literals;
 
 namespace seastar {
@@ -266,13 +268,19 @@ logger::do_log(log_level level, log_writer& writer) {
       return writer(it);
     };
 
+    // Mainly this protects us from re-entrance via malloc()'s
+    // oversized allocation warnings and failed allocation errors
+    silencer be_silent(*this);
+
     if (is_ostream_enabled) {
         internal::log_buf buf(static_log_buf.data(), static_log_buf.size());
         auto it = buf.back_insert_begin();
         it = fmt::format_to(it, "{} ", level_map[int(level)]);
         it = print_timestamp(it);
         it = print_once(it);
-        *_out << buf.view() << std::endl;
+        *it++ = '\n';
+        *_out << buf.view();
+        _out->flush();
     }
     if (is_syslog_enabled) {
         internal::log_buf buf(static_log_buf.data(), static_log_buf.size());
@@ -296,11 +304,15 @@ logger::do_log(log_level level, log_writer& writer) {
     }
 }
 
-void logger::failed_to_log(std::exception_ptr ex) noexcept
+void logger::failed_to_log(std::exception_ptr ex, format_info fmt) noexcept
 {
     try {
-        lambda_log_writer writer([ex = std::move(ex)] (internal::log_buf::inserter_iterator it) {
-            return fmt::format_to(it, "failed to log message: {}", ex);
+        lambda_log_writer writer([ex = std::move(ex), fmt = std::move(fmt)] (internal::log_buf::inserter_iterator it) {
+            it = fmt::format_to(it, "{}:{} @{}: failed to log message", fmt.loc.file_name(), fmt.loc.line(), fmt.loc.function_name());
+            if (!fmt.format.empty()) {
+                it = fmt::format_to(it, ": fmt='{}'", fmt.format);
+            }
+            return fmt::format_to(it, ": {}", ex);
         });
         do_log(log_level::error, writer);
     } catch (...) {
@@ -452,29 +464,51 @@ log_level parse_log_level(const sstring& s) {
     }
 }
 
-bpo::options_description get_options_description() {
-    bpo::options_description opts("Logging options");
+void parse_map_associations(const std::string& v, std::function<void(std::string, std::string)> consume_key_value) {
+    static const std::regex colon(":");
 
-    opts.add_options()
-            ("default-log-level",
-             bpo::value<sstring>()->default_value("info"),
+    std::sregex_token_iterator s(v.begin(), v.end(), colon, -1);
+    const std::sregex_token_iterator e;
+    while (s != e) {
+        const sstring p = std::string(*s++);
+
+        const auto i = p.find('=');
+        if (i == sstring::npos) {
+            throw bpo::invalid_option_value(p);
+        }
+
+        auto k = p.substr(0, i);
+        auto v = p.substr(i + 1, p.size());
+        consume_key_value(std::move(k), std::move(v));
+    };
+}
+
+bpo::options_description get_options_description() {
+    program_options::options_description_building_visitor descriptor;
+    options(nullptr).describe(descriptor);
+    return std::move(descriptor).get_options_description();
+}
+
+options::options(program_options::option_group* parent_group)
+    : program_options::option_group(parent_group, "Logging options")
+    , default_log_level(*this, "default-log-level",
+             log_level::info,
              "Default log level for log messages. Valid values are trace, debug, info, warn, error."
-            )
-            ("logger-log-level",
-             bpo::value<program_options::string_map>()->default_value({}),
+             )
+    , logger_log_level(*this, "logger-log-level",
+             {{}},
              "Map of logger name to log level. The format is \"NAME0=LEVEL0[:NAME1=LEVEL1:...]\". "
              "Valid logger names can be queried with --help-loggers. "
              "Valid values for levels are trace, debug, info, warn, error. "
              "This option can be specified multiple times."
             )
-            ("logger-stdout-timestamps", bpo::value<logger_timestamp_style>()->default_value(logger_timestamp_style::real),
+    , logger_stdout_timestamps(*this, "logger-stdout-timestamps", logger_timestamp_style::real,
                     "Select timestamp style for stdout logs: none|boot|real")
-            ("log-to-stdout", bpo::value<bool>()->default_value(true), "Send log output to output stream, as selected by --logger-ostream-type")
-            ("logger-ostream-type", bpo::value<logger_ostream_type>()->default_value(logger_ostream_type::stderr), "Send log output to: none|stdout|stderr")
-            ("log-to-syslog", bpo::value<bool>()->default_value(false), "Send log output to syslog.")
-            ("help-loggers", bpo::bool_switch(), "Print a list of logger names and exit.");
-
-    return opts;
+    , log_to_stdout(*this, "log-to-stdout", true, "Send log output to output stream, as selected by --logger-ostream-type")
+    , logger_ostream_type(*this, "logger-ostream-type", logger_ostream_type::stderr,
+            "Send log output to: none|stdout|stderr")
+    , log_to_syslog(*this, "log-to-syslog", false, "Send log output to syslog.")
+{
 }
 
 void print_available_loggers(std::ostream& os) {
@@ -490,18 +524,20 @@ void print_available_loggers(std::ostream& os) {
 }
 
 logging_settings extract_settings(const boost::program_options::variables_map& vars) {
-    const auto& raw_levels = vars["logger-log-level"].as<program_options::string_map>();
+    options opts(nullptr);
+    program_options::variables_map_extracting_visitor visitor(vars);
+    opts.mutate(visitor);
+    return extract_settings(opts);
+}
 
-    std::unordered_map<sstring, log_level> levels;
-    parse_logger_levels(raw_levels, std::inserter(levels, levels.begin()));
-
+logging_settings extract_settings(const options& opts) {
     return logging_settings{
-        std::move(levels),
-        parse_log_level(vars["default-log-level"].as<sstring>()),
-        vars["log-to-stdout"].as<bool>(),
-        vars["log-to-syslog"].as<bool>(),
-        vars["logger-stdout-timestamps"].as<logger_timestamp_style>(),
-        vars["logger-ostream-type"].as<logger_ostream_type>(),
+        opts.logger_log_level.get_value(),
+        opts.default_log_level.get_value(),
+        opts.log_to_stdout.get_value(),
+        opts.log_to_syslog.get_value(),
+        opts.logger_stdout_timestamps.get_value(),
+        opts.logger_ostream_type.get_value(),
     };
 }
 
@@ -542,17 +578,20 @@ std::ostream& operator<<(std::ostream& out, const std::exception_ptr& eptr) {
             throw;
         } catch (const seastar::nested_exception& ne) {
             out << fmt::format(": {} (while cleaning up after {})", ne.inner, ne.outer);
-        } catch(const std::system_error &e) {
+        } catch (const std::system_error& e) {
             out << " (error " << e.code() << ", " << e.what() << ")";
-        } catch(const std::exception& e) {
+        } catch (const std::exception& e) {
             out << " (" << e.what() << ")";
-            try {
-                std::rethrow_if_nested(e);
-            } catch (...) {
-                out << ": " << std::current_exception();
-            }
-        } catch(...) {
+        } catch (...) {
             // no extra info
+        }
+
+        try {
+            throw;
+        } catch (const std::nested_exception& ne) {
+            out << ": " << ne.nested_ptr();
+        } catch (...) {
+            // do nothing
         }
     }
     return out;

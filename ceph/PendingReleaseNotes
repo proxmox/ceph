@@ -1,5 +1,14 @@
 >=17.0.0
 
+* Filestore has been deprecated in Quincy, considering that BlueStore has been
+  the default objectstore for quite some time.
+
+* Critical bug in OMAP format upgrade is fixed. This could cause data corruption
+  (improperly formatted OMAP keys) after pre-Pacific cluster upgrade if
+  bluestore-quick-fix-on-mount parameter is set to true or ceph-bluestore-tool's
+  quick-fix/repair commands are invoked.
+  Relevant tracker: https://tracker.ceph.com/issues/53062
+
 * `ceph-mgr-modules-core` debian package does not recommend `ceph-mgr-rook`
   anymore. As the latter depends on `python3-numpy` which cannot be imported in
   different Python sub-interpreters multi-times if the version of
@@ -7,6 +16,11 @@
   packages by default, `ceph-mgr-rook` was always installed along with
   `ceph-mgr` debian package as an indirect dependency. If your workflow depends
   on this behavior, you might want to install `ceph-mgr-rook` separately.
+
+* the "kvs" Ceph object class is not packaged anymore. "kvs" Ceph object class
+  offers a distributed flat b-tree key-value store implemented on top of librados
+  objects omap. Because we don't have existing internal users of this object
+  class, it is not packaged anymore.
 
 * A new library is available, libcephsqlite. It provides a SQLite Virtual File
   System (VFS) on top of RADOS. The database and journals are striped over
@@ -17,61 +31,110 @@
   that were storing state in RADOS omap, especially without striping which
   limits scalability.
 
+* The ``device_health_metrics`` pool has been renamed ``.mgr``. It is now
+  used as a common store for all ``ceph-mgr`` modules.
+
+* fs: A file system can be created with a specific ID ("fscid"). This is useful
+  in certain recovery scenarios, e.g., monitor database lost and rebuilt, and
+  the restored file system is expected to have the same ID as before.
+
+* fs: A file system can be renamed using the `fs rename` command. Any cephx
+  credentials authorized for the old file system name will need to be
+  reauthorized to the new file system name. Since the operations of the clients
+  using these re-authorized IDs may be disrupted, this command requires the
+  "--yes-i-really-mean-it" flag. Also, mirroring is expected to be disabled
+  on the file system.
 * MDS upgrades no longer require stopping all standby MDS daemons before
   upgrading the sole active MDS for a file system.
 
+* RGW: RGW now supports rate limiting by user and/or by bucket.
+  With this feature it is possible to limit user and/or bucket, the total operations and/or
+  bytes per minute can be delivered.
+  This feature is allowing the admin to limit only READ operations and/or WRITE operations.
+  The rate limiting configuration could be applied on all users and all bucket by using 
+  global configuration.
+
+* RGW: `radosgw-admin realm delete` is now renamed to `radosgw-admin realm rm`. This
+  is consistent with the help message.
+
+* OSD: Ceph now uses mclock_scheduler for bluestore OSDs as its default osd_op_queue
+  to provide QoS. The 'mclock_scheduler' is not supported for filestore OSDs.
+  Therefore, the default 'osd_op_queue' is set to 'wpq' for filestore OSDs
+  and is enforced even if the user attempts to change it.
+
 * CephFS: Failure to replay the journal by a standby-replay daemon will now
   cause the rank to be marked damaged.
+
+* RGW: S3 bucket notification events now contain an `eTag` key instead of `etag`,
+  and eventName values no longer carry the `s3:` prefix, fixing deviations from
+  the message format observed on AWS.
 
 * RGW: It is possible to specify ssl options and ciphers for beast frontend now.
   The default ssl options setting is "no_sslv2:no_sslv3:no_tlsv1:no_tlsv1_1".
   If you want to return back the old behavior add 'ssl_options=' (empty) to
   ``rgw frontends`` configuration.
 
-* fs: A file system can be created with a specific ID ("fscid"). This is useful
-  in certain recovery scenarios, e.g., monitor database lost and rebuilt, and
-  the restored file system is expected to have the same ID as before.
+* RGW: The behavior for Multipart Upload was modified so that only 
+  CompleteMultipartUpload notification is sent at the end of the multipart upload. 
+  The POST notification at the beginning of the upload, and PUT notifications that 
+  were sent on each part are not sent anymore.
 
->=16.2.7
---------
-
-* Critical bug in OMAP format upgrade is fixed. This could cause data corruption
-  (improperly formatted OMAP keys) after pre-Pacific cluster upgrade if
-  bluestore-quick-fix-on-mount parameter is set to true or ceph-bluestore-tool's
-  quick-fix/repair commands are invoked.
-  Relevant tracker: https://tracker.ceph.com/issues/53062
-
-* MGR: The pg_autoscaler will use the 'scale-up' profile as the default profile.
-  16.2.6 changed the default profile to 'scale-down' but we ran into issues
-  with the device_health_metrics pool consuming too many PGs, which is not ideal
-  for performance. So we will continue to use the 'scale-up' profile by default,
-  until we implement a limit on the number of PGs default pools should consume,
-  in combination with the 'scale-down' profile.
-
->=16.2.6
---------
-
-* MGR: The pg_autoscaler has a new default 'scale-down' profile which provides more
-  performance from the start for new pools (for newly created clusters).
-  Existing clusters will retain the old behavior, now called the 'scale-up' profile.
+* MGR: The pg_autoscaler has a new 'scale-down' profile which provides more
+  performance from the start for new pools. However, the module will remain
+  using it old behavior by default, now called the 'scale-up' profile.
   For more details, see:
 
   https://docs.ceph.com/en/latest/rados/operations/placement-groups/
 
+* MGR: The pg_autoscaler can now be turned `on` and `off` globally
+  with the `noautoscale` flag. By default this flag is unset and
+  the default pg_autoscale mode remains the same.
+  For more details, see:
+
+  https://docs.ceph.com/en/latest/rados/operations/placement-groups/
+
+* The ``ceph pg dump`` command now prints three additional columns:
+  `LAST_SCRUB_DURATION` shows the duration (in seconds) of the last completed scrub;
+  `SCRUB_SCHEDULING` conveys whether a PG is scheduled to be scrubbed at a specified
+  time, queued for scrubbing, or being scrubbed;
+  `OBJECTS_SCRUBBED` shows the number of objects scrubbed in a PG after scrub begins.
+
+* A health warning will now be reported if the ``require-osd-release`` flag is not
+  set to the appropriate release after a cluster upgrade.
+
+* LevelDB support has been removed. ``WITH_LEVELDB`` is no longer a supported
+  build option.
+
+* MON/MGR: Pools can now be created with `--bulk` flag. Any pools created with `bulk`
+  will use a profile of the `pg_autoscaler` that provides more performance from the start.
+  However, any pools created without the `--bulk` flag will remain using it's old behavior 
+  by default. For more details, see:
+
+  https://docs.ceph.com/en/latest/rados/operations/placement-groups/
+* Cephadm: ``osd_memory_target_autotune`` will be enabled by default which will set
+  ``mgr/cephadm/autotune_memory_target_ratio`` to ``0.7`` of total RAM. This will be
+  unsuitable for hyperconverged infrastructures. For hyperconverged Ceph, please refer
+  to the documentation or set ``mgr/cephadm/autotune_memory_target_ratio`` to ``0.2``.
+
+* telemetry: Improved the opt-in flow so that users can keep sharing the same
+  data, even when new data collections are available. A new 'perf' channel
+  that collects various performance metrics is now avaiable to opt-in to with:
+  `ceph telemetry on`
+  `ceph telemetry enable channel perf`
+  See a sample report with `ceph telemetry preview`
+  For more details, see:
+
+  https://docs.ceph.com/en/latest/mgr/telemetry/
+
+* MGR: The progress module disables the pg recovery event by default
+  since the event is expensive and has interrupted other service when
+  there are OSDs being marked in/out from the the cluster. However,
+  the user may still enable this event anytime. For more details, see:
+
+  https://docs.ceph.com/en/latest/mgr/progress/
+
 >=16.0.0
 --------
-
-* RGW: S3 bucket notification events now contain an `eTag` key instead of `etag`,
-  and eventName values no longer carry the `s3:` prefix, fixing deviations from
-  the message format observed on AWS.
-* `ceph-mgr-modules-core` debian package does not recommend `ceph-mgr-rook`
-  anymore. As the latter depends on `python3-numpy` which cannot be imported in
-  different Python sub-interpreters multi-times if the version of
-  `python3-numpy` is older than 1.19. Since `apt-get` installs the `Recommends`
-  packages by default, `ceph-mgr-rook` was always installed along with
-  `ceph-mgr` debian package as an indirect dependency. If your workflow depends
-  on this behavior, you might want to install `ceph-mgr-rook` separately.
-
 * mgr/nfs: ``nfs`` module is moved out of volumes plugin. Prior using the
   ``ceph nfs`` commands, ``nfs`` mgr module must be enabled.
 
@@ -115,9 +178,9 @@
 * New bluestore_rocksdb_options_annex config parameter. Complements
   bluestore_rocksdb_options and allows setting rocksdb options without repeating
   the existing defaults.
-* The cephfs addes two new CDentry tags, 'I' --> 'i' and 'L' --> 'l', and
-  on-RADOS metadata is no longer backwards compatible after upgraded to Pacific
-  or a later release.
+* The MDS in Pacific makes backwards-incompatible changes to the ON-RADOS
+  metadata structures, which prevent a downgrade to older releases
+  (to Octopus and older).
 
 * $pid expansion in config paths like `admin_socket` will now properly expand
   to the daemon pid for commands like `ceph-mds` or `ceph-osd`. Previously only
@@ -125,53 +188,51 @@
 
 * The allowable options for some "radosgw-admin" commands have been changed.
 
-  * "mdlog-list", "datalog-list", "sync-error-list" no longer accepts
-    start and end dates, but does accept a single optional start marker.
+  * "mdlog-list", "datalog-list", "sync-error-list" no longer accept
+    start and end dates, but do accept a single optional start marker.
   * "mdlog-trim", "datalog-trim", "sync-error-trim" only accept a
     single marker giving the end of the trimmed range.
   * Similarly the date ranges and marker ranges have been removed on
     the RESTful DATALog and MDLog list and trim operations.
 
-* ceph-volume: The ``lvm batch` subcommand received a major rewrite. This closed
-  a number of bugs and improves usability in terms of size specification and
-  calculation, as well as idempotency behaviour and disk replacement process.
-  Please refer to https://docs.ceph.com/en/latest/ceph-volume/lvm/batch/ for
-  more detailed information.
+* ceph-volume: The ``lvm batch`` subcommand received a major rewrite. This 
+  closed a number of bugs and improves usability in terms of size specification
+  and calculation, as well as idempotency behaviour and disk replacement 
+  process. Please refer to 
+  https://docs.ceph.com/en/latest/ceph-volume/lvm/batch/ for more detailed 
+  information.
 
 * Configuration variables for permitted scrub times have changed.  The legal
-  values for ``osd_scrub_begin_hour`` and ``osd_scrub_end_hour`` are 0 - 23.
-  The use of 24 is now illegal.  Specifying ``0`` for both values causes every
-  hour to be allowed.  The legal vaues for ``osd_scrub_begin_week_day`` and
-  ``osd_scrub_end_week_day`` are 0 - 6.  The use of 7 is now illegal.
-  Specifying ``0`` for both values causes every day of the week to be allowed.
+  values for ``osd_scrub_begin_hour`` and ``osd_scrub_end_hour`` are ``0`` -
+  ``23``. The use of 24 is now illegal. Specifying ``0`` for both values 
+  causes every hour to be allowed.  The legal vaues for 
+  ``osd_scrub_begin_week_day`` and ``osd_scrub_end_week_day`` are ``0`` - 
+  ``6``. The use of ``7`` is now illegal. Specifying ``0`` for both values 
+  causes every day of the week to be allowed.
 
-* Multiple file systems in a single Ceph cluster is now stable. New Ceph clusters
-  enable support for multiple file systems by default. Existing clusters
-  must still set the "enable_multiple" flag on the fs. Please see the CephFS
-  documentation for more information.
+* Support for multiple file systems in a single Ceph cluster is now stable. 
+  New Ceph clusters enable support for multiple file systems by default.
+  Existing clusters must still set the "enable_multiple" flag on the fs. 
+  See the CephFS documentation for more information.
 
-* volume/nfs: Recently "ganesha-" prefix from cluster id and nfs-ganesha common
-  config object was removed, to ensure consistent namespace across different
-  orchestrator backends. Please delete any existing nfs-ganesha clusters prior
+* volume/nfs: The "ganesha-" prefix from cluster id and nfs-ganesha common
+  config object was removed to ensure a consistent namespace across different
+  orchestrator backends. Delete any existing nfs-ganesha clusters prior
   to upgrading and redeploy new clusters after upgrading to Pacific.
 
-* A new health check, DAEMON_OLD_VERSION, will warn if different versions of Ceph are running
-  on daemons. It will generate a health error if multiple versions are detected.
-  This condition must exist for over mon_warn_older_version_delay (set to 1 week by default) in order for the
-  health condition to be triggered.  This allows most upgrades to proceed
-  without falsely seeing the warning.  If upgrade is paused for an extended
-  time period, health mute can be used like this
-  "ceph health mute DAEMON_OLD_VERSION --sticky".  In this case after
-  upgrade has finished use "ceph health unmute DAEMON_OLD_VERSION".
+* A new health check, DAEMON_OLD_VERSION, warns if different versions of
+  Ceph are running on daemons. It generates a health error if multiple
+  versions are detected.  This condition must exist for over 
+  ``mon_warn_older_version_delay`` (set to 1 week by default) in order for the 
+  health condition to be triggered. This allows most upgrades to proceed 
+  without falsely seeing the warning.  If upgrade is paused for an extended 
+  time period, health mute can be used like this "ceph health mute 
+  DAEMON_OLD_VERSION --sticky". In this case after upgrade has finished use 
+  "ceph health unmute DAEMON_OLD_VERSION".
 
-* MGR: progress module can now be turned on/off, using the commands:
+* MGR: progress module can now be turned on/off, using these commands:
   ``ceph progress on`` and ``ceph progress off``.
-* An AWS-compliant API: "GetTopicAttributes" was added to replace the existing "GetTopic" API. The new API
-  should be used to fetch information about topics used for bucket notifications.
 
-* librbd: The shared, read-only parent cache's config option ``immutable_object_cache_watermark`` now has been updated
-  to property reflect the upper cache utilization before space is reclaimed. The default ``immutable_object_cache_watermark``
-  now is ``0.9``. If the capacity reaches 90% the daemon will delete cold cache.
 * The ceph_volume_client.py library used for manipulating legacy "volumes" in
   CephFS is removed. All remaining users should use the "fs volume" interface
   exposed by the ceph-mgr:
@@ -198,18 +259,6 @@
 
 * Scubs are more aggressive in trying to find more simultaneous possible PGs within osd_max_scrubs limitation.
   It is possible that increasing osd_scrub_sleep may be necessary to maintain client responsiveness.
-* OSD: the option ``osd_fast_shutdown_notify_mon`` has been introduced to allow
-  the OSD to notify the monitor it is shutting down even if ``osd_fast_shutdown``
-  is enabled. This helps with the monitor logs on larger clusters, that may get
-  many 'osd.X reported immediately failed by osd.Y' messages, and confuse tools.
-
-* The mclock scheduler has been refined. A set of built-in profiles are now available that
-  provide QoS between the internal and external clients of Ceph. To enable the mclock
-  scheduler, set the config option "osd_op_queue" to "mclock_scheduler". The
-  "high_client_ops" profile is enabled by default, and allocates more OSD bandwidth to
-  external client operations than to internal client operations (such as background recovery
-  and scrubs). Other built-in profiles include "high_recovery_ops" and "balanced". These
-  built-in profiles optimize the QoS provided to clients of mclock scheduler.
 
 * Version 2 of the cephx authentication protocol (``CEPHX_V2`` feature bit) is
   now required by default.  It was introduced in 2018, adding replay attack
@@ -219,8 +268,6 @@
   4.9.150, 4.14.86, 4.19 and later; various distribution kernels, in particular
   CentOS 7.6 and later.  To enable older clients, set ``cephx_require_version``
   and ``cephx_service_require_version`` config options to 1.
-
-* rgw: The Civetweb frontend is now deprecated and will be removed in Quincy.
 
 >=15.0.0
 --------
@@ -412,6 +459,9 @@
   multisite configuration beforehand--cephadm no longer attempts to
   create missing realms or zones.
 
+* The ``min_size`` and ``max_size`` CRUSH rule properties have been removed.  Older
+  CRUSH maps will still compile but Ceph will issue a warning that these fields are
+  ignored.
 * The cephadm NFS support has been simplified to no longer allow the
   pool and namespace where configuration is stored to be customized.
   As a result, the ``ceph orch apply nfs`` command no longer has
@@ -421,3 +471,8 @@
   from Octopus) will be automatically migrated when the cluster is
   upgraded.  Note that the NFS ganesha daemons will be redeployed and
   it is possible that their IPs will change.
+
+* RGW now requires a secure connection to the monitor by default
+  (``auth_client_required=cephx`` and ``ms_mon_client_mode=secure``).
+  If you have cephx authentication disabled on your cluster, you may
+  need to adjust these settings for RGW.

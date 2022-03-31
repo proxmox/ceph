@@ -7,10 +7,10 @@
 #ifndef BOOST_HISTOGRAM_ACCUMULATORS_MEAN_HPP
 #define BOOST_HISTOGRAM_ACCUMULATORS_MEAN_HPP
 
-#include <boost/assert.hpp>
 #include <boost/core/nvp.hpp>
 #include <boost/histogram/fwd.hpp> // for mean<>
 #include <boost/throw_exception.hpp>
+#include <cassert>
 #include <stdexcept>
 #include <type_traits>
 
@@ -87,10 +87,16 @@ public:
   /// Return how many samples were accumulated
   const_reference count() const noexcept { return sum_; }
 
-  /// Return mean value of accumulated samples
+  /** Return mean value of accumulated samples.
+
+    The result is undefined, if `count() < 1`.
+  */
   const_reference value() const noexcept { return mean_; }
 
-  /// Return variance of accumulated samples
+  /** Return variance of accumulated samples
+
+    The result is undefined, if `count() < 2`.
+  */
   value_type variance() const noexcept { return sum_of_deltas_squared_ / (sum_ - 1); }
 
   template <class Archive>

@@ -30,8 +30,6 @@ namespace seastar {
 
 namespace testing {
 
-thread_local std::default_random_engine local_random_engine;
-
 static test_runner instance;
 
 struct stop_execution : public std::exception {};
@@ -59,6 +57,11 @@ test_runner::start(int ac, char** av) {
         abort();
     }
 
+    _st_args = std::make_unique<start_thread_args>(ac, av);
+    return true;
+}
+
+void test_runner::start_thread(int ac, char** av) {
     auto init_outcome = std::make_shared<exchanger<bool>>();
 
     namespace bpo = boost::program_options;
@@ -106,11 +109,19 @@ test_runner::start(int ac, char** av) {
         init_outcome->give(!_exit_code);
     });
 
-    return init_outcome->take();
+    if (!init_outcome->take()) {
+        throw std::runtime_error("error starting reactor thread");
+    }
 }
 
 void
 test_runner::run_sync(std::function<future<>()> task) {
+    if (_st_args) {
+        start_thread_args sa = *_st_args;
+        _st_args.reset();
+        start_thread(sa.ac, sa.av);
+    }
+
     exchanger<std::exception_ptr> e;
     _task.give([task = std::move(task), &e] {
         try {

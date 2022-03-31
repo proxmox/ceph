@@ -21,6 +21,7 @@
 
 #pragma once
 
+#include <chrono>
 #include <typeindex>
 #include <seastar/core/sstring.hh>
 #include <seastar/core/function_traits.hh>
@@ -30,7 +31,7 @@
 
 namespace seastar {
 
-constexpr unsigned max_scheduling_groups() { return 16; }
+constexpr unsigned max_scheduling_groups() { return SEASTAR_SCHEDULING_GROUPS_COUNT; }
 
 #if SEASTAR_API_LEVEL < 6
 #define SEASTAR_ELLIPSIS ...
@@ -45,6 +46,8 @@ class reactor;
 
 class scheduling_group;
 class scheduling_group_key;
+
+using sched_clock = std::chrono::steady_clock;
 
 namespace internal {
 

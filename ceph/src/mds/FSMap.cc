@@ -30,6 +30,7 @@ using std::list;
 using std::pair;
 using std::ostream;
 using std::string;
+using std::string_view;
 
 using ceph::bufferlist;
 using ceph::Formatter;
@@ -450,7 +451,7 @@ mds_gid_t Filesystem::get_standby_replay(mds_gid_t who) const
 
 Filesystem::ref FSMap::create_filesystem(std::string_view name,
     int64_t metadata_pool, int64_t data_pool, uint64_t features,
-    fs_cluster_id_t fscid)
+    fs_cluster_id_t fscid, bool recover)
 {
   auto fs = Filesystem::create();
   fs->mds_map.epoch = epoch;
@@ -467,6 +468,15 @@ Filesystem::ref FSMap::create_filesystem(std::string_view name,
   } else {
     fs->fscid = fscid;
     next_filesystem_id = std::max(fscid,  (fs_cluster_id_t)next_filesystem_id) + 1;
+  }
+
+  if (recover) {
+    // Populate rank 0 as existing (so don't go into CREATING)
+    // but failed (so that next available MDS is assigned the rank)
+    fs->mds_map.in.insert(mds_rank_t(0));
+    fs->mds_map.failed.insert(mds_rank_t(0));
+
+    fs->mds_map.set_flag(CEPH_MDSMAP_NOT_JOINABLE);
   }
 
   // File system's ID can be FS_CLUSTER_ID_ANONYMOUS if we're recovering
@@ -1056,6 +1066,10 @@ void FSMap::insert(const MDSMap::mds_info_t &new_info)
     // or older) MDS.
     info.compat = MDSMap::get_compat_set_v16_2_4();
   }
+  /* TODO remove after R is released
+   * Insert INLINE; see comment in MDSMap::decode.
+   */
+  info.compat.incompat.insert(MDS_FEATURE_INCOMPAT_INLINE);
   standby_epochs[new_info.global_id] = epoch;
 }
 

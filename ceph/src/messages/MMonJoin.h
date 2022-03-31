@@ -31,7 +31,7 @@ public:
    * location. Generally the monitor will force an update if it's given a
    * location from the CLI on boot-up, and then never force again (so that it
    * can be moved/updated via the ceph tool from elsewhere). */
-  map<string,string> crush_loc;
+  std::map<std::string,std::string> crush_loc;
   bool force_loc{false};
 
   MMonJoin() : PaxosServiceMessage{MSG_MON_JOIN, 0, HEAD_VERSION, COMPAT_VERSION} {}
@@ -39,7 +39,8 @@ public:
     : PaxosServiceMessage{MSG_MON_JOIN, 0, HEAD_VERSION, COMPAT_VERSION},
       fsid(f), name(n), addrs(av)
   { }
-  MMonJoin(uuid_d &f, std::string n, const entity_addrvec_t& av, const map<string,string>& cloc, bool force)
+  MMonJoin(uuid_d &f, std::string n, const entity_addrvec_t& av,
+	   const std::map<std::string,std::string>& cloc, bool force)
     : PaxosServiceMessage{MSG_MON_JOIN, 0, HEAD_VERSION, COMPAT_VERSION},
       fsid(f), name(n), addrs(av), crush_loc(cloc), force_loc(force)
   { }
@@ -58,17 +59,12 @@ public:
     paxos_encode();
     encode(fsid, payload);
     encode(name, payload);
-    if (HAVE_FEATURE(features, SERVER_NAUTILUS)) {
-      header.version = HEAD_VERSION;
-      header.compat_version = COMPAT_VERSION;
-      encode(addrs, payload, features);
-      encode(crush_loc, payload);
-      encode(force_loc, payload);
-    } else {
-      header.version = 1;
-      header.compat_version = 1;
-      encode(addrs.legacy_addr(), payload, features);
-    }
+    assert(HAVE_FEATURE(features, SERVER_NAUTILUS));
+    header.version = HEAD_VERSION;
+    header.compat_version = COMPAT_VERSION;
+    encode(addrs, payload, features);
+    encode(crush_loc, payload);
+    encode(force_loc, payload);
   }
   void decode_payload() override {
     using ceph::decode;
@@ -76,16 +72,11 @@ public:
     paxos_decode(p);
     decode(fsid, p);
     decode(name, p);
-    if (header.version == 1) {
-      entity_addr_t addr;
-      decode(addr, p);
-      addrs = entity_addrvec_t(addr);
-    } else {
-      decode(addrs, p);
-      if (header.version >= 3) {
-	decode(crush_loc, p);
-	decode(force_loc, p);
-      }
+    assert(header.version > 1);
+    decode(addrs, p);
+    if (header.version >= 3) {
+      decode(crush_loc, p);
+      decode(force_loc, p);
     }
   }
 };

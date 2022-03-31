@@ -4,6 +4,7 @@
 #include "librbd/crypto/BlockCrypto.h"
 #include "include/byteorder.h"
 #include "include/ceph_assert.h"
+#include "include/scope_guard.h"
 
 #include <stdlib.h>
 
@@ -53,6 +54,10 @@ int BlockCrypto<T>::crypt(ceph::bufferlist* data, uint64_t image_offset,
     lderr(m_cct) << "unable to get crypt context" << dendl;
     return -EIO;
   }
+
+  auto sg = make_scope_guard([&] {
+      m_data_cryptor->return_context(ctx, mode); });
+
   auto sector_number = image_offset / 512;
   auto appender = data->get_contiguous_appender(src.length());
   unsigned char* out_buf_ptr = nullptr;
@@ -63,7 +68,7 @@ int BlockCrypto<T>::crypt(ceph::bufferlist* data, uint64_t image_offset,
     auto remaining_buf_bytes = buf->length();
     while (remaining_buf_bytes > 0) {
       if (leftover_size == 0) {
-        auto block_offset_le = init_le64(sector_number);
+        auto block_offset_le = ceph_le64(sector_number);
         memcpy(iv, &block_offset_le, sizeof(block_offset_le));
         auto r = m_data_cryptor->init_context(ctx, iv, m_iv_size);
         if (r != 0) {
@@ -106,8 +111,6 @@ int BlockCrypto<T>::crypt(ceph::bufferlist* data, uint64_t image_offset,
       out_buf_ptr += crypto_output_length;
     }
   }
-
-  m_data_cryptor->return_context(ctx, mode);
 
   return 0;
 }

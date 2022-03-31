@@ -20,9 +20,9 @@ project spirit-classic
 
 ###############################################################################
 
-cpp-pch pch : pch.hpp : : : <include>. <toolset>msvc:<cxxflags>"/FIpch.hpp" ;
+cpp-pch pch : pch.hpp : : : <include>. <force-include>pch.hpp ;
 cpp-pch pch-dbg : pch.hpp : <define>BOOST_SPIRIT_DEBUG :
-                          : <include>. <toolset>msvc:<cxxflags>"/FIpch.hpp" ;
+                          : <include>. <force-include>pch.hpp ;
 
 explicit pch pch-dbg ;
 
@@ -52,7 +52,8 @@ local opt-metrowerks = <toolset>cw:<optimization>speed ;
 
 # VP, 2005/04/14: MT is not available with Como, but this is
 # not handled yet.
-local multi-threading = <library>/boost/thread//boost_thread 
+alias boost_thread : /boost/thread//boost_thread : <warnings>off <warnings-as-errors>off ;
+local multi-threading = <library>boost_thread
                         <threading>multi <define>BOOST_ALL_NO_LIB ;
 
     test-suite "spirit.classic.core.kernel"

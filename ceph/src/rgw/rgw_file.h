@@ -371,12 +371,16 @@ namespace rgw {
       fh.fh_private = this;
     }
 
+    const std::string& get_name() const {
+      return name;
+    }
+
     const fh_key& get_key() const {
       return fhk;
     }
 
     directory* get_directory() {
-      return get<directory>(&variant_type);
+      return boost::get<directory>(&variant_type);
     }
 
     size_t get_size() const { return state.size; }
@@ -856,7 +860,7 @@ namespace rgw {
     
     std::string uid; // should match user.user_id, iiuc
 
-    RGWUserInfo user;
+    std::unique_ptr<rgw::sal::User> user;
     RGWAccessKey key; // XXXX acc_key
 
     static std::atomic<uint32_t> fs_inst_counter;
@@ -984,13 +988,13 @@ namespace rgw {
       (void) fh_lru.unref(fh, cohort::lru::FLAG_NONE);
     }
 
-    int authorize(const DoutPrefixProvider *dpp, rgw::sal::RGWRadosStore* store) {
-      int ret = store->ctl()->user->get_info_by_access_key(dpp, key.id, &user, null_yield);
+    int authorize(const DoutPrefixProvider *dpp, rgw::sal::Store* store) {
+      int ret = store->get_user_by_access_key(dpp, key.id, null_yield, &user);
       if (ret == 0) {
-	RGWAccessKey* k = user.get_key(key.id);
+	RGWAccessKey* k = user->get_info().get_key(key.id);
 	if (!k || (k->key != key.key))
 	  return -EINVAL;
-	if (user.suspended)
+	if (user->get_info().suspended)
 	  return -ERR_USER_SUSPENDED;
       } else {
 	/* try external authenticators (ldap for now) */
@@ -1004,10 +1008,8 @@ namespace rgw {
 	}
 	if (token.valid() && (ldh->auth(token.id, token.key) == 0)) {
 	  /* try to store user if it doesn't already exist */
-	  if (store->ctl()->user->get_info_by_uid(dpp, rgw_user(token.id), &user, null_yield) < 0) {
-	    int ret = store->ctl()->user->store_info(dpp, user, null_yield,
-                                                  RGWUserCtl::PutParams()
-                                                  .set_exclusive(true));
+	  if (user->load_user(dpp, null_yield) < 0) {
+	    int ret = user->store_user(dpp, null_yield, true);
 	    if (ret < 0) {
 	      lsubdout(get_context(), rgw, 10)
 		<< "NOTICE: failed to store new user's info: ret=" << ret
@@ -1293,16 +1295,14 @@ namespace rgw {
 
     struct rgw_fs* get_fs() { return &fs; }
 
+    RGWFileHandle& get_fh() { return root_fh; }
+
     uint64_t get_fsid() { return root_fh.state.dev; }
 
-    RGWUserInfo* get_user() { return &user; }
+    RGWUserInfo* get_user() { return &user->get_info(); }
 
     void update_user(const DoutPrefixProvider *dpp) {
-      RGWUserInfo _user = user;
-      auto user_ctl = rgwlib.get_store()->ctl()->user;
-      int ret = user_ctl->get_info_by_access_key(dpp, key.id, &user, null_yield);
-      if (ret != 0)
-        user = _user;
+      (void) rgwlib.get_store()->get_user_by_access_key(dpp, key.id, null_yield, &user);
     }
 
     void close();
@@ -1336,7 +1336,7 @@ public:
   uint32_t d_count;
   bool rcb_eof; // caller forced early stop in readdir cycle
 
-  RGWListBucketsRequest(CephContext* _cct, std::unique_ptr<rgw::sal::RGWUser> _user,
+  RGWListBucketsRequest(CephContext* _cct, std::unique_ptr<rgw::sal::User> _user,
 			RGWFileHandle* _rgw_fh, rgw_readdir_cb _rcb,
 			void* _cb_arg, RGWFileHandle::readdir_offset& _offset)
     : RGWLibRequest(_cct, std::move(_user)), rgw_fh(_rgw_fh), offset(_offset),
@@ -1397,7 +1397,7 @@ public:
     sent_data = true;
   }
 
-  void send_response_data(rgw::sal::RGWBucketList& buckets) override {
+  void send_response_data(rgw::sal::BucketList& buckets) override {
     if (!sent_data)
       return;
     auto& m = buckets.get_buckets();
@@ -1435,6 +1435,8 @@ public:
   }
 
   bool eof() {
+    using boost::get;
+
     if (unlikely(cct->_conf->subsys.should_gather(ceph_subsys_rgw, 15))) {
       bool is_offset =
 	unlikely(! get<const char*>(&offset)) ||
@@ -1466,7 +1468,7 @@ public:
   uint32_t d_count;
   bool rcb_eof; // caller forced early stop in readdir cycle
 
-  RGWReaddirRequest(CephContext* _cct, std::unique_ptr<rgw::sal::RGWUser> _user,
+  RGWReaddirRequest(CephContext* _cct, std::unique_ptr<rgw::sal::User> _user,
 		    RGWFileHandle* _rgw_fh, rgw_readdir_cb _rcb,
 		    void* _cb_arg, RGWFileHandle::readdir_offset& _offset)
     : RGWLibRequest(_cct, std::move(_user)), rgw_fh(_rgw_fh), offset(_offset),
@@ -1579,11 +1581,11 @@ public:
 
     class DirIterator
     {
-      vector<rgw_bucket_dir_entry>& objs;
-      vector<rgw_bucket_dir_entry>::iterator obj_iter;
+      std::vector<rgw_bucket_dir_entry>& objs;
+      std::vector<rgw_bucket_dir_entry>::iterator obj_iter;
 
-      map<string, bool>& common_prefixes;
-      map<string, bool>::iterator cp_iter;
+      std::map<std::string, bool>& common_prefixes;
+      std::map<string, bool>::iterator cp_iter;
 
       boost::optional<std::string_view> obj_sref;
       boost::optional<std::string_view> cp_sref;
@@ -1591,8 +1593,8 @@ public:
 
     public:
 
-      DirIterator(vector<rgw_bucket_dir_entry>& objs,
-		  map<string, bool>& common_prefixes)
+      DirIterator(std::vector<rgw_bucket_dir_entry>& objs,
+		  std::map<string, bool>& common_prefixes)
 	: objs(objs), common_prefixes(common_prefixes), _skip_cp(false)
 	{
 	  obj_iter = objs.begin();
@@ -1674,11 +1676,11 @@ public:
 	return cp_sref.get();
       }
 
-      vector<rgw_bucket_dir_entry>::iterator& get_obj_iter() {
+      std::vector<rgw_bucket_dir_entry>::iterator& get_obj_iter() {
 	return obj_iter;
       }
 
-      map<string, bool>::iterator& get_cp_iter() {
+      std::map<string, bool>::iterator& get_cp_iter() {
 	return cp_iter;
       }
 
@@ -1763,6 +1765,8 @@ public:
   }
 
   bool eof() {
+    using boost::get;
+
     if (unlikely(cct->_conf->subsys.should_gather(ceph_subsys_rgw, 15))) {
       bool is_offset =
 	unlikely(! get<const char*>(&offset)) ||
@@ -1790,7 +1794,7 @@ public:
   bool valid;
   bool has_children;
 
-  RGWRMdirCheck (CephContext* _cct, std::unique_ptr<rgw::sal::RGWUser> _user,
+  RGWRMdirCheck (CephContext* _cct, std::unique_ptr<rgw::sal::User> _user,
 		 const RGWFileHandle* _rgw_fh)
     : RGWLibRequest(_cct, std::move(_user)), rgw_fh(_rgw_fh), valid(false),
       has_children(false) {
@@ -1869,7 +1873,7 @@ class RGWCreateBucketRequest : public RGWLibRequest,
 public:
   const std::string& bucket_name;
 
-  RGWCreateBucketRequest(CephContext* _cct, std::unique_ptr<rgw::sal::RGWUser> _user,
+  RGWCreateBucketRequest(CephContext* _cct, std::unique_ptr<rgw::sal::User> _user,
 			std::string& _bname)
     : RGWLibRequest(_cct, std::move(_user)), bucket_name(_bname) {
     op = this;
@@ -1934,7 +1938,7 @@ class RGWDeleteBucketRequest : public RGWLibRequest,
 public:
   const std::string& bucket_name;
 
-  RGWDeleteBucketRequest(CephContext* _cct, std::unique_ptr<rgw::sal::RGWUser> _user,
+  RGWDeleteBucketRequest(CephContext* _cct, std::unique_ptr<rgw::sal::User> _user,
 			std::string& _bname)
     : RGWLibRequest(_cct, std::move(_user)), bucket_name(_bname) {
     op = this;
@@ -1986,7 +1990,7 @@ public:
   buffer::list& bl; /* XXX */
   size_t bytes_written;
 
-  RGWPutObjRequest(CephContext* _cct, std::unique_ptr<rgw::sal::RGWUser> _user,
+  RGWPutObjRequest(CephContext* _cct, std::unique_ptr<rgw::sal::User> _user,
 		  const std::string& _bname, const std::string& _oname,
 		  buffer::list& _bl)
     : RGWLibRequest(_cct, std::move(_user)), bucket_name(_bname), obj_name(_oname),
@@ -2078,7 +2082,7 @@ public:
   size_t read_resid; /* initialize to len, <= sizeof(ulp_buffer) */
   bool do_hexdump = false;
 
-  RGWReadRequest(CephContext* _cct, std::unique_ptr<rgw::sal::RGWUser> _user,
+  RGWReadRequest(CephContext* _cct, std::unique_ptr<rgw::sal::User> _user,
 		 RGWFileHandle* _rgw_fh, uint64_t off, uint64_t len,
 		 void *_ulp_buffer)
     : RGWLibRequest(_cct, std::move(_user)), rgw_fh(_rgw_fh), ulp_buffer(_ulp_buffer),
@@ -2171,7 +2175,7 @@ public:
   const std::string& bucket_name;
   const std::string& obj_name;
 
-  RGWDeleteObjRequest(CephContext* _cct, std::unique_ptr<rgw::sal::RGWUser> _user,
+  RGWDeleteObjRequest(CephContext* _cct, std::unique_ptr<rgw::sal::User> _user,
 		      const std::string& _bname, const std::string& _oname)
     : RGWLibRequest(_cct, std::move(_user)), bucket_name(_bname), obj_name(_oname) {
     op = this;
@@ -2222,7 +2226,7 @@ public:
 
   static constexpr uint32_t FLAG_NONE = 0x000;
 
-  RGWStatObjRequest(CephContext* _cct, std::unique_ptr<rgw::sal::RGWUser> _user,
+  RGWStatObjRequest(CephContext* _cct, std::unique_ptr<rgw::sal::User> _user,
 		    const std::string& _bname, const std::string& _oname,
 		    uint32_t _flags)
     : RGWLibRequest(_cct, std::move(_user)), bucket_name(_bname), obj_name(_oname),
@@ -2315,7 +2319,7 @@ public:
   std::map<std::string, buffer::list> attrs;
   RGWLibFS::BucketStats& bs;
 
-  RGWStatBucketRequest(CephContext* _cct, std::unique_ptr<rgw::sal::RGWUser> _user,
+  RGWStatBucketRequest(CephContext* _cct, std::unique_ptr<rgw::sal::User> _user,
 		       const std::string& _path,
 		       RGWLibFS::BucketStats& _stats)
     : RGWLibRequest(_cct, std::move(_user)), bs(_stats) {
@@ -2390,7 +2394,7 @@ public:
   bool is_dir;
   bool exact_matched;
 
-  RGWStatLeafRequest(CephContext* _cct, std::unique_ptr<rgw::sal::RGWUser> _user,
+  RGWStatLeafRequest(CephContext* _cct, std::unique_ptr<rgw::sal::User> _user,
 		     RGWFileHandle* _rgw_fh, const std::string& _path)
     : RGWLibRequest(_cct, std::move(_user)), rgw_fh(_rgw_fh), path(_path),
       matched(false), is_dir(false), exact_matched(false) {
@@ -2495,8 +2499,8 @@ public:
   const std::string& obj_name;
   RGWFileHandle* rgw_fh;
   std::optional<rgw::BlockingAioThrottle> aio;
-  std::optional<rgw::putobj::AtomicObjectProcessor> processor;
-  rgw::putobj::DataProcessor* filter;
+  std::unique_ptr<rgw::sal::Writer> processor;
+  rgw::sal::DataProcessor* filter;
   boost::optional<RGWPutObj_Compress> compressor;
   CompressorRef plugin;
   buffer::list data;
@@ -2506,8 +2510,8 @@ public:
   size_t bytes_written;
   bool eio;
 
-  RGWWriteRequest(rgw::sal::RGWRadosStore* store,
-		  std::unique_ptr<rgw::sal::RGWUser> _user,
+  RGWWriteRequest(rgw::sal::Store* store,
+		  std::unique_ptr<rgw::sal::User> _user,
 		  RGWFileHandle* _fh, const std::string& _bname,
 		  const std::string& _oname)
     : RGWLibContinuedReq(store->ctx(), std::move(_user)),
@@ -2519,6 +2523,8 @@ public:
     // invoking this classes's header_init()
     (void) RGWWriteRequest::header_init();
     op = this;
+    // Allow use of MD5 digest in FIPS mode for non-cryptographic purposes
+    hash.SetFlags(EVP_MD_CTX_FLAG_NON_FIPS_ALLOW);
   }
 
   bool only_bucket() override { return true; }
@@ -2600,7 +2606,7 @@ public:
   const std::string& src_name;
   const std::string& dst_name;
 
-  RGWCopyObjRequest(CephContext* _cct, std::unique_ptr<rgw::sal::RGWUser> _user,
+  RGWCopyObjRequest(CephContext* _cct, std::unique_ptr<rgw::sal::User> _user,
 		    RGWFileHandle* _src_parent, RGWFileHandle* _dst_parent,
 		    const std::string& _src_name, const std::string& _dst_name)
     : RGWLibRequest(_cct, std::move(_user)), src_parent(_src_parent),
@@ -2633,11 +2639,10 @@ public:
     state->op = OP_PUT;
 
     src_bucket_name = src_parent->bucket_name();
-    // need s->src_bucket_name?
+    state->src_bucket_name = src_bucket_name;
     dest_bucket_name = dst_parent->bucket_name();
-    // need s->bucket.name?
+    state->bucket_name = dest_bucket_name;
     dest_obj_name = dst_parent->format_child_name(dst_name, false);
-    // need s->object_name?
 
     int rc = valid_s3_object_name(dest_obj_name);
     if (rc != 0)
@@ -2669,8 +2674,8 @@ public:
     dest_policy = s3policy;
     /* src_object required before RGWCopyObj::verify_permissions() */
     rgw_obj_key k = rgw_obj_key(src_name);
-    src_object = rgwlib.get_store()->get_object(k);
-    s->object = src_object->clone(); // needed to avoid trap at rgw_op.cc:5150
+    s->src_object = s->bucket->get_object(k);
+    s->object = s->src_object->clone(); // needed to avoid trap at rgw_op.cc:5150
     return ret;
   }
 
@@ -2687,7 +2692,7 @@ public:
   const std::string& obj_name;
 
   RGWGetAttrsRequest(CephContext* _cct,
-		     std::unique_ptr<rgw::sal::RGWUser> _user,
+		     std::unique_ptr<rgw::sal::User> _user,
 		     const std::string& _bname, const std::string& _oname)
     : RGWLibRequest(_cct, std::move(_user)), RGWGetAttrs(),
       bucket_name(_bname), obj_name(_oname) {
@@ -2742,7 +2747,7 @@ public:
   const std::string& bucket_name;
   const std::string& obj_name;
 
-  RGWSetAttrsRequest(CephContext* _cct, std::unique_ptr<rgw::sal::RGWUser> _user,
+  RGWSetAttrsRequest(CephContext* _cct, std::unique_ptr<rgw::sal::User> _user,
 		     const std::string& _bname, const std::string& _oname)
     : RGWLibRequest(_cct, std::move(_user)), bucket_name(_bname), obj_name(_oname) {
     op = this;
@@ -2798,14 +2803,14 @@ public:
   const std::string& obj_name;
 
   RGWRMAttrsRequest(CephContext* _cct,
-		     std::unique_ptr<rgw::sal::RGWUser> _user,
+		     std::unique_ptr<rgw::sal::User> _user,
 		     const std::string& _bname, const std::string& _oname)
     : RGWLibRequest(_cct, std::move(_user)), RGWRMAttrs(),
       bucket_name(_bname), obj_name(_oname) {
     op = this;
   }
 
-  const rgw::sal::RGWAttrs& get_attrs() {
+  const rgw::sal::Attrs& get_attrs() {
     return attrs;
   }
 
@@ -2853,7 +2858,7 @@ class RGWGetClusterStatReq : public RGWLibRequest,
         public RGWGetClusterStat {
 public:
   struct rados_cluster_stat_t& stats_req;
-  RGWGetClusterStatReq(CephContext* _cct, std::unique_ptr<rgw::sal::RGWUser> _user,
+  RGWGetClusterStatReq(CephContext* _cct, std::unique_ptr<rgw::sal::User> _user,
                        rados_cluster_stat_t& _stats):
   RGWLibRequest(_cct, std::move(_user)), stats_req(_stats){
     op = this;

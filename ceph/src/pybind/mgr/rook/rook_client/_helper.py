@@ -1,4 +1,5 @@
 import logging
+import sys
 try:
     from typing import List, Dict, Any, Optional
 except ImportError:
@@ -16,13 +17,22 @@ _omit = object()  # type: ignore
 # Don't add any additionalProperties to objects. Useful for completeness testing
 STRICT = False
 
+def _str_to_class(cls, typ_str):
+    if isinstance(typ_str, str):
+        return getattr(sys.modules[cls.__module__], typ_str)
+    return typ_str
 
-def _property_from_json(data, breadcrumb, name, py_name, typ, required, nullable):
+
+def _property_from_json(cls, data, breadcrumb, name, py_name, typ_str, required, nullable):
     if not required and name not in data:
         return _omit
-    obj = data[name]
+    try:
+        obj = data[name]
+    except KeyError as e:
+        raise ValueError('KeyError in {}: {}'.format(breadcrumb, e))
     if nullable and obj is None:
         return obj
+    typ = _str_to_class(cls, typ_str)
     if issubclass(typ, CrdObject) or issubclass(typ, CrdObjectList):
         return typ.from_json(obj, breadcrumb + '.' + name)
     return obj
@@ -45,8 +55,9 @@ class CrdObject(object):
             raise AttributeError(name + ' not found')
         return obj
 
-    def _property_to_json(self, name, py_name, typ, required, nullable):
+    def _property_to_json(self, name, py_name, typ_str, required, nullable):
         obj = getattr(self, '_' + py_name)
+        typ = _str_to_class(self.__class__, typ_str)
         if issubclass(typ, CrdObject) or issubclass(typ, CrdObjectList):
             if nullable and obj is None:
                 return obj
@@ -66,7 +77,7 @@ class CrdObject(object):
     def from_json(cls, data, breadcrumb=''):
         try:
             sanitized = {
-                p[1]: _property_from_json(data, breadcrumb, *p) for p in cls._properties
+                p[1]: _property_from_json(cls, data, breadcrumb, *p) for p in cls._properties
             }
             extra = {k:v for k,v in data.items() if k not in sanitized}
             ret = cls(**sanitized)
@@ -99,10 +110,19 @@ class CrdObjectList(list):
         # type: () -> List
         if self._items_type is None:
             return self
-        return [e.to_json() for e in self]
+        if issubclass(self._items_type, CrdObject) or issubclass(self._items_type, CrdObjectList):
+            return [e.to_json() for e in self]
+        return list(self)
+
 
     @classmethod
     def from_json(cls, data, breadcrumb=''):
         if cls._items_type is None:
             return cls(data)
-        return cls(cls._items_type.from_json(e, breadcrumb + '[]') for e in data)
+        if issubclass(cls._items_type, CrdObject) or issubclass(cls._items_type, CrdObjectList):
+            return cls(cls._items_type.from_json(e, breadcrumb + '[{}]'.format(i)) for i, e in enumerate(data))
+        return cls(data)
+
+    def __repr__(self):
+        return '{}({})'.format(self.__class__.__name__, repr(list(self)))
+

@@ -17,7 +17,7 @@
 
 #include <boost/config.hpp>
 
-#ifdef __BORLANDC__     // Borland mis-detects our custom iterators
+#ifdef BOOST_BORLANDC     // Borland mis-detects our custom iterators
 # pragma warn -8091     // template argument ForwardIterator passed to '...' is a output iterator
 # pragma warn -8071     // Conversion may lose significant digits (due to counting_iterator<char> += n).
 #endif
@@ -26,13 +26,11 @@
 # pragma warning(disable:4786) // identifier truncated in debug info
 #endif
 
-#include <boost/detail/iterator.hpp>
 #include <boost/iterator/counting_iterator.hpp>
 #include <boost/iterator/new_iterator_tests.hpp>
 
 #include <boost/next_prior.hpp>
 #include <boost/mpl/if.hpp>
-#include <boost/detail/iterator.hpp>
 #include <boost/detail/workaround.hpp>
 #include <boost/limits.hpp>
 
@@ -40,7 +38,7 @@
 #include <climits>
 #include <iterator>
 #include <stdlib.h>
-#ifndef __BORLANDC__
+#ifndef BOOST_BORLANDC
 # include <boost/tuple/tuple.hpp>
 #endif
 #include <vector>
@@ -88,9 +86,9 @@ void category_test(
     std::random_access_iterator_tag)
 {
     typedef typename
-        boost::detail::iterator_traits<CountingIterator>::difference_type
+        std::iterator_traits<CountingIterator>::difference_type
         difference_type;
-    difference_type distance = boost::detail::distance(start, finish);
+    difference_type distance = std::distance(start, finish);
 
     // Pick a random position internal to the range
     difference_type offset = (unsigned)rand() % distance;
@@ -112,7 +110,7 @@ void category_test(
         std::equal_range(start, finish, *internal));
     CountingIterator x = xy.first, y = xy.second;
 
-    BOOST_TEST(boost::detail::distance(x, y) == 1);
+    BOOST_TEST(std::distance(x, y) == 1);
 
     // Show that values outside the range can't be found
     BOOST_TEST(!std::binary_search(start, boost::prior(finish), *finish));

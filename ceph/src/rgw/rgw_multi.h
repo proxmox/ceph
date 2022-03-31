@@ -11,7 +11,7 @@
 #include "common/dout.h"
 
 namespace rgw { namespace sal {
-  class RGWRadosStore;
+  class Store;
 } }
 
 #define MULTIPART_UPLOAD_ID_PREFIX_LEGACY "2/"
@@ -23,7 +23,7 @@ struct RGWUploadPartInfo {
   uint32_t num;
   uint64_t size;
   uint64_t accounted_size{0};
-  string etag;
+  std::string etag;
   ceph::real_time modified;
   RGWObjManifest manifest;
   RGWCompressionInfo cs_info;
@@ -58,7 +58,7 @@ struct RGWUploadPartInfo {
     DECODE_FINISH(bl);
   }
   void dump(Formatter *f) const;
-  static void generate_test_instances(list<RGWUploadPartInfo*>& o);
+  static void generate_test_instances(std::list<RGWUploadPartInfo*>& o);
 };
 WRITE_CLASS_ENCODER(RGWUploadPartInfo)
 
@@ -69,19 +69,19 @@ public:
   ~RGWMultiCompleteUpload() override {}
   bool xml_end(const char *el) override;
 
-  std::map<int, string> parts;
+  std::map<int, std::string> parts;
 };
 
 class RGWMultiPart : public XMLObj
 {
-  string etag;
+  std::string etag;
   int num;
 public:
   RGWMultiPart() : num(0) {}
   ~RGWMultiPart() override {}
   bool xml_end(const char *el) override;
 
-  string& get_etag() { return etag; }
+  std::string& get_etag() { return etag; }
   int get_num() { return num; }
 };
 
@@ -104,44 +104,9 @@ class RGWMultiXMLParser : public RGWXMLParser
   XMLObj *alloc_obj(const char *el) override;
 public:
   RGWMultiXMLParser() {}
-  ~RGWMultiXMLParser() override {}
+  virtual ~RGWMultiXMLParser() override;
 };
 
-extern bool is_v2_upload_id(const string& upload_id);
+extern bool is_v2_upload_id(const std::string& upload_id);
 
-extern int list_multipart_parts(const DoutPrefixProvider *dpp, 
-                                rgw::sal::RGWRadosStore *store, RGWBucketInfo& bucket_info,
-				CephContext *cct,
-                                const string& upload_id,
-                                const string& meta_oid, int num_parts,
-                                int marker, map<uint32_t, RGWUploadPartInfo>& parts,
-                                int *next_marker, bool *truncated,
-                                bool assume_unsorted = false);
-
-extern int list_multipart_parts(const DoutPrefixProvider *dpp, 
-                                rgw::sal::RGWRadosStore *store, struct req_state *s,
-                                const string& upload_id,
-                                const string& meta_oid, int num_parts,
-                                int marker, map<uint32_t, RGWUploadPartInfo>& parts,
-                                int *next_marker, bool *truncated,
-                                bool assume_unsorted = false);
-
-extern int abort_multipart_upload(const DoutPrefixProvider *dpp, rgw::sal::RGWRadosStore *store, CephContext *cct, RGWObjectCtx *obj_ctx,
-                                RGWBucketInfo& bucket_info, RGWMPObj& mp_obj);
-
-extern int list_bucket_multiparts(const DoutPrefixProvider* dpp,
-				  rgw::sal::RGWRadosStore* store,
-				  RGWBucketInfo& bucket_info,
-				  const std::string& prefix,
-				  std::string& marker, // in/out
-				  const std::string& delim,
-				  const int& max_uploads,
-				  std::vector<rgw_bucket_dir_entry>* objs,
-				  std::map<std::string, bool>* common_prefixes,
-				  bool* is_truncated);
-
-extern int abort_bucket_multiparts(const DoutPrefixProvider* dpp,
-				   rgw::sal::RGWRadosStore* store,
-				   CephContext* cct,
-				   RGWBucketInfo& bucket_info);
 #endif

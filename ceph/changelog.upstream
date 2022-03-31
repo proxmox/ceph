@@ -1,56 +1,8 @@
-ceph (16.2.7-1) stable; urgency=medium
+ceph (17.1.0-1) stable; urgency=medium
 
   * New upstream release
 
- -- Ceph Release Team <ceph-maintainers@ceph.com>  Tue, 07 Dec 2021 16:15:46 +0000
-
-ceph (16.2.6-1) stable; urgency=medium
-
-  * New upstream release
-
- -- Ceph Release Team <ceph-maintainers@ceph.com>  Thu, 16 Sep 2021 14:27:16 +0000
-
-ceph (16.2.5-1) stable; urgency=medium
-
-  * New upstream release
-
- -- Ceph Release Team <ceph-maintainers@ceph.com>  Thu, 08 Jul 2021 14:03:54 +0000
-
-ceph (16.2.4-1) stable; urgency=medium
-
-  * New upstream release
-
- -- Ceph Release Team <ceph-maintainers@ceph.com>  Thu, 13 May 2021 17:20:24 +0000
-
-ceph (16.2.3-1) stable; urgency=medium
-
-  * New upstream release
-
- -- Ceph Release Team <ceph-maintainers@ceph.com>  Thu, 06 May 2021 15:46:57 +0000
-
-ceph (16.2.2-1) stable; urgency=medium
-
-  * New upstream release
-
- -- Ceph Release Team <ceph-maintainers@ceph.com>  Tue, 04 May 2021 18:38:20 +0000
-
-ceph (16.2.1-1) stable; urgency=medium
-
-  * New upstream release
-
- -- Ceph Release Team <ceph-maintainers@ceph.com>  Mon, 19 Apr 2021 13:50:04 +0000
-
-ceph (16.2.0-1) stable; urgency=medium
-
-  * New upstream release
-
- -- Ceph Release Team <ceph-maintainers@ceph.com>  Tue, 30 Mar 2021 21:13:26 +0000
-
-ceph (16.1.0-1) stable; urgency=medium
-
-  * New upstream release
-
- -- Ceph Release Team <ceph-maintainers@ceph.com>  Fri, 19 Mar 2021 16:54:19 +0000
+ -- Ceph Release Team <ceph-maintainers@ceph.com>  Thu, 24 Feb 2022 23:06:32 +0000
 
 ceph (15.2.0-1) stable; urgency=medium
 

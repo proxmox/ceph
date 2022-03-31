@@ -8,7 +8,6 @@ import datetime
 import re
 import errno
 import random
-import traceback
 
 from io import BytesIO, StringIO
 from errno import EBUSY
@@ -479,6 +478,17 @@ class MDSCluster(CephCluster):
         for fs in self.status().get_filesystems():
             Filesystem(ctx=self._ctx, fscid=fs['id']).destroy()
 
+    @property
+    def beacon_timeout(self):
+        """
+        Generate an acceptable timeout for the mons to drive some MDSMap change
+        because of missed beacons from some MDS. This involves looking up the
+        grace period in use by the mons and adding an acceptable buffer.
+        """
+
+        grace = float(self.get_config("mds_beacon_grace", service_type="mon"))
+        return grace*2+15
+
 
 class Filesystem(MDSCluster):
     """
@@ -550,41 +560,10 @@ class Filesystem(MDSCluster):
             raise RuntimeError("cannot specify fscid when configuring overlay")
         self.metadata_overlay = overlay
 
-    def deactivate(self, rank):
-        if rank < 0:
-            raise RuntimeError("invalid rank")
-        elif rank == 0:
-            raise RuntimeError("cannot deactivate rank 0")
-        self.mon_manager.raw_cluster_cmd("mds", "deactivate", "%d:%d" % (self.id, rank))
-
     def reach_max_mds(self):
-        # Try to reach rank count == max_mds, up or down (UPGRADE SENSITIVE!)
-        status = self.getinfo()
+        status = self.wait_for_daemons()
         mds_map = self.get_mds_map(status=status)
-        max_mds = mds_map['max_mds']
-
-        count = len(list(self.get_ranks(status=status)))
-        if count > max_mds:
-            try:
-                # deactivate mds in decending order
-                status = self.wait_for_daemons(status=status, skip_max_mds_check=True)
-                while count > max_mds:
-                    targets = sorted(self.get_ranks(status=status), key=lambda r: r['rank'], reverse=True)
-                    target = targets[0]
-                    log.debug("deactivating rank %d" % target['rank'])
-                    self.deactivate(target['rank'])
-                    status = self.wait_for_daemons(skip_max_mds_check=True)
-                    count = len(list(self.get_ranks(status=status)))
-            except:
-                # In Mimic, deactivation is done automatically:
-                log.info("Error:\n{}".format(traceback.format_exc()))
-                status = self.wait_for_daemons()
-        else:
-            status = self.wait_for_daemons()
-
-        mds_map = self.get_mds_map(status=status)
-        assert(mds_map['max_mds'] == max_mds)
-        assert(mds_map['in'] == list(range(0, max_mds)))
+        assert(mds_map['in'] == list(range(0, mds_map['max_mds'])))
 
     def reset(self):
         self.mon_manager.raw_cluster_cmd("fs", "reset", str(self.name), '--yes-i-really-mean-it')
@@ -668,7 +647,7 @@ class Filesystem(MDSCluster):
         log.debug("Creating filesystem '{0}'".format(self.name))
 
         self.mon_manager.raw_cluster_cmd('osd', 'pool', 'create',
-                                         self.metadata_pool_name, str(self.pg_num),
+                                         self.metadata_pool_name,
                                          '--pg_num_min', str(self.pg_num_min))
 
         self.mon_manager.raw_cluster_cmd('osd', 'pool', 'create',
@@ -741,7 +720,7 @@ class Filesystem(MDSCluster):
         # avoid circular dep by importing here:
         from tasks.cephfs.fuse_mount import FuseMount
         d = misc.get_testdir(self._ctx)
-        m = FuseMount(self._ctx, {}, d, "admin", self.client_remote, cephfs_name=self.name)
+        m = FuseMount(self._ctx, d, "admin", self.client_remote, cephfs_name=self.name)
         m.mount_wait()
         m.run_shell_payload(cmd)
         m.umount_wait(require_clean=True)
@@ -1184,7 +1163,12 @@ class Filesystem(MDSCluster):
         return self.json_asok(command, 'mds', info['name'], timeout=timeout)
 
     def rank_tell(self, command, rank=0, status=None):
-        return json.loads(self.mon_manager.raw_cluster_cmd("tell", f"mds.{self.id}:{rank}", *command))
+        try:
+            out = self.mon_manager.raw_cluster_cmd("tell", f"mds.{self.id}:{rank}", *command)
+            return json.loads(out)
+        except json.decoder.JSONDecodeError:
+            log.error("could not decode: {}".format(out))
+            raise
 
     def ranks_tell(self, command, status=None):
         if status is None:
@@ -1305,6 +1289,9 @@ class Filesystem(MDSCluster):
         obj_name = "{0:x}.00000000".format(ino_no)
         args = ["setxattr", obj_name, xattr_name, data]
         self.rados(args, pool=pool)
+
+    def read_symlink(self, ino_no, pool=None):
+        return self._read_data_xattr(ino_no, "symlink", "string_wrapper", pool)
 
     def read_backtrace(self, ino_no, pool=None):
         """

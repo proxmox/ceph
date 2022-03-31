@@ -21,6 +21,7 @@
 
 #include <seastar/http/routes.hh>
 #include <seastar/http/reply.hh>
+#include <seastar/http/request.hh>
 #include <seastar/http/exception.hh>
 #include <seastar/http/json_path.hh>
 
@@ -127,7 +128,7 @@ handler_base* routes::get_handler(operation_type type, const sstring& url,
         }
         params.clear();
     }
-    return nullptr;
+    return _default_handler;
 }
 
 routes& routes::add(operation_type type, const url& url,
@@ -138,6 +139,11 @@ routes& routes::add(operation_type type, const url& url,
         rule->add_param(url._param, true);
     }
     return add(rule, type);
+}
+
+routes& routes::add_default_handler(handler_base* handler) {
+    _default_handler = handler;
+    return *this;
 }
 
 template <typename Map, typename Key>

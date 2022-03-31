@@ -6,7 +6,7 @@
 #include "rgw_op.h"
 #include "rgw_user.h"
 #include "rgw_rest_user.h"
-#include "rgw_sal_rados.h"
+#include "rgw_sal.h"
 
 #include "include/str_list.h"
 #include "include/ceph_assert.h"
@@ -16,6 +16,8 @@
 #include "rgw_zone.h"
 
 #define dout_subsys ceph_subsys_rgw
+
+using namespace std;
 
 class RGWOp_User_List : public RGWRESTOp {
 
@@ -33,7 +35,7 @@ public:
 
 void RGWOp_User_List::execute(optional_yield y)
 {
-  RGWUserAdminOpState op_state;
+  RGWUserAdminOpState op_state(store);
 
   uint32_t max_entries;
   std::string marker;
@@ -61,7 +63,7 @@ public:
 
 void RGWOp_User_Info::execute(optional_yield y)
 {
-  RGWUserAdminOpState op_state;
+  RGWUserAdminOpState op_state(store);
 
   std::string uid_str, access_key_str;
   bool fetch_stats;
@@ -129,7 +131,7 @@ void RGWOp_User_Create::execute(optional_yield y)
   const int32_t default_max_buckets =
     s->cct->_conf.get_val<int64_t>("rgw_user_max_buckets");
 
-  RGWUserAdminOpState op_state;
+  RGWUserAdminOpState op_state(store);
 
   RESTArgs::get_string(s, "uid", uid_str, &uid_str);
   rgw_user uid(uid_str);
@@ -210,7 +212,7 @@ void RGWOp_User_Create::execute(optional_yield y)
   if (!default_placement_str.empty()) {
     rgw_placement_rule target_rule;
     target_rule.from_str(default_placement_str);
-    if (!store->svc()->zone->get_zone_params().valid_placement(target_rule)) {
+    if (!store->get_zone()->get_params().valid_placement(target_rule)) {
       ldpp_dout(this, 0) << "NOTICE: invalid dest placement: " << target_rule.to_str() << dendl;
       op_ret = -EINVAL;
       return;
@@ -255,7 +257,6 @@ void RGWOp_User_Modify::execute(optional_yield y)
   std::string access_key;
   std::string secret_key;
   std::string key_type_str;
-  std::string caps;
   std::string op_mask_str;
   std::string default_placement_str;
   std::string placement_tags_str;
@@ -267,7 +268,7 @@ void RGWOp_User_Modify::execute(optional_yield y)
   bool quota_set;
   int32_t max_buckets;
 
-  RGWUserAdminOpState op_state;
+  RGWUserAdminOpState op_state(store);
 
   RESTArgs::get_string(s, "uid", uid_str, &uid_str);
   rgw_user uid(uid_str);
@@ -276,7 +277,6 @@ void RGWOp_User_Modify::execute(optional_yield y)
   RESTArgs::get_string(s, "email", email, &email, &email_set);
   RESTArgs::get_string(s, "access-key", access_key, &access_key);
   RESTArgs::get_string(s, "secret-key", secret_key, &secret_key);
-  RESTArgs::get_string(s, "user-caps", caps, &caps);
   RESTArgs::get_bool(s, "generate-key", false, &gen_key);
   RESTArgs::get_bool(s, "suspended", false, &suspended);
   RESTArgs::get_int32(s, "max-buckets", RGW_DEFAULT_MAX_BUCKETS, &max_buckets, &quota_set);
@@ -299,7 +299,6 @@ void RGWOp_User_Modify::execute(optional_yield y)
   if (email_set)
     op_state.set_user_email(email);
 
-  op_state.set_caps(caps);
   op_state.set_access_key(access_key);
   op_state.set_secret_key(secret_key);
 
@@ -352,7 +351,7 @@ void RGWOp_User_Modify::execute(optional_yield y)
   if (!default_placement_str.empty()) {
     rgw_placement_rule target_rule;
     target_rule.from_str(default_placement_str);
-    if (!store->svc()->zone->get_zone_params().valid_placement(target_rule)) {
+    if (!store->get_zone()->get_params().valid_placement(target_rule)) {
       ldpp_dout(this, 0) << "NOTICE: invalid dest placement: " << target_rule.to_str() << dendl;
       op_ret = -EINVAL;
       return;
@@ -394,7 +393,7 @@ void RGWOp_User_Remove::execute(optional_yield y)
   std::string uid_str;
   bool purge_data;
 
-  RGWUserAdminOpState op_state;
+  RGWUserAdminOpState op_state(store);
 
   RESTArgs::get_string(s, "uid", uid_str, &uid_str);
   rgw_user uid(uid_str);
@@ -446,7 +445,7 @@ void RGWOp_Subuser_Create::execute(optional_yield y)
   uint32_t perm_mask = 0;
   int32_t key_type = KEY_TYPE_SWIFT;
 
-  RGWUserAdminOpState op_state;
+  RGWUserAdminOpState op_state(store);
 
   RESTArgs::get_string(s, "uid", uid_str, &uid_str);
   rgw_user uid(uid_str);
@@ -456,7 +455,6 @@ void RGWOp_Subuser_Create::execute(optional_yield y)
   RESTArgs::get_string(s, "secret-key", secret_key, &secret_key);
   RESTArgs::get_string(s, "access", perm_str, &perm_str);
   RESTArgs::get_string(s, "key-type", key_type_str, &key_type_str);
-  //RESTArgs::get_bool(s, "generate-subuser", false, &gen_subuser);
   RESTArgs::get_bool(s, "generate-secret", false, &gen_secret);
   RESTArgs::get_bool(s, "gen-access-key", false, &gen_access);
   
@@ -514,7 +512,7 @@ void RGWOp_Subuser_Modify::execute(optional_yield y)
   std::string key_type_str;
   std::string perm_str;
 
-  RGWUserAdminOpState op_state;
+  RGWUserAdminOpState op_state(store);
 
   uint32_t perm_mask;
   int32_t key_type = KEY_TYPE_SWIFT;
@@ -579,7 +577,7 @@ void RGWOp_Subuser_Remove::execute(optional_yield y)
   std::string subuser;
   bool purge_keys;
 
-  RGWUserAdminOpState op_state;
+  RGWUserAdminOpState op_state(store);
 
   RESTArgs::get_string(s, "uid", uid_str, &uid_str);
   rgw_user uid(uid_str);
@@ -626,7 +624,7 @@ void RGWOp_Key_Create::execute(optional_yield y)
 
   bool gen_key;
 
-  RGWUserAdminOpState op_state;
+  RGWUserAdminOpState op_state(store);
 
   RESTArgs::get_string(s, "uid", uid_str, &uid_str);
   rgw_user uid(uid_str);
@@ -679,7 +677,7 @@ void RGWOp_Key_Remove::execute(optional_yield y)
   std::string access_key;
   std::string key_type_str;
 
-  RGWUserAdminOpState op_state;
+  RGWUserAdminOpState op_state(store);
 
   RESTArgs::get_string(s, "uid", uid_str, &uid_str);
   rgw_user uid(uid_str);
@@ -724,7 +722,7 @@ void RGWOp_Caps_Add::execute(optional_yield y)
   std::string uid_str;
   std::string caps;
 
-  RGWUserAdminOpState op_state;
+  RGWUserAdminOpState op_state(store);
 
   RESTArgs::get_string(s, "uid", uid_str, &uid_str);
   rgw_user uid(uid_str);
@@ -762,7 +760,7 @@ void RGWOp_Caps_Remove::execute(optional_yield y)
   std::string uid_str;
   std::string caps;
 
-  RGWUserAdminOpState op_state;
+  RGWUserAdminOpState op_state(store);
 
   RESTArgs::get_string(s, "uid", uid_str, &uid_str);
   rgw_user uid(uid_str);
@@ -817,7 +815,7 @@ public:
 
 void RGWOp_Quota_Info::execute(optional_yield y)
 {
-  RGWUserAdminOpState op_state;
+  RGWUserAdminOpState op_state(store);
 
   std::string uid_str;
   std::string quota_type;
@@ -936,7 +934,7 @@ public:
 
 void RGWOp_Quota_Set::execute(optional_yield y)
 {
-  RGWUserAdminOpState op_state;
+  RGWUserAdminOpState op_state(store);
 
   std::string uid_str;
   std::string quota_type;
@@ -994,7 +992,7 @@ void RGWOp_Quota_Set::execute(optional_yield y)
   if (set_all) {
     UserQuotas quotas;
 
-    if ((op_ret = rgw_rest_get_json_input(store->ctx(), s, quotas, QUOTA_INPUT_MAX_LEN, NULL)) < 0) {
+    if ((op_ret = get_json_input(store->ctx(), s, quotas, QUOTA_INPUT_MAX_LEN, NULL)) < 0) {
       ldpp_dout(this, 20) << "failed to retrieve input" << dendl;
       return;
     }
@@ -1006,7 +1004,7 @@ void RGWOp_Quota_Set::execute(optional_yield y)
 
     if (!use_http_params) {
       bool empty;
-      op_ret = rgw_rest_get_json_input(store->ctx(), s, quota, QUOTA_INPUT_MAX_LEN, &empty);
+      op_ret = get_json_input(store->ctx(), s, quota, QUOTA_INPUT_MAX_LEN, &empty);
       if (op_ret < 0) {
         ldpp_dout(this, 20) << "failed to retrieve input" << dendl;
         if (!empty)

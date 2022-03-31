@@ -14,7 +14,7 @@ Synopsis
 Description
 ===========
 
-:program:`ceph-diff-sorted` is a simplifed *diff* utility optimized
+:program:`ceph-diff-sorted` is a simplified *diff* utility optimized
 for comparing two files with lines that are lexically sorted.
 
 The output is simplified in comparison to that of the standard `diff`
@@ -63,7 +63,7 @@ Availability
 
 :program:`ceph-diff-sorted` is part of Ceph, a massively scalable,
 open-source, distributed storage system.  Please refer to the Ceph
-documentation at http://ceph.com/docs for more information.
+documentation at https://docs.ceph.com for more information.
 
 See also
 ========

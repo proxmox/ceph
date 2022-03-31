@@ -28,7 +28,7 @@ template< typename T >
 void verify_lock_free(const char* type_name, int lock_free_macro_val, int lock_free_expect)
 {
     BOOST_TEST(lock_free_macro_val >= 0 && lock_free_macro_val <= 2);
-    BOOST_TEST(lock_free_macro_val == lock_free_expect);
+    BOOST_TEST_EQ(lock_free_macro_val, lock_free_expect);
 
     boost::atomic<T> value;
 
@@ -58,7 +58,8 @@ void verify_lock_free(const char* type_name, int lock_free_macro_val, int lock_f
 #define EXPECT_SHORT_LOCK_FREE 2
 #define EXPECT_INT_LOCK_FREE 2
 #define EXPECT_LONG_LOCK_FREE 2
-#if defined(BOOST_ATOMIC_DETAIL_X86_HAS_CMPXCHG8B)
+#if defined(BOOST_ATOMIC_DETAIL_X86_HAS_CMPXCHG8B) || defined(__GCC_HAVE_SYNC_COMPARE_AND_SWAP_8) ||\
+    defined(__i586__) || defined(__i686__) || defined(__SSE__)
 #define EXPECT_LLONG_LOCK_FREE 2
 #else
 #define EXPECT_LLONG_LOCK_FREE 0
@@ -74,7 +75,7 @@ void verify_lock_free(const char* type_name, int lock_free_macro_val, int lock_f
 #define EXPECT_INT_LOCK_FREE 2
 #define EXPECT_LONG_LOCK_FREE 2
 #define EXPECT_LLONG_LOCK_FREE 2
-#if defined(BOOST_ATOMIC_DETAIL_X86_HAS_CMPXCHG16B)
+#if defined(BOOST_ATOMIC_DETAIL_X86_HAS_CMPXCHG16B) || defined(__GCC_HAVE_SYNC_COMPARE_AND_SWAP_16)
 #define EXPECT_INT128_LOCK_FREE 2
 #else
 #define EXPECT_INT128_LOCK_FREE 0
@@ -114,14 +115,27 @@ void verify_lock_free(const char* type_name, int lock_free_macro_val, int lock_f
 #define EXPECT_POINTER_LOCK_FREE 2
 #define EXPECT_BOOL_LOCK_FREE 2
 
-#elif defined(__GNUC__) &&\
+#elif defined(__GNUC__) && defined(__aarch64__)
+
+#define EXPECT_CHAR_LOCK_FREE 2
+#define EXPECT_SHORT_LOCK_FREE 2
+#define EXPECT_INT_LOCK_FREE 2
+#define EXPECT_LONG_LOCK_FREE 2
+#define EXPECT_LLONG_LOCK_FREE 2
+#define EXPECT_INT128_LOCK_FREE 2
+#define EXPECT_POINTER_LOCK_FREE 2
+#define EXPECT_BOOL_LOCK_FREE 2
+
+#elif defined(__GNUC__) && defined(__arm__) &&\
     (\
+        (defined(__ARM_ARCH) && __ARM_ARCH >= 6) ||\
         defined(__ARM_ARCH_6__)  || defined(__ARM_ARCH_6J__) ||\
         defined(__ARM_ARCH_6K__) || defined(__ARM_ARCH_6Z__) ||\
         defined(__ARM_ARCH_6ZK__) ||\
         defined(__ARM_ARCH_7__) || defined(__ARM_ARCH_7A__) ||\
         defined(__ARM_ARCH_7R__) || defined(__ARM_ARCH_7M__) ||\
-        defined(__ARM_ARCH_7EM__) || defined(__ARM_ARCH_7S__)\
+        defined(__ARM_ARCH_7EM__) || defined(__ARM_ARCH_7S__) ||\
+        defined(__ARM_ARCH_8A__)\
     )
 
 #define EXPECT_CHAR_LOCK_FREE 2

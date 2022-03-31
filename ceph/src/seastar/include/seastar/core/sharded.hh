@@ -28,6 +28,7 @@
 #include <seastar/util/tuple_utils.hh>
 #include <seastar/core/do_with.hh>
 #include <seastar/util/concepts.hh>
+#include <seastar/util/log.hh>
 #include <boost/iterator/counting_iterator.hpp>
 #include <functional>
 #if __has_include(<concepts>)
@@ -108,9 +109,13 @@ public:
 
 /// Exception thrown when a \ref sharded object does not exist
 class no_sharded_instance_exception : public std::exception {
+    sstring _msg;
 public:
+    no_sharded_instance_exception() : _msg("sharded instance does not exist") {}
+    explicit no_sharded_instance_exception(sstring type_info)
+        : _msg("sharded instance does not exist: " + type_info) {}
     virtual const char* what() const noexcept override {
-        return "sharded instance does not exist";
+        return _msg.c_str();
     }
 };
 
@@ -301,7 +306,7 @@ public:
                         if (inst) {
                             return ((*inst).*func)(std::forward<Args>(args)...);
                         } else {
-                            throw no_sharded_instance_exception();
+                            throw no_sharded_instance_exception(pretty_type_name(typeid(Service)));
                         }
                     }, std::move(args));
                 });
@@ -320,6 +325,21 @@ public:
                             boost::make_counting_iterator<unsigned>(_instances.size()),
             [this, &func] (unsigned c) mutable {
                 return smp::submit_to(c, [this, func] () mutable {
+                    auto inst = get_local_service();
+                    return func(*inst);
+                });
+            }, std::forward<Reducer>(r));
+    }
+
+    /// The const version of \ref map_reduce(Reducer&& r, Func&& func)
+    template <typename Reducer, typename Func>
+    inline
+    auto map_reduce(Reducer&& r, Func&& func) const -> typename reducer_traits<Reducer>::future_type
+    {
+        return ::seastar::map_reduce(boost::make_counting_iterator<unsigned>(0),
+                            boost::make_counting_iterator<unsigned>(_instances.size()),
+            [this, &func] (unsigned c) {
+                return smp::submit_to(c, [this, func] () {
                     auto inst = get_local_service();
                     return func(*inst);
                 });
@@ -358,6 +378,23 @@ public:
                             std::move(reduce));
     }
 
+    /// The const version of \ref map_reduce0(Mapper map, Initial initial, Reduce reduce)
+    template <typename Mapper, typename Initial, typename Reduce>
+    inline
+    future<Initial>
+    map_reduce0(Mapper map, Initial initial, Reduce reduce) const {
+        auto wrapped_map = [this, map] (unsigned c) {
+            return smp::submit_to(c, [this, map] {
+                auto inst = get_local_service();
+                return map(*inst);
+            });
+        };
+        return ::seastar::map_reduce(smp::all_cpus().begin(), smp::all_cpus().end(),
+                            std::move(wrapped_map),
+                            std::move(initial),
+                            std::move(reduce));
+    }
+
     /// Applies a map function to all shards, and return a vector of the result.
     ///
     /// \param mapper callable with the signature `Value (Service&)` or
@@ -367,7 +404,7 @@ public:
     ///
     /// \tparam  Mapper unary function taking `Service&` and producing some result.
     /// \return  Result vector of invoking `map` with each instance in parallel
-    template <typename Mapper, typename Future = futurize_t<std::result_of_t<Mapper(Service&)>>, typename return_type = decltype(internal::untuple(std::declval<typename Future::tuple_type>()))>
+    template <typename Mapper, typename Future = futurize_t<std::invoke_result_t<Mapper,Service&>>, typename return_type = decltype(internal::untuple(std::declval<typename Future::tuple_type>()))>
     inline future<std::vector<return_type>> map(Mapper mapper) {
         return do_with(std::vector<return_type>(),
                 [&mapper, this] (std::vector<return_type>& vec) mutable {
@@ -455,7 +492,15 @@ private:
     shared_ptr<Service> get_local_service() {
         auto inst = _instances[this_shard_id()].service;
         if (!inst) {
-            throw no_sharded_instance_exception();
+            throw no_sharded_instance_exception(pretty_type_name(typeid(Service)));
+        }
+        return inst;
+    }
+
+    shared_ptr<const Service> get_local_service() const {
+        auto inst = _instances[this_shard_id()].service;
+        if (!inst) {
+            throw no_sharded_instance_exception(pretty_type_name(typeid(Service)));
         }
         return inst;
     }
@@ -795,23 +840,33 @@ inline bool sharded<Service>::local_is_initialized() const noexcept {
 /// \c foreign_ptr<> is a move-only object; it cannot be copied.
 ///
 template <typename PtrType>
+SEASTAR_CONCEPT( requires (!std::is_pointer<PtrType>::value) )
 class foreign_ptr {
 private:
     PtrType _value;
     unsigned _cpu;
 private:
     void destroy(PtrType p, unsigned cpu) noexcept {
-        if (p && this_shard_id() != cpu) {
-            // `destroy()` is called from the destructor and other
-            // synchronous methods (like `reset()`), that have no way to
-            // wait for this future.
-            (void)smp::submit_to(cpu, [v = std::move(p)] () mutable {
-                // Destroy the contained pointer. We do this explicitly
-                // in the current shard, because the lambda is destroyed
-                // in the shard that submitted the task.
-                v = {};
-            });
+        // `destroy()` is called from the destructor and other
+        // synchronous methods (like `reset()`), that have no way to
+        // wait for this future.
+        (void)destroy_on(std::move(p), cpu);
+    }
+
+    static future<> destroy_on(PtrType p, unsigned cpu) noexcept {
+        if (p) {
+            if (cpu != this_shard_id()) {
+                return smp::submit_to(cpu, [v = std::move(p)] () mutable {
+                    // Destroy the contained pointer. We do this explicitly
+                    // in the current shard, because the lambda is destroyed
+                    // in the shard that submitted the task.
+                    v = {};
+                });
+            } else {
+                p = {};
+            }
         }
+        return make_ready_future<>();
     }
 public:
     using element_type = typename std::pointer_traits<PtrType>::element_type;
@@ -890,6 +945,13 @@ public:
     /// The previous managed pointer is destroyed on its owner shard.
     void reset(std::nullptr_t = nullptr) noexcept(std::is_nothrow_default_constructible_v<PtrType>) {
         reset(PtrType());
+    }
+
+    /// Destroy the managed pointer.
+    ///
+    /// \returns a future that is resolved when managed pointer is destroyed on its owner shard.
+    future<> destroy() noexcept {
+        return destroy_on(std::move(_value), _cpu);
     }
 };
 

@@ -17,6 +17,7 @@ if(WITH_MGR)
     DaemonState.cc
     Gil.cc
     Mgr.cc
+    mgr_perf_counters.cc
     MgrStandby.cc
     MetricCollector.cc
     OSDPerfMetricTypes.cc
@@ -33,6 +34,11 @@ if(WITH_MGR)
     mgr_commands.cc
     $<TARGET_OBJECTS:mgr_cap_obj>)
   add_executable(ceph-mgr ${mgr_srcs})
+  if(WITH_LIBCEPHSQLITE)
+    target_link_libraries(ceph-mgr cephsqlite SQLite3::SQLite3)
+  endif()
+  target_include_directories(ceph-mgr PRIVATE
+    $<TARGET_PROPERTY:RocksDB::RocksDB,INTERFACE_INCLUDE_DIRECTORIES>)
   target_link_libraries(ceph-mgr
     osdc client heap_profiler
     global-static ceph-common

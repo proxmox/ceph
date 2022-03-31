@@ -6,14 +6,9 @@ import {
 describe('Create cluster add host page', () => {
   const createCluster = new CreateClusterWizardHelper();
   const createClusterHostPage = new CreateClusterHostPageHelper();
-  const hostnames = [
-    'ceph-node-00.cephlab.com',
-    'ceph-node-01.cephlab.com',
-    'ceph-node-02.cephlab.com',
-    'ceph-node-[01-02].cephlab.com'
-  ];
+  const hostnames = ['ceph-node-00', 'ceph-node-01', 'ceph-node-02', 'ceph-node-[01-03]'];
   const addHost = (hostname: string, exist?: boolean, pattern?: boolean, labels: string[] = []) => {
-    cy.get('.btn.btn-accent').first().click({ force: true });
+    cy.get('button[data-testid=table-action-button]').click();
     createClusterHostPage.add(hostname, exist, false, labels);
     if (!pattern) {
       createClusterHostPage.checkExist(hostname, true);
@@ -38,13 +33,13 @@ describe('Create cluster add host page', () => {
 
     addHost(hostnames[1], false);
     addHost(hostnames[2], false);
-    createClusterHostPage.delete(hostnames[1]);
-    createClusterHostPage.delete(hostnames[2]);
+    createClusterHostPage.remove(hostnames[1]);
+    createClusterHostPage.remove(hostnames[2]);
     addHost(hostnames[3], false, true);
   });
 
-  it('should delete a host', () => {
-    createClusterHostPage.delete(hostnames[1]);
+  it('should remove a host', () => {
+    createClusterHostPage.remove(hostnames[1]);
   });
 
   it('should add a host with some predefined labels and verify it', () => {

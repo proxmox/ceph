@@ -32,6 +32,8 @@
 #include "rgw_sal.h"
 #include "rgw_sal_rados.h"
 
+using namespace std;
+
 class RGWSI_RADOS;
 class RGWSI_Zone;
 class RGWBucketInfo;
@@ -40,9 +42,9 @@ class cls_timeindex_entry;
 class RGWObjExpStore {
   CephContext *cct;
   RGWSI_RADOS *rados_svc;
-  RGWSI_Zone *zone_svc;
+  rgw::sal::Zone* zone_svc;
 public:
-  RGWObjExpStore(CephContext *_cct, RGWSI_RADOS *_rados_svc, RGWSI_Zone *_zone_svc) : cct(_cct),
+  RGWObjExpStore(CephContext *_cct, RGWSI_RADOS *_rados_svc, rgw::sal::Zone* _zone_svc) : cct(_cct),
                                                                                       rados_svc(_rados_svc),
                                                                                       zone_svc(_zone_svc) {}
 
@@ -73,13 +75,8 @@ public:
 
 class RGWObjectExpirer {
 protected:
-  rgw::sal::RGWRadosStore *store;
+  rgw::sal::Store* store;
   RGWObjExpStore exp_store;
-
-  int init_bucket_info(const std::string& tenant_name,
-                       const std::string& bucket_name,
-                       const std::string& bucket_id,
-                       RGWBucketInfo& bucket_info);
 
   class OEWorker : public Thread, public DoutPrefixProvider {
     CephContext *cct;
@@ -106,9 +103,9 @@ protected:
   std::atomic<bool> down_flag = { false };
 
 public:
-  explicit RGWObjectExpirer(rgw::sal::RGWRadosStore *_store)
+  explicit RGWObjectExpirer(rgw::sal::Store* _store)
     : store(_store),
-      exp_store(_store->getRados()->ctx(), _store->svc()->rados, _store->svc()->zone),
+      exp_store(_store->ctx(), static_cast<rgw::sal::RadosStore*>(store)->svc()->rados, store->get_zone()),
       worker(NULL) {
   }
   ~RGWObjectExpirer() {

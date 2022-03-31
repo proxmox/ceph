@@ -1,7 +1,6 @@
 """
 A RESTful API for Ceph
 """
-from __future__ import absolute_import
 
 import os
 import json
@@ -24,7 +23,7 @@ from pecan.rest import RestController
 from werkzeug.serving import make_server, make_ssl_devcert
 
 from .hooks import ErrorHook
-from mgr_module import MgrModule, CommandResult
+from mgr_module import MgrModule, CommandResult, NotifyType
 from mgr_util import build_url
 
 
@@ -228,6 +227,8 @@ class Module(MgrModule):
         },
     ]
 
+    NOTIFY_TYPES = [NotifyType.command]
+
     def __init__(self, *args, **kwargs):
         super(Module, self).__init__(*args, **kwargs)
         context.instance = self
@@ -361,15 +362,15 @@ class Module(MgrModule):
             self.log.error(str(traceback.format_exc()))
 
 
-    def notify(self, notify_type, tag):
+    def notify(self, notify_type: NotifyType, tag: str):
         try:
             self._notify(notify_type, tag)
         except:
             self.log.error(str(traceback.format_exc()))
 
 
-    def _notify(self, notify_type, tag):
-        if notify_type != "command":
+    def _notify(self, notify_type: NotifyType, tag):
+        if notify_type != NotifyType.command:
             self.log.debug("Unhandled notification type '%s'", notify_type)
             return
         # we can safely skip all the sequential commands
@@ -522,8 +523,7 @@ class Module(MgrModule):
         for pool_id, pool in pools.items():
             pool_osds = None
             for rule in [r for r in crush_rules if r['rule_id'] == pool['crush_rule']]:
-                if rule['min_size'] <= pool['size'] <= rule['max_size']:
-                    pool_osds = common.crush_rule_osds(crush['buckets'], rule)
+                pool_osds = common.crush_rule_osds(crush['buckets'], rule)
 
             osds_by_pool[pool_id] = pool_osds
 

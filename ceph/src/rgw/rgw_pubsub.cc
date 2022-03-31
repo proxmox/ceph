@@ -15,6 +15,7 @@
 
 #define dout_subsys ceph_subsys_rgw
 
+using namespace std;
 void set_event_id(std::string& id, const std::string& hash, const utime_t& ts) {
   char buf[64];
   const auto len = snprintf(buf, sizeof(buf), "%010ld.%06ld.%s", (long)ts.sec(), (long)ts.usec(), hash.c_str());
@@ -172,6 +173,19 @@ bool match(const rgw_s3_key_value_filter& filter, const KeyValueMap& kv) {
   return std::includes(kv.begin(), kv.end(), filter.kv.begin(), filter.kv.end());
 }
 
+bool match(const rgw_s3_key_value_filter& filter, const KeyMultiValueMap& kv) {
+  // all filter pairs must exist with the same value in the object's metadata/tags
+  // object metadata/tags may include items not in the filter
+  for (auto& filter : filter.kv) {
+    auto result = kv.equal_range(filter.first);
+    if (std::any_of(result.first, result.second, [&filter](const pair<string,string>& p) { return p.second == filter.second;}))
+      continue;
+    else
+      return false;
+  }
+  return true;
+}
+
 bool match(const rgw::notify::EventTypeList& events, rgw::notify::EventType event) {
   // if event list exists, and none of the events in the list matches the event type, filter the message
   if (!events.empty() && std::find(events.begin(), events.end(), event) == events.end()) {
@@ -223,9 +237,6 @@ void rgw_pubsub_s3_notification::dump_xml(Formatter *f) const {
 
 bool rgw_pubsub_s3_notifications::decode_xml(XMLObj *obj) {
   do_decode_xml_obj(list, "TopicConfiguration", obj);
-  if (list.empty()) {
-    throw RGWXMLDecoder::err("at least one 'TopicConfiguration' must exist");
-  }
   return true;
 }
 
@@ -424,7 +435,7 @@ void rgw_pubsub_sub_config::dump(Formatter *f) const
   encode_json("s3_id", s3_id, f);
 }
 
-RGWPubSub::RGWPubSub(rgw::sal::RGWRadosStore* _store, const std::string& _tenant) : 
+RGWPubSub::RGWPubSub(rgw::sal::RadosStore* _store, const std::string& _tenant) :
                             store(_store),
                             tenant(_tenant),
                             obj_ctx(store->svc()->sysobj->init_obj_ctx()) {
@@ -606,7 +617,7 @@ int RGWPubSub::Bucket::remove_notification(const DoutPrefixProvider *dpp, const 
     // no more topics - delete the notification object of the bucket
     ret = ps->remove(dpp, bucket_meta_obj, &objv_tracker, y);
     if (ret < 0 && ret != -ENOENT) {
-      ldout(ps->store->ctx(), 1) << "ERROR: failed to remove bucket topics: ret=" << ret << dendl;
+      ldpp_dout(dpp, 1) << "ERROR: failed to remove bucket topics: ret=" << ret << dendl;
       return ret;
     }
     return 0;
@@ -917,7 +928,7 @@ int RGWPubSub::SubWithEvents<EventType>::list_events(const DoutPrefixProvider *d
 template<typename EventType>
 int RGWPubSub::SubWithEvents<EventType>::remove_event(const DoutPrefixProvider *dpp, const string& event_id)
 {
-  rgw::sal::RGWRadosStore *store = ps->store;
+  rgw::sal::RadosStore* store = ps->store;
   rgw_pubsub_sub_config sub_conf;
   int ret = get_conf(&sub_conf);
   if (ret < 0) {

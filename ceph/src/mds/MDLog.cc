@@ -36,6 +36,8 @@
 #undef dout_prefix
 #define dout_prefix *_dout << "mds." << mds->get_nodeid() << ".log "
 
+using namespace std;
+
 // cons/des
 MDLog::~MDLog()
 {
@@ -626,7 +628,7 @@ void MDLog::trim(int m)
   unsigned max_expiring_segments = 0;
   if (pre_segments_size > 0){
     max_expiring_segments = max_segments/2;
-    assert(segments.size() >= pre_segments_size);
+    ceph_assert(segments.size() >= pre_segments_size);
     max_expiring_segments = std::max<unsigned>(max_expiring_segments,segments.size() - pre_segments_size);
   }
   
@@ -1055,8 +1057,6 @@ void MDLog::_recovery_thread(MDSContext *completion)
   front_journal->recover(&recover_wait);
   dout(4) << "Waiting for journal " << jp.front << " to recover..." << dendl;
   int recovery_result = recover_wait.wait();
-  dout(4) << "Journal " << jp.front << " recovered." << dendl;
-
   if (recovery_result == -CEPHFS_EBLOCKLISTED) {
     derr << "Blocklisted during journal recovery!  Respawning..." << dendl;
     mds->respawn();
@@ -1067,6 +1067,7 @@ void MDLog::_recovery_thread(MDSContext *completion)
     mds->damaged_unlocked();
     ceph_assert(recovery_result == 0); // Unreachable because damaged() calls respawn()
   }
+  dout(4) << "Journal " << jp.front << " recovered." << dendl;
 
   /* Check whether the front journal format is acceptable or needs re-write */
   if (front_journal->get_stream_format() > JOURNAL_FORMAT_MAX) {

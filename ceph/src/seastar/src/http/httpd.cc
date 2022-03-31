@@ -36,7 +36,9 @@
 #include <cctype>
 #include <vector>
 #include <seastar/http/httpd.hh>
+#include <seastar/http/internal/content_source.hh>
 #include <seastar/http/reply.hh>
+#include <seastar/util/short_streams.hh>
 #include <seastar/util/log.hh>
 
 using namespace std::chrono_literals;
@@ -165,6 +167,7 @@ bool connection::url_decode(const std::string_view& in, sstring& out) {
 void connection::on_new_connection() {
     ++_server._total_connections;
     ++_server._current_connections;
+    _fd.set_nodelay(true);
     _server._connections.push_back(*this);
 }
 
@@ -183,25 +186,28 @@ future<> connection::read() {
     });
 }
 
-// Check if the request has a body, and if so read it. This function modifies
-// the request object with the newly read body, and returns the object for
-// further processing.
-// FIXME: reading the entire request body into a string req->_content is a
-// bad idea, because it may be very big. Instead, we should present to the
-// handler a req->_content_stream, an input stream that reads from the request
-// body - via a specialized input streams which reads exactly up to
-// Content-Length or decodes chunked-encoding.
-// FIXME: We currently support the case that there is a "Content-Length:"
-// header - chunked encoding is not yet supported.
-static future<std::unique_ptr<httpd::request>>
-read_request_body(input_stream<char>& buf, std::unique_ptr<httpd::request> req) {
-    if (!req->content_length) {
-        return make_ready_future<std::unique_ptr<httpd::request>>(std::move(req));
+static input_stream<char> make_content_stream(httpd::request* req, input_stream<char>& buf) {
+    // Create an input stream based on the requests body encoding or lack thereof
+    if (request::case_insensitive_cmp()(req->get_header("Transfer-Encoding"), "chunked")) {
+        return input_stream<char>(data_source(std::make_unique<internal::chunked_source_impl>(buf, req->chunk_extensions, req->trailing_headers)));
+    } else {
+        return input_stream<char>(data_source(std::make_unique<internal::content_length_source_impl>(buf, req->content_length)));
     }
-    return buf.read_exactly(req->content_length).then([req = std::move(req)] (temporary_buffer<char> body) mutable {
-        req->content = seastar::to_sstring(std::move(body));
+}
+
+static future<std::unique_ptr<httpd::request>>
+set_request_content(std::unique_ptr<httpd::request> req, input_stream<char>* content_stream, bool streaming) {
+    req->content_stream = content_stream;
+
+    if (streaming) {
         return make_ready_future<std::unique_ptr<httpd::request>>(std::move(req));
-    });
+    } else {
+        // Read the entire content into the request content string
+        return util::read_entire_stream_contiguous(*content_stream).then([req = std::move(req)] (sstring content) mutable {
+            req->content = std::move(content);
+            return make_ready_future<std::unique_ptr<httpd::request>>(std::move(req));
+        });
+    }
 }
 
 void connection::generate_error_reply_and_close(std::unique_ptr<httpd::request> req, reply::status_type status, const sstring& msg) {
@@ -245,6 +251,13 @@ future<> connection::read_one() {
             return make_ready_future<>();
         }
 
+        sstring encoding = req->get_header("Transfer-Encoding");
+        if (encoding.size() && !request::case_insensitive_cmp()(encoding, "chunked")){
+            //TODO: add "identity", "gzip"("x-gzip"), "compress"("x-compress"), and "deflate" encodings and their combinations
+            generate_error_reply_and_close(std::move(req), reply::status_type::not_implemented, format("Encodings other than \"chunked\" are not implemented (received encoding: \"{}\")", encoding));
+            return make_ready_future<>();
+        }
+
         auto maybe_reply_continue = [this, req = std::move(req)] () mutable {
             if (req->_version == "1.1" && request::case_insensitive_cmp()(req->get_header("Expect"), "100-continue")){
                 return _replies.not_full().then([req = std::move(req), this] () mutable {
@@ -261,11 +274,29 @@ future<> connection::read_one() {
         };
 
         return maybe_reply_continue().then([this] (std::unique_ptr<httpd::request> req) {
-            return read_request_body(_read_buf, std::move(req)).then([this] (std::unique_ptr<httpd::request> req) {
-                return _replies.not_full().then([req = std::move(req), this] () mutable {
-                    return generate_reply(std::move(req));
-                }).then([this](bool done) {
-                    _done = done;
+            return do_with(make_content_stream(req.get(), _read_buf), sstring(req->_version), std::move(req), [this] (input_stream<char>& content_stream, sstring& version, std::unique_ptr<httpd::request>& req) {
+                return set_request_content(std::move(req), &content_stream, _server.get_content_streaming()).then([this, &content_stream] (std::unique_ptr<httpd::request> req) {
+                    return _replies.not_full().then([this, req = std::move(req)] () mutable {
+                        return generate_reply(std::move(req));
+                    }).then([this, &content_stream](bool done) {
+                        _done = done;
+                        // If the handler did not read the entire request
+                        // content, this connection cannot be reused so we
+                        // need to close it (via "_done = true"). But we can't
+                        // just check content_stream.eof(): It may only become
+                        // true after read(). Issue #907.
+                        return content_stream.read().then([this] (temporary_buffer<char> buf) {
+                            if (!buf.empty()) {
+                                _done = true;
+                            }
+                        });
+                    });
+                }).handle_exception_type([this, &version] (const base_exception& e) mutable {
+                    // If the request had a "Transfer-Encoding: chunked" header and content streaming wasn't enabled, we might have failed
+                    // before passing the request to handler - when we were parsing chunks
+                    auto err_req = std::make_unique<httpd::request>();
+                    err_req->_version = version;
+                    generate_error_reply_and_close(std::move(err_req), e.status(), e.str());
                 });
             });
         });
@@ -437,6 +468,14 @@ size_t http_server::get_content_length_limit() const {
 
 void http_server::set_content_length_limit(size_t limit) {
     _content_length_limit = limit;
+}
+
+bool http_server::get_content_streaming() const {
+    return _content_streaming;
+}
+
+void http_server::set_content_streaming(bool b) {
+    _content_streaming = b;
 }
 
 future<> http_server::listen(socket_address addr, listen_options lo) {

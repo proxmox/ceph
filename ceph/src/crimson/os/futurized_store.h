@@ -37,9 +37,6 @@ public:
     virtual std::string key() {
       return {};
     }
-    virtual seastar::future<std::string> tail_key() {
-      return seastar::make_ready_future<std::string>();
-    }
     virtual ceph::buffer::list value() {
       return {};
     }
@@ -54,7 +51,7 @@ public:
   };
   using OmapIteratorRef = boost::intrusive_ptr<OmapIterator>;
 
-  static std::unique_ptr<FuturizedStore> create(const std::string& type,
+  static seastar::future<std::unique_ptr<FuturizedStore>> create(const std::string& type,
                                                 const std::string& data,
                                                 const ConfigValues& values);
   FuturizedStore() = default;
@@ -68,10 +65,13 @@ public:
     return seastar::now();
   }
   virtual seastar::future<> stop() = 0;
-  virtual seastar::future<> mount() = 0;
+
+  using mount_ertr = crimson::errorator<crimson::stateful_ec>;
+  virtual mount_ertr::future<> mount() = 0;
   virtual seastar::future<> umount() = 0;
 
-  virtual seastar::future<> mkfs(uuid_d new_osd_fsid) = 0;
+  using mkfs_ertr = crimson::errorator<crimson::stateful_ec>;
+  virtual mkfs_ertr::future<> mkfs(uuid_d new_osd_fsid) = 0;
   virtual seastar::future<store_statfs_t> stat() const = 0;
 
   using CollectionRef = boost::intrusive_ptr<FuturizedCollection>;
@@ -92,14 +92,14 @@ public:
   using get_attr_errorator = crimson::errorator<
     crimson::ct_error::enoent,
     crimson::ct_error::enodata>;
-  virtual get_attr_errorator::future<ceph::bufferptr> get_attr(
+  virtual get_attr_errorator::future<ceph::bufferlist> get_attr(
     CollectionRef c,
     const ghobject_t& oid,
     std::string_view name) const = 0;
 
   using get_attrs_ertr = crimson::errorator<
     crimson::ct_error::enoent>;
-  using attrs_t = std::map<std::string, ceph::bufferptr, std::less<>>;
+  using attrs_t = std::map<std::string, ceph::bufferlist, std::less<>>;
   virtual get_attrs_ertr::future<attrs_t> get_attrs(
     CollectionRef c,
     const ghobject_t& oid) = 0;
@@ -107,7 +107,7 @@ public:
     CollectionRef c,
     const ghobject_t& oid) = 0;
 
-  using omap_values_t = std::map<std::string, bufferlist, std::less<>>;
+  using omap_values_t = std::map<std::string, ceph::bufferlist, std::less<>>;
   using omap_keys_t = std::set<std::string>;
   virtual read_errorator::future<omap_values_t> omap_get_values(
     CollectionRef c,
@@ -122,7 +122,7 @@ public:
     CollectionRef c,           ///< [in] collection
     const ghobject_t &oid,     ///< [in] oid
     const std::optional<std::string> &start ///< [in] start, empty for begin
-    ) = 0; ///< @return <done, values> values.empty() iff done
+    ) = 0; ///< @return <done, values> values.empty() only if done
 
   virtual read_errorator::future<bufferlist> omap_get_header(
     CollectionRef c,
@@ -134,6 +134,14 @@ public:
 
   virtual seastar::future<> do_transaction(CollectionRef ch,
 					   ceph::os::Transaction&& txn) = 0;
+  // error injection
+  virtual seastar::future<> inject_data_error(const ghobject_t& o) {
+    return seastar::now();
+  }
+  virtual seastar::future<> inject_mdata_error(const ghobject_t& o) {
+    return seastar::now();
+  }
+
   virtual seastar::future<OmapIteratorRef> get_omap_iterator(
     CollectionRef ch,
     const ghobject_t& oid) = 0;

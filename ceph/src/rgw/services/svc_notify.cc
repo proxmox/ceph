@@ -15,7 +15,15 @@
 
 #define dout_subsys ceph_subsys_rgw
 
+using namespace std;
+
 static string notify_oid_prefix = "notify";
+
+RGWSI_Notify::~RGWSI_Notify()
+{
+  shutdown();
+}
+
 
 class RGWWatcher : public DoutPrefixProvider , public librados::WatchCtx2 {
   CephContext *cct;
@@ -70,7 +78,7 @@ public:
     obj.notify_ack(notify_id, cookie, reply_bl);
   }
   void handle_error(uint64_t cookie, int err) override {
-    lderr(cct) << "RGWWatcher::handle_error cookie " << cookie
+    ldpp_dout(this, -1) << "RGWWatcher::handle_error cookie " << cookie
 			<< " err " << cpp_strerror(err) << dendl;
     svc->remove_watcher(index);
     svc->schedule_context(new C_ReinitWatch(this));
@@ -268,7 +276,7 @@ int RGWSI_Notify::do_start(optional_yield y, const DoutPrefixProvider *dpp)
 
   int ret = init_watch(dpp, y);
   if (ret < 0) {
-    lderr(cct) << "ERROR: failed to initialize watch: " << cpp_strerror(-ret) << dendl;
+    ldpp_dout(dpp, -1) << "ERROR: failed to initialize watch: " << cpp_strerror(-ret) << dendl;
     return ret;
   }
 
@@ -294,11 +302,6 @@ void RGWSI_Notify::shutdown()
   delete shutdown_cb;
 
   finalized = true;
-}
-
-RGWSI_Notify::~RGWSI_Notify()
-{
-  shutdown();
 }
 
 int RGWSI_Notify::unwatch(RGWSI_RADOS::Obj& obj, uint64_t watch_handle)
@@ -407,7 +410,7 @@ int RGWSI_Notify::robust_notify(const DoutPrefixProvider *dpp,
   // If we timed out, get serious.
   if (r == -ETIMEDOUT) {
     RGWCacheNotifyInfo info;
-    info.op = REMOVE_OBJ;
+    info.op = INVALIDATE_OBJ;
     info.obj = cni.obj;
     bufferlist retrybl;
     encode(info, retrybl);

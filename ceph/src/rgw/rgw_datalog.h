@@ -175,10 +175,10 @@ class RGWDataChangesLog {
   const int num_shards;
   std::string get_prefix() {
     auto prefix = cct->_conf->rgw_data_log_obj_prefix;
-    return prefix.empty() ? prefix : "data_log"s;
+    return prefix.empty() ? prefix : "data_log";
   }
   std::string metadata_log_oid() {
-    return get_prefix() + "generations_metadata"s;
+    return get_prefix() + "generations_metadata";
   }
   std::string prefix;
 
@@ -210,7 +210,7 @@ class RGWDataChangesLog {
 
   ceph::mutex renew_lock = ceph::make_mutex("ChangesRenewThread::lock");
   ceph::condition_variable renew_cond;
-  void renew_run();
+  void renew_run() noexcept;
   void renew_stop();
   std::thread renew_thread;
 

@@ -14,7 +14,7 @@
 
 #include "boost/numeric/conversion/converter.hpp"
 
-#ifdef __BORLANDC__
+#ifdef BOOST_BORLANDC
 #pragma hdrstop
 #endif
 

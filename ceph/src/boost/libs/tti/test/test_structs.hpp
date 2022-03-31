@@ -269,7 +269,7 @@ AType::AStructType AnotherType::AnStat;
 
 #if !defined(BOOST_NO_CXX11_UNRESTRICTED_UNION)
 
-float AType::AnUnion::USMember(893.53);
+float AType::AnUnion::USMember(893.53f);
 char AnotherType::AnotherUnion::ASCData('e');
 
 #endif

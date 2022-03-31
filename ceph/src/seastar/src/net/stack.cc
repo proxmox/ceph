@@ -97,8 +97,10 @@ input_stream<char> connected_socket::input(connected_socket_input_stream_config 
 }
 
 output_stream<char> connected_socket::output(size_t buffer_size) {
+    output_stream_options opts;
+    opts.batch_flushes = true;
     // TODO: allow user to determine buffer size etc
-    return output_stream<char>(_csi->sink(), buffer_size, false, true);
+    return output_stream<char>(_csi->sink(), buffer_size, opts);
 }
 
 void connected_socket::set_nodelay(bool nodelay) {
@@ -125,6 +127,10 @@ void connected_socket::set_sockopt(int level, int optname, const void* data, siz
 }
 int connected_socket::get_sockopt(int level, int optname, void* data, size_t len) const {
     return _csi->get_sockopt(level, optname, data, len);
+}
+
+socket_address connected_socket::local_address() const noexcept {
+    return _csi->local_address();
 }
 
 void connected_socket::shutdown_output() {

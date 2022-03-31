@@ -1,6 +1,4 @@
 # -*- coding: utf-8 -*-
-from __future__ import absolute_import
-
 import errno
 import inspect
 from ast import literal_eval
@@ -69,6 +67,9 @@ class Options(object):
     RGW_API_SECRET_KEY = Setting('', [dict, str])
     RGW_API_ADMIN_RESOURCE = Setting('admin', [str])
     RGW_API_SSL_VERIFY = Setting(True, [bool])
+
+    # Ceph Issue Tracker API Access Key
+    ISSUE_TRACKER_API_KEY = Setting('', [str])
 
     # Grafana settings
     GRAFANA_API_URL = Setting('', [str])

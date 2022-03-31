@@ -17,8 +17,7 @@
 
 #include <boost/config.hpp>
 
-// Boost.Test
-#include <boost/test/minimal.hpp>
+#include <boost/core/lightweight_test.hpp>
 
 // std
 #include <utility>
@@ -70,7 +69,7 @@ void test_basic()
 
     using namespace boost::bimaps::relation;
 
-    // Instanciate two pairs and test the storage alignmentDataData
+    // Instantiate two pairs and test the storage alignmentDataData
 
     typedef structured_pair< short, double, normal_layout > pair_type;
     typedef structured_pair< double, short, mirror_layout > mirror_type;
@@ -78,13 +77,13 @@ void test_basic()
     pair_type   pa( 2, 3.1416 );
     mirror_type pb( 3.1416, 2 );
 
-    BOOST_CHECK( pa.first  == pb.second );
-    BOOST_CHECK( pa.second == pb.first  );
+    BOOST_TEST( pa.first  == pb.second );
+    BOOST_TEST( pa.second == pb.first  );
 
 }
 
 
-int test_main( int, char* [] )
+int main()
 {
 
     BOOST_BIMAP_CALL_TEST_STATIC_FUNCTION( static_are_storage_compatible_test );
@@ -93,6 +92,6 @@ int test_main( int, char* [] )
 
     test_basic();
 
-    return 0;
+    return boost::report_errors();
 }
 

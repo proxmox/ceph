@@ -25,6 +25,7 @@
 #include "ECMsgTypes.h"
 
 #include "PrimaryLogPG.h"
+#include "osd_tracer.h"
 
 #define dout_context cct
 #define dout_subsys ceph_subsys_osd
@@ -34,6 +35,7 @@
 
 using std::dec;
 using std::hex;
+using std::less;
 using std::list;
 using std::make_pair;
 using std::map;
@@ -433,7 +435,7 @@ void ECBackend::handle_recovery_push_reply(
 void ECBackend::handle_recovery_read_complete(
   const hobject_t &hoid,
   boost::tuple<uint64_t, uint64_t, map<pg_shard_t, bufferlist> > &to_read,
-  std::optional<map<string, bufferlist> > attrs,
+  std::optional<map<string, bufferlist, less<>> > attrs,
   RecoveryMessages *m)
 {
   dout(10) << __func__ << ": returned " << hoid << " "
@@ -478,7 +480,7 @@ void ECBackend::handle_recovery_read_complete(
       }
       // Need to remove ECUtil::get_hinfo_key() since it should not leak out
       // of the backend (see bug #12983)
-      map<string, bufferlist> sanitized_attrs(op.xattrs);
+      map<string, bufferlist, less<>> sanitized_attrs(op.xattrs);
       sanitized_attrs.erase(ECUtil::get_hinfo_key());
       op.obc = get_parent()->get_obc(hoid, sanitized_attrs);
       ceph_assert(op.obc);
@@ -946,14 +948,13 @@ void ECBackend::handle_sub_write(
   ECSubWrite &op,
   const ZTracer::Trace &trace)
 {
-  if (msg)
+  jspan span;
+  if (msg) {
     msg->mark_event("sub_op_started");
-  trace.event("handle_sub_write");
-#ifdef HAVE_JAEGER
-  if (msg->osd_parent_span) {
-    auto ec_sub_trans = jaeger_tracing::child_span(__func__, msg->osd_parent_span);
+    span = tracing::osd::tracer.add_span(__func__, msg->osd_parent_span);
   }
-#endif
+  trace.event("handle_sub_write");
+
   if (!get_parent()->pgb_is_primary())
     get_parent()->update_stats(op.stats);
   ObjectStore::Transaction localt;
@@ -1240,7 +1241,7 @@ void ECBackend::handle_sub_read_reply(
       dout(20) << __func__ << " to_read skipping" << dendl;
       continue;
     }
-    rop.complete[i->first].attrs = map<string, bufferlist>();
+    rop.complete[i->first].attrs.emplace();
     (*(rop.complete[i->first].attrs)).swap(i->second);
   }
   for (auto i = op.errors.begin();
@@ -1549,14 +1550,11 @@ void ECBackend::submit_transaction(
   op->tid = tid;
   op->reqid = reqid;
   op->client_op = client_op;
-  if (client_op)
+  jspan span;
+  if (client_op) {
     op->trace = client_op->pg_trace;
-
-#ifdef HAVE_JAEGER
-  if (client_op->osd_parent_span) {
-    auto ec_sub_trans = jaeger_tracing::child_span("ECBackend::submit_transaction", client_op->osd_parent_span);
+    span = tracing::osd::tracer.add_span("ECBackend::submit_transaction", client_op->osd_parent_span);
   }
-#endif
   dout(10) << __func__ << ": op " << *op << " starting" << dendl;
   start_rmw(op, std::move(t));
 }
@@ -1826,7 +1824,7 @@ void ECBackend::do_read_op(ReadOp &op)
 }
 
 ECUtil::HashInfoRef ECBackend::get_hash_info(
-  const hobject_t &hoid, bool create, const map<string,bufferptr> *attrs)
+  const hobject_t &hoid, bool create, const map<string,bufferptr,less<>> *attrs)
 {
   dout(10) << __func__ << ": Getting attr on " << hoid << dendl;
   ECUtil::HashInfoRef ref = unstable_hashinfo_registry.lookup(hoid);
@@ -2128,12 +2126,11 @@ bool ECBackend::try_reads_to_commit()
       messages.push_back(std::make_pair(i->osd, r));
     }
   }
+  jspan span;
+  if (op->client_op) {
+    span = tracing::osd::tracer.add_span("EC sub write", op->client_op->osd_parent_span);
+  }
 
-#ifdef HAVE_JAEGER
-   if (op->client_op->osd_parent_span) {
-      auto sub_write_span = jaeger_tracing::child_span("EC sub write", op->client_op->osd_parent_span);
-    }
-#endif
   if (!messages.empty()) {
     get_parent()->send_message_osd_cluster(messages, get_osdmap_epoch());
   }
@@ -2493,7 +2490,7 @@ int ECBackend::send_all_remaining_reads(
 
 int ECBackend::objects_get_attrs(
   const hobject_t &hoid,
-  map<string, bufferlist> *out)
+  map<string, bufferlist, less<>> *out)
 {
   int r = store->getattrs(
     ch,

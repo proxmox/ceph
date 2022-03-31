@@ -19,6 +19,8 @@
 
 #define RGW_BUCKET_INSTANCE_MD_PREFIX ".bucket.meta."
 
+using namespace std;
+
 class RGWSI_Bucket_SObj_Module : public RGWSI_MBSObj_Handler_Module {
   RGWSI_Bucket_SObj::Svc& svc;
 
@@ -400,7 +402,7 @@ int RGWSI_Bucket_SObj::read_bucket_info(RGWSI_Bucket_X_Ctx& ctx,
     if (!found_version ||
         (refresh_version &&
          e->info.objv_tracker.read_version.compare(&(*refresh_version)))) {
-      lderr(cct) << "WARNING: The bucket info cache is inconsistent. This is "
+      ldpp_dout(dpp, -1) << "WARNING: The bucket info cache is inconsistent. This is "
         << "a failure that should be debugged. I am a nice machine, "
         << "so I will try to recover." << dendl;
       binfo_cache->invalidate(cache_key);
@@ -546,7 +548,7 @@ int RGWSI_Bucket_SObj::store_bucket_instance_info(RGWSI_Bucket_BI_Ctx& ctx,
   } else if (ret == -EEXIST) {
     /* well, if it's exclusive we shouldn't overwrite it, because we might race with another
      * bucket operation on this specific bucket (e.g., being synced from the master), but
-     * since bucket instace meta object is unique for this specific bucket instace, we don't
+     * since bucket instance meta object is unique for this specific bucket instance, we don't
      * need to return an error.
      * A scenario where we'd get -EEXIST here, is in a multi-zone config, we're not on the
      * master, creating a bucket, sending bucket creation to the master, we create the bucket
@@ -640,4 +642,3 @@ int RGWSI_Bucket_SObj::read_buckets_stats(RGWSI_Bucket_X_Ctx& ctx,
 
   return m.size();
 }
-

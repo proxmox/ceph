@@ -27,8 +27,9 @@ using std::map;
 using std::multimap;
 using std::ostream;
 using std::pair;
-using std::string;
 using std::set;
+using std::string;
+using std::vector;
 
 using ceph::bufferlist;
 using ceph::Formatter;
@@ -93,6 +94,7 @@ CompatSet MDSMap::get_compat_set_v16_2_4() {
   feature_incompat.insert(MDS_FEATURE_INCOMPAT_DIRINODE);
   feature_incompat.insert(MDS_FEATURE_INCOMPAT_ENCODING);
   feature_incompat.insert(MDS_FEATURE_INCOMPAT_OMAPDIRFRAG);
+  feature_incompat.insert(MDS_FEATURE_INCOMPAT_INLINE);
   feature_incompat.insert(MDS_FEATURE_INCOMPAT_NOANCHOR);
   feature_incompat.insert(MDS_FEATURE_INCOMPAT_FILE_LAYOUT_V2);
   feature_incompat.insert(MDS_FEATURE_INCOMPAT_SNAPREALM_V2);
@@ -162,6 +164,7 @@ void MDSMap::dump(Formatter *f) const
 {
   f->dump_int("epoch", epoch);
   f->dump_unsigned("flags", flags);
+  dump_flags_state(f);
   f->dump_unsigned("ever_allowed_features", ever_allowed_features);
   f->dump_unsigned("explicitly_allowed_features", explicitly_allowed_features);
   f->dump_stream("created") << created;
@@ -223,6 +226,16 @@ void MDSMap::dump(Formatter *f) const
   f->dump_int("standby_count_wanted", std::max(0, standby_count_wanted));
 }
 
+void MDSMap::dump_flags_state(Formatter *f) const
+{
+    f->open_object_section("flags_state");
+    f->dump_bool(flag_display.at(CEPH_MDSMAP_NOT_JOINABLE), joinable());
+    f->dump_bool(flag_display.at(CEPH_MDSMAP_ALLOW_SNAPS), allows_snaps());
+    f->dump_bool(flag_display.at(CEPH_MDSMAP_ALLOW_MULTIMDS_SNAPS), allows_multimds_snaps());
+    f->dump_bool(flag_display.at(CEPH_MDSMAP_ALLOW_STANDBY_REPLAY), allows_standby_replay());
+    f->close_section();
+}
+
 void MDSMap::generate_test_instances(std::list<MDSMap*>& ls)
 {
   MDSMap *m = new MDSMap();
@@ -243,7 +256,9 @@ void MDSMap::print(ostream& out) const
 {
   out << "fs_name\t" << fs_name << "\n";
   out << "epoch\t" << epoch << "\n";
-  out << "flags\t" << hex << flags << dec << "\n";
+  out << "flags\t" << hex << flags << dec;
+  print_flags(out);
+  out << "\n";
   out << "created\t" << created << "\n";
   out << "modified\t" << modified << "\n";
   out << "tableserver\t" << tableserver << "\n";
@@ -345,6 +360,17 @@ void MDSMap::print_summary(Formatter *f, ostream *out) const
   }
   //if (stopped.size())
   //out << ", " << stopped.size() << " stopped";
+}
+
+void MDSMap::print_flags(std::ostream& out) const {
+ if (joinable())
+    out << " " << flag_display.at(CEPH_MDSMAP_NOT_JOINABLE);
+  if (allows_snaps())
+    out << " " << flag_display.at(CEPH_MDSMAP_ALLOW_SNAPS);
+  if (allows_multimds_snaps())
+    out << " " << flag_display.at(CEPH_MDSMAP_ALLOW_MULTIMDS_SNAPS);
+  if (allows_standby_replay())
+    out << " " << flag_display.at(CEPH_MDSMAP_ALLOW_STANDBY_REPLAY);
 }
 
 void MDSMap::get_health(list<pair<health_status_t,string> >& summary,
@@ -906,6 +932,10 @@ void MDSMap::decode(bufferlist::const_iterator& p)
     }
   }
 
+  /* All MDS since at least v14.0.0 understand INLINE */
+  /* TODO: remove after R is released */
+  compat.incompat.insert(MDS_FEATURE_INCOMPAT_INLINE);
+
   for (auto& p: mds_info) {
     static const CompatSet empty;
     auto& info = p.second;
@@ -913,6 +943,9 @@ void MDSMap::decode(bufferlist::const_iterator& p)
       /* bootstrap old compat; mds_info_t::decode does not have access to MDSMap */
       info.compat = compat;
     }
+    /* All MDS since at least v14.0.0 understand INLINE */
+    /* TODO: remove after R is released */
+    info.compat.incompat.insert(MDS_FEATURE_INCOMPAT_INLINE);
   }
 
   DECODE_FINISH(p);

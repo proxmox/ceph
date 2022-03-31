@@ -260,8 +260,7 @@ int main(int argc, const char **argv)
   bool yes_really = false;
   std::string osdmapfn, inject_monmap, extract_monmap, crush_loc;
 
-  vector<const char*> args;
-  argv_to_vec(argc, argv, args);
+  auto args = argv_to_vec(argc, argv);
   if (args.empty()) {
     cerr << argv[0] << ": -h or --help for usage" << std::endl;
     exit(1);
@@ -618,7 +617,6 @@ int main(int argc, const char **argv)
 
   // set up signal handlers, now that we've daemonized/forked.
   init_async_signal_handler();
-  register_async_signal_handler(SIGHUP, sighup_handler);
 
   MonitorDBStore *store = new MonitorDBStore(g_conf()->mon_data);
 
@@ -755,7 +753,7 @@ int main(int argc, const char **argv)
     if (g_conf().get_val_from_conf_file(my_sections, "mon addr",
 				       mon_addr_str, true) == 0) {
       entity_addr_t conf_addr;
-      if (conf_addr.parse(mon_addr_str.c_str())) {
+      if (conf_addr.parse(mon_addr_str)) {
 	entity_addrvec_t conf_addrs = make_mon_addrs(conf_addr);
         if (ipaddrs != conf_addrs) {
 	  derr << "WARNING: 'mon addr' config option " << conf_addrs
@@ -913,6 +911,7 @@ int main(int argc, const char **argv)
 
   register_async_signal_handler_oneshot(SIGINT, handle_mon_signal);
   register_async_signal_handler_oneshot(SIGTERM, handle_mon_signal);
+  register_async_signal_handler(SIGHUP, handle_mon_signal);
 
   if (g_conf()->inject_early_sigterm)
     kill(getpid(), SIGTERM);
@@ -922,7 +921,7 @@ int main(int argc, const char **argv)
 
   store->close();
 
-  unregister_async_signal_handler(SIGHUP, sighup_handler);
+  unregister_async_signal_handler(SIGHUP, handle_mon_signal);
   unregister_async_signal_handler(SIGINT, handle_mon_signal);
   unregister_async_signal_handler(SIGTERM, handle_mon_signal);
   shutdown_async_signal_handler();

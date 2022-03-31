@@ -87,20 +87,20 @@ enabled for each client type. The mclock parameters are calculated based on
 the max OSD capacity provided beforehand. As a result, the following mclock
 config parameters cannot be modified when using any of the built-in profiles:
 
-- ``osd_mclock_scheduler_client_res``
-- ``osd_mclock_scheduler_client_wgt``
-- ``osd_mclock_scheduler_client_lim``
-- ``osd_mclock_scheduler_background_recovery_res``
-- ``osd_mclock_scheduler_background_recovery_wgt``
-- ``osd_mclock_scheduler_background_recovery_lim``
-- ``osd_mclock_scheduler_background_best_effort_res``
-- ``osd_mclock_scheduler_background_best_effort_wgt``
-- ``osd_mclock_scheduler_background_best_effort_lim``
+- :confval:`osd_mclock_scheduler_client_res`
+- :confval:`osd_mclock_scheduler_client_wgt`
+- :confval:`osd_mclock_scheduler_client_lim`
+- :confval:`osd_mclock_scheduler_background_recovery_res`
+- :confval:`osd_mclock_scheduler_background_recovery_wgt`
+- :confval:`osd_mclock_scheduler_background_recovery_lim`
+- :confval:`osd_mclock_scheduler_background_best_effort_res`
+- :confval:`osd_mclock_scheduler_background_best_effort_wgt`
+- :confval:`osd_mclock_scheduler_background_best_effort_lim`
 
 The following Ceph options will not be modifiable by the user:
 
-- ``osd_max_backfills``
-- ``osd_recovery_max_active``
+- :confval:`osd_max_backfills`
+- :confval:`osd_recovery_max_active`
 
 This is because the above options are internally modified by the mclock
 scheduler in order to maximize the impact of the set profile.
@@ -116,19 +116,19 @@ in the next section.
 If any mClock profile (including "custom") is active, the following Ceph config
 sleep options will be disabled,
 
-- ``osd_recovery_sleep``
-- ``osd_recovery_sleep_hdd``
-- ``osd_recovery_sleep_ssd``
-- ``osd_recovery_sleep_hybrid``
-- ``osd_scrub_sleep``
-- ``osd_delete_sleep``
-- ``osd_delete_sleep_hdd``
-- ``osd_delete_sleep_ssd``
-- ``osd_delete_sleep_hybrid``
-- ``osd_snap_trim_sleep``
-- ``osd_snap_trim_sleep_hdd``
-- ``osd_snap_trim_sleep_ssd``
-- ``osd_snap_trim_sleep_hybrid``
+- :confval:`osd_recovery_sleep`
+- :confval:`osd_recovery_sleep_hdd`
+- :confval:`osd_recovery_sleep_ssd`
+- :confval:`osd_recovery_sleep_hybrid`
+- :confval:`osd_scrub_sleep`
+- :confval:`osd_delete_sleep`
+- :confval:`osd_delete_sleep_hdd`
+- :confval:`osd_delete_sleep_ssd`
+- :confval:`osd_delete_sleep_hybrid`
+- :confval:`osd_snap_trim_sleep`
+- :confval:`osd_snap_trim_sleep_hdd`
+- :confval:`osd_snap_trim_sleep_ssd`
+- :confval:`osd_snap_trim_sleep_hybrid`
 
 The above sleep options are disabled to ensure that mclock scheduler is able to
 determine when to pick the next op from its operation queue and transfer it to
@@ -146,7 +146,7 @@ The other values for the built-in profiles include *balanced* and
 *high_recovery_ops*.
 
 If there is a requirement to change the default profile, then the option
-``osd_mclock_profile`` may be set during runtime by using the following
+:confval:`osd_mclock_profile` may be set during runtime by using the following
 command:
 
   .. prompt:: bash #
@@ -218,10 +218,9 @@ maximize the impact of the mclock scheduler.
 
 :Bluestore Throttle Parameters:
   We recommend using the default values as defined by
-  ``bluestore_throttle_bytes`` and ``bluestore_throttle_deferred_bytes``. But
-  these parameters may also be determined during the benchmarking phase as
-  described below.
-
+  :confval:`bluestore_throttle_bytes` and
+  :confval:`bluestore_throttle_deferred_bytes`. But these parameters may also be
+  determined during the benchmarking phase as described below.
 
 OSD Bench Command Syntax
 ````````````````````````
@@ -269,8 +268,8 @@ the correct bluestore throttle values (optional).
    command. This value is the baseline throughput(IOPS) when the default
    bluestore throttle options are in effect.
 #. If the intent is to determine the bluestore throttle values for your
-   environment, then set the two options, ``bluestore_throttle_bytes``
-   and ``bluestore_throttle_deferred_bytes`` to 32 KiB(32768 Bytes) each
+   environment, then set the two options, :confval:`bluestore_throttle_bytes`
+   and :confval:`bluestore_throttle_deferred_bytes` to 32 KiB(32768 Bytes) each
    to begin with. Otherwise, you may skip to the next section.
 #. Run the 4KiB random write test as before using OSD bench.
 #. Note the overall throughput from the output and compare the value
@@ -316,80 +315,12 @@ configuration file under the respective [osd.N] section. See
 mClock Config Options
 =====================
 
-``osd_mclock_profile``
-
-:Description: This sets the type of mclock profile to use for providing QoS
-              based on operations belonging to different classes (background
-              recovery, scrub, snaptrim, client op, osd subop). Once a built-in
-              profile is enabled, the lower level mclock resource control
-              parameters [*reservation, weight, limit*] and some Ceph
-              configuration parameters are set transparently. Note that the
-              above does not apply for the *custom* profile.
-
-:Type: String
-:Valid Choices: high_client_ops, high_recovery_ops, balanced, custom
-:Default: ``high_client_ops``
-
-``osd_mclock_max_capacity_iops_hdd``
-
-:Description: Max IOPS capacity (at 4KiB block size) to consider per OSD (for
-              rotational media)
-
-:Type: Float
-:Default: ``315.0``
-
-``osd_mclock_max_capacity_iops_ssd``
-
-:Description: Max IOPS capacity (at 4KiB block size) to consider per OSD (for
-              solid state media)
-
-:Type: Float
-:Default: ``21500.0``
-
-``osd_mclock_cost_per_io_usec``
-
-:Description: Cost per IO in microseconds to consider per OSD (overrides _ssd
-              and _hdd if non-zero)
-
-:Type: Float
-:Default: ``0.0``
-
-``osd_mclock_cost_per_io_usec_hdd``
-
-:Description: Cost per IO in microseconds to consider per OSD (for rotational
-              media)
-
-:Type: Float
-:Default: ``25000.0``
-
-``osd_mclock_cost_per_io_usec_ssd``
-
-:Description: Cost per IO in microseconds to consider per OSD (for solid state
-              media)
-
-:Type: Float
-:Default: ``50.0``
-
-``osd_mclock_cost_per_byte_usec``
-
-:Description: Cost per byte in microseconds to consider per OSD (overrides _ssd
-              and _hdd if non-zero)
-
-:Type: Float
-:Default: ``0.0``
-
-``osd_mclock_cost_per_byte_usec_hdd``
-
-:Description: Cost per byte in microseconds to consider per OSD (for rotational
-              media)
-
-:Type: Float
-:Default: ``5.2``
-
-``osd_mclock_cost_per_byte_usec_ssd``
-
-:Description: Cost per byte in microseconds to consider per OSD (for solid state
-              media)
-
-:Type: Float
-:Default: ``0.011``
+.. confval:: osd_mclock_profile
+.. confval:: osd_mclock_max_capacity_iops_hdd
+.. confval:: osd_mclock_max_capacity_iops_ssd
+.. confval:: osd_mclock_cost_per_io_usec
+.. confval:: osd_mclock_cost_per_io_usec_hdd
+.. confval:: osd_mclock_cost_per_io_usec_ssd
+.. confval:: osd_mclock_cost_per_byte_usec
+.. confval:: osd_mclock_cost_per_byte_usec_hdd
+.. confval:: osd_mclock_cost_per_byte_usec_ssd

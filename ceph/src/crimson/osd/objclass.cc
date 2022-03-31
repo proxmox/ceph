@@ -18,6 +18,9 @@
 #include "auth/Crypto.h"
 #include "common/armor.h"
 
+using std::map;
+using std::string;
+
 static inline int execute_osd_op(cls_method_context_t hctx, OSDOp& op)
 {
   // we can expect the memory under `ret` will be still fine after
@@ -25,7 +28,8 @@ static inline int execute_osd_op(cls_method_context_t hctx, OSDOp& op)
   // created for us by `seastar::async` in `::do_op_call()`.
   int ret = 0;
   using osd_op_errorator = crimson::osd::OpsExecuter::osd_op_errorator;
-  reinterpret_cast<crimson::osd::OpsExecuter*>(hctx)->execute_op(op).handle_error(
+  reinterpret_cast<crimson::osd::OpsExecuter*>(hctx)->execute_op(op)
+  .handle_error_interruptible(
     osd_op_errorator::all_same_way([&ret] (const std::error_code& err) {
       assert(err.value() > 0);
       ret = -err.value();
@@ -122,7 +126,22 @@ int cls_cxx_stat2(cls_method_context_t hctx,
                   uint64_t *size,
                   ceph::real_time *mtime)
 {
-  return 0;
+  OSDOp op{CEPH_OSD_OP_STAT};
+  if (const int ret = execute_osd_op(hctx, op); ret < 0) {
+    return ret;
+  }
+  uint64_t dummy_size;
+  real_time dummy_mtime;
+  uint64_t& out_size = size ? *size : dummy_size;
+  real_time& out_mtime = mtime ? *mtime : dummy_mtime;
+  try {
+    auto iter = op.outdata.cbegin();
+    decode(out_size, iter);
+    decode(out_mtime, iter);
+    return 0;
+  } catch (buffer::error& err) {
+    return -EIO;
+  }
 }
 
 int cls_cxx_read2(cls_method_context_t hctx,
@@ -224,6 +243,16 @@ int cls_cxx_getxattr(cls_method_context_t hctx,
 int cls_cxx_getxattrs(cls_method_context_t hctx,
                       map<string, bufferlist> *attrset)
 {
+  OSDOp op{CEPH_OSD_OP_GETXATTRS};
+  if (const int ret = execute_osd_op(hctx, op); ret < 0) {
+    return ret;
+  }
+  try {
+    auto iter = op.outdata.cbegin();
+    decode(*attrset, iter);
+  } catch (buffer::error& err) {
+    return -EIO;
+  }
   return 0;
 }
 
@@ -377,7 +406,8 @@ int cls_cxx_map_set_vals(cls_method_context_t hctx,
 
 int cls_cxx_map_clear(cls_method_context_t hctx)
 {
-  return 0;
+  OSDOp op{CEPH_OSD_OP_OMAPCLEAR};
+  return execute_osd_op(hctx, op);
 }
 
 int cls_cxx_map_write_header(cls_method_context_t hctx, bufferlist *inbl)
@@ -399,7 +429,10 @@ int cls_cxx_map_remove_range(cls_method_context_t hctx,
 
 int cls_cxx_map_remove_key(cls_method_context_t hctx, const string &key)
 {
-  return 0;
+  OSDOp op{CEPH_OSD_OP_OMAPRMKEYS};
+  std::vector<string> to_rm{key};
+  encode(to_rm, op.indata);
+  return execute_osd_op(hctx, op);
 }
 
 int cls_cxx_list_watchers(cls_method_context_t hctx,
@@ -410,7 +443,8 @@ int cls_cxx_list_watchers(cls_method_context_t hctx,
 
 uint64_t cls_current_version(cls_method_context_t hctx)
 {
-  return 0;
+  auto* ox = reinterpret_cast<crimson::osd::OpsExecuter*>(hctx);
+  return ox->get_last_user_version();
 }
 
 
@@ -481,4 +515,15 @@ int cls_get_manifest_ref_count(cls_method_context_t hctx, string fp_oid)
 uint64_t cls_get_osd_min_alloc_size(cls_method_context_t hctx) {
   // FIXME
   return 4096;
+}
+
+int cls_cxx_gather(cls_method_context_t hctx, const std::set<std::string> &src_objs, const std::string& pool,
+		   const char *cls, const char *method, bufferlist& inbl)
+{
+  return 0;
+}
+
+int cls_cxx_get_gathered_data(cls_method_context_t hctx, std::map<std::string, bufferlist> *results)
+{
+  return 0;
 }
