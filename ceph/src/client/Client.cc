@@ -4399,9 +4399,10 @@ void Client::remove_session_caps(MetaSession *s, int err)
   sync_cond.notify_all();
 }
 
-int Client::_do_remount(bool retry_on_error)
+std::pair<int, bool> Client::_do_remount(bool retry_on_error)
 {
   uint64_t max_retries = cct->_conf.get_val<uint64_t>("mds_max_retries_on_remount_failure");
+  bool abort_on_failure = false;
 
   errno = 0;
   int r = remount_cb(callback_handle);
@@ -4425,10 +4426,10 @@ int Client::_do_remount(bool retry_on_error)
       !(retry_on_error && (++retries_on_invalidate < max_retries));
     if (should_abort && !is_unmounting()) {
       lderr(cct) << "failed to remount for kernel dentry trimming; quitting!" << dendl;
-      ceph_abort();
+      abort_on_failure = true;
     }
   }
-  return r;
+  return std::make_pair(r, abort_on_failure);
 }
 
 class C_Client_Remount : public Context  {
@@ -7438,6 +7439,54 @@ int Client::_getattr(Inode *in, int mask, const UserPerm& perms, bool force)
   
   int res = make_request(req, perms);
   ldout(cct, 10) << __func__ << " result=" << res << dendl;
+  return res;
+}
+
+int Client::_getvxattr(
+  Inode *in,
+  const UserPerm& perms,
+  const char *xattr_name,
+  ssize_t size,
+  void *value,
+  mds_rank_t rank)
+{
+  if (!xattr_name || strlen(xattr_name) <= 0 || strlen(xattr_name) > 255) {
+    return -CEPHFS_ENODATA;
+  }
+
+  MetaRequest *req = new MetaRequest(CEPH_MDS_OP_GETVXATTR);
+  filepath path;
+  in->make_nosnap_relative_path(path);
+  req->set_filepath(path);
+  req->set_inode(in);
+  req->set_string2(xattr_name);
+
+  bufferlist bl;
+  int res = make_request(req, perms, nullptr, nullptr, rank, &bl);
+  ldout(cct, 10) << __func__ << " result=" << res << dendl;
+
+  if (res < 0) {
+    return res;
+  }
+
+  std::string buf;
+  auto p = bl.cbegin();
+
+  DECODE_START(1, p);
+  decode(buf, p);
+  DECODE_FINISH(p);
+
+  ssize_t len = buf.length();
+
+  res = len; // refer to man getxattr(2) for output buffer size == 0
+
+  if (size > 0) {
+    if (len > size) {
+      res = -CEPHFS_ERANGE; // insufficient output buffer space
+    } else {
+      memcpy(value, buf.c_str(), len);
+    }
+  }
   return res;
 }
 
@@ -11357,20 +11406,19 @@ int Client::ll_register_callbacks2(struct ceph_client_callback_args *args)
   return 0;
 }
 
-int Client::test_dentry_handling(bool can_invalidate)
+std::pair<int, bool> Client::test_dentry_handling(bool can_invalidate)
 {
-  int r = 0;
+  std::pair <int, bool> r(0, false);
 
   RWRef_t iref_reader(initialize_state, CLIENT_INITIALIZED);
   if (!iref_reader.is_state_satisfied())
-    return -CEPHFS_ENOTCONN;
+    return std::make_pair(-CEPHFS_ENOTCONN, false);
 
   can_invalidate_dentries = can_invalidate;
 
   if (can_invalidate_dentries) {
     ceph_assert(dentry_invalidate_cb);
     ldout(cct, 1) << "using dentry_invalidate_cb" << dendl;
-    r = 0;
   } else {
     ceph_assert(remount_cb);
     ldout(cct, 1) << "using remount_cb" << dendl;
@@ -12276,8 +12324,9 @@ int Client::_getxattr(Inode *in, const char *name, void *value, size_t size,
 		      const UserPerm& perms)
 {
   int r;
+  const VXattr *vxattr = nullptr;
 
-  const VXattr *vxattr = _match_vxattr(in, name);
+  vxattr = _match_vxattr(in, name);
   if (vxattr) {
     r = -CEPHFS_ENODATA;
 
@@ -12314,6 +12363,11 @@ int Client::_getxattr(Inode *in, const char *name, void *value, size_t size,
     goto out;
   }
 
+  if (!strncmp(name, "ceph.", 5)) {
+    r = _getvxattr(in, perms, name, size, value, MDS_RANK_NONE);
+    goto out;
+  }
+
   if (acl_type == NO_ACL && !strncmp(name, "system.", 7)) {
     r = -CEPHFS_EOPNOTSUPP;
     goto out;
@@ -12323,7 +12377,7 @@ int Client::_getxattr(Inode *in, const char *name, void *value, size_t size,
   if (r == 0) {
     string n(name);
     r = -CEPHFS_ENODATA;
-   if (in->xattrs.count(n)) {
+    if (in->xattrs.count(n)) {
       r = in->xattrs[n].length();
       if (r > 0 && size != 0) {
 	if (size >= (unsigned)r)
@@ -12905,6 +12959,8 @@ const Client::VXattr Client::_dir_vxattrs[] = {
     exists_cb: &Client::_vxattrcb_layout_exists,
     flags: 0,
   },
+  // FIXME
+  // Delete the following dir layout field definitions for release "S"
   XATTR_LAYOUT_FIELD(dir, layout, stripe_unit),
   XATTR_LAYOUT_FIELD(dir, layout, stripe_count),
   XATTR_LAYOUT_FIELD(dir, layout, object_size),
@@ -12928,6 +12984,8 @@ const Client::VXattr Client::_dir_vxattrs[] = {
   },
   XATTR_QUOTA_FIELD(quota, max_bytes),
   XATTR_QUOTA_FIELD(quota, max_files),
+  // FIXME
+  // Delete the following dir pin field definitions for release "S"
   {
     name: "ceph.dir.pin",
     getxattr_cb: &Client::_vxattrcb_dir_pin,

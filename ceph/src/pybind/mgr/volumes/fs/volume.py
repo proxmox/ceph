@@ -10,10 +10,11 @@ from mgr_util import CephfsClient
 from .fs_util import listdir
 
 from .operations.volume import create_volume, \
-    delete_volume, list_volumes, open_volume, get_pool_names
+    delete_volume, rename_volume, list_volumes, open_volume, get_pool_names
 from .operations.group import open_group, create_group, remove_group, open_group_unique
 from .operations.subvolume import open_subvol, create_subvol, remove_subvol, \
     create_clone
+from .operations.trash import Trash
 
 from .vol_spec import VolSpec
 from .exception import VolumeException, ClusterError, ClusterTimeout, EvictionError
@@ -131,6 +132,21 @@ class VolumeClient(CephfsClient["Module"]):
         volumes = list_volumes(self.mgr)
         return 0, json.dumps(volumes, indent=4, sort_keys=True), ""
 
+    def rename_fs_volume(self, volname, newvolname, sure):
+        if self.is_stopping():
+            return -errno.ESHUTDOWN, "", "shutdown in progress"
+
+        if not sure:
+            return (
+                -errno.EPERM, "",
+                "WARNING: This will rename the filesystem and possibly its "
+                "pools. It is a potentially disruptive operation, clients' "
+                "cephx credentials need reauthorized to access the file system "
+                "and its pools with the new name. Add --yes-i-really-mean-it "
+                "if you are sure you wish to continue.")
+
+        return rename_volume(self.mgr, volname, newvolname)
+
     ### subvolume operations
 
     def _create_subvolume(self, fs_handle, volname, group, subvolname, **kwargs):
@@ -160,6 +176,7 @@ class VolumeClient(CephfsClient["Module"]):
         pool       = kwargs['pool_layout']
         uid        = kwargs['uid']
         gid        = kwargs['gid']
+        mode       = kwargs['mode']
         isolate_nspace = kwargs['namespace_isolated']
 
         try:
@@ -171,6 +188,7 @@ class VolumeClient(CephfsClient["Module"]):
                             attrs = {
                                 'uid': uid if uid else subvolume.uid,
                                 'gid': gid if gid else subvolume.gid,
+                                'mode': octal_str_to_decimal_int(mode),
                                 'data_pool': pool,
                                 'pool_namespace': subvolume.namespace if isolate_nspace else None,
                                 'quota': size
@@ -626,7 +644,7 @@ class VolumeClient(CephfsClient["Module"]):
         try:
             with open_volume(self, volname) as fs_handle:
                 volume_exists = True
-                groups = listdir(fs_handle, self.volspec.base_dir)
+                groups = listdir(fs_handle, self.volspec.base_dir, filter_entries=[Trash.GROUP_NAME.encode('utf-8')])
                 ret = 0, name_to_json(groups), ""
         except VolumeException as ve:
             if not ve.errno == -errno.ENOENT or not volume_exists:

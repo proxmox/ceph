@@ -2507,6 +2507,9 @@ void BlueFS::_rewrite_log_and_layout_sync_LNF_LD(bool allocate_with_fallback,
   }
 #endif
   _flush_bdev();
+  ++log.seq_live;
+  dirty.seq_live = log.seq_live;
+  log.t.seq = log.seq_live;
 
   super.memorized_layout = layout;
   super.log_fnode = log_file->fnode;
@@ -4075,6 +4078,14 @@ bool BlueFS::wal_is_rotational()
   if (bdev[BDEV_WAL]) {
     return bdev[BDEV_WAL]->is_rotational();
   } else if (bdev[BDEV_DB]) {
+    return bdev[BDEV_DB]->is_rotational();
+  }
+  return bdev[BDEV_SLOW]->is_rotational();
+}
+
+bool BlueFS::db_is_rotational()
+{
+  if (bdev[BDEV_DB]) {
     return bdev[BDEV_DB]->is_rotational();
   }
   return bdev[BDEV_SLOW]->is_rotational();

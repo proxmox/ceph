@@ -224,11 +224,13 @@ void librados::ObjectReadOperation::read(size_t off, uint64_t len, bufferlist *p
 
 void librados::ObjectReadOperation::sparse_read(uint64_t off, uint64_t len,
 						std::map<uint64_t,uint64_t> *m,
-						bufferlist *data_bl, int *prval)
+						bufferlist *data_bl, int *prval,
+						uint64_t truncate_size,
+						uint32_t truncate_seq)
 {
   ceph_assert(impl);
   ::ObjectOperation *o = &impl->o;
-  o->sparse_read(off, len, m, data_bl, prval);
+  o->sparse_read(off, len, m, data_bl, prval, truncate_size, truncate_seq);
 }
 
 void librados::ObjectReadOperation::checksum(rados_checksum_type_t type,
@@ -2596,7 +2598,7 @@ int64_t librados::Rados::pool_lookup(const char *name)
 
 int librados::Rados::pool_reverse_lookup(int64_t id, std::string *name)
 {
-  return client->pool_get_name(id, name);
+  return client->pool_get_name(id, name, true);
 }
 
 int librados::Rados::mon_command(string cmd, const bufferlist& inbl,

@@ -1074,6 +1074,9 @@ inline std::ostream& operator<<(std::ostream& out, const pool_snap_info_t& si) {
  * pool options.
  */
 
+// The order of items in the list is important, therefore,
+// you should always add to the end of the list when adding new options.
+
 class pool_opts_t {
 public:
   enum key_t {
@@ -1093,7 +1096,6 @@ public:
     CSUM_MIN_BLOCK,
     FINGERPRINT_ALGORITHM,
     PG_NUM_MIN,         // min pg_num
-    PG_NUM_MAX,         // max pg_num
     TARGET_SIZE_BYTES,  // total bytes in pool
     TARGET_SIZE_RATIO,  // fraction of total cluster
     PG_AUTOSCALE_BIAS,
@@ -1101,6 +1103,7 @@ public:
     DEDUP_TIER,
     DEDUP_CHUNK_ALGORITHM,
     DEDUP_CDC_CHUNK_SIZE,
+    PG_NUM_MAX, // max pg_num
   };
 
   enum type_t {
@@ -2247,6 +2250,7 @@ struct pg_stat_t {
   int64_t log_size;
   int64_t ondisk_log_size;    // >= active_log_size
   int64_t objects_scrubbed;
+  double scrub_duration;
 
   std::vector<int32_t> up, acting;
   std::vector<pg_shard_t> avail_no_missing;
@@ -2267,6 +2271,8 @@ struct pg_stat_t {
   // snaptrimq.size() is 64bit, but let's be serious - anything over 50k is
   // absurd already, so cap it to 2^32 and save 4 bytes at the same time
   uint32_t snaptrimq_len;
+  int64_t objects_trimmed;
+  double snaptrim_duration;
 
   pg_scrubbing_status_t scrub_sched_status;
 
@@ -2288,10 +2294,13 @@ struct pg_stat_t {
       parent_split_bits(0),
       log_size(0), ondisk_log_size(0),
       objects_scrubbed(0),
+      scrub_duration(0),
       mapping_epoch(0),
       up_primary(-1),
       acting_primary(-1),
       snaptrimq_len(0),
+      objects_trimmed(0),
+      snaptrim_duration(0.0),
       stats_invalid(false),
       dirty_stats_invalid(false),
       omap_stats_invalid(false),

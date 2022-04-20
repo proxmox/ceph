@@ -94,6 +94,8 @@
 # distros that do _not_ ship cmd2/colorama
 %bcond_with cephfs_shell
 %endif
+%bcond_with system_arrow
+%bcond_with system_utf8proc
 %if 0%{?fedora} || 0%{?suse_version} || 0%{?rhel} >= 8
 %global weak_deps 1
 %endif
@@ -143,7 +145,7 @@
 # main package definition
 #################################################################################
 Name:		ceph
-Version:	17.1.0
+Version:	17.2.0
 Release:	0%{?dist}
 %if 0%{?fedora} || 0%{?rhel}
 Epoch:		2
@@ -159,7 +161,7 @@ License:	LGPL-2.1 and LGPL-3.0 and CC-BY-SA-3.0 and GPL-2.0 and BSL-1.0 and BSD-
 Group:		System/Filesystems
 %endif
 URL:		http://ceph.com/
-Source0:	%{?_remote_tarball_prefix}ceph-17.1.0.tar.bz2
+Source0:	%{?_remote_tarball_prefix}ceph-17.2.0.tar.bz2
 %if 0%{?suse_version}
 # _insert_obs_source_lines_here
 ExclusiveArch:  x86_64 aarch64 ppc64le s390x
@@ -260,10 +262,11 @@ BuildRequires:	socat
 %if 0%{with zbd}
 BuildRequires:  libzbd-devel
 %endif
+BuildRequires:  thrift-devel >= 0.13.0
+BuildRequires:  re2-devel
 %if 0%{with jaeger}
 BuildRequires:  bison
 BuildRequires:  flex
-BuildRequires:  thrift-devel >= 0.13.0
 %if 0%{?fedora} || 0%{?rhel}
 BuildRequires:  json-devel
 %endif
@@ -275,6 +278,13 @@ BuildRequires:  libevent-devel
 %if 0%{with system_pmdk}
 BuildRequires:  libpmem-devel
 BuildRequires:  libpmemobj-devel
+%endif
+%if 0%{with system_arrow}
+BuildRequires:  arrow-devel
+BuildRequires:  parquet-devel
+%endif
+%if 0%{with system_utf8proc}
+BuildRequires:  utf8proc-devel
 %endif
 %if 0%{with seastar}
 BuildRequires:  c-ares-devel
@@ -1214,7 +1224,7 @@ This package provides Ceph default alerts for Prometheus.
 # common
 #################################################################################
 %prep
-%autosetup -p1 -n ceph-17.1.0
+%autosetup -p1 -n ceph-17.2.0
 
 %build
 # Disable lto on systems that do not support symver attribute
@@ -1246,6 +1256,9 @@ export LDFLAGS="$RPM_LD_FLAGS"
 %if 0%{with seastar}
 # seastar uses longjmp() to implement coroutine. and this annoys longjmp_chk()
 export CXXFLAGS=$(echo $RPM_OPT_FLAGS | sed -e 's/-Wp,-D_FORTIFY_SOURCE=2//g')
+# remove from CFLAGS too because it causes the arrow submodule to fail with:
+#   warning _FORTIFY_SOURCE requires compiling with optimization (-O)
+export CFLAGS=$(echo $RPM_OPT_FLAGS | sed -e 's/-Wp,-D_FORTIFY_SOURCE=2//g')
 %endif
 
 env | sort
@@ -1334,6 +1347,12 @@ cmake .. \
 %endif
 %if 0%{?rhel}
     -DWITH_FMT_HEADER_ONLY:BOOL=ON \
+%endif
+%if 0%{with system_arrow}
+    -DWITH_SYSTEM_ARROW:BOOL=ON \
+%endif
+%if 0%{without system_utf8proc}
+    -DWITH_SYSTEM_UTF8PROC:BOOL=OFF \
 %endif
     -DWITH_GRAFANA:BOOL=ON
 

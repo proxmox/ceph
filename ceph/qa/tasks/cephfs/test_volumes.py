@@ -513,6 +513,89 @@ class TestVolumes(TestVolumesHelper):
             self.assertNotIn(pool["name"], pools,
                              "pool {0} exists after volume removal".format(pool["name"]))
 
+    def test_volume_rename(self):
+        """
+        That volume, its file system and pools, can be renamed.
+        """
+        for m in self.mounts:
+            m.umount_wait()
+        oldvolname = self.volname
+        newvolname = self._generate_random_volume_name()
+        new_data_pool, new_metadata_pool = f"cephfs.{newvolname}.data", f"cephfs.{newvolname}.meta"
+        self._fs_cmd("volume", "rename", oldvolname, newvolname,
+                     "--yes-i-really-mean-it")
+        volumels = json.loads(self._fs_cmd('volume', 'ls'))
+        volnames = [volume['name'] for volume in volumels]
+        # volume name changed
+        self.assertIn(newvolname, volnames)
+        self.assertNotIn(oldvolname, volnames)
+        # pool names changed
+        self.fs.get_pool_names(refresh=True)
+        self.assertEqual(new_metadata_pool, self.fs.get_metadata_pool_name())
+        self.assertEqual(new_data_pool, self.fs.get_data_pool_name())
+
+    def test_volume_rename_idempotency(self):
+        """
+        That volume rename is idempotent.
+        """
+        for m in self.mounts:
+            m.umount_wait()
+        oldvolname = self.volname
+        newvolname = self._generate_random_volume_name()
+        new_data_pool, new_metadata_pool = f"cephfs.{newvolname}.data", f"cephfs.{newvolname}.meta"
+        self._fs_cmd("volume", "rename", oldvolname, newvolname,
+                     "--yes-i-really-mean-it")
+        self._fs_cmd("volume", "rename", oldvolname, newvolname,
+                     "--yes-i-really-mean-it")
+        volumels = json.loads(self._fs_cmd('volume', 'ls'))
+        volnames = [volume['name'] for volume in volumels]
+        self.assertIn(newvolname, volnames)
+        self.assertNotIn(oldvolname, volnames)
+        self.fs.get_pool_names(refresh=True)
+        self.assertEqual(new_metadata_pool, self.fs.get_metadata_pool_name())
+        self.assertEqual(new_data_pool, self.fs.get_data_pool_name())
+
+    def test_volume_rename_fails_without_confirmation_flag(self):
+        """
+        That renaming volume fails without --yes-i-really-mean-it flag.
+        """
+        newvolname = self._generate_random_volume_name()
+        try:
+            self._fs_cmd("volume", "rename", self.volname, newvolname)
+        except CommandFailedError as ce:
+            self.assertEqual(ce.exitstatus, errno.EPERM,
+                "invalid error code on renaming a FS volume without the "
+                "'--yes-i-really-mean-it' flag")
+        else:
+            self.fail("expected renaming of FS volume to fail without the "
+                      "'--yes-i-really-mean-it' flag")
+
+    def test_volume_rename_for_more_than_one_data_pool(self):
+        """
+        That renaming a volume with more than one data pool does not change
+        the name of the data pools.
+        """
+        for m in self.mounts:
+            m.umount_wait()
+        self.fs.add_data_pool('another-data-pool')
+        oldvolname = self.volname
+        newvolname = self._generate_random_volume_name()
+        self.fs.get_pool_names(refresh=True)
+        orig_data_pool_names = list(self.fs.data_pools.values())
+        new_metadata_pool = f"cephfs.{newvolname}.meta"
+        self._fs_cmd("volume", "rename", self.volname, newvolname,
+                     "--yes-i-really-mean-it")
+        volumels = json.loads(self._fs_cmd('volume', 'ls'))
+        volnames = [volume['name'] for volume in volumels]
+        # volume name changed
+        self.assertIn(newvolname, volnames)
+        self.assertNotIn(oldvolname, volnames)
+        self.fs.get_pool_names(refresh=True)
+        # metadata pool name changed
+        self.assertEqual(new_metadata_pool, self.fs.get_metadata_pool_name())
+        # data pool names unchanged
+        self.assertCountEqual(orig_data_pool_names, list(self.fs.data_pools.values()))
+
 
 class TestSubvolumeGroups(TestVolumesHelper):
     """Tests for FS subvolume group operations."""
@@ -683,6 +766,26 @@ class TestSubvolumeGroups(TestVolumesHelper):
             if collections.Counter(subvolgroupnames) != collections.Counter(subvolumegroups):
                 raise RuntimeError("Error creating or listing subvolume groups")
 
+    def test_subvolume_group_ls_filter(self):
+        # tests the 'fs subvolumegroup ls' command filters '_deleting' directory
+
+        subvolumegroups = []
+
+        #create subvolumegroup
+        subvolumegroups = self._generate_random_group_name(3)
+        for groupname in subvolumegroups:
+            self._fs_cmd("subvolumegroup", "create", self.volname, groupname)
+
+        # create subvolume and remove. This creates '_deleting' directory.
+        subvolume = self._generate_random_subvolume_name()
+        self._fs_cmd("subvolume", "create", self.volname, subvolume)
+        self._fs_cmd("subvolume", "rm", self.volname, subvolume)
+
+        subvolumegroupls = json.loads(self._fs_cmd('subvolumegroup', 'ls', self.volname))
+        subvolgroupnames = [subvolumegroup['name'] for subvolumegroup in subvolumegroupls]
+        if "_deleting" in subvolgroupnames:
+            self.fail("Listing subvolume groups listed '_deleting' directory")
+
     def test_subvolume_group_ls_for_nonexistent_volume(self):
         # tests the 'fs subvolumegroup ls' command when /volume doesn't exist
         # prerequisite: we expect that the test volume is created and a subvolumegroup is NOT created
@@ -842,6 +945,58 @@ class TestSubvolumes(TestVolumesHelper):
         # get subvolume metadata
         subvol_info = json.loads(self._get_subvolume_info(self.volname, subvolume))
         self.assertEqual(subvol_info["bytes_quota"], 1000000000)
+
+        # remove subvolume
+        self._fs_cmd("subvolume", "rm", self.volname, subvolume)
+
+        # verify trash dir is clean
+        self._wait_for_trash_empty()
+
+    def test_subvolume_create_idempotence_mode(self):
+        # default mode
+        default_mode = "755"
+
+        # create subvolume
+        subvolume = self._generate_random_subvolume_name()
+        self._fs_cmd("subvolume", "create", self.volname, subvolume)
+
+        subvol_path = self._get_subvolume_path(self.volname, subvolume)
+
+        actual_mode_1 = self.mount_a.run_shell(['stat', '-c' '%a', subvol_path]).stdout.getvalue().strip()
+        self.assertEqual(actual_mode_1, default_mode)
+
+        # try creating w/ same subvolume name with --mode 777
+        new_mode = "777"
+        self._fs_cmd("subvolume", "create", self.volname, subvolume, "--mode", new_mode)
+
+        actual_mode_2 = self.mount_a.run_shell(['stat', '-c' '%a', subvol_path]).stdout.getvalue().strip()
+        self.assertEqual(actual_mode_2, new_mode)
+
+        # remove subvolume
+        self._fs_cmd("subvolume", "rm", self.volname, subvolume)
+
+        # verify trash dir is clean
+        self._wait_for_trash_empty()
+
+    def test_subvolume_create_idempotence_without_passing_mode(self):
+        # create subvolume
+        desired_mode = "777"
+        subvolume = self._generate_random_subvolume_name()
+        self._fs_cmd("subvolume", "create", self.volname, subvolume, "--mode", desired_mode)
+
+        subvol_path = self._get_subvolume_path(self.volname, subvolume)
+
+        actual_mode_1 = self.mount_a.run_shell(['stat', '-c' '%a', subvol_path]).stdout.getvalue().strip()
+        self.assertEqual(actual_mode_1, desired_mode)
+
+        # default mode
+        default_mode = "755"
+
+        # try creating w/ same subvolume name without passing --mode argument
+        self._fs_cmd("subvolume", "create", self.volname, subvolume)
+
+        actual_mode_2 = self.mount_a.run_shell(['stat', '-c' '%a', subvol_path]).stdout.getvalue().strip()
+        self.assertEqual(actual_mode_2, default_mode)
 
         # remove subvolume
         self._fs_cmd("subvolume", "rm", self.volname, subvolume)
@@ -3233,6 +3388,54 @@ class TestSubvolumeSnapshotClones(TestVolumesHelper):
 
         # verify clone
         self._verify_clone(subvolume, snapshot, clone)
+
+        # remove snapshot
+        self._fs_cmd("subvolume", "snapshot", "rm", self.volname, subvolume, snapshot)
+
+        # remove subvolumes
+        self._fs_cmd("subvolume", "rm", self.volname, subvolume)
+        self._fs_cmd("subvolume", "rm", self.volname, clone)
+
+        # verify trash dir is clean
+        self._wait_for_trash_empty()
+
+    def test_subvolume_clone_inherit_quota_attrs(self):
+        subvolume = self._generate_random_subvolume_name()
+        snapshot = self._generate_random_snapshot_name()
+        clone = self._generate_random_clone_name()
+        osize = self.DEFAULT_FILE_SIZE*1024*1024*12
+
+        # create subvolume with a specified size
+        self._fs_cmd("subvolume", "create", self.volname, subvolume, "--mode=777", "--size", str(osize))
+
+        # do some IO
+        self._do_subvolume_io(subvolume, number_of_files=8)
+
+        # get subvolume path
+        subvolpath = self._get_subvolume_path(self.volname, subvolume)
+
+        # set quota on number of files
+        self.mount_a.setfattr(subvolpath, 'ceph.quota.max_files', "20", sudo=True)
+
+        # snapshot subvolume
+        self._fs_cmd("subvolume", "snapshot", "create", self.volname, subvolume, snapshot)
+
+        # schedule a clone
+        self._fs_cmd("subvolume", "snapshot", "clone", self.volname, subvolume, snapshot, clone)
+
+        # check clone status
+        self._wait_for_clone_to_complete(clone)
+
+        # verify clone
+        self._verify_clone(subvolume, snapshot, clone)
+
+        # get subvolume path
+        clonepath = self._get_subvolume_path(self.volname, clone)
+
+        # verify quota max_files is inherited from source snapshot
+        subvol_quota = self.mount_a.getfattr(subvolpath, "ceph.quota.max_files")
+        clone_quota = self.mount_a.getfattr(clonepath, "ceph.quota.max_files")
+        self.assertEqual(subvol_quota, clone_quota)
 
         # remove snapshot
         self._fs_cmd("subvolume", "snapshot", "rm", self.volname, subvolume, snapshot)

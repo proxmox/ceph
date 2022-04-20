@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.16)
 
 project(ceph
-  VERSION 17.1.0
+  VERSION 17.2.0
   LANGUAGES CXX C ASM)
 
 cmake_policy(SET CMP0028 NEW)
@@ -270,10 +270,16 @@ endif()
 
 option(WITH_BLUEFS "libbluefs library" OFF)
 
+option(WITH_QAT "Enable Qat driver" OFF)
+if(WITH_QAT)
+  find_package(QatDrv REQUIRED COMPONENTS qat_s usdm_drv_s)
+  set(HAVE_QATDRV $(QatDrv_FOUND))
+endif()
+
 option(WITH_QATZIP "Enable QATZIP" OFF)
 if(WITH_QATZIP)
   find_package(qatzip REQUIRED)
-  set(HAVE_QATZIP ${QATZIP_FOUND})
+  set(HAVE_QATZIP ${qatzip_FOUND})
 endif(WITH_QATZIP)
 
 # needs mds and? XXX
@@ -394,7 +400,10 @@ option(WITH_RADOSGW_AMQP_ENDPOINT "Rados Gateway's pubsub support for AMQP push 
 option(WITH_RADOSGW_KAFKA_ENDPOINT "Rados Gateway's pubsub support for Kafka push endpoint" ON)
 option(WITH_RADOSGW_LUA_PACKAGES "Rados Gateway's support for dynamically adding lua packagess" ON)
 option(WITH_RADOSGW_DBSTORE "DBStore backend for Rados Gateway" ON)
-option(WITH_RADOSGW_SELECT_PARQUET "Support for s3 select on parquet objects" OFF)
+option(WITH_RADOSGW_SELECT_PARQUET "Support for s3 select on parquet objects" ON)
+
+option(WITH_SYSTEM_ARROW "Use system-provided arrow" OFF)
+option(WITH_SYSTEM_UTF8PROC "Use system-provided utf8proc" ON)
 
 if(WITH_RADOSGW)
   find_package(EXPAT REQUIRED)

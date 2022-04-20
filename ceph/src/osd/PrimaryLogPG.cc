@@ -4694,6 +4694,8 @@ int PrimaryLogPG::trim_object(
 
   PGTransaction *t = ctx->op_t.get();
 
+  int64_t num_objects_before_trim = ctx->delta_stats.num_objects;
+
   if (new_snaps.empty()) {
     // remove clone
     dout(10) << coid << " snaps " << old_snaps << " -> "
@@ -4881,6 +4883,13 @@ int PrimaryLogPG::trim_object(
     t->setattrs(head_oid, attrs);
   }
 
+  // Stats reporting - Set number of objects trimmed
+  if (num_objects_before_trim > ctx->delta_stats.num_objects) {
+    int64_t num_objects_trimmed =
+      num_objects_before_trim - ctx->delta_stats.num_objects;
+    add_objects_trimmed_count(num_objects_trimmed);
+  }
+
   *ctxp = std::move(ctx);
   return 0;
 }
@@ -4896,6 +4905,8 @@ void PrimaryLogPG::kick_snap_trim()
       dout(10) << __func__ << ": nosnaptrim set, not kicking" << dendl;
     } else {
       dout(10) << __func__ << ": clean and snaps to trim, kicking" << dendl;
+      reset_objects_trimmed();
+      set_snaptrim_begin_stamp();
       snap_trimmer_machine.process_event(KickTrim());
     }
   }
@@ -4903,8 +4914,8 @@ void PrimaryLogPG::kick_snap_trim()
 
 void PrimaryLogPG::snap_trimmer_scrub_complete()
 {
-  if (is_primary() && is_active() && is_clean()) {
-    ceph_assert(!snap_trimq.empty());
+  if (is_primary() && is_active() && is_clean() && !snap_trimq.empty()) {
+    dout(10) << "scrub finished - requeuing snap_trimmer" << dendl;
     snap_trimmer_machine.process_event(ScrubComplete());
   }
 }
@@ -5848,22 +5859,26 @@ int PrimaryLogPG::do_sparse_read(OpContext *ctx, OSDOp& osd_op) {
   auto& op = osd_op.op;
   auto& oi = ctx->new_obs.oi;
   auto& soid = oi.soid;
+  uint64_t size = oi.size;
+  uint64_t offset = op.extent.offset;
+  uint64_t length = op.extent.length;
 
-  if (op.extent.truncate_seq) {
-    dout(0) << "sparse_read does not support truncation sequence " << dendl;
-    return -EINVAL;
+  // are we beyond truncate_size?
+  if ((oi.truncate_seq < op.extent.truncate_seq) &&
+       (op.extent.offset + op.extent.length > op.extent.truncate_size) &&
+       (size > op.extent.truncate_size)) {
+    size = op.extent.truncate_size;
+  }
+
+  if (offset > size) {
+    length = 0;
+  } else if (offset + length > size) {
+    length = size - offset;
   }
 
   ++ctx->num_read;
   if (pool.info.is_erasure()) {
     // translate sparse read to a normal one if not supported
-    uint64_t offset = op.extent.offset;
-    uint64_t length = op.extent.length;
-    if (offset > oi.size) {
-      length = 0;
-    } else if (offset + length > oi.size) {
-      length = oi.size - offset;
-    }
 
     if (length > 0) {
       ctx->pending_async_reads.push_back(
@@ -5887,7 +5902,7 @@ int PrimaryLogPG::do_sparse_read(OpContext *ctx, OSDOp& osd_op) {
     map<uint64_t, uint64_t> m;
     int r = osd->store->fiemap(ch, ghobject_t(soid, ghobject_t::NO_GEN,
 					      info.pgid.shard),
-			       op.extent.offset, op.extent.length, m);
+			       offset, length, m);
     if (r < 0)  {
       return r;
     }
@@ -7965,6 +7980,7 @@ int PrimaryLogPG::do_osd_ops(OpContext *ctx, vector<OSDOp>& ops)
 	  goto fail;
 	}
 	t->omap_rmkeyrange(soid, key_begin, key_end);
+        ctx->clean_regions.mark_omap_dirty();
 	ctx->delta_stats.num_wr++;
       }
       obs.oi.clear_omap_digest();
@@ -15594,6 +15610,9 @@ boost::statechart::result PrimaryLogPG::AwaitAsyncWork::react(const DoSnapWork&)
 
   vector<hobject_t> to_trim;
   unsigned max = pg->cct->_conf->osd_pg_max_concurrent_snap_trims;
+  // we need to look for at least 1 snaptrim, otherwise we'll misinterpret
+  // the ENOENT below and erase snap_to_trim.
+  ceph_assert(max > 0);
   to_trim.reserve(max);
   int r = pg->snap_mapper.get_next_objects_to_trim(
     snap_to_trim,
@@ -15633,6 +15652,7 @@ boost::statechart::result PrimaryLogPG::AwaitAsyncWork::react(const DoSnapWork&)
       pg->recovery_state.share_pg_info();
     }
     post_event(KickTrim());
+    pg->set_snaptrim_duration();
     return transit< NotTrimming >();
   }
   ceph_assert(!to_trim.empty());

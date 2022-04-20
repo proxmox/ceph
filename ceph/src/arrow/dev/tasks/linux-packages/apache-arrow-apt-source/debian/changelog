@@ -1,0 +1,11 @@
+apache-arrow-apt-source (6.0.1-1) unstable; urgency=low
+
+  * New upstream release.
+
+ -- Sutou Kouhei <kou@clear-code.com>  Wed, 10 Nov 2021 02:04:45 -0000
+
+apache-arrow-apt-source (6.0.0-1) unstable; urgency=low
+
+  * New upstream release.
+
+ -- Krisztián Szűcs <szucs.krisztian@gmail.com>  Thu, 21 Oct 2021 19:01:54 -0000
