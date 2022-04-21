@@ -1,3 +1,9 @@
+ceph (17.2.0-pve1) bullseye; urgency=medium
+
+  * Initial packaging of new major upstream ceph Quincy release
+
+ -- Proxmox Support Team <support@proxmox.com>  Thu, 21 Apr 2022 17:46:16 +0200
+
 ceph (16.2.7) bullseye; urgency=medium
 
   * new upstream pacific 16.2.7 stable release
