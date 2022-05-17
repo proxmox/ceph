@@ -17,6 +17,7 @@ for details on individual services:
     iscsi
     custom-container
     monitoring
+    snmp-gateway
 
 Service Status
 ==============
@@ -25,8 +26,8 @@ Service Status
 To see the status of one
 of the services running in the Ceph cluster, do the following:
 
-#. Use the command line to print a list of services. 
-#. Locate the service whose status you want to check. 
+#. Use the command line to print a list of services.
+#. Locate the service whose status you want to check.
 #. Print the status of the service.
 
 The following command prints a list of services known to the orchestrator. To
@@ -78,7 +79,7 @@ system name:
    .. prompt:: bash #
 
     ceph orch ps --daemon_type osd --daemon_id 0
-    
+
 .. _orchestrator-cli-service-spec:
 
 Service Specification
@@ -147,7 +148,7 @@ the Services Specification, we suggest exporting the running Service Specificati
 following these instructions:
 
    .. prompt:: bash #
-    
+
     ceph orch ls --service-name rgw.<realm>.<zone> --export > rgw.<realm>.<zone>.yaml
     ceph orch ls --service-type mgr --export > mgr.yaml
     ceph orch ls --export > cluster.yaml
@@ -401,6 +402,30 @@ YAML can also be used to specify limits on hosts:
         - host2
         - host3
 
+.. _cephadm_co_location:
+
+Co-location of daemons
+----------------------
+
+Cephadm supports the deployment of multiple daemons on the same host:
+
+.. code-block:: yaml
+
+    service_type: rgw
+    placement:
+      label: rgw
+      count-per-host: 2
+
+The main reason for deploying multiple daemons per host is an additional
+performance benefit for running multiple RGW and MDS daemons on the same host.
+
+See also: 
+
+* :ref:`cephadm_mgr_co_location`.
+* :ref:`cephadm-rgw-designated_gateways`.
+
+This feature was introduced in Pacific.
+
 Algorithm description
 ---------------------
 
@@ -453,6 +478,32 @@ candidate hosts.
 
    If there are fewer hosts selected by the placement specification than
    demanded by ``count``, cephadm will deploy only on the selected hosts.
+
+Extra Container Arguments
+=========================
+
+.. warning:: 
+  The arguments provided for extra container args are limited to whatever arguments are available for a `run` command from whichever container engine you are using. Providing any arguments the `run` command does not support (or invalid values for arguments) will cause the daemon to fail to start.
+
+
+Cephadm supports providing extra miscellaneous container arguments for
+specific cases when they may be necessary. For example, if a user needed
+to limit the amount of cpus their mon daemons make use of they could apply
+a spec like
+
+.. code-block:: yaml
+
+    service_type: mon
+    service_name: mon
+    placement:
+      hosts:
+        - host1
+        - host2
+        - host3
+    extra_container_args:
+      -  "--cpus=2"
+
+which would cause each mon daemon to be deployed with `--cpus=2`.
 
 .. _orch-rm:
 
@@ -515,12 +566,12 @@ Deploying a daemon on a host manually
 .. note::
 
   This workflow has a very limited use case and should only be used
-  in rare circumstances. 
+  in rare circumstances.
 
 To manually deploy a daemon on a host, follow these steps:
 
-Modify the service spec for a service by getting the 
-existing spec, adding ``unmanaged: true``, and applying the modified spec. 
+Modify the service spec for a service by getting the
+existing spec, adding ``unmanaged: true``, and applying the modified spec.
 
 Then manually deploy the daemon using the following:
 
@@ -534,12 +585,12 @@ For example :
 
      ceph orch daemon add mgr --placement=my_host
 
-.. note:: 
+.. note::
 
-  Removing ``unmanaged: true`` from the service spec will 
+  Removing ``unmanaged: true`` from the service spec will
   enable the reconciliation loop for this service and will
   potentially lead to the removal of the daemon, depending
-  on the placement spec. 
+  on the placement spec.
 
 Removing a daemon from a host manually
 --------------------------------------
@@ -556,13 +607,13 @@ For example:
 
      ceph orch daemon rm mgr.my_host.xyzxyz
 
-.. note:: 
+.. note::
 
   For managed services (``unmanaged=False``), cephadm will automatically
   deploy a new daemon a few seconds later.
 
 See also
 --------
-    
-* See :ref:`cephadm-osd-declarative` for special handling of unmanaged OSDs. 
+
+* See :ref:`cephadm-osd-declarative` for special handling of unmanaged OSDs.
 * See also :ref:`cephadm-pause`

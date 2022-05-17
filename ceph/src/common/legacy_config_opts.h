@@ -305,6 +305,8 @@ OPTION(mon_debug_unsafe_allow_tier_with_nonempty_snaps, OPT_BOOL)
 OPTION(mon_osd_blocklist_default_expire, OPT_DOUBLE) // default one hour
 OPTION(mon_osd_crush_smoke_test, OPT_BOOL)
 
+OPTION(mgr_max_pg_num_change, OPT_INT)
+
 OPTION(paxos_stash_full_interval, OPT_INT)   // how often (in commits) to stash a full copy of the PaxosService state
 OPTION(paxos_max_join_drift, OPT_INT) // max paxos iterations before we must first sync the monitor stores
 OPTION(paxos_propose_interval, OPT_DOUBLE)  // gather updates for this long before proposing a map update
@@ -574,6 +576,7 @@ OPTION(osd_pool_default_flag_hashpspool, OPT_BOOL)   // use new pg hashing to pr
 OPTION(osd_pool_default_flag_nodelete, OPT_BOOL) // pool can't be deleted
 OPTION(osd_pool_default_flag_nopgchange, OPT_BOOL) // pool's pg and pgp num can't be changed
 OPTION(osd_pool_default_flag_nosizechange, OPT_BOOL) // pool's size and min size can't be changed
+OPTION(osd_pool_default_flag_bulk, OPT_BOOL)
 OPTION(osd_pool_default_hit_set_bloom_fpp, OPT_FLOAT)
 OPTION(osd_pool_default_cache_target_dirty_ratio, OPT_FLOAT)
 OPTION(osd_pool_default_cache_target_dirty_high_ratio, OPT_FLOAT)
@@ -606,6 +609,7 @@ OPTION(osd_max_markdown_count, OPT_INT)
 OPTION(osd_op_pq_max_tokens_per_priority, OPT_U64)
 OPTION(osd_op_pq_min_cost, OPT_U64)
 OPTION(osd_recover_clone_overlap, OPT_BOOL)   // preserve clone_overlap during recovery/migration
+OPTION(osd_aggregated_slow_ops_logging, OPT_BOOL)
 OPTION(osd_op_num_threads_per_shard, OPT_INT)
 OPTION(osd_op_num_threads_per_shard_hdd, OPT_INT)
 OPTION(osd_op_num_threads_per_shard_ssd, OPT_INT)
@@ -764,6 +768,7 @@ OPTION(osd_failsafe_full_ratio, OPT_FLOAT) // what % full makes an OSD "full" (f
 OPTION(osd_fast_shutdown, OPT_BOOL)
 OPTION(osd_fast_shutdown_notify_mon, OPT_BOOL) // tell mon the OSD is shutting down on osd_fast_shutdown
 OPTION(osd_fast_fail_on_connection_refused, OPT_BOOL) // immediately mark OSDs as down once they refuse to accept connections
+OPTION(osd_rocksdb_iterator_bounds_enabled, OPT_BOOL) // whether omap iterator bounds are applied to rocksdb iterator ReadOptions
 
 OPTION(osd_pg_object_context_cache_count, OPT_INT)
 OPTION(osd_tracing, OPT_BOOL) // true if LTTng-UST tracepoints should be enabled

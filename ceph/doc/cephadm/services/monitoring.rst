@@ -161,6 +161,8 @@ For example, if you had changed the prometheus image
 
           ceph config rm mgr mgr/cephadm/container_image_prometheus
 
+.. _cephadm-overwrite-jinja2-templates:
+
 Using custom configuration files
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -180,7 +182,7 @@ preserved and automatically applied on future deployments of these services.
 
   The configuration of the custom template is also preserved when the default
   configuration of cephadm changes. If the updated configuration is to be used,
-  the custom template needs to be migrated *manually*.
+  the custom template needs to be migrated *manually* after each upgrade of Ceph.
 
 Option names
 """"""""""""
@@ -338,6 +340,30 @@ update its configuration:
 
 The ``reconfig`` command also sets the proper URL for Ceph Dashboard.
 
+Setting the initial admin password
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+By default, Grafana will not create an initial
+admin user. In order to create the admin user, please create a file
+``grafana.yaml`` with this content:
+
+.. code-block:: yaml
+
+  service_type: grafana
+  spec:
+    initial_admin_password: mypassword
+
+Then apply this specification:
+
+.. code-block:: bash
+
+  ceph orch apply -i grafana.yaml
+  ceph orch redeploy grafana
+
+Grafana will now create an admin user called ``admin`` with the
+given password.
+
+
 Setting up Alertmanager
 -----------------------
 
@@ -360,6 +386,26 @@ Where ``default_webhook_urls`` is a list of additional URLs that are
 added to the default receivers' ``<webhook_configs>`` configuration.
 
 Run ``reconfig`` on the service to update its configuration:
+
+.. prompt:: bash #
+
+  ceph orch reconfig alertmanager
+
+Turn on Certificate Validation
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+If you are using certificates for alertmanager and want to make sure
+these certs are verified, you should set the "secure" option to
+true in your alertmanager spec (this defaults to false).
+
+.. code-block:: yaml
+
+    service_type: alertmanager
+    spec:
+      secure: true
+
+If you already had alertmanager daemons running before applying the spec
+you must reconfigure them to update their configuration
 
 .. prompt:: bash #
 

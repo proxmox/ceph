@@ -2316,6 +2316,11 @@ void librados::IoCtx::unset_osdmap_full_try()
   io_ctx_impl->extra_op_flags &= ~CEPH_OSD_FLAG_FULL_TRY;
 }
 
+bool librados::IoCtx::get_pool_full_try()
+{
+  return (io_ctx_impl->extra_op_flags & CEPH_OSD_FLAG_FULL_TRY) != 0;
+}
+
 void librados::IoCtx::set_pool_full_try()
 {
   io_ctx_impl->extra_op_flags |= CEPH_OSD_FLAG_FULL_TRY;
@@ -2589,7 +2594,7 @@ int64_t librados::Rados::pool_lookup(const char *name)
 
 int librados::Rados::pool_reverse_lookup(int64_t id, std::string *name)
 {
-  return client->pool_get_name(id, name);
+  return client->pool_get_name(id, name, true);
 }
 
 int librados::Rados::mon_command(string cmd, const bufferlist& inbl,

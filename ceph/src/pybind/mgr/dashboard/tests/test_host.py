@@ -1,40 +1,13 @@
-import contextlib
 import unittest
-from typing import List, Optional
 from unittest import mock
 
-from orchestrator import HostSpec, InventoryHost
+from orchestrator import HostSpec
 
 from .. import mgr
 from ..controllers._version import APIVersion
 from ..controllers.host import Host, HostUi, get_device_osd_map, get_hosts, get_inventories
-from ..tests import ControllerTestCase
+from ..tests import ControllerTestCase, patch_orch
 from ..tools import NotificationQueue, TaskManager
-
-
-@contextlib.contextmanager
-def patch_orch(available: bool, missing_features: Optional[List[str]] = None,
-               hosts: Optional[List[HostSpec]] = None,
-               inventory: Optional[List[dict]] = None):
-    with mock.patch('dashboard.controllers.orchestrator.OrchClient.instance') as instance:
-        fake_client = mock.Mock()
-        fake_client.available.return_value = available
-        fake_client.get_missing_features.return_value = missing_features
-
-        if hosts is not None:
-            fake_client.hosts.list.return_value = hosts
-
-        if inventory is not None:
-            def _list_inventory(hosts=None, refresh=False):  # pylint: disable=unused-argument
-                inv_hosts = []
-                for inv_host in inventory:
-                    if hosts is None or inv_host['name'] in hosts:
-                        inv_hosts.append(InventoryHost.from_json(inv_host))
-                return inv_hosts
-            fake_client.inventory.list.side_effect = _list_inventory
-
-        instance.return_value = fake_client
-        yield fake_client
 
 
 class HostControllerTest(ControllerTestCase):
@@ -330,6 +303,24 @@ class HostControllerTest(ControllerTestCase):
         # list without orchestrator service
         with patch_orch(False):
             self._get(inventory_url)
+            self.assertStatus(503)
+
+    def test_host_drain(self):
+        mgr.list_servers.return_value = []
+        orch_hosts = [
+            HostSpec('node0')
+        ]
+        with patch_orch(True, hosts=orch_hosts):
+            self._put('{}/node0'.format(self.URL_HOST), {'drain': True},
+                      version=APIVersion(0, 1))
+            self.assertStatus(200)
+            self.assertHeader('Content-Type',
+                              'application/vnd.ceph.api.v0.1+json')
+
+        # maintenance without orchestrator service
+        with patch_orch(False):
+            self._put('{}/node0'.format(self.URL_HOST), {'drain': True},
+                      version=APIVersion(0, 1))
             self.assertStatus(503)
 
 

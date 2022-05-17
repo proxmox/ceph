@@ -1597,6 +1597,21 @@ void PGMap::dump_pg_stats(ceph::Formatter *f, bool brief) const
   f->close_section();
 }
 
+void PGMap::dump_pg_progress(ceph::Formatter *f) const
+{
+  f->open_object_section("pgs");
+  for (auto& i : pg_stat) {
+    std::string n = stringify(i.first);
+    f->open_object_section(n.c_str());
+    f->dump_int("num_bytes_recovered", i.second.stats.sum.num_bytes_recovered);
+    f->dump_int("num_bytes", i.second.stats.sum.num_bytes);
+    f->dump_unsigned("reported_epoch", i.second.reported_epoch);
+    f->dump_string("state", pg_state_string(i.second.state));
+    f->close_section();
+  }
+  f->close_section();
+}
+
 void PGMap::dump_pool_stats(ceph::Formatter *f) const
 {
   f->open_array_section("pool_stats");
@@ -2996,11 +3011,13 @@ void PGMap::get_health_checks(
 	if (mon_pg_warn_max_object_skew > 0 &&
 	    ratio > mon_pg_warn_max_object_skew) {
 	  ostringstream ss;
-	  ss << "pool " << name << " objects per pg ("
-	     << objects_per_pg << ") is more than " << ratio
-	     << " times cluster average ("
-	     << average_objects_per_pg << ")";
-	  many_detail.push_back(ss.str());
+	  if (pi->pg_autoscale_mode != pg_pool_t::pg_autoscale_mode_t::ON) {
+	      ss << "pool " << name << " objects per pg ("
+		 << objects_per_pg << ") is more than " << ratio
+		 << " times cluster average ("
+		 << average_objects_per_pg << ")";
+	      many_detail.push_back(ss.str());
+	  }
 	}
       }
     }

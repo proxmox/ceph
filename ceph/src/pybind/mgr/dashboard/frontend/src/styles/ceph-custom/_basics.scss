@@ -17,6 +17,11 @@ option {
   font-weight: normal;
 }
 
+mark {
+  background-color: vv.$yellow;
+  padding: 0;
+}
+
 .full-height {
   height: 100vh;
 }
@@ -35,7 +40,7 @@ option {
   justify-content: center;
 }
 
-.loading {
+.loading:not(cd-api-docs *) {
   left: 50%;
   position: absolute;
   top: 50%;

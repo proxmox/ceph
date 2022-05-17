@@ -30,6 +30,8 @@
 
 #include "rgw_zone.h"
 #include "rgw_rest_conn.h"
+#include "rgw_service.h"
+#include "rgw_lc.h"
 #include "services/svc_sys_obj.h"
 #include "services/svc_zone.h"
 #include "services/svc_tier_rados.h"
@@ -132,6 +134,10 @@ int RGWRadosBucket::remove_bucket(const DoutPrefixProvider *dpp,
     return ret;
   }
 
+  // remove lifecycle config, if any (XXX note could be made generic)
+  (void) store->getRados()->get_lc()->remove_bucket_config(
+    this->info, get_attrs());
+
   ret = store->ctl()->bucket->sync_user_stats(dpp, info.owner, info, y);
   if (ret < 0) {
      ldout(store->ctx(), 1) << "WARNING: failed sync user stats before bucket delete. ret=" <<  ret << dendl;
@@ -192,6 +198,7 @@ int RGWRadosBucket::get_bucket_info(const DoutPrefixProvider *dpp, optional_yiel
   if (ret == 0) {
     bucket_version = ep_ot.read_version;
     ent.placement_rule = info.placement_rule;
+    ent.bucket = info.bucket; // we looked up bucket_id
   }
   return ret;
 }
@@ -809,6 +816,7 @@ RGWRadosObject::RadosWriteOp::RadosWriteOp(RGWRadosObject* _source, RGWObjectCtx
 int RGWRadosObject::RadosWriteOp::prepare(optional_yield y)
 {
   op_target.set_versioning_disabled(params.versioning_disabled);
+  op_target.set_meta_placement_rule(params.pmeta_placement_rule);
   parent_op.meta.mtime = params.mtime;
   parent_op.meta.rmattrs = params.rmattrs;
   parent_op.meta.data = params.data;

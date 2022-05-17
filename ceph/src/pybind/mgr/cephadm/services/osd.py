@@ -120,6 +120,10 @@ class OSDService(CephService):
                 if osd_id in before_osd_uuid_map and osd_id not in replace_osd_ids:
                     # if it exists but is part of the replacement operation, don't skip
                     continue
+                if self.mgr.cache.has_daemon(f'osd.{osd_id}', host):
+                    # cephadm daemon instance already exists
+                    logger.debug(f'osd id {osd_id} daemon already exists')
+                    continue
                 if osd_id not in osd_uuid_map:
                     logger.debug('osd id {} does not exist in cluster'.format(osd_id))
                     continue
@@ -133,7 +137,7 @@ class OSDService(CephService):
                 created.append(osd_id)
                 daemon_spec: CephadmDaemonDeploySpec = CephadmDaemonDeploySpec(
                     service_name=service_name,
-                    daemon_id=osd_id,
+                    daemon_id=str(osd_id),
                     host=host,
                     daemon_type='osd',
                 )
@@ -310,9 +314,6 @@ class OSDService(CephService):
             stdin=j,
             error_ok=True)
         return out, err, code
-
-    def get_osdspec_affinity(self, osd_id: str) -> str:
-        return self.mgr.get('osd_metadata').get(osd_id, {}).get('osdspec_affinity', '')
 
     def post_remove(self, daemon: DaemonDescription, is_failed_deploy: bool) -> None:
         # Do not remove the osd.N keyring, if we failed to deploy the OSD, because

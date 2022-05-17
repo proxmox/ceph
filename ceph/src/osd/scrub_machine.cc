@@ -42,12 +42,15 @@ void on_event_discard(std::string_view nm)
   dout(20) << " event: --^^^^---- " << nm << dendl;
 }
 
-void ScrubMachine::my_states() const
+std::string ScrubMachine::current_states_desc() const
 {
+  std::string sts{"<"};
   for (auto si = state_begin(); si != state_end(); ++si) {
-    const auto& siw{*si};  // prevents a warning re side-effects
-    dout(20) << " state: " << boost::core::demangle(typeid(siw).name()) << dendl;
+    const auto& siw{ *si };  // prevents a warning re side-effects
+    // the '7' is the size of the 'scrub::'
+    sts += boost::core::demangle(typeid(siw).name()).substr(7, std::string::npos) + "/";
   }
+  return sts + ">";
 }
 
 void ScrubMachine::assert_not_active() const
@@ -60,12 +63,27 @@ bool ScrubMachine::is_reserving() const
   return state_cast<const ReservingReplicas*>();
 }
 
+bool ScrubMachine::is_accepting_updates() const
+{
+  DECLARE_LOCALS;  // 'scrbr' & 'pg_id' aliases
+  ceph_assert(scrbr->is_primary());
+
+  return state_cast<const WaitLastUpdate*>();
+}
+
 // for the rest of the code in this file - we know what PG we are dealing with:
 #undef dout_prefix
-#define dout_prefix _prefix(_dout, this->context<ScrubMachine>().m_pg)
-template <class T> static ostream& _prefix(std::ostream* _dout, T* t)
+#define dout_prefix _prefix(_dout, this->context<ScrubMachine>())
+
+template <class T>
+static ostream& _prefix(std::ostream* _dout, T& t)
 {
-  return t->gen_prefix(*_dout) << " scrubberFSM pg(" << t->pg_id << ") ";
+  return t.gen_prefix(*_dout);
+}
+
+std::ostream& ScrubMachine::gen_prefix(std::ostream& out) const
+{
+  return m_scrbr->gen_prefix(out) << "FSM: ";
 }
 
 // ////////////// the actual actions
@@ -183,15 +201,10 @@ NewChunk::NewChunk(my_context ctx) : my_base(ctx)
   scrbr->get_preemptor().adjust_parameters();
 
   //  choose range to work on
-  bool got_a_chunk = scrbr->select_range();
-  if (got_a_chunk) {
-    dout(15) << __func__ << " selection OK" << dendl;
-    post_event(SelectedChunkFree{});
-  } else {
-    dout(10) << __func__ << " selected chunk is busy" << dendl;
-    // wait until we are available (transitioning to Blocked)
-    post_event(ChunkIsBusy{});
-  }
+  //  select_range_n_notify() will signal either SelectedChunkFree or
+  //  ChunkIsBusy. If 'busy', we transition to Blocked, and wait for the
+  //  range to become available.
+  scrbr->select_range_n_notify();
 }
 
 sc::result NewChunk::react(const SelectedChunkFree&)
@@ -236,6 +249,15 @@ WaitLastUpdate::WaitLastUpdate(my_context ctx) : my_base(ctx)
   post_event(UpdatesApplied{});
 }
 
+/**
+ *  Note:
+ *  Updates are locally readable immediately. Thus, on the replicas we do need
+ *  to wait for the update notifications before scrubbing. For the Primary it's
+ *  a bit different: on EC (and only there) rmw operations have an additional
+ *  read roundtrip. That means that on the Primary we need to wait for
+ *  last_update_applied (the replica side, even on EC, is still safe
+ *  since the actual transaction will already be readable by commit time.
+ */
 void WaitLastUpdate::on_new_updates(const UpdatesApplied&)
 {
   DECLARE_LOCALS;  // 'scrbr' & 'pg_id' aliases
@@ -290,7 +312,6 @@ BuildMap::BuildMap(my_context ctx) : my_base(ctx)
     } else if (ret < 0) {
 
       dout(10) << "BuildMap::BuildMap() Error! Aborting. Ret: " << ret << dendl;
-      // scrbr->mark_local_map_ready();
       post_event(InternalError{});
 
     } else {
@@ -342,13 +363,28 @@ WaitReplicas::WaitReplicas(my_context ctx) : my_base(ctx)
   post_event(GotReplicas{});
 }
 
+/**
+ * note: now that maps_compare_n_cleanup() is "futurized"(*), and we remain in this state
+ *  for a while even after we got all our maps, we must prevent are_all_maps_available()
+ *  (actually - the code after the if()) from being called more than once.
+ * This is basically a separate state, but it's too transitory and artificial to justify
+ *  the cost of a separate state.
+
+ * (*) "futurized" - in Crimson, the call to maps_compare_n_cleanup() returns immediately
+ *  after initiating the process. The actual termination of the maps comparing etc' is
+ *  signalled via an event. As we share the code with "classic" OSD, here too
+ *  maps_compare_n_cleanup() is responsible for signalling the completion of the
+ *  processing.
+ */
 sc::result WaitReplicas::react(const GotReplicas&)
 {
   DECLARE_LOCALS;  // 'scrbr' & 'pg_id' aliases
   dout(10) << "WaitReplicas::react(const GotReplicas&)" << dendl;
 
-  if (scrbr->are_all_maps_available()) {
+  if (!all_maps_already_called && scrbr->are_all_maps_available()) {
     dout(10) << "WaitReplicas::react(const GotReplicas&) got all" << dendl;
+
+    all_maps_already_called = true;
 
     // were we preempted?
     if (scrbr->get_preemptor().disable_and_test()) {  // a test&set
@@ -359,8 +395,9 @@ sc::result WaitReplicas::react(const GotReplicas&)
 
     } else {
 
+      // maps_compare_n_cleanup() will arrange for MapsCompared event to be sent:
       scrbr->maps_compare_n_cleanup();
-      return transit<WaitDigestUpdate>();
+      return discard_event();
     }
   } else {
     return discard_event();
@@ -383,30 +420,19 @@ sc::result WaitDigestUpdate::react(const DigestUpdate&)
   DECLARE_LOCALS;  // 'scrbr' & 'pg_id' aliases
   dout(10) << "WaitDigestUpdate::react(const DigestUpdate&)" << dendl;
 
-  switch (scrbr->on_digest_updates()) {
+  // on_digest_updates() will either:
+  // - do nothing - if we are still waiting for updates, or
+  // - finish the scrubbing of the current chunk, and:
+  //  - send NextChunk, or
+  //  - send ScrubFinished
 
-    case Scrub::FsmNext::goto_notactive:
-      // scrubbing is done
-      return transit<NotActive>();
-
-    case Scrub::FsmNext::next_chunk:
-      // go get the next chunk
-      return transit<PendingTimer>();
-
-    case Scrub::FsmNext::do_discard:
-      // still waiting for more updates
-      return discard_event();
-  }
-  __builtin_unreachable();  // Prevent a gcc warning.
-			    // Adding a phony 'default:' above is wrong: (a) prevents a
-			    // warning if FsmNext is extended, and (b) elicits a correct
-			    // warning from Clang
+  scrbr->on_digest_updates();
+  return discard_event();
 }
 
 ScrubMachine::ScrubMachine(PG* pg, ScrubMachineListener* pg_scrub)
-    : m_pg{pg}, m_pg_id{pg->pg_id}, m_scrbr{pg_scrub}
+    : m_pg_id{pg->pg_id}, m_scrbr{pg_scrub}
 {
-  dout(15) << "ScrubMachine created " << m_pg_id << dendl;
 }
 
 ScrubMachine::~ScrubMachine() = default;
@@ -468,39 +494,18 @@ sc::result ActiveReplica::react(const SchedReplica&)
   if (scrbr->get_preemptor().was_preempted()) {
     dout(10) << "replica scrub job preempted" << dendl;
 
-    scrbr->send_replica_map(PreemptionNoted::preempted);
+    scrbr->send_preempted_replica();
     scrbr->replica_handling_done();
     return transit<NotActive>();
   }
 
   // start or check progress of build_replica_map_chunk()
-
-  auto ret = scrbr->build_replica_map_chunk();
-  dout(15) << "ActiveReplica::react(const SchedReplica&) Ret: " << ret << dendl;
-
-  if (ret == -EINPROGRESS) {
-    // must wait for the backend to finish. No external event source.
-    // build_replica_map_chunk() has already requeued a SchedReplica
-    // event.
-
-    dout(20) << "waiting for the backend..." << dendl;
-    return discard_event();
-  }
-
-  if (ret < 0) {
-    //  the existing code ignores this option, treating an error
-    //  report as a success.
-    dout(1) << "Error! Aborting. ActiveReplica::react(SchedReplica) Ret: " << ret
-	    << dendl;
-    scrbr->replica_handling_done();
+  auto ret_init = scrbr->build_replica_map_chunk();
+  if (ret_init != -EINPROGRESS) {
     return transit<NotActive>();
   }
 
-
-  // the local map was created. Send it to the primary.
-  scrbr->send_replica_map(PreemptionNoted::no_preemption);
-  scrbr->replica_handling_done();
-  return transit<NotActive>();
+  return discard_event();
 }
 
 /**

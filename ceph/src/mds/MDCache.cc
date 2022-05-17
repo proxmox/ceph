@@ -3732,8 +3732,9 @@ bool MDCache::expire_recursive(CInode *in, expiremap &expiremap)
       return true;
     }
 
-    for (auto &it : subdir->items) {
-      CDentry *dn = it.second;
+    for (auto it = subdir->items.begin(); it != subdir->items.end();) {
+      CDentry *dn = it->second;
+      it++;
       CDentry::linkage_t *dnl = dn->get_linkage();
       if (dnl->is_primary()) {
 	CInode *tin = dnl->get_inode();
@@ -8551,10 +8552,12 @@ CInode *MDCache::cache_traverse(const filepath& fp)
 
   CInode *in;
   unsigned depth = 0;
+  char mdsdir_name[16];
+  sprintf(mdsdir_name, "~mds%d", mds->get_nodeid());
 
   if (fp.get_ino()) {
     in = get_inode(fp.get_ino());
-  } else if (fp.depth() > 0 && fp[0] == "~mdsdir") {
+  } else if (fp.depth() > 0 && (fp[0] == "~mdsdir" || fp[0] == mdsdir_name)) {
     in = myin;
     depth = 1;
   } else {

@@ -24,6 +24,7 @@ from .fixtures import (
     mock_docker,
     mock_podman,
     with_cephadm_ctx,
+    mock_bad_firewalld,
 )
 
 with mock.patch('builtins.open', create=True):
@@ -218,10 +219,43 @@ class TestCephAdm(object):
         for address, expected in tests:
             wrap_test(address, expected)
 
+    @mock.patch('cephadm.Firewalld', mock_bad_firewalld)
+    @mock.patch('cephadm.logger')
+    def test_skip_firewalld(self, logger, cephadm_fs):
+        """
+        test --skip-firewalld actually skips changing firewall
+        """
+
+        ctx = cd.CephadmContext()
+        with pytest.raises(Exception):
+            cd.update_firewalld(ctx, 'mon')
+
+        ctx.skip_firewalld = True
+        cd.update_firewalld(ctx, 'mon')
+
+        ctx.skip_firewalld = False
+        with pytest.raises(Exception):
+            cd.update_firewalld(ctx, 'mon')
+
+        ctx = cd.CephadmContext()
+        ctx.ssl_dashboard_port = 8888
+        ctx.dashboard_key = None
+        ctx.dashboard_password_noupdate = True
+        ctx.initial_dashboard_password = 'password'
+        ctx.initial_dashboard_user = 'User'
+        with pytest.raises(Exception):
+            cd.prepare_dashboard(ctx, 0, 0, lambda _, extra_mounts=None, ___=None : '5', lambda : None)
+
+        ctx.skip_firewalld = True
+        cd.prepare_dashboard(ctx, 0, 0, lambda _, extra_mounts=None, ___=None : '5', lambda : None)
+
+        ctx.skip_firewalld = False
+        with pytest.raises(Exception):
+            cd.prepare_dashboard(ctx, 0, 0, lambda _, extra_mounts=None, ___=None : '5', lambda : None)
+
     @mock.patch('cephadm.call_throws')
     @mock.patch('cephadm.get_parm')
     def test_registry_login(self, get_parm, call_throws):
-
         # test normal valid login with url, username and password specified
         call_throws.return_value = '', '', 0
         ctx: cd.CephadmContext = cd.cephadm_init_ctx(
@@ -457,8 +491,22 @@ docker.io/ceph/daemon-base:octopus
                 '00000000-0000-0000-0000-0000deadbeef',
                 None,
                 None,
-                [{'name': 'mon.a'}],
+                [{'name': 'mon.a', 'fsid': '00000000-0000-0000-0000-0000deadbeef', 'style': 'cephadm:v1'}],
                 '/var/lib/ceph/00000000-0000-0000-0000-0000deadbeef/mon.a/config',
+            ),
+            (
+                '00000000-0000-0000-0000-0000deadbeef',
+                None,
+                None,
+                [{'name': 'mon.a', 'fsid': 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', 'style': 'cephadm:v1'}],
+                cd.SHELL_DEFAULT_CONF,
+            ),
+            (
+                '00000000-0000-0000-0000-0000deadbeef',
+                None,
+                None,
+                [{'name': 'mon.a', 'fsid': '00000000-0000-0000-0000-0000deadbeef', 'style': 'legacy'}],
+                cd.SHELL_DEFAULT_CONF,
             ),
             (
                 '00000000-0000-0000-0000-0000deadbeef',
@@ -471,7 +519,7 @@ docker.io/ceph/daemon-base:octopus
                 '00000000-0000-0000-0000-0000deadbeef',
                 '/foo/bar.conf',
                 'mon.a',
-                [{'name': 'mon.a'}],
+                [{'name': 'mon.a', 'style': 'cephadm:v1'}],
                 '/foo/bar.conf',
             ),
             (
@@ -497,7 +545,8 @@ docker.io/ceph/daemon-base:octopus
             ),
         ])
     @mock.patch('cephadm.call')
-    def test_infer_config(self, _call, fsid, config, name, list_daemons, result, cephadm_fs):
+    @mock.patch('cephadm.logger')
+    def test_infer_config(self, logger, _call, fsid, config, name, list_daemons, result, cephadm_fs):
         # build the context
         ctx = cd.CephadmContext()
         ctx.fsid = fsid
@@ -509,13 +558,53 @@ docker.io/ceph/daemon-base:octopus
         mock_fn.return_value = 0
         infer_config = cd.infer_config(mock_fn)
 
-        # mock the shell config
-        cephadm_fs.create_file(cd.SHELL_DEFAULT_CONF)
+        # mock the config file
+        cephadm_fs.create_file(result)
 
         # test
         with mock.patch('cephadm.list_daemons', return_value=list_daemons):
             infer_config(ctx)
             assert ctx.config == result
+
+    @mock.patch('cephadm.call')
+    def test_extract_uid_gid_fail(self, _call):
+        err = """Error: container_linux.go:370: starting container process caused: process_linux.go:459: container init caused: process_linux.go:422: setting cgroup config for procHooks process caused: Unit libpod-056038e1126191fba41d8a037275136f2d7aeec9710b9ee
+ff792c06d8544b983.scope not found.: OCI runtime error"""
+        _call.return_value = ('', err, 127)
+        ctx = cd.CephadmContext()
+        ctx.container_engine = mock_podman()
+        with pytest.raises(cd.Error, match='OCI'):
+            cd.extract_uid_gid(ctx)
+
+    @pytest.mark.parametrize('test_input, expected', [
+        ([cd.make_fsid(), cd.make_fsid(), cd.make_fsid()], 3),
+        ([cd.make_fsid(), 'invalid-fsid', cd.make_fsid(), '0b87e50c-8e77-11ec-b890-'], 2),
+        (['f6860ec2-8e76-11ec-', '0b87e50c-8e77-11ec-b890-', ''], 0),
+        ([], 0),
+    ])
+    def test_get_ceph_cluster_count(self, test_input, expected):
+        ctx = cd.CephadmContext()
+        with mock.patch('os.listdir', return_value=test_input):
+            assert cd.get_ceph_cluster_count(ctx) == expected
+
+    def test_set_image_minimize_config(self):
+        def throw_cmd(cmd):
+            raise cd.Error(' '.join(cmd))
+        ctx = cd.CephadmContext()
+        ctx.image = 'test_image'
+        ctx.no_minimize_config = True
+        fake_cli = lambda cmd, __=None, ___=None: throw_cmd(cmd)
+        with pytest.raises(cd.Error, match='config set global container_image test_image'):
+            cd.finish_bootstrap_config(
+                ctx=ctx,
+                fsid=cd.make_fsid(),
+                config='',
+                mon_id='a', mon_dir='mon_dir',
+                mon_network=None, ipv6=False,
+                cli=fake_cli,
+                cluster_network=None,
+                ipv6_cluster_network=False
+            )
 
 
 class TestCustomContainer(unittest.TestCase):
@@ -896,7 +985,7 @@ class TestMaintenance:
     fsid = '0ea8cdd0-1bbf-11ec-a9c7-5254002763fa'
 
     def test_systemd_target_OK(self, tmp_path):
-        base = tmp_path 
+        base = tmp_path
         wants = base / "ceph.target.wants"
         wants.mkdir()
         target = wants / TestMaintenance.systemd_target
@@ -907,7 +996,7 @@ class TestMaintenance:
         assert cd.systemd_target_state(ctx, target.name)
 
     def test_systemd_target_NOTOK(self, tmp_path):
-        base = tmp_path 
+        base = tmp_path
         ctx = cd.CephadmContext()
         ctx.unit_dir = str(base)
         assert not cd.systemd_target_state(ctx, TestMaintenance.systemd_target)
@@ -1057,6 +1146,22 @@ class TestMonitoring(object):
             assert os.path.exists(file)
             with open(file) as f:
                 assert f.read() == content
+
+        # assert uid/gid after redeploy
+        new_uid = uid+1
+        new_gid = gid+1
+        cd.create_daemon_dirs(ctx,
+                              fsid,
+                              daemon_type,
+                              daemon_id,
+                              new_uid,
+                              new_gid,
+                              config=None,
+                              keyring=None)
+        for file,content in expected.items():
+            file = os.path.join(prefix, file)
+            assert os.stat(file).st_uid == new_uid
+            assert os.stat(file).st_gid == new_gid
 
 
 class TestBootstrap(object):
@@ -1630,6 +1735,240 @@ class TestRmRepo:
         cd.command_rm_repo(ctx)
 
 
+class TestValidateRepo:
+
+    @pytest.mark.parametrize('values',
+        [
+            # Apt - no checks
+            dict(
+            version="",
+            release="pacific",
+            err_text="",
+            os_release=dedent("""
+            NAME="Ubuntu"
+            VERSION="20.04 LTS (Focal Fossa)"
+            ID=ubuntu
+            ID_LIKE=debian
+            PRETTY_NAME="Ubuntu 20.04 LTS"
+            VERSION_ID="20.04"
+            HOME_URL="https://www.ubuntu.com/"
+            SUPPORT_URL="https://help.ubuntu.com/"
+            BUG_REPORT_URL="https://bugs.launchpad.net/ubuntu/"
+            PRIVACY_POLICY_URL="https://www.ubuntu.com/legal/terms-and-policies/privacy-policy"
+            VERSION_CODENAME=focal
+            UBUNTU_CODENAME=focal
+            """)),
+
+            # YumDnf on Centos8 - OK
+            dict(
+            version="",
+            release="pacific",
+            err_text="",
+            os_release=dedent("""
+            NAME="CentOS Linux"
+            VERSION="8 (Core)"
+            ID="centos"
+            ID_LIKE="rhel fedora"
+            VERSION_ID="8"
+            PLATFORM_ID="platform:el8"
+            PRETTY_NAME="CentOS Linux 8 (Core)"
+            ANSI_COLOR="0;31"
+            CPE_NAME="cpe:/o:centos:centos:8"
+            HOME_URL="https://www.centos.org/"
+            BUG_REPORT_URL="https://bugs.centos.org/"
+
+            CENTOS_MANTISBT_PROJECT="CentOS-8"
+            CENTOS_MANTISBT_PROJECT_VERSION="8"
+            REDHAT_SUPPORT_PRODUCT="centos"
+            REDHAT_SUPPORT_PRODUCT_VERSION="8"
+            """)),
+
+            # YumDnf on Fedora - Fedora not supported
+            dict(
+            version="",
+            release="pacific",
+            err_text="does not build Fedora",
+            os_release=dedent("""
+            NAME="Fedora Linux"
+            VERSION="35 (Cloud Edition)"
+            ID=fedora
+            VERSION_ID=35
+            VERSION_CODENAME=""
+            PLATFORM_ID="platform:f35"
+            PRETTY_NAME="Fedora Linux 35 (Cloud Edition)"
+            ANSI_COLOR="0;38;2;60;110;180"
+            LOGO=fedora-logo-icon
+            CPE_NAME="cpe:/o:fedoraproject:fedora:35"
+            HOME_URL="https://fedoraproject.org/"
+            DOCUMENTATION_URL="https://docs.fedoraproject.org/en-US/fedora/f35/system-administrators-guide/"
+            SUPPORT_URL="https://ask.fedoraproject.org/"
+            BUG_REPORT_URL="https://bugzilla.redhat.com/"
+            REDHAT_BUGZILLA_PRODUCT="Fedora"
+            REDHAT_BUGZILLA_PRODUCT_VERSION=35
+            REDHAT_SUPPORT_PRODUCT="Fedora"
+            REDHAT_SUPPORT_PRODUCT_VERSION=35
+            PRIVACY_POLICY_URL="https://fedoraproject.org/wiki/Legal:PrivacyPolicy"
+            VARIANT="Cloud Edition"
+            VARIANT_ID=cloud
+            """)),
+
+            # YumDnf on Centos 7 - no pacific
+            dict(
+            version="",
+            release="pacific",
+            err_text="does not support pacific",
+            os_release=dedent("""
+            NAME="CentOS Linux"
+            VERSION="7 (Core)"
+            ID="centos"
+            ID_LIKE="rhel fedora"
+            VERSION_ID="7"
+            PRETTY_NAME="CentOS Linux 7 (Core)"
+            ANSI_COLOR="0;31"
+            CPE_NAME="cpe:/o:centos:centos:7"
+            HOME_URL="https://www.centos.org/"
+            BUG_REPORT_URL="https://bugs.centos.org/"
+
+            CENTOS_MANTISBT_PROJECT="CentOS-7"
+            CENTOS_MANTISBT_PROJECT_VERSION="7"
+            REDHAT_SUPPORT_PRODUCT="centos"
+            REDHAT_SUPPORT_PRODUCT_VERSION="7"
+            """)),
+
+            # YumDnf on Centos 7 - nothing after pacific
+            dict(
+            version="",
+            release="zillions",
+            err_text="does not support pacific",
+            os_release=dedent("""
+            NAME="CentOS Linux"
+            VERSION="7 (Core)"
+            ID="centos"
+            ID_LIKE="rhel fedora"
+            VERSION_ID="7"
+            PRETTY_NAME="CentOS Linux 7 (Core)"
+            ANSI_COLOR="0;31"
+            CPE_NAME="cpe:/o:centos:centos:7"
+            HOME_URL="https://www.centos.org/"
+            BUG_REPORT_URL="https://bugs.centos.org/"
+
+            CENTOS_MANTISBT_PROJECT="CentOS-7"
+            CENTOS_MANTISBT_PROJECT_VERSION="7"
+            REDHAT_SUPPORT_PRODUCT="centos"
+            REDHAT_SUPPORT_PRODUCT_VERSION="7"
+            """)),
+
+            # YumDnf on Centos 7 - nothing v16 or higher
+            dict(
+            version="v16.1.3",
+            release="",
+            err_text="does not support",
+            os_release=dedent("""
+            NAME="CentOS Linux"
+            VERSION="7 (Core)"
+            ID="centos"
+            ID_LIKE="rhel fedora"
+            VERSION_ID="7"
+            PRETTY_NAME="CentOS Linux 7 (Core)"
+            ANSI_COLOR="0;31"
+            CPE_NAME="cpe:/o:centos:centos:7"
+            HOME_URL="https://www.centos.org/"
+            BUG_REPORT_URL="https://bugs.centos.org/"
+
+            CENTOS_MANTISBT_PROJECT="CentOS-7"
+            CENTOS_MANTISBT_PROJECT_VERSION="7"
+            REDHAT_SUPPORT_PRODUCT="centos"
+            REDHAT_SUPPORT_PRODUCT_VERSION="7"
+            """)),
+        ])
+    @mock.patch('cephadm.find_executable', return_value='foo')
+    def test_distro_validation(self, find_executable, values, cephadm_fs):
+        os_release = values['os_release']
+        release = values['release']
+        version = values['version']
+        err_text = values['err_text']
+
+        cephadm_fs.create_file('/etc/os-release', contents=os_release)
+        ctx = cd.CephadmContext()
+        ctx.repo_url = 'http://localhost'
+        pkg = cd.create_packager(ctx, stable=release, version=version)
+
+        if err_text:
+            with pytest.raises(cd.Error, match=err_text):
+                pkg.validate()
+        else:
+            with mock.patch('cephadm.urlopen', return_value=None):
+                pkg.validate()
+
+    @pytest.mark.parametrize('values',
+        [
+            # Apt - not checked
+            dict(
+            version="",
+            release="pacific",
+            err_text="",
+            os_release=dedent("""
+            NAME="Ubuntu"
+            VERSION="20.04 LTS (Focal Fossa)"
+            ID=ubuntu
+            ID_LIKE=debian
+            PRETTY_NAME="Ubuntu 20.04 LTS"
+            VERSION_ID="20.04"
+            HOME_URL="https://www.ubuntu.com/"
+            SUPPORT_URL="https://help.ubuntu.com/"
+            BUG_REPORT_URL="https://bugs.launchpad.net/ubuntu/"
+            PRIVACY_POLICY_URL="https://www.ubuntu.com/legal/terms-and-policies/privacy-policy"
+            VERSION_CODENAME=focal
+            UBUNTU_CODENAME=focal
+            """)),
+
+            # YumDnf on Centos8 - force failure
+            dict(
+            version="",
+            release="foobar",
+            err_text="failed to fetch repository metadata",
+            os_release=dedent("""
+            NAME="CentOS Linux"
+            VERSION="8 (Core)"
+            ID="centos"
+            ID_LIKE="rhel fedora"
+            VERSION_ID="8"
+            PLATFORM_ID="platform:el8"
+            PRETTY_NAME="CentOS Linux 8 (Core)"
+            ANSI_COLOR="0;31"
+            CPE_NAME="cpe:/o:centos:centos:8"
+            HOME_URL="https://www.centos.org/"
+            BUG_REPORT_URL="https://bugs.centos.org/"
+
+            CENTOS_MANTISBT_PROJECT="CentOS-8"
+            CENTOS_MANTISBT_PROJECT_VERSION="8"
+            REDHAT_SUPPORT_PRODUCT="centos"
+            REDHAT_SUPPORT_PRODUCT_VERSION="8"
+            """)),
+        ])
+    @mock.patch('cephadm.find_executable', return_value='foo')
+    def test_http_validation(self, find_executable, values, cephadm_fs):
+        from urllib.error import HTTPError
+
+        os_release = values['os_release']
+        release = values['release']
+        version = values['version']
+        err_text = values['err_text']
+
+        cephadm_fs.create_file('/etc/os-release', contents=os_release)
+        ctx = cd.CephadmContext()
+        ctx.repo_url = 'http://localhost'
+        pkg = cd.create_packager(ctx, stable=release, version=version)
+
+        with mock.patch('cephadm.urlopen') as _urlopen:
+            _urlopen.side_effect = HTTPError(ctx.repo_url, 404, "not found", None, fp=None)
+            if err_text:
+                with pytest.raises(cd.Error, match=err_text):
+                    pkg.validate()
+            else:
+                pkg.validate()
+
+
 class TestPull:
 
     @mock.patch('time.sleep')
@@ -1656,9 +1995,32 @@ class TestPull:
             cd.command_pull(ctx)
         assert err in str(e.value)
 
+    @mock.patch('cephadm.logger')
+    @mock.patch('cephadm.get_image_info_from_inspect', return_value={})
+    @mock.patch('cephadm.get_last_local_ceph_image', return_value='last_local_ceph_image')
+    def test_image(self, get_last_local_ceph_image, get_image_info_from_inspect, logger):
+        cmd = ['pull']
+        with with_cephadm_ctx(cmd) as ctx:
+            retval = cd.command_pull(ctx)
+            assert retval == 0
+            assert ctx.image == cd.DEFAULT_IMAGE
+
+        with mock.patch.dict(os.environ, {"CEPHADM_IMAGE": 'cephadm_image_environ'}):
+            cmd = ['pull']
+            with with_cephadm_ctx(cmd) as ctx:
+                retval = cd.command_pull(ctx)
+                assert retval == 0
+                assert ctx.image == 'cephadm_image_environ'
+
+            cmd = ['--image',  'cephadm_image_param', 'pull']
+            with with_cephadm_ctx(cmd) as ctx:
+                retval = cd.command_pull(ctx)
+                assert retval == 0
+                assert ctx.image == 'cephadm_image_param'
+
 
 class TestApplySpec:
- 
+
     def test_parse_yaml(self, cephadm_fs):
         yaml = '''service_type: host
 hostname: vm-00
@@ -1682,7 +2044,7 @@ addr: 192.168.122.165'''
         retdic = [{'service_type': 'host', 'hostname': 'vm-00', 'addr': '192.168.122.44', 'labels': '- example1- example2'},
                   {'service_type': 'host', 'hostname': 'vm-01', 'addr': '192.168.122.247', 'labels': '- grafana'},
                   {'service_type': 'host', 'hostname': 'vm-02', 'addr': '192.168.122.165'}]
-      
+
         with open('spec.yml') as f:
             dic = cd.parse_yaml_objs(f)
             assert dic == retdic
@@ -1706,11 +2068,157 @@ addr: 192.168.122.165'''
         assert retval == 1
 
 
+class TestSNMPGateway:
+    V2c_config = {
+        'snmp_community': 'public',
+        'destination': '192.168.1.10:162',
+        'snmp_version': 'V2c',
+    }
+    V3_no_priv_config = {
+        'destination': '192.168.1.10:162',
+        'snmp_version': 'V3',
+        'snmp_v3_auth_username': 'myuser',
+        'snmp_v3_auth_password': 'mypassword',
+        'snmp_v3_auth_protocol': 'SHA',
+        'snmp_v3_engine_id': '8000C53F00000000',
+    }
+    V3_priv_config = {
+        'destination': '192.168.1.10:162',
+        'snmp_version': 'V3',
+        'snmp_v3_auth_username': 'myuser',
+        'snmp_v3_auth_password': 'mypassword',
+        'snmp_v3_auth_protocol': 'SHA',
+        'snmp_v3_priv_protocol': 'DES',
+        'snmp_v3_priv_password': 'mysecret',
+        'snmp_v3_engine_id': '8000C53F00000000',
+    }
+    no_destination_config = {
+        'snmp_version': 'V3',
+        'snmp_v3_auth_username': 'myuser',
+        'snmp_v3_auth_password': 'mypassword',
+        'snmp_v3_auth_protocol': 'SHA',
+        'snmp_v3_priv_protocol': 'DES',
+        'snmp_v3_priv_password': 'mysecret',
+        'snmp_v3_engine_id': '8000C53F00000000',
+    }
+    bad_version_config = {
+        'snmp_community': 'public',
+        'destination': '192.168.1.10:162',
+        'snmp_version': 'V1',
+    }
 
+    def test_unit_run_V2c(self, cephadm_fs):
+        fsid = 'ca734440-3dc6-11ec-9b98-5254002537a6'
+        with with_cephadm_ctx(['--image=docker.io/maxwo/snmp-notifier:v1.2.1'], list_networks={}) as ctx:
+            import json
+            ctx.config_json = json.dumps(self.V2c_config)
+            ctx.fsid = fsid
+            ctx.tcp_ports = '9464'
+            cd.get_parm.return_value = self.V2c_config
+            c = cd.get_container(ctx, fsid, 'snmp-gateway', 'daemon_id')
 
+            cd.make_data_dir(ctx, fsid, 'snmp-gateway', 'daemon_id')
 
+            cd.create_daemon_dirs(ctx, fsid, 'snmp-gateway', 'daemon_id', 0, 0)
+            with open(f'/var/lib/ceph/{fsid}/snmp-gateway.daemon_id/snmp-gateway.conf', 'r') as f:
+                conf = f.read().rstrip()
+                assert conf == 'SNMP_NOTIFIER_COMMUNITY=public'
 
+            cd.deploy_daemon_units(
+                ctx,
+                fsid,
+                0, 0,
+                'snmp-gateway',
+                'daemon_id',
+                c,
+                True, True
+            )
+            with open(f'/var/lib/ceph/{fsid}/snmp-gateway.daemon_id/unit.run', 'r') as f:
+                run_cmd = f.readlines()[-1].rstrip()
+                assert run_cmd.endswith('docker.io/maxwo/snmp-notifier:v1.2.1 --web.listen-address=:9464 --snmp.destination=192.168.1.10:162 --snmp.version=V2c --log.level=info --snmp.trap-description-template=/etc/snmp_notifier/description-template.tpl')
 
+    def test_unit_run_V3_noPriv(self, cephadm_fs):
+        fsid = 'ca734440-3dc6-11ec-9b98-5254002537a6'
+        with with_cephadm_ctx(['--image=docker.io/maxwo/snmp-notifier:v1.2.1'], list_networks={}) as ctx:
+            import json
+            ctx.config_json = json.dumps(self.V3_no_priv_config)
+            ctx.fsid = fsid
+            ctx.tcp_ports = '9465'
+            cd.get_parm.return_value = self.V3_no_priv_config
+            c = cd.get_container(ctx, fsid, 'snmp-gateway', 'daemon_id')
 
+            cd.make_data_dir(ctx, fsid, 'snmp-gateway', 'daemon_id')
 
-  
+            cd.create_daemon_dirs(ctx, fsid, 'snmp-gateway', 'daemon_id', 0, 0)
+            with open(f'/var/lib/ceph/{fsid}/snmp-gateway.daemon_id/snmp-gateway.conf', 'r') as f:
+                conf = f.read()
+                assert conf == 'SNMP_NOTIFIER_AUTH_USERNAME=myuser\nSNMP_NOTIFIER_AUTH_PASSWORD=mypassword\n'
+
+            cd.deploy_daemon_units(
+                ctx,
+                fsid,
+                0, 0,
+                'snmp-gateway',
+                'daemon_id',
+                c,
+                True, True
+            )
+            with open(f'/var/lib/ceph/{fsid}/snmp-gateway.daemon_id/unit.run', 'r') as f:
+                run_cmd = f.readlines()[-1].rstrip()
+                assert run_cmd.endswith('docker.io/maxwo/snmp-notifier:v1.2.1 --web.listen-address=:9465 --snmp.destination=192.168.1.10:162 --snmp.version=V3 --log.level=info --snmp.trap-description-template=/etc/snmp_notifier/description-template.tpl --snmp.authentication-enabled --snmp.authentication-protocol=SHA --snmp.security-engine-id=8000C53F00000000')
+
+    def test_unit_run_V3_Priv(self, cephadm_fs):
+        fsid = 'ca734440-3dc6-11ec-9b98-5254002537a6'
+        with with_cephadm_ctx(['--image=docker.io/maxwo/snmp-notifier:v1.2.1'], list_networks={}) as ctx:
+            import json
+            ctx.config_json = json.dumps(self.V3_priv_config)
+            ctx.fsid = fsid
+            ctx.tcp_ports = '9464'
+            cd.get_parm.return_value = self.V3_priv_config
+            c = cd.get_container(ctx, fsid, 'snmp-gateway', 'daemon_id')
+
+            cd.make_data_dir(ctx, fsid, 'snmp-gateway', 'daemon_id')
+
+            cd.create_daemon_dirs(ctx, fsid, 'snmp-gateway', 'daemon_id', 0, 0)
+            with open(f'/var/lib/ceph/{fsid}/snmp-gateway.daemon_id/snmp-gateway.conf', 'r') as f:
+                conf = f.read()
+                assert conf == 'SNMP_NOTIFIER_AUTH_USERNAME=myuser\nSNMP_NOTIFIER_AUTH_PASSWORD=mypassword\nSNMP_NOTIFIER_PRIV_PASSWORD=mysecret\n'
+
+            cd.deploy_daemon_units(
+                ctx,
+                fsid,
+                0, 0,
+                'snmp-gateway',
+                'daemon_id',
+                c,
+                True, True
+            )
+            with open(f'/var/lib/ceph/{fsid}/snmp-gateway.daemon_id/unit.run', 'r') as f:
+                run_cmd = f.readlines()[-1].rstrip()
+                assert run_cmd.endswith('docker.io/maxwo/snmp-notifier:v1.2.1 --web.listen-address=:9464 --snmp.destination=192.168.1.10:162 --snmp.version=V3 --log.level=info --snmp.trap-description-template=/etc/snmp_notifier/description-template.tpl --snmp.authentication-enabled --snmp.authentication-protocol=SHA --snmp.security-engine-id=8000C53F00000000 --snmp.private-enabled --snmp.private-protocol=DES')
+
+    def test_unit_run_no_dest(self, cephadm_fs):
+        fsid = 'ca734440-3dc6-11ec-9b98-5254002537a6'
+        with with_cephadm_ctx(['--image=docker.io/maxwo/snmp-notifier:v1.2.1'], list_networks={}) as ctx:
+            import json
+            ctx.config_json = json.dumps(self.no_destination_config)
+            ctx.fsid = fsid
+            ctx.tcp_ports = '9464'
+            cd.get_parm.return_value = self.no_destination_config
+
+            with pytest.raises(Exception) as e:
+                c = cd.get_container(ctx, fsid, 'snmp-gateway', 'daemon_id')
+            assert str(e.value) == "config is missing destination attribute(<ip>:<port>) of the target SNMP listener"
+
+    def test_unit_run_bad_version(self, cephadm_fs):
+        fsid = 'ca734440-3dc6-11ec-9b98-5254002537a6'
+        with with_cephadm_ctx(['--image=docker.io/maxwo/snmp-notifier:v1.2.1'], list_networks={}) as ctx:
+            import json
+            ctx.config_json = json.dumps(self.bad_version_config)
+            ctx.fsid = fsid
+            ctx.tcp_ports = '9464'
+            cd.get_parm.return_value = self.bad_version_config
+
+            with pytest.raises(Exception) as e:
+                c = cd.get_container(ctx, fsid, 'snmp-gateway', 'daemon_id')
+            assert str(e.value) == 'not a valid snmp version: V1'

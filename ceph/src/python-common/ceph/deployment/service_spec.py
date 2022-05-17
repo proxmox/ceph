@@ -1,30 +1,21 @@
 import fnmatch
 import re
+import enum
 from collections import OrderedDict
+from contextlib import contextmanager
 from functools import wraps
 from ipaddress import ip_network, ip_address
 from typing import Optional, Dict, Any, List, Union, Callable, Iterable, Type, TypeVar, cast, \
-    NamedTuple, Mapping
+    NamedTuple, Mapping, Iterator
 
 import yaml
 
-from ceph.deployment.hostspec import HostSpec, SpecValidationError
-from ceph.deployment.utils import unwrap_ipv6
+from ceph.deployment.hostspec import HostSpec, SpecValidationError, assert_valid_host
+from ceph.deployment.utils import unwrap_ipv6, valid_addr
+from ceph.utils import is_hex
 
 ServiceSpecT = TypeVar('ServiceSpecT', bound='ServiceSpec')
 FuncT = TypeVar('FuncT', bound=Callable)
-
-
-def assert_valid_host(name: str) -> None:
-    p = re.compile('^[a-zA-Z0-9-]+$')
-    try:
-        assert len(name) <= 250, 'name is too long (max 250 chars)'
-        for part in name.split('.'):
-            assert len(part) > 0, '.-delimited name component must not be empty'
-            assert len(part) <= 63, '.-delimited name component must not be more than 63 chars'
-            assert p.match(part), 'name component must include only a-z, 0-9, and -'
-    except AssertionError as e:
-        raise SpecValidationError(str(e))
 
 
 def handle_type_error(method: FuncT) -> FuncT:
@@ -273,10 +264,24 @@ class PlacementSpec(object):
         if self.hosts and self.label:
             # TODO: a less generic Exception
             raise SpecValidationError('Host and label are mutually exclusive')
-        if self.count is not None and self.count <= 0:
-            raise SpecValidationError("num/count must be > 1")
-        if self.count_per_host is not None and self.count_per_host < 1:
-            raise SpecValidationError("count-per-host must be >= 1")
+        if self.count is not None:
+            try:
+                intval = int(self.count)
+            except (ValueError, TypeError):
+                raise SpecValidationError("num/count must be a numeric value")
+            if self.count != intval:
+                raise SpecValidationError("num/count must be an integer value")
+            if self.count < 1:
+                raise SpecValidationError("num/count must be >= 1")
+        if self.count_per_host is not None:
+            try:
+                intval = int(self.count_per_host)
+            except (ValueError, TypeError):
+                raise SpecValidationError("count-per-host must be a numeric value")
+            if self.count_per_host != intval:
+                raise SpecValidationError("count-per-host must be an integer value")
+            if self.count_per_host < 1:
+                raise SpecValidationError("count-per-host must be >= 1")
         if self.count_per_host is not None and not (
                 self.label
                 or self.hosts
@@ -295,8 +300,12 @@ class PlacementSpec(object):
             raise SpecValidationError(
                 "count-per-host cannot be combined explicit placement with names or networks"
             )
-        if self.host_pattern and self.hosts:
-            raise SpecValidationError('cannot combine host patterns and hosts')
+        if self.host_pattern:
+            if not isinstance(self.host_pattern, str):
+                raise SpecValidationError('host_pattern must be of type string')
+            if self.hosts:
+                raise SpecValidationError('cannot combine host patterns and hosts')
+
         for h in self.hosts:
             h.validate()
 
@@ -305,28 +314,34 @@ class PlacementSpec(object):
         # type: (Optional[str]) -> PlacementSpec
         """
         A single integer is parsed as a count:
+
         >>> PlacementSpec.from_string('3')
         PlacementSpec(count=3)
 
         A list of names is parsed as host specifications:
+
         >>> PlacementSpec.from_string('host1 host2')
         PlacementSpec(hosts=[HostPlacementSpec(hostname='host1', network='', name=''), HostPlacemen\
 tSpec(hostname='host2', network='', name='')])
 
         You can also prefix the hosts with a count as follows:
+
         >>> PlacementSpec.from_string('2 host1 host2')
         PlacementSpec(count=2, hosts=[HostPlacementSpec(hostname='host1', network='', name=''), Hos\
 tPlacementSpec(hostname='host2', network='', name='')])
 
-        You can spefify labels using `label:<label>`
+        You can specify labels using `label:<label>`
+
         >>> PlacementSpec.from_string('label:mon')
         PlacementSpec(label='mon')
 
-        Labels als support a count:
+        Labels also support a count:
+
         >>> PlacementSpec.from_string('3 label:mon')
         PlacementSpec(count=3, label='mon')
 
         fnmatch is also supported:
+
         >>> PlacementSpec.from_string('data[1-3]')
         PlacementSpec(host_pattern='data[1-3]')
 
@@ -402,6 +417,22 @@ tPlacementSpec(hostname='host2', network='', name='')])
         return ps
 
 
+_service_spec_from_json_validate = True
+
+
+@contextmanager
+def service_spec_allow_invalid_from_json() -> Iterator[None]:
+    """
+    I know this is evil, but unfortunately `ceph orch ls`
+    may return invalid OSD specs for OSDs not associated to
+    and specs. If you have a better idea, please!
+    """
+    global _service_spec_from_json_validate
+    _service_spec_from_json_validate = False
+    yield
+    _service_spec_from_json_validate = True
+
+
 class ServiceSpec(object):
     """
     Details of service creation.
@@ -414,8 +445,8 @@ class ServiceSpec(object):
     """
     KNOWN_SERVICE_TYPES = 'alertmanager crash grafana iscsi mds mgr mon nfs ' \
                           'node-exporter osd prometheus rbd-mirror rgw ' \
-                          'container cephadm-exporter ingress cephfs-mirror'.split()
-    REQUIRES_SERVICE_ID = 'iscsi mds nfs osd rgw container ingress '.split()
+                          'container cephadm-exporter ingress cephfs-mirror snmp-gateway'.split()
+    REQUIRES_SERVICE_ID = 'iscsi mds nfs rgw container ingress '.split()
     MANAGED_CONFIG_OPTIONS = [
         'mds_join_fs',
     ]
@@ -428,13 +459,15 @@ class ServiceSpec(object):
             'rgw': RGWSpec,
             'nfs': NFSServiceSpec,
             'osd': DriveGroupSpec,
+            'mds': MDSSpec,
             'iscsi': IscsiServiceSpec,
             'alertmanager': AlertManagerSpec,
             'ingress': IngressSpec,
             'container': CustomContainerSpec,
-            'grafana': MonitoringSpec,
+            'grafana': GrafanaSpec,
             'node-exporter': MonitoringSpec,
             'prometheus': MonitoringSpec,
+            'snmp-gateway': SNMPGatewaySpec,
         }.get(service_type, cls)
         if ret == ServiceSpec and not service_type:
             raise SpecValidationError('Spec needs a "service_type" key.')
@@ -464,6 +497,7 @@ class ServiceSpec(object):
                  unmanaged: bool = False,
                  preview_only: bool = False,
                  networks: Optional[List[str]] = None,
+                 extra_container_args: Optional[List[str]] = None,
                  ):
 
         #: See :ref:`orchestrator-cli-placement-spec`.
@@ -481,7 +515,7 @@ class ServiceSpec(object):
         #: ``container``, ``ingress``
         self.service_id = None
 
-        if self.service_type in self.REQUIRES_SERVICE_ID:
+        if self.service_type in self.REQUIRES_SERVICE_ID or self.service_type == 'osd':
             self.service_id = service_id
 
         #: If set to ``true``, the orchestrator will not deploy nor remove
@@ -501,6 +535,8 @@ class ServiceSpec(object):
         self.config: Optional[Dict[str, str]] = None
         if config:
             self.config = {k.replace(' ', '_'): v for k, v in config.items()}
+
+        self.extra_container_args: Optional[List[str]] = extra_container_args
 
     @classmethod
     @handle_type_error
@@ -543,7 +579,6 @@ class ServiceSpec(object):
 
         :meta private:
         """
-
         if not isinstance(json_spec, dict):
             raise SpecValidationError(
                 f'Service Spec is not an (JSON or YAML) object. got "{str(json_spec)}"')
@@ -594,7 +629,8 @@ class ServiceSpec(object):
                 continue
             args.update({k: v})
         _cls = cls(**args)
-        _cls.validate()
+        if _service_spec_from_json_validate:
+            _cls.validate()
         return _cls
 
     def service_name(self) -> str:
@@ -618,11 +654,14 @@ class ServiceSpec(object):
         if self.service_id:
             ret['service_id'] = self.service_id
         ret['service_name'] = self.service_name()
-        ret['placement'] = self.placement.to_json()
+        if self.placement.to_json():
+            ret['placement'] = self.placement.to_json()
         if self.unmanaged:
             ret['unmanaged'] = self.unmanaged
         if self.networks:
             ret['networks'] = self.networks
+        if self.extra_container_args:
+            ret['extra_container_args'] = self.extra_container_args
 
         c = {}
         for key, val in sorted(self.__dict__.items(), key=lambda tpl: tpl[0]):
@@ -640,15 +679,17 @@ class ServiceSpec(object):
         if not self.service_type:
             raise SpecValidationError('Cannot add Service: type required')
 
-        if self.service_type in self.REQUIRES_SERVICE_ID:
-            if not self.service_id:
+        if self.service_type != 'osd':
+            if self.service_type in self.REQUIRES_SERVICE_ID and not self.service_id:
                 raise SpecValidationError('Cannot add Service: id required')
-            if not re.match('^[a-zA-Z0-9_.-]+$', self.service_id):
+            if self.service_type not in self.REQUIRES_SERVICE_ID and self.service_id:
+                raise SpecValidationError(
+                        f'Service of type \'{self.service_type}\' should not contain a service id')
+
+        if self.service_id:
+            if not re.match('^[a-zA-Z0-9_.-]+$', str(self.service_id)):
                 raise SpecValidationError('Service id contains invalid characters, '
                                           'only [a-zA-Z0-9_.-] allowed')
-        elif self.service_id:
-            raise SpecValidationError(
-                    f'Service of type \'{self.service_type}\' should not contain a service id')
 
         if self.placement is not None:
             self.placement.validate()
@@ -667,7 +708,8 @@ class ServiceSpec(object):
                 )
 
     def __repr__(self) -> str:
-        return "{}({!r})".format(self.__class__.__name__, self.__dict__)
+        y = yaml.dump(cast(dict, self), default_flow_style=False)
+        return f"{self.__class__.__name__}.from_json(yaml.safe_load('''{y}'''))"
 
     def __eq__(self, other: Any) -> bool:
         return (self.__class__ == other.__class__
@@ -695,12 +737,13 @@ class NFSServiceSpec(ServiceSpec):
                  config: Optional[Dict[str, str]] = None,
                  networks: Optional[List[str]] = None,
                  port: Optional[int] = None,
+                 extra_container_args: Optional[List[str]] = None,
                  ):
         assert service_type == 'nfs'
         super(NFSServiceSpec, self).__init__(
             'nfs', service_id=service_id,
             placement=placement, unmanaged=unmanaged, preview_only=preview_only,
-            config=config, networks=networks)
+            config=config, networks=networks, extra_container_args=extra_container_args)
 
         self.port = port
 
@@ -757,6 +800,7 @@ class RGWSpec(ServiceSpec):
                  config: Optional[Dict[str, str]] = None,
                  networks: Optional[List[str]] = None,
                  subcluster: Optional[str] = None,  # legacy, only for from_json on upgrade
+                 extra_container_args: Optional[List[str]] = None,
                  ):
         assert service_type == 'rgw', service_type
 
@@ -767,7 +811,8 @@ class RGWSpec(ServiceSpec):
         super(RGWSpec, self).__init__(
             'rgw', service_id=service_id,
             placement=placement, unmanaged=unmanaged,
-            preview_only=preview_only, config=config, networks=networks)
+            preview_only=preview_only, config=config, networks=networks,
+            extra_container_args=extra_container_args)
 
         #: The RGW realm associated with this service. Needs to be manually created
         self.rgw_realm: Optional[str] = rgw_realm
@@ -824,12 +869,14 @@ class IscsiServiceSpec(ServiceSpec):
                  preview_only: bool = False,
                  config: Optional[Dict[str, str]] = None,
                  networks: Optional[List[str]] = None,
+                 extra_container_args: Optional[List[str]] = None,
                  ):
         assert service_type == 'iscsi'
         super(IscsiServiceSpec, self).__init__('iscsi', service_id=service_id,
                                                placement=placement, unmanaged=unmanaged,
                                                preview_only=preview_only,
-                                               config=config, networks=networks)
+                                               config=config, networks=networks,
+                                               extra_container_args=extra_container_args)
 
         #: RADOS pool where ceph-iscsi config data is stored.
         self.pool = pool
@@ -868,61 +915,6 @@ class IscsiServiceSpec(ServiceSpec):
 yaml.add_representer(IscsiServiceSpec, ServiceSpec.yaml_representer)
 
 
-class AlertManagerSpec(ServiceSpec):
-    def __init__(self,
-                 service_type: str = 'alertmanager',
-                 service_id: Optional[str] = None,
-                 placement: Optional[PlacementSpec] = None,
-                 unmanaged: bool = False,
-                 preview_only: bool = False,
-                 user_data: Optional[Dict[str, Any]] = None,
-                 config: Optional[Dict[str, str]] = None,
-                 networks: Optional[List[str]] = None,
-                 port: Optional[int] = None,
-                 ):
-        assert service_type == 'alertmanager'
-        super(AlertManagerSpec, self).__init__(
-            'alertmanager', service_id=service_id,
-            placement=placement, unmanaged=unmanaged,
-            preview_only=preview_only, config=config, networks=networks)
-
-        # Custom configuration.
-        #
-        # Example:
-        # service_type: alertmanager
-        # service_id: xyz
-        # user_data:
-        #   default_webhook_urls:
-        #   - "https://foo"
-        #   - "https://bar"
-        #
-        # Documentation:
-        # default_webhook_urls - A list of additional URL's that are
-        #                        added to the default receivers'
-        #                        <webhook_configs> configuration.
-        self.user_data = user_data or {}
-        self.port = port
-
-    def get_port_start(self) -> List[int]:
-        return [self.get_port(), 9094]
-
-    def get_port(self) -> int:
-        if self.port:
-            return self.port
-        else:
-            return 9093
-
-    def validate(self) -> None:
-        super(AlertManagerSpec, self).validate()
-
-        if self.port == 9094:
-            raise SpecValidationError(
-                'Port 9094 is reserved for AlertManager cluster listen address')
-
-
-yaml.add_representer(AlertManagerSpec, ServiceSpec.yaml_representer)
-
-
 class IngressSpec(ServiceSpec):
     def __init__(self,
                  service_type: str = 'ingress',
@@ -945,13 +937,15 @@ class IngressSpec(ServiceSpec):
                  virtual_ip: Optional[str] = None,
                  virtual_interface_networks: Optional[List[str]] = [],
                  unmanaged: bool = False,
-                 ssl: bool = False
+                 ssl: bool = False,
+                 extra_container_args: Optional[List[str]] = None,
                  ):
         assert service_type == 'ingress'
         super(IngressSpec, self).__init__(
             'ingress', service_id=service_id,
             placement=placement, config=config,
-            networks=networks
+            networks=networks,
+            extra_container_args=extra_container_args
         )
         self.backend_service = backend_service
         self.frontend_port = frontend_port
@@ -1073,14 +1067,15 @@ class MonitoringSpec(ServiceSpec):
                  unmanaged: bool = False,
                  preview_only: bool = False,
                  port: Optional[int] = None,
+                 extra_container_args: Optional[List[str]] = None,
                  ):
-        assert service_type in ['grafana', 'node-exporter', 'prometheus']
+        assert service_type in ['grafana', 'node-exporter', 'prometheus', 'alertmanager']
 
         super(MonitoringSpec, self).__init__(
             service_type, service_id,
             placement=placement, unmanaged=unmanaged,
             preview_only=preview_only, config=config,
-            networks=networks)
+            networks=networks, extra_container_args=extra_container_args)
 
         self.service_type = service_type
         self.port = port
@@ -1094,4 +1089,264 @@ class MonitoringSpec(ServiceSpec):
         else:
             return {'prometheus': 9095,
                     'node-exporter': 9100,
+                    'alertmanager': 9093,
                     'grafana': 3000}[self.service_type]
+
+
+yaml.add_representer(MonitoringSpec, ServiceSpec.yaml_representer)
+
+
+class AlertManagerSpec(MonitoringSpec):
+    def __init__(self,
+                 service_type: str = 'alertmanager',
+                 service_id: Optional[str] = None,
+                 placement: Optional[PlacementSpec] = None,
+                 unmanaged: bool = False,
+                 preview_only: bool = False,
+                 user_data: Optional[Dict[str, Any]] = None,
+                 config: Optional[Dict[str, str]] = None,
+                 networks: Optional[List[str]] = None,
+                 port: Optional[int] = None,
+                 secure: bool = False,
+                 extra_container_args: Optional[List[str]] = None,
+                 ):
+        assert service_type == 'alertmanager'
+        super(AlertManagerSpec, self).__init__(
+            'alertmanager', service_id=service_id,
+            placement=placement, unmanaged=unmanaged,
+            preview_only=preview_only, config=config, networks=networks, port=port,
+            extra_container_args=extra_container_args)
+
+        # Custom configuration.
+        #
+        # Example:
+        # service_type: alertmanager
+        # service_id: xyz
+        # user_data:
+        #   default_webhook_urls:
+        #   - "https://foo"
+        #   - "https://bar"
+        #
+        # Documentation:
+        # default_webhook_urls - A list of additional URL's that are
+        #                        added to the default receivers'
+        #                        <webhook_configs> configuration.
+        self.user_data = user_data or {}
+        self.secure = secure
+
+    def get_port_start(self) -> List[int]:
+        return [self.get_port(), 9094]
+
+    def validate(self) -> None:
+        super(AlertManagerSpec, self).validate()
+
+        if self.port == 9094:
+            raise SpecValidationError(
+                'Port 9094 is reserved for AlertManager cluster listen address')
+
+
+yaml.add_representer(AlertManagerSpec, ServiceSpec.yaml_representer)
+
+
+class GrafanaSpec(MonitoringSpec):
+    def __init__(self,
+                 service_type: str = 'grafana',
+                 service_id: Optional[str] = None,
+                 placement: Optional[PlacementSpec] = None,
+                 unmanaged: bool = False,
+                 preview_only: bool = False,
+                 config: Optional[Dict[str, str]] = None,
+                 networks: Optional[List[str]] = None,
+                 port: Optional[int] = None,
+                 initial_admin_password: Optional[str] = None,
+                 extra_container_args: Optional[List[str]] = None,
+                 ):
+        assert service_type == 'grafana'
+        super(GrafanaSpec, self).__init__(
+            'grafana', service_id=service_id,
+            placement=placement, unmanaged=unmanaged,
+            preview_only=preview_only, config=config, networks=networks, port=port,
+            extra_container_args=extra_container_args)
+
+        self.initial_admin_password = initial_admin_password
+
+
+yaml.add_representer(GrafanaSpec, ServiceSpec.yaml_representer)
+
+
+class SNMPGatewaySpec(ServiceSpec):
+    class SNMPVersion(str, enum.Enum):
+        V2c = 'V2c'
+        V3 = 'V3'
+
+        def to_json(self) -> str:
+            return self.value
+
+    class SNMPAuthType(str, enum.Enum):
+        MD5 = 'MD5'
+        SHA = 'SHA'
+
+        def to_json(self) -> str:
+            return self.value
+
+    class SNMPPrivacyType(str, enum.Enum):
+        DES = 'DES'
+        AES = 'AES'
+
+        def to_json(self) -> str:
+            return self.value
+
+    valid_destination_types = [
+        'Name:Port',
+        'IPv4:Port'
+    ]
+
+    def __init__(self,
+                 service_type: str = 'snmp-gateway',
+                 snmp_version: Optional[SNMPVersion] = None,
+                 snmp_destination: str = '',
+                 credentials: Dict[str, str] = {},
+                 engine_id: Optional[str] = None,
+                 auth_protocol: Optional[SNMPAuthType] = None,
+                 privacy_protocol: Optional[SNMPPrivacyType] = None,
+                 placement: Optional[PlacementSpec] = None,
+                 unmanaged: bool = False,
+                 preview_only: bool = False,
+                 port: Optional[int] = None,
+                 extra_container_args: Optional[List[str]] = None,
+                 ):
+        assert service_type == 'snmp-gateway'
+
+        super(SNMPGatewaySpec, self).__init__(
+            service_type,
+            placement=placement,
+            unmanaged=unmanaged,
+            preview_only=preview_only,
+            extra_container_args=extra_container_args)
+
+        self.service_type = service_type
+        self.snmp_version = snmp_version
+        self.snmp_destination = snmp_destination
+        self.port = port
+        self.credentials = credentials
+        self.engine_id = engine_id
+        self.auth_protocol = auth_protocol
+        self.privacy_protocol = privacy_protocol
+
+    @classmethod
+    def _from_json_impl(cls, json_spec: dict) -> 'SNMPGatewaySpec':
+
+        cpy = json_spec.copy()
+        types = [
+            ('snmp_version', SNMPGatewaySpec.SNMPVersion),
+            ('auth_protocol', SNMPGatewaySpec.SNMPAuthType),
+            ('privacy_protocol', SNMPGatewaySpec.SNMPPrivacyType),
+        ]
+        for d in cpy, cpy.get('spec', {}):
+            for key, enum_cls in types:
+                try:
+                    if key in d:
+                        d[key] = enum_cls(d[key])
+                except ValueError:
+                    raise SpecValidationError(f'{key} unsupported. Must be one of '
+                                              f'{", ".join(enum_cls)}')
+        return super(SNMPGatewaySpec, cls)._from_json_impl(cpy)
+
+    @property
+    def ports(self) -> List[int]:
+        return [self.port or 9464]
+
+    def get_port_start(self) -> List[int]:
+        return self.ports
+
+    def validate(self) -> None:
+        super(SNMPGatewaySpec, self).validate()
+
+        if not self.credentials:
+            raise SpecValidationError(
+                'Missing authentication information (credentials). '
+                'SNMP V2c and V3 require credential information'
+            )
+        elif not self.snmp_version:
+            raise SpecValidationError(
+                'Missing SNMP version (snmp_version)'
+            )
+
+        creds_requirement = {
+            'V2c': ['snmp_community'],
+            'V3': ['snmp_v3_auth_username', 'snmp_v3_auth_password']
+        }
+        if self.privacy_protocol:
+            creds_requirement['V3'].append('snmp_v3_priv_password')
+
+        missing = [parm for parm in creds_requirement[self.snmp_version]
+                   if parm not in self.credentials]
+        # check that credentials are correct for the version
+        if missing:
+            raise SpecValidationError(
+                f'SNMP {self.snmp_version} credentials are incomplete. Missing {", ".join(missing)}'
+            )
+
+        if self.engine_id:
+            if 10 <= len(self.engine_id) <= 64 and \
+               is_hex(self.engine_id) and \
+               len(self.engine_id) % 2 == 0:
+                pass
+            else:
+                raise SpecValidationError(
+                    'engine_id must be a string containing 10-64 hex characters. '
+                    'Its length must be divisible by 2'
+                )
+
+        else:
+            if self.snmp_version == 'V3':
+                raise SpecValidationError(
+                    'Must provide an engine_id for SNMP V3 notifications'
+                )
+
+        if not self.snmp_destination:
+            raise SpecValidationError(
+                'SNMP destination (snmp_destination) must be provided'
+            )
+        else:
+            valid, description = valid_addr(self.snmp_destination)
+            if not valid:
+                raise SpecValidationError(
+                    f'SNMP destination (snmp_destination) is invalid: {description}'
+                )
+            if description not in self.valid_destination_types:
+                raise SpecValidationError(
+                    f'SNMP destination (snmp_destination) type ({description}) is invalid. '
+                    f'Must be either: {", ".join(sorted(self.valid_destination_types))}'
+                )
+
+
+yaml.add_representer(SNMPGatewaySpec, ServiceSpec.yaml_representer)
+
+
+class MDSSpec(ServiceSpec):
+    def __init__(self,
+                 service_type: str = 'mds',
+                 service_id: Optional[str] = None,
+                 placement: Optional[PlacementSpec] = None,
+                 config: Optional[Dict[str, str]] = None,
+                 unmanaged: bool = False,
+                 preview_only: bool = False,
+                 extra_container_args: Optional[List[str]] = None,
+                 ):
+        assert service_type == 'mds'
+        super(MDSSpec, self).__init__('mds', service_id=service_id,
+                                      placement=placement,
+                                      config=config,
+                                      unmanaged=unmanaged,
+                                      preview_only=preview_only,
+                                      extra_container_args=extra_container_args)
+
+    def validate(self) -> None:
+        super(MDSSpec, self).validate()
+
+        if str(self.service_id)[0].isdigit():
+            raise SpecValidationError('MDS service id cannot start with a numeric digit')
+
+
+yaml.add_representer(MDSSpec, ServiceSpec.yaml_representer)

@@ -32,9 +32,28 @@
   in certain recovery scenarios, e.g., monitor database lost and rebuilt, and
   the restored file system is expected to have the same ID as before.
 
->=16.2.7
+>=16.2.8
 --------
 
+* MON/MGR: Pools can now be created with `--bulk` flag. Any pools created with `bulk`
+  will use a profile of the `pg_autoscaler` that provides more performance from the start.
+  However, any pools created without the `--bulk` flag will remain using it's old behavior
+  by default. For more details, see:
+
+  https://docs.ceph.com/en/latest/rados/operations/placement-groups/
+
+* MGR: The pg_autoscaler can now be turned `on` and `off` globally
+  with the `noautoscale` flag. By default this flag is unset and
+  the default pg_autoscale mode remains the same.
+  For more details, see:
+
+  https://docs.ceph.com/en/latest/rados/operations/placement-groups/
+
+* A health warning will now be reported if the ``require-osd-release`` flag is not
+  set to the appropriate release after a cluster upgrade.
+
+>=16.2.7
+--------
 * Critical bug in OMAP format upgrade is fixed. This could cause data corruption
   (improperly formatted OMAP keys) after pre-Pacific cluster upgrade if
   bluestore-quick-fix-on-mount parameter is set to true or ceph-bluestore-tool's
@@ -57,6 +76,10 @@
   For more details, see:
 
   https://docs.ceph.com/en/latest/rados/operations/placement-groups/
+* Cephadm: ``osd_memory_target_autotune`` will be enabled by default which will set
+  ``mgr/cephadm/autotune_memory_target_ratio`` to ``0.7`` of total RAM. This will be
+  unsuitable for hyperconverged infrastructures. For hyperconverged Ceph, please refer
+  to the documentation or set ``mgr/cephadm/autotune_memory_target_ratio`` to ``0.2``.
 
 >=16.0.0
 --------
@@ -421,3 +444,8 @@
   from Octopus) will be automatically migrated when the cluster is
   upgraded.  Note that the NFS ganesha daemons will be redeployed and
   it is possible that their IPs will change.
+
+* RGW now requires a secure connection to the monitor by default
+  (``auth_client_required=cephx`` and ``ms_mon_client_mode=secure``).
+  If you have cephx authentication disabled on your cluster, you may
+  need to adjust these settings for RGW.

@@ -332,7 +332,7 @@ Alternatively, you can use your OSDSpec file:
 
 .. prompt:: bash #
 
-  ceph orch apply osd -i <osd_spec_file> --dry-run
+  ceph orch apply -i <osd_spec_file> --dry-run
 
 Expected output::
 
@@ -380,9 +380,7 @@ memory with other services, cephadm can automatically adjust the per-OSD
 memory consumption based on the total amount of RAM and the number of deployed
 OSDs.
 
-This option is enabled globally with::
-
-  ceph config set osd osd_memory_target_autotune true
+.. warning:: Cephadm sets ``osd_memory_target_autotune`` to ``true`` by default which is unsuitable for hyperconverged infrastructures.
 
 Cephadm will start with a fraction
 (``mgr/cephadm/autotune_memory_target_ratio``, which defaults to
@@ -459,7 +457,7 @@ This means :
 
    .. prompt:: bash [monitor.1]#
 
-     ceph orch apply osd -i /path/to/osd_spec.yml
+     ceph orch apply -i /path/to/osd_spec.yml
 
    This instruction will be issued to all the matching hosts, and will deploy
    these OSDs.
@@ -474,7 +472,7 @@ Example
 
 .. prompt:: bash [monitor.1]#
 
-   ceph orch apply osd -i /path/to/osd_spec.yml --dry-run
+   ceph orch apply -i /path/to/osd_spec.yml --dry-run
 
 
 

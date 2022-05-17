@@ -1683,6 +1683,11 @@ PrimaryLogPG::PrimaryLogPG(OSDService *o, OSDMapRef curmap,
   m_scrubber = make_unique<PrimaryLogScrub>(this);
 }
 
+PrimaryLogPG::~PrimaryLogPG()
+{
+  m_scrubber.reset();
+}
+
 void PrimaryLogPG::get_src_oloc(const object_t& oid, const object_locator_t& oloc, object_locator_t& src_oloc)
 {
   src_oloc = oloc;
@@ -3339,7 +3344,7 @@ void PrimaryLogPG::cancel_manifest_ops(bool requeue, vector<ceph_tid_t> *tids)
   }
 }
 
-int PrimaryLogPG::get_manifest_ref_count(ObjectContextRef obc, std::string& fp_oid) 
+int PrimaryLogPG::get_manifest_ref_count(ObjectContextRef obc, std::string& fp_oid, OpRequestRef op) 
 {
   int cnt = 0;
   // head
@@ -3365,6 +3370,9 @@ int PrimaryLogPG::get_manifest_ref_count(ObjectContextRef obc, std::string& fp_o
     ObjectContextRef clone_obc = get_object_context(clone_oid, false);
     if (!clone_obc) {
       break;
+    }
+    if (recover_adjacent_clones(obc, op)) {
+      return -EAGAIN;
     }
     get_adjacent_clones(clone_obc, obc_l, obc_g);
     clone_obc->obs.oi.manifest.calc_refs_to_inc_on_set(
@@ -3396,6 +3404,7 @@ bool PrimaryLogPG::recover_adjacent_clones(ObjectContextRef obc, OpRequestRef op
   if (!obc->obs.oi.manifest.is_chunked() && !has_manifest_op) {
     return false;
   }
+  ceph_assert(op);
 
   const SnapSet& snapset = obc->ssc->snapset;
   auto s = std::find(snapset.clones.begin(), snapset.clones.end(), obc->obs.oi.soid.snap);
@@ -4766,8 +4775,8 @@ void PrimaryLogPG::kick_snap_trim()
 
 void PrimaryLogPG::snap_trimmer_scrub_complete()
 {
-  if (is_primary() && is_active() && is_clean()) {
-    ceph_assert(!snap_trimq.empty());
+  if (is_primary() && is_active() && is_clean() && !snap_trimq.empty()) {
+    dout(10) << "scrub finished - requeuing snap_trimmer" << dendl;
     snap_trimmer_machine.process_event(ScrubComplete());
   }
 }
@@ -5187,11 +5196,11 @@ struct FillInVerifyExtent : public Context {
     r(r), rval(rv), outdatap(blp), maybe_crc(mc),
     size(size), osd(osd), soid(soid), flags(flags) {}
   void finish(int len) override {
-    *r = len;
     if (len < 0) {
       *rval = len;
       return;
     }
+    *r = len;
     *rval = 0;
 
     // whole object?  can we verify the checksum?
@@ -7839,6 +7848,7 @@ int PrimaryLogPG::do_osd_ops(OpContext *ctx, vector<OSDOp>& ops)
 	  goto fail;
 	}
 	t->omap_rmkeyrange(soid, key_begin, key_end);
+        ctx->clean_regions.mark_omap_dirty();
 	ctx->delta_stats.num_wr++;
       }
       obs.oi.clear_omap_digest();
@@ -10958,8 +10968,10 @@ void PrimaryLogPG::op_applied(const eversion_t &applied_version)
   ceph_assert(applied_version <= info.last_update);
   recovery_state.local_write_applied(applied_version);
 
-  if (is_primary() && m_scrubber->should_requeue_blocked_ops(recovery_state.get_last_update_applied())) {
-    osd->queue_scrub_applied_update(this, is_scrub_blocking_ops());
+  if (is_primary() && m_scrubber) {
+    // if there's a scrub operation waiting for the selected chunk to be fully updated -
+    // allow it to continue
+    m_scrubber->on_applied_when_primary(recovery_state.get_last_update_applied());
   }
 }
 
@@ -15259,6 +15271,9 @@ boost::statechart::result PrimaryLogPG::AwaitAsyncWork::react(const DoSnapWork&)
 
   vector<hobject_t> to_trim;
   unsigned max = pg->cct->_conf->osd_pg_max_concurrent_snap_trims;
+  // we need to look for at least 1 snaptrim, otherwise we'll misinterpret
+  // the ENOENT below and erase snap_to_trim.
+  ceph_assert(max > 0);
   to_trim.reserve(max);
   int r = pg->snap_mapper.get_next_objects_to_trim(
     snap_to_trim,

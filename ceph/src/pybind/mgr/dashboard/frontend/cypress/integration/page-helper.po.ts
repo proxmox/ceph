@@ -171,7 +171,7 @@ export abstract class PageHelper {
   getTableRow(content: string) {
     this.waitDataTableToLoad();
 
-    this.seachTable(content);
+    this.searchTable(content);
     return cy.contains('.datatable-body-row', content);
   }
 
@@ -189,16 +189,23 @@ export abstract class PageHelper {
     this.waitDataTableToLoad();
 
     if (content) {
-      this.seachTable(content);
+      this.searchTable(content);
       return cy.contains('.datatable-body-cell-label', content);
     } else {
       return cy.get('.datatable-body-cell-label').first();
     }
   }
 
-  getTableCell(columnIndex: number, exactContent: string) {
+  getTableCell(columnIndex: number, exactContent: string, partialMatch = false) {
     this.waitDataTableToLoad();
-    this.seachTable(exactContent);
+    this.clearTableSearchInput();
+    this.searchTable(exactContent);
+    if (partialMatch) {
+      return cy.contains(
+        `datatable-body-row datatable-body-cell:nth-child(${columnIndex})`,
+        exactContent
+      );
+    }
     return cy.contains(
       `datatable-body-row datatable-body-cell:nth-child(${columnIndex})`,
       new RegExp(`^${exactContent}$`)
@@ -250,7 +257,7 @@ export abstract class PageHelper {
     cy.get('cd-table .dataTables_paginate input').first().clear({ force: true }).type(size);
   }
 
-  seachTable(text: string) {
+  searchTable(text: string) {
     this.waitDataTableToLoad();
 
     this.setPageSize('10');
@@ -260,7 +267,7 @@ export abstract class PageHelper {
   clearTableSearchInput() {
     this.waitDataTableToLoad();
 
-    return cy.get('cd-table .search button').click();
+    return cy.get('cd-table .search button').first().click();
   }
 
   // Click the action button

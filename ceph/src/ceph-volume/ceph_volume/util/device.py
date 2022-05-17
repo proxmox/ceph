@@ -366,6 +366,17 @@ class Device(object):
         return self.path.startswith(('/dev/mapper', '/dev/dm-'))
 
     @property
+    def device_type(self):
+        if self.disk_api:
+            return self.disk_api['TYPE']
+        elif self.blkid_api:
+            return self.blkid_api['TYPE']
+
+    @property
+    def is_mpath(self):
+        return self.device_type == 'mpath'
+
+    @property
     def is_lv(self):
         return self.lv_api is not None
 
@@ -385,10 +396,7 @@ class Device(object):
         elif self.blkid_api:
             api = self.blkid_api
         if api:
-            is_device = api['TYPE'] == 'device'
-            is_disk = api['TYPE'] == 'disk'
-            if is_device or is_disk:
-                return True
+            return self.device_type in ['disk', 'device', 'mpath']
         return False
 
     @property
@@ -466,6 +474,15 @@ class Device(object):
                 vg_free -= extent_size
             return [vg_free]
 
+    @property
+    def has_partitions(self):
+        '''
+        Boolean to determine if a given device has partitions.
+        '''
+        if self.sys_api.get('partitions'):
+            return True
+        return False
+
     def _check_generic_reject_reasons(self):
         reasons = [
             ('removable', 1, 'removable'),
@@ -504,6 +521,8 @@ class Device(object):
 
         if self.has_gpt_headers:
             rejected.append('Has GPT headers')
+        if self.has_partitions:
+            rejected.append('Has partitions')
         return rejected
 
     def _check_lvm_reject_reasons(self):

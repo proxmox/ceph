@@ -2107,6 +2107,11 @@ std::vector<Option> get_global_options() {
     .add_service("mon")
     .set_description("force mons to trim mdsmaps/fsmaps through this epoch"),
 
+    Option("mds_beacon_mon_down_grace", Option::TYPE_SECS, Option::LEVEL_ADVANCED)
+    .set_default(1_min)
+    .set_description("tolerance in seconds for missed MDS beacons to monitors")
+    .set_long_description("The interval without beacons before Ceph declares an MDS laggy when a monitor is down."),
+
     Option("mon_mds_skip_sanity", Option::TYPE_BOOL, Option::LEVEL_ADVANCED)
     .set_default(false)
     .add_service("mon")
@@ -2812,6 +2817,11 @@ std::vector<Option> get_global_options() {
     .set_description("set nosizechange flag on new pools")
     .add_service("mon"),
 
+    Option("osd_pool_default_flag_bulk", Option::TYPE_BOOL, Option::LEVEL_ADVANCED)
+    .set_default(false)
+    .set_description("set bulk flag on new pools")
+    .add_service("mon"),
+
     Option("osd_pool_default_hit_set_bloom_fpp", Option::TYPE_FLOAT, Option::LEVEL_ADVANCED)
     .set_default(.05)
     .set_description("")
@@ -2974,6 +2984,10 @@ std::vector<Option> get_global_options() {
     .set_default(32)
     .set_flag(Option::FLAG_STARTUP)
     .set_description("The number of cache shards to use in the object store."),
+
+    Option("osd_aggregated_slow_ops_logging", Option::TYPE_BOOL, Option::LEVEL_ADVANCED)
+    .set_default(true)
+    .set_description("Allow OSD daemon to send an aggregated slow ops to the cluster log."),
 
     Option("osd_op_num_threads_per_shard", Option::TYPE_INT, Option::LEVEL_ADVANCED)
     .set_default(0)
@@ -3279,6 +3293,7 @@ std::vector<Option> get_global_options() {
 
     Option("osd_pg_max_concurrent_snap_trims", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
     .set_default(2)
+    .set_min(1)
     .set_description(""),
 
     Option("osd_max_trimming_pgs", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
@@ -3783,6 +3798,10 @@ std::vector<Option> get_global_options() {
     .set_flag(Option::FLAG_RUNTIME)
     .set_description("Time in seconds to sleep before next removal transaction when data is on HDD and journal is on SSD"),
 
+    Option("osd_rocksdb_iterator_bounds_enabled", Option::TYPE_BOOL, Option::LEVEL_DEV)
+    .set_default(true)
+    .set_description("Whether omap iterator bounds are applied to rocksdb iterator ReadOptions"),
+
     Option("osd_failsafe_full_ratio", Option::TYPE_FLOAT, Option::LEVEL_ADVANCED)
     .set_default(.97)
     .set_description(""),
@@ -3793,7 +3812,7 @@ std::vector<Option> get_global_options() {
     .set_long_description("Setting this to false makes the OSD do a slower teardown of all state when it receives a SIGINT or SIGTERM or when shutting down for any other reason.  That slow shutdown is primarilyy useful for doing memory leak checking with valgrind."),
 
     Option("osd_fast_shutdown_notify_mon", Option::TYPE_BOOL, Option::LEVEL_ADVANCED)
-    .set_default(false)
+    .set_default(true)
     .set_description("Tell mon about OSD shutdown on immediate shutdown")
     .set_long_description("Tell the monitor the OSD is shutting down on immediate shutdown. This helps with cluster log messages from other OSDs reporting it immediately failed.")
     .add_see_also({"osd_fast_shutdown", "osd_mon_shutdown_timeout"}),
@@ -4735,6 +4754,12 @@ std::vector<Option> get_global_options() {
       .set_default(2)
       .set_description("Number of additional threads to perform quick-fix (shallow fsck) command"),
 
+    Option("bluestore_fsck_shared_blob_tracker_size", Option::TYPE_FLOAT, Option::LEVEL_DEV)
+    .set_default(0.03125)
+    .set_flag(Option::FLAG_RUNTIME)
+    .set_description("Size(a fraction of osd_memory_target, defaults to 128MB) of a hash table to track shared blobs ref counts. Higher the size, more precise is the tracker -> less overhead during the repair.")
+    .add_see_also("osd_memory_target"),
+
     Option("bluestore_throttle_bytes", Option::TYPE_SIZE, Option::LEVEL_ADVANCED)
     .set_default(64_M)
     .set_flag(Option::FLAG_RUNTIME)
@@ -4918,6 +4943,14 @@ std::vector<Option> get_global_options() {
     .set_enum_allowed({"default", "hdd", "ssd"})
     .set_description("Enforces specific hw profile settings")
     .set_long_description("'hdd' enforces settings intended for BlueStore above a rotational drive. 'ssd' enforces settings intended for BlueStore above a solid drive. 'default' - using settings for the actual hardware."),
+
+    Option("bluestore_avl_alloc_ff_max_search_count", Option::TYPE_UINT, Option::LEVEL_DEV)
+    .set_default(100)
+    .set_description("Search for this many ranges in first-fit mode before switching over to to best-fit mode. 0 to iterate through all ranges for required chunk."),
+
+    Option("bluestore_avl_alloc_ff_max_search_bytes", Option::TYPE_SIZE, Option::LEVEL_DEV)
+    .set_default(16_M)
+    .set_description("Maximum distance to search in first-fit mode before switching over to to best-fit mode. 0 to iterate through all ranges for required chunk."),
 
     Option("bluestore_avl_alloc_bf_threshold", Option::TYPE_UINT, Option::LEVEL_DEV)
     .set_default(131072)
@@ -5474,6 +5507,11 @@ std::vector<Option> get_global_options() {
     .add_service("mgr")
     .set_description("Path to cephadm utility"),
 
+    Option("mgr_max_pg_num_change", Option::TYPE_INT, Option::LEVEL_ADVANCED)
+    .set_default(128)
+    .add_service("mgr")
+    .set_description("maximum change in pg_num"),
+
     Option("mgr_module_path", Option::TYPE_STR, Option::LEVEL_ADVANCED)
     .set_default(CEPH_DATADIR "/mgr")
     .add_service("mgr")
@@ -5727,7 +5765,13 @@ std::vector<Option> get_global_options() {
     // blk specific options
     Option("bdev_type", Option::TYPE_STR, Option::LEVEL_ADVANCED)
     .set_description("Explicitly set the device type to select the driver if it's needed")
-    .set_enum_allowed({"aio", "spdk", "pmem", "hm_smr"})
+    .set_enum_allowed({"aio", "spdk", "pmem", "hm_smr"}),
+
+    Option("mgr_ttl_cache_expire_seconds", Option::TYPE_UINT, Option::LEVEL_DEV)
+    .set_default(0)
+    .set_description("Set the time to live in seconds - set to 0 to disable the cache.")
+    .set_flag(Option::FLAG_STARTUP)
+    .add_service("mgr")
 
   });
 }
@@ -5977,7 +6021,12 @@ std::vector<Option> get_rgw_options() {
 
     Option("rgw_lc_debug_interval", Option::TYPE_INT, Option::LEVEL_DEV)
     .set_default(-1)
-    .set_description(""),
+    .set_description("The number of seconds that simulate one \"day\" in order to debug RGW LifeCycle. "
+                     "Do *not* modify for a production cluster.")
+    .set_long_description("For debugging RGW LifeCycle, the number of seconds that are equivalent to "
+                          "one simulated \"day\". Values less than 1 are ignored and do not change LifeCycle behavior. "
+                          "For example, during debugging if one wanted every 10 minutes to be equivalent to one day, "
+                          "then this would be set to 600, the number of seconds in 10 minutes."),
 
     Option("rgw_mp_lock_max_time", Option::TYPE_INT, Option::LEVEL_ADVANCED)
     .set_default(600)
@@ -7979,10 +8028,6 @@ static std::vector<Option> get_rbd_options() {
     .set_enum_allowed({"disabled", "rwl", "ssd"})
     .set_description("enable persistent write back cache for this volume"),
 
-    Option("rbd_persistent_cache_log_periodic_stats", Option::TYPE_BOOL, Option::LEVEL_ADVANCED)
-    .set_default(false)
-    .set_description("emit periodic perf stats to debug log"),
-
     Option("rbd_persistent_cache_size", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
     .set_default(1073741824)
     .set_min(1073741824)
@@ -8586,7 +8631,7 @@ std::vector<Option> get_mds_options() {
     .set_description("rate of decay for export targets communicated to clients"),
 
     Option("mds_oft_prefetch_dirfrags", Option::TYPE_BOOL, Option::LEVEL_ADVANCED)
-    .set_default(true)
+    .set_default(false)
     .set_description("prefetch dirfrags recorded in open file table on startup")
     .set_flag(Option::FLAG_STARTUP),
 
@@ -8866,11 +8911,27 @@ std::vector<Option> get_mds_options() {
      .set_description("interval in seconds for sending ping messages to active MDSs.")
      .set_long_description("interval in seconds for rank 0 to send ping messages to all active MDSs."),
 
+    Option("mds_sleep_rank_change", Option::TYPE_FLOAT, Option::LEVEL_DEV)
+     .set_default(0.0)
+     .set_flag(Option::FLAG_RUNTIME)
+     .set_description(""),
+
+    Option("mds_connect_bootstrapping", Option::TYPE_BOOL, Option::LEVEL_DEV)
+     .set_default(false)
+     .set_flag(Option::FLAG_RUNTIME)
+     .set_description(""),
+
     Option("mds_metrics_update_interval", Option::TYPE_SECS, Option::LEVEL_ADVANCED)
      .set_default(2)
      .set_flag(Option::FLAG_RUNTIME)
      .set_description("interval in seconds for metrics data update.")
-     .set_long_description("interval in seconds after which active MDSs send client metrics data to rank 0.")
+     .set_long_description("interval in seconds after which active MDSs send client metrics data to rank 0."),
+
+    Option("mds_dir_max_entries", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
+     .set_default(0)
+     .set_flag(Option::FLAG_RUNTIME)
+     .set_description("maximum number of entries per directory before new creat/links fail")
+     .set_long_description("The maximum number of entries before any new entries are rejected with ENOSPC.")
   });
 }
 

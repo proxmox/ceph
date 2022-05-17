@@ -9,14 +9,15 @@
 #include "PrimaryLogPG.h"
 #include "scrub_machine.h"
 
-#define dout_context (m_pg->cct)
+#define dout_context (m_osds->cct)
 #define dout_subsys ceph_subsys_osd
 #undef dout_prefix
-#define dout_prefix _prefix(_dout, this->m_pg)
+#define dout_prefix _prefix(_dout, this)
 
-template <class T> static ostream& _prefix(std::ostream* _dout, T* t)
+template <class T>
+static ostream& _prefix(std::ostream* _dout, T* t)
 {
-  return t->gen_prefix(*_dout) << " PrimaryLog scrubber pg(" << t->pg_id << ") ";
+  return t->gen_prefix(*_dout);
 }
 
 using namespace Scrub;
@@ -546,8 +547,8 @@ void PrimaryLogScrub::scrub_snapshot_metadata(ScrubMap& scrubmap,
 
     ++num_digest_updates_pending;
     ctx->register_on_success([this]() {
-      dout(20) << "updating scrub digest " << num_digest_updates_pending << dendl;
-      if (--num_digest_updates_pending <= 0) {
+      if ((num_digest_updates_pending >= 1) && 
+          (--num_digest_updates_pending == 0)) {
 	m_osds->queue_scrub_digest_update(m_pl_pg, m_pl_pg->is_scrub_blocking_ops());
       }
     });
@@ -585,15 +586,4 @@ void PrimaryLogScrub::stats_of_handled_objects(const object_stat_sum_t& delta_st
 	       << dendl;
     }
   }
-}
-
-bool PrimaryLogScrub::should_requeue_blocked_ops(eversion_t last_recovery_applied) const
-{
-  if (!is_scrub_active()) {
-    // just verify that things indeed are quiet
-    ceph_assert(m_start == m_end);
-    return false;
-  }
-
-  return last_recovery_applied >= m_subset_last_update;
 }

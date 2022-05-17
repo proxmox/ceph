@@ -157,7 +157,7 @@ endif()
 add_executable(ceph_test_mutate
   test_mutate.cc
   )
-target_link_libraries(ceph_test_mutate global librados ${BLKID_LIBRARIES} 
+target_link_libraries(ceph_test_mutate global librados ${BLKID_LIBRARIES}
   ${CMAKE_DL_LIBS})
 
 if(NOT WIN32)
@@ -590,24 +590,6 @@ add_ceph_test(run-cli-tests ${CMAKE_CURRENT_SOURCE_DIR}/run-cli-tests)
 #add_ceph_test(test_pidfile.sh ${CMAKE_CURRENT_SOURCE_DIR}/test_pidfile.sh)
 
 add_ceph_test(smoke.sh ${CMAKE_CURRENT_SOURCE_DIR}/smoke.sh)
-
-find_program(PROMTOOL_EXECUTABLE promtool)
-if(PROMTOOL_EXECUTABLE)
-  execute_process(
-    COMMAND ${PROMTOOL_EXECUTABLE} test rules /dev/null
-    RESULT_VARIABLE rc
-    OUTPUT_QUIET)
-  if(NOT rc)
-    add_ceph_test(run-promtool-unittests
-      ${PROMTOOL_EXECUTABLE} test rules ${CMAKE_SOURCE_DIR}/monitoring/prometheus/alerts/test_alerts.yml)
-  else()
-    message(WARNING "'${PROMTOOL_EXECUTABLE} test rules' does not work, "
-      "please use a newer prometheus")
-  endif()
-else()
-  add_ceph_test(run-promtool-unittests
-    {CMAKE_CURRENT_SOURCE_DIR}/run-promtool-unittests.sh)
-endif()
 
 set_property(
   TEST ${tox_tests}

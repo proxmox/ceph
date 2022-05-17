@@ -1489,7 +1489,7 @@ public:
 	       const PGPool &_pool,
 	       const std::map<std::string,std::string>& ec_profile,
 	       spg_t p);
-  ~PrimaryLogPG() override {}
+  ~PrimaryLogPG() override;
 
   void do_command(
     const std::string_view& prefix,
@@ -1849,7 +1849,7 @@ public:
   void maybe_kick_recovery(const hobject_t &soid);
   void wait_for_unreadable_object(const hobject_t& oid, OpRequestRef op);
 
-  int get_manifest_ref_count(ObjectContextRef obc, std::string& fp_oid);
+  int get_manifest_ref_count(ObjectContextRef obc, std::string& fp_oid, OpRequestRef op);
 
   bool check_laggy(OpRequestRef& op);
   bool check_laggy_requeue(OpRequestRef& op);

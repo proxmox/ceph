@@ -21,21 +21,12 @@ describe('Hosts page', () => {
       hosts.add(hostname, true);
     });
 
-    it('should drain and delete a host and then add it back', function () {
+    it('should drain and remove a host and then add it back', function () {
       const hostname = Cypress._.last(this.hosts)['name'];
 
       // should drain the host first before deleting
-      hosts.editLabels(hostname, ['_no_schedule'], true);
-      hosts.clickTab('cd-host-details', hostname, 'Daemons');
-      cy.get('cd-host-details').within(() => {
-        // draining will take some time to complete.
-        // since we don't know how many daemons will be
-        // running in this host in future putting the wait
-        // to 15s
-        cy.wait(15000);
-        hosts.getTableCount('total').should('be.eq', 0);
-      });
-      hosts.delete(hostname);
+      hosts.drain(hostname);
+      hosts.remove(hostname);
 
       // add it back
       hosts.navigateTo('add');
@@ -47,7 +38,7 @@ describe('Hosts page', () => {
       for (const host of this.hosts) {
         hosts.clickTab('cd-host-details', host.name, 'Physical Disks');
         cy.get('cd-host-details').within(() => {
-          hosts.getTableCount('total').should('be.gte', 0);
+          hosts.expectTableCount('total', host.devices.length);
         });
       }
     });

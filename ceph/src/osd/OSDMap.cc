@@ -1809,6 +1809,12 @@ void OSDMap::clean_temps(CephContext *cct,
       pending_inc->new_pg_temp[pg.first].clear();
       continue;
     }
+    if (!nextmap.pg_exists(pg.first)) {
+      ldout(cct, 10) << __func__ << " removing pg_temp " << pg.first
+                     << " for nonexistent pg " << dendl;
+      pending_inc->new_pg_temp[pg.first].clear();
+      continue;
+    }
     // all osds down?
     unsigned num_up = 0;
     for (auto o : pg.second) {
@@ -4251,6 +4257,8 @@ int OSDMap::build_simple_optioned(CephContext *cct, epoch_t e, uuid_d &fsid,
 	pools[pool].set_flag(pg_pool_t::FLAG_NOPGCHANGE);
       if (cct->_conf->osd_pool_default_flag_nosizechange)
 	pools[pool].set_flag(pg_pool_t::FLAG_NOSIZECHANGE);
+      if (cct->_conf->osd_pool_default_flag_bulk)
+        pools[pool].set_flag(pg_pool_t::FLAG_BULK);
       pools[pool].size = cct->_conf.get_val<uint64_t>("osd_pool_default_size");
       pools[pool].min_size = cct->_conf.get_osd_pool_default_min_size(
                                  pools[pool].size);
@@ -6005,7 +6013,13 @@ void OSDMap::check_health(CephContext *cct,
   }
 
   // OSD_UPGRADE_FINISHED
-  // none of these (yet) since we don't run until luminous upgrade is done.
+  if (auto require_release = pending_require_osd_release()) {
+    ostringstream ss;
+    ss << "all OSDs are running " << *require_release << " or later but"
+       << " require_osd_release < " << *require_release;
+    auto& d = checks->add("OSD_UPGRADE_FINISHED", HEALTH_WARN, ss.str(), 0);
+    d.detail.push_back(ss.str());
+  }
 
   // POOL_NEARFULL/BACKFILLFULL/FULL
   {
@@ -6237,4 +6251,22 @@ unsigned OSDMap::get_device_class_flags(int id) const
   if (it != device_class_flags.end())
     flags = it->second;
   return flags;
+}
+
+std::optional<std::string> OSDMap::pending_require_osd_release() const
+{
+  if (HAVE_FEATURE(get_up_osd_features(), SERVER_PACIFIC) &&
+      require_osd_release < ceph_release_t::pacific) {
+    return "pacific";
+  }
+  if (HAVE_FEATURE(get_up_osd_features(), SERVER_OCTOPUS) &&
+      require_osd_release < ceph_release_t::octopus) {
+    return "octopus";
+  }
+  if (HAVE_FEATURE(get_up_osd_features(), SERVER_NAUTILUS) &&
+      require_osd_release < ceph_release_t::nautilus) {
+    return "nautilus";
+  }
+
+  return std::nullopt;
 }

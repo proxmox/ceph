@@ -4,11 +4,11 @@ Device health monitoring
 
 import errno
 import json
-from mgr_module import MgrModule, CommandResult, CLICommand, Option
+from mgr_module import MgrModule, CommandResult, CLICommand, Option, NotifyType
 import operator
 import rados
 from threading import Event
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import cast, Any, Dict, List, Optional, Sequence, Tuple, TYPE_CHECKING, Union
 
 TIME_FORMAT = '%Y%m%d-%H%M%S'
@@ -30,7 +30,7 @@ def get_ata_wear_level(data: Dict[Any,Any]) -> Optional[float]:
     Extract wear level (as float) from smartctl -x --json output for SATA SSD
     """
     for page in data.get("ata_device_statistics", {}).get("pages", []):
-        if page.get("number") != 7:
+        if page is None or page.get("number") != 7:
             continue
         for item in page.get("table", []):
             if item["offset"] == 8:
@@ -107,6 +107,7 @@ class Module(MgrModule):
             runtime=True,
         ),
     ]
+    NOTIFY_TYPES = [NotifyType.osd_map]
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super(Module, self).__init__(*args, **kwargs)
@@ -243,8 +244,8 @@ class Module(MgrModule):
                     self.get_module_option(opt['name']))
             self.log.debug(' %s = %s', opt['name'], getattr(self, opt['name']))
 
-    def notify(self, notify_type: str, notify_id: str) -> None:
-        if notify_type == "osd_map" and self.enable_monitoring:
+    def notify(self, notify_type: NotifyType, notify_id: str) -> None:
+        if notify_type == NotifyType.osd_map and self.enable_monitoring:
             # create device_health_metrics pool if it doesn't exist
             self.maybe_create_device_pool()
 
@@ -277,6 +278,7 @@ class Module(MgrModule):
             'pool': self.pool_name,
             'pg_num': 1,
             'pg_num_min': 1,
+            'pg_num_max': 32,
         }), '')
         r, outb, outs = result.wait()
         assert r == 0
@@ -545,7 +547,7 @@ class Module(MgrModule):
         devs = self.get("devices")
         osds_in = {}
         osds_out = {}
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)  # e.g. '2021-09-22 13:18:45.021712+00:00'
         osdmap = self.get("osd_map")
         assert osdmap is not None
         for dev in devs['devices']:
@@ -560,7 +562,7 @@ class Module(MgrModule):
                 continue
             # life_expectancy_(min/max) is in the format of:
             # '%Y-%m-%dT%H:%M:%S.%f%z', e.g.:
-            # '2019-01-20T21:12:12.000000Z'
+            # '2019-01-20 21:12:12.000000+00:00'
             life_expectancy_max = datetime.strptime(
                 dev['life_expectancy_max'],
                 '%Y-%m-%dT%H:%M:%S.%f%z')

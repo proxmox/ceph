@@ -175,7 +175,7 @@ describe('HostsComponent', () => {
     const spans = fixture.debugElement.nativeElement.querySelectorAll(
       '.datatable-body-cell-label span'
     );
-    expect(spans[7].textContent).toBe('Unavailable');
+    expect(spans[7].textContent).toBe('N/A');
   });
 
   it('should test if host facts are unavailable if get_fatcs orch feature is not available', () => {
@@ -200,7 +200,7 @@ describe('HostsComponent', () => {
     const spans = fixture.debugElement.nativeElement.querySelectorAll(
       '.datatable-body-cell-label span'
     );
-    expect(spans[7].textContent).toBe('Unavailable');
+    expect(spans[7].textContent).toBe('N/A');
   });
 
   it('should show force maintenance modal when it is safe to stop host', () => {
@@ -294,7 +294,8 @@ describe('HostsComponent', () => {
         OrchestratorFeature.HOST_ADD,
         OrchestratorFeature.HOST_LABEL_ADD,
         OrchestratorFeature.HOST_REMOVE,
-        OrchestratorFeature.HOST_LABEL_REMOVE
+        OrchestratorFeature.HOST_LABEL_REMOVE,
+        OrchestratorFeature.HOST_DRAIN
       ];
       await testTableActions(true, features, tests);
     });

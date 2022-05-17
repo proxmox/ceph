@@ -5,6 +5,7 @@ import json
 import logging
 from contextlib import contextmanager
 
+import cephfs
 import cherrypy
 import rados
 import rbd
@@ -56,6 +57,14 @@ def dashboard_exception_handler(handler, *args, **kwargs):
 
 
 @contextmanager
+def handle_cephfs_error():
+    try:
+        yield
+    except cephfs.OSError as e:
+        raise DashboardException(e, component='cephfs') from e
+
+
+@contextmanager
 def handle_rbd_error():
     try:
         yield
@@ -89,3 +98,11 @@ def handle_orchestrator_error(component):
         yield
     except OrchestratorError as e:
         raise DashboardException(e, component=component)
+
+
+@contextmanager
+def handle_error(component, http_status_code=None):
+    try:
+        yield
+    except Exception as e:  # pylint: disable=broad-except
+        raise DashboardException(e, component=component, http_status_code=http_status_code)
