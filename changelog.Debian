@@ -1,3 +1,9 @@
+ceph (16.2.9-pve1) bullseye; urgency=medium
+
+  * new upstream pacific 16.2.9 stable release
+
+ -- Proxmox Support Team <support@proxmox.com>  Thu, 19 May 2022 09:37:37 +0200
+
 ceph (16.2.8-pve1) bullseye; urgency=medium
 
   * new upstream pacific 16.2.8 stable release
