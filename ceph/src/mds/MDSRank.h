@@ -53,6 +53,7 @@ enum {
   l_mds_request,
   l_mds_reply,
   l_mds_reply_latency,
+  l_mds_slow_reply,
   l_mds_forward,
   l_mds_dir_fetch,
   l_mds_dir_commit,
@@ -266,6 +267,9 @@ class MDSRank {
      * of code while holding the mds_lock
      */
     void heartbeat_reset();
+    int heartbeat_reset_grace(int count=1) {
+      return count * _heartbeat_reset_grace;
+    }
 
     /**
      * Report state DAMAGED to the mon, and then pass on to respawn().  Call
@@ -575,6 +579,7 @@ class MDSRank {
 
     ceph::heartbeat_handle_d *hb = nullptr;  // Heartbeat for threads using mds_lock
     double heartbeat_grace;
+    int _heartbeat_reset_grace;
 
     std::map<mds_rank_t, version_t> peer_mdsmap_epoch;
 
@@ -704,4 +709,3 @@ public:
 };
 
 #endif // MDS_RANK_H_
-

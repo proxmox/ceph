@@ -11872,10 +11872,10 @@ int BlueStore::_onode_omap_get(
   o->flush();
   {
     const string& prefix = o->get_omap_prefix();
-    KeyValueDB::Iterator it = db->get_iterator(prefix);
     string head, tail;
     o->get_omap_header(&head);
     o->get_omap_tail(&tail);
+    KeyValueDB::Iterator it = db->get_iterator(prefix, 0, KeyValueDB::IteratorBounds{head, tail});
     it->lower_bound(head);
     while (it->valid()) {
       if (it->key() == head) {
@@ -11957,10 +11957,10 @@ int BlueStore::omap_get_keys(
   o->flush();
   {
     const string& prefix = o->get_omap_prefix();
-    KeyValueDB::Iterator it = db->get_iterator(prefix);
     string head, tail;
     o->get_omap_key(string(), &head);
     o->get_omap_tail(&tail);
+    KeyValueDB::Iterator it = db->get_iterator(prefix, 0, KeyValueDB::IteratorBounds{head, tail});
     it->lower_bound(head);
     while (it->valid()) {
       if (it->key() >= tail) {
@@ -12145,7 +12145,15 @@ ObjectMap::ObjectMapIterator BlueStore::get_omap_iterator(
   }
   o->flush();
   dout(10) << __func__ << " has_omap = " << (int)o->onode.has_omap() <<dendl;
-  KeyValueDB::Iterator it = db->get_iterator(o->get_omap_prefix());
+  auto bounds = KeyValueDB::IteratorBounds();
+  if (o->onode.has_omap()) {
+    std::string lower_bound, upper_bound;
+    o->get_omap_key(string(), &lower_bound);
+    o->get_omap_tail(&upper_bound);
+    bounds.lower_bound = std::move(lower_bound);
+    bounds.upper_bound = std::move(upper_bound);
+  }
+  KeyValueDB::Iterator it = db->get_iterator(o->get_omap_prefix(), 0, std::move(bounds));
   return ObjectMap::ObjectMapIterator(new OmapIteratorImpl(c, o, it));
 }
 
@@ -14581,7 +14589,7 @@ void BlueStore::_do_write_small(
     o->extent_map.punch_hole(c, offset, length, &wctx->old_extents);
 
     // Zero detection -- small block
-    if (!bl.is_zero()) {
+    if (!cct->_conf->bluestore_zero_block_detection || !bl.is_zero()) {
       BlobRef b = c->new_blob();
       _pad_zeros(&bl, &b_off0, min_alloc_size);
       wctx->write(offset, b, alloc_len, b_off0, bl, b_off, length, false, true);
@@ -14820,7 +14828,7 @@ void BlueStore::_do_write_small(
 	    o->extent_map.punch_hole(c, offset, length, &wctx->old_extents);
 
 	    // Zero detection -- small block
-	    if (!bl.is_zero()) {
+	    if (!cct->_conf->bluestore_zero_block_detection || !bl.is_zero()) {
 	      _pad_zeros(&bl, &b_off0, chunk_size);
 
 	      dout(20) << __func__ << " reuse blob " << *b << std::hex
@@ -14882,7 +14890,7 @@ void BlueStore::_do_write_small(
 	  o->extent_map.punch_hole(c, offset, length, &wctx->old_extents);
 
 	  // Zero detection -- small block
-	  if (!bl.is_zero()) {
+	  if (!cct->_conf->bluestore_zero_block_detection || !bl.is_zero()) {
 	    uint64_t chunk_size = b->get_blob().get_chunk_size(block_size);
 	    _pad_zeros(&bl, &b_off0, chunk_size);
 
@@ -14938,7 +14946,7 @@ void BlueStore::_do_write_small(
   o->extent_map.punch_hole(c, offset, length, &wctx->old_extents);
 
   // Zero detection -- small block
-  if (!bl.is_zero()) {
+  if (!cct->_conf->bluestore_zero_block_detection || !bl.is_zero()) {
     // new blob.
     BlobRef b = c->new_blob();
     _pad_zeros(&bl, &b_off0, block_size);
@@ -15271,7 +15279,7 @@ void BlueStore::_do_write_big(
     blp.copy(l, t);
 
     // Zero detection -- big block
-    if (!t.is_zero()) {
+    if (!cct->_conf->bluestore_zero_block_detection || !t.is_zero()) {
       wctx->write(offset, b, l, b_off, t, b_off, l, false, new_blob);
 
       dout(20) << __func__ << " schedule write big: 0x"
@@ -16658,10 +16666,10 @@ int BlueStore::_clone(TransContext *txc,
     // otherwise rewrite_omap_key will corrupt data
     ceph_assert(oldo->onode.flags == newo->onode.flags);
     const string& prefix = newo->get_omap_prefix();
-    KeyValueDB::Iterator it = db->get_iterator(prefix);
     string head, tail;
     oldo->get_omap_header(&head);
     oldo->get_omap_tail(&tail);
+    KeyValueDB::Iterator it = db->get_iterator(prefix, 0, KeyValueDB::IteratorBounds{head, tail});
     it->lower_bound(head);
     while (it->valid()) {
       if (it->key() >= tail) {

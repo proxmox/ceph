@@ -429,6 +429,7 @@ class PgScrubber : public ScrubPgIF, public ScrubMachineListener {
   [[nodiscard]] bool was_epoch_changed() const final;
 
   void set_queued_or_active() final;
+  /// Clears `m_queued_or_active` and restarts snaptrimming
   void clear_queued_or_active() final;
 
   void mark_local_map_ready() final;
@@ -443,6 +444,8 @@ class PgScrubber : public ScrubPgIF, public ScrubMachineListener {
 
   utime_t scrub_begin_stamp;
   std::ostream& gen_prefix(std::ostream& out) const final;
+
+  void log_cluster_warning(const std::string& warning) const final;
 
  protected:
   bool state_test(uint64_t m) const { return m_pg->state_test(m); }
