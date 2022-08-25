@@ -12,7 +12,7 @@ from .op_sm import SubvolumeOpSm
 from .subvolume_v1 import SubvolumeV1
 from ..template import SubvolumeTemplate
 from ...exception import OpSmException, VolumeException, MetadataMgrException
-from ...fs_util import listdir
+from ...fs_util import listdir, create_base_dir
 from ..template import SubvolumeOpType
 
 log = logging.getLogger(__name__)
@@ -167,6 +167,8 @@ class SubvolumeV2(SubvolumeV1):
             raise VolumeException(-errno.EAGAIN, "asynchronous purge of subvolume in progress")
         subvol_path = os.path.join(self.base_path, str(uuid.uuid4()).encode('utf-8'))
         try:
+            # create group directory with default mode(0o755) if it doesn't exist.
+            create_base_dir(self.fs, self.group.path, self.vol_spec.DEFAULT_MODE)
             self.fs.mkdirs(subvol_path, mode)
             self.mark_subvolume()
             attrs = {
@@ -216,6 +218,13 @@ class SubvolumeV2(SubvolumeV1):
             # source snapshot attrs are used to create clone subvolume
             # attributes of subvolume's content though, are synced during the cloning process.
             attrs = source_subvolume.get_attrs(source_subvolume.snapshot_data_path(snapname))
+
+            # The source of the clone may have exceeded its quota limit as
+            # CephFS quotas are imprecise. Cloning such a source may fail if
+            # the quota on the destination is set before starting the clone
+            # copy. So always set the quota on destination after cloning is
+            # successful.
+            attrs["quota"] = None
 
             # override snapshot pool setting, if one is provided for the clone
             if pool is not None:

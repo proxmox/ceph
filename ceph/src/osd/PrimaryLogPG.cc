@@ -7667,6 +7667,7 @@ int PrimaryLogPG::do_osd_ops(OpContext *ctx, vector<OSDOp>& ops)
 	  goto fail;
 	}
 	t->omap_rmkeyrange(soid, key_begin, key_end);
+        ctx->clean_regions.mark_omap_dirty();
 	ctx->delta_stats.num_wr++;
       }
       obs.oi.clear_omap_digest();
@@ -15285,6 +15286,9 @@ boost::statechart::result PrimaryLogPG::AwaitAsyncWork::react(const DoSnapWork&)
 
   vector<hobject_t> to_trim;
   unsigned max = pg->cct->_conf->osd_pg_max_concurrent_snap_trims;
+  // we need to look for at least 1 snaptrim, otherwise we'll misinterpret
+  // the ENOENT below and erase snap_to_trim.
+  ceph_assert(max > 0);
   to_trim.reserve(max);
   int r = pg->snap_mapper.get_next_objects_to_trim(
     snap_to_trim,

@@ -2527,6 +2527,11 @@ std::vector<Option> get_global_options() {
     .set_default(.02)
     .set_description("slop factor to avoid switching tiering flush and eviction mode"),
 
+    Option("osd_aggregated_slow_ops_logging", Option::TYPE_BOOL, Option::LEVEL_ADVANCED)
+    .set_default(true)
+    .set_description("Allow OSD daemon to send an aggregated slow ops to the cluster log")
+    .set_long_description("If set to ``true``, the OSD daemon will send slow ops information in an aggregated format to the cluster log else sends every slow op to the cluster log."),
+
     Option("osd_uuid", Option::TYPE_UUID, Option::LEVEL_ADVANCED)
     .set_default(uuid_d())
     .set_flag(Option::FLAG_CREATE)
@@ -3093,6 +3098,7 @@ std::vector<Option> get_global_options() {
 
     Option("osd_pg_max_concurrent_snap_trims", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
     .set_default(2)
+    .set_min(1)
     .set_description(""),
 
     Option("osd_max_trimming_pgs", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
@@ -3600,7 +3606,7 @@ std::vector<Option> get_global_options() {
     .set_long_description("Setting this to false makes the OSD do a slower teardown of all state when it receives a SIGINT or SIGTERM or when shutting down for any other reason.  That slow shutdown is primarilyy useful for doing memory leak checking with valgrind."),
 
     Option("osd_fast_shutdown_notify_mon", Option::TYPE_BOOL, Option::LEVEL_ADVANCED)
-    .set_default(false)
+    .set_default(true)
     .set_description("Tell mon about OSD shutdown on immediate shutdown")
     .set_long_description("Tell the monitor the OSD is shutting down on immediate shutdown. This helps with cluster log messages from other OSDs reporting it immediately failed.")
     .add_see_also({"osd_fast_shutdown", "osd_mon_shutdown_timeout"}),
@@ -5270,6 +5276,11 @@ std::vector<Option> get_global_options() {
     .add_service("mgr")
     .set_description("Path to cephadm utility"),
 
+    Option("mgr_max_pg_num_change", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
+    .set_default(128)
+    .add_service("mgr")
+    .set_description("maximum change in pg_num"),
+
     Option("mgr_module_path", Option::TYPE_STR, Option::LEVEL_ADVANCED)
     .set_default(CEPH_DATADIR "/mgr")
     .add_service("mgr")
@@ -5718,7 +5729,12 @@ std::vector<Option> get_rgw_options() {
 
     Option("rgw_lc_debug_interval", Option::TYPE_INT, Option::LEVEL_DEV)
     .set_default(-1)
-    .set_description(""),
+    .set_description("The number of seconds that simulate one \"day\" in order to debug RGW LifeCycle. "
+                     "Do *not* modify for a production cluster.")
+    .set_long_description("For debugging RGW LifeCycle, the number of seconds that are equivalent to "
+                          "one simulated \"day\". Values less than 1 are ignored and do not change LifeCycle behavior. "
+                          "For example, during debugging if one wanted every 10 minutes to be equivalent to one day, "
+                          "then this would be set to 600, the number of seconds in 10 minutes."),
 
     Option("rgw_mp_lock_max_time", Option::TYPE_INT, Option::LEVEL_ADVANCED)
     .set_default(600)
@@ -7430,7 +7446,7 @@ static std::vector<Option> get_rbd_options() {
     .set_description("time-delay in seconds for rbd-mirror asynchronous replication"),
 
     Option("rbd_mirroring_max_mirroring_snapshots", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
-    .set_default(3)
+    .set_default(5)
     .set_min(3)
     .set_description("mirroring snapshots limit"),
 
@@ -8135,7 +8151,7 @@ std::vector<Option> get_mds_options() {
     .set_description("rate of decay for export targets communicated to clients"),
 
     Option("mds_oft_prefetch_dirfrags", Option::TYPE_BOOL, Option::LEVEL_ADVANCED)
-    .set_default(true)
+    .set_default(false)
     .set_description("prefetch dirfrags recorded in open file table on startup")
     .set_flag(Option::FLAG_STARTUP),
 

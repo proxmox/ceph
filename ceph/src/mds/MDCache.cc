@@ -3733,8 +3733,9 @@ bool MDCache::expire_recursive(CInode *in, expiremap &expiremap)
       return true;
     }
 
-    for (auto &it : subdir->items) {
-      CDentry *dn = it.second;
+    for (auto it = subdir->items.begin(); it != subdir->items.end();) {
+      CDentry *dn = it->second;
+      it++;
       CDentry::linkage_t *dnl = dn->get_linkage();
       if (dnl->is_primary()) {
 	CInode *tin = dnl->get_inode();
@@ -5323,7 +5324,7 @@ void MDCache::rejoin_open_ino_finish(inodeno_t ino, int ret)
   cap_imports_num_opening--;
 
   if (cap_imports_num_opening == 0) {
-    if (rejoin_gather.empty())
+    if (rejoin_gather.empty() && rejoin_ack_gather.count(mds->get_nodeid()))
       rejoin_gather_finish();
     else if (rejoin_gather.count(mds->get_nodeid()))
       process_imported_caps();
@@ -5345,7 +5346,7 @@ void MDCache::rejoin_open_sessions_finish(map<client_t,pair<Session*,uint64_t> >
   dout(10) << "rejoin_open_sessions_finish" << dendl;
   mds->server->finish_force_open_sessions(session_map);
   rejoin_session_map.swap(session_map);
-  if (rejoin_gather.empty())
+  if (rejoin_gather.empty() && rejoin_ack_gather.count(mds->get_nodeid()))
     rejoin_gather_finish();
 }
 
@@ -6001,7 +6002,7 @@ bool MDCache::open_undef_inodes_dirfrags()
   MDSGatherBuilder gather(g_ceph_context,
       new MDSInternalContextWrapper(mds,
 	new LambdaContext([this](int r) {
-	    if (rejoin_gather.empty())
+	    if (rejoin_gather.empty() && rejoin_ack_gather.count(mds->get_nodeid()))
 	      rejoin_gather_finish();
 	  })
 	)
@@ -6390,14 +6391,19 @@ void MDCache::identify_files_to_recover()
 
 void MDCache::start_files_to_recover()
 {
+  int count = 0;
   for (CInode *in : rejoin_check_q) {
     if (in->filelock.get_state() == LOCK_XLOCKSNAP)
       mds->locker->issue_caps(in);
     mds->locker->check_inode_max_size(in);
+    if (!(++count % 1000))
+      mds->heartbeat_reset();
   }
   rejoin_check_q.clear();
   for (CInode *in : rejoin_recover_q) {
     mds->locker->file_recover(&in->filelock);
+    if (!(++count % 1000))
+      mds->heartbeat_reset();
   }
   if (!rejoin_recover_q.empty()) {
     rejoin_recover_q.clear();
@@ -8211,7 +8217,7 @@ int MDCache::path_traverse(MDRequestRef& mdr, MDSContextFactory& cf,
   if (mdr)
     mdr->snapid = snapid;
 
-  client_t client = (mdr && mdr->reqid.name.is_client()) ? mdr->reqid.name.num() : -1;
+  client_t client = mdr ? mdr->get_client() : -1;
 
   if (mds->logger) mds->logger->inc(l_mds_traverse);
 

@@ -574,8 +574,8 @@ int rgw_build_bucket_policies(rgw::sal::RGWRadosStore* store, struct req_state* 
 
   string bi = s->info.args.get(RGW_SYS_PARAM_PREFIX "bucket-instance");
   if (!bi.empty()) {
-    string bucket_name;
-    ret = rgw_bucket_parse_bucket_instance(bi, &bucket_name, &s->bucket_instance_id, &s->bucket_instance_shard_id);
+    // note: overwrites s->bucket_name, may include a tenant/
+    ret = rgw_bucket_parse_bucket_instance(bi, &s->bucket_name, &s->bucket_instance_id, &s->bucket_instance_shard_id);
     if (ret < 0) {
       return ret;
     }
@@ -794,7 +794,7 @@ int rgw_build_object_policies(rgw::sal::RGWRadosStore *store, struct req_state *
     }
     s->object_acl = std::make_unique<RGWAccessControlPolicy>(s->cct);
     rgw_obj obj(s->bucket, s->object);
-      
+
     store->getRados()->set_atomic(s->obj_ctx, obj);
     if (prefetch_data) {
       store->getRados()->set_prefetch_data(s->obj_ctx, obj);
@@ -1203,7 +1203,7 @@ void RGWGetBucketTags::pre_exec()
   rgw_bucket_object_pre_exec(s);
 }
 
-void RGWGetBucketTags::execute() 
+void RGWGetBucketTags::execute()
 {
   auto iter = s->bucket_attrs.find(RGW_ATTR_TAGS);
   if (iter != s->bucket_attrs.end()) {
@@ -1735,6 +1735,8 @@ static int iterate_user_manifest_parts(CephContext * const cct,
   list_op.params.delim = delim;
 
   MD5 etag_sum;
+  // Allow use of MD5 digest in FIPS mode for non-cryptographic purposes
+  etag_sum.SetFlags(EVP_MD_CTX_FLAG_NON_FIPS_ALLOW);
   do {
 #define MAX_LIST_OBJS 100
     int r = list_op.list_objects(MAX_LIST_OBJS, &objs, NULL, &is_truncated, null_yield);
@@ -2017,6 +2019,8 @@ int RGWGetObj::handle_slo_manifest(bufferlist& bl)
   map<uint64_t, rgw_slo_part> slo_parts;
 
   MD5 etag_sum;
+  // Allow use of MD5 digest in FIPS mode for non-cryptographic purposes
+  etag_sum.SetFlags(EVP_MD_CTX_FLAG_NON_FIPS_ALLOW);
   total_len = 0;
 
   for (const auto& entry : slo_info.entries) {
@@ -2835,7 +2839,7 @@ void RGWDeleteBucketWebsite::execute()
     bufferlist in_data;
     op_ret = forward_request_to_master(s, nullptr, store, in_data, nullptr);
     if (op_ret < 0) {
-      ldpp_dout(this, 0) << "NOTICE: forward_to_master failed on bucket=" << s->bucket.name 
+      ldpp_dout(this, 0) << "NOTICE: forward_to_master failed on bucket=" << s->bucket.name
 	                 << "returned err=" << op_ret << dendl;
       return;
     }
@@ -3534,7 +3538,7 @@ void RGWDeleteBucket::execute()
   if ( op_ret < 0) {
      ldpp_dout(this, 1) << "WARNING: failed to sync user stats before bucket delete: op_ret= " << op_ret << dendl;
   }
-  
+
   op_ret = store->getRados()->check_bucket_empty(s->bucket_info, s->yield);
   if (op_ret < 0) {
     return;
@@ -3847,6 +3851,8 @@ void RGWPutObj::execute()
   char calc_md5[CEPH_CRYPTO_MD5_DIGESTSIZE * 2 + 1];
   unsigned char m[CEPH_CRYPTO_MD5_DIGESTSIZE];
   MD5 hash;
+  // Allow use of MD5 digest in FIPS mode for non-cryptographic purposes
+  hash.SetFlags(EVP_MD_CTX_FLAG_NON_FIPS_ALLOW);
   bufferlist bl, aclbl, bs;
   int len;
   
@@ -4274,6 +4280,8 @@ void RGWPostObj::execute()
     char calc_md5[CEPH_CRYPTO_MD5_DIGESTSIZE * 2 + 1];
     unsigned char m[CEPH_CRYPTO_MD5_DIGESTSIZE];
     MD5 hash;
+    // Allow use of MD5 digest in FIPS mode for non-cryptographic purposes
+    hash.SetFlags(EVP_MD_CTX_FLAG_NON_FIPS_ALLOW);
     ceph::buffer::list bl, aclbl;
     int len = 0;
 
@@ -4361,6 +4369,9 @@ void RGWPostObj::execute()
 
       hash.Update((const unsigned char *)data.c_str(), data.length());
       op_ret = filter->process(std::move(data), ofs);
+      if (op_ret < 0) {
+        return;
+      }
 
       ofs += len;
 
@@ -4995,16 +5006,17 @@ bool RGWCopyObj::parse_copy_location(const boost::string_view& url_src,
     params_str = url_src.substr(pos + 1);
   }
 
-  boost::string_view dec_src{name_str};
-  if (dec_src[0] == '/')
-    dec_src.remove_prefix(1);
+  if (name_str[0] == '/') // trim leading slash
+    name_str.remove_prefix(1);
+
+  std::string dec_src = url_decode(name_str);
 
   pos = dec_src.find('/');
   if (pos == string::npos)
     return false;
 
-  bucket_name = url_decode(dec_src.substr(0, pos));
-  key.name = url_decode(dec_src.substr(pos + 1));
+  bucket_name = dec_src.substr(0, pos);
+  key.name = dec_src.substr(pos + 1);
 
   if (key.name.empty()) {
     return false;
@@ -5607,6 +5619,8 @@ void RGWPutLC::execute()
   ldpp_dout(this, 15) << "read len=" << data.length() << " data=" << (buf ? buf : "") << dendl;
 
   MD5 data_hash;
+  // Allow use of MD5 digest in FIPS mode for non-cryptographic purposes
+  data_hash.SetFlags(EVP_MD_CTX_FLAG_NON_FIPS_ALLOW);
   unsigned char data_hash_res[CEPH_CRYPTO_MD5_DIGESTSIZE];
   data_hash.Update(reinterpret_cast<const unsigned char*>(buf), data.length());
   data_hash.Final(data_hash_res);
@@ -5972,7 +5986,7 @@ void RGWInitMultipart::execute()
 
     op_ret = obj_op.write_meta(bl.length(), 0, attrs, s->yield);
   } while (op_ret == -EEXIST);
-  
+
   const auto ret = rgw::notify::publish(s, s->object, s->obj_size, ceph::real_clock::now(), attrs[RGW_ATTR_ETAG].to_str(), rgw::notify::ObjectCreatedPost, store);
   if (ret < 0) {
     ldpp_dout(this, 5) << "WARNING: publishing notification failed, with error: " << ret << dendl;
@@ -6031,6 +6045,8 @@ void RGWCompleteMultipart::execute()
   map<string, bufferlist> attrs;
   off_t ofs = 0;
   MD5 hash;
+  // Allow use of MD5 digest in FIPS mode for non-cryptographic purposes
+  hash.SetFlags(EVP_MD_CTX_FLAG_NON_FIPS_ALLOW);
   char final_etag[CEPH_CRYPTO_MD5_DIGESTSIZE];
   char final_etag_str[CEPH_CRYPTO_MD5_DIGESTSIZE * 2 + 16];
   bufferlist etag_bl;
@@ -6115,6 +6131,11 @@ void RGWCompleteMultipart::execute()
   op_ret = serializer.try_lock(raw_obj.oid, dur);
   if (op_ret < 0) {
     ldpp_dout(this, 0) << "failed to acquire lock" << dendl;
+    if (op_ret == -ENOENT && check_previously_completed(this, parts)) {
+      ldpp_dout(this, 1) << "NOTICE: This multipart completion is already completed" << dendl;
+      op_ret = 0;
+      return;
+    }
     op_ret = -ERR_INTERNAL_ERROR;
     s->err.message = "This multipart completion is already in progress";
     return;
@@ -6196,9 +6217,9 @@ void RGWCompleteMultipart::execute()
           ldpp_dout(this, 0) << "ERROR: compression type was changed during multipart upload ("
                            << cs_info.compression_type << ">>" << obj_part.cs_info.compression_type << ")" << dendl;
           op_ret = -ERR_INVALID_PART;
-          return; 
+          return;
       }
-      
+
       if (part_compressed) {
         int64_t new_ofs; // offset in compression data for new part
         if (cs_info.blocks.size() > 0)
@@ -6212,7 +6233,7 @@ void RGWCompleteMultipart::execute()
           cb.len = block.len;
           cs_info.blocks.push_back(cb);
           new_ofs = cb.new_ofs + cb.len;
-        } 
+        }
         if (!compressed)
           cs_info.compression_type = obj_part.cs_info.compression_type;
         cs_info.orig_size += obj_part.cs_info.orig_size;
@@ -6286,7 +6307,7 @@ void RGWCompleteMultipart::execute()
   } else {
     ldpp_dout(this, 0) << "WARNING: failed to remove object " << meta_obj << dendl;
   }
-  
+
   const auto ret = rgw::notify::publish(s, s->object, ofs, ceph::real_clock::now(), final_etag_str, rgw::notify::ObjectCreatedCompleteMultipartUpload, store);
 
   if (ret < 0) {
@@ -6310,6 +6331,45 @@ int RGWCompleteMultipart::MPSerializer::try_lock(
     locked = true;
   }
   return ret;
+}
+
+bool RGWCompleteMultipart::check_previously_completed(const DoutPrefixProvider* dpp, const RGWMultiCompleteUpload* parts)
+{
+  // re-calculate the etag from the parts and compare to the existing object
+  map<string, bufferlist> sattrs;
+  int ret = get_obj_attrs(store, s, {s->bucket, s->object}, sattrs);
+  if (ret < 0) {
+    ldpp_dout(dpp, 0) << __func__ << "() ERROR: get_obj_attrs() returned ret=" << ret << dendl;
+    return false;
+  }
+  string oetag = sattrs[RGW_ATTR_ETAG].to_str();
+
+  MD5 hash;
+  // Allow use of MD5 digest in FIPS mode for non-cryptographic purposes
+  hash.SetFlags(EVP_MD_CTX_FLAG_NON_FIPS_ALLOW);
+  for (const auto& [index, part] : parts->parts) {
+    std::string partetag = rgw_string_unquote(part);
+    char petag[CEPH_CRYPTO_MD5_DIGESTSIZE];
+    hex_to_buf(partetag.c_str(), petag, CEPH_CRYPTO_MD5_DIGESTSIZE);
+    hash.Update((const unsigned char *)petag, sizeof(petag));
+    ldpp_dout(dpp, 20) << __func__ << "() re-calculating multipart etag: part: "
+                                   << index << ", etag: " << partetag << dendl;
+  }
+
+  unsigned char final_etag[CEPH_CRYPTO_MD5_DIGESTSIZE];
+  char final_etag_str[CEPH_CRYPTO_MD5_DIGESTSIZE * 2 + 16];
+  hash.Final(final_etag);
+  buf_to_hex(final_etag, CEPH_CRYPTO_MD5_DIGESTSIZE, final_etag_str);
+  snprintf(&final_etag_str[CEPH_CRYPTO_MD5_DIGESTSIZE * 2], sizeof(final_etag_str) - CEPH_CRYPTO_MD5_DIGESTSIZE * 2,
+           "-%lld", (long long)parts->parts.size());
+
+  if (oetag.compare(final_etag_str) != 0) {
+    ldpp_dout(dpp, 1) << __func__ << "() NOTICE: etag mismatch: object etag:"
+                                  << oetag << ", re-calculated etag:" << final_etag_str << dendl;
+    return false;
+  }
+  ldpp_dout(dpp, 5) << __func__ << "() object etag and re-calculated etag match, etag: " << oetag << dendl;
+  return true;
 }
 
 void RGWCompleteMultipart::complete()
@@ -6690,7 +6750,7 @@ void RGWDeleteMultiObj::execute()
     bufferlist etag_bl;
     const auto etag = obj_state->get_attr(RGW_ATTR_ETAG, etag_bl) ? etag_bl.to_str() : "";
 
-    const auto ret = rgw::notify::publish(s, obj.key, obj_state->size, obj_state->mtime, etag, 
+    const auto ret = rgw::notify::publish(s, obj.key, obj_state->size, obj_state->mtime, etag,
             del_op.result.delete_marker && s->object.instance.empty() ? rgw::notify::ObjectRemovedDeleteMarkerCreated : rgw::notify::ObjectRemovedDelete,
             store);
     if (ret < 0) {
@@ -7288,6 +7348,8 @@ int RGWBulkUploadOp::handle_file(const boost::string_ref path,
   ssize_t len = 0;
   size_t ofs = 0;
   MD5 hash;
+  // Allow use of MD5 digest in FIPS mode for non-cryptographic purposes
+  hash.SetFlags(EVP_MD_CTX_FLAG_NON_FIPS_ALLOW);
   do {
     ceph::bufferlist data;
     len = body.get_at_most(s->cct->_conf->rgw_max_chunk_size, data);
@@ -7352,7 +7414,7 @@ int RGWBulkUploadOp::handle_file(const boost::string_ref path,
     ceph::bufferlist tmp;
     RGWCompressionInfo cs_info;
     cs_info.compression_type = plugin->get_type_name();
-    cs_info.orig_size = s->obj_size;
+    cs_info.orig_size = size;
     cs_info.blocks = std::move(compressor->get_compression_blocks());
     encode(cs_info, tmp);
     attrs.emplace(RGW_ATTR_COMPRESSION, std::move(tmp));
@@ -8007,10 +8069,20 @@ void RGWPutObjRetention::execute()
     }
     if (ceph::real_clock::to_time_t(obj_retention.get_retain_until_date()) < ceph::real_clock::to_time_t(old_obj_retention.get_retain_until_date())) {
       if (old_obj_retention.get_mode().compare("GOVERNANCE") != 0 || !bypass_perm || !bypass_governance_mode) {
-	s->err.message = "proposed retain-until date shortens an existing retention period and governance bypass check failed";
+	  s->err.message = "proposed retain-until date shortens an existing retention period and governance bypass check failed";
         op_ret = -EACCES;
         return;
       }
+    } else if (old_obj_retention.get_mode() == obj_retention.get_mode()) {
+      // ok if retention mode doesn't change
+    } else if (obj_retention.get_mode() == "GOVERNANCE") {
+      s->err.message = "can't change retention mode from COMPLIANCE to GOVERNANCE";
+      op_ret = -EACCES;
+      return;
+    } else if (!bypass_perm || !bypass_governance_mode) {
+      s->err.message = "can't change retention mode from GOVERNANCE without governance bypass";
+      op_ret = -EACCES;
+      return;
     }
   }
 

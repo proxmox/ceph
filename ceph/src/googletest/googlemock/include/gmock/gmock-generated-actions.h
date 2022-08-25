@@ -47,6 +47,8 @@
 #include "gmock/gmock-actions.h"
 #include "gmock/internal/gmock-port.h"
 
+// Include any custom callback actions added by the local installation.
+#include "gmock/internal/custom/gmock-generated-actions.h"
 
 // Sometimes you want to give an action explicit template parameters
 // that cannot be inferred from its value parameters.  ACTION() and
@@ -292,6 +294,20 @@
         p7(::std::move(gmock_p7)), p8(::std::move(gmock_p8)), \
         p9(::std::move(gmock_p9))
 
+// Defines the copy constructor
+#define GMOCK_INTERNAL_DEFN_COPY_AND_0_VALUE_PARAMS() \
+    noexcept {}  // Avoid https://gcc.gnu.org/bugzilla/show_bug.cgi?id=82134
+#define GMOCK_INTERNAL_DEFN_COPY_AND_1_VALUE_PARAMS(...) = default;
+#define GMOCK_INTERNAL_DEFN_COPY_AND_2_VALUE_PARAMS(...) = default;
+#define GMOCK_INTERNAL_DEFN_COPY_AND_3_VALUE_PARAMS(...) = default;
+#define GMOCK_INTERNAL_DEFN_COPY_AND_4_VALUE_PARAMS(...) = default;
+#define GMOCK_INTERNAL_DEFN_COPY_AND_5_VALUE_PARAMS(...) = default;
+#define GMOCK_INTERNAL_DEFN_COPY_AND_6_VALUE_PARAMS(...) = default;
+#define GMOCK_INTERNAL_DEFN_COPY_AND_7_VALUE_PARAMS(...) = default;
+#define GMOCK_INTERNAL_DEFN_COPY_AND_8_VALUE_PARAMS(...) = default;
+#define GMOCK_INTERNAL_DEFN_COPY_AND_9_VALUE_PARAMS(...) = default;
+#define GMOCK_INTERNAL_DEFN_COPY_AND_10_VALUE_PARAMS(...) = default;
+
 // Declares the fields for storing the value parameters.
 #define GMOCK_INTERNAL_DEFN_AND_0_VALUE_PARAMS()
 #define GMOCK_INTERNAL_DEFN_AND_1_VALUE_PARAMS(p0) p0##_type p0;
@@ -413,64 +429,69 @@
 #define GMOCK_ACTION_CLASS_(name, value_params)\
     GTEST_CONCAT_TOKEN_(name##Action, GMOCK_INTERNAL_COUNT_##value_params)
 
-#define ACTION_TEMPLATE(name, template_params, value_params)\
-  template <GMOCK_INTERNAL_DECL_##template_params\
-            GMOCK_INTERNAL_DECL_TYPE_##value_params>\
-  class GMOCK_ACTION_CLASS_(name, value_params) {\
-   public:\
-    explicit GMOCK_ACTION_CLASS_(name, value_params)\
-        GMOCK_INTERNAL_INIT_##value_params {}\
-    template <typename F>\
-    class gmock_Impl : public ::testing::ActionInterface<F> {\
-     public:\
-      typedef F function_type;\
-      typedef typename ::testing::internal::Function<F>::Result return_type;\
-      typedef typename ::testing::internal::Function<F>::ArgumentTuple\
-          args_type;\
-      explicit gmock_Impl GMOCK_INTERNAL_INIT_##value_params {}\
-      return_type Perform(const args_type& args) override {\
-        return ::testing::internal::ActionHelper<return_type, gmock_Impl>::\
-            Perform(this, args);\
-      }\
-      template <GMOCK_ACTION_TEMPLATE_ARGS_NAMES_>\
-      return_type gmock_PerformImpl(GMOCK_ACTION_ARG_TYPES_AND_NAMES_) const;\
-      GMOCK_INTERNAL_DEFN_##value_params\
-     private:\
-      GTEST_DISALLOW_ASSIGN_(gmock_Impl);\
-    };\
-    template <typename F> operator ::testing::Action<F>() const {\
-      return ::testing::Action<F>(\
-          new gmock_Impl<F>(GMOCK_INTERNAL_LIST_##value_params));\
-    }\
-    GMOCK_INTERNAL_DEFN_##value_params\
-   private:\
-    GTEST_DISALLOW_ASSIGN_(GMOCK_ACTION_CLASS_(name, value_params));\
-  };\
-  template <GMOCK_INTERNAL_DECL_##template_params\
-            GMOCK_INTERNAL_DECL_TYPE_##value_params>\
-  inline GMOCK_ACTION_CLASS_(name, value_params)<\
-      GMOCK_INTERNAL_LIST_##template_params\
-      GMOCK_INTERNAL_LIST_TYPE_##value_params> name(\
-          GMOCK_INTERNAL_DECL_##value_params) {\
-    return GMOCK_ACTION_CLASS_(name, value_params)<\
-        GMOCK_INTERNAL_LIST_##template_params\
-        GMOCK_INTERNAL_LIST_TYPE_##value_params>(\
-            GMOCK_INTERNAL_LIST_##value_params);\
-  }\
-  template <GMOCK_INTERNAL_DECL_##template_params\
-            GMOCK_INTERNAL_DECL_TYPE_##value_params>\
-  template <typename F>\
-  template <GMOCK_ACTION_TEMPLATE_ARGS_NAMES_>\
-  typename ::testing::internal::Function<F>::Result\
-      GMOCK_ACTION_CLASS_(name, value_params)<\
-          GMOCK_INTERNAL_LIST_##template_params\
-          GMOCK_INTERNAL_LIST_TYPE_##value_params>::gmock_Impl<F>::\
-              gmock_PerformImpl(\
+#define ACTION_TEMPLATE(name, template_params, value_params)                   \
+  template <GMOCK_INTERNAL_DECL_##template_params                              \
+            GMOCK_INTERNAL_DECL_TYPE_##value_params>                           \
+  class GMOCK_ACTION_CLASS_(name, value_params) {                              \
+   public:                                                                     \
+    explicit GMOCK_ACTION_CLASS_(name, value_params)(                          \
+        GMOCK_INTERNAL_DECL_##value_params)                                    \
+        GMOCK_PP_IF(GMOCK_PP_IS_EMPTY(GMOCK_INTERNAL_COUNT_##value_params),    \
+                    = default; ,                                               \
+                    : impl_(std::make_shared<gmock_Impl>(                      \
+                                GMOCK_INTERNAL_LIST_##value_params)) { })      \
+    GMOCK_ACTION_CLASS_(name, value_params)(                                   \
+        const GMOCK_ACTION_CLASS_(name, value_params)&)                        \
+        GMOCK_INTERNAL_DEFN_COPY_##value_params                                \
+    GMOCK_ACTION_CLASS_(name, value_params)(                                   \
+        GMOCK_ACTION_CLASS_(name, value_params)&&)                             \
+        GMOCK_INTERNAL_DEFN_COPY_##value_params                                \
+    template <typename F>                                                      \
+    operator ::testing::Action<F>() const {                                    \
+      return GMOCK_PP_IF(                                                      \
+          GMOCK_PP_IS_EMPTY(GMOCK_INTERNAL_COUNT_##value_params),              \
+                      (::testing::internal::MakeAction<F, gmock_Impl>()),      \
+                      (::testing::internal::MakeAction<F>(impl_)));            \
+    }                                                                          \
+   private:                                                                    \
+    class gmock_Impl {                                                         \
+     public:                                                                   \
+      explicit gmock_Impl GMOCK_INTERNAL_INIT_##value_params {}                \
+      template <typename function_type, typename return_type,                  \
+                typename args_type, GMOCK_ACTION_TEMPLATE_ARGS_NAMES_>         \
+      return_type gmock_PerformImpl(GMOCK_ACTION_ARG_TYPES_AND_NAMES_) const;  \
+      GMOCK_INTERNAL_DEFN_##value_params                                       \
+    };                                                                         \
+    GMOCK_PP_IF(GMOCK_PP_IS_EMPTY(GMOCK_INTERNAL_COUNT_##value_params),        \
+                , std::shared_ptr<const gmock_Impl> impl_;)                    \
+  };                                                                           \
+  template <GMOCK_INTERNAL_DECL_##template_params                              \
+            GMOCK_INTERNAL_DECL_TYPE_##value_params>                           \
+  GMOCK_ACTION_CLASS_(name, value_params)<                                     \
+      GMOCK_INTERNAL_LIST_##template_params                                    \
+      GMOCK_INTERNAL_LIST_TYPE_##value_params> name(                           \
+          GMOCK_INTERNAL_DECL_##value_params) GTEST_MUST_USE_RESULT_;          \
+  template <GMOCK_INTERNAL_DECL_##template_params                              \
+            GMOCK_INTERNAL_DECL_TYPE_##value_params>                           \
+  inline GMOCK_ACTION_CLASS_(name, value_params)<                              \
+      GMOCK_INTERNAL_LIST_##template_params                                    \
+      GMOCK_INTERNAL_LIST_TYPE_##value_params> name(                           \
+          GMOCK_INTERNAL_DECL_##value_params) {                                \
+    return GMOCK_ACTION_CLASS_(name, value_params)<                            \
+        GMOCK_INTERNAL_LIST_##template_params                                  \
+        GMOCK_INTERNAL_LIST_TYPE_##value_params>(                              \
+            GMOCK_INTERNAL_LIST_##value_params);                               \
+  }                                                                            \
+  template <GMOCK_INTERNAL_DECL_##template_params                              \
+            GMOCK_INTERNAL_DECL_TYPE_##value_params>                           \
+  template <typename function_type, typename return_type, typename args_type,  \
+            GMOCK_ACTION_TEMPLATE_ARGS_NAMES_>                                 \
+  return_type GMOCK_ACTION_CLASS_(name, value_params)<                         \
+      GMOCK_INTERNAL_LIST_##template_params                                    \
+      GMOCK_INTERNAL_LIST_TYPE_##value_params>::gmock_Impl::gmock_PerformImpl( \
           GMOCK_ACTION_ARG_TYPES_AND_NAMES_UNUSED_) const
 
-
 namespace testing {
-
 
 // The ACTION*() macros trigger warning C4100 (unreferenced formal
 // parameter) in MSVC with -W4.  Unfortunately they cannot be fixed in
@@ -482,8 +503,37 @@ namespace testing {
 # pragma warning(disable:4100)
 #endif
 
-// Various overloads for InvokeArgument<N>().
-//
+namespace internal {
+
+// internal::InvokeArgument - a helper for InvokeArgument action.
+// The basic overloads are provided here for generic functors.
+// Overloads for other custom-callables are provided in the
+// internal/custom/gmock-generated-actions.h header.
+template <typename F, typename... Args>
+auto InvokeArgument(F f, Args... args) -> decltype(f(args...)) {
+  return f(args...);
+}
+
+template <std::size_t index, typename... Params>
+struct InvokeArgumentAction {
+  template <typename... Args>
+  auto operator()(Args&&... args) const -> decltype(internal::InvokeArgument(
+      std::get<index>(std::forward_as_tuple(std::forward<Args>(args)...)),
+      std::declval<const Params&>()...)) {
+    internal::FlatTuple<Args&&...> args_tuple(FlatTupleConstructTag{},
+                                              std::forward<Args>(args)...);
+    return params.Apply([&](const Params&... unpacked_params) {
+      auto&& callable = args_tuple.template Get<index>();
+      return internal::InvokeArgument(
+          std::forward<decltype(callable)>(callable), unpacked_params...);
+    });
+  }
+
+  internal::FlatTuple<Params...> params;
+};
+
+}  // namespace internal
+
 // The InvokeArgument<N>(a1, a2, ..., a_k) action invokes the N-th
 // (0-based) argument, which must be a k-ary callable, of the mock
 // function, with arguments a1, a2, ..., a_k.
@@ -491,15 +541,15 @@ namespace testing {
 // Notes:
 //
 //   1. The arguments are passed by value by default.  If you need to
-//   pass an argument by reference, wrap it inside ByRef().  For
+//   pass an argument by reference, wrap it inside std::ref().  For
 //   example,
 //
-//     InvokeArgument<1>(5, string("Hello"), ByRef(foo))
+//     InvokeArgument<1>(5, string("Hello"), std::ref(foo))
 //
 //   passes 5 and string("Hello") by value, and passes foo by
 //   reference.
 //
-//   2. If the callable takes an argument by reference but ByRef() is
+//   2. If the callable takes an argument by reference but std::ref() is
 //   not used, it will receive the reference to a copy of the value,
 //   instead of the original value.  For example, when the 0-th
 //   argument of the mock function takes a const string&, the action
@@ -511,166 +561,11 @@ namespace testing {
 //   to the callable.  This makes it easy for a user to define an
 //   InvokeArgument action from temporary values and have it performed
 //   later.
-
-ACTION_TEMPLATE(InvokeArgument,
-                HAS_1_TEMPLATE_PARAMS(int, k),
-                AND_0_VALUE_PARAMS()) {
-  using internal::invoke_argument::InvokeArgumentAdl;
-  return InvokeArgumentAdl(internal::invoke_argument::AdlTag(),
-                           ::std::get<k>(args));
-}
-
-ACTION_TEMPLATE(InvokeArgument,
-                HAS_1_TEMPLATE_PARAMS(int, k),
-                AND_1_VALUE_PARAMS(p0)) {
-  using internal::invoke_argument::InvokeArgumentAdl;
-  return InvokeArgumentAdl(internal::invoke_argument::AdlTag(),
-                           ::std::get<k>(args), p0);
-}
-
-ACTION_TEMPLATE(InvokeArgument,
-                HAS_1_TEMPLATE_PARAMS(int, k),
-                AND_2_VALUE_PARAMS(p0, p1)) {
-  using internal::invoke_argument::InvokeArgumentAdl;
-  return InvokeArgumentAdl(internal::invoke_argument::AdlTag(),
-                           ::std::get<k>(args), p0, p1);
-}
-
-ACTION_TEMPLATE(InvokeArgument,
-                HAS_1_TEMPLATE_PARAMS(int, k),
-                AND_3_VALUE_PARAMS(p0, p1, p2)) {
-  using internal::invoke_argument::InvokeArgumentAdl;
-  return InvokeArgumentAdl(internal::invoke_argument::AdlTag(),
-                           ::std::get<k>(args), p0, p1, p2);
-}
-
-ACTION_TEMPLATE(InvokeArgument,
-                HAS_1_TEMPLATE_PARAMS(int, k),
-                AND_4_VALUE_PARAMS(p0, p1, p2, p3)) {
-  using internal::invoke_argument::InvokeArgumentAdl;
-  return InvokeArgumentAdl(internal::invoke_argument::AdlTag(),
-                           ::std::get<k>(args), p0, p1, p2, p3);
-}
-
-ACTION_TEMPLATE(InvokeArgument,
-                HAS_1_TEMPLATE_PARAMS(int, k),
-                AND_5_VALUE_PARAMS(p0, p1, p2, p3, p4)) {
-  using internal::invoke_argument::InvokeArgumentAdl;
-  return InvokeArgumentAdl(internal::invoke_argument::AdlTag(),
-                           ::std::get<k>(args), p0, p1, p2, p3, p4);
-}
-
-ACTION_TEMPLATE(InvokeArgument,
-                HAS_1_TEMPLATE_PARAMS(int, k),
-                AND_6_VALUE_PARAMS(p0, p1, p2, p3, p4, p5)) {
-  using internal::invoke_argument::InvokeArgumentAdl;
-  return InvokeArgumentAdl(internal::invoke_argument::AdlTag(),
-                           ::std::get<k>(args), p0, p1, p2, p3, p4, p5);
-}
-
-ACTION_TEMPLATE(InvokeArgument,
-                HAS_1_TEMPLATE_PARAMS(int, k),
-                AND_7_VALUE_PARAMS(p0, p1, p2, p3, p4, p5, p6)) {
-  using internal::invoke_argument::InvokeArgumentAdl;
-  return InvokeArgumentAdl(internal::invoke_argument::AdlTag(),
-                           ::std::get<k>(args), p0, p1, p2, p3, p4, p5, p6);
-}
-
-ACTION_TEMPLATE(InvokeArgument,
-                HAS_1_TEMPLATE_PARAMS(int, k),
-                AND_8_VALUE_PARAMS(p0, p1, p2, p3, p4, p5, p6, p7)) {
-  using internal::invoke_argument::InvokeArgumentAdl;
-  return InvokeArgumentAdl(internal::invoke_argument::AdlTag(),
-                           ::std::get<k>(args), p0, p1, p2, p3, p4, p5, p6, p7);
-}
-
-ACTION_TEMPLATE(InvokeArgument,
-                HAS_1_TEMPLATE_PARAMS(int, k),
-                AND_9_VALUE_PARAMS(p0, p1, p2, p3, p4, p5, p6, p7, p8)) {
-  using internal::invoke_argument::InvokeArgumentAdl;
-  return InvokeArgumentAdl(internal::invoke_argument::AdlTag(),
-                           ::std::get<k>(args), p0, p1, p2, p3, p4, p5, p6, p7,
-                               p8);
-}
-
-ACTION_TEMPLATE(InvokeArgument,
-                HAS_1_TEMPLATE_PARAMS(int, k),
-                AND_10_VALUE_PARAMS(p0, p1, p2, p3, p4, p5, p6, p7, p8, p9)) {
-  using internal::invoke_argument::InvokeArgumentAdl;
-  return InvokeArgumentAdl(internal::invoke_argument::AdlTag(),
-                           ::std::get<k>(args), p0, p1, p2, p3, p4, p5, p6, p7,
-                               p8, p9);
-}
-
-// Various overloads for ReturnNew<T>().
-//
-// The ReturnNew<T>(a1, a2, ..., a_k) action returns a pointer to a new
-// instance of type T, constructed on the heap with constructor arguments
-// a1, a2, ..., and a_k. The caller assumes ownership of the returned value.
-ACTION_TEMPLATE(ReturnNew,
-                HAS_1_TEMPLATE_PARAMS(typename, T),
-                AND_0_VALUE_PARAMS()) {
-  return new T();
-}
-
-ACTION_TEMPLATE(ReturnNew,
-                HAS_1_TEMPLATE_PARAMS(typename, T),
-                AND_1_VALUE_PARAMS(p0)) {
-  return new T(p0);
-}
-
-ACTION_TEMPLATE(ReturnNew,
-                HAS_1_TEMPLATE_PARAMS(typename, T),
-                AND_2_VALUE_PARAMS(p0, p1)) {
-  return new T(p0, p1);
-}
-
-ACTION_TEMPLATE(ReturnNew,
-                HAS_1_TEMPLATE_PARAMS(typename, T),
-                AND_3_VALUE_PARAMS(p0, p1, p2)) {
-  return new T(p0, p1, p2);
-}
-
-ACTION_TEMPLATE(ReturnNew,
-                HAS_1_TEMPLATE_PARAMS(typename, T),
-                AND_4_VALUE_PARAMS(p0, p1, p2, p3)) {
-  return new T(p0, p1, p2, p3);
-}
-
-ACTION_TEMPLATE(ReturnNew,
-                HAS_1_TEMPLATE_PARAMS(typename, T),
-                AND_5_VALUE_PARAMS(p0, p1, p2, p3, p4)) {
-  return new T(p0, p1, p2, p3, p4);
-}
-
-ACTION_TEMPLATE(ReturnNew,
-                HAS_1_TEMPLATE_PARAMS(typename, T),
-                AND_6_VALUE_PARAMS(p0, p1, p2, p3, p4, p5)) {
-  return new T(p0, p1, p2, p3, p4, p5);
-}
-
-ACTION_TEMPLATE(ReturnNew,
-                HAS_1_TEMPLATE_PARAMS(typename, T),
-                AND_7_VALUE_PARAMS(p0, p1, p2, p3, p4, p5, p6)) {
-  return new T(p0, p1, p2, p3, p4, p5, p6);
-}
-
-ACTION_TEMPLATE(ReturnNew,
-                HAS_1_TEMPLATE_PARAMS(typename, T),
-                AND_8_VALUE_PARAMS(p0, p1, p2, p3, p4, p5, p6, p7)) {
-  return new T(p0, p1, p2, p3, p4, p5, p6, p7);
-}
-
-ACTION_TEMPLATE(ReturnNew,
-                HAS_1_TEMPLATE_PARAMS(typename, T),
-                AND_9_VALUE_PARAMS(p0, p1, p2, p3, p4, p5, p6, p7, p8)) {
-  return new T(p0, p1, p2, p3, p4, p5, p6, p7, p8);
-}
-
-ACTION_TEMPLATE(ReturnNew,
-                HAS_1_TEMPLATE_PARAMS(typename, T),
-                AND_10_VALUE_PARAMS(p0, p1, p2, p3, p4, p5, p6, p7, p8, p9)) {
-  return new T(p0, p1, p2, p3, p4, p5, p6, p7, p8, p9);
+template <std::size_t index, typename... Params>
+internal::InvokeArgumentAction<index, typename std::decay<Params>::type...>
+InvokeArgument(Params&&... params) {
+  return {internal::FlatTuple<typename std::decay<Params>::type...>(
+      internal::FlatTupleConstructTag{}, std::forward<Params>(params)...)};
 }
 
 #ifdef _MSC_VER
@@ -678,10 +573,5 @@ ACTION_TEMPLATE(ReturnNew,
 #endif
 
 }  // namespace testing
-
-// Include any custom callback actions added by the local installation.
-// We must include this header at the end to make sure it can use the
-// declarations from this file.
-#include "gmock/internal/custom/gmock-generated-actions.h"
 
 #endif  // GMOCK_INCLUDE_GMOCK_GMOCK_GENERATED_ACTIONS_H_

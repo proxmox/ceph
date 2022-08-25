@@ -1184,12 +1184,16 @@ int RGWRados::init_complete()
 
   pools_initialized = true;
 
-  gc = new RGWGC();
-  gc->initialize(cct, this);
+  if (use_gc) {
+    gc = new RGWGC();
+    gc->initialize(cct, this);
+  } else {
+    ldout(cct, 5) << "note: GC not initialized" << dendl;
+  }
 
   obj_expirer = new RGWObjectExpirer(this->store);
 
-  if (use_gc_thread) {
+  if (use_gc_thread && use_gc) {
     gc->start_processor();
     obj_expirer->start_processor();
   }
@@ -5228,6 +5232,8 @@ static void generate_fake_tag(RGWRados *store, map<string, bufferlist>& attrset,
   unsigned char md5[CEPH_CRYPTO_MD5_DIGESTSIZE];
   char md5_str[CEPH_CRYPTO_MD5_DIGESTSIZE * 2 + 1];
   MD5 hash;
+  // Allow use of MD5 digest in FIPS mode for non-cryptographic purposes
+  hash.SetFlags(EVP_MD_CTX_FLAG_NON_FIPS_ALLOW);
   hash.Update((const unsigned char *)manifest_bl.c_str(), manifest_bl.length());
 
   map<string, bufferlist>::iterator iter = attrset.find(RGW_ATTR_ETAG);
@@ -8050,9 +8056,9 @@ int RGWRados::bi_put(rgw_bucket& bucket, rgw_obj& obj, rgw_cls_bi_entry& entry)
   return bi_put(bs, entry);
 }
 
-int RGWRados::bi_list(rgw_bucket& bucket, const string& obj_name, const string& marker, uint32_t max, list<rgw_cls_bi_entry> *entries, bool *is_truncated)
+int RGWRados::bi_list(rgw_bucket& bucket, const string& obj_name_filter, const string& marker, uint32_t max, list<rgw_cls_bi_entry> *entries, bool *is_truncated)
 {
-  rgw_obj obj(bucket, obj_name);
+  rgw_obj obj(bucket, obj_name_filter);
   BucketShard bs(this);
   int ret = bs.init(bucket, obj, nullptr /* no RGWBucketInfo */);
   if (ret < 0) {
@@ -8061,7 +8067,7 @@ int RGWRados::bi_list(rgw_bucket& bucket, const string& obj_name, const string& 
   }
 
   auto& ref = bs.bucket_obj.get_ref();
-  ret = cls_rgw_bi_list(ref.pool.ioctx(), ref.obj.oid, obj_name, marker, max, entries, is_truncated);
+  ret = cls_rgw_bi_list(ref.pool.ioctx(), ref.obj.oid, obj_name_filter, marker, max, entries, is_truncated);
   if (ret == -ENOENT) {
     *is_truncated = false;
   }
@@ -8071,14 +8077,27 @@ int RGWRados::bi_list(rgw_bucket& bucket, const string& obj_name, const string& 
   return 0;
 }
 
-int RGWRados::bi_list(BucketShard& bs, const string& filter_obj, const string& marker, uint32_t max, list<rgw_cls_bi_entry> *entries, bool *is_truncated)
+int RGWRados::bi_list(BucketShard& bs, const string& obj_name_filter, const string& marker, uint32_t max,
+		      list<rgw_cls_bi_entry> *entries, bool *is_truncated)
 {
   auto& ref = bs.bucket_obj.get_ref();
-  int ret = cls_rgw_bi_list(ref.pool.ioctx(), ref.obj.oid, filter_obj, marker, max, entries, is_truncated);
+  int ret = cls_rgw_bi_list(ref.pool.ioctx(), ref.obj.oid, obj_name_filter, marker, max, entries, is_truncated);
   if (ret < 0)
     return ret;
 
   return 0;
+}
+
+int RGWRados::bi_list(rgw_bucket& bucket, int shard_id, const string& filter_obj, const string& marker, uint32_t max, list<rgw_cls_bi_entry> *entries, bool *is_truncated)
+{
+  BucketShard bs(this);
+  int ret = bs.init(bucket, shard_id, nullptr /* no RGWBucketInfo */);
+  if (ret < 0) {
+    ldout(cct, 5) << "bs.init() returned ret=" << ret << dendl;
+    return ret;
+  }
+
+  return bi_list(bs, filter_obj, marker, max, entries, is_truncated);
 }
 
 int RGWRados::bi_remove(BucketShard& bs)
@@ -8094,18 +8113,6 @@ int RGWRados::bi_remove(BucketShard& bs)
   }
 
   return 0;
-}
-
-int RGWRados::bi_list(rgw_bucket& bucket, int shard_id, const string& filter_obj, const string& marker, uint32_t max, list<rgw_cls_bi_entry> *entries, bool *is_truncated)
-{
-  BucketShard bs(this);
-  int ret = bs.init(bucket, shard_id, nullptr /* no RGWBucketInfo */);
-  if (ret < 0) {
-    ldout(cct, 5) << "bs.init() returned ret=" << ret << dendl;
-    return ret;
-  }
-
-  return bi_list(bs, filter_obj, marker, max, entries, is_truncated);
 }
 
 int RGWRados::gc_operate(string& oid, librados::ObjectWriteOperation *op)
@@ -8424,7 +8431,7 @@ int RGWRados::cls_bucket_list_ordered(RGWBucketInfo& bucket_info,
   // (key=candidate, value=index into results_trackers); as we consume
   // entries from shards, we replace them with the next entries in the
   // shards until we run out
-  map<string, size_t> candidates;
+  std::map<std::string, size_t> candidates;
   size_t tracker_idx = 0;
   for (auto& t : results_trackers) {
     // it's important that the values in the map refer to the index
@@ -8688,6 +8695,7 @@ int RGWRados::cls_bucket_list_unordered(RGWBucketInfo& bucket_info,
 	  ent_list.emplace_back(std::move(dirent));
 	  ++count;
 	} else {
+	  last_added_entry = dirent.key;
 	  *is_truncated = true;
 	  goto check_updates;
 	}
@@ -8881,6 +8889,7 @@ int RGWRados::check_disk_state(librados::IoCtx io_ctx,
        * non-bad ways this could happen (there probably are, but annoying
        * to handle!) */
     }
+
     // encode a suggested removal of that key
     list_state.ver.epoch = io_ctx.get_last_version();
     list_state.ver.pool = io_ctx.get_id();
@@ -8936,16 +8945,29 @@ int RGWRados::check_disk_state(librados::IoCtx io_ctx,
   object.meta.owner_display_name = owner.get_display_name();
 
   // encode suggested updates
-  list_state.ver.pool = io_ctx.get_id();
-  list_state.ver.epoch = astate->epoch;
+
   list_state.meta.size = object.meta.size;
   list_state.meta.accounted_size = object.meta.accounted_size;
   list_state.meta.mtime = object.meta.mtime;
   list_state.meta.category = main_category;
   list_state.meta.etag = etag;
   list_state.meta.content_type = content_type;
-  if (astate->obj_tag.length() > 0)
+
+  librados::IoCtx head_obj_ctx; // initialize to data pool so we can get pool id
+  const bool head_pool_found =
+    get_obj_head_ioctx(bucket_info, obj, &head_obj_ctx);
+  if (head_pool_found) {
+    list_state.ver.pool = head_obj_ctx.get_id();
+    list_state.ver.epoch = astate->epoch;
+  } else {
+    dout(0) << __PRETTY_FUNCTION__ <<
+      " WARNING: unable to find head object data pool for \"" <<
+      obj << "\", not updating version pool/epoch" << dendl;
+  }
+
+  if (astate->obj_tag.length() > 0) {
     list_state.tag = astate->obj_tag.c_str();
+  }
   list_state.meta.owner = owner.get_id().to_str();
   list_state.meta.owner_display_name = owner.get_display_name();
 

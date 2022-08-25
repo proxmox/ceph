@@ -378,6 +378,11 @@ int Monitor::do_admin_command(
     cmd_getval(cmdmap, "devid", want_devid);
 
     string devname = store->get_devname();
+    if (devname.empty()) {
+      err << "could not determine device name for " << store->get_path();
+      r = -ENOENT;
+      goto abort;
+    }
     set<string> devnames;
     get_raw_devices(devname, &devnames);
     json_spirit::mObject json_map;
@@ -3332,7 +3337,15 @@ void Monitor::handle_command(MonOpRequestRef op)
 
   // validate user's permissions for requested command
   map<string,string> param_str_map;
-  _generate_command_map(cmdmap, param_str_map);
+
+  // Catch bad_cmd_get exception if _generate_command_map() throws it
+  try {
+    _generate_command_map(cmdmap, param_str_map);
+  }
+  catch(bad_cmd_get& e) {
+    reply_command(op, -EINVAL, e.what(), 0);
+  }
+
   if (!_allowed_command(session, service, prefix, cmdmap,
                         param_str_map, mon_cmd)) {
     dout(1) << __func__ << " access denied" << dendl;

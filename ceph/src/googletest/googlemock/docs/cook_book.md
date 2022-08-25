@@ -3,12 +3,14 @@
 <!-- GOOGLETEST_CM0012 DO NOT DELETE -->
 
 You can find recipes for using gMock here. If you haven't yet, please read
-[this](for_dummies.md) first to make sure you understand the basics.
+[the dummy guide](for_dummies.md) first to make sure you understand the basics.
 
 **Note:** gMock lives in the `testing` name space. For readability, it is
 recommended to write `using ::testing::Foo;` once in your file before using the
 name `Foo` defined by gMock. We omit such `using` statements in this section for
 brevity, but you should do it in your own code.
+
+<!-- GOOGLETEST_CM0035 DO NOT DELETE -->
 
 ## Creating Mock Classes
 
@@ -35,6 +37,9 @@ generated method:
     `noexcept` method.
 *   **`Calltype(...)`** - Sets the call type for the method (e.g. to
     `STDMETHODCALLTYPE`), useful in Windows.
+*   **`ref(...)`** - Marks the method with the reference qualification
+    specified. Required if overriding a method that has reference
+    qualifications. Eg `ref(&)` or `ref(&&)`.
 
 ### Dealing with unprotected commas
 
@@ -281,9 +286,11 @@ recipe for [mocking non-virtual methods](#MockingNonVirtualMethods).
 
 ### Old-Style `MOCK_METHODn` Macros
 
-Before the generic `MOCK_METHOD` macro was introduced, mocks where created using
-a family of macros collectively called `MOCK_METHODn`. These macros are still
-supported, though migration to the new `MOCK_METHOD` is recommended.
+Before the generic `MOCK_METHOD` macro
+[was introduced in 2018](https://github.com/google/googletest/commit/c5f08bf91944ce1b19bcf414fa1760e69d20afc2),
+mocks where created using a family of macros collectively called `MOCK_METHODn`.
+These macros are still supported, though migration to the new `MOCK_METHOD` is
+recommended.
 
 The macros in the `MOCK_METHODn` family differ from `MOCK_METHOD`:
 
@@ -410,8 +417,8 @@ NOTE: `NiceMock` and `StrictMock` only affects *uninteresting* calls (calls of
 methods with expectations, but they don't match). See
 [Understanding Uninteresting vs Unexpected Calls](#uninteresting-vs-unexpected).
 
-There are some caveats though (I dislike them just as much as the next guy, but
-sadly they are side effects of C++'s limitations):
+There are some caveats though (sadly they are side effects of C++'s
+limitations):
 
 1.  `NiceMock<MockFoo>` and `StrictMock<MockFoo>` only work for mock methods
     defined using the `MOCK_METHOD` macro **directly** in the `MockFoo` class.
@@ -421,17 +428,7 @@ sadly they are side effects of C++'s limitations):
     `NiceMock<StrictMock<MockFoo> >`) is **not** supported.
 2.  `NiceMock<MockFoo>` and `StrictMock<MockFoo>` may not work correctly if the
     destructor of `MockFoo` is not virtual. We would like to fix this, but it
-    requires cleaning up existing tests. http://b/28934720 tracks the issue.
-3.  During the constructor or destructor of `MockFoo`, the mock object is *not*
-    nice or strict. This may cause surprises if the constructor or destructor
-    calls a mock method on `this` object. (This behavior, however, is consistent
-    with C++'s general rule: if a constructor or destructor calls a virtual
-    method of `this` object, that method is treated as non-virtual. In other
-    words, to the base class's constructor or destructor, `this` object behaves
-    like an instance of the base class, not the derived class. This rule is
-    required for safety. Otherwise a base constructor may use members of a
-    derived class before they are initialized, or a base destructor may use
-    members of a derived class after they have been destroyed.)
+    requires cleaning up existing tests.
 
 Finally, you should be **very cautious** about when to use naggy or strict
 mocks, as they tend to make tests more brittle and harder to maintain. When you
@@ -513,7 +510,7 @@ argument matchers:
 
 ```cpp
 ON_CALL(factory, DoMakeTurtle)
-    .WillByDefault(MakeMockTurtle());
+    .WillByDefault(Return(MakeMockTurtle()));
 ```
 
 ### Alternative to Mocking Concrete Classes
@@ -777,28 +774,12 @@ perhaps your test doesn't need to mock `Concrete()` at all (but it would be
 oh-so painful to have to define a new mock class whenever you don't need to mock
 one of its methods).
 
-The trick is to leave a back door in your mock class for accessing the real
-methods in the base class:
-
-```cpp
-class MockFoo : public Foo {
- public:
-  // Mocking a pure method.
-  MOCK_METHOD(void, Pure, (int n), (override));
-  // Mocking a concrete method.  Foo::Concrete() is shadowed.
-  MOCK_METHOD(int, Concrete, (const char* str), (override));
-
-  // Use this to call Concrete() defined in Foo.
-  int FooConcrete(const char* str) { return Foo::Concrete(str); }
-};
-```
-
-Now, you can call `Foo::Concrete()` inside an action by:
+You can call `Foo::Concrete()` inside an action by:
 
 ```cpp
 ...
   EXPECT_CALL(foo, Concrete).WillOnce([&foo](const char* str) {
-    return foo.FooConcrete(str);
+    return foo.Foo::Concrete(str);
   });
 ```
 
@@ -807,7 +788,7 @@ or tell the mock object that you don't want to mock `Concrete()`:
 ```cpp
 ...
   ON_CALL(foo, Concrete).WillByDefault([&foo](const char* str) {
-    return foo.FooConcrete(str);
+    return foo.Foo::Concrete(str);
   });
 ```
 
@@ -869,6 +850,22 @@ using ::testing::Not;
   // The first argument must not contain sub-string "blah".
   EXPECT_CALL(foo, DoThat(Not(HasSubstr("blah")),
                           NULL));
+```
+
+Matchers are function objects, and parametrized matchers can be composed just
+like any other function. However because their types can be long and rarely
+provide meaningful information, it can be easier to express them with C++14
+generic lambdas to avoid specifying types. For example,
+
+```cpp
+using ::testing::Contains;
+using ::testing::Property;
+
+inline constexpr auto HasFoo = [](const auto& f) {
+  return Property(&MyClass::foo, Contains(f));
+};
+...
+  EXPECT_THAT(x, HasFoo("blah"));
 ```
 
 ### Casting Matchers {#SafeMatcherCast}
@@ -1144,10 +1141,11 @@ Hamcrest project, which adds `assertThat()` to JUnit.
 
 ### Using Predicates as Matchers
 
-gMock provides a [built-in set](#MatcherList) of matchers. In case you find them
-lacking, you can use an arbitrary unary predicate function or functor as a
-matcher - as long as the predicate accepts a value of the type you want. You do
-this by wrapping the predicate inside the `Truly()` function, for example:
+gMock provides a [built-in set](cheat_sheet.md#MatcherList) of matchers. In case
+you find them lacking, you can use an arbitrary unary predicate function or
+functor as a matcher - as long as the predicate accepts a value of the type you
+want. You do this by wrapping the predicate inside the `Truly()` function, for
+example:
 
 ```cpp
 using ::testing::Truly;
@@ -1180,15 +1178,14 @@ executed. Just tell gMock that it should save a reference to `bar`, instead of a
 copy of it. Here's how:
 
 ```cpp
-using ::testing::ByRef;
 using ::testing::Eq;
 using ::testing::Lt;
 ...
   // Expects that Foo()'s argument == bar.
-  EXPECT_CALL(mock_obj, Foo(Eq(ByRef(bar))));
+  EXPECT_CALL(mock_obj, Foo(Eq(std::ref(bar))));
 
   // Expects that Foo()'s argument < bar.
-  EXPECT_CALL(mock_obj, Foo(Lt(ByRef(bar))));
+  EXPECT_CALL(mock_obj, Foo(Lt(std::ref(bar))));
 ```
 
 Remember: if you do this, don't change `bar` after the `EXPECT_CALL()`, or the
@@ -1675,11 +1672,11 @@ times from calling it with the wrong arguments.
 
 ### Expecting Ordered Calls {#OrderedCalls}
 
-Although an `EXPECT_CALL()` statement defined earlier takes precedence when
-gMock tries to match a function call with an expectation, by default calls don't
-have to happen in the order `EXPECT_CALL()` statements are written. For example,
-if the arguments match the matchers in the third `EXPECT_CALL()`, but not those
-in the first two, then the third expectation will be used.
+Although an `EXPECT_CALL()` statement defined later takes precedence when gMock
+tries to match a function call with an expectation, by default calls don't have
+to happen in the order `EXPECT_CALL()` statements are written. For example, if
+the arguments match the matchers in the second `EXPECT_CALL()`, but not those in
+the first and third, then the second expectation will be used.
 
 If you would rather have all calls occur in the order of the expectations, put
 the `EXPECT_CALL()` statements in a block where you define a variable of type
@@ -1712,8 +1709,8 @@ brittle tests. For example, we may care about `A` occurring before both `B` and
 the test should reflect our real intent, instead of being overly constraining.
 
 gMock allows you to impose an arbitrary DAG (directed acyclic graph) on the
-calls. One way to express the DAG is to use the [After](#AfterClause) clause of
-`EXPECT_CALL`.
+calls. One way to express the DAG is to use the
+[After](cheat_sheet.md#AfterClause) clause of `EXPECT_CALL`.
 
 Another way is via the `InSequence()` clause (not the same as the `InSequence`
 class), which we borrowed from jMock 2. It's less flexible than `After()`, but
@@ -1851,10 +1848,9 @@ Methods"). However, gMock doesn't let you use `ReturnRef()` in a mock function
 whose return type is not a reference, as doing that usually indicates a user
 error. So, what shall you do?
 
-Though you may be tempted, DO NOT use `ByRef()`:
+Though you may be tempted, DO NOT use `std::ref()`:
 
 ```cpp
-using testing::ByRef;
 using testing::Return;
 
 class MockFoo : public Foo {
@@ -1865,7 +1861,7 @@ class MockFoo : public Foo {
   int x = 0;
   MockFoo foo;
   EXPECT_CALL(foo, GetValue())
-      .WillRepeatedly(Return(ByRef(x)));  // Wrong!
+      .WillRepeatedly(Return(std::ref(x)));  // Wrong!
   x = 42;
   EXPECT_EQ(42, foo.GetValue());
 ```
@@ -1881,9 +1877,9 @@ Expected: 42
 The reason is that `Return(*value*)` converts `value` to the actual return type
 of the mock function at the time when the action is *created*, not when it is
 *executed*. (This behavior was chosen for the action to be safe when `value` is
-a proxy object that references some temporary objects.) As a result, `ByRef(x)`
-is converted to an `int` value (instead of a `const int&`) when the expectation
-is set, and `Return(ByRef(x))` will always return 0.
+a proxy object that references some temporary objects.) As a result,
+`std::ref(x)` is converted to an `int` value (instead of a `const int&`) when
+the expectation is set, and `Return(std::ref(x))` will always return 0.
 
 `ReturnPointee(pointer)` was provided to solve this problem specifically. It
 returns the value pointed to by `pointer` at the time the action is *executed*:
@@ -2128,7 +2124,7 @@ class MockFoo : public Foo {
   DefaultValue<Bar>::Clear();
 ```
 
-Please note that changing the default value for a type can make you tests hard
+Please note that changing the default value for a type can make your tests hard
 to understand. We recommend you to use this feature judiciously. For example,
 you may want to make sure the `Set()` and `Clear()` calls are right next to the
 code that uses your mock.
@@ -2174,7 +2170,7 @@ own precedence order distinct from the `ON_CALL` precedence order.
 ### Using Functions/Methods/Functors/Lambdas as Actions {#FunctionsAsActions}
 
 If the built-in actions don't suit you, you can use an existing callable
-(function, `std::function`, method, functor, lambda as an action.
+(function, `std::function`, method, functor, lambda) as an action.
 
 <!-- GOOGLETEST_CM0024 DO NOT DELETE -->
 
@@ -2203,6 +2199,7 @@ class Helper {
       .WillRepeatedly(Invoke(NewPermanentCallback(Sum3, 1)));
   EXPECT_CALL(foo, ComplexJob(_))
       .WillOnce(Invoke(&helper, &Helper::ComplexJob))
+      .WillOnce([] { return true; })
       .WillRepeatedly([](int x) { return x > 0; });
 
   foo.Sum(5, 6);         // Invokes CalculateSum(5, 6).
@@ -2212,11 +2209,11 @@ class Helper {
 ```
 
 The only requirement is that the type of the function, etc must be *compatible*
-with the signature of the mock function, meaning that the latter's arguments can
-be implicitly converted to the corresponding arguments of the former, and the
-former's return type can be implicitly converted to that of the latter. So, you
-can invoke something whose type is *not* exactly the same as the mock function,
-as long as it's safe to do so - nice, huh?
+with the signature of the mock function, meaning that the latter's arguments (if
+it takes any) can be implicitly converted to the corresponding arguments of the
+former, and the former's return type can be implicitly converted to that of the
+latter. So, you can invoke something whose type is *not* exactly the same as the
+mock function, as long as it's safe to do so - nice, huh?
 
 **`Note:`{.escaped}**
 
@@ -2267,19 +2264,20 @@ TEST_F(FooTest, Test) {
 
 ### Invoking a Function/Method/Functor/Lambda/Callback Without Arguments
 
-`Invoke()` is very useful for doing actions that are more complex. It passes the
-mock function's arguments to the function, etc being invoked such that the
-callee has the full context of the call to work with. If the invoked function is
-not interested in some or all of the arguments, it can simply ignore them.
+`Invoke()` passes the mock function's arguments to the function, etc being
+invoked such that the callee has the full context of the call to work with. If
+the invoked function is not interested in some or all of the arguments, it can
+simply ignore them.
 
 Yet, a common pattern is that a test author wants to invoke a function without
-the arguments of the mock function. `Invoke()` allows her to do that using a
-wrapper function that throws away the arguments before invoking an underlining
-nullary function. Needless to say, this can be tedious and obscures the intent
-of the test.
+the arguments of the mock function. She could do that using a wrapper function
+that throws away the arguments before invoking an underlining nullary function.
+Needless to say, this can be tedious and obscures the intent of the test.
 
-`InvokeWithoutArgs()` solves this problem. It's like `Invoke()` except that it
-doesn't pass the mock function's arguments to the callee. Here's an example:
+There are two solutions to this problem. First, you can pass any callable of
+zero args as an action. Alternatively, use `InvokeWithoutArgs()`, which is like
+`Invoke()` except that it doesn't pass the mock function's arguments to the
+callee. Here's an example of each:
 
 ```cpp
 using ::testing::_;
@@ -2296,7 +2294,7 @@ bool Job2(int n, char c) { ... }
 ...
   MockFoo foo;
   EXPECT_CALL(foo, ComplexJob(_))
-      .WillOnce(InvokeWithoutArgs(Job1))
+      .WillOnce([] { Job1(); });
       .WillOnce(InvokeWithoutArgs(NewPermanentCallback(Job2, 5, 'a')));
 
   foo.ComplexJob(10);  // Invokes Job1().
@@ -2374,7 +2372,7 @@ using ::testing::InvokeArgument;
 ```
 
 What if the callable takes an argument by reference? No problem - just wrap it
-inside `ByRef()`:
+inside `std::ref()`:
 
 ```cpp
   ...
@@ -2383,20 +2381,19 @@ inside `ByRef()`:
               (override));
   ...
   using ::testing::_;
-  using ::testing::ByRef;
   using ::testing::InvokeArgument;
   ...
   MockFoo foo;
   Helper helper;
   ...
   EXPECT_CALL(foo, Bar(_))
-      .WillOnce(InvokeArgument<0>(5, ByRef(helper)));
-      // ByRef(helper) guarantees that a reference to helper, not a copy of it,
-      // will be passed to the callback.
+      .WillOnce(InvokeArgument<0>(5, std::ref(helper)));
+      // std::ref(helper) guarantees that a reference to helper, not a copy of
+      // it, will be passed to the callback.
 ```
 
 What if the callable takes an argument by reference and we do **not** wrap the
-argument in `ByRef()`? Then `InvokeArgument()` will *make a copy* of the
+argument in `std::ref()`? Then `InvokeArgument()` will *make a copy* of the
 argument, and pass a *reference to the copy*, instead of a reference to the
 original value, to the callable. This is especially handy when the argument is a
 temporary value:
@@ -2684,7 +2681,7 @@ TEST(EventQueueTest, EnqueueEventTest) {
   EventQueue event_queue(&mock_event_dispatcher);
 
   const int32 kEventId = 321;
-  Notification done;
+  absl::Notification done;
   EXPECT_CALL(mock_event_dispatcher, DispatchEvent(kEventId))
       .WillOnce(Notify(&done));
 
@@ -3071,7 +3068,7 @@ class MockFoo : public Foo {
   ...
   // Add the following two lines to the mock class.
   MOCK_METHOD(void, Die, ());
-  virtual ~MockFoo() { Die(); }
+  ~MockFoo() override { Die(); }
 };
 ```
 

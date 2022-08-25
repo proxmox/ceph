@@ -717,6 +717,8 @@ int rgw_s3_prepare_encrypt(struct req_state* s,
       }
 
       MD5 key_hash;
+      // Allow use of MD5 digest in FIPS mode for non-cryptographic purposes
+      key_hash.SetFlags(EVP_MD_CTX_FLAG_NON_FIPS_ALLOW);
       unsigned char key_hash_res[CEPH_CRYPTO_MD5_DIGESTSIZE];
       key_hash.Update(reinterpret_cast<const unsigned char*>(key_bin.c_str()), key_bin.size());
       key_hash.Final(key_hash_res);
@@ -781,7 +783,7 @@ int rgw_s3_prepare_encrypt(struct req_state* s,
 	  ldout(s->cct, 5) << "ERROR: not provide a valid key id" << dendl;
 	  s->err.message = "Server Side Encryption with KMS managed key requires "
 	    "HTTP header x-amz-server-side-encryption-aws-kms-key-id";
-	  return -ERR_INVALID_ACCESS_KEY;
+	  return -EINVAL;
 	}
 	/* try to retrieve actual key */
 	std::string key_selector = create_random_key_selector(s->cct);
@@ -796,7 +798,7 @@ int rgw_s3_prepare_encrypt(struct req_state* s,
 	  ldout(s->cct, 5) << "ERROR: key obtained from key_id:" <<
             key_id << " is not 256 bit size" << dendl;
 	  s->err.message = "KMS provided an invalid key for the given kms-keyid.";
-	  return -ERR_INVALID_ACCESS_KEY;
+	  return -EINVAL;
 	}
 	set_attr(attrs, RGW_ATTR_CRYPT_MODE, "SSE-KMS");
 	set_attr(attrs, RGW_ATTR_CRYPT_KEYID, key_id);
@@ -960,6 +962,8 @@ int rgw_s3_prepare_decrypt(struct req_state* s,
     }
 
     MD5 key_hash;
+    // Allow use of MD5 digest in FIPS mode for non-cryptographic purposes
+    key_hash.SetFlags(EVP_MD_CTX_FLAG_NON_FIPS_ALLOW);
     uint8_t key_hash_res[CEPH_CRYPTO_MD5_DIGESTSIZE];
     key_hash.Update(reinterpret_cast<const unsigned char*>(key_bin.c_str()), key_bin.size());
     key_hash.Final(key_hash_res);

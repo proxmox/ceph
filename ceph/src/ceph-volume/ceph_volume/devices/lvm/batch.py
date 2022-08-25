@@ -270,6 +270,7 @@ class Batch(object):
             '--crush-device-class',
             dest='crush_device_class',
             help='Crush device class to assign this OSD to',
+            default=""
         )
         parser.add_argument(
             '--no-systemd',
@@ -339,7 +340,7 @@ class Batch(object):
             nargs='*',
             default=[],
             help='Reuse existing OSD ids',
-            type=common.valid_osd_id
+            type=arg_validators.valid_osd_id
         )
         self.args = parser.parse_args(argv)
         self.parser = parser
