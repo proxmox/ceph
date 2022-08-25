@@ -6,6 +6,9 @@ from ceph_volume.util import disk
 from ceph_volume.util.device import Device
 
 
+def valid_osd_id(val):
+    return str(int(val))
+
 class ValidDevice(object):
 
     def __init__(self, as_string=False, gpt_ok=False):
@@ -37,10 +40,10 @@ class ValidDevice(object):
         # __init__
         elif device.has_gpt_headers and not self.gpt_ok:
             error = "GPT headers found, they must be removed on: %s" % dev_path
-
+        if device.has_partitions:
+            raise RuntimeError("Device {} has partitions.".format(dev_path))
         if error:
             raise argparse.ArgumentError(None, error)
-
         return device
 
 

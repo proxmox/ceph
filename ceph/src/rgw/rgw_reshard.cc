@@ -338,15 +338,15 @@ static int create_new_bucket_instance(rgw::sal::RGWRadosStore *store,
   new_bucket_info.new_bucket_instance_id.clear();
   new_bucket_info.reshard_status = cls_rgw_reshard_status::NOT_RESHARDING;
 
-  int ret = store->svc()->bi->init_index(new_bucket_info);
+  int ret = store->getRados()->put_bucket_instance_info(new_bucket_info, true, real_time(), &attrs);
   if (ret < 0) {
-    cerr << "ERROR: failed to init new bucket indexes: " << cpp_strerror(-ret) << std::endl;
+    cerr << "ERROR: failed to store new bucket instance info: " << cpp_strerror(-ret) << std::endl;
     return ret;
   }
 
-  ret = store->getRados()->put_bucket_instance_info(new_bucket_info, true, real_time(), &attrs);
+  ret = store->svc()->bi->init_index(new_bucket_info);
   if (ret < 0) {
-    cerr << "ERROR: failed to store new bucket instance info: " << cpp_strerror(-ret) << std::endl;
+    cerr << "ERROR: failed to init new bucket indexes: " << cpp_strerror(-ret) << std::endl;
     return ret;
   }
 
@@ -587,9 +587,10 @@ int RGWBucketReshard::do_reshard(int num_shards,
   for (int i = 0; i < num_source_shards; ++i) {
     bool is_truncated = true;
     marker.clear();
+    const std::string null_object_filter; // empty string since we're not filtering by object
     while (is_truncated) {
       entries.clear();
-      ret = store->getRados()->bi_list(bucket, i, string(), marker, max_entries, &entries, &is_truncated);
+      ret = store->getRados()->bi_list(bucket, i, null_object_filter, marker, max_entries, &entries, &is_truncated);
       if (ret < 0 && ret != -ENOENT) {
 	derr << "ERROR: bi_list(): " << cpp_strerror(-ret) << dendl;
 	return ret;
@@ -875,17 +876,17 @@ int RGWReshard::list(int logshard_num, string& marker, uint32_t max, std::list<c
 
   int ret = cls_rgw_reshard_list(store->getRados()->reshard_pool_ctx, logshard_oid, marker, max, entries, is_truncated);
 
-  if (ret < 0) {
-    if (ret == -ENOENT) {
-      *is_truncated = false;
-      ret = 0;
-    } else {
-      lderr(store->ctx()) << "ERROR: failed to list reshard log entries, oid=" << logshard_oid << dendl;
-      if (ret == -EACCES) {
-        lderr(store->ctx()) << "access denied to pool " << store->svc()->zone->get_zone_params().reshard_pool
-                          << ". Fix the pool access permissions of your client" << dendl;
-      }
-    } 
+  if (ret == -ENOENT) {
+    // these shard objects aren't created until we actually write something to
+    // them, so treat ENOENT as a successful empty listing
+    *is_truncated = false;
+    ret = 0;
+  } else if (ret == -EACCES) {
+    lderr(store->ctx()) << "ERROR: access denied to pool " << store->svc()->zone->get_zone_params().reshard_pool
+                      << ". Fix the pool access permissions of your client" << dendl;
+  } else if (ret < 0) {
+    lderr(store->ctx()) << "ERROR: failed to list reshard log entries, oid="
+        << logshard_oid << " marker=" << marker << " " << cpp_strerror(ret) << dendl;
   }
 
   return ret;

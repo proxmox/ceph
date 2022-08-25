@@ -1,5 +1,7 @@
 ## Using GoogleTest from various build systems
 
+<!-- GOOGLETEST_CM0035 DO NOT DELETE -->
+
 GoogleTest comes with pkg-config files that can be used to determine all
 necessary flags for compiling and linking to GoogleTest (and GoogleMock).
 Pkg-config is a standardised plain-text format containing
@@ -44,77 +46,6 @@ splitting the pkg-config `Cflags` variable into include dirs and macros for
 `target_compile_definitions()` might still miss this). The same recommendation
 goes for using `_LDFLAGS` over the more commonplace `_LIBRARIES`, which happens
 to discard `-L` flags and `-pthread`.
-
-### Autotools
-
-Finding GoogleTest in Autoconf and using it from Automake is also fairly easy:
-
-In your `configure.ac`:
-
-```
-AC_PREREQ([2.69])
-AC_INIT([my_gtest_pkgconfig], [0.0.1])
-AC_CONFIG_SRCDIR([samples/sample3_unittest.cc])
-AC_PROG_CXX
-
-PKG_CHECK_MODULES([GTEST], [gtest_main])
-
-AM_INIT_AUTOMAKE([foreign subdir-objects])
-AC_CONFIG_FILES([Makefile])
-AC_OUTPUT
-```
-
-and in your `Makefile.am`:
-
-```
-check_PROGRAMS = testapp
-TESTS = $(check_PROGRAMS)
-
-testapp_SOURCES = samples/sample3_unittest.cc
-testapp_CXXFLAGS = $(GTEST_CFLAGS)
-testapp_LDADD = $(GTEST_LIBS)
-```
-
-### Meson
-
-Meson natively uses pkgconfig to query dependencies:
-
-```
-project('my_gtest_pkgconfig', 'cpp', version : '0.0.1')
-
-gtest_dep = dependency('gtest_main')
-
-testapp = executable(
-  'testapp',
-  files(['samples/sample3_unittest.cc']),
-  dependencies : gtest_dep,
-  install : false)
-
-test('first_and_only_test', testapp)
-```
-
-### Plain Makefiles
-
-Since `pkg-config` is a small Unix command-line utility, it can be used in
-handwritten `Makefile`s too:
-
-```makefile
-GTEST_CFLAGS = `pkg-config --cflags gtest_main`
-GTEST_LIBS = `pkg-config --libs gtest_main`
-
-.PHONY: tests all
-
-tests: all
-  ./testapp
-
-all: testapp
-
-testapp: testapp.o
-  $(CXX) $(CXXFLAGS) $(LDFLAGS) $< -o $@ $(GTEST_LIBS)
-
-testapp.o: samples/sample3_unittest.cc
-  $(CXX) $(CPPFLAGS) $(CXXFLAGS) $< -c -o $@ $(GTEST_CFLAGS)
-```
 
 ### Help! pkg-config can't find GoogleTest!
 

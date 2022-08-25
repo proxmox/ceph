@@ -28,14 +28,14 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
-# Author: misterg@google.com (Gennadiy Civil)
-#
 # Bazel BUILD for The Google C++ Testing Framework (Google Test)
 
 load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_test")
 load("@rules_python//python:defs.bzl", "py_library", "py_test")
 
 licenses(["notice"])
+
+package(default_visibility = ["//:__subpackages__"])
 
 #on windows exclude gtest-tuple.h
 cc_test(
@@ -56,9 +56,11 @@ cc_test(
             "gtest-listener_test.cc",
             "gtest-unittest-api_test.cc",
             "googletest-param-test-test.cc",
+            "googletest-param-test2-test.cc",
             "googletest-catch-exceptions-test_.cc",
             "googletest-color-test_.cc",
             "googletest-env-var-test_.cc",
+            "googletest-failfast-unittest_.cc",
             "googletest-filter-unittest_.cc",
             "googletest-break-on-failure-unittest_.cc",
             "googletest-listener-test.cc",
@@ -154,6 +156,7 @@ py_library(
     name = "gtest_test_utils",
     testonly = 1,
     srcs = ["gtest_test_utils.py"],
+    imports = ["."],
 )
 
 cc_binary(
@@ -220,6 +223,21 @@ py_test(
     size = "medium",
     srcs = ["googletest-env-var-test.py"],
     data = [":googletest-env-var-test_"],
+    deps = [":gtest_test_utils"],
+)
+
+cc_binary(
+    name = "googletest-failfast-unittest_",
+    testonly = 1,
+    srcs = ["googletest-failfast-unittest_.cc"],
+    deps = ["//:gtest"],
+)
+
+py_test(
+    name = "googletest-failfast-unittest",
+    size = "medium",
+    srcs = ["googletest-failfast-unittest.py"],
+    data = [":googletest-failfast-unittest_"],
     deps = [":gtest_test_utils"],
 )
 
@@ -534,6 +552,10 @@ py_test(
     srcs = ["googletest-param-test-invalid-name1-test.py"],
     data = [":googletest-param-test-invalid-name1-test_"],
     deps = [":gtest_test_utils"],
+    tags = [
+        "no_test_msvc2015",
+        "no_test_msvc2017",
+    ],
 )
 
 py_test(
@@ -542,4 +564,8 @@ py_test(
     srcs = ["googletest-param-test-invalid-name2-test.py"],
     data = [":googletest-param-test-invalid-name2-test_"],
     deps = [":gtest_test_utils"],
+    tags = [
+        "no_test_msvc2015",
+        "no_test_msvc2017",
+    ],
 )

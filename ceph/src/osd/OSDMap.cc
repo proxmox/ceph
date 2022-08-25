@@ -1935,12 +1935,20 @@ bool OSDMap::check_pg_upmaps(
     // okay, upmap is valid
     // continue to check if it is still necessary
     auto i = pg_upmap.find(pg);
-    if (i != pg_upmap.end() && raw == i->second) {
-      ldout(cct, 10) << " removing redundant pg_upmap "
-                     << i->first << " " << i->second
-                     << dendl;
-      to_cancel->push_back(pg);
-      continue;
+    if (i != pg_upmap.end()) {
+      if (i->second == raw) {
+        ldout(cct, 10) << "removing redundant pg_upmap " << i->first << " "
+                       << i->second << dendl;
+        to_cancel->push_back(pg);
+        continue;
+      }
+      if ((int)i->second.size() != get_pg_pool_size(pg)) {
+        ldout(cct, 10) << "removing pg_upmap " << i->first << " "
+                       << i->second << " != pool size " << get_pg_pool_size(pg)
+                       << dendl;
+        to_cancel->push_back(pg);
+        continue;
+      }
     }
     auto j = pg_upmap_items.find(pg);
     if (j != pg_upmap_items.end()) {
@@ -5930,7 +5938,13 @@ void OSDMap::check_health(CephContext *cct,
   }
 
   // OSD_UPGRADE_FINISHED
-  // none of these (yet) since we don't run until luminous upgrade is done.
+  if (auto require_release = pending_require_osd_release()) {
+    ostringstream ss;
+    ss << "all OSDs are running " << *require_release << " or later but"
+       << " require_osd_release < " << *require_release;
+    auto& d = checks->add("OSD_UPGRADE_FINISHED", HEALTH_WARN, ss.str(), 0);
+    d.detail.push_back(ss.str());
+  }
 
   // POOL_NEARFULL/BACKFILLFULL/FULL
   {
@@ -6146,4 +6160,18 @@ unsigned OSDMap::get_device_class_flags(int id) const
   if (it != device_class_flags.end())
     flags = it->second;
   return flags;
+}
+
+std::optional<std::string> OSDMap::pending_require_osd_release() const
+{
+  if (HAVE_FEATURE(get_up_osd_features(), SERVER_OCTOPUS) &&
+      require_osd_release < ceph_release_t::octopus) {
+    return "octopus";
+  }
+  if (HAVE_FEATURE(get_up_osd_features(), SERVER_NAUTILUS) &&
+      require_osd_release < ceph_release_t::nautilus) {
+    return "nautilus";
+  }
+
+  return std::nullopt;
 }
