@@ -316,7 +316,13 @@ void rgw_format_ops_log_entry(struct rgw_log_entry& entry, Formatter *formatter)
       formatter->close_section();
     }
   }
-
+  if (!entry.access_key_id.empty()) {
+    formatter->dump_string("access_key_id", entry.access_key_id);
+  }
+  if (!entry.subuser.empty()) {
+    formatter->dump_string("subuser", entry.subuser);
+  }
+  formatter->dump_bool("temp_url", entry.temp_url);
   formatter->close_section();
 }
 
@@ -344,8 +350,12 @@ int OpsLogManifold::log(struct req_state* s, struct rgw_log_entry& entry)
 }
 
 OpsLogFile::OpsLogFile(CephContext* cct, std::string& path, uint64_t max_data_size) :
-  cct(cct), file(path, std::ofstream::app), data_size(0), max_data_size(max_data_size)
+  cct(cct), data_size(0), max_data_size(max_data_size), path(path), need_reopen(false)
 {
+}
+
+void OpsLogFile::reopen() {
+  need_reopen = true;
 }
 
 void OpsLogFile::flush()
@@ -359,6 +369,11 @@ void OpsLogFile::flush()
   for (auto bl : flush_buffer) {
     int try_num = 0;
     while (true) {
+      if (!file.is_open() || need_reopen) {
+        need_reopen = false;
+        file.close();
+        file.open(path, std::ofstream::app);
+      }
       bl.write_stream(file);
       if (!file) {
         ldpp_dout(this, 0) << "ERROR: failed to log RGW ops log file entry" << dendl;
@@ -582,6 +597,7 @@ int rgw_log_op(RGWREST* const rest, struct req_state *s, const string& op_name, 
 
   if (s->auth.identity) {
     entry.identity_type = s->auth.identity->get_identity_type();
+    s->auth.identity->write_ops_log_entry(entry);
   } else {
     entry.identity_type = TYPE_NONE;
   }

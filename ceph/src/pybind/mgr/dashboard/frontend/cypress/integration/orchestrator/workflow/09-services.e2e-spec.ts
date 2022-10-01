@@ -1,4 +1,6 @@
-import { ServicesPageHelper } from 'cypress/integration/cluster/services.po';
+/* tslint:disable*/
+import { ServicesPageHelper } from '../../cluster/services.po';
+/* tslint:enable*/
 
 describe('Services page', () => {
   const services = new ServicesPageHelper();
@@ -100,5 +102,13 @@ describe('Services page', () => {
     });
 
     services.deleteService('snmp-gateway');
+  });
+
+  it('should create ingress as unmanaged', () => {
+    services.navigateTo('create');
+    services.addService('ingress', false, undefined, undefined, undefined, true);
+    services.checkExist('ingress.rgw.foo', true);
+    services.isUnmanaged('ingress.rgw.foo', true);
+    services.deleteService('ingress.rgw.foo');
   });
 });

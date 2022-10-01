@@ -2474,6 +2474,7 @@ RGWOp* RGWSwiftWebsiteHandler::get_ws_index_op()
   } else {
     s->object->set_name(s->bucket->get_info().website_conf.get_index_doc());
   }
+  s->object->set_bucket(s->bucket.get());
 
   auto getop = new RGWGetObj_ObjStore_SWIFT;
   getop->set_get_data(boost::algorithm::equals("GET", s->info.method));
@@ -2805,7 +2806,12 @@ int RGWHandler_REST_SWIFT::postauth_init(optional_yield y)
   struct req_init_state* t = &s->init_state;
 
   /* XXX Stub this until Swift Auth sets account into URL. */
-  s->bucket_tenant = s->user->get_tenant();
+  if (g_conf()->rgw_swift_account_in_url
+      && s->user->get_id().id == RGW_USER_ANON_ID) {
+    s->bucket_tenant = s->account_name;
+  } else {
+    s->bucket_tenant = s->user->get_tenant();
+  }
   s->bucket_name = t->url_bucket;
 
   if (!s->object) {

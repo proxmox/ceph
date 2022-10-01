@@ -147,6 +147,7 @@ class CephadmUpgrade:
             r.target_image = self.target_image
             r.in_progress = True
             r.progress, r.services_complete = self._get_upgrade_info()
+            r.is_paused = self.upgrade_state.paused
 
             if self.upgrade_state.daemon_types is not None:
                 which_str = f'Upgrading daemons of type(s) {",".join(self.upgrade_state.daemon_types)}'
@@ -267,7 +268,11 @@ class CephadmUpgrade:
             "registry": reg_name,
             "bare_image": bare_image,
         }
-        ls = reg.get_tags(bare_image)
+
+        try:
+            ls = reg.get_tags(bare_image)
+        except ValueError as e:
+            raise OrchestratorError(f'{e}')
         if not tags:
             for t in ls:
                 if t[0] != 'v':
@@ -451,6 +456,7 @@ class CephadmUpgrade:
         if not self.upgrade_state.paused:
             return 'Upgrade to %s not paused' % self.target_image
         self.upgrade_state.paused = False
+        self.upgrade_state.error = ''
         self.mgr.log.info('Upgrade: Resumed upgrade to %s' % self.target_image)
         self._save_upgrade_state()
         self.mgr.event.set()

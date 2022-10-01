@@ -43,9 +43,12 @@ struct rgw_log_entry {
   std::string trans_id;
   std::vector<std::string> token_claims;
   uint32_t identity_type;
+  std::string access_key_id;
+  std::string subuser;
+  bool temp_url {false};
 
   void encode(bufferlist &bl) const {
-    ENCODE_START(12, 5, bl);
+    ENCODE_START(13, 5, bl);
     encode(object_owner.id, bl);
     encode(bucket_owner.id, bl);
     encode(bucket, bl);
@@ -71,10 +74,13 @@ struct rgw_log_entry {
     encode(trans_id, bl);
     encode(token_claims, bl);
     encode(identity_type,bl);
+    encode(access_key_id, bl);
+    encode(subuser, bl);
+    encode(temp_url, bl);
     ENCODE_FINISH(bl);
   }
   void decode(bufferlist::const_iterator &p) {
-    DECODE_START_LEGACY_COMPAT_LEN(12, 5, 5, p);
+    DECODE_START_LEGACY_COMPAT_LEN(13, 5, 5, p);
     decode(object_owner.id, p);
     if (struct_v > 3)
       decode(bucket_owner.id, p);
@@ -129,6 +135,11 @@ struct rgw_log_entry {
     if (struct_v >= 12) {
       decode(identity_type, p);
     }
+    if (struct_v >= 13) {
+      decode(access_key_id, p);
+      decode(subuser, p);
+      decode(temp_url, p);
+    }
     DECODE_FINISH(p);
   }
   void dump(ceph::Formatter *f) const;
@@ -173,6 +184,8 @@ class OpsLogFile : public JsonOpsLogSink, public Thread, public DoutPrefixProvid
   bool stopped;
   uint64_t data_size;
   uint64_t max_data_size;
+  std::string path;
+  std::atomic_bool need_reopen;
 
   void flush();
 protected:
@@ -184,6 +197,7 @@ public:
   CephContext *get_cct() const override { return cct; }
   unsigned get_subsys() const override { return dout_subsys; }
   std::ostream& gen_prefix(std::ostream& out) const override { return out << "rgw OpsLogFile: "; }
+  void reopen();
   void start();
   void stop();
 };

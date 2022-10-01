@@ -3,7 +3,7 @@ import stat
 
 import errno
 import logging
-from hashlib import md5
+import hashlib
 from typing import Dict, Union
 from pathlib import Path
 
@@ -76,9 +76,16 @@ class SubvolumeBase(object):
 
     @property
     def legacy_config_path(self):
-        m = md5()
-        m.update(self.base_path)
-        meta_config = "{0}.meta".format(m.digest().hex())
+        try:
+            m = hashlib.md5(self.base_path)
+        except ValueError:
+            try:
+                m = hashlib.md5(self.base_path, usedforsecurity=False) # type: ignore
+            except TypeError:
+                raise VolumeException(-errno.EINVAL,
+                                      "require python's hashlib library to support usedforsecurity flag in FIPS enabled systems")
+
+        meta_config = "{0}.meta".format(m.hexdigest())
         return os.path.join(self.legacy_dir, meta_config.encode('utf-8'))
 
     @property
@@ -127,6 +134,10 @@ class SubvolumeBase(object):
     @property
     def purgeable(self):
         """ Boolean declaring if subvolume can be purged """
+        raise NotImplementedError
+
+    def clean_stale_snapshot_metadata(self):
+        """ Clean up stale snapshot metadata """
         raise NotImplementedError
 
     def load_config(self):
@@ -426,9 +437,14 @@ class SubvolumeBase(object):
                 'features': self.features, 'state': self.state.value}
 
     def set_user_metadata(self, keyname, value):
-        self.metadata_mgr.add_section(MetadataManager.USER_METADATA_SECTION)
-        self.metadata_mgr.update_section(MetadataManager.USER_METADATA_SECTION, keyname, str(value))
-        self.metadata_mgr.flush()
+        try:
+            self.metadata_mgr.add_section(MetadataManager.USER_METADATA_SECTION)
+            self.metadata_mgr.update_section(MetadataManager.USER_METADATA_SECTION, keyname, str(value))
+            self.metadata_mgr.flush()
+        except MetadataMgrException as me:
+            log.error(f"Failed to set user metadata key={keyname} value={value} on subvolume={self.subvol_name} "
+                      f"group={self.group_name} reason={me.args[1]}, errno:{-me.args[0]}, {os.strerror(-me.args[0])}")
+            raise VolumeException(-me.args[0], me.args[1])
 
     def get_user_metadata(self, keyname):
         try:
@@ -450,7 +466,9 @@ class SubvolumeBase(object):
             self.metadata_mgr.flush()
         except MetadataMgrException as me:
             if me.errno == -errno.ENOENT:
-                raise VolumeException(-errno.ENOENT, "subvolume metadata not does not exist")
+                raise VolumeException(-errno.ENOENT, "subvolume metadata does not exist")
+            log.error(f"Failed to remove user metadata key={keyname} on subvolume={self.subvol_name} "
+                      f"group={self.group_name} reason={me.args[1]}, errno:{-me.args[0]}, {os.strerror(-me.args[0])}")
             raise VolumeException(-me.args[0], me.args[1])
 
     def get_snap_section_name(self, snapname):
@@ -458,10 +476,16 @@ class SubvolumeBase(object):
         return section;
 
     def set_snapshot_metadata(self, snapname, keyname, value):
-        section = self.get_snap_section_name(snapname)
-        self.metadata_mgr.add_section(section)
-        self.metadata_mgr.update_section(section, keyname, str(value))
-        self.metadata_mgr.flush()
+        try:
+            section = self.get_snap_section_name(snapname)
+            self.metadata_mgr.add_section(section)
+            self.metadata_mgr.update_section(section, keyname, str(value))
+            self.metadata_mgr.flush()
+        except MetadataMgrException as me:
+            log.error(f"Failed to set snapshot metadata key={keyname} value={value} on snap={snapname} "
+                      f"subvolume={self.subvol_name} group={self.group_name} "
+                      f"reason={me.args[1]}, errno:{-me.args[0]}, {os.strerror(-me.args[0])}")
+            raise VolumeException(-me.args[0], me.args[1])
 
     def get_snapshot_metadata(self, snapname, keyname):
         try:
@@ -469,6 +493,9 @@ class SubvolumeBase(object):
         except MetadataMgrException as me:
             if me.errno == -errno.ENOENT:
                 raise VolumeException(-errno.ENOENT, "key '{0}' does not exist.".format(keyname))
+            log.error(f"Failed to get snapshot metadata key={keyname} on snap={snapname} "
+                      f"subvolume={self.subvol_name} group={self.group_name} "
+                      f"reason={me.args[1]}, errno:{-me.args[0]}, {os.strerror(-me.args[0])}")
             raise VolumeException(-me.args[0], me.args[1])
         return value
 
@@ -484,4 +511,7 @@ class SubvolumeBase(object):
         except MetadataMgrException as me:
             if me.errno == -errno.ENOENT:
                 raise VolumeException(-errno.ENOENT, "snapshot metadata not does not exist")
+            log.error(f"Failed to remove snapshot metadata key={keyname} on snap={snapname} "
+                      f"subvolume={self.subvol_name} group={self.group_name} "
+                      f"reason={me.args[1]}, errno:{-me.args[0]}, {os.strerror(-me.args[0])}")
             raise VolumeException(-me.args[0], me.args[1])

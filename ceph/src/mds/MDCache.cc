@@ -6324,6 +6324,11 @@ void MDCache::identify_files_to_recover()
 {
   dout(10) << "identify_files_to_recover" << dendl;
   int count = 0;
+
+  // Clear the recover and check queues in case the monitor sends rejoin mdsmap twice.
+  rejoin_recover_q.clear();
+  rejoin_check_q.clear();
+
   for (auto &p : inode_map) {
     CInode *in = p.second;
     if (!in->is_auth())
@@ -7888,7 +7893,7 @@ bool MDCache::shutdown_pass()
 
   // (only do this once!)
   if (!mds->mdlog->is_capped()) {
-    dout(7) << "capping the log" << dendl;
+    dout(7) << "capping the mdlog" << dendl;
     mds->mdlog->cap();
   }
   

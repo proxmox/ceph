@@ -29,7 +29,7 @@ from ._interface import OrchestratorClientMixin, DeviceLightLoc, _cli_read_comma
     NoOrchestrator, OrchestratorValidationError, NFSServiceSpec, \
     RGWSpec, InventoryFilter, InventoryHost, HostSpec, CLICommandMeta, \
     ServiceDescription, DaemonDescription, IscsiServiceSpec, json_to_generic_spec, \
-    GenericSpec, DaemonDescriptionStatus, SNMPGatewaySpec, MDSSpec
+    GenericSpec, DaemonDescriptionStatus, SNMPGatewaySpec, MDSSpec, TunedProfileSpec
 
 
 def nice_delta(now: datetime.datetime, t: Optional[datetime.datetime], suffix: str = '') -> str:
@@ -452,6 +452,16 @@ class OrchestratorCli(OrchestratorClientMixin, MgrModule,
         raise_if_exception(completion)
 
         return HandleCommandResult(stdout=completion.result_str())
+
+    @_cli_write_command('orch host rescan')
+    def _host_rescan(self, hostname: str, with_summary: bool = False) -> HandleCommandResult:
+        """Perform a disk rescan on a host"""
+        completion = self.rescan_host(hostname)
+        raise_if_exception(completion)
+
+        if with_summary:
+            return HandleCommandResult(stdout=completion.result_str())
+        return HandleCommandResult(stdout=completion.result_str().split('.')[0])
 
     @_cli_read_command('orch device ls')
     def _list_devices(self,
@@ -1352,6 +1362,84 @@ Usage:
                 output += f"\nHost Parallelism: {result['workers']}"
         return HandleCommandResult(stdout=output)
 
+    @_cli_write_command('orch tuned-profile apply')
+    def _apply_tuned_profiles(self,
+                              profile_name: Optional[str] = None,
+                              placement: Optional[str] = None,
+                              settings: Optional[str] = None,
+                              no_overwrite: bool = False,
+                              inbuf: Optional[str] = None) -> HandleCommandResult:
+        """Add or update a tuned profile"""
+        usage = """Usage:
+  ceph orch tuned-profile apply -i <yaml spec>
+  ceph orch tuned-profile apply <profile_name> [--placement=<placement_string>] [--settings='option=value,option2=value2']
+        """
+        if inbuf:
+            if profile_name or placement or settings:
+                raise OrchestratorValidationError(usage)
+            yaml_objs: Iterator = yaml.safe_load_all(inbuf)
+            specs: List[TunedProfileSpec] = []
+            # YAML '---' document separator with no content generates
+            # None entries in the output. Let's skip them silently.
+            content = [o for o in yaml_objs if o is not None]
+            for spec in content:
+                specs.append(TunedProfileSpec.from_json(spec))
+        else:
+            if not profile_name:
+                raise OrchestratorValidationError(usage)
+            placement_spec = PlacementSpec.from_string(
+                placement) if placement else PlacementSpec(host_pattern='*')
+            settings_dict = {}
+            if settings:
+                settings_list = settings.split(',')
+                for setting in settings_list:
+                    if '=' not in setting:
+                        raise SpecValidationError('settings defined on cli for tuned profile must '
+                                                  + 'be of format "setting_name=value,setting_name2=value2" etc.')
+                    name, value = setting.split('=', 1)
+                    settings_dict[name.strip()] = value.strip()
+            tuned_profile_spec = TunedProfileSpec(
+                profile_name=profile_name, placement=placement_spec, settings=settings_dict)
+            specs = [tuned_profile_spec]
+        completion = self.apply_tuned_profiles(specs, no_overwrite)
+        res = raise_if_exception(completion)
+        return HandleCommandResult(stdout=res)
+
+    @_cli_write_command('orch tuned-profile rm')
+    def _rm_tuned_profiles(self, profile_name: str) -> HandleCommandResult:
+        completion = self.rm_tuned_profile(profile_name)
+        res = raise_if_exception(completion)
+        return HandleCommandResult(stdout=res)
+
+    @_cli_read_command('orch tuned-profile ls')
+    def _tuned_profile_ls(self, format: Format = Format.plain) -> HandleCommandResult:
+        completion = self.tuned_profile_ls()
+        profiles: List[TunedProfileSpec] = raise_if_exception(completion)
+        if format != Format.plain:
+            return HandleCommandResult(stdout=to_format(profiles, format, many=True, cls=TunedProfileSpec))
+        else:
+            out = ''
+            for profile in profiles:
+                out += f'profile_name: {profile.profile_name}\n'
+                out += f'placement: {profile.placement.pretty_str()}\n'
+                out += 'settings:\n'
+                for k, v in profile.settings.items():
+                    out += f'  {k}: {v}\n'
+                out += '---\n'
+            return HandleCommandResult(stdout=out)
+
+    @_cli_write_command('orch tuned-profile add-setting')
+    def _tuned_profile_add_setting(self, profile_name: str, setting: str, value: str) -> HandleCommandResult:
+        completion = self.tuned_profile_add_setting(profile_name, setting, value)
+        res = raise_if_exception(completion)
+        return HandleCommandResult(stdout=res)
+
+    @_cli_write_command('orch tuned-profile rm-setting')
+    def _tuned_profile_rm_setting(self, profile_name: str, setting: str) -> HandleCommandResult:
+        completion = self.tuned_profile_rm_setting(profile_name, setting)
+        res = raise_if_exception(completion)
+        return HandleCommandResult(stdout=res)
+
     def self_test(self) -> None:
         old_orch = self._select_orchestrator()
         self._set_backend('')
@@ -1421,6 +1509,7 @@ Usage:
             'services_complete': status.services_complete,
             'progress': status.progress,
             'message': status.message,
+            'is_paused': status.is_paused,
         }
         out = json.dumps(r, indent=4)
         return HandleCommandResult(stdout=out)

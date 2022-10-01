@@ -2238,8 +2238,15 @@ void MDSRankDispatcher::handle_mds_map(
   // I am only to be passed MDSMaps in which I hold a rank
   ceph_assert(whoami != MDS_RANK_NONE);
 
-  MDSMap::DaemonState oldstate = state;
   mds_gid_t mds_gid = mds_gid_t(monc->get_global_id());
+  MDSMap::DaemonState oldstate = oldmap.get_state_gid(mds_gid);
+  if (oldstate == MDSMap::STATE_NULL) {
+    // monitor may skip sending me the STANDBY map (e.g. if paxos_propose_interval is high)
+    // Assuming I have passed STANDBY state if I got a rank in the first map.
+    oldstate = MDSMap::STATE_STANDBY;
+  }
+  // I should not miss map update
+  ceph_assert(state == oldstate);
   state = mdsmap->get_state_gid(mds_gid);
   if (state != oldstate) {
     last_state = oldstate;
@@ -3506,7 +3513,7 @@ void MDSRankDispatcher::handle_osd_map()
   // reconnect state will journal blocklisted clients (journal
   // is opened for writing in `replay_done` before moving to
   // up:resolve).
-  if (!is_replay()) {
+  if (!is_any_replay()) {
     std::set<entity_addr_t> newly_blocklisted;
     objecter->consume_blocklist_events(&newly_blocklisted);
     auto epoch = objecter->with_osdmap([](const OSDMap &o){return o.get_epoch();});

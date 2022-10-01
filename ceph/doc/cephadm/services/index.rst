@@ -86,7 +86,20 @@ Service Specification
 =====================
 
 A *Service Specification* is a data structure that is used to specify the
-deployment of services.  Here is an example of a service specification in YAML:
+deployment of services. In addition to parameters such as `placement` or
+`networks`, the user can set initial values of service configuration parameters
+by means of the `config` section. For each param/value configuration pair,
+cephadm calls the following command to set its value:
+
+   .. prompt:: bash #
+
+    ceph config set <service-name> <param> <value>
+
+cephadm raises health warnings in case invalid configuration parameters are
+found in the spec (`CEPHADM_INVALID_CONFIG_OPTION`) or if any error while
+trying to apply the new configuration option(s) (`CEPHADM_FAILED_SET_OPTION`).
+
+Here is an example of a service specification in YAML:
 
 .. code-block:: yaml
 
@@ -97,6 +110,10 @@ deployment of services.  Here is an example of a service specification in YAML:
         - host1
         - host2
         - host3
+    config:
+      param_1: val_1
+      ...
+      param_N: val_N
     unmanaged: false
     networks:
     - 192.169.142.0/24
@@ -414,7 +431,7 @@ Cephadm supports the deployment of multiple daemons on the same host:
     service_type: rgw
     placement:
       label: rgw
-      count-per-host: 2
+      count_per_host: 2
 
 The main reason for deploying multiple daemons per host is an additional
 performance benefit for running multiple RGW and MDS daemons on the same host.
@@ -504,6 +521,57 @@ a spec like
       -  "--cpus=2"
 
 which would cause each mon daemon to be deployed with `--cpus=2`.
+
+Custom Config Files
+===================
+
+Cephadm supports specifying miscellaneous config files for daemons.
+To do so, users must provide both the content of the config file and the
+location within the daemon's container at which it should be mounted. After
+applying a YAML spec with custom config files specified and having cephadm
+redeploy the daemons for which the config files are specified, these files will
+be mounted within the daemon's container at the specified location.
+
+Example service spec:
+
+.. code-block:: yaml
+
+    service_type: grafana
+    service_name: grafana
+    custom_configs:
+      - mount_path: /etc/example.conf
+        content: |
+          setting1 = value1
+          setting2 = value2
+      - mount_path: /usr/share/grafana/example.cert
+        content: |
+          -----BEGIN PRIVATE KEY-----
+          V2VyIGRhcyBsaWVzdCBpc3QgZG9vZi4gTG9yZW0gaXBzdW0gZG9sb3Igc2l0IGFt
+          ZXQsIGNvbnNldGV0dXIgc2FkaXBzY2luZyBlbGl0ciwgc2VkIGRpYW0gbm9udW15
+          IGVpcm1vZCB0ZW1wb3IgaW52aWR1bnQgdXQgbGFib3JlIGV0IGRvbG9yZSBtYWdu
+          YSBhbGlxdXlhbSBlcmF0LCBzZWQgZGlhbSB2b2x1cHR1YS4gQXQgdmVybyBlb3Mg
+          ZXQgYWNjdXNhbSBldCBqdXN0byBkdW8=
+          -----END PRIVATE KEY-----
+          -----BEGIN CERTIFICATE-----
+          V2VyIGRhcyBsaWVzdCBpc3QgZG9vZi4gTG9yZW0gaXBzdW0gZG9sb3Igc2l0IGFt
+          ZXQsIGNvbnNldGV0dXIgc2FkaXBzY2luZyBlbGl0ciwgc2VkIGRpYW0gbm9udW15
+          IGVpcm1vZCB0ZW1wb3IgaW52aWR1bnQgdXQgbGFib3JlIGV0IGRvbG9yZSBtYWdu
+          YSBhbGlxdXlhbSBlcmF0LCBzZWQgZGlhbSB2b2x1cHR1YS4gQXQgdmVybyBlb3Mg
+          ZXQgYWNjdXNhbSBldCBqdXN0byBkdW8=
+          -----END CERTIFICATE-----
+
+To make these new config files actually get mounted within the
+containers for the daemons
+
+.. prompt:: bash
+
+  ceph orch redeploy <service-name>
+
+For example:
+
+.. prompt:: bash
+
+  ceph orch redeploy grafana
 
 .. _orch-rm:
 
