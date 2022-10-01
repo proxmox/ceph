@@ -17,7 +17,7 @@ diff --git a/debian/rules b/debian/rules
 index 3ac923f71a..d9927b3e0d 100755
 --- a/debian/rules
 +++ b/debian/rules
-@@ -80,9 +80,7 @@ override_dh_auto_install:
+@@ -81,9 +81,7 @@ override_dh_auto_install:
  
  # doc/changelog is a directory, which confuses dh_installchangelogs
  override_dh_installchangelogs:

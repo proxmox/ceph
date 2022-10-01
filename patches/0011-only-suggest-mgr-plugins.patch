@@ -15,7 +15,7 @@ diff --git a/debian/control b/debian/control
 index e7a01c6ff8..692705c4c4 100644
 --- a/debian/control
 +++ b/debian/control
-@@ -238,11 +238,11 @@ Depends: ceph-base (= ${binary:Version}),
+@@ -242,11 +242,11 @@ Depends: ceph-base (= ${binary:Version}),
           ${misc:Depends},
           ${python:Depends},
           ${shlibs:Depends},

@@ -25,7 +25,7 @@ diff --git a/debian/rules b/debian/rules
 index b5ce42c6f3..00e9ac6b16 100755
 --- a/debian/rules
 +++ b/debian/rules
-@@ -103,7 +103,7 @@ override_dh_installinit:
+@@ -104,7 +104,7 @@ override_dh_installinit:
  
  	# NOTE: execute systemd helpers so they pickup dh_install'ed units and targets
  	dh_systemd_enable

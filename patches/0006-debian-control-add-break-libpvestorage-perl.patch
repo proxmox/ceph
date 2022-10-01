@@ -11,7 +11,7 @@ diff --git a/debian/control b/debian/control
 index 83dc414788..1cfa2250de 100644
 --- a/debian/control
 +++ b/debian/control
-@@ -153,6 +153,7 @@ Replaces: ceph (<< 10),
+@@ -154,6 +154,7 @@ Replaces: ceph (<< 10),
  Breaks: ceph (<< 10),
          ceph-test (<< 12.2.2-14),
          python-ceph (<< 0.92-1223),
@@ -19,7 +19,7 @@ index 83dc414788..1cfa2250de 100644
  Description: common ceph daemon libraries and management tools
   Ceph is a massively scalable, open-source, distributed
   storage system that runs on commodity hardware and delivers object,
-@@ -654,6 +654,7 @@ Breaks: ceph (<< 10),
+@@ -660,6 +661,7 @@ Breaks: ceph (<< 10),
          ceph-test (<< 9.0.3-1646),
          librbd1 (<< 0.92-1238),
          python-ceph (<< 0.92-1223),
