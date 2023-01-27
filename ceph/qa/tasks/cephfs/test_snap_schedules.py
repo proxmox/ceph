@@ -354,7 +354,7 @@ class TestSnapSchedules(CephFSTestCase):
         log.debug(f'snapshots: {snapshots}');
 
         result = self.fs_snap_schedule_cmd('status', path=dir_path,
-                                           snap_schedule='1M', format='json')
+                                           format='json')
         json_res = json.loads(result)[0]
         db_count = int(json_res['created_count'])
         log.debug(f'json_res: {json_res}')
@@ -438,8 +438,9 @@ class TestSnapSchedules(CephFSTestCase):
         self.fs_snap_schedule_cmd('deactivate', path=testdir, snap_schedule='1M')
 
         new_stats = self.get_snap_stats(testdir)
-        self.assertTrue(new_stats['fs_count'] == new_stats['db_count'] + old_stats['db_count'])
+        self.assertTrue(new_stats['fs_count'] == new_stats['db_count'])
         self.assertTrue(new_stats['fs_count'] > old_stats['fs_count'])
+        self.assertTrue(new_stats['db_count'] > old_stats['db_count'])
 
         # cleanup
         self.fs_snap_schedule_cmd('remove', path=testdir, snap_schedule='1M')

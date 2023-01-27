@@ -2173,7 +2173,7 @@ void MDCache::predirty_journal_parents(MutationRef mut, EMetaBlob *blob,
       if (do_parent_mtime) {
 	pf->fragstat.mtime = mut->get_op_stamp();
 	pf->fragstat.change_attr++;
-	dout(10) << "predirty_journal_parents bumping change_attr to " << pf->fragstat.change_attr << " on " << parent << dendl;
+	dout(10) << "predirty_journal_parents bumping fragstat change_attr to " << pf->fragstat.change_attr << " on " << parent << dendl;
 	if (pf->fragstat.mtime > pf->rstat.rctime) {
 	  dout(10) << "predirty_journal_parents updating mtime on " << *parent << dendl;
 	  pf->rstat.rctime = pf->fragstat.mtime;
@@ -2299,7 +2299,7 @@ void MDCache::predirty_journal_parents(MutationRef mut, EMetaBlob *blob,
       if (touched_mtime)
 	pi.inode->mtime = pi.inode->ctime = pi.inode->dirstat.mtime;
       if (touched_chattr)
-	pi.inode->change_attr = pi.inode->dirstat.change_attr;
+	pi.inode->change_attr++;
       dout(20) << "predirty_journal_parents     gives " << pi.inode->dirstat << " on " << *pin << dendl;
 
       if (parent->get_frag() == frag_t()) { // i.e., we are the only frag
@@ -3776,13 +3776,13 @@ void MDCache::trim_unlinked_inodes()
       q.push_back(in);
     }
 
-    if (!(++count % 1000))
+    if (!(++count % mds->heartbeat_reset_grace()))
       mds->heartbeat_reset();
   }
   for (auto& in : q) {
     remove_inode_recursive(in);
 
-    if (!(++count % 1000))
+    if (!(++count % mds->heartbeat_reset_grace()))
       mds->heartbeat_reset();
   }
 }
@@ -5426,7 +5426,7 @@ bool MDCache::process_imported_caps()
     } else {
       open_ino(p.first, (int64_t)-1, fin, false);
     }
-    if (!(cap_imports_num_opening % 1000))
+    if (!(cap_imports_num_opening % mds->heartbeat_reset_grace()))
       mds->heartbeat_reset();
   }
 
@@ -5610,7 +5610,7 @@ void MDCache::choose_lock_states_and_reconnect_caps()
       rejoin_pending_snaprealms.insert(in);
     }
 
-    if (!(++count % 1000))
+    if (!(++count % mds->heartbeat_reset_grace()))
       mds->heartbeat_reset();
   }
 }
@@ -5779,7 +5779,7 @@ void MDCache::export_remaining_imported_caps()
       }
     }
 
-    if (!(++count % 1000))
+    if (!(++count % mds->heartbeat_reset_grace()))
       mds->heartbeat_reset();
   }
 
@@ -6235,7 +6235,7 @@ void MDCache::reissue_all_caps()
 	n += mds->locker->issue_caps(in);
     }
 
-    if ((count % 1000) + n >= 1000)
+    if ((count % mds->heartbeat_reset_grace()) + n >= mds->heartbeat_reset_grace())
       mds->heartbeat_reset();
     count += n;
   }
@@ -6315,6 +6315,11 @@ void MDCache::identify_files_to_recover()
 {
   dout(10) << "identify_files_to_recover" << dendl;
   int count = 0;
+
+  // Clear the recover and check queues in case the monitor sends rejoin mdsmap twice.
+  rejoin_recover_q.clear();
+  rejoin_check_q.clear();
+
   for (auto &p : inode_map) {
     CInode *in = p.second;
     if (!in->is_auth())
@@ -6356,7 +6361,7 @@ void MDCache::identify_files_to_recover()
       rejoin_check_q.push_back(in);
     }
 
-    if (!(++count % 1000))
+    if (!(++count % mds->heartbeat_reset_grace()))
       mds->heartbeat_reset();
   }
 }
@@ -6368,13 +6373,13 @@ void MDCache::start_files_to_recover()
     if (in->filelock.get_state() == LOCK_XLOCKSNAP)
       mds->locker->issue_caps(in);
     mds->locker->check_inode_max_size(in);
-    if (!(++count % 1000))
+    if (!(++count % mds->heartbeat_reset_grace()))
       mds->heartbeat_reset();
   }
   rejoin_check_q.clear();
   for (CInode *in : rejoin_recover_q) {
     mds->locker->file_recover(&in->filelock);
-    if (!(++count % 1000))
+    if (!(++count % mds->heartbeat_reset_grace()))
       mds->heartbeat_reset();
   }
   if (!rejoin_recover_q.empty()) {
@@ -7879,7 +7884,7 @@ bool MDCache::shutdown_pass()
 
   // (only do this once!)
   if (!mds->mdlog->is_capped()) {
-    dout(7) << "capping the log" << dendl;
+    dout(7) << "capping the mdlog" << dendl;
     mds->mdlog->cap();
   }
   
@@ -8102,6 +8107,10 @@ void MDCache::dispatch(const cref_t<Message> &m)
   case MSG_MDS_DENTRYUNLINK:
     handle_dentry_unlink(ref_cast<MDentryUnlink>(m));
     break;
+  case MSG_MDS_DENTRYUNLINK_ACK:
+    handle_dentry_unlink_ack(ref_cast<MDentryUnlinkAck>(m));
+    break;
+
 
   case MSG_MDS_FRAGMENTNOTIFY:
     handle_fragment_notify(ref_cast<MMDSFragmentNotify>(m));
@@ -9317,6 +9326,19 @@ void MDCache::handle_find_ino(const cref_t<MMDSFindIno> &m)
   if (in) {
     in->make_path(r->path);
     dout(10) << " have " << r->path << " " << *in << dendl;
+
+    /*
+     * If the the CInode was just created by using openc in current
+     * auth MDS, but the client just sends a getattr request to another
+     * replica MDS. Then here it will make a path of '#INODE-NUMBER'
+     * only because the CInode hasn't been linked yet, and the replica
+     * MDS will keep retrying until the auth MDS flushes the mdlog and
+     * the C_MDS_openc_finish and link_primary_inode are called at most
+     * 5 seconds later.
+     */
+    if (!in->get_parent_dn() && in->is_auth()) {
+      mds->mdlog->flush();
+    }
   }
   mds->send_message_mds(r, mds_rank_t(m->get_source().num()));
 }
@@ -10778,7 +10800,7 @@ void MDCache::decode_replica_inode(CInode *&in, bufferlist::const_iterator& p, C
 void MDCache::encode_replica_stray(CDentry *straydn, mds_rank_t who, bufferlist& bl)
 {
   ceph_assert(straydn->get_num_auth_pins());
-  ENCODE_START(1, 1, bl);
+  ENCODE_START(2, 1, bl);
   uint64_t features = mds->mdsmap->get_up_features();
   encode_replica_inode(get_myin(), who, bl, features);
   encode_replica_dir(straydn->get_dir()->inode->get_parent_dn()->get_dir(), who, bl);
@@ -10786,15 +10808,18 @@ void MDCache::encode_replica_stray(CDentry *straydn, mds_rank_t who, bufferlist&
   encode_replica_inode(straydn->get_dir()->inode, who, bl, features);
   encode_replica_dir(straydn->get_dir(), who, bl);
   encode_replica_dentry(straydn, who, bl);
+  if (!straydn->get_projected_linkage()->is_null()) {
+    encode_replica_inode(straydn->get_projected_linkage()->get_inode(), who, bl, features);
+  }
   ENCODE_FINISH(bl);
 }
    
-void MDCache::decode_replica_stray(CDentry *&straydn, const bufferlist &bl, mds_rank_t from)
+void MDCache::decode_replica_stray(CDentry *&straydn, CInode **in, const bufferlist &bl, mds_rank_t from)
 {
   MDSContext::vec finished;
   auto p = bl.cbegin();
 
-  DECODE_START(1, p);
+  DECODE_START(2, p);
   CInode *mdsin = nullptr;
   decode_replica_inode(mdsin, p, NULL, finished);
   CDir *mdsdir = nullptr;
@@ -10807,6 +10832,9 @@ void MDCache::decode_replica_stray(CDentry *&straydn, const bufferlist &bl, mds_
   decode_replica_dir(straydir, p, strayin, from, finished);
 
   decode_replica_dentry(straydn, p, straydir, finished);
+  if (struct_v >= 2 && in) {
+    decode_replica_inode(*in, p, straydn, finished);
+  }
   if (!finished.empty())
     mds->queue_waiters(finished);
   DECODE_FINISH(p);
@@ -11001,7 +11029,8 @@ void MDCache::handle_dentry_link(const cref_t<MDentryLink> &m)
 
 // UNLINK
 
-void MDCache::send_dentry_unlink(CDentry *dn, CDentry *straydn, MDRequestRef& mdr)
+void MDCache::send_dentry_unlink(CDentry *dn, CDentry *straydn,
+                                 MDRequestRef& mdr, bool unlinking)
 {
   dout(10) << __func__ << " " << *dn << dendl;
   // share unlink news with replicas
@@ -11012,6 +11041,11 @@ void MDCache::send_dentry_unlink(CDentry *dn, CDentry *straydn, MDRequestRef& md
     straydn->list_replicas(replicas);
     CInode *strayin = straydn->get_linkage()->get_inode();
     strayin->encode_snap_blob(snapbl);
+  }
+
+  if (unlinking) {
+    ceph_assert(!straydn);
+    dn->replica_unlinking_ref = 0;
   }
   for (set<mds_rank_t>::iterator it = replicas.begin();
        it != replicas.end();
@@ -11025,12 +11059,21 @@ void MDCache::send_dentry_unlink(CDentry *dn, CDentry *straydn, MDRequestRef& md
 	 rejoin_gather.count(*it)))
       continue;
 
-    auto unlink = make_message<MDentryUnlink>(dn->get_dir()->dirfrag(), dn->get_name());
+    auto unlink = make_message<MDentryUnlink>(dn->get_dir()->dirfrag(),
+                                              dn->get_name(), unlinking);
     if (straydn) {
       encode_replica_stray(straydn, *it, unlink->straybl);
       unlink->snapbl = snapbl;
     }
     mds->send_message_mds(unlink, *it);
+    if (unlinking) {
+      dn->replica_unlinking_ref++;
+      dn->get(CDentry::PIN_WAITUNLINKSTATE);
+    }
+  }
+
+  if (unlinking && dn->replica_unlinking_ref) {
+    dn->add_waiter(CDentry::WAIT_UNLINK_STATE, new C_MDS_RetryRequest(this, mdr));
   }
 }
 
@@ -11038,23 +11081,41 @@ void MDCache::handle_dentry_unlink(const cref_t<MDentryUnlink> &m)
 {
   // straydn
   CDentry *straydn = nullptr;
+  CInode *strayin = nullptr;
+
   if (m->straybl.length())
-    decode_replica_stray(straydn, m->straybl, mds_rank_t(m->get_source().num()));
+    decode_replica_stray(straydn, &strayin, m->straybl, mds_rank_t(m->get_source().num()));
+
+  boost::intrusive_ptr<MDentryUnlinkAck> ack;
+  CDentry::linkage_t *dnl;
+  CDentry *dn;
+  CInode *in;
+  bool hadrealm;
 
   CDir *dir = get_dirfrag(m->get_dirfrag());
   if (!dir) {
     dout(7) << __func__ << " don't have dirfrag " << m->get_dirfrag() << dendl;
+    if (m->is_unlinking())
+      goto ack;
   } else {
-    CDentry *dn = dir->lookup(m->get_dn());
+    dn = dir->lookup(m->get_dn());
     if (!dn) {
       dout(7) << __func__ << " don't have dentry " << *dir << " dn " << m->get_dn() << dendl;
+      if (m->is_unlinking())
+        goto ack;
     } else {
       dout(7) << __func__ << " on " << *dn << dendl;
-      CDentry::linkage_t *dnl = dn->get_linkage();
+
+      if (m->is_unlinking()) {
+        dn->state_set(CDentry::STATE_UNLINKING);
+        goto ack;
+      }
+
+      dnl = dn->get_linkage();
 
       // open inode?
       if (dnl->is_primary()) {
-	CInode *in = dnl->get_inode();
+	in = dnl->get_inode();
 	dn->dir->unlink_inode(dn);
 	ceph_assert(straydn);
 	straydn->dir->link_primary_inode(straydn, in);
@@ -11065,11 +11126,12 @@ void MDCache::handle_dentry_unlink(const cref_t<MDentryUnlink> &m)
 	in->first = straydn->first;
 
 	// update subtree map?
-	if (in->is_dir()) 
+	if (in->is_dir()) {
 	  adjust_subtree_after_rename(in, dir, false);
+	}
 
 	if (m->snapbl.length()) {
-	  bool hadrealm = (in->snaprealm ? true : false);
+	  hadrealm = (in->snaprealm ? true : false);
 	  in->decode_snap_blob(m->snapbl);
 	  ceph_assert(in->snaprealm);
 	  if (!hadrealm)
@@ -11080,7 +11142,7 @@ void MDCache::handle_dentry_unlink(const cref_t<MDentryUnlink> &m)
 	if (in->is_any_caps() &&
 	    !in->state_test(CInode::STATE_EXPORTINGCAPS))
 	  migrator->export_caps(in);
-	
+
 	straydn = NULL;
       } else {
 	ceph_assert(!straydn);
@@ -11088,6 +11150,7 @@ void MDCache::handle_dentry_unlink(const cref_t<MDentryUnlink> &m)
 	dn->dir->unlink_inode(dn);
       }
       ceph_assert(dnl->is_null());
+      dn->state_clear(CDentry::STATE_UNLINKING);
     }
   }
 
@@ -11099,8 +11162,36 @@ void MDCache::handle_dentry_unlink(const cref_t<MDentryUnlink> &m)
     trim_dentry(straydn, ex);
     send_expire_messages(ex);
   }
+  return;
+
+ack:
+  ack = make_message<MDentryUnlinkAck>(m->get_dirfrag(), m->get_dn());
+  mds->send_message(ack, m->get_connection());
 }
 
+void MDCache::handle_dentry_unlink_ack(const cref_t<MDentryUnlinkAck> &m)
+{
+  CDir *dir = get_dirfrag(m->get_dirfrag());
+  if (!dir) {
+    dout(7) << __func__ << " don't have dirfrag " << m->get_dirfrag() << dendl;
+  } else {
+    CDentry *dn = dir->lookup(m->get_dn());
+    if (!dn) {
+      dout(7) << __func__ << " don't have dentry " << *dir << " dn " << m->get_dn() << dendl;
+    } else {
+      dout(7) << __func__ << " on " << *dn << " ref "
+	      << dn->replica_unlinking_ref << " -> "
+	      << dn->replica_unlinking_ref - 1 << dendl;
+      dn->replica_unlinking_ref--;
+      if (!dn->replica_unlinking_ref) {
+        MDSContext::vec finished;
+        dn->take_waiting(CDentry::WAIT_UNLINK_STATE, finished);
+        mds->queue_waiters(finished);
+      }
+      dn->put(CDentry::PIN_WAITUNLINKSTATE);
+    }
+  }
+}
 
 
 
@@ -12295,7 +12386,7 @@ void MDCache::force_readonly()
     CInode *in = p.second;
     if (in->is_head())
       mds->locker->eval(in, CEPH_CAP_LOCKS);
-    if (!(++count % 1000))
+    if (!(++count % mds->heartbeat_reset_grace()))
       mds->heartbeat_reset();
   }
 

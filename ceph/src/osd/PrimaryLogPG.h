@@ -557,7 +557,7 @@ public:
   }
   void send_message_osd_cluster(
     MessageRef m, Connection *con) override {
-    osd->send_message_osd_cluster(m, con);
+    osd->send_message_osd_cluster(std::move(m), con);
   }
   void send_message_osd_cluster(
     Message *m, const ConnectionRef& con) override {
@@ -1475,7 +1475,7 @@ protected:
   int do_cdc(const object_info_t& oi, std::map<uint64_t, chunk_info_t>& chunk_map,
 	     std::map<uint64_t, bufferlist>& chunks);
   int start_dedup(OpRequestRef op, ObjectContextRef obc);
-  hobject_t get_fpoid_from_chunk(const hobject_t soid, bufferlist& chunk);
+  std::pair<int, hobject_t> get_fpoid_from_chunk(const hobject_t soid, bufferlist& chunk);
   int finish_set_dedup(hobject_t oid, int r, ceph_tid_t tid, uint64_t offset);
 
   friend struct C_ProxyChunkRead;

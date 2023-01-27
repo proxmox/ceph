@@ -198,7 +198,7 @@ class SubvolumeV2(SubvolumeV1):
 
             if isinstance(e, MetadataMgrException):
                 log.error("metadata manager exception: {0}".format(e))
-                e = VolumeException(-errno.EINVAL, "exception in subvolume metadata")
+                e = VolumeException(-errno.EINVAL, f"exception in subvolume metadata: {os.strerror(-e.args[0])}")
             elif isinstance(e, cephfs.Error):
                 e = VolumeException(-e.args[0], e.args[1])
             raise e
@@ -252,7 +252,7 @@ class SubvolumeV2(SubvolumeV1):
 
             if isinstance(e, MetadataMgrException):
                 log.error("metadata manager exception: {0}".format(e))
-                e = VolumeException(-errno.EINVAL, "exception in subvolume metadata")
+                e = VolumeException(-errno.EINVAL, f"exception in subvolume metadata: {os.strerror(-e.args[0])}")
             elif isinstance(e, cephfs.Error):
                 e = VolumeException(-e.args[0], e.args[1])
             raise e
@@ -352,7 +352,7 @@ class SubvolumeV2(SubvolumeV1):
         # machine which removes the entry from the index. Hence, it's safe to removed clone with
         # force option for both.
         acceptable_rm_clone_states = [SubvolumeStates.STATE_COMPLETE, SubvolumeStates.STATE_CANCELED,
-                                      SubvolumeStates.STATE_FAILED]
+                                      SubvolumeStates.STATE_FAILED, SubvolumeStates.STATE_RETAINED]
         if subvol_state not in acceptable_rm_clone_states:
             return False
         return True
@@ -372,6 +372,7 @@ class SubvolumeV2(SubvolumeV1):
                 return
         if self.state != SubvolumeStates.STATE_RETAINED:
             self.trash_incarnation_dir()
+            self.metadata_mgr.remove_section(MetadataManager.USER_METADATA_SECTION)
             self.metadata_mgr.update_global_section(MetadataManager.GLOBAL_META_KEY_PATH, "")
             self.metadata_mgr.update_global_section(MetadataManager.GLOBAL_META_KEY_STATE, SubvolumeStates.STATE_RETAINED.value)
             self.metadata_mgr.flush()
@@ -384,8 +385,8 @@ class SubvolumeV2(SubvolumeV1):
 
         return {'type': self.subvol_type.value, 'features': self.features, 'state': SubvolumeStates.STATE_RETAINED.value}
 
-    def remove_snapshot(self, snapname):
-        super(SubvolumeV2, self).remove_snapshot(snapname)
+    def remove_snapshot(self, snapname, force=False):
+        super(SubvolumeV2, self).remove_snapshot(snapname, force)
         if self.purgeable:
             self.trash_base_dir()
             # tickle the volume purge job to purge this entry, using ESTALE

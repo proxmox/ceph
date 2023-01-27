@@ -1,15 +1,14 @@
 from ceph_volume.util import arg_validators, disk
 from ceph_volume import process, conf
 from ceph_volume import terminal
+from ceph_volume.devices.lvm.zap import Zap
 import argparse
 
-def valid_osd_id(val):
-    return str(int(val))
 
 def rollback_osd(args, osd_id=None):
     """
     When the process of creating or preparing fails, the OSD needs to be
-    destroyed so that the ID cane be reused.  This is prevents leaving the ID
+    destroyed so that the ID can be reused.  This prevents from leaving the ID
     around as "used" on the monitor, which can cause confusion if expecting
     sequential OSD IDs.
 
@@ -34,13 +33,14 @@ def rollback_osd(args, osd_id=None):
     ]
 
     process.run(cmd)
+    Zap(['--destroy', '--osd-id', osd_id]).main()
 
 
 common_args = {
     '--data': {
         'help': 'OSD data path. A physical device or logical volume',
         'required': True,
-        'type': arg_validators.ValidDevice(as_string=True),
+        'type': arg_validators.ValidDataDevice(as_string=True),
         #'default':,
         #'type':,
     },
@@ -58,7 +58,7 @@ common_args = {
     '--osd-id': {
         'help': 'Reuse an existing OSD id',
         'default': None,
-        'type': valid_osd_id,
+        'type': arg_validators.valid_osd_id,
     },
     '--osd-fsid': {
         'help': 'Reuse an existing OSD fsid',

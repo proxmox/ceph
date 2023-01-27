@@ -2024,10 +2024,11 @@ void CInode::decode_lock_inest(bufferlist::const_iterator& p)
 
 void CInode::encode_lock_ixattr(bufferlist& bl)
 {
-  ENCODE_START(1, 1, bl);
+  ENCODE_START(2, 1, bl);
   encode(get_inode()->version, bl);
   encode(get_inode()->ctime, bl);
   encode_xattrs(bl);
+  encode(get_inode()->xattr_version, bl);
   ENCODE_FINISH(bl);
 }
 
@@ -2035,13 +2036,16 @@ void CInode::decode_lock_ixattr(bufferlist::const_iterator& p)
 {
   ceph_assert(!is_auth());
   auto _inode = allocate_inode(*get_inode());
-  DECODE_START(1, p);
+  DECODE_START(2, p);
   decode(_inode->version, p);
   utime_t tm;
   decode(tm, p);
   if (_inode->ctime < tm)
     _inode->ctime = tm;
   decode_xattrs(p);
+  if (struct_v >= 2) {
+    decode(_inode->xattr_version, p);
+  }
   DECODE_FINISH(p);
   reset_inode(std::move(_inode));
 }
@@ -2519,7 +2523,8 @@ void CInode::finish_scatter_gather_update(int type, MutationRef& mut)
       if (touched_mtime)
 	pi->mtime = pi->ctime = pi->dirstat.mtime;
       if (touched_chattr)
-	pi->change_attr = pi->dirstat.change_attr;
+	pi->change_attr++;
+
       dout(20) << " final dirstat " << pi->dirstat << dendl;
 
       if (dirstat_valid && !dirstat.same_sums(pi->dirstat)) {
@@ -3775,7 +3780,9 @@ int CInode::encode_inodestat(bufferlist& bl, Session *session,
   dout(20) << " pfile " << pfile << " pauth " << pauth
 	   << " plink " << plink << " pxattr " << pxattr
 	   << " plocal " << plocal
+	   << " mtime " << any_i->mtime
 	   << " ctime " << any_i->ctime
+	   << " change_attr " << any_i->change_attr
 	   << " valid=" << valid << dendl;
 
   // file
@@ -4121,7 +4128,7 @@ void CInode::encode_cap_message(const ref_t<MClientCaps> &m, Capability *cap)
 
   dout(20) << __func__ << " pfile " << pfile
 	   << " pauth " << pauth << " plink " << plink << " pxattr " << pxattr
-	   << " ctime " << i->ctime << dendl;
+	   << " mtime " << i->mtime << " ctime " << i->ctime << " change_attr " << i->change_attr << dendl;
 
   i = pfile ? pi:oi;
   m->set_layout(i->layout);

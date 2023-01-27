@@ -4,17 +4,26 @@
 Host Management
 ===============
 
-To list hosts associated with the cluster:
+Listing Hosts
+=============
+
+Run a command of this form to list hosts associated with the cluster:
 
 .. prompt:: bash #
 
-    ceph orch host ls [--format yaml] [--host-pattern <name>] [--label <label>] [--host-status <status>]
+   ceph orch host ls [--format yaml] [--host-pattern <name>] [--label <label>] [--host-status <status>]
 
-where the optional arguments "host-pattern", "label" and "host-status" are used for filtering.
-"host-pattern" is a regex that will match against hostnames and will only return matching hosts
-"label" will only return hosts with the given label
-"host-status" will only return hosts with the given status (currently "offline" or "maintenance")
-Any combination of these filtering flags is valid. You may filter against name, label and/or status simultaneously
+In commands of this form, the arguments "host-pattern", "label" and
+"host-status" are optional and are used for filtering. 
+
+- "host-pattern" is a regex that matches against hostnames and returns only
+  matching hosts.
+- "label" returns only hosts with the specified label.
+- "host-status" returns only hosts with the specified status (currently
+  "offline" or "maintenance").
+- Any combination of these filtering flags is valid. It is possible to filter
+  against name, label and status simultaneously, or to filter against any
+  proper subset of name, label and status.
 
 .. _cephadm-adding-hosts:    
     
@@ -30,7 +39,7 @@ To add each new host to the cluster, perform two steps:
 
    .. prompt:: bash #
 
-    ssh-copy-id -f -i /etc/ceph/ceph.pub root@*<new-host>*
+      ssh-copy-id -f -i /etc/ceph/ceph.pub root@*<new-host>*
 
    For example:
 
@@ -43,7 +52,7 @@ To add each new host to the cluster, perform two steps:
 
    .. prompt:: bash #
 
-     ceph orch host add *<newhost>* [*<ip>*] [*<label1> ...*]
+      ceph orch host add *<newhost>* [*<ip>*] [*<label1> ...*]
 
    For example:
 
@@ -63,54 +72,60 @@ To add each new host to the cluster, perform two steps:
 
    .. prompt:: bash #
 
-       ceph orch host add host4 10.10.0.104 --labels _admin
+      ceph orch host add host4 10.10.0.104 --labels _admin
 
 .. _cephadm-removing-hosts:
 
 Removing Hosts
 ==============
 
-A host can safely be removed from a the cluster once all daemons are removed from it.
+A host can safely be removed from the cluster after all daemons are removed
+from it.
 
-To drain all daemons from a host do the following:
-
-.. prompt:: bash #
-
-  ceph orch host drain *<host>*
-
-The '_no_schedule' label will be applied to the host. See :ref:`cephadm-special-host-labels`
-
-All osds on the host will be scheduled to be removed. You can check osd removal progress with the following:
+To drain all daemons from a host, run a command of the following form:
 
 .. prompt:: bash #
 
-  ceph orch osd rm status
+   ceph orch host drain *<host>*
 
-see :ref:`cephadm-osd-removal` for more details about osd removal
+The ``_no_schedule`` label will be applied to the host. See
+:ref:`cephadm-special-host-labels`.
 
-You can check if there are no deamons left on the host with the following:
-
-.. prompt:: bash #
-
-  ceph orch ps <host> 
-
-Once all daemons are removed you can remove the host with the following:
+All OSDs on the host will be scheduled to be removed. You can check the progress of the OSD removal operation with the following command:
 
 .. prompt:: bash #
 
-  ceph orch host rm <host>
+   ceph orch osd rm status
+
+See :ref:`cephadm-osd-removal` for more details about OSD removal.
+
+Use the following command to determine whether any daemons are still on the
+host:
+
+.. prompt:: bash #
+
+   ceph orch ps <host> 
+
+After all daemons have been removed from the host, remove the host from the
+cluster by running the following command: 
+
+.. prompt:: bash #
+
+   ceph orch host rm <host>
 
 Offline host removal
 --------------------
 
-If a host is offline and can not be recovered it can still be removed from the cluster with the following:
+Even if a host is offline and can not be recovered, it can be removed from the
+cluster by running a command of the following form:
 
 .. prompt:: bash #
 
-  ceph orch host rm <host> --offline --force
+   ceph orch host rm <host> --offline --force
 
-This can potentially cause data loss as osds will be forcefully purged from the cluster by calling ``osd purge-actual`` for each osd.
-Service specs that still contain this host should be manually updated.
+.. warning:: This can potentially cause data loss. This command forcefully
+   purges OSDs from the cluster by calling ``osd purge-actual`` for each OSD.
+   Any service specs that still contain this host should be manually updated.
 
 .. _orchestrator-host-labels:
 
@@ -122,18 +137,24 @@ are free form and have no particular meaning by itself and each host
 can have multiple labels. They can be used to specify placement
 of daemons. See :ref:`orch-placement-by-labels`
 
-Labels can be added when adding a host with the ``--labels`` flag::
+Labels can be added when adding a host with the ``--labels`` flag:
 
-  ceph orch host add my_hostname --labels=my_label1
-  ceph orch host add my_hostname --labels=my_label1,my_label2
+.. prompt:: bash #
 
-To add a label a existing host, run::
+   ceph orch host add my_hostname --labels=my_label1
+   ceph orch host add my_hostname --labels=my_label1,my_label2
 
-  ceph orch host label add my_hostname my_label
+To add a label a existing host, run:
 
-To remove a label, run::
+.. prompt:: bash #
 
-  ceph orch host label rm my_hostname my_label
+   ceph orch host label add my_hostname my_label
+
+To remove a label, run:
+
+.. prompt:: bash #
+
+   ceph orch host label rm my_hostname my_label
 
 
 .. _cephadm-special-host-labels:
@@ -166,14 +187,38 @@ The following host labels have a special meaning to cephadm.  All start with ``_
 Maintenance Mode
 ================
 
-Place a host in and out of maintenance mode (stops all Ceph daemons on host)::
+Place a host in and out of maintenance mode (stops all Ceph daemons on host):
 
-    ceph orch host maintenance enter <hostname> [--force]
-    ceph orch host maintenance exit <hostname>
+.. prompt:: bash #
+
+   ceph orch host maintenance enter <hostname> [--force]
+   ceph orch host maintenance exit <hostname>
 
 Where the force flag when entering maintenance allows the user to bypass warnings (but not alerts)
 
 See also :ref:`cephadm-fqdn`
+
+Rescanning Host Devices
+=======================
+
+Some servers and external enclosures may not register device removal or insertion with the
+kernel. In these scenarios, you'll need to perform a host rescan. A rescan is typically
+non-disruptive, and can be performed with the following CLI command:
+
+.. prompt:: bash #
+
+   ceph orch host rescan <hostname> [--with-summary]
+
+The ``with-summary`` flag provides a breakdown of the number of HBAs found and scanned, together
+with any that failed:
+
+.. prompt:: bash [ceph:root@rh9-ceph1/]#
+
+   ceph orch host rescan rh9-ceph1 --with-summary
+   
+::
+
+   Ok. 2 adapters detected: 2 rescanned, 0 skipped, 0 failed (0.32s)
 
 Creating many hosts at once
 ===========================
@@ -241,26 +286,36 @@ connect to remote hosts.  When the cluster is bootstrapped, this SSH
 key is generated automatically and no additional configuration
 is necessary.
 
-A *new* SSH key can be generated with::
+A *new* SSH key can be generated with:
 
-  ceph cephadm generate-key
+.. prompt:: bash #
 
-The public portion of the SSH key can be retrieved with::
+   ceph cephadm generate-key
 
-  ceph cephadm get-pub-key
+The public portion of the SSH key can be retrieved with:
 
-The currently stored SSH key can be deleted with::
+.. prompt:: bash #
 
-  ceph cephadm clear-key
+   ceph cephadm get-pub-key
 
-You can make use of an existing key by directly importing it with::
+The currently stored SSH key can be deleted with:
 
-  ceph config-key set mgr/cephadm/ssh_identity_key -i <key>
-  ceph config-key set mgr/cephadm/ssh_identity_pub -i <pub>
+.. prompt:: bash #
 
-You will then need to restart the mgr daemon to reload the configuration with::
+   ceph cephadm clear-key
 
-  ceph mgr fail
+You can make use of an existing key by directly importing it with:
+
+.. prompt:: bash #
+
+   ceph config-key set mgr/cephadm/ssh_identity_key -i <key>
+   ceph config-key set mgr/cephadm/ssh_identity_pub -i <pub>
+
+You will then need to restart the mgr daemon to reload the configuration with:
+
+.. prompt:: bash #
+
+   ceph mgr fail
 
 .. _cephadm-ssh-user:
 
@@ -272,11 +327,13 @@ that has enough privileges to download container images, start containers
 and execute commands without prompting for a password. If you do not want
 to use the "root" user (default option in cephadm), you must provide
 cephadm the name of the user that is going to be used to perform all the
-cephadm operations. Use the command::
+cephadm operations. Use the command:
 
-  ceph cephadm set-user <user>
+.. prompt:: bash #
 
-Prior to running this the cluster ssh key needs to be added to this users
+   ceph cephadm set-user <user>
+
+Prior to running this the cluster SSH key needs to be added to this users
 authorized_keys file and non-root users must have passwordless sudo access.
 
 
@@ -295,17 +352,23 @@ something like this::
 There are two ways to customize this configuration for your environment:
 
 #. Import a customized configuration file that will be stored
-   by the monitor with::
+   by the monitor with:
 
-     ceph cephadm set-ssh-config -i <ssh_config_file>
+   .. prompt:: bash #
 
-   To remove a customized SSH config and revert back to the default behavior::
+      ceph cephadm set-ssh-config -i <ssh_config_file>
 
-     ceph cephadm clear-ssh-config
+   To remove a customized SSH config and revert back to the default behavior:
 
-#. You can configure a file location for the SSH configuration file with::
+   .. prompt:: bash #
 
-     ceph config set mgr mgr/cephadm/ssh_config_file <path>
+      ceph cephadm clear-ssh-config
+
+#. You can configure a file location for the SSH configuration file with:
+
+   .. prompt:: bash #
+
+      ceph config set mgr mgr/cephadm/ssh_config_file <path>
 
    We do *not recommend* this approach.  The path name must be
    visible to *any* mgr daemon, and cephadm runs all daemons as
@@ -370,4 +433,4 @@ requires the bare host name when adding a host to the cluster:
 
 ..
   TODO: This chapter needs to provide way for users to configure
-  Grafana in the dashboard, as this is right no very hard to do.
+  Grafana in the dashboard, as this is right now very hard to do.

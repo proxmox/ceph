@@ -538,6 +538,7 @@ MDSRank::MDSRank(
   server = new Server(this, &metrics_handler);
   locker = new Locker(this, mdcache);
 
+  _heartbeat_reset_grace = g_conf().get_val<uint64_t>("mds_heartbeat_reset_grace");
   heartbeat_grace = g_conf().get_val<double>("mds_heartbeat_grace");
   op_tracker.set_complaint_and_threshold(cct->_conf->mds_op_complaint_time,
                                          cct->_conf->mds_op_log_threshold);
@@ -1943,8 +1944,8 @@ void MDSRank::resolve_done()
 }
 
 void MDSRank::apply_blocklist(const std::set<entity_addr_t> &addrs, epoch_t epoch) {
-  auto victims = server->apply_blocklist(addrs);
-  dout(4) << __func__ << ": killed " << victims << " blocklisted sessions ("
+  auto victims = server->apply_blocklist();
+  dout(4) << __func__ << ": killed " << victims << ", blocklisted sessions ("
           << addrs.size() << " blocklist entries, "
           << sessionmap.get_sessions().size() << ")" << dendl;
   if (victims) {
@@ -1965,9 +1966,10 @@ void MDSRank::reconnect_start()
   // into reconnect, so that we don't wait for them.
   objecter->enable_blocklist_events();
   std::set<entity_addr_t> blocklist;
+  std::set<entity_addr_t> range;
   epoch_t epoch = 0;
-  objecter->with_osdmap([&blocklist, &epoch](const OSDMap& o) {
-      o.get_blocklist(&blocklist);
+  objecter->with_osdmap([&blocklist, &range, &epoch](const OSDMap& o) {
+    o.get_blocklist(&blocklist, &range);
       epoch = o.get_epoch();
   });
 
@@ -2231,8 +2233,15 @@ void MDSRankDispatcher::handle_mds_map(
   // I am only to be passed MDSMaps in which I hold a rank
   ceph_assert(whoami != MDS_RANK_NONE);
 
-  MDSMap::DaemonState oldstate = state;
   mds_gid_t mds_gid = mds_gid_t(monc->get_global_id());
+  MDSMap::DaemonState oldstate = oldmap.get_state_gid(mds_gid);
+  if (oldstate == MDSMap::STATE_NULL) {
+    // monitor may skip sending me the STANDBY map (e.g. if paxos_propose_interval is high)
+    // Assuming I have passed STANDBY state if I got a rank in the first map.
+    oldstate = MDSMap::STATE_STANDBY;
+  }
+  // I should not miss map update
+  ceph_assert(state == oldstate);
   state = mdsmap->get_state_gid(mds_gid);
   if (state != oldstate) {
     last_state = oldstate;
@@ -3351,6 +3360,8 @@ void MDSRank::create_logger()
                             "exi", PerfCountersBuilder::PRIO_INTERESTING);
     mds_plb.add_u64_counter(l_mds_imported_inodes, "imported_inodes", "Imported inodes",
                             "imi", PerfCountersBuilder::PRIO_INTERESTING);
+    mds_plb.add_u64_counter(l_mds_slow_reply, "slow_reply", "Slow replies", "slr",
+                              PerfCountersBuilder::PRIO_INTERESTING);
 
     // caps msg stats
     mds_plb.add_u64_counter(l_mdss_handle_client_caps, "handle_client_caps",
@@ -3507,7 +3518,7 @@ void MDSRankDispatcher::handle_osd_map()
   // reconnect state will journal blocklisted clients (journal
   // is opened for writing in `replay_done` before moving to
   // up:resolve).
-  if (!is_replay()) {
+  if (!is_any_replay()) {
     std::set<entity_addr_t> newly_blocklisted;
     objecter->consume_blocklist_events(&newly_blocklisted);
     auto epoch = objecter->with_osdmap([](const OSDMap &o){return o.get_epoch();});
@@ -3749,6 +3760,7 @@ const char** MDSRankDispatcher::get_tracked_conf_keys() const
     "mds_recall_warning_decay_rate",
     "mds_request_load_average_decay_rate",
     "mds_session_cache_liveness_decay_rate",
+    "mds_heartbeat_reset_grace",
     "mds_heartbeat_grace",
     "mds_session_cap_acquisition_decay_rate",
     "mds_max_caps_per_client",
@@ -3766,6 +3778,9 @@ void MDSRankDispatcher::handle_conf_change(const ConfigProxy& conf, const std::s
 {
   // XXX with or without mds_lock!
 
+  if (changed.count("mds_heartbeat_reset_grace")) {
+    _heartbeat_reset_grace = conf.get_val<uint64_t>("mds_heartbeat_reset_grace");
+  }
   if (changed.count("mds_heartbeat_grace")) {
     heartbeat_grace = conf.get_val<double>("mds_heartbeat_grace");
   }

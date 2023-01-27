@@ -32,8 +32,32 @@
   in certain recovery scenarios, e.g., monitor database lost and rebuilt, and
   the restored file system is expected to have the same ID as before.
 
+>=16.2.11
+--------
+
+* Cephfs: The 'AT_NO_ATTR_SYNC' macro is deprecated, please use the standard
+  'AT_STATX_DONT_SYNC' macro. The 'AT_NO_ATTR_SYNC' macro will be removed in
+  the future.
+* Trimming of PGLog dups is now controlled by the size instead of the version.
+  This fixes the PGLog inflation issue that was happening when the on-line
+  (in OSD) trimming got jammed after a PG split operation. Also, a new off-line
+  mechanism has been added: `ceph-objectstore-tool` got `trim-pg-log-dups` op
+  that targets situations where OSD is unable to boot due to those inflated dups.
+  If that is the case, in OSD logs the "You can be hit by THE DUPS BUG" warning
+  will be visible.
+  Relevant tracker: https://tracker.ceph.com/issues/53729
+* RBD: `rbd device unmap` command gained `--namespace` option.  Support for
+  namespaces was added to RBD in Nautilus 14.2.0 and it has been possible to
+  map and unmap images in namespaces using the `image-spec` syntax since then
+  but the corresponding option available in most other commands was missing.
+
 >=16.2.8
 --------
+
+* RGW: The behavior for Multipart Upload was modified so that only 
+  CompleteMultipartUpload notification is sent at the end of the multipart upload. 
+  The POST notification at the beginning of the upload, and PUT notifications that 
+  were sent on each part are not sent anymore.
 
 * MON/MGR: Pools can now be created with `--bulk` flag. Any pools created with `bulk`
   will use a profile of the `pg_autoscaler` that provides more performance from the start.

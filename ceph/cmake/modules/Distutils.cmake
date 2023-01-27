@@ -65,14 +65,13 @@ function(distutils_add_cython_module target name src)
   # This little bit of magic wipes out __Pyx_check_single_interpreter()
   # Note: this is reproduced in distutils_install_cython_module
   list(APPEND cflags -D'void0=dead_function\(void\)')
-  list(APPEND cflags -D'__Pyx_check_single_interpreter\(ARG\)=ARG \#\# 0')
+  list(APPEND cflags -D'__Pyx_check_single_interpreter\(ARG\)=ARG\#\#0')
   set(PY_CC ${compiler_launcher} ${CMAKE_C_COMPILER} ${c_compiler_arg1} ${cflags})
   set(PY_CXX ${compiler_launcher} ${CMAKE_CXX_COMPILER} ${cxx_compiler_arg1})
   set(PY_LDSHARED ${link_launcher} ${CMAKE_C_COMPILER} ${c_compiler_arg1} "-shared")
 
-  set(suffix_var "EXT_SUFFIX")
   execute_process(COMMAND "${Python3_EXECUTABLE}" -c
-    "from distutils import sysconfig; print(sysconfig.get_config_var('${suffix_var}'))"
+    "import sysconfig; print(sysconfig.get_config_var('EXT_SUFFIX'))"
     RESULT_VARIABLE result
     OUTPUT_VARIABLE ext_suffix
     ERROR_VARIABLE error
@@ -113,7 +112,7 @@ function(distutils_install_cython_module name)
     set(ENV{LDSHARED} \"${PY_LDSHARED}\")
     set(ENV{CPPFLAGS} \"-iquote${CMAKE_SOURCE_DIR}/src/include
                         -D'void0=dead_function\(void\)' \
-                        -D'__Pyx_check_single_interpreter\(ARG\)=ARG \#\# 0'\")
+                        -D'__Pyx_check_single_interpreter\(ARG\)=ARG\#\#0'\")
     set(ENV{LDFLAGS} \"-L${CMAKE_LIBRARY_OUTPUT_DIRECTORY}\")
     set(ENV{CYTHON_BUILD_DIR} \"${CMAKE_CURRENT_BINARY_DIR}\")
     set(ENV{CEPH_LIBDIR} \"${CMAKE_LIBRARY_OUTPUT_DIRECTORY}\")

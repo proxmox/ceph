@@ -63,17 +63,29 @@ Parameters:
 Before invoking AssumeRoleWithWebIdentity, an OpenID Connect Provider entity (which the web application
 authenticates with), needs to be created in RGW.
 
-The trust between the IDP and the role is created by adding a Condition to the role trust policy, which
-allows access only to applications with the app id given in the trust policy document. The Condition
-is of the form::
+The trust between the IDP and the role is created by adding a condition to the role's trust policy, which
+allows access only to applications which satisfy the given condition.
+All claims of the JWT are supported in the condition of the role's trust policy.
+An example of a policy that uses the 'aud' claim in the condition is of the form::
 
     "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\"Principal\":{\"Federated\":[\"arn:aws:iam:::oidc-provider/<URL of IDP>\"]},\"Action\":[\"sts:AssumeRoleWithWebIdentity\"],\"Condition\":{\"StringEquals\":{\"<URL of IDP> :app_id\":\"<aud>\"\}\}\}\]\}"
 
-The app_id in the condition above must match the 'aud' field of the incoming token.
+The app_id in the condition above must match the 'aud' claim of the incoming token.
+
+An example of a policy that uses the 'sub' claim in the condition is of the form::
+
+    "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\"Principal\":{\"Federated\":[\"arn:aws:iam:::oidc-provider/<URL of IDP>\"]},\"Action\":[\"sts:AssumeRoleWithWebIdentity\"],\"Condition\":{\"StringEquals\":{\"<URL of IDP> :sub\":\"<sub>\"\}\}\}\]\}"
+
+Similarly, an example of a policy that uses 'azp' claim in the condition is of the form::
+
+    "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\"Principal\":{\"Federated\":[\"arn:aws:iam:::oidc-provider/<URL of IDP>\"]},\"Action\":[\"sts:AssumeRoleWithWebIdentity\"],\"Condition\":{\"StringEquals\":{\"<URL of IDP> :azp\":\"<azp>\"\}\}\}\]\}"
 
 A shadow user is created corresponding to every federated user. The user id is derived from the 'sub' field of the incoming web token.
 The user is created in a separate namespace - 'oidc' such that the user id doesn't clash with any other user ids in rgw. The format of the user id
 is - <tenant>$<user-namespace>$<sub> where user-namespace is 'oidc' for users that authenticate with oidc providers.
+
+RGW now supports Session tags that can be passed in the web token to AssumeRoleWithWebIdentity call. More information related to Session Tags can be found here
+:doc:`session-tags`.
 
 STS Configuration
 =================
@@ -94,6 +106,15 @@ Examples
 (that allows access to S3 resources), assuming a role to get temporary credentials and accessing s3 resources using
 those credentials. In this example, TESTER1 assumes a role created by TESTER, to access S3 resources owned by TESTER,
 according to the permission policy attached to the role.
+
+.. code-block:: console
+
+   radosgw-admin caps add --uid="TESTER" --caps="roles=*"
+
+2. The following is an example of the AssumeRole API call, which shows steps to create a role, assign a policy to it
+   (that allows access to S3 resources), assuming a role to get temporary credentials and accessing S3 resources using
+   those credentials. In this example, TESTER1 assumes a role created by TESTER, to access S3 resources owned by TESTER,
+   according to the permission policy attached to the role.
 
 .. code-block:: python
 

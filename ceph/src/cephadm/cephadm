@@ -104,7 +104,38 @@ You can invoke cephadm in two ways:
 """
 cached_stdin = None
 
+
 ##################################
+
+
+async def run_func(func: Callable, cmd: str) -> subprocess.CompletedProcess:
+    logger.debug(f'running function {func.__name__}, with parms: {cmd}')
+    response = func(cmd)
+    return response
+
+
+async def concurrent_tasks(func: Callable, cmd_list: List[str]) -> List[Any]:
+    tasks = []
+    for cmd in cmd_list:
+        tasks.append(run_func(func, cmd))
+
+    data = await asyncio.gather(*tasks)
+
+    return data
+
+
+class EndPoint:
+    """EndPoint representing an ip:port format"""
+
+    def __init__(self, ip: str, port: int) -> None:
+        self.ip = ip
+        self.port = port
+
+    def __str__(self) -> str:
+        return f'{self.ip}:{self.port}'
+
+    def __repr__(self) -> str:
+        return f'{self.ip}:{self.port}'
 
 
 class BaseConfig:
@@ -493,10 +524,11 @@ class Monitoring(object):
         cmd = daemon_type.replace('-', '_')
         code = -1
         err = ''
+        out = ''
         version = ''
         if daemon_type == 'alertmanager':
             for cmd in ['alertmanager', 'prometheus-alertmanager']:
-                _, err, code = call(ctx, [
+                out, err, code = call(ctx, [
                     ctx.container_engine.path, 'exec', container_id, cmd,
                     '--version'
                 ], verbosity=CallVerbosity.DEBUG)
@@ -504,12 +536,14 @@ class Monitoring(object):
                     break
             cmd = 'alertmanager'  # reset cmd for version extraction
         else:
-            _, err, code = call(ctx, [
+            out, err, code = call(ctx, [
                 ctx.container_engine.path, 'exec', container_id, cmd, '--version'
             ], verbosity=CallVerbosity.DEBUG)
-        if code == 0 and \
-                err.startswith('%s, version ' % cmd):
-            version = err.split(' ')[2]
+        if code == 0:
+            if err.startswith('%s, version ' % cmd):
+                version = err.split(' ')[2]
+            elif out.startswith('%s, version ' % cmd):
+                version = out.split(' ')[2]
         return version
 
 ##################################
@@ -878,8 +912,9 @@ class HAproxy(object):
     @staticmethod
     def get_sysctl_settings() -> List[str]:
         return [
-            '# IP forwarding',
+            '# IP forwarding and non-local bind',
             'net.ipv4.ip_forward = 1',
+            'net.ipv4.ip_nonlocal_bind = 1',
         ]
 
 ##################################
@@ -1210,16 +1245,17 @@ def port_in_use(ctx, port_num):
     ))
 
 
-def check_ip_port(ctx, ip, port):
-    # type: (CephadmContext, str, int) -> None
+def check_ip_port(ctx, ep):
+    # type: (CephadmContext, EndPoint) -> None
     if not ctx.skip_ping_check:
-        logger.info('Verifying IP %s port %d ...' % (ip, port))
-        if is_ipv6(ip):
+        logger.info(f'Verifying IP {ep.ip} port {ep.port} ...')
+        if is_ipv6(ep.ip):
             s = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
-            ip = unwrap_ipv6(ip)
+            ip = unwrap_ipv6(ep.ip)
         else:
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        attempt_bind(ctx, s, ip, port)
+            ip = ep.ip
+        attempt_bind(ctx, s, ip, ep.port)
 
 ##################################
 
@@ -2343,6 +2379,13 @@ def get_daemon_args(ctx, fsid, daemon_type, daemon_id):
                 if 'ports' in meta and meta['ports']:
                     port = meta['ports'][0]
             r += [f'--web.listen-address={ip}:{port}']
+            if daemon_type == 'prometheus':
+                config = get_parm(ctx.config_json)
+                retention_time = config.get('retention_time', '15d')
+                r += [f'--storage.tsdb.retention.time={retention_time}']
+                scheme = 'http'
+                host = get_fqdn()
+                r += [f'--web.external-url={scheme}://{host}:{port}']
         if daemon_type == 'alertmanager':
             config = get_parm(ctx.config_json)
             peers = config.get('peers', list())  # type: ignore
@@ -3850,6 +3893,7 @@ def check_subnet(subnets: str) -> Tuple[int, List[int], str]:
     subnet_list = subnets.split(',')
     for subnet in subnet_list:
         # ensure the format of the string is as expected address/netmask
+        subnet = subnet.strip()
         if not re.search(r'\/\d+$', subnet):
             rc = 1
             errors.append(f'{subnet} is not in CIDR format (address/netmask)')
@@ -3896,93 +3940,190 @@ def is_ipv6(address):
         return False
 
 
-def prepare_mon_addresses(
-    ctx: CephadmContext
-) -> Tuple[str, bool, Optional[str]]:
+def ip_in_subnets(ip_addr: str, subnets: str) -> bool:
+    """Determine if the ip_addr belongs to any of the subnets list."""
+    subnet_list = [x.strip() for x in subnets.split(',')]
+    for subnet in subnet_list:
+        ip_address = unwrap_ipv6(ip_addr) if is_ipv6(ip_addr) else ip_addr
+        if ipaddress.ip_address(ip_address) in ipaddress.ip_network(subnet):
+            return True
+    return False
+
+
+def parse_mon_addrv(addrv_arg: str) -> List[EndPoint]:
+    """Parse mon-addrv param into a list of mon end points."""
     r = re.compile(r':(\d+)$')
-    base_ip = ''
+    addrv_args = []
+    addr_arg = addrv_arg
+    if addr_arg[0] != '[' or addr_arg[-1] != ']':
+        raise Error(f'--mon-addrv value {addr_arg} must use square backets')
+
+    for addr in addr_arg[1: -1].split(','):
+        hasport = r.findall(addr)
+        if not hasport:
+            raise Error(f'--mon-addrv value {addr_arg} must include port number')
+        port_str = hasport[0]
+        addr = re.sub(r'^v\d+:', '', addr)  # strip off v1: or v2: prefix
+        base_ip = addr[0:-(len(port_str)) - 1]
+        addrv_args.append(EndPoint(base_ip, int(port_str)))
+
+    return addrv_args
+
+
+def parse_mon_ip(mon_ip: str) -> List[EndPoint]:
+    """Parse mon-ip param into a list of mon end points."""
+    r = re.compile(r':(\d+)$')
+    addrv_args = []
+    hasport = r.findall(mon_ip)
+    if hasport:
+        port_str = hasport[0]
+        base_ip = mon_ip[0:-(len(port_str)) - 1]
+        addrv_args.append(EndPoint(base_ip, int(port_str)))
+    else:
+        # No port provided: use fixed ports for ceph monitor
+        addrv_args.append(EndPoint(mon_ip, 3300))
+        addrv_args.append(EndPoint(mon_ip, 6789))
+
+    return addrv_args
+
+
+def build_addrv_params(addrv: List[EndPoint]) -> str:
+    """Convert mon end-points (ip:port) into the format: [v[1|2]:ip:port1]"""
+    if len(addrv) > 2:
+        raise Error('Detected a local mon-addrv list with more than 2 entries.')
+    port_to_ver: Dict[int, str] = {6789: 'v1', 3300: 'v2'}
+    addr_arg_list: List[str] = []
+    for ep in addrv:
+        if ep.port in port_to_ver:
+            ver = port_to_ver[ep.port]
+        else:
+            ver = 'v2'  # default mon protocol version if port is not provided
+            logger.warning(f'Using msgr2 protocol for unrecognized port {ep}')
+        addr_arg_list.append(f'{ver}:{ep.ip}:{ep.port}')
+
+    addr_arg = '[{0}]'.format(','.join(addr_arg_list))
+    return addr_arg
+
+
+def get_public_net_from_cfg(ctx: CephadmContext) -> Optional[str]:
+    """Get mon public network from configuration file."""
+    cp = read_config(ctx.config)
+    if not cp.has_option('global', 'public_network'):
+        return None
+
+    # Ensure all public CIDR networks are valid
+    public_network = cp.get('global', 'public_network').strip('"').strip("'")
+    rc, _, err_msg = check_subnet(public_network)
+    if rc:
+        raise Error(f'Invalid public_network {public_network} parameter: {err_msg}')
+
+    # Ensure all public CIDR networks are configured locally
+    configured_subnets = set([x.strip() for x in public_network.split(',')])
+    local_subnets = set([x[0] for x in list_networks(ctx).items()])
+    valid_public_net = False
+    for net in configured_subnets:
+        if net in local_subnets:
+            valid_public_net = True
+        else:
+            logger.warning(f'The public CIDR network {net} (from -c conf file) is not configured locally.')
+    if not valid_public_net:
+        raise Error(f'None of the public CIDR network(s) {configured_subnets} (from -c conf file) is configured locally.')
+
+    # Ensure public_network is compatible with the provided mon-ip (or mon-addrv)
+    if ctx.mon_ip:
+        if not ip_in_subnets(ctx.mon_ip, public_network):
+            raise Error(f'The provided --mon-ip {ctx.mon_ip} does not belong to any public_network(s) {public_network}')
+    elif ctx.mon_addrv:
+        addrv_args = parse_mon_addrv(ctx.mon_addrv)
+        for addrv in addrv_args:
+            if not ip_in_subnets(addrv.ip, public_network):
+                raise Error(f'The provided --mon-addrv {addrv.ip} ip does not belong to any public_network(s) {public_network}')
+
+    logger.debug(f'Using mon public network from configuration file {public_network}')
+    return public_network
+
+
+def infer_mon_network(ctx: CephadmContext, mon_eps: List[EndPoint]) -> Optional[str]:
+    """Infer mon public network from local network."""
+    # Make sure IP is configured locally, and then figure out the CIDR network
+    mon_networks = []
+    for net, ifaces in list_networks(ctx).items():
+        # build local_ips list for the specified network
+        local_ips: List[str] = []
+        for _, ls in ifaces.items():
+            local_ips.extend([ipaddress.ip_address(ip) for ip in ls])
+
+        # check if any of mon ips belong to this net
+        for mon_ep in mon_eps:
+            try:
+                if ipaddress.ip_address(unwrap_ipv6(mon_ep.ip)) in local_ips:
+                    mon_networks.append(net)
+                    logger.info(f'Mon IP `{mon_ep.ip}` is in CIDR network `{net}`')
+            except ValueError as e:
+                logger.warning(f'Cannot infer CIDR network for mon IP `{mon_ep.ip}` : {e}')
+
+    if not mon_networks:
+        raise Error('Cannot infer CIDR network. Pass --skip-mon-network to configure it later')
+    else:
+        logger.debug(f'Inferred mon public CIDR from local network configuration {mon_networks}')
+
+    mon_networks = list(set(mon_networks))  # remove duplicates
+    return ','.join(mon_networks)
+
+
+def prepare_mon_addresses(ctx: CephadmContext) -> Tuple[str, bool, Optional[str]]:
+    """Get mon public network configuration."""
     ipv6 = False
+    addrv_args: List[EndPoint] = []
+    mon_addrv: str = ''  # i.e: [v2:192.168.100.1:3300,v1:192.168.100.1:6789]
 
     if ctx.mon_ip:
         ipv6 = is_ipv6(ctx.mon_ip)
         if ipv6:
             ctx.mon_ip = wrap_ipv6(ctx.mon_ip)
-        hasport = r.findall(ctx.mon_ip)
-        if hasport:
-            port_str = hasport[0]
-            port = int(port_str)
-            if port == 6789:
-                addr_arg = '[v1:%s]' % ctx.mon_ip
-            elif port == 3300:
-                addr_arg = '[v2:%s]' % ctx.mon_ip
-            else:
-                logger.warning('Using msgr2 protocol for unrecognized port %d' %
-                               port)
-                addr_arg = '[v2:%s]' % ctx.mon_ip
-            base_ip = ctx.mon_ip[0:-(len(port_str)) - 1]
-            check_ip_port(ctx, base_ip, port)
-        else:
-            base_ip = ctx.mon_ip
-            addr_arg = '[v2:%s:3300,v1:%s:6789]' % (ctx.mon_ip, ctx.mon_ip)
-            check_ip_port(ctx, ctx.mon_ip, 3300)
-            check_ip_port(ctx, ctx.mon_ip, 6789)
+        addrv_args = parse_mon_ip(ctx.mon_ip)
+        mon_addrv = build_addrv_params(addrv_args)
     elif ctx.mon_addrv:
-        addr_arg = ctx.mon_addrv
-        if addr_arg[0] != '[' or addr_arg[-1] != ']':
-            raise Error('--mon-addrv value %s must use square backets' %
-                        addr_arg)
-        ipv6 = addr_arg.count('[') > 1
-        for addr in addr_arg[1:-1].split(','):
-            hasport = r.findall(addr)
-            if not hasport:
-                raise Error('--mon-addrv value %s must include port number' %
-                            addr_arg)
-            port_str = hasport[0]
-            port = int(port_str)
-            # strip off v1: or v2: prefix
-            addr = re.sub(r'^v\d+:', '', addr)
-            base_ip = addr[0:-(len(port_str)) - 1]
-            check_ip_port(ctx, base_ip, port)
+        ipv6 = ctx.mon_addrv.count('[') > 1
+        addrv_args = parse_mon_addrv(ctx.mon_addrv)
+        mon_addrv = ctx.mon_addrv
     else:
         raise Error('must specify --mon-ip or --mon-addrv')
-    logger.debug('Base mon IP is %s, final addrv is %s' % (base_ip, addr_arg))
 
+    if addrv_args:
+        for end_point in addrv_args:
+            check_ip_port(ctx, end_point)
+
+    logger.debug(f'Base mon IP(s) is {addrv_args}, mon addrv is {mon_addrv}')
     mon_network = None
     if not ctx.skip_mon_network:
-        # make sure IP is configured locally, and then figure out the
-        # CIDR network
-        errmsg = f'Cannot infer CIDR network for mon IP `{base_ip}`'
-        for net, ifaces in list_networks(ctx).items():
-            ips: List[str] = []
-            for iface, ls in ifaces.items():
-                ips.extend(ls)
-            try:
-                if ipaddress.ip_address(unwrap_ipv6(base_ip)) in \
-                        [ipaddress.ip_address(ip) for ip in ips]:
-                    mon_network = net
-                    logger.info(f'Mon IP `{base_ip}` is in CIDR network `{mon_network}`')
-                    break
-            except ValueError as e:
-                logger.warning(f'{errmsg}: {e}')
-        if not mon_network:
-            raise Error(f'{errmsg}: pass --skip-mon-network to configure it later')
+        mon_network = get_public_net_from_cfg(ctx) or infer_mon_network(ctx, addrv_args)
 
-    return (addr_arg, ipv6, mon_network)
+    return (mon_addrv, ipv6, mon_network)
 
 
 def prepare_cluster_network(ctx: CephadmContext) -> Tuple[str, bool]:
-    cluster_network = ''
-    ipv6_cluster_network = False
     # the cluster network may not exist on this node, so all we can do is
     # validate that the address given is valid ipv4 or ipv6 subnet
-    if ctx.cluster_network:
-        rc, versions, err_msg = check_subnet(ctx.cluster_network)
+    ipv6_cluster_network = False
+    cp = read_config(ctx.config)
+    cluster_network = ctx.cluster_network
+    if cluster_network is None and cp.has_option('global', 'cluster_network'):
+        cluster_network = cp.get('global', 'cluster_network').strip('"').strip("'")
+
+    if cluster_network:
+        cluser_nets = set([x.strip() for x in cluster_network.split(',')])
+        local_subnets = set([x[0] for x in list_networks(ctx).items()])
+        for net in cluser_nets:
+            if net not in local_subnets:
+                logger.warning(f'The cluster CIDR network {net} is not configured locally.')
+
+        rc, versions, err_msg = check_subnet(cluster_network)
         if rc:
             raise Error(f'Invalid --cluster-network parameter: {err_msg}')
-        cluster_network = ctx.cluster_network
         ipv6_cluster_network = True if 6 in versions else False
     else:
-        logger.info('- internal network (--cluster-network) has not '
+        logger.info('Internal network (--cluster-network) has not '
                     'been provided, OSD replication will default to '
                     'the public_network')
 
@@ -4247,6 +4388,9 @@ def prepare_ssh(
         args = ['orch', 'host', 'add', host]
         if ctx.mon_ip:
             args.append(unwrap_ipv6(ctx.mon_ip))
+        elif ctx.mon_addrv:
+            addrv_args = parse_mon_addrv(ctx.mon_addrv)
+            args.append(unwrap_ipv6(addrv_args[0].ip))
         cli(args)
     except RuntimeError as e:
         raise Error('Failed to add host <%s>: %s' % (host, e))
@@ -4456,7 +4600,7 @@ def _parse_yaml_docs(f: Iterable[str]) -> List[List[str]]:
     docs = []
     current_doc = []  # type: List[str]
     for line in f:
-        if '---' in line:
+        if re.search(r'^---\s+', line):
             if current_doc:
                 docs.append(current_doc)
             current_doc = []
@@ -4513,6 +4657,8 @@ def _distribute_ssh_keys(ctx: CephadmContext, host_spec: Dict[str, str], bootstr
 @default_image
 def command_bootstrap(ctx):
     # type: (CephadmContext) -> int
+
+    ctx.error_code = 0
 
     if not ctx.output_config:
         ctx.output_config = os.path.join(ctx.output_dir, 'ceph.conf')
@@ -4718,7 +4864,7 @@ def command_bootstrap(ctx):
     if not ctx.skip_dashboard:
         prepare_dashboard(ctx, uid, gid, cli, wait_for_mgr_restart)
 
-    if ctx.output_config == '/etc/ceph/ceph.conf' and not ctx.skip_admin_label:
+    if ctx.output_config == '/etc/ceph/ceph.conf' and not ctx.skip_admin_label and not ctx.no_minimize_config:
         logger.info('Enabling client.admin keyring and conf on hosts with "admin" label')
         try:
             cli(['orch', 'client-keyring', 'set', 'client.admin', 'label:_admin'])
@@ -4743,6 +4889,7 @@ def command_bootstrap(ctx):
             out = cli(['orch', 'apply', '-i', '/tmp/spec.yml'], extra_mounts=mounts)
             logger.info(out)
         except Exception:
+            ctx.error_code = -errno.EINVAL
             logger.info('\nApplying %s to cluster failed!\n' % ctx.apply_spec)
 
     # enable autotune for osd_memory_target
@@ -4766,7 +4913,7 @@ def command_bootstrap(ctx):
                 'For more information see:\n\n'
                 '\thttps://docs.ceph.com/en/pacific/mgr/telemetry/\n')
     logger.info('Bootstrap complete.')
-    return 0
+    return ctx.error_code
 
 ##################################
 
@@ -5178,19 +5325,19 @@ def command_ceph_volume(ctx):
 
 @infer_fsid
 def command_unit(ctx):
-    # type: (CephadmContext) -> None
+    # type: (CephadmContext) -> int
     if not ctx.fsid:
         raise Error('must pass --fsid to specify cluster')
 
     unit_name = get_unit_name_by_daemon_name(ctx, ctx.fsid, ctx.name)
 
-    call_throws(ctx, [
-        'systemctl',
-        ctx.command,
-        unit_name],
+    _, _, code = call(
+        ctx,
+        ['systemctl', ctx.command, unit_name],
         verbosity=CallVerbosity.VERBOSE,
         desc=''
     )
+    return code
 
 ##################################
 
@@ -5240,12 +5387,14 @@ def _list_ipv4_networks(ctx: CephadmContext) -> Dict[str, Dict[str, Set[str]]]:
 
 def _parse_ipv4_route(out: str) -> Dict[str, Dict[str, Set[str]]]:
     r = {}  # type: Dict[str, Dict[str, Set[str]]]
-    p = re.compile(r'^(\S+) dev (\S+) (.*)scope link (.*)src (\S+)')
+    p = re.compile(r'^(\S+) (?:via \S+)? ?dev (\S+) (.*)scope link (.*)src (\S+)')
     for line in out.splitlines():
         m = p.findall(line)
         if not m:
             continue
         net = m[0][0]
+        if '/' not in net:  # aggregate /32 mask for single host sub-networks
+            net += '/32'
         iface = m[0][1]
         ip = m[0][4]
         if net not in r:
@@ -5275,9 +5424,11 @@ def _parse_ipv6_route(routes: str, ips: str) -> Dict[str, Dict[str, Set[str]]]:
         if not m or m[0][0].lower() == 'default':
             continue
         net = m[0][0]
-        if '/' not in net:  # only consider networks with a mask
-            continue
+        if '/' not in net:  # aggregate /128 mask for single host sub-networks
+            net += '/128'
         iface = m[0][1]
+        if iface == 'lo':  # skip loopback devices
+            continue
         if net not in r:
             r[net] = {}
         if iface not in r[net]:
@@ -5297,7 +5448,7 @@ def _parse_ipv6_route(routes: str, ips: str) -> Dict[str, Dict[str, Set[str]]]:
         net = [n for n in r.keys()
                if ipaddress.ip_address(ip) in ipaddress.ip_network(n)]
         if net and iface in r[net[0]]:
-            assert(iface)
+            assert iface
             r[net[0]][iface].add(ip)
 
     return r
@@ -5359,14 +5510,22 @@ def list_daemons(ctx, detail=True, legacy_dir=None):
     # keep track of image digests
     seen_digests = {}   # type: Dict[str, List[str]]
 
-    # keep track of memory usage we've seen
+    # keep track of memory and cpu usage we've seen
     seen_memusage = {}  # type: Dict[str, int]
+    seen_cpuperc = {}  # type: Dict[str, str]
     out, err, code = call(
         ctx,
         [container_path, 'stats', '--format', '{{.ID}},{{.MemUsage}}', '--no-stream'],
         verbosity=CallVerbosity.DEBUG
     )
     seen_memusage_cid_len, seen_memusage = _parse_mem_usage(code, out)
+
+    out, err, code = call(
+        ctx,
+        [container_path, 'stats', '--format', '{{.ID}},{{.CPUPerc}}', '--no-stream'],
+        verbosity=CallVerbosity.DEBUG
+    )
+    seen_cpuperc_cid_len, seen_cpuperc = _parse_cpu_perc(code, out)
 
     # /var/lib/ceph
     if os.path.exists(data_dir):
@@ -5537,6 +5696,7 @@ def list_daemons(ctx, detail=True, legacy_dir=None):
                         val['container_image_digests'] = image_digests
                         if container_id:
                             val['memory_usage'] = seen_memusage.get(container_id[0:seen_memusage_cid_len])
+                            val['cpu_percentage'] = seen_cpuperc.get(container_id[0:seen_cpuperc_cid_len])
                         val['version'] = version
                         val['started'] = start_stamp
                         val['created'] = get_file_timestamp(
@@ -5546,7 +5706,6 @@ def list_daemons(ctx, detail=True, legacy_dir=None):
                             os.path.join(data_dir, fsid, j, 'unit.image'))
                         val['configured'] = get_file_timestamp(
                             os.path.join(data_dir, fsid, j, 'unit.configured'))
-
                     ls.append(val)
 
     return ls
@@ -5568,6 +5727,22 @@ def _parse_mem_usage(code: int, out: str) -> Tuple[int, Dict[str, int]]:
                 logger.info('unable to parse memory usage line\n>{}'.format(line))
                 pass
     return seen_memusage_cid_len, seen_memusage
+
+
+def _parse_cpu_perc(code: int, out: str) -> Tuple[int, Dict[str, str]]:
+    seen_cpuperc = {}
+    seen_cpuperc_cid_len = 0
+    if not code:
+        for line in out.splitlines():
+            (cid, cpuperc) = line.split(',')
+            try:
+                seen_cpuperc[cid] = cpuperc
+                if not seen_cpuperc_cid_len:
+                    seen_cpuperc_cid_len = len(cid)
+            except ValueError:
+                logger.info('unable to parse cpu percentage line\n>{}'.format(line))
+                pass
+    return seen_cpuperc_cid_len, seen_cpuperc
 
 
 def get_daemon_description(ctx, fsid, name, detail=False, legacy_dir=None):
@@ -5718,6 +5893,37 @@ class AdoptOsd(object):
 
         return osd_fsid, osd_type
 
+    def change_cluster_name(self) -> None:
+        logger.info('Attempting to convert osd cluster name to ceph . . .')
+        c = get_ceph_volume_container(
+            self.ctx,
+            args=['lvm', 'list', '{}'.format(self.osd_id), '--format=json'],
+        )
+        out, err, code = call_throws(self.ctx, c.run_cmd())
+        if code:
+            raise Exception(f'Failed to get list of LVs: {err}\nceph-volume failed with rc {code}')
+        try:
+            js = json.loads(out)
+            if not js:
+                raise RuntimeError(f'Failed to find osd.{self.osd_id}')
+            device: Optional[Dict[Any, Any]] = None
+            for d in js[self.osd_id]:
+                if d['type'] == 'block':
+                    device = d
+                    break
+            if not device:
+                raise RuntimeError(f'Failed to find block device for osd.{self.osd_id}')
+            vg = device['vg_name']
+            out, err, code = call_throws(self.ctx, ['lvchange', '--deltag', f'ceph.cluster_name={self.ctx.cluster}', vg])
+            if code:
+                raise RuntimeError(f"Can't delete tag ceph.cluster_name={self.ctx.cluster} on osd.{self.osd_id}.\nlvchange failed with rc {code}")
+            out, err, code = call_throws(self.ctx, ['lvchange', '--addtag', 'ceph.cluster_name=ceph', vg])
+            if code:
+                raise RuntimeError(f"Can't add tag ceph.cluster_name=ceph on osd.{self.osd_id}.\nlvchange failed with rc {code}")
+            logger.info('Successfully converted osd cluster name')
+        except (Exception, RuntimeError) as e:
+            logger.info(f'Failed to convert osd cluster name: {e}')
+
 
 def command_adopt_ceph(ctx, daemon_type, daemon_id, fsid):
     # type: (CephadmContext, str, str, str) -> None
@@ -5743,6 +5949,8 @@ def command_adopt_ceph(ctx, daemon_type, daemon_id, fsid):
             osd_fsid, osd_type = adopt_osd.check_offline_simple_osd()
         if not osd_fsid:
             raise Error('Unable to find OSD {}'.format(daemon_id))
+        elif ctx.cluster != 'ceph':
+            adopt_osd.change_cluster_name()
         logger.info('objectstore_type is %s' % osd_type)
         assert osd_type
         if osd_type == 'filestore':
@@ -6026,6 +6234,18 @@ def command_rm_daemon(ctx):
             CephadmDaemon.uninstall(ctx, ctx.fsid, daemon_type, daemon_id)
         call_throws(ctx, ['rm', '-rf', data_dir])
 
+    if 'tcp_ports' in ctx and ctx.tcp_ports is not None:
+        ports: List[int] = [int(p) for p in ctx.tcp_ports.split()]
+        try:
+            fw = Firewalld(ctx)
+            fw.close_ports(ports)
+            fw.apply_rules()
+        except RuntimeError as e:
+            # in case we cannot close the ports we will remove
+            # the daemon but keep them open.
+            logger.warning(f' Error when trying to close ports: {e}')
+
+
 ##################################
 
 
@@ -6058,7 +6278,7 @@ def _zap_osds(ctx: CephadmContext) -> None:
         raise Error(f'Invalid JSON in ceph-volume inventory: {e}')
 
     for i in ls:
-        matches = [lv.get('cluster_fsid') == ctx.fsid for lv in i.get('lvs', [])]
+        matches = [lv.get('cluster_fsid') == ctx.fsid and i.get('ceph_device') for lv in i.get('lvs', [])]
         if any(matches) and all(matches):
             _zap(ctx, i.get('path'))
         elif any(matches):
@@ -6391,7 +6611,7 @@ class Packager(object):
 
     def repo_gpgkey(self) -> Tuple[str, str]:
         if self.ctx.gpg_url:
-            return self.ctx.gpg_url
+            return self.ctx.gpg_url, 'manual'
         if self.stable or self.version:
             return 'https://download.ceph.com/keys/release.gpg', 'release'
         else:
@@ -6455,7 +6675,7 @@ class Apt(Packager):
         self.update()
 
     def rm_repo(self) -> None:
-        for name in ['autobuild', 'release']:
+        for name in ['autobuild', 'release', 'manual']:
             p = '/etc/apt/trusted.gpg.d/ceph.%s.gpg' % name
             if os.path.exists(p):
                 logger.info('Removing repo GPG key %s...' % p)
@@ -6539,6 +6759,7 @@ class YumDnf(Packager):
         'scientific': ('centos', 'el'),
         'rocky': ('centos', 'el'),
         'almalinux': ('centos', 'el'),
+        'ol': ('centos', 'el'),
         'fedora': ('fedora', 'fc'),
         'mariner': ('mariner', 'cm'),
     }
@@ -6842,6 +7063,50 @@ def command_install(ctx: CephadmContext) -> None:
     pkg = create_packager(ctx)
     pkg.install(ctx.packages)
 
+
+def command_rescan_disks(ctx: CephadmContext) -> str:
+
+    def probe_hba(scan_path: str) -> None:
+        """Tell the adapter to rescan"""
+        with open(scan_path, 'w') as f:
+            f.write('- - -')
+
+    cmd = ctx.func.__name__.replace('command_', '')
+    logger.info(f'{cmd}: starting')
+    start = time.time()
+
+    all_scan_files = glob('/sys/class/scsi_host/*/scan')
+    scan_files = []
+    skipped = []
+    for scan_path in all_scan_files:
+        adapter_name = os.path.basename(os.path.dirname(scan_path))
+        proc_name = read_file([os.path.join(os.path.dirname(scan_path), 'proc_name')])
+        if proc_name in ['unknown', 'usb-storage']:
+            skipped.append(os.path.basename(scan_path))
+            logger.info(f'{cmd}: rescan skipping incompatible host adapter {adapter_name} : {proc_name}')
+            continue
+
+        scan_files.append(scan_path)
+
+    if not scan_files:
+        logger.info(f'{cmd}: no compatible HBAs found')
+        return 'Ok. No compatible HBAs found'
+
+    responses = async_run(concurrent_tasks(probe_hba, scan_files))
+    failures = [r for r in responses if r]
+
+    logger.info(f'{cmd}: Complete. {len(scan_files)} adapters rescanned, {len(failures)} failures, {len(skipped)} skipped')
+
+    elapsed = time.time() - start
+    if failures:
+        plural = 's' if len(failures) > 1 else ''
+        if len(failures) == len(scan_files):
+            return f'Failed. All {len(scan_files)} rescan requests failed'
+        else:
+            return f'Partial. {len(scan_files) - len(failures)} successful, {len(failures)} failure{plural} against: {", ".join(failures)}'
+
+    return f'Ok. {len(all_scan_files)} adapters detected: {len(scan_files)} rescanned, {len(skipped)} skipped, {len(failures)} failed ({elapsed:.2f}s)'
+
 ##################################
 
 
@@ -7056,12 +7321,15 @@ class HostFacts():
 
     def _get_capacity(self, dev):
         # type: (str) -> int
-        """Determine the size of a given device"""
+        """Determine the size of a given device
+
+        The kernel always bases device size calculations based on a 512 byte
+        sector. For more information see
+        https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/tree/include/linux/types.h?h=v5.15.63#n120
+        """
         size_path = os.path.join('/sys/block', dev, 'size')
         size_blocks = int(read_file([size_path]))
-        blk_path = os.path.join('/sys/block', dev, 'queue', 'logical_block_size')
-        blk_count = int(read_file([blk_path]))
-        return size_blocks * blk_count
+        return size_blocks * 512
 
     def _get_capacity_by_type(self, rota='0'):
         # type: (str) -> int
@@ -8353,6 +8621,9 @@ def _get_parser():
         action=CustomValidation,
         help='daemon name (type.id)')
     parser_rm_daemon.add_argument(
+        '--tcp-ports',
+        help='List of tcp ports to close in the host firewall')
+    parser_rm_daemon.add_argument(
         '--fsid',
         required=True,
         help='cluster FSID')
@@ -8528,10 +8799,11 @@ def _get_parser():
         '--mon-id',
         required=False,
         help='mon id (default: local hostname)')
-    parser_bootstrap.add_argument(
+    group = parser_bootstrap.add_mutually_exclusive_group()
+    group.add_argument(
         '--mon-addrv',
         help='mon IPs (e.g., [v2:localipaddr:3300,v1:localipaddr:6789])')
-    parser_bootstrap.add_argument(
+    group.add_argument(
         '--mon-ip',
         help='mon IP')
     parser_bootstrap.add_argument(
@@ -8866,6 +9138,10 @@ def _get_parser():
         help='Maintenance action - enter maintenance, or exit maintenance')
     parser_maintenance.set_defaults(func=command_maintenance)
 
+    parser_disk_rescan = subparsers.add_parser(
+        'disk-rescan', help='rescan all HBAs to detect new/removed devices')
+    parser_disk_rescan.set_defaults(func=command_rescan_disks)
+
     return parser
 
 
@@ -8915,6 +9191,7 @@ def cephadm_init_logging(ctx: CephadmContext, args: List[str]) -> None:
     compress
     missingok
     notifempty
+    su root root
 }
 """)
 

@@ -173,6 +173,7 @@
 #define MSG_MDS_OPENINOREPLY       0x210
 #define MSG_MDS_SNAPUPDATE         0x211
 #define MSG_MDS_FRAGMENTNOTIFYACK  0x212
+#define MSG_MDS_DENTRYUNLINK_ACK   0x213
 #define MSG_MDS_LOCK               0x300 // 0x3xx are for locker of mds
 #define MSG_MDS_INODEFILECAPS      0x301
 
@@ -234,6 +235,9 @@
 #define MSG_MGR_CLOSE             0x708
 #define MSG_MGR_COMMAND           0x709
 #define MSG_MGR_COMMAND_REPLY     0x70a
+
+// *** ceph-mgr <-> MON daemons ***
+#define MSG_MGR_UPDATE     0x70b
 
 // ======================================================
 
@@ -541,6 +545,10 @@ extern Message *decode_message(CephContext *cct, int crcflags,
 class SafeMessage : public Message {
 public:
   using Message::Message;
+  bool is_a_client() const {
+    return get_connection()->get_peer_type() == CEPH_ENTITY_TYPE_CLIENT;
+  }
+
 private:
   using RefCountedObject::get;
   using RefCountedObject::put;

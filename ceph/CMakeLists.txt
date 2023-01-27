@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.10.2)
 # remove cmake/modules/FindPython* once 3.12 is required
 
 project(ceph
-  VERSION 16.2.10
+  VERSION 16.2.11
   LANGUAGES CXX C ASM)
 
 foreach(policy
@@ -36,7 +36,15 @@ if(WIN32)
   # the targeted Windows version. The availability of certain functions and
   # structures will depend on it.
   set(WIN32_WINNT "0x0A00" CACHE STRING "Targeted Windows version.")
-  add_definitions(-D_WIN32_WINNT=${WIN32_WINNT})
+  # In order to avoid known winpthread issues, we're using the boost
+  # shared mutex implementation.
+  # https://github.com/msys2/MINGW-packages/issues/3319
+  add_definitions(
+    -D_WIN32_WINNT=${WIN32_WINNT}
+    -DBOOST_THREAD_PROVIDES_GENERIC_SHARED_MUTEX_ON_WIN
+    -DBOOST_THREAD_V2_SHARED_MUTEX
+  )
+  set(Boost_THREADAPI "win32")
 endif()
 
 if(MINGW)

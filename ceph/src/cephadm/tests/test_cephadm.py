@@ -27,6 +27,9 @@ from .fixtures import (
     mock_bad_firewalld,
 )
 
+from pyfakefs import fake_filesystem
+from pyfakefs import fake_filesystem_unittest
+
 with mock.patch('builtins.open', create=True):
     from importlib.machinery import SourceFileLoader
     cd = SourceFileLoader('cephadm', 'cephadm').load_module()
@@ -111,7 +114,7 @@ class TestCephAdm(object):
             ('::', socket.AF_INET6),
         ):
             try:
-                cd.check_ip_port(ctx, address, 9100)
+                cd.check_ip_port(ctx, cd.EndPoint(address, 9100))
             except:
                 assert False
             else:
@@ -142,7 +145,7 @@ class TestCephAdm(object):
                 mock_socket_obj.bind.side_effect = side_effect
                 _socket.return_value = mock_socket_obj
                 try:
-                    cd.check_ip_port(ctx, address, 9100)
+                    cd.check_ip_port(ctx, cd.EndPoint(address, 9100))
                 except Exception as e:
                     assert isinstance(e, expected_exception)
                 else:
@@ -1025,7 +1028,7 @@ class TestMaintenance:
     @mock.patch('cephadm.call')
     @mock.patch('cephadm.systemd_target_state')
     def test_enter_failure_2(self, _target_state, _call, _listdir):
-        _call.side_effect = [('', '', 0), ('', '', 999)]
+        _call.side_effect = [('', '', 0), ('', '', 999), ('', '', 0), ('', '', 999)]
         _target_state.return_value = True
         ctx: cd.CephadmContext = cd.cephadm_init_ctx(
             ['host-maintenance', 'enter', '--fsid', TestMaintenance.fsid])
@@ -1052,7 +1055,7 @@ class TestMaintenance:
     @mock.patch('cephadm.systemd_target_state')
     @mock.patch('cephadm.target_exists')
     def test_exit_failure_2(self, _target_exists, _target_state, _call, _listdir):
-        _call.side_effect = [('', '', 0), ('', '', 999)]
+        _call.side_effect = [('', '', 0), ('', '', 999), ('', '', 0), ('', '', 999)]
         _target_state.return_value = False
         _target_exists.return_value = True
         ctx: cd.CephadmContext = cd.cephadm_init_ctx(
@@ -1090,6 +1093,15 @@ class TestMonitoring(object):
         _call.return_value = '', '{}, version 0.16.1'.format(daemon_type), 0
         version = cd.Monitoring.get_version(ctx, 'container_id', daemon_type)
         assert version == '0.16.1'
+
+    def test_prometheus_external_url(self):
+        ctx = cd.CephadmContext()
+        ctx.config_json = json.dumps({'files': {}, 'retention_time': '15d'})
+        daemon_type = 'prometheus'
+        daemon_id = 'home'
+        fsid = 'aaf5a720-13fe-4a3b-82b9-2d99b7fd9704'
+        args = cd.get_daemon_args(ctx, fsid, daemon_type, daemon_id)
+        assert any([x.startswith('--web.external-url=http://') for x in args])
 
     @mock.patch('cephadm.call')
     def test_get_version_node_exporter(self, _call):
@@ -2022,7 +2034,8 @@ class TestPull:
 class TestApplySpec:
 
     def test_parse_yaml(self, cephadm_fs):
-        yaml = '''service_type: host
+        yaml = '''---
+service_type: host
 hostname: vm-00
 addr: 192.168.122.44
 labels:
@@ -2034,16 +2047,46 @@ hostname: vm-01
 addr: 192.168.122.247
 labels:
  - grafana
----
+---      
 service_type: host
 hostname: vm-02
-addr: 192.168.122.165'''
+addr: 192.168.122.165
+---
+---      
+service_type: rgw
+service_id: myrgw
+spec:
+  rgw_frontend_ssl_certificate: |
+    -----BEGIN PRIVATE KEY-----
+    V2VyIGRhcyBsaWVzdCBpc3QgZG9vZi4gTG9yZW0gaXBzdW0gZG9sb3Igc2l0IGFt
+    ZXQsIGNvbnNldGV0dXIgc2FkaXBzY2luZyBlbGl0ciwgc2VkIGRpYW0gbm9udW15
+    IGVpcm1vZCB0ZW1wb3IgaW52aWR1bnQgdXQgbGFib3JlIGV0IGRvbG9yZSBtYWdu
+    YSBhbGlxdXlhbSBlcmF0LCBzZWQgZGlhbSB2b2x1cHR1YS4gQXQgdmVybyBlb3Mg
+    ZXQgYWNjdXNhbSBldCBqdXN0byBkdW8=
+    -----END PRIVATE KEY-----
+    -----BEGIN CERTIFICATE-----
+    V2VyIGRhcyBsaWVzdCBpc3QgZG9vZi4gTG9yZW0gaXBzdW0gZG9sb3Igc2l0IGFt
+    ZXQsIGNvbnNldGV0dXIgc2FkaXBzY2luZyBlbGl0ciwgc2VkIGRpYW0gbm9udW15
+    IGVpcm1vZCB0ZW1wb3IgaW52aWR1bnQgdXQgbGFib3JlIGV0IGRvbG9yZSBtYWdu
+    YSBhbGlxdXlhbSBlcmF0LCBzZWQgZGlhbSB2b2x1cHR1YS4gQXQgdmVybyBlb3Mg
+    ZXQgYWNjdXNhbSBldCBqdXN0byBkdW8=
+    -----END CERTIFICATE-----
+  ssl: true
+---  
+'''
 
         cephadm_fs.create_file('spec.yml', contents=yaml)
-
         retdic = [{'service_type': 'host', 'hostname': 'vm-00', 'addr': '192.168.122.44', 'labels': '- example1- example2'},
                   {'service_type': 'host', 'hostname': 'vm-01', 'addr': '192.168.122.247', 'labels': '- grafana'},
-                  {'service_type': 'host', 'hostname': 'vm-02', 'addr': '192.168.122.165'}]
+                  {'service_type': 'host', 'hostname': 'vm-02', 'addr': '192.168.122.165'},
+                  {'service_id': 'myrgw',
+                   'service_type': 'rgw',
+                   'spec':
+                   'rgw_frontend_ssl_certificate: |-----BEGIN PRIVATE '
+                   'KEY-----V2VyIGRhcyBsaWVzdCBpc3QgZG9vZi4gTG9yZW0gaXBzdW0gZG9sb3Igc2l0IGFtZXQsIGNvbnNldGV0dXIgc2FkaXBzY2luZyBlbGl0ciwgc2VkIGRpYW0gbm9udW15IGVpcm1vZCB0ZW1wb3IgaW52aWR1bnQgdXQgbGFib3JlIGV0IGRvbG9yZSBtYWduYSBhbGlxdXlhbSBlcmF0LCBzZWQgZGlhbSB2b2x1cHR1YS4gQXQgdmVybyBlb3MgZXQgYWNjdXNhbSBldCBqdXN0byBkdW8=-----END '
+                   'PRIVATE KEY----------BEGIN '
+                   'CERTIFICATE-----V2VyIGRhcyBsaWVzdCBpc3QgZG9vZi4gTG9yZW0gaXBzdW0gZG9sb3Igc2l0IGFtZXQsIGNvbnNldGV0dXIgc2FkaXBzY2luZyBlbGl0ciwgc2VkIGRpYW0gbm9udW15IGVpcm1vZCB0ZW1wb3IgaW52aWR1bnQgdXQgbGFib3JlIGV0IGRvbG9yZSBtYWduYSBhbGlxdXlhbSBlcmF0LCBzZWQgZGlhbSB2b2x1cHR1YS4gQXQgdmVybyBlb3MgZXQgYWNjdXNhbSBldCBqdXN0byBkdW8=-----END '
+                   'CERTIFICATE-----ssl: true'}]
 
         with open('spec.yml') as f:
             dic = cd.parse_yaml_objs(f)
@@ -2222,3 +2265,149 @@ class TestSNMPGateway:
             with pytest.raises(Exception) as e:
                 c = cd.get_container(ctx, fsid, 'snmp-gateway', 'daemon_id')
             assert str(e.value) == 'not a valid snmp version: V1'
+
+class TestNetworkValidation:
+
+    def test_ipv4_subnet(self):
+        rc, v, msg = cd.check_subnet('192.168.1.0/24')
+        assert rc == 0 and v[0] == 4
+
+    def test_ipv4_subnet_list(self):
+        rc, v, msg = cd.check_subnet('192.168.1.0/24,10.90.90.0/24')
+        assert rc == 0 and not msg
+
+    def test_ipv4_subnet_list_with_spaces(self):
+        rc, v, msg = cd.check_subnet('192.168.1.0/24, 10.90.90.0/24 ')
+        assert rc == 0 and not msg
+
+    def test_ipv4_subnet_badlist(self):
+        rc, v, msg = cd.check_subnet('192.168.1.0/24,192.168.1.1')
+        assert rc == 1 and msg
+
+    def test_ipv4_subnet_mixed(self):
+        rc, v, msg = cd.check_subnet('192.168.100.0/24,fe80::/64')
+        assert rc == 0 and v == [4,6]
+
+    def test_ipv6_subnet(self):
+        rc, v, msg = cd.check_subnet('fe80::/64')
+        assert rc == 0 and v[0] == 6
+
+    def test_subnet_mask_missing(self):
+        rc, v, msg = cd.check_subnet('192.168.1.58')
+        assert rc == 1 and msg
+
+    def test_subnet_mask_junk(self):
+        rc, v, msg = cd.check_subnet('wah')
+        assert rc == 1 and msg
+
+    def test_ip_in_subnet(self):
+        # valid ip and only one valid subnet
+        rc = cd.ip_in_subnets('192.168.100.1', '192.168.100.0/24')
+        assert rc is True
+
+        # valid ip and valid subnets list without spaces
+        rc = cd.ip_in_subnets('192.168.100.1', '192.168.100.0/24,10.90.90.0/24')
+        assert rc is True
+
+        # valid ip and valid subnets list with spaces
+        rc = cd.ip_in_subnets('10.90.90.2', '192.168.1.0/24, 192.168.100.0/24, 10.90.90.0/24')
+        assert rc is True
+
+        # valid ip that doesn't belong to any subnet
+        rc = cd.ip_in_subnets('192.168.100.2', '192.168.50.0/24, 10.90.90.0/24')
+        assert rc is False
+
+        # valid ip that doesn't belong to the subnet (only 14 hosts)
+        rc = cd.ip_in_subnets('192.168.100.20', '192.168.100.0/28')
+        assert rc is False
+
+        # valid ip and valid IPV6 network
+        rc = cd.ip_in_subnets('fe80::5054:ff:fef4:873a', 'fe80::/64')
+        assert rc is True
+
+        # valid wrapped ip and valid IPV6 network
+        rc = cd.ip_in_subnets('[fe80::5054:ff:fef4:873a]', 'fe80::/64')
+        assert rc is True
+
+        # valid ip and that doesn't belong to IPV6 network
+        rc = cd.ip_in_subnets('fe80::5054:ff:fef4:873a', '2001:db8:85a3::/64')
+        assert rc is False
+
+        # invalid IPv4 and valid subnets list
+        with pytest.raises(Exception):
+            rc = cd.ip_in_sublets('10.90.200.', '192.168.1.0/24, 192.168.100.0/24, 10.90.90.0/24')
+
+        # invalid IPv6 and valid subnets list
+        with pytest.raises(Exception):
+            rc = cd.ip_in_sublets('fe80:2030:31:24', 'fe80::/64')
+
+    @pytest.mark.parametrize("conf", [
+    """[global]
+public_network='1.1.1.0/24,2.2.2.0/24'
+cluster_network="3.3.3.0/24, 4.4.4.0/24"
+""",
+    """[global]
+public_network=" 1.1.1.0/24,2.2.2.0/24 "
+cluster_network=3.3.3.0/24, 4.4.4.0/24
+""",
+    """[global]
+    public_network= 1.1.1.0/24,  2.2.2.0/24 
+    cluster_network='3.3.3.0/24,4.4.4.0/24'
+"""])
+    @mock.patch('cephadm.list_networks')
+    def test_get_networks_from_conf(self, _list_networks, conf, cephadm_fs):
+        cephadm_fs.create_file('ceph.conf', contents=conf)
+        _list_networks.return_value = {'1.1.1.0/24': {'eth0': ['1.1.1.1']},
+                                       '2.2.2.0/24': {'eth1': ['2.2.2.2']},
+                                       '3.3.3.0/24': {'eth2': ['3.3.3.3']},
+                                       '4.4.4.0/24': {'eth3': ['4.4.4.4']}}
+        ctx = cd.CephadmContext()
+        ctx.config = 'ceph.conf'
+        ctx.mon_ip = '1.1.1.1'
+        ctx.cluster_network = None
+        # what the cephadm module does with the public network string is
+        # [x.strip() for x in out.split(',')]
+        # so we must make sure our output, through that alteration,
+        # generates correctly formatted networks
+        def _str_to_networks(s):
+            return [x.strip() for x in s.split(',')]
+        public_network = cd.get_public_net_from_cfg(ctx)
+        assert _str_to_networks(public_network) == ['1.1.1.0/24', '2.2.2.0/24']
+        cluster_network, ipv6 = cd.prepare_cluster_network(ctx)
+        assert not ipv6
+        assert _str_to_networks(cluster_network) == ['3.3.3.0/24', '4.4.4.0/24']
+
+class TestRescan(fake_filesystem_unittest.TestCase):
+
+    def setUp(self):
+        self.setUpPyfakefs()
+        if not fake_filesystem.is_root():
+            fake_filesystem.set_uid(0)
+
+        self.fs.create_dir('/sys/class')
+        self.ctx = cd.CephadmContext()
+        self.ctx.func = cd.command_rescan_disks
+
+    def test_no_hbas(self):
+        out = cd.command_rescan_disks(self.ctx)
+        assert out == 'Ok. No compatible HBAs found'
+
+    def test_success(self):
+        self.fs.create_file('/sys/class/scsi_host/host0/scan')
+        self.fs.create_file('/sys/class/scsi_host/host1/scan')
+        out = cd.command_rescan_disks(self.ctx)
+        assert out.startswith('Ok. 2 adapters detected: 2 rescanned, 0 skipped, 0 failed')
+
+    def test_skip_usb_adapter(self):
+        self.fs.create_file('/sys/class/scsi_host/host0/scan')
+        self.fs.create_file('/sys/class/scsi_host/host1/scan')
+        self.fs.create_file('/sys/class/scsi_host/host1/proc_name', contents='usb-storage')
+        out = cd.command_rescan_disks(self.ctx)
+        assert out.startswith('Ok. 2 adapters detected: 1 rescanned, 1 skipped, 0 failed')
+
+    def test_skip_unknown_adapter(self):
+        self.fs.create_file('/sys/class/scsi_host/host0/scan')
+        self.fs.create_file('/sys/class/scsi_host/host1/scan')
+        self.fs.create_file('/sys/class/scsi_host/host1/proc_name', contents='unknown')
+        out = cd.command_rescan_disks(self.ctx)
+        assert out.startswith('Ok. 2 adapters detected: 1 rescanned, 1 skipped, 0 failed')

@@ -45,7 +45,9 @@ def dashboard_exception_handler(handler, *args, **kwargs):
     try:
         with handle_rados_error(component=None):  # make the None controller the fallback.
             return handler(*args, **kwargs)
-    # Don't catch cherrypy.* Exceptions.
+    # pylint: disable=try-except-raise
+    except (cherrypy.HTTPRedirect, cherrypy.NotFound, cherrypy.HTTPError):
+        raise
     except (ViewCacheNoDataException, DashboardException) as error:
         logger.exception('Dashboard Exception')
         cherrypy.response.headers['Content-Type'] = 'application/json'
@@ -105,4 +107,12 @@ def handle_error(component, http_status_code=None):
     try:
         yield
     except Exception as e:  # pylint: disable=broad-except
+        raise DashboardException(e, component=component, http_status_code=http_status_code)
+
+
+@contextmanager
+def handle_custom_error(component, http_status_code=None, exceptions=()):
+    try:
+        yield
+    except exceptions as e:
         raise DashboardException(e, component=component, http_status_code=http_status_code)

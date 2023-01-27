@@ -471,7 +471,7 @@ public:
         if (ret < 0) {
           ldout(store->ctx(), 0) << "ERROR: list_op returned ret=" << ret
 				 << dendl;
-          return ret;
+          return false;
         }
       }
       delay();
@@ -1029,20 +1029,22 @@ public:
       return false;
     }
     if (o.is_delete_marker()) {
-      std::string nkn;
-      if (oc.next_key_name) nkn = *oc.next_key_name;
-      if (oc.next_has_same_name(o.key.name)) {
-	ldpp_dout(dpp, 7) << __func__ << "(): dm-check SAME: key=" << o.key
-		       << " next_key_name: %%" << nkn << "%% "
-		       << oc.wq->thr_name() << dendl;
-	return false;
-      } else {
-	ldpp_dout(dpp, 7) << __func__ << "(): dm-check DELE: key=" << o.key
-			 << " next_key_name: %%" << nkn << "%% "
-			 << oc.wq->thr_name() << dendl;
+      if (oc.next_key_name) {
+	std::string nkn = *oc.next_key_name;
+	if (oc.next_has_same_name(o.key.name)) {
+	  ldpp_dout(dpp, 7) << __func__ << "(): dm-check SAME: key=" << o.key
+			   << " next_key_name: %%" << nkn << "%% "
+			   << oc.wq->thr_name() << dendl;
+	  return false;
+	} else {
+	  ldpp_dout(dpp, 7) << __func__ << "(): dm-check DELE: key=" << o.key
+			   << " next_key_name: %%" << nkn << "%% "
+			   << oc.wq->thr_name() << dendl;
         *exp_time = real_clock::now();
         return true;
+	}
       }
+      return false;
     }
 
     auto& mtime = o.meta.mtime;

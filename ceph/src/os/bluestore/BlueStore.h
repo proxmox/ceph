@@ -2513,6 +2513,8 @@ private:
   void _deferred_submit_unlock(OpSequencer *osr);
   void _deferred_aio_finish(OpSequencer *osr);
   int _deferred_replay();
+  bool _eliminate_outdated_deferred(bluestore_deferred_transaction_t* deferred_txn,
+				    interval_set<uint64_t>& bluefs_extents);
 
 public:
   using mempool_dynamic_bitset =
@@ -2652,6 +2654,7 @@ public:
 
   int open_db_environment(KeyValueDB **pdb, bool to_repair);
   int close_db_environment();
+  BlueFS* get_bluefs();
 
   int write_meta(const std::string& key, const std::string& value) override;
   int read_meta(const std::string& key, std::string *value) override;

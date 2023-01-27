@@ -134,7 +134,7 @@ public:
   void find_idle_sessions();
 
   void kill_session(Session *session, Context *on_safe);
-  size_t apply_blocklist(const std::set<entity_addr_t> &blocklist);
+  size_t apply_blocklist();
   void journal_close_session(Session *session, int state, Context *on_safe);
 
   size_t get_num_pending_reclaim() const { return client_reclaim_gather.size(); }
@@ -187,6 +187,7 @@ public:
   void journal_allocated_inos(MDRequestRef& mdr, EMetaBlob *blob);
   void apply_allocated_inos(MDRequestRef& mdr, Session *session);
 
+  void _try_open_ino(MDRequestRef& mdr, int r, inodeno_t ino);
   CInode* rdlock_path_pin_ref(MDRequestRef& mdr, bool want_auth,
 			      bool no_want_auth=false);
   CDentry* rdlock_path_xlock_dentry(MDRequestRef& mdr, bool create,
@@ -232,6 +233,9 @@ public:
   void handle_client_removexattr(MDRequestRef& mdr);
 
   void handle_client_fsync(MDRequestRef& mdr);
+
+  bool is_unlink_pending(CDentry *dn);
+  void wait_for_pending_unlink(CDentry *dn, MDRequestRef& mdr);
 
   // open
   void handle_client_open(MDRequestRef& mdr);
@@ -487,6 +491,7 @@ private:
   set<client_t> client_reconnect_denied;  // clients whose reconnect msg have been denied .
 
   feature_bitset_t supported_features;
+  feature_bitset_t supported_metric_spec;
   feature_bitset_t required_client_features;
 
   bool forward_all_requests_to_auth = false;

@@ -86,7 +86,20 @@ Service Specification
 =====================
 
 A *Service Specification* is a data structure that is used to specify the
-deployment of services.  Here is an example of a service specification in YAML:
+deployment of services. In addition to parameters such as `placement` or
+`networks`, the user can set initial values of service configuration parameters
+by means of the `config` section. For each param/value configuration pair,
+cephadm calls the following command to set its value:
+
+   .. prompt:: bash #
+
+    ceph config set <service-name> <param> <value>
+
+cephadm raises health warnings in case invalid configuration parameters are
+found in the spec (`CEPHADM_INVALID_CONFIG_OPTION`) or if any error while
+trying to apply the new configuration option(s) (`CEPHADM_FAILED_SET_OPTION`).
+
+Here is an example of a service specification in YAML:
 
 .. code-block:: yaml
 
@@ -97,6 +110,10 @@ deployment of services.  Here is an example of a service specification in YAML:
         - host1
         - host2
         - host3
+    config:
+      param_1: val_1
+      ...
+      param_N: val_N
     unmanaged: false
     networks:
     - 192.169.142.0/24
@@ -414,7 +431,7 @@ Cephadm supports the deployment of multiple daemons on the same host:
     service_type: rgw
     placement:
       label: rgw
-      count-per-host: 2
+      count_per_host: 2
 
 The main reason for deploying multiple daemons per host is an additional
 performance benefit for running multiple RGW and MDS daemons on the same host.
@@ -501,9 +518,31 @@ a spec like
         - host2
         - host3
     extra_container_args:
-      -  "--cpus=2"
+      - "--cpus=2"
 
 which would cause each mon daemon to be deployed with `--cpus=2`.
+
+Mounting Files with Extra Container Arguments
+---------------------------------------------
+
+A common use case for extra container arguments is to mount additional
+files within the container. However, some intuitive formats for doing
+so can cause deployment to fail (see https://tracker.ceph.com/issues/57338).
+The recommended syntax for mounting a file with extra container arguments is:
+
+.. code-block:: yaml
+
+    extra_container_args:
+      - "-v"
+      - "/absolute/file/path/on/host:/absolute/file/path/in/container"
+
+For example:
+
+.. code-block:: yaml
+
+    extra_container_args:
+      - "-v"
+      - "/opt/ceph_cert/host.cert:/etc/grafana/certs/cert_file:ro"
 
 .. _orch-rm:
 

@@ -341,7 +341,7 @@ namespace rgw {
               << e.what() << dendl;
     }
     if (should_log) {
-      rgw_log_op(nullptr /* !rest */, s, (op ? op->name() : "unknown"), olog);
+      rgw_log_op(nullptr /* !rest */, s, op, olog);
     }
 
     int http_ret = s->err.http_ret;
@@ -600,7 +600,7 @@ namespace rgw {
       ops_log_file->start();
       olog_manifold->add_sink(ops_log_file);
     }
-    olog_manifold->add_sink(new OpsLogRados(store->getRados()));
+    olog_manifold->add_sink(new OpsLogRados(store));
     olog = olog_manifold;
 
     int port = 80;

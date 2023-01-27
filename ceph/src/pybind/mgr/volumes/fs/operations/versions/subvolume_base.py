@@ -3,7 +3,7 @@ import stat
 import uuid
 import errno
 import logging
-from hashlib import md5
+import hashlib
 from typing import Dict, Union
 from pathlib import Path
 
@@ -75,9 +75,16 @@ class SubvolumeBase(object):
 
     @property
     def legacy_config_path(self):
-        m = md5()
-        m.update(self.base_path)
-        meta_config = "{0}.meta".format(m.digest().hex())
+        try:
+            m = hashlib.md5(self.base_path)
+        except ValueError:
+            try:
+                m = hashlib.md5(self.base_path, usedforsecurity=False) # type: ignore
+            except TypeError:
+                raise VolumeException(-errno.EINVAL,
+                                      "require python's hashlib library to support usedforsecurity flag in FIPS enabled systems")
+
+        meta_config = "{0}.meta".format(m.hexdigest())
         return os.path.join(self.legacy_dir, meta_config.encode('utf-8'))
 
     @property
@@ -122,6 +129,10 @@ class SubvolumeBase(object):
     @property
     def purgeable(self):
         """ Boolean declaring if subvolume can be purged """
+        raise NotImplementedError
+
+    def clean_stale_snapshot_metadata(self):
+        """ Clean up stale snapshot metadata """
         raise NotImplementedError
 
     def load_config(self):
@@ -356,3 +367,83 @@ class SubvolumeBase(object):
             'bytes_quota': "infinite" if nsize == 0 else nsize, 'bytes_used': int(usedbytes),
             'bytes_pcent': "undefined" if nsize == 0 else '{0:.2f}'.format((float(usedbytes) / nsize) * 100.0),
             'pool_namespace': pool_namespace, 'features': self.features, 'state': self.state.value}
+
+    def set_user_metadata(self, keyname, value):
+        try:
+            self.metadata_mgr.add_section(MetadataManager.USER_METADATA_SECTION)
+            self.metadata_mgr.update_section(MetadataManager.USER_METADATA_SECTION, keyname, str(value))
+            self.metadata_mgr.flush()
+        except MetadataMgrException as me:
+            log.error(f"Failed to set user metadata key={keyname} value={value} on subvolume={self.subvol_name} "
+                      f"group={self.group_name} reason={me.args[1]}, errno:{-me.args[0]}, {os.strerror(-me.args[0])}")
+            raise VolumeException(-me.args[0], me.args[1])
+
+    def get_user_metadata(self, keyname):
+        try:
+            value = self.metadata_mgr.get_option(MetadataManager.USER_METADATA_SECTION, keyname)
+        except MetadataMgrException as me:
+            if me.errno == -errno.ENOENT:
+                raise VolumeException(-errno.ENOENT, "key '{0}' does not exist.".format(keyname))
+            raise VolumeException(-me.args[0], me.args[1])
+        return value
+
+    def list_user_metadata(self):
+        return self.metadata_mgr.list_all_options_from_section(MetadataManager.USER_METADATA_SECTION)
+
+    def remove_user_metadata(self, keyname):
+        try:
+            ret = self.metadata_mgr.remove_option(MetadataManager.USER_METADATA_SECTION, keyname)
+            if not ret:
+                raise VolumeException(-errno.ENOENT, "key '{0}' does not exist.".format(keyname))
+            self.metadata_mgr.flush()
+        except MetadataMgrException as me:
+            if me.errno == -errno.ENOENT:
+                raise VolumeException(-errno.ENOENT, "subvolume metadata does not exist")
+            log.error(f"Failed to remove user metadata key={keyname} on subvolume={self.subvol_name} "
+                      f"group={self.group_name} reason={me.args[1]}, errno:{-me.args[0]}, {os.strerror(-me.args[0])}")
+            raise VolumeException(-me.args[0], me.args[1])
+
+    def get_snap_section_name(self, snapname):
+        section = "SNAP_METADATA" + "_" + snapname;
+        return section;
+
+    def set_snapshot_metadata(self, snapname, keyname, value):
+        try:
+            section = self.get_snap_section_name(snapname)
+            self.metadata_mgr.add_section(section)
+            self.metadata_mgr.update_section(section, keyname, str(value))
+            self.metadata_mgr.flush()
+        except MetadataMgrException as me:
+            log.error(f"Failed to set snapshot metadata key={keyname} value={value} on snap={snapname} "
+                      f"subvolume={self.subvol_name} group={self.group_name} "
+                      f"reason={me.args[1]}, errno:{-me.args[0]}, {os.strerror(-me.args[0])}")
+            raise VolumeException(-me.args[0], me.args[1])
+
+    def get_snapshot_metadata(self, snapname, keyname):
+        try:
+            value = self.metadata_mgr.get_option(self.get_snap_section_name(snapname), keyname)
+        except MetadataMgrException as me:
+            if me.errno == -errno.ENOENT:
+                raise VolumeException(-errno.ENOENT, "key '{0}' does not exist.".format(keyname))
+            log.error(f"Failed to get snapshot metadata key={keyname} on snap={snapname} "
+                      f"subvolume={self.subvol_name} group={self.group_name} "
+                      f"reason={me.args[1]}, errno:{-me.args[0]}, {os.strerror(-me.args[0])}")
+            raise VolumeException(-me.args[0], me.args[1])
+        return value
+
+    def list_snapshot_metadata(self, snapname):
+        return self.metadata_mgr.list_all_options_from_section(self.get_snap_section_name(snapname))
+
+    def remove_snapshot_metadata(self, snapname, keyname):
+        try:
+            ret = self.metadata_mgr.remove_option(self.get_snap_section_name(snapname), keyname)
+            if not ret:
+                raise VolumeException(-errno.ENOENT, "key '{0}' does not exist.".format(keyname))
+            self.metadata_mgr.flush()
+        except MetadataMgrException as me:
+            if me.errno == -errno.ENOENT:
+                raise VolumeException(-errno.ENOENT, "snapshot metadata not does not exist")
+            log.error(f"Failed to remove snapshot metadata key={keyname} on snap={snapname} "
+                      f"subvolume={self.subvol_name} group={self.group_name} "
+                      f"reason={me.args[1]}, errno:{-me.args[0]}, {os.strerror(-me.args[0])}")
+            raise VolumeException(-me.args[0], me.args[1])

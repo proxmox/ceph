@@ -68,12 +68,13 @@ function main() {
     FOR_MAKE_CHECK=1 prepare
     # Init defaults after deps are installed.
     local cmake_opts=" -DWITH_PYTHON3=3 -DWITH_GTEST_PARALLEL=ON -DWITH_FIO=ON -DWITH_CEPHFS_SHELL=ON -DWITH_GRAFANA=ON -DWITH_SPDK=ON -DENABLE_GIT_VERSION=OFF"
-    if [ $WITH_SEASTAR ]; then
-        cmake_opts+=" -DWITH_SEASTAR=ON"
-    fi
     if [ $WITH_ZBD ]; then
         cmake_opts+=" -DWITH_ZBD=ON"
     fi
+    if [ $WITH_RBD_RWL ]; then
+        cmake_opts+=" -DWITH_RBD_RWL=ON"
+    fi
+    cmake_opts+=" -DWITH_RBD_SSD_CACHE=ON"
     in_jenkins && echo "CI_DEBUG: Our cmake_opts are: $cmake_opts
                         CI_DEBUG: Running ./configure"
     configure $cmake_opts $@
