@@ -13,7 +13,7 @@ diff --git a/debian/control b/debian/control
 index c93aa3c21..aa8edb3d2 100644
 --- a/debian/control
 +++ b/debian/control
-@@ -138,7 +138,7 @@ Depends: binutils,
+@@ -137,7 +137,7 @@ Depends: binutils,
           psmisc,
           xfsprogs,
           ${misc:Depends},
@@ -22,7 +22,7 @@ index c93aa3c21..aa8edb3d2 100644
           ${shlibs:Depends},
  Recommends: btrfs-tools,
              ceph-mds (= ${binary:Version}),
-@@ -184,7 +184,7 @@ Package: cephadm
+@@ -185,7 +185,7 @@ Package: cephadm
  Architecture: linux-any
  Recommends: podman (>= 2.0.2) | docker.io
  Depends: lvm2,
@@ -31,17 +31,19 @@ index c93aa3c21..aa8edb3d2 100644
  Description: cephadm utility to bootstrap ceph daemons with systemd and containers
   Ceph is a massively scalable, open-source, distributed
   storage system that runs on commodity hardware and delivers object,
-@@ -237,7 +237,8 @@ Depends: ceph-base (= ${binary:Version}),
+@@ -237,9 +237,10 @@ Depends: ceph-base (= ${binary:Version}),
           python3-requests,
           python3-werkzeug,
 +         python3-yaml,
+          libsqlite3-mod-ceph (= ${binary:Version}),
+          librados2 (= ${binary:Version}),
           ${misc:Depends},
 -         ${python:Depends},
 +         ${python3:Depends},
           ${shlibs:Depends},
  Suggests: ceph-mgr-dashboard,
            ceph-mgr-diskprediction-local,
-@@ -263,7 +263,7 @@ Depends: ceph-mgr (= ${binary:Version}),
+@@ -266,7 +266,7 @@ Depends: ceph-mgr (= ${binary:Version}),
           python3-werkzeug,
           python3-routes,
           ${misc:Depends},
@@ -50,7 +52,7 @@ index c93aa3c21..aa8edb3d2 100644
           ${shlibs:Depends},
  Description: dashboard module for ceph-mgr
   Ceph is a massively scalable, open-source, distributed
-@@ -284,7 +284,7 @@ Depends: ceph-mgr (= ${binary:Version}),
+@@ -287,7 +287,7 @@ Depends: ceph-mgr (= ${binary:Version}),
           python3-scipy,
           python3-sklearn,
           ${misc:Depends},
@@ -59,7 +61,7 @@ index c93aa3c21..aa8edb3d2 100644
           ${shlibs:Depends},
  Description: diskprediction-local module for ceph-mgr
   Ceph is a massively scalable, open-source, distributed
-@@ -297,7 +297,7 @@ Description: diskprediction-local module for ceph-mgr
+@@ -300,7 +300,7 @@ Description: diskprediction-local module for ceph-mgr
  Package: ceph-mgr-modules-core
  Architecture: all
  Depends: ${misc:Depends},
@@ -68,7 +70,7 @@ index c93aa3c21..aa8edb3d2 100644
           ${shlibs:Depends},
           python3-dateutil,
           python3-openssl,
-@@ -317,7 +317,7 @@ Depends: ceph-mgr (= ${binary:Version}),
+@@ -319,7 +319,7 @@ Depends: ceph-mgr (= ${binary:Version}),
  Depends: ceph-mgr (= ${binary:Version}),
           python3-jsonpatch
           ${misc:Depends},
@@ -77,7 +79,7 @@ index c93aa3c21..aa8edb3d2 100644
           ${shlibs:Depends},
  Description: rook module for ceph-mgr
   Ceph is a massively scalable, open-source, distributed
-@@ -333,7 +333,7 @@ Architecture: all
+@@ -335,7 +335,7 @@ Architecture: all
  Depends: ceph-mgr (= ${binary:Version}),
           python3-kubernetes,
           ${misc:Depends},
@@ -86,7 +88,7 @@ index c93aa3c21..aa8edb3d2 100644
  Description: kubernetes events module for ceph-mgr
   Ceph is a massively scalable, open-source, distributed
   storage system that runs on commodity hardware and delivers object,
-@@ -348,7 +348,7 @@ Depends: ceph-mgr (= ${binary:Version}),
+@@ -350,7 +350,7 @@ Depends: ceph-mgr (= ${binary:Version}),
  Depends: ceph-mgr (= ${binary:Version}),
  	 cephadm,
           ${misc:Depends},
@@ -104,7 +106,7 @@ index c93aa3c21..aa8edb3d2 100644
           ${shlibs:Depends},
  Replaces: ceph (<< 10), ceph-test (<< 12.2.2-14)
  Breaks: ceph (<< 10), ceph-test (<< 12.2.2-14)
-@@ -620,7 +620,7 @@ Depends: librbd1 (= ${binary:Version}),
+@@ -618,7 +618,7 @@ Depends: librbd1 (= ${binary:Version}),
           python3-rbd (= ${binary:Version}),
           python3-rgw (= ${binary:Version}),
           ${misc:Depends},
