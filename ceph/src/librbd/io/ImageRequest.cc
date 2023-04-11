@@ -455,6 +455,19 @@ void AbstractImageWriteRequest<I>::send_request() {
     return;
   }
 
+  // reflect changes in object_extents back to m_image_extents
+  if (ret == 1) {
+    this->m_image_extents.clear();
+    for (auto& object_extent : object_extents) {
+      io::Extents image_extents;
+      io::util::extent_to_file(&image_ctx, object_extent.object_no,
+                               object_extent.offset, object_extent.length,
+                               image_extents);
+      this->m_image_extents.insert(this->m_image_extents.end(),
+                                   image_extents.begin(), image_extents.end());
+    }
+  }
+
   aio_comp->set_request_count(object_extents.size());
   if (!object_extents.empty()) {
     uint64_t journal_tid = 0;
@@ -601,11 +614,12 @@ int ImageDiscardRequest<I>::prune_object_extents(
   // discard_granularity_bytes >= object_size && tail truncation
   // is a special case for filestore
   bool prune_required = false;
+  bool length_modified = false;
   auto object_size = this->m_image_ctx.layout.object_size;
   auto discard_granularity_bytes = std::min(m_discard_granularity_bytes,
                                             object_size);
   auto xform_lambda =
-    [discard_granularity_bytes, object_size, &prune_required]
+    [discard_granularity_bytes, object_size, &prune_required, &length_modified]
     (LightweightObjectExtent& object_extent) {
       auto& offset = object_extent.offset;
       auto& length = object_extent.length;
@@ -619,7 +633,11 @@ int ImageDiscardRequest<I>::prune_object_extents(
           prune_required = true;
           length = 0;
         } else {
-          length = next_offset - offset;
+          auto new_length = next_offset - offset;
+          if (length != new_length) {
+            length_modified = true;
+            length = new_length;
+          }
         }
       }
     };
@@ -637,6 +655,12 @@ int ImageDiscardRequest<I>::prune_object_extents(
                      remove_lambda),
       object_extents->end());
   }
+
+  // object extents were modified, image extents needs updating
+  if (length_modified || prune_required) {
+    return 1;
+  }
+
   return 0;
 }
 
@@ -748,24 +772,28 @@ uint64_t ImageCompareAndWriteRequest<I>::append_journal_event(
   uint64_t tid = 0;
   ceph_assert(this->m_image_extents.size() == 1);
   auto &extent = this->m_image_extents.front();
-  journal::EventEntry event_entry(
-    journal::AioCompareAndWriteEvent(extent.first, extent.second, m_cmp_bl,
-                                     m_bl));
-  tid = image_ctx.journal->append_io_event(std::move(event_entry),
-                                           extent.first, extent.second,
-                                           synchronous, -EILSEQ);
+  tid = image_ctx.journal->append_compare_and_write_event(extent.first,
+                                                          extent.second,
+                                                          m_cmp_bl,
+                                                          m_bl,
+                                                          synchronous);
 
   return tid;
 }
 
 template <typename I>
 void ImageCompareAndWriteRequest<I>::assemble_extent(
-  const LightweightObjectExtent &object_extent, bufferlist *bl) {
+    const LightweightObjectExtent &object_extent, bufferlist *bl,
+    bufferlist *cmp_bl) {
   for (auto q = object_extent.buffer_extents.begin();
        q != object_extent.buffer_extents.end(); ++q) {
     bufferlist sub_bl;
     sub_bl.substr_of(m_bl, q->first, q->second);
     bl->claim_append(sub_bl);
+
+    bufferlist sub_cmp_bl;
+    sub_cmp_bl.substr_of(m_cmp_bl, q->first, q->second);
+    cmp_bl->claim_append(sub_cmp_bl);
   }
 }
 
@@ -775,13 +803,12 @@ ObjectDispatchSpec *ImageCompareAndWriteRequest<I>::create_object_request(
     uint64_t journal_tid, bool single_extent, Context *on_finish) {
   I &image_ctx = this->m_image_ctx;
 
-  // NOTE: safe to move m_cmp_bl since we only support this op against
-  // a single object
   bufferlist bl;
-  assemble_extent(object_extent, &bl);
+  bufferlist cmp_bl;
+  assemble_extent(object_extent, &bl, &cmp_bl);
   auto req = ObjectDispatchSpec::create_compare_and_write(
     &image_ctx, OBJECT_DISPATCH_LAYER_NONE, object_extent.object_no,
-    object_extent.offset, std::move(m_cmp_bl), std::move(bl), io_context,
+    object_extent.offset, std::move(cmp_bl), std::move(bl), io_context,
     m_mismatch_offset, m_op_flags, journal_tid, this->m_trace, on_finish);
   return req;
 }
@@ -800,11 +827,9 @@ int ImageCompareAndWriteRequest<I>::prune_object_extents(
     return -EINVAL;
 
   I &image_ctx = this->m_image_ctx;
-  uint64_t sector_size = 512ULL;
   uint64_t su = image_ctx.layout.stripe_unit;
   auto& object_extent = object_extents->front();
-  if (object_extent.offset % sector_size + object_extent.length > sector_size ||
-      (su != 0 && (object_extent.offset % su + object_extent.length > su)))
+  if (su == 0 || (object_extent.offset % su + object_extent.length > su))
     return -EINVAL;
 
   return 0;

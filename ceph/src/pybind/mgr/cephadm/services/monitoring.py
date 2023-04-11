@@ -9,7 +9,8 @@ from urllib.parse import urlparse
 from mgr_module import HandleCommandResult
 
 from orchestrator import DaemonDescription
-from ceph.deployment.service_spec import AlertManagerSpec, GrafanaSpec, ServiceSpec, SNMPGatewaySpec
+from ceph.deployment.service_spec import AlertManagerSpec, GrafanaSpec, ServiceSpec, \
+    SNMPGatewaySpec, PrometheusSpec
 from cephadm.services.cephadmservice import CephadmService, CephadmDaemonDeploySpec
 from cephadm.services.ingress import IngressSpec
 from mgr_util import verify_tls, ServerConfigException, create_self_signed_cert, build_url
@@ -289,6 +290,20 @@ class PrometheusService(CephadmService):
             daemon_spec: CephadmDaemonDeploySpec,
     ) -> Tuple[Dict[str, Any], List[str]]:
         assert self.TYPE == daemon_spec.daemon_type
+
+        prom_spec = cast(PrometheusSpec, self.mgr.spec_store[daemon_spec.service_name].spec)
+
+        try:
+            retention_time = prom_spec.retention_time if prom_spec.retention_time else '15d'
+        except AttributeError:
+            retention_time = '15d'
+
+        try:
+            retention_size = prom_spec.retention_size if prom_spec.retention_size else '0'
+        except AttributeError:
+            # default to disabled
+            retention_size = '0'
+
         deps = []  # type: List[str]
 
         # scrape mgrs
@@ -356,19 +371,34 @@ class PrometheusService(CephadmService):
                         "service": dd.service_name(),
                     })
 
+        # scrape ceph-exporters
+        ceph_exporter_targets = []
+        for dd in self.mgr.cache.get_daemons_by_service('ceph-exporter'):
+            assert dd.hostname is not None
+            deps.append(dd.name())
+            addr = dd.ip if dd.ip else self._inventory_get_fqdn(dd.hostname)
+            port = dd.ports[0] if dd.ports else 9926
+            ceph_exporter_targets.append({
+                'url': build_url(host=addr, port=port).lstrip('/'),
+                'hostname': dd.hostname
+            })
+
         # generate the prometheus configuration
         context = {
             'alertmgr_targets': alertmgr_targets,
             'mgr_scrape_list': mgr_scrape_list,
             'haproxy_targets': haproxy_targets,
+            'ceph_exporter_targets': ceph_exporter_targets,
             'nodes': nodes,
         }
-        r = {
+        r: Dict[str, Any] = {
             'files': {
                 'prometheus.yml':
                     self.mgr.template.render(
                         'services/prometheus/prometheus.yml.j2', context)
-            }
+            },
+            'retention_time': retention_time,
+            'retention_size': retention_size
         }
 
         # include alerts, if present in the container

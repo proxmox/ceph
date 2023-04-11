@@ -14,7 +14,7 @@ except ImportError:
     # fallback to normal sort
     natsorted = sorted  # type: ignore
 
-from ceph.deployment.inventory import Device
+from ceph.deployment.inventory import Device  # noqa: F401; pylint: disable=unused-variable
 from ceph.deployment.drive_group import DriveGroupSpec, DeviceSelection, OSDMethod
 from ceph.deployment.service_spec import PlacementSpec, ServiceSpec, service_spec_allow_invalid_from_json
 from ceph.deployment.hostspec import SpecValidationError
@@ -54,6 +54,7 @@ class ServiceType(enum.Enum):
     alertmanager = 'alertmanager'
     grafana = 'grafana'
     node_exporter = 'node-exporter'
+    ceph_exporter = 'ceph-exporter'
     prometheus = 'prometheus'
     loki = 'loki'
     promtail = 'promtail'
@@ -70,6 +71,7 @@ class ServiceAction(enum.Enum):
     restart = 'restart'
     redeploy = 'redeploy'
     reconfig = 'reconfig'
+    rotate_key = 'rotate-key'
 
 
 class DaemonAction(enum.Enum):
@@ -77,6 +79,7 @@ class DaemonAction(enum.Enum):
     stop = 'stop'
     restart = 'restart'
     reconfig = 'reconfig'
+    rotate_key = 'rotate-key'
 
 
 def to_format(what: Any, format: Format, many: bool, cls: Any) -> Any:
@@ -215,8 +218,8 @@ class OrchestratorCli(OrchestratorClientMixin, MgrModule,
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super(OrchestratorCli, self).__init__(*args, **kwargs)
-        self.ident = set()  # type: Set[str]
-        self.fault = set()  # type: Set[str]
+        self.ident: Set[str] = set()
+        self.fault: Set[str] = set()
         self._load()
         self._refresh_health()
 
@@ -495,7 +498,7 @@ class OrchestratorCli(OrchestratorClientMixin, MgrModule,
                 "On": "On",
                 "Off": "Off",
                 True: "Yes",
-                False: "",
+                False: "No",
             }
 
             out = []
@@ -995,7 +998,7 @@ Usage:
 
     @_cli_write_command('orch daemon')
     def _daemon_action(self, action: DaemonAction, name: str) -> HandleCommandResult:
-        """Start, stop, restart, (redeploy,) or reconfig a specific daemon"""
+        """Start, stop, restart, redeploy, reconfig, or rotate-key for a specific daemon"""
         if '.' not in name:
             raise OrchestratorError('%s is not a valid daemon name' % name)
         completion = self.daemon_action(action.value, name)
@@ -1006,7 +1009,7 @@ Usage:
     def _daemon_action_redeploy(self,
                                 name: str,
                                 image: Optional[str] = None) -> HandleCommandResult:
-        """Redeploy a daemon (with a specifc image)"""
+        """Redeploy a daemon (with a specific image)"""
         if '.' not in name:
             raise OrchestratorError('%s is not a valid daemon name' % name)
         completion = self.daemon_action("redeploy", name, image=image)
@@ -1499,7 +1502,7 @@ Usage:
 
     @_cli_write_command('orch upgrade status')
     def _upgrade_status(self) -> HandleCommandResult:
-        """Check service versions vs available and target containers"""
+        """Check the status of any potential ongoing upgrade operation"""
         completion = self.upgrade_status()
         status = raise_if_exception(completion)
         r = {

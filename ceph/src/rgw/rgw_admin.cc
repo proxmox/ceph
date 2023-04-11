@@ -369,6 +369,9 @@ void usage()
   cout << "   --data-extra-pool=<pool>  placement target data extra (non-ec) pool\n";
   cout << "   --placement-index-type=<type>\n";
   cout << "                             placement target index type (normal, indexless, or #id)\n";
+  cout << "   --placement-inline-data=<true>\n";
+  cout << "                             set whether the placement target is configured to store a data\n";
+  cout << "                             chunk inline in head objects\n";
   cout << "   --compression=<type>      placement target compression type (plugin name or empty/none)\n";
   cout << "   --tier-type=<type>        zone tier type\n";
   cout << "   --tier-config=<k>=<v>[,...]\n";
@@ -3478,6 +3481,8 @@ int main(int argc, const char **argv)
   list<string> tags;
   list<string> tags_add;
   list<string> tags_rm;
+  int placement_inline_data = true;
+  bool placement_inline_data_specified = false;
 
   int64_t max_objects = -1;
   int64_t max_size = -1;
@@ -3515,6 +3520,7 @@ int main(int argc, const char **argv)
   int num_shards = 0;
   bool num_shards_specified = false;
   std::optional<int> bucket_index_max_shards;
+
   int max_concurrent_ios = 32;
   uint64_t orphan_stale_secs = (24 * 3600);
   int detail = false;
@@ -3842,6 +3848,9 @@ int main(int argc, const char **argv)
     } else if (ceph_argparse_binary_flag(args, i, &warnings_only, NULL, "--warnings-only", (char*)NULL)) {
      // do nothing
     } else if (ceph_argparse_binary_flag(args, i, &inconsistent_index, NULL, "--inconsistent-index", (char*)NULL)) {
+     // do nothing
+    } else if (ceph_argparse_binary_flag(args, i, &placement_inline_data, NULL, "--placement-inline-data", (char*)NULL)) {
+      placement_inline_data_specified = true;
      // do nothing
     } else if (ceph_argparse_witharg(args, i, &val, "--caps", (char*)NULL)) {
       caps = val;
@@ -4241,7 +4250,9 @@ int main(int argc, const char **argv)
 			 OPT::OBJECTS_EXPIRE_STALE_RM,
 			 OPT::LC_PROCESS,
        OPT::BUCKET_SYNC_RUN,
-       OPT::DATA_SYNC_RUN
+       OPT::DATA_SYNC_RUN,
+       OPT::BUCKET_REWRITE,
+       OPT::OBJECT_REWRITE
     };
 
     raw_storage_op = (raw_storage_ops_list.find(opt_cmd) != raw_storage_ops_list.end() ||
@@ -5975,6 +5986,9 @@ int main(int argc, const char **argv)
           if (index_type_specified) {
 	    info.index_type = placement_index_type;
           }
+          if (placement_inline_data_specified) {
+            info.inline_data = placement_inline_data;
+          }
 
           ret = check_pool_support_omap(info.get_data_extra_pool());
           if (ret < 0) {
@@ -6062,7 +6076,9 @@ int main(int argc, const char **argv)
                                         OPT::METADATA_RM, OPT::RESHARD_CANCEL,
                                         OPT::RESHARD_ADD, OPT::MFA_CREATE,
                                         OPT::MFA_REMOVE, OPT::MFA_RESYNC,
-                                        OPT::CAPS_ADD, OPT::CAPS_RM};
+                                        OPT::CAPS_ADD, OPT::CAPS_RM,
+                                        OPT::ROLE_CREATE, OPT::ROLE_DELETE,
+                                        OPT::ROLE_POLICY_PUT, OPT::ROLE_POLICY_DELETE};
 
   bool print_warning_message = (non_master_ops_list.find(opt_cmd) != non_master_ops_list.end() &&
                                 non_master_cmd);
@@ -6401,7 +6417,7 @@ int main(int argc, const char **argv)
         return -EINVAL;
       }
       std::unique_ptr<rgw::sal::RGWRole> role = store->get_role(role_name, tenant, path, assume_role_doc);
-      ret = role->create(dpp(), true, null_yield);
+      ret = role->create(dpp(), true, "", null_yield);
       if (ret < 0) {
         return -ret;
       }
@@ -7661,6 +7677,8 @@ next:
       }
     }
 
+    bool resharding_underway = true;
+
     if (bucket_initable) {
       // we did not encounter an error, so let's work with the bucket
       RGWBucketReshard br(static_cast<rgw::sal::RadosStore*>(store), bucket->get_info(), bucket->get_attrs(),
@@ -7669,14 +7687,17 @@ next:
       if (ret < 0) {
         if (ret == -EBUSY) {
           cerr << "There is ongoing resharding, please retry after " <<
-            store->ctx()->_conf.get_val<uint64_t>(
-              "rgw_reshard_bucket_lock_duration") <<
-            " seconds " << std::endl;
+            store->ctx()->_conf.get_val<uint64_t>("rgw_reshard_bucket_lock_duration") <<
+            " seconds." << std::endl;
+	  return -ret;
+	} else if (ret == -EINVAL) {
+	  resharding_underway = false;
+	  // we can continue and try to unschedule
         } else {
-          cerr << "Error canceling bucket " << bucket_name <<
-            " resharding: " << cpp_strerror(-ret) << std::endl;
+          cerr << "Error cancelling bucket \"" << bucket_name <<
+            "\" resharding: " << cpp_strerror(-ret) << std::endl;
+	  return -ret;
         }
-        return ret;
       }
     }
 
@@ -7685,13 +7706,22 @@ next:
     cls_rgw_reshard_entry entry;
     entry.tenant = tenant;
     entry.bucket_name = bucket_name;
-    //entry.bucket_id = bucket_id;
 
     ret = reshard.remove(dpp(), entry);
-    if (ret < 0 && ret != -ENOENT) {
-      cerr << "Error in updating reshard log with bucket " <<
-        bucket_name << ": " << cpp_strerror(-ret) << std::endl;
-      return ret;
+    if (ret == -ENOENT) {
+      if (!resharding_underway) {
+	cerr << "Error, bucket \"" << bucket_name <<
+	  "\" is neither undergoing resharding nor scheduled to undergo "
+	  "resharding." << std::endl;
+	return EINVAL;
+      } else {
+	// we cancelled underway resharding above, so we're good
+	return 0;
+      }
+    } else if (ret < 0) {
+      cerr << "Error in updating reshard log with bucket \"" <<
+        bucket_name << "\": " << cpp_strerror(-ret) << std::endl;
+      return -ret;
     }
   } // OPT_RESHARD_CANCEL
 
@@ -8039,7 +8069,7 @@ next:
   }
 
   if (opt_cmd == OPT::USER_CHECK) {
-    check_bad_user_bucket_mapping(store, user.get(), fix, null_yield, dpp());
+    check_bad_user_bucket_mapping(store, *user.get(), fix, null_yield, dpp());
   }
 
   if (opt_cmd == OPT::USER_STATS) {

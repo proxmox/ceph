@@ -1068,12 +1068,11 @@ void AbstractWriteLog<I>::compare_and_write(Extents &&image_extents,
                                      << "cw_req=" << cw_req << dendl;
 
           /* Compare read_bl to cmp_bl to determine if this will produce a write */
-          buffer::list aligned_read_bl;
-          if (cw_req->cmp_bl.length() < cw_req->read_bl.length()) {
-            aligned_read_bl.substr_of(cw_req->read_bl, 0, cw_req->cmp_bl.length());
-          }
-          if (cw_req->cmp_bl.contents_equal(cw_req->read_bl) ||
-              cw_req->cmp_bl.contents_equal(aligned_read_bl)) {
+          ceph_assert(cw_req->read_bl.length() <= cw_req->cmp_bl.length());
+          ceph_assert(cw_req->read_bl.length() == cw_req->image_extents_summary.total_bytes);
+          bufferlist sub_cmp_bl;
+          sub_cmp_bl.substr_of(cw_req->cmp_bl, 0, cw_req->read_bl.length());
+          if (sub_cmp_bl.contents_equal(cw_req->read_bl)) {
             /* Compare phase succeeds. Begin write */
             ldout(m_image_ctx.cct, 5) << " cw_req=" << cw_req << " compare matched" << dendl;
             cw_req->compare_succeeded = true;
@@ -1087,8 +1086,8 @@ void AbstractWriteLog<I>::compare_and_write(Extents &&image_extents,
             ldout(m_image_ctx.cct, 15) << " cw_req=" << cw_req << " compare failed" << dendl;
             /* Bufferlist doesn't tell us where they differed, so we'll have to determine that here */
             uint64_t bl_index = 0;
-            for (bl_index = 0; bl_index < cw_req->cmp_bl.length(); bl_index++) {
-              if (cw_req->cmp_bl[bl_index] != cw_req->read_bl[bl_index]) {
+            for (bl_index = 0; bl_index < sub_cmp_bl.length(); bl_index++) {
+              if (sub_cmp_bl[bl_index] != cw_req->read_bl[bl_index]) {
                 ldout(m_image_ctx.cct, 15) << " cw_req=" << cw_req << " mismatch at " << bl_index << dendl;
                 break;
               }
@@ -1308,7 +1307,6 @@ void AbstractWriteLog<I>::complete_op_log_entries(GenericLogOperations &&ops,
 {
   GenericLogEntries dirty_entries;
   int published_reserves = 0;
-  bool need_update_state = false;
   ldout(m_image_ctx.cct, 20) << __func__ << ": completing" << dendl;
   for (auto &op : ops) {
     utime_t now = ceph_clock_now();
@@ -1328,11 +1326,6 @@ void AbstractWriteLog<I>::complete_op_log_entries(GenericLogOperations &&ops,
       std::lock_guard locker(m_lock);
       m_unpublished_reserves -= published_reserves;
       m_dirty_log_entries.splice(m_dirty_log_entries.end(), dirty_entries);
-      if (m_cache_state->clean && !this->m_dirty_log_entries.empty()) {
-        m_cache_state->clean = false;
-        update_image_cache_state();
-        need_update_state = true;
-      }
     }
     op->complete(result);
     m_perfcounter->tinc(l_librbd_pwl_log_op_dis_to_app_t,
@@ -1346,10 +1339,6 @@ void AbstractWriteLog<I>::complete_op_log_entries(GenericLogOperations &&ops,
     m_perfcounter->hinc(l_librbd_pwl_log_op_app_to_appc_t_hist, app_lat.to_nsec(),
                       log_entry->ram_entry.write_bytes);
     m_perfcounter->tinc(l_librbd_pwl_log_op_app_to_cmp_t, now - op->log_append_start_time);
-  }
-  if (need_update_state) {
-    std::unique_lock locker(m_lock);
-    write_image_cache_state(locker);
   }
   // New entries may be flushable
   {
@@ -1540,7 +1529,7 @@ bool AbstractWriteLog<I>::check_allocation(
   }
 
   if (alloc_succeeds) {
-    std::lock_guard locker(m_lock);
+    std::unique_lock locker(m_lock);
     /* We need one free log entry per extent (each is a separate entry), and
      * one free "lane" for remote replication. */
     if ((m_free_lanes >= num_lanes) &&
@@ -1552,6 +1541,11 @@ bool AbstractWriteLog<I>::check_allocation(
       m_bytes_allocated += bytes_allocated;
       m_bytes_cached += bytes_cached;
       m_bytes_dirty += bytes_dirtied;
+      if (m_cache_state->clean && bytes_dirtied > 0) {
+        m_cache_state->clean = false;
+        update_image_cache_state();
+        write_image_cache_state(locker);
+      }
     } else {
       alloc_succeeds = false;
     }

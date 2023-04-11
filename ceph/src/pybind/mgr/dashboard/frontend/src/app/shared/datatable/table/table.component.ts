@@ -70,6 +70,8 @@ export class TableComponent implements AfterContentChecked, OnInit, OnChanges, O
   timeAgoTpl: TemplateRef<any>;
   @ViewChild('rowDetailsTpl', { static: true })
   rowDetailsTpl: TemplateRef<any>;
+  @ViewChild('rowSelectionTpl', { static: true })
+  rowSelectionTpl: TemplateRef<any>;
 
   // This is the array with the items to be shown.
   @Input()
@@ -331,10 +333,6 @@ export class TableComponent implements AfterContentChecked, OnInit, OnChanges, O
     } else {
       this.useData();
     }
-
-    if (this.selectionType === 'single') {
-      this.table.selectCheck = this.singleSelectCheck.bind(this);
-    }
   }
 
   initUserConfig() {
@@ -432,9 +430,10 @@ export class TableComponent implements AfterContentChecked, OnInit, OnChanges, O
         resizeable: false,
         sortable: false,
         draggable: false,
-        checkboxable: true,
+        checkboxable: false,
         canAutoResize: false,
         cellClass: 'cd-datatable-checkbox',
+        cellTemplate: this.rowSelectionTpl,
         width: 30
       });
     }
@@ -767,10 +766,6 @@ export class TableComponent implements AfterContentChecked, OnInit, OnChanges, O
       this.selection.selected = $event['selected'];
     }
     this.updateSelection.emit(_.clone(this.selection));
-  }
-
-  private singleSelectCheck(row: any) {
-    return this.selection.selected.indexOf(row) === -1;
   }
 
   toggleColumn(column: CdTableColumn) {

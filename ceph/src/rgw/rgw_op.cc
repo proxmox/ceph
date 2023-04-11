@@ -2397,6 +2397,8 @@ void RGWListBuckets::execute(optional_yield y)
       break;
     }
 
+    is_truncated = buckets.is_truncated();
+
     /* We need to have stats for all our policies - even if a given policy
      * isn't actually used in a given account. In such situation its usage
      * stats would be simply full of zeros. */
@@ -5786,23 +5788,23 @@ void RGWPutLC::execute(optional_yield y)
   RGWXMLParser parser;
   RGWLifecycleConfiguration_S3 new_config(s->cct);
 
-  content_md5 = s->info.env->get("HTTP_CONTENT_MD5");
-  if (content_md5 == nullptr) {
-    op_ret = -ERR_INVALID_REQUEST;
-    s->err.message = "Missing required header for this request: Content-MD5";
-    ldpp_dout(this, 5) << s->err.message << dendl;
-    return;
-  }
+  // amazon says that Content-MD5 is required for this op specifically, but MD5
+  // is not a security primitive and FIPS mode makes it difficult to use. if the
+  // client provides the header we'll try to verify its checksum, but the header
+  // itself is no longer required
+  std::optional<std::string> content_md5_bin;
 
-  std::string content_md5_bin;
-  try {
-    content_md5_bin = rgw::from_base64(std::string_view(content_md5));
-  } catch (...) {
-    s->err.message = "Request header Content-MD5 contains character "
-                     "that is not base64 encoded.";
-    ldpp_dout(this, 5) << s->err.message << dendl;
-    op_ret = -ERR_BAD_DIGEST;
-    return;
+  content_md5 = s->info.env->get("HTTP_CONTENT_MD5");
+  if (content_md5 != nullptr) {
+    try {
+      content_md5_bin = rgw::from_base64(std::string_view(content_md5));
+    } catch (...) {
+      s->err.message = "Request header Content-MD5 contains character "
+                       "that is not base64 encoded.";
+      ldpp_dout(this, 5) << s->err.message << dendl;
+      op_ret = -ERR_BAD_DIGEST;
+      return;
+    }
   }
 
   if (!parser.init()) {
@@ -5817,21 +5819,23 @@ void RGWPutLC::execute(optional_yield y)
   char* buf = data.c_str();
   ldpp_dout(this, 15) << "read len=" << data.length() << " data=" << (buf ? buf : "") << dendl;
 
-  MD5 data_hash;
-  // Allow use of MD5 digest in FIPS mode for non-cryptographic purposes
-  data_hash.SetFlags(EVP_MD_CTX_FLAG_NON_FIPS_ALLOW);
-  unsigned char data_hash_res[CEPH_CRYPTO_MD5_DIGESTSIZE];
-  data_hash.Update(reinterpret_cast<const unsigned char*>(buf), data.length());
-  data_hash.Final(data_hash_res);
+  if (content_md5_bin) {
+    MD5 data_hash;
+    // Allow use of MD5 digest in FIPS mode for non-cryptographic purposes
+    data_hash.SetFlags(EVP_MD_CTX_FLAG_NON_FIPS_ALLOW);
+    unsigned char data_hash_res[CEPH_CRYPTO_MD5_DIGESTSIZE];
+    data_hash.Update(reinterpret_cast<const unsigned char*>(buf), data.length());
+    data_hash.Final(data_hash_res);
 
-  if (memcmp(data_hash_res, content_md5_bin.c_str(), CEPH_CRYPTO_MD5_DIGESTSIZE) != 0) {
-    op_ret = -ERR_BAD_DIGEST;
-    s->err.message = "The Content-MD5 you specified did not match what we received.";
-    ldpp_dout(this, 5) << s->err.message
-                     << " Specified content md5: " << content_md5
-                     << ", calculated content md5: " << data_hash_res
-                     << dendl;
-    return;
+    if (memcmp(data_hash_res, content_md5_bin->c_str(), CEPH_CRYPTO_MD5_DIGESTSIZE) != 0) {
+      op_ret = -ERR_BAD_DIGEST;
+      s->err.message = "The Content-MD5 you specified did not match what we received.";
+      ldpp_dout(this, 5) << s->err.message
+                       << " Specified content md5: " << content_md5
+                       << ", calculated content md5: " << data_hash_res
+                       << dendl;
+      return;
+    }
   }
 
   if (!parser.parse(buf, data.length(), 1)) {
@@ -6764,6 +6768,23 @@ int RGWDeleteMultiObj::verify_permission(optional_yield y)
 void RGWDeleteMultiObj::pre_exec()
 {
   rgw_bucket_object_pre_exec(s);
+}
+
+void RGWDeleteMultiObj::write_ops_log_entry(rgw_log_entry& entry) const {
+  int num_err = 0;
+  int num_ok = 0;
+  for (auto iter = ops_log_entries.begin();
+       iter != ops_log_entries.end();
+       ++iter) {
+    if (iter->error) {
+      num_err++;
+    } else {
+      num_ok++;
+    }
+  }
+  entry.delete_multi_obj_meta.num_err = num_err;
+  entry.delete_multi_obj_meta.num_ok = num_ok;
+  entry.delete_multi_obj_meta.objects = std::move(ops_log_entries);
 }
 
 void RGWDeleteMultiObj::execute(optional_yield y)

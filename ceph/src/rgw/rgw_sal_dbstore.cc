@@ -311,13 +311,11 @@ namespace rgw::sal {
     return 0;
   }
 
-  int DBBucket::chown(const DoutPrefixProvider *dpp, User* new_user, User* old_user, optional_yield y, const std::string* marker)
+  int DBBucket::chown(const DoutPrefixProvider *dpp, User& new_user, optional_yield y)
   {
     int ret;
 
-    ret = store->getDB()->update_bucket(dpp, "owner", info, false, &(new_user->get_id()), nullptr, nullptr, nullptr);
-
-    /* XXX: Update policies of all the bucket->objects with new user */
+    ret = store->getDB()->update_bucket(dpp, "owner", info, false, &(new_user.get_id()), nullptr, nullptr, nullptr);
     return ret;
   }
 
@@ -682,6 +680,11 @@ namespace rgw::sal {
     DB::Object op_target(store->getDB(),
         get_bucket()->get_info(), get_obj());
     return op_target.obj_omap_set_val_by_key(dpp, key, val, must_exist);
+  }
+
+  int DBObject::chown(User& new_user, const DoutPrefixProvider* dpp, optional_yield y)
+  {
+    return 0;
   }
 
   MPSerializer* DBObject::get_serializer(const DoutPrefixProvider *dpp, const std::string& lock_name)
@@ -1515,6 +1518,12 @@ namespace rgw::sal {
     return std::unique_ptr<RGWRole>(p);
   }
 
+  std::unique_ptr<RGWRole> DBStore::get_role(const RGWRoleInfo& info)
+  {
+    RGWRole* p = nullptr;
+    return std::unique_ptr<RGWRole>(p);
+  }
+
   int DBStore::get_roles(const DoutPrefixProvider *dpp,
       optional_yield y,
       const std::string& path_prefix,
@@ -1678,6 +1687,14 @@ namespace rgw::sal {
       optional_yield y)
   {
     return 0;
+  }
+
+  int DBStore::forward_iam_request_to_master(const DoutPrefixProvider *dpp, const RGWAccessKey& key, obj_version* objv,
+					     bufferlist& in_data,
+					     RGWXMLDecoder::XMLParser* parser, req_info& info,
+					     optional_yield y)
+  {
+      return 0;
   }
 
   std::string DBStore::zone_unique_id(uint64_t unique_num)

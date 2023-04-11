@@ -3,8 +3,8 @@ import { Router } from '@angular/router';
 
 import { NgbModalRef } from '@ng-bootstrap/ng-bootstrap';
 import _ from 'lodash';
-import { Observable, Subscription } from 'rxjs';
-import { map, mergeMap } from 'rxjs/operators';
+import { Subscription } from 'rxjs';
+import { mergeMap } from 'rxjs/operators';
 
 import { HostService } from '~/app/shared/api/host.service';
 import { OrchestratorService } from '~/app/shared/api/orchestrator.service';
@@ -22,7 +22,6 @@ import { CdTableAction } from '~/app/shared/models/cd-table-action';
 import { CdTableColumn } from '~/app/shared/models/cd-table-column';
 import { CdTableFetchDataContext } from '~/app/shared/models/cd-table-fetch-data-context';
 import { CdTableSelection } from '~/app/shared/models/cd-table-selection';
-import { Daemon } from '~/app/shared/models/daemon.interface';
 import { FinishedTask } from '~/app/shared/models/finished-task';
 import { OrchestratorFeature } from '~/app/shared/models/orchestrator.enum';
 import { OrchestratorStatus } from '~/app/shared/models/orchestrator.interface';
@@ -199,7 +198,7 @@ export class HostsComponent extends ListWithDetails implements OnDestroy, OnInit
       {
         name: $localize`Service Instances`,
         prop: 'service_instances',
-        flexGrow: 1,
+        flexGrow: 1.5,
         cellTemplate: this.servicesTpl
       },
       {
@@ -214,7 +213,7 @@ export class HostsComponent extends ListWithDetails implements OnDestroy, OnInit
       {
         name: $localize`Status`,
         prop: 'status',
-        flexGrow: 1,
+        flexGrow: 0.8,
         cellTransformation: CellTemplate.badge,
         customTemplateConfig: {
           map: {
@@ -491,37 +490,7 @@ export class HostsComponent extends ListWithDetails implements OnDestroy, OnInit
           this.orchStatus = orchStatus;
           const factsAvailable = this.checkHostsFactsAvailable();
           return this.hostService.list(`${factsAvailable}`);
-        }),
-        map((hostList: object[]) =>
-          hostList.map((host) => {
-            const counts = {};
-            host['service_instances'] = new Set<string>();
-            if (this.orchStatus?.available) {
-              let daemons: Daemon[] = [];
-              let observable: Observable<Daemon[]>;
-              observable = this.hostService.getDaemons(host['hostname']);
-              observable.subscribe((dmns: Daemon[]) => {
-                daemons = dmns;
-                daemons.forEach((daemon: any) => {
-                  counts[daemon.daemon_type] = (counts[daemon.daemon_type] || 0) + 1;
-                });
-                daemons.map((daemon: any) => {
-                  host['service_instances'].add(
-                    `${daemon.daemon_type}: ${counts[daemon.daemon_type]}`
-                  );
-                });
-              });
-            } else {
-              host['services'].forEach((service: any) => {
-                counts[service.type] = (counts[service.type] || 0) + 1;
-              });
-              host['services'].map((service: any) => {
-                host['service_instances'].add(`${service.type}: ${counts[service.type]}`);
-              });
-            }
-            return host;
-          })
-        )
+        })
       )
       .subscribe(
         (hostList) => {

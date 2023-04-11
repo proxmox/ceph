@@ -417,6 +417,14 @@ struct cls_rgw_obj_key {
     ls.back()->name = "name";
     ls.back()->instance = "instance";
   }
+
+  size_t estimate_encoded_size() const {
+    constexpr size_t start_overhead = sizeof(__u8) + sizeof(__u8) + sizeof(ceph_le32); // version and length prefix
+    constexpr size_t string_overhead = sizeof(__u32); // strings are encoded with 32-bit length prefix
+    return start_overhead +
+        string_overhead + name.size() +
+        string_overhead + instance.size();
+  }
 };
 WRITE_CLASS_ENCODER(cls_rgw_obj_key)
 
@@ -775,6 +783,7 @@ enum class cls_rgw_reshard_status : uint8_t {
   IN_PROGRESS     = 1,
   DONE            = 2
 };
+std::ostream& operator<<(std::ostream&, cls_rgw_reshard_status);
 
 inline std::string to_string(const cls_rgw_reshard_status status)
 {
@@ -833,8 +842,15 @@ struct cls_rgw_bucket_instance_entry {
   bool resharding() const {
     return reshard_status != RESHARD_STATUS::NOT_RESHARDING;
   }
+
   bool resharding_in_progress() const {
     return reshard_status == RESHARD_STATUS::IN_PROGRESS;
+  }
+
+  friend std::ostream& operator<<(std::ostream& out, const cls_rgw_bucket_instance_entry& v) {
+    out << "cls_rgw_bucket_instance_entry:{ " << v.reshard_status <<
+      ", \"" << v.new_bucket_instance_id << "\", " << v.num_shards << " }";
+    return out;
   }
 };
 WRITE_CLASS_ENCODER(cls_rgw_bucket_instance_entry)
@@ -1146,6 +1162,16 @@ struct cls_rgw_obj {
     ls.back()->key.name = "myoid";
     ls.back()->loc = "mykey";
   }
+
+  size_t estimate_encoded_size() const {
+    constexpr size_t start_overhead = sizeof(__u8) + sizeof(__u8) + sizeof(ceph_le32); // version and length prefix
+    constexpr size_t string_overhead = sizeof(__u32); // strings are encoded with 32-bit length prefix
+    return start_overhead +
+        string_overhead + pool.size() +
+        string_overhead + key.name.size() +
+        string_overhead + loc.size() +
+        key.estimate_encoded_size();
+  }
 };
 WRITE_CLASS_ENCODER(cls_rgw_obj)
 
@@ -1190,6 +1216,16 @@ struct cls_rgw_obj_chain {
   bool empty() {
     return objs.empty();
   }
+
+  size_t estimate_encoded_size() const {
+    constexpr size_t start_overhead = sizeof(__u8) + sizeof(__u8) + sizeof(ceph_le32);
+    constexpr size_t size_overhead = sizeof(__u32); // size of the chain
+    size_t chain_overhead = 0;
+    for (auto& it : objs) {
+      chain_overhead += it.estimate_encoded_size();
+    }
+    return (start_overhead + size_overhead + chain_overhead);
+  }
 };
 WRITE_CLASS_ENCODER(cls_rgw_obj_chain)
 
@@ -1230,6 +1266,14 @@ struct cls_rgw_gc_obj_info
     ls.back()->tag = "footag";
     ceph_timespec ts{ceph_le32(21), ceph_le32(32)};
     ls.back()->time = ceph::real_clock::from_ceph_timespec(ts);
+  }
+
+  size_t estimate_encoded_size() const {
+    constexpr size_t start_overhead = sizeof(__u8) + sizeof(__u8) + sizeof(ceph_le32); // version and length prefix
+    constexpr size_t string_overhead = sizeof(__u32); // strings are encoded with 32-bit length prefix
+    constexpr size_t time_overhead = 2 * sizeof(ceph_le32); // time is stored as tv_sec and tv_nsec
+    return start_overhead + string_overhead + tag.size() +
+            time_overhead + chain.estimate_encoded_size();
   }
 };
 WRITE_CLASS_ENCODER(cls_rgw_gc_obj_info)

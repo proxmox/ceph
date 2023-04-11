@@ -1,3 +1,34 @@
+>=17.2.6
+--------
+
+* `ceph mgr dump` command now outputs `last_failure_osd_epoch` and
+  `active_clients` fields at the top level.  Previously, these fields were
+  output under `always_on_modules` field.
+
+>=17.2.5
+--------
+
+* RBD: The semantics of compare-and-write C++ API (`Image::compare_and_write`
+  and `Image::aio_compare_and_write` methods) now match those of C API.  Both
+  compare and write steps operate only on `len` bytes even if the respective
+  buffers are larger. The previous behavior of comparing up to the size of
+  the compare buffer was prone to subtle breakage upon straddling a stripe
+  unit boundary.
+* RBD: compare-and-write operation is no longer limited to 512-byte sectors.
+  Assuming proper alignment, it now allows operating on stripe units (4M by
+  default).
+* RBD: New `rbd_aio_compare_and_writev` API method to support scatter/gather
+  on both compare and write buffers.  This compliments existing `rbd_aio_readv`
+  and `rbd_aio_writev` methods.
+* RBD: `rbd device unmap` command gained `--namespace` option.  Support for
+  namespaces was added to RBD in Nautilus 14.2.0 and it has been possible to
+  map and unmap images in namespaces using the `image-spec` syntax since then
+  but the corresponding option available in most other commands was missing.
+* CEPHFS: Rename the `mds_max_retries_on_remount_failure` option to
+  `client_max_retries_on_remount_failure` and move it from mds.yaml.in to
+  mds-client.yaml.in because this option was only used by MDS client from its
+  birth.
+
 >=17.2.4
 --------
 
@@ -7,6 +38,15 @@
 
 * OSD: The issue of high CPU utilization during recovery/backfill operations
   has been fixed. For more details, see: https://tracker.ceph.com/issues/56530.
+
+* Trimming of PGLog dups is now controlled by the size instead of the version.
+  This fixes the PGLog inflation issue that was happening when the on-line
+  (in OSD) trimming got jammed after a PG split operation. Also, a new off-line
+  mechanism has been added: `ceph-objectstore-tool` got `trim-pg-log-dups` op
+  that targets situations where OSD is unable to boot due to those inflated dups.
+  If that is the case, in OSD logs the "You can be hit by THE DUPS BUG" warning
+  will be visible.
+  Relevant tracker: https://tracker.ceph.com/issues/53729
 
 >=17.2.1
 

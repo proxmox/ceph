@@ -617,8 +617,8 @@ int RGWGetObj_ObjStore_S3::override_range_hdr(const rgw::auth::StrategyRegistry&
     std::string key = "HTTP_";
     key.append(*k);
     boost::replace_all(key, "-", "_");
+    ldpp_dout(this, 10) << "after splitting cache kv key: " << key  << " " << *v << dendl;
     rgw_env->set(std::move(key), std::string(*v));
-    ldpp_dout(this, 10) << "after splitting cache kv key: " << key  << " " << rgw_env->get(key.c_str())  << dendl;
   }
   ret = RGWOp::verify_requester(auth_registry, y);
   if(!ret && backup_range) {
@@ -2847,7 +2847,7 @@ int RGWPostObj_ObjStore_S3::get_params(optional_yield y)
     return -EINVAL;
   }
 
-  s->object = store->get_object(rgw_obj_key(object_str));
+  s->object = s->bucket->get_object(rgw_obj_key(object_str));
 
   rebuild_key(s->object.get());
 
@@ -4118,17 +4118,28 @@ void RGWDeleteMultiObj_ObjStore_S3::send_partial_response(rgw_obj_key& key,
 							  const string& marker_version_id, int ret)
 {
   if (!key.empty()) {
-    if (ret == 0 && !quiet) {
-      s->formatter->open_object_section("Deleted");
-      s->formatter->dump_string("Key", key.name);
-      if (!key.instance.empty()) {
-	s->formatter->dump_string("VersionId", key.instance);
-      }
+    delete_multi_obj_entry ops_log_entry;
+    ops_log_entry.key = key.name;
+    ops_log_entry.version_id = key.instance;
+    if (ret == 0) {
+      ops_log_entry.error = false;
+      ops_log_entry.http_status = 200;
+      ops_log_entry.delete_marker = delete_marker;
       if (delete_marker) {
-	s->formatter->dump_bool("DeleteMarker", true);
-	s->formatter->dump_string("DeleteMarkerVersionId", marker_version_id);
+        ops_log_entry.marker_version_id = marker_version_id;
       }
-      s->formatter->close_section();
+      if (!quiet) {
+        s->formatter->open_object_section("Deleted");
+        s->formatter->dump_string("Key", key.name);
+        if (!key.instance.empty()) {
+            s->formatter->dump_string("VersionId", key.instance);
+        }
+        if (delete_marker) {
+            s->formatter->dump_bool("DeleteMarker", true);
+            s->formatter->dump_string("DeleteMarkerVersionId", marker_version_id);
+        }
+        s->formatter->close_section();
+      }
     } else if (ret < 0) {
       struct rgw_http_error r;
       int err_no;
@@ -4138,6 +4149,10 @@ void RGWDeleteMultiObj_ObjStore_S3::send_partial_response(rgw_obj_key& key,
       err_no = -ret;
       rgw_get_errno_s3(&r, err_no);
 
+      ops_log_entry.error = true;
+      ops_log_entry.http_status = r.http_ret;
+      ops_log_entry.error_message = r.s3_code;
+
       s->formatter->dump_string("Key", key.name);
       s->formatter->dump_string("VersionId", key.instance);
       s->formatter->dump_string("Code", r.s3_code);
@@ -4145,6 +4160,7 @@ void RGWDeleteMultiObj_ObjStore_S3::send_partial_response(rgw_obj_key& key,
       s->formatter->close_section();
     }
 
+    ops_log_entries.push_back(std::move(ops_log_entry));
     rgw_flush_formatter(s, s->formatter);
   }
 }
@@ -4451,7 +4467,7 @@ RGWOp *RGWHandler_REST_Service_S3::op_post()
   }
 
   if (isIAMEnabled) {
-    RGWHandler_REST_IAM iam_handler(auth_registry, post_body);
+    RGWHandler_REST_IAM iam_handler(auth_registry, data);
     iam_handler.init(store, s, s->cio);
     auto op = iam_handler.get_op();
     if (op) {
@@ -4855,9 +4871,11 @@ int RGWHandler_REST_S3::postauth_init(optional_yield y)
 {
   struct req_init_state *t = &s->init_state;
 
-  rgw_parse_url_bucket(t->url_bucket, s->user->get_tenant(),
-		      s->bucket_tenant, s->bucket_name);
-
+  int ret = rgw_parse_url_bucket(t->url_bucket, s->user->get_tenant(),
+                                 s->bucket_tenant, s->bucket_name);
+  if (ret) {
+    return ret;
+  }
   if (s->auth.identity->get_identity_type() == TYPE_ROLE) {
     s->bucket_tenant = s->auth.identity->get_role_tenant();
   }
@@ -4865,7 +4883,6 @@ int RGWHandler_REST_S3::postauth_init(optional_yield y)
   ldpp_dout(s, 10) << "s->object=" << s->object
            << " s->bucket=" << rgw_make_bucket_entry_name(s->bucket_tenant, s->bucket_name) << dendl;
 
-  int ret;
   ret = rgw_validate_tenant_name(s->bucket_tenant);
   if (ret)
     return ret;
@@ -4882,8 +4899,11 @@ int RGWHandler_REST_S3::postauth_init(optional_yield y)
     } else {
       auth_tenant = s->user->get_tenant();
     }
-    rgw_parse_url_bucket(t->src_bucket, auth_tenant,
-			s->src_tenant_name, s->src_bucket_name);
+    ret = rgw_parse_url_bucket(t->src_bucket, auth_tenant,
+                               s->src_tenant_name, s->src_bucket_name);
+    if (ret) {
+      return ret;
+    }
     ret = rgw_validate_tenant_name(s->src_tenant_name);
     if (ret)
       return ret;
@@ -5451,7 +5471,7 @@ AWSSignerV4::prepare(const DoutPrefixProvider *dpp,
 
 
   /* Craft canonical query string. std::moving later so non-const here. */
-  auto canonical_qs = rgw::auth::s3::gen_v4_canonical_qs(info);
+  auto canonical_qs = rgw::auth::s3::gen_v4_canonical_qs(info, is_non_s3_op);
 
   auto cct = dpp->get_cct();
 

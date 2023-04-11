@@ -17,7 +17,7 @@ except ImportError:
 
 from ceph.deployment.service_spec import ServiceSpec, PlacementSpec, RGWSpec, \
     NFSServiceSpec, IscsiServiceSpec, HostPlacementSpec, CustomContainerSpec, MDSSpec, \
-    CustomConfig
+    CustomConfig, PrometheusSpec
 from ceph.deployment.drive_selection.selector import DriveSelection
 from ceph.deployment.inventory import Devices, Device
 from ceph.utils import datetime_to_str, datetime_now
@@ -117,13 +117,13 @@ def with_osd_daemon(cephadm_module: CephadmOrchestrator, _run_cephadm, host: str
         [host]).stdout == f"Created osd(s) 1 on host '{host}'"
     assert _run_cephadm.mock_calls == [
         mock.call(host, 'osd', 'ceph-volume',
-                  ['--', 'lvm', 'list', '--format', 'json'], no_fsid=False, image=''),
+                  ['--', 'lvm', 'list', '--format', 'json'], no_fsid=False, error_ok=False, image='', log_output=True),
         mock.call(host, f'osd.{osd_id}', 'deploy',
                   ['--name', f'osd.{osd_id}', '--meta-json', mock.ANY,
                    '--config-json', '-', '--osd-fsid', 'uuid'],
                   stdin=mock.ANY, image=''),
         mock.call(host, 'osd', 'ceph-volume',
-                  ['--', 'raw', 'list', '--format', 'json'], no_fsid=False, image=''),
+                  ['--', 'raw', 'list', '--format', 'json'], no_fsid=False, error_ok=False, image='', log_output=True),
     ]
     dd = cephadm_module.cache.get_daemon(f'osd.{osd_id}', host=host)
     assert dd.name() == f'osd.{osd_id}'
@@ -404,7 +404,8 @@ class TestCephadm(object):
         ]
     )
     @mock.patch("cephadm.serve.CephadmServe._run_cephadm", _run_cephadm('{}'))
-    def test_daemon_check(self, cephadm_module: CephadmOrchestrator, action):
+    @mock.patch("cephadm.module.HostCache.save_host")
+    def test_daemon_check(self, _save_host, cephadm_module: CephadmOrchestrator, action):
         with with_host(cephadm_module, 'test'):
             with with_service(cephadm_module, ServiceSpec(service_type='grafana'), CephadmOrchestrator.apply_grafana, 'test') as d_names:
                 [daemon_name] = d_names
@@ -416,6 +417,7 @@ class TestCephadm(object):
 
                 CephadmServe(cephadm_module)._check_daemons()
 
+                assert _save_host.called_with('test')
                 assert cephadm_module.cache.get_scheduled_daemon_action('test', daemon_name) is None
 
     @mock.patch("cephadm.serve.CephadmServe._run_cephadm")
@@ -451,7 +453,8 @@ class TestCephadm(object):
                 _run_cephadm.assert_called_with(
                     'test', 'mon.test', 'deploy', [
                         '--name', 'mon.test',
-                        '--meta-json', '{"service_name": "mon", "ports": [], "ip": null, "deployed_by": [], "rank": null, "rank_generation": null, "extra_container_args": null}',
+                        '--meta-json', ('{"service_name": "mon", "ports": [], "ip": null, "deployed_by": [], "rank": null, '
+                                        '"rank_generation": null, "extra_container_args": null, "extra_entrypoint_args": null}'),
                         '--config-json', '-',
                         '--reconfig',
                     ],
@@ -467,12 +470,91 @@ class TestCephadm(object):
                 _run_cephadm.assert_called_with(
                     'test', 'crash.test', 'deploy', [
                         '--name', 'crash.test',
-                        '--meta-json', '{"service_name": "crash", "ports": [], "ip": null, "deployed_by": [], "rank": null, "rank_generation": null, "extra_container_args": ["--cpus=2", "--quiet"]}',
+                        '--meta-json', ('{"service_name": "crash", "ports": [], "ip": null, "deployed_by": [], "rank": null, '
+                                        '"rank_generation": null, "extra_container_args": ["--cpus=2", "--quiet"], "extra_entrypoint_args": null}'),
                         '--config-json', '-',
                         '--extra-container-args=--cpus=2',
                         '--extra-container-args=--quiet'
                     ],
-                    stdin='{"config": "", "keyring": ""}',
+                    stdin='{"config": "", "keyring": "[client.crash.test]\\nkey = None\\n"}',
+                    image='',
+                )
+
+    @mock.patch("cephadm.serve.CephadmServe._run_cephadm")
+    def test_extra_entrypoint_args(self, _run_cephadm, cephadm_module: CephadmOrchestrator):
+        _run_cephadm.side_effect = async_side_effect(('{}', '', 0))
+        with with_host(cephadm_module, 'test'):
+            with with_service(cephadm_module, ServiceSpec(service_type='node-exporter',
+                              extra_entrypoint_args=['--collector.textfile.directory=/var/lib/node_exporter/textfile_collector', '--some-other-arg']),
+                              CephadmOrchestrator.apply_node_exporter):
+                _run_cephadm.assert_called_with(
+                    'test', 'node-exporter.test', 'deploy', [
+                        '--name', 'node-exporter.test',
+                        '--meta-json', ('{"service_name": "node-exporter", "ports": [9100], "ip": null, "deployed_by": [], "rank": null, '
+                                        '"rank_generation": null, "extra_container_args": null, "extra_entrypoint_args": '
+                                        '["--collector.textfile.directory=/var/lib/node_exporter/textfile_collector", '
+                                        '"--some-other-arg"]}'),
+                        '--config-json', '-',
+                        '--tcp-ports', '9100',
+                        '--extra-entrypoint-args=--collector.textfile.directory=/var/lib/node_exporter/textfile_collector',
+                        '--extra-entrypoint-args=--some-other-arg'
+                    ],
+                    stdin='{}',
+                    image='',
+                )
+
+    @mock.patch("cephadm.serve.CephadmServe._run_cephadm")
+    def test_extra_entrypoint_and_container_args(self, _run_cephadm, cephadm_module: CephadmOrchestrator):
+        _run_cephadm.side_effect = async_side_effect(('{}', '', 0))
+        with with_host(cephadm_module, 'test'):
+            with with_service(cephadm_module, ServiceSpec(service_type='node-exporter',
+                              extra_entrypoint_args=['--collector.textfile.directory=/var/lib/node_exporter/textfile_collector', '--some-other-arg'],
+                              extra_container_args=['--cpus=2', '--quiet']),
+                              CephadmOrchestrator.apply_node_exporter):
+                _run_cephadm.assert_called_with(
+                    'test', 'node-exporter.test', 'deploy', [
+                        '--name', 'node-exporter.test',
+                        '--meta-json', ('{"service_name": "node-exporter", "ports": [9100], "ip": null, "deployed_by": [], "rank": null, '
+                                        '"rank_generation": null, "extra_container_args": ["--cpus=2", "--quiet"], "extra_entrypoint_args": '
+                                        '["--collector.textfile.directory=/var/lib/node_exporter/textfile_collector", '
+                                        '"--some-other-arg"]}'),
+                        '--config-json', '-',
+                        '--tcp-ports', '9100',
+                        '--extra-container-args=--cpus=2',
+                        '--extra-container-args=--quiet',
+                        '--extra-entrypoint-args=--collector.textfile.directory=/var/lib/node_exporter/textfile_collector',
+                        '--extra-entrypoint-args=--some-other-arg'
+                    ],
+                    stdin='{}',
+                    image='',
+                )
+
+    @mock.patch("cephadm.serve.CephadmServe._run_cephadm")
+    def test_extra_entrypoint_and_container_args_with_spaces(self, _run_cephadm, cephadm_module: CephadmOrchestrator):
+        _run_cephadm.side_effect = async_side_effect(('{}', '', 0))
+        with with_host(cephadm_module, 'test'):
+            with with_service(cephadm_module, ServiceSpec(service_type='node-exporter',
+                              extra_entrypoint_args=['--entrypoint-arg-with-value value', '--some-other-arg   3'],
+                              extra_container_args=['--cpus    2', '--container-arg-with-value value']),
+                              CephadmOrchestrator.apply_node_exporter):
+                _run_cephadm.assert_called_with(
+                    'test', 'node-exporter.test', 'deploy', [
+                        '--name', 'node-exporter.test',
+                        '--meta-json', ('{"service_name": "node-exporter", "ports": [9100], "ip": null, "deployed_by": [], "rank": null, '
+                                        '"rank_generation": null, "extra_container_args": ["--cpus    2", "--container-arg-with-value value"], '
+                                        '"extra_entrypoint_args": ["--entrypoint-arg-with-value value", "--some-other-arg   3"]}'),
+                        '--config-json', '-',
+                        '--tcp-ports', '9100',
+                        '--extra-container-args=--cpus',
+                        '--extra-container-args=2',
+                        '--extra-container-args=--container-arg-with-value',
+                        '--extra-container-args=value',
+                        '--extra-entrypoint-args=--entrypoint-arg-with-value',
+                        '--extra-entrypoint-args=value',
+                        '--extra-entrypoint-args=--some-other-arg',
+                        '--extra-entrypoint-args=3'
+                    ],
+                    stdin='{}',
                     image='',
                 )
 
@@ -494,13 +576,14 @@ class TestCephadm(object):
         ]
         conf_outs = [json.dumps(c.to_json()) for c in configs]
         stdin_str = '{' + \
-            f'"config": "", "keyring": "", "custom_config_files": [{conf_outs[0]}, {conf_outs[1]}]' + '}'
+            f'"config": "", "keyring": "[client.crash.test]\\nkey = None\\n", "custom_config_files": [{conf_outs[0]}, {conf_outs[1]}]' + '}'
         with with_host(cephadm_module, 'test'):
             with with_service(cephadm_module, ServiceSpec(service_type='crash', custom_configs=configs), CephadmOrchestrator.apply_crash):
                 _run_cephadm.assert_called_with(
                     'test', 'crash.test', 'deploy', [
                         '--name', 'crash.test',
-                        '--meta-json', '{"service_name": "crash", "ports": [], "ip": null, "deployed_by": [], "rank": null, "rank_generation": null, "extra_container_args": null}',
+                        '--meta-json', ('{"service_name": "crash", "ports": [], "ip": null, "deployed_by": [], "rank": null, '
+                                        '"rank_generation": null, "extra_container_args": null, "extra_entrypoint_args": null}'),
                         '--config-json', '-',
                     ],
                     stdin=stdin_str,
@@ -790,11 +873,12 @@ class TestCephadm(object):
                 'test', 'osd', 'ceph-volume',
                 ['--config-json', '-', '--', 'lvm', 'batch',
                     '--no-auto', '/dev/sdb', '--yes', '--no-systemd'],
-                env_vars=['CEPH_VOLUME_OSDSPEC_AFFINITY=foo'], error_ok=True, stdin='{"config": "", "keyring": ""}')
+                env_vars=['CEPH_VOLUME_OSDSPEC_AFFINITY=foo'], error_ok=True,
+                stdin='{"config": "", "keyring": ""}')
             _run_cephadm.assert_any_call(
-                'test', 'osd', 'ceph-volume', ['--', 'lvm', 'list', '--format', 'json'], image='', no_fsid=False)
+                'test', 'osd', 'ceph-volume', ['--', 'lvm', 'list', '--format', 'json'], image='', no_fsid=False, error_ok=False, log_output=True)
             _run_cephadm.assert_any_call(
-                'test', 'osd', 'ceph-volume', ['--', 'raw', 'list', '--format', 'json'], image='', no_fsid=False)
+                'test', 'osd', 'ceph-volume', ['--', 'raw', 'list', '--format', 'json'], image='', no_fsid=False, error_ok=False, log_output=True)
 
     @mock.patch("cephadm.serve.CephadmServe._run_cephadm")
     def test_apply_osd_save_non_collocated(self, _run_cephadm, cephadm_module: CephadmOrchestrator):
@@ -834,9 +918,9 @@ class TestCephadm(object):
                 env_vars=['CEPH_VOLUME_OSDSPEC_AFFINITY=noncollocated'],
                 error_ok=True, stdin='{"config": "", "keyring": ""}')
             _run_cephadm.assert_any_call(
-                'test', 'osd', 'ceph-volume', ['--', 'lvm', 'list', '--format', 'json'], image='', no_fsid=False)
+                'test', 'osd', 'ceph-volume', ['--', 'lvm', 'list', '--format', 'json'], image='', no_fsid=False, error_ok=False, log_output=True)
             _run_cephadm.assert_any_call(
-                'test', 'osd', 'ceph-volume', ['--', 'raw', 'list', '--format', 'json'], image='', no_fsid=False)
+                'test', 'osd', 'ceph-volume', ['--', 'raw', 'list', '--format', 'json'], image='', no_fsid=False, error_ok=False, log_output=True)
 
     @mock.patch("cephadm.serve.CephadmServe._run_cephadm", _run_cephadm('{}'))
     @mock.patch("cephadm.module.SpecStore.save")
@@ -1214,6 +1298,7 @@ class TestCephadm(object):
             def __init__(self, c: str = 'a'):
                 # using 1015 here makes the serialized string exactly 1024 bytes if c is one char
                 self.content = {c: c * 1015}
+                self.path = 'dev/vdc'
 
             def to_json(self):
                 return self.content
@@ -1508,6 +1593,64 @@ class TestCephadm(object):
             with with_service(cephadm_module, spec, meth, 'test'):
                 pass
 
+    @pytest.mark.parametrize(
+        "spec, raise_exception, msg",
+        [
+            # Valid retention_time values (valid units: 'y', 'w', 'd', 'h', 'm', 's')
+            (PrometheusSpec(retention_time='1y'), False, ''),
+            (PrometheusSpec(retention_time=' 10w '), False, ''),
+            (PrometheusSpec(retention_time=' 1348d'), False, ''),
+            (PrometheusSpec(retention_time='2000h '), False, ''),
+            (PrometheusSpec(retention_time='173847m'), False, ''),
+            (PrometheusSpec(retention_time='200s'), False, ''),
+            (PrometheusSpec(retention_time='  '), False, ''),  # default value will be used
+
+            # Invalid retention_time values
+            (PrometheusSpec(retention_time='100k'), True, '^Invalid retention time'),     # invalid unit
+            (PrometheusSpec(retention_time='10'), True, '^Invalid retention time'),       # no unit
+            (PrometheusSpec(retention_time='100.00y'), True, '^Invalid retention time'),  # invalid value and valid unit
+            (PrometheusSpec(retention_time='100.00k'), True, '^Invalid retention time'),  # invalid value and invalid unit
+            (PrometheusSpec(retention_time='---'), True, '^Invalid retention time'),      # invalid value
+
+            # Valid retention_size values (valid units: 'B', 'KB', 'MB', 'GB', 'TB', 'PB', 'EB')
+            (PrometheusSpec(retention_size='123456789B'), False, ''),
+            (PrometheusSpec(retention_size=' 200KB'), False, ''),
+            (PrometheusSpec(retention_size='99999MB '), False, ''),
+            (PrometheusSpec(retention_size=' 10GB '), False, ''),
+            (PrometheusSpec(retention_size='100TB'), False, ''),
+            (PrometheusSpec(retention_size='500PB'), False, ''),
+            (PrometheusSpec(retention_size='200EB'), False, ''),
+            (PrometheusSpec(retention_size='  '), False, ''),  # default value will be used
+
+            # Invalid retention_size values
+            (PrometheusSpec(retention_size='100b'), True, '^Invalid retention size'),      # invalid unit (case sensitive)
+            (PrometheusSpec(retention_size='333kb'), True, '^Invalid retention size'),     # invalid unit (case sensitive)
+            (PrometheusSpec(retention_size='2000'), True, '^Invalid retention size'),      # no unit
+            (PrometheusSpec(retention_size='200.00PB'), True, '^Invalid retention size'),  # invalid value and valid unit
+            (PrometheusSpec(retention_size='400.B'), True, '^Invalid retention size'),     # invalid value and invalid unit
+            (PrometheusSpec(retention_size='10.000s'), True, '^Invalid retention size'),   # invalid value and invalid unit
+            (PrometheusSpec(retention_size='...'), True, '^Invalid retention size'),       # invalid value
+
+            # valid retention_size and valid retention_time
+            (PrometheusSpec(retention_time='1y', retention_size='100GB'), False, ''),
+            # invalid retention_time and valid retention_size
+            (PrometheusSpec(retention_time='1j', retention_size='100GB'), True, '^Invalid retention time'),
+            # valid retention_time and invalid retention_size
+            (PrometheusSpec(retention_time='1y', retention_size='100gb'), True, '^Invalid retention size'),
+            # valid retention_time and invalid retention_size
+            (PrometheusSpec(retention_time='1y', retention_size='100gb'), True, '^Invalid retention size'),
+            # invalid retention_time and invalid retention_size
+            (PrometheusSpec(retention_time='1i', retention_size='100gb'), True, '^Invalid retention time'),
+        ])
+    @mock.patch("cephadm.serve.CephadmServe._run_cephadm", _run_cephadm('{}'))
+    def test_apply_prometheus(self, spec: PrometheusSpec, raise_exception: bool, msg: str, cephadm_module: CephadmOrchestrator):
+        with with_host(cephadm_module, 'test'):
+            if not raise_exception:
+                cephadm_module._apply(spec)
+            else:
+                with pytest.raises(OrchestratorError, match=msg):
+                    cephadm_module._apply(spec)
+
     @mock.patch("cephadm.serve.CephadmServe._run_cephadm", _run_cephadm('{}'))
     def test_mds_config_purge(self, cephadm_module: CephadmOrchestrator):
         spec = MDSSpec('mds', service_id='fsname', config={'test': 'foo'})
@@ -1683,7 +1826,7 @@ class TestCephadm(object):
             cephadm_module.config_notify()
             assert cephadm_module.manage_etc_ceph_ceph_conf is True
 
-            CephadmServe(cephadm_module)._refresh_hosts_and_daemons()
+            CephadmServe(cephadm_module)._write_all_client_files()
             # Make sure both ceph conf locations (default and per fsid) are called
             _write_file.assert_has_calls([mock.call('test', '/etc/ceph/ceph.conf', b'',
                                           0o644, 0, 0, None),
@@ -1697,7 +1840,7 @@ class TestCephadm(object):
 
             # set extra config and expect that we deploy another ceph.conf
             cephadm_module._set_extra_ceph_conf('[mon]\nk=v')
-            CephadmServe(cephadm_module)._refresh_hosts_and_daemons()
+            CephadmServe(cephadm_module)._write_all_client_files()
             _write_file.assert_has_calls([mock.call('test',
                                                     '/etc/ceph/ceph.conf',
                                                     b'\n\n[mon]\nk=v\n', 0o644, 0, 0, None),
@@ -1719,7 +1862,7 @@ class TestCephadm(object):
             f2_before_digest = cephadm_module.cache.get_host_client_files(
                 'test')['/var/lib/ceph/fsid/config/ceph.conf'][0]
             cephadm_module._set_extra_ceph_conf('[mon]\nk2=v2')
-            CephadmServe(cephadm_module)._refresh_hosts_and_daemons()
+            CephadmServe(cephadm_module)._write_all_client_files()
             f1_after_digest = cephadm_module.cache.get_host_client_files('test')[
                 '/etc/ceph/ceph.conf'][0]
             f2_after_digest = cephadm_module.cache.get_host_client_files(
@@ -1828,10 +1971,10 @@ Traceback (most recent call last):
             assert _run_cephadm.mock_calls == [
                 mock.call('test', 'osd', 'ceph-volume',
                           ['--', 'inventory', '--format=json-pretty', '--filter-for-batch'], image='',
-                          no_fsid=False),
+                          no_fsid=False, error_ok=False, log_output=False),
                 mock.call('test', 'osd', 'ceph-volume',
                           ['--', 'inventory', '--format=json-pretty'], image='',
-                          no_fsid=False),
+                          no_fsid=False, error_ok=False, log_output=False),
             ]
 
     @mock.patch("cephadm.serve.CephadmServe._run_cephadm")
@@ -1938,3 +2081,119 @@ Traceback (most recent call last):
         with with_host(cephadm_module, 'test1', refresh_hosts=False, rm_with_force=True):
             with with_host(cephadm_module, 'test2', refresh_hosts=False, rm_with_force=False):
                 cephadm_module.inventory.add_label('test2', '_admin')
+
+    @pytest.mark.parametrize("facts, settings, expected_value",
+                             [
+                                 # All options are available on all hosts
+                                 (
+                                     {
+                                         "host1":
+                                         {
+                                             "sysctl_options":
+                                             {
+                                                 'opt1': 'val1',
+                                                 'opt2': 'val2',
+                                             }
+                                         },
+                                         "host2":
+                                         {
+                                             "sysctl_options":
+                                             {
+                                                 'opt1': '',
+                                                 'opt2': '',
+                                             }
+                                         },
+                                     },
+                                     {'opt1', 'opt2'},  # settings
+                                     {'host1': [], 'host2': []}  # expected_value
+                                 ),
+                                 # opt1 is missing on host 1, opt2 is missing on host2
+                                 ({
+                                     "host1":
+                                     {
+                                         "sysctl_options":
+                                         {
+                                             'opt2': '',
+                                             'optX': '',
+                                         }
+                                     },
+                                     "host2":
+                                     {
+                                         "sysctl_options":
+                                         {
+                                             'opt1': '',
+                                             'opt3': '',
+                                             'opt4': '',
+                                         }
+                                     },
+                                 },
+                                     {'opt1', 'opt2'},  # settings
+                                     {'host1': ['opt1'], 'host2': ['opt2']}  # expected_value
+                                 ),
+                                 # All options are missing on all hosts
+                                 ({
+                                     "host1":
+                                     {
+                                         "sysctl_options":
+                                         {
+                                         }
+                                     },
+                                     "host2":
+                                     {
+                                         "sysctl_options":
+                                         {
+                                         }
+                                     },
+                                 },
+                                     {'opt1', 'opt2'},  # settings
+                                     {'host1': ['opt1', 'opt2'], 'host2': [
+                                         'opt1', 'opt2']}  # expected_value
+                                 ),
+                             ]
+                             )
+    @mock.patch("cephadm.serve.CephadmServe._run_cephadm", _run_cephadm('[]'))
+    def test_tuned_profiles_settings_validation(self, facts, settings, expected_value, cephadm_module):
+        with with_host(cephadm_module, 'test'):
+            spec = mock.Mock()
+            spec.settings = sorted(settings)
+            spec.placement.filter_matching_hostspecs = mock.Mock()
+            spec.placement.filter_matching_hostspecs.return_value = ['host1', 'host2']
+            cephadm_module.cache.facts = facts
+            assert cephadm_module._validate_tunedprofile_settings(spec) == expected_value
+
+    @mock.patch("cephadm.serve.CephadmServe._run_cephadm", _run_cephadm('[]'))
+    def test_tuned_profiles_validation(self, cephadm_module):
+        with with_host(cephadm_module, 'test'):
+
+            with pytest.raises(OrchestratorError, match="^Invalid placement specification.+"):
+                spec = mock.Mock()
+                spec.settings = {'a': 'b'}
+                spec.placement = PlacementSpec(hosts=[])
+                cephadm_module._validate_tuned_profile_spec(spec)
+
+            with pytest.raises(OrchestratorError, match="Invalid spec: settings section cannot be empty."):
+                spec = mock.Mock()
+                spec.settings = {}
+                spec.placement = PlacementSpec(hosts=['host1', 'host2'])
+                cephadm_module._validate_tuned_profile_spec(spec)
+
+            with pytest.raises(OrchestratorError, match="^Placement 'count' field is no supported .+"):
+                spec = mock.Mock()
+                spec.settings = {'a': 'b'}
+                spec.placement = PlacementSpec(count=1)
+                cephadm_module._validate_tuned_profile_spec(spec)
+
+            with pytest.raises(OrchestratorError, match="^Placement 'count_per_host' field is no supported .+"):
+                spec = mock.Mock()
+                spec.settings = {'a': 'b'}
+                spec.placement = PlacementSpec(count_per_host=1, label='foo')
+                cephadm_module._validate_tuned_profile_spec(spec)
+
+            with pytest.raises(OrchestratorError, match="^Found invalid host"):
+                spec = mock.Mock()
+                spec.settings = {'a': 'b'}
+                spec.placement = PlacementSpec(hosts=['host1', 'host2'])
+                cephadm_module.inventory = mock.Mock()
+                cephadm_module.inventory.all_specs = mock.Mock(
+                    return_value=[mock.Mock().hostname, mock.Mock().hostname])
+                cephadm_module._validate_tuned_profile_spec(spec)

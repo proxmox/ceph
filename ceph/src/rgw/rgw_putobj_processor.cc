@@ -18,6 +18,7 @@
 #include "rgw_multi.h"
 #include "rgw_compression.h"
 #include "services/svc_sys_obj.h"
+#include "services/svc_zone.h"
 #include "rgw_sal_rados.h"
 
 #define dout_subsys ceph_subsys_rgw
@@ -246,7 +247,12 @@ int AtomicObjectProcessor::prepare(optional_yield y)
   }
 
   if (same_pool) {
-    head_max_size = max_head_chunk_size;
+    RGWZonePlacementInfo placement_info;
+    if (!store->svc()->zone->get_zone_params().get_placement(head_obj->get_bucket()->get_placement_rule().name, &placement_info) || placement_info.inline_data) {
+      head_max_size = max_head_chunk_size;
+    } else {
+      head_max_size = 0;
+    }
     chunk_size = max_head_chunk_size;
   }
 
@@ -330,6 +336,11 @@ int AtomicObjectProcessor::complete(size_t accounted_size,
 
   r = obj_op.write_meta(dpp, actual_size, accounted_size, attrs, y);
   if (r < 0) {
+    if (r == -ETIMEDOUT) {
+      // The head object write may eventually succeed, clear the set of objects for deletion. if it
+      // doesn't ever succeed, we'll orphan any tail objects as if we'd crashed before that write
+      writer.clear_written();
+    }
     return r;
   }
   if (!obj_op.meta.canceled) {

@@ -1268,6 +1268,10 @@ public:
   int obj_operate(const DoutPrefixProvider *dpp, const RGWBucketInfo& bucket_info, const rgw_obj& obj, librados::ObjectWriteOperation *op);
   int obj_operate(const DoutPrefixProvider *dpp, const RGWBucketInfo& bucket_info, const rgw_obj& obj, librados::ObjectReadOperation *op);
 
+  int fetch_new_bucket_id(const RGWBucketInfo& curr_bucket_info,
+			  RGWBucketInfo* save_bucket_info,
+			  std::string& new_bucket_id,
+			  const DoutPrefixProvider* dpp);
   int guard_reshard(const DoutPrefixProvider *dpp,
                     BucketShard *bs,
 		    const rgw_obj& obj_instance,
@@ -1444,7 +1448,7 @@ public:
   int unlock(const rgw_pool& pool, const std::string& oid, rgw_zone_id& zone_id, std::string& owner_id);
 
   void update_gc_chain(const DoutPrefixProvider *dpp, rgw_obj& head_obj, RGWObjManifest& manifest, cls_rgw_obj_chain *chain);
-  int send_chain_to_gc(cls_rgw_obj_chain& chain, const std::string& tag);
+  std::tuple<int, std::optional<cls_rgw_obj_chain>> send_chain_to_gc(cls_rgw_obj_chain& chain, const std::string& tag);
   void delete_objs_inline(const DoutPrefixProvider *dpp, cls_rgw_obj_chain& chain, const std::string& tag);
   int gc_operate(const DoutPrefixProvider *dpp, std::string& oid, librados::ObjectWriteOperation *op);
   int gc_aio_operate(const std::string& oid, librados::AioCompletion *c,

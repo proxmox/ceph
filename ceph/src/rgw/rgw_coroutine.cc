@@ -897,6 +897,7 @@ int RGWCoroutinesManagerRegistry::hook_to_admin_command(const string& command)
 
 int RGWCoroutinesManagerRegistry::call(std::string_view command,
 				       const cmdmap_t& cmdmap,
+				       const bufferlist&,
 				       Formatter *f,
 				       std::ostream& ss,
 				       bufferlist& out) {
@@ -1046,7 +1047,9 @@ bool RGWCoroutine::drain_children(int num_cr_left,
 
 void RGWCoroutine::wakeup()
 {
-  stack->wakeup();
+  if (stack) {
+    stack->wakeup();
+  }
 }
 
 RGWCoroutinesEnv *RGWCoroutine::get_env() const

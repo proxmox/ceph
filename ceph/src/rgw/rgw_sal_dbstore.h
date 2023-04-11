@@ -196,7 +196,7 @@ protected:
       virtual int sync_user_stats(const DoutPrefixProvider *dpp, optional_yield y) override;
       virtual int update_container_stats(const DoutPrefixProvider *dpp) override;
       virtual int check_bucket_shards(const DoutPrefixProvider *dpp) override;
-      virtual int chown(const DoutPrefixProvider *dpp, User* new_user, User* old_user, optional_yield y, const std::string* marker = nullptr) override;
+      virtual int chown(const DoutPrefixProvider *dpp, User& new_user, optional_yield y) override;
       virtual int put_info(const DoutPrefixProvider *dpp, bool exclusive, ceph::real_time mtime) override;
       virtual bool is_owner(User* user) override;
       virtual int check_empty(const DoutPrefixProvider *dpp, optional_yield y) override;
@@ -555,6 +555,7 @@ protected:
           Attrs* vals) override;
       virtual int omap_set_val_by_key(const DoutPrefixProvider *dpp, const std::string& key, bufferlist& val,
           bool must_exist, optional_yield y) override;
+      virtual int chown(User& new_user, const DoutPrefixProvider* dpp, optional_yield y) override;
     private:
       int read_attrs(const DoutPrefixProvider* dpp, DB::Object::Read &read_op, optional_yield y, rgw_obj* target_obj = nullptr);
   };
@@ -708,6 +709,10 @@ public:
       virtual int forward_request_to_master(const DoutPrefixProvider *dpp, User* user, obj_version* objv,
           bufferlist& in_data, JSONParser *jp, req_info& info,
           optional_yield y) override;
+      virtual int forward_iam_request_to_master(const DoutPrefixProvider *dpp, const RGWAccessKey& key, obj_version* objv,
+					     bufferlist& in_data,
+					     RGWXMLDecoder::XMLParser* parser, req_info& info,
+					     optional_yield y) override;
       virtual Zone* get_zone() { return &zone; }
       virtual std::string zone_unique_id(uint64_t unique_num) override;
       virtual std::string zone_unique_trans_id(const uint64_t unique_num) override;
@@ -768,6 +773,7 @@ public:
           std::string max_session_duration_str="",
           std::multimap<std::string,std::string> tags={}) override;
       virtual std::unique_ptr<RGWRole> get_role(std::string id) override;
+      virtual std::unique_ptr<RGWRole> get_role(const RGWRoleInfo& info) override;
       virtual int get_roles(const DoutPrefixProvider *dpp,
           optional_yield y,
           const std::string& path_prefix,

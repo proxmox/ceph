@@ -498,7 +498,7 @@ class ServiceSpec(object):
     """
     KNOWN_SERVICE_TYPES = 'alertmanager crash grafana iscsi loki promtail mds mgr mon nfs ' \
                           'node-exporter osd prometheus rbd-mirror rgw agent ' \
-                          'container ingress cephfs-mirror snmp-gateway'.split()
+                          'container ingress cephfs-mirror snmp-gateway ceph-exporter'.split()
     REQUIRES_SERVICE_ID = 'iscsi mds nfs rgw container ingress '.split()
     MANAGED_CONFIG_OPTIONS = [
         'mds_join_fs',
@@ -519,7 +519,8 @@ class ServiceSpec(object):
             'container': CustomContainerSpec,
             'grafana': GrafanaSpec,
             'node-exporter': MonitoringSpec,
-            'prometheus': MonitoringSpec,
+            'ceph-exporter': CephExporterSpec,
+            'prometheus': PrometheusSpec,
             'loki': MonitoringSpec,
             'promtail': MonitoringSpec,
             'snmp-gateway': SNMPGatewaySpec,
@@ -553,6 +554,7 @@ class ServiceSpec(object):
                  preview_only: bool = False,
                  networks: Optional[List[str]] = None,
                  extra_container_args: Optional[List[str]] = None,
+                 extra_entrypoint_args: Optional[List[str]] = None,
                  custom_configs: Optional[List[CustomConfig]] = None,
                  ):
 
@@ -593,6 +595,7 @@ class ServiceSpec(object):
             self.config = {k.replace(' ', '_'): v for k, v in config.items()}
 
         self.extra_container_args: Optional[List[str]] = extra_container_args
+        self.extra_entrypoint_args: Optional[List[str]] = extra_entrypoint_args
         self.custom_configs: Optional[List[CustomConfig]] = custom_configs
 
     @classmethod
@@ -721,6 +724,8 @@ class ServiceSpec(object):
             ret['networks'] = self.networks
         if self.extra_container_args:
             ret['extra_container_args'] = self.extra_container_args
+        if self.extra_entrypoint_args:
+            ret['extra_entrypoint_args'] = self.extra_entrypoint_args
         if self.custom_configs:
             ret['custom_configs'] = [c.to_json() for c in self.custom_configs]
 
@@ -799,6 +804,7 @@ class NFSServiceSpec(ServiceSpec):
                  networks: Optional[List[str]] = None,
                  port: Optional[int] = None,
                  extra_container_args: Optional[List[str]] = None,
+                 extra_entrypoint_args: Optional[List[str]] = None,
                  custom_configs: Optional[List[CustomConfig]] = None,
                  ):
         assert service_type == 'nfs'
@@ -806,7 +812,7 @@ class NFSServiceSpec(ServiceSpec):
             'nfs', service_id=service_id,
             placement=placement, unmanaged=unmanaged, preview_only=preview_only,
             config=config, networks=networks, extra_container_args=extra_container_args,
-            custom_configs=custom_configs)
+            extra_entrypoint_args=extra_entrypoint_args, custom_configs=custom_configs)
 
         self.port = port
 
@@ -864,6 +870,7 @@ class RGWSpec(ServiceSpec):
                  networks: Optional[List[str]] = None,
                  subcluster: Optional[str] = None,  # legacy, only for from_json on upgrade
                  extra_container_args: Optional[List[str]] = None,
+                 extra_entrypoint_args: Optional[List[str]] = None,
                  custom_configs: Optional[List[CustomConfig]] = None,
                  ):
         assert service_type == 'rgw', service_type
@@ -876,7 +883,8 @@ class RGWSpec(ServiceSpec):
             'rgw', service_id=service_id,
             placement=placement, unmanaged=unmanaged,
             preview_only=preview_only, config=config, networks=networks,
-            extra_container_args=extra_container_args, custom_configs=custom_configs)
+            extra_container_args=extra_container_args, extra_entrypoint_args=extra_entrypoint_args,
+            custom_configs=custom_configs)
 
         #: The RGW realm associated with this service. Needs to be manually created
         self.rgw_realm: Optional[str] = rgw_realm
@@ -922,9 +930,9 @@ class IscsiServiceSpec(ServiceSpec):
                  service_id: Optional[str] = None,
                  pool: Optional[str] = None,
                  trusted_ip_list: Optional[str] = None,
-                 api_port: Optional[int] = None,
-                 api_user: Optional[str] = None,
-                 api_password: Optional[str] = None,
+                 api_port: Optional[int] = 5000,
+                 api_user: Optional[str] = 'admin',
+                 api_password: Optional[str] = 'admin',
                  api_secure: Optional[bool] = None,
                  ssl_cert: Optional[str] = None,
                  ssl_key: Optional[str] = None,
@@ -934,6 +942,7 @@ class IscsiServiceSpec(ServiceSpec):
                  config: Optional[Dict[str, str]] = None,
                  networks: Optional[List[str]] = None,
                  extra_container_args: Optional[List[str]] = None,
+                 extra_entrypoint_args: Optional[List[str]] = None,
                  custom_configs: Optional[List[CustomConfig]] = None,
                  ):
         assert service_type == 'iscsi'
@@ -942,6 +951,7 @@ class IscsiServiceSpec(ServiceSpec):
                                                preview_only=preview_only,
                                                config=config, networks=networks,
                                                extra_container_args=extra_container_args,
+                                               extra_entrypoint_args=extra_entrypoint_args,
                                                custom_configs=custom_configs)
 
         #: RADOS pool where ceph-iscsi config data is stored.
@@ -963,6 +973,9 @@ class IscsiServiceSpec(ServiceSpec):
 
         if not self.api_secure and self.ssl_cert and self.ssl_key:
             self.api_secure = True
+
+    def get_port_start(self) -> List[int]:
+        return [self.api_port or 5000]
 
     def validate(self) -> None:
         super(IscsiServiceSpec, self).validate()
@@ -1006,6 +1019,7 @@ class IngressSpec(ServiceSpec):
                  unmanaged: bool = False,
                  ssl: bool = False,
                  extra_container_args: Optional[List[str]] = None,
+                 extra_entrypoint_args: Optional[List[str]] = None,
                  custom_configs: Optional[List[CustomConfig]] = None,
                  ):
         assert service_type == 'ingress'
@@ -1015,6 +1029,7 @@ class IngressSpec(ServiceSpec):
             placement=placement, config=config,
             networks=networks,
             extra_container_args=extra_container_args,
+            extra_entrypoint_args=extra_entrypoint_args,
             custom_configs=custom_configs
         )
         self.backend_service = backend_service
@@ -1075,10 +1090,11 @@ class CustomContainerSpec(ServiceSpec):
                  preview_only: bool = False,
                  image: Optional[str] = None,
                  entrypoint: Optional[str] = None,
+                 extra_entrypoint_args: Optional[List[str]] = None,
                  uid: Optional[int] = None,
                  gid: Optional[int] = None,
                  volume_mounts: Optional[Dict[str, str]] = {},
-                 args: Optional[List[str]] = [],
+                 args: Optional[List[str]] = [],  # args for the container runtime, not entrypoint
                  envs: Optional[List[str]] = [],
                  privileged: Optional[bool] = False,
                  bind_mounts: Optional[List[List[str]]] = None,
@@ -1094,7 +1110,7 @@ class CustomContainerSpec(ServiceSpec):
             service_type, service_id,
             placement=placement, unmanaged=unmanaged,
             preview_only=preview_only, config=config,
-            networks=networks)
+            networks=networks, extra_entrypoint_args=extra_entrypoint_args)
 
         self.image = image
         self.entrypoint = entrypoint
@@ -1142,6 +1158,7 @@ class MonitoringSpec(ServiceSpec):
                  preview_only: bool = False,
                  port: Optional[int] = None,
                  extra_container_args: Optional[List[str]] = None,
+                 extra_entrypoint_args: Optional[List[str]] = None,
                  custom_configs: Optional[List[CustomConfig]] = None,
                  ):
         assert service_type in ['grafana', 'node-exporter', 'prometheus', 'alertmanager',
@@ -1152,6 +1169,7 @@ class MonitoringSpec(ServiceSpec):
             placement=placement, unmanaged=unmanaged,
             preview_only=preview_only, config=config,
             networks=networks, extra_container_args=extra_container_args,
+            extra_entrypoint_args=extra_entrypoint_args,
             custom_configs=custom_configs)
 
         self.service_type = service_type
@@ -1188,6 +1206,7 @@ class AlertManagerSpec(MonitoringSpec):
                  port: Optional[int] = None,
                  secure: bool = False,
                  extra_container_args: Optional[List[str]] = None,
+                 extra_entrypoint_args: Optional[List[str]] = None,
                  custom_configs: Optional[List[CustomConfig]] = None,
                  ):
         assert service_type == 'alertmanager'
@@ -1195,7 +1214,8 @@ class AlertManagerSpec(MonitoringSpec):
             'alertmanager', service_id=service_id,
             placement=placement, unmanaged=unmanaged,
             preview_only=preview_only, config=config, networks=networks, port=port,
-            extra_container_args=extra_container_args, custom_configs=custom_configs)
+            extra_container_args=extra_container_args, extra_entrypoint_args=extra_entrypoint_args,
+            custom_configs=custom_configs)
 
         # Custom configuration.
         #
@@ -1240,6 +1260,7 @@ class GrafanaSpec(MonitoringSpec):
                  port: Optional[int] = None,
                  initial_admin_password: Optional[str] = None,
                  extra_container_args: Optional[List[str]] = None,
+                 extra_entrypoint_args: Optional[List[str]] = None,
                  custom_configs: Optional[List[CustomConfig]] = None,
                  ):
         assert service_type == 'grafana'
@@ -1247,12 +1268,44 @@ class GrafanaSpec(MonitoringSpec):
             'grafana', service_id=service_id,
             placement=placement, unmanaged=unmanaged,
             preview_only=preview_only, config=config, networks=networks, port=port,
-            extra_container_args=extra_container_args, custom_configs=custom_configs)
+            extra_container_args=extra_container_args, extra_entrypoint_args=extra_entrypoint_args,
+            custom_configs=custom_configs)
 
         self.initial_admin_password = initial_admin_password
 
 
 yaml.add_representer(GrafanaSpec, ServiceSpec.yaml_representer)
+
+
+class PrometheusSpec(MonitoringSpec):
+    def __init__(self,
+                 service_type: str = 'prometheus',
+                 service_id: Optional[str] = None,
+                 placement: Optional[PlacementSpec] = None,
+                 unmanaged: bool = False,
+                 preview_only: bool = False,
+                 config: Optional[Dict[str, str]] = None,
+                 networks: Optional[List[str]] = None,
+                 port: Optional[int] = None,
+                 retention_time: Optional[str] = None,
+                 retention_size: Optional[str] = None,
+                 extra_container_args: Optional[List[str]] = None,
+                 extra_entrypoint_args: Optional[List[str]] = None,
+                 custom_configs: Optional[List[CustomConfig]] = None,
+                 ):
+        assert service_type == 'prometheus'
+        super(PrometheusSpec, self).__init__(
+            'prometheus', service_id=service_id,
+            placement=placement, unmanaged=unmanaged,
+            preview_only=preview_only, config=config, networks=networks, port=port,
+            extra_container_args=extra_container_args, extra_entrypoint_args=extra_entrypoint_args,
+            custom_configs=custom_configs)
+
+        self.retention_time = retention_time.strip() if retention_time else None
+        self.retention_size = retention_size.strip() if retention_size else None
+
+
+yaml.add_representer(PrometheusSpec, ServiceSpec.yaml_representer)
 
 
 class SNMPGatewaySpec(ServiceSpec):
@@ -1295,6 +1348,7 @@ class SNMPGatewaySpec(ServiceSpec):
                  preview_only: bool = False,
                  port: Optional[int] = None,
                  extra_container_args: Optional[List[str]] = None,
+                 extra_entrypoint_args: Optional[List[str]] = None,
                  custom_configs: Optional[List[CustomConfig]] = None,
                  ):
         assert service_type == 'snmp-gateway'
@@ -1305,6 +1359,7 @@ class SNMPGatewaySpec(ServiceSpec):
             unmanaged=unmanaged,
             preview_only=preview_only,
             extra_container_args=extra_container_args,
+            extra_entrypoint_args=extra_entrypoint_args,
             custom_configs=custom_configs)
 
         self.service_type = service_type
@@ -1416,6 +1471,7 @@ class MDSSpec(ServiceSpec):
                  unmanaged: bool = False,
                  preview_only: bool = False,
                  extra_container_args: Optional[List[str]] = None,
+                 extra_entrypoint_args: Optional[List[str]] = None,
                  custom_configs: Optional[List[CustomConfig]] = None,
                  ):
         assert service_type == 'mds'
@@ -1425,6 +1481,7 @@ class MDSSpec(ServiceSpec):
                                       unmanaged=unmanaged,
                                       preview_only=preview_only,
                                       extra_container_args=extra_container_args,
+                                      extra_entrypoint_args=extra_entrypoint_args,
                                       custom_configs=custom_configs)
 
     def validate(self) -> None:
@@ -1487,3 +1544,46 @@ class TunedProfileSpec():
         # for making deep copies so you can edit the settings in one without affecting the other
         # mostly for testing purposes
         return TunedProfileSpec(self.profile_name, self.placement, self.settings.copy())
+
+
+class CephExporterSpec(ServiceSpec):
+    def __init__(self,
+                 service_type: str = 'ceph-exporter',
+                 sock_dir: Optional[str] = None,
+                 addrs: str = '',
+                 port: Optional[int] = None,
+                 prio_limit: Optional[int] = 5,
+                 stats_period: Optional[int] = 5,
+                 placement: Optional[PlacementSpec] = None,
+                 unmanaged: bool = False,
+                 preview_only: bool = False,
+                 extra_container_args: Optional[List[str]] = None,
+                 ):
+        assert service_type == 'ceph-exporter'
+
+        super(CephExporterSpec, self).__init__(
+            service_type,
+            placement=placement,
+            unmanaged=unmanaged,
+            preview_only=preview_only,
+            extra_container_args=extra_container_args)
+
+        self.service_type = service_type
+        self.sock_dir = sock_dir
+        self.addrs = addrs
+        self.port = port
+        self.prio_limit = prio_limit
+        self.stats_period = stats_period
+
+    def validate(self) -> None:
+        super(CephExporterSpec, self).validate()
+
+        if not isinstance(self.prio_limit, int):
+            raise SpecValidationError(
+                    f'prio_limit must be an integer. Got {type(self.prio_limit)}')
+        if not isinstance(self.stats_period, int):
+            raise SpecValidationError(
+                    f'stats_period must be an integer. Got {type(self.stats_period)}')
+
+
+yaml.add_representer(CephExporterSpec, ServiceSpec.yaml_representer)

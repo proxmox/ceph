@@ -268,6 +268,7 @@ public:
   public:
     explicit CommandHook(Client *client);
     int call(std::string_view command, const cmdmap_t& cmdmap,
+	     const bufferlist&,
 	     Formatter *f,
 	     std::ostream& errss,
 	     bufferlist& out) override;
@@ -900,6 +901,7 @@ public:
   bool _collect_and_send_global_metrics;
 
 protected:
+  std::list<ceph::condition_variable*> waiting_for_reclaim;
   /* Flags for check_caps() */
   static const unsigned CHECK_CAPS_NODELAY = 0x1;
   static const unsigned CHECK_CAPS_SYNCHRONOUS = 0x2;
@@ -933,8 +935,9 @@ protected:
   void dump_mds_sessions(Formatter *f, bool cap_dump=false);
 
   int make_request(MetaRequest *req, const UserPerm& perms,
-		   InodeRef *ptarget = 0, bool *pcreated = 0,
-		   mds_rank_t use_mds=-1, bufferlist *pdirbl=0);
+                   InodeRef *ptarget = 0, bool *pcreated = 0,
+                   mds_rank_t use_mds=-1, bufferlist *pdirbl=0,
+                   size_t feature_needed=ULONG_MAX);
   void put_request(MetaRequest *request);
   void unregister_request(MetaRequest *request);
 
@@ -981,6 +984,7 @@ protected:
   void update_snap_trace(const bufferlist& bl, SnapRealm **realm_ret, bool must_flush=true);
   void invalidate_snaprealm_and_children(SnapRealm *realm);
 
+  void refresh_snapdir_attrs(Inode *in, Inode *diri);
   Inode *open_snapdir(Inode *diri);
 
   int get_fd() {
@@ -1562,7 +1566,6 @@ private:
   uint64_t retries_on_invalidate = 0;
 
   // state reclaim
-  std::list<ceph::condition_variable*> waiting_for_reclaim;
   int reclaim_errno = 0;
   epoch_t reclaim_osd_epoch = 0;
   entity_addrvec_t reclaim_target_addrs;

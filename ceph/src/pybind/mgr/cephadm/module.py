@@ -26,7 +26,7 @@ from ceph.deployment.drive_group import DriveGroupSpec
 from ceph.deployment.service_spec import \
     ServiceSpec, PlacementSpec, \
     HostPlacementSpec, IngressSpec, \
-    TunedProfileSpec
+    TunedProfileSpec, IscsiServiceSpec, PrometheusSpec
 from ceph.utils import str_to_datetime, datetime_to_str, datetime_now
 from cephadm.serve import CephadmServe
 from cephadm.services.cephadmservice import CephadmDaemonDeploySpec
@@ -47,7 +47,8 @@ from . import utils
 from . import ssh
 from .migrations import Migrations
 from .services.cephadmservice import MonService, MgrService, MdsService, RgwService, \
-    RbdMirrorService, CrashService, CephadmService, CephfsMirrorService, CephadmAgent
+    RbdMirrorService, CrashService, CephadmService, CephfsMirrorService, CephadmAgent, \
+    CephExporterService
 from .services.ingress import IngressService
 from .services.container import CustomContainerService
 from .services.iscsi import IscsiService
@@ -395,6 +396,18 @@ class CephadmOrchestrator(orchestrator.Orchestrator, MgrModule,
             default=10,
             desc='max number of osds that will be drained simultaneously when osds are removed'
         ),
+        Option(
+            'cgroups_split',
+            type='bool',
+            default=True,
+            desc='Pass --cgroups=split when cephadm creates containers (currently podman only)'
+        ),
+        Option(
+            'log_refresh_metadata',
+            type='bool',
+            default=False,
+            desc='Log all refresh metadata. Includes daemon, device, and host info collected regularly. Only has effect if logging at debug level'
+        ),
     ]
 
     def __init__(self, *args: Any, **kwargs: Any):
@@ -465,6 +478,8 @@ class CephadmOrchestrator(orchestrator.Orchestrator, MgrModule,
             self.apply_spec_fails: List[Tuple[str, str]] = []
             self.max_osd_draining_count = 10
             self.device_enhanced_scan = False
+            self.cgroups_split = True
+            self.log_refresh_metadata = False
 
         self.notify(NotifyType.mon_map, None)
         self.config_notify()
@@ -531,7 +546,7 @@ class CephadmOrchestrator(orchestrator.Orchestrator, MgrModule,
             RgwService, RbdMirrorService, GrafanaService, AlertmanagerService,
             PrometheusService, NodeExporterService, LokiService, PromtailService, CrashService, IscsiService,
             IngressService, CustomContainerService, CephfsMirrorService,
-            CephadmAgent, SNMPGatewayService
+            CephadmAgent, SNMPGatewayService, CephExporterService
         ]
 
         # https://github.com/python/mypy/issues/8993
@@ -540,6 +555,9 @@ class CephadmOrchestrator(orchestrator.Orchestrator, MgrModule,
 
         self.mgr_service: MgrService = cast(MgrService, self.cephadm_services['mgr'])
         self.osd_service: OSDService = cast(OSDService, self.cephadm_services['osd'])
+        self.iscsi_service: IscsiService = cast(IscsiService, self.cephadm_services['iscsi'])
+
+        self.scheduled_async_actions: List[Callable] = []
 
         self.template = TemplateMgr(self)
 
@@ -683,7 +701,7 @@ class CephadmOrchestrator(orchestrator.Orchestrator, MgrModule,
         Generate a unique random service name
         """
         suffix = daemon_type not in [
-            'mon', 'crash',
+            'mon', 'crash', 'ceph-exporter',
             'prometheus', 'node-exporter', 'grafana', 'alertmanager',
             'container', 'agent', 'snmp-gateway', 'loki', 'promtail'
         ]
@@ -772,6 +790,7 @@ class CephadmOrchestrator(orchestrator.Orchestrator, MgrModule,
             sd.rank_generation = int(d['rank_generation']) if d.get(
                 'rank_generation') is not None else None
             sd.extra_container_args = d.get('extra_container_args')
+            sd.extra_entrypoint_args = d.get('extra_entrypoint_args')
             if 'state' in d:
                 sd.status_desc = d['state']
                 sd.status = {
@@ -1049,6 +1068,10 @@ class CephadmOrchestrator(orchestrator.Orchestrator, MgrModule,
                                                                              error_ok=True, no_fsid=True))
             if code:
                 return 1, '', ('check-host failed:\n' + '\n'.join(err))
+        except ssh.HostConnectionError as e:
+            self.log.exception(f"check-host failed for '{host}' at addr ({e.addr}) due to connection failure: {str(e)}")
+            return 1, '', ('check-host failed:\n'
+                           + f"Failed to connect to {host} at address ({e.addr}): {str(e)}")
         except OrchestratorError:
             self.log.exception(f"check-host failed for '{host}'")
             return 1, '', ('check-host failed:\n'
@@ -1502,8 +1525,8 @@ Then run the following:
                 self.log.info(f"removing: {d.name()}")
 
                 if d.daemon_type != 'osd':
-                    self.cephadm_services[str(d.daemon_type)].pre_remove(d)
-                    self.cephadm_services[str(d.daemon_type)].post_remove(d, is_failed_deploy=False)
+                    self.cephadm_services[daemon_type_to_service(str(d.daemon_type))].pre_remove(d)
+                    self.cephadm_services[daemon_type_to_service(str(d.daemon_type))].post_remove(d, is_failed_deploy=False)
                 else:
                     cmd_args = {
                         'prefix': 'osd purge-actual',
@@ -1521,6 +1544,7 @@ Then run the following:
         self.inventory.rm_host(host)
         self.cache.rm_host(host)
         self.ssh.reset_con(host)
+        self.offline_hosts_remove(host)  # if host was in offline host list, we should remove it now.
         self.event.set()  # refresh stray health check
         self.log.info('Removed host %s' % host)
         return "Removed {} host '{}'".format('offline' if offline else '', host)
@@ -1940,6 +1964,52 @@ Then run the following:
             for dd in dds
         ]
 
+    def _rotate_daemon_key(self, daemon_spec: CephadmDaemonDeploySpec) -> str:
+        self.log.info(f'Rotating authentication key for {daemon_spec.name()}')
+        rc, out, err = self.mon_command({
+            'prefix': 'auth get-or-create-pending',
+            'entity': daemon_spec.entity_name(),
+            'format': 'json',
+        })
+        j = json.loads(out)
+        pending_key = j[0]['pending_key']
+
+        # deploy a new keyring file
+        if daemon_spec.daemon_type != 'osd':
+            daemon_spec = self.cephadm_services[daemon_type_to_service(
+                daemon_spec.daemon_type)].prepare_create(daemon_spec)
+        self.wait_async(CephadmServe(self)._create_daemon(daemon_spec, reconfig=True))
+
+        # try to be clever, or fall back to restarting the daemon
+        rc = -1
+        if daemon_spec.daemon_type == 'osd':
+            rc, out, err = self.tool_exec(
+                args=['ceph', 'tell', daemon_spec.name(), 'rotate-stored-key', '-i', '-'],
+                stdin=pending_key.encode()
+            )
+            if not rc:
+                rc, out, err = self.tool_exec(
+                    args=['ceph', 'tell', daemon_spec.name(), 'rotate-key', '-i', '-'],
+                    stdin=pending_key.encode()
+                )
+        elif daemon_spec.daemon_type == 'mds':
+            rc, out, err = self.tool_exec(
+                args=['ceph', 'tell', daemon_spec.name(), 'rotate-key', '-i', '-'],
+                stdin=pending_key.encode()
+            )
+        elif (
+                daemon_spec.daemon_type == 'mgr'
+                and daemon_spec.daemon_id == self.get_mgr_id()
+        ):
+            rc, out, err = self.tool_exec(
+                args=['ceph', 'tell', daemon_spec.name(), 'rotate-key', '-i', '-'],
+                stdin=pending_key.encode()
+            )
+        if rc:
+            self._daemon_action(daemon_spec, 'restart')
+
+        return f'Rotated key for {daemon_spec.name()}'
+
     def _daemon_action(self,
                        daemon_spec: CephadmDaemonDeploySpec,
                        action: str,
@@ -1952,6 +2022,9 @@ Then run the following:
             self.mgr_service.fail_over()
             return ''  # unreachable
 
+        if action == 'rotate-key':
+            return self._rotate_daemon_key(daemon_spec)
+
         if action == 'redeploy' or action == 'reconfig':
             if daemon_spec.daemon_type != 'osd':
                 daemon_spec = self.cephadm_services[daemon_type_to_service(
@@ -1959,7 +2032,8 @@ Then run the following:
             else:
                 # for OSDs, we still need to update config, just not carry out the full
                 # prepare_create function
-                daemon_spec.final_config, daemon_spec.deps = self.osd_service.generate_config(daemon_spec)
+                daemon_spec.final_config, daemon_spec.deps = self.osd_service.generate_config(
+                    daemon_spec)
             return self.wait_async(CephadmServe(self)._create_daemon(daemon_spec, reconfig=(action == 'reconfig')))
 
         actions = {
@@ -2008,6 +2082,13 @@ Then run the following:
             raise OrchestratorError(
                 f'Unable to schedule redeploy for {daemon_name}: No standby MGRs')
 
+        if action == 'rotate-key':
+            if d.daemon_type not in ['mgr', 'osd', 'mds',
+                                     'rgw', 'crash', 'nfs', 'rbd-mirror', 'iscsi']:
+                raise OrchestratorError(
+                    f'key rotation not supported for {d.daemon_type}'
+                )
+
         self._daemon_action_set_image(action, image, d.daemon_type, d.daemon_id)
 
         self.log.info(f'Schedule {action} daemon {daemon_name}')
@@ -2031,6 +2112,7 @@ Then run the following:
             raise OrchestratorError(
                 f'Unable to schedule redeploy for {daemon_name}: No standby MGRs')
         self.cache.schedule_daemon_action(dd.hostname, dd.name(), action)
+        self.cache.save_host(dd.hostname)
         msg = "Scheduled to {} {} on host '{}'".format(action, daemon_name, dd.hostname)
         self._kick_serve_loop()
         return msg
@@ -2360,10 +2442,14 @@ Then run the following:
             deps = sorted([self.get_mgr_ip(), server_port, root_cert,
                            str(self.device_enhanced_scan)])
         elif daemon_type == 'iscsi':
-            deps = [self.get_mgr_ip()]
+            if spec:
+                iscsi_spec = cast(IscsiServiceSpec, spec)
+                deps = [self.iscsi_service.get_trusted_ips(iscsi_spec)]
+            else:
+                deps = [self.get_mgr_ip()]
         else:
             need = {
-                'prometheus': ['mgr', 'alertmanager', 'node-exporter', 'ingress'],
+                'prometheus': ['mgr', 'alertmanager', 'node-exporter', 'ingress', 'ceph-exporter'],
                 'grafana': ['prometheus', 'loki'],
                 'alertmanager': ['mgr', 'alertmanager', 'snmp-gateway'],
                 'promtail': ['loki'],
@@ -2476,15 +2562,85 @@ Then run the following:
             # should only refresh if a change has been detected
             self._trigger_preview_refresh(specs=[cast(DriveGroupSpec, spec)])
 
+        if spec.service_type == 'prometheus':
+            spec = cast(PrometheusSpec, spec)
+            if spec.retention_time:
+                valid_units = ['y', 'w', 'd', 'h', 'm', 's']
+                m = re.search(rf"^(\d+)({'|'.join(valid_units)})$", spec.retention_time)
+                if not m:
+                    raise OrchestratorError(f"Invalid retention time. Valid units are: {', '.join(valid_units)}")
+            if spec.retention_size:
+                valid_units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB', 'EB']
+                m = re.search(rf"^(\d+)({'|'.join(valid_units)})$", spec.retention_size)
+                if not m:
+                    raise OrchestratorError(f"Invalid retention size. Valid units are: {', '.join(valid_units)}")
+
         return self._apply_service_spec(cast(ServiceSpec, spec))
+
+    def _get_candidate_hosts(self, placement: PlacementSpec) -> List[str]:
+        """Return a list of candidate hosts according to the placement specification."""
+        all_hosts = self.cache.get_schedulable_hosts()
+        draining_hosts = [dh.hostname for dh in self.cache.get_draining_hosts()]
+        candidates = []
+        if placement.hosts:
+            candidates = [h.hostname for h in placement.hosts if h.hostname in placement.hosts]
+        elif placement.label:
+            candidates = [x.hostname for x in [h for h in all_hosts if placement.label in h.labels]]
+        elif placement.host_pattern:
+            candidates = [x for x in placement.filter_matching_hostspecs(all_hosts)]
+        elif (placement.count is not None or placement.count_per_host is not None):
+            candidates = [x.hostname for x in all_hosts]
+        return [h for h in candidates if h not in draining_hosts]
+
+    def _validate_one_shot_placement_spec(self, spec: PlacementSpec) -> None:
+        """Validate placement specification for TunedProfileSpec and ClientKeyringSpec."""
+        if spec.count is not None:
+            raise OrchestratorError(
+                "Placement 'count' field is no supported for this specification.")
+        if spec.count_per_host is not None:
+            raise OrchestratorError(
+                "Placement 'count_per_host' field is no supported for this specification.")
+        if spec.hosts:
+            all_hosts = [h.hostname for h in self.inventory.all_specs()]
+            invalid_hosts = [h.hostname for h in spec.hosts if h.hostname not in all_hosts]
+            if invalid_hosts:
+                raise OrchestratorError(f"Found invalid host(s) in placement section: {invalid_hosts}. "
+                                        f"Please check 'ceph orch host ls' for available hosts.")
+        elif not self._get_candidate_hosts(spec):
+            raise OrchestratorError("Invalid placement specification. No host(s) matched placement spec.\n"
+                                    "Please check 'ceph orch host ls' for available hosts.\n"
+                                    "Note: draining hosts are excluded from the candidate list.")
+
+    def _validate_tunedprofile_settings(self, spec: TunedProfileSpec) -> Dict[str, List[str]]:
+        candidate_hosts = spec.placement.filter_matching_hostspecs(self.inventory.all_specs())
+        invalid_options: Dict[str, List[str]] = {}
+        for host in candidate_hosts:
+            host_sysctl_options = self.cache.get_facts(host).get('sysctl_options', {})
+            invalid_options[host] = []
+            for option in spec.settings:
+                if option not in host_sysctl_options:
+                    invalid_options[host].append(option)
+        return invalid_options
+
+    def _validate_tuned_profile_spec(self, spec: TunedProfileSpec) -> None:
+        if not spec.settings:
+            raise OrchestratorError("Invalid spec: settings section cannot be empty.")
+        self._validate_one_shot_placement_spec(spec.placement)
+        invalid_options = self._validate_tunedprofile_settings(spec)
+        if any(e for e in invalid_options.values()):
+            raise OrchestratorError(
+                f'Failed to apply tuned profile. Invalid sysctl option(s) for host(s) detected: {invalid_options}')
 
     @handle_orch_error
     def apply_tuned_profiles(self, specs: List[TunedProfileSpec], no_overwrite: bool = False) -> str:
         outs = []
         for spec in specs:
+            self._validate_tuned_profile_spec(spec)
             if no_overwrite and self.tuned_profiles.exists(spec.profile_name):
-                outs.append(f"Tuned profile '{spec.profile_name}' already exists (--no-overwrite was passed)")
+                outs.append(
+                    f"Tuned profile '{spec.profile_name}' already exists (--no-overwrite was passed)")
             else:
+                # done, let's save the specs
                 self.tuned_profiles.add_profile(spec)
                 outs.append(f'Saved tuned profile {spec.profile_name}')
         self._kick_serve_loop()
@@ -2591,6 +2747,7 @@ Then run the following:
                 'alertmanager': PlacementSpec(count=1),
                 'prometheus': PlacementSpec(count=1),
                 'node-exporter': PlacementSpec(host_pattern='*'),
+                'ceph-exporter': PlacementSpec(host_pattern='*'),
                 'loki': PlacementSpec(count=1),
                 'promtail': PlacementSpec(host_pattern='*'),
                 'crash': PlacementSpec(host_pattern='*'),
@@ -2702,6 +2859,10 @@ Then run the following:
         return self._apply(spec)
 
     @handle_orch_error
+    def apply_ceph_exporter(self, spec: ServiceSpec) -> str:
+        return self._apply(spec)
+
+    @handle_orch_error
     def apply_crash(self, spec: ServiceSpec) -> str:
         return self._apply(spec)
 
@@ -2783,7 +2944,9 @@ Then run the following:
     def upgrade_start(self, image: str, version: str, daemon_types: Optional[List[str]] = None, host_placement: Optional[str] = None,
                       services: Optional[List[str]] = None, limit: Optional[int] = None) -> str:
         if self.inventory.get_host_with_state("maintenance"):
-            raise OrchestratorError("upgrade aborted - you have host(s) in maintenance state")
+            raise OrchestratorError("Upgrade aborted - you have host(s) in maintenance state")
+        if self.offline_hosts:
+            raise OrchestratorError(f"Upgrade aborted - Some host(s) are currently offline: {self.offline_hosts}")
         if daemon_types is not None and services is not None:
             raise OrchestratorError('--daemon-types and --services are mutually exclusive')
         if daemon_types is not None:

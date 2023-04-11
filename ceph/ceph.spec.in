@@ -61,7 +61,11 @@
 %global _remote_tarball_prefix https://download.ceph.com/tarballs/
 %endif
 %if 0%{?suse_version}
+%ifarch s390x
+%bcond_with system_pmdk
+%else
 %bcond_without system_pmdk
+%endif
 %bcond_with amqp_endpoint
 %bcond_with cephfs_java
 %bcond_with kafka_endpoint
@@ -202,8 +206,11 @@ BuildRequires:	selinux-policy-devel
 BuildRequires:	gperf
 BuildRequires:  cmake > 3.5
 BuildRequires:	fuse-devel
-%if 0%{?fedora} || 0%{?suse_version} || 0%{?rhel} == 9
+%if 0%{?fedora} || 0%{?suse_version} > 1500 || 0%{?rhel} == 9
 BuildRequires:	gcc-c++ >= 11
+%endif
+%if 0%{?suse_version} == 1500
+BuildRequires: gcc11-c++
 %endif
 %if 0%{?rhel} == 8
 BuildRequires:	%{gts_prefix}-gcc-c++
@@ -648,6 +655,7 @@ Requires:       python%{python3_pkgversion}-pecan
 Requires:       python%{python3_pkgversion}-pyOpenSSL
 Requires:       python%{python3_pkgversion}-requests
 Requires:       python%{python3_pkgversion}-dateutil
+Requires:       python%{python3_pkgversion}-setuptools
 %if 0%{?fedora} || 0%{?rhel} >= 8
 Requires:       python%{python3_pkgversion}-cherrypy
 Requires:       python%{python3_pkgversion}-pyyaml
@@ -1307,6 +1315,10 @@ env | sort
 mkdir -p %{_vpath_builddir}
 pushd %{_vpath_builddir}
 cmake .. \
+%if 0%{?suse_version} == 1500
+    -DCMAKE_C_COMPILER=gcc-11 \
+    -DCMAKE_CXX_COMPILER=g++-11 \
+%endif
     -DCMAKE_INSTALL_PREFIX=%{_prefix} \
     -DCMAKE_INSTALL_LIBDIR:PATH=%{_libdir} \
     -DCMAKE_INSTALL_LIBEXECDIR:PATH=%{_libexecdir} \
@@ -1461,7 +1473,7 @@ touch %{buildroot}%{_sharedstatedir}/cephadm/.ssh/authorized_keys
 chmod 0600 %{buildroot}%{_sharedstatedir}/cephadm/.ssh/authorized_keys
 
 # firewall templates and /sbin/mount.ceph symlink
-%if 0%{?suse_version} && !0%{?usrmerged}
+%if 0%{?suse_version} && 0%{?suse_version} < 1550
 mkdir -p %{buildroot}/sbin
 ln -sf %{_sbindir}/mount.ceph %{buildroot}/sbin/mount.ceph
 %endif
@@ -1637,7 +1649,7 @@ exit 0
 %{_bindir}/rbd-replay-many
 %{_bindir}/rbdmap
 %{_sbindir}/mount.ceph
-%if 0%{?suse_version} && !0%{?usrmerged}
+%if 0%{?suse_version} && 0%{?suse_version} < 1550
 /sbin/mount.ceph
 %endif
 %if %{with lttng}
