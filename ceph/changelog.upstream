@@ -1,7 +1,19 @@
-ceph (16.2.11-1focal) focal; urgency=medium
+ceph (16.2.12-1focal) focal; urgency=medium
 
 
- -- Jenkins Build Slave User <jenkins-build@braggi16.front.sepia.ceph.com>  Tue, 24 Jan 2023 21:28:06 +0000
+ -- Jenkins Build Slave User <jenkins-build@braggi17.front.sepia.ceph.com>  Thu, 13 Apr 2023 22:05:57 +0000
+
+ceph (16.2.12-1) stable; urgency=medium
+
+  * New upstream release
+
+ -- Ceph Release Team <ceph-maintainers@ceph.io>  Thu, 13 Apr 2023 21:54:05 +0000
+
+ceph (16.2.12-1) stable; urgency=medium
+
+  * New upstream release
+
+ -- Ceph Release Team <ceph-maintainers@ceph.io>  Thu, 13 Apr 2023 14:09:23 +0000
 
 ceph (16.2.11-1) stable; urgency=medium
 

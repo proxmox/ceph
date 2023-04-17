@@ -8684,6 +8684,25 @@ std::vector<Option> get_mds_options() {
     .set_default(false)
     .set_description(""),
 
+    Option("mds_abort_on_newly_corrupt_dentry", Option::TYPE_BOOL, Option::LEVEL_ADVANCED)
+    .set_default(true)
+    .set_description("MDS will abort if dentry is detected newly corrupted."),
+
+    Option("mds_go_bad_corrupt_dentry", Option::TYPE_BOOL, Option::LEVEL_ADVANCED)
+    .set_default(true)
+    .set_flag(Option::FLAG_RUNTIME)
+    .set_description("MDS will mark a corrupt dentry as bad and isolate"),
+
+    Option("mds_inject_rename_corrupt_dentry_first", Option::TYPE_FLOAT, Option::LEVEL_DEV)
+    .set_default(0.0)
+    .set_flag(Option::FLAG_RUNTIME)
+    .set_description("probabilistically inject corrupt CDentry::first at rename"),
+
+    Option("mds_inject_journal_corrupt_dentry_first", Option::TYPE_FLOAT, Option::LEVEL_DEV)
+    .set_default(0.0)
+    .set_flag(Option::FLAG_RUNTIME)
+    .set_description("probabilistically inject corrupt CDentry::first at journal load"),
+
     Option("mds_kill_mdstable_at", Option::TYPE_INT, Option::LEVEL_DEV)
     .set_default(0)
     .set_description(""),
@@ -8875,10 +8894,6 @@ std::vector<Option> get_mds_options() {
     Option("mds_cap_revoke_eviction_timeout", Option::TYPE_FLOAT, Option::LEVEL_ADVANCED)
      .set_default(0)
      .set_description("number of seconds after which clients which have not responded to cap revoke messages by the MDS are evicted."),
-
-    Option("mds_max_retries_on_remount_failure", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
-     .set_default(5)
-     .set_description("number of consecutive failed remount attempts for invalidating kernel dcache after which client would abort."),
 
     Option("mds_dump_cache_threshold_formatter", Option::TYPE_SIZE, Option::LEVEL_DEV)
      .set_default(1_G)
@@ -9093,6 +9108,10 @@ std::vector<Option> get_mds_client_options() {
     Option("client_force_lazyio", Option::TYPE_BOOL, Option::LEVEL_ADVANCED)
     .set_default(false)
     .set_description(""),
+
+    Option("client_max_retries_on_remount_failure", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
+     .set_default(5)
+     .set_description("number of consecutive failed remount attempts for invalidating kernel dcache after which client would abort."),
 
     // note: the max amount of "in flight" dirty data is roughly (max - target)
     Option("fuse_use_invalidate_cb", Option::TYPE_BOOL, Option::LEVEL_ADVANCED)
