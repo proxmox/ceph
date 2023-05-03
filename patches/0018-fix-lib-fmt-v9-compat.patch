@@ -1,0 +1,140 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Thomas Lamprecht <t.lamprecht@proxmox.com>
+Date: Wed, 3 May 2023 10:36:10 +0200
+Subject: [PATCH] try to fix lib fmt v9 compat
+
+Signed-off-by: Thomas Lamprecht <t.lamprecht@proxmox.com>
+---
+ ceph/debian/rules       |  2 ++
+ src/common/Journald.cc  |  1 +
+ src/common/LogEntry.h   | 18 ++++++++++++++++++
+ src/osd/osd_types_fmt.h | 14 +++++++-------
+ 4 files changed, 28 insertions(+), 7 deletions(-)
+
+diff --git a/debian/rules b/debian/rules
+index 9f49deabb..c4eeebaee 100755
+--- a/debian/rules
++++ b/debian/rules
+@@ -52,6 +52,8 @@ ifneq (,$(filter with_system_libs,$(DEB_BUILD_OPTIONS)))
+   extraopts += -DWITH_SYSTEM_PMDK=ON
+ endif
+ 
++export DEB_CXXFLAGS_MAINT_APPEND += -DFMT_DEPRECATED_OSTREAM
++
+ %:
+ 	dh $@ --buildsystem=cmake --with javahelper,python3,systemd --parallel
+ 
+diff --git a/src/common/Journald.cc b/src/common/Journald.cc
+index e3ae2d358..a1321c7ee 100644
+--- a/src/common/Journald.cc
++++ b/src/common/Journald.cc
+@@ -21,6 +21,7 @@
+ #include "common/LogEntry.h"
+ #include "log/Entry.h"
+ #include "log/SubsystemMap.h"
++#include "msg/msg_fmt.h"
+ 
+ 
+ namespace ceph::logging {
+diff --git a/src/common/LogEntry.h b/src/common/LogEntry.h
+index 124a20799..3ddebbd30 100644
+--- a/src/common/LogEntry.h
++++ b/src/common/LogEntry.h
+@@ -15,7 +15,10 @@
+ #ifndef CEPH_LOGENTRY_H
+ #define CEPH_LOGENTRY_H
+ 
++#include <fmt/format.h>
++
+ #include "include/utime.h"
++#include "msg/msg_fmt.h"
+ #include "msg/msg_types.h"
+ #include "common/entity_name.h"
+ #include "ostream_temp.h"
+@@ -191,4 +194,19 @@ inline std::ostream& operator<<(std::ostream& out, const LogEntry& e)
+              << e.channel << " " << e.prio << " " << e.msg;
+ }
+ 
++template <> struct fmt::formatter<EntityName> : fmt::formatter<std::string_view> {
++  template <typename FormatContext>
++  auto format(const EntityName& e, FormatContext& ctx) {
++    return formatter<std::string_view>::format(e.to_str(), ctx);
++  }
++};
++
++template <> struct fmt::formatter<LogEntry> : fmt::formatter<std::string_view> {
++  template <typename FormatContext>
++  auto format(const LogEntry& e, FormatContext& ctx) {
++    return fmt::format_to(ctx.out(), "{} {} ({}) {} : {} {} {}",
++			  e.stamp, e.name, e.rank, e.seq, e.channel, e.prio, e.msg);
++  }
++};
++
+ #endif
+diff --git a/src/osd/osd_types_fmt.h b/src/osd/osd_types_fmt.h
+index 23c0e8a3b..a3c9eb61c 100644
+--- a/src/osd/osd_types_fmt.h
++++ b/src/osd/osd_types_fmt.h
+@@ -13,7 +13,7 @@ struct fmt::formatter<osd_reqid_t> {
+   constexpr auto parse(format_parse_context& ctx) { return ctx.begin(); }
+ 
+   template <typename FormatContext>
+-  auto format(const osd_reqid_t& req_id, FormatContext& ctx)
++  auto format(const osd_reqid_t& req_id, FormatContext& ctx) const
+   {
+     return fmt::format_to(ctx.out(), "{}.{}:{}", req_id.name, req_id.inc,
+ 			  req_id.tid);
+@@ -25,7 +25,7 @@ struct fmt::formatter<pg_shard_t> {
+   constexpr auto parse(format_parse_context& ctx) { return ctx.begin(); }
+ 
+   template <typename FormatContext>
+-  auto format(const pg_shard_t& shrd, FormatContext& ctx)
++  auto format(const pg_shard_t& shrd, FormatContext& ctx) const
+   {
+     if (shrd.is_undefined()) {
+       return fmt::format_to(ctx.out(), "?");
+@@ -42,7 +42,7 @@ struct fmt::formatter<eversion_t> {
+   constexpr auto parse(format_parse_context& ctx) { return ctx.begin(); }
+ 
+   template <typename FormatContext>
+-  auto format(const eversion_t& ev, FormatContext& ctx)
++  auto format(const eversion_t& ev, FormatContext& ctx) const
+   {
+     return fmt::format_to(ctx.out(), "{}'{}", ev.epoch, ev.version);
+   }
+@@ -53,7 +53,7 @@ struct fmt::formatter<chunk_info_t> {
+   constexpr auto parse(format_parse_context& ctx) { return ctx.begin(); }
+ 
+   template <typename FormatContext>
+-  auto format(const chunk_info_t& ci, FormatContext& ctx)
++  auto format(const chunk_info_t& ci, FormatContext& ctx) const
+   {
+     return fmt::format_to(ctx.out(), "(len: {} oid: {} offset: {} flags: {})",
+ 			  ci.length, ci.oid, ci.offset,
+@@ -66,7 +66,7 @@ struct fmt::formatter<object_manifest_t> {
+   constexpr auto parse(format_parse_context& ctx) { return ctx.begin(); }
+ 
+   template <typename FormatContext>
+-  auto format(const object_manifest_t& om, FormatContext& ctx)
++  auto format(const object_manifest_t& om, FormatContext& ctx) const
+   {
+     fmt::format_to(ctx.out(), "manifest({}", om.get_type_name());
+     if (om.is_redirect()) {
+@@ -83,7 +83,7 @@ struct fmt::formatter<object_info_t> {
+   constexpr auto parse(format_parse_context& ctx) { return ctx.begin(); }
+ 
+   template <typename FormatContext>
+-  auto format(const object_info_t& oi, FormatContext& ctx)
++  auto format(const object_info_t& oi, FormatContext& ctx) const
+   {
+     fmt::format_to(ctx.out(), "{}({} {} {} s {} uv {}", oi.soid, oi.version,
+ 		   oi.last_reqid, (oi.flags ? oi.get_flag_string() : ""), oi.size,
+@@ -110,7 +110,7 @@ struct fmt::formatter<pg_t> {
+   constexpr auto parse(format_parse_context& ctx) { return ctx.begin(); }
+ 
+   template <typename FormatContext>
+-  auto format(const pg_t& pg, FormatContext& ctx)
++  auto format(const pg_t& pg, FormatContext& ctx) const
+   {
+     return fmt::format_to(ctx.out(), "{}.{:x}", pg.pool(), pg.m_seed);
+   }
