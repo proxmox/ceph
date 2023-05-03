@@ -1,12 +1,10 @@
-ceph (17.2.6-pve1+2) bullseye; urgency=medium
+ceph (17.2.6-pve1+3) bookworm; urgency=medium
+
+  * rebuild for Proxmox VE 8.x based on Debian 12 Bookworm
 
   * backport patches lib boost compat with python3.10+
 
- -- Proxmox Support Team <support@proxmox.com>  Wed, 03 May 2023 08:33:57 +0200
-
-ceph (17.2.6-pve1+1) bullseye; urgency=medium
-
-  * rebuild for Proxmox VE 8.x based on Debian 12 Bookworm
+  * fix and improve compat with libfmt9 and newer gcc/c++17
 
  -- Proxmox Support Team <support@proxmox.com>  Tue, 02 May 2023 18:06:49 +0200
 
