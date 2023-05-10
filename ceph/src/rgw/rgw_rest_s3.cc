@@ -3925,9 +3925,11 @@ void RGWDeleteMultiObj_ObjStore_S3::begin_response()
   rgw_flush_formatter(s, s->formatter);
 }
 
-void RGWDeleteMultiObj_ObjStore_S3::send_partial_response(rgw_obj_key& key,
+void RGWDeleteMultiObj_ObjStore_S3::send_partial_response(const rgw_obj_key& key,
 							  bool delete_marker,
-							  const string& marker_version_id, int ret)
+							  const string& marker_version_id,
+                                                          int ret,
+                                                          boost::asio::deadline_timer *formatter_flush_cond)
 {
   if (!key.empty()) {
     delete_multi_obj_entry ops_log_entry;
@@ -3973,7 +3975,11 @@ void RGWDeleteMultiObj_ObjStore_S3::send_partial_response(rgw_obj_key& key,
     }
 
     ops_log_entries.push_back(std::move(ops_log_entry));
-    rgw_flush_formatter(s, s->formatter);
+    if (formatter_flush_cond) {
+      formatter_flush_cond->cancel();
+    } else {
+      rgw_flush_formatter(s, s->formatter);
+    }
   }
 }
 
@@ -4694,9 +4700,11 @@ int RGWHandler_REST_S3::postauth_init(optional_yield y)
 {
   struct req_init_state *t = &s->init_state;
 
-  rgw_parse_url_bucket(t->url_bucket, s->user->get_tenant(),
-		      s->bucket_tenant, s->bucket_name);
-
+  int ret = rgw_parse_url_bucket(t->url_bucket, s->user->get_tenant(),
+                                 s->bucket_tenant, s->bucket_name);
+  if (ret) {
+    return ret;
+  }
   if (s->auth.identity->get_identity_type() == TYPE_ROLE) {
     s->bucket_tenant = s->auth.identity->get_role_tenant();
   }
@@ -4704,7 +4712,6 @@ int RGWHandler_REST_S3::postauth_init(optional_yield y)
   ldpp_dout(s, 10) << "s->object=" << s->object
            << " s->bucket=" << rgw_make_bucket_entry_name(s->bucket_tenant, s->bucket_name) << dendl;
 
-  int ret;
   ret = rgw_validate_tenant_name(s->bucket_tenant);
   if (ret)
     return ret;
@@ -4721,8 +4728,11 @@ int RGWHandler_REST_S3::postauth_init(optional_yield y)
     } else {
       auth_tenant = s->user->get_tenant();
     }
-    rgw_parse_url_bucket(t->src_bucket, auth_tenant,
-			s->src_tenant_name, s->src_bucket_name);
+    ret = rgw_parse_url_bucket(t->src_bucket, auth_tenant,
+                               s->src_tenant_name, s->src_bucket_name);
+    if (ret) {
+      return ret;
+    }
     ret = rgw_validate_tenant_name(s->src_tenant_name);
     if (ret)
       return ret;

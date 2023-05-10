@@ -806,6 +806,10 @@ OPTION(rocksdb_collect_compaction_stats, OPT_BOOL) //For rocksdb, this behavior 
 OPTION(rocksdb_collect_extended_stats, OPT_BOOL) //For rocksdb, this behavior will be an overhead of 5%~10%, collected only rocksdb_perf is enabled.
 OPTION(rocksdb_collect_memory_stats, OPT_BOOL) //For rocksdb, this behavior will be an overhead of 5%~10%, collected only rocksdb_perf is enabled.
 
+OPTION(rocksdb_cf_compact_on_deletion, OPT_BOOL)
+OPTION(rocksdb_cf_compact_on_deletion_sliding_window, OPT_INT)
+OPTION(rocksdb_cf_compact_on_deletion_trigger, OPT_INT)
+
 // rocksdb options that will be used for omap(if omap_backend is rocksdb)
 OPTION(filestore_rocksdb_options, OPT_STR)
 // rocksdb options that will be used in monstore
@@ -1263,6 +1267,11 @@ OPTION(rgw_override_bucket_index_max_shards, OPT_U32)
  * Represents the maximum AIO pending requests for the bucket index object shards.
  */
 OPTION(rgw_bucket_index_max_aio, OPT_U32)
+
+/**
+ * Represents the maximum AIO pending requests for multi object delete requests.
+ */
+OPTION(rgw_multi_obj_del_max_aio, OPT_U32)
 
 /**
  * whether or not the quota/gc threads should be started

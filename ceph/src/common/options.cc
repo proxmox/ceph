@@ -3972,6 +3972,22 @@ std::vector<Option> get_global_options() {
     .set_default(4_K)
     .set_description("The block size for index partitions. (0 = rocksdb default)"),
 
+    Option("rocksdb_cf_compact_on_deletion", Option::TYPE_BOOL, Option::LEVEL_DEV)
+    .set_default(false)
+    .set_description("Compact the column family when a certain number of tombstones are observed within a given window.")
+    .set_long_description("This setting instructs RocksDB to compact a column family when a certain number of tombstones are observed during iteration within a certain sliding window. For instance if rocksdb_cf_compact_on_deletion_sliding_window is 8192 and rocksdb_cf_compact_on_deletion_trigger is 4096,  then once 4096 tombstones are observed after iteration over 8192 entries, the column family will be compacted.")
+    .add_see_also({"rocksdb_cf_compact_on_deletion_sliding_window", "rocksdb_cf_compact_on_deletion_trigger"}),
+
+    Option("rocksdb_cf_compact_on_deletion_sliding_window", Option::TYPE_INT, Option::LEVEL_DEV)
+    .set_default(32768)
+    .set_description("The sliding window to use when rocksdb_cf_compact_on_deletion is enabled.")
+    .add_see_also({"rocksdb_cf_compact_on_deletion"}),
+
+    Option("rocksdb_cf_compact_on_deletion_trigger", Option::TYPE_INT, Option::LEVEL_DEV)
+    .set_default(16384)
+    .set_description("The trigger to use when rocksdb_cf_compact_on_deletion is enabled.")
+    .add_see_also({"rocksdb_cf_compact_on_deletion"}),
+
     Option("mon_rocksdb_options", Option::TYPE_STR, Option::LEVEL_ADVANCED)
     .set_default("write_buffer_size=33554432,"
 		 "compression=kNoCompression,"
@@ -5867,6 +5883,10 @@ std::vector<Option> get_rgw_options() {
     Option("rgw_bucket_index_max_aio", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
     .set_default(128)
     .set_description("Max number of concurrent RADOS requests when handling bucket shards."),
+
+    Option("rgw_multi_obj_del_max_aio", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
+    .set_default(16)
+    .set_description("Max number of concurrent RADOS requests per multi-object delete request."),
 
     Option("rgw_enable_quota_threads", Option::TYPE_BOOL, Option::LEVEL_ADVANCED)
     .set_default(true)

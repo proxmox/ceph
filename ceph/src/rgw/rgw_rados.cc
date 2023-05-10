@@ -5187,7 +5187,7 @@ int RGWRados::Object::Delete::delete_obj(optional_yield y, const DoutPrefixProvi
   store->remove_rgw_head_obj(op);
 
   auto& ioctx = ref.pool.ioctx();
-  r = rgw_rados_operate(dpp, ioctx, ref.obj.oid, &op, null_yield);
+  r = rgw_rados_operate(dpp, ioctx, ref.obj.oid, &op, y);
 
   /* raced with another operation, object state is indeterminate */
   const bool need_invalidate = (r == -ECANCELED);
@@ -7298,9 +7298,6 @@ int RGWRados::apply_olh_log(const DoutPrefixProvider *dpp,
 
   /* update olh object */
   r = rgw_rados_operate(dpp, ref.pool.ioctx(), ref.obj.oid, &op, null_yield);
-  if (r == -ECANCELED) {
-    r = 0;
-  }
   if (r < 0) {
     ldpp_dout(dpp, 0) << "ERROR: could not apply olh update, r=" << r << dendl;
     return r;
@@ -7611,6 +7608,12 @@ int RGWRados::follow_olh(const DoutPrefixProvider *dpp, const RGWBucketInfo& buc
 
     int ret = update_olh(dpp, obj_ctx, state, bucket_info, olh_obj);
     if (ret < 0) {
+      if (ret == -ECANCELED) {
+        // In this context, ECANCELED means that the OLH tag changed in either the bucket index entry or the OLH object.
+        // If the OLH tag changed, it indicates that a previous OLH entry was removed since this request started. We
+        // return ENOENT to indicate that the OLH object was removed.
+        ret = -ENOENT;
+      }
       return ret;
     }
   }
@@ -7664,7 +7667,7 @@ int RGWRados::raw_obj_stat(const DoutPrefixProvider *dpp,
     op.read(0, cct->_conf->rgw_max_chunk_size, first_chunk, NULL);
   }
   bufferlist outbl;
-  r = rgw_rados_operate(dpp, ref.pool.ioctx(), ref.obj.oid, &op, &outbl, null_yield);
+  r = rgw_rados_operate(dpp, ref.pool.ioctx(), ref.obj.oid, &op, &outbl, y);
 
   if (epoch) {
     *epoch = ref.pool.ioctx().get_last_version();
@@ -8558,14 +8561,12 @@ int RGWRados::cls_bucket_list_ordered(const DoutPrefixProvider *dpp,
 
   // add the next unique candidate, or return false if we reach the end
   auto next_candidate = [] (CephContext *cct, ShardTracker& t,
-                            std::map<std::string, size_t>& candidates,
+                            std::multimap<std::string, size_t>& candidates,
                             size_t tracker_idx) {
-    while (!t.at_end()) {
-      if (candidates.emplace(t.entry_name(), tracker_idx).second) {
-        return;
-      }
-      t.advance(); // skip duplicate common prefixes
+    if (!t.at_end()) {
+      candidates.emplace(t.entry_name(), tracker_idx);
     }
+    return;
   };
 
   // one tracker per shard requested (may not be all shards)
@@ -8587,8 +8588,10 @@ int RGWRados::cls_bucket_list_ordered(const DoutPrefixProvider *dpp,
   // (key=candidate, value=index into results_trackers); as we consume
   // entries from shards, we replace them with the next entries in the
   // shards until we run out
-  std::map<std::string, size_t> candidates;
+  std::multimap<std::string, size_t> candidates;
   size_t tracker_idx = 0;
+  std::vector<size_t> vidx;
+  vidx.reserve(shard_list_results.size());
   for (auto& t : results_trackers) {
     // it's important that the values in the map refer to the index
     // into the results_trackers vector, which may not be the same
@@ -8650,16 +8653,31 @@ int RGWRados::cls_bucket_list_ordered(const DoutPrefixProvider *dpp,
     }
 
     // refresh the candidates map
-    candidates.erase(candidates.begin());
-    tracker.advance();
-
-    next_candidate(cct, tracker, candidates, tracker_idx);
-
-    if (tracker.at_end() && tracker.is_truncated()) {
+    vidx.clear();
+    bool need_to_stop = false;
+    auto range = candidates.equal_range(name);
+    for (auto i = range.first; i != range.second; ++i) {
+      vidx.push_back(i->second);
+    } 
+    candidates.erase(range.first, range.second);
+    for (auto idx : vidx) {
+      auto& tracker_match = results_trackers.at(idx);
+      tracker_match.advance();
+      next_candidate(cct, tracker_match, candidates, idx);
+      if (tracker_match.at_end() && tracker_match.is_truncated()) {
+        need_to_stop = true;
+        break;
+      }
+    }
+    if (need_to_stop) {
       // once we exhaust one shard that is truncated, we need to stop,
       // as we cannot be certain that one of the next entries needs to
       // come from that shard; S3 and swift protocols allow returning
       // fewer than what was requested
+      ldpp_dout(dpp, 10) << __PRETTY_FUNCTION__ <<
+	": stopped accumulating results at count=" << count <<
+	", dirent=\"" << dirent.key <<
+	"\", because its shard is truncated and exhausted" << dendl;
       break;
     }
   } // while we haven't provided requested # of result entries
